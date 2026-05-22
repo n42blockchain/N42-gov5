@@ -12,11 +12,16 @@ import (
 	"github.com/n42blockchain/N42/internal/mpttrie"
 )
 
-// TestRethWalk_USDCSlot0000a010: forced walk for the known slot
-// whose [0,0,0,0,a] HAS a subtree row in reth (per the earlier
-// probe). With the corrected tree_mask semantics (walker probes
-// extended path), we should now DESCEND past depth 5, not land.
-func TestRethWalk_USDCSlot0000a010(t *testing.T) {
+// TestRB4_USDCSubtreeRebuild_Slot0000a010 is the canonical RB-4
+// regression guard: pick a USDC storage slot whose walk reaches an
+// inline (not separately rowed) sub-trie at depth 5, enumerate the
+// 4 sibling slots, and verify expandSubtreeProofPath produces a
+// sub-branch RLP whose keccak BYTE-EXACTLY matches the parent
+// branch's stored child hash.
+//
+// If reth's StoragesTrie/HashedStorages diverge or if the sub-trie
+// reconstruction encoding changes, this test fails loudly.
+func TestRB4_USDCSubtreeRebuild_Slot0000a010(t *testing.T) {
 	if testing.Short() {
 		t.Skip("--short")
 	}
@@ -35,7 +40,8 @@ func TestRethWalk_USDCSlot0000a010(t *testing.T) {
 	var usdcHash [32]byte
 	h.Sum(usdcHash[:0])
 
-	// Specific slot known to have a depth-5 subtree under USDC.
+	// Known slot — walk's deepest hop will reference a 4-leaf inline
+	// sub-trie at prefix [0,0,0,0,a,0].
 	slotHashHex := "0000a01024dfe538ecd7033c75412089fea58e095d05b7b93fd3d07e0587d72f"
 	slotHashBytes, _ := hex.DecodeString(slotHashHex)
 
@@ -43,86 +49,54 @@ func TestRethWalk_USDCSlot0000a010(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WalkRethStorage: %v", err)
 	}
-	t.Logf("walk: %d hops outcome=%v leafDepth=%d", len(walk.Hops), walk.Outcome, walk.LeafDepth)
-	for i, hop := range walk.Hops {
-		t.Logf("  hop %d: depth=%d nib=%x state=0x%04x tree=0x%04x hash=0x%04x",
-			i, hop.PrefixDepth, hop.TargetNibble,
-			hop.Branch.HasState, hop.Branch.HasTree, hop.Branch.HasHash)
-	}
 	if walk.Outcome != mpttrie.LandedOnLeaf {
-		t.Logf("outcome != LandedOnLeaf, len(hops)=%d", len(walk.Hops))
+		t.Fatalf("expected LandedOnLeaf, got %v", walk.Outcome)
+	}
+	if len(walk.Hops) == 0 {
+		t.Fatalf("walk produced 0 hops")
 	}
 
-	// Look up slot's value from reth.
-	reader := NewRethBackedReader(src)
-	composite := append(append([]byte{}, usdc...), make([]byte, 32)...)
-	// derive the actual slot bytes by trying simple known values
-	// (only the slot HASH is what's in the trie — the original slot
-	// can't be recovered cheaply). Skip and use raw 32-byte FF value
-	// from value field directly.
-	_ = composite
-	_ = reader
-
-	// Encode our hypothetical leaf for this slot and compare hash to
-	// what reth recorded at the deepest hop's hash slot.
-	if walk.Outcome == mpttrie.LandedOnLeaf && len(walk.Hops) > 0 {
-		deepest := walk.Hops[len(walk.Hops)-1]
-		if deepest.Branch.HasHash&(uint16(1)<<uint16(deepest.TargetNibble)) != 0 {
-			expectedHash, _ := deepest.Branch.ChildHash(deepest.TargetNibble)
-			t.Logf("expected leaf keccak (from depth-%d branch slot %x): %x",
-				deepest.PrefixDepth, deepest.TargetNibble, expectedHash[:8])
-
-			// Pull value from HashedStorages for this slot.
-			val := readValueAtSlotHash(t, src, usdcHash[:], slotHashBytes)
-			t.Logf("slot value: %x (%d B)", val, len(val))
-
-			slotNib := nibblesOf(slotHashBytes)
-
-			tryVariant := func(label string, rem []byte, value []byte, doubleWrap bool) {
-				v := value
-				if doubleWrap {
-					v = encodeBytes(value)
-				}
-				rlpBytes := encodeLeafRLP(rem, v)
-				h := sha3.NewLegacyKeccak256()
-				h.Write(rlpBytes)
-				var got [32]byte
-				h.Sum(got[:0])
-				ok := got == expectedHash
-				t.Logf("  [%s] keccak=%x match=%v (leaf_len=%d)", label, got[:8], ok, len(rlpBytes))
-			}
-
-			remTerm := append(append([]byte{}, slotNib[walk.LeafDepth:]...), 0x10)
-			tryVariant("term-strip-single", remTerm, stripLeadingZeros(val), false)
-
-			// RB-4 subtree reconstruction: enumerate all leaves under
-			// slotNib[:walk.LeafDepth] and run expandSubtreeProofPath.
-			subLeaves, lerr := enumerateUSDCStorageSubLeaves(src, usdcHash[:], slotNib[:walk.LeafDepth])
-			if lerr != nil {
-				t.Fatalf("enumerateUSDCStorageSubLeaves: %v", lerr)
-			}
-			t.Logf("subLeaves count under prefix %v: %d", slotNib[:walk.LeafDepth], len(subLeaves))
-			keyTail := append([]byte{}, slotNib[walk.LeafDepth:]...)
-			keyTail = append(keyTail, 0x10)
-			expanded, eerr := expandSubtreeProofPath(subLeaves, keyTail)
-			if eerr != nil {
-				t.Fatalf("expandSubtreeProofPath: %v", eerr)
-			}
-			t.Logf("expanded: %d nodes", len(expanded))
-			for i, n := range expanded {
-				hsum := sha3.NewLegacyKeccak256()
-				hsum.Write(n)
-				var hh [32]byte
-				hsum.Sum(hh[:0])
-				t.Logf("  expanded[%d]: len=%d keccak=%x", i, len(n), hh[:8])
-				if hh == expectedHash {
-					t.Logf("    ← MATCHES expected slot hash %x", expectedHash[:8])
-				}
-			}
-		}
+	deepest := walk.Hops[len(walk.Hops)-1]
+	if deepest.Branch.HasHash&(uint16(1)<<uint16(deepest.TargetNibble)) == 0 {
+		t.Fatalf("deepest hop's target slot has no stored hash; cannot validate sub-trie")
 	}
+	expectedHash, _ := deepest.Branch.ChildHash(deepest.TargetNibble)
+
+	slotNib := nibblesOf(slotHashBytes)
+	subLeaves, lerr := enumerateUSDCStorageSubLeaves(src, usdcHash[:], slotNib[:walk.LeafDepth])
+	if lerr != nil {
+		t.Fatalf("enumerateUSDCStorageSubLeaves: %v", lerr)
+	}
+	if len(subLeaves) < 2 {
+		t.Fatalf("expected multi-leaf inline subtree, got %d sub-leaves", len(subLeaves))
+	}
+
+	keyTail := append([]byte{}, slotNib[walk.LeafDepth:]...)
+	keyTail = append(keyTail, 0x10)
+	expanded, eerr := expandSubtreeProofPath(subLeaves, keyTail)
+	if eerr != nil {
+		t.Fatalf("expandSubtreeProofPath: %v", eerr)
+	}
+	if len(expanded) == 0 {
+		t.Fatalf("expandSubtreeProofPath returned no nodes")
+	}
+
+	// The first expanded node is the sub-trie root; its keccak must
+	// match the parent branch's stored child hash byte-for-byte.
+	hsum := sha3.NewLegacyKeccak256()
+	hsum.Write(expanded[0])
+	var gotHash [32]byte
+	hsum.Sum(gotHash[:0])
+	if gotHash != expectedHash {
+		t.Fatalf("sub-trie root keccak mismatch:\n  got      = %x\n  expected = %x\n  expanded[0] (%d B) = %x",
+			gotHash[:], expectedHash[:], len(expanded[0]), expanded[0])
+	}
+	t.Logf("RB-4 OK: %d sub-leaves → sub-trie root keccak %x matches reth byte-exact",
+		len(subLeaves), gotHash[:8])
 }
 
+// readValueAtSlotHash: small helper kept here as it's only used by
+// this specific test for diagnostic reads.
 func readValueAtSlotHash(t *testing.T, src *RethHashedLeafSource, addrHash, slotHash []byte) []byte {
 	t.Helper()
 	tx, _ := src.db.BeginRo(context.Background())
@@ -140,4 +114,3 @@ func readValueAtSlotHash(t *testing.T, src *RethHashedLeafSource, addrHash, slot
 	}
 	return append([]byte{}, v[32:]...)
 }
-
