@@ -49,6 +49,7 @@ func main() {
 	dstMapGB := flag.Int("dst-mapsize-gb", 256, "destination env mapsize (GB)")
 	acctLimit := flag.Int("account-limit", 0, "bound account count (0 = no limit)")
 	storLimit := flag.Int("storage-limit", 0, "bound storage entry count (0 = no limit)")
+	zstdLevel := flag.Int("zstd-level", 0, "zstd compression level for CommitmentBranches values (0 = off, 3 = recommended)")
 	flag.Parse()
 
 	if *rethDB == "" || *dst == "" {
@@ -99,6 +100,12 @@ func main() {
 	// --- Wire HPH + PersistentPatriciaContext ---
 	pctx := commitment.NewPersistentPatriciaContext(reader, reader)
 	pctx.SetWriteTx(tx)
+	if *zstdLevel > 0 {
+		if err := pctx.SetZstdLevel(*zstdLevel); err != nil {
+			fail("SetZstdLevel: %v", err)
+		}
+		fmt.Printf("zstd compression enabled at level %d\n", *zstdLevel)
+	}
 	hph := commitment.NewHexPatriciaHashed(int16(length.Addr), pctx)
 
 	// Plain keys are real (unhashed) addresses / addr||slot from

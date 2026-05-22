@@ -3,6 +3,10 @@ package commitment
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
+
+	"github.com/klauspost/compress/zstd"
 
 	"github.com/n42blockchain/N42/lib/kv"
 )
@@ -55,7 +59,37 @@ type PersistentPatriciaContext struct {
 	accts   AccountReader
 	stors   StorageReader
 	txNum   uint64
+
+	// HA-3d compression. zstdLevel == 0 = no compression (raw
+	// BranchData bytes stored as-is — compatible with HA-3a/b
+	// snapshots). zstdLevel > 0 = zstd-compressed BranchData with a
+	// 1-byte version prefix on every value:
+	//
+	//	prefix 0x00 = raw (no following bytes interpreted as zstd)
+	//	prefix 0x01 = zstd-compressed (decompress remaining bytes)
+	//
+	// The prefix is REQUIRED to distinguish formats on read because
+	// raw BranchData can start with any byte value (touchMap u16 BE).
+	// An env can mix-and-match: rows written by an uncompressed
+	// writer remain readable by a compressed reader (it sees
+	// prefix 0x00 and returns the rest verbatim).
+	zstdLevel  int
+	zstdEnc    *zstd.Encoder
+	zstdDec    *zstd.Decoder
+	zstdInit   sync.Once
+	zstdInitOK error
 }
+
+// CompressionPrefixRaw / CompressionPrefixZstd: the first byte of
+// every CommitmentBranches value when a zstd-aware writer/reader is
+// used. Pre-HA-3d data lacks a prefix entirely (legacy raw stream).
+// To preserve readability of old snapshots, the writer always emits
+// a prefix; the reader's hot path checks the first byte ONLY when
+// CompressionEnabled (set via SetZstdLevel).
+const (
+	CompressionPrefixRaw  byte = 0x00
+	CompressionPrefixZstd byte = 0x01
+)
 
 // NewPersistentPatriciaContext builds the context. Either readTx or
 // writeTx (or both) must be set before use; the readers are
@@ -77,6 +111,53 @@ func (p *PersistentPatriciaContext) SetTxNum(n uint64) {
 	p.txNum = n
 }
 
+// SetZstdLevel enables zstd compression on persisted BranchData.
+// level == 0 disables compression (default). level == 1..22 picks
+// the corresponding zstd encoder level (we cap at zstd-3 in
+// practice — higher levels rarely pay off on per-row BranchData
+// payloads). PutBranch will then prefix each row with one byte
+// indicating raw (0x00) or zstd (0x01); Branch reads the prefix
+// and decompresses if needed.
+//
+// Compression-prefix bytes appear on the wire even when level == 0,
+// to keep the on-disk format consistent. Snapshots written before
+// HA-3d (pure raw BranchData, no prefix) MUST NOT be opened with a
+// zstd-aware reader — the format is incompatible. Tests reset the
+// dir between bootstrap runs to avoid this case.
+func (p *PersistentPatriciaContext) SetZstdLevel(level int) error {
+	if level < 0 {
+		return fmt.Errorf("SetZstdLevel: negative level %d", level)
+	}
+	p.zstdLevel = level
+	if level == 0 {
+		return nil
+	}
+	p.zstdInit.Do(func() {
+		enc, err := zstd.NewWriter(nil,
+			zstd.WithEncoderLevel(zstd.EncoderLevel(level)),
+			zstd.WithEncoderConcurrency(1))
+		if err != nil {
+			p.zstdInitOK = err
+			return
+		}
+		dec, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
+		if err != nil {
+			enc.Close()
+			p.zstdInitOK = err
+			return
+		}
+		p.zstdEnc = enc
+		p.zstdDec = dec
+	})
+	return p.zstdInitOK
+}
+
+// CompressionEnabled reports whether PutBranch/Branch are routed
+// through the zstd codec.
+func (p *PersistentPatriciaContext) CompressionEnabled() bool {
+	return p.zstdLevel > 0 && p.zstdEnc != nil
+}
+
 func (p *PersistentPatriciaContext) TxNum() uint64 {
 	return p.txNum
 }
@@ -92,18 +173,55 @@ func (p *PersistentPatriciaContext) Branch(prefix []byte) ([]byte, kv.Step, erro
 	if v == nil {
 		return nil, 0, nil
 	}
-	// MDBX returns slices that alias the page until tx commit; the
-	// caller may keep the value past that, so copy.
-	out := make([]byte, len(v))
-	copy(out, v)
-	return out, 0, nil
+	if !p.CompressionEnabled() {
+		// MDBX returns slices that alias the page until tx commit;
+		// caller may keep the value past that, so copy.
+		out := make([]byte, len(v))
+		copy(out, v)
+		return out, 0, nil
+	}
+	// Compression-aware path: read 1-byte prefix.
+	if len(v) < 1 {
+		return nil, 0, fmt.Errorf("Branch at %x: empty value", prefix)
+	}
+	switch v[0] {
+	case CompressionPrefixRaw:
+		out := make([]byte, len(v)-1)
+		copy(out, v[1:])
+		return out, 0, nil
+	case CompressionPrefixZstd:
+		out, err := p.zstdDec.DecodeAll(v[1:], nil)
+		if err != nil {
+			return nil, 0, fmt.Errorf("Branch at %x: zstd decode: %w", prefix, err)
+		}
+		return out, 0, nil
+	default:
+		return nil, 0, fmt.Errorf("Branch at %x: unknown compression prefix 0x%02x", prefix, v[0])
+	}
 }
 
 func (p *PersistentPatriciaContext) PutBranch(prefix []byte, data []byte, _ []byte) error {
 	if p.writeTx == nil {
 		return errors.New("PersistentPatriciaContext: PutBranch needs a writeTx (call SetWriteTx)")
 	}
-	return p.writeTx.Put(CommitmentBranchesTable, prefix, data)
+	if !p.CompressionEnabled() {
+		return p.writeTx.Put(CommitmentBranchesTable, prefix, data)
+	}
+	// Compression-aware path: try zstd; emit raw prefix if the
+	// compressed payload is larger than data (i.e. negative gain
+	// because BranchData is already small / high-entropy).
+	compressed := p.zstdEnc.EncodeAll(data, nil)
+	if len(compressed) >= len(data) {
+		// Raw wins (or ties). Prefix 0x00 + verbatim data.
+		buf := make([]byte, 1+len(data))
+		buf[0] = CompressionPrefixRaw
+		copy(buf[1:], data)
+		return p.writeTx.Put(CommitmentBranchesTable, prefix, buf)
+	}
+	buf := make([]byte, 1+len(compressed))
+	buf[0] = CompressionPrefixZstd
+	copy(buf[1:], compressed)
+	return p.writeTx.Put(CommitmentBranchesTable, prefix, buf)
 }
 
 func (p *PersistentPatriciaContext) Account(plainKey []byte) (*Update, error) {
