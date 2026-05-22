@@ -57,6 +57,8 @@ func NewRethHashedLeafSource(dbPath string, mapSizeGB int) (*RethHashedLeafSourc
 			d[rethHashedStoragesTable] = kv.TableCfgItem{Flags: kv.DupSort}
 			d[rethPlainAccountStateTable] = kv.TableCfgItem{}
 			d[rethPlainStorageStateTable] = kv.TableCfgItem{Flags: kv.DupSort}
+			d[rethAccountsTrieTable] = kv.TableCfgItem{}
+			d[rethStoragesTrieTable] = kv.TableCfgItem{Flags: kv.DupSort}
 			return d
 		}).
 		Open(context.Background())
