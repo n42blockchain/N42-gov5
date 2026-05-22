@@ -1,0 +1,15 @@
+=== RUN   TestFullProofBytes_Production_USDC_RethHashed
+    reth_hashed_test.go:58: setup: 17ms
+    reth_hashed_test.go:70: acct walk: 1ms — hops=7 siblings=97 leafFound=true
+    reth_hashed_test.go:84: acct FullProofBytes: 1ms — 9 nodes / 3779 bytes
+    reth_hashed_test.go:122: stor slot 0 walk: hops=7 deepest depth=6 nib=b leafDepth=0 leafFound=true
+    reth_hashed_test.go:130: stor slot 0: FullProofBytes 372ms — ERROR: dense expand prefix : StorageByHashedPrefix: subtree under prefix  (len 0 nib) exceeds 200000-leaf cap — proof needs dense-recursive expansion or per-contract storage trie
+    reth_hashed_test.go:122: stor slot 1 walk: hops=7 deepest depth=6 nib=b leafDepth=0 leafFound=true
+    reth_hashed_test.go:130: stor slot 1: FullProofBytes 43ms — ERROR: dense expand prefix : StorageByHashedPrefix: subtree under prefix  (len 0 nib) exceeds 200000-leaf cap — proof needs dense-recursive expansion or per-contract storage trie
+    reth_hashed_test.go:149: 
+          source       = D:\reth2k\db (HashedAccounts + HashedStorages)
+          acct proof   = 9 nodes / 3779 bytes / 1ms wall
+          oracle       = PASS for 35-byte account value
+--- PASS: TestFullProofBytes_Production_USDC_RethHashed (0.46s)
+PASS
+ok  	github.com/n42blockchain/N42/internal/mptproof	1.294s
