@@ -74,12 +74,21 @@ func (g *Generator) fullProofBytesDense(hashedKey, leafValue []byte,
 		return out, nil
 	}
 
-	// 33B hash ref. Try direct leaf at LeafDepth: does keccak of
+	// Effective leaf depth = the nibble depth just past the deepest
+	// branch's target slot. walk.LeafDepth is only populated when
+	// Outcome == LandedOnLeaf; for NoBranchAtPath (slot's hash points
+	// at an under-threshold subtree not persisted as its own branch),
+	// LeafDepth stays 0. Derive from the deepest hop directly so we
+	// don't accidentally key off the zero default and prefix-scan the
+	// entire unified storage trie.
+	effLeafDepth := deepest.PrefixDepth + 1
+
+	// 33B hash ref. Try direct leaf at effLeafDepth: does keccak of
 	// leafRLP(remainder, leafValue) match the stored hash? If yes,
 	// emit a single leaf RLP. If no, fall back to the legacy
 	// target-subtree-expansion path (handles intermediate extensions
 	// when keccak space is sparse — rare in real MPTs but possible).
-	remainder := keyNibbles[walk.LeafDepth:]
+	remainder := keyNibbles[effLeafDepth:]
 	directLeaf := encodeLeafRLP(remainder, leafValue)
 	directHash := keccak256(directLeaf)
 	var storedHash [32]byte
@@ -89,14 +98,14 @@ func (g *Generator) fullProofBytesDense(hashedKey, leafValue []byte,
 		return out, nil
 	}
 
-	// Fall back: expand the subtree below `keyNibbles[:LeafDepth]`
+	// Fall back: expand the subtree below `keyNibbles[:effLeafDepth]`
 	// using the LeafSource (same algorithm as fullProofBytes). Costs
 	// one prefix scan over LeafSource — acceptable here because this
 	// path triggers only on sparse-keccak edge cases.
 	if g.leaves == nil {
 		return nil, fmt.Errorf("dense leaf at hop deepest needs expansion but Generator.leaves is nil")
 	}
-	prefix := keyNibbles[:walk.LeafDepth]
+	prefix := keyNibbles[:effLeafDepth]
 	var builder subtreeRootBuilder
 	if isAccountWalk(hashedKey) {
 		builder = accountSubtreeBuilder{src: g.leaves}
@@ -107,7 +116,7 @@ func (g *Generator) fullProofBytesDense(hashedKey, leafValue []byte,
 	if err != nil {
 		return nil, fmt.Errorf("dense expand prefix %x: %w", prefix, err)
 	}
-	expanded, err := expandSubtreeProofPath(expandLeaves, keyNibbles[walk.LeafDepth:])
+	expanded, err := expandSubtreeProofPath(expandLeaves, keyNibbles[effLeafDepth:])
 	if err != nil {
 		return nil, fmt.Errorf("dense expand: %w", err)
 	}
@@ -222,7 +231,12 @@ func (g *Generator) fullProofBytesDenseV2(hashedKey, leafValue []byte,
 		return out, nil // inline leaf already in last branch RLP
 	}
 
-	remainder := keyNibbles[walk.LeafDepth:]
+	// Derive effLeafDepth from the deepest hop directly — same
+	// reasoning as the V1 path (walk.LeafDepth is unreliable when
+	// Outcome != LandedOnLeaf).
+	effLeafDepth := deepest.PrefixDepth + 1
+
+	remainder := keyNibbles[effLeafDepth:]
 	directLeaf := encodeLeafRLP(remainder, leafValue)
 	directHash := keccak256(directLeaf)
 	var storedHash [32]byte
@@ -236,7 +250,7 @@ func (g *Generator) fullProofBytesDenseV2(hashedKey, leafValue []byte,
 	if g.leaves == nil {
 		return nil, fmt.Errorf("dense V2 leaf at hop deepest needs expansion but Generator.leaves is nil")
 	}
-	prefix := keyNibbles[:walk.LeafDepth]
+	prefix := keyNibbles[:effLeafDepth]
 	var builder subtreeRootBuilder
 	if isAccountWalk(hashedKey) {
 		builder = accountSubtreeBuilder{src: g.leaves}
@@ -247,7 +261,7 @@ func (g *Generator) fullProofBytesDenseV2(hashedKey, leafValue []byte,
 	if err != nil {
 		return nil, fmt.Errorf("dense V2 expand prefix %x: %w", prefix, err)
 	}
-	expanded, err := expandSubtreeProofPath(expandLeaves, keyNibbles[walk.LeafDepth:])
+	expanded, err := expandSubtreeProofPath(expandLeaves, keyNibbles[effLeafDepth:])
 	if err != nil {
 		return nil, fmt.Errorf("dense V2 expand: %w", err)
 	}
