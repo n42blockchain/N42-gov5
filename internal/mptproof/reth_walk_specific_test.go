@@ -93,18 +93,32 @@ func TestRethWalk_USDCSlot0000a010(t *testing.T) {
 			}
 
 			remTerm := append(append([]byte{}, slotNib[walk.LeafDepth:]...), 0x10)
-			remNoTerm := append([]byte{}, slotNib[walk.LeafDepth:]...)
-			remOneShort := append(append([]byte{}, slotNib[walk.LeafDepth-1:]...), 0x10)
-			remOneShortNoTerm := append([]byte{}, slotNib[walk.LeafDepth-1:]...)
-
 			tryVariant("term-strip-single", remTerm, stripLeadingZeros(val), false)
-			tryVariant("term-raw-single", remTerm, val, false)
-			tryVariant("term-strip-double", remTerm, stripLeadingZeros(val), true)
-			tryVariant("term-raw-double", remTerm, val, true)
-			tryVariant("noterm-strip-single", remNoTerm, stripLeadingZeros(val), false)
-			tryVariant("oneShort-strip-single", remOneShort, stripLeadingZeros(val), false)
-			tryVariant("oneShort-raw-single", remOneShort, val, false)
-			tryVariant("oneShortNoTerm-raw", remOneShortNoTerm, val, false)
+
+			// RB-4 subtree reconstruction: enumerate all leaves under
+			// slotNib[:walk.LeafDepth] and run expandSubtreeProofPath.
+			subLeaves, lerr := enumerateUSDCStorageSubLeaves(src, usdcHash[:], slotNib[:walk.LeafDepth])
+			if lerr != nil {
+				t.Fatalf("enumerateUSDCStorageSubLeaves: %v", lerr)
+			}
+			t.Logf("subLeaves count under prefix %v: %d", slotNib[:walk.LeafDepth], len(subLeaves))
+			keyTail := append([]byte{}, slotNib[walk.LeafDepth:]...)
+			keyTail = append(keyTail, 0x10)
+			expanded, eerr := expandSubtreeProofPath(subLeaves, keyTail)
+			if eerr != nil {
+				t.Fatalf("expandSubtreeProofPath: %v", eerr)
+			}
+			t.Logf("expanded: %d nodes", len(expanded))
+			for i, n := range expanded {
+				hsum := sha3.NewLegacyKeccak256()
+				hsum.Write(n)
+				var hh [32]byte
+				hsum.Sum(hh[:0])
+				t.Logf("  expanded[%d]: len=%d keccak=%x", i, len(n), hh[:8])
+				if hh == expectedHash {
+					t.Logf("    ← MATCHES expected slot hash %x", expectedHash[:8])
+				}
+			}
 		}
 	}
 }
