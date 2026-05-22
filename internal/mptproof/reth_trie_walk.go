@@ -84,7 +84,22 @@ func walkRethGeneric(
 			res.Outcome = mpttrie.NoSuchChild
 			return res, nil
 		}
-		if !branch.IsChildSubtree(n) {
+		// Reth/alloy_trie tree_mask semantics: bit SET = child is
+		// the ROOT of a deeper subtree (rare; recorded explicitly
+		// for re-walk efficiency). Bit CLEAR with hash_mask set =
+		// child reference is a 32B hash that may STILL be a deeper
+		// subtree (the common case — reth doesn't redundantly mark
+		// every subtree). We thus probe the extended path for a
+		// child row regardless of tree_mask; only if absent do we
+		// treat as leaf.
+		extended := append(append([]byte{}, prefix...), n)
+		childBranch, childOk, cerr := getBranch(extended)
+		if cerr != nil {
+			return nil, fmt.Errorf("walk reth: probe child at %x: %w", extended, cerr)
+		}
+		if !childOk {
+			// No deeper subtree row — child is a leaf (its keccak
+			// lives in this branch's hashes[] when hash bit is set).
 			h, hashOk := branch.ChildHash(n)
 			if hashOk {
 				res.Outcome = mpttrie.LandedOnLeaf
@@ -96,7 +111,10 @@ func walkRethGeneric(
 			}
 			return res, nil
 		}
-		prefix = append(prefix, n)
+		// Use the already-loaded child branch for the next iter to
+		// avoid a duplicate getBranch call.
+		_ = childBranch
+		prefix = extended
 		depth++
 		if depth > 132 {
 			return nil, fmt.Errorf("walk reth: depth exceeded 132 (cycle?)")

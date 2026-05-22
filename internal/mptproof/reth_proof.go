@@ -98,12 +98,17 @@ func BuildRethStorageProof(
 	//    references a leaf via a 32B HASH (hash_mask bit set). When
 	//    hash_mask bit is clear the leaf is INLINE inside the
 	//    deepest branch's RLP and no separate node is emitted.
+	//
+	// Ethereum standard storage-trie leaf: value field is the
+	// RLP-encoded BE-stripped U256 (one level of RLP). The outer
+	// leaf list wraps this RLP byte string AGAIN — net double-RLP.
 	if walk.Outcome == mpttrie.LandedOnLeaf && walk.LeafDepth > 0 {
 		deepest := walk.Hops[len(walk.Hops)-1]
 		if deepest.Branch.HasHash&(uint16(1)<<deepest.TargetNibble) != 0 {
 			remainder := append([]byte{}, slotNibbles[walk.LeafDepth:]...)
 			remainder = append(remainder, 0x10)
-			proof = append(proof, encodeLeafRLP(remainder, slotValue))
+			innerRLP := encodeBytes(slotValue)
+			proof = append(proof, encodeLeafRLP(remainder, innerRLP))
 		}
 	}
 
@@ -253,6 +258,17 @@ func findUniqueStorageBelowPrefix(
 		return nil, nil, false, nil
 	}
 	return match, matchSlotNibbles, true, nil
+}
+
+// stripLeadingZeros returns b with leading 0x00 bytes removed. For
+// U256 BE byte arrays this canonicalises to the minimal-length BE
+// representation (Ethereum's storage-trie value convention).
+func stripLeadingZeros(b []byte) []byte {
+	i := 0
+	for i < len(b) && b[i] == 0 {
+		i++
+	}
+	return b[i:]
 }
 
 // hasNibblePrefix returns true iff `nib` starts with `prefix`.
