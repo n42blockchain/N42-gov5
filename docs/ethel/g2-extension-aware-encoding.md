@@ -151,6 +151,56 @@ Next debug steps for whoever picks this up:
   3. consider adding a second pushOrigin path inside the buildExtensions
      block to "remember" extensions that hit the just-snapshotted region
 
+## Update 2026-05-21 late evening — 500-acct trace probe
+
+Used `TestV2OriginTrace_TwoAccounts` (renamed via parameter, n=500)
+to dump per-branch (state/tree/extMask) tuples. Findings:
+
+| Branch | StateMask popcount | TreeMask popcount | ExtMask popcount |
+|---|---|---|---|
+| Root (key=) | 15 | 6 | **0** |
+| key=00 | 13 | 1 | **0** |
+| key=01 | 4 | 0 | 0 |
+| ... | | | |
+| Total extMask hits across 13 branches | | | **0** |
+
+Statistical impossibility: 500 random accounts in 16 root buckets
+should give ~31 accounts per bucket. Root has 9 buckets with
+HasTree=0 (treeMask bit clear, slot is a "leaf-like" entry). Those
+9 buckets can't actually be single leaves at random keccak
+distribution — they must be extension+(deeper_branch). So extMask
+should have ≥9 bits set at root.
+
+But trace shows extMask=0. Origin tracking fundamentally missing
+these extensions.
+
+Two hypotheses to investigate next:
+
+(H1) The buildExtensions block inside gen_struct_step's outer loop
+fires extensionHash for a DIFFERENT subtree than the one whose
+branch is currently being committed via snapshot+branchHash. The
+extension'd entry on hashStack might be at a position OUTSIDE the
+top-N slice that snapshotDenseSlots reads.
+
+(H2) extensionHash is invoked but on the WRONG hashStack entry by
+my interpretation. Maybe extension overwrites the entry BELOW the
+top (the input child) rather than the top itself. Need to re-verify
+which slot's hash extensionHash modifies.
+
+To resolve, instrument extensionHash to print:
+  - hashStack size before/after
+  - which byte offset gets overwritten
+  - the BEFORE and AFTER hash value at that position
+
+Compare against expected: extensionHash should take the top
+hashStackStride bytes (the just-pushed child), reset prefix to
+0x80+32, and write the new hash there. originStack[-1] should
+correspond.
+
+Until this is debugged, the V2 dispatch must stay disabled — code
+shipped Marshal/Unmarshal codec + reader + transcode tools, but
+proof correctness requires extension-aware tracking that works.
+
 ## Current state (this commit)
 
 - V2 codec (`MarshalTrieNodeDenseV2` / `UnmarshalTrieNodeDenseV2`)
