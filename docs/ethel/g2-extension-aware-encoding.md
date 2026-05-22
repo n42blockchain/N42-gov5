@@ -151,6 +151,65 @@ Next debug steps for whoever picks this up:
   3. consider adding a second pushOrigin path inside the buildExtensions
      block to "remember" extensions that hit the just-snapshotted region
 
+## Update 2026-05-21 late evening — root cause: extension ABSORPTION
+
+Verified via instrumented traces:
+  - extensionHash DOES fire (5 times in 500-acct test)
+  - extensionHash DOES overwrite originStack[-1] to originExtension
+  - subsequent snapshots for the BRANCH ABOVE these extension'd
+    entries STILL show origin=branch (2), not extension (1)
+
+Root cause: an intermediate branchHash absorbs the extension'd
+child. When branch combines N children that include an extension'd
+entry, popOrigins drops the extension origin and pushOrigin(branch)
+appends a fresh branch entry. The new branch entry's origin says
+"branch" — it has no memory that one of its children was
+extension'd.
+
+The PARENT of THIS new branch then sees origin=branch in its slot
+(via topMostStack-N). The parent's V2 encoder treats this as "deeper
+branch" (HasTree=1) and keeps 33 B verbatim — CORRECT.
+
+But the V1 vs V2 cross-check shows 8 mismatches at branch [0]'s
+HasTree=0 slots. So those slots have HasTree=0 (per the compact
+form) AND originStack reports leaf (per my tracking). Both agree
+"direct leaf". But the V1-stored hash and V2-reconstructed hash
+differ.
+
+Conclusion: my origin tracking IS faithful to what reth's compact
+form claims. The problem is that reth's HasTree=0 + originLeaf
+doesn't actually mean "direct leaf with no path compression" — it
+can also mean "this subtree was fully absorbed into a single hash
+that the slot stores", which is exactly what extension+leaf produces.
+But after the absorption, NO marker survives on the stack to tell V2.
+
+Fix paths (next session):
+
+**Path 1**: Instead of per-slot origin tracking, capture the
+HASHBUILDER's "did extension fire at this depth" as a separate
+per-depth tracker. When parent's snapshot fires at depth D, check
+if any extension at depth D+1+ contributed to the children slots.
+Complex bookkeeping.
+
+**Path 2**: Add a "compressed-prefix bit" to each hashStack entry
+that survives branchHash absorption. When extensionHash fires, set
+bit on the top entry. When branchHash combines children, OR all
+their bits into the new branch entry's bit. Now ANY descendant
+extension marks the slot. V2 encoder uses this to skip LeafMarker
+for compressed-prefix slots.
+
+This is the right approach but requires re-think. Path 2 is roughly
+1-2 days of careful gen_struct_step + hashbuilder editing.
+
+**Path 3**: Give up V2 LeafMarker compression for this build path.
+Accept V1's 8.45 GB accounts dense as the production size. Saves
+the engineering. Storage V1 dense ~50 GB lands shortly via the
+bootstrap-in-flight. Combined ~58 GB total, still 70% smaller than
+reth combined.
+
+Current state: shipping V1 (Path 3 by default). G2 V2 codec stays
+in tree for future Path 2 work.
+
 ## Update 2026-05-21 late evening — 500-acct trace probe
 
 Used `TestV2OriginTrace_TwoAccounts` (renamed via parameter, n=500)
