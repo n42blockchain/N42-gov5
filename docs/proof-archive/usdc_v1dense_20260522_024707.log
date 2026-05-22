@@ -1,0 +1,59 @@
+=== RUN   TestFullProofBytes_Production_USDC_RethHashed
+    reth_hashed_test.go:58: setup: 23ms
+    reth_hashed_test.go:70: acct walk: 1ms — hops=7 siblings=97 leafFound=true
+    reth_hashed_test.go:84: acct FullProofBytes: 0s — 9 nodes / 3779 bytes
+panic: test timed out after 5m0s
+	running tests:
+		TestFullProofBytes_Production_USDC_RethHashed (5m0s)
+
+goroutine 9 [running]:
+testing.(*M).startAlarm.func1()
+	C:/Program Files/Go/src/testing/testing.go:2682 +0x345
+created by time.goFunc
+	C:/Program Files/Go/src/time/sleep.go:215 +0x2d
+
+goroutine 1 [chan receive, 4 minutes]:
+testing.(*T).Run(0xc0002d81c0, {0x7ff7411c692e?, 0x7ff7410155b0?}, 0x7ff741339610)
+	C:/Program Files/Go/src/testing/testing.go:2005 +0x469
+testing.runTests.func1(0xc0002d81c0)
+	C:/Program Files/Go/src/testing/testing.go:2477 +0x37
+testing.tRunner(0xc0002d81c0, 0xc0001ddc70)
+	C:/Program Files/Go/src/testing/testing.go:1934 +0xc3
+testing.runTests(0xc0002aec78, {0x7ff7410a6860, 0x2e, 0x2e}, {0x7?, 0xc0002b1680?, 0x7ff7417cfa80?})
+	C:/Program Files/Go/src/testing/testing.go:2475 +0x4b4
+testing.(*M).Run(0xc0002d55e0)
+	C:/Program Files/Go/src/testing/testing.go:2337 +0x63a
+main.main()
+	_testmain.go:135 +0x9b
+
+goroutine 19 [runnable]:
+github.com/erigontech/mdbx-go/mdbx._Cfunc_mdbx_cursor_get(0x127401ee490, 0xc0002c3690, 0xc0002c36a0, 0x9)
+	_cgo_gotypes.go:547 +0x50
+github.com/erigontech/mdbx-go/mdbx.(*Cursor).getValEmpty.func1(...)
+	C:/Users/10200/go/pkg/mod/github.com/erigontech/mdbx-go@v0.40.0/mdbx/cursor.go:199
+github.com/erigontech/mdbx-go/mdbx.(*Cursor).getValEmpty(0x80?, 0x9)
+	C:/Users/10200/go/pkg/mod/github.com/erigontech/mdbx-go@v0.40.0/mdbx/cursor.go:199 +0xbb
+github.com/erigontech/mdbx-go/mdbx.(*Cursor).Get(0xc000288da0, {0x0, 0x0, 0x0}, {0x0?, 0xc7e7c00040?, 0xc7e7c04000?}, 0x9)
+	C:/Users/10200/go/pkg/mod/github.com/erigontech/mdbx-go@v0.40.0/mdbx/cursor.go:167 +0x4f
+github.com/n42blockchain/N42/lib/kv/mdbx.(*MdbxCursor).nextDup(...)
+	C:/N42/N42-gov5/lib/kv/mdbx/kv_mdbx_cursor.go:42
+github.com/n42blockchain/N42/lib/kv/mdbx.(*MdbxDupSortCursor).NextDup(0x2cbd5080d54?)
+	C:/N42/N42-gov5/lib/kv/mdbx/kv_mdbx_dupsort.go:80 +0x34
+github.com/n42blockchain/N42/internal/mptproof.(*RethHashedLeafSource).StorageByHashedPrefix(0x7ff74108c6a0?, {0xc00037e500, 0x0, 0x80})
+	C:/N42/N42-gov5/internal/mptproof/reth_hashed.go:223 +0xcb3
+github.com/n42blockchain/N42/internal/mptproof.collectStorageLeavesWithPrefix({0x7ff7413bc1e0, 0xc000288b40}, {0xc00037e500, 0x0, 0x80})
+	C:/N42/N42-gov5/internal/mptproof/verify_subtree.go:160 +0x10a
+github.com/n42blockchain/N42/internal/mptproof.storageSubtreeBuilder.subLeavesByPrefix(...)
+	C:/N42/N42-gov5/internal/mptproof/wire_full.go:106
+github.com/n42blockchain/N42/internal/mptproof.(*Generator).fullProofBytesDense(0xc00029d800, {0xc00029e874, 0x40, 0xc0002b4d00?}, {0xc0002aca50, 0x14, 0x14}, 0x1, 0xc0002c2dc0, 0xc00035ac30)
+	C:/N42/N42-gov5/internal/mptproof/wire_full_dense.go:106 +0x997
+github.com/n42blockchain/N42/internal/mptproof.(*Generator).FullStorageProofBytes(0x368b21c69169b8a0?, 0xceb09e2e4a9dd1c1?)
+	C:/N42/N42-gov5/internal/mptproof/wire_full.go:58 +0x57
+github.com/n42blockchain/N42/internal/mptproof.TestFullProofBytes_Production_USDC_RethHashed(0xc0002d8380)
+	C:/N42/N42-gov5/internal/mptproof/reth_hashed_test.go:113 +0xcbf
+testing.tRunner(0xc0002d8380, 0x7ff741339610)
+	C:/Program Files/Go/src/testing/testing.go:1934 +0xc3
+created by testing.(*T).Run in goroutine 1
+	C:/Program Files/Go/src/testing/testing.go:1997 +0x44b
+FAIL	github.com/n42blockchain/N42/internal/mptproof	309.444s
+FAIL
