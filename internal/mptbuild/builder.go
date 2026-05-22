@@ -56,16 +56,20 @@ type Opts struct {
 	// DenseBranchSink, when set, is invoked once per branch with the
 	// FULL per-child slot data (33 bytes per child, prefix encodes
 	// inline-vs-hash). Pairs 1:1 with the standard compact write to
-	// Target. Used by Phase G1 to populate a dense CommitmentDomain
+	// Target. Used by Phase G1/G2 to populate a dense CommitmentDomain
 	// table alongside (or instead of) the compact AccountsTrie /
 	// StoragesTrie tables.
 	//
 	//   keyHex   = nibble path of the branch (same as the compact key)
 	//   stateMask, treeMask = same masks the compact form would record
+	//   extMask  = bit i set iff child i's stack entry came from an
+	//              extension node (extensionHash) — needed for G2
+	//              Option A LeafMarker correctness; nil-equivalent
+	//              for V1 callers
 	//   slotData = hashStackStride * popcount(stateMask) bytes
 	//
 	// Returning a non-nil error aborts the build.
-	DenseBranchSink func(keyHex []byte, stateMask, treeMask uint16, slotData []byte) error
+	DenseBranchSink func(keyHex []byte, stateMask, treeMask, extMask uint16, slotData []byte) error
 }
 
 // Result captures the outcome of a build.
@@ -189,13 +193,14 @@ func Build(ctx context.Context, opts Opts) (*Result, error) {
 		res.BranchBytes += int64(need)
 		// Dense sink: hb.LastDenseSlots() returns the snapshot taken
 		// by gen_struct_step right after topHashes (before branchHash
-		// pops the children). The snapshot covers all bits in hasState
-		// regardless of how many made it into hasHash, so dense always
-		// has full per-child data even when the compact hc passes a
-		// trimmed `hashes` arg.
+		// pops the children). hb.LastExtMask() returns the per-child
+		// extension origin bitmap (G2 Option A). Both are captured at
+		// the same moment as compact hashes/masks so the trio
+		// (stateMask, treeMask, extMask, slotData) is consistent.
 		if opts.DenseBranchSink != nil {
 			slot := hb.LastDenseSlots()
-			if err := opts.DenseBranchSink(keyCopy, hasState, hasTreeM, slot); err != nil {
+			extMask := hb.LastExtMask()
+			if err := opts.DenseBranchSink(keyCopy, hasState, hasTreeM, extMask, slot); err != nil {
 				return err
 			}
 		}

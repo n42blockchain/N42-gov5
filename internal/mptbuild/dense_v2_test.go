@@ -24,7 +24,7 @@ func TestMarshalTrieNodeDenseV2_LeafMarker(t *testing.T) {
 		Extractor: NewAccountExtractor(),
 		TmpDir:    filepath.Join(t.TempDir(), "etl"),
 		BufMB:     1,
-		DenseBranchSink: func(keyHex []byte, stateMask, treeMask uint16, slotData []byte) error {
+		DenseBranchSink: func(keyHex []byte, stateMask, treeMask, _ uint16, slotData []byte) error {
 			captured = append(captured, capturedDense{
 				keyHex:    append([]byte(nil), keyHex...),
 				stateMask: stateMask,
@@ -50,7 +50,8 @@ func TestMarshalTrieNodeDenseV2_LeafMarker(t *testing.T) {
 	const stride = 33
 	for _, c := range captured {
 		v1 := trie.MarshalTrieNodeDense(c.stateMask, c.treeMask, c.slotData, nil)
-		v2 := trie.MarshalTrieNodeDenseV2(c.stateMask, c.treeMask, c.slotData, nil)
+		// Test does not capture extMask; pass 0 (no extensions in synthetic).
+		v2 := trie.MarshalTrieNodeDenseV2(c.stateMask, c.treeMask, 0, c.slotData, nil)
 		v1Total += len(v1)
 		v2Total += len(v2)
 

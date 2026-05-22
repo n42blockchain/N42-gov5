@@ -84,7 +84,7 @@ func buildDenseUnifiedTestDB(t *testing.T, nAccts int) (string, map[[20]byte][]b
 		Extractor: mptbuild.NewAccountExtractor(),
 		TmpDir:    filepath.Join(tmp, "etl-build"),
 		BufMB:     1,
-		DenseBranchSink: func(keyHex []byte, stateMask, treeMask uint16, slotData []byte) error {
+		DenseBranchSink: func(keyHex []byte, stateMask, treeMask, _ uint16, slotData []byte) error {
 			enc := trie.MarshalTrieNodeDense(stateMask, treeMask, slotData, nil)
 			k := make([]byte, len(keyHex))
 			copy(k, keyHex)

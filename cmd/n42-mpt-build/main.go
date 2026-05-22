@@ -149,9 +149,9 @@ func main() {
 	}
 	if denseColl != nil {
 		var encBuf []byte
-		opts.DenseBranchSink = func(keyHex []byte, stateMask, treeMask uint16, slotData []byte) error {
+		opts.DenseBranchSink = func(keyHex []byte, stateMask, treeMask, extMask uint16, slotData []byte) error {
 			if denseV2 {
-				encBuf = trie.MarshalTrieNodeDenseV2(stateMask, treeMask, slotData, encBuf[:0])
+				encBuf = trie.MarshalTrieNodeDenseV2(stateMask, treeMask, extMask, slotData, encBuf[:0])
 			} else {
 				encBuf = trie.MarshalTrieNodeDense(stateMask, treeMask, slotData, encBuf[:0])
 			}

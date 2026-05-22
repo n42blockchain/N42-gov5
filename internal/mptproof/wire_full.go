@@ -39,16 +39,11 @@ import (
 // Returns ProofBytes that, when passed to VerifyStandardProof against
 // the recorded StateRoot, will verify iff the proof is in MVP scope.
 func (g *Generator) FullAccountProofBytes(proof *AccountProof) (ProofBytes, error) {
-	// V2 path DISABLED — LeafMarker compression assumes "HasTree=0 →
-	// direct leaf at slot+1", but gen_struct_step.go emits extension
-	// nodes between a branch slot and a deeper leaf when the keccak
-	// space is sparse. In that case the slot's stored hash is
-	// keccak(extension RLP), not keccak(leaf RLP), and the
-	// reconstruction in DenseReader.GetV2 produces a different hash.
-	// See docs/ethel/g2-extension-aware-encoding.md for the fix.
-	//
-	// Falls through to V1 (still 78% smaller than reth's combined
-	// AccountsTrie + HashedAccounts).
+	// V2 dispatch STILL DISABLED — Option A ext-aware tracking works
+	// for some extension cases but snapshot ordering vs extensionHash
+	// firing isn't fully captured yet. See
+	// docs/ethel/g2-extension-aware-encoding.md for current status.
+	// Falls through to V1 (proof-correct, 78% smaller than reth).
 	if g.accountsDense != nil {
 		return g.fullProofBytesDense(proof.HashedAddr[:], proof.LeafValue,
 			proof.LeafFound, proof.Walk, g.accountsDense)
@@ -59,7 +54,6 @@ func (g *Generator) FullAccountProofBytes(proof *AccountProof) (ProofBytes, erro
 
 // FullStorageProofBytes is the storage equivalent.
 func (g *Generator) FullStorageProofBytes(proof *StorageProof) (ProofBytes, error) {
-	// V2 path DISABLED — same extension-node issue as accounts above.
 	if g.storagesDense != nil {
 		return g.fullProofBytesDense(proof.HashedKey[:], proof.LeafValue,
 			proof.LeafFound, proof.Walk, g.storagesDense)

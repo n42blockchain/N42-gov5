@@ -191,7 +191,8 @@ func TestV2Marshal_MultiBranchRoundTrip(t *testing.T) {
 		}
 	}
 
-	encV2 := trie.MarshalTrieNodeDenseV2(state, tree, slotData, nil)
+	// All slots are HasTree=0, no extension, so extMask=0.
+	encV2 := trie.MarshalTrieNodeDenseV2(state, tree, 0, slotData, nil)
 	stateOut, treeOut, slots, err := trie.UnmarshalTrieNodeDenseV2(encV2)
 	if err != nil {
 		t.Fatal(err)
