@@ -15,8 +15,8 @@ the default.** Pick lower tiers only if disk-bound.
 | Mode | Disk | Capabilities | Catch-up |
 |:--|--:|:--|:--|
 | `minimal` | **~39 GB** | Header verification + point queries on current state | minutes |
-| `full` | **~720 GB** | minimal + historical state + tx-by-hash + receipts + bodies | tens of minutes |
-| `archive` *(default)* | **~887 GB** | full + EVM replay + state proofs at any height + on-demand CS derivation | ~1 hour |
+| `full` | **~682 GB** | minimal + historical state + tx-by-hash + receipts + bodies | tens of minutes |
+| `archive` *(default)* | **~849 GB** | full + EVM replay + state proofs at any height + on-demand CS derivation | ~1 hour |
 
 All three modes are produced from the **same underlying archive**
 (`docs/ethel/client-server-sync.md`) — choosing a mode just selects
@@ -60,22 +60,24 @@ transactions, **cannot** answer historical queries.
 
 ---
 
-## Mode 2 — `full` (~720 GB)
+## Mode 2 — `full` (~682 GB)
 
-Full RPC node. Adds bodies, receipts, senders, and the history
-index that lets historical queries hit a single block lookup.
+Full RPC node. Adds bodies, receipts, and the history index that
+lets historical queries hit a single block lookup.
+
+Senders are **NOT** in `full` — they're deterministically derivable
+from bodies via `ecrecover`. See "Senders are recoverable" below.
 
 | Section | File(s) | Size | Format | Notes |
 |:--|:--|--:|:--|:--|
 | *(everything from `minimal`)* | | 39 GB | | |
 | Bodies | `chain/freezer/bodyc.{cidx,NNNN.cdat}` | **567 GB** | N42 columnar, per-field zstd; ratio 27.5 % vs raw RLP, 65 % vs geth snappy | `ethexec body-compact` |
 | Receipts | `chain/freezer/receipts.{cidx,NNNN.cdat}` | **63 GB** | Reth-style Compact, batch=64 zstd; 30 % of geth raw | `ethexec receipt-copy` |
-| Senders | `chain/freezer/senders.{cidx,NNNN.cdat}` | **38 GB** | Per-block 20 B addresses ×txCount, batch=64 zstd | `ethexec sender-recovery` *or* recompute offline via `ecrecover` |
 | History — accounts | `chain/freezer/accthist.{cidx,NNNN.cdat}` | **13 GB** | cscompact SegmentStore + RecSplit, 1 M blocks/segment, delta-varint block lists | `ethexec history-build` |
 | History — storage | `chain/freezer/storhist.{cidx,NNNN.cdat}` | **28 GB** | same; 52 B addr+slot key with 4 B fingerprint | same |
 | Tx-by-hash index | `chain/freezer/txindex.{cidx,NNNN.cdat}` | **13 GB** | RecSplit MPHF over 32 B txHash → (blockNum, txIndex) | `ethexec txlookup-build` |
 | Manifest | `manifest-full.json` | < 1 MB | | |
-| **Total** | | **~720 GB** | | |
+| **Total** | | **~682 GB** | | |
 
 ### What `full` adds vs `minimal`
 
@@ -95,15 +97,20 @@ index that lets historical queries hit a single block lookup.
 
 ### Senders are recoverable
 
-`senders.NNNN.cdat` is the only file in `full` that can be
-deterministically derived locally — `ecrecover` over every tx in
-`bodyc` produces it. We ship it because recovery costs ~12 hours
-single-threaded on 25 M blocks. Operators with spare CPU can
-download `full --without-senders` and rebuild offline.
+`senders.NNNN.cdat` is NOT shipped in any mode — it's
+deterministically derivable from `bodyc` via `ecrecover`.
+`ethexec sender-recovery --ancient <bodyc>` produces it in
+~3 hours on 16 cores (or ~12 hours single-threaded) on 25 M
+blocks. Once built it lives at `chain/freezer/senders.*` and
+the executor skips ecrecover in the hot loop.
+
+Operators wanting the pre-built senders pack can opt in via
+`--include-senders` during snapshot fetch; the publisher
+maintains it as an optional add-on (~38 GB).
 
 ---
 
-## Mode 3 — `archive` (~887 GB) — **default**
+## Mode 3 — `archive` (~849 GB) — **default**
 
 Adds the per-block witness stream. With witness, EVM execution is
 replayable from any historical block, which means **changesets
@@ -112,9 +119,9 @@ derivable on demand** rather than shipped.
 
 | Section | File(s) | Size | Format | Notes |
 |:--|:--|--:|:--|:--|
-| *(everything from `full`)* | | 720 GB | | |
+| *(everything from `full`)* | | 682 GB | | |
 | Witness | `chain/freezer/witness.{cidx,NNNN.cdat}` | **167 GB** | Stream/length-prefixed v1 (`docs/ethel/devlog-eth-el-node.md`; `memory/feedback_witness_stream_v1.md`); set of state slots touched per block | `ethexec` executor with `--witness` |
-| **Total** | | **~887 GB** | | |
+| **Total** | | **~849 GB** | | |
 
 ### Why archive ships witness and not raw CS
 
@@ -171,7 +178,7 @@ historical proofs can save 167 GB by choosing `full`.
 | `debug_traceTransaction`, `trace_*` | – | – | ✓ |
 | `eth_getProof` (historical) | – | – | ✓ |
 | Re-derive CS / audit log | – | – | ✓ |
-| **Disk** | **39 GB** | **720 GB** | **887 GB** |
+| **Disk** | **39 GB** | **682 GB** | **849 GB** |
 
 ---
 
@@ -338,10 +345,10 @@ For the same 25.1 M block chain state:
 | Mode | n42-eth | reth equivalent | Saving |
 |:--|--:|--:|--:|
 | minimal | 39 GB | reth has no equivalent — closest is `--full` ≈ 1.2 TB | — |
-| full | 720 GB | reth `--full` ≈ 1.2 TB | **−480 GB (−40%)** |
-| archive | 887 GB | reth `--archive` ≈ 2.5 TB | **−1.6 TB (−65%)** |
+| full | 682 GB | reth `--full` ≈ 1.2 TB | **−518 GB (−43%)** |
+| archive | 849 GB | reth `--archive` ≈ 2.5 TB | **−1.65 TB (−66%)** |
 
-n42-eth's archive at 887 GB vs reth's 2.5 TB comes from:
+n42-eth's archive at 849 GB vs reth's 2.5 TB comes from:
 
 - Reth's `StoragesTrie` 31.4 GB → n42 packed-subkey 26 GB
   (`docs/ethel/rb-5a-compression-results.md`)
