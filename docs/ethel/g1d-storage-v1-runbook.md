@@ -68,21 +68,48 @@ Expected:
 - oracle PASS, 35-byte USDC account value
 - proof: 9 nodes / 3779 bytes (matches morning measurement)
 
-## Step 4 — USDC storage proof (target sub-second with dense V1)
+## Step 4 — USDC storage proof (KNOWN LIMITATION post-2026-05-22)
 
 Same test prints `stor slot 0 FullProofBytes` and `stor slot 1
-FullProofBytes` timings. Expectations:
+FullProofBytes` timings. Updated expectations:
 
-| Path | Cold | Warm |
-|---|---|---|
-| Compact + RethHashedLeafSource (today's baseline) | 14-35 s | similar |
-| Dense V1 + RethHashedLeafSource (post-migrate) | **target 50-500 ms** | similar |
+| Path | Result |
+|---|---|
+| Account proof (dense V1) | ✓ 9 nodes / 3779 bytes / **<1 ms** |
+| Storage proof (dense V1) | ✗ ERROR: subtree cap exceeded (~200K-leaf hard limit) |
 
-The dense path collapses inline-sibling rebuilds (the heavy-account
-prefix overlap cost) — sub-second is realistic. If still >1 s,
-profile `collectStorageLeavesWithPrefix` callers — they should
-NEVER fire when dense reader returns 33 B branch-hash slots
-directly.
+### Why storage proof fails
+
+USDC's account-keccak shares a 7-nibble prefix with the deepest
+persisted branch in the unified storage trie (`070b050805050b`).
+At that depth, the subtree below contains USDC's *entire* storage
+space (millions of slots from balanceOf / allowance mappings),
+which our current fallback (`StorageByHashedPrefix` →
+`expandSubtreeProofPath`) tries to load in full. The 200K leaf cap
+in `reth_hashed.go` fires fast (under 400 ms) and the proof returns
+an error rather than OOMing.
+
+Also note: `mpttrie.Walk` sets `LeafDepth` only on
+`Outcome=LandedOnLeaf`; for `NoBranchAtPath` (slot's hash points at
+an under-persistence-threshold subtree) `LeafDepth` stays 0. The
+dense path now derives the effective leaf depth from the deepest
+hop's `PrefixDepth+1` to avoid prefix-scanning the entire 1.5B
+storage table.
+
+### Long-term fix options
+
+1. **Per-contract storage tries** (Ethereum standard) — proofs
+   would be scoped to one contract's slots, bounded by that
+   contract's slot count.
+2. **Dense-recursive descent** — walk dense reader entries below
+   the deepest persisted branch using nibble paths, terminating
+   when reaching an inline leaf or extension. Only viable if we
+   persist sub-threshold branches in dense (currently we don't).
+3. **Subtree streaming** — replace `expandSubtreeProofPath`'s
+   load-all-leaves model with an iterator-driven trie reconstructor
+   that builds the path one branch at a time.
+
+Tracked as task #70.
 
 ## Step 5 — Archive log
 
@@ -94,6 +121,15 @@ go test -count=1 -timeout 5m -v `
 ```
 
 Commit the log for future regression comparison.
+
+**Note** (post-2026-05-22): the archived log will contain two
+`ERROR: ... 200000-leaf cap` lines for `stor slot 0`/`stor slot 1`.
+That is the *expected* error described in Step 4 — the test still
+PASSes overall (account proof validates, only storage cap-error is
+recorded). A regression manifests as either (a) the test FAILing
+with `unexpected storage-proof errors` (any error not containing
+`200000-leaf cap`), or (b) the account proof timing/size moving off
+9 nodes / 3779 bytes / <1 ms.
 
 ## Step 6 — Cleanup (optional)
 
