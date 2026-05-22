@@ -38,8 +38,18 @@ func BuildRethStorageProof(
 	slotNibbles := nibblesOf(slotHashedKey)
 
 	// 1) Implicit depth-0 root. Reth doesn't persist the empty-
-	//    prefix branch; it's composed from the 16 depth-1 children
-	//    keyed at single-nibble prefixes.
+	//    prefix branch for the dense case; it's composed from the
+	//    16 depth-1 children keyed at single-nibble prefixes.
+	//
+	// Sparse-trie note: if reth instead stores an extension/leaf at
+	// the empty prefix (small storage tries with a single common
+	// prefix), the implicit composition is WRONG. Probe first and
+	// fail loud so we know to add the sparse path. USDC and most
+	// production contracts hit the dense path.
+	if root, exists, perr := r.StorageBranchAt(addrHash, nil); perr == nil && exists {
+		return nil, [32]byte{}, fmt.Errorf("sparse-trie path not implemented: reth stores a depth-0 row at empty prefix (state=0x%04x); implicit-root reconstruction would be wrong",
+			root.HasState)
+	}
 	rootHashes := make([][32]byte, 16)
 	var rootState uint16
 	for nib := 0; nib < 16; nib++ {
@@ -210,6 +220,17 @@ func encodeRethBranchRLPInlineAware(
 // hashed-slot key starts with `prefixNibbles`. Returns (value,
 // fullSlotHashNibbles64, true, nil) on exactly one match; (nil,
 // nil, false, nil) on zero matches; error on multiple matches.
+//
+// NOTE (RB-4 limitation): when called from encodeRethBranchRLPInlineAware
+// for inline-sibling reconstruction, MULTIPLE matches are possible
+// in reality — an inline sibling can itself be a multi-leaf subtree
+// (< 32 B encoded). The current path errors on that case. The
+// expandSubtreeProofPath logic in BuildRethStorageProof's tail handles
+// that for the TARGET slot; the encodeRethBranchRLPInlineAware path
+// for sibling inlines still uses this stricter single-leaf finder.
+// USDC's tested slots happen to have unique inline siblings; deeper
+// or different contracts may need the same expand-then-embed logic
+// extended to siblings.
 func findUniqueStorageBelowPrefix(
 	storReader *RethBackedReader,
 	addrHash []byte,
@@ -393,6 +414,16 @@ func compareNibbles(a, b []byte) int {
 // proof[i] as either a 32-byte hash reference (0xa0||hash) or as
 // inline RLP (when child RLP is < 32 bytes). Returns the first
 // mismatch index, or -1 on success.
+//
+// LIMITATION: this is a STRUCTURAL link-presence check, not a
+// cryptographic proof verifier. It does NOT validate that proof[i+1]
+// sits at the CORRECT slot (the target nibble's slot) within
+// proof[i]'s branch RLP — an adversary could craft proof[i] with
+// the child hash at the wrong slot and still pass this check. For
+// EXTERNAL verification (proofs received from a third party), use
+// the EIP-1186 full-decode verifier at mptproof.VerifyStandardProof.
+// VerifyProofChain is intended only as an internal sanity check on
+// proofs we built ourselves.
 func VerifyProofChain(proof [][]byte) int {
 	for i := 0; i+1 < len(proof); i++ {
 		curHash := keccak256(proof[i+1])

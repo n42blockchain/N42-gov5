@@ -66,33 +66,34 @@ func DecodeRethBranchNodeCompact(raw []byte) (*mpttrie.BranchNode, error) {
 //
 // DecodeStoredNibbles strips the trailing length byte and returns the
 // nibble slice limited to that length.
+//
+// Reth always emits 65-byte StoredNibblesSubKey (64-byte nibble
+// payload + 1-byte length). Any shorter buffer is unexpected — we
+// return nil so callers (typically compare-against-expected logic)
+// don't silently accept a malformed row.
 func DecodeStoredNibbles(raw []byte) []byte {
-	if len(raw) == 0 {
+	if len(raw) < 65 {
 		return nil
 	}
-	// Length byte is the LAST byte of the fixed 65-byte encoding;
-	// the leading bytes are the nibble path padded with zeros.
-	if len(raw) >= 65 {
-		l := int(raw[64])
-		if l > 64 {
-			l = 64
-		}
-		out := make([]byte, l)
-		copy(out, raw[:l])
-		return out
+	l := int(raw[64])
+	if l > 64 {
+		l = 64
 	}
-	// Shorter encodings (v2 packed?) fall back to copy-as-is.
-	out := make([]byte, len(raw))
-	copy(out, raw)
+	out := make([]byte, l)
+	copy(out, raw[:l])
 	return out
 }
 
 // EncodeStoredNibbles produces a 65-byte StoredNibbles key matching
 // reth's expected layout for AccountsTrie / StoragesTrie SubKey
 // lookups.
+//
+// Storage paths are at most 64 nibbles (keccak(slot) = 32 bytes).
+// Passing more is a programming error: fail loud (return nil) rather
+// than silently truncate to a key that could alias a different row.
 func EncodeStoredNibbles(nibbles []byte) []byte {
 	if len(nibbles) > 64 {
-		nibbles = nibbles[:64]
+		return nil
 	}
 	out := make([]byte, 65)
 	copy(out, nibbles)
