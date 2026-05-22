@@ -2,6 +2,7 @@ package mptproof
 
 import (
 	"encoding/hex"
+	"math/bits"
 	"os"
 	"path/filepath"
 	"testing"
@@ -40,7 +41,7 @@ func TestRethTrieReader_AccountsRoot(t *testing.T) {
 		t.Fatalf("no AccountsTrie branch at nibble [0]")
 	}
 	t.Logf("AccountsTrie root branch:")
-	t.Logf("  state_mask = 0x%04x (popcount %d)", bn.HasState, popcountUint16(bn.HasState))
+	t.Logf("  state_mask = 0x%04x (popcount %d)", bn.HasState, bits.OnesCount16(bn.HasState))
 	t.Logf("  tree_mask  = 0x%04x", bn.HasTree)
 	t.Logf("  hash_mask  = 0x%04x", bn.HasHash)
 	t.Logf("  has_root   = %v", bn.HasRoot)
@@ -106,7 +107,7 @@ func TestRethTrieReader_USDCStorageSubtreeRoot(t *testing.T) {
 		return
 	}
 	t.Logf("USDC storage-trie root branch:")
-	t.Logf("  state_mask = 0x%04x (popcount %d)", bn.HasState, popcountUint16(bn.HasState))
+	t.Logf("  state_mask = 0x%04x (popcount %d)", bn.HasState, bits.OnesCount16(bn.HasState))
 	t.Logf("  tree_mask  = 0x%04x", bn.HasTree)
 	t.Logf("  hash_mask  = 0x%04x", bn.HasHash)
 	t.Logf("  has_root   = %v", bn.HasRoot)
@@ -114,17 +115,9 @@ func TestRethTrieReader_USDCStorageSubtreeRoot(t *testing.T) {
 		t.Logf("  root_hash  = 0x%x", bn.RootHash[:])
 	}
 	t.Logf("  child_hashes = %d entries", len(bn.Hashes))
-	if popcountUint16(bn.HasState) < 8 {
+	if bits.OnesCount16(bn.HasState) < 8 {
 		t.Errorf("USDC storage root has only %d children — expected dense (16 slots)",
-			popcountUint16(bn.HasState))
+			bits.OnesCount16(bn.HasState))
 	}
 }
 
-func popcountUint16(x uint16) int {
-	count := 0
-	for x != 0 {
-		count += int(x & 1)
-		x >>= 1
-	}
-	return count
-}

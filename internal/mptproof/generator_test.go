@@ -176,7 +176,6 @@ func TestGenerator_RethLeafSource_Account(t *testing.T) {
 	t.Logf("USDC account value: %d bytes  prefix=%x", len(v), v[:min(8, len(v))])
 }
 
-func min(a, b int) int { if a < b { return a }; return b }
 
 // =========================================================================
 // Integration tests against D:\n42-mpt + reth source
