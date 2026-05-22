@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"golang.org/x/crypto/sha3"
-
 	"github.com/n42blockchain/N42/lib/commitment"
 )
 
@@ -30,15 +28,11 @@ func TestRethBackedReader_USDCAccount(t *testing.T) {
 
 	reader := NewRethBackedReader(src)
 
-	// USDC address.
+	// USDC address (plain, 20-byte).
 	usdcHex := "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
 	usdc, _ := hex.DecodeString(usdcHex)
-	h := sha3.NewLegacyKeccak256()
-	h.Write(usdc)
-	var usdcHash [32]byte
-	h.Sum(usdcHash[:0])
 
-	upd, err := reader.Account(usdcHash[:])
+	upd, err := reader.Account(usdc)
 	if err != nil {
 		t.Fatalf("Account: %v", err)
 	}
@@ -92,19 +86,11 @@ func TestRethBackedReader_USDCStorageSlot0(t *testing.T) {
 
 	usdcHex := "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
 	usdc, _ := hex.DecodeString(usdcHex)
-	h := sha3.NewLegacyKeccak256()
-	h.Write(usdc)
-	var addrHash [32]byte
-	h.Sum(addrHash[:0])
 
-	// Slot 0 = USDC totalSupply.
+	// Slot 0 = USDC totalSupply (plain, 32-byte all-zero slot id).
 	var slot [32]byte
-	h2 := sha3.NewLegacyKeccak256()
-	h2.Write(slot[:])
-	var slotHash [32]byte
-	h2.Sum(slotHash[:0])
 
-	composite := append(addrHash[:], slotHash[:]...)
+	composite := append(append([]byte{}, usdc...), slot[:]...)
 	upd, err := reader.Storage(composite)
 	if err != nil {
 		t.Fatalf("Storage: %v", err)

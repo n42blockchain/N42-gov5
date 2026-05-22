@@ -55,6 +55,8 @@ func NewRethHashedLeafSource(dbPath string, mapSizeGB int) (*RethHashedLeafSourc
 		WithTableCfg(func(d kv.TableCfg) kv.TableCfg {
 			d[rethHashedAccountsTable] = kv.TableCfgItem{}
 			d[rethHashedStoragesTable] = kv.TableCfgItem{Flags: kv.DupSort}
+			d[rethPlainAccountStateTable] = kv.TableCfgItem{}
+			d[rethPlainStorageStateTable] = kv.TableCfgItem{Flags: kv.DupSort}
 			return d
 		}).
 		Open(context.Background())
@@ -62,6 +64,14 @@ func NewRethHashedLeafSource(dbPath string, mapSizeGB int) (*RethHashedLeafSourc
 		return nil, fmt.Errorf("RethHashedLeafSource: %w", err)
 	}
 	return &RethHashedLeafSource{db: db}, nil
+}
+
+// RoTx is exposed for callers that need a read-only tx on the
+// underlying env (e.g. the bootstrap CLI walks both
+// HashedAccounts and HashedStorages cursors). Returns kv.Tx because
+// the underlying db is read-only.
+func (r *RethHashedLeafSource) RoTx(ctx context.Context) (kv.Tx, error) {
+	return r.db.BeginRo(ctx)
 }
 
 func (r *RethHashedLeafSource) Close() error {
