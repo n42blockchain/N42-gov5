@@ -9,22 +9,25 @@ import (
 	"github.com/n42blockchain/N42/lib/common/empty"
 )
 
-// RethBackedReader exposes reth's HashedAccounts + HashedStorages
-// tables as commitment.AccountReader and commitment.StorageReader.
+// Reth's plain-state tables. PlainAccountState is keyed by 20-byte
+// Address (NOT hashed) with Account-encoded value; PlainStorageState
+// is DupSort keyed by 20-byte Address with 32-byte slot+value dups.
 //
-// IMPORTANT — plainKey convention:
+// These tables are the canonical input for HPH bootstrap because
+// they contain the plain (unhashed) keys HPH expects, so we can use
+// the standard KeyToHexNibbleHash and NewHexPatriciaHashed(length.Addr).
+const (
+	rethPlainAccountStateTable = "PlainAccountState"
+	rethPlainStorageStateTable = "PlainStorageState"
+)
+
+// RethBackedReader exposes reth's PlainAccountState +
+// PlainStorageState as commitment.AccountReader and
+// commitment.StorageReader. plain keys are the actual addresses /
+// slots — HPH hashes them via the standard hasher.
 //
-//	For accounts, plainKey is the 32-byte ADDR HASH (i.e. keccak256
-//	of the 20-byte address). Reth's HashedAccounts is keyed by this
-//	hash, so we don't need plain addresses (which we couldn't recover
-//	from a hashed-state-only source anyway).
-//
-//	For storage, plainKey is the 64-byte composite ADDR HASH || SLOT
-//	HASH. We split it on the 32-byte boundary to query the DupSort
-//	cursor.
-//
-// Pairing the reader with NibbleIdentityHasher (see below) prevents
-// HPH from re-hashing the already-hashed keys.
+//	Account.plainKey  = 20-byte addr
+//	Storage.plainKey  = 52-byte addr || slot
 type RethBackedReader struct {
 	src *RethHashedLeafSource
 }
@@ -33,18 +36,18 @@ func NewRethBackedReader(src *RethHashedLeafSource) *RethBackedReader {
 	return &RethBackedReader{src: src}
 }
 
-// Account implements commitment.AccountReader. plainKey must be the
-// 32-byte addrHash. Returns nil if absent.
+// Account implements commitment.AccountReader. plainKey is the
+// 20-byte address. Returns nil if absent.
 func (r *RethBackedReader) Account(plainKey []byte) (*commitment.Update, error) {
-	if len(plainKey) != 32 {
-		return nil, fmt.Errorf("RethBackedReader.Account: expected 32-byte addrHash, got %d", len(plainKey))
+	if len(plainKey) != 20 {
+		return nil, fmt.Errorf("RethBackedReader.Account: expected 20-byte addr, got %d", len(plainKey))
 	}
 	tx, err := r.src.db.BeginRo(context.Background())
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	v, err := tx.GetOne(rethHashedAccountsTable, plainKey)
+	v, err := tx.GetOne(rethPlainAccountStateTable, plainKey)
 	if err != nil {
 		return nil, err
 	}
@@ -57,12 +60,10 @@ func (r *RethBackedReader) Account(plainKey []byte) (*commitment.Update, error) 
 	}
 
 	upd := new(commitment.Update)
-	upd.Flags = 0 // build the present-flags below
+	upd.Flags = commitment.BalanceUpdate | commitment.NonceUpdate
 	upd.Nonce = acct.Nonce
 	upd.Balance.Set(&acct.Balance)
-	upd.Flags |= commitment.BalanceUpdate | commitment.NonceUpdate
 	if acct.HasBytecode {
-		// CodeHash field is types.Hash (32B array).
 		copy(upd.CodeHash[:], acct.BytecodeHash[:])
 		upd.Flags |= commitment.CodeUpdate
 	} else {
@@ -71,31 +72,31 @@ func (r *RethBackedReader) Account(plainKey []byte) (*commitment.Update, error) 
 	return upd, nil
 }
 
-// Storage implements commitment.StorageReader. plainKey must be the
-// 64-byte addrHash||slotHash composite. Returns nil if absent.
+// Storage implements commitment.StorageReader. plainKey is the
+// 52-byte address||slot. Returns nil if absent.
 func (r *RethBackedReader) Storage(plainKey []byte) (*commitment.Update, error) {
-	if len(plainKey) != 64 {
-		return nil, fmt.Errorf("RethBackedReader.Storage: expected 64-byte addrHash||slotHash, got %d", len(plainKey))
+	if len(plainKey) != 52 {
+		return nil, fmt.Errorf("RethBackedReader.Storage: expected 52-byte addr||slot, got %d", len(plainKey))
 	}
-	addrHash := plainKey[:32]
-	slotHash := plainKey[32:]
+	addr := plainKey[:20]
+	slot := plainKey[20:]
 
 	tx, err := r.src.db.BeginRo(context.Background())
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	c, err := tx.CursorDupSort(rethHashedStoragesTable)
+	c, err := tx.CursorDupSort(rethPlainStorageStateTable)
 	if err != nil {
 		return nil, err
 	}
 	defer c.Close()
 
-	v, err := c.SeekBothRange(addrHash, slotHash)
+	v, err := c.SeekBothRange(addr, slot)
 	if err != nil {
 		return nil, err
 	}
-	if v == nil || len(v) < 32 || !bytes.Equal(v[:32], slotHash) {
+	if v == nil || len(v) < 32 || !bytes.Equal(v[:32], slot) {
 		return nil, nil // absent
 	}
 	val := v[32:] // BE-stripped U256 bytes (StorageEntry.value)
@@ -105,24 +106,4 @@ func (r *RethBackedReader) Storage(plainKey []byte) (*commitment.Update, error) 
 	upd.StorageLen = int8(len(val))
 	copy(upd.Storage[:], val)
 	return upd, nil
-}
-
-// NibbleIdentityHasher converts an already-hashed key (32-byte
-// addrHash for accounts, 64-byte addrHash||slotHash for storage)
-// into nibblized form WITHOUT re-hashing. Pair with RethBackedReader
-// to feed HPH a hashed-state source while preserving canonical
-// state-root semantics.
-//
-// Layout produced (matches KeyToHexNibbleHash's output for the
-// nibblized half):
-//
-//	account:  64 nibbles  (keccak addr expanded to nibbles)
-//	storage:  128 nibbles (keccak addr + keccak slot expanded)
-func NibbleIdentityHasher(key []byte) []byte {
-	out := make([]byte, len(key)*2)
-	for i, b := range key {
-		out[i*2] = (b >> 4) & 0xf
-		out[i*2+1] = b & 0xf
-	}
-	return out
 }
