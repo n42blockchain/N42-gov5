@@ -63,6 +63,54 @@ type HashBuilder struct {
 	// receiver can read full per-child slot data after compact-only
 	// info has been passed via HashCollector2.
 	denseStash []byte
+	// denseExtMask records, for each child in the most recent dense
+	// snapshot, whether the slot's hash came from an EXTENSION node
+	// (vs a direct leaf hash). Bit i = 1 iff child nibble i has an
+	// extension child. Read via LastExtMask().
+	//
+	// Phase G2 Option A uses this to gate LeafMarker compression:
+	// only HasState=1 + HasTree=0 + HasExt=0 + hashed slots are
+	// safe to mark; extension-bearing slots must keep 33 bytes of
+	// keccak(extension_RLP) verbatim.
+	denseExtMask uint16
+
+	// originStack parallels hashStack but with 1 byte per entry
+	// (vs 33 bytes), indicating how the entry was pushed:
+	//   originLeaf=0      leafHash, accountLeafHash, leaf,
+	//                     accountLeaf, hash
+	//   originExtension=1 extensionHash, extension
+	//   originBranch=2    branchHash, branch
+	// snapshotDenseSlots reads originStack alongside hashStack to
+	// compute denseExtMask.
+	originStack []byte
+}
+
+const (
+	originLeaf      byte = 0
+	originExtension byte = 1
+	originBranch    byte = 2
+)
+
+// pushOrigin records the kind of node just pushed onto hashStack.
+// Each opcode that grows hashStack by one entry calls this. Pops
+// happen automatically when the parallel hashStack shrinks — kept
+// in sync by pop helper.
+func (hb *HashBuilder) pushOrigin(o byte) {
+	hb.originStack = append(hb.originStack, o)
+}
+
+// popOrigins drops the top n entries from originStack to mirror a
+// branchHash that consumed n children. Called inline with the
+// hashStack resize.
+func (hb *HashBuilder) popOrigins(n int) {
+	if n <= 0 {
+		return
+	}
+	if len(hb.originStack) < n {
+		hb.originStack = hb.originStack[:0]
+		return
+	}
+	hb.originStack = hb.originStack[:len(hb.originStack)-n]
 }
 
 // SetBranchEmitter registers a callback that receives raw slot data
@@ -93,7 +141,12 @@ func (hb *HashBuilder) Reset() {
 	if len(hb.nodeStack) > 0 {
 		hb.nodeStack = hb.nodeStack[:0]
 	}
+	if len(hb.originStack) > 0 {
+		hb.originStack = hb.originStack[:0]
+	}
 	hb.topHashesCopy = hb.topHashesCopy[:0]
+	hb.denseStash = hb.denseStash[:0]
+	hb.denseExtMask = 0
 	hb.proofElement = nil
 }
 
@@ -170,6 +223,7 @@ func (hb *HashBuilder) leafHashWithKeyVal(key []byte, val rlphacks.RlpSerializab
 	//fmt.Printf("leafHashWithKeyVal [%x]=>[%x]\nHash [%x]\n", key, val, hb.hashBuf[:])
 
 	hb.hashStack = append(hb.hashStack, hb.hashBuf[:]...)
+	hb.pushOrigin(originLeaf)
 	if len(hb.hashStack) > hashStackStride*len(hb.nodeStack) {
 		hb.nodeStack = append(hb.nodeStack, nil)
 	}
@@ -400,9 +454,11 @@ func (hb *HashBuilder) accountLeafHashWithKey(key []byte, popped int) error {
 	if popped > 0 {
 		hb.hashStack = hb.hashStack[:len(hb.hashStack)-popped*hashStackStride]
 		hb.nodeStack = hb.nodeStack[:len(hb.nodeStack)-popped]
+		hb.popOrigins(popped)
 	}
 	//fmt.Printf("accountLeafHashWithKey [%x]=>[%x]\nHash [%x]\n", key, val, hb.hashBuf[:])
 	hb.hashStack = append(hb.hashStack, hb.hashBuf[:]...)
+	hb.pushOrigin(originLeaf)
 	hb.nodeStack = append(hb.nodeStack, nil)
 	if hb.trace {
 		fmt.Printf("Stack depth: %d\n", len(hb.nodeStack))
@@ -506,6 +562,12 @@ func (hb *HashBuilder) extensionHash(key []byte) error {
 	}
 
 	hb.hashStack[len(hb.hashStack)-hashStackStride] = 0x80 + length.Hash
+	// extensionHash REPLACES the top hashStack entry's hash in place
+	// (no growth). The top originStack entry now represents an
+	// extension wrapping whatever it was before — mark it.
+	if len(hb.originStack) > 0 {
+		hb.originStack[len(hb.originStack)-1] = originExtension
+	}
 	//fmt.Printf("extensionHash [%x]=>[%x]\nHash [%x]\n", key, capture, hb.hashStack[len(hb.hashStack)-hashStackStride:len(hb.hashStack)])
 	if _, ok := hb.nodeStack[len(hb.nodeStack)-1].(*fullNode); ok {
 		return fmt.Errorf("extensionHash cannot be emitted when a node is on top of the stack")
@@ -626,6 +688,10 @@ func (hb *HashBuilder) branchHash(set uint16) error {
 	if _, err := hb.sha.Read(hb.hashStack[len(hb.hashStack)-length.Hash:]); err != nil {
 		return err
 	}
+	// Pop `digits` origins (the consumed children) and push one for
+	// the new branch entry that replaces them.
+	hb.popOrigins(digits)
+	hb.pushOrigin(originBranch)
 
 	//fmt.Printf("} [%x]\n", hb.hashStack[len(hb.hashStack)-hashStackStride:])
 
@@ -648,6 +714,7 @@ func (hb *HashBuilder) hash(hash []byte) error {
 	}
 	hb.hashStack = append(hb.hashStack, 0x80+length.Hash)
 	hb.hashStack = append(hb.hashStack, hash...)
+	hb.pushOrigin(originLeaf) // injected hash — treat as leaf-equivalent
 	hb.nodeStack = append(hb.nodeStack, nil)
 	if hb.trace {
 		fmt.Printf("Stack depth: %d\n", len(hb.nodeStack))
@@ -673,6 +740,7 @@ func (hb *HashBuilder) code(code []byte) error {
 		return err
 	}
 	hb.hashStack = append(hb.hashStack, hash[:]...)
+	hb.pushOrigin(originLeaf) // code hash — treated as leaf for origin tracking
 	return nil
 }
 
@@ -685,6 +753,7 @@ func (hb *HashBuilder) emptyRoot() {
 	hash[0] = 0x80 + length.Hash
 	copy(hash[1:], EmptyRoot[:])
 	hb.hashStack = append(hb.hashStack, hash[:]...)
+	hb.pushOrigin(originLeaf)
 }
 
 func (hb *HashBuilder) RootHash() (types.Hash, error) {
@@ -749,14 +818,32 @@ func (hb *HashBuilder) snapshotDenseSlots(hasState uint16) []byte {
 	digits := bits.OnesCount16(hasState)
 	if digits == 0 {
 		hb.denseStash = hb.denseStash[:0]
+		hb.denseExtMask = 0
 		return hb.denseStash
 	}
 	start := len(hb.hashStack) - hashStackStride*digits
 	if start < 0 {
 		hb.denseStash = hb.denseStash[:0]
+		hb.denseExtMask = 0
 		return hb.denseStash
 	}
 	hb.denseStash = append(hb.denseStash[:0], hb.hashStack[start:]...)
+
+	// Compute extMask from originStack — bit i set iff present child
+	// i's stack entry came from an extension (extensionHash).
+	hb.denseExtMask = 0
+	if originStart := len(hb.originStack) - digits; originStart >= 0 {
+		i := 0
+		for digit := uint(0); digit < 16; digit++ {
+			if hasState&(1<<digit) == 0 {
+				continue
+			}
+			if hb.originStack[originStart+i] == originExtension {
+				hb.denseExtMask |= 1 << digit
+			}
+			i++
+		}
+	}
 	return hb.denseStash
 }
 
@@ -764,6 +851,15 @@ func (hb *HashBuilder) snapshotDenseSlots(hasState uint16) []byte {
 // snapshotDenseSlots call. Aliases internal storage; copy if you
 // need long-lived bytes.
 func (hb *HashBuilder) LastDenseSlots() []byte { return hb.denseStash }
+
+// LastExtMask returns the per-child extension bitmap captured by the
+// most recent snapshotDenseSlots. Bit i = 1 iff child nibble i's
+// stack entry was produced by an extension node (extensionHash) and
+// therefore the slot's hash is keccak(extension_RLP) — NOT a direct
+// leaf hash. Phase G2 Option A uses this to gate LeafMarker
+// compression: only HasState=1 + HasTree=0 + HasExt=0 + hashed slots
+// are safe to mark.
+func (hb *HashBuilder) LastExtMask() uint16 { return hb.denseExtMask }
 
 func (hb *HashBuilder) topHashes(prefix []byte, hasHash, hasState uint16) []byte {
 	digits := bits.OnesCount16(hasState)

@@ -98,6 +98,59 @@ reth's combined AccountsTrie+HashedAccounts+StoragesTrie+HashedStorages
 
 This is what's deployed today (commit 9241f8c9 + the V2 disable).
 
+## Update 2026-05-21 evening — Option A partial implementation
+
+Implemented per-slot extension origin tracking:
+
+  lib/trie/hashbuilder.go
+    + originStack []byte parallel to hashStack
+    + leafHash / accountLeafHash / hash / code / emptyRoot → pushOrigin(originLeaf)
+    + branchHash → popOrigins(N) + pushOrigin(originBranch)
+    + extensionHash → overwrite top origin to originExtension
+    + snapshotDenseSlots → also computes denseExtMask
+    + LastExtMask() accessor
+
+  MarshalTrieNodeDenseV2 → 3rd arg extMask uint16; LeafMarker only when
+    state=1 AND tree=0 AND ext=0 AND hashed
+  DenseBranchSink callback signature extended with extMask
+
+Verified:
+  - extensionHash fires (5 times in 500-account synthetic test)
+  - originStack push/pop/overwrite happen in correct sequence at each
+    opcode
+
+NOT verified:
+  - snapshotDenseSlots's captured extMask was always 0 for the failing
+    cases at branch [0,0]. Either:
+      (a) extension fires AFTER the relevant snapshot (lifetime/order
+          mismatch between gen_struct_step's buildExtensions block and
+          the snapshotDenseSlots call sites)
+      (b) the extension'd entries are at stack positions OUTSIDE the
+          top-N range that snapshot reads
+      (c) snapshot captures a DIFFERENT branch's children than the one
+          that will ultimately be the parent of the extension'd entry
+
+Concretely: the V1 vs V2 cross-check showed digit 0 of branch [0]
+stored a 33-byte hash that mismatches keccak(leafRLP) of the first
+keccak-matching account under prefix [0,0]. AccountLeafByPrefix
+returns 3 matches for that prefix — telling us there ARE 3 accounts
+that share the prefix, which means the slot's child is actually a
+deeper structure (extension+branch wrapping 3 leaves), not a direct
+leaf.
+
+But our origin tracking didn't catch the extension. Either the
+extension was emitted for a DIFFERENT slot, or the lifetime/order is
+off.
+
+Next debug steps for whoever picks this up:
+  1. instrument the OUTER loop iteration count in gen_struct_step,
+     log per-iteration: maxLen, buildExtensions, what e.X opcode
+     fires, and originStack content before/after
+  2. specifically check: when the test failure prefix=[0,0,0] gets
+     its parent's branchHash, what was the originStack just before?
+  3. consider adding a second pushOrigin path inside the buildExtensions
+     block to "remember" extensions that hit the just-snapshotted region
+
 ## Current state (this commit)
 
 - V2 codec (`MarshalTrieNodeDenseV2` / `UnmarshalTrieNodeDenseV2`)

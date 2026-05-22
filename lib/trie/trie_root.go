@@ -1603,20 +1603,21 @@ func ensureCap(buf []byte, n int) []byte {
 const LeafMarker byte = 0x01
 
 // MarshalTrieNodeDenseV2 is the G2 variant of MarshalTrieNodeDense.
-// Slots whose hash represents a single LEAF (state bit set, tree bit
-// clear, original slot prefix == 0xa0) are emitted as a 1-byte
-// LeafMarker — the reader reconstructs the 33-byte 0xa0||hash by
-// prefix-scanning the base hashed table for the unique leaf below
-// branchPath||childNibble.
+// Slots whose hash represents a single LEAF — state bit set, tree
+// bit clear, extension bit clear, original slot prefix == 0xa0 —
+// are emitted as a 1-byte LeafMarker. The reader reconstructs the
+// 33-byte 0xa0||hash via the base hashed table.
 //
-// Other slots (hashed branch references, inline RLPs) are encoded
-// identically to V1.
+// extMask (G2 Option A): bit i set iff the slot's stack entry was
+// produced by extensionHash, i.e. the stored hash is keccak(
+// extension_RLP) and CANNOT be re-derived from the leaf alone.
+// Those slots stay as 33-byte 0xa0||hash verbatim.
 //
-// Container header is 2 B (state_mask only) — tree_mask is NOT
-// stored. Read-side recovers tree info by inspecting slot first
-// bytes (0xa0 ⇒ HasTree=1; LeafMarker or inline ⇒ HasTree=0). See
-// docs/ethel/g2-compression-frontier.md §3.1.
-func MarshalTrieNodeDenseV2(stateMask, treeMask uint16, slotData []byte, buf []byte) []byte {
+// Container header is 2 B (state_mask only). Tree / ext info is not
+// stored — read side can't see those bits but doesn't need to (it
+// dispatches off slot first byte: 0x01 marker ⇒ leaf; 0xa0 ⇒ hash
+// ref; 0xc0..0xfe ⇒ inline RLP).
+func MarshalTrieNodeDenseV2(stateMask, treeMask, extMask uint16, slotData []byte, buf []byte) []byte {
 	const stride = 33
 	size := 2 // 2 B state_mask
 	{
@@ -1626,7 +1627,7 @@ func MarshalTrieNodeDenseV2(stateMask, treeMask uint16, slotData []byte, buf []b
 				continue
 			}
 			b0 := slotData[i*stride]
-			isLeafHash := b0 == 0xa0 && (treeMask&(1<<digit)) == 0
+			isLeafHash := b0 == 0xa0 && (treeMask&(1<<digit)) == 0 && (extMask&(1<<digit)) == 0
 			if isLeafHash {
 				size++
 			} else {
@@ -1644,7 +1645,7 @@ func MarshalTrieNodeDenseV2(stateMask, treeMask uint16, slotData []byte, buf []b
 			continue
 		}
 		b0 := slotData[i*stride]
-		isLeafHash := b0 == 0xa0 && (treeMask&(1<<digit)) == 0
+		isLeafHash := b0 == 0xa0 && (treeMask&(1<<digit)) == 0 && (extMask&(1<<digit)) == 0
 		if isLeafHash {
 			buf[off] = LeafMarker
 			off++

@@ -35,7 +35,7 @@ func TestDenseBranchSink_Synthetic(t *testing.T) {
 		Extractor: NewAccountExtractor(),
 		TmpDir:    filepath.Join(t.TempDir(), "etl"),
 		BufMB:     1,
-		DenseBranchSink: func(keyHex []byte, stateMask, treeMask uint16, slotData []byte) error {
+		DenseBranchSink: func(keyHex []byte, stateMask, treeMask, _ uint16, slotData []byte) error {
 			c := capturedDense{
 				keyHex:    append([]byte(nil), keyHex...),
 				stateMask: stateMask,

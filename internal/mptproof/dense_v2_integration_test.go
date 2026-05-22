@@ -145,8 +145,8 @@ func buildDenseV2UnifiedTestDB(t *testing.T, nAccts int) (string, map[[20]byte][
 		Extractor: mptbuild.NewAccountExtractor(),
 		TmpDir:    filepath.Join(tmp, "etl-build"),
 		BufMB:     1,
-		DenseBranchSink: func(keyHex []byte, stateMask, treeMask uint16, slotData []byte) error {
-			enc := trie.MarshalTrieNodeDenseV2(stateMask, treeMask, slotData, nil)
+		DenseBranchSink: func(keyHex []byte, stateMask, treeMask, extMask uint16, slotData []byte) error {
+			enc := trie.MarshalTrieNodeDenseV2(stateMask, treeMask, extMask, slotData, nil)
 			k := make([]byte, len(keyHex))
 			copy(k, keyHex)
 			return denseColl.Collect(k, enc)
@@ -226,11 +226,11 @@ func buildBothDenseUnifiedTestDB(t *testing.T, nAccts int) (string, map[[20]byte
 		Extractor: mptbuild.NewAccountExtractor(),
 		TmpDir:    filepath.Join(tmp, "etl-build"),
 		BufMB:     1,
-		DenseBranchSink: func(keyHex []byte, stateMask, treeMask uint16, slotData []byte) error {
+		DenseBranchSink: func(keyHex []byte, stateMask, treeMask, extMask uint16, slotData []byte) error {
 			k := make([]byte, len(keyHex))
 			copy(k, keyHex)
 			enc1 := trie.MarshalTrieNodeDense(stateMask, treeMask, slotData, nil)
-			enc2 := trie.MarshalTrieNodeDenseV2(stateMask, treeMask, slotData, nil)
+			enc2 := trie.MarshalTrieNodeDenseV2(stateMask, treeMask, extMask, slotData, nil)
 			if err := denseV1.Collect(k, enc1); err != nil {
 				return err
 			}
@@ -270,18 +270,13 @@ func buildBothDenseUnifiedTestDB(t *testing.T, nAccts int) (string, map[[20]byte
 	return dst, acctValues, res.StateRoot
 }
 
-// TestProofBytes_DenseV2_ExtensionMismatch documents the V2 LeafMarker
-// limitation. When the build emits an extension node between a branch
-// slot and a deeper leaf (gen_struct_step does this for sparse keccak
-// paths), the slot's stored hash is keccak(extension RLP) NOT
-// keccak(leaf RLP). V2 reconstruction returns keccak(leaf RLP) and
-// the proof fails.
-//
-// Test left for documentation: it currently fails with hash mismatch
-// for some slots. Skip in CI. Fix requires extension-aware encoding
-// (see docs/ethel/g2-extension-aware-encoding.md).
-func TestProofBytes_DenseV2_ExtensionMismatch(t *testing.T) {
-	t.Skip("V2 plain-key referencing has known extension-node mismatch; see docs/ethel/g2-extension-aware-encoding.md")
+// TestProofBytes_DenseV2FastPath_VsV1: build V1 AND V2 in the same
+// env, compare slots. Currently FAILS: G2 Option A ext-aware tracking
+// captures some extension cases but not all (snapshot order vs
+// extensionHash firing point needs further investigation). See
+// docs/ethel/g2-extension-aware-encoding.md for current status.
+func TestProofBytes_DenseV2FastPath_VsV1(t *testing.T) {
+	t.Skip("V2 dispatch still disabled; ext-aware tracking incomplete (see docs/ethel/g2-extension-aware-encoding.md)")
 	dst, values, expectedRoot := buildBothDenseUnifiedTestDB(t, 500)
 
 	base := &mapLeafSourceWithLookup{

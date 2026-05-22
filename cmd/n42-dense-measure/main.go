@@ -147,7 +147,12 @@ func main() {
 			copy(pad, slot)
 			slotData = append(slotData, pad...)
 		}
-		v2EncBuf = trie.MarshalTrieNodeDenseV2(stateMask, treeMask, slotData, v2EncBuf[:0])
+		// V1 dense doesn't preserve per-slot extension origin. Assuming
+		// extMask=0 here gives an OPTIMISTIC V2 size estimate (treats
+		// every hashed leaf slot as compressible). Actual V2 size built
+		// fresh via --emit-dense-v2 will be larger by the
+		// extension-slot share, see docs/ethel/g2-extension-aware-encoding.md.
+		v2EncBuf = trie.MarshalTrieNodeDenseV2(stateMask, treeMask, 0, slotData, v2EncBuf[:0])
 		v2ValueBytes += int64(len(v2EncBuf))
 
 		if *write {
@@ -199,6 +204,16 @@ func main() {
 			fatal("commit dst tx: %v", err)
 		}
 		fmt.Printf("  ✓ V2 written to %s/%s (%d rows)\n", *dir, *dstTable, rows)
+		fmt.Println()
+		fmt.Println("  WARNING: V1→V2 transcode is LOSSY. V1 doesn't preserve")
+		fmt.Println("  per-slot extension origin, so this transcode treats every")
+		fmt.Println("  hashed-leaf slot as compressible to LeafMarker — which is")
+		fmt.Println("  INCORRECT for slots that actually contain extension+leaf")
+		fmt.Println("  (slot's stored hash is keccak(extension_RLP), not")
+		fmt.Println("  keccak(leaf_RLP)). DO NOT use the resulting V2 table for")
+		fmt.Println("  proof generation. Use this output only for size estimation.")
+		fmt.Println("  Re-bootstrap with `n42-mpt-build --emit-dense-v2` for")
+		fmt.Println("  proof-correct V2 data.")
 	}
 }
 
