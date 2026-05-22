@@ -134,3 +134,38 @@ Tracked as task #75.
 - **NOT chosen**: P1+P2+P3 incremental compression of current
   format — would optimize the existing 98 GB to ~6 GB but still
   fail on USDC storage proofs. Wasted work.
+
+## HA-3b baseline measurements (2026-05-22)
+
+Empirical results from `cmd/n42-commitment-bootstrap` against the
+`D:\reth2k\db` reth env, persisting BranchData verbatim
+(uncompressed, no dictionary, no step merge).
+
+| acct limit | stor limit | total leaves | branches | CommitmentBranches size | wall time |
+|---|---|---|---|---|---|
+| 100 | 1,000 | 1,100 | 396 | 0.10 MB | 11 ms |
+| 10,000 | 100,000 | 110,000 | 41,019 | 10.31 MB | 1.41 s |
+| 1,000,000 | 10,000,000 | 11,000,000 | 3,686,238 | **1015.96 MB** | 2m12s |
+
+Per-leaf storage: ~94 bytes (uncompressed). Branch:leaf ratio
+~33.5 % across all three scales.
+
+Naive linear projection to full reth (28.9 M accounts +
+1.53 B storage entries = 1.56 B leaves):
+- Wall time: ~3.5-4 h (HPH.Process dominates).
+- Storage: ~140 GB (way above erigon's 3-5 GB).
+
+The 140 GB gap is the room HA-3d compression has to close:
+
+| Stage | Mechanism | Expected saving |
+|---|---|---|
+| HA-3a/b baseline | raw MDBX | 140 GB (1×) |
+| add zstd compression on value bytes | per-row zstd-3 | ~50 % → 70 GB |
+| add dictionary key compression | seg.CompressKeys | extra ~30 % → 50 GB |
+| step-based .kv segments + key prefix dedup | mirrors erigon | another ~50 % → 25 GB |
+| eliminate inline-only branches (those whose RLP < 32 B) from storage | mark-and-skip during build | another ~30-40 % → 15-17 GB |
+| **realistic floor**: erigon-style step files + zstd over deltas | full erigon parity | ~3-5 GB |
+
+This is multi-quarter work. The HA-1..HA-3c milestones unlock the
+*proof generation* side (the USDC blocker); HA-3d→HA-4 close the
+compression side over time.
