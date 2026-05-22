@@ -369,7 +369,7 @@ n42-eth's archive at 849 GB vs reth's 2.5 TB comes from:
 | Phase B — single-source archive build | `ethexec` replay → all freezer tables | ✓ in production |
 | Phase C — snapshot exporter | `reth-snapshot-export --n42` (accounts 3.92 GB / storage 24 GB) | accounts ✓, storage in progress |
 | Phase D — history index | `accthist` / `storhist` / `txindex` | ✓ at 24M blocks |
-| Phase E — manifest tool | `n42-eth-manifest` produces per-mode manifests + content-addressed indexes | TODO |
+| Phase E — manifest tool | `n42-eth-manifest` produces per-mode manifests + content-addressed indexes | ✓ |
 | Phase F — client snapshot CLI | `n42-eth snapshot {fetch,verify,upgrade,downgrade}` | TODO |
 | Phase G — public distribution server | snapshots.n42.io + per-region mirrors | TODO |
 | Phase H — delta updates | weekly incremental snapshots since H₀ — see `client-server-sync.md` | TODO |
