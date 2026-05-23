@@ -372,10 +372,11 @@ n42-eth's archive at 849 GB vs reth's 2.5 TB comes from:
 | Phase E — manifest tool | `n42-eth-manifest` produces per-mode manifests + content-addressed indexes | ✓ |
 | Phase F — client snapshot CLI | `n42-eth-snapshot {verify,mode,fetch,upgrade,downgrade}` | ✓ |
 | Phase G — public distribution server | snapshots.n42.io + per-region mirrors | TODO |
-| Phase H.1 — delta builder | `n42-eth-delta-build` emits per-release delta trees | ✓ skeleton |
-| Phase H.2 — delta client | `n42-eth-snapshot delta apply` flow | TODO |
-| Phase H.3 — segment-incremental snapshot | accounts/storage snapshot split into 1-M-block segments for delta reuse | TODO |
-| Phase H.4 — publication tooling | upload to S3/CDN, prune old deltas | TODO |
+| Phase H.1 — delta builder | `n42-eth-delta-build` emits per-release delta trees | ✓ |
+| Phase H.2 — delta client | `n42-eth-snapshot delta {plan,apply}` flow | ✓ |
+| Phase H.3a — segmented snapshot spec + selector | docs + selector glob verified for segments | ✓ |
+| Phase H.3b — snapshot writer emits segments | `cmd/reth-snapshot-export --n42` migration | TODO |
+| Phase H.4 — publication tooling | `n42-eth-publish release/delta/prune/list` | ✓ |
 
 ---
 
