@@ -38,6 +38,8 @@ func main() {
 		runUpgrade(os.Args[2:])
 	case "downgrade":
 		runDowngrade(os.Args[2:])
+	case "delta":
+		runDelta(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -54,12 +56,14 @@ USAGE
     n42-eth-snapshot <subcommand> [flags]
 
 SUBCOMMANDS
-    verify     hash every file in a datadir against its manifest
-    mode       detect maximal mode (minimal/full/archive) in a datadir
-    fetch      copy missing files from --source into --datadir for --mode
-    upgrade    fetch the delta needed to move from current to --to mode
-    downgrade  remove files not in --to mode's manifest
-    help       this message
+    verify         hash every file in a datadir against its manifest
+    mode           detect maximal mode (minimal/full/archive) in a datadir
+    fetch          copy missing files from --source into --datadir for --mode
+    upgrade        fetch the delta needed to move from current to --to mode
+    downgrade      remove files not in --to mode's manifest
+    delta plan     show what files a delta from --source would fetch
+    delta apply    apply an incremental delta from --source
+    help           this message
 
 Try:
     n42-eth-snapshot verify --datadir /var/lib/n42
@@ -148,6 +152,53 @@ func runUpgrade(args []string) {
 	}
 	report.Print(os.Stdout)
 	if !report.OK {
+		os.Exit(2)
+	}
+}
+
+func runDelta(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "delta requires a sub-subcommand (plan|apply)")
+		os.Exit(2)
+	}
+	sub, rest := args[0], args[1:]
+	fs := flag.NewFlagSet("delta", flag.ExitOnError)
+	source := fs.String("source", "", "source: file:///path or http(s)://host/")
+	datadir := fs.String("datadir", "", "destination datadir")
+	mode := fs.String("mode", "archive", "mode (minimal|full|archive)")
+	parallel := fs.Int("parallel", 4, "concurrent transfers (apply only)")
+	_ = fs.Parse(rest)
+	if *source == "" || *datadir == "" {
+		fmt.Fprintln(os.Stderr, "--source and --datadir are required")
+		os.Exit(2)
+	}
+
+	switch sub {
+	case "plan":
+		plan, _, err := snapshot.PlanDelta(*source, *datadir, *mode)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "plan: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("delta plan: mode=%s from=%d → to=%d\n", plan.Mode, plan.FromHeight, plan.ToHeight)
+		fmt.Printf("  local manifest_id    : %s\n", plan.LocalManifestID)
+		fmt.Printf("  baseline manifest_id : %s\n", plan.BaselineManifestID)
+		fmt.Printf("  applicable           : %v\n", plan.Applicable)
+		if !plan.Applicable {
+			fmt.Printf("  reason               : %s\n", plan.Reason)
+		}
+		fmt.Printf("  files to fetch       : %d\n", plan.FilesToFetch)
+		fmt.Printf("  bytes to fetch       : %.2f GB\n", float64(plan.BytesToFetch)/1024/1024/1024)
+	case "apply":
+		rep, err := snapshot.ApplyDelta(*source, *datadir, *mode, *parallel)
+		if err != nil {
+			rep.Print(os.Stderr)
+			fmt.Fprintf(os.Stderr, "apply: %v\n", err)
+			os.Exit(1)
+		}
+		rep.Print(os.Stdout)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown delta sub-subcommand: %s\n", sub)
 		os.Exit(2)
 	}
 }
