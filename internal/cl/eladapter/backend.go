@@ -81,6 +81,19 @@ type Backend interface {
 	// EVM + state-root verify per block, single-step).
 	InsertBlock(ctx context.Context, blk *deptypes.Block) error
 	InsertBlocks(ctx context.Context, blks []*deptypes.Block, wait bool) error
+
+	// Phase 7.1.3 — Body read path. Caplin pulls block bodies from
+	// EL via these two methods (mostly for RPC eth_getBlockByXXX
+	// serving, occasionally for re-org body reconstruction).
+	//
+	// N42's common/block.Body does not store Withdrawals (post-Shanghai
+	// withdrawals are applied directly to IntraBlockState by the
+	// EngineStateAdapter and never persisted to body), so RawBody
+	// returned here has Withdrawals=nil. Downstream RPC handlers
+	// that need withdrawals must reconstruct from changesets — a
+	// follow-up beyond Phase 7.1.
+	GetBodiesByRange(ctx context.Context, start, count uint64) ([]*deptypes.RawBody, error)
+	GetBodiesByHashes(ctx context.Context, hashes []depcommon.Hash) ([]*deptypes.RawBody, error)
 }
 
 // Adapter implements Caplin's ExecutionEngine interface by delegating
@@ -176,12 +189,14 @@ func (a *Adapter) HasBlock(ctx context.Context, hash depcommon.Hash) (bool, erro
 
 // --- Range / body queries -------------------------------------------------
 
-func (a *Adapter) GetBodiesByRange(_ context.Context, _, _ uint64) ([]*deptypes.RawBody, error) {
-	return nil, ErrNotImplemented
+// GetBodiesByRange delegates to Backend.GetBodiesByRange (Phase 7.1.3).
+func (a *Adapter) GetBodiesByRange(ctx context.Context, start, count uint64) ([]*deptypes.RawBody, error) {
+	return a.backend.GetBodiesByRange(ctx, start, count)
 }
 
-func (a *Adapter) GetBodiesByHashes(_ context.Context, _ []depcommon.Hash) ([]*deptypes.RawBody, error) {
-	return nil, ErrNotImplemented
+// GetBodiesByHashes delegates to Backend.GetBodiesByHashes (Phase 7.1.3).
+func (a *Adapter) GetBodiesByHashes(ctx context.Context, hashes []depcommon.Hash) ([]*deptypes.RawBody, error) {
+	return a.backend.GetBodiesByHashes(ctx, hashes)
 }
 
 // --- Snapshot info --------------------------------------------------------
