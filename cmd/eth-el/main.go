@@ -31,6 +31,7 @@ import (
 	"github.com/n42blockchain/N42/internal/ethel/catchup"
 	"github.com/n42blockchain/N42/internal/ethel/engineapi"
 	"github.com/n42blockchain/N42/internal/ethel/fetch"
+	"github.com/n42blockchain/N42/internal/ethel/snapshotprestart"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -95,11 +96,57 @@ func flags() []cli.Flag {
 		&cli.IntFlag{Name: "caplin.sentinel.port", Usage: "Caplin sentinel libp2p TCP port", Value: 9000},
 		&cli.IntFlag{Name: "caplin.sentinel.discovery.port", Usage: "Caplin sentinel discv5 UDP port", Value: 9000},
 		&cli.StringFlag{Name: "caplin.checkpoint.url", Usage: "Beacon checkpoint-sync URL"},
+
+		// Snapshot mirror pre-start sync (Stage 2 G3).
+		&cli.StringFlag{Name: "snapshot.source", Usage: "Publisher mirror URL (file:// or http(s)://). When set, runs status + auto-catchup before Engine API opens"},
+		&cli.StringFlag{Name: "snapshot.mode", Usage: "Snapshot mode (minimal|full|archive)", Value: "archive"},
+		&cli.Uint64Flag{Name: "snapshot.max-gap", Usage: "Refuse auto-catchup if behind by more than N blocks (0 = no cap)", Value: 1_000_000},
+		&cli.IntFlag{Name: "snapshot.max-iterations", Usage: "Per-CatchUp delta-apply iteration cap (0 = no cap)"},
+		&cli.DurationFlag{Name: "snapshot.timeout", Usage: "Total budget for the pre-start sync"},
 	}
 }
 
 func run(c *cli.Context) error {
 	cfg := assembleConfig(c)
+
+	// Stage 2 G3: optional pre-start sync against a publisher mirror.
+	// If --snapshot.source is set, we run snapshot status + auto-catchup
+	// BEFORE building the node so the Engine API opens against a
+	// current datadir. The gap is capped via --snapshot.max-gap to
+	// avoid multi-hour catchup loops on first boot — operators
+	// fetch the initial archive with `n42-eth-snapshot fetch` and
+	// only rely on auto-catchup for the per-cycle delta.
+	if src := c.String("snapshot.source"); src != "" {
+		rep, err := snapshotprestart.PreStartSync(c.Context, snapshotprestart.Config{
+			Datadir:   cfg.DataDir,
+			Source:    src,
+			Mode:      c.String("snapshot.mode"),
+			MaxBlocks: c.Uint64("snapshot.max-gap"),
+			MaxIter:   c.Int("snapshot.max-iterations"),
+			Timeout:   c.Duration("snapshot.timeout"),
+		})
+		if err != nil {
+			log.Error("eth-el: snapshot pre-start sync failed",
+				"err", err, "skipped", rep != nil && rep.Skipped,
+				"gap", func() uint64 { if rep != nil { return rep.GapAtStart }; return 0 }())
+			return fmt.Errorf("snapshot pre-start: %w", err)
+		}
+		if rep.Skipped {
+			log.Info("eth-el: snapshot pre-start skipped (no source)")
+		} else if rep.WasCurrent {
+			log.Info("eth-el: snapshot pre-start OK (already current)",
+				"height", rep.FinalHeight)
+		} else {
+			log.Info("eth-el: snapshot pre-start applied deltas",
+				"deltas", rep.DeltasApplied,
+				"start_height", rep.StartHeight,
+				"final_height", rep.FinalHeight,
+				"elapsed_ms", rep.ElapsedMS)
+			if rep.WarnMessage != "" {
+				log.Warn("eth-el: snapshot pre-start partial", "msg", rep.WarnMessage)
+			}
+		}
+	}
 
 	node, err := ethel.NewNode(cfg)
 	if err != nil {
