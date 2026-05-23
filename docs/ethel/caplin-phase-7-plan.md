@@ -166,6 +166,39 @@ forkchoice.go 主入口 988 行。依赖图（cherry-pick 顺序按依赖深度�
 `internal/cl/phase1/forkchoice/{types.go,interface.go}` baseline，后续 Tier 1+
 工作者可以照葫芦画瓢。
 
+## Phase 7.2 实际 progress（2026-05-23 session）
+
+完成 commits (in order):
+
+| Sub-phase | Files | 状态 |
+|---|---|---|
+| 7.2.0 | `cl/das/{peer_das.go, state/interface.go}` (NoopPeerDas) | ✓ stub |
+| 7.2.1 Tier 0 | `forkchoice/{types.go, interface.go}` + ForkNode hoist | ✓ |
+| 7.2.2 Tier 1 | `forkchoice/{latest_messages_store.go, checkpoint_state.go}` + `optimistic/` + `public_keys_registry/` | ✓ |
+| 7.2.4 | `validator_params/` + `pool/` | ✓ |
+| 7.2.5 | `forkchoice/fork_graph/` (4 files, 1166 行) | ✓ |
+| 7.2.6 | `persistence/blob_storage/` (NoopBlobStore + NoopColumnStore) | ✓ stub |
+
+Tier 2/3 cherry-pick **attempt** stopped at this dep boundary:
+
+| Missing dep | 出现于 | 性质 |
+|---|---|---|
+| `execution/types` (Transaction / Block / Body / Bloom) | on_block.go line 61 `types.DecodeTransactions` | 整 EL 类型层，数千行 |
+| `execution/protocol/misc` (ValidateBlobs) | on_block.go line 82 `misc.ValidateBlobs` | misc 函数，可 stub |
+| `persistence/beacon_indicies` (WriteExecutionPayloadEnvelopeIndicies) | on_block.go line 471 | Gloas-only，可 stub |
+
+N42 用 `common/transaction` + `common/block` 替代 erigon `execution/types` — 完整
+mirror cherry-pick 需要 erigon → N42 type bridge 层 (alias 或 adapter)。这是
+Phase 7.2.7 单独 task（估 1-2 周）。**Bridge 完成前 Tier 2/3 cherry-pick 阻塞**。
+
+## Phase 7.2.7 — execution/types bridge（next critical step）
+
+待办：
+- 选择策略 A or B:
+  - **A**：cherry-pick `../erigon/execution/types/*` 整层进 `internal/cl/depshim/eltypes/`，作为 caplin 内部的 EL 类型 mirror（与 N42 common/transaction 不冲突，只 caplin 用）
+  - **B**：写 type alias 适配 `execution/types.Transaction = *common/transaction.Transaction` 等（少代码但要细心保证所有 erigon caplin 调的 method 在 N42 type 上有等价）
+- 完成后 Tier 2/3 cherry-pick 可以一次性 land
+
 ### Phase 7.3 — 拉回 phase1/stages (2-3 weeks)
 
 CL sync 状态机：BeaconChainStage, HeadersStage, BeaconStateStage, SyncCommitteeStage 等。
