@@ -251,6 +251,98 @@ Once all of 7.2-7.5 are in:
 - E2E: mainnet beacon checkpoint sync → catch up beacon tip →
   push newPayload → eth-el catch up EL tip → 12 s live
 
+## Session 2026-05-23 cumulative result (38 commits)
+
+Cherry-picked into `internal/cl/` from `../erigon/cl/`:
+
+| Subpackage | Status |
+|---|---|
+| `eladapter/` (Phase 7.1 全 7 methods) | ✓ |
+| `phase1/forkchoice/` (19 files / 4945 行) | ✓ |
+| `phase1/forkchoice/fork_graph/` (4 files / 1166 行) | ✓ |
+| `phase1/forkchoice/optimistic/` | ✓ |
+| `phase1/forkchoice/public_keys_registry/` | ✓ |
+| `clstages/` framework | ✓ |
+| `pool/` (3 files / 333 行) | ✓ |
+| `validator/validator_params/` | ✓ |
+| `validator/attestation_producer/` | ✓ |
+| `validator/sync_contribution_pool/interface` | ✓ (impl deferred) |
+| `validator/committee_subscription/interface` | ✓ (impl deferred) |
+| `aggregation/` (2 files / 255 行) | ✓ |
+| `gossip/` (cl/gossip 2 files / 101 行) | ✓ |
+| `phase1/network/blobs+envelopes+subnets` | ✓ |
+| `phase1/network/gossip/{interface,stats}` | ✓ (manager deferred) |
+| `phase1/network/registry/tb_rate_limiter` | ✓ |
+| `phase1/network/services/{constants,service_interface}` | ✓ |
+| `persistence/beacon_indicies/` (real, 469 行) | ✓ |
+| `persistence/base_encoding/` (4 files / 636 行) | ✓ |
+| `persistence/genesisdb/` | ✓ |
+| `persistence/state/{static_validator_table, validator_events}` | ✓ |
+| `persistence/format/snapshot_format/blocks` | ✓ |
+| `persistence/format/snapshot_format/getters/execution_rpc` | ✓ |
+| `persistence/blob_storage/` (interface + Noop) | ✓ |
+| `antiquary/utils` | ✓ (main 4 files deferred) |
+| `rpc/{interface, BeaconRpcP2P stub}` | ✓ |
+| `das/` (NoopPeerDas) | ✓ |
+| `sentinel/communication/{topics, ssz_snappy}` | ✓ |
+| `sentinel/peers/peers_pool` | ✓ |
+| `sentinel/httpreqresp/server` | ✓ |
+| `sentinel/handshake/handshake` | ✓ |
+
+New `internal/cl/depshim/`:
+| Subpackage | Purpose |
+|---|---|
+| `elmisc/` (package "misc") | misc.ValidateBlobs stub |
+| `beaconindicies/` | (retired — replaced by real persistence/beacon_indicies) |
+| `cbor/` | erigon common/cbor mirror |
+| `dbcfg/` | DB name constants |
+| `dir/` | filesystem helpers |
+| `types/` extensions | Transaction.Type/GetBlobHashes/BlobTxType const; DecodeTransactions; Block.Hash/ParentHash/NumberU64/Slot accessors |
+| `dbg/` extensions | AssertEnabled + TraceDeletion consts |
+
+`lib/kv` adds CaplinDB Label constant.
+
+Net session output: **~14,800 lines cherry-picked + ~2,000 lines N42 bridge/stub**.
+
+## Phase 7.5/7.6 outstanding (next session 重点)
+
+| Subpackage | Lines | Blocked on |
+|---|---|---|
+| `phase1/execution_client/{rpc_client, direct, engine_mock}` | ~1800 | rpc_helper / chainreader |
+| `phase1/network/{beacon_downloader, backward_beacon_downloader, blob_downloader}` | ~1700 | services impl + sentinel main |
+| `phase1/network/gossip/{manager, subscription, message_register, score}` | ~1000 | libp2p pubsub |
+| `phase1/network/services/{all 14 service files}` | ~4800 | inter-file ForGossip type forward decls |
+| `phase1/network/registry/register` | 94 | services impl |
+| `sentinel/{sentinel, discovery, gossip, config}` | ~1500 | p2p/{enr, enode, discover, nat} (5000+ 行 devp2p) |
+| `sentinel/handlers/{heartbeats, light_client, rate_limiter, handlers}` | ~825 | freezeblocks + p2p/enr |
+| `p2p/{config, gater, msg_id, libp2p_setting, p2p, discovery, localnode, interface, utils}` | ~700 | p2p/{enr, enode, discover, nat} (整 devp2p subtree) |
+| `antiquary/{antiquary, beacon_states_collector, state_antiquary}` | ~1900 | datadir + freezeblocks + downloader |
+| `phase1/execution_client/block_collector` | 555 | mdbx.NewMDBX signature bridge + types.NewBlockFromStorage + Block.HeaderNoCopy |
+| `phase1/stages/{6 stage files}` | 2383 | all of the above |
+| `db/datadir` | 450 | common/dir done; needs db/kv/dbcfg done; ready to land |
+| `db/snapshotsync/freezeblocks` | 4288 | devp2p subtree |
+
+The `p2p/{enr, enode, discover, nat}` devp2p subtree is the single
+largest blocker — cherry-picking it unlocks sentinel main +
+phase1/stages backward_downloader + p2p package. Estimate 1-2 weeks
+just for the devp2p layer.
+
+## Real-chain 12 s live status
+
+Until Phase 7.6 closes: **N42 自带 Caplin 不能 sync mainnet**. Two
+operational paths remain available:
+
+1. **External CL (Lighthouse / Prysm)** — eth-el's Engine API
+   (`internal/api/EngineAPI*` + EngineStateAdapter) is fully real-
+   implementation as of Phase 7.1.1.b. Runbook:
+   `docs/ethel/external-cl-runbook.md`. Operator setup ~1 h.
+   Currently active eth-el process (PID 16692 against
+   D:/N42-eth1177-test) listens on :20014 waiting for any CL.
+
+2. **N42 native chain (cmd/n42)** — own HotStuff-2 BFT consensus,
+   own validator set, own genesis. Not mainnet beacon chain;
+   different L1.
+
 ### Phase 7.3 — 拉回 phase1/stages (2-3 weeks)
 
 CL sync 状态机：BeaconChainStage, HeadersStage, BeaconStateStage, SyncCommitteeStage 等。
