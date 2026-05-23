@@ -1591,18 +1591,45 @@ func runRebuildState(c *cli.Context) error {
 	// Saves the user from having to remember the exact checkpoint height
 	// between runs. --start 0 explicitly still clears and rebuilds from
 	// genesis.
+	//
+	// Two progress markers can exist:
+	//   DbInfo/ethel_progress              — set ONLY at RebuildState
+	//                                        end; STALE if rebuild crashed
+	//                                        mid-run. Observed on
+	//                                        D:/N42-eth1177 reading 12.5M
+	//                                        when the executor had
+	//                                        actually pushed PlainState to
+	//                                        25.1M via SyncStageProgress.
+	//   SyncStageProgress/ethel-last-block — set per-batch by
+	//                                        ethel.WriteProgress
+	//                                        (progress.go:34) — AUTHORITATIVE.
+	// We read BOTH and use max(). If they disagree, log loudly so the
+	// operator notices the inconsistency.
 	if !startWasSet && hasMDBX {
 		roTx, rerr := db.BeginRo(context.Background())
 		if rerr == nil {
-			v, gerr := roTx.GetOne("DbInfo", []byte("ethel_progress"))
+			var dbInfoProgress, syncProgress uint64
+			if v, _ := roTx.GetOne("DbInfo", []byte("ethel_progress")); len(v) == 8 {
+				dbInfoProgress = binary.BigEndian.Uint64(v)
+			}
+			if v, _ := roTx.GetOne(kv.SyncStageProgress, []byte("ethel-last-block")); len(v) == 8 {
+				syncProgress = binary.BigEndian.Uint64(v)
+			}
 			roTx.Rollback()
-			if gerr == nil && len(v) == 8 {
-				progress := binary.BigEndian.Uint64(v)
-				if progress > 0 {
-					startBlock = progress + 1
-					log.Info("Auto-resuming from DbInfo/ethel_progress",
-						"progress", progress, "startBlock", startBlock)
-				}
+			progress := dbInfoProgress
+			source := "DbInfo/ethel_progress"
+			if syncProgress > dbInfoProgress {
+				progress = syncProgress
+				source = "SyncStageProgress/ethel-last-block"
+			}
+			if syncProgress != 0 && dbInfoProgress != syncProgress {
+				log.Warn("Progress markers disagree — using max (authoritative)",
+					"db_info", dbInfoProgress, "sync_stage", syncProgress, "chosen_source", source)
+			}
+			if progress > 0 {
+				startBlock = progress + 1
+				log.Info("Auto-resuming",
+					"progress", progress, "startBlock", startBlock, "source", source)
 			}
 		}
 	}
