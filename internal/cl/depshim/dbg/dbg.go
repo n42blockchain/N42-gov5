@@ -23,3 +23,11 @@ var Stack = libdbg.Stack
 // — flipping it would only add background work for a feature we do not need
 // in production.
 const CaplinSyncedDataMangerDeadlockDetection = false
+
+// AssertEnabled toggles invariant checks in upstream code. Off in the
+// N42 fork — production paths should not pay for runtime asserts.
+const AssertEnabled = false
+
+// TraceDeletion toggles per-file delete logging in common/dir.
+// Off in the N42 fork.
+const TraceDeletion = false
