@@ -50,6 +50,37 @@ gossip + rpc + sentinel_proto + ...
 | `GetAssembledBlock` | stub | P2 (block production；validator 自跑才用) |
 | `GetBlobs` | stub | P2 (4844 blob store) |
 
+## N42 ↔ Erigon 架构分歧（影响 InsertBlocks 实装）
+
+`../erigon` 上游 `ExecutionClientDirect.InsertBlocks` 调
+`chainRW.InsertBlocks` → `executionModule.InsertBlocks` — **纯存储**
+（写 block 到 chaindata，状态 stage 后续异步执行）。靠 staged-sync 的
+execution stage 解耦。
+
+N42 没有 staged-sync 这层解耦：
+- `internal/ethel/executor` 是 batch replayer（freezer changeset → state）
+- `EngineStateAdapter` 一站式 execute+commit
+- 没有 "header/body 写好但 state 还没算" 的中间态
+
+务实决策：
+- **N42 InsertBlocks 走 NewPayloadV4 loop**（在 ethELBackend 内每 block
+  转 ExecutionPayloadV4 + 调 `EngineAPIv4.NewPayloadV4`）
+- 与 erigon 行为不同（更严格：每 block 必须 spec-compliant + state
+  root 必须匹配）；与 N42 现有 single-step 架构一致
+- 如未来要支持 "存储不执行" 历史 import 加速 backfill，需要先建 stages
+  框架（Phase 7.3+）
+
+`SupportInsertion()` 保留 `false` 直到 InsertBlocks 经 mainnet 验证
+（强制 Caplin 走 NewPayload 路径不冒重复执行风险）。
+
+## EL 侧实装参考来源
+
+按 user direction `2026-05-23`:
+- CL（Caplin）— 严格参考 `../erigon/cl/*` 实现
+- EL — N42 现有 `internal/api/*` + `internal/ethel/*` 为主；
+  `../reth` (Rust) 提供 staged-sync 替代设计参考；
+  `../erigon/execution/*` 提供 executionModule 借鉴
+
 ## Phase 拆分
 
 ### Phase 7.1 — eladapter 全实装 (1-2 weeks)

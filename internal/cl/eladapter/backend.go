@@ -72,6 +72,15 @@ type Backend interface {
 	) (payloadID []byte, err error)
 
 	ReadCurrentHeader(ctx context.Context) (*deptypes.Header, error)
+
+	// Phase 7.1.2 — Historical import path. Caplin's block_collector
+	// calls InsertBlock(s) to push backfill blocks into the EL.
+	// Backend chooses how to materialise: erigon-style pure storage
+	// (writes block to chaindata, defers execution to a stage loop),
+	// or N42's NewPayload-loop variant (full Engine API validation +
+	// EVM + state-root verify per block, single-step).
+	InsertBlock(ctx context.Context, blk *deptypes.Block) error
+	InsertBlocks(ctx context.Context, blks []*deptypes.Block, wait bool) error
 }
 
 // Adapter implements Caplin's ExecutionEngine interface by delegating
@@ -125,16 +134,24 @@ func (a *Adapter) ForkChoiceUpdate(
 
 // --- Insertion path -------------------------------------------------------
 
-// SupportInsertion returns false to force Caplin onto the NewPayload path.
-// Flip when InsertBlock(s) is wired to internal/ethel/executor.
+// SupportInsertion stays false until Phase 7.1.2 has been exercised
+// against mainnet. Returning false forces Caplin's stage loop onto the
+// NewPayload path (which is also implemented as of 7.1.1.b); flipping
+// to true unlocks batch backfill, which is faster but skips per-block
+// FCU updates between inserts.
 func (a *Adapter) SupportInsertion() bool { return false }
 
-func (a *Adapter) InsertBlocks(_ context.Context, _ []*deptypes.Block, _ bool) error {
-	return ErrNotImplemented
+// InsertBlocks delegates to Backend.InsertBlocks. Phase 7.1.2 wiring;
+// Backend chooses the storage strategy (erigon-style pure storage or
+// N42's NewPayload-loop variant). See docs/ethel/caplin-phase-7-plan.md
+// for the architecture analysis.
+func (a *Adapter) InsertBlocks(ctx context.Context, blks []*deptypes.Block, wait bool) error {
+	return a.backend.InsertBlocks(ctx, blks, wait)
 }
 
-func (a *Adapter) InsertBlock(_ context.Context, _ *deptypes.Block) error {
-	return ErrNotImplemented
+// InsertBlock delegates to Backend.InsertBlock.
+func (a *Adapter) InsertBlock(ctx context.Context, blk *deptypes.Block) error {
+	return a.backend.InsertBlock(ctx, blk)
 }
 
 // --- Read-only chain access ----------------------------------------------

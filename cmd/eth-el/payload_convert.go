@@ -22,6 +22,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/cl/cltypes"
+	deptypes "github.com/n42blockchain/N42/internal/cl/depshim/types"
 )
 
 // extractBaseFeePerGasUint64 converts the cltypes BaseFeePerGas (32 B
@@ -141,5 +142,88 @@ func eth1BlockToExecutionPayloadV4(blk *cltypes.Eth1Block) (*api.ExecutionPayloa
 		ExcessBlobGas: &excessBlobGas,
 		// Pectra request fields are passed alongside via executionRequests
 		// parameter to NewPayloadV4; we don't materialise them here.
+	}, nil
+}
+
+// depBlockToExecutionPayloadV4 converts caplin's depshim/types.Block
+// (used by the InsertBlock(s) historical-import path) into the
+// api.ExecutionPayloadV4 form NewPayloadV4 expects.
+//
+// The conversion mirrors eth1BlockToExecutionPayloadV4 but pulls data
+// from a depshim.Block's HeaderField + Transactions + Withdrawals
+// rather than a cltypes.Eth1Block. Caplin's block_collector ships
+// historical blocks in this shape during backfill.
+//
+// Pre-Cancun blocks miss BlobGasUsed / ExcessBlobGas at the header
+// level; we leave those as zero in the payload (NewPayloadV4 doesn't
+// reject zero blob gas, only mismatched).
+func depBlockToExecutionPayloadV4(blk *deptypes.Block) (*api.ExecutionPayloadV4, error) {
+	if blk == nil {
+		return nil, errors.New("depBlockToExecutionPayloadV4: nil block")
+	}
+	h := blk.Header()
+	if h == nil {
+		return nil, errors.New("depBlockToExecutionPayloadV4: nil header")
+	}
+
+	// Raw txs
+	rawTxs := make([]hexutil.Bytes, len(blk.Transactions))
+	for i, raw := range blk.Transactions {
+		rawTxs[i] = hexutil.Bytes(append([]byte(nil), raw...))
+	}
+
+	// Withdrawals
+	var ws []*api.Withdrawal
+	if len(blk.Withdrawals) > 0 {
+		ws = make([]*api.Withdrawal, len(blk.Withdrawals))
+		for i, w := range blk.Withdrawals {
+			ws[i] = &api.Withdrawal{
+				Index:          hexutil.Uint64(w.Index),
+				ValidatorIndex: hexutil.Uint64(w.Validator),
+				Address:        types.Address(w.Address),
+				Amount:         hexutil.Uint64(w.Amount),
+			}
+		}
+	}
+
+	// BaseFee — depshim uses *uint256.Int (pointer); fits uint64 in
+	// practice (verified in extractBaseFeePerGasUint64 path).
+	var baseFee hexutil.Uint64
+	if h.BaseFee != nil {
+		if !h.BaseFee.IsUint64() {
+			return nil, fmt.Errorf("baseFeePerGas > uint64.max: %s", h.BaseFee.String())
+		}
+		baseFee = hexutil.Uint64(h.BaseFee.Uint64())
+	}
+
+	// BlobGasUsed / ExcessBlobGas — Cancun+ only.
+	var blobGasUsed, excessBlobGas *hexutil.Uint64
+	if h.BlobGasUsed != nil {
+		v := hexutil.Uint64(*h.BlobGasUsed)
+		blobGasUsed = &v
+	}
+	if h.ExcessBlobGas != nil {
+		v := hexutil.Uint64(*h.ExcessBlobGas)
+		excessBlobGas = &v
+	}
+
+	return &api.ExecutionPayloadV4{
+		ParentHash:    types.Hash(h.ParentHash),
+		FeeRecipient:  types.Address(h.Coinbase),
+		StateRoot:     types.Hash(h.Root),
+		ReceiptsRoot:  types.Hash(h.ReceiptHash),
+		LogsBloom:     hexutil.Bytes(append([]byte(nil), h.Bloom[:]...)),
+		PrevRandao:    types.Hash(h.MixDigest),
+		BlockNumber:   hexutil.Uint64(h.Number.Uint64()),
+		GasLimit:      hexutil.Uint64(h.GasLimit),
+		GasUsed:       hexutil.Uint64(h.GasUsed),
+		Timestamp:     hexutil.Uint64(h.Time),
+		ExtraData:     hexutil.Bytes(append([]byte(nil), h.Extra...)),
+		BaseFeePerGas: baseFee,
+		BlockHash:     types.Hash(h.Hash()),
+		Transactions:  rawTxs,
+		Withdrawals:   ws,
+		BlobGasUsed:   blobGasUsed,
+		ExcessBlobGas: excessBlobGas,
 	}, nil
 }

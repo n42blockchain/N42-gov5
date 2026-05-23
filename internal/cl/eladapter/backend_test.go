@@ -46,12 +46,18 @@ type recordingBackend struct {
 	currentHeaderResult *deptypes.Header
 	currentHeaderErr    error
 
+	// Phase 7.1.2 — insertion path
+	gotInsertSingle *deptypes.Block
+	gotInsertBatch  []*deptypes.Block
+	gotInsertWait   bool
+	insertErr       error
+
 	// existing methods get safe defaults
-	currentNum   uint64
-	hasBlock     bool
-	isCanonical  bool
-	ready        bool
-	returnErr    error
+	currentNum  uint64
+	hasBlock    bool
+	isCanonical bool
+	ready       bool
+	returnErr   error
 }
 
 func (b *recordingBackend) CurrentHeadNumber(_ context.Context) (uint64, error) {
@@ -97,6 +103,17 @@ func (b *recordingBackend) UpdateForkchoice(
 
 func (b *recordingBackend) ReadCurrentHeader(_ context.Context) (*deptypes.Header, error) {
 	return b.currentHeaderResult, b.currentHeaderErr
+}
+
+func (b *recordingBackend) InsertBlock(_ context.Context, blk *deptypes.Block) error {
+	b.gotInsertSingle = blk
+	return b.insertErr
+}
+
+func (b *recordingBackend) InsertBlocks(_ context.Context, blks []*deptypes.Block, wait bool) error {
+	b.gotInsertBatch = blks
+	b.gotInsertWait = wait
+	return b.insertErr
 }
 
 func TestAdapter_NewPayload_DelegatesToBackend(t *testing.T) {
@@ -192,6 +209,47 @@ func TestAdapter_CurrentHeader_BackendErrorPassedThrough(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("expected nil header on err; got %v", got)
+	}
+}
+
+func TestAdapter_InsertBlock_DelegatesToBackend(t *testing.T) {
+	wantErr := errors.New("insert failed")
+	b := &recordingBackend{insertErr: wantErr}
+	a := New(b)
+
+	blk := &deptypes.Block{Transactions: [][]byte{{0xaa}}}
+	err := a.InsertBlock(context.Background(), blk)
+	if err != wantErr {
+		t.Errorf("err = %v, want %v", err, wantErr)
+	}
+	if b.gotInsertSingle != blk {
+		t.Errorf("Backend did not see same Block pointer")
+	}
+}
+
+func TestAdapter_InsertBlocks_DelegatesToBackend(t *testing.T) {
+	b := &recordingBackend{}
+	a := New(b)
+
+	blks := []*deptypes.Block{
+		{Transactions: [][]byte{{0x01}}},
+		{Transactions: [][]byte{{0x02}}},
+	}
+	if err := a.InsertBlocks(context.Background(), blks, true); err != nil {
+		t.Errorf("err = %v", err)
+	}
+	if len(b.gotInsertBatch) != 2 {
+		t.Errorf("got %d blocks, want 2", len(b.gotInsertBatch))
+	}
+	if !b.gotInsertWait {
+		t.Errorf("wait flag not forwarded")
+	}
+}
+
+func TestAdapter_SupportInsertion_StaysFalseUntilValidated(t *testing.T) {
+	a := New(&recordingBackend{})
+	if a.SupportInsertion() {
+		t.Errorf("SupportInsertion must stay false until 7.1.2 is mainnet-validated; see plan doc")
 	}
 }
 
