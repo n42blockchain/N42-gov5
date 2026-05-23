@@ -14,10 +14,17 @@ package main
 
 import (
 	"context"
+	"errors"
 
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/cl/clparams"
+	"github.com/n42blockchain/N42/internal/cl/cltypes"
 	depcommon "github.com/n42blockchain/N42/internal/cl/depshim/common"
+	"github.com/n42blockchain/N42/internal/cl/depshim/engineapi/engine_types"
+	"github.com/n42blockchain/N42/internal/cl/depshim/hexutil"
+	deptypes "github.com/n42blockchain/N42/internal/cl/depshim/types"
 	"github.com/n42blockchain/N42/internal/cl/eladapter"
+	"github.com/n42blockchain/N42/internal/cl/phase1/execution_client"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
 )
@@ -115,4 +122,62 @@ func (b *ethELBackend) IsCanonicalHash(ctx context.Context, hash depcommon.Hash)
 
 func (b *ethELBackend) Ready(_ context.Context) (bool, error) {
 	return b.chaindb() != nil, nil
+}
+
+// errPayloadConversionPending is returned by ExecutePayload /
+// UpdateForkchoice until Phase 7.1.1.b lands the cltypes.Eth1Block →
+// common/block.Block converter and wires the EngineStateAdapter call.
+// It is intentionally distinct from eladapter.ErrNotImplemented so the
+// stage loop (Phase 7.3+) can distinguish "method wired but converter
+// pending" from "interface method missing entirely".
+var errPayloadConversionPending = errors.New(
+	"eth-el: payload converter not wired yet (Phase 7.1.1.b)")
+
+// ExecutePayload — Phase 7.1.1.a scaffold. Signature is the final
+// production signature; body is a stub until Phase 7.1.1.b adds the
+// cltypes.Eth1Block → common/block.Block converter and calls
+// internal/api.EngineStateAdapter.ExecutePayload.
+//
+// Returning PayloadStatusNotValidated keeps Caplin's stage loop on a
+// safe path (no false ValidatedStatus); the error is propagated so
+// upstream callers see why the stage stalled.
+func (b *ethELBackend) ExecutePayload(
+	_ context.Context,
+	_ *cltypes.Eth1Block,
+	_ *depcommon.Hash,
+	_ []depcommon.Hash,
+	_ []hexutil.Bytes,
+) (execution_client.PayloadStatus, error) {
+	return execution_client.PayloadStatusNotValidated, errPayloadConversionPending
+}
+
+// UpdateForkchoice — Phase 7.1.1.a scaffold. Signature is final;
+// body stub until Phase 7.1.1.b wires
+// internal/api.EngineStateAdapter.ForkchoiceUpdated.
+func (b *ethELBackend) UpdateForkchoice(
+	_ context.Context,
+	_, _, _ depcommon.Hash,
+	_ *engine_types.PayloadAttributes,
+	_ clparams.StateVersion,
+) ([]byte, error) {
+	return nil, errPayloadConversionPending
+}
+
+// ReadCurrentHeader — Phase 7.1.1.a scaffold. Reads chaindata for the
+// canonical head hash + header number; depshim/types.Header construction
+// from N42's common/block.Header is left for Phase 7.1.1.b.
+//
+// Returning (nil, nil) signals "no head known" to Caplin, which treats
+// that as a startup race rather than an error.
+func (b *ethELBackend) ReadCurrentHeader(ctx context.Context) (*deptypes.Header, error) {
+	return withRoTx(ctx, b, func(tx kv.Tx) (*deptypes.Header, error) {
+		headHash := rawdb.ReadHeadBlockHash(tx)
+		if headHash == (types.Hash{}) {
+			return nil, nil
+		}
+		// Phase 7.1.1.b: convert N42 common/block.Header → depshim/types.Header
+		// (the depshim DeriveSha stub panics on non-empty tx lists, so the
+		// converter has to fill in the real MPT root computed from the body).
+		return nil, errPayloadConversionPending
+	})
 }

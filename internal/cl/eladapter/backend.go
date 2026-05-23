@@ -42,7 +42,7 @@ import (
 var ErrNotImplemented = errors.New("eladapter: not implemented")
 
 // Backend is the narrow surface eladapter needs from the surrounding
-// n42-el runtime. cmd/ethexec/beacon_backend.go provides the
+// n42-el runtime. cmd/eth-el/beacon_backend.go provides the
 // implementation. Methods are invoked from Caplin's stage loop and must
 // be safe for concurrent use.
 type Backend interface {
@@ -50,6 +50,28 @@ type Backend interface {
 	HasBlock(ctx context.Context, hash depcommon.Hash) (bool, error)
 	IsCanonicalHash(ctx context.Context, hash depcommon.Hash) (bool, error)
 	Ready(ctx context.Context) (bool, error)
+
+	// Phase 7.1.1 — Engine API surface. The Backend owns the
+	// *api.EngineStateAdapter (real EVM execute + state root verify +
+	// MDBX commit) and is the only place cltypes.Eth1Block →
+	// common/block.Block conversion happens. eladapter passes Caplin's
+	// payload as-is and lets the Backend do the type translation.
+	ExecutePayload(
+		ctx context.Context,
+		blk *cltypes.Eth1Block,
+		parentBeaconBlockRoot *depcommon.Hash,
+		versionedHashes []depcommon.Hash,
+		executionRequests []hexutil.Bytes,
+	) (execution_client.PayloadStatus, error)
+
+	UpdateForkchoice(
+		ctx context.Context,
+		head, safe, finalized depcommon.Hash,
+		attrs *engine_types.PayloadAttributes,
+		version clparams.StateVersion,
+	) (payloadID []byte, err error)
+
+	ReadCurrentHeader(ctx context.Context) (*deptypes.Header, error)
 }
 
 // Adapter implements Caplin's ExecutionEngine interface by delegating
@@ -74,23 +96,31 @@ var _ execution_client.ExecutionEngine = (*Adapter)(nil)
 
 // --- Engine API surface ---------------------------------------------------
 
+// NewPayload delegates to Backend.ExecutePayload, which owns the
+// cltypes.Eth1Block → common/block.Block conversion and the real
+// EngineStateAdapter call. Phase 7.1.1 wiring; the Backend may still
+// return ErrNotImplemented while its conversion path is being filled in.
 func (a *Adapter) NewPayload(
-	_ context.Context,
-	_ *cltypes.Eth1Block,
-	_ *depcommon.Hash,
-	_ []depcommon.Hash,
-	_ []hexutil.Bytes,
+	ctx context.Context,
+	blk *cltypes.Eth1Block,
+	parentBeaconBlockRoot *depcommon.Hash,
+	versionedHashes []depcommon.Hash,
+	executionRequests []hexutil.Bytes,
 ) (execution_client.PayloadStatus, error) {
-	return execution_client.PayloadStatusNotValidated, ErrNotImplemented
+	return a.backend.ExecutePayload(ctx, blk, parentBeaconBlockRoot, versionedHashes, executionRequests)
 }
 
+// ForkChoiceUpdate delegates to Backend.UpdateForkchoice. Phase 7.1.1
+// wiring; Backend implementations decide how to materialise the call
+// (direct EngineStateAdapter.ForkchoiceUpdated or via EngineAPIv4
+// in-process).
 func (a *Adapter) ForkChoiceUpdate(
-	_ context.Context,
-	_, _, _ depcommon.Hash,
-	_ *engine_types.PayloadAttributes,
-	_ clparams.StateVersion,
+	ctx context.Context,
+	head, safe, finalized depcommon.Hash,
+	attrs *engine_types.PayloadAttributes,
+	version clparams.StateVersion,
 ) ([]byte, error) {
-	return nil, ErrNotImplemented
+	return a.backend.UpdateForkchoice(ctx, head, safe, finalized, attrs, version)
 }
 
 // --- Insertion path -------------------------------------------------------
@@ -109,8 +139,10 @@ func (a *Adapter) InsertBlock(_ context.Context, _ *deptypes.Block) error {
 
 // --- Read-only chain access ----------------------------------------------
 
-func (a *Adapter) CurrentHeader(_ context.Context) (*deptypes.Header, error) {
-	return nil, ErrNotImplemented
+// CurrentHeader delegates to Backend.ReadCurrentHeader, which reads the
+// canonical head from rawdb. Phase 7.1.1 wiring.
+func (a *Adapter) CurrentHeader(ctx context.Context) (*deptypes.Header, error) {
+	return a.backend.ReadCurrentHeader(ctx)
 }
 
 func (a *Adapter) IsCanonicalHash(ctx context.Context, hash depcommon.Hash) (bool, error) {
