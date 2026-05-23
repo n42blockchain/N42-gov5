@@ -81,12 +81,13 @@ type ethELBackend struct {
 	// initOnce / engineV4 / stateAdpt / initErr — lazily built on
 	// first ExecutePayload / UpdateForkchoice call. Building eagerly
 	// would fail when Node.Start hasn't opened RwDB yet.
-	initOnce  sync.Once
-	apiCore   *api.API
-	engineV4  *api.EngineAPIv4
-	engineV1  *api.EngineAPIV1
-	stateAdpt *api.EngineStateAdapter
-	initErr   error
+	initOnce   sync.Once
+	apiCore    *api.API
+	engineV4   *api.EngineAPIv4
+	engineV1   *api.EngineAPIV1
+	engineBlob *api.EngineAPIBlob // Phase 7.4 — producer wiring (ForkchoiceUpdatedV3 + GetPayloadV3)
+	stateAdpt  *api.EngineStateAdapter
+	initErr    error
 }
 
 // Compile-time check that *ethELBackend satisfies eladapter.Backend.
@@ -214,12 +215,13 @@ func (b *ethELBackend) initAPIs() error {
 				b.engineV1 = svc
 			case *api.EngineAPIBlob:
 				svc.SetStateAdapter(b.stateAdpt)
+				b.engineBlob = svc
 			case *api.EngineAPIv4:
 				svc.SetStateAdapter(b.stateAdpt)
 				b.engineV4 = svc
 			}
 		}
-		if b.engineV4 == nil || b.engineV1 == nil {
+		if b.engineV4 == nil || b.engineV1 == nil || b.engineBlob == nil {
 			b.initErr = errors.New("eth-el: api.EngineAPIs() returned an incomplete set")
 		}
 	})
@@ -274,14 +276,16 @@ func (b *ethELBackend) ExecutePayload(
 	return mapPayloadStatus(status), nil
 }
 
-// UpdateForkchoice — Phase 7.1.1.b. Calls
-// EngineAPIv4.ForkchoiceUpdatedV3 (the Cancun+ path; V4 reuses the same
-// FCU shape, only the NewPayload variant differs).
+// UpdateForkchoice — Phase 7.1.1.b head update + Phase 7.4 producer
+// wiring. When attrs is nil, dispatches to EngineAPIV1.ForkchoiceUpdatedV1
+// (simple head update). When attrs is non-nil, builds a
+// PayloadAttributesV3 from the depshim attrs and dispatches to
+// EngineAPIBlob.ForkchoiceUpdatedV3 — that path triggers the builder
+// to assemble a new payload and store it under the returned PayloadID,
+// which GetAssembledBlock later reads back.
 //
-// PayloadAttributes is not wired in this commit — a stage loop that
-// asks the EL to assemble a new payload (block production) needs more
-// of the api surface than Caplin has historically used. attrs == nil
-// (the more common case, "just update head") is fully supported.
+// Caplin in proposer role sets attrs to ask the EL to build a block;
+// in follower role attrs is nil and only the head update happens.
 func (b *ethELBackend) UpdateForkchoice(
 	ctx context.Context,
 	head, safe, finalized depcommon.Hash,
@@ -296,18 +300,23 @@ func (b *ethELBackend) UpdateForkchoice(
 		SafeBlockHash:      types.Hash(safe),
 		FinalizedBlockHash: types.Hash(finalized),
 	}
-	if attrs != nil {
-		// Block-production path. Phase 7.1.1.c hooks PayloadAttributesV3
-		// construction (timestamp + prevRandao + recipient + withdrawals
-		// + parentBeaconBlockRoot from attrs). For now, ignore attrs and
-		// return only the FCU result — Caplin nodes that don't propose
-		// blocks reach the same outcome.
+	if attrs == nil {
+		// Pure head update path (most common).
+		resp, err := b.engineV1.ForkchoiceUpdatedV1(ctx, state, nil)
+		if err != nil {
+			return nil, err
+		}
+		if resp == nil || resp.PayloadID == nil {
+			return nil, nil
+		}
+		return resp.PayloadID[:], nil
 	}
-	// Use the blob-API to dispatch ForkchoiceUpdatedV3 since the
-	// EngineAPIBlob service owns that method. We can reach it via the
-	// api.EngineAPIs() set; for simplicity reuse EngineAPIV1's overlay
-	// path which mirrors ForkchoiceV1 semantics — head update only.
-	resp, err := b.engineV1.ForkchoiceUpdatedV1(ctx, state, nil)
+
+	// Producer path — convert depshim attrs to api.PayloadAttributesV3
+	// and dispatch to EngineAPIBlob.ForkchoiceUpdatedV3 so the builder
+	// stores a built payload under the returned PayloadID.
+	apiAttrs := depAttrsToAPIv3(attrs)
+	resp, err := b.engineBlob.ForkchoiceUpdatedV3(ctx, state, apiAttrs)
 	if err != nil {
 		return nil, err
 	}
@@ -529,26 +538,60 @@ func n42HeaderToDepshim(h *block.Header) *deptypes.Header {
 var errBlockProductionNotWired = errors.New(
 	"eth-el: block production not wired (follower mode; see Phase 7.4)")
 
-// GetAssembledBlock — Phase 7.1.4 scaffold. Production block-builder
-// wiring is deferred to Phase 7.4 because:
+// GetAssembledBlock — Phase 7.4 producer wiring. Reads back a payload
+// the builder cached under the 8-byte payloadID (set by a prior
+// UpdateForkchoice(attrs != nil) call).
 //
-//  1. N42 eth-el is a follower node — no validator key management,
-//     no attestation upload, no deposit. Caplin only calls this when
-//     the local node is in proposer role for the current slot.
-//  2. The wiring requires PayloadAttributesV3 → builder cache →
-//     EngineAPIBlob.GetPayloadV3 → cltypes.Eth1Block + BlobsBundle +
-//     RequestsBundle + BlockValue conversion (4 return values, each
-//     a fresh type bridge). Building this without first having a
-//     real validator path to test against is premature.
+// Uses EngineAPIBlob.GetPayloadV3 — V3 (Cancun) is the lowest fork
+// that ships blob bundles, and V4 (Pectra) GetPayload isn't yet wired
+// on the api side (depends on api.GetPayloadResponseV4 + Pectra
+// request bundles that the EngineAPIv4 service doesn't synthesise on
+// its own). Pre-Pectra Caplin builders are perfectly served by V3
+// because every payload includes blobs and withdrawals.
 //
-// Returning errBlockProductionNotWired keeps the Adapter contract
-// satisfied without lying about producing blocks.
+// Returns errBlockProductionNotWired when no builder produced a
+// payload under this id (the builder cache miss surfaces from the api
+// layer as errPayloadNotFound; we map it back to the Caplin
+// "no payload" expectation).
+//
+// The api → caplin reverse conversion happens in payload_convert.go
+// (executionPayloadV3ToEth1Block + apiBlobsBundleToDepshim). Block
+// value comes from GetPayloadResponseV3.BlockValue as a hexutil.Uint64
+// → *big.Int; RequestsBundle stays nil (V3 has no Pectra requests).
 func (b *ethELBackend) GetAssembledBlock(
-	_ context.Context,
-	_ []byte,
+	ctx context.Context,
+	idBytes []byte,
 	_ clparams.StateVersion,
 ) (*cltypes.Eth1Block, *engine_types.BlobsBundle, *typesproto.RequestsBundle, *big.Int, error) {
-	return nil, nil, nil, nil, errBlockProductionNotWired
+	if err := b.initAPIs(); err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if len(idBytes) != 8 {
+		return nil, nil, nil, nil, fmt.Errorf("eth-el: payloadID must be 8 bytes; got %d", len(idBytes))
+	}
+	var pid api.PayloadID
+	copy(pid[:], idBytes)
+
+	resp, err := b.engineBlob.GetPayloadV3(ctx, pid)
+	if err != nil {
+		// Builder cache miss surfaces as a non-typed error in
+		// internal/api; surface it as a stable sentinel so Caplin can
+		// switch on errors.Is(err, errBlockProductionNotWired).
+		return nil, nil, nil, nil, fmt.Errorf("%w: %v", errBlockProductionNotWired, err)
+	}
+	if resp == nil || resp.ExecutionPayload == nil {
+		return nil, nil, nil, nil, errBlockProductionNotWired
+	}
+
+	eth1Block, err := executionPayloadV3ToEth1Block(resp.ExecutionPayload)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("convert payload to Eth1Block: %w", err)
+	}
+	blobsBundle := apiBlobsBundleToDepshim(resp.BlobsBundle)
+	blockValue := new(big.Int).SetUint64(uint64(resp.BlockValue))
+	// RequestsBundle stays nil — V3 is Cancun; Pectra requests need V4
+	// GetPayload, which is a follow-up.
+	return eth1Block, blobsBundle, nil, blockValue, nil
 }
 
 // GetBlobs — Phase 7.1.5. Follower-mode N42 doesn't maintain a blob
