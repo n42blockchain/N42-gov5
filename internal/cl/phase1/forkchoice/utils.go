@@ -1,0 +1,243 @@
+//go:build n42el
+
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
+//
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
+
+package forkchoice
+
+import (
+	"errors"
+
+	"github.com/n42blockchain/N42/internal/cl/beacon/beaconevents"
+	"github.com/n42blockchain/N42/internal/cl/cltypes"
+	"github.com/n42blockchain/N42/internal/cl/transition"
+
+	"github.com/n42blockchain/N42/internal/cl/cltypes/solid"
+	"github.com/n42blockchain/N42/internal/cl/phase1/core/state"
+	common "github.com/n42blockchain/N42/internal/cl/depshim/common"
+	"github.com/n42blockchain/N42/lib/log/v3"
+)
+
+// Slot calculates the current slot number using the time and genesis slot.
+func (f *ForkChoiceStore) Slot() uint64 {
+	return f.beaconCfg.GenesisSlot + ((f.time.Load() - f.genesisTime) / f.beaconCfg.SecondsPerSlot)
+}
+
+// updateCheckpoints updates the justified and finalized checkpoints if new checkpoints have higher epochs.
+func (f *ForkChoiceStore) updateCheckpoints(justifiedCheckpoint, finalizedCheckpoint solid.Checkpoint) {
+	if justifiedCheckpoint.Epoch > f.justifiedCheckpoint.Load().(solid.Checkpoint).Epoch {
+		f.justifiedCheckpoint.Store(justifiedCheckpoint)
+	}
+	if finalizedCheckpoint.Epoch > f.finalizedCheckpoint.Load().(solid.Checkpoint).Epoch {
+		f.onNewFinalized(finalizedCheckpoint)
+		f.finalizedCheckpoint.Store(finalizedCheckpoint)
+
+		// prepare and send the finalized checkpoint event
+		blockRoot := finalizedCheckpoint.Root
+		blockHeader, ok := f.forkGraph.GetHeader(blockRoot)
+		if !ok {
+			log.Warn("Finalized block header not found", "blockRoot", blockRoot)
+			return
+		}
+		f.emitters.State().SendFinalizedCheckpoint(&beaconevents.FinalizedCheckpointData{
+			Block:               finalizedCheckpoint.Root,
+			Epoch:               finalizedCheckpoint.Epoch,
+			State:               blockHeader.Root,
+			ExecutionOptimistic: false,
+		})
+	}
+}
+
+func (f *ForkChoiceStore) onNewFinalized(newFinalized solid.Checkpoint) {
+	f.checkpointStates.Range(func(key, value any) bool {
+		checkpoint := key.(solid.Checkpoint)
+
+		if checkpoint.Epoch < newFinalized.Epoch {
+			f.checkpointStates.Delete(key)
+		}
+		return true
+	})
+
+	// get rid of children
+	finalizedSlot := newFinalized.Epoch * f.beaconCfg.SlotsPerEpoch
+	f.childrens.Range(func(k, v any) bool {
+		if v.(childrens).parentSlot <= finalizedSlot {
+			f.childrens.Delete(k)
+			delete(f.headSet, k.(common.Hash))
+		}
+		return true
+	})
+
+	// Clean up per-block unrealized justifications/finalizations for finalized blocks.
+	f.unrealizedJustifications.Range(func(k, v any) bool {
+		blockRoot := k.(common.Hash)
+		header, has := f.forkGraph.GetHeader(blockRoot)
+		if !has || header.Slot <= finalizedSlot {
+			f.unrealizedJustifications.Delete(k)
+		}
+		return true
+	})
+	f.unrealizedFinalizations.Range(func(k, v any) bool {
+		blockRoot := k.(common.Hash)
+		header, has := f.forkGraph.GetHeader(blockRoot)
+		if !has || header.Slot <= finalizedSlot {
+			f.unrealizedFinalizations.Delete(k)
+		}
+		return true
+	})
+	// Clean up block timeliness entries for finalized blocks.
+	f.blockTimeliness.Range(func(k, v any) bool {
+		blockRoot := k.(common.Hash)
+		header, has := f.forkGraph.GetHeader(blockRoot)
+		if !has || header.Slot <= finalizedSlot {
+			f.blockTimeliness.Delete(k)
+		}
+		return true
+	})
+	// Clean up GLOAS-specific payload votes for finalized blocks.
+	// Note: envelope files are cleaned up in forkGraph.Prune().
+	if newFinalized.Epoch >= f.beaconCfg.GloasForkEpoch {
+		f.payloadTimelinessVote.Range(func(k, v any) bool {
+			root := k.(common.Hash)
+			if header, has := f.forkGraph.GetHeader(root); !has || header.Slot <= finalizedSlot {
+				f.payloadTimelinessVote.Delete(k)
+			}
+			return true
+		})
+		f.payloadDataAvailabilityVote.Range(func(k, v any) bool {
+			// Key is stored as common.Hash
+			root := k.(common.Hash)
+			if header, has := f.forkGraph.GetHeader(root); !has || header.Slot <= finalizedSlot {
+				f.payloadDataAvailabilityVote.Delete(k)
+			}
+			return true
+		})
+	}
+
+	// Guard against uint64 underflow during the first 3 epochs after genesis.
+	if newFinalized.Epoch > 3 {
+		slotToPrune := ((newFinalized.Epoch - 3) * f.beaconCfg.SlotsPerEpoch) - 1
+		f.forkGraph.Prune(slotToPrune)
+	}
+}
+
+// updateCheckpoints updates the justified and finalized checkpoints if new checkpoints have higher epochs.
+func (f *ForkChoiceStore) updateUnrealizedCheckpoints(justifiedCheckpoint, finalizedCheckpoint solid.Checkpoint) {
+	if justifiedCheckpoint.Epoch > f.unrealizedJustifiedCheckpoint.Load().(solid.Checkpoint).Epoch {
+		f.unrealizedJustifiedCheckpoint.Store(justifiedCheckpoint)
+	}
+	if finalizedCheckpoint.Epoch > f.unrealizedFinalizedCheckpoint.Load().(solid.Checkpoint).Epoch {
+		f.unrealizedFinalizedCheckpoint.Store(finalizedCheckpoint)
+	}
+}
+
+// computeEpochAtSlot calculates the epoch at a given slot number.
+func (f *ForkChoiceStore) computeEpochAtSlot(slot uint64) uint64 {
+	return slot / f.beaconCfg.SlotsPerEpoch
+}
+
+// computeStartSlotAtEpoch calculates the starting slot of a given epoch.
+func (f *ForkChoiceStore) computeStartSlotAtEpoch(epoch uint64) uint64 {
+	return epoch * f.beaconCfg.SlotsPerEpoch
+}
+
+// computeSlotsSinceEpochStart calculates the number of slots since the start of the epoch of a given slot.
+func (f *ForkChoiceStore) computeSlotsSinceEpochStart(slot uint64) uint64 {
+	return slot - f.computeStartSlotAtEpoch(f.computeEpochAtSlot(slot))
+}
+
+// Ancestor returns the ancestor to the given root.
+// [Modified in Gloas:EIP7732] Returns ForkChoiceNode with payload status.
+// Spec: if block.slot <= slot (block is at or before the target), return PENDING.
+// Otherwise traverse up and return get_parent_payload_status for the found ancestor.
+func (f *ForkChoiceStore) Ancestor(root common.Hash, slot uint64) ForkChoiceNode {
+	header, has := f.forkGraph.GetHeader(root)
+	if !has {
+		return ForkChoiceNode{Root: common.Hash{}, PayloadStatus: cltypes.PayloadStatusPending}
+	}
+
+	// Spec: if block.slot <= slot, return (root, PENDING)
+	if header.Slot <= slot {
+		return ForkChoiceNode{Root: root, PayloadStatus: cltypes.PayloadStatusPending}
+	}
+
+	// Traverse up: find the ancestor block whose parent is at or before the target slot.
+	// This mirrors the spec's "while parent.slot > slot" loop, tracking the child (block)
+	// so we can call get_parent_payload_status(block) at the end.
+	childRoot := root
+	for header.Slot > slot {
+		childRoot = root
+		root = header.ParentRoot
+		header, has = f.forkGraph.GetHeader(header.ParentRoot)
+		if !has {
+			return ForkChoiceNode{Root: common.Hash{}, PayloadStatus: cltypes.PayloadStatusPending}
+		}
+	}
+
+	// root is now the ancestor at or before the target slot.
+	// childRoot is the block whose parent_root == root (i.e. "block" in the spec).
+	// Spec: return ForkChoiceNode(root=block.parent_root, payload_status=get_parent_payload_status(store, block))
+	payloadStatus := cltypes.PayloadStatusPending
+	if block, hasBlock := f.forkGraph.GetBlock(childRoot); hasBlock && block != nil {
+		payloadStatus = f.getParentPayloadStatus(block.Block)
+	}
+
+	return ForkChoiceNode{
+		Root:          root,
+		PayloadStatus: payloadStatus,
+	}
+}
+
+// getCheckpointState computes and caches checkpoint states.
+func (f *ForkChoiceStore) getCheckpointState(checkpoint solid.Checkpoint) (*checkpointState, error) {
+	// check if it can be found in cache.
+	if state, ok := f.checkpointStates.Load(checkpoint); ok {
+		return state.(*checkpointState), nil
+	}
+
+	// If it is not in cache compute it and then put in cache.
+	if f.forkGraph == nil {
+		return nil, errors.New("getCheckpointState: forkGraph not initialized")
+	}
+	baseState, err := f.forkGraph.GetState(checkpoint.Root, true)
+	if err != nil {
+		return nil, err
+	}
+	if baseState == nil {
+		return nil, errors.New("getCheckpointState: baseState not found in graph")
+	}
+	// By default use the no change encoding to signal that there is no future epoch here.
+	if baseState.Slot() < f.computeStartSlotAtEpoch(checkpoint.Epoch) {
+		log.Debug("Long checkpoint detected")
+		// If we require to change it then process the future epoch
+		if err := transition.DefaultMachine.ProcessSlots(baseState, f.computeStartSlotAtEpoch(checkpoint.Epoch)); err != nil {
+			return nil, err
+		}
+	}
+	mixes := baseState.RandaoMixes()
+	// TODO: make this copy smarter when validators is a smarter struct
+	validators := make([]solid.Validator, baseState.ValidatorLength())
+	baseState.ForEachValidator(func(v solid.Validator, idx, total int) bool {
+		validators[idx] = v
+		return true
+	})
+	f.publicKeysRegistry.AddState(checkpoint, baseState)
+	checkpointState := newCheckpointState(f.beaconCfg, f.publicKeysRegistry, validators,
+		mixes, baseState.GenesisValidatorsRoot(), baseState.Fork(), baseState.GetTotalActiveBalance(), state.Epoch(baseState.BeaconState), checkpoint)
+	// Cache in memory what we are left with.
+	f.checkpointStates.Store(checkpoint, checkpointState)
+	return checkpointState, nil
+}
