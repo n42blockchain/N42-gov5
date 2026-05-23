@@ -30,6 +30,13 @@ type Config struct {
 	MaxBlocks uint64        // refuse auto-catchup if gap > this (0 = no cap)
 	MaxIter   int           // per-CatchUp max-iterations cap (0 = no cap)
 	Timeout   time.Duration // total time budget (0 = no cap)
+
+	// G4 strategy selection. ModeRequest is the operator's
+	// --catch-up-mode (auto|off|delta|libp2p|fetch); empty == "auto".
+	// Libp2pAvailable + DeltaWindow let auto pick the right path.
+	ModeRequest     string
+	Libp2pAvailable bool
+	DeltaWindow     uint64
 }
 
 // Result captures what PreStartSync did so eth-el can log it.
@@ -42,6 +49,7 @@ type Result struct {
 	DeltasApplied int
 	ElapsedMS     int64
 	WarnMessage   string // populated when we choose to keep starting despite an issue
+	Strategy      Strategy // which path was selected (G4)
 }
 
 // PreStartSync runs the optional auto-catchup. Returns (Result,
@@ -78,6 +86,7 @@ func PreStartSync(ctx context.Context, cfg Config) (*Result, error) {
 	if st.UpToDate {
 		rep.WasCurrent = true
 		rep.FinalHeight = st.LocalHeight
+		rep.Strategy = StrategyNone
 		rep.ElapsedMS = time.Since(t0).Milliseconds()
 		return rep, nil
 	}
@@ -87,6 +96,36 @@ func PreStartSync(ctx context.Context, cfg Config) (*Result, error) {
 			st.BehindBlocks, cfg.MaxBlocks)
 	}
 
+	// G4 strategy selection: pick the catch-up mechanism that
+	// fits the gap + available infrastructure.
+	rep.Strategy = SelectStrategy(StrategyInput{
+		Gap:             st.BehindBlocks,
+		ModeRequest:     cfg.ModeRequest,
+		DeltaSourceSet:  cfg.Source != "",
+		DeltaWindow:     cfg.DeltaWindow,
+		Libp2pAvailable: cfg.Libp2pAvailable,
+	})
+
+	switch rep.Strategy {
+	case StrategyNone:
+		// Operator opted out via ModeRequest=off. Nothing to do.
+		rep.FinalHeight = st.LocalHeight
+		rep.ElapsedMS = time.Since(t0).Milliseconds()
+		return rep, nil
+	case StrategyLibp2p:
+		// Defer to the in-node libp2p catchup pipeline. We don't
+		// invoke it here; eth-el's node startup runs catchup
+		// after PreStartSync returns. Just log + carry on.
+		rep.FinalHeight = st.LocalHeight
+		rep.WarnMessage = fmt.Sprintf("gap=%d resolved by in-node libp2p catchup (not delta)", st.BehindBlocks)
+		rep.ElapsedMS = time.Since(t0).Milliseconds()
+		return rep, nil
+	case StrategyFetch:
+		return rep, fmt.Errorf("snapshotprestart: gap %d too wide for available mechanisms — run `n42-eth-snapshot fetch` explicitly",
+			st.BehindBlocks)
+	}
+
+	// StrategyDelta — the existing behaviour.
 	cur, err := snapshot.CatchUp(cfg.Datadir, cfg.Source, cfg.Mode, cfg.MaxIter)
 	rep.ElapsedMS = time.Since(t0).Milliseconds()
 	if cur != nil {
