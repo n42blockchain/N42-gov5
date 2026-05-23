@@ -199,10 +199,11 @@ func publishFakeMirror(t *testing.T, src, mirror, network, mode string, m interf
 	// Maintain releases.json at <mirror>/<network>/releases.json.
 	idxPath := filepath.Join(mirror, network, "releases.json")
 	var idx struct {
-		Network  string                       `json:"network"`
-		Latest   map[string]*publishedRel     `json:"latest"`
-		Releases []*publishedRel              `json:"releases"`
-		Updated  string                       `json:"updated_at"`
+		Network  string                            `json:"network"`
+		Latest   map[string]*publishedRel          `json:"latest"`
+		Releases []*publishedRel                   `json:"releases"`
+		Deltas   []map[string]interface{}          `json:"deltas"` // preserve on round-trip
+		Updated  string                            `json:"updated_at"`
 	}
 	if data, err := os.ReadFile(idxPath); err == nil {
 		_ = json.Unmarshal(data, &idx)

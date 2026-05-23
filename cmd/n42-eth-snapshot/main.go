@@ -34,6 +34,8 @@ func main() {
 		runMode(os.Args[2:])
 	case "status":
 		runStatus(os.Args[2:])
+	case "catch-up", "catchup":
+		runCatchUp(os.Args[2:])
 	case "fetch":
 		runFetch(os.Args[2:])
 	case "upgrade":
@@ -61,6 +63,7 @@ SUBCOMMANDS
     verify         hash every file in a datadir against its manifest
     mode           detect maximal mode (minimal/full/archive) in a datadir
     status         compare local height to publisher's latest (am I behind?)
+    catch-up       loop delta-apply until at publisher's latest height
     fetch          copy missing files from --source into --datadir for --mode
     upgrade        fetch the delta needed to move from current to --to mode
     downgrade      remove files not in --to mode's manifest
@@ -126,6 +129,30 @@ func runStatus(args []string) {
 	rep.Print(os.Stdout)
 	if !rep.UpToDate {
 		os.Exit(3) // distinct exit code so scripts can detect "behind"
+	}
+}
+
+func runCatchUp(args []string) {
+	fs := flag.NewFlagSet("catch-up", flag.ExitOnError)
+	datadir := fs.String("datadir", ".", "client datadir")
+	source := fs.String("source", "", "publisher source root: file:///mirror/<network> or https://host/<network>")
+	mode := fs.String("mode", "archive", "mode (minimal|full|archive)")
+	maxIter := fs.Int("max-iterations", 0, "max delta-apply loops (0 = unlimited)")
+	_ = fs.Parse(args)
+	if *source == "" {
+		fmt.Fprintln(os.Stderr, "--source is required")
+		os.Exit(2)
+	}
+	rep, err := snapshot.CatchUp(*datadir, *source, *mode, *maxIter)
+	if rep != nil {
+		rep.Print(os.Stdout)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "catch-up: %v\n", err)
+		os.Exit(1)
+	}
+	if !rep.UpToDate {
+		os.Exit(3)
 	}
 }
 
