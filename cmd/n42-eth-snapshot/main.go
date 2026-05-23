@@ -15,9 +15,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/n42blockchain/N42/cmd/n42-eth-snapshot/snapshot"
 )
@@ -36,6 +40,8 @@ func main() {
 		runStatus(os.Args[2:])
 	case "catch-up", "catchup":
 		runCatchUp(os.Args[2:])
+	case "follow":
+		runFollow(os.Args[2:])
 	case "fetch":
 		runFetch(os.Args[2:])
 	case "upgrade":
@@ -64,6 +70,7 @@ SUBCOMMANDS
     mode           detect maximal mode (minimal/full/archive) in a datadir
     status         compare local height to publisher's latest (am I behind?)
     catch-up       loop delta-apply until at publisher's latest height
+    follow         background autopilot: poll publisher + apply new deltas
     fetch          copy missing files from --source into --datadir for --mode
     upgrade        fetch the delta needed to move from current to --to mode
     downgrade      remove files not in --to mode's manifest
@@ -153,6 +160,53 @@ func runCatchUp(args []string) {
 	}
 	if !rep.UpToDate {
 		os.Exit(3)
+	}
+}
+
+func runFollow(args []string) {
+	fs := flag.NewFlagSet("follow", flag.ExitOnError)
+	datadir := fs.String("datadir", ".", "client datadir")
+	source := fs.String("source", "", "publisher source root: file:///mirror/<network> or https://host/<network>")
+	mode := fs.String("mode", "archive", "mode (minimal|full|archive)")
+	interval := fs.Duration("interval", 30*time.Second, "poll interval between cycles")
+	maxCycles := fs.Int("max-cycles", 0, "exit after N cycles (0 = unlimited; SIGTERM stops cleanly)")
+	maxIter := fs.Int("max-iterations", 0, "per-cycle catch-up max iterations (0 = unlimited)")
+	_ = fs.Parse(args)
+	if *source == "" {
+		fmt.Fprintln(os.Stderr, "--source is required")
+		os.Exit(2)
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	cfg := snapshot.FollowConfig{
+		Datadir:      *datadir,
+		Source:       *source,
+		Mode:         *mode,
+		PollInterval: *interval,
+		MaxCycles:    *maxCycles,
+		MaxIter:      *maxIter,
+		OnCycle: func(cycle int, rep *snapshot.CatchUpReport, err error) {
+			ts := time.Now().UTC().Format(time.RFC3339)
+			if err != nil {
+				fmt.Printf("%s cycle=%d ERR: %v\n", ts, cycle, err)
+				return
+			}
+			h := uint64(0)
+			it := 0
+			if rep != nil {
+				h = rep.FinalHeight
+				it = rep.Iterations
+			}
+			fmt.Printf("%s cycle=%d height=%d deltas_applied=%d\n", ts, cycle, h, it)
+		},
+	}
+	rep, err := snapshot.Follow(ctx, cfg)
+	if rep != nil {
+		rep.Print(os.Stdout)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "follow: %v\n", err)
+		os.Exit(1)
 	}
 }
 
