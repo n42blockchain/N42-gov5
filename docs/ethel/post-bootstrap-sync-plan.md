@@ -163,14 +163,14 @@ $ cmd/n42 --datadir /var/lib/n42
 
 ## Gaps to close (this is the engineering backlog)
 
-| # | Gap | Effort | Outcome |
+| # | Gap | Effort | Status |
 |:-:|:--|:-:|:--|
-| 1 | `n42-eth-snapshot catch-up` command that loops delta apply until current | 2-3 days | one-command catch-up |
-| 2 | Health-check `n42-eth-snapshot status` reports current height vs publisher latest | 1 day | "am I behind?" answer |
-| 3 | Auto-trigger on `cmd/eth-el` startup: if behind, run catch-up before opening Engine API | 2-3 days | seamless restart-after-downtime |
-| 4 | `cmd/eth-el --catch-up-mode auto` picks delta apply vs libp2p vs engine-replay based on gap size | 3-5 days | one-line ops |
-| 5 | Tip-vs-publisher monitoring loop (background goroutine pulls `releases.json`, applies delta when newer) | 3-5 days | autopilot for live mirror clients |
-| 6 | (eth/68 devp2p sync) | 1-2 weeks | mainline ETH peer interop — see `sync-protocol-comparison.md` |
+| 1 | `n42-eth-snapshot catch-up` command that loops delta apply until current | 2-3 days | ✓ G1 shipped (commit `f5ef531d`) |
+| 2 | Health-check `n42-eth-snapshot status` reports current height vs publisher latest | 1 day | ✓ G2 shipped (commit `ff5a0e43`) |
+| 3 | Auto-trigger on `cmd/eth-el` startup: if behind, run catch-up before opening Engine API | 2-3 days | ✓ G3 shipped (commit `f8fd99f0`) |
+| 4 | `cmd/eth-el --catch-up.mode auto` picks delta apply vs libp2p vs engine-replay based on gap size | 3-5 days | ✓ G4 shipped (commit `3419a0df`) |
+| 5 | Tip-vs-publisher monitoring loop (background goroutine pulls `releases.json`, applies delta when newer) | 3-5 days | ✓ G5 shipped (commit `000c0fa7`) |
+| 6 | (eth/68 devp2p sync) | 1-2 weeks | DEFERRED — only needed for mainline ETH peer interop; see `sync-protocol-comparison.md` |
 
 Gaps 1-5 use the existing snapshot + delta + libp2p + Engine API
 primitives — they're orchestration, not new protocol work.
