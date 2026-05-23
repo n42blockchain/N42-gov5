@@ -12,11 +12,22 @@ the D:\N42-eth1177 reference build at chain height 25.1 M.
 Three sync modes, ordered by storage and capability. **Archive is
 the default.** Pick lower tiers only if disk-bound.
 
-| Mode | Disk | Capabilities | Catch-up |
-|:--|--:|:--|:--|
-| `minimal` | **~39 GB** | Header verification + point queries on current state | minutes |
-| `full` | **~682 GB** | minimal + historical state + tx-by-hash + receipts + bodies | tens of minutes |
-| `archive` *(default)* | **~849 GB** | full + EVM replay + state proofs at any height + on-demand CS derivation | ~1 hour |
+| Mode | Disk | Bootstrap path | Capabilities | Catch-up |
+|:--|--:|:--|:--|:--|
+| `minimal` | **~39 GB** | **snapshot → continue** (no rebuild) | Header verification + point queries on current state | minutes |
+| `full` | **~682 GB** | **snapshot → continue** (no rebuild) | minimal + historical state + tx-by-hash + receipts + bodies | tens of minutes |
+| `archive` *(default)* | **~849 GB** | **leaves-journal → rebuild** from genesis | full + EVM replay + state proofs at any height + on-demand CS derivation | ~1 hour |
+
+**Critical distinction**: `minimal` and `full` start FROM the
+snapshot tier's height (e.g., H₀ = 25,101,867 in the published
+manifest) — eth-el reads state directly from the RecSplit-indexed
+snapshot files and applies a warm-tier delta MDBX for blocks
+H₀ + 1 .. tip. **No PlainState rebuild from per-block leaves.**
+
+`archive` is the only mode that runs the full leaves-journal →
+RebuildState path on startup, allowing it to replay every EVM
+state transition from genesis (and therefore answer historical
+state proofs at any block).
 
 All three modes are produced from the **same underlying archive**
 (`docs/ethel/client-server-sync.md`) — choosing a mode just selects
@@ -39,6 +50,25 @@ transactions, **cannot** answer historical queries.
 | Code | `chain/freezer/codes.{cidx,NNNN.cdat}` | **6 GB** | Address-indexed (`internal/ethel/codes_freezer_reader.go`); per-entry zstd | `code-import2fz` |
 | Manifest | `manifest-minimal.json` | < 1 MB | blake2b-256 per file + segment range | `cmd/n42-eth-manifest` |
 | **Total** | | **~39 GB** | | |
+
+### How `minimal` bootstraps
+
+1. Operator fetches the manifest files (~39 GB)
+2. eth-el opens the snapshot tier RecSplit + EF indexes for
+   accounts/storage — state at H₀ becomes queryable
+3. eth-el opens a fresh "warm tier" MDBX for blocks H₀ + 1 ..
+   (this starts EMPTY)
+4. cmd/eth-el sync pipeline:
+   - Fetch headers H₀+1 to tip via libp2p / Engine API
+   - Fetch bodies for the same range
+   - Execute each block → state mutations go INTO the warm tier
+     (not back into the snapshot)
+   - State reads consult warm tier first, fall back to snapshot
+5. Once at tip, 12-sec live loop adds each new block to the warm
+   tier the same way
+
+**No leaves journal, no PlainState rebuild.** The snapshot tier
+IS the historical state up to H₀; the warm tier is the delta.
 
 ### What `minimal` can do
 
@@ -116,6 +146,25 @@ Adds the per-block witness stream. With witness, EVM execution is
 replayable from any historical block, which means **changesets
 (acctcs / storcs) and arbitrary historical state proofs are
 derivable on demand** rather than shipped.
+
+### How `archive` bootstraps (different from minimal/full)
+
+Archive is the ONLY mode that runs the full **leaves journal →
+RebuildState** path on first start. After that, behaviour is
+the same as full + on-demand replay capability:
+
+1. eth-el reads the leaves freezer (per-block leaf changes from
+   genesis)
+2. `internal/ethel.RebuildState` walks every leaf entry, applies
+   to a fresh MDBX PlainState — full state at every block
+3. The witness stream is checked in lockstep so any divergence
+   surfaces immediately
+4. Catch-up + 12-sec live loop continues as before, with
+   per-block witness recorded into the freezer
+
+The rebuild is one-shot. Once PlainState is complete, future
+restarts skip it (cmd/eth-el/main.go: `bootstrap.enabled=false`
+or detection of an already-populated chaindata).
 
 | Section | File(s) | Size | Format | Notes |
 |:--|:--|--:|:--|:--|
