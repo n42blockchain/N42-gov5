@@ -20,6 +20,7 @@ import (
 	"github.com/n42blockchain/N42/internal/cl"
 	"github.com/n42blockchain/N42/internal/cl/eladapter"
 	"github.com/n42blockchain/N42/internal/ethel"
+	"github.com/n42blockchain/N42/log"
 )
 
 // caplinHandle owns the running Caplin service so the shutdown path can
@@ -40,6 +41,11 @@ type caplinHandle struct {
 func startCaplin(ctx context.Context, cfg conf.BeaconCfg, node *ethel.Node) (*caplinHandle, error) {
 	if cfg.Enabled && node == nil {
 		return nil, fmt.Errorf("startCaplin: node must not be nil when caplin is enabled")
+	}
+	if cfg.Enabled {
+		log.Warn("eth-el: Caplin is a Phase 6 stub — sentinel/checkpoint sync/stage loop NOT wired",
+			"see", "memory/project_caplin_stub_reality.md",
+			"recommendation", "for real-chain sync run an external CL (Lighthouse/Prysm) against engine API at :20014; see docs/ethel/external-cl-runbook.md")
 	}
 
 	backend := newEthELBackend(node)
