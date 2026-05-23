@@ -52,6 +52,68 @@ func BytesToBloom(b []byte) Bloom {
 	return out
 }
 
+// MarshalJSON encodes Bloom as a 0x-prefixed hex string, matching
+// the EL JSON convention used by all Ethereum tooling.
+func (b Bloom) MarshalJSON() ([]byte, error) {
+	out := make([]byte, 0, 2+2*BloomByteLength+2)
+	out = append(out, '"', '0', 'x')
+	const hex = "0123456789abcdef"
+	for _, by := range b {
+		out = append(out, hex[by>>4], hex[by&0x0f])
+	}
+	out = append(out, '"')
+	return out, nil
+}
+
+// UnmarshalJSON decodes a 0x-prefixed hex Bloom from JSON.
+// Accepts strings up to BloomByteLength bytes; shorter inputs
+// right-align (matching BytesToBloom).
+func (b *Bloom) UnmarshalJSON(data []byte) error {
+	// Strip surrounding quotes.
+	if len(data) < 2 || data[0] != '"' || data[len(data)-1] != '"' {
+		return errInvalidBloomJSON
+	}
+	s := data[1 : len(data)-1]
+	if len(s) >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
+		s = s[2:]
+	}
+	if len(s)%2 != 0 {
+		return errInvalidBloomJSON
+	}
+	if len(s)/2 > BloomByteLength {
+		return errInvalidBloomJSON
+	}
+	raw := make([]byte, len(s)/2)
+	for i := 0; i < len(s)/2; i++ {
+		hi, ok1 := hexNibble(s[2*i])
+		lo, ok2 := hexNibble(s[2*i+1])
+		if !ok1 || !ok2 {
+			return errInvalidBloomJSON
+		}
+		raw[i] = hi<<4 | lo
+	}
+	*b = BytesToBloom(raw)
+	return nil
+}
+
+var errInvalidBloomJSON = bloomJSONErr{}
+
+type bloomJSONErr struct{}
+
+func (bloomJSONErr) Error() string { return "depshim/types: invalid Bloom JSON" }
+
+func hexNibble(c byte) (byte, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, true
+	}
+	return 0, false
+}
+
 // Header is the EL block header. Field shape mirrors erigon's
 // execution/types.Header so cl/cltypes' RlpHeader builder compiles
 // unchanged. Methods are stubs — see package doc.
@@ -86,9 +148,11 @@ type Header struct {
 	SlotNumber          *uint64
 }
 
-// Hash returns the Keccak256 RLP hash of the header. STUB — see package doc.
+// Hash returns the keccak256 hash of the header's RLP encoding.
+// Wire-compatible with erigon's execution/types.Header.Hash;
+// see header_hash.go for the encoder implementation.
 func (h *Header) Hash() common.Hash {
-	panic("depshim/types: Header.Hash is a Phase-2 stub; wire eladapter (Phase 5) before invoking")
+	return keccakRLPHeader(h)
 }
 
 // Withdrawal mirrors EIP-4895 withdrawal entries.
@@ -113,10 +177,31 @@ type RawBody struct {
 // transactions used to compute the transactions root.
 type BinaryTransactions [][]byte
 
-// DeriveSha computes the Merkle-Patricia root of a list. STUB — see package
-// doc.
-func DeriveSha(_ any) common.Hash {
-	panic("depshim/types: DeriveSha is a Phase-2 stub; wire eladapter (Phase 5) before invoking")
+// emptyMPTRoot is keccak256(RLP("")), the canonical empty
+// Merkle-Patricia trie root used by Ethereum for any empty list
+// (TxHash on a 0-tx block, WithdrawalsHash on a no-withdrawal
+// post-Capella block, etc.).
+var emptyMPTRoot = common.Hash{
+	0x56, 0xe8, 0x1f, 0x17, 0x1b, 0xcc, 0x55, 0xa6,
+	0xff, 0x83, 0x45, 0xe6, 0x92, 0xc0, 0xf8, 0x6e,
+	0x5b, 0x48, 0xe0, 0x1b, 0x99, 0x6c, 0xad, 0xc0,
+	0x01, 0x62, 0x2f, 0xb5, 0xe3, 0x63, 0xb4, 0x21,
+}
+
+// DeriveSha computes the Merkle-Patricia root of a derivable list.
+// For empty inputs we return the canonical empty-trie root; for
+// non-empty inputs the production path (eladapter) MUST supply
+// the real MPT root via a real implementation. The cl/cltypes
+// callers we exercise in tests only pass empty
+// BinaryTransactions / Withdrawals lists.
+func DeriveSha(list any) common.Hash {
+	if l, ok := list.(BinaryTransactions); ok && len(l) == 0 {
+		return emptyMPTRoot
+	}
+	if l, ok := list.(Withdrawals); ok && len(l) == 0 {
+		return emptyMPTRoot
+	}
+	panic("depshim/types: DeriveSha on non-empty list is a stub; eladapter wires the real MPT root")
 }
 
 // Block is the canonical EL block container — header plus body components.
