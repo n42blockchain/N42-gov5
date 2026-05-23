@@ -14,8 +14,6 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
-//go:build n42el
-
 package execution_client
 
 import "github.com/n42blockchain/N42/internal/cl/depshim/engineapi/engine_types"

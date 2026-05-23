@@ -1,11 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Interface unit for the synced_data package.
-// Defines the SyncedData types.
-// Shared snapshot of the latest synced beacon state.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package synced_data
 
@@ -21,6 +28,7 @@ type ViewHeadStateFn func(headState *state.CachingBeaconState) error
 //go:generate mockgen -typed=true -destination=./mock_services/synced_data_mock.go -package=mock_services . SyncedData
 type SyncedData interface {
 	OnHeadState(newState *state.CachingBeaconState) error
+	OnHeadStateWithBlockRoot(newState *state.CachingBeaconState, blockRoot common.Hash) error
 	UnsetHeadState()
 	ViewHeadState(fn ViewHeadStateFn) error
 	ViewPreviousHeadState(fn ViewHeadStateFn) error

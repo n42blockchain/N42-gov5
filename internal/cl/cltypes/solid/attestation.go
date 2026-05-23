@@ -1,13 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Attestation unit for the solid package.
-// Defines the Attestation and SingleAttestation types.
-// Exports helpers such as GetCommitteeIndexFromBits, SetBeaconConfig,
-// Static, and Copy.
-// Fixed-layout SSZ containers with in-place encoding.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package solid
 
@@ -18,12 +23,12 @@ import (
 	"errors"
 
 	"github.com/n42blockchain/N42/internal/cl/clparams"
-	"github.com/n42blockchain/N42/internal/cl/depshim/clonable"
-	"github.com/n42blockchain/N42/internal/cl/depshim/common"
-	"github.com/n42blockchain/N42/internal/cl/depshim/length"
 	"github.com/n42blockchain/N42/internal/cl/merkle_tree"
 	ssz2 "github.com/n42blockchain/N42/internal/cl/ssz"
-	"github.com/n42blockchain/N42/lib/types/ssz"
+	"github.com/n42blockchain/N42/internal/cl/depshim/common"
+	"github.com/n42blockchain/N42/internal/cl/depshim/clonable"
+	"github.com/n42blockchain/N42/internal/cl/depshim/length"
+	"github.com/n42blockchain/N42/internal/cl/depshim/ssz"
 )
 
 const (
@@ -91,6 +96,13 @@ func (a *Attestation) EncodingSizeSSZ() (size int) {
 
 // DecodeSSZ decodes the provided buffer into the Attestation instance.
 func (a *Attestation) DecodeSSZ(buf []byte, version int) error {
+	return a.DecodeSSZWithConfig(buf, version, nil)
+}
+
+// DecodeSSZWithConfig decodes the provided buffer into the Attestation instance,
+// using the given beacon config to determine preset-aware limits (e.g. minimal vs mainnet).
+// If cfg is nil, mainnet defaults are used.
+func (a *Attestation) DecodeSSZWithConfig(buf []byte, version int, cfg *clparams.BeaconChainConfig) error {
 	clversion := clparams.StateVersion(version)
 	if clversion.AfterOrEqual(clparams.ElectraVersion) {
 		// The CommitteeBits size depends on MAX_COMMITTEES_PER_SLOT which differs between
@@ -106,7 +118,11 @@ func (a *Attestation) DecodeSSZ(buf []byte, version int) error {
 		if committeeBitsBytes <= 0 {
 			return ssz.ErrLowBufferSize
 		}
-		a.AggregationBits = NewBitList(0, aggregationBitsSizeElectra)
+		aggrBitsLimit := aggregationBitsSizeElectra
+		if cfg != nil && cfg.MaxCommitteesPerSlot > 0 {
+			aggrBitsLimit = int(cfg.MaxCommitteesPerSlot) * maxValidatorsPerCommittee
+		}
+		a.AggregationBits = NewBitList(0, aggrBitsLimit)
 		a.Data = &AttestationData{}
 		a.CommitteeBits = NewBitVector(committeeBitsBytes * 8)
 		return ssz2.UnmarshalSSZ(buf, version, a.AggregationBits, a.Data, a.Signature[:], a.CommitteeBits)
@@ -156,9 +172,13 @@ func (a *Attestation) UnmarshalJSON(data []byte) error {
 
 	// For Electra, the committee bits are present in the JSON
 	if bytes.Contains(data, []byte("committee_bits")) {
-		// Electra case
+		// Electra case — preserve existing limit if SetBeaconConfig was called
+		aggrBitsLimit := aggregationBitsSizeElectra
+		if a.AggregationBits != nil && a.AggregationBits.Cap() > 0 {
+			aggrBitsLimit = a.AggregationBits.Cap()
+		}
 		var temp tempAttestation
-		temp.AggregationBits = NewBitList(0, aggregationBitsSizeElectra)
+		temp.AggregationBits = NewBitList(0, aggrBitsLimit)
 		temp.CommitteeBits = &BitVector{} // UnmarshalJSON self-sizes from the hex bytes
 		if err := json.Unmarshal(data, &temp); err != nil {
 			return err
@@ -223,14 +243,18 @@ func (s *SingleAttestation) Static() bool {
 	return true
 }
 
-func (s *SingleAttestation) ToAttestation(memberIndexInCommittee int, committeeLen int, maxCommittees int) *Attestation {
+func (s *SingleAttestation) ToAttestation(memberIndexInCommittee int, committeeLen int, maxCommittees int, cfg *clparams.BeaconChainConfig) *Attestation {
 	committeeBits := NewBitVector(maxCommittees)
 	committeeBits.SetBitAt(int(s.CommitteeIndex), true)
 	// flip the bit for the validator and also mark the last bit
 	bytes := make([]byte, committeeLen/8+1)
 	bytes[memberIndexInCommittee/8] |= 1 << (memberIndexInCommittee % 8)
 	bytes[committeeLen/8] |= 1 << (committeeLen % 8)
-	aggregationBits := BitlistFromBytes(bytes, aggregationBitsSizeElectra)
+	aggrBitsLimit := aggregationBitsSizeElectra
+	if cfg != nil && cfg.MaxCommitteesPerSlot > 0 {
+		aggrBitsLimit = int(cfg.MaxCommitteesPerSlot) * maxValidatorsPerCommittee
+	}
+	aggregationBits := BitlistFromBytes(bytes, aggrBitsLimit)
 	return &Attestation{
 		AggregationBits: aggregationBits,
 		Data:            s.Data,

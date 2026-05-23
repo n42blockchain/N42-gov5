@@ -1,32 +1,40 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Light client unit for the cltypes package.
-// Defines the LightClientHeader, LightClientUpdate, LightClientBootstrap,
-// and LightClientFinalityUpdate types.
-// Provides constructors NewLightClientHeader, NewLightClientUpdate,
-// NewLightClientBootstrap, and NewLightClientFinalityUpdate.
-// Exports helpers such as NewLightClientHeader, Version, EncodeSSZ, and
-// DecodeSSZ.
-// Beacon chain SSZ data structures used across phases.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package cltypes
 
 import (
+	"encoding/json"
+
 	"github.com/n42blockchain/N42/internal/cl/clparams"
 	"github.com/n42blockchain/N42/internal/cl/cltypes/solid"
-	"github.com/n42blockchain/N42/internal/cl/depshim/clonable"
 	"github.com/n42blockchain/N42/internal/cl/merkle_tree"
 	ssz2 "github.com/n42blockchain/N42/internal/cl/ssz"
+	"github.com/n42blockchain/N42/internal/cl/depshim/common"
+	"github.com/n42blockchain/N42/internal/cl/depshim/clonable"
 )
 
 const (
 	// FINALIZED_ROOT_GINDEX	get_generalized_index(altair.BeaconState, 'finalized_checkpoint', 'root') (= 105)
 	// CURRENT_SYNC_COMMITTEE_GINDEX	get_generalized_index(altair.BeaconState, 'current_sync_committee') (= 54)
 	// NEXT_SYNC_COMMITTEE_GINDEX	get_generalized_index(altair.BeaconState, 'next_sync_committee') (= 55)
-	ExecutionBranchSize            = 4
+	ExecutionBranchSize = 4
+	// EXECUTION_BLOCK_HASH_GINDEX_GLOAS = get_generalized_index(BeaconBlockBody, 'signed_execution_payload_bid', 'message', 'parent_block_hash') (= 832)
+	// floorlog2(832) = 9
+	ExecutionBranchSizeGloas       = 9
 	SyncCommitteeBranchSize        = 5
 	CurrentSyncCommitteeBranchSize = 5
 	FinalizedBranchSize            = 6
@@ -44,6 +52,8 @@ type LightClientHeader struct {
 
 	ExecutionPayloadHeader *Eth1Header         `json:"execution_payload_header,omitempty"`
 	ExecutionBranch        solid.HashVectorSSZ `json:"execution_branch,omitempty"`
+	// [New in Gloas:EIP7732] replaces ExecutionPayloadHeader
+	ExecutionBlockHash common.Hash `json:"execution_block_hash,omitempty"`
 
 	version clparams.StateVersion
 }
@@ -53,6 +63,13 @@ func NewLightClientHeader(version clparams.StateVersion) *LightClientHeader {
 		return &LightClientHeader{
 			version: version,
 			Beacon:  &BeaconBlockHeader{},
+		}
+	}
+	if version >= clparams.GloasVersion {
+		return &LightClientHeader{
+			version:         version,
+			Beacon:          &BeaconBlockHeader{},
+			ExecutionBranch: solid.NewHashVector(ExecutionBranchSizeGloas),
 		}
 	}
 	return &LightClientHeader{
@@ -74,7 +91,9 @@ func (l *LightClientHeader) EncodeSSZ(buf []byte) ([]byte, error) {
 func (l *LightClientHeader) DecodeSSZ(buf []byte, version int) error {
 	l.version = clparams.StateVersion(version)
 	l.Beacon = &BeaconBlockHeader{}
-	if version >= int(clparams.CapellaVersion) {
+	if version >= int(clparams.GloasVersion) {
+		l.ExecutionBranch = solid.NewHashVector(ExecutionBranchSizeGloas)
+	} else if version >= int(clparams.CapellaVersion) {
 		l.ExecutionPayloadHeader = NewEth1Header(l.version)
 		l.ExecutionBranch = solid.NewHashVector(ExecutionBranchSize)
 	}
@@ -83,8 +102,11 @@ func (l *LightClientHeader) DecodeSSZ(buf []byte, version int) error {
 
 func (l *LightClientHeader) EncodingSizeSSZ() int {
 	size := l.Beacon.EncodingSizeSSZ()
-	if l.version >= clparams.CapellaVersion {
-		size += l.ExecutionPayloadHeader.EncodingSizeSSZ() + 4 // the extra 4 is for the offset
+	if l.version >= clparams.GloasVersion {
+		size += 32 // execution_block_hash
+		size += l.ExecutionBranch.EncodingSizeSSZ()
+	} else if l.version >= clparams.CapellaVersion {
+		size += l.ExecutionPayloadHeader.EncodingSizeSSZ() + 4 // +4 for offset
 		size += l.ExecutionBranch.EncodingSizeSSZ()
 	}
 	return size
@@ -95,6 +117,9 @@ func (l *LightClientHeader) HashSSZ() ([32]byte, error) {
 }
 
 func (l *LightClientHeader) Static() bool {
+	if l.version >= clparams.GloasVersion {
+		return true // All fields are fixed-size in GLOAS
+	}
 	return l.version < clparams.CapellaVersion
 }
 
@@ -102,11 +127,43 @@ func (l *LightClientHeader) Clone() clonable.Clonable {
 	return NewLightClientHeader(l.version)
 }
 
+func (l *LightClientHeader) MarshalJSON() ([]byte, error) {
+	if l.version >= clparams.GloasVersion {
+		return json.Marshal(struct {
+			Beacon             *BeaconBlockHeader  `json:"beacon"`
+			ExecutionBlockHash common.Hash         `json:"execution_block_hash"`
+			ExecutionBranch    solid.HashVectorSSZ `json:"execution_branch,omitempty"`
+		}{
+			Beacon:             l.Beacon,
+			ExecutionBlockHash: l.ExecutionBlockHash,
+			ExecutionBranch:    l.ExecutionBranch,
+		})
+	}
+	if l.version >= clparams.CapellaVersion {
+		return json.Marshal(struct {
+			Beacon                 *BeaconBlockHeader  `json:"beacon"`
+			ExecutionPayloadHeader *Eth1Header         `json:"execution_payload_header,omitempty"`
+			ExecutionBranch        solid.HashVectorSSZ `json:"execution_branch,omitempty"`
+		}{
+			Beacon:                 l.Beacon,
+			ExecutionPayloadHeader: l.ExecutionPayloadHeader,
+			ExecutionBranch:        l.ExecutionBranch,
+		})
+	}
+	return json.Marshal(struct {
+		Beacon *BeaconBlockHeader `json:"beacon"`
+	}{
+		Beacon: l.Beacon,
+	})
+}
+
 func (l *LightClientHeader) getSchema() []any {
 	schema := []any{
 		l.Beacon,
 	}
-	if l.version >= clparams.CapellaVersion {
+	if l.version >= clparams.GloasVersion {
+		schema = append(schema, l.ExecutionBlockHash[:], l.ExecutionBranch)
+	} else if l.version >= clparams.CapellaVersion {
 		schema = append(schema, l.ExecutionPayloadHeader, l.ExecutionBranch)
 	}
 	return schema

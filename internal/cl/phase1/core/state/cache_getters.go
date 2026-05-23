@@ -1,15 +1,24 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Cache getters unit for the state package.
-// Exports helpers such as ValidatorIndexByPubkey and PreviousStateRoot.
-// Part of the n42el consensus-layer build.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package state
 
-import "github.com/n42blockchain/N42/internal/cl/depshim/common"
+import (
+	"github.com/n42blockchain/N42/internal/cl/depshim/common"
+)
 
 func (b *CachingBeaconState) ValidatorIndexByPubkey(key [48]byte) (uint64, bool) {
 	return b.publicKeyIndicies.Get(key[:])
@@ -20,4 +29,9 @@ func (b *CachingBeaconState) PreviousStateRoot() common.Hash {
 	ret := b.previousStateRoot
 	b.previousStateRoot = common.Hash{}
 	return ret
+}
+
+// PeekPreviousStateRoot returns the previously saved state root without consuming it.
+func (b *CachingBeaconState) PeekPreviousStateRoot() common.Hash {
+	return b.previousStateRoot
 }

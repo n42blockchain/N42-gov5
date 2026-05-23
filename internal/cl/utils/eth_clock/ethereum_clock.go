@@ -1,26 +1,32 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Ethereum clock unit for the eth_clock package.
-// Defines the EthereumClock, forkNode, and ethereumClockImpl types.
-// Provides constructors NewEthereumClock.
-// Exports helpers such as NewEthereumClock, GetSlotTime, GetCurrentSlot, and
-// GetEpochAtSlot.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package eth_clock
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math"
 	"slices"
 	"sort"
 	"time"
 
 	"github.com/n42blockchain/N42/internal/cl/clparams"
-	"github.com/n42blockchain/N42/internal/cl/depshim/common"
 	"github.com/n42blockchain/N42/internal/cl/utils"
+	"github.com/n42blockchain/N42/internal/cl/depshim/common"
 )
 
 var maximumClockDisparity = 500 * time.Millisecond
@@ -86,7 +92,25 @@ func NewEthereumClock(genesisTime uint64, genesisValidatorsRoot common.Hash, bea
 		if err != nil {
 			panic(err)
 		}
+		if fork.stateVersion >= clparams.FuluVersion {
+			// For Fulu+, the fork digest is XOR'd with blob parameters hash
+			impl.xorDigestWithBlobParams(&digest, fork.epoch)
+		}
 		impl.forkDigestToVersion[digest] = fork.stateVersion
+	}
+	// Also register fork digests for blob schedule change points (Fulu+)
+	for _, blobEntry := range beaconCfg.BlobSchedule {
+		stateVersion := beaconCfg.GetCurrentStateVersion(blobEntry.Epoch)
+		if stateVersion < clparams.FuluVersion {
+			continue
+		}
+		forkVersion := utils.Uint32ToBytes4(beaconCfg.GetForkVersionByVersion(stateVersion))
+		digest, err := impl.computeForkDigestForVersion(forkVersion)
+		if err != nil {
+			panic(err)
+		}
+		impl.xorDigestWithBlobParams(&digest, blobEntry.Epoch)
+		impl.forkDigestToVersion[digest] = stateVersion
 	}
 	return impl
 }
@@ -221,7 +245,7 @@ func (t *ethereumClockImpl) StateVersionByForkDigest(digest common.Bytes4) (clpa
 		return stateVersion, nil
 	}
 
-	return clparams.FuluVersion, nil
+	return 0, fmt.Errorf("unknown fork digest: %x", digest)
 }
 
 func (t *ethereumClockImpl) computeForkDigestForVersion(currentVersion common.Bytes4) (digest common.Bytes4, err error) {
@@ -229,6 +253,19 @@ func (t *ethereumClockImpl) computeForkDigestForVersion(currentVersion common.By
 	// copy first four bytes to output
 	copy(digest[:], dataRoot[:4])
 	return
+}
+
+// xorDigestWithBlobParams XORs a fork digest with the hash of blob parameters at the given epoch.
+// This is required for Fulu+ forks where the fork digest includes blob scheduling info.
+func (t *ethereumClockImpl) xorDigestWithBlobParams(digest *common.Bytes4, epoch uint64) {
+	blobParams := t.beaconCfg.GetBlobParameters(epoch)
+	blobParamsBytes := make([]byte, 16)
+	binary.LittleEndian.PutUint64(blobParamsBytes[:8], blobParams.Epoch)
+	binary.LittleEndian.PutUint64(blobParamsBytes[8:], blobParams.MaxBlobsPerBlock)
+	blobParamsHash := utils.Sha256(blobParamsBytes)
+	for i := 0; i < 4; i++ {
+		digest[i] ^= blobParamsHash[i]
+	}
 }
 
 func (t *ethereumClockImpl) ComputeForkDigest(epoch uint64) (digest common.Bytes4, err error) {
@@ -240,25 +277,12 @@ func (t *ethereumClockImpl) ComputeForkDigest(epoch uint64) (digest common.Bytes
 	// Compute base digest from fork version and genesis validators root
 	baseDigest := computeForkDataRoot(forkVersion, t.genesisValidatorsRoot)
 
-	if stateVersion < clparams.FuluVersion {
-		digest = common.Bytes4{}
-		copy(digest[:], baseDigest[:4])
-		return
-	}
-
-	// For Fulu and later, XOR base digest with hash of blob parameters
-	blobParams := t.beaconCfg.GetBlobParameters(epoch)
-
-	// Hash blob parameters (epoch and max_blobs_per_block)
-	blobParamsBytes := make([]byte, 16)
-	binary.LittleEndian.PutUint64(blobParamsBytes[:8], blobParams.Epoch)
-	binary.LittleEndian.PutUint64(blobParamsBytes[8:], blobParams.MaxBlobsPerBlock)
-	blobParamsHash := utils.Sha256(blobParamsBytes)
-
-	// XOR first 4 bytes of base digest with first 4 bytes of blob params hash
 	digest = common.Bytes4{}
-	for i := 0; i < 4; i++ {
-		digest[i] = baseDigest[i] ^ blobParamsHash[i]
+	copy(digest[:], baseDigest[:4])
+
+	if stateVersion >= clparams.FuluVersion {
+		// For Fulu and later, XOR base digest with hash of blob parameters
+		t.xorDigestWithBlobParams(&digest, epoch)
 	}
 
 	return digest, nil

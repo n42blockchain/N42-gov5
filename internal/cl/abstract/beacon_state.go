@@ -1,6 +1,5 @@
-
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
 // Erigon is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Lesser General Public License as published by
@@ -14,13 +13,6 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with Erigon. If not, see <http://www.gnu.org/licenses/>.
-//
-// Beacon state unit for the abstract package.
-// Defines the BeaconState, BeaconStateUpgradable, BeaconStateExtension, and
-// BeaconStateBasic types.
-// Abstract interfaces for beacon state access.
-
-//go:build n42el
 
 package abstract
 
@@ -46,11 +38,13 @@ type BeaconStateUpgradable interface {
 	UpgradeToDeneb() error
 	UpgradeToElectra() error
 	UpgradeToFulu() error
+	UpgradeToGloas() error
 }
 
 type BeaconStateExtension interface {
 	SlashValidator(slashedInd uint64, whistleblowerInd *uint64) (uint64, error)
 	InitiateValidatorExit(index uint64) error
+	InitiateBuilderExit(builderIndex uint64)
 	GetActiveValidatorsIndices(epoch uint64) (indicies []uint64)
 	GetTotalActiveBalance() uint64
 	ComputeCommittee(indicies []uint64, slot uint64, index, count uint64) ([]uint64, error)
@@ -78,6 +72,18 @@ type BeaconStateExtension interface {
 	ComputeExitEpochAndUpdateChurn(exitBalance uint64) uint64
 	GetConsolidationBalanceToConsume() uint64
 	GetProposerLookahead() solid.Uint64VectorSSZ
+	GetBuilders() *solid.ListSSZ[*cltypes.Builder]
+	GetLatestExecutionPayloadBid() *cltypes.ExecutionPayloadBid
+	GetLatestBlockHash() common.Hash
+	GetBuilderPendingWithdrawals() *solid.ListSSZ[*cltypes.BuilderPendingWithdrawal]
+	GetBuilderPendingPayments() *solid.VectorSSZ[*cltypes.BuilderPendingPayment]
+	GetBuilderPaymentQuorumThreshold() uint64
+	GetNextWithdrawalBuilderIndex() uint64
+	GetPayloadExpectedWithdrawals() *solid.ListSSZ[*cltypes.Withdrawal]
+	GetIndexedPayloadAttestation(payloadAttestation *cltypes.PayloadAttestation) (*cltypes.IndexedPayloadAttestation, error)
+	GetPtcWindow() *solid.VectorSSZ[solid.Uint64VectorSSZ]
+	GetPTC(slot uint64) ([]uint64, error)
+	ComputePTC(slot uint64) ([]uint64, error)
 }
 
 type BeaconStateBasic interface {
@@ -96,6 +102,7 @@ type BeaconStateSSZ interface {
 	DecodeSSZ(buf []byte, version int) error
 	EncodingSizeSSZ() (size int)
 	HashSSZ() (out [32]byte, err error)
+	PrintLeaves()
 }
 
 //go:generate mockgen -typed=true -destination=./mock_services/beacon_state_mutator_mock.go -package=mock_services . BeaconStateMutator
@@ -151,6 +158,15 @@ type BeaconStateMutator interface {
 	SetConsolidationBalanceToConsume(uint64)
 	SetEarlistConsolidationEpoch(uint64)
 	SetProposerLookahead(proposerLookahead solid.Uint64VectorSSZ)
+	SetExecutionPayloadAvailability(slot uint64, available bool)
+	SetBuilderPendingPayments(*solid.VectorSSZ[*cltypes.BuilderPendingPayment])
+	SetBuilderPendingWithdrawals(withdrawals *solid.ListSSZ[*cltypes.BuilderPendingWithdrawal])
+	SetPayloadExpectedWithdrawals(withdrawals *solid.ListSSZ[*cltypes.Withdrawal])
+	SetLatestBlockHash(hash common.Hash)
+	SetNextWithdrawalBuilderIndex(index uint64)
+	SetBuilders(builders *solid.ListSSZ[*cltypes.Builder])
+	SetLatestExecutionPayloadBid(bid *cltypes.ExecutionPayloadBid)
+	SetPtcWindow(ptcWindow *solid.VectorSSZ[solid.Uint64VectorSSZ])
 
 	AddEth1DataVote(vote *cltypes.Eth1Data)
 	AddValidator(validator solid.Validator, balance uint64)

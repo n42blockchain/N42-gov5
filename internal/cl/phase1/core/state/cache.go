@@ -1,12 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Cache unit for the state package.
-// Defines the CachingBeaconState types.
-// Provides constructors New.
-// Exports helpers such as SetPreviousStateRoot and InitBeaconState.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package state
 
@@ -14,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 
+	"github.com/n42blockchain/N42/internal/cl/cltypes"
 	"github.com/n42blockchain/N42/internal/cl/cltypes/solid"
 	"github.com/n42blockchain/N42/internal/cl/phase1/core/caches"
 	"github.com/n42blockchain/N42/internal/cl/phase1/core/state/lru"
@@ -56,6 +63,34 @@ func New(cfg *clparams.BeaconChainConfig) *CachingBeaconState {
 	}
 	state.InitBeaconState()
 	return state
+}
+
+// BlockRoot overrides raw.BeaconState.BlockRoot to use previousStateRoot
+// (set by TransitionState after VerifyTransition) when latestBlockHeader.Root
+// is still zero. In GLOAS, the execution payload envelope has not yet been
+// processed at the point AddChainSegment checks this, so the raw fallback to
+// HashSSZ() can return a diverged value. previousStateRoot is the
+// authoritative state root confirmed by TransitionState.
+func (b *CachingBeaconState) BlockRoot() ([32]byte, error) {
+	hdr := b.LatestBlockHeader()
+	root := hdr.Root
+	if root == (common.Hash{}) && b.previousStateRoot != (common.Hash{}) {
+		root = b.previousStateRoot
+	}
+	if root == (common.Hash{}) {
+		var err error
+		root, err = b.HashSSZ()
+		if err != nil {
+			return [32]byte{}, err
+		}
+	}
+	return (&cltypes.BeaconBlockHeader{
+		Slot:          hdr.Slot,
+		ProposerIndex: hdr.ProposerIndex,
+		BodyRoot:      hdr.BodyRoot,
+		ParentRoot:    hdr.ParentRoot,
+		Root:          root,
+	}).HashSSZ()
 }
 
 func (b *CachingBeaconState) SetPreviousStateRoot(root common.Hash) {

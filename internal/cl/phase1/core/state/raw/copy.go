@@ -1,11 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Copy unit for the raw package.
-// Exports helpers such as CopyInto and Copy.
-// Part of the n42el consensus-layer build.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package raw
 
@@ -62,7 +69,11 @@ func (b *BeaconState) CopyInto(dst *BeaconState) error {
 	b.inactivityScores.CopyTo(dst.inactivityScores)
 
 	if b.version >= clparams.BellatrixVersion {
-		dst.latestExecutionPayloadHeader = b.latestExecutionPayloadHeader.Copy()
+		if b.version >= clparams.GloasVersion {
+			dst.latestExecutionPayloadBid = b.latestExecutionPayloadBid.Copy()
+		} else {
+			dst.latestExecutionPayloadHeader = b.latestExecutionPayloadHeader.Copy()
+		}
 	}
 	dst.nextWithdrawalIndex = b.nextWithdrawalIndex
 	dst.nextWithdrawalValidatorIndex = b.nextWithdrawalValidatorIndex
@@ -85,16 +96,30 @@ func (b *BeaconState) CopyInto(dst *BeaconState) error {
 	}
 
 	if b.version >= clparams.FuluVersion {
-		dst.proposerLookahead = b.proposerLookahead
+		b.proposerLookahead.CopyTo(dst.proposerLookahead)
 	}
 
+	if b.version >= clparams.GloasVersion {
+		dst.builders = b.builders.ShallowCopy()
+		dst.nextWithdrawalBuilderIndex = b.nextWithdrawalBuilderIndex
+		b.executionPayloadAvailability.CopyTo(dst.executionPayloadAvailability)
+		b.builderPendingPayments.CopyTo(dst.builderPendingPayments)
+		dst.builderPendingWithdrawals = b.builderPendingWithdrawals.ShallowCopy()
+		dst.latestBlockHash = b.latestBlockHash
+		dst.payloadExpectedWithdrawals = b.payloadExpectedWithdrawals.ShallowCopy()
+		b.ptcWindow.CopyTo(dst.ptcWindow)
+	}
 	dst.version = b.version
-	// Now sync internals
+	// Now sync internals: copy the cached leaf hashes but mark every leaf
+	// dirty so the destination will recompute them on the next HashSSZ().
+	// This avoids propagating stale cache entries when the source state is
+	// mutated after the copy (e.g. by TransitionState on a shared
+	// currentState pointer in the fork graph, or by a background goroutine
+	// accessing the state after a ViewHeadState lock is released).
 	copy(dst.leaves, b.leaves)
 	dst.touchedLeaves = make([]atomic.Uint32, StateLeafSizeLatest)
-	for leafIndex := range b.touchedLeaves {
-		// Copy the value
-		dst.touchedLeaves[leafIndex].Store(b.touchedLeaves[leafIndex].Load())
+	for leafIndex := range dst.touchedLeaves {
+		dst.touchedLeaves[leafIndex].Store(LeafDirtyValue)
 	}
 	return nil
 }

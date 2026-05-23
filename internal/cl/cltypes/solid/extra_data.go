@@ -1,14 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Extra data unit for the solid package.
-// Defines the ExtraData types.
-// Provides constructors NewExtraData.
-// Exports helpers such as NewExtraData, UnmarshalJSON, MarshalJSON, and
-// Clone.
-// Fixed-layout SSZ containers with in-place encoding.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package solid
 
@@ -16,11 +20,11 @@ import (
 	"encoding/binary"
 	"encoding/json"
 
-	"github.com/n42blockchain/N42/internal/cl/depshim/clonable"
+	"github.com/n42blockchain/N42/internal/cl/merkle_tree"
 	"github.com/n42blockchain/N42/internal/cl/depshim/common"
+	"github.com/n42blockchain/N42/internal/cl/depshim/clonable"
 	"github.com/n42blockchain/N42/internal/cl/depshim/hexutil"
 	"github.com/n42blockchain/N42/internal/cl/depshim/length"
-	"github.com/n42blockchain/N42/internal/cl/merkle_tree"
 )
 
 // ExtraData type stores data as a byte slice and its length.
@@ -60,16 +64,26 @@ func (*ExtraData) Static() bool {
 
 // EncodeSSZ appends ExtraData bytes to the provided buffer.
 func (e *ExtraData) EncodeSSZ(buf []byte) ([]byte, error) {
+	if e == nil {
+		return buf, nil
+	}
 	return append(buf, e.Bytes()...), nil
 }
 
 // EncodingSizeSSZ returns the length of ExtraData.
 func (e *ExtraData) EncodingSizeSSZ() int {
+	if e == nil {
+		return 0
+	}
 	return e.l
 }
 
 // HashSSZ returns the Merkle Root of the ExtraData byte slice.
 func (e *ExtraData) HashSSZ() ([32]byte, error) {
+	if e == nil {
+		// Nil ExtraData is equivalent to empty (length 0).
+		e = NewExtraData()
+	}
 	leaves := make([]byte, length.Hash*2)
 	copy(leaves, e.data[:e.l])
 	binary.LittleEndian.PutUint64(leaves[length.Hash:], uint64(e.l))

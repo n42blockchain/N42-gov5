@@ -1,12 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Cache mutators unit for the state package.
-// Exports helpers such as SlashValidator, InitiateValidatorExit, and
-// ComputeExitEpochAndUpdateChurn.
-// Part of the n42el consensus-layer build.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package state
 
@@ -16,6 +22,7 @@ import (
 
 	"github.com/n42blockchain/N42/internal/cl/clparams"
 	"github.com/n42blockchain/N42/internal/cl/cltypes/solid"
+	log "github.com/n42blockchain/N42/internal/cl/depshim/log/v3"
 	"github.com/n42blockchain/N42/internal/cl/depshim/math"
 )
 
@@ -154,4 +161,32 @@ func (b *CachingBeaconState) ComputeExitEpochAndUpdateChurn(exitBalance uint64) 
 	b.SetExitBalanceToConsume(exitBalanceToConsume - exitBalance)
 	b.SetEarliestExitEpoch(earliestExitEpoch)
 	return earliestExitEpoch
+}
+
+// InitiateBuilderExit initiates the exit of a builder by setting its withdrawable epoch.
+// If the builder has already initiated exit (withdrawable_epoch != FAR_FUTURE_EPOCH), this is a no-op.
+func (b *CachingBeaconState) InitiateBuilderExit(builderIndex uint64) {
+	builders := b.GetBuilders()
+	if builders == nil {
+		log.Debug("builders is nil")
+		return
+	}
+	if int(builderIndex) >= builders.Len() {
+		log.Debug("builder index out of range", "builderIndex", builderIndex, "len", builders.Len())
+		return
+	}
+	builder := builders.Get(int(builderIndex))
+	if builder == nil {
+		log.Debug("builder is nil", "builderIndex", builderIndex)
+		return
+	}
+	if builder.WithdrawableEpoch != b.BeaconConfig().FarFutureEpoch {
+		return
+	}
+	// Copy-on-write: create a new Builder to avoid mutating a shared pointer
+	// (ShallowCopy shares *Builder pointers across state copies).
+	newBuilder := *builder
+	newBuilder.WithdrawableEpoch = Epoch(b) + b.BeaconConfig().MinBuilderWithdrawabilityDelay
+	builders.Set(int(builderIndex), &newBuilder)
+	b.SetBuilders(builders)
 }

@@ -1,11 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Encode unit for the ssz2 package.
-// Defines the Sized, ObjectSSZ, and SizedObjectSSZ types.
-// Exports helpers such as MarshalSSZ.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package ssz2
 
@@ -14,21 +21,21 @@ import (
 	"fmt"
 	"runtime/debug"
 
-	ssz "github.com/n42blockchain/N42/internal/cl/depshim/sszh"
+	"github.com/n42blockchain/N42/internal/cl/depshim/ssz"
 )
 
 type Sized interface {
 	Static() bool
 }
 
-type ObjectSSZ interface {
+type SizedObjectSSZ interface {
 	ssz.EncodableSSZ
-	ssz.Marshaler
+	Sized
 }
 
-type SizedObjectSSZ interface {
-	ObjectSSZ
-	Sized
+type HashableSizedObjectSSZ interface {
+	SizedObjectSSZ
+	ssz.HashableSSZ
 }
 
 /*
@@ -89,6 +96,13 @@ func MarshalSSZ(buf []byte, schema ...any) (dst []byte, err error) {
 			// If the element is a byte slice, append it to the dst
 			dst = append(dst, obj...)
 			currentOffset += len(obj)
+		case bool:
+			b := byte(0)
+			if obj {
+				b = 1
+			}
+			dst = append(dst, b)
+			currentOffset += 1
 		case SizedObjectSSZ:
 			// If the element implements the SizedObjectSSZ interface
 			startSize := len(dst)

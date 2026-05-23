@@ -1,14 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Indexed attestation unit for the cltypes package.
-// Defines the IndexedAttestation types.
-// Provides constructors NewIndexedAttestation.
-// Exports helpers such as NewIndexedAttestation, SetVersion, Static, and
-// UnmarshalJSON.
-// Beacon chain SSZ data structures used across phases.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package cltypes
 
@@ -18,9 +22,9 @@ import (
 
 	"github.com/n42blockchain/N42/internal/cl/clparams"
 	"github.com/n42blockchain/N42/internal/cl/cltypes/solid"
-	"github.com/n42blockchain/N42/internal/cl/depshim/common"
 	"github.com/n42blockchain/N42/internal/cl/merkle_tree"
 	ssz2 "github.com/n42blockchain/N42/internal/cl/ssz"
+	"github.com/n42blockchain/N42/internal/cl/depshim/common"
 )
 
 const (
@@ -38,9 +42,18 @@ type IndexedAttestation struct {
 }
 
 func NewIndexedAttestation(version clparams.StateVersion) *IndexedAttestation {
+	return NewIndexedAttestationWithConfig(version, nil)
+}
+
+// NewIndexedAttestationWithConfig creates a new IndexedAttestation with preset-aware limits.
+// If cfg is nil, mainnet defaults are used.
+func NewIndexedAttestationWithConfig(version clparams.StateVersion, cfg *clparams.BeaconChainConfig) *IndexedAttestation {
 	var attLimit int
 	if version.AfterOrEqual(clparams.ElectraVersion) {
 		attLimit = attestingIndicesLimitElectra
+		if cfg != nil && cfg.MaxCommitteesPerSlot > 0 {
+			attLimit = int(cfg.MaxValidatorsPerCommittee) * int(cfg.MaxCommitteesPerSlot)
+		}
 	} else {
 		attLimit = attestingIndicesLimit
 	}
@@ -51,8 +64,18 @@ func NewIndexedAttestation(version clparams.StateVersion) *IndexedAttestation {
 }
 
 func (i *IndexedAttestation) SetVersion(v clparams.StateVersion) {
+	i.SetVersionWithConfig(v, nil)
+}
+
+// SetVersionWithConfig sets the version and adjusts the attesting indices limit based on config.
+// If cfg is nil, mainnet defaults are used.
+func (i *IndexedAttestation) SetVersionWithConfig(v clparams.StateVersion, cfg *clparams.BeaconChainConfig) {
 	if v >= clparams.ElectraVersion {
-		i.AttestingIndices.SetCap(attestingIndicesLimitElectra)
+		limit := attestingIndicesLimitElectra
+		if cfg != nil && cfg.MaxCommitteesPerSlot > 0 {
+			limit = int(cfg.MaxValidatorsPerCommittee) * int(cfg.MaxCommitteesPerSlot)
+		}
+		i.AttestingIndices.SetCap(limit)
 	} else {
 		i.AttestingIndices.SetCap(attestingIndicesLimit)
 	}
@@ -94,9 +117,19 @@ func (i *IndexedAttestation) EncodeSSZ(buf []byte) (dst []byte, err error) {
 
 // DecodeSSZ ssz unmarshals the IndexedAttestation object
 func (i *IndexedAttestation) DecodeSSZ(buf []byte, version int) error {
+	return i.DecodeSSZWithConfig(buf, version, nil)
+}
+
+// DecodeSSZWithConfig ssz unmarshals the IndexedAttestation object with preset-aware limits.
+// If cfg is nil, mainnet defaults are used.
+func (i *IndexedAttestation) DecodeSSZWithConfig(buf []byte, version int, cfg *clparams.BeaconChainConfig) error {
 	i.Data = &solid.AttestationData{}
 	if version >= int(clparams.ElectraVersion) {
-		i.AttestingIndices = solid.NewRawUint64List(attestingIndicesLimitElectra, nil)
+		limit := attestingIndicesLimitElectra
+		if cfg != nil && cfg.MaxCommitteesPerSlot > 0 {
+			limit = int(cfg.MaxValidatorsPerCommittee) * int(cfg.MaxCommitteesPerSlot)
+		}
+		i.AttestingIndices = solid.NewRawUint64List(limit, nil)
 	} else {
 		i.AttestingIndices = solid.NewRawUint64List(attestingIndicesLimit, nil)
 	}

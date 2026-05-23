@@ -1,11 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Process epoch unit for the statechange package.
-// Exports helpers such as GetUnslashedIndiciesSet and ProcessEpoch.
-// Per-slot and per-epoch state change routines.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package statechange
 
@@ -71,6 +78,10 @@ func ProcessEpoch(s abstract.BeaconState) error {
 		ProcessPendingConsolidations(s)
 	}
 
+	if s.Version() >= clparams.GloasVersion {
+		ProcessBuilderPendingPayments(s)
+	}
+
 	if err := ProcessEffectiveBalanceUpdates(s); err != nil {
 		return err
 	}
@@ -97,6 +108,12 @@ func ProcessEpoch(s abstract.BeaconState) error {
 
 	if s.Version() >= clparams.FuluVersion {
 		if err := ProcessProposerLookahead(s); err != nil {
+			return err
+		}
+	}
+
+	if s.Version() >= clparams.GloasVersion {
+		if err := ProcessPtcWindow(s); err != nil {
 			return err
 		}
 	}

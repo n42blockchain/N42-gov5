@@ -1,13 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Uint64slice byte unit for the solid package.
-// Defines the byteBasedUint64Slice types.
-// Provides constructors NewUint64Slice.
-// Exports helpers such as NewUint64Slice, Clear, CopyTo, and MarshalJSON.
-// Fixed-layout SSZ containers with in-place encoding.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package solid
 
@@ -16,10 +21,10 @@ import (
 	"encoding/json"
 	"strconv"
 
-	"github.com/n42blockchain/N42/internal/cl/depshim/length"
 	"github.com/n42blockchain/N42/internal/cl/merkle_tree"
 	"github.com/n42blockchain/N42/internal/cl/utils"
-	"github.com/n42blockchain/N42/lib/types/ssz"
+	"github.com/n42blockchain/N42/internal/cl/depshim/length"
+	"github.com/n42blockchain/N42/internal/cl/depshim/ssz"
 )
 
 func convertDepthToChunkSize(d int) int {

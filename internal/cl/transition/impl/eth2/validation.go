@@ -1,12 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Validation unit for the eth2 package.
-// Exports helpers such as VerifyTransition, VerifyBlockSignature, and
-// VerifyBlockSignature.
-// Part of the n42el consensus-layer build.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package eth2
 
@@ -19,6 +25,7 @@ import (
 	"github.com/n42blockchain/N42/internal/cl/cltypes"
 	"github.com/n42blockchain/N42/internal/cl/fork"
 	"github.com/n42blockchain/N42/internal/cl/phase1/core/state"
+	"github.com/n42blockchain/N42/internal/cl/utils"
 	"github.com/n42blockchain/N42/internal/cl/utils/bls"
 )
 
@@ -55,7 +62,26 @@ func VerifyBlockSignature(s abstract.BeaconState, block *cltypes.SignedBeaconBlo
 	if err != nil {
 		return false, err
 	}
-	domain, err := s.GetDomain(s.BeaconConfig().DomainBeaconProposer, state.Epoch(s))
+	cfg := s.BeaconConfig()
+	blockEpoch := state.GetEpochAtSlot(cfg, block.Block.Slot)
+
+	var domain []byte
+	// Check whether the block belongs to a newer fork than the state currently
+	// knows about.  This happens during gossip validation: the head state has
+	// not yet been advanced through ProcessSlots, so its fork info still
+	// reflects the previous fork.  In that case we derive the signing domain
+	// directly from the beacon-config fork schedule.
+	blockVersion := cfg.GetCurrentStateVersion(blockEpoch)
+	if blockVersion > s.Version() {
+		forkVersion := utils.Uint32ToBytes4(uint32(cfg.GetForkVersionByVersion(blockVersion)))
+		domain, err = fork.ComputeDomain(
+			cfg.DomainBeaconProposer[:],
+			forkVersion,
+			s.GenesisValidatorsRoot(),
+		)
+	} else {
+		domain, err = s.GetDomain(cfg.DomainBeaconProposer, blockEpoch)
+	}
 	if err != nil {
 		return false, err
 	}

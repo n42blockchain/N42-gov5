@@ -1,21 +1,27 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Interfaces unit for the solid package.
-// Defines the Uint64ListSSZ, Uint64VectorSSZ, HashListSSZ, and HashVectorSSZ
-// types.
-// Fixed-layout SSZ containers with in-place encoding.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package solid
 
 import (
 	"encoding/json"
 
-	"github.com/n42blockchain/N42/internal/cl/depshim/common"
 	ssz2 "github.com/n42blockchain/N42/internal/cl/ssz"
-	"github.com/n42blockchain/N42/lib/types/ssz"
+	"github.com/n42blockchain/N42/internal/cl/depshim/common"
+	"github.com/n42blockchain/N42/internal/cl/depshim/ssz"
 )
 
 type IterableSSZ[T any] interface {

@@ -1,11 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Params unit for the raw package.
-// Declares the StateLeafIndex type aliases.
-// Part of the n42el consensus-layer build.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package raw
 
@@ -40,6 +47,8 @@ const (
 	NextSyncCommitteeLeafIndex    StateLeafIndex = 23
 	// Bellatrix
 	LatestExecutionPayloadHeaderLeafIndex StateLeafIndex = 24
+	// new in Gloas: latest_block_hash inherits position 24 from latest_execution_payload_header (gindex preserved per consensus-specs #5113)
+	LatestBlockHashLeafIndex StateLeafIndex = 24 // same as LatestExecutionPayloadHeaderLeafIndex
 	// Capella
 	NextWithdrawalIndexLeafIndex          StateLeafIndex = 25
 	NextWithdrawalValidatorIndexLeafIndex StateLeafIndex = 26
@@ -56,14 +65,24 @@ const (
 	PendingConsolidationsLeafIndex         StateLeafIndex = 36
 	// Fulu
 	ProposerLookaheadLeafIndex StateLeafIndex = 37
+	// Gloas
+	BuildersLeafIndex                     StateLeafIndex = 38
+	NextWithdrawalBuilderIndexLeafIndex   StateLeafIndex = 39
+	ExecutionPayloadAvailabilityLeafIndex StateLeafIndex = 40
+	BuilderPendingPaymentsLeafIndex       StateLeafIndex = 41
+	BuilderPendingWithdrawalsLeafIndex    StateLeafIndex = 42
+	LatestExecutionPayloadBidLeafIndex    StateLeafIndex = 43
+	PayloadExpectedWithdrawalsLeafIndex   StateLeafIndex = 44
+	PtcWindowLeafIndex                    StateLeafIndex = 45
 )
 
 const (
 	StateLeafSizeDeneb   = 32
 	StateLeafSizeElectra = 37
 	StateLeafSizeFulu    = 38
+	StateLeafSizeGloas   = 46
 
-	StateLeafSizeLatest = StateLeafSizeFulu
+	StateLeafSizeLatest = StateLeafSizeGloas
 
 	LeafInitValue  = 0
 	LeafCleanValue = 1

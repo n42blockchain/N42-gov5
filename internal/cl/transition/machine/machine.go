@@ -1,14 +1,20 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Machine unit for the machine package.
-// Defines the Interface, BlockProcessor, BlockValidator, and SlotProcessor
-// types.
-// Part of the n42el consensus-layer build.
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 // Package machine is the interface for eth2 state transition
-//go:build n42el
-
 package machine
 
 import (
@@ -42,9 +48,14 @@ type BlockHeaderProcessor interface {
 	ProcessBlockHeader(s abstract.BeaconState, slot, proposerIndex uint64, parentRoot common.Hash, bodyRoot [32]byte) error
 	ProcessWithdrawals(s abstract.BeaconState, withdrawals *solid.ListSSZ[*cltypes.Withdrawal]) error
 	ProcessExecutionPayload(s abstract.BeaconState, body cltypes.GenericBeaconBody) error
+	ProcessExecutionPayloadBid(s abstract.BeaconState, block cltypes.GenericBeaconBlock) error
+	ProcessParentExecutionPayload(s abstract.BeaconState, block cltypes.GenericBeaconBlock) error
+	ApplyParentExecutionPayload(s abstract.BeaconState, requests *cltypes.ExecutionRequests) error
 	ProcessRandao(s abstract.BeaconState, randao [96]byte, proposerIndex uint64) error
 	ProcessEth1Data(state abstract.BeaconState, eth1Data *cltypes.Eth1Data) error
 	ProcessSyncAggregate(s abstract.BeaconState, sync *cltypes.SyncAggregate) error
+	// [New in Gloas:EIP7732] ProcessExecutionPayloadEnvelope processes the execution payload envelope, which includes the payload header and the randao reveal
+	ProcessExecutionPayloadEnvelope(s abstract.BeaconState, signedEnvelope *cltypes.SignedExecutionPayloadEnvelope) error
 }
 
 type BlockOperationProcessor interface {
@@ -57,5 +68,6 @@ type BlockOperationProcessor interface {
 	ProcessDepositRequest(s abstract.BeaconState, depositRequest *solid.DepositRequest) error
 	ProcessWithdrawalRequest(s abstract.BeaconState, withdrawalRequest *solid.WithdrawalRequest) error
 	ProcessConsolidationRequest(s abstract.BeaconState, consolidationRequest *solid.ConsolidationRequest) error
+	ProcessPayloadAttestation(s abstract.BeaconState, payloadAttestation *cltypes.PayloadAttestation) error
 	FullValidate() bool
 }

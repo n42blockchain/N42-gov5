@@ -1,12 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Setters unit for the raw package.
-// Exports helpers such as SetVersion, SetSlot, SetFork, and
-// SetLatestBlockHeader.
-// Part of the n42el consensus-layer build.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package raw
 
@@ -339,8 +345,16 @@ func (b *BeaconState) SetNextSyncCommittee(nextSyncCommittee *solid.SyncCommitte
 }
 
 func (b *BeaconState) SetLatestExecutionPayloadHeader(header *cltypes.Eth1Header) {
+	if b.version >= clparams.GloasVersion {
+		return
+	}
 	b.latestExecutionPayloadHeader = header
 	b.markLeaf(LatestExecutionPayloadHeaderLeafIndex)
+}
+
+func (b *BeaconState) SetLatestExecutionPayloadBid(bid *cltypes.ExecutionPayloadBid) {
+	b.latestExecutionPayloadBid = bid
+	b.markLeaf(LatestExecutionPayloadBidLeafIndex)
 }
 
 func (b *BeaconState) SetNextWithdrawalIndex(index uint64) {
@@ -572,4 +586,50 @@ func (b *BeaconState) SetEarlistConsolidationEpoch(epoch uint64) {
 func (b *BeaconState) SetProposerLookahead(proposerLookahead solid.Uint64VectorSSZ) {
 	b.proposerLookahead = proposerLookahead
 	b.markLeaf(ProposerLookaheadLeafIndex)
+}
+
+func (b *BeaconState) SetExecutionPayloadAvailability(slot uint64, available bool) {
+	b.executionPayloadAvailability.SetBitAt(int(slot%b.beaconConfig.SlotsPerHistoricalRoot), available)
+	b.markLeaf(ExecutionPayloadAvailabilityLeafIndex)
+}
+
+// SetExecutionPayloadAvailabilityRaw replaces the entire bitvector (used by the historical state reader).
+func (b *BeaconState) SetExecutionPayloadAvailabilityRaw(bv *solid.BitVector) {
+	b.executionPayloadAvailability = bv
+	b.markLeaf(ExecutionPayloadAvailabilityLeafIndex)
+}
+
+func (b *BeaconState) SetBuilderPendingPayments(payments *solid.VectorSSZ[*cltypes.BuilderPendingPayment]) {
+	b.builderPendingPayments = payments
+	b.markLeaf(BuilderPendingPaymentsLeafIndex)
+}
+
+func (b *BeaconState) SetBuilderPendingWithdrawals(withdrawals *solid.ListSSZ[*cltypes.BuilderPendingWithdrawal]) {
+	b.builderPendingWithdrawals = withdrawals
+	b.markLeaf(BuilderPendingWithdrawalsLeafIndex)
+}
+
+func (b *BeaconState) SetLatestBlockHash(hash common.Hash) {
+	b.latestBlockHash = hash
+	b.markLeaf(LatestBlockHashLeafIndex)
+}
+
+func (b *BeaconState) SetPayloadExpectedWithdrawals(withdrawals *solid.ListSSZ[*cltypes.Withdrawal]) {
+	b.payloadExpectedWithdrawals = withdrawals
+	b.markLeaf(PayloadExpectedWithdrawalsLeafIndex)
+}
+
+func (b *BeaconState) SetPtcWindow(ptcWindow *solid.VectorSSZ[solid.Uint64VectorSSZ]) {
+	b.ptcWindow = ptcWindow
+	b.markLeaf(PtcWindowLeafIndex)
+}
+
+func (b *BeaconState) SetNextWithdrawalBuilderIndex(index uint64) {
+	b.nextWithdrawalBuilderIndex = index
+	b.markLeaf(NextWithdrawalBuilderIndexLeafIndex)
+}
+
+func (b *BeaconState) SetBuilders(builders *solid.ListSSZ[*cltypes.Builder]) {
+	b.builders = builders
+	b.markLeaf(BuildersLeafIndex)
 }

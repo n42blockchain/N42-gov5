@@ -1,5 +1,3 @@
-//go:build n42el
-
 package statechange
 
 import (
@@ -11,7 +9,7 @@ import (
 	"github.com/n42blockchain/N42/internal/cl/utils"
 	"github.com/n42blockchain/N42/internal/cl/utils/bls"
 	"github.com/n42blockchain/N42/internal/cl/depshim/common"
-	"github.com/n42blockchain/N42/internal/cl/depshim/log"
+	log "github.com/n42blockchain/N42/internal/cl/depshim/log/v3"
 )
 
 func IsValidDepositSignature(

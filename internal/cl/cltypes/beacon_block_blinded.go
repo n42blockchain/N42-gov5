@@ -1,16 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Beacon block blinded unit for the cltypes package.
-// Defines the SignedBlindedBeaconBlock, BlindedBeaconBlock, and
-// BlindedBeaconBody types.
-// Provides constructors NewSignedBlindedBeaconBlock, NewBlindedBeaconBlock,
-// and NewBlindedBeaconBody.
-// Exports helpers such as NewSignedBlindedBeaconBlock,
-// SignedBeaconBlockHeader, Clone, and Unblind.
-// Beacon chain SSZ data structures used across phases.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package cltypes
 
@@ -20,18 +22,18 @@ import (
 
 	"github.com/n42blockchain/N42/internal/cl/clparams"
 	"github.com/n42blockchain/N42/internal/cl/cltypes/solid"
-	"github.com/n42blockchain/N42/internal/cl/depshim/clonable"
-	"github.com/n42blockchain/N42/internal/cl/depshim/common"
 	"github.com/n42blockchain/N42/internal/cl/merkle_tree"
 	ssz2 "github.com/n42blockchain/N42/internal/cl/ssz"
-	"github.com/n42blockchain/N42/lib/types/ssz"
+	"github.com/n42blockchain/N42/internal/cl/depshim/common"
+	"github.com/n42blockchain/N42/internal/cl/depshim/clonable"
+	"github.com/n42blockchain/N42/internal/cl/depshim/ssz"
 )
 
 // make sure that the type implements the interface ssz2.ObjectSSZ
 var (
-	_ ssz2.ObjectSSZ = (*BlindedBeaconBody)(nil)
-	_ ssz2.ObjectSSZ = (*BlindedBeaconBlock)(nil)
-	_ ssz2.ObjectSSZ = (*SignedBlindedBeaconBlock)(nil)
+	_ ssz2.HashableSizedObjectSSZ = (*BlindedBeaconBody)(nil)
+	_ ssz2.HashableSizedObjectSSZ = (*BlindedBeaconBlock)(nil)
+	_ ssz.EncodableSSZ            = (*SignedBlindedBeaconBlock)(nil)
 
 	_ GenericBeaconBlock = (*BlindedBeaconBlock)(nil)
 	_ GenericBeaconBody  = (*BlindedBeaconBody)(nil)
@@ -115,6 +117,26 @@ func (b *SignedBlindedBeaconBlock) Full(txs *solid.TransactionsSSZ, withdrawals 
 		Signature: b.Signature,
 		Block:     b.Block.Full(txs, withdrawals),
 	}
+}
+
+// GetSlot returns the slot of the inner block.
+// Implements ColumnSyncableSignedBlock interface.
+func (b *SignedBlindedBeaconBlock) GetSlot() uint64 {
+	return b.Block.Slot
+}
+
+// BlockHashSSZ returns the hash of the inner block (not the signed block).
+// Implements ColumnSyncableSignedBlock interface.
+func (b *SignedBlindedBeaconBlock) BlockHashSSZ() ([32]byte, error) {
+	return b.Block.HashSSZ()
+}
+
+// GetBlobKzgCommitments returns blob KZG commitments from the block body.
+// Implements ColumnSyncableSignedBlock interface.
+// Note: BlindedBeaconBlock cannot exist for GLOAS (Blinded() returns error),
+// so this always returns the pre-GLOAS commitments.
+func (b *SignedBlindedBeaconBlock) GetBlobKzgCommitments() *solid.ListSSZ[*KZGCommitment] {
+	return b.Block.Body.GetBlobKzgCommitments()
 }
 
 // Definitions of BlindedBeaconBlock
@@ -357,8 +379,22 @@ func (b *BlindedBeaconBody) DecodeSSZ(buf []byte, version int) error {
 
 	b.ExecutionPayload = NewEth1Header(b.Version)
 
-	err := ssz2.UnmarshalSSZ(buf, version, b.getSchema(false)...)
-	return err
+	if err := ssz2.UnmarshalSSZ(buf, version, b.getSchema(false)...); err != nil {
+		return err
+	}
+
+	// Post-decode fixup: propagate preset-aware limits to decoded attestations and slashings.
+	if b.beaconCfg != nil && b.Version.AfterOrEqual(clparams.ElectraVersion) {
+		b.Attestations.Range(func(_ int, att *solid.Attestation, _ int) bool {
+			att.SetBeaconConfig(b.beaconCfg)
+			return true
+		})
+		b.AttesterSlashings.Range(func(_ int, as *AttesterSlashing, _ int) bool {
+			as.SetVersionWithConfig(b.Version, b.beaconCfg)
+			return true
+		})
+	}
+	return nil
 }
 
 func (b *BlindedBeaconBody) HashSSZ() ([32]byte, error) {
@@ -421,8 +457,12 @@ func (b *BlindedBeaconBody) Full(txs *solid.TransactionsSSZ, withdrawals *solid.
 		PrevRandao:    b.ExecutionPayload.PrevRandao,
 		Transactions:  txs,
 		Withdrawals:   withdrawals,
+		SlotNumber:    b.ExecutionPayload.SlotNumber,
 		version:       b.ExecutionPayload.version,
 		beaconCfg:     b.beaconCfg,
+	}
+	if b.ExecutionPayload.version >= clparams.GloasVersion {
+		executionPayload.BlockAccessList = solid.NewByteListSSZ(b.beaconCfg.MaxBytesPerTransaction)
 	}
 
 	return &BeaconBody{
@@ -492,6 +532,12 @@ func (b *BlindedBeaconBody) GetVoluntaryExits() *solid.ListSSZ[*SignedVoluntaryE
 }
 
 func (b *BlindedBeaconBody) GetBlobKzgCommitments() *solid.ListSSZ[*KZGCommitment] {
+	// [Modified in Gloas:EIP7732] BlindedBeaconBody does not support GLOAS
+	// In GLOAS, blob_kzg_commitments are in signed_execution_payload_bid.message,
+	// which is not available in blinded blocks
+	if b.Version >= clparams.GloasVersion {
+		return nil
+	}
 	return b.BlobKzgCommitments
 }
 
@@ -501,4 +547,16 @@ func (b *BlindedBeaconBody) GetExecutionChanges() *solid.ListSSZ[*SignedBLSToExe
 
 func (b *BlindedBeaconBody) GetExecutionRequests() *ExecutionRequests {
 	return b.ExecutionRequests
+}
+
+func (b *BlindedBeaconBody) GetSignedExecutionPayloadBid() *SignedExecutionPayloadBid {
+	return nil
+}
+
+func (b *BlindedBeaconBody) GetPayloadAttestations() *solid.ListSSZ[*PayloadAttestation] {
+	return nil
+}
+
+func (b *BlindedBeaconBody) GetParentExecutionRequests() *ExecutionRequests {
+	return nil
 }

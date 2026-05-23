@@ -1,12 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Getters unit for the raw package.
-// Exports helpers such as BeaconConfig, Version, GenesisTime, and
-// GenesisValidatorsRoot.
-// Part of the n42el consensus-layer build.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package raw
 
@@ -376,4 +382,85 @@ func (b *BeaconState) DebugPrint(prefix string) {
 
 func (b *BeaconState) GetPendingPartialWithdrawals() *solid.ListSSZ[*solid.PendingPartialWithdrawal] {
 	return b.pendingPartialWithdrawals
+}
+
+func (b *BeaconState) EarliestExitEpoch() uint64 {
+	return b.earliestExitEpoch
+}
+
+func (b *BeaconState) ExitBalanceToConsume() uint64 {
+	return b.exitBalanceToConsume
+}
+
+func (b *BeaconState) GetDepositBalanceToConsume() uint64 {
+	return b.depositBalanceToConsume
+}
+
+func (b *BeaconState) GetPendingDeposits() *solid.ListSSZ[*solid.PendingDeposit] {
+	return b.pendingDeposits
+}
+
+func (b *BeaconState) GetDepositRequestsStartIndex() uint64 {
+	return b.depositRequestsStartIndex
+}
+
+func (b *BeaconState) GetPendingConsolidations() *solid.ListSSZ[*solid.PendingConsolidation] {
+	return b.pendingConsolidations
+}
+
+func (b *BeaconState) GetEarlistConsolidationEpoch() uint64 {
+	return b.earliestConsolidationEpoch
+}
+
+func (b *BeaconState) GetEarlistExitEpoch() uint64 {
+	return b.earliestExitEpoch
+}
+
+func (b *BeaconState) GetExitBalanceToConsume() uint64 {
+	return b.exitBalanceToConsume
+}
+
+func (b *BeaconState) GetConsolidationBalanceToConsume() uint64 {
+	return b.consolidationBalanceToConsume
+}
+
+func (b *BeaconState) GetProposerLookahead() solid.Uint64VectorSSZ {
+	return b.proposerLookahead
+}
+
+// Gloas
+func (b *BeaconState) GetLatestExecutionPayloadBid() *cltypes.ExecutionPayloadBid {
+	return b.latestExecutionPayloadBid
+}
+
+func (b *BeaconState) GetBuilders() *solid.ListSSZ[*cltypes.Builder] {
+	return b.builders
+}
+
+func (b *BeaconState) GetNextWithdrawalBuilderIndex() uint64 {
+	return b.nextWithdrawalBuilderIndex
+}
+
+func (b *BeaconState) GetExecutionPayloadAvailability() *solid.BitVector {
+	return b.executionPayloadAvailability
+}
+
+func (b *BeaconState) GetBuilderPendingPayments() *solid.VectorSSZ[*cltypes.BuilderPendingPayment] {
+	return b.builderPendingPayments
+}
+
+func (b *BeaconState) GetBuilderPendingWithdrawals() *solid.ListSSZ[*cltypes.BuilderPendingWithdrawal] {
+	return b.builderPendingWithdrawals
+}
+
+func (b *BeaconState) GetLatestBlockHash() common.Hash {
+	return b.latestBlockHash
+}
+
+func (b *BeaconState) GetPayloadExpectedWithdrawals() *solid.ListSSZ[*cltypes.Withdrawal] {
+	return b.payloadExpectedWithdrawals
+}
+
+func (b *BeaconState) GetPtcWindow() *solid.VectorSSZ[solid.Uint64VectorSSZ] {
+	return b.ptcWindow
 }

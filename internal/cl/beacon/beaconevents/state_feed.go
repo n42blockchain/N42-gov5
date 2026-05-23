@@ -1,5 +1,3 @@
-//go:build n42el
-
 package beaconevents
 
 import (

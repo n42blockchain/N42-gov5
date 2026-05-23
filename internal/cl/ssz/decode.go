@@ -1,11 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Decode unit for the ssz2 package.
-// Exports helpers such as UnmarshalSSZ.
-// Part of the n42el consensus-layer build.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package ssz2
 
@@ -14,7 +21,7 @@ import (
 	"fmt"
 	"reflect"
 
-	ssz "github.com/n42blockchain/N42/internal/cl/depshim/sszh"
+	"github.com/n42blockchain/N42/internal/cl/depshim/ssz"
 )
 
 /*
@@ -72,6 +79,13 @@ func UnmarshalSSZ(buf []byte, version int, schema ...any) (err error) {
 			// If the element is a byte slice, copy the corresponding data from the buf to the slice
 			copy(obj, buf[position:])
 			position += len(obj)
+		case *bool:
+			if len(buf) < position+1 {
+				return ssz.ErrLowBufferSize
+			}
+			// If the element is a pointer to bool, decode it from the buf
+			*obj = buf[position] != 0
+			position += 1
 		case SizedObjectSSZ:
 			// If the element implements the SizedObjectSSZ interface
 			if obj.Static() {

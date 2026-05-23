@@ -1,11 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2022 The Erigon Authors
+// This file is part of Erigon.
 //
-// Fork unit for the fork package.
-// Exports helpers such as ComputeDomain, ComputeSigningRoot, and Domain.
-// Fork digest and signing domain computation.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package fork
 
@@ -15,7 +22,7 @@ import (
 	"github.com/n42blockchain/N42/internal/cl/cltypes"
 	"github.com/n42blockchain/N42/internal/cl/utils"
 	"github.com/n42blockchain/N42/internal/cl/depshim/common"
-	"github.com/n42blockchain/N42/internal/cl/depshim/sszh"
+	"github.com/n42blockchain/N42/internal/cl/depshim/ssz"
 )
 
 var NO_GENESIS_TIME_ERR error = errors.New("genesis time is not set")

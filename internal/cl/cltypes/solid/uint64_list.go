@@ -1,14 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Uint64 list unit for the solid package.
-// Defines the uint64ListSSZ types.
-// Provides constructors NewUint64ListSSZ and NewUint64ListSSZFromSlice.
-// Exports helpers such as NewUint64ListSSZ, MarshalJSON, UnmarshalJSON, and
-// Static.
-// Fixed-layout SSZ containers with in-place encoding.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package solid
 
@@ -118,6 +122,16 @@ func (arr *uint64ListSSZ) Append(v uint64) {
 func IsUint64SortedSet(set IterableSSZ[uint64]) bool {
 	for i := 0; i < set.Length()-1; i++ {
 		if set.Get(i) >= set.Get(i+1) {
+			return false
+		}
+	}
+	return true
+}
+
+// IsUint64Sorted checks if the list is sorted in non-decreasing order (duplicates allowed). O(N) complexity.
+func IsUint64Sorted(list IterableSSZ[uint64]) bool {
+	for i := 0; i < list.Length()-1; i++ {
+		if list.Get(i) > list.Get(i+1) {
 			return false
 		}
 	}

@@ -1,12 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Lightclient unit for the lightclient_utils package.
-// Exports helpers such as CreateLightClientUpdate, BlockToLightClientHeader,
-// and CreateLightClientBootstrap.
-// Light-client update construction helpers.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package lightclient_utils
 
@@ -127,6 +133,10 @@ func BlockToLightClientHeader(block *cltypes.SignedBeaconBlock) (*cltypes.LightC
 	h := cltypes.NewLightClientHeader(block.Version())
 	h.Beacon = block.SignedBeaconBlockHeader().Header
 	if block.Version() < clparams.CapellaVersion {
+		return h, nil
+	}
+	// [Modified in Gloas:EIP7732] ExecutionPayload not in BeaconBody for GLOAS blocks
+	if block.Version() >= clparams.GloasVersion || block.Block.Body.ExecutionPayload == nil {
 		return h, nil
 	}
 	var err error

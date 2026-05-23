@@ -1,14 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Network unit for the cltypes package.
-// Defines the Metadata, Ping, Root, and LightClientUpdatesByRangeRequest
-// types.
-// Exports helpers such as EncodeSSZ, EncodingSizeSSZ, DecodeSSZ, and
-// MarshalJSON.
-// Beacon chain SSZ data structures used across phases.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package cltypes
 
@@ -17,11 +21,11 @@ import (
 	"strconv"
 
 	"github.com/n42blockchain/N42/internal/cl/clparams"
-	"github.com/n42blockchain/N42/internal/cl/depshim/clonable"
-	"github.com/n42blockchain/N42/internal/cl/depshim/common"
-	"github.com/n42blockchain/N42/internal/cl/depshim/hexutil"
 	ssz2 "github.com/n42blockchain/N42/internal/cl/ssz"
-	"github.com/n42blockchain/N42/lib/types/ssz"
+	"github.com/n42blockchain/N42/internal/cl/depshim/common"
+	"github.com/n42blockchain/N42/internal/cl/depshim/clonable"
+	"github.com/n42blockchain/N42/internal/cl/depshim/hexutil"
+	"github.com/n42blockchain/N42/internal/cl/depshim/ssz"
 )
 
 type Metadata struct {
@@ -250,4 +254,29 @@ func (l *BlobsByRangeRequest) EncodingSizeSSZ() int {
 
 func (*BlobsByRangeRequest) Clone() clonable.Clonable {
 	return &BlobsByRangeRequest{}
+}
+
+/*
+ * ExecutionPayloadEnvelopesByRangeRequest requests execution payload envelopes by slot range.
+ * [New in Gloas:EIP7732]
+ */
+type ExecutionPayloadEnvelopesByRangeRequest struct {
+	StartSlot uint64
+	Count     uint64
+}
+
+func (l *ExecutionPayloadEnvelopesByRangeRequest) EncodeSSZ(buf []byte) ([]byte, error) {
+	return ssz2.MarshalSSZ(buf, &l.StartSlot, &l.Count)
+}
+
+func (l *ExecutionPayloadEnvelopesByRangeRequest) DecodeSSZ(buf []byte, _ int) error {
+	return ssz2.UnmarshalSSZ(buf, 0, &l.StartSlot, &l.Count)
+}
+
+func (l *ExecutionPayloadEnvelopesByRangeRequest) EncodingSizeSSZ() int {
+	return 16
+}
+
+func (*ExecutionPayloadEnvelopesByRangeRequest) Clone() clonable.Clonable {
+	return &ExecutionPayloadEnvelopesByRangeRequest{}
 }
