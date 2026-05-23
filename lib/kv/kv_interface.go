@@ -105,6 +105,11 @@ const (
 	DownloaderDB  Label = 4
 	InMem         Label = 5
 	DiagnosticsDB Label = 6
+	// CaplinDB is the dedicated MDBX environment Caplin (the embedded
+	// consensus layer) owns. Added in Phase 7.4 so block_collector and
+	// other caplin-internal stores can label their environments
+	// distinctly from the main chaindata.
+	CaplinDB Label = 7
 )
 
 func (l Label) String() string {
@@ -123,6 +128,8 @@ func (l Label) String() string {
 		return "inMem"
 	case DiagnosticsDB:
 		return "diagnostics"
+	case CaplinDB:
+		return "caplin"
 	default:
 		return "unknown"
 	}
@@ -144,6 +151,8 @@ func UnmarshalLabel(s string) Label {
 		return InMem
 	case "diagnostics":
 		return DiagnosticsDB
+	case "caplin":
+		return CaplinDB
 	default:
 		panic(fmt.Sprintf("unexpected label: %s", s))
 	}
