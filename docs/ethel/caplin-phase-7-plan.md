@@ -191,13 +191,65 @@ N42 用 `common/transaction` + `common/block` 替代 erigon `execution/types` �
 mirror cherry-pick 需要 erigon → N42 type bridge 层 (alias 或 adapter)。这是
 Phase 7.2.7 单独 task（估 1-2 周）。**Bridge 完成前 Tier 2/3 cherry-pick 阻塞**。
 
-## Phase 7.2.7 — execution/types bridge（next critical step）
+## Phase 7.2.7 — execution/types bridge（DONE 2026-05-23）
 
-待办：
-- 选择策略 A or B:
-  - **A**：cherry-pick `../erigon/execution/types/*` 整层进 `internal/cl/depshim/eltypes/`，作为 caplin 内部的 EL 类型 mirror（与 N42 common/transaction 不冲突，只 caplin 用）
-  - **B**：写 type alias 适配 `execution/types.Transaction = *common/transaction.Transaction` 等（少代码但要细心保证所有 erigon caplin 调的 method 在 N42 type 上有等价）
-- 完成后 Tier 2/3 cherry-pick 可以一次性 land
+执行了策略 B 的精简版 — 不复刻 erigon execution/types 整层，而是给
+现有 depshim/types 扩 Transaction.Type()/GetBlobHashes() +
+DecodeTransactions + BlobTxType constant，再加两个 mini package:
+- `depshim/elmisc` (package name `misc`) — ValidateBlobs stub
+- `depshim/beaconindicies` (package name `beacon_indicies`) —
+  WriteExecutionPayloadEnvelopeIndicies + ReadCanonicalBlockRoot stubs
+
+完整 forkchoice (19 files, 4945 行) cherry-pick 一次性 land。
+
+## Phase 7.3 — clstages framework（DONE 2026-05-23）
+
+`cl/clstages/clstages.go` 78 行 leaf cherry-pick clean。
+Per-stage 实装在 `cl/phase1/stages/*` (6 files / 2383 行) — 每个 stage
+依赖 antiquary / phase1/network / rpc / block_collector / datadir /
+freezeblocks，需 Phase 7.4 这些 subpackage 全 land 后才能 cherry-pick。
+
+## Phase 7.4 — periphery（in progress）
+
+| Subpackage | Files / 行 | 状态 |
+|---|---|---|
+| `validator/validator_params` | 1 / 52 | ✓ (7.2.4) |
+| `pool` | 3 / 333 | ✓ (7.2.4) |
+| `validator/attestation_producer` | 2 / 234 | ✓ |
+| `rpc/interface.go` + BeaconRpcP2P stub | 2 / 95 | ✓ (real impl Phase 7.5) |
+| `depshim/dir` + `depshim/dbcfg` + dbg consts | 5 / 335 | ✓ |
+| `cl/das` (Noop stub) | 2 / 167 | ✓ (7.2.0) |
+| `persistence/blob_storage` (Noop stub) | 1 / 116 | ✓ (7.2.6) |
+| `phase1/forkchoice` (full 19-file port) | 19 / 4945 | ✓ (7.2.1-7.2.7) |
+| `phase1/forkchoice/fork_graph` | 4 / 1166 | ✓ (7.2.5) |
+| `clstages` framework | 1 / 78 | ✓ (7.3) |
+| `cl/antiquary` | 4 / 1896 | TODO (Phase 7.5) |
+| `phase1/network` | 5 / 1985 + 8 child packages | TODO (Phase 7.5) |
+| `phase1/execution_client/block_collector` | 2 / 555 | TODO (needs mdbx.NewMDBX rewrite + types.NewBlockFromStorage + Block.HeaderNoCopy — bundled with 7.5 sentinel rewrite) |
+| `cl/sentinel` (whole subtree) | ~20 files / 5000+ | TODO (Phase 7.5) |
+| `db/datadir` | 1 / 450 | TODO (deps on common/dir done, db/kv/dbcfg done; ready to land in 7.5) |
+| `db/snapshotsync/freezeblocks` | 7 / 4288 | TODO (Phase 7.5) |
+| `phase1/stages/*` (6 stage files) | 6 / 2383 | TODO (blocked on antiquary + network + block_collector + freezeblocks above) |
+
+## Phase 7.5 — sentinel + network (multi-week, follow-on session)
+
+Block_collector partial-attempt notes captured in commit message
+`feat(cl/depshim): extend depshim.Block with Hash/...`: an additional
+N42-side mdbx.NewMDBX signature bridge and depshim.Block.HeaderNoCopy
+accessor are needed; combine with the sentinel sed-pass.
+
+After Phase 7.5 lands the sentinel + network + block_collector +
+datadir + freezeblocks subpackages, Phase 7.3 per-stage cherry-pick
+(`phase1/stages/*` 6 files) becomes mechanical.
+
+## Phase 7.6 — wire stage loop + E2E mainnet test (final session)
+
+Once all of 7.2-7.5 are in:
+- service.go Start() — boot stages framework, wire forkchoice into
+  the stage loop, register sentinel-backed RpcP2P client
+- checkpoint sync URL config wire-up
+- E2E: mainnet beacon checkpoint sync → catch up beacon tip →
+  push newPayload → eth-el catch up EL tip → 12 s live
 
 ### Phase 7.3 — 拉回 phase1/stages (2-3 weeks)
 
