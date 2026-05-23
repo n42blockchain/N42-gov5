@@ -42,30 +42,65 @@ Copy into <datadir>/:
                                                  → ~720 GB
 ```
 
-### Mode 3 — archive (~849 GB datadir input + ?? GB leaves)
+### Mode 3 — archive (~849 GB datadir input; CS derived locally)
 
 ```
 Copy into <datadir>/:
   full files                                      = 720 GB
   chain/freezer/witness.{cidx,NNNN.cdat}          ← 167 GB from D:/N42-eth1177
-  chain/freezer/leaves.{cidx,NNNN.cdat}           ← ???
-                                                 → ~849 GB + leaves
+                                                 → 887 GB shipped
+  (no acctcs/storcs in the manifest — those are LOCALLY DERIVED)
 ```
 
-## ⚠ Blocker — leaves journal absent on disk
+## Bootstrap pipeline per mode
 
-Surveyed disk locations (D:/n42-eth1, D:/n42-eth2, D:/N42-eth1177,
-D:/n42-snapshot): NONE contain a `leaves.cidx` / `leaves.NNNN.cdat`
-freezer table.
+### minimal / full → snapshot-direct (no rebuild)
 
-Implication: **archive mode cannot run leaves-rebuild today on
-existing local data**. Two paths to unblock:
+The snapshot tier (`accounts.* + storage.*`) IS the historical
+state at H₀. eth-el reads it directly via RecSplit + EF; a fresh
+warm-tier MDBX overlays for blocks H₀+1..tip. **No PlainState
+rebuild.** Bootstrap is essentially instant — only opening the
+indexed files.
 
-  1. Re-run `cmd/ethexec` to regenerate leaves from a source
-     (geth ancient at D:/geth/ or witness-replay output). Time:
-     ~hours to multi-day depending on range.
-  2. Skip archive mode entirely for now and only test
-     minimal/full (these don't need leaves — see below).
+### archive → witness execution → CS → RebuildState → PlainState
+
+Two-stage:
+
+1. **witness-replay** (one-shot, multi-day on full chain):
+   Replay each per-block witness through the EVM. Output is the
+   `acctcs` + `storcs` changeset stream. Existing tool:
+   `internal/ethel/witness_replay_pipeline.go` driven by
+   `cmd/ethexec`.
+
+2. **RebuildState** (forward replay of derived CS):
+   `internal/ethel/rebuild_state.go:90` opens the freshly-produced
+   acctcs/storcs and forward-applies every NEW value to
+   PlainState. No EVM during this stage — it's a pure diff stream.
+
+**Terminology correction:** the bootstrap package's "leaves
+journal" comments are STALE. Actual code reads acctcs+storcs. The
+"leaves" naming was retired well before this session; doc text
+should be updated.
+
+**Why archive doesn't ship CS pre-built:** witness is 167 GB,
+CS is 397 GB (acctcs 137 + storcs 260). Shipping witness saves
+230 GB on the wire at the cost of multi-day local CS derivation.
+The publisher pipeline decided this is the right trade for
+clients with disk pressure; clients with spare CPU + bandwidth can
+opt into a pre-built-CS variant later.
+
+So **D:/N42-eth1177 already has the CS derived** from a past
+witness-replay run:
+- `acctcs.cidx` + `acctcs.NNNN.cdat`  (~137 GB)
+- `storcs.cidx` + `storcs.NNNN.cdat`  (~260 GB)
+- `witness.cidx` + `witness.NNNN.cdat` (~167 GB)
+- `senders.cidx` + `senders.NNNN.cdat` (~38 GB)
+
+For a fresh archive bootstrap from the published manifest, ONLY
+witness is in the package. CS is the local computation product.
+For TESTING archive bootstrap today, we can short-circuit by
+using D:/N42-eth1177's already-derived CS directly (skip
+witness-replay) and just run RebuildState.
 
 ## ⚠ Blocker — snapshot-continue not wired in cmd/eth-el
 
@@ -104,19 +139,26 @@ The Caplin merge (Strategy A) is now complete (`commit 0ca2cae9`),
 so the binary builds with -tags n42el. Per task #94, what's not
 yet wired is the bootstrap-mode dispatch + the warm-tier reader.
 
-## Phased plan (1-2 days IF blockers resolved)
+## Phased plan (1-2 days, ONLY task #94 is a hard blocker)
 
 | Phase | Work | Time |
 |:--|:--|--:|
-| 0 | resolve blockers above (leaves regen for archive, task #94 for minimal/full) | days to weeks |
-| 1 | copy snapshot+chaindata+freezer into a fresh datadir per mode | ~30 min IO (86 GB) |
+| 0 | task #94 — snapshot-continue path in cmd/eth-el (minimal/full bootstrap) | 3-5 days |
+| 1 | copy snapshot+chaindata+freezer into a fresh datadir per mode | ~30 min IO (86 GB minimal) |
 | 2 | build cmd/eth-el -tags n42el | 1 min |
 | 3 | smoke-launch eth-el → opens snapshot, fresh warm tier, no work | <1 min |
 | 4 | Caplin connects to mainnet beacon peers + checkpoint syncs | ~10 min |
 | 5 | catch up 55K blocks (minimal) — Engine API receives + EVM executes | 3-12 hours |
 | 6 | observe 12-sec live loop for 1+ hour | observation only |
-| 7 | repeat for full (~30 min more IO) | same compute as minimal |
-| 8 | repeat for archive — full leaves-rebuild from genesis | days to weeks |
+| 7 | repeat for full (~5 hours more IO for 567 GB bodyc) | same compute as minimal |
+| 8a | archive: witness-replay → produce CS (multi-day on full chain) | multi-day |
+| 8b | archive: RebuildState reads derived CS → PlainState | hours |
+| 8c | archive: catch-up + 12s live (same as minimal) | hours-days |
+
+For TESTING archive bootstrap quickly today, skip 8a by reusing
+the CS already derived in D:/N42-eth1177 from a past witness-replay
+run. The published archive manifest ships only witness; CS is
+local-derived in production.
 
 ## What we have NOW that's reusable
 
