@@ -593,6 +593,8 @@ github.com/libp2p/go-libp2p-kad-dht v0.38.0 h1:NToFzwvICo6ghDfSwuTmROCtl9LDXSZT1
 github.com/libp2p/go-libp2p-kad-dht v0.38.0/go.mod h1:g/CefQilAnCMyUH52A6tUGbe17NgQ8q26MaZCA968iI=
 github.com/libp2p/go-libp2p-kbucket v0.8.0 h1:QAK7RzKJpYe+EuSEATAaaHYMYLkPDGC18m9jxPLnU8s=
 github.com/libp2p/go-libp2p-kbucket v0.8.0/go.mod h1:JMlxqcEyKwO6ox716eyC0hmiduSWZZl6JY93mGaaqc4=
+github.com/libp2p/go-libp2p-mplex v0.11.0 h1:0vwpLXRSfkTzshEjETIEgJaVxXvg+orbxYoIb3Ty5qM=
+github.com/libp2p/go-libp2p-mplex v0.11.0/go.mod h1:QrsdNY3lzjpdo9V1goJfPb0O65Nms0sUR8CDAO18f6k=
 github.com/libp2p/go-libp2p-pubsub v0.15.0 h1:cG7Cng2BT82WttmPFMi50gDNV+58K626m/wR00vGL1o=
 github.com/libp2p/go-libp2p-pubsub v0.15.0/go.mod h1:lr4oE8bFgQaifRcoc2uWhWWiK6tPdOEKpUuR408GFN4=
 github.com/libp2p/go-libp2p-record v0.3.1 h1:cly48Xi5GjNw5Wq+7gmjfBiG9HCzQVkiZOUZ8kUl+Fg=
@@ -601,6 +603,8 @@ github.com/libp2p/go-libp2p-routing-helpers v0.7.5 h1:HdwZj9NKovMx0vqq6YNPTh6aaN
 github.com/libp2p/go-libp2p-routing-helpers v0.7.5/go.mod h1:3YaxrwP0OBPDD7my3D0KxfR89FlcX/IEbxDEDfAmj98=
 github.com/libp2p/go-libp2p-testing v0.12.0 h1:EPvBb4kKMWO29qP4mZGyhVzUyR25dvfUIK5WDu6iPUA=
 github.com/libp2p/go-libp2p-testing v0.12.0/go.mod h1:KcGDRXyN7sQCllucn1cOOS+Dmm7ujhfEyXQL5lvkcPg=
+github.com/libp2p/go-mplex v0.7.0 h1:BDhFZdlk5tbr0oyFq/xv/NPGfjbnrsDam1EvutpBDbY=
+github.com/libp2p/go-mplex v0.7.0/go.mod h1:rW8ThnRcYWft/Jb2jeORBmPd6xuG3dGxWN/W168L9EU=
 github.com/libp2p/go-msgio v0.3.0 h1:mf3Z8B1xcFN314sWX+2vOTShIE0Mmn2TXn3YCUQGNj0=
 github.com/libp2p/go-msgio v0.3.0/go.mod h1:nyRM819GmVaF9LX3l03RMh10QdOroF++NBbxAb0mmDM=
 github.com/libp2p/go-netroute v0.4.0 h1:sZZx9hyANYUx9PZyqcgE/E1GUG3iEtTZHUEvdtXT7/Q=
