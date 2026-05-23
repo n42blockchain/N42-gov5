@@ -48,7 +48,11 @@ func startCaplin(ctx context.Context, cfg conf.BeaconCfg, node *ethel.Node) (*ca
 			"recommendation", "for real-chain sync run an external CL (Lighthouse/Prysm) against engine API at :20014; see docs/ethel/external-cl-runbook.md")
 	}
 
-	backend := newEthELBackend(node)
+	// Pass node as both providers: ethel.Node implements both
+	// chaindbProvider (DB) and executionProvider (RwDB / ChainConfig /
+	// Engine / OutFreezer), so the Phase 7.1.1.b real Engine API path
+	// can lazy-build the EngineAPIv4 stack on first ExecutePayload.
+	backend := newEthELBackendWith(node, node)
 	engine := eladapter.New(backend)
 
 	svc := cl.NewService(ctx, cfg, engine)
