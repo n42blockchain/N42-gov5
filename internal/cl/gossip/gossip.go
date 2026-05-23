@@ -1,0 +1,92 @@
+//go:build n42el
+
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
+//
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
+
+package gossip
+
+import (
+	"fmt"
+	"strings"
+)
+
+const (
+	TopicNameBeaconBlock                       = "beacon_block"
+	TopicNameBeaconAggregateAndProof           = "beacon_aggregate_and_proof"
+	TopicNameVoluntaryExit                     = "voluntary_exit"
+	TopicNameProposerSlashing                  = "proposer_slashing"
+	TopicNameAttesterSlashing                  = "attester_slashing"
+	TopicNameBlsToExecutionChange              = "bls_to_execution_change"
+	TopicNameSyncCommitteeContributionAndProof = "sync_committee_contribution_and_proof"
+
+	TopicNameLightClientFinalityUpdate   = "light_client_finality_update"
+	TopicNameLightClientOptimisticUpdate = "light_client_optimistic_update"
+
+	TopicNameExecutionPayload    = "execution_payload"
+	TopicNameExecutionPayloadBid = "execution_payload_bid"
+	TopicNamePayloadAttestation  = "payload_attestation_message"
+	TopicNameProposerPreferences = "proposer_preferences"
+
+	TopicNamePrefixBlobSidecar       = "blob_sidecar_%d"
+	TopicNamePrefixBeaconAttestation = "beacon_attestation_%d"
+	TopicNamePrefixSyncCommittee     = "sync_committee_%d"
+	TopicNamePrefixDataColumnSidecar = "data_column_sidecar_%d"
+)
+
+const SSZSnappyCodec = "ssz_snappy"
+
+// GossipSubD is the libp2p pubsub topic stable mesh target count (matches
+// the Ethereum consensus-layer spec value).
+const GossipSubD = 4
+
+// DecayToZero is the terminal value used when decaying pubsub scoring
+// values toward zero.
+const DecayToZero = 0.01
+
+func IsTopicNameWithSubnet(name string) bool {
+	return IsTopicBeaconAttestation(name) || IsTopicSyncCommittee(name) || IsTopicBlobSidecar(name) || IsTopicDataColumnSidecar(name)
+}
+
+func TopicNameBlobSidecar(d uint64) string {
+	return fmt.Sprintf(TopicNamePrefixBlobSidecar, d)
+}
+
+func TopicNameBeaconAttestation(d uint64) string {
+	return fmt.Sprintf(TopicNamePrefixBeaconAttestation, d)
+}
+
+func TopicNameSyncCommittee(d int) string {
+	return fmt.Sprintf(TopicNamePrefixSyncCommittee, d)
+}
+
+func TopicNameDataColumnSidecar(d uint64) string {
+	return fmt.Sprintf(TopicNamePrefixDataColumnSidecar, d)
+}
+
+func IsTopicBlobSidecar(d string) bool {
+	return strings.HasPrefix(d, "blob_sidecar_")
+}
+
+func IsTopicDataColumnSidecar(d string) bool {
+	return strings.HasPrefix(d, "data_column_sidecar_")
+}
+
+func IsTopicSyncCommittee(d string) bool {
+	return strings.HasPrefix(d, "sync_committee_") && !strings.Contains(d, TopicNameSyncCommitteeContributionAndProof)
+}
+func IsTopicBeaconAttestation(d string) bool {
+	return strings.HasPrefix(d, "beacon_attestation_")
+}
