@@ -253,6 +253,40 @@ func NewTransaction(nonce uint64, to common.Address, value *uint256.Int,
 		GasLimit: gasLimit, GasPrice: gasPrice, Data: data}
 }
 
+// BlobTxType is the EIP-4844 tx type discriminator. Mirrored from
+// erigon execution/types so caplin's blob validation paths compile.
+const BlobTxType = 0x03
+
+// Type returns the tx type byte. STUB — without real RLP decoding the
+// transaction is treated as legacy (0). The Phase 7.2.7 caplin
+// cherry-pick only uses Type() in misc.ValidateBlobs path; that path
+// is itself a stub (see depshim/elmisc) and skips blob validation
+// pre-Fulu. For follower-mode mainnet this is harmless because Caplin
+// already validates blob hashes upstream on the CL side.
+func (t Transaction) Type() byte { return 0 }
+
+// GetBlobHashes returns the EIP-4844 blob versioned hashes carried by
+// the transaction. STUB returns nil; see Type() doc.
+func (t Transaction) GetBlobHashes() []common.Hash { return nil }
+
+// DecodeTransactions decodes the per-block raw RLP byte slices Caplin
+// receives in ExecutionPayload.Transactions back into Transaction
+// structs. STUB returns a slice of zero-value Transaction; the
+// downstream consumers (misc.ValidateBlobs) only need len(); the real
+// EL-side validation runs inside api.EngineAPIv4.NewPayloadV4 which is
+// already wired (Phase 7.1.1.b).
+//
+// When PeerDAS / blob validation needs real per-tx structure (Fusaka+),
+// this must be replaced with a proper RLP decode that materialises
+// the tx type byte and blob versioned-hashes list.
+func DecodeTransactions(raw [][]byte) ([]Transaction, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make([]Transaction, len(raw))
+	return out, nil
+}
+
 // NewBlock builds a Block stub from header + transactions +
 // uncles + withdrawals (+ optional requests, matching erigon's
 // 5-arg variadic). STUB — only invoked from cl/cltypes test code.

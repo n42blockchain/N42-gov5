@@ -39,17 +39,5 @@ type ForkChoiceNode struct {
 	PayloadStatus cltypes.PayloadStatus
 }
 
-// ForkNode is a struct that represents a node in the fork choice tree.
-// Originally defined in forkchoice.go (Tier 3); hoisted here in the N42
-// fork so Tier 0 (interface.go) compiles standalone before later tiers
-// land.
-type ForkNode struct {
-	Slot           uint64      `json:"slot,string"`
-	BlockRoot      common.Hash `json:"block_root"`
-	ParentRoot     common.Hash `json:"parent_root"`
-	JustifiedEpoch uint64      `json:"justified_epoch,string"`
-	FinalizedEpoch uint64      `json:"finalized_epoch,string"`
-	Weight         uint64      `json:"weight,string"`
-	Validity       string      `json:"validity"`
-	ExecutionBlock common.Hash `json:"execution_block_hash"`
-}
+// (ForkNode now lives in forkchoice.go as in upstream; the Phase 7.2.1
+// hoist was removed once Tier 3 landed.)
