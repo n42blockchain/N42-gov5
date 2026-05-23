@@ -314,6 +314,38 @@ func (b *ethELBackend) UpdateForkchoice(
 	return resp.PayloadID[:], nil
 }
 
+// InsertBlock — Phase 7.1.2. Single-block historical import. Delegates
+// to the shared insertBlockViaNewPayload helper (NewPayloadV4 loop).
+//
+// Returns nil for VALID / ACCEPTED, errors for INVALID / SYNCING.
+// Caplin's block_collector treats nil as "block durably stored" and
+// advances its progress marker.
+func (b *ethELBackend) InsertBlock(ctx context.Context, blk *deptypes.Block) error {
+	if err := b.initAPIs(); err != nil {
+		return err
+	}
+	return b.insertBlockViaNewPayload(ctx, blk)
+}
+
+// InsertBlocks — Phase 7.1.2. Batch historical import. Caplin sets
+// wait=true to block until every insertion is durable; we are
+// always synchronous because NewPayloadV4 doesn't return until state
+// is committed, so wait is effectively a no-op flag for us.
+//
+// Stops at the first INVALID / SYNCING block; partial progress is
+// safe because EngineStateAdapter writes per-block state atomically.
+func (b *ethELBackend) InsertBlocks(ctx context.Context, blks []*deptypes.Block, _ bool) error {
+	if err := b.initAPIs(); err != nil {
+		return err
+	}
+	for i, blk := range blks {
+		if err := b.insertBlockViaNewPayload(ctx, blk); err != nil {
+			return fmt.Errorf("InsertBlocks[%d/%d]: %w", i, len(blks), err)
+		}
+	}
+	return nil
+}
+
 // ReadCurrentHeader — Phase 7.1.1.b. Reads the canonical head from
 // rawdb and converts the N42 common/block.Header into a
 // depshim/types.Header so Caplin code that walks the head pointer
@@ -401,6 +433,55 @@ func n42HeaderToDepshim(h *block.Header) *deptypes.Header {
 		out.RequestsHash = &r
 	}
 	return out
+}
+
+// insertBlockViaNewPayload converts a single depshim block to
+// ExecutionPayloadV4 and calls EngineAPIv4.NewPayloadV4. Centralises
+// the InsertBlock / InsertBlocks path so error handling is identical.
+//
+// N42 diverges from erigon ExecutionClientDirect here (it goes
+// chainRW.InsertBlocks → executionModule.InsertBlocks, a pure-storage
+// path); we run full Engine API validation + EVM + state-root check
+// per block instead. See docs/ethel/caplin-phase-7-plan.md for the
+// architecture rationale.
+func (b *ethELBackend) insertBlockViaNewPayload(ctx context.Context, blk *deptypes.Block) error {
+	payload, err := depBlockToExecutionPayloadV4(blk)
+	if err != nil {
+		return fmt.Errorf("convert: %w", err)
+	}
+	// Historical inserts come pre-validated by Caplin; we still surface
+	// what NewPayloadV4 expects but don't have versionedHashes or
+	// executionRequests at hand (caplin's block_collector path doesn't
+	// thread them through). For Cancun+ blocks with blob txs this would
+	// fail validation; revisit when historical blob handling is wired.
+	parentRoot := (*types.Hash)(nil)
+	if h := blk.Header(); h != nil && h.ParentBeaconBlockRoot != nil {
+		v := types.Hash(*h.ParentBeaconBlockRoot)
+		parentRoot = &v
+	}
+	status, err := b.engineV4.NewPayloadV4(ctx, payload, nil, parentRoot, nil)
+	if err != nil {
+		return fmt.Errorf("NewPayloadV4: %w", err)
+	}
+	if status == nil {
+		return errors.New("eth-el: NewPayloadV4 returned nil status")
+	}
+	switch status.Status {
+	case api.PayloadStatusValid, api.PayloadStatusAccepted:
+		return nil
+	case api.PayloadStatusInvalid:
+		msg := "invalid"
+		if status.ValidationError != nil {
+			msg = *status.ValidationError
+		}
+		return fmt.Errorf("eth-el: payload INVALID: %s", msg)
+	case api.PayloadStatusSyncing:
+		// SYNCING from a single-block insert means EL doesn't have
+		// parent state. For historical import this is a hard error —
+		// Caplin is expected to push blocks in order.
+		return errors.New("eth-el: payload SYNCING (parent state missing)")
+	}
+	return fmt.Errorf("eth-el: unexpected payload status %q", status.Status)
 }
 
 // mapPayloadStatus converts the api.PayloadStatusV1.Status string
