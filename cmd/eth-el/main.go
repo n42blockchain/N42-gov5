@@ -103,6 +103,10 @@ func flags() []cli.Flag {
 		&cli.Uint64Flag{Name: "snapshot.max-gap", Usage: "Refuse auto-catchup if behind by more than N blocks (0 = no cap)", Value: 1_000_000},
 		&cli.IntFlag{Name: "snapshot.max-iterations", Usage: "Per-CatchUp delta-apply iteration cap (0 = no cap)"},
 		&cli.DurationFlag{Name: "snapshot.timeout", Usage: "Total budget for the pre-start sync"},
+
+		// Stage 2 G4 — auto mode selection.
+		&cli.StringFlag{Name: "catch-up.mode", Usage: "Catch-up mechanism: auto|off|delta|libp2p|fetch (auto picks based on gap)", Value: "auto"},
+		&cli.Uint64Flag{Name: "catch-up.delta-window", Usage: "Publisher's typical delta retention (blocks). Auto switches to libp2p when gap > this. 0 = unknown", Value: 1_000_000},
 	}
 }
 
@@ -118,12 +122,20 @@ func run(c *cli.Context) error {
 	// only rely on auto-catchup for the per-cycle delta.
 	if src := c.String("snapshot.source"); src != "" {
 		rep, err := snapshotprestart.PreStartSync(c.Context, snapshotprestart.Config{
-			Datadir:   cfg.DataDir,
-			Source:    src,
-			Mode:      c.String("snapshot.mode"),
-			MaxBlocks: c.Uint64("snapshot.max-gap"),
-			MaxIter:   c.Int("snapshot.max-iterations"),
-			Timeout:   c.Duration("snapshot.timeout"),
+			Datadir:     cfg.DataDir,
+			Source:      src,
+			Mode:        c.String("snapshot.mode"),
+			MaxBlocks:   c.Uint64("snapshot.max-gap"),
+			MaxIter:     c.Int("snapshot.max-iterations"),
+			Timeout:     c.Duration("snapshot.timeout"),
+			ModeRequest: c.String("catch-up.mode"),
+			DeltaWindow: c.Uint64("catch-up.delta-window"),
+			// libp2p availability is true if eth-el has the
+			// catchup pipeline wired (which it always does via
+			// catchup.New below). When upstream peers aren't
+			// reachable, the libp2p stage will surface that
+			// at sync time — not at pre-start.
+			Libp2pAvailable: true,
 		})
 		if err != nil {
 			log.Error("eth-el: snapshot pre-start sync failed",
@@ -135,9 +147,10 @@ func run(c *cli.Context) error {
 			log.Info("eth-el: snapshot pre-start skipped (no source)")
 		} else if rep.WasCurrent {
 			log.Info("eth-el: snapshot pre-start OK (already current)",
-				"height", rep.FinalHeight)
+				"height", rep.FinalHeight, "strategy", rep.Strategy)
 		} else {
-			log.Info("eth-el: snapshot pre-start applied deltas",
+			log.Info("eth-el: snapshot pre-start ran",
+				"strategy", rep.Strategy,
 				"deltas", rep.DeltasApplied,
 				"start_height", rep.StartHeight,
 				"final_height", rep.FinalHeight,
