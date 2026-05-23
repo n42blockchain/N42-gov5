@@ -32,3 +32,12 @@ func WriteExecutionPayloadEnvelopeIndicies(
 ) error {
 	return nil
 }
+
+// ReadCanonicalBlockRoot returns the canonical beacon block root at the
+// given slot. STUB: returns zero-hash, which downstream code treats as
+// "unknown". Real impl needed for fork-choice walks and proposer
+// attestation production; lands in Phase 7.5 when the persistence
+// layer is wired.
+func ReadCanonicalBlockRoot(_ kv.Tx, _ uint64) (common.Hash, error) {
+	return common.Hash{}, nil
+}
