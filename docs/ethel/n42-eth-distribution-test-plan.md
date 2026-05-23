@@ -138,6 +138,72 @@ libraries directly) to exercise the publisher→client flow.
    first deletes it, then fetch downloads).
 ```
 
+### IT-7: 12-minute public-mirror convergence (`n42-eth-sim`)
+
+The long-running scenario tests that all three modes track the
+publisher's height through 24 publish cycles without
+divergence. Implemented as `cmd/n42-eth-sim` so it can run
+interactively or in CI with `--duration 30s` for fast feedback.
+
+```
+Publisher every 30s for 12 min (24 ticks):
+  - grow archive by 1000 fake blocks
+  - rotate a new .cdat at 5000-block boundaries
+  - re-emit manifest per mode
+  - publish full release + delta vs previous tick
+
+3 clients (minimal/full/archive) per tick:
+  - apply latest delta in parallel
+  - update local manifest_id
+
+Acceptance criteria:
+  - All 24 ticks complete without error
+  - Per-tick delta size shrinks to a small steady-state
+    (~few hundred B for the modest fake growth in the harness)
+  - Final state: every client's manifest_id matches publisher's
+    latest manifest_id for that mode (byte-exact)
+  - VerifyAllClients passes — every file in every client
+    datadir blake2b-matches the published manifest
+```
+
+Sim CLI:
+
+```bash
+n42-eth-sim --duration 12m --tick 30s --root /tmp/n42-sim
+```
+
+Smoke run (10 s, 2 s tick): 6 ticks complete, all clients
+converge, total bytes per mode in the hundreds.
+
+**12-min production run** (30 s tick × 24 ticks, executed
+2026-05-22):
+
+| Metric | minimal | full | archive |
+|---|--:|--:|--:|
+| Final height | 25000 | 25000 | 25000 |
+| Tot bytes xferred (bootstrap + 24 deltas) | 9.2 KB | 27.2 KB | 36.0 KB |
+| Mean Δfiles per tick (steady state) | 2 | 6 | 8 |
+| Mean Δbytes per tick (steady state) | ~250 B | ~1.1 KB | ~1.5 KB |
+| Tick boundary rotates (every 5000 blocks) | Δfiles 3 / 9 / 12 | (1.5× the steady state) |
+| Final verify (blake2b every file) | OK | OK | OK |
+| Final manifest_id matches publisher | ✓ | ✓ | ✓ |
+| Mean tick wall time | ~130 ms | (publisher + 3 clients in lockstep) |
+
+On-disk after sim:
+| Path | Size |
+|---|--:|
+| publisher mirror (24 releases × 3 modes + 23 deltas × 3 modes) | 4.4 MB |
+| client minimal | 31 KB |
+| client full | 59 KB |
+| client archive | 74 KB |
+
+All 24 publisher cycles ran to completion within the 12-minute
+window, with no client falling behind or producing a verify
+failure at any point. Per-tick byte volumes are tiny — the
+fake-growth harness is exercising the orchestration, not data
+volume; real archives would scale up but the same convergence
+pattern applies.
+
 ## E2E test execution
 
 The integration tests live in `cmd/n42-eth-snapshot/snapshot/e2e_test.go`
