@@ -21,7 +21,12 @@ import (
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/api"
+	"github.com/n42blockchain/N42/internal/cl/clparams"
 	"github.com/n42blockchain/N42/internal/cl/cltypes"
+	"github.com/n42blockchain/N42/internal/cl/cltypes/solid"
+	depcommon "github.com/n42blockchain/N42/internal/cl/depshim/common"
+	"github.com/n42blockchain/N42/internal/cl/depshim/engineapi/engine_types"
+	dephexutil "github.com/n42blockchain/N42/internal/cl/depshim/hexutil"
 	deptypes "github.com/n42blockchain/N42/internal/cl/depshim/types"
 )
 
@@ -226,4 +231,154 @@ func depBlockToExecutionPayloadV4(blk *deptypes.Block) (*api.ExecutionPayloadV4,
 		BlobGasUsed:   blobGasUsed,
 		ExcessBlobGas: excessBlobGas,
 	}, nil
+}
+
+// --- Phase 7.4 reverse converters (api → caplin) -------------------------
+
+// depAttrsToAPIv3 converts the depshim PayloadAttributes that Caplin
+// passes to UpdateForkchoice into the api.PayloadAttributesV3 form
+// EngineAPIBlob.ForkchoiceUpdatedV3 expects.
+//
+// V3 requires ParentBeaconBlockRoot non-nil; we trust the caller to
+// pass it for Cancun+ slots (Caplin enforces this upstream).
+// Withdrawals shape carries 1:1 because depshim.Withdrawal and
+// api.Withdrawal mirror the EIP-4895 layout.
+func depAttrsToAPIv3(in *engine_types.PayloadAttributes) *api.PayloadAttributesV3 {
+	if in == nil {
+		return nil
+	}
+	out := &api.PayloadAttributesV3{
+		Timestamp:             hexutil.Uint64(in.Timestamp),
+		PrevRandao:            types.Hash(in.PrevRandao),
+		SuggestedFeeRecipient: types.Address(in.SuggestedFeeRecipient),
+	}
+	if in.Withdrawals != nil {
+		out.Withdrawals = make([]*api.Withdrawal, len(in.Withdrawals))
+		for i, w := range in.Withdrawals {
+			out.Withdrawals[i] = &api.Withdrawal{
+				Index:          hexutil.Uint64(w.Index),
+				ValidatorIndex: hexutil.Uint64(w.ValidatorIndex),
+				Address:        types.Address(w.Address),
+				Amount:         hexutil.Uint64(w.Amount),
+			}
+		}
+	}
+	if in.ParentBeaconBlockRoot != nil {
+		h := types.Hash(*in.ParentBeaconBlockRoot)
+		out.ParentBeaconBlockRoot = &h
+	}
+	return out
+}
+
+// uint64ToBaseFeeBytes32 is the inverse of extractBaseFeePerGasUint64:
+// converts a single base-fee uint64 back into the 32-byte
+// little-endian wire form that cltypes.Eth1Block.BaseFeePerGas uses.
+func uint64ToBaseFeeBytes32(v uint64) [32]byte {
+	var out [32]byte
+	out[0] = byte(v)
+	out[1] = byte(v >> 8)
+	out[2] = byte(v >> 16)
+	out[3] = byte(v >> 24)
+	out[4] = byte(v >> 32)
+	out[5] = byte(v >> 40)
+	out[6] = byte(v >> 48)
+	out[7] = byte(v >> 56)
+	return out
+}
+
+// executionPayloadV3ToEth1Block converts the api.ExecutionPayloadV3
+// that EngineAPIBlob.GetPayloadV3 returns into a cltypes.Eth1Block,
+// the form Caplin's builder cache stores.
+//
+// This is the inverse direction of eth1BlockToExecutionPayloadV4 (used
+// during NewPayload). Used by GetAssembledBlock so the builder result
+// flows back through Caplin's proposer path.
+//
+// LogsBloom + Transactions are deep-copied so the returned block
+// doesn't alias the api response's buffers; downstream consumers may
+// retain the Eth1Block while the api response goes out of scope.
+func executionPayloadV3ToEth1Block(p *api.ExecutionPayloadV3) (*cltypes.Eth1Block, error) {
+	if p == nil {
+		return nil, errors.New("executionPayloadV3ToEth1Block: nil payload")
+	}
+	// V3 is Cancun (Deneb on the CL side).
+	beaconCfg := &clparams.MainnetBeaconConfig
+	blk := cltypes.NewEth1Block(clparams.DenebVersion, beaconCfg)
+	blk.ParentHash = depcommon.Hash(p.ParentHash)
+	blk.FeeRecipient = depcommon.Address(p.FeeRecipient)
+	blk.StateRoot = depcommon.Hash(p.StateRoot)
+	blk.ReceiptsRoot = depcommon.Hash(p.ReceiptsRoot)
+	if len(p.LogsBloom) != len(blk.LogsBloom) {
+		return nil, fmt.Errorf("logsBloom: got %d bytes, want %d", len(p.LogsBloom), len(blk.LogsBloom))
+	}
+	copy(blk.LogsBloom[:], p.LogsBloom)
+	blk.PrevRandao = depcommon.Hash(p.PrevRandao)
+	blk.BlockNumber = uint64(p.BlockNumber)
+	blk.GasLimit = uint64(p.GasLimit)
+	blk.GasUsed = uint64(p.GasUsed)
+	blk.Time = uint64(p.Timestamp)
+	blk.Extra = solid.NewExtraData()
+	if len(p.ExtraData) > 0 {
+		blk.Extra.SetBytes(append([]byte(nil), p.ExtraData...))
+	}
+	blk.BaseFeePerGas = uint64ToBaseFeeBytes32(uint64(p.BaseFeePerGas))
+	blk.BlockHash = depcommon.Hash(p.BlockHash)
+
+	// Transactions: deep-copy each entry so the SSZ wrapper owns
+	// the bytes.
+	rawTxs := make([][]byte, len(p.Transactions))
+	for i, raw := range p.Transactions {
+		rawTxs[i] = append([]byte(nil), raw...)
+	}
+	blk.Transactions = solid.NewTransactionsSSZFromTransactions(rawTxs)
+
+	// Withdrawals: cltypes uses *solid.ListSSZ[*Withdrawal]; for
+	// MainnetBeaconConfig the max is 16 per slot post-Capella.
+	if p.Withdrawals != nil {
+		const withdrawalsListSize = 16
+		const withdrawalRecordSize = 44 // 8 + 8 + 20 + 8
+		wlist := solid.NewStaticListSSZ[*cltypes.Withdrawal](withdrawalsListSize, withdrawalRecordSize)
+		for _, w := range p.Withdrawals {
+			wlist.Append(&cltypes.Withdrawal{
+				Index:     uint64(w.Index),
+				Validator: uint64(w.ValidatorIndex),
+				Address:   depcommon.Address(w.Address),
+				Amount:    uint64(w.Amount),
+			})
+		}
+		blk.Withdrawals = wlist
+	}
+
+	if p.BlobGasUsed != nil {
+		blk.BlobGasUsed = uint64(*p.BlobGasUsed)
+	}
+	if p.ExcessBlobGas != nil {
+		blk.ExcessBlobGas = uint64(*p.ExcessBlobGas)
+	}
+	return blk, nil
+}
+
+// apiBlobsBundleToDepshim converts the api.BlobsBundleV1 produced by
+// GetPayloadV3 to the depshim engine_types.BlobsBundle Caplin uses.
+// The two structs share the wire layout but are distinct named types.
+// Nil-safe.
+func apiBlobsBundleToDepshim(in *api.BlobsBundleV1) *engine_types.BlobsBundle {
+	if in == nil {
+		return nil
+	}
+	out := &engine_types.BlobsBundle{
+		Commitments: make([]dephexutil.Bytes, len(in.Commitments)),
+		Proofs:      make([]dephexutil.Bytes, len(in.Proofs)),
+		Blobs:       make([]dephexutil.Bytes, len(in.Blobs)),
+	}
+	for i, c := range in.Commitments {
+		out.Commitments[i] = dephexutil.Bytes(append([]byte(nil), c...))
+	}
+	for i, p := range in.Proofs {
+		out.Proofs[i] = dephexutil.Bytes(append([]byte(nil), p...))
+	}
+	for i, b := range in.Blobs {
+		out.Blobs[i] = dephexutil.Bytes(append([]byte(nil), b...))
+	}
+	return out
 }

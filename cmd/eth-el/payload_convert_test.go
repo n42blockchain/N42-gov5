@@ -19,12 +19,14 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/cl/clparams"
 	"github.com/n42blockchain/N42/internal/cl/cltypes"
 	"github.com/n42blockchain/N42/internal/cl/cltypes/solid"
 	depcommon "github.com/n42blockchain/N42/internal/cl/depshim/common"
+	"github.com/n42blockchain/N42/internal/cl/depshim/engineapi/engine_types"
 	"github.com/n42blockchain/N42/internal/cl/phase1/execution_client"
 )
 
@@ -288,6 +290,161 @@ func TestN42HeaderToDepshim_FieldMapping(t *testing.T) {
 	in.Extra[0] = 'X'
 	if string(out.Extra) == "Xanity" {
 		t.Errorf("Extra was aliased to source slice")
+	}
+}
+
+func TestDepAttrsToAPIv3_FieldMapping(t *testing.T) {
+	root := depcommon.Hash{0x99}
+	in := &engine_types.PayloadAttributes{
+		Timestamp:             1_747_000_000,
+		PrevRandao:            depcommon.Hash{0x11},
+		SuggestedFeeRecipient: depcommon.Address{0x22},
+		Withdrawals: []*engine_types.Withdrawal{
+			{Index: 1, ValidatorIndex: 5, Address: depcommon.Address{0xaa}, Amount: 1_000_000_000},
+			{Index: 2, ValidatorIndex: 6, Address: depcommon.Address{0xbb}, Amount: 2_000_000_000},
+		},
+		ParentBeaconBlockRoot: &root,
+	}
+	out := depAttrsToAPIv3(in)
+	if out == nil {
+		t.Fatalf("got nil")
+	}
+	if uint64(out.Timestamp) != 1_747_000_000 {
+		t.Errorf("Timestamp: %d", uint64(out.Timestamp))
+	}
+	if out.PrevRandao != (types.Hash{0x11}) {
+		t.Errorf("PrevRandao mismatch")
+	}
+	if out.SuggestedFeeRecipient != (types.Address{0x22}) {
+		t.Errorf("FeeRecipient mismatch")
+	}
+	if len(out.Withdrawals) != 2 {
+		t.Fatalf("Withdrawals: %d", len(out.Withdrawals))
+	}
+	if uint64(out.Withdrawals[0].Amount) != 1_000_000_000 {
+		t.Errorf("Withdrawal[0].Amount: %d", uint64(out.Withdrawals[0].Amount))
+	}
+	if out.ParentBeaconBlockRoot == nil || *out.ParentBeaconBlockRoot != (types.Hash{0x99}) {
+		t.Errorf("ParentBeaconBlockRoot mismatch: %v", out.ParentBeaconBlockRoot)
+	}
+}
+
+func TestDepAttrsToAPIv3_NilSafety(t *testing.T) {
+	if got := depAttrsToAPIv3(nil); got != nil {
+		t.Errorf("expected nil from nil input; got %v", got)
+	}
+	out := depAttrsToAPIv3(&engine_types.PayloadAttributes{Timestamp: 42})
+	if out == nil || out.ParentBeaconBlockRoot != nil || out.Withdrawals != nil {
+		t.Errorf("missing optional fields must stay nil; got %+v", out)
+	}
+}
+
+func TestUint64ToBaseFeeBytes32_RoundtripWithExtractBaseFee(t *testing.T) {
+	cases := []uint64{0, 1, 1_000_000_000, 100_000_000_000_000, ^uint64(0)}
+	for _, v := range cases {
+		b32 := uint64ToBaseFeeBytes32(v)
+		got, err := extractBaseFeePerGasUint64(b32)
+		if err != nil {
+			t.Errorf("v=%d: extract err=%v", v, err)
+			continue
+		}
+		if uint64(got) != v {
+			t.Errorf("v=%d: roundtrip got=%d", v, uint64(got))
+		}
+	}
+}
+
+func TestExecutionPayloadV3ToEth1Block_FieldMapping(t *testing.T) {
+	blobGas := hexutil.Uint64(131072)
+	excess := hexutil.Uint64(0)
+	in := &api.ExecutionPayloadV3{
+		ParentHash:    types.Hash{0x11},
+		FeeRecipient:  types.Address{0x22},
+		StateRoot:     types.Hash{0x33},
+		ReceiptsRoot:  types.Hash{0x44},
+		LogsBloom:     hexutil.Bytes(make([]byte, 256)),
+		PrevRandao:    types.Hash{0x55},
+		BlockNumber:   25_101_867,
+		GasLimit:      30_000_000,
+		GasUsed:       12_345,
+		Timestamp:     1_747_000_000,
+		ExtraData:     hexutil.Bytes("p74-test"),
+		BaseFeePerGas: 7_500_000_000,
+		BlockHash:     types.Hash{0x66},
+		Transactions: []hexutil.Bytes{
+			hexutil.Bytes{0xaa, 0xbb},
+			hexutil.Bytes{0xcc, 0xdd, 0xee},
+		},
+		Withdrawals: []*api.Withdrawal{
+			{Index: 1, ValidatorIndex: 5, Address: types.Address{0x77}, Amount: 1_000_000_000},
+		},
+		BlobGasUsed:   &blobGas,
+		ExcessBlobGas: &excess,
+	}
+	out, err := executionPayloadV3ToEth1Block(in)
+	if err != nil {
+		t.Fatalf("conversion: %v", err)
+	}
+	if out.ParentHash != (depcommon.Hash{0x11}) {
+		t.Errorf("ParentHash mismatch")
+	}
+	if out.BlockNumber != 25_101_867 {
+		t.Errorf("BlockNumber: %d", out.BlockNumber)
+	}
+	if out.BlockHash != (depcommon.Hash{0x66}) {
+		t.Errorf("BlockHash mismatch")
+	}
+	if string(out.Extra.Bytes()) != "p74-test" {
+		t.Errorf("Extra: %q", string(out.Extra.Bytes()))
+	}
+	// BaseFee roundtrip
+	rev, err := extractBaseFeePerGasUint64(out.BaseFeePerGas)
+	if err != nil || uint64(rev) != 7_500_000_000 {
+		t.Errorf("BaseFee roundtrip: rev=%d err=%v", uint64(rev), err)
+	}
+	if out.BlobGasUsed != 131072 {
+		t.Errorf("BlobGasUsed: %d", out.BlobGasUsed)
+	}
+	if out.Transactions == nil || len(out.Transactions.UnderlyngReference()) != 2 {
+		t.Errorf("Transactions count mismatch")
+	}
+	if out.Withdrawals == nil || out.Withdrawals.Len() != 1 {
+		t.Errorf("Withdrawals count mismatch")
+	}
+}
+
+func TestExecutionPayloadV3ToEth1Block_NilRejected(t *testing.T) {
+	if _, err := executionPayloadV3ToEth1Block(nil); err == nil {
+		t.Errorf("expected error on nil input")
+	}
+}
+
+func TestApiBlobsBundleToDepshim_FieldMapping(t *testing.T) {
+	in := &api.BlobsBundleV1{
+		Commitments: []hexutil.Bytes{{0xaa}, {0xbb}},
+		Proofs:      []hexutil.Bytes{{0xcc}, {0xdd}},
+		Blobs:       []hexutil.Bytes{{0xee}, {0xff}},
+	}
+	out := apiBlobsBundleToDepshim(in)
+	if out == nil {
+		t.Fatalf("nil output")
+	}
+	if len(out.Commitments) != 2 || len(out.Proofs) != 2 || len(out.Blobs) != 2 {
+		t.Errorf("counts mismatch: c=%d p=%d b=%d", len(out.Commitments), len(out.Proofs), len(out.Blobs))
+	}
+	if !bytes.Equal(out.Commitments[0], []byte{0xaa}) {
+		t.Errorf("Commitments[0] mismatch")
+	}
+	// Ownership: mutating input must not corrupt output.
+	in.Blobs[0][0] = 0x00
+	if bytes.Equal(out.Blobs[0], []byte{0x00}) {
+		t.Errorf("Blobs were aliased to source")
+	}
+}
+
+func TestApiBlobsBundleToDepshim_NilSafety(t *testing.T) {
+	if got := apiBlobsBundleToDepshim(nil); got != nil {
+		t.Errorf("expected nil output for nil input")
 	}
 }
 
