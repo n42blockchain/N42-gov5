@@ -70,14 +70,16 @@ func main() {
 				fmt.Printf("  %s: cursor err %v\n", t, cerr)
 				continue
 			}
-			n := uint64(0)
-			for k, _, e := c.First(); k != nil; k, _, e = c.Next() {
-				if e != nil {
-					break
-				}
-				n++
-			}
+			// MDBX Count() is O(1) — reads the stored entry count
+			// from the table's metadata page. Much faster than a
+			// full cursor walk over 175M+ rows (which would force
+			// the entire B-tree into the page cache).
+			n, cnterr := c.Count()
 			c.Close()
+			if cnterr != nil {
+				fmt.Printf("  %-20s count err %v\n", t, cnterr)
+				continue
+			}
 			fmt.Printf("  %-20s entries=%d\n", t, n)
 		}
 		fmt.Println("--- (no changes made) ---")
