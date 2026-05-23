@@ -1,0 +1,148 @@
+# Caplin Phase 7 — Implementation Plan
+
+**Status:** Planning + Phase 7.1 sub-task started 2026-05-23
+**Goal:** N42 自己跑 Ethereum CL — `cmd/eth-el --caplin.enabled=true`
+能 checkpoint-sync mainnet beacon → 推 newPayload → eth-el 真链 catch-up
++ 12s live，不依赖外部 Lighthouse/Prysm。
+**Effort estimate:** 6-12 weeks (multi-session work).
+
+## 现状盘点（2026-05-23）
+
+### N42 `internal/cl/` 已有
+
+```
+abstract/    beacon/    clparams/    cltypes/    coverage/    depshim/
+eladapter/   fork/      kvadapter/   merkle_tree/ monitor/    phase1/{core,execution_client}
+service.go (Phase 6 stub — Start() 只开 MDBX)
+ssz/         transition/ utils/
+```
+
+### 缺失（Strategy A wholesale 时被删）
+
+```
+phase1/forkchoice/   — head 决策 + LMD-GHOST + checkpoint
+phase1/network/      — beacon p2p protocol handlers + sync committee
+phase1/stages/       — sync 状态机
+p2p/                 — libp2p config + gater + transport
+gossip/              — gossipsub topic + 序列化
+sentinel/            — discv5 + ENR + beacon p2p mesh entry point
+clstages/            — stage loop framework
+antiquary/           — beacon historical antiquary (segment 化历史 archive)
+aggregation/         — attestation aggregation
+pool/                — operations pool (slashings, exits, attestations)
+das/                 — data availability sampling
+persistence/         — beacon block + state persistence
+gossip + rpc + sentinel_proto + ...
+```
+
+### eladapter stub 现状
+
+| Method | 状态 | 真实化优先级 |
+|---|---|---|
+| `IsCanonicalHash` | ✓ wired | — |
+| `HasBlock` | ✓ wired | — |
+| `Ready` | ✓ wired | — |
+| `NewPayload` | stub | **P0** (sync 关键路径) |
+| `ForkChoiceUpdate` | stub | **P0** (head 决策) |
+| `CurrentHeader` | stub | **P0** (Caplin 读 EL head) |
+| `InsertBlock(s)` | stub | P1 (历史 import) |
+| `GetBodiesByRange/Hashes` | stub | P1 (backfill) |
+| `GetAssembledBlock` | stub | P2 (block production；validator 自跑才用) |
+| `GetBlobs` | stub | P2 (4844 blob store) |
+
+## Phase 拆分
+
+### Phase 7.1 — eladapter 全实装 (1-2 weeks)
+
+不依赖 phase1/* 子包，先用现有 `internal/api/EngineAPIv4` + `EngineStateAdapter` 实现 in-process Engine API call。
+
+**子任务**:
+- [ ] 7.1.1 `NewPayload(blocks)` → `EngineStateAdapter.ExecutePayload` per block
+- [ ] 7.1.2 `ForkChoiceUpdate(head, safe, finalized)` → `EngineStateAdapter.ForkchoiceUpdated`
+- [ ] 7.1.3 `CurrentHeader()` → `modules/rawdb.ReadCurrentHeader + ReadHeader`
+- [ ] 7.1.4 `InsertBlock(s)` → bridge to `internal/ethel/executor` historical import
+- [ ] 7.1.5 `GetBodiesByRange/Hashes` → `rawdb.ReadBodies` decode
+- [ ] 7.1.6 `GetAssembledBlock` → `EngineAPIv4.GetPayloadV3` (defer if no producer)
+- [ ] 7.1.7 `GetBlobs` → blob store (defer — Phase 7.2.5)
+- [ ] 7.1.8 单元测试 + 集成测试 (mock CL → eladapter → real EL)
+
+完成后效果：phase1 stage loop 一旦回来，就有 working ExecutionEngine 接口。
+
+### Phase 7.2 — 拉回 phase1/forkchoice (1-2 weeks)
+
+从 erigon cherry-pick + 适配 N42 fork。
+
+**子任务**:
+- [ ] 7.2.1 cp -r ../erigon/cl/phase1/forkchoice → internal/cl/phase1/forkchoice
+- [ ] 7.2.2 替换 erigon import → n42blockchain/N42 import
+- [ ] 7.2.3 适配 cltypes / clparams 差异（N42 fork 早于 erigon 主线，可能少 Gloas 等新 fork）
+- [ ] 7.2.4 build tag n42el 整合
+- [ ] 7.2.5 单元测试（erigon 上游测试也一起拉，跑 PASS）
+- [ ] 7.2.6 fork choice store 持久化：MDBX 表 schema
+
+### Phase 7.3 — 拉回 phase1/stages (2-3 weeks)
+
+CL sync 状态机：BeaconChainStage, HeadersStage, BeaconStateStage, SyncCommitteeStage 等。
+
+**子任务**:
+- [ ] 7.3.1 cp -r ../erigon/cl/phase1/stages → internal/cl/phase1/stages
+- [ ] 7.3.2 cp -r ../erigon/cl/clstages → internal/cl/clstages
+- [ ] 7.3.3 适配 staged_sync 框架到 N42 service 风格
+- [ ] 7.3.4 接 forkchoice (Phase 7.2)
+- [ ] 7.3.5 接 eladapter (Phase 7.1)
+- [ ] 7.3.6 单元测试
+
+### Phase 7.4 — 拉回 p2p + sentinel (2-3 weeks)
+
+libp2p beacon p2p mesh + discv5 + ENR + GossipSub。
+
+**子任务**:
+- [ ] 7.4.1 cp -r ../erigon/cl/p2p → internal/cl/p2p
+- [ ] 7.4.2 cp -r ../erigon/cl/gossip → internal/cl/gossip
+- [ ] 7.4.3 cp -r ../erigon/cl/sentinel → internal/cl/sentinel
+- [ ] 7.4.4 适配 N42 libp2p 配置（复用 internal/p2p 已有 libp2p 选项）
+- [ ] 7.4.5 端口 9000 TCP + 9000 UDP 真 listen
+- [ ] 7.4.6 mainnet bootnode ENR list 配置
+- [ ] 7.4.7 单元测试 (mock peer mesh)
+
+### Phase 7.5 — 拉回 phase1/network (1-2 weeks)
+
+beacon p2p protocol handlers + sync committee + 投票 + attestation。
+
+**子任务**:
+- [ ] 7.5.1 cp -r ../erigon/cl/phase1/network → internal/cl/phase1/network
+- [ ] 7.5.2 cp -r ../erigon/cl/{aggregation,pool,persistence,antiquary} (按需)
+- [ ] 7.5.3 配 RPC protocol handler (beacon_chain_v1, status, goodbye, ping)
+- [ ] 7.5.4 配 gossip 主题 (beacon_block, attestation_*, sync_committee_*)
+
+### Phase 7.6 — Service.Start wire 起来 + E2E mainnet test (1 week)
+
+**子任务**:
+- [ ] 7.6.1 service.go Start() 加 stage loop 启动
+- [ ] 7.6.2 checkpoint sync URL config + checkpoint sync 启动
+- [ ] 7.6.3 E2E：从 mainnet beacon checkpoint sync → catch up beacon tip
+- [ ] 7.6.4 E2E：beacon head 推 newPayload → eth-el catch up EL tip
+- [ ] 7.6.5 12s live loop 验证
+- [ ] 7.6.6 文档：cmd/eth-el --caplin.enabled 正式 production-ready
+
+## 测试目标
+
+- **Phase 7.1**：unit + integration tests 跑 mock CL → eladapter → real EL，验 NewPayload/FCU 端到端
+- **Phase 7.2-7.5**：每子包拉回时跑 erigon 上游对应 unit tests
+- **Phase 7.6**：E2E mainnet sync test —— 与外部 Lighthouse 对比 sync 速度 + final state root 一致
+
+## 风险点
+
+1. **N42 fork 与 erigon 漂移**：cltypes/clparams 已有差异（Gloas 等新 fork），cherry-pick 时要适配
+2. **MDBX 版本差异**：erigon Caplin 用最新 mdbx-go，N42 锁定老版本（don't upgrade holiman/uint256 类规则）
+3. **依赖循环**：phase1/{forkchoice, stages, network} 互相依赖；拉的顺序要按 dep graph 走
+4. **测试基础设施**：erigon 用 ginkgo / testify，N42 主用 testing — 选一种风格统一
+5. **mainnet bootnode + peer 发现**：discv5 网络可能 IP rate-limit，需用稳定 outbound
+
+## 第一步交付（本 session）
+
+Phase 7.1.1 — `eladapter.NewPayload` 真实化（最优先且无 phase1/* 依赖）。
+设计：用 `internal/api/EngineStateAdapter`（已有真实现）做 in-process call，
+不走 HTTP / JWT 一层，直接 Go 方法调用。
+
+接下来 Sub-task 列在 task tracker。
