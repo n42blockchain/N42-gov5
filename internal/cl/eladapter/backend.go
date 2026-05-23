@@ -94,6 +94,36 @@ type Backend interface {
 	// follow-up beyond Phase 7.1.
 	GetBodiesByRange(ctx context.Context, start, count uint64) ([]*deptypes.RawBody, error)
 	GetBodiesByHashes(ctx context.Context, hashes []depcommon.Hash) ([]*deptypes.RawBody, error)
+
+	// Phase 7.1.4 — Block production path. Caplin in proposer role
+	// calls GetAssembledBlock to fetch an EL-assembled payload + blobs
+	// bundle + execution-requests bundle + block value. Required
+	// only when the local node is a mainnet validator AND the slot
+	// is its propose slot.
+	//
+	// N42 eth-el currently runs in follower mode (no validator key
+	// management, no attestation upload). The Backend may return
+	// errBlockProductionNotWired / ErrNotImplemented; Caplin's stage
+	// loop falls through to a non-proposer path. Wiring this to
+	// EngineAPIBlob.GetPayloadV3 + a builder is Phase 7.4 work.
+	GetAssembledBlock(
+		ctx context.Context,
+		idBytes []byte,
+		version clparams.StateVersion,
+	) (*cltypes.Eth1Block, *engine_types.BlobsBundle, *typesproto.RequestsBundle, *big.Int, error)
+
+	// Phase 7.1.5 — Blob retrieval (EIP-4844). Caplin queries this
+	// when validating attestations that reference blob commitments.
+	// Backed by an EL-side blob store (mempool blob TX cache +
+	// recent-blocks persisted blobs). N42's eth-el doesn't maintain
+	// a blob store at the moment — the Backend may return empty
+	// slices; this is acceptable for follower nodes that don't
+	// serve blob attestations.
+	GetBlobs(
+		ctx context.Context,
+		versionedHashes []depcommon.Hash,
+		version clparams.StateVersion,
+	) (blobs [][]byte, proofs [][][]byte, err error)
 }
 
 // Adapter implements Caplin's ExecutionEngine interface by delegating
@@ -209,20 +239,27 @@ func (a *Adapter) HasGapInSnapshots(_ context.Context) bool { return false }
 
 // --- Block production -----------------------------------------------------
 
+// GetAssembledBlock delegates to Backend.GetAssembledBlock (Phase 7.1.4).
+// Backends that don't run a builder (follower-mode N42) return
+// errBlockProductionNotWired; Caplin treats that as "no payload" and
+// falls through to a non-proposer path.
 func (a *Adapter) GetAssembledBlock(
-	_ context.Context,
-	_ []byte,
-	_ clparams.StateVersion,
+	ctx context.Context,
+	idBytes []byte,
+	version clparams.StateVersion,
 ) (*cltypes.Eth1Block, *engine_types.BlobsBundle, *typesproto.RequestsBundle, *big.Int, error) {
-	return nil, nil, nil, nil, ErrNotImplemented
+	return a.backend.GetAssembledBlock(ctx, idBytes, version)
 }
 
 // --- Blob retrieval -------------------------------------------------------
 
+// GetBlobs delegates to Backend.GetBlobs (Phase 7.1.5). N42 eth-el does
+// not maintain a blob store; follower-mode backends return empty
+// slices.
 func (a *Adapter) GetBlobs(
-	_ context.Context,
-	_ []depcommon.Hash,
-	_ clparams.StateVersion,
+	ctx context.Context,
+	versionedHashes []depcommon.Hash,
+	version clparams.StateVersion,
 ) (blobs [][]byte, proofs [][][]byte, err error) {
-	return nil, nil, ErrNotImplemented
+	return a.backend.GetBlobs(ctx, versionedHashes, version)
 }

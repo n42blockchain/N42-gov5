@@ -22,6 +22,7 @@ import (
 	"github.com/n42blockchain/N42/internal/cl/depshim/engineapi/engine_types"
 	"github.com/n42blockchain/N42/internal/cl/depshim/hexutil"
 	deptypes "github.com/n42blockchain/N42/internal/cl/depshim/types"
+	"github.com/n42blockchain/N42/internal/cl/depshim/typesproto"
 	"github.com/n42blockchain/N42/internal/cl/phase1/execution_client"
 )
 
@@ -58,6 +59,18 @@ type recordingBackend struct {
 	gotHashesQueried []depcommon.Hash
 	bodiesResult     []*deptypes.RawBody
 	bodiesErr        error
+
+	// Phase 7.1.4 — block production
+	assembledBlock    *cltypes.Eth1Block
+	assembledBlobs    *engine_types.BlobsBundle
+	assembledRequests *typesproto.RequestsBundle
+	assembledValue    *big.Int
+	assembledErr      error
+
+	// Phase 7.1.5 — blob retrieval
+	blobsResult [][]byte
+	proofsResult [][][]byte
+	blobsErr    error
 
 	// existing methods get safe defaults
 	currentNum  uint64
@@ -132,6 +145,18 @@ func (b *recordingBackend) GetBodiesByRange(_ context.Context, start, count uint
 func (b *recordingBackend) GetBodiesByHashes(_ context.Context, hashes []depcommon.Hash) ([]*deptypes.RawBody, error) {
 	b.gotHashesQueried = hashes
 	return b.bodiesResult, b.bodiesErr
+}
+
+func (b *recordingBackend) GetAssembledBlock(
+	_ context.Context, _ []byte, _ clparams.StateVersion,
+) (*cltypes.Eth1Block, *engine_types.BlobsBundle, *typesproto.RequestsBundle, *big.Int, error) {
+	return b.assembledBlock, b.assembledBlobs, b.assembledRequests, b.assembledValue, b.assembledErr
+}
+
+func (b *recordingBackend) GetBlobs(
+	_ context.Context, _ []depcommon.Hash, _ clparams.StateVersion,
+) ([][]byte, [][][]byte, error) {
+	return b.blobsResult, b.proofsResult, b.blobsErr
 }
 
 func TestAdapter_NewPayload_DelegatesToBackend(t *testing.T) {
@@ -287,6 +312,38 @@ func TestAdapter_GetBodiesByHashes_DelegatesToBackend(t *testing.T) {
 	_, _ = a.GetBodiesByHashes(context.Background(), hashes)
 	if len(b.gotHashesQueried) != 2 || b.gotHashesQueried[0] != hashes[0] {
 		t.Errorf("hashes not forwarded: %v", b.gotHashesQueried)
+	}
+}
+
+func TestAdapter_GetAssembledBlock_DelegatesToBackend(t *testing.T) {
+	wantBlk := &cltypes.Eth1Block{BlockNumber: 99}
+	wantBlobs := &engine_types.BlobsBundle{}
+	wantValue := big.NewInt(42)
+	b := &recordingBackend{
+		assembledBlock: wantBlk, assembledBlobs: wantBlobs,
+		assembledValue: wantValue,
+	}
+	a := New(b)
+	blk, bundle, _, value, err := a.GetAssembledBlock(context.Background(), []byte{0, 1, 2, 3, 4, 5, 6, 7}, clparams.DenebVersion)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if blk != wantBlk || bundle != wantBlobs || value.Cmp(wantValue) != 0 {
+		t.Errorf("delegation mismatch")
+	}
+}
+
+func TestAdapter_GetBlobs_DelegatesToBackend(t *testing.T) {
+	want := [][]byte{{0xab}, {0xcd}}
+	wantProofs := [][][]byte{{[]byte{0x11}}, {[]byte{0x22}}}
+	b := &recordingBackend{blobsResult: want, proofsResult: wantProofs}
+	a := New(b)
+	got, gotProofs, err := a.GetBlobs(context.Background(), []depcommon.Hash{{0x01}, {0x02}}, clparams.DenebVersion)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(got) != 2 || len(gotProofs) != 2 {
+		t.Errorf("count mismatch: blobs=%d proofs=%d", len(got), len(gotProofs))
 	}
 }
 
