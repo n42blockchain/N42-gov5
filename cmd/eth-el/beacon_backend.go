@@ -19,6 +19,7 @@ import (
 	"sync"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/api"
@@ -344,6 +345,89 @@ func (b *ethELBackend) InsertBlocks(ctx context.Context, blks []*deptypes.Block,
 		}
 	}
 	return nil
+}
+
+// GetBodiesByRange — Phase 7.1.3. Walks canonical hashes for the
+// requested block-number window, loads each body, and converts to
+// depshim.RawBody. Missing blocks (gap in canonical history) produce
+// a nil entry at the corresponding index — caplin handles partial
+// results.
+//
+// N42 body does not store Withdrawals (see Backend interface doc);
+// the returned RawBody.Withdrawals is always nil. Pre-Shanghai
+// behaviour is faithful; post-Shanghai consumers must reconstruct
+// from changesets if they need withdrawals.
+func (b *ethELBackend) GetBodiesByRange(ctx context.Context, start, count uint64) ([]*deptypes.RawBody, error) {
+	return withRoTx(ctx, b, func(tx kv.Tx) ([]*deptypes.RawBody, error) {
+		out := make([]*deptypes.RawBody, 0, count)
+		for i := uint64(0); i < count; i++ {
+			num := start + i
+			hash, err := rawdb.ReadCanonicalHash(tx, num)
+			if err != nil {
+				return nil, fmt.Errorf("ReadCanonicalHash(%d): %w", num, err)
+			}
+			if hash == (types.Hash{}) {
+				out = append(out, nil)
+				continue
+			}
+			raw, err := readBlockBodyAsRawBody(tx, hash, num)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, raw)
+		}
+		return out, nil
+	})
+}
+
+// GetBodiesByHashes — Phase 7.1.3. Same as GetBodiesByRange but keyed
+// by block hash (no canonical-walk).
+func (b *ethELBackend) GetBodiesByHashes(ctx context.Context, hashes []depcommon.Hash) ([]*deptypes.RawBody, error) {
+	return withRoTx(ctx, b, func(tx kv.Tx) ([]*deptypes.RawBody, error) {
+		out := make([]*deptypes.RawBody, 0, len(hashes))
+		for _, h := range hashes {
+			ch := chainHash(h)
+			num := rawdb.ReadHeaderNumber(tx, ch)
+			if num == nil {
+				out = append(out, nil)
+				continue
+			}
+			raw, err := readBlockBodyAsRawBody(tx, ch, *num)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, raw)
+		}
+		return out, nil
+	})
+}
+
+// readBlockBodyAsRawBody reads the N42 block body at (hash, num) and
+// encodes its transactions to canonical Ethereum RLP bytes (the form
+// caplin expects). Returns nil if the body is absent.
+func readBlockBodyAsRawBody(tx kv.Tx, hash types.Hash, num uint64) (*deptypes.RawBody, error) {
+	body, err := rawdb.ReadBodyWithTransactions(tx, hash, num)
+	if err != nil {
+		return nil, fmt.Errorf("ReadBodyWithTransactions(%d): %w", num, err)
+	}
+	if body == nil {
+		return nil, nil
+	}
+	rawTxs := make([][]byte, 0, len(body.Txs))
+	for _, tx := range body.Txs {
+		if tx == nil {
+			continue
+		}
+		raw, err := transaction.EncodeEthereumTransaction(tx)
+		if err != nil {
+			return nil, fmt.Errorf("encode tx %s: %w", tx.Hash().Hex(), err)
+		}
+		rawTxs = append(rawTxs, raw)
+	}
+	return &deptypes.RawBody{
+		Transactions: rawTxs,
+		// Withdrawals: nil — N42 body has no withdrawal storage; see Backend doc.
+	}, nil
 }
 
 // ReadCurrentHeader — Phase 7.1.1.b. Reads the canonical head from

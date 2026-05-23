@@ -52,6 +52,13 @@ type recordingBackend struct {
 	gotInsertWait   bool
 	insertErr       error
 
+	// Phase 7.1.3 — body read path
+	gotRangeStart    uint64
+	gotRangeCount    uint64
+	gotHashesQueried []depcommon.Hash
+	bodiesResult     []*deptypes.RawBody
+	bodiesErr        error
+
 	// existing methods get safe defaults
 	currentNum  uint64
 	hasBlock    bool
@@ -114,6 +121,17 @@ func (b *recordingBackend) InsertBlocks(_ context.Context, blks []*deptypes.Bloc
 	b.gotInsertBatch = blks
 	b.gotInsertWait = wait
 	return b.insertErr
+}
+
+func (b *recordingBackend) GetBodiesByRange(_ context.Context, start, count uint64) ([]*deptypes.RawBody, error) {
+	b.gotRangeStart = start
+	b.gotRangeCount = count
+	return b.bodiesResult, b.bodiesErr
+}
+
+func (b *recordingBackend) GetBodiesByHashes(_ context.Context, hashes []depcommon.Hash) ([]*deptypes.RawBody, error) {
+	b.gotHashesQueried = hashes
+	return b.bodiesResult, b.bodiesErr
 }
 
 func TestAdapter_NewPayload_DelegatesToBackend(t *testing.T) {
@@ -243,6 +261,32 @@ func TestAdapter_InsertBlocks_DelegatesToBackend(t *testing.T) {
 	}
 	if !b.gotInsertWait {
 		t.Errorf("wait flag not forwarded")
+	}
+}
+
+func TestAdapter_GetBodiesByRange_DelegatesToBackend(t *testing.T) {
+	want := []*deptypes.RawBody{{Transactions: [][]byte{{0xaa}}}, nil, {Transactions: [][]byte{{0xbb}}}}
+	b := &recordingBackend{bodiesResult: want}
+	a := New(b)
+	got, err := a.GetBodiesByRange(context.Background(), 25_000_000, 3)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(got) != 3 || got[1] != nil || string(got[0].Transactions[0]) != "\xaa" {
+		t.Errorf("result mismatch: %+v", got)
+	}
+	if b.gotRangeStart != 25_000_000 || b.gotRangeCount != 3 {
+		t.Errorf("args not forwarded: start=%d count=%d", b.gotRangeStart, b.gotRangeCount)
+	}
+}
+
+func TestAdapter_GetBodiesByHashes_DelegatesToBackend(t *testing.T) {
+	b := &recordingBackend{bodiesResult: []*deptypes.RawBody{nil}}
+	a := New(b)
+	hashes := []depcommon.Hash{{0x11}, {0x22}}
+	_, _ = a.GetBodiesByHashes(context.Background(), hashes)
+	if len(b.gotHashesQueried) != 2 || b.gotHashesQueried[0] != hashes[0] {
+		t.Errorf("hashes not forwarded: %v", b.gotHashesQueried)
 	}
 }
 
