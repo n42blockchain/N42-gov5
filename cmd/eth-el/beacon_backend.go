@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
 	"sync"
 
 	"github.com/n42blockchain/N42/common/block"
@@ -30,6 +31,7 @@ import (
 	dephexutil "github.com/n42blockchain/N42/internal/cl/depshim/hexutil"
 	depmerge "github.com/n42blockchain/N42/internal/cl/depshim/merge"
 	deptypes "github.com/n42blockchain/N42/internal/cl/depshim/types"
+	"github.com/n42blockchain/N42/internal/cl/depshim/typesproto"
 	"github.com/n42blockchain/N42/internal/cl/eladapter"
 	"github.com/n42blockchain/N42/internal/cl/phase1/execution_client"
 	"github.com/n42blockchain/N42/internal/consensus"
@@ -517,6 +519,60 @@ func n42HeaderToDepshim(h *block.Header) *deptypes.Header {
 		out.RequestsHash = &r
 	}
 	return out
+}
+
+// errBlockProductionNotWired surfaces from GetAssembledBlock when the
+// node runs in follower mode (no validator key, no builder, no
+// proposer slot). N42 eth-el is follower-only as of Phase 7.1; a
+// Phase 7.4 producer wiring would replace this with a real
+// EngineAPIBlob.GetPayloadV3 call.
+var errBlockProductionNotWired = errors.New(
+	"eth-el: block production not wired (follower mode; see Phase 7.4)")
+
+// GetAssembledBlock — Phase 7.1.4 scaffold. Production block-builder
+// wiring is deferred to Phase 7.4 because:
+//
+//  1. N42 eth-el is a follower node — no validator key management,
+//     no attestation upload, no deposit. Caplin only calls this when
+//     the local node is in proposer role for the current slot.
+//  2. The wiring requires PayloadAttributesV3 → builder cache →
+//     EngineAPIBlob.GetPayloadV3 → cltypes.Eth1Block + BlobsBundle +
+//     RequestsBundle + BlockValue conversion (4 return values, each
+//     a fresh type bridge). Building this without first having a
+//     real validator path to test against is premature.
+//
+// Returning errBlockProductionNotWired keeps the Adapter contract
+// satisfied without lying about producing blocks.
+func (b *ethELBackend) GetAssembledBlock(
+	_ context.Context,
+	_ []byte,
+	_ clparams.StateVersion,
+) (*cltypes.Eth1Block, *engine_types.BlobsBundle, *typesproto.RequestsBundle, *big.Int, error) {
+	return nil, nil, nil, nil, errBlockProductionNotWired
+}
+
+// GetBlobs — Phase 7.1.5. Follower-mode N42 doesn't maintain a blob
+// store (mempool 4844 blob TX cache + recent-blocks blob persistence),
+// so we return empty slices for every requested versioned hash.
+// Caplin's attestation aggregation tolerates empty blob responses
+// from follower peers; only block-builder validators are required to
+// serve blobs.
+//
+// A future Phase 7.5 can plug in the txpool blob cache + a per-block
+// blob persistence layer to make this a real read path.
+func (b *ethELBackend) GetBlobs(
+	_ context.Context,
+	versionedHashes []depcommon.Hash,
+	_ clparams.StateVersion,
+) (blobs [][]byte, proofs [][][]byte, err error) {
+	// Honest signal: return n nil slots so callers can index by
+	// original position; nil entries → "blob not held locally".
+	if len(versionedHashes) == 0 {
+		return nil, nil, nil
+	}
+	return make([][]byte, len(versionedHashes)),
+		make([][][]byte, len(versionedHashes)),
+		nil
 }
 
 // insertBlockViaNewPayload converts a single depshim block to
