@@ -75,6 +75,7 @@ func main() {
 	n42 := flag.Bool("n42", false, "Shortcut: sets account-table=Account, storage-table=Storage")
 	countOverride := flag.Uint64("count", 0, "Skip counting, use this entry count")
 	skipZstd := flag.Bool("skip-zstd", false, "Skip the final zstd compress step")
+	endBlock := flag.Uint64("end-block", 0, "Snapshot end block; when > 0, files are named accounts.0-<endBlock>.* / storage.0-<endBlock>.* (H.3 segment naming, monolithic case)")
 	flag.Parse()
 
 	if *n42 {
@@ -87,6 +88,11 @@ func main() {
 	}
 
 	accTbl, stoTbl := *accountTable, *storageTable
+	prefAcc, prefSto := "accounts", "storage"
+	if *endBlock > 0 {
+		prefAcc = fmt.Sprintf("accounts.0-%d", *endBlock)
+		prefSto = fmt.Sprintf("storage.0-%d", *endBlock)
+	}
 	db, err := mdbx.NewMDBX(logger).
 		Path(*dbPath).
 		Label(kv.ChainDB).
@@ -113,10 +119,10 @@ func main() {
 	defer tx.Rollback()
 
 	if *table == "" || *table == "account" || *table == "both" {
-		dumpAccount(tx, accTbl, *outDir, *countOverride, *skipZstd)
+		dumpAccount(tx, accTbl, *outDir, prefAcc, *countOverride, *skipZstd)
 	}
 	if *table == "" || *table == "storage" || *table == "both" {
-		dumpStorage(tx, stoTbl, *outDir, *countOverride, *skipZstd)
+		dumpStorage(tx, stoTbl, *outDir, prefSto, *countOverride, *skipZstd)
 	}
 }
 
@@ -178,9 +184,7 @@ func rewriteAccountValue(v []byte, dict map[[32]byte]uint32, scratch []byte) []b
 	return scratch
 }
 
-func dumpAccount(tx kv.Tx, table, outDir string, countHint uint64, skipZstd bool) {
-	const prefix = "accounts"
-
+func dumpAccount(tx kv.Tx, table, outDir, prefix string, countHint uint64, skipZstd bool) {
 	idxPath := outDir + "/" + prefix + ".idx"
 	codedictPath := outDir + "/" + prefix + ".codedict"
 	valPath := outDir + "/" + prefix + ".val"
@@ -453,9 +457,7 @@ func dumpAccount(tx kv.Tx, table, outDir string, countHint uint64, skipZstd bool
 		time.Since(t0).Truncate(time.Second))
 }
 
-func dumpStorage(tx kv.Tx, table, outDir string, countHint uint64, skipZstd bool) {
-	const prefix = "storage"
-
+func dumpStorage(tx kv.Tx, table, outDir, prefix string, countHint uint64, skipZstd bool) {
 	idxPath := outDir + "/" + prefix + ".idx"
 	valPath := outDir + "/" + prefix + ".val"
 	efPath := outDir + "/" + prefix + ".ef"
