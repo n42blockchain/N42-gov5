@@ -1,7 +1,12 @@
 # Phase H.3 — Segment-Incremental Snapshot
 
-**Status:** Spec + selector glob support landed (Phase H.3a).
-Snapshot writer change (Phase H.3b) tracked in companion ticket.
+**Status:**
+- ✓ Phase H.3a — spec + selector glob support
+- ✓ Phase H.3b-mini (2026-05-23) — `reth-snapshot-export --end-block H`
+  emits monolithic files with spec-compatible segment naming
+  (`accounts.0-H.{idx,ef,val.zst}` instead of `accounts.{idx,ef,val.zst}`)
+- ⊘ Phase H.3b-full — real block-range per-segment writer (needs reth
+  changeset reader; 1-2 weeks)
 
 ## Why
 
@@ -82,9 +87,35 @@ nature, full weekly delta:
 
 | Sub | Outcome | Effort | Status |
 |---|---|---|---|
-| **H.3a docs + selector validation** | this doc + test confirming glob handles segments | <1 day | ✓ (this PR) |
-| **H.3b writer migration** | `cmd/reth-snapshot-export` emits per-segment files | 1-2 weeks | TODO |
-| **H.3c per-segment verifier** | `cmd/n42-snapshot-verify-segment` validates one segment standalone | 2-3 days | TODO |
+| **H.3a docs + selector validation** | this doc + `TestSelector_HandlesSegmentedSnapshot` | <1 day | ✓ |
+| **H.3b-mini segment naming** | `reth-snapshot-export --end-block H` emits `accounts.0-H.*` (still monolithic, but spec-compliant filename) | <1 day | ✓ (2026-05-23) |
+| **H.3b-full writer migration** | per-segment `accounts.{k*1M}-{(k+1)*1M-1}.*` files; needs reth changeset reader to enumerate keys touched in each block range, dedupe to last value per segment, build per-segment RecSplit MPHF | 1-2 weeks | TODO |
+| **H.3c per-segment verifier** | `cmd/n42-snapshot-verify-segment` validates one segment standalone (RecSplit + EF integrity + value hash count) | 2-3 days | TODO |
+| **H.3d resplit tool** | `cmd/n42-snapshot-resplit` takes a monolithic `accounts.0-H.*` + reth `AccountChangeSets` and post-process splits into per-segment files (alternative to writer migration) | 1 week | TODO |
+
+## H.3b-full implementation notes
+
+Two paths to true per-segment files; pick one:
+
+**Path A — writer-side segmentation (one DB scan)**
+1. Open reth `AccountChangeSets` table (key = block + tx_idx, value = changes)
+2. For each segment k in [0..⌈H/1M⌉]:
+   a. Build set of keys touched in blocks [k*1M, (k+1)*1M-1]
+   b. For each touched key, look up the value in `PlainAccountState`
+   c. Build per-segment RecSplit MPHF + EF + zstd
+3. Output: `accounts.{k*1M}-{(k+1)*1M-1}.{idx,ef,val.zst,codedict}`
+4. Total scans: 1 over changesets + ⌈H/1M⌉ × M-keys reads from PlainState
+
+**Path B — post-process splitter (two-pass)**
+1. Existing `reth-snapshot-export --end-block H` produces monolithic
+2. New `n42-snapshot-resplit`:
+   a. Read reth `AccountHistory` (per-key sorted block list)
+   b. For each key, find max(modBlocks) → maps to segment k
+   c. Bucket all (key, value) pairs by segment
+   d. Build per-segment RecSplit + EF + zstd
+3. Faster on subsequent reruns (don't re-derive monolithic)
+
+Path A is cleaner but couples export with segmentation. Path B is decoupled but needs `AccountHistory` reader (already present in cmd/reth-acct-history). Defer choice to operator scheduling decision.
 
 ## Reader compatibility
 
