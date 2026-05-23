@@ -30,7 +30,7 @@ import (
 	"github.com/n42blockchain/N42/internal/cl/cltypes"
 	"github.com/n42blockchain/N42/internal/cl/cltypes/solid"
 	"github.com/n42blockchain/N42/internal/cl/monitor"
-	"github.com/n42blockchain/N42/internal/cl/depshim/beaconindicies"
+	"github.com/n42blockchain/N42/internal/cl/persistence/beacon_indicies"
 	"github.com/n42blockchain/N42/internal/cl/phase1/core/state"
 	"github.com/n42blockchain/N42/internal/cl/phase1/execution_client"
 	"github.com/n42blockchain/N42/internal/cl/phase1/forkchoice/fork_graph"
