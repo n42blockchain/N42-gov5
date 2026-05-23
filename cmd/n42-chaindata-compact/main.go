@@ -143,6 +143,11 @@ func main() {
 // are O(1) per row when source is in sorted order — which it is
 // when we walk via cursor.First/Next on the same key/value
 // schema.
+//
+// Progress is printed every progressEvery rows so an external
+// monitor can detect a stall.
+const progressEvery uint64 = 500_000
+
 func copyTable(ctx context.Context, srcDB, dstDB kv.RwDB, table string, dup bool, commitEvery int) (uint64, uint64, error) {
 	srcTx, err := srcDB.BeginRo(ctx)
 	if err != nil {
@@ -178,21 +183,23 @@ func copyTable(ctx context.Context, srcDB, dstDB kv.RwDB, table string, dup bool
 		if err != nil {
 			return rows, bytes, fmt.Errorf("dst cursor: %w", err)
 		}
+		ts := time.Now()
 		for k, v, err := sc.First(); k != nil; k, v, err = sc.Next() {
 			if err != nil {
 				return rows, bytes, fmt.Errorf("src iter: %w", err)
 			}
 			if aerr := dc.AppendDup(k, v); aerr != nil {
-				// Fall back to Put. AppendDup requires strictly
-				// increasing keys + non-existing dups; if either
-				// constraint is violated for any reason, Put is
-				// always safe.
 				if perr := dc.Put(k, v); perr != nil {
 					return rows, bytes, fmt.Errorf("dst put: %w", perr)
 				}
 			}
 			rows++
 			bytes += uint64(len(k) + len(v))
+			if rows%progressEvery == 0 {
+				rate := float64(rows) / time.Since(ts).Seconds()
+				fmt.Printf("    %s dup: rows=%d (%.0fK/s) bytes=%.2f GB elapsed=%s\n",
+					table, rows, rate/1000, float64(bytes)/1024/1024/1024, time.Since(ts).Truncate(time.Second))
+			}
 			if commitEvery > 0 && rows%uint64(commitEvery) == 0 {
 				dc.Close()
 				if cerr := commit(); cerr != nil {
@@ -215,6 +222,7 @@ func copyTable(ctx context.Context, srcDB, dstDB kv.RwDB, table string, dup bool
 		if err != nil {
 			return rows, bytes, fmt.Errorf("dst cursor: %w", err)
 		}
+		ts := time.Now()
 		for k, v, err := sc.First(); k != nil; k, v, err = sc.Next() {
 			if err != nil {
 				return rows, bytes, fmt.Errorf("src iter: %w", err)
@@ -226,6 +234,11 @@ func copyTable(ctx context.Context, srcDB, dstDB kv.RwDB, table string, dup bool
 			}
 			rows++
 			bytes += uint64(len(k) + len(v))
+			if rows%progressEvery == 0 {
+				rate := float64(rows) / time.Since(ts).Seconds()
+				fmt.Printf("    %s plain: rows=%d (%.0fK/s) bytes=%.2f GB elapsed=%s\n",
+					table, rows, rate/1000, float64(bytes)/1024/1024/1024, time.Since(ts).Truncate(time.Second))
+			}
 			if commitEvery > 0 && rows%uint64(commitEvery) == 0 {
 				dc.Close()
 				if cerr := commit(); cerr != nil {
