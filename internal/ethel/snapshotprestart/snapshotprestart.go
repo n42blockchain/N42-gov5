@@ -17,6 +17,7 @@ package snapshotprestart
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/n42blockchain/N42/cmd/n42-eth-snapshot/snapshot"
@@ -37,6 +38,14 @@ type Config struct {
 	ModeRequest     string
 	Libp2pAvailable bool
 	DeltaWindow     uint64
+
+	// AutoFetch — when datadir has no local manifest (first boot),
+	// run snapshot.Fetch(latest, mode) to lay down the initial
+	// archive before attempting catch-up. Default false because
+	// the initial fetch can be many GB and we don't want operators
+	// to trigger that by accident; opt-in via --snapshot.auto-fetch.
+	AutoFetch     bool
+	FetchParallel int // workers for snapshot.Fetch; 0 → snapshot default
 }
 
 // Result captures what PreStartSync did so eth-el can log it.
@@ -50,6 +59,13 @@ type Result struct {
 	ElapsedMS     int64
 	WarnMessage   string // populated when we choose to keep starting despite an issue
 	Strategy      Strategy // which path was selected (G4)
+
+	// InitialFetched is true when PreStartSync ran the first-boot
+	// snapshot.Fetch (AutoFetch path). Helps logs distinguish
+	// "first-boot bootstrap" from "delta catch-up".
+	InitialFetched     bool
+	InitialFetchBytes  int64
+	InitialFetchFiles  int
 }
 
 // PreStartSync runs the optional auto-catchup. Returns (Result,
@@ -83,6 +99,40 @@ func PreStartSync(ctx context.Context, cfg Config) (*Result, error) {
 	}
 	rep.StartHeight = st.LocalHeight
 	rep.GapAtStart = st.BehindBlocks
+
+	// First-boot path: no local manifest. Either auto-fetch the
+	// initial archive or fail loud so the operator runs the fetch
+	// step explicitly.
+	if st.LocalManifestID == "" && st.LocalHeight == 0 {
+		if !cfg.AutoFetch {
+			return rep, fmt.Errorf(
+				"snapshotprestart: no local manifest-%s.json in %s — pass AutoFetch=true or run "+
+					"`n42-eth-snapshot fetch --source %s/%d/%s --datadir %s --mode %s` first",
+				cfg.Mode, cfg.Datadir, cfg.Source, st.RemoteHeight, cfg.Mode, cfg.Datadir, cfg.Mode)
+		}
+		fetchSrc := fmt.Sprintf("%s/%d/%s", strings.TrimRight(cfg.Source, "/"), st.RemoteHeight, cfg.Mode)
+		fr, ferr := snapshot.Fetch(fetchSrc, cfg.Datadir, cfg.Mode, false, false, cfg.FetchParallel)
+		if ferr != nil {
+			return rep, fmt.Errorf("snapshotprestart: initial fetch: %w", ferr)
+		}
+		if fr == nil || !fr.OK {
+			return rep, fmt.Errorf("snapshotprestart: initial fetch reported FAIL (downloaded=%d failed=%d)",
+				fr.Downloaded, fr.Failed)
+		}
+		rep.InitialFetched = true
+		rep.InitialFetchBytes = fr.BytesXfer
+		rep.InitialFetchFiles = fr.Downloaded
+		// Re-status after the initial fetch so we know whether
+		// delta catch-up is still needed (publisher may have
+		// rolled forward while we were downloading).
+		st, err = snapshot.Status(cfg.Datadir, cfg.Source, cfg.Mode)
+		if err != nil {
+			return rep, fmt.Errorf("snapshotprestart: post-fetch status: %w", err)
+		}
+		rep.StartHeight = st.LocalHeight
+		rep.GapAtStart = st.BehindBlocks
+	}
+
 	if st.UpToDate {
 		rep.WasCurrent = true
 		rep.FinalHeight = st.LocalHeight

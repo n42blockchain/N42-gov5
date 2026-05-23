@@ -103,6 +103,8 @@ func flags() []cli.Flag {
 		&cli.Uint64Flag{Name: "snapshot.max-gap", Usage: "Refuse auto-catchup if behind by more than N blocks (0 = no cap)", Value: 1_000_000},
 		&cli.IntFlag{Name: "snapshot.max-iterations", Usage: "Per-CatchUp delta-apply iteration cap (0 = no cap)"},
 		&cli.DurationFlag{Name: "snapshot.timeout", Usage: "Total budget for the pre-start sync"},
+		&cli.BoolFlag{Name: "snapshot.auto-fetch", Usage: "When datadir is empty (first boot), auto-fetch the initial archive from --snapshot.source before catch-up. Default false because initial fetch can be many GB."},
+		&cli.IntFlag{Name: "snapshot.fetch-parallel", Usage: "Worker count for the initial AutoFetch download (0 = default 4)", Value: 8},
 
 		// Stage 2 G4 — auto mode selection.
 		&cli.StringFlag{Name: "catch-up.mode", Usage: "Catch-up mechanism: auto|off|delta|libp2p|fetch (auto picks based on gap)", Value: "auto"},
@@ -122,14 +124,16 @@ func run(c *cli.Context) error {
 	// only rely on auto-catchup for the per-cycle delta.
 	if src := c.String("snapshot.source"); src != "" {
 		rep, err := snapshotprestart.PreStartSync(c.Context, snapshotprestart.Config{
-			Datadir:     cfg.DataDir,
-			Source:      src,
-			Mode:        c.String("snapshot.mode"),
-			MaxBlocks:   c.Uint64("snapshot.max-gap"),
-			MaxIter:     c.Int("snapshot.max-iterations"),
-			Timeout:     c.Duration("snapshot.timeout"),
-			ModeRequest: c.String("catch-up.mode"),
-			DeltaWindow: c.Uint64("catch-up.delta-window"),
+			Datadir:       cfg.DataDir,
+			Source:        src,
+			Mode:          c.String("snapshot.mode"),
+			MaxBlocks:     c.Uint64("snapshot.max-gap"),
+			MaxIter:       c.Int("snapshot.max-iterations"),
+			Timeout:       c.Duration("snapshot.timeout"),
+			ModeRequest:   c.String("catch-up.mode"),
+			DeltaWindow:   c.Uint64("catch-up.delta-window"),
+			AutoFetch:     c.Bool("snapshot.auto-fetch"),
+			FetchParallel: c.Int("snapshot.fetch-parallel"),
 			// libp2p availability is true if eth-el has the
 			// catchup pipeline wired (which it always does via
 			// catchup.New below). When upstream peers aren't
@@ -152,6 +156,9 @@ func run(c *cli.Context) error {
 			log.Info("eth-el: snapshot pre-start ran",
 				"strategy", rep.Strategy,
 				"deltas", rep.DeltasApplied,
+				"initial_fetched", rep.InitialFetched,
+				"initial_files", rep.InitialFetchFiles,
+				"initial_bytes_mb", rep.InitialFetchBytes/(1<<20),
 				"start_height", rep.StartHeight,
 				"final_height", rep.FinalHeight,
 				"elapsed_ms", rep.ElapsedMS)
