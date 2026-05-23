@@ -99,17 +99,72 @@ N42 没有 staged-sync 这层解耦：
 
 完成后效果：phase1 stage loop 一旦回来，就有 working ExecutionEngine 接口。
 
-### Phase 7.2 — 拉回 phase1/forkchoice (1-2 weeks)
+### Phase 7.2 — 拉回 phase1/forkchoice (2-4 weeks, multi-session)
 
-从 erigon cherry-pick + 适配 N42 fork。
+`../erigon/cl/phase1/forkchoice` 总规模：**36 文件 / 8,531 行**。
+forkchoice.go 主入口 988 行。依赖图（cherry-pick 顺序按依赖深度）：
 
-**子任务**:
-- [ ] 7.2.1 cp -r ../erigon/cl/phase1/forkchoice → internal/cl/phase1/forkchoice
-- [ ] 7.2.2 替换 erigon import → n42blockchain/N42 import
-- [ ] 7.2.3 适配 cltypes / clparams 差异（N42 fork 早于 erigon 主线，可能少 Gloas 等新 fork）
-- [ ] 7.2.4 build tag n42el 整合
-- [ ] 7.2.5 单元测试（erigon 上游测试也一起拉，跑 PASS）
-- [ ] 7.2.6 fork choice store 持久化：MDBX 表 schema
+**Tier 0（叶子，无 forkchoice 子包内依赖）**：
+- `types.go` (38 行) — LatestMessage / ForkChoiceNode struct
+- `interface.go` (144 行) — ForkChoiceStorage{Reader,Writer} 接口
+
+**Tier 1（依赖 Tier 0 + N42 外部包）**：
+- `latest_messages_store.go` — 投票 store
+- `weight_store.go` / `weight_store_indexed.go` — block weight 缓存
+- `checkpoint_state.go` — checkpoint cache
+- `payload_vote.go` — payload vote tracking
+- `optimistic/` — optimistic block tracking
+- `public_keys_registry/` — validator pubkey cache
+
+**Tier 2（依赖 Tier 1）**：
+- `on_attestation.go` — Caplin 收 attestation 时调
+- `on_attester_slashing.go`
+- `on_block.go` — 收新 block 时调
+- `on_execution_payload.go` — 收 EL payload 时调
+- `on_payload_attestation_message.go` (Gloas)
+- `on_tick.go` — slot tick 时调
+- `get_head.go` — LMD-GHOST head 计算
+- `blob_sidecars.go`
+- `timing.go`
+
+**Tier 3（顶层入口）**：
+- `forkchoice.go` (988 行) — 综合所有上面
+
+**Tier 4（fork graph 子包）**：
+- `fork_graph/` — 11 文件，beacon state diff graph
+
+**N42 外部依赖（需先确认存在或一起 cherry-pick）**：
+- ✓ `internal/cl/cltypes` + `cltypes/solid` (已有)
+- ✓ `internal/cl/clparams` (已有, 注意 Gloas 字段差异)
+- ✓ `internal/cl/phase1/core/state` (已有)
+- ✓ `internal/cl/phase1/execution_client` (已有)
+- ✓ `internal/cl/transition/impl/eth2` (已有)
+- ⊘ `internal/cl/das` — **N42 缺**；is required by interface.go (GetPeerDas). 需先 cherry-pick `../erigon/cl/das` (估 5-10 文件) 或临时从接口移除 PeerDAS 相关方法
+- ⊘ depshim/common.Hash vs cl/common.Hash — 所有 cherry-pick 文件需 import 路径替换
+
+**Cherry-pick 子任务**（按依赖顺序）：
+
+| Sub | 工作 | 估时 |
+|---|---|---|
+| 7.2.0 | cherry-pick `../erigon/cl/das` → `internal/cl/das` + 适配 | 3-5 天 |
+| 7.2.1 | Tier 0: types.go + interface.go cherry-pick + import 适配 | 半天 |
+| 7.2.2 | Tier 1: 6 个 store/cache 文件 cherry-pick | 2-3 天 |
+| 7.2.3 | Tier 2: 9 个 on_*/get_head/timing 文件 cherry-pick | 4-5 天 |
+| 7.2.4 | Tier 3: forkchoice.go (988 行) cherry-pick | 2-3 天 |
+| 7.2.5 | Tier 4: fork_graph 子包 (11 文件) cherry-pick | 3-4 天 |
+| 7.2.6 | 所有 *_test.go cherry-pick + 跑通 | 3-5 天 |
+| 7.2.7 | MDBX 表 schema 加 forkchoice store 持久化 | 2 天 |
+| 7.2.8 | 单元测试 PASS gate + lint | 1-2 天 |
+
+**总估 18-29 天（4-6 周持续 work，跨多个 session）**。
+
+### Phase 7.2 启动建议
+
+不要一次性 cherry-pick 36 文件然后期望编译过 — 会 stuck 在 import cycle/type drift。
+反而：**Tier-by-tier**，每 Tier 一个 commit + 单元测试 + 编译验证。Tier 0
+是 1 day work，可以作为下一 session 第一步。Tier 0 commit 后我们就有
+`internal/cl/phase1/forkchoice/{types.go,interface.go}` baseline，后续 Tier 1+
+工作者可以照葫芦画瓢。
 
 ### Phase 7.3 — 拉回 phase1/stages (2-3 weeks)
 
