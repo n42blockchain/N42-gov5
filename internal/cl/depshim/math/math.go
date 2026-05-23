@@ -9,6 +9,7 @@
 
 // Package math re-exports the SafeAdd helper that cl/ uses from erigon's
 // common/math. The implementation lives in N42's lib/common/math.
+
 package math
 
 import libmath "github.com/n42blockchain/N42/lib/common/math"

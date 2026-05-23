@@ -23,6 +23,7 @@
 // Until then, any code path that triggers a stub method will panic with a
 // clear message identifying the symbol — much safer than silently producing
 // wrong hashes.
+
 package types
 
 import (
@@ -76,6 +77,13 @@ type Header struct {
 	ExcessBlobGas         *uint64
 	ParentBeaconBlockRoot *common.Hash
 	RequestsHash          *common.Hash
+
+	// Gloas (EIP-7928 / EIP-7843) additions. nil for pre-Gloas
+	// headers; populated by the Engine API on Gloas+ payloads.
+	// Caplin only dereferences these inside `version >= GloasVersion`
+	// guards, so leaving them nil on non-Gloas chains is safe.
+	BlockAccessListHash *common.Hash
+	SlotNumber          *uint64
 }
 
 // Hash returns the Keccak256 RLP hash of the header. STUB — see package doc.
@@ -115,8 +123,56 @@ func DeriveSha(_ any) common.Hash {
 // Stub: cl/phase1/execution_client only references it as a parameter type
 // for InsertBlock(s); the eladapter materialises real Block instances when
 // it actually needs to import historical blocks.
+//
+// Field names match erigon's execution/types.Block public fields
+// so straight initialiser-style constructors still work; the methods
+// below provide the erigon-style accessor API used by cl/cltypes
+// tests (block.Header() returns the *Header pointer).
 type Block struct {
-	Header       *Header
-	Transactions [][]byte
-	Withdrawals  []*Withdrawal
+	HeaderField       *Header
+	Transactions      [][]byte
+	Withdrawals       []*Withdrawal
+}
+
+// Header returns the block header (matches erigon accessor signature).
+func (b *Block) Header() *Header { return b.HeaderField }
+
+// RawBody returns a RawBody view over the block's transactions and
+// withdrawals. STUB — only invoked from cl/cltypes test code.
+func (b *Block) RawBody() *RawBody {
+	return &RawBody{Transactions: b.Transactions, Withdrawals: b.Withdrawals}
+}
+
+// --- test-only constructors --------------------------------------------
+// These are panic-stubs so test files that need them compile under
+// `go vet -tags n42el`. Production code lives in the EL adapter,
+// which constructs Block/Transaction values via N42's core packages,
+// not via these helpers.
+
+// Transaction is a placeholder for cl/cltypes test helpers that
+// construct synthetic EL transactions. The real EL tx type lives
+// in N42's common/transaction; eladapter bridges as needed.
+type Transaction struct {
+	Nonce    uint64
+	To       common.Address
+	Value    *uint256.Int
+	GasLimit uint64
+	GasPrice *uint256.Int
+	Data     []byte
+}
+
+// NewTransaction builds a Transaction stub. STUB — see package doc.
+func NewTransaction(nonce uint64, to common.Address, value *uint256.Int,
+	gasLimit uint64, gasPrice *uint256.Int, data []byte) Transaction {
+	return Transaction{Nonce: nonce, To: to, Value: value,
+		GasLimit: gasLimit, GasPrice: gasPrice, Data: data}
+}
+
+// NewBlock builds a Block stub from header + transactions +
+// uncles + withdrawals (+ optional requests, matching erigon's
+// 5-arg variadic). STUB — only invoked from cl/cltypes test code.
+func NewBlock(header *Header, txs []Transaction, _ []*Header, withdrawals Withdrawals, _ ...any) *Block {
+	_ = withdrawals
+	rawTxs := make([][]byte, 0, len(txs))
+	return &Block{HeaderField: header, Transactions: rawTxs}
 }

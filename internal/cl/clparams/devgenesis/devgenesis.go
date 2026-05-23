@@ -1,6 +1,8 @@
 // Package devgenesis builds a valid beacon genesis state for dev mode.
 // It creates deterministic validators from a seed string, producing
 // a self-contained PoS genesis that can run with an embedded validator.
+//go:build n42el
+
 package devgenesis
 
 import (

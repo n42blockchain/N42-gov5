@@ -14,6 +14,8 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
+//go:build n42el
+
 package cltypes
 
 import (
@@ -530,7 +532,7 @@ func (b *Eth1Block) RlpHeader(parentRoot *common.Hash, executionReqHash common.H
 
 	// If the header hash does not match the block hash, return an error.
 	if header.Hash() != b.BlockHash {
-		return nil, fmt.Errorf("cannot derive rlp header: mismatching hash: %s != %s, %d", header.Hash(), b.BlockHash, header.Number)
+		return nil, fmt.Errorf("cannot derive rlp header: mismatching hash: %s != %s, %s", header.Hash(), b.BlockHash, header.Number.String())
 	}
 
 	return header, nil

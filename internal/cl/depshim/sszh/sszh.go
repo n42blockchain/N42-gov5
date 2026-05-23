@@ -15,6 +15,7 @@
 // because that is what cl/ source files reference. Type aliases keep
 // identity unified with lib/types/ssz so anything that implements
 // HashableSSZ here also implements lib/types/ssz.HashableSSZ.
+
 package ssz
 
 import libssz "github.com/n42blockchain/N42/lib/types/ssz"

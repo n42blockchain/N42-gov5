@@ -11,6 +11,7 @@
 // lib/common/length so the cl/ tree's
 // `github.com/n42blockchain/N42/internal/cl/depshim/length` imports resolve to the same
 // values as the rest of the project.
+
 package length
 
 import liblength "github.com/n42blockchain/N42/lib/common/length"

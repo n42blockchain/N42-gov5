@@ -7,6 +7,7 @@
 
 //go:build n42el
 
+
 package empty
 
 import (

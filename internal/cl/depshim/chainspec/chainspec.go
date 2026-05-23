@@ -11,6 +11,7 @@
 // layer references from erigon/execution/chain/spec. Only the IDs are
 // needed in Phase 2 — the full chain spec (genesis, fork heights, etc.) is
 // vendored later when the phase1 stages land.
+
 package chainspec
 
 // Untyped so they convert implicitly to caller-defined network ID types.

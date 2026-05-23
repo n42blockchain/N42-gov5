@@ -11,6 +11,7 @@
 // common/clonable defines an identical Clonable interface — by aliasing
 // rather than vendoring we ensure cl/ types implement the SAME interface
 // that the rest of N42 (lib/types/ssz, lib/types) already uses.
+
 package clonable
 
 import libclonable "github.com/n42blockchain/N42/lib/types/clonable"

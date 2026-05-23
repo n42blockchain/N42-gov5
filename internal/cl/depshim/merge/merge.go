@@ -10,6 +10,7 @@
 // Package merge provides the post-merge constant header fields that the
 // cl/ pure-type layer stamps onto headers when converting CL execution
 // payloads back into RLP-style EL headers.
+
 package merge
 
 import "math/big"

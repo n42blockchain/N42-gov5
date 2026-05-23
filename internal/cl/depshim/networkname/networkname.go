@@ -11,6 +11,7 @@
 // pure-type layer uses. The values must match erigon's
 // execution/chain/networkname package exactly so that beacon network
 // presets resolve to the same chain configuration.
+
 package networkname
 
 const (

@@ -15,6 +15,8 @@
 // along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 // Package machine is the interface for eth2 state transition
+//go:build n42el
+
 package machine
 
 import (

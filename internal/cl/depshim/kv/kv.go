@@ -21,6 +21,7 @@
 //
 // If a future Caplin update needs a kv.* symbol that is not yet re-exported
 // here, the only required change is to add a new alias line below.
+
 package kv
 
 import libkv "github.com/n42blockchain/N42/lib/kv"

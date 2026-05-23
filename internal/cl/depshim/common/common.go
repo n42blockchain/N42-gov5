@@ -18,6 +18,7 @@
 //
 // A few helpers (Bytes2Hex, NewUint64) that erigon's common package exposes
 // but N42's lib/common does not are provided locally.
+
 package common
 
 import (

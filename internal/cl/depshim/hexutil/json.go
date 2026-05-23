@@ -9,6 +9,7 @@
 
 //go:build n42el
 
+
 package hexutil
 
 import (

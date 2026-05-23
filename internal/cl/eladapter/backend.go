@@ -19,6 +19,7 @@
 // answer to a narrow Backend (provided by cmd/ethexec/beacon_backend.go).
 // Methods that need a live Engine API server still return
 // ErrNotImplemented — see PHASE6_NOTES.md for the architectural seam.
+
 package eladapter
 
 import (

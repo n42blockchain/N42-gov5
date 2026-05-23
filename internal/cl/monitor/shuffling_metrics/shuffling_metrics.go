@@ -1,3 +1,5 @@
+//go:build n42el
+
 package shuffling_metrics
 
 import (
