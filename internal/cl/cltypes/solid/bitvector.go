@@ -1,5 +1,3 @@
-//go:build n42el
-
 package solid
 
 import (
@@ -11,7 +9,7 @@ import (
 	ssz2 "github.com/n42blockchain/N42/internal/cl/ssz"
 	"github.com/n42blockchain/N42/internal/cl/depshim/clonable"
 	"github.com/n42blockchain/N42/internal/cl/depshim/hexutil"
-	"github.com/n42blockchain/N42/internal/cl/depshim/sszh"
+	"github.com/n42blockchain/N42/internal/cl/depshim/ssz"
 )
 
 var (

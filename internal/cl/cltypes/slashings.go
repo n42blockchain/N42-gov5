@@ -1,14 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Slashings unit for the cltypes package.
-// Defines the ProposerSlashing and AttesterSlashing types.
-// Provides constructors NewAttesterSlashing.
-// Exports helpers such as EncodeSSZ, DecodeSSZ, EncodingSizeSSZ, and
-// HashSSZ.
-// Beacon chain SSZ data structures used across phases.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package cltypes
 
@@ -58,13 +62,24 @@ func (a *AttesterSlashing) SetVersion(v clparams.StateVersion) {
 	a.Attestation_2.SetVersion(v)
 }
 
+// SetVersionWithConfig sets the version on both indexed attestations with preset-aware limits.
+func (a *AttesterSlashing) SetVersionWithConfig(v clparams.StateVersion, cfg *clparams.BeaconChainConfig) {
+	a.Attestation_1.SetVersionWithConfig(v, cfg)
+	a.Attestation_2.SetVersionWithConfig(v, cfg)
+}
+
 func (a *AttesterSlashing) EncodeSSZ(dst []byte) ([]byte, error) {
 	return ssz2.MarshalSSZ(dst, a.Attestation_1, a.Attestation_2)
 }
 
 func (a *AttesterSlashing) DecodeSSZ(buf []byte, version int) error {
-	a.Attestation_1 = NewIndexedAttestation(clparams.StateVersion(version))
-	a.Attestation_2 = NewIndexedAttestation(clparams.StateVersion(version))
+	return a.DecodeSSZWithConfig(buf, version, nil)
+}
+
+// DecodeSSZWithConfig decodes an AttesterSlashing with preset-aware limits.
+func (a *AttesterSlashing) DecodeSSZWithConfig(buf []byte, version int, cfg *clparams.BeaconChainConfig) error {
+	a.Attestation_1 = NewIndexedAttestationWithConfig(clparams.StateVersion(version), cfg)
+	a.Attestation_2 = NewIndexedAttestationWithConfig(clparams.StateVersion(version), cfg)
 	return ssz2.UnmarshalSSZ(buf, version, a.Attestation_1, a.Attestation_2)
 }
 

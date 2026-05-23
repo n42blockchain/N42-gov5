@@ -1,12 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Util unit for the state package.
-// Exports helpers such as GetIndexedAttestation, GetValidatorFromDeposit,
-// HasEth1WithdrawalCredential, and HasCompoundingWithdrawalCredential.
-// Part of the n42el consensus-layer build.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package state
 
@@ -123,14 +129,23 @@ func GetActivationExitChurnLimit(s abstract.BeaconState) uint64 {
 }
 
 func GetBalanceChurnLimit(s abstract.BeaconState) uint64 {
+	churnLimitQuotient := s.BeaconConfig().ChurnLimitQuotient
+	if s.Version() >= clparams.GloasVersion {
+		churnLimitQuotient = s.BeaconConfig().ChurnLimitQuotientGloas
+	}
 	churn := max(
 		s.BeaconConfig().MinPerEpochChurnLimitElectra,
-		s.GetTotalActiveBalance()/s.BeaconConfig().ChurnLimitQuotient,
+		s.GetTotalActiveBalance()/churnLimitQuotient,
 	)
 	return churn - churn%s.BeaconConfig().EffectiveBalanceIncrement
 }
 
 func GetConsolidationChurnLimit(s abstract.BeaconState) uint64 {
+	if s.Version() >= clparams.GloasVersion {
+		// [Modified in Gloas:EIP8061] Independent consolidation churn, no max() with min churn
+		churn := s.GetTotalActiveBalance() / s.BeaconConfig().ConsolidationChurnLimitQuotient
+		return churn - churn%s.BeaconConfig().EffectiveBalanceIncrement
+	}
 	return GetBalanceChurnLimit(s) - GetActivationExitChurnLimit(s)
 }
 
@@ -172,4 +187,23 @@ func GetValidatorsCustodyRequirement(s abstract.BeaconState, validatorIndices []
 		max(count, s.BeaconConfig().ValidatorCustodyRequirement),
 		s.BeaconConfig().NumberOfCustodyGroups,
 	)
+}
+
+// IsAttestationSameSlot checks if the attestation is for the block proposed at the attestation slot.
+func IsAttestationSameSlot(s abstract.BeaconState, data *solid.AttestationData) (bool, error) {
+	if data.Slot == 0 {
+		return true, nil
+	}
+
+	blockRoot := data.BeaconBlockRoot
+	slotBlockRoot, err := s.GetBlockRootAtSlot(data.Slot)
+	if err != nil {
+		return false, err
+	}
+	prevBlockRoot, err := s.GetBlockRootAtSlot(data.Slot - 1)
+	if err != nil {
+		return false, err
+	}
+
+	return blockRoot == slotBlockRoot && blockRoot != prevBlockRoot, nil
 }

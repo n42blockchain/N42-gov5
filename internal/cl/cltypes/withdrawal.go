@@ -1,24 +1,29 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Withdrawal unit for the cltypes package.
-// Defines the Withdrawal types.
-// Exports helpers such as EncodeSSZ, DecodeSSZ, EncodingSizeSSZ, and
-// HashSSZ.
-// Beacon chain SSZ data structures used across phases.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package cltypes
 
 import (
 	"fmt"
 
+	"github.com/n42blockchain/N42/internal/cl/merkle_tree"
 	"github.com/n42blockchain/N42/internal/cl/depshim/common"
 	"github.com/n42blockchain/N42/internal/cl/depshim/length"
-	ssz "github.com/n42blockchain/N42/internal/cl/depshim/sszh"
+	"github.com/n42blockchain/N42/internal/cl/depshim/ssz"
 	"github.com/n42blockchain/N42/internal/cl/depshim/types"
-	"github.com/n42blockchain/N42/internal/cl/merkle_tree"
 )
 
 type Withdrawal struct {
@@ -80,4 +85,13 @@ func convertExecutionWithdrawalsToConsensusWithdrawals(executionWithdrawal []*ty
 		ret[i] = convertExecutionWithdrawalToConsensusWithdrawal(w)
 	}
 	return ret
+}
+
+// ExpectedWithdrawals represents the expected withdrawals for a beacon state
+type ExpectedWithdrawals struct {
+	Withdrawals                      []*Withdrawal `json:"withdrawals"`
+	ProcessedBuilderWithdrawalsCount uint64        `json:"processed_builder_withdrawals_count,string"` // [New in Gloas:EIP7732]
+	ProcessedPartialWithdrawalsCount uint64        `json:"processed_partial_withdrawals_count,string"`
+	ProcessedBuildersSweepCount      uint64        `json:"processed_builders_sweep_count,string"` // [New in Gloas:EIP7732]
+	ProcessedSweepWithdrawalsCount   uint64        `json:"processed_sweep_withdrawals_count,string"`
 }

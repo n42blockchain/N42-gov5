@@ -7,8 +7,6 @@
 //
 
 // Package eth_clock is a generated GoMock package.
-//go:build n42el
-
 package eth_clock
 
 import (

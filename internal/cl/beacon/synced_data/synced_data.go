@@ -1,14 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Synced data unit for the synced_data package.
-// Defines the SyncedDataManager types.
-// Provides constructors NewSyncedDataManager.
-// Exports helpers such as NewSyncedDataManager, OnHeadState, ViewHeadState,
-// and ViewPreviousHeadState.
-// Shared snapshot of the latest synced beacon state.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package synced_data
 
@@ -94,6 +98,46 @@ func (s *SyncedDataManager) OnHeadState(newState *state.CachingBeaconState) (err
 	}
 	s.headSlot.Store(newState.Slot())
 	s.headRoot.Store(blkRoot)
+	return nil
+}
+
+// OnHeadStateWithBlockRoot updates the head state with a known block root,
+// avoiding recomputation of BlockRoot() which can produce incorrect results
+// when the state's incremental hashing cache has been dirtied by operations
+// like unrealized justification/finality processing.
+func (s *SyncedDataManager) OnHeadStateWithBlockRoot(newState *state.CachingBeaconState, blockRoot common.Hash) (err error) {
+	if !s.enabled {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.accessLock.Lock()
+	defer s.accessLock.Unlock()
+
+	// Save current state as previous state, if available.
+	if s.headState != nil {
+		if s.previousHeadState != nil {
+			err = s.headState.CopyInto(s.previousHeadState)
+		} else {
+			s.previousHeadState, err = s.headState.Copy()
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	// Update headState with the new state.
+	if s.headState == nil {
+		s.headState, err = newState.Copy()
+	} else {
+		err = newState.CopyInto(s.headState)
+	}
+	if err != nil {
+		return err
+	}
+	s.headSlot.Store(newState.Slot())
+	s.headRoot.Store(blockRoot)
 	return nil
 }
 

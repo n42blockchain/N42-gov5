@@ -1,12 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// List unit for the merkle_tree package.
-// Exports helpers such as MerkleizeVector, BitlistRootWithLimit,
-// BitvectorRootWithLimit, and TransactionsListRoot.
-// Generalized merkle tree hashing utilities.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package merkle_tree
 
@@ -15,8 +21,8 @@ import (
 
 	"github.com/prysmaticlabs/gohashtree"
 
-	ssz "github.com/n42blockchain/N42/internal/cl/depshim/sszh"
 	"github.com/n42blockchain/N42/internal/cl/utils"
+	"github.com/n42blockchain/N42/internal/cl/depshim/ssz"
 )
 
 // MerkleizeVector uses our optimized routine to hash a list of 32-byte
@@ -103,10 +109,10 @@ func TransactionsListRoot(transactions [][]byte) ([32]byte, error) {
 }
 
 func ListObjectSSZRoot[T ssz.HashableSSZ](list []T, limit uint64) ([32]byte, error) {
-	globalHasher.mu2.Lock()
-	defer globalHasher.mu2.Unlock()
-	// due to go generics we cannot make a method for global hasher.
-	subLeaves := globalHasher.getBufferForSSZList(len(list))
+	// Allocate a local buffer instead of using the global hasher buffer.
+	// The global mutex (mu2) caused reentrant deadlocks when element.HashSSZ()
+	// itself called ListObjectSSZRoot (e.g., PartialDataColumnSidecar → Header list → PartialDataColumnHeader → KzgCommitments list).
+	subLeaves := make([][32]byte, len(list))
 	for i, element := range list {
 		subLeaf, err := element.HashSSZ()
 		if err != nil {

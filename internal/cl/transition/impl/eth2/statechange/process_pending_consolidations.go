@@ -1,12 +1,10 @@
-//go:build n42el
-
 package statechange
 
 import (
 	"github.com/n42blockchain/N42/internal/cl/abstract"
 	"github.com/n42blockchain/N42/internal/cl/cltypes/solid"
 	"github.com/n42blockchain/N42/internal/cl/phase1/core/state"
-	"github.com/n42blockchain/N42/internal/cl/depshim/log"
+	log "github.com/n42blockchain/N42/internal/cl/depshim/log/v3"
 )
 
 func ProcessPendingConsolidations(s abstract.BeaconState) {

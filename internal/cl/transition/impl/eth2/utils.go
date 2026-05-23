@@ -1,11 +1,18 @@
-// Copyright 2021-2026 The N42 Authors
-// This file is part of the N42 library.
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
 //
-// Utils unit for the eth2 package.
-// Part of the n42el consensus-layer build.
-// Part of the n42el consensus-layer build.
-
-//go:build n42el
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
 
 package eth2
 
@@ -13,6 +20,7 @@ import (
 	"encoding/binary"
 
 	"github.com/n42blockchain/N42/internal/cl/abstract"
+	"github.com/n42blockchain/N42/internal/cl/clparams"
 	"github.com/n42blockchain/N42/internal/cl/utils"
 	"github.com/n42blockchain/N42/internal/cl/depshim/common"
 )
@@ -28,6 +36,7 @@ func transitionSlot(s abstract.BeaconState) error {
 	slot := s.Slot()
 	previousStateRoot := s.PreviousStateRoot()
 	var err error
+
 	if previousStateRoot == (common.Hash{}) {
 		previousStateRoot, err = s.HashSSZ()
 		if err != nil {
@@ -51,5 +60,10 @@ func transitionSlot(s abstract.BeaconState) error {
 		return err
 	}
 	s.SetBlockRootAt(int(slot%beaconConfig.SlotsPerHistoricalRoot), previousBlockRoot)
+
+	if s.Version() >= clparams.GloasVersion {
+		// Unset the next payload availability
+		s.SetExecutionPayloadAvailability(slot+1, false)
+	}
 	return nil
 }
