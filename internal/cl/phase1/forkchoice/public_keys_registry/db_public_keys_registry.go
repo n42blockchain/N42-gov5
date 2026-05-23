@@ -1,0 +1,50 @@
+//go:build n42el
+
+package public_keys_registry
+
+import (
+	"github.com/n42blockchain/N42/internal/cl/abstract"
+	"github.com/n42blockchain/N42/internal/cl/beacon/synced_data"
+	"github.com/n42blockchain/N42/internal/cl/cltypes/solid"
+	"github.com/n42blockchain/N42/internal/cl/utils/bls"
+	common "github.com/n42blockchain/N42/internal/cl/depshim/common"
+)
+
+type DBPublicKeysRegistry struct {
+	headView synced_data.SyncedData
+}
+
+func NewHeadViewPublicKeysRegistry(headView synced_data.SyncedData) *DBPublicKeysRegistry {
+	return &DBPublicKeysRegistry{headView: headView}
+}
+
+// ResetAnchor resets the public keys registry to the anchor state
+func (r *DBPublicKeysRegistry) ResetAnchor(s abstract.BeaconState) {
+	// no-op
+}
+
+// VerifyAggregateSignature verifies the aggregate signature
+func (r *DBPublicKeysRegistry) VerifyAggregateSignature(checkpoint solid.Checkpoint, pubkeysIdxs *solid.RawUint64List, message []byte, signature common.Bytes96) (bool, error) {
+	pks := make([][]byte, 0, pubkeysIdxs.Length())
+
+	pubkeysIdxs.Range(func(_ int, value uint64, length int) bool {
+		pk, err := r.headView.ValidatorPublicKeyByIndex(int(value))
+		if err != nil {
+			return false
+		}
+		pks = append(pks, pk[:])
+		return true
+	})
+
+	return bls.VerifyAggregate(signature[:], message, pks)
+}
+
+// AddState adds the state to the public keys registry
+func (r *DBPublicKeysRegistry) AddState(checkpoint solid.Checkpoint, s abstract.BeaconState) {
+	// no-op
+}
+
+// Prune removes the public keys registry for the given epoch
+func (r *DBPublicKeysRegistry) Prune(epoch uint64) {
+	// no-op
+}
