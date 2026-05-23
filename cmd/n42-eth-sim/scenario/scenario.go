@@ -30,6 +30,7 @@ type Scenario struct {
 	archiveDir    string // <root>/publisher/archive   (single source of truth)
 	publishedDir  string // <root>/published          (the "mirror")
 	network       string
+	activeModes   []string // which client modes this scenario tracks
 
 	mu     sync.Mutex
 	height uint64
@@ -56,9 +57,34 @@ type Status struct {
 	Clients         map[string]*ClientState
 }
 
-// New initialises a fresh scenario under root. Does NOT publish
-// anything yet; call PublisherTick + BootstrapClients to start.
+// New initialises a fresh scenario under root with the default set
+// of clients (one per mode in AllModes). Does NOT publish anything
+// yet; call PublisherTick + BootstrapClients to start.
 func New(root string) (*Scenario, error) {
+	return NewWithModes(root, AllModes)
+}
+
+// NewWithModes is like New but lets the caller restrict which
+// client modes the scenario will run. The publisher still emits
+// manifests + deltas for all three modes (so a client could
+// subscribe later), but only the listed modes have actively
+// tracked client state.
+func NewWithModes(root string, modes []string) (*Scenario, error) {
+	if len(modes) == 0 {
+		return nil, fmt.Errorf("NewWithModes: at least one mode required")
+	}
+	for _, m := range modes {
+		ok := false
+		for _, am := range AllModes {
+			if m == am {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return nil, fmt.Errorf("NewWithModes: unknown mode %q", m)
+		}
+	}
 	s := &Scenario{
 		root:           root,
 		archiveDir:     filepath.Join(root, "publisher", "archive"),
@@ -66,6 +92,7 @@ func New(root string) (*Scenario, error) {
 		network:        "simnet",
 		prevManifestID: make(map[string]string),
 		clients:        make(map[string]*ClientState),
+		activeModes:    append([]string{}, modes...),
 	}
 	if err := os.MkdirAll(s.archiveDir, 0o755); err != nil {
 		return nil, err
@@ -73,7 +100,7 @@ func New(root string) (*Scenario, error) {
 	if err := os.MkdirAll(s.publishedDir, 0o755); err != nil {
 		return nil, err
 	}
-	for _, mode := range AllModes {
+	for _, mode := range modes {
 		s.clients[mode] = &ClientState{
 			Datadir: filepath.Join(root, "clients", mode),
 			Mode:    mode,
@@ -84,6 +111,9 @@ func New(root string) (*Scenario, error) {
 	}
 	return s, nil
 }
+
+// ActiveModes returns the modes whose clients this scenario tracks.
+func (s *Scenario) ActiveModes() []string { return s.activeModes }
 
 func (s *Scenario) PublishedDir() string { return s.publishedDir }
 
@@ -135,12 +165,12 @@ func (s *Scenario) PublisherTick() error {
 	return nil
 }
 
-// BootstrapClients runs the initial fetch for each client mode
-// against the most recently published release.
+// BootstrapClients runs the initial fetch for each active client
+// mode against the most recently published release.
 func (s *Scenario) BootstrapClients() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, mode := range AllModes {
+	for _, mode := range s.activeModes {
 		src := s.releaseSourceFor(mode, s.height)
 		c := s.clients[mode]
 		rep, err := snapshot.Fetch("file://"+src, c.Datadir, mode, false, false, 4)
@@ -211,7 +241,7 @@ func (s *Scenario) PrintFinalReport(w io.Writer) {
 		"mode", "height", "total bytes", "matches?")
 	fmt.Fprintf(w, "%-10s  %-10s  %-14s  %-10s\n",
 		"----", "------", "-----------", "--------")
-	for _, mode := range AllModes {
+	for _, mode := range s.activeModes {
 		c := st.Clients[mode]
 		match := "OK"
 		if c.Height != st.PublisherHeight {
@@ -222,13 +252,13 @@ func (s *Scenario) PrintFinalReport(w io.Writer) {
 	}
 }
 
-// VerifyAllClients runs a full blake2b verify on each client's
-// datadir and asserts the manifest_id matches the latest published
-// manifest_id for that mode.
+// VerifyAllClients runs a full blake2b verify on each active
+// client's datadir and asserts the manifest_id matches the latest
+// published manifest_id for that mode.
 func (s *Scenario) VerifyAllClients() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, mode := range AllModes {
+	for _, mode := range s.activeModes {
 		c := s.clients[mode]
 		rep, err := snapshot.Verify(c.Datadir, "", 4)
 		if err != nil {
