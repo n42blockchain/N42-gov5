@@ -32,6 +32,8 @@ func main() {
 		runVerify(os.Args[2:])
 	case "mode":
 		runMode(os.Args[2:])
+	case "status":
+		runStatus(os.Args[2:])
 	case "fetch":
 		runFetch(os.Args[2:])
 	case "upgrade":
@@ -58,6 +60,7 @@ USAGE
 SUBCOMMANDS
     verify         hash every file in a datadir against its manifest
     mode           detect maximal mode (minimal/full/archive) in a datadir
+    status         compare local height to publisher's latest (am I behind?)
     fetch          copy missing files from --source into --datadir for --mode
     upgrade        fetch the delta needed to move from current to --to mode
     downgrade      remove files not in --to mode's manifest
@@ -102,6 +105,27 @@ func runMode(args []string) {
 	fmt.Printf("mode=%s  height=%d  intact=%v\n", det.Mode, det.Height, det.Intact)
 	if len(det.MissingSections) > 0 {
 		fmt.Printf("  missing sections for next tier: %v\n", det.MissingSections)
+	}
+}
+
+func runStatus(args []string) {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	datadir := fs.String("datadir", ".", "client datadir")
+	source := fs.String("source", "", "publisher source root: file:///mirror/<network> or https://host/<network>")
+	mode := fs.String("mode", "archive", "mode (minimal|full|archive)")
+	_ = fs.Parse(args)
+	if *source == "" {
+		fmt.Fprintln(os.Stderr, "--source is required")
+		os.Exit(2)
+	}
+	rep, err := snapshot.Status(*datadir, *source, *mode)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "status: %v\n", err)
+		os.Exit(1)
+	}
+	rep.Print(os.Stdout)
+	if !rep.UpToDate {
+		os.Exit(3) // distinct exit code so scripts can detect "behind"
 	}
 }
 
