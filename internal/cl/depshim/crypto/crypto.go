@@ -10,6 +10,7 @@
 // Package crypto re-exports the Keccak256 helpers and key utilities that
 // the cl/ tree expects from erigon's common/crypto. Everything is forwarded
 // to N42's lib/crypto, which already provides identical signatures.
+
 package crypto
 
 import (
@@ -24,6 +25,15 @@ var (
 	NewKeccakState = libcrypto.NewKeccakState
 	ToECDSA        = libcrypto.ToECDSA
 )
+
+// HashData is the EIP-7928 / EIP-7843 helper that mirrors erigon's
+// crypto.HashData: keccak256 over an arbitrary byte slice. Caplin
+// uses it inside Gloas-fork-guarded paths to compute the
+// BlockAccessListHash. Returns a depshim/common.Hash (aliased to
+// lib/common.Hash) for type compatibility with the Caplin tree.
+func HashData(data []byte) [32]byte {
+	return libcrypto.Keccak256Hash(data)
+}
 
 // PubkeyToAddress derives the 20-byte EL address from an ECDSA public key.
 // The returned address is compatible with depshim/common.Address (both are

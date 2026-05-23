@@ -18,6 +18,7 @@
 // are all stubs — they will be replaced with the real types (or with thin
 // adapters around N42's existing engine API types in internal/api) when
 // Phase 5 wires up the eladapter.
+
 package engine_types
 
 import (

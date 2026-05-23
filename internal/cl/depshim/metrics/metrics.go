@@ -19,6 +19,7 @@
 // package can be replaced with thin adapters around N42's own metrics
 // registry. Until then, the no-op cost is one allocation per metric at
 // startup and zero work per increment.
+
 package metrics
 
 import "time"

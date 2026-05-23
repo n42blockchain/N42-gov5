@@ -7,6 +7,7 @@
 
 //go:build n42el
 
+
 package ssz
 
 import libssz "github.com/n42blockchain/N42/lib/types/ssz"

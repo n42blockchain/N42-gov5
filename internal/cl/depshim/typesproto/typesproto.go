@@ -15,6 +15,7 @@
 //
 // Avoiding the real package keeps gRPC, protobuf, and the entire erigon
 // node/gointerfaces tree out of the n42el dependency graph.
+
 package typesproto
 
 // RequestsBundle mirrors erigon's typesproto.RequestsBundle just enough to

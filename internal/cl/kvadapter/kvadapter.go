@@ -24,6 +24,7 @@
 // Caplin code uses `internal/cl/depshim/kv.RwDB`, which is a type alias to
 // the same lib/kv interface — so the value returned here can be passed
 // straight in.
+
 package kvadapter
 
 import (

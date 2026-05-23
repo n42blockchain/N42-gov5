@@ -9,6 +9,7 @@
 
 // Package log re-exports N42's lib/log/v3 under the import path expected by
 // the Caplin source tree (github.com/n42blockchain/N42/internal/cl/depshim/log).
+
 package log
 
 import libLog "github.com/n42blockchain/N42/lib/log/v3"

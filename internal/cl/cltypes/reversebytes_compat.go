@@ -13,6 +13,7 @@
 // in-place 32-byte reversal that the patched call sites in eth1_block.go
 // and eth1_header.go invoke instead.
 
+
 package cltypes
 
 import (

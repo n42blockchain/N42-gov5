@@ -1,3 +1,5 @@
+//go:build n42el
+
 package beaconevents
 
 import ethevent "github.com/n42blockchain/N42/internal/cl/depshim/event"

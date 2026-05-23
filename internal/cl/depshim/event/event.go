@@ -15,6 +15,7 @@
 // pattern down to the surface Caplin actually uses (Subscribe, Send,
 // Unsubscribe, Err). Slow consumers drop messages — that matches the
 // loose-coupling semantics that beacon event listeners assume.
+
 package event
 
 import (

@@ -7,6 +7,8 @@
 //
 
 // Package mock_services is a generated GoMock package.
+//go:build n42el
+
 package mock_services
 
 import (

@@ -11,6 +11,7 @@
 // Package cl is the N42 fork of Erigon's Caplin consensus-layer
 // implementation. The entire subtree is gated behind the `n42el` build tag
 // and is linked only into cmd/ethexec, never into the native cmd/n42 path.
+
 package cl
 
 import (
