@@ -228,6 +228,36 @@ func (b *Block) RawBody() *RawBody {
 	return &RawBody{Transactions: b.Transactions, Withdrawals: b.Withdrawals}
 }
 
+// Hash forwards to the header hash (matches erigon Block accessor).
+// Phase 7.4 — block_collector reads Block.Hash() to chain blocks.
+func (b *Block) Hash() common.Hash {
+	if b.HeaderField == nil {
+		return common.Hash{}
+	}
+	return b.HeaderField.Hash()
+}
+
+// ParentHash forwards to the header ParentHash (matches erigon Block accessor).
+func (b *Block) ParentHash() common.Hash {
+	if b.HeaderField == nil {
+		return common.Hash{}
+	}
+	return b.HeaderField.ParentHash
+}
+
+// NumberU64 forwards to the header block number (matches erigon Block accessor).
+func (b *Block) NumberU64() uint64 {
+	if b.HeaderField == nil {
+		return 0
+	}
+	return b.HeaderField.Number.Uint64()
+}
+
+// Slot is a Caplin-side helper that returns the slot the block was
+// proposed for. EL Block stub stores no slot — return 0; caller treats
+// this as "unknown".
+func (b *Block) Slot() uint64 { return 0 }
+
 // --- test-only constructors --------------------------------------------
 // These are panic-stubs so test files that need them compile under
 // `go vet -tags n42el`. Production code lives in the EL adapter,
