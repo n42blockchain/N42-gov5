@@ -134,8 +134,25 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	ibs := state.New(reader)
 	ibs.BeginWriteCodes()
 	ethel.SetupStateRootComputer(tx, ibs)
-	if err := ethel.InitHashState(tx); err != nil {
-		return nil, err
+	// InitHashState populates HashedAccounts/HashedStorage from PlainState
+	// for the FlatDBTrieLoader-based CalcStateRoot path. HPH itself uses
+	// CommitmentBranches (see lib/commitment/persistent_context.go) and
+	// reads Account/Storage by plain key, so it does NOT need this
+	// pre-population. The catchup executor mirrors this: it only calls
+	// InitHashState when VerifyInterval > 0 (see executor.go:314).
+	//
+	// In the wire path the one-time cost is catastrophic — 280M+ account
+	// hashes for a 25M-state chain takes 30-60min and produces a ~14 GB
+	// MDBX table we won't read. Skip it entirely on fastVerify; only the
+	// legacy CL/test path that may fall through to VerifyStateRoot's
+	// FlatDBTrieLoader sibling needs it. (VerifyStateRoot itself doesn't
+	// use HashedAccounts — but other tests / paths that ARE exercised
+	// from the same adapter might, so we keep the legacy behavior off
+	// the wire path only.)
+	if !a.fastVerify {
+		if err := ethel.InitHashState(tx); err != nil {
+			return nil, err
+		}
 	}
 
 	expected := captureExpectedExecutionPayloadOutputs(header)
