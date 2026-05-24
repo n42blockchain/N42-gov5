@@ -82,6 +82,14 @@ type Downloader struct {
 	peers    map[string]*peerState        // peerID → state
 	inflight map[string]chan inflightResp // reqKey → reply channel
 	adapter  *api.EngineStateAdapter
+
+	// importMu serialises calls to adapter.ExecutePayloadFromWire +
+	// writeLocalHead across the per-peer goroutines. Without it,
+	// every reconnecting peer spawns a fresh runPeerLoop that
+	// concurrently calls BeginRw on the same MDBX env — they don't
+	// deadlock but they queue indefinitely behind whichever one
+	// got the write lock first, with no progress visibility.
+	importMu sync.Mutex
 }
 
 // executionProvider is the surface the downloader needs from the
@@ -329,32 +337,48 @@ func (d *Downloader) runPeerLoop(ctx context.Context, peerID string) {
 			bodies = bodies[:len(decoded)]
 		}
 
-		// Import each block sequentially. On any failure, abandon the
-		// remainder of the batch — the next iteration will retry from
-		// our updated head, possibly with a different peer.
+		// Serialise the actual import so concurrent per-peer goroutines
+		// don't pile up on MDBX's single-Rw lock. Each peer's local
+		// view of `start` may be stale after another peer imports
+		// ahead of us, so check + skip on re-entry.
+		d.importMu.Lock()
+		localNow, _ := d.localHead(ctx)
+		log.Info("eldevp2p: import lock acquired",
+			"peer", peerID[:16], "localHead", localNow,
+			"batchStart", start, "batchSize", len(decoded))
 		var imported uint64
 		for i, hdr := range decoded {
+			blockNum := hdr.Number64().Uint64()
+			if blockNum <= localNow {
+				continue // someone already imported this
+			}
 			blk, withdrawals, err := assembleBlock(hdr, bodies[i])
 			if err != nil {
 				log.Warn("eldevp2p: assemble block failed",
-					"block", hdr.Number64().Uint64(), "err", err)
+					"block", blockNum, "err", err)
 				break
 			}
+			log.Info("eldevp2p: executing payload",
+				"block", blockNum, "txs", len(blk.Transactions()),
+				"withdrawals", len(withdrawals))
 			ok, root, err := d.adapter.ExecutePayloadFromWire(blk, withdrawals)
 			if err != nil {
 				log.Warn("eldevp2p: ExecutePayloadFromWire error",
-					"block", hdr.Number64().Uint64(), "err", err)
+					"block", blockNum, "err", err)
 				break
 			}
 			if !ok {
 				log.Warn("eldevp2p: payload invalid",
-					"block", hdr.Number64().Uint64(),
+					"block", blockNum,
 					"computedRoot", root.Hex(),
 					"declaredRoot", hdr.Root.Hex())
 				break
 			}
+			log.Info("eldevp2p: imported block",
+				"block", blockNum, "root", root.Hex())
 			imported++
 		}
+		d.importMu.Unlock()
 
 		if imported > 0 {
 			newHead := start + imported - 1
