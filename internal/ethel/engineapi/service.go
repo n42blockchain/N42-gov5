@@ -118,6 +118,20 @@ func (s *Service) Start(_ context.Context) error {
 			return fmt.Errorf("register %s: %w", a.Namespace, err)
 		}
 	}
+	// Minimal eth + net + web3 namespaces — Lighthouse / Prysm /
+	// any standards-compliant CL upcheck the EL by calling
+	// eth_syncing / eth_chainId / eth_blockNumber before forwarding
+	// payloads. Without these the upcheck loops with
+	// "Error during execution engine upcheck" and the wire is dead.
+	if err := rpcSrv.RegisterName("eth", NewEthAPIMinimal(s.db, s.chainCfg)); err != nil {
+		return fmt.Errorf("register eth: %w", err)
+	}
+	if err := rpcSrv.RegisterName("net", NewNetAPIMinimal(s.chainCfg)); err != nil {
+		return fmt.Errorf("register net: %w", err)
+	}
+	if err := rpcSrv.RegisterName("web3", NewWeb3APIMinimal()); err != nil {
+		return fmt.Errorf("register web3: %w", err)
+	}
 	s.rpc = rpcSrv
 
 	mux := http.NewServeMux()
@@ -145,7 +159,7 @@ func (s *Service) Start(_ context.Context) error {
 	log.Info("eth-el: engineAPI listening",
 		"addr", addr,
 		"jwt", s.cfg.JWTSecretPath,
-		"namespaces", "engine",
+		"namespaces", "engine,eth,net,web3",
 	)
 	return nil
 }
