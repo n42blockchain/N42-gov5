@@ -66,13 +66,22 @@ func (s *Server) Start() error {
 
 	s.srv = &gethp2p.Server{
 		Config: gethp2p.Config{
-			PrivateKey:     s.cfg.PrivateKey,
-			MaxPeers:       s.cfg.MaxPeers,
-			Name:           "n42-ethel/v1",
-			ListenAddr:     s.cfg.ListenAddr,
-			Protocols:      []gethp2p.Protocol{ethProto},
-			BootstrapNodes: s.cfg.BootNodes,
-			NAT:            s.cfg.NAT,
+			PrivateKey: s.cfg.PrivateKey,
+			MaxPeers:   s.cfg.MaxPeers,
+			Name:       "n42-ethel/v1",
+			ListenAddr: s.cfg.ListenAddr,
+			Protocols:  []gethp2p.Protocol{ethProto},
+			// DiscoveryV4 + DiscoveryV5 are NOT enabled by default —
+			// without them BootstrapNodes are only used as static peers
+			// and we never walk the DHT to find real serving peers.
+			// Bootnodes are typically discovery-only and EOF us right
+			// after the eth handshake; without discovery we'd hit only
+			// them and never find an archive node.
+			DiscoveryV4:      true,
+			DiscoveryV5:      true,
+			BootstrapNodes:   s.cfg.BootNodes,
+			BootstrapNodesV5: s.cfg.BootNodes,
+			NAT:              s.cfg.NAT,
 		},
 	}
 
