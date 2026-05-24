@@ -86,7 +86,7 @@ func (s *Server) Start() error {
 			// we don't get penalised on string heuristics.
 			Name:       "Geth/v1.17.2-stable-7c8a8a8a/linux-amd64/go1.23.0",
 			ListenAddr: s.cfg.ListenAddr,
-			Protocols:  []gethp2p.Protocol{ethProto69, ethProto68, snapProto},
+			Protocols:  []gethp2p.Protocol{ethProto, snapProto},
 			// DiscoveryV4 + DiscoveryV5 are NOT enabled by default —
 			// without them BootstrapNodes are only used as static peers
 			// and we never walk the DHT to find real serving peers.
@@ -98,12 +98,44 @@ func (s *Server) Start() error {
 			BootstrapNodes:   s.cfg.BootNodes,
 			BootstrapNodesV5: s.cfg.BootNodes,
 			NAT:              s.cfg.NAT,
+			// Required so SubscribeEvents fires PeerEventTypeDrop with
+			// the actual RLPx Disconnect reason in PeerEvent.Error.
+			EnableMsgEvents: true,
 		},
 	}
 
 	if err := s.srv.Start(); err != nil {
 		return fmt.Errorf("devp2p start: %w", err)
 	}
+
+	// Subscribe to peer add/drop events so we can log the actual
+	// RLPx Disconnect reason from the remote side. That reason is
+	// otherwise hidden — our subprotocol handler just sees io.EOF.
+	// Without this, debugging 'why does geth EOF us?' is blind.
+	events := make(chan *gethp2p.PeerEvent, 256)
+	sub := s.srv.SubscribeEvents(events)
+	go func() {
+		defer sub.Unsubscribe()
+		for ev := range events {
+			if ev.Type != gethp2p.PeerEventTypeAdd && ev.Type != gethp2p.PeerEventTypeDrop {
+				continue
+			}
+			id := ev.Peer.String()
+			if len(id) > 16 {
+				id = id[:16]
+			}
+			if ev.Type == gethp2p.PeerEventTypeAdd {
+				log.Info("p2p: peer add", "id", id, "proto", ev.Protocol)
+				continue
+			}
+			// Drop — the precious one. ev.Error carries the disconnect
+			// reason string ("useless peer", "subprotocol error: ...",
+			// "client quitting", etc.) when geth's framing layer parsed
+			// a Disconnect frame before the TCP close.
+			log.Warn("p2p: peer drop",
+				"id", id, "proto", ev.Protocol, "reason", ev.Error)
+		}
+	}()
 
 	log.Info("devp2p server started",
 		"listenAddr", s.cfg.ListenAddr,

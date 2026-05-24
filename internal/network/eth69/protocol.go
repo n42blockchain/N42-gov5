@@ -199,13 +199,26 @@ func (h *HashOrNumber) DecodeRLP(s *rlp.Stream) error {
 	return err
 }
 
-// GetBlockHeadersPacket represents a GetBlockHeaders request.
+// GetBlockHeadersQuery is the inner payload of GetBlockHeaders.
+//
+// IMPORTANT — the eth/68-69 wire format wraps THIS inside a 2-element
+// list with the request id: `[reqID, [origin, amount, skip, reverse]]`.
+// A flat 5-field encoding (which is what the default reflect encoder
+// would produce for a non-nested struct) is rejected by every mainline
+// EL client with DiscProtocolError ("breach of protocol"). Geth, Reth
+// and Erigon all model this as `struct { RequestID; *Query }`.
+type GetBlockHeadersQuery struct {
+	Origin  HashOrNumber // Block to start from
+	Amount  uint64       // Number of headers to retrieve
+	Skip    uint64       // Blocks to skip between consecutive headers
+	Reverse bool         // Query direction (false = ascending)
+}
+
+// GetBlockHeadersPacket represents a GetBlockHeaders request. RLP encodes
+// as the spec-mandated nested list (see GetBlockHeadersQuery doc).
 type GetBlockHeadersPacket struct {
-	RequestID uint64       // Request identifier for matching responses
-	Origin    HashOrNumber // Block to start from
-	Amount    uint64       // Number of headers to retrieve
-	Skip      uint64       // Blocks to skip between consecutive headers
-	Reverse   bool         // Query direction (false = ascending)
+	RequestID uint64
+	*GetBlockHeadersQuery
 }
 
 // BlockHeadersPacket is the response to GetBlockHeaders.
@@ -214,7 +227,9 @@ type BlockHeadersPacket struct {
 	Headers   [][]byte // RLP-encoded headers
 }
 
-// GetBlockBodiesPacket requests block bodies by hash.
+// GetBlockBodiesPacket requests block bodies by hash. Wire form here
+// IS naturally flat (no nested inner-list), so the default encoding
+// works — but if you ever change this, double-check the spec.
 type GetBlockBodiesPacket struct {
 	RequestID uint64       // Request identifier
 	Hashes    []types.Hash // Block hashes to retrieve bodies for

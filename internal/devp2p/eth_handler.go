@@ -9,7 +9,9 @@
 package devp2p
 
 import (
+	"errors"
 	"fmt"
+	"io"
 
 	gethp2p "github.com/ethereum/go-ethereum/p2p"
 
@@ -39,7 +41,9 @@ type ResponseHandler interface {
 	// downloader cancel any in-flight requests on this peer.
 	OnPeerDisconnect(peerID string)
 	// OnBlockHeaders delivers a BlockHeaders (msg code 4) response.
-	OnBlockHeaders(peerID string, reqID uint64, headers []*n42block.Header)
+	// Headers are raw RLP bytes — the consumer must decode each with
+	// ethel.DecodeUncleHeader (or any other fork-aware decoder).
+	OnBlockHeaders(peerID string, reqID uint64, headers [][]byte)
 	// OnBlockBodies delivers a BlockBodies (msg code 6) response.
 	OnBlockBodies(peerID string, reqID uint64, bodies []BlockBody)
 	// OnNewBlock delivers a NewBlock (msg code 7) push — peer announces
@@ -88,10 +92,27 @@ func (h *EthHandler) currentForkID(head *n42block.Header) forkID {
 func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error {
 	log.Info("devp2p peer connected", "id", peer.ID().String()[:16], "name", peer.Name())
 
+	// cleanExit translates any error our handler would return into a
+	// clean nil if the underlying cause is a TCP/RLPx shutdown (peer
+	// went away on their own terms). Returning the original error
+	// instead would make p2p.Server attribute the disconnect to OUR
+	// subprotocol — see commit message for the long version. Any
+	// non-shutdown error is still surfaced (network ID mismatch,
+	// genesis mismatch, malformed packet, etc.).
+	cleanExit := func(err error) error {
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) {
+			return nil
+		}
+		return err
+	}
+
 	// Handshake: send our status.
 	head, headHash, err := h.provider.CurrentHead()
 	if err != nil {
-		return fmt.Errorf("current head: %w", err)
+		return cleanExit(fmt.Errorf("current head: %w", err))
 	}
 	status := statusPacket{
 		ProtocolVersion: uint32(69),
@@ -109,13 +130,17 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error
 		"forkHash", fmt.Sprintf("%x", status.ForkID.Hash),
 		"forkNext", status.ForkID.Next)
 	if err := gethp2p.Send(rw, 0, &status); err != nil {
-		return fmt.Errorf("send status: %w", err)
+		return cleanExit(fmt.Errorf("send status: %w", err))
 	}
 
-	// Read peer's status.
+	// Read peer's status. The handshake-phase ReadMsg is where ~all our
+	// peers were dying — same EOF-returns-as-subprotocol-error trap as
+	// the message loop below. The clean treatment is: if peer closed
+	// before completing the handshake, exit cleanly so the drop reason
+	// reflects geth's real cause (full mesh, useless peer, etc).
 	msg, err := rw.ReadMsg()
 	if err != nil {
-		return err
+		return cleanExit(err)
 	}
 	if msg.Code != 0 {
 		return fmt.Errorf("expected status message, got %d", msg.Code)
@@ -137,22 +162,13 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error
 		"peerForkHash", fmt.Sprintf("%x", peerStatus.ForkID.Hash),
 		"peerForkNext", peerStatus.ForkID.Next)
 
-	// eth/69 spec: BlockRangeUpdate (msg 0x11) MUST be sent immediately
-	// after Status to declare our available block range. Without it,
-	// Erigon's sentry (and likely other clients) waits a short window
-	// and then disconnects with DiscProtocolError — observed as silent
-	// EOF after handshake across Geth / Nethermind / Erigon / Besu on
-	// 2026-05-24. The Status already carries the range, but eth/69
-	// treats the post-handshake BlockRangeUpdate as the authoritative
-	// signal that we're an eth/69 speaker (not a hijacked eth/68).
-	bru := blockRangeUpdatePacket{
-		EarliestBlock:   status.EarliestBlock,
-		LatestBlock:     status.LatestBlock,
-		LatestBlockHash: status.LatestBlockHash,
-	}
-	if err := gethp2p.Send(rw, 17, &bru); err != nil {
-		return fmt.Errorf("send BlockRangeUpdate: %w", err)
-	}
+	// IMPORTANT: do NOT send BlockRangeUpdate (msg 0x11) right after
+	// Status. The eth/69 spec sends BRU only on range CHANGE — the
+	// initial range is already carried by the Status itself. Geth
+	// reads an unsolicited BRU as spam and replies with a
+	// DiscProtocolError ("breach of protocol") Disconnect frame.
+	// We were doing exactly that and getting EOF'd; the fix is to
+	// stay quiet until our range actually moves.
 
 	peerID := peer.ID().String()
 	if h.rh != nil {
@@ -164,14 +180,12 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error
 	for {
 		msg, err := rw.ReadMsg()
 		if err != nil {
-			log.Warn("devp2p: peer dropped",
-				"peer", peer.ID().String()[:16], "err", err)
-			return err
+			return cleanExit(err)
 		}
 		if err := h.handleMessage(peer, rw, msg); err != nil {
 			log.Warn("devp2p message error", "peer", peer.ID().String()[:16],
 				"msg", msg.Code, "err", err)
-			return err
+			return cleanExit(err)
 		}
 	}
 }
@@ -200,7 +214,11 @@ func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter,
 			return fmt.Errorf("decode BlockHeaders: %w", err)
 		}
 		if h.rh != nil {
-			h.rh.OnBlockHeaders(peerID, resp.RequestID, resp.Headers)
+			raw := make([][]byte, len(resp.Headers))
+			for i, h := range resp.Headers {
+				raw[i] = []byte(h)
+			}
+			h.rh.OnBlockHeaders(peerID, resp.RequestID, raw)
 		}
 		return nil
 
@@ -252,49 +270,21 @@ func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter,
 }
 
 // handleGetBlockHeaders serves block headers to a requesting peer.
+//
+// Today the eth-el chaindata is state-only — there are no Ethereum
+// headers stored, so the only honest answer is the empty response.
+// (Returning empty is a valid eth/69 reply meaning "no data in
+// range"; it does not cause a disconnect.) Once the body/header
+// columnar store is wired into BlockProvider, this handler will
+// encode each fetched *block.Header via the same per-fork RLP layout
+// that ethel.DecodeUncleHeader expects. See header_compact.go for the
+// canonical encoder we'd reuse.
 func (h *EthHandler) handleGetBlockHeaders(rw gethp2p.MsgReadWriter, msg gethp2p.Msg) error {
 	var req getBlockHeadersPacket
 	if err := msg.Decode(&req); err != nil {
 		return err
 	}
-
-	headers := make([]*n42block.Header, 0, req.Amount)
-	num := req.Origin.Number
-	if req.Origin.Hash != (types.Hash{}) {
-		header, err := h.provider.GetHeaderByHash(req.Origin.Hash)
-		if err != nil {
-			return err
-		}
-		if header == nil {
-			return gethp2p.Send(rw, 4, &blockHeadersPacket{RequestID: req.RequestID})
-		}
-		num = header.Number64().Uint64()
-	}
-
-	for i := uint64(0); i < req.Amount && i < 1024; i++ {
-		hdr, err := h.provider.GetHeaderByNumber(num)
-		if err != nil {
-			return err
-		}
-		if hdr == nil {
-			break
-		}
-		headers = append(headers, n42block.CopyHeader(hdr))
-		if req.Reverse {
-			if num <= req.Skip+1 {
-				break
-			}
-			num -= req.Skip + 1
-		} else {
-			num += req.Skip + 1
-		}
-	}
-
-	resp := blockHeadersPacket{
-		RequestID: req.RequestID,
-		Headers:   headers,
-	}
-	return gethp2p.Send(rw, 4, &resp)
+	return gethp2p.Send(rw, 4, &blockHeadersPacket{RequestID: req.RequestID})
 }
 
 // handleGetBlockBodies serves block bodies to a requesting peer.

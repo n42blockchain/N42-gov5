@@ -9,7 +9,11 @@
 package devp2p
 
 import (
-	n42block "github.com/n42blockchain/N42/common/block"
+	"fmt"
+	"io"
+
+	"github.com/ethereum/go-ethereum/rlp"
+
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -29,22 +33,68 @@ type statusPacket struct {
 	LatestBlockHash types.Hash
 }
 
+// hashOrNumber is a union: exactly one of Hash / Number is on the
+// wire, never both. Default reflect-based RLP would emit a two-field
+// list and any non-N42 peer would Disconnect; the custom EncodeRLP /
+// DecodeRLP below match the eth/68-69 spec exactly.
 type hashOrNumber struct {
 	Hash   types.Hash
 	Number uint64
 }
 
-type getBlockHeadersPacket struct {
-	RequestID uint64
-	Origin    hashOrNumber
-	Amount    uint64
-	Skip      uint64
-	Reverse   bool
+func (h *hashOrNumber) EncodeRLP(w io.Writer) error {
+	if h.Hash == (types.Hash{}) {
+		return rlp.Encode(w, h.Number)
+	}
+	if h.Number != 0 {
+		return fmt.Errorf("both origin hash (%x) and number (%d) provided", h.Hash, h.Number)
+	}
+	return rlp.Encode(w, h.Hash)
 }
 
+func (h *hashOrNumber) DecodeRLP(s *rlp.Stream) error {
+	origin, err := s.Raw()
+	if err != nil {
+		return err
+	}
+	switch {
+	case len(origin) == 33:
+		return rlp.DecodeBytes(origin, &h.Hash)
+	case len(origin) <= 9:
+		return rlp.DecodeBytes(origin, &h.Number)
+	default:
+		return fmt.Errorf("invalid origin size %d", len(origin))
+	}
+}
+
+// getBlockHeadersQuery is the INNER wire payload — the eth/68-69 spec
+// wraps this inside `[reqID, [...]]`. See getBlockHeadersPacket below.
+type getBlockHeadersQuery struct {
+	Origin  hashOrNumber
+	Amount  uint64
+	Skip    uint64
+	Reverse bool
+}
+
+// getBlockHeadersPacket matches the wire form `[reqID, [origin, amount,
+// skip, reverse]]`. The pointer-to-inner-struct embedding is how geth/
+// reth/erigon all encode this — encoding a 5-field flat struct here
+// produces wire bytes the rest of the network rejects with
+// DiscProtocolError ("breach of protocol").
+type getBlockHeadersPacket struct {
+	RequestID uint64
+	*getBlockHeadersQuery
+}
+
+// blockHeadersPacket carries headers as RAW RLP bytes per entry. The
+// alternative — decoding into `[]*n42block.Header` via reflect — fails
+// against real mainnet wire bytes because N42's Header struct has post-
+// London fork fields without `rlp:"optional"` tags (touching those
+// would alter Header's hash). Consumers decode each entry with the
+// existing ethel.DecodeUncleHeader, which knows the per-fork layout.
 type blockHeadersPacket struct {
 	RequestID uint64
-	Headers   []*n42block.Header
+	Headers   []rlp.RawValue
 }
 
 type getBlockBodiesPacket struct {
@@ -53,15 +103,21 @@ type getBlockBodiesPacket struct {
 }
 
 // BlockBody is the eth/69 wire-form body. Exported so external
-// downloaders (internal/ethel/eldevp2p) can decode it. The Transactions
-// field carries raw RLP-encoded transactions; Withdrawals are present
-// post-Shanghai (Capella). ExecutionRequests are present post-Pectra.
+// downloaders (internal/ethel/eldevp2p) can decode it.
+//
+// All three slots use `rlp.RawValue` rather than `[]byte` because the
+// transaction list mixes RLP shapes: legacy txs are RLP lists
+// (`[nonce, gasPrice, ...]`), EIP-2718 typed txs are RLP strings
+// (`type || rlp(payload)`). A `[]byte` element forces RLP to expect
+// only strings — on a legacy tx (block 25M+ still has many) it errors
+// with "expected input string or byte for []uint8". `rlp.RawValue` is
+// the only safe element type for a wire list with mixed inner shapes.
 type BlockBody struct {
-	Transactions [][]byte
-	Uncles       []*n42block.Header
+	Transactions []rlp.RawValue
+	Uncles       []rlp.RawValue
 	// Withdrawals optionally encoded — geth peers serving post-Shanghai
 	// blocks include this slot. Pre-Shanghai blocks omit it (rlp:"optional").
-	Withdrawals [][]byte `rlp:"optional"`
+	Withdrawals []rlp.RawValue `rlp:"optional"`
 }
 
 type blockBodiesPacket struct {
