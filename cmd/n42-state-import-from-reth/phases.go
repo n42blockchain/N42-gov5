@@ -123,20 +123,34 @@ func importAccounts(n42DB kv.RwDB, rethDB kv.RoDB, clear bool, commitEvery uint6
 }
 
 // importStorage streams reth PlainStorageState DupSort entries through
-// to N42 Storage as composite-key (addr+slot) plain k/v.
+// to N42 Storage with the DupSort schema applied in
+// lib/kv/tables.go ("Storage" entry: DupFromLen=52, DupToLen=20). With
+// AutoDupSortKeysConversion, callers keep using plain
+// tx.Put(addr+slot, val) — MDBX splits the 52B composite key into
+// (20B dup-key, 32B+val dup-value) transparently.
 //
 // reth value layout per dup entry: 32B slot || N-byte value
-// N42 key: 20B addr + 32B slot, value: N-byte value (same bytes)
+// N42 logical key: 20B addr + 32B slot, logical value: N-byte value
 func importStorage(n42DB kv.RwDB, rethDB kv.RoDB, clear bool, commitEvery uint64, logger log.Logger) error {
 	logger.Info("PHASE 2/4 — Storage import starting")
 	t0 := time.Now()
 
+	// ForceRecreateBucket drops + recreates with the on-disk flags
+	// adjusted to match the current TableCfg (DupSort). Plain
+	// ClearBucket would only clear entries, leaving the old non-DupSort
+	// flags in place — subsequent writes would either error or silently
+	// produce non-DupSort layout, defeating the point of the schema
+	// change. Idempotent: safe if Storage was already DupSort.
 	if clear {
 		if err := n42DB.Update(context.Background(), func(tx kv.RwTx) error {
-			logger.Info("  clearing N42 Storage table")
-			return tx.ClearBucket(n42Sto)
+			migrator, ok := tx.(interface{ ForceRecreateBucket(string) error })
+			if !ok {
+				return fmt.Errorf("RwTx missing ForceRecreateBucket — old mdbx wrapper?")
+			}
+			logger.Info("  force-recreating N42 Storage as DupSort (drop + recreate with new flags)")
+			return migrator.ForceRecreateBucket(n42Sto)
 		}); err != nil {
-			return fmt.Errorf("clear Storage: %w", err)
+			return fmt.Errorf("force-recreate Storage: %w", err)
 		}
 	}
 

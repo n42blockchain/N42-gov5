@@ -61,7 +61,15 @@ var emptyCodeHash = crypto.Keccak256Hash(nil)
 
 func n42Cfg(d kv.TableCfg) kv.TableCfg {
 	d[n42Acct] = kv.TableCfgItem{}
-	d[n42Sto] = kv.TableCfgItem{}
+	// Storage flags must match lib/kv/tables.go ChaindataTablesCfg["Storage"]
+	// or the cursor/Put semantics in this tool's tx will diverge from what
+	// the rest of the codebase expects on the same MDBX file.
+	d[n42Sto] = kv.TableCfgItem{
+		Flags:                     kv.DupSort,
+		AutoDupSortKeysConversion: true,
+		DupFromLen:                52,
+		DupToLen:                  20,
+	}
 	d[n42Code] = kv.TableCfgItem{}
 	d[n42Cmt] = kv.TableCfgItem{}
 	d[n42Prog] = kv.TableCfgItem{}
