@@ -29,6 +29,8 @@ import (
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/internal/ethel/bootstrap"
 	"github.com/n42blockchain/N42/internal/ethel/catchup"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/ethel/eldevp2p"
 	"github.com/n42blockchain/N42/internal/ethel/engineapi"
 	"github.com/n42blockchain/N42/internal/ethel/fetch"
 	"github.com/n42blockchain/N42/internal/ethel/snapshotprestart"
@@ -105,6 +107,11 @@ func flags() []cli.Flag {
 		&cli.DurationFlag{Name: "snapshot.timeout", Usage: "Total budget for the pre-start sync"},
 		&cli.BoolFlag{Name: "snapshot.auto-fetch", Usage: "When datadir is empty (first boot), auto-fetch the initial archive from --snapshot.source before catch-up. Default false because initial fetch can be many GB."},
 		&cli.IntFlag{Name: "snapshot.fetch-parallel", Usage: "Worker count for the initial AutoFetch download (0 = default 4)", Value: 8},
+
+		// EL devp2p — direct mainnet EL p2p sync, bypasses CL when beacon p2p (port 9000) is blocked.
+		&cli.BoolFlag{Name: "eldevp2p.enabled", Usage: "Run an embedded Ethereum devp2p (eth/68-69) listener so eth-el catches up via EL p2p directly, bypassing a CL"},
+		&cli.StringFlag{Name: "eldevp2p.listen", Usage: "EL devp2p TCP listen address (default :30303)", Value: ":30303"},
+		&cli.IntFlag{Name: "eldevp2p.max-peers", Usage: "Maximum simultaneous EL devp2p peers", Value: 50},
 
 		// Stage 2 G4 — auto mode selection.
 		&cli.StringFlag{Name: "catch-up.mode", Usage: "Catch-up mechanism: auto|off|delta|libp2p|fetch (auto picks based on gap)", Value: "auto"},
@@ -220,6 +227,28 @@ func run(c *cli.Context) error {
 	})
 	node.RegisterFactory(func(n *ethel.Node) ethel.Service {
 		return engineapi.New(cfg.EngineAPI, n.ChainConfig(), n.Engine(), n.RwDB(), n.OutFreezer())
+	})
+
+	// EL devp2p service — bypasses the CL entirely. Dials Ethereum mainnet
+	// peers on TCP 30303 directly so eth-el can catch up its head from EL
+	// p2p when CL beacon p2p (port 9000) is filtered by the operator's ISP.
+	// Off by default; enable via --eldevp2p.enabled.
+	node.RegisterFactory(func(n *ethel.Node) ethel.Service {
+		eldcfg := eldevp2p.DefaultConfig()
+		eldcfg.Enabled = c.Bool("eldevp2p.enabled")
+		if addr := c.String("eldevp2p.listen"); addr != "" {
+			eldcfg.ListenAddr = addr
+		}
+		if mp := c.Int("eldevp2p.max-peers"); mp > 0 {
+			eldcfg.MaxPeers = mp
+		}
+		// Mainnet genesis hash + time. These are well-known constants;
+		// pin them here rather than read from rawdb so the devp2p handshake
+		// produces deterministic ForkID computation even before any block
+		// has been written.
+		genesisHash := types.HexToHash("0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3")
+		genesisTime := uint64(1438269988) // 2015-07-30 15:26:28 UTC
+		return eldevp2p.New(eldcfg, n, genesisHash, genesisTime)
 	})
 
 	ctx, cancel := withShutdown()
