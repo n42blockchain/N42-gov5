@@ -138,9 +138,17 @@ func main() {
 
 	t0 := time.Now()
 
+	// IMPORTANT: WriteMap() removed for Code phase. Bytecodes are large
+	// values (24KB+ common) that fall on MDBX overflow pages. Three
+	// successive Code-phase runs SEGV'd inside mdbxgo_cursor_put2 at
+	// the very first Put when WriteMap is on; without WriteMap the
+	// write path uses pwrite() syscalls instead of memcpy-into-mmap
+	// and avoids whatever overflow-page-in-write-map bug is biting us.
+	// Costs ~5-10% throughput on small-value writes (Account/Storage)
+	// but unblocks Code import. Safe to switch — same MDBX file format.
 	n42DB, err := mdbx.NewMDBX(logger).
 		Path(*n42Dir).Label(kv.ChainDB).PageSize(4096).
-		MapSize(4 * datasize.TB).WriteMap().Accede().
+		MapSize(4 * datasize.TB).Accede().
 		WithTableCfg(n42Cfg).Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open n42:", err)
