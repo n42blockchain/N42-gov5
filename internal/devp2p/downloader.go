@@ -34,10 +34,12 @@ func NewDownloader(server *Server) *Downloader {
 func (d *Downloader) RequestHeaders(ctx context.Context, peer *gethp2p.Peer, rw gethp2p.MsgReadWriter, origin uint64, amount uint64) error {
 	req := eth69.GetBlockHeadersPacket{
 		RequestID: uint64(origin), // use origin as simple request ID
-		Origin:    eth69.HashOrNumber{Number: origin},
-		Amount:    amount,
-		Skip:      0,
-		Reverse:   false,
+		GetBlockHeadersQuery: &eth69.GetBlockHeadersQuery{
+			Origin:  eth69.HashOrNumber{Number: origin},
+			Amount:  amount,
+			Skip:    0,
+			Reverse: false,
+		},
 	}
 	if err := gethp2p.Send(rw, eth69.GetBlockHeadersMsg, &req); err != nil {
 		return fmt.Errorf("send GetBlockHeaders: %w", err)

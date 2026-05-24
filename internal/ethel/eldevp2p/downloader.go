@@ -47,6 +47,7 @@ import (
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/devp2p"
+	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/internal/network/eth69"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
@@ -103,9 +104,11 @@ type peerState struct {
 
 // inflightResp carries either headers or bodies depending on which
 // request the reply matches. exactly one of headers / bodies is
-// non-nil on success.
+// non-nil on success. headers come as raw RLP bytes because N42's
+// Header struct can't be reflect-decoded without altering its hash
+// (see devp2p/protocol.go blockHeadersPacket doc).
 type inflightResp struct {
-	headers []*block.Header
+	headers [][]byte
 	bodies  []devp2p.BlockBody
 }
 
@@ -186,7 +189,7 @@ func (d *Downloader) OnPeerDisconnect(peerID string) {
 }
 
 // OnBlockHeaders forwards to the matching inflight request.
-func (d *Downloader) OnBlockHeaders(peerID string, reqID uint64, headers []*block.Header) {
+func (d *Downloader) OnBlockHeaders(peerID string, reqID uint64, headers [][]byte) {
 	d.dispatch(peerID, reqID, "h", inflightResp{headers: headers})
 }
 
@@ -274,8 +277,27 @@ func (d *Downloader) runPeerLoop(ctx context.Context, peerID string) {
 			continue
 		}
 
-		hashes := make([]types.Hash, len(headers))
-		for i, h := range headers {
+		// Decode each raw RLP header via the fork-aware decoder in
+		// internal/ethel (it knows the optional-field layout that
+		// reflect-based RLP can't handle on n42block.Header).
+		decoded := make([]*block.Header, 0, len(headers))
+		for i, raw := range headers {
+			h, err := ethel.DecodeUncleHeader(raw)
+			if err != nil {
+				log.Warn("eldevp2p: decode header failed",
+					"idx", i, "err", err)
+				decoded = nil
+				break
+			}
+			decoded = append(decoded, h)
+		}
+		if len(decoded) == 0 {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		hashes := make([]types.Hash, len(decoded))
+		for i, h := range decoded {
 			hashes[i] = h.Hash()
 		}
 		bodies, err := d.requestBodies(ctx, peerID, p.rw, hashes)
@@ -284,18 +306,34 @@ func (d *Downloader) runPeerLoop(ctx context.Context, peerID string) {
 			time.Sleep(2 * time.Second)
 			continue
 		}
-		if len(bodies) != len(headers) {
-			log.Warn("eldevp2p: body/header count mismatch",
-				"headers", len(headers), "bodies", len(bodies))
+		// Peers cap body responses around softResponseLimit (~2 MB on
+		// geth). For a 192-header request that often means just ~28
+		// bodies come back. Accept any non-zero partial — we import
+		// the prefix and the next iteration will pick up where we
+		// left off. Only the "zero bodies" case is a real error
+		// (peer doesn't have them).
+		if len(bodies) == 0 {
+			log.Warn("eldevp2p: empty body response",
+				"headers", len(decoded))
 			time.Sleep(2 * time.Second)
 			continue
+		}
+		if len(bodies) < len(decoded) {
+			log.Info("eldevp2p: partial body response — truncating batch",
+				"requested", len(decoded), "received", len(bodies))
+			decoded = decoded[:len(bodies)]
+		} else if len(bodies) > len(decoded) {
+			// Defensive: more bodies than headers is malformed.
+			log.Warn("eldevp2p: peer returned more bodies than asked",
+				"headers", len(decoded), "bodies", len(bodies))
+			bodies = bodies[:len(decoded)]
 		}
 
 		// Import each block sequentially. On any failure, abandon the
 		// remainder of the batch — the next iteration will retry from
 		// our updated head, possibly with a different peer.
 		var imported uint64
-		for i, hdr := range headers {
+		for i, hdr := range decoded {
 			blk, withdrawals, err := assembleBlock(hdr, bodies[i])
 			if err != nil {
 				log.Warn("eldevp2p: assemble block failed",
@@ -336,7 +374,7 @@ func (d *Downloader) runPeerLoop(ctx context.Context, peerID string) {
 	}
 }
 
-func (d *Downloader) requestHeaders(ctx context.Context, peerID string, rw gethp2p.MsgReadWriter, from, amount uint64) ([]*block.Header, error) {
+func (d *Downloader) requestHeaders(ctx context.Context, peerID string, rw gethp2p.MsgReadWriter, from, amount uint64) ([][]byte, error) {
 	reqID := uint64(time.Now().UnixNano())
 	key := fmt.Sprintf("%s:h:%d", peerID, reqID)
 	ch := make(chan inflightResp, 1)
@@ -351,10 +389,12 @@ func (d *Downloader) requestHeaders(ctx context.Context, peerID string, rw gethp
 
 	req := eth69.GetBlockHeadersPacket{
 		RequestID: reqID,
-		Origin:    eth69.HashOrNumber{Number: from},
-		Amount:    amount,
-		Skip:      0,
-		Reverse:   false,
+		GetBlockHeadersQuery: &eth69.GetBlockHeadersQuery{
+			Origin:  eth69.HashOrNumber{Number: from},
+			Amount:  amount,
+			Skip:    0,
+			Reverse: false,
+		},
 	}
 	if err := gethp2p.Send(rw, eth69.GetBlockHeadersMsg, &req); err != nil {
 		return nil, fmt.Errorf("send GetBlockHeaders: %w", err)
@@ -425,13 +465,25 @@ func assembleBlock(hdr *block.Header, body devp2p.BlockBody) (*block.Block, []*a
 	return blk, withdrawals, nil
 }
 
-func decodeTxs(raw [][]byte) ([]*transaction.Transaction, error) {
+func decodeTxs(raw []rlp.RawValue) ([]*transaction.Transaction, error) {
 	out := make([]*transaction.Transaction, 0, len(raw))
 	for i, r := range raw {
 		if len(r) == 0 {
 			continue
 		}
-		tx, err := transaction.DecodeEthereumTransaction(r)
+		data := []byte(r)
+		// Typed transactions (EIP-2718+) arrive as RLP strings wrapping
+		// `type || rlp(payload)`. Legacy txs are bare RLP lists. Mirror
+		// internal/ethel.DecodeGethBody's unwrap step so both forms feed
+		// the same transaction.DecodeEthereumTransaction path.
+		if data[0] >= 0x80 && data[0] < 0xc0 {
+			var inner []byte
+			if err := rlp.DecodeBytes(data, &inner); err != nil {
+				return nil, fmt.Errorf("tx %d: unwrap typed: %w", i, err)
+			}
+			data = inner
+		}
+		tx, err := transaction.DecodeEthereumTransaction(data)
 		if err != nil {
 			return nil, fmt.Errorf("tx %d: %w", i, err)
 		}
@@ -449,7 +501,7 @@ type wireWithdrawal struct {
 	Amount         uint64
 }
 
-func decodeWithdrawals(raw [][]byte) ([]*api.Withdrawal, error) {
+func decodeWithdrawals(raw []rlp.RawValue) ([]*api.Withdrawal, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}

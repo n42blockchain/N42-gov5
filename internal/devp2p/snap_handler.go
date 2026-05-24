@@ -23,7 +23,9 @@
 package devp2p
 
 import (
+	"errors"
 	"fmt"
+	"io"
 
 	gethp2p "github.com/ethereum/go-ethereum/p2p"
 
@@ -136,6 +138,16 @@ func (h *SnapHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) erro
 	for {
 		msg, err := rw.ReadMsg()
 		if err != nil {
+			// EOF / closed-pipe from the underlying RLPx connection
+			// means the peer simply went away. Returning that error
+			// gets mapped to DiscSubprotocolError by p2p.Server, which
+			// in turn flags THIS subprotocol as the disconnect cause —
+			// even when eth/69 was perfectly happy. Return nil for the
+			// clean-shutdown errors so the disconnect reason reflects
+			// the real cause (the eth side, or geth's own reason).
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) {
+				return nil
+			}
 			return err
 		}
 		if err := h.handle(peerID, rw, msg); err != nil {
