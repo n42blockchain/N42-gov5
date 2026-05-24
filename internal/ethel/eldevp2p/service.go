@@ -44,20 +44,27 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/devp2p"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
+	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/params"
 )
 
 // nodeAccessor is the narrow surface the service needs from an *ethel.Node.
 // Declaring it locally avoids importing ethel here (which would create a
 // service-registration import cycle); production wiring passes the
-// concrete Node.
+// concrete Node. The download path additionally needs the RwDB handle,
+// the consensus.Engine, and the output freezer because the in-process
+// EngineStateAdapter writes state per-payload (Phase 7.1.1.b path).
 type nodeAccessor interface {
 	DB() kv.RoDB
+	RwDB() kv.RwDB
 	ChainConfig() *params.ChainConfig
+	Engine() consensus.Engine
+	OutFreezer() *freezer.Freezer
 }
 
 // Config controls the devp2p listener.
@@ -144,6 +151,13 @@ func (s *Service) Start(_ context.Context) error {
 		return fmt.Errorf("eldevp2p handler: %w", err)
 	}
 	s.handler = handler
+
+	// Active downloader — drives forward catch-up by issuing
+	// GetBlockHeaders/GetBlockBodies to each peer that completes
+	// handshake. Registered as the EthHandler ResponseHandler so the
+	// peer goroutine routes msg code 4 / 6 here.
+	dl := NewDownloader(s.node)
+	handler.SetResponseHandler(dl)
 
 	boot := make([]*enode.Node, 0, len(s.cfg.BootNodes))
 	for _, raw := range s.cfg.BootNodes {
