@@ -296,11 +296,23 @@ func importCode(n42DB kv.RwDB, rethDB kv.RoDB, clear bool, commitEvery uint64, l
 		// 0=Raw, 1=EOF, etc.). The actual EVM bytecode for type=0 is
 		// from byte 1 onwards. For codeHash compatibility we strip the
 		// prefix if value[0] == 0 (raw).
-		code := v
-		if len(v) >= 1 && v[0] == 0 {
-			code = v[1:]
+		//
+		// COPY both key + value buffers. reth cursor reuses its internal
+		// page-buffer on Next(), so the k/v slice headers we received
+		// stop being valid the moment we advance the cursor. The mdbx
+		// Put we hand them to dispatches a cgo call that may run while
+		// the page is being recycled — observed as a SIGSEGV deep in
+		// mdbxgo_cursor_put2 when Code phase writes 24KB bytecodes
+		// (large values stress the page handling more than the 32-byte
+		// storage values importStorage writes). Same defensive copy
+		// is cheap (2.4M total entries, ~5 GB) and bullet-proofs the
+		// path.
+		kCopy := append([]byte(nil), k...)
+		code := append([]byte(nil), v...)
+		if len(code) >= 1 && code[0] == 0 {
+			code = code[1:]
 		}
-		if err := n42Tx.Put(n42Code, k, code); err != nil {
+		if err := n42Tx.Put(n42Code, kCopy, code); err != nil {
 			return fmt.Errorf("put Code: %w", err)
 		}
 		written++
