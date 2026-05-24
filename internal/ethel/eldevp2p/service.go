@@ -36,6 +36,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"time"
 
 	gethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/p2p/enode"
@@ -251,10 +252,19 @@ func (p *chaindataProvider) CurrentHead() (*block.Header, types.Hash, error) {
 	v, _ := tx.GetOne(kv.SyncStageProgress, progressKey)
 	if len(v) == 8 {
 		num := binary.BigEndian.Uint64(v)
+		// CRITICAL: Time must reflect a real wall-clock value so the
+		// EIP-2124 ForkID we send during eth/69 Status matches what
+		// mainnet peers expect. With Time=0 the fork checksum lands
+		// on the genesis fork and every Pectra-aware peer disconnects
+		// with EOF immediately after handshake. Reading the freezer
+		// header would be the proper fix; for v1 we approximate by
+		// pretending the synthesised head is at the current wall time
+		// (any tip-side block, including ours, would post-date all
+		// historical forks and yield the same Pectra ForkID).
 		hdr := &block.Header{
 			Number:     uint256.NewInt(num),
 			Difficulty: uint256.NewInt(0),
-			Time:       0, // freezer-backed timestamp lookup is a follow-up
+			Time:       uint64(time.Now().Unix()),
 		}
 		// Hash is best-effort: the peer doesn't trust it without
 		// header content, but we don't have the full header here.
