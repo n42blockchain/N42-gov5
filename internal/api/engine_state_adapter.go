@@ -74,6 +74,28 @@ func (a *EngineStateAdapter) ExecutePayload(blk *block.Block) (bool, types.Hash,
 	return true, result.stateRoot, nil
 }
 
+// ExecutePayloadFromWire executes a block decoded directly from the
+// eth/68-69 devp2p wire form: header + raw transactions + withdrawals.
+// Unlike the CL path, the Pectra+ execution requests hash is anchored
+// to header.RequestsHash carried on the wire (no separate CL-supplied
+// requests list), and withdrawals are sourced from the body rather than
+// engine_newPayloadV4 args. Returns (valid, computed state root, err).
+func (a *EngineStateAdapter) ExecutePayloadFromWire(blk *block.Block, withdrawals []*Withdrawal) (bool, types.Hash, error) {
+	var parentBeaconRoot *types.Hash
+	if hdr, _ := blk.Header().(*block.Header); hdr != nil && hdr.ParentBeaconRoot != nil {
+		v := *hdr.ParentBeaconRoot
+		parentBeaconRoot = &v
+	}
+	result, err := a.executePayloadDetailed(blk, parentBeaconRoot, nil, withdrawals)
+	if err != nil {
+		return false, types.Hash{}, err
+	}
+	if result.validationError != nil {
+		return false, result.stateRoot, nil
+	}
+	return true, result.stateRoot, nil
+}
+
 func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal) (*enginePayloadExecutionResult, error) {
 	header := blk.Header().(*block.Header)
 	if header == nil || header.Number == nil {
@@ -144,13 +166,31 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	}
 	rules := a.chainCfg.RulesWithTimestamp(blockNum, header.Time)
 	if rules != nil && rules.IsPrague {
-		if executionRequestsHash(actualRequests) != executionRequestsHash(expectedRequests) {
+		actualHash := executionRequestsHash(actualRequests)
+		// Pick the trust anchor for the requests hash. Three cases:
+		//   1. CL-driven (NewPayloadV4): expectedRequests is the
+		//      authoritative list from the beacon block — compare
+		//      against its hash.
+		//   2. Wire-driven (devp2p sync): the caller didn't pass a
+		//      list, but the wire header carries header.RequestsHash
+		//      — that's the anchor.
+		//   3. Neither: pre-existing tests with toy blocks that have
+		//      no requests anywhere. Hash empty list and compare.
+		var expectedHash types.Hash
+		switch {
+		case expectedRequests != nil:
+			expectedHash = executionRequestsHash(expectedRequests)
+		case header.RequestsHash != nil:
+			expectedHash = *header.RequestsHash
+		default:
+			expectedHash = executionRequestsHash(nil)
+		}
+		if actualHash != expectedHash {
 			return &enginePayloadExecutionResult{
 				validationError: fmt.Errorf("invalid requests hash"),
 			}, nil
 		}
-		requestsHash := executionRequestsHash(actualRequests)
-		header.RequestsHash = &requestsHash
+		header.RequestsHash = &actualHash
 	}
 	actualReceiptHash := ethel.EthReceiptHash(receipts)
 	actualBloom := block.CreateBloom(receipts)
