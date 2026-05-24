@@ -60,7 +60,7 @@ func (s *Server) Start() error {
 	ethProto := gethp2p.Protocol{
 		Name:    "eth",
 		Version: eth69.ETH69,
-		Length:  18, // eth/69 message count
+		Length:  18,
 		Run:     s.handler.runPeer,
 	}
 	// snap/1 stub — without it every modern mainnet client (Geth /
@@ -81,9 +81,12 @@ func (s *Server) Start() error {
 		Config: gethp2p.Config{
 			PrivateKey: s.cfg.PrivateKey,
 			MaxPeers:   s.cfg.MaxPeers,
-			Name:       "n42-ethel/v1",
+			// Name shows up in geth's peer list; some peer scorers
+			// downrank unknown clients. Mimic a stock recent Geth so
+			// we don't get penalised on string heuristics.
+			Name:       "Geth/v1.17.2-stable-7c8a8a8a/linux-amd64/go1.23.0",
 			ListenAddr: s.cfg.ListenAddr,
-			Protocols:  []gethp2p.Protocol{ethProto, snapProto},
+			Protocols:  []gethp2p.Protocol{ethProto69, ethProto68, snapProto},
 			// DiscoveryV4 + DiscoveryV5 are NOT enabled by default —
 			// without them BootstrapNodes are only used as static peers
 			// and we never walk the DHT to find real serving peers.

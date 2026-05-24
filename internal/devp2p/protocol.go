@@ -68,3 +68,13 @@ type blockBodiesPacket struct {
 	RequestID uint64
 	Bodies    []BlockBody
 }
+
+// blockRangeUpdatePacket is eth/69 msg 0x11. Sent right after Status to
+// (re-)announce the local block range. Required by the eth/69 spec — peers
+// treat its absence as a protocol violation and silently EOF after a
+// few hundred ms.
+type blockRangeUpdatePacket struct {
+	EarliestBlock   uint64
+	LatestBlock     uint64
+	LatestBlockHash types.Hash
+}

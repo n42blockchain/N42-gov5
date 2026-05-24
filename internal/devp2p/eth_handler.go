@@ -137,6 +137,23 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error
 		"peerForkHash", fmt.Sprintf("%x", peerStatus.ForkID.Hash),
 		"peerForkNext", peerStatus.ForkID.Next)
 
+	// eth/69 spec: BlockRangeUpdate (msg 0x11) MUST be sent immediately
+	// after Status to declare our available block range. Without it,
+	// Erigon's sentry (and likely other clients) waits a short window
+	// and then disconnects with DiscProtocolError — observed as silent
+	// EOF after handshake across Geth / Nethermind / Erigon / Besu on
+	// 2026-05-24. The Status already carries the range, but eth/69
+	// treats the post-handshake BlockRangeUpdate as the authoritative
+	// signal that we're an eth/69 speaker (not a hijacked eth/68).
+	bru := blockRangeUpdatePacket{
+		EarliestBlock:   status.EarliestBlock,
+		LatestBlock:     status.LatestBlock,
+		LatestBlockHash: status.LatestBlockHash,
+	}
+	if err := gethp2p.Send(rw, 17, &bru); err != nil {
+		return fmt.Errorf("send BlockRangeUpdate: %w", err)
+	}
+
 	peerID := peer.ID().String()
 	if h.rh != nil {
 		h.rh.OnPeerHandshake(peerID, rw, peerStatus.LatestBlock, peerStatus.LatestBlockHash)
