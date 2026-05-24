@@ -63,6 +63,19 @@ func (s *Server) Start() error {
 		Length:  18, // eth/69 message count
 		Run:     s.handler.runPeer,
 	}
+	// snap/1 stub — without it every modern mainnet client (Geth /
+	// Nethermind / Erigon / Besu / Pulse / Bera) classifies us as a
+	// snapless leech and EOF-drops within ~1s of eth handshake. The
+	// stub answers all GetXxx with empty XxxResp carrying the same
+	// request ID; that's a valid snap/1 response meaning "no data in
+	// range" and is enough to stay paired.
+	snapHandler := NewSnapHandler()
+	snapProto := gethp2p.Protocol{
+		Name:    "snap",
+		Version: 1,
+		Length:  snapProtocolLength,
+		Run:     snapHandler.runPeer,
+	}
 
 	s.srv = &gethp2p.Server{
 		Config: gethp2p.Config{
@@ -70,7 +83,7 @@ func (s *Server) Start() error {
 			MaxPeers:   s.cfg.MaxPeers,
 			Name:       "n42-ethel/v1",
 			ListenAddr: s.cfg.ListenAddr,
-			Protocols:  []gethp2p.Protocol{ethProto},
+			Protocols:  []gethp2p.Protocol{ethProto, snapProto},
 			// DiscoveryV4 + DiscoveryV5 are NOT enabled by default —
 			// without them BootstrapNodes are only used as static peers
 			// and we never walk the DHT to find real serving peers.
