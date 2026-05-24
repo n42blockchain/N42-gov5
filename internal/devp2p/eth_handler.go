@@ -102,6 +102,12 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error
 		LatestBlock:     head.Number64().Uint64(),
 		LatestBlockHash: headHash,
 	}
+	log.Info("devp2p sending status",
+		"peer", peer.ID().String()[:16],
+		"network", h.networkID,
+		"head", status.LatestBlock,
+		"forkHash", fmt.Sprintf("%x", status.ForkID.Hash),
+		"forkNext", status.ForkID.Next)
 	if err := gethp2p.Send(rw, 0, &status); err != nil {
 		return fmt.Errorf("send status: %w", err)
 	}
@@ -127,7 +133,9 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error
 
 	log.Info("devp2p handshake complete",
 		"peer", peer.ID().String()[:16],
-		"head", peerStatus.LatestBlock)
+		"head", peerStatus.LatestBlock,
+		"peerForkHash", fmt.Sprintf("%x", peerStatus.ForkID.Hash),
+		"peerForkNext", peerStatus.ForkID.Next)
 
 	peerID := peer.ID().String()
 	if h.rh != nil {
@@ -139,6 +147,8 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error
 	for {
 		msg, err := rw.ReadMsg()
 		if err != nil {
+			log.Warn("devp2p: peer dropped",
+				"peer", peer.ID().String()[:16], "err", err)
 			return err
 		}
 		if err := h.handleMessage(peer, rw, msg); err != nil {
@@ -204,11 +214,23 @@ func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter,
 	case 15:
 		return nil // TODO: serve from freezer
 
+	case 10:
+		// 0x0a PooledTransactions response — we never asked, ignore.
+		return nil
+
+	case 16:
+		// 0x10 Receipts response — we never asked, ignore.
+		return nil
+
 	case 17:
 		return nil // eth/69 range update, log only
 
 	default:
-		return fmt.Errorf("unknown message code: %d", msg.Code)
+		// Unknown / not-yet-handled codes must NOT disconnect — that's
+		// what was happening with geth right after handshake. Log so we
+		// can extend handling later, but keep the peer.
+		log.Debug("devp2p: unhandled msg", "peer", peerID[:16], "code", msg.Code)
+		return nil
 	}
 }
 

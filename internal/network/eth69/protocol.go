@@ -31,6 +31,9 @@ package eth69
 
 import (
 	"fmt"
+	"io"
+
+	"github.com/ethereum/go-ethereum/rlp"
 
 	"github.com/n42blockchain/N42/common/types"
 )
@@ -155,9 +158,45 @@ func IsProtocolVersionSupported(version uint) bool {
 // --- Wire protocol packet types for eth/68-69 ---
 
 // HashOrNumber allows referencing a block by hash or number.
+//
+// On the wire (eth/68-69) it is a union — exactly ONE of Hash / Number
+// is sent, not a two-field struct. Geth, Reth and Erigon all serialize
+// it this way; the default reflect-based RLP for a struct would emit
+// [hash, number] and any non-N42 peer would disconnect on receipt.
 type HashOrNumber struct {
 	Hash   types.Hash // Block hash (preferred)
 	Number uint64     // Block number (if Hash is zero)
+}
+
+// EncodeRLP emits either the hash or the number, not both.
+func (h *HashOrNumber) EncodeRLP(w io.Writer) error {
+	if h.Hash == (types.Hash{}) {
+		return rlp.Encode(w, h.Number)
+	}
+	if h.Number != 0 {
+		return fmt.Errorf("both origin hash (%x) and number (%d) provided", h.Hash, h.Number)
+	}
+	return rlp.Encode(w, h.Hash)
+}
+
+// DecodeRLP reads a single value and dispatches on length: 32 bytes is
+// interpreted as a hash, anything shorter as a varlen uint64.
+func (h *HashOrNumber) DecodeRLP(s *rlp.Stream) error {
+	origin, err := s.Raw()
+	if err != nil {
+		return err
+	}
+	switch {
+	case len(origin) == 33:
+		// RLP-encoded 32-byte string: 0xa0 || 32 bytes.
+		err = rlp.DecodeBytes(origin, &h.Hash)
+	case len(origin) <= 9:
+		// Up to 8-byte uint64 (plus 1-byte RLP prefix).
+		err = rlp.DecodeBytes(origin, &h.Number)
+	default:
+		err = fmt.Errorf("invalid origin size %d", len(origin))
+	}
+	return err
 }
 
 // GetBlockHeadersPacket represents a GetBlockHeaders request.
