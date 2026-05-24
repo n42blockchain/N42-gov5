@@ -26,6 +26,27 @@ type BlockProvider interface {
 	GetHeaderByHash(hash types.Hash) (*n42block.Header, error)
 }
 
+// ResponseHandler receives wire-message responses from peers. A nil
+// ResponseHandler means the EthHandler operates passively (only serves
+// incoming queries, never expects responses). The eldevp2p downloader
+// registers a real implementation to drive active block fetching.
+type ResponseHandler interface {
+	// OnPeerHandshake fires once per peer after eth/69 Status exchange
+	// succeeds. Gives the downloader the peer's latest head so it can
+	// decide whether to fetch from this peer.
+	OnPeerHandshake(peerID string, rw gethp2p.MsgReadWriter, peerHead uint64, peerHash types.Hash)
+	// OnPeerDisconnect fires when a peer's runPeer returns. Lets the
+	// downloader cancel any in-flight requests on this peer.
+	OnPeerDisconnect(peerID string)
+	// OnBlockHeaders delivers a BlockHeaders (msg code 4) response.
+	OnBlockHeaders(peerID string, reqID uint64, headers []*n42block.Header)
+	// OnBlockBodies delivers a BlockBodies (msg code 6) response.
+	OnBlockBodies(peerID string, reqID uint64, bodies []BlockBody)
+	// OnNewBlock delivers a NewBlock (msg code 7) push — peer announces
+	// they've produced/learned a new tip.
+	OnNewBlock(peerID string, hdr *n42block.Header, txs [][]byte)
+}
+
 // EthHandler processes eth/68-69 protocol messages.
 type EthHandler struct {
 	chainConfig *params.ChainConfig
@@ -33,7 +54,14 @@ type EthHandler struct {
 	networkID   uint64
 	genesis     types.Hash
 	genesisTime uint64
+
+	// rh is the optional active-download callback. Nil = passive mode.
+	rh ResponseHandler
 }
+
+// SetResponseHandler swaps in (or out) the active-download callback.
+// Must be called BEFORE Start so the peer loop reads it consistently.
+func (h *EthHandler) SetResponseHandler(rh ResponseHandler) { h.rh = rh }
 
 // NewEthHandler creates a new eth protocol message handler.
 func NewEthHandler(cfg *params.ChainConfig, genesisHash types.Hash, genesisTime uint64, provider BlockProvider) (*EthHandler, error) {
@@ -101,6 +129,12 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error
 		"peer", peer.ID().String()[:16],
 		"head", peerStatus.LatestBlock)
 
+	peerID := peer.ID().String()
+	if h.rh != nil {
+		h.rh.OnPeerHandshake(peerID, rw, peerStatus.LatestBlock, peerStatus.LatestBlockHash)
+		defer h.rh.OnPeerDisconnect(peerID)
+	}
+
 	// Message loop.
 	for {
 		msg, err := rw.ReadMsg()
@@ -118,11 +152,12 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error
 // handleMessage routes an incoming message to the appropriate handler.
 func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter, msg gethp2p.Msg) error {
 	defer msg.Discard()
+	peerID := peer.ID().String()
 
 	switch msg.Code {
 	case 1:
 		// Peer announces new block hashes — log and ignore for now.
-		log.Debug("devp2p: new block hashes", "peer", peer.ID().String()[:16])
+		log.Debug("devp2p: new block hashes", "peer", peerID[:16])
 		return nil
 
 	case 2:
@@ -132,11 +167,32 @@ func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter,
 	case 3:
 		return h.handleGetBlockHeaders(rw, msg)
 
+	case 4:
+		var resp blockHeadersPacket
+		if err := msg.Decode(&resp); err != nil {
+			return fmt.Errorf("decode BlockHeaders: %w", err)
+		}
+		if h.rh != nil {
+			h.rh.OnBlockHeaders(peerID, resp.RequestID, resp.Headers)
+		}
+		return nil
+
 	case 5:
 		return h.handleGetBlockBodies(rw, msg)
 
+	case 6:
+		var resp blockBodiesPacket
+		if err := msg.Decode(&resp); err != nil {
+			return fmt.Errorf("decode BlockBodies: %w", err)
+		}
+		if h.rh != nil {
+			h.rh.OnBlockBodies(peerID, resp.RequestID, resp.Bodies)
+		}
+		return nil
+
 	case 7:
-		log.Debug("devp2p: new block", "peer", peer.ID().String()[:16])
+		// NewBlock push — peer found / produced a block.
+		log.Debug("devp2p: new block", "peer", peerID[:16])
 		return nil
 
 	case 8:

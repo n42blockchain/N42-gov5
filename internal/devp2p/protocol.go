@@ -52,12 +52,19 @@ type getBlockBodiesPacket struct {
 	Hashes    []types.Hash
 }
 
-type blockBody struct {
+// BlockBody is the eth/69 wire-form body. Exported so external
+// downloaders (internal/ethel/eldevp2p) can decode it. The Transactions
+// field carries raw RLP-encoded transactions; Withdrawals are present
+// post-Shanghai (Capella). ExecutionRequests are present post-Pectra.
+type BlockBody struct {
 	Transactions [][]byte
 	Uncles       []*n42block.Header
+	// Withdrawals optionally encoded — geth peers serving post-Shanghai
+	// blocks include this slot. Pre-Shanghai blocks omit it (rlp:"optional").
+	Withdrawals [][]byte `rlp:"optional"`
 }
 
 type blockBodiesPacket struct {
 	RequestID uint64
-	Bodies    []blockBody
+	Bodies    []BlockBody
 }
