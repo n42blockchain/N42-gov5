@@ -33,11 +33,13 @@ package eldevp2p
 import (
 	"context"
 	"crypto/ecdsa"
+	"encoding/binary"
 	"errors"
 	"fmt"
 
 	gethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/p2p/enode"
+	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
@@ -164,9 +166,31 @@ func (s *Service) Start(_ context.Context) error {
 	if err := s.server.Start(); err != nil {
 		return fmt.Errorf("eldevp2p start: %w", err)
 	}
+	// Add bootnodes as static peers — discv4 (UDP 30303) may be filtered by
+	// the same ISP that filters beacon-p2p UDP 9000; static peers TCP-dial
+	// directly regardless of discovery state.
+	for _, raw := range s.cfg.BootNodes {
+		if err := s.server.AddPeer(raw); err != nil {
+			// AddPeer parses enode://… URLs but our bootnodes are in
+			// enr:-prefixed form (signed ENR). Fall back to dialing the
+			// enode URL we built earlier.
+			log.Debug("eth-el: AddPeer skipped (enr form)", "err", err)
+		}
+	}
+	for _, n := range boot {
+		// URLv4 normalises enode://pubkey@ip:port — geth's AddPeer accepts it.
+		if u := n.URLv4(); u != "" {
+			if err := s.server.AddPeer(u); err != nil {
+				log.Warn("eth-el: AddPeer failed", "enode", u, "err", err)
+			} else {
+				log.Info("eth-el: added static peer", "enode", u)
+			}
+		}
+	}
 	log.Info("eth-el: el-devp2p started",
 		"addr", s.cfg.ListenAddr,
 		"bootnodes", len(boot),
+		"staticPeers", len(boot),
 		"enode", s.server.Self().URLv4())
 	return nil
 }
@@ -202,11 +226,31 @@ func (p *chaindataProvider) CurrentHead() (*block.Header, types.Hash, error) {
 		return nil, types.Hash{}, err
 	}
 	defer tx.Rollback()
+
+	// Prefer ethel-last-block (the catch-up executor writes per-batch).
+	// eth-el's chaindata is state-only — changeset-replayed — so the
+	// standard rawdb.ReadHeadBlockHash returns empty even when the EL
+	// has actually advanced to block 25M+. Synthesise a minimal header
+	// carrying just the Number and Time the eth/69 Status handshake
+	// needs; real header content lives in the freezer (Phase 2).
+	progressKey := []byte("ethel-last-block")
+	v, _ := tx.GetOne(kv.SyncStageProgress, progressKey)
+	if len(v) == 8 {
+		num := binary.BigEndian.Uint64(v)
+		hdr := &block.Header{
+			Number:     uint256.NewInt(num),
+			Difficulty: uint256.NewInt(0),
+			Time:       0, // freezer-backed timestamp lookup is a follow-up
+		}
+		// Hash is best-effort: the peer doesn't trust it without
+		// header content, but we don't have the full header here.
+		return hdr, hdr.Hash(), nil
+	}
+
 	headHash := rawdb.ReadHeadBlockHash(tx)
 	if headHash == (types.Hash{}) {
-		// No head stored — return the genesis-ish header so the handshake
-		// still completes. Peers will see we're empty and skip us.
-		return &block.Header{}, types.Hash{}, nil
+		// Truly empty datadir — present as genesis.
+		return &block.Header{Number: uint256.NewInt(0), Difficulty: uint256.NewInt(0)}, types.Hash{}, nil
 	}
 	num := rawdb.ReadHeaderNumber(tx, headHash)
 	if num == nil {
