@@ -788,6 +788,25 @@ var ChaindataTablesCfg = TableCfg{
 		DupFromLen:                72,
 		DupToLen:                  40,
 	},
+	// Storage: 20B address + 32B slot → value (trimmed uint256, ≤32B).
+	// DupSort with AutoDupSortKeysConversion: callers keep doing plain
+	// tx.Put(composite, val) / tx.Cursor().Seek(addrPrefix) / Cursor.Next();
+	// MDBX transparently splits the 52B key into a 20B dup-key + (32B slot
+	// + value) dup-value. Same pattern as HashedStorage above (which is
+	// well-exercised — see internal/ethel/hashstate.go:642 +
+	// modules/state/commitment/trie_root_computer.go:316 for the
+	// reference cursor.Seek pattern that "just works").
+	//
+	// Disk savings ~30–40%: the 20B address prefix is amortized across
+	// all slots of an account on a single MDBX page instead of being
+	// duplicated per slot. Matches the layout reth + Erigon already use,
+	// so cross-chain state migrations are 1:1.
+	"Storage": {
+		Flags:                     DupSort,
+		AutoDupSortKeysConversion: true,
+		DupFromLen:                52,
+		DupToLen:                  20,
+	},
 	AccountChangeSet: {Flags: DupSort},
 	StorageChangeSet: {Flags: DupSort},
 	PlainState: {
