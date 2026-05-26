@@ -7,6 +7,8 @@ import (
 	"math/bits"
 	"testing"
 
+	"github.com/n42blockchain/N42/modules"
+
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/account"
@@ -419,6 +421,240 @@ func TestDeepAccountTrie(t *testing.T) {
 			return dA, dS
 		})
 	})
+}
+
+// TestSequentialRethMix reproduces the eth-el block-157 scenario: after a first
+// incremental block writes erigon-native nodes (keylen-32 root + "+1") for the
+// accounts it touched, a SECOND incremental block runs on the resulting MIXED
+// tree (reth-shape untouched + native touched). Block A mirrors 156; block B
+// mirrors 157 and must still match a full rebuild.
+func TestSequentialRethMix(t *testing.T) {
+	n, slots := 8, 1024
+	accts, stor, addrs := buildDeep(n, slots)
+	db := memdb.NewTestDB(t)
+	tx, _ := db.BeginRw(context.Background())
+	defer tx.Rollback()
+	trc := NewTrieRootComputer()
+	trc.SetRwTx(tx)
+	trc.SetIncremental(false)
+	if _, err := trc.ComputeRoot(accts, stor); err != nil {
+		t.Fatal(err)
+	}
+	stripToRethShape(t, tx) // migrated reth-shape state
+
+	mkChange := func(src map[types.Address]*account.StateAccount, idxs []int, base int) (map[types.Address]*account.StateAccount, map[types.Address]map[types.Hash]*uint256.Int) {
+		dA := map[types.Address]*account.StateAccount{}
+		dS := map[types.Address]map[types.Hash]*uint256.Int{}
+		for _, i := range idxs {
+			a := addrs[i]
+			na := *src[a]
+			na.Nonce++
+			dA[a] = &na
+			var s types.Hash
+			binary.BigEndian.PutUint32(s[0:4], 0) // slot j=0
+			s[31] = byte(i)
+			dS[a] = map[types.Hash]*uint256.Int{s: uint256.NewInt(uint64(base + i))}
+		}
+		return dA, dS
+	}
+
+	trc.SetIncremental(true)
+
+	// Block A (= 156): touch accounts 0,2,4 → their nodes become native.
+	dA1, dS1 := mkChange(accts, []int{0, 2, 4}, 900000)
+	rootA, err := trc.ComputeRoot(dA1, dS1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refA1, refS1 := applyDelta(accts, stor, dA1, dS1)
+	if want := fullRoot(t, refA1, refS1); rootA != want {
+		t.Fatalf("block A (156-like) MISMATCH inc=%x want=%x", rootA[:8], want[:8])
+	}
+
+	// Block B (= 157): runs on the MIXED tree. Overlap 2,4 (now native) + 6 (still reth-shape).
+	dA2, dS2 := mkChange(refA1, []int{2, 4, 6}, 800000)
+	rootB, err := trc.ComputeRoot(dA2, dS2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refA2, refS2 := applyDelta(refA1, refS1, dA2, dS2)
+	if want := fullRoot(t, refA2, refS2); rootB != want {
+		t.Errorf("block B (157-like, MIXED tree) MISMATCH inc=%x want=%x", rootB[:8], want[:8])
+	}
+}
+
+// TestDeepStorageInsert reproduces block 157's bug: inserting NEW storage slots
+// into a deep storage trie. eth-el showed the incremental storage root wrong for
+// such inserts (despite the marker). Tests both native and reth-shape, and a few
+// scales, since the account-insert analog needed the right size/position.
+func TestDeepStorageInsert(t *testing.T) {
+	run := func(t *testing.T, n, slots, nins int, reth bool) (types.Hash, types.Hash) {
+		accts, stor, addrs := buildDeep(n, slots)
+		db := memdb.NewTestDB(t)
+		tx, _ := db.BeginRw(context.Background())
+		defer tx.Rollback()
+		trc := NewTrieRootComputer()
+		trc.SetRwTx(tx)
+		trc.SetIncremental(false)
+		if _, err := trc.ComputeRoot(accts, stor); err != nil {
+			t.Fatal(err)
+		}
+		if reth {
+			stripToRethShape(t, tx)
+		}
+		a := addrs[0]
+		na := *accts[a]
+		dA := map[types.Address]*account.StateAccount{a: &na}
+		ins := map[types.Hash]*uint256.Int{}
+		for j := slots; j < slots+nins; j++ { // NEW slot indices (not in original)
+			var s types.Hash
+			binary.BigEndian.PutUint32(s[0:4], uint32(j))
+			s[31] = byte(0)
+			ins[s] = uint256.NewInt(uint64(j) + 1)
+		}
+		dS := map[types.Address]map[types.Hash]*uint256.Int{a: ins}
+		trc.SetIncremental(true)
+		rInc, err := trc.ComputeRoot(dA, dS)
+		if err != nil {
+			t.Fatal(err)
+		}
+		refA, refS := applyDelta(accts, stor, dA, dS)
+		return rInc, fullRoot(t, refA, refS)
+	}
+	type cfg struct {
+		n, slots, nins int
+		reth           bool
+	}
+	for _, cc := range []cfg{
+		{2, 1024, 3, false}, {2, 1024, 3, true},
+		{2, 4096, 3, false}, {2, 4096, 3, true},
+		{4, 2048, 5, false}, {4, 2048, 5, true},
+		{2, 8192, 8, false},
+	} {
+		cc := cc
+		t.Run(fmt.Sprintf("n=%d_slots=%d_ins=%d_reth=%v", cc.n, cc.slots, cc.nins, cc.reth), func(t *testing.T) {
+			rInc, rRef := run(t, cc.n, cc.slots, cc.nins, cc.reth)
+			if rInc != rRef {
+				t.Errorf("MISMATCH inc=%x ref=%x", rInc[:8], rRef[:8])
+			}
+		})
+	}
+}
+
+// TestSequentialStorageInsert checks two consecutive incremental blocks that each
+// insert new storage slots: block B reads the TrieOfStorage that block A persisted,
+// so both roots must match a full descent.
+func TestSequentialStorageInsert(t *testing.T) {
+	n, slots := 1, 4096
+	accts, stor, addrs := buildDeep(n, slots)
+	db := memdb.NewTestDB(t)
+	tx, _ := db.BeginRw(context.Background())
+	defer tx.Rollback()
+	trc := NewTrieRootComputer()
+	trc.SetRwTx(tx)
+	trc.SetIncremental(false)
+	if _, err := trc.ComputeRoot(accts, stor); err != nil {
+		t.Fatal(err)
+	}
+	a := addrs[0]
+	newSlots := func(from, k int) map[types.Hash]*uint256.Int {
+		m := map[types.Hash]*uint256.Int{}
+		for j := from; j < from+k; j++ {
+			var s types.Hash
+			binary.BigEndian.PutUint32(s[0:4], uint32(j))
+			s[31] = 0
+			m[s] = uint256.NewInt(uint64(j) + 1)
+		}
+		return m
+	}
+	trc.SetIncremental(true)
+
+	// Block A: insert new slots → Phase-4 writes (duplicates without the fix).
+	naA := *accts[a]
+	dAA := map[types.Address]*account.StateAccount{a: &naA}
+	dSA := map[types.Address]map[types.Hash]*uint256.Int{a: newSlots(slots, 8)}
+	rootA, err := trc.ComputeRoot(dAA, dSA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refAA, refSA := applyDelta(accts, stor, dAA, dSA)
+	if want := fullRoot(t, refAA, refSA); rootA != want {
+		t.Fatalf("block A MISMATCH inc=%x want=%x", rootA[:8], want[:8])
+	}
+
+	// Block B: more inserts, on block A's persisted TrieOfStorage.
+	naB := *refAA[a]
+	dAB := map[types.Address]*account.StateAccount{a: &naB}
+	dSB := map[types.Address]map[types.Hash]*uint256.Int{a: newSlots(slots+8, 8)}
+	rootB, err := trc.ComputeRoot(dAB, dSB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refAB, refSB := applyDelta(refAA, refSA, dAB, dSB)
+	if want := fullRoot(t, refAB, refSB); rootB != want {
+		t.Errorf("block B (reads block A's TrieOfStorage) MISMATCH inc=%x want=%x", rootB[:8], want[:8])
+	}
+}
+
+// TestRethShapeNoRootRecord reproduces block-157's exact condition: reth-migrated
+// TrieOfStorage OMITS the keylen-32 empty-path storage "account.root" records.
+// We build a normal (erigon-shape) trie, DELETE those records to mimic reth, then
+// run an incremental insert. The loader must recompute each storage root from its
+// top-level children + hashed leaves on demand (reth's algorithm) — no cached ""
+// root node. If the no-root cursor path is incomplete, inc != full here.
+func TestRethShapeNoRootRecord(t *testing.T) {
+	for _, slots := range []int{24, 256, 4096} {
+		t.Run(fmt.Sprintf("slots=%d", slots), func(t *testing.T) {
+			accts, stor, addrs := buildDeep(3, slots)
+			db := memdb.NewTestDB(t)
+			tx, _ := db.BeginRw(context.Background())
+			defer tx.Rollback()
+			trc := NewTrieRootComputer()
+			trc.SetRwTx(tx)
+			trc.SetIncremental(false)
+			if _, err := trc.ComputeRoot(accts, stor); err != nil {
+				t.Fatal(err)
+			}
+			// Mimic reth: drop every keylen-32 (empty-path) storage-root record.
+			c, _ := tx.Cursor(modules.TrieOfStorage)
+			var del [][]byte
+			for k, _, e := c.First(); k != nil; k, _, e = c.Next() {
+				if e != nil {
+					t.Fatal(e)
+				}
+				if len(k) == 32 {
+					del = append(del, append([]byte(nil), k...))
+				}
+			}
+			c.Close()
+			for _, k := range del {
+				if err := tx.Delete(modules.TrieOfStorage, k); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Logf("deleted %d keylen-32 root records (reth shape)", len(del))
+
+			a := addrs[0]
+			trc.SetIncremental(true)
+			ins := map[types.Hash]*uint256.Int{}
+			for j := slots; j < slots+5; j++ {
+				var s types.Hash
+				binary.BigEndian.PutUint32(s[0:4], uint32(j))
+				ins[s] = uint256.NewInt(uint64(j) + 1)
+			}
+			na := *accts[a]
+			dA := map[types.Address]*account.StateAccount{a: &na}
+			dS := map[types.Address]map[types.Hash]*uint256.Int{a: ins}
+			rootInc, err := trc.ComputeRoot(dA, dS)
+			if err != nil {
+				t.Fatal(err)
+			}
+			refA, refS := applyDelta(accts, stor, dA, dS)
+			if want := fullRoot(t, refA, refS); rootInc != want {
+				t.Errorf("reth-shape (no keylen-32) MISMATCH inc=%x want=%x", rootInc[:8], want[:8])
+			}
+		})
+	}
 }
 
 // TestNoRootSweep validates the no-root (reth-shape) incremental path across

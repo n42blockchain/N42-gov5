@@ -81,7 +81,7 @@ type FlatDBTrieLoader struct {
 	logPrefix          string
 	trace              bool
 	rd                 RetainDeciderWithMarker
-	accAddrHashWithInc [40]byte // Concatenation of addrHash of the currently build account with its incarnation encoding
+	accAddrHashWithInc [32]byte // addrHash of the currently-built account (incarnation removed — storage keys are 32B addrHash, matching reth)
 
 	ihSeek, accSeek, storageSeek []byte
 	kHex, kHexS                  []byte
@@ -248,7 +248,7 @@ func (l *FlatDBTrieLoader) CalcTrieRoot(tx kv.Tx, quit <-chan struct{}) (types.H
 				return EmptyRoot, err
 			}
 			copy(l.accAddrHashWithInc[:], k)
-			binary.BigEndian.PutUint64(l.accAddrHashWithInc[32:], 0)
+			// incarnation removed: storage trie key prefix is the 32B addrHash only
 			accWithInc := l.accAddrHashWithInc[:]
 			for ihKS, ihVS, hasTreeS, err2 := storageTrie.SeekToAccount(accWithInc); ; ihKS, ihVS, hasTreeS, err2 = storageTrie.Next() {
 				if err2 != nil {
@@ -545,16 +545,13 @@ func (r *RootHashAggregator) genStructStorage() error {
 	}
 	var wantProof func(_ []byte) *proofElement
 	if r.proofRetainer != nil {
-		var fullKey [2 * (length.Hash + length.Incarnation + length.Hash)]byte
+		// incarnation removed: storage key = addrHash(32B) nibbles + storage prefix
+		var fullKey [2 * (length.Hash + length.Hash)]byte
 		for i, b := range r.currAccK {
 			fullKey[i*2] = b / 16
 			fullKey[i*2+1] = b % 16
 		}
-		for i, b := range binary.BigEndian.AppendUint64(nil, 0) {
-			fullKey[2*length.Hash+i*2] = b / 16
-			fullKey[2*length.Hash+i*2+1] = b % 16
-		}
-		baseKeyLen := 2 * (length.Hash + length.Incarnation)
+		baseKeyLen := 2 * length.Hash
 		wantProof = func(prefix []byte) *proofElement {
 			copy(fullKey[baseKeyLen:], prefix)
 			return r.proofRetainer.ProofElement(fullKey[:baseKeyLen+len(prefix)])
@@ -1043,6 +1040,26 @@ func (c *StorageTrieCursor) FirstNotCoveredPrefix() ([]byte, bool) {
 
 func (c *StorageTrieCursor) SeekToAccount(accWithInc []byte) (k, v []byte, hasTree bool, err error) {
 	c.skipState = true
+	// Reset per-account level state. erigon always writes an empty-path
+	// account.root record whose _unmarshal (path is empty) nils every stale
+	// level entry from the previous account, so its cursor is implicitly reset
+	// between accounts. reth storage tries omit that record, so the first
+	// record has a non-empty path and _unmarshal's prefix check can RETAIN a
+	// previous account's level entries when paths coincidentally share a
+	// prefix — corrupting this account's storage root. Clear explicitly.
+	for i := range c.k {
+		c.k[i] = nil
+		c.v[i] = nil
+		c.hasState[i] = 0
+		c.hasTree[i] = 0
+		c.hasHash[i] = 0
+		c.deleted[i] = false
+		c.childID[i] = 0
+		c.hashID[i] = 0
+	}
+	c.lvl = 0
+	c.cur = nil
+	c.next = c.next[:0]
 	c.accWithInc = accWithInc
 	hexutil.DecompressNibbles(c.accWithInc, &c.kBuf)
 	_, c.nextCreated = c.canUse(c.kBuf)
@@ -1058,7 +1075,7 @@ func (c *StorageTrieCursor) SeekToAccount(accWithInc []byte) (k, v []byte, hasTr
 		c.skipState = false
 		return nil, nil, false, nil
 	}
-	if c.root != nil { // check if acc.storageRoot can be used
+	if c.root != nil && c.lvl == 0 { // real empty-path root record: acc.storageRoot usable
 		root := c.root
 		c.root = nil
 		ok1, nextCreated := c.canUse(c.kBuf)
@@ -1076,6 +1093,50 @@ func (c *StorageTrieCursor) SeekToAccount(accWithInc []byte) (k, v []byte, hasTr
 		if err != nil {
 			return []byte{}, nil, false, err
 		}
+	} else {
+		// No empty-path account.root record for this storage trie. erigon always
+		// writes one (it carries the whole-trie storage root + its tree_mask /
+		// hash_mask), but reth omits it. Without it the cursor has no lvl-0 frame:
+		// it would process only the first top-level branch record and terminate,
+		// computing the storage root from a fraction of the trie.
+		//
+		// Walk like reth instead: synthesize a virtual lvl-0 root. Scan the
+		// path-1 branch records to recover the root's tree_mask (which top-level
+		// children are stored branches to descend into). hasState is set to all-1s
+		// so every other top-level child is leaf-scanned (skipState=false), and
+		// hasHash=0 so the root's own hash is recomputed from its children rather
+		// than read from a (non-existent) cache. prev is reset so the first
+		// FirstNotCoveredPrefix returns {0,0} (start of THIS account's storage),
+		// not NextNibblesSubtree of the previous account's slot path.
+		// See modules/state/commitment/trie_root_trace_test.go (TestRethShape*).
+		var treeMask uint16
+		var probe [33]byte
+		copy(probe[:32], c.accWithInc)
+		for nib := byte(0); nib < 16; nib++ {
+			probe[32] = nib
+			sk, _, e := c.c.Seek(probe[:])
+			if e != nil {
+				return []byte{}, nil, false, e
+			}
+			if len(sk) == 33 && bytes.Equal(sk, probe[:]) {
+				treeMask |= 1 << nib
+			}
+		}
+		for i := range c.k {
+			c.k[i], c.v[i] = nil, nil
+			c.hasState[i], c.hasTree[i], c.hasHash[i] = 0, 0, 0
+			c.deleted[i], c.childID[i], c.hashID[i] = false, 0, 0
+		}
+		c.lvl = 0
+		c.k[0] = []byte{}
+		c.hasState[0] = 0xFFFF
+		c.hasTree[0] = treeMask
+		c.hasHash[0] = 0
+		c.childID[0] = int8(bits.TrailingZeros16(c.hasState[0]) - 1)
+		c.hashID[0] = -1
+		c.skipState = false
+		c.prev = c.prev[:0]
+		c._nextSiblingInMem()
 	}
 
 	ok, err = c._consume()
@@ -1114,12 +1175,12 @@ func (c *StorageTrieCursor) Next() (k, v []byte, hasTree bool, err error) {
 
 func (c *StorageTrieCursor) _consume() (bool, error) {
 	if c._hasHash() {
-		c.kBuf = append(append(c.kBuf[:80], c.k[c.lvl]...), uint8(c.childID[c.lvl]))
+		c.kBuf = append(append(c.kBuf[:64], c.k[c.lvl]...), uint8(c.childID[c.lvl]))
 		ok, nextCreated := c.canUse(c.kBuf)
 		if ok {
 			c.skipState = c.skipState && keyIsBefore(c.kBuf, c.nextCreated)
 			c.nextCreated = nextCreated
-			c.cur = types.CopyBytes(c.kBuf[80:])
+			c.cur = types.CopyBytes(c.kBuf[64:])
 			return true, nil
 		}
 	}
@@ -1139,7 +1200,7 @@ func (c *StorageTrieCursor) _seek(seek, withinPrefix []byte) (bool, error) {
 		if k == nil {
 			return false, nil
 		}
-		if !bytes.HasPrefix(k, c.accWithInc) || !bytes.HasPrefix(k[40:], withinPrefix) {
+		if !bytes.HasPrefix(k, c.accWithInc) || !bytes.HasPrefix(k[32:], withinPrefix) {
 			return false, nil
 		}
 	} else {
@@ -1162,7 +1223,7 @@ func (c *StorageTrieCursor) _seek(seek, withinPrefix []byte) (bool, error) {
 // _preOrderTraversalStep - goToChild || nextSiblingInMem || nextSiblingOfParentInMem || nextSiblingInDB
 func (c *StorageTrieCursor) _preOrderTraversalStep() error {
 	if c._hasTree() {
-		c.seek = append(append(c.seek[:40], c.k[c.lvl]...), byte(c.childID[c.lvl]))
+		c.seek = append(append(c.seek[:32], c.k[c.lvl]...), byte(c.childID[c.lvl]))
 		ok, err := c._seek(c.seek, []byte{})
 		if err != nil {
 			return err
@@ -1219,7 +1280,7 @@ func (c *StorageTrieCursor) _nextSiblingOfParentInMem() bool {
 			continue
 		}
 
-		c.seek = append(append(c.seek[:40], c.k[originalLvl]...), uint8(c.childID[originalLvl]))
+		c.seek = append(append(c.seek[:32], c.k[originalLvl]...), uint8(c.childID[originalLvl]))
 		c.next = append(append(c.next[:0], c.k[c.lvl]...), uint8(c.childID[c.lvl]))
 		ok, err := c._seek(c.seek, c.next)
 		if err != nil {
@@ -1242,7 +1303,7 @@ func (c *StorageTrieCursor) _nextSiblingInDB() error {
 		c.k[c.lvl] = nil
 		return nil
 	}
-	c.seek = append(c.seek[:40], c.next...)
+	c.seek = append(c.seek[:32], c.next...)
 	if _, err := c._seek(c.seek, []byte{}); err != nil {
 		return err
 	}
@@ -1298,7 +1359,7 @@ func (c *StorageTrieCursor) _unmarshal(k, v []byte) {
 		if c.k[i] == nil {
 			continue
 		}
-		if bytes.HasPrefix(k[40:], c.k[i]) {
+		if bytes.HasPrefix(k[32:], c.k[i]) {
 			break
 		}
 		from = i
@@ -1307,8 +1368,8 @@ func (c *StorageTrieCursor) _unmarshal(k, v []byte) {
 		c.k[i], c.hasState[i], c.hasTree[i], c.hasHash[i], c.hashID[i], c.childID[i], c.deleted[i] = nil, 0, 0, 0, 0, 0, false
 	}
 
-	c.lvl = len(k) - 40
-	c.k[c.lvl] = k[40:]
+	c.lvl = len(k) - 32
+	c.k[c.lvl] = k[32:]
 	c.deleted[c.lvl] = false
 	c.hasState[c.lvl], c.hasTree[c.lvl], c.hasHash[c.lvl], c.v[c.lvl], c.root = UnmarshalTrieNode(v)
 	c.hashID[c.lvl] = -1
