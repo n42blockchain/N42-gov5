@@ -94,8 +94,18 @@ func (t *TrieRootComputer) ComputeRoot(
 	for addr, acct := range accounts {
 		addrHash := t.keccakAddr(addr)
 
-		// Add to RetainList (forces CalcTrieRoot to recompute this path).
-		rl.AddKey(addrHash[:])
+		// Add to RetainList WITH the "created" marker. CalcTrieRoot uses the
+		// marker (via RetainWithMarker → nextCreated) to force a HashedAccounts
+		// leaf scan around the key. This is REQUIRED for INSERTS: a brand-new
+		// account sits at a nibble that the cached parent branch's hasState mask
+		// doesn't know about, so the AccTrieCursor's child iteration never
+		// descends to it; without the marker, SkipState stays true and the new
+		// leaf is silently skipped (its child bit never added to hasState).
+		// Modifies don't strictly need the marker (the key is already in
+		// hasState, so _nextSiblingInMem clears SkipState), but marking all
+		// dirty keys is correct and simpler — an extra bounded leaf scan is
+		// harmless.
+		rl.AddKeyWithMarker(addrHash[:], true)
 
 		if acct == nil {
 			// Account deleted.
@@ -126,14 +136,15 @@ func (t *TrieRootComputer) ComputeRoot(
 		for slot, val := range slots {
 			slotHash := t.keccakHash(slot)
 
-			// compositeKey: addrHash(32) + zero_incarnation(8) + slotHash(32) = 72B
-			var compositeKey [72]byte
+			// compositeKey: addrHash(32) + slotHash(32) = 64B (incarnation removed)
+			var compositeKey [64]byte
 			copy(compositeKey[:32], addrHash[:])
-			// [32:40] stays zero — incarnation removed from state model
-			copy(compositeKey[40:], slotHash[:])
+			copy(compositeKey[32:], slotHash[:])
 
-			// Add to RetainList.
-			rl.AddKey(compositeKey[:])
+			// Add to RetainList with the "created" marker — same reason as
+			// accounts: a brand-new storage slot must force a HashedStorage leaf
+			// scan around its (cached-parent-unknown) nibble position.
+			rl.AddKeyWithMarker(compositeKey[:], true)
 
 			if val == nil || val.IsZero() {
 				if err := t.tx.Delete(modules.HashedStorage, compositeKey[:]); err != nil {
@@ -205,6 +216,15 @@ func (t *TrieRootComputer) ComputeRoot(
 	// full rebuild with empty RetainList.
 	// Incremental mode: pass the populated dirty-paths RetainList so
 	// unchanged subtrees are read from TrieOf* instead of rebuilt.
+	//
+	// NOTE: incremental mode REQUIRES the empty-path (keylen-32) storage
+	// "account.root" records to be present in TrieOfStorage. The loader
+	// re-processes whole cached-IH ranges around any dirty path, recomputing
+	// the leaves of neighbouring (untouched) accounts too — and those need
+	// their cached storage root, which lives in the keylen-32 record. A
+	// reth-migrated TrieOfStorage omits these, so it must be rebuilt once
+	// (cmd/n42-rebuild-trie) before incremental updates are correct. See
+	// trie_root_incremental_test.go for the regression covering this.
 	retainer := trie.NewRetainList(0)
 	if t.incremental {
 		retainer = rl
@@ -296,10 +316,9 @@ func (t *TrieRootComputer) InitFromPlainState() error {
 		copy(slot[:], k[20:52])
 		slotHash := t.keccakHash(slot)
 
-		var compositeKey [72]byte
+		var compositeKey [64]byte
 		copy(compositeKey[:32], addrHash[:])
-		// [32:40] stays zero — incarnation removed
-		copy(compositeKey[40:], slotHash[:])
+		copy(compositeKey[32:], slotHash[:])
 
 		if err := t.tx.Put(modules.HashedStorage, compositeKey[:], v); err != nil {
 			return err
