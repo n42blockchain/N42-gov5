@@ -284,8 +284,15 @@ func (t *TrieRootComputer) flushTrieRoot(rl *trie.RetainList) (types.Hash, error
 		accTrieUpdates = append(accTrieUpdates, kvPair{k, append([]byte{}, v...)})
 		return nil
 	}
+	traceStor := os.Getenv("N42_TRACE_STORCOLL") == "1"
 	storCollector := func(accWithInc []byte, keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
 		k := append(append(make([]byte, 0, len(accWithInc)+len(keyHex)), accWithInc...), keyHex...)
+		if traceStor && len(accWithInc) >= 4 && accWithInc[0] == 0x6c && accWithInc[1] == 0x9d && accWithInc[2] == 0x57 && accWithInc[3] == 0xbe {
+			// EIP-2935 contract: log every emission to verify root path
+			// (keyHex==empty) is being written back.
+			fmt.Fprintf(os.Stderr, "STORCOLL acc=%x keyHexLen=%d k=%x hasState=%04x hasTree=%04x hasHash=%04x nHashes=%d rootHashLen=%d\n",
+				accWithInc[:4], len(keyHex), k[:min(len(k), 36)], hasState, hasTree, hasHash, len(hashes)/32, len(rootHash))
+		}
 		if len(k) == 0 {
 			return nil
 		}
