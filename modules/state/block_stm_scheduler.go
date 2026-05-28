@@ -91,19 +91,46 @@ type Scheduler struct {
 	txMu        []sync.Mutex
 	status      []TxStatus
 	incarnation []uint32
+
+	// Per-tx diagnostics (N42_PEVM_TRACE): execCount = times finished executing,
+	// valFailCount = times validation failed, rewindCount = times a lower tx's
+	// write rewound the frontier past this tx. Used to localize convergence bugs.
+	execCount    []atomic.Int32
+	valFailCount []atomic.Int32
+
+	// Block-level rewind diagnostics: every RewindValidationIdx call either FIRES
+	// (cur > target → CAS down) or SKIPS (cur ≤ target → guard returns no-op).
+	// If skips dominate, validationIdx is already behind the target when the
+	// lower tx finishes — meaning higher txs aren't past their first validation
+	// yet, and the rewind never has anything to pull back. In that case the
+	// missing trigger is somewhere else (e.g., in-order validation racing with
+	// the lower tx's MV write).
+	rewindFires atomic.Int64
+	rewindSkips atomic.Int64
 }
 
 // NewScheduler creates a scheduler for a block of numTxs transactions.
 func NewScheduler(numTxs int) *Scheduler {
 	s := &Scheduler{
-		numTxs:      numTxs,
-		txMu:        make([]sync.Mutex, numTxs),
-		status:      make([]TxStatus, numTxs),
-		incarnation: make([]uint32, numTxs),
+		numTxs:       numTxs,
+		txMu:         make([]sync.Mutex, numTxs),
+		status:       make([]TxStatus, numTxs),
+		incarnation:  make([]uint32, numTxs),
+		execCount:    make([]atomic.Int32, numTxs),
+		valFailCount: make([]atomic.Int32, numTxs),
 	}
 	// All txs start as Ready with incarnation 0.
 	return s
 }
+
+// ExecCount returns how many times tx_i has finished executing (diagnostics).
+func (s *Scheduler) ExecCount(txIdx int) int32 { return s.execCount[txIdx].Load() }
+
+// ValFailCount returns how many times tx_i's validation has failed (diagnostics).
+func (s *Scheduler) ValFailCount(txIdx int) int32 { return s.valFailCount[txIdx].Load() }
+
+// FinalStatus returns the tx's current status + incarnation (diagnostics).
+func (s *Scheduler) FinalStatus(txIdx int) (TxStatus, uint32) { return s.Status(txIdx) }
 
 // NumTxs returns the block's tx count.
 func (s *Scheduler) NumTxs() int { return s.numTxs }
@@ -238,7 +265,41 @@ func (s *Scheduler) FinishExecution(txIdx int, inc uint32) {
 		s.status[txIdx] = TxStatusExecuted
 	}
 	s.txMu[txIdx].Unlock()
+	s.execCount[txIdx].Add(1)
 	s.numActive.Add(-1)
+}
+
+// RewindValidationIdx decreases validationIdx down to `target` (no-op if it is
+// already <= target). This is the canonical Block-STM decrease_validation_idx:
+// the caller invokes it AFTER an execution flushes writes that higher txs may
+// have speculatively read, forcing those higher txs (even already-Committed
+// ones) to re-validate — and, on the resulting read-mismatch, re-execute.
+//
+// Without this, a higher tx that read a key from the base store BEFORE a lower
+// tx wrote it would validate-pass (no writer existed at read time) and commit a
+// STALE result — most visibly a same-sender "nonce too high" for a tx whose
+// lower-nonce sibling hadn't executed yet. (The old code only rewound on
+// validation FAILURE, never on execution, so the universal coinbase write was
+// silently masking this — every read hit an MVEstimate. Lazy-coinbase removed
+// that crutch and exposed the missing rewind.)
+func (s *Scheduler) RewindValidationIdx(target int) {
+	t := int64(target)
+	for {
+		cur := s.validationIdx.Load()
+		if cur <= t {
+			s.rewindSkips.Add(1)
+			return
+		}
+		if s.validationIdx.CompareAndSwap(cur, t) {
+			s.rewindFires.Add(1)
+			return
+		}
+	}
+}
+
+// RewindStats returns (fires, skips) for diagnostics.
+func (s *Scheduler) RewindStats() (int64, int64) {
+	return s.rewindFires.Load(), s.rewindSkips.Load()
 }
 
 // FinishExecutionAbort is called when a worker's Execute task observed
@@ -291,6 +352,7 @@ func (s *Scheduler) FinishValidationPass(txIdx int, inc uint32) {
 // scheduler bumps the incarnation, schedules re-execution, and rewinds
 // validationIdx so subsequent validations re-check from txIdx onward.
 func (s *Scheduler) FinishValidationFail(txIdx int, inc uint32) {
+	s.valFailCount[txIdx].Add(1)
 	s.txMu[txIdx].Lock()
 	abort := s.incarnation[txIdx] == inc &&
 		(s.status[txIdx] == TxStatusExecuted || s.status[txIdx] == TxStatusCommitted)

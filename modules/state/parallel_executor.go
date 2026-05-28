@@ -12,6 +12,8 @@ package state
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"runtime"
 	"sort"
 	"sync"
@@ -81,32 +83,136 @@ func ExecuteBlockParallel(
 	for w := 0; w < numWorkers; w++ {
 		go func() {
 			defer wg.Done()
-			for {
-				task := sched.NextTask()
-				if task.Kind == TaskDone {
-					return
-				}
-				if task.Kind == TaskNone {
-					// Brief backoff; avoids hammering the CAS counters
-					// when no work is immediately available.
-					time.Sleep(50 * time.Microsecond)
-					continue
-				}
-				switch task.Kind {
-				case TaskExecute:
-					runExecute(sched, mv, base, executor, task.TxIdx, task.Incarnation,
-						txViews, txWrittenKeys, txResults, txMu)
-				case TaskValidate:
-					runValidate(sched, task.TxIdx, task.Incarnation,
-						txViews, txWrittenKeys, txMu)
-				}
-			}
+			runWorker(sched, mv, base, executor, txViews, txWrittenKeys, txResults, txMu)
 		}()
 	}
 
 	wg.Wait()
 
 	return txResults, mv, nil
+}
+
+// ExecuteBlockParallelF is ExecuteBlockParallel but with a per-worker base
+// factory instead of a single shared base. Each worker calls `factory()` once
+// to obtain its OWN MVBaseReader (and a closer run on worker exit). This is
+// REQUIRED when the base wraps a non-goroutine-safe resource such as a single
+// MDBX read transaction (sharing one RoTx across workers trips mdbx-go's cgo
+// goroutine-safety check) — e.g. NewMVBaseFromStateReader(NewHashedStateReader(tx)).
+// A pre-flight factory call fails fast (and avoids a worker deadlock) if no base
+// can be created at all.
+func ExecuteBlockParallelF(
+	numTxs int,
+	numWorkers int,
+	factory MVBaseFactory,
+	executor func(txIdx int) TxExecutor,
+) ([]Result, *MVHashMap, error) {
+	if numTxs == 0 {
+		return nil, NewMVHashMap(1), nil
+	}
+	if numWorkers <= 0 {
+		numWorkers = runtime.NumCPU()
+	}
+	// Pre-flight: confirm a base can be created before launching workers (else a
+	// total factory failure would leave the scheduler with no progressing worker
+	// and wg.Wait would block forever).
+	if pb, pc := factory(); pb == nil {
+		return nil, nil, errors.New("ExecuteBlockParallelF: base factory returned nil")
+	} else if pc != nil {
+		pc()
+	}
+
+	sched := NewScheduler(numTxs)
+	mv := NewMVHashMap(nextPow2(numWorkers * 8))
+	txViews := make([]*MVStateView, numTxs)
+	txWrittenKeys := make([][]string, numTxs)
+	txResults := make([]Result, numTxs)
+	txMu := make([]sync.Mutex, numTxs)
+
+	var wg sync.WaitGroup
+	wg.Add(numWorkers)
+	for w := 0; w < numWorkers; w++ {
+		go func() {
+			defer wg.Done()
+			base, closer := factory()
+			if base == nil {
+				return // reduced parallelism; the pre-flight guarantees ≥1 base
+			}
+			if closer != nil {
+				defer closer()
+			}
+			runWorker(sched, mv, base, executor, txViews, txWrittenKeys, txResults, txMu)
+		}()
+	}
+
+	wg.Wait()
+
+	// Per-failing-tx diagnostics for convergence debugging: logs how many times
+	// each failed tx executed (incarnations), how many times its validation
+	// failed, and its final status/incarnation. Lets us tell apart "scheduler
+	// never re-triggered" (execCount==1, valFails==0) from "kept re-executing
+	// but always read stale" (execCount>>1).
+	if os.Getenv("N42_PEVM_TRACE") != "" {
+		fires, skips := sched.RewindStats()
+		nFail := 0
+		totalWrittenKeys := 0
+		nTxsWithWrites := 0
+		for i, r := range txResults {
+			if r.Err != nil {
+				nFail++
+			}
+			if k := len(txWrittenKeys[i]); k > 0 {
+				totalWrittenKeys += k
+				nTxsWithWrites++
+			}
+		}
+		fmt.Fprintf(os.Stderr,
+			"PEVM_TRACE_BLOCK nTx=%d nFail=%d rewindFires=%d rewindSkips=%d nTxsWithWrites=%d totalKeys=%d\n",
+			len(txResults), nFail, fires, skips, nTxsWithWrites, totalWrittenKeys)
+		for i, r := range txResults {
+			if r.Err != nil {
+				st, inc := sched.FinalStatus(i)
+				fmt.Fprintf(os.Stderr,
+					"PEVM_TRACE failed tx=%d execCount=%d valFails=%d status=%d inc=%d err=%v\n",
+					i, sched.ExecCount(i), sched.ValFailCount(i), st, inc, r.Err)
+			}
+		}
+	}
+
+	return txResults, mv, nil
+}
+
+// runWorker is the shared Block-STM worker loop: pull a task, execute or
+// validate, until the scheduler reports all txs committed.
+func runWorker(
+	sched *Scheduler,
+	mv *MVHashMap,
+	base MVBaseReader,
+	executor func(int) TxExecutor,
+	txViews []*MVStateView,
+	txWrittenKeys [][]string,
+	txResults []Result,
+	txMu []sync.Mutex,
+) {
+	for {
+		task := sched.NextTask()
+		if task.Kind == TaskDone {
+			return
+		}
+		if task.Kind == TaskNone {
+			// Brief backoff; avoids hammering the CAS counters when no work is
+			// immediately available.
+			time.Sleep(50 * time.Microsecond)
+			continue
+		}
+		switch task.Kind {
+		case TaskExecute:
+			runExecute(sched, mv, base, executor, task.TxIdx, task.Incarnation,
+				txViews, txWrittenKeys, txResults, txMu)
+		case TaskValidate:
+			runValidate(sched, task.TxIdx, task.Incarnation,
+				txViews, txWrittenKeys, txMu)
+		}
+	}
 }
 
 func runExecute(
@@ -172,6 +278,19 @@ func runExecute(
 	txWrittenKeys[txIdx] = keys
 	txResults[txIdx] = Result{TxIdx: txIdx, Err: err}
 	txMu[txIdx].Unlock()
+
+	// Block-STM frontier rewind: if this incarnation wrote (or removed) any
+	// keys, higher txs that may have speculatively read them must re-validate.
+	// MUST be called BEFORE FinishExecution: FinishExecution decrements numActive,
+	// and if validationIdx is already at numTxs and numCommitted==numTxs, another
+	// worker's NextTask sees numActive==0 and sets done=true → all workers exit
+	// before our rewind can take effect (the convergence bug surfaced in
+	// PEVM_TRACE: failing txs had execCount=1, valFails=0 — scheduler terminated
+	// before re-validation ran). Doing the rewind FIRST keeps numActive non-zero
+	// through the rewind, blocking the spurious termination check.
+	if len(keys) > 0 || len(prevKeys) > 0 {
+		sched.RewindValidationIdx(txIdx + 1)
+	}
 
 	sched.FinishExecution(txIdx, inc)
 }
