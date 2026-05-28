@@ -188,6 +188,54 @@ func (t *TrieRootComputer) ComputeRoot(
 		return types.Hash{}, nil
 	}
 
+	// N42_DROP_STALE_ROOT_CACHE=1: for every account whose storage was dirtied
+	// this block, delete its 32-byte-key root-cache entry from TrieOfStorage
+	// before flushTrieRoot. The FlatDBTrieLoader will then fall through to
+	// HashedStorage leaf rebuild for that subtree instead of trusting the
+	// stale cached root. Used to bisect #150: dump-tos confirmed EIP-2935's
+	// cached root (`0x7b62992d...`) is stale relative to mainnet
+	// `0xf88630...`; if dropping the cache yields the mainnet expected root,
+	// the bug is incremental writes never propagate the new root back to
+	// the keylen-32 record.
+	if hexAddr := os.Getenv("N42_DROP_STALE_ADDR"); hexAddr != "" {
+		// Scoped variant: drop ONLY the listed addrHash(es) (comma-separated
+		// 64-hex). Used to isolate one contract's stale cache rather than
+		// blow away the cache for every dirty-storage account.
+		droppedEntries := 0
+		droppedAccts := 0
+		for _, item := range strings.Split(hexAddr, ",") {
+			item = strings.TrimSpace(strings.TrimPrefix(item, "0x"))
+			if len(item) != 64 {
+				continue
+			}
+			ahBytes, derr := hex.DecodeString(item)
+			if derr != nil {
+				continue
+			}
+			cur, err := t.tx.Cursor(modules.TrieOfStorage)
+			if err != nil {
+				continue
+			}
+			var stale [][]byte
+			for k, _, e := cur.Seek(ahBytes); k != nil && len(k) >= 32 && bytes.HasPrefix(k, ahBytes); k, _, e = cur.Next() {
+				if e != nil {
+					break
+				}
+				stale = append(stale, append([]byte(nil), k...))
+			}
+			cur.Close()
+			for _, k := range stale {
+				if err := t.tx.Delete(modules.TrieOfStorage, k); err == nil {
+					droppedEntries++
+				}
+			}
+			if len(stale) > 0 {
+				droppedAccts++
+			}
+		}
+		fmt.Fprintf(os.Stderr, "N42_DROP_STALE_ADDR droppedAccts=%d droppedEntries=%d\n", droppedAccts, droppedEntries)
+	}
+
 	root, err := t.flushTrieRoot(rl)
 	if err != nil {
 		return types.Hash{}, err
