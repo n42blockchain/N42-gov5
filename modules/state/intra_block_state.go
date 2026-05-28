@@ -212,6 +212,31 @@ func (sdb *IntraBlockState) SetHeight(height uint64) {
 	sdb.height = height
 }
 
+// DirtyAddresses returns the set of addresses whose state was modified during
+// the current block execution. Intended for diagnostic dumps; the underlying
+// stateObjectsDirty map is preserved (this method only iterates).
+func (sdb *IntraBlockState) DirtyAddresses() []types.Address {
+	out := make([]types.Address, 0, len(sdb.stateObjectsDirty))
+	for addr := range sdb.stateObjectsDirty {
+		out = append(out, addr)
+	}
+	return out
+}
+
+// DirtyStorageSlots returns the slot keys this block wrote on the given
+// address (post-tx, pre-commit). Intended for diagnostic dumps.
+func (sdb *IntraBlockState) DirtyStorageSlots(addr types.Address) []types.Hash {
+	obj, ok := sdb.stateObjects[addr]
+	if !ok || obj == nil {
+		return nil
+	}
+	out := make([]types.Hash, 0, len(obj.dirtyStorage))
+	for k := range obj.dirtyStorage {
+		out = append(out, k)
+	}
+	return out
+}
+
 func (sdb *IntraBlockState) Snap() *Snapshot {
 	return sdb.snap
 }

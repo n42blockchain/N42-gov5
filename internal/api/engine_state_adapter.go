@@ -13,13 +13,17 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
@@ -506,6 +510,57 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	}
 	header.ReceiptHash = actualReceiptHash
 	header.Bloom = actualBloom
+	if os.Getenv("N42_DUMP_DIRTY") == "1" && os.Getenv("N42_DUMP_BLOCK") == fmt.Sprintf("%d", blockNum) {
+		dumpStorage := os.Getenv("N42_DUMP_DIRTY_STORAGE") == "1"
+		for _, addr := range ibs.DirtyAddresses() {
+			bal := ibs.GetBalance(addr)
+			non := ibs.GetNonce(addr)
+			ch := ibs.GetCodeHash(addr)
+			log.Warn("DUMPDIRTY", "block", blockNum, "addr", fmt.Sprintf("%x", addr[:]),
+				"balance", bal.Hex(), "nonce", non, "codeHash", ch.Hex())
+			if dumpStorage {
+				for _, slot := range ibs.DirtyStorageSlots(addr) {
+					var val uint256.Int
+					ibs.GetState(addr, &slot, &val)
+					log.Warn("DUMPDIRTYSTOR", "block", blockNum, "addr", fmt.Sprintf("%x", addr[:]),
+						"slot", slot.Hex(), "value", val.Hex())
+				}
+			}
+		}
+	}
+	if dumpAddrs := os.Getenv("N42_DUMP_ADDR"); dumpAddrs != "" && os.Getenv("N42_DUMP_BLOCK") == fmt.Sprintf("%d", blockNum) {
+		for _, raw := range strings.Split(dumpAddrs, ",") {
+			raw = strings.TrimSpace(strings.TrimPrefix(raw, "0x"))
+			if len(raw) != 40 {
+				continue
+			}
+			b, derr := hex.DecodeString(raw)
+			if derr != nil {
+				continue
+			}
+			var a types.Address
+			copy(a[:], b)
+			bal := ibs.GetBalance(a)
+			non := ibs.GetNonce(a)
+			ch := ibs.GetCodeHash(a)
+			csz := ibs.GetCodeSize(a)
+			log.Warn("DUMPSTATE", "block", blockNum, "addr", fmt.Sprintf("%x", a),
+				"balance", bal.String(), "nonce", non, "codeHash", ch.Hex(), "codeSize", csz)
+			for _, slotHex := range strings.Split(os.Getenv("N42_DUMP_SLOTS"), ",") {
+				slotHex = strings.TrimSpace(strings.TrimPrefix(slotHex, "0x"))
+				if len(slotHex) == 0 {
+					continue
+				}
+				var slot types.Hash
+				sb, _ := hex.DecodeString(strings.Repeat("0", 64-len(slotHex)) + slotHex)
+				copy(slot[:], sb)
+				var val uint256.Int
+				ibs.GetState(a, &slot, &val)
+				log.Warn("DUMPSLOT", "block", blockNum, "addr", fmt.Sprintf("%x", a[:4][:]),
+					"slot", slot.Hex(), "value", val.Hex())
+			}
+		}
+	}
 	tPhase = time.Now()
 	if a.staged {
 		// Staged catch-up: IntermediateRoot still runs (writeOnly trc writes the
