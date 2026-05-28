@@ -80,9 +80,14 @@ func main() {
 	reader := mptproof.NewRethBackedReader(rethSrc)
 
 	// --- Open destination CommitmentBranches env ---
+	// Accede() is critical when --dst points at an existing chaindata
+	// env that already holds Account/Storage/Code etc. Without it,
+	// MDBX schema-check fails or quietly hides DBIs we didn't declare,
+	// and a later opener may see corruption when it tries to CreateBucket
+	// a missing-but-actually-present table.
 	dstDB, err := mdbxkv.NewMDBX(logger).
 		Path(*dst).Label(kv.ChainDB).PageSize(4096).
-		MapSize(datasize.ByteSize(*dstMapGB) * datasize.GB).
+		MapSize(datasize.ByteSize(*dstMapGB) * datasize.GB).Accede().
 		WithTableCfg(func(d kv.TableCfg) kv.TableCfg {
 			d[commitment.CommitmentBranchesTable] = kv.TableCfgItem{}
 			return d

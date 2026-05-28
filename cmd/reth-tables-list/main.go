@@ -33,6 +33,8 @@ var knownTables = []string{
 	"Bytecodes",
 	"AccountsTrie",
 	"StoragesTrie",
+	"HashedAccounts",
+	"HashedStorages",
 }
 
 func cfg(d kv.TableCfg) kv.TableCfg {
@@ -41,6 +43,8 @@ func cfg(d kv.TableCfg) kv.TableCfg {
 	}
 	d["AccountChangeSets"] = kv.TableCfgItem{Flags: kv.DupSort}
 	d["StorageChangeSets"] = kv.TableCfgItem{Flags: kv.DupSort}
+	d["HashedStorages"] = kv.TableCfgItem{Flags: kv.DupSort}
+	d["StoragesTrie"] = kv.TableCfgItem{Flags: kv.DupSort}
 	return d
 }
 

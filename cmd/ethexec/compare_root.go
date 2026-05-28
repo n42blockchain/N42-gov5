@@ -54,14 +54,17 @@ func runCompareRoot(c *cli.Context) error {
 		dirtyGB = 32
 	}
 
+	noHeader := c.Bool("no-header")
+
 	logger := log2.New()
 	db, err := mdbx.NewMDBX(logger).
 		Path(datadir).
 		Label(kv.ChainDB).
 		PageSize(4096).
-		MapSize(2 * datasize.TB).
+		MapSize(4 * datasize.TB).
 		GrowthStep(4 * datasize.GB).
 		DirtySpace(uint64(datasize.ByteSize(dirtyGB) * datasize.GB)).
+		Accede().
 		Open(context.Background())
 	if err != nil {
 		return fmt.Errorf("open mdbx: %w", err)
@@ -71,24 +74,31 @@ func runCompareRoot(c *cli.Context) error {
 	ctx, cancel := withShutdown()
 	defer cancel()
 
-	// Header root from geth ancient.
-	f, err := freezer.New(ancientPath, 0)
-	if err != nil {
-		return fmt.Errorf("open ancient: %w", err)
+	// Header root from geth ancient (skipped in --no-header mode so this
+	// can run as a one-shot HPH bulk-rebuild without needing a geth
+	// ancient on disk — used for lazy-build of CommitmentBranches against
+	// PlainState that was populated by another tool).
+	var headerRoot types.Hash
+	if !noHeader {
+		f, err := freezer.New(ancientPath, 0)
+		if err != nil {
+			return fmt.Errorf("open ancient: %w", err)
+		}
+		defer f.Close()
+		hdrData, err := f.Ancient(freezer.TableHeaders, block)
+		if err != nil {
+			return fmt.Errorf("read header %d: %w", block, err)
+		}
+		hdr, err := ethel.DecodeGethHeader(hdrData)
+		if err != nil {
+			return fmt.Errorf("decode header %d: %w", block, err)
+		}
+		headerRoot = hdr.Root
+		fmt.Printf("\n=== Comparing state root @ block %d ===\n", block)
+		fmt.Printf("Header root: %s\n\n", headerRoot.Hex())
+	} else {
+		fmt.Printf("\n=== Bulk-rebuild state root @ block %d (--no-header: skip header compare) ===\n", block)
 	}
-	defer f.Close()
-	hdrData, err := f.Ancient(freezer.TableHeaders, block)
-	if err != nil {
-		return fmt.Errorf("read header %d: %w", block, err)
-	}
-	hdr, err := ethel.DecodeGethHeader(hdrData)
-	if err != nil {
-		return fmt.Errorf("decode header %d: %w", block, err)
-	}
-	headerRoot := hdr.Root
-
-	fmt.Printf("\n=== Comparing state root @ block %d ===\n", block)
-	fmt.Printf("Header root: %s\n\n", headerRoot.Hex())
 
 	var (
 		rootMPT, rootHPH types.Hash
@@ -181,17 +191,27 @@ func runCompareRoot(c *cli.Context) error {
 	// Comparison table.
 	fmt.Println()
 	fmt.Println("=== Results ===")
-	fmt.Printf("Header        : %s\n", headerRoot.Hex())
+	if !noHeader {
+		fmt.Printf("Header        : %s\n", headerRoot.Hex())
+	}
 	if mode == "mpt" || mode == "both" {
-		ok := rootMPT == headerRoot
-		fmt.Printf("Method A MPT  : %s  match=%v\n", rootMPT.Hex(), ok)
+		ok := !noHeader && rootMPT == headerRoot
+		if noHeader {
+			fmt.Printf("Method A MPT  : %s\n", rootMPT.Hex())
+		} else {
+			fmt.Printf("Method A MPT  : %s  match=%v\n", rootMPT.Hex(), ok)
+		}
 		fmt.Printf("  hashedState : %s\n", dHash.Truncate(time.Millisecond))
 		fmt.Printf("  calcTrieRoot: %s\n", dMPT.Truncate(time.Millisecond))
 		fmt.Printf("  total       : %s   allocDelta=%dMB\n", (dHash + dMPT).Truncate(time.Millisecond), mpAllocMB)
 	}
 	if mode == "hph" || mode == "both" {
-		ok := rootHPH == headerRoot
-		fmt.Printf("Method B HPH  : %s  match=%v\n", rootHPH.Hex(), ok)
+		ok := !noHeader && rootHPH == headerRoot
+		if noHeader {
+			fmt.Printf("Method B HPH  : %s\n", rootHPH.Hex())
+		} else {
+			fmt.Printf("Method B HPH  : %s  match=%v\n", rootHPH.Hex(), ok)
+		}
 		fmt.Printf("  elapsed     : %s   allocDelta=%dMB\n", dHPH.Truncate(time.Millisecond), hpAllocMB)
 	}
 	if mode == "both" {
@@ -366,7 +386,12 @@ func computeHPHFromPlainState(ctx context.Context, db kv.RwDB) (types.Hash, erro
 // flushBranchesEveryChunks bounds in-memory branch growth during bulk
 // rebuild. Quartered frequency (128 vs 32) keeps mem peak ~32 GB and
 // cuts flush+cold-read overhead ~75% on hosts with >40 GB headroom.
-const flushBranchesEveryChunks = 128
+// Flush in-memory branch store to MDBX every N chunks. Lower = lower
+// peak memory but more MDBX commit overhead. 128 was the original (~big
+// memory headroom) but 25M-state mainnet rebuild on Windows accumulates
+// ~2 GB per chunk → would OOM a 128 GB box before chunk 128. 16 keeps
+// peak under ~32 GB which is safe under page-cache pressure.
+const flushBranchesEveryChunks = 16
 
 // computeHPHFromPlainStateConcurrent is the 16-way parallel variant of
 // computeHPHFromPlainState. Bulk-loads PlainState through
