@@ -619,7 +619,8 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	if expected != nil && computedRoot != expected.stateRoot {
 		log.Error("State root mismatch", "block", blockNum,
 			"computed", computedRoot.Hex(), "expected", expected.stateRoot.Hex(),
-			"fastVerify", a.fastVerify)
+			"fastVerify", a.fastVerify, "hashedCanonical", a.hashedCanonical,
+			"envFULLROOT", os.Getenv("N42_FULLROOT"))
 		if a.hashedCanonical && os.Getenv("N42_FULLROOT") == "1" {
 			// Diagnostic: recompute the root by FULL descent from the
 			// post-block HashedAccounts/HashedStorage leaves (retain
