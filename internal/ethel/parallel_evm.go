@@ -21,7 +21,10 @@
 package ethel
 
 import (
+	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -43,7 +46,21 @@ type RealParallelEVM struct {
 	header        *block.Header
 	blockHashFunc func(uint64) types.Hash
 	author        *types.Address
+
+	// skipCoinbase, when non-zero, drops the per-tx coinbase balance write from
+	// the MV write-set (lazy-coinbase): the coinbase credit is a COMMUTATIVE delta
+	// (final balance = Σ tips, order-independent), so the per-tx write is a FALSE
+	// conflict that serializes every tx in Block-STM. Dropping it removes that
+	// universal conflict. NOTE: only sound when no tx observes the intermediate
+	// coinbase balance (reads it / transacts with it) — for the timing benchmark
+	// the result is discarded so correctness is moot; production lazy-coinbase
+	// (P1-C) must aggregate the tip via FinalizeBlock + handle the rare read.
+	skipCoinbase types.Address
 }
+
+// SetSkipCoinbase enables lazy-coinbase (see the field doc). Pass the block's
+// coinbase address; zero disables.
+func (e *RealParallelEVM) SetSkipCoinbase(addr types.Address) { e.skipCoinbase = addr }
 
 // NewRealParallelEVM constructs an adapter for one block. Reusable
 // across the block's txs; not safe to call Execute concurrently on
@@ -91,7 +108,21 @@ func (e *RealParallelEVM) Execute(
 	}
 
 	reader := state.NewMVStateReader(view)
-	writer := state.NewMVStateWriter(view)
+	var writer state.StateWriter = state.NewMVStateWriter(view)
+	var cbw *coinbaseSkipWriter
+	// Lazy-coinbase is sound ONLY when the tx's coinbase change is a pure tip
+	// credit (commutative add). When the tx's sender IS the coinbase (an MEV
+	// builder sending its own tx — common at 25M), the coinbase's update bundles
+	// nonce++ + balance changes from sending + tip; those non-tip changes are
+	// NOT commutative and MUST reach the MV so the builder's next tx sees the
+	// correct nonce. Otherwise every builder tx after the first reads its own
+	// stale nonce and fails "nonce too high" — exactly the convergence bug
+	// VTRACE pinpointed (18.7k reads, 0 writes for builder coinbases). Enable
+	// the skip ONLY when sender != coinbase.
+	if e.skipCoinbase != (types.Address{}) && sender != e.skipCoinbase {
+		cbw = &coinbaseSkipWriter{StateWriter: writer, coinbase: e.skipCoinbase}
+		writer = cbw
+	}
 
 	// Fresh IntraBlockState per tx. The existing IntraBlockState
 	// isn't thread-safe; one-per-tx avoids ANY shared-state races.
@@ -164,33 +195,74 @@ func (e *RealParallelEVM) Execute(
 		}
 	}
 
-	// Coinbase tip is NOT returned as TxOutput.CoinbaseTip here.
-	// Rationale: internal.ApplyTransaction already credits the coinbase
-	// via st.state.AddBalance(coinbase, tip) in state_transition.go,
-	// which flows through IntraBlockState → MVStateWriter → MVHashMap
-	// as a regular account update. If we ALSO returned CoinbaseTip,
-	// FinalizeBlock's CoinbaseDelta aggregation + Apply's AddBalance
-	// would double-count the tip (2× credit per tx).
-	//
-	// Side effect: every tx writes the coinbase account, so concurrent
-	// txs will conflict on that key and effectively serialize through
-	// the validation loop. Phase 5 will add a coinbase-skipping writer
-	// adapter that drops coinbase writes from the per-tx MV writeSet
-	// and reintroduces the tip via TxOutput.CoinbaseTip → FinalizeBlock
-	// → Apply.AddBalance, restoring the "lazy coinbase" optimization
-	// the Block-STM paper prescribes.
-
+	// Coinbase tip handling depends on the lazy-coinbase mode:
+	//   - Default (skipCoinbase unset): the coinbase credit flowed through the
+	//     normal MVStateWriter into the MV write-set (a regular account update),
+	//     so we must NOT also return CoinbaseTip or FinalizeBlock would
+	//     double-count. Every tx writes the coinbase → universal conflict.
+	//   - Lazy (skipCoinbase set): coinbaseSkipWriter DROPPED the coinbase write
+	//     from the MV write-set (removing the universal false conflict) and
+	//     CAPTURED the exact credited delta. We return it as CoinbaseTip so
+	//     FinalizeBlock aggregates Σtips into CoinbaseDelta and Apply credits the
+	//     coinbase ONCE. (Sound when no tx observes the intermediate coinbase
+	//     balance; a coinbase-reading tx needs prefix-sum materialization or a
+	//     serial fallback at the caller — handled in the staged integration.)
 	status := uint8(1)
 	if receipt != nil {
 		status = uint8(receipt.Status)
 	}
 
-	return state.TxOutput{
+	out := state.TxOutput{
 		GasUsed: usedGas,
 		Status:  status,
 		Logs:    logs,
-	}, nil
+	}
+	if cbw != nil && !cbw.tip.IsZero() {
+		tip := cbw.tip
+		out.CoinbaseTip = &tip
+	}
+	return out, nil
 }
 
 // Compile-time interface assertion.
 var _ state.ParallelEVM = (*RealParallelEVM)(nil)
+
+// coinbaseSkipWriter wraps a StateWriter and drops account writes for the
+// coinbase address (lazy-coinbase). The coinbase receives only a balance credit
+// via UpdateAccountData, so dropping it removes the coinbase write-set entry and
+// the universal per-tx Block-STM conflict on that key. See RealParallelEVM.skipCoinbase.
+type coinbaseSkipWriter struct {
+	state.StateWriter
+	coinbase types.Address
+	tip      uint256.Int // captured coinbase balance delta (new-old) = this tx's tip
+}
+
+func (w *coinbaseSkipWriter) UpdateAccountData(address types.Address, original, acct *account.StateAccount) error {
+	if address == w.coinbase {
+		// Drop the write (no MV conflict) but CAPTURE the exact credited delta
+		// (acct.Balance - original.Balance) — that's this tx's coinbase tip,
+		// taken from the value ApplyTransaction actually computed (no formula
+		// re-derivation, so it can't drift from the serial path).
+		if acct != nil {
+			newBal := acct.Balance
+			var oldBal uint256.Int
+			if original != nil {
+				oldBal = original.Balance
+			}
+			if newBal.Cmp(&oldBal) > 0 {
+				var d uint256.Int
+				d.Sub(&newBal, &oldBal)
+				w.tip.Add(&w.tip, &d)
+			}
+		}
+		return nil
+	}
+	return w.StateWriter.UpdateAccountData(address, original, acct)
+}
+
+func (w *coinbaseSkipWriter) DeleteAccount(address types.Address, original *account.StateAccount) error {
+	if address == w.coinbase {
+		return nil
+	}
+	return w.StateWriter.DeleteAccount(address, original)
+}

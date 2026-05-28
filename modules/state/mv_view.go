@@ -27,8 +27,54 @@
 package state
 
 import (
+	"encoding/hex"
+	"fmt"
+	"os"
+	"strings"
 	"sync"
+
+	"github.com/n42blockchain/N42/common/types"
 )
+
+// vtraceAddrs is the runtime watch-list for the view-level MV trace. When
+// N42_PEVM_VTRACE_ADDRS is set (comma-separated hex addresses, no 0x prefix),
+// every view.Get / FlushWrites that touches an ACCOUNT key for those
+// addresses is logged to stderr with txIdx + status + writerVer. Used to
+// correlate write timing vs validating-tx read timing for specific senders
+// while debugging Block-STM convergence. Default empty list = no logs.
+var vtraceAddrs = map[types.Address]bool{}
+var vtraceOn = false
+
+func init() {
+	raw := os.Getenv("N42_PEVM_VTRACE_ADDRS")
+	if raw == "" {
+		return
+	}
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(strings.TrimPrefix(item, "0x"))
+		if len(item) != 40 {
+			continue
+		}
+		b, err := hex.DecodeString(item)
+		if err != nil {
+			continue
+		}
+		var a types.Address
+		copy(a[:], b)
+		vtraceAddrs[a] = true
+	}
+	vtraceOn = len(vtraceAddrs) > 0
+}
+
+// vtraceKey returns the addr if the key is a watched account key.
+func vtraceKey(key []byte) (types.Address, bool) {
+	if !vtraceOn || len(key) != 21 || key[0] != mvKeyTagAccount {
+		return types.Address{}, false
+	}
+	var a types.Address
+	copy(a[:], key[1:])
+	return a, vtraceAddrs[a]
+}
 
 // MVBaseReader is the fallback layer consulted when MVHashMap has no
 // entry visible to the reader's txIdx. In production this is
@@ -54,8 +100,8 @@ const (
 
 // ReadRecord captures one read's observation for later validation.
 type ReadRecord struct {
-	Key      []byte
-	Source   ReadSource
+	Key    []byte
+	Source ReadSource
 	// When Source == ReadFromMV: WriterVer identifies which earlier
 	// tx produced the value we read.
 	WriterVer Version
@@ -88,8 +134,8 @@ type MVStateView struct {
 	// entry. Such a read cannot produce a valid result; the executor
 	// should abort and let the scheduler re-execute after the blocking
 	// writer finishes.
-	sawEstimate   bool
-	estimatedOn   Version // the writer we blocked on (for diagnostics)
+	sawEstimate bool
+	estimatedOn Version // the writer we blocked on (for diagnostics)
 }
 
 // NewMVStateView creates a view for (txIdx, incarnation). Caller must
@@ -121,6 +167,10 @@ func (v *MVStateView) Get(key []byte) ([]byte, error) {
 	}
 	// Query MVHashMap for highest committed earlier write.
 	mvVal, ver, status := v.mv.Read(key, v.txIdx)
+	if addr, ok := vtraceKey(key); ok {
+		fmt.Fprintf(os.Stderr, "VTRACE_READ addr=%x readerTx=%d inc=%d status=%d writerTx=%d writerInc=%d valLen=%d\n",
+			addr[:4], v.txIdx, v.incarnation, status, ver.TxIdx, ver.Incarnation, len(mvVal))
+	}
 	switch status {
 	case MVOk:
 		v.readSet = append(v.readSet, ReadRecord{
@@ -191,6 +241,10 @@ func (v *MVStateView) FlushWrites() []string {
 	keys := make([]string, 0, len(v.writeSet))
 	for k, val := range v.writeSet {
 		v.mv.Write([]byte(k), ver, val)
+		if addr, ok := vtraceKey([]byte(k)); ok {
+			fmt.Fprintf(os.Stderr, "VTRACE_WRITE addr=%x writerTx=%d inc=%d valLen=%d\n",
+				addr[:4], v.txIdx, v.incarnation, len(val))
+		}
 		keys = append(keys, k)
 	}
 	return keys
