@@ -14,6 +14,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"runtime"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
@@ -26,6 +32,7 @@ import (
 	"github.com/n42blockchain/N42/internal/ethel"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/trie"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
@@ -49,7 +56,39 @@ type EngineStateAdapter struct {
 	// path (ExecutePayloadFromWire); leave false for CL/test paths
 	// where state-root reconstruction is the canonical verifier.
 	fastVerify bool
+
+	// hashedCanonical selects the reth-2.2-style hashed-canonical state
+	// model: EVM reads come from HashedAccounts/HashedStorage (keccak the
+	// key on access) instead of PlainState, and the state-root computer
+	// runs incrementally over the migrated TrieOfAccounts/TrieOfStorage.
+	// Set true when the datadir was populated by n42-migrate-reth-hashed
+	// (no PlainState). Leave false for the legacy plain-state datadir.
+	hashedCanonical bool
+
+	// batchTx, when non-nil, makes executePayloadDetailed run against this
+	// caller-owned tx and NOT open/commit its own. The batch importer
+	// (eldevp2p executeRange) sets it so many blocks execute into one tx and
+	// the head advance commits ATOMICALLY with the block state — a kill then
+	// leaves state and head consistent (no "state ahead of head" split), and
+	// per-block fsync is replaced by one commit per batch. Single-coordinator
+	// use only (the CL/NewPayload path leaves it nil → unchanged behavior).
+	batchTx kv.RwTx
+
+	// staged: staged catch-up execution. The trc runs writeOnly (writes
+	// HashedAccounts/HashedStorage + changesets, SKIPS per-block CalcTrieRoot),
+	// the trusted wire header.Root is kept as-is, and the per-block root compare
+	// is skipped. The state root + TrieOf* are produced/verified per sub-batch by
+	// commitment.MerkleStageIncremental, driven by the importer. Removes ~82ms/block
+	// dRoot during catch-up (validated ~7-12ms/block amortized at 1k-10k sub-batches).
+	staged bool
 }
+
+// SetBatchTx routes executePayloadDetailed onto a caller-owned tx (no internal
+// commit). Pass nil to restore standalone (open+commit-per-call) behavior.
+func (a *EngineStateAdapter) SetBatchTx(tx kv.RwTx) { a.batchTx = tx }
+
+// SetStaged toggles staged catch-up execution (writeOnly root, per-sub-batch Merkle).
+func (a *EngineStateAdapter) SetStaged(v bool) { a.staged = v }
 
 type enginePayloadExecutionResult struct {
 	stateRoot       types.Hash
@@ -65,6 +104,15 @@ func NewEngineStateAdapter(db kv.RwDB, f *freezer.Freezer, cfg *params.ChainConf
 // over warm + freezer). Pass nil to revert to direct freezer reads.
 func (a *EngineStateAdapter) WithCSSource(src cs.Source) *EngineStateAdapter {
 	a.csSource = src
+	return a
+}
+
+// WithHashedCanonical enables the reth-2.2-style hashed-canonical state
+// model (read/execute against HashedAccounts/HashedStorage, incremental
+// root over migrated TrieOf*). Use for datadirs built by
+// n42-migrate-reth-hashed.
+func (a *EngineStateAdapter) WithHashedCanonical(v bool) *EngineStateAdapter {
+	a.hashedCanonical = v
 	return a
 }
 
@@ -105,9 +153,69 @@ func (a *EngineStateAdapter) ExecutePayloadFromWire(blk *block.Block, withdrawal
 		return false, types.Hash{}, err
 	}
 	if result.validationError != nil {
+		log.Warn("ExecutePayloadFromWire: validation failed",
+			"block", blk.Number64().Uint64(), "err", result.validationError)
 		return false, result.stateRoot, nil
 	}
 	return true, result.stateRoot, nil
+}
+
+// decodeRevert renders a tx's revert payload: solidity Error(string),
+// Panic(uint256), or a raw 4-byte custom-error selector. Diagnostic only.
+func decodeRevert(data []byte) string {
+	if len(data) == 0 {
+		return "(empty)"
+	}
+	if len(data) < 4 {
+		return fmt.Sprintf("(short 0x%x)", data)
+	}
+	sel := data[:4]
+	if bytes.Equal(sel, []byte{0x08, 0xc3, 0x79, 0xa0}) && len(data) >= 68 { // Error(string)
+		strLen := 0
+		for _, b := range data[60:68] {
+			strLen = strLen<<8 | int(b)
+		}
+		if strLen >= 0 && 68+strLen <= len(data) {
+			return "Error(" + string(data[68:68+strLen]) + ")"
+		}
+		return "Error(string?)"
+	}
+	if bytes.Equal(sel, []byte{0x4e, 0x48, 0x7b, 0x71}) && len(data) >= 36 { // Panic(uint256)
+		return fmt.Sprintf("Panic(0x%x)", data[4:36])
+	}
+	return fmt.Sprintf("customErr sel=0x%x", sel)
+}
+
+// recoverSenders runs ecrecover on every transaction in parallel, caching each
+// recovered sender on the tx via SetFrom. A worker per CPU pulls indices off a
+// shared atomic counter. Errors are left uncached so the serial apply loop's
+// AsMessage surfaces them exactly as before (no behavior change, only timing).
+func (a *EngineStateAdapter) recoverSenders(txns []*transaction.Transaction, signer transaction.Signer) {
+	workers := runtime.NumCPU()
+	if workers > len(txns) {
+		workers = len(txns)
+	}
+	var next int64 = -1
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func() {
+			defer wg.Done()
+			for {
+				i := int(atomic.AddInt64(&next, 1))
+				if i >= len(txns) {
+					return
+				}
+				if txns[i].From() != nil {
+					continue
+				}
+				if from, err := transaction.Sender(signer, txns[i]); err == nil {
+					txns[i].SetFrom(from)
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal) (*enginePayloadExecutionResult, error) {
@@ -120,20 +228,49 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	}
 	blockNum := header.Number.Uint64()
 
-	tx, err := a.db.BeginRw(context.Background())
-	if err != nil {
-		return nil, err
+	// When a batch tx is supplied, run against it and let the caller commit
+	// (atomic state+head per batch). Otherwise open + commit our own tx.
+	tx := a.batchTx
+	ownTx := tx == nil
+	var err error
+	if ownTx {
+		tx, err = a.db.BeginRw(context.Background())
+		if err != nil {
+			return nil, err
+		}
+		defer tx.Rollback()
 	}
-	defer tx.Rollback()
 
 	// Execute against the parent snapshot, i.e. the state at the start of this block.
 	// This matches the stateful Engine payload builder path and preserves historical
 	// account metadata such as code hashes reconstructed from change history.
-	reader := state.NewPlainState(tx, blockNum)
-	writer := state.NewPlainStateWriter(tx, tx, blockNum)
+	var reader state.StateReader
+	var writer state.WriterWithChangeSets
+	if a.hashedCanonical {
+		// reth-2.2-style: read/execute against hashed state; the dirty hashed
+		// account/storage leaves are persisted by the incremental
+		// TrieRootComputer during IntermediateRoot. CODE is NOT part of the
+		// trie, so it needs an explicit writer — newly deployed contracts and
+		// EIP-7702 delegation designators must reach modules.Code, else a later
+		// block CALLing them reads empty code and diverges (block-160 bug).
+		reader = state.NewHashedStateReader(tx)
+		writer = state.NewHashedCanonicalWriter(tx, blockNum)
+	} else {
+		reader = state.NewPlainState(tx, blockNum)
+		writer = state.NewPlainStateWriter(tx, tx, blockNum)
+	}
 	ibs := state.New(reader)
 	ibs.BeginWriteCodes()
-	ethel.SetupStateRootComputer(tx, ibs)
+	trc := ethel.SetupStateRootComputer(tx, ibs)
+	if a.hashedCanonical {
+		// Reuse the migrated TrieOfAccounts/TrieOfStorage: O(dirty) per block.
+		trc.SetIncremental(true)
+		if a.staged {
+			// Staged catch-up: write hashed state but defer the root + TrieOf*
+			// to the per-sub-batch MerkleStageIncremental.
+			trc.SetWriteOnly(true)
+		}
+	}
 	// InitHashState populates HashedAccounts/HashedStorage from PlainState
 	// for the FlatDBTrieLoader-based CalcStateRoot path. HPH itself uses
 	// CommitmentBranches (see lib/commitment/persistent_context.go) and
@@ -172,20 +309,139 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	if err := internalcore.ProcessExecutionBlockStart(parentBeaconRoot, a.chainCfg, ibs, header, a.engine); err != nil {
 		return nil, err
 	}
+	gasDiag := os.Getenv("N42_GAS161") != ""
+	execProf := os.Getenv("N42_EXECPROF") != ""
+	var dEVM, dRoot, dCommit, dCS time.Duration
+	tPhase := time.Now()
+	// Phase 2: recover all tx senders concurrently before the serial apply loop.
+	// ecrecover (~100µs/tx) otherwise runs inline inside AsMessage and dominates
+	// execution on tx-dense blocks. SetFrom caches the result so AsMessage hits
+	// the cache (message.go:106) instead of re-recovering.
+	if txns := blk.Transactions(); len(txns) > 1 {
+		a.recoverSenders(txns, transaction.MakeSignerWithTimestamp(a.chainCfg, header.Number.ToBig(), header.Time))
+	}
 	for i, txn := range blk.Transactions() {
 		ibs.Prepare(txn.Hash(), blk.Hash(), i)
-		receipt, _, err := internalcore.ApplyTransaction(a.chainCfg, blockHashFunc, a.engine, nil, gasPool, ibs, state.NewNoopWriter(), header, txn, &usedGas, vm2.Config{})
+		prevUsed := usedGas
+		receipt, retData, err := internalcore.ApplyTransaction(a.chainCfg, blockHashFunc, a.engine, nil, gasPool, ibs, state.NewNoopWriter(), header, txn, &usedGas, vm2.Config{})
 		if err != nil {
+			if os.Getenv("N42_TXERR") != "" {
+				enc, _ := transaction.EncodeEthereumTransaction(txn)
+				log.Warn("TXERR", "block", blockNum, "i", i, "type", txn.Type(), "decodedNonce", txn.Nonce(),
+					"to", fmt.Sprintf("%v", txn.To()), "hash", txn.Hash().Hex(), "err", err,
+					"raw", fmt.Sprintf("%x", enc))
+			}
 			return nil, err
+		}
+		if gasDiag {
+			st := uint64(99)
+			if receipt != nil {
+				st = receipt.Status
+			}
+			log.Warn("GAS161 tx", "i", i, "type", txn.Type(), "txGas", usedGas-prevUsed,
+				"cum", usedGas, "status", st, "to", fmt.Sprintf("%v", txn.To()), "dataLen", len(txn.Data()))
+			if receipt != nil && receipt.Status == 0 {
+				log.Warn("GAS161 REVERT", "i", i, "retLen", len(retData),
+					"reason", decodeRevert(retData), "input", fmt.Sprintf("%x", txn.Data()))
+			}
 		}
 		if receipt != nil {
 			receipts = append(receipts, receipt)
 		}
 	}
+	dEVM = time.Since(tPhase)
+	// N42_PEVM_BENCH: shadow-run the Block-STM parallel EVM on this block's txs and
+	// time it against the serial dEVM. Results are DISCARDED (the serial path above
+	// already produced the real state) — this only measures the parallel speedup on
+	// our real 25M tx-dense workload before committing to the full integration.
+	// Workers read a per-worker RoTx at the committed parent, so run with
+	// N42_COMMIT_INTERVAL=1 (each block committed) for an un-stale read view.
+	if a.hashedCanonical && os.Getenv("N42_PEVM_BENCH") != "" {
+		if txns := blk.Transactions(); len(txns) > 1 {
+			senders := make([]types.Address, len(txns))
+			for i, t := range txns {
+				if f := t.From(); f != nil {
+					senders[i] = *f
+				}
+			}
+			pevm := ethel.NewRealParallelEVM(a.chainCfg, a.engine, vm2.Config{}, header, blockHashFunc, nil)
+			if os.Getenv("N42_PEVM_LAZYCB") != "" {
+				pevm.SetSkipCoinbase(header.Coinbase)
+			}
+			outs := make([]state.TxOutput, len(txns))
+			runner := state.ParallelTxRunner(pevm, txns, senders, &state.BlockContext{}, outs)
+			factory := func() (state.MVBaseReader, func()) {
+				rotx, err := a.db.BeginRo(context.Background())
+				if err != nil {
+					return nil, nil
+				}
+				return state.NewMVBaseFromStateReader(state.NewHashedStateReader(rotx)), func() { rotx.Rollback() }
+			}
+			workers := 8
+			if v := os.Getenv("N42_PEVM_WORKERS"); v != "" {
+				if n, e := strconv.Atoi(v); e == nil && n > 0 {
+					workers = n
+				}
+			}
+			tp := time.Now()
+			_, mv, perr := state.ExecuteBlockParallelF(len(txns), workers, factory, runner)
+			dPar := time.Since(tp)
+			fails := 0
+			var firstErr error
+			firstErrTx := -1
+			for i, o := range outs {
+				if o.Err != nil {
+					fails++
+					if firstErr == nil {
+						firstErr = o.Err
+						firstErrTx = i
+					}
+				}
+			}
+			if firstErr != nil {
+				log.Warn("PEVMERR", "block", blockNum, "tx", firstErrTx, "err", firstErr.Error())
+			}
+			// Correctness check: assemble receipts from the parallel BlockCommit and
+			// compare receiptHash + total gas to the trusted wire header. Validates
+			// FinalizeBlock + lazy-coinbase + receipt assembly on real blocks (no
+			// commit). The receipt-root RLP needs only Type/Status/CumGas/Bloom/Logs.
+			if mv != nil {
+				if bc, ferr := state.FinalizeBlock(mv, outs, header.Coinbase); ferr == nil {
+					pr := make([]*block.Receipt, 0, len(bc.Receipts))
+					for _, tr := range bc.Receipts {
+						lg := make([]*block.Log, 0, tr.LastLogIndex-tr.FirstLogIndex)
+						for j := tr.FirstLogIndex; j < tr.LastLogIndex; j++ {
+							sl := bc.Logs[j]
+							lg = append(lg, &block.Log{Address: sl.Address, Topics: sl.Topics, Data: sl.Data})
+						}
+						r := &block.Receipt{Type: txns[tr.TxIdx].Type(), Status: uint64(tr.Status),
+							CumulativeGasUsed: tr.CumulativeGasUsed, Logs: lg}
+						r.Bloom = block.CreateBloom(block.Receipts{r})
+						pr = append(pr, r)
+					}
+					prHash := ethel.EthReceiptHash(pr)
+					log.Warn("PEVMCHK", "block", blockNum,
+						"rcptMatch", prHash == header.ReceiptHash, "gasMatch", bc.GasUsed == usedGas,
+						"pGas", bc.GasUsed, "sGas", usedGas, "fails", fails)
+				}
+			}
+			speedup := 0.0
+			if dPar > 0 {
+				speedup = float64(dEVM) / float64(dPar)
+			}
+			log.Warn("PEVMBENCH", "block", blockNum, "ntx", len(txns), "workers", workers,
+				"dEVMserial", dEVM.Round(time.Millisecond), "dParallel", dPar.Round(time.Millisecond),
+				"speedup", fmt.Sprintf("%.2fx", speedup), "txFails", fails, "perr", perr)
+		}
+	}
 	if usedGas != header.GasUsed {
-		return &enginePayloadExecutionResult{
-			validationError: fmt.Errorf("gas mismatch: got %d, want %d", usedGas, header.GasUsed),
-		}, nil
+		if gasDiag {
+			log.Warn("GAS161 mismatch (non-fatal)", "block", blockNum, "got", usedGas, "want", header.GasUsed, "diff", int64(header.GasUsed)-int64(usedGas))
+		} else {
+			return &enginePayloadExecutionResult{
+				validationError: fmt.Errorf("gas mismatch: got %d, want %d", usedGas, header.GasUsed),
+			}, nil
+		}
 	}
 	if err := finalizeExecutionStateChanges(a.chainCfg, header, ibs); err != nil {
 		return nil, err
@@ -225,35 +481,70 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	}
 	actualReceiptHash := ethel.EthReceiptHash(receipts)
 	actualBloom := block.CreateBloom(receipts)
+	if blockNum == 25096160 {
+		log.Warn("RCPT160", "computed", actualReceiptHash.Hex(), "header", header.ReceiptHash.Hex(),
+			"match", actualReceiptHash == header.ReceiptHash, "nrcpt", len(receipts), "ntx", len(blk.Transactions()))
+	}
 	if expected != nil && actualReceiptHash != expected.receiptsRoot {
-		return &enginePayloadExecutionResult{
-			validationError: fmt.Errorf("receipts root mismatch"),
-		}, nil
+		if gasDiag {
+			log.Warn("GAS161 receipts root mismatch (non-fatal)", "block", blockNum,
+				"computed", actualReceiptHash.Hex(), "expected", expected.receiptsRoot.Hex())
+		} else {
+			return &enginePayloadExecutionResult{
+				validationError: fmt.Errorf("receipts root mismatch"),
+			}, nil
+		}
 	}
 	if expected != nil && !bytes.Equal(actualBloom.Bytes(), expected.logsBloom) {
-		return &enginePayloadExecutionResult{
-			validationError: fmt.Errorf("logs bloom mismatch"),
-		}, nil
+		if gasDiag {
+			log.Warn("GAS161 logs bloom mismatch (non-fatal)", "block", blockNum)
+		} else {
+			return &enginePayloadExecutionResult{
+				validationError: fmt.Errorf("logs bloom mismatch"),
+			}, nil
+		}
 	}
 	header.ReceiptHash = actualReceiptHash
 	header.Bloom = actualBloom
-	header.Root = ibs.IntermediateRoot()
+	tPhase = time.Now()
+	if a.staged {
+		// Staged catch-up: IntermediateRoot still runs (writeOnly trc writes the
+		// dirty hashed state in Phase 1/2) but returns zero (root deferred to the
+		// per-sub-batch Merkle stage). Keep the trusted wire header.Root unchanged.
+		ibs.IntermediateRoot()
+	} else {
+		header.Root = ibs.IntermediateRoot()
+	}
+	dRoot = time.Since(tPhase)
 	blk.WithSeal(header)
 
 	// Commit block state into the transaction, then verify the canonical
 	// Ethereum MPT root before exposing any changes to the database.
+	tPhase = time.Now()
 	if err := ibs.CommitBlock(rules, writer); err != nil {
 		return nil, err
 	}
+	dCommit = time.Since(tPhase)
+	tPhase = time.Now()
 	if err := writer.WriteChangeSets(); err != nil {
 		return nil, err
 	}
 	if err := writer.WriteHistory(); err != nil {
 		return nil, err
 	}
+	dCS = time.Since(tPhase)
+	if execProf {
+		log.Warn("EXECPROF", "block", blockNum, "ntx", len(blk.Transactions()),
+			"dEVM", dEVM.Round(time.Millisecond), "dRoot", dRoot.Round(time.Millisecond),
+			"dCommit", dCommit.Round(time.Millisecond), "dCS", dCS.Round(time.Millisecond))
+	}
 
 	var computedRoot types.Hash
-	if a.fastVerify {
+	if a.staged {
+		// Staged catch-up: root not computed per block (writeOnly). Trust the wire
+		// header.Root; commitment.MerkleStageIncremental verifies the whole sub-batch.
+		computedRoot = header.Root
+	} else if a.fastVerify {
 		// Wire-driven sync path (ExecutePayloadFromWire). Trust the HPH
 		// IntermediateRoot we already computed above — that's the same
 		// incremental algorithm the catchup executor uses at ~3000 blk/s
@@ -274,6 +565,22 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 		log.Error("State root mismatch", "block", blockNum,
 			"computed", computedRoot.Hex(), "expected", expected.stateRoot.Hex(),
 			"fastVerify", a.fastVerify)
+		if a.hashedCanonical && os.Getenv("N42_FULLROOT") == "1" {
+			// Diagnostic: recompute the root by FULL descent from the
+			// post-block HashedAccounts/HashedStorage leaves (retain
+			// everything → ignore cached TrieOf*). If this equals the
+			// expected root, execution is correct and only the incremental
+			// path is wrong; otherwise execution produced wrong state.
+			rl := trie.NewRetainList(1 << 30)
+			ldr := trie.NewFlatDBTrieLoader("dbg-fullroot", rl, nil, nil, false)
+			if fr, ferr := ldr.CalcTrieRoot(tx, nil); ferr == nil {
+				log.Error("DEBUG full-rebuild root", "block", blockNum,
+					"incremental", computedRoot.Hex(), "full", fr.Hex(),
+					"expected", expected.stateRoot.Hex())
+			} else {
+				log.Error("DEBUG full-rebuild failed", "err", ferr)
+			}
+		}
 		return &enginePayloadExecutionResult{
 			stateRoot:       computedRoot,
 			validationError: fmt.Errorf("state root mismatch"),
@@ -281,6 +588,12 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	}
 	header.Root = computedRoot
 	blk.WithSeal(header)
+
+	if os.Getenv("N42_NOCOMMIT") == "1" {
+		log.Warn("NOCOMMIT: root MATCHED, rolling back (no persist)", "block", blockNum, "root", computedRoot.Hex())
+		return &enginePayloadExecutionResult{stateRoot: computedRoot,
+			validationError: fmt.Errorf("nocommit test")}, nil
+	}
 
 	// Persist the executed payload so subsequent head/header lookups can
 	// resolve Engine eth-compatible hashes back to the underlying block.
@@ -292,12 +605,14 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 		return nil, err
 	}
 
-	if err := tx.Commit(); err != nil {
-		return nil, err
+	// Standalone: commit our own tx. Batch: leave it to the caller, who
+	// writes the head into the SAME tx and commits the batch atomically.
+	if ownTx {
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
 	}
 
-	log.Info("Payload executed", "block", blockNum, "root", header.Root.Hex(),
-		"txs", len(blk.Transactions()), "gas", usedGas)
 	return &enginePayloadExecutionResult{stateRoot: computedRoot}, nil
 }
 

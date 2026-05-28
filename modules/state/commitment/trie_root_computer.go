@@ -12,7 +12,11 @@ package commitment
 
 import (
 	"bytes"
+	"encoding/hex"
 	"fmt"
+	"os"
+	"sort"
+	"strings"
 
 	"github.com/holiman/uint256"
 	"golang.org/x/crypto/sha3"
@@ -22,6 +26,7 @@ import (
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/trie"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 )
 
@@ -49,7 +54,21 @@ type TrieRootComputer struct {
 	tx          kv.RwTx
 	hasher      hash256
 	incremental bool
+
+	// writeOnly: staged catch-up. ComputeRoot writes the dirty accounts/storage
+	// to HashedAccounts/HashedStorage (so the next block reads them) but SKIPS
+	// flushTrieRoot (CalcTrieRoot + TrieOf* update) and returns a zero hash. The
+	// state root + TrieOf* maintenance are deferred to a per-sub-batch
+	// MerkleStageIncremental, which builds a RetainList from the sub-batch's
+	// changesets and runs ONE incremental FlatDBTrieLoader pass — memory bounded
+	// by the sub-batch's touched keys (erigon2.7 IncrementIntermediateHashes
+	// model). Removes the ~82ms/block dRoot from the execution stage.
+	writeOnly bool
 }
+
+// SetWriteOnly toggles staged-catch-up write-only mode (per-block root deferred to
+// MerkleStageIncremental). TrieOf* is NOT maintained per block while set.
+func (t *TrieRootComputer) SetWriteOnly(v bool) { t.writeOnly = v }
 
 type hash256 interface {
 	Reset()
@@ -163,6 +182,26 @@ func (t *TrieRootComputer) ComputeRoot(
 		}
 	}
 
+	// Staged catch-up: state written above; defer CalcTrieRoot + TrieOf* update to
+	// the per-sub-batch MerkleStageIncremental. Returns zero (root not computed).
+	if t.writeOnly {
+		return types.Hash{}, nil
+	}
+
+	root, err := t.flushTrieRoot(rl)
+	if err != nil {
+		return types.Hash{}, err
+	}
+	if os.Getenv("N42_DUMP160") != "" {
+		t.diagnose160(accounts, storage, root)
+	}
+	return root, nil
+}
+
+// flushTrieRoot runs CalcTrieRoot over the given retain list and flushes the
+// updated intermediate nodes to TrieOfAccounts/TrieOfStorage (Phase 3/4). Shared
+// by the immediate (ComputeRoot) and deferred/batch (FinalizeRoot) paths.
+func (t *TrieRootComputer) flushTrieRoot(rl *trie.RetainList) (types.Hash, error) {
 	// Phase 3: CalcTrieRoot. In legacy mode, ClearBucket TrieOf* so the
 	// rebuild is full (empty RetainList, every subtree recomputed from
 	// HashedAccounts/HashedStorage). In incremental mode, leave TrieOf*
@@ -246,9 +285,19 @@ func (t *TrieRootComputer) ComputeRoot(
 		}
 	}
 	for _, kv := range storTrieUpdates {
-		if kv.v == nil {
-			_ = t.tx.Delete(modules.TrieOfStorage, kv.k)
-		} else {
+		// TrieOfStorage is a DupSort table keyed by addrHash+nibblePath: Put
+		// APPENDS a new node-version under the path key instead of replacing the
+		// existing one. Across blocks this accumulates stale node versions at the
+		// same path, and StorageTrieCursor reads the lexicographically-first dup —
+		// which can be an outdated node (e.g. one that predates a child added by a
+		// later block), producing a wrong storage root whenever the current block's
+		// dirty slots don't force a rescan of that child. Delete the path key first
+		// (delAllDupData removes every stale version) so each path holds exactly the
+		// current node. TrieOfAccounts is a plain table, so it is unaffected.
+		if err := t.tx.Delete(modules.TrieOfStorage, kv.k); err != nil {
+			return types.Hash{}, err
+		}
+		if kv.v != nil {
 			if err := t.tx.Put(modules.TrieOfStorage, kv.k, kv.v); err != nil {
 				return types.Hash{}, err
 			}
@@ -256,6 +305,214 @@ func (t *TrieRootComputer) ComputeRoot(
 	}
 
 	return root, nil
+}
+
+// diagnose160 isolates an incremental-root divergence (e.g. block 160). Pass A
+// recomputes per-account storage roots from the CURRENT (cached/incremental)
+// TrieOf*; pass B deletes the storage-changed accounts' TrieOfStorage and
+// recomputes — a pure leaf rebuild (correct by construction). Diffing the two
+// pins whether the bug is in a storage subtree's cached-IH read or in the
+// account trie, and names the offending account.
+func (t *TrieRootComputer) diagnose160(
+	accounts map[types.Address]*account.StateAccount,
+	storage map[types.Address]map[types.Hash]*uint256.Int,
+	incRoot types.Hash,
+) {
+	log.Warn("DIAG160 begin", "incRoot", incRoot.Hex(), "nAcct", len(accounts), "nStorAcct", len(storage))
+
+	rootA, perA, nodesA, err := t.calcRootCapture(t.buildRetainList(accounts, storage))
+	if err != nil {
+		log.Warn("DIAG160 passA err", "err", err)
+		return
+	}
+
+	for addr := range storage {
+		ah := t.keccakAddr(addr)
+		if e := t.deleteTrieOfStoragePrefix(ah[:]); e != nil {
+			log.Warn("DIAG160 del err", "err", e)
+			return
+		}
+	}
+	rootB, perB, nodesB, err := t.calcRootCapture(t.buildRetainList(accounts, storage))
+	if err != nil {
+		log.Warn("DIAG160 passB err", "err", err)
+		return
+	}
+
+	log.Warn("DIAG160 roots", "A_cached", rootA.Hex(), "B_leafrebuild", rootB.Hex(), "match", rootA == rootB)
+
+	for addr := range storage {
+		ah := t.keccakAddr(addr)
+		a, b := perA[string(ah[:])], perB[string(ah[:])]
+		if bytes.Equal(a, b) {
+			continue
+		}
+		log.Warn("DIAG160 STORAGE-ROOT DIFF",
+			"addrHash", hex.EncodeToString(ah[:]),
+			"cached", hex.EncodeToString(a),
+			"leafrebuild", hex.EncodeToString(b),
+			"changedSlots", len(storage[addr]),
+			"totalSlotsCapped", t.countStorageLeaves(ah[:], 256))
+
+		// Dump the changed slots (hashed slot key + new value) for offline replay.
+		for slot, val := range storage[addr] {
+			sh := t.keccakHash(slot)
+			vs := "0"
+			if val != nil && !val.IsZero() {
+				vs = val.Hex()
+			}
+			log.Warn("DIAG160   slot", "slotHash", hex.EncodeToString(sh[:]), "rawSlot", slot.Hex(), "newVal", vs)
+		}
+
+		// Dump per-path emitted nodes in both passes; mark where they diverge.
+		pfx := string(ah[:]) + "|"
+		paths := map[string]struct{}{}
+		for k := range nodesA {
+			if strings.HasPrefix(k, pfx) {
+				paths[k[len(pfx):]] = struct{}{}
+			}
+		}
+		for k := range nodesB {
+			if strings.HasPrefix(k, pfx) {
+				paths[k[len(pfx):]] = struct{}{}
+			}
+		}
+		ordered := make([]string, 0, len(paths))
+		for p := range paths {
+			ordered = append(ordered, p)
+		}
+		sort.Slice(ordered, func(i, j int) bool {
+			if len(ordered[i]) != len(ordered[j]) {
+				return len(ordered[i]) < len(ordered[j])
+			}
+			return ordered[i] < ordered[j]
+		})
+		for _, p := range ordered {
+			na, okA := nodesA[pfx+p]
+			nb, okB := nodesB[pfx+p]
+			same := okA && okB && na.hasState == nb.hasState && na.hasTree == nb.hasTree &&
+				na.hasHash == nb.hasHash && bytes.Equal(na.hashes, nb.hashes) && bytes.Equal(na.rootHash, nb.rootHash)
+			if same {
+				continue
+			}
+			log.Warn("DIAG160   NODE-DIFF path="+nibStr([]byte(p)),
+				"A", fmtNode(okA, na), "B", fmtNode(okB, nb))
+		}
+	}
+}
+
+func fmtNode(ok bool, n diagNode) string {
+	if !ok {
+		return "<absent>"
+	}
+	rh := "-"
+	if len(n.rootHash) > 0 {
+		rh = hex.EncodeToString(n.rootHash[:4])
+	}
+	out := fmt.Sprintf("hs=%04x ht=%04x hh=%04x nH=%d rh=%s", n.hasState, n.hasTree, n.hasHash, len(n.hashes)/32, rh)
+	for i := 0; i+32 <= len(n.hashes); i += 32 {
+		out += " " + hex.EncodeToString(n.hashes[i:i+4])
+	}
+	return out
+}
+
+func (t *TrieRootComputer) buildRetainList(
+	accounts map[types.Address]*account.StateAccount,
+	storage map[types.Address]map[types.Hash]*uint256.Int,
+) *trie.RetainList {
+	rl := trie.NewRetainList(0)
+	for addr := range accounts {
+		ah := t.keccakAddr(addr)
+		rl.AddKeyWithMarker(ah[:], true)
+	}
+	for addr, slots := range storage {
+		ah := t.keccakAddr(addr)
+		for slot := range slots {
+			sh := t.keccakHash(slot)
+			var ck [64]byte
+			copy(ck[:32], ah[:])
+			copy(ck[32:], sh[:])
+			rl.AddKeyWithMarker(ck[:], true)
+		}
+	}
+	return rl
+}
+
+// calcRootCapture runs CalcTrieRoot (read-only: collectors do not persist) and
+// captures each processed account's storage root (the empty-path account.root
+// record) keyed by accWithInc.
+type diagNode struct {
+	hasState, hasTree, hasHash uint16
+	hashes, rootHash           []byte
+}
+
+func (t *TrieRootComputer) calcRootCapture(rl *trie.RetainList) (types.Hash, map[string][]byte, map[string]diagNode, error) {
+	perAcct := make(map[string][]byte)
+	allNodes := make(map[string]diagNode)
+	accColl := func(keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error { return nil }
+	storColl := func(accWithInc, keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
+		if len(keyHex) == 0 {
+			perAcct[string(accWithInc)] = append([]byte{}, rootHash...)
+		}
+		allNodes[string(accWithInc)+"|"+string(keyHex)] = diagNode{
+			hasState, hasTree, hasHash,
+			append([]byte{}, hashes...), append([]byte{}, rootHash...),
+		}
+		return nil
+	}
+	loader := trie.NewFlatDBTrieLoader("diag160", rl, accColl, storColl, false)
+	root, err := loader.CalcTrieRoot(t.tx, nil)
+	return root, perAcct, allNodes, err
+}
+
+// nibStr renders a nibble path (each byte 0..15) as a hex string.
+func nibStr(keyHex []byte) string {
+	const hd = "0123456789abcdef"
+	b := make([]byte, len(keyHex))
+	for i, n := range keyHex {
+		b[i] = hd[n&0xf]
+	}
+	return string(b)
+}
+
+func (t *TrieRootComputer) deleteTrieOfStoragePrefix(addrHash []byte) error {
+	c, err := t.tx.Cursor(modules.TrieOfStorage)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	var keys [][]byte
+	for k, _, e := c.Seek(addrHash); k != nil && bytes.HasPrefix(k, addrHash); k, _, e = c.Next() {
+		if e != nil {
+			return e
+		}
+		keys = append(keys, append([]byte(nil), k...))
+	}
+	for _, k := range keys {
+		if e := t.tx.Delete(modules.TrieOfStorage, k); e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
+func (t *TrieRootComputer) countStorageLeaves(addrHash []byte, cap int) int {
+	c, err := t.tx.Cursor(modules.HashedStorage)
+	if err != nil {
+		return -1
+	}
+	defer c.Close()
+	n := 0
+	for k, _, e := c.Seek(addrHash); k != nil && bytes.HasPrefix(k, addrHash); k, _, e = c.Next() {
+		if e != nil {
+			return -1
+		}
+		n++
+		if n >= cap {
+			break
+		}
+	}
+	return n
 }
 
 // InitFromPlainState populates HashedAccounts + HashedStorage from PlainState.

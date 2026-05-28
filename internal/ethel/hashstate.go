@@ -214,10 +214,9 @@ func RebuildHashedStateETL(ctx context.Context, tx kv.RwTx, tmpdir string, logge
 		if len(k) < 52 {
 			continue
 		}
-		var compositeKey [72]byte
+		var compositeKey [64]byte
 		copy(compositeKey[:32], crypto.Keccak256(k[:20]))
-		// 8-byte zero incarnation gap (compositeKey[32:40] stays zero)
-		copy(compositeKey[40:72], crypto.Keccak256(k[20:52]))
+		copy(compositeKey[32:64], crypto.Keccak256(k[20:52]))
 		if err := stoColl.Collect(compositeKey[:], v); err != nil {
 			stoCur.Close()
 			return fmt.Errorf("collect sto: %w", err)
@@ -516,6 +515,139 @@ func BootstrapHPHBatched(ctx context.Context, db kv.RwDB, accountBatchN, storage
 	return root, nil
 }
 
+// BootstrapHPHFastETL fills the four TrieRootComputer tables (HashedAccounts,
+// HashedStorage, TrieOfAccounts, TrieOfStorage) from PlainState, using the
+// sorted etl.Collector bulk-load for the hashing phase instead of the
+// random-key tx.Put path in BootstrapHPHBatched.
+//
+// Why: writing HashedAccounts/HashedStorage is keyed by keccak(addr) /
+// keccak(slot) — i.e. RANDOM order. The batched random-Put path degrades
+// catastrophically once the table outgrows the page cache (observed at 25M
+// state: 108M/386M accounts after 55 min and decelerating, ~500 MB/s random
+// reads to locate B-tree insertion points → ~8 h projected). The ETL path
+// sorts keys on tmpfile first and bulk-loads in sorted order, so writes are
+// sequential and the working set stays cache-hot.
+//
+// Phases (separate RwTx each, to bound dirty-page pressure):
+//  1. Clear the four tables.
+//  2. RebuildHashedStateETL → HashedAccounts/HashedStorage (sorted load).
+//  3. CalcTrieRoot with collectors → persist TrieOfAccounts/TrieOfStorage.
+//
+// tmpdir holds ETL spill files (~30 GB at 25M state); put it on the same
+// fast drive as the datadir. The caller's db should be opened with a large
+// DirtySpace (≥32 GB) for the sorted bulk-load tx.
+func BootstrapHPHFastETL(ctx context.Context, db kv.RwDB, tmpdir string) (types.Hash, error) {
+	logger := log2.New()
+
+	// Phase 1: clear the four tables (own tx).
+	{
+		log.Info("BootstrapHPHFastETL: clearing HashedAccounts/HashedStorage/TrieOf*")
+		tx, err := db.BeginRw(ctx)
+		if err != nil {
+			return types.Hash{}, err
+		}
+		for _, tbl := range []string{kv.HashedAccounts, kv.HashedStorage, kv.TrieOfAccounts, kv.TrieOfStorage} {
+			if err := tx.ClearBucket(tbl); err != nil {
+				tx.Rollback()
+				return types.Hash{}, fmt.Errorf("clear %s: %w", tbl, err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return types.Hash{}, fmt.Errorf("commit clear: %w", err)
+		}
+	}
+
+	// Phase 2: ETL sorted hashing of accounts + storage (own tx).
+	{
+		log.Info("BootstrapHPHFastETL: hashing PlainState → HashedAccounts/HashedStorage via sorted ETL")
+		tHash := time.Now()
+		tx, err := db.BeginRw(ctx)
+		if err != nil {
+			return types.Hash{}, err
+		}
+		if err := RebuildHashedStateETL(ctx, tx, tmpdir, logger); err != nil {
+			tx.Rollback()
+			return types.Hash{}, fmt.Errorf("RebuildHashedStateETL: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return types.Hash{}, fmt.Errorf("commit hashed state: %w", err)
+		}
+		log.Info("BootstrapHPHFastETL: hashing complete", "elapsed", time.Since(tHash).Truncate(time.Second))
+	}
+
+	// Phase 3: CalcTrieRoot + persist intermediate nodes (own tx).
+	log.Info("BootstrapHPHFastETL: computing trie root via FlatDBTrieLoader")
+	tx, err := db.BeginRw(ctx)
+	if err != nil {
+		return types.Hash{}, err
+	}
+	defer tx.Rollback()
+
+	type kvPair struct{ k, v []byte }
+	var accTrie []kvPair
+	var storTrie []kvPair
+
+	accCollector := func(keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
+		if len(keyHex) == 0 {
+			return nil
+		}
+		k := append([]byte{}, keyHex...)
+		if hasState == 0 {
+			accTrie = append(accTrie, kvPair{k, nil})
+			return nil
+		}
+		buf := make([]byte, len(hashes)+len(rootHash)+6)
+		v := trie.MarshalTrieNode(hasState, hasTree, hasHash, hashes, rootHash, buf)
+		accTrie = append(accTrie, kvPair{k, append([]byte{}, v...)})
+		return nil
+	}
+	storCollector := func(accWithInc []byte, keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
+		k := append(append(make([]byte, 0, len(accWithInc)+len(keyHex)), accWithInc...), keyHex...)
+		if len(k) == 0 {
+			return nil
+		}
+		if hasState == 0 {
+			storTrie = append(storTrie, kvPair{k, nil})
+			return nil
+		}
+		buf := make([]byte, len(hashes)+len(rootHash)+6)
+		v := trie.MarshalTrieNode(hasState, hasTree, hasHash, hashes, rootHash, buf)
+		storTrie = append(storTrie, kvPair{k, append([]byte{}, v...)})
+		return nil
+	}
+
+	loader := trie.NewFlatDBTrieLoader("bootstrap-hph-etl", trie.NewRetainList(0), accCollector, storCollector, false)
+	root, err := loader.CalcTrieRoot(tx, nil)
+	if err != nil {
+		return types.Hash{}, fmt.Errorf("CalcTrieRoot: %w", err)
+	}
+
+	log.Info("BootstrapHPHFastETL: flushing intermediate trie nodes",
+		"accTrie", len(accTrie), "storTrie", len(storTrie))
+	for _, e := range accTrie {
+		if e.v == nil {
+			_ = tx.Delete(kv.TrieOfAccounts, e.k)
+		} else {
+			if err := tx.Put(kv.TrieOfAccounts, e.k, e.v); err != nil {
+				return types.Hash{}, err
+			}
+		}
+	}
+	for _, e := range storTrie {
+		if e.v == nil {
+			_ = tx.Delete(kv.TrieOfStorage, e.k)
+		} else {
+			if err := tx.Put(kv.TrieOfStorage, e.k, e.v); err != nil {
+				return types.Hash{}, err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return types.Hash{}, fmt.Errorf("commit trie flush: %w", err)
+	}
+	return root, nil
+}
+
 // hashAllAccountsBatched scans the Account table and writes keccak-hashed
 // entries to HashedAccounts, committing every batchN puts so the MDBX
 // dirty-page pool never overflows. Returns the total number of hashed
@@ -636,9 +768,9 @@ func hashAllStorageBatched(ctx context.Context, db kv.RwDB, batchN int) (int, er
 				continue
 			}
 			// Plain: addr(20)+slot(32)=52B → Hashed: addrHash(32)+inc0(8)+slotHash(32)=72B
-			var compositeKey [72]byte
+			var compositeKey [64]byte
 			copy(compositeKey[:32], crypto.Keccak256(k[:20]))
-			copy(compositeKey[40:72], crypto.Keccak256(k[20:52]))
+			copy(compositeKey[32:64], crypto.Keccak256(k[20:52]))
 			if err := tx.Put(kv.HashedStorage, compositeKey[:], v); err != nil {
 				cursor.Close()
 				tx.Rollback()
@@ -727,9 +859,9 @@ func hashAllStorage(tx kv.RwTx) error {
 			continue
 		}
 		// Plain: addr(20)+slot(32)=52B → Hashed: addrHash(32)+inc0(8)+slotHash(32)=72B
-		var compositeKey [72]byte
+		var compositeKey [64]byte
 		copy(compositeKey[:32], crypto.Keccak256(k[:20]))
-		copy(compositeKey[40:72], crypto.Keccak256(k[20:52]))
+		copy(compositeKey[32:64], crypto.Keccak256(k[20:52]))
 		if err := tx.Put(kv.HashedStorage, compositeKey[:], v); err != nil {
 			return err
 		}
@@ -805,9 +937,9 @@ func InitHashState(tx kv.RwTx) error {
 		if len(k) < 52 {
 			continue
 		}
-		var compositeKey [72]byte
+		var compositeKey [64]byte
 		copy(compositeKey[:32], crypto.Keccak256(k[:20]))
-		copy(compositeKey[40:72], crypto.Keccak256(k[20:52]))
+		copy(compositeKey[32:64], crypto.Keccak256(k[20:52]))
 		if err := tx.Put(kv.HashedStorage, compositeKey[:], v); err != nil {
 			return fmt.Errorf("put HashedStorage: %w", err)
 		}
