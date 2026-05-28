@@ -257,39 +257,25 @@ func (p *chaindataProvider) CurrentHead() (*block.Header, types.Hash, error) {
 	v, _ := tx.GetOne(kv.SyncStageProgress, progressKey)
 	if len(v) == 8 {
 		num := binary.BigEndian.Uint64(v)
-		// Two distinct pieces of "head" data flow out of this header
-		// during the eth/69 Status handshake:
-		//   - Time → drives EIP-2124 ForkID. Use wall-clock so we land
-		//     on Pectra (which all current mainnet peers expect).
-		//   - Number → goes into Status.LatestBlock. If we advertise a
-		//     number 60K behind tip, geth's useless-peer scorer drops
-		//     us after handshake. So we present an estimated current
-		//     tip instead: linearly extrapolated from a known anchor
-		//     using 12-second slots. If the peer asks us for blocks
-		//     above our real head we'll respond empty, but that's a
-		//     "no data in range" answer, not a protocol violation —
-		//     peers treat us as a low-priority source for those, not
-		//     an enemy to disconnect.
-		const anchorBlock = uint64(25101867)
-		const anchorTime = uint64(1748000000) // ~2026-05-23 12:00 UTC
-		const slotSecs = uint64(12)
-		now := uint64(time.Now().Unix())
-		var tipEstimate uint64
-		if now > anchorTime {
-			tipEstimate = anchorBlock + (now-anchorTime)/slotSecs
-		} else {
-			tipEstimate = anchorBlock
-		}
-		if tipEstimate < num {
-			tipEstimate = num
-		}
+		// Status handshake reports our REAL head:
+		//   - Time → wall-clock so EIP-2124 ForkID lands on the current
+		//     Pectra (peers expect this).
+		//   - Number → the actual chaindata head from ethel-last-block.
+		// Earlier versions spoofed `tip ≈ anchor + (now-anchorTime)/12s`
+		// to dodge geth's useless-peer scorer, but the lie cost more
+		// than it earned: peers would dispatch GetBlockHeaders for the
+		// fake-advertised window and drop us when every response came
+		// back empty ("subprotocol error" on the eldevp2p log). Honest
+		// head lets peers schedule us as a sync source for OUR window
+		// and forward higher blocks via NewBlockHashes broadcasts —
+		// exactly what we need to actually catch up.
 		hdr := &block.Header{
-			Number:     uint256.NewInt(tipEstimate),
+			Number:     uint256.NewInt(num),
 			Difficulty: uint256.NewInt(0),
-			Time:       now,
+			Time:       uint64(time.Now().Unix()),
 		}
-		// Hash is best-effort: the peer doesn't trust it without
-		// header content, but we don't have the full header here.
+		// Best-effort hash; peer treats it as advisory until it pulls
+		// the real header content.
 		return hdr, hdr.Hash(), nil
 	}
 
