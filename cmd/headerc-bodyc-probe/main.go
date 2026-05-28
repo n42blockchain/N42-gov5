@@ -41,8 +41,8 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "read header %d: %v\n", *block, err)
 	} else {
-		fmt.Printf("hdr[%d]: hash=%s coinbase=%s gasUsed=%d gasLimit=%d time=%d difficulty=%s txRoot=%s receiptRoot=%s\n",
-			*block, hdr.Hash().Hex(), hdr.Coinbase.Hex(), hdr.GasUsed, hdr.GasLimit, hdr.Time, hdr.Difficulty.String(), hdr.TxHash.Hex(), hdr.ReceiptHash.Hex())
+		fmt.Printf("hdr[%d]: hash=%s coinbase=%s gasUsed=%d gasLimit=%d time=%d difficulty=%s stateRoot=%s txRoot=%s receiptRoot=%s\n",
+			*block, hdr.Hash().Hex(), hdr.Coinbase.Hex(), hdr.GasUsed, hdr.GasLimit, hdr.Time, hdr.Difficulty.String(), hdr.Root.Hex(), hdr.TxHash.Hex(), hdr.ReceiptHash.Hex())
 	}
 
 	br, err := ethel.OpenBodyCompact(*dir)
