@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math/bits"
+	"os"
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/common/length"
@@ -427,6 +428,17 @@ func (hb *HashBuilder) accountLeafHash(keyLength int, keyHex []byte, balance *ui
 		popped++
 	} else {
 		copy(hb.acc.CodeHash[:], EmptyCodeHash[:])
+	}
+	// N42_LEAFTRACE: dump every account leaf input so we can compare against
+	// mainnet eth_getProof (storageHash + nonce + balance + codeHash). Logs
+	// the full 64-nibble hashed address (= keccak(addr)), the 4 RLP fields
+	// hb.acc encodes via EncodeForHashing, and the popped count for stack
+	// invariant. Used to bisect block 25,191,537 stateRoot mismatch against
+	// trusted mainnet RPC.
+	if os.Getenv("N42_LEAFTRACE") != "" {
+		fmt.Fprintf(os.Stderr,
+			"LEAFACC keyHex=%x len=%d fieldSet=%04b nonce=%d balance=%s root=%x codeHash=%x popped=%d\n",
+			keyHex, keyLength, fieldSet, nonce, hb.acc.Balance.Dec(), hb.acc.Root[:], hb.acc.CodeHash[:], popped)
 	}
 	return hb.accountLeafHashWithKey(key, popped)
 }
