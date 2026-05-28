@@ -296,6 +296,20 @@ var dbgRefundBlock = func() uint64 {
 	return n
 }()
 
+// dbgNonceBlock (N42_NONCETRACE=<blockNum>) traces every nonce increment in a
+// target block — the tx-sender increment and each EIP-7702 authority increment
+// — to diagnose "nonce too low" (an authority nonce bumped one too many times).
+var dbgNonceBlock = func() uint64 {
+	v := os.Getenv("N42_NONCETRACE")
+	if v == "" {
+		return 0
+	}
+	n, _ := strconv.ParseUint(v, 10, 64)
+	return n
+}()
+
+var dbgNonceTraceN int
+
 // ApplyMessage computes the new state by applying the given message against the old state.
 // Returns the execution result and an error if the message would always fail for that state.
 // `refunds` is false when gas refunds should not be applied.
@@ -488,6 +502,11 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 	if contractCreation {
 		ret, _, st.gas, vmerr = st.evm.Create(sender, st.data, st.gas, st.value)
 	} else {
+		if dbgNonceBlock > 0 && dbgNonceTraceN < 80 {
+			dbgNonceTraceN++
+			fmt.Fprintf(os.Stderr, "NONCE want=%d bn=%d sender=%x nonceBefore=%d nAuth=%d\n",
+				dbgNonceBlock, st.evm.Context().BlockNumber, msg.From(), st.state.GetNonce(sender.Address()), len(msg.AuthList()))
+		}
 		st.state.SetNonce(msg.From(), st.state.GetNonce(sender.Address())+1)
 		if rules.IsPrague && msg.AuthList() != nil {
 			if err := st.applyAuthorizations(msg.AuthList()); err != nil {
@@ -657,6 +676,11 @@ func (st *StateTransition) applyAuthorizations(authList transaction.Authorizatio
 
 		if !wasEmpty && params.PerEmptyAccountCost > params.PerAuthBaseCost {
 			st.state.AddRefund(params.PerEmptyAccountCost - params.PerAuthBaseCost)
+		}
+		if dbgNonceBlock > 0 && dbgNonceTraceN < 200 {
+			dbgNonceTraceN++
+			fmt.Fprintf(os.Stderr, "NONCE bn=%d AUTH signer=%x authNonce=%d stateNonce=%d -> %d (txSender=%x)\n",
+				st.evm.Context().BlockNumber, signer, auth.Nonce, signerNonce, signerNonce+1, st.msg.From())
 		}
 		st.state.SetNonce(signer, signerNonce+1)
 		if auth.Address == (types.Address{}) {

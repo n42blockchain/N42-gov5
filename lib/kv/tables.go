@@ -785,8 +785,8 @@ var ChaindataTablesCfg = TableCfg{
 	HashedStorage: {
 		Flags:                     DupSort,
 		AutoDupSortKeysConversion: true,
-		DupFromLen:                72,
-		DupToLen:                  40,
+		DupFromLen:                64, // 32B addrHash + 32B slotHash (incarnation removed)
+		DupToLen:                  32, // dup-key = 32B addrHash; dup-value = 32B slotHash + trimmed value
 	},
 	// Storage: 20B address + 32B slot → value (trimmed uint256, ≤32B).
 	// DupSort with AutoDupSortKeysConversion: callers keep doing plain

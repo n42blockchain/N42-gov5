@@ -37,6 +37,7 @@ package commitment
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/holiman/uint256"
 
@@ -156,7 +157,22 @@ func (m *ConcurrentMPTRootComputer) RootScheme() state.RootScheme {
 func (m *ConcurrentMPTRootComputer) FlushBranches(tx kv.RwTx) error {
 	m.mem.mu.RLock()
 	defer m.mem.mu.RUnlock()
-	for k, v := range m.mem.data {
+	// Sort keys before writing. Iterating the Go map yields keys in random
+	// order; random Put into a large MDBX B-tree forces a fresh page read
+	// to locate each insertion point, so a 100M-entry flush degenerates
+	// into 100M random reads (observed: a single flush stuck 9+ hours,
+	// read-bound at ~33 MB/s). Inserting in sorted key order gives
+	// sequential page locality — consecutive keys land in the same or
+	// adjacent leaf pages, keeping the working set cache-hot and letting
+	// page splits amortize. Costs one []string of all keys (freed right
+	// after, and bounded small now that we flush every few chunks).
+	keys := make([]string, 0, len(m.mem.data))
+	for k := range m.mem.data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := m.mem.data[k]
 		if len(v) == 0 {
 			if err := tx.Delete(modules.MPTBranch, []byte(k)); err != nil {
 				return err

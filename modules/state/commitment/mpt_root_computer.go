@@ -16,6 +16,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash"
+	"sort"
 	"sync"
 
 	"github.com/holiman/uint256"
@@ -474,7 +475,16 @@ func (m *MPTRootComputer) RootScheme() state.RootScheme {
 }
 
 func (m *MPTRootComputer) FlushBranches(tx kv.RwTx) error {
-	for k, v := range m.mem.data {
+	// Sorted write — see ConcurrentMPTRootComputer.FlushBranches for the
+	// rationale (random map-order Put degenerates into one random B-tree
+	// page read per entry; sorted order gives sequential page locality).
+	keys := make([]string, 0, len(m.mem.data))
+	for k := range m.mem.data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := m.mem.data[k]
 		if len(v) == 0 {
 			if err := tx.Delete(modules.MPTBranch, []byte(k)); err != nil {
 				return err
