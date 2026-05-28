@@ -112,6 +112,9 @@ func flags() []cli.Flag {
 		&cli.BoolFlag{Name: "eldevp2p.enabled", Usage: "Run an embedded Ethereum devp2p (eth/68-69) listener so eth-el catches up via EL p2p directly, bypassing a CL"},
 		&cli.StringFlag{Name: "eldevp2p.listen", Usage: "EL devp2p TCP listen address (default :30303)", Value: ":30303"},
 		&cli.IntFlag{Name: "eldevp2p.max-peers", Usage: "Maximum simultaneous EL devp2p peers", Value: 50},
+		&cli.StringSliceFlag{Name: "eldevp2p.bootnodes", Usage: "Extra enode:// URLs appended to the default mainnet bootnodes (repeatable, or comma-separated)"},
+		&cli.BoolFlag{Name: "eldevp2p.bootnodes-replace", Usage: "When set, use ONLY --eldevp2p.bootnodes entries (don't merge with the built-in mainnet defaults)"},
+		&cli.BoolFlag{Name: "hashed-canonical", Usage: "reth-2.2-style hashed-canonical state: EVM reads from HashedAccounts/HashedStorage (no PlainState), incremental root over migrated TrieOf*. Use for datadirs built by n42-migrate-reth-hashed."},
 
 		// Stage 2 G4 — auto mode selection.
 		&cli.StringFlag{Name: "catch-up.mode", Usage: "Catch-up mechanism: auto|off|delta|libp2p|fetch (auto picks based on gap)", Value: "auto"},
@@ -242,6 +245,14 @@ func run(c *cli.Context) error {
 		if mp := c.Int("eldevp2p.max-peers"); mp > 0 {
 			eldcfg.MaxPeers = mp
 		}
+		if extra := c.StringSlice("eldevp2p.bootnodes"); len(extra) > 0 {
+			if c.Bool("eldevp2p.bootnodes-replace") {
+				eldcfg.BootNodes = append([]string{}, extra...)
+			} else {
+				eldcfg.BootNodes = append(eldcfg.BootNodes, extra...)
+			}
+		}
+		eldcfg.HashedCanonical = c.Bool("hashed-canonical")
 		// Mainnet genesis hash + time. These are well-known constants;
 		// pin them here rather than read from rawdb so the devp2p handshake
 		// produces deterministic ForkID computation even before any block

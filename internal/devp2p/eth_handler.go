@@ -14,6 +14,7 @@ import (
 	"io"
 
 	gethp2p "github.com/ethereum/go-ethereum/p2p"
+	"github.com/ethereum/go-ethereum/rlp"
 
 	n42block "github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
@@ -46,6 +47,9 @@ type ResponseHandler interface {
 	OnBlockHeaders(peerID string, reqID uint64, headers [][]byte)
 	// OnBlockBodies delivers a BlockBodies (msg code 6) response.
 	OnBlockBodies(peerID string, reqID uint64, bodies []BlockBody)
+	// OnReceipts delivers a Receipts (msg code 16) response. receipts is
+	// per requested block → its raw receipts (rlp.RawValue, mixed shapes).
+	OnReceipts(peerID string, reqID uint64, receipts [][]rlp.RawValue)
 	// OnNewBlock delivers a NewBlock (msg code 7) push — peer announces
 	// they've produced/learned a new tip.
 	OnNewBlock(peerID string, hdr *n42block.Header, txs [][]byte)
@@ -254,7 +258,13 @@ func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter,
 		return nil
 
 	case 16:
-		// 0x10 Receipts response — we never asked, ignore.
+		var resp blockReceiptsPacket
+		if err := msg.Decode(&resp); err != nil {
+			return fmt.Errorf("decode Receipts: %w", err)
+		}
+		if h.rh != nil {
+			h.rh.OnReceipts(peerID, resp.RequestID, resp.Receipts)
+		}
 		return nil
 
 	case 17:

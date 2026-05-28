@@ -125,6 +125,14 @@ type blockBodiesPacket struct {
 	Bodies    []BlockBody
 }
 
+// blockReceiptsPacket is the eth/68-69 Receipts (0x10) response. Each receipt is
+// kept as rlp.RawValue (mixed shapes: legacy receipts are RLP lists, typed ones
+// are RLP strings wrapping type||payload) — a []byte element would reject legacy.
+type blockReceiptsPacket struct {
+	RequestID uint64
+	Receipts  [][]rlp.RawValue // per requested block → its receipts
+}
+
 // blockRangeUpdatePacket is eth/69 msg 0x11. Sent right after Status to
 // (re-)announce the local block range. Required by the eth/69 spec — peers
 // treat its absence as a protocol violation and silently EOF after a

@@ -79,6 +79,11 @@ type Config struct {
 	MaxPeers int
 	// BootNodes overrides the default Ethereum mainnet bootnodes list.
 	BootNodes []string
+	// HashedCanonical selects the reth-2.2-style hashed-canonical state
+	// model on the EngineStateAdapter (read/execute against hashed state,
+	// incremental root over migrated TrieOf*). Set for datadirs built by
+	// n42-migrate-reth-hashed.
+	HashedCanonical bool
 }
 
 // DefaultConfig is a follower-friendly default — listens on the standard
@@ -157,7 +162,7 @@ func (s *Service) Start(_ context.Context) error {
 	// GetBlockHeaders/GetBlockBodies to each peer that completes
 	// handshake. Registered as the EthHandler ResponseHandler so the
 	// peer goroutine routes msg code 4 / 6 here.
-	dl := NewDownloader(s.node)
+	dl := NewDownloader(s.node, s.cfg.HashedCanonical)
 	handler.SetResponseHandler(dl)
 
 	boot := make([]*enode.Node, 0, len(s.cfg.BootNodes))
