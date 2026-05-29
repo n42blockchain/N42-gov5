@@ -7,11 +7,15 @@ import (
 	"os"
 	"time"
 
+	"github.com/c2h5oh/datasize"
+
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/lib/etl"
 	"github.com/n42blockchain/N42/lib/kv"
 	log "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/lib/trie"
 )
 
 // decodeRethBytecode extracts the raw deployed EVM bytecode from reth's
@@ -224,8 +228,16 @@ func migrateHashedStorages(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64,
 	return nil
 }
 
-// migrateAccountsTrie: full byte-copy. reth StoredNibbles key (1 nibble/byte,
-// no length) == N42 TrieOfAccounts key; BranchNodeCompact value identical.
+// migrateAccountsTrie: full byte-copy of reth's AccountsTrie.
+//
+// DEPRECATED (2026-05-29, #150): copying reth trie nodes verbatim leaves the
+// branch records' own-hash (rootHash) field in a representation that does NOT
+// match N42's MarshalTrieNode for subtrees never re-dirtied during later
+// self-sync — N42's incremental loader then reads a stale cached root and the
+// state root drifts (see [[150-hph-cache-stale]]). Prefer the `rtrie` phase
+// (rebuildTrieFromLeaves), which recomputes TrieOf* from the hashed leaves so
+// every record is N42-native and self-consistent. Kept only for explicit
+// `--phases tacc,tsto` debugging/comparison; NOT in the default phase list.
 func migrateAccountsTrie(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, logger log.Logger) error {
 	say("PHASE tacc: AccountsTrie -> TrieOfAccounts (byte-copy)")
 	p := newProg("tacc", logger)
@@ -282,9 +294,13 @@ func migrateAccountsTrie(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, l
 	return nil
 }
 
-// migrateStoragesTrie: reth DupSort key=32B addrHash, dup-value = 65B
-// StoredNibblesSubKey (64 padded + 1 len byte) + BranchNodeCompact. N42 key =
-// 32B addrHash + nibble-path (path = subkey[:subkey[64]]), value = node bytes.
+// migrateStoragesTrie: byte-copy of reth's StoragesTrie (path extracted).
+//
+// DEPRECATED (2026-05-29, #150): same stale-rootHash problem as
+// migrateAccountsTrie — this is exactly what produced the EIP-2935 stale
+// storage root that wedged sync at block 25,191,537. Prefer the `rtrie`
+// phase. Kept only for explicit `--phases tacc,tsto`. See
+// [[150-hph-cache-stale]].
 func migrateStoragesTrie(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, logger log.Logger) error {
 	say("PHASE tsto: StoragesTrie -> TrieOfStorage (extract nibble path)")
 	p := newProg("tsto", logger)
@@ -427,5 +443,108 @@ func migrateBytecodes(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, logg
 	}
 	wtx = nil
 	say("PHASE code done: written=%d skipped=%d decodeFail=%d", written, skipped, decodeFail)
+	return nil
+}
+
+// rebuildTrieFromLeaves rebuilds TrieAccount + TrieStorage from the already-
+// migrated HashedAccount + HashedStorage leaves, producing N42-native,
+// self-consistent BranchNodeCompact records (including the own-hash/rootHash
+// field). This is the fix for #150: copying reth's trie nodes verbatim (the
+// deprecated tacc/tsto phases) left stale rootHash fields that wedged sync.
+//
+// It mirrors cmd/n42-rebuild-trie's verify-before-clear flow:
+//  1. full RetainList(1<<30) → Retain() true everywhere → the loader IGNORES
+//     any existing TrieOf* (even reth-copied nodes) and descends to leaves,
+//     streaming freshly-computed nodes into ETL collectors;
+//  2. verify the recomputed root against expectRoot (the head block's mainnet
+//     stateRoot) BEFORE touching the destination trie tables — a mismatch
+//     aborts with TrieOf* untouched;
+//  3. only after the check passes, clear + bulk-load TrieAccount/TrieStorage.
+//
+// expectRoot may be "" to skip the check (not recommended; you then have no
+// guarantee the migrated leaves reproduce the expected state root).
+func rebuildTrieFromLeaves(dst kv.RwDB, expectRoot, tmpdir string, accBufGB, stoBufGB uint64, logger log.Logger) error {
+	say("PHASE rtrie: rebuild TrieAccount/TrieStorage from hashed leaves (verify-before-clear, #150 fix)")
+	if err := os.MkdirAll(tmpdir, 0o755); err != nil {
+		return fmt.Errorf("mkdir tmpdir: %w", err)
+	}
+	ctx := context.Background()
+	t0 := time.Now()
+
+	accColl := etl.NewCollector("migrate-rtrie-acc", tmpdir,
+		etl.NewSortableBuffer(datasize.ByteSize(accBufGB)*datasize.GB), logger)
+	defer accColl.Close()
+	stoColl := etl.NewCollector("migrate-rtrie-sto", tmpdir,
+		etl.NewSortableBuffer(datasize.ByteSize(stoBufGB)*datasize.GB), logger)
+	defer stoColl.Close()
+
+	var accN, stoN uint64
+	accCollector := func(keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
+		if len(keyHex) == 0 || hasState == 0 {
+			return nil
+		}
+		buf := make([]byte, len(hashes)+len(rootHash)+6)
+		v := trie.MarshalTrieNode(hasState, hasTree, hasHash, hashes, rootHash, buf)
+		accN++
+		return accColl.Collect(append([]byte(nil), keyHex...), append([]byte(nil), v...))
+	}
+	storCollector := func(accWithInc, keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
+		k := append(append(make([]byte, 0, len(accWithInc)+len(keyHex)), accWithInc...), keyHex...)
+		if len(k) == 0 || hasState == 0 {
+			return nil
+		}
+		buf := make([]byte, len(hashes)+len(rootHash)+6)
+		v := trie.MarshalTrieNode(hasState, hasTree, hasHash, hashes, rootHash, buf)
+		stoN++
+		return stoColl.Collect(k, append([]byte(nil), v...))
+	}
+
+	say("  rtrie: CalcTrieRoot full descent from leaves (full RetainList ignores any existing TrieOf*)")
+	var root [32]byte
+	{
+		rtx, err := dst.BeginRo(ctx)
+		if err != nil {
+			return err
+		}
+		loader := trie.NewFlatDBTrieLoader("migrate-rtrie", trie.NewRetainList(1<<30), accCollector, storCollector, false)
+		r, err := loader.CalcTrieRoot(rtx, nil)
+		rtx.Rollback()
+		if err != nil {
+			return fmt.Errorf("CalcTrieRoot: %w", err)
+		}
+		root = r
+	}
+	say("  rtrie computed: root=%x accNodes=%d stoNodes=%d elapsed=%s",
+		root[:], accN, stoN, time.Since(t0).Truncate(time.Second))
+
+	if expectRoot != "" && fmt.Sprintf("0x%x", root[:]) != expectRoot {
+		return fmt.Errorf("rtrie ROOT MISMATCH: got 0x%x want %s — NOT persisting (TrieOf* untouched)", root[:], expectRoot)
+	}
+	if expectRoot == "" {
+		say("  rtrie WARNING: --expect-root empty, skipping verify (cannot confirm leaves reproduce expected state root)")
+	}
+
+	// Verified (or skip) → safe to clear + load. Two txns, matching
+	// cmd/n42-rebuild-trie, to bound per-txn dirty pages.
+	say("  rtrie: clearing TrieAccount + TrieStorage")
+	if err := dst.Update(ctx, func(tx kv.RwTx) error {
+		if err := tx.ClearBucket(n42TrieAccounts); err != nil {
+			return err
+		}
+		return tx.ClearBucket(n42TrieStorage)
+	}); err != nil {
+		return fmt.Errorf("clear: %w", err)
+	}
+	say("  rtrie: loading TrieAccount + TrieStorage")
+	if err := dst.Update(ctx, func(tx kv.RwTx) error {
+		if err := accColl.Load(tx, n42TrieAccounts, etl.IdentityLoadFunc, etl.TransformArgs{}); err != nil {
+			return fmt.Errorf("load TrieAccount: %w", err)
+		}
+		return stoColl.Load(tx, n42TrieStorage, etl.IdentityLoadFunc, etl.TransformArgs{})
+	}); err != nil {
+		return fmt.Errorf("load: %w", err)
+	}
+	say("PHASE rtrie done: root=0x%x accNodes=%d stoNodes=%d total=%s",
+		root[:], accN, stoN, time.Since(t0).Truncate(time.Second))
 	return nil
 }

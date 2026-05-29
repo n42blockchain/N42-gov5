@@ -1,10 +1,17 @@
 // n42-migrate-reth-hashed copies a reth 2.2 hashed-canonical state
-// (HashedAccounts, HashedStorages, AccountsTrie, StoragesTrie, Bytecodes)
-// into a FRESH N42 MDBX, re-encoding values to N42 conventions. It does
-// NOT recompute the trie — reth's already-built intermediate nodes are
-// copied verbatim (the BranchNodeCompact value bytes are identical to
-// erigon-2.7/N42). The state root is then read directly from the copied
-// account-trie root node and checked against the block header.
+// (HashedAccounts, HashedStorages, Bytecodes) into a FRESH N42 MDBX,
+// re-encoding values to N42 conventions, then REBUILDS TrieAccount/
+// TrieStorage from the migrated hashed leaves (the `rtrie` phase).
+//
+// IMPORTANT (#150, 2026-05-29): the trie is REBUILT from leaves, NOT copied
+// from reth. The old approach (deprecated `tacc`/`tsto` phases) copied reth's
+// AccountsTrie/StoragesTrie nodes verbatim; their own-hash (rootHash) field
+// did not match N42's MarshalTrieNode for subtrees never re-dirtied during
+// later self-sync, so N42's incremental loader read a stale cached root and
+// the state root drifted — this wedged eth-el sync at block 25,191,537 (see
+// memory 150-hph-cache-stale). Rebuilding from leaves yields N42-native,
+// self-consistent records. Pass --expect-root=<head stateRoot> so `rtrie`
+// verifies the rebuilt root before persisting (verify-before-clear).
 //
 // Prereq: N42 must have incarnation removed from the storage trie key
 // (32B addrHash, no 8B incarnation) so HashedStorages/StoragesTrie line
@@ -127,7 +134,14 @@ func main() {
 	dirtyGB := flag.Uint64("dirty-space-gb", 48, "MDBX dirty pool GB for dst")
 	commitEvery := flag.Uint64("commit-every", 5_000_000, "commit interval (entries)")
 	limit := flag.Uint64("limit", 0, "per-table cap for sampling (0=all)")
-	phases := flag.String("phases", "acc,sto,tacc,tsto,code,head", "comma list of phases to run")
+	// Default rebuilds the trie from leaves (rtrie) instead of copying reth
+	// trie nodes (tacc/tsto, deprecated — see #150). tacc/tsto remain runnable
+	// via explicit --phases for debugging/comparison.
+	phases := flag.String("phases", "acc,sto,code,rtrie,head", "comma list of phases to run (acc,sto,code,rtrie,head; deprecated: tacc,tsto)")
+	expectRoot := flag.String("expect-root", "", "rtrie: expected stateRoot hex of --head-block; rtrie verifies before clearing TrieOf* (empty = skip verify, not recommended)")
+	tmpdir := flag.String("tmpdir", `D:/N42-trie-tmp`, "rtrie: ETL spill dir (same fast drive as dst)")
+	accBufGB := flag.Uint64("acc-buf-gb", 4, "rtrie: ETL account buffer GB")
+	stoBufGB := flag.Uint64("sto-buf-gb", 16, "rtrie: ETL storage buffer GB")
 	flag.Parse()
 
 	logger := log.New()
@@ -187,6 +201,11 @@ func main() {
 	if run("code") {
 		if err := migrateBytecodes(rethDB, dstDB, *commitEvery, *limit, logger); err != nil {
 			fail("bytecodes", err)
+		}
+	}
+	if run("rtrie") {
+		if err := rebuildTrieFromLeaves(dstDB, *expectRoot, *tmpdir, *accBufGB, *stoBufGB, logger); err != nil {
+			fail("rebuild trie from leaves", err)
 		}
 	}
 	if run("head") {
