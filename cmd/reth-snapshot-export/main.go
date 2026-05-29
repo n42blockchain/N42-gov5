@@ -54,6 +54,7 @@ import (
 
 	"github.com/c2h5oh/datasize"
 	"github.com/cespare/xxhash/v2"
+	"github.com/holiman/uint256"
 	"github.com/klauspost/compress/zstd"
 
 	"github.com/n42blockchain/N42/lib/etl"
@@ -66,6 +67,10 @@ import (
 
 var logger = log.New()
 
+// limitEntries, when >0, caps the number of entries exported per table — used
+// to generate small test snapshots quickly. 0 = export the whole table.
+var limitEntries uint64
+
 func main() {
 	dbPath := flag.String("db", "d:/reth2k/db", "MDBX path (Reth or N42)")
 	outDir := flag.String("out", "d:/n42-snapshot", "Output directory")
@@ -76,7 +81,9 @@ func main() {
 	countOverride := flag.Uint64("count", 0, "Skip counting, use this entry count")
 	skipZstd := flag.Bool("skip-zstd", false, "Skip the final zstd compress step")
 	endBlock := flag.Uint64("end-block", 0, "Snapshot end block; when > 0, files are named accounts.0-<endBlock>.* / storage.0-<endBlock>.* (H.3 segment naming, monolithic case)")
+	limit := flag.Uint64("limit", 0, "Cap entries per table (for small test snapshots; 0 = export all)")
 	flag.Parse()
+	limitEntries = *limit
 
 	if *n42 {
 		*accountTable = "Account"
@@ -133,54 +140,105 @@ func main() {
 // Heuristic instead: len ≥ 33 AND the trailing 32B is non-zero.
 // Same approach as cmd/reth-codehash-uniq, which empirically found
 // 73.9M contracts / 2.22M unique hashes against this reth db.
-func extractCodeHash(v []byte) []byte {
-	if len(v) < 33 {
-		return nil
+// decodeRethCompact parses a reth Account Compact value.
+//
+// Layout: [2B flags LE][nonce: nonceLen B BE][balance: balLen B BE][codeHash: 32B if present]
+//
+//	flags: nonceLen   = bits[0:4]   (u64, 0..8 bytes, leading-zero trimmed)
+//	       balanceLen = bits[4:10]  (U256, 0..32 bytes, leading-zero trimmed)
+//	       hasCode    = bit[10]     (bytecode_hash Option present)
+//
+// reth never stores Some(emptyCodeHash) — EOAs are None — so hasCode == true
+// means a real contract codeHash. ok==false on a malformed length.
+func decodeRethCompact(v []byte) (nonce uint64, balance uint256.Int, codeHash [32]byte, hasCode, ok bool) {
+	if len(v) < 2 {
+		return
 	}
-	tail := v[len(v)-32:]
-	allZero := true
-	for _, b := range tail {
-		if b != 0 {
-			allZero = false
-			break
-		}
+	flags := uint16(v[0]) | uint16(v[1])<<8
+	nonceLen := int(flags & 0x0f)
+	balLen := int((flags >> 4) & 0x3f)
+	hasCode = (flags>>10)&1 == 1
+	need := 2 + nonceLen + balLen
+	if hasCode {
+		need += 32
 	}
-	if allZero {
-		return nil
+	if balLen > 32 || nonceLen > 8 || len(v) != need {
+		hasCode = false
+		return
 	}
-	return tail
+	p := 2
+	if nonceLen > 0 {
+		var nb [8]byte
+		copy(nb[8-nonceLen:], v[p:p+nonceLen])
+		nonce = binary.BigEndian.Uint64(nb[:])
+	}
+	p += nonceLen
+	if balLen > 0 {
+		var bb [32]byte
+		copy(bb[32-balLen:], v[p:p+balLen])
+		balance.SetBytes(bb[:])
+	}
+	p += balLen
+	if hasCode {
+		copy(codeHash[:], v[p:p+32])
+	}
+	return nonce, balance, codeHash, hasCode, true
 }
 
-// rewriteAccountValue rewrites a reth-compact account value, replacing
-// the trailing 32B codeHash with a 3-byte big-endian dict id. Returns
-// the original slice unchanged for non-contract values (no detectable
-// codeHash). Callers must not mutate the input concurrently when the
-// returned slice aliases v.
+// extractCodeHash returns the 32B contract codeHash of a reth-compact account,
+// or nil for an EOA (no bytecode_hash). Uses the flags bit — NOT a trailing-32B
+// heuristic, which would mis-read a large EOA balance as a codeHash.
+func extractCodeHash(v []byte) []byte {
+	_, _, ch, hasCode, ok := decodeRethCompact(v)
+	if !ok || !hasCode {
+		return nil
+	}
+	out := make([]byte, 32)
+	copy(out, ch[:])
+	return out
+}
+
+// rewriteAccountValue converts a reth-compact account value into the N42 V2
+// account encoding (see common/account.EncodeForStorageV2) with the 32B
+// codeHash replaced by a 3-byte big-endian codedict id. Output layout:
+//
+//	[fieldBits:1B][nonce:uvarint][balance:1B len + trimmed BE][codeHash id:3B]
+//	fieldBits bit0=nonce bit1=balance bit3=codeHash (matches snapshotreader.DecodeAccount)
+//
+// The returned slice is backed by scratch (never aliases v); callers copy it
+// before the next call.
 func rewriteAccountValue(v []byte, dict map[[32]byte]uint32, scratch []byte) []byte {
-	if len(v) < 33 {
-		return v
-	}
-	tail := v[len(v)-32:]
-	allZero := true
-	for _, b := range tail {
-		if b != 0 {
-			allZero = false
-			break
-		}
-	}
-	if allZero {
-		return v
-	}
-	var ch [32]byte
-	copy(ch[:], tail)
-	id, ok := dict[ch]
+	nonce, balance, codeHash, hasCode, ok := decodeRethCompact(v)
 	if !ok {
-		// Shouldn't happen — dict was built from the same scan. Be defensive.
-		return v
+		fatal("malformed reth-compact account value (len=%d): %x", len(v), v)
 	}
-	prefix := v[:len(v)-32]
-	scratch = append(scratch[:0], prefix...)
-	scratch = append(scratch, byte(id>>16), byte(id>>8), byte(id))
+	scratch = append(scratch[:0], 0) // fieldBits placeholder at [0]
+	var fieldBits byte
+	if nonce > 0 {
+		fieldBits |= 1
+		var tmp [binary.MaxVarintLen64]byte
+		n := binary.PutUvarint(tmp[:], nonce)
+		scratch = append(scratch, tmp[:n]...)
+	}
+	if !balance.IsZero() {
+		fieldBits |= 2
+		bb := balance.Bytes32()
+		start := 0
+		for start < 31 && bb[start] == 0 {
+			start++
+		}
+		scratch = append(scratch, byte(32-start))
+		scratch = append(scratch, bb[start:]...)
+	}
+	if hasCode {
+		id, found := dict[codeHash]
+		if !found {
+			fatal("codeHash %x not in dict (built from same scan)", codeHash)
+		}
+		fieldBits |= 8
+		scratch = append(scratch, byte(id>>16), byte(id>>8), byte(id))
+	}
+	scratch[0] = fieldBits
 	return scratch
 }
 
@@ -207,6 +265,9 @@ func dumpAccount(tx kv.Tx, table, outDir, prefix string, countHint uint64, skipZ
 				fatal("count: %v", err)
 			}
 			count++
+			if limitEntries > 0 && count >= limitEntries {
+				break
+			}
 			if count%100_000_000 == 0 {
 				fmt.Printf("    ... %dM\n", count/1_000_000)
 			}
@@ -237,6 +298,9 @@ func dumpAccount(tx kv.Tx, table, outDir, prefix string, countHint uint64, skipZ
 				codeHashSet[key] = struct{}{}
 			}
 			n++
+			if limitEntries > 0 && n >= limitEntries {
+				break
+			}
 			if n%100_000_000 == 0 {
 				fmt.Printf("    ... %dM scanned, %d unique codeHashes\n",
 					n/1_000_000, len(codeHashSet))
@@ -344,12 +408,9 @@ func dumpAccount(tx kv.Tx, table, outDir, prefix string, countHint uint64, skipZ
 			}
 			binary.BigEndian.PutUint64(ordBuf[:], ordinal)
 
-			// Pass a fresh slice over our own backing array. Don't
-			// reassign rewriteScratch from the return value — for
-			// non-contract entries rewriteAccountValue returns the
-			// MDBX-aliased v unchanged, and using v[:0] as the next
-			// scratch would have a later append write into mmap'd
-			// read-only memory and segfault.
+			// rewriteAccountValue always writes into our own scratch
+			// (never aliases the MDBX-mapped v); payload copies it below
+			// before the next iteration reuses the buffer.
 			modified := rewriteAccountValue(v, codeHashIdx, rewriteScratch[:0])
 
 			fp := uint32(xxhash.Sum64(k))
@@ -361,6 +422,9 @@ func dumpAccount(tx kv.Tx, table, outDir, prefix string, countHint uint64, skipZ
 				fatal("etl collect: %v", err)
 			}
 			n++
+			if limitEntries > 0 && n >= limitEntries {
+				break
+			}
 			if n%50_000_000 == 0 {
 				var m runtime.MemStats
 				runtime.ReadMemStats(&m)
@@ -479,6 +543,9 @@ func dumpStorage(tx kv.Tx, table, outDir, prefix string, countHint uint64, skipZ
 				fatal("count: %v", err)
 			}
 			count++
+			if limitEntries > 0 && count >= limitEntries {
+				break
+			}
 			if count%200_000_000 == 0 {
 				fmt.Printf("    ... %dM\n", count/1_000_000)
 			}
@@ -562,6 +629,9 @@ func dumpStorage(tx kv.Tx, table, outDir, prefix string, countHint uint64, skipZ
 				fatal("etl collect: %v", err)
 			}
 			n++
+			if limitEntries > 0 && n >= limitEntries {
+				break
+			}
 			if n%200_000_000 == 0 {
 				var m runtime.MemStats
 				runtime.ReadMemStats(&m)
@@ -685,6 +755,9 @@ func buildMPHF(rs *recsplit.RecSplit, tx kv.Tx, table string, dupSort bool, coun
 				return err
 			}
 			n++
+			if limitEntries > 0 && n >= limitEntries {
+				break
+			}
 			if n%50_000_000 == 0 {
 				fmt.Printf("    ... %dM / %dM keys fed\n",
 					n/1_000_000, count/1_000_000)
