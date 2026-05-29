@@ -380,10 +380,17 @@ func openSnapshotCold(dataDir string) (state.StateReader, error) {
 	if err != nil {
 		return nil, err
 	}
-	// TODO(P1 phase 6 E2E): wire a codes-freezer CodeSource so H0 contract code
-	// (CALL targets) resolves. nil returns empty code for H0 contracts; warm
-	// (catch-up-deployed) code still resolves via the warm Code table.
-	return snapshotreader.NewStateReader(seg, nil), nil
+	// H0 contract bytecode lives in the codes freezer (codes.cidx + .cdat,
+	// shipped in every snapshot mode). Wire it as the StateReader's CodeSource
+	// so CALL targets resolve. Optional: if absent, H0 contract code reads
+	// empty (warm/catch-up-deployed code still resolves via the warm Code table).
+	var codeSrc state.CodeSource
+	if cr, cerr := ethel.NewCodesFreezerReader(filepath.Join(dataDir, "chain", "freezer")); cerr == nil {
+		codeSrc = cr
+	} else {
+		log.Warn("eth-el: snapshot-direct: codes freezer unavailable, H0 contract code reads empty", "err", cerr)
+	}
+	return snapshotreader.NewStateReader(seg, codeSrc), nil
 }
 
 // snapshotPrefix finds a table's segment prefix (e.g. "accounts.0-25999999") by
