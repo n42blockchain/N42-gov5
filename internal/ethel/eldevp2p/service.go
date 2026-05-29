@@ -48,6 +48,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/devp2p"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
@@ -84,6 +85,10 @@ type Config struct {
 	// incremental root over migrated TrieOf*). Set for datadirs built by
 	// n42-migrate-reth-hashed.
 	HashedCanonical bool
+	// SnapshotCold, when non-nil, enables snapshot-direct (minimal/full): the
+	// immutable H0 snapshot StateReader the adapter overlays the warm MDBX on.
+	// Set by cmd/eth-el when --bootstrap.mode=snapshot.
+	SnapshotCold state.StateReader
 }
 
 // DefaultConfig is a follower-friendly default — listens on the standard
@@ -162,7 +167,7 @@ func (s *Service) Start(_ context.Context) error {
 	// GetBlockHeaders/GetBlockBodies to each peer that completes
 	// handshake. Registered as the EthHandler ResponseHandler so the
 	// peer goroutine routes msg code 4 / 6 here.
-	dl := NewDownloader(s.node, s.cfg.HashedCanonical)
+	dl := NewDownloader(s.node, s.cfg.HashedCanonical, s.cfg.SnapshotCold)
 	handler.SetResponseHandler(dl)
 
 	boot := make([]*enode.Node, 0, len(s.cfg.BootNodes))

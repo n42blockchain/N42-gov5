@@ -63,6 +63,7 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
+	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/params"
 )
@@ -120,6 +121,11 @@ type Downloader struct {
 	// hashedCanonical enables the reth-2.2-style state model on the adapter.
 	hashedCanonical bool
 
+	// snapshotCold, when non-nil, enables snapshot-direct (minimal/full): the
+	// immutable H0 snapshot StateReader wired into the adapter (plain mode →
+	// WarmOverlayReader + OverlayStateWriter).
+	snapshotCold state.StateReader
+
 	// backfilled is set once the pre-migration BLOCKHASH-window headers have
 	// been fetched + persisted (see backfillBlockhashWindow).
 	backfilled bool
@@ -176,12 +182,13 @@ type inflightResp struct {
 }
 
 // NewDownloader builds the orchestrator without starting it.
-func NewDownloader(exec executionProvider, hashedCanonical bool) *Downloader {
+func NewDownloader(exec executionProvider, hashedCanonical bool, snapshotCold state.StateReader) *Downloader {
 	return &Downloader{
 		exec:            exec,
 		peers:           make(map[string]*peerState),
 		inflight:        make(map[string]chan inflightResp),
 		hashedCanonical: hashedCanonical,
+		snapshotCold:    snapshotCold,
 		buffer:          newBlockBuffer(),
 	}
 }
@@ -202,6 +209,9 @@ func (d *Downloader) initAdapter() error {
 	d.adapter = api.NewEngineStateAdapter(
 		rwdb, d.exec.OutFreezer(), d.exec.ChainConfig(), d.exec.Engine(),
 	).WithHashedCanonical(d.hashedCanonical)
+	if d.snapshotCold != nil {
+		d.adapter.SetSnapshotCold(d.snapshotCold)
+	}
 	return nil
 }
 

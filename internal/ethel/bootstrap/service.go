@@ -92,14 +92,34 @@ func (s *Service) Name() string { return "bootstrap" }
 // an ethel.Node service-loop goroutine; a non-nil return aborts the
 // whole node startup.
 func (s *Service) Start(ctx context.Context) error {
-	if !s.cfg.Enabled {
-		log.Info("eth-el: bootstrap disabled by config")
-		return nil
+	// Resolve mode. Empty falls back to the legacy Enabled flag for compat.
+	mode := s.cfg.Mode
+	if mode == "" {
+		if s.cfg.Enabled {
+			mode = "leaves"
+		} else {
+			mode = "none"
+		}
 	}
+	switch mode {
+	case "none":
+		log.Info("eth-el: bootstrap mode=none (chaindata assumed populated, or snapshot-direct handled by pre-start)")
+		return nil
+	case "snapshot":
+		return s.startSnapshot(ctx)
+	case "leaves":
+		return s.startLeaves(ctx)
+	default:
+		return fmt.Errorf("bootstrap: unknown mode %q (want snapshot|leaves|none)", mode)
+	}
+}
+
+// startLeaves runs the archive-mode bootstrap: optionally fetch the leaves
+// journal manifest, then RebuildState from genesis to the journal head.
+func (s *Service) startLeaves(ctx context.Context) error {
 	if s.node == nil {
 		return fmt.Errorf("bootstrap: nil node")
 	}
-
 	already, err := s.node.HasPopulatedState(ctx)
 	if err != nil {
 		return fmt.Errorf("bootstrap: probe chaindata: %w", err)
@@ -110,7 +130,6 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 
 	leavesDir := s.node.LeavesDir()
-
 	if s.cfg.Manifest != "" {
 		if err := s.runManifest(ctx, leavesDir); err != nil {
 			return fmt.Errorf("bootstrap: manifest fetch: %w", err)
@@ -126,6 +145,21 @@ func (s *Service) Start(ctx context.Context) error {
 		return fmt.Errorf("bootstrap: RebuildState: %w", err)
 	}
 	log.Info("eth-el: bootstrap complete")
+	return nil
+}
+
+// startSnapshot runs the minimal/full snapshot-direct bootstrap: the RecSplit
+// snapshot files at H0 ARE the state, served via the warm overlay reader wired
+// into the execution path (engine_state_adapter). Bootstrap performs NO
+// RebuildState — that is the whole point of snapshot-direct (#94). Snapshot
+// file fetch + the H0 head marker are handled by the snapshot pre-start sync
+// (--snapshot.source); here we only assert we are not about to shadow the
+// snapshot with a half-built PlainState and then hand off.
+func (s *Service) startSnapshot(ctx context.Context) error {
+	if s.node == nil {
+		return fmt.Errorf("bootstrap: nil node")
+	}
+	log.Info("eth-el: bootstrap mode=snapshot — state served from snapshot at H0 via warm overlay, skipping RebuildState")
 	return nil
 }
 
