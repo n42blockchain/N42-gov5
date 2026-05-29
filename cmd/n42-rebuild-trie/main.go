@@ -65,18 +65,15 @@ func main() {
 	ctx := context.Background()
 	t0 := time.Now()
 
-	// Phase 1: clear TrieOf* (own tx) so CalcTrieRoot does a full descent
-	// from HashedAccounts/HashedStorage leaves.
-	fmt.Fprintln(os.Stderr, "phase1: clearing TrieAccount + TrieStorage")
-	if err := db.Update(ctx, func(tx kv.RwTx) error {
-		if err := tx.ClearBucket("TrieAccount"); err != nil {
-			return err
-		}
-		return tx.ClearBucket("TrieStorage")
-	}); err != nil {
-		fmt.Fprintln(os.Stderr, "clear:", err)
-		os.Exit(1)
-	}
+	// VERIFY-BEFORE-CLEAR: Phase 2 rebuilds from leaves using a FULL
+	// RetainList (minLength 1<<30 → Retain() returns true for every prefix →
+	// cached TrieOf* hashes are never adopted; the loader descends to
+	// HashedAccounts/HashedStorage leaves everywhere). Because it ignores the
+	// cached nodes anyway, it does NOT need the tables cleared first — so we
+	// can verify the recomputed root against --expect BEFORE touching the
+	// on-disk TrieOf*. A mismatch (wrong --expect or corrupt leaves) then
+	// exits with the existing trie intact instead of destroying the only
+	// verified datadir. The clear is deferred to Phase 2.5, after the check.
 
 	// Phase 2: CalcTrieRoot (read tx) → stream emitted trie nodes into ETL.
 	accColl := etl.NewCollector("rebuild-trie-acc", *tmpdir,
@@ -115,7 +112,8 @@ func main() {
 			fmt.Fprintln(os.Stderr, "begin ro:", err)
 			os.Exit(1)
 		}
-		loader := trie.NewFlatDBTrieLoader("rebuild-trie", trie.NewRetainList(0), accCollector, storCollector, false)
+		// minLength 1<<30 → retain everything → ignore cached TrieOf*, descend leaves.
+		loader := trie.NewFlatDBTrieLoader("rebuild-trie", trie.NewRetainList(1<<30), accCollector, storCollector, false)
 		r, err := loader.CalcTrieRoot(rtx, nil)
 		rtx.Rollback()
 		if err != nil {
@@ -127,9 +125,27 @@ func main() {
 	fmt.Fprintf(os.Stderr, "phase2 done: root=%x accNodes=%d stoNodes=%d elapsed=%s\n",
 		root[:], accN, stoN, time.Since(t0).Truncate(time.Second))
 
-	if *expect != "" && fmt.Sprintf("0x%x", root[:]) != *expect {
-		fmt.Fprintf(os.Stderr, "ROOT MISMATCH: got 0x%x want %s — NOT persisting\n", root[:], *expect)
+	if *expect == "" {
+		fmt.Fprintf(os.Stderr, "REFUSING to clear+persist without --expect (would clear TrieOf* unverified). Re-run with --expect=0x<25,191,536 stateRoot>. Computed root was 0x%x\n", root[:])
 		os.Exit(2)
+	}
+	if fmt.Sprintf("0x%x", root[:]) != *expect {
+		fmt.Fprintf(os.Stderr, "ROOT MISMATCH: got 0x%x want %s — NOT persisting (TrieOf* left intact)\n", root[:], *expect)
+		os.Exit(2)
+	}
+
+	// Phase 2.5: root verified against --expect — NOW it is safe to clear the
+	// stale TrieOf*. Moved here from the top so a wrong --expect / bad leaves
+	// can never leave the datadir with empty trie tables.
+	fmt.Fprintln(os.Stderr, "phase2.5: root verified — clearing stale TrieAccount + TrieStorage")
+	if err := db.Update(ctx, func(tx kv.RwTx) error {
+		if err := tx.ClearBucket("TrieAccount"); err != nil {
+			return err
+		}
+		return tx.ClearBucket("TrieStorage")
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, "clear:", err)
+		os.Exit(1)
 	}
 
 	// Phase 3: bulk-load nodes into TrieOf* (own tx).
