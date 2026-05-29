@@ -85,6 +85,14 @@ type EngineStateAdapter struct {
 	// commitment.MerkleStageIncremental, driven by the importer. Removes ~82ms/block
 	// dRoot during catch-up (validated ~7-12ms/block amortized at 1k-10k sub-batches).
 	staged bool
+
+	// snapshotCold, when non-nil, is the immutable H0 snapshot StateReader
+	// (a snapshotreader.StateReader). In plain (non-hashed-canonical) mode it
+	// turns on snapshot-direct (minimal/full): reads go through a
+	// WarmOverlayReader(warm MDBX + this cold snapshot) and writes use
+	// OverlayStateWriter (empty-value tombstones on delete). Set by the node
+	// when --bootstrap.mode=snapshot.
+	snapshotCold state.StateReader
 }
 
 // SetBatchTx routes executePayloadDetailed onto a caller-owned tx (no internal
@@ -93,6 +101,11 @@ func (a *EngineStateAdapter) SetBatchTx(tx kv.RwTx) { a.batchTx = tx }
 
 // SetStaged toggles staged catch-up execution (writeOnly root, per-sub-batch Merkle).
 func (a *EngineStateAdapter) SetStaged(v bool) { a.staged = v }
+
+// SetSnapshotCold enables snapshot-direct (minimal/full): in plain mode, reads
+// overlay the warm MDBX on this immutable H0 snapshot reader and writes use
+// tombstone-on-delete. Pass nil to disable (legacy plain-state behavior).
+func (a *EngineStateAdapter) SetSnapshotCold(r state.StateReader) { a.snapshotCold = r }
 
 type enginePayloadExecutionResult struct {
 	stateRoot       types.Hash
@@ -259,6 +272,12 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 		// block CALLing them reads empty code and diverges (block-160 bug).
 		reader = state.NewHashedStateReader(tx)
 		writer = state.NewHashedCanonicalWriter(tx, blockNum)
+	} else if a.snapshotCold != nil {
+		// snapshot-direct (minimal/full): warm MDBX delta overlaid on the
+		// immutable H0 snapshot; tombstone-aware writer so SSTORE slot->0 does
+		// not fall through to a stale snapshot value.
+		reader = state.NewWarmOverlayReader(tx, a.snapshotCold)
+		writer = state.NewOverlayStateWriter(tx)
 	} else {
 		reader = state.NewPlainState(tx, blockNum)
 		writer = state.NewPlainStateWriter(tx, tx, blockNum)

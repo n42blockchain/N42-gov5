@@ -64,6 +64,15 @@ type BootstrapCfg struct {
 	// chaindata MDBX already holds a populated PlainState.
 	Enabled bool `json:"enabled" yaml:"enabled"`
 
+	// Mode selects the bootstrap mechanism:
+	//   "leaves"   — download the leaves journal + RebuildState (archive mode)
+	//   "snapshot" — snapshot-direct: state is served from the RecSplit snapshot
+	//                files at H0 via the warm overlay reader; NO RebuildState
+	//                (minimal/full modes)
+	//   "none"     — assume chaindata already holds a populated state
+	// Empty falls back to Enabled for backward compat (true→leaves, false→none).
+	Mode string `json:"mode" yaml:"mode"`
+
 	// Manifest is the URL or magnet link of the leaves-journal segment set
 	// to download. Empty disables the BT fetch (caller must place files
 	// under DataDir/leaves manually).

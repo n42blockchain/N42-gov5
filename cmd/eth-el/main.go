@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/c2h5oh/datasize"
@@ -34,7 +35,9 @@ import (
 	"github.com/n42blockchain/N42/internal/ethel/engineapi"
 	"github.com/n42blockchain/N42/internal/ethel/fetch"
 	"github.com/n42blockchain/N42/internal/ethel/snapshotprestart"
+	"github.com/n42blockchain/N42/internal/ethel/snapshotreader"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules/state"
 )
 
 func main() {
@@ -65,6 +68,7 @@ func flags() []cli.Flag {
 
 		// Bootstrap.
 		&cli.BoolFlag{Name: "bootstrap.enabled", Usage: "Run leaves-journal bootstrap on startup", Value: true},
+		&cli.StringFlag{Name: "bootstrap.mode", Usage: "Bootstrap mechanism: leaves (download journal + RebuildState, archive) | snapshot (snapshot-direct via warm overlay, minimal/full) | none. Empty = compat with --bootstrap.enabled"},
 		&cli.StringFlag{Name: "bootstrap.manifest", Usage: "Manifest URL or magnet for the leaves journal segment set"},
 		&cli.Uint64Flag{Name: "bootstrap.end-block", Usage: "Cap the rebuild range (0 = use all leaves)"},
 
@@ -253,6 +257,17 @@ func run(c *cli.Context) error {
 			}
 		}
 		eldcfg.HashedCanonical = c.Bool("hashed-canonical")
+		// snapshot-direct (minimal/full): overlay the warm MDBX on the
+		// immutable H0 snapshot segment. Open it here so the downloader's
+		// adapter reads via WarmOverlayReader + OverlayStateWriter.
+		if cfg.Bootstrap.Mode == "snapshot" {
+			if cold, err := openSnapshotCold(cfg.DataDir); err != nil {
+				log.Error("eth-el: snapshot-direct open failed, falling back to plain state", "err", err)
+			} else {
+				eldcfg.SnapshotCold = cold
+				log.Info("eth-el: snapshot-direct enabled (warm overlay on H0 snapshot)")
+			}
+		}
 		// Mainnet genesis hash + time. These are well-known constants;
 		// pin them here rather than read from rawdb so the devp2p handshake
 		// produces deterministic ForkID computation even before any block
@@ -296,6 +311,7 @@ func assembleConfig(c *cli.Context) conf.EthELCfg {
 	}
 
 	cfg.Bootstrap.Enabled = c.Bool("bootstrap.enabled")
+	cfg.Bootstrap.Mode = c.String("bootstrap.mode")
 	cfg.Bootstrap.Manifest = c.String("bootstrap.manifest")
 	cfg.Bootstrap.EndBlock = c.Uint64("bootstrap.end-block")
 
@@ -346,4 +362,39 @@ func withShutdown() (context.Context, context.CancelFunc) {
 		os.Exit(1)
 	}()
 	return ctx, cancel
+}
+
+// openSnapshotCold opens the H0 snapshot segment under <dataDir>/snapshot and
+// wraps it as a cold StateReader for snapshot-direct (minimal/full) mode.
+func openSnapshotCold(dataDir string) (state.StateReader, error) {
+	snapDir := filepath.Join(dataDir, "snapshot")
+	accPrefix, err := snapshotPrefix(snapDir, "accounts")
+	if err != nil {
+		return nil, err
+	}
+	stoPrefix, err := snapshotPrefix(snapDir, "storage")
+	if err != nil {
+		return nil, err
+	}
+	seg, err := snapshotreader.OpenSegment(snapDir, accPrefix, stoPrefix)
+	if err != nil {
+		return nil, err
+	}
+	// TODO(P1 phase 6 E2E): wire a codes-freezer CodeSource so H0 contract code
+	// (CALL targets) resolves. nil returns empty code for H0 contracts; warm
+	// (catch-up-deployed) code still resolves via the warm Code table.
+	return snapshotreader.NewStateReader(seg, nil), nil
+}
+
+// snapshotPrefix finds a table's segment prefix (e.g. "accounts.0-25999999") by
+// globbing <dir>/<table>*.idx and stripping ".idx".
+func snapshotPrefix(dir, table string) (string, error) {
+	matches, err := filepath.Glob(filepath.Join(dir, table+"*.idx"))
+	if err != nil {
+		return "", err
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("no %s snapshot segment (.idx) under %s", table, dir)
+	}
+	return strings.TrimSuffix(filepath.Base(matches[0]), ".idx"), nil
 }
