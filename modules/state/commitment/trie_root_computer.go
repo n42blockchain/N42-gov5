@@ -311,14 +311,17 @@ func (t *TrieRootComputer) flushTrieRoot(rl *trie.RetainList) (types.Hash, error
 	// Incremental mode: pass the populated dirty-paths RetainList so
 	// unchanged subtrees are read from TrieOf* instead of rebuilt.
 	//
-	// NOTE: incremental mode REQUIRES the empty-path (keylen-32) storage
-	// "account.root" records to be present in TrieOfStorage. The loader
-	// re-processes whole cached-IH ranges around any dirty path, recomputing
-	// the leaves of neighbouring (untouched) accounts too — and those need
-	// their cached storage root, which lives in the keylen-32 record. A
-	// reth-migrated TrieOfStorage omits these, so it must be rebuilt once
-	// (cmd/n42-rebuild-trie) before incremental updates are correct. See
-	// trie_root_incremental_test.go for the regression covering this.
+	// NOTE (updated 2026-05-29, P7-A): incremental mode does NOT require the
+	// empty-path (keylen-32) storage "account.root" records. reth-migrated
+	// TrieOfStorage omits them, but StorageTrieCursor.SeekToAccount synthesizes
+	// a virtual lvl-0 root on the fly (P6 fix: probe path-1 tree_mask, recompute
+	// the storage root from children) so the loader walks the subtree correctly
+	// without that record. Verified on REAL reth EIP-2935 nodes across 2755
+	// incremental rounds spanning block 25,191,537 (cmd/n42-reth-eip2935-repro:
+	// verbatim incremental == full rebuild). The earlier "#150 needs rebuild"
+	// note was a pre-P6 artifact: the on-disk stale in D:/N42-hashed came from a
+	// pre-P6 binary writing stale nodes, not from a current-binary loader bug.
+	// trie_root_incremental_test.go (reth-shape suite) covers the regression.
 	retainer := trie.NewRetainList(0)
 	if t.incremental {
 		retainer = rl
