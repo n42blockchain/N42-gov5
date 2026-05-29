@@ -1,17 +1,25 @@
 // n42-migrate-reth-hashed copies a reth 2.2 hashed-canonical state
-// (HashedAccounts, HashedStorages, Bytecodes) into a FRESH N42 MDBX,
-// re-encoding values to N42 conventions, then REBUILDS TrieAccount/
-// TrieStorage from the migrated hashed leaves (the `rtrie` phase).
+// (HashedAccounts, HashedStorages, AccountsTrie, StoragesTrie, Bytecodes) into
+// a FRESH N42 MDBX, re-encoding values to N42 conventions.
 //
-// IMPORTANT (#150, 2026-05-29): the trie is REBUILT from leaves, NOT copied
-// from reth. The old approach (deprecated `tacc`/`tsto` phases) copied reth's
-// AccountsTrie/StoragesTrie nodes verbatim; their own-hash (rootHash) field
-// did not match N42's MarshalTrieNode for subtrees never re-dirtied during
-// later self-sync, so N42's incremental loader read a stale cached root and
-// the state root drifted — this wedged eth-el sync at block 25,191,537 (see
-// memory 150-hph-cache-stale). Rebuilding from leaves yields N42-native,
-// self-consistent records. Pass --expect-root=<head stateRoot> so `rtrie`
-// verifies the rebuilt root before persisting (verify-before-clear).
+// DEFAULT (P7-A, 2026-05-29): the trie is imported VERBATIM (`tacc`/`tsto`
+// phases byte-copy reth's AccountsTrie/StoragesTrie), then verified in place by
+// `vtrie` against --expect-root. reth trie nodes are byte-compatible with N42's
+// MarshalTrieNode (same mask order; reth's missing "+1" own-hash and missing
+// keylen-0/keylen-32 empty-path roots are handled by UnmarshalTrieNode's
+// own-hash detection and the P6 StorageTrieCursor lvl-0 synthesis). This is far
+// faster than rebuilding (no descent to leaves, no HashBuilder over 24M state).
+//
+// Verified before flipping the default: cmd/n42-reth-eip2935-repro replays the
+// REAL reth EIP-2935 storage nodes across 2755 incremental rounds spanning the
+// once-"wedging" block 25,191,537, and verbatim-incremental == full-rebuild
+// exactly. The prior #150 deprecation of tacc/tsto was a pre-P6 artifact: the
+// on-disk stale lived in D:/N42-hashed because a pre-P6 binary wrote stale
+// nodes, not because verbatim import is wrong on the current binary.
+//
+// FALLBACK: if `vtrie` ever reports a mismatch, re-run with
+// `--phases acc,sto,code,rtrie,head --expect-root=<root>` to rebuild
+// TrieAccount/TrieStorage from the hashed leaves (verify-before-clear).
 //
 // Prereq: N42 must have incarnation removed from the storage trie key
 // (32B addrHash, no 8B incarnation) so HashedStorages/StoragesTrie line
@@ -134,11 +142,13 @@ func main() {
 	dirtyGB := flag.Uint64("dirty-space-gb", 48, "MDBX dirty pool GB for dst")
 	commitEvery := flag.Uint64("commit-every", 5_000_000, "commit interval (entries)")
 	limit := flag.Uint64("limit", 0, "per-table cap for sampling (0=all)")
-	// Default rebuilds the trie from leaves (rtrie) instead of copying reth
-	// trie nodes (tacc/tsto, deprecated — see #150). tacc/tsto remain runnable
-	// via explicit --phases for debugging/comparison.
-	phases := flag.String("phases", "acc,sto,code,rtrie,head", "comma list of phases to run (acc,sto,code,rtrie,head; deprecated: tacc,tsto)")
-	expectRoot := flag.String("expect-root", "", "rtrie: expected stateRoot hex of --head-block; rtrie verifies before clearing TrieOf* (empty = skip verify, not recommended)")
+	// Default: VERBATIM trie import (tacc/tsto byte-copy) + vtrie verify
+	// (P7-A). Far faster than rebuilding. rtrie (rebuild-from-leaves) remains
+	// available as a fallback via explicit --phases if vtrie ever mismatches.
+	// For the fastest possible import (no verify), drop vtrie:
+	//   --phases acc,sto,tacc,tsto,code,head
+	phases := flag.String("phases", "acc,sto,tacc,tsto,code,vtrie,head", "comma list of phases to run (default verbatim: acc,sto,tacc,tsto,code,vtrie,head; rebuild fallback: acc,sto,code,rtrie,head)")
+	expectRoot := flag.String("expect-root", "", "expected stateRoot hex of --head-block; vtrie/rtrie verify against it (vtrie: read-only check; rtrie: verify-before-clear). empty = skip verify, not recommended")
 	tmpdir := flag.String("tmpdir", `D:/N42-trie-tmp`, "rtrie: ETL spill dir (same fast drive as dst)")
 	accBufGB := flag.Uint64("acc-buf-gb", 4, "rtrie: ETL account buffer GB")
 	stoBufGB := flag.Uint64("sto-buf-gb", 16, "rtrie: ETL storage buffer GB")
@@ -206,6 +216,11 @@ func main() {
 	if run("rtrie") {
 		if err := rebuildTrieFromLeaves(dstDB, *expectRoot, *tmpdir, *accBufGB, *stoBufGB, logger); err != nil {
 			fail("rebuild trie from leaves", err)
+		}
+	}
+	if run("vtrie") {
+		if err := verifyVerbatimTrie(dstDB, *expectRoot, logger); err != nil {
+			fail("verify verbatim trie", err)
 		}
 	}
 	if run("head") {

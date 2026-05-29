@@ -16,6 +16,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	log "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/lib/trie"
+	"github.com/n42blockchain/N42/modules/state/commitment"
 )
 
 // decodeRethBytecode extracts the raw deployed EVM bytecode from reth's
@@ -230,14 +231,19 @@ func migrateHashedStorages(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64,
 
 // migrateAccountsTrie: full byte-copy of reth's AccountsTrie.
 //
-// DEPRECATED (2026-05-29, #150): copying reth trie nodes verbatim leaves the
-// branch records' own-hash (rootHash) field in a representation that does NOT
-// match N42's MarshalTrieNode for subtrees never re-dirtied during later
-// self-sync — N42's incremental loader then reads a stale cached root and the
-// state root drifts (see [[150-hph-cache-stale]]). Prefer the `rtrie` phase
-// (rebuildTrieFromLeaves), which recomputes TrieOf* from the hashed leaves so
-// every record is N42-native and self-consistent. Kept only for explicit
-// `--phases tacc,tsto` debugging/comparison; NOT in the default phase list.
+// DEFAULT path (re-enabled 2026-05-29, P7-A). reth AccountsTrie nodes are
+// byte-compatible with N42's MarshalTrieNode (same state/tree/hash mask order;
+// reth omits the "+1" own-hash, which UnmarshalTrieNode detects via
+// OnesCount16(hasHash)+1==nHashes and treats as "no cached own-hash" → the
+// node's hash is recomputed). reth also omits the keylen-0 global root record,
+// but so does N42 (AccTrieCursor walks from First(), never relying on it), so
+// the shapes already match. The earlier #150 deprecation was a pre-P6 artifact:
+// the on-disk stale in D:/N42-hashed was written by a pre-P6 binary, not caused
+// by verbatim import on the current binary. Verified: cmd/n42-reth-eip2935-repro
+// (real reth nodes, verbatim incremental == full rebuild across block
+// 25,191,537) + cmd/n42-reth-trie-probe (account/storage empty-path shapes).
+// The `vtrie` verify phase confirms the imported trie root before head is set;
+// the `rtrie` rebuild remains available as a fallback if vtrie ever mismatches.
 func migrateAccountsTrie(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, logger log.Logger) error {
 	say("PHASE tacc: AccountsTrie -> TrieOfAccounts (byte-copy)")
 	p := newProg("tacc", logger)
@@ -296,11 +302,15 @@ func migrateAccountsTrie(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, l
 
 // migrateStoragesTrie: byte-copy of reth's StoragesTrie (path extracted).
 //
-// DEPRECATED (2026-05-29, #150): same stale-rootHash problem as
-// migrateAccountsTrie — this is exactly what produced the EIP-2935 stale
-// storage root that wedged sync at block 25,191,537. Prefer the `rtrie`
-// phase. Kept only for explicit `--phases tacc,tsto`. See
-// [[150-hph-cache-stale]].
+// DEFAULT path (re-enabled 2026-05-29, P7-A). reth omits the per-contract
+// keylen-32 empty-path storage root, but StorageTrieCursor.SeekToAccount
+// synthesizes a virtual lvl-0 root (P6 fix) so the loader walks each storage
+// subtree correctly without it. The EIP-2935 storage root that previously
+// "wedged" at 25,191,537 was a pre-P6 on-disk artifact, not a verbatim-import
+// fault: cmd/n42-reth-eip2935-repro replays the REAL reth EIP-2935 nodes across
+// 2755 incremental rounds (through block 25,191,537) and verbatim incremental
+// matches full rebuild exactly. `vtrie` verifies the whole-state root post-
+// import; `rtrie` rebuild stays as a fallback.
 func migrateStoragesTrie(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, logger log.Logger) error {
 	say("PHASE tsto: StoragesTrie -> TrieOfStorage (extract nibble path)")
 	p := newProg("tsto", logger)
@@ -546,5 +556,47 @@ func rebuildTrieFromLeaves(dst kv.RwDB, expectRoot, tmpdir string, accBufGB, sto
 	}
 	say("PHASE rtrie done: root=0x%x accNodes=%d stoNodes=%d total=%s",
 		root[:], accN, stoN, time.Since(t0).Truncate(time.Second))
+	return nil
+}
+
+// verifyVerbatimTrie confirms the verbatim-imported TrieAccount/TrieStorage
+// reproduce the expected head stateRoot WITHOUT rebuilding. It runs one
+// incremental ComputeRoot with an EMPTY dirty set: the loader reads every
+// cached (verbatim reth) node and, for storage subtrees missing reth's
+// keylen-32 root, synthesizes the lvl-0 root via the P6 cursor path. The
+// resulting whole-state root is compared to --expect-root. The check is
+// read-only (the txn is rolled back), so it never mutates the imported trie.
+//
+// This is the verbatim counterpart to rtrie's verify-before-clear, but far
+// cheaper: it reads cached intermediate hashes instead of descending to every
+// hashed leaf. A mismatch means the verbatim import is not self-consistent for
+// this binary — re-run with `--phases acc,sto,code,rtrie,head` to rebuild.
+func verifyVerbatimTrie(dst kv.RwDB, expectRoot string, logger log.Logger) error {
+	say("PHASE vtrie: verify verbatim trie root via cached read (no rebuild)")
+	if expectRoot == "" {
+		say("  vtrie WARNING: --expect-root empty, skipping verify (cannot confirm verbatim trie reproduces the head stateRoot)")
+		return nil
+	}
+	ctx := context.Background()
+	t0 := time.Now()
+	tx, err := dst.BeginRw(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // read-only verify: never persist
+
+	trc := commitment.NewTrieRootComputer()
+	trc.SetIncremental(true)
+	trc.SetRwTx(tx)
+	root, err := trc.ComputeRoot(nil, nil) // empty dirty → root from all cached verbatim nodes
+	if err != nil {
+		return fmt.Errorf("vtrie ComputeRoot: %w", err)
+	}
+	got := fmt.Sprintf("0x%x", root[:])
+	if got != expectRoot {
+		return fmt.Errorf("vtrie ROOT MISMATCH: got %s want %s — verbatim trie not self-consistent on this binary; "+
+			"re-run `--phases acc,sto,code,rtrie,head --expect-root=%s` to rebuild from leaves", got, expectRoot, expectRoot)
+	}
+	say("PHASE vtrie OK: verbatim trie root %s == expect (verify took %s)", got, time.Since(t0).Truncate(time.Second))
 	return nil
 }
