@@ -309,7 +309,10 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	// use HashedAccounts — but other tests / paths that ARE exercised
 	// from the same adapter might, so we keep the legacy behavior off
 	// the wire path only.)
-	if !a.fastVerify {
+	// snapshot-direct (minimal) keeps no local trie — HashedAccounts/Storage are
+	// never scanned for a root, so skip the (30-60min / ~14GB) PlainState→Hashed
+	// init entirely. State is served from the warm overlay + snapshot cold tier.
+	if !a.fastVerify && a.snapshotCold == nil {
 		if err := ethel.InitHashState(tx); err != nil {
 			return nil, err
 		}
@@ -586,6 +589,10 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 		// dirty hashed state in Phase 1/2) but returns zero (root deferred to the
 		// per-sub-batch Merkle stage). Keep the trusted wire header.Root unchanged.
 		ibs.IntermediateRoot()
+	} else if a.snapshotCold != nil {
+		// snapshot-direct (minimal): no local trie. Trust the wire header.Root
+		// (the block was already validated by the network/CL); receipts/gas/bloom
+		// were verified above. Skip the root compute entirely — keep header.Root.
 	} else {
 		header.Root = ibs.IntermediateRoot()
 	}
@@ -617,6 +624,12 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	if a.staged {
 		// Staged catch-up: root not computed per block (writeOnly). Trust the wire
 		// header.Root; commitment.MerkleStageIncremental verifies the whole sub-batch.
+		computedRoot = header.Root
+	} else if a.snapshotCold != nil {
+		// snapshot-direct (minimal): trust the wire root — there is no local trie
+		// to verify against. Execution correctness is still bounded by the
+		// receipts-root / gas / logs-bloom checks above and the E2E-verified
+		// snapshot cold values feeding the warm overlay reader.
 		computedRoot = header.Root
 	} else if a.fastVerify {
 		// Wire-driven sync path (ExecutePayloadFromWire). Trust the HPH
