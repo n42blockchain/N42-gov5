@@ -101,7 +101,7 @@ func main() {
 		hs, ht, hh, hashes, root := trie.UnmarshalTrieNode(r.v)
 		rh := "-"
 		if len(root) > 0 {
-			rh = hex.EncodeToString(root[:4])
+			rh = hex.EncodeToString(root)
 		}
 		line := fmt.Sprintf("path=%-4s hs=%04x ht=%04x hh=%04x nH=%2d rh=%s", "'"+r.path+"'", hs, ht, hh, len(hashes)/32, rh)
 		for i := 0; i+32 <= len(hashes); i += 32 {

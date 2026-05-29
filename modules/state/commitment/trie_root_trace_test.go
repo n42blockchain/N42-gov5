@@ -15,6 +15,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
+	"github.com/n42blockchain/N42/lib/trie"
 )
 
 // stripToRethShape rewrites a TrieStorage into reth's on-disk shape: delete the
@@ -671,6 +672,161 @@ func TestNoRootSweep(t *testing.T) {
 			if rInc != rRef {
 				t.Errorf("MISMATCH inc=%x ref=%x", rInc[:], rRef[:])
 			}
+		})
+	}
+}
+
+// TestRethShapeMultiRound reproduces #150's core: a TRUE reth-shape start
+// (stripToRethShape — drops keylen-32 roots AND strips the +1 own-hash from
+// every node, the genuine reth on-disk format) followed by MANY consecutive
+// incremental rounds, each dirtying a DIFFERENT existing slot (mimicking
+// EIP-2935's per-block ring-buffer writes over 2755 self-sync blocks). Sibling
+// subtrees stay no-dirty across rounds and must not go stale. Existing tests
+// only ran ONE incremental round after stripToRethShape — that's the gap where
+// #150 hid. Each round is verified against a full rebuild; the first drifting
+// round pins the bug to a concrete (round, slot).
+func TestRethShapeMultiRound(t *testing.T) {
+	const slots = 256
+	const rounds = 40
+	accts, stor, addrs := buildDeep(3, slots)
+	db := memdb.NewTestDB(t)
+	tx, _ := db.BeginRw(context.Background())
+	defer tx.Rollback()
+	trc := NewTrieRootComputer()
+	trc.SetRwTx(tx)
+	trc.SetIncremental(false)
+	if _, err := trc.ComputeRoot(accts, stor); err != nil {
+		t.Fatal(err)
+	}
+	stripToRethShape(t, tx) // genuine reth on-disk shape
+	trc.SetIncremental(true)
+
+	a := addrs[0]
+	// cumulative reference state (deep copy of stor)
+	cum := map[types.Address]map[types.Hash]*uint256.Int{}
+	for k, m := range stor {
+		mm := map[types.Hash]*uint256.Int{}
+		for s, v := range m {
+			vv := *v
+			mm[s] = &vv
+		}
+		cum[k] = mm
+	}
+	for round := 0; round < rounds; round++ {
+		var s types.Hash
+		binary.BigEndian.PutUint32(s[0:4], uint32(round)) // change existing slot `round`
+		s[31] = 0                                          // addrs[0] (i=0 → s[31]=0)
+		nv := uint256.NewInt(uint64(round)*1000 + 999)
+		dS := map[types.Address]map[types.Hash]*uint256.Int{a: {s: nv}}
+		rootInc, err := trc.ComputeRoot(nil, dS)
+		if err != nil {
+			t.Fatalf("round %d: %v", round, err)
+		}
+		cum[a][s] = nv
+		want := fullRoot(t, accts, cum)
+		if rootInc != want {
+			t.Fatalf("round %d (slot %d): reth-shape MULTI-ROUND MISMATCH inc=%x want=%x — reproduces #150",
+				round, round, rootInc[:8], want[:8])
+		}
+	}
+	t.Logf("%d rounds reth-shape multi-round all OK", rounds)
+}
+
+// TestRethShapeCachedReadCorrect isolates whether N42 even READS a genuine
+// reth-shape trie correctly (independent of any incremental/drift). After
+// stripToRethShape, it recomputes the root using an EMPTY RetainList — every
+// subtree resolved from the cached (reth-format) nodes — and compares against
+// the N42-format root over the same leaves. If they differ, N42 mis-reads reth
+// nodes at import time (the real #150 root cause); if they match, reading is
+// fine and #150 lives elsewhere.
+func TestRethShapeCachedReadCorrect(t *testing.T) {
+	for _, slots := range []int{24, 256, 4096} {
+		t.Run(fmt.Sprintf("slots=%d", slots), func(t *testing.T) {
+			accts, stor, _ := buildDeep(3, slots)
+			db := memdb.NewTestDB(t)
+			tx, _ := db.BeginRw(context.Background())
+			defer tx.Rollback()
+			trc := NewTrieRootComputer()
+			trc.SetRwTx(tx)
+			trc.SetIncremental(false)
+			rootFull, err := trc.ComputeRoot(accts, stor) // N42 format + root
+			if err != nil {
+				t.Fatal(err)
+			}
+			stripToRethShape(t, tx) // → genuine reth on-disk format
+
+			// Read the root back using ONLY cached reth-format nodes.
+			loader := trie.NewFlatDBTrieLoader("reth-read", trie.NewRetainList(0), nil, nil, false)
+			rootCached, err := loader.CalcTrieRoot(tx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rootCached != rootFull {
+				t.Errorf("reth-shape CACHED-READ MISMATCH cached=%x full=%x — N42 mis-reads reth nodes at import",
+					rootCached[:8], rootFull[:8])
+			} else {
+				t.Logf("reth-shape cached read OK = %x", rootCached[:8])
+			}
+		})
+	}
+}
+
+// TestRethShapeMultiAcctMultiRound targets the suspected #150 mechanism:
+// MULTI-ACCOUNT whole-block incremental over a reth-shape trie, repeated many
+// rounds. The single-account multi-round test passes, and real reth EIP-2935
+// data over 2755 rounds passes — so the bug (if any) needs SeekToAccount to
+// switch between accounts each round (per memory hph-incremental-broken: the
+// reth no-keylen-32 synthesize path can retain a previous account's level
+// entries when paths share a prefix, corrupting THIS account's storage root).
+// Each round dirties one slot in EVERY account (a whole-block shape).
+func TestRethShapeMultiAcctMultiRound(t *testing.T) {
+	for _, n := range []int{3, 5, 8} {
+		t.Run(fmt.Sprintf("accts=%d", n), func(t *testing.T) {
+			const slots = 256
+			const rounds = 40
+			accts, stor, addrs := buildDeep(n, slots)
+			db := memdb.NewTestDB(t)
+			tx, _ := db.BeginRw(context.Background())
+			defer tx.Rollback()
+			trc := NewTrieRootComputer()
+			trc.SetRwTx(tx)
+			trc.SetIncremental(false)
+			if _, err := trc.ComputeRoot(accts, stor); err != nil {
+				t.Fatal(err)
+			}
+			stripToRethShape(t, tx)
+			trc.SetIncremental(true)
+
+			cum := map[types.Address]map[types.Hash]*uint256.Int{}
+			for k, m := range stor {
+				mm := map[types.Hash]*uint256.Int{}
+				for s, v := range m {
+					vv := *v
+					mm[s] = &vv
+				}
+				cum[k] = mm
+			}
+			for round := 0; round < rounds; round++ {
+				dS := map[types.Address]map[types.Hash]*uint256.Int{}
+				for ai, a := range addrs {
+					var s types.Hash
+					binary.BigEndian.PutUint32(s[0:4], uint32(round))
+					s[31] = byte(ai) // account ai's slot namespace (buildDeep: s[31]=byte(i))
+					nv := uint256.NewInt(uint64(round)*100 + uint64(ai) + 1)
+					dS[a] = map[types.Hash]*uint256.Int{s: nv}
+					cum[a][s] = nv
+				}
+				rootInc, err := trc.ComputeRoot(nil, dS) // whole-block, multi-account
+				if err != nil {
+					t.Fatalf("round %d: %v", round, err)
+				}
+				want := fullRoot(t, accts, cum)
+				if rootInc != want {
+					t.Fatalf("accts=%d round %d: reth-shape MULTI-ACCT MISMATCH inc=%x want=%x — reproduces #150",
+						n, round, rootInc[:8], want[:8])
+				}
+			}
+			t.Logf("accts=%d: %d whole-block rounds all OK", n, rounds)
 		})
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/bits"
+	"os"
 	"time"
 
 	"github.com/n42blockchain/N42/lib/log/v3"
@@ -14,7 +15,7 @@ import (
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/lib/common/length"
 	"github.com/n42blockchain/N42/lib/kv"
-	
+
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/lib/rlphacks"
@@ -560,6 +561,21 @@ func (r *RootHashAggregator) genStructStorage() error {
 	r.groupsStorage, r.hasTreeStorage, r.hasHashStorage, err = GenStructStepEx(r.RetainNothing, r.currStorage.Bytes(), r.succStorage.Bytes(), r.hb, func(keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
 		if r.shc == nil {
 			return nil
+		}
+		// N42_TRACE_STORCOLL_TOP=1: print HashBuilder stack top at the exact
+		// moment storCollector fires for the EIP-2935 hashed-addr prefix
+		// (0x6c9d57be...). Cross-checks the rootHash GenStructStepEx hands us
+		// against an independent r.hb.topHash() read — they must agree if the
+		// stack really has the storage subtree root on top.
+		if os.Getenv("N42_TRACE_STORCOLL_TOP") == "1" && len(r.currAccK) >= 4 &&
+			r.currAccK[0] == 0x6c && r.currAccK[1] == 0x9d && r.currAccK[2] == 0x57 && r.currAccK[3] == 0xbe {
+			top := r.hb.topHash()
+			nHashes := 0
+			if len(hashes) > 0 {
+				nHashes = len(hashes) / 32
+			}
+			fmt.Fprintf(os.Stderr, "STORCOLLTOP accK=%x keyHex=%x rootHash=%x topHash=%x topLen=%d hasState=%04x hasTree=%04x hasHash=%04x nHashes=%d\n",
+				r.currAccK, keyHex, rootHash, top, len(top), hasState, hasTree, hasHash, nHashes)
 		}
 		return r.shc(r.currAccK, keyHex, hasState, hasTree, hasHash, hashes, rootHash)
 	}, data, r.groupsStorage, r.hasTreeStorage, r.hasHashStorage,
