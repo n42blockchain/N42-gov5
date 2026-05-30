@@ -17,6 +17,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"flag"
@@ -107,6 +108,7 @@ func main() {
 	rethDir := flag.String("reth", "", "plain-keyed reth datadir for plaintext slot harvest (e.g. D:/reth2k/db); empty = account proof only")
 	addrHex := flag.String("addr", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "plaintext account address (default USDC)")
 	maxSlots := flag.Int("slots", 6, "max storage slots to prove (requires --reth)")
+	probeCS := flag.Uint64("probe-cs", 0, "if set, report AccountChangeSet/StorageChangeSet entry counts for this block and exit")
 	expect := flag.String("expect", "", "override anchor stateRoot hex (used only when datadir has no headers)")
 	outPath := flag.String("out", "stateless-realproof.txt", "write the result summary here (trustworthy vs polluted stdout)")
 	flag.Parse()
@@ -129,6 +131,60 @@ func main() {
 		os.Exit(1)
 	}
 	defer tx.Rollback()
+
+	if *probeCS != 0 {
+		var bk [8]byte
+		binary.BigEndian.PutUint64(bk[:], *probeCS)
+		countDup := func(table string) (int, []byte) {
+			c, cerr := tx.CursorDupSort(table)
+			if cerr != nil {
+				fmt.Fprintf(os.Stderr, "%s cursor: %v\n", table, cerr)
+				return -1, nil
+			}
+			defer c.Close()
+			n := 0
+			var first []byte
+			for v, e := c.SeekBothRange(bk[:], nil); v != nil; _, v, e = c.NextDup() {
+				if e != nil {
+					break
+				}
+				if n == 0 {
+					first = append([]byte(nil), v...)
+				}
+				n++
+			}
+			return n, first
+		}
+		aN, aFirst := countDup("AccountChangeSet")
+		// StorageChangeSet key = blockNum(8) + address(+incarnation) — composite,
+		// so scan by 8-byte blockNum prefix over the full key space.
+		scanPrefix := func(table string) (keys int, dups int, firstKey, firstVal []byte) {
+			c, cerr := tx.CursorDupSort(table)
+			if cerr != nil {
+				fmt.Fprintf(os.Stderr, "%s cursor: %v\n", table, cerr)
+				return -1, -1, nil, nil
+			}
+			defer c.Close()
+			for k, v, e := c.Seek(bk[:]); k != nil; k, v, e = c.Next() {
+				if e != nil || len(k) < 8 || !bytes.Equal(k[:8], bk[:]) {
+					break
+				}
+				if keys == 0 {
+					firstKey = append([]byte(nil), k...)
+					firstVal = append([]byte(nil), v...)
+				}
+				if dups == 0 || !bytes.Equal(k, firstKey) {
+					keys++
+				}
+				dups++
+			}
+			return keys, dups, firstKey, firstVal
+		}
+		sKeys, sDups, sfk, sfv := scanPrefix("StorageChangeSet")
+		fmt.Fprintf(os.Stderr, "block %d: AccountChangeSet=%d (first dup %x)\n", *probeCS, aN, aFirst)
+		fmt.Fprintf(os.Stderr, "  StorageChangeSet keys=%d dups=%d firstKey=%x firstVal=%x\n", sKeys, sDups, sfk, sfv)
+		return
+	}
 
 	addr := types.HexToAddress(*addrHex)
 	addrHash, err := types.HashData(addr[:])
