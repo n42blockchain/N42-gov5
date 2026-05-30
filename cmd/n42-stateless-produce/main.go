@@ -95,6 +95,24 @@ func main() {
 		nbytes += len(n)
 	}
 
+	// Compact-wire compression (faithful): encode -> decode-to-nodes -> the
+	// round-tripped set must still anchor to the same root.
+	var compactBytes, compactRT int
+	var compactErr error
+	if wire, err := stateless.CompactProofFromNodes(root[:], proof); err == nil {
+		compactBytes = len(wire)
+		if nodes2, derr := stateless.DecodeCompactToNodes(wire); derr == nil {
+			for _, n := range nodes2 {
+				compactRT += len(n)
+			}
+			compactErr = stateless.VerifyProofAnchors(root[:], nodes2)
+		} else {
+			compactErr = derr
+		}
+	} else {
+		compactErr = err
+	}
+
 	var b []byte
 	add := func(f string, a ...interface{}) { b = append(b, []byte(fmt.Sprintf(f, a...))...) }
 	add("=== n42-stateless-produce (Phase A real-data validation) ===\n")
@@ -103,13 +121,20 @@ func main() {
 	add("computed root  : 0x%x\n", root[:])
 	add("header.Root    : 0x%x\n", headerRoot[:])
 	add("root == header : %v\n", rootMatch)
-	add("proof nodes    : %d (%d bytes)\n", len(proof), nbytes)
+	add("proof nodes    : %d (%d bytes, full RLP)\n", len(proof), nbytes)
 	add("proof anchors  : %v\n", anchorErr == nil)
 	if anchorErr != nil {
 		add("anchor error   : %v\n", anchorErr)
 	}
+	if compactBytes > 0 {
+		add("compact wire   : %d bytes (%.1f%% of full RLP)\n", compactBytes, 100*float64(compactBytes)/float64(nbytes))
+		add("compact decode : %d bytes round-tripped, anchors=%v\n", compactRT, compactErr == nil)
+	}
+	if compactErr != nil {
+		add("compact error  : %v\n", compactErr)
+	}
 	add("elapsed        : %s\n", elapsed)
-	pass := rootMatch && anchorErr == nil
+	pass := rootMatch && anchorErr == nil && compactErr == nil
 	add("RESULT         : %s\n", map[bool]string{true: "PASS", false: "FAIL"}[pass])
 
 	if werr := os.WriteFile(*outPath, b, 0o644); werr != nil {

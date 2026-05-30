@@ -4,6 +4,11 @@ import (
 	"bytes"
 	"math/rand"
 	"testing"
+
+	"github.com/holiman/uint256"
+
+	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/common/types"
 )
 
 // TestCompactProofRoundTrip asserts the compact wire reproduces the ROOT after
@@ -66,6 +71,87 @@ func TestCompactProofRoundTrip(t *testing.T) {
 	}
 	t.Logf("compact wire: %d bytes vs flat RLP proof: %d bytes (%.1f%%)",
 		totCompact, totRLP, 100*float64(totCompact)/float64(totRLP))
+}
+
+// TestCompactProofFaithful proves the faithful encoder: a REAL EIP-1186 proof
+// (account + storage, lazily loaded as hashNodes into t.nodes) survives a
+// compact encode→decode→re-serialize round-trip and still verifies through the
+// P8 consumer — i.e. no proof node is lost. Also reports the size ratio.
+func TestCompactProofFaithful(t *testing.T) {
+	accts := map[types.Address]*account.StateAccount{}
+	stor := map[types.Address]map[types.Hash]*uint256.Int{}
+	for i := 1; i <= 12; i++ {
+		a := &account.StateAccount{}
+		a.Reset()
+		a.Nonce = uint64(i)
+		a.Balance.SetUint64(uint64(i) * 700)
+		a.CodeHash = types.BytesToHash(emptyCodeHashBytes)
+		a.Initialised = true
+		accts[addr20(uint64(i))] = a
+	}
+	target := addr20(100)
+	c := &account.StateAccount{}
+	c.Reset()
+	c.Nonce = 1
+	c.Balance.SetUint64(42)
+	c.CodeHash = types.BytesToHash([]byte{0xab, 0xcd})
+	c.Initialised = true
+	accts[target] = c
+	slots := []types.Hash{slot32(1), slot32(2), slot32(99), slot32(12345)}
+	m := map[types.Hash]*uint256.Int{}
+	for i, s := range slots {
+		m[s] = uint256.NewInt(uint64(i)*1000 + 7)
+	}
+	m[slot32(777)] = uint256.NewInt(0xdeadbeef)
+	stor[target] = m
+
+	root, res := genProof(t, accts, stor, target, slots)
+
+	// Round-trip the account multiproof through the compact wire.
+	flat := 0
+	for _, n := range res.AccountProof {
+		flat += len(n)
+	}
+	wire, err := CompactProofFromNodes(root[:], res.AccountProof)
+	if err != nil {
+		t.Fatalf("CompactProofFromNodes: %v", err)
+	}
+	nodes2, err := DecodeCompactToNodes(wire)
+	if err != nil {
+		t.Fatalf("DecodeCompactToNodes: %v", err)
+	}
+	// Re-anchored partial trie from the round-tripped nodes must reproduce root.
+	pt, err := newPartialTrie(root[:], nodes2)
+	if err != nil || !bytes.Equal(pt.hash(), root[:]) {
+		t.Fatalf("round-tripped account nodes do not reconstruct root (err=%v)", err)
+	}
+	t.Logf("account proof: flat %d B -> compact %d B (%.0f%%), nodes %d->%d",
+		flat, len(wire), 100*float64(len(wire))/float64(flat), len(res.AccountProof), len(nodes2))
+
+	// Faithfulness through the consumer: swap in the round-tripped proofs and
+	// re-run VerifyAccountInclusion — it must still pass (account + storage).
+	res2 := *res
+	res2.AccountProof = nodes2
+	res2.StorageProof = make([]account.StorProofResult, len(res.StorageProof))
+	copy(res2.StorageProof, res.StorageProof)
+	for i := range res2.StorageProof {
+		sp := &res2.StorageProof[i]
+		if len(sp.Proof) == 0 {
+			continue
+		}
+		sw, err := CompactProofFromNodes(res.StorageHash[:], sp.Proof)
+		if err != nil {
+			t.Fatalf("storage compact: %v", err)
+		}
+		sn, err := DecodeCompactToNodes(sw)
+		if err != nil {
+			t.Fatalf("storage decode: %v", err)
+		}
+		sp.Proof = sn
+	}
+	if _, err := VerifyAccountInclusion(root[:], &res2); err != nil {
+		t.Fatalf("compact-round-tripped proof failed verification: %v", err)
+	}
 }
 
 // TestCompactProofWithBoundary: a SPARSE proof (only some keys' paths present,
