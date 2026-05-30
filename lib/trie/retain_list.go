@@ -18,7 +18,6 @@ package trie
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"sort"
 
@@ -74,10 +73,15 @@ func NewProofRetainer(addr types.Address, a *account.StateAccount, storageKeys [
 			return nil, err
 		}
 
-		var compactEncoded [72]byte
-		copy(compactEncoded[:32], addrHash[:])
-		binary.BigEndian.PutUint64(compactEncoded[32:40], 0)
-		copy(compactEncoded[40:], storageHash[:])
+		// Incarnation removed: N42's storage trie key is addrHash || slotHash
+		// (no 8-byte incarnation — see trie_root.go genStructStorage, which
+		// builds the proof element key as a 64-nibble fullKey). The retain key
+		// MUST match that layout, otherwise the storage walk prefix diverges at
+		// nibble 64 (incarnation zeros vs. slot nibbles) and no storage proof
+		// element is ever collected.
+		var compactEncoded [2 * length.Hash]byte
+		copy(compactEncoded[:length.Hash], addrHash[:])
+		copy(compactEncoded[length.Hash:], storageHash[:])
 		storageHexKeys[i] = rl.AddKey(compactEncoded[:])
 	}
 
@@ -165,16 +169,26 @@ func (pr *ProofRetainer) ProofResult() (*account.AccProofResult, error) {
 		}
 
 		for _, pe := range pr.proofs {
-			if len(pe.hexKey) <= 2*32 {
-				// Ignore the proof elements above the storage tree (64 bytes, as nibble
-				// encoded)
+			// Account-path interior nodes are strictly shorter than the 64-nibble
+			// account key; skip them. (Incarnation removed: storage-subtree nodes
+			// start at the account key length, so we can no longer rely on the
+			// old 16-nibble incarnation gap to separate them by length alone.)
+			if len(pe.hexKey) < 2*length.Hash {
+				continue
+			}
+			// The account leaf sits at exactly the account key length and records
+			// the storageRoot; it belongs to the account proof, not the storage
+			// subtree. The storage-subtree ROOT also sits at that length (empty
+			// storage prefix) but never sets storageRootKey, so this cleanly keeps
+			// the storage root while excluding the account leaf.
+			if len(pe.storageRootKey) > 0 {
 				continue
 			}
 			if !bytes.HasPrefix(hexKey, pe.hexKey) {
 				continue
 			}
 
-			if pe.storageValue != nil && bytes.Equal(pe.storageKey, hexKey[2*(length.Hash+length.Incarnation):]) {
+			if pe.storageValue != nil && bytes.Equal(pe.storageKey, hexKey[2*length.Hash:]) {
 				result.StorageProof[i].Value = pe.storageValue.ToBig().String()
 			}
 
