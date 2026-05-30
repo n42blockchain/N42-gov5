@@ -139,3 +139,28 @@ func MerkleStageIncrementalWithProof(tx kv.RwTx, from, to uint64) (types.Hash, [
 		"accKeys", nAcc, "stoKeys", nSto, "root", root.Hex(), "proofNodes", len(proof))
 	return root, proof, nil
 }
+
+// ExtractBlockMultiproof is the READ-ONLY twin of MerkleStageIncrementalWithProof:
+// it captures the same touched-path multiproof for blocks [from,to] and returns
+// the root the current trie reconstructs to, WITHOUT writing TrieOf* back (no-op
+// HashCollectors). Because proof capture happens entirely in CalcTrieRoot's read
+// pass, this takes a plain kv.Tx and is safe to run against a live datadir.
+// Run it while the trie is at the post-state of `to` to obtain a multiproof
+// anchored at header[to].Root.
+func ExtractBlockMultiproof(tx kv.Tx, from, to uint64) (types.Hash, [][]byte, error) {
+	rl, _, _, err := BuildRetainListFromChangesets(tx, from, to)
+	if err != nil {
+		return types.Hash{}, nil, err
+	}
+	wr := trie.NewWitnessRetainerFromList(rl)
+	loader := trie.NewFlatDBTrieLoader("extract-proof", rl,
+		func([]byte, uint16, uint16, uint16, []byte, []byte) error { return nil },
+		func([]byte, []byte, uint16, uint16, uint16, []byte, []byte) error { return nil },
+		false)
+	loader.SetWitnessRetainer(wr)
+	root, err := loader.CalcTrieRoot(tx, nil)
+	if err != nil {
+		return types.Hash{}, nil, err
+	}
+	return root, wr.Nodes(), nil
+}
