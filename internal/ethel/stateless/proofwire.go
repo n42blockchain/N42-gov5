@@ -47,6 +47,20 @@ const (
 
 // EncodeCompactProof serializes a partial trie into the compact tree wire,
 // omitting all internal-node hashes.
+//
+// SCOPE / KNOWN LIMITATION (2026-05-30): the encoder treats every hashNode as a
+// boundary, so a partialTrie loaded lazily from a proof (where ≥32 B children
+// are hashNodes pointing into t.nodes) encodes those children as 32 B boundary
+// refs. The decoded trie therefore REPRODUCES THE ROOT correctly (hashing a
+// boundary uses its bytes) but is NOT a faithful structural round-trip for
+// subsequent mutation: an insert/delete that must descend into a boundary child
+// hits errMissingNode (its blob isn't in the decoded map). A faithful encoder
+// must instead inline every in-map child as a recursed subtree (and keep only
+// genuinely-absent children as boundaries). This is not yet wired into the
+// verification path — verify.go consumes standard RLP node sets ([][]byte),
+// which ARE faithful for mutation; the compact wire is a size optimization
+// pending the faithful-encode fix. Do not feed a compact-decoded trie to
+// StateRootUpdater until then.
 func EncodeCompactProof(t *partialTrie) []byte {
 	if t.root == nil {
 		return []byte{wEmpty}
