@@ -58,21 +58,26 @@ func hexToCompact(hex []byte) []byte {
 	return buf
 }
 
-// compactToHex reverses hexToCompact.
+// compactToHex reverses hexToCompact (go-ethereum trie.compactToHex).
+// Input HP byte form -> hex nibbles, re-appending the 0x10 leaf terminator.
 func compactToHex(compact []byte) []byte {
 	if len(compact) == 0 {
 		return []byte{16}
 	}
 	base := keybytesToHexNoTerm(compact)
-	// delete terminator flag
-	if base[0] < 2 {
-		base = base[:len(base)-1]
+	// base[0] holds 2*terminatorFlag + oddFlag (from the HP first byte's high
+	// nibble: 0x2->leaf even, 0x3->leaf odd, 0x0->ext even, 0x1->ext odd).
+	// Append terminator iff leaf (base[0] >= 2).
+	if base[0] >= 2 {
+		base = append(base, 16)
 	}
-	// apply odd flag
+	// Chop the header nibbles: 2 for even (flag nibble + padding 0), 1 for odd
+	// (flag nibble only, first key nibble already in base[1]).
 	chop := 2 - base[0]&1
 	return base[chop:]
 }
 
+// keybytesToHexNoTerm expands bytes to nibbles with NO leaf terminator.
 func keybytesToHexNoTerm(b []byte) []byte {
 	nib := make([]byte, len(b)*2)
 	for i, x := range b {
