@@ -6,10 +6,12 @@ import (
 	"testing"
 )
 
-// TestCompactProofRoundTrip: build a trie, take its full node set as a standard
-// RLP proof, load it into a partialTrie, encode to the compact wire, decode
-// back, and assert the decoded trie's root == the original root (lossless), and
-// that the compact form is smaller than the flat RLP proof.
+// TestCompactProofRoundTrip asserts the compact wire reproduces the ROOT after
+// encode→decode, and is smaller than the flat RLP proof. NOTE: this proves only
+// root reproduction, NOT a faithful structural round-trip for later mutation —
+// see EncodeCompactProof's KNOWN LIMITATION. The compact wire is not yet wired
+// into the (RLP-based) verification path; this guards the size+root property
+// while the faithful-encode fix is pending.
 func TestCompactProofRoundTrip(t *testing.T) {
 	rng := rand.New(rand.NewSource(11))
 	var totRLP, totCompact int
