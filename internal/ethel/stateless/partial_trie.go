@@ -248,8 +248,14 @@ func (t *partialTrie) delete(n node, prefix, key []byte) (bool, node, error) {
 					return true, &shortNode{key: k, val: cn.val, flags: dirtyFlag()}, nil
 				}
 			}
-			// single value-slot child, or non-short child: wrap in a short node
-			return true, &shortNode{key: []byte{byte(pos), 16}, val: c.children[pos], flags: dirtyFlag()}, nil
+			// Surviving child is the value slot (pos==16) or a non-short node
+			// (a branch / unresolved hash). Wrap in a ONE-nibble short node
+			// keyed []byte{byte(pos)}: when pos==16 that nibble IS the 0x10 leaf
+			// terminator (value-slot leaf); when pos<16 it is an extension into
+			// the surviving branch. Appending an explicit 16 here was the bug —
+			// it turned an extension into a bogus terminated leaf (go-ethereum
+			// trie.delete uses []byte{byte(pos)}).
+			return true, &shortNode{key: []byte{byte(pos)}, val: c.children[pos], flags: dirtyFlag()}, nil
 		}
 		return true, c, nil
 	case valueNode:
