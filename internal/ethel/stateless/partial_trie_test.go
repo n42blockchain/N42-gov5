@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"math/rand"
 	"testing"
+
+	libtrie "github.com/n42blockchain/N42/lib/trie"
 )
 
 // fullTrie builds a complete in-memory trie from scratch (every node present),
@@ -51,17 +53,19 @@ func k32(i uint64) []byte {
 }
 
 func TestEmptyRootMatchesEthereum(t *testing.T) {
-	// keccak(rlp("")) = keccak(0x80) = the canonical empty MPT root.
-	want := "56e81f171bcac102f8fc1c3e6e21c7f5e51b9c2c5e1e2e8d2cf8f9e0c0e0..." // prefix-checked below
+	// keccak(rlp("")) = keccak(0x80) = the canonical empty MPT root. Anchored to
+	// the project's own lib/trie.EmptyRoot (the constant N42 uses in production),
+	// = 0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421.
+	want := libtrie.EmptyRoot.Hex()[2:] // strip 0x
 	got := hex.EncodeToString(emptyRootHash)
-	if !bytes.HasPrefix([]byte(got), []byte("56e81f171bcac1")) {
-		t.Fatalf("empty root = %s, want prefix 56e81f171bcac1 (%.14s)", got, want)
+	if got != want {
+		t.Fatalf("empty root = %s, want %s (lib/trie.EmptyRoot)", got, want)
 	}
 }
 
 func TestPartialUpdateEqualsFullRebuild(t *testing.T) {
 	rng := rand.New(rand.NewSource(42))
-	for round := 0; round < 50; round++ {
+	for round := 0; round < 300; round++ {
 		nKeys := 20 + rng.Intn(200)
 		// base state
 		base := map[string][]byte{}
