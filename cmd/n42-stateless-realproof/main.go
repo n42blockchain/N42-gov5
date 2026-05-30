@@ -3,18 +3,17 @@
 // ProofRetainer + FlatDBTrieLoader — the same machinery that computes eth-el's
 // header.Root — and feeds it through the P8 stateless consumer
 // (stateless.VerifyAccountInclusion) to prove a minimal client can verify a real
-// mainnet account against the trusted head state root.
+// mainnet account (and its storage slots) against the trusted head state root.
 //
-// This is Step 2 of P8 ③b ("接真实主网数据"): it closes the loop from real
+// This is P8 ③b Step 2/2b ("接真实主网数据"): it closes the loop from real
 // on-disk state to the P8 partialTrie. The account-trie root the proof anchors
 // to is the production CalcTrieRoot output; the INDEPENDENT anchor is the
-// canonical head header.Root read straight from the datadir (if it carries block
-// headers), so the check is not circular. --expect overrides the anchor when the
-// datadir has no headers (pure migration state).
+// canonical head header.Root read straight from the datadir.
 //
-// D:/N42-hashed is mainnet-aligned, so the address is supplied in plaintext
-// (--addr, default USDC). Storage-slot proofs need plaintext slots (only from a
-// plain-keyed reth datadir) and are out of scope here — Step 2b.
+// D:/N42-hashed is mainnet-aligned but HASHED, so plaintext slots are needed for
+// storage proofs. --reth points at a plain-keyed reth datadir (D:/reth2k) from
+// which we harvest real plaintext slots for the address (Step 2b). Without
+// --reth only the account proof is produced (Step 2).
 package main
 
 import (
@@ -44,9 +43,70 @@ func nopStorHC(accWithInc, keyHex []byte, hasState, hasTree, hasHash uint16, has
 	return nil
 }
 
+// harvestSlots opens a plain-keyed reth datadir, enumerates `addr`'s storage
+// slots (PlainStorageState: key=addr20, dup=slot32||value), and keeps up to
+// `max` plaintext slots that are ALSO present (non-zero) in the hashed N42 tx
+// (so the resulting storage proofs are real inclusion proofs at the N42 head).
+func harvestSlots(logger log.Logger, rethDir string, addr types.Address, addrHash types.Hash, n42tx kv.Tx, max int) ([]types.Hash, error) {
+	rdb, err := mdbx.NewMDBX(logger).Path(rethDir).Label(kv.ChainDB).
+		PageSize(4096).MapSize(4 * datasize.TB).Readonly().Accede().
+		WithTableCfg(func(kv.TableCfg) kv.TableCfg {
+			return kv.TableCfg{
+				"PlainStorageState": kv.TableCfgItem{Flags: kv.DupSort},
+				"PlainAccountState": kv.TableCfgItem{},
+			}
+		}).Open(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("open reth: %w", err)
+	}
+	defer rdb.Close()
+
+	rtx, err := rdb.BeginRo(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	defer rtx.Rollback()
+	c, err := rtx.CursorDupSort("PlainStorageState")
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+
+	var slots []types.Hash
+	v, err := c.SeekBothRange(addr[:], nil)
+	for ; v != nil && len(slots) < max; _, v, err = c.NextDup() {
+		if err != nil {
+			return nil, err
+		}
+		if len(v) < 32 {
+			continue
+		}
+		slot := types.BytesToHash(v[:32])
+		// keep only slots present in the N42 hashed state (same head).
+		slotHash, herr := types.HashData(slot[:])
+		if herr != nil {
+			return nil, herr
+		}
+		var key64 [64]byte
+		copy(key64[:32], addrHash[:])
+		copy(key64[32:], slotHash[:])
+		nv, gerr := n42tx.GetOne(kv.HashedStorage, key64[:])
+		if gerr != nil {
+			return nil, gerr
+		}
+		if len(nv) == 0 {
+			continue // absent at N42 head — skip so we exercise real inclusion
+		}
+		slots = append(slots, slot)
+	}
+	return slots, nil
+}
+
 func main() {
 	dir := flag.String("dir", `D:/N42-hashed/chaindata`, "hashed-canonical N42 chaindata dir")
+	rethDir := flag.String("reth", "", "plain-keyed reth datadir for plaintext slot harvest (e.g. D:/reth2k/db); empty = account proof only")
 	addrHex := flag.String("addr", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "plaintext account address (default USDC)")
+	maxSlots := flag.Int("slots", 6, "max storage slots to prove (requires --reth)")
 	expect := flag.String("expect", "", "override anchor stateRoot hex (used only when datadir has no headers)")
 	outPath := flag.String("out", "stateless-realproof.txt", "write the result summary here (trustworthy vs polluted stdout)")
 	flag.Parse()
@@ -77,8 +137,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 0. Independent anchor: canonical head header.Root straight from the datadir
-	//    (bypasses CalcTrieRoot). Empty if this datadir carries no block headers.
+	// 0. Independent anchor: canonical head header.Root straight from the datadir.
 	var headerRoot []byte
 	var headNum uint64
 	haveHeader := false
@@ -92,9 +151,8 @@ func main() {
 		}
 	}
 	if !haveHeader {
-		// Migration datadir: the LastBlock head pointer is unset, but headers
-		// exist keyed by number. Find the canonical head via the highest
-		// CanonicalHeader key (block_num_u64 BE).
+		// Migration datadir: LastBlock head pointer unset, but headers exist
+		// keyed by number — find the canonical head via the highest key.
 		if c, cerr := tx.Cursor(kv.HeaderCanonical); cerr == nil {
 			k, v, lerr := c.Last()
 			c.Close()
@@ -126,10 +184,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 2. Generate the EIP-1186 account proof via the production machinery.
+	// 1b. Harvest plaintext slots from reth (Step 2b).
+	var slots []types.Hash
+	if *rethDir != "" {
+		slots, err = harvestSlots(logger, *rethDir, addr, addrHash, tx, *maxSlots)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "harvest slots:", err)
+			os.Exit(1)
+		}
+	}
+
+	// 2. Generate the EIP-1186 account (+ storage) proof via production machinery.
 	t0 := time.Now()
 	rl := trie.NewRetainList(0)
-	pr, err := trie.NewProofRetainer(addr, &acc, nil, rl)
+	pr, err := trie.NewProofRetainer(addr, &acc, slots, rl)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "NewProofRetainer:", err)
 		os.Exit(1)
@@ -148,8 +216,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 3. Feed the real proof through the P8 stateless consumer, anchored to the
-	//    computed account-trie root.
+	// 3. Feed the real proof through the P8 stateless consumer (account + storage).
 	va, verr := stateless.VerifyAccountInclusion(root[:], res)
 
 	// 4. Independent anchor check: computed root == header.Root (or --expect).
@@ -162,11 +229,19 @@ func main() {
 	}
 	anchorOK := anchorHex == "" || rootHex == anchorHex
 
-	// Assemble a trustworthy summary (stdout in this env can be polluted).
+	// Count non-zero storage slots actually proven (real inclusions).
+	nonZero := 0
+	for i := range res.StorageProof {
+		if res.StorageProof[i].Value != "0" && res.StorageProof[i].Value != "" {
+			nonZero++
+		}
+	}
+
 	var b []byte
 	add := func(format string, args ...interface{}) { b = append(b, []byte(fmt.Sprintf(format, args...))...) }
 	add("=== n42-stateless-realproof ===\n")
 	add("dir            : %s\n", *dir)
+	add("reth           : %s\n", *rethDir)
 	add("address        : %s\n", addr.Hex())
 	add("addrHash       : %x\n", addrHash[:])
 	if haveHeader {
@@ -179,9 +254,14 @@ func main() {
 	add("anchor match   : %v\n", anchorOK)
 	add("proof elapsed  : %s\n", elapsed)
 	add("acct proof len : %d nodes\n", len(res.AccountProof))
+	add("storage proofs : %d (%d non-zero / real inclusion)\n", len(res.StorageProof), nonZero)
 	add("leaf nonce     : %d\n", acc.Nonce)
 	add("leaf balance   : %s\n", acc.Balance.ToBig().String())
 	add("leaf codeHash  : %x\n", acc.CodeHash[:])
+	for i := range res.StorageProof {
+		sp := &res.StorageProof[i]
+		add("  slot[%d] %x = %s (%d proof nodes)\n", i, sp.Key[:8], sp.Value, len(sp.Proof))
+	}
 	if verr != nil {
 		add("VERIFY         : FAIL: %v\n", verr)
 	} else {
