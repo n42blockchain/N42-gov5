@@ -89,6 +89,21 @@ func VerifyStateRoot(preStateRoot, trustedPostRoot []byte, bp *BlockProof) error
 	return nil
 }
 
+// VerifyProofAnchors checks that proofNodes form a multiproof that anchors to
+// root: the root node must resolve from the set and re-hash to root. Used to
+// validate a captured/received multiproof against a trusted (e.g. header) root
+// before relying on it.
+func VerifyProofAnchors(root []byte, proofNodes [][]byte) error {
+	pt, err := newPartialTrie(root, proofNodes)
+	if err != nil {
+		return fmt.Errorf("proof does not anchor to root: %w", err)
+	}
+	if got := pt.hash(); !bytes.Equal(got, root) {
+		return fmt.Errorf("proof root mismatch: %x != %x", got[:8], root[:8])
+	}
+	return nil
+}
+
 // VerifyAgainstChain is the minimal-client entry point: it pulls the trusted
 // pre/post state roots for bp.Number from a HeaderChain (so both anchors trace
 // to the checkpoint) and verifies the state transition.
