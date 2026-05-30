@@ -9,13 +9,19 @@
 // header[N-1].Root. That is a complete stateless verification of N-1 -> N (run
 // backwards), anchored to two independently-stored canonical headers.
 //
-// This is P8 ③b Step 3. Limits (reported, not hidden): an account SELF-DESTRUCTed
-// in block N has no post-state storage to restore (irreversible from post alone);
-// such blocks are flagged. Accounts CREATED in N revert via delete, which needs
-// the sibling nodes a per-key proof may omit — surfaced as a missing-node error.
+// This is P8 ③b Step 3. Scope: the datadir holds ONLY the head trie, so proofs
+// exist only at the head post-state — therefore only the HEAD block's transition
+// (head-1 -> head) is verifiable here, which is exactly the live/minimal-client
+// case (verify each new block as it arrives). Non-head --block is rejected with a
+// warning (its post-state trie is not stored). Created keys (accounts/slots)
+// revert via delete; the branch-collapse sibling nodes a per-key proof omits are
+// supplied by a neighbour-retain WitnessRetainer pass. A SELF-DESTRUCT in the
+// head block would have no post-state storage to restore (irreversible from post
+// alone) and is flagged; post-EIP-6780 these are essentially absent at tip.
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"flag"
@@ -77,9 +83,11 @@ func main() {
 	}
 	defer tx.Rollback()
 
-	// Resolve block N (default canonical head) and the pre/post header roots.
-	blockN := *blockFlag
-	if blockN == 0 {
+	// Resolve canonical head: this datadir holds ONLY the head trie, so proofs
+	// can only be generated against the head post-state. Verifying block N
+	// requires the datadir's trie to be at N — i.e. N == head.
+	var headNum uint64
+	{
 		c, _ := tx.Cursor(kv.HeaderCanonical)
 		k, _, lerr := c.Last()
 		c.Close()
@@ -87,7 +95,17 @@ func main() {
 			fmt.Fprintln(os.Stderr, "cannot find canonical head")
 			os.Exit(1)
 		}
-		blockN = binary.BigEndian.Uint64(k)
+		headNum = binary.BigEndian.Uint64(k)
+	}
+	blockN := *blockFlag
+	if blockN == 0 {
+		blockN = headNum
+	}
+	if blockN != headNum {
+		fmt.Fprintf(os.Stderr, "WARNING: block %d != head %d — this head-only datadir can only\n"+
+			"  generate proofs at the head post-state, so verification will fail for non-head\n"+
+			"  blocks (their post-state trie is not stored). Run without --block to verify head.\n",
+			blockN, headNum)
 	}
 	postRoot := headerRoot(tx, blockN)
 	preRoot := headerRoot(tx, blockN-1)
@@ -164,6 +182,12 @@ func main() {
 	}
 	var changes []stateless.AccountChange
 	var nCreated, nSelfdestruct, nStorageOnly, nProofMs int64
+	// Deleted keys (created in N) revert via delete; record them so we can add
+	// their trie neighbours to the witness (the branch-collapse sibling nodes a
+	// single-key proof omits).
+	var createdAccts []types.Hash
+	type slotKey struct{ a, s types.Hash }
+	var createdSlots []slotKey
 	t0 := time.Now()
 
 	for _, addr := range addrs {
@@ -206,6 +230,7 @@ func main() {
 			// Created in N -> revert by deleting.
 			ch.Deleted = true
 			nCreated++
+			createdAccts = append(createdAccts, addrHash)
 		default:
 			var oldAcc account.StateAccount
 			if t.inAcctCS {
@@ -237,10 +262,56 @@ func main() {
 				for _, slot := range t.slotOrder {
 					slotHash, _ := types.HashData(slot[:])
 					ch.Storage = append(ch.Storage, stateless.StorageChange{SlotHash: slotHash, Value: t.slots[slot]})
+					if len(t.slots[slot]) == 0 { // slot created in N -> revert deletes it
+						createdSlots = append(createdSlots, slotKey{addrHash, slotHash})
+					}
 				}
 			}
 		}
 		changes = append(changes, ch)
+	}
+
+	// Neighbour-retain pass: for every key DELETED by the reverse (created in N),
+	// add its trie neighbours' hashed keys so the witness carries the sibling
+	// subtree nodes the branch-collapse needs. One CalcTrieRoot over a
+	// WitnessRetainer yields a flat node set; merged into the proof it is
+	// resolved by hash, so the extra nodes are harmless where unneeded.
+	var siblingNodes [][]byte
+	nNeighborKeys := 0
+	if len(createdAccts) > 0 || len(createdSlots) > 0 {
+		rl := trie.NewRetainList(0)
+		wr := trie.NewWitnessRetainer(rl)
+		for _, ah := range createdAccts {
+			for _, nb := range acctNeighbors(tx, ah) {
+				wr.AddHashedKey(nb)
+				nNeighborKeys++
+			}
+		}
+		for _, ck := range createdSlots {
+			for _, nb := range slotNeighbors(tx, ck.a, ck.s) {
+				var composite [64]byte
+				copy(composite[:32], ck.a[:])
+				copy(composite[32:], nb)
+				wr.AddHashedKey(composite[:])
+				nNeighborKeys++
+			}
+		}
+		loader := trie.NewFlatDBTrieLoader("transition-neighbors", rl, nopAccHC, nopStorHC, false)
+		loader.SetWitnessRetainer(wr)
+		if _, lerr := loader.CalcTrieRoot(tx, nil); lerr != nil {
+			fmt.Fprintln(os.Stderr, "neighbor calc:", lerr)
+			os.Exit(1)
+		}
+		siblingNodes = wr.Nodes()
+		for _, n := range siblingNodes {
+			acctNodes[string(keccakB(n))] = n
+		}
+		// Make the sibling nodes available to every storage subtree resolution too.
+		for i := range changes {
+			if len(changes[i].StorageProof) > 0 {
+				changes[i].StorageProof = append(changes[i].StorageProof, siblingNodes...)
+			}
+		}
 	}
 
 	acctProof := make([][]byte, 0, len(acctNodes))
@@ -263,6 +334,7 @@ func main() {
 	add("  created      : %d (reverted by delete)\n", nCreated)
 	add("  storage-only : %d\n", nStorageOnly)
 	add("  selfdestruct?: %d (post storage absent — irreversible)\n", nSelfdestruct)
+	add("neighbor retain: %d keys -> %d sibling nodes\n", nNeighborKeys, len(siblingNodes))
 	add("acct multiproof: %d nodes\n", len(acctProof))
 	add("proof gen total: %dms (per-account passes)\n", nProofMs)
 	add("wallclock      : %s\n", time.Since(t0).Truncate(time.Millisecond))
@@ -280,6 +352,58 @@ func main() {
 	if verr != nil {
 		os.Exit(2)
 	}
+}
+
+// acctNeighbors returns the raw 32B hashed keys of addrHash's predecessor and
+// successor in the account trie (HashedAccount), whose proofs carry the sibling
+// subtree a delete-collapse needs.
+func acctNeighbors(tx kv.Tx, addrHash types.Hash) [][]byte {
+	c, err := tx.Cursor(kv.HashedAccounts)
+	if err != nil {
+		return nil
+	}
+	defer c.Close()
+	var out [][]byte
+	if k, _, e := c.Seek(addrHash[:]); e == nil && k != nil {
+		if bytes.Equal(k, addrHash[:]) {
+			k, _, e = c.Next()
+		}
+		if e == nil && len(k) == 32 {
+			out = append(out, append([]byte(nil), k...))
+		}
+	}
+	if k, _, e := c.Seek(addrHash[:]); e == nil && k != nil {
+		if pk, _, pe := c.Prev(); pe == nil && len(pk) == 32 && !bytes.Equal(pk, addrHash[:]) {
+			out = append(out, append([]byte(nil), pk...))
+		}
+	}
+	return out
+}
+
+// slotNeighbors returns the predecessor/successor hashed slot keys (32B) of
+// slotHash within addrHash's storage subtree (HashedStorage DupSort).
+func slotNeighbors(tx kv.Tx, addrHash, slotHash types.Hash) [][]byte {
+	c, err := tx.CursorDupSort(kv.HashedStorage)
+	if err != nil {
+		return nil
+	}
+	defer c.Close()
+	var out [][]byte
+	if v, e := c.SeekBothRange(addrHash[:], slotHash[:]); e == nil && v != nil {
+		if len(v) >= 32 && bytes.Equal(v[:32], slotHash[:]) {
+			if _, v2, e2 := c.NextDup(); e2 == nil && len(v2) >= 32 {
+				out = append(out, append([]byte(nil), v2[:32]...))
+			}
+		} else if len(v) >= 32 {
+			out = append(out, append([]byte(nil), v[:32]...))
+		}
+	}
+	if v, e := c.SeekBothRange(addrHash[:], slotHash[:]); e == nil && v != nil {
+		if _, pv, pe := c.PrevDup(); pe == nil && len(pv) >= 32 && !bytes.Equal(pv[:32], slotHash[:]) {
+			out = append(out, append([]byte(nil), pv[:32]...))
+		}
+	}
+	return out
 }
 
 func headerRoot(tx kv.Tx, n uint64) []byte {
