@@ -126,8 +126,10 @@ type RootHashAggregator struct {
 	leafData       GenStructStepLeafData
 	accData        GenStructStepAccountData
 
-	// Used to construct an Account proof while calculating the tree root.
-	proofRetainer *ProofRetainer
+	// Used to construct a proof / block witness while calculating the tree root.
+	// Holds a *ProofRetainer (single-account EIP-1186) or *WitnessRetainer
+	// (multi-key flat witness); both satisfy proofCollector.
+	proofRetainer proofCollector
 	cutoff        bool
 }
 
@@ -163,6 +165,12 @@ func NewFlatDBTrieLoader(logPrefix string, rd RetainDeciderWithMarker, hc HashCo
 
 func (l *FlatDBTrieLoader) SetProofRetainer(pr *ProofRetainer) {
 	l.receiver.proofRetainer = pr
+}
+
+// SetWitnessRetainer installs a multi-key WitnessRetainer as the proof collector
+// (mutually exclusive with SetProofRetainer — the loader holds one collector).
+func (l *FlatDBTrieLoader) SetWitnessRetainer(w *WitnessRetainer) {
+	l.receiver.proofRetainer = w
 }
 
 // CalcTrieRoot algo:

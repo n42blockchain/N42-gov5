@@ -234,6 +234,77 @@ type proofElement struct {
 	storageKey []byte
 }
 
+// proofCollector receives a node-proof request for a trie prefix during root
+// computation; returning non-nil captures that node's RLP into the element.
+// ProofRetainer (single account, EIP-1186 AccProofResult) and WitnessRetainer
+// (multi-key flat block witness) both implement it. FlatDBTrieLoader holds one
+// and invokes ProofElement as each trie node is emitted.
+type proofCollector interface {
+	ProofElement(prefix []byte) *proofElement
+}
+
+// WitnessRetainer collects every proof node on the paths of a set of
+// already-hashed keys into a flat, de-duplicated node set — a block witness
+// sufficient for stateless re-execution INCLUDING the sibling subtrees a delete
+// needs when its branch collapses (add the deleted key's trie neighbours so
+// their paths reveal the surviving sibling). Unlike ProofRetainer it neither
+// hashes inputs nor builds an AccProofResult: callers add hashed account keys
+// (32B) and/or hashed storage composite keys (64B = addrHash||slotHash) via
+// AddHashedKey and read the merged RLP nodes via Nodes().
+type WitnessRetainer struct {
+	rl    *RetainList
+	keys  [][]byte // nibble-encoded retained keys, for prefix relevance tests
+	elems []*proofElement
+}
+
+func NewWitnessRetainer(rl *RetainList) *WitnessRetainer {
+	return &WitnessRetainer{rl: rl}
+}
+
+// AddHashedKey registers an already-hashed key (raw bytes) to be proven.
+func (w *WitnessRetainer) AddHashedKey(key []byte) {
+	w.keys = append(w.keys, w.rl.AddKey(key))
+}
+
+// ProofElement captures the node at prefix when that prefix lies on the path to,
+// or under, any registered key.
+func (w *WitnessRetainer) ProofElement(prefix []byte) *proofElement {
+	if !w.rl.Retain(prefix) {
+		return nil
+	}
+	relevant := false
+	for _, k := range w.keys {
+		if bytes.HasPrefix(k, prefix) || bytes.HasPrefix(prefix, k) {
+			relevant = true
+			break
+		}
+	}
+	if !relevant {
+		return nil
+	}
+	pe := &proofElement{hexKey: append([]byte{}, prefix...)}
+	w.elems = append(w.elems, pe)
+	return pe
+}
+
+// Nodes returns the collected proof nodes (RLP), de-duplicated by content.
+func (w *WitnessRetainer) Nodes() [][]byte {
+	seen := make(map[string]struct{}, len(w.elems))
+	out := make([][]byte, 0, len(w.elems))
+	for _, pe := range w.elems {
+		b := pe.proof.Bytes()
+		if len(b) == 0 {
+			continue
+		}
+		if _, ok := seen[string(b)]; ok {
+			continue
+		}
+		seen[string(b)] = struct{}{}
+		out = append(out, append([]byte(nil), b...))
+	}
+	return out
+}
+
 // RetainList encapsulates the list of keys that are required to be fully available, or loaded
 // (by using `BRANCH` opcode instead of `HASHER`) after processing of the sequence of key-value
 // pairs
