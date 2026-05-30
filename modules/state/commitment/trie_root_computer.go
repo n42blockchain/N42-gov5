@@ -64,7 +64,24 @@ type TrieRootComputer struct {
 	// by the sub-batch's touched keys (erigon2.7 IncrementIntermediateHashes
 	// model). Removes the ~82ms/block dRoot from the execution stage.
 	writeOnly bool
+
+	// captureProof: when set (incremental mode only), flushTrieRoot attaches a
+	// trie.WitnessRetainer to the FlatDBTrieLoader over the same dirty RetainList,
+	// so the multiproof for the touched paths is captured as a byproduct of
+	// computing the root. The captured nodes reconstruct to the COMPUTED root
+	// (the post-state root) — i.e. a post-state multiproof. Read via CapturedProof.
+	captureProof  bool
+	capturedProof [][]byte
 }
+
+// EnableProofCapture toggles per-call multiproof capture during flushTrieRoot
+// (incremental mode only). After a ComputeRoot/flushTrieRoot call, CapturedProof
+// returns the touched-path nodes that reconstruct to the computed root.
+func (t *TrieRootComputer) EnableProofCapture(v bool) { t.captureProof = v }
+
+// CapturedProof returns the multiproof captured by the most recent
+// proof-capturing root computation (nil if capture was off or none ran).
+func (t *TrieRootComputer) CapturedProof() [][]byte { return t.capturedProof }
 
 // SetWriteOnly toggles staged-catch-up write-only mode (per-block root deferred to
 // MerkleStageIncremental). TrieOf* is NOT maintained per block while set.
@@ -327,9 +344,20 @@ func (t *TrieRootComputer) flushTrieRoot(rl *trie.RetainList) (types.Hash, error
 		retainer = rl
 	}
 	loader := trie.NewFlatDBTrieLoader("trie-root", retainer, accCollector, storCollector, false)
+	var wr *trie.WitnessRetainer
+	if t.captureProof && t.incremental {
+		// Capture the touched-path multiproof over the SAME dirty RetainList the
+		// loader runs against. The emitted nodes reconstruct to the root computed
+		// here (post-state multiproof).
+		wr = trie.NewWitnessRetainerFromList(retainer)
+		loader.SetWitnessRetainer(wr)
+	}
 	root, err := loader.CalcTrieRoot(t.tx, nil)
 	if err != nil {
 		return types.Hash{}, fmt.Errorf("CalcTrieRoot: %w", err)
+	}
+	if wr != nil {
+		t.capturedProof = wr.Nodes()
 	}
 
 	// Phase 4: Flush collected intermediate hashes to TrieOfAccounts/TrieOfStorage.

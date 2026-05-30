@@ -108,3 +108,34 @@ func MerkleStageIncremental(tx kv.RwTx, from, to uint64) (types.Hash, error) {
 		"accKeys", nAcc, "stoKeys", nSto, "root", root.Hex())
 	return root, nil
 }
+
+// MerkleStageIncrementalWithProof is MerkleStageIncremental plus block-witness
+// capture: it returns the standard-RLP multiproof for the touched keys of
+// [from,to] alongside the computed root. The multiproof reconstructs to the
+// returned (post-state) root, so a minimal client can verify the [from,to]
+// transition against it. For a single block use from==to==N.
+//
+// Anchoring note: the captured proof is anchored at the COMPUTED (post) root —
+// it is a post-state multiproof. A minimal client verifies with it in the
+// reverse direction (post proof + changeset OLD values -> pre root), the model
+// n42-stateless-transition uses. A forward pre-state proof (anchored at the
+// N-1 root) is instead obtained by running this over [N,N] while the trie is
+// still at N-1 (before block N's leaf writes are flushed).
+func MerkleStageIncrementalWithProof(tx kv.RwTx, from, to uint64) (types.Hash, [][]byte, error) {
+	rl, nAcc, nSto, err := BuildRetainListFromChangesets(tx, from, to)
+	if err != nil {
+		return types.Hash{}, nil, err
+	}
+	trc := NewTrieRootComputer()
+	trc.SetRwTx(tx)
+	trc.SetIncremental(true)
+	trc.EnableProofCapture(true)
+	root, err := trc.flushTrieRoot(rl)
+	if err != nil {
+		return types.Hash{}, nil, err
+	}
+	proof := trc.CapturedProof()
+	log.Info("MerkleStageIncrementalWithProof", "from", from, "to", to,
+		"accKeys", nAcc, "stoKeys", nSto, "root", root.Hex(), "proofNodes", len(proof))
+	return root, proof, nil
+}

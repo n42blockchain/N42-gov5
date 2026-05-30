@@ -261,6 +261,20 @@ func NewWitnessRetainer(rl *RetainList) *WitnessRetainer {
 	return &WitnessRetainer{rl: rl}
 }
 
+// NewWitnessRetainerFromList builds a WitnessRetainer over the keys ALREADY in
+// rl (e.g. the dirty-key RetainList a root computation runs over). The same rl
+// serves as both the RetainDecider for the loader and the relevance source, so
+// attaching the returned retainer to that computation captures exactly the
+// touched-path multiproof — no separate AddHashedKey calls needed.
+func NewWitnessRetainerFromList(rl *RetainList) *WitnessRetainer {
+	w := &WitnessRetainer{rl: rl}
+	w.keys = make([][]byte, len(rl.hexes))
+	for i, k := range rl.hexes {
+		w.keys[i] = append([]byte(nil), k...)
+	}
+	return w
+}
+
 // AddHashedKey registers an already-hashed key (raw bytes) to be proven.
 func (w *WitnessRetainer) AddHashedKey(key []byte) {
 	w.keys = append(w.keys, w.rl.AddKey(key))
