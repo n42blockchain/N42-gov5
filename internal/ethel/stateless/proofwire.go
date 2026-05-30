@@ -46,33 +46,48 @@ const (
 )
 
 // EncodeCompactProof serializes a partial trie into the compact tree wire,
-// omitting all internal-node hashes.
-//
-// SCOPE / KNOWN LIMITATION (2026-05-30): the encoder treats every hashNode as a
-// boundary, so a partialTrie loaded lazily from a proof (where ≥32 B children
-// are hashNodes pointing into t.nodes) encodes those children as 32 B boundary
-// refs. The decoded trie therefore REPRODUCES THE ROOT correctly (hashing a
-// boundary uses its bytes) but is NOT a faithful structural round-trip for
-// subsequent mutation: an insert/delete that must descend into a boundary child
-// hits errMissingNode (its blob isn't in the decoded map). A faithful encoder
-// must instead inline every in-map child as a recursed subtree (and keep only
-// genuinely-absent children as boundaries). This is not yet wired into the
-// verification path — verify.go consumes standard RLP node sets ([][]byte),
-// which ARE faithful for mutation; the compact wire is a size optimization
-// pending the faithful-encode fix. Do not feed a compact-decoded trie to
-// StateRootUpdater until then.
+// omitting all internal-node hashes. It is FAITHFUL: a child that is a hashNode
+// whose blob is present in the proof (t.nodes) is RESOLVED and inlined as a
+// recursed subtree, so the whole multiproof survives the round-trip; only
+// genuinely-absent children (a hashNode pointing at a subtree the proof does not
+// carry) stay as 32 B boundary refs. A decoded trie therefore carries every
+// proof node and can be fed to StateRootUpdater. The root is recomputed and
+// checked against the trusted anchor on decode.
 func EncodeCompactProof(t *partialTrie) []byte {
 	if t.root == nil {
 		return []byte{wEmpty}
 	}
-	return encWire(nil, t.root)
+	return t.encWire(nil, t.root)
 }
 
-func encWire(buf []byte, n node) []byte {
+// childInlined reports whether child c should be inlined (recursed) rather than
+// emitted as a 32 B boundary hash: true for any non-hash node, and for a
+// hashNode whose blob is present in the proof map (so it can be resolved).
+func (t *partialTrie) childInlined(c node) bool {
+	h, ok := c.(hashNode)
+	if !ok {
+		return true
+	}
+	_, present := t.nodes[string(h)]
+	return present
+}
+
+func (t *partialTrie) encWire(buf []byte, n node) []byte {
+	// Resolve an in-proof hashNode so its subtree is inlined faithfully; a
+	// genuinely-absent hashNode is a bare-hash boundary (valid only as a root
+	// here — branch/ext children are handled as raw refs by their parent).
+	if h, ok := n.(hashNode); ok {
+		if blob, present := t.nodes[string(h)]; present {
+			rn, err := decodeNode(h, blob)
+			if err != nil {
+				return append(append(buf, wHash), h...)
+			}
+			n = rn
+		} else {
+			return append(append(buf, wHash), h...)
+		}
+	}
 	switch n := n.(type) {
-	case hashNode:
-		buf = append(buf, wHash)
-		return append(buf, n...)
 	case *shortNode:
 		if hasTerm(n.key) {
 			buf = append(buf, wLeaf)
@@ -83,12 +98,13 @@ func encWire(buf []byte, n node) []byte {
 		}
 		buf = append(buf, wExt)
 		buf = encNibbles(buf, n.key)
-		if h, ok := n.val.(hashNode); ok {
-			buf = append(buf, 0)
-			return append(buf, h...)
+		if t.childInlined(n.val) {
+			buf = append(buf, 1)
+			return t.encWire(buf, n.val)
 		}
-		buf = append(buf, 1)
-		return encWire(buf, n.val)
+		h := n.val.(hashNode)
+		buf = append(buf, 0)
+		return append(buf, h...)
 	case *fullNode:
 		buf = append(buf, wBranch)
 		var childMask, inProofMask uint16
@@ -98,7 +114,7 @@ func encWire(buf []byte, n node) []byte {
 				continue
 			}
 			childMask |= 1 << uint(i)
-			if _, isHash := c.(hashNode); !isHash {
+			if t.childInlined(c) {
 				inProofMask |= 1 << uint(i)
 			}
 		}
@@ -108,10 +124,11 @@ func encWire(buf []byte, n node) []byte {
 			if childMask&(1<<uint(i)) == 0 {
 				continue
 			}
-			if h, ok := n.children[i].(hashNode); ok {
-				buf = append(buf, h...)
+			c := n.children[i]
+			if t.childInlined(c) {
+				buf = t.encWire(buf, c)
 			} else {
-				buf = encWire(buf, n.children[i])
+				buf = append(buf, c.(hashNode)...)
 			}
 		}
 		if v, ok := n.children[16].(valueNode); ok && len(v) > 0 {
@@ -125,6 +142,57 @@ func encWire(buf []byte, n node) []byte {
 	default:
 		panic(fmt.Sprintf("encWire: unexpected %T", n))
 	}
+}
+
+// CompactProofFromNodes loads a flat RLP proof set anchored at root and returns
+// its faithful compact-wire encoding (all proof nodes preserved, internal hashes
+// omitted). Inverse: DecodeCompactToNodes.
+func CompactProofFromNodes(root []byte, proofNodes [][]byte) ([]byte, error) {
+	pt, err := newPartialTrie(root, proofNodes)
+	if err != nil {
+		return nil, err
+	}
+	return EncodeCompactProof(pt), nil
+}
+
+// DecodeCompactToNodes decodes a compact wire and re-serializes it to a flat RLP
+// proof node set — the form NewStateRootUpdater/AddStorageProof consume. The
+// faithful encoder guarantees this set equals the original proof's nodes (modulo
+// genuinely-absent boundaries, which were never in the proof).
+func DecodeCompactToNodes(wire []byte) ([][]byte, error) {
+	pt, err := DecodeCompactProof(wire)
+	if err != nil {
+		return nil, err
+	}
+	return pt.toNodes(), nil
+}
+
+// toNodes re-serializes the materialized nodes of the trie (those with an
+// independent ≥32 B hash) as a flat RLP node set — the inverse of
+// newPartialTrie. Boundary hashNodes (genuinely-absent subtrees) emit nothing.
+func (t *partialTrie) toNodes() [][]byte {
+	var out [][]byte
+	var walk func(n node)
+	walk = func(n node) {
+		switch n := n.(type) {
+		case *shortNode:
+			if enc := encodeNode(n); len(enc) >= 32 {
+				out = append(out, enc)
+			}
+			walk(n.val)
+		case *fullNode:
+			if enc := encodeNode(n); len(enc) >= 32 {
+				out = append(out, enc)
+			}
+			for i := 0; i < 17; i++ {
+				walk(n.children[i])
+			}
+		}
+	}
+	if t.root != nil {
+		walk(t.root)
+	}
+	return out
 }
 
 // DecodeCompactProof rebuilds a partial trie from the compact wire. The caller
@@ -259,15 +327,24 @@ func decBytes(b []byte) ([]byte, []byte, error) {
 	return append([]byte(nil), b[:l]...), b[l:], nil
 }
 
-// encNibbles writes a hex-nibble slice as uvarint count + packed bytes
-// (2 nibbles/byte, high first; trailing odd nibble in the high half).
+// encNibbles writes a hex-nibble slice as uvarint body-count + 1-byte terminator
+// flag + packed body bytes (2 nibbles/byte, high first; trailing odd nibble in
+// the high half). The leaf terminator nibble (0x10) does NOT fit in 4 bits, so
+// it is carried as the flag rather than packed — body nibbles are all 0..15.
 func encNibbles(b []byte, nib []byte) []byte {
-	b = encUvarint(b, uint64(len(nib)))
-	for i := 0; i < len(nib); i += 2 {
-		hi := nib[i] << 4
+	var term byte
+	body := nib
+	if len(nib) > 0 && nib[len(nib)-1] == 16 {
+		term = 1
+		body = nib[:len(nib)-1]
+	}
+	b = encUvarint(b, uint64(len(body)))
+	b = append(b, term)
+	for i := 0; i < len(body); i += 2 {
+		hi := body[i] << 4
 		var lo byte
-		if i+1 < len(nib) {
-			lo = nib[i+1]
+		if i+1 < len(body) {
+			lo = body[i+1]
 		}
 		b = append(b, hi|lo)
 	}
@@ -280,11 +357,20 @@ func decNibbles(b []byte) ([]byte, []byte, error) {
 		return nil, nil, fmt.Errorf("compact: bad nibble count")
 	}
 	b = b[n:]
+	if len(b) < 1 {
+		return nil, nil, fmt.Errorf("compact: missing nibble term flag")
+	}
+	term := b[0]
+	b = b[1:]
 	packed := int((cnt + 1) / 2)
 	if len(b) < packed {
 		return nil, nil, fmt.Errorf("compact: truncated nibbles")
 	}
-	nib := make([]byte, cnt)
+	outLen := int(cnt)
+	if term == 1 {
+		outLen++
+	}
+	nib := make([]byte, outLen)
 	for i := 0; i < int(cnt); i++ {
 		by := b[i/2]
 		if i%2 == 0 {
@@ -292,6 +378,9 @@ func decNibbles(b []byte) ([]byte, []byte, error) {
 		} else {
 			nib[i] = by & 0x0f
 		}
+	}
+	if term == 1 {
+		nib[int(cnt)] = 16
 	}
 	return nib, b[packed:], nil
 }
