@@ -175,31 +175,48 @@ func main() {
 			continue
 		}
 
-		// Sub-batch boundary: build the touched-key RetainList, advance the trie
-		// (incremental), verify root, capture + save the anchor.
-		rl := trie.NewRetainList(0)
-		for addr := range dA {
-			rl.AddKeyWithMarker(crypto.Keccak256(addr[:]), true)
-		}
-		for addr, slots := range dS {
-			ah := crypto.Keccak256(addr[:])
-			for slot := range slots {
-				var comp [64]byte
-				copy(comp[:32], ah)
-				copy(comp[32:], crypto.Keccak256(slot[:]))
-				rl.AddKeyWithMarker(comp[:], true)
-			}
-		}
-
+		// Sub-batch boundary: advance the trie (incremental), verify root, capture
+		// the anchor proof. The anchor is captured DURING the root computation
+		// (EnableProofCapture) so there is only ONE trie walk per sub-batch — the
+		// dominant cost. Only the first (full-bootstrap, non-incremental) batch
+		// can't capture inline, so it does a separate read-only ExtractMultiproof.
+		var root types.Hash
+		var proof [][]byte
 		if bootstrapped {
+			root, err = trc.ComputeRoot(dA, dS) // incremental + capture (one walk)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "ComputeRoot at %d: %v\n", n, err)
+				os.Exit(1)
+			}
+			proof = trc.CapturedProof()
+		} else {
+			root, err = trc.ComputeRoot(dA, dS) // first: full bootstrap build
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "ComputeRoot at %d: %v\n", n, err)
+				os.Exit(1)
+			}
+			rl := trie.NewRetainList(0)
+			for addr := range dA {
+				rl.AddKeyWithMarker(crypto.Keccak256(addr[:]), true)
+			}
+			for addr, slots := range dS {
+				ah := crypto.Keccak256(addr[:])
+				for slot := range slots {
+					var comp [64]byte
+					copy(comp[:32], ah)
+					copy(comp[32:], crypto.Keccak256(slot[:]))
+					rl.AddKeyWithMarker(comp[:], true)
+				}
+			}
+			if _, proof, err = commitment.ExtractMultiproof(tx, rl); err != nil {
+				fmt.Fprintf(os.Stderr, "extract %d: %v\n", n, err)
+				os.Exit(1)
+			}
+			// Enable inline capture for all subsequent (incremental) sub-batches.
 			trc.SetIncremental(true)
+			trc.EnableProofCapture(true)
+			bootstrapped = true
 		}
-		root, rerr := trc.ComputeRoot(dA, dS)
-		if rerr != nil {
-			fmt.Fprintf(os.Stderr, "ComputeRoot at %d: %v\n", n, rerr)
-			os.Exit(1)
-		}
-		bootstrapped = true
 
 		hdr, herr := hc.ReadHeader(n)
 		if herr != nil {
@@ -210,15 +227,8 @@ func main() {
 			fmt.Fprintf(os.Stderr, "ROOT MISMATCH block %d: computed %s header %s\n", n, root.Hex(), hdr.Root.Hex())
 			os.Exit(2)
 		}
-
-		// Capture the anchor multiproof (read-only) over the sub-batch keys.
-		r2, proof, eerr := commitment.ExtractMultiproof(tx, rl)
-		if eerr != nil {
-			fmt.Fprintf(os.Stderr, "extract %d: %v\n", n, eerr)
-			os.Exit(1)
-		}
-		if r2 != root {
-			fmt.Fprintf(os.Stderr, "extract root %s != %s at %d\n", r2.Hex(), root.Hex(), n)
+		if len(proof) == 0 {
+			fmt.Fprintf(os.Stderr, "empty anchor proof at %d\n", n)
 			os.Exit(1)
 		}
 		var fullBytes int
