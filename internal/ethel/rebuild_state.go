@@ -76,6 +76,14 @@ type RebuildOptions struct {
 	// O(dirty) instead of O(state).
 	PersistTrie bool
 
+	// OnVerify — optional hook called at each VerifyInterval boundary AFTER the
+	// state root is computed and BEFORE the verify tx is rolled back, with a tx
+	// on the freshly-populated trie (HashedAccounts/HashedStorage/TrieOf* live
+	// in tx) and the computed root. Used to capture an MPT anchor proof. When
+	// set, the verify boundary runs even if InputFreezer is nil (the hook does
+	// its own header check). A returned error aborts the rebuild.
+	OnVerify func(blockNum uint64, tx kv.Tx, root types.Hash) error
+
 	// WipesSidecarDir — optional path to a freezer dir containing a "wipes"
 	// table produced by storcs-extract-wipes. Used to fill SELFDESTRUCT
 	// pre-wipe entries that witness-replay's storcs structurally lacks
@@ -239,11 +247,22 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 		// + repopulates HashedAccounts/HashedStorage and TrieOf* via
 		// streaming, peak ~5-10 GB regardless of state size.
 		root, err := FullStateRootVerify(tx2)
-		tx2.Rollback()
 		if err != nil {
+			tx2.Rollback()
 			return fmt.Errorf("calc state root at block %d: %w", blockNum, err)
 		}
-		// Read the header at blockNum from the input freezer.
+		// Anchor hook (runs with the freshly-populated trie in tx2, before rollback).
+		if opts.OnVerify != nil {
+			if oerr := opts.OnVerify(blockNum, tx2, root); oerr != nil {
+				tx2.Rollback()
+				return fmt.Errorf("OnVerify at block %d: %w", blockNum, oerr)
+			}
+		}
+		tx2.Rollback()
+		// Optional header check via Geth-format InputFreezer.
+		if opts.InputFreezer == nil {
+			return nil
+		}
 		hdrData, err := opts.InputFreezer.Ancient(freezer.TableHeaders, blockNum)
 		if err != nil {
 			log.Warn("Cannot read header for verify", "block", blockNum, "err", err)
@@ -417,7 +436,7 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 
 		// Periodic verify: at blockNum where (blockNum+1) % VerifyInterval == 0
 		// (i.e., we just applied the last block of an interval).
-		if opts.VerifyInterval > 0 && opts.InputFreezer != nil &&
+		if opts.VerifyInterval > 0 && (opts.InputFreezer != nil || opts.OnVerify != nil) &&
 			(blockNum+1)%opts.VerifyInterval == 0 {
 			if err := doVerify(blockNum); err != nil {
 				return err

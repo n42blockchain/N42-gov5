@@ -152,6 +152,15 @@ func ExtractBlockMultiproof(tx kv.Tx, from, to uint64) (types.Hash, [][]byte, er
 	if err != nil {
 		return types.Hash{}, nil, err
 	}
+	return ExtractMultiproof(tx, rl)
+}
+
+// ExtractMultiproof captures the touched-path multiproof for an already-built
+// RetainList (the hashed keys to prove) against the current trie, read-only (no
+// TrieOf* write-back). Returns the root the current trie reconstructs to and the
+// proof nodes. Use when the caller already has the touched-key set (e.g. from a
+// V2 changeset) rather than from MDBX AccountChangeSet/StorageChangeSet.
+func ExtractMultiproof(tx kv.Tx, rl *trie.RetainList) (types.Hash, [][]byte, error) {
 	wr := trie.NewWitnessRetainerFromList(rl)
 	loader := trie.NewFlatDBTrieLoader("extract-proof", rl,
 		func([]byte, uint16, uint16, uint16, []byte, []byte) error { return nil },
