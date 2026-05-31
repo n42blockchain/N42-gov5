@@ -1,19 +1,20 @@
 // n42-stateless-anchor-produce is the real-data forward producer: it builds the
 // state trie from GENESIS forward into a fresh TEMP datadir by streaming the V2
-// forward changesets (acctcs/storcs), and every K blocks computes the state
-// root, verifies it against the real header.Root (read from the columnar headerc
-// freezer), and captures + saves the MPT-stateless anchor proof (compact wire).
+// forward changesets (acctcs/storcs), and every K blocks verifies the state root
+// against the real header.Root (columnar headerc) and captures + saves the
+// MPT-stateless anchor proof (compact wire).
 //
-// Data sources (read-only, never mutated):
-//   --cs       acctcs/storcs (V2 forward changesets) — the forward-build input
-//   --headers  headerc (columnar headers) — the trusted root to verify against
-// Output: <tmp>/anchors/anchor-<block>.bin (compact proof per anchor) +
-//         <tmp>/anchors.tsv (manifest: block, root, proofNodes, compactBytes).
+// INCREMENTAL: per sub-batch (K blocks) the net changes are applied via
+// TrieRootComputer.ComputeRoot in incremental mode — O(dirty), maintaining
+// HashedAccounts + TrieOf* across sub-batches — instead of an O(state) full
+// rebuild per boundary. This makes full-chain (25M+) production feasible. The
+// first sub-batch bootstraps with a full build (empty TrieOf*); the rest are
+// incremental. The anchor proof is captured read-only (ExtractMultiproof) over
+// the sub-batch's touched keys after the root is advanced.
 //
-// Forward build needs the POST-block state; the V2 changesets carry new values
-// (unlike MDBX backward changesets), so no EVM runs — RebuildStateWith streams
-// the diffs. The anchor proof is captured from the freshly-populated trie inside
-// the verify boundary (RebuildOptions.OnVerify).
+// Data sources (read-only): --cs acctcs/storcs (V2 forward changesets),
+// --headers columnar headerc. Output: <tmp>/anchors/anchor-<block>.bin +
+// <tmp>/anchors.tsv.
 package main
 
 import (
@@ -22,9 +23,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/c2h5oh/datasize"
+	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/ethel"
@@ -43,11 +47,15 @@ func main() {
 	tmp := flag.String("tmp", filepath.Join(os.TempDir(), "n42-anchor-trie"), "temp writable trie datadir (recreated)")
 	endBlock := flag.Uint64("end", 100000, "build genesis..end (exclusive)")
 	K := flag.Uint64("k", 1000, "anchor cadence (verify + capture every K blocks)")
-	mapGB := flag.Int("mapsize-gb", 64, "temp trie MDBX mapsize GB")
+	mapGB := flag.Int("mapsize-gb", 256, "temp trie MDBX mapsize GB")
 	flag.Parse()
 
 	ctx := context.Background()
 	logger := log.New()
+	if *K == 0 {
+		fmt.Fprintln(os.Stderr, "--k must be > 0")
+		os.Exit(1)
+	}
 
 	if err := os.RemoveAll(*tmp); err != nil {
 		fmt.Fprintln(os.Stderr, "clean tmp:", err)
@@ -101,103 +109,155 @@ func main() {
 	defer manifest.Close()
 	fmt.Fprintln(manifest, "block\troot\tproofNodes\tfullRLPBytes\tcompactBytes")
 
-	var anchors int
-	lastAnchor := ^uint64(0) // none yet → first interval starts at genesis (block 0)
+	tx, err := db.BeginRw(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "begin rw:", err)
+		os.Exit(1)
+	}
+	trc := commitment.NewTrieRootComputer()
+	trc.SetRwTx(tx)
+	trc.SetIncremental(false) // first sub-batch bootstraps a full build
 
-	onVerify := func(blockNum uint64, tx kv.Tx, root types.Hash) error {
-		// Trusted root from the columnar header freezer.
-		hdr, herr := hc.ReadHeader(blockNum)
+	// Per-sub-batch net change accumulators.
+	dA := map[types.Address]*account.StateAccount{}
+	dS := map[types.Address]map[types.Hash]*uint256.Int{}
+
+	t0 := time.Now()
+	var anchors int
+	bootstrapped := false
+
+	for n := uint64(0); n < *endBlock; n++ {
+		if d, e := acctTbl.Retrieve(n); e == nil && len(d) > 0 {
+			es, de := ethel.DecodeAccountChanges(d)
+			if de != nil {
+				fmt.Fprintf(os.Stderr, "decode acctcs %d: %v\n", n, de)
+				os.Exit(1)
+			}
+			for _, ch := range es {
+				if len(ch.NewValue) == 0 {
+					dA[ch.Address] = nil // delete
+					continue
+				}
+				a := new(account.StateAccount)
+				if err := a.DecodeForStorage(ch.NewValue); err != nil {
+					fmt.Fprintf(os.Stderr, "decode account %d %x: %v\n", n, ch.Address[:6], err)
+					os.Exit(1)
+				}
+				dA[ch.Address] = a
+			}
+		}
+		if d, e := stoTbl.Retrieve(n); e == nil && len(d) > 0 {
+			es, de := ethel.DecodeStorageChanges(d)
+			if de != nil {
+				fmt.Fprintf(os.Stderr, "decode storcs %d: %v\n", n, de)
+				os.Exit(1)
+			}
+			for _, ch := range es {
+				if len(ch.CompositeKey) < 52 {
+					continue
+				}
+				var addr types.Address
+				copy(addr[:], ch.CompositeKey[:20])
+				var slot types.Hash
+				copy(slot[:], ch.CompositeKey[20:52])
+				if dS[addr] == nil {
+					dS[addr] = map[types.Hash]*uint256.Int{}
+				}
+				v := new(uint256.Int) // zero = delete
+				if len(ch.NewValue) > 0 {
+					v.SetBytes(ch.NewValue)
+				}
+				dS[addr][slot] = v
+			}
+		}
+
+		if (n+1)%*K != 0 {
+			continue
+		}
+
+		// Sub-batch boundary: build the touched-key RetainList, advance the trie
+		// (incremental), verify root, capture + save the anchor.
+		rl := trie.NewRetainList(0)
+		for addr := range dA {
+			rl.AddKeyWithMarker(crypto.Keccak256(addr[:]), true)
+		}
+		for addr, slots := range dS {
+			ah := crypto.Keccak256(addr[:])
+			for slot := range slots {
+				var comp [64]byte
+				copy(comp[:32], ah)
+				copy(comp[32:], crypto.Keccak256(slot[:]))
+				rl.AddKeyWithMarker(comp[:], true)
+			}
+		}
+
+		if bootstrapped {
+			trc.SetIncremental(true)
+		}
+		root, rerr := trc.ComputeRoot(dA, dS)
+		if rerr != nil {
+			fmt.Fprintf(os.Stderr, "ComputeRoot at %d: %v\n", n, rerr)
+			os.Exit(1)
+		}
+		bootstrapped = true
+
+		hdr, herr := hc.ReadHeader(n)
 		if herr != nil {
-			return fmt.Errorf("read header %d: %w", blockNum, herr)
+			fmt.Fprintf(os.Stderr, "read header %d: %v\n", n, herr)
+			os.Exit(1)
 		}
 		if root != hdr.Root {
-			return fmt.Errorf("ROOT MISMATCH block %d: computed %s header %s", blockNum, root.Hex(), hdr.Root.Hex())
+			fmt.Fprintf(os.Stderr, "ROOT MISMATCH block %d: computed %s header %s\n", n, root.Hex(), hdr.Root.Hex())
+			os.Exit(2)
 		}
 
-		// Build the touched-key RetainList over the whole window since the last
-		// anchor [lastAnchor+1 .. blockNum] (deduped). The anchor's multiproof
-		// thus covers every key the K-block span touched, anchored at the
-		// verified header[blockNum].stateRoot — a minimal client with the span's
-		// changesets reverse-verifies it to the previous anchor's root.
-		from := uint64(0)
-		if lastAnchor != ^uint64(0) {
-			from = lastAnchor + 1
-		}
-		rl := trie.NewRetainList(0)
-		seenA := map[types.Address]struct{}{}
-		seenS := map[string]struct{}{}
-		for b := from; b <= blockNum; b++ {
-			if d, e := acctTbl.Retrieve(b); e == nil && len(d) > 0 {
-				es, de := ethel.DecodeAccountChanges(d)
-				if de != nil {
-					return fmt.Errorf("decode acctcs %d: %w", b, de)
-				}
-				for _, ch := range es {
-					if _, ok := seenA[ch.Address]; ok {
-						continue
-					}
-					seenA[ch.Address] = struct{}{}
-					rl.AddKeyWithMarker(crypto.Keccak256(ch.Address[:]), true)
-				}
-			}
-			if d, e := stoTbl.Retrieve(b); e == nil && len(d) > 0 {
-				es, de := ethel.DecodeStorageChanges(d)
-				if de != nil {
-					return fmt.Errorf("decode storcs %d: %w", b, de)
-				}
-				for _, ch := range es {
-					if len(ch.CompositeKey) < 52 {
-						continue
-					}
-					ck := string(ch.CompositeKey[:52])
-					if _, ok := seenS[ck]; ok {
-						continue
-					}
-					seenS[ck] = struct{}{}
-					var comp [64]byte
-					copy(comp[:32], crypto.Keccak256(ch.CompositeKey[:20]))
-					copy(comp[32:], crypto.Keccak256(ch.CompositeKey[20:52]))
-					rl.AddKeyWithMarker(comp[:], true)
-				}
-			}
-		}
-		lastAnchor = blockNum
-
-		// Capture the anchor multiproof from the freshly-populated trie.
+		// Capture the anchor multiproof (read-only) over the sub-batch keys.
 		r2, proof, eerr := commitment.ExtractMultiproof(tx, rl)
 		if eerr != nil {
-			return fmt.Errorf("extract proof %d: %w", blockNum, eerr)
+			fmt.Fprintf(os.Stderr, "extract %d: %v\n", n, eerr)
+			os.Exit(1)
 		}
 		if r2 != root {
-			return fmt.Errorf("extract root %s != verified root %s at %d", r2.Hex(), root.Hex(), blockNum)
+			fmt.Fprintf(os.Stderr, "extract root %s != %s at %d\n", r2.Hex(), root.Hex(), n)
+			os.Exit(1)
 		}
 		var fullBytes int
-		for _, n := range proof {
-			fullBytes += len(n)
+		for _, nd := range proof {
+			fullBytes += len(nd)
 		}
 		wire, cerr := stateless.CompactProofFromNodes(root[:], proof)
 		if cerr != nil {
-			return fmt.Errorf("compact %d: %w", blockNum, cerr)
+			fmt.Fprintf(os.Stderr, "compact %d: %v\n", n, cerr)
+			os.Exit(1)
 		}
-		// Self-check: the compact proof anchors to the verified header root.
 		if verr := stateless.VerifyProofAnchors(root[:], proof); verr != nil {
-			return fmt.Errorf("anchor self-check %d: %w", blockNum, verr)
+			fmt.Fprintf(os.Stderr, "anchor self-check %d: %v\n", n, verr)
+			os.Exit(1)
 		}
-		fname := filepath.Join(anchorDir, fmt.Sprintf("anchor-%010d.bin", blockNum))
-		if werr := os.WriteFile(fname, wire, 0o644); werr != nil {
-			return fmt.Errorf("write anchor %d: %w", blockNum, werr)
+		if werr := os.WriteFile(filepath.Join(anchorDir, fmt.Sprintf("anchor-%010d.bin", n)), wire, 0o644); werr != nil {
+			fmt.Fprintf(os.Stderr, "write anchor %d: %v\n", n, werr)
+			os.Exit(1)
 		}
 		anchors++
-		fmt.Fprintf(manifest, "%d\t0x%x\t%d\t%d\t%d\n", blockNum, root[:], len(proof), fullBytes, len(wire))
-		fmt.Fprintf(os.Stderr, "ANCHOR block=%d root=0x%x proofNodes=%d full=%dB compact=%dB\n",
-			blockNum, root[:6], len(proof), fullBytes, len(wire))
-		return nil
-	}
+		fmt.Fprintf(manifest, "%d\t0x%x\t%d\t%d\t%d\n", n, root[:], len(proof), fullBytes, len(wire))
+		fmt.Fprintf(os.Stderr, "ANCHOR block=%d root=0x%x proofNodes=%d full=%dB compact=%dB elapsed=%s\n",
+			n, root[:6], len(proof), fullBytes, len(wire), time.Since(t0).Truncate(time.Second))
 
-	opts := ethel.RebuildOptions{VerifyInterval: *K, OnVerify: onVerify}
-	if err := ethel.RebuildStateWith(ctx, db, *csDir, *endBlock, opts); err != nil {
-		fmt.Fprintln(os.Stderr, "RebuildStateWith:", err)
-		os.Exit(2)
+		// Commit the sub-batch (HashedAccounts + TrieOf*), re-begin, reset.
+		if err := tx.Commit(); err != nil {
+			fmt.Fprintf(os.Stderr, "commit %d: %v\n", n, err)
+			os.Exit(1)
+		}
+		tx, err = db.BeginRw(ctx)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "re-begin:", err)
+			os.Exit(1)
+		}
+		trc.SetRwTx(tx)
+		dA = map[types.Address]*account.StateAccount{}
+		dS = map[types.Address]map[types.Hash]*uint256.Int{}
 	}
-	fmt.Fprintf(os.Stderr, "DONE: %d anchors (every %d) saved to %s\n", anchors, *K, anchorDir)
+	tx.Rollback()
+	fmt.Fprintf(os.Stderr, "DONE: %d anchors (every %d) saved to %s in %s\n",
+		anchors, *K, anchorDir, time.Since(t0).Truncate(time.Second))
 }
