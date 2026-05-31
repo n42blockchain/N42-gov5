@@ -69,9 +69,14 @@ func VerifyBlockFull(hc *stateless.HeaderChain, chainCfg *params.ChainConfig, en
 		return fmt.Errorf("minimal: block %d layer②: %w", num, err)
 	}
 
-	// ③ MPT stateless state-root check.
+	// ③ MPT stateless state-root check — only on anchor blocks (the cadence
+	// model: every block carries a witness for ①②; an MPT proof is attached
+	// every K blocks). A nil Proof means a light (non-anchor) bundle: its
+	// stateRoot is trusted through the header chain (①), independently
+	// re-derived only at the next anchor. The caller enforces the cadence
+	// (every K-th block MUST carry a Proof) — see VerifyWindowCadence.
 	if in.Proof == nil {
-		return fmt.Errorf("minimal: block %d missing state proof", num)
+		return nil
 	}
 	if in.Proof.Number != num {
 		return fmt.Errorf("minimal: block %d proof is for block %d", num, in.Proof.Number)
@@ -80,6 +85,32 @@ func VerifyBlockFull(hc *stateless.HeaderChain, chainCfg *params.ChainConfig, en
 		return fmt.Errorf("minimal: block %d layer③: %w", num, err)
 	}
 	return nil
+}
+
+// VerifyWindowCadence verifies a contiguous window of per-block inputs under the
+// cadence model (the chosen "option B"): every block's ① (header trust) + ②
+// (witness execution) is checked, and an MPT proof (③) is REQUIRED on anchor
+// blocks — those whose number is a multiple of anchorEvery, plus the window's
+// last block. A missing proof on an anchor, or any layer failure, fails that
+// block. Light (non-anchor) bundles carry no proof; their stateRoot is trusted
+// through the header chain and independently re-derived at the next anchor.
+// Results are returned in input order.
+func VerifyWindowCadence(hc *stateless.HeaderChain, chainCfg *params.ChainConfig, engine consensus.Engine, inputs []*MinimalVerifyInput, anchorEvery uint64) []stateless.BlockResult {
+	results := make([]stateless.BlockResult, len(inputs))
+	for i, in := range inputs {
+		if in == nil || in.Header == nil || in.Header.Number == nil {
+			results[i] = stateless.BlockResult{Err: fmt.Errorf("minimal: nil input/header at index %d", i)}
+			continue
+		}
+		num := in.Header.Number.Uint64()
+		isAnchor := anchorEvery > 0 && (num%anchorEvery == 0 || i == len(inputs)-1)
+		if isAnchor && in.Proof == nil {
+			results[i] = stateless.BlockResult{Number: num, Err: fmt.Errorf("minimal: anchor block %d missing MPT proof", num)}
+			continue
+		}
+		results[i] = stateless.BlockResult{Number: num, Err: VerifyBlockFull(hc, chainCfg, engine, in)}
+	}
+	return results
 }
 
 // verifyExecution is layer ②: replay the witness through the EVM and let
