@@ -209,7 +209,17 @@ func (b *freezerBackend) HeaderRLP(n uint64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return h.Marshal()
+	// headerc is lossy (drops ParentHash) — reconstruct parentHash as the stored
+	// canonical hash of block n-1 (chain property). Genesis has zero parentHash.
+	var parent types.Hash
+	if n > 0 {
+		ph, perr := b.hc.ReadHeader(n - 1)
+		if perr != nil {
+			return nil, fmt.Errorf("parent header %d: %w", n-1, perr)
+		}
+		parent = ph.Hash()
+	}
+	return serve.EncodeHeaderRecord(h, parent), nil
 }
 
 func (b *freezerBackend) BodyRLP(n uint64) ([]byte, error) {

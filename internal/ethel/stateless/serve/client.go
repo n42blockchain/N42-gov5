@@ -32,16 +32,28 @@ func NewHTTPSource(base string) *HTTPSource {
 var _ stateless.Source = (*HTTPSource)(nil)
 
 func (s *HTTPSource) get(path string) ([]byte, error) {
-	resp, err := s.c.Get(s.base + path)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
-	if resp.StatusCode != http.StatusOK {
+	// Retry on 429/503 with bounded backoff — a real client respects the
+	// producer's per-IP rate/concurrency limiter rather than failing the sync.
+	backoff := 50 * time.Millisecond
+	for attempt := 0; ; attempt++ {
+		resp, err := s.c.Get(s.base + path)
+		if err != nil {
+			return nil, err
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return body, nil
+		}
+		if (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) && attempt < 12 {
+			time.Sleep(backoff)
+			if backoff < 2*time.Second {
+				backoff *= 2
+			}
+			continue
+		}
 		return nil, fmt.Errorf("GET %s: %s: %s", path, resp.Status, strings.TrimSpace(string(body)))
 	}
-	return body, nil
 }
 
 // Head returns the producer's tip block number.
@@ -65,11 +77,43 @@ func (s *HTTPSource) Header(n uint64) (*block.Header, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := new(block.Header)
-	if err := h.Unmarshal(b); err != nil {
+	h, err := DecodeHeaderRecord(b)
+	if err != nil {
 		return nil, fmt.Errorf("decode header %d: %w", n, err)
 	}
 	return h, nil
+}
+
+// HeadersFrom fetches up to count contiguous headers starting at from, decoding
+// the [4-byte-LE len || header] record stream from /headers. Returns fewer at a
+// gap/tip. Far cheaper than count× single Header calls for catch-up.
+func (s *HTTPSource) HeadersFrom(from, count uint64) ([]*block.Header, error) {
+	b, err := s.get(fmt.Sprintf("/headers?from=%d&count=%d", from, count))
+	if err != nil {
+		return nil, err
+	}
+	var out []*block.Header
+	for len(b) >= 4 {
+		l := int(uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24)
+		b = b[4:]
+		if l > len(b) {
+			return nil, fmt.Errorf("header record length %d overflows", l)
+		}
+		h, err := DecodeHeaderRecord(b[:l])
+		if err != nil {
+			return nil, fmt.Errorf("decode header: %w", err)
+		}
+		out = append(out, h)
+		b = b[l:]
+	}
+	return out, nil
+}
+
+// AnchorBytes fetches the raw compact MPT anchor proof bytes at n (the
+// CompactProofFromNodes wire emitted by the producer), for structural
+// VerifyProofAnchors against the trusted header stateRoot.
+func (s *HTTPSource) AnchorBytes(n uint64) ([]byte, error) {
+	return s.get(fmt.Sprintf("/anchor?n=%d", n))
 }
 
 // Anchor fetches and decodes the MPT anchor proof (encoded BlockProof) at n.
