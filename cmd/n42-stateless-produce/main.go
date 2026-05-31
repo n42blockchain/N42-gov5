@@ -74,6 +74,7 @@ func main() {
 	dir := flag.String("dir", `D:/N42-hashed/chaindata`, "hashed-canonical N42 chaindata dir")
 	blockFlag := flag.Uint64("block", 0, "block to capture (0 = canonical head)")
 	statsN := flag.Int("stats", 0, "if >0, scan changeset acct/stor counts over the last N blocks and report avg/min/max")
+	mergeN := flag.Int("merge", 0, "if >0, measure proof merge/dedup ratio over the last N blocks (sum of per-block proofs vs one union proof, all at head trie)")
 	outPath := flag.String("out", "stateless-produce.txt", "result summary file")
 	flag.Parse()
 
@@ -221,6 +222,54 @@ func main() {
 		add("acct/blk       : avg %.1f  min %d  max %d  (total %d)\n", float64(sumA)/float64(cnt), minA, maxA, sumA)
 		add("stor/blk       : avg %.1f  min %d  max %d  (total %d)\n", float64(sumS)/float64(cnt), minS, maxS, sumS)
 		add("touched/blk    : avg %.1f\n", float64(sumA+sumS)/float64(cnt))
+	}
+
+	if *mergeN > 0 {
+		lo := uint64(1)
+		if blockN >= uint64(*mergeN) {
+			lo = blockN - uint64(*mergeN) + 1
+		}
+		// Sum of per-block proofs (each block's touched keys, all at the head trie).
+		var sumNodes, sumFull, sumCompact int
+		for b := lo; b <= blockN; b++ {
+			_, pb, perr := commitment.ExtractBlockMultiproof(tx, b, b)
+			if perr != nil {
+				continue
+			}
+			sumNodes += len(pb)
+			for _, n := range pb {
+				sumFull += len(n)
+			}
+			if w, e := stateless.CompactProofFromNodes(root[:], pb); e == nil {
+				sumCompact += len(w)
+			}
+		}
+		// One union proof over all touched keys in [lo, head].
+		_, pu, uerr := commitment.ExtractBlockMultiproof(tx, lo, blockN)
+		if uerr == nil {
+			uNodes := len(pu)
+			uFull := 0
+			for _, n := range pu {
+				uFull += len(n)
+			}
+			uCompact := 0
+			if w, e := stateless.CompactProofFromNodes(root[:], pu); e == nil {
+				uCompact = len(w)
+			}
+			pct := func(part, whole int) float64 {
+				if whole == 0 {
+					return 0
+				}
+				return 100 * float64(part) / float64(whole)
+			}
+			add("--- merge over %d blocks [%d..%d] (at head trie) ---\n", blockN-lo+1, lo, blockN)
+			add("sum per-block  : %d nodes  %d B full  %d B compact\n", sumNodes, sumFull, sumCompact)
+			add("union (merged) : %d nodes  %d B full  %d B compact\n", uNodes, uFull, uCompact)
+			add("union/sum      : nodes %.1f%%  full %.1f%%  compact %.1f%%\n",
+				pct(uNodes, sumNodes), pct(uFull, sumFull), pct(uCompact, sumCompact))
+			add("mergeable      : nodes %.1f%%  compact %.1f%% (1 - union/sum)\n",
+				100-pct(uNodes, sumNodes), 100-pct(uCompact, sumCompact))
+		}
 	}
 
 	pass := rootMatch && anchorErr == nil && compactErr == nil
