@@ -86,6 +86,30 @@ func Handler(svc *Service, rl *jsonrpc.RateLimiter) http.Handler {
 		writeBytes(w, b)
 	})
 
+	// /headers?from=F&count=C → concatenated [4-byte-LE len || header] records
+	// (≤ Caps.MaxHeaders; stops early at a gap/tip). Batches the per-block /header
+	// fetch so a client can catch up over a long range efficiently.
+	mux.HandleFunc("/headers", func(w http.ResponseWriter, r *http.Request) {
+		from, err1 := strconv.ParseUint(r.URL.Query().Get("from"), 10, 64)
+		count, err2 := strconv.ParseUint(r.URL.Query().Get("count"), 10, 64)
+		if err1 != nil || err2 != nil {
+			http.Error(w, "bad from/count", http.StatusBadRequest)
+			return
+		}
+		hs, err := svc.GetHeaders(clientIP(r), from, count)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		for _, h := range hs {
+			var lp [4]byte
+			binary.LittleEndian.PutUint32(lp[:], uint32(len(h)))
+			_, _ = w.Write(lp[:])
+			_, _ = w.Write(h)
+		}
+	})
+
 	// /block?n=N → 4-byte-LE header length || header || body (one round-trip).
 	mux.HandleFunc("/block", func(w http.ResponseWriter, r *http.Request) {
 		n, err := qn(r)

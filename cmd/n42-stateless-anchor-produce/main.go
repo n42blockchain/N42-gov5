@@ -171,7 +171,11 @@ func main() {
 			}
 		}
 
-		if (n+1)%*K != 0 {
+		// Anchor at block heights that are multiples of K (1000, 2000, ...),
+		// post-state of block n == header[n].Root. This matches the consumer
+		// convention (MinimalClient / buildAnchorChain request anchors at n%K==0),
+		// so the producer's anchor-<n>.bin heights align with client requests.
+		if n == 0 || n%*K != 0 {
 			continue
 		}
 
