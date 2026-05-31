@@ -255,6 +255,16 @@ type WitnessRetainer struct {
 	rl    *RetainList
 	keys  [][]byte // nibble-encoded retained keys, for prefix relevance tests
 	elems []*proofElement
+
+	// relevance index, built lazily on first ProofElement (keys must be final by
+	// then — the loader call). Replaces an O(len(keys)) linear scan per visited
+	// node, which is O(nodes×keys) overall and stalls on high-churn windows (e.g.
+	// the 2016 DoS-spam blocks touch 100k+ keys → 10^11 ops). sorted enables an
+	// O(log keys) "prefix is a prefix of some key" test; set enables an O(pathlen)
+	// "some key is a prefix of prefix" test.
+	prepared bool
+	sorted   [][]byte
+	set      map[string]struct{}
 }
 
 func NewWitnessRetainer(rl *RetainList) *WitnessRetainer {
@@ -280,20 +290,52 @@ func (w *WitnessRetainer) AddHashedKey(key []byte) {
 	w.keys = append(w.keys, w.rl.AddKey(key))
 }
 
+// prepareIndex builds the sorted key list + key set used by ProofElement's
+// relevance test. Called once on the first ProofElement; keys must be final.
+func (w *WitnessRetainer) prepareIndex() {
+	w.sorted = make([][]byte, len(w.keys))
+	copy(w.sorted, w.keys)
+	sort.Slice(w.sorted, func(i, j int) bool { return bytes.Compare(w.sorted[i], w.sorted[j]) < 0 })
+	w.set = make(map[string]struct{}, len(w.keys))
+	for _, k := range w.keys {
+		w.set[string(k)] = struct{}{}
+	}
+	w.prepared = true
+}
+
+// relevant reports whether prefix lies on the path to a registered key (some key
+// has prefix as a prefix) or under one (some key is a prefix of prefix) — the
+// same predicate as the old linear scan, but O(log keys + len(prefix)) instead of
+// O(len(keys)). The path case is the common one (multiproof); the under case
+// covers the delete-collapse sibling subtrees the transition tool needs.
+func (w *WitnessRetainer) relevant(prefix []byte) bool {
+	// path case: first sorted key >= prefix; if it starts with prefix, a key lies
+	// on/under this node's path. (Any key with prefix as a prefix is >= prefix and
+	// is the first such; the immediate successor of prefix is the candidate.)
+	i := sort.Search(len(w.sorted), func(i int) bool { return bytes.Compare(w.sorted[i], prefix) >= 0 })
+	if i < len(w.sorted) && bytes.HasPrefix(w.sorted[i], prefix) {
+		return true
+	}
+	// under case: some key equals a proper prefix of prefix (prefix is deeper than
+	// a registered full key — e.g. a leaf's value node). Bounded by len(prefix).
+	for j := 1; j <= len(prefix); j++ {
+		if _, ok := w.set[string(prefix[:j])]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // ProofElement captures the node at prefix when that prefix lies on the path to,
 // or under, any registered key.
 func (w *WitnessRetainer) ProofElement(prefix []byte) *proofElement {
 	if !w.rl.Retain(prefix) {
 		return nil
 	}
-	relevant := false
-	for _, k := range w.keys {
-		if bytes.HasPrefix(k, prefix) || bytes.HasPrefix(prefix, k) {
-			relevant = true
-			break
-		}
+	if !w.prepared {
+		w.prepareIndex()
 	}
-	if !relevant {
+	if !w.relevant(prefix) {
 		return nil
 	}
 	pe := &proofElement{hexKey: append([]byte{}, prefix...)}
