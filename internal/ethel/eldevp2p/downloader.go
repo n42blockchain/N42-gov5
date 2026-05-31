@@ -40,6 +40,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"sync"
@@ -58,6 +59,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/devp2p"
 	"github.com/n42blockchain/N42/internal/ethel"
+	"github.com/n42blockchain/N42/internal/ethel/stateless"
 	"github.com/n42blockchain/N42/internal/network/eth69"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
@@ -137,6 +139,12 @@ type Downloader struct {
 	staged     bool
 	subBatch   uint64
 	lastMerkle uint64
+
+	// anchorDir, when set (N42_ANCHOR_DIR), makes each completed staged Merkle
+	// ALSO emit the block's MPT-stateless anchor proof (compact wire) to
+	// anchorDir/anchor-<to>.bin — the live producer path. Set subBatch to the
+	// anchor cadence K so every Merkle boundary is an anchor height.
+	anchorDir string
 
 	// buffer holds headers/bodies fetched but not yet executed, persisting across
 	// coordinator rounds so nothing is re-fetched or discarded (reth BodyStage
@@ -327,6 +335,14 @@ func (d *Downloader) coordinator(ctx context.Context) {
 		if v := os.Getenv("N42_SUBBATCH"); v != "" {
 			if n, err := strconv.ParseUint(v, 10, 64); err == nil && n > 0 {
 				d.subBatch = n
+			}
+		}
+		if dir := os.Getenv("N42_ANCHOR_DIR"); dir != "" {
+			if err := os.MkdirAll(dir, 0o755); err == nil {
+				d.anchorDir = dir
+				log.Info("eldevp2p: live MPT-anchor emit enabled", "dir", dir, "cadence", d.subBatch)
+			} else {
+				log.Error("eldevp2p: cannot create anchor dir", "dir", dir, "err", err)
 			}
 		}
 		d.adapter.SetStaged(true)
@@ -721,7 +737,15 @@ func (d *Downloader) runMerkleStage(ctx context.Context, from, to uint64) error 
 	}
 	defer tx.Rollback()
 	t0 := time.Now()
-	root, err := commitment.MerkleStageIncremental(tx, from, to)
+	// Live producer path: when anchor emit is on, capture the MPT-stateless
+	// anchor proof as a byproduct of the same Merkle (one walk); else plain root.
+	var root types.Hash
+	var anchorProof [][]byte
+	if d.anchorDir != "" {
+		root, anchorProof, err = commitment.MerkleStageIncrementalWithProof(tx, from, to)
+	} else {
+		root, err = commitment.MerkleStageIncremental(tx, from, to)
+	}
 	if err != nil {
 		return fmt.Errorf("MerkleStageIncremental [%d,%d]: %w", from, to, err)
 	}
@@ -736,6 +760,11 @@ func (d *Downloader) runMerkleStage(ctx context.Context, from, to uint64) error 
 	if root != hdr.Root {
 		return fmt.Errorf("staged Merkle root mismatch at %d: computed %s wire %s", to, root.Hex(), hdr.Root.Hex())
 	}
+	if d.anchorDir != "" {
+		if err := d.emitAnchor(to, root, anchorProof); err != nil {
+			log.Error("eldevp2p: anchor emit failed", "block", to, "err", err)
+		}
+	}
 	var v [8]byte
 	binary.BigEndian.PutUint64(v[:], to)
 	if err := tx.Put(progressTable, merkleProgressKey, v[:]); err != nil {
@@ -748,6 +777,23 @@ func (d *Downloader) runMerkleStage(ctx context.Context, from, to uint64) error 
 	log.Info("eldevp2p: staged Merkle OK", "from", from, "to", to, "blocks", to-from+1,
 		"root", root.Hex(), "dur", time.Since(t0).Round(time.Millisecond))
 	return nil
+}
+
+// emitAnchor writes block N's compact MPT-stateless anchor proof to
+// anchorDir/anchor-<N>.bin, self-checking it reconstructs to the verified root.
+// Best-effort: a failure is logged by the caller, not fatal to sync.
+func (d *Downloader) emitAnchor(blockNum uint64, root types.Hash, proof [][]byte) error {
+	if len(proof) == 0 {
+		return fmt.Errorf("empty proof")
+	}
+	if err := stateless.VerifyProofAnchors(root[:], proof); err != nil {
+		return fmt.Errorf("anchor self-check: %w", err)
+	}
+	wire, err := stateless.CompactProofFromNodes(root[:], proof)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(d.anchorDir, fmt.Sprintf("anchor-%010d.bin", blockNum)), wire, 0o644)
 }
 
 // commitBatch writes the head marker INTO the batch tx and commits it, so the
