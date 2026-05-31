@@ -113,11 +113,62 @@ func VerifyWindowCadence(hc *stateless.HeaderChain, chainCfg *params.ChainConfig
 	return results
 }
 
+// WireMinimalExec installs layer ② on a stateless minimal client: per block it
+// fetches body/witness/code (and recovers senders) via the given fetchers and
+// replays the block, checking gasUsed + receiptRoot against the trusted header.
+// Composing this with the client's ① (header chain) + ③ (MPT anchor) yields full
+// three-layer verification while keeping MinimalClient in the stateless package
+// (the EVM replay can't be imported there without a cycle). Any fetcher may be
+// nil (e.g. an empty-block test needs no code).
+func WireMinimalExec(
+	c *stateless.MinimalClient,
+	chainCfg *params.ChainConfig,
+	engine consensus.Engine,
+	body func(uint64) (*GethBodyResult, error),
+	witness func(uint64) ([]byte, error),
+	senders func(uint64) ([]types.Address, error),
+	code func(uint64) (map[types.Hash][]byte, error),
+) {
+	c.ExecVerify = func(n uint64, h *block.Header, ancestor func(uint64) types.Hash) error {
+		var b *GethBodyResult
+		if body != nil {
+			var err error
+			if b, err = body(n); err != nil {
+				return fmt.Errorf("fetch body: %w", err)
+			}
+		}
+		var w []byte
+		if witness != nil {
+			var err error
+			if w, err = witness(n); err != nil {
+				return fmt.Errorf("fetch witness: %w", err)
+			}
+		}
+		var sn []types.Address
+		if senders != nil {
+			sn, _ = senders(n)
+		}
+		var cd map[types.Hash][]byte
+		if code != nil {
+			cd, _ = code(n)
+		}
+		in := &MinimalVerifyInput{Header: h, Body: b, Witness: w, Senders: sn, Code: cd}
+		return verifyExecutionAncestor(ancestor, chainCfg, engine, in)
+	}
+}
+
 // verifyExecution is layer ②: replay the witness through the EVM and let
-// replayWitnessBlock check gasUsed + receiptRoot against the header. Code is
-// served from an in-memory Code table built from the verified code map; the
-// trusted HeaderChain supplies BLOCKHASH ancestor hashes.
+// replayWitnessBlock check gasUsed + receiptRoot against the header. The trusted
+// HeaderChain supplies BLOCKHASH ancestor hashes.
 func verifyExecution(hc *stateless.HeaderChain, chainCfg *params.ChainConfig, engine consensus.Engine, in *MinimalVerifyInput) error {
+	return verifyExecutionAncestor(func(n uint64) types.Hash { h, _ := hc.TrustedHash(n); return h }, chainCfg, engine, in)
+}
+
+// verifyExecutionAncestor is verifyExecution with the BLOCKHASH ancestor lookup
+// passed directly (used by the minimal client's ExecVerify hook, which has the
+// ancestor func but not the HeaderChain). Code is served from an in-memory Code
+// table built from the verified code map.
+func verifyExecutionAncestor(ancestor func(uint64) types.Hash, chainCfg *params.ChainConfig, engine consensus.Engine, in *MinimalVerifyInput) error {
 	dir, err := os.MkdirTemp("", "minimal-code-")
 	if err != nil {
 		return err
@@ -158,7 +209,7 @@ func verifyExecution(hc *stateless.HeaderChain, chainCfg *params.ChainConfig, en
 		Body:        body,
 		Witness:     in.Witness,
 		Senders:     in.Senders,
-		BlockHashFn: func(n uint64) types.Hash { h, _ := hc.TrustedHash(n); return h },
+		BlockHashFn: ancestor,
 	}
 	res := replayWitnessBlock(job, codeTx, chainCfg, engine, ReplayMode{NoOutput: true}, ibs, reader)
 	return res.Err

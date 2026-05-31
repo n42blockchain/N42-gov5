@@ -36,6 +36,14 @@ type MinimalClient struct {
 	anchorKnown  bool
 
 	reanchors uint64 // count of trust-root advances (observability)
+
+	// ExecVerify, if set, is the layer-② check run per block after the header is
+	// extended (① ) and before the anchor (③): the caller (in internal/ethel,
+	// which can't be imported here without a cycle) fetches the block's
+	// witness/body/code and replays it through the EVM, checking receiptRoot
+	// against the now-trusted header. `ancestor` yields trusted ancestor hashes
+	// for the BLOCKHASH opcode. A non-nil error stops the sync.
+	ExecVerify func(n uint64, h *block.Header, ancestor func(uint64) types.Hash) error
 }
 
 // NewMinimalClient trusts `anchor` (an out-of-band checkpoint header, ideally
@@ -77,6 +85,12 @@ func (c *MinimalClient) Sync() (uint64, error) {
 		}
 		c.headers[n] = h
 
+		if c.ExecVerify != nil { // ② witness replay → receiptRoot
+			if err := c.ExecVerify(n, h, c.ancestorHash); err != nil {
+				return c.headNum(), fmt.Errorf("block %d layer②: %w", n, err)
+			}
+		}
+
 		if c.anchorEvery > 0 && n%c.anchorEvery == 0 {
 			bp, aerr := c.src.Anchor(n)
 			if aerr != nil {
@@ -97,6 +111,13 @@ func (c *MinimalClient) Sync() (uint64, error) {
 }
 
 func (c *MinimalClient) headNum() uint64 { n, _ := c.hc.Head(); return n }
+
+// ancestorHash yields the trusted hash of block m (for the BLOCKHASH opcode in
+// the layer-② replay), or the zero hash if outside the retained window.
+func (c *MinimalClient) ancestorHash(m uint64) types.Hash {
+	h, _ := c.hc.TrustedHash(m)
+	return h
+}
 
 // maybePrune enforces the rolling window: once the trust root lags the head by
 // more than retentionBlocks, re-anchor to the latest ③-verified anchor that is
