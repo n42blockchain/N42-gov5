@@ -187,11 +187,27 @@ Goal: full historical state, built by self-execution, then live.
   timeouts middleware; metrics; `/health`. CDN-frontable static artifacts.
 - **P-C — minimal client**: 12 s live sync + fast-catch-up `VerifyWindowCadence`
   + rolling 1-week prune + re-anchor.
-- **P-D — full client**: header+body genesis archive + serve.
-- **P-E — archive client**: download → forward-execute from genesis (persist
-  full state) → catch up → switch to 12 s.
-- **P-F — multi-IDC**: ≥M-of-N attestation aggregation, cross-producer
-  cross-check, producer discovery.
+- **P-D — full client** ✅ `stateless.FullClient`: follows the header chain
+  genesis→tip, stores every header+body (optional `BodyVerifier`), no prune/state.
+- **P-E — archive client** ✅ `stateless.ArchiveClient`: download header+body+
+  witness → forward-execute from genesis via a pluggable `ArchiveExecutor`
+  (persists full state; ② receiptRoot inside, ③ computed root == header root) →
+  catch up (`AtTip`) → switch to 12 s.
+- **P-F — multi-IDC** ✅ `stateless.MultiSource`: M-of-N cross-producer agreement
+  on head/header/anchor (a lone liar is outvoted; no quorum ⇒ reported, not
+  silently resolved), composed with the existing `AttestationPool` aggregation.
+
+### Mount
+
+The serving RPC is mounted in production by **`cmd/n42-stateless-serve`**: a
+`serve.Backend` over the read-only producer freezers (columnar headerc/bodyc,
+witness `TableBlockWitness`, anchor-`<n>`.bin files, optional MDBX `kv.Code`),
+wrapped by `serve.NewServer` (per-IP rate limit → 429, per-IP bandwidth +
+per-request caps, max-concurrent → 503, hardened timeouts). Bodies are served
+faithfully via `ethel.EncodeBodyBlock` (the same columnar codec that produced the
+bodyc files), so no geth-header RLP encoder is needed. HTTP routes:
+`/head /header /block /witness /anchor /code /health`; client half is
+`serve.HTTPSource` (implements `Source`/`FullSource`/`ArchiveSource`).
 
 ### Open items
 - **Incremental anchor verify** for the live producer (replace
