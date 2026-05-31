@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"net"
@@ -8,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
 
@@ -81,6 +84,68 @@ func Handler(svc *Service, rl *jsonrpc.RateLimiter) http.Handler {
 			return
 		}
 		writeBytes(w, b)
+	})
+
+	// /block?n=N → 4-byte-LE header length || header || body (one round-trip).
+	mux.HandleFunc("/block", func(w http.ResponseWriter, r *http.Request) {
+		n, err := qn(r)
+		if err != nil {
+			http.Error(w, "bad n", http.StatusBadRequest)
+			return
+		}
+		hb, bb, err := svc.GetBlock(clientIP(r), n)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		var lp [4]byte
+		binary.LittleEndian.PutUint32(lp[:], uint32(len(hb)))
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(lp[:])
+		_, _ = w.Write(hb)
+		_, _ = w.Write(bb)
+	})
+
+	// /code?h=0x..&h=0x.. → concatenated [4-byte-LE len || code] records, in
+	// request order (missing hashes are omitted, so check returned hashes).
+	mux.HandleFunc("/code", func(w http.ResponseWriter, r *http.Request) {
+		raw := r.URL.Query()["h"]
+		hashes := make([]types.Hash, 0, len(raw))
+		for _, s := range raw {
+			b, err := hexutil.Decode(s)
+			if err != nil || len(b) != 32 {
+				http.Error(w, "bad code hash", http.StatusBadRequest)
+				return
+			}
+			hashes = append(hashes, types.BytesToHash(b))
+		}
+		codes, err := svc.GetCode(clientIP(r), hashes)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		for _, h := range hashes {
+			c, ok := codes[h]
+			if !ok {
+				continue
+			}
+			var lp [4]byte
+			binary.LittleEndian.PutUint32(lp[:], uint32(len(c)))
+			_, _ = w.Write(h[:])
+			_, _ = w.Write(lp[:])
+			_, _ = w.Write(c)
+		}
+	})
+
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		num, hash, anchor, err := svc.Head()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "head": num, "hash": hash.Hex(), "anchor": anchor})
 	})
 
 	var h http.Handler = mux

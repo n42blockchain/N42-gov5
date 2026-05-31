@@ -85,3 +85,29 @@ func (s *HTTPSource) Anchor(n uint64) (*stateless.BlockProof, error) {
 func (s *HTTPSource) GetWitness(n uint64) ([]byte, error) {
 	return s.get(fmt.Sprintf("/witness?n=%d", n))
 }
+
+// Witness satisfies stateless.ArchiveSource (alias of GetWitness).
+func (s *HTTPSource) Witness(n uint64) ([]byte, error) { return s.GetWitness(n) }
+
+// Body fetches block n's body, satisfying stateless.FullSource. It reads the
+// /block response (4-byte-LE header length || header || body) and returns the
+// trailing body bytes.
+func (s *HTTPSource) Body(n uint64) ([]byte, error) {
+	b, err := s.get(fmt.Sprintf("/block?n=%d", n))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) < 4 {
+		return nil, fmt.Errorf("block %d: short response", n)
+	}
+	hlen := int(uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24)
+	if 4+hlen > len(b) {
+		return nil, fmt.Errorf("block %d: header length %d overflows response", n, hlen)
+	}
+	return b[4+hlen:], nil
+}
+
+var (
+	_ stateless.FullSource    = (*HTTPSource)(nil)
+	_ stateless.ArchiveSource = (*HTTPSource)(nil)
+)
