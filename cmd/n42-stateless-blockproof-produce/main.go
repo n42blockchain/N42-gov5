@@ -269,10 +269,19 @@ func readBlockChangeset(acctTbl, stoTbl *freezer.FreezerTable, n uint64) (map[ty
 }
 
 // buildBlockProof assembles a single-block FORWARD transition BlockProof for block
-// n at the PRE-state trie (tx is at header[n-1]): a pre-state account multiproof +
-// per-account storage proofs over the touched keys, with the block's NEW-value
-// changeset. Deleted keys get neighbour subtrees retained (forward delete collapses
-// a branch — same sibling-node need as the reverse case).
+// n at the PRE-state trie (tx is at header[n-1]): ONE merged account+storage
+// multiproof over all touched keys, plus the block's NEW-value changeset. Deleted
+// keys get neighbour subtrees retained (forward delete collapses a branch).
+//
+// All touched keys (account hashes + storage composite keys + delete neighbours)
+// are retained in a SINGLE WitnessRetainer and proven with a SINGLE CalcTrieRoot
+// walk — not one walk per account. At a dense anchor (hundreds of touched
+// accounts in a 25M-block state) the per-account walk was O(accounts × trie scan)
+// and dominated runtime; one merged walk is O(trie scan). The flat node set is
+// shipped once as AccountProof; the consumer's StateRootUpdater treats it as a
+// shared pool for every account's storage subtree, so per-account StorageProof is
+// left empty (no node duplication). Each account's pre-state storageRoot is read
+// back out of the merged proof via stateless.StorageRootsFromProof.
 func buildBlockProof(tx kv.Tx, n uint64, dA map[types.Address]*account.StateAccount, dS map[types.Address]map[types.Hash]*uint256.Int) (*stateless.BlockProof, error) {
 	// Union of touched addresses (account-changed ∪ storage-changed), stable order.
 	addrs := make([]types.Address, 0, len(dA)+len(dS))
@@ -290,20 +299,20 @@ func buildBlockProof(tx kv.Tx, n uint64, dA map[types.Address]*account.StateAcco
 		add(a)
 	}
 
-	acctNodes := map[string][]byte{}
-	addNodes := func(m map[string][]byte, ns [][]byte) {
-		for _, nd := range ns {
-			m[string(keccakB(nd))] = nd
-		}
+	type acctMeta struct {
+		addr             types.Address
+		addrHash         types.Hash
+		preAcc           account.StateAccount
+		preStorageExists bool
+		allSlots         []types.Hash
 	}
-	var changes []stateless.AccountChange
-	var delAccts []types.Hash
-	type sk struct{ a, s types.Hash }
-	var delSlots []sk
+	metas := make([]acctMeta, 0, len(addrs))
+
+	rl := trie.NewRetainList(0)
+	wr := trie.NewWitnessRetainer(rl)
 
 	for _, addr := range addrs {
 		addrHash, _ := types.HashData(addr[:])
-		// Pre-state account (for the ProofRetainer hint + storage subtree).
 		var preAcc account.StateAccount
 		preAcc.Reset()
 		preExists := false
@@ -315,15 +324,10 @@ func buildBlockProof(tx kv.Tx, n uint64, dA map[types.Address]*account.StateAcco
 		for s := range dS[addr] {
 			allSlots = append(allSlots, s)
 		}
-		// A storage proof only exists when the account has a NON-EMPTY storage
-		// subtree at pre-state. Two cases need slotOrder=nil + emptyStorageRoot
-		// (pure inserts into an empty trie, no pre-subtree to prove):
-		//   1. a contract CREATED in this block (account absent at pre-state), and
-		//   2. an EXISTING account whose pre-state storage is empty (EOA gaining
-		//      its first slots, or a contract with EmptyRoot storage). In case 2
-		//      the account leaf is a simple leaf with no storage subtree, so the
-		//      ProofRetainer never captures a storageRoot — requesting one fails
-		//      with "did not find storage root". Detect it via HashedStorage.
+		// Storage is proven only when the account has a NON-EMPTY pre-state storage
+		// subtree. A created account, or an existing EOA/empty-storage account gaining
+		// its first slots, has no pre-subtree: its slots are pure inserts into an
+		// empty root (StorageRoot=EmptyRoot, no storage proof). Detect via HashedStorage.
 		preStorageExists := false
 		if preExists {
 			if sc, e := tx.CursorDupSort(kv.HashedStorage); e == nil {
@@ -333,42 +337,69 @@ func buildBlockProof(tx kv.Tx, n uint64, dA map[types.Address]*account.StateAcco
 				sc.Close()
 			}
 		}
-		slotOrder := allSlots
-		if !preStorageExists {
-			slotOrder = nil
-		}
 
-		rl := trie.NewRetainList(0)
-		// For an empty-storage account the account leaf is a simple leaf (no storage
-		// subtree), so the ProofRetainer never captures a storageRoot. Passing
-		// Initialised=false tells ProofResult to treat storage as empty/absent
-		// (skip the "did not find storage root" requirement) while still returning
-		// the account-inclusion proof nodes we need. Account fields for the changeset
-		// are taken from the changeset/preAcc directly below, not from the proof.
-		prAcc := preAcc
-		if !preStorageExists {
-			prAcc.Initialised = false
+		// Retain the account key (inclusion + storageRoot read-back).
+		wr.AddHashedKey(addrHash[:])
+		if preStorageExists {
+			for _, slot := range allSlots {
+				slotHash, _ := types.HashData(slot[:])
+				var comp [64]byte
+				copy(comp[:32], addrHash[:])
+				copy(comp[32:], slotHash[:])
+				wr.AddHashedKey(comp[:]) // storage subtree path
+			}
 		}
-		pr, perr := trie.NewProofRetainer(addr, &prAcc, slotOrder, rl)
-		if perr != nil {
-			return nil, fmt.Errorf("proof retainer %x: %w", addr[:6], perr)
+		// Deleted account → retain neighbours so a branch collapse has its siblings.
+		if newAcc, inAcct := dA[addr]; inAcct && newAcc == nil {
+			for _, nb := range acctNeighbors(tx, addrHash) {
+				wr.AddHashedKey(nb)
+			}
 		}
-		loader := trie.NewFlatDBTrieLoader("bp", rl, nopAccHC, nopStorHC, false)
-		loader.SetProofRetainer(pr)
-		if _, lerr := loader.CalcTrieRoot(tx, nil); lerr != nil {
-			return nil, fmt.Errorf("calc %x: %w", addr[:6], lerr)
+		// Forward-deleted slots (zero value in an existing subtree) → slot neighbours.
+		if preStorageExists {
+			for _, slot := range allSlots {
+				if v := dS[addr][slot]; v == nil || v.IsZero() {
+					slotHash, _ := types.HashData(slot[:])
+					for _, nb := range slotNeighbors(tx, addrHash, slotHash) {
+						var comp [64]byte
+						copy(comp[:32], addrHash[:])
+						copy(comp[32:], nb)
+						wr.AddHashedKey(comp[:])
+					}
+				}
+			}
 		}
-		res, rerr := pr.ProofResult()
-		if rerr != nil {
-			return nil, fmt.Errorf("proof result %x: %w", addr[:6], rerr)
-		}
-		addNodes(acctNodes, res.AccountProof)
+		metas = append(metas, acctMeta{addr, addrHash, preAcc, preStorageExists, allSlots})
+	}
 
-		ch := stateless.AccountChange{AddrHash: addrHash}
-		newAcc, inAcct := dA[addr]
+	// ONE walk → merged account+storage multiproof.
+	loader := trie.NewFlatDBTrieLoader("bp", rl, nopAccHC, nopStorHC, false)
+	loader.SetWitnessRetainer(wr)
+	root, lerr := loader.CalcTrieRoot(tx, nil)
+	if lerr != nil {
+		return nil, fmt.Errorf("calc: %w", lerr)
+	}
+	allNodes := wr.Nodes()
+
+	// Read each existing-subtree account's pre-state storageRoot out of the proof.
+	var withStorage []types.Hash
+	for _, m := range metas {
+		if m.preStorageExists {
+			withStorage = append(withStorage, m.addrHash)
+		}
+	}
+	storageRoots, srerr := stateless.StorageRootsFromProof(root[:], allNodes, withStorage)
+	if srerr != nil {
+		return nil, fmt.Errorf("storage roots: %w", srerr)
+	}
+
+	changes := make([]stateless.AccountChange, 0, len(metas))
+	for i := range metas {
+		m := &metas[i]
+		ch := stateless.AccountChange{AddrHash: m.addrHash}
+		newAcc, inAcct := dA[m.addr]
 		if inAcct && newAcc == nil {
 			ch.Deleted = true
-			delAccts = append(delAccts, addrHash)
 			changes = append(changes, ch)
 			continue
 		}
@@ -381,83 +412,37 @@ func buildBlockProof(tx kv.Tx, n uint64, dA map[types.Address]*account.StateAcco
 			}
 			ch.CodeHash = chash[:]
 		} else { // storage-only: account fields unchanged (use pre values)
-			ch.Nonce = preAcc.Nonce
-			ch.Balance.Set(&preAcc.Balance)
-			chash := preAcc.CodeHash
+			ch.Nonce = m.preAcc.Nonce
+			ch.Balance.Set(&m.preAcc.Balance)
+			chash := m.preAcc.CodeHash
 			if chash == (types.Hash{}) {
 				chash = types.BytesToHash(emptyCodeHash())
 			}
 			ch.CodeHash = chash[:]
 		}
-		if len(allSlots) > 0 {
-			if preStorageExists {
-				ch.StorageRoot = res.StorageHash[:]
-				stNodes := map[string][]byte{}
-				for i := range res.StorageProof {
-					for _, nd := range res.StorageProof[i].Proof {
-						stNodes[string(keccakB(nd))] = nd
-					}
-				}
-				for _, nd := range stNodes {
-					ch.StorageProof = append(ch.StorageProof, nd)
-				}
+		if len(m.allSlots) > 0 {
+			if m.preStorageExists {
+				ch.StorageRoot = storageRoots[m.addrHash] // from the merged proof's leaf
 			} else {
-				ch.StorageRoot = emptyStorageRoot() // created/empty-storage account: empty pre-subtree
+				ch.StorageRoot = emptyStorageRoot() // created/empty-storage: empty pre-subtree
 			}
-			for _, slot := range allSlots {
+			// StorageProof left nil: the storage nodes live in the shared AccountProof
+			// pool (the consumer's AddStorageProof consults it).
+			for _, slot := range m.allSlots {
 				slotHash, _ := types.HashData(slot[:])
-				val := dS[addr][slot]
+				val := dS[m.addr][slot]
 				var vb []byte
 				if val != nil && !val.IsZero() {
 					b := val.Bytes32()
 					vb = bytes.TrimLeft(b[:], "\x00")
 				}
 				ch.Storage = append(ch.Storage, stateless.StorageChange{SlotHash: slotHash, Value: vb})
-				if len(vb) == 0 && preStorageExists { // slot deleted forward in an existing subtree → collapse
-					delSlots = append(delSlots, sk{addrHash, slotHash})
-				}
 			}
 		}
 		changes = append(changes, ch)
 	}
 
-	// Neighbour-retain for FORWARD-deleted keys (branch collapse needs siblings).
-	if len(delAccts) > 0 || len(delSlots) > 0 {
-		rl := trie.NewRetainList(0)
-		wr := trie.NewWitnessRetainer(rl)
-		for _, ah := range delAccts {
-			for _, nb := range acctNeighbors(tx, ah) {
-				wr.AddHashedKey(nb)
-			}
-		}
-		for _, ds := range delSlots {
-			for _, nb := range slotNeighbors(tx, ds.a, ds.s) {
-				var comp [64]byte
-				copy(comp[:32], ds.a[:])
-				copy(comp[32:], nb)
-				wr.AddHashedKey(comp[:])
-			}
-		}
-		loader := trie.NewFlatDBTrieLoader("bp-neighbors", rl, nopAccHC, nopStorHC, false)
-		loader.SetWitnessRetainer(wr)
-		if _, lerr := loader.CalcTrieRoot(tx, nil); lerr == nil {
-			sib := wr.Nodes()
-			for _, nd := range sib {
-				acctNodes[string(keccakB(nd))] = nd
-			}
-			for i := range changes {
-				if len(changes[i].StorageProof) > 0 {
-					changes[i].StorageProof = append(changes[i].StorageProof, sib...)
-				}
-			}
-		}
-	}
-
-	acctProof := make([][]byte, 0, len(acctNodes))
-	for _, nd := range acctNodes {
-		acctProof = append(acctProof, nd)
-	}
-	return &stateless.BlockProof{Number: n, AccountProof: acctProof, Changes: changes}, nil
+	return &stateless.BlockProof{Number: n, AccountProof: allNodes, Changes: changes}, nil
 }
 
 // acctNeighbors / slotNeighbors return the predecessor/successor hashed keys whose

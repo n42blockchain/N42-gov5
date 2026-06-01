@@ -28,10 +28,14 @@ import (
 // storage step. The storage proof for a contract must be supplied before its
 // slots are touched.
 type StateRootUpdater struct {
-	acct      *partialTrie            // account trie
-	storage   map[string]*storageCtx  // addrHash(hex string of 32B) -> storage subtree
-	acctDirty map[string]*AccountEdit // pending account-field edits, keyed by addrHash
-	deleted   map[string]bool         // accounts to delete
+	acct        *partialTrie            // account trie
+	storage     map[string]*storageCtx  // addrHash(hex string of 32B) -> storage subtree
+	acctDirty   map[string]*AccountEdit // pending account-field edits, keyed by addrHash
+	deleted     map[string]bool         // accounts to delete
+	sharedNodes [][]byte                // account-proof node pool, also consulted when
+	// building per-account storage subtrees — lets a producer ship ONE merged node
+	// set (account + all storage nodes) in AccountProof and leave each Change's
+	// StorageProof empty, instead of duplicating storage nodes per account.
 }
 
 type storageCtx struct {
@@ -49,6 +53,35 @@ type AccountEdit struct {
 	CodeHash []byte // 32B; nil → keep existing / empty
 }
 
+// StorageRootsFromProof reads each account's pre-state storageRoot out of an
+// account-trie multiproof. For an account whose leaf is present it decodes the
+// embedded storageRoot; for one whose leaf is absent or unresolved (an
+// empty-pre-storage account — its leaf is a simple node the per-account
+// ProofRetainer doesn't capture) it returns the empty-trie root. A producer uses
+// this to fill each Change.StorageRoot from a single merged multiproof, instead
+// of running a separate per-account proof walk just to learn the storage roots.
+func StorageRootsFromProof(preStateRoot []byte, accountProof [][]byte, addrHashes []types.Hash) (map[types.Hash][]byte, error) {
+	at, err := newPartialTrie(preStateRoot, accountProof)
+	if err != nil {
+		return nil, fmt.Errorf("account trie: %w", err)
+	}
+	out := make(map[types.Hash][]byte, len(addrHashes))
+	for _, ah := range addrHashes {
+		leaf, found, gerr := at.get(keybytesToHex(ah[:]))
+		if gerr != nil || !found { // absent/unresolved leaf ⇒ empty pre-state storage
+			out[ah] = append([]byte(nil), emptyRootHash...)
+			continue
+		}
+		al, derr := decodeAccountLeaf(leaf)
+		if derr != nil {
+			out[ah] = append([]byte(nil), emptyRootHash...)
+			continue
+		}
+		out[ah] = al.storageRoot
+	}
+	return out, nil
+}
+
 // NewStateRootUpdater loads the account-trie multiproof rooted at preStateRoot.
 func NewStateRootUpdater(preStateRoot []byte, accountProofNodes [][]byte) (*StateRootUpdater, error) {
 	at, err := newPartialTrie(preStateRoot, accountProofNodes)
@@ -56,16 +89,26 @@ func NewStateRootUpdater(preStateRoot []byte, accountProofNodes [][]byte) (*Stat
 		return nil, fmt.Errorf("account trie: %w", err)
 	}
 	return &StateRootUpdater{
-		acct:      at,
-		storage:   map[string]*storageCtx{},
-		acctDirty: map[string]*AccountEdit{},
-		deleted:   map[string]bool{},
+		acct:        at,
+		storage:     map[string]*storageCtx{},
+		acctDirty:   map[string]*AccountEdit{},
+		deleted:     map[string]bool{},
+		sharedNodes: accountProofNodes,
 	}, nil
 }
 
 // AddStorageProof registers a contract's storage-subtree multiproof, rooted at
 // storageRoot (which must equal the storageRoot embedded in that account's leaf).
 func (u *StateRootUpdater) AddStorageProof(addrHash types.Hash, storageRoot []byte, proofNodes [][]byte) error {
+	// Also consult the shared account-proof pool: a producer may ship one merged
+	// node set in AccountProof (covering every account's storage subtree too) and
+	// leave proofNodes empty, rather than duplicating storage nodes per account.
+	if len(u.sharedNodes) > 0 {
+		merged := make([][]byte, 0, len(proofNodes)+len(u.sharedNodes))
+		merged = append(merged, proofNodes...)
+		merged = append(merged, u.sharedNodes...)
+		proofNodes = merged
+	}
 	st, err := newPartialTrie(storageRoot, proofNodes)
 	if err != nil {
 		return fmt.Errorf("storage trie %x: %w", addrHash[:6], err)
