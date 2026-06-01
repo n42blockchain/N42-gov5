@@ -12,10 +12,9 @@
 package io.n42.verifier
 
 import evmsdk.Evmsdk
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 class MinimalClient {
@@ -114,7 +113,24 @@ class MinimalClient {
         _state.value = _state.value.copy(lastVerify = "② block $n: ${if (ok) "✓ verified" else "✗ failed"} · $tx tx")
     }
 
-    fun free() { Evmsdk.mobileMinimalFree(); _state.value = _state.value.copy(initialized = false) }
+    // ─── Live following (12 s ticker) ───────────────────────────────────
+    private val _following = MutableStateFlow(false)
+    val following: StateFlow<Boolean> = _following
+    private var followJob: Job? = null
+
+    /** Auto-syncs ① every intervalMs (default 12s, one ETH block) on the given scope. */
+    fun startFollowing(scope: CoroutineScope, intervalMs: Long = 12_000) {
+        if (!_state.value.initialized) return
+        followJob?.cancel()
+        _following.value = true
+        followJob = scope.launch {
+            while (isActive) { sync(); delay(intervalMs) }
+        }
+    }
+
+    fun stopFollowing() { followJob?.cancel(); followJob = null; _following.value = false }
+
+    fun free() { stopFollowing(); Evmsdk.mobileMinimalFree(); _state.value = _state.value.copy(initialized = false) }
 
     private fun apply(js: String) {
         if (js.startsWith("error:")) { _state.value = _state.value.copy(status = js); return }

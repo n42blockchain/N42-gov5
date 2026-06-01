@@ -87,11 +87,14 @@ fun MinimalScreen(node: MinimalClient) {
                 FilledTonalButton(onClick = { node.initialize(idc, cpBlock.toLongOrNull() ?: 0, cpHash) }) {
                     Text(if (st.initialized) "Re-anchor" else "Connect")
                 }
+                val following by node.following.collectAsState()
                 FilledTonalButton(
-                    onClick = { scope.launch { node.sync() } },
-                    enabled = st.initialized && !st.syncing,
-                    colors = ButtonDefaults.filledTonalButtonColors(containerColor = GREEN.copy(alpha = 0.18f), contentColor = GREEN)
-                ) { Text(if (st.syncing) "Syncing…" else "Follow tip ▶") }
+                    onClick = { if (following) node.stopFollowing() else node.startFollowing(scope) },
+                    enabled = st.initialized,
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = (if (following) Color.Red else GREEN).copy(alpha = 0.18f),
+                        contentColor = if (following) Color.Red else GREEN)
+                ) { Text(if (following) "● Live (12s)" else "Follow tip ▶") }
                 FilledTonalButton(
                     onClick = { node.verifyBlock(st.head) },
                     enabled = st.initialized && st.head > 0,
