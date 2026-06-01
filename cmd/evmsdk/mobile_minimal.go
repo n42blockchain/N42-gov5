@@ -266,17 +266,27 @@ func MobileVerifyBlock(n int64) string {
 		Witness: wit,
 	}
 	ancestor := func(m uint64) types.Hash { h, _ := minClient.mc.TrustedHash(m); return h }
-	codeFetch := func(h types.Hash) ([]byte, error) { return minClient.src.Code(h) }
+	// On a contract call the replay fetches bytecode by codeHash from the producer
+	// /code endpoint (content-addressed; the reader verifies keccak256==codeHash).
+	codeFetched := 0
+	codeFetch := func(h types.Hash) ([]byte, error) {
+		c, err := minClient.src.Code(h)
+		if err == nil && len(c) > 0 {
+			codeFetched++
+		}
+		return c, err
+	}
 	cfg := params.EthereumMainnetChainConfig
 	engine := ethel.NewEthReplayEngine(cfg)
 
 	verr := ethel.VerifyWitnessReceipt(in, ancestor, cfg, engine, codeFetch)
 	b, _ := json.Marshal(map[string]any{
-		"block":     bn,
-		"txCount":   len(decoded.Txs),
-		"byzantium": cfg.IsByzantium(bn),
-		"verified":  verr == nil,
-		"error":     errStr(verr),
+		"block":       bn,
+		"txCount":     len(decoded.Txs),
+		"byzantium":   cfg.IsByzantium(bn),
+		"codeFetched": codeFetched,
+		"verified":    verr == nil,
+		"error":       errStr(verr),
 	})
 	return string(b)
 }

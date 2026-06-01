@@ -49,6 +49,7 @@ func main() {
 	anchorDir := flag.String("anchors", "", "MPT anchor proof dir (anchor-<n>.bin); empty = no ③ serving")
 	chaindata := flag.String("chaindata", "", "optional MDBX chaindata for code-by-hash (kv.Code); empty = no code serving")
 	trieDir := flag.String("trie", "", "optional MDBX trie dir (HashedAccounts+TrieOf*) for /account-proof; empty = disabled")
+	codesDir := flag.String("codes", "", "optional codes-freezer dir (codes.cidx + codes.NNNN.cdat) for /code-by-addr (contract-block ②); empty = disabled")
 	trieHead := flag.Uint64("trie-head", 0, "block number the trie's state is at (when the trie DB has no HeaderCanonical, e.g. a producer temp trie)")
 	chainID := flag.Uint64("chainid", 1, "chain id embedded in served bodies")
 	rps := flag.Int("rps", 50, "per-IP requests/sec")
@@ -58,7 +59,7 @@ func main() {
 	flag.Parse()
 
 	logger := log.New()
-	be, err := openBackend(*hdrDir, *bodyDir, *witDir, *anchorDir, *chaindata, *trieDir, *chainID)
+	be, err := openBackend(*hdrDir, *bodyDir, *witDir, *anchorDir, *chaindata, *trieDir, *codesDir, *chainID)
 	if be != nil && *trieHead > 0 {
 		be.trieHead = *trieHead
 	}
@@ -104,11 +105,13 @@ type freezerBackend struct {
 	trieDB   kv.RoDB // optional (HashedAccounts + TrieOf*) for /account-proof
 	trieHead uint64  // head block of the trie DB (canonical head)
 
+	codes *ethel.CodesFreezerReader // optional address-indexed code source for /code-by-addr
+
 	mu      sync.Mutex
 	tipSeen uint64 // monotonic cache of the highest readable header
 }
 
-func openBackend(hdrDir, bodyDir, witDir, anchorDir, chaindata, trieDir string, chainID uint64) (*freezerBackend, error) {
+func openBackend(hdrDir, bodyDir, witDir, anchorDir, chaindata, trieDir, codesDir string, chainID uint64) (*freezerBackend, error) {
 	hc, err := ethel.OpenHeaderCompact(hdrDir)
 	if err != nil {
 		return nil, fmt.Errorf("headerc: %w", err)
@@ -171,6 +174,15 @@ func openBackend(hdrDir, bodyDir, witDir, anchorDir, chaindata, trieDir string, 
 		}
 	}
 
+	if codesDir != "" {
+		cr, err := ethel.NewCodesFreezerReader(codesDir)
+		if err != nil {
+			be.Close()
+			return nil, fmt.Errorf("codes-freezer: %w", err)
+		}
+		be.codes = cr
+	}
+
 	be.tipSeen = be.findTip()
 	return be, nil
 }
@@ -190,6 +202,9 @@ func (b *freezerBackend) Close() {
 	}
 	if b.trieDB != nil {
 		b.trieDB.Close()
+	}
+	if b.codes != nil {
+		b.codes.Close()
 	}
 }
 
@@ -342,21 +357,34 @@ func (b *freezerBackend) Anchor(n uint64) ([]byte, error) {
 	return os.ReadFile(filepath.Join(b.anchorDir, fmt.Sprintf("anchor-%010d.bin", n)))
 }
 
+// Code serves bytecode by keccak codeHash (content-addressed) for layer-② replay.
+// Source order: codes-freezer (keyed by codeHash[:20] — code-import2fz truncates
+// the codeHash-keyed Code/Bytecodes table key to 20 B), then MDBX kv.Code. The
+// client verifies keccak256(code)==codeHash, so the 20-byte index is collision-safe.
 func (b *freezerBackend) Code(hash types.Hash) ([]byte, error) {
-	if b.codeDB == nil {
-		return nil, fmt.Errorf("code serving disabled (no --chaindata)")
+	if b.codes != nil {
+		var key types.Address
+		copy(key[:], hash[:20])
+		if c, err := b.codes.LookupByAddress(key); err == nil && len(c) > 0 {
+			return c, nil
+		}
 	}
-	tx, err := b.codeDB.BeginRo(context.Background())
-	if err != nil {
-		return nil, err
+	if b.codeDB != nil {
+		tx, err := b.codeDB.BeginRo(context.Background())
+		if err != nil {
+			return nil, err
+		}
+		defer tx.Rollback()
+		c, err := tx.GetOne(kv.Code, hash[:])
+		if err != nil {
+			return nil, err
+		}
+		if len(c) > 0 {
+			return c, nil
+		}
 	}
-	defer tx.Rollback()
-	c, err := tx.GetOne(kv.Code, hash[:])
-	if err != nil {
-		return nil, err
+	if b.codes == nil && b.codeDB == nil {
+		return nil, fmt.Errorf("code serving disabled (set --codes or --chaindata)")
 	}
-	if len(c) == 0 {
-		return nil, fmt.Errorf("code %x not found", hash[:6])
-	}
-	return c, nil
+	return nil, fmt.Errorf("code %x not found", hash[:6])
 }

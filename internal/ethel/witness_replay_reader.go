@@ -33,10 +33,11 @@ type WitnessReplayReader struct {
 	pos    int
 	codeTx kv.Tx               // MDBX Code table (codeHash → code), optional
 	codes  *CodesFreezerReader // freezer codes.cidx (addr → code), optional
-	// codeFetch is an optional on-demand bytecode source by codeHash (e.g. a
-	// minimal client fetching from a producer's /code endpoint). Tried after the
-	// cache/codes/codeTx misses and before failing loud. Returns nil to fall
-	// through (genuinely absent). Verified keccak256(code)==codeHash by the caller.
+	// codeFetch is an optional on-demand bytecode source by codeHash (e.g. a minimal
+	// client fetching from a producer's /code endpoint). Tried after the cache/
+	// codes/codeTx misses and before failing loud. Returns nil to fall through.
+	// keccak256(code)==codeHash is verified here, so it is content-addressed and
+	// historically correct (unlike address-keyed code, which is only tip-accurate).
 	codeFetch func(types.Hash) ([]byte, error)
 	// scratch is reused across ReadAccountData calls. All call sites
 	// in IntraBlockState do data.Copy(scratch) before the next read,
