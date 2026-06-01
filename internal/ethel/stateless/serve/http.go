@@ -162,6 +162,37 @@ func Handler(svc *Service, rl *jsonrpc.RateLimiter) http.Handler {
 		}
 	})
 
+	// /account-proof?addr=0x..&slots=0x..,0x.. → JSON account.AccProofResult
+	// (EIP-1186) at head. The mobile/minimal layer-③: bounded (~KB), verified by
+	// the client via stateless.VerifyAccountInclusion against the trusted stateRoot.
+	mux.HandleFunc("/account-proof", func(w http.ResponseWriter, r *http.Request) {
+		ab, err := hexutil.Decode(r.URL.Query().Get("addr"))
+		if err != nil || len(ab) != 20 {
+			http.Error(w, "bad addr", http.StatusBadRequest)
+			return
+		}
+		var addr types.Address
+		copy(addr[:], ab)
+		var slots []types.Hash
+		if s := strings.TrimSpace(r.URL.Query().Get("slots")); s != "" {
+			for _, p := range strings.Split(s, ",") {
+				sb, err := hexutil.Decode(strings.TrimSpace(p))
+				if err != nil || len(sb) != 32 {
+					http.Error(w, "bad slot", http.StatusBadRequest)
+					return
+				}
+				slots = append(slots, types.BytesToHash(sb))
+			}
+		}
+		b, err := svc.GetAccountProof(clientIP(r), addr, slots)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(b)
+	})
+
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		num, hash, anchor, err := svc.Head()
 		if err != nil {

@@ -28,6 +28,8 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/internal/ethel/stateless"
 	"github.com/n42blockchain/N42/internal/ethel/stateless/serve"
@@ -41,6 +43,7 @@ func main() {
 	iters := flag.Int("iterations", 3, "stability passes of the minimal sync")
 	runFull := flag.Bool("full", true, "also run the full-client archive")
 	withWitness := flag.Bool("witness", true, "download per-block witness (size check)")
+	account := flag.String("account", "", "optional account (0x..20B) to fetch+verify an EIP-1186 proof (mobile layer-③)")
 	flag.Parse()
 
 	src := serve.NewHTTPSource(*url)
@@ -87,6 +90,32 @@ func main() {
 		}
 		fmt.Printf("full archive: %d blocks (header+body) ✓ chain+body-decode, body=%.1fMB, %.1fs\n",
 			blocks, float64(bodyBytes)/1e6, time.Since(t0).Seconds())
+	}
+
+	// ---- mobile layer-③: per-account EIP-1186 proof (bounded, vs full-window) ----
+	if *account != "" {
+		ab, derr := hexutil.Decode(*account)
+		if derr != nil || len(ab) != 20 {
+			fail("bad --account", fmt.Errorf("want 20-byte hex addr"))
+		}
+		var addr types.Address
+		copy(addr[:], ab)
+		resp, aerr := src.AccountProof(addr, nil)
+		if aerr != nil {
+			fmt.Printf("account-proof: SKIP (%v)\n", aerr)
+		} else {
+			va, verr := stateless.VerifyAccountInclusion(resp.Root[:], resp.Proof)
+			if verr != nil {
+				fail("account-proof verify", verr)
+			}
+			sz := len(resp.Proof.AccountProof)
+			tot := 0
+			for _, n := range resp.Proof.AccountProof {
+				tot += len(n)
+			}
+			fmt.Printf("account-proof ③: %s @block=%d root=%x ✓ exists=%v balance=%s nonce=%d (%d nodes, %d B — bounded)\n",
+				addr.Hex()[:10], resp.Block, resp.Root[:6], va.Exists, resp.Proof.Balance, va.Nonce, sz, tot)
+		}
 	}
 
 	// ---- /health stability ----

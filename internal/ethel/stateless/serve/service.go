@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -24,6 +25,26 @@ type Backend interface {
 	Witness(n uint64) ([]byte, error)
 	Anchor(n uint64) ([]byte, error) // valid only at anchor heights
 	Code(hash types.Hash) ([]byte, error)
+	// AccountProof returns a JSON-encoded account.AccProofResult (EIP-1186) for
+	// addr (+ optional storage slots) at the CURRENT head state — the bounded,
+	// mobile-friendly layer-③ artifact (a few KB) that replaces the full-window
+	// multiproof. The client verifies it via stateless.VerifyAccountInclusion
+	// against the trusted header stateRoot. Returns ErrNotSupported if the backend
+	// has no state trie (freezer-only producer).
+	AccountProof(addr types.Address, slots []types.Hash) ([]byte, error)
+}
+
+// ErrNotSupported is returned by AccountProof when the backend lacks a state trie.
+var ErrNotSupported = errors.New("serve: account proof not supported (no state trie)")
+
+// AccountProofResponse is the /account-proof wire: the EIP-1186 proof plus the
+// block + stateRoot it anchors to, so the client can both (a) verify the proof
+// reconstructs to Root (stateless.VerifyAccountInclusion) and (b) check Root ==
+// the trusted header[Block].Root from its header chain.
+type AccountProofResponse struct {
+	Block uint64
+	Root  types.Hash
+	Proof *account.AccProofResult
 }
 
 // Caps bound the per-request cost so one call can't be arbitrarily expensive.
@@ -128,6 +149,22 @@ func (s *Service) GetAnchor(ip string, n uint64) ([]byte, error) {
 		return nil, cerr
 	}
 	return p, nil
+}
+
+// GetAccountProof returns the EIP-1186 proof bytes for addr (+ slots) at head,
+// charging the byte cap + bandwidth limiter.
+func (s *Service) GetAccountProof(ip string, addr types.Address, slots []types.Hash) ([]byte, error) {
+	if s.caps.MaxCodeHashes > 0 && len(slots) > s.caps.MaxCodeHashes {
+		return nil, fmt.Errorf("%w: %d slots > cap %d", ErrCapExceeded, len(slots), s.caps.MaxCodeHashes)
+	}
+	b, err := s.be.AccountProof(addr, slots)
+	if err != nil {
+		return nil, err
+	}
+	if cerr := s.charge(ip, len(b)); cerr != nil {
+		return nil, cerr
+	}
+	return b, nil
 }
 
 // GetCode returns the requested bytecodes (content-addressed; missing hashes are

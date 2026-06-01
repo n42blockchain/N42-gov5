@@ -61,6 +61,9 @@ func (s *stubBE) BodyRLP(n uint64) ([]byte, error)        { return make([]byte, 
 func (s *stubBE) Witness(n uint64) ([]byte, error)        { return make([]byte, 7000), nil }
 func (s *stubBE) Anchor(n uint64) ([]byte, error)         { return make([]byte, 1000), nil }
 func (s *stubBE) Code(h types.Hash) ([]byte, error)       { return make([]byte, 100), nil }
+func (s *stubBE) AccountProof(types.Address, []types.Hash) ([]byte, error) {
+	return nil, ErrNotSupported
+}
 
 func TestServiceCaps(t *testing.T) {
 	svc := NewService(&stubBE{head: 1000}, DefaultCaps(), nil)

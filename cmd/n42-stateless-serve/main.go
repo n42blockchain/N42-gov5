@@ -17,6 +17,8 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -27,12 +29,14 @@ import (
 
 	"github.com/c2h5oh/datasize"
 
+	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/internal/ethel/stateless/serve"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	log "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/lib/trie"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 )
@@ -44,6 +48,8 @@ func main() {
 	witDir := flag.String("witness", `D:/N42-eth1177/chain/freezer`, "witness freezer dir")
 	anchorDir := flag.String("anchors", "", "MPT anchor proof dir (anchor-<n>.bin); empty = no ③ serving")
 	chaindata := flag.String("chaindata", "", "optional MDBX chaindata for code-by-hash (kv.Code); empty = no code serving")
+	trieDir := flag.String("trie", "", "optional MDBX trie dir (HashedAccounts+TrieOf*) for /account-proof; empty = disabled")
+	trieHead := flag.Uint64("trie-head", 0, "block number the trie's state is at (when the trie DB has no HeaderCanonical, e.g. a producer temp trie)")
 	chainID := flag.Uint64("chainid", 1, "chain id embedded in served bodies")
 	rps := flag.Int("rps", 50, "per-IP requests/sec")
 	burst := flag.Int("burst", 100, "per-IP burst")
@@ -52,7 +58,10 @@ func main() {
 	flag.Parse()
 
 	logger := log.New()
-	be, err := openBackend(*hdrDir, *bodyDir, *witDir, *anchorDir, *chaindata, *chainID)
+	be, err := openBackend(*hdrDir, *bodyDir, *witDir, *anchorDir, *chaindata, *trieDir, *chainID)
+	if be != nil && *trieHead > 0 {
+		be.trieHead = *trieHead
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open backend:", err)
 		os.Exit(1)
@@ -92,11 +101,14 @@ type freezerBackend struct {
 
 	codeDB kv.RoDB // optional
 
+	trieDB   kv.RoDB // optional (HashedAccounts + TrieOf*) for /account-proof
+	trieHead uint64  // head block of the trie DB (canonical head)
+
 	mu      sync.Mutex
 	tipSeen uint64 // monotonic cache of the highest readable header
 }
 
-func openBackend(hdrDir, bodyDir, witDir, anchorDir, chaindata string, chainID uint64) (*freezerBackend, error) {
+func openBackend(hdrDir, bodyDir, witDir, anchorDir, chaindata, trieDir string, chainID uint64) (*freezerBackend, error) {
 	hc, err := ethel.OpenHeaderCompact(hdrDir)
 	if err != nil {
 		return nil, fmt.Errorf("headerc: %w", err)
@@ -126,6 +138,39 @@ func openBackend(hdrDir, bodyDir, witDir, anchorDir, chaindata string, chainID u
 		}
 		be.codeDB = db
 	}
+
+	if trieDir != "" {
+		db, err := mdbx.NewMDBX(log.New()).Path(trieDir).Label(kv.ChainDB).
+			MapSize(datasize.ByteSize(8) * datasize.TB).Readonly().
+			WithTableCfg(func(kv.TableCfg) kv.TableCfg { return kv.ChaindataTablesCfg }).
+			Open(context.Background())
+		if err != nil {
+			be.Close()
+			return nil, fmt.Errorf("trie: %w", err)
+		}
+		be.trieDB = db
+		// Canonical head of the trie DB (HeaderCanonical cursor.Last), so the proof
+		// response can name the block its root anchors to.
+		if e := db.View(context.Background(), func(tx kv.Tx) error {
+			c, err := tx.Cursor(kv.HeaderCanonical)
+			if err != nil {
+				return err
+			}
+			defer c.Close()
+			k, _, err := c.Last()
+			if err != nil {
+				return err
+			}
+			if len(k) >= 8 {
+				be.trieHead = binary.BigEndian.Uint64(k[:8])
+			}
+			return nil
+		}); e != nil {
+			be.Close()
+			return nil, fmt.Errorf("trie head: %w", e)
+		}
+	}
+
 	be.tipSeen = be.findTip()
 	return be, nil
 }
@@ -143,6 +188,54 @@ func (b *freezerBackend) Close() {
 	if b.codeDB != nil {
 		b.codeDB.Close()
 	}
+	if b.trieDB != nil {
+		b.trieDB.Close()
+	}
+}
+
+// AccountProof extracts an EIP-1186 proof for addr (+ slots) from the trie DB at
+// its canonical head, reusing the production ProofRetainer + FlatDBTrieLoader (the
+// same machinery that computes header.Root). Returns JSON serve.AccountProofResponse.
+func (b *freezerBackend) AccountProof(addr types.Address, slots []types.Hash) ([]byte, error) {
+	if b.trieDB == nil {
+		return nil, serve.ErrNotSupported
+	}
+	tx, err := b.trieDB.BeginRo(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	addrHash, err := types.HashData(addr[:])
+	if err != nil {
+		return nil, err
+	}
+	var acc account.StateAccount
+	enc, err := tx.GetOne(kv.HashedAccounts, addrHash[:])
+	if err != nil {
+		return nil, err
+	}
+	if len(enc) > 0 {
+		if err := acc.DecodeForStorage(enc); err != nil {
+			return nil, fmt.Errorf("decode account: %w", err)
+		}
+	}
+	rl := trie.NewRetainList(0)
+	pr, err := trie.NewProofRetainer(addr, &acc, slots, rl)
+	if err != nil {
+		return nil, err
+	}
+	loader := trie.NewFlatDBTrieLoader("account-proof", rl, nil, nil, false)
+	loader.SetProofRetainer(pr)
+	root, err := loader.CalcTrieRoot(tx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("CalcTrieRoot: %w", err)
+	}
+	res, err := pr.ProofResult()
+	if err != nil {
+		return nil, fmt.Errorf("ProofResult: %w", err)
+	}
+	return json.Marshal(serve.AccountProofResponse{Block: b.trieHead, Root: root, Proof: res})
 }
 
 // findTip locates the highest readable header by scanning down from the headerc
