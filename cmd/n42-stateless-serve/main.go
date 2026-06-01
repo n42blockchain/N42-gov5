@@ -22,9 +22,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
 
 	"github.com/c2h5oh/datasize"
@@ -46,7 +43,8 @@ func main() {
 	hdrDir := flag.String("headers", `D:/n42-eth1/chain/freezer`, "columnar headerc dir")
 	bodyDir := flag.String("bodies", `D:/n42-eth1/chain/freezer`, "columnar bodyc dir")
 	witDir := flag.String("witness", `D:/N42-eth1177/chain/freezer`, "witness freezer dir")
-	anchorDir := flag.String("anchors", "", "MPT anchor proof dir (anchor-<n>.bin); empty = no ③ serving")
+	anchorDir := flag.String("anchors", "", "anchorc freezer dir (anchorc.cidx + anchorc.NNNN.cdat, item=n/K-1); empty = no ③ serving")
+	anchorK := flag.Uint64("anchor-k", 1000, "anchor cadence K (block n's anchor is freezer item n/K-1)")
 	chaindata := flag.String("chaindata", "", "optional MDBX chaindata for code-by-hash (kv.Code); empty = no code serving")
 	trieDir := flag.String("trie", "", "optional MDBX trie dir (HashedAccounts+TrieOf*) for /account-proof; empty = disabled")
 	codesDir := flag.String("codes", "", "optional codes-freezer dir (codes.cidx + codes.NNNN.cdat) for /code-by-addr (contract-block ②); empty = disabled")
@@ -59,7 +57,7 @@ func main() {
 	flag.Parse()
 
 	logger := log.New()
-	be, err := openBackend(*hdrDir, *bodyDir, *witDir, *anchorDir, *chaindata, *trieDir, *codesDir, *chainID)
+	be, err := openBackend(*hdrDir, *bodyDir, *witDir, *anchorDir, *anchorK, *chaindata, *trieDir, *codesDir, *chainID)
 	if be != nil && *trieHead > 0 {
 		be.trieHead = *trieHead
 	}
@@ -97,7 +95,8 @@ type freezerBackend struct {
 	hc        *ethel.HeaderCompactReader
 	bc        *ethel.BodyCompactReader
 	wit       *freezer.FreezerTable
-	anchorDir string
+	anchorTbl *freezer.FreezerTable // anchorc fdb (compressed); item = block/K - 1
+	anchorK   uint64
 	chainID   uint64
 
 	codeDB kv.RoDB // optional
@@ -111,7 +110,7 @@ type freezerBackend struct {
 	tipSeen uint64 // monotonic cache of the highest readable header
 }
 
-func openBackend(hdrDir, bodyDir, witDir, anchorDir, chaindata, trieDir, codesDir string, chainID uint64) (*freezerBackend, error) {
+func openBackend(hdrDir, bodyDir, witDir, anchorDir string, anchorK uint64, chaindata, trieDir, codesDir string, chainID uint64) (*freezerBackend, error) {
 	hc, err := ethel.OpenHeaderCompact(hdrDir)
 	if err != nil {
 		return nil, fmt.Errorf("headerc: %w", err)
@@ -128,7 +127,20 @@ func openBackend(hdrDir, bodyDir, witDir, anchorDir, chaindata, trieDir, codesDi
 	}
 	wit.ForceBatchSize(freezer.BatchSize)
 
-	be := &freezerBackend{hc: hc, bc: bc, wit: wit, anchorDir: anchorDir, chainID: chainID}
+	if anchorK == 0 {
+		anchorK = 1000
+	}
+	be := &freezerBackend{hc: hc, bc: bc, wit: wit, anchorK: anchorK, chainID: chainID}
+	if anchorDir != "" {
+		// anchorc is written per-item (one Append per anchor, not batched), so it is
+		// read per-item — do NOT ForceBatchSize.
+		at, aerr := freezer.NewFreezerTableCompressedReadOnly(anchorDir, "anchorc", "c")
+		if aerr != nil {
+			be.Close()
+			return nil, fmt.Errorf("anchorc freezer: %w", aerr)
+		}
+		be.anchorTbl = at
+	}
 
 	if chaindata != "" {
 		db, err := mdbx.NewMDBX(log.New()).Path(chaindata).Label(kv.ChainDB).
@@ -205,6 +217,9 @@ func (b *freezerBackend) Close() {
 	}
 	if b.codes != nil {
 		b.codes.Close()
+	}
+	if b.anchorTbl != nil {
+		b.anchorTbl.Close()
 	}
 }
 
@@ -285,31 +300,17 @@ func (b *freezerBackend) Head() (uint64, types.Hash, uint64, error) {
 	return tip, h.Hash(), b.latestAnchor(tip), nil
 }
 
-// latestAnchor returns the highest anchor height ≤ tip with a proof file present.
+// latestAnchor returns the highest anchor height ≤ tip in the anchorc fdb. Item i
+// holds block (i+1)*K, so Items() items → last anchor block = Items()*K.
 func (b *freezerBackend) latestAnchor(tip uint64) uint64 {
-	if b.anchorDir == "" {
+	if b.anchorTbl == nil {
 		return 0
 	}
-	ents, err := os.ReadDir(b.anchorDir)
-	if err != nil {
+	last := b.anchorTbl.Items() * b.anchorK
+	if last > tip {
 		return 0
 	}
-	best := uint64(0)
-	for _, e := range ents {
-		name := e.Name()
-		if !strings.HasPrefix(name, "anchor-") || !strings.HasSuffix(name, ".bin") {
-			continue
-		}
-		numStr := strings.TrimSuffix(strings.TrimPrefix(name, "anchor-"), ".bin")
-		n, perr := strconv.ParseUint(numStr, 10, 64)
-		if perr != nil || n > tip {
-			continue
-		}
-		if n > best {
-			best = n
-		}
-	}
-	return best
+	return last
 }
 
 func (b *freezerBackend) HeaderRLP(n uint64) ([]byte, error) {
@@ -351,10 +352,13 @@ func (b *freezerBackend) Witness(n uint64) ([]byte, error) {
 }
 
 func (b *freezerBackend) Anchor(n uint64) ([]byte, error) {
-	if b.anchorDir == "" {
+	if b.anchorTbl == nil {
 		return nil, fmt.Errorf("anchor serving disabled")
 	}
-	return os.ReadFile(filepath.Join(b.anchorDir, fmt.Sprintf("anchor-%010d.bin", n)))
+	if n == 0 || n%b.anchorK != 0 {
+		return nil, fmt.Errorf("block %d is not an anchor height (K=%d)", n, b.anchorK)
+	}
+	return b.anchorTbl.Retrieve(n/b.anchorK - 1) // item = n/K - 1
 }
 
 // CodeCompressed serves the codes-freezer's already-zstd-framed blob for codeHash

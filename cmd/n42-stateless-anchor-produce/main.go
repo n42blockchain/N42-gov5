@@ -61,11 +61,21 @@ func main() {
 		fmt.Fprintln(os.Stderr, "clean tmp:", err)
 		os.Exit(1)
 	}
-	anchorDir := filepath.Join(*tmp, "anchors")
+	// Anchors are stored in a zstd-compressed freezer table (anchorc.cidx +
+	// anchorc.NNNN.cdat) — same fdb format as headerc/witness/acctcs, not millions
+	// of loose .bin files. Item index = n/K - 1 (block K→item0, 2K→item1, …),
+	// strictly sequential as anchors are emitted.
+	anchorDir := filepath.Join(*tmp, "anchorfz")
 	if err := os.MkdirAll(anchorDir, 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, "mkdir:", err)
 		os.Exit(1)
 	}
+	anchorTbl, err := freezer.NewFreezerTableCompressed(anchorDir, "anchorc", "c")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "open anchorc freezer:", err)
+		os.Exit(1)
+	}
+	defer anchorTbl.Close()
 
 	db, err := mdbx.NewMDBX(logger).Path(filepath.Join(*tmp, "chaindata")).Label(kv.ChainDB).
 		PageSize(4096).MapSize(datasize.ByteSize(*mapGB) * datasize.GB).
@@ -248,8 +258,8 @@ func main() {
 			fmt.Fprintf(os.Stderr, "anchor self-check %d: %v\n", n, verr)
 			os.Exit(1)
 		}
-		if werr := os.WriteFile(filepath.Join(anchorDir, fmt.Sprintf("anchor-%010d.bin", n)), wire, 0o644); werr != nil {
-			fmt.Fprintf(os.Stderr, "write anchor %d: %v\n", n, werr)
+		if werr := anchorTbl.Append(n/(*K)-1, wire); werr != nil { // item = n/K - 1 (block K→item0)
+			fmt.Fprintf(os.Stderr, "append anchor %d (item %d): %v\n", n, n/(*K)-1, werr)
 			os.Exit(1)
 		}
 		anchors++
@@ -272,6 +282,10 @@ func main() {
 		dS = map[types.Address]map[types.Hash]*uint256.Int{}
 	}
 	tx.Rollback()
-	fmt.Fprintf(os.Stderr, "DONE: %d anchors (every %d) saved to %s in %s\n",
+	if serr := anchorTbl.Sync(); serr != nil {
+		fmt.Fprintln(os.Stderr, "anchorc sync:", serr)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "DONE: %d anchors (every %d) → %s (anchorc fdb, item=n/K-1) in %s\n",
 		anchors, *K, anchorDir, time.Since(t0).Truncate(time.Second))
 }
