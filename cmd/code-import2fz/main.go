@@ -53,6 +53,30 @@ const (
 
 var cidxMagic = string(freezer.CidxMagic[:])
 
+// rethRawCode extracts the original deployed bytecode from a reth Compact-encoded
+// revm Bytecode value: [u32 BE padded_len][padded bytecode][0x02][u64 BE
+// original_len][jumptable]. Returns padded[:original_len] (the code keccak256
+// hashes to its codeHash), or padded[:padded_len] when there is no trailer
+// (LegacyRaw), or nil if the value is malformed.
+func rethRawCode(v []byte) []byte {
+	if len(v) < 4 {
+		return nil
+	}
+	pl := int(uint32(v[0])<<24 | uint32(v[1])<<16 | uint32(v[2])<<8 | uint32(v[3]))
+	if pl < 0 || 4+pl > len(v) {
+		return nil
+	}
+	if len(v) >= 4+pl+9 { // [variant u8][u64 BE original_len]
+		ol := int(uint64(v[4+pl+1])<<56 | uint64(v[4+pl+2])<<48 | uint64(v[4+pl+3])<<40 |
+			uint64(v[4+pl+4])<<32 | uint64(v[4+pl+5])<<24 | uint64(v[4+pl+6])<<16 |
+			uint64(v[4+pl+7])<<8 | uint64(v[4+pl+8]))
+		if ol >= 0 && ol <= pl {
+			return v[4 : 4+ol]
+		}
+	}
+	return v[4 : 4+pl]
+}
+
 func main() {
 	if len(os.Args) < 5 || os.Args[1] != "--db" || os.Args[3] != "--outdir" {
 		fmt.Fprintln(os.Stderr, "usage: code-import2fz --db RETH_MDBX_PATH --outdir OUTPUT_DIR")
@@ -129,8 +153,22 @@ func main() {
 		} else {
 			copy(a[:], k)
 		}
-		code := make([]byte, len(v))
-		copy(code, v)
+		// Reth's "Bytecodes" table stores Compact-encoded revm Bytecode, NOT raw
+		// bytecode: [u32 BE padded_len][padded bytecode][0x02][u64 BE original_len]
+		// [jumptable]. keccak256(whole value) != codeHash; the DEPLOYED code is
+		// padded_bytecode[:original_len]. (LegacyAnalyzed pads the analyzed bytecode;
+		// original_len recovers the real length — verified keccak==key on 5000/5000
+		// sampled entries.) The N42 "Code" table stores raw bytecode, no decode.
+		raw := v
+		if tableName == "Bytecodes" {
+			raw = rethRawCode(v)
+			if raw == nil {
+				fmt.Fprintf(os.Stderr, "  WARN undecodable reth bytecode (valLen=%d) for key %x — skipping\n", len(v), k[:min(len(k), 8)])
+				continue
+			}
+		}
+		code := make([]byte, len(raw))
+		copy(code, raw)
 		entries = append(entries, codeEntry{addr: a, code: code})
 		if len(entries)%100000 == 0 {
 			fmt.Fprintf(os.Stderr, "  read %d  key_len=%d\n", len(entries), len(k))
