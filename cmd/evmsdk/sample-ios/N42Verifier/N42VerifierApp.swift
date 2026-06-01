@@ -7,7 +7,12 @@ import SwiftUI
 struct N42VerifierApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            TabView {
+                MinimalView()
+                    .tabItem { Label("Minimal", systemImage: "shield.lefthalf.filled") }
+                ContentView()
+                    .tabItem { Label("Verifier", systemImage: "checkmark.seal") }
+            }
         }
     }
 }
