@@ -65,6 +65,9 @@ func (s *stubBE) AccountProof(types.Address, []types.Hash) ([]byte, error) {
 	return nil, ErrNotSupported
 }
 func (s *stubBE) FullHeaderRLP(uint64) ([]byte, error) { return make([]byte, 200), nil }
+func (s *stubBE) AccountMultiproof([]types.Address) ([]byte, error) {
+	return nil, ErrNotSupported
+}
 
 func TestServiceCaps(t *testing.T) {
 	svc := NewService(&stubBE{head: 1000}, DefaultCaps(), nil)
