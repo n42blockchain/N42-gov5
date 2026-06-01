@@ -201,12 +201,6 @@ func main() {
 	trc.SetIncremental(startBlock > 0) // resuming a non-empty trie → incremental from the start
 
 	t0 := time.Now()
-	var preRoot types.Hash // header[n-1].Root (empty before block 0)
-	if startBlock > 0 {
-		if h, herr := hc.ReadHeader(startBlock - 1); herr == nil {
-			preRoot = h.Root
-		}
-	}
 	emitted, verifiedOK := 0, 0
 
 	anchorK := func(n uint64) uint64 { // variable cadence: coarse historical, fine recent
@@ -215,103 +209,130 @@ func main() {
 		}
 		return *kHist
 	}
+
+	// Path C ("batch root"): non-anchor blocks only ACCUMULATE their forward
+	// changeset (last-write-wins per key, in block order) into netA/netS — no
+	// CalcTrieRoot. At each anchor block n the window's net is applied with ONE
+	// incremental ComputeRoot to bring the trie to n-1 (verified against
+	// header[n-1].Root — a strong window-level state-root check), the window is
+	// reset, the single-block transition proof for n is captured at n-1, then
+	// block n is applied alone (verified against header[n].Root). This computes the
+	// root ~2× per anchor instead of once per block and dedups keys touched
+	// repeatedly within a window (a hot contract slot is hashed once, not per
+	// block). The per-block root is no longer checked; the per-anchor pre/post root
+	// verifications + the anchor self-verify (VerifyStateRoot) cover correctness.
+	netA := map[types.Address]*account.StateAccount{}
+	netS := map[types.Address]map[types.Hash]*uint256.Int{}
+	mergeCS := func(dA map[types.Address]*account.StateAccount, dS map[types.Address]map[types.Hash]*uint256.Int) {
+		for a, v := range dA {
+			netA[a] = v // last write wins (nil = deleted; per-block changesets are faithful deltas)
+		}
+		for a, slots := range dS {
+			m := netS[a]
+			if m == nil {
+				m = map[types.Hash]*uint256.Int{}
+				netS[a] = m
+			}
+			for s, v := range slots {
+				m[s] = v
+			}
+		}
+	}
+	firstCompute := startBlock == 0 // a fresh trie needs one bootstrap (incremental=false) pass
+
 	for n := startBlock; n < *endBlock; n++ {
 		dA, dS := readBlockChangeset(acctTbl, stoTbl, n)
-		isAnchor := n > 0 && n%anchorK(n) == 0
-
-		var bp *stateless.BlockProof
-		var bpErr error
-		if isAnchor {
-			// pre-trie is at header[n-1] (== preRoot). Capture block n's transition proof.
-			bp, bpErr = buildBlockProof(tx, n, dA, dS)
+		if n == 0 || n%anchorK(n) != 0 { // non-anchor (incl. genesis block 0): accumulate only
+			mergeCS(dA, dS)
+			continue
 		}
 
-		root, cerr := trc.ComputeRoot(dA, dS)
+		// (a) Bring the trie to n-1 by applying the accumulated window net once.
+		var rootNm1 types.Hash
+		if len(netA) > 0 || len(netS) > 0 {
+			trc.SetIncremental(!firstCompute)
+			r, cerr := trc.ComputeRoot(netA, netS)
+			if cerr != nil {
+				fmt.Fprintf(os.Stderr, "ComputeRoot window→%d: %v\n", n-1, cerr)
+				os.Exit(1)
+			}
+			firstCompute = false
+			rootNm1 = r
+			netA = map[types.Address]*account.StateAccount{}
+			netS = map[types.Address]map[types.Hash]*uint256.Int{}
+		} else if h, herr := hc.ReadHeader(n - 1); herr == nil { // empty window (resumed at an anchor): trie already at n-1
+			rootNm1 = h.Root
+		}
+		if hnm1, herr := hc.ReadHeader(n - 1); herr == nil && rootNm1 != hnm1.Root {
+			fmt.Fprintf(os.Stderr, "ROOT MISMATCH window→block %d: computed %s header %s\n", n-1, rootNm1.Hex(), hnm1.Root.Hex())
+			os.Exit(2)
+		}
+
+		// (b) Single-block transition proof for n (trie is at n-1).
+		bp, bpErr := buildBlockProof(tx, n, dA, dS)
+
+		// (c) Apply block n alone → post-state root.
+		trc.SetIncremental(!firstCompute)
+		rootN, cerr := trc.ComputeRoot(dA, dS)
 		if cerr != nil {
 			fmt.Fprintf(os.Stderr, "ComputeRoot %d: %v\n", n, cerr)
 			os.Exit(1)
 		}
-		trc.SetIncremental(true)
-
-		hdr, herr := hc.ReadHeader(n)
-		if herr != nil {
+		firstCompute = false
+		if hn, herr := hc.ReadHeader(n); herr != nil {
 			fmt.Fprintf(os.Stderr, "read header %d: %v\n", n, herr)
 			os.Exit(1)
-		}
-		if root != hdr.Root {
-			fmt.Fprintf(os.Stderr, "ROOT MISMATCH block %d: computed %s header %s\n", n, root.Hex(), hdr.Root.Hex())
+		} else if rootN != hn.Root {
+			fmt.Fprintf(os.Stderr, "ROOT MISMATCH block %d: computed %s header %s\n", n, rootN.Hex(), hn.Root.Hex())
 			os.Exit(2)
 		}
 
-		if isAnchor {
-			emitted++
-			if bpErr != nil {
-				fmt.Fprintf(os.Stderr, "BLOCKPROOF n=%d SKIP (proof build): %v\n", n, bpErr)
-			} else {
-				verr := stateless.VerifyStateRoot(preRoot[:], root[:], bp)
-				if verr != nil {
-					fmt.Fprintf(os.Stderr, "BLOCKPROOF n=%d ✗ FAILED: %v\n", n, verr)
-				} else {
-					verifiedOK++
-					wire := stateless.EncodeBlockProof(bp)
-					if werr := anchorTbl.Append(nextItem, wire); werr != nil {
-						fmt.Fprintf(os.Stderr, "append anchor %d (item %d): %v\n", n, nextItem, werr)
-						os.Exit(1)
-					}
-					var bn [8]byte
-					binary.BigEndian.PutUint64(bn[:], n)
-					if _, werr := sidecar.Write(bn[:]); werr != nil { // item nextItem → block n
-						fmt.Fprintf(os.Stderr, "sidecar write %d: %v\n", n, werr)
-						os.Exit(1)
-					}
-					nextItem++
-					fmt.Fprintf(os.Stderr, "BLOCKPROOF n=%d item=%d changes=%d acctNodes=%d pre=%s→post=%s ✓ VERIFIED (%s)\n",
-						n, nextItem-1, len(bp.Changes), len(bp.AccountProof), preRoot.Hex()[:10], root.Hex()[:10],
-						time.Since(t0).Truncate(time.Second))
-				}
+		// (d) Self-verify the single-block transition proof and append.
+		emitted++
+		if bpErr != nil {
+			fmt.Fprintf(os.Stderr, "BLOCKPROOF n=%d SKIP (proof build): %v\n", n, bpErr)
+		} else if verr := stateless.VerifyStateRoot(rootNm1[:], rootN[:], bp); verr != nil {
+			fmt.Fprintf(os.Stderr, "BLOCKPROOF n=%d ✗ FAILED: %v\n", n, verr)
+		} else {
+			verifiedOK++
+			wire := stateless.EncodeBlockProof(bp)
+			if werr := anchorTbl.Append(nextItem, wire); werr != nil {
+				fmt.Fprintf(os.Stderr, "append anchor %d (item %d): %v\n", n, nextItem, werr)
+				os.Exit(1)
 			}
+			if _, werr := sidecar.Write(be8(n)); werr != nil { // item nextItem → block n
+				fmt.Fprintf(os.Stderr, "sidecar write %d: %v\n", n, werr)
+				os.Exit(1)
+			}
+			nextItem++
+			fmt.Fprintf(os.Stderr, "BLOCKPROOF n=%d item=%d changes=%d acctNodes=%d pre=%s→post=%s ✓ VERIFIED (%s)\n",
+				n, nextItem-1, len(bp.Changes), len(bp.AccountProof), rootNm1.Hex()[:10], rootN.Hex()[:10],
+				time.Since(t0).Truncate(time.Second))
 		}
-		preRoot = root
 
-		if (n+1)%*kRecent == 0 { // commit periodically (finest cadence)
-			// Periodic durability: flush the anchorc freezer + sidecar (the
-			// deliverable) every commit interval, so a hard crash loses at most one
-			// interval of anchors instead of the whole run. The temp trie tx is
-			// rebuildable, so its commit is secondary — flush the anchors first.
-			if serr := anchorTbl.Sync(); serr != nil {
-				fmt.Fprintf(os.Stderr, "anchorc periodic sync %d: %v\n", n, serr)
-				os.Exit(1)
-			}
-			_ = sidecar.Sync()
-			// Record progress ATOMICALLY with the trie commit (DbInfo bucket), so a
-			// --resume continues from exactly the committed block and the freezer is
-			// reconciled to it. Anchors flushed just above but not yet committed here
-			// are dropped on the next resume's reconcile (no duplicates).
-			if perr := tx.Put(kv.DatabaseInfo, bppProgressKey, be8(n)); perr != nil {
-				fmt.Fprintf(os.Stderr, "put progress %d: %v\n", n, perr)
-				os.Exit(1)
-			}
-			if err := tx.Commit(); err != nil {
-				fmt.Fprintf(os.Stderr, "commit %d: %v\n", n, err)
-				os.Exit(1)
-			}
-			tx, err = db.BeginRw(ctx)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "re-begin:", err)
-				os.Exit(1)
-			}
-			trc.SetRwTx(tx)
+		// (e) Commit: the trie is durable at block n. Flush the anchorc + sidecar
+		// first, then record progress=n ATOMICALLY with the trie commit so a
+		// --resume continues from exactly here (and reconciles the freezer to n).
+		if serr := anchorTbl.Sync(); serr != nil {
+			fmt.Fprintf(os.Stderr, "anchorc sync %d: %v\n", n, serr)
+			os.Exit(1)
 		}
-	}
-	// Final commit so a completed run records progress = endBlock-1 (a later --resume
-	// sees it finished and the trie is durable through the last block).
-	if *endBlock > 0 {
-		if perr := tx.Put(kv.DatabaseInfo, bppProgressKey, be8(*endBlock-1)); perr != nil || tx.Commit() != nil {
-			tx.Rollback()
+		_ = sidecar.Sync()
+		if perr := tx.Put(kv.DatabaseInfo, bppProgressKey, be8(n)); perr != nil {
+			fmt.Fprintf(os.Stderr, "put progress %d: %v\n", n, perr)
+			os.Exit(1)
 		}
-	} else {
-		tx.Rollback()
+		if cerr := tx.Commit(); cerr != nil {
+			fmt.Fprintf(os.Stderr, "commit %d: %v\n", n, cerr)
+			os.Exit(1)
+		}
+		if tx, err = db.BeginRw(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, "re-begin:", err)
+			os.Exit(1)
+		}
+		trc.SetRwTx(tx)
 	}
+	tx.Rollback() // discard the empty re-begun tx; progress was committed at the last anchor
 	if serr := anchorTbl.Sync(); serr != nil {
 		fmt.Fprintln(os.Stderr, "anchorc sync:", serr)
 		os.Exit(1)
