@@ -102,11 +102,11 @@ struct MinimalView: View {
                 }
                 .buttonStyle(Filled(color: .cyan))
 
-                Button(node.syncing ? "Syncing…" : "Follow tip ▶") {
-                    Task { await node.sync() }
+                Button(node.following ? "● Live (12s)" : "Follow tip ▶") {
+                    if node.following { node.stopFollowing() } else { node.startFollowing() }
                 }
-                .buttonStyle(Filled(color: green))
-                .disabled(!node.initialized || node.syncing)
+                .buttonStyle(Filled(color: node.following ? .red : green))
+                .disabled(!node.initialized)
 
                 Button("Replay ② @head") { node.verifyBlock(node.head) }
                     .buttonStyle(Filled(color: .orange))

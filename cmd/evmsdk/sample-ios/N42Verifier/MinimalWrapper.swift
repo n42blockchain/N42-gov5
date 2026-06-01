@@ -112,7 +112,28 @@ final class MinimalWrapper: ObservableObject {
         lastVerify = "② block \(n): \(ok ? "✓ verified" : "✗ failed") · \(tx) tx"
     }
 
-    func free() { _ = EvmsdkMobileMinimalFree(); initialized = false }
+    // MARK: Live following (12 s ticker)
+    @Published var following = false
+    private var followTimer: Timer?
+
+    /// Auto-syncs ① every `interval` seconds (default 12 s, one ETH block). The
+    /// timer is lifecycle-owned by the view; pair with stopFollowing on disappear.
+    func startFollowing(interval: TimeInterval = 12) {
+        guard initialized else { return }
+        following = true
+        Task { await sync() }                       // immediate catch-up
+        followTimer?.invalidate()
+        followTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            Task { await self?.sync() }
+        }
+    }
+
+    func stopFollowing() {
+        followTimer?.invalidate(); followTimer = nil
+        following = false
+    }
+
+    func free() { stopFollowing(); _ = EvmsdkMobileMinimalFree(); initialized = false }
 
     // MARK: helpers
     private func apply(stateJSON js: String) {
