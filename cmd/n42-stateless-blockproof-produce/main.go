@@ -45,7 +45,7 @@ func main() {
 	csDir := flag.String("cs", `D:/N42-eth1177/chain/freezer`, "freezer dir with acctcs/storcs (V2 forward changesets)")
 	hdrDir := flag.String("headers", `D:/n42-eth1/chain/freezer`, "columnar headerc dir")
 	tmp := flag.String("tmp", filepath.Join(os.TempDir(), "n42-bp-trie"), "temp writable trie datadir (recreated)")
-	out := flag.String("out", "", "output dir for blockproof-<N>.bin (default <tmp>/blockproofs)")
+	out := flag.String("out", "", "anchorc freezer dir (default <tmp>/anchorfz)")
 	endBlock := flag.Uint64("end", 20000, "build genesis..end (exclusive)")
 	K := flag.Uint64("k", 1000, "emit a transition BlockProof every K blocks")
 	mapGB := flag.Int("mapsize-gb", 64, "temp trie MDBX mapsize GB")
@@ -58,13 +58,22 @@ func main() {
 		os.Exit(1)
 	}
 	if *out == "" {
-		*out = filepath.Join(*tmp, "blockproofs")
+		*out = filepath.Join(*tmp, "anchorfz")
 	}
 	_ = os.RemoveAll(*tmp)
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, "mkdir:", err)
 		os.Exit(1)
 	}
+	// anchorc fdb (zstd), same format as the full-window producer. item = n/K - 1;
+	// strictly sequential — a skipped/failed anchor stores an EMPTY item to keep the
+	// index aligned (the serve returns empty → client treats that K as unavailable).
+	anchorTbl, err := freezer.NewFreezerTableCompressed(*out, "anchorc", "c")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "open anchorc freezer:", err)
+		os.Exit(1)
+	}
+	defer anchorTbl.Close()
 
 	db, err := mdbx.NewMDBX(logger).Path(filepath.Join(*tmp, "chaindata")).Label(kv.ChainDB).
 		PageSize(4096).MapSize(datasize.ByteSize(*mapGB) * datasize.GB).
@@ -142,6 +151,7 @@ func main() {
 
 		if isAnchor {
 			emitted++
+			var wire []byte // empty = skipped/failed (keeps freezer item index aligned)
 			if bpErr != nil {
 				fmt.Fprintf(os.Stderr, "BLOCKPROOF n=%d SKIP (proof build): %v\n", n, bpErr)
 			} else {
@@ -151,16 +161,15 @@ func main() {
 					status = "✗ FAILED: " + verr.Error()
 				} else {
 					verifiedOK++
-					wire := stateless.EncodeBlockProof(bp)
-					// serve /anchor convention: anchor-<N>.bin (HTTPSource.Anchor → DecodeBlockProof).
-					if werr := os.WriteFile(filepath.Join(*out, fmt.Sprintf("anchor-%010d.bin", n)), wire, 0o644); werr != nil {
-						fmt.Fprintf(os.Stderr, "write %d: %v\n", n, werr)
-						os.Exit(1)
-					}
+					wire = stateless.EncodeBlockProof(bp)
 				}
 				fmt.Fprintf(os.Stderr, "BLOCKPROOF n=%d changes=%d acctNodes=%d pre=%s→post=%s %s (%s)\n",
 					n, len(bp.Changes), len(bp.AccountProof), preRoot.Hex()[:10], root.Hex()[:10], status,
 					time.Since(t0).Truncate(time.Second))
+			}
+			if werr := anchorTbl.Append(n/(*K)-1, wire); werr != nil { // item = n/K - 1
+				fmt.Fprintf(os.Stderr, "append anchor %d (item %d): %v\n", n, n/(*K)-1, werr)
+				os.Exit(1)
 			}
 		}
 		preRoot = root
@@ -179,7 +188,11 @@ func main() {
 		}
 	}
 	tx.Rollback()
-	fmt.Fprintf(os.Stderr, "DONE: %d BlockProofs emitted, %d/%d self-VERIFIED (every %d) → %s in %s\n",
+	if serr := anchorTbl.Sync(); serr != nil {
+		fmt.Fprintln(os.Stderr, "anchorc sync:", serr)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "DONE: %d BlockProofs emitted, %d/%d self-VERIFIED (every %d) → %s (anchorc fdb) in %s\n",
 		emitted, verifiedOK, emitted, *K, *out, time.Since(t0).Truncate(time.Second))
 }
 
