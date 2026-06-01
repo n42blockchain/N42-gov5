@@ -11,6 +11,29 @@
 // height, non-contiguously, and produce a multi-signature attestation it submits
 // to an aggregator for cumulative verification counting.
 //
+// # Terminology — two DIFFERENT artifacts (do not conflate)
+//
+// N42 carries two distinct per-block stateless artifacts. They are not the same
+// thing and serve different layers:
+//
+//   - "witness" (layer ②, /witness, internal/ethel.WitnessStateReader,
+//     freezer.TableBlockWitness): an ADDRESS-LESS, ordered STATE-READ STREAM —
+//     just the values the EVM reads, in execution order, length-prefixed. It has
+//     NO addresses, NO keys, NO Merkle proof, and is NOT self-verifying: the
+//     replayer re-runs the same EVM and dequeues values in lockstep, so a wrong
+//     stream is caught only downstream by the receiptRoot (②) / stateRoot (③)
+//     check. It is a re-execution READ-LOG, not a Merkle "witness" in the
+//     stateless-Ethereum sense. (Name kept for production compatibility — it is
+//     the format ethexec/the mining SDK validated across 25M blocks.)
+//   - "proof" / "multiproof" / BlockProof (layer ③, /anchor): MERKLE proof nodes
+//     (account-trie paths + per-account storage subtrees + boundary sibling
+//     hashes) that ARE self-verifying — each node's keccak is checked against its
+//     parent's reference up to a trusted root. This is what recomputes / proves
+//     the state root. EIP-1186 per-account and BlockProof (changeset) variants.
+//
+// Rule of thumb: ② "witness" = address-less value stream for re-EXECUTION;
+// ③ "proof"/"anchor" = Merkle nodes for STATE-ROOT recompute/inclusion.
+//
 // # Why a self-contained partial trie
 //
 // N42's lib/trie has no geth-style mutable Trie + NodeResolver — only the
