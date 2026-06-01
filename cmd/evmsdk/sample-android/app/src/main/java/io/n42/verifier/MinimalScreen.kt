@@ -92,6 +92,15 @@ fun MinimalScreen(node: MinimalClient) {
                     enabled = st.initialized && !st.syncing,
                     colors = ButtonDefaults.filledTonalButtonColors(containerColor = GREEN.copy(alpha = 0.18f), contentColor = GREEN)
                 ) { Text(if (st.syncing) "Syncing…" else "Follow tip ▶") }
+                FilledTonalButton(
+                    onClick = { node.verifyBlock(st.head) },
+                    enabled = st.initialized && st.head > 0,
+                    colors = ButtonDefaults.filledTonalButtonColors(containerColor = Color(0xFFFFA033).copy(alpha = 0.18f), contentColor = Color(0xFFFFA033))
+                ) { Text("Replay ② @head") }
+            }
+            if (st.lastVerify.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Text(st.lastVerify, color = Color(0xFFFFA033), fontSize = 12.sp, fontFamily = FontFamily.Monospace)
             }
         }
 

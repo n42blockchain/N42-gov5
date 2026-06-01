@@ -15,10 +15,14 @@ exposed as `EvmsdkMobileMinimal*` (iOS) / `Evmsdk.mobileMinimal*` (Android):
 | `MobileMinimalInit(idcURL, cpBlock, cpHash, retention)` | bootstrap from a social checkpoint | — |
 | `MobileMinimalSync` / `MobileMinimalSyncTo(maxBlock)` | ① header chain (parentHash → tip) | 136 B/block |
 | `MobileMinimalState` | — (query) | — |
+| `MobileVerifyBlock(n)` | ② witness EVM replay → gasUsed/receiptRoot | ~7 KB witness/block |
 | `MobileBalanceOf(addr)` | ③ per-account EIP-1186 proof vs trusted stateRoot | **~2 KB / call** |
 
-Layer ② (witness EVM replay → receiptRoot) reuses the existing on-device verifier
-(`verify_v2_exec.go`); wiring the producer witness stream to it is the next step.
+Layer ② (`MobileVerifyBlock`) fetches the full header + body + witness from the IDC
+and replays the block through the EVM on-device, checking gasUsed (+ receiptRoot
+from Byzantium on) against the ①-trusted receiptRoot. Missing contract bytecode is
+fetched on demand from `/code` (the IDC must serve it from a kv.Code-populated
+trie). Validated live: block 46147 (Ethereum's first tx) verified on-device.
 
 ## Build
 

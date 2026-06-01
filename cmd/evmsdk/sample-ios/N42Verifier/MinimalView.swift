@@ -107,6 +107,13 @@ struct MinimalView: View {
                 }
                 .buttonStyle(Filled(color: green))
                 .disabled(!node.initialized || node.syncing)
+
+                Button("Replay ② @head") { node.verifyBlock(node.head) }
+                    .buttonStyle(Filled(color: .orange))
+                    .disabled(!node.initialized || node.head == 0)
+            }
+            if !node.lastVerify.isEmpty {
+                Text(node.lastVerify).font(.system(size: 12, design: .monospaced)).foregroundColor(.orange)
             }
         }
         .padding(16).background(Color.white.opacity(0.04)).cornerRadius(16)
