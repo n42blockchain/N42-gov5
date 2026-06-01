@@ -31,6 +31,7 @@ class MinimalClient {
         val syncing: Boolean = false,
         val syncProgress: Float = 0f,
         val lastProofBytes: Int = 0,
+        val lastVerify: String = "",
     )
 
     data class Account(
@@ -101,6 +102,16 @@ class MinimalClient {
         )
         _state.value = _state.value.copy(lastProofBytes = acc.proofBytes)
         _accounts.value = listOf(acc) + _accounts.value.filter { it.address.lowercase() != acc.address.lowercase() }
+    }
+
+    /** Layer ②: on-device witness EVM replay for a block. */
+    fun verifyBlock(n: Long) {
+        val js = Evmsdk.mobileVerifyBlock(n)
+        if (js.startsWith("error:")) { _state.value = _state.value.copy(lastVerify = "② $n: $js"); return }
+        val d = JSONObject(js)
+        val ok = d.optBoolean("verified", false)
+        val tx = d.optInt("txCount", 0)
+        _state.value = _state.value.copy(lastVerify = "② block $n: ${if (ok) "✓ verified" else "✗ failed"} · $tx tx")
     }
 
     fun free() { Evmsdk.mobileMinimalFree(); _state.value = _state.value.copy(initialized = false) }

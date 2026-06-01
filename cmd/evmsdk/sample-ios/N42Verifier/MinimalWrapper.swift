@@ -32,6 +32,7 @@ final class MinimalWrapper: ObservableObject {
     @Published var tip: Int64   = 0
     @Published var accounts: [Account] = []
     @Published var lastProofBytes = 0
+    @Published var lastVerify = ""          // ② witness-replay result line
 
     struct Account: Identifiable {
         var id: String { address }
@@ -99,6 +100,16 @@ final class MinimalWrapper: ObservableObject {
         lastProofBytes = acc.proofBytes
         accounts.removeAll { $0.address.lowercased() == acc.address.lowercased() }
         accounts.insert(acc, at: 0)
+    }
+
+    // MARK: Layer ② — on-device witness EVM replay for a block
+    func verifyBlock(_ n: Int64) {
+        let js = EvmsdkMobileVerifyBlock(n)
+        if js.hasPrefix("error:") { lastVerify = "② \(n): \(js)"; return }
+        guard let d = json(js) else { return }
+        let ok = d["verified"] as? Bool ?? false
+        let tx = (d["txCount"] as? NSNumber)?.intValue ?? 0
+        lastVerify = "② block \(n): \(ok ? "✓ verified" : "✗ failed") · \(tx) tx"
     }
 
     func free() { _ = EvmsdkMobileMinimalFree(); initialized = false }
