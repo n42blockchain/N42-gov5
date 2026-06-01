@@ -188,6 +188,17 @@ func (c *MinimalClient) Head() (uint64, types.Hash) { return c.hc.Head() }
 // on re-anchor.
 func (c *MinimalClient) TrustRoot() (uint64, types.Hash) { return c.hc.Anchor() }
 
+// TrustedStateRoot returns the verified stateRoot for block n (within the
+// retained window), or (zero,false) if n is outside it. A mobile client uses
+// this to cross-check a per-account EIP-1186 proof's root against the header
+// chain (layer ③ on demand, instead of the full-window multiproof).
+func (c *MinimalClient) TrustedStateRoot(n uint64) (types.Hash, bool) {
+	return c.hc.TrustedStateRoot(n)
+}
+
+// Source returns the underlying transport (e.g. to fetch per-account proofs).
+func (c *MinimalClient) Source() Source { return c.src }
+
 // Retained returns how many window headers are held (bounded by RetentionBlocks).
 func (c *MinimalClient) Retained() int { return len(c.headers) }
 
