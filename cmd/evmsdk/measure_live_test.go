@@ -180,6 +180,29 @@ func measureAccountProofMerge(t *testing.T, src *serve.HTTPSource, addrs []types
 	t.Logf("   separate: %d B total (%.0f B/acct)", sepBytes, float64(sepBytes)/float64(maxi(got, 1)))
 	t.Logf("   merged (node dedup): %d B (%.1f%% of separate); merged+zstd: %d B",
 		mergedBytes, 100*float64(mergedBytes)/float64(maxi(sepBytes, 1)), mz)
+
+	// Real /account-multiproof endpoint: fetch + VERIFY + measure on-wire size.
+	resp, err := src.AccountMultiproof(addrs)
+	if err != nil {
+		t.Logf("   /account-multiproof: %v (skip)", err)
+		return
+	}
+	vas, verr := stateless.VerifyAccountMultiproof(resp.Root[:], resp.ProofNodes, resp.Addrs)
+	if verr != nil {
+		t.Fatalf("   /account-multiproof VERIFY: %v", verr)
+	}
+	wire := 0
+	for _, nd := range resp.ProofNodes {
+		wire += len(nd)
+	}
+	exists := 0
+	for _, va := range vas {
+		if va != nil && va.Exists {
+			exists++
+		}
+	}
+	t.Logf("   /account-multiproof endpoint: %d nodes, %d B, ✓ verified %d accounts (%d exist) — %.1f%% of separate",
+		len(resp.ProofNodes), wire, len(vas), exists, 100*float64(wire)/float64(maxi(sepBytes, 1)))
 }
 
 func hexDecode32(s string) ([]byte, error) { return hexutil.Decode(s) }

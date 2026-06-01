@@ -51,6 +51,9 @@ func (b *chainBE) Anchor(n uint64) ([]byte, error) {
 	return stateless.EncodeBlockProof(&stateless.BlockProof{Number: n}), nil
 }
 func (b *chainBE) Code(types.Hash) ([]byte, error) { return nil, errors.New("no code") }
+func (b *chainBE) AccountMultiproof([]types.Address) ([]byte, error) {
+	return nil, ErrNotSupported
+}
 func (b *chainBE) AccountProof(types.Address, []types.Hash) ([]byte, error) {
 	return nil, ErrNotSupported
 }

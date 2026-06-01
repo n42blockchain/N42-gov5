@@ -130,8 +130,10 @@ func Handler(svc *Service, rl *jsonrpc.RateLimiter) http.Handler {
 		_, _ = w.Write(bb)
 	})
 
-	// /code?h=0x..&h=0x.. → concatenated [4-byte-LE len || code] records, in
-	// request order (missing hashes are omitted, so check returned hashes).
+	// /code?h=0x..&h=0x.. → concatenated [hash(32) || 4-byte-LE len || ZSTD(code)]
+	// records (the client decompresses); missing hashes omitted. zstd halves the
+	// wire (~45% of raw) and, when the backend has the codes-freezer, ships its
+	// already-compressed blob directly (no decompress+recompress).
 	mux.HandleFunc("/code", func(w http.ResponseWriter, r *http.Request) {
 		raw := r.URL.Query()["h"]
 		hashes := make([]types.Hash, 0, len(raw))
@@ -143,7 +145,7 @@ func Handler(svc *Service, rl *jsonrpc.RateLimiter) http.Handler {
 			}
 			hashes = append(hashes, types.BytesToHash(b))
 		}
-		codes, err := svc.GetCode(clientIP(r), hashes)
+		codes, err := svc.GetCodeZ(clientIP(r), hashes)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -160,6 +162,33 @@ func Handler(svc *Service, rl *jsonrpc.RateLimiter) http.Handler {
 			_, _ = w.Write(lp[:])
 			_, _ = w.Write(c)
 		}
+	})
+
+	// /account-multiproof?addrs=0x..,0x.. → JSON serve.AccountMultiproofResponse:
+	// one merged, deduped account multiproof for all addrs (per-block layer-③).
+	mux.HandleFunc("/account-multiproof", func(w http.ResponseWriter, r *http.Request) {
+		var addrs []types.Address
+		for _, p := range strings.Split(r.URL.Query().Get("addrs"), ",") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			ab, err := hexutil.Decode(p)
+			if err != nil || len(ab) != 20 {
+				http.Error(w, "bad addr", http.StatusBadRequest)
+				return
+			}
+			var a types.Address
+			copy(a[:], ab)
+			addrs = append(addrs, a)
+		}
+		b, err := svc.GetAccountMultiproof(clientIP(r), addrs)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(b)
 	})
 
 	// /full-header?n=N → fork-aware canonical RLP header (all exec fields) for ②.

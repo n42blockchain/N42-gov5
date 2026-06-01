@@ -357,6 +357,52 @@ func (b *freezerBackend) Anchor(n uint64) ([]byte, error) {
 	return os.ReadFile(filepath.Join(b.anchorDir, fmt.Sprintf("anchor-%010d.bin", n)))
 }
 
+// CodeCompressed serves the codes-freezer's already-zstd-framed blob for codeHash
+// directly (no decompress+recompress) — the serve.GetCodeZ passthrough fast path.
+// Returns (nil,nil) when the freezer lacks it (the caller falls back to compressing
+// the raw Code(hash)).
+func (b *freezerBackend) CodeCompressed(hash types.Hash) ([]byte, error) {
+	if b.codes == nil {
+		return nil, nil
+	}
+	var key types.Address
+	copy(key[:], hash[:20])
+	return b.codes.LookupCompressedByAddress(key)
+}
+
+// AccountMultiproof builds ONE merged account-trie multiproof covering all addrs
+// via a single CalcTrieRoot pass with a WitnessRetainer (the shared upper trie is
+// captured once, deduped). Returns JSON serve.AccountMultiproofResponse.
+func (b *freezerBackend) AccountMultiproof(addrs []types.Address) ([]byte, error) {
+	if b.trieDB == nil {
+		return nil, serve.ErrNotSupported
+	}
+	tx, err := b.trieDB.BeginRo(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	rl := trie.NewRetainList(0)
+	wr := trie.NewWitnessRetainer(rl)
+	for _, a := range addrs {
+		ah, err := types.HashData(a[:])
+		if err != nil {
+			return nil, err
+		}
+		wr.AddHashedKey(ah[:])
+	}
+	loader := trie.NewFlatDBTrieLoader("account-multiproof", rl, nil, nil, false)
+	loader.SetWitnessRetainer(wr)
+	root, err := loader.CalcTrieRoot(tx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("CalcTrieRoot: %w", err)
+	}
+	return json.Marshal(serve.AccountMultiproofResponse{
+		Block: b.trieHead, Root: root, Addrs: addrs, ProofNodes: wr.Nodes(),
+	})
+}
+
 // Code serves bytecode by keccak codeHash (content-addressed) for layer-② replay.
 // Source order: codes-freezer (keyed by codeHash[:20] — code-import2fz truncates
 // the codeHash-keyed Code/Bytecodes table key to 20 B), then MDBX kv.Code. The

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
+
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/ethel/stateless"
@@ -171,13 +173,40 @@ func (s *HTTPSource) Code(hash types.Hash) ([]byte, error) {
 		if 36+l > len(b) {
 			return nil, fmt.Errorf("code record length %d overflows", l)
 		}
-		code := b[36 : 36+l]
+		blob := b[36 : 36+l]
 		if h == hash {
-			return code, nil
+			// /code ships ZSTD(code); decompress to raw bytecode.
+			return codeZDecoder.DecodeAll(blob, nil)
 		}
 		b = b[36+l:]
 	}
 	return nil, nil
+}
+
+// codeZDecoder decompresses the zstd-framed code blobs from /code (DecodeAll is
+// goroutine-safe).
+var codeZDecoder, _ = zstd.NewReader(nil)
+
+// AccountMultiproof fetches ONE merged account multiproof covering addrs (the
+// per-block layer-③). Verify via stateless.VerifyAccountMultiproof(resp.Root,
+// resp.ProofNodes, resp.Addrs) against the trusted stateRoot.
+func (s *HTTPSource) AccountMultiproof(addrs []types.Address) (*AccountMultiproofResponse, error) {
+	if len(addrs) == 0 {
+		return &AccountMultiproofResponse{}, nil
+	}
+	parts := make([]string, len(addrs))
+	for i, a := range addrs {
+		parts[i] = a.Hex()
+	}
+	b, err := s.get("/account-multiproof?addrs=" + strings.Join(parts, ","))
+	if err != nil {
+		return nil, err
+	}
+	res := new(AccountMultiproofResponse)
+	if err := json.Unmarshal(b, res); err != nil {
+		return nil, fmt.Errorf("decode account multiproof: %w", err)
+	}
+	return res, nil
 }
 
 // FullHeader fetches block n's full canonical-RLP header (all exec fields), for
