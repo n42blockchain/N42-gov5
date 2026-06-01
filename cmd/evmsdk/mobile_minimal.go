@@ -26,8 +26,10 @@ import (
 
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/internal/ethel/stateless"
 	"github.com/n42blockchain/N42/internal/ethel/stateless/serve"
+	"github.com/n42blockchain/N42/params"
 )
 
 var (
@@ -210,6 +212,80 @@ func MobileBalanceOf(addrHex string) string {
 		"verified":   true,
 	})
 	return string(b)
+}
+
+// MobileVerifyBlock runs layer ② for block n: it fetches the full header + body +
+// witness from the IDC and replays the witness through the EVM on-device, checking
+// gasUsed (+ receiptRoot from Byzantium on) against the header-chain-TRUSTED
+// receiptRoot. Missing contract bytecode is fetched on demand from /code. Requires
+// the header chain to already cover n (syncs if behind). Returns JSON {block,
+// txCount, byzantium, verified} or "error: ...".
+//
+// Trust: the receiptRoot target is overridden with the ①-trusted value, so a
+// passing replay means the block's execution reconciles with a receiptRoot whose
+// authenticity traces to the checkpoint. (Pre-Byzantium blocks carry no usable
+// receiptRoot — there ② checks gasUsed only; pair with ③ for state assurance.)
+func MobileVerifyBlock(n int64) string {
+	minMu.Lock()
+	defer minMu.Unlock()
+	if minClient == nil {
+		return "error: not initialized"
+	}
+	bn := uint64(n)
+	if head, _ := minClient.mc.Head(); bn > head {
+		if _, err := minClient.mc.Sync(); err != nil {
+			return "error: sync to block: " + err.Error()
+		}
+	}
+	trustedReceipt, ok := minClient.mc.TrustedReceiptRoot(bn)
+	if !ok {
+		return fmt.Sprintf("error: block %d outside trusted/retained window", bn)
+	}
+
+	hdr, err := minClient.src.FullHeader(bn)
+	if err != nil {
+		return "error: fetch full header: " + err.Error()
+	}
+	hdr.ReceiptHash = trustedReceipt // anchor the ② target to the trusted value
+	bodyBytes, err := minClient.src.Body(bn)
+	if err != nil {
+		return "error: fetch body: " + err.Error()
+	}
+	decoded, err := ethel.DecodeBodyBlock(bodyBytes)
+	if err != nil {
+		return "error: decode body: " + err.Error()
+	}
+	wit, err := minClient.src.GetWitness(bn)
+	if err != nil {
+		return "error: fetch witness: " + err.Error()
+	}
+
+	in := &ethel.MinimalVerifyInput{
+		Header:  hdr,
+		Body:    ethel.GethBodyFromDecoded(decoded),
+		Witness: wit,
+	}
+	ancestor := func(m uint64) types.Hash { h, _ := minClient.mc.TrustedHash(m); return h }
+	codeFetch := func(h types.Hash) ([]byte, error) { return minClient.src.Code(h) }
+	cfg := params.EthereumMainnetChainConfig
+	engine := ethel.NewEthReplayEngine(cfg)
+
+	verr := ethel.VerifyWitnessReceipt(in, ancestor, cfg, engine, codeFetch)
+	b, _ := json.Marshal(map[string]any{
+		"block":     bn,
+		"txCount":   len(decoded.Txs),
+		"byzantium": cfg.IsByzantium(bn),
+		"verified":  verr == nil,
+		"error":     errStr(verr),
+	})
+	return string(b)
+}
+
+func errStr(e error) string {
+	if e == nil {
+		return ""
+	}
+	return e.Error()
 }
 
 // MobileMinimalFree releases the minimal node.

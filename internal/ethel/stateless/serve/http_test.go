@@ -36,6 +36,12 @@ func (b *chainBE) HeaderRLP(n uint64) ([]byte, error) {
 	}
 	return EncodeHeaderRecord(b.headers[n], b.headers[n].ParentHash), nil
 }
+func (b *chainBE) FullHeaderRLP(n uint64) ([]byte, error) {
+	if n >= uint64(len(b.headers)) {
+		return nil, errors.New("gap")
+	}
+	return HeaderToRLP(b.headers[n])
+}
 func (b *chainBE) BodyRLP(n uint64) ([]byte, error) { return []byte{}, nil }
 func (b *chainBE) Witness(n uint64) ([]byte, error) { return []byte{}, nil }
 func (b *chainBE) Anchor(n uint64) ([]byte, error) {

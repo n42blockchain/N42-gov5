@@ -25,6 +25,12 @@ type Backend interface {
 	Witness(n uint64) ([]byte, error)
 	Anchor(n uint64) ([]byte, error) // valid only at anchor heights
 	Code(hash types.Hash) ([]byte, error)
+	// FullHeaderRLP returns block n's header as fork-aware canonical RLP (all exec
+	// fields: gasLimit/gasUsed/baseFee/time/…), for layer-② witness replay — unlike
+	// the compact /header record (hash+roots only) used for the ① chain. ParentHash
+	// and Bloom may be zero if the source (columnar headerc) dropped them; that does
+	// not affect the gas/receiptRoot the replay checks.
+	FullHeaderRLP(n uint64) ([]byte, error)
 	// AccountProof returns a JSON-encoded account.AccProofResult (EIP-1186) for
 	// addr (+ optional storage slots) at the CURRENT head state — the bounded,
 	// mobile-friendly layer-③ artifact (a few KB) that replaces the full-window
@@ -149,6 +155,18 @@ func (s *Service) GetAnchor(ip string, n uint64) ([]byte, error) {
 		return nil, cerr
 	}
 	return p, nil
+}
+
+// GetFullHeader returns block n's full canonical-RLP header (layer ②).
+func (s *Service) GetFullHeader(ip string, n uint64) ([]byte, error) {
+	b, err := s.be.FullHeaderRLP(n)
+	if err != nil {
+		return nil, err
+	}
+	if cerr := s.charge(ip, len(b)); cerr != nil {
+		return nil, cerr
+	}
+	return b, nil
 }
 
 // GetAccountProof returns the EIP-1186 proof bytes for addr (+ slots) at head,

@@ -162,6 +162,21 @@ func Handler(svc *Service, rl *jsonrpc.RateLimiter) http.Handler {
 		}
 	})
 
+	// /full-header?n=N → fork-aware canonical RLP header (all exec fields) for ②.
+	mux.HandleFunc("/full-header", func(w http.ResponseWriter, r *http.Request) {
+		n, err := qn(r)
+		if err != nil {
+			http.Error(w, "bad n", http.StatusBadRequest)
+			return
+		}
+		b, err := svc.GetFullHeader(clientIP(r), n)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeBytes(w, b)
+	})
+
 	// /account-proof?addr=0x..&slots=0x..,0x.. → JSON account.AccProofResult
 	// (EIP-1186) at head. The mobile/minimal layer-③: bounded (~KB), verified by
 	// the client via stateless.VerifyAccountInclusion against the trusted stateRoot.

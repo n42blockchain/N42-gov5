@@ -199,6 +199,16 @@ func (c *MinimalClient) TrustedStateRoot(n uint64) (types.Hash, bool) {
 // Source returns the underlying transport (e.g. to fetch per-account proofs).
 func (c *MinimalClient) Source() Source { return c.src }
 
+// TrustedHash returns the verified block hash for block n (BLOCKHASH ancestor for
+// layer-② replay), or (zero,false) outside the retained window.
+func (c *MinimalClient) TrustedHash(n uint64) (types.Hash, bool) { return c.hc.TrustedHash(n) }
+
+// TrustedReceiptRoot returns the verified receiptsRoot for block n — the ② target
+// a witness replay must reproduce.
+func (c *MinimalClient) TrustedReceiptRoot(n uint64) (types.Hash, bool) {
+	return c.hc.TrustedReceiptRoot(n)
+}
+
 // Retained returns how many window headers are held (bounded by RetentionBlocks).
 func (c *MinimalClient) Retained() int { return len(c.headers) }
 

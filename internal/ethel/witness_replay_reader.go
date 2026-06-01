@@ -33,6 +33,11 @@ type WitnessReplayReader struct {
 	pos    int
 	codeTx kv.Tx               // MDBX Code table (codeHash → code), optional
 	codes  *CodesFreezerReader // freezer codes.cidx (addr → code), optional
+	// codeFetch is an optional on-demand bytecode source by codeHash (e.g. a
+	// minimal client fetching from a producer's /code endpoint). Tried after the
+	// cache/codes/codeTx misses and before failing loud. Returns nil to fall
+	// through (genuinely absent). Verified keccak256(code)==codeHash by the caller.
+	codeFetch func(types.Hash) ([]byte, error)
 	// scratch is reused across ReadAccountData calls. All call sites
 	// in IntraBlockState do data.Copy(scratch) before the next read,
 	// so the returned pointer never aliases stale state. Saves ~5-10K
@@ -49,6 +54,13 @@ func NewWitnessReplayReader(stream []byte, codeTx kv.Tx) *WitnessReplayReader {
 // MDBX codeTx only if codes-freezer is absent.
 func (r *WitnessReplayReader) SetCodesFreezer(codes *CodesFreezerReader) {
 	r.codes = codes
+}
+
+// SetCodeFetcher attaches an on-demand bytecode fetcher (codeHash → code), used
+// by a minimal client that pulls missing contract code from a producer /code
+// endpoint instead of holding a full code DB.
+func (r *WitnessReplayReader) SetCodeFetcher(fn func(types.Hash) ([]byte, error)) {
+	r.codeFetch = fn
 }
 
 // Reset rebinds the reader to a new witness stream and clears the read
@@ -121,6 +133,24 @@ func (r *WitnessReplayReader) ReadAccountCode(address types.Address, codeHash ty
 			if h := crypto.Keccak256Hash(code); h != codeHash {
 				return nil, fmt.Errorf("codes-freezer: stale entry for addr=%x — stored bytecode hashes to %x but witness expects %x; rerun code-import2fz against an up-to-date state DB",
 					address[:], h[:], codeHash[:])
+			}
+			if GlobalBytecodeCache != nil {
+				GlobalBytecodeCache.Put(codeHash, code)
+			}
+			return code, nil
+		}
+	}
+	// On-demand fetcher (e.g. minimal client → producer /code). Tried before the
+	// fail-loud paths; verifies keccak256(code)==codeHash so a lying server can't
+	// substitute bytecode.
+	if r.codeFetch != nil && codeHash != witnessReplayEmptyCodeHash {
+		code, err := r.codeFetch(codeHash)
+		if err != nil {
+			return nil, fmt.Errorf("witness-replay: code fetch for %x: %w", codeHash[:8], err)
+		}
+		if len(code) > 0 {
+			if h := crypto.Keccak256Hash(code); h != codeHash {
+				return nil, fmt.Errorf("witness-replay: fetched code for %x hashes to %x (server returned wrong bytecode)", codeHash[:8], h[:8])
 			}
 			if GlobalBytecodeCache != nil {
 				GlobalBytecodeCache.Put(codeHash, code)

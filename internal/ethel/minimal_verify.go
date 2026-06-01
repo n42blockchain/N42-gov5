@@ -153,7 +153,7 @@ func WireMinimalExec(
 			cd, _ = code(n)
 		}
 		in := &MinimalVerifyInput{Header: h, Body: b, Witness: w, Senders: sn, Code: cd}
-		return verifyExecutionAncestor(ancestor, chainCfg, engine, in)
+		return verifyExecutionAncestor(ancestor, chainCfg, engine, in, nil)
 	}
 }
 
@@ -161,14 +161,29 @@ func WireMinimalExec(
 // replayWitnessBlock check gasUsed + receiptRoot against the header. The trusted
 // HeaderChain supplies BLOCKHASH ancestor hashes.
 func verifyExecution(hc *stateless.HeaderChain, chainCfg *params.ChainConfig, engine consensus.Engine, in *MinimalVerifyInput) error {
-	return verifyExecutionAncestor(func(n uint64) types.Hash { h, _ := hc.TrustedHash(n); return h }, chainCfg, engine, in)
+	return verifyExecutionAncestor(func(n uint64) types.Hash { h, _ := hc.TrustedHash(n); return h }, chainCfg, engine, in, nil)
+}
+
+// VerifyWitnessReceipt is the exported layer-② check for a minimal/mobile client:
+// replay the witness through the EVM and verify gasUsed (+ receiptRoot from
+// Byzantium on) against the supplied trusted header. `ancestor` yields trusted
+// ancestor hashes (BLOCKHASH); `codeFetch` (optional) pulls missing contract
+// bytecode on demand (e.g. from a producer /code endpoint) — needed for blocks
+// that call pre-existing contracts, since the witness carries no code. Senders
+// may be nil (recovered from signatures). Returns nil iff execution reconciles
+// with the header.
+func VerifyWitnessReceipt(in *MinimalVerifyInput, ancestor func(uint64) types.Hash, chainCfg *params.ChainConfig, engine consensus.Engine, codeFetch func(types.Hash) ([]byte, error)) error {
+	if in == nil || in.Header == nil || in.Header.Number == nil {
+		return fmt.Errorf("minimal: nil input/header")
+	}
+	return verifyExecutionAncestor(ancestor, chainCfg, engine, in, codeFetch)
 }
 
 // verifyExecutionAncestor is verifyExecution with the BLOCKHASH ancestor lookup
 // passed directly (used by the minimal client's ExecVerify hook, which has the
 // ancestor func but not the HeaderChain). Code is served from an in-memory Code
 // table built from the verified code map.
-func verifyExecutionAncestor(ancestor func(uint64) types.Hash, chainCfg *params.ChainConfig, engine consensus.Engine, in *MinimalVerifyInput) error {
+func verifyExecutionAncestor(ancestor func(uint64) types.Hash, chainCfg *params.ChainConfig, engine consensus.Engine, in *MinimalVerifyInput, codeFetch func(types.Hash) ([]byte, error)) error {
 	dir, err := os.MkdirTemp("", "minimal-code-")
 	if err != nil {
 		return err
@@ -197,6 +212,9 @@ func verifyExecutionAncestor(ancestor func(uint64) types.Hash, chainCfg *params.
 	defer codeTx.Rollback()
 
 	reader := NewWitnessReplayReader(nil, codeTx)
+	if codeFetch != nil {
+		reader.SetCodeFetcher(codeFetch)
+	}
 	ibs := state.New(reader)
 
 	body := in.Body
