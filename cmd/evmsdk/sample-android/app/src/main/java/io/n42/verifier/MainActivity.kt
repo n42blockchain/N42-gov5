@@ -29,13 +29,23 @@ import androidx.compose.ui.unit.sp
 class MainActivity : ComponentActivity() {
 
     private val verifier = EvmsdkWrapper()
+    private val minimal = MinimalClient()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         verifier.initialize()
         setContent {
             MaterialTheme {
-                VerifierScreen(verifier)
+                var tab by remember { mutableStateOf(0) }
+                Column {
+                    TabRow(selectedTabIndex = tab) {
+                        Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Minimal") })
+                        Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Verifier") })
+                    }
+                    Box(Modifier.weight(1f)) {
+                        if (tab == 0) MinimalScreen(minimal) else VerifierScreen(verifier)
+                    }
+                }
             }
         }
     }
@@ -43,6 +53,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         verifier.free()
+        minimal.free()
     }
 }
 
