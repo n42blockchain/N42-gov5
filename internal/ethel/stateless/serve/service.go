@@ -51,6 +51,30 @@ type Backend interface {
 // ErrNotSupported is returned by AccountProof when the backend lacks a state trie.
 var ErrNotSupported = errors.New("serve: account proof not supported (no state trie)")
 
+// anchorListerBackend is the OPTIONAL capability a Backend implements to report
+// its actual anchor block heights (variable cadence via the anchorc.blocks
+// sidecar). Surfaced on /anchor-heights so a client verifies only real anchors.
+type anchorListerBackend interface {
+	AnchorHeights(from, to uint64) ([]uint64, error)
+}
+
+// GetAnchorHeights returns the producer's actual anchor heights in [from,to]
+// (ascending). ErrNotSupported when the backend has no anchor index.
+func (s *Service) GetAnchorHeights(ip string, from, to uint64) ([]uint64, error) {
+	al, ok := s.be.(anchorListerBackend)
+	if !ok {
+		return nil, ErrNotSupported
+	}
+	hs, err := al.AnchorHeights(from, to)
+	if err != nil {
+		return nil, err
+	}
+	if cerr := s.charge(ip, 8*len(hs)); cerr != nil {
+		return nil, cerr
+	}
+	return hs, nil
+}
+
 // AccountMultiproofResponse is the /account-multiproof wire: one merged account
 // multiproof (ProofNodes, deduped) covering Addrs at block Root. The client
 // verifies via stateless.VerifyAccountMultiproof(Root, ProofNodes, Addrs) — the
