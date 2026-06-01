@@ -45,6 +45,9 @@ func (b *chainBE) Anchor(n uint64) ([]byte, error) {
 	return stateless.EncodeBlockProof(&stateless.BlockProof{Number: n}), nil
 }
 func (b *chainBE) Code(types.Hash) ([]byte, error) { return nil, errors.New("no code") }
+func (b *chainBE) AccountProof(types.Address, []types.Hash) ([]byte, error) {
+	return nil, ErrNotSupported
+}
 
 func mkH(num uint64, parent, root types.Hash) *block.Header {
 	return &block.Header{

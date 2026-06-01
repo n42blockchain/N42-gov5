@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/ethel/stateless"
 )
 
@@ -128,6 +129,30 @@ func (s *HTTPSource) Anchor(n uint64) (*stateless.BlockProof, error) {
 // GetWitness fetches block n's witness stream (for layer ② wiring).
 func (s *HTTPSource) GetWitness(n uint64) ([]byte, error) {
 	return s.get(fmt.Sprintf("/witness?n=%d", n))
+}
+
+// AccountProof fetches the EIP-1186 proof for addr (+ optional storage slots) at
+// the producer's head and decodes it. The mobile/minimal layer-③: verify the
+// returned proof via stateless.VerifyAccountInclusion against the trusted head
+// stateRoot. Bounded (~KB), unlike the full-window MPT anchor.
+func (s *HTTPSource) AccountProof(addr types.Address, slots []types.Hash) (*AccountProofResponse, error) {
+	q := "/account-proof?addr=" + addr.Hex()
+	if len(slots) > 0 {
+		parts := make([]string, len(slots))
+		for i, sl := range slots {
+			parts[i] = sl.Hex()
+		}
+		q += "&slots=" + strings.Join(parts, ",")
+	}
+	b, err := s.get(q)
+	if err != nil {
+		return nil, err
+	}
+	res := new(AccountProofResponse)
+	if err := json.Unmarshal(b, res); err != nil {
+		return nil, fmt.Errorf("decode account proof: %w", err)
+	}
+	return res, nil
 }
 
 // Witness satisfies stateless.ArchiveSource (alias of GetWitness).
