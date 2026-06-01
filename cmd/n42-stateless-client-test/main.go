@@ -81,9 +81,16 @@ func main() {
 		if serr != nil {
 			fail("transition sync", serr)
 		}
-		nAnchors := (*tip - *checkpoint) / *k
-		fmt.Printf("③ state-transition: synced %d..%d, ✓ recomputed stateRoot from changeset at %d anchors (every %d), %.1fs\n",
-			*checkpoint+1, head, nAnchors, *k, time.Since(t0).Seconds())
+		// Real anchor count: prefer the producer's ACTUAL heights (variable cadence)
+		// over the fixed-K estimate, which is wrong when historical/recent K differ.
+		nAnchors := int((*tip - *checkpoint) / *k)
+		cadence := fmt.Sprintf("fixed K=%d", *k)
+		if hs, e := src.AnchorHeights(*checkpoint+1, *tip); e == nil {
+			nAnchors = len(hs)
+			cadence = "variable cadence (producer-confirmed heights)"
+		}
+		fmt.Printf("③ state-transition: synced %d..%d, ✓ recomputed stateRoot from changeset at %d anchors (%s), %.1fs\n",
+			*checkpoint+1, head, nAnchors, cadence, time.Since(t0).Seconds())
 		fmt.Println("ALL CLIENT-MODE CHECKS PASSED")
 		return
 	}

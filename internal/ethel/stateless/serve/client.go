@@ -32,7 +32,10 @@ func NewHTTPSource(base string) *HTTPSource {
 	}
 }
 
-var _ stateless.Source = (*HTTPSource)(nil)
+var (
+	_ stateless.Source       = (*HTTPSource)(nil)
+	_ stateless.AnchorLister = (*HTTPSource)(nil)
+)
 
 func (s *HTTPSource) get(path string) ([]byte, error) {
 	// Retry on 429/503 with bounded backoff — a real client respects the
@@ -131,6 +134,23 @@ func (s *HTTPSource) Anchor(n uint64) (*stateless.BlockProof, error) {
 // GetWitness fetches block n's witness stream (for layer ② wiring).
 func (s *HTTPSource) GetWitness(n uint64) ([]byte, error) {
 	return s.get(fmt.Sprintf("/witness?n=%d", n))
+}
+
+// AnchorHeights fetches the producer's ACTUAL anchor block heights in [from,to]
+// (ascending) from /anchor-heights, so the minimal client verifies only real
+// anchors under a variable cadence. Implements stateless.AnchorLister.
+func (s *HTTPSource) AnchorHeights(from, to uint64) ([]uint64, error) {
+	b, err := s.get(fmt.Sprintf("/anchor-heights?from=%d&to=%d", from, to))
+	if err != nil {
+		return nil, err
+	}
+	var v struct {
+		Heights []uint64 `json:"heights"`
+	}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return nil, fmt.Errorf("decode anchor heights: %w", err)
+	}
+	return v.Heights, nil
 }
 
 // AccountProof fetches the EIP-1186 proof for addr (+ optional storage slots) at

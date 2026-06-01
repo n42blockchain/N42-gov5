@@ -94,13 +94,13 @@ func main() {
 
 // freezerBackend implements serve.Backend over the read-only producer freezers.
 type freezerBackend struct {
-	hc        *ethel.HeaderCompactReader
-	bc        *ethel.BodyCompactReader
-	wit       *freezer.FreezerTable
+	hc           *ethel.HeaderCompactReader
+	bc           *ethel.BodyCompactReader
+	wit          *freezer.FreezerTable
 	anchorTbl    *freezer.FreezerTable // anchorc fdb (compressed)
 	anchorK      uint64                // fixed-cadence fallback when no sidecar
 	anchorBlocks []uint64              // anchorc.blocks sidecar: item i → block (ascending); variable cadence
-	chainID   uint64
+	chainID      uint64
 
 	codeDB kv.RoDB // optional
 
@@ -384,6 +384,35 @@ func (b *freezerBackend) Anchor(n uint64) ([]byte, error) {
 		return nil, fmt.Errorf("block %d is not an anchor height (K=%d)", n, b.anchorK)
 	}
 	return b.anchorTbl.Retrieve(n/b.anchorK - 1)
+}
+
+// AnchorHeights reports the actual anchor block heights in [from,to] (ascending):
+// the anchorc.blocks sidecar slice when present (variable cadence), else the
+// fixed-K multiples bounded by the produced item count. Implements the serve
+// anchorListerBackend → /anchor-heights so a client verifies only real anchors.
+func (b *freezerBackend) AnchorHeights(from, to uint64) ([]uint64, error) {
+	if b.anchorTbl == nil || to < from {
+		return nil, nil
+	}
+	if len(b.anchorBlocks) > 0 { // sidecar: slice [from,to]
+		lo := sort.Search(len(b.anchorBlocks), func(i int) bool { return b.anchorBlocks[i] >= from })
+		var out []uint64
+		for i := lo; i < len(b.anchorBlocks) && b.anchorBlocks[i] <= to; i++ {
+			out = append(out, b.anchorBlocks[i])
+		}
+		return out, nil
+	}
+	// fixed cadence: multiples of anchorK in [from,to], capped at produced items.
+	maxAnchor := b.anchorTbl.Items() * b.anchorK
+	first := ((from + b.anchorK - 1) / b.anchorK) * b.anchorK
+	if first == 0 {
+		first = b.anchorK
+	}
+	var out []uint64
+	for n := first; n <= to && n <= maxAnchor; n += b.anchorK {
+		out = append(out, n)
+	}
+	return out, nil
 }
 
 // CodeCompressed serves the codes-freezer's already-zstd-framed blob for codeHash

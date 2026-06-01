@@ -72,6 +72,25 @@ func Handler(svc *Service, rl *jsonrpc.RateLimiter) http.Handler {
 		writeBytes(w, b)
 	})
 
+	// /anchor-heights?from=F&to=T → {"heights":[...]} the producer's ACTUAL anchor
+	// block heights in [from,to] (variable cadence), so a client verifies only real
+	// anchors instead of guessing from a single K.
+	mux.HandleFunc("/anchor-heights", func(w http.ResponseWriter, r *http.Request) {
+		from, err1 := strconv.ParseUint(r.URL.Query().Get("from"), 10, 64)
+		to, err2 := strconv.ParseUint(r.URL.Query().Get("to"), 10, 64)
+		if err1 != nil || err2 != nil {
+			http.Error(w, "bad from/to", http.StatusBadRequest)
+			return
+		}
+		hs, err := svc.GetAnchorHeights(clientIP(r), from, to)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"heights": hs})
+	})
+
 	mux.HandleFunc("/witness", func(w http.ResponseWriter, r *http.Request) {
 		n, err := qn(r)
 		if err != nil {

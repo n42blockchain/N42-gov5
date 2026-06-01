@@ -16,7 +16,17 @@ import (
 type Source interface {
 	Head() (uint64, error)
 	Header(n uint64) (*block.Header, error)
-	Anchor(n uint64) (*BlockProof, error) // valid only at anchor heights (n % K == 0)
+	Anchor(n uint64) (*BlockProof, error) // valid only at anchor heights
+}
+
+// AnchorLister is an OPTIONAL Source capability: report the producer's ACTUAL
+// anchor block heights in [from,to] (ascending). Under a variable cadence (coarse
+// historical K + fine recent K) the client cannot derive anchor heights from a
+// single K, and skipped/failed anchors are simply absent — so it learns the real
+// set from the producer (the anchorc.blocks sidecar). A Source that does NOT
+// implement this falls back to the fixed anchorEvery passed to NewMinimalClient.
+type AnchorLister interface {
+	AnchorHeights(from, to uint64) ([]uint64, error)
 }
 
 // MinimalClient follows the tip with a rolling retention window. It extends the
@@ -75,6 +85,23 @@ func (c *MinimalClient) Sync() (uint64, error) {
 		return 0, err
 	}
 	head, _ := c.hc.Head()
+
+	// Learn the producer's ACTUAL anchor heights for this range when the source
+	// supports it (variable cadence): the fixed n%anchorEvery==0 rule is wrong when
+	// historical (K=10000) and recent (K=1000) cadences differ, and skipped anchors
+	// are absent. Falls back to anchorEvery when the source can't list them.
+	var anchorSet map[uint64]bool
+	if al, ok := c.src.(AnchorLister); ok && tip >= head+1 {
+		hs, herr := al.AnchorHeights(head+1, tip)
+		if herr != nil {
+			return c.headNum(), fmt.Errorf("anchor heights %d..%d: %w", head+1, tip, herr)
+		}
+		anchorSet = make(map[uint64]bool, len(hs))
+		for _, a := range hs {
+			anchorSet[a] = true
+		}
+	}
+
 	for n := head + 1; n <= tip; n++ {
 		h, herr := c.src.Header(n)
 		if herr != nil {
@@ -91,7 +118,13 @@ func (c *MinimalClient) Sync() (uint64, error) {
 			}
 		}
 
-		if c.anchorEvery > 0 && n%c.anchorEvery == 0 {
+		isAnchor := false
+		if anchorSet != nil {
+			isAnchor = anchorSet[n] // variable cadence: only producer-confirmed anchors
+		} else {
+			isAnchor = c.anchorEvery > 0 && n%c.anchorEvery == 0 // fixed-cadence fallback
+		}
+		if isAnchor {
 			bp, aerr := c.src.Anchor(n)
 			if aerr != nil {
 				return c.headNum(), fmt.Errorf("fetch anchor %d: %w", n, aerr)
