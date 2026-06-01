@@ -44,6 +44,7 @@ func main() {
 	runFull := flag.Bool("full", true, "also run the full-client archive")
 	withWitness := flag.Bool("witness", true, "download per-block witness (size check)")
 	account := flag.String("account", "", "optional account (0x..20B) to fetch+verify an EIP-1186 proof (mobile layer-③)")
+	transition := flag.Bool("transition", false, "run MinimalClient.Sync (①+③ state-transition recompute at each K anchor) — needs BlockProof anchors")
 	flag.Parse()
 
 	src := serve.NewHTTPSource(*url)
@@ -65,6 +66,27 @@ func main() {
 		fail("checkpoint header", err)
 	}
 	fmt.Printf("checkpoint: block=%d hash=%x stateRoot=%x\n", *checkpoint, cp.Hash().Bytes()[:6], cp.Root[:6])
+
+	// ---- ③ state-transition mode (exclusive): MinimalClient recomputes stateRoot
+	// from the changeset at each K anchor. Anchors are BlockProofs (not the compact
+	// structural proofs the default pass decodes), so this runs on its own. ----
+	if *transition {
+		t0 := time.Now()
+		capped := &cappedSource{HTTPSource: src, tip: *tip}
+		mc, err := stateless.NewMinimalClient(capped, cp, 1<<30, *k)
+		if err != nil {
+			fail("transition init", err)
+		}
+		head, serr := mc.Sync() // ① extend + ③ VerifyAgainstChain (recompute from changeset)
+		if serr != nil {
+			fail("transition sync", serr)
+		}
+		nAnchors := (*tip - *checkpoint) / *k
+		fmt.Printf("③ state-transition: synced %d..%d, ✓ recomputed stateRoot from changeset at %d anchors (every %d), %.1fs\n",
+			*checkpoint+1, head, nAnchors, *k, time.Since(t0).Seconds())
+		fmt.Println("ALL CLIENT-MODE CHECKS PASSED")
+		return
+	}
 
 	// ---- minimal ①③ (+ witness download), repeated for stability ----
 	for it := 1; it <= *iters; it++ {
