@@ -36,11 +36,11 @@ import (
 	"github.com/n42blockchain/N42/modules/state/commitment"
 )
 
-func nopAccHC([]byte, uint16, uint16, uint16, []byte, []byte) error            { return nil }
-func nopStorHC([]byte, []byte, uint16, uint16, uint16, []byte, []byte) error   { return nil }
-func keccakB(b []byte) []byte                                                  { h, _ := types.HashData(b); return h[:] }
-func emptyCodeHash() []byte                                                    { h, _ := types.HashData(nil); return h[:] }
-func emptyStorageRoot() []byte                                                 { return keccakB([]byte{0x80}) } // keccak(rlp("")) = empty MPT root
+func nopAccHC([]byte, uint16, uint16, uint16, []byte, []byte) error          { return nil }
+func nopStorHC([]byte, []byte, uint16, uint16, uint16, []byte, []byte) error { return nil }
+func keccakB(b []byte) []byte                                                { h, _ := types.HashData(b); return h[:] }
+func emptyCodeHash() []byte                                                  { h, _ := types.HashData(nil); return h[:] }
+func emptyStorageRoot() []byte                                               { return keccakB([]byte{0x80}) } // keccak(rlp("")) = empty MPT root
 
 func main() {
 	csDir := flag.String("cs", `D:/N42-eth1177/chain/freezer`, "freezer dir with acctcs/storcs (V2 forward changesets)")
@@ -197,6 +197,15 @@ func main() {
 		preRoot = root
 
 		if (n+1)%*kRecent == 0 { // commit periodically (finest cadence)
+			// Periodic durability: flush the anchorc freezer + sidecar (the
+			// deliverable) every commit interval, so a hard crash loses at most one
+			// interval of anchors instead of the whole run. The temp trie tx is
+			// rebuildable, so its commit is secondary — flush the anchors first.
+			if serr := anchorTbl.Sync(); serr != nil {
+				fmt.Fprintf(os.Stderr, "anchorc periodic sync %d: %v\n", n, serr)
+				os.Exit(1)
+			}
+			_ = sidecar.Sync()
 			if err := tx.Commit(); err != nil {
 				fmt.Fprintf(os.Stderr, "commit %d: %v\n", n, err)
 				os.Exit(1)
@@ -306,16 +315,41 @@ func buildBlockProof(tx kv.Tx, n uint64, dA map[types.Address]*account.StateAcco
 		for s := range dS[addr] {
 			allSlots = append(allSlots, s)
 		}
-		// A storage proof only exists when the account (and thus its storage
-		// subtree) is present at pre-state. A contract CREATED in this block has
-		// no pre storage subtree — its slots are pure inserts into an empty root.
+		// A storage proof only exists when the account has a NON-EMPTY storage
+		// subtree at pre-state. Two cases need slotOrder=nil + emptyStorageRoot
+		// (pure inserts into an empty trie, no pre-subtree to prove):
+		//   1. a contract CREATED in this block (account absent at pre-state), and
+		//   2. an EXISTING account whose pre-state storage is empty (EOA gaining
+		//      its first slots, or a contract with EmptyRoot storage). In case 2
+		//      the account leaf is a simple leaf with no storage subtree, so the
+		//      ProofRetainer never captures a storageRoot — requesting one fails
+		//      with "did not find storage root". Detect it via HashedStorage.
+		preStorageExists := false
+		if preExists {
+			if sc, e := tx.CursorDupSort(kv.HashedStorage); e == nil {
+				if v, e2 := sc.SeekBothRange(addrHash[:], make([]byte, 32)); e2 == nil && len(v) >= 32 {
+					preStorageExists = true
+				}
+				sc.Close()
+			}
+		}
 		slotOrder := allSlots
-		if !preExists {
+		if !preStorageExists {
 			slotOrder = nil
 		}
 
 		rl := trie.NewRetainList(0)
-		pr, perr := trie.NewProofRetainer(addr, &preAcc, slotOrder, rl)
+		// For an empty-storage account the account leaf is a simple leaf (no storage
+		// subtree), so the ProofRetainer never captures a storageRoot. Passing
+		// Initialised=false tells ProofResult to treat storage as empty/absent
+		// (skip the "did not find storage root" requirement) while still returning
+		// the account-inclusion proof nodes we need. Account fields for the changeset
+		// are taken from the changeset/preAcc directly below, not from the proof.
+		prAcc := preAcc
+		if !preStorageExists {
+			prAcc.Initialised = false
+		}
+		pr, perr := trie.NewProofRetainer(addr, &prAcc, slotOrder, rl)
 		if perr != nil {
 			return nil, fmt.Errorf("proof retainer %x: %w", addr[:6], perr)
 		}
@@ -356,7 +390,7 @@ func buildBlockProof(tx kv.Tx, n uint64, dA map[types.Address]*account.StateAcco
 			ch.CodeHash = chash[:]
 		}
 		if len(allSlots) > 0 {
-			if preExists {
+			if preStorageExists {
 				ch.StorageRoot = res.StorageHash[:]
 				stNodes := map[string][]byte{}
 				for i := range res.StorageProof {
@@ -368,7 +402,7 @@ func buildBlockProof(tx kv.Tx, n uint64, dA map[types.Address]*account.StateAcco
 					ch.StorageProof = append(ch.StorageProof, nd)
 				}
 			} else {
-				ch.StorageRoot = emptyStorageRoot() // created account: empty pre-subtree
+				ch.StorageRoot = emptyStorageRoot() // created/empty-storage account: empty pre-subtree
 			}
 			for _, slot := range allSlots {
 				slotHash, _ := types.HashData(slot[:])
@@ -379,7 +413,7 @@ func buildBlockProof(tx kv.Tx, n uint64, dA map[types.Address]*account.StateAcco
 					vb = bytes.TrimLeft(b[:], "\x00")
 				}
 				ch.Storage = append(ch.Storage, stateless.StorageChange{SlotHash: slotHash, Value: vb})
-				if len(vb) == 0 && preExists { // slot deleted forward in an existing subtree → collapse
+				if len(vb) == 0 && preStorageExists { // slot deleted forward in an existing subtree → collapse
 					delSlots = append(delSlots, sk{addrHash, slotHash})
 				}
 			}
