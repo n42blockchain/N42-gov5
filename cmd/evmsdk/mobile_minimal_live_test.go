@@ -45,6 +45,17 @@ func TestMobileMinimalLive(t *testing.T) {
 		t.Fatalf("head %d < syncTo %d", st.Head, syncTo)
 	}
 
+	if vb := os.Getenv("N42_LIVE_VERIFY_BLOCK"); vb != "" {
+		var bn int64
+		for _, c := range vb { bn = bn*10 + int64(c-'0') }
+		j := MobileVerifyBlock(bn)
+		t.Logf("② witness replay: %s", j)
+		if strings.HasPrefix(j, "error:") { t.Fatalf("VerifyBlock: %s", j) }
+		var v struct{ Verified bool `json:"verified"`; Error string `json:"error"` }
+		_ = json.Unmarshal([]byte(j), &v)
+		if !v.Verified { t.Fatalf("② not verified: %s", v.Error) }
+	}
+
 	if acct != "" {
 		balJSON := MobileBalanceOf(acct)
 		if strings.HasPrefix(balJSON, "error:") {

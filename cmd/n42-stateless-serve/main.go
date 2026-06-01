@@ -315,6 +315,14 @@ func (b *freezerBackend) HeaderRLP(n uint64) ([]byte, error) {
 	return serve.EncodeHeaderRecord(h, parent), nil
 }
 
+func (b *freezerBackend) FullHeaderRLP(n uint64) ([]byte, error) {
+	h, err := b.hc.ReadHeader(n)
+	if err != nil {
+		return nil, err
+	}
+	return serve.HeaderToRLP(h) // all exec fields; ParentHash/Bloom zero (columnar drops them), fine for ②
+}
+
 func (b *freezerBackend) BodyRLP(n uint64) ([]byte, error) {
 	d, err := b.bc.ReadBody(n)
 	if err != nil {

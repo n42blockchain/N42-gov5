@@ -155,6 +155,41 @@ func (s *HTTPSource) AccountProof(addr types.Address, slots []types.Hash) (*Acco
 	return res, nil
 }
 
+// Code fetches a single bytecode by keccak hash from /code (on-demand layer-②
+// code distribution). Returns nil if absent. The /code response is a stream of
+// [hash(32) || len(4 LE) || code] records; for one requested hash there is at
+// most one record.
+func (s *HTTPSource) Code(hash types.Hash) ([]byte, error) {
+	b, err := s.get("/code?h=" + hash.Hex())
+	if err != nil {
+		return nil, err
+	}
+	for len(b) >= 36 {
+		var h types.Hash
+		copy(h[:], b[:32])
+		l := int(uint32(b[32]) | uint32(b[33])<<8 | uint32(b[34])<<16 | uint32(b[35])<<24)
+		if 36+l > len(b) {
+			return nil, fmt.Errorf("code record length %d overflows", l)
+		}
+		code := b[36 : 36+l]
+		if h == hash {
+			return code, nil
+		}
+		b = b[36+l:]
+	}
+	return nil, nil
+}
+
+// FullHeader fetches block n's full canonical-RLP header (all exec fields), for
+// layer-② witness replay. Distinct from Header (the compact ①-chain record).
+func (s *HTTPSource) FullHeader(n uint64) (*block.Header, error) {
+	b, err := s.get(fmt.Sprintf("/full-header?n=%d", n))
+	if err != nil {
+		return nil, err
+	}
+	return HeaderFromRLP(b)
+}
+
 // Witness satisfies stateless.ArchiveSource (alias of GetWitness).
 func (s *HTTPSource) Witness(n uint64) ([]byte, error) { return s.GetWitness(n) }
 
