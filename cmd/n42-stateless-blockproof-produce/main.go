@@ -17,6 +17,7 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -42,6 +43,12 @@ func keccakB(b []byte) []byte                                                { h
 func emptyCodeHash() []byte                                                  { h, _ := types.HashData(nil); return h[:] }
 func emptyStorageRoot() []byte                                               { return keccakB([]byte{0x80}) } // keccak(rlp("")) = empty MPT root
 
+// bppProgressKey holds the last fully-committed block in the trie DB's DbInfo
+// bucket, written atomically with the trie state so --resume can continue exactly.
+var bppProgressKey = []byte("bpp_progress")
+
+func be8(n uint64) []byte { var b [8]byte; binary.BigEndian.PutUint64(b[:], n); return b[:] }
+
 func main() {
 	csDir := flag.String("cs", `D:/N42-eth1177/chain/freezer`, "freezer dir with acctcs/storcs (V2 forward changesets)")
 	hdrDir := flag.String("headers", `D:/n42-eth1/chain/freezer`, "columnar headerc dir")
@@ -52,6 +59,7 @@ func main() {
 	kRecent := flag.Uint64("k-recent", 1000, "anchor cadence for blocks >= --recent-from")
 	recentFrom := flag.Uint64("recent-from", 0, "block at/after which the fine (k-recent) cadence applies; 0 = use k-recent throughout")
 	mapGB := flag.Int("mapsize-gb", 64, "temp trie MDBX mapsize GB")
+	resume := flag.Bool("resume", false, "continue an interrupted run: keep the existing --tmp trie + --out anchorc, resume from the last committed block (DbInfo/bpp_progress), reconciling the anchorc/sidecar to that block")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -63,28 +71,13 @@ func main() {
 	if *out == "" {
 		*out = filepath.Join(*tmp, "anchorfz")
 	}
-	_ = os.RemoveAll(*tmp)
+	if !*resume {
+		_ = os.RemoveAll(*tmp) // fresh run: discard any prior trie
+	}
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, "mkdir:", err)
 		os.Exit(1)
 	}
-	// anchorc fdb (zstd) + anchorc.blocks sidecar (8-byte BE block number per item).
-	// Items are sequential = only SUCCESSFUL anchors; the sidecar maps item↔block so
-	// any/variable cadence works (the serve binary-searches block→item). Skipped
-	// anchors are simply absent (client gets not-found for that block).
-	anchorTbl, err := freezer.NewFreezerTableCompressed(*out, "anchorc", "c")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "open anchorc freezer:", err)
-		os.Exit(1)
-	}
-	defer anchorTbl.Close()
-	sidecar, err := os.Create(filepath.Join(*out, "anchorc.blocks"))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "create sidecar:", err)
-		os.Exit(1)
-	}
-	defer sidecar.Close()
-	var nextItem uint64
 
 	db, err := mdbx.NewMDBX(logger).Path(filepath.Join(*tmp, "chaindata")).Label(kv.ChainDB).
 		PageSize(4096).MapSize(datasize.ByteSize(*mapGB) * datasize.GB).
@@ -94,6 +87,24 @@ func main() {
 		os.Exit(1)
 	}
 	defer db.Close()
+
+	// Resume: read the last fully-committed block (atomic with the trie state).
+	// startBlock is the first block to (re)process; the trie is already at
+	// startBlock-1, so ComputeRoot runs incrementally from there.
+	var startBlock uint64
+	if *resume {
+		_ = db.View(ctx, func(rtx kv.Tx) error {
+			if v, _ := rtx.GetOne(kv.DatabaseInfo, bppProgressKey); len(v) == 8 {
+				startBlock = binary.BigEndian.Uint64(v) + 1
+			}
+			return nil
+		})
+		if startBlock > 0 {
+			fmt.Fprintf(os.Stderr, "RESUME: trie committed through block %d → continue at %d\n", startBlock-1, startBlock)
+		} else {
+			fmt.Fprintln(os.Stderr, "RESUME requested but no DbInfo/bpp_progress found → starting fresh")
+		}
+	}
 
 	hc, err := ethel.OpenHeaderCompact(*hdrDir)
 	if err != nil {
@@ -119,6 +130,67 @@ func main() {
 	stoTbl.ForceBatchSize(freezer.BatchSize)
 	stoTbl.SetCompressed(true)
 
+	// anchorc fdb (zstd) + anchorc.blocks sidecar (8-byte BE block number per item).
+	// Items are sequential = only SUCCESSFUL anchors; the sidecar maps item↔block so
+	// any/variable cadence works (the serve binary-searches block→item). Skipped
+	// anchors are simply absent (client gets not-found for that block).
+	anchorTbl, err := freezer.NewFreezerTableCompressed(*out, "anchorc", "c")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "open anchorc freezer:", err)
+		os.Exit(1)
+	}
+	defer anchorTbl.Close()
+	sidecarPath := filepath.Join(*out, "anchorc.blocks")
+
+	// Reconcile the freezer (non-transactional) with the committed trie progress:
+	// keep only anchors whose block ≤ startBlock-1, dropping any produced after the
+	// last trie commit (a hard kill can leave the freezer ahead of the commit). On a
+	// fresh run, clear any stale --out anchorc entirely.
+	var sidecarBlocks []uint64
+	if startBlock > 0 {
+		if sb, e := os.ReadFile(sidecarPath); e == nil {
+			for i := 0; i+8 <= len(sb); i += 8 {
+				sidecarBlocks = append(sidecarBlocks, binary.BigEndian.Uint64(sb[i:i+8]))
+			}
+		}
+	}
+	keep := uint64(0)
+	for _, b := range sidecarBlocks {
+		if b <= startBlock-1 {
+			keep++
+		} else {
+			break // sidecar is ascending; the rest are post-commit
+		}
+	}
+	if startBlock == 0 { // fresh: clear stale anchorc + sidecar
+		if err := anchorTbl.TruncateHead(0); err != nil {
+			fmt.Fprintln(os.Stderr, "truncate anchorc:", err)
+			os.Exit(1)
+		}
+	} else if keep < anchorTbl.Items() {
+		if err := anchorTbl.TruncateHead(keep); err != nil {
+			fmt.Fprintln(os.Stderr, "reconcile anchorc TruncateHead:", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "RESUME: reconciled anchorc to %d items (≤ block %d)\n", keep, startBlock-1)
+	}
+	nextItem := keep
+	// Open the sidecar truncated to the kept items, positioned for append.
+	sidecar, err := os.OpenFile(sidecarPath, os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "open sidecar:", err)
+		os.Exit(1)
+	}
+	defer sidecar.Close()
+	if err := sidecar.Truncate(int64(keep) * 8); err != nil {
+		fmt.Fprintln(os.Stderr, "truncate sidecar:", err)
+		os.Exit(1)
+	}
+	if _, err := sidecar.Seek(int64(keep)*8, io.SeekStart); err != nil {
+		fmt.Fprintln(os.Stderr, "seek sidecar:", err)
+		os.Exit(1)
+	}
+
 	tx, err := db.BeginRw(ctx)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "begin rw:", err)
@@ -126,10 +198,15 @@ func main() {
 	}
 	trc := commitment.NewTrieRootComputer()
 	trc.SetRwTx(tx)
-	trc.SetIncremental(false) // first block bootstraps; the rest incremental
+	trc.SetIncremental(startBlock > 0) // resuming a non-empty trie → incremental from the start
 
 	t0 := time.Now()
 	var preRoot types.Hash // header[n-1].Root (empty before block 0)
+	if startBlock > 0 {
+		if h, herr := hc.ReadHeader(startBlock - 1); herr == nil {
+			preRoot = h.Root
+		}
+	}
 	emitted, verifiedOK := 0, 0
 
 	anchorK := func(n uint64) uint64 { // variable cadence: coarse historical, fine recent
@@ -138,7 +215,7 @@ func main() {
 		}
 		return *kHist
 	}
-	for n := uint64(0); n < *endBlock; n++ {
+	for n := startBlock; n < *endBlock; n++ {
 		dA, dS := readBlockChangeset(acctTbl, stoTbl, n)
 		isAnchor := n > 0 && n%anchorK(n) == 0
 
@@ -206,6 +283,14 @@ func main() {
 				os.Exit(1)
 			}
 			_ = sidecar.Sync()
+			// Record progress ATOMICALLY with the trie commit (DbInfo bucket), so a
+			// --resume continues from exactly the committed block and the freezer is
+			// reconciled to it. Anchors flushed just above but not yet committed here
+			// are dropped on the next resume's reconcile (no duplicates).
+			if perr := tx.Put(kv.DatabaseInfo, bppProgressKey, be8(n)); perr != nil {
+				fmt.Fprintf(os.Stderr, "put progress %d: %v\n", n, perr)
+				os.Exit(1)
+			}
 			if err := tx.Commit(); err != nil {
 				fmt.Fprintf(os.Stderr, "commit %d: %v\n", n, err)
 				os.Exit(1)
@@ -218,7 +303,15 @@ func main() {
 			trc.SetRwTx(tx)
 		}
 	}
-	tx.Rollback()
+	// Final commit so a completed run records progress = endBlock-1 (a later --resume
+	// sees it finished and the trie is durable through the last block).
+	if *endBlock > 0 {
+		if perr := tx.Put(kv.DatabaseInfo, bppProgressKey, be8(*endBlock-1)); perr != nil || tx.Commit() != nil {
+			tx.Rollback()
+		}
+	} else {
+		tx.Rollback()
+	}
 	if serr := anchorTbl.Sync(); serr != nil {
 		fmt.Fprintln(os.Stderr, "anchorc sync:", serr)
 		os.Exit(1)
