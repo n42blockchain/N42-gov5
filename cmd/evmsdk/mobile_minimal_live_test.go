@@ -46,14 +46,30 @@ func TestMobileMinimalLive(t *testing.T) {
 	}
 
 	if vb := os.Getenv("N42_LIVE_VERIFY_BLOCK"); vb != "" {
-		var bn int64
-		for _, c := range vb { bn = bn*10 + int64(c-'0') }
-		j := MobileVerifyBlock(bn)
-		t.Logf("② witness replay: %s", j)
-		if strings.HasPrefix(j, "error:") { t.Fatalf("VerifyBlock: %s", j) }
-		var v struct{ Verified bool `json:"verified"`; Error string `json:"error"` }
-		_ = json.Unmarshal([]byte(j), &v)
-		if !v.Verified { t.Fatalf("② not verified: %s", v.Error) }
+		start := atoi(vb)
+		count := int64(1)
+		if c := os.Getenv("N42_LIVE_VERIFY_COUNT"); c != "" { count = int64(atoi(c)) }
+		totalCodeFetched := 0
+		contractBlocks := 0
+		for bn := start; bn < start+count; bn++ {
+			j := MobileVerifyBlock(bn)
+			if strings.HasPrefix(j, "error:") { t.Fatalf("VerifyBlock %d: %s", bn, j) }
+			var v struct {
+				Verified    bool `json:"verified"`
+				Error       string `json:"error"`
+				TxCount     int  `json:"txCount"`
+				CodeFetched int  `json:"codeFetched"`
+			}
+			_ = json.Unmarshal([]byte(j), &v)
+			if !v.Verified { t.Fatalf("② block %d not verified: %s", bn, v.Error) }
+			totalCodeFetched += v.CodeFetched
+			if v.CodeFetched > 0 {
+				contractBlocks++
+				t.Logf("② block %d: ✓ %d tx, %d code fetched (CONTRACT block)", bn, v.TxCount, v.CodeFetched)
+			}
+		}
+		t.Logf("② span [%d,%d): all verified; %d contract blocks, %d total bytecodes fetched via /code-by-addr",
+			start, start+count, contractBlocks, totalCodeFetched)
 	}
 
 	if acct != "" {
@@ -76,6 +92,17 @@ func TestMobileMinimalLive(t *testing.T) {
 			t.Fatalf("proof bytes %d not bounded (~KB expected)", bal.ProofBytes)
 		}
 	}
+}
+
+func atoi(s string) int64 {
+	var n int64
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			break
+		}
+		n = n*10 + int64(c-'0')
+	}
+	return n
 }
 
 func envU64(t *testing.T, k string) uint64 {
