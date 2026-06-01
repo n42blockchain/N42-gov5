@@ -22,6 +22,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"sync"
 
 	"github.com/c2h5oh/datasize"
@@ -95,8 +97,9 @@ type freezerBackend struct {
 	hc        *ethel.HeaderCompactReader
 	bc        *ethel.BodyCompactReader
 	wit       *freezer.FreezerTable
-	anchorTbl *freezer.FreezerTable // anchorc fdb (compressed); item = block/K - 1
-	anchorK   uint64
+	anchorTbl    *freezer.FreezerTable // anchorc fdb (compressed)
+	anchorK      uint64                // fixed-cadence fallback when no sidecar
+	anchorBlocks []uint64              // anchorc.blocks sidecar: item i → block (ascending); variable cadence
 	chainID   uint64
 
 	codeDB kv.RoDB // optional
@@ -140,6 +143,14 @@ func openBackend(hdrDir, bodyDir, witDir, anchorDir string, anchorK uint64, chai
 			return nil, fmt.Errorf("anchorc freezer: %w", aerr)
 		}
 		be.anchorTbl = at
+		// Optional block-index sidecar (item i → block n, ascending). When present
+		// it supports ANY/variable cadence (block→item binary search); otherwise the
+		// fixed-cadence item = n/K - 1 fallback applies.
+		if sb, serr := os.ReadFile(filepath.Join(anchorDir, "anchorc.blocks")); serr == nil && len(sb) >= 8 {
+			for i := 0; i+8 <= len(sb); i += 8 {
+				be.anchorBlocks = append(be.anchorBlocks, binary.BigEndian.Uint64(sb[i:i+8]))
+			}
+		}
 	}
 
 	if chaindata != "" {
@@ -306,6 +317,13 @@ func (b *freezerBackend) latestAnchor(tip uint64) uint64 {
 	if b.anchorTbl == nil {
 		return 0
 	}
+	if len(b.anchorBlocks) > 0 { // sidecar: largest anchor block ≤ tip
+		i := sort.Search(len(b.anchorBlocks), func(i int) bool { return b.anchorBlocks[i] > tip })
+		if i == 0 {
+			return 0
+		}
+		return b.anchorBlocks[i-1]
+	}
 	last := b.anchorTbl.Items() * b.anchorK
 	if last > tip {
 		return 0
@@ -355,10 +373,17 @@ func (b *freezerBackend) Anchor(n uint64) ([]byte, error) {
 	if b.anchorTbl == nil {
 		return nil, fmt.Errorf("anchor serving disabled")
 	}
-	if n == 0 || n%b.anchorK != 0 {
+	if len(b.anchorBlocks) > 0 { // sidecar: variable cadence, block→item binary search
+		i := sort.Search(len(b.anchorBlocks), func(i int) bool { return b.anchorBlocks[i] >= n })
+		if i >= len(b.anchorBlocks) || b.anchorBlocks[i] != n {
+			return nil, fmt.Errorf("block %d has no anchor", n)
+		}
+		return b.anchorTbl.Retrieve(uint64(i))
+	}
+	if n == 0 || n%b.anchorK != 0 { // fixed-cadence fallback: item = n/K - 1
 		return nil, fmt.Errorf("block %d is not an anchor height (K=%d)", n, b.anchorK)
 	}
-	return b.anchorTbl.Retrieve(n/b.anchorK - 1) // item = n/K - 1
+	return b.anchorTbl.Retrieve(n/b.anchorK - 1)
 }
 
 // CodeCompressed serves the codes-freezer's already-zstd-framed blob for codeHash
