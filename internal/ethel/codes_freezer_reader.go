@@ -138,7 +138,23 @@ func (r *CodesFreezerReader) GetCode(addr types.Address) ([]byte, error) {
 
 // LookupByAddress returns the bytecode for addr, or nil if not present.
 func (r *CodesFreezerReader) LookupByAddress(addr types.Address) ([]byte, error) {
-	// Binary search by address.
+	compressed, err := r.LookupCompressedByAddress(addr)
+	if err != nil || compressed == nil {
+		return nil, err
+	}
+	// Decompress. zstd.Decoder.DecodeAll is goroutine-safe.
+	decoded, err := r.zstdDec.DecodeAll(compressed, nil)
+	if err != nil {
+		return nil, fmt.Errorf("codes-freezer: decompress addr %x: %w", addr[:], err)
+	}
+	return decoded, nil
+}
+
+// LookupCompressedByAddress returns the RAW zstd-framed blob for addr (one
+// independent zstd frame), skipping decompression — so a server can ship the
+// compressed code over the wire directly (the client decompresses), saving
+// ~55% bandwidth and the decompress+recompress round-trip. Returns nil if absent.
+func (r *CodesFreezerReader) LookupCompressedByAddress(addr types.Address) ([]byte, error) {
 	idx := sort.Search(len(r.entries), func(i int) bool {
 		return bytes.Compare(r.entries[i].addr[:], addr[:]) >= 0
 	})
@@ -149,8 +165,6 @@ func (r *CodesFreezerReader) LookupByAddress(addr types.Address) ([]byte, error)
 	if e.addr != addr {
 		return nil, nil
 	}
-	// End offset: the start of the NEXT entry IF same file, else the
-	// current file's size (this entry is the last in its file).
 	var endOffset int64
 	if idx+1 < len(r.entries) && r.entries[idx+1].fileNum == e.fileNum {
 		endOffset = int64(r.entries[idx+1].offset)
@@ -174,12 +188,7 @@ func (r *CodesFreezerReader) LookupByAddress(addr types.Address) ([]byte, error)
 	if _, err := f.ReadAt(compressed, int64(e.offset)); err != nil {
 		return nil, fmt.Errorf("codes-freezer: read cdat %d at %d: %w", e.fileNum, e.offset, err)
 	}
-	// Decompress. zstd.Decoder.DecodeAll is goroutine-safe.
-	decoded, err := r.zstdDec.DecodeAll(compressed, nil)
-	if err != nil {
-		return nil, fmt.Errorf("codes-freezer: decompress addr %x: %w", addr[:], err)
-	}
-	return decoded, nil
+	return compressed, nil
 }
 
 func (r *CodesFreezerReader) openFile(num uint16) (*os.File, error) {

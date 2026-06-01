@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/klauspost/compress/zstd"
+
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 )
@@ -31,6 +33,12 @@ type Backend interface {
 	// and Bloom may be zero if the source (columnar headerc) dropped them; that does
 	// not affect the gas/receiptRoot the replay checks.
 	FullHeaderRLP(n uint64) ([]byte, error)
+	// AccountMultiproof returns a JSON serve.AccountMultiproofResponse: ONE merged,
+	// deduplicated account-trie multiproof covering all addrs (the shared upper trie
+	// stored once). The per-block layer-③ artifact — prove every touched account in
+	// a single request, ~30% smaller than N separate proofs. ErrNotSupported if no
+	// state trie.
+	AccountMultiproof(addrs []types.Address) ([]byte, error)
 	// AccountProof returns a JSON-encoded account.AccProofResult (EIP-1186) for
 	// addr (+ optional storage slots) at the CURRENT head state — the bounded,
 	// mobile-friendly layer-③ artifact (a few KB) that replaces the full-window
@@ -42,6 +50,17 @@ type Backend interface {
 
 // ErrNotSupported is returned by AccountProof when the backend lacks a state trie.
 var ErrNotSupported = errors.New("serve: account proof not supported (no state trie)")
+
+// AccountMultiproofResponse is the /account-multiproof wire: one merged account
+// multiproof (ProofNodes, deduped) covering Addrs at block Root. The client
+// verifies via stateless.VerifyAccountMultiproof(Root, ProofNodes, Addrs) — the
+// proof must hash to Root, then each address walks to its leaf.
+type AccountMultiproofResponse struct {
+	Block      uint64
+	Root       types.Hash
+	Addrs      []types.Address
+	ProofNodes [][]byte
+}
 
 // AccountProofResponse is the /account-proof wire: the EIP-1186 proof plus the
 // block + stateRoot it anchors to, so the client can both (a) verify the proof
@@ -157,6 +176,21 @@ func (s *Service) GetAnchor(ip string, n uint64) ([]byte, error) {
 	return p, nil
 }
 
+// GetAccountMultiproof returns the merged multiproof bytes for addrs.
+func (s *Service) GetAccountMultiproof(ip string, addrs []types.Address) ([]byte, error) {
+	if s.caps.MaxCodeHashes > 0 && len(addrs) > s.caps.MaxCodeHashes {
+		return nil, fmt.Errorf("%w: %d addrs > cap %d", ErrCapExceeded, len(addrs), s.caps.MaxCodeHashes)
+	}
+	b, err := s.be.AccountMultiproof(addrs)
+	if err != nil {
+		return nil, err
+	}
+	if cerr := s.charge(ip, len(b)); cerr != nil {
+		return nil, cerr
+	}
+	return b, nil
+}
+
 // GetFullHeader returns block n's full canonical-RLP header (layer ②).
 func (s *Service) GetFullHeader(ip string, n uint64) ([]byte, error) {
 	b, err := s.be.FullHeaderRLP(n)
@@ -183,6 +217,54 @@ func (s *Service) GetAccountProof(ip string, addr types.Address, slots []types.H
 		return nil, cerr
 	}
 	return b, nil
+}
+
+// codeZEncoder is a shared, concurrency-safe zstd encoder for /code wire
+// compression (EncodeAll is goroutine-safe).
+var codeZEncoder, _ = zstd.NewWriter(nil)
+
+// codeCompressedBackend is the optional fast-path a Backend can implement to ship
+// the freezer's already-zstd-framed code blob directly (no decompress+recompress).
+type codeCompressedBackend interface {
+	CodeCompressed(hash types.Hash) ([]byte, error)
+}
+
+// GetCodeZ returns ZSTD-COMPRESSED bytecode per hash for the wire (the client
+// decompresses). Bandwidth is ~45% of raw on bytecode. Prefers the backend's
+// CodeCompressed passthrough (the codes-freezer already stores zstd, so no
+// decompress+recompress); else compresses Code(hash). Caps + charges on the
+// compressed size. Missing hashes omitted.
+func (s *Service) GetCodeZ(ip string, hashes []types.Hash) (map[types.Hash][]byte, error) {
+	if s.caps.MaxCodeHashes > 0 && len(hashes) > s.caps.MaxCodeHashes {
+		return nil, fmt.Errorf("%w: %d hashes > MaxCodeHashes %d", ErrCapExceeded, len(hashes), s.caps.MaxCodeHashes)
+	}
+	cc, hasFast := s.be.(codeCompressedBackend)
+	out := make(map[types.Hash][]byte, len(hashes))
+	total := 0
+	for _, h := range hashes {
+		var blob []byte
+		if hasFast {
+			if z, err := cc.CodeCompressed(h); err == nil && len(z) > 0 {
+				blob = z
+			}
+		}
+		if blob == nil {
+			c, err := s.be.Code(h)
+			if err != nil || len(c) == 0 {
+				continue
+			}
+			blob = codeZEncoder.EncodeAll(c, nil)
+		}
+		total += len(blob)
+		if s.caps.MaxRespBytes > 0 && total > s.caps.MaxRespBytes {
+			return nil, fmt.Errorf("%w: code exceeds MaxRespBytes", ErrCapExceeded)
+		}
+		out[h] = blob
+	}
+	if s.bw != nil && !s.bw.Allow(ip, total) {
+		return nil, ErrRateLimited
+	}
+	return out, nil
 }
 
 // GetCode returns the requested bytecodes (content-addressed; missing hashes are

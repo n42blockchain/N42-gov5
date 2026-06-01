@@ -65,22 +65,22 @@ func TestCodeRoute(t *testing.T) {
 	srv := httptest.NewServer(Handler(svc, nil))
 	defer srv.Close()
 
-	// Request the present hash + a missing one; only the present one comes back.
-	missing := types.BytesToHash([]byte{0xde, 0xad})
-	resp, err := http.Get(srv.URL + "/code?h=" + ch.Hex() + "&h=" + missing.Hex())
+	// /code ships ZSTD(code); HTTPSource.Code decompresses → raw round-trip.
+	src := NewHTTPSource(srv.URL)
+	got, err := src.Code(ch)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("fetch code: %v", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("code route status %d", resp.StatusCode)
+	if string(got) != string(code) {
+		t.Fatalf("code round-trip mismatch: %x != %x", got, code)
 	}
-	buf := make([]byte, 256)
-	n, _ := resp.Body.Read(buf)
-	// record = hash(32) || len(4 LE) || code; one record for the present hash.
-	want := 32 + 4 + len(code)
-	if n != want {
-		t.Fatalf("code response %d bytes, want %d", n, want)
+	// A missing hash decompresses to nothing (no record).
+	missing, err := src.Code(types.BytesToHash([]byte{0xde, 0xad}))
+	if err != nil {
+		t.Fatalf("missing code: %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("expected empty for missing hash, got %d bytes", len(missing))
 	}
 }
 

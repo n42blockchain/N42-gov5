@@ -108,6 +108,45 @@ func VerifyAccountInclusion(stateRoot []byte, res *account.AccProofResult) (*Ver
 	return va, nil
 }
 
+// VerifyAccountMultiproof verifies a MERGED account multiproof: one deduplicated
+// account-trie node set proving many accounts at once (the shared upper trie is
+// stored once, ~30% smaller than N separate proofs). It builds the partialTrie
+// once (which fails if the nodes don't hash to stateRoot), then walks each
+// address to its leaf. Returns one VerifiedAccount per address, in input order
+// (Exists=false = proven absent). This is the per-block layer-③ artifact: prove
+// all touched accounts in a single request.
+func VerifyAccountMultiproof(stateRoot []byte, proofNodes [][]byte, addrs []types.Address) ([]*VerifiedAccount, error) {
+	at, err := newPartialTrie(stateRoot, proofNodes)
+	if err != nil {
+		return nil, fmt.Errorf("eip1186: multiproof does not anchor to state root: %w", err)
+	}
+	out := make([]*VerifiedAccount, len(addrs))
+	for i := range addrs {
+		addrHash := keccak(addrs[i][:])
+		va := &VerifiedAccount{}
+		copy(va.AddrHash[:], addrHash)
+		leaf, found, err := at.get(keybytesToHex(addrHash))
+		if err != nil {
+			return nil, fmt.Errorf("eip1186: account %x walk: %w", addrs[i][:4], err)
+		}
+		if !found {
+			out[i] = va // Exists=false (proven absent)
+			continue
+		}
+		al, err := decodeAccountLeaf(leaf)
+		if err != nil {
+			return nil, fmt.Errorf("eip1186: account %x leaf: %w", addrs[i][:4], err)
+		}
+		va.Exists = true
+		va.Nonce = al.nonce
+		va.Balance.Set(&al.balance)
+		va.StorageRoot = append([]byte(nil), al.storageRoot...)
+		va.CodeHash = append([]byte(nil), al.codeHash...)
+		out[i] = va
+	}
+	return out, nil
+}
+
 // verifyStorageSlot anchors one slot proof at storageRoot and checks the proven
 // value matches the result's claimed (decimal) value.
 func verifyStorageSlot(storageRoot []byte, sp *account.StorProofResult) error {
