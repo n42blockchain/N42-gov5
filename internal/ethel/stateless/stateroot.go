@@ -147,22 +147,34 @@ func (u *StateRootUpdater) Root() ([]byte, error) {
 }
 
 // patchAccountStorageRoot reads the account leaf, replaces its storageRoot with
-// newRoot, and writes it back. The account MUST already exist in the proof
-// (a contract with storage always does).
+// newRoot, and writes it back. If the account leaf is not present in the proof —
+// which happens for an account whose pre-state storage was EMPTY (a created
+// contract, or an existing EOA/empty-storage account gaining its first slots):
+// such a leaf is emitted as a simple account leaf with no storage subtree, so
+// the producer's per-account ProofRetainer never captures it as a full node —
+// start from empty defaults (storageRoot=EmptyRoot, codeHash=emptyCode). The
+// subsequent applyAccountEdit fills in the real nonce/balance/codeHash from the
+// changeset, and the final root comparison validates the whole reconstruction,
+// so this cannot mask an incorrect transition (a wrong leaf → wrong root → fail).
 func (u *StateRootUpdater) patchAccountStorageRoot(addrHash types.Hash, newRoot []byte) error {
 	leaf, found, err := u.acct.get(keybytesToHex(addrHash[:]))
 	if err != nil {
 		return fmt.Errorf("read account %x: %w", addrHash[:6], err)
 	}
-	if !found {
-		return fmt.Errorf("patch storageRoot: account %x not in proof", addrHash[:6])
-	}
-	al, err := decodeAccountLeaf(leaf)
-	if err != nil {
-		return fmt.Errorf("decode account %x: %w", addrHash[:6], err)
-	}
-	if bytes.Equal(al.storageRoot, newRoot) {
-		return nil // no change
+	var al *accountLeaf
+	if found {
+		al, err = decodeAccountLeaf(leaf)
+		if err != nil {
+			return fmt.Errorf("decode account %x: %w", addrHash[:6], err)
+		}
+		if bytes.Equal(al.storageRoot, newRoot) {
+			return nil // no change
+		}
+	} else {
+		al = &accountLeaf{
+			storageRoot: append([]byte(nil), emptyRootHash...),
+			codeHash:    append([]byte(nil), emptyCodeHashBytes...),
+		}
 	}
 	al.storageRoot = append([]byte(nil), newRoot...)
 	return u.acct.update(keybytesToHex(addrHash[:]), al.encode())
