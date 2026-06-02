@@ -22,9 +22,10 @@ func TestFullPrunePlan(t *testing.T) {
 	const tip, merge, window = 25_000_000, 15_537_394, 100_000
 	plan := PrunePlan(rpccaps.Full, tip, merge, window)
 
-	// Pre-merge bodies dropped, post-merge kept.
-	if a, ok := findAction(plan, rpccaps.AllBodies); !ok || a.Action != DropBefore || a.Cutoff != merge {
-		t.Errorf("AllBodies: want DropBefore@%d, got %+v (ok=%v)", merge, a, ok)
+	// EIP-4444 standard: bodies cold-offloaded below the ~1yr window (tip-window),
+	// not dropped at the merge boundary.
+	if a, ok := findAction(plan, rpccaps.AllBodies); !ok || a.Action != ColdOffload || a.Cutoff != tip-window {
+		t.Errorf("AllBodies: want ColdOffload@%d (EIP-4444 window), got %+v (ok=%v)", tip-window, a, ok)
 	}
 	// Historical state dropped entirely (latest kept).
 	if a, ok := findAction(plan, rpccaps.HistoricalState); !ok || a.Action != Drop {

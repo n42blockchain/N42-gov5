@@ -272,6 +272,43 @@ Sequence 在 Arbitrum/OP/Base 上把 calldata 压 ~5×、gas 省 ~50%：零字�
 
 ---
 
+## 9. EIP-4444 近窗保留 + 冷段卸载（已实现，Full 节点标准）
+
+把 §8.7 的"最大杠杆"落地为 N42 eth-el **Full 节点标准**：保留近 ~1 年 body 热，冷段卸载，archive 节点 seed（1-of-N）。
+
+**前提（已确认）**：N42 网络有 Archive/seeder 层保全并 seed 冷段 → Full 默认过期安全。
+
+### 9.1 组件（已入仓）
+
+- `internal/ethel/historyexpiry`：保留策略。`Compute(tip, window, segSize)` → 冷/热段边界；`DefaultWindowBlocks=2,629,800`（365.25 天 @12s）。单测覆盖窗口内/边界对齐/post-merge 可用范围。
+- `cmd/n42-history-expiry`：两种冷段单元——
+  - **`--mode cdat`（推荐，默认）**：冷单元 = `bodyc.NNNN.cdat` 列式段本身，字节级 relocate + manifest，**比 era 重编码紧 ~2.5×**。
+  - `--mode era`：重编码成 EraE（`modules/rawdb/era`，zstd，随机访问，可带 receipts），用于跨客户端互操作/收据捆绑。实测 EraE = 2.06–2.22× 压缩，但绝对大小是 bodyc 列式的 ~2.5×。
+- `internal/sync/torrentsync.Manifest`：per-段 `{FromBlock,ToBlock,FileName,Size,SHA256}` + `FindSegment(block)` 解析器（已有，复用）。
+- `internal/ethel/modestate`：新增 `ColdOffload` retention；**Full 的 body 从"留全部 post-merge"改为"留 ~1yr 窗口 + 冷段卸载"**（`PrunePlan` AllBodies → `ColdOffload@(tip-window)`）。
+
+### 9.2 实测：1 年窗口落在哪个 cdat + 后续 size（D:/n42-eth1-postmerge, tip≈25.1M）
+
+| | 值 |
+|---|---|
+| 热边界块（tip − 1yr） | 22,478,680（seg 2743） |
+| **热边界 cdat** | **0283**（跨 seg 2739..2747，block 22,437,888..22,511,615）→ 整个留热 |
+| **HOT（~1yr，Full 保留）** | **cdat 0283..0335，53 文件，91.5 GB** |
+| **COLD（卸载+seed）** | **cdat 0097..0282，186 文件，302.7 GB** |
+
+> **EIP-4444 的真实威力**：post-merge body 从 394 GB → Full 只留 **91.5 GB 热**（−77%），远超任何压缩（F2 也只 −45%）。冷 302.7 GB relocate + manifest + torrent，archive seed。
+> 往返验证：`mode=cdat` manifest 的 `FindSegment(coldBlock)` → 正确 cdat，2/2 PASS。
+
+### 9.3 冷读路径（透明）
+
+热 store 只留近窗 cdat + **全量 bodyc.cidx**（trimmed-store，冷块 `ReadBody` 返回 `ErrBodyTrimmed`）。冷读：`manifest.FindSegment(block)` → 取冷 cdat（本地冷盘/torrent/CAS）→ 配保留的 cidx → `ReadBody`。cidx 小，常驻热。
+
+### 9.4 与压缩正交
+
+过期（−77%）和去签名压缩（F1 −18% / F2 −45%）可叠加：热的 91.5 GB 内部副本还能再上 F1 → ~75 GB。但过期是数量级更大的杠杆，**优先做过期，压缩次之**。
+
+---
+
 ## 附：复测命令
 
 ```

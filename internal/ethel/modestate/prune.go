@@ -10,9 +10,10 @@ import (
 type Retention int
 
 const (
-	Keep       Retention = iota // retain in full (required by the mode)
-	Drop                        // remove entirely (mode never needs it)
-	DropBefore                  // remove blocks strictly below Cutoff (keep the recent/post-merge tail)
+	Keep        Retention = iota // retain in full (required by the mode)
+	Drop                         // remove entirely (mode never needs it)
+	DropBefore                   // remove blocks strictly below Cutoff (keep the recent/post-merge tail)
+	ColdOffload                  // relocate blocks below Cutoff to a cold archive (era/cdat) + torrentsync manifest, then trim hot (EIP-4444; data not destroyed, seeded by archive nodes)
 )
 
 func (r Retention) String() string {
@@ -23,6 +24,8 @@ func (r Retention) String() string {
 		return "drop-all"
 	case DropBefore:
 		return "drop-before"
+	case ColdOffload:
+		return "cold-offload"
 	default:
 		return "?"
 	}
@@ -74,10 +77,13 @@ func PrunePlan(mode rpccaps.Mode, tip, mergeBlock, recentWindow uint64) []PruneA
 		act := PruneAction{Class: c, Action: Drop, StoreHint: storeHint[c]}
 		switch c {
 		case rpccaps.AllBodies:
-			// If the mode keeps post-merge bodies, only pre-merge bodies are droppable.
+			// EIP-4444 standard for Full: keep only the recent ~1yr window hot;
+			// cold-offload everything older (incl. pre-merge) to an era/cdat archive
+			// + torrentsync manifest, seeded by archive nodes (1-of-N). Data is not
+			// destroyed. Modes that keep no bodies just drop.
 			if keep[rpccaps.PostMergeBodies] {
-				act.Action, act.Cutoff = DropBefore, mergeBlock
-				act.Note = "keep post-merge bodies; drop pre-merge"
+				act.Action, act.Cutoff = ColdOffload, receiptCutoff
+				act.Note = "EIP-4444: keep ~1yr window hot; cold-offload older bodies (era/cdat + manifest, archive-seeded)"
 			} else {
 				act.Note = "no body queries in this mode"
 			}
@@ -102,7 +108,7 @@ func PrunePlan(mode rpccaps.Mode, tip, mergeBlock, recentWindow uint64) []PruneA
 func PlanString(mode rpccaps.Mode, plan []PruneAction) string {
 	s := fmt.Sprintf("prune plan for mode %s (%d actions):\n", mode, len(plan))
 	for _, a := range plan {
-		if a.Action == DropBefore {
+		if a.Action == DropBefore || a.Action == ColdOffload {
 			s += fmt.Sprintf("  %-18s %s < %d  [%s] — %s\n", a.Class, a.Action, a.Cutoff, a.StoreHint, a.Note)
 		} else {
 			s += fmt.Sprintf("  %-18s %s        [%s] — %s\n", a.Class, a.Action, a.StoreHint, a.Note)
