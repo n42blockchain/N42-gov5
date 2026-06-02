@@ -320,6 +320,14 @@ Full 节点:          ReadBody(冷块) → ErrBodyTrimmed → ManifestResolver.F
 ```
 任一 seeder 在线即可满足拉取；内容用 manifest 的 SHA256 校验，不信任单个 seeder。
 
+### 9.4 seed 侧：`n42-cold-seed`（archive 节点，已实现）
+
+archive 节点 seed **全部** columnar 文件（header + body + witness），不只冷段，让其他节点能拉全历史：
+
+- `internal/ethel/coldseed.PlanSeed`（单测）：**sealed 文件**（每类除最高编号外）不可变 → seed 一次，后续跑按 size 不变跳过（infohash 稳定）；**active 文件**（最高 NNNN，仍在追加）→ **每次重 seed**（内容/infohash 随 tail 增长而变）。
+- `cmd/n42-cold-seed --dir <freezer> --prefixes bodyc,headerc,witness --seeddata <dir> [--interval 168h]`：枚举各 prefix 文件、按 cidx 算块范围、`Bridge.SeedContent` 得 infohash、写/合并 manifest。`--interval 168h` = **周更新**（active 文件 tail 持续增长，需周期重 seed）。`--dryrun` 只分类不联网。
+- 实测 dryrun（D:/n42-eth1）：bodyc 336 文件（active 0335）+ headerc 3 文件（active 0002），首跑 seed 339；次跑 sealed 全 kept、仅 active 重 seed。
+
 ### 9.4 与压缩正交
 
 过期（−77%）和去签名压缩（F1 −18% / F2 −45%）可叠加：热的 91.5 GB 内部副本还能再上 F1 → ~75 GB。但过期是数量级更大的杠杆，**优先做过期，压缩次之**。
