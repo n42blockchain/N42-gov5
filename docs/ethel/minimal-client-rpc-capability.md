@@ -214,6 +214,48 @@ M0/M1/M2 data modes above.
 
 ---
 
+## 8b. Size summary across profiles (measured, compressed, near tip)
+
+Per-block artifact sizes (D:/N42-eth1177 + D:/n42-eth1 freezers, zstd):
+
+| artifact | KB/block | role |
+|---|---|---|
+| header (①) | **0.19** | trust chain / anchor; tiny, everyone keeps |
+| K-anchor (③) | **~1.3** amortized | state-root verification every K blocks |
+| witness (②) | **7.8** | address-less state-read stream → replay |
+| changeset (acct+storage newValues) | **16.6** | **DERIVED** by replay; or downloaded directly to apply forward |
+| body (txs) | **23.7** | the transactions — the **biggest** per-block item |
+| snapshot (M1 base, whole state @25.19M) | **~22.3 GB** (one-time) | accounts 3.5 GB + storage 18.8 GB (zstd) |
+
+Key download-control fact: the **witness (7.8 KB) is ~3× smaller than the body
+(23.7 KB)**, and executing it (with the body + codes) PRODUCES the changeset
+(16.6 KB) + receipts locally — so what you download depends on the RPC surface
+and trust you need, not on holding state:
+
+### Download tiers (extreme → rich)
+
+| profile | bootstrap (one-time) | steady-state download | local storage | RPC surface |
+|---|---|---|---|---|
+| **mobile (M0), trust-anchor** | CL checkpoint (~KB) | ① header + ③ anchor only: **~1.5 KB/blk ≈ 11 MB/day** | window headers+anchors (~MB) | follow + verify state-root @anchors (no ② replay) |
+| **mobile (M0), verified** | CL checkpoint | + witness + body (+codes) to replay ②: **~33 KB/blk ≈ 240 MB/day** | rolling 1 wk ~1–2 GB (witness+derived changeset+receipts) | recent-changes state + recent receipts/logs, fully verified ①②③ |
+| **mobile (M0), changeset-direct** | CL checkpoint | changeset only, apply forward (no EVM, no body): **16.6 KB/blk ≈ 120 MB/day** | rolling changeset+state delta | recent-changes state (no receipts unless also replayed) |
+| **minimal (M1)** | **snapshot ~22 GB** (weekly rotation) | hot follow (witness or changeset) ~120–240 MB/day | snapshot 22 GB + hot delta | **full CURRENT state**: getBalance/getCode/getStorageAt/getProof/call @tip |
+| **full** | sync headers (4.5 GB) + post-merge bodies | follow bodies+state, ~tens–hundreds MB/day | **trimmed**: latest state + post-merge bodies + recent receipts + indexes (~hundreds GB; vs 246 GB untrimmed) | latest-state + post-merge tx/block + recent receipts/logs |
+| **archive** | full sync (all bodies 567 GB + history) | follow | **full historical** (~1.5 TB+) | everything incl. historical state/proof/logs |
+
+Takeaways:
+- **bodies dominate** (23.7 KB/blk → 567 GB full chain). Any profile that doesn't
+  need tx-level queries (mobile changeset-direct, M1) skips them — the single
+  biggest download saving.
+- **witness-execution is a compute-for-download trade**: download 7.8 KB witness
+  (+ body to replay) and DERIVE the 16.6 KB changeset + receipts, vs downloading
+  them. Worth it when you want ② verification + receipts; for pure
+  state-following, changeset-direct (16.6 KB, no body, no EVM) is lighter.
+- **mobile floor is ~11 MB/day** (headers + anchors, trust-anchor tier) — a phone
+  can follow + verify state roots for a year on ~4 GB.
+- **M1 one-time 22 GB snapshot** unlocks full current-state RPC; the weekly
+  rotation + ~120–240 MB/day hot follow keeps it at tip.
+
 ## 8. One-paragraph summary
 Ship a block's state as either the address-less **witness** (replay → receipts,
 ②) or a **proof-carrying pre-state** (recompute root, ③); the EVM's **changeset**
