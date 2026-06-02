@@ -29,10 +29,11 @@ type Manifest struct {
 type SegmentInfo struct {
 	FromBlock  uint64 `json:"from_block"`
 	ToBlock    uint64 `json:"to_block"`
-	FileName   string `json:"file_name"`    // e.g. "era-000000-008192.era"
+	FileName   string `json:"file_name"` // e.g. "era-000000-008192.era"
 	Size       int64  `json:"size"`
 	BlockCount uint64 `json:"block_count"`
-	SHA256     string `json:"sha256"` // hex-encoded file integrity hash
+	SHA256     string `json:"sha256"`             // hex-encoded file integrity hash
+	InfoHash   string `json:"infohash,omitempty"` // hex BitTorrent v1 infohash for 1-of-N fetch (optional)
 }
 
 // EraFileName returns a deterministic file name for a segment covering [from, to].
