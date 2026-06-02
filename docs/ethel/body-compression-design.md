@@ -301,9 +301,24 @@ Sequence 在 Arbitrum/OP/Base 上把 calldata 压 ~5×、gas 省 ~50%：零字�
 > 往返验证：`mode=cdat` manifest 的 `FindSegment(coldBlock)` → 正确 cdat，2/2 PASS。
 > 透明冷读已实现（§9.3）：`ErrBodyTrimmed` → resolver `FindSegment` → 取冷 cdat（SHA256 校验）→ 解码，端到端 PASS。
 
-### 9.3 冷读路径（透明）
+### 9.3 冷读路径（透明，已实现）
 
-热 store 只留近窗 cdat + **全量 bodyc.cidx**（trimmed-store，冷块 `ReadBody` 返回 `ErrBodyTrimmed`）。冷读：`manifest.FindSegment(block)` → 取冷 cdat（本地冷盘/torrent/CAS）→ 配保留的 cidx → `ReadBody`。cidx 小，常驻热。
+热 store 只留近窗 cdat + **全量 bodyc.cidx**（trimmed-store，冷块 `ReadBody` 返回 `ErrBodyTrimmed`）。
+
+`BodyCompactReader.SetColdResolver(ethel.ColdResolver)`：`loadSegment` 缺段时调 `Resolve(firstBlockOfSeg)` 取段再开；无 resolver 则行为不变。
+
+`internal/ethel/coldresolve.ManifestResolver`：`manifest.FindSegment(block)` 定位冷段 → `Fetcher` 取来 → **SHA256 校验**（对照 manifest，这是 1-of-N 的信任锚：seeder 任意，内容由 manifest 哈希背书）→ per-段缓存。两种 `Fetcher`：
+
+- **`LocalDirFetcher`**：本地冷盘/torrent 下载目录。端到端验证 PASS（热缺 0097 → 自动取 → 解出 230 txs）。
+- **`TorrentFetcher`（1-of-N，已实现）**：按 `SegmentInfo.InfoHash` 用 `torrent.Bridge.FetchByInfoHash` 从 swarm 拉取，写入 `CacheDir`（原子 rename），磁盘+内存双层缓存（一段最多拉一次）。最小 `TorrentSource` 接口让单测无需联网（fake source + 真 Bridge 编译断言）。
+
+**1-of-N 端到端流程**：
+```
+archive/seeder 节点: 持有冷 cdat 0000..0282 → Bridge.SeedContent → infohash 写入 manifest.SegmentInfo.InfoHash
+Full 节点:          ReadBody(冷块) → ErrBodyTrimmed → ManifestResolver.FindSegment
+                     → TorrentFetcher.FetchByInfoHash(swarm) → CacheDir → SHA256 校验 → 解码
+```
+任一 seeder 在线即可满足拉取；内容用 manifest 的 SHA256 校验，不信任单个 seeder。
 
 ### 9.4 与压缩正交
 
