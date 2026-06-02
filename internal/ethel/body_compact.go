@@ -15,6 +15,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -779,6 +780,12 @@ func (s *BodyCompactStage) Run(ctx context.Context) error {
 
 // BodyCompactReader provides random and sequential access to bodies
 // stored in bodyc.NNNN.cdat + bodyc.cidx. Caches current segment.
+// ErrBodyTrimmed is returned by ReadBody when the block's segment cdat is absent
+// from the store — e.g. a trimmed post-merge-only body store that keeps just the
+// high-numbered cdat segments (bodyc.0097.cdat..) plus the full bodyc.cidx. The
+// cdat files need not start at 0000; the reader opens by the cidx's fileNum.
+var ErrBodyTrimmed = errors.New("ethel: body segment trimmed (not in this store)")
+
 type BodyCompactReader struct {
 	dir       string
 	idxFile   *os.File
@@ -825,7 +832,7 @@ func (r *BodyCompactReader) Close() {
 }
 
 func (r *BodyCompactReader) Segments() uint64 { return r.segments }
-func (r *BodyCompactReader) MaxBlock() uint64  { return r.segments * HeaderSegmentSize }
+func (r *BodyCompactReader) MaxBlock() uint64 { return r.segments * HeaderSegmentSize }
 
 func (r *BodyCompactReader) ReadBody(blockNum uint64) (*DecodedBlock, error) {
 	seg := int64(blockNum / HeaderSegmentSize)
@@ -855,12 +862,20 @@ func (r *BodyCompactReader) loadSegment(segNum int64) error {
 	}
 	e := decodeBodyIdx(entryBuf[:])
 
-	// Open/cache dat file.
+	// Open/cache dat file. The cdat files need NOT start at bodyc.0000: a trimmed
+	// post-merge store carries only the high-numbered segments (e.g. 0097..) plus
+	// the full bodyc.cidx, so the reader opens by the cidx's fileNum on demand.
+	// A missing cdat means that block's body was trimmed (pre-merge / below the
+	// retained range) — surface that as ErrBodyTrimmed, not a raw open error.
 	df, ok := r.dataFiles[e.fileNum]
 	if !ok {
 		path := filepath.Join(r.dir, fmt.Sprintf("bodyc.%04d.cdat", e.fileNum))
 		f, err := os.Open(path)
 		if err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("%w: segment %d (block ~%d), cdat %04d absent",
+					ErrBodyTrimmed, segNum, uint64(segNum)*HeaderSegmentSize, e.fileNum)
+			}
 			return fmt.Errorf("open dat %d: %w", e.fileNum, err)
 		}
 		r.dataFiles[e.fileNum] = f
@@ -1425,4 +1440,3 @@ func decodeNonTxColumns(data []byte, pos int, blocks []*DecodedBlock, f bodyFlag
 	}
 	return pos, nil
 }
-
