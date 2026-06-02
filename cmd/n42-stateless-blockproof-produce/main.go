@@ -198,7 +198,8 @@ func main() {
 	}
 	trc := commitment.NewTrieRootComputer()
 	trc.SetRwTx(tx)
-	trc.SetIncremental(startBlock > 0) // resuming a non-empty trie → incremental from the start
+	trc.SetIncremental(startBlock > 0)                     // resuming a non-empty trie → incremental from the start
+	trc.SetSortedWrites(os.Getenv("N42_BPP_NOSORT") == "") // ascending-key leaf writes (batch locality); N42_BPP_NOSORT=1 disables (A/B)
 
 	t0 := time.Now()
 	emitted, verifiedOK := 0, 0

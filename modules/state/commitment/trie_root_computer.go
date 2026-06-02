@@ -72,7 +72,20 @@ type TrieRootComputer struct {
 	// (the post-state root) — i.e. a post-state multiproof. Read via CapturedProof.
 	captureProof  bool
 	capturedProof [][]byte
+
+	// sortedWrites: when set, Phase 1/2 collects the dirty HashedAccounts/
+	// HashedStorage leaf writes and applies them in ASCENDING KEY ORDER instead of
+	// Go-map (random) order. For a large batch on a large DB (e.g. a 10k-block
+	// anchor window with ~2M dirty storage slots) ascending Puts give B-tree page
+	// locality, turning random page thrash into near-sequential writes. Same data,
+	// same root — only the write order changes. Off by default (per-block callers
+	// with few keys gain nothing); the batched anchor producer opts in.
+	sortedWrites bool
 }
+
+// SetSortedWrites toggles ascending-key-order leaf writes in Phase 1/2 (a large-
+// batch optimization; see the field doc). Correctness-neutral.
+func (t *TrieRootComputer) SetSortedWrites(v bool) { t.sortedWrites = v }
 
 // EnableProofCapture toggles per-call multiproof capture during flushTrieRoot
 // (incremental mode only). After a ComputeRoot/flushTrieRoot call, CapturedProof
@@ -126,6 +139,14 @@ func (t *TrieRootComputer) ComputeRoot(
 
 	rl := trie.NewRetainList(0)
 
+	// In sortedWrites mode, Phase 1/2 collect leaf writes and apply them in
+	// ascending key order (B-tree page locality on large batches). nil val = delete.
+	type leafWrite struct {
+		key []byte
+		val []byte
+	}
+	var acctWrites, storWrites []leafWrite
+
 	// Phase 1: Update HashedAccounts for dirty accounts + build RetainList.
 	for addr, acct := range accounts {
 		addrHash := t.keccakAddr(addr)
@@ -143,23 +164,26 @@ func (t *TrieRootComputer) ComputeRoot(
 		// harmless.
 		rl.AddKeyWithMarker(addrHash[:], true)
 
-		if acct == nil {
-			// Account deleted.
+		var enc []byte
+		if acct != nil {
+			if acct.CodeHash == (types.Hash{}) { // Normalize CodeHash.
+				acct.CodeHash = emptyCodeHash
+			}
+			enc = acct.MarshalV2()
+		}
+		if t.sortedWrites {
+			acctWrites = append(acctWrites, leafWrite{key: append([]byte(nil), addrHash[:]...), val: enc})
+			continue
+		}
+		if acct == nil { // Account deleted: drop leaf + its whole storage subtree.
 			if err := t.tx.Delete(modules.HashedAccounts, addrHash[:]); err != nil {
 				return types.Hash{}, err
 			}
-			// Also clean up storage for this account in HashedStorage.
 			if err := t.deleteAccountStorage(addrHash); err != nil {
 				return types.Hash{}, err
 			}
 			continue
 		}
-
-		// Normalize CodeHash.
-		if acct.CodeHash == (types.Hash{}) {
-			acct.CodeHash = emptyCodeHash
-		}
-		enc := acct.MarshalV2()
 		if err := t.tx.Put(modules.HashedAccounts, addrHash[:], enc); err != nil {
 			return types.Hash{}, err
 		}
@@ -182,17 +206,60 @@ func (t *TrieRootComputer) ComputeRoot(
 			// scan around its (cached-parent-unknown) nibble position.
 			rl.AddKeyWithMarker(compositeKey[:], true)
 
-			if val == nil || val.IsZero() {
-				if err := t.tx.Delete(modules.HashedStorage, compositeKey[:]); err != nil {
-					return types.Hash{}, err
-				}
-			} else {
+			var enc []byte
+			if !(val == nil || val.IsZero()) {
 				b := val.Bytes32()
 				start := 0
 				for start < 31 && b[start] == 0 {
 					start++
 				}
-				if err := t.tx.Put(modules.HashedStorage, compositeKey[:], b[start:]); err != nil {
+				enc = append([]byte(nil), b[start:]...)
+			}
+			if t.sortedWrites {
+				storWrites = append(storWrites, leafWrite{key: append([]byte(nil), compositeKey[:]...), val: enc})
+				continue
+			}
+			if enc == nil {
+				if err := t.tx.Delete(modules.HashedStorage, compositeKey[:]); err != nil {
+					return types.Hash{}, err
+				}
+			} else {
+				if err := t.tx.Put(modules.HashedStorage, compositeKey[:], enc); err != nil {
+					return types.Hash{}, err
+				}
+			}
+		}
+	}
+
+	// Sorted apply: ascending key order keeps the B-tree writes local (Phase 1
+	// before Phase 2, same as the inline path — a deleted account's storage is
+	// dropped before its (no-op) wipe entries replay).
+	if t.sortedWrites {
+		sort.Slice(acctWrites, func(i, j int) bool { return bytes.Compare(acctWrites[i].key, acctWrites[j].key) < 0 })
+		for _, w := range acctWrites {
+			if w.val == nil {
+				if err := t.tx.Delete(modules.HashedAccounts, w.key); err != nil {
+					return types.Hash{}, err
+				}
+				var ah types.Hash
+				copy(ah[:], w.key)
+				if err := t.deleteAccountStorage(ah); err != nil {
+					return types.Hash{}, err
+				}
+				continue
+			}
+			if err := t.tx.Put(modules.HashedAccounts, w.key, w.val); err != nil {
+				return types.Hash{}, err
+			}
+		}
+		sort.Slice(storWrites, func(i, j int) bool { return bytes.Compare(storWrites[i].key, storWrites[j].key) < 0 })
+		for _, w := range storWrites {
+			if w.val == nil {
+				if err := t.tx.Delete(modules.HashedStorage, w.key); err != nil {
+					return types.Hash{}, err
+				}
+			} else {
+				if err := t.tx.Put(modules.HashedStorage, w.key, w.val); err != nil {
 					return types.Hash{}, err
 				}
 			}
