@@ -224,6 +224,54 @@
 
 ---
 
+## 8. 外部研究与现有工程对比（2026-06 web 调研）
+
+调研了 Erigon、go-ethereum、L2、学术界的 body 压缩做法。**结论先行：没有"更神奇"的通用压缩器能超过 zstd 处理这种数据**——签名/calldata 已在熵地板，Erigon/era1 实测同级或更差。真正的杠杆只有两个：**去签名（语义裁剪，本文 F1/F2）** 和 **历史过期（EIP-4444，整段卸载）**。
+
+### 8.1 Erigon compress（`erigon-lib/compress`）— 同级比率，赢在随机访问
+
+算法：在 superstring 里用 **patricia 树** 找重复 pattern（`MinPatternScore=1024`）→ **双层 Huffman**（pattern 码 + position 码）→ **动态规划**求每条 word 的最优 pattern 切分。比 zstd 复杂得多，但：
+
+- **比率 ~1.90×（≈0.53×）on transactions** —— 和我们的 zstd 0.57× 基本一样。**没有比率红利。**
+- 真正的优势是 **word 级随机访问**：能单独解出一条 tx，不必膨胀整个 8192-块段（zstd block 必须整段解压）。
+- 全 `.seg` 一个全局字典，能抓 zstd per-segment 窗口漏掉的跨段 pattern——但净比率仍≈zstd。
+
+> 启示：若 F1/F2 要按 hash **点查单条 tx**，zstd 整段解压浪费。我们的 MPHF coldstore 已用 64-entry zstd page 做随机访问，方向与 Erigon 一致；不需要移植 Erigon 的 Huffman。
+
+### 8.2 era1（go-ethereum/Nimbus，EIP-4444 后全历史事实标准）— 比我们更松
+
+格式：`snappyFramed(rlp(header/body/receipts))`，8192-块批 + accumulator + block index。**用的是 snappy，不是 zstd。** snappy 偏速度、比率弱于 zstd（~1.5–2× vs ~2–3×）。
+
+> **我们的 zstd bodyc 已经比官方 era1 更紧。** era1 的价值是标准化、可索引、accumulator 证明，不是压缩比。
+
+### 8.3 L2 calldata 5×（Sequence / Optimism）— 不适用于历史
+
+Sequence 在 Arbitrum/OP/Base 上把 calldata 压 ~5×、gas 省 ~50%：零字节游程 + 地址/selector 字典 + 常见模式字典。但这是 **在 tx 生成时重编码 calldata**。历史 tx 的 calldata 是**已签名 payload 的一部分，不可改**；事后只能像 zstd 那样无损压（我们已做）。techniques 与 zstd 已提取的冗余重叠，**对历史 body 无额外红利**。
+
+### 8.4 BLS 签名聚合（ethresear.ch / Wonderboom）— 未来协议，救不了历史
+
+把多签压成一签是协议级改动（未来 tx）。**已存在的 secp256k1 EOA 签名无法事后聚合。** 对历史 body 零帮助。
+
+### 8.5 EIP-4444 历史过期 — 主网对 400GB body 的真实答案
+
+不是压缩，是**过期**：客户端停止在 p2p 提供、并本地修剪 **超过 ~1 年**（`HISTORY_PRUNE_EPOCHS=82125`）的 header/body/receipt；靠 **弱主观性 checkpoint** 引导；历史数据卸载到 **Portal Network / torrents / era1**（1-of-N 信任）。**2025 年已上线，所有 EL 客户端支持 partial expiry。** 动机原文：历史 block+receipt >400GB，过期后大幅降盘。
+
+> 这彻底重构了"full 节点存所有 post-merge body"的前提：**主网 full 节点只留 ~1 年 body/receipt，其余卸载。** 我们 394GB 全量 post-merge 的设定，本身就比主网激进。
+
+### 8.6 弱主观性/finality 给 F2 背书，但也划清边界
+
+研究共识：finalized 历史不可逆，**信任型节点无需再验签**——这正是 F2 去签名的逻辑依据。但主网仍保留签名，因为 **p2p / era1 对外服务需要 canonical（含签名）形式** 供其他节点验 hash。所以去签名只对 **不对外提供 canonical 历史的节点** 成立——与本文 §7.3 的"F2=内部分析节点"完全一致。
+
+### 8.7 综合结论与最优架构
+
+1. **别找魔法压缩器**：Erigon 双 Huffman ≈ zstd、era1 snappy < zstd、L2 5× 不适用、BLS 救不了历史。这类数据（签名+单例 calldata word）就在熵地板。
+2. **两个真杠杆，正交可叠加**：
+   - **去签名**（F1/F2，本文）：语义裁剪，−18%（对外）/−45%（内部）。
+   - **历史过期**（EIP-4444）：只留近 ~1 年，冷段卸载到 era1/torrent。**这个杠杆比压缩大得多**——若只留 1 年 post-merge body，盘上从 394GB 降到几十 GB 量级。
+3. **推荐最优组合**：`zstd bodyc（已 > era1）` + `EIP-4444 式近窗保留 + 冷段 era1/torrent 卸载` + `保留的内部副本可选 F1 去签名` + `MPHF tx 索引（随机访问，已实现）`。压缩到此为止，**下一步的大收益在"过期+卸载"，不在"再压"。**
+
+---
+
 ## 附：复测命令
 
 ```
