@@ -103,6 +103,27 @@
 
 **账本必要信息在 F1/F2 全部保留**：from、to、value、nonce、gas、calldata（合约参数）、type、accessList、withdrawals。能正常服务 `eth_getBlockByNumber`（含解码 tx：from/to/value/input/gas）、`eth_getBalance`/`eth_call`（state）、`eth_getTransactionReceipt`、`eth_getLogs`。
 
+### F1.5 — tx hash 用 MPHF 索引，不存 hash 值（~2 B/tx 而非 32）
+
+关键区分：`eth_getTransactionByHash(H)` 需要的不是"存下每条 tx 的 32B hash"，而是 **hash → 位置** 的查找。
+
+- **hash 的值不可压**：keccak，每条 tx 唯一，复用率 0% → 字典/zstd 都无效（这是 F1 +32B 的根源）。
+- **hash 的索引可压到 ~2 B/tx**：用代码库已有的 **RecSplit MPHF + fingerprint**（`lib/state` history 冷存同款，见 [[RecSplit History Segments]] / [[RecSplit No Fingerprint]]）：
+  - MPHF 把 26 亿已知 hash 映射到 `[0,N)` 唯一槽，**不存 key**，~1.8 bit/key。
+  - 槽位按 (block,index) 规范顺序排 → 槽号 = 全局 tx 序号 → 配每块 tx 数前缀和反推 (block,index)，**location 也不用存**。
+  - 1–2B fingerprint 拒绝集合外 hash（MPHF 对未知 key 返回垃圾槽）。
+  - 合计 **≈ 2 B/tx**。
+
+| 能力 | F2 | **F1.5 (F2 + MPHF 索引)** | F1 (存 32B hash) |
+|---|---|---|---|
+| `eth_getTransactionByHash(H)` 找到并解码 tx | ❌ | ✅（响应里的 hash 字段 = 把请求的 H 回显，免费） | ✅ |
+| `eth_getBlockByNumber(fullTx)` 每条 tx 的 `hash` 字段 | ❌ | ❌（需 ordinal→hash 反查 = 又要存 32B） | ✅ |
+| `eth_getRawTransaction` / 响应 r,s,v | ❌ | ❌ | ❌ |
+| post-zstd B/tx | 83.1 | **~85** | 115.1 |
+| 394GB → | ~217 | **~222 GB (−43.6%)** | ~301 GB |
+
+> **F1.5 几乎不牺牲 F2 的 45%，却把 `getTransactionByHash` 查回来了**——代价只剩"block 列表里的 tx.hash 字段填不出"（因为没法从 tx 反算 hash），以及 r/s/v、getRawTransaction。对多数用途这是比 F1 更优的点。
+
 ### 维度 b — 叠加项（对 L/F1/F2 都适用，单独看收益都是个位数 %）
 
 1. **全局地址字典**：跨 segment 的 from/to/accessList-address → 3–4B 全局 ID，单例走 raw escape。预估再省 calldata+地址盘上的 3–6%。
@@ -116,11 +137,12 @@
 
 ## 5. 盘上大小投影（post-merge ~2.6B tx, 394.2 GB 基线，实测每列 zstd）
 
-| 方案 | post-zstd B/tx | post-merge 总量 | 相对基线 |
-|---|---:|---:|---:|
-| L 当前 | 150.6 | **394 GB** | — |
-| F1（去签名，留 hash） | 115.1 | **~301 GB** | −23.6% |
-| **F2（去签名+hash）** | **83.1** | **~217 GB** | **−44.8%** |
+| 方案 | post-zstd B/tx | post-merge 总量 | 相对基线 | getTxByHash |
+|---|---:|---:|---:|---|
+| L 当前 | 150.6 | **394 GB** | — | ✅ |
+| F1（去签名，留 32B hash） | 115.1 | **~301 GB** | −23.6% | ✅ + block 列表 hash 字段 |
+| **F1.5（F2 + MPHF hash 索引）** | **~85** | **~222 GB** | **−43.6%** | ✅（查找）；block 列表 hash 字段 ❌ |
+| **F2（去签名+hash，无索引）** | **83.1** | **~217 GB** | **−44.8%** | ❌ |
 
 > calldata 字典/字裁剪、accessList slot 字典等"维度 b"叠加项：calldata 已 zstd 到极致（63 B/tx 全是单例熵），叠加项总收益 < 个位数 %，**不做**。
 > 真正的肉只有签名（43%）。F2 兑现 45%，是设计的终点。
@@ -129,7 +151,9 @@
 
 ## 6. 建议
 
-- **直接做 F2**：去 R/S/V + hash，存 from-ID/to-ID。实测 **−44.8%**（394→217 GB）。工程改动集中在 encoder 的 tx 列 + 一个全局 address 字典 sidecar，decoder 端把 `tx.Hash()`/`From` 从"计算"改成"读存储 ID"。
+- **推荐 F1.5**（甜点）：F2 的 −45% 几乎全保留，但用 RecSplit MPHF 索引（~2 B/tx）把 `eth_getTransactionByHash` 查回来。代价只剩 block 列表 hash 字段 + r/s/v + getRawTransaction。复用代码库已有 RecSplit 设施。
+- 若 block 列表必须带 tx.hash（标准浏览器）→ 退 **F1**（存 32B，−24%）。若纯内部账本、连 getTxByHash 都不要 → **F2**（−45%）。
+- 三档共同改动：encoder 去 R/S/V 列 + 全局 address 字典 sidecar；decoder 把 `From` 从 ecrecover 改成读 from-ID。F1.5/F2 还需把 `tx.Hash()` 从"计算"改成"索引/不可用"。
 - 维度 b（calldata 字裁剪、selector/slot 字典）**不做**：calldata 已 zstd 到极致（63 B/tx 单例熵），增量 < 个位数 %，复杂度高，纯亏。
 - **保留 L 档源数据只读**（`D:/n42-eth1`），F2 作为派生只读副本（像本次 post-merge 裁剪一样），可随时重建、不污染源。
 
