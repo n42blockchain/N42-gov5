@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"time"
 	"sort"
 	"strings"
 
@@ -136,6 +137,7 @@ func (t *TrieRootComputer) ComputeRoot(
 	if t.tx == nil {
 		return types.Hash{}, fmt.Errorf("TrieRootComputer: tx not set")
 	}
+	tStart := time.Now() // N42_TRC_SPLIT profiling: time Phase 1/2 vs flushTrieRoot
 
 	rl := trie.NewRetainList(0)
 
@@ -320,9 +322,20 @@ func (t *TrieRootComputer) ComputeRoot(
 		fmt.Fprintf(os.Stderr, "N42_DROP_STALE_ADDR droppedAccts=%d droppedEntries=%d\n", droppedAccts, droppedEntries)
 	}
 
+	prof := os.Getenv("N42_TRC_SPLIT") != ""
+	var phase12 time.Duration
+	var tFlush time.Time
+	if prof {
+		phase12 = time.Since(tStart)
+		tFlush = time.Now()
+	}
 	root, err := t.flushTrieRoot(rl)
 	if err != nil {
 		return types.Hash{}, err
+	}
+	if prof {
+		fmt.Fprintf(os.Stderr, "TRCSPLIT phase12(leaf writes)=%s flushTrieRoot(walk)=%s\n",
+			phase12.Truncate(time.Millisecond), time.Since(tFlush).Truncate(time.Millisecond))
 	}
 	if os.Getenv("N42_DUMP160") != "" {
 		t.diagnose160(accounts, storage, root)
