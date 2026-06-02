@@ -14,6 +14,8 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -112,11 +114,29 @@ func (b *Bridge) SeedContent(ctx context.Context, contentHash [32]byte, name str
 		CreatedAt:   time.Now(),
 	}
 
+	// Persist the data to the storage path the client serves from, so the
+	// seeder actually HAS the bytes to upload. NewFileByInfoHash lays a single
+	// torrent out at <DataDir>/<infohashHex>/<name>; without this write the
+	// client would advertise a torrent it cannot serve (0 complete pieces).
+	if b.client != nil && b.client.cfg != nil && b.client.cfg.DataDir != "" {
+		dst := filepath.Join(b.client.cfg.DataDir, ih.HexString(), name)
+		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+			return nil, fmt.Errorf("seed mkdir: %w", err)
+		}
+		if err := os.WriteFile(dst, data, 0644); err != nil {
+			return nil, fmt.Errorf("seed write: %w", err)
+		}
+	}
+
 	// Add to client for seeding
 	t, err := b.client.AddTorrent(mi)
 	if err != nil {
 		return nil, err
 	}
+	// Mark pieces complete from the on-disk data so the client serves them
+	// (also populates in-memory piece completion when the sqlite/bolt backends
+	// are compiled out under -tags nosqlite,noboltdb).
+	t.VerifyData()
 
 	b.mu.Lock()
 	b.mappings[contentHash] = mapping
