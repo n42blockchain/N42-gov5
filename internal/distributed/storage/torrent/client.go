@@ -13,7 +13,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -43,7 +45,17 @@ func NewClient(cfg *conf.TorrentDistCfg) (*Client, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	tcfg := torrent.NewDefaultClientConfig()
-	tcfg.ListenPort = 0 // auto-assign from ListenAddr
+	tcfg.ListenPort = 0 // default: OS-assigned ephemeral port
+	// Honor a configured listen address (host:port). Previously cfg.ListenAddr
+	// was ignored, so the client always bound a random port — direct-peer
+	// dialing (and any fixed-port firewall rule) could not work.
+	if cfg.ListenAddr != "" {
+		if _, portStr, err := net.SplitHostPort(cfg.ListenAddr); err == nil {
+			if p, err := strconv.Atoi(portStr); err == nil {
+				tcfg.ListenPort = p
+			}
+		}
+	}
 	tcfg.DataDir = cfg.DataDir
 	tcfg.NoDHT = !cfg.EnableDHT
 	tcfg.NoDefaultPortForwarding = true
