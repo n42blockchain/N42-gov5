@@ -287,17 +287,19 @@ Sequence 在 Arbitrum/OP/Base 上把 calldata 压 ~5×、gas 省 ~50%：零字�
 - `internal/sync/torrentsync.Manifest`：per-段 `{FromBlock,ToBlock,FileName,Size,SHA256}` + `FindSegment(block)` 解析器（已有，复用）。
 - `internal/ethel/modestate`：新增 `ColdOffload` retention；**Full 的 body 从"留全部 post-merge"改为"留 ~1yr 窗口 + 冷段卸载"**（`PrunePlan` AllBodies → `ColdOffload@(tip-window)`）。
 
-### 9.2 实测：1 年窗口落在哪个 cdat + 后续 size（D:/n42-eth1-postmerge, tip≈25.1M）
+### 9.2 实测：1 年窗口落在哪个 cdat + 后续 size（全量源 D:/n42-eth1, tip≈25.1M）
 
 | | 值 |
 |---|---|
 | 热边界块（tip − 1yr） | 22,478,680（seg 2743） |
 | **热边界 cdat** | **0283**（跨 seg 2739..2747，block 22,437,888..22,511,615）→ 整个留热 |
 | **HOT（~1yr，Full 保留）** | **cdat 0283..0335，53 文件，91.5 GB** |
-| **COLD（卸载+seed）** | **cdat 0097..0282，186 文件，302.7 GB** |
+| **COLD（卸载+seed）** | **cdat 0000..0282，283 文件，475.9 GB**（pre-merge 0000..0096 ~173GB + post-merge 冷段 0097..0282 302.7GB） |
+| 全链 body 合计 | 567.4 GB |
 
-> **EIP-4444 的真实威力**：post-merge body 从 394 GB → Full 只留 **91.5 GB 热**（−77%），远超任何压缩（F2 也只 −45%）。冷 302.7 GB relocate + manifest + torrent，archive seed。
+> **EIP-4444 的真实威力**：全链 body 567 GB → Full 只留 **91.5 GB 热**（**−84%**），远超任何压缩（F2 也只 −45%）。冷 475.9 GB（cdat 0000..0282）relocate + manifest + torrent，archive seed。
 > 往返验证：`mode=cdat` manifest 的 `FindSegment(coldBlock)` → 正确 cdat，2/2 PASS。
+> 透明冷读已实现（§9.3）：`ErrBodyTrimmed` → resolver `FindSegment` → 取冷 cdat（SHA256 校验）→ 解码，端到端 PASS。
 
 ### 9.3 冷读路径（透明）
 
