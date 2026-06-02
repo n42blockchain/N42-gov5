@@ -786,16 +786,30 @@ func (s *BodyCompactStage) Run(ctx context.Context) error {
 // cdat files need not start at 0000; the reader opens by the cidx's fileNum.
 var ErrBodyTrimmed = errors.New("ethel: body segment trimmed (not in this store)")
 
+// ColdResolver resolves a cold (offloaded) body segment on demand. When
+// loadSegment finds a segment's cdat absent (trimmed under EIP-4444 retention),
+// it asks the resolver to make the covering cold archive locally available and
+// return its path; the reader then opens that path instead of failing with
+// ErrBodyTrimmed. Resolve is called with the first block of the missing segment.
+type ColdResolver interface {
+	Resolve(blockNum uint64) (cdatPath string, err error)
+}
+
 type BodyCompactReader struct {
-	dir       string
-	idxFile   *os.File
-	dataFiles map[uint16]*os.File
-	dec       *zstd.Decoder
-	segments  uint64
+	dir          string
+	idxFile      *os.File
+	dataFiles    map[uint16]*os.File
+	dec          *zstd.Decoder
+	segments     uint64
+	coldResolver ColdResolver
 
 	cachedSeg    int64
 	cachedBlocks []*DecodedBlock
 }
+
+// SetColdResolver installs a resolver consulted when a segment's cdat is absent
+// (cold/trimmed). With no resolver, an absent segment yields ErrBodyTrimmed.
+func (r *BodyCompactReader) SetColdResolver(cr ColdResolver) { r.coldResolver = cr }
 
 func OpenBodyCompact(dir string) (*BodyCompactReader, error) {
 	idxPath := filepath.Join(dir, "bodyc.cidx")
@@ -871,6 +885,13 @@ func (r *BodyCompactReader) loadSegment(segNum int64) error {
 	if !ok {
 		path := filepath.Join(r.dir, fmt.Sprintf("bodyc.%04d.cdat", e.fileNum))
 		f, err := os.Open(path)
+		if err != nil && os.IsNotExist(err) && r.coldResolver != nil {
+			// Segment is trimmed locally — ask the cold resolver to fetch the
+			// covering cold archive and open it from wherever it landed.
+			if cp, rerr := r.coldResolver.Resolve(uint64(segNum) * HeaderSegmentSize); rerr == nil {
+				f, err = os.Open(cp)
+			}
+		}
 		if err != nil {
 			if os.IsNotExist(err) {
 				return fmt.Errorf("%w: segment %d (block ~%d), cdat %04d absent",
