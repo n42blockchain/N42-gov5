@@ -355,7 +355,12 @@ archive 节点 seed **全部** columnar 文件（header + body + witness），�
 ```
 `coldresolve.DownloadService`(Service):boot 时 `DownloadAll` 把 manifest 里**每个**段(header+bodies+witness+receipts)经 `TorrentFetcher` 从 swarm 拉到本地 store(幂等,已在的跳过)+ SHA256 校验。`--history.mode full` 则只装按需冷读 resolver。
 
-**receipts 已纳入(已实现)**:seed 默认 prefixes = `bodyc,headerc,receipts`。注意 `receipts.cidx` 是逐块索引(150MB,非 ethel 8B/seg),`coldseed` 的块范围推导加了守卫(非 8 整除/段数>1M → 跳过),receipts 文件照常 seed(FileName+SHA256+infohash),只是 manifest 无块范围(body 式按块冷读不适用 receipts,需独立 resolver,留待后续)。实测 receipts 90 文件(active 0089)正确纳入。
+**receipts 已纳入(已实现)**:seed 默认 prefixes = `bodyc,headerc,receipts`。注意 `receipts.cidx` 是逐块索引(150MB,非 ethel 8B/seg),`coldseed` 的块范围推导加了守卫(非 8 整除/段数>1M → 跳过),receipts 文件照常 seed(FileName+SHA256+infohash)。实测 receipts 90 文件(active 0089)正确纳入。
+
+**receipts 按块冷读独立 resolver(已实现)**:receipts 经 freezer `Ancient(TableReceipts, n)` 读,索引是逐块 6B(fileNum 2B BE + offset 4B BE),body 式按块 FindSegment 不适用。改用 **freezer 层 hook**:
+- `freezer.ColdResolver` 接口 + `FreezerTable.openDataFileRO` 钩子(缺文件→resolver→开取来的路径)+ `Freezer.SetColdResolver(table, r)`;nil 默认零影响。
+- `coldresolve.FreezerResolver`:**按 FileName 索引**(receipts manifest 无块范围),fetch + SHA256 校验 + 缓存。freezer 自己把 blockNum→fileNum,resolver 只需按名取文件。
+- `coldresolve.FreezerInstallService`:Start 时(freezer 已开)给 receipts 表装 resolver;cmd/eth-el Full 模式自动注册。单测覆盖按名解析/缓存/未知文件/SHA256 不符。
 
 **1-of-N 实测(已验证)**:`cmd/torrent-1of-n-demo` 起两个本地 client,seeder seed 6MB 段、fetcher 直连拉取,**77ms 完成、SHA256 匹配、PASS**。期间修复了 seed 路径两个真 bug(`SeedContent` 不写盘 / `NewClient` 忽略 ListenAddr,见 commit 8471fc52)。
 

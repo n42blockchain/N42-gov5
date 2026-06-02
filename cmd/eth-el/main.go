@@ -266,6 +266,15 @@ func run(c *cli.Context) error {
 		log.Info("eth-el: EIP-4444 cold-read resolver installed",
 			"manifest", cm, "segments", len(m.Segments), "cache", cacheDir,
 			"fetch", map[bool]string{true: "local-dir", false: "torrent(1-of-N)"}[c.String("history.colddir") != ""])
+
+		// Receipts use a per-block freezer index (not the 8B/seg columnar), so
+		// they get a name-keyed resolver installed on the freezer's receipts
+		// table once it is open (freezer maps blockNum→fileNum; resolver fetches
+		// the trimmed file by name). Same manifest + fetcher.
+		fr := coldresolve.NewFreezerResolver(m, cf, true)
+		node.RegisterFactory(func(n *ethel.Node) ethel.Service {
+			return coldresolve.NewFreezerInstallService(n.OutFreezer(), "receipts", fr)
+		})
 	}
 
 	// Archive history profile: explicitly download the FULL history (every file

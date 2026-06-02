@@ -382,6 +382,20 @@ func (f *Freezer) Table(name string) *FreezerTable {
 	return f.tables[name]
 }
 
+// SetColdResolver installs a cold-offload resolver on the named table (e.g.
+// "receipts") so trimmed data files are fetched on demand. Returns false if the
+// table is not open. Call at startup before reads.
+func (f *Freezer) SetColdResolver(table string, r ColdResolver) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.tables[table]
+	if !ok {
+		return false
+	}
+	t.SetColdResolver(r)
+	return true
+}
+
 // EnsureTable opens or creates an extended table that may not exist yet.
 // Read-only freezers fall through to NewFreezerTableReadOnly so the
 // underlying files are not opened RW (and thus cannot be truncated).
