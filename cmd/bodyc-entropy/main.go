@@ -50,6 +50,36 @@ func trimU256Len(v *big.Int) int {
 	return 1 + len(v.Bytes())
 }
 
+var big10 = big.NewInt(10)
+
+// sciU256Len: encode v as mantissa×10^exp (scientific/financial notation, à la
+// Vitalik rollup compression). Layout: [ctrl][mantissa-trimmed]. ctrl high bit =
+// sci flag, low 7 bits = exp. mantissa = v with trailing decimal zeros stripped.
+// Falls back to plain trimmed (exp=0) when sci isn't smaller. Returns min bytes.
+func sciU256Len(v *big.Int) int {
+	if v == nil || v.Sign() == 0 {
+		return 1
+	}
+	plain := 1 + len(v.Bytes()) // trimmed fallback (ctrl with exp=0 + bytes)
+	m := new(big.Int).Set(v)
+	exp := 0
+	q := new(big.Int)
+	r := new(big.Int)
+	for exp < 127 {
+		q.QuoRem(m, big10, r)
+		if r.Sign() != 0 {
+			break
+		}
+		m.Set(q)
+		exp++
+	}
+	sci := 1 + len(m.Bytes()) // ctrl(exp in low 7 bits) + mantissa trimmed
+	if sci < plain {
+		return sci
+	}
+	return plain
+}
+
 func main() {
 	dir := flag.String("dir", "", "bodyc freezer dir")
 	start := flag.Uint64("start", 0, "start block")
@@ -71,6 +101,7 @@ func main() {
 	var (
 		nTx                                                            int64
 		szType, szSig, szTo, szValue, szGas, szNonce, szGasCap, szTip  int64
+		szValueSci                                                     int64
 		szCalldata, szAccessList, szOther                              int64
 		toSeen                                                         = map[types.Address]int{}
 		senderSeen                                                     = map[types.Address]int{}
@@ -108,6 +139,7 @@ func main() {
 				toSeen[*tx.To()]++
 			}
 			szValue += int64(trimU256Len(tx.Value().ToBig()))
+			szValueSci += int64(sciU256Len(tx.Value().ToBig()))
 			szGasCap += int64(trimU256Len(tx.GasFeeCap().ToBig()))
 			if tx.Type() >= transaction.DynamicFeeTxType {
 				szTip += int64(trimU256Len(tx.GasTipCap().ToBig()))
@@ -225,6 +257,9 @@ func main() {
 	pf("sig(R+S+V)", szSig)
 	pf("to(20B)", szTo)
 	pf("value", szValue)
+	fmt.Printf("  %-12s %14d B  (sci/财务计数法: %.2f B/tx vs trimmed %.2f → −%.1f%% on value col)\n",
+		"value-sci", szValueSci, float64(szValueSci)/float64(max1(nTx)), float64(szValue)/float64(max1(nTx)),
+		100*(1-float64(szValueSci)/float64(max1(szValue))))
 	pf("gasFeeCap", szGasCap)
 	pf("gasTipCap", szTip)
 	pf("gas", szGas)
