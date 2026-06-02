@@ -328,6 +328,29 @@ archive 节点 seed **全部** columnar 文件（header + body + witness），�
 - `cmd/n42-cold-seed --dir <freezer> --prefixes bodyc,headerc,witness --seeddata <dir> [--interval 168h]`：枚举各 prefix 文件、按 cidx 算块范围、`Bridge.SeedContent` 得 infohash、写/合并 manifest。`--interval 168h` = **周更新**（active 文件 tail 持续增长，需周期重 seed）。`--dryrun` 只分类不联网。
 - 实测 dryrun（D:/n42-eth1）：bodyc 336 文件（active 0335）+ headerc 3 文件（active 0002），首跑 seed 339；次跑 sealed 全 kept、仅 active 重 seed。
 
+### 9.5 node 启动接线（eth-el，已实现）
+
+`cmd/eth-el` 新增 history-expiry flags，opt-in（默认全关 → 零影响）：
+
+**Full 节点（透明冷读）**
+```
+--history.coldmanifest <manifest.json>   # 启用冷读 resolver
+--history.coldcache <dir>                # 取来的冷段缓存(默认 <torrent.datadir>/cold)
+--history.colddir <dir>                  # 用本地冷盘代替 torrent 拉取(可选)
+```
+装在 `fetcher` 组装之后、服务开 reader 之前：`ethel.SetDefaultColdResolver(coldresolve.New(manifest, fetcher, true))`。`openN42CompactSource` 开 `BodyCompactReader` 时自动 `SetColdResolver` → 冷块 `ReadBody` 透明取段。torrent 在场用 `TorrentFetcher`(1-of-N),否则 `LocalDirFetcher`。
+
+**Archive 节点（seed 全部 + 下全历史）**
+```
+--history.seed                           # 注册 history-seeder 服务
+--history.seed.dir <freezer>             # 要 seed 的 freezer 目录
+--history.seed.prefixes bodyc,headerc,witness
+--history.seed.interval 168h             # 周更新(active 文件 tail 增长)
+```
+注册 `coldseed.NewService`(Service 接口,Name/Start/Stop):后台循环 `RunOnce` 每 interval 重 seed,active 文件随 tail 增长每周刷新 infohash。seed 逻辑在 `internal/ethel/coldseed`(cmd 与 node 共用)。
+
+> **archive 必须下全部 header+bodies+witness**:archive 节点的 bootstrap/catchup 用全量 seed-manifest 经现有 `fetch.TorrentFetcher` 从 swarm 拉全部 sealed 文件(三类),自身再 seed → 1-of-N 在 N42 自有网络闭环。
+
 ### 9.4 与压缩正交
 
 过期（−77%）和去签名压缩（F1 −18% / F2 −45%）可叠加：热的 91.5 GB 内部副本还能再上 F1 → ~75 GB。但过期是数量级更大的杠杆，**优先做过期，压缩次之**。

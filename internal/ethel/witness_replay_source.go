@@ -157,6 +157,12 @@ func openN42CompactSource(dir string) (*n42CompactSource, error) {
 		hr.Close()
 		return nil, fmt.Errorf("open body compact %s: %w", dir, err)
 	}
+	// EIP-4444: a Full node keeps only a recent window of bodies hot; if a
+	// cold-read resolver is installed, trimmed (cold) segments are fetched on
+	// demand instead of failing with ErrBodyTrimmed.
+	if defaultColdResolver != nil {
+		br.SetColdResolver(defaultColdResolver)
+	}
 	return &n42CompactSource{hr: hr, br: br}, nil
 }
 

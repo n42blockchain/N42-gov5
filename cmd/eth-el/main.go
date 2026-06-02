@@ -21,21 +21,25 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/c2h5oh/datasize"
 	"github.com/urfave/cli/v2"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	storagetorrent "github.com/n42blockchain/N42/internal/distributed/storage/torrent"
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/internal/ethel/bootstrap"
 	"github.com/n42blockchain/N42/internal/ethel/catchup"
-	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/ethel/coldresolve"
+	"github.com/n42blockchain/N42/internal/ethel/coldseed"
 	"github.com/n42blockchain/N42/internal/ethel/eldevp2p"
 	"github.com/n42blockchain/N42/internal/ethel/engineapi"
 	"github.com/n42blockchain/N42/internal/ethel/fetch"
 	"github.com/n42blockchain/N42/internal/ethel/snapshotprestart"
 	"github.com/n42blockchain/N42/internal/ethel/snapshotreader"
+	"github.com/n42blockchain/N42/internal/sync/torrentsync"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/state"
 )
@@ -94,6 +98,17 @@ func flags() []cli.Flag {
 		&cli.IntFlag{Name: "torrent.download.kbps", Usage: "Download rate limit in KB/s (0 = unlimited)"},
 		&cli.BoolFlag{Name: "torrent.dht", Usage: "Enable DHT peer discovery", Value: true},
 		&cli.BoolFlag{Name: "torrent.pex", Usage: "Enable PEX peer exchange", Value: true},
+
+		// EIP-4444 history expiry: Full node keeps a recent window of bodies hot
+		// and fetches cold (offloaded) segments on demand; archive node seeds all.
+		&cli.StringFlag{Name: "history.coldmanifest", Usage: "Cold-segment manifest (JSON). When set, trimmed cold bodies are fetched on demand (EIP-4444 Full node)"},
+		&cli.StringFlag{Name: "history.coldcache", Usage: "Local cache dir for fetched cold segments (default: <torrent.datadir>/cold)"},
+		&cli.StringFlag{Name: "history.colddir", Usage: "Local cold dir holding offloaded cdat (use instead of torrent fetch)"},
+		&cli.BoolFlag{Name: "history.seed", Usage: "Archive node: seed ALL columnar files (headers+bodies+witness) over torrent for 1-of-N"},
+		&cli.StringFlag{Name: "history.seed.dir", Usage: "Freezer dir to seed (archive node; default: the output freezer dir)"},
+		&cli.StringFlag{Name: "history.seed.prefixes", Usage: "Comma list of file prefixes to seed", Value: "bodyc,headerc"},
+		&cli.StringFlag{Name: "history.seed.manifest", Usage: "Seed manifest output path (archive node)", Value: "seed-manifest.json"},
+		&cli.DurationFlag{Name: "history.seed.interval", Usage: "Re-seed interval; the active (growing) file is re-seeded each pass", Value: 168 * time.Hour},
 
 		// Caplin (embedded CL). Inert unless built with -tags n42el.
 		&cli.BoolFlag{Name: "caplin.enabled", Usage: "Run an embedded Caplin consensus layer (requires -tags n42el)"},
@@ -158,7 +173,12 @@ func run(c *cli.Context) error {
 		if err != nil {
 			log.Error("eth-el: snapshot pre-start sync failed",
 				"err", err, "skipped", rep != nil && rep.Skipped,
-				"gap", func() uint64 { if rep != nil { return rep.GapAtStart }; return 0 }())
+				"gap", func() uint64 {
+					if rep != nil {
+						return rep.GapAtStart
+					}
+					return 0
+				}())
 			return fmt.Errorf("snapshot pre-start: %w", err)
 		}
 		if rep.Skipped {
@@ -218,6 +238,61 @@ func run(c *cli.Context) error {
 		)
 	}
 	fetcher := fetch.NewMultiSourceFetcher(fetchers...)
+
+	// EIP-4444 transparent cold reads (Full node). With a cold manifest, trimmed
+	// cold body segments are fetched on demand — over torrent (1-of-N, any
+	// archive/seeder serving the infohash) when the torrent client is up, else
+	// from a local cold dir. Installed before services open their readers.
+	if cm := c.String("history.coldmanifest"); cm != "" {
+		m, err := torrentsync.LoadManifest(cm)
+		if err != nil {
+			return fmt.Errorf("load cold manifest %q: %w", cm, err)
+		}
+		cacheDir := c.String("history.coldcache")
+		if cacheDir == "" {
+			cacheDir = filepath.Join(cfg.Torrent.DataDir, "cold")
+		}
+		var cf coldresolve.Fetcher
+		switch {
+		case c.String("history.colddir") != "":
+			cf = coldresolve.LocalDirFetcher{ColdDir: c.String("history.colddir")}
+		case torrentClient != nil:
+			cf = coldresolve.NewTorrentFetcher(storagetorrent.NewBridge(torrentClient), cacheDir, 10*time.Minute)
+		default:
+			return fmt.Errorf("history.coldmanifest set but neither --history.colddir nor --torrent.enabled provided")
+		}
+		ethel.SetDefaultColdResolver(coldresolve.New(m, cf, true))
+		log.Info("eth-el: EIP-4444 cold-read resolver installed",
+			"manifest", cm, "segments", len(m.Segments), "cache", cacheDir,
+			"fetch", map[bool]string{true: "local-dir", false: "torrent(1-of-N)"}[c.String("history.colddir") != ""])
+	}
+
+	// Archive node: seed ALL columnar files (headers+bodies+witness) so other
+	// nodes can pull full history under 1-of-N. The active (growing) file is
+	// re-seeded each interval. Requires the torrent client.
+	if c.Bool("history.seed") {
+		if torrentClient == nil {
+			return fmt.Errorf("--history.seed requires --torrent.enabled")
+		}
+		seedDir := c.String("history.seed.dir")
+		if seedDir == "" {
+			seedDir = cfg.Torrent.DataDir // operator should point this at the freezer dir
+		}
+		bridge := storagetorrent.NewBridge(torrentClient)
+		opts := coldseed.Options{
+			Dir:          seedDir,
+			Prefixes:     strings.Split(c.String("history.seed.prefixes"), ","),
+			ManifestPath: c.String("history.seed.manifest"),
+			ChainID:      1, // eth-el is Ethereum mainnet EL
+			PieceSize:    cfg.Torrent.PieceSize,
+			Interval:     c.Duration("history.seed.interval"),
+		}
+		node.RegisterFactory(func(n *ethel.Node) ethel.Service {
+			return coldseed.NewService(opts, coldseed.BridgeSink{Bridge: bridge})
+		})
+		log.Info("eth-el: archive history seeder registered",
+			"dir", seedDir, "prefixes", opts.Prefixes, "interval", opts.Interval)
+	}
 
 	// Factory-registered services run in registration order. Order
 	// matters: bootstrap lands a PlainState before catch-up tries to
