@@ -364,6 +364,10 @@ archive 节点 seed **全部** columnar 文件（header + body + witness），�
 
 **1-of-N 实测(已验证)**:`cmd/torrent-1of-n-demo` 起两个本地 client,seeder seed 6MB 段、fetcher 直连拉取,**77ms 完成、SHA256 匹配、PASS**。期间修复了 seed 路径两个真 bug(`SeedContent` 不写盘 / `NewClient` 忽略 ListenAddr,见 commit 8471fc52)。
 
+**archive 全量端到端实测(已验证)**:`cmd/cold-e2e-demo` 起双 client,seeder seed 3 段(bodies+receipts)+ 建 manifest,archive 节点用**真实 `coldresolve.DownloadAll`** 全量拉取——fetched=3 failed=0、每段 SHA256 校验、**ARCHIVE E2E PASS**(11.5s,localhost 直连)。证明 archive 下全历史路径端到端可行。
+
+**value 科学计数法小杠杆(实测)**:`bodyc-entropy` 加 `sciU256Len`(mantissa×10^exp,整数值省,非整数 fallback trimmed)。实测 value 列 4.51→2.73 B/tx(**−39.3%**),但 value 仅占总量 ~1% → 绝对省 ~1.8 B/tx,远不及签名 65B。codec 就绪,待 F2 encoder 落地折入。
+
 ### 9.4 与压缩正交
 
 过期（−77%）和去签名压缩（F1 −18% / F2 −45%）可叠加：热的 91.5 GB 内部副本还能再上 F1 → ~75 GB。但过期是数量级更大的杠杆，**优先做过期，压缩次之**。
