@@ -22,17 +22,30 @@
 | type | 1.0 | 0.2% | 1B |
 | **合计** | **449.8** | 100% | |
 
-当前盘上（zstd 后）≈ **278 B/tx**（394.2 GB / ~1.4B post-merge tx，估）。zstd 比 ≈ 0.62×。
+## 1b. 实测 post-zstd 每列占用（真正的盘上目标图）
 
-### 关键纠偏：压缩后各字段占比 ≠ 原始占比
+`cmd/bodyc-entropy --zstd` 把每个字段单独成列做 zstd，得到**压缩后**的真实占用（blocks 20,000,000 起，8192 块，122万 tx）：
 
-zstd 会把 calldata 里 65.7% 的零字节几乎免费吃掉，但**对随机的签名无能为力**。所以：
+| 字段 | zstd 后 B/tx | 盘上占比 | 性质 |
+|---|---:|---:|---|
+| **sig R+S+V** | **65.00** | **43.2%** | 完全不可压（随机），盘上头号 |
+| calldata | 63.25 | 42.0% | 原始 317→63，**zstd 已 5× 压扁，到极致** |
+| to | 6.25 | 4.1% | 76% 单例，per-segment zstd 压不动 |
+| accessList | 5.55 | 3.7% | 地址+slot |
+| value | 2.86 | 1.9% | |
+| gasFeeCap | 2.60 | 1.7% | |
+| gas | 1.96 | 1.3% | |
+| nonce | 1.84 | 1.2% | |
+| gasTipCap | 1.28 | 0.8% | |
+| **DISK-SUM** | **150.6** | 100% | |
 
-> **签名在原始里只占 14.4%，在盘上（zstd 后）占 ~23–25%** —— 因为它是唯一不被压缩的大字段。
->
-> 反过来 calldata 原始 71%，盘上掉到约 50%（零字节蒸发）。
+> 盘上 **150.6 B/tx**（不是早先估的 278）。反推 394.2 GB ≈ **26 亿** post-merge tx。
 
-**结论：盘上唯一的大杠杆是去掉签名，不是 calldata 的字典化。** 用户的"去掉 R/S/V"直觉，在压缩后的真实占比下比原始数字看起来还要划算。
+### 关键纠偏（已用实测替换原估算）
+
+- **calldata 已到极致**：原始 317 B/tx，zstd 后仅 63 B/tx（5× 压扁），且其中 83.6% 是单例 32B word（固有熵）。**不要再碰 calldata。**
+- **签名是盘上头号**：原始只占 14.4%，但因为是唯一不被压缩的大字段，**zstd 后占 43.2%**。这是唯一的大杠杆。
+- 其余所有结构字段（to+access+value+gas+nonce+caps）合计仅 ~22 B/tx（14.6%）。
 
 ---
 
@@ -77,14 +90,16 @@ zstd 会把 calldata 里 65.7% 的零字节几乎免费吃掉，但**对随机�
 
 ### 维度 a — 签名/hash 取舍
 
-| 档 | 存什么 | 去什么 | 盘上 Δ（估） | 丢失的 RPC 能力 |
-|---|---|---|---:|---|
-| **L** 当前（线级保真） | R/S/V | — | 基线 278 B/tx | 无 |
-| **F1** 账本+可查 hash | hash(32B) + from-ID | R/S/V | **−11%** | tx 响应无 r/s/v；`eth_getRawTransaction` 不可（无法还原原始 RLP） |
-| **F2** 纯账本 | from-ID + to-ID | R/S/V + hash | **−23%** | 上面全部 + `eth_getTransactionByHash`、响应里无 canonical hash |
+| 档 | 存什么 | 去什么 | post-zstd B/tx（实测） | 盘上 Δ | 丢失的 RPC 能力 |
+|---|---|---|---:|---:|---|
+| **L** 当前（线级保真） | R/S/V | — | 150.6 | 基线 | 无 |
+| **F1** 账本+可查 hash | hash(32B) + from-ID + to-ID | R/S/V | 115.1 | **−23.6%** | tx 响应无 r/s/v；`eth_getRawTransaction` 不可（无法还原原始 RLP） |
+| **F2** 纯账本 | from-ID + to-ID | R/S/V + hash | **83.1** | **−44.8%** | 上面全部 + `eth_getTransactionByHash`、响应里无 canonical hash |
 
-> from-ID 是低熵（sender 高度重用），盘上压到 ~1–2 B/tx；F1 的 hash(32B) 不可压，是它只省 11% 的原因。
-> F2 把签名 65B 换成 ~2B 的 from-ID/to-ID，几乎全额兑现 23% 的签名盘上份额。
+> 实测（8192 块，122万 tx）：from-ID 列 zstd 后 **2.18 B/tx**（36万 unique sender），to-ID 列 **1.58 B/tx**（vs to-20B 列 6.25）。
+> F2 = 去 sig(−65.00) + from-ID(+2.18) + to 换 to-ID(−4.67) = 150.6 → **83.1 B/tx**。
+> F1 的 32B hash 不可压（+32 B/tx），是它只省 23.6% 的原因。
+> 全局 from/to 字典是 store-wide sidecar：post-merge 全量 unique 地址 × 20B（数千万级 ≈ 1GB 量级），摊到 26 亿 tx ≈ **0.4 B/tx**，可忽略。
 
 **账本必要信息在 F1/F2 全部保留**：from、to、value、nonce、gas、calldata（合约参数）、type、accessList、withdrawals。能正常服务 `eth_getBlockByNumber`（含解码 tx：from/to/value/input/gas）、`eth_getBalance`/`eth_call`（state）、`eth_getTransactionReceipt`、`eth_getLogs`。
 
@@ -99,23 +114,23 @@ zstd 会把 calldata 里 65.7% 的零字节几乎免费吃掉，但**对随机�
 
 ---
 
-## 5. 盘上大小投影（post-merge ~1.4B tx, 394.2 GB 基线）
+## 5. 盘上大小投影（post-merge ~2.6B tx, 394.2 GB 基线，实测每列 zstd）
 
-| 方案 | 盘上 B/tx（估） | post-merge 总量 | 相对基线 |
+| 方案 | post-zstd B/tx | post-merge 总量 | 相对基线 |
 |---|---:|---:|---:|
-| L 当前 | 278 | **394 GB** | — |
-| F1（去签名，留 hash） | ~247 | **~350 GB** | −11% |
-| F2（去签名+hash） | ~215 | **~305 GB** | −23% |
-| F2 + 全局字典 + 字裁剪 | ~190 | **~270 GB** | **−31%** |
+| L 当前 | 150.6 | **394 GB** | — |
+| F1（去签名，留 hash） | 115.1 | **~301 GB** | −23.6% |
+| **F2（去签名+hash）** | **83.1** | **~217 GB** | **−44.8%** |
 
-> 注：投影里签名按不可压 65B 直接扣减、from-ID 按 ~2B 计；±5% 量级取决于实际 zstd 行为，落地后用 `bodyc-entropy` 复测。
+> calldata 字典/字裁剪、accessList slot 字典等"维度 b"叠加项：calldata 已 zstd 到极致（63 B/tx 全是单例熵），叠加项总收益 < 个位数 %，**不做**。
+> 真正的肉只有签名（43%）。F2 兑现 45%，是设计的终点。
 
 ---
 
 ## 6. 建议
 
-- **大头先吃 F2**：去 R/S/V + hash，存 from-ID/to-ID。一步拿到 ~23%，工程改动集中在 encoder 的 tx 列 + 一个全局 address 字典 sidecar，decoder 端把 `tx.Hash()`/`From` 从"计算"改成"读存储 ID"。
-- 维度 b 的字典/字裁剪**先不做**：相对 zstd 增量个位数 %，复杂度高，等 F2 落地用实测决定是否值得。
+- **直接做 F2**：去 R/S/V + hash，存 from-ID/to-ID。实测 **−44.8%**（394→217 GB）。工程改动集中在 encoder 的 tx 列 + 一个全局 address 字典 sidecar，decoder 端把 `tx.Hash()`/`From` 从"计算"改成"读存储 ID"。
+- 维度 b（calldata 字裁剪、selector/slot 字典）**不做**：calldata 已 zstd 到极致（63 B/tx 单例熵），增量 < 个位数 %，复杂度高，纯亏。
 - **保留 L 档源数据只读**（`D:/n42-eth1`），F2 作为派生只读副本（像本次 post-merge 裁剪一样），可随时重建、不污染源。
 
 ### F2 的硬代价（务必确认）

@@ -13,11 +13,26 @@ import (
 	"math/big"
 	"os"
 
+	"github.com/klauspost/compress/zstd"
+
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/params"
 )
+
+var zenc, _ = zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
+
+// zlen returns the zstd-compressed size of b (the per-column on-disk footprint).
+func zlen(b []byte) int { return len(zenc.EncodeAll(b, nil)) }
+
+func appendVar(buf []byte, v uint64) []byte {
+	for v >= 0x80 {
+		buf = append(buf, byte(v)|0x80)
+		v >>= 7
+	}
+	return append(buf, byte(v))
+}
 
 func varintLen(v uint64) int {
 	n := 1
@@ -40,6 +55,7 @@ func main() {
 	start := flag.Uint64("start", 0, "start block")
 	count := flag.Uint64("count", 100000, "blocks to scan")
 	senderSample := flag.Int("sendersample", 200000, "max txs to ecrecover for sender cardinality (0=skip)")
+	zstdCols := flag.Bool("zstd", false, "accumulate per-column buffers and report POST-ZSTD footprint per field (memory-heavy; use small --count)")
 	flag.Parse()
 	if *dir == "" {
 		fmt.Fprintln(os.Stderr, "usage: bodyc-entropy --dir <freezer> --start N --count M")
@@ -66,6 +82,13 @@ func main() {
 		selSeen                                                        = map[[4]byte]int{}
 		wordSeen                                                       = map[[32]byte]int{}
 	)
+
+	// Per-column raw buffers (only filled when --zstd) to measure POST-ZSTD footprint.
+	var colSig, colTo, colValue, colGasCap, colTip, colGas, colNonce, colCalldata, colAccess []byte
+	// Two-pass sender dictionary for the F2 from-ID column: pass-1 collects senders
+	// (txID order) here, then we assign global dict IDs and emit the varint column.
+	var fromOrder []types.Address // sender per tx, in scan order (only when --zstd)
+	var toOrder []types.Address   // to per non-create tx, in scan order (only when --zstd)
 
 	end := *start + *count
 	for n := *start; n < end; n++ {
@@ -119,6 +142,49 @@ func main() {
 				for _, t := range al {
 					szAccessList += int64(20 + len(t.StorageKeys)*32)
 				}
+			}
+
+			if *zstdCols {
+				v, r, s := tx.RawSignatureValues()
+				var rB, sB [32]byte
+				if r != nil {
+					rB = r.Bytes32()
+				}
+				if s != nil {
+					sB = s.Bytes32()
+				}
+				colSig = append(colSig, rB[:]...)
+				colSig = append(colSig, sB[:]...)
+				if v != nil {
+					colSig = append(colSig, byte(v.Uint64()))
+				} else {
+					colSig = append(colSig, 0)
+				}
+				if tx.To() != nil {
+					colTo = append(colTo, tx.To()[:]...)
+					toOrder = append(toOrder, *tx.To())
+				}
+				colValue = encVarBytes(colValue, tx.Value().ToBig())
+				colGasCap = encVarBytes(colGasCap, tx.GasFeeCap().ToBig())
+				if tx.Type() >= transaction.DynamicFeeTxType {
+					colTip = encVarBytes(colTip, tx.GasTipCap().ToBig())
+				}
+				colGas = appendVar(colGas, tx.Gas())
+				colNonce = appendVar(colNonce, tx.Nonce())
+				colCalldata = appendVar(colCalldata, uint64(len(d)))
+				colCalldata = append(colCalldata, d...)
+				for _, t := range tx.AccessList() {
+					colAccess = append(colAccess, t.Address[:]...)
+					for _, k := range t.StorageKeys {
+						colAccess = append(colAccess, k[:]...)
+					}
+				}
+				// Sender for the from-ID column (ecrecover every tx in --zstd mode).
+				signer := transaction.MakeSignerWithTimestamp(params.EthereumMainnetChainConfig, big.NewInt(int64(n)), 0)
+				from, _ := transaction.Sender(signer, tx)
+				fromOrder = append(fromOrder, from)
+				senderSeen[from]++
+				continue
 			}
 
 			if *senderSample > 0 && senderRecovered < int64(*senderSample) {
@@ -206,6 +272,82 @@ func main() {
 	fmt.Printf("  selectors: %d unique 4-byte selectors (dict ≪ 4B/tx)\n", len(selSeen))
 	fmt.Printf("  32B words: %d unique / singletons=%d (%.1f%%) — singletons are irreducible entropy\n",
 		len(wordSeen), wordSingle, 100*float64(wordSingle)/float64(max1(int64(len(wordSeen)))))
+
+	if *zstdCols {
+		reportPostZstd(nTx, colSig, colTo, colValue, colGasCap, colTip, colGas, colNonce, colCalldata, colAccess, fromOrder, toOrder)
+	}
+}
+
+// reportPostZstd compresses each column independently and reports the real
+// on-disk (post-zstd) footprint per field — the map of what's actually left to
+// attack after zstd has already crushed calldata's zero-padding.
+func reportPostZstd(nTx int64, colSig, colTo, colValue, colGasCap, colTip, colGas, colNonce, colCalldata, colAccess []byte, fromOrder, toOrder []types.Address) {
+	per := func(z int) float64 { return float64(z) / float64(max1(nTx)) }
+	zSig := zlen(colSig)
+	zTo := zlen(colTo)
+	zVal := zlen(colValue)
+	zCap := zlen(colGasCap)
+	zTip := zlen(colTip)
+	zGas := zlen(colGas)
+	zNon := zlen(colNonce)
+	zCd := zlen(colCalldata)
+	zAcc := zlen(colAccess)
+	diskTotal := zSig + zTo + zVal + zCap + zTip + zGas + zNon + zCd + zAcc
+
+	fmt.Println("=== POST-ZSTD per-column footprint (the real on-disk map) ===")
+	pz := func(name string, z int) {
+		fmt.Printf("  %-12s %12d B  %6.1f%%  %7.2f B/tx\n", name, z, 100*float64(z)/float64(max1(int64(diskTotal))), per(z))
+	}
+	pz("sig(R+S+V)", zSig)
+	pz("calldata", zCd)
+	pz("to(20B)", zTo)
+	pz("accessList", zAcc)
+	pz("gasFeeCap", zCap)
+	pz("gasTipCap", zTip)
+	pz("value", zVal)
+	pz("gas", zGas)
+	pz("nonce", zNon)
+	fmt.Printf("  %-12s %12d B  100.0%%  %7.2f B/tx  (sum of per-column zstd)\n", "DISK-SUM", diskTotal, per(diskTotal))
+
+	// F2: replace sig column with a from-ID column; replace to-20B with a to-ID column.
+	fromCol, fromDict, fromUniq := buildDictColumn(fromOrder)
+	toCol, toDict, toUniq := buildDictColumn(toOrder)
+	zFrom := zlen(fromCol)
+	zToID := zlen(toCol)
+	fmt.Println("=== F2 column swaps (post-zstd) ===")
+	fmt.Printf("  from-ID col : %7.2f B/tx (zstd of %d varint IDs; %d unique senders, dict=%d B raw)\n",
+		per(zFrom), len(fromOrder), fromUniq, fromDict)
+	fmt.Printf("  to-ID col   : %7.2f B/tx (zstd of %d varint IDs; %d unique, dict=%d B raw) vs to-20B %7.2f B/tx\n",
+		per(zToID), len(toOrder), toUniq, toDict, per(zTo))
+	f2Disk := diskTotal - zSig - zTo + zFrom + zToID + zlen([]byte(nil)) // sig→from, to→toID
+	// dict sidecars (shared store-wide; amortized — shown separately)
+	fmt.Printf("  F2 per-block-data DISK-SUM: %.2f B/tx (was %.2f) → %.1f%% smaller; + shared from/to dict sidecars (~%d B raw, one-time)\n",
+		per(f2Disk), per(diskTotal), 100*(1-float64(f2Disk)/float64(max1(int64(diskTotal)))), fromDict+toDict)
+	fmt.Printf("  F1 (keep 32B hash): add ~32 B/tx incompressible hash back → F2 + %.2f B/tx\n", 32.0)
+}
+
+// encVarBytes mirrors encodeTrimmedU256: 1 length byte + trimmed big-endian bytes.
+func encVarBytes(buf []byte, v *big.Int) []byte {
+	if v == nil || v.Sign() == 0 {
+		return append(buf, 0)
+	}
+	b := v.Bytes()
+	return append(append(buf, byte(len(b))), b...)
+}
+
+// buildDictColumn assigns a global dict ID (first-seen order) to each address and
+// emits a varint-ID column; returns (idColumnBytes, dictRawBytes, uniqueCount).
+func buildDictColumn(order []types.Address) (idCol []byte, dictBytes int, uniq int) {
+	id := map[types.Address]uint64{}
+	for _, a := range order {
+		x, ok := id[a]
+		if !ok {
+			x = uint64(len(id))
+			id[a] = x
+		}
+		idCol = appendVar(idCol, x)
+	}
+	return idCol, len(id) * 20, len(id)
 }
 
 func max1(v int64) int64 {
