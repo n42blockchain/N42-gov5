@@ -239,23 +239,43 @@ func main() {
 		}
 	}
 	firstCompute := startBlock == 0 // a fresh trie needs one bootstrap (incremental=false) pass
+	timing := os.Getenv("N42_BPP_TIMING") != ""
+	var windowRead, windowMerge time.Duration // per-window cumulative (reset at each anchor)
+	var netKeys int
 
 	for n := startBlock; n < *endBlock; n++ {
+		tRead := time.Now()
 		dA, dS := readBlockChangeset(acctTbl, stoTbl, n)
+		if timing {
+			windowRead += time.Since(tRead)
+		}
 		if n == 0 || n%anchorK(n) != 0 { // non-anchor (incl. genesis block 0): accumulate only
+			tMerge := time.Now()
 			mergeCS(dA, dS)
+			if timing {
+				windowMerge += time.Since(tMerge)
+			}
 			continue
 		}
 
 		// (a) Bring the trie to n-1 by applying the accumulated window net once.
 		var rootNm1 types.Hash
+		var tComputeNet, tBuildProof, tComputeN time.Duration
 		if len(netA) > 0 || len(netS) > 0 {
+			if timing {
+				netKeys = len(netA)
+				for _, m := range netS {
+					netKeys += len(m)
+				}
+			}
+			ta := time.Now()
 			trc.SetIncremental(!firstCompute)
 			r, cerr := trc.ComputeRoot(netA, netS)
 			if cerr != nil {
 				fmt.Fprintf(os.Stderr, "ComputeRoot window→%d: %v\n", n-1, cerr)
 				os.Exit(1)
 			}
+			tComputeNet = time.Since(ta)
 			firstCompute = false
 			rootNm1 = r
 			netA = map[types.Address]*account.StateAccount{}
@@ -269,16 +289,26 @@ func main() {
 		}
 
 		// (b) Single-block transition proof for n (trie is at n-1).
+		tb := time.Now()
 		bp, bpErr := buildBlockProof(tx, n, dA, dS)
+		tBuildProof = time.Since(tb)
 
 		// (c) Apply block n alone → post-state root.
+		tc := time.Now()
 		trc.SetIncremental(!firstCompute)
 		rootN, cerr := trc.ComputeRoot(dA, dS)
 		if cerr != nil {
 			fmt.Fprintf(os.Stderr, "ComputeRoot %d: %v\n", n, cerr)
 			os.Exit(1)
 		}
+		tComputeN = time.Since(tc)
 		firstCompute = false
+		if timing {
+			fmt.Fprintf(os.Stderr, "TIMING n=%d window: read=%s merge=%s netKeys=%d computeNet=%s buildProof=%s computeN=%s\n",
+				n, windowRead.Truncate(time.Millisecond), windowMerge.Truncate(time.Millisecond), netKeys,
+				tComputeNet.Truncate(time.Millisecond), tBuildProof.Truncate(time.Millisecond), tComputeN.Truncate(time.Millisecond))
+			windowRead, windowMerge = 0, 0
+		}
 		if hn, herr := hc.ReadHeader(n); herr != nil {
 			fmt.Fprintf(os.Stderr, "read header %d: %v\n", n, herr)
 			os.Exit(1)
