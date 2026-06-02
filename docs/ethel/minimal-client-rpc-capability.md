@@ -77,7 +77,30 @@ bounded by that representation — §4.
 
 | Mode | Downloads / retains | State it can answer about |
 |---|---|---|
-| **M0 witness-direct** (mobile minimal) | rolling ~1 wk of {header, body, witness} + K-anchors; codes on demand | only keys it has touched/fetched proofs for; verifies ①②③ |
+| **M0 witness-direct** (mobile minimal) | rolling ~1 wk of {header, body, witness} + K-anchors; codes on demand; **derives + keeps the rolling changeset (account/storage newValues) + replay receipts** | **any key CHANGED in the rolling window** (newValue in the kept changeset) + window receipts/logs; verifies ①②③ |
+
+### M0 daily/weekly footprint (measured, D:/N42-eth1177 freezer, zstd, near tip)
+12 s blocks ⇒ 7200 blocks/day. Per block (compressed): witness ~7.8 KB,
+changeset acctcs ~5.7 KB + storcs ~10.9 KB (chain-average; recent heavy blocks
+~1.5–2.5×), anchor ~1.3 KB amortized.
+
+| | per block | per day | rolling 1 week |
+|---|---|---|---|
+| witness (download) | ~7.8 KB | **~56 MB** | ~0.4 GB |
+| changeset output (acct+storage newValues) | ~16–40 KB | **~120–250 MB** | ~1–2 GB |
+| K-anchor (③) | ~1.3 KB | ~9 MB | ~65 MB |
+
+A phone easily holds a 1-week rolling window (~1–2 GB).
+
+### M0 is a "recent-changes RPC source", not just own-account
+The changeset M0 derives by replaying the witness carries the **newValue** of
+every account/storage key the window touched, and the replay also yields
+**receipts**. So M0 can serve, **for any key changed in its rolling window** (not
+only the user's own account): `getBalance` / `getTransactionCount` / `getCode` /
+`getStorageAt`, plus `getTransactionReceipt` / `getBlockReceipts` for window
+blocks, and `getLogs` over the window if it indexes the replayed logs. **Limit:**
+only *changed* keys — a key untouched in the window has no value in M0 (fall back
+to the M1 snapshot or an on-demand proof).
 | **M1 snapshot-compact + hot-delta** | weekly **compact state snapshot** (keccak-keyed, MPHF) + client records **hot** block changesets forward | **full current state** at (snapshot height + hot blocks) |
 | **M2 full headers+bodies** | genesis→tip headers + bodies (no state) | none (blocks/txs only) |
 | **M2+R full + receipts store** | M2 + **stored receipts + log index** | none (but receipts/logs available) |
@@ -101,23 +124,25 @@ Legend: ✅ serviceable · ⚠️ serviceable but expensive/slow · ❌ data not
 | `getBlockByNumber` (full txs), `getBlockTransactionCount`, `getTransactionByBlock*Index`, `getUncle*` | body | ✅ recent only | ⚠️ if body kept | ✅ all heights | ✅ | ❌ |
 | `gasPrice`,`feeHistory`,`maxPriorityFeePerGas` | recent headers/txs | ✅ | ✅ | ✅ | ✅ | ❌ |
 | `getTransactionByHash` | txHash→(blk,idx) index | ❌ (no global tx index) | ❌ | ⚠️ needs tx-hash index built over bodies | ✅ (index) | ❌ |
-| `getBalance`,`getCode`,`getStorageAt`,`getTransactionCount` — **latest** | state | ⚠️ only via on-demand proof | ✅ | ❌ (no state) | ❌ | ❌ |
+| `getBalance`,`getCode`,`getStorageAt`,`getTransactionCount` — **latest** | state | ✅ for keys **changed in window** (newValue); else ⚠️ on-demand proof | ✅ | ❌ (no state) | ❌ | ❌ |
 | same — **historical** | state-as-of | ❌ | ❌ (only snapshot height + hot) | ❌ | ❌ | ❌ |
 | `getProof` — **latest** | trie/proof | ✅ (per-account proof from producer) | ✅ (snapshot trie) | ❌ | ❌ | ❌ |
 | `getProof` — **historical (all heights)** | state-as-of trie | ❌ | ❌ | ❌ | ❌ | ❌ |
 | `call`,`estimateGas` — **latest** | state+codes+EVM | ⚠️ if it has the touched pre-state (proofs) + codes | ✅ (full current state + codes + EVM) | ❌ | ❌ | ❌ |
 | `call`,`estimateGas` — **historical** | state-as-of+EVM | ❌ | ❌ | ❌ | ❌ | ❌ |
-| `getTransactionReceipt`,`getBlockReceipts` | receipts | ⚠️ recompute via witness replay (one block, OK) | ⚠️ recompute (no stored receipts) | ⚠️⚠️ **re-execute block** (slow) | ✅ (stored) | ❌ |
-| `getLogs`,`getFilterLogs`,`*Filter` | receipts + **log index** | ❌ (no range log index) | ❌ | ❌ (re-exec a range = infeasible) | ✅ (stored + index) | ❌ |
+| `getTransactionReceipt`,`getBlockReceipts` | receipts | ✅ **window blocks** (replay receipts) | ⚠️ recompute (no stored receipts) | ⚠️⚠️ **re-execute block** (slow) | ✅ (stored) | ❌ |
+| `getLogs`,`getFilterLogs`,`*Filter` | receipts + **log index** | ⚠️ **window range** if it indexes replayed logs | ❌ | ❌ (re-exec a range = infeasible) | ✅ (stored + index) | ❌ |
 | `sendRawTransaction`,`newPendingTransactionFilter` | mempool + P2P | ❌ (no txpool) | ❌ | ❌ | ❌ | ❌ |
 | beacon `eth/v1/beacon/*` (finality, validators, attestations) | CL | ❌ | ❌ | ❌ | ❌ | ✅ |
 
 ### Per-mode gap summary (what's MISSING)
-- **M0 witness-direct:** no global tx-hash index, no range log index, no
-  arbitrary-account latest state (only what it proved), no historical state, no
-  mempool. Good for: verify the chain + answer queries for accounts the user
-  cares about (their own wallet) via on-demand proofs + replay the current block's
-  receipts. This is the **phone wallet** profile.
+- **M0 witness-direct:** serves **recent-changes** state RPC — any account/slot
+  changed in the rolling window (newValue from the derived changeset) + window
+  receipts (replay) + window logs (if indexed). Missing: arbitrary-account latest
+  state for keys NOT changed in the window (fall back to M1 snapshot or on-demand
+  proof), no global tx-hash index, no historical state, no mempool. ~56 MB/day
+  witness + ~120–250 MB/day changeset; 1-week window ~1–2 GB. The **phone**
+  profile (wallet + recent-activity queries, fully verified ①②③).
 - **M1 snapshot+hot:** full **current** state → `getBalance/getCode/getStorageAt/
   getProof/call/estimateGas` at tip all ✅. Missing: historical state, receipts/
   logs (no stored receipts; would re-execute), tx-by-hash (no index), mempool.
