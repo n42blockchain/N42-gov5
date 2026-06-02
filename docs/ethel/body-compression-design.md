@@ -349,7 +349,15 @@ archive 节点 seed **全部** columnar 文件（header + body + witness），�
 ```
 注册 `coldseed.NewService`(Service 接口,Name/Start/Stop):后台循环 `RunOnce` 每 interval 重 seed,active 文件随 tail 增长每周刷新 infohash。seed 逻辑在 `internal/ethel/coldseed`(cmd 与 node 共用)。
 
-> **archive 必须下全部 header+bodies+witness**:archive 节点的 bootstrap/catchup 用全量 seed-manifest 经现有 `fetch.TorrentFetcher` 从 swarm 拉全部 sealed 文件(三类),自身再 seed → 1-of-N 在 N42 自有网络闭环。
+**显式 archive mode(下全历史,已实现)**
+```
+--history.mode archive --history.coldmanifest <full-manifest.json>
+```
+`coldresolve.DownloadService`(Service):boot 时 `DownloadAll` 把 manifest 里**每个**段(header+bodies+witness+receipts)经 `TorrentFetcher` 从 swarm 拉到本地 store(幂等,已在的跳过)+ SHA256 校验。`--history.mode full` 则只装按需冷读 resolver。
+
+**receipts 已纳入(已实现)**:seed 默认 prefixes = `bodyc,headerc,receipts`。注意 `receipts.cidx` 是逐块索引(150MB,非 ethel 8B/seg),`coldseed` 的块范围推导加了守卫(非 8 整除/段数>1M → 跳过),receipts 文件照常 seed(FileName+SHA256+infohash),只是 manifest 无块范围(body 式按块冷读不适用 receipts,需独立 resolver,留待后续)。实测 receipts 90 文件(active 0089)正确纳入。
+
+**1-of-N 实测(已验证)**:`cmd/torrent-1of-n-demo` 起两个本地 client,seeder seed 6MB 段、fetcher 直连拉取,**77ms 完成、SHA256 匹配、PASS**。期间修复了 seed 路径两个真 bug(`SeedContent` 不写盘 / `NewClient` 忽略 ListenAddr,见 commit 8471fc52)。
 
 ### 9.4 与压缩正交
 

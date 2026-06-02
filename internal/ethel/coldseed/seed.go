@@ -56,6 +56,13 @@ func cidxGroups(dir, prefix string) map[int][2]uint64 {
 	if err != nil {
 		return nil
 	}
+	// Only the ethel columnar cidx is 8 bytes/segment with a small segment count.
+	// Freezer-table indexes (e.g. receipts.cidx, senders.cidx) are per-block and
+	// huge — parsing them as 8B/seg would yield bogus ranges, so skip them: the
+	// files are still seedable, just without manifest block ranges.
+	if len(data)%8 != 0 || len(data)/8 > 1_000_000 {
+		return nil
+	}
 	groups := map[int][2]uint64{}
 	for s := 0; (s+1)*8 <= len(data); s++ {
 		fn := int(uint16(data[s*8]) | uint16(data[s*8+1])<<8)

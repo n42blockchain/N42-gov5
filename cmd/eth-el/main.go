@@ -101,12 +101,13 @@ func flags() []cli.Flag {
 
 		// EIP-4444 history expiry: Full node keeps a recent window of bodies hot
 		// and fetches cold (offloaded) segments on demand; archive node seeds all.
-		&cli.StringFlag{Name: "history.coldmanifest", Usage: "Cold-segment manifest (JSON). When set, trimmed cold bodies are fetched on demand (EIP-4444 Full node)"},
+		&cli.StringFlag{Name: "history.mode", Usage: "History profile: full (recent window hot, cold fetched on demand) | archive (download + serve full history). Empty = neither"},
+		&cli.StringFlag{Name: "history.coldmanifest", Usage: "Cold/seed manifest (JSON). Full: on-demand cold fetch; archive: eager full-history download"},
 		&cli.StringFlag{Name: "history.coldcache", Usage: "Local cache dir for fetched cold segments (default: <torrent.datadir>/cold)"},
 		&cli.StringFlag{Name: "history.colddir", Usage: "Local cold dir holding offloaded cdat (use instead of torrent fetch)"},
 		&cli.BoolFlag{Name: "history.seed", Usage: "Archive node: seed ALL columnar files (headers+bodies+witness) over torrent for 1-of-N"},
 		&cli.StringFlag{Name: "history.seed.dir", Usage: "Freezer dir to seed (archive node; default: the output freezer dir)"},
-		&cli.StringFlag{Name: "history.seed.prefixes", Usage: "Comma list of file prefixes to seed", Value: "bodyc,headerc"},
+		&cli.StringFlag{Name: "history.seed.prefixes", Usage: "Comma list of file prefixes to seed", Value: "bodyc,headerc,receipts"},
 		&cli.StringFlag{Name: "history.seed.manifest", Usage: "Seed manifest output path (archive node)", Value: "seed-manifest.json"},
 		&cli.DurationFlag{Name: "history.seed.interval", Usage: "Re-seed interval; the active (growing) file is re-seeded each pass", Value: 168 * time.Hour},
 
@@ -265,6 +266,33 @@ func run(c *cli.Context) error {
 		log.Info("eth-el: EIP-4444 cold-read resolver installed",
 			"manifest", cm, "segments", len(m.Segments), "cache", cacheDir,
 			"fetch", map[bool]string{true: "local-dir", false: "torrent(1-of-N)"}[c.String("history.colddir") != ""])
+	}
+
+	// Archive history profile: explicitly download the FULL history (every file
+	// in the manifest: headers+bodies+witness+receipts) from the swarm at boot,
+	// rather than relying only on on-demand cold reads. Distinct from the Full
+	// profile, which keeps a recent window hot and fetches cold lazily.
+	if c.String("history.mode") == "archive" {
+		cm := c.String("history.coldmanifest")
+		if cm == "" {
+			return fmt.Errorf("--history.mode archive requires --history.coldmanifest (the full-history manifest)")
+		}
+		if torrentClient == nil {
+			return fmt.Errorf("--history.mode archive requires --torrent.enabled")
+		}
+		m, err := torrentsync.LoadManifest(cm)
+		if err != nil {
+			return fmt.Errorf("load history manifest %q: %w", cm, err)
+		}
+		store := c.String("history.coldcache")
+		if store == "" {
+			store = cfg.Torrent.DataDir // operator should point at the freezer dir
+		}
+		tf := coldresolve.NewTorrentFetcher(storagetorrent.NewBridge(torrentClient), store, 30*time.Minute)
+		node.RegisterFactory(func(n *ethel.Node) ethel.Service {
+			return coldresolve.NewDownloadService(m, tf, true)
+		})
+		log.Info("eth-el: archive full-history download registered", "manifest", cm, "segments", len(m.Segments), "store", store)
 	}
 
 	// Archive node: seed ALL columnar files (headers+bodies+witness) so other
