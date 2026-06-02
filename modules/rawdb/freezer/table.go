@@ -117,6 +117,15 @@ func isZstdFrame(data []byte) bool {
 		data[0] == 0x28 && data[1] == 0xB5 && data[2] == 0x2F && data[3] == 0xFD
 }
 
+// ColdResolver makes a trimmed (cold-offloaded) data file locally available on
+// demand. When a table's data file is absent — e.g. an EIP-4444 archive that
+// offloaded old receipts/bodies segments — Retrieve asks the resolver to fetch
+// the covering file (by its base name, e.g. "receipts.0042.cdat") and returns
+// the local path to open instead of failing. nil = unchanged (absent → error).
+type ColdResolver interface {
+	ResolveDataFile(fileName string) (localPath string, err error)
+}
+
 // indexEntry represents one item's position in the data files.
 // Geth cidx format: 2-byte file number + 4-byte offset, both big-endian.
 // Item size is derived from the next entry's offset, not stored explicitly.
@@ -186,6 +195,18 @@ type FreezerTable struct {
 	batchCacheStart uint64
 	batchCacheEnd   uint64
 	batchCacheData  [][]byte
+
+	// coldResolver, if set, fetches trimmed (cold-offloaded) data files on
+	// demand in openDataFileRO. nil = absent file is a hard error (default).
+	coldResolver ColdResolver
+}
+
+// SetColdResolver installs an on-demand resolver for trimmed data files
+// (EIP-4444 cold offload). Safe to call at startup before reads.
+func (t *FreezerTable) SetColdResolver(r ColdResolver) {
+	t.mu.Lock()
+	t.coldResolver = r
+	t.mu.Unlock()
 }
 
 // NewFreezerTable opens or creates a Geth-compatible freezer table.
@@ -742,7 +763,6 @@ func (t *FreezerTable) Retrieve(item uint64) ([]byte, error) {
 	return data, nil
 }
 
-
 // retrieveBatch handles reading an item from a batch-compressed region.
 // Batch format: consecutive cidx entries share the same (fileNum, offset).
 // The first entry's offset points to zstd_compressed([len0:4][data0][len1:4][data1]...).
@@ -999,6 +1019,13 @@ func (t *FreezerTable) openDataFileRO(num uint16) (*os.File, error) {
 	}
 	name := filepath.Join(t.path, fmt.Sprintf("%s.%04d.%sdat", t.name, num, t.ext))
 	f, err := os.Open(name)
+	if err != nil && os.IsNotExist(err) && t.coldResolver != nil {
+		// Trimmed (cold-offloaded) data file — ask the resolver to fetch it and
+		// open wherever it landed (e.g. a torrent cache dir).
+		if p, rerr := t.coldResolver.ResolveDataFile(fmt.Sprintf("%s.%04d.%sdat", t.name, num, t.ext)); rerr == nil {
+			f, err = os.Open(p)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
