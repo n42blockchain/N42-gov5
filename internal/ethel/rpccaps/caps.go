@@ -117,8 +117,12 @@ func RequiredData(m Mode) []DataClass {
 		return []DataClass{Headers, PostMergeBodies, TxHashIndex, LatestState,
 			RecentReceipts, LogIndex, Consensus, P2P, Mempool}
 	case Archive:
-		return []DataClass{Headers, AllBodies, TxHashIndex, LatestState, HistoricalState,
-			AllReceipts, LogIndex, Consensus, P2P, Mempool}
+		// The everything-node: keeps every data class (PostMergeBodies⊂AllBodies and
+		// RecentReceipts⊂AllReceipts are listed explicitly so Prunable(Archive) is
+		// empty; RollingChangeset is M0's derived artifact but archive-keeps-all).
+		return []DataClass{Headers, PostMergeBodies, AllBodies, TxHashIndex, LatestState,
+			HistoricalState, RecentReceipts, AllReceipts, LogIndex, RollingChangeset,
+			Consensus, P2P, Mempool}
 	default:
 		return nil
 	}
