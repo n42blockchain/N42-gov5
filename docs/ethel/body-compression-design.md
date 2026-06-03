@@ -145,7 +145,8 @@ proto 之外的生产编解码器 `internal/ethel/bodyf2`（全部单测 + 真�
 - **blob(t3)/7702(t4) 字段（已做）**：`F2Tx` 加 `BlobFeeCap/BlobHashes`(t3)、`AuthList []F2Auth`(t4,保留 auth 自身 V/R/S);codec 条件列(仅 t3/t4 付费)。converter `toF2Tx` 映射;`newRPCTransactionFromF2` 填 `MaxFeePerBlobGas/BlobVersionedHashes/AuthorizationList`。round-trip 单测 + 真实 post-Dencun block(含 blob)转换 0 mismatch。
 - **getBlockByNumber(fullTx=false) hash 列表（已做,可选）**：`bodyf2.HashWriter/HashReader` = 可选 `f2.txhashes.*` sidecar（block→[32B hashes],~32B/tx,要 wire-faithful hash 列表才留）。converter `--txhashes` 产出（复用转换时已算的 `tx.Hash()`,无需 reth）。`ethel.SetF2Hashes/F2BlockHashes` + cmd/eth-el 打开。`RPCMarshalBlock` fullTx=false 用它填 hash 列表、fullTx=true 填每条 tx hash。实测 sidecar verify 0 bad。注:source 也可来自 reth `TransactionHashNumbers`（hash→num,反向）+ `TransactionBlocks`,仓库 `internal/txlookup/reth_builder.go` 已读这两表。
 - **senders 优化（已做）**：`--senders <freezerdir>` 从预存 senders 表读 From(2510万块,无缺口),转换 I/O-bound（16s/段 vs 71s）,可与 bpp 并行。
-- **未做**：全量转换长跑前 hash 索引需流式 Append（避免 ~20亿 tx hashRecs 内存累积 OOM）。
+- **流式全量转换（已做,OOM-safe）**：`--stream` —— 不在内存累积 hashRecs；转换 pass 只流式写 F2 store + txhashes sidecar + 计数,MPHF 由 `buildHashIndexFromSidecar` **扫盘 sidecar** 逐块 Append(MPHFWriter 的 ETL 自带磁盘 spill)。`--limit 0`=全部到 tail(tail-tolerant)。残余内存仅 = 全局 dict(全链最坏 ~20GB)+ ETL/seg buffer(~0.8GB)。实测 stream --limit 2:MPHF 从 sidecar 建 254万 keys、lookup 282,804 次 0 bad PASS。
+  - **内存红线**:全量跑前必须确认空闲内存充足(2026-06-03 实测 bpp 建树占 90GB、free 仅 3.3GB → 全量必须等 bpp 完成释放)。
 
 ### 维度 b — 叠加项（对 L/F1/F2 都适用，单独看收益都是个位数 %）
 
