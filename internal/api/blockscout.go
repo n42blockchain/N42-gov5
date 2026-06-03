@@ -227,12 +227,18 @@ func (s *TransactionAPI) overlayBlockHash(blk block.IBlock) types.Hash {
 func (s *TransactionAPI) GetTransactionByBlockNumberAndIndex(ctx context.Context, blockNr jsonrpc.BlockNumber, index hexutil.Uint) *RPCTransaction {
 	blk, err := s.getBlockByNumber(blockNr)
 	if err != nil || blk == nil {
+		// F2 ledger fallback: the full body is unavailable (EIP-4444 Full node
+		// past its window, or an F2-only node) but the position is addressable.
+		if blockNr.Int64() >= 0 {
+			return f2TxByNumberAndIndex(uint64(blockNr.Int64()), uint64(index), types.Hash{})
+		}
 		return nil
 	}
 
 	txs := blk.Transactions()
 	if int(index) >= len(txs) {
-		return nil
+		// Header present but body txs absent (cold body) → serve from F2.
+		return f2TxByNumberAndIndex(uint256ToUint64OrZero(blk.Number64()), uint64(index), s.overlayBlockHash(blk))
 	}
 
 	header := blk.Header()
