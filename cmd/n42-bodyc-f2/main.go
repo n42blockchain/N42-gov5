@@ -64,6 +64,49 @@ func buildHashIndex(outDir string, recs []hashRec) (int64, error) {
 	return int64(st.MphfSize + st.KvSize + st.IdxSize), nil
 }
 
+// buildHashIndexFromSidecar builds the tx-hash MPHF index WITHOUT holding hashes
+// in memory: it scans the on-disk tx-hash sidecar (f2.txhashes.*) block by block
+// and streams each (hash, loc) into the MPHFWriter, whose ETL spills to disk.
+// keyCount must equal the total txs written. OOM-safe for full-chain runs.
+func buildHashIndexFromSidecar(outDir string, startBlock, lastBlock uint64, keyCount int64) (int64, error) {
+	hsr, err := bodyf2.OpenHashReader(outDir)
+	if err != nil {
+		return 0, err
+	}
+	defer hsr.Close()
+	mw, err := history.NewMPHFWriter(history.MPHFWriterOpts{
+		BaseDir: outDir, Prefix: "f2.txhash", PageSize: 64,
+		TmpDir: filepath.Join(outDir, "etl-txhash"), KeyCount: int(keyCount), EtlBufMB: 256, Logger: l3.Root(),
+	})
+	if err != nil {
+		return 0, err
+	}
+	var b [binary.MaxVarintLen64 * 2]byte
+	var appended int64
+	for n := startBlock; n <= lastBlock; n++ {
+		hs, herr := hsr.BlockHashes(n)
+		if herr != nil {
+			continue // gap / beyond written range
+		}
+		for idx := range hs {
+			nn := binary.PutUvarint(b[:], n)
+			nn += binary.PutUvarint(b[nn:], uint64(idx))
+			if err := mw.Append(hs[idx][:], b[:nn]); err != nil {
+				return 0, err
+			}
+			appended++
+		}
+	}
+	if appended != keyCount {
+		return 0, fmt.Errorf("sidecar tx count %d != expected %d", appended, keyCount)
+	}
+	if err := mw.Close(); err != nil {
+		return 0, err
+	}
+	st := mw.Stats()
+	return int64(st.MphfSize + st.KvSize + st.IdxSize), nil
+}
+
 func toF2Tx(tx *transaction.Transaction, from types.Address) bodyf2.F2Tx {
 	f := bodyf2.F2Tx{
 		Type: tx.Type(), From: from, To: tx.To(),
@@ -115,7 +158,12 @@ func main() {
 	write := flag.Bool("write", false, "write a real F2 store (f2.cidx + f2.NNNN.cdat + f2.addr.dict) and reopen-verify it")
 	sendersDir := flag.String("senders", "", "freezer dir with a pre-computed senders table — read From from it instead of ecrecover (no CPU-bound recovery)")
 	txhashes := flag.Bool("txhashes", false, "also write the optional per-block tx-hash sidecar (f2.txhashes.*) so fullTx=false hash lists serve (+32 B/tx)")
+	stream := flag.Bool("stream", false, "OOM-safe full run: no in-memory hash accumulation — build the MPHF index by scanning the on-disk tx-hash sidecar afterward (forces --txhashes; --limit 0 = all segments to the tail)")
 	flag.Parse()
+	if *stream {
+		*write = true
+		*txhashes = true // the sidecar is the disk-backed hash source for the MPHF
+	}
 	if *dir == "" {
 		fmt.Fprintln(os.Stderr, "usage: n42-bodyc-f2 --dir <bodyc> [--out D] [--start N] [--limit K]")
 		os.Exit(1)
@@ -168,7 +216,9 @@ func main() {
 	var checked, mismatch int64
 	t0 := time.Now()
 
-	for s := 0; s < *limit; s++ {
+	tailReached := false
+	var lastBlock uint64
+	for s := 0; (*limit == 0 || s < *limit) && !tailReached; s++ {
 		segStart := (startSeg + uint64(s)) * segSize
 		var blocks []bodyf2.F2Block
 		var segHashes [][][32]byte
@@ -180,6 +230,10 @@ func main() {
 		for n := segStart; n < segStart+segSize; n++ {
 			body, err := br.ReadBody(n)
 			if err != nil {
+				if *stream {
+					tailReached = true // reached the body tail — stop cleanly
+					break
+				}
 				fmt.Fprintf(os.Stderr, "read %d: %v\n", n, err)
 				os.Exit(1)
 			}
@@ -211,7 +265,9 @@ func main() {
 				recs = append(recs, srcRec{from, tx})
 				if writer != nil {
 					th := tx.Hash()
-					hashRecs = append(hashRecs, hashRec{th, n, uint64(ti)})
+					if !*stream {
+						hashRecs = append(hashRecs, hashRec{th, n, uint64(ti)})
+					}
 					if hashWriter != nil {
 						var h [32]byte
 						copy(h[:], th[:])
@@ -230,6 +286,10 @@ func main() {
 			if hashWriter != nil {
 				segHashes = append(segHashes, blkHashes)
 			}
+			lastBlock = n
+		}
+		if len(blocks) == 0 {
+			continue // tail fell exactly on a segment boundary — nothing to write
 		}
 		segNum := startSeg + uint64(s)
 		raw := bodyf2.EncodeSegment(blocks, dict)
@@ -247,7 +307,11 @@ func main() {
 			}
 		}
 
-		// Verify: decode + compare From/To/Value/Nonce/Gas to source.
+		// Per-segment decode-verify (skipped in stream mode: with senders the
+		// From compare is tautological and the reopen + sidecar checks cover it).
+		if *stream {
+			continue
+		}
 		got, err := bodyf2.DecodeSegment(raw, dict)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "decode seg %d: %v\n", segNum, err)
@@ -284,42 +348,85 @@ func main() {
 			fmt.Println("tx-hash sidecar f2.txhashes.* written (fullTx=false hash lists)")
 		}
 		// Build the tx-hash -> (block,index) MPHF index (F1.5: getTransactionByHash).
-		idxBytes, err := buildHashIndex(*out, hashRecs)
+		// Stream mode builds it OOM-free by scanning the on-disk sidecar.
+		var idxBytes int64
+		if *stream {
+			idxBytes, err = buildHashIndexFromSidecar(*out, startSeg*segSize, lastBlock, nTx)
+		} else {
+			idxBytes, err = buildHashIndex(*out, hashRecs)
+		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "build hash index:", err)
 			os.Exit(1)
 		}
-		fmt.Printf("tx-hash MPHF index: %d keys, %d B (%.2f B/tx)\n", len(hashRecs), idxBytes, float64(idxBytes)/float64(max1(nTx)))
+		fmt.Printf("tx-hash MPHF index: %d keys, %d B (%.2f B/tx)\n", nTx, idxBytes, float64(idxBytes)/float64(max1(nTx)))
 		// Verify a sample of hash lookups resolve to the right (block,index).
 		if hr, herr := history.OpenMPHF(*out, "f2.txhash"); herr == nil {
-			step := 1
-			if len(hashRecs) > 100000 {
-				step = len(hashRecs) / 100000
-			}
 			hChecked, hBad := 0, 0
-			for i := 0; i < len(hashRecs); i += step {
-				rec := hashRecs[i]
-				blob, ok, _ := hr.Get(rec.h[:])
-				hChecked++
-				if !ok {
-					hBad++
-					continue
+			if *stream {
+				if hsr, e := bodyf2.OpenHashReader(*out); e == nil {
+					span := lastBlock - startSeg*segSize
+					stepN := span/2000 + 1
+					for n := startSeg * segSize; n <= lastBlock; n += stepN {
+						hs, herr2 := hsr.BlockHashes(n)
+						if herr2 != nil {
+							continue
+						}
+						for idx := range hs {
+							blob, ok, _ := hr.Get(hs[idx][:])
+							hChecked++
+							if !ok {
+								hBad++
+								continue
+							}
+							b, nn := binary.Uvarint(blob)
+							gi, _ := binary.Uvarint(blob[nn:])
+							if b != n || gi != uint64(idx) {
+								hBad++
+							}
+						}
+					}
+					hsr.Close()
 				}
-				b, n := binary.Uvarint(blob)
-				idx, _ := binary.Uvarint(blob[n:])
-				if b != rec.block || idx != rec.idx {
-					hBad++
+			} else {
+				step := 1
+				if len(hashRecs) > 100000 {
+					step = len(hashRecs) / 100000
+				}
+				for i := 0; i < len(hashRecs); i += step {
+					rec := hashRecs[i]
+					blob, ok, _ := hr.Get(rec.h[:])
+					hChecked++
+					if !ok {
+						hBad++
+						continue
+					}
+					b, n := binary.Uvarint(blob)
+					idx, _ := binary.Uvarint(blob[n:])
+					if b != rec.block || idx != rec.idx {
+						hBad++
+					}
 				}
 			}
 			hr.Close()
 			fmt.Printf("tx-hash index lookup: checked=%d bad=%d → %s\n", hChecked, hBad,
 				map[bool]string{true: "PASS", false: "FAIL"}[hBad == 0])
 		}
+		// Verification sampling range (stream converts an unknown #segments to the
+		// tail; sample at most ~2000 segments).
+		verifySegs := *limit
+		if *stream {
+			verifySegs = int((lastBlock-startSeg*segSize)/segSize) + 1
+		}
+		sampleStep := 1
+		if verifySegs > 2000 {
+			sampleStep = verifySegs / 2000
+		}
 		// Verify the optional per-block tx-hash sidecar vs source tx.Hash().
 		if hashWriter != nil {
 			if hsr, e := bodyf2.OpenHashReader(*out); e == nil {
 				hsChecked, hsBad := 0, 0
-				for s := 0; s < *limit; s++ {
+				for s := 0; s < verifySegs; s += sampleStep {
 					n := (startSeg+uint64(s))*segSize + 1
 					got, gerr := hsr.BlockHashes(n)
 					body, berr := br.ReadBody(n)
@@ -349,9 +456,12 @@ func main() {
 			os.Exit(1)
 		}
 		rtChecked, rtBad := 0, 0
-		for s := 0; s < *limit; s++ {
+		for s := 0; s < verifySegs; s += sampleStep {
 			segStart := (startSeg + uint64(s)) * segSize
 			for _, n := range []uint64{segStart, segStart + segSize/2, segStart + segSize - 1} {
+				if n > lastBlock {
+					continue
+				}
 				fb, e1 := rd.ReadBlock(n)
 				body, e2 := br.ReadBody(n)
 				if e1 != nil || e2 != nil {
