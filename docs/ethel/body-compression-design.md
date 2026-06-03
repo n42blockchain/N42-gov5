@@ -137,8 +137,11 @@ proto 之外的生产编解码器 `internal/ethel/bodyf2`（全部单测 + 真�
 - `cmd/n42-bodyc-f2 --write`：真实 bodyc→F2 转换 + reopen 验证。
 - **实测（blocks 20M,2 段,254万 tx）：F2 盘上 82.12 B/tx（vs L 148.7 = −44.8%，满额 −45%）；From/To/Value/Nonce/Gas vs ecrecover 0 mismatch；store 写盘 + 重开 887 抽样块 0 bad → PASS。**
 - node 接线：`ethel.SetF2Reader/F2LedgerBody` + cmd/eth-el `--history.f2dir`（opt-in）→ 节点可从 F2 store 服务账本视图 body（from/to/value/nonce/gas/input）。签名/canonical hash 不可复现（经 MPHF 索引/F1.5 另解），故 F2 不喂 witness-replay/执行（那走全 tx `GethBodyResult`）。
-- **eth_ RPC 接线（已做 by-index）**：`internal/api/f2_rpc.go` `newRPCTransactionFromF2`（账本字段→RPCTransaction,hash/v/r/s 留空）+ `f2TxByNumberAndIndex`。`GetTransactionByBlockNumberAndIndex` / `GetTransactionByBlockHashAndIndex` 在全 body 不可用时回退 F2 账本(api 已 import ethel,直接用 `ethel.F2LedgerBody`)。单测验字段映射 + V/R/S nil + Hash 零。
-- **未做**：blob hashes(t3)/7702 authList(t4) 未 carried（ledger- 非 wire-faithful）;全量转换长跑（ecrecover ~2.6B tx,别与 bpp co-run）;`getBlockByNumber(fullTx)` 整块列表的 F2 注入（需改 RPCMarshalBlock）;MPHF hash 索引接 F2 供 getTransactionByHash。
+- **eth_ RPC 接线（已做）**：`internal/api/f2_rpc.go` `newRPCTransactionFromF2`（账本字段→RPCTransaction,hash/v/r/s 留空）+ `f2TxByNumberAndIndex`。
+  - `GetTransactionByBlockNumberAndIndex` / `GetTransactionByBlockHashAndIndex`：全 body 不可用时回退 F2 账本。
+  - `RPCMarshalBlock`（getBlockByNumber/getBlockByHash **fullTx**）：冷 body 时 transactions 数组从 F2 填(每条 tx hash 字段空;fullTx=false 的 hash 列表 F2 产不出,留空,§7)。`F2Reader()==nil` 快速门控 → 非 F2 节点零开销。
+  - api 已 import ethel,直接用 `ethel.F2LedgerBody`。单测验字段映射 + V/R/S nil + Hash 零。
+- **未做**：blob hashes(t3)/7702 authList(t4) 未 carried（ledger- 非 wire-faithful）;全量转换长跑（ecrecover ~2.6B tx,别与 bpp co-run）;**MPHF hash 索引接 F2 供 getTransactionByHash**（F1.5,转换时产 hash→(block,idx) 索引,internal/history.MPHFWriter 已验 ~8.8B/tx）。
 
 ### 维度 b — 叠加项（对 L/F1/F2 都适用，单独看收益都是个位数 %）
 
