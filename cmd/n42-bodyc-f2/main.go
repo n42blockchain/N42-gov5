@@ -25,6 +25,7 @@ import (
 	"github.com/n42blockchain/N42/internal/ethel/bodyf2"
 	"github.com/n42blockchain/N42/internal/history"
 	l3 "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -112,6 +113,7 @@ func main() {
 	start := flag.Uint64("start", 0, "start block (segment-aligned)")
 	limit := flag.Int("limit", 2, "segments to convert")
 	write := flag.Bool("write", false, "write a real F2 store (f2.cidx + f2.NNNN.cdat + f2.addr.dict) and reopen-verify it")
+	sendersDir := flag.String("senders", "", "freezer dir with a pre-computed senders table — read From from it instead of ecrecover (no CPU-bound recovery)")
 	flag.Parse()
 	if *dir == "" {
 		fmt.Fprintln(os.Stderr, "usage: n42-bodyc-f2 --dir <bodyc> [--out D] [--start N] [--limit K]")
@@ -126,6 +128,21 @@ func main() {
 	if err := os.MkdirAll(*out, 0755); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+
+	var senderTable *freezer.FreezerTable
+	if *sendersDir != "" {
+		fz, ferr := freezer.NewReadOnly(*sendersDir)
+		if ferr != nil {
+			fmt.Fprintln(os.Stderr, "open senders freezer:", ferr)
+			os.Exit(1)
+		}
+		senderTable, ferr = fz.EnsureTableCompressed("senders", "c")
+		if ferr != nil {
+			fmt.Fprintln(os.Stderr, "open senders table:", ferr)
+			os.Exit(1)
+		}
+		fmt.Printf("senders table: %d blocks covered (reading From from it, no ecrecover)\n", senderTable.Items())
 	}
 
 	dict := bodyf2.NewAddrDict()
@@ -157,11 +174,29 @@ func main() {
 				fmt.Fprintf(os.Stderr, "read %d: %v\n", n, err)
 				os.Exit(1)
 			}
-			signer := transaction.MakeSignerWithTimestamp(params.EthereumMainnetChainConfig, big.NewInt(int64(n)), 0)
+			// Prefer the pre-computed senders table (pure I/O) over ecrecover.
+			var segSenders []types.Address
+			if senderTable != nil && n < senderTable.Items() {
+				if data, derr := senderTable.Retrieve(n); derr == nil && len(data)/20 == len(body.Txs) {
+					segSenders = make([]types.Address, len(body.Txs))
+					for i := range segSenders {
+						copy(segSenders[i][:], data[i*20:(i+1)*20])
+					}
+				}
+			}
+			var signer transaction.Signer
+			if segSenders == nil {
+				signer = transaction.MakeSignerWithTimestamp(params.EthereumMainnetChainConfig, big.NewInt(int64(n)), 0)
+			}
 			var blk bodyf2.F2Block
 			var recs []srcRec
 			for ti, tx := range body.Txs {
-				from, _ := transaction.Sender(signer, tx)
+				var from types.Address
+				if segSenders != nil {
+					from = segSenders[ti]
+				} else {
+					from, _ = transaction.Sender(signer, tx)
+				}
 				blk.Txs = append(blk.Txs, toF2Tx(tx, from))
 				recs = append(recs, srcRec{from, tx})
 				if writer != nil {
