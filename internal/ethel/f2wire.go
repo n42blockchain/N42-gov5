@@ -11,9 +11,12 @@
 package ethel
 
 import (
+	"encoding/binary"
 	"fmt"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/ethel/bodyf2"
+	"github.com/n42blockchain/N42/internal/history"
 )
 
 // defaultF2Reader, if set at startup, is the process-wide F2 ledger reader
@@ -35,4 +38,33 @@ func F2LedgerBody(blockNum uint64) (*bodyf2.F2Block, error) {
 		return nil, fmt.Errorf("ethel: no F2 ledger store configured")
 	}
 	return defaultF2Reader.ReadBlock(blockNum)
+}
+
+// defaultF2HashIdx is the process-wide MPHF tx-hash -> (block,index) index that
+// lets getTransactionByHash resolve F2 ledger txs (F1.5). nil = not configured.
+var defaultF2HashIdx *history.MPHFReader
+
+// SetF2HashIndex installs the process-wide F2 tx-hash index (call once at startup).
+func SetF2HashIndex(r *history.MPHFReader) { defaultF2HashIdx = r }
+
+// F2HashIndex returns the installed index (may be nil).
+func F2HashIndex() *history.MPHFReader { return defaultF2HashIdx }
+
+// F2TxLocByHash resolves a tx hash to (block, index) via the MPHF index. The
+// 4-byte fingerprint inside the index rejects out-of-set hashes, so a false ok
+// is ~1/2^32. Returns ok=false when no index is configured or the hash is absent.
+func F2TxLocByHash(h types.Hash) (block uint64, index uint64, ok bool) {
+	if defaultF2HashIdx == nil {
+		return 0, 0, false
+	}
+	blob, found, err := defaultF2HashIdx.Get(h[:])
+	if err != nil || !found {
+		return 0, 0, false
+	}
+	b, n := binary.Uvarint(blob)
+	if n <= 0 {
+		return 0, 0, false
+	}
+	idx, _ := binary.Uvarint(blob[n:])
+	return b, idx, true
 }
