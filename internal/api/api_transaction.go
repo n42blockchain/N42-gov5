@@ -298,7 +298,8 @@ func (s *TransactionAPI) GetTransactionByBlockHashAndIndex(ctx context.Context, 
 	}
 	txs := blk.Transactions()
 	if int(index) >= len(txs) {
-		return nil
+		// Header present but body txs absent (cold body) → serve from F2.
+		return f2TxByNumberAndIndex(uint256ToUint64OrZero(blk.Number64()), uint64(index), avmtypes.ToastHash(blockHash))
 	}
 	hdr := blk.Header()
 	if hdr == nil {
