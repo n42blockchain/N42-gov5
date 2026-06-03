@@ -112,6 +112,12 @@ type witnessAggregateState struct {
 	end           uint64
 	writeWitness  bool
 	writeReceipts bool
+	// out, when non-nil, receives results in strict block order; a separate
+	// writer goroutine drains it and does the (sequential, I/O-bound) freezer
+	// write, so the EVM workers + aggregator never block on disk ("CS = ordered
+	// async write"). nil in NoOutput mode (absorb just advances the head).
+	out chan<- WitnessResult
+	ctx context.Context
 }
 
 // RunWitnessReplay drives the parallel replay end-to-end. Returns
@@ -319,6 +325,32 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		end:           end,
 		writeWitness:  cfg.WriteWitness,
 		writeReceipts: cfg.WriteReceipts,
+		ctx:           ctx,
+	}
+	// Async CS writer: the freezer write is sequential + I/O-bound; running it in
+	// its own goroutine (fed in strict block order by absorb) keeps the EVM
+	// workers + aggregator off the disk path so they stay CPU-bound. nil-batcher
+	// (NoOutput) skips it entirely.
+	var writerCh chan WitnessResult
+	writerDone := make(chan error, 1)
+	if batcher != nil {
+		writerCh = make(chan WitnessResult, chanCap)
+		agg.out = writerCh
+		go func() {
+			var werr error
+			for res := range writerCh {
+				if werr == nil {
+					if err := agg.writeOne(res); err != nil {
+						werr = err
+						cancel() // unblock absorb's select + stop workers
+					}
+				}
+				// keep draining post-error so absorb never blocks on a full chan
+			}
+			writerDone <- werr
+		}()
+	} else {
+		writerDone <- nil
 	}
 	target := end - cfg.StartBlock
 	log.Info("Replay started",
@@ -344,11 +376,13 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		close(resultCh)
 	}()
 
+	var loopErr error
 	for r := range resultCh {
 		if r.Err != nil {
 			if !cfg.ContinueOnError {
+				loopErr = fmt.Errorf("witnessreplay: %w", r.Err)
 				cancel()
-				return fmt.Errorf("witnessreplay: %w", r.Err)
+				break
 			}
 			failed++
 			// Treat as empty so aggregator's sequential counter advances.
@@ -360,8 +394,9 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		windowTxs += uint64(r.TxCount)
 		windowBlocks++
 		if err := agg.absorb(r); err != nil {
+			loopErr = err
 			cancel()
-			return err
+			break
 		}
 		if d := time.Since(lastLog); d > 10*time.Second {
 			elapsed := time.Since(t0)
@@ -381,6 +416,18 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 			lastLog = time.Now()
 			windowGas, windowTxs, windowBlocks = 0, 0, 0
 		}
+	}
+
+	// Stop the async CS writer and surface its error first (a write failure is
+	// the real cause; absorb's ctx.Canceled is only the symptom).
+	if batcher != nil {
+		close(writerCh)
+	}
+	if werr := <-writerDone; werr != nil {
+		return fmt.Errorf("cs writer: %w", werr)
+	}
+	if loopErr != nil {
+		return loopErr
 	}
 
 	if err := <-readerErr; err != nil {
@@ -417,9 +464,10 @@ func outputDescription(cfg WitnessReplayConfig) string {
 	return cfg.OutputPath
 }
 
-// absorb takes a worker result, places it in the pending map, then
-// drains pending entries in block order, writing each to the
-// outputBatcher (skipped when batcher is nil — NoOutput mode).
+// absorb takes a worker result, reorders it, and emits ready results in strict
+// block order. With an async writer (a.out != nil) it hands each ordered result
+// to the writer goroutine (which does the freezer I/O) so the aggregator never
+// blocks on disk. In NoOutput mode (a.out nil) it just advances the head.
 func (a *witnessAggregateState) absorb(r WitnessResult) error {
 	a.reorder.put(r)
 	for {
@@ -427,33 +475,11 @@ func (a *witnessAggregateState) absorb(r WitnessResult) error {
 		if !ok {
 			return nil
 		}
-		if a.batcher != nil {
-			if a.writeReceipts {
-				if err := a.batcher.addEntry(freezer.TableReceipts, "c", res.ReceiptBytes); err != nil {
-					return fmt.Errorf("addEntry receipts block %d: %w", res.BlockNum, err)
-				}
-			}
-			if err := a.batcher.addEntry(freezer.TableAccountChanges, "c", res.AcctCSBytes); err != nil {
-				return fmt.Errorf("addEntry acctcs block %d: %w", res.BlockNum, err)
-			}
-			if err := a.batcher.addEntry(freezer.TableStorageChanges, "c", res.StoCSBytes); err != nil {
-				return fmt.Errorf("addEntry storcs block %d: %w", res.BlockNum, err)
-			}
-			// Wipes column kept in 64-batch lockstep with acctcs/storcs.
-			if err := a.batcher.addEntry(freezer.TableWipes, "c", res.WipesBytes); err != nil {
-				return fmt.Errorf("addEntry wipes block %d: %w", res.BlockNum, err)
-			}
-			// Witness output is opt-in (WriteWitness=true). When on, the
-			// entry must always be emitted — even if empty for a txless
-			// block — so the witness table stays 64-batch-aligned with
-			// receipts/acctcs/storcs.
-			if a.writeWitness {
-				if err := a.batcher.addEntry(freezer.TableBlockWitness, "c", res.WitnessBytes); err != nil {
-					return fmt.Errorf("addEntry witness block %d: %w", res.BlockNum, err)
-				}
-			}
-			if _, err := a.batcher.flushFullBatches(); err != nil {
-				return fmt.Errorf("flushFullBatches block %d: %w", res.BlockNum, err)
+		if a.out != nil {
+			select {
+			case a.out <- res:
+			case <-a.ctx.Done():
+				return a.ctx.Err()
 			}
 		}
 		a.next++
@@ -461,6 +487,38 @@ func (a *witnessAggregateState) absorb(r WitnessResult) error {
 			return nil
 		}
 	}
+}
+
+// writeOne appends one block's outputs to the freezer in batch lockstep. Called
+// only by the single writer goroutine, in strict block order, so the cdat tables
+// stay 64-batch-aligned. (Same write sequence the aggregator used to do inline.)
+func (a *witnessAggregateState) writeOne(res WitnessResult) error {
+	if a.batcher == nil {
+		return nil
+	}
+	if a.writeReceipts {
+		if err := a.batcher.addEntry(freezer.TableReceipts, "c", res.ReceiptBytes); err != nil {
+			return fmt.Errorf("addEntry receipts block %d: %w", res.BlockNum, err)
+		}
+	}
+	if err := a.batcher.addEntry(freezer.TableAccountChanges, "c", res.AcctCSBytes); err != nil {
+		return fmt.Errorf("addEntry acctcs block %d: %w", res.BlockNum, err)
+	}
+	if err := a.batcher.addEntry(freezer.TableStorageChanges, "c", res.StoCSBytes); err != nil {
+		return fmt.Errorf("addEntry storcs block %d: %w", res.BlockNum, err)
+	}
+	if err := a.batcher.addEntry(freezer.TableWipes, "c", res.WipesBytes); err != nil {
+		return fmt.Errorf("addEntry wipes block %d: %w", res.BlockNum, err)
+	}
+	if a.writeWitness {
+		if err := a.batcher.addEntry(freezer.TableBlockWitness, "c", res.WitnessBytes); err != nil {
+			return fmt.Errorf("addEntry witness block %d: %w", res.BlockNum, err)
+		}
+	}
+	if _, err := a.batcher.flushFullBatches(); err != nil {
+		return fmt.Errorf("flushFullBatches block %d: %w", res.BlockNum, err)
+	}
+	return nil
 }
 
 // feedBlocks streams (header, body, witness, senders) tuples into
