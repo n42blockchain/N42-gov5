@@ -128,6 +128,17 @@
 
 > **F1.5 用 ~9 B/tx 把 `getTransactionByHash` 查回来**——代价只剩"block 列表里的 tx.hash 字段填不出"（没法从 tx 反算 hash），以及 r/s/v、getRawTransaction。F1 多花 32B/tx 只为能在 block 列表里回显 hash，且同样要那个索引。
 
+### F2 生产实现（已落地）
+
+proto 之外的生产编解码器 `internal/ethel/bodyf2`（全部单测 + 真实数据验证）：
+- `AddrDict`：全局地址↔uint32 ID + 20B/addr sidecar。
+- `EncodeSegment/DecodeSegment`：**列式**布局（同字段聚一起 + isCreate bitpack + 条件列在 type/isCreate 后），value 用科学计数法。无 R/S/V/hash，From 从 dict 读。
+- `Writer/Reader` + 真实 store：`f2.cidx`（8B/seg,缺段哨兵 0xFFFF）+ `f2.NNNN.cdat`（per-seg zstd）+ `f2.addr.dict`。
+- `cmd/n42-bodyc-f2 --write`：真实 bodyc→F2 转换 + reopen 验证。
+- **实测（blocks 20M,2 段,254万 tx）：F2 盘上 82.12 B/tx（vs L 148.7 = −44.8%，满额 −45%）；From/To/Value/Nonce/Gas vs ecrecover 0 mismatch；store 写盘 + 重开 887 抽样块 0 bad → PASS。**
+- node 接线：`ethel.SetF2Reader/F2LedgerBody` + cmd/eth-el `--history.f2dir`（opt-in）→ 节点可从 F2 store 服务账本视图 body（from/to/value/nonce/gas/input）。签名/canonical hash 不可复现（经 MPHF 索引/F1.5 另解），故 F2 不喂 witness-replay/执行（那走全 tx `GethBodyResult`）。
+- **未做**：blob hashes(t3)/7702 authList(t4) 未 carried（ledger- 非 wire-faithful）;全量转换长跑（ecrecover ~2.6B tx,别与 bpp co-run）;具体 eth_ RPC 方法返回 F2 账本（§7 语义,需 RPC 层改）。
+
 ### 维度 b — 叠加项（对 L/F1/F2 都适用，单独看收益都是个位数 %）
 
 1. **全局地址字典**：跨 segment 的 from/to/accessList-address → 3–4B 全局 ID，单例走 raw escape。预估再省 calldata+地址盘上的 3–6%。
