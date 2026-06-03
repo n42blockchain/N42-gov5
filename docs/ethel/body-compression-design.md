@@ -143,7 +143,9 @@ proto 之外的生产编解码器 `internal/ethel/bodyf2`（全部单测 + 真�
   - api 已 import ethel,直接用 `ethel.F2LedgerBody`。单测验字段映射 + V/R/S nil + Hash 零。
 - **getTransactionByHash（F1.5,已做）**：converter `--write` 产 MPHF 索引 `f2.txhash.{mphf,kv,idx}`（key=tx hash,blob=varint(block)||varint(idx),复用 `internal/history.MPHFWriter`）。`ethel.SetF2HashIndex/F2TxLocByHash` + cmd/eth-el 打开 `f2.txhash`。`GetTransactionByHash` 正常路径失败时 → `f2TxByHash`(MPHF 查 hash→(block,idx) → F2 账本 → **响应 hash=查询值回显**,r/s/v 空)。实测 124万 tx:索引 **10.79 B/tx**,查找 103,403 次 0 bad → PASS。
 - **blob(t3)/7702(t4) 字段（已做）**：`F2Tx` 加 `BlobFeeCap/BlobHashes`(t3)、`AuthList []F2Auth`(t4,保留 auth 自身 V/R/S);codec 条件列(仅 t3/t4 付费)。converter `toF2Tx` 映射;`newRPCTransactionFromF2` 填 `MaxFeePerBlobGas/BlobVersionedHashes/AuthorizationList`。round-trip 单测 + 真实 post-Dencun block(含 blob)转换 0 mismatch。
-- **未做**：全量转换长跑（ecrecover ~2.6B tx,别与 bpp co-run）;`getBlockByNumber(fullTx=false)` 的 hash 列表（F2 无 ordinal→hash,本质需存 32B,§7）。
+- **getBlockByNumber(fullTx=false) hash 列表（已做,可选）**：`bodyf2.HashWriter/HashReader` = 可选 `f2.txhashes.*` sidecar（block→[32B hashes],~32B/tx,要 wire-faithful hash 列表才留）。converter `--txhashes` 产出（复用转换时已算的 `tx.Hash()`,无需 reth）。`ethel.SetF2Hashes/F2BlockHashes` + cmd/eth-el 打开。`RPCMarshalBlock` fullTx=false 用它填 hash 列表、fullTx=true 填每条 tx hash。实测 sidecar verify 0 bad。注:source 也可来自 reth `TransactionHashNumbers`（hash→num,反向）+ `TransactionBlocks`,仓库 `internal/txlookup/reth_builder.go` 已读这两表。
+- **senders 优化（已做）**：`--senders <freezerdir>` 从预存 senders 表读 From(2510万块,无缺口),转换 I/O-bound（16s/段 vs 71s）,可与 bpp 并行。
+- **未做**：全量转换长跑前 hash 索引需流式 Append（避免 ~20亿 tx hashRecs 内存累积 OOM）。
 
 ### 维度 b — 叠加项（对 L/F1/F2 都适用，单独看收益都是个位数 %）
 

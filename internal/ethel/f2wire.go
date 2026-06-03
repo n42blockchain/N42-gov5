@@ -50,6 +50,25 @@ func SetF2HashIndex(r *history.MPHFReader) { defaultF2HashIdx = r }
 // F2HashIndex returns the installed index (may be nil).
 func F2HashIndex() *history.MPHFReader { return defaultF2HashIdx }
 
+// defaultF2Hashes is the optional per-block canonical tx-hash sidecar that lets
+// fullTx=false hash lists (and per-tx hashes in fullTx listings) be served. nil
+// = not configured (those responses omit/skip hashes).
+var defaultF2Hashes *bodyf2.HashReader
+
+// SetF2Hashes installs the process-wide F2 tx-hash sidecar (call once at startup).
+func SetF2Hashes(r *bodyf2.HashReader) { defaultF2Hashes = r }
+
+// F2Hashes returns the installed tx-hash sidecar (may be nil).
+func F2Hashes() *bodyf2.HashReader { return defaultF2Hashes }
+
+// F2BlockHashes returns the canonical tx hashes for a block from the sidecar.
+func F2BlockHashes(block uint64) ([][32]byte, error) {
+	if defaultF2Hashes == nil {
+		return nil, fmt.Errorf("ethel: no F2 tx-hash sidecar configured")
+	}
+	return defaultF2Hashes.BlockHashes(block)
+}
+
 // F2TxLocByHash resolves a tx hash to (block, index) via the MPHF index. The
 // 4-byte fingerprint inside the index rejects out-of-set hashes, so a false ok
 // is ~1/2^32. Returns ok=false when no index is configured or the hash is absent.

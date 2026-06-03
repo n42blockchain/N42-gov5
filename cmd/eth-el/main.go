@@ -259,6 +259,11 @@ func run(c *cli.Context) error {
 			ethel.SetF2HashIndex(hr)
 			log.Info("eth-el: F2 tx-hash index opened", "keys", hr.KeyCount())
 		}
+		// Optional per-block tx-hash sidecar → fullTx=false hash lists.
+		if hsr, herr := bodyf2.OpenHashReader(f2dir); herr == nil {
+			ethel.SetF2Hashes(hsr)
+			log.Info("eth-el: F2 tx-hash sidecar opened (fullTx=false hash lists)")
+		}
 	}
 
 	// EIP-4444 transparent cold reads (Full node). With a cold manifest, trimmed
