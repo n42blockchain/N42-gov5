@@ -71,6 +71,13 @@ func (b *blockBuffer) putBody(n uint64, body devp2p.BlockBody) {
 	b.mu.Unlock()
 }
 
+func (b *blockBuffer) drop(n uint64) {
+	b.mu.Lock()
+	delete(b.headers, n)
+	delete(b.bodies, n)
+	b.mu.Unlock()
+}
+
 // prune drops every header/body at or below throughEq (executed + committed).
 func (b *blockBuffer) prune(throughEq uint64) {
 	b.mu.Lock()

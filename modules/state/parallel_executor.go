@@ -89,6 +89,10 @@ func ExecuteBlockParallel(
 
 	wg.Wait()
 
+	if err := reconcileCommittedViews(numTxs, mv, base, executor, txViews, txWrittenKeys, txResults, txMu); err != nil {
+		return txResults, mv, err
+	}
+
 	return txResults, mv, nil
 }
 
@@ -146,6 +150,17 @@ func ExecuteBlockParallelF(
 
 	wg.Wait()
 
+	base, closer := factory()
+	if base == nil {
+		return txResults, mv, errors.New("ExecuteBlockParallelF: final base factory returned nil")
+	}
+	if closer != nil {
+		defer closer()
+	}
+	if err := reconcileCommittedViews(numTxs, mv, base, executor, txViews, txWrittenKeys, txResults, txMu); err != nil {
+		return txResults, mv, err
+	}
+
 	// Per-failing-tx diagnostics for convergence debugging: logs how many times
 	// each failed tx executed (incarnations), how many times its validation
 	// failed, and its final status/incarnation. Lets us tell apart "scheduler
@@ -179,6 +194,90 @@ func ExecuteBlockParallelF(
 	}
 
 	return txResults, mv, nil
+}
+
+// reconcileCommittedViews is a conservative final convergence pass for the
+// optimistic scheduler. It walks txs in order, validates each read set against
+// the final MV state built so far, and re-executes stale txs serially with a new
+// incarnation. This preserves correctness for high-contention read/modify/write
+// workloads even if the cooperative scheduler reached Done before every
+// downstream invalidation was observed.
+func reconcileCommittedViews(
+	numTxs int,
+	mv *MVHashMap,
+	base MVBaseReader,
+	executor func(int) TxExecutor,
+	txViews []*MVStateView,
+	txWrittenKeys [][]string,
+	txResults []Result,
+	txMu []sync.Mutex,
+) error {
+	for pass := 0; pass <= numTxs; pass++ {
+		changed := false
+		for txIdx := 0; txIdx < numTxs; txIdx++ {
+			txMu[txIdx].Lock()
+			view := txViews[txIdx]
+			txMu[txIdx].Unlock()
+			if view != nil && view.Validate() {
+				continue
+			}
+			if err := rerunTxFinal(txIdx, mv, base, executor, txViews, txWrittenKeys, txResults, txMu); err != nil {
+				return err
+			}
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
+	}
+	return ErrDependencyCycle
+}
+
+func rerunTxFinal(
+	txIdx int,
+	mv *MVHashMap,
+	base MVBaseReader,
+	executor func(int) TxExecutor,
+	txViews []*MVStateView,
+	txWrittenKeys [][]string,
+	txResults []Result,
+	txMu []sync.Mutex,
+) error {
+	txMu[txIdx].Lock()
+	prevKeys := txWrittenKeys[txIdx]
+	prevView := txViews[txIdx]
+	txMu[txIdx].Unlock()
+
+	inc := uint32(0)
+	if prevView != nil {
+		inc = prevView.incarnation + 1
+	}
+	view := NewMVStateView(mv, base, txIdx, inc)
+	err := executor(txIdx)(view)
+	if view.AbortPending() {
+		return ErrDependencyCycle
+	}
+
+	keys := view.FlushWrites()
+	sort.Strings(keys)
+	if prevKeys != nil {
+		newKeyset := make(map[string]struct{}, len(keys))
+		for _, k := range keys {
+			newKeyset[k] = struct{}{}
+		}
+		for _, pk := range prevKeys {
+			if _, keep := newKeyset[pk]; !keep {
+				mv.Delete([]byte(pk), txIdx)
+			}
+		}
+	}
+
+	txMu[txIdx].Lock()
+	txViews[txIdx] = view
+	txWrittenKeys[txIdx] = keys
+	txResults[txIdx] = Result{TxIdx: txIdx, Err: err}
+	txMu[txIdx].Unlock()
+	return nil
 }
 
 // runWorker is the shared Block-STM worker loop: pull a task, execute or
