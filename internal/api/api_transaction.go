@@ -287,6 +287,13 @@ func (s *TransactionAPI) GetTransactionByHash(ctx context.Context, hash avmcommo
 		return newRPCPendingTransaction(tx, currentBlock.Header()), nil
 	}
 
+	// F2 ledger fallback (F1.5): the full tx isn't in the index/store, but the
+	// MPHF tx-hash index can resolve it to (block,index) → serve the F2 ledger
+	// view, echoing the queried hash. r/s/v stay empty (F2 has no signature).
+	if t := s.f2TxByHash(avmtypes.ToastHash(hash)); t != nil {
+		return t, nil
+	}
+
 	return nil, nil
 }
 

@@ -9,10 +9,12 @@
 package main
 
 import (
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"math/big"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -21,12 +23,45 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/internal/ethel/bodyf2"
+	"github.com/n42blockchain/N42/internal/history"
+	l3 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/params"
 )
 
 const segSize = 8192
 
+type hashRec struct {
+	h          types.Hash
+	block, idx uint64
+}
+
 var zenc, _ = zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
+
+// buildHashIndex writes an MPHF tx-hash -> (block,index) index (f2.txhash.*) so
+// getTransactionByHash can resolve F2 ledger txs (F1.5). Blob = varint(block) ||
+// varint(index). Returns the index size.
+func buildHashIndex(outDir string, recs []hashRec) (int64, error) {
+	mw, err := history.NewMPHFWriter(history.MPHFWriterOpts{
+		BaseDir: outDir, Prefix: "f2.txhash", PageSize: 64,
+		TmpDir: filepath.Join(outDir, "etl-txhash"), KeyCount: len(recs), EtlBufMB: 256, Logger: l3.Root(),
+	})
+	if err != nil {
+		return 0, err
+	}
+	var b [binary.MaxVarintLen64 * 2]byte
+	for _, hr := range recs {
+		n := binary.PutUvarint(b[:], hr.block)
+		n += binary.PutUvarint(b[n:], hr.idx)
+		if err := mw.Append(hr.h[:], b[:n]); err != nil {
+			return 0, err
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return 0, err
+	}
+	st := mw.Stats()
+	return int64(st.MphfSize + st.KvSize + st.IdxSize), nil
+}
 
 func toF2Tx(tx *transaction.Transaction, from types.Address) bodyf2.F2Tx {
 	f := bodyf2.F2Tx{
@@ -82,6 +117,7 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	var hashRecs []hashRec
 	startSeg := *start / segSize
 	var nTx int64
 	var f2Bytes int64
@@ -105,10 +141,13 @@ func main() {
 			signer := transaction.MakeSignerWithTimestamp(params.EthereumMainnetChainConfig, big.NewInt(int64(n)), 0)
 			var blk bodyf2.F2Block
 			var recs []srcRec
-			for _, tx := range body.Txs {
+			for ti, tx := range body.Txs {
 				from, _ := transaction.Sender(signer, tx)
 				blk.Txs = append(blk.Txs, toF2Tx(tx, from))
 				recs = append(recs, srcRec{from, tx})
+				if writer != nil {
+					hashRecs = append(hashRecs, hashRec{tx.Hash(), n, uint64(ti)})
+				}
 				nTx++
 			}
 			for _, w := range body.Withdrawals {
@@ -157,6 +196,38 @@ func main() {
 		if err := writer.Close(); err != nil {
 			fmt.Fprintln(os.Stderr, "writer close:", err)
 			os.Exit(1)
+		}
+		// Build the tx-hash -> (block,index) MPHF index (F1.5: getTransactionByHash).
+		idxBytes, err := buildHashIndex(*out, hashRecs)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "build hash index:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("tx-hash MPHF index: %d keys, %d B (%.2f B/tx)\n", len(hashRecs), idxBytes, float64(idxBytes)/float64(max1(nTx)))
+		// Verify a sample of hash lookups resolve to the right (block,index).
+		if hr, herr := history.OpenMPHF(*out, "f2.txhash"); herr == nil {
+			step := 1
+			if len(hashRecs) > 100000 {
+				step = len(hashRecs) / 100000
+			}
+			hChecked, hBad := 0, 0
+			for i := 0; i < len(hashRecs); i += step {
+				rec := hashRecs[i]
+				blob, ok, _ := hr.Get(rec.h[:])
+				hChecked++
+				if !ok {
+					hBad++
+					continue
+				}
+				b, n := binary.Uvarint(blob)
+				idx, _ := binary.Uvarint(blob[n:])
+				if b != rec.block || idx != rec.idx {
+					hBad++
+				}
+			}
+			hr.Close()
+			fmt.Printf("tx-hash index lookup: checked=%d bad=%d → %s\n", hChecked, hBad,
+				map[bool]string{true: "PASS", false: "FAIL"}[hBad == 0])
 		}
 		// Reopen the written store and verify a sample against the source.
 		rd, err := bodyf2.OpenReader(*out)

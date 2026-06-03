@@ -91,3 +91,25 @@ func f2TxByNumberAndIndex(blockNumber uint64, index uint64, blockHash types.Hash
 	}
 	return newRPCTransactionFromF2(&fb.Txs[index], blockHash, blockNumber, index)
 }
+
+// f2TxByHash resolves a tx hash via the MPHF index (F1.5) and serves its F2
+// ledger view. The response Hash is the queried hash (echo — the caller
+// supplied it), so getTransactionByHash returns the right hash even though F2
+// does not store it. Returns nil if no index is configured or the hash is absent.
+func (s *TransactionAPI) f2TxByHash(h types.Hash) *RPCTransaction {
+	block, index, ok := ethel.F2TxLocByHash(h)
+	if !ok {
+		return nil
+	}
+	fb, err := ethel.F2LedgerBody(block)
+	if err != nil || index >= uint64(len(fb.Txs)) {
+		return nil
+	}
+	var bh types.Hash
+	if hdr := s.api.BlockChain().GetHeaderByNumber(uint256.NewInt(block)); hdr != nil {
+		bh = hdr.Hash()
+	}
+	r := newRPCTransactionFromF2(&fb.Txs[index], bh, block, index)
+	r.Hash = avmtypes.FromastHash(h) // echo the queried canonical hash
+	return r
+}

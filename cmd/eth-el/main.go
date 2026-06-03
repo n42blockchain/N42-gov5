@@ -40,6 +40,7 @@ import (
 	"github.com/n42blockchain/N42/internal/ethel/fetch"
 	"github.com/n42blockchain/N42/internal/ethel/snapshotprestart"
 	"github.com/n42blockchain/N42/internal/ethel/snapshotreader"
+	"github.com/n42blockchain/N42/internal/history"
 	"github.com/n42blockchain/N42/internal/sync/torrentsync"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/state"
@@ -253,6 +254,11 @@ func run(c *cli.Context) error {
 		}
 		ethel.SetF2Reader(f2r)
 		log.Info("eth-el: F2 ledger store opened", "dir", f2dir, "segments", f2r.Segments())
+		// Optional tx-hash -> (block,index) MPHF index → getTransactionByHash (F1.5).
+		if hr, herr := history.OpenMPHF(f2dir, "f2.txhash"); herr == nil {
+			ethel.SetF2HashIndex(hr)
+			log.Info("eth-el: F2 tx-hash index opened", "keys", hr.KeyCount())
+		}
 	}
 
 	// EIP-4444 transparent cold reads (Full node). With a cold manifest, trimmed
