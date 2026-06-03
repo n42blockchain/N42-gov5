@@ -34,6 +34,7 @@ import (
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -44,22 +45,44 @@ func RPCMarshalBlock(block block.IBlock, chain common.IBlockChain, cfg *params.C
 	}
 
 	if inclTx {
-		formatTx := func(tx *transaction.Transaction) (interface{}, error) {
-			hash := tx.Hash()
-			return avmtypes.FromastHash(hash), nil
-		}
-		if fullTx {
-			formatTx = func(tx *transaction.Transaction) (interface{}, error) {
-				hash := tx.Hash()
-				return newRPCTransactionFromBlockHash(block, hash, cfg, blockHashOverride), nil
+		num := uint256ToUint64OrZero(block.Number64())
+		txs := block.Transactions()
+		var transactions []interface{}
+
+		// F2 ledger fallback: the full body is unavailable (an EIP-4444 Full
+		// node past its window, or an F2-only node) but the ledger view is in
+		// the F2 store. Only fullTx can be served — a hash-only listing needs
+		// canonical tx hashes that F2 cannot reproduce (see §7).
+		if len(txs) == 0 && fullTx && ethel.F2Reader() != nil {
+			if fb, ferr := ethel.F2LedgerBody(num); ferr == nil && len(fb.Txs) > 0 {
+				bh := block.Hash()
+				if blockHashOverride != nil {
+					bh = *blockHashOverride
+				}
+				transactions = make([]interface{}, len(fb.Txs))
+				for i := range fb.Txs {
+					transactions[i] = newRPCTransactionFromF2(&fb.Txs[i], bh, num, uint64(i))
+				}
 			}
 		}
-		txs := block.Transactions()
-		transactions := make([]interface{}, len(txs))
-		var err error
-		for i, tx := range txs {
-			if transactions[i], err = formatTx(tx); err != nil {
-				return nil, err
+
+		if transactions == nil {
+			formatTx := func(tx *transaction.Transaction) (interface{}, error) {
+				hash := tx.Hash()
+				return avmtypes.FromastHash(hash), nil
+			}
+			if fullTx {
+				formatTx = func(tx *transaction.Transaction) (interface{}, error) {
+					hash := tx.Hash()
+					return newRPCTransactionFromBlockHash(block, hash, cfg, blockHashOverride), nil
+				}
+			}
+			transactions = make([]interface{}, len(txs))
+			var err error
+			for i, tx := range txs {
+				if transactions[i], err = formatTx(tx); err != nil {
+					return nil, err
+				}
 			}
 		}
 		fields["transactions"] = transactions
