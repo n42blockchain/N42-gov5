@@ -30,6 +30,7 @@ import (
 	"github.com/n42blockchain/N42/conf"
 	storagetorrent "github.com/n42blockchain/N42/internal/distributed/storage/torrent"
 	"github.com/n42blockchain/N42/internal/ethel"
+	"github.com/n42blockchain/N42/internal/ethel/bodyf2"
 	"github.com/n42blockchain/N42/internal/ethel/bootstrap"
 	"github.com/n42blockchain/N42/internal/ethel/catchup"
 	"github.com/n42blockchain/N42/internal/ethel/coldresolve"
@@ -110,6 +111,7 @@ func flags() []cli.Flag {
 		&cli.StringFlag{Name: "history.seed.prefixes", Usage: "Comma list of file prefixes to seed", Value: "bodyc,headerc,receipts"},
 		&cli.StringFlag{Name: "history.seed.manifest", Usage: "Seed manifest output path (archive node)", Value: "seed-manifest.json"},
 		&cli.DurationFlag{Name: "history.seed.interval", Usage: "Re-seed interval; the active (growing) file is re-seeded each pass", Value: 168 * time.Hour},
+		&cli.StringFlag{Name: "history.f2dir", Usage: "F2 (no-signature) body store dir. When set, the node can serve ledger bodies (from/to/value/nonce/gas/input) from it — ~45% smaller, no sig/hash"},
 
 		// Caplin (embedded CL). Inert unless built with -tags n42el.
 		&cli.BoolFlag{Name: "caplin.enabled", Usage: "Run an embedded Caplin consensus layer (requires -tags n42el)"},
@@ -239,6 +241,19 @@ func run(c *cli.Context) error {
 		)
 	}
 	fetcher := fetch.NewMultiSourceFetcher(fetchers...)
+
+	// F2 ledger store (no-signature bodies, ~45% smaller). When configured, the
+	// node opens it and can serve ledger body fields (from/to/value/nonce/gas/
+	// input) from it; signatures and canonical tx hashes are not reproducible
+	// (served via the MPHF hash index / F1.5, separately).
+	if f2dir := c.String("history.f2dir"); f2dir != "" {
+		f2r, err := bodyf2.OpenReader(f2dir)
+		if err != nil {
+			return fmt.Errorf("open F2 store %q: %w", f2dir, err)
+		}
+		ethel.SetF2Reader(f2r)
+		log.Info("eth-el: F2 ledger store opened", "dir", f2dir, "segments", f2r.Segments())
+	}
 
 	// EIP-4444 transparent cold reads (Full node). With a cold manifest, trimmed
 	// cold body segments are fetched on demand — over torrent (1-of-N, any
