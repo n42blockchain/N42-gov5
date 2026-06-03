@@ -257,6 +257,11 @@ func (p *chaindataProvider) CurrentHead() (*block.Header, types.Hash, error) {
 	v, _ := tx.GetOne(kv.SyncStageProgress, progressKey)
 	if len(v) == 8 {
 		num := binary.BigEndian.Uint64(v)
+		if canon, err := rawdb.ReadCanonicalHash(tx, num); err == nil && canon != (types.Hash{}) {
+			if hdr := rawdb.ReadHeader(tx, canon, num); hdr != nil {
+				return hdr, canon, nil
+			}
+		}
 		// Status handshake reports our REAL head:
 		//   - Time → wall-clock so EIP-2124 ForkID lands on the current
 		//     Pectra (peers expect this).

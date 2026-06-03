@@ -14,8 +14,9 @@
 //     to per-account storage tries for full EIP-1186 parity)
 //
 // Limitations (documented; will be addressed in subsequent phases):
-//   - Historical proofs (blockNrOrHash != latest) return an error
-//     (Phase D.4 will integrate historicalstate for as-of queries)
+//   - Historical block requests return the latest trie proof and expose
+//     state-as-of values via historicalstate helpers; true block-N Merkle
+//     proof rebuilds are still Phase D.4.1 work.
 //   - Inline siblings in the proof path trigger ScanAccounts/Storage
 //     (SLOW — ~30s per inline sibling on reth-scale plain state)
 

@@ -34,7 +34,7 @@ func buildTinyGeneratorForProvider(t *testing.T) (*mptproof.Generator, [][20]byt
 		addrs[i] = a
 		v := make([]byte, 64)
 		for k := range v {
-			v[k] = byte((i + k) * 7 ^ 0x55)
+			v[k] = byte((i+k)*7 ^ 0x55)
 		}
 		values[a] = v
 		acctEntries[i] = [2][]byte{a[:], v}
@@ -119,8 +119,8 @@ func TestMPTProofProvider_Descriptor(t *testing.T) {
 	if desc.StorageHash != StorageHashSemanticsCanonicalTrieRoot {
 		t.Errorf("storage hash: got %v want canonical-trie-root", desc.StorageHash)
 	}
-	if desc.SupportsHistorical {
-		t.Error("MVP should not yet claim SupportsHistorical (Phase D.4)")
+	if !desc.SupportsHistorical {
+		t.Error("MPT provider should advertise historical state-as-of support")
 	}
 }
 

@@ -619,14 +619,23 @@ func (d *Downloader) executeRange(ctx context.Context, local uint64, headers []*
 		if !ok {
 			break // body missing — refetch next round
 		}
+		if err := d.validateHeaderLink(tx, hdr, n); err != nil {
+			log.Warn("eldevp2p: header link invalid — refetch",
+				"block", n, "hash", hdr.Hash().Hex(), "parent", hdr.ParentHash.Hex(), "err", err)
+			d.buffer.drop(n)
+			tx.Rollback()
+			return committed - local, committed
+		}
 		blk, withdrawals, aerr := assembleBlock(hdr, body)
 		if aerr != nil {
 			log.Warn("eldevp2p: assemble block failed", "block", n, "err", aerr)
+			d.buffer.drop(n)
 			break
 		}
 		if got := hash.DeriveShaErigon(rawTxList(unwrapWireTxs(body.Transactions))); got != hdr.TxHash {
 			log.Warn("eldevp2p: body txRoot mismatch — refetch",
 				"block", n, "got", got.Hex(), "want", hdr.TxHash.Hex())
+			d.buffer.drop(n)
 			break
 		}
 		// Per-block root verification (ExecutePayloadFromWire computes the
@@ -675,6 +684,32 @@ func (d *Downloader) executeRange(ctx context.Context, local uint64, headers []*
 		tx.Rollback()
 	}
 	return committed - local, committed
+}
+
+func (d *Downloader) validateHeaderLink(tx kv.Tx, hdr *block.Header, n uint64) error {
+	if hdr == nil {
+		return errors.New("nil header")
+	}
+	if n == 0 {
+		return nil
+	}
+	parentHash, err := rawdb.ReadCanonicalHash(tx, n-1)
+	if err != nil {
+		return fmt.Errorf("read parent canonical hash %d: %w", n-1, err)
+	}
+	if parentHash == (types.Hash{}) {
+		return fmt.Errorf("missing canonical parent hash at %d", n-1)
+	}
+	if hdr.ParentHash != parentHash {
+		return fmt.Errorf("parent mismatch: got %s want %s", hdr.ParentHash.Hex(), parentHash.Hex())
+	}
+	if existing, err := rawdb.ReadCanonicalHash(tx, n); err != nil {
+		return fmt.Errorf("read existing canonical hash %d: %w", n, err)
+	} else if existing != (types.Hash{}) && existing != hdr.Hash() {
+		return fmt.Errorf("canonical hash collision at %d: existing %s new %s",
+			n, existing.Hex(), hdr.Hash().Hex())
+	}
+	return nil
 }
 
 // merkleProgressKey marks the head of the last completed MerkleStageIncremental
@@ -899,19 +934,15 @@ func (d *Downloader) backfillBlockhashWindow(ctx context.Context) {
 		from = local - window
 	}
 	// Already covered (head advanced past the migration gap, or a prior run
-	// backfilled): the bottom-of-window header resolves canonically.
-	if d.haveHeader(ctx, from) {
+	// backfilled): every header in the BLOCKHASH window resolves canonically.
+	if d.haveHeaderRange(ctx, from, local) {
 		d.backfilled = true
 		return
 	}
-	pp := d.pickPeer(local)
-	if pp == nil {
-		return // no peer covers the head yet; retry next round
-	}
-	raw, err := d.requestHeaders(ctx, pp.id, pp.rw, from, local-from+1)
-	d.releasePeer(pp)
-	if err != nil || len(raw) == 0 {
-		log.Warn("eldevp2p: blockhash-window backfill fetch failed", "from", from, "to", local, "err", err)
+	headers := d.fetchHeaderRange(ctx, from, local)
+	if err := d.validateBackfillHeaders(ctx, from, local, headers); err != nil {
+		log.Warn("eldevp2p: blockhash-window backfill incomplete/invalid",
+			"from", from, "to", local, "got", len(headers), "err", err)
 		return
 	}
 	tx, err := d.exec.RwDB().BeginRw(ctx)
@@ -920,42 +951,122 @@ func (d *Downloader) backfillBlockhashWindow(ctx context.Context) {
 	}
 	defer tx.Rollback()
 	written := 0
-	for _, r := range raw {
-		h, derr := ethel.DecodeUncleHeader(r)
-		if derr != nil {
-			continue
-		}
-		num := h.Number64().Uint64()
-		if num < from || num > local {
-			continue
-		}
+	for num := from; ; num++ {
+		h := headers[num]
 		rawdb.WriteHeader(tx, h)
 		if werr := rawdb.WriteCanonicalHash(tx, h.Hash(), num); werr != nil {
 			log.Warn("eldevp2p: backfill canonical-hash write failed", "n", num, "err", werr)
 			return
 		}
 		written++
+		if num == local {
+			break
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		log.Warn("eldevp2p: blockhash-window backfill commit failed", "err", err)
 		return
 	}
-	// Only consider it done if the bottom of the window is now resolvable; a
+	// Only consider it done if every header in the window is now resolvable; a
 	// partial peer reply leaves the flag clear so the next round retries.
-	if d.haveHeader(ctx, from) {
+	if d.haveHeaderRange(ctx, from, local) {
 		d.backfilled = true
 	}
 	log.Info("eldevp2p: backfilled blockhash-window headers", "from", from, "to", local, "written", written, "complete", d.backfilled)
 }
 
-func (d *Downloader) haveHeader(ctx context.Context, num uint64) bool {
+func (d *Downloader) fetchHeaderRange(ctx context.Context, from, to uint64) map[uint64]*block.Header {
+	out := make(map[uint64]*block.Header, to-from+1)
+	for start := from; start <= to; start += headersPerBatch {
+		amount := uint64(headersPerBatch)
+		if to-start+1 < amount {
+			amount = to - start + 1
+		}
+		end := start + amount - 1
+		pp := d.pickPeer(end)
+		if pp == nil {
+			return out
+		}
+		raw, err := d.requestHeaders(ctx, pp.id, pp.rw, start, amount)
+		d.releasePeer(pp)
+		if err != nil {
+			log.Warn("eldevp2p: blockhash-window header chunk fetch failed",
+				"from", start, "to", end, "err", err)
+			return out
+		}
+		for _, r := range raw {
+			h, derr := ethel.DecodeUncleHeader(r)
+			if derr != nil {
+				continue
+			}
+			num := h.Number64().Uint64()
+			if num >= start && num <= end {
+				out[num] = h
+			}
+		}
+	}
+	return out
+}
+
+func (d *Downloader) validateBackfillHeaders(ctx context.Context, from, to uint64, headers map[uint64]*block.Header) error {
+	tx, err := d.exec.RwDB().BeginRo(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var prevHash types.Hash
+	if from > 0 {
+		prevHash, _ = rawdb.ReadCanonicalHash(tx, from-1)
+	}
+	for num := from; ; num++ {
+		h := headers[num]
+		if h == nil {
+			return fmt.Errorf("missing header %d", num)
+		}
+		if num == from {
+			if prevHash != (types.Hash{}) && h.ParentHash != prevHash {
+				return fmt.Errorf("header %d parent mismatch: got %s want %s",
+					num, h.ParentHash.Hex(), prevHash.Hex())
+			}
+		} else {
+			parent := headers[num-1]
+			if parent == nil {
+				return fmt.Errorf("missing parent header %d", num-1)
+			}
+			if h.ParentHash != parent.Hash() {
+				return fmt.Errorf("header %d parent mismatch: got %s want %s",
+					num, h.ParentHash.Hex(), parent.Hash().Hex())
+			}
+		}
+		if existing, e := rawdb.ReadCanonicalHash(tx, num); e != nil {
+			return e
+		} else if existing != (types.Hash{}) && existing != h.Hash() {
+			return fmt.Errorf("existing canonical hash mismatch at %d: got %s new %s",
+				num, existing.Hex(), h.Hash().Hex())
+		}
+		if num == to {
+			break
+		}
+	}
+	return nil
+}
+
+func (d *Downloader) haveHeaderRange(ctx context.Context, from, to uint64) bool {
 	tx, err := d.exec.RwDB().BeginRo(ctx)
 	if err != nil {
 		return false
 	}
 	defer tx.Rollback()
-	h, _ := rawdb.ReadCanonicalHash(tx, num)
-	return h != (types.Hash{})
+	for num := from; ; num++ {
+		h, _ := rawdb.ReadCanonicalHash(tx, num)
+		if h == (types.Hash{}) {
+			return false
+		}
+		if num == to {
+			return true
+		}
+	}
 }
 
 // --- block assembly ------------------------------------------------------
