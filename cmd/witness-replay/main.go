@@ -22,6 +22,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"syscall"
 
 	"github.com/c2h5oh/datasize"
@@ -58,7 +59,9 @@ func main() {
 			&cli.StringFlag{Name: "senders", Usage: "Optional pre-computed senders freezer dir (avoids ecrecover)"},
 			&cli.Uint64Flag{Name: "start", Value: 0, Usage: "Start block (inclusive)"},
 			&cli.Uint64Flag{Name: "end", Value: 0, Usage: "End block (exclusive); 0 = all available witness items"},
-			&cli.IntFlag{Name: "workers", Value: 8, Usage: "Number of parallel replay workers. Default 8 — values >= 16 can stall mid-run on DeFi-era blocks (~10M+) because the slowest worker holds back the aggregator, the rest pile results into the pending map, heap grows past 10 GB, GC STW stretches into seconds, and the slow worker gets even slower. Raise only on cheap pre-DeFi ranges or after profiling cgo contention."},
+			&cli.IntFlag{Name: "workers", Value: 8, Usage: "Number of parallel replay workers. The reorder buffer (in-order emit) is heap-bounded by the small channel cap (256); for high worker counts (e.g. 32) ALSO pass --gogc 300 --mem-limit-gb 16 so GC stays infrequent + concurrent and doesn't steal CPU from workers on heavy DeFi blocks (the old >=16 stall was a GC-frequency feedback loop, not a hard limit)."},
+			&cli.IntFlag{Name: "gogc", Value: 0, Usage: "runtime GOGC (debug.SetGCPercent). 0 = Go default (100). For 32-worker runs set ~300 to cut GC frequency."},
+			&cli.IntFlag{Name: "mem-limit-gb", Value: 0, Usage: "soft heap ceiling in GiB (debug.SetMemoryLimit). 0 = off. Set ~16 with high --gogc so the heap stays capped and GC stays concurrent (no multi-second STW)."},
 			&cli.BoolFlag{Name: "no-output", Usage: "Skip cdat writes (smoke / throughput tests). Workers still verify gas per block."},
 			&cli.BoolFlag{Name: "skip-verify", Usage: "Skip per-block gas verification. Useful when the witness was recorded by a different ProcessBlock version (state-read order drift produces gas mismatches that aren't a framework bug)."},
 			&cli.BoolFlag{Name: "continue-on-error", Usage: "Keep replaying past per-block failures (logged + counted). Throughput measurement against a possibly-stale witness needs this; production runs should leave it false so any divergence halts immediately."},
@@ -84,6 +87,19 @@ func run(c *cli.Context) error {
 	sendersPath := c.String("senders")
 	start := c.Uint64("start")
 	end := c.Uint64("end")
+	// GC tuning — the witness aggregator must emit in block order, so fast
+	// workers pile out-of-order results in the reorder buffer; at high worker
+	// counts a heavy DeFi block makes the GC run often and steal CPU from
+	// workers (mark-assist), spiralling. A higher GOGC cuts GC frequency and a
+	// soft memory limit caps the heap so GC stays concurrent (no multi-second
+	// STW). Defaults are Go's (no change); set these for 32-worker runs, e.g.
+	// --gogc 300 --mem-limit-gb 16.
+	if g := c.Int("gogc"); g > 0 {
+		debug.SetGCPercent(g)
+	}
+	if m := c.Int("mem-limit-gb"); m > 0 {
+		debug.SetMemoryLimit(int64(m) << 30)
+	}
 	workers := c.Int("workers")
 	if workers <= 0 {
 		workers = runtime.NumCPU()

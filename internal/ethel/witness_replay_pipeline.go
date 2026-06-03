@@ -106,11 +106,11 @@ type WitnessReplayConfig struct {
 // witnessAggregateState owns the outputBatcher and is the only thing
 // that writes to it (sequentially, in block order).
 type witnessAggregateState struct {
-	batcher      *outputBatcher
-	pending      map[uint64]WitnessResult
-	next         uint64
-	end          uint64
-	writeWitness bool
+	batcher       *outputBatcher
+	reorder       *reorderBuffer
+	next          uint64
+	end           uint64
+	writeWitness  bool
 	writeReceipts bool
 }
 
@@ -310,12 +310,14 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 	}()
 
 	// 6. Aggregator (this goroutine).
+	// Reorder window ≥ the max out-of-order spread (reader feeds chanCap ahead +
+	// Workers in flight); generous margin so the overflow map stays empty.
 	agg := &witnessAggregateState{
-		batcher:      batcher,
-		pending:      make(map[uint64]WitnessResult),
-		next:         feedStart,
-		end:          end,
-		writeWitness: cfg.WriteWitness,
+		batcher:       batcher,
+		reorder:       newReorderBuffer(chanCap + cfg.Workers + 256),
+		next:          feedStart,
+		end:           end,
+		writeWitness:  cfg.WriteWitness,
 		writeReceipts: cfg.WriteReceipts,
 	}
 	target := end - cfg.StartBlock
@@ -419,9 +421,9 @@ func outputDescription(cfg WitnessReplayConfig) string {
 // drains pending entries in block order, writing each to the
 // outputBatcher (skipped when batcher is nil — NoOutput mode).
 func (a *witnessAggregateState) absorb(r WitnessResult) error {
-	a.pending[r.BlockNum] = r
+	a.reorder.put(r)
 	for {
-		res, ok := a.pending[a.next]
+		res, ok := a.reorder.take(a.next)
 		if !ok {
 			return nil
 		}
@@ -454,7 +456,6 @@ func (a *witnessAggregateState) absorb(r WitnessResult) error {
 				return fmt.Errorf("flushFullBatches block %d: %w", res.BlockNum, err)
 			}
 		}
-		delete(a.pending, a.next)
 		a.next++
 		if a.next >= a.end {
 			return nil
