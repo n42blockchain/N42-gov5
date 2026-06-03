@@ -114,6 +114,7 @@ func main() {
 	limit := flag.Int("limit", 2, "segments to convert")
 	write := flag.Bool("write", false, "write a real F2 store (f2.cidx + f2.NNNN.cdat + f2.addr.dict) and reopen-verify it")
 	sendersDir := flag.String("senders", "", "freezer dir with a pre-computed senders table — read From from it instead of ecrecover (no CPU-bound recovery)")
+	txhashes := flag.Bool("txhashes", false, "also write the optional per-block tx-hash sidecar (f2.txhashes.*) so fullTx=false hash lists serve (+32 B/tx)")
 	flag.Parse()
 	if *dir == "" {
 		fmt.Fprintln(os.Stderr, "usage: n42-bodyc-f2 --dir <bodyc> [--out D] [--start N] [--limit K]")
@@ -154,6 +155,13 @@ func main() {
 		}
 	}
 	var hashRecs []hashRec
+	var hashWriter *bodyf2.HashWriter
+	if *write && *txhashes {
+		if hashWriter, err = bodyf2.NewHashWriter(*out); err != nil {
+			fmt.Fprintln(os.Stderr, "new hash writer:", err)
+			os.Exit(1)
+		}
+	}
 	startSeg := *start / segSize
 	var nTx int64
 	var f2Bytes int64
@@ -163,6 +171,7 @@ func main() {
 	for s := 0; s < *limit; s++ {
 		segStart := (startSeg + uint64(s)) * segSize
 		var blocks []bodyf2.F2Block
+		var segHashes [][][32]byte
 		type srcRec struct {
 			from types.Address
 			tx   *transaction.Transaction
@@ -190,6 +199,7 @@ func main() {
 			}
 			var blk bodyf2.F2Block
 			var recs []srcRec
+			var blkHashes [][32]byte
 			for ti, tx := range body.Txs {
 				var from types.Address
 				if segSenders != nil {
@@ -200,7 +210,13 @@ func main() {
 				blk.Txs = append(blk.Txs, toF2Tx(tx, from))
 				recs = append(recs, srcRec{from, tx})
 				if writer != nil {
-					hashRecs = append(hashRecs, hashRec{tx.Hash(), n, uint64(ti)})
+					th := tx.Hash()
+					hashRecs = append(hashRecs, hashRec{th, n, uint64(ti)})
+					if hashWriter != nil {
+						var h [32]byte
+						copy(h[:], th[:])
+						blkHashes = append(blkHashes, h)
+					}
 				}
 				nTx++
 			}
@@ -211,6 +227,9 @@ func main() {
 			}
 			blocks = append(blocks, blk)
 			srcByBlock = append(srcByBlock, recs)
+			if hashWriter != nil {
+				segHashes = append(segHashes, blkHashes)
+			}
 		}
 		segNum := startSeg + uint64(s)
 		raw := bodyf2.EncodeSegment(blocks, dict)
@@ -218,6 +237,12 @@ func main() {
 		if writer != nil {
 			if err := writer.AppendSegment(segNum, blocks); err != nil {
 				fmt.Fprintln(os.Stderr, "append segment:", err)
+				os.Exit(1)
+			}
+		}
+		if hashWriter != nil {
+			if err := hashWriter.AppendSegment(segNum, segHashes); err != nil {
+				fmt.Fprintln(os.Stderr, "append hash segment:", err)
 				os.Exit(1)
 			}
 		}
@@ -251,6 +276,13 @@ func main() {
 			fmt.Fprintln(os.Stderr, "writer close:", err)
 			os.Exit(1)
 		}
+		if hashWriter != nil {
+			if err := hashWriter.Close(); err != nil {
+				fmt.Fprintln(os.Stderr, "hash writer close:", err)
+				os.Exit(1)
+			}
+			fmt.Println("tx-hash sidecar f2.txhashes.* written (fullTx=false hash lists)")
+		}
 		// Build the tx-hash -> (block,index) MPHF index (F1.5: getTransactionByHash).
 		idxBytes, err := buildHashIndex(*out, hashRecs)
 		if err != nil {
@@ -282,6 +314,33 @@ func main() {
 			hr.Close()
 			fmt.Printf("tx-hash index lookup: checked=%d bad=%d → %s\n", hChecked, hBad,
 				map[bool]string{true: "PASS", false: "FAIL"}[hBad == 0])
+		}
+		// Verify the optional per-block tx-hash sidecar vs source tx.Hash().
+		if hashWriter != nil {
+			if hsr, e := bodyf2.OpenHashReader(*out); e == nil {
+				hsChecked, hsBad := 0, 0
+				for s := 0; s < *limit; s++ {
+					n := (startSeg+uint64(s))*segSize + 1
+					got, gerr := hsr.BlockHashes(n)
+					body, berr := br.ReadBody(n)
+					if gerr != nil || berr != nil || len(got) != len(body.Txs) {
+						hsBad++
+						continue
+					}
+					for ti, tx := range body.Txs {
+						hsChecked++
+						var th [32]byte
+						h := tx.Hash()
+						copy(th[:], h[:])
+						if got[ti] != th {
+							hsBad++
+						}
+					}
+				}
+				hsr.Close()
+				fmt.Printf("tx-hash sidecar verify: checked=%d bad=%d → %s\n", hsChecked, hsBad,
+					map[bool]string{true: "PASS", false: "FAIL"}[hsBad == 0])
+			}
 		}
 		// Reopen the written store and verify a sample against the source.
 		rd, err := bodyf2.OpenReader(*out)

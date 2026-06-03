@@ -51,17 +51,31 @@ func RPCMarshalBlock(block block.IBlock, chain common.IBlockChain, cfg *params.C
 
 		// F2 ledger fallback: the full body is unavailable (an EIP-4444 Full
 		// node past its window, or an F2-only node) but the ledger view is in
-		// the F2 store. Only fullTx can be served — a hash-only listing needs
-		// canonical tx hashes that F2 cannot reproduce (see §7).
-		if len(txs) == 0 && fullTx && ethel.F2Reader() != nil {
+		// the F2 store. fullTx serves the ledger objects; a hash-only listing
+		// needs canonical hashes from the optional tx-hash sidecar (§7), so it
+		// is only served when that sidecar is configured.
+		if len(txs) == 0 && ethel.F2Reader() != nil && (fullTx || ethel.F2Hashes() != nil) {
 			if fb, ferr := ethel.F2LedgerBody(num); ferr == nil && len(fb.Txs) > 0 {
 				bh := block.Hash()
 				if blockHashOverride != nil {
 					bh = *blockHashOverride
 				}
+				hashes, _ := ethel.F2BlockHashes(num) // optional sidecar; nil if absent
 				transactions = make([]interface{}, len(fb.Txs))
 				for i := range fb.Txs {
-					transactions[i] = newRPCTransactionFromF2(&fb.Txs[i], bh, num, uint64(i))
+					var th types.Hash
+					if i < len(hashes) {
+						copy(th[:], hashes[i][:])
+					}
+					if fullTx {
+						rt := newRPCTransactionFromF2(&fb.Txs[i], bh, num, uint64(i))
+						if th != (types.Hash{}) {
+							rt.Hash = avmtypes.FromastHash(th)
+						}
+						transactions[i] = rt
+					} else {
+						transactions[i] = avmtypes.FromastHash(th)
+					}
 				}
 			}
 		}
