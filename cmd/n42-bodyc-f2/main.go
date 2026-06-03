@@ -84,6 +84,25 @@ func toF2Tx(tx *transaction.Transaction, from types.Address) bodyf2.F2Tx {
 		}
 		f.Access = append(f.Access, at)
 	}
+	if tx.Type() == 3 {
+		f.BlobFeeCap = tx.BlobFeeCap()
+		for _, h := range tx.BlobHashes() {
+			var hb [32]byte
+			copy(hb[:], h[:])
+			f.BlobHashes = append(f.BlobHashes, hb)
+		}
+	}
+	if tx.Type() == 4 {
+		for _, a := range tx.AuthList() {
+			if a == nil {
+				continue
+			}
+			cid := a.ChainID
+			f.AuthList = append(f.AuthList, bodyf2.F2Auth{
+				ChainID: &cid, Address: a.Address, Nonce: a.Nonce, V: a.V, R: a.R, S: a.S,
+			})
+		}
+	}
 	return f
 }
 

@@ -22,11 +22,20 @@ type F2Withdrawal struct {
 	Amount           uint64
 }
 
+// F2Auth is one EIP-7702 set-code authorization (type 4). Its own signature
+// (V/R/S over the authorization tuple) is kept — it is part of the authorization
+// semantics and these txs are rare, so the size impact is negligible.
+type F2Auth struct {
+	ChainID *uint256.Int
+	Address types.Address
+	Nonce   uint64
+	V, R, S *uint256.Int
+}
+
 // F2Tx is the trust-history (no-signature) transaction: full ledger content,
-// From resolved from the dict (no ecrecover), no R/S/V, no canonical hash.
-// NOTE: blob hashes (type 3) and 7702 auth lists (type 4) are not yet carried —
-// F2 is ledger-faithful, not wire-faithful; add them if those fields must be
-// served. Type is preserved so consumers know the tx kind.
+// From resolved from the dict (no ecrecover), no R/S/V on the tx, no canonical
+// hash. Blob fields (type 3) and 7702 auth lists (type 4) are carried so those
+// tx kinds serve faithfully. Type is preserved so consumers know the tx kind.
 type F2Tx struct {
 	Type      uint8
 	From      types.Address
@@ -38,6 +47,11 @@ type F2Tx struct {
 	GasTipCap *uint256.Int // type>=2 only
 	Data      []byte
 	Access    []F2AccessTuple
+	// Type 3 (blob):
+	BlobFeeCap *uint256.Int
+	BlobHashes [][32]byte
+	// Type 4 (set-code / EIP-7702):
+	AuthList []F2Auth
 }
 
 // F2Block is a decoded block body in F2 form.
@@ -237,6 +251,30 @@ func EncodeSegment(blocks []F2Block, dict *AddrDict) []byte {
 			}
 		}
 	}
+	// blob fields (type 3 only): blobFeeCap + blob versioned hashes
+	for _, tx := range txs {
+		if tx.Type == 3 {
+			b = encValueSci(b, tx.BlobFeeCap)
+			b = appendUvarint(b, uint64(len(tx.BlobHashes)))
+			for _, h := range tx.BlobHashes {
+				b = append(b, h[:]...)
+			}
+		}
+	}
+	// auth list (type 4 / EIP-7702 only)
+	for _, tx := range txs {
+		if tx.Type == 4 {
+			b = appendUvarint(b, uint64(len(tx.AuthList)))
+			for _, a := range tx.AuthList {
+				b = encValueSci(b, a.ChainID)
+				b = append(b, a.Address[:]...)
+				b = appendUvarint(b, a.Nonce)
+				b = encValueSci(b, a.V)
+				b = encValueSci(b, a.R)
+				b = encValueSci(b, a.S)
+			}
+		}
+	}
 	// withdrawals per block
 	for bi := range blocks {
 		for wi := range blocks[bi].Withdrawals {
@@ -391,6 +429,61 @@ func DecodeSegment(data []byte, dict *AddrDict) ([]F2Block, error) {
 				copy(at.StorageKeys[ki][:], kb)
 			}
 			tx.Access = append(tx.Access, at)
+		}
+	}
+	// blob fields (type 3)
+	for _, tx := range txs {
+		if tx.Type != 3 {
+			continue
+		}
+		if tx.BlobFeeCap, err = r.valueSci(); err != nil {
+			return nil, err
+		}
+		nbh, err := r.uvarint()
+		if err != nil {
+			return nil, err
+		}
+		tx.BlobHashes = make([][32]byte, nbh)
+		for i := uint64(0); i < nbh; i++ {
+			hb, err := r.bytes(32)
+			if err != nil {
+				return nil, err
+			}
+			copy(tx.BlobHashes[i][:], hb)
+		}
+	}
+	// auth list (type 4)
+	for _, tx := range txs {
+		if tx.Type != 4 {
+			continue
+		}
+		na, err := r.uvarint()
+		if err != nil {
+			return nil, err
+		}
+		tx.AuthList = make([]F2Auth, na)
+		for i := uint64(0); i < na; i++ {
+			a := &tx.AuthList[i]
+			if a.ChainID, err = r.valueSci(); err != nil {
+				return nil, err
+			}
+			ab, err := r.bytes(20)
+			if err != nil {
+				return nil, err
+			}
+			copy(a.Address[:], ab)
+			if a.Nonce, err = r.uvarint(); err != nil {
+				return nil, err
+			}
+			if a.V, err = r.valueSci(); err != nil {
+				return nil, err
+			}
+			if a.R, err = r.valueSci(); err != nil {
+				return nil, err
+			}
+			if a.S, err = r.valueSci(); err != nil {
+				return nil, err
+			}
 		}
 	}
 	// withdrawals per block

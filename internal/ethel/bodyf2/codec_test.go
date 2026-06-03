@@ -73,6 +73,20 @@ func TestSegmentRoundTrip(t *testing.T) {
 						{Address: addr(3), StorageKeys: [][32]byte{{1}, {2, 3}}},
 					},
 				},
+				// blob tx (type 3): blobFeeCap + versioned hashes
+				{
+					Type: 3, From: addr(4), To: &to, Nonce: 1, Gas: 21000,
+					Value: u(0), GasFeeCap: u(50), GasTipCap: u(3),
+					BlobFeeCap: u(7), BlobHashes: [][32]byte{{0x01, 0x11}, {0x01, 0x22}},
+				},
+				// set-code tx (type 4): auth list
+				{
+					Type: 4, From: addr(5), To: &to, Nonce: 2, Gas: 60000,
+					Value: u(0), GasFeeCap: u(40), GasTipCap: u(4),
+					AuthList: []F2Auth{
+						{ChainID: u(1), Address: addr(6), Nonce: 9, V: u(1), R: u(123456), S: u(654321)},
+					},
+				},
 			},
 		},
 	}
@@ -116,6 +130,23 @@ func TestSegmentRoundTrip(t *testing.T) {
 				for ai := range w.Access {
 					if g.Access[ai].Address != w.Access[ai].Address || len(g.Access[ai].StorageKeys) != len(w.Access[ai].StorageKeys) {
 						t.Errorf("b%d t%d access %d mismatch", bi, ti, ai)
+					}
+				}
+			}
+			if w.Type == 3 {
+				if g.BlobFeeCap == nil || g.BlobFeeCap.Cmp(w.BlobFeeCap) != 0 || len(g.BlobHashes) != len(w.BlobHashes) {
+					t.Errorf("b%d t%d blob mismatch: feecap=%v hashes=%d", bi, ti, g.BlobFeeCap, len(g.BlobHashes))
+				} else if len(w.BlobHashes) > 0 && g.BlobHashes[0] != w.BlobHashes[0] {
+					t.Errorf("b%d t%d blob hash[0] mismatch", bi, ti)
+				}
+			}
+			if w.Type == 4 {
+				if len(g.AuthList) != len(w.AuthList) {
+					t.Errorf("b%d t%d authlist len %d != %d", bi, ti, len(g.AuthList), len(w.AuthList))
+				} else if len(w.AuthList) > 0 {
+					ga, wa := g.AuthList[0], w.AuthList[0]
+					if ga.Address != wa.Address || ga.Nonce != wa.Nonce || ga.R.Cmp(wa.R) != 0 || ga.S.Cmp(wa.S) != 0 {
+						t.Errorf("b%d t%d auth mismatch", bi, ti)
 					}
 				}
 			}

@@ -17,6 +17,7 @@ import (
 	"github.com/holiman/uint256"
 
 	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
+	avmcommon "github.com/n42blockchain/N42/common/avmutil"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -68,6 +69,39 @@ func newRPCTransactionFromF2(ftx *bodyf2.F2Tx, blockHash types.Hash, blockNumber
 		}
 		al := avmtypes.FromastAccessList(tal)
 		r.Accesses = &al
+	}
+	if ftx.Type == 3 {
+		if ftx.BlobFeeCap != nil {
+			r.MaxFeePerBlobGas = (*hexutil.Big)(ftx.BlobFeeCap.ToBig())
+		}
+		if len(ftx.BlobHashes) > 0 {
+			r.BlobVersionedHashes = make([]avmcommon.Hash, len(ftx.BlobHashes))
+			for i, h := range ftx.BlobHashes {
+				var th types.Hash
+				copy(th[:], h[:])
+				r.BlobVersionedHashes[i] = avmtypes.FromastHash(th)
+			}
+		}
+	}
+	if ftx.Type == 4 && len(ftx.AuthList) > 0 {
+		r.AuthorizationList = make([]RPCAuthorization, 0, len(ftx.AuthList))
+		for _, a := range ftx.AuthList {
+			ra := RPCAuthorization{Address: *avmtypes.FromastAddress(&a.Address), Nonce: hexutil.Uint64(a.Nonce)}
+			if a.ChainID != nil {
+				ra.ChainID = (*hexutil.Big)(a.ChainID.ToBig())
+			}
+			if a.V != nil {
+				ra.V = (*hexutil.Big)(a.V.ToBig())
+				ra.YParity = yparity(a.V)
+			}
+			if a.R != nil {
+				ra.R = (*hexutil.Big)(a.R.ToBig())
+			}
+			if a.S != nil {
+				ra.S = (*hexutil.Big)(a.S.ToBig())
+			}
+			r.AuthorizationList = append(r.AuthorizationList, ra)
+		}
 	}
 	if blockHash != (types.Hash{}) {
 		h := avmtypes.FromastHash(blockHash)
