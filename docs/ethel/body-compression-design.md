@@ -142,7 +142,8 @@ proto 之外的生产编解码器 `internal/ethel/bodyf2`（全部单测 + 真�
   - `RPCMarshalBlock`（getBlockByNumber/getBlockByHash **fullTx**）：冷 body 时 transactions 数组从 F2 填(每条 tx hash 字段空;fullTx=false 的 hash 列表 F2 产不出,留空,§7)。`F2Reader()==nil` 快速门控 → 非 F2 节点零开销。
   - api 已 import ethel,直接用 `ethel.F2LedgerBody`。单测验字段映射 + V/R/S nil + Hash 零。
 - **getTransactionByHash（F1.5,已做）**：converter `--write` 产 MPHF 索引 `f2.txhash.{mphf,kv,idx}`（key=tx hash,blob=varint(block)||varint(idx),复用 `internal/history.MPHFWriter`）。`ethel.SetF2HashIndex/F2TxLocByHash` + cmd/eth-el 打开 `f2.txhash`。`GetTransactionByHash` 正常路径失败时 → `f2TxByHash`(MPHF 查 hash→(block,idx) → F2 账本 → **响应 hash=查询值回显**,r/s/v 空)。实测 124万 tx:索引 **10.79 B/tx**,查找 103,403 次 0 bad → PASS。
-- **未做**：blob hashes(t3)/7702 authList(t4) 未 carried（ledger- 非 wire-faithful）;全量转换长跑（ecrecover ~2.6B tx,别与 bpp co-run）;`getBlockByNumber(fullTx=false)` 的 hash 列表（F2 无 ordinal→hash,本质需存 32B,§7）。
+- **blob(t3)/7702(t4) 字段（已做）**：`F2Tx` 加 `BlobFeeCap/BlobHashes`(t3)、`AuthList []F2Auth`(t4,保留 auth 自身 V/R/S);codec 条件列(仅 t3/t4 付费)。converter `toF2Tx` 映射;`newRPCTransactionFromF2` 填 `MaxFeePerBlobGas/BlobVersionedHashes/AuthorizationList`。round-trip 单测 + 真实 post-Dencun block(含 blob)转换 0 mismatch。
+- **未做**：全量转换长跑（ecrecover ~2.6B tx,别与 bpp co-run）;`getBlockByNumber(fullTx=false)` 的 hash 列表（F2 无 ordinal→hash,本质需存 32B,§7）。
 
 ### 维度 b — 叠加项（对 L/F1/F2 都适用，单独看收益都是个位数 %）
 
