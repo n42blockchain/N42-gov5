@@ -57,6 +57,7 @@ func main() {
 	out := flag.String("out", "D:/n42-bodyf2", "output dir (f2 segments + addr.dict)")
 	start := flag.Uint64("start", 0, "start block (segment-aligned)")
 	limit := flag.Int("limit", 2, "segments to convert")
+	write := flag.Bool("write", false, "write a real F2 store (f2.cidx + f2.NNNN.cdat + f2.addr.dict) and reopen-verify it")
 	flag.Parse()
 	if *dir == "" {
 		fmt.Fprintln(os.Stderr, "usage: n42-bodyc-f2 --dir <bodyc> [--out D] [--start N] [--limit K]")
@@ -74,6 +75,13 @@ func main() {
 	}
 
 	dict := bodyf2.NewAddrDict()
+	var writer *bodyf2.Writer
+	if *write {
+		if writer, err = bodyf2.NewWriter(*out, dict); err != nil {
+			fmt.Fprintln(os.Stderr, "new writer:", err)
+			os.Exit(1)
+		}
+	}
 	startSeg := *start / segSize
 	var nTx int64
 	var f2Bytes int64
@@ -111,13 +119,20 @@ func main() {
 			blocks = append(blocks, blk)
 			srcByBlock = append(srcByBlock, recs)
 		}
+		segNum := startSeg + uint64(s)
 		raw := bodyf2.EncodeSegment(blocks, dict)
 		f2Bytes += int64(len(zenc.EncodeAll(raw, nil)))
+		if writer != nil {
+			if err := writer.AppendSegment(segNum, blocks); err != nil {
+				fmt.Fprintln(os.Stderr, "append segment:", err)
+				os.Exit(1)
+			}
+		}
 
 		// Verify: decode + compare From/To/Value/Nonce/Gas to source.
 		got, err := bodyf2.DecodeSegment(raw, dict)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "decode seg %d: %v\n", startSeg+uint64(s), err)
+			fmt.Fprintf(os.Stderr, "decode seg %d: %v\n", segNum, err)
 			os.Exit(1)
 		}
 		for bi := range got {
@@ -137,8 +152,46 @@ func main() {
 		}
 	}
 
-	dictPath := *out + "/addr.dict"
-	if err := dict.Save(dictPath); err != nil {
+	storeMsg := ""
+	if writer != nil {
+		if err := writer.Close(); err != nil {
+			fmt.Fprintln(os.Stderr, "writer close:", err)
+			os.Exit(1)
+		}
+		// Reopen the written store and verify a sample against the source.
+		rd, err := bodyf2.OpenReader(*out)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "reopen:", err)
+			os.Exit(1)
+		}
+		rtChecked, rtBad := 0, 0
+		for s := 0; s < *limit; s++ {
+			segStart := (startSeg + uint64(s)) * segSize
+			for _, n := range []uint64{segStart, segStart + segSize/2, segStart + segSize - 1} {
+				fb, e1 := rd.ReadBlock(n)
+				body, e2 := br.ReadBody(n)
+				if e1 != nil || e2 != nil {
+					rtBad++
+					continue
+				}
+				signer := transaction.MakeSignerWithTimestamp(params.EthereumMainnetChainConfig, big.NewInt(int64(n)), 0)
+				for ti, tx := range body.Txs {
+					if ti >= len(fb.Txs) {
+						rtBad++
+						break
+					}
+					from, _ := transaction.Sender(signer, tx)
+					rtChecked++
+					if fb.Txs[ti].From != from || fb.Txs[ti].Value.Cmp(tx.Value()) != 0 {
+						rtBad++
+					}
+				}
+			}
+		}
+		rd.Close()
+		storeMsg = fmt.Sprintf("F2 store written to %s; reopen+verify vs source: checked=%d bad=%d → %s",
+			*out, rtChecked, rtBad, map[bool]string{true: "PASS", false: "FAIL"}[rtBad == 0])
+	} else if err := dict.Save(*out + "/addr.dict"); err != nil {
 		fmt.Fprintln(os.Stderr, "save dict:", err)
 		os.Exit(1)
 	}
@@ -148,6 +201,9 @@ func main() {
 	fmt.Printf("addr dict: %d unique addrs (%d B sidecar, %.3f B/tx over this range)\n", dict.Len(), dict.Len()*20, float64(dict.Len()*20)/float64(max1(nTx)))
 	fmt.Printf("verify From/To/Value/Nonce/Gas vs source (ecrecover): checked=%d mismatch=%d → %s\n",
 		checked, mismatch, map[bool]string{true: "PASS", false: "FAIL"}[mismatch == 0])
+	if storeMsg != "" {
+		fmt.Println(storeMsg)
+	}
 }
 
 func max1(v int64) int64 {
