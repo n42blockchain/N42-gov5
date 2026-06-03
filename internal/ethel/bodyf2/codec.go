@@ -131,47 +131,116 @@ func (r *reader) valueSci() (*uint256.Int, error) {
 	return v, nil
 }
 
-// ---- segment encode / decode (raw; the storage layer adds zstd) ----
+// ---- bit helpers ----
 
-// EncodeSegment serializes blocks to the F2 columnar layout, interning from/to
-// addresses into dict. Senders must already be set on each F2Tx.From.
+func appendBits(b []byte, bits []bool) []byte {
+	packed := make([]byte, (len(bits)+7)/8)
+	for i, bit := range bits {
+		if bit {
+			packed[i/8] |= 1 << (uint(i) % 8)
+		}
+	}
+	return append(b, packed...)
+}
+
+func (r *reader) bits(n int) ([]bool, error) {
+	buf, err := r.bytes((n + 7) / 8)
+	if err != nil {
+		return nil, err
+	}
+	bits := make([]bool, n)
+	for i := 0; i < n; i++ {
+		bits[i] = buf[i/8]&(1<<(uint(i)%8)) != 0
+	}
+	return bits, nil
+}
+
+// ---- segment encode / decode (raw; the storage layer adds zstd) ----
+//
+// COLUMN-MAJOR layout: each field is grouped across ALL txs in the segment
+// (all types, then all from-IDs, ...) so adjacent bytes are similar and zstd
+// compresses far better than a per-tx interleaving. Conditional columns (to-ID
+// for non-creates, tip for type>=2) follow the type/isCreate columns that drive
+// them, so the decoder knows the per-tx shape before reading them.
+
+// EncodeSegment serializes blocks to the F2 column-major layout, interning
+// from/to addresses into dict. Senders must already be set on each F2Tx.From.
 func EncodeSegment(blocks []F2Block, dict *AddrDict) []byte {
+	var txs []*F2Tx
 	var b []byte
 	b = appendUvarint(b, uint64(len(blocks)))
 	for bi := range blocks {
-		blk := &blocks[bi]
-		b = appendUvarint(b, uint64(len(blk.Txs)))
-		b = appendUvarint(b, uint64(len(blk.Withdrawals)))
-		for ti := range blk.Txs {
-			tx := &blk.Txs[ti]
-			b = append(b, tx.Type)
-			b = appendUvarint(b, uint64(dict.Intern(tx.From)))
-			if tx.To == nil {
-				b = append(b, 0) // create
-			} else {
-				b = append(b, 1)
-				b = appendUvarint(b, uint64(dict.Intern(*tx.To)))
-			}
-			b = appendUvarint(b, tx.Nonce)
-			b = appendUvarint(b, tx.Gas)
-			b = encValueSci(b, tx.Value)
-			b = encValueSci(b, tx.GasFeeCap)
-			if tx.Type >= 2 {
-				b = encValueSci(b, tx.GasTipCap)
-			}
-			b = appendUvarint(b, uint64(len(tx.Data)))
-			b = append(b, tx.Data...)
-			b = appendUvarint(b, uint64(len(tx.Access)))
-			for _, at := range tx.Access {
-				b = append(b, at.Address[:]...)
-				b = appendUvarint(b, uint64(len(at.StorageKeys)))
-				for _, k := range at.StorageKeys {
-					b = append(b, k[:]...)
-				}
+		b = appendUvarint(b, uint64(len(blocks[bi].Txs)))
+		b = appendUvarint(b, uint64(len(blocks[bi].Withdrawals)))
+		for ti := range blocks[bi].Txs {
+			txs = append(txs, &blocks[bi].Txs[ti])
+		}
+	}
+
+	// type column
+	for _, tx := range txs {
+		b = append(b, tx.Type)
+	}
+	// isCreate bitpack
+	creates := make([]bool, len(txs))
+	for i, tx := range txs {
+		creates[i] = tx.To == nil
+	}
+	b = appendBits(b, creates)
+	// from-ID column
+	for _, tx := range txs {
+		b = appendUvarint(b, uint64(dict.Intern(tx.From)))
+	}
+	// to-ID column (non-create only)
+	for _, tx := range txs {
+		if tx.To != nil {
+			b = appendUvarint(b, uint64(dict.Intern(*tx.To)))
+		}
+	}
+	// nonce, gas
+	for _, tx := range txs {
+		b = appendUvarint(b, tx.Nonce)
+	}
+	for _, tx := range txs {
+		b = appendUvarint(b, tx.Gas)
+	}
+	// value, gasFeeCap
+	for _, tx := range txs {
+		b = encValueSci(b, tx.Value)
+	}
+	for _, tx := range txs {
+		b = encValueSci(b, tx.GasFeeCap)
+	}
+	// gasTipCap (type>=2 only)
+	for _, tx := range txs {
+		if tx.Type >= 2 {
+			b = encValueSci(b, tx.GasTipCap)
+		}
+	}
+	// calldata: lengths, then concatenated bytes
+	for _, tx := range txs {
+		b = appendUvarint(b, uint64(len(tx.Data)))
+	}
+	for _, tx := range txs {
+		b = append(b, tx.Data...)
+	}
+	// accessList: per-tx tuple count, then tuples
+	for _, tx := range txs {
+		b = appendUvarint(b, uint64(len(tx.Access)))
+	}
+	for _, tx := range txs {
+		for _, at := range tx.Access {
+			b = append(b, at.Address[:]...)
+			b = appendUvarint(b, uint64(len(at.StorageKeys)))
+			for _, k := range at.StorageKeys {
+				b = append(b, k[:]...)
 			}
 		}
-		for wi := range blk.Withdrawals {
-			w := &blk.Withdrawals[wi]
+	}
+	// withdrawals per block
+	for bi := range blocks {
+		for wi := range blocks[bi].Withdrawals {
+			w := &blocks[bi].Withdrawals[wi]
 			b = appendUvarint(b, w.Index)
 			b = appendUvarint(b, w.Validator)
 			b = append(b, w.Address[:]...)
@@ -181,7 +250,7 @@ func EncodeSegment(blocks []F2Block, dict *AddrDict) []byte {
 	return b
 }
 
-// DecodeSegment parses an F2 segment, resolving from/to IDs via dict.
+// DecodeSegment parses a column-major F2 segment, resolving from/to IDs via dict.
 func DecodeSegment(data []byte, dict *AddrDict) ([]F2Block, error) {
 	r := &reader{b: data}
 	nb, err := r.uvarint()
@@ -189,6 +258,8 @@ func DecodeSegment(data []byte, dict *AddrDict) ([]F2Block, error) {
 		return nil, err
 	}
 	blocks := make([]F2Block, nb)
+	wdCounts := make([]int, nb)
+	var txs []*F2Tx
 	for bi := uint64(0); bi < nb; bi++ {
 		ntx, err := r.uvarint()
 		if err != nil {
@@ -198,92 +269,134 @@ func DecodeSegment(data []byte, dict *AddrDict) ([]F2Block, error) {
 		if err != nil {
 			return nil, err
 		}
-		blk := &blocks[bi]
-		blk.Txs = make([]F2Tx, ntx)
-		for ti := uint64(0); ti < ntx; ti++ {
-			tx := &blk.Txs[ti]
-			if tx.Type, err = r.byte1(); err != nil {
+		blocks[bi].Txs = make([]F2Tx, ntx)
+		blocks[bi].Withdrawals = make([]F2Withdrawal, nwd)
+		wdCounts[bi] = int(nwd)
+		for ti := range blocks[bi].Txs {
+			txs = append(txs, &blocks[bi].Txs[ti])
+		}
+	}
+
+	// type
+	for _, tx := range txs {
+		if tx.Type, err = r.byte1(); err != nil {
+			return nil, err
+		}
+	}
+	// isCreate
+	creates, err := r.bits(len(txs))
+	if err != nil {
+		return nil, err
+	}
+	// from-ID
+	for _, tx := range txs {
+		id, err := r.uvarint()
+		if err != nil {
+			return nil, err
+		}
+		from, ok := dict.Addr(uint32(id))
+		if !ok {
+			return nil, fmt.Errorf("bodyf2: from-ID %d out of dict", id)
+		}
+		tx.From = from
+	}
+	// to-ID (non-create)
+	for i, tx := range txs {
+		if creates[i] {
+			continue
+		}
+		id, err := r.uvarint()
+		if err != nil {
+			return nil, err
+		}
+		to, ok := dict.Addr(uint32(id))
+		if !ok {
+			return nil, fmt.Errorf("bodyf2: to-ID %d out of dict", id)
+		}
+		tx.To = &to
+	}
+	// nonce, gas
+	for _, tx := range txs {
+		if tx.Nonce, err = r.uvarint(); err != nil {
+			return nil, err
+		}
+	}
+	for _, tx := range txs {
+		if tx.Gas, err = r.uvarint(); err != nil {
+			return nil, err
+		}
+	}
+	// value, gasFeeCap
+	for _, tx := range txs {
+		if tx.Value, err = r.valueSci(); err != nil {
+			return nil, err
+		}
+	}
+	for _, tx := range txs {
+		if tx.GasFeeCap, err = r.valueSci(); err != nil {
+			return nil, err
+		}
+	}
+	// gasTipCap (type>=2)
+	for _, tx := range txs {
+		if tx.Type >= 2 {
+			if tx.GasTipCap, err = r.valueSci(); err != nil {
 				return nil, err
-			}
-			fid, err := r.uvarint()
-			if err != nil {
-				return nil, err
-			}
-			from, ok := dict.Addr(uint32(fid))
-			if !ok {
-				return nil, fmt.Errorf("bodyf2: from-ID %d out of dict", fid)
-			}
-			tx.From = from
-			isTo, err := r.byte1()
-			if err != nil {
-				return nil, err
-			}
-			if isTo == 1 {
-				tid, err := r.uvarint()
-				if err != nil {
-					return nil, err
-				}
-				to, ok := dict.Addr(uint32(tid))
-				if !ok {
-					return nil, fmt.Errorf("bodyf2: to-ID %d out of dict", tid)
-				}
-				tx.To = &to
-			}
-			if tx.Nonce, err = r.uvarint(); err != nil {
-				return nil, err
-			}
-			if tx.Gas, err = r.uvarint(); err != nil {
-				return nil, err
-			}
-			if tx.Value, err = r.valueSci(); err != nil {
-				return nil, err
-			}
-			if tx.GasFeeCap, err = r.valueSci(); err != nil {
-				return nil, err
-			}
-			if tx.Type >= 2 {
-				if tx.GasTipCap, err = r.valueSci(); err != nil {
-					return nil, err
-				}
-			}
-			dlen, err := r.uvarint()
-			if err != nil {
-				return nil, err
-			}
-			d, err := r.bytes(int(dlen))
-			if err != nil {
-				return nil, err
-			}
-			tx.Data = append([]byte(nil), d...)
-			nal, err := r.uvarint()
-			if err != nil {
-				return nil, err
-			}
-			for ai := uint64(0); ai < nal; ai++ {
-				var at F2AccessTuple
-				ab, err := r.bytes(20)
-				if err != nil {
-					return nil, err
-				}
-				copy(at.Address[:], ab)
-				nk, err := r.uvarint()
-				if err != nil {
-					return nil, err
-				}
-				at.StorageKeys = make([][32]byte, nk)
-				for ki := uint64(0); ki < nk; ki++ {
-					kb, err := r.bytes(32)
-					if err != nil {
-						return nil, err
-					}
-					copy(at.StorageKeys[ki][:], kb)
-				}
-				tx.Access = append(tx.Access, at)
 			}
 		}
-		blk.Withdrawals = make([]F2Withdrawal, nwd)
-		for wi := uint64(0); wi < nwd; wi++ {
-			w := &blk.Withdrawals[wi]
+	}
+	// calldata lengths, then bytes
+	dlens := make([]int, len(txs))
+	for i := range txs {
+		l, err := r.uvarint()
+		if err != nil {
+			return nil, err
+		}
+		dlens[i] = int(l)
+	}
+	for i, tx := range txs {
+		d, err := r.bytes(dlens[i])
+		if err != nil {
+			return nil, err
+		}
+		tx.Data = append([]byte(nil), d...)
+	}
+	// accessList counts, then tuples
+	alens := make([]int, len(txs))
+	for i := range txs {
+		l, err := r.uvarint()
+		if err != nil {
+			return nil, err
+		}
+		alens[i] = int(l)
+	}
+	for i, tx := range txs {
+		for ai := 0; ai < alens[i]; ai++ {
+			var at F2AccessTuple
+			ab, err := r.bytes(20)
+			if err != nil {
+				return nil, err
+			}
+			copy(at.Address[:], ab)
+			nk, err := r.uvarint()
+			if err != nil {
+				return nil, err
+			}
+			at.StorageKeys = make([][32]byte, nk)
+			for ki := uint64(0); ki < nk; ki++ {
+				kb, err := r.bytes(32)
+				if err != nil {
+					return nil, err
+				}
+				copy(at.StorageKeys[ki][:], kb)
+			}
+			tx.Access = append(tx.Access, at)
+		}
+	}
+	// withdrawals per block
+	for bi := range blocks {
+		for wi := range blocks[bi].Withdrawals {
+			w := &blocks[bi].Withdrawals[wi]
 			if w.Index, err = r.uvarint(); err != nil {
 				return nil, err
 			}
