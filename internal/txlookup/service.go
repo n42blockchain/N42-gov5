@@ -27,11 +27,27 @@ import (
 	"github.com/n42blockchain/N42/modules"
 )
 
+// TxVerifier reports whether block blockNum actually contains a tx with hash
+// txHash (and if so its index). It is supplied by the wiring that has body
+// access. Its purpose is to reject RecSplit phantom hits: an index built
+// WITHOUT the LessFalsePositives fingerprint maps every out-of-set hash to some
+// ordinal, so a newer segment will confidently return a wrong block for a tx
+// that lives in an older one. With a verifier set, Lookup confirms each segment
+// candidate and keeps probing older segments on a miss — making the cheaper
+// no-LFP index (~4.4 bit/key) correct. nil verifier = legacy behaviour (return
+// the first segment hit; correct only for LFP-on indexes).
+type TxVerifier func(blockNum uint64, txHash types.Hash) (index uint64, present bool)
+
 // Service provides tiered tx hash lookup (L0 MDBX + L1 RecSplit segments).
 type Service struct {
 	store    *cscompact.SegmentStoreReader
 	segments []*txSegmentCached // sorted by startBlock descending
+	verifier TxVerifier         // optional; rejects phantom hits (no-LFP indexes)
 }
+
+// SetVerifier installs the phantom-rejection verifier. Required for correctness
+// when the segments were built with LessFalsePositives off.
+func (s *Service) SetVerifier(v TxVerifier) { s.verifier = v }
 
 type txSegmentCached struct {
 	segNum     uint64
@@ -66,15 +82,18 @@ func NewService(segmentDir string) (*Service, error) {
 }
 
 // Lookup queries L0 (MDBX) then L1 (segments) for txHash → blockNumber.
+// tx may be nil to query only the L1 RecSplit segments (no hot MDBX tier).
 func (s *Service) Lookup(tx kv.Tx, txHash types.Hash) (*uint64, error) {
-	// L0: MDBX TxLookup table.
-	v, err := tx.GetOne(modules.TxLookup, txHash[:])
-	if err != nil {
-		return nil, err
-	}
-	if len(v) > 0 {
-		blockNum := decodeBlockNum(v)
-		return &blockNum, nil
+	// L0: MDBX TxLookup table (exact key/value — no phantom, no verify needed).
+	if tx != nil {
+		v, err := tx.GetOne(modules.TxLookup, txHash[:])
+		if err != nil {
+			return nil, err
+		}
+		if len(v) > 0 {
+			blockNum := decodeBlockNum(v)
+			return &blockNum, nil
+		}
 	}
 
 	// L1: RecSplit segments (newest first).
@@ -92,7 +111,15 @@ func (s *Service) Lookup(tx kv.Tx, txHash types.Hash) (*uint64, error) {
 			sc.seg = seg
 		}
 		if result := sc.seg.Lookup(txHash); result != nil {
-			return result, nil
+			if s.verifier == nil {
+				return result, nil
+			}
+			// no-LFP index: confirm the candidate block really holds this hash;
+			// a phantom (out-of-set hash mapped to a stranger's ordinal) fails
+			// here and we keep probing older segments.
+			if _, present := s.verifier(*result, txHash); present {
+				return result, nil
+			}
 		}
 	}
 

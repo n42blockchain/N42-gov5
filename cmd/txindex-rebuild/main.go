@@ -21,11 +21,12 @@
 // LessFalsePositives (--lfp, default true) keeps the 8-bit existence
 // fingerprint. It is REQUIRED for correct multi-segment lookup as it stands:
 // with it off every out-of-set hash phantom-hits (the MPHF always maps to
-// [0,N)), so a newer segment falsely answers for a tx in an older one. Dropping
-// it (→ ~4.4 bit/key, ~1.9 GB archive) needs a verify-and-continue lookup
-// (read the candidate block, confirm the tx hash, else keep probing) — a
-// separate follow-up. --lfp=false is allowed here for measurement but logs a
-// loud warning.
+// [0,N)), so a newer segment falsely answers for a tx in an older one. The
+// verify-and-continue lookup that makes the no-LFP index (~4.4 bit/key,
+// ~1.9 GB archive) correct is implemented (txlookup.Service.SetVerifier:
+// confirm the candidate block holds the hash, else keep probing). So --lfp=false
+// is a valid, smaller build PROVIDED the reader installs a verifier; the tool
+// logs a loud warning as a reminder.
 //
 // Size expectations (3.495 B txs to 25.2M):
 //
@@ -69,7 +70,7 @@ func main() {
 		os.Exit(1)
 	}
 	if !*lfp {
-		log.Warn("LessFalsePositives DISABLED — every out-of-set hash will phantom-hit; this index is only correct with a verify-and-continue lookup (not yet wired). Use for size measurement only.")
+		log.Warn("LessFalsePositives DISABLED (~4.4 bit/key) — every out-of-set hash phantom-hits. This index is correct ONLY when the consuming txlookup.Service has a verifier installed (Service.SetVerifier — verify-and-continue is implemented and unit-tested). Do not serve it from a reader without a verifier.")
 	}
 
 	fz, err := freezer.NewReadOnly(*ancient)
