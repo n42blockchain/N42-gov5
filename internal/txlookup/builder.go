@@ -28,10 +28,33 @@ import (
 type SegmentBuilder struct {
 	inputFreezer *freezer.Freezer
 	outputDir    string
+	// RecSplit tuning. Legacy default (NewSegmentBuilder): enums=false,
+	// lessFalsePositives=true — matches every txindex built before this field
+	// existed.
+	enums              bool
+	lessFalsePositives bool
 }
 
 func NewSegmentBuilder(input *freezer.Freezer, outputDir string) *SegmentBuilder {
-	return &SegmentBuilder{inputFreezer: input, outputDir: outputDir}
+	return &SegmentBuilder{inputFreezer: input, outputDir: outputDir, lessFalsePositives: true}
+}
+
+// SetRecSplitTuning overrides the RecSplit space/correctness config.
+//
+//   - enums=true replaces the fixed-width per-key offset (bytesPerRec, ~28 bit
+//     at 250M keys) with an Elias-Fano enumeration of the dense ordinals
+//     (~2.5 bit/key). This is the main lever: ~33.7 → ~12 bit/key with LFP on.
+//   - lessFalsePositives=true keeps the 8-bit existence fingerprint. It is
+//     REQUIRED for correct multi-segment lookup: with it off, every out-of-set
+//     hash gets a phantom ordinal (the MPHF always maps to [0,N)), so a newer
+//     segment will falsely answer for a tx that lives in an older one and the
+//     newest-first probe returns the wrong block. Only disable it together with
+//     a verify-and-continue lookup (read the candidate block, confirm the tx
+//     hash, else keep probing). With LFP off + that lookup change the index
+//     drops to ~4.4 bit/key.
+func (b *SegmentBuilder) SetRecSplitTuning(enums, lessFalsePositives bool) {
+	b.enums = enums
+	b.lessFalsePositives = lessFalsePositives
 }
 
 // SegmentFileName returns the file name for a segment (without extension).
@@ -121,8 +144,8 @@ func (b *SegmentBuilder) buildOne(ctx context.Context, startBlock, endBlock uint
 			KeyCount:           keyCount,
 			BucketSize:         2000,
 			LeafSize:           8,
-			Enums:              false,
-			LessFalsePositives: true,
+			Enums:              b.enums,
+			LessFalsePositives: b.lessFalsePositives,
 			IndexFile:          idxPath,
 			BaseDataID:         startBlock,
 			TmpDir:             os.TempDir(),
