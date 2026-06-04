@@ -137,6 +137,14 @@ func (s *BlockChainAPI) getBlockByHash(hash types.Hash) (block.IBlock, error) {
 			return blk, nil
 		}
 	}
+	if blk, err := s.api.BlockChain().GetBlockByHash(hash); err == nil && blk != nil {
+		return blk, nil
+	}
+	// Cold tier: blockHash aged out of the MDBX HeaderNumber table — resolve via
+	// the blockhash RecSplit index (self-verified by header-hash recompute).
+	if blk := s.api.coldBlockByHash(hash); blk != nil {
+		return blk, nil
+	}
 	return s.api.BlockChain().GetBlockByHash(hash)
 }
 
@@ -212,6 +220,14 @@ func (s *TransactionAPI) getBlockByHash(hash types.Hash) (block.IBlock, error) {
 		if blk := s.api.engineOverlay.canonicalBlockByHash(hash); blk != nil {
 			return blk, nil
 		}
+	}
+	if blk, err := s.api.BlockChain().GetBlockByHash(hash); err == nil && blk != nil {
+		return blk, nil
+	}
+	// Cold tier: blockHash aged out of the MDBX HeaderNumber table — resolve via
+	// the blockhash RecSplit index (self-verified by header-hash recompute).
+	if blk := s.api.coldBlockByHash(hash); blk != nil {
+		return blk, nil
 	}
 	return s.api.BlockChain().GetBlockByHash(hash)
 }

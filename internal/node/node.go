@@ -70,6 +70,7 @@ import (
 	"github.com/n42blockchain/N42/internal/ai/wallet"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/api/graphql"
+	"github.com/n42blockchain/N42/internal/blockhashindex"
 	"github.com/n42blockchain/N42/internal/bridge"
 	"github.com/n42blockchain/N42/internal/bundler"
 	"github.com/n42blockchain/N42/internal/consensus"
@@ -1143,6 +1144,18 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		} else {
 			node.api.SetTxIndexService(svc)
 			log.Info("txindex cold tx-hash lookup enabled", "dir", dir, "segments", svc.SegmentCount())
+		}
+	}
+	// Optional cold blockHash → number index (blockhashindex RecSplit segments).
+	// Lets getBlockByHash & friends resolve historical block hashes that have aged
+	// out of the MDBX HeaderNumber table. Opt-in via N42_BLOCKHASH_DIR (built by
+	// cmd/blockhash-rebuild); off by default.
+	if dir := os.Getenv("N42_BLOCKHASH_DIR"); dir != "" {
+		if svc, err := blockhashindex.NewService(dir); err != nil {
+			log.Warn("blockhash cold lookup: open failed", "dir", dir, "err", err)
+		} else {
+			node.api.SetBlockHashIndex(svc)
+			log.Info("blockhash cold lookup enabled", "dir", dir, "segments", svc.SegmentCount())
 		}
 	}
 

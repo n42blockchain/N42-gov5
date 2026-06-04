@@ -44,6 +44,7 @@ import (
 	"github.com/n42blockchain/N42/internal/api/filters"
 	"github.com/n42blockchain/N42/internal/api/rpchelper"
 	"github.com/n42blockchain/N42/internal/avm/abi"
+	"github.com/n42blockchain/N42/internal/blockhashindex"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/txlookup"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
@@ -113,7 +114,43 @@ type API struct {
 
 	engineOverlay *engineOverlay
 
-	txIndex *txlookup.Service // optional cold tx-hash→block index; nil until SetTxIndexService
+	txIndex        *txlookup.Service       // optional cold tx-hash→block index; nil until SetTxIndexService
+	blockHashIndex *blockhashindex.Service // optional cold blockHash→number index; nil until SetBlockHashIndex
+}
+
+// SetBlockHashIndex installs the cold-tier blockHash → number lookup (RecSplit
+// segments) used by getBlockByHash for historical blocks no longer in the MDBX
+// HeaderNumber table. It installs the self-verifying verifier: read the header
+// at the candidate number and confirm its recomputed hash == the queried hash,
+// so a phantom hit (the index stores no hash) is skipped and the probe
+// continues to older segments. No-op if svc is nil.
+func (n *API) SetBlockHashIndex(svc *blockhashindex.Service) {
+	if svc == nil {
+		return
+	}
+	svc.SetVerifier(func(blockNum uint64, blockHash types.Hash) bool {
+		hdr := n.bc.GetHeaderByNumber(uint256.NewInt(blockNum))
+		if hdr == nil {
+			return false
+		}
+		return hdr.Hash() == blockHash
+	})
+	n.blockHashIndex = svc
+}
+
+// coldBlockByHash resolves a blockHash to its block via the cold blockHash→number
+// index (verified by header-hash recompute), or nil when no index is wired or
+// the hash is absent.
+func (n *API) coldBlockByHash(hash types.Hash) block.IBlock {
+	if n.blockHashIndex == nil {
+		return nil
+	}
+	num := n.blockHashIndex.Lookup(hash)
+	if num == nil {
+		return nil
+	}
+	blk, _ := n.bc.GetBlockByNumber(uint256.NewInt(*num))
+	return blk
 }
 
 // SetTxIndexService installs the cold-tier tx-hash → block lookup (RecSplit
