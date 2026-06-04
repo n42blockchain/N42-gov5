@@ -158,6 +158,25 @@ func (s *TransactionAPI) GetTransactionReceipt(ctx context.Context, hash avmcomm
 	}); dbErr != nil {
 		return nil, dbErr
 	}
+	// Cold tier: a tx aged out of the MDBX TxLookup table is resolved via the
+	// txlookup RecSplit segment index → block → (tx, index). Same self-verifying
+	// path as GetTransactionByHash; the receipt is then read from that block.
+	if tx == nil && s.api != nil && s.api.txIndex != nil {
+		want := avmtypes.ToastHash(hash)
+		if blkNum, _ := s.api.txIndex.Lookup(nil, want); blkNum != nil {
+			if blk, _ := s.api.BlockChain().GetBlockByNumber(uint256.NewInt(*blkNum)); blk != nil {
+				for i, btx := range blk.Transactions() {
+					if btx.Hash() == want {
+						tx = btx
+						blockNumber = *blkNum
+						index = uint64(i)
+						blockHash = blk.Hash()
+						break
+					}
+				}
+			}
+		}
+	}
 	if tx == nil {
 		return nil, nil
 	}
