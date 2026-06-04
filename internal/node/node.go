@@ -660,6 +660,15 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	// Enable parallel EVM execution, state prefetching, and ancient DB if configured.
 	if realBC, ok := bc.(*internal.BlockChain); ok {
 		if cfg.NodeCfg.ParallelEVM {
+			// EXPERIMENTAL + known-incorrect: the internal/parallel Block-STM path
+			// (ParallelStateReader.ReadAccountStorage) does NOT consult the
+			// SELFDESTRUCT/CREATE2 storage-wipe set, so an intra-block read of a
+			// slot on an account destroyed earlier in the same block returns the
+			// stale pre-destruct value (and is then faithfully persisted). Off by
+			// default; only reachable via the config key. Warn loudly so it can't
+			// be silently enabled in production until the wipe shadow-read is
+			// ported from modules/state (see docs/ethel/erigon-borrow-audit.md).
+			log.Warn("ParallelEVM ENABLED — EXPERIMENTAL: internal/parallel path lacks SELFDESTRUCT/CREATE2 storage-wipe isolation; do NOT use on consensus-critical chains")
 			realBC.SetParallelEVM(true)
 		}
 		if cfg.NodeCfg.Prefetch {
