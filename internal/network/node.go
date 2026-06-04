@@ -205,6 +205,15 @@ func (n *Node) ProcessHandshake(h *msg_proto.ProtocolHandshakeMessage) error {
 			return
 		}
 
+		// Bound the pre-auth handshake allocation. A legit handshake is < 1 KiB;
+		// without this an inbound peer could force a make([]byte, payloadLen) up
+		// to MaxPayloadSize (256 MiB) per connection before authenticating.
+		if payloadLen < 0 || payloadLen > MaxHandshakePayload {
+			log.Error("handshake payload size exceeds limit", "ID", n.peer.ID, "payloadLen", payloadLen, "max", MaxHandshakePayload)
+			errCh <- fmt.Errorf("handshake payload size %d exceeds maximum %d", payloadLen, MaxHandshakePayload)
+			return
+		}
+
 		payload := make([]byte, payloadLen)
 		if _, err = io.ReadFull(reader, payload); err != nil {
 			log.Error("failed to read payload", "payloadLen", payloadLen, "err", err)
