@@ -51,4 +51,25 @@ getTransactionByBlockHashAndIndex、getLogs(blockHash)、filters、receipts-by-b
 1. **机会 2 ✅**(cf05e305):txlookup.Service 冷层接进 getTransactionReceipt —— 零新索引。
 2. **机会 1 ✅**(c5962f82):`internal/blockhashindex` 冷层 + `cmd/blockhash-rebuild` + getBlockByHash 接线 + node opt-in `N42_BLOCKHASH_DIR`。HeaderNumber 从 ~1GB MDBX 卸到 ~80MB mmap 冷段,getBlockByHash 家族(29 处)受益。
 
-**剩余优化(非阻塞)**:Enums:true EF 压 relBlock 进一步缩小;一体大段减扇出;冷层命中读放大(verifier 读 header + 最终读 block,header-only 已较省)。
+## 尺寸与编码:纠正 + 最终决定(2026-06-04,经实测/信息论核对)
+
+**纠正先前的错误估计**(防被旧表误导):
+- ❌ "③ 关 LFP → ~4.4 bit/key" —— **错**。来源是"Enums:true 把 offset 压到 ~2.5bit"的乐观假设,被 `internal/blockhashindex/enums_measure_test` 推翻:`Enums:true` 对 dense offset **反而更大**(27.85 vs 25.72 bit/key)。**Enums:true 不是压缩手段,别开。**
+- ❌ "blockhash ~10MB(纯 MPHF 1.8bit)" —— **错**。纯 MPHF 1.8bit 只给一个**乱序内部槽号(排列)**,**不是** block number / tx 顺序号。要拿真定位必须存 relBlock/ordinal。
+
+**信息论下限(为什么省不掉)**:把 N 个随机 hash 一一对应到 N 个顺序号,是个排列,信息量 = log₂(N!)/N ≈ log₂N − 1.44 bit/key。
+- txbyhash(N≈3.5B):定位 ≈ log₂(3.5B) ≈ 31.7 bit/tx(= block 24.6bit + 块内 idx 7.1bit);+MPHF ≈ **~32 bit/tx ≈ 4 B/tx**;**单探紧排极限 ≈ 30.3 bit/tx ≈ 13.3 GB**。
+- 实测盘上 txindex = 33.7 bit/key(含 8bit LFP)= 12.3GB/3.13B。**关 LFP(自校验)≈ 25.7 bit/key ≈ ~11GB**;**留 LFP ≈ 33.7 bit/key ≈ ~14.7GB**(3.5B)。
+- 压缩杠杆 = offset 位宽 = **段大小**(1M段3B→80MB级/64K段2B→小,但小段=多段=扇出),**非 Enums**。
+
+**cscompact 2GB/文件硬上限 → 两者根本差异**:
+- **blockhash**(25M key ≈ 106MB < 2GB)→ **可单段**:已做 `internal/blockhashindex` **单段全历史 + 无 LFP + 自校验(重算 header.Hash())+ 热 MDBX**(commit abb304a0)。扇出=1。
+- **txbyhash**(3.5B key ≈ 14GB ≫ 2GB)→ **物理上无法单段**(现有 txindex 已是 9 个 cdat)→ **被迫分段**。
+
+**最终决定(txbyhash)= 分段 + LFP + verify-and-continue + mmap ≈ 14.7GB**:
+- **mmap**(①6fed9750):查找堆 ≈0(冷查询曾把全段 ri 读进堆 12+GB)。
+- **LFP**:错段 found=false **不读块**(255/256)→ 块读 ≈1(答案块);L0 热表吸收近期查询(根本不碰 L1)。
+- **verify-and-continue**(③14687036):纠 1/256 跨段假阳性(读块核 hash,不符续探)→ 不返错块。
+- 备选 ~11GB = 关 LFP + verify(省盘但 cold/missing 查询逐段读块扇出)。减扇出可调大 SegmentSize(1M→4M:25段→7段,~+1-2GB)。
+
+> 一句话:1.8bit 是"hash→乱序槽"(不含顺序号);顺序号是独立 ~30bit/tx 信息;blockhash 小可单段无LFP,txbyhash 大必分段、留 LFP 换廉价查找。
