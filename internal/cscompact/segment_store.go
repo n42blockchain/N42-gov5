@@ -25,6 +25,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/n42blockchain/N42/lib/mmap"
 	"github.com/n42blockchain/N42/lib/recsplit"
 )
 
@@ -148,6 +149,18 @@ func (w *SegmentStoreWriter) Close() {
 	}
 }
 
+// segMmap holds a read-only memory-map of a .cdat data file so each segment's
+// embedded RecSplit index can be referenced IN PLACE (off-heap) instead of
+// being read into a heap buffer per lookup. The OS pages it on demand and may
+// evict under memory pressure, so a cold/missing tx-hash lookup that fans out
+// across many segments no longer pulls every segment's multi-MB index into the
+// Go heap (the old OpenIndexFromBytes(make([]byte,riSize)) path could resident
+// the entire txindex — 12+ GB — on a single miss).
+type segMmap struct {
+	data   []byte
+	handle *[mmap.MaxMapSize]byte
+}
+
 // SegmentStoreReader reads chain archive segments.
 type SegmentStoreReader struct {
 	dir       string
@@ -155,7 +168,34 @@ type SegmentStoreReader struct {
 	idxFile   *os.File
 	segments  uint64
 	dataFiles map[uint16]*os.File
+	mmaps     map[uint16]*segMmap
 	riCache   map[uint64]*recsplit.Index
+}
+
+// getDataMmap lazily memory-maps the .cdat data file for fileNum (read-only)
+// and caches the mapping. The returned slice is the whole file; callers slice
+// the embedded RecSplit-index region out of it without copying.
+func (r *SegmentStoreReader) getDataMmap(fileNum uint16) ([]byte, error) {
+	if m, ok := r.mmaps[fileNum]; ok {
+		return m.data, nil
+	}
+	df, err := r.getDataFile(fileNum)
+	if err != nil {
+		return nil, err
+	}
+	fi, err := df.Stat()
+	if err != nil {
+		return nil, err
+	}
+	data, handle, err := mmap.Mmap(df, int(fi.Size()))
+	if err != nil {
+		return nil, fmt.Errorf("mmap data file %d: %w", fileNum, err)
+	}
+	if r.mmaps == nil {
+		r.mmaps = make(map[uint16]*segMmap)
+	}
+	r.mmaps[fileNum] = &segMmap{data: data, handle: handle}
+	return data, nil
 }
 
 // OpenSegmentStore opens a segment store for reading.
@@ -313,20 +353,28 @@ func (r *SegmentStoreReader) GetRecSplitIndex(segNum uint64) (*recsplit.Index, e
 		return nil, fmt.Errorf("segment %d has no embedded RecSplit", segNum)
 	}
 
-	df, err := r.getDataFile(fileNum)
+	// mmap the data file and reference the embedded ri region in place — no
+	// heap copy. The OS pages only the touched index bytes; this is what keeps
+	// a fan-out lookup from residenting every segment's index in the Go heap.
+	mm, err := r.getDataMmap(fileNum)
 	if err != nil {
 		return nil, err
 	}
-
-	var sizeBuf [4]byte
-	if _, err := df.ReadAt(sizeBuf[:], int64(riOff)); err != nil {
-		return nil, fmt.Errorf("read ri size at offset %d: %w", riOff, err)
+	if int64(riOff)+4 > int64(len(mm)) {
+		return nil, fmt.Errorf("ri size offset %d beyond data file len %d", riOff, len(mm))
 	}
-	riSize := binary.LittleEndian.Uint32(sizeBuf[:])
-	riData := make([]byte, riSize)
-	if _, err := df.ReadAt(riData, int64(riOff)+4); err != nil {
-		return nil, fmt.Errorf("read ri data (%d bytes at offset %d): %w", riSize, riOff+4, err)
+	riSize := binary.LittleEndian.Uint32(mm[riOff : riOff+4])
+	start := int64(riOff) + 4
+	end := start + int64(riSize)
+	if end > int64(len(mm)) {
+		return nil, fmt.Errorf("ri data [%d,%d) beyond data file len %d", start, end, len(mm))
 	}
+	// Reference the index bytes in place inside the mmap (cap==len so the
+	// reader can't read past). The RecSplit reader casts an internal 8-aligned
+	// sub-region to []uint64 via unsafe; on amd64 (our target) an unaligned
+	// 8-byte load is tolerated, and the ② rebuild pads each segment's ri to an
+	// 8-byte file offset so this is also alignment-correct for portable builds.
+	riData := mm[start:end:end]
 
 	idx, err := recsplit.OpenIndexFromBytes(riData, fmt.Sprintf("seg%06d", segNum))
 	if err != nil {
@@ -340,11 +388,16 @@ func (r *SegmentStoreReader) Close() {
 	if r.idxFile != nil {
 		r.idxFile.Close()
 	}
-	for _, f := range r.dataFiles {
-		f.Close()
-	}
+	// Close indexes first (their data may slice into the mmaps below), then
+	// unmap the data files, then close the underlying file handles.
 	for _, idx := range r.riCache {
 		idx.Close()
+	}
+	for _, m := range r.mmaps {
+		_ = mmap.Munmap(m.data, m.handle)
+	}
+	for _, f := range r.dataFiles {
+		f.Close()
 	}
 }
 
