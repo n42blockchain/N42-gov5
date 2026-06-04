@@ -13,6 +13,8 @@
 package ethel
 
 import (
+	"fmt"
+
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/state"
@@ -45,6 +47,13 @@ func (w *WitnessStateReader) ReadAccountData(address types.Address) (*account.St
 		w.stream = append(w.stream, 0) // absent: len=0
 	} else {
 		encoded := acc.MarshalV2()
+		// The wire format uses a 1-byte length prefix; byte(len) would silently
+		// wrap for >255 (corrupting the stream → garbage on replay). Account
+		// MarshalV2 is always well under 256 today, so this is a fail-loud guard
+		// against a future encoding change, not a live path.
+		if len(encoded) > 255 {
+			return nil, fmt.Errorf("witness: account encoding %d bytes > 255 (1-byte length prefix overflow) for %x", len(encoded), address)
+		}
 		w.stream = append(w.stream, byte(len(encoded)))
 		w.stream = append(w.stream, encoded...)
 	}
@@ -59,6 +68,11 @@ func (w *WitnessStateReader) ReadAccountStorage(address types.Address, key *type
 	if len(val) == 0 {
 		w.stream = append(w.stream, 0) // absent/empty: len=0
 	} else {
+		// 1-byte length prefix guard (storage values are ≤32 bytes for EVM, so
+		// this never trips today — defensive against byte() wrap).
+		if len(val) > 255 {
+			return nil, fmt.Errorf("witness: storage value %d bytes > 255 (1-byte length prefix overflow) for %x", len(val), address)
+		}
 		w.stream = append(w.stream, byte(len(val)))
 		w.stream = append(w.stream, val...)
 	}

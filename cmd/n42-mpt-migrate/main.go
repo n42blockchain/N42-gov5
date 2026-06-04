@@ -16,7 +16,8 @@
 // so the unified env knows which root belongs to which trie.
 //
 // Output (when both sources merged):
-//   <dst>/mdbx.dat   one env, two trie buckets, one Meta bucket
+//
+//	<dst>/mdbx.dat   one env, two trie buckets, one Meta bucket
 package main
 
 import (
@@ -256,6 +257,11 @@ func migrateTable(logger log.Logger, srcMapGB int, dstDB kv.RwDB, m migration, d
 		}
 	}
 
+	// mptMigrateCommitInterval bounds the live write transaction (entries per
+	// chunk) so a large table doesn't accumulate into a single oversized MDBX
+	// commit. Matches the cadence other N42 migrate tools use.
+	const mptMigrateCommitInterval = 5_000_000
+
 	var (
 		copied  uint64
 		bytes   uint64
@@ -289,6 +295,26 @@ func migrateTable(logger log.Logger, srcMapGB int, dstDB kv.RwDB, m migration, d
 				dstCur.Close()
 				dstTx.Rollback()
 				return copied, bytes, fmt.Errorf("dst Append entry %d: %w", copied, err)
+			}
+			// Chunked commit: bound the live MDBX write transaction so its dirty
+			// pages don't accumulate into one giant commit. The other N42
+			// migrate/replay tools all chunk; this one used a single tx for the
+			// whole table → OOM risk on a large StoragesTrie (esp. Windows).
+			// srcCursor is on a separate source read-tx, unaffected by dst
+			// commits; MDBX_APPEND keeps working across commits because keys
+			// arrive strictly ascending (sorted source).
+			if copied%mptMigrateCommitInterval == 0 {
+				dstCur.Close()
+				if err := dstTx.Commit(); err != nil {
+					return copied, bytes, fmt.Errorf("dst chunk commit at %d: %w", copied, err)
+				}
+				if dstTx, err = dstDB.BeginRw(context.Background()); err != nil {
+					return copied, bytes, fmt.Errorf("dst reopen tx at %d: %w", copied, err)
+				}
+				if dstCur, err = dstTx.RwCursor(m.dstTable); err != nil {
+					dstTx.Rollback()
+					return copied, bytes, fmt.Errorf("dst reopen cursor at %d: %w", copied, err)
+				}
 			}
 		}
 		if time.Since(lastLog) > 5*time.Second {
