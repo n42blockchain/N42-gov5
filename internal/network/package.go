@@ -28,6 +28,14 @@ import (
 const (
 	// Maximum payload size in bytes (256MiB - 1B).
 	MaxPayloadSize = (1 << (4 * 7)) - 1
+
+	// MaxHandshakePayload caps the pre-authentication handshake message. A
+	// ProtocolHandshakeMessage carries only genesisHash + currentHeight, so it
+	// is well under 1 KiB; 64 KiB is a generous ceiling. Without this, the
+	// handshake reader allocated make([]byte, payloadLen) for an attacker-
+	// controlled length up to MaxPayloadSize (256 MiB) on every inbound
+	// connection, pre-auth — a trivial memory-exhaustion vector.
+	MaxHandshakePayload = 64 * 1024
 )
 
 type P2PMessage struct {
