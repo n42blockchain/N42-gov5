@@ -13,7 +13,11 @@ package txlookup
 import (
 	"encoding/binary"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/cscompact"
@@ -44,10 +48,11 @@ func NewService(segmentDir string) (*Service, error) {
 	}
 
 	s := &Service{store: store}
+	base := readSegmentBase(segmentDir)
 	for i := uint64(0); i < store.SegmentCount(); i++ {
 		s.segments = append(s.segments, &txSegmentCached{
 			segNum:     i,
-			startBlock: i * SegmentSize,
+			startBlock: base + i*SegmentSize,
 		})
 	}
 
@@ -138,6 +143,23 @@ func (s *Service) Stats() string {
 
 func (s *Service) Close() {
 	s.store.Close()
+}
+
+// readSegmentBase returns the first block covered by segment 0. A full
+// (archive) txindex starts at block 0; a windowed (EIP-4444) txindex covering
+// only recent blocks records its base block in <dir>/txindex.base so the
+// per-segment startBlock derivation (base + i*SegmentSize) stays correct.
+// Absent / unparesable file → 0 (legacy archive behaviour).
+func readSegmentBase(dir string) uint64 {
+	b, err := os.ReadFile(filepath.Join(dir, "txindex.base"))
+	if err != nil {
+		return 0
+	}
+	v, err := strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 func decodeBlockNum(v []byte) uint64 {
