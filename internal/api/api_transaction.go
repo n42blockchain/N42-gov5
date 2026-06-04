@@ -287,6 +287,21 @@ func (s *TransactionAPI) GetTransactionByHash(ctx context.Context, hash avmcommo
 		return newRPCPendingTransaction(tx, currentBlock.Header()), nil
 	}
 
+	// Cold tier: a historical tx no longer in the MDBX TxLookup table is
+	// resolved via the txlookup RecSplit segment index → block number → the
+	// real block, returning the FULL tx (with signature). Preferred over the F2
+	// ledger view below (which has no r/s/v). The Service's verifier already
+	// confirmed the candidate block actually holds this hash.
+	if s.api != nil && s.api.txIndex != nil {
+		if blkNum, _ := s.api.txIndex.Lookup(nil, avmtypes.ToastHash(hash)); blkNum != nil {
+			if blk, _ := s.api.BlockChain().GetBlockByNumber(uint256.NewInt(*blkNum)); blk != nil {
+				if rpcTx := newRPCTransactionFromBlockHash(blk, avmtypes.ToastHash(hash), s.api.GetChainConfig(), nil); rpcTx != nil {
+					return rpcTx, nil
+				}
+			}
+		}
+	}
+
 	// F2 ledger fallback (F1.5): the full tx isn't in the index/store, but the
 	// MPHF tx-hash index can resolve it to (block,index) → serve the F2 ledger
 	// view, echoing the queried hash. r/s/v stay empty (F2 has no signature).
