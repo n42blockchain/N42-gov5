@@ -36,44 +36,38 @@ func NewBuilder(in *freezer.Freezer, outDir string, lessFalsePositives bool) *Bu
 	return &Builder{in: in, outDir: outDir, lessFalsePositives: lessFalsePositives}
 }
 
-// BuildRange builds segments covering [startBlock, endBlock) into outDir using a
-// cscompact SegmentStore named "blockhash". Resumes from existing segments.
+// BuildRange builds ONE immutable cold segment covering [startBlock, endBlock)
+// into outDir (cscompact SegmentStore "blockhash"). Per the design rule the cold
+// tier is a single segment built once — new blocks are served by the hot MDBX
+// tier, not by appending more segments — so there is no per-segment fanout and
+// no LessFalsePositives fingerprint is needed (the reader self-verifies by
+// recomputing the header hash). A windowed build narrows the range; the reader
+// recovers blockNum = base + relBlock from blockhash.base.
 func (b *Builder) BuildRange(ctx context.Context, startBlock, endBlock uint64) error {
+	if endBlock > b.in.Frozen() {
+		endBlock = b.in.Frozen()
+	}
+	if endBlock <= startBlock {
+		return fmt.Errorf("empty range %d..%d", startBlock, endBlock)
+	}
 	store, err := cscompact.NewSegmentStoreWriter(b.outDir, "blockhash")
 	if err != nil {
 		return err
 	}
 	defer store.Close()
-
-	existing := store.SegmentCount()
-	if resume := existing * SegmentSize; resume > startBlock {
-		startBlock = resume
-		log.Info("blockhashindex: resuming", "from", startBlock, "segments", existing)
+	if store.SegmentCount() > 0 {
+		log.Info("blockhashindex: cold segment already present — nothing to do", "segments", store.SegmentCount())
+		return nil
 	}
 
-	for segStart := (startBlock / SegmentSize) * SegmentSize; segStart < endBlock; segStart += SegmentSize {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		segEnd := segStart + SegmentSize
-		if segEnd > endBlock {
-			segEnd = endBlock
-		}
-		if segEnd > b.in.Frozen() {
-			segEnd = b.in.Frozen()
-		}
-		if segEnd <= segStart {
-			break
-		}
-		tmpIdx := filepath.Join(b.outDir, fmt.Sprintf("tmp_blockhash_%d.ri", segStart))
-		if err := b.buildOne(ctx, segStart, segEnd, tmpIdx); err != nil {
-			os.Remove(tmpIdx)
-			return fmt.Errorf("segment %d-%d: %w", segStart, segEnd, err)
-		}
-		// No dat: blockHash→relBlock is 1:1, RecSplit returns relBlock directly.
-		if _, err := store.WriteSegment(nil, tmpIdx); err != nil {
-			return err
-		}
+	tmpIdx := filepath.Join(b.outDir, "tmp_blockhash.ri")
+	if err := b.buildOne(ctx, startBlock, endBlock, tmpIdx); err != nil {
+		os.Remove(tmpIdx)
+		return fmt.Errorf("build cold segment %d-%d: %w", startBlock, endBlock, err)
+	}
+	// No dat: blockHash→relBlock is 1:1, RecSplit returns relBlock directly.
+	if _, err := store.WriteSegment(nil, tmpIdx); err != nil {
+		return err
 	}
 	return nil
 }
