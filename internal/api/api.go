@@ -45,6 +45,7 @@ import (
 	"github.com/n42blockchain/N42/internal/api/rpchelper"
 	"github.com/n42blockchain/N42/internal/avm/abi"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/txlookup"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -111,6 +112,34 @@ type API struct {
 	miner MinerAdmin // optional; nil until SetMiner is called
 
 	engineOverlay *engineOverlay
+
+	txIndex *txlookup.Service // optional cold tx-hash→block index; nil until SetTxIndexService
+}
+
+// SetTxIndexService installs the cold-tier tx-hash → block lookup (RecSplit
+// segments) used by GetTransactionByHash for historical txs no longer in the
+// MDBX TxLookup table. It also installs the phantom-rejection verifier the
+// lookup needs when the segments were built without the LessFalsePositives
+// fingerprint: the verifier reads the candidate block and confirms it actually
+// holds the queried hash, so a phantom hit is skipped and the probe continues
+// to older segments. No-op if svc is nil.
+func (n *API) SetTxIndexService(svc *txlookup.Service) {
+	if svc == nil {
+		return
+	}
+	svc.SetVerifier(func(blockNum uint64, h types.Hash) (uint64, bool) {
+		blk, _ := n.bc.GetBlockByNumber(uint256.NewInt(blockNum))
+		if blk == nil {
+			return 0, false
+		}
+		for i, tx := range blk.Transactions() {
+			if tx.Hash() == h {
+				return uint64(i), true
+			}
+		}
+		return 0, false
+	})
+	n.txIndex = svc
 }
 
 // NewAPI creates a new protocol API.

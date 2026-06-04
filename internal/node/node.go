@@ -73,10 +73,10 @@ import (
 	"github.com/n42blockchain/N42/internal/bridge"
 	"github.com/n42blockchain/N42/internal/bundler"
 	"github.com/n42blockchain/N42/internal/consensus"
-	"github.com/n42blockchain/N42/internal/cs"
 	"github.com/n42blockchain/N42/internal/consensus/apoa"
 	"github.com/n42blockchain/N42/internal/consensus/apos"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
+	"github.com/n42blockchain/N42/internal/cs"
 	"github.com/n42blockchain/N42/internal/debug"
 	"github.com/n42blockchain/N42/internal/deferred"
 	ethdevp2p "github.com/n42blockchain/N42/internal/devp2p"
@@ -104,6 +104,7 @@ import (
 	"github.com/n42blockchain/N42/internal/tracers"
 	"github.com/n42blockchain/N42/internal/tracing"
 	"github.com/n42blockchain/N42/internal/txgen"
+	"github.com/n42blockchain/N42/internal/txlookup"
 	"github.com/n42blockchain/N42/internal/txspool"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/zkprover"
@@ -1131,6 +1132,19 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	node.api.SetGpo(api.NewOracle(bc, miner, cfg.ChainCfg, gpoParams))
 	node.api.SetP2P(&p2pAdminAdapter{svc: p2p, node: &node})
 	node.api.SetMiner(&minerAdminAdapter{m: miner})
+
+	// Optional cold tx-hash → block index (txlookup RecSplit segments). Lets
+	// eth_getTransactionByHash resolve historical txs that have aged out of the
+	// MDBX TxLookup table. Opt-in via N42_TXINDEX_DIR (built by cmd/txindex-rebuild);
+	// off by default so default nodes are unchanged.
+	if dir := os.Getenv("N42_TXINDEX_DIR"); dir != "" {
+		if svc, err := txlookup.NewService(dir); err != nil {
+			log.Warn("txindex cold lookup: open failed", "dir", dir, "err", err)
+		} else {
+			node.api.SetTxIndexService(svc)
+			log.Info("txindex cold tx-hash lookup enabled", "dir", dir, "segments", svc.SegmentCount())
+		}
+	}
 
 	// Create ERC-4337 bundler service if enabled.
 	if cfg.BundlerCfg.Enabled {
