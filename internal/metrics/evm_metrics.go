@@ -49,6 +49,13 @@ var (
 	EVMRevertCount    = prometheus.GetOrCreateCounter("n42_evm_revert_total", true)
 	EVMPrecompileCall = prometheus.GetOrCreateCounter("n42_evm_precompile_call_total", true)
 
+	// EVMHotMetricsEnabled gates the per-call counters above, which sit in the
+	// hottest EVM path. Under 32-worker replay all workers Inc the same global
+	// counter → cache-line contention (~3.5% CPU in profiling). Throughput tools
+	// (witness-replay) set this false; the node leaves it true. Set once at
+	// startup before workers spawn — plain bool, no atomic needed.
+	EVMHotMetricsEnabled = true
+
 	// State metrics
 	StateAccountReads   = prometheus.GetOrCreateCounter("n42_state_account_reads_total", true)
 	StateStorageReads   = prometheus.GetOrCreateCounter("n42_state_storage_reads_total", true)
@@ -65,7 +72,7 @@ var (
 var (
 	// Chain head tracking
 	ChainHeadBlock     = prometheus.GetOrCreateCounter("n42_chain_head_block", true)
-	ChainHeadTimestamp  = prometheus.GetOrCreateCounter("n42_chain_head_timestamp", true)
+	ChainHeadTimestamp = prometheus.GetOrCreateCounter("n42_chain_head_timestamp", true)
 	ChainHeadGasUsed   = prometheus.GetOrCreateCounter("n42_chain_head_gas_used", true)
 
 	// Reorg tracking
@@ -84,12 +91,12 @@ var (
 // =============================================================================
 
 var (
-	BaseFeeGwei           = prometheus.GetOrCreateCounter("n42_basefee_gwei", true)
-	BlobBaseFeeGwei       = prometheus.GetOrCreateCounter("n42_blob_basefee_gwei", true)
-	ExcessBlobGas         = prometheus.GetOrCreateCounter("n42_excess_blob_gas", true)
-	BlobGasUsed           = prometheus.GetOrCreateCounter("n42_blob_gas_used", true)
-	BlobCount             = prometheus.GetOrCreateCounter("n42_blob_count_total", true)
-	TxPriorityFeeAvgGwei  = prometheus.GetOrCreateCounter("n42_tx_priority_fee_avg_gwei", true)
+	BaseFeeGwei          = prometheus.GetOrCreateCounter("n42_basefee_gwei", true)
+	BlobBaseFeeGwei      = prometheus.GetOrCreateCounter("n42_blob_basefee_gwei", true)
+	ExcessBlobGas        = prometheus.GetOrCreateCounter("n42_excess_blob_gas", true)
+	BlobGasUsed          = prometheus.GetOrCreateCounter("n42_blob_gas_used", true)
+	BlobCount            = prometheus.GetOrCreateCounter("n42_blob_count_total", true)
+	TxPriorityFeeAvgGwei = prometheus.GetOrCreateCounter("n42_tx_priority_fee_avg_gwei", true)
 )
 
 // =============================================================================
@@ -97,11 +104,11 @@ var (
 // =============================================================================
 
 var (
-	TxReceived     = prometheus.GetOrCreateCounter("n42_tx_received_total", true)
-	TxValidated    = prometheus.GetOrCreateCounter("n42_tx_validated_total", true)
-	TxIncluded     = prometheus.GetOrCreateCounter("n42_tx_included_total", true)
-	TxFailed       = prometheus.GetOrCreateCounter("n42_tx_failed_total", true)
-	TxPendingTime  = prometheus.GetOrCreateSummary("n42_tx_pending_seconds")
+	TxReceived    = prometheus.GetOrCreateCounter("n42_tx_received_total", true)
+	TxValidated   = prometheus.GetOrCreateCounter("n42_tx_validated_total", true)
+	TxIncluded    = prometheus.GetOrCreateCounter("n42_tx_included_total", true)
+	TxFailed      = prometheus.GetOrCreateCounter("n42_tx_failed_total", true)
+	TxPendingTime = prometheus.GetOrCreateSummary("n42_tx_pending_seconds")
 
 	// By type
 	TxLegacyCount     = prometheus.GetOrCreateCounter("n42_tx_type_legacy_total", true)
@@ -116,11 +123,11 @@ var (
 // =============================================================================
 
 var (
-	EngineNewPayloadCount  = prometheus.GetOrCreateCounter("n42_engine_new_payload_total", true)
-	EngineNewPayloadValid  = prometheus.GetOrCreateCounter("n42_engine_new_payload_valid_total", true)
+	EngineNewPayloadCount   = prometheus.GetOrCreateCounter("n42_engine_new_payload_total", true)
+	EngineNewPayloadValid   = prometheus.GetOrCreateCounter("n42_engine_new_payload_valid_total", true)
 	EngineNewPayloadInvalid = prometheus.GetOrCreateCounter("n42_engine_new_payload_invalid_total", true)
-	EngineForkchoiceCount  = prometheus.GetOrCreateCounter("n42_engine_forkchoice_total", true)
-	EngineGetPayloadCount  = prometheus.GetOrCreateCounter("n42_engine_get_payload_total", true)
+	EngineForkchoiceCount   = prometheus.GetOrCreateCounter("n42_engine_forkchoice_total", true)
+	EngineGetPayloadCount   = prometheus.GetOrCreateCounter("n42_engine_get_payload_total", true)
 	EngineNewPayloadSeconds = prometheus.GetOrCreateSummary("n42_engine_new_payload_seconds")
 	EngineForkchoiceSeconds = prometheus.GetOrCreateSummary("n42_engine_forkchoice_seconds")
 )
@@ -130,11 +137,11 @@ var (
 // =============================================================================
 
 var (
-	RPCRequestsTotal   = prometheus.GetOrCreateCounter("n42_rpc_requests_total", true)
-	RPCErrorsTotal     = prometheus.GetOrCreateCounter("n42_rpc_errors_total", true)
-	RPCRequestSeconds  = prometheus.GetOrCreateSummary("n42_rpc_request_seconds")
-	RPCWebSocketConns  = prometheus.GetOrCreateCounter("n42_rpc_ws_connections", true)
-	RPCBatchSize       = prometheus.GetOrCreateSummary("n42_rpc_batch_size")
+	RPCRequestsTotal  = prometheus.GetOrCreateCounter("n42_rpc_requests_total", true)
+	RPCErrorsTotal    = prometheus.GetOrCreateCounter("n42_rpc_errors_total", true)
+	RPCRequestSeconds = prometheus.GetOrCreateSummary("n42_rpc_request_seconds")
+	RPCWebSocketConns = prometheus.GetOrCreateCounter("n42_rpc_ws_connections", true)
+	RPCBatchSize      = prometheus.GetOrCreateSummary("n42_rpc_batch_size")
 )
 
 // =============================================================================
@@ -142,16 +149,16 @@ var (
 // =============================================================================
 
 var (
-	JMTUpdateSeconds   = prometheus.GetOrCreateSummary("n42_jmt_update_seconds")
-	JMTFlushSeconds    = prometheus.GetOrCreateSummary("n42_jmt_flush_seconds")
-	JMTDirtyNodes      = prometheus.GetOrCreateCounter("n42_jmt_dirty_nodes", true)
-	JMTProofSeconds    = prometheus.GetOrCreateSummary("n42_jmt_proof_seconds")
-	JMTTreeHeight      = prometheus.GetOrCreateCounter("n42_jmt_tree_height", true)
-	JMTCacheHits       = prometheus.GetOrCreateCounter("n42_jmt_cache_hits_total", true)
-	JMTCacheMisses     = prometheus.GetOrCreateCounter("n42_jmt_cache_misses_total", true)
-	JMTCacheSize       = prometheus.GetOrCreateCounter("n42_jmt_cache_size", true)
-	JMTGCDeletedNodes  = prometheus.GetOrCreateCounter("n42_jmt_gc_deleted_total", true)
-	JMTGCPendingNodes  = prometheus.GetOrCreateCounter("n42_jmt_gc_pending", true)
+	JMTUpdateSeconds  = prometheus.GetOrCreateSummary("n42_jmt_update_seconds")
+	JMTFlushSeconds   = prometheus.GetOrCreateSummary("n42_jmt_flush_seconds")
+	JMTDirtyNodes     = prometheus.GetOrCreateCounter("n42_jmt_dirty_nodes", true)
+	JMTProofSeconds   = prometheus.GetOrCreateSummary("n42_jmt_proof_seconds")
+	JMTTreeHeight     = prometheus.GetOrCreateCounter("n42_jmt_tree_height", true)
+	JMTCacheHits      = prometheus.GetOrCreateCounter("n42_jmt_cache_hits_total", true)
+	JMTCacheMisses    = prometheus.GetOrCreateCounter("n42_jmt_cache_misses_total", true)
+	JMTCacheSize      = prometheus.GetOrCreateCounter("n42_jmt_cache_size", true)
+	JMTGCDeletedNodes = prometheus.GetOrCreateCounter("n42_jmt_gc_deleted_total", true)
+	JMTGCPendingNodes = prometheus.GetOrCreateCounter("n42_jmt_gc_pending", true)
 )
 
 // =============================================================================
@@ -159,18 +166,18 @@ var (
 // =============================================================================
 
 var (
-	P2PPeersConnected     = prometheus.GetOrCreateCounter("n42_p2p_peers_connected", true)
-	P2PPeersDisconnected  = prometheus.GetOrCreateCounter("n42_p2p_peers_disconnected_total", true)
-	P2PBytesReceived      = prometheus.GetOrCreateCounter("n42_p2p_bytes_received_total", true)
-	P2PBytesSent          = prometheus.GetOrCreateCounter("n42_p2p_bytes_sent_total", true)
-	P2PMessagesReceived   = prometheus.GetOrCreateCounter("n42_p2p_messages_received_total", true)
-	P2PMessagesSent       = prometheus.GetOrCreateCounter("n42_p2p_messages_sent_total", true)
-	P2PDiscoveryLookups   = prometheus.GetOrCreateCounter("n42_p2p_discovery_lookups_total", true)
-	P2PDiscoverySeeded    = prometheus.GetOrCreateCounter("n42_p2p_discovery_seeded_total", true)
-	P2PDialAttempts       = prometheus.GetOrCreateCounter("n42_p2p_dial_attempts_total", true)
-	P2PDialErrors         = prometheus.GetOrCreateCounter("n42_p2p_dial_errors_total", true)
-	P2PHandshakeSeconds   = prometheus.GetOrCreateSummary("n42_p2p_handshake_seconds")
-	P2PBadPeers           = prometheus.GetOrCreateCounter("n42_p2p_bad_peers_total", true)
+	P2PPeersConnected    = prometheus.GetOrCreateCounter("n42_p2p_peers_connected", true)
+	P2PPeersDisconnected = prometheus.GetOrCreateCounter("n42_p2p_peers_disconnected_total", true)
+	P2PBytesReceived     = prometheus.GetOrCreateCounter("n42_p2p_bytes_received_total", true)
+	P2PBytesSent         = prometheus.GetOrCreateCounter("n42_p2p_bytes_sent_total", true)
+	P2PMessagesReceived  = prometheus.GetOrCreateCounter("n42_p2p_messages_received_total", true)
+	P2PMessagesSent      = prometheus.GetOrCreateCounter("n42_p2p_messages_sent_total", true)
+	P2PDiscoveryLookups  = prometheus.GetOrCreateCounter("n42_p2p_discovery_lookups_total", true)
+	P2PDiscoverySeeded   = prometheus.GetOrCreateCounter("n42_p2p_discovery_seeded_total", true)
+	P2PDialAttempts      = prometheus.GetOrCreateCounter("n42_p2p_dial_attempts_total", true)
+	P2PDialErrors        = prometheus.GetOrCreateCounter("n42_p2p_dial_errors_total", true)
+	P2PHandshakeSeconds  = prometheus.GetOrCreateSummary("n42_p2p_handshake_seconds")
+	P2PBadPeers          = prometheus.GetOrCreateCounter("n42_p2p_bad_peers_total", true)
 )
 
 // =============================================================================
@@ -178,18 +185,18 @@ var (
 // =============================================================================
 
 var (
-	DBTableCount        = prometheus.GetOrCreateCounter("n42_db_table_count", true)
-	DBDiskSizeBytes     = prometheus.GetOrCreateCounter("n42_db_disk_size_bytes", true)
-	DBFreelistPages     = prometheus.GetOrCreateCounter("n42_db_freelist_pages", true)
-	DBPageSize          = prometheus.GetOrCreateCounter("n42_db_page_size_bytes", true)
-	DBReadTxActive      = prometheus.GetOrCreateCounter("n42_db_read_tx_active", true)
-	DBWriteTxActive     = prometheus.GetOrCreateCounter("n42_db_write_tx_active", true)
-	DBReadTxSeconds     = prometheus.GetOrCreateSummary("n42_db_read_tx_seconds")
-	DBWriteTxSeconds    = prometheus.GetOrCreateSummary("n42_db_write_tx_seconds")
-	DBGetOps            = prometheus.GetOrCreateCounter("n42_db_get_ops_total", true)
-	DBPutOps            = prometheus.GetOrCreateCounter("n42_db_put_ops_total", true)
-	DBDeleteOps         = prometheus.GetOrCreateCounter("n42_db_delete_ops_total", true)
-	DBCursorOps         = prometheus.GetOrCreateCounter("n42_db_cursor_ops_total", true)
+	DBTableCount     = prometheus.GetOrCreateCounter("n42_db_table_count", true)
+	DBDiskSizeBytes  = prometheus.GetOrCreateCounter("n42_db_disk_size_bytes", true)
+	DBFreelistPages  = prometheus.GetOrCreateCounter("n42_db_freelist_pages", true)
+	DBPageSize       = prometheus.GetOrCreateCounter("n42_db_page_size_bytes", true)
+	DBReadTxActive   = prometheus.GetOrCreateCounter("n42_db_read_tx_active", true)
+	DBWriteTxActive  = prometheus.GetOrCreateCounter("n42_db_write_tx_active", true)
+	DBReadTxSeconds  = prometheus.GetOrCreateSummary("n42_db_read_tx_seconds")
+	DBWriteTxSeconds = prometheus.GetOrCreateSummary("n42_db_write_tx_seconds")
+	DBGetOps         = prometheus.GetOrCreateCounter("n42_db_get_ops_total", true)
+	DBPutOps         = prometheus.GetOrCreateCounter("n42_db_put_ops_total", true)
+	DBDeleteOps      = prometheus.GetOrCreateCounter("n42_db_delete_ops_total", true)
+	DBCursorOps      = prometheus.GetOrCreateCounter("n42_db_cursor_ops_total", true)
 )
 
 // =============================================================================
@@ -197,16 +204,16 @@ var (
 // =============================================================================
 
 var (
-	ConsensusRoundDuration    = prometheus.GetOrCreateSummary("n42_consensus_round_seconds")
-	ConsensusProposalLatency  = prometheus.GetOrCreateSummary("n42_consensus_proposal_latency_seconds")
-	ConsensusVoteLatency      = prometheus.GetOrCreateSummary("n42_consensus_vote_latency_seconds")
-	ConsensusCommitLatency    = prometheus.GetOrCreateSummary("n42_consensus_commit_latency_seconds")
-	ConsensusTimeouts         = prometheus.GetOrCreateCounter("n42_consensus_timeouts_total", true)
-	ConsensusViewChanges      = prometheus.GetOrCreateCounter("n42_consensus_view_changes_total", true)
-	ConsensusBlocksCommitted  = prometheus.GetOrCreateCounter("n42_consensus_blocks_committed_total", true)
-	ConsensusValidators       = prometheus.GetOrCreateCounter("n42_consensus_validators_active", true)
-	ConsensusQuorumSize       = prometheus.GetOrCreateCounter("n42_consensus_quorum_size", true)
-	ConsensusForkChoice       = prometheus.GetOrCreateCounter("n42_consensus_fork_choice_total", true)
+	ConsensusRoundDuration   = prometheus.GetOrCreateSummary("n42_consensus_round_seconds")
+	ConsensusProposalLatency = prometheus.GetOrCreateSummary("n42_consensus_proposal_latency_seconds")
+	ConsensusVoteLatency     = prometheus.GetOrCreateSummary("n42_consensus_vote_latency_seconds")
+	ConsensusCommitLatency   = prometheus.GetOrCreateSummary("n42_consensus_commit_latency_seconds")
+	ConsensusTimeouts        = prometheus.GetOrCreateCounter("n42_consensus_timeouts_total", true)
+	ConsensusViewChanges     = prometheus.GetOrCreateCounter("n42_consensus_view_changes_total", true)
+	ConsensusBlocksCommitted = prometheus.GetOrCreateCounter("n42_consensus_blocks_committed_total", true)
+	ConsensusValidators      = prometheus.GetOrCreateCounter("n42_consensus_validators_active", true)
+	ConsensusQuorumSize      = prometheus.GetOrCreateCounter("n42_consensus_quorum_size", true)
+	ConsensusForkChoice      = prometheus.GetOrCreateCounter("n42_consensus_fork_choice_total", true)
 )
 
 // =============================================================================

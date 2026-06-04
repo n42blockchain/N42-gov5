@@ -29,9 +29,9 @@ import (
 
 	"github.com/holiman/uint256"
 
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/u256"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/metrics"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/params"
@@ -253,7 +253,9 @@ func (evm *EVM) resolveCodeHash(addr types.Address) types.Hash {
 }
 
 func (evm *EVM) call(typ OpCode, caller ContractRef, addr types.Address, input []byte, gas uint64, value *uint256.Int, bailout bool) (ret []byte, leftOverGas uint64, err error) {
-	metrics.EVMCallCount.Inc()
+	if metrics.EVMHotMetricsEnabled {
+		metrics.EVMCallCount.Inc()
+	}
 	depth := evm.interpreter.Depth()
 
 	if evm.config.NoRecursion && depth > 0 {
@@ -439,7 +441,9 @@ func (c *codeAndHash) Hash() types.Hash {
 
 // create creates a new contract using code as deployment code.
 func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64, value *uint256.Int, address types.Address, typ OpCode, incrementNonce bool) ([]byte, types.Address, uint64, error) {
-	metrics.EVMCreateCount.Inc()
+	if metrics.EVMHotMetricsEnabled {
+		metrics.EVMCreateCount.Inc()
+	}
 	var ret []byte
 	var err error
 	var gasConsumption uint64

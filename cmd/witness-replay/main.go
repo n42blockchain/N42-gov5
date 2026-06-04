@@ -29,6 +29,7 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"github.com/n42blockchain/N42/internal/ethel"
+	"github.com/n42blockchain/N42/internal/metrics"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
@@ -87,22 +88,41 @@ func run(c *cli.Context) error {
 	sendersPath := c.String("senders")
 	start := c.Uint64("start")
 	end := c.Uint64("end")
-	// GC tuning — the witness aggregator must emit in block order, so fast
-	// workers pile out-of-order results in the reorder buffer; at high worker
-	// counts a heavy DeFi block makes the GC run often and steal CPU from
-	// workers (mark-assist), spiralling. A higher GOGC cuts GC frequency and a
-	// soft memory limit caps the heap so GC stays concurrent (no multi-second
-	// STW). Defaults are Go's (no change); set these for 32-worker runs, e.g.
-	// --gogc 300 --mem-limit-gb 16.
-	if g := c.Int("gogc"); g > 0 {
-		debug.SetGCPercent(g)
+
+	// --senders defaults to auto-detect. A pre-computed senders freezer skips
+	// ecrecover, which profiling showed was ~49% of replay CPU (secp256k1
+	// ext_ecdsa_recover via cgo). Look beside the witness, then under the
+	// datadir's freezer, then the datadir itself. An explicit --senders wins.
+	if sendersPath == "" {
+		for _, cand := range []string{witnessPath, filepath.Join(datadir, "chain", "freezer"), datadir} {
+			if cand == "" {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(cand, "senders.cidx")); err == nil {
+				sendersPath = cand
+				log.Info("Senders freezer auto-detected (skips ecrecover ~49% CPU)", "dir", sendersPath)
+				break
+			}
+		}
 	}
-	if m := c.Int("mem-limit-gb"); m > 0 {
-		debug.SetMemoryLimit(int64(m) << 30)
-	}
+
 	workers := c.Int("workers")
 	if workers <= 0 {
 		workers = runtime.NumCPU()
+	}
+	// GC tuning — the in-order aggregator buffers out-of-order results, so at
+	// high worker counts a heavy DeFi block makes GC run often and steal worker
+	// CPU (mark-assist). A higher GOGC cuts GC frequency. Default: bump to 300
+	// automatically for >=16 workers; an explicit --gogc always wins. A soft
+	// memory limit (--mem-limit-gb) keeps the heap capped so GC stays
+	// concurrent; left off by default (host-RAM dependent).
+	if g := c.Int("gogc"); g > 0 {
+		debug.SetGCPercent(g)
+	} else if workers >= 16 {
+		debug.SetGCPercent(300)
+	}
+	if m := c.Int("mem-limit-gb"); m > 0 {
+		debug.SetMemoryLimit(int64(m) << 30)
 	}
 
 	// JUMPDEST analysis cache (lock-free Get path). Skipping the LRU
@@ -115,6 +135,11 @@ func run(c *cli.Context) error {
 	// immutable (content-addressed by codeHash) so any cache hit is
 	// guaranteed-correct. 32K entries × ~12KB avg ≈ 400MB worst case.
 	ethel.GlobalBytecodeCache = ethel.NewBytecodeCache(32768)
+
+	// Throughput tool: disable the per-EVM-call global counters (all workers
+	// Inc the same counter → cache-line contention, ~3.5% CPU). Set before any
+	// worker spawns; the node leaves these on.
+	metrics.EVMHotMetricsEnabled = false
 
 	// Resolve codes-freezer: explicit flag wins; otherwise auto-detect
 	// <hbPath>/codes.cidx.
