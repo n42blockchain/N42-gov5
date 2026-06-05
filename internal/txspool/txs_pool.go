@@ -194,11 +194,16 @@ func (pool *TxsPool) Content() (map[types.Address][]*transaction.Transaction, ma
 }
 
 // Nonce returns the next expected nonce for the given address.
+//
+// This is a read-only query reachable from RPC (eth_getTransactionCount with
+// the "pending" tag) with caller-supplied addresses, so it uses getReadOnly to
+// avoid caching unknown addresses — otherwise a flood of queries for random
+// addresses would grow the pending-nonce map until the next pool reset.
 func (pool *TxsPool) Nonce(addr types.Address) uint64 {
 	pool.mu.RLock()
 	defer pool.mu.RUnlock()
 
-	return pool.pendingNonces.get(addr)
+	return pool.pendingNonces.getReadOnly(addr)
 }
 
 // Stats returns counts of pending/queued addresses and transactions.
