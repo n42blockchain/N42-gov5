@@ -91,10 +91,20 @@ func (w *ParallelStateWriter) WriteAccountStorage(address types.Address, key typ
 	return nil
 }
 
-// CreateContract records contract creation.
+// CreateContract records contract creation AND a storage-wipe marker.
+//
+// IntraBlockState.updateAccountWithWipe calls CreateContract on every
+// SELFDESTRUCT, recreate-after-destruct and fresh CREATE (see the three call
+// sites in intra_block_state.go), so this single marker covers all wipe cases.
+// Recording it lets ParallelStateReader.ReadAccountStorage shadow stale
+// pre-wipe slots — without it a tx ordered after a SELFDESTRUCT would read the
+// destroyed contract's old storage from base (the bug this fix closes).
 func (w *ParallelStateWriter) CreateContract(address types.Address) error {
 	key := LocationKey{Address: address, Field: FieldExist}
 	w.rw.RecordWrite(key, []byte{1})
+
+	wipeKey := LocationKey{Address: address, Field: FieldStorageWipe}
+	w.rw.RecordWrite(wipeKey, []byte{1})
 	return nil
 }
 

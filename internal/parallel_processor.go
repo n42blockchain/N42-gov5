@@ -265,6 +265,7 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 	var accounts []accountEntry
 	var storages []storageEntry
 	var codes []codeEntry
+	var wipes []types.Address
 
 	// Single pass to collect and categorize all MVS entries.
 	if err := mvs.ApplyAll(numTxs, func(key parallel.LocationKey, value []byte) error {
@@ -279,6 +280,10 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 			if value != nil {
 				codes = append(codes, codeEntry{addr: key.Address, code: value})
 			}
+		case parallel.FieldStorageWipe:
+			if value != nil {
+				wipes = append(wipes, key.Address)
+			}
 		}
 		// Other fields (CodeHash, CodeSize, Suicide, Exist, Incarnation) are
 		// auxiliary — the IBS handles them internally via SetBalance/SetCode/etc.
@@ -289,6 +294,26 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 
 	// Track which accounts are deleted in the final state.
 	deletedAccounts := make(map[types.Address]bool)
+	for _, ae := range accounts {
+		if ae.value == nil {
+			deletedAccounts[ae.addr] = true
+		}
+	}
+
+	// Pass 0: storage wipes for addresses that are ALIVE in the final state
+	// (recreate-after-SELFDESTRUCT / CREATE-on-existing). A plain SELFDESTRUCT
+	// ends deleted and has its storage cleared by Selfdestruct in Pass 1, so
+	// skip those here. CreateAccount(addr, true) preserves the balance and marks
+	// the address in storageWipes, so CommitBlock clears the stale base slots
+	// before the post-wipe slots from Pass 2 are written. Must run before Pass 1
+	// (account) and Pass 2 (storage) so those values land on the recreated
+	// object rather than being discarded by the wipe.
+	for _, addr := range wipes {
+		if deletedAccounts[addr] {
+			continue
+		}
+		ibs.CreateAccount(addr, true)
+	}
 
 	// Pass 1: Apply account-level changes.
 	for _, ae := range accounts {
@@ -298,7 +323,6 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 			// for accounts created and deleted within the same block
 			// (not in base state), Selfdestruct is a safe no-op.
 			ibs.Selfdestruct(ae.addr)
-			deletedAccounts[ae.addr] = true
 		} else {
 			acc, err := parallel.DecodeAccount(ae.value)
 			if err != nil {
