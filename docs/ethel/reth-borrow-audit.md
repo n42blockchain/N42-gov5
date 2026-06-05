@@ -85,3 +85,26 @@
 **记账(将来)**:R6(BAL 照 Reth 两关)、R7(reorder buffer ceiling)、R8(WriteMap windows 守卫)。
 **共识相邻(已建 Erigon 任务)**:path2 wipe(#6)、Engine fail-closed(#7)、WS/devp2p 限速(#8)、commitment -race(#9)、BLOCKHASH 测试(#10)。
 **无需借鉴**:blob 校验、getLogs、订阅 recover、getBlobsV1、txpool 边界、3 工具分块 —— N42 已对或已优。
+
+---
+
+## 2026-06-04 — fresh ../reth 3 个月提交复审(实仓 git log)
+
+../reth 已更新到 origin/main HEAD `9468154552`(2026-06-04)。3 个月 **801 commits**,逐 crate 筛 fix/perf/security,排除 reth 专属(SparseTrie/ArenaParallelSparseTrie/rocksdb)、BAL/EIP-7928(N42 未实现)、forward-fork。深挖并对 N42 逐一验证:
+
+### 已借鉴落地(2 个真 bug)
+- **#15 `txNoncer` 只读不缓存未知地址**(借 reth #23008,commit 本会话):`TxsPool.Nonce`(`eth_getTransactionCount` pending 走它)对任意调用地址写 `pendingNonces` 缓存 → RPC 洪泛 `getTransactionCount(randomAddr,pending)` 可在每块 reset 窗口内膨胀该 map(内存尖峰 + noncer 写锁竞争)。加 `getReadOnly`:命中返缓存、未命中读 state 不写。`tx_noncer.go`/`txs_pool.go:Nonce` + 单测。
+- **#16 `eth_simulateV1` 无 gas call 默认剩余块 gas**(借 reth #24387):N42 无 gas 的 simulate call 走 `setDefaults→DoEstimateGas`(每 call 一次二分估算,1024-call 块里大量冗余 EVM + 偏离 simulate 规格)。改为默认 `gp.Gas()`(剩余块 gas)跳过估算,`ToMessage` 仍 RPCGasCap 封顶。`blockscout.go:simulateCall`。
+
+### 核查后 N42 已正确 / 不适用(不需借鉴)
+- **最小 gas limit 校验**(reth #23441 把 `else if` 改 `if`):N42 `consensus/misc/gaslimit.go:47` **本就是无条件 `if`** → 无此 bug。
+- **eth/68 tx 打包 size 溢出**(reth #23848 `checked_add`):N42 P2P 是 libp2p,**无 eth/68 tx-fetcher 的 size 累加打包** → 无对应面。
+- **替换 tx price bump ceiling**(reth #23012):N42 `txs_list.go` 用 geth 经典 floor `Div`;ceiling 仅在 oldFC<10 wei 有别,真实 gwei 级 fee cap **无实际可利用性**,且与 geth 一致 → 跳过。
+- **malformed blob sidecar→peer misbehavior**(reth #23035):N42 BlobSidecar 是**共识层 libp2p**(HotStuff `BlobSidecarsByRange/ByRoot`),非 reth 修的 eth devp2p mempool blob → 不同层。
+- **文件导入跳过坏块 / reject expired recovered blocks / mdbx posix_fallocate(ZFS)**:N42 无对应面或环境无关。
+
+### 记账(将来,有触发条件再做)
+- **EIP-1186 接受 geth 的 `B256::ZERO` 不存在账户格式**(reth #24359):仅当 N42 minimal client **跨客户端消费 geth 的 `eth_getProof`** 时需要;当前 serve 是 N42 原生 → interop 待办。
+- **R5 全套**:见上文 R5 行(已纠正——Osaka 无 newPayloadV5,proposer 侧 getPayloadV5/getBlobsV2 cell-proof 才需,eth-el 不出 ETH 块)。
+
+**方法纪律**:每个候选都 ① 读 reth 实际 diff ② grep N42 对应代码 ③ 判"真 bug/已正确/不适用/理论无害"——不凭 commit 标题推断,不无脑移植。
