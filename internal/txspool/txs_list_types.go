@@ -23,6 +23,7 @@ package txspool
 
 import (
 	"container/heap"
+	"slices"
 	"sort"
 	"sync"
 
@@ -106,12 +107,17 @@ type txLookup struct {
 	lock    sync.RWMutex
 	locals  map[types.Hash]*transaction.Transaction
 	remotes map[types.Hash]*transaction.Transaction
+	// auths maps an EIP-7702 authority address to the hashes of the in-flight
+	// SetCode transactions that authorize it. Maintained in Add/Remove so it
+	// stays consistent with the tracked set. Mirrors go-ethereum legacypool.
+	auths map[types.Address][]types.Hash
 }
 
 func newTxLookup() *txLookup {
 	return &txLookup{
 		locals:  make(map[types.Hash]*transaction.Transaction),
 		remotes: make(map[types.Hash]*transaction.Transaction),
+		auths:   make(map[types.Address][]types.Hash),
 	}
 }
 
@@ -193,6 +199,7 @@ func (t *txLookup) Add(tx *transaction.Transaction, local bool) {
 	} else {
 		t.remotes[hash] = tx
 	}
+	t.addAuthorities(tx)
 }
 
 func (t *txLookup) Remove(hash types.Hash) {
@@ -209,6 +216,44 @@ func (t *txLookup) Remove(hash types.Hash) {
 	t.slots -= numSlots(tx)
 	delete(t.locals, hash)
 	delete(t.remotes, hash)
+	t.removeAuthorities(tx)
+}
+
+// addAuthorities tracks tx against each EIP-7702 authority it specifies.
+// Non-SetCode txs have no authorities, so this is a no-op for them. Caller
+// holds t.lock.
+func (t *txLookup) addAuthorities(tx *transaction.Transaction) {
+	hash := tx.Hash()
+	for _, addr := range setCodeAuthorities(tx) {
+		if slices.Contains(t.auths[addr], hash) {
+			continue // no duplicates
+		}
+		t.auths[addr] = append(t.auths[addr], hash)
+	}
+}
+
+// removeAuthorities stops tracking tx against its authorities. Caller holds
+// t.lock.
+func (t *txLookup) removeAuthorities(tx *transaction.Transaction) {
+	hash := tx.Hash()
+	for _, addr := range setCodeAuthorities(tx) {
+		list := t.auths[addr]
+		if i := slices.Index(list, hash); i >= 0 {
+			list = append(list[:i], list[i+1:]...)
+		}
+		if len(list) == 0 {
+			delete(t.auths, addr)
+			continue
+		}
+		t.auths[addr] = list
+	}
+}
+
+// hasAuth reports whether addr is an authority in any in-flight SetCode tx.
+func (t *txLookup) hasAuth(addr types.Address) bool {
+	t.lock.RLock()
+	defer t.lock.RUnlock()
+	return len(t.auths[addr]) > 0
 }
 
 // RemoteToLocals migrates transactions belonging to the given locals to the locals set.

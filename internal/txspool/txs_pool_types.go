@@ -68,15 +68,23 @@ var (
 	ErrInsufficientFunds  = errors.New("insufficient funds for gas * price + value")
 	ErrTipAboveFeeCap     = errors.New("max priority fee per gas higher than max fee per gas")
 
+	// EIP-7702 (SetCode) authorization pool restrictions — mirror go-ethereum's
+	// legacypool. Prevent an attacker from stacking transactions on an account
+	// that has an in-flight delegation, or reserving an authority with multiple
+	// in-flight transactions.
+	ErrInflightTxLimitReached    = errors.New("in-flight transaction limit reached for delegated accounts")
+	ErrAuthorityReserved         = errors.New("authority already reserved")
+	ErrOutOfOrderTxFromDelegated = errors.New("origin account that has gapped nonce cannot be delegated")
+
 	pendingGauge = prometheus.GetOrCreateCounter("txpool_pending", true)
 	queuedGauge  = prometheus.GetOrCreateCounter("txpool_queued", true)
 	localGauge   = prometheus.GetOrCreateCounter("txpool_local", true)
 
-	txpoolAddedTotal    = prometheus.GetOrCreateCounter("txpool_added_total")
-	txpoolDroppedTotal  = prometheus.GetOrCreateCounter("txpool_dropped_total")
-	txpoolRejectedTotal = prometheus.GetOrCreateCounter("txpool_rejected_total")
+	txpoolAddedTotal       = prometheus.GetOrCreateCounter("txpool_added_total")
+	txpoolDroppedTotal     = prometheus.GetOrCreateCounter("txpool_dropped_total")
+	txpoolRejectedTotal    = prometheus.GetOrCreateCounter("txpool_rejected_total")
 	txpoolUnderpricedTotal = prometheus.GetOrCreateCounter("txpool_underpriced_total")
-	txpoolOverflowTotal = prometheus.GetOrCreateCounter("txpool_overflow_total")
+	txpoolOverflowTotal    = prometheus.GetOrCreateCounter("txpool_overflow_total")
 )
 
 type txspoolResetRequest struct {
@@ -101,9 +109,9 @@ type TxsPoolConfig struct {
 	// DynamicSizing enables memory-aware pool capacity adjustment.
 	// When enabled, the pool periodically checks heap usage and scales
 	// GlobalSlots between MinGlobalSlots and GlobalSlots.
-	DynamicSizing   bool   `json:"dynamic_sizing" yaml:"dynamic_sizing"`
-	MinGlobalSlots  uint64 `json:"min_global_slots" yaml:"min_global_slots"`
-	MemoryLimitMB   uint64 `json:"memory_limit_mb" yaml:"memory_limit_mb"`
+	DynamicSizing  bool   `json:"dynamic_sizing" yaml:"dynamic_sizing"`
+	MinGlobalSlots uint64 `json:"min_global_slots" yaml:"min_global_slots"`
+	MemoryLimitMB  uint64 `json:"memory_limit_mb" yaml:"memory_limit_mb"`
 }
 
 // DefaultTxPoolConfig contains the default configuration for the transaction pool.
@@ -153,10 +161,10 @@ type TxsPool struct {
 	gasPrice *uint256.Int
 
 	// Channels for scheduling.
-	reqResetCh      chan *txspoolResetRequest
-	reqPromoteCh    chan *accountSet
-	queueTxEventCh  chan *transaction.Transaction
-	reorgDoneCh     chan chan struct{}
+	reqResetCh     chan *txspoolResetRequest
+	reqPromoteCh   chan *accountSet
+	queueTxEventCh chan *transaction.Transaction
+	reorgDoneCh    chan chan struct{}
 
 	changesSinceReorg int
 
