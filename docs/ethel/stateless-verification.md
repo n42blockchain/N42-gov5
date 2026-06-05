@@ -1,9 +1,12 @@
 # eth-el Minimal-Client Stateless Verification
 
-> Status 2026-05-30. Package `internal/ethel/stateless` (20 tests, PowerShell-
-> verified). Verifier (consumer) side complete. Producer side (③b) and
-> integration (④b/⑤b) are the remaining work; the producer should extend
-> `internal/mptproof`, not duplicate it.
+> Status 2026-06-05. Package `internal/ethel/stateless` (21 tests, PowerShell-
+> verified). Verifier (consumer) side complete. Producer (③b) DONE —
+> `cmd/n42-stateless-blockproof-produce` (merged-walk + shared-pool, NOT mptproof;
+> 3398 anchors genesis→24.998M client-verified 2026-06-05). Remaining: ④b real
+> anchor `Header.Unmarshal` + checkpoint policy, ⑤b eth-el downloader integration
+> (`--mpt-verify-interval` + multi-IDC workflow), and the ① proofwire compact-encoding
+> optimization (verify.go uses correct RLP node sets today).
 
 ## Goal
 
@@ -79,18 +82,27 @@ parent; only <32 B children are inlined. The current encoder loses this when it
 materialises lazy `hashNode`s, so a decoded trie can re-hash to a different root.
 Until fixed, `verify.go` uses standard RLP node sets (correct, just larger).
 
-### ③b Producer — generate `BlockProof` from real state
+### ③b Producer — DONE (`cmd/n42-stateless-blockproof-produce`)
 
-Producing a `BlockProof` (account multiproof + per-contract storage proofs +
-changeset) from real N42 state requires walking `TrieAccount`/`TrieStorage`
-(N42 `BranchNodeCompact`) for changed keys' paths + boundary sibling hashes.
-**Do not build a standalone BranchNodeCompact→proof extractor** —
-`internal/mptproof` (`wire_full.go` / `wire_expand.go`) already converts N42 trie
-nodes to standard-MPT proof bytes. Reuse it; read the per-block changeset
-(`AccountChangeSet`/`StorageChangeSet`, decodable today — see
-`cmd/n42-stateless-bench`) for `Changes`. mptproof is keyed to
-`AccountsTrie`/`StoragesTrie`; a migrated datadir uses `TrieAccount`/`TrieStorage`
-— reconcile the bucket names.
+> 2026-06-05 update: this is implemented and verified. The "reuse `internal/mptproof`"
+> plan below was SUPERSEDED — `mptproof` proves against N42's **unified** storage
+> trie (composite key `keccak(addr)||keccak(slot)`, see `generator.go:227`), which
+> does not fit P8's standard **two-level** model (`account.storageRoot` → per-account
+> subtree). Do not reuse it for this.
+
+The working producer is `cmd/n42-stateless-blockproof-produce`'s `buildBlockProof`:
+it retains all touched keys (account hashes + storage composite keys) in ONE
+`trie.WitnessRetainer` and proves them with a **single merged `CalcTrieRoot` walk**
+(the erigon FlatDBTrieLoader two-level model over `HashedAccounts` + composite-key
+storage) — O(trie scan), not O(accounts × scan). The flat node set is shipped once
+as `BlockProof.AccountProof`; the consumer's `StateRootUpdater` treats it as a
+**shared pool** for every account's storage subtree, so per-account `StorageProof`
+is left empty (no node duplication) and each pre-state `storageRoot` is read back via
+`stateless.StorageRootsFromProof`. Verified end-to-end: 3398 anchors (genesis→24.998M)
+re-verified by `n42-stateless-client-test --transition` (changeset recompute == header).
+
+~~Original plan (superseded): reuse `internal/mptproof` wire_full/wire_expand; reconcile
+`AccountsTrie`/`StoragesTrie` vs `TrieAccount`/`TrieStorage` bucket names.~~
 
 ### ④b Anchor source
 
