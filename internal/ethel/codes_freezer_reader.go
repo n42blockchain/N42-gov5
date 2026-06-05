@@ -112,6 +112,18 @@ func NewCodesFreezerReader(dir string) (*CodesFreezerReader, error) {
 	}, nil
 }
 
+// Coverage returns the highest block whose codes this store is guaranteed to
+// contain (and whether a coverage record exists). Bytecode is content-addressed,
+// so individual codes carry no height; this single sidecar value (codes.coverage)
+// is the store's boundary. A consumer replaying block N should require
+// covered >= N before trusting the store. See freezer.CodesCoverageFile.
+func (r *CodesFreezerReader) Coverage() (uint64, bool) {
+	return freezer.ReadCodesCoverage(r.dir)
+}
+
+// ContractCount reports the number of indexed contract addresses (diagnostics).
+func (r *CodesFreezerReader) ContractCount() int { return len(r.entries) }
+
 // Close releases all open data files and the zstd decoder.
 func (r *CodesFreezerReader) Close() {
 	for i := range r.files {

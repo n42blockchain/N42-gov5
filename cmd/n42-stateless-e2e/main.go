@@ -187,6 +187,18 @@ func main() {
 	}
 	ancestor := func(n uint64) types.Hash { h, _ := chain.TrustedHash(n); return h }
 
+	// Report code-store coverage and warn if the verify range exceeds it — an
+	// out-of-range block calls a contract the snapshot store may not contain.
+	if codesFz != nil {
+		if cov, ok := codesFz.Coverage(); ok {
+			fmt.Printf("codes-freezer: coverage block %d, %d contracts\n", cov, codesFz.ContractCount())
+			if cov < *from+*count {
+				fmt.Printf("  ⚠ verify top %d EXCEEDS codes coverage %d — out-of-range blocks may fail ②\n", *from+*count, cov)
+			}
+		} else {
+			fmt.Printf("codes-freezer: NO coverage record (%d contracts). Set it by rebuilding with code-import2fz --coverage-block N (= source state height)\n", codesFz.ContractCount())
+		}
+	}
 	fmt.Printf("Phase E: header-chain anchor=%d, verifying %d..%d (layer③ %s)\n",
 		*from, *from+1, *from+*count, ifStr(*anchorsDir != "", "ON", "OFF"))
 
