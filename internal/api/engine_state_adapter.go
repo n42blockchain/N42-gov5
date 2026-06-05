@@ -44,6 +44,10 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
+// gas161WarnOnce guards the one-time loud warning emitted when the
+// N42_GAS161 consensus-bypass diagnostic is active (see executeBlock).
+var gas161WarnOnce sync.Once
+
 // EngineStateAdapter bridges Engine API with persistent state execution.
 type EngineStateAdapter struct {
 	db       kv.RwDB
@@ -336,6 +340,17 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 		return nil, err
 	}
 	gasDiag := os.Getenv("N42_GAS161") != ""
+	if gasDiag {
+		// N42_GAS161 downgrades gas/receipts/bloom mismatches to non-fatal so an
+		// operator can push a block import past a known mismatch while debugging.
+		// That is a fail-OPEN consensus bypass — warn loudly (once) so it can't be
+		// silently left on in a production / validator node. Behaviour is kept
+		// (diagnostic-continue) rather than flipped to fail-closed, which would
+		// break that ad-hoc debugging use.
+		gas161WarnOnce.Do(func() {
+			log.Warn("N42_GAS161 SET — gas/receipts/bloom mismatches are NON-FATAL; this node will ACCEPT consensus-invalid blocks. DIAGNOSTIC ONLY — never set on a production or validator node.")
+		})
+	}
 	execProf := os.Getenv("N42_EXECPROF") != ""
 	var dEVM, dRoot, dCommit, dCS time.Duration
 	tPhase := time.Now()
