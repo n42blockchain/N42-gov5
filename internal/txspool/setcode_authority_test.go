@@ -26,6 +26,7 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -312,4 +313,58 @@ func mustKey(t *testing.T) *ecdsa.PrivateKey {
 		t.Fatalf("generate key: %v", err)
 	}
 	return k
+}
+
+// TestValidateSetCodeStructure pins the structural SetCode rules: Prague-gated,
+// no contract creation (To required), non-empty authorization list; non-SetCode
+// txs pass through.
+func TestValidateSetCodeStructure(t *testing.T) {
+	key, _ := crypto.GenerateKey()
+
+	// Pre-Prague: a SetCode tx is rejected as unsupported.
+	scTx := setCodeTxWithKey(t, key, 0)
+	if err := validateSetCodeStructure(scTx, false); err != internal.ErrTxTypeNotSupported {
+		t.Fatalf("pre-Prague SetCode = %v, want ErrTxTypeNotSupported", err)
+	}
+	// Prague: a well-formed SetCode tx (To set, one auth) passes.
+	if err := validateSetCodeStructure(scTx, true); err != nil {
+		t.Fatalf("valid SetCode = %v, want nil", err)
+	}
+
+	// Contract-creation SetCode (To == nil) is rejected.
+	to := types.HexToAddress("0x00000000000000000000000000000000000000aa")
+	creation := transaction.NewTx(&transaction.SetCodeTx{
+		ChainID:   uint256.NewInt(1),
+		Nonce:     0,
+		GasTipCap: uint256.NewInt(1),
+		GasFeeCap: uint256.NewInt(1),
+		Gas:       21000,
+		To:        nil, // creation — forbidden for SetCode
+		Value:     uint256.NewInt(0),
+		AuthList:  transaction.AuthorizationList{{ChainID: *uint256.NewInt(1), Address: to}},
+	})
+	if err := validateSetCodeStructure(creation, true); err != ErrSetCodeTxCreate {
+		t.Fatalf("creation SetCode = %v, want ErrSetCodeTxCreate", err)
+	}
+
+	// Empty authorization list is rejected.
+	empty := transaction.NewTx(&transaction.SetCodeTx{
+		ChainID:   uint256.NewInt(1),
+		Nonce:     0,
+		GasTipCap: uint256.NewInt(1),
+		GasFeeCap: uint256.NewInt(1),
+		Gas:       21000,
+		To:        &to,
+		Value:     uint256.NewInt(0),
+		AuthList:  nil,
+	})
+	if err := validateSetCodeStructure(empty, true); err != ErrSetCodeTxNoAuth {
+		t.Fatalf("empty-authlist SetCode = %v, want ErrSetCodeTxNoAuth", err)
+	}
+
+	// A non-SetCode tx passes regardless of fork.
+	legacy := transaction.NewTransaction(0, types.Address{}, &to, uint256.NewInt(0), 21000, uint256.NewInt(1), nil)
+	if err := validateSetCodeStructure(legacy, true); err != nil {
+		t.Fatalf("legacy tx = %v, want nil", err)
+	}
 }

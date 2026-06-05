@@ -75,6 +75,8 @@ var (
 	ErrInflightTxLimitReached    = errors.New("in-flight transaction limit reached for delegated accounts")
 	ErrAuthorityReserved         = errors.New("authority already reserved")
 	ErrOutOfOrderTxFromDelegated = errors.New("origin account that has gapped nonce cannot be delegated")
+	ErrSetCodeTxCreate           = errors.New("setcode transaction cannot be used to create contract")
+	ErrSetCodeTxNoAuth           = errors.New("setcode transaction with no authorization list")
 
 	pendingGauge = prometheus.GetOrCreateCounter("txpool_pending", true)
 	queuedGauge  = prometheus.GetOrCreateCounter("txpool_queued", true)
