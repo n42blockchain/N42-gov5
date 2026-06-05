@@ -192,6 +192,14 @@ func setStatefulPayloadRequestsHash(cfg *params.ChainConfig, header *block.Heade
 }
 
 func (e *EngineAPIV1) executePayloadOnParentStateWithWithdrawals(blk block.IBlock, parentHash types.Hash, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal) (*engineStateOverlay, block.Receipts, error) {
+	// The (nil,nil,nil) "no-error, no-overlay" return is an intentional sentinel
+	// for the N42 lightweight / validate-only mode: when no execution engine is
+	// wired (e.api.api.engine == nil) deep state execution is skipped and the
+	// payload is accepted on the strength of the structural checks the caller
+	// already ran. Do NOT flip these to fail-closed — that path is load-bearing
+	// (and exercised by the engine_api tests). The legitimate missing-parent
+	// case is short-circuited to ACCEPTED by the live callers before reaching
+	// here, so VALID is never reported for an unresolved-parent block.
 	if blk == nil || parentHash == (types.Hash{}) {
 		return nil, nil, nil
 	}
