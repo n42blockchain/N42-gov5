@@ -27,6 +27,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/internal/ethel/stateless"
+	"github.com/n42blockchain/N42/internal/ethel/stateless/serve"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	log "github.com/n42blockchain/N42/lib/log/v3"
@@ -38,8 +39,9 @@ func main() {
 	headersDir := flag.String("headers", `D:/n42-eth1/chain/freezer`, "columnar headerc dir")
 	bodiesDir := flag.String("bodies", `D:/n42-eth1/chain/freezer`, "columnar bodyc dir")
 	witDir := flag.String("witness", `D:/N42-eth1177/chain/freezer`, "witness freezer dir (TableBlockWitness)")
-	datadir := flag.String("datadir", `D:/N42-eth1177`, "MDBX datadir holding the Code table (code-by-hash on demand)")
-	codesDir := flag.String("codes", `D:/N42-eth1177/chain/freezer`, "address-indexed codes-freezer dir (complete bytecode source; must be built to >= --from+--count)")
+	datadir := flag.String("datadir", `D:/N42-eth1177`, "MDBX datadir holding the Code table (by-hash, optional; empty = no local MDBX code)")
+	codesDir := flag.String("codes", `D:/N42-eth1177/chain/freezer`, "address-indexed codes-freezer dir (complete bytecode source; empty = none. Must be built to >= --from+--count)")
+	idcURL := flag.String("idc", "", "optional IDC/producer base URL — on-demand by-hash code fallback via GET /code (the true minimal-client path: no local code needed). Code is keccak-verified, so a lying IDC cannot inject wrong bytecode")
 	sendersDir := flag.String("senders", `D:/N42-eth1177/chain/freezer`, "senders freezer dir (matches the recording's sender source; empty = ecrecover)")
 	anchorsDir := flag.String("anchors", "", "optional anchorc freezer dir for layer ③ (empty = skip ③)")
 	from := flag.Uint64("from", 24989000, "trusted anchor block (header chain root); verification runs from from+1")
@@ -75,9 +77,12 @@ func main() {
 	// MDBX Code table is not complete to the tip, so the witness replay would
 	// miss a contract whose code was deployed past the MDBX's height; the
 	// codes-freezer (genesis→tip) covers it. Must be built to >= the verify range.
-	codesFz, err := ethel.NewCodesFreezerReader(*codesDir)
-	if err != nil {
-		fail("open codes-freezer", err)
+	var codesFz *ethel.CodesFreezerReader
+	if *codesDir != "" {
+		codesFz, err = ethel.NewCodesFreezerReader(*codesDir)
+		if err != nil {
+			fail("open codes-freezer", err)
+		}
 	}
 	// Senders freezer — match the recording's sender source (the executor used the
 	// senders table, not ecrecover); a mismatch would misalign the witness stream.
@@ -105,22 +110,51 @@ func main() {
 		return sns
 	}
 
-	db, err := mdbx.NewMDBX(log.New()).Path(*datadir).Label(kv.ChainDB).
-		MapSize(datasize.ByteSize(*mapGB) * datasize.GB).Readonly().Open(ctx)
-	if err != nil {
-		fail("open code MDBX", err)
-	}
-	defer db.Close()
-	codeFetch := func(h types.Hash) ([]byte, error) {
-		var code []byte
-		_ = db.View(ctx, func(tx kv.Tx) error {
-			code, _ = tx.GetOne(kv.Code, h[:])
-			return nil
-		})
-		if len(code) == 0 {
-			return nil, fmt.Errorf("code %x not found", h[:6])
+	// Optional local by-hash code source (MDBX Code table).
+	var db kv.RoDB
+	if *datadir != "" {
+		db, err = mdbx.NewMDBX(log.New()).Path(*datadir).Label(kv.ChainDB).
+			MapSize(datasize.ByteSize(*mapGB) * datasize.GB).Readonly().Open(ctx)
+		if err != nil {
+			fail("open code MDBX", err)
 		}
-		return code, nil
+		defer db.Close()
+	}
+	// Optional online IDC/producer code source (the true minimal-client path).
+	var idc *serve.HTTPSource
+	if *idcURL != "" {
+		idc = serve.NewHTTPSource(*idcURL)
+	}
+
+	// codeFetch resolves contract bytecode by hash: local in-memory cache (codes
+	// are content-addressed + immutable, so a fetched code is reused, never
+	// re-read) → local MDBX → online IDC /code. The witness reader re-verifies
+	// keccak256(code)==hash on every result, so neither the IDC nor the cache can
+	// inject wrong bytecode.
+	codeCache := make(map[types.Hash][]byte)
+	var idcHits, cacheHits int
+	codeFetch := func(h types.Hash) ([]byte, error) {
+		if c, ok := codeCache[h]; ok {
+			cacheHits++
+			return c, nil
+		}
+		if db != nil {
+			var code []byte
+			_ = db.View(ctx, func(tx kv.Tx) error { code, _ = tx.GetOne(kv.Code, h[:]); return nil })
+			if len(code) > 0 {
+				codeCache[h] = code
+				return code, nil
+			}
+		}
+		if idc != nil {
+			code, e := idc.Code(h)
+			if e == nil && len(code) > 0 {
+				codeCache[h] = code // cache the fetched code so we never re-read it
+				idcHits++
+				return code, nil
+			}
+		}
+		return nil, fmt.Errorf("code %x not found (cache/MDBX/IDC)", h[:6])
 	}
 
 	var anchorTbl *freezer.FreezerTable
@@ -227,6 +261,10 @@ func main() {
 	}
 	fmt.Printf("ALL VERIFIED ✓ — %d blocks (①header + ②witness-replay), %d MPT anchors (③), %s\n",
 		verified, anchorsChecked, time.Since(t0).Round(time.Millisecond))
+	if idc != nil {
+		fmt.Printf("  code: %d cached (%d distinct), %d fetched from IDC %s\n",
+			cacheHits, len(codeCache), idcHits, *idcURL)
+	}
 }
 
 func beU64(b []byte) uint64 {
