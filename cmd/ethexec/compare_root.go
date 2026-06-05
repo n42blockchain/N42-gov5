@@ -56,6 +56,16 @@ func runCompareRoot(c *cli.Context) error {
 
 	noHeader := c.Bool("no-header")
 
+	// Safety: the concurrent (16-way parallel) root computer PERSISTS branch
+	// nodes as it builds. The parallel-vs-sequential root equality is only
+	// enforced in unit tests, so at runtime the header-root compare is the sole
+	// independent oracle that the parallel result is canonical. Refuse the combo
+	// so a parallel divergence can't be silently persisted into the trie tables.
+	// (audit: docs/ethel/erigon-borrow-audit.md / commitment §C2)
+	if concurrent && noHeader {
+		return fmt.Errorf("--concurrent with --no-header is unsafe: the parallel root computer persists branches without the header-root cross-check; drop one of the flags")
+	}
+
 	logger := log2.New()
 	db, err := mdbx.NewMDBX(logger).
 		Path(datadir).

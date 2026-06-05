@@ -955,8 +955,11 @@ func (d *Downloader) backfillBlockhashWindow(ctx context.Context) {
 		from = local - window
 	}
 	// Already covered (head advanced past the migration gap, or a prior run
-	// backfilled): the bottom-of-window header resolves canonically.
-	if d.haveHeader(ctx, from) {
+	// backfilled): the ENTIRE window resolves canonically. Checking only the
+	// bottom is insufficient — a truncated/sparse peer reply from an earlier
+	// run can leave a mid-window hole that the bottom check misses, silently
+	// returning a zero BLOCKHASH for that height later.
+	if d.windowComplete(ctx, from, local) {
 		d.backfilled = true
 		return
 	}
@@ -996,9 +999,11 @@ func (d *Downloader) backfillBlockhashWindow(ctx context.Context) {
 		log.Warn("eldevp2p: blockhash-window backfill commit failed", "err", err)
 		return
 	}
-	// Only consider it done if the bottom of the window is now resolvable; a
-	// partial peer reply leaves the flag clear so the next round retries.
-	if d.haveHeader(ctx, from) {
+	// Only consider it done if the ENTIRE window [from, local] is now
+	// resolvable; a partial/truncated peer reply (which can leave a mid-window
+	// hole, not just a missing bottom) keeps the flag clear so the next round
+	// retries and fills the gap.
+	if d.windowComplete(ctx, from, local) {
 		d.backfilled = true
 	}
 	log.Info("eldevp2p: backfilled blockhash-window headers", "from", from, "to", local, "written", written, "complete", d.backfilled)
@@ -1012,6 +1017,26 @@ func (d *Downloader) haveHeader(ctx context.Context, num uint64) bool {
 	defer tx.Rollback()
 	h, _ := rawdb.ReadCanonicalHash(tx, num)
 	return h != (types.Hash{})
+}
+
+// windowComplete reports whether EVERY block in [from, to] has a canonical
+// hash — i.e. the BLOCKHASH window is fully backfilled with no mid-window
+// holes. Checking only an endpoint is insufficient: a truncated or sparse peer
+// reply can leave a hole in the middle that an endpoint check misses, which
+// would later return a zero BLOCKHASH for that height (and can revert a
+// contract that depends on it). The scan is ≤256 cheap canonical-hash reads.
+func (d *Downloader) windowComplete(ctx context.Context, from, to uint64) bool {
+	tx, err := d.exec.RwDB().BeginRo(ctx)
+	if err != nil {
+		return false
+	}
+	defer tx.Rollback()
+	for n := from; n <= to; n++ {
+		if h, _ := rawdb.ReadCanonicalHash(tx, n); h == (types.Hash{}) {
+			return false
+		}
+	}
+	return true
 }
 
 // --- block assembly ------------------------------------------------------
