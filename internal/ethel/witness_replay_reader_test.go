@@ -115,20 +115,31 @@ func TestCodesFreezerCoverageRoundTrip(t *testing.T) {
 	}
 }
 
-// TestWitnessReplayCodeMismatchFallsThrough: the freezer holds OLD bytecode for
-// an address (a redeploy / post-coverage deployment), so its keccak != the
-// requested codeHash. The reader must fall through to the hot tier (codeFetch
-// here) and return the correct current code — NOT fail loud.
-func TestWitnessReplayCodeMismatchFallsThrough(t *testing.T) {
+// codeHashKey returns the 20-byte codes-freezer key for a bytecode — the first
+// 20 bytes of its codeHash, mirroring code-import2fz (which keys the freezer by
+// the codeHash[:20] of the source Code/Bytecodes table).
+func codeHashKey(code []byte) types.Address {
+	h := crypto.Keccak256Hash(code)
+	var a types.Address
+	copy(a[:], h[:20])
+	return a
+}
+
+// TestWitnessReplayCodeTiering covers the cold-freezer→hot-MDBX tier on the
+// content-addressed (codeHash-keyed) freezer:
+//   - a codeHash present in the cold freezer is served cold (no fetch);
+//   - a codeHash NOT in the freezer (deployed past coverage) misses and falls
+//     through to the hot tier (codeFetch) — NOT fail loud.
+func TestWitnessReplayCodeTiering(t *testing.T) {
 	prev := GlobalBytecodeCache
 	GlobalBytecodeCache = nil // isolate from process-wide cache
 	defer func() { GlobalBytecodeCache = prev }()
 
+	coldCode := []byte{0x60, 0x01, 0x60, 0x02} // in the cold freezer (≤ coverage)
+	hotCode := []byte{0x60, 0x0a, 0x60, 0x0b}  // deployed past coverage → hot tier
+
 	dir := t.TempDir()
-	addr := types.Address{0xbe, 0xef}
-	oldCode := []byte{0x60, 0x01, 0x60, 0x02} // what the snapshot froze
-	newCode := []byte{0x60, 0x0a, 0x60, 0x0b} // what the contract holds now
-	writeTinyCodesFreezer(t, dir, map[types.Address][]byte{addr: oldCode}, 24000000)
+	writeTinyCodesFreezer(t, dir, map[types.Address][]byte{codeHashKey(coldCode): coldCode}, 24000000)
 
 	codes, err := NewCodesFreezerReader(dir)
 	if err != nil {
@@ -142,36 +153,36 @@ func TestWitnessReplayCodeMismatchFallsThrough(t *testing.T) {
 		r.SetFreezerCoverage(cov)
 	}
 	fetched := 0
-	newHash := crypto.Keccak256Hash(newCode)
+	hotHash := crypto.Keccak256Hash(hotCode)
 	r.SetCodeFetcher(func(h types.Hash) ([]byte, error) {
 		fetched++
-		if h == newHash {
-			return newCode, nil
+		if h == hotHash {
+			return hotCode, nil
 		}
 		return nil, nil
 	})
 
-	got, err := r.ReadAccountCode(addr, newHash)
+	// Hot tier: post-coverage code is absent from the freezer → fall through.
+	got, err := r.ReadAccountCode(types.Address{0xbe, 0xef}, hotHash)
 	if err != nil {
 		t.Fatalf("ReadAccountCode fell loud on a post-coverage code: %v", err)
 	}
-	if string(got) != string(newCode) {
-		t.Fatalf("got %x, want hot-tier code %x", got, newCode)
+	if string(got) != string(hotCode) {
+		t.Fatalf("got %x, want hot-tier code %x", got, hotCode)
 	}
 	if fetched != 1 {
-		t.Fatalf("codeFetch called %d times, want 1 (mismatch must fall through)", fetched)
+		t.Fatalf("codeFetch called %d times, want 1 (freezer miss must fall through)", fetched)
 	}
 
-	// Sanity: a matching freezer entry is still served from the cold tier
-	// without touching the fetcher.
+	// Cold tier: a codeHash in the freezer is served cold without touching the
+	// fetcher (looked up by codeHash[:20], keccak-verified).
 	fetched = 0
-	oldHash := crypto.Keccak256Hash(oldCode)
-	got, err = r.ReadAccountCode(addr, oldHash)
+	got, err = r.ReadAccountCode(types.Address{0x11}, crypto.Keccak256Hash(coldCode))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != string(oldCode) {
-		t.Fatalf("cold-tier hit returned %x, want %x", got, oldCode)
+	if string(got) != string(coldCode) {
+		t.Fatalf("cold-tier hit returned %x, want %x", got, coldCode)
 	}
 	if fetched != 0 {
 		t.Fatalf("cold-tier hit should not call codeFetch, called %d", fetched)
