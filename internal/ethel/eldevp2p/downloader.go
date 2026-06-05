@@ -146,6 +146,17 @@ type Downloader struct {
 	// anchor cadence K so every Merkle boundary is an anchor height.
 	anchorDir string
 
+	// mptVerifyInterval (N42_MPT_VERIFY_INTERVAL / --mpt-verify-interval),
+	// when > 0, runs the stateless CONSUMER path on live sync data at that block
+	// cadence: capture the MPT multiproof, round-trip it through the compact wire
+	// (encode → decode — exactly what a minimal client receives) and confirm the
+	// stateless engine re-hashes it to the canonical header.Root. Independent of
+	// anchorDir (verify without writing files); a mismatch is a loud error. This
+	// is the ⑤b verifier side — it continuously audits that emitted anchors are
+	// minimal-client-verifiable and exercises the proofwire codec on real data.
+	mptVerifyInterval uint64
+	lastMptVerify     uint64
+
 	// buffer holds headers/bodies fetched but not yet executed, persisting across
 	// coordinator rounds so nothing is re-fetched or discarded (reth BodyStage
 	// reorder buffer). Populated by ensureHeaders/ensureBodies, drained by
@@ -343,6 +354,12 @@ func (d *Downloader) coordinator(ctx context.Context) {
 				log.Info("eldevp2p: live MPT-anchor emit enabled", "dir", dir, "cadence", d.subBatch)
 			} else {
 				log.Error("eldevp2p: cannot create anchor dir", "dir", dir, "err", err)
+			}
+		}
+		if v := os.Getenv("N42_MPT_VERIFY_INTERVAL"); v != "" {
+			if n, err := strconv.ParseUint(v, 10, 64); err == nil && n > 0 {
+				d.mptVerifyInterval = n
+				log.Info("eldevp2p: live MPT-stateless verify enabled (consumer round-trip)", "interval", n)
 			}
 		}
 		d.adapter.SetStaged(true)
@@ -737,11 +754,13 @@ func (d *Downloader) runMerkleStage(ctx context.Context, from, to uint64) error 
 	}
 	defer tx.Rollback()
 	t0 := time.Now()
-	// Live producer path: when anchor emit is on, capture the MPT-stateless
-	// anchor proof as a byproduct of the same Merkle (one walk); else plain root.
+	// Live producer/verifier path: when anchor emit OR stateless verify is due,
+	// capture the MPT-stateless multiproof as a byproduct of the same Merkle
+	// (one walk); else plain root.
+	mptVerifyDue := d.mptVerifyInterval > 0 && to/d.mptVerifyInterval > d.lastMptVerify/d.mptVerifyInterval
 	var root types.Hash
 	var anchorProof [][]byte
-	if d.anchorDir != "" {
+	if d.anchorDir != "" || mptVerifyDue {
 		root, anchorProof, err = commitment.MerkleStageIncrementalWithProof(tx, from, to)
 	} else {
 		root, err = commitment.MerkleStageIncremental(tx, from, to)
@@ -764,6 +783,12 @@ func (d *Downloader) runMerkleStage(ctx context.Context, from, to uint64) error 
 		if err := d.emitAnchor(to, root, anchorProof); err != nil {
 			log.Error("eldevp2p: anchor emit failed", "block", to, "err", err)
 		}
+	}
+	if mptVerifyDue {
+		if err := verifyAnchorRoundTrip(to, root, anchorProof); err != nil {
+			return fmt.Errorf("MPT-stateless verify [%d,%d]: %w", from, to, err)
+		}
+		d.lastMptVerify = to
 	}
 	var v [8]byte
 	binary.BigEndian.PutUint64(v[:], to)
@@ -794,6 +819,37 @@ func (d *Downloader) emitAnchor(blockNum uint64, root types.Hash, proof [][]byte
 		return err
 	}
 	return os.WriteFile(filepath.Join(d.anchorDir, fmt.Sprintf("anchor-%010d.bin", blockNum)), wire, 0o644)
+}
+
+// verifyAnchorRoundTrip is the ⑤b verifier side: it runs the stateless CONSUMER
+// path on the live block's captured multiproof, exactly as a minimal client
+// would. First the raw proof is re-hashed by the stateless engine to confirm it
+// anchors to the production root (cross-checks the two root engines agree). Then
+// the proof is round-tripped through the compact wire (encode → decode — the form
+// a minimal client actually receives) and re-verified, which continuously
+// exercises the proofwire codec on real data. Any failure means an emitted anchor
+// would NOT verify on a minimal client, so it is a loud, sync-halting error.
+func verifyAnchorRoundTrip(blockNum uint64, root types.Hash, proof [][]byte) error {
+	if len(proof) == 0 {
+		return fmt.Errorf("empty proof at %d", blockNum)
+	}
+	if err := stateless.VerifyProofAnchors(root[:], proof); err != nil {
+		return fmt.Errorf("raw proof anchor: %w", err)
+	}
+	wire, err := stateless.CompactProofFromNodes(root[:], proof)
+	if err != nil {
+		return fmt.Errorf("compact encode: %w", err)
+	}
+	decoded, err := stateless.DecodeCompactToNodes(wire)
+	if err != nil {
+		return fmt.Errorf("compact decode: %w", err)
+	}
+	if err := stateless.VerifyProofAnchors(root[:], decoded); err != nil {
+		return fmt.Errorf("decoded-wire anchor: %w", err)
+	}
+	log.Info("eldevp2p: MPT-stateless verify OK (minimal-client round-trip)",
+		"block", blockNum, "root", root.Hex(), "nodes", len(proof), "wireBytes", len(wire))
+	return nil
 }
 
 // commitBatch writes the head marker INTO the batch tx and commits it, so the
