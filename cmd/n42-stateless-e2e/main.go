@@ -39,6 +39,8 @@ func main() {
 	bodiesDir := flag.String("bodies", `D:/n42-eth1/chain/freezer`, "columnar bodyc dir")
 	witDir := flag.String("witness", `D:/N42-eth1177/chain/freezer`, "witness freezer dir (TableBlockWitness)")
 	datadir := flag.String("datadir", `D:/N42-eth1177`, "MDBX datadir holding the Code table (code-by-hash on demand)")
+	codesDir := flag.String("codes", `D:/N42-eth1177/chain/freezer`, "address-indexed codes-freezer dir (complete bytecode source; must be built to >= --from+--count)")
+	sendersDir := flag.String("senders", `D:/N42-eth1177/chain/freezer`, "senders freezer dir (matches the recording's sender source; empty = ecrecover)")
 	anchorsDir := flag.String("anchors", "", "optional anchorc freezer dir for layer ③ (empty = skip ③)")
 	from := flag.Uint64("from", 24989000, "trusted anchor block (header chain root); verification runs from from+1")
 	count := flag.Uint64("count", 100, "number of blocks to verify")
@@ -68,6 +70,40 @@ func main() {
 	}
 	wit.ForceBatchSize(freezer.BatchSize)
 	defer wit.Close()
+
+	// Address-indexed codes-freezer — the COMPLETE bytecode source. The by-hash
+	// MDBX Code table is not complete to the tip, so the witness replay would
+	// miss a contract whose code was deployed past the MDBX's height; the
+	// codes-freezer (genesis→tip) covers it. Must be built to >= the verify range.
+	codesFz, err := ethel.NewCodesFreezerReader(*codesDir)
+	if err != nil {
+		fail("open codes-freezer", err)
+	}
+	// Senders freezer — match the recording's sender source (the executor used the
+	// senders table, not ecrecover); a mismatch would misalign the witness stream.
+	var senderTbl *freezer.FreezerTable
+	if *sendersDir != "" {
+		senderTbl, err = freezer.NewFreezerTableCompressedReadOnly(*sendersDir, freezer.TableSenders, "c")
+		if err != nil {
+			fail("open senders", err)
+		}
+		senderTbl.ForceBatchSize(freezer.BatchSize)
+		defer senderTbl.Close()
+	}
+	readSenders := func(n uint64, txCount int) []types.Address {
+		if senderTbl == nil {
+			return nil
+		}
+		data, e := senderTbl.Retrieve(n)
+		if e != nil || len(data)/20 != txCount {
+			return nil // fall back to ecrecover on miss/mismatch
+		}
+		sns := make([]types.Address, txCount)
+		for i := 0; i < txCount; i++ {
+			copy(sns[i][:], data[i*20:(i+1)*20])
+		}
+		return sns
+	}
 
 	db, err := mdbx.NewMDBX(log.New()).Path(*datadir).Label(kv.ChainDB).
 		MapSize(datasize.ByteSize(*mapGB) * datasize.GB).Readonly().Open(ctx)
@@ -157,9 +193,11 @@ func main() {
 		if werr != nil {
 			fail(fmt.Sprintf("read witness %d", n), werr)
 		}
-		// ② witness EVM replay → receiptRoot/gasUsed vs header.
-		in := &ethel.MinimalVerifyInput{Header: hdr, Body: body, Witness: w}
-		if err := ethel.VerifyWitnessReceipt(in, ancestor, chainCfg, engine, codeFetch); err != nil {
+		// ② witness EVM replay → receiptRoot/gasUsed vs header. Senders from the
+		// freezer (matching the recording); code from the complete codes-freezer
+		// (height >= block) with the by-hash MDBX as on-demand fallback.
+		in := &ethel.MinimalVerifyInput{Header: hdr, Body: body, Witness: w, Senders: readSenders(n, len(body.Transactions))}
+		if err := ethel.VerifyWitnessReceiptWithCodes(in, ancestor, chainCfg, engine, codeFetch, codesFz); err != nil {
 			fail(fmt.Sprintf("② replay %d", n), err)
 		}
 		// ③ MPT anchor (optional, at cadence boundaries that have an anchor).

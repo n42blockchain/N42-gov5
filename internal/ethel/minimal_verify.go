@@ -153,7 +153,7 @@ func WireMinimalExec(
 			cd, _ = code(n)
 		}
 		in := &MinimalVerifyInput{Header: h, Body: b, Witness: w, Senders: sn, Code: cd}
-		return verifyExecutionAncestor(ancestor, chainCfg, engine, in, nil)
+		return verifyExecutionAncestor(ancestor, chainCfg, engine, in, nil, nil)
 	}
 }
 
@@ -161,7 +161,7 @@ func WireMinimalExec(
 // replayWitnessBlock check gasUsed + receiptRoot against the header. The trusted
 // HeaderChain supplies BLOCKHASH ancestor hashes.
 func verifyExecution(hc *stateless.HeaderChain, chainCfg *params.ChainConfig, engine consensus.Engine, in *MinimalVerifyInput) error {
-	return verifyExecutionAncestor(func(n uint64) types.Hash { h, _ := hc.TrustedHash(n); return h }, chainCfg, engine, in, nil)
+	return verifyExecutionAncestor(func(n uint64) types.Hash { h, _ := hc.TrustedHash(n); return h }, chainCfg, engine, in, nil, nil)
 }
 
 // VerifyWitnessReceipt is the exported layer-② check for a minimal/mobile client:
@@ -176,14 +176,27 @@ func VerifyWitnessReceipt(in *MinimalVerifyInput, ancestor func(uint64) types.Ha
 	if in == nil || in.Header == nil || in.Header.Number == nil {
 		return fmt.Errorf("minimal: nil input/header")
 	}
-	return verifyExecutionAncestor(ancestor, chainCfg, engine, in, codeFetch)
+	return verifyExecutionAncestor(ancestor, chainCfg, engine, in, codeFetch, nil)
+}
+
+// VerifyWitnessReceiptWithCodes is VerifyWitnessReceipt plus an address-indexed
+// codes-freezer — the complete local bytecode source a producer/IDC has. A pure
+// mobile client uses only codeFetch (by hash, from the producer); a node that
+// holds the codes-freezer passes it here so the witness replay can resolve any
+// contract whose code is not in the by-hash store. The freezer must be built to
+// >= in.Header.Number, else ReadAccountCode reports a stale-entry error.
+func VerifyWitnessReceiptWithCodes(in *MinimalVerifyInput, ancestor func(uint64) types.Hash, chainCfg *params.ChainConfig, engine consensus.Engine, codeFetch func(types.Hash) ([]byte, error), codes *CodesFreezerReader) error {
+	if in == nil || in.Header == nil || in.Header.Number == nil {
+		return fmt.Errorf("minimal: nil input/header")
+	}
+	return verifyExecutionAncestor(ancestor, chainCfg, engine, in, codeFetch, codes)
 }
 
 // verifyExecutionAncestor is verifyExecution with the BLOCKHASH ancestor lookup
 // passed directly (used by the minimal client's ExecVerify hook, which has the
 // ancestor func but not the HeaderChain). Code is served from an in-memory Code
 // table built from the verified code map.
-func verifyExecutionAncestor(ancestor func(uint64) types.Hash, chainCfg *params.ChainConfig, engine consensus.Engine, in *MinimalVerifyInput, codeFetch func(types.Hash) ([]byte, error)) error {
+func verifyExecutionAncestor(ancestor func(uint64) types.Hash, chainCfg *params.ChainConfig, engine consensus.Engine, in *MinimalVerifyInput, codeFetch func(types.Hash) ([]byte, error), codes *CodesFreezerReader) error {
 	dir, err := os.MkdirTemp("", "minimal-code-")
 	if err != nil {
 		return err
@@ -214,6 +227,14 @@ func verifyExecutionAncestor(ancestor func(uint64) types.Hash, chainCfg *params.
 	reader := NewWitnessReplayReader(nil, codeTx)
 	if codeFetch != nil {
 		reader.SetCodeFetcher(codeFetch)
+	}
+	if codes != nil {
+		// Address-indexed codes-freezer: the complete local bytecode source the
+		// bulk replay uses. Required when the by-hash codeFetch/codeTx is not
+		// complete up to this block's height (a contract called here may have
+		// been deployed past the by-hash store's height). It must itself be built
+		// to >= this block, else ReadAccountCode reports a stale-entry error.
+		reader.SetCodesFreezer(codes)
 	}
 	ibs := state.New(reader)
 
