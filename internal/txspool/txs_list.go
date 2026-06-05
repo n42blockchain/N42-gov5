@@ -61,6 +61,11 @@ func (l *txsList) Overlaps(tx *transaction.Transaction) bool {
 	return l.txs.Get(tx.Nonce()) != nil
 }
 
+// Contains reports whether the list holds a transaction with the given nonce.
+func (l *txsList) Contains(nonce uint64) bool {
+	return l.txs.Get(nonce) != nil
+}
+
 // Add tries to insert a new transaction into the list, returning whether the
 // transaction was accepted, and if yes, any previous transaction it replaced.
 // All uint256 arithmetic uses stack-local variables to avoid heap allocation
@@ -166,8 +171,8 @@ func (l *txsList) Ready(start uint64) []*transaction.Transaction {
 	return l.txs.Ready(start)
 }
 
-func (l *txsList) Len() int     { return l.txs.Len() }
-func (l *txsList) Empty() bool  { return l.Len() == 0 }
+func (l *txsList) Len() int    { return l.txs.Len() }
+func (l *txsList) Empty() bool { return l.Len() == 0 }
 
 func (l *txsList) Flatten() []*transaction.Transaction {
 	return l.txs.Flatten()

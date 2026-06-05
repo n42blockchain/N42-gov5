@@ -529,6 +529,17 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
 		return internal.ErrIntrinsicGas
 	}
 
+	// EIP-7702 authorization restrictions (Prague+): at most one in-flight tx
+	// for a delegated account / pending authority, and an authority cannot be
+	// reserved by more than one in-flight transaction. Runs for every tx once
+	// Prague is active (a plain tx from a delegated account is also restricted);
+	// the authority-side check is a no-op for non-SetCode txs.
+	if isPrague {
+		if err := pool.validateAuth(tx); err != nil {
+			return err
+		}
+	}
+
 	if pool.deposit != nil {
 		var depositInfo *deposit.Info
 		if err := pool.bc.DB().View(pool.ctx, func(tx kv.Tx) error {
