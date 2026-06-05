@@ -6,19 +6,22 @@
 // Each code entry in cdat is individually zstd max-compressed.
 //
 // cidx layout:
-//   [16B header: "NCIX" + ver=1 + flags=0x09 (compressed|addrIndexed) + batch=0 + entry=26]
-//   [entry₀: address:20B + fileNum:2B BE + offset:4B BE]
-//   [entry₁: ...]
-//   ...
-//   Entries sorted by address for binary search lookup.
+//
+//	[16B header: "NCIX" + ver=1 + flags=0x09 (compressed|addrIndexed) + batch=0 + entry=26]
+//	[entry₀: address:20B + fileNum:2B BE + offset:4B BE]
+//	[entry₁: ...]
+//	...
+//	Entries sorted by address for binary search lookup.
 //
 // cdat layout:
-//   [zstd(code₀)][zstd(code₁)]...
-//   Each code independently compressed. Retrieve by reading
-//   [offset_i, offset_{i+1}) from the cdat file.
+//
+//	[zstd(code₀)][zstd(code₁)]...
+//	Each code independently compressed. Retrieve by reading
+//	[offset_i, offset_{i+1}) from the cdat file.
 //
 // Usage:
-//   code-import2fz --db d:\reth2k\db --outdir D:\output
+//
+//	code-import2fz --db d:\reth2k\db --outdir D:\output
 package main
 
 import (
@@ -29,6 +32,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -85,6 +89,17 @@ func main() {
 	dbPath := os.Args[2]
 	outdir := os.Args[4]
 
+	// Optional --coverage-block N: the height of the source state this code store
+	// is built from. Recorded to codes.coverage so a verifier can check the store
+	// covers a block before trusting it (content-addressed code has no per-entry
+	// height; this single value is the store's coverage boundary).
+	var coverageBlock uint64
+	for i := 5; i+1 < len(os.Args); i++ {
+		if os.Args[i] == "--coverage-block" {
+			coverageBlock, _ = strconv.ParseUint(os.Args[i+1], 10, 64)
+		}
+	}
+
 	if err := os.MkdirAll(outdir, 0755); err != nil {
 		fmt.Fprintln(os.Stderr, "mkdir:", err)
 		os.Exit(1)
@@ -125,16 +140,29 @@ func main() {
 	t0 := time.Now()
 	fmt.Fprintf(os.Stderr, "Reading Code table...\n")
 
-	// Try "Bytecodes" table first (Reth), then try "Code" (N42/Erigon).
-	tableName := "Bytecodes"
-	cursor, err := tx.Cursor(tableName)
-	if err != nil {
-		tableName = "Code"
-		cursor, err = tx.Cursor(tableName)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "cannot open Bytecodes/Code table:", err)
-			os.Exit(1)
+	// Pick the table that actually holds data. Both "Bytecodes" (Reth) and "Code"
+	// (N42/Erigon) are declared in WithTableCfg, so Cursor() succeeds on either even
+	// when empty — selecting purely by open-success would wrongly use an empty
+	// "Bytecodes" on an N42 schema and export 0 codes. Probe First() and prefer the
+	// non-empty one; "Bytecodes" wins ties (its values need reth-decode).
+	tableName := ""
+	var cursor kv.Cursor
+	for _, name := range []string{"Bytecodes", "Code"} {
+		c, cerr := tx.Cursor(name)
+		if cerr != nil {
+			continue
 		}
+		k, _, _ := c.First()
+		if k != nil {
+			tableName = name
+			cursor = c
+			break
+		}
+		c.Close()
+	}
+	if cursor == nil {
+		fmt.Fprintln(os.Stderr, "no non-empty Bytecodes/Code table found")
+		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "Using table: %s\n", tableName)
 
@@ -306,4 +334,13 @@ func main() {
 		cidxHeaderSize+len(index)*addrEntrySize, len(index), addrEntrySize)
 	fmt.Printf("  elapsed:    %v\n", elapsed)
 	fmt.Printf("  output:     %s/codes.cidx + codes.*.cdat\n", outdir)
+	if coverageBlock > 0 {
+		if err := freezer.WriteCodesCoverage(outdir, coverageBlock); err != nil {
+			fmt.Fprintln(os.Stderr, "write coverage:", err)
+		} else {
+			fmt.Printf("  coverage:   block %d (codes.coverage)\n", coverageBlock)
+		}
+	} else {
+		fmt.Printf("  coverage:   NOT recorded (pass --coverage-block N = source state height)\n")
+	}
 }
