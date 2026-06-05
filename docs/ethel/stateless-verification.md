@@ -127,6 +127,12 @@ A failure halts sync loudly. Tested: `stateless.TestVerifyAnchorRoundTrip` (real
 trie/proof, raw + wire round-trip pass, wrong root rejected) +
 `eldevp2p.TestVerifyAnchorRoundTripEmptyProof` (empty-proof guard).
 
-Remaining: the multi-IDC workflow (#9) — producers run EVM to emit `(witness, proof)`,
-keep one rolling week indexed by block number (codes one week + incremental),
-verifiers fan out + attest, aggregator counts.
+Multi-IDC workflow (#9) — **aggregator side DONE** (`aggregator.go` + `serve/attest_http.go`):
+`Aggregator` is a thread-safe verification-count service over `AttestationPool`
+(distinct-signer count per (block, roots), finalisation threshold, rolling-window
+prune; a lying producer's wrong-root attestations form a separate under-threshold
+group). Wire codec `EncodeAttestation`/`DecodeAttestation` (137 B) + `serve.AttestHandler`
+(`POST /attest`, `GET /attest-status`) give verifier IDCs a place to submit signed
+attestations after a successful stateless verify. Remaining: producers keep one
+rolling week indexed by block number (codes one week + incremental), and the
+verifier-side glue that auto-emits an attestation after the ⑤b downloader verify.
