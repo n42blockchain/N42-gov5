@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"time"
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common"
@@ -706,12 +707,37 @@ type SimulateV1BlockResult struct {
 	Calls         []SimulateV1CallResult `json:"calls"`
 }
 
+const (
+	// Bounds for eth_simulateV1 so a single request can't pin a worker:
+	// max simulated blocks, max total calls across all blocks, and a wall-clock
+	// deadline (mirrors debug_trace's 5s) — without these a long-looping call
+	// runs until the block gas pool drains with no time limit.
+	maxSimulateBlocks = 256
+	maxSimulateCalls  = 1024
+	simulateTimeout   = 5 * time.Second
+)
+
 // SimulateV1 executes a series of transactions against the state, returning the results.
 // Implements EIP-7560 eth_simulateV1 for Blockscout compatibility.
 func (s *BlockChainAPI) SimulateV1(ctx context.Context, blocks []SimulateV1BlockStateCalls, blockNrOrHash *jsonrpc.BlockNumberOrHash, opts *SimulateV1Options) ([]SimulateV1BlockResult, error) {
 	if len(blocks) == 0 {
 		return []SimulateV1BlockResult{}, nil
 	}
+	if len(blocks) > maxSimulateBlocks {
+		return nil, fmt.Errorf("eth_simulateV1: too many blocks: %d (max %d)", len(blocks), maxSimulateBlocks)
+	}
+	totalCalls := 0
+	for i := range blocks {
+		totalCalls += len(blocks[i].Calls)
+	}
+	if totalCalls > maxSimulateCalls {
+		return nil, fmt.Errorf("eth_simulateV1: too many calls: %d (max %d)", totalCalls, maxSimulateCalls)
+	}
+	// Wall-clock deadline for the whole request; propagated to each call's EVM
+	// (see simulateCall) so a runaway loop is aborted instead of pinning a worker.
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, simulateTimeout)
+	defer cancel()
 
 	// Set default block
 	bNrOrHash := jsonrpc.BlockNumberOrHashWithNumber(jsonrpc.LatestBlockNumber)
@@ -871,6 +897,13 @@ func (s *BlockChainAPI) simulateCall(ctx context.Context, args TransactionArgs, 
 	txContext := internal.NewEVMTxContext(msg)
 	blockContext := internal.NewEVMBlockContext(header, internal.GetHashFn(header, nil), s.api.engine, s.api.GetChainConfig(), nil)
 	evm := vm.NewEVM(blockContext, txContext, ibs, s.api.GetChainConfig(), vmConfig)
+
+	// Abort the EVM if the request deadline (carried by ctx from SimulateV1)
+	// expires, so a long-looping call can't run until the gas pool drains.
+	go func() {
+		<-ctx.Done()
+		evm.Cancel()
+	}()
 
 	// Execute
 	result, err := internal.ApplyMessage(evm, msg, gp, true, false)
