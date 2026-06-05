@@ -54,6 +54,25 @@ func (txn *txNoncer) get(addr types.Address) uint64 {
 	return txn.nonces[addr]
 }
 
+// getReadOnly returns the pending nonce like get, but does NOT insert an entry
+// for an untracked address. Read-only RPC paths (eth_getTransactionCount with
+// the "pending" tag → TxsPool.Nonce) take arbitrary caller-supplied addresses;
+// using get there lets a flood of queries for unknown addresses balloon the
+// nonces map (only bounded by setAll's per-reset replacement, i.e. one block).
+// For an untracked sender the pending nonce IS the state nonce, so returning
+// fallback without caching is correctness-neutral (a later tx insertion caches
+// it properly via set/get). Mirrors reth #23008. Same lock discipline as get
+// (so fallback calls stay serialized — no concurrency change).
+func (txn *txNoncer) getReadOnly(addr types.Address) uint64 {
+	txn.lock.Lock()
+	defer txn.lock.Unlock()
+
+	if nonce, ok := txn.nonces[addr]; ok {
+		return nonce
+	}
+	return txn.fallback.GetNonce(addr)
+}
+
 func (txn *txNoncer) set(addr types.Address, nonce uint64) {
 	txn.lock.Lock()
 	defer txn.lock.Unlock()
