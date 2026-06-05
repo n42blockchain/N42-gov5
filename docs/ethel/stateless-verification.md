@@ -140,3 +140,44 @@ the aggregator — so N verifier nodes independently verify + attest and the agg
 finalises at threshold. Remaining: producers keep one rolling week of artifacts
 indexed by block number (codes one week + incremental) — an ops/retention concern,
 not new verification logic.
+
+## Code tiering & coverage (Phase E closeout)
+
+Witness streams carry no contract bytecode, so layer ② resolves code from a
+**two-tier, content-addressed** source:
+
+- **cold** — the codes-freezer (`code-import2fz`, keyed by `codeHash[:20]` of the
+  source Code/Bytecodes table; ~6 GB zstd for 2.4M mainnet contracts). It is a
+  snapshot at a fixed height.
+- **hot** — MDBX `Code` (keyed by full codeHash). On a live node this is populated
+  by `HashedCanonicalWriter.UpdateAccountCode` at commit, i.e. **captured from the
+  creating transaction** — every contract deployed past the cold snapshot lands here.
+- a minimal/mobile client with neither tier fetches by codeHash from a producer
+  `/code` endpoint (`codeFetch`), keccak-verified so a lying server can't substitute.
+
+`ReadAccountCode` tries cold → (codeFetch) → hot, and **every tier verifies
+`keccak256(code)==codeHash`** before serving. A cold miss or keccak mismatch
+(redeploy, or a code deployed past coverage) falls THROUGH to the hot tier rather
+than failing — the cold freezer is just a snapshot, not the authority.
+
+**Coverage height.** Code is content-addressed and carries no height, but a *store*
+covers blocks only up to the state it was built from. `codes.coverage` (a
+`WriteCodesCoverage`/`ReadCodesCoverage` sidecar, 8-byte BE) records that boundary;
+`CodesFreezerReader.Coverage()` reads it back. It does not gate reads (a miss tiers
+to hot regardless) — it sharpens diagnostics: an all-tiers-miss error states the
+coverage so an operator can tell a coverage gap (→ belongs in hot MDBX) from real
+corruption. The 25.2M store is built with `code-import2fz --coverage-block N`.
+
+**Phase E diagnostic — resolved.** The real-data three-layer E2E (`cmd/n42-stateless-e2e`)
+surfaced two distinct root causes on out-of-range blocks:
+1. *Code key mismatch (fixed).* The witness-replay reader queried the codes-freezer
+   by account address while the freezer is `codeHash[:20]`-keyed, so the cold tier
+   never engaged locally (every read fell to MDBX; a freezer-only minimal client
+   served nothing). Now keyed by `codeHash[:20]` like `serve.Code`. Verified: a
+   clean aligned range (24989901..24990000) passes ①header + ②witness-replay + ③
+   anchor end-to-end on real mainnet data with the 25.2M cold store, no MDBX needed
+   for in-coverage code.
+2. *Witness data gaps (→ data fill).* A few individual blocks (e.g. 24990034) fail
+   ② with `proto: cannot parse invalid wire-format data` — a corrupt/misaligned
+   witness entry, independent of code. Routed to the data-fill task (regenerate
+   witness to tip from the reth2k/geth sources), not a verification-logic bug.
