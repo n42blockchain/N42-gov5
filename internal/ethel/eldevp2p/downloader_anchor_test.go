@@ -19,9 +19,13 @@
 package eldevp2p
 
 import (
+	"net/http/httptest"
 	"testing"
 
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/internal/ethel/stateless"
+	"github.com/n42blockchain/N42/internal/ethel/stateless/serve"
 )
 
 // TestVerifyAnchorRoundTripEmptyProof pins the ⑤b loud-failure guard: an empty
@@ -34,5 +38,30 @@ func TestVerifyAnchorRoundTripEmptyProof(t *testing.T) {
 	}
 	if err := verifyAnchorRoundTrip(1, types.Hash{}, [][]byte{}); err == nil {
 		t.Fatal("expected error for empty proof slice")
+	}
+}
+
+// TestSignAndPostAttestation closes the multi-IDC loop in a test: a verifier
+// signs an attestation and POSTs it to a real AttestHandler-backed aggregator,
+// which counts and finalises it. A dead aggregator yields a (non-fatal) error.
+func TestSignAndPostAttestation(t *testing.T) {
+	agg := stateless.NewAggregator(nil, 1, 0)
+	srv := httptest.NewServer(serve.AttestHandler(agg, nil))
+	defer srv.Close()
+
+	key, _ := crypto.GenerateKey()
+	sr := types.HexToHash("0x00000000000000000000000000000000000000000000000000000000000000aa")
+	rr := types.HexToHash("0x00000000000000000000000000000000000000000000000000000000000000bb")
+
+	if err := signAndPostAttestation(key, srv.URL, 100, sr, rr); err != nil {
+		t.Fatalf("signAndPostAttestation: %v", err)
+	}
+	if c, fin := agg.Status(100, sr, rr); c != 1 || !fin {
+		t.Fatalf("aggregator after submit: count=%d fin=%v want 1,true", c, fin)
+	}
+
+	// A dead aggregator must surface an error (caller logs it, never halts sync).
+	if err := signAndPostAttestation(key, "http://127.0.0.1:1", 1, sr, rr); err == nil {
+		t.Fatal("expected error posting to a dead aggregator")
 	}
 }
