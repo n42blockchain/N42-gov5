@@ -15,12 +15,15 @@
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 //
 // sync.Pool recyclers for hot-path EVM allocations. Uint256Pool
-// (GetUint256/PutUint256) hands out pre-zeroed *uint256.Int values and
-// clears them on return, avoiding garbage for every stack push or
-// arithmetic intermediate. ByteSlicePool (GetByteSlice) recycles
-// 32-byte word buffers for memory copies. Used extensively by
-// instructions and memory helpers to keep per-opcode allocations off
-// the GC heap.
+// (GetUint256/PutUint256) hands out *uint256.Int values cleared on return;
+// ByteSlicePool/HashPool/memPool recycle word/hash/memory buffers, zeroed on
+// Get so each helper is a transparent drop-in for make([]byte, n).
+//
+// NOTE (2026-06-05 audit): these byte/memory pools are currently NOT wired into
+// the interpreter — the live EVM memory recycling uses the *Memory struct pool
+// in interpreter.go (which zeroes via Memory.Resize). These helpers are kept as
+// scaffolding; if wired later, the Get-time clear() above is what keeps EVM
+// memory zero-initialised. Only Uint256Pool/Put semantics are exercised (tests).
 
 package vm
 
@@ -64,6 +67,10 @@ var ByteSlicePool = &sync.Pool{
 }
 
 // GetByteSlice gets a byte slice from the pool with at least the given capacity.
+// The returned slice is zeroed, so it is a transparent drop-in for
+// make([]byte, size): a recycled buffer still carries the previous user's bytes
+// and returning it unzeroed would leak stale data (a consensus hazard if ever
+// wired into EVM memory/word buffers, which must be zero-initialised).
 func GetByteSlice(size int) []byte {
 	if size <= 32 {
 		bp, ok := ByteSlicePool.Get().(*[]byte)
@@ -71,7 +78,9 @@ func GetByteSlice(size int) []byte {
 			// Type assertion failed, allocate new slice
 			return make([]byte, size)
 		}
-		return (*bp)[:size]
+		s := (*bp)[:size]
+		clear(s)
+		return s
 	}
 	return make([]byte, size)
 }
@@ -150,7 +159,10 @@ func sizeClass(size int) int {
 	return class
 }
 
-// GetMemory gets a memory slice of at least the given size.
+// GetMemory gets a memory slice of at least the given size. The returned slice
+// is zeroed so it is a transparent drop-in for make([]byte, size): EVM memory
+// must be zero-initialised, and a recycled buffer otherwise carries the previous
+// user's bytes (a consensus hazard).
 func GetMemory(size int) []byte {
 	class := sizeClass(size)
 	if class < 0 {
@@ -161,7 +173,9 @@ func GetMemory(size int) []byte {
 		// Type assertion failed, allocate new memory
 		return make([]byte, size)
 	}
-	return (*bp)[:size]
+	s := (*bp)[:size]
+	clear(s)
+	return s
 }
 
 // PutMemory returns a memory slice to the pool.
