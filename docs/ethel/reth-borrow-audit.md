@@ -115,7 +115,7 @@
 - `always reinsert reorged blocks`(reth #23175):reth 的 bug 是 **bundle-state 模型在 hashed 模式跳过重插**;N42 txpool 有标准 geth reorg reinjection(`txs_pool.go:640-727`)+ 用 changeset unwind 非 bundle-state → N/A。
 - `account cache double-decrement`/`state cache reorg cleanup`/`tx-hash 缓存`:reth 内部 cache 结构专属 → N/A。
 
-**唯一真缺口(feature 级,记账非借鉴)= txpool 缺 EIP-7702 authority 限制**:
-- `pectraTime=1774656000`(已激活)→ 7702 在线;N42 txpool 只在 intrinsic gas 用 `tx.AuthList()`(`txs_pool.go:524`),**不跟踪/不限制 authority inflight 委托数、pool 内不恢复 authority**(grep 全空)。
-- geth/reth 都有 PendingDelegations 跟踪(reth #23406 #24494 等持续精修):防单个 authority 被刷多笔 inflight 委托(pool спам + 包含时失效)。
-- **风险**:中(DoS/griefing,7702 流量上来才显);**成本**:feature 级(逐 SetCode 恢复 authority + per-authority inflight 计数 + add/promote/demote/reorg/reset 全周期,须照 geth 7702 pool 规则)。consensus-adjacent admission,**须单独 scope + 照 geth 实现 + 大量测试**,不宜顺手塞。
+**真缺口 → 已实现(commit `feat(txpool): enforce EIP-7702 authorization restrictions`)= txpool EIP-7702 authority 限制**:
+- 原状:`pectraTime=1774656000`(已激活)→ 7702 在线;N42 txpool 只在 intrinsic gas 用 `tx.AuthList()`(`txs_pool.go:524`),**不跟踪/不限制 authority inflight 委托数、pool 内不恢复 authority**(grep 全空)。
+- 实现(照 geth legacypool 两条规则):① `txLookup` 维护 `auths` = authority→inflight-tx-hash 索引(Add/Remove 维护 + hasAuth);`setCodeAuthorities` 恢复授权签名者(非 SetCode 返 nil)。② `validateAuth`(Prague 后从 validateTx 调)= `checkDelegationLimit`(被委托 / in-flight authority 的 sender 至多 1 executable,不许 stacked `ErrInflightTxLimitReached` / gapped `ErrOutOfOrderTxFromDelegated`,同 nonce 替换允许)+ authority 侧(任一 authority 已有 >1 inflight(pending+queue)→ `ErrAuthorityReserved`)。
+- 测试:authority 恢复 + 非 SetCode nil;txLookup auths 跨 Add/Remove(含共享 authority、重复 Add);pool 级 reserved-authority、delegation stacking-vs-replacement、normal-account 放行。共 6 测,race 过。文件 `internal/txspool/setcode_authority.go` + `_test.go` + `txs_list_types.go`(auths)+ `txs_list.go`(Contains)+ `txs_pool.go`(validateTx 接入)。
