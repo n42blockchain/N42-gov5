@@ -50,6 +50,12 @@ const (
 	FieldExist       LocationField = 6
 	FieldCodeSize    LocationField = 7
 	FieldIncarnation LocationField = 8
+	// FieldStorageWipe is a per-address marker (no slot) recorded whenever an
+	// address's whole storage is wiped — SELFDESTRUCT, CREATE-on-existing, or
+	// fresh CREATE. It shadows storage reads of that address so a concurrent /
+	// later tx never sees stale pre-wipe slot data. Mirrors the mvKeyTagWipe
+	// poison-write in modules/state's MV adapter (the production parallel path).
+	FieldStorageWipe LocationField = 9
 )
 
 // versionedValue is a single write to a location at a given transaction index.

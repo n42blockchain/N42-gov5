@@ -69,18 +69,40 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 	return r.base.ReadAccountData(address)
 }
 
-// ReadAccountStorage reads a storage slot, checking MVS first.
+// ReadAccountStorage reads a storage slot, checking MVS first, then applying
+// the storage-wipe shadow before falling back to base.
+//
+// Wipe shadow (mirrors modules/state EVMStateView.ReadStorage): if a preceding
+// tx wiped this address's whole storage (SELFDESTRUCT / CREATE-on-existing) and
+// that wipe is newer than the slot's direct writer — or the slot value would
+// come from base (i.e. it is pre-wipe data) — the slot must read as zero, not
+// the stale pre-wipe value. The wipe marker read is recorded so validation
+// re-executes this tx if a later commit changes who wiped the address or when.
 func (r *ParallelStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	locKey := LocationKey{Address: address, Field: FieldStorage, Slot: *key}
 
 	val, writerTx, writerInc, found := r.mvs.Read(locKey, r.txIndex)
 	if found {
 		r.rw.RecordRead(locKey, writerTx, writerInc, false)
-		return val, nil
+	} else {
+		r.rw.RecordRead(locKey, -1, 0, true)
 	}
 
-	// Not in MVS — read from base.
-	r.rw.RecordRead(locKey, -1, 0, true)
+	wipeKey := LocationKey{Address: address, Field: FieldStorageWipe}
+	if wipeVal, wipeTx, wipeInc, wipeFound := r.mvs.Read(wipeKey, r.txIndex); wipeFound && len(wipeVal) > 0 {
+		r.rw.RecordRead(wipeKey, wipeTx, wipeInc, false)
+		// Wipe overrides when the slot came from base (no MVS writer → pre-wipe
+		// data) or the wipe is strictly newer than the slot's writer. An equal
+		// txIdx means the same tx wiped then re-wrote the slot, so the explicit
+		// slot write wins (do not shadow).
+		if !found || wipeTx > writerTx {
+			return nil, nil
+		}
+	}
+
+	if found {
+		return val, nil
+	}
 	return r.base.ReadAccountStorage(address, key)
 }
 
