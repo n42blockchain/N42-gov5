@@ -36,10 +36,11 @@
 - N42 EL 走 **JSON-RPC newPayload**(非 SSZ)→ Reth 的 SSZ-newPayload versioned-hash 修复 **N/A**。
 - **getBlobsV1 无别名 bug**(每个 `&BlobAndProofV1` 独立)。缺 **getBlobsV4/BlobAndProofV2**(Osaka cell proofs)。
 - **payload attrs 无 targetGasLimit**(`PayloadAttributesV4` 只到 TargetBlobsPerBlock/EIP-7840)。
-- **关键不对齐(R5)**:Engine 端点 `supportedEngineMethods` 止步 **V4/Pectra**,但 VM 已实现 **Osaka/Fusaka/Amsterdam**(`params/config_rules.go` IsOsaka/IsFusaka/IsGlamsterdam;`eips_amsterdam.go` SLOTNUM 0x4b)。
-  - 标准 CL 在 Osaka+ 发 `engine_newPayloadV5` → **method not found**,握手 exchangeCapabilities 不通告 V5 → CL 判 EL 不支持 Osaka+。
-  - **Amsterdam SLOTNUM 静默错值**:opcode 已实现但 `PayloadAttributesV4` 无 slot 字段 → `Context().Slot` 恒 0 → SLOTNUM 永远返 0 而不报错(最难排查类)。
-  - **Osaka 激活前必补**:newPayloadV5/getPayloadV5/forkchoiceUpdatedV5 + 通告 osaka/fusaka + getBlobsV4 + PayloadAttributes 加 slot 注入 BlockContext.Slot + targetGasLimit。
+- **R5 —— 2026-06-04 经权威 Engine API Osaka 规格(execution-apis/src/engine/osaka.md)核对,原断言基本错误,改为如下:**
+  - ❌ **不存在 `engine_newPayloadV5` / `engine_forkchoiceUpdatedV5`**。Osaka 继续用 **newPayloadV4 / forkchoiceUpdatedV3**(ExecutionPayload 形状不变)。N42 的 `NewPayloadV4`(`engine_api_v4.go:166`)只有 pre-Pectra 下界守卫、**无上界**,且 blob schedule 按 timestamp fork-aware(`:184-186`)→ **已能正确接受并校验 Osaka 块**。同步/校验型 eth-el **无需任何改动**。
+  - Osaka 实际新增的只有 **`getPayloadV5`(返 BlobsBundleV2 cell proofs)+ `getBlobsV2`/`getBlobsV3`**(EIP-7594 cell proofs)—— 全是**出块(proposer/builder)+ blob 检索侧**。N42 eth-el 是同步/兼容节点(自有共识 apos/apoa/hotstuff,不经 Engine-API 出 ETH 块),**不在其路径**;capabilities 只通告到 V4 → 合规 CL 不会对 N42 发 V5,**无握手 bug**。
+  - **SLOTNUM(EIP-7843)= Glamsterdam**,`mainnet.json` 无 `glamsterdamTime`(未激活)→ opcode 不可达,`Context().Slot` 恒 0 **不可能 manifest**,纯前瞻。slot 来源待定(Osaka PayloadAttributes 未加 slot 字段,规格确认)。
+  - **结论:R5 当前无 live 缺口、无需改动**。仅当 N42 将来要做"经外部 CL 出 ETH 块的 proposer"时,才需实现 getPayloadV5/getBlobsV2(cell proofs,可复用 `internal/peerdas/kzg.go`);SLOTNUM slot 注入等 Glamsterdam 排期 + slot 来源规格定型后再做。
 - Engine fail-closed 两逃生口(N42_GAS161 / validate-only):**见 [[erigon-borrow-audit]] §2**(任务 #7)。
 
 ## 3. RPC simulate / trace / getLogs(R2,新)
