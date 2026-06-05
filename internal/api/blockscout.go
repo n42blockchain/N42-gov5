@@ -869,6 +869,16 @@ func (s *BlockChainAPI) simulateBlock(ctx context.Context, simBlock SimulateV1Bl
 
 // simulateCall simulates a single call
 func (s *BlockChainAPI) simulateCall(ctx context.Context, args TransactionArgs, header *block.Header, ibs *state.IntraBlockState, gp *common.GasPool) SimulateV1CallResult {
+	// eth_simulateV1: a call without an explicit gas limit defaults to the
+	// block's REMAINING gas (gp drains across the block's calls). Pin it here so
+	// setDefaults does not fall back to DoEstimateGas — running a binary-search
+	// gas estimation per call is expensive (an extra EVM loop each) and deviates
+	// from the simulate spec, which executes calls as given. ToMessage still caps
+	// at RPCGasCap below. Mirrors reth #24387.
+	if args.Gas == nil {
+		remaining := hexutil.Uint64(gp.Gas())
+		args.Gas = &remaining
+	}
 	// Set defaults
 	if err := args.setDefaults(ctx, s.api); err != nil {
 		return SimulateV1CallResult{
