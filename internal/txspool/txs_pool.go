@@ -34,10 +34,10 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/contracts/deposit"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/internal/tracing"
@@ -64,11 +64,11 @@ func NewTxsPool(ctx context.Context, bc common.IBlockChain, depositContract *dep
 		beats:       make(map[types.Address]time.Time),
 		all:         newTxLookup(),
 
-		reqResetCh:      make(chan *txspoolResetRequest),
-		reqPromoteCh:    make(chan *accountSet),
-		queueTxEventCh:  make(chan *transaction.Transaction),
-		reorgDoneCh:     make(chan chan struct{}),
-		gasPrice:        uint256.NewInt(DefaultTxPoolConfig.PriceLimit),
+		reqResetCh:     make(chan *txspoolResetRequest),
+		reqPromoteCh:   make(chan *accountSet),
+		queueTxEventCh: make(chan *transaction.Transaction),
+		reorgDoneCh:    make(chan chan struct{}),
+		gasPrice:       uint256.NewInt(DefaultTxPoolConfig.PriceLimit),
 	}
 
 	pool.currentState = StateClient(ctx, bc.DB())
@@ -527,6 +527,15 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
 	}
 	if tx.Gas() < intrGas {
 		return internal.ErrIntrinsicGas
+	}
+
+	// SetCode (EIP-7702) transactions are only valid from Prague, must target an
+	// address (no contract creation) and must carry at least one authorization.
+	// The block/engine validator already enforces this; rejecting here too keeps
+	// invalid SetCode txs out of the pool entirely (mirrors go-ethereum's txpool
+	// validation, geth #35094 / legacypool).
+	if err := validateSetCodeStructure(tx, isPrague); err != nil {
+		return err
 	}
 
 	// EIP-7702 authorization restrictions (Prague+): at most one in-flight tx

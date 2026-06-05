@@ -26,7 +26,30 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/internal"
 )
+
+// validateSetCodeStructure enforces the structural rules of an EIP-7702 SetCode
+// transaction: it is only valid from Prague, may not be a contract creation
+// (To must be set), and must carry at least one authorization. Non-SetCode txs
+// pass through. Mirrors go-ethereum txpool validation (geth #35094). Keeps
+// structurally-invalid SetCode txs — which the block validator rejects anyway —
+// out of the pool, so they cannot occupy a slot or be propagated.
+func validateSetCodeStructure(tx *transaction.Transaction, isPrague bool) error {
+	if tx.Type() != transaction.SetCodeTxType {
+		return nil
+	}
+	if !isPrague {
+		return internal.ErrTxTypeNotSupported
+	}
+	if tx.To() == nil {
+		return ErrSetCodeTxCreate
+	}
+	if len(tx.AuthList()) == 0 {
+		return ErrSetCodeTxNoAuth
+	}
+	return nil
+}
 
 // emptyCodeHash is keccak256(nil) — the code hash of a non-contract (and
 // non-delegated) account. Matches common/account's unexported constant.
