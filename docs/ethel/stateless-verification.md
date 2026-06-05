@@ -4,9 +4,10 @@
 > verified). Verifier (consumer) side complete. Producer (③b) DONE —
 > `cmd/n42-stateless-blockproof-produce` (merged-walk + shared-pool, NOT mptproof;
 > 3398 anchors genesis→24.998M client-verified 2026-06-05). Remaining: ④b real
-> anchor `Header.Unmarshal` + checkpoint policy, ⑤b eth-el downloader integration
-> (`--mpt-verify-interval` + multi-IDC workflow), and the ① proofwire compact-encoding
-> optimization (verify.go uses correct RLP node sets today).
+> anchor `Header.Unmarshal` + checkpoint policy; ⑤b verifier side DONE
+> (`N42_MPT_VERIFY_INTERVAL` runs the consumer round-trip in the downloader),
+> multi-IDC workflow (#9) remains; ① proofwire compact-encoding is now
+> continuously exercised by ⑤b on live data (verify.go uses correct RLP today).
 
 ## Goal
 
@@ -112,8 +113,20 @@ already accepts it.
 
 ### ⑤b eth-el integration
 
-Wire `MinimalVerifier` into the eth-el downloader behind `--mpt-verify-interval N`
-(1 = every block, 100 = periodic anchor, 0 = off / on-demand), and the
-multi-IDC workflow (#9): producers run EVM to emit `(witness, proof)`, keep one
-rolling week indexed by block number (codes one week + incremental), verifiers
-fan out + attest, aggregator counts.
+**Verifier side DONE** (`internal/ethel/eldevp2p/downloader.go`, build tag `n42el`).
+The staged-Merkle catch-up path already emitted anchors to disk when
+`N42_ANCHOR_DIR` is set (producer). `N42_MPT_VERIFY_INTERVAL=N` (the
+`--mpt-verify-interval` feature) now also runs the stateless CONSUMER path on
+live sync data at that block cadence, independent of disk emit: `runMerkleStage`
+captures the MPT multiproof (byproduct of the same Merkle walk) and
+`verifyAnchorRoundTrip` does exactly what a minimal client does — `VerifyProofAnchors`
+on the raw nodes (production ↔ stateless root engines agree), then a compact-wire
+round-trip (`CompactProofFromNodes` → `DecodeCompactToNodes`) and `VerifyProofAnchors`
+on the decoded nodes (also continuously exercises the proofwire codec on real data).
+A failure halts sync loudly. Tested: `stateless.TestVerifyAnchorRoundTrip` (real
+trie/proof, raw + wire round-trip pass, wrong root rejected) +
+`eldevp2p.TestVerifyAnchorRoundTripEmptyProof` (empty-proof guard).
+
+Remaining: the multi-IDC workflow (#9) — producers run EVM to emit `(witness, proof)`,
+keep one rolling week indexed by block number (codes one week + incremental),
+verifiers fan out + attest, aggregator counts.
