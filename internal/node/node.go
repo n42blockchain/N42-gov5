@@ -2164,10 +2164,11 @@ func (n *Node) startRPC() error {
 			return err
 		}
 		config := wsConfig{
-			Modules:   utils.SplitAndTrim(n.config.NodeCfg.WSApi),
-			Origins:   utils.SplitAndTrim(n.config.NodeCfg.WSOrigins),
-			prefix:    "",
-			jwtSecret: []byte{},
+			Modules:     utils.SplitAndTrim(n.config.NodeCfg.WSApi),
+			Origins:     utils.SplitAndTrim(n.config.NodeCfg.WSOrigins),
+			prefix:      "",
+			jwtSecret:   []byte{},
+			rateLimiter: n.rateLimiter, // share the HTTP per-IP limiter; bounds WS upgrades
 		}
 		if err := n.ws.enableWS(n.rpcAPIs, config); err != nil {
 			return err

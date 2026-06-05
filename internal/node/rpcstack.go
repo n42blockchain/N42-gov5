@@ -53,10 +53,11 @@ type httpConfig struct {
 
 // wsConfig is the JSON-RPC/Websocket configuration
 type wsConfig struct {
-	Origins   []string
-	Modules   []string
-	prefix    string // path prefix on which to mount ws handler
-	jwtSecret []byte // optional JWT secret
+	Origins     []string
+	Modules     []string
+	prefix      string               // path prefix on which to mount ws handler
+	jwtSecret   []byte               // optional JWT secret
+	rateLimiter *jsonrpc.RateLimiter // optional; rate-limits WS connection upgrades
 }
 
 type rpcHandler struct {
@@ -216,7 +217,7 @@ func (h *httpServer) enableWS(apis []jsonrpc.API, config wsConfig) error {
 	}
 	h.wsConfig = config
 	h.wsHandler.Store(&rpcHandler{
-		Handler: NewWSHandlerStack(srv.WebsocketHandler(config.Origins), config.jwtSecret),
+		Handler: NewWSHandlerStack(srv.WebsocketHandler(config.Origins), config.jwtSecret, config.rateLimiter),
 		server:  srv,
 	})
 	return nil
@@ -352,12 +353,19 @@ func NewHTTPHandlerStack(srv http.Handler, cors []string, vhosts []string, jwtSe
 	return newGzipHandler(handler)
 }
 
-// NewWSHandlerStack returns a wrapped ws-related handler.
-func NewWSHandlerStack(srv http.Handler, jwtSecret []byte) http.Handler {
+// NewWSHandlerStack returns a wrapped ws-related handler. The rate limiter (when
+// set) is applied to the WS upgrade request so a client cannot open WebSocket
+// connections at an unbounded per-IP rate — previously WS bypassed the limiter
+// entirely (only the HTTP path was rate-limited).
+func NewWSHandlerStack(srv http.Handler, jwtSecret []byte, rl *jsonrpc.RateLimiter) http.Handler {
+	handler := srv
 	if len(jwtSecret) != 0 {
-		return newJWTHandler(jwtSecret, srv)
+		handler = newJWTHandler(jwtSecret, handler)
 	}
-	return srv
+	if rl != nil {
+		handler = jsonrpc.RateLimitMiddleware(rl, handler)
+	}
+	return handler
 }
 
 func newCorsHandler(srv http.Handler, allowedOrigins []string) http.Handler {
