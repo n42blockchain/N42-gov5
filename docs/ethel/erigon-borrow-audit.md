@@ -86,3 +86,20 @@ read-view **已一致**(`getHeader` 读执行同 tx,`engine_state_adapter.go:322
 - ⑦ eldevp2p BLOCKHASH 回填续传/partial-window 测试。
 
 **不借鉴(已优于或已干净)**:Engine slice 所有权、BLOCKHASH read-view、libp2p fan-out、commitment 字节所有权。
+
+---
+
+## 2026-06-05 — fresh ../erigon 3 个月复审(实仓 git log)
+
+../erigon 已 fetch 到 origin/main 最新(本地 main 落后 3 commit,审 origin/main)。聚焦 N42 最直接的 erigon 移植区:**lib/commitment(HexPatriciaHashed 直接移植)**、parallel-exec、mdbx、txpool。方法:读 erigon diff + grep N42。
+
+**结论:无新借鉴 —— N42 erigon-衍生区已全部 current。** N42 的 commitment 移植维护良好,近期 erigon fix 已在 N42。
+
+逐项核查:
+- **commitment: cancel stale DeleteUpdate on storage rewrite**(erigon #19982):N42 **已有** —— `commitment.go` `TouchAccount`(1731-1733 清 DeleteUpdate)+ `TouchStorage`(1763 `&^= DeleteUpdate`)+ Merge(2063-2064)三处都清。N/A。
+- **commitment: fix witness hash for embedded MPT nodes (RLP<32)**(erigon #20139):N42 **已有字节相同修复** —— `hex_patricia_hashed.go:1596-1597`(`len(cellHash)==length.Hash+1` → `cellHash[1:]` 剥 0xa0 前缀)+ `verify.go:131`。N/A。
+- **parallel-exec SD-revival + metamorphic-CREATE2**(erigon #21590 / #21294):erigon 的 bug 在其 **per-slot DELETE cascade + SelfDestructPath** 写集归一化模型;N42 用 **marker 模型**(path1 `mvKeyTagWipe` 单标记 + phase-ordered commit;path2 `FieldStorageWipe` shadow + Pass0 `CreateAccount(addr,true)`,本会话 #6)。N42 的 SD-then-later-revival:revived 账户 FieldBalance@later 存活 → Pass0 wipe 旧 storage、保留 balance;中间 tx 读旧 slot 被 wipe-shadow 挡。**不同模型,N42 已正确处理**。N/A。
+- **txpool: tolerate invalid EIP-7702 auth tuples**(erigon #20809):N42 `setCodeAuthorities` 已 `continue` 跳过 `RecoverSigner` 失败的 auth(非整 tx 拒);`validateSetCodeStructure` 只查 raw AuthList 非空 → 无效 auth tuple 被容忍。**已对齐**。N/A。
+- mdbx async-tx channel 死锁(#19856)、senders.info race(#20996)、blob KZG peer-kick(#21421):N42 无对应结构 / 不同实现。N/A。
+
+**意义**:N42 的 lib/commitment 是 erigon HexPatriciaHashed 的活跃维护移植,近期 erigon 修复已同步;parallel-exec 与 txpool 7702 也已对齐或用等价模型覆盖。本轮无代码改动。
