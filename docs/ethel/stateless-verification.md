@@ -133,6 +133,10 @@ Multi-IDC workflow (#9) — **aggregator side DONE** (`aggregator.go` + `serve/a
 prune; a lying producer's wrong-root attestations form a separate under-threshold
 group). Wire codec `EncodeAttestation`/`DecodeAttestation` (137 B) + `serve.AttestHandler`
 (`POST /attest`, `GET /attest-status`) give verifier IDCs a place to submit signed
-attestations after a successful stateless verify. Remaining: producers keep one
-rolling week indexed by block number (codes one week + incremental), and the
-verifier-side glue that auto-emits an attestation after the ⑤b downloader verify.
+attestations. **Loop closed**: the downloader's ⑤b verifier (`signAndPostAttestation`,
+gated by `N42_ATTEST_KEY` + `N42_ATTEST_AGGREGATOR`) signs an Attestation over
+(block, header.Root, header.ReceiptHash) after a successful verify and POSTs it to
+the aggregator — so N verifier nodes independently verify + attest and the aggregator
+finalises at threshold. Remaining: producers keep one rolling week of artifacts
+indexed by block number (codes one week + incremental) — an ops/retention concern,
+not new verification logic.
