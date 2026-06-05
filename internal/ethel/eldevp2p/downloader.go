@@ -36,13 +36,16 @@ package eldevp2p
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -51,6 +54,7 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
@@ -156,6 +160,14 @@ type Downloader struct {
 	// minimal-client-verifiable and exercises the proofwire codec on real data.
 	mptVerifyInterval uint64
 	lastMptVerify     uint64
+
+	// attestKey / attestURL (N42_ATTEST_KEY hex + N42_ATTEST_AGGREGATOR url):
+	// after a successful ⑤b stateless verify, this node signs an Attestation over
+	// (block, header.Root, header.ReceiptHash) and POSTs it to the aggregator,
+	// closing the multi-IDC loop (#9). Best-effort: a failed POST warns, never
+	// halts sync. Set both to enable.
+	attestKey *ecdsa.PrivateKey
+	attestURL string
 
 	// buffer holds headers/bodies fetched but not yet executed, persisting across
 	// coordinator rounds so nothing is re-fetched or discarded (reth BodyStage
@@ -360,6 +372,16 @@ func (d *Downloader) coordinator(ctx context.Context) {
 			if n, err := strconv.ParseUint(v, 10, 64); err == nil && n > 0 {
 				d.mptVerifyInterval = n
 				log.Info("eldevp2p: live MPT-stateless verify enabled (consumer round-trip)", "interval", n)
+			}
+		}
+		if k := os.Getenv("N42_ATTEST_KEY"); k != "" {
+			if key, err := crypto.HexToECDSA(strings.TrimPrefix(k, "0x")); err == nil {
+				d.attestKey = key
+				d.attestURL = os.Getenv("N42_ATTEST_AGGREGATOR")
+				log.Info("eldevp2p: stateless attestation enabled",
+					"signer", crypto.PubkeyToAddress(key.PublicKey).Hex(), "aggregator", d.attestURL)
+			} else {
+				log.Error("eldevp2p: bad N42_ATTEST_KEY", "err", err)
 			}
 		}
 		d.adapter.SetStaged(true)
@@ -789,6 +811,16 @@ func (d *Downloader) runMerkleStage(ctx context.Context, from, to uint64) error 
 			return fmt.Errorf("MPT-stateless verify [%d,%d]: %w", from, to, err)
 		}
 		d.lastMptVerify = to
+		// Closed multi-IDC loop (#9): having verified block `to` statelessly
+		// (state root) and via execution (receipt root, full-node path), sign and
+		// submit an attestation. Best-effort — a down aggregator must not halt sync.
+		if d.attestKey != nil && d.attestURL != "" {
+			if err := signAndPostAttestation(d.attestKey, d.attestURL, to, hdr.Root, hdr.ReceiptHash); err != nil {
+				log.Warn("eldevp2p: attestation submit failed (non-fatal)", "block", to, "err", err)
+			} else {
+				log.Info("eldevp2p: attestation submitted", "block", to)
+			}
+		}
 	}
 	var v [8]byte
 	binary.BigEndian.PutUint64(v[:], to)
@@ -849,6 +881,31 @@ func verifyAnchorRoundTrip(blockNum uint64, root types.Hash, proof [][]byte) err
 	}
 	log.Info("eldevp2p: MPT-stateless verify OK (minimal-client round-trip)",
 		"block", blockNum, "root", root.Hex(), "nodes", len(proof), "wireBytes", len(wire))
+	return nil
+}
+
+// signAndPostAttestation signs an Attestation over (blockNum, stateRoot,
+// receiptRoot) with key and POSTs its wire form to the aggregator's /attest
+// endpoint. Used to close the multi-IDC loop after a successful stateless verify.
+// Bounded by a short timeout so a slow/down aggregator cannot stall sync.
+func signAndPostAttestation(key *ecdsa.PrivateKey, aggregatorURL string, blockNum uint64, stateRoot, receiptRoot types.Hash) error {
+	a, err := stateless.SignAttestation(key, blockNum, stateRoot, receiptRoot)
+	if err != nil {
+		return err
+	}
+	wire, err := stateless.EncodeAttestation(a)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(strings.TrimRight(aggregatorURL, "/")+"/attest", "application/octet-stream", bytes.NewReader(wire))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("aggregator status %d", resp.StatusCode)
+	}
 	return nil
 }
 
