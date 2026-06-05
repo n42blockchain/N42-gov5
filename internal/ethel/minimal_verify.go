@@ -235,6 +235,9 @@ func verifyExecutionAncestor(ancestor func(uint64) types.Hash, chainCfg *params.
 		// been deployed past the by-hash store's height). It must itself be built
 		// to >= this block, else ReadAccountCode reports a stale-entry error.
 		reader.SetCodesFreezer(codes)
+		if cov, ok := codes.Coverage(); ok {
+			reader.SetFreezerCoverage(cov)
+		}
 	}
 	ibs := state.New(reader)
 

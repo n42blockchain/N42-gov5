@@ -39,6 +39,13 @@ type WitnessReplayReader struct {
 	// keccak256(code)==codeHash is verified here, so it is content-addressed and
 	// historically correct (unlike address-keyed code, which is only tip-accurate).
 	codeFetch func(types.Hash) ([]byte, error)
+	// freezerCoverage is the highest block the codes-freezer is guaranteed to
+	// cover (from codes.Coverage()); 0 = unknown. It only sharpens the error
+	// message when every tier misses — it does NOT gate reads, because code is
+	// content-addressed: a freezer miss falls through to the hot MDBX tier
+	// regardless of height (a contract deployed/redeployed past the freezer's
+	// coverage lives only in MDBX). See SetFreezerCoverage.
+	freezerCoverage uint64
 	// scratch is reused across ReadAccountData calls. All call sites
 	// in IntraBlockState do data.Copy(scratch) before the next read,
 	// so the returned pointer never aliases stale state. Saves ~5-10K
@@ -63,6 +70,13 @@ func (r *WitnessReplayReader) SetCodesFreezer(codes *CodesFreezerReader) {
 func (r *WitnessReplayReader) SetCodeFetcher(fn func(types.Hash) ([]byte, error)) {
 	r.codeFetch = fn
 }
+
+// SetFreezerCoverage records the codes-freezer's coverage height (codes.Coverage())
+// so a final all-tiers-miss error can say whether the requested code is plausibly
+// past the cold freezer's boundary (→ expected in the hot MDBX tier) or within it
+// (→ the freezer is genuinely incomplete). Reads are unaffected; this only refines
+// diagnostics. Pass 0 to leave it unknown.
+func (r *WitnessReplayReader) SetFreezerCoverage(block uint64) { r.freezerCoverage = block }
 
 // Reset rebinds the reader to a new witness stream and clears the read
 // cursor. codeTx is preserved across calls — workers reuse one RoTx for
@@ -131,14 +145,19 @@ func (r *WitnessReplayReader) ReadAccountCode(address types.Address, codeHash ty
 			return nil, fmt.Errorf("codes-freezer: %w", err)
 		}
 		if len(code) > 0 {
-			if h := crypto.Keccak256Hash(code); h != codeHash {
-				return nil, fmt.Errorf("codes-freezer: stale entry for addr=%x — stored bytecode hashes to %x but witness expects %x; rerun code-import2fz against an up-to-date state DB",
-					address[:], h[:], codeHash[:])
+			if h := crypto.Keccak256Hash(code); h == codeHash {
+				if GlobalBytecodeCache != nil {
+					GlobalBytecodeCache.Put(codeHash, code)
+				}
+				return code, nil
 			}
-			if GlobalBytecodeCache != nil {
-				GlobalBytecodeCache.Put(codeHash, code)
-			}
-			return code, nil
+			// keccak mismatch = the freezer holds OLD bytecode for this address:
+			// the contract was redeployed (SELFDESTRUCT+CREATE) or first deployed
+			// past the freezer's coverage, so the current code lives only in the
+			// hot tier (codeFetch / MDBX). Fall through rather than fail loud —
+			// the cold freezer is a snapshot at its coverage height, and the
+			// full-node readers (HashedStateReader/PlainStateReader) tier exactly
+			// this way. Downstream keccak checks still guarantee correctness.
 		}
 	}
 	// On-demand fetcher (e.g. minimal client → producer /code). Tried before the
@@ -169,8 +188,8 @@ func (r *WitnessReplayReader) ReadAccountCode(address types.Address, codeHash ty
 	// below.
 	if r.codeTx == nil {
 		if codeHash != witnessReplayEmptyCodeHash {
-			return nil, fmt.Errorf("witness-replay: bytecode for addr=%x codeHash=%x not in codes-freezer and no MDBX fallback configured — codes-freezer is incomplete; rerun code-import2fz against a full state DB or pass --datadir for MDBX Code-table fallback",
-				address[:], codeHash[:])
+			return nil, fmt.Errorf("witness-replay: bytecode for addr=%x codeHash=%x not in codes-freezer and no MDBX fallback configured — codes-freezer is incomplete; rerun code-import2fz against a full state DB or pass --datadir for MDBX Code-table fallback%s",
+				address[:], codeHash[:], r.coverageHint())
 		}
 		return nil, nil
 	}
@@ -205,10 +224,20 @@ func (r *WitnessReplayReader) ReadAccountCode(address types.Address, codeHash ty
 	// real contract as an EOA — exactly the failure mode that produced
 	// the 40-gas drift on block 14530048 tx 43. Fail loud instead.
 	if len(code) == 0 && codeHash != witnessReplayEmptyCodeHash {
-		return nil, fmt.Errorf("witness-replay: bytecode for codeHash=%x not found in codes-freezer or mdbx — both code sources are incomplete; populate codes-freezer (run code-import2fz against a full state DB) or fix the codeDB",
-			codeHash[:])
+		return nil, fmt.Errorf("witness-replay: bytecode for codeHash=%x not found in codes-freezer or mdbx — both code sources are incomplete; populate codes-freezer (run code-import2fz against a full state DB) or fix the codeDB%s",
+			codeHash[:], r.coverageHint())
 	}
 	return code, nil
+}
+
+// coverageHint annotates an all-tiers-miss error with the cold freezer's coverage
+// height when known, so the operator can tell a coverage gap (code deployed past
+// the snapshot, belongs in the hot MDBX tier) from genuine store corruption.
+func (r *WitnessReplayReader) coverageHint() string {
+	if r.freezerCoverage == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" [codes-freezer coverage=%d; a contract deployed/redeployed after this height lives only in the hot MDBX Code tier]", r.freezerCoverage)
 }
 
 // witnessReplayEmptyCodeHash mirrors common/account.emptyCodeHash so we
