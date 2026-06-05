@@ -108,3 +108,14 @@
 - **R5 全套**:见上文 R5 行(已纠正——Osaka 无 newPayloadV5,proposer 侧 getPayloadV5/getBlobsV2 cell-proof 才需,eth-el 不出 ETH 块)。
 
 **方法纪律**:每个候选都 ① 读 reth 实际 diff ② grep N42 对应代码 ③ 判"真 bug/已正确/不适用/理论无害"——不凭 commit 标题推断,不无脑移植。
+
+### 第二轮扫描(rpc/engine/prune/evm 剩余 ~40 fix)— 2026-06-04
+逐一读 diff + grep N42,**无新快速借鉴**(均 reth 专属或 N42 已对):
+- `eth_callMany 信号量`(reth #24499)、`不缓存 stateful precompile`(#23619)、`log 订阅 broadcast lag panic`(#23561):N42 **无 callMany、无 precompile 结果缓存、订阅用 Go event.Feed 不 panic** → 全 N/A。
+- `always reinsert reorged blocks`(reth #23175):reth 的 bug 是 **bundle-state 模型在 hashed 模式跳过重插**;N42 txpool 有标准 geth reorg reinjection(`txs_pool.go:640-727`)+ 用 changeset unwind 非 bundle-state → N/A。
+- `account cache double-decrement`/`state cache reorg cleanup`/`tx-hash 缓存`:reth 内部 cache 结构专属 → N/A。
+
+**唯一真缺口(feature 级,记账非借鉴)= txpool 缺 EIP-7702 authority 限制**:
+- `pectraTime=1774656000`(已激活)→ 7702 在线;N42 txpool 只在 intrinsic gas 用 `tx.AuthList()`(`txs_pool.go:524`),**不跟踪/不限制 authority inflight 委托数、pool 内不恢复 authority**(grep 全空)。
+- geth/reth 都有 PendingDelegations 跟踪(reth #23406 #24494 等持续精修):防单个 authority 被刷多笔 inflight 委托(pool спам + 包含时失效)。
+- **风险**:中(DoS/griefing,7702 流量上来才显);**成本**:feature 级(逐 SetCode 恢复 authority + per-authority inflight 计数 + add/promote/demote/reorg/reset 全周期,须照 geth 7702 pool 规则)。consensus-adjacent admission,**须单独 scope + 照 geth 实现 + 大量测试**,不宜顺手塞。
