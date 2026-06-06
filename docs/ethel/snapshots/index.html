@@ -108,8 +108,11 @@ n42-eth-snapshot catch-up --datadir D:/n42 ; n42 --syncmode full --el.devp2p
 
   <h2>Status</h2>
   <p class="note">
-    <span class="pill ok">ready</span> compact state snapshot (25.7 GB, exported) · headers · bodies(hot+cold) · codes · witness · anchors · txindex · cold-offload manifest · client tool (<code>n42-eth-snapshot</code> fetch/verify/catch-up/follow) · manifest builder (<code>n42-eth-manifest</code>) · coldresolve 1-of-N (tested) &nbsp;
-    <span class="pill warn">TODO</span> receipts + accthist/storhist build (full/archive) · per-tier .torrent/magnet generation · EIP-4444 prune scheduled task · manifest signing/hosting
+    <span class="pill ok">ready</span> all 4 tier manifests built + verified (re-hash, 0 mismatch):
+    mobile 4.62 GB <code>8524ab26</code> · minimal 34 GB <code>0cb9b1a2</code> · full 828.66 GB <code>1030ae62</code> · archive 1000.29 GB <code>e22824b4</code>.
+    Components: compact snapshot 25.7 GB · headers · bodies(hot+cold) · codes · receipts 182 GB · accthist+storhist 41.5 GB (N42-native build, sample-verified) · witness · anchors · txindex.
+    Tooling: <code>n42-eth-manifest</code> (mobile/minimal/full/archive) · <code>n42-eth-snapshot</code> (fetch/verify/catch-up/follow) · <code>n42-hist-from-freezer</code> · <code>n42-history-expiry --interval</code> (prune) · coldresolve 1-of-N (tested). &nbsp;
+    <span class="pill warn">TODO</span> per-tier .torrent/magnet seed-prep · manifest signing/hosting · receipts compression (182→~63 GB).
   </p>
 </div>
 </body>
