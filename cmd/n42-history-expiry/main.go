@@ -117,12 +117,26 @@ func main() {
 	limit := flag.Int("limit", 2, "max cold units to process (prototype; 0=all)")
 	mode := flag.String("mode", "cdat", "cold unit: 'cdat' (relocate columnar segments, ~2.5x tighter, recommended) | 'era' (re-encode to EraE, interop/receipts)")
 	dryrun := flag.Bool("dryrun", false, "only print the plan + sizes, do not export")
+	interval := flag.Duration("interval", 0, "if >0, loop forever re-pruning every interval (e.g. 168h weekly) — EIP-4444 scheduled prune; the hot window tracks the growing tip each pass")
 	flag.Parse()
 	if *dir == "" {
-		fmt.Fprintln(os.Stderr, "usage: n42-history-expiry --dir <bodyc> [--out D] [--window N] [--limit K]")
+		fmt.Fprintln(os.Stderr, "usage: n42-history-expiry --dir <bodyc> [--out D] [--window N] [--limit K] [--interval 168h]")
 		os.Exit(1)
 	}
+	for {
+		runOnce(dir, out, window, chainID, limit, mode, dryrun)
+		if *interval == 0 {
+			return
+		}
+		fmt.Printf("sleeping %s until next EIP-4444 prune...\n", *interval)
+		time.Sleep(*interval)
+	}
+}
 
+// runOnce performs one EIP-4444 cold/hot split + cold-segment relocate/manifest
+// pass. Called once for a one-shot run, or repeatedly by main's --interval loop
+// (each pass reopens bodyc so the hot window tracks the growing tip).
+func runOnce(dir, out *string, window, chainID *uint64, limit *int, mode *string, dryrun *bool) {
 	br, err := ethel.OpenBodyCompact(*dir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open bodyc:", err)
