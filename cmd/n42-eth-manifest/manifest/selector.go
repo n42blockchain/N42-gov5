@@ -48,6 +48,8 @@ type FileEntry struct {
 // modes error rather than silently fall back.
 func SelectorFor(mode string) (*Selector, error) {
 	switch mode {
+	case "mobile":
+		return mobileSelector(), nil
 	case "minimal":
 		return minimalSelector(), nil
 	case "full":
@@ -55,7 +57,26 @@ func SelectorFor(mode string) (*Selector, error) {
 	case "archive":
 		return archiveSelector(), nil
 	}
-	return nil, fmt.Errorf("unknown mode %q (want minimal|full|archive)", mode)
+	return nil, fmt.Errorf("unknown mode %q (want mobile|minimal|full|archive)", mode)
+}
+
+// mobile: stateless witness+anchor verifier. Local data is ONLY the signed
+// anchors (BlockProof trust roots); headers, witness, and code are streamed
+// from an IDC per block and verified against an anchor via the parentHash chain.
+func mobileSelector() *Selector {
+	return &Selector{
+		Mode: "mobile",
+		Sections: []Section{
+			{
+				Name: "anchors",
+				Patterns: []string{
+					"chain/freezer/anchorc.cidx",
+					"chain/freezer/anchorc.*.cdat",
+					"chain/freezer/anchorc.blocks",
+				},
+			},
+		},
+	}
 }
 
 // WithSenders returns a Selector that additionally includes the
