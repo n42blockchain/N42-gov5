@@ -239,6 +239,69 @@ func (b *HistoryBuilder) BuildFromChangesets(ctx context.Context, startBlock, en
 	return nil
 }
 
+// BuildFromBlockKeys builds history segments from a per-block changed-key source
+// instead of an Erigon MDBX. changedKeys(block) returns the keys (b.keyLen bytes
+// each: 20 for accounts, 52 for storage addr+slot) modified at that block. This is
+// the N42-native path: the caller reads the acctcs/storcs columnar freezer and
+// decodes the changed keys, with no Erigon dependency. Output format is identical
+// to BuildFromChangesets (SegmentStoreWriter + RecSplit + delta-varint block lists),
+// processed per 1M-block segment so memory stays bounded; resumes from existing
+// segments. A nil/empty changedKeys result for a block (e.g. empty post-merge
+// block) contributes nothing.
+func (b *HistoryBuilder) BuildFromBlockKeys(ctx context.Context, startBlock, endBlock uint64, changedKeys func(block uint64) ([][]byte, error)) error {
+	store, err := NewSegmentStoreWriter(b.outputDir, b.prefix)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	existingSegs := store.SegmentCount()
+	if resume := existingSegs * HistSegmentSize; resume > startBlock {
+		startBlock = resume
+		log.Info("Resuming history build", "from", startBlock, "existingSegments", existingSegs)
+	}
+
+	for segStart := (startBlock / HistSegmentSize) * HistSegmentSize; segStart < endBlock; segStart += HistSegmentSize {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		segEnd := segStart + HistSegmentSize
+		if segEnd > endBlock {
+			segEnd = endBlock
+		}
+
+		keyMap := make(map[string][]uint64)
+		for bn := segStart; bn < segEnd; bn++ {
+			if bn%200000 == 0 && ctx.Err() != nil {
+				return ctx.Err()
+			}
+			keys, err := changedKeys(bn)
+			if err != nil {
+				return fmt.Errorf("changedKeys block %d: %w", bn, err)
+			}
+			for _, k := range keys {
+				if len(k) != b.keyLen {
+					continue
+				}
+				keyMap[string(k)] = append(keyMap[string(k)], bn)
+			}
+		}
+		entries := sortAndDedup(keyMap)
+
+		tmpIdx := filepath.Join(b.outputDir, fmt.Sprintf("tmp_%s_%d.ri", b.prefix, segStart))
+		datBuf, err := b.buildSegment(ctx, entries, tmpIdx, segStart, segEnd)
+		if err != nil {
+			os.Remove(tmpIdx)
+			return fmt.Errorf("build seg %d: %w", segStart, err)
+		}
+		if _, err := store.WriteSegment(datBuf, tmpIdx); err != nil {
+			return err
+		}
+		log.Info("History segment written", "prefix", b.prefix, "blocks", fmt.Sprintf("%d-%d", segStart, segEnd-1), "keys", len(entries))
+	}
+	return nil
+}
+
 // buildSegment builds RecSplit + dat bytes for one segment.
 // Returns the dat bytes (zstd compressed) and writes RecSplit to idxPath.
 func (b *HistoryBuilder) buildSegment(ctx context.Context, entries []histKeyData, idxPath string, startBlock, endBlock uint64) ([]byte, error) {
