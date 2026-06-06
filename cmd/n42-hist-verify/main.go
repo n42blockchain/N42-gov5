@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"sort"
 
 	"github.com/n42blockchain/N42/internal/cscompact"
 	"github.com/n42blockchain/N42/internal/ethel"
@@ -104,9 +105,16 @@ func main() {
 		st.ok++
 	}
 
-	for i := 0; i < *samples; i++ {
-		b := uint64(rng.Int63n(int64(end)))
+	// Sample blocks then SORT them: the history readers cache one segment, so
+	// visiting blocks in ascending order keeps same-segment samples consecutive
+	// (cache hits) instead of thrashing segment reload on every random jump.
+	blocks := make([]uint64, *samples)
+	for i := range blocks {
+		blocks[i] = uint64(rng.Int63n(int64(end)))
+	}
+	sort.Slice(blocks, func(i, j int) bool { return blocks[i] < blocks[j] })
 
+	for _, b := range blocks {
 		if blob, err := acctCS.Retrieve(b); err == nil && len(blob) > 0 {
 			if ch, err := ethel.DecodeAccountChanges(blob); err == nil {
 				for j := 0; j < len(ch) && j < *maxKeys; j++ {
