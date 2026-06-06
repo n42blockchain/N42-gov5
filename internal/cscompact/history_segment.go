@@ -207,6 +207,10 @@ func NewHistoryReader(dir, prefix string) (*HistoryReader, error) {
 	}, nil
 }
 
+// SegmentCount returns the number of written history segments (each
+// HistSegmentSize blocks) — coverage = SegmentCount() * HistSegmentSize.
+func (r *HistoryReader) SegmentCount() uint64 { return r.store.SegmentCount() }
+
 func (r *HistoryReader) Lookup(key []byte, blockNum uint64) (uint64, bool) {
 	segNum := int64(blockNum / r.segmentSize)
 	if uint64(segNum) >= r.store.SegmentCount() {
