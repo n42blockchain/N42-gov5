@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>N42 eth-el Snapshots</title>
+<style>
+  :root{--bg:#0d1117;--card:#161b22;--bd:#30363d;--fg:#c9d1d9;--mut:#8b949e;--acc:#58a6ff;--ok:#3fb950;--warn:#d29922}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1120px;margin:0 auto;padding:32px 20px 80px}
+  h1{font-size:26px;margin:0 0 4px} h1 .b{color:var(--acc)}
+  .sub{color:var(--mut);margin:0 0 6px}
+  .meta{color:var(--mut);font-size:12px;margin-bottom:28px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px;margin-bottom:30px}
+  .card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:18px}
+  .card h3{margin:0 0 2px;font-size:16px}
+  .card .tag{display:inline-block;font-size:11px;color:var(--mut);border:1px solid var(--bd);border-radius:20px;padding:1px 9px;margin-bottom:10px}
+  .sz{font-size:30px;font-weight:700;color:var(--acc);line-height:1.1}
+  .sz small{font-size:13px;color:var(--mut);font-weight:400}
+  .card p{color:var(--mut);font-size:13px;margin:8px 0 12px;min-height:60px}
+  .card .use{font-size:12px;color:var(--fg)}
+  .flex .sz{color:var(--ok)}
+  table{width:100%;border-collapse:collapse;margin:10px 0 24px;font-size:13px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--bd)}
+  th{color:var(--mut);font-weight:600} td.n{text-align:right;font-variant-numeric:tabular-nums}
+  .total td{font-weight:700;border-top:2px solid var(--bd)}
+  code,pre{background:#0b0f14;border:1px solid var(--bd);border-radius:6px;font:12px/1.5 SFMono-Regular,Consolas,monospace}
+  code{padding:1px 6px} pre{padding:12px 14px;overflow:auto;color:#d7dde5}
+  h2{font-size:19px;margin:34px 0 10px;border-bottom:1px solid var(--bd);padding-bottom:6px}
+  .pill{font-size:11px;padding:1px 7px;border-radius:4px}
+  .pill.ok{background:rgba(63,185,80,.15);color:var(--ok)} .pill.warn{background:rgba(210,153,34,.15);color:var(--warn)}
+  .note{color:var(--mut);font-size:12px} b.g{color:var(--ok)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>N42 <span class="b">eth-el</span> Snapshots</h1>
+  <p class="sub">Pick a tier · download over BitTorrent · catch up via devp2p · stay live at 12 s/block.</p>
+  <p class="meta">Ethereum-mainnet-compatible · Head <b>25,252,185</b> · 3,509,958,650 txs · State snapshot H₀ <b>25,188,781</b> · Sizes measured on-disk (shipped = zstd, no local intermediates).</p>
+
+  <div class="grid">
+    <div class="card">
+      <span class="tag">stateless · 手机/嵌入</span>
+      <h3>mobile</h3>
+      <div class="sz">~10 <small>GB</small></div>
+      <p>Trustless witness+anchor verifier. No local state — streams witness &amp; code from an IDC per block, recomputes stateRoot, checks vs a signed anchor.</p>
+      <div class="use">anchors 5.0 + headers 4.9<br>RPC:验证型(无 state 查询)</div>
+    </div>
+    <div class="card">
+      <span class="tag">snapshot-direct</span>
+      <h3>minimal</h3>
+      <div class="sz">~37 <small>GB</small></div>
+      <p>Compact RecSplit+EF state snapshot at H₀ (no 234 GB MDBX, no trie). Serves state RPC (balance/code/storage/call) at head.</p>
+      <div class="use">snapshot 25.7 + headers 4.9 + codes 6.0<br>RPC:tip state,无历史 tx/log</div>
+    </div>
+    <div class="card">
+      <span class="tag">EIP-4444 · 1yr · 生产推荐</span>
+      <h3>full</h3>
+      <div class="sz">~245 <small>GB</small></div>
+      <p>minimal + <b>1 year of bodies</b> (EIP-4444; the 96 GB hot window) + receipts + history indexes. Full RPC for ~1 yr; older bodies fetched 1-of-N from cold seeders.</p>
+      <div class="use">+ hot bodies 91.5 + receipts 63 + accthist 13 + storhist 28 + txindex 13<br>RPC:1yr 全功能,冷区 1-of-N 取回</div>
+    </div>
+    <div class="card flex">
+      <span class="tag">witness-replay · 秀肌肉 💪</span>
+      <h3>archive</h3>
+      <div class="sz">~850 <small>GB</small></div>
+      <p>Ships the <b>witness stream (184 GB)</b> instead of changesets (435 GB) — <b class="g">−250 GB</b>. Replay the chain from witness in a few hours to materialize state + changesets + receipts on demand.</p>
+      <div class="use">all bodies 616 + witness 184 + minimal 37 + indexes 13<br>下载后 witness-replay 几小时 → 重建 CS/state,可 eth_getProof @ 任意高度</div>
+    </div>
+  </div>
+
+  <h2>What each tier ships (measured · shipped/zstd)</h2>
+  <table>
+    <tr><th>Component</th><th class="n">Size</th><th>mobile</th><th>minimal</th><th>full (1yr)</th><th>archive</th></tr>
+    <tr><td>anchors (BlockProof)</td><td class="n">5.0 GB</td><td>✓</td><td></td><td></td><td>✓</td></tr>
+    <tr><td>headers (columnar)</td><td class="n">4.9 GB</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td></tr>
+    <tr><td>state snapshot — accounts (RecSplit+EF)</td><td class="n">4.25 GB</td><td></td><td>✓</td><td>✓</td><td>✓</td></tr>
+    <tr><td>state snapshot — storage</td><td class="n">21.5 GB</td><td></td><td>✓</td><td>✓</td><td>✓</td></tr>
+    <tr><td>codes (by codeHash)</td><td class="n">6.0 GB</td><td></td><td>✓</td><td>✓</td><td>✓</td></tr>
+    <tr><td>bodies — hot 1 yr (EIP-4444)</td><td class="n">91.5 GB</td><td></td><td></td><td>✓</td><td>—</td></tr>
+    <tr><td>bodies — all</td><td class="n">616 GB</td><td></td><td></td><td>cold 1-of-N</td><td>✓</td></tr>
+    <tr><td>receipts</td><td class="n">63 GB*</td><td></td><td></td><td>✓</td><td>✓</td></tr>
+    <tr><td>history idx (accthist+storhist)</td><td class="n">41 GB*</td><td></td><td></td><td>✓</td><td>✓</td></tr>
+    <tr><td>txindex (txhash→block)</td><td class="n">13.2 GB</td><td></td><td></td><td>✓</td><td>✓</td></tr>
+    <tr><td>witness</td><td class="n">184 GB</td><td>stream</td><td></td><td></td><td>✓</td></tr>
+    <tr><td>changesets (acctcs+storcs)</td><td class="n">435 GB</td><td></td><td></td><td></td><td><b class="g">rebuilt</b></td></tr>
+    <tr class="total"><td>Download total</td><td class="n"></td><td>~10 GB</td><td>~37 GB</td><td>~245 GB</td><td>~850 GB</td></tr>
+  </table>
+  <p class="note">* receipts / history-idx 为规格值(`ethexec receipt-copy` / `history-build` 产出,full/archive 需构建)。<b class="g">archive 不下 435 GB changesets</b> —— 由 witness-replay 本地重建(省 250 GB)。state snapshot 是紧凑 RecSplit+EF(~1.8 bit/key),不是 234 GB MDBX。senders 不发(ecrecover 可derive,可选 +38 GB add-on)。</p>
+
+  <h2>Bootstrap</h2>
+  <pre># 1. fetch + verify tier manifest (blake2b/file + sha256 manifest_id; reproduced by N producers)
+n42-eth-snapshot fetch --tier full --src https://snapshots.n42 --out D:/n42
+
+# 2. download bundle over BitTorrent (1-of-N seeders, resumable; cold bodies stay on seeders → coldresolve)
+
+# 3a. minimal/full: snapshot-direct — open snapshot @ H0 + warm-tier MDBX for H0+1..tip. NO rebuild.
+# 3b. archive: witness-replay the chain → materialize state + changesets (几小时, ~2900 blk/s)
+n42 ethexec --witness D:/n42/witness --bodies D:/n42/bodies --datadir D:/n42 --workers 32
+
+# 4. catch up the gap via devp2p, then stay live at 12 s/block
+n42-eth-snapshot catch-up --datadir D:/n42 ; n42 --syncmode full --el.devp2p
+#    catchup ~270 Mgas/s → live 12s; new blocks → MDBX warm overlay above the cold snapshot</pre>
+
+  <h2>Live model</h2>
+  <p class="note">Cold base = immutable snapshot/freezer; every 12 s block writes to the <b>MDBX warm overlay</b> on top. Reads consult overlay → cold. EIP-4444 periodically prunes the hot-bodies window and relocates aged segments to cold seeders (1-of-N).</p>
+
+  <h2>Status</h2>
+  <p class="note">
+    <span class="pill ok">ready</span> compact state snapshot (25.7 GB, exported) · headers · bodies(hot+cold) · codes · witness · anchors · txindex · cold-offload manifest · client tool (<code>n42-eth-snapshot</code> fetch/verify/catch-up/follow) · manifest builder (<code>n42-eth-manifest</code>) · coldresolve 1-of-N (tested) &nbsp;
+    <span class="pill warn">TODO</span> receipts + accthist/storhist build (full/archive) · per-tier .torrent/magnet generation · EIP-4444 prune scheduled task · manifest signing/hosting
+  </p>
+</div>
+</body>
+</html>
