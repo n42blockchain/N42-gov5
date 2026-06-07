@@ -35,17 +35,19 @@ type caplinHandle struct {
 // that until node.Start has run, so we register a wrapper service that
 // constructs the Backend lazily on first call.
 //
-// Phase 5–6 left the eladapter Engine API methods stubbed; this wiring
-// preserves that contract. Filling them in is tracked in
-// internal/cl/eladapter/PHASE6_NOTES.md.
+// #31 Phase 7 (option B): when BeaconCfg.CheckpointSyncURL is set, Service.Start
+// runs the lightweight EL-follower — it drives the EL's Engine API
+// forkChoiceUpdated from the finalized beacon checkpoint over HTTP, with the EL
+// syncing payloads via its own eth/68 devp2p. The full beacon-gossip stage loop
+// (sentinel/p2p/gossip) is intentionally NOT ported (see
+// docs/ethel/caplin-merge-plan.md, Phase 7 A-vs-B decision).
 func startCaplin(ctx context.Context, cfg conf.BeaconCfg, node *ethel.Node) (*caplinHandle, error) {
 	if cfg.Enabled && node == nil {
 		return nil, fmt.Errorf("startCaplin: node must not be nil when caplin is enabled")
 	}
-	if cfg.Enabled {
-		log.Warn("eth-el: Caplin is a Phase 6 stub — sentinel/checkpoint sync/stage loop NOT wired",
-			"see", "memory/project_caplin_stub_reality.md",
-			"recommendation", "for real-chain sync run an external CL (Lighthouse/Prysm) against engine API at :20014; see docs/ethel/external-cl-runbook.md")
+	if cfg.Enabled && cfg.CheckpointSyncURL == "" {
+		log.Warn("eth-el: Caplin enabled but no CheckpointSyncURL — follower idle (no finality source)",
+			"recommendation", "set BeaconCfg.CheckpointSyncURL to a beacon checkpoint endpoint, or run an external CL against engine API at :20014 (docs/ethel/external-cl-runbook.md)")
 	}
 
 	// Pass node as both providers: ethel.Node implements both
