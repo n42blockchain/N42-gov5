@@ -398,3 +398,21 @@ stages 文件已就位(编译通过),两条路都用得上;先定方向再动手
 6. OnTick 循环 → `GetHead` → 取 fork-choice head 的 execution payload → 驱动 EL（替换 follower.go 盲跟 EL tip）。
 
 这是把本会话移植的传输层 + 已有 stages/forkchoice 接起来的真正收口;follower.go 退化为无 beacon-peer 时的 fallback。之后 = 步骤 8 对抗 E2E。
+
+### 步骤 6+7 bootstrap recipe(已勘定签名,下次一次写成 `internal/cl/independent_forkchoice.go`)
+
+不移植完整 `RunCaplinService`(它拉完整 gossip-manager + 17 services + PeerDas + committee,是完整 beacon 节点);写聚焦 B+ driver。**已验证可用的构造(全在 N42):**
+- anchor:`checkpoint_sync.NewRemoteCheckpointSync(beaconCfg,net).GetLatestBeaconState(ctx)` → `*state.CachingBeaconState`(follower.go 已在用)。
+- `eth_clock.NewEthereumClock(anchorState.GenesisTime(), anchorState.GenesisValidatorsRoot(), beaconCfg)`。
+- deps:`beaconevents.NewEventEmitter()` / `synced_data.NewSyncedDataManager(cfg,true)` / `pool.NewOperationsPool(cfg)` / `public_keys_registry.NewInMemoryPublicKeysRegistry()`(或 NewHeadViewPublicKeysRegistry(syncedData)) / `validator_params.NewValidatorParams()` / `blob_storage.NoopBlobStore{}` + `NoopColumnStore{}`。
+- fork graph:`fork_graph.NewForkGraphDisk(anchorState, syncedData, afero.NewMemMapFs(), beacon_router_configuration.RouterConfiguration{}, emitters)`(afero 已在 go.mod)。
+- **`forkchoice.NewForkChoiceStore(ethClock, anchorState, s.engine, opPool, forkGraph, emitters, syncedData, NoopBlobStore{}, pksRegistry, valParams, doLMD, s.db)`** —— `s.engine` 是 `*eladapter.Adapter`(满足 execution_client.ExecutionEngine);doLMD = `len(anchorState.GetActiveValidatorsIndices(anchorState.Slot()/cfg.SlotsPerEpoch))>=20000`。
+- transport:`clp2p.NewP2Pmanager(ctx,&clp2p.P2PConfig{NetworkConfig,BeaconConfig,IpAddr,Port,TCPPort,DataDir,TmpDir,MaxPeerCount},logger,ethClock)` → `service.StartSentinelService(&sentinel.SentinelConfig{P2PConfig,EnableBlocks:true,...}, beaconDB, NoopBlobStore{}, s.db, &service.ServerConfig{InitialStatus: anchorRoot 状态}, ethClock, fc, NoopColumnStore{}, peerDasState, p2p, logger)` → `rpc.NewBeaconRpcP2P(ctx, sentinelClient, beaconCfg, ethClock, anchorState)`。
+- 循环:`go` OnTick(每 ~1s `fc.OnTick(now)`);`go` backfill(从 anchor slot `beaconRpc.SendBeaconBlocksByRangeReq` → `fc.OnBlock(ctx,blk,true,true,false)`,fullValidation=对抗安全);`go` gossip(`p2p.Pubsub().Subscribe(beacon_block topic+forkDigest)` → snappy decode SignedBeaconBlock → `fc.OnBlock`);`go` head-drive(`fc.GetHead()` → `fc.GetBlock(headRoot).Block.Body.ExecutionPayload.BlockHash` → `s.engine.ForkChoiceUpdate(finalized,safe,head,...)`,替换 follower 盲跟 tip)。
+
+**剩余 2 个小 shim 缺口(下次先补):**
+1. `das/state.PeerDasStateReader` 只有 interface,无 noop → 写 ~30 行 NoopPeerDasState(GetAdvertisedCgc/GetEarliestAvailableSlot 返 0)。
+2. `forkChoice.GetPeerDas()`(sentinel.Identity 调)需 `InitPeerDas(das.PeerDas)`;块-only 写/找 noop `das.PeerDas`(否则 Identity 取 nil panic)。
+3. sentinel 需 `freezeblocks.BeaconSnapshotReader`(serve 块给 peer 用);B+ consume-only 可写 noop reader(ReadBlockBySlot/ByRoot 返 nil,块从 gossip/forkGraph 取,不靠快照 serve）。
+
+补这 3 个 noop + 写上面 driver,即闭合 B+「对抗环境独立 fork choice 驱动 EL」。
