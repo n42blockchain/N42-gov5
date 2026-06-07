@@ -121,6 +121,10 @@ func flags() []cli.Flag {
 		&cli.IntFlag{Name: "caplin.sentinel.port", Usage: "Caplin sentinel libp2p TCP port", Value: 9000},
 		&cli.IntFlag{Name: "caplin.sentinel.discovery.port", Usage: "Caplin sentinel discv5 UDP port", Value: 9000},
 		&cli.StringFlag{Name: "caplin.checkpoint.url", Usage: "Beacon checkpoint-sync URL"},
+		&cli.StringFlag{Name: "caplin.discovery.addr", Usage: "Caplin discv5/libp2p bind IP", Value: "0.0.0.0"},
+		&cli.StringFlag{Name: "caplin.nat", Usage: "Caplin external IP for ENR/multiaddr (extip:<ip> | none)"},
+		&cli.StringSliceFlag{Name: "caplin.bootnodes", Usage: "Extra Caplin ENR bootnodes (appended to the network preset)"},
+		&cli.Uint64Flag{Name: "caplin.max-peer-count", Usage: "Max Caplin beacon peers", Value: 64},
 
 		// Snapshot mirror pre-start sync (Stage 2 G3).
 		&cli.StringFlag{Name: "snapshot.source", Usage: "Publisher mirror URL (file:// or http(s)://). When set, runs status + auto-catchup before Engine API opens"},
@@ -480,6 +484,10 @@ func assembleConfig(c *cli.Context) conf.EthELCfg {
 	cfg.Beacon.SentinelPort = c.Int("caplin.sentinel.port")
 	cfg.Beacon.SentinelDiscoveryPort = c.Int("caplin.sentinel.discovery.port")
 	cfg.Beacon.CheckpointSyncURL = c.String("caplin.checkpoint.url")
+	cfg.Beacon.DiscoveryAddr = c.String("caplin.discovery.addr")
+	cfg.Beacon.NAT = c.String("caplin.nat")
+	cfg.Beacon.BootnodesENR = c.StringSlice("caplin.bootnodes")
+	cfg.Beacon.MaxPeerCount = c.Uint64("caplin.max-peer-count")
 
 	return cfg
 }

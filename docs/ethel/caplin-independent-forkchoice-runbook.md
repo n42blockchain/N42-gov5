@@ -46,12 +46,35 @@ n42 eth-el --tags-built-with n42el \
 Set `--caplin.sentinel.discovery.port 0` to fall back to the lightweight
 follower (EL-tip following, not adversarial-safe).
 
-Build eth-el with `-tags n42el`. The driver opens a libp2p host + discv5 on the
-discovery port and joins the beacon gossip + req/resp protocols.
+Build eth-el with `-tags n42el`. The driver opens a libp2p host + discv5 and
+joins the beacon gossip + req/resp protocols.
 
-> Note: the current wiring binds discovery UDP and libp2p TCP to the same port
-> value (`Port == TCPPort == SentinelDiscoveryPort`, `IpAddr = 0.0.0.0`). Splitting
-> them + NAT/bootnode config is tracked as production hardening in the merge plan.
+### Network flags (production)
+
+| Flag | `BeaconCfg` | Default | Purpose |
+|:--|:--|:--|:--|
+| `--caplin.sentinel.port` | `SentinelPort` | 9000 | libp2p **TCP** port |
+| `--caplin.sentinel.discovery.port` | `SentinelDiscoveryPort` | 9000 | discv5 **UDP** port (>0 enables) |
+| `--caplin.discovery.addr` | `DiscoveryAddr` | `0.0.0.0` | bind IP |
+| `--caplin.nat` | `NAT` | _(none)_ | external IP for ENR/multiaddr: `extip:<ip>` \| `none` |
+| `--caplin.bootnodes` | `BootnodesENR` | _(none)_ | extra ENR bootnodes, appended to the preset (repeatable) |
+| `--caplin.max-peer-count` | `MaxPeerCount` | 64 | beacon peer cap |
+
+TCP and UDP are now separate (`SentinelPort` vs `SentinelDiscoveryPort`); the
+two may share the number 9000 (different protocols) or be split. Behind NAT/
+Docker set `--caplin.nat extip:<public-ip>` so the discv5 ENR advertises a
+reachable address (otherwise inbound peers cannot connect — the node logs a
+private-IP warning). stun/upnp/pmp are not supported by the block-only sentinel;
+use `extip:`.
+
+```bash
+n42 eth-el --tags-built-with n42el \
+    --caplin.enabled --caplin.network mainnet \
+    --caplin.checkpoint.url https://beaconstate.ethstaker.cc \
+    --caplin.sentinel.port 9000 --caplin.sentinel.discovery.port 9000 \
+    --caplin.nat extip:203.0.113.7 \
+    --caplin.bootnodes enr:-... --caplin.bootnodes enr:-...
+```
 
 ## Validation: catch-up → live
 
@@ -100,5 +123,8 @@ own devp2p peers feed it.
   intentionally not ported (block-only B+). Block-embedded attestations drive fork
   choice; live single-slot tip reorg resistance is slightly weaker than a full
   beacon node but finality + near-tip safety hold.
-- **Production hardening:** split discovery/TCP ports, NAT (`extip:`/stun),
-  bootnode/static-peer config surface, configurable `MaxPeerCount`.
+- **Production hardening (done):** discovery/TCP ports are split
+  (`--caplin.sentinel.port` / `--caplin.sentinel.discovery.port`), NAT
+  (`--caplin.nat extip:<ip>`), bootnode surface (`--caplin.bootnodes`), bind addr
+  (`--caplin.discovery.addr`) and `--caplin.max-peer-count` are configurable.
+  Still open: stun/upnp NAT auto-resolution, static-peer list.

@@ -31,6 +31,20 @@ type BeaconCfg struct {
 	// SentinelDiscoveryPort is the discv5 UDP port for Caplin sentinel.
 	SentinelDiscoveryPort int `json:"sentinel_discovery_port" yaml:"sentinel_discovery_port"`
 
+	// DiscoveryAddr is the bind IP for the discv5 UDP listener and the libp2p
+	// host. Defaults to "0.0.0.0" (all interfaces). For ENR advertisement behind
+	// NAT, set NAT instead of (or in addition to) this.
+	DiscoveryAddr string `json:"discovery_addr" yaml:"discovery_addr"`
+
+	// NAT controls the external IP advertised in the discv5 ENR and libp2p
+	// multiaddrs (needed for Docker/NAT so inbound peers can reach the node).
+	// Supported: "extip:<ip>" (fixed public IP), "none"/"" (no NAT). stun/upnp/
+	// pmp are not supported by the block-only sentinel.
+	NAT string `json:"nat" yaml:"nat"`
+
+	// MaxPeerCount caps the beacon peer set. 0 falls back to the default (64).
+	MaxPeerCount uint64 `json:"max_peer_count" yaml:"max_peer_count"`
+
 	// BootnodesENR are extra ENR bootnodes appended to the network preset.
 	BootnodesENR []string `json:"bootnodes_enr" yaml:"bootnodes_enr"`
 
@@ -54,6 +68,9 @@ func DefaultBeaconCfg() BeaconCfg {
 		DataDir:               "",
 		SentinelPort:          9000,
 		SentinelDiscoveryPort: 9000,
+		DiscoveryAddr:         "0.0.0.0",
+		NAT:                   "",
+		MaxPeerCount:          64,
 		BootnodesENR:          nil,
 		CheckpointSyncURL:     "",
 		BeaconAPIEnabled:      false,
