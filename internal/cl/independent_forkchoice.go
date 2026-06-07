@@ -43,6 +43,7 @@ import (
 	peerdasstate "github.com/n42blockchain/N42/internal/cl/das/state"
 	common "github.com/n42blockchain/N42/internal/cl/depshim/common"
 	"github.com/n42blockchain/N42/internal/cl/depshim/freezeblocks"
+	"github.com/n42blockchain/N42/internal/cl/depshim/nat"
 	"github.com/n42blockchain/N42/internal/cl/persistence/blob_storage"
 	state2 "github.com/n42blockchain/N42/internal/cl/phase1/core/state"
 	"github.com/n42blockchain/N42/internal/cl/phase1/core/checkpoint_sync"
@@ -117,15 +118,38 @@ func (s *Service) runIndependentForkChoice(networkConfig *clparams.NetworkConfig
 
 	// 3. Beacon P2P: libp2p host + discv5, then the sentinel (req/resp server +
 	//    peer mgmt) consumed in-process via the direct SentinelClient.
+	// External IP advertisement (Docker/NAT): extip:<ip> | none.
+	caplinNAT, err := nat.Parse(s.cfg.NAT)
+	if err != nil {
+		log.Error("Caplin independent fork choice: invalid NAT config", "nat", s.cfg.NAT, "err", err)
+		return
+	}
+	// Append operator ENR bootnodes to the preset WITHOUT mutating the shared
+	// network preset (clone struct + slice).
+	if len(s.cfg.BootnodesENR) > 0 {
+		nc := *networkConfig
+		nc.BootNodes = append(append([]string{}, networkConfig.BootNodes...), s.cfg.BootnodesENR...)
+		networkConfig = &nc
+		log.Info("Caplin independent fork choice: added operator bootnodes", "count", len(s.cfg.BootnodesENR))
+	}
+	ipAddr := s.cfg.DiscoveryAddr
+	if ipAddr == "" {
+		ipAddr = "0.0.0.0"
+	}
+	maxPeers := s.cfg.MaxPeerCount
+	if maxPeers == 0 {
+		maxPeers = 64
+	}
 	p2pCfg := &clp2p.P2PConfig{
 		NetworkConfig: networkConfig,
 		BeaconConfig:  beaconCfg,
-		IpAddr:        "0.0.0.0",
-		Port:          s.cfg.SentinelDiscoveryPort,
-		TCPPort:       uint(s.cfg.SentinelDiscoveryPort),
+		IpAddr:        ipAddr,
+		Port:          s.cfg.SentinelDiscoveryPort, // discv5 UDP
+		TCPPort:       uint(s.cfg.SentinelPort),    // libp2p TCP (split from discovery)
+		NAT:           caplinNAT,
 		DataDir:       s.cfg.DataDir,
 		TmpDir:        s.cfg.DataDir,
-		MaxPeerCount:  64,
+		MaxPeerCount:  maxPeers,
 	}
 	p2pManager, err := clp2p.NewP2Pmanager(s.ctx, p2pCfg, logger, ethClock)
 	if err != nil {

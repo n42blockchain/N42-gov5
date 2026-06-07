@@ -16,6 +16,7 @@ package nat
 import (
 	"fmt"
 	"net"
+	"strings"
 )
 
 // Interface resolves the node's external IP for ENR / multiaddr advertisement.
@@ -38,3 +39,37 @@ func (n ExtIP) ExternalIP() (net.IP, error) {
 }
 
 func (n ExtIP) String() string { return fmt.Sprintf("extip:%v", net.IP(n)) }
+
+// Parse builds a NAT Interface from a spec string. Supported forms (a subset of
+// erigon/geth p2p/nat for the block-only sentinel):
+//
+//	""        | "none"        → no NAT (nil, nil)
+//	"extip:<ip>"              → fixed external IP
+//
+// stun / upnp / pmp require live network probing and are intentionally not
+// implemented here; they return a clear error so misconfiguration is loud.
+func Parse(spec string) (Interface, error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" || strings.EqualFold(spec, "none") {
+		return nil, nil
+	}
+	if rest, ok := cutPrefixFold(spec, "extip:"); ok {
+		ip := net.ParseIP(strings.TrimSpace(rest))
+		if ip == nil {
+			return nil, fmt.Errorf("nat: invalid extip address %q", rest)
+		}
+		return ExtIP(ip), nil
+	}
+	if mode, _, _ := strings.Cut(spec, ":"); strings.EqualFold(mode, "stun") ||
+		strings.EqualFold(mode, "upnp") || strings.EqualFold(mode, "pmp") {
+		return nil, fmt.Errorf("nat: %q is not supported by the block-only sentinel; use extip:<ip>", mode)
+	}
+	return nil, fmt.Errorf("nat: unknown spec %q (use extip:<ip> or none)", spec)
+}
+
+func cutPrefixFold(s, prefix string) (string, bool) {
+	if len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix) {
+		return s[len(prefix):], true
+	}
+	return "", false
+}
