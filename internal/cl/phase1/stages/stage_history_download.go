@@ -1,0 +1,406 @@
+//go:build n42el
+
+// Ported from erigon cl/phase1/stages/stage_history_download.go for the Caplin merge (#31); imports
+// rewritten to internal/cl/* + N42 DB-fallback shims.
+
+// Copyright 2024 The Erigon Authors
+// This file is part of Erigon.
+//
+// Erigon is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Erigon is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with Erigon. If not, see <http://www.gnu.org/licenses/>.
+
+package stages
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"sync/atomic"
+	"time"
+
+	"github.com/n42blockchain/N42/internal/cl/antiquary"
+	"github.com/n42blockchain/N42/internal/cl/clparams"
+	"github.com/n42blockchain/N42/internal/cl/cltypes"
+	"github.com/n42blockchain/N42/internal/cl/depshim/common"
+	"github.com/n42blockchain/N42/internal/cl/depshim/freezeblocks"
+	log "github.com/n42blockchain/N42/internal/cl/depshim/log/v3"
+	"github.com/n42blockchain/N42/internal/cl/persistence/beacon_indicies"
+	"github.com/n42blockchain/N42/internal/cl/persistence/blob_storage"
+	"github.com/n42blockchain/N42/internal/cl/phase1/execution_client"
+	"github.com/n42blockchain/N42/internal/cl/phase1/execution_client/block_collector"
+	"github.com/n42blockchain/N42/internal/cl/phase1/forkchoice"
+	"github.com/n42blockchain/N42/internal/cl/phase1/network"
+	"github.com/n42blockchain/N42/lib/kv"
+)
+
+type StageHistoryReconstructionCfg struct {
+	beaconCfg                *clparams.BeaconChainConfig
+	downloader               *network.BackwardBeaconDownloader
+	sn                       *freezeblocks.CaplinSnapshots
+	startingRoot             common.Hash
+	caplinConfig             clparams.CaplinConfig
+	waitForAllRoutines       bool
+	startingSlot             uint64
+	tmpdir                   string
+	indiciesDB               kv.RwDB
+	engine                   execution_client.ExecutionEngine
+	antiquary                *antiquary.Antiquary
+	logger                   log.Logger
+	executionBlocksCollector block_collector.BlockCollector
+	backfillingThrottling    time.Duration
+	blockReader              freezeblocks.BeaconSnapshotReader
+	blobStorage              blob_storage.BlobStorage
+	forkchoiceStore          forkchoice.ForkChoiceStorage
+	blobDownloader           *network.BlobHistoryDownloader
+}
+
+const logIntervalTime = 30 * time.Second
+
+func StageHistoryReconstruction(downloader *network.BackwardBeaconDownloader, antiquary *antiquary.Antiquary, sn *freezeblocks.CaplinSnapshots, indiciesDB kv.RwDB, engine execution_client.ExecutionEngine, beaconCfg *clparams.BeaconChainConfig, caplinConfig clparams.CaplinConfig, waitForAllRoutines bool, startingRoot common.Hash, startinSlot uint64, tmpdir string, backfillingThrottling time.Duration, executionBlocksCollector block_collector.BlockCollector, blockReader freezeblocks.BeaconSnapshotReader, blobStorage blob_storage.BlobStorage, logger log.Logger, forkchoiceStore forkchoice.ForkChoiceStorage, blobDownloader *network.BlobHistoryDownloader) StageHistoryReconstructionCfg {
+	return StageHistoryReconstructionCfg{
+		beaconCfg:                beaconCfg,
+		downloader:               downloader,
+		startingRoot:             startingRoot,
+		tmpdir:                   tmpdir,
+		startingSlot:             startinSlot,
+		waitForAllRoutines:       waitForAllRoutines,
+		logger:                   logger,
+		caplinConfig:             caplinConfig,
+		indiciesDB:               indiciesDB,
+		antiquary:                antiquary,
+		engine:                   engine,
+		sn:                       sn,
+		backfillingThrottling:    backfillingThrottling,
+		executionBlocksCollector: executionBlocksCollector,
+		blockReader:              blockReader,
+		blobStorage:              blobStorage,
+		forkchoiceStore:          forkchoiceStore,
+		blobDownloader:           blobDownloader,
+	}
+}
+
+// elBackfillFinished reports whether the EL history backfill reached its floor:
+// the beacon slot, or for a snapshot gap the EL block number (compared to elBlock).
+func elBackfillFinished(slot, elBlock, destinationSlot, destinationBlock uint64) bool {
+	if destinationSlot != math.MaxUint64 && slot <= destinationSlot {
+		return true
+	}
+	if destinationBlock != math.MaxUint64 && elBlock != 0 && elBlock <= destinationBlock {
+		return true
+	}
+	return false
+}
+
+// SpawnStageBeaconsForward spawn the beacon forward stage
+func SpawnStageHistoryDownload(cfg StageHistoryReconstructionCfg, ctx context.Context, logger log.Logger) error {
+	// Wait for execution engine to be ready.
+	blockRoot := cfg.startingRoot
+	currentSlot := cfg.startingSlot
+
+	if !clparams.SupportBackfilling(cfg.beaconCfg.DepositNetworkID) {
+		cfg.caplinConfig.ArchiveBlocks = false // disable backfilling if not on a supported network
+	}
+
+	var hasFinishedDownloadingElBlocks atomic.Bool
+
+	// Start the procedure
+	logger.Info("Starting downloading History", "from", currentSlot)
+	// Setup slot and block root
+	cfg.downloader.SetSlotToDownload(currentSlot)
+	cfg.downloader.SetExpectedRoot(blockRoot)
+	cfg.downloader.SetBlockChecker(cfg.executionBlocksCollector)
+
+	var initialBeaconBlock *cltypes.SignedBeaconBlock
+
+	var currEth1Progress atomic.Int64
+	// initialEth1Progress holds the EL block number of the first (highest) beacon block seen.
+	// Used for logging; kept separate to avoid accessing ExecutionPayload on GLOAS blocks.
+	var initialEth1Progress atomic.Int64
+
+	destinationSlotForEL := uint64(math.MaxUint64)
+	if cfg.engine != nil && cfg.engine.SupportInsertion() && cfg.beaconCfg.DenebForkEpoch != math.MaxUint64 {
+		destinationSlotForEL = cfg.beaconCfg.BellatrixForkEpoch * cfg.beaconCfg.SlotsPerEpoch
+	}
+	// EL block-number floor for snapshot-gap backfill, kept separate from the
+	// beacon-slot destinationSlotForEL since the units must not be mixed.
+	destinationBlockForEL := uint64(math.MaxUint64)
+	// Set up onNewBlock callback
+	// [Modified in Gloas:EIP7732] envelope is non-nil for GLOAS FULL blocks, nil for EMPTY or pre-GLOAS.
+	cfg.downloader.SetOnNewBlock(func(blk *cltypes.SignedBeaconBlock, envelope *cltypes.SignedExecutionPayloadEnvelope) (finished bool, err error) {
+		tx, err := cfg.indiciesDB.BeginRw(ctx)
+		if err != nil {
+			return false, err
+		}
+		defer tx.Rollback()
+
+		// Track EL block number for progress logging and batch-commit cadence.
+		if blk.Version() >= clparams.GloasVersion {
+			if envelope != nil {
+				currEth1Progress.Store(int64(envelope.Message.Payload.BlockNumber))
+			}
+		} else if blk.Version() >= clparams.BellatrixVersion {
+			currEth1Progress.Store(int64(blk.Block.Body.ExecutionPayload.BlockNumber))
+		}
+
+		if initialBeaconBlock == nil {
+			initialBeaconBlock = blk
+			// Record initial EL block number for the logging goroutine.
+			if blk.Version() >= clparams.GloasVersion {
+				if envelope != nil {
+					initialEth1Progress.Store(int64(envelope.Message.Payload.BlockNumber))
+				}
+			} else if blk.Version() >= clparams.BellatrixVersion {
+				initialEth1Progress.Store(int64(blk.Block.Body.ExecutionPayload.BlockNumber))
+			}
+		}
+
+		slot := blk.Block.Slot
+		isInCLSnapshots := cfg.sn.SegmentsMax() > blk.Block.Slot
+		// Skip blocks that are already in the snapshots
+		if !isInCLSnapshots {
+			if err := beacon_indicies.WriteBeaconBlockAndIndicies(ctx, tx, blk, true); err != nil {
+				return false, err
+			}
+			// [New in Gloas:EIP7732] WriteBeaconBlockAndIndicies skips EL indices for GLOAS blocks
+			// because the payload is in the envelope, not the block body. Write them here now
+			// that we have the envelope.
+			if blk.Version() >= clparams.GloasVersion && envelope != nil {
+				blockRoot, hashErr := blk.Block.HashSSZ()
+				if hashErr != nil {
+					return false, hashErr
+				}
+				if err := beacon_indicies.WriteExecutionPayloadEnvelopeIndicies(tx, common.Hash(blockRoot), envelope.Message); err != nil {
+					return false, err
+				}
+			}
+		}
+		// we need to backfill an equivalent number of blobs to the blocks
+		hasDownloadEnoughForImmediateBlobsBackfilling := true
+		if cfg.caplinConfig.ImmediateBlobsBackfilling {
+			// download twice the number of blocks needed for good measure
+			blocksToDownload := cfg.beaconCfg.MinSlotsForBlobsSidecarsRequest() * 2
+			hasDownloadEnoughForImmediateBlobsBackfilling = cfg.startingSlot < blocksToDownload || slot > cfg.startingSlot-blocksToDownload
+		}
+
+		if cfg.engine != nil && cfg.engine.SupportInsertion() && blk.Version() >= clparams.BellatrixVersion {
+			frozenBlocksInEL := cfg.engine.FrozenBlocks(ctx)
+
+			// [New in Gloas:EIP7732] EMPTY blocks carry no EL payload; skip EL insertion.
+			isGloasEmpty := blk.Version() >= clparams.GloasVersion && envelope == nil
+			if !isGloasEmpty {
+				var payloadBlockHash common.Hash
+				var payloadBlockNumber uint64
+				if blk.Version() >= clparams.GloasVersion {
+					payloadBlockHash = envelope.Message.Payload.BlockHash
+					payloadBlockNumber = envelope.Message.Payload.BlockNumber
+				} else {
+					payloadBlockHash = blk.Block.Body.ExecutionPayload.BlockHash
+					payloadBlockNumber = blk.Block.Body.ExecutionPayload.BlockNumber
+				}
+
+				hasELBlock := frozenBlocksInEL > payloadBlockNumber
+				if !hasELBlock {
+					hasELBlock, err = cfg.engine.HasBlock(ctx, payloadBlockHash)
+					if err != nil {
+						return false, fmt.Errorf("error retrieving whether execution payload is present: %s", err)
+					}
+				}
+
+				if !hasELBlock {
+					if blk.Version() >= clparams.GloasVersion {
+						if err := cfg.executionBlocksCollector.AddGloasBlock(blk.Block, envelope); err != nil {
+							return false, fmt.Errorf("error adding gloas block to execution blocks collector: %s", err)
+						}
+					} else {
+						if err := cfg.executionBlocksCollector.AddBlock(blk.Block); err != nil {
+							return false, fmt.Errorf("error adding block to execution blocks collector: %s", err)
+						}
+					}
+					if currEth1Progress.Load()%100 == 0 {
+						return false, tx.Commit()
+					}
+				}
+				if hasELBlock && !cfg.caplinConfig.ArchiveBlocks {
+					return hasDownloadEnoughForImmediateBlobsBackfilling, tx.Commit()
+				}
+				hasFinishedDownloadingElBlocks.Store(hasELBlock)
+			}
+			// For GLOAS EMPTY blocks, hasFinishedDownloadingElBlocks is left unchanged.
+		} else {
+			hasFinishedDownloadingElBlocks.Store(true)
+		}
+
+		isInElSnapshots := true
+		if blk.Version() >= clparams.BellatrixVersion && cfg.engine != nil && cfg.engine.SupportInsertion() {
+			frozenBlocksInEL := cfg.engine.FrozenBlocks(ctx)
+			if blk.Version() >= clparams.GloasVersion {
+				if envelope != nil {
+					isInElSnapshots = frozenBlocksInEL > envelope.Message.Payload.BlockNumber
+				} else {
+					// GLOAS EMPTY: no EL block for this slot; EL chain did not advance.
+					// Keep isInElSnapshots=false so we continue backwards to find the next FULL block.
+					isInElSnapshots = false
+				}
+			} else {
+				isInElSnapshots = frozenBlocksInEL > blk.Block.Body.ExecutionPayload.BlockNumber
+			}
+			if cfg.engine.HasGapInSnapshots(ctx) && frozenBlocksInEL > 0 {
+				destinationBlockForEL = frozenBlocksInEL - 1
+			}
+		}
+
+		if slot == 0 || (isInCLSnapshots && isInElSnapshots) {
+			return true, tx.Commit()
+		}
+		return hasDownloadEnoughForImmediateBlobsBackfilling &&
+				(!cfg.caplinConfig.ArchiveBlocks || slot <= cfg.sn.SegmentsMax()) &&
+				(elBackfillFinished(slot, uint64(currEth1Progress.Load()), destinationSlotForEL, destinationBlockForEL) || isInElSnapshots),
+			tx.Commit()
+	})
+
+	finishCh := make(chan struct{})
+	// Start logging thread
+
+	isBackfilling := atomic.Bool{}
+
+	go func() {
+		startTimeLoop := time.Now()
+		initialProgress := cfg.downloader.Progress()
+		logInterval := time.NewTicker(logIntervalTime)
+		defer logInterval.Stop()
+		for {
+			select {
+			case <-logInterval.C:
+				if cfg.engine != nil && cfg.engine.SupportInsertion() {
+					if ready, err := cfg.engine.Ready(ctx); !ready {
+						if err != nil {
+							log.Warn("could not log progress", "err", err)
+						}
+						continue
+					}
+
+				}
+				logArgs := []any{}
+				currProgress := cfg.downloader.Progress()
+				speed := math.Abs(float64(currProgress)-float64(initialProgress)) / time.Since(startTimeLoop).Seconds()
+				if speed > 1000.0 { // to avoid spamming logs on fast syncs
+					initialProgress = currProgress
+					startTimeLoop = time.Now()
+					continue
+				}
+
+				if speed == 0 || initialBeaconBlock == nil {
+					continue
+				}
+
+				if cfg.sn != nil && cfg.sn.SegmentsMax() == 0 {
+					cfg.sn.OpenFolder()
+				}
+
+				highestBlockSeen := initialBeaconBlock.Block.Slot
+				lowestBlockToReach := cfg.sn.SegmentsMax()
+
+				logArgs = append(logArgs,
+					"slot", currProgress,
+					"blockNumber", currEth1Progress.Load(),
+					"blk/sec", fmt.Sprintf("%.1f", speed),
+					"snapshots", cfg.sn.SegmentsMax(),
+				)
+
+				isDownloadingForBeacon := (hasFinishedDownloadingElBlocks.Load() || cfg.caplinConfig.ArchiveBlocks) && clparams.SupportBackfilling(cfg.beaconCfg.DepositNetworkID)
+
+				if cfg.engine != nil && cfg.engine.SupportInsertion() {
+					logArgs = append(logArgs, "frozenBlocks", cfg.engine.FrozenBlocks(ctx))
+					if !isDownloadingForBeacon {
+						// If we are not backfilling, we are in the EL phase.
+						// [Modified in Gloas:EIP7732] Use initialEth1Progress to avoid nil ExecutionPayload access.
+						highestBlockSeen = uint64(initialEth1Progress.Load())
+
+						h, err := cfg.engine.CurrentHeader(ctx)
+						if err != nil || h == nil {
+							log.Debug("could not log progress", "err", err)
+							lowestBlockToReach = cfg.engine.FrozenBlocks(ctx)
+						} else {
+							lowestBlockToReach = h.Number.Uint64()
+						}
+					}
+				}
+
+				logMsg := "Node is still syncing... downloading past blocks"
+				if isBackfilling.Load() {
+					logMsg = "Node has finished syncing... full history is being downloaded for archiving purposes"
+				}
+				// Log the progress for debugging
+				logger.Debug(logMsg, logArgs...)
+
+				if !isDownloadingForBeacon {
+					// Genesis block (0) is never collected, so the lowest reachable
+					// EL block number is 1. Clamp to avoid an off-by-one that makes
+					// progress stall at N-1/N.
+					effectiveLowest := max(lowestBlockToReach, 1)
+					toprocess := highestBlockSeen - effectiveLowest
+					processed := highestBlockSeen - uint64(currEth1Progress.Load())
+					remaining := float64(toprocess - processed)
+					log.Info("Downloading Execution History", "progress",
+						fmt.Sprintf("%d/%d", processed, toprocess),
+						"ETA", (time.Duration(remaining/speed) * time.Second).String(),
+						"blk/sec", fmt.Sprintf("%.1f", speed))
+				} else {
+					log.Info("Downloading Beacon History", "progress",
+						fmt.Sprintf("%d/%d", highestBlockSeen-currProgress, highestBlockSeen-lowestBlockToReach),
+						"blk/sec", fmt.Sprintf("%.1f", speed))
+				}
+				// More UX-friendly logging
+			case <-finishCh:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	go func() {
+		for !cfg.downloader.Finished() {
+			if err := cfg.downloader.RequestMore(ctx); err != nil {
+				log.Warn("closing backfilling routine", "err", err)
+				return
+			}
+		}
+		cfg.antiquary.NotifyBackfilled()
+		if cfg.caplinConfig.ArchiveBlocks {
+			cfg.logger.Info("Full backfilling finished")
+		}
+
+		close(finishCh)
+		if cfg.blobDownloader != nil {
+			cfg.blobDownloader.SetHeadSlot(cfg.startingSlot + 1)
+			cfg.blobDownloader.SetNotifyBlobBackfilled(cfg.antiquary.NotifyBlobBackfilled)
+			cfg.blobDownloader.Start()
+		}
+	}()
+	// We block until we are done with the EL side of the backfilling with 2000 blocks of safety margin.
+	for !cfg.downloader.Finished() && (cfg.engine == nil || cfg.downloader.Progress() > destinationSlotForEL) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+		}
+	}
+	cfg.downloader.SetThrottle(cfg.backfillingThrottling) // throttle to 0.6 second for backfilling
+	cfg.downloader.SetNeverSkip(false)
+	isBackfilling.Store(true)
+
+	cfg.logger.Info("Ready to insert history, waiting for sync cycle to finish")
+
+	return nil
+}

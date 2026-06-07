@@ -32,6 +32,7 @@ import (
 	"github.com/n42blockchain/N42/internal/cl/cltypes"
 	"github.com/n42blockchain/N42/internal/cl/cltypes/solid"
 	"github.com/n42blockchain/N42/internal/cl/das"
+	common "github.com/n42blockchain/N42/internal/cl/depshim/common"
 	"github.com/n42blockchain/N42/internal/cl/persistence/blob_storage"
 	"github.com/n42blockchain/N42/internal/cl/phase1/core/state"
 	state2 "github.com/n42blockchain/N42/internal/cl/phase1/core/state"
@@ -43,7 +44,6 @@ import (
 	"github.com/n42blockchain/N42/internal/cl/transition/impl/eth2"
 	"github.com/n42blockchain/N42/internal/cl/utils/eth_clock"
 	"github.com/n42blockchain/N42/internal/cl/validator/validator_params"
-	common "github.com/n42blockchain/N42/internal/cl/depshim/common"
 	"github.com/n42blockchain/N42/lib/kv"
 
 	lru "github.com/hashicorp/golang-lru/v2"
@@ -554,6 +554,24 @@ func (f *ForkChoiceStore) Engine() execution_client.ExecutionEngine {
 func (f *ForkChoiceStore) GetEth1Hash(eth2Root common.Hash) common.Hash {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
+	ret, _ := f.eth2Roots.Get(eth2Root)
+	return ret
+}
+
+// GetFinalizedExecutionHash returns the execution-layer block hash for the given
+// beacon (eth2) root. From Gloas (EIP-7732) the execution payload is decoupled
+// from the beacon block, so the hash comes from the block's execution-payload
+// bid (ParentBlockHash); pre-Gloas it falls back to the eth2Root→eth1Hash map.
+// Mirrors erigon forkchoice.GetFinalizedExecutionHash.
+func (f *ForkChoiceStore) GetFinalizedExecutionHash(eth2Root common.Hash) common.Hash {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	block, ok := f.forkGraph.GetBlock(eth2Root)
+	if ok && block != nil && block.Block.Body.Version >= clparams.GloasVersion {
+		if bid := block.Block.Body.GetSignedExecutionPayloadBid(); bid != nil && bid.Message != nil {
+			return bid.Message.ParentBlockHash
+		}
+	}
 	ret, _ := f.eth2Roots.Get(eth2Root)
 	return ret
 }

@@ -18,6 +18,10 @@ import libdbg "github.com/n42blockchain/N42/lib/common/dbg"
 // Stack returns the current goroutine stack as a string.
 var Stack = libdbg.Stack
 
+// ReadMemStats reads runtime memory statistics (used by Caplin's stage loop for
+// periodic memory logging).
+var ReadMemStats = libdbg.ReadMemStats
+
 // CaplinSyncedDataMangerDeadlockDetection toggles a deadlock-detection
 // goroutine in Caplin's synced-data manager. The N42 fork keeps it disabled
 // — flipping it would only add background work for a feature we do not need
