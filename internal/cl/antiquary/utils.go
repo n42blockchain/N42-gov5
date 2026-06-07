@@ -20,8 +20,8 @@ package antiquary
 
 import (
 	"github.com/n42blockchain/N42/internal/cl/clparams"
-	"github.com/n42blockchain/N42/internal/cl/persistence/beacon_indicies"
 	common "github.com/n42blockchain/N42/internal/cl/depshim/common"
+	"github.com/n42blockchain/N42/internal/cl/persistence/beacon_indicies"
 	"github.com/n42blockchain/N42/lib/kv"
 )
 
