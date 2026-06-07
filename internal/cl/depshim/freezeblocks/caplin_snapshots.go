@@ -23,9 +23,28 @@ import (
 	"github.com/n42blockchain/N42/internal/cl/depshim/ethconfig"
 	log "github.com/n42blockchain/N42/internal/cl/depshim/log/v3"
 	"github.com/n42blockchain/N42/internal/cl/depshim/snapshotsync"
+	deptypes "github.com/n42blockchain/N42/internal/cl/depshim/types"
 	"github.com/n42blockchain/N42/lib/common/datadir"
 	"github.com/n42blockchain/N42/lib/kv"
 )
+
+// BeaconSnapshotReader mirrors erigon's freezeblocks.BeaconSnapshotReader — the
+// read interface Caplin consumers (historical_states_reader, antiquary) store
+// and call to fetch beacon blocks/headers. The concrete implementation (backed
+// by CaplinSnapshots + the DB) is wired by the caller; defining the interface
+// here lets the consumers compile under the DB-fallback model.
+type BeaconSnapshotReader interface {
+	// ReadBlockBySlot reads the block at the given slot; nil if absent.
+	ReadBlockBySlot(ctx context.Context, tx kv.Tx, slot uint64) (*cltypes.SignedBeaconBlock, error)
+	ReadBlockByRoot(ctx context.Context, tx kv.Tx, blockRoot common.Hash) (*cltypes.SignedBeaconBlock, error)
+	ReadHeaderByRoot(ctx context.Context, tx kv.Tx, blockRoot common.Hash) (*cltypes.SignedBeaconBlockHeader, error)
+	// ReadBeaconBlockBodyBySlot reads a block without full execution payload data.
+	ReadBeaconBlockBodyBySlot(ctx context.Context, tx kv.Tx, slot uint64) (*cltypes.SignedBeaconBlock, error)
+
+	FrozenSlots() uint64
+	// CacheBlockBody caches a recently produced block's execution body.
+	CacheBlockBody(blockNumber uint64, transactions [][]byte, withdrawals []*deptypes.Withdrawal)
+}
 
 // CaplinSnapshots is the beacon-block + blob-sidecar snapshot reader. The shim
 // holds no segments; availability is always zero so consumers use the DB.
