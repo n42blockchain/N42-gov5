@@ -416,3 +416,18 @@ stages 文件已就位(编译通过),两条路都用得上;先定方向再动手
 3. sentinel 需 `freezeblocks.BeaconSnapshotReader`(serve 块给 peer 用);B+ consume-only 可写 noop reader(ReadBlockBySlot/ByRoot 返 nil,块从 gossip/forkGraph 取,不靠快照 serve）。
 
 补这 3 个 noop + 写上面 driver,即闭合 B+「对抗环境独立 fork choice 驱动 EL」。
+
+### 步骤 6+7 ✅ 完成(commit 134ec218)— B+ 收口已接通
+
+`internal/cl/independent_forkchoice.go`(新)+ service.go wiring 落地:
+- **bootstrap**:checkpoint-sync anchor `*CachingBeaconState` → `ForkChoiceStore`(engine=EL,全 in-memory/noop 依赖)+ `InitPeerDas(das.NewNoopPeerDas(NoopPeerDasState{}))`。
+- **transport**:`clp2p.NewP2Pmanager` → `StartSentinelService`(in-process direct SentinelClient)→ `NewBeaconRpcP2P`。
+- **三循环**:`forkChoiceTickLoop`(OnTick);`blockSyncLoop`(req/resp beacon-blocks-by-range 从**多 peer** → `OnBlock(fullValidation=true)`=对抗安全门);`headDriveLoop`(`GetHead`→`GetEth1Hash`→驱动 EL `forkChoiceUpdated` 到**独立选出的 head**,替换盲跟 tip)。
+- **wiring 门控**:`CheckpointSyncURL!="" && SentinelDiscoveryPort>0` → 独立 fork choice;否则退化 follower(非对抗安全)。
+- 补 noop:`peerdasstate.NoopPeerDasState`、`freezeblocks.NoopBeaconSnapshotReader`(consume-only)。
+- 全 build+vet 绿;cl + forkchoice 测试过。
+
+**剩余(refinement / 验证):**
+- **live gossip(可选优化)**:当前 live-tip 靠 `blockSyncLoop` 的 req/resp 轮询(每 4s,attestation-weighted 已生效,只是延迟非 sub-slot);加 `p2p.Pubsub().Subscribe(beacon_block topic+forkDigest)` → OnBlock 可降到 sub-slot 延迟。非对抗安全性必需。
+- **步骤 8 对抗 E2E**:活 beacon checkpoint endpoint + eth/68 EL,验 catchup→live,且构造 EL devp2p 喂低权重链时 caplin 用 fork-choice head 覆盖/拒绝(对抗鲁棒性实证)。
+- **生产加固**:discovery/TCP 端口拆分(现 Port=TCPPort=SentinelDiscoveryPort 同值,应分开)、NAT、bootnode/static peer 配置面、`MaxPeerCount` 可配。
