@@ -203,9 +203,9 @@ func TestMissingSections_ReportsGaps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MissingSections: %v", err)
 	}
-	// minimal is now snapshot-only (no headers/code section); both state sections
-	// are missing here since all snapshot/state files are absent.
-	wantMissing := map[string]bool{"state-accounts": true, "state-storage": true}
+	// minimal = snapshot + caplin checkpoint seed; both state sections and the
+	// beacon-checkpoint seed are missing here (only headerc present).
+	wantMissing := map[string]bool{"state-accounts": true, "state-storage": true, "beacon-checkpoint": true}
 	for _, m := range missing {
 		delete(wantMissing, m)
 	}
