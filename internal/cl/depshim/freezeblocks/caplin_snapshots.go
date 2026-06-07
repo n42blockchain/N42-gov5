@@ -43,6 +43,10 @@ type BeaconSnapshotReader interface {
 
 	FrozenSlots() uint64
 	// CacheBlockBody caches a recently produced block's execution body.
+	// NOTE: erigon types this as execution/types.Withdrawal; N42's canonical
+	// equivalent is depshim/types.Withdrawal, so the real BeaconSnapshotReader
+	// impl wired in a later #31 step must use depshim/types.Withdrawal to satisfy
+	// this interface.
 	CacheBlockBody(blockNumber uint64, transactions [][]byte, withdrawals []*deptypes.Withdrawal)
 }
 
