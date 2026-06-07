@@ -64,9 +64,14 @@ type Backend interface {
 		executionRequests []hexutil.Bytes,
 	) (execution_client.PayloadStatus, error)
 
+	// UpdateForkchoice drives the EL fork choice. Argument order is the
+	// canonical Caplin execution_client.ExecutionEngine contract:
+	// (finalized, safe, head) — matching how cl/phase1 stages and rpc call
+	// ForkChoiceUpdate. The Backend maps finalized→FinalizedBlockHash and
+	// head→HeadBlockHash.
 	UpdateForkchoice(
 		ctx context.Context,
-		head, safe, finalized depcommon.Hash,
+		finalized, safe, head depcommon.Hash,
 		attrs *engine_types.PayloadAttributes,
 		version clparams.StateVersion,
 	) (payloadID []byte, err error)
@@ -166,13 +171,20 @@ func (a *Adapter) NewPayload(
 // wiring; Backend implementations decide how to materialise the call
 // (direct EngineStateAdapter.ForkchoiceUpdated or via EngineAPIv4
 // in-process).
+//
+// Argument order is the canonical Caplin execution_client.ExecutionEngine
+// contract: (finalized, safe, head). The earlier (head, safe, finalized)
+// naming here silently swapped the EL's HeadBlockHash and FinalizedBlockHash
+// because Go matches interface methods structurally (all three are Hash), so
+// every caller (cl/phase1 stages, follower, independent fork choice) drove the
+// EL head to the finalized block and vice-versa. Fixed to match the interface.
 func (a *Adapter) ForkChoiceUpdate(
 	ctx context.Context,
-	head, safe, finalized depcommon.Hash,
+	finalized, safe, head depcommon.Hash,
 	attrs *engine_types.PayloadAttributes,
 	version clparams.StateVersion,
 ) ([]byte, error) {
-	return a.backend.UpdateForkchoice(ctx, head, safe, finalized, attrs, version)
+	return a.backend.UpdateForkchoice(ctx, finalized, safe, head, attrs, version)
 }
 
 // --- Insertion path -------------------------------------------------------
