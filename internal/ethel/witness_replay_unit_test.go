@@ -170,6 +170,53 @@ func TestWitnessCapturingWriter_RecordsBothOldAndNew(t *testing.T) {
 	}
 }
 
+// TestWitnessCapturingWriter_PostState pins that PostState() exposes the
+// captured changeset (accounts/storage/wiped) the mobile overlay folds in —
+// account update, storage write, delete-as-nil, and CreateContract wipe.
+func TestWitnessCapturingWriter_PostState(t *testing.T) {
+	a1 := types.HexToAddress("0x1111111111111111111111111111111111111111")
+	a2 := types.HexToAddress("0x2222222222222222222222222222222222222222")
+	wiped := types.HexToAddress("0x3333333333333333333333333333333333333333")
+	slot := types.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000007")
+
+	old := &account.StateAccount{Initialised: true, Nonce: 1}
+	old.Balance.SetUint64(10)
+	newA := &account.StateAccount{Initialised: true, Nonce: 2}
+	newA.Balance.SetUint64(99)
+
+	w := NewWitnessCapturingWriter()
+	if err := w.UpdateAccountData(a1, old, newA); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.DeleteAccount(a2, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteAccountStorage(a1, slot, *uint256.NewInt(0), *uint256.NewInt(0x42)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.CreateContract(wiped); err != nil {
+		t.Fatal(err)
+	}
+
+	ps := w.PostState()
+	if ps == nil {
+		t.Fatal("PostState nil")
+	}
+	if len(ps.Accounts[a1]) == 0 {
+		t.Error("a1 account bytes missing from PostState")
+	}
+	if v, ok := ps.Accounts[a2]; !ok || v != nil {
+		t.Errorf("a2 should be present with nil (deleted) value, got ok=%v v=%x", ok, v)
+	}
+	inner, ok := ps.Storage[a1]
+	if !ok || len(inner[slot]) == 0 {
+		t.Errorf("a1 storage slot missing from PostState: ok=%v", ok)
+	}
+	if _, ok := ps.Wiped[wiped]; !ok {
+		t.Error("wiped address missing from PostState.Wiped")
+	}
+}
+
 // TestWitnessCapturingWriter_DeleteAccount pins that DeleteAccount
 // records a nil new-value (so EncodeAccountChanges emits a deletion
 // marker), without disturbing the old-value capture path.

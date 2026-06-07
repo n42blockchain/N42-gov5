@@ -153,7 +153,8 @@ func WireMinimalExec(
 			cd, _ = code(n)
 		}
 		in := &MinimalVerifyInput{Header: h, Body: b, Witness: w, Senders: sn, Code: cd}
-		return verifyExecutionAncestor(ancestor, chainCfg, engine, in, nil, nil)
+		_, err := verifyExecutionAncestor(ancestor, chainCfg, engine, in, nil, nil, false)
+		return err
 	}
 }
 
@@ -161,7 +162,8 @@ func WireMinimalExec(
 // replayWitnessBlock check gasUsed + receiptRoot against the header. The trusted
 // HeaderChain supplies BLOCKHASH ancestor hashes.
 func verifyExecution(hc *stateless.HeaderChain, chainCfg *params.ChainConfig, engine consensus.Engine, in *MinimalVerifyInput) error {
-	return verifyExecutionAncestor(func(n uint64) types.Hash { h, _ := hc.TrustedHash(n); return h }, chainCfg, engine, in, nil, nil)
+	_, err := verifyExecutionAncestor(func(n uint64) types.Hash { h, _ := hc.TrustedHash(n); return h }, chainCfg, engine, in, nil, nil, false)
+	return err
 }
 
 // VerifyWitnessReceipt is the exported layer-② check for a minimal/mobile client:
@@ -176,7 +178,29 @@ func VerifyWitnessReceipt(in *MinimalVerifyInput, ancestor func(uint64) types.Ha
 	if in == nil || in.Header == nil || in.Header.Number == nil {
 		return fmt.Errorf("minimal: nil input/header")
 	}
-	return verifyExecutionAncestor(ancestor, chainCfg, engine, in, codeFetch, nil)
+	_, err := verifyExecutionAncestor(ancestor, chainCfg, engine, in, codeFetch, nil, false)
+	return err
+}
+
+// VerifyWitnessReceiptCapture is VerifyWitnessReceipt that, on success, ALSO
+// returns the block's post-state changeset (the new account/storage values it
+// wrote). The replay commits through a WitnessCapturingWriter; because the
+// gasUsed + receiptRoot reconcile with the trusted header (layer ②), the
+// returned changeset is the witness-verified post-state for this block — what
+// a mobile client folds into its rolling overlay. Returns (nil, err) if the
+// block fails verification.
+func VerifyWitnessReceiptCapture(in *MinimalVerifyInput, ancestor func(uint64) types.Hash, chainCfg *params.ChainConfig, engine consensus.Engine, codeFetch func(types.Hash) ([]byte, error)) (*PostState, error) {
+	if in == nil || in.Header == nil || in.Header.Number == nil {
+		return nil, fmt.Errorf("minimal: nil input/header")
+	}
+	w, err := verifyExecutionAncestor(ancestor, chainCfg, engine, in, codeFetch, nil, true)
+	if err != nil {
+		return nil, err
+	}
+	if w == nil {
+		return nil, fmt.Errorf("minimal: capture produced no writer")
+	}
+	return w.PostState(), nil
 }
 
 // VerifyWitnessReceiptWithCodes is VerifyWitnessReceipt plus an address-indexed
@@ -189,17 +213,18 @@ func VerifyWitnessReceiptWithCodes(in *MinimalVerifyInput, ancestor func(uint64)
 	if in == nil || in.Header == nil || in.Header.Number == nil {
 		return fmt.Errorf("minimal: nil input/header")
 	}
-	return verifyExecutionAncestor(ancestor, chainCfg, engine, in, codeFetch, codes)
+	_, err := verifyExecutionAncestor(ancestor, chainCfg, engine, in, codeFetch, codes, false)
+	return err
 }
 
 // verifyExecutionAncestor is verifyExecution with the BLOCKHASH ancestor lookup
 // passed directly (used by the minimal client's ExecVerify hook, which has the
 // ancestor func but not the HeaderChain). Code is served from an in-memory Code
 // table built from the verified code map.
-func verifyExecutionAncestor(ancestor func(uint64) types.Hash, chainCfg *params.ChainConfig, engine consensus.Engine, in *MinimalVerifyInput, codeFetch func(types.Hash) ([]byte, error), codes *CodesFreezerReader) error {
+func verifyExecutionAncestor(ancestor func(uint64) types.Hash, chainCfg *params.ChainConfig, engine consensus.Engine, in *MinimalVerifyInput, codeFetch func(types.Hash) ([]byte, error), codes *CodesFreezerReader, capture bool) (*WitnessCapturingWriter, error) {
 	dir, err := os.MkdirTemp("", "minimal-code-")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer os.RemoveAll(dir)
 	codeDB := memdb.New(dir)
@@ -215,12 +240,12 @@ func verifyExecutionAncestor(ancestor func(uint64) types.Hash, chainCfg *params.
 			}
 			return nil
 		}); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	codeTx, err := codeDB.BeginRo(context.Background())
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer codeTx.Rollback()
 
@@ -253,6 +278,9 @@ func verifyExecutionAncestor(ancestor func(uint64) types.Hash, chainCfg *params.
 		Senders:     in.Senders,
 		BlockHashFn: ancestor,
 	}
-	res := replayWitnessBlock(job, codeTx, chainCfg, engine, ReplayMode{NoOutput: true}, ibs, reader)
-	return res.Err
+	res := replayWitnessBlock(job, codeTx, chainCfg, engine, ReplayMode{NoOutput: true, Capture: capture}, ibs, reader)
+	if res.Err != nil {
+		return nil, res.Err
+	}
+	return res.Writer, nil
 }

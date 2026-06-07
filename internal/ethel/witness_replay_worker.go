@@ -49,7 +49,11 @@ type WitnessResult struct {
 	StoCSBytes   []byte
 	WipesBytes   []byte
 	WitnessBytes []byte
-	Err          error
+	// Writer is set only in Capture mode: it holds the per-block post-state
+	// (accNewVals/stoNewVals/wipedAddrs) so a caller (e.g. the mobile overlay)
+	// can read the changeset directly without re-encoding to cdat bytes.
+	Writer *WitnessCapturingWriter
+	Err    error
 }
 
 // ReplayMode bundles the per-worker switches that control whether to
@@ -58,6 +62,11 @@ type WitnessResult struct {
 type ReplayMode struct {
 	SkipVerify bool
 	NoOutput   bool
+	// Capture commits the block through a WitnessCapturingWriter and returns
+	// it via WitnessResult.Writer WITHOUT encoding acctcs/storcs/receipts —
+	// the lightweight path a minimal/mobile client uses to harvest the
+	// post-state changeset. Implies output (overrides NoOutput's NoopWriter).
+	Capture bool
 }
 
 // runWitnessWorker pulls jobs from blockCh, replays each, pushes
@@ -180,7 +189,7 @@ func replayWitnessBlock(
 
 	var writer *WitnessCapturingWriter
 	var stateWriter state.WriterWithChangeSets
-	if mode.NoOutput {
+	if mode.NoOutput && !mode.Capture {
 		stateWriter = state.NewNoopWriter()
 	} else {
 		writer = NewWitnessCapturingWriter()
@@ -238,13 +247,21 @@ func replayWitnessBlock(
 		}
 	}
 
-	if mode.NoOutput {
+	if mode.NoOutput && !mode.Capture {
 		return res
 	}
 
 	rules := chainCfg.Rules(job.Header.Number.Uint64())
 	if err := ibs.CommitBlock(rules, writer); err != nil {
 		res.Err = fmt.Errorf("block %d: CommitBlock: %w", job.BlockNum, err)
+		return res
+	}
+
+	// Capture path: hand the writer (post-state changeset) back without the
+	// cdat encoding the bulk pipeline needs. The mobile overlay reads
+	// writer.PostState() directly.
+	if mode.Capture {
+		res.Writer = writer
 		return res
 	}
 

@@ -44,7 +44,21 @@ type minimalNode struct {
 	// verifiedHead is the highest block whose witness (②) has been replayed and
 	// reconciled with the ①-trusted receiptRoot. MobileFollowTick advances it.
 	verifiedHead uint64
+	// overlay holds the rolling post-state (last `retention` blocks) folded in
+	// from each witness-verified block; MobileBalanceOf reads it before falling
+	// back to an IDC proof.
+	overlay *mobileOverlay
+	// codes is a small hot-only LRU of contract bytecode (content-addressed by
+	// codeHash). The witness reader verifies keccak256(code)==hash, so a cache
+	// hit is as trustworthy as a fresh fetch. Bounds RAM — only hot contracts
+	// stay resident; cold ones are re-fetched on demand from the IDC.
+	codes *CodeCache
 }
+
+// mobileCodeCacheCap bounds how many distinct hot contract bytecodes the mobile
+// node keeps resident. ~1024 covers the working set of the popular contracts a
+// rolling window touches; misses fall back to an IDC /code fetch.
+const mobileCodeCacheCap = 1024
 
 // cappedSrc caps the sync tip so a phone can catch up in bounded steps (bounding
 // per-call work + battery) rather than syncing the whole gap at once. cap==0 → tip.
@@ -123,7 +137,13 @@ func MobileMinimalInit(idcURL string, checkpointBlock int64, checkpointHashHex s
 	if err != nil {
 		return "error: " + err.Error()
 	}
-	minClient = &minimalNode{src: src, capped: capped, mc: mc}
+	minClient = &minimalNode{
+		src:     src,
+		capped:  capped,
+		mc:      mc,
+		overlay: newMobileOverlay(uint64(retentionBlocks)),
+		codes:   NewCodeCache(mobileCodeCacheCap),
+	}
 	return ""
 }
 
@@ -205,6 +225,31 @@ func MobileBalanceOf(addrHex string) string {
 	var addr types.Address
 	copy(addr[:], ab)
 
+	// Overlay-first: if this account changed within the rolling window, the value
+	// is already witness-verified on-device (layer ②, receiptRoot reconciled to
+	// the ①-trusted header) — no network round-trip needed.
+	if minClient.overlay != nil {
+		if raw, at, ok := minClient.overlay.account(addr); ok {
+			acc, exists := decodeAccount(raw)
+			out := map[string]any{
+				"address":  addr.Hex(),
+				"exists":   exists,
+				"block":    at,
+				"source":   "overlay",
+				"verified": true,
+			}
+			if exists {
+				out["balance"] = acc.Balance.ToBig().String()
+				out["nonce"] = acc.Nonce
+			} else {
+				out["balance"] = "0"
+				out["nonce"] = uint64(0)
+			}
+			b, _ := json.Marshal(out)
+			return string(b)
+		}
+	}
+
 	resp, err := minClient.src.AccountProof(addr, nil)
 	if err != nil {
 		return "error: fetch account proof: " + err.Error()
@@ -239,6 +284,7 @@ func MobileBalanceOf(addrHex string) string {
 		"block":      resp.Block,
 		"root":       resp.Root.Hex(),
 		"proofBytes": proofBytes,
+		"source":     "proof",
 		"verified":   true,
 	})
 	return string(b)
@@ -267,10 +313,15 @@ func MobileVerifyBlock(n int64) string {
 			return "error: sync to block: " + err.Error()
 		}
 	}
-	txCount, codeFetched, verr := minClient.verifyBlockLocked(bn)
+	txCount, codeFetched, ps, verr := minClient.verifyBlockLocked(bn)
 	cfg := params.EthereumMainnetChainConfig
-	if verr == nil && bn > minClient.verifiedHead {
-		minClient.verifiedHead = bn
+	if verr == nil {
+		if minClient.overlay != nil {
+			minClient.overlay.apply(bn, ps)
+		}
+		if bn > minClient.verifiedHead {
+			minClient.verifiedHead = bn
+		}
 	}
 	b, _ := json.Marshal(map[string]any{
 		"block":       bn,
@@ -286,29 +337,30 @@ func MobileVerifyBlock(n int64) string {
 // verifyBlockLocked runs layer ② for block bn: fetch full header + body + witness
 // from the IDC, override receiptRoot with the ①-trusted value, and replay the
 // witness through the EVM (missing code fetched by codeHash from /code). Assumes
-// the caller holds minMu and the header chain already covers bn. Returns
-// (txCount, codeFetched, err).
-func (n *minimalNode) verifyBlockLocked(bn uint64) (int, int, error) {
+// the caller holds minMu and the header chain already covers bn. On success it
+// returns the block's witness-verified post-state changeset (for the overlay).
+// Returns (txCount, codeFetched, postState, err).
+func (n *minimalNode) verifyBlockLocked(bn uint64) (int, int, *ethel.PostState, error) {
 	trustedReceipt, ok := n.mc.TrustedReceiptRoot(bn)
 	if !ok {
-		return 0, 0, fmt.Errorf("block %d outside trusted/retained window", bn)
+		return 0, 0, nil, fmt.Errorf("block %d outside trusted/retained window", bn)
 	}
 	hdr, err := n.src.FullHeader(bn)
 	if err != nil {
-		return 0, 0, fmt.Errorf("fetch full header: %w", err)
+		return 0, 0, nil, fmt.Errorf("fetch full header: %w", err)
 	}
 	hdr.ReceiptHash = trustedReceipt // anchor the ② target to the trusted value
 	bodyBytes, err := n.src.Body(bn)
 	if err != nil {
-		return 0, 0, fmt.Errorf("fetch body: %w", err)
+		return 0, 0, nil, fmt.Errorf("fetch body: %w", err)
 	}
 	decoded, err := ethel.DecodeBodyBlock(bodyBytes)
 	if err != nil {
-		return 0, 0, fmt.Errorf("decode body: %w", err)
+		return 0, 0, nil, fmt.Errorf("decode body: %w", err)
 	}
 	wit, err := n.src.GetWitness(bn)
 	if err != nil {
-		return 0, 0, fmt.Errorf("fetch witness: %w", err)
+		return 0, 0, nil, fmt.Errorf("fetch witness: %w", err)
 	}
 	in := &ethel.MinimalVerifyInput{
 		Header:  hdr,
@@ -318,16 +370,25 @@ func (n *minimalNode) verifyBlockLocked(bn uint64) (int, int, error) {
 	ancestor := func(m uint64) types.Hash { h, _ := n.mc.TrustedHash(m); return h }
 	codeFetched := 0
 	codeFetch := func(h types.Hash) ([]byte, error) {
+		// Hot-cache first (content-addressed; reader re-verifies keccak).
+		if n.codes != nil {
+			if c, ok := n.codes.Get(h); ok {
+				return c, nil
+			}
+		}
 		c, err := n.src.Code(h)
 		if err == nil && len(c) > 0 {
 			codeFetched++
+			if n.codes != nil {
+				n.codes.Insert(h, c)
+			}
 		}
 		return c, err
 	}
 	cfg := params.EthereumMainnetChainConfig
 	engine := ethel.NewEthReplayEngine(cfg)
-	verr := ethel.VerifyWitnessReceipt(in, ancestor, cfg, engine, codeFetch)
-	return len(decoded.Txs), codeFetched, verr
+	ps, verr := ethel.VerifyWitnessReceiptCapture(in, ancestor, cfg, engine, codeFetch)
+	return len(decoded.Txs), codeFetched, ps, verr
 }
 
 // MobileFollowTick is the witness-verified 12 s follow step: it advances ① to the
@@ -362,20 +423,31 @@ func MobileFollowTick(maxVerify int64) string {
 		if maxVerify > 0 && int64(newVerified) >= maxVerify {
 			break
 		}
-		if _, _, err := minClient.verifyBlockLocked(bn); err != nil {
+		_, _, ps, err := minClient.verifyBlockLocked(bn)
+		if err != nil {
 			failedAt, failErr = bn, err
 			break
+		}
+		if minClient.overlay != nil {
+			minClient.overlay.apply(bn, ps)
 		}
 		minClient.verifiedHead = bn
 		newVerified++
 	}
+	ovAccts, ovStor, ovBlocks := 0, 0, 0
+	if minClient.overlay != nil {
+		ovAccts, ovStor, ovBlocks = minClient.overlay.stats()
+	}
 	b, _ := json.Marshal(map[string]any{
-		"head":         head,
-		"hash":         hash.Hex(),
-		"verifiedHead": minClient.verifiedHead,
-		"newVerified":  newVerified,
-		"failedAt":     failedAt,
-		"error":        errStr(failErr),
+		"head":          head,
+		"hash":          hash.Hex(),
+		"verifiedHead":  minClient.verifiedHead,
+		"newVerified":   newVerified,
+		"failedAt":      failedAt,
+		"error":         errStr(failErr),
+		"overlayAccts":  ovAccts,
+		"overlayStor":   ovStor,
+		"overlayBlocks": ovBlocks,
 	})
 	return string(b)
 }

@@ -114,6 +114,30 @@ func (c *WitnessCapturingWriter) WipedAddrsBytes() []byte {
 func (c *WitnessCapturingWriter) WriteChangeSets() error { return nil }
 func (c *WitnessCapturingWriter) WriteHistory() error    { return nil }
 
+// PostState is the per-block changeset a capture-mode replay produces: the
+// new account/storage values written this block, plus the addresses wiped by
+// CreateContract. nil account value = deleted; nil/absent slot value = zeroed.
+// Maps are the writer's own (not copied) — the caller takes ownership once the
+// writer is discarded, which the replay does immediately after capture.
+type PostState struct {
+	// addr -> account V2 bytes (account.MarshalV2). nil = deleted/absent.
+	Accounts map[types.Address][]byte
+	// addr -> slot -> big-endian trimmed value bytes. nil/absent = zeroed.
+	Storage map[types.Address]map[types.Hash][]byte
+	// addresses that received CreateContract this block (storage must be
+	// wiped before this block's Storage entries are applied).
+	Wiped map[types.Address]struct{}
+}
+
+// PostState exposes the captured per-block changeset for overlay consumers.
+func (c *WitnessCapturingWriter) PostState() *PostState {
+	return &PostState{
+		Accounts: c.accNewVals,
+		Storage:  c.stoNewVals,
+		Wiped:    c.wipedAddrs,
+	}
+}
+
 func (c *WitnessCapturingWriter) AccountNewValue(addr types.Address) []byte {
 	return c.accNewVals[addr]
 }
