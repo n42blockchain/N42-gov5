@@ -16,9 +16,12 @@ package cl
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/internal/cl/clparams"
+	common "github.com/n42blockchain/N42/internal/cl/depshim/common"
 	"github.com/n42blockchain/N42/internal/cl/eladapter"
 	"github.com/n42blockchain/N42/internal/cl/kvadapter"
 	libkv "github.com/n42blockchain/N42/lib/kv"
@@ -39,6 +42,10 @@ type Service struct {
 	engine ExecutionEngine
 
 	db libkv.RwDB // Caplin MDBX, nil while disabled or stopped
+
+	// lastFinalized is the execution block hash the follower last drove the EL
+	// to via forkChoiceUpdated; used to skip redundant updates.
+	lastFinalized common.Hash
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -80,6 +87,20 @@ func (s *Service) Start() error {
 		return err
 	}
 	s.db = db
+
+	// Lightweight EL-follower (#31 Phase 7, option B): when a checkpoint-sync
+	// endpoint is configured, drive the EL's fork choice from the finalized
+	// beacon checkpoint over HTTP — no beacon P2P / gossip stack required. The
+	// EL syncs payloads via its own devp2p; Caplin pins finality.
+	if s.cfg.CheckpointSyncURL != "" && s.engine != nil {
+		_, beaconCfg, netType, err := clparams.GetConfigsByNetworkName(s.cfg.Network)
+		if err != nil {
+			return fmt.Errorf("caplin follower: unknown network %q: %w", s.cfg.Network, err)
+		}
+		clparams.ConfigurableCheckpointsURLs = []string{s.cfg.CheckpointSyncURL}
+		go s.runFinalityFollower(beaconCfg, netType)
+		log.Info("Caplin lightweight EL-follower enabled", "checkpointURL", s.cfg.CheckpointSyncURL)
+	}
 
 	log.Info("Caplin started",
 		"network", s.cfg.Network,
