@@ -26,10 +26,13 @@
 package cl
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/spf13/afero"
 
+	"github.com/n42blockchain/N42/internal/cl/gossip"
+	"github.com/n42blockchain/N42/internal/cl/utils"
 	"github.com/n42blockchain/N42/internal/cl/beacon/beacon_router_configuration"
 	"github.com/n42blockchain/N42/internal/cl/beacon/beaconevents"
 	"github.com/n42blockchain/N42/internal/cl/beacon/synced_data"
@@ -172,6 +175,7 @@ func (s *Service) runIndependentForkChoice(networkConfig *clparams.NetworkConfig
 	// 4. Drive loops.
 	go s.forkChoiceTickLoop(fc)
 	go s.blockSyncLoop(fc, beaconRpc, ethClock)
+	go s.gossipBlockLoop(fc, p2pManager, ethClock, beaconCfg)
 	s.headDriveLoop(fc, beaconCfg) // blocks until ctx done
 }
 
@@ -237,6 +241,68 @@ func (s *Service) blockSyncLoop(fc *forkchoice.ForkChoiceStore, beaconRpc *rpc.B
 					nextSlot += count
 				}
 			}
+		}
+	}
+}
+
+// gossipBlockLoop subscribes to the beacon_block gossip topic on the libp2p
+// pubsub and feeds received blocks into fork choice with full validation. This
+// gives sub-slot head latency (a freshly proposed block reaches OnBlock within
+// the slot it was gossiped, vs the ~4s req/resp poll). It is a latency
+// optimization layered on top of blockSyncLoop, which remains the reliable
+// backstop (and covers fork-digest transitions, where the gossip topic name
+// changes — this loop subscribes to the current fork digest only).
+func (s *Service) gossipBlockLoop(fc *forkchoice.ForkChoiceStore, p2pManager clp2p.P2PManager, ethClock eth_clock.EthereumClock, beaconCfg *clparams.BeaconChainConfig) {
+	ps := p2pManager.Pubsub()
+	if ps == nil {
+		return
+	}
+	forkDigest, err := ethClock.CurrentForkDigest()
+	if err != nil {
+		log.Warn("Caplin independent fork choice: gossip CurrentForkDigest failed", "err", err)
+		return
+	}
+	// /eth2/[fork_digest]/beacon_block/ssz_snappy
+	topicName := fmt.Sprintf("/eth2/%x/%s/%s", forkDigest, gossip.TopicNameBeaconBlock, gossip.SSZSnappyCodec)
+	topic, err := ps.Join(topicName)
+	if err != nil {
+		log.Warn("Caplin independent fork choice: gossip Join failed", "topic", topicName, "err", err)
+		return
+	}
+	sub, err := topic.Subscribe()
+	if err != nil {
+		log.Warn("Caplin independent fork choice: gossip Subscribe failed", "topic", topicName, "err", err)
+		return
+	}
+	defer sub.Cancel()
+	log.Info("Caplin independent fork choice: subscribed to beacon_block gossip", "topic", topicName)
+
+	version, err := ethClock.StateVersionByForkDigest(forkDigest)
+	if err != nil {
+		log.Warn("Caplin independent fork choice: gossip StateVersionByForkDigest failed", "err", err)
+		return
+	}
+
+	for {
+		msg, err := sub.Next(s.ctx)
+		if err != nil {
+			if s.ctx.Err() != nil {
+				return
+			}
+			log.Trace("Caplin independent fork choice: gossip Next failed", "err", err)
+			continue
+		}
+		decoded, err := utils.DecompressSnappy(msg.Data, true)
+		if err != nil {
+			continue
+		}
+		blk := cltypes.NewSignedBeaconBlock(beaconCfg, version)
+		if err := blk.DecodeSSZ(decoded, int(version)); err != nil {
+			log.Trace("Caplin independent fork choice: gossip block decode failed", "err", err)
+			continue
+		}
+		if err := fc.OnBlock(s.ctx, blk, true, true, false); err != nil {
+			log.Trace("Caplin independent fork choice: gossip OnBlock rejected", "slot", blk.Block.Slot, "err", err)
 		}
 	}
 }
