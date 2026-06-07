@@ -37,6 +37,7 @@ type ServerConfig struct {
 }
 
 func createSentinel(
+	ctx context.Context,
 	cfg *sentinel.SentinelConfig,
 	blockReader freezeblocks.BeaconSnapshotReader,
 	blobStorage blob_storage.BlobStorage,
@@ -49,7 +50,7 @@ func createSentinel(
 	initialStatus *cltypes.Status,
 	logger log.Logger) (*sentinel.Sentinel, *enode.LocalNode, error) {
 	sent, err := sentinel.New(
-		context.Background(),
+		ctx,
 		cfg,
 		ethClock,
 		blockReader,
@@ -74,12 +75,23 @@ func createSentinel(
 		return nil, nil, err
 	}
 
+	// Tie the libp2p host lifetime to the caller's context: libp2p.New does not
+	// bind the host to a context, so without this the host (TCP listener + peer
+	// conns) would leak when the cl.Service stops. The sentinel's other
+	// goroutines (gossip manager, consensus handlers, rate-limiter cleanup,
+	// listenForPeers) already observe ctx via sentinel.New above.
+	go func() {
+		<-ctx.Done()
+		sent.Stop()
+	}()
+
 	return sent, localNode, nil
 }
 
 // StartSentinelService builds the sentinel and returns an in-process
 // SentinelClient (direct, no gRPC hop) for cl/rpc.BeaconRpcP2P to consume.
 func StartSentinelService(
+	ctx context.Context,
 	cfg *sentinel.SentinelConfig,
 	blockReader freezeblocks.BeaconSnapshotReader,
 	blobStorage blob_storage.BlobStorage,
@@ -91,8 +103,8 @@ func StartSentinelService(
 	PeerDasStateReader peerdasstate.PeerDasStateReader,
 	p2p p2p.P2PManager,
 	logger log.Logger) (sentinelproto.SentinelClient, *enode.LocalNode, error) {
-	ctx := context.Background()
 	sent, localNode, err := createSentinel(
+		ctx,
 		cfg,
 		blockReader,
 		blobStorage,
