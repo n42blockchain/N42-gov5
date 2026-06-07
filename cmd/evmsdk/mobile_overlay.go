@@ -47,6 +47,7 @@ type mobileOverlay struct {
 	storage   map[types.Address]map[types.Hash]ovalue
 	touched   map[uint64]*touchedKeys
 	minBlock  uint64 // oldest block currently retained (0 = none yet)
+	head      uint64 // highest block applied (0 = none yet)
 }
 
 func newMobileOverlay(retention uint64) *mobileOverlay {
@@ -63,7 +64,18 @@ func newMobileOverlay(retention uint64) *mobileOverlay {
 
 // apply folds one verified block's post-state into the overlay, then prunes any
 // blocks that fell outside the [head-retention+1, head] window.
+//
+// The overlay's last-writer / prune invariants assume blocks are applied
+// monotonically and gap-free. Callers must feed it only forward-contiguous
+// blocks; as defense-in-depth a non-forward block (blockNum <= head) is ignored
+// so a stray out-of-order apply can never clobber a newer cell with a stale
+// value (which would otherwise be served as "verified") or strand entries below
+// the prune cursor.
 func (o *mobileOverlay) apply(blockNum uint64, ps *ethel.PostState) {
+	if o.head != 0 && blockNum <= o.head {
+		return // non-forward apply — ignore (see contract above)
+	}
+	o.head = blockNum
 	if ps == nil {
 		o.pruneTo(blockNum)
 		return
