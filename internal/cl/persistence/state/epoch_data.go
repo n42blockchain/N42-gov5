@@ -1,3 +1,5 @@
+//go:build n42el
+
 // Copyright 2024 The Erigon Authors
 // This file is part of Erigon.
 //

@@ -1,3 +1,5 @@
+//go:build n42el
+
 // Copyright 2026 The N42 Authors
 // This file is part of the N42 library.
 //
