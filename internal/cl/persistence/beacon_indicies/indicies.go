@@ -28,9 +28,9 @@ import (
 
 	"github.com/n42blockchain/N42/internal/cl/clparams"
 	"github.com/n42blockchain/N42/internal/cl/cltypes"
+	common "github.com/n42blockchain/N42/internal/cl/depshim/common"
 	"github.com/n42blockchain/N42/internal/cl/persistence/base_encoding"
 	"github.com/n42blockchain/N42/internal/cl/persistence/format/snapshot_format"
-	common "github.com/n42blockchain/N42/internal/cl/depshim/common"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/dbutils"
 )
@@ -135,6 +135,27 @@ func ReadCanonicalBlockRoot(tx kv.Tx, slot uint64) (common.Hash, error) {
 
 	copy(blockRoot[:], bRoot)
 	return blockRoot, nil
+}
+
+// ReadCanonicalHead returns the slot + block root of the highest canonical block
+// (the last entry in the CanonicalBlockRoots table). Returns (0, zero, nil) when
+// no canonical blocks are stored. Mirrors erigon beacon_indicies.ReadCanonicalHead.
+func ReadCanonicalHead(tx kv.Tx) (uint64, common.Hash, error) {
+	cursor, err := tx.Cursor(kv.CanonicalBlockRoots)
+	if err != nil {
+		return 0, common.Hash{}, err
+	}
+	defer cursor.Close()
+	k, v, err := cursor.Last()
+	if err != nil {
+		return 0, common.Hash{}, err
+	}
+	if k == nil {
+		return 0, common.Hash{}, nil
+	}
+	var root common.Hash
+	copy(root[:], v)
+	return base_encoding.Decode64FromBytes4(k), root, nil
 }
 
 func WriteLastBeaconSnapshot(tx kv.RwTx, slot uint64) error {

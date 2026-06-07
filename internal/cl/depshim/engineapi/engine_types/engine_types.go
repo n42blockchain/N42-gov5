@@ -24,17 +24,21 @@ package engine_types
 import (
 	"github.com/n42blockchain/N42/internal/cl/depshim/common"
 	"github.com/n42blockchain/N42/internal/cl/depshim/hexutil"
+	deptypes "github.com/n42blockchain/N42/internal/cl/depshim/types"
 )
 
 // PayloadAttributes describes the parameters required by an EL payload
 // builder when assembling a new block. Field shape mirrors the EL JSON-RPC
 // engine API definition.
 type PayloadAttributes struct {
-	Timestamp             hexutil.Uint64       `json:"timestamp"`
-	PrevRandao            common.Hash          `json:"prevRandao"`
-	SuggestedFeeRecipient common.Address       `json:"suggestedFeeRecipient"`
-	Withdrawals           []*Withdrawal        `json:"withdrawals,omitempty"`
-	ParentBeaconBlockRoot *common.Hash         `json:"parentBeaconBlockRoot,omitempty"`
+	Timestamp             hexutil.Uint64         `json:"timestamp"`
+	PrevRandao            common.Hash            `json:"prevRandao"`
+	SuggestedFeeRecipient common.Address         `json:"suggestedFeeRecipient"`
+	Withdrawals           []*deptypes.Withdrawal `json:"withdrawals,omitempty"`
+	ParentBeaconBlockRoot *common.Hash           `json:"parentBeaconBlockRoot,omitempty"`
+	// Gloas (EIP-7732) additions; nil pre-Gloas.
+	SlotNumber     *hexutil.Uint64 `json:"slotNumber,omitempty"`
+	TargetGasLimit *hexutil.Uint64 `json:"targetGasLimit,omitempty"`
 }
 
 // Withdrawal mirrors EIP-4895 withdrawal entries shipped over the engine
@@ -77,6 +81,6 @@ const (
 // PayloadStatus mirrors the engine API PayloadStatusV1 result.
 type PayloadStatus struct {
 	Status          EngineStatus `json:"status"`
-	LatestValidHash *common.Hash     `json:"latestValidHash"`
-	ValidationError *string          `json:"validationError"`
+	LatestValidHash *common.Hash `json:"latestValidHash"`
+	ValidationError *string      `json:"validationError"`
 }
