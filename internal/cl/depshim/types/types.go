@@ -214,9 +214,9 @@ func DeriveSha(list any) common.Hash {
 // below provide the erigon-style accessor API used by cl/cltypes
 // tests (block.Header() returns the *Header pointer).
 type Block struct {
-	HeaderField       *Header
-	Transactions      [][]byte
-	Withdrawals       []*Withdrawal
+	HeaderField  *Header
+	Transactions [][]byte
+	Withdrawals  []*Withdrawal
 }
 
 // Header returns the block header (matches erigon accessor signature).
@@ -251,6 +251,23 @@ func (b *Block) NumberU64() uint64 {
 		return 0
 	}
 	return b.HeaderField.Number.Uint64()
+}
+
+// HeaderNoCopy returns the block header by reference (matches erigon's accessor;
+// the shim Block already holds a single *Header, so this is the same pointer as
+// Header()).
+func (b *Block) HeaderNoCopy() *Header { return b.HeaderField }
+
+// NewBlockFromStorageWithBinaryTxs builds a Block from a header + the raw
+// (binary) transaction list, mirroring erigon's constructor. The shim Block
+// stores transactions in binary form, so the parsed txs and uncles params are
+// accepted for signature fidelity but only binaryTxs/withdrawals are retained.
+func NewBlockFromStorageWithBinaryTxs(hash common.Hash, header *Header, txs []Transaction, binaryTxs BinaryTransactions, uncles []*Header, withdrawals []*Withdrawal) *Block {
+	return &Block{
+		HeaderField:  header,
+		Transactions: [][]byte(binaryTxs),
+		Withdrawals:  withdrawals,
+	}
 }
 
 // Slot is a Caplin-side helper that returns the slot the block was
