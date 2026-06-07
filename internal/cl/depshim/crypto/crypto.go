@@ -24,6 +24,13 @@ var (
 	Keccak256Hash  = libcrypto.Keccak256Hash
 	NewKeccakState = libcrypto.NewKeccakState
 	ToECDSA        = libcrypto.ToECDSA
+
+	// secp256k1 node-key helpers used by cl/p2p to load-or-generate the
+	// stable Caplin node key (mirrors erigon common/crypto). All forwarded to
+	// lib/crypto, which provides identical signatures.
+	GenerateKey = libcrypto.GenerateKey
+	LoadECDSA   = libcrypto.LoadECDSA
+	SaveECDSA   = libcrypto.SaveECDSA
 )
 
 // HashData is the EIP-7928 / EIP-7843 helper that mirrors erigon's
