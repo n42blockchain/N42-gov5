@@ -272,14 +272,23 @@ validation / P2P**;eth_getBalance(latest)/eth_call(latest) 已由 EL snapshot �
 | Phase | 包/文件 | N42 现状 | 状态 |
 |:--|:--|:--|:--|
 | 1 | `persistence/state/{slot_data,epoch_data}.go` | 缺 | **✅ DONE**(commit c77d7bb2,测试绿) |
-| 0/2 | **snapshotsync 基础**:`lib/seg`、`lib/chain/snapcfg`、`lib/downloader/snaptype`(主仓缺,仅在 agent worktree)+ `db/snapshotsync/{caplin_state_snapshots,caplin_snap_schema}.go` + `freezeblocks/caplin_snapshots.go`(~1637 LOC) | 缺(`lib/recsplit` 已有) | **下一步,硬地基** |
-| 3 | `persistence/state/state_accessors.go`(依赖 `snapshotsync.CaplinStateView`)+ `historical_states_reader/*` | 缺 | 待 Phase 2 |
-| 3 | `persistence/blob_storage/{blob_db,data_column_db}.go`(N42 只有 interface.go) | 缺实现 | 可与 Phase 2 并行(依赖少) |
-| 4 | `phase1/execution_client/block_collector/*`、`phase1/network/{beacon,backward_beacon,blob}_downloader.go` | 缺/不全 | 待 Phase 2 |
+| 2 | **snapshotsync 地基(改用 DB-fallback shim,见下)** + `persistence/state/state_accessors.go` | 缺 | **✅ DONE**(commit 4063d76a,测试绿) |
+| 3 | `persistence/state/historical_states_reader/*`(依赖 state_accessors + snapshot view) | 缺 | **下一步** |
+| 3 | `persistence/blob_storage/{blob_db,data_column_db}.go`(N42 只有 interface.go) | 缺实现 | 可并行(依赖少) |
+| 4 | `phase1/execution_client/block_collector/*`、`phase1/network/{beacon,backward_beacon,blob}_downloader.go` | 缺/不全 | 待 3(freezeblocks shim 已就位) |
 | 5 | `antiquary/{antiquary,beacon_states_collector,state_antiquary}.go`(N42 只有 utils.go) | stub | 待 3+4 |
 | 6 | `phase1/stages/*.go`(ConsensusClStages 同步循环,~2711 LOC)**关键路径** | 缺 | 最后,待全部 |
 | 7 | wiring:仿 erigon `cmd/caplin/caplin1/run.go` 把 forkchoice+sentinel+ClStages 接进 `service.go Start()`(现只开 MDBX) | — | #32 |
 
-**关键判断:** `db/snapshotsync`(caplin 部分)是 state_accessors / 下载器 / antiquary 的**共同硬地基**,
-且它依赖 `lib/seg`/`snapcfg`/`snaptype`(主仓尚无,需先从 worktree/erigon 落地到主仓)。这是下一个 session
-的主攻点,规模最大、风险最高。移植纪律:**每包 `go build -tags n42el` + 测试绿再下一包**。
+**关键策略转变(Phase 2):放弃整体移植 erigon 的 snapshot-distribution 子系统,改用 DB-fallback shim。**
+erigon `db/snapshotsync`(caplin 部分)依赖 `snaptype`/`snapcfg`/`db.state SnapNameSchema`/`version`/
+`node/ethconfig` —— 一大坨与 N42 自有 freezer/columnar 平行的外来机制。但 **所有 caplin 消费者
+(state_accessors / antiquary / phase1/stages / 下载器)本就对"空快照"容错**:都 guard `BlocksAvailable()==0` /
+`SegmentsMax()==0` / nil View,空时退回 MDBX + 网络读。⇒ 写一个 ~150 行的 shim
+(`internal/cl/depshim/{snapshotsync,freezeblocks,ethconfig}`)处处报"无快照",把所有读路由到 DB,即
+**解锁 checkpoint-sync + live-follow 关键路径,且不引入外来快照机制**。真正的历史快照
+读取/构建器(archive 档 beacon-archive 用)是**后续独立移植**,关键路径不需要。
+
+**已就位的 N42 基础库:** `lib/seg`(30 文件)、`lib/recsplit`(39 文件)、`lib/common/datadir`、
+`lib/common/background`、`lib/kv/dbutils`、`lib/kv`(含全部 caplin 表:SlotData/EpochData/StaticValidators…)。
+移植纪律:**每包 `go build -tags n42el` + 测试绿再下一包**。
