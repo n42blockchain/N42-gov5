@@ -20,6 +20,12 @@ type gossipTracer struct {
 func (g gossipTracer) AddPeer(_ peer.ID, _ protocol.ID) {}
 func (g gossipTracer) RemovePeer(_ peer.ID)              {}
 
+// OnNewOutboundStream / OnClosedOutboundStream are required by
+// pubsub.RawTracer as of go-libp2p-pubsub v0.16.0. No metric is recorded —
+// they mirror upstream's own gossipTracer no-ops for outbound-stream lifecycle.
+func (g gossipTracer) OnNewOutboundStream(_ peer.ID, _ protocol.ID) {}
+func (g gossipTracer) OnClosedOutboundStream(_ peer.ID)             {}
+
 func (g gossipTracer) Join(topic string) {
 	pubsubTopicsActive.WithLabelValues(topic).Set(1)
 }
