@@ -66,6 +66,14 @@ func main() {
 	pieceLen := *piece
 	if pieceLen <= 0 {
 		pieceLen = torrentbuild.AutoPieceLength(total)
+	} else if pieceLen&(pieceLen-1) != 0 {
+		// A manual piece length that isn't a power of two produces a technically
+		// valid but client-unfriendly torrent; warn rather than silently accept.
+		fmt.Fprintf(os.Stderr, "warning: --piece %d is not a power of two; some clients prefer power-of-two piece lengths\n", pieceLen)
+	}
+	if pieces := (total + pieceLen - 1) / pieceLen; pieces > 200_000 {
+		fmt.Fprintf(os.Stderr, "warning: %d pieces at %s — large .torrent (~%d MB hash list); consider a bigger --piece\n",
+			pieces, humanBytes(pieceLen), pieces*20/(1<<20))
 	}
 
 	if *dryRun {
@@ -116,8 +124,9 @@ func main() {
 	fmt.Printf("  magnet      : %s\n", magnet)
 
 	if *updateManifest {
-		torRel := outPath
-		if r, rerr := filepath.Rel(*datadir, outPath); rerr == nil && !strings.HasPrefix(r, "..") {
+		torRel := filepath.ToSlash(outPath)
+		if r, rerr := filepath.Rel(*datadir, outPath); rerr == nil &&
+			r != ".." && !strings.HasPrefix(r, ".."+string(filepath.Separator)) {
 			torRel = filepath.ToSlash(r)
 		}
 		man.Torrent = &manifest.TorrentInfo{
