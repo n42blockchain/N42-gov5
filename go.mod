@@ -12,12 +12,12 @@ require (
 	github.com/crate-crypto/go-kzg-4844 v1.1.0
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
 	github.com/deckarep/golang-set v1.8.0
-	github.com/deckarep/golang-set/v2 v2.8.0
+	github.com/deckarep/golang-set/v2 v2.9.0
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
 	github.com/erigontech/mdbx-go v0.40.1
 	github.com/ethereum/go-ethereum v1.16.9
 	github.com/fjl/gencodec v0.1.2
-	github.com/fsnotify/fsnotify v1.9.0
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-kit/kit v0.13.0
 	github.com/go-stack/stack v1.8.1
 	github.com/gofrs/flock v0.13.0
@@ -44,7 +44,7 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
-	github.com/prometheus/common v0.67.5
+	github.com/prometheus/common v0.68.1
 	github.com/prysmaticlabs/fastssz v0.0.0-20260421202104-7a6eb71e6e45
 	github.com/rcrowley/go-metrics v0.0.0-20250401214520-65e299d6c5c9
 	github.com/rs/cors v1.11.1
@@ -55,10 +55,10 @@ require (
 	github.com/urfave/cli/v2 v2.27.7
 	go.opencensus.io v0.24.0
 	go.uber.org/zap v1.28.0
-	golang.org/x/crypto v0.51.0
+	golang.org/x/crypto v0.52.0
 	golang.org/x/exp v0.0.0-20260508232706-74f9aab9d74a
 	golang.org/x/sync v0.20.0
-	golang.org/x/sys v0.44.0
+	golang.org/x/sys v0.45.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/natefinch/npipe.v2 v2.0.0-20160621034901-c1b8fa8bdcce
@@ -81,26 +81,26 @@ require (
 	github.com/ethereum/go-verkle v0.2.2
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
 	github.com/klauspost/compress v1.18.6
-	github.com/mattn/go-colorable v0.1.14
+	github.com/mattn/go-colorable v0.1.15
 	github.com/mattn/go-isatty v0.0.22
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58
-	github.com/pelletier/go-toml/v2 v2.2.4
+	github.com/pelletier/go-toml/v2 v2.3.1
 	github.com/pion/webrtc/v4 v4.2.13
 	github.com/prysmaticlabs/gohashtree v0.0.5-beta
-	github.com/puzpuzpuz/xsync/v4 v4.4.0
+	github.com/puzpuzpuz/xsync/v4 v4.5.0
 	github.com/quasilyte/go-ruleguard/dsl v0.3.23
-	github.com/shirou/gopsutil/v4 v4.26.4
+	github.com/shirou/gopsutil/v4 v4.26.5
 	github.com/spaolacci/murmur3 v1.1.0
 	github.com/spf13/afero v1.15.0
 	github.com/thomaso-mirodin/intmath v0.0.0-20160323211736-5dc6d854e46e
 	github.com/tidwall/btree v1.8.1
 	github.com/ugorji/go/codec v1.3.1
-	go.opentelemetry.io/otel v1.42.0
-	go.opentelemetry.io/otel/sdk v1.42.0
-	go.opentelemetry.io/otel/trace v1.42.0
+	go.opentelemetry.io/otel v1.44.0
+	go.opentelemetry.io/otel/sdk v1.44.0
+	go.opentelemetry.io/otel/trace v1.44.0
 	go.uber.org/mock v0.6.0
 	golang.org/x/time v0.15.0
-	google.golang.org/grpc v1.79.3
+	google.golang.org/grpc v1.81.1
 	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.6.1
 	gopkg.in/yaml.v3 v3.0.1
 	lukechampine.com/blake3 v1.4.1
@@ -258,15 +258,15 @@ require (
 	github.com/xrash/smetrics v0.0.0-20250705151800-55b8f293f342 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.etcd.io/bbolt v1.4.3 // indirect
+	go.mongodb.org/mongo-driver v1.17.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/otel/metric v1.42.0 // indirect
+	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.uber.org/dig v1.19.0 // indirect
 	go.uber.org/fx v1.24.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/mod v0.36.0 // indirect
-	golang.org/x/net v0.54.0 // indirect
+	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260519152614-eab6ae52b5e2 // indirect
 	golang.org/x/term v0.43.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
