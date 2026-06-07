@@ -21,12 +21,19 @@ package snapshotsync
 
 import (
 	"context"
+	"errors"
 
 	"github.com/n42blockchain/N42/internal/cl/clparams"
 	"github.com/n42blockchain/N42/internal/cl/depshim/ethconfig"
 	log "github.com/n42blockchain/N42/internal/cl/depshim/log/v3"
 	"github.com/n42blockchain/N42/lib/common/datadir"
 )
+
+// errSnapshotBuildUnsupported is returned by snapshot-BUILDING entry points.
+// N42's Caplin runs in DB-fallback (follower) mode with snapshot generation off,
+// so these are never reached; surfacing an explicit error (rather than a silent
+// no-op) fails loud if a caller is ever misconfigured to build snapshots.
+var errSnapshotBuildUnsupported = errors.New("snapshotsync: snapshot build not supported in N42 DB-fallback shim (run with snapshot generation disabled)")
 
 // VisibleSegment is the opaque per-segment handle erigon hands back from a view.
 // In DB-fallback mode a view never returns a non-nil segment, so Get is never
@@ -75,6 +82,11 @@ func (s *CaplinStateSnapshots) Get(tbl string, slot uint64) ([]byte, error)     
 // BuildMissingIndices is a no-op: with no segments there are no indices to build.
 func (s *CaplinStateSnapshots) BuildMissingIndices(ctx context.Context, logger log.Logger) error {
 	return nil
+}
+
+// DumpCaplinState is a snapshot-build entry point — unsupported in DB-fallback.
+func (s *CaplinStateSnapshots) DumpCaplinState(ctx context.Context, fromSlot, toSlot, blocksPerFile uint64, salt uint32, dirs datadir.Dirs, workers int, lvl log.Lvl, logger log.Logger) error {
+	return errSnapshotBuildUnsupported
 }
 
 // View returns an empty view (no visible segments → DB fallback in callers).

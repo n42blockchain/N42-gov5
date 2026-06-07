@@ -18,6 +18,7 @@ type (
 )
 
 var (
+	Log              = libLog.Log
 	New              = libLog.New
 	Root             = libLog.Root
 	Crit             = libLog.Crit

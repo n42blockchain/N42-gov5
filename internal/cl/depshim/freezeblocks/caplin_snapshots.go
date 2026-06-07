@@ -16,6 +16,7 @@ package freezeblocks
 
 import (
 	"context"
+	"errors"
 
 	"github.com/n42blockchain/N42/internal/cl/clparams"
 	"github.com/n42blockchain/N42/internal/cl/cltypes"
@@ -24,9 +25,19 @@ import (
 	log "github.com/n42blockchain/N42/internal/cl/depshim/log/v3"
 	"github.com/n42blockchain/N42/internal/cl/depshim/snapshotsync"
 	deptypes "github.com/n42blockchain/N42/internal/cl/depshim/types"
+	"github.com/n42blockchain/N42/internal/cl/persistence/blob_storage"
 	"github.com/n42blockchain/N42/lib/common/datadir"
 	"github.com/n42blockchain/N42/lib/kv"
 )
+
+// errSnapshotBuildUnsupported is returned by snapshot-BUILDING entry points
+// (Dump*). N42's Caplin runs in DB-fallback (follower) mode with snapshot
+// generation off, so these are never reached; an explicit error (not a silent
+// no-op) fails loud if a caller is ever misconfigured to build snapshots.
+var errSnapshotBuildUnsupported = errors.New("freezeblocks: snapshot build not supported in N42 DB-fallback shim (run with snapshot generation disabled)")
+
+// BlobCountBySlotFn mirrors erigon's freezeblocks.BlobCountBySlotFn.
+type BlobCountBySlotFn func(slot uint64) (uint64, error)
 
 // BeaconSnapshotReader mirrors erigon's freezeblocks.BeaconSnapshotReader — the
 // read interface Caplin consumers (historical_states_reader, antiquary) store
@@ -53,12 +64,27 @@ type BeaconSnapshotReader interface {
 // CaplinSnapshots is the beacon-block + blob-sidecar snapshot reader. The shim
 // holds no segments; availability is always zero so consumers use the DB.
 type CaplinSnapshots struct {
+	// Salt is read by antiquary when building snapshots (unused in DB-fallback,
+	// where the Dump* paths return errSnapshotBuildUnsupported). Exported to match
+	// erigon's field so ported code compiles.
+	Salt uint32
+
 	beaconCfg *clparams.BeaconChainConfig
 }
 
 // NewCaplinSnapshots constructs an empty (DB-fallback) beacon snapshot set.
 func NewCaplinSnapshots(cfg ethconfig.BlocksFreezing, beaconCfg *clparams.BeaconChainConfig, dirs datadir.Dirs, logger log.Logger) *CaplinSnapshots {
 	return &CaplinSnapshots{beaconCfg: beaconCfg}
+}
+
+// DumpBeaconBlocks is a snapshot-build entry point — unsupported in DB-fallback.
+func DumpBeaconBlocks(ctx context.Context, db kv.RoDB, fromSlot, toSlot uint64, salt uint32, dirs datadir.Dirs, workers int, lvl log.Lvl, logger log.Logger) error {
+	return errSnapshotBuildUnsupported
+}
+
+// DumpBlobsSidecar is a snapshot-build entry point — unsupported in DB-fallback.
+func DumpBlobsSidecar(ctx context.Context, blobStorage blob_storage.BlobStorage, db kv.RoDB, fromSlot, toSlot uint64, salt uint32, dirs datadir.Dirs, compressWorkers int, blobCountFn BlobCountBySlotFn, lvl log.Lvl, logger log.Logger) error {
+	return errSnapshotBuildUnsupported
 }
 
 func (s *CaplinSnapshots) IndicesMax() uint64                                 { return 0 }
