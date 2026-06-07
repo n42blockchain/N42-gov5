@@ -1,0 +1,311 @@
+// Copyright 2024-2026 The N42 Authors
+// This file is part of the N42 library.
+//
+// Ported from erigon cl/p2p. Adaptations for N42 (#34 caplin-merge-plan):
+//   - import paths rewritten to internal/p2p/{discover,enode,enr},
+//     depshim/{common,crypto,nat}, lib/log/v3.
+//   - erigon p2p.NodeKeyConfig load/save inlined via depshim/crypto
+//     LoadECDSA/GenerateKey/SaveECDSA (no erigon/p2p import).
+//   - prysmaticlabs/go-bitfield replaced with raw []byte attnets(8)/syncnets(1)
+//     bit manipulation to avoid pulling a new external dep.
+
+//go:build n42el
+
+package p2p
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"net"
+	"path/filepath"
+	"time"
+
+	"github.com/n42blockchain/N42/internal/cl/clparams"
+	"github.com/n42blockchain/N42/internal/cl/phase1/core/state/lru"
+	"github.com/n42blockchain/N42/internal/cl/utils/eth_clock"
+	common "github.com/n42blockchain/N42/internal/cl/depshim/common"
+	"github.com/n42blockchain/N42/internal/cl/depshim/crypto"
+	"github.com/n42blockchain/N42/internal/cl/depshim/nat"
+	"github.com/n42blockchain/N42/internal/p2p/discover"
+	"github.com/n42blockchain/N42/internal/p2p/enode"
+	"github.com/n42blockchain/N42/internal/p2p/enr"
+	log "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/libp2p/go-libp2p"
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/metrics"
+	"github.com/libp2p/go-libp2p/core/peer"
+)
+
+type P2PConfig struct {
+	NetworkConfig *clparams.NetworkConfig
+	BeaconConfig  *clparams.BeaconChainConfig
+	IpAddr        string
+	Port          int
+	TCPPort       uint
+
+	// Optional
+	LocalIP        string
+	EnableUPnP     bool
+	RelayNodeAddr  string
+	HostAddress    string
+	HostDNS        string
+	NoDiscovery    bool
+	TmpDir         string
+	LocalDiscovery bool
+
+	// NAT resolves the external IP for the discv5 ENR and libp2p multiaddrs.
+	// When set, ExternalIP is populated at startup. In the embedded EL-follower
+	// it is usually nil — the external address comes from explicit config.
+	NAT        nat.Interface
+	ExternalIP net.IP // resolved from NAT at startup; set by NewP2Pmanager
+
+	MaxPeerCount       uint64
+	SubscribeAllTopics bool // When true, advertise all attnets/syncnets in ENR
+
+	DataDir string // persistent storage dir; used to save the node key so ENR is stable across restarts
+}
+
+type p2pManager struct {
+	cfg      *P2PConfig
+	pubsub   *pubsub.PubSub
+	bwc      *metrics.BandwidthCounter
+	host     host.Host
+	udpv5    *discover.UDPv5
+	ethClock eth_clock.EthereumClock
+
+	bannedPeers *lru.CacheWithTTL[peer.ID, struct{}]
+}
+
+// loadOrGenerateKey returns the Caplin node key. With a DataDir it persists the
+// key under caplin-nodekey so the ENR / peer-id is stable across restarts
+// (inlining erigon p2p.NodeKeyConfig.LoadOrGenerateAndSave).
+func loadOrGenerateKey(dataDir string) (*ecdsa.PrivateKey, error) {
+	if dataDir == "" {
+		return crypto.GenerateKey()
+	}
+	keyPath := filepath.Join(dataDir, "caplin-nodekey")
+	if key, err := crypto.LoadECDSA(keyPath); err == nil {
+		return key, nil
+	}
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		return nil, err
+	}
+	if err := crypto.SaveECDSA(keyPath, key); err != nil {
+		log.Warn("[Caplin] could not persist node key; peer id will change on restart", "path", keyPath, "err", err)
+	}
+	return key, nil
+}
+
+func NewP2Pmanager(ctx context.Context, cfg *P2PConfig, logger log.Logger, ethClock eth_clock.EthereumClock) (P2PManager, error) {
+	// Resolve external IP from NAT once so both discv5 ENR and libp2p multiaddrs use
+	// the same public address.
+	if cfg.NAT != nil {
+		if extIP, err := cfg.NAT.ExternalIP(); err == nil {
+			cfg.ExternalIP = extIP
+			logger.Info("[Caplin] NAT external IP resolved", "ip", extIP, "nat", cfg.NAT)
+		} else {
+			logger.Warn("[Caplin] NAT external IP resolution failed — incoming peers may not reach this node", "nat", cfg.NAT, "err", err)
+		}
+	}
+
+	// Setup discovery
+	enodes := make([]*enode.Node, len(cfg.NetworkConfig.BootNodes))
+	for i, bootnode := range cfg.NetworkConfig.BootNodes {
+		newNode, err := enode.Parse(enode.ValidSchemes, bootnode)
+		if err != nil {
+			return nil, err
+		}
+		enodes[i] = newNode
+	}
+
+	privateKey, err := loadOrGenerateKey(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+
+	gater, err := NewGater(cfg)
+	if err != nil {
+		return nil, err
+	}
+	opts, err := buildOptions(cfg, privateKey)
+	if err != nil {
+		return nil, err
+	}
+	bwc := metrics.NewBandwidthCounter()
+	opts = append(opts, libp2p.ConnectionGater(gater), libp2p.BandwidthReporter(bwc))
+	h, err := libp2p.New(opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	p := p2pManager{
+		cfg:         cfg,
+		host:        h,
+		bwc:         bwc,
+		ethClock:    ethClock,
+		bannedPeers: lru.NewWithTTL[peer.ID, struct{}]("bannedPeers", 1_000, 30*time.Minute),
+	}
+
+	// pubsub
+	pubsub.TimeCacheDuration = gossipSubSeenTTL * gossipSubHeartbeatInterval
+	p.pubsub, err = pubsub.NewGossipSub(ctx, h, p.pubsubOptions(cfg.BeaconConfig)...)
+	if err != nil {
+		return nil, err
+	}
+
+	// udpv5
+	discCfg := discover.Config{
+		PrivateKey: privateKey,
+		Bootnodes:  enodes,
+	}
+	p.udpv5, err = NewUDPv5Listener(ctx, cfg, discCfg, logger)
+	if err != nil {
+		return nil, err
+	}
+
+	// connect to bootnodes
+	if err := p.connectToBootnodes(ctx, discCfg); err != nil {
+		return nil, err
+	}
+
+	// setup ENR
+	if err := p.setupENR(); err != nil {
+		return nil, err
+	}
+	go p.updateENR()
+	go p.peerMonitor(ctx)
+	return &p, nil
+}
+
+func (p *p2pManager) Pubsub() *pubsub.PubSub {
+	return p.pubsub
+}
+
+func (p *p2pManager) Host() host.Host {
+	return p.host
+}
+
+func (p *p2pManager) BandwidthCounter() *metrics.BandwidthCounter {
+	return p.bwc
+}
+
+func (p *p2pManager) UDPv5Listener() *discover.UDPv5 {
+	return p.udpv5
+}
+
+// setBit sets bit i (0-indexed) in a little-endian-by-byte bitfield slice.
+func setBit(field []byte, i int) {
+	if i/8 < len(field) {
+		field[i/8] |= 1 << (uint(i) % 8)
+	}
+}
+
+func (p *p2pManager) setupENR() error {
+	node := p.udpv5.LocalNode()
+	if node == nil {
+		panic("local node is nil")
+	}
+	forkId, err := p.ethClock.ForkId()
+	if err != nil {
+		return err
+	}
+	nfd, err := p.ethClock.NextForkDigest()
+	if err != nil {
+		return err
+	}
+	// attnets = Bitvector64 (8 bytes), syncnets = Bitvector4 (1 byte).
+	initialAttnets := make([]byte, 8)
+	initialSyncnets := []byte{0x00}
+	if p.cfg.SubscribeAllTopics {
+		// Advertise all 64 attestation subnets and all 4 sync committee subnets.
+		for i := 0; i < 64; i++ {
+			setBit(initialAttnets, i)
+		}
+		initialSyncnets = []byte{0x0f}
+	} else {
+		// Set a couple of subnets so peers don't see all-zeros and penalize us
+		// as a "useless peer". The VC will update subnets later.
+		setBit(initialAttnets, 0)
+		setBit(initialAttnets, 1)
+	}
+	node.Set(enr.WithEntry(p.cfg.NetworkConfig.Eth2key, forkId))
+	node.Set(enr.WithEntry(p.cfg.NetworkConfig.AttSubnetKey, initialAttnets))
+	node.Set(enr.WithEntry(p.cfg.NetworkConfig.SyncCommsSubnetKey, initialSyncnets))
+	node.Set(enr.WithEntry(p.cfg.NetworkConfig.CgcKey, []byte{}))
+	node.Set(enr.WithEntry(p.cfg.NetworkConfig.NfdKey, nfd))
+	return nil
+}
+
+func (s *p2pManager) updateENR() {
+	node := s.udpv5.LocalNode()
+	if node == nil {
+		panic("local node is nil")
+	}
+	for {
+		nextForkEpoch := s.ethClock.NextForkEpochIncludeBPO()
+		if nextForkEpoch == s.cfg.BeaconConfig.FarFutureEpoch {
+			break
+		}
+		// sleep until next fork epoch
+		wakeupTime := s.ethClock.GetSlotTime(nextForkEpoch * s.cfg.BeaconConfig.SlotsPerEpoch).Add(time.Second)
+		log.Info("[Sentinel] Sleeping until next fork epoch", "nextForkEpoch", nextForkEpoch, "wakeupTime", wakeupTime)
+		time.Sleep(time.Until(wakeupTime)) // add 1 second for safety
+		nfd, err := s.ethClock.NextForkDigest()
+		if err != nil {
+			log.Warn("[Sentinel] Could not get next fork digest", "err", err)
+			break
+		}
+		node.Set(enr.WithEntry(s.cfg.NetworkConfig.NfdKey, nfd))
+		forkId, err := s.ethClock.ForkId()
+		if err != nil {
+			log.Warn("[Sentinel] Could not get fork id", "err", err)
+			break
+		}
+		node.Set(enr.WithEntry(s.cfg.NetworkConfig.Eth2key, forkId))
+		log.Info("[Sentinel] Updated fork id and nfd")
+	}
+}
+
+func (s *p2pManager) UpdateENRAttSubnets(subnetIndex int, on bool) {
+	// Attestation subnets use a Bitvector64 (8 bytes for 64 subnets).
+	subnetField := make([]byte, 8)
+	if err := s.udpv5.LocalNode().Node().Load(enr.WithEntry(s.cfg.NetworkConfig.AttSubnetKey, &subnetField)); err != nil {
+		log.Error("[Sentinel] Could not load AttSubnetKey", "err", err)
+		return
+	}
+	subnetField = common.Copy(subnetField)
+	if subnetIndex < 0 || len(subnetField) <= subnetIndex/8 {
+		log.Error("[Sentinel] Att subnet index out of range", "subnetIndex", subnetIndex, "len", len(subnetField))
+		return
+	}
+	if on {
+		subnetField[subnetIndex/8] |= 1 << (subnetIndex % 8)
+	} else {
+		subnetField[subnetIndex/8] &^= 1 << (subnetIndex % 8)
+	}
+	s.udpv5.LocalNode().Set(enr.WithEntry(s.cfg.NetworkConfig.AttSubnetKey, &subnetField))
+	log.Debug("[Sentinel] Updated att subnet", "subnetIndex", subnetIndex, "on", on)
+}
+
+func (s *p2pManager) UpdateENRSyncNets(subnetIndex int, on bool) {
+	// Sync committee subnets use a Bitvector4 (1 byte for 4 subnets).
+	subnetField := make([]byte, 1)
+	if err := s.udpv5.LocalNode().Node().Load(enr.WithEntry(s.cfg.NetworkConfig.SyncCommsSubnetKey, &subnetField)); err != nil {
+		log.Error("[Sentinel] Could not load SyncCommsSubnetKey", "err", err)
+		return
+	}
+	subnetField = common.Copy(subnetField)
+	if subnetIndex < 0 || len(subnetField) <= subnetIndex/8 {
+		log.Error("[Sentinel] Sync subnet index out of range", "subnetIndex", subnetIndex, "len", len(subnetField))
+		return
+	}
+	if on {
+		subnetField[subnetIndex/8] |= 1 << (subnetIndex % 8)
+	} else {
+		subnetField[subnetIndex/8] &^= 1 << (subnetIndex % 8)
+	}
+	s.udpv5.LocalNode().Set(enr.WithEntry(s.cfg.NetworkConfig.SyncCommsSubnetKey, &subnetField))
+	log.Debug("[Sentinel] Updated sync subnet", "subnetIndex", subnetIndex, "on", on)
+}
