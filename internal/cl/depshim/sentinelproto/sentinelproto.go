@@ -26,6 +26,7 @@ package sentinelproto
 
 import (
 	"context"
+	"errors"
 
 	common "github.com/n42blockchain/N42/internal/cl/depshim/common"
 	"google.golang.org/grpc"
@@ -227,6 +228,55 @@ type SentinelClient interface {
 	Identity(ctx context.Context, in *EmptyMessage, opts ...grpc.CallOption) (*IdentityResponse, error)
 	PeersInfo(ctx context.Context, in *PeersInfoRequest, opts ...grpc.CallOption) (*PeersInfoResponse, error)
 	SendPeerRequest(ctx context.Context, in *RequestDataWithPeer, opts ...grpc.CallOption) (*ResponseData, error)
+}
+
+// UnimplementedSentinelServer provides default (no-op / unimplemented) impls of
+// every SentinelServer method so cl/sentinel/service can embed it and override
+// only the methods the block-only B+ path needs — mirroring the gRPC-generated
+// UnimplementedSentinelServer. The peer-reputation no-ops (Unban/Penalize/
+// Reward) return an empty message; the rest return errUnimplemented.
+type UnimplementedSentinelServer struct{}
+
+var errUnimplemented = errors.New("sentinelproto: method not implemented")
+
+func (UnimplementedSentinelServer) SetSubscribeExpiry(context.Context, *RequestSubscribeExpiry) (*EmptyMessage, error) {
+	return nil, errUnimplemented
+}
+func (UnimplementedSentinelServer) SubscribeGossip(*SubscriptionData, Sentinel_SubscribeGossipServer) error {
+	return errUnimplemented
+}
+func (UnimplementedSentinelServer) SendRequest(context.Context, *RequestData) (*ResponseData, error) {
+	return nil, errUnimplemented
+}
+func (UnimplementedSentinelServer) SetStatus(context.Context, *Status) (*EmptyMessage, error) {
+	return nil, errUnimplemented
+}
+func (UnimplementedSentinelServer) GetPeers(context.Context, *EmptyMessage) (*PeerCount, error) {
+	return nil, errUnimplemented
+}
+func (UnimplementedSentinelServer) BanPeer(context.Context, *Peer) (*EmptyMessage, error) {
+	return nil, errUnimplemented
+}
+func (UnimplementedSentinelServer) UnbanPeer(context.Context, *Peer) (*EmptyMessage, error) {
+	return &EmptyMessage{}, nil
+}
+func (UnimplementedSentinelServer) PenalizePeer(context.Context, *Peer) (*EmptyMessage, error) {
+	return &EmptyMessage{}, nil
+}
+func (UnimplementedSentinelServer) RewardPeer(context.Context, *Peer) (*EmptyMessage, error) {
+	return &EmptyMessage{}, nil
+}
+func (UnimplementedSentinelServer) PublishGossip(context.Context, *GossipData) (*EmptyMessage, error) {
+	return nil, errUnimplemented
+}
+func (UnimplementedSentinelServer) Identity(context.Context, *EmptyMessage) (*IdentityResponse, error) {
+	return nil, errUnimplemented
+}
+func (UnimplementedSentinelServer) PeersInfo(context.Context, *PeersInfoRequest) (*PeersInfoResponse, error) {
+	return nil, errUnimplemented
+}
+func (UnimplementedSentinelServer) SendPeerRequest(context.Context, *RequestDataWithPeer) (*ResponseData, error) {
+	return nil, errUnimplemented
 }
 
 // SentinelServer is the producer side, implemented by cl/sentinel/service.
