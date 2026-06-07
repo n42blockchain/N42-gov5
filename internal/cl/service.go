@@ -93,13 +93,24 @@ func (s *Service) Start() error {
 	// beacon checkpoint over HTTP — no beacon P2P / gossip stack required. The
 	// EL syncs payloads via its own devp2p; Caplin pins finality.
 	if s.cfg.CheckpointSyncURL != "" && s.engine != nil {
-		_, beaconCfg, netType, err := clparams.GetConfigsByNetworkName(s.cfg.Network)
+		networkConfig, beaconCfg, netType, err := clparams.GetConfigsByNetworkName(s.cfg.Network)
 		if err != nil {
-			return fmt.Errorf("caplin follower: unknown network %q: %w", s.cfg.Network, err)
+			return fmt.Errorf("caplin: unknown network %q: %w", s.cfg.Network, err)
 		}
 		clparams.ConfigurableCheckpointsURLs = []string{s.cfg.CheckpointSyncURL}
-		go s.runFinalityFollower(beaconCfg, netType)
-		log.Info("Caplin lightweight EL-follower enabled", "checkpointURL", s.cfg.CheckpointSyncURL)
+		if s.cfg.SentinelDiscoveryPort > 0 {
+			// B+ independent fork choice (#34): run real attestation-weighted
+			// LMD-GHOST over a diverse beacon peer set and drive the EL to the
+			// independently-chosen head — adversarial-environment safe.
+			go s.runIndependentForkChoice(networkConfig, beaconCfg, netType)
+			log.Info("Caplin independent fork choice enabled",
+				"checkpointURL", s.cfg.CheckpointSyncURL, "discoveryPort", s.cfg.SentinelDiscoveryPort)
+		} else {
+			// Lightweight EL-follower: pins finality from the checkpoint and
+			// follows the EL's own devp2p tip (no beacon P2P). Not adversarial-safe.
+			go s.runFinalityFollower(beaconCfg, netType)
+			log.Info("Caplin lightweight EL-follower enabled", "checkpointURL", s.cfg.CheckpointSyncURL)
+		}
 	}
 
 	log.Info("Caplin started",
