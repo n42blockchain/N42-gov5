@@ -26,9 +26,12 @@
 package cl
 
 import (
+	"context"
 	"fmt"
 	"time"
 
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/spf13/afero"
 
 	"github.com/n42blockchain/N42/internal/cl/gossip"
@@ -171,6 +174,7 @@ func (s *Service) runIndependentForkChoice(networkConfig *clparams.NetworkConfig
 		HeadRoot:       anchorRoot,
 	}
 	sentinelClient, _, err := sentinelservice.StartSentinelService(
+		s.ctx,
 		&clsentinel.SentinelConfig{
 			P2PConfig:    *p2pCfg,
 			EnableBlocks: true,
@@ -247,7 +251,8 @@ func (s *Service) blockSyncLoop(fc *forkchoice.ForkChoiceStore, beaconRpc *rpc.B
 				if len(blocks) == 0 {
 					break
 				}
-				highest := nextSlot
+				applied := false
+				var highest uint64
 				for _, blk := range blocks {
 					if blk == nil {
 						continue
@@ -256,14 +261,21 @@ func (s *Service) blockSyncLoop(fc *forkchoice.ForkChoiceStore, beaconRpc *rpc.B
 						log.Trace("Caplin independent fork choice: OnBlock rejected", "slot", blk.Block.Slot, "err", err)
 						continue
 					}
-					if blk.Block.Slot >= highest {
+					if !applied || blk.Block.Slot > highest {
 						highest = blk.Block.Slot
+						applied = true
 					}
 				}
-				// Advance past the chunk; OnBlock-rejected slots are simply skipped.
-				if highest+1 > nextSlot+count {
+				if applied {
+					// Re-request from the slot after the highest block we actually
+					// applied. Unlike a blind nextSlot += count, this never
+					// permanently skips a tip slot whose block peers hadn't served
+					// yet; genuine empty slots below `highest` are naturally passed.
 					nextSlot = highest + 1
 				} else {
+					// Peers returned blocks but none applied (e.g. missing parent /
+					// all in the future). Advance past the chunk to avoid stalling;
+					// the gossip loop backstops live blocks.
 					nextSlot += count
 				}
 			}
@@ -288,8 +300,45 @@ func (s *Service) gossipBlockLoop(fc *forkchoice.ForkChoiceStore, p2pManager clp
 		log.Warn("Caplin independent fork choice: gossip CurrentForkDigest failed", "err", err)
 		return
 	}
+	version, err := ethClock.StateVersionByForkDigest(forkDigest)
+	if err != nil {
+		log.Warn("Caplin independent fork choice: gossip StateVersionByForkDigest failed", "err", err)
+		return
+	}
 	// /eth2/[fork_digest]/beacon_block/ssz_snappy
 	topicName := fmt.Sprintf("/eth2/%x/%s/%s", forkDigest, gossip.TopicNameBeaconBlock, gossip.SSZSnappyCodec)
+
+	// Register a topic validator BEFORE subscribing. Without one, libp2p pubsub
+	// relays every received message to mesh peers before our handler runs —
+	// amplifying spam / invalid blocks to the network even though OnBlock would
+	// reject them locally. The validator does cheap gate-keeping (snappy + SSZ
+	// decode, drop far-future slots) and stashes the decoded block in
+	// ValidatorData so the handler need not decode twice. Full state-transition
+	// and signature checks still run in OnBlock.
+	validator := func(_ context.Context, _ peer.ID, msg *pubsub.Message) pubsub.ValidationResult {
+		decoded, err := utils.DecompressSnappy(msg.Data, true)
+		if err != nil {
+			return pubsub.ValidationReject
+		}
+		blk := cltypes.NewSignedBeaconBlock(beaconCfg, version)
+		if err := blk.DecodeSSZ(decoded, int(version)); err != nil {
+			return pubsub.ValidationReject
+		}
+		// Allow one slot of clock disparity; anything further ahead is spam or a
+		// clock attack — ignore (do not propagate, do not penalize: it may become
+		// valid once our clock catches up).
+		if blk.Block.Slot > ethClock.GetCurrentSlot()+1 {
+			return pubsub.ValidationIgnore
+		}
+		msg.ValidatorData = blk
+		return pubsub.ValidationAccept
+	}
+	if err := ps.RegisterTopicValidator(topicName, validator); err != nil {
+		log.Warn("Caplin independent fork choice: gossip RegisterTopicValidator failed", "topic", topicName, "err", err)
+		return
+	}
+	defer func() { _ = ps.UnregisterTopicValidator(topicName) }()
+
 	topic, err := ps.Join(topicName)
 	if err != nil {
 		log.Warn("Caplin independent fork choice: gossip Join failed", "topic", topicName, "err", err)
@@ -303,12 +352,6 @@ func (s *Service) gossipBlockLoop(fc *forkchoice.ForkChoiceStore, p2pManager clp
 	defer sub.Cancel()
 	log.Info("Caplin independent fork choice: subscribed to beacon_block gossip", "topic", topicName)
 
-	version, err := ethClock.StateVersionByForkDigest(forkDigest)
-	if err != nil {
-		log.Warn("Caplin independent fork choice: gossip StateVersionByForkDigest failed", "err", err)
-		return
-	}
-
 	for {
 		msg, err := sub.Next(s.ctx)
 		if err != nil {
@@ -318,13 +361,10 @@ func (s *Service) gossipBlockLoop(fc *forkchoice.ForkChoiceStore, p2pManager clp
 			log.Trace("Caplin independent fork choice: gossip Next failed", "err", err)
 			continue
 		}
-		decoded, err := utils.DecompressSnappy(msg.Data, true)
-		if err != nil {
-			continue
-		}
-		blk := cltypes.NewSignedBeaconBlock(beaconCfg, version)
-		if err := blk.DecodeSSZ(decoded, int(version)); err != nil {
-			log.Trace("Caplin independent fork choice: gossip block decode failed", "err", err)
+		// Only Accept-ed messages reach the subscription, with the decoded block
+		// stashed by the validator above.
+		blk, ok := msg.ValidatorData.(*cltypes.SignedBeaconBlock)
+		if !ok {
 			continue
 		}
 		if err := fc.OnBlock(s.ctx, blk, true, true, false); err != nil {
@@ -359,10 +399,13 @@ func resolveHeadExec(r headResolver, beaconCfg *clparams.BeaconChainConfig) (fin
 	if headExec == (common.Hash{}) {
 		return common.Hash{}, common.Hash{}, 0, false, nil
 	}
+	// finalized = the finalized checkpoint's execution hash. When the finalized
+	// payload is not yet known (cold start, before the finalized block is in the
+	// fork graph) we leave it ZERO — the Engine API reads a zero finalized hash
+	// as "no finalized block", which is safe. We must NEVER fall back to head
+	// here: asserting the (still-reorg-able) head as finalized would invite the
+	// EL to irreversibly commit/prune state on a block fork choice may abandon.
 	finalizedExec = r.GetFinalizedExecutionHash(r.FinalizedCheckpoint().Root)
-	if finalizedExec == (common.Hash{}) {
-		finalizedExec = headExec
-	}
 	version = beaconCfg.GetCurrentStateVersion(headSlot / beaconCfg.SlotsPerEpoch)
 	return finalizedExec, headExec, version, true, nil
 }

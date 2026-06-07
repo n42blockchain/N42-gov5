@@ -93,9 +93,11 @@ func TestResolveHeadExec_SourcesHeadFromForkChoice(t *testing.T) {
 	}
 }
 
-// TestResolveHeadExec_FinalizedFallsBackToHead asserts that when the finalized
-// execution hash is unknown, finalized falls back to head (never to an EL tip).
-func TestResolveHeadExec_FinalizedFallsBackToHead(t *testing.T) {
+// TestResolveHeadExec_FinalizedZeroWhenUnknown asserts that when the finalized
+// execution hash is unknown, finalized is left ZERO (read by the Engine API as
+// "no finalized block") and is NEVER substituted with head — substituting head
+// would assert a still-reorg-able block as finalized. Head still drives.
+func TestResolveHeadExec_FinalizedZeroWhenUnknown(t *testing.T) {
 	cfg := testBeaconConfig(t)
 	headRoot := common.HexToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	fcHeadExec := common.HexToHash("0x3333333333333333333333333333333333333333333333333333333333333333")
@@ -110,8 +112,11 @@ func TestResolveHeadExec_FinalizedFallsBackToHead(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("unexpected err=%v ok=%v", err, ok)
 	}
-	if finalizedExec != fcHeadExec || headExec != fcHeadExec {
-		t.Fatalf("finalized should fall back to head exec: fin=%x head=%x want %x", finalizedExec, headExec, fcHeadExec)
+	if headExec != fcHeadExec {
+		t.Fatalf("head must still be the fork-choice head exec: got %x want %x", headExec, fcHeadExec)
+	}
+	if finalizedExec != (common.Hash{}) {
+		t.Fatalf("finalized must be zero when unknown (never head): got %x", finalizedExec)
 	}
 }
 
