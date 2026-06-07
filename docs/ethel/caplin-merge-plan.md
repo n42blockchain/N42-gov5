@@ -278,7 +278,7 @@ validation / P2P**;eth_getBalance(latest)/eth_call(latest) 已由 EL snapshot �
 | 5 | `antiquary/{antiquary,beacon_states_collector,state_antiquary}.go`(~72KB)+ downloader/snaptype shim + Dump* fail-loud stub | stub | **✅ DONE**(commit 98266346;依赖 3a 满足,提前于 4) |
 | 4a | `phase1/network/{beacon,backward_beacon,blob}_downloader.go` + blob_storage Verify… stub | 不全 | **✅ DONE**(commit d8cb154d) |
 | 4b | `phase1/execution_client/block_collector/*` + depshim/types.Block 2 accessor + mdbx 适配 | 缺 | **✅ DONE**(commit 08e87433) |
-| 6 | `phase1/stages/*.go`(ConsensusClStages 同步循环,~2711 LOC)**关键路径** | 缺 | **下一步**(全部依赖已就绪) |
+| 6 | `phase1/stages/*.go`(ConsensusClStages 同步循环,~2711 LOC,6 文件)**关键路径** | 缺 | **进行中**:文件已 port(干净 import 重写),卡在 8 个版本漂移符号(见下);已暂移出树保持 build 绿 |
 | 7 | wiring:仿 erigon `cmd/caplin/caplin1/run.go` 把 forkchoice+sentinel+ClStages 接进 `service.go Start()`(现只开 MDBX) | — | #32 |
 
 **关键策略转变(Phase 2):放弃整体移植 erigon 的 snapshot-distribution 子系统,改用 DB-fallback shim。**
@@ -293,3 +293,19 @@ erigon `db/snapshotsync`(caplin 部分)依赖 `snaptype`/`snapcfg`/`db.state Sna
 **已就位的 N42 基础库:** `lib/seg`(30 文件)、`lib/recsplit`(39 文件)、`lib/common/datadir`、
 `lib/common/background`、`lib/kv/dbutils`、`lib/kv`(含全部 caplin 表:SlotData/EpochData/StaticValidators…)。
 移植纪律:**每包 `go build -tags n42el` + 测试绿再下一包**。
+
+### Phase 6 (stages) 版本漂移缺口清单(8 符号,2026-06-06)
+
+stages 6 文件 import 重写干净,卡在 8 个符号(N42 子系统比 erigon 当前 stages 落后):
+
+- **瘦类型/字段(低风险):**
+  1. `lib/common/datadir.Dirs.CaplinHistory` — 加字段 + 构造处填充。
+  2. `depshim/dbg.ReadMemStats` — 包 runtime.ReadMemStats。
+  3. `depshim/engineapi/engine_types.PayloadAttributes.{SlotNumber,TargetGasLimit}` — 加 2 字段(Gloas)。
+  4. forkchoice.go PayloadAttributes 的 `[]*depshim/types.Withdrawal` vs `[]*engine_types.Withdrawal` 类型不符 — 统一或转换。
+- **真实共识逻辑(对照 N42 既有 API 谨慎加,误则共识 bug):**
+  5. `forkchoice.ForkChoiceStore.GetFinalizedExecutionHash()` — finalized checkpoint 的 execution payload hash。
+  6. `beacon_indicies.ReadCanonicalHead()` — 从 DB 读 canonical head root/slot。
+  7. `checkpoint_sync.FetchFinalizedEnvelope()` — 取 finalized state envelope(Gloas,新)。
+
+补齐这 8 个即可编译 stages,然后 Phase 7 wiring 进 `service.go Start()`(现只开 MDBX)。stages 文件已暂移出树以保持 build 绿;下个 session 先加 8 符号再落 stages。
