@@ -254,3 +254,32 @@ validation / P2P**;eth_getBalance(latest)/eth_call(latest) 已由 EL snapshot �
 
 **一句话:** caplin 嵌入 minimal 在数据上几乎免费(~150 MB 运行时,0 分发包增量),值得做;门槛是
 #31 的代码移植而非存储。EL 三档分发包维持 (a) 的组成不变。
+
+---
+
+## 2026-06-06 用户决策 + #31 移植进度
+
+**用户拍板(超越上面 (c) 的 #1/#2 运行时方案):**
+- **minimal/full 把 caplin checkpoint-sync seed 打进分发包**(finalized BeaconState,~150 MB)→ 选择器
+  加 `beacon-checkpoint` 段(`caplin/checkpoint/state.*.ssz.zst`,provisional)。
+- **archive 装全历史 beacon 归档(极致压缩)** → 选择器加 `beacon-archive` 段
+  (`caplin/beacon-archive.*.zst`+idx)。20 GB erigon caplin 快照再压。
+- 顺序:**#29 完成 → #31 → #32**。(#29 torrent 工具已完成并实测,见 RELEASE.md。)
+- 文件由 #31 产出;在产出前 manifest 把这两段记为已知 gap(selector test 已更新)。
+
+**依赖排序的移植清单(Explore 走 erigon `cl/phase1/stages` import 图得出,bottom-up):**
+
+| Phase | 包/文件 | N42 现状 | 状态 |
+|:--|:--|:--|:--|
+| 1 | `persistence/state/{slot_data,epoch_data}.go` | 缺 | **✅ DONE**(commit c77d7bb2,测试绿) |
+| 0/2 | **snapshotsync 基础**:`lib/seg`、`lib/chain/snapcfg`、`lib/downloader/snaptype`(主仓缺,仅在 agent worktree)+ `db/snapshotsync/{caplin_state_snapshots,caplin_snap_schema}.go` + `freezeblocks/caplin_snapshots.go`(~1637 LOC) | 缺(`lib/recsplit` 已有) | **下一步,硬地基** |
+| 3 | `persistence/state/state_accessors.go`(依赖 `snapshotsync.CaplinStateView`)+ `historical_states_reader/*` | 缺 | 待 Phase 2 |
+| 3 | `persistence/blob_storage/{blob_db,data_column_db}.go`(N42 只有 interface.go) | 缺实现 | 可与 Phase 2 并行(依赖少) |
+| 4 | `phase1/execution_client/block_collector/*`、`phase1/network/{beacon,backward_beacon,blob}_downloader.go` | 缺/不全 | 待 Phase 2 |
+| 5 | `antiquary/{antiquary,beacon_states_collector,state_antiquary}.go`(N42 只有 utils.go) | stub | 待 3+4 |
+| 6 | `phase1/stages/*.go`(ConsensusClStages 同步循环,~2711 LOC)**关键路径** | 缺 | 最后,待全部 |
+| 7 | wiring:仿 erigon `cmd/caplin/caplin1/run.go` 把 forkchoice+sentinel+ClStages 接进 `service.go Start()`(现只开 MDBX) | — | #32 |
+
+**关键判断:** `db/snapshotsync`(caplin 部分)是 state_accessors / 下载器 / antiquary 的**共同硬地基**,
+且它依赖 `lib/seg`/`snapcfg`/`snaptype`(主仓尚无,需先从 worktree/erigon 落地到主仓)。这是下一个 session
+的主攻点,规模最大、风险最高。移植纪律:**每包 `go build -tags n42el` + 测试绿再下一包**。
