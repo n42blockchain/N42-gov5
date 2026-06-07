@@ -79,12 +79,42 @@ func FilesFromManifest(m *manifest.Manifest) []metainfo.FileInfo {
 // BuildInfo assembles a metainfo.Info and streams the piece hashes by reading
 // each file from datadir. pieceLen<=0 → AutoPieceLength(total). Returns the
 // populated Info (Pieces filled) ready to bencode.
+//
+// Manifests are cross-producer artifacts, so the file list is validated before
+// hashing: each path must stay within datadir (no "../" escape), must be unique
+// (duplicate paths make the bencoded file order — and thus the infohash —
+// nondeterministic), and its on-disk size must equal the manifest's declared
+// size. The size check closes a trust gap: anacrolix reads exactly Length bytes
+// per file, so a file grown since the manifest was written would otherwise be
+// silently torrented as a truncated prefix that no longer matches the manifest.
 func BuildInfo(datadir, name string, files []metainfo.FileInfo, pieceLen int64) (*metainfo.Info, error) {
 	if len(files) == 0 {
 		return nil, fmt.Errorf("torrentbuild: no files to include")
 	}
+	seen := make(map[string]struct{}, len(files))
 	var total int64
 	for _, f := range files {
+		rel := strings.Join(f.Path, "/")
+		if _, dup := seen[rel]; dup {
+			return nil, fmt.Errorf("torrentbuild: duplicate path %q in manifest (would make the infohash nondeterministic)", rel)
+		}
+		seen[rel] = struct{}{}
+
+		full := filepath.Join(append([]string{datadir}, f.Path...)...)
+		within, err := filepath.Rel(datadir, full)
+		if err != nil || within == ".." || strings.HasPrefix(within, ".."+string(filepath.Separator)) || filepath.IsAbs(within) {
+			return nil, fmt.Errorf("torrentbuild: path %q escapes datadir", rel)
+		}
+		st, err := os.Stat(full)
+		if err != nil {
+			return nil, fmt.Errorf("torrentbuild: stat %q: %w", rel, err)
+		}
+		if st.IsDir() {
+			return nil, fmt.Errorf("torrentbuild: %q is a directory", rel)
+		}
+		if st.Size() != f.Length {
+			return nil, fmt.Errorf("torrentbuild: %q on-disk size %d != manifest size %d (manifest is stale or the file changed)", rel, st.Size(), f.Length)
+		}
 		total += f.Length
 	}
 	if pieceLen <= 0 {
