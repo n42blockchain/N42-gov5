@@ -310,3 +310,26 @@ stages 6 文件 import 重写干净,卡在 8 个符号(N42 子系统比 erigon �
   7. `checkpoint_sync.FetchFinalizedEnvelope()` — 取 finalized state envelope(Gloas,新)。
 
 补齐这 8 个即可编译 stages,然后 Phase 7 wiring 进 `service.go Start()`(现只开 MDBX)。stages 文件已暂移出树以保持 build 绿;下个 session 先加 8 符号再落 stages。
+
+### Phase 7 (wiring) 现实:卡在 sentinel/p2p/gossip 子系统(2026-06-07)
+
+stages 已编译,但 `RunCaplinService`(erigon cmd/caplin/caplin1/run.go)把 ClStages **跑起来**需要的依赖链:
+`ConsensusClStages` ← `ClStagesCfg(beaconRpc, …)` ← `beaconRpc = rpc.NewBeaconRpcP2P(sentinel, …)` ← `sentinel = service.StartSentinelService(…)` ← `cl/p2p.NewP2Pmanager` + gossip + services。
+
+**N42 缺口(本质是整个 beacon P2P 栈,merge plan step 6):**
+| 包 | N42 | erigon | 状态 |
+|:--|--:|--:|:--|
+| `sentinel` | 0 | 4 | 缺 |
+| `sentinel/service`(StartSentinelService) | 0 | 2 | 缺 |
+| `cl/p2p`(NewP2Pmanager) | 0 | 9 | 缺 |
+| `phase1/network/services`(BlockService 等 16 个 gossip 服务) | 1 | 16 | 缺 15 |
+| `phase1/network/gossip` | 2 | 6 | 半 |
+| aggregation / das / rpc / attestation_producer | 2/2/2/2 | — | ✓ |
+
+⇒ **ClStages 没有区块来源就跑不起来**(forward sync 经 beaconRpc 走 sentinel req/resp 取 beacon 区块)。sentinel/p2p 依赖 libp2p,是最大未移植子系统(~数万 LOC),不是"编辑 service.go"能完成的。
+
+**架构岔路(需用户拍板):**
+- **A. 移植完整 beacon P2P 栈**(sentinel + p2p + 15 gossip services):得到真正的 caplin beacon 节点;工作量大,多 session。
+- **B. EL-follower 轻量接法**:EL 已用自有 eth/68 devp2p 同步 execution payload;caplin 只需提供 fork-choice/finality(喂 Engine API forkchoiceUpdated 的 finalized/safe)。不跑完整 ClStages beacon-gossip 循环,而是用 finalized checkpoint(checkpoint-sync HTTP,已就位)+ 轻量 forkchoice 驱动。这更贴合 minimal/full EL 档的"checkpoint-sync 嵌入"目标(~150MB beacon state),且避开整个 beacon p2p 栈。
+
+stages 文件已就位(编译通过),两条路都用得上;先定方向再动手。
