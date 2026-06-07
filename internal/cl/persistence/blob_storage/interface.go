@@ -25,8 +25,25 @@ import (
 	"io"
 
 	"github.com/n42blockchain/N42/internal/cl/cltypes"
+	"github.com/n42blockchain/N42/internal/cl/cltypes/solid"
 	depcommon "github.com/n42blockchain/N42/internal/cl/depshim/common"
 )
+
+// VerifyAgainstIdentifiersAndInsertIntoTheBlobStore mirrors erigon's
+// blob_storage package function used by the blob history downloader. The real
+// KZG-verify-and-insert implementation lands with the blob store in Phase 7.4-7.5
+// (alongside the sentinel stack); until then it surfaces errBlobStoreNotWired so
+// blob backfill fails loud rather than silently dropping sidecars. The live
+// follower path does not depend on historical blob backfill.
+func VerifyAgainstIdentifiersAndInsertIntoTheBlobStore(
+	ctx context.Context,
+	storage BlobStorage,
+	identifiers *solid.ListSSZ[*cltypes.BlobIdentifier],
+	sidecars []*cltypes.BlobSidecar,
+	verifySignatureFn func(header *cltypes.SignedBeaconBlockHeader) error,
+) (uint64, uint64, error) {
+	return 0, 0, errBlobStoreNotWired
+}
 
 // errBlobStoreNotWired surfaces from every fallible Noop method so
 // fork-choice callers see an explicit "Phase 7.5 work pending" rather
