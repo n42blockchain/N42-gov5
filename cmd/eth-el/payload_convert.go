@@ -257,7 +257,7 @@ func depAttrsToAPIv3(in *engine_types.PayloadAttributes) *api.PayloadAttributesV
 		for i, w := range in.Withdrawals {
 			out.Withdrawals[i] = &api.Withdrawal{
 				Index:          hexutil.Uint64(w.Index),
-				ValidatorIndex: hexutil.Uint64(w.ValidatorIndex),
+				ValidatorIndex: hexutil.Uint64(w.Validator),
 				Address:        types.Address(w.Address),
 				Amount:         hexutil.Uint64(w.Amount),
 			}
