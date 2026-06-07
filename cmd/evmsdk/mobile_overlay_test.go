@@ -184,6 +184,37 @@ func TestOverlay_MissReturnsNotOk(t *testing.T) {
 	}
 }
 
+// A non-forward apply (blockNum <= head) must be ignored so a stale out-of-order
+// block can never clobber a newer overlay cell (which would be served as
+// "verified") or strand entries below the prune cursor.
+func TestOverlay_IgnoresNonForwardApply(t *testing.T) {
+	o := newMobileOverlay(900)
+	a := addrOf(1)
+	o.apply(100, psAcct(a, 500, 5)) // head = 100, A = 500
+	o.apply(95, psAcct(a, 300, 4))  // older block — must be ignored
+
+	raw, at, ok := o.account(a)
+	if !ok {
+		t.Fatal("account missing")
+	}
+	if at != 100 {
+		t.Errorf("lastBlock = %d, want 100 (older apply must not overwrite)", at)
+	}
+	acc, _ := decodeAccount(raw)
+	if acc.Balance.Uint64() != 500 {
+		t.Errorf("balance = %d, want 500 (stale 300 must not clobber)", acc.Balance.Uint64())
+	}
+	// re-applying the same block is also a no-op (idempotent).
+	o.apply(100, psAcct(a, 999, 9))
+	_, at2, _ := o.account(a)
+	if at2 != 100 {
+		t.Errorf("re-apply of head changed cell: lastBlock=%d", at2)
+	}
+	if _, ok := o.touched[95]; ok {
+		t.Error("ignored block 95 must not leave a touched entry (leak)")
+	}
+}
+
 // guard against accidental balance overflow handling in decode.
 func TestOverlay_BigBalance(t *testing.T) {
 	o := newMobileOverlay(900)

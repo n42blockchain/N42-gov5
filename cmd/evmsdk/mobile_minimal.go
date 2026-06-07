@@ -315,13 +315,16 @@ func MobileVerifyBlock(n int64) string {
 	}
 	txCount, codeFetched, ps, verr := minClient.verifyBlockLocked(bn)
 	cfg := params.EthereumMainnetChainConfig
-	if verr == nil {
+	// Only fold into the overlay / advance verifiedHead when this block extends
+	// the contiguous verified window. An out-of-order spot-check (bn not equal to
+	// verifiedHead+1) verifies execution but must NOT mutate the rolling overlay
+	// state — its prune/last-writer invariants assume monotonic application, and
+	// advancing verifiedHead on a gap would let MobileFollowTick skip blocks.
+	if verr == nil && bn == minClient.verifiedHead+1 {
 		if minClient.overlay != nil {
 			minClient.overlay.apply(bn, ps)
 		}
-		if bn > minClient.verifiedHead {
-			minClient.verifiedHead = bn
-		}
+		minClient.verifiedHead = bn
 	}
 	b, _ := json.Marshal(map[string]any{
 		"block":       bn,
