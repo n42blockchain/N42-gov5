@@ -385,4 +385,16 @@ stages 文件已就位(编译通过),两条路都用得上;先定方向再动手
 - **步骤 3 ✅ `internal/cl/p2p/`(9 文件):** 移植 erigon cl/p2p — `NewP2Pmanager`(libp2p host + discv5 ENR + gossipsub),sentinel 将跑在其上。适配:import→`internal/p2p/{discover,enode,enr}`+`depshim/{common,crypto,nat}`+`lib/log/v3`;`enode.OpenDBEx→OpenDB`;去 `/mplex`(用 DefaultMuxers/yamux);`p2p.NodeKeyConfig` 内联到 depshim/crypto(GenerateKey/LoadECDSA/SaveECDSA);`prysmaticlabs/go-bitfield`→原生 `[]byte` attnets(8)/syncnets(1)避免引新依赖。新增 `depshim/nat`(最小 `Interface`+ExtIP)。`go build -tags n42el` ✅ + vet 干净 + 全 cl 树构建。
 - **步骤 4a ✅ `cl/sentinel/handlers`(commit 327ee353):** 块-only req/resp 处理器。handlers.go(ConsensusHandlers 框架 + wrapStreamHandler:per-peer 并发上限 + token-bucket 限速 + panic 恢复,只注册 blocks-by-range/root + ping/goodbye/status(V1/V2)/metadata(V1/V2/V3))+ blocks.go + heartbeats.go + rate_limiter.go。排除 light_client/blob/data_column/exec_payload handlers + blocks-by-head(Fulu,N42 cltypes/communication 旧无)。NewConsensusHandlers 保 erigon 签名。
 - **步骤 4b ✅ `cl/sentinel` 核心 + service(commit 1bc50c5e):** Sentinel 跑在 cl/p2p 上、实现 sentinelproto.SentinelServer。config.go;sentinel.go(New/Start/Identity,**chi→stdlib http.ServeMux**、go-bitfield→原生 []byte);discovery.go(裁成 peer discovery + connect + handshake-on-connect,丢子网搜索机制、proactiveSubnetPeerSearch no-op);gossip.go(skeleton,SubscribeGossip inert——B+ 直接在 libp2p pubsub 订阅 beacon_block);service/service.go(SendRequest/SendPeerRequest req/resp 块回填 + peer 管理,SetStatus 直接用 common.Hash 无 gointerfaces);service/start.go(StartSentinelService 嵌入式,返回 in-process direct.SentinelClientDirect,**去 gRPC server**)。depshim/sentinelproto 加 UnimplementedSentinelServer。**关键架构发现:此 erigon 版 gossip 已移出 sentinel(SubscribeGossip panic),B+ gossip 走 pubsub 直订,sentinel 只管 req/resp。**
-- **下一步:** 真 `cl/rpc/rpc.go`(替换 rpc_stub,经 SentinelClient.SendRequest 实现 SendBeaconBlocksBy{Range,Root}Req)→ `block_service`(libp2p pubsub 订 beacon_block → 验证 → forkchoice.OnBlock)→ wiring(service.go Start 起 p2p+sentinel+ClStages+GetHead 驱动 EL,替换盲跟 tip)→ 对抗 E2E。
+- **步骤 5 ✅ 真 `cl/rpc/rpc.go`(commit f61444be):** 替换 rpc_stub.go。`SendBeaconBlocksBy{Range,Root}Req` 编码 ssz_snappy 请求 → in-process `SentinelClient.SendRequest`(prefer V2 topic、accept V1)→ 解码 fork-digest 分帧的多 chunk 响应成 SignedBeaconBlock。这是 downloader 已期望的 B+ 块回填活路径。适配:SetStatus 直接用 common.Hash;丢 PeerDAS columnDataPeers(单独文件,块 fork choice 不需要),SendColumnSidecarsByRootIdentifierReq 返回 errBlockOnlyTransport;blob/exec-payload/column-by-range 方法保留以满足接口。
+
+### 剩余 = 集成 wiring(步骤 6+7,最复杂收口)
+
+**关键发现:`phase1/stages` 早已移植(#31 Phase 6)** —— `internal/cl/phase1/stages/` 已有 clstages.go / forward_sync.go / chain_tip_sync.go / forkchoice.go / cleanup_and_pruning.go / stage_history_download.go。所以**不需要重新移植 sync 循环**;剩的是 erigon `cmd/caplin/caplin1/run.go`(662 行)式的 wiring:
+1. checkpoint-sync 引导 anchor BeaconState（follower.go 已有 GetLatestBeaconState）→ 初始化 `ForkChoiceStore`(OnBlock/OnTick/GetHead 已移植测试绿)。
+2. `p2p.NewP2Pmanager` → `service.StartSentinelService` → `sentinelproto.SentinelClient`（in-process direct）。
+3. `rpc.NewBeaconRpcP2P(sentinelClient,…)`。
+4. 跑 `ConsensusClStages`(forward sync 经 BeaconRpcP2P 取块 → OnBlock；chain_tip_sync 跟 live tip）。
+5. beacon_block gossip：直接在 `sentinel.Host()`/`p2p.Pubsub()` 订阅 → 解码 → `forkchoice.OnBlock`（gossip-out-of-sentinel,见步骤4b）。
+6. OnTick 循环 → `GetHead` → 取 fork-choice head 的 execution payload → 驱动 EL（替换 follower.go 盲跟 EL tip）。
+
+这是把本会话移植的传输层 + 已有 stages/forkchoice 接起来的真正收口;follower.go 退化为无 beacon-peer 时的 fallback。之后 = 步骤 8 对抗 E2E。
