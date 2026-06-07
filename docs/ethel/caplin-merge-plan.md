@@ -178,3 +178,32 @@ incremental sync model.
 - `docs/ethel/devlog-eth-el-node.md` — original Caplin import history
 - `docs/ethel/sync-protocol-comparison.md` — eth/68 + 12s sync analysis
 - `docs/ethel/post-bootstrap-sync-plan.md` — catch-up + live sync flow
+
+---
+
+## 2026-06-06 更新 — 决策:A 关键路径 + 逐包增量(≈ Strategy B 子集)
+
+**完整性基线(已测):** `go build -tags n42el ./internal/cl/` ✅;**67 测试包全 PASS**(transition-eth2/forkchoice/phase1-core-state/ssz/bls/cltypes/das/merkle_tree…)→ 核心共识健全,缺的是 sync-loop wiring + 版本追平,不是算法。N42 现 ~63K LOC(5-22 时 35K,已涨)。
+
+**关键发现:A 的核心 `phase1/stages`(N42 完全缺,erigon 2,395 LOC)级联依赖整个落后集** —— import antiquary、beacon/{synced_data,beaconevents}、das、persistence/{beacon_indicies,blob_storage}、phase1/network、execution_client/block_collector、validator/attestation_producer、forkchoice(✓)、rpc、freezeblocks。⇒ 即使只走 A,stage loop 也要 bottom-up 移植大部分落后包。
+
+**Import 重写映射(depshim 层,已对照 N42 已移植包确认):**
+- `erigon/cl/*` → `internal/cl/*`
+- `erigon-lib/{common,clonable,hexutil,log/v3,ssz}` → `internal/cl/depshim/*`
+- `erigon-lib/kv` → `lib/kv`;`erigon/db/{datadir,snapshotsync/freezeblocks}` → N42 对应/shim
+- 移植 = 拷贝 + sed import + 补 depshim 缺口 + `go build -tags n42el` + 测试。
+
+**Bottom-up 逐包顺序(底→顶,每步 build+test 绿了再下一包):**
+1. persistence(beacon_indicies、blob_storage)
+2. beacon(synced_data、beaconevents)
+3. das、antiquary 补全
+4. phase1/network、validator/attestation_producer、execution_client/block_collector
+5. **phase1/stages**(ConsensusClStages,核心)
+6. sentinel 服务(5→34,缺顶层 Sentinel + StartSentinelService)+ p2p(0→12)
+7. wiring:仿 erigon cmd/caplin/caplin1/run.go 把 forkchoice+sentinel+ClStages 接进 service.go Start()(现只开 MDBX)
+8. #32 对接各 EL(eladapter 14-method ✓ → Engine API → catchup→12s live)
+9. 完整性测试:checkpoint sync E2E(+ 可选 spectest)
+
+**规模:~33–43K LOC,多 session。** spectest 可延后。
+
+**mobile(#33)独立**:去 header、仅 anchors + IDC witness,不自验 beacon 共识 → **不依赖 caplin 全量追平**,可与 #31 并行。
