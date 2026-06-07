@@ -342,3 +342,43 @@ stages 文件已就位(编译通过),两条路都用得上;先定方向再动手
 - full cl + eth-el 在 -tags n42el 编译通过;cl 测试(forkchoice/eladapter/beaconevents/transition/state…)全绿。
 
 **#31 结论(option B 架构下完成):** 整个 caplin 组件栈(Phase 1-6)已移植+编译+测试,8 个漂移符号补齐,follower 接驳 EL(Phase 7-B)。完整 beacon-gossip 栈(sentinel/p2p/15 gossip services)按 B 决策**有意不移植**。剩 #32 = 把 CheckpointSyncURL 配进 minimal/full 档(mobile 走自有 SDK)+ 真实 endpoint 联调。
+
+---
+
+## 2026-06-07 — #34 对抗环境下的独立 fork choice(B+ 块-gossip 优先)
+
+**动因:** option B(follower.go)在对抗环境下不安全 —— 两个可信单点:finality 信任单个 checkpoint endpoint;**head 盲跟 EL 自己 eth/68 devp2p 的 tip**(`driveForkChoice` 里 `head = eng.CurrentHeader()`),**完全不验证 attestation 权重**。控制你 EL peer 的攻击者可喂"执行有效但非 canonical(低 attestation 权重)"的链,follower 直接把 EL 驱动上去。runbook 末尾自承 "No independent fork choice"。
+
+**已具备(不缺算法):** `get_head.go` 是真以太坊 fork choice —— LMD-GHOST + proposer boost + Casper FFG `filter_block_tree`(justified/finalized 过滤)+ Gloas,配 `on_block`/`on_attestation`/`fork_graph`/state transition,全移植 + 67 测试包绿。
+
+**用户决策(2026-06-07):走 B+ 块-gossip 优先**(非完整 A,也非 C 多端点交叉验证)。只订阅 `beacon_block` gossip + 块 req/resp 回填 → `forkchoice.OnBlock` → `GetHead` → 用**独立选出的 head** 驱动 EL(替换盲跟 tip)。块内嵌 attestation 已足够跑 LMD-GHOST(finality + 近 tip 安全);活 attestation 子网(其余 14 gossip services)延后。约完整 A 的 40% 工作拿 ~80% 鲁棒性。
+
+**传输层选型决策:路线 A(移植 erigon `cl/sentinel`+`cl/p2p`),非在 `internal/p2p` 上写 adapter。** 证据:
+- 已移植消费侧 `phase1/network/{beacon,backward_beacon}_downloader.go` 已期望 `rpc.BeaconRpcP2P`;`internal/cl/rpc/rpc_stub.go:4-11` 明确写 "Phase 7.5 lands the sentinel subtree" —— 架构早已锁定 A。
+- 已移植 sentinel 碎片(`communication/ssz_snappy`、`handshake`、`httpreqresp`、`peers`、`communication/topics`)与 erigon 源 >95% 兼容。
+- `internal/p2p` 硬编码 N42 原生链 fork digest(`fork.go` n42ENRKey)/topic(`/n42/` 前缀)+ 用 protobuf 非 SSZ;改造逆水行舟。
+
+**地基已核实:**
+- libp2p:N42 `go-libp2p v0.47.0`/`pubsub v0.15.0` vs erigon `v0.48.0`/`pubsub v0.11.0` —— **N42 pubsub 更新**。erigon gossip/sentinel 写在 0.11 API,移植须适配到 0.15;**参照** = N42 自有 `internal/p2p/pubsub.go`(已在 0.15)。这是主要 friction 点。
+- in-process:erigon `node/direct/sentinel_client.go` `NewSentinelClientDirect(SentinelServer)` 把 sentinel.Service 包成 in-process `SentinelClient`,**无需真起 gRPC server**。
+- discv5/enode/enr:`internal/p2p/{discover(v4+v5+pq),enode,enr}` 齐全,depshim 可映射。
+- seam 边界 = `sentinelproto.SentinelClient`(14 方法);块-only 路径只用 `SendRequest`(req/resp 取块)/`SubscribeGossip`(收 beacon_block)/`SetStatus`/`GetPeers`/`BanPeer`。`rpc.go:420` `SendRequest(&RequestData{Topic, Data})`。
+
+**Bottom-up 移植顺序(每包 `go build -tags n42el` + 测试绿再下一包):**
+1. `depshim/sentinelproto`:边界消息类型(RequestData/ResponseData/GossipData/Status/Peer/EmptyMessage/PeerCount…)+ `SentinelClient`/`SentinelServer` 接口(保留 `grpc.CallOption`,grpc 已在 go.mod)。**自包含,解锁 rpc + sentinel 两侧。**
+2. `depshim/direct`:`SentinelClientDirect`(in-process 包装,~50 行)。
+3. `cl/p2p`:libp2p host + discv5 + ENR(p2p.go/p2p_discovery.go/p2p_localnode.go/libp2p_setting.go/gater.go/msg_id.go/config.go/utils.go,~1224 行)。depshim 映射 `p2p/{discover,enode,enr,nat}`→`internal/p2p/*`;pubsub 0.15 适配。
+4. `cl/sentinel` 核心:sentinel.go/gossip.go/discovery.go/config.go + `handlers/{handlers,blocks}.go`(块-only,排除 attestation/sync-committee/blob/data-column handlers ~3300 行)+ `service/{service,start}.go`(实现 SentinelServer)。
+5. `cl/rpc/rpc.go`:真 `BeaconRpcP2P`(替换 rpc_stub.go),`SendBeaconBlocksBy{Range,Root}Req` 经 SendRequest。
+6. `phase1/network/services/block_service.go`:gossip 收块验证 → `forkchoice.OnBlock`。
+7. wiring `service.go Start()`:起 sentinel(direct)+ ClStages forward-sync + gossip → `GetHead` → 驱动 EL(替换 follower 盲跟 tip)。catch-up→12s live。
+8. E2E 对抗验证:EL devp2p 喂低权重链时,caplin 用 fork-choice head 覆盖/拒绝。
+
+**规模:~3K LOC 新增 + 多 session。** 主风险 = pubsub 0.11→0.15 漂移(有 internal/p2p 参照)+ depshim discover/enode/enr API 对齐。follower.go 保留为无 beacon-peer 时的退化路径。
+
+### 进度(2026-06-07,session 1)
+
+- **步骤 1 ✅** `internal/cl/depshim/sentinelproto/`:手写边界 shim(13 消息类型 + `SentinelClient`/`SentinelServer` 14 方法接口 + `Sentinel_SubscribeGossip{Client,Server}` 流接口)。简化:`Status.{Finalized,Head}Root` 用 `common.Hash` 不用 H256 wrapper;保留 `grpc.CallOption`(grpc v1.79.3 已在 go.mod)。`go build -tags n42el` ✅。
+- **步骤 2 ✅** `internal/cl/depshim/direct/sentinel_client.go`:移植 erigon `node/direct/sentinel_client.go`,`NewSentinelClientDirect(SentinelServer)→SentinelClient`,SubscribeGossip 走 buffered-channel 桥接流。`go build -tags n42el` ✅。
+- **步骤 3 cl/p2p 映射已勘定(降风险):** erigon `cl/p2p` 只从 `p2p/{discover,enode,enr,nat}` 用这些符号:`discover.{UDPv5,Config,ListenV5}`、`enode.{Node,LocalNode,NewLocalNode,OpenDBEx,Parse,ValidSchemes}`、`enr.{WithEntry,TCP,UDP,IP,IsNotFound}`、`nat.Interface`。核对 N42 `internal/p2p/{discover,enode,enr}` —— **95%+ 已有**,仅两缺口:① `enode.OpenDBEx`(N42 只有 `OpenDB`,加 1 行 wrapper 或改用 OpenDB);② N42 无 `p2p/nat` 包(stub `nat.Interface` 或映射)。`internal/p2p` 非 n42el-tag、始终编译,cl/p2p 可把 erigon import 直接重写到 `internal/p2p/*`,无需中间 depshim 层。
+- **下一步:** 移植 `cl/p2p`(8 文件 ~1224 行,补 2 缺口 + pubsub 0.15 适配)→ `cl/sentinel` 核心 + `handlers/{handlers,blocks}.go` → `service/{service,start}.go`(SentinelServer)→ 真 `cl/rpc/rpc.go`(替换 rpc_stub)→ `block_service` → wiring → E2E。
