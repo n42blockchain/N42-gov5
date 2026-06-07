@@ -40,7 +40,7 @@ func newRichBE(n int) *richBE {
 func TestBlockBodyRoundTrip(t *testing.T) {
 	be := newRichBE(5)
 	svc := NewService(be, DefaultCaps(), nil)
-	srv := httptest.NewServer(Handler(svc, nil))
+	srv := httptest.NewServer(Handler(svc, nil, nil))
 	defer srv.Close()
 
 	src := NewHTTPSource(srv.URL)
@@ -62,7 +62,7 @@ func TestCodeRoute(t *testing.T) {
 	be.codes[ch] = code
 
 	svc := NewService(be, DefaultCaps(), nil)
-	srv := httptest.NewServer(Handler(svc, nil))
+	srv := httptest.NewServer(Handler(svc, nil, nil))
 	defer srv.Close()
 
 	// /code ships ZSTD(code); HTTPSource.Code decompresses → raw round-trip.
@@ -88,7 +88,7 @@ func TestCodeRoute(t *testing.T) {
 func TestHealth(t *testing.T) {
 	be := newRichBE(3)
 	svc := NewService(be, DefaultCaps(), nil)
-	srv := httptest.NewServer(Handler(svc, nil))
+	srv := httptest.NewServer(Handler(svc, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/health")

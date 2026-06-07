@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"time"
 
@@ -19,7 +20,8 @@ type ServerConfig struct {
 	WriteTimeout   time.Duration
 	IdleTimeout    time.Duration
 	MaxHeaderBytes int
-	MaxConcurrent  int // 0 = unlimited
+	MaxConcurrent  int          // 0 = unlimited
+	TrustedProxies []*net.IPNet // honor X-Forwarded-For only from these (else RemoteAddr)
 }
 
 // DefaultServerConfig: 10 s read / 30 s write / 60 s idle, 1 MiB headers, 1024
@@ -40,7 +42,7 @@ func DefaultServerConfig(addr string) ServerConfig {
 // caps (inside the Service), a max-concurrent-requests gate (→ 503), and hardened
 // timeouts/header limits. Call srv.ListenAndServe(); stop with ShutdownServer.
 func NewServer(cfg ServerConfig, svc *Service, rl *jsonrpc.RateLimiter) *http.Server {
-	h := Handler(svc, rl)
+	h := Handler(svc, rl, cfg.TrustedProxies)
 	if cfg.MaxConcurrent > 0 {
 		h = limitConcurrent(cfg.MaxConcurrent, h)
 	}

@@ -39,9 +39,19 @@ import (
 func AttestHandler(agg *stateless.Aggregator, rl *jsonrpc.RateLimiter) http.Handler {
 	mux := http.NewServeMux()
 
+	// An aggregator with no signer allowlist counts ANY valid signature, so its
+	// distinct-signer threshold is sybil-defeatable (an attacker signs the public
+	// roots with N self-generated keys). Refuse to serve it — exposing such a
+	// count publicly would be worse than useless (it looks authoritative).
+	allowlisted := agg.HasAllowlist()
+
 	mux.HandleFunc("/attest", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		if !allowlisted {
+			http.Error(w, "attestation aggregator requires a signer allowlist", http.StatusForbidden)
 			return
 		}
 		// The wire form is a fixed 137 bytes; cap the read so a hostile client
@@ -71,6 +81,14 @@ func AttestHandler(agg *stateless.Aggregator, rl *jsonrpc.RateLimiter) http.Hand
 	})
 
 	mux.HandleFunc("/attest-status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "GET only", http.StatusMethodNotAllowed)
+			return
+		}
+		if !allowlisted {
+			http.Error(w, "attestation aggregator requires a signer allowlist", http.StatusForbidden)
+			return
+		}
 		n, err := qn(r)
 		if err != nil {
 			http.Error(w, "bad n", http.StatusBadRequest)

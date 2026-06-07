@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/c2h5oh/datasize"
@@ -56,7 +57,13 @@ func main() {
 	burst := flag.Int("burst", 100, "per-IP burst")
 	bwMBps := flag.Int("bw-mbps", 0, "per-IP bandwidth cap MB/s (0 = unlimited)")
 	maxConc := flag.Int("max-concurrent", 1024, "max concurrent in-flight requests")
+	trustedProxies := flag.String("trusted-proxies", "", "comma-separated CIDRs of trusted reverse-proxy/CDN egress; X-Forwarded-For is honored ONLY from these (else the per-IP limiters key on RemoteAddr, so a client cannot spoof its identity by forging X-Forwarded-For). Empty = never trust X-Forwarded-For")
 	flag.Parse()
+
+	var proxyCIDRs []string
+	if *trustedProxies != "" {
+		proxyCIDRs = strings.Split(*trustedProxies, ",")
+	}
 
 	logger := log.New()
 	be, err := openBackend(*hdrDir, *bodyDir, *witDir, *anchorDir, *anchorK, *chaindata, *trieDir, *codesDir, *chainID)
@@ -76,11 +83,14 @@ func main() {
 	}
 	svc := serve.NewService(be, serve.DefaultCaps(), bw)
 
-	rl := jsonrpc.NewRateLimiter(&jsonrpc.RateLimitConfig{RequestsPerSecond: *rps, BurstSize: *burst})
+	rl := jsonrpc.NewRateLimiter(&jsonrpc.RateLimitConfig{
+		RequestsPerSecond: *rps, BurstSize: *burst, TrustedProxies: proxyCIDRs,
+	})
 	defer rl.Stop()
 
 	cfg := serve.DefaultServerConfig(*addr)
 	cfg.MaxConcurrent = *maxConc
+	cfg.TrustedProxies = jsonrpc.ParseCIDRs(proxyCIDRs)
 	srv := serve.NewServer(cfg, svc, rl)
 
 	tip, _, anchor, _ := be.Head()

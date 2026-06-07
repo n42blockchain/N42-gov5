@@ -18,6 +18,7 @@ package serve
 
 import (
 	"bytes"
+	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -33,7 +34,15 @@ import (
 // verifiers POST attestations, the count rises and finalises at threshold, and
 // the status endpoint reflects it. A malformed body is rejected.
 func TestAttestHandler(t *testing.T) {
-	agg := stateless.NewAggregator(nil, 2, 0)
+	// Build an allowlist of two authorized signers (required: AttestHandler now
+	// refuses a nil-allowlist aggregator as sybil-defeatable).
+	k0, _ := crypto.GenerateKey()
+	k1, _ := crypto.GenerateKey()
+	allow := map[types.Address]bool{
+		crypto.PubkeyToAddress(k0.PublicKey): true,
+		crypto.PubkeyToAddress(k1.PublicKey): true,
+	}
+	agg := stateless.NewAggregator(allow, 2, 0)
 	srv := httptest.NewServer(AttestHandler(agg, nil))
 	defer srv.Close()
 
@@ -52,10 +61,10 @@ func TestAttestHandler(t *testing.T) {
 		return resp.StatusCode, out
 	}
 
-	// Two distinct verifiers → finalised at threshold 2.
+	// Two distinct allowlisted verifiers → finalised at threshold 2.
+	signerKeys := []*ecdsa.PrivateKey{k0, k1}
 	for i := 0; i < 2; i++ {
-		key, _ := crypto.GenerateKey()
-		a, _ := stateless.SignAttestation(key, 100, sr, rr)
+		a, _ := stateless.SignAttestation(signerKeys[i], 100, sr, rr)
 		wire, _ := stateless.EncodeAttestation(a)
 		code, out := post(t, wire)
 		if code != http.StatusOK {
@@ -86,5 +95,38 @@ func TestAttestHandler(t *testing.T) {
 	// Malformed body → 400.
 	if code, _ := post(t, []byte("garbage")); code != http.StatusBadRequest {
 		t.Fatalf("garbage body: status %d want 400", code)
+	}
+}
+
+// TestAttestHandler_RequiresAllowlist: an aggregator with no signer allowlist is
+// sybil-defeatable, so AttestHandler must refuse it (403) on both endpoints.
+func TestAttestHandler_RequiresAllowlist(t *testing.T) {
+	agg := stateless.NewAggregator(nil, 2, 0) // no allowlist
+	srv := httptest.NewServer(AttestHandler(agg, nil))
+	defer srv.Close()
+
+	key, _ := crypto.GenerateKey()
+	sr := types.HexToHash("0x00000000000000000000000000000000000000000000000000000000000000aa")
+	rr := types.HexToHash("0x00000000000000000000000000000000000000000000000000000000000000bb")
+	a, _ := stateless.SignAttestation(key, 100, sr, rr)
+	wire, _ := stateless.EncodeAttestation(a)
+
+	resp, err := http.Post(srv.URL+"/attest", "application/octet-stream", bytes.NewReader(wire))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("/attest without allowlist: status %d want 403", resp.StatusCode)
+	}
+
+	url := fmt.Sprintf("%s/attest-status?n=100&state=%s&receipt=%s", srv.URL, sr.Hex(), rr.Hex())
+	sresp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("status get: %v", err)
+	}
+	sresp.Body.Close()
+	if sresp.StatusCode != http.StatusForbidden {
+		t.Fatalf("/attest-status without allowlist: status %d want 403", sresp.StatusCode)
 	}
 }

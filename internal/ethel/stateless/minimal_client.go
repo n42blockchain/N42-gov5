@@ -1,11 +1,19 @@
 package stateless
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 )
+
+// ErrUnsupported signals that a Source does not provide an OPTIONAL capability
+// (e.g. AnchorHeights on a producer with no anchor-block sidecar). It is a
+// capability-absence signal, distinct from a transient transport error: the
+// client may fall back (e.g. to fixed cadence) ONLY on this, never on a generic
+// failure — so a transient error can't silently downgrade verification.
+var ErrUnsupported = errors.New("stateless: source capability unsupported")
 
 // Source is the transport-agnostic data a minimal client pulls (a producer RPC,
 // a P2P peer, or a local cache — see docs/ethel/idc-stateless-node-architecture.md).
@@ -93,12 +101,18 @@ func (c *MinimalClient) Sync() (uint64, error) {
 	var anchorSet map[uint64]bool
 	if al, ok := c.src.(AnchorLister); ok && tip >= head+1 {
 		hs, herr := al.AnchorHeights(head+1, tip)
-		if herr != nil {
+		switch {
+		case herr == nil:
+			anchorSet = make(map[uint64]bool, len(hs))
+			for _, a := range hs {
+				anchorSet[a] = true
+			}
+		case errors.Is(herr, ErrUnsupported):
+			// Capability absent → fall back to the fixed anchorEvery cadence
+			// (anchorSet stays nil). A transient error is NOT swallowed here, so it
+			// cannot silently downgrade us from variable to fixed cadence.
+		default:
 			return c.headNum(), fmt.Errorf("anchor heights %d..%d: %w", head+1, tip, herr)
-		}
-		anchorSet = make(map[uint64]bool, len(hs))
-		for _, a := range hs {
-			anchorSet[a] = true
 		}
 	}
 

@@ -87,7 +87,7 @@ func TestHTTPEndToEnd(t *testing.T) {
 	hdrs := emptyStateChain(N)
 	be := &chainBE{headers: hdrs, anchorEvery: K}
 	svc := NewService(be, DefaultCaps(), nil)
-	srv := httptest.NewServer(Handler(svc, nil))
+	srv := httptest.NewServer(Handler(svc, nil, nil))
 	defer srv.Close()
 
 	src := NewHTTPSource(srv.URL)
@@ -122,7 +122,7 @@ func TestHTTPRateLimit(t *testing.T) {
 	svc := NewService(be, DefaultCaps(), nil)
 	rl := jsonrpc.NewRateLimiter(&jsonrpc.RateLimitConfig{RequestsPerSecond: 1, BurstSize: 2})
 	defer rl.Stop()
-	srv := httptest.NewServer(Handler(svc, rl))
+	srv := httptest.NewServer(Handler(svc, rl, nil))
 	defer srv.Close()
 
 	c := &http.Client{}

@@ -90,6 +90,10 @@ func NewAggregator(allow map[types.Address]bool, threshold int, window uint64) *
 	}
 }
 
+// HasAllowlist reports whether the aggregator restricts which signers count.
+// AttestHandler refuses to serve an aggregator without one (sybil-defeatable).
+func (g *Aggregator) HasAllowlist() bool { return g.pool.HasAllowlist() }
+
 // SubmitResult reports the outcome of recording one attestation.
 type SubmitResult struct {
 	Signer    types.Address
