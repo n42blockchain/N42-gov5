@@ -494,12 +494,24 @@ const (
 	StatesProcessingProgress = "StatesProcessingProgress"
 
 	// Electra pending operations
-	PendingConsolidations        = "PendingConsolidations"
-	PendingConsolidationsDump    = "PendingConsolidationsDump"
-	PendingDeposits              = "PendingDeposits"
-	PendingDepositsDump          = "PendingDepositsDump"
-	PendingPartialWithdrawals    = "PendingPartialWithdrawals"
+	PendingConsolidations         = "PendingConsolidations"
+	PendingConsolidationsDump     = "PendingConsolidationsDump"
+	PendingDeposits               = "PendingDeposits"
+	PendingDepositsDump           = "PendingDepositsDump"
+	PendingPartialWithdrawals     = "PendingPartialWithdrawals"
 	PendingPartialWithdrawalsDump = "PendingPartialWithdrawalsDump"
+
+	// GLOAS / ePBS (EIP-7732) Caplin state tables
+	BuildersDump                      = "BuildersDump"                   // slot => dump
+	Builders                          = "Builders"                       // slot => queue_diffs
+	BuilderPendingWithdrawalsDump     = "BuilderPendingWithdrawalsDump"  // slot => dump
+	BuilderPendingWithdrawals         = "BuilderPendingWithdrawals"      // slot => queue_diffs
+	PayloadExpectedWithdrawalsDump    = "PayloadExpectedWithdrawalsDump" // slot => dump
+	PayloadExpectedWithdrawals        = "PayloadExpectedWithdrawals"     // slot => queue_diffs
+	ExecutionPayloadAvailabilityTable = "ExecutionPayloadAvailability"   // slot => bitvector SSZ
+	BuilderPendingPaymentsTable       = "BuilderPendingPayments"         // slot => vector SSZ
+	PtcWindowTable                    = "PtcWindow"                      // slot => ptc window SSZ
+	LatestExecutionPayloadBidTable    = "LatestExecutionPayloadBid"      // slot => compressed SSZ
 
 	//Diagnostics tables
 	DiagSystemInfo = "DiagSystemInfo"
@@ -544,8 +556,8 @@ var (
 // This list will be sorted in `init` method.
 // ChaindataTablesCfg - can be used to find index in sorted version of ChaindataTables list by name
 var ChaindataTables = []string{
-	"Account",  // modules.Account: address -> account encoded (Erigon V2)
-	"Storage",  // modules.Storage: address+incarnation+key -> value
+	"Account", // modules.Account: address -> account encoded (Erigon V2)
+	"Storage", // modules.Storage: address+incarnation+key -> value
 	E2AccountsHistory,
 	E2StorageHistory,
 	Code,
@@ -653,8 +665,8 @@ var ChaindataTables = []string{
 
 	VerkleRoots,
 	VerkleTrie,
-	"VerkleNode",  // content-addressed nodes (lib/verkle/store)
-	"VerkleRoot",  // root + version recovery (lib/verkle/store)
+	"VerkleNode", // content-addressed nodes (lib/verkle/store)
+	"VerkleRoot", // root + version recovery (lib/verkle/store)
 	// Beacon stuff
 	BeaconState,
 	BeaconBlocks,
@@ -709,6 +721,17 @@ var ChaindataTables = []string{
 	PendingConsolidationsDump,
 	PendingPartialWithdrawals,
 	PendingPartialWithdrawalsDump,
+	// GLOAS / ePBS (EIP-7732) Caplin state tables
+	BuildersDump,
+	Builders,
+	BuilderPendingWithdrawalsDump,
+	BuilderPendingWithdrawals,
+	PayloadExpectedWithdrawalsDump,
+	PayloadExpectedWithdrawals,
+	ExecutionPayloadAvailabilityTable,
+	BuilderPendingPaymentsTable,
+	PtcWindowTable,
+	LatestExecutionPayloadBidTable,
 }
 
 const (
@@ -891,6 +914,7 @@ func TablesCfgByLabel(label Label) TableCfg {
 		panic(fmt.Sprintf("unexpected label: %s", label))
 	}
 }
+
 // ensureTableDefaults populates cfg with default entries for any tables not already present.
 func ensureTableDefaults(cfg TableCfg, tables []string) {
 	for _, name := range tables {
