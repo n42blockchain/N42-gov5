@@ -333,3 +333,12 @@ stages 已编译,但 `RunCaplinService`(erigon cmd/caplin/caplin1/run.go)把 ClS
 - **B. EL-follower 轻量接法**:EL 已用自有 eth/68 devp2p 同步 execution payload;caplin 只需提供 fork-choice/finality(喂 Engine API forkchoiceUpdated 的 finalized/safe)。不跑完整 ClStages beacon-gossip 循环,而是用 finalized checkpoint(checkpoint-sync HTTP,已就位)+ 轻量 forkchoice 驱动。这更贴合 minimal/full EL 档的"checkpoint-sync 嵌入"目标(~150MB beacon state),且避开整个 beacon p2p 栈。
 
 stages 文件已就位(编译通过),两条路都用得上;先定方向再动手。
+
+### Phase 7-B 完成(2026-06-07):轻量 EL-follower 已接驳
+
+用户选 B。实现 `internal/cl/follower.go` + service.go 接线:`BeaconCfg.CheckpointSyncURL` 设了就在 `Service.Start` 起 `runFinalityFollower` —— HTTP checkpoint-sync 取 finalized beacon state → 读 execution payload block hash → 经 eladapter 驱动 EL Engine API `forkChoiceUpdated(finalized=safe=head)`,变化时才更新。EL 自己用 eth/68 devp2p 同步 payload,caplin 只钉 finality。**零 beacon P2P。** commit efc3a053(+ payload_convert 回归修复 一起)。
+
+- 用 GetLatestBeaconState(全 SSZ state)→ execution header 跨所有 fork(含 Gloas)正确;刷新走保守间隔,TODO 换轻量 `/eth/v1/beacon/headers/finalized` poll 省带宽。
+- full cl + eth-el 在 -tags n42el 编译通过;cl 测试(forkchoice/eladapter/beaconevents/transition/state…)全绿。
+
+**#31 结论(option B 架构下完成):** 整个 caplin 组件栈(Phase 1-6)已移植+编译+测试,8 个漂移符号补齐,follower 接驳 EL(Phase 7-B)。完整 beacon-gossip 栈(sentinel/p2p/15 gossip services)按 B 决策**有意不移植**。剩 #32 = 把 CheckpointSyncURL 配进 minimal/full 档(mobile 走自有 SDK)+ 真实 endpoint 联调。
