@@ -110,16 +110,31 @@ hot-bodies window and relocates aged segments to cold seeders (1-of-N).
 
 ## Tooling
 - `n42-eth-manifest --mode {mobile,minimal,full,archive}` — producer manifest builder
+- `n42-eth-torrent --datadir <d> --manifest <m> [--tracker ..] [--webseed ..] --update-manifest`
+  — builds ONE multi-file `.torrent` over a tier's files, streaming piece hashes
+  from disk (no in-RAM load); infohash is reproducible (info-dict only), trackers/
+  webseeds attach outside it. Writes the magnet + infohash back into the manifest.
 - `n42-eth-snapshot {fetch,verify,catch-up,follow,upgrade,downgrade}` — client
 - `n42-hist-from-freezer` — N42-native accthist/storhist build (sample-verified)
 - `n42-history-expiry --interval 168h` — scheduled EIP-4444 prune
 - `coldresolve` — 1-of-N cold-segment fetch (BitTorrent), tested
 
+### Per-tier torrent seed-prep
+```bash
+n42-eth-manifest --datadir D:/n42-release --mode minimal --network mainnet --height 25252185
+n42-eth-torrent  --datadir D:/n42-release --manifest D:/n42-release/manifest-minimal.json \
+    --tracker udp://tracker.n42:6969/announce --webseed https://snapshots.n42/mainnet/ \
+    --update-manifest        # → minimal.torrent + manifest.torrent{infohash,magnet}
+```
+**minimal tier built + verified** (D:/n42-release, 23.94 GB / 7 files): infohash
+`f644e8ff…`, 49026 pieces @ 512 KiB, round-trips through `metainfo.LoadFromFile`.
+full/archive use the same path once their manifests are regenerated.
+
 ## Remaining before public release
-- regenerate the 3 file-bundle manifests (minimal/full/archive) from the rescoped
-  selectors against a hot-only-bodies datadir for `full`
-- per-tier `.torrent`/magnet seed-prep (`n42-cold-seed`; archive 800 GB+ piece-hash is heavy I/O)
+- regenerate the full/archive manifests from the rescoped selectors (full needs a
+  hot-only-bodies datadir) + build their torrents (archive 800 GB+ piece-hash is heavy I/O)
+- caplin: produce the `beacon-checkpoint` seed (minimal/full) + extreme-compressed
+  `beacon-archive` (archive) so those sections populate (#31)
 - manifest signing + hosting
-- caplin checkpoint-sync embed for minimal/full consensus validation (#31, code; ~150 MB runtime, 0 bundle)
 
 > Web view of this page: `docs/ethel/snapshots/index.html` (reth-snapshots style).

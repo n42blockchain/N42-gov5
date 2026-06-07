@@ -34,6 +34,25 @@ type Manifest struct {
 	CreatedAt  string       `json:"created_at"`
 	ManifestID string       `json:"manifest_id"`
 	Files      []*FileEntry `json:"files"`
+	// Torrent is filled by n42-eth-torrent once a .torrent is built over this
+	// tier's files, so the client can fetch over BitTorrent (magnet) as well as
+	// HTTP. Omitted until then.
+	Torrent *TorrentInfo `json:"torrent,omitempty"`
+}
+
+// TorrentInfo records the per-tier BitTorrent metadata. InfoHash is reproducible
+// across producers (depends only on name + piece length + ordered files + piece
+// hashes); Magnet/trackers/webseeds are convenience fields.
+type TorrentInfo struct {
+	Name        string   `json:"name"`
+	InfoHash    string   `json:"infohash"`     // hex SHA-1 of the bencoded info dict
+	Magnet      string   `json:"magnet"`       // magnet: URI
+	PieceLength int64    `json:"piece_length"` // bytes
+	Pieces      int      `json:"pieces"`       // number of pieces
+	TotalBytes  int64    `json:"total_bytes"`
+	TorrentFile string   `json:"torrent_file"` // relative path of the .torrent (if written under datadir)
+	WebSeeds    []string `json:"webseeds,omitempty"`
+	Trackers    []string `json:"trackers,omitempty"`
 }
 
 // FileEntry is one row in Manifest.Files.
@@ -93,11 +112,33 @@ var snapshotSections = []Section{
 	}},
 }
 
-// minimal: compact state snapshot ONLY (~25.7 GB, weekly). Headers/bodies/codes
-// for the snapshot→tip catch-up are fetched live (IDC/peers), not bundled; older
-// data missing locally is requested from peers on demand.
+// beaconCheckpointSection is the caplin checkpoint-sync seed: a single finalized
+// BeaconState (weak-subjectivity anchor, ~150 MB zstd) so minimal/full can start
+// embedded consensus validation without an external checkpoint URL. Produced by
+// the caplin work (#31); absent until then, so it shows as a known gap. Provisional
+// path under caplin/ (matches erigon's caplin datadir convention).
+var beaconCheckpointSection = Section{
+	Name:     "beacon-checkpoint",
+	Patterns: []string{"caplin/checkpoint/state.*.ssz.zst"},
+}
+
+// beaconArchiveSection is the full-history beacon-block archive, extreme-compressed
+// (the ~20 GB erigon caplin archive re-compressed). Shipped by archive so it can
+// serve consensus history. Produced by #31; absent until then. Provisional glob.
+var beaconArchiveSection = Section{
+	Name:     "beacon-archive",
+	Patterns: []string{"caplin/beacon-archive.*.zst", "caplin/beacon-archive.*.idx"},
+}
+
+// minimal: compact state snapshot + caplin checkpoint-sync seed (~25.7 GB +
+// ~150 MB beacon state, weekly). Headers/bodies/codes for the snapshot→tip
+// catch-up are fetched live (IDC/peers), not bundled; older data missing locally
+// is requested from peers on demand. The beacon-checkpoint seed lets it run
+// embedded consensus validation (Sync-to-tip) without an external CL.
 func minimalSelector() *Selector {
-	return &Selector{Mode: "minimal", Sections: append([]Section{}, snapshotSections...)}
+	s := &Selector{Mode: "minimal", Sections: append([]Section{}, snapshotSections...)}
+	s.Sections = append(s.Sections, beaconCheckpointSection)
+	return s
 }
 
 // full: snapshot + headers + codes + 1-yr hot bodies + txindex (~130 GB). Receipts
@@ -114,6 +155,7 @@ func fullSelector() *Selector {
 	s.Sections = append(s.Sections,
 		Section{Name: "bodies", Patterns: []string{"chain/freezer/bodyc.cidx", "chain/freezer/bodyc.*.cdat"}},
 		Section{Name: "tx-index", Patterns: []string{"chain/freezer/txindex.cidx", "chain/freezer/txindex.*.cdat"}},
+		beaconCheckpointSection, // caplin checkpoint-sync seed for embedded consensus
 	)
 	return s
 }
@@ -130,6 +172,7 @@ func archiveSelector() *Selector {
 		{Name: "witness", Patterns: []string{"chain/freezer/witness.cidx", "chain/freezer/witness.*.cdat"}},
 		{Name: "tx-index", Patterns: []string{"chain/freezer/txindex.cidx", "chain/freezer/txindex.*.cdat"}},
 		{Name: "anchors", Patterns: []string{"chain/freezer/anchorc.cidx", "chain/freezer/anchorc.*.cdat", "chain/freezer/anchorc.blocks"}},
+		beaconArchiveSection, // full-history beacon archive, extreme-compressed
 	}}
 }
 
