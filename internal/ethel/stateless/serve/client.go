@@ -58,6 +58,11 @@ func (s *HTTPSource) get(path string) ([]byte, error) {
 			}
 			continue
 		}
+		if resp.StatusCode == http.StatusNotImplemented {
+			// Optional capability the backend doesn't provide — let callers fall
+			// back (e.g. AnchorHeights → fixed cadence) without masking real errors.
+			return nil, fmt.Errorf("GET %s: %s: %w", path, resp.Status, stateless.ErrUnsupported)
+		}
 		return nil, fmt.Errorf("GET %s: %s: %s", path, resp.Status, strings.TrimSpace(string(body)))
 	}
 }

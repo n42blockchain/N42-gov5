@@ -27,8 +27,13 @@ import (
 //
 // Artifacts are immutable + content-verifiable, so responses are cacheable
 // (a CDN can front everything but the live /head).
-func Handler(svc *Service, rl *jsonrpc.RateLimiter) http.Handler {
+func Handler(svc *Service, rl *jsonrpc.RateLimiter, trusted []*net.IPNet) http.Handler {
 	mux := http.NewServeMux()
+
+	// ipOf is the per-IP limiter key. It honors X-Forwarded-For / X-Real-IP only
+	// from trusted proxies (CDN/reverse-proxy egress); otherwise RemoteAddr, so a
+	// client cannot spoof its bandwidth-limit identity. See jsonrpc.ClientIP.
+	ipOf := func(r *http.Request) string { return jsonrpc.ClientIP(r, trusted) }
 
 	mux.HandleFunc("/head", func(w http.ResponseWriter, r *http.Request) {
 		num, hash, anchor, err := svc.Head()
@@ -46,7 +51,7 @@ func Handler(svc *Service, rl *jsonrpc.RateLimiter) http.Handler {
 			http.Error(w, "bad n", http.StatusBadRequest)
 			return
 		}
-		hs, err := svc.GetHeaders(clientIP(r), n, 1)
+		hs, err := svc.GetHeaders(ipOf(r), n, 1)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -64,7 +69,7 @@ func Handler(svc *Service, rl *jsonrpc.RateLimiter) http.Handler {
 			http.Error(w, "bad n", http.StatusBadRequest)
 			return
 		}
-		b, err := svc.GetAnchor(clientIP(r), n)
+		b, err := svc.GetAnchor(ipOf(r), n)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -82,7 +87,7 @@ func Handler(svc *Service, rl *jsonrpc.RateLimiter) http.Handler {
 			http.Error(w, "bad from/to", http.StatusBadRequest)
 			return
 		}
-		hs, err := svc.GetAnchorHeights(clientIP(r), from, to)
+		hs, err := svc.GetAnchorHeights(ipOf(r), from, to)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -97,7 +102,7 @@ func Handler(svc *Service, rl *jsonrpc.RateLimiter) http.Handler {
 			http.Error(w, "bad n", http.StatusBadRequest)
 			return
 		}
-		b, err := svc.GetWitness(clientIP(r), n)
+		b, err := svc.GetWitness(ipOf(r), n)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -115,7 +120,7 @@ func Handler(svc *Service, rl *jsonrpc.RateLimiter) http.Handler {
 			http.Error(w, "bad from/count", http.StatusBadRequest)
 			return
 		}
-		hs, err := svc.GetHeaders(clientIP(r), from, count)
+		hs, err := svc.GetHeaders(ipOf(r), from, count)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -136,7 +141,7 @@ func Handler(svc *Service, rl *jsonrpc.RateLimiter) http.Handler {
 			http.Error(w, "bad n", http.StatusBadRequest)
 			return
 		}
-		hb, bb, err := svc.GetBlock(clientIP(r), n)
+		hb, bb, err := svc.GetBlock(ipOf(r), n)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -164,7 +169,7 @@ func Handler(svc *Service, rl *jsonrpc.RateLimiter) http.Handler {
 			}
 			hashes = append(hashes, types.BytesToHash(b))
 		}
-		codes, err := svc.GetCodeZ(clientIP(r), hashes)
+		codes, err := svc.GetCodeZ(ipOf(r), hashes)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -201,7 +206,7 @@ func Handler(svc *Service, rl *jsonrpc.RateLimiter) http.Handler {
 			copy(a[:], ab)
 			addrs = append(addrs, a)
 		}
-		b, err := svc.GetAccountMultiproof(clientIP(r), addrs)
+		b, err := svc.GetAccountMultiproof(ipOf(r), addrs)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -217,7 +222,7 @@ func Handler(svc *Service, rl *jsonrpc.RateLimiter) http.Handler {
 			http.Error(w, "bad n", http.StatusBadRequest)
 			return
 		}
-		b, err := svc.GetFullHeader(clientIP(r), n)
+		b, err := svc.GetFullHeader(ipOf(r), n)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -247,7 +252,7 @@ func Handler(svc *Service, rl *jsonrpc.RateLimiter) http.Handler {
 				slots = append(slots, types.BytesToHash(sb))
 			}
 		}
-		b, err := svc.GetAccountProof(clientIP(r), addr, slots)
+		b, err := svc.GetAccountProof(ipOf(r), addr, slots)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -266,11 +271,23 @@ func Handler(svc *Service, rl *jsonrpc.RateLimiter) http.Handler {
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "head": num, "hash": hash.Hex(), "anchor": anchor})
 	})
 
-	var h http.Handler = mux
+	var h http.Handler = onlyGET(mux)
 	if rl != nil {
 		h = jsonrpc.RateLimitMiddleware(rl, h)
 	}
 	return h
+}
+
+// onlyGET rejects non-GET/HEAD methods (all stateless routes are read-only), so a
+// POST/PUT flood can't reach the handlers and responses stay cleanly cacheable.
+func onlyGET(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func writeBytes(w http.ResponseWriter, b []byte) {
@@ -284,32 +301,18 @@ func writeErr(w http.ResponseWriter, err error) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	case errors.Is(err, ErrRateLimited):
 		http.Error(w, err.Error(), http.StatusTooManyRequests)
+	case errors.Is(err, ErrNotSupported):
+		// A capability this backend doesn't provide (e.g. no state trie, no anchor
+		// index) — a non-sensitive signal the client uses to fall back. Distinct
+		// status so it isn't confused with a missing block.
+		http.Error(w, err.Error(), http.StatusNotImplemented)
 	default:
-		http.Error(w, err.Error(), http.StatusNotFound) // backend gap/absent
+		// Backend gap/absent. Do NOT echo err.Error() to the client — it may carry
+		// internal freezer paths / state. Log-worthy detail stays server-side.
+		http.Error(w, "not found", http.StatusNotFound)
 	}
 }
 
 func qn(r *http.Request) (uint64, error) {
 	return strconv.ParseUint(r.URL.Query().Get("n"), 10, 64)
-}
-
-// clientIP mirrors jsonrpc.getClientIP (unexported there): X-Forwarded-For,
-// then X-Real-IP, then RemoteAddr — for the per-IP bandwidth limiter.
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		first := strings.TrimSpace(strings.Split(xff, ",")[0])
-		if ip := net.ParseIP(first); ip != nil {
-			return ip.String()
-		}
-	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		if ip := net.ParseIP(xri); ip != nil {
-			return ip.String()
-		}
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }

@@ -79,6 +79,12 @@ func NewAttestationPool(allow map[types.Address]bool) *AttestationPool {
 	}
 }
 
+// HasAllowlist reports whether the pool restricts which signers count. A pool
+// with no allowlist accepts ANY valid signature, which makes a distinct-signer
+// threshold sybil-defeatable (an attacker signs the public roots with N
+// self-generated keys) — callers exposing the count publicly must require one.
+func (p *AttestationPool) HasAllowlist() bool { return len(p.allowlist) > 0 }
+
 // rootsKey distinguishes attestations claiming different roots for the same block
 // (a fork/disagreement shows as two separate counted groups).
 func rootsKey(stateRoot, receiptRoot types.Hash) string {

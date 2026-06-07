@@ -61,6 +61,12 @@ type anchorListerBackend interface {
 // GetAnchorHeights returns the producer's actual anchor heights in [from,to]
 // (ascending). ErrNotSupported when the backend has no anchor index.
 func (s *Service) GetAnchorHeights(ip string, from, to uint64) ([]uint64, error) {
+	if to < from {
+		return nil, fmt.Errorf("%w: to < from", ErrCapExceeded)
+	}
+	if s.caps.MaxAnchorSpan > 0 && to-from > s.caps.MaxAnchorSpan {
+		return nil, fmt.Errorf("%w: anchor span %d > MaxAnchorSpan %d", ErrCapExceeded, to-from, s.caps.MaxAnchorSpan)
+	}
 	al, ok := s.be.(anchorListerBackend)
 	if !ok {
 		return nil, ErrNotSupported
@@ -98,13 +104,16 @@ type AccountProofResponse struct {
 
 // Caps bound the per-request cost so one call can't be arbitrarily expensive.
 type Caps struct {
-	MaxHeaders    int // max headers per GetHeaders
-	MaxCodeHashes int // max code hashes per GetCode
-	MaxRespBytes  int // hard ceiling on a single response's total bytes
+	MaxHeaders    int    // max headers per GetHeaders
+	MaxCodeHashes int    // max code hashes per GetCode
+	MaxRespBytes  int    // hard ceiling on a single response's total bytes
+	MaxAnchorSpan uint64 // max (to-from) block span per GetAnchorHeights (0 = unbounded)
 }
 
-// DefaultCaps: 256 headers, 64 code hashes, 8 MiB per response.
-func DefaultCaps() Caps { return Caps{MaxHeaders: 256, MaxCodeHashes: 64, MaxRespBytes: 8 << 20} }
+// DefaultCaps: 256 headers, 64 code hashes, 8 MiB per response, 1M-block anchor span.
+func DefaultCaps() Caps {
+	return Caps{MaxHeaders: 256, MaxCodeHashes: 64, MaxRespBytes: 8 << 20, MaxAnchorSpan: 1 << 20}
+}
 
 // Service is the transport-agnostic stateless serving API. Each method takes the
 // caller IP for the per-IP bandwidth limiter; the per-IP REQUEST-RATE limiter
