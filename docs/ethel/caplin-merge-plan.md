@@ -207,3 +207,50 @@ incremental sync model.
 **规模:~33–43K LOC,多 session。** spectest 可延后。
 
 **mobile(#33)独立**:去 header、仅 anchors + IDC witness,不自验 beacon 共识 → **不依赖 caplin 全量追平**,可与 #31 并行。
+
+---
+
+## 2026-06-06 (c) — Caplin 数据量评估(决定 minimal 是否嵌入共识)
+
+用户问题:minimal 档(snapshot 25.7 GB)是否值得嵌入 caplin 来做 **Sync to tip / Consensus
+validation / P2P**;eth_getBalance(latest)/eth_call(latest) 已由 EL snapshot 提供。
+核心要先量化 **caplin 要多少盘**,再决定。
+
+### 实测/规格数字
+
+| 项目 | 数字 | 来源 |
+|:--|--:|:--|
+| **全历史 beacon 区块归档**(caplin snapshots,genesis→tip,压缩) | **20.1 GB / 128 文件** | erigon `seg du` 实测(`docs/plans/.../seg-du-command.md`) |
+| 单 validator 在 BeaconState 占用 | ~137 B(pubkey48+wc32+effbal8+slashed1+4×epoch32 = 121,+balances8+inactivity8) | cltypes.Validator SSZ |
+| mainnet validator 数 | ~1.06–1.08M | 公开链上 |
+| → registry+balances+inactivity 小计 | ~145 MB | 上两行 |
+| **单个 finalized BeaconState**(SSZ 全量) | ~180–230 MB;**snappy ≈ 100–150 MB** | 上 + historical_roots/randao 等定长向量 |
+| snapshot 退休安全边界 | finalized 后 `safetyMargin = 20_000` 块 | `cl/antiquary/antiquary.go:43` |
+
+**关键区分:checkpoint-sync ≠ 全历史归档。**
+- **全历史 caplin = 20 GB**(每个 beacon 区块 genesis→今)。只有"共识档案"用途才需要。**任何 EL 档(minimal/full/archive)都不需要它。**
+- **Checkpoint-sync(弱主观性)只需:** 1 个 finalized BeaconState(**~150 MB**)+ 未 finalize 窗口的最近区块(~2 epoch,极小)+ 之后每 12s 一个 slot(可剪枝)。热盘稳态 ≈ **几百 MB**。
+
+### 能力 → 需求 → 数据增量(minimal 视角)
+
+| 能力 | 需要什么 | 数据增量 | minimal 结论 |
+|:--|:--|--:|:--|
+| eth_getBalance/eth_call(latest) | EL snapshot(已在 minimal) | 0 | **已具备** |
+| Sync to tip(确定 head) | caplin checkpoint-sync **或** 外部可信 head | ~150 MB **运行时拉取**(不进 torrent) | 可嵌入(数据可忽略),**卡在 #31 代码** |
+| Consensus validation(自验 head,零信任) | caplin(fork choice + state transition) | 同 ~150 MB | #31 落地后 **YES**;之前用可信/finalized checkpoint head |
+| P2P(beacon gossip/req-resp) | sentinel + gossip(#31 步骤 6) | 盘 ~0,主要是带宽 | 可选;checkpoint-sync 也能走 req/resp 取块 |
+
+### 决策
+
+1. **数据不是瓶颈。** 把 caplin checkpoint-sync 嵌进 minimal/full,只增 **~150 MB 运行时** beacon
+   state(从 checkpoint-sync 端点拉,**不打进 BitTorrent 分发包**),相对 25.7 GB snapshot 可忽略。
+   ⇒ **manifest/torrent 选择器无需为 caplin 加任何文件**(已在 (a) 完成,无需改)。
+2. **20 GB 全历史 beacon 归档** 仅服务"共识档案"用途,**不纳入任何 EL 档**;若将来要,做成独立可选
+   add-on(类比 senders +38 GB)。
+3. **共识验证的真实成本是 #31 代码移植(~33–43K LOC),不是盘。** #31 落地前,minimal 跟 tip 的方式
+   = EL devp2p + 一个可信/finalized head(checkpoint hash),与 mobile 同模型(信任锚 + 流式跟随)。
+4. **配置面:** minimal/full 的 config 增一个可选 `beaconCheckpointURL`(弱主观性 state 来源)。无 URL
+   时退化为"信任 head 源"模式(当前行为)。
+
+**一句话:** caplin 嵌入 minimal 在数据上几乎免费(~150 MB 运行时,0 分发包增量),值得做;门槛是
+#31 的代码移植而非存储。EL 三档分发包维持 (a) 的组成不变。
