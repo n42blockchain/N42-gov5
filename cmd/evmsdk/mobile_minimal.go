@@ -41,6 +41,9 @@ type minimalNode struct {
 	src    *serve.HTTPSource // raw transport (per-account proofs)
 	capped *cappedSrc        // sync target cap (chunked catch-up)
 	mc     *stateless.MinimalClient
+	// verifiedHead is the highest block whose witness (②) has been replayed and
+	// reconciled with the ①-trusted receiptRoot. MobileFollowTick advances it.
+	verifiedHead uint64
 }
 
 // cappedSrc caps the sync tip so a phone can catch up in bounded steps (bounding
@@ -59,6 +62,33 @@ func (c *cappedSrc) Head() (uint64, error) {
 		return c.cap, nil
 	}
 	return h, nil
+}
+
+// MobileConfig is the single-blob config for a lightweight mobile node.
+// Retention defaults to 900 blocks (the rolling cache window) when 0.
+type MobileConfig struct {
+	IDC            string `json:"idc"`             // IDC base URL serving witness/body/code/proof
+	CheckpointBlk  int64  `json:"checkpointBlock"` // socially-trusted anchor block
+	CheckpointHash string `json:"checkpointHash"`  // 0x.. 32-byte trusted block hash
+	Retention      int64  `json:"retention"`       // rolling window (0 → 900)
+}
+
+// MobileStartFromConfig is the one-call config-file launch: parse a JSON config
+// blob and bootstrap the minimal node. The caller (app or launcher) reads its
+// config file and passes the contents here, then drives MobileFollowTick on a
+// 12 s ticker. Returns "" on success or "error: ...". Retention defaults to 900.
+func MobileStartFromConfig(configJSON string) string {
+	var c MobileConfig
+	if err := json.Unmarshal([]byte(configJSON), &c); err != nil {
+		return "error: parse config: " + err.Error()
+	}
+	if c.IDC == "" || c.CheckpointHash == "" {
+		return "error: config needs idc + checkpointHash"
+	}
+	if c.Retention <= 0 {
+		c.Retention = 900
+	}
+	return MobileMinimalInit(c.IDC, c.CheckpointBlk, c.CheckpointHash, c.Retention)
 }
 
 // MobileMinimalInit bootstraps a minimal node from a socially-trusted checkpoint
@@ -237,52 +267,14 @@ func MobileVerifyBlock(n int64) string {
 			return "error: sync to block: " + err.Error()
 		}
 	}
-	trustedReceipt, ok := minClient.mc.TrustedReceiptRoot(bn)
-	if !ok {
-		return fmt.Sprintf("error: block %d outside trusted/retained window", bn)
-	}
-
-	hdr, err := minClient.src.FullHeader(bn)
-	if err != nil {
-		return "error: fetch full header: " + err.Error()
-	}
-	hdr.ReceiptHash = trustedReceipt // anchor the ② target to the trusted value
-	bodyBytes, err := minClient.src.Body(bn)
-	if err != nil {
-		return "error: fetch body: " + err.Error()
-	}
-	decoded, err := ethel.DecodeBodyBlock(bodyBytes)
-	if err != nil {
-		return "error: decode body: " + err.Error()
-	}
-	wit, err := minClient.src.GetWitness(bn)
-	if err != nil {
-		return "error: fetch witness: " + err.Error()
-	}
-
-	in := &ethel.MinimalVerifyInput{
-		Header:  hdr,
-		Body:    ethel.GethBodyFromDecoded(decoded),
-		Witness: wit,
-	}
-	ancestor := func(m uint64) types.Hash { h, _ := minClient.mc.TrustedHash(m); return h }
-	// On a contract call the replay fetches bytecode by codeHash from the producer
-	// /code endpoint (content-addressed; the reader verifies keccak256==codeHash).
-	codeFetched := 0
-	codeFetch := func(h types.Hash) ([]byte, error) {
-		c, err := minClient.src.Code(h)
-		if err == nil && len(c) > 0 {
-			codeFetched++
-		}
-		return c, err
-	}
+	txCount, codeFetched, verr := minClient.verifyBlockLocked(bn)
 	cfg := params.EthereumMainnetChainConfig
-	engine := ethel.NewEthReplayEngine(cfg)
-
-	verr := ethel.VerifyWitnessReceipt(in, ancestor, cfg, engine, codeFetch)
+	if verr == nil && bn > minClient.verifiedHead {
+		minClient.verifiedHead = bn
+	}
 	b, _ := json.Marshal(map[string]any{
 		"block":       bn,
-		"txCount":     len(decoded.Txs),
+		"txCount":     txCount,
 		"byzantium":   cfg.IsByzantium(bn),
 		"codeFetched": codeFetched,
 		"verified":    verr == nil,
@@ -290,6 +282,114 @@ func MobileVerifyBlock(n int64) string {
 	})
 	return string(b)
 }
+
+// verifyBlockLocked runs layer ② for block bn: fetch full header + body + witness
+// from the IDC, override receiptRoot with the ①-trusted value, and replay the
+// witness through the EVM (missing code fetched by codeHash from /code). Assumes
+// the caller holds minMu and the header chain already covers bn. Returns
+// (txCount, codeFetched, err).
+func (n *minimalNode) verifyBlockLocked(bn uint64) (int, int, error) {
+	trustedReceipt, ok := n.mc.TrustedReceiptRoot(bn)
+	if !ok {
+		return 0, 0, fmt.Errorf("block %d outside trusted/retained window", bn)
+	}
+	hdr, err := n.src.FullHeader(bn)
+	if err != nil {
+		return 0, 0, fmt.Errorf("fetch full header: %w", err)
+	}
+	hdr.ReceiptHash = trustedReceipt // anchor the ② target to the trusted value
+	bodyBytes, err := n.src.Body(bn)
+	if err != nil {
+		return 0, 0, fmt.Errorf("fetch body: %w", err)
+	}
+	decoded, err := ethel.DecodeBodyBlock(bodyBytes)
+	if err != nil {
+		return 0, 0, fmt.Errorf("decode body: %w", err)
+	}
+	wit, err := n.src.GetWitness(bn)
+	if err != nil {
+		return 0, 0, fmt.Errorf("fetch witness: %w", err)
+	}
+	in := &ethel.MinimalVerifyInput{
+		Header:  hdr,
+		Body:    ethel.GethBodyFromDecoded(decoded),
+		Witness: wit,
+	}
+	ancestor := func(m uint64) types.Hash { h, _ := n.mc.TrustedHash(m); return h }
+	codeFetched := 0
+	codeFetch := func(h types.Hash) ([]byte, error) {
+		c, err := n.src.Code(h)
+		if err == nil && len(c) > 0 {
+			codeFetched++
+		}
+		return c, err
+	}
+	cfg := params.EthereumMainnetChainConfig
+	engine := ethel.NewEthReplayEngine(cfg)
+	verr := ethel.VerifyWitnessReceipt(in, ancestor, cfg, engine, codeFetch)
+	return len(decoded.Txs), codeFetched, verr
+}
+
+// MobileFollowTick is the witness-verified 12 s follow step: it advances ① to the
+// IDC tip, then replays ② (witness EVM) for each new block since the last verified
+// head, within the retention window, up to maxVerify blocks per call (battery
+// bound; <=0 means all new blocks). Drive it on a 12 s ticker — each new block is
+// header-trusted AND witness-verified before it's counted. Returns JSON
+// {head, hash, verifiedHead, newVerified, failedAt, error}.
+func MobileFollowTick(maxVerify int64) string {
+	minMu.Lock()
+	defer minMu.Unlock()
+	if minClient == nil {
+		return "error: not initialized"
+	}
+	minClient.capped.cap = 0 // ① to tip
+	if _, err := minClient.mc.Sync(); err != nil {
+		return "error: sync: " + err.Error()
+	}
+	head, hash := minClient.mc.Head()
+	// First tick: anchor verifiedHead just below head so we verify forward from here
+	// (catch-up of the whole retained window on tick 1 would be heavy; the window is
+	// header+proof trusted regardless — ② proves execution of blocks seen live).
+	if minClient.verifiedHead == 0 || minClient.verifiedHead < head-min64(head, retainedDepth(minClient)) {
+		if head > 0 {
+			minClient.verifiedHead = head - 1
+		}
+	}
+	newVerified := 0
+	var failedAt uint64
+	var failErr error
+	for bn := minClient.verifiedHead + 1; bn <= head; bn++ {
+		if maxVerify > 0 && int64(newVerified) >= maxVerify {
+			break
+		}
+		if _, _, err := minClient.verifyBlockLocked(bn); err != nil {
+			failedAt, failErr = bn, err
+			break
+		}
+		minClient.verifiedHead = bn
+		newVerified++
+	}
+	b, _ := json.Marshal(map[string]any{
+		"head":         head,
+		"hash":         hash.Hex(),
+		"verifiedHead": minClient.verifiedHead,
+		"newVerified":  newVerified,
+		"failedAt":     failedAt,
+		"error":        errStr(failErr),
+	})
+	return string(b)
+}
+
+func min64(a, b uint64) uint64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// retainedDepth is the rolling-window depth (retention blocks); ② only verifies
+// within it since older receiptRoots aren't retained.
+func retainedDepth(n *minimalNode) uint64 { return uint64(n.mc.Retained()) }
 
 func errStr(e error) string {
 	if e == nil {
