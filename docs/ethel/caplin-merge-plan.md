@@ -437,4 +437,14 @@ stages 文件已就位(编译通过),两条路都用得上;先定方向再动手
 - **live gossip(commit 1ea20a05):** `gossipBlockLoop` 直订 `/eth2/<forkDigest>/beacon_block/ssz_snappy` → snappy 解压 + SSZ decode → `OnBlock(fullValidation)`,sub-slot head 延迟。blockSyncLoop(req/resp)留作可靠 backstop + fork 切换覆盖。
 - **步骤 8 对抗脚手架(commit e523827b):** head→EL 决策抽成 `resolveHeadExec(headResolver, beaconCfg)` —— **只接受 fork-choice store,无 engine/EL tip 访问**,对抗性质结构化可测。`independent_forkchoice_test.go` 4 个 TestResolveHeadExec_* 全绿(head==fork-choice head exec、finalized 回退到 head 不碰 EL tip、payload 未知拒驱动、GetHead err 传播)。runbook=`docs/ethel/caplin-independent-forkchoice-runbook.md`。
 
-**#34 实现 + 优化 + 对抗脚手架全部闭合。** 默认开(`--caplin.sentinel.discovery.port` 默认 9000 + checkpoint url)。剩纯 ops/加固:live 双链 testnet 实证 + fork-digest gossip 自动 resubscribe + 端口拆分/NAT/bootnode 配置面。
+**#34 实现 + 优化 + 对抗脚手架全部闭合。** 默认开(`--caplin.sentinel.discovery.port` 默认 9000 + checkpoint url)。
+
+### 生产加固 ✅(commit 9934f035)
+
+- **端口拆分**:discv5 UDP=`SentinelDiscoveryPort`,libp2p TCP=`SentinelPort`(driver 之前 TCP 也用了 discovery port)。
+- **NAT**:`--caplin.nat extip:<ip>` 在 ENR/multiaddr 广播可达外部 IP;`depshim/nat.Parse`(extip:/none;stun/upnp/pmp 报 unsupported)+ nat_test.go。
+- **bootnodes**:`--caplin.bootnodes`(可重复)追加 operator ENR 到 preset,clone 不污染共享 preset。
+- **bind addr** `--caplin.discovery.addr` + `--caplin.max-peer-count` 可配。
+- conf.BeaconCfg 加 DiscoveryAddr/NAT/MaxPeerCount;cmd/eth-el 接 4 新 flag;runbook 含 network-flags 表。
+
+**剩纯 ops:** live 双链 testnet 实证 + fork-digest gossip 自动 resubscribe + stun/upnp NAT 自动解析 + static-peer list。
