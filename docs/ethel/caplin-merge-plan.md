@@ -272,9 +272,9 @@ validation / P2P**;eth_getBalance(latest)/eth_call(latest) 已由 EL snapshot �
 | Phase | 包/文件 | N42 现状 | 状态 |
 |:--|:--|:--|:--|
 | 1 | `persistence/state/{slot_data,epoch_data}.go` | 缺 | **✅ DONE**(commit c77d7bb2,测试绿) |
-| 2 | **snapshotsync 地基(改用 DB-fallback shim,见下)** + `persistence/state/state_accessors.go` | 缺 | **✅ DONE**(commit 4063d76a,测试绿) |
-| 3 | `persistence/state/historical_states_reader/*`(依赖 state_accessors + snapshot view) | 缺 | **下一步** |
-| 3 | `persistence/blob_storage/{blob_db,data_column_db}.go`(N42 只有 interface.go) | 缺实现 | 可并行(依赖少) |
+| 2 | **snapshotsync 地基(改用 DB-fallback shim,见下)** + `persistence/state/state_accessors.go` | 缺 | **✅ DONE**(commit 4063d76a;+ build-tag 修复 35c58de2) |
+| 3a | `persistence/state/historical_states_reader/*`(~1800 LOC)+ 10 个 Gloas/ePBS kv 表 + freezeblocks `BeaconSnapshotReader` 接口 | 缺 | **✅ DONE**(commit b916ef08,cl 全绿) |
+| 3b | `persistence/blob_storage/{blob_db,data_column_db}.go` 真实现 | 只有 interface.go + Noop | **已延后**:Noop 对 follower 关键路径足够(同快照 shim 逻辑;真实现需 sentinel ssz_snappy) |
 | 4 | `phase1/execution_client/block_collector/*`、`phase1/network/{beacon,backward_beacon,blob}_downloader.go` | 缺/不全 | 待 3(freezeblocks shim 已就位) |
 | 5 | `antiquary/{antiquary,beacon_states_collector,state_antiquary}.go`(N42 只有 utils.go) | stub | 待 3+4 |
 | 6 | `phase1/stages/*.go`(ConsensusClStages 同步循环,~2711 LOC)**关键路径** | 缺 | 最后,待全部 |
