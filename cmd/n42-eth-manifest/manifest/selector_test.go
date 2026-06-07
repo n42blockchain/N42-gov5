@@ -62,11 +62,9 @@ func TestWalkFiles_MinimalSelectsOnlyMinimal(t *testing.T) {
 	}
 	sort.Strings(got)
 
+	// minimal is now snapshot-ONLY; headers/codes/bodies are catch-up (runtime),
+	// not bundled.
 	want := []string{
-		"chain/freezer/codes.0000.cdat",
-		"chain/freezer/codes.cidx",
-		"chain/freezer/headerc.0000.cdat",
-		"chain/freezer/headerc.cidx",
 		"snapshot/accounts.0-25099999.ef",
 		"snapshot/accounts.0-25099999.idx",
 		"snapshot/accounts.0-25099999.val.zst",
@@ -138,65 +136,60 @@ func TestWithSenders_AddsSendersSection(t *testing.T) {
 	}
 }
 
-func TestWalkFiles_ArchiveSupersetOfFull(t *testing.T) {
+// archive and full are NOT super/subset under the corrected bundles: full ships
+// the state snapshot (and no witness/anchors); archive ships witness + anchors
+// (and rebuilds state from them, so no snapshot). Both share headers/bodies/
+// codes/txindex.
+func TestWalkFiles_ArchiveVsFull(t *testing.T) {
 	root := touchTree(t, []string{
 		"chain/freezer/headerc.cidx",
 		"chain/freezer/bodyc.cidx",
-		"chain/freezer/receipts.cidx",
-		"chain/freezer/accthist.cidx",
-		"chain/freezer/storhist.cidx",
+		"chain/freezer/codes.cidx",
 		"chain/freezer/txindex.cidx",
 		"chain/freezer/witness.cidx",
 		"chain/freezer/witness.0000.cdat",
-		"chain/freezer/codes.cidx",
+		"chain/freezer/anchorc.cidx",
+		"chain/freezer/anchorc.0000.cdat",
 		"snapshot/accounts.0-25099999.idx",
+		"snapshot/accounts.0-25099999.ef",
+		"snapshot/accounts.0-25099999.val.zst",
 		"snapshot/storage.0-25099999.idx",
+		"snapshot/storage.0-25099999.ef",
+		"snapshot/storage.0-25099999.val.zst",
 	})
 	fullSel, _ := SelectorFor("full")
 	archSel, _ := SelectorFor("archive")
-
 	fullFiles, _ := WalkFiles(root, fullSel)
 	archFiles, _ := WalkFiles(root, archSel)
 
-	if len(archFiles) <= len(fullFiles) {
-		t.Errorf("archive should include strictly more files than full (full=%d arch=%d)",
-			len(fullFiles), len(archFiles))
+	sect := func(files []*FileEntry) map[string]bool {
+		m := map[string]bool{}
+		for _, f := range files {
+			m[f.Section] = true
+		}
+		return m
 	}
+	fs, as := sect(fullFiles), sect(archFiles)
 
-	full := make(map[string]struct{})
-	for _, f := range fullFiles {
-		full[f.Path] = struct{}{}
+	// full has snapshot, NOT witness/anchors.
+	if !fs["state-accounts"] || !fs["state-storage"] {
+		t.Errorf("full must ship the state snapshot")
 	}
-	for _, f := range fullFiles {
-		var found bool
-		for _, a := range archFiles {
-			if a.Path == f.Path {
-				found = true
-				break
-			}
+	if fs["witness"] || fs["anchors"] {
+		t.Errorf("full must NOT ship witness/anchors")
+	}
+	// archive has witness + anchors, NOT snapshot.
+	if !as["witness"] || !as["anchors"] {
+		t.Errorf("archive must ship witness + anchors")
+	}
+	if as["state-accounts"] || as["state-storage"] {
+		t.Errorf("archive must NOT ship the snapshot (rebuilds state from witness)")
+	}
+	// shared: headers/bodies/code/tx-index in both.
+	for _, s := range []string{"headers", "bodies", "code", "tx-index"} {
+		if !fs[s] || !as[s] {
+			t.Errorf("both full and archive must ship %q (full=%v archive=%v)", s, fs[s], as[s])
 		}
-		if !found {
-			t.Errorf("archive missing full file: %s", f.Path)
-		}
-	}
-
-	// witness should be in archive only.
-	var witnessInFull, witnessInArch bool
-	for _, f := range fullFiles {
-		if f.Section == "witness" {
-			witnessInFull = true
-		}
-	}
-	for _, f := range archFiles {
-		if f.Section == "witness" {
-			witnessInArch = true
-		}
-	}
-	if witnessInFull {
-		t.Errorf("witness must not be in full")
-	}
-	if !witnessInArch {
-		t.Errorf("witness must be in archive")
 	}
 }
 
@@ -210,7 +203,9 @@ func TestMissingSections_ReportsGaps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MissingSections: %v", err)
 	}
-	wantMissing := map[string]bool{"code": true, "state-accounts": true, "state-storage": true}
+	// minimal is now snapshot-only (no headers/code section); both state sections
+	// are missing here since all snapshot/state files are absent.
+	wantMissing := map[string]bool{"state-accounts": true, "state-storage": true}
 	for _, m := range missing {
 		delete(wantMissing, m)
 	}
