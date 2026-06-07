@@ -278,7 +278,8 @@ validation / P2P**;eth_getBalance(latest)/eth_call(latest) 已由 EL snapshot �
 | 5 | `antiquary/{antiquary,beacon_states_collector,state_antiquary}.go`(~72KB)+ downloader/snaptype shim + Dump* fail-loud stub | stub | **✅ DONE**(commit 98266346;依赖 3a 满足,提前于 4) |
 | 4a | `phase1/network/{beacon,backward_beacon,blob}_downloader.go` + blob_storage Verify… stub | 不全 | **✅ DONE**(commit d8cb154d) |
 | 4b | `phase1/execution_client/block_collector/*` + depshim/types.Block 2 accessor + mdbx 适配 | 缺 | **✅ DONE**(commit 08e87433) |
-| 6 | `phase1/stages/*.go`(ConsensusClStages 同步循环,~2711 LOC,6 文件)**关键路径** | 缺 | **进行中**:文件已 port(干净 import 重写),卡在 8 个版本漂移符号(见下);已暂移出树保持 build 绿 |
+| 6 | `phase1/stages/*.go`(ConsensusClStages 同步循环,~2711 LOC,6 文件)**关键路径** | 缺 | **✅ DONE**(commit 75dec3e5):8 个版本漂移符号全补齐,stages 编译通过,full cl 绿 |
+| 7 | wiring:仿 erigon `cmd/caplin/caplin1/run.go` 把 forkchoice+sentinel+ClStages 接进 `service.go Start()`(现只开 MDBX) | 缺 | **下一步** → #32 |
 | 7 | wiring:仿 erigon `cmd/caplin/caplin1/run.go` 把 forkchoice+sentinel+ClStages 接进 `service.go Start()`(现只开 MDBX) | — | #32 |
 
 **关键策略转变(Phase 2):放弃整体移植 erigon 的 snapshot-distribution 子系统,改用 DB-fallback shim。**
