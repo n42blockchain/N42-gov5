@@ -23,8 +23,8 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/internal/cl/cltypes"
-	"github.com/n42blockchain/N42/internal/cl/rpc"
 	common "github.com/n42blockchain/N42/internal/cl/depshim/common"
+	"github.com/n42blockchain/N42/internal/cl/rpc"
 	"github.com/n42blockchain/N42/lib/log/v3"
 )
 
