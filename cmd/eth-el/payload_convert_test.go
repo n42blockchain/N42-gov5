@@ -27,6 +27,7 @@ import (
 	"github.com/n42blockchain/N42/internal/cl/cltypes/solid"
 	depcommon "github.com/n42blockchain/N42/internal/cl/depshim/common"
 	"github.com/n42blockchain/N42/internal/cl/depshim/engineapi/engine_types"
+	deptypes "github.com/n42blockchain/N42/internal/cl/depshim/types"
 	"github.com/n42blockchain/N42/internal/cl/phase1/execution_client"
 )
 
@@ -299,9 +300,9 @@ func TestDepAttrsToAPIv3_FieldMapping(t *testing.T) {
 		Timestamp:             1_747_000_000,
 		PrevRandao:            depcommon.Hash{0x11},
 		SuggestedFeeRecipient: depcommon.Address{0x22},
-		Withdrawals: []*engine_types.Withdrawal{
-			{Index: 1, ValidatorIndex: 5, Address: depcommon.Address{0xaa}, Amount: 1_000_000_000},
-			{Index: 2, ValidatorIndex: 6, Address: depcommon.Address{0xbb}, Amount: 2_000_000_000},
+		Withdrawals: []*deptypes.Withdrawal{
+			{Index: 1, Validator: 5, Address: depcommon.Address{0xaa}, Amount: 1_000_000_000},
+			{Index: 2, Validator: 6, Address: depcommon.Address{0xbb}, Amount: 2_000_000_000},
 		},
 		ParentBeaconBlockRoot: &root,
 	}
