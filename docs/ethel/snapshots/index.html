@@ -37,57 +37,57 @@
 <div class="wrap">
   <h1>N42 <span class="b">eth-el</span> Snapshots</h1>
   <p class="sub">Pick a tier · download over BitTorrent · catch up via devp2p · stay live at 12 s/block.</p>
-  <p class="meta">Ethereum-mainnet-compatible · Head <b>25,252,185</b> · 3,509,958,650 txs · State snapshot H₀ <b>25,188,781</b> · Sizes measured on-disk (shipped = zstd, no local intermediates).</p>
+  <p class="meta">Ethereum-mainnet-compatible · Head <b>25,252,185</b> · 3,509,958,650 txs · State snapshot H₀ <b>25,188,781</b> · Sizes = composition targets (post-rescope selectors); derivable data rebuilt locally, not downloaded.</p>
 
   <div class="grid">
     <div class="card">
       <span class="tag">stateless · 手机/嵌入</span>
       <h3>mobile</h3>
-      <div class="sz">~10 <small>GB</small></div>
-      <p>Trustless witness+anchor verifier. No local state — streams witness &amp; code from an IDC per block, recomputes stateRoot, checks vs a signed anchor.</p>
-      <div class="use">anchors 5.0 + headers 4.9<br>RPC:验证型(无 state 查询)</div>
+      <div class="sz">~MB <small>app+config</small></div>
+      <p>No file bundle — app binary + checkpoint config {block, hash, IDC}. Streams header/body/witness/code per block, recomputes stateRoot vs the trusted header chain. Rolling 900-block in-memory state overlay.</p>
+      <div class="use">无分发包(流式 IDC)<br>RPC:验证型 + overlay 余额(900块),miss 回退证明</div>
     </div>
     <div class="card">
       <span class="tag">snapshot-direct</span>
       <h3>minimal</h3>
-      <div class="sz">~37 <small>GB</small></div>
-      <p>Compact RecSplit+EF state snapshot at H₀ (no 234 GB MDBX, no trie). Serves state RPC (balance/code/storage/call) at head.</p>
-      <div class="use">snapshot 25.7 + headers 4.9 + codes 6.0<br>RPC:tip state,无历史 tx/log</div>
+      <div class="sz">~25.7 <small>GB</small></div>
+      <p>Compact RecSplit+EF state snapshot at H₀ ONLY (no 234 GB MDBX, no trie). Headers/bodies/codes for snapshot→tip catch-up are fetched live, not bundled.</p>
+      <div class="use">snapshot 25.7(headers/codes/bodies 运行时拉)<br>RPC:tip state,无历史 tx/log</div>
     </div>
     <div class="card">
       <span class="tag">EIP-4444 · 1yr · 生产推荐</span>
       <h3>full</h3>
-      <div class="sz">~245 <small>GB</small></div>
-      <p>minimal + <b>1 year of bodies</b> (EIP-4444; the 96 GB hot window) + receipts + history indexes. Full RPC for ~1 yr; older bodies fetched 1-of-N from cold seeders.</p>
-      <div class="use">+ hot bodies 91.5 + receipts 63 + accthist 13 + storhist 28 + txindex 13<br>RPC:1yr 全功能,冷区 1-of-N 取回</div>
+      <div class="sz">~137 <small>GB</small></div>
+      <p>snapshot + headers + codes + <b>1 year of hot bodies</b> (EIP-4444, ~97 GB) + 1-yr txindex. Full RPC for ~1 yr; older bodies fetched 1-of-N from cold seeders. Receipts/history rebuilt, not shipped.</p>
+      <div class="use">snapshot 25.7 + headers 5 + codes 6 + 1yr bodies 97 + txindex ~3<br>RPC:1yr 全功能,冷区 1-of-N 取回</div>
     </div>
     <div class="card flex">
       <span class="tag">witness-replay · 秀肌肉 💪</span>
       <h3>archive</h3>
-      <div class="sz">~850 <small>GB</small></div>
-      <p>Ships the <b>witness stream (184 GB)</b> instead of changesets (435 GB) — <b class="g">−250 GB</b>. Replay the chain from witness in a few hours to materialize state + changesets + receipts on demand.</p>
-      <div class="use">all bodies 616 + witness 184 + minimal 37 + indexes 13<br>下载后 witness-replay 几小时 → 重建 CS/state,可 eth_getProof @ 任意高度</div>
+      <div class="sz">~809 <small>GB</small></div>
+      <p>Raw materials only — headers + bodies(all) + codes + witness + txindex + anchors. State, receipts, changesets, history are <b class="g">rebuilt locally</b> by witness-replay (saves ~640 GB download).</p>
+      <div class="use">headers 5 + bodies 601 + codes 6 + witness 179 + txindex 13 + anchors 5<br>下载后 witness-replay 几小时 → 重建 state/CS/receipts/his,可 eth_getProof @ 任意高度</div>
     </div>
   </div>
 
-  <h2>What each tier ships (measured · shipped/zstd)</h2>
+  <h2>What each tier ships (composition targets)</h2>
   <table>
     <tr><th>Component</th><th class="n">Size</th><th>mobile</th><th>minimal</th><th>full (1yr)</th><th>archive</th></tr>
-    <tr><td>anchors (BlockProof)</td><td class="n">5.0 GB</td><td>✓</td><td></td><td></td><td>✓</td></tr>
-    <tr><td>headers (columnar)</td><td class="n">4.9 GB</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td></tr>
-    <tr><td>state snapshot — accounts (RecSplit+EF)</td><td class="n">4.25 GB</td><td></td><td>✓</td><td>✓</td><td>✓</td></tr>
-    <tr><td>state snapshot — storage</td><td class="n">21.5 GB</td><td></td><td>✓</td><td>✓</td><td>✓</td></tr>
-    <tr><td>codes (by codeHash)</td><td class="n">6.0 GB</td><td></td><td>✓</td><td>✓</td><td>✓</td></tr>
-    <tr><td>bodies — hot 1 yr (EIP-4444)</td><td class="n">91.5 GB</td><td></td><td></td><td>✓</td><td>—</td></tr>
-    <tr><td>bodies — all</td><td class="n">616 GB</td><td></td><td></td><td>cold 1-of-N</td><td>✓</td></tr>
-    <tr><td>receipts</td><td class="n">63 GB*</td><td></td><td></td><td>✓</td><td>✓</td></tr>
-    <tr><td>history idx (accthist+storhist)</td><td class="n">41 GB*</td><td></td><td></td><td>✓</td><td>✓</td></tr>
-    <tr><td>txindex (txhash→block)</td><td class="n">13.2 GB</td><td></td><td></td><td>✓</td><td>✓</td></tr>
-    <tr><td>witness</td><td class="n">184 GB</td><td>stream</td><td></td><td></td><td>✓</td></tr>
+    <tr><td>anchors (BlockProof)</td><td class="n">5 GB</td><td>stream</td><td></td><td></td><td>✓</td></tr>
+    <tr><td>headers (columnar)</td><td class="n">5 GB</td><td>stream</td><td>live</td><td>✓</td><td>✓</td></tr>
+    <tr><td>state snapshot — accounts (RecSplit+EF)</td><td class="n">4.25 GB</td><td></td><td>✓</td><td>✓</td><td>rebuilt</td></tr>
+    <tr><td>state snapshot — storage</td><td class="n">21.5 GB</td><td></td><td>✓</td><td>✓</td><td>rebuilt</td></tr>
+    <tr><td>codes (by codeHash)</td><td class="n">6 GB</td><td>stream(hot)</td><td>live</td><td>✓</td><td>✓</td></tr>
+    <tr><td>bodies — hot 1 yr (EIP-4444)</td><td class="n">97 GB</td><td></td><td></td><td>✓</td><td>—</td></tr>
+    <tr><td>bodies — all</td><td class="n">601 GB</td><td></td><td></td><td>cold 1-of-N</td><td>✓</td></tr>
+    <tr><td>txindex (txhash→block)</td><td class="n">13 GB</td><td></td><td></td><td>1-yr</td><td>✓</td></tr>
+    <tr><td>witness</td><td class="n">179 GB</td><td>stream</td><td></td><td></td><td>✓</td></tr>
+    <tr><td>receipts</td><td class="n">182 GB</td><td></td><td></td><td>latest-win</td><td><b class="g">rebuilt</b></td></tr>
+    <tr><td>history idx (accthist+storhist)</td><td class="n">41.5 GB</td><td></td><td></td><td>rebuilt</td><td><b class="g">rebuilt</b></td></tr>
     <tr><td>changesets (acctcs+storcs)</td><td class="n">435 GB</td><td></td><td></td><td></td><td><b class="g">rebuilt</b></td></tr>
-    <tr class="total"><td>Download total</td><td class="n"></td><td>~10 GB</td><td>~37 GB</td><td>~245 GB</td><td>~850 GB</td></tr>
+    <tr class="total"><td>Bundle total</td><td class="n"></td><td>~MB</td><td>~25.7 GB</td><td>~137 GB</td><td>~809 GB</td></tr>
   </table>
-  <p class="note">* receipts / history-idx 为规格值(`ethexec receipt-copy` / `history-build` 产出,full/archive 需构建)。<b class="g">archive 不下 435 GB changesets</b> —— 由 witness-replay 本地重建(省 250 GB)。state snapshot 是紧凑 RecSplit+EF(~1.8 bit/key),不是 234 GB MDBX。senders 不发(ecrecover 可derive,可选 +38 GB add-on)。</p>
+  <p class="note"><b class="g">archive 只下原料</b>(headers+bodies+codes+witness+txindex+anchors)—— state / receipts / changesets / history 全由 witness-replay 本地重建(省 ~640 GB)。state snapshot 是紧凑 RecSplit+EF(~1.8 bit/key),不是 234 GB MDBX。senders 不发(ecrecover 可derive,可选 +38 GB add-on)。共识(Sync-to-tip/验证)= caplin checkpoint-sync,仅 +~150 MB 运行时 beacon state(不进分发包,#31 代码项)。20 GB 全 beacon 归档为独立可选 add-on,不属任何 EL 档。</p>
 
   <h2>Bootstrap</h2>
   <pre># 1. fetch + verify tier manifest (blake2b/file + sha256 manifest_id; reproduced by N producers)
@@ -108,11 +108,11 @@ n42-eth-snapshot catch-up --datadir D:/n42 ; n42 --syncmode full --el.devp2p
 
   <h2>Status</h2>
   <p class="note">
-    <span class="pill ok">ready</span> all 4 tier manifests built + verified (re-hash, 0 mismatch):
-    mobile 4.62 GB <code>8524ab26</code> · minimal 34 GB <code>0cb9b1a2</code> · full 828.66 GB <code>1030ae62</code> · archive 1000.29 GB <code>e22824b4</code>.
-    Components: compact snapshot 25.7 GB · headers · bodies(hot+cold) · codes · receipts 182 GB · accthist+storhist 41.5 GB (N42-native build, sample-verified) · witness · anchors · txindex.
+    <span class="pill ok">ready</span> rescoped tier selectors (mobile=no-bundle · minimal=snapshot-only · full=+1yr-hot-bodies · archive=raw-materials) + selector tests green.
+    Data on disk to tip 25,252,185: compact snapshot 25.7 GB · headers · bodies(hot+cold) · codes · receipts 182 GB · accthist+storhist 41.5 GB (N42-native build, sample-verified) · witness · anchors · txindex.
+    Mobile: 900-block in-memory overlay + hot code cache wired (`MobileFollowTick` / `MobileBalanceOf`).
     Tooling: <code>n42-eth-manifest</code> (mobile/minimal/full/archive) · <code>n42-eth-snapshot</code> (fetch/verify/catch-up/follow) · <code>n42-hist-from-freezer</code> · <code>n42-history-expiry --interval</code> (prune) · coldresolve 1-of-N (tested). &nbsp;
-    <span class="pill warn">TODO</span> per-tier .torrent/magnet seed-prep · manifest signing/hosting · receipts compression (182→~63 GB).
+    <span class="pill warn">TODO</span> regenerate minimal/full/archive manifests from rescoped selectors (full needs a hot-only-bodies datadir) · per-tier .torrent/magnet seed-prep · manifest signing/hosting · caplin checkpoint-sync embed (#31).
   </p>
 </div>
 </body>

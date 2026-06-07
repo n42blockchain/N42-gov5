@@ -4,64 +4,85 @@ Ethereum-mainnet-compatible execution layer. Pick a tier, download over
 BitTorrent, catch up via devp2p, stay live at 12 s/block.
 
 - **Head:** block 25,252,185 · **Txs:** 3,509,958,650 · **State snapshot H₀:** 25,188,781
-- Sizes are **measured on-disk** (shipped = zstd, no local intermediates).
-- All four tier manifests are **built and verified** (`n42-eth-snapshot verify`,
-  re-hash every file, 0 mismatch).
+- Sizes are **composition targets** (post-rescope selectors). The shipped bundle
+  is the cold/immutable data only; everything derivable (state from snapshot,
+  receipts/changesets/history from witness) is rebuilt locally, not downloaded.
+- Tier file selection lives in `cmd/n42-eth-manifest/manifest/selector.go`
+  (mobile / minimal / full / archive). Manifests are regenerated from the live
+  datadir per release (`n42-eth-manifest` → `n42-eth-snapshot verify`).
 
 ## Tiers
 
-| Tier | Download | Files | manifestID | RPC capability |
-|:--|--:|--:|:--|:--|
-| **mobile** | **4.62 GB** | 5 | `8524ab26…415` | stateless verify; state via verified IDC proofs; no historical tx/log locally |
-| **minimal** | **34.13 GB** | 16 | `0cb9b1a2…0ae` | tip state RPC (balance/code/storage/call); no historical bodies |
-| **full** (EIP-4444 1yr) | **828.66 GB** | 489 | `1030ae62…c84` | minimal + ~1yr bodies/receipts/logs/tx-by-hash; older bodies 1-of-N from cold seeders |
-| **archive** | **1000.29 GB** | 583 | `e22824b4…b54` | full + witness → replay any block, eth_getProof at any height, on-demand changeset/state |
+| Tier | Download | Bundle | RPC capability |
+|:--|--:|:--|:--|
+| **mobile** | **~MB (app + config)** | no file bundle — app binary + checkpoint config `{block, hash, IDC URL}` | stateless verify; state via verified IDC proofs + a rolling 900-block in-memory overlay; no historical tx/log locally |
+| **minimal** | **~25.7 GB** | compact state snapshot ONLY | tip state RPC (balance/code/storage/call); headers/bodies/codes for snapshot→tip are fetched live, not bundled |
+| **full** (EIP-4444 1yr) | **~137 GB** | snapshot + headers + codes + 1-yr hot bodies + 1-yr txindex | minimal + ~1 yr bodies/tx-by-hash; older bodies 1-of-N from cold seeders; receipts/logs serve the latest window |
+| **archive** | **~809 GB** | raw materials: headers + bodies + codes + witness + txindex + anchors | replay witness → materialize state + changesets + receipts; `eth_getProof` / state at any height |
 
-> `manifestID` = sha256 of the sorted file list (blake2b-256 per file inside).
-> Full lists: `D:/n42-release/manifest-{mobile,minimal,full,archive}.json`.
+> Consensus (Sync-to-tip / Consensus-validation): embedding caplin checkpoint-sync
+> adds only **~150 MB runtime** beacon state (fetched from a checkpoint URL, **not**
+> in the torrent). It is a code-merge item (#31), not a download-size item — see
+> `docs/ethel/caplin-merge-plan.md` (2026-06-06 (c) evaluation). EL tier bundles
+> are unaffected by it.
 
-### mobile — stateless witness+anchor verifier
-Local data is ONLY the signed anchors (BlockProof trust roots, 4.62 GB). Headers,
-witness, and code are **streamed from an IDC per block**, the stateRoot is
-recomputed and checked against an anchor via the parentHash chain. Account/storage
-queries are served by **verified IDC proofs** (`VerifyAccountInclusion` against the
-trusted stateRoot). Caches the most recent ~900 blocks + their updated state.
+### mobile — stateless witness+anchor verifier (no file bundle)
+The phone ships the **app + a checkpoint config blob** (`MobileConfig{IDC,
+CheckpointBlk, CheckpointHash, Retention}`); there is nothing to download/seed.
+Per block it streams header/body/witness/code from an IDC, recomputes the
+stateRoot, and checks it against the ①-trusted header chain (parentHash from the
+socially-trusted checkpoint). Each verified block's post-state changeset is
+folded into a **rolling 900-block in-memory overlay** (`MobileFollowTick`), so
+`MobileBalanceOf` answers from RAM (`source:overlay`) and only falls back to a
+verified EIP-1186 proof (`source:proof`) on a miss. Contract bytecode is a small
+hot-only LRU (re-fetched from IDC `/code` on eviction). Nothing is written to
+disk.
 
 ### minimal — snapshot-direct
-Compact RecSplit+EF state snapshot at H₀ (≈25.7 GB; **not** the 234 GB MDBX, no
-trie) + headers + codes. Serves state RPC at head; no historical bodies.
+Compact RecSplit+EF state snapshot at H₀ (≈25.7 GB; **not** a 234 GB MDBX, no
+trie). Headers/bodies/codes for the snapshot→tip catch-up are fetched live from
+the IDC/peers; older data missing locally is requested from peers on demand.
+Serves state RPC at head.
 
 ### full — EIP-4444, 1-year window (production recommended)
-minimal + **1 year of bodies** (the 96 GB hot window) + receipts + history
-indexes + txindex. Full RPC for ~1 yr; bodies older than the window stay on cold
-seeders, fetched 1-of-N on demand via `coldresolve`. EIP-4444 prune runs on a
-schedule (`n42-history-expiry --interval 168h`).
+snapshot + headers + codes + **1 year of hot bodies** (the ~97 GB EIP-4444
+window) + 1-yr txindex. Full RPC for ~1 yr; bodies older than the window stay on
+cold seeders, fetched 1-of-N on demand via `coldresolve`. Receipts/history are
+**not** shipped — they serve the latest window or are rebuilt. EIP-4444 prune
+runs on a schedule (`n42-history-expiry --interval 168h`).
 
 ### archive — witness-replay (💪)
-Ships the **witness stream (184 GB)** instead of changesets (435 GB) — **−250 GB**.
-Replay the chain from witness in a few hours (~2,900 blk/s) to materialize state +
-changesets + receipts on demand, enabling `eth_getProof` and state at any height.
+Ships **raw materials only** — headers + bodies(all) + codes + witness + txindex
++ anchors. State, receipts, changesets, and history are **regenerated locally**
+by replaying the witness from genesis (~2,900 blk/s, a few hours) — saving the
+~640 GB those derived datasets would otherwise add. Enables `eth_getProof` and
+state at any height.
 
-## Components (measured, shipped/zstd)
+## Components (composition targets)
 
 | Component | Size | mobile | minimal | full | archive |
 |:--|--:|:-:|:-:|:-:|:-:|
-| anchors (BlockProof) | 5.0 GB | ✓ | | | ✓ |
-| headers (columnar) | 4.9 GB | stream | ✓ | ✓ | ✓ |
-| state snapshot — accounts | 4.25 GB | | ✓ | ✓ | ✓ |
-| state snapshot — storage | 21.5 GB | | ✓ | ✓ | ✓ |
-| codes (by codeHash) | 6.0 GB | | ✓ | ✓ | ✓ |
-| bodies — hot 1 yr | 91.5 GB | | | ✓ | — |
-| bodies — all | 616 GB | | | cold 1-of-N | ✓ |
-| receipts | 182 GB | | | ✓ | ✓ |
-| history idx (accthist+storhist) | 41.5 GB | | | ✓ | ✓ |
-| txindex (txhash→block) | 13.2 GB | | | ✓ | ✓ |
-| witness | 184 GB | stream | | | ✓ |
+| anchors (BlockProof) | 5 GB | stream | | | ✓ |
+| headers (columnar) | 5 GB | stream | live | ✓ | ✓ |
+| state snapshot — accounts (RecSplit+EF) | 4.25 GB | | ✓ | ✓ | rebuilt |
+| state snapshot — storage | 21.5 GB | | ✓ | ✓ | rebuilt |
+| codes (by codeHash) | 6 GB | stream(hot) | live | ✓ | ✓ |
+| bodies — hot 1 yr (EIP-4444) | 97 GB | | | ✓ | — |
+| bodies — all | 601 GB | | | cold 1-of-N | ✓ |
+| txindex (txhash→block) | 13 GB | | | 1-yr | ✓ |
+| witness | 179 GB | stream | | | ✓ |
+| receipts | 182 GB | | | latest-window | **rebuilt by replay** |
+| history idx (accthist+storhist) | 41.5 GB | | | rebuilt | **rebuilt by replay** |
 | changesets (acctcs+storcs) | 435 GB | | | | **rebuilt by replay** |
+| **bundle total** | | ~MB | **~25.7 GB** | **~137 GB** | **~809 GB** |
 
-> archive does **not** download the 435 GB changesets or the 234 GB state MDBX —
-> both are rebuilt locally by witness-replay. senders are derivable via ecrecover
+> `full` = 25.7 + 5(headers) + 6(codes) + 97(1-yr bodies) + ~3(1-yr txindex) ≈ 137 GB.
+> `archive` = 5 + 601 + 6 + 179 + 13 + 5 ≈ 809 GB; it does **not** download the
+> 435 GB changesets, 182 GB receipts, 41.5 GB history, or the state snapshot —
+> all rebuilt locally by witness-replay. senders are derivable via ecrecover
 > (`ethexec sender-recovery`, ~3 h/16 cores) — optional +38 GB add-on, not shipped.
+> The 20 GB full beacon-block archive is a separate optional consensus add-on, not
+> part of any EL tier.
 
 ## Bootstrap
 
@@ -73,7 +94,7 @@ n42-eth-snapshot verify --datadir D:/n42 --manifest D:/n42/manifest-full.json
 # 2. download the bundle over BitTorrent (1-of-N seeders, resumable; cold bodies → coldresolve)
 
 # 3a. minimal/full: snapshot-direct — open snapshot @ H0 + warm-tier MDBX for H0+1..tip. NO rebuild.
-# 3b. archive: witness-replay → materialize state + changesets (~几小时, ~2900 blk/s)
+# 3b. archive: witness-replay → materialize state + changesets + receipts (~几小时, ~2900 blk/s)
 n42 ethexec --witness D:/n42/witness --bodies D:/n42/bodies --datadir D:/n42 --workers 32
 
 # 4. catch up via devp2p, then stay live at 12 s/block
@@ -95,8 +116,10 @@ hot-bodies window and relocates aged segments to cold seeders (1-of-N).
 - `coldresolve` — 1-of-N cold-segment fetch (BitTorrent), tested
 
 ## Remaining before public release
-- per-tier `.torrent`/magnet seed-prep (`n42-cold-seed`; archive 850 GB+ piece-hash is heavy I/O)
+- regenerate the 3 file-bundle manifests (minimal/full/archive) from the rescoped
+  selectors against a hot-only-bodies datadir for `full`
+- per-tier `.torrent`/magnet seed-prep (`n42-cold-seed`; archive 800 GB+ piece-hash is heavy I/O)
 - manifest signing + hosting
-- receipts compression (182 GB → ~63 GB target, batch-64 zstd)
+- caplin checkpoint-sync embed for minimal/full consensus validation (#31, code; ~150 MB runtime, 0 bundle)
 
 > Web view of this page: `docs/ethel/snapshots/index.html` (reth-snapshots style).
