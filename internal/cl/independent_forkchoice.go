@@ -38,11 +38,13 @@ import (
 	"github.com/n42blockchain/N42/internal/cl/beacon/synced_data"
 	"github.com/n42blockchain/N42/internal/cl/clparams"
 	"github.com/n42blockchain/N42/internal/cl/cltypes"
+	"github.com/n42blockchain/N42/internal/cl/cltypes/solid"
 	"github.com/n42blockchain/N42/internal/cl/das"
 	peerdasstate "github.com/n42blockchain/N42/internal/cl/das/state"
 	common "github.com/n42blockchain/N42/internal/cl/depshim/common"
 	"github.com/n42blockchain/N42/internal/cl/depshim/freezeblocks"
 	"github.com/n42blockchain/N42/internal/cl/persistence/blob_storage"
+	state2 "github.com/n42blockchain/N42/internal/cl/phase1/core/state"
 	"github.com/n42blockchain/N42/internal/cl/phase1/core/checkpoint_sync"
 	"github.com/n42blockchain/N42/internal/cl/phase1/forkchoice"
 	"github.com/n42blockchain/N42/internal/cl/phase1/forkchoice/fork_graph"
@@ -307,6 +309,40 @@ func (s *Service) gossipBlockLoop(fc *forkchoice.ForkChoiceStore, p2pManager clp
 	}
 }
 
+// headResolver is the slice of ForkChoiceStore the head-drive loop reads. It
+// exists so the adversarial-environment guarantee — that the EL head is sourced
+// ENTIRELY from the attestation-weighted fork choice and NEVER from the EL's own
+// devp2p tip — is unit-testable with a fake (see independent_forkchoice_test.go).
+type headResolver interface {
+	GetHead(*state2.CachingBeaconState) (common.Hash, uint64, error)
+	GetEth1Hash(common.Hash) common.Hash
+	GetFinalizedExecutionHash(common.Hash) common.Hash
+	FinalizedCheckpoint() solid.Checkpoint
+}
+
+// resolveHeadExec computes the execution (finalized, head) block hashes to drive
+// the EL to. Both are sourced from the fork choice r: head = the execution hash
+// of the LMD-GHOST + FFG head block; finalized = the finalized checkpoint's
+// execution hash. The EL's own tip is never consulted — that is precisely what
+// makes this adversarial-safe vs follower.go. ok=false means the head's
+// execution payload is not known yet (skip this round, do not drive the EL).
+func resolveHeadExec(r headResolver, beaconCfg *clparams.BeaconChainConfig) (finalizedExec, headExec common.Hash, version clparams.StateVersion, ok bool, err error) {
+	headRoot, headSlot, err := r.GetHead(nil)
+	if err != nil {
+		return common.Hash{}, common.Hash{}, 0, false, err
+	}
+	headExec = r.GetEth1Hash(headRoot)
+	if headExec == (common.Hash{}) {
+		return common.Hash{}, common.Hash{}, 0, false, nil
+	}
+	finalizedExec = r.GetFinalizedExecutionHash(r.FinalizedCheckpoint().Root)
+	if finalizedExec == (common.Hash{}) {
+		finalizedExec = headExec
+	}
+	version = beaconCfg.GetCurrentStateVersion(headSlot / beaconCfg.SlotsPerEpoch)
+	return finalizedExec, headExec, version, true, nil
+}
+
 // headDriveLoop recomputes the fork-choice head and drives the EL's Engine API
 // forkChoiceUpdated to the INDEPENDENTLY chosen head (replacing follower.go's
 // blind EL-tip following). Blocks until the service context is cancelled.
@@ -319,32 +355,25 @@ func (s *Service) headDriveLoop(fc *forkchoice.ForkChoiceStore, beaconCfg *clpar
 		case <-s.ctx.Done():
 			return
 		case <-ticker.C:
-			headRoot, headSlot, err := fc.GetHead(nil)
+			finalizedExec, headExec, version, ok, err := resolveHeadExec(fc, beaconCfg)
 			if err != nil {
 				log.Trace("Caplin independent fork choice: GetHead failed", "err", err)
 				continue
 			}
-			headExec := fc.GetEth1Hash(headRoot)
-			if headExec == (common.Hash{}) {
+			if !ok {
 				continue // head's execution payload not yet known
-			}
-			finalized := fc.FinalizedCheckpoint()
-			finalizedExec := fc.GetFinalizedExecutionHash(finalized.Root)
-			if finalizedExec == (common.Hash{}) {
-				finalizedExec = headExec
 			}
 			next := fcuPointers{finalized: finalizedExec, head: headExec}
 			if next == last {
 				continue
 			}
-			version := beaconCfg.GetCurrentStateVersion(headSlot / beaconCfg.SlotsPerEpoch)
 			if _, err := s.engine.ForkChoiceUpdate(s.ctx, finalizedExec, finalizedExec, headExec, nil, version); err != nil {
 				log.Warn("Caplin independent fork choice: forkChoiceUpdated failed", "head", headExec, "err", err)
 				continue
 			}
 			last = next
 			log.Info("Caplin independent fork choice: drove EL to attestation-weighted head",
-				"headSlot", headSlot, "headExec", headExec, "finalizedExec", finalizedExec)
+				"headExec", headExec, "finalizedExec", finalizedExec)
 		}
 	}
 }
