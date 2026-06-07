@@ -109,7 +109,7 @@ func (b *recordingBackend) ExecutePayload(
 
 func (b *recordingBackend) UpdateForkchoice(
 	_ context.Context,
-	head, safe, finalized depcommon.Hash,
+	finalized, safe, head depcommon.Hash,
 	attrs *engine_types.PayloadAttributes,
 	version clparams.StateVersion,
 ) ([]byte, error) {
@@ -198,12 +198,15 @@ func TestAdapter_ForkChoiceUpdate_DelegatesToBackend(t *testing.T) {
 	b := &recordingBackend{fcuPayloadID: wantID, fcuErr: wantErr}
 	a := New(b)
 
-	head := depcommon.Hash{0x10}
+	// Canonical argument order is (finalized, safe, head) — assert the adapter
+	// routes each to the matching Backend field (this is the regression guard
+	// for the head/finalized swap fix).
+	final := depcommon.Hash{0x10}
 	safe := depcommon.Hash{0x20}
-	final := depcommon.Hash{0x30}
+	head := depcommon.Hash{0x30}
 	attrs := &engine_types.PayloadAttributes{Timestamp: 1234}
 
-	gotID, gotErr := a.ForkChoiceUpdate(context.Background(), head, safe, final, attrs, clparams.DenebVersion)
+	gotID, gotErr := a.ForkChoiceUpdate(context.Background(), final, safe, head, attrs, clparams.DenebVersion)
 
 	if string(gotID) != string(wantID) {
 		t.Errorf("payloadID = %x, want %x", gotID, wantID)

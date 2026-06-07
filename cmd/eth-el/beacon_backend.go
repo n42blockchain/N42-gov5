@@ -288,7 +288,7 @@ func (b *ethELBackend) ExecutePayload(
 // in follower role attrs is nil and only the head update happens.
 func (b *ethELBackend) UpdateForkchoice(
 	ctx context.Context,
-	head, safe, finalized depcommon.Hash,
+	finalized, safe, head depcommon.Hash,
 	attrs *engine_types.PayloadAttributes,
 	_ clparams.StateVersion,
 ) ([]byte, error) {
