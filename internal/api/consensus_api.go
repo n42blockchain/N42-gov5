@@ -19,6 +19,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/internal/blspool"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -35,6 +36,7 @@ type ConsensusAPI struct {
 	//   N42_BLS_POOL_SIZE   (default 200000)
 	//   N42_BLS_COMMITTEE   (default 512)
 	//   N42_BLS_RAMP_BLOCKS (default 1000000)
+	configOnce sync.Once
 	poolOnce   sync.Once
 	poolPks    []common.PublicKey
 	poolErr    error
@@ -187,12 +189,25 @@ func (c *ConsensusAPI) GetCommittee(ctx context.Context, blockNr jsonrpc.BlockNu
 	return res, nil
 }
 
+// ensureConfig reads the (cheap) pool sizing parameters from env. These are
+// enough to resolve pool/committee sizes and committee membership indices
+// without deriving any keys.
+func (c *ConsensusAPI) ensureConfig() {
+	c.configOnce.Do(func() {
+		c.poolSize = envInt("N42_BLS_POOL_SIZE", 200000)
+		c.committee = envInt("N42_BLS_COMMITTEE", 512)
+		c.rampBlocks = uint64(envInt("N42_BLS_RAMP_BLOCKS", 1000000))
+	})
+}
+
 // ensurePool lazily derives the voter pool public keys from the env config.
+// Required only for endpoints that return public keys.
 func (c *ConsensusAPI) ensurePool() error {
+	c.ensureConfig()
 	c.poolOnce.Do(func() {
 		seedHex := strings.TrimPrefix(os.Getenv("N42_BLS_POOL_SEED"), "0x")
 		if seedHex == "" {
-			c.poolErr = fmt.Errorf("committee resolution disabled: set N42_BLS_POOL_SEED")
+			c.poolErr = fmt.Errorf("public-key resolution disabled: set N42_BLS_POOL_SEED")
 			return
 		}
 		seedBytes, err := hex.DecodeString(seedHex)
@@ -202,9 +217,6 @@ func (c *ConsensusAPI) ensurePool() error {
 		}
 		var seed [32]byte
 		copy(seed[:], seedBytes)
-		c.poolSize = envInt("N42_BLS_POOL_SIZE", 200000)
-		c.committee = envInt("N42_BLS_COMMITTEE", 512)
-		c.rampBlocks = uint64(envInt("N42_BLS_RAMP_BLOCKS", 1000000))
 		_, pks, derr := blspool.DeriveKeys(seed, c.poolSize, false)
 		if derr != nil {
 			c.poolErr = derr
@@ -213,6 +225,114 @@ func (c *ConsensusAPI) ensurePool() error {
 		c.poolPks = pks
 	})
 	return c.poolErr
+}
+
+// ValidatorPoolResult describes the mobile-voter pool sizing at a block.
+type ValidatorPoolResult struct {
+	BlockNumber    hexutil.Uint64 `json:"blockNumber"`
+	ActivePoolSize hexutil.Uint64 `json:"activePoolSize"` // voters eligible at this block
+	CommitteeSize  hexutil.Uint64 `json:"committeeSize"`  // per-block committee
+	TotalPoolSize  hexutil.Uint64 `json:"totalPoolSize"`  // pool size once fully ramped
+	RampBlocks     hexutil.Uint64 `json:"rampBlocks"`     // ramp duration
+	FullyRamped    bool           `json:"fullyRamped"`
+}
+
+// GetValidatorPool returns the voter-pool sizing at a block (no keys needed).
+func (c *ConsensusAPI) GetValidatorPool(ctx context.Context, blockNr jsonrpc.BlockNumber) (*ValidatorPoolResult, error) {
+	num, err := c.resolveBlockNumber(blockNr)
+	if err != nil {
+		return nil, err
+	}
+	c.ensureConfig()
+	active := blspool.ActivePool(num, c.poolSize, c.committee, c.rampBlocks)
+	return &ValidatorPoolResult{
+		BlockNumber:    hexutil.Uint64(num),
+		ActivePoolSize: hexutil.Uint64(active),
+		CommitteeSize:  hexutil.Uint64(c.committee),
+		TotalPoolSize:  hexutil.Uint64(c.poolSize),
+		RampBlocks:     hexutil.Uint64(c.rampBlocks),
+		FullyRamped:    active >= c.poolSize,
+	}, nil
+}
+
+// ValidatorInfo is a single pool member's identity.
+type ValidatorInfo struct {
+	Index   hexutil.Uint64 `json:"index"`
+	PubKey  hexutil.Bytes  `json:"pubkey"`  // 48-byte BLS12-381 G1 public key
+	Address types.Address  `json:"address"` // keccak256(pubkey)[12:]
+}
+
+// GetValidator returns the public key and derived address of a pool member.
+func (c *ConsensusAPI) GetValidator(ctx context.Context, index hexutil.Uint64) (*ValidatorInfo, error) {
+	if err := c.ensurePool(); err != nil {
+		return nil, err
+	}
+	i := int(index)
+	if i < 0 || i >= len(c.poolPks) {
+		return nil, fmt.Errorf("validator index %d out of range [0,%d)", i, len(c.poolPks))
+	}
+	pub := c.poolPks[i].Marshal()
+	var addr types.Address
+	copy(addr[:], crypto.Keccak256(pub)[12:])
+	return &ValidatorInfo{
+		Index:   index,
+		PubKey:  append(hexutil.Bytes{}, pub...),
+		Address: addr,
+	}, nil
+}
+
+// ValidatorDuty records that a validator was in a block's committee.
+type ValidatorDuty struct {
+	BlockNumber hexutil.Uint64 `json:"blockNumber"`
+	View        hexutil.Uint64 `json:"view"`
+	Position    hexutil.Uint64 `json:"position"` // index within the committee
+	Signed      bool           `json:"signed"`
+}
+
+const maxDutiesRange = 50000
+
+// GetValidatorDuties scans a bounded block range and reports the blocks in which
+// the validator was sampled into the committee, and whether it signed. The range
+// is capped at maxDutiesRange blocks. No public keys are needed.
+func (c *ConsensusAPI) GetValidatorDuties(ctx context.Context, index hexutil.Uint64, fromBlock, toBlock hexutil.Uint64) ([]ValidatorDuty, error) {
+	c.ensureConfig()
+	from, to := uint64(fromBlock), uint64(toBlock)
+	if to < from {
+		return nil, fmt.Errorf("toBlock < fromBlock")
+	}
+	if to-from+1 > maxDutiesRange {
+		return nil, fmt.Errorf("range too large: %d blocks (max %d)", to-from+1, maxDutiesRange)
+	}
+	target := int(index)
+
+	tx, err := c.api.db.BeginRo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	duties := make([]ValidatorDuty, 0, 64)
+	for num := from; num <= to; num++ {
+		ce, err := rawdb.ReadConsensusEvidence(tx, num)
+		if err != nil || ce == nil {
+			continue
+		}
+		active := blspool.ActivePool(ce.View, c.poolSize, c.committee, c.rampBlocks)
+		members := blspool.Committee(ce.View, ce.BlockHash, active, c.committee)
+		for pos, idx := range members {
+			if idx == target {
+				signed := pos < len(ce.SignersPacked)*8 && ce.SignersPacked[pos/8]&(1<<uint(pos%8)) != 0
+				duties = append(duties, ValidatorDuty{
+					BlockNumber: hexutil.Uint64(num),
+					View:        hexutil.Uint64(ce.View),
+					Position:    hexutil.Uint64(pos),
+					Signed:      signed,
+				})
+				break
+			}
+		}
+	}
+	return duties, nil
 }
 
 func envInt(key string, def int) int {
