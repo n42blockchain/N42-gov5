@@ -130,7 +130,7 @@ func devnetGenesisBlock(cfg *conf.Config) *conf.Genesis {
 		Config:   chainConfig,
 		Alloc:    alloc,
 		Miners:   miners,
-		GasLimit: 30_000_000,
+		GasLimit: params.DevTestGasLimit,
 	}
 }
 
@@ -200,7 +200,7 @@ func ethDevGenesisBlock(cfg *conf.Config) *conf.Genesis {
 	return &conf.Genesis{
 		Config:   chainConfig,
 		Alloc:    alloc,
-		GasLimit: 30_000_000,
+		GasLimit: params.DevTestGasLimit,
 	}
 }
 

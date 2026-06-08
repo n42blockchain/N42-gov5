@@ -24,6 +24,8 @@ package main
 
 import (
 	"github.com/urfave/cli/v2"
+
+	"github.com/n42blockchain/N42/params"
 )
 
 // =============================================================================
@@ -92,6 +94,7 @@ var QuickStartFlags = []cli.Flag{
 				DefaultConfig.NodeCfg.Profile = "n42"
 				DefaultConfig.P2PCfg.NoDiscovery = true
 				DefaultConfig.P2PCfg.MaxPeers = 0
+				DefaultConfig.Miner.GasCeil = params.DevTestGasLimit
 			}
 			return nil
 		},
@@ -106,6 +109,7 @@ var QuickStartFlags = []cli.Flag{
 				DefaultConfig.NodeCfg.Profile = "eth"
 				DefaultConfig.P2PCfg.NoDiscovery = true
 				DefaultConfig.P2PCfg.MaxPeers = 0
+				DefaultConfig.Miner.GasCeil = params.DevTestGasLimit
 			}
 			return nil
 		},
