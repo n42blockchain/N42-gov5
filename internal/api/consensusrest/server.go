@@ -23,7 +23,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/n42blockchain/N42/crypto"
@@ -58,6 +60,32 @@ type Server struct {
 	poolErr  error
 }
 
+// ConfigFromEnv reads the pool config from N42_BLS_POOL_SEED/SIZE/COMMITTEE/
+// RAMP_BLOCKS. The seed is optional (without it, pubkey/verify routes are off).
+func ConfigFromEnv() Config {
+	cfg := Config{
+		PoolSize:   envInt("N42_BLS_POOL_SIZE", 200000),
+		Committee:  envInt("N42_BLS_COMMITTEE", 512),
+		RampBlocks: uint64(envInt("N42_BLS_RAMP_BLOCKS", 1000000)),
+	}
+	if sh := strings.TrimPrefix(os.Getenv("N42_BLS_POOL_SEED"), "0x"); sh != "" {
+		if b, err := hex.DecodeString(sh); err == nil && len(b) == 32 {
+			copy(cfg.Seed[:], b)
+			cfg.HasSeed = true
+		}
+	}
+	return cfg
+}
+
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
+
 // NewServer builds the REST server. PoolSize/Committee/RampBlocks default to
 // 200000/512/1000000 when zero.
 func NewServer(db kv.RoDB, cfg Config) *Server {
@@ -83,6 +111,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /n42/consensus/v1/pool/{id}", s.handlePool)
 	mux.HandleFunc("GET /n42/consensus/v1/validator/{index}", s.handleValidator)
 	mux.HandleFunc("GET /n42/consensus/v1/validator/{index}/duties", s.handleDuties)
+	mux.Handle("GET /n42/explorer", ExplorerHandler())
 	return mux
 }
 
