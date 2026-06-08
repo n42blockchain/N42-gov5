@@ -48,6 +48,12 @@ const (
 	MaxGasLimit     uint64 = 0x7fffffffffffffff // Maximum the gas limit may ever be.
 	GenesisGasLimit uint64 = 4712388            // Gas limit of the Genesis block.
 
+	// DevTestGasLimit is the block gas limit used by the dev/test profiles
+	// (--dev / --ethdev, the "private" chain). It is intentionally large to match
+	// the Rust reference test suite's high-throughput benchmark limit. Production
+	// chains (mainnet/testnet) keep their own, much smaller limits.
+	DevTestGasLimit uint64 = 1_000_000_000
+
 	MaximumExtraDataSize  uint64 = 32    // Maximum size extra data may be after Genesis.
 	CallValueTransferGas  uint64 = 9000  // Paid for CALL when the value transfer is non-zero.
 	CallNewAccountGas     uint64 = 25000 // Paid for CALL when the destination address didn't exist prior.
