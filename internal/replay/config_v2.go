@@ -43,6 +43,19 @@ type ConfigV2 struct {
 	StatsFile    string // stats JSON output file (updated every batch)
 	LeafJournal  string // leaf change journal file (empty = disabled)
 	ProgressFn func(current, total uint64, bps float64)
+
+	// BLS re-seal simulation (mobile-voter consensus). When BLSReseal is true,
+	// each block's consensus proof is a CommitteeSize-member BLS aggregate QC
+	// sampled from a PoolSize mobile-voter pool that ramps from one committee at
+	// genesis up to PoolSize over RampBlocks blocks. The QC is written to the
+	// ConsensusEvidence MDBX table and committed into the header via
+	// ParentBeaconRoot (Blake3 of the parent evidence), which is also fed to the
+	// EVM through the EIP-4788 beacon-roots contract.
+	BLSReseal        bool
+	BLSSeed          [32]byte
+	BLSPoolSize      int
+	BLSCommitteeSize int
+	BLSRampBlocks    uint64
 }
 
 // DefaultConfigV2 returns a ConfigV2 with sensible defaults.
