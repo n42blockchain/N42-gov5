@@ -12,10 +12,12 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -53,6 +55,11 @@ var replayV2Command = &cli.Command{
 		&cli.StringFlag{Name: "log", Usage: "Structured log file (empty=stderr only)", Value: ""},
 		&cli.StringFlag{Name: "leaf-journal", Usage: "Leaf change journal file for tree building (empty=disabled)", Value: ""},
 		&cli.BoolFlag{Name: "verify-mpt", Usage: "Per-block: rebuild MPT root from PlainState and verify (slow)", Value: false},
+		&cli.BoolFlag{Name: "bls-reseal", Usage: "Re-seal every block with a simulated mobile-voter BLS committee QC (written to ConsensusEvidence)", Value: false},
+		&cli.StringFlag{Name: "bls-seed", Usage: "32-byte hex master seed for the BLS voter pool (must match the generated pool)"},
+		&cli.IntFlag{Name: "bls-pool-size", Usage: "Total mobile-voter pool size", Value: 200000},
+		&cli.IntFlag{Name: "bls-committee", Usage: "Per-block committee size (ETH sync-committee reference)", Value: 512},
+		&cli.Uint64Flag{Name: "bls-ramp-blocks", Usage: "Blocks over which the active pool ramps from one committee up to pool-size", Value: 1000000},
 	},
 	Action: runReplayV2,
 }
@@ -85,6 +92,19 @@ func runReplayV2(cliCtx *cli.Context) error {
 	cfg.LeafJournal = cliCtx.String("leaf-journal")
 	cfg.StatsFile = cliCtx.String("output")
 	cfg.VerifyMPT = cliCtx.Bool("verify-mpt")
+
+	cfg.BLSReseal = cliCtx.Bool("bls-reseal")
+	if cfg.BLSReseal {
+		seedHex := strings.TrimPrefix(cliCtx.String("bls-seed"), "0x")
+		seed, err := hex.DecodeString(seedHex)
+		if err != nil || len(seed) != 32 {
+			return fmt.Errorf("--bls-seed must be 32-byte hex (got %d bytes)", len(seed))
+		}
+		copy(cfg.BLSSeed[:], seed)
+		cfg.BLSPoolSize = cliCtx.Int("bls-pool-size")
+		cfg.BLSCommitteeSize = cliCtx.Int("bls-committee")
+		cfg.BLSRampBlocks = cliCtx.Uint64("bls-ramp-blocks")
+	}
 
 	cfg.ProgressFn = func(current, total uint64, bps float64) {
 		pct := float64(current) / float64(total) * 100

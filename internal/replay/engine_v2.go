@@ -81,6 +81,7 @@ type EngineV2 struct {
 	trieRC        *commitment.TrieRootComputer // CalcTrieRoot incremental (persists across batches)
 	witnessReader *WitnessStateReader     // records per-block state access
 	leafJournal   *LeafJournal            // per-block leaf changes for tree building
+	resealer      *BLSResealer            // BLS mobile-voter re-seal (nil = disabled)
 }
 
 // NewEngineV2 creates a replay-v2 engine. Call Run() to execute.
@@ -139,6 +140,24 @@ func NewEngineV2(cfg ConfigV2) (*EngineV2, error) {
 		}
 		e.leafJournal = lj
 		logger.Info("leaf journal enabled", "path", cfg.LeafJournal)
+	}
+
+	// Build the BLS mobile-voter re-sealer if enabled (derives the key pool).
+	if cfg.BLSReseal {
+		t0 := time.Now()
+		rs, err := NewBLSResealer(BLSResealConfig{
+			Seed:          cfg.BLSSeed,
+			PoolSize:      cfg.BLSPoolSize,
+			CommitteeSize: cfg.BLSCommitteeSize,
+			RampBlocks:    cfg.BLSRampBlocks,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("init BLS resealer: %w", err)
+		}
+		e.resealer = rs
+		logger.Info("BLS re-seal enabled",
+			"pool", cfg.BLSPoolSize, "committee", cfg.BLSCommitteeSize,
+			"rampBlocks", cfg.BLSRampBlocks, "deriveTime", time.Since(t0))
 	}
 
 	return e, nil
@@ -610,6 +629,9 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 						}
 						gapBlk := block.NewBlock(gapHeader, nil)
 						gapCE.BlockHash = gapBlk.Hash()
+						if e.resealer != nil {
+							gapCE = e.resealer.BuildCE(newBlockNum, gapBlk.Hash(), emptyReceiptHash)
+						}
 						if err := rawdb.WriteConsensusEvidence(dstTx, newBlockNum, gapCE); err != nil {
 							return fmt.Errorf("write gap consensus evidence %d: %w", newBlockNum, err)
 						}
@@ -649,6 +671,18 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					ibs.SetRootComputer(bmtRC)
 				} else if ltRC != nil {
 					ibs.SetRootComputer(ltRC)
+				}
+
+				// EIP-4788: feed the parent consensus evidence hash (the re-sealed
+				// BLS QC commitment) into the beacon-roots contract before tx
+				// execution, so the consensus commitment is part of EVM state.
+				// Self-gates on Cancun being active in the target chain config.
+				if e.resealer != nil {
+					pbr := parentConsensusEvidenceHash(dstTx, newBlockNum)
+					ebrHeader := &block.Header{Number: uint256.NewInt(newBlockNum), Time: srcTime}
+					if err := internal.ProcessBeaconBlockRoot(&pbr, e.cfg.ChainConfig, ibs, ebrHeader, nil); err != nil {
+						return fmt.Errorf("eip4788 block %d: %w", newBlockNum, err)
+					}
 				}
 
 				replayedTxs, receipts, usedGas := e.replayBlockTxs(ibs, w, srcBlk, srcHeader, dstTx)
@@ -806,8 +840,13 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					e.stats.BlocksEmpty.Add(1)
 				}
 
-				// Write consensus evidence with actual block hash.
+				// Write consensus evidence with actual block hash. When re-sealing,
+				// replace the source-derived APoS evidence with a fresh
+				// CommitteeSize-member BLS aggregate QC over this block.
 				ce.BlockHash = newBlk.Hash()
+				if e.resealer != nil {
+					ce = e.resealer.BuildCE(newBlockNum, newBlk.Hash(), receiptHash)
+				}
 				if err := rawdb.WriteConsensusEvidence(dstTx, newBlockNum, ce); err != nil {
 					return fmt.Errorf("write consensus evidence block %d: %w", newBlockNum, err)
 				}
