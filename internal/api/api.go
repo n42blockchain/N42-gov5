@@ -235,6 +235,9 @@ func (api *API) Apis() []jsonrpc.API {
 		}, {
 			Namespace: "eth",
 			Service:   filters.NewFilterAPI(api, 5*time.Minute),
+		}, {
+			Namespace: "n42",
+			Service:   NewConsensusAPI(api),
 		},
 	}
 }
