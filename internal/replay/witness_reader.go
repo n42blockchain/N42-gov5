@@ -92,6 +92,30 @@ func (w *WitnessStateReader) ReadAccountCodeSize(address types.Address, codeHash
 	return len(code), nil
 }
 
+// ForEachStorage enumerates all persisted storage slots of addr via the inner
+// reader (implements state.StorageEnumerator) and records each one in the
+// witness storage map. Recording is essential: when an account is
+// selfdestructed, IntraBlockState enumerates its full pre-block storage to
+// delete those slots from the hashed state — a stateless re-execution of the
+// same block must therefore have those slots in its witness to reproduce the
+// identical root. Slots already recorded by an explicit read are preserved
+// (first-write-wins, matching ReadAccountStorage).
+func (w *WitnessStateReader) ForEachStorage(addr types.Address, f func(slot types.Hash, value []byte) bool) error {
+	enum, ok := w.inner.(state.StorageEnumerator)
+	if !ok {
+		return nil
+	}
+	return enum.ForEachStorage(addr, func(slot types.Hash, value []byte) bool {
+		sk := storageWKey{addr: addr, slot: slot}
+		if _, recorded := w.storage[sk]; !recorded {
+			cp := make([]byte, len(value))
+			copy(cp, value)
+			w.storage[sk] = cp
+		}
+		return f(slot, value)
+	})
+}
+
 // Serialize encodes the collected witness as a compact byte slice.
 // Format:
 //

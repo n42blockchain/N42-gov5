@@ -139,5 +139,19 @@ func (r *CachedStateReader) ReadAccountCodeSize(address types.Address, codeHash 
 	return len(code), err
 }
 
+// ForEachStorage delegates to the inner reader. The flat ShardedCache cannot
+// be enumerated by address prefix, and a full slot scan must reflect the
+// authoritative DB state anyway, so this bypasses the cache entirely and
+// forwards to inner when inner supports StorageEnumerator.
+func (r *CachedStateReader) ForEachStorage(addr types.Address, f func(slot types.Hash, value []byte) bool) error {
+	if enum, ok := r.inner.(StorageEnumerator); ok {
+		return enum.ForEachStorage(addr, f)
+	}
+	return nil
+}
+
 // Compile-time check.
-var _ StateReader = (*CachedStateReader)(nil)
+var (
+	_ StateReader       = (*CachedStateReader)(nil)
+	_ StorageEnumerator = (*CachedStateReader)(nil)
+)
