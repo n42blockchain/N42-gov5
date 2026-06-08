@@ -13,6 +13,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/n42blockchain/N42/proto/sync_pb"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/p2p/p2ptypes"
 	"github.com/n42blockchain/N42/internal/p2p/peers"
@@ -129,6 +130,14 @@ func (s *Service) sendRPCStatusRequest(ctx context.Context, id peer.ID) error {
 	}
 
 	err = s.validateStatusMessage(ctx, msg)
+	if err != nil {
+		log.Info("Peer status mismatch",
+			"peer", id,
+			"remoteGenesis", types.Hash(utils.ConvertH256ToHash(msg.GenesisHash)).Hex(),
+			"remoteHeight", utils.ConvertH256ToUint256Int(msg.CurrentHeight).Uint64(),
+			"ourGenesis", s.genesisHashForStatus().Hex(),
+			"err", err)
+	}
 	s.cfg.p2p.Peers().Scorers().PeerStatusScorer().SetPeerStatus(id, msg, err)
 	if s.cfg.p2p.Peers().IsBad(id) {
 		s.disconnectBadPeer(s.ctx, id)
@@ -173,6 +182,11 @@ func (s *Service) statusRPCHandler(ctx context.Context, msg interface{}, stream 
 		case p2ptypes.ErrGeneric:
 			respCode = responseCodeServerError
 		case p2ptypes.ErrWrongForkDigestVersion:
+			log.Info("Inbound peer status mismatch",
+				"peer", remotePeer,
+				"remoteGenesis", types.Hash(utils.ConvertH256ToHash(m.GenesisHash)).Hex(),
+				"remoteHeight", utils.ConvertH256ToUint256Int(m.CurrentHeight).Uint64(),
+				"ourGenesis", s.genesisHashForStatus().Hex())
 			// Respond with our status and disconnect with the peer.
 			s.cfg.p2p.Peers().SetChainState(remotePeer, m)
 			if err := s.respondWithStatus(ctx, stream); err != nil {

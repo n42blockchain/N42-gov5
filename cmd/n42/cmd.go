@@ -391,6 +391,12 @@ var (
 		Value:       1,
 		Destination: &DefaultConfig.P2PCfg.MinSyncPeers,
 	}
+	P2PGenesisOverride = &cli.StringFlag{
+		Name:        "p2p.genesis-override",
+		Usage:       "Override the genesis hash used for the P2P fork digest/status handshake (0x-prefixed 32-byte hex). Use to match a deployed network whose on-wire genesis differs from this binary's hardcoded constant. Empty = use configured chain genesis.",
+		Value:       "",
+		Destination: &DefaultConfig.P2PCfg.GenesisHashOverride,
+	}
 	P2PBlockBatchLimit = &cli.IntFlag{
 		Name:        "p2p.limit.block-batch",
 		Usage:       "The amount of blocks the local peer is bounded to request and respond to in a batch.",
@@ -606,6 +612,7 @@ var (
 		P2PUDPPort,
 		P2PTCPPort,
 		P2PMinSyncPeers,
+		P2PGenesisOverride,
 	}
 
 	p2pLimitFlags = []cli.Flag{
