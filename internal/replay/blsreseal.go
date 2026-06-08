@@ -1,8 +1,6 @@
 package replay
 
 import (
-	"crypto/sha256"
-	"encoding/binary"
 	"fmt"
 	"runtime"
 	"sync"
@@ -10,6 +8,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/crypto/bls/common"
+	"github.com/n42blockchain/N42/internal/blspool"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/modules/rawdb"
 )
@@ -60,43 +59,11 @@ func NewBLSResealer(cfg BLSResealConfig) (*BLSResealer, error) {
 		return nil, fmt.Errorf("blsreseal: committee %d > pool %d", cfg.CommitteeSize, cfg.PoolSize)
 	}
 	r := &BLSResealer{cfg: cfg, npar: runtime.GOMAXPROCS(0)}
-	r.sks = make([]common.SecretKey, cfg.PoolSize)
-	r.pks = make([]common.PublicKey, cfg.PoolSize)
-
-	var wg sync.WaitGroup
-	var derErr error
-	var derOnce sync.Once
-	chunk := (cfg.PoolSize + r.npar - 1) / r.npar
-	for w := 0; w < r.npar; w++ {
-		lo := w * chunk
-		hi := lo + chunk
-		if hi > cfg.PoolSize {
-			hi = cfg.PoolSize
-		}
-		if lo >= hi {
-			break
-		}
-		wg.Add(1)
-		go func(lo, hi int) {
-			defer wg.Done()
-			for i := lo; i < hi; i++ {
-				var idx [8]byte
-				binary.BigEndian.PutUint64(idx[:], uint64(i))
-				ikm := sha256.Sum256(append(append([]byte{}, cfg.Seed[:]...), idx[:]...))
-				sk, err := bls.SecretKeyFromRandom32Byte(ikm)
-				if err != nil {
-					derOnce.Do(func() { derErr = err })
-					return
-				}
-				r.sks[i] = sk
-				r.pks[i] = sk.PublicKey()
-			}
-		}(lo, hi)
+	sks, pks, err := blspool.DeriveKeys(cfg.Seed, cfg.PoolSize, true)
+	if err != nil {
+		return nil, fmt.Errorf("blsreseal: %w", err)
 	}
-	wg.Wait()
-	if derErr != nil {
-		return nil, fmt.Errorf("blsreseal: derive pool: %w", derErr)
-	}
+	r.sks, r.pks = sks, pks
 
 	// Persistent signing worker pool: workers live for the whole run so we pay
 	// no per-block goroutine spawn cost (the dominant overhead at 512 sigs/block
@@ -125,50 +92,14 @@ func (r *BLSResealer) CommitteeSize() int { return r.cfg.CommitteeSize }
 // it ramps linearly from one full committee at genesis up to PoolSize over
 // RampBlocks blocks, then stays at PoolSize.
 func (r *BLSResealer) ActivePool(blockNum uint64) int {
-	if r.cfg.RampBlocks == 0 || blockNum >= r.cfg.RampBlocks {
-		return r.cfg.PoolSize
-	}
-	grow := uint64(r.cfg.PoolSize-r.cfg.CommitteeSize) * blockNum / r.cfg.RampBlocks
-	active := r.cfg.CommitteeSize + int(grow)
-	if active > r.cfg.PoolSize {
-		active = r.cfg.PoolSize
-	}
-	return active
+	return blspool.ActivePool(blockNum, r.cfg.PoolSize, r.cfg.CommitteeSize, r.cfg.RampBlocks)
 }
 
 // committee deterministically samples CommitteeSize distinct validator indices
 // from [0, active) using a partial Fisher-Yates shuffle seeded by (view,
 // blockHash). The result is the ordered validator set for that view.
 func (r *BLSResealer) committee(view hotstuff.ViewNumber, blockHash types.Hash, active int) []int {
-	k := r.cfg.CommitteeSize
-	if k > active {
-		k = active
-	}
-	var seedBuf [40]byte
-	binary.LittleEndian.PutUint64(seedBuf[:8], uint64(view))
-	copy(seedBuf[8:], blockHash[:])
-	base := sha256.Sum256(seedBuf[:])
-
-	swaps := make(map[int]int, k)
-	get := func(i int) int {
-		if v, ok := swaps[i]; ok {
-			return v
-		}
-		return i
-	}
-	out := make([]int, k)
-	var ctr [8]byte
-	for i := 0; i < k; i++ {
-		binary.LittleEndian.PutUint64(ctr[:], uint64(i))
-		h := sha256.Sum256(append(base[:], ctr[:]...))
-		rnd := binary.LittleEndian.Uint64(h[:8])
-		j := i + int(rnd%uint64(active-i))
-		vj := get(j)
-		out[i] = vj
-		swaps[j] = get(i)
-		swaps[i] = vj
-	}
-	return out
+	return blspool.Committee(uint64(view), blockHash, active, r.cfg.CommitteeSize)
 }
 
 // signMembers signs msg with every committee member's key, dispatching
