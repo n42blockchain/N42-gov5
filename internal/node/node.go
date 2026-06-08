@@ -637,6 +637,16 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	if canonicalHash, ok := configuredGenesis.canonicalHash(); ok {
 		p2pGenesisHash = canonicalHash
 	}
+	// An explicit operator override wins over both the computed and the hardcoded
+	// hash. Required to sync a deployed network whose on-wire genesis differs from
+	// this binary's constant (see --p2p.genesis-override).
+	if ov := strings.TrimSpace(cfg.P2PCfg.GenesisHashOverride); ov != "" {
+		overrideHash := types.HexToHash(ov)
+		log.Warn("Overriding P2P genesis hash for fork digest",
+			"override", overrideHash.Hex(),
+			"configured", p2pGenesisHash.Hex())
+		p2pGenesisHash = overrideHash
+	}
 	p2p, err := p2p.NewService(ctx, p2pGenesisHash, cfg.P2PCfg, cfg.NodeCfg)
 	if err != nil {
 		return nil, err
@@ -970,9 +980,11 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		n42sync.WithChainService(bc),
 		n42sync.WithInitialSync(is),
 	}
-	if canonicalHash, ok := configuredGenesis.canonicalHash(); ok {
-		syncOpts = append(syncOpts, n42sync.WithOverrideGenesisHash(canonicalHash))
-	}
+	// Keep the sync/status-handshake genesis hash consistent with the P2P fork
+	// digest (p2pGenesisHash already folds in the chain constant and any
+	// --p2p.genesis-override). Advertising two different hashes would cause peers
+	// to reject us with a wrong-network goodbye.
+	syncOpts = append(syncOpts, n42sync.WithOverrideGenesisHash(p2pGenesisHash))
 	if cfg.P2PCfg.TxGossipEnabled && pool != nil {
 		syncOpts = append(syncOpts, n42sync.WithTxPool(pool))
 	}

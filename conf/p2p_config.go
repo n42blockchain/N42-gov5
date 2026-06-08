@@ -51,6 +51,14 @@ type P2PConfig struct {
 	DenyListCIDR        []string `json:"deny_list_cidr" yaml:"deny_list_cidr"`
 	MinSyncPeers        int      `json:"min_sync_peers" yaml:"min_sync_peers"`
 
+	// GenesisHashOverride, when set to a 0x-prefixed 32-byte hex hash, forces the
+	// genesis hash used for the P2P fork digest and status handshake instead of the
+	// chain's configured (hardcoded) genesis hash. Use this to sync a deployed
+	// network whose on-wire genesis hash differs from the local binary's constant
+	// (e.g., legacy mainnet peers on 0x138734b7... vs the post-header-refactor
+	// 0x594aad... constant). Empty = use the configured chain genesis hash.
+	GenesisHashOverride string `json:"genesis_hash_override" yaml:"genesis_hash_override"`
+
 	// QUIC transport: listen on UDP for QUIC-v1 connections (default true).
 	QUICEnabled bool `json:"quic_enabled" yaml:"quic_enabled"`
 
