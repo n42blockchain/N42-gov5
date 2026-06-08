@@ -146,6 +146,16 @@ type IntraBlockState struct {
 	// ltHashRoot stores the LtHash digest root computed during IntermediateRoot().
 	// Zero if LtHash is not active.
 	ltHashRoot types.Hash
+
+	// wipedStorageSlots holds, per wiped address, the COMPLETE pre-block storage
+	// slot set (slot → original value) captured at storage-wipe registration time
+	// (Selfdestruct / contract CreateAccount), via a StorageEnumerator reader.
+	// computeRootViaComputer consults it to remove the full storage of a deleted
+	// or metamorphically-recreated account from the hashed state (JMT/MPT/BMT),
+	// rather than only the slots touched in the current block (which leaves stale
+	// leaves and a wrong state root). Only populated when a RootComputer is set
+	// and the reader supports enumeration; the legacy Keccak path is unaffected.
+	wipedStorageSlots map[types.Address]map[types.Hash]uint256.Int
 }
 
 // New creates a new IntraBlockState with the given state reader.
@@ -162,7 +172,51 @@ func New(stateReader StateReader) *IntraBlockState {
 		transientStorage:     newTransientStorage(),
 		storageWipes:         map[types.Address]struct{}{},
 		priorTxWipes:         map[types.Address]struct{}{},
+		wipedStorageSlots:    map[types.Address]map[types.Hash]uint256.Int{},
 	}
+}
+
+// captureWipedSlots records the complete pre-block storage of addr so a later
+// IntermediateRoot can delete every slot from the hashed state. It is called
+// when a storage wipe is registered (Selfdestruct or contract CreateAccount),
+// which happens during EVM execution — before any wipe is flushed to the DB —
+// so the StorageEnumerator scan still observes the full slot set. First capture
+// wins (a metamorphic destroy+recreate registers twice; the first scan already
+// holds the authoritative pre-block storage). No-op without a RootComputer (the
+// legacy Keccak path isolates storage differently) or without an enumerable
+// reader (a witness-backed minimal client, which falls back to touched slots).
+func (sdb *IntraBlockState) captureWipedSlots(addr types.Address) {
+	if sdb.rootComputer == nil {
+		return
+	}
+	if _, done := sdb.wipedStorageSlots[addr]; done {
+		return
+	}
+	enum, ok := sdb.stateReader.(StorageEnumerator)
+	if !ok {
+		return
+	}
+	slots := make(map[types.Hash]uint256.Int)
+	_ = enum.ForEachStorage(addr, func(slot types.Hash, value []byte) bool {
+		var v uint256.Int
+		v.SetBytes(value)
+		slots[slot] = v
+		return true
+	})
+	sdb.wipedStorageSlots[addr] = slots
+}
+
+// activeWipedSlots returns the captured pre-block storage of addr ONLY when the
+// address is still flagged for wiping in storageWipes. captureWipedSlots is not
+// journaled, so a SELFDESTRUCT/CREATE that gets reverted leaves a stale capture
+// behind; storageWipes IS journal-reverted (storageWipeAddChange), so gating on
+// it ensures a reverted wipe can never trigger a spurious slot deletion at root
+// time. Returns nil when there is no active capture.
+func (sdb *IntraBlockState) activeWipedSlots(addr types.Address) map[types.Hash]uint256.Int {
+	if _, stillWiped := sdb.storageWipes[addr]; !stillWiped {
+		return nil
+	}
+	return sdb.wipedStorageSlots[addr]
 }
 
 // SetRootComputer sets a custom state root implementation (e.g., JMT).
@@ -365,6 +419,7 @@ func (sdb *IntraBlockState) Reset() {
 	sdb.nilAccounts = make(map[types.Address]struct{})
 	clear(sdb.storageWipes)
 	clear(sdb.priorTxWipes)
+	clear(sdb.wipedStorageSlots)
 	sdb.savedErr = nil
 	sdb.codeMap = nil
 	sdb.snap = nil
@@ -839,6 +894,9 @@ func (sdb *IntraBlockState) CreateAccount(addr types.Address, contractCreation b
 			sdb.journal.append(storageWipeAddChange{account: &addr})
 			sdb.storageWipes[addr] = struct{}{}
 		}
+		// Capture the full pre-block storage before it is wiped, so the hashed
+		// state root removes every old slot (CREATE2-over-existing / metamorphic).
+		sdb.captureWipedSlots(addr)
 	} else {
 		newObj.selfdestructed = false
 	}
@@ -1258,9 +1316,27 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 		// Without incarnation, old storage is not auto-isolated — must be explicitly deleted.
 		if obj == nil || obj.deleted || obj.selfdestructed {
 			accounts[addr] = nil
-			// Collect storage slots for deletion so HashOnlyComputer removes them
-			// from HashedStorage. Without this, stale slots accumulate.
-			if obj != nil && len(obj.blockOriginStorage) > 0 {
+			// Collect storage slots for deletion so the RootComputer removes them
+			// from the hashed state. Prefer the COMPLETE pre-block slot set captured
+			// at wipe time (wipedStorageSlots) — deleting only obj.blockOriginStorage
+			// (slots touched this block) leaves stale leaves and a wrong root.
+			// Fall back to blockOriginStorage when no full capture exists (reader
+			// without StorageEnumerator, e.g. a witness-backed minimal client).
+			if wiped := s.activeWipedSlots(addr); len(wiped) > 0 {
+				slots := make(map[types.Hash]*uint256.Int, len(wiped))
+				for key := range wiped {
+					slots[key] = new(uint256.Int) // zero = deleted
+				}
+				storage[addr] = slots
+				if ltEnabled {
+					origSlots := make(map[types.Hash]*uint256.Int, len(wiped))
+					for key, origVal := range wiped {
+						ov := origVal
+						origSlots[key] = new(uint256.Int).Set(&ov)
+					}
+					originalStorage[addr] = origSlots
+				}
+			} else if obj != nil && len(obj.blockOriginStorage) > 0 {
 				slots := make(map[types.Hash]*uint256.Int, len(obj.blockOriginStorage))
 				for key := range obj.blockOriginStorage {
 					slots[key] = new(uint256.Int) // zero = deleted
@@ -1293,21 +1369,38 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 			originals[addr] = orig
 		}
 
-		if len(obj.dirtyStorage) == 0 {
+		// Metamorphic case: this address was destroyed+recreated (or CREATE2'd over
+		// an existing contract) this block but ends the block alive. The old storage
+		// must still be wiped from the hashed state, including slots not touched
+		// after recreation: seed every captured pre-block slot to zero, then overlay
+		// the new dirtyStorage values.
+		wiped := s.activeWipedSlots(addr)
+		if len(wiped) == 0 && len(obj.dirtyStorage) == 0 {
 			continue
 		}
-		slots := make(map[types.Hash]*uint256.Int, len(obj.dirtyStorage))
+		slots := make(map[types.Hash]*uint256.Int, len(wiped)+len(obj.dirtyStorage))
+		for key := range wiped {
+			slots[key] = new(uint256.Int) // zero = delete old slot
+		}
 		for key, value := range obj.dirtyStorage {
-			slots[key] = new(uint256.Int).Set(&value)
+			v := value
+			slots[key] = new(uint256.Int).Set(&v)
+		}
+		if len(slots) == 0 {
+			continue
 		}
 		storage[addr] = slots
 
-		if ltEnabled && len(obj.dirtyStorage) > 0 {
-			origSlots := make(map[types.Hash]*uint256.Int, len(obj.dirtyStorage))
+		if ltEnabled {
+			origSlots := make(map[types.Hash]*uint256.Int, len(slots))
+			for key, origVal := range wiped {
+				ov := origVal
+				origSlots[key] = new(uint256.Int).Set(&ov)
+			}
 			for key := range obj.dirtyStorage {
 				if origVal, ok := obj.blockOriginStorage[key]; ok {
 					origSlots[key] = new(uint256.Int).Set(&origVal)
-				} else {
+				} else if _, seeded := origSlots[key]; !seeded {
 					origSlots[key] = new(uint256.Int) // zero = didn't exist
 				}
 			}
@@ -1398,6 +1491,9 @@ func (sdb *IntraBlockState) Selfdestruct(addr types.Address) bool {
 		sdb.journal.append(storageWipeAddChange{account: &addr})
 		sdb.storageWipes[addr] = struct{}{}
 	}
+	// Capture the full pre-block storage before the wipe so the hashed state
+	// root removes every old slot, not just the ones touched this block.
+	sdb.captureWipedSlots(addr)
 	return true
 }
 

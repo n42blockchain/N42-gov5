@@ -71,6 +71,26 @@ type StateReader interface {
 	ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error)
 }
 
+// StorageEnumerator is an optional capability of a StateReader that can
+// enumerate every persisted storage slot of an account (a full prefix scan
+// of the plain Storage table). IntraBlockState uses it, at storage-wipe
+// registration time (Selfdestruct / contract CreateAccount), to capture the
+// COMPLETE pre-block slot set of an account so the pluggable RootComputer
+// (JMT/MPT/BMT) can delete all of them from the hashed state — not merely
+// the slots that happened to be touched in the current block.
+//
+// Readers that cannot enumerate (e.g. a pure witness-backed minimal-client
+// reader) simply do not implement this interface; the caller then falls back
+// to the touched-slot set (obj.blockOriginStorage).
+//
+// f is called once per slot with the raw stored value bytes; returning false
+// stops the iteration early. The scan must reflect state as of the start of
+// the block (pre-wipe), which holds because IntraBlockState invokes it during
+// EVM execution, before FinalizeTx/CommitBlock flushes any wipe to the DB.
+type StorageEnumerator interface {
+	ForEachStorage(addr types.Address, f func(slot types.Hash, value []byte) bool) error
+}
+
 // StateWriter provides write access to blockchain state.
 // This interface is used during block execution to modify state.
 //

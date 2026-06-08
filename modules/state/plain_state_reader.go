@@ -129,3 +129,40 @@ func (r *PlainStateReader) ReadAccountCodeSize(address types.Address, codeHash t
 	code, err := r.ReadAccountCode(address, codeHash)
 	return len(code), err
 }
+
+// ForEachStorage enumerates every persisted storage slot of address by doing a
+// prefix scan of the plain Storage table (composite key = addr(20)||slot(32),
+// 52 bytes). It mirrors PlainStateWriter.collectPreWipeSlots so the hashed-state
+// wipe and the plain-state wipe see the identical slot set. Implements
+// StorageEnumerator. The underlying db must support cursors (kv.Tx); if not
+// (e.g. a bare Getter), the scan is a no-op and the caller falls back to the
+// touched-slot set.
+func (r *PlainStateReader) ForEachStorage(addr types.Address, f func(slot types.Hash, value []byte) bool) error {
+	cp, ok := r.db.(cursorProvider)
+	if !ok {
+		return nil
+	}
+	cursor, err := cp.Cursor(modules.Storage)
+	if err != nil {
+		return err
+	}
+	defer cursor.Close()
+	prefix := addr[:]
+	for k, v, err := cursor.Seek(prefix); k != nil; k, v, err = cursor.Next() {
+		if err != nil {
+			return err
+		}
+		if len(k) < 20 || !bytes.Equal(k[:20], prefix) {
+			break
+		}
+		if len(k) != 52 || len(v) == 0 {
+			continue
+		}
+		var slot types.Hash
+		copy(slot[:], k[20:52])
+		if !f(slot, v) {
+			break
+		}
+	}
+	return nil
+}
