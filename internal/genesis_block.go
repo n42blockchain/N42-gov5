@@ -379,10 +379,17 @@ func (g *GenesisBlock) WriteGenesisState(tx kv.RwTx) (*block.Block, *state.Intra
 	if err := statedb.FinalizeTx(g.GenesisConfig.Config.Rules(0), blockWriter); err != nil {
 		return nil, statedb, fmt.Errorf("cannot write state: %w", err)
 	}
-	if verifiedRoot, err := ethcompat.VerifyStateRoot(tx); err != nil {
-		return nil, statedb, fmt.Errorf("cannot verify genesis state root: %w", err)
-	} else if g.GenesisConfig.StateRoot == (types.Hash{}) && block.StateRoot() != verifiedRoot {
-		return nil, statedb, fmt.Errorf("genesis state root mismatch: header=%s computed=%s", block.StateRoot(), verifiedRoot)
+	// The ETH-MPT cross-check only applies to chains whose genesis header root is
+	// the ethcompat MPT root (see the matching guard in the block-construction path
+	// above). Native N42 chains (APoS, legacy genesis trie roots) set the header
+	// root via statedb.GenerateRootHash(); verifying those against the ETH MPT root
+	// is meaningless and would falsely reject genesis initialization.
+	if !useLegacyGenesisTrieRoots(g.GenesisConfig.Config) {
+		if verifiedRoot, err := ethcompat.VerifyStateRoot(tx); err != nil {
+			return nil, statedb, fmt.Errorf("cannot verify genesis state root: %w", err)
+		} else if g.GenesisConfig.StateRoot == (types.Hash{}) && block.StateRoot() != verifiedRoot {
+			return nil, statedb, fmt.Errorf("genesis state root mismatch: header=%s computed=%s", block.StateRoot(), verifiedRoot)
+		}
 	}
 	if err := blockWriter.WriteChangeSets(); err != nil {
 		return nil, statedb, fmt.Errorf("cannot write change sets: %w", err)
