@@ -69,6 +69,7 @@ import (
 	"github.com/n42blockchain/N42/internal/ai/training"
 	"github.com/n42blockchain/N42/internal/ai/wallet"
 	"github.com/n42blockchain/N42/internal/api"
+	"github.com/n42blockchain/N42/internal/api/consensusrest"
 	"github.com/n42blockchain/N42/internal/api/graphql"
 	"github.com/n42blockchain/N42/internal/blockhashindex"
 	"github.com/n42blockchain/N42/internal/bridge"
@@ -2166,6 +2167,19 @@ func (n *Node) startRPC() error {
 			endpoint := n.config.NodeCfg.GraphQL.EffectiveEndpoint()
 			n.http.mux.Handle(endpoint, gqlHandler)
 			log.Info("GraphQL endpoint enabled", "endpoint", endpoint)
+		}
+
+		// Consensus REST + explorer page, on the same HTTP port, enabled when
+		// "n42" is present in --http.api (alongside the n42_* JSON-RPC methods).
+		// Pool config (for committee/verify routes) comes from N42_BLS_POOL_* env.
+		for _, m := range httpModules {
+			if m == "n42" {
+				restSrv := consensusrest.NewServer(n.db, consensusrest.ConfigFromEnv())
+				n.http.mux.Handle("/n42/consensus/v1/", restSrv.Handler())
+				n.http.mux.Handle("/n42/explorer", consensusrest.ExplorerHandler())
+				log.Info("Consensus REST + explorer enabled", "rest", "/n42/consensus/v1/", "explorer", "/n42/explorer")
+				break
+			}
 		}
 	}
 
