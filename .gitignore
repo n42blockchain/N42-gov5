@@ -180,3 +180,8 @@ trace_tx*.ps1
 
 # Python bytecode cache
 __pycache__/
+
+# Simulated BLS voter pool — contains PRIVATE KEYS, never commit
+*bls*pool*.md
+bls-pool*/
+n42-bls-pool/
