@@ -603,6 +603,26 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					"root", fmt.Sprintf("%x", jmtRoot[:8]),
 				)
 			}
+
+			// BMT: feed all genesis accounts/storage into the BMT so it holds the
+			// full state from block 0 (same genesis-seeding fix as MPT/Trie/JMT).
+			// Without this the BMT omits untouched genesis accounts and the root
+			// diverges from a full rebuild.
+			if useBMT && bmtRC != nil {
+				genesisAccounts, genesisStorage, gerr := e.readAllState(dstTx)
+				if gerr != nil {
+					return fmt.Errorf("read genesis state for BMT: %w", gerr)
+				}
+				if root, e2 := bmtRC.ComputeRoot(genesisAccounts, genesisStorage); e2 != nil {
+					return fmt.Errorf("BMT genesis root: %w", e2)
+				} else {
+					e.log.Info("BMT genesis state loaded",
+						"accounts", len(genesisAccounts),
+						"storage", len(genesisStorage),
+						"root", fmt.Sprintf("%x", root[:8]),
+					)
+				}
+			}
 		}
 
 		// Set MPT StateReader once per batch (dstTx is constant within batch).
