@@ -324,15 +324,16 @@ func (t *Tree) putExtension(node *Node, path NibblePath, depth int, leaf *Node) 
 		}
 	}
 
-	// Full match — recurse into the child.
+	// Full match — recurse into the child (always an internal node by the
+	// canonical invariant), then re-wrap with the same extension path. We do
+	// NOT inline single-nibble extensions into a single-child internal: that
+	// produces a second representation for the same logical structure and makes
+	// the tree shape depend on insertion/deletion history rather than the live
+	// key set. Extensions point only to internals; this stays canonical.
 	if commonLen == extLen {
 		newChild, err := t.put(ext.Child, path, depth+extLen, leaf)
 		if err != nil {
 			return EmptyHash, err
-		}
-		if extLen == 1 {
-			// Single nibble extension can be inlined into parent.
-			return t.wrapSingleExtension(extNibbles[0], newChild), nil
 		}
 		newExt := NewExtensionNode(ext.Path, newChild)
 		return t.storeNode(newExt), nil
@@ -366,13 +367,6 @@ func (t *Tree) putExtension(node *Node, path NibblePath, depth int, leaf *Node) 
 		return t.storeNode(prefixExt), nil
 	}
 	return forkHash, nil
-}
-
-// wrapSingleExtension builds an internal node with a single child at the given nibble.
-func (t *Tree) wrapSingleExtension(nibble byte, childHash Hash) Hash {
-	internal := NewInternalNode()
-	internal.Internal.Children[nibble] = ChildEntry{Hash: childHash, Valid: true}
-	return t.storeNode(internal)
 }
 
 // Delete removes a key from the tree. Returns ErrNotFound if the key is absent.
@@ -440,8 +434,12 @@ func (t *Tree) deleteInternal(node *Node, path NibblePath, depth int) (Hash, boo
 		newInternal.Internal.Children[nibble] = ChildEntry{Hash: newChild, Valid: true}
 	}
 
-	// Collapse if only one child remains.
-	return t.collapseInternal(newInternal), true, nil
+	// Collapse to the canonical shape if the node dropped below 2 children.
+	h, err := t.collapseInternal(newInternal)
+	if err != nil {
+		return EmptyHash, false, err
+	}
+	return h, true, nil
 }
 
 func (t *Tree) deleteExtension(node *Node, path NibblePath, depth int) (Hash, bool, error) {
@@ -462,61 +460,135 @@ func (t *Tree) deleteExtension(node *Node, path NibblePath, depth int) (Hash, bo
 		return EmptyHash, true, nil
 	}
 
-	// Check if the child is also an extension — merge paths.
 	childNode, err := t.loadNode(newChild)
 	if err != nil {
 		return EmptyHash, false, err
 	}
-	if childNode.Type == NodeTypeExtension {
+	switch childNode.Type {
+	case NodeTypeLeaf:
+		// An extension must never point to a leaf (the leaf already carries its
+		// full key hash, so the path prefix is redundant). Bubble the bare leaf
+		// up so an ancestor places it as a direct child — matching the shape a
+		// delete-free Put history would produce.
+		return newChild, true, nil
+	case NodeTypeExtension:
+		// Merge consecutive extensions into one.
 		merged := ext.Path.Concat(childNode.Extension.Path)
-		mergedExt := NewExtensionNode(merged, childNode.Extension.Child)
-		return t.storeNode(mergedExt), true, nil
+		return t.storeNode(NewExtensionNode(merged, childNode.Extension.Child)), true, nil
+	default: // Internal
+		return t.storeNode(NewExtensionNode(ext.Path, newChild)), true, nil
 	}
-
-	newExt := NewExtensionNode(ext.Path, newChild)
-	return t.storeNode(newExt), true, nil
 }
 
-// collapseInternal checks if an internal node has only one child and,
-// if that child is a leaf or extension, merges them.
-func (t *Tree) collapseInternal(node *Node) Hash {
-	idx, childHash := node.Internal.singleChild()
-	if idx < 0 {
-		// 0 or 2+ children — keep as internal.
-		if node.Internal.childCount() == 0 {
-			return EmptyHash
-		}
-		return t.storeNode(node)
+// collapseInternal returns the canonical representation of an internal node that
+// may have dropped below two children after a deletion. It enforces the strict
+// JMT invariants so the tree shape is a pure function of the live key set
+// (independent of insertion/deletion history):
+//
+//   - internal nodes have >= 2 children,
+//   - extension nodes point only to internal nodes (never a leaf or extension),
+//   - leaves are bare (no extension wrapper).
+//
+// A single remaining child is therefore lifted: a leaf bubbles up as-is; an
+// extension absorbs the branch nibble into its path; an internal is wrapped in a
+// single-nibble extension. Returns EmptyHash when no children remain.
+func (t *Tree) collapseInternal(node *Node) (Hash, error) {
+	cc := node.Internal.childCount()
+	if cc == 0 {
+		return EmptyHash, nil
+	}
+	if cc >= 2 {
+		return t.storeNode(node), nil
 	}
 
-	// Single child — try to collapse.
+	idx, childHash := node.Internal.singleChild()
 	childNode, err := t.loadNode(childHash)
 	if err != nil {
-		// Cannot load child — this should not happen in a well-formed tree.
-		// Keep the internal node as-is to avoid data loss.
-		return t.storeNode(node)
+		return EmptyHash, err
 	}
-
 	nibble := byte(idx)
 	switch childNode.Type {
 	case NodeTypeLeaf:
-		// A single-child internal pointing to a leaf can be replaced by
-		// an extension → leaf (or just the leaf if parent handles it).
-		// But since we always key by the full hash, we keep the leaf as-is.
-		ext := NewExtensionNode(NewNibblePathFromSlice([]byte{nibble}), childHash)
-		return t.storeNode(ext)
-
+		// Bubble the bare leaf up — no extension wrapper.
+		return childHash, nil
 	case NodeTypeExtension:
-		// Merge: nibble + extension path.
+		// Prepend the branch nibble to the child extension's path.
 		merged := NewNibblePathFromSlice([]byte{nibble}).Concat(childNode.Extension.Path)
-		ext := NewExtensionNode(merged, childNode.Extension.Child)
-		return t.storeNode(ext)
-
-	default:
-		// Internal child — wrap with single-nibble extension.
-		ext := NewExtensionNode(NewNibblePathFromSlice([]byte{nibble}), childHash)
-		return t.storeNode(ext)
+		return t.storeNode(NewExtensionNode(merged, childNode.Extension.Child)), nil
+	default: // Internal
+		return t.storeNode(NewExtensionNode(NewNibblePathFromSlice([]byte{nibble}), childHash)), nil
 	}
+}
+
+// CanonicalRoot rebuilds the tree's current live leaf set into a fresh tree and
+// returns that root. For a correctly maintained tree this always equals Root();
+// any difference reveals non-canonical internal structure left behind by an
+// incremental mutation. Intended for diagnostics and tests, not the hot path.
+func (t *Tree) CanonicalRoot() (Hash, error) {
+	var entries []BatchEntry
+	if err := t.collectLeavesForRebuild(t.root, &entries); err != nil {
+		return EmptyHash, err
+	}
+	if len(entries) == 0 {
+		return EmptyHash, nil
+	}
+	return New(NewMemStore()).BatchUpdate(entries)
+}
+
+// LeafChecksum returns an order-independent XOR checksum over hash(keyHash||value)
+// of every leaf. Two trees with the same {key→value} set share a checksum.
+func (t *Tree) LeafChecksum() (Hash, int, error) {
+	var entries []BatchEntry
+	if err := t.collectLeavesForRebuild(t.root, &entries); err != nil {
+		return EmptyHash, 0, err
+	}
+	var x Hash
+	for _, e := range entries {
+		buf := make([]byte, 0, HashSize+len(e.Value))
+		buf = append(buf, e.KeyHash[:]...)
+		buf = append(buf, e.Value...)
+		h := t.hasher.Hash(buf)
+		for i := range x {
+			x[i] ^= h[i]
+		}
+	}
+	return x, len(entries), nil
+}
+
+// LeafCount returns the number of leaves reachable from the current root.
+func (t *Tree) LeafCount() (int, error) {
+	var entries []BatchEntry
+	if err := t.collectLeavesForRebuild(t.root, &entries); err != nil {
+		return 0, err
+	}
+	return len(entries), nil
+}
+
+func (t *Tree) collectLeavesForRebuild(h Hash, out *[]BatchEntry) error {
+	if h == EmptyHash {
+		return nil
+	}
+	n, err := t.loadNode(h)
+	if err != nil {
+		return err
+	}
+	switch n.Type {
+	case NodeTypeLeaf:
+		v := make([]byte, len(n.Leaf.Value))
+		copy(v, n.Leaf.Value)
+		*out = append(*out, BatchEntry{KeyHash: n.Leaf.KeyHash, Value: v})
+	case NodeTypeExtension:
+		return t.collectLeavesForRebuild(n.Extension.Child, out)
+	case NodeTypeInternal:
+		for i := range n.Internal.Children {
+			if n.Internal.Children[i].Valid {
+				if err := t.collectLeavesForRebuild(n.Internal.Children[i].Hash, out); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // Flush writes all dirty nodes to the underlying store and clears the buffer.
