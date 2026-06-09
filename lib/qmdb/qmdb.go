@@ -75,7 +75,10 @@ type entry struct {
 }
 
 type twig struct {
-	leaves [TwigSize]Hash // leafHash per slot; nullHash for empty/dead
+	// leaves is the 2048-leaf array (64 KiB). It is a POINTER so a sealed twig's
+	// leaf storage can be evicted (set to nil) while its 32-byte root is retained;
+	// the leaves are rebuilt on demand from the cold entry log (see twig_evict.go).
+	leaves *[TwigSize]Hash // nil = evicted (leaf storage freed, root kept)
 	live   int
 	root   Hash
 	dirty  bool
@@ -83,17 +86,16 @@ type twig struct {
 }
 
 func newTwig() *twig {
-	t := &twig{dirty: true}
-	for i := range t.leaves {
-		t.leaves[i] = nullHash
-	}
-	return t
+	t := &twig{dirty: true, leaves: new([TwigSize]Hash)}
+	return t // new([...]) zero-fills, and nullHash is the zero Hash
 }
 
 // recompute rebuilds the twig root from its 2048 leaves (cheap: 4095 hashes).
+// The twig must be hydrated (leaves != nil); callers dirty a twig only after
+// hydrating it, and eviction never targets a dirty twig.
 func (tw *twig) recompute() {
 	var buf [TwigSize]Hash
-	buf = tw.leaves
+	buf = *tw.leaves
 	n := TwigSize
 	for n > 1 {
 		for i := 0; i < n/2; i++ {
@@ -171,7 +173,9 @@ func (t *Tree) LiveCount() int { return len(t.index) }
 // forest. Intended for benchmarking the parallel-vs-sequential recompute path.
 func (t *Tree) ForceDirty() {
 	for _, tw := range t.twigs {
-		if tw != nil && !tw.pruned {
+		// Only resident twigs can be recomputed; an evicted twig already holds its
+		// current root (recompute would need its freed leaves).
+		if tw != nil && !tw.pruned && tw.leaves != nil {
 			tw.dirty = true
 		}
 	}
@@ -191,7 +195,9 @@ func (t *Tree) twigFor(slot uint64) *twig {
 }
 
 func (t *Tree) deactivate(slot uint64) {
-	tw := t.twigs[slot/TwigSize]
+	id := int(slot / TwigSize)
+	t.ensureHydrated(id) // rehydrate this twig's leaves if they were evicted
+	tw := t.twigs[id]
 	local := slot % TwigSize
 	if tw.leaves[local] != nullHash {
 		tw.leaves[local] = nullHash

@@ -45,7 +45,7 @@ func (t *Tree) markPruned(id int) {
 		return
 	}
 	// Drop the 2048-entry leaf array; a pruned twig contributes nullTwigRoot.
-	tw.leaves = [TwigSize]Hash{}
+	tw.leaves = nil
 	tw.root = nullTwigRoot
 	tw.dirty = false
 	tw.pruned = true

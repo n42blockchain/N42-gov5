@@ -26,6 +26,7 @@ func (t *Tree) GetProof(keyHash Hash) (*Proof, bool) {
 
 	twigID := slot / TwigSize
 	local := int(slot % TwigSize)
+	t.ensureHydrated(int(twigID)) // rebuild leaves if this twig was evicted
 	tw := t.twigs[twigID]
 
 	pe, _ := t.entryAt(slot) // faults from cold if the slot was evicted
@@ -33,7 +34,7 @@ func (t *Tree) GetProof(keyHash Hash) (*Proof, bool) {
 
 	// Collect siblings inside the twig.
 	var buf [TwigSize]Hash
-	buf = tw.leaves
+	buf = *tw.leaves
 	idx, n := local, TwigSize
 	for L := 0; L < TwigHeight; L++ {
 		p.TwigPath[L] = buf[idx^1]
