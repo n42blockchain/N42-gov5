@@ -564,6 +564,45 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					)
 				}
 			}
+
+			// JMT: feed all genesis accounts/storage into the JMT tree (and the
+			// LtHash digest) so the tree holds the full state from block 0. Without
+			// this the JMT only ever sees per-block dirty accounts and omits every
+			// untouched genesis account → state root diverges from a full rebuild.
+			// Mirrors the MPT/Trie seeding above. Persisted by the per-batch
+			// tree.FlushTo(nodeStore) at the end of the block loop.
+			if jmtCommit != nil {
+				genesisAccounts, genesisStorage, gerr := e.readAllState(dstTx)
+				if gerr != nil {
+					return fmt.Errorf("read genesis state for JMT: %w", gerr)
+				}
+				tree.SetVersion(0)
+				var jmtRoot types.Hash
+				if ltRC != nil {
+					lr, ok := ltRC.(state.LtHashRootComputer)
+					if !ok {
+						return fmt.Errorf("JMT genesis: ltRC missing LtHashRootComputer")
+					}
+					emptyOrigAcc := map[types.Address]*account.StateAccount{}
+					emptyOrigStor := map[types.Address]map[types.Hash]*uint256.Int{}
+					r, _, e2 := lr.ComputeRootWithOriginals(genesisAccounts, emptyOrigAcc, genesisStorage, emptyOrigStor)
+					if e2 != nil {
+						return fmt.Errorf("JMT+LtHash genesis root: %w", e2)
+					}
+					jmtRoot = r
+				} else {
+					r, e2 := commitment.NewJMTRootComputer(jmtCommit).ComputeRoot(genesisAccounts, genesisStorage)
+					if e2 != nil {
+						return fmt.Errorf("JMT genesis root: %w", e2)
+					}
+					jmtRoot = r
+				}
+				e.log.Info("JMT genesis state loaded",
+					"accounts", len(genesisAccounts),
+					"storage", len(genesisStorage),
+					"root", fmt.Sprintf("%x", jmtRoot[:8]),
+				)
+			}
 		}
 
 		// Set MPT StateReader once per batch (dstTx is constant within batch).
@@ -680,7 +719,12 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				if e.resealer != nil {
 					pbr := parentConsensusEvidenceHash(dstTx, newBlockNum)
 					ebrHeader := &block.Header{Number: uint256.NewInt(newBlockNum), Time: srcTime}
-					if err := internal.ProcessBeaconBlockRoot(&pbr, e.cfg.ChainConfig, ibs, ebrHeader, nil); err != nil {
+					// Persist the beacon-roots writes through the real writer (w):
+					// the engine flushes block state via FinalizeTx (journal-based),
+					// and ProcessBeaconBlockRoot's internal FinalizeTx clears the
+					// journal, so without this the writes reach the JMT (still-dirty
+					// storage at IntermediateRoot) but never the plain Storage table.
+					if err := internal.ProcessBeaconBlockRootWithWriter(&pbr, e.cfg.ChainConfig, ibs, ebrHeader, w); err != nil {
 						return fmt.Errorf("eip4788 block %d: %w", newBlockNum, err)
 					}
 				}
