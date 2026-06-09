@@ -26,9 +26,9 @@ import (
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/bmt"
 	"github.com/n42blockchain/N42/lib/jmt"
+	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	"github.com/n42blockchain/N42/lib/kv"
 	mdbxkv "github.com/n42blockchain/N42/lib/kv/mdbx"
-	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	log "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -164,6 +164,27 @@ func main() {
 			return
 		}
 		fmt.Printf("\n❌ BMT rebuild (%x) != header.Root (%x)\n", bmtRoot, headerRoot)
+		os.Exit(1)
+	}
+
+	// QMDB (append-only twig) mode: the world root is history-dependent, so it is
+	// NOT a from-scratch rebuild of the live key set. Verify by RELOADING the
+	// persisted positional entry log and recomputing the root, which must equal
+	// header.Root. (A from-PlainState rebuild would deliberately diverge.)
+	if *treeType == "qmdb" {
+		fmt.Printf("reloading QMDB twig forest from entry log…\n")
+		t1 := time.Now()
+		qrc := commitment.NewQMDBRootComputer()
+		if e := qrc.LoadFrom(tx); e != nil {
+			die("qmdb reload: %v", e)
+		}
+		qRoot := qrc.Root()
+		fmt.Printf("  QMDB reload root: %x  liveKeys=%d  (%s)\n", qRoot, qrc.Tree().LiveCount(), time.Since(t1).Round(time.Millisecond))
+		if qRoot == headerRoot {
+			fmt.Printf("\n✅ MATCH — header.Root equals reloaded QMDB world root. State is correct.\n")
+			return
+		}
+		fmt.Printf("\n❌ QMDB reload (%x) != header.Root (%x)\n", qRoot, headerRoot)
 		os.Exit(1)
 	}
 

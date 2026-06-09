@@ -26,20 +26,20 @@ import (
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hash"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
-	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/lib/bmt"
 	bmtstore "github.com/n42blockchain/N42/lib/bmt/store"
 	"github.com/n42blockchain/N42/lib/jmt"
 	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
-	"github.com/n42blockchain/N42/lib/lthash"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/lib/lthash"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
@@ -54,7 +54,7 @@ var (
 	emptyCodeHashValue = crypto.Keccak256Hash(nil)
 	emptyUncleHash     = hash.EmptyUncleHash // rlpHash([]*Header(nil)) = 0x1dcc4de8...
 	emptyRewardsHash   = hash.DeriveSha(block.Rewards(nil))
-	emptyRequestsHash  = hash.EmptyRootHash  // keccak256(RLP([])) = 0x56e81f17...
+	emptyRequestsHash  = hash.EmptyRootHash // keccak256(RLP([])) = 0x56e81f17...
 )
 
 // ptrU64 returns a fresh *uint64 pointer. Avoids shared mutable state across headers.
@@ -70,18 +70,19 @@ func newDefaultExtra() []byte { return make([]byte, 32) }
 // transactions, fills timeline gaps, builds new headers with JMT+LtHash
 // roots, and writes to a new database.
 type EngineV2 struct {
-	cfg         ConfigV2
-	srcDB       kv.RwDB
-	dstDB       kv.RwDB
-	stats       *Stats
-	log         log2.Logger
-	replayCache   *layered.ShardedCache    // Erigon-style cross-batch state cache
-	bmtTree       *bmt.Tree               // retained after replay for final flush
-	mptRC         state.RootComputer      // MPT root computer (persists across batches)
+	cfg           ConfigV2
+	srcDB         kv.RwDB
+	dstDB         kv.RwDB
+	stats         *Stats
+	log           log2.Logger
+	replayCache   *layered.ShardedCache        // Erigon-style cross-batch state cache
+	bmtTree       *bmt.Tree                    // retained after replay for final flush
+	qmdbRC        *commitment.QMDBRootComputer // QMDB-twig computer (in-memory, persists across batches)
+	mptRC         state.RootComputer           // MPT root computer (persists across batches)
 	trieRC        *commitment.TrieRootComputer // CalcTrieRoot incremental (persists across batches)
-	witnessReader *WitnessStateReader     // records per-block state access
-	leafJournal   *LeafJournal            // per-block leaf changes for tree building
-	resealer      *BLSResealer            // BLS mobile-voter re-seal (nil = disabled)
+	witnessReader *WitnessStateReader          // records per-block state access
+	leafJournal   *LeafJournal                 // per-block leaf changes for tree building
+	resealer      *BLSResealer                 // BLS mobile-voter re-seal (nil = disabled)
 }
 
 // NewEngineV2 creates a replay-v2 engine. Call Run() to execute.
@@ -354,7 +355,9 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 		var bmtRC state.RootComputer
 		var ltCommit *commitment.LtHashCommitment
 		var ltRC state.RootComputer
+		var qmdbRC *commitment.QMDBRootComputer
 		useBMT := e.cfg.TreeType == "bmt"
+		useQMDB := e.cfg.TreeType == "qmdb"
 		useMPT := e.cfg.TreeType == "mpt"
 		useTrie := e.cfg.TreeType == "trie"
 		var mptRC state.RootComputer
@@ -390,6 +393,20 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					e.mptRC = rc
 				}
 				mptRC = e.mptRC
+
+			case useQMDB:
+				// QMDB path — append-only twig forest (Blake3, position-addressed).
+				// In-memory across batches; the root is history-dependent, so resume
+				// reloads the exact forest from the persisted entry log (not a rebuild
+				// from the key set). kv.RwTx satisfies qmdb.Putter/Getter directly.
+				if e.qmdbRC == nil {
+					rc := commitment.NewQMDBRootComputer()
+					if err := rc.LoadFrom(dstTx); err != nil {
+						return fmt.Errorf("QMDB reload: %w", err)
+					}
+					e.qmdbRC = rc
+				}
+				qmdbRC = e.qmdbRC
 
 			case useBMT:
 				// BMT path — Binary Merkle Tree (Blake3, content-addressed)
@@ -440,6 +457,9 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 		if useBMT {
 			resumeTable = bmtstore.BMTRootTable
 		}
+		if useQMDB {
+			resumeTable = modules.QMDBMeta
+		}
 		if headData, _ := dstTx.GetOne(resumeTable, []byte("replay_chain_head")); len(headData) >= 8 {
 			head := binary.BigEndian.Uint64(headData)
 			if head > 0 && head >= from {
@@ -468,6 +488,8 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 		treeEmpty := true
 		if useBMT {
 			treeEmpty = bmtTree == nil || bmtTree.Root() == bmt.EmptyHash
+		} else if useQMDB {
+			treeEmpty = qmdbRC == nil || qmdbRC.Tree().LiveCount() == 0
 		} else {
 			treeEmpty = tree == nil || tree.Root() == jmt.EmptyHash
 		}
@@ -478,9 +500,13 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				// buildConsensusExtraData will produce the correct Extra for snapshot init.
 				if err := e.srcDB.View(ctx, func(srcTx kv.Tx) error {
 					srcGenesis, _ := rawdb.ReadBlockByNumber(srcTx, 0)
-					if srcGenesis == nil { return nil }
+					if srcGenesis == nil {
+						return nil
+					}
 					srcHdr := srcGenesis.Header().(*block.Header)
-					if len(srcHdr.Extra) < 97 { return nil }
+					if len(srcHdr.Extra) < 97 {
+						return nil
+					}
 					signerBytes := srcHdr.Extra[32 : len(srcHdr.Extra)-65]
 					n := len(signerBytes) / 20
 					miners := make([]string, n)
@@ -505,16 +531,16 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					"accounts", len(genesis.Alloc),
 					"extraLen", len(genesis.ExtraData))
 
-					// Write genesis ConsensusEvidence to MDBX (block 0).
-					genHash, _ := rawdb.ReadCanonicalHash(dstTx, 0)
-					genCE := &rawdb.ConsensusEvidence{
-						BlockHash:     genHash,
-						SignerCount:   1,
-						SignersPacked: []byte{0x01},
-					}
-					if err := rawdb.WriteConsensusEvidence(dstTx, 0, genCE); err != nil {
-						return fmt.Errorf("write genesis consensus evidence: %w", err)
-					}
+				// Write genesis ConsensusEvidence to MDBX (block 0).
+				genHash, _ := rawdb.ReadCanonicalHash(dstTx, 0)
+				genCE := &rawdb.ConsensusEvidence{
+					BlockHash:     genHash,
+					SignerCount:   1,
+					SignersPacked: []byte{0x01},
+				}
+				if err := rawdb.WriteConsensusEvidence(dstTx, 0, genCE); err != nil {
+					return fmt.Errorf("write genesis consensus evidence: %w", err)
+				}
 			}
 			// Also apply hard-fork allocs and system contracts on top.
 			r := state.NewPlainStateReader(dstTx)
@@ -623,6 +649,24 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					)
 				}
 			}
+
+			// QMDB: seed the twig forest with the full genesis state (same
+			// genesis-seeding requirement as MPT/Trie/JMT/BMT).
+			if useQMDB && qmdbRC != nil {
+				genesisAccounts, genesisStorage, gerr := e.readAllState(dstTx)
+				if gerr != nil {
+					return fmt.Errorf("read genesis state for QMDB: %w", gerr)
+				}
+				if root, e2 := qmdbRC.ComputeRoot(genesisAccounts, genesisStorage); e2 != nil {
+					return fmt.Errorf("QMDB genesis root: %w", e2)
+				} else {
+					e.log.Info("QMDB genesis state loaded",
+						"accounts", len(genesisAccounts),
+						"storage", len(genesisStorage),
+						"root", fmt.Sprintf("%x", root[:8]),
+					)
+				}
+			}
 		}
 
 		// Set MPT StateReader once per batch (dstTx is constant within batch).
@@ -658,6 +702,8 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 							gapTreeRoot = r
 						} else if useBMT && bmtCommit != nil {
 							gapTreeRoot = bmtCommit.Root()
+						} else if useQMDB && qmdbRC != nil {
+							gapTreeRoot = qmdbRC.Root()
 						} else if jmtCommit != nil {
 							gapTreeRoot = jmtCommit.Root()
 						}
@@ -728,6 +774,8 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					ibs.SetRootComputer(mptRC)
 				} else if useBMT && bmtRC != nil {
 					ibs.SetRootComputer(bmtRC)
+				} else if useQMDB && qmdbRC != nil {
+					ibs.SetRootComputer(qmdbRC)
 				} else if ltRC != nil {
 					ibs.SetRootComputer(ltRC)
 				}
@@ -969,17 +1017,21 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 						"gasTotal", e.stats.GasUsedTotal.Load(),
 						"heapMB", m.HeapAlloc/1024/1024,
 						"cacheHitRate", func() string {
-						if e.replayCache == nil { return "n/a" }
-						h, m, _ := e.replayCache.Stats()
-						if h+m == 0 { return "0%" }
-						return fmt.Sprintf("%.1f%%", float64(h)/float64(h+m)*100)
-					}(),
-					"mptBranches", func() int {
-						if rc, ok := e.mptRC.(*commitment.MPTRootComputer); ok {
-							return rc.BranchCount()
-						}
-						return 0
-					}(),
+							if e.replayCache == nil {
+								return "n/a"
+							}
+							h, m, _ := e.replayCache.Stats()
+							if h+m == 0 {
+								return "0%"
+							}
+							return fmt.Sprintf("%.1f%%", float64(h)/float64(h+m)*100)
+						}(),
+						"mptBranches", func() int {
+							if rc, ok := e.mptRC.(*commitment.MPTRootComputer); ok {
+								return rc.BranchCount()
+							}
+							return 0
+						}(),
 						"elapsed", elapsed.Round(time.Second),
 					)
 				}
@@ -1021,6 +1073,26 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				if err := bmtstore.WriteBMTVersion(dstTx, lastVersion); err != nil {
 					return fmt.Errorf("write BMT version: %w", err)
 				}
+			} else if useQMDB && qmdbRC != nil {
+				// QMDB: persist the positional entry log + twig meta (sequential
+				// appends) so a cross-process restart can reload the exact forest.
+				// FlushTo also writes "root"/"nextSlot" into QMDBMeta.
+				bytesW, ferr := qmdbRC.FlushTo(dstTx)
+				if ferr != nil {
+					return fmt.Errorf("QMDB flush: %w", ferr)
+				}
+				qRoot := qmdbRC.Root()
+				var verBuf [8]byte
+				binary.BigEndian.PutUint64(verBuf[:], lastVersion)
+				if err := dstTx.Put(modules.QMDBMeta, []byte("version"), verBuf[:]); err != nil {
+					return fmt.Errorf("write QMDB version: %w", err)
+				}
+				e.log.Info("batch done",
+					"blocks", fmt.Sprintf("%d-%d", from, lastVersion),
+					"qmdbRoot", qRoot.Hex()[:16],
+					"liveKeys", qmdbRC.Tree().LiveCount(),
+					"flushKB", bytesW/1024,
+				)
 			} else if tree != nil {
 				if err := tree.FlushTo(nodeStore); err != nil {
 					return fmt.Errorf("JMT flush: %w", err)
@@ -1069,6 +1141,9 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 			resumeTable := jmtstore.JMTRootTable
 			if useBMT {
 				resumeTable = bmtstore.BMTRootTable
+			}
+			if useQMDB {
+				resumeTable = modules.QMDBMeta
 			}
 			if useMPT {
 				resumeTable = modules.MPTRoot
@@ -1339,4 +1414,3 @@ func (e *EngineV2) writeNewBlock(dstTx kv.RwTx, blk *block.Block, num uint64) er
 	}
 	return nil
 }
-

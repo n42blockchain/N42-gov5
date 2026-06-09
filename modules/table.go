@@ -204,6 +204,14 @@ const (
 	// BMTRoot stores the latest BMT root hash and version for recovery.
 	BMTRoot = "BMTRoot"
 
+	// QMDB-twig store (append-only, position-addressed). Keys are sequential.
+	// QMDBEntries: BE8(slot) -> keyHash(32) || value
+	QMDBEntries = "qmdbEntries"
+	// QMDBTwigs: BE8(twigID) -> twigRoot(32) || activeBits(256)
+	QMDBTwigs = "qmdbTwigs"
+	// QMDBMeta: "root"|"version"|"nextSlot"|"replay_chain_head"|"replay_src_height"
+	QMDBMeta = "qmdbMeta"
+
 	// VerkleNode stores content-addressed Verkle nodes.
 	// key: commitment_bytes (64 bytes)   value: serialized_node (97B internal / 288B+ leaf)
 	VerkleNode = "VerkleNode"
@@ -344,6 +352,9 @@ var n42Tables = []string{
 	JMTRoot,
 	BMTNode,
 	BMTRoot,
+	QMDBEntries,
+	QMDBTwigs,
+	QMDBMeta,
 	VerkleNode,
 	VerkleRoot,
 	ConsensusEvidence,

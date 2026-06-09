@@ -25,7 +25,8 @@ import (
 
 // QMDBRootComputer maintains a qmdb.Tree across blocks.
 type QMDBRootComputer struct {
-	t *qmdb.Tree
+	t              *qmdb.Tree
+	flushedThrough uint64 // entry-log slots already persisted (for incremental flush)
 }
 
 // NewQMDBRootComputer creates an empty in-memory QMDB root computer.
@@ -35,6 +36,32 @@ func NewQMDBRootComputer() *QMDBRootComputer {
 
 // Tree exposes the underlying tree (for snapshot/proof tests).
 func (r *QMDBRootComputer) Tree() *qmdb.Tree { return r.t }
+
+// Root returns the current world root without applying a dirty set.
+func (r *QMDBRootComputer) Root() types.Hash { return types.Hash(r.t.Root()) }
+
+// LoadFrom rebuilds the forest from a previously-flushed positional layout (the
+// cross-process resume path — the QMDB root is history-dependent, so resume must
+// replay positions, not rebuild from the key set). flushedThrough advances to the
+// reloaded cursor so the next flush is incremental.
+func (r *QMDBRootComputer) LoadFrom(g qmdb.Getter) error {
+	if err := r.t.LoadFrom(g); err != nil {
+		return err
+	}
+	r.flushedThrough = r.t.NextSlot()
+	return nil
+}
+
+// FlushTo persists entries appended since the last flush plus twig metadata and
+// recovery meta (positional, sequential). Returns bytes written.
+func (r *QMDBRootComputer) FlushTo(p qmdb.Putter) (int, error) {
+	next, n, err := r.t.FlushTo(p, r.flushedThrough)
+	if err != nil {
+		return n, err
+	}
+	r.flushedThrough = next
+	return n, nil
+}
 
 // RootScheme reports an unspecified scheme (the prototype does not yet have a
 // dedicated state.RootScheme constant).
