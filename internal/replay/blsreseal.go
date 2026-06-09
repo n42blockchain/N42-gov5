@@ -41,10 +41,13 @@ type BLSResealer struct {
 	jobs chan signJob // persistent signing worker pool (avoids per-block goroutine spawn)
 }
 
-// signJob signs members[lo:hi] over msg into sigs, then signals wg.
+// signJob signs members[lo:hi] over a precomputed message hash into sigs, then
+// signals wg. precomp holds the message hashed to G2 once (shared, read-only);
+// each member only does the scalar multiplication sk*H(msg), ~halving sign cost
+// vs re-hashing the identical message per member.
 type signJob struct {
 	members []int
-	msg     []byte
+	precomp *bls.PrecomputedHash
 	sigs    []common.Signature
 	lo, hi  int
 	wg      *sync.WaitGroup
@@ -73,7 +76,7 @@ func NewBLSResealer(cfg BLSResealConfig) (*BLSResealer, error) {
 		go func() {
 			for j := range r.jobs {
 				for i := j.lo; i < j.hi; i++ {
-					j.sigs[i] = r.sks[j.members[i]].Sign(j.msg)
+					j.sigs[i] = j.precomp.SignWith(r.sks[j.members[i]])
 				}
 				j.wg.Done()
 			}
@@ -106,6 +109,10 @@ func (r *BLSResealer) committee(view hotstuff.ViewNumber, blockHash types.Hash, 
 // fixed-size chunks to the persistent worker pool.
 func (r *BLSResealer) signMembers(members []int, msg []byte) []common.Signature {
 	sigs := make([]common.Signature, len(members))
+	// Hash the message to G2 once (the dominant ~half of blst sign cost); all
+	// committee members sign the SAME message, so workers reuse this point and
+	// only perform the scalar multiplication.
+	precomp := bls.PrecomputeHash(msg)
 	chunk := (len(members) + r.npar - 1) / r.npar
 	if chunk < 1 {
 		chunk = 1
@@ -117,7 +124,7 @@ func (r *BLSResealer) signMembers(members []int, msg []byte) []common.Signature 
 			hi = len(members)
 		}
 		wg.Add(1)
-		r.jobs <- signJob{members: members, msg: msg, sigs: sigs, lo: lo, hi: hi, wg: &wg}
+		r.jobs <- signJob{members: members, precomp: precomp, sigs: sigs, lo: lo, hi: hi, wg: &wg}
 	}
 	wg.Wait()
 	return sigs
