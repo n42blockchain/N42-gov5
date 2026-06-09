@@ -39,6 +39,7 @@ var emptyCodeHash = crypto.Keccak256Hash(nil)
 func main() {
 	datadir := flag.String("datadir", "D:/mainnet-bls", "converted chain datadir (contains chaindata/)")
 	mapGB := flag.Int("map.gb", 4096, "MDBX map size (GB)")
+	treeType := flag.String("tree", "jmt", "state commitment to verify: jmt (Blake3) or mpt (Keccak/HPH, ETH-compatible)")
 	flag.Parse()
 
 	logger := log.New()
@@ -71,15 +72,17 @@ func main() {
 		die("head header %d unavailable", head)
 	}
 	headerRoot := header.Root
-	storedJMT, _ := jmtstore.ReadJMTRoot(tx)
-	storedRoot := types.Hash(storedJMT)
 
-	fmt.Printf("=== n42-state-verify: %s ===\n", *datadir)
+	fmt.Printf("=== n42-state-verify (tree=%s): %s ===\n", *treeType, *datadir)
 	fmt.Printf("head block      : %d\n", head)
 	fmt.Printf("header.Root     : %x\n", headerRoot)
-	fmt.Printf("stored JMT root : %x\n", storedRoot)
-	if headerRoot != storedRoot {
-		fmt.Printf("WARN: header.Root != stored JMT root (plumbing inconsistency)\n")
+	if *treeType == "jmt" {
+		storedJMT, _ := jmtstore.ReadJMTRoot(tx)
+		storedRoot := types.Hash(storedJMT)
+		fmt.Printf("stored JMT root : %x\n", storedRoot)
+		if headerRoot != storedRoot {
+			fmt.Printf("WARN: header.Root != stored JMT root (plumbing inconsistency)\n")
+		}
 	}
 
 	fmt.Printf("reading full PlainState…\n")
@@ -123,6 +126,27 @@ func main() {
 	}
 	fmt.Printf("  contracts=%d storageAddrs=%d StorageDupEntries=%d | AccountTableRaw=%d (non-20B=%d) emptyAccts(read)=%d\n",
 		contracts, len(stor), dupCount, acctRaw, acctNon20, acctEmpty)
+
+	// MPT (Keccak/HPH) mode: rebuild the Ethereum-compatible state root and
+	// compare to header.Root. This is the zkEVM-relevant commitment — a Keccak
+	// MPT root that off-the-shelf Ethereum zkEVM circuits can verify in-circuit.
+	if *treeType == "mpt" {
+		fmt.Printf("rebuilding MPT (HPH/Keccak) from scratch…\n")
+		t1 := time.Now()
+		mrc := commitment.NewMPTRootComputer()
+		mrc.SetStateReader(commitment.NewPlainStateMPTReader(tx))
+		mptRoot, e := mrc.ComputeRoot(accts, stor)
+		if e != nil {
+			die("mpt compute root: %v", e)
+		}
+		fmt.Printf("  MPT rebuild root: %x (%s)\n", mptRoot, time.Since(t1).Round(time.Millisecond))
+		if mptRoot == headerRoot {
+			fmt.Printf("\n✅ MATCH — header.Root equals from-scratch MPT (Keccak) rebuild. ETH-compatible state root is correct.\n")
+			return
+		}
+		fmt.Printf("\n❌ MPT rebuild (%x) != header.Root (%x)\n", mptRoot, headerRoot)
+		os.Exit(1)
+	}
 
 	fmt.Printf("rebuilding JMT from scratch…\n")
 	t1 := time.Now()
