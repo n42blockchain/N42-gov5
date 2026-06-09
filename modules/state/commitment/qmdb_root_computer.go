@@ -73,10 +73,18 @@ func (r *QMDBRootComputer) SetCold(g qmdb.Getter) {
 	r.t.SetCold(qmdb.ColdReaderFromGetter(g))
 }
 
-// EvictFlushed drops entry records up to the flushed cursor from RAM (they are
-// recoverable from cold), bounding the resident entry footprint to the unflushed
-// window. Must be called after FlushTo and after SetCold.
-func (r *QMDBRootComputer) EvictFlushed() { r.t.EvictThrough(r.flushedThrough) }
+// EvictFlushed drops, up to the flushed cursor and recoverable from cold, both
+// the entry records AND the sealed twig leaf arrays from RAM — bounding the
+// resident footprint to the unflushed window plus the active/touched twigs. Must
+// be called after FlushTo and after SetCold.
+func (r *QMDBRootComputer) EvictFlushed() {
+	r.t.EvictThrough(r.flushedThrough)
+	r.t.EvictTwigsThrough(r.flushedThrough)
+}
+
+// ResidentTwigLeaves exposes how many twigs still hold their leaf array (for the
+// engine's per-batch memory log).
+func (r *QMDBRootComputer) ResidentTwigLeaves() int { return r.t.ResidentTwigLeaves() }
 
 // RootScheme reports an unspecified scheme (the prototype does not yet have a
 // dedicated state.RootScheme constant).

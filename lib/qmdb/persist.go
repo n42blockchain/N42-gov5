@@ -56,15 +56,22 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 		}
 		bytesW += 8 + len(val)
 	}
-	// Dirty twig metadata: root + activeBits (256 bytes for 2048 slots).
+	// Twig metadata: root + activeBits (256 bytes for 2048 slots). Skip twigs
+	// whose leaves were EVICTED (leaves==nil, not pruned): their meta was already
+	// persisted before eviction and an evicted twig is, by construction, unchanged
+	// since (any mutation rehydrates it). Pruned twigs (leaves==nil, pruned) still
+	// flush their constant null-twig meta.
 	for id, tw := range t.twigs {
 		if tw == nil {
 			continue
 		}
+		if tw.leaves == nil && !tw.pruned {
+			continue // evicted-clean: on-disk meta is current
+		}
 		meta := make([]byte, 32+TwigSize/8)
 		copy(meta[:32], tw.root[:])
 		// activeBits from live leaves (non-null = active in this prototype).
-		if !tw.pruned {
+		if !tw.pruned && tw.leaves != nil {
 			for slot := 0; slot < TwigSize; slot++ {
 				if tw.leaves[slot] != nullHash {
 					meta[32+slot/8] |= 1 << uint(slot%8)
@@ -109,45 +116,53 @@ func (t *Tree) LoadFrom(g Getter) error {
 	}
 	nextSlot := binary.BigEndian.Uint64(nsRaw)
 	numTwigs := int((nextSlot + TwigSize - 1) / TwigSize)
+	activeTwig := int((nextSlot - 1) / TwigSize) // twig holding the last live slot
 
 	t.twigs = make([]*twig, numTwigs)
 	t.index = make(map[Hash]uint64, nextSlot)
-	for id := 0; id < numTwigs; id++ {
-		t.twigs[id] = newTwig()
-	}
 
-	var activeBits []byte // current twig's live-slot bitmap (refreshed per twig)
-	for slot := uint64(0); slot < nextSlot; slot++ {
-		id := int(slot / TwigSize)
-		local := slot % TwigSize
-		// Only live slots contribute a leaf + index entry; read activeBits per
-		// twig (once) and skip dead/pruned slots without faulting their value.
-		if local == 0 {
-			meta, e := g.GetOne(TwigTable, be8(uint64(id)))
-			if e != nil {
-				return e
-			}
-			activeBits = nil
-			if len(meta) >= 32+TwigSize/8 {
-				activeBits = meta[32 : 32+TwigSize/8]
-			}
-		}
-		if activeBits == nil || activeBits[local/8]&(1<<uint(local%8)) == 0 {
-			continue
-		}
-		v, e := g.GetOne(EntryTable, be8(slot))
+	// Build twig-by-twig and evict each sealed twig's leaves as soon as its root is
+	// computed, so at most one twig's leaves (+ the active twig) are resident at a
+	// time — the reload itself is memory-bounded, not O(history).
+	for id := 0; id < numTwigs; id++ {
+		tw := newTwig()
+		t.twigs[id] = tw
+		meta, e := g.GetOne(TwigTable, be8(uint64(id)))
 		if e != nil {
 			return e
 		}
-		if len(v) < 32 {
-			continue
+		var activeBits []byte
+		if len(meta) >= 32+TwigSize/8 {
+			activeBits = meta[32 : 32+TwigSize/8]
 		}
-		var kh Hash
-		copy(kh[:], v[:32])
-		tw := t.twigs[id]
-		tw.leaves[local] = hashLeaf(kh, v[32:])
-		tw.live++
-		t.index[kh] = slot
+		if activeBits != nil {
+			lo := uint64(id) * TwigSize
+			for local := 0; local < TwigSize; local++ {
+				slot := lo + uint64(local)
+				if slot >= nextSlot {
+					break
+				}
+				if activeBits[local/8]&(1<<uint(local%8)) == 0 {
+					continue
+				}
+				v, e := g.GetOne(EntryTable, be8(slot))
+				if e != nil {
+					return e
+				}
+				if len(v) < 32 {
+					continue
+				}
+				var kh Hash
+				copy(kh[:], v[:32])
+				tw.leaves[local] = hashLeaf(kh, v[32:])
+				tw.live++
+				t.index[kh] = slot
+			}
+		}
+		tw.recompute() // set this twig's root from its leaves
+		if id < activeTwig {
+			tw.leaves = nil // sealed: keep only the 32-byte root, free the array
+		}
 	}
 	// Entry records are not retained — start the resident window empty at the
 	// append cursor. Future appends grow it; cold serves everything below.

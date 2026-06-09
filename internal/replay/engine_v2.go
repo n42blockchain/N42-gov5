@@ -1101,6 +1101,8 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					"qmdbRoot", qRoot.Hex()[:16],
 					"liveKeys", qmdbRC.Tree().LiveCount(),
 					"residentEntries", qmdbRC.Tree().ResidentEntries(),
+					"residentTwigLeaves", qmdbRC.ResidentTwigLeaves(),
+					"twigs", qmdbRC.Tree().NumTwigs(),
 					"flushKB", bytesW/1024,
 				)
 			} else if tree != nil {
