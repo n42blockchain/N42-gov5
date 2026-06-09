@@ -28,7 +28,8 @@ func (t *Tree) GetProof(keyHash Hash) (*Proof, bool) {
 	local := int(slot % TwigSize)
 	tw := t.twigs[twigID]
 
-	p := &Proof{KeyHash: keyHash, Value: t.entries[slot].value, Slot: slot}
+	pe, _ := t.entryAt(slot) // faults from cold if the slot was evicted
+	p := &Proof{KeyHash: keyHash, Value: pe.value, Slot: slot}
 
 	// Collect siblings inside the twig.
 	var buf [TwigSize]Hash
@@ -111,7 +112,10 @@ type SlotEntry struct {
 func (t *Tree) SnapshotLog() []SlotEntry {
 	out := make([]SlotEntry, 0, len(t.entries))
 	for s := uint64(0); s < t.nextSlot; s++ {
-		e := t.entries[s]
+		e, ok := t.entryAt(s)
+		if !ok {
+			continue
+		}
 		if e.value == nil && !e.active {
 			// truly empty slot (never written) — skip; only export written ones
 			if e.keyHash == (Hash{}) {

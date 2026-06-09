@@ -49,14 +49,19 @@ func (t *Tree) markPruned(id int) {
 	tw.root = nullTwigRoot
 	tw.dirty = false
 	tw.pruned = true
-	// Free the entry records for this twig's slot range.
+	// Free the entry records for this twig's slot range (resident slots only;
+	// evicted slots are already out of RAM).
 	lo := uint64(id) * TwigSize
 	hi := lo + TwigSize
-	if hi > uint64(len(t.entries)) {
-		hi = uint64(len(t.entries))
-	}
 	for s := lo; s < hi; s++ {
-		t.entries[s] = entry{}
+		if s < t.entriesBase {
+			continue
+		}
+		i := s - t.entriesBase
+		if i >= uint64(len(t.entries)) {
+			break
+		}
+		t.entries[i] = entry{}
 	}
 }
 
@@ -94,12 +99,9 @@ func (t *Tree) Compact(liveRatioThreshold float64) int {
 	for _, id := range sparse {
 		lo := uint64(id) * TwigSize
 		hi := lo + TwigSize
-		if hi > uint64(len(t.entries)) {
-			hi = uint64(len(t.entries))
-		}
 		for s := lo; s < hi; s++ {
-			e := t.entries[s]
-			if e.active {
+			e, ok := t.entryAt(s) // faults evicted slots from cold
+			if ok && e.active {
 				moves = append(moves, mv{e.keyHash, e.value})
 			}
 		}

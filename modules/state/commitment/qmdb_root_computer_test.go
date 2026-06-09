@@ -55,7 +55,7 @@ func TestQMDBComputerDeterministic(t *testing.T) {
 			accts: map[types.Address]*account.StateAccount{qmAddr(1): qmAcct(2, 150)}, // update
 			stor:  map[types.Address]map[types.Hash]*uint256.Int{qmAddr(1): {slot(1): uint256.NewInt(0xaa)}},
 		},
-		{accts: map[types.Address]*account.StateAccount{qmAddr(2): nil}}, // delete acct 2
+		{accts: map[types.Address]*account.StateAccount{qmAddr(2): nil}},                               // delete acct 2
 		{stor: map[types.Address]map[types.Hash]*uint256.Int{qmAddr(1): {slot(1): uint256.NewInt(0)}}}, // delete slot
 	}
 	r1 := runBlocks(blocks)
@@ -68,6 +68,39 @@ func TestQMDBComputerDeterministic(t *testing.T) {
 	// roots must actually change across blocks (state is moving)
 	if r1[0] == r1[1] || r1[1] == r1[2] {
 		t.Fatal("expected roots to change as state changes")
+	}
+}
+
+// TestQMDBComputerOrderInvariant: because QMDB's root depends on append order and
+// Go map iteration is randomized, ComputeRoot MUST normalize ordering (sort by
+// keyHash) or two independent runs over the same dirty set diverge. With many
+// keys, random map iteration order virtually guarantees divergence if unsorted,
+// so repeating the run and requiring identical roots is a strong regression guard
+// (this is the cross-node-agreement property — different nodes, same blocks, same
+// root). qmAddr only varies one byte, so use a 2-byte spread for >256 keys.
+func TestQMDBComputerOrderInvariant(t *testing.T) {
+	addr := func(i int) types.Address { var a types.Address; a[18] = byte(i >> 8); a[19] = byte(i); return a }
+	slot := func(i int) types.Hash { var h types.Hash; h[30] = byte(i >> 8); h[31] = byte(i); return h }
+	build := func() []block {
+		b0 := block{accts: map[types.Address]*account.StateAccount{}, stor: map[types.Address]map[types.Hash]*uint256.Int{}}
+		for i := 0; i < 400; i++ {
+			b0.accts[addr(i)] = qmAcct(uint64(i+1), uint64(i)*7)
+		}
+		b1 := block{accts: map[types.Address]*account.StateAccount{}, stor: map[types.Address]map[types.Hash]*uint256.Int{}}
+		for i := 0; i < 400; i += 2 {
+			b1.accts[addr(i)] = qmAcct(uint64(i+2), uint64(i)*11) // updates
+			b1.stor[addr(i)] = map[types.Hash]*uint256.Int{slot(i): uint256.NewInt(uint64(i) + 1)}
+		}
+		return []block{b0, b1}
+	}
+	ref := runBlocks(build())
+	for run := 0; run < 6; run++ {
+		got := runBlocks(build()) // fresh maps each run -> fresh random iteration order
+		for i := range ref {
+			if got[i] != ref[i] {
+				t.Fatalf("run %d block %d root diverged (map-order dependence not normalized):\n  ref=%x\n  got=%x", run, i, ref[i], got[i])
+			}
+		}
 	}
 }
 
