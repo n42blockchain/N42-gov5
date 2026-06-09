@@ -74,6 +74,7 @@ type twig struct {
 	live   int
 	root   Hash
 	dirty  bool
+	pruned bool // leaves dropped (fully dead); root is the constant null-twig root
 }
 
 func newTwig() *twig {
