@@ -25,7 +25,9 @@
 package store
 
 import (
+	"bytes"
 	"encoding/binary"
+	"sort"
 
 	"github.com/n42blockchain/N42/lib/jmt"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -87,8 +89,20 @@ func (s *MDBXStore) Has(hash jmt.Hash) (bool, error) {
 // MDBX transaction. More efficient than individual Put() calls when
 // flushing many dirty nodes.
 func (s *MDBXStore) PutBatch(entries map[jmt.Hash][]byte) error {
-	for h, data := range entries {
-		if err := s.tx.Put(s.table, h[:], data); err != nil {
+	// MDBX is a B+tree: inserting keys in ascending order fills pages
+	// sequentially instead of triggering scattered page splits/rebalances, which
+	// also keeps the uncommitted dirty-page working set (and peak memory before
+	// commit) far smaller. The dirty map is in random (Go map) order, so sort the
+	// content-addressed node hashes before writing.
+	keys := make([]jmt.Hash, 0, len(entries))
+	for h := range entries {
+		keys = append(keys, h)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return bytes.Compare(keys[i][:], keys[j][:]) < 0
+	})
+	for _, h := range keys {
+		if err := s.tx.Put(s.table, h[:], entries[h]); err != nil {
 			return err
 		}
 	}

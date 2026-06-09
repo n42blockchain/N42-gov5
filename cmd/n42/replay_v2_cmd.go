@@ -15,6 +15,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"strings"
@@ -60,11 +62,19 @@ var replayV2Command = &cli.Command{
 		&cli.IntFlag{Name: "bls-pool-size", Usage: "Total mobile-voter pool size", Value: 200000},
 		&cli.IntFlag{Name: "bls-committee", Usage: "Per-block committee size (ETH sync-committee reference)", Value: 512},
 		&cli.Uint64Flag{Name: "bls-ramp-blocks", Usage: "Blocks over which the active pool ramps from one committee up to pool-size", Value: 1000000},
+		&cli.IntFlag{Name: "pprof.port", Usage: "If >0, serve net/http/pprof on this port for profiling", Value: 0},
 	},
 	Action: runReplayV2,
 }
 
 func runReplayV2(cliCtx *cli.Context) error {
+	if port := cliCtx.Int("pprof.port"); port > 0 {
+		addr := fmt.Sprintf("127.0.0.1:%d", port)
+		go func() {
+			fmt.Printf("pprof listening on http://%s/debug/pprof/\n", addr)
+			_ = http.ListenAndServe(addr, nil)
+		}()
+	}
 	cfg := replay.DefaultConfigV2()
 	cfg.SourcePath = cliCtx.String("source")
 	cfg.TargetPath = cliCtx.String("target")
