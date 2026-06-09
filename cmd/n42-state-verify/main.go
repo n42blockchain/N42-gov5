@@ -24,6 +24,7 @@ import (
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/lib/bmt"
 	"github.com/n42blockchain/N42/lib/jmt"
 	"github.com/n42blockchain/N42/lib/kv"
 	mdbxkv "github.com/n42blockchain/N42/lib/kv/mdbx"
@@ -145,6 +146,24 @@ func main() {
 			return
 		}
 		fmt.Printf("\n❌ MPT rebuild (%x) != header.Root (%x)\n", mptRoot, headerRoot)
+		os.Exit(1)
+	}
+
+	// BMT (binary Blake3) mode: rebuild from PlainState and compare to header.Root.
+	if *treeType == "bmt" {
+		fmt.Printf("rebuilding BMT (binary Blake3) from scratch…\n")
+		t1 := time.Now()
+		brc := commitment.NewBMTRootComputer(commitment.NewBMTCommitment(bmt.New(bmt.NewMemStore())))
+		bmtRoot, e := brc.ComputeRoot(accts, stor)
+		if e != nil {
+			die("bmt compute root: %v", e)
+		}
+		fmt.Printf("  BMT rebuild root: %x (%s)\n", bmtRoot, time.Since(t1).Round(time.Millisecond))
+		if bmtRoot == headerRoot {
+			fmt.Printf("\n✅ MATCH — header.Root equals from-scratch BMT (binary Blake3) rebuild. State is correct.\n")
+			return
+		}
+		fmt.Printf("\n❌ BMT rebuild (%x) != header.Root (%x)\n", bmtRoot, headerRoot)
 		os.Exit(1)
 	}
 

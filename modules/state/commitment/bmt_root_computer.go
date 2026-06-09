@@ -28,7 +28,6 @@ import (
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/lib/bmt"
 	"github.com/n42blockchain/N42/modules/state"
 )
 
@@ -49,52 +48,32 @@ func (*BMTRootComputer) RootScheme() state.RootScheme {
 }
 
 // ComputeRoot applies all dirty accounts and storage to the BMT and returns
-// the new root hash. Uses PutBatch for a single top-down traversal instead
-// of individual Put() calls, eliminating intermediate root garbage.
+// the new root hash.
+//
+// It uses the sequential UpdateAccount/UpdateStorage (tree.Put/Delete) path,
+// which is canonical: the resulting tree is a pure function of the live key set,
+// independent of insertion order. The previous PutBatch path was NOT canonical —
+// its "build from empty" branch collapses single-child nodes while its
+// "update existing internal" branch keeps a single-child internal, so the two
+// produce different structures for the same logical content, and a per-block
+// incremental root diverges from a from-scratch rebuild. Root computation is a
+// negligible fraction of replay time, so the per-key traversal is well worth the
+// correctness.
 func (r *BMTRootComputer) ComputeRoot(
 	accounts map[types.Address]*account.StateAccount,
 	storage map[types.Address]map[types.Hash]*uint256.Int,
 ) (types.Hash, error) {
-	entries := make([]bmt.BatchEntry, 0, len(accounts)+len(storage))
-
 	for addr, acct := range accounts {
-		keyHash := AccountKeyHash(addr)
-		if acct == nil || isAccountEmpty(acct) {
-			// Delete: insert empty marker (handled by tree)
-			// For now, use individual delete for deletions.
-			_ = r.commitment.UpdateAccount(addr, acct)
-			continue
-		}
-		entries = append(entries, bmt.BatchEntry{
-			Key:   bmt.Hash(keyHash),
-			Value: EncodeAccountValue(acct),
-		})
-	}
-
-	for addr, slots := range storage {
-		for slot, val := range slots {
-			if val == nil || val.IsZero() {
-				_ = r.commitment.UpdateStorage(addr, slot, val)
-				continue
-			}
-			keyHash := StorageKeyHash(addr, slot)
-			b := val.Bytes32()
-			start := 0
-			for start < 31 && b[start] == 0 {
-				start++
-			}
-			entries = append(entries, bmt.BatchEntry{
-				Key:   bmt.Hash(keyHash),
-				Value: b[start:],
-			})
-		}
-	}
-
-	if len(entries) > 0 {
-		if err := r.commitment.Tree().PutBatch(entries); err != nil {
+		if err := r.commitment.UpdateAccount(addr, acct); err != nil {
 			return types.Hash{}, err
 		}
 	}
-
+	for addr, slots := range storage {
+		for slot, val := range slots {
+			if err := r.commitment.UpdateStorage(addr, slot, val); err != nil {
+				return types.Hash{}, err
+			}
+		}
+	}
 	return r.commitment.Root(), nil
 }
