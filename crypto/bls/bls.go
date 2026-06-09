@@ -27,6 +27,17 @@ func SignatureFromBytes(sig []byte) (Signature, error) {
 	return blst.SignatureFromBytes(sig)
 }
 
+// PrecomputedHash is a message pre-hashed to G2 for shared-hash batch signing
+// (see blst.PrecomputedHash). When many keys sign the same message, hashing the
+// message once and reusing it ~halves total signing cost.
+type PrecomputedHash = blst.PrecomputedHash
+
+// PrecomputeHash hashes msg to G2 once so it can be reused across many signers
+// of the same message.
+func PrecomputeHash(msg []byte) *PrecomputedHash {
+	return blst.PrecomputeHash(msg)
+}
+
 // MultipleSignaturesFromBytes creates a slice of BLS signatures from a LittleEndian 2d-byte slice.
 func MultipleSignaturesFromBytes(sigs [][]byte) ([]Signature, error) {
 	return blst.MultipleSignaturesFromBytes(sigs)
