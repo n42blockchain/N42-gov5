@@ -20,6 +20,12 @@ type Putter interface {
 	Put(table string, key, value []byte) error
 }
 
+// Getter is the minimal source the tree reloads from (an adapter over kv.Tx).
+// GetOne returns nil (not an error) for an absent key.
+type Getter interface {
+	GetOne(table string, key []byte) ([]byte, error)
+}
+
 // Table names for the positional layout.
 const (
 	EntryTable = "qmdbEntries" // BE8(slot) -> keyHash(32) || value
@@ -74,6 +80,74 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 	_ = p.Put(MetaTable, []byte("nextSlot"), be8(t.nextSlot))
 	bytesW += 32 + 8
 	return t.nextSlot, bytesW, nil
+}
+
+// LoadFrom rebuilds the in-memory forest from a previously-flushed positional
+// layout: the entry log (slot -> keyHash||value) plus per-twig activeBits (which
+// slots are live — the source of truth that distinguishes a deleted key's last
+// entry from a live one). nextSlot comes from the meta table. Twig roots are
+// recomputed rather than trusted, so the reconstructed root is self-consistent.
+// A fresh (never-flushed) store leaves the tree empty.
+func (t *Tree) LoadFrom(g Getter) error {
+	nsRaw, err := g.GetOne(MetaTable, []byte("nextSlot"))
+	if err != nil {
+		return err
+	}
+	if len(nsRaw) < 8 {
+		return nil // nothing persisted yet
+	}
+	nextSlot := binary.BigEndian.Uint64(nsRaw)
+	numTwigs := int((nextSlot + TwigSize - 1) / TwigSize)
+
+	t.entries = make([]entry, nextSlot)
+	t.twigs = make([]*twig, numTwigs)
+	t.index = make(map[Hash]uint64, nextSlot)
+	for id := 0; id < numTwigs; id++ {
+		t.twigs[id] = newTwig()
+	}
+
+	// Per-twig activeBits.
+	activeBits := make([][]byte, numTwigs)
+	for id := 0; id < numTwigs; id++ {
+		meta, e := g.GetOne(TwigTable, be8(uint64(id)))
+		if e != nil {
+			return e
+		}
+		if len(meta) >= 32+TwigSize/8 {
+			activeBits[id] = meta[32 : 32+TwigSize/8]
+		}
+	}
+
+	for slot := uint64(0); slot < nextSlot; slot++ {
+		v, e := g.GetOne(EntryTable, be8(slot))
+		if e != nil {
+			return e
+		}
+		if len(v) < 32 {
+			continue // pruned/freed slot
+		}
+		var kh Hash
+		copy(kh[:], v[:32])
+		val := make([]byte, len(v)-32)
+		copy(val, v[32:])
+		id := int(slot / TwigSize)
+		local := slot % TwigSize
+		active := false
+		if ab := activeBits[id]; ab != nil {
+			active = ab[local/8]&(1<<uint(local%8)) != 0
+		}
+		t.entries[slot] = entry{keyHash: kh, value: val, active: active}
+		if active {
+			tw := t.twigs[id]
+			tw.leaves[local] = hashLeaf(kh, val)
+			tw.live++
+			t.index[kh] = slot
+		}
+	}
+	t.nextSlot = nextSlot
+	t.rootDirty = true
+	t.Root() // materialize twig + world roots
+	return nil
 }
 
 // OnDiskBytes reports the persistent footprint without flushing: the entry log
