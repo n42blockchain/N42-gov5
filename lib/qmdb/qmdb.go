@@ -27,7 +27,12 @@
 // NOT thread-safe; callers synchronize externally (matches IntraBlockState).
 package qmdb
 
-import "lukechampine.com/blake3"
+import (
+	"runtime"
+	"sync"
+
+	"lukechampine.com/blake3"
+)
 
 const (
 	// TwigSize is the number of slots per twig (2^TwigHeight). A twig is a
@@ -118,6 +123,17 @@ func New() *Tree {
 // LiveCount returns the number of live keys.
 func (t *Tree) LiveCount() int { return len(t.index) }
 
+// ForceDirty marks every twig dirty so the next Root() recomputes the whole
+// forest. Intended for benchmarking the parallel-vs-sequential recompute path.
+func (t *Tree) ForceDirty() {
+	for _, tw := range t.twigs {
+		if tw != nil && !tw.pruned {
+			tw.dirty = true
+		}
+	}
+	t.rootDirty = true
+}
+
 // NextSlot exposes the append cursor (total entries ever appended) — for tests
 // that assert the append-only invariant (it only grows).
 func (t *Tree) NextSlot() uint64 { return t.nextSlot }
@@ -194,16 +210,68 @@ func (t *Tree) Root() Hash {
 		t.rootDirty = false
 		return t.root
 	}
+	// Recompute dirty twig roots in parallel — every twig is an independent
+	// subtree (each goroutine mutates only its own twig), so this scales across
+	// cores. The upper tree (over twig roots) is small and computed sequentially.
+	t.recomputeDirtyTwigs()
 	roots := make([]Hash, len(t.twigs))
 	for i, tw := range t.twigs {
-		if tw.dirty {
-			tw.recompute()
-		}
 		roots[i] = tw.root
 	}
 	t.root = upperRoot(roots)
 	t.rootDirty = false
 	return t.root
+}
+
+// ParallelRoot toggles concurrent twig recomputation (default true). Exposed so
+// benchmarks can compare against the sequential path.
+var ParallelRoot = true
+
+func (t *Tree) recomputeDirtyTwigs() {
+	if !ParallelRoot {
+		for _, tw := range t.twigs {
+			if tw.dirty {
+				tw.recompute()
+			}
+		}
+		return
+	}
+	// Collect dirty twigs.
+	dirty := make([]*twig, 0, len(t.twigs))
+	for _, tw := range t.twigs {
+		if tw.dirty {
+			dirty = append(dirty, tw)
+		}
+	}
+	if len(dirty) == 0 {
+		return
+	}
+	workers := runtime.GOMAXPROCS(0)
+	if workers > len(dirty) {
+		workers = len(dirty)
+	}
+	if workers <= 1 {
+		for _, tw := range dirty {
+			tw.recompute()
+		}
+		return
+	}
+	ch := make(chan *twig, len(dirty))
+	for _, tw := range dirty {
+		ch <- tw
+	}
+	close(ch)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for tw := range ch {
+				tw.recompute()
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 // upperRoot is the binary Merkle root over twig roots, padded to a power of two
