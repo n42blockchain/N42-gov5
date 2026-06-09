@@ -44,9 +44,10 @@ func be8(v uint64) []byte {
 // flushedThrough is the slot cursor already persisted (0 on first flush).
 func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 	bytesW := 0
-	// Append new immutable entries [flushedThrough, nextSlot).
+	// Append new immutable entries [flushedThrough, nextSlot). These are always
+	// in the resident window (eviction only drops already-flushed slots).
 	for s := flushedThrough; s < t.nextSlot; s++ {
-		e := t.entries[s]
+		e, _ := t.entryAt(s)
 		val := make([]byte, 0, 32+len(e.value))
 		val = append(val, e.keyHash[:]...)
 		val = append(val, e.value...)
@@ -88,10 +89,20 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 // entry from a live one). nextSlot comes from the meta table. Twig roots are
 // recomputed rather than trusted, so the reconstructed root is self-consistent.
 // A fresh (never-flushed) store leaves the tree empty.
+//
+// Memory-bounded reload: only twig leaves + the live-key index + nextSlot are
+// materialized; the entry RECORDS are NOT retained (the resident window starts
+// empty at entriesBase=nextSlot). Live values are served from the cold reader,
+// which LoadFrom attaches to g itself — so Get/GetProof work immediately after a
+// load without the caller holding the whole entry log in RAM.
 func (t *Tree) LoadFrom(g Getter) error {
 	nsRaw, err := g.GetOne(MetaTable, []byte("nextSlot"))
 	if err != nil {
 		return err
+	}
+	// Serve live values from the persisted log even if nothing is loaded yet.
+	if t.cold == nil {
+		t.cold = ColdReaderFromGetter(g)
 	}
 	if len(nsRaw) < 8 {
 		return nil // nothing persisted yet
@@ -99,51 +110,50 @@ func (t *Tree) LoadFrom(g Getter) error {
 	nextSlot := binary.BigEndian.Uint64(nsRaw)
 	numTwigs := int((nextSlot + TwigSize - 1) / TwigSize)
 
-	t.entries = make([]entry, nextSlot)
 	t.twigs = make([]*twig, numTwigs)
 	t.index = make(map[Hash]uint64, nextSlot)
 	for id := 0; id < numTwigs; id++ {
 		t.twigs[id] = newTwig()
 	}
 
-	// Per-twig activeBits.
-	activeBits := make([][]byte, numTwigs)
-	for id := 0; id < numTwigs; id++ {
-		meta, e := g.GetOne(TwigTable, be8(uint64(id)))
-		if e != nil {
-			return e
-		}
-		if len(meta) >= 32+TwigSize/8 {
-			activeBits[id] = meta[32 : 32+TwigSize/8]
-		}
-	}
-
+	var activeBits []byte // current twig's live-slot bitmap (refreshed per twig)
 	for slot := uint64(0); slot < nextSlot; slot++ {
+		id := int(slot / TwigSize)
+		local := slot % TwigSize
+		// Only live slots contribute a leaf + index entry; read activeBits per
+		// twig (once) and skip dead/pruned slots without faulting their value.
+		if local == 0 {
+			meta, e := g.GetOne(TwigTable, be8(uint64(id)))
+			if e != nil {
+				return e
+			}
+			activeBits = nil
+			if len(meta) >= 32+TwigSize/8 {
+				activeBits = meta[32 : 32+TwigSize/8]
+			}
+		}
+		if activeBits == nil || activeBits[local/8]&(1<<uint(local%8)) == 0 {
+			continue
+		}
 		v, e := g.GetOne(EntryTable, be8(slot))
 		if e != nil {
 			return e
 		}
 		if len(v) < 32 {
-			continue // pruned/freed slot
+			continue
 		}
 		var kh Hash
 		copy(kh[:], v[:32])
-		val := make([]byte, len(v)-32)
-		copy(val, v[32:])
-		id := int(slot / TwigSize)
-		local := slot % TwigSize
-		active := false
-		if ab := activeBits[id]; ab != nil {
-			active = ab[local/8]&(1<<uint(local%8)) != 0
-		}
-		t.entries[slot] = entry{keyHash: kh, value: val, active: active}
-		if active {
-			tw := t.twigs[id]
-			tw.leaves[local] = hashLeaf(kh, val)
-			tw.live++
-			t.index[kh] = slot
-		}
+		tw := t.twigs[id]
+		tw.leaves[local] = hashLeaf(kh, v[32:])
+		tw.live++
+		t.index[kh] = slot
 	}
+	// Entry records are not retained — start the resident window empty at the
+	// append cursor. Future appends grow it; cold serves everything below.
+	t.entries = nil
+	t.entriesBase = nextSlot
+	t.evicted = nextSlot
 	t.nextSlot = nextSlot
 	t.rootDirty = true
 	t.Root() // materialize twig + world roots
@@ -154,8 +164,9 @@ func (t *Tree) LoadFrom(g Getter) error {
 // (immutable appends) plus twig metadata. This is the apples-to-apples analogue
 // of a Merkle tree's node-store bytes.
 func (t *Tree) OnDiskBytes() (entryBytes, twigBytes int) {
-	for s := uint64(0); s < t.nextSlot; s++ {
-		e := t.entries[s]
+	// Resident window only; evicted slots live in the cold store (counted there).
+	for i := range t.entries {
+		e := t.entries[i]
 		// pruned slots are freed; count only resident records.
 		if e.keyHash == (Hash{}) && e.value == nil {
 			continue

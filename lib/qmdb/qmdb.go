@@ -106,18 +106,62 @@ func (tw *twig) recompute() {
 }
 
 // Tree is the in-memory QMDB-twig forest.
+//
+// Memory bounding (P3): the entry log is a SLIDING WINDOW. entries[i] holds the
+// absolute slot (entriesBase + i); slots below entriesBase have been evicted from
+// RAM and are served from an optional ColdReader (the persisted entry log). This
+// keeps the resident entry footprint O(unflushed window) instead of O(history).
+// When cold is nil the window starts at 0 and never shifts — identical to the
+// original all-in-RAM behavior, so existing callers/tests are unaffected.
 type Tree struct {
-	twigs     []*twig
-	entries   []entry         // indexed by global slot
-	index     map[Hash]uint64 // keyHash -> global slot of the live entry
-	nextSlot  uint64          // append cursor
-	root      Hash
-	rootDirty bool
+	twigs       []*twig
+	entries     []entry         // window: entries[i] is absolute slot entriesBase+i
+	entriesBase uint64          // absolute slot of entries[0]; slots < base are cold
+	cold        ColdReader      // serves evicted entries (nil = no eviction)
+	evicted     uint64          // count of slots evicted from RAM (for Stats)
+	index       map[Hash]uint64 // keyHash -> global slot of the live entry
+	nextSlot    uint64          // append cursor
+	root        Hash
+	rootDirty   bool
 }
 
 // New creates an empty tree.
 func New() *Tree {
 	return &Tree{index: make(map[Hash]uint64), rootDirty: true}
+}
+
+// entryAt returns the entry at an absolute slot, transparently reading the cold
+// store for evicted slots. The active flag of a cold entry is DERIVED (a slot is
+// live iff it is the indexed slot for its key), since cold records are immutable.
+func (t *Tree) entryAt(slot uint64) (entry, bool) {
+	if slot >= t.entriesBase {
+		i := slot - t.entriesBase
+		if i < uint64(len(t.entries)) {
+			return t.entries[i], true
+		}
+		return entry{}, false
+	}
+	if t.cold == nil {
+		return entry{}, false
+	}
+	kh, v, ok := t.cold.ColdEntry(slot)
+	if !ok {
+		return entry{}, false
+	}
+	// Derive liveness via comma-ok: an absent key must NOT alias slot 0 (the
+	// zero value of a missing map entry would otherwise mark cold slot 0 active).
+	liveSlot, present := t.index[kh]
+	return entry{keyHash: kh, value: v, active: present && liveSlot == slot}, true
+}
+
+// setEntry writes an entry at an absolute slot, growing the window as needed.
+// slot must be >= entriesBase (appends only ever target the live cursor).
+func (t *Tree) setEntry(slot uint64, e entry) {
+	i := slot - t.entriesBase
+	for uint64(len(t.entries)) <= i {
+		t.entries = append(t.entries, entry{})
+	}
+	t.entries[i] = e
 }
 
 // LiveCount returns the number of live keys.
@@ -154,8 +198,13 @@ func (t *Tree) deactivate(slot uint64) {
 		tw.live--
 		tw.dirty = true
 	}
-	if slot < uint64(len(t.entries)) {
-		t.entries[slot].active = false
+	// Only resident entries carry a mutable active flag; cold entries derive it
+	// from the index, so an evicted slot needs no record mutation here (its twig
+	// leaf — the source of truth for the root — is nulled above).
+	if slot >= t.entriesBase {
+		if i := slot - t.entriesBase; i < uint64(len(t.entries)) {
+			t.entries[i].active = false
+		}
 	}
 	t.rootDirty = true
 }
@@ -172,10 +221,7 @@ func (t *Tree) Set(keyHash Hash, value []byte) {
 	local := slot % TwigSize
 	v := make([]byte, len(value))
 	copy(v, value)
-	for uint64(len(t.entries)) <= slot {
-		t.entries = append(t.entries, entry{})
-	}
-	t.entries[slot] = entry{keyHash: keyHash, value: v, active: true}
+	t.setEntry(slot, entry{keyHash: keyHash, value: v, active: true})
 	tw.leaves[local] = hashLeaf(keyHash, v)
 	tw.live++
 	tw.dirty = true
@@ -195,7 +241,9 @@ func (t *Tree) Delete(keyHash Hash) {
 // lookup, the prototype analogue of QMDB's 1-SSD-read path).
 func (t *Tree) Get(keyHash Hash) ([]byte, bool) {
 	if slot, ok := t.index[keyHash]; ok {
-		return t.entries[slot].value, true
+		if e, ok2 := t.entryAt(slot); ok2 {
+			return e.value, true
+		}
 	}
 	return nil, false
 }

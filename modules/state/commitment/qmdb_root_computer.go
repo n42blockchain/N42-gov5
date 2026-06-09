@@ -15,6 +15,9 @@
 package commitment
 
 import (
+	"bytes"
+	"sort"
+
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/account"
@@ -63,34 +66,71 @@ func (r *QMDBRootComputer) FlushTo(p qmdb.Putter) (int, error) {
 	return n, nil
 }
 
+// SetCold attaches the cold entry source (the persisted positional log) so the
+// tree can evict flushed entries from RAM and fault them back on demand. The
+// engine re-points this at the current batch's tx each batch.
+func (r *QMDBRootComputer) SetCold(g qmdb.Getter) {
+	r.t.SetCold(qmdb.ColdReaderFromGetter(g))
+}
+
+// EvictFlushed drops entry records up to the flushed cursor from RAM (they are
+// recoverable from cold), bounding the resident entry footprint to the unflushed
+// window. Must be called after FlushTo and after SetCold.
+func (r *QMDBRootComputer) EvictFlushed() { r.t.EvictThrough(r.flushedThrough) }
+
 // RootScheme reports an unspecified scheme (the prototype does not yet have a
 // dedicated state.RootScheme constant).
 func (*QMDBRootComputer) RootScheme() state.RootScheme { return state.RootSchemeUnknown }
 
 // ComputeRoot applies the dirty accounts and storage to the twig forest and
 // returns the new world root. Empty accounts and zero storage slots delete.
+//
+// QMDB is append-only and its root is a function of the APPLICATION ORDER (each
+// Set consumes a new slot). Go map iteration is randomized, so applying the dirty
+// maps directly would make the root non-reproducible across nodes/runs. We
+// therefore collect every operation, sort by keyHash, and apply in that
+// deterministic order — so any node replaying the same blocks produces the same
+// append sequence and the same root (the cross-node-agreement requirement for a
+// physical-layout-dependent commitment).
 func (r *QMDBRootComputer) ComputeRoot(
 	accounts map[types.Address]*account.StateAccount,
 	storage map[types.Address]map[types.Hash]*uint256.Int,
 ) (types.Hash, error) {
+	type op struct {
+		kh    qmdb.Hash
+		value []byte // nil => delete
+	}
+	ops := make([]op, 0, len(accounts)+len(storage))
 	for addr, acct := range accounts {
 		kh := qmdb.Hash(AccountKeyHash(addr))
 		if acct == nil || isAccountEmpty(acct) {
-			r.t.Delete(kh)
+			ops = append(ops, op{kh: kh, value: nil})
 		} else {
-			r.t.Set(kh, EncodeAccountValue(acct))
+			ops = append(ops, op{kh: kh, value: EncodeAccountValue(acct)})
 		}
 	}
 	for addr, slots := range storage {
 		for slot, val := range slots {
 			kh := qmdb.Hash(StorageKeyHash(addr, slot))
 			if val == nil || val.IsZero() {
-				r.t.Delete(kh)
+				ops = append(ops, op{kh: kh, value: nil})
 			} else {
 				var buf [32]byte
 				val.WriteToSlice(buf[:])
-				r.t.Set(kh, buf[:])
+				v := make([]byte, 32)
+				copy(v, buf[:])
+				ops = append(ops, op{kh: kh, value: v})
 			}
+		}
+	}
+	sort.Slice(ops, func(i, j int) bool {
+		return bytes.Compare(ops[i].kh[:], ops[j].kh[:]) < 0
+	})
+	for _, o := range ops {
+		if o.value == nil {
+			r.t.Delete(o.kh)
+		} else {
+			r.t.Set(o.kh, o.value)
 		}
 	}
 	return types.Hash(r.t.Root()), nil

@@ -404,9 +404,14 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					if err := rc.LoadFrom(dstTx); err != nil {
 						return fmt.Errorf("QMDB reload: %w", err)
 					}
+					rc.SetCold(dstTx)
+					rc.EvictFlushed() // free the freshly-loaded window (already on disk)
 					e.qmdbRC = rc
 				}
 				qmdbRC = e.qmdbRC
+				// Re-point the cold reader at THIS batch's tx (the prior batch's tx
+				// is rolled back); faults read committed cold slots from it.
+				qmdbRC.SetCold(dstTx)
 
 			case useBMT:
 				// BMT path — Binary Merkle Tree (Blake3, content-addressed)
@@ -1081,6 +1086,10 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				if ferr != nil {
 					return fmt.Errorf("QMDB flush: %w", ferr)
 				}
+				// Evict the just-flushed entries from RAM (recoverable from the cold
+				// reader = this tx's persisted log). Bounds resident memory to the
+				// unflushed window instead of O(history).
+				qmdbRC.EvictFlushed()
 				qRoot := qmdbRC.Root()
 				var verBuf [8]byte
 				binary.BigEndian.PutUint64(verBuf[:], lastVersion)
@@ -1091,6 +1100,7 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					"blocks", fmt.Sprintf("%d-%d", from, lastVersion),
 					"qmdbRoot", qRoot.Hex()[:16],
 					"liveKeys", qmdbRC.Tree().LiveCount(),
+					"residentEntries", qmdbRC.Tree().ResidentEntries(),
 					"flushKB", bytesW/1024,
 				)
 			} else if tree != nil {
