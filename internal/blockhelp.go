@@ -146,6 +146,25 @@ func CollectDepositExecutionRequests(receipts block.Receipts) ([]hexutil.Bytes, 
 
 // ProcessBeaconBlockRoot applies the EIP-4788 system call before block transaction execution.
 func ProcessBeaconBlockRoot(beaconRoot *types.Hash, chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, engine consensus.Engine) error {
+	// Standard block execution finalizes the system-call with a NoopWriter; the
+	// changes live in the IntraBlockState dirty set and are persisted later by
+	// the end-of-block CommitBlock/MakeWriteSet (which flushes stateObjectsDirty).
+	return processBeaconBlockRoot(beaconRoot, chainConfig, ibs, header, state.NewNoopWriter())
+}
+
+// ProcessBeaconBlockRootWithWriter is ProcessBeaconBlockRoot but finalizes the
+// EIP-4788 beacon-roots system writes through the supplied writer rather than
+// discarding them. Callers that persist block state via FinalizeTx (journal-
+// based) instead of CommitBlock/MakeWriteSet (stateObjectsDirty-based) MUST use
+// this: ProcessBeaconBlockRoot's own FinalizeTx clears the journal, so a later
+// journal-based flush never persists the beacon writes — they would reach the
+// hashed-state root (via the still-dirty storage at IntermediateRoot) but never
+// the plain Storage table, diverging the two. The replay engine uses this.
+func ProcessBeaconBlockRootWithWriter(beaconRoot *types.Hash, chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, writer state.StateWriter) error {
+	return processBeaconBlockRoot(beaconRoot, chainConfig, ibs, header, writer)
+}
+
+func processBeaconBlockRoot(beaconRoot *types.Hash, chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, writer state.StateWriter) error {
 	if beaconRoot == nil || chainConfig == nil || ibs == nil || header == nil {
 		return nil
 	}
@@ -168,7 +187,7 @@ func ProcessBeaconBlockRoot(beaconRoot *types.Hash, chainConfig *params.ChainCon
 	rootValue := uint256.NewInt(0).SetBytes(beaconRoot[:])
 	ibs.SetState(params.BeaconRootsAddress, &timestampSlot, *timestampValue)
 	ibs.SetState(params.BeaconRootsAddress, &rootSlot, *rootValue)
-	return ibs.FinalizeTx(rules, state.NewNoopWriter())
+	return ibs.FinalizeTx(rules, writer)
 }
 
 // ProcessExecutionBlockStart applies shared start-of-block execution hooks in
