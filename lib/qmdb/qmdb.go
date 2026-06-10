@@ -1,11 +1,19 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
-// Package qmdb is a P1 in-memory prototype of a QMDB-style authenticated store
-// mapped onto N42's binary Blake3 Merkle tree (BMT). It validates the core
-// QMDB idea — replace content-addressed random writes with an append-only,
-// position-addressed twig forest plus an in-memory key->slot index — without any
-// disk layer yet (P2 wires the twig log to the freezer and the index to MPHF).
+// Package qmdb is a QMDB-style authenticated store mapped onto N42's binary
+// Blake3 Merkle tree (BMT): it replaces content-addressed random writes with an
+// append-only, position-addressed twig forest plus a key->slot index. It is wired
+// into replay-v2 as the --tree qmdb commitment.
+//
+// Memory is bounded for chain-scale use by three eviction tiers, all opt-in via a
+// cold reader / injected index and transparent when absent:
+//   - entry log: a sliding window; flushed entry records are evicted from RAM and
+//     faulted back from the cold store (evict.go).
+//   - twig leaves: a sealed twig keeps only its 32-byte root; its 64 KiB leaf
+//     array is freed and rebuilt on demand from the cold store (twig_evict.go).
+//   - live-key index: pluggable (index.go); the engine backs it with MDBX so it
+//     lives off-heap and survives restarts without a rebuild.
 //
 // Structure (three layers):
 //
@@ -117,19 +125,19 @@ func (tw *twig) recompute() {
 // original all-in-RAM behavior, so existing callers/tests are unaffected.
 type Tree struct {
 	twigs       []*twig
-	entries     []entry         // window: entries[i] is absolute slot entriesBase+i
-	entriesBase uint64          // absolute slot of entries[0]; slots < base are cold
-	cold        ColdReader      // serves evicted entries (nil = no eviction)
-	evicted     uint64          // count of slots evicted from RAM (for Stats)
-	index       map[Hash]uint64 // keyHash -> global slot of the live entry
-	nextSlot    uint64          // append cursor
+	entries     []entry    // window: entries[i] is absolute slot entriesBase+i
+	entriesBase uint64     // absolute slot of entries[0]; slots < base are cold
+	cold        ColdReader // serves evicted entries (nil = no eviction)
+	evicted     uint64     // count of slots evicted from RAM (for Stats)
+	idx         Index      // keyHash -> global slot of the live entry (pluggable)
+	nextSlot    uint64     // append cursor
 	root        Hash
 	rootDirty   bool
 }
 
-// New creates an empty tree.
+// New creates an empty tree with the default in-RAM index.
 func New() *Tree {
-	return &Tree{index: make(map[Hash]uint64), rootDirty: true}
+	return &Tree{idx: newMapIndex(), rootDirty: true}
 }
 
 // entryAt returns the entry at an absolute slot, transparently reading the cold
@@ -151,8 +159,8 @@ func (t *Tree) entryAt(slot uint64) (entry, bool) {
 		return entry{}, false
 	}
 	// Derive liveness via comma-ok: an absent key must NOT alias slot 0 (the
-	// zero value of a missing map entry would otherwise mark cold slot 0 active).
-	liveSlot, present := t.index[kh]
+	// zero value of a missing entry would otherwise mark cold slot 0 active).
+	liveSlot, present := t.idx.Get(kh)
 	return entry{keyHash: kh, value: v, active: present && liveSlot == slot}, true
 }
 
@@ -167,7 +175,7 @@ func (t *Tree) setEntry(slot uint64, e entry) {
 }
 
 // LiveCount returns the number of live keys.
-func (t *Tree) LiveCount() int { return len(t.index) }
+func (t *Tree) LiveCount() int { return t.idx.Len() }
 
 // ForceDirty marks every twig dirty so the next Root() recomputes the whole
 // forest. Intended for benchmarking the parallel-vs-sequential recompute path.
@@ -218,7 +226,7 @@ func (t *Tree) deactivate(slot uint64) {
 // Set inserts or updates keyHash -> value (append-only: a new slot is consumed
 // and the key's previous slot, if any, is deactivated).
 func (t *Tree) Set(keyHash Hash, value []byte) {
-	if old, ok := t.index[keyHash]; ok {
+	if old, ok := t.idx.Get(keyHash); ok {
 		t.deactivate(old)
 	}
 	slot := t.nextSlot
@@ -231,22 +239,22 @@ func (t *Tree) Set(keyHash Hash, value []byte) {
 	tw.leaves[local] = hashLeaf(keyHash, v)
 	tw.live++
 	tw.dirty = true
-	t.index[keyHash] = slot
+	t.idx.Put(keyHash, slot)
 	t.rootDirty = true
 }
 
 // Delete removes keyHash (deactivates its slot). No-op if absent.
 func (t *Tree) Delete(keyHash Hash) {
-	if old, ok := t.index[keyHash]; ok {
+	if old, ok := t.idx.Get(keyHash); ok {
 		t.deactivate(old)
-		delete(t.index, keyHash)
+		t.idx.Delete(keyHash)
 	}
 }
 
 // Get returns the live value for keyHash (via the in-memory index — one map
 // lookup, the prototype analogue of QMDB's 1-SSD-read path).
 func (t *Tree) Get(keyHash Hash) ([]byte, bool) {
-	if slot, ok := t.index[keyHash]; ok {
+	if slot, ok := t.idx.Get(keyHash); ok {
 		if e, ok2 := t.entryAt(slot); ok2 {
 			return e.value, true
 		}

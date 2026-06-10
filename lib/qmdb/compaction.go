@@ -147,7 +147,7 @@ type Stats struct {
 
 // Stats returns current footprint metrics.
 func (t *Tree) Stats() Stats {
-	s := Stats{Twigs: len(t.twigs), LiveEntries: len(t.index)}
+	s := Stats{Twigs: len(t.twigs), LiveEntries: t.idx.Len()}
 	for _, tw := range t.twigs {
 		if tw == nil {
 			continue
