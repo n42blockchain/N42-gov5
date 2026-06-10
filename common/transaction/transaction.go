@@ -453,6 +453,11 @@ func (tx *Transaction) MarshalTo(data []byte) (n int, err error) {
 }
 
 func (tx *Transaction) Unmarshal(data []byte) error {
+	// Compact storage format (0xFF marker — never a valid proto first byte,
+	// since 0xFF decodes as field 31 / wire type 7 which is illegal).
+	if IsCompactTx(data) {
+		return tx.unmarshalCompactStorage(data)
+	}
 	var pbTx types_pb.Transaction
 	if err := proto.Unmarshal(data, &pbTx); err != nil {
 		return err

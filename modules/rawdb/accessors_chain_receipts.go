@@ -171,7 +171,7 @@ func WriteReceipts(tx kv.Putter, number uint64, receipts block.Receipts) error {
 		}
 	}
 
-	data, err := receipts.Marshal()
+	data, err := marshalReceiptsForStorage(receipts)
 	if err != nil {
 		return fmt.Errorf("encode block receipts for block %d: %w", number, err)
 	}
@@ -202,7 +202,7 @@ func WriteReceiptsPooled(tx kv.Putter, number uint64, receipts block.Receipts) e
 	buf := GetBuf()
 	defer PutBuf(buf)
 
-	data, err := receipts.Marshal()
+	data, err := marshalReceiptsForStorage(receipts)
 	if err != nil {
 		return fmt.Errorf("encode block receipts for block %d: %w", number, err)
 	}
@@ -214,6 +214,19 @@ func WriteReceiptsPooled(tx kv.Putter, number uint64, receipts block.Receipts) e
 }
 
 // AppendReceipts stores all the transaction receipts belonging to a block.
+// CompactReceiptWrites switches receipt writes to the compact storage codec
+// (consensus fields + logs only; Bloom recomputed and context fields derived on
+// read). Read paths accept both formats (Receipts.Unmarshal dispatches on the
+// 0xFF marker). Set by replay-v2's --compact-receipts.
+var CompactReceiptWrites = false
+
+func marshalReceiptsForStorage(receipts block.Receipts) ([]byte, error) {
+	if CompactReceiptWrites {
+		return receipts.MarshalCompact(), nil
+	}
+	return receipts.Marshal()
+}
+
 func AppendReceipts(tx kv.StatelessWriteTx, blockNumber uint64, receipts block.Receipts) error {
 	for txID, receipt := range receipts {
 		if len(receipt.Logs) == 0 {
@@ -229,7 +242,7 @@ func AppendReceipts(tx kv.StatelessWriteTx, blockNumber uint64, receipts block.R
 		}
 	}
 
-	data, err := receipts.Marshal()
+	data, err := marshalReceiptsForStorage(receipts)
 	if err != nil {
 		return fmt.Errorf("encode block receipts for block %d: %w", blockNumber, err)
 	}
