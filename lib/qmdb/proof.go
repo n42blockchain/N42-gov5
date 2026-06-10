@@ -25,51 +25,27 @@ func (t *Tree) GetProof(keyHash Hash) (*Proof, bool) {
 	t.Root() // ensure twig/upper roots are current
 
 	twigID := slot / TwigSize
-	local := int(slot % TwigSize)
-	t.ensureHydrated(int(twigID)) // rebuild leaves if this twig was evicted
+	local := slot % TwigSize
+	t.ensureHydrated(int(twigID)) // rebuild nodes if this twig was evicted
 	tw := t.twigs[twigID]
 
 	pe, _ := t.entryAt(slot) // faults from cold if the slot was evicted
 	p := &Proof{KeyHash: keyHash, Value: pe.value, Slot: slot}
 
-	// Collect siblings inside the twig.
-	var buf [TwigSize]Hash
-	buf = *tw.leaves
-	idx, n := local, TwigSize
+	// Collect siblings inside the twig — read straight from the resident node
+	// heap (kept current by setLeaf / recompute), no re-hashing needed.
+	j := TwigSize + local
 	for L := 0; L < TwigHeight; L++ {
-		p.TwigPath[L] = buf[idx^1]
-		for i := 0; i < n/2; i++ {
-			buf[i] = hashNode(buf[2*i], buf[2*i+1])
-		}
-		n /= 2
-		idx >>= 1
+		p.TwigPath[L] = tw.nodes[j^1]
+		j >>= 1
 	}
 
-	// Collect siblings up the upper tree (padded to pow2).
-	roots := make([]Hash, len(t.twigs))
-	for i, tw := range t.twigs {
-		roots[i] = tw.root
-	}
-	np := 1
-	for np < len(roots) {
-		np <<= 1
-	}
-	ulevel := make([]Hash, np)
-	for i := range ulevel {
-		if i < len(roots) {
-			ulevel[i] = roots[i]
-		} else {
-			ulevel[i] = nullHash
-		}
-	}
-	uidx, un := int(twigID), np
-	for un > 1 {
-		p.UpperPath = append(p.UpperPath, ulevel[uidx^1])
-		for i := 0; i < un/2; i++ {
-			ulevel[i] = hashNode(ulevel[2*i], ulevel[2*i+1])
-		}
-		un /= 2
-		uidx >>= 1
+	// Collect siblings up the upper tree — read straight from the incremental
+	// upper heap (kept current by Root(), called above), no re-hashing needed.
+	j = uint64(t.upCap) + twigID
+	for j > 1 {
+		p.UpperPath = append(p.UpperPath, t.upper[j^1])
+		j >>= 1
 	}
 	return p, true
 }
@@ -151,7 +127,9 @@ func FromSnapshotLog(log []SlotEntry) *Tree {
 		copy(v, se.Value)
 		t.entries[se.Slot] = entry{keyHash: se.KeyHash, value: v, active: se.Active}
 		if se.Active {
-			tw.leaves[local] = hashLeaf(se.KeyHash, v)
+			// Bulk load: write raw leaves and mark dirty; Root() does one full
+			// recompute per twig instead of an O(log) fold per leaf.
+			tw.nodes[TwigSize+local] = hashLeaf(se.KeyHash, v)
 			tw.live++
 			t.idx.Put(se.KeyHash, se.Slot)
 		}
