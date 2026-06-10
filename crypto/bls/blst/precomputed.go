@@ -13,9 +13,16 @@
 package blst
 
 import (
+	"math/big"
+
 	"github.com/n42blockchain/N42/crypto/bls/common"
 	blst "github.com/supranational/blst/bindings/go"
 )
+
+// blsScalarOrder is r, the BLS12-381 scalar field modulus (the group order of
+// G1/G2). Secret keys are scalars mod r.
+var blsScalarOrder, _ = new(big.Int).SetString(
+	"73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001", 16)
 
 // PrecomputedHash is a message pre-hashed to G2, reusable across many signers of
 // the same message.
@@ -41,5 +48,40 @@ func (h *PrecomputedHash) SignWith(sk common.SecretKey) common.Signature {
 	}
 	acc := new(blst.P2)
 	acc.MultNAccumulate(h.q, k.p)
+	return &Signature{s: acc.ToAffine()}
+}
+
+// AggregateSignWith returns the AGGREGATE signature of all sks over the
+// precomputed message hash using a single curve multiplication:
+//
+//	Σ(sk_i · H(m)) == (Σ sk_i mod r) · H(m)
+//
+// — the scalar sum costs only field additions, so signing a 512-member
+// committee collapses from 512 G2 multiplications to one. The result is
+// byte-identical to aggregating the individual SignWith signatures (the
+// aggregate of points equals the point of the summed scalars; asserted by
+// tests). This shortcut requires holding EVERY participant's secret key, so it
+// is only valid for the reseal SIMULATOR — a real distributed committee cannot
+// do this, and the produced chain is indistinguishable either way.
+//
+// Falls back to individual signing + aggregation if any key is not blst-backed.
+func (h *PrecomputedHash) AggregateSignWith(sks []common.SecretKey) common.Signature {
+	sum := new(big.Int)
+	for _, sk := range sks {
+		k, ok := sk.(*bls12SecretKey)
+		if !ok {
+			sigs := make([]common.Signature, len(sks))
+			for i, s := range sks {
+				sigs[i] = h.SignWith(s)
+			}
+			return AggregateSignatures(sigs)
+		}
+		sum.Add(sum, new(big.Int).SetBytes(k.Marshal()))
+	}
+	sum.Mod(sum, blsScalarOrder)
+	var sc blst.Scalar
+	sc.Deserialize(sum.FillBytes(make([]byte, 32)))
+	acc := new(blst.P2)
+	acc.MultNAccumulate(h.q, &sc)
 	return &Signature{s: acc.ToAffine()}
 }

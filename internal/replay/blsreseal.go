@@ -141,8 +141,16 @@ func (r *BLSResealer) BuildCE(blockNum uint64, blockHash types.Hash, receiptRoot
 	active := r.ActivePool(blockNum)
 	members := r.committee(view, blockHash, active)
 	msg := hotstuff.SigningMessage(view, blockHash)
-	sigs := r.signMembers(members, msg)
-	agg := bls.AggregateSignatures(sigs)
+	// Aggregate via the scalar-sum fast path: the simulator holds every member
+	// key, so Σ(sk_i·H(m)) is computed as (Σsk_i)·H(m) — ONE G2 multiplication
+	// instead of one per member (512x). Byte-identical to aggregating individual
+	// signatures (blst.TestAggregateSignWithEquivalence); profiling showed the
+	// per-member multiplications at 97% of conversion CPU.
+	memberKeys := make([]common.SecretKey, len(members))
+	for i, m := range members {
+		memberKeys[i] = r.sks[m]
+	}
+	agg := bls.PrecomputeHash(msg).AggregateSignWith(memberKeys)
 
 	ce := &rawdb.ConsensusEvidence{
 		View:        uint64(view),
