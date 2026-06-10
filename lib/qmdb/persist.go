@@ -44,6 +44,10 @@ func be8(v uint64) []byte {
 // flushedThrough is the slot cursor already persisted (0 on first flush).
 func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 	bytesW := 0
+	// Recompute dirty twig roots FIRST so the per-twig meta below persists the
+	// CURRENT root (resume's fast path trusts these stored roots). Without this a
+	// dirty twig would flush a stale root.
+	root := t.Root()
 	// Append new immutable entries [flushedThrough, nextSlot). These are always
 	// in the resident window (eviction only drops already-flushed slots).
 	for s := flushedThrough; s < t.nextSlot; s++ {
@@ -83,7 +87,6 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 		}
 		bytesW += 8 + len(meta)
 	}
-	root := t.Root()
 	_ = p.Put(MetaTable, []byte("root"), root[:])
 	_ = p.Put(MetaTable, []byte("nextSlot"), be8(t.nextSlot))
 	bytesW += 32 + 8
@@ -119,7 +122,10 @@ func (t *Tree) LoadFrom(g Getter) error {
 	activeTwig := int((nextSlot - 1) / TwigSize) // twig holding the last live slot
 
 	t.twigs = make([]*twig, numTwigs)
-	t.index = make(map[Hash]uint64, nextSlot)
+	// A persistent index (MDBX-backed) already holds the live key set across
+	// restarts, so it must NOT be rescanned; only a fresh in-RAM index (Len()==0)
+	// needs rebuilding from the entry log.
+	rebuildIndex := t.idx.Len() == 0
 
 	// Build twig-by-twig and evict each sealed twig's leaves as soon as its root is
 	// computed, so at most one twig's leaves (+ the active twig) are resident at a
@@ -132,8 +138,32 @@ func (t *Tree) LoadFrom(g Getter) error {
 			return e
 		}
 		var activeBits []byte
+		var storedRoot Hash
 		if len(meta) >= 32+TwigSize/8 {
+			copy(storedRoot[:], meta[:32])
 			activeBits = meta[32 : 32+TwigSize/8]
+		}
+		// Fast path: a sealed twig with a persistent index trusts its stored root
+		// and skips the per-slot entry scan entirely — O(numTwigs) resume, O(1) RAM.
+		if !rebuildIndex && id < activeTwig {
+			tw.root = storedRoot
+			tw.dirty = false
+			tw.leaves = nil // sealed: no leaves resident
+			// recover live count from activeBits for compaction sparsity decisions
+			if activeBits != nil {
+				cnt := 0
+				lim := TwigSize
+				if rem := int(nextSlot - uint64(id)*TwigSize); rem < lim {
+					lim = rem
+				}
+				for local := 0; local < lim; local++ {
+					if activeBits[local/8]&(1<<uint(local%8)) != 0 {
+						cnt++
+					}
+				}
+				tw.live = cnt
+			}
+			continue
 		}
 		if activeBits != nil {
 			lo := uint64(id) * TwigSize
@@ -156,7 +186,9 @@ func (t *Tree) LoadFrom(g Getter) error {
 				copy(kh[:], v[:32])
 				tw.leaves[local] = hashLeaf(kh, v[32:])
 				tw.live++
-				t.index[kh] = slot
+				if rebuildIndex {
+					t.idx.Put(kh, slot)
+				}
 			}
 		}
 		tw.recompute() // set this twig's root from its leaves

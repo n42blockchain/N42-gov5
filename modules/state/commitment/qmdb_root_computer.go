@@ -22,6 +22,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/qmdb"
 	"github.com/n42blockchain/N42/modules/state"
 )
@@ -29,7 +30,8 @@ import (
 // QMDBRootComputer maintains a qmdb.Tree across blocks.
 type QMDBRootComputer struct {
 	t              *qmdb.Tree
-	flushedThrough uint64 // entry-log slots already persisted (for incremental flush)
+	flushedThrough uint64         // entry-log slots already persisted (for incremental flush)
+	mdbxIdx        *qmdbMDBXIndex // non-nil when the live-key index is MDBX-backed
 }
 
 // NewQMDBRootComputer creates an empty in-memory QMDB root computer.
@@ -63,6 +65,9 @@ func (r *QMDBRootComputer) FlushTo(p qmdb.Putter) (int, error) {
 		return n, err
 	}
 	r.flushedThrough = next
+	if r.mdbxIdx != nil {
+		r.mdbxIdx.persistCount() // index rows are already written through the tx
+	}
 	return n, nil
 }
 
@@ -71,6 +76,23 @@ func (r *QMDBRootComputer) FlushTo(p qmdb.Putter) (int, error) {
 // engine re-points this at the current batch's tx each batch.
 func (r *QMDBRootComputer) SetCold(g qmdb.Getter) {
 	r.t.SetCold(qmdb.ColdReaderFromGetter(g))
+}
+
+// UseMDBXIndex backs the live-key index with an MDBX table (instead of the default
+// in-RAM Go map), so the index does not grow the heap with the live key set and
+// survives restarts. Call once on the fresh computer BEFORE LoadFrom, with the
+// first batch's tx. Re-point per batch with SetIndexTx.
+func (r *QMDBRootComputer) UseMDBXIndex(tx kv.RwTx) {
+	r.mdbxIdx = newQMDBMDBXIndex(tx)
+	r.t.SetIndex(r.mdbxIdx)
+}
+
+// SetIndexTx re-points the MDBX index at the current batch's tx (no-op for the
+// in-RAM index). Call each batch alongside SetCold.
+func (r *QMDBRootComputer) SetIndexTx(tx kv.RwTx) {
+	if r.mdbxIdx != nil {
+		r.mdbxIdx.setTx(tx)
+	}
 }
 
 // EvictFlushed drops, up to the flushed cursor and recoverable from cold, both

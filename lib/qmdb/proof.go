@@ -18,7 +18,7 @@ type Proof struct {
 
 // GetProof produces a membership proof for a live key, or false if absent.
 func (t *Tree) GetProof(keyHash Hash) (*Proof, bool) {
-	slot, ok := t.index[keyHash]
+	slot, ok := t.idx.Get(keyHash)
 	if !ok {
 		return nil, false
 	}
@@ -153,7 +153,7 @@ func FromSnapshotLog(log []SlotEntry) *Tree {
 		if se.Active {
 			tw.leaves[local] = hashLeaf(se.KeyHash, v)
 			tw.live++
-			t.index[se.KeyHash] = se.Slot
+			t.idx.Put(se.KeyHash, se.Slot)
 		}
 		tw.dirty = true
 	}

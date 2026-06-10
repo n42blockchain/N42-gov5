@@ -401,6 +401,10 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				// from the key set). kv.RwTx satisfies qmdb.Putter/Getter directly.
 				if e.qmdbRC == nil {
 					rc := commitment.NewQMDBRootComputer()
+					// Back the live-key index with MDBX (persistent, off-heap) BEFORE
+					// LoadFrom so reload trusts the on-disk index + twig roots instead
+					// of rescanning the whole entry log.
+					rc.UseMDBXIndex(dstTx)
 					if err := rc.LoadFrom(dstTx); err != nil {
 						return fmt.Errorf("QMDB reload: %w", err)
 					}
@@ -409,9 +413,10 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					e.qmdbRC = rc
 				}
 				qmdbRC = e.qmdbRC
-				// Re-point the cold reader at THIS batch's tx (the prior batch's tx
-				// is rolled back); faults read committed cold slots from it.
+				// Re-point the cold reader and index at THIS batch's tx (the prior
+				// batch's tx is rolled back); faults/index reads use committed data.
 				qmdbRC.SetCold(dstTx)
+				qmdbRC.SetIndexTx(dstTx)
 
 			case useBMT:
 				// BMT path — Binary Merkle Tree (Blake3, content-addressed)
