@@ -345,6 +345,38 @@ func envInt(key string, def int) int {
 	return def
 }
 
+// StateProofInfo describes how eth_getProof results are encoded and how to
+// verify them — so a client can detect a QMDB-backed chain and route each proof
+// blob to qmdb.VerifyEncodedProof instead of an MPT verifier.
+type StateProofInfo struct {
+	Backend               string `json:"backend"`               // e.g. "qmdb", "jmt", "ethereum-mpt", "hash-only"
+	ProofRootScheme       string `json:"proofRootScheme"`       // commitment behind the proof
+	Semantics             string `json:"semantics"`             // EIP-1186 conformance
+	StorageHash           string `json:"storageHash"`           // how AccountResult.storageHash is computed
+	SupportsHistorical    bool   `json:"supportsHistorical"`    // proofs for non-latest blocks
+	HeaderStateRootScheme string `json:"headerStateRootScheme"` // header.stateRoot semantics
+}
+
+// GetStateProofInfo reports the proof backend serving eth_getProof. For a QMDB
+// chain Backend == "qmdb": each accountProof/storageProof element is a single
+// hex blob to decode with qmdb.UnmarshalProof and check with
+// qmdb.VerifyEncodedProof against the block's stateRoot.
+func (c *ConsensusAPI) GetStateProofInfo(ctx context.Context) (*StateProofInfo, error) {
+	bc, ok := c.api.BlockChain().(*internal.BlockChain)
+	if !ok {
+		return nil, fmt.Errorf("state proof info unavailable: concrete blockchain required")
+	}
+	d := bc.StateProofDescriptor()
+	return &StateProofInfo{
+		Backend:               string(d.Backend),
+		ProofRootScheme:       string(d.ProofRootScheme),
+		Semantics:             string(d.Semantics),
+		StorageHash:           string(d.StorageHash),
+		SupportsHistorical:    d.SupportsHistorical,
+		HeaderStateRootScheme: string(d.HeaderStateRootScheme),
+	}, nil
+}
+
 // livePool resolves the live committee pool wired into the running chain (the
 // same instance that stamps evidence onto produced blocks), or an error when no
 // pool is configured.

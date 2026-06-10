@@ -855,6 +855,14 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 				"checkpoint", mptBlock,
 			)
 
+		case state.RootSchemeQMDB:
+			// QMDB chains are built offline by the replay engine; the node serves
+			// them read-only. No live commitment is wired for block production —
+			// only the QMDB-native eth_getProof provider (lazily reloads the twig
+			// forest from the persisted entry log to serve membership proofs).
+			realBC.SetStateProofProvider(internal.NewQMDBStateProofProvider())
+			log.Info("State commitment: QMDB (twig forest, read-only; eth_getProof = QMDB membership proofs)")
+
 		case state.RootSchemeLegacyKeccak:
 			log.Info("State commitment: Legacy-Keccak (no tree)")
 

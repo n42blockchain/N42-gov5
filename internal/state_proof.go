@@ -32,6 +32,7 @@ const (
 	StateProofBackendHashOnly    StateProofBackend = "hash-only"
 	StateProofBackendJMT         StateProofBackend = "jmt"
 	StateProofBackendEthereumMPT StateProofBackend = "ethereum-mpt"
+	StateProofBackendQMDB        StateProofBackend = "qmdb"
 )
 
 // StateProofSemantics describes how closely the returned proof matches EIP-1186.
