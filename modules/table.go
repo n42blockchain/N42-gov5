@@ -280,6 +280,13 @@ const (
 	// value: 48-byte BLS12-381 G1 public key
 	CommitteeRegistration = "CommitteeRegistration"
 
+	// QMDBUndoWindow holds the recent-blocks undo records that let eth_getProof
+	// serve QMDB membership proofs at the last W block heights (the QMDB root is
+	// history-dependent; see lib/qmdb/undo.go). Pruned to the window each block.
+	// key: block number (8 bytes, big-endian)
+	// value: qmdb.BlockUndo (compact binary, typically a few hundred bytes)
+	QMDBUndoWindow = "QMDBUndoWindow"
+
 	// ContentStore stores content-addressed blobs for the CAS precompile.
 	// key: keccak256(data) (32 bytes)
 	// value: raw data (up to 24KB)
@@ -375,6 +382,7 @@ var n42Tables = []string{
 	VerkleRoot,
 	ConsensusEvidence,
 	CommitteeRegistration,
+	QMDBUndoWindow,
 	HashedAccounts,
 	HashedStorage,
 	TrieOfAccounts,

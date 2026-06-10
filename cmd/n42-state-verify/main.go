@@ -44,6 +44,7 @@ func main() {
 	mapGB := flag.Int("map.gb", 4096, "MDBX map size (GB)")
 	treeType := flag.String("tree", "jmt", "state commitment to verify: jmt (Blake3) or mpt (Keccak/HPH, ETH-compatible)")
 	proofSample := flag.Int("proof-sample", 0, "qmdb only: after MATCH, verify N account + N storage membership proofs (eth_getProof data) against header.Root")
+	undoWindow := flag.Int("undo-e2e", 0, "qmdb only: after MATCH, apply N realistic blocks with undo recording on the REAL forest and verify ProofAt reproduces every historical root (in-memory; nothing is written)")
 	flag.Parse()
 
 	logger := log.New()
@@ -187,6 +188,9 @@ func main() {
 			fmt.Printf("\n✅ MATCH — header.Root equals reloaded QMDB world root. State is correct.\n")
 			if *proofSample > 0 {
 				verifyQMDBProofs(qrc.Tree(), headerRoot, accts, stor, *proofSample)
+			}
+			if *undoWindow > 0 {
+				runUndoWindowE2E(qrc.Tree(), accts, *undoWindow)
 			}
 			return
 		}
@@ -514,6 +518,132 @@ func readAllState(tx kv.Tx) (
 func die(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "error: "+format+"\n", a...)
 	os.Exit(1)
+}
+
+// runUndoWindowE2E exercises the recent-blocks proof window on the REAL loaded
+// forest: applies `window` blocks of realistic ops (overwrites of real existing
+// accounts, creations, deletions) with undo recording — all in-memory, nothing
+// is written to the DB — then for every depth into the window reconstructs the
+// historical root via ProofAt, asserting byte-exact equality with the recorded
+// root and correct values. Reports undo-record sizes and ProofAt latency.
+func runUndoWindowE2E(
+	tree *qmdb.Tree,
+	accts map[types.Address]*account.StateAccount,
+	window int,
+) {
+	fmt.Printf("\n=== recent-blocks proof window E2E (%d blocks on the real forest) ===\n", window)
+
+	// Deterministic sample of real account keys to overwrite.
+	realKeys := make([]qmdb.Hash, 0, window*4)
+	for addr := range accts {
+		realKeys = append(realKeys, qmdb.Hash(commitment.AccountKeyHash(addr)))
+		if len(realKeys) == cap(realKeys) {
+			break
+		}
+	}
+	if len(realKeys) < window {
+		die("not enough live accounts for the E2E")
+	}
+
+	type blockRec struct {
+		root  qmdb.Hash
+		undo  *qmdb.BlockUndo
+		bytes int
+	}
+	recs := make([]blockRec, 0, window+1)
+	recs = append(recs, blockRec{root: tree.Root()}) // target base = real chain head
+
+	// Track expected values for sampled keys at each height.
+	expected := make([]map[qmdb.Hash][]byte, 0, window+1)
+	cur := make(map[qmdb.Hash][]byte)
+	snap := func() map[qmdb.Hash][]byte {
+		m := make(map[qmdb.Hash][]byte, len(cur))
+		for k, v := range cur {
+			m[k] = v
+		}
+		return m
+	}
+	// Base values of the sampled real keys (their CURRENT live values).
+	for _, k := range realKeys {
+		if v, ok := tree.Get(k); ok {
+			cur[k] = append([]byte(nil), v...)
+		}
+	}
+	expected = append(expected, snap())
+
+	totalUndoBytes := 0
+	for b := 0; b < window; b++ {
+		tree.StartUndoRecording()
+		// 4 overwrites of real accounts + 1 creation + 1 deletion per block —
+		// roughly this chain's observed ~2.4 state-changes/block, doubled.
+		for j := 0; j < 4; j++ {
+			k := realKeys[(b*4+j)%len(realKeys)]
+			nv := []byte(fmt.Sprintf("e2e-val-%d-%d", b, j))
+			tree.Set(k, nv)
+			cur[k] = nv
+		}
+		var ck qmdb.Hash
+		ck[0], ck[1], ck[2] = 0xe2, 0xe2, byte(b)
+		tree.Set(ck, []byte{byte(b)})
+		cur[ck] = []byte{byte(b)}
+		if b > 0 {
+			var dk qmdb.Hash
+			dk[0], dk[1], dk[2] = 0xe2, 0xe2, byte(b-1)
+			tree.Delete(dk)
+			delete(cur, dk)
+		}
+		undo := tree.StopUndoRecording()
+		ub := len(undo.Marshal())
+		totalUndoBytes += ub
+		recs = append(recs, blockRec{root: tree.Root(), undo: undo, bytes: ub})
+		expected = append(expected, snap())
+	}
+	fmt.Printf("  applied %d blocks: undo total %d B, avg %d B/block\n",
+		window, totalUndoBytes, totalUndoBytes/window)
+
+	// Verify every depth; time ProofAt.
+	head := len(recs) - 1
+	var proofCount int
+	var proofTotal time.Duration
+	for target := 0; target < head; target++ {
+		undos := make([]*qmdb.BlockUndo, 0, head-target)
+		for b := target + 1; b <= head; b++ {
+			undos = append(undos, recs[b].undo)
+		}
+		// Two real overwritten keys + the created key visible at this height.
+		checkKeys := []qmdb.Hash{realKeys[0], realKeys[(target*4)%len(realKeys)]}
+		for _, k := range checkKeys {
+			t0 := time.Now()
+			proof, root, found, err := tree.ProofAt(k, undos)
+			proofTotal += time.Since(t0)
+			proofCount++
+			if err != nil {
+				die("ProofAt target %d: %v", target, err)
+			}
+			if root != recs[target].root {
+				die("target %d: reconstructed root %x != recorded %x", target, root[:8], recs[target].root[:8])
+			}
+			want, wantLive := expected[target][k]
+			if found != wantLive {
+				die("target %d key %x: found=%v want %v", target, k[:4], found, wantLive)
+			}
+			if found {
+				if !bytesEqual(proof.Value, want) {
+					die("target %d key %x: value mismatch", target, k[:4])
+				}
+				if !qmdb.VerifyProof(root, proof) {
+					die("target %d key %x: proof does not verify", target, k[:4])
+				}
+				if !qmdb.VerifyEncodedProof(root, proof.Marshal()) {
+					die("target %d key %x: encoded proof does not verify", target, k[:4])
+				}
+			}
+		}
+	}
+	fmt.Printf("  verified %d historical roots × keys = %d proofs, all byte-exact\n", head, proofCount)
+	fmt.Printf("  ProofAt latency: avg %s/proof (deepest window = %d blocks)\n",
+		(proofTotal / time.Duration(proofCount)).Round(time.Microsecond), window)
+	fmt.Printf("\n✅ recent-blocks proof window verified on the real forest.\n")
 }
 
 // verifyQMDBProofs samples live accounts and storage slots, produces a QMDB

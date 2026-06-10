@@ -223,6 +223,11 @@ type Tree struct {
 	upCap     int
 	upDirty   map[int]struct{} // twig IDs whose root changed since last fold
 	upRebuild bool             // full upper rebuild needed (growth/bulk load)
+
+	// rec, when non-nil, captures per-block undo data (deactivated slots' prior
+	// state + the cursor watermark) for the sliding-window historical proofs in
+	// undo.go. Nil (the default) adds zero overhead to Set/Delete.
+	rec *BlockUndo
 }
 
 // New creates an empty tree with the default in-RAM index.
@@ -330,6 +335,7 @@ func (t *Tree) deactivate(slot uint64) {
 // and the key's previous slot, if any, is deactivated).
 func (t *Tree) Set(keyHash Hash, value []byte) {
 	if old, ok := t.idx.Get(keyHash); ok {
+		t.recordDeactivation(old, keyHash)
 		t.deactivate(old)
 	}
 	slot := t.nextSlot
@@ -349,6 +355,7 @@ func (t *Tree) Set(keyHash Hash, value []byte) {
 // Delete removes keyHash (deactivates its slot). No-op if absent.
 func (t *Tree) Delete(keyHash Hash) {
 	if old, ok := t.idx.Get(keyHash); ok {
+		t.recordDeactivation(old, keyHash)
 		t.deactivate(old)
 		t.idx.Delete(keyHash)
 	}

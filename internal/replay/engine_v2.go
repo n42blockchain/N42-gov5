@@ -40,6 +40,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/lib/lthash"
+	"github.com/n42blockchain/N42/lib/qmdb"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
@@ -436,6 +437,11 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					}
 					rc.SetCold(dstTx)
 					rc.EvictFlushed() // free the freshly-loaded window (already on disk)
+					if e.cfg.QMDBUndoWindow > 0 {
+						// Capture per-block undo records (slot deactivations + cursor
+						// watermark) so eth_getProof can serve the last N heights.
+						rc.EnableUndoRecording()
+					}
 					e.qmdbRC = rc
 				}
 				qmdbRC = e.qmdbRC
@@ -792,6 +798,14 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 						if err := e.writeNewBlock(dstTx, gapBlk.(*block.Block), newBlockNum); err != nil {
 							return err
 						}
+						// Gap blocks change no state: their undo is an empty record at
+						// the current cursor (keeps the window contiguous for ProofAt).
+						if useQMDB && qmdbRC != nil && e.cfg.QMDBUndoWindow > 0 {
+							gu := &qmdb.BlockUndo{PrevNextSlot: qmdbRC.Tree().NextSlot()}
+							if err := rawdb.WriteQMDBUndo(dstTx, newBlockNum, gu); err != nil {
+								return fmt.Errorf("write qmdb undo gap block %d: %w", newBlockNum, err)
+							}
+						}
 
 						parentHash = gapBlk.Hash()
 						newBlockNum++
@@ -918,6 +932,25 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 							_ = stor
 							return fmt.Errorf("MPT ROOT MISMATCH at block %d: incremental=%x rebuild=%x accounts=%d storage=%d dirty=%d%s",
 								newBlockNum, stateRoot, verifyRoot, len(verifyAccts), len(verifyStor), len(accts), diff)
+						}
+					}
+				}
+
+				// Persist this block's QMDB undo record and prune the window — the
+				// data behind recent-height eth_getProof (lib/qmdb/undo.go). A block
+				// whose root was never recomputed changed nothing: an empty record
+				// at the current cursor is exactly its undo.
+				if useQMDB && qmdbRC != nil && e.cfg.QMDBUndoWindow > 0 {
+					undo := qmdbRC.TakeUndo()
+					if undo == nil {
+						undo = &qmdb.BlockUndo{PrevNextSlot: qmdbRC.Tree().NextSlot()}
+					}
+					if err := rawdb.WriteQMDBUndo(dstTx, newBlockNum, undo); err != nil {
+						return fmt.Errorf("write qmdb undo block %d: %w", newBlockNum, err)
+					}
+					if newBlockNum > uint64(e.cfg.QMDBUndoWindow) {
+						if err := rawdb.PruneQMDBUndoBelow(dstTx, newBlockNum-uint64(e.cfg.QMDBUndoWindow)); err != nil {
+							return fmt.Errorf("prune qmdb undo window: %w", err)
 						}
 					}
 				}
