@@ -11,6 +11,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/bmt"
 	"github.com/n42blockchain/N42/lib/jmt"
+	"github.com/n42blockchain/N42/lib/qmdb"
 	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	"github.com/n42blockchain/N42/lib/kv"
 	mdbxkv "github.com/n42blockchain/N42/lib/kv/mdbx"
@@ -41,6 +43,7 @@ func main() {
 	datadir := flag.String("datadir", "D:/mainnet-bls", "converted chain datadir (contains chaindata/)")
 	mapGB := flag.Int("map.gb", 4096, "MDBX map size (GB)")
 	treeType := flag.String("tree", "jmt", "state commitment to verify: jmt (Blake3) or mpt (Keccak/HPH, ETH-compatible)")
+	proofSample := flag.Int("proof-sample", 0, "qmdb only: after MATCH, verify N account + N storage membership proofs (eth_getProof data) against header.Root")
 	flag.Parse()
 
 	logger := log.New()
@@ -182,6 +185,9 @@ func main() {
 		fmt.Printf("  QMDB reload root: %x  liveKeys=%d  (%s)\n", qRoot, qrc.Tree().LiveCount(), time.Since(t1).Round(time.Millisecond))
 		if qRoot == headerRoot {
 			fmt.Printf("\n✅ MATCH — header.Root equals reloaded QMDB world root. State is correct.\n")
+			if *proofSample > 0 {
+				verifyQMDBProofs(qrc.Tree(), headerRoot, accts, stor, *proofSample)
+			}
 			return
 		}
 		fmt.Printf("\n❌ QMDB reload (%x) != header.Root (%x)\n", qRoot, headerRoot)
@@ -508,4 +514,105 @@ func readAllState(tx kv.Tx) (
 func die(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "error: "+format+"\n", a...)
 	os.Exit(1)
+}
+
+// verifyQMDBProofs samples live accounts and storage slots, produces a QMDB
+// membership proof for each (the proof data eth_getProof returns for this
+// commitment), and checks that (a) the proof folds to header.Root and (b) the
+// proven value equals what PlainState holds. Also checks one absence case.
+func verifyQMDBProofs(
+	tree *qmdb.Tree,
+	root types.Hash,
+	accts map[types.Address]*account.StateAccount,
+	stor map[types.Address]map[types.Hash]*uint256.Int,
+	sample int,
+) {
+	qroot := qmdb.Hash(root)
+	fmt.Printf("\n=== eth_getProof data verification (QMDB membership proofs) ===\n")
+
+	// Accounts.
+	accOK, accFail, accChecked := 0, 0, 0
+	for addr, acct := range accts {
+		if accChecked >= sample {
+			break
+		}
+		// Empty accounts are deleted from the commitment — skip (correctly absent).
+		if acct.Nonce == 0 && acct.Balance.IsZero() && acct.CodeHash == emptyCodeHash {
+			continue
+		}
+		accChecked++
+		kh := qmdb.Hash(commitment.AccountKeyHash(addr))
+		p, ok := tree.GetProof(kh)
+		if !ok {
+			fmt.Printf("  ❌ account %x: no proof (missing from commitment)\n", addr)
+			accFail++
+			continue
+		}
+		if !qmdb.VerifyProof(qroot, p) {
+			fmt.Printf("  ❌ account %x: proof does not verify against header.Root\n", addr)
+			accFail++
+			continue
+		}
+		if !bytes.Equal(p.Value, commitment.EncodeAccountValue(acct)) {
+			fmt.Printf("  ❌ account %x: proven value != PlainState account\n", addr)
+			accFail++
+			continue
+		}
+		accOK++
+	}
+	fmt.Printf("  accounts : %d verified, %d failed (of %d sampled)\n", accOK, accFail, accChecked)
+
+	// Storage slots.
+	stoOK, stoFail, stoChecked := 0, 0, 0
+	for addr, slots := range stor {
+		if stoChecked >= sample {
+			break
+		}
+		for slot, val := range slots {
+			if stoChecked >= sample {
+				break
+			}
+			if val == nil || val.IsZero() {
+				continue
+			}
+			stoChecked++
+			kh := qmdb.Hash(commitment.StorageKeyHash(addr, slot))
+			p, ok := tree.GetProof(kh)
+			if !ok {
+				fmt.Printf("  ❌ storage %x/%x: no proof\n", addr, slot)
+				stoFail++
+				continue
+			}
+			if !qmdb.VerifyProof(qroot, p) {
+				fmt.Printf("  ❌ storage %x/%x: proof does not verify\n", addr, slot)
+				stoFail++
+				continue
+			}
+			var want [32]byte
+			val.WriteToSlice(want[:])
+			if !bytes.Equal(p.Value, want[:]) {
+				fmt.Printf("  ❌ storage %x/%x: proven value != PlainState slot\n", addr, slot)
+				stoFail++
+				continue
+			}
+			stoOK++
+		}
+	}
+	fmt.Printf("  storage  : %d verified, %d failed (of %d sampled)\n", stoOK, stoFail, stoChecked)
+
+	// Absence: a key that is not in the live set must have no membership proof.
+	absent := qmdb.Hash(crypto.Keccak256Hash([]byte("n42-absent-probe-key")))
+	if _, ok := tree.GetProof(absent); ok {
+		fmt.Printf("  ❌ absence: a non-existent key returned a proof\n")
+		accFail++
+	} else {
+		fmt.Printf("  absence  : non-existent key correctly has no proof\n")
+	}
+
+	if accFail == 0 && stoFail == 0 {
+		fmt.Printf("\n✅ getProof data correct — every sampled proof folds to header.Root and matches PlainState.\n")
+	} else {
+		fmt.Printf("\n❌ getProof data verification FAILED (%d account + %d storage failures)\n", accFail, stoFail)
+		os.Exit(1)
+	}
 }
