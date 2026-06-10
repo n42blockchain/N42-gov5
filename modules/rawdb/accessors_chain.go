@@ -304,13 +304,26 @@ func decodeStoredTransaction(raw []byte) (*transaction.Transaction, error) {
 	return transaction.DecodeEthereumTransaction(raw)
 }
 
+// CompactTxWrites switches WriteTransactions to the compact storage codec for
+// supported tx types (unsupported types fall back to proto per record). Read
+// paths accept both formats (Transaction.Unmarshal dispatches on the 0xFF
+// marker), so mixed tables are fine. Set by replay-v2's --compact-headers.
+var CompactTxWrites = false
+
 func WriteTransactions(db kv.RwTx, txs []*transaction.Transaction, baseTxId uint64) error {
 	txIdKey := make([]byte, 8)
 	for i, tx := range txs {
 		binary.BigEndian.PutUint64(txIdKey, baseTxId+uint64(i))
-		data, err := tx.Marshal()
-		if err != nil {
-			return err
+		var data []byte
+		if CompactTxWrites {
+			data = tx.MarshalCompactStorage() // nil for unsupported types
+		}
+		if data == nil {
+			var err error
+			data, err = tx.Marshal()
+			if err != nil {
+				return err
+			}
 		}
 		// If next Append returns KeyExists error - it means you need to open transaction
 		// in App code before calling this func. Batch is also fine.

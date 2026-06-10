@@ -34,15 +34,81 @@ const (
 	LeavesTable = "qmdbTwigLeaves" // BE8(twigID) -> TwigSize*32 leaf blob (fast rehydrate)
 )
 
-// leafStoreGetter adapts a Getter into a LeafStore (reads the QMDBTwigLeaves blob).
+// Twig leaf blobs are stored SPARSE: most slots in a sealed twig are null
+// (deactivated or never written — ~90% on the converted chain), and the raw
+// 64 KiB-per-twig format spent 1.8 GB at 12.7M blocks mostly on zero bytes.
+//
+//	[0] 0xFE  — sparse marker (a raw legacy blob is exactly TwigSize*32 bytes
+//	            and is still accepted on read)
+//	[1] 0x01  — version
+//	[2:2+TwigSize/8] presence bitmap (bit set = non-null leaf)
+//	then the non-null 32 B leaf hashes in slot order.
+const (
+	sparseLeavesMarker  = 0xFE
+	sparseLeavesVersion = 0x01
+	leavesBitmapLen     = TwigSize / 8
+)
+
+// encodeSparseLeaves packs the non-null leaves of a twig's node heap.
+func encodeSparseLeaves(nodes *[2 * TwigSize]Hash) []byte {
+	nonNull := 0
+	for i := 0; i < TwigSize; i++ {
+		if nodes[TwigSize+i] != nullHash {
+			nonNull++
+		}
+	}
+	out := make([]byte, 2+leavesBitmapLen, 2+leavesBitmapLen+32*nonNull)
+	out[0], out[1] = sparseLeavesMarker, sparseLeavesVersion
+	for i := 0; i < TwigSize; i++ {
+		if h := nodes[TwigSize+i]; h != nullHash {
+			out[2+i/8] |= 1 << uint(i%8)
+			out = append(out, h[:]...)
+		}
+	}
+	return out
+}
+
+// decodeSparseLeaves expands a sparse blob to the raw TwigSize*32 layout.
+// Returns nil if the blob is malformed.
+func decodeSparseLeaves(v []byte) []byte {
+	if len(v) < 2+leavesBitmapLen || v[0] != sparseLeavesMarker || v[1] != sparseLeavesVersion {
+		return nil
+	}
+	bitmap := v[2 : 2+leavesBitmapLen]
+	p := v[2+leavesBitmapLen:]
+	out := make([]byte, TwigSize*32)
+	for i := 0; i < TwigSize; i++ {
+		if bitmap[i/8]&(1<<uint(i%8)) == 0 {
+			continue
+		}
+		if len(p) < 32 {
+			return nil // truncated
+		}
+		copy(out[i*32:(i+1)*32], p[:32])
+		p = p[32:]
+	}
+	if len(p) != 0 {
+		return nil // trailing garbage
+	}
+	return out
+}
+
+// leafStoreGetter adapts a Getter into a LeafStore (reads the QMDBTwigLeaves
+// blob, accepting both the sparse and the raw legacy format).
 type leafStoreGetter struct{ g Getter }
 
 func (l leafStoreGetter) Leaves(id int) ([]byte, bool) {
 	v, err := l.g.GetOne(LeavesTable, be8(uint64(id)))
-	if err != nil || len(v) != TwigSize*32 {
+	if err != nil || len(v) == 0 {
 		return nil, false
 	}
-	return v, true
+	if len(v) == TwigSize*32 {
+		return v, true // raw legacy blob
+	}
+	if exp := decodeSparseLeaves(v); exp != nil {
+		return exp, true
+	}
+	return nil, false
 }
 
 // LeafStoreFromGetter wraps a Getter (kv.Tx / map store) as a LeafStore.
@@ -101,13 +167,11 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 			return flushedThrough, bytesW, err
 		}
 		bytesW += 8 + len(meta)
-		// Persist the leaf blob (one read rehydration) when a leaf store is in use.
-		// Skipped for evicted/pruned twigs (nodes==nil): their blob is current.
+		// Persist the leaf blob (one read rehydration) when a leaf store is in use,
+		// in the sparse format (bitmap + non-null leaves) — sealed twigs are mostly
+		// dead slots. Skipped for evicted/pruned twigs (nodes==nil): blob is current.
 		if t.leafStore != nil && tw.nodes != nil {
-			blob := make([]byte, TwigSize*32)
-			for i := 0; i < TwigSize; i++ {
-				copy(blob[i*32:(i+1)*32], tw.nodes[TwigSize+i][:])
-			}
+			blob := encodeSparseLeaves(tw.nodes)
 			if err := p.Put(LeavesTable, be8(uint64(id)), blob); err != nil {
 				return flushedThrough, bytesW, err
 			}

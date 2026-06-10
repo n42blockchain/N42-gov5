@@ -36,6 +36,11 @@ func (rs *Receipts) Marshal() ([]byte, error) {
 }
 
 func (rs *Receipts) Unmarshal(data []byte) error {
+	// Compact storage format (0xFF marker — never a valid proto first byte,
+	// since 0xFF decodes as field 31 / wire type 7 which is illegal).
+	if IsCompactReceipts(data) {
+		return rs.unmarshalCompact(data)
+	}
 	pb := new(types_pb.Receipts)
 	if err := proto.Unmarshal(data, pb); err != nil {
 		return err
