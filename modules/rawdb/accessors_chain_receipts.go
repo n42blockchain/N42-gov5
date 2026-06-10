@@ -218,7 +218,7 @@ func WriteReceiptsPooled(tx kv.Putter, number uint64, receipts block.Receipts) e
 // (consensus fields + logs only; Bloom recomputed and context fields derived on
 // read). Read paths accept both formats (Receipts.Unmarshal dispatches on the
 // 0xFF marker). Set by replay-v2's --compact-receipts.
-var CompactReceiptWrites = false
+var CompactReceiptWrites = true
 
 func marshalReceiptsForStorage(receipts block.Receipts) ([]byte, error) {
 	if CompactReceiptWrites {

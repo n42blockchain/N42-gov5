@@ -176,8 +176,11 @@ func ReadHeadersByNumber(db kv.Tx, number uint64) ([]*block.Header, error) {
 // smaller, dominated savings on empty blocks (no 256B zero Bloom, no constant
 // hashes). Read paths accept BOTH formats (Header.Unmarshal dispatches on the
 // 0xFF marker), so mixed tables are fine; this only affects new writes.
-// Set by replay-v2's --compact-headers before any header is written.
-var CompactHeaderWrites = false
+// DEFAULT ON: all new writes (node and replay) use the compact codec; proto
+// remains a read format forever (legacy chains, mixed tables). Note that a
+// database touched by compact writes requires a binary with the dispatching
+// readers — older binaries cannot read compact records.
+var CompactHeaderWrites = true
 
 func marshalHeaderForStorage(header *block.Header) ([]byte, error) {
 	if CompactHeaderWrites {
@@ -308,7 +311,7 @@ func decodeStoredTransaction(raw []byte) (*transaction.Transaction, error) {
 // supported tx types (unsupported types fall back to proto per record). Read
 // paths accept both formats (Transaction.Unmarshal dispatches on the 0xFF
 // marker), so mixed tables are fine. Set by replay-v2's --compact-headers.
-var CompactTxWrites = false
+var CompactTxWrites = true
 
 func WriteTransactions(db kv.RwTx, txs []*transaction.Transaction, baseTxId uint64) error {
 	txIdKey := make([]byte, 8)
