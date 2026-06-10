@@ -639,12 +639,55 @@ func deleteBody(db kv.Deleter, hash types.Hash, number uint64) {
 }
 
 // ReadTd retrieves a block's total difficulty corresponding to the hash.
+// VirtualTd makes total-difficulty rows VIRTUAL on a PoS-from-genesis chain:
+// every block's TD is identically 0, so the HeaderTD table carried zero
+// information per row (a 40-byte key with an EMPTY value — uint256 zero
+// serializes to no bytes; 619 MB of pure key/page overhead at 12.7M blocks).
+// The one thing TD rows were still used for is ancestor existence:
+// blockchain_write treats ReadTd==nil as ErrUnknownAncestor. With VirtualTd,
+// ReadTd answers from the actual source of truth instead — the Headers table:
+// header exists -> TD 0; header absent -> nil (semantics preserved verbatim).
+// WriteTd becomes a no-op. Legacy rows (old chains, mixed tables) still decode.
+//
+// Enabled per database via the DatabaseInfo marker (replay-v2 --virtual-td
+// writes it; node startup reads it via SetupVirtualTdFromDB).
+var VirtualTd = false
+
+// virtualTdKey marks a database whose TD is virtual (DatabaseInfo table).
+var virtualTdKey = []byte("virtualTd")
+
+// WriteVirtualTdMarker records in the database that TD is virtual.
+func WriteVirtualTdMarker(db kv.Putter) error {
+	return db.Put(modules.DatabaseInfo, virtualTdKey, []byte{1})
+}
+
+// HasVirtualTdMarker reports whether the database declares virtual TD.
+func HasVirtualTdMarker(db kv.Getter) bool {
+	v, err := db.GetOne(modules.DatabaseInfo, virtualTdKey)
+	return err == nil && len(v) == 1 && v[0] == 1
+}
+
+// SetupVirtualTdFromDB sets the package-level VirtualTd flag from the database
+// marker. Call once at node startup after opening the chain database.
+func SetupVirtualTdFromDB(db kv.Getter) {
+	if HasVirtualTdMarker(db) {
+		VirtualTd = true
+	}
+}
+
 func ReadTd(db kv.Getter, hash types.Hash, number uint64) (*uint256.Int, error) {
 	data, err := db.GetOne(modules.HeaderTD, modules.HeaderKey(number, hash))
 	if err != nil {
 		return nil, fmt.Errorf("failed ReadTd: %w", err)
 	}
 	if data == nil {
+		if VirtualTd {
+			// Ancestor-existence check delegates to the Headers table (the real
+			// source of truth); known blocks have TD 0 on a PoS-from-genesis chain.
+			if HasHeader(db, hash, number) {
+				return uint256.NewInt(0), nil
+			}
+		}
 		return nil, nil
 	}
 	td := uint256.NewInt(0).SetBytes(data)
@@ -661,7 +704,11 @@ func ReadTdByHash(db kv.Getter, hash types.Hash) (*uint256.Int, error) {
 }
 
 // WriteTd stores the total difficulty of a block into the database.
+// No-op on virtual-TD chains (ReadTd synthesizes 0 for known headers).
 func WriteTd(db kv.Putter, hash types.Hash, number uint64, td *uint256.Int) error {
+	if VirtualTd {
+		return nil
+	}
 	data := td.Bytes()
 	if err := db.Put(modules.HeaderTD, modules.HeaderKey(number, hash), data); err != nil {
 		return fmt.Errorf("failed to store block total difficulty: %w", err)

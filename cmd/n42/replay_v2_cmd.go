@@ -52,6 +52,7 @@ var replayV2Command = &cli.Command{
 		&cli.BoolFlag{Name: "compact-headers", Usage: "Write target headers in the compact storage codec (~4x smaller; read path accepts both formats)", Value: true},
 		&cli.BoolFlag{Name: "compact-txs", Usage: "Write target transactions in the compact storage codec (unsupported types fall back to proto; read path accepts both)", Value: true},
 		&cli.BoolFlag{Name: "compact-receipts", Usage: "Write target receipts in the compact storage codec (consensus fields + logs; Bloom recomputed on read; read path accepts both)", Value: true},
+		&cli.BoolFlag{Name: "virtual-td", Usage: "Skip all-zero TD rows (PoS TD=0); ReadTd synthesizes 0 for known headers via a DatabaseInfo marker", Value: true},
 		&cli.BoolFlag{Name: "snapshot-at-end", Usage: "Create snapshot after replay", Value: true},
 		&cli.BoolFlag{Name: "export-era", Usage: "Export EraE segments after replay", Value: false},
 		&cli.Uint64Flag{Name: "era-segment-size", Usage: "Blocks per EraE segment", Value: 8192},
@@ -101,6 +102,7 @@ func runReplayV2(cliCtx *cli.Context) error {
 	rawdb.CompactHeaderWrites = cliCtx.Bool("compact-headers")
 	rawdb.CompactTxWrites = cliCtx.Bool("compact-txs")
 	rawdb.CompactReceiptWrites = cliCtx.Bool("compact-receipts")
+	cfg.VirtualTd = cliCtx.Bool("virtual-td")
 	cfg.SnapshotAtEnd = cliCtx.Bool("snapshot-at-end")
 	cfg.ExportEraE = cliCtx.Bool("export-era")
 	cfg.EraESegmentSize = cliCtx.Uint64("era-segment-size")
