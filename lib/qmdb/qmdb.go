@@ -57,15 +57,25 @@ type Hash [32]byte
 // nullHash marks an empty or deactivated slot. Zero is fine for the prototype.
 var nullHash = Hash{}
 
+// leafHasherPool recycles blake3 hashers for hashLeaf — allocating a fresh
+// hasher per call was ~7.5% of all process allocations at chain scale. A pool
+// (not a shared global) keeps independent Trees safe to use from different
+// goroutines (each Tree itself stays single-threaded).
+var leafHasherPool = sync.Pool{New: func() any { return blake3.New(32, nil) }}
+
+var leafDomain = [1]byte{0x01}
+
 // hashLeaf is the leaf hash of a live entry (domain-separated from internal
 // nodes by the 0x01 prefix).
 func hashLeaf(keyHash Hash, value []byte) Hash {
-	h := blake3.New(32, nil)
-	_, _ = h.Write([]byte{0x01})
+	h := leafHasherPool.Get().(*blake3.Hasher)
+	h.Reset()
+	_, _ = h.Write(leafDomain[:])
 	_, _ = h.Write(keyHash[:])
 	_, _ = h.Write(value)
 	var out Hash
-	copy(out[:], h.Sum(nil))
+	h.Sum(out[:0]) // cap(out) == Size(): Sum writes in place, no append-allocation
+	leafHasherPool.Put(h)
 	return out
 }
 
@@ -410,7 +420,21 @@ func (t *Tree) Root() Hash {
 var ParallelRoot = true
 
 func (t *Tree) recomputeDirtyTwigs() {
-	if !ParallelRoot {
+	// Count first, allocate only if needed: Root() calls this once per block and
+	// the steady state has ZERO dirty twigs (setLeaf keeps roots current), but the
+	// previous version allocated an O(numTwigs) slice before discovering there was
+	// nothing to do — at chain scale that was 40% of ALL process allocations and
+	// the main GC feeder (~46 KB/block at 10M blocks).
+	nDirty := 0
+	for _, tw := range t.twigs {
+		if tw.dirty {
+			nDirty++
+		}
+	}
+	if nDirty == 0 {
+		return
+	}
+	if !ParallelRoot || nDirty == 1 {
 		for id, tw := range t.twigs {
 			if tw.dirty {
 				tw.recompute()
@@ -420,15 +444,12 @@ func (t *Tree) recomputeDirtyTwigs() {
 		return
 	}
 	// Collect dirty twigs (and mark their upper paths — roots are changing).
-	dirty := make([]*twig, 0, len(t.twigs))
+	dirty := make([]*twig, 0, nDirty)
 	for id, tw := range t.twigs {
 		if tw.dirty {
 			dirty = append(dirty, tw)
 			t.markUpperDirty(id)
 		}
-	}
-	if len(dirty) == 0 {
-		return
 	}
 	workers := runtime.GOMAXPROCS(0)
 	if workers > len(dirty) {

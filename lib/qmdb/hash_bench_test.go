@@ -50,3 +50,37 @@ func BenchmarkTwigSetLeaf(b *testing.B) {
 		tw.setLeaf(uint64(i%TwigSize), h)
 	}
 }
+
+// BenchmarkHashLeaf guards the pooled-hasher path (allocating a fresh blake3
+// hasher per call was ~7.5% of all process allocations at chain scale).
+func BenchmarkHashLeaf(b *testing.B) {
+	var k Hash
+	v := make([]byte, 80) // typical account-encoding size
+	b.ReportAllocs()
+	b.ResetTimer()
+	var sink Hash
+	for i := 0; i < b.N; i++ {
+		k[0] = byte(i)
+		sink = hashLeaf(k, v)
+	}
+	_ = sink
+}
+
+// BenchmarkRootSteadyState guards the per-block Root() cost on a large forest
+// with a tiny dirty set — the exact shape of one block at chain scale. The
+// previous recomputeDirtyTwigs allocated O(numTwigs) per call even with zero
+// dirty twigs (40% of all process allocations at 10M blocks).
+func BenchmarkRootSteadyState(b *testing.B) {
+	tr := New()
+	const keys = 6 * TwigSize // ~6 twigs... scale up: use 256 twigs worth
+	for i := uint64(0); i < 256*TwigSize/4; i++ {
+		tr.Set(key(i), val(i))
+	}
+	tr.Root()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tr.Set(key(uint64(i)%keys), val(uint64(i)))
+		tr.Root()
+	}
+}
