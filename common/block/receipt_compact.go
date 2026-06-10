@@ -175,6 +175,24 @@ func (rs *Receipts) unmarshalCompact(data []byte) error {
 	if len(p) != 0 {
 		return fmt.Errorf("compact receipts: %d trailing bytes", len(p))
 	}
+	// Populate the fields derivable WITHIN the record (no block context needed):
+	// per-tx GasUsed is the cumulative-gas delta; positional indices follow from
+	// record order. Only TxHash/BlockHash/BlockNumber/ContractAddress stay zero
+	// on the raw path (they need the block — ReadRawReceipts' documented contract).
+	logIdx := uint(0)
+	for i, r := range out {
+		if i == 0 {
+			r.GasUsed = r.CumulativeGasUsed
+		} else {
+			r.GasUsed = r.CumulativeGasUsed - out[i-1].CumulativeGasUsed
+		}
+		r.TransactionIndex = uint(i)
+		for _, lg := range r.Logs {
+			lg.TxIndex = uint(i)
+			lg.Index = logIdx
+			logIdx++
+		}
+	}
 	*rs = out
 	return nil
 }
