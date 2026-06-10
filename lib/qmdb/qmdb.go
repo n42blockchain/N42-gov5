@@ -40,6 +40,7 @@ import (
 	"sync"
 
 	"lukechampine.com/blake3"
+	"lukechampine.com/blake3/guts"
 )
 
 const (
@@ -68,12 +69,27 @@ func hashLeaf(keyHash Hash, value []byte) Hash {
 	return out
 }
 
-// hashNode is Blake3(left || right) for internal nodes (matches lib/bmt).
+// hashNode is Blake3(left || right) for internal nodes. Hot path: a twig
+// recompute calls this 4095 times. blake3.Sum256(buf[:]) forces `buf` to escape
+// to the heap (the compiler can't prove Sum512's general path doesn't retain the
+// slice), which allocated ~190 GB/run and drove a third of CPU into GC. Since the
+// input is always exactly one 64-byte block, we call the low-level single-block
+// compression directly (identical to what Sum512 does for <=64-byte input, then
+// truncated to 256 bits) — all by value, nothing escapes, zero allocations.
 func hashNode(l, r Hash) Hash {
-	var buf [64]byte
-	copy(buf[:32], l[:])
-	copy(buf[32:], r[:])
-	return blake3.Sum256(buf[:])
+	var block [64]byte
+	copy(block[:32], l[:])
+	copy(block[32:], r[:])
+	words := guts.CompressNode(guts.Node{
+		CV:       guts.IV,
+		Block:    guts.BytesToWords(block),
+		BlockLen: 64,
+		Flags:    guts.FlagChunkStart | guts.FlagChunkEnd | guts.FlagRoot,
+	})
+	wb := guts.WordsToBytes(words)
+	var out Hash
+	copy(out[:], wb[:32])
+	return out
 }
 
 type entry struct {

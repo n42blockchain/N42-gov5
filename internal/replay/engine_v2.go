@@ -231,9 +231,18 @@ func (e *EngineV2) Run(ctx context.Context) (*Stats, error) {
 	// blocks and may exceed the source block count).
 	resumeBlock := uint64(0)
 	if err := e.dstDB.View(ctx, func(tx kv.Tx) error {
+		// resumeTable must match where processBatchV2 wrote replay_src_height for
+		// this tree type, else resume reads an empty table, restarts the SOURCE at
+		// block 1, and re-replays already-applied blocks (their txs fail as no-ops,
+		// so state stays correct but the target chain inflates and time is wasted).
 		resumeTable := jmtstore.JMTRootTable
-		if e.cfg.TreeType == "bmt" {
+		switch e.cfg.TreeType {
+		case "bmt":
 			resumeTable = bmtstore.BMTRootTable
+		case "qmdb":
+			resumeTable = modules.QMDBMeta
+		case "mpt":
+			resumeTable = modules.MPTRoot
 		}
 		data, err := tx.GetOne(resumeTable, []byte("replay_src_height"))
 		if err != nil {
