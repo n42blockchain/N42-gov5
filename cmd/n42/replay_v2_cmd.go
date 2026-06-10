@@ -26,6 +26,7 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"github.com/n42blockchain/N42/internal/replay"
+	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -48,6 +49,7 @@ var replayV2Command = &cli.Command{
 		&cli.Uint64Flag{Name: "gap-period", Usage: "Gap fill period (seconds)", Value: 8},
 		&cli.Uint64Flag{Name: "gap-tolerance", Usage: "Gap fill tolerance (seconds)", Value: 15},
 		&cli.Uint64Flag{Name: "gap-max", Usage: "Cap synthetic empty blocks per gap (0=unlimited); guards OOM on a huge startup/outage gap", Value: 10000},
+		&cli.BoolFlag{Name: "compact-headers", Usage: "Write target headers in the compact storage codec (~4x smaller; read path accepts both formats)", Value: true},
 		&cli.BoolFlag{Name: "snapshot-at-end", Usage: "Create snapshot after replay", Value: true},
 		&cli.BoolFlag{Name: "export-era", Usage: "Export EraE segments after replay", Value: false},
 		&cli.Uint64Flag{Name: "era-segment-size", Usage: "Blocks per EraE segment", Value: 8192},
@@ -94,6 +96,7 @@ func runReplayV2(cliCtx *cli.Context) error {
 	cfg.GapPeriod = cliCtx.Uint64("gap-period")
 	cfg.GapTolerance = cliCtx.Uint64("gap-tolerance")
 	cfg.GapMaxBlocks = cliCtx.Uint64("gap-max")
+	rawdb.CompactHeaderWrites = cliCtx.Bool("compact-headers")
 	cfg.SnapshotAtEnd = cliCtx.Bool("snapshot-at-end")
 	cfg.ExportEraE = cliCtx.Bool("export-era")
 	cfg.EraESegmentSize = cliCtx.Uint64("era-segment-size")

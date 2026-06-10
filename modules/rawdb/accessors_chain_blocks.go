@@ -123,7 +123,7 @@ func WriteHeaderPooled(db kv.Putter, header *block.Header) {
 		log.Crit("Failed to store hash to number mapping", "err", err)
 	}
 
-	data, err := header.Marshal()
+	data, err := marshalHeaderForStorage(header)
 	if err != nil {
 		log.Crit("failed to Marshal header", "err", err)
 	}
