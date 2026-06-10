@@ -171,6 +171,21 @@ func ReadHeadersByNumber(db kv.Tx, number uint64) ([]*block.Header, error) {
 	return res, nil
 }
 
+// CompactHeaderWrites switches WriteHeader (and the pooled block-write path) to
+// the compact storage codec (block.MarshalCompact) instead of proto — ~4x
+// smaller, dominated savings on empty blocks (no 256B zero Bloom, no constant
+// hashes). Read paths accept BOTH formats (Header.Unmarshal dispatches on the
+// 0xFF marker), so mixed tables are fine; this only affects new writes.
+// Set by replay-v2's --compact-headers before any header is written.
+var CompactHeaderWrites = false
+
+func marshalHeaderForStorage(header *block.Header) ([]byte, error) {
+	if CompactHeaderWrites {
+		return header.MarshalCompact(), nil
+	}
+	return header.Marshal()
+}
+
 // WriteHeader stores a block header into the database and also stores the hash-
 // to-number mapping.
 func WriteHeader(db kv.Putter, header *block.Header) {
@@ -188,7 +203,7 @@ func WriteHeader(db kv.Putter, header *block.Header) {
 	}
 
 	// Write the encoded header
-	data, err := header.Marshal()
+	data, err := marshalHeaderForStorage(header)
 	if err != nil {
 		log.Crit("failed to Marshal header", "err", err)
 	}

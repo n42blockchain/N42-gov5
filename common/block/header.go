@@ -333,6 +333,11 @@ func (h *Header) Marshal() ([]byte, error) {
 }
 
 func (h *Header) Unmarshal(data []byte) error {
+	// Compact storage format (0xFF marker — never a valid proto first byte,
+	// since 0xFF decodes as field 31 / wire type 7 which is illegal).
+	if IsCompactHeader(data) {
+		return h.unmarshalCompact(data)
+	}
 	// Split proto bytes from trailer using the 4-byte proto length at the end.
 	// Format: [proto bytes][magic(4)+flags(1)+fields...+protoLen(4)]
 	protoData := data
