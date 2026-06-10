@@ -63,8 +63,30 @@ func (h *PrecomputedHash) SignWith(sk common.SecretKey) common.Signature {
 // tests). This shortcut requires holding EVERY participant's secret key, so it
 // is only valid for the reseal SIMULATOR — a real distributed committee cannot
 // do this, and the produced chain is indistinguishable either way.
-//
-// Falls back to individual signing + aggregation if any key is not blst-backed.
+
+// SignWithScalarSum signs with an already-summed committee scalar (32-byte
+// big-endian, reduced mod r) — the zero-serialization fast path for callers
+// that cache per-key scalars (the reseal simulator caches the whole pool's
+// scalars as big.Ints at construction; per block it only does field additions).
+// Byte-identical to AggregateSignWith over the same keys (asserted by tests).
+func (h *PrecomputedHash) SignWithScalarSum(sum32 [32]byte) common.Signature {
+	var sc blst.Scalar
+	sc.Deserialize(sum32[:])
+	acc := new(blst.P2)
+	acc.MultNAccumulate(h.q, &sc)
+	return &Signature{s: acc.ToAffine()}
+}
+
+// SumKeyScalars reduces a scalar sum into the 32-byte form SignWithScalarSum
+// expects. sum may exceed r; it is reduced here.
+func SumKeyScalars(sum *big.Int) [32]byte {
+	var out [32]byte
+	new(big.Int).Mod(sum, blsScalarOrder).FillBytes(out[:])
+	return out
+}
+
+// AggregateSignWith aggregates via the scalar sum (see package comment above);
+// falls back to individual signing + aggregation if any key is not blst-backed.
 func (h *PrecomputedHash) AggregateSignWith(sks []common.SecretKey) common.Signature {
 	sum := new(big.Int)
 	for _, sk := range sks {

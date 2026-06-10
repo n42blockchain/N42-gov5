@@ -3,6 +3,7 @@ package blst
 import (
 	"bytes"
 	"encoding/binary"
+	"math/big"
 	"testing"
 
 	"github.com/n42blockchain/N42/crypto/bls/common"
@@ -97,6 +98,15 @@ func TestAggregateSignWithEquivalence(t *testing.T) {
 		fast := precomp.AggregateSignWith(sks)
 		if !bytes.Equal(ref.Marshal(), fast.Marshal()) {
 			t.Fatalf("n=%d: scalar-sum aggregate diverged from point aggregate", n)
+		}
+		// The cached-scalar variant (what BuildCE uses) must match too.
+		sum := new(big.Int)
+		for _, sk := range sks {
+			sum.Add(sum, new(big.Int).SetBytes(sk.Marshal()))
+		}
+		viaSum := precomp.SignWithScalarSum(SumKeyScalars(sum))
+		if !bytes.Equal(ref.Marshal(), viaSum.Marshal()) {
+			t.Fatalf("n=%d: SignWithScalarSum diverged from point aggregate", n)
 		}
 		// And both must equal aggregating plain sk.Sign(msg).
 		plain := make([]common.Signature, n)
