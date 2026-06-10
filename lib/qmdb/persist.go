@@ -84,15 +84,15 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 		if tw == nil {
 			continue
 		}
-		if tw.leaves == nil && !tw.pruned {
+		if tw.nodes == nil && !tw.pruned {
 			continue // evicted-clean: on-disk meta is current
 		}
 		meta := make([]byte, 32+TwigSize/8)
 		copy(meta[:32], tw.root[:])
 		// activeBits from live leaves (non-null = active in this prototype).
-		if !tw.pruned && tw.leaves != nil {
+		if !tw.pruned && tw.nodes != nil {
 			for slot := 0; slot < TwigSize; slot++ {
-				if tw.leaves[slot] != nullHash {
+				if tw.nodes[TwigSize+slot] != nullHash {
 					meta[32+slot/8] |= 1 << uint(slot%8)
 				}
 			}
@@ -102,11 +102,11 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 		}
 		bytesW += 8 + len(meta)
 		// Persist the leaf blob (one read rehydration) when a leaf store is in use.
-		// Skipped for evicted/pruned twigs (leaves==nil): their blob is current.
-		if t.leafStore != nil && tw.leaves != nil {
+		// Skipped for evicted/pruned twigs (nodes==nil): their blob is current.
+		if t.leafStore != nil && tw.nodes != nil {
 			blob := make([]byte, TwigSize*32)
 			for i := 0; i < TwigSize; i++ {
-				copy(blob[i*32:(i+1)*32], tw.leaves[i][:])
+				copy(blob[i*32:(i+1)*32], tw.nodes[TwigSize+i][:])
 			}
 			if err := p.Put(LeavesTable, be8(uint64(id)), blob); err != nil {
 				return flushedThrough, bytesW, err
@@ -175,7 +175,7 @@ func (t *Tree) LoadFrom(g Getter) error {
 		if !rebuildIndex && id < activeTwig {
 			tw.root = storedRoot
 			tw.dirty = false
-			tw.leaves = nil // sealed: no leaves resident
+			tw.nodes = nil // sealed: no node storage resident
 			// recover live count from activeBits for compaction sparsity decisions
 			if activeBits != nil {
 				cnt := 0
@@ -211,16 +211,16 @@ func (t *Tree) LoadFrom(g Getter) error {
 				}
 				var kh Hash
 				copy(kh[:], v[:32])
-				tw.leaves[local] = hashLeaf(kh, v[32:])
+				tw.nodes[TwigSize+local] = hashLeaf(kh, v[32:]) // bulk raw write
 				tw.live++
 				if rebuildIndex {
 					t.idx.Put(kh, slot)
 				}
 			}
 		}
-		tw.recompute() // set this twig's root from its leaves
+		tw.recompute() // one full rebuild from the bulk-written leaves
 		if id < activeTwig {
-			tw.leaves = nil // sealed: keep only the 32-byte root, free the array
+			tw.nodes = nil // sealed: keep only the 32-byte root, free the array
 		}
 	}
 	// Entry records are not retained — start the resident window empty at the
@@ -230,7 +230,8 @@ func (t *Tree) LoadFrom(g Getter) error {
 	t.evicted = nextSlot
 	t.nextSlot = nextSlot
 	t.rootDirty = true
-	t.Root() // materialize twig + world roots
+	t.upRebuild = true // twig set replaced wholesale; rebuild the upper heap
+	t.Root()           // materialize twig + world roots
 	return nil
 }
 

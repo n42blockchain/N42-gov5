@@ -99,35 +99,71 @@ type entry struct {
 }
 
 type twig struct {
-	// leaves is the 2048-leaf array (64 KiB). It is a POINTER so a sealed twig's
-	// leaf storage can be evicted (set to nil) while its 32-byte root is retained;
-	// the leaves are rebuilt on demand from the cold entry log (see twig_evict.go).
-	leaves *[TwigSize]Hash // nil = evicted (leaf storage freed, root kept)
+	// nodes is the twig's complete binary Merkle heap (128 KiB): nodes[1] is the
+	// twig root, internal nodes occupy [1, TwigSize), and the 2048 leaves occupy
+	// [TwigSize, 2*TwigSize) — node j's children are 2j and 2j+1. Keeping the
+	// internal nodes resident is what makes leaf changes O(log): setLeaf folds
+	// just the 11-node path to the root instead of rebuilding all 4095 hashes
+	// (profiling showed the full rebuild dominating conversion CPU at ~50%).
+	// It is a POINTER so a sealed twig's node storage can be evicted (set to nil)
+	// while its 32-byte root is retained; the nodes are rebuilt on demand from
+	// the persisted leaf blob or cold entry log (see twig_evict.go).
+	nodes  *[2 * TwigSize]Hash // nil = evicted (node storage freed, root kept)
 	live   int
-	root   Hash
-	dirty  bool
-	pruned bool // leaves dropped (fully dead); root is the constant null-twig root
+	root   Hash // current twig root (== nodes[1] when resident and not dirty)
+	dirty  bool // internal nodes stale; full recompute needed (bulk-load/ForceDirty)
+	pruned bool // nodes dropped (fully dead); root is the constant null-twig root
 }
+
+// nullLevel[h] is the root of an all-null subtree of height h (nullLevel[0] is
+// the null leaf). Lets newTwig start with valid internal nodes for free.
+var nullLevel = func() (lv [TwigHeight + 1]Hash) {
+	for h := 1; h <= TwigHeight; h++ {
+		lv[h] = hashNode(lv[h-1], lv[h-1])
+	}
+	return
+}()
 
 func newTwig() *twig {
-	t := &twig{dirty: true, leaves: new([TwigSize]Hash)}
-	return t // new([...]) zero-fills, and nullHash is the zero Hash
+	t := &twig{nodes: new([2 * TwigSize]Hash)} // zero-fill = null leaves
+	// Internal depth d holds all-null subtrees of height TwigHeight-d.
+	for d := 0; d < TwigHeight; d++ {
+		v := nullLevel[TwigHeight-d]
+		for j := 1 << d; j < 1<<(d+1); j++ {
+			t.nodes[j] = v
+		}
+	}
+	t.root = nullLevel[TwigHeight]
+	return t
 }
 
-// recompute rebuilds the twig root from its 2048 leaves (cheap: 4095 hashes).
-// The twig must be hydrated (leaves != nil); callers dirty a twig only after
-// hydrating it, and eviction never targets a dirty twig.
-func (tw *twig) recompute() {
-	var buf [TwigSize]Hash
-	buf = *tw.leaves
-	n := TwigSize
-	for n > 1 {
-		for i := 0; i < n/2; i++ {
-			buf[i] = hashNode(buf[2*i], buf[2*i+1])
-		}
-		n /= 2
+// leaf returns leaf `local`'s hash. The twig must be hydrated.
+func (tw *twig) leaf(local uint64) Hash { return tw.nodes[TwigSize+local] }
+
+// setLeaf writes leaf `local` and eagerly folds the 11-node path to the twig
+// root — O(log) instead of the full 4095-hash rebuild. If the internal nodes are
+// stale (dirty), only the leaf is written; recompute will rebuild everything.
+func (tw *twig) setLeaf(local uint64, h Hash) {
+	j := TwigSize + local
+	tw.nodes[j] = h
+	if tw.dirty {
+		return
 	}
-	tw.root = buf[0]
+	for j >>= 1; j >= 1; j >>= 1 {
+		tw.nodes[j] = hashNode(tw.nodes[2*j], tw.nodes[2*j+1])
+	}
+	tw.root = tw.nodes[1]
+}
+
+// recompute rebuilds all internal nodes from the 2048 leaves (4095 hashes).
+// Only needed after bulk leaf writes (hydration, LoadFrom, ForceDirty); steady-
+// state updates go through setLeaf's O(log) path instead. The twig must be
+// hydrated (nodes != nil); eviction never targets a dirty twig.
+func (tw *twig) recompute() {
+	for j := TwigSize - 1; j >= 1; j-- {
+		tw.nodes[j] = hashNode(tw.nodes[2*j], tw.nodes[2*j+1])
+	}
+	tw.root = tw.nodes[1]
 	tw.dirty = false
 }
 
@@ -150,6 +186,17 @@ type Tree struct {
 	nextSlot    uint64     // append cursor
 	root        Hash
 	rootDirty   bool
+
+	// Incremental upper tree (binary Merkle over twig roots). upper is a heap of
+	// size 2*upCap (upCap = pow2 >= len(twigs)): upper[1] is the world root and
+	// the twig roots occupy [upCap, upCap+len(twigs)), padded with nullHash. Twig
+	// root changes are folded up O(log) paths (upDirty tracks which) instead of
+	// rebuilding the whole level set per block — the rebuild is O(numTwigs),
+	// which grows with chain history and dominated profiles at scale.
+	upper     []Hash
+	upCap     int
+	upDirty   map[int]struct{} // twig IDs whose root changed since last fold
+	upRebuild bool             // full upper rebuild needed (growth/bulk load)
 }
 
 // New creates an empty tree with the default in-RAM index.
@@ -199,8 +246,8 @@ func (t *Tree) LiveCount() int { return t.idx.Len() }
 func (t *Tree) ForceDirty() {
 	for _, tw := range t.twigs {
 		// Only resident twigs can be recomputed; an evicted twig already holds its
-		// current root (recompute would need its freed leaves).
-		if tw != nil && !tw.pruned && tw.leaves != nil {
+		// current root (recompute would need its freed nodes).
+		if tw != nil && !tw.pruned && tw.nodes != nil {
 			tw.dirty = true
 		}
 	}
@@ -221,13 +268,13 @@ func (t *Tree) twigFor(slot uint64) *twig {
 
 func (t *Tree) deactivate(slot uint64) {
 	id := int(slot / TwigSize)
-	t.ensureHydrated(id) // rehydrate this twig's leaves if they were evicted
+	t.ensureHydrated(id) // rehydrate this twig's nodes if they were evicted
 	tw := t.twigs[id]
 	local := slot % TwigSize
-	if tw.leaves[local] != nullHash {
-		tw.leaves[local] = nullHash
+	if tw.leaf(local) != nullHash {
+		tw.setLeaf(local, nullHash) // eager O(log) path-update
 		tw.live--
-		tw.dirty = true
+		t.markUpperDirty(id)
 	}
 	// Only resident entries carry a mutable active flag; cold entries derive it
 	// from the index, so an evicted slot needs no record mutation here (its twig
@@ -253,9 +300,9 @@ func (t *Tree) Set(keyHash Hash, value []byte) {
 	v := make([]byte, len(value))
 	copy(v, value)
 	t.setEntry(slot, entry{keyHash: keyHash, value: v, active: true})
-	tw.leaves[local] = hashLeaf(keyHash, v)
+	tw.setLeaf(local, hashLeaf(keyHash, v)) // eager O(log) path-update
 	tw.live++
-	tw.dirty = true
+	t.markUpperDirty(int(slot / TwigSize))
 	t.idx.Put(keyHash, slot)
 	t.rootDirty = true
 }
@@ -279,6 +326,55 @@ func (t *Tree) Get(keyHash Hash) ([]byte, bool) {
 	return nil, false
 }
 
+// markUpperDirty records that twig id's root changed, so the next Root() folds
+// just its path through the upper tree.
+func (t *Tree) markUpperDirty(id int) {
+	if t.upDirty == nil {
+		t.upDirty = make(map[int]struct{}, 16)
+	}
+	t.upDirty[id] = struct{}{}
+}
+
+// ensureUpper sizes the upper heap to the twig count (next power of two);
+// growth forces a full rebuild (rare: once per upCap doubling).
+func (t *Tree) ensureUpper() {
+	upCap := 1
+	for upCap < len(t.twigs) {
+		upCap <<= 1
+	}
+	if t.upper == nil || upCap != t.upCap {
+		t.upCap = upCap
+		t.upper = make([]Hash, 2*upCap)
+		t.upRebuild = true
+	}
+}
+
+// rebuildUpper recomputes the whole upper heap from the twig roots (padded to
+// upCap with nullHash).
+func (t *Tree) rebuildUpper() {
+	for i := 0; i < t.upCap; i++ {
+		if i < len(t.twigs) {
+			t.upper[t.upCap+i] = t.twigs[i].root
+		} else {
+			t.upper[t.upCap+i] = nullHash
+		}
+	}
+	for j := t.upCap - 1; j >= 1; j-- {
+		t.upper[j] = hashNode(t.upper[2*j], t.upper[2*j+1])
+	}
+	t.upRebuild = false
+	clear(t.upDirty)
+}
+
+// updateUpperPath folds one changed twig root up to upper[1] — O(log numTwigs).
+func (t *Tree) updateUpperPath(id int) {
+	j := t.upCap + id
+	t.upper[j] = t.twigs[id].root
+	for j >>= 1; j >= 1; j >>= 1 {
+		t.upper[j] = hashNode(t.upper[2*j], t.upper[2*j+1])
+	}
+}
+
 // Root returns the world state root, recomputing dirty twigs + the upper tree.
 func (t *Tree) Root() Hash {
 	if !t.rootDirty {
@@ -291,13 +387,20 @@ func (t *Tree) Root() Hash {
 	}
 	// Recompute dirty twig roots in parallel — every twig is an independent
 	// subtree (each goroutine mutates only its own twig), so this scales across
-	// cores. The upper tree (over twig roots) is small and computed sequentially.
+	// cores. (Steady state has no dirty twigs: setLeaf keeps roots current.)
 	t.recomputeDirtyTwigs()
-	roots := make([]Hash, len(t.twigs))
-	for i, tw := range t.twigs {
-		roots[i] = tw.root
+	t.ensureUpper()
+	// Fold only the changed twig roots through the upper tree; full rebuild when
+	// grown, bulk-loaded, or when most twigs changed anyway.
+	if t.upRebuild || len(t.upDirty) >= t.upCap/2 {
+		t.rebuildUpper()
+	} else {
+		for id := range t.upDirty {
+			t.updateUpperPath(id)
+		}
+		clear(t.upDirty)
 	}
-	t.root = upperRoot(roots)
+	t.root = t.upper[1]
 	t.rootDirty = false
 	return t.root
 }
@@ -308,18 +411,20 @@ var ParallelRoot = true
 
 func (t *Tree) recomputeDirtyTwigs() {
 	if !ParallelRoot {
-		for _, tw := range t.twigs {
+		for id, tw := range t.twigs {
 			if tw.dirty {
 				tw.recompute()
+				t.markUpperDirty(id)
 			}
 		}
 		return
 	}
-	// Collect dirty twigs.
+	// Collect dirty twigs (and mark their upper paths — roots are changing).
 	dirty := make([]*twig, 0, len(t.twigs))
-	for _, tw := range t.twigs {
+	for id, tw := range t.twigs {
 		if tw.dirty {
 			dirty = append(dirty, tw)
+			t.markUpperDirty(id)
 		}
 	}
 	if len(dirty) == 0 {
@@ -351,29 +456,4 @@ func (t *Tree) recomputeDirtyTwigs() {
 		}()
 	}
 	wg.Wait()
-}
-
-// upperRoot is the binary Merkle root over twig roots, padded to a power of two
-// with nullHash so proofs have a clean fixed-shape path.
-func upperRoot(roots []Hash) Hash {
-	np := 1
-	for np < len(roots) {
-		np <<= 1
-	}
-	level := make([]Hash, np)
-	for i := range level {
-		if i < len(roots) {
-			level[i] = roots[i]
-		} else {
-			level[i] = nullHash
-		}
-	}
-	n := np
-	for n > 1 {
-		for i := 0; i < n/2; i++ {
-			level[i] = hashNode(level[2*i], level[2*i+1])
-		}
-		n /= 2
-	}
-	return level[0]
 }

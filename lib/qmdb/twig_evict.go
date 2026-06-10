@@ -1,24 +1,23 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
-// Twig-leaf eviction (P3 memory tier 2). After the entry log is evicted
-// (evict.go), the next O(history) resident cost is the twig leaf arrays: 32 B per
-// slot ever appended (a 64 KiB array per 2048-slot twig). A SEALED twig — one
-// that lies fully below the flushed watermark — is only ever read again to (a)
-// produce a membership proof or (b) null one of its leaves when a key it holds is
-// updated/deleted elsewhere. Both can rebuild the leaves on demand from the cold
-// entry log, so a sealed twig keeps only its 32-byte root in RAM and drops the
-// 64 KiB leaf array.
+// Twig-node eviction (P3 memory tier 2). After the entry log is evicted
+// (evict.go), the next O(history) resident cost is the twig node heaps: a 128 KiB
+// array (2048 leaves + 2047 internal nodes) per 2048-slot twig. A SEALED twig —
+// one that lies fully below the flushed watermark — is only ever read again to
+// (a) produce a membership proof or (b) null one of its leaves when a key it
+// holds is updated/deleted elsewhere. Both can rebuild the heap on demand, so a
+// sealed twig keeps only its 32-byte root in RAM and drops the node array.
 //
-// Rehydration reconstructs leaf[local] = hashLeaf(key,value) for each slot whose
-// entry is still the live one (index[key] == slot), exactly as the leaves were
-// built originally — so the recomputed root is identical to the retained root.
-// This is correct but not free: a first touch of a sealed twig in a batch costs a
-// 2048-entry cold scan. Updates have strong temporal locality (hot keys live in
-// recent, non-evicted twigs), so in practice few sealed twigs are touched per
-// batch; the steady-state resident leaf cost falls to O(active + touched-this-
-// batch) instead of O(history). (Storing twig internal nodes on disk for O(log)
-// path-updates would remove the scan entirely — a later optimization.)
+// Rehydration restores the leaves from the persisted leaf blob (one read) or the
+// cold entry log (leaf[local] = hashLeaf(key,value) for each slot whose entry is
+// still the live one, index[key] == slot), then one recompute rebuilds the
+// internal nodes — the recomputed root is identical to the retained root. First
+// touch of a sealed twig in a batch therefore costs one blob read + a 4095-hash
+// rebuild; after that, changes inside it are O(log) via setLeaf. Updates have
+// strong temporal locality (hot keys live in recent, non-evicted twigs), so few
+// sealed twigs are touched per batch and the steady-state resident cost is
+// O(active + touched-this-batch) instead of O(history).
 
 package qmdb
 
@@ -33,50 +32,52 @@ type LeafStore interface {
 // blobs). The engine backs it with the QMDBTwigLeaves MDBX table.
 func (t *Tree) SetLeafStore(ls LeafStore) { t.leafStore = ls }
 
-// ensureHydrated rebuilds a sealed twig's leaf array if it was evicted. It prefers
-// a single LeafStore blob read; otherwise it reconstructs from the cold entry log.
-// No-op for resident, absent, or pruned twigs (a pruned twig has no live leaves).
+// ensureHydrated rebuilds a sealed twig's node heap if it was evicted: the leaves
+// come from a single LeafStore blob read (preferred) or the cold entry log, then
+// one recompute restores the internal nodes (which proofs and setLeaf's O(log)
+// path-updates read). No-op for resident, absent, or pruned twigs (a pruned twig
+// has no live leaves).
 func (t *Tree) ensureHydrated(id int) {
 	if id < 0 || id >= len(t.twigs) {
 		return
 	}
 	tw := t.twigs[id]
-	if tw == nil || tw.leaves != nil || tw.pruned {
+	if tw == nil || tw.nodes != nil || tw.pruned {
 		return
 	}
+	a := new([2 * TwigSize]Hash)
+	live := 0
 	// Fast path: one blob read.
+	hydrated := false
 	if t.leafStore != nil {
 		if blob, ok := t.leafStore.Leaves(id); ok && len(blob) == TwigSize*32 {
-			a := new([TwigSize]Hash)
-			live := 0
 			for i := 0; i < TwigSize; i++ {
-				copy(a[i][:], blob[i*32:(i+1)*32])
-				if a[i] != nullHash {
+				copy(a[TwigSize+i][:], blob[i*32:(i+1)*32])
+				if a[TwigSize+i] != nullHash {
 					live++
 				}
 			}
-			tw.leaves = a
-			tw.live = live
-			return
+			hydrated = true
 		}
 	}
-	// Fallback: reconstruct from the entry log (random reads).
-	a := new([TwigSize]Hash)
-	lo := uint64(id) * TwigSize
-	live := 0
-	for local := 0; local < TwigSize; local++ {
-		slot := lo + uint64(local)
-		if slot >= t.nextSlot {
-			break
-		}
-		e, ok := t.entryAt(slot)
-		if ok && e.active {
-			a[local] = hashLeaf(e.keyHash, e.value)
-			live++
+	if !hydrated {
+		// Fallback: reconstruct from the entry log (random reads).
+		lo := uint64(id) * TwigSize
+		for local := 0; local < TwigSize; local++ {
+			slot := lo + uint64(local)
+			if slot >= t.nextSlot {
+				break
+			}
+			e, ok := t.entryAt(slot)
+			if ok && e.active {
+				a[TwigSize+local] = hashLeaf(e.keyHash, e.value)
+				live++
+			}
 		}
 	}
-	tw.leaves = a
+	tw.nodes = a
 	tw.live = live // reconcile (should already match; cheap to be exact)
+	tw.recompute() // restore internal nodes; root must equal the retained root
 }
 
 // EvictTwigsThrough frees the leaf arrays of every twig that lies fully below the
@@ -95,23 +96,23 @@ func (t *Tree) EvictTwigsThrough(through uint64) {
 	}
 	for id := 0; id < maxID; id++ {
 		tw := t.twigs[id]
-		if tw == nil || tw.leaves == nil || tw.pruned || tw.dirty {
+		if tw == nil || tw.nodes == nil || tw.pruned || tw.dirty {
 			continue
 		}
-		tw.leaves = nil // free 64 KiB; root retained for the upper tree
+		tw.nodes = nil // free 128 KiB; root retained for the upper tree
 	}
 }
 
 // NumTwigs reports the total number of twigs in the forest (grows with history).
 func (t *Tree) NumTwigs() int { return len(t.twigs) }
 
-// ResidentTwigLeaves reports how many twigs currently hold their leaf array in RAM
-// (the rest keep only their root). Used by tests to assert the leaf footprint
+// ResidentTwigLeaves reports how many twigs currently hold their node heap in RAM
+// (the rest keep only their root). Used by tests to assert the resident footprint
 // stays bounded as the twig count grows with history.
 func (t *Tree) ResidentTwigLeaves() int {
 	n := 0
 	for _, tw := range t.twigs {
-		if tw != nil && tw.leaves != nil {
+		if tw != nil && tw.nodes != nil {
 			n++
 		}
 	}

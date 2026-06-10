@@ -30,25 +30,23 @@ package qmdb
 
 import "sort"
 
-// nullTwigRoot is the root of an all-empty (pruned) twig — computed once.
-var nullTwigRoot = func() Hash {
-	tw := newTwig()
-	tw.recompute()
-	return tw.root
-}()
+// nullTwigRoot is the root of an all-empty (pruned) twig — the precomputed
+// all-null subtree root at twig height.
+var nullTwigRoot = nullLevel[TwigHeight]
 
-// markPruned drops a fully-dead twig's leaf storage, freeing memory; its root
+// markPruned drops a fully-dead twig's node storage, freeing memory; its root
 // becomes the constant null-twig root so the upper tree stays well-formed.
 func (t *Tree) markPruned(id int) {
 	tw := t.twigs[id]
 	if tw == nil || tw.live != 0 {
 		return
 	}
-	// Drop the 2048-entry leaf array; a pruned twig contributes nullTwigRoot.
-	tw.leaves = nil
+	// Drop the node heap; a pruned twig contributes nullTwigRoot.
+	tw.nodes = nil
 	tw.root = nullTwigRoot
 	tw.dirty = false
 	tw.pruned = true
+	t.markUpperDirty(id)
 	// Free the entry records for this twig's slot range (resident slots only;
 	// evicted slots are already out of RAM).
 	lo := uint64(id) * TwigSize
