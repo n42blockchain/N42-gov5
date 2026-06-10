@@ -22,9 +22,20 @@
 
 package qmdb
 
-// ensureHydrated rebuilds a sealed twig's leaf array from the cold entry log if it
-// was evicted. No-op for resident, absent, or pruned twigs (a pruned twig has no
-// live leaves and keeps the constant null-twig root). Requires a cold reader.
+// LeafStore serves a twig's persisted leaf array (TwigSize*32 raw bytes) so an
+// evicted twig rehydrates in ONE read instead of a 2048-entry cold scan. Optional:
+// without it, ensureHydrated falls back to rebuilding leaves from the entry log.
+type LeafStore interface {
+	Leaves(twigID int) ([]byte, bool) // raw TwigSize*32 blob, or ok=false if absent
+}
+
+// SetLeafStore attaches a leaf-blob source (and enables FlushTo to persist leaf
+// blobs). The engine backs it with the QMDBTwigLeaves MDBX table.
+func (t *Tree) SetLeafStore(ls LeafStore) { t.leafStore = ls }
+
+// ensureHydrated rebuilds a sealed twig's leaf array if it was evicted. It prefers
+// a single LeafStore blob read; otherwise it reconstructs from the cold entry log.
+// No-op for resident, absent, or pruned twigs (a pruned twig has no live leaves).
 func (t *Tree) ensureHydrated(id int) {
 	if id < 0 || id >= len(t.twigs) {
 		return
@@ -33,6 +44,23 @@ func (t *Tree) ensureHydrated(id int) {
 	if tw == nil || tw.leaves != nil || tw.pruned {
 		return
 	}
+	// Fast path: one blob read.
+	if t.leafStore != nil {
+		if blob, ok := t.leafStore.Leaves(id); ok && len(blob) == TwigSize*32 {
+			a := new([TwigSize]Hash)
+			live := 0
+			for i := 0; i < TwigSize; i++ {
+				copy(a[i][:], blob[i*32:(i+1)*32])
+				if a[i] != nullHash {
+					live++
+				}
+			}
+			tw.leaves = a
+			tw.live = live
+			return
+		}
+	}
+	// Fallback: reconstruct from the entry log (random reads).
 	a := new([TwigSize]Hash)
 	lo := uint64(id) * TwigSize
 	live := 0

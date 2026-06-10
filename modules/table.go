@@ -214,6 +214,10 @@ const (
 	// QMDBIndex: keyHash(32) -> BE8(slot) — the persistent live-key index (replaces
 	// the in-RAM map so it does not grow the Go heap with the live key set).
 	QMDBIndex = "qmdbIndex"
+	// QMDBTwigLeaves: BE8(twigID) -> 2048*32B leaf array. Redundant with the entry
+	// log, but lets an evicted twig rehydrate in ONE sequential read instead of
+	// 2048 random entry+index lookups.
+	QMDBTwigLeaves = "qmdbTwigLeaves"
 
 	// VerkleNode stores content-addressed Verkle nodes.
 	// key: commitment_bytes (64 bytes)   value: serialized_node (97B internal / 288B+ leaf)
@@ -359,6 +363,7 @@ var n42Tables = []string{
 	QMDBTwigs,
 	QMDBMeta,
 	QMDBIndex,
+	QMDBTwigLeaves,
 	VerkleNode,
 	VerkleRoot,
 	ConsensusEvidence,

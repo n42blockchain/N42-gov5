@@ -72,10 +72,12 @@ func (r *QMDBRootComputer) FlushTo(p qmdb.Putter) (int, error) {
 }
 
 // SetCold attaches the cold entry source (the persisted positional log) so the
-// tree can evict flushed entries from RAM and fault them back on demand. The
-// engine re-points this at the current batch's tx each batch.
+// tree can evict flushed entries from RAM and fault them back on demand. It also
+// attaches the leaf-blob store (same backing tx) so an evicted twig rehydrates in
+// one read. The engine re-points both at the current batch's tx each batch.
 func (r *QMDBRootComputer) SetCold(g qmdb.Getter) {
 	r.t.SetCold(qmdb.ColdReaderFromGetter(g))
+	r.t.SetLeafStore(qmdb.LeafStoreFromGetter(g))
 }
 
 // UseMDBXIndex backs the live-key index with an MDBX table (instead of the default

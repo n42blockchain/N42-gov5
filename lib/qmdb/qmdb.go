@@ -128,6 +128,7 @@ type Tree struct {
 	entries     []entry    // window: entries[i] is absolute slot entriesBase+i
 	entriesBase uint64     // absolute slot of entries[0]; slots < base are cold
 	cold        ColdReader // serves evicted entries (nil = no eviction)
+	leafStore   LeafStore  // serves persisted twig leaf blobs for fast rehydration
 	evicted     uint64     // count of slots evicted from RAM (for Stats)
 	idx         Index      // keyHash -> global slot of the live entry (pluggable)
 	nextSlot    uint64     // append cursor
