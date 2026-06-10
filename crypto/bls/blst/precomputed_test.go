@@ -69,3 +69,42 @@ func TestPrecomputedHashAggregateIdentical(t *testing.T) {
 		t.Fatalf("aggregate mismatch:\n  individual=%x\n  precomputed=%x", aggA, aggB)
 	}
 }
+
+// TestAggregateSignWithEquivalence: the scalar-sum fast path must produce a
+// BYTE-IDENTICAL aggregate to aggregating individual signatures, across
+// committee sizes including the production 512. This is the correctness gate
+// for replacing 512 G2 multiplications per block with one.
+func TestAggregateSignWithEquivalence(t *testing.T) {
+	msg := []byte("hotstuff-signing-message-for-aggregate-equivalence")
+	for _, n := range []int{1, 2, 7, 64, 512} {
+		sks := make([]common.SecretKey, n)
+		for i := range sks {
+			k, err := RandKey()
+			if err != nil {
+				t.Fatal(err)
+			}
+			sks[i] = k
+		}
+		precomp := PrecomputeHash(msg)
+
+		// Reference: individual sk*H(m) signatures aggregated as points.
+		sigs := make([]common.Signature, n)
+		for i, sk := range sks {
+			sigs[i] = precomp.SignWith(sk)
+		}
+		ref := AggregateSignatures(sigs)
+
+		fast := precomp.AggregateSignWith(sks)
+		if !bytes.Equal(ref.Marshal(), fast.Marshal()) {
+			t.Fatalf("n=%d: scalar-sum aggregate diverged from point aggregate", n)
+		}
+		// And both must equal aggregating plain sk.Sign(msg).
+		plain := make([]common.Signature, n)
+		for i, sk := range sks {
+			plain[i] = sk.Sign(msg)
+		}
+		if !bytes.Equal(AggregateSignatures(plain).Marshal(), fast.Marshal()) {
+			t.Fatalf("n=%d: fast aggregate diverged from plain-sign aggregate", n)
+		}
+	}
+}
