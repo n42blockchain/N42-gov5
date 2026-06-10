@@ -2,13 +2,12 @@ package replay
 
 import (
 	"fmt"
-	"math/big"
+	"github.com/holiman/uint256"
 	"runtime"
 	"sync"
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto/bls"
-	"github.com/n42blockchain/N42/crypto/bls/blst"
 	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/internal/blspool"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
@@ -33,6 +32,10 @@ type BLSResealConfig struct {
 	RampBlocks    uint64   // blocks over which the active pool ramps committee->PoolSize
 }
 
+// blsOrderU256 is r, the BLS12-381 scalar field modulus, as a uint256 for the
+// zero-allocation committee scalar sum.
+var blsOrderU256 = *uint256.MustFromHex("0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001")
+
 // BLSResealer holds the derived key pool and produces a HotStuff-2 committee QC
 // (as a rawdb.ConsensusEvidence) for each re-sealed block.
 type BLSResealer struct {
@@ -41,10 +44,14 @@ type BLSResealer struct {
 	// skScalars caches each pool key's secret scalar as a big.Int (derived once
 	// at construction, ~8 MB for 200K keys) so per-block committee aggregation is
 	// pure field additions — no per-key serialization (was ~19% CPU per profile).
-	skScalars []*big.Int
-	pks       []common.PublicKey
-	npar      int
-	jobs      chan signJob // persistent signing worker pool (avoids per-block goroutine spawn)
+	skScalars []uint256.Int
+	// committeeScratch reuses the sampler's map/slice across blocks (the
+	// one-shot sampler was 49% of all allocations). BuildCE/VerifyCE run
+	// sequentially per block, matching the scratch's single-thread contract.
+	committeeScratch *blspool.CommitteeScratch
+	pks              []common.PublicKey
+	npar             int
+	jobs             chan signJob // persistent signing worker pool (avoids per-block goroutine spawn)
 }
 
 // signJob signs members[lo:hi] over a precomputed message hash into sigs, then
@@ -73,9 +80,10 @@ func NewBLSResealer(cfg BLSResealConfig) (*BLSResealer, error) {
 		return nil, fmt.Errorf("blsreseal: %w", err)
 	}
 	r.sks, r.pks = sks, pks
-	r.skScalars = make([]*big.Int, len(sks))
+	r.committeeScratch = blspool.NewCommitteeScratch()
+	r.skScalars = make([]uint256.Int, len(sks))
 	for i, sk := range sks {
-		r.skScalars[i] = new(big.Int).SetBytes(sk.Marshal())
+		r.skScalars[i].SetBytes(sk.Marshal())
 	}
 
 	// Persistent signing worker pool: workers live for the whole run so we pay
@@ -112,7 +120,7 @@ func (r *BLSResealer) ActivePool(blockNum uint64) int {
 // from [0, active) using a partial Fisher-Yates shuffle seeded by (view,
 // blockHash). The result is the ordered validator set for that view.
 func (r *BLSResealer) committee(view hotstuff.ViewNumber, blockHash types.Hash, active int) []int {
-	return blspool.Committee(uint64(view), blockHash, active, r.cfg.CommitteeSize)
+	return r.committeeScratch.Committee(uint64(view), blockHash, active, r.cfg.CommitteeSize)
 }
 
 // signMembers signs msg with every committee member's key, dispatching
@@ -156,11 +164,13 @@ func (r *BLSResealer) BuildCE(blockNum uint64, blockHash types.Hash, receiptRoot
 	// instead of one per member (512x). Byte-identical to aggregating individual
 	// signatures (blst.TestAggregateSignWithEquivalence); profiling showed the
 	// per-member multiplications at 97% of conversion CPU.
-	sum := new(big.Int)
+	// Fixed-width modular sum (uint256.AddMod, zero-alloc) — each scalar is
+	// < r, so the running sum stays reduced; equivalent to (Σsk_i) mod r.
+	var sum uint256.Int
 	for _, m := range members {
-		sum.Add(sum, r.skScalars[m])
+		sum.AddMod(&sum, &r.skScalars[m], &blsOrderU256)
 	}
-	agg := bls.PrecomputeHash(msg).SignWithScalarSum(blst.SumKeyScalars(sum))
+	agg := bls.PrecomputeHash(msg).SignWithScalarSum(sum.Bytes32())
 
 	ce := &rawdb.ConsensusEvidence{
 		View:        uint64(view),
