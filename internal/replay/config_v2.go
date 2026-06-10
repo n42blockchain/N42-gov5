@@ -27,6 +27,12 @@ type ConfigV2 struct {
 	DisableGC    bool
 	TreeType     string // "jmt" or "bmt"
 
+	// QMDBUndoWindow (qmdb tree only): per-block undo records are kept for the
+	// last N blocks so eth_getProof can serve membership proofs at recent
+	// heights (the QMDB root is history-dependent — see lib/qmdb/undo.go).
+	// 0 disables recording.
+	QMDBUndoWindow int
+
 	FillGaps     bool
 	GapPeriod    uint64
 	GapTolerance uint64
@@ -68,6 +74,7 @@ func DefaultConfigV2() ConfigV2 {
 		EnableLtHash:    true,
 		DisableGC:       true,
 		TreeType:        "mpt",
+		QMDBUndoWindow:  64,
 		FillGaps:        true,
 		GapPeriod:       8,
 		GapTolerance:    15,

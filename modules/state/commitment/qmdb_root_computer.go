@@ -32,6 +32,28 @@ type QMDBRootComputer struct {
 	t              *qmdb.Tree
 	flushedThrough uint64         // entry-log slots already persisted (for incremental flush)
 	mdbxIdx        *qmdbMDBXIndex // non-nil when the live-key index is MDBX-backed
+
+	undoRecording bool            // capture per-block undo data in ComputeRoot
+	lastUndo      *qmdb.BlockUndo // undo record of the most recent ComputeRoot
+}
+
+// EnableUndoRecording makes every subsequent ComputeRoot capture the block's
+// undo record (for the recent-window historical proofs); fetch it with
+// LastUndo right after the ComputeRoot call.
+func (r *QMDBRootComputer) EnableUndoRecording() { r.undoRecording = true }
+
+// LastUndo returns the undo record captured by the most recent ComputeRoot
+// (nil if recording is disabled or no block was computed yet).
+func (r *QMDBRootComputer) LastUndo() *qmdb.BlockUndo { return r.lastUndo }
+
+// TakeUndo returns the most recent ComputeRoot's undo record and clears it, so
+// a caller persisting one record per block can detect a block whose root was
+// never recomputed (nil = state unchanged → synthesize an empty record) instead
+// of re-writing a stale one.
+func (r *QMDBRootComputer) TakeUndo() *qmdb.BlockUndo {
+	u := r.lastUndo
+	r.lastUndo = nil
+	return u
 }
 
 // NewQMDBRootComputer creates an empty in-memory QMDB root computer.
@@ -110,9 +132,8 @@ func (r *QMDBRootComputer) EvictFlushed() {
 // engine's per-batch memory log).
 func (r *QMDBRootComputer) ResidentTwigLeaves() int { return r.t.ResidentTwigLeaves() }
 
-// RootScheme reports an unspecified scheme (the prototype does not yet have a
-// dedicated state.RootScheme constant).
-func (*QMDBRootComputer) RootScheme() state.RootScheme { return state.RootSchemeUnknown }
+// RootScheme reports the QMDB twig-forest scheme.
+func (*QMDBRootComputer) RootScheme() state.RootScheme { return state.RootSchemeQMDB }
 
 // ComputeRoot applies the dirty accounts and storage to the twig forest and
 // returns the new world root. Empty accounts and zero storage slots delete.
@@ -158,12 +179,18 @@ func (r *QMDBRootComputer) ComputeRoot(
 	sort.Slice(ops, func(i, j int) bool {
 		return bytes.Compare(ops[i].kh[:], ops[j].kh[:]) < 0
 	})
+	if r.undoRecording {
+		r.t.StartUndoRecording()
+	}
 	for _, o := range ops {
 		if o.value == nil {
 			r.t.Delete(o.kh)
 		} else {
 			r.t.Set(o.kh, o.value)
 		}
+	}
+	if r.undoRecording {
+		r.lastUndo = r.t.StopUndoRecording()
 	}
 	return types.Hash(r.t.Root()), nil
 }
