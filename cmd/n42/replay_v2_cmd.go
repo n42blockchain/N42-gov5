@@ -47,6 +47,7 @@ var replayV2Command = &cli.Command{
 		&cli.BoolFlag{Name: "fill-gaps", Usage: "Fill timeline gaps with empty blocks", Value: true},
 		&cli.Uint64Flag{Name: "gap-period", Usage: "Gap fill period (seconds)", Value: 8},
 		&cli.Uint64Flag{Name: "gap-tolerance", Usage: "Gap fill tolerance (seconds)", Value: 15},
+		&cli.Uint64Flag{Name: "gap-max", Usage: "Cap synthetic empty blocks per gap (0=unlimited); guards OOM on a huge startup/outage gap", Value: 10000},
 		&cli.BoolFlag{Name: "snapshot-at-end", Usage: "Create snapshot after replay", Value: true},
 		&cli.BoolFlag{Name: "export-era", Usage: "Export EraE segments after replay", Value: false},
 		&cli.Uint64Flag{Name: "era-segment-size", Usage: "Blocks per EraE segment", Value: 8192},
@@ -92,6 +93,7 @@ func runReplayV2(cliCtx *cli.Context) error {
 	cfg.FillGaps = cliCtx.Bool("fill-gaps")
 	cfg.GapPeriod = cliCtx.Uint64("gap-period")
 	cfg.GapTolerance = cliCtx.Uint64("gap-tolerance")
+	cfg.GapMaxBlocks = cliCtx.Uint64("gap-max")
 	cfg.SnapshotAtEnd = cliCtx.Bool("snapshot-at-end")
 	cfg.ExportEraE = cliCtx.Bool("export-era")
 	cfg.EraESegmentSize = cliCtx.Uint64("era-segment-size")

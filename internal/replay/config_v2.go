@@ -30,6 +30,7 @@ type ConfigV2 struct {
 	FillGaps     bool
 	GapPeriod    uint64
 	GapTolerance uint64
+	GapMaxBlocks uint64 // cap on synthetic empty blocks per gap (0 = unlimited); guards OOM on a huge gap (startup/outage)
 
 	ExportEraE      bool
 	EraESegmentSize uint64
@@ -37,12 +38,12 @@ type ConfigV2 struct {
 
 	SkipAddresses map[types.Address]bool
 
-	VerifyMPT    bool   // per-block: rebuild MPT from PlainState and verify root
+	VerifyMPT bool // per-block: rebuild MPT from PlainState and verify root
 
-	LogFile      string // structured log output file (empty = stderr only)
-	StatsFile    string // stats JSON output file (updated every batch)
-	LeafJournal  string // leaf change journal file (empty = disabled)
-	ProgressFn func(current, total uint64, bps float64)
+	LogFile     string // structured log output file (empty = stderr only)
+	StatsFile   string // stats JSON output file (updated every batch)
+	LeafJournal string // leaf change journal file (empty = disabled)
+	ProgressFn  func(current, total uint64, bps float64)
 
 	// BLS re-seal simulation (mobile-voter consensus). When BLSReseal is true,
 	// each block's consensus proof is a CommitteeSize-member BLS aggregate QC
@@ -69,6 +70,7 @@ func DefaultConfigV2() ConfigV2 {
 		FillGaps:        true,
 		GapPeriod:       8,
 		GapTolerance:    15,
+		GapMaxBlocks:    10000, // bound a single gap's fill so a multi-day outage/startup gap cannot OOM one batch
 		EraESegmentSize: 8192,
 		SnapshotAtEnd:   true,
 		SkipAddresses:   DefaultSkipAddresses,
