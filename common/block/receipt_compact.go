@@ -5,24 +5,30 @@
 // and transaction codecs. The proto encoding averaged ~345 B/receipt (3.7 GB
 // Receipts table at 12.7M blocks), most of it spent on DERIVABLE fields: the
 // 256-byte Bloom (a pure function of the logs, recomputed on decode), TxHash /
-// BlockHash / BlockNumber / TransactionIndex / GasUsed / ContractAddress
-// (block-context fields the raw read path documents as "not guaranteed to be
-// populated"). The compact record keeps exactly the consensus content:
+// BlockHash / BlockNumber / TransactionIndex / GasUsed (block-context fields the
+// raw read path documents as "not guaranteed to be populated"). ContractAddress
+// is NOT derivable from the receipt alone (it needs the creating tx's sender +
+// nonce) and the read path does not re-derive it, so it is stored explicitly
+// when present — contract-creation receipts only, a small minority. The compact
+// record keeps the consensus content plus ContractAddress:
 //
 //	[0] 0xFF  — format marker (a valid protobuf message can never begin with
 //	            0xFF: field 31 / wire type 7 is illegal)
 //	[1] 0x01  — codec version
 //	[2..] uvarint count, then per receipt:
 //	      type byte
-//	      flag byte: bit0 = PostState present (32 B follows; else Status uvarint)
+//	      flag byte: bit0 = PostState present (32 B follows; else Status uvarint),
+//	                 bit1 = ContractAddress present (20 B)
+//	      [PostState 32 B | Status uvarint]
+//	      [ContractAddress 20 B if bit1]
 //	      CumulativeGasUsed uvarint
 //	      logs: uvarint count; per log: address 20 B, uvarint topic count,
 //	            topics 32 B each, uvarint data len + data
 //
 // Bloom is recomputed from the logs on decode (identical to how it was created
 // at execution time), so the RLP receipt root derived from decoded receipts is
-// byte-identical. Context fields are left zero on the raw path — same contract
-// as the proto path's documentation; ReadReceipts fills them from the block.
+// byte-identical. Remaining context fields are left zero on the raw path — same
+// contract as the proto path's documentation; ReadReceipts fills them.
 
 package block
 
@@ -38,6 +44,7 @@ const (
 	compactReceiptsVersion = 0x01
 
 	rcfPostState = 1 << 0 // PostState (32 B) instead of Status
+	rcfContract  = 1 << 1 // ContractAddress (20 B) present (contract-creation tx)
 )
 
 func rcAppendUvarint(b []byte, v uint64) []byte {
@@ -53,12 +60,22 @@ func (rs *Receipts) MarshalCompact() []byte {
 	out = rcAppendUvarint(out, uint64(len(*rs)))
 	for _, r := range *rs {
 		out = append(out, r.Type)
+		var flags byte
 		if len(r.PostState) == 32 {
-			out = append(out, rcfPostState)
+			flags |= rcfPostState
+		}
+		hasContract := r.ContractAddress != (types.Address{})
+		if hasContract {
+			flags |= rcfContract
+		}
+		out = append(out, flags)
+		if flags&rcfPostState != 0 {
 			out = append(out, r.PostState...)
 		} else {
-			out = append(out, 0)
 			out = rcAppendUvarint(out, r.Status)
+		}
+		if hasContract {
+			out = append(out, r.ContractAddress[:]...)
 		}
 		out = rcAppendUvarint(out, r.CumulativeGasUsed)
 		out = rcAppendUvarint(out, uint64(len(r.Logs)))
@@ -129,6 +146,13 @@ func (rs *Receipts) unmarshalCompact(data []byte) error {
 				return err
 			}
 		}
+		if flags&rcfContract != 0 {
+			ca, err := take(20)
+			if err != nil {
+				return err
+			}
+			copy(r.ContractAddress[:], ca)
+		}
 		if r.CumulativeGasUsed, err = uvarint(); err != nil {
 			return err
 		}
@@ -177,8 +201,8 @@ func (rs *Receipts) unmarshalCompact(data []byte) error {
 	}
 	// Populate the fields derivable WITHIN the record (no block context needed):
 	// per-tx GasUsed is the cumulative-gas delta; positional indices follow from
-	// record order. Only TxHash/BlockHash/BlockNumber/ContractAddress stay zero
-	// on the raw path (they need the block — ReadRawReceipts' documented contract).
+	// record order. Only TxHash/BlockHash/BlockNumber stay zero on the raw path
+	// (they need the block — ReadRawReceipts' documented contract).
 	logIdx := uint(0)
 	for i, r := range out {
 		if i == 0 {

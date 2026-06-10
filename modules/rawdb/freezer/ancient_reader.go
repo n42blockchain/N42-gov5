@@ -9,9 +9,6 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
-	"google.golang.org/protobuf/proto"
-
-	"github.com/n42blockchain/N42/proto/types_pb"
 )
 
 // AncientReader provides high-level read access to frozen block data.
@@ -52,18 +49,18 @@ func (r *AncientReader) ReadHeaderRaw(number uint64) ([]byte, error) {
 	return r.freezer.Ancient(TableHeaders, number)
 }
 
-// ReadHeader retrieves and decodes a frozen block header (protobuf format).
+// ReadHeader retrieves and decodes a frozen block header. The stored bytes may
+// be compact (0xFF marker) or legacy protobuf — Header.Unmarshal dispatches on
+// the marker, so both formats decode transparently.
 func (r *AncientReader) ReadHeader(number uint64) (*block.Header, error) {
 	raw, err := r.ReadHeaderRaw(number)
 	if err != nil {
 		return nil, err
 	}
-	var hPB types_pb.Header
-	if err := proto.Unmarshal(raw, &hPB); err != nil {
+	h := new(block.Header)
+	if err := h.Unmarshal(raw); err != nil {
 		return nil, fmt.Errorf("freezer: unmarshal header %d: %w", number, err)
 	}
-	h := new(block.Header)
-	h.FromProtoMessage(&hPB)
 	return h, nil
 }
 

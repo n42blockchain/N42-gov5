@@ -33,7 +33,12 @@ func receiptsForCompactTest() Receipts {
 	postState := &Receipt{PostState: bytes.Repeat([]byte{0x42}, 32), CumulativeGasUsed: 100000, BlockNumber: uint256.NewInt(7)}
 	postState.Bloom = CreateBloom(Receipts{postState})
 
-	return Receipts{withLogs, failed, postState}
+	// Contract-creation receipt: ContractAddress must survive (not derivable from
+	// the receipt alone, and the read path does not re-derive it).
+	creation := &Receipt{Type: 0, Status: 1, CumulativeGasUsed: 153000, ContractAddress: types.Address{0xde, 0xad, 0xbe, 0xef, 0x05}, BlockNumber: uint256.NewInt(7)}
+	creation.Bloom = CreateBloom(Receipts{creation})
+
+	return Receipts{withLogs, failed, postState, creation}
 }
 
 // TestCompactReceiptsRoundTrip: consensus fields and recomputed Bloom must be
@@ -58,6 +63,9 @@ func TestCompactReceiptsRoundTrip(t *testing.T) {
 		}
 		if !bytes.Equal(w.PostState, g.PostState) {
 			t.Fatalf("receipt %d: PostState diverged", i)
+		}
+		if w.ContractAddress != g.ContractAddress {
+			t.Fatalf("receipt %d: ContractAddress diverged: %x vs %x", i, w.ContractAddress, g.ContractAddress)
 		}
 		if w.Bloom != g.Bloom {
 			t.Fatalf("receipt %d: recomputed Bloom diverged", i)
