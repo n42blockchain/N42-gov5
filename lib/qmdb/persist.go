@@ -28,10 +28,25 @@ type Getter interface {
 
 // Table names for the positional layout.
 const (
-	EntryTable = "qmdbEntries" // BE8(slot) -> keyHash(32) || value
-	TwigTable  = "qmdbTwigs"   // BE8(twigID) -> twigRoot(32) || activeBits(256)
-	MetaTable  = "qmdbMeta"    // "root","version","nextSlot"
+	EntryTable  = "qmdbEntries"    // BE8(slot) -> keyHash(32) || value
+	TwigTable   = "qmdbTwigs"      // BE8(twigID) -> twigRoot(32) || activeBits(256)
+	MetaTable   = "qmdbMeta"       // "root","version","nextSlot","liveCount"
+	LeavesTable = "qmdbTwigLeaves" // BE8(twigID) -> TwigSize*32 leaf blob (fast rehydrate)
 )
+
+// leafStoreGetter adapts a Getter into a LeafStore (reads the QMDBTwigLeaves blob).
+type leafStoreGetter struct{ g Getter }
+
+func (l leafStoreGetter) Leaves(id int) ([]byte, bool) {
+	v, err := l.g.GetOne(LeavesTable, be8(uint64(id)))
+	if err != nil || len(v) != TwigSize*32 {
+		return nil, false
+	}
+	return v, true
+}
+
+// LeafStoreFromGetter wraps a Getter (kv.Tx / map store) as a LeafStore.
+func LeafStoreFromGetter(g Getter) LeafStore { return leafStoreGetter{g} }
 
 func be8(v uint64) []byte {
 	var b [8]byte
@@ -86,6 +101,18 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 			return flushedThrough, bytesW, err
 		}
 		bytesW += 8 + len(meta)
+		// Persist the leaf blob (one read rehydration) when a leaf store is in use.
+		// Skipped for evicted/pruned twigs (leaves==nil): their blob is current.
+		if t.leafStore != nil && tw.leaves != nil {
+			blob := make([]byte, TwigSize*32)
+			for i := 0; i < TwigSize; i++ {
+				copy(blob[i*32:(i+1)*32], tw.leaves[i][:])
+			}
+			if err := p.Put(LeavesTable, be8(uint64(id)), blob); err != nil {
+				return flushedThrough, bytesW, err
+			}
+			bytesW += 8 + len(blob)
+		}
 	}
 	_ = p.Put(MetaTable, []byte("root"), root[:])
 	_ = p.Put(MetaTable, []byte("nextSlot"), be8(t.nextSlot))

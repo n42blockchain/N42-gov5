@@ -2,6 +2,74 @@ package qmdb
 
 import "testing"
 
+// countingGetter wraps a mapStore and counts entry-log reads, so a test can assert
+// that leaf-blob rehydration does NOT scan the entry log.
+type countingGetter struct {
+	g          Getter
+	entryReads int
+}
+
+func (c *countingGetter) GetOne(table string, key []byte) ([]byte, error) {
+	if table == EntryTable {
+		c.entryReads++
+	}
+	return c.g.GetOne(table, key)
+}
+
+// TestLeafBlobRehydrationNoEntryScan: with a LeafStore attached, touching an
+// evicted twig rebuilds its leaves from the single blob — no per-slot entry reads
+// — and yields the same root/proofs as a plain tree.
+func TestLeafBlobRehydrationNoEntryScan(t *testing.T) {
+	store := newMapStore()
+	cg := &countingGetter{g: store}
+
+	ev := New()
+	ev.SetCold(ColdReaderFromGetter(cg))
+	ev.SetLeafStore(LeafStoreFromGetter(cg))
+	plain := New()
+
+	const n = 8000 // ~4 twigs
+	for i := uint64(0); i < n; i++ {
+		ev.Set(key(i), val(i))
+		plain.Set(key(i), val(i))
+	}
+	// flush writes leaf blobs; then evict sealed twigs.
+	next, _, err := ev.FlushTo(store, 0)
+	if err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	ev.EvictThrough(next)
+	ev.EvictTwigsThrough(next)
+	if ev.ResidentTwigLeaves() > 2 {
+		t.Fatalf("expected sealed twigs evicted, resident=%d", ev.ResidentTwigLeaves())
+	}
+
+	cg.entryReads = 0 // measure only the rehydration that follows
+	// Update keys spread across the early (evicted) twigs -> forces rehydration.
+	for i := uint64(0); i < n; i += 50 {
+		ev.Set(key(i), val(i+9))
+		plain.Set(key(i), val(i+9))
+	}
+	if ev.Root() != plain.Root() {
+		t.Fatalf("root diverged after leaf-blob rehydration: ev=%x plain=%x", ev.Root(), plain.Root())
+	}
+	// The whole point: rehydration used blobs, so it must NOT have scanned entries.
+	if cg.entryReads != 0 {
+		t.Fatalf("leaf-blob rehydration still read %d entries (expected 0)", cg.entryReads)
+	}
+	// Proofs for evicted twigs still verify (rehydrated from blob).
+	root := ev.Root()
+	for i := uint64(0); i < n; i += 37 {
+		if _, ok := ev.Get(key(i)); !ok {
+			continue
+		}
+		p, _ := ev.GetProof(key(i))
+		if !VerifyProof(root, p) {
+			t.Fatalf("key %d proof failed after blob rehydration", i)
+		}
+	}
+}
+
 // flushEvictAll mirrors the engine's per-batch maintenance with BOTH tiers:
 // persist new entries, then evict entry records AND sealed twig leaves below the
 // flushed cursor.
