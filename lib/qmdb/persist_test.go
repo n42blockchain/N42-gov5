@@ -27,6 +27,13 @@ func (m mapStore) GetOne(table string, key []byte) ([]byte, error) {
 	return nil, nil
 }
 
+func (m mapStore) Delete(table string, key []byte) error {
+	if t := m[table]; t != nil {
+		delete(t, string(key))
+	}
+	return nil
+}
+
 // TestFlushReloadRoundTrip: flushing a tree's positional layout and reloading it
 // into a fresh tree must reproduce the exact world root, live set, and proofs.
 // This is the cross-process resume path for the (history-dependent) QMDB root.

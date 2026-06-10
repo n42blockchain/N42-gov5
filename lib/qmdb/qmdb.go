@@ -197,6 +197,15 @@ type Tree struct {
 	root        Hash
 	rootDirty   bool
 
+	// deadFlushed collects slots whose entry row is already ON DISK (below the
+	// evicted/flushed watermark) and was deactivated afterwards. Dead rows are
+	// never read again (cold faults go through the live index, rehydration uses
+	// the leaf blob / activeBits, index rebuild scans only active slots), so the
+	// next FlushTo deletes them — the entry log then tracks the LIVE set instead
+	// of the full append history. Rows orphaned by a crash between batches are
+	// harmless garbage (never read), just unreclaimed.
+	deadFlushed []uint64
+
 	// Incremental upper tree (binary Merkle over twig roots). upper is a heap of
 	// size 2*upCap (upCap = pow2 >= len(twigs)): upper[1] is the world root and
 	// the twig roots occupy [upCap, upCap+len(twigs)), padded with nullHash. Twig
@@ -293,6 +302,10 @@ func (t *Tree) deactivate(slot uint64) {
 		if i := slot - t.entriesBase; i < uint64(len(t.entries)) {
 			t.entries[i].active = false
 		}
+	} else {
+		// The row for this slot is already on disk and is now dead: schedule its
+		// deletion at the next flush (dead rows are never read again).
+		t.deadFlushed = append(t.deadFlushed, slot)
 	}
 	t.rootDirty = true
 }
