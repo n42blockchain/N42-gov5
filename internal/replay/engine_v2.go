@@ -485,6 +485,11 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 			}
 		}
 
+		// Batch-level history-index aggregation: one bitmap round-trip per
+		// distinct key per BATCH instead of per key-BLOCK (the coinbase account
+		// alone is touched by every block). Flushed before the batch commits.
+		histAgg := state.NewHistoryAggregator()
+
 		// Track the running new-chain block number.
 		// With gap filling, newBlockNum diverges from source block number.
 		// Read target chain head from the replay metadata key.
@@ -809,6 +814,7 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				}
 				// State writer: PlainState + ChangeSet + cache write-through.
 				csWriter := state.NewPlainStateWriter(dstTx, dstTx, newBlockNum)
+				csWriter.SetHistoryAggregator(histAgg)
 				w := state.NewCachedStateWriter(csWriter, e.replayCache)
 				ibs := state.New(e.witnessReader)
 				if useTrie && trieRC != nil {
@@ -1081,7 +1087,11 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				}
 			}
 
-			// End of batch: write recovery metadata.
+			// End of batch: flush the aggregated history indices (one read+union+
+			// write per distinct key, sorted), then write recovery metadata.
+			if err := histAgg.Flush(dstTx); err != nil {
+				return fmt.Errorf("flush history aggregator: %w", err)
+			}
 			lastVersion := newBlockNum - 1
 
 			// Update head pointers — node startup reads these.
