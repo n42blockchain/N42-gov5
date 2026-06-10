@@ -196,10 +196,12 @@ type BlockChain struct {
 }
 
 // CommitteeEvidenceBuilder builds the consensus evidence for a freshly persisted
-// block. Implemented by *blspool.Pool (via BuildSimulatedCE); an interface keeps
-// the blockchain decoupled from the blspool package and its BLS types.
+// block, folding in any real validator signatures collected for it (identical to
+// the all-simulated evidence when none). Implemented by *blspool.Pool (via
+// BuildBlockEvidence); an interface keeps the blockchain decoupled from the
+// blspool package and its BLS types.
 type CommitteeEvidenceBuilder interface {
-	BuildSimulatedCE(blockNum uint64, blockHash, receiptRoot types.Hash) (*rawdb.ConsensusEvidence, error)
+	BuildBlockEvidence(blockNum uint64, blockHash, receiptRoot types.Hash) (*rawdb.ConsensusEvidence, error)
 }
 
 type insertStats struct {

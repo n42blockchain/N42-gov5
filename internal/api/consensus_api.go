@@ -21,6 +21,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/crypto/bls/common"
+	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/blspool"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
@@ -342,6 +343,55 @@ func envInt(key string, def int) int {
 		}
 	}
 	return def
+}
+
+// livePool resolves the live committee pool wired into the running chain (the
+// same instance that stamps evidence onto produced blocks), or an error when no
+// pool is configured.
+func (c *ConsensusAPI) livePool() (*blspool.Pool, error) {
+	bc, ok := c.api.BlockChain().(*internal.BlockChain)
+	if !ok {
+		return nil, fmt.Errorf("committee hand-over unavailable: concrete blockchain required")
+	}
+	cp := bc.CommitteePool()
+	if cp == nil {
+		return nil, fmt.Errorf("committee pool not enabled (set hotStuff.committeePool)")
+	}
+	pool, ok := cp.(*blspool.Pool)
+	if !ok {
+		return nil, fmt.Errorf("committee pool type mismatch")
+	}
+	return pool, nil
+}
+
+// RegisterCommitteeValidator hands committee-pool slot over to a real validator.
+// proofSig must be the validator's BLS signature over
+// RegistrationMessage(slot, pubkey) — proof that it controls the key. Requires
+// hand-over to be enabled (hotStuff.committeePool.allowHandover).
+func (c *ConsensusAPI) RegisterCommitteeValidator(ctx context.Context, slot hexutil.Uint64, pubkey, proofSig hexutil.Bytes) (bool, error) {
+	pool, err := c.livePool()
+	if err != nil {
+		return false, err
+	}
+	if err := pool.RegisterValidator(int(slot), pubkey, proofSig); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// SubmitCommitteeSignature submits a real validator's partial signature for a
+// block. The signature must verify against the slot's registered public key over
+// SigningMessage(blockNum, blockHash); only committee members are accepted. The
+// signature is folded into the block's consensus evidence when it is produced.
+func (c *ConsensusAPI) SubmitCommitteeSignature(ctx context.Context, blockNum hexutil.Uint64, blockHash types.Hash, slot hexutil.Uint64, sig hexutil.Bytes) (bool, error) {
+	pool, err := c.livePool()
+	if err != nil {
+		return false, err
+	}
+	if err := pool.SubmitSignature(uint64(blockNum), blockHash, int(slot), sig); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (c *ConsensusAPI) resolveBlockNumber(blockNr jsonrpc.BlockNumber) (uint64, error) {

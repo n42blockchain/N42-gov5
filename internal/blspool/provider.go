@@ -54,7 +54,11 @@ type PoolConfig struct {
 	PoolSize      int
 	CommitteeSize int
 	RampBlocks    uint64
+	AllowHandover bool // enable RegisterValidator / SubmitSignature (real-validator phase)
 }
+
+// HandoverAllowed reports whether validator hand-over is enabled.
+func (p *Pool) HandoverAllowed() bool { return p.cfg.AllowHandover }
 
 // Pool is the pluggable committee-signing provider. Safe for concurrent use
 // (Register vs BuildCE/VerifyCE).
@@ -67,6 +71,20 @@ type Pool struct {
 	pks       []common.PublicKey // CURRENT pubkey per slot (simulated or real)
 	replaced  []bool             // slot handed over to a real validator
 	scratch   *CommitteeScratch
+
+	// onRegister persists a hand-over (slot → pubkey) so it survives restart.
+	// Set by the node; nil leaves registrations in-memory only.
+	onRegister func(slot int, pubkey []byte) error
+
+	// pendingSigs collects real validators' partial signatures per block,
+	// keyed by block hash, consumed when that block's evidence is built.
+	pendingSigs map[types.Hash]*pendingBlock
+}
+
+// pendingBlock is the set of real validator signatures collected for one block.
+type pendingBlock struct {
+	num  uint64
+	sigs map[int]common.Signature // pool slot → signature
 }
 
 // NewSimulatedPool derives the full simulated pool from the master seed.
@@ -79,11 +97,12 @@ func NewSimulatedPool(cfg PoolConfig) (*Pool, error) {
 		return nil, fmt.Errorf("blspool: %w", err)
 	}
 	p := &Pool{
-		cfg:      cfg,
-		sks:      sks,
-		pks:      pks,
-		replaced: make([]bool, cfg.PoolSize),
-		scratch:  NewCommitteeScratch(),
+		cfg:         cfg,
+		sks:         sks,
+		pks:         pks,
+		replaced:    make([]bool, cfg.PoolSize),
+		scratch:     NewCommitteeScratch(),
+		pendingSigs: make(map[types.Hash]*pendingBlock),
 	}
 	p.skScalars = make([]uint256.Int, len(sks))
 	for i, sk := range sks {

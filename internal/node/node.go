@@ -1410,10 +1410,29 @@ func (n *Node) wireCommitteePool(hs *hotstuff.HotStuff) error {
 		PoolSize:      cp.PoolSize,
 		CommitteeSize: cp.CommitteeSize,
 		RampBlocks:    cp.RampBlocks,
+		AllowHandover: cp.AllowHandover,
 	})
 	if err != nil {
 		return fmt.Errorf("hotstuff committee pool: %w", err)
 	}
+
+	// Persist validator hand-overs to the chain DB, and load any recorded at a
+	// previous run so the committee state survives restart.
+	pool.SetPersistHook(func(slot int, pubkey []byte) error {
+		return n.db.Update(context.Background(), func(tx kv.RwTx) error {
+			return rawdb.WriteCommitteeRegistration(tx, slot, pubkey)
+		})
+	})
+	if err := n.db.View(context.Background(), func(tx kv.Tx) error {
+		regs, rerr := rawdb.ReadCommitteeRegistrations(tx)
+		if rerr != nil {
+			return rerr
+		}
+		return pool.LoadRegistrations(regs)
+	}); err != nil {
+		return fmt.Errorf("hotstuff committee pool: load registrations: %w", err)
+	}
+
 	realBC, ok := n.blockChain.(*internal.BlockChain)
 	if !ok {
 		return errors.New("hotstuff committee pool: concrete blockchain unavailable")
@@ -1421,7 +1440,8 @@ func (n *Node) wireCommitteePool(hs *hotstuff.HotStuff) error {
 	realBC.SetCommitteePool(pool)
 	hs.SetCommitteeEvidence(pool, realBC)
 	log.Info("HotStuff live BLS committee pool wired",
-		"poolSize", cp.PoolSize, "committee", cp.CommitteeSize, "rampBlocks", cp.RampBlocks)
+		"poolSize", cp.PoolSize, "committee", cp.CommitteeSize,
+		"rampBlocks", cp.RampBlocks, "handover", cp.AllowHandover, "replaced", pool.ReplacedCount())
 	return nil
 }
 
