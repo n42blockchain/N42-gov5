@@ -2,11 +2,13 @@ package replay
 
 import (
 	"fmt"
+	"math/big"
 	"runtime"
 	"sync"
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto/bls"
+	"github.com/n42blockchain/N42/crypto/bls/blst"
 	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/internal/blspool"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
@@ -34,11 +36,15 @@ type BLSResealConfig struct {
 // BLSResealer holds the derived key pool and produces a HotStuff-2 committee QC
 // (as a rawdb.ConsensusEvidence) for each re-sealed block.
 type BLSResealer struct {
-	cfg  BLSResealConfig
-	sks  []common.SecretKey
-	pks  []common.PublicKey
-	npar int
-	jobs chan signJob // persistent signing worker pool (avoids per-block goroutine spawn)
+	cfg BLSResealConfig
+	sks []common.SecretKey
+	// skScalars caches each pool key's secret scalar as a big.Int (derived once
+	// at construction, ~8 MB for 200K keys) so per-block committee aggregation is
+	// pure field additions — no per-key serialization (was ~19% CPU per profile).
+	skScalars []*big.Int
+	pks       []common.PublicKey
+	npar      int
+	jobs      chan signJob // persistent signing worker pool (avoids per-block goroutine spawn)
 }
 
 // signJob signs members[lo:hi] over a precomputed message hash into sigs, then
@@ -67,6 +73,10 @@ func NewBLSResealer(cfg BLSResealConfig) (*BLSResealer, error) {
 		return nil, fmt.Errorf("blsreseal: %w", err)
 	}
 	r.sks, r.pks = sks, pks
+	r.skScalars = make([]*big.Int, len(sks))
+	for i, sk := range sks {
+		r.skScalars[i] = new(big.Int).SetBytes(sk.Marshal())
+	}
 
 	// Persistent signing worker pool: workers live for the whole run so we pay
 	// no per-block goroutine spawn cost (the dominant overhead at 512 sigs/block
@@ -146,11 +156,11 @@ func (r *BLSResealer) BuildCE(blockNum uint64, blockHash types.Hash, receiptRoot
 	// instead of one per member (512x). Byte-identical to aggregating individual
 	// signatures (blst.TestAggregateSignWithEquivalence); profiling showed the
 	// per-member multiplications at 97% of conversion CPU.
-	memberKeys := make([]common.SecretKey, len(members))
-	for i, m := range members {
-		memberKeys[i] = r.sks[m]
+	sum := new(big.Int)
+	for _, m := range members {
+		sum.Add(sum, r.skScalars[m])
 	}
-	agg := bls.PrecomputeHash(msg).AggregateSignWith(memberKeys)
+	agg := bls.PrecomputeHash(msg).SignWithScalarSum(blst.SumKeyScalars(sum))
 
 	ce := &rawdb.ConsensusEvidence{
 		View:        uint64(view),
