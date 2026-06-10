@@ -273,6 +273,13 @@ const (
 	// value: ConsensusEvidence (compact binary, 140-1600 bytes)
 	ConsensusEvidence = "ConsensusEvidence"
 
+	// CommitteeRegistration records validator hand-overs: a real validator's BLS
+	// public key takes over a simulated committee-pool slot. Persisted so the
+	// hand-over survives restart.
+	// key: pool slot (4 bytes, big-endian)
+	// value: 48-byte BLS12-381 G1 public key
+	CommitteeRegistration = "CommitteeRegistration"
+
 	// ContentStore stores content-addressed blobs for the CAS precompile.
 	// key: keccak256(data) (32 bytes)
 	// value: raw data (up to 24KB)
@@ -367,6 +374,7 @@ var n42Tables = []string{
 	VerkleNode,
 	VerkleRoot,
 	ConsensusEvidence,
+	CommitteeRegistration,
 	HashedAccounts,
 	HashedStorage,
 	TrieOfAccounts,

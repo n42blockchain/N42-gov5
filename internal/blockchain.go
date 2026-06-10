@@ -515,7 +515,7 @@ func (bc *BlockChain) persistBlock(db kv.RwDB, blk block.IBlock, source string) 
 			hdr, ok := concreteBlock.Header().(*block.Header)
 			if ok && hdr != nil {
 				num := concreteBlock.Number64().Uint64()
-				ce, err := bc.committeePool.BuildSimulatedCE(num, blk.Hash(), hdr.ReceiptHash)
+				ce, err := bc.committeePool.BuildBlockEvidence(num, blk.Hash(), hdr.ReceiptHash)
 				if err != nil {
 					return fmt.Errorf("build consensus evidence block %d: %w", num, err)
 				}

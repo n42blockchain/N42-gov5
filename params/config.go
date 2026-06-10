@@ -463,6 +463,13 @@ type HotStuffCommitteePoolConfig struct {
 	PoolSize      int    `json:"poolSize"`      // total mobile-voter pool (e.g. 200000)
 	CommitteeSize int    `json:"committeeSize"` // per-block committee (e.g. 512)
 	RampBlocks    uint64 `json:"rampBlocks"`    // blocks over which the active pool ramps
+
+	// AllowHandover enables the validator hand-over RPC surface: real validators
+	// register their BLS key for a pool slot and submit per-block partial
+	// signatures. Off by default — leaving the committee fully simulated and the
+	// per-block evidence deterministic across nodes. Enable only once the
+	// operator is ready to propagate per-block evidence to followers.
+	AllowHandover bool `json:"allowHandover,omitempty"`
 }
 
 func (c *HotStuffConfig) String() string {
