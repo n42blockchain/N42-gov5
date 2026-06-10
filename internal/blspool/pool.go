@@ -91,6 +91,31 @@ func ActivePool(blockNum uint64, poolSize, committeeSize int, rampBlocks uint64)
 // [0, active) via a partial Fisher-Yates shuffle seeded by (view, blockHash).
 // The returned slice is the ordered validator set for that view.
 func Committee(view uint64, blockHash types.Hash, active, committeeSize int) []int {
+	return NewCommitteeScratch().Committee(view, blockHash, active, committeeSize)
+}
+
+// CommitteeScratch holds the reusable buffers for committee sampling. The
+// one-shot Committee allocated a fresh swap map (+ a 40-byte append per
+// iteration) on EVERY call — at one call per block that was 49% of all process
+// allocations in the reseal conversion (369 GB). A caller-owned scratch keeps
+// the map buckets and output slice alive across blocks; clear() empties the map
+// without releasing its storage, so the steady state allocates nothing.
+// Outputs are bit-identical to the one-shot form (same algorithm, asserted by
+// tests). Not safe for concurrent use.
+type CommitteeScratch struct {
+	swaps map[int]int
+	out   []int
+}
+
+// NewCommitteeScratch creates a reusable sampler scratch.
+func NewCommitteeScratch() *CommitteeScratch {
+	return &CommitteeScratch{swaps: make(map[int]int, 1024)}
+}
+
+// Committee deterministically samples committeeSize distinct indices from
+// [0, active) via a partial Fisher-Yates shuffle seeded by (view, blockHash).
+// The returned slice is owned by the scratch and overwritten by the next call.
+func (cs *CommitteeScratch) Committee(view uint64, blockHash types.Hash, active, committeeSize int) []int {
 	k := committeeSize
 	if k > active {
 		k = active
@@ -100,24 +125,28 @@ func Committee(view uint64, blockHash types.Hash, active, committeeSize int) []i
 	copy(seedBuf[8:], blockHash[:])
 	base := sha256.Sum256(seedBuf[:])
 
-	swaps := make(map[int]int, k)
+	clear(cs.swaps)
 	get := func(i int) int {
-		if v, ok := swaps[i]; ok {
+		if v, ok := cs.swaps[i]; ok {
 			return v
 		}
 		return i
 	}
-	out := make([]int, k)
-	var ctr [8]byte
+	if cap(cs.out) < k {
+		cs.out = make([]int, k)
+	}
+	out := cs.out[:k]
+	var hashBuf [40]byte // base(32) || ctr(8) — fixed, no per-iteration append
+	copy(hashBuf[:32], base[:])
 	for i := 0; i < k; i++ {
-		binary.LittleEndian.PutUint64(ctr[:], uint64(i))
-		h := sha256.Sum256(append(base[:], ctr[:]...))
+		binary.LittleEndian.PutUint64(hashBuf[32:], uint64(i))
+		h := sha256.Sum256(hashBuf[:])
 		rnd := binary.LittleEndian.Uint64(h[:8])
 		j := i + int(rnd%uint64(active-i))
 		vj := get(j)
 		out[i] = vj
-		swaps[j] = get(i)
-		swaps[i] = vj
+		cs.swaps[j] = get(i)
+		cs.swaps[i] = vj
 	}
 	return out
 }
