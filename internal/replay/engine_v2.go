@@ -703,7 +703,15 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 
 				// Gap filling: insert empty blocks for timeline gaps.
 				if e.cfg.FillGaps && prevTime > 0 {
-					gapTimes := CalcGapBlockTimes(prevTime, srcTime, e.cfg.GapPeriod, e.cfg.GapTolerance)
+					gapTimes := CalcGapBlockTimesCapped(prevTime, srcTime, e.cfg.GapPeriod, e.cfg.GapTolerance, e.cfg.GapMaxBlocks)
+					if e.cfg.GapMaxBlocks > 0 && uint64(len(gapTimes)) >= e.cfg.GapMaxBlocks {
+						e.log.Warn("gap-fill capped",
+							"atTargetBlock", newBlockNum,
+							"gapSeconds", srcTime-prevTime,
+							"cappedAt", e.cfg.GapMaxBlocks,
+							"note", "huge timestamp gap (startup/outage) truncated to avoid OOM",
+						)
+					}
 					for _, gapTime := range gapTimes {
 						var gapTreeRoot types.Hash
 						if useMPT && mptRC != nil {
