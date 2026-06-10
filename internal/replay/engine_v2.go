@@ -1423,16 +1423,11 @@ func buildConsensusEvidence(srcHeader *block.Header) *rawdb.ConsensusEvidence {
 	return ce
 }
 
-// parentConsensusEvidenceHash returns Blake3(parent ConsensusEvidence).
+// parentConsensusEvidenceHash returns Blake3(parent ConsensusEvidence) — the
+// canonical CE→ParentBeaconRoot derivation, shared with live block production
+// via rawdb.ParentBeaconRoot so both paths link byte-identically.
 func parentConsensusEvidenceHash(tx kv.Tx, blockNum uint64) types.Hash {
-	if blockNum <= 1 {
-		return types.Hash{}
-	}
-	parentCE, err := rawdb.ReadConsensusEvidence(tx, blockNum-1)
-	if err != nil || parentCE == nil {
-		return types.Hash{}
-	}
-	return types.Hash(blake3.Sum256(parentCE.Marshal()))
+	return rawdb.ParentBeaconRoot(tx, blockNum)
 }
 
 // derivePrevRandao computes prevRandao (MixDigest) for a block.

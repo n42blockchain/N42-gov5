@@ -11,6 +11,7 @@ import (
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
+	"lukechampine.com/blake3"
 )
 
 // ConsensusEvidence holds per-block consensus data (QC + optional mobile BLS).
@@ -137,9 +138,33 @@ func (ce *ConsensusEvidence) Unmarshal(data []byte) error {
 	return nil
 }
 
-// Hash returns keccak256 of the marshaled evidence (for parentBeaconBlockRoot).
+// Hash returns keccak256 of the marshaled evidence.
 func (ce *ConsensusEvidence) Hash() types.Hash {
 	return crypto.Keccak256Hash(ce.Marshal())
+}
+
+// BeaconRoot returns Blake3(Marshal) — the value a CHILD block carries as its
+// ParentBeaconRoot (EIP-4788), committing to this block's consensus evidence.
+// This is the canonical CE→ParentBeaconRoot derivation shared by the replay
+// resealer and live block production. It is deliberately Blake3, NOT Hash()'s
+// keccak256, so that resealed and live-produced chains link byte-identically.
+func (ce *ConsensusEvidence) BeaconRoot() types.Hash {
+	return types.Hash(blake3.Sum256(ce.Marshal()))
+}
+
+// ParentBeaconRoot reads the consensus evidence of blockNum-1 and returns its
+// BeaconRoot — the ParentBeaconRoot a block at blockNum must carry. Returns the
+// zero hash for genesis/block 1 or when no parent evidence exists (legacy
+// chains), matching the replay resealer's behavior.
+func ParentBeaconRoot(tx kv.Getter, blockNum uint64) types.Hash {
+	if blockNum <= 1 {
+		return types.Hash{}
+	}
+	parentCE, err := ReadConsensusEvidence(tx, blockNum-1)
+	if err != nil || parentCE == nil {
+		return types.Hash{}
+	}
+	return parentCE.BeaconRoot()
 }
 
 // WriteConsensusEvidence writes evidence for a block number.

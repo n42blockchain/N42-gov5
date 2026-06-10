@@ -105,7 +105,7 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 		misc.ApplyDAOHardFork(ibs)
 	}
 
-	if err := ProcessExecutionBlockStart(nil, chainConfig, ibs, concreteHeader, p.engine); err != nil {
+	if err := ProcessExecutionBlockStart(concreteHeader.ParentBeaconRoot, chainConfig, ibs, concreteHeader, p.engine); err != nil {
 		return nil, nil, nil, 0, err
 	}
 

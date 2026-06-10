@@ -446,6 +446,23 @@ type HotStuffConfig struct {
 
 	// Validators is the genesis validator set for HotStuff consensus.
 	Validators []HotStuffValidatorConfig `json:"validators,omitempty"`
+
+	// CommitteePool, when enabled, runs the simulated BLS committee multi-sig
+	// (the 200K-voter / 512-committee pool carried over from the replay reseal)
+	// for live block production: each new block is stamped with consensus
+	// evidence and a ParentBeaconRoot link, continuing the resealed chain.
+	CommitteePool *HotStuffCommitteePoolConfig `json:"committeePool,omitempty"`
+}
+
+// HotStuffCommitteePoolConfig configures the live BLS committee-evidence pool.
+// The seed and sizes MUST match the replay resealer's (--bls-seed / pool sizes)
+// for the live node to continue a resealed chain byte-identically.
+type HotStuffCommitteePoolConfig struct {
+	Enabled       bool   `json:"enabled"`
+	SeedHex       string `json:"seedHex"`       // 32-byte hex master seed (= replay --bls-seed)
+	PoolSize      int    `json:"poolSize"`      // total mobile-voter pool (e.g. 200000)
+	CommitteeSize int    `json:"committeeSize"` // per-block committee (e.g. 512)
+	RampBlocks    uint64 `json:"rampBlocks"`    // blocks over which the active pool ramps
 }
 
 func (c *HotStuffConfig) String() string {

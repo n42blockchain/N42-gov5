@@ -177,6 +177,17 @@ func (p *Pool) BuildCE(blockNum uint64, blockHash types.Hash, receiptRoot types.
 	return ce, missing, nil
 }
 
+// BuildSimulatedCE builds the all-simulated committee evidence for a block — no
+// external real-validator signatures, the node signs the whole committee via the
+// scalar-sum fast path. This is the early-phase / block-production entry point;
+// its output is byte-identical to the replay resealer's BuildCE for an
+// all-simulated committee, so a node producing block N+1 continues the resealed
+// chain seamlessly.
+func (p *Pool) BuildSimulatedCE(blockNum uint64, blockHash, receiptRoot types.Hash) (*rawdb.ConsensusEvidence, error) {
+	ce, _, err := p.BuildCE(blockNum, blockHash, receiptRoot, nil)
+	return ce, err
+}
+
 // aggregateLocked signs the committee for (blockNum, blockHash): scalar-sum for
 // simulated members, external signatures for replaced ones. Caller holds p.mu.
 func (p *Pool) aggregateLocked(blockNum uint64, blockHash types.Hash,

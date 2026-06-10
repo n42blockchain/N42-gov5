@@ -79,7 +79,7 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 
 	chainConfig := p.config
 	cfg := vm2.Config{}
-	if err := ProcessExecutionBlockStart(nil, chainConfig, ibs, concreteHeader, p.engine); err != nil {
+	if err := ProcessExecutionBlockStart(concreteHeader.ParentBeaconRoot, chainConfig, ibs, concreteHeader, p.engine); err != nil {
 		return nil, nil, nil, 0, err
 	}
 	// blockContext is a value type — each goroutine's NewEVM copies it, safe to share.
