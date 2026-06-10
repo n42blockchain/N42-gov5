@@ -26,6 +26,14 @@ type Getter interface {
 	GetOne(table string, key []byte) ([]byte, error)
 }
 
+// Deleter is the optional sink capability used to reclaim dead entry rows
+// (kv.RwTx satisfies it). When the Putter passed to FlushTo also implements
+// Deleter, rows of slots deactivated after they were flushed are deleted, so
+// the on-disk entry log tracks the live set instead of the full history.
+type Deleter interface {
+	Delete(table string, k []byte) error
+}
+
 // Table names for the positional layout.
 const (
 	EntryTable  = "qmdbEntries"    // BE8(slot) -> keyHash(32) || value
@@ -129,10 +137,15 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 	// CURRENT root (resume's fast path trusts these stored roots). Without this a
 	// dirty twig would flush a stale root.
 	root := t.Root()
-	// Append new immutable entries [flushedThrough, nextSlot). These are always
-	// in the resident window (eviction only drops already-flushed slots).
+	// Append new entries [flushedThrough, nextSlot). These are always in the
+	// resident window (eviction only drops already-flushed slots). Slots already
+	// DEAD at flush time are skipped entirely — their row would never be read
+	// (readers only touch live slots; absent rows read as pruned).
 	for s := flushedThrough; s < t.nextSlot; s++ {
 		e, _ := t.entryAt(s)
+		if !e.active {
+			continue
+		}
 		val := make([]byte, 0, 32+len(e.value))
 		val = append(val, e.keyHash[:]...)
 		val = append(val, e.value...)
@@ -140,6 +153,15 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 			return flushedThrough, bytesW, err
 		}
 		bytesW += 8 + len(val)
+	}
+	// Reclaim rows of slots that were flushed earlier but have since died.
+	if d, ok := p.(Deleter); ok && len(t.deadFlushed) > 0 {
+		for _, s := range t.deadFlushed {
+			if err := d.Delete(EntryTable, be8(s)); err != nil {
+				return flushedThrough, bytesW, err
+			}
+		}
+		t.deadFlushed = t.deadFlushed[:0]
 	}
 	// Twig metadata: root + activeBits (256 bytes for 2048 slots). Skip twigs
 	// whose leaves were EVICTED (leaves==nil, not pruned): their meta was already
