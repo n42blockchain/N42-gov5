@@ -12,6 +12,7 @@ import (
 	"github.com/c2h5oh/datasize"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	mdbxkv "github.com/n42blockchain/N42/lib/kv/mdbx"
 	log "github.com/n42blockchain/N42/lib/log/v3"
@@ -36,6 +37,26 @@ func main() {
 	defer db.Close()
 	tx, _ := db.BeginRo(context.Background())
 	defer tx.Rollback()
+
+	// Binary-search the canonical head.
+	var zero types.Hash
+	hi := uint64(1_000_000)
+	for {
+		if h, _ := rawdb.ReadCanonicalHash(tx, hi); h == zero {
+			break
+		}
+		hi *= 2
+	}
+	lo := uint64(0)
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if h, _ := rawdb.ReadCanonicalHash(tx, mid); h == zero {
+			hi = mid - 1
+		} else {
+			lo = mid
+		}
+	}
+	fmt.Printf("source canonical head = %d\n\n", lo)
 
 	nums := []uint64{0, 1, 2, 3, 4, 5, 10, 100, 1000, 5000}
 	var prev uint64
