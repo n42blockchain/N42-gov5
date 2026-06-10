@@ -553,6 +553,13 @@ func verifyQMDBProofs(
 			accFail++
 			continue
 		}
+		// Exercise the eth_getProof wire codec: marshal → unmarshal → verify,
+		// exactly as the QMDBStateProofProvider serves and a client checks.
+		if !qmdb.VerifyEncodedProof(qroot, p.Marshal()) {
+			fmt.Printf("  ❌ account %x: encoded (wire) proof does not verify\n", addr)
+			accFail++
+			continue
+		}
 		if !bytes.Equal(p.Value, commitment.EncodeAccountValue(acct)) {
 			fmt.Printf("  ❌ account %x: proven value != PlainState account\n", addr)
 			accFail++
@@ -585,6 +592,11 @@ func verifyQMDBProofs(
 			}
 			if !qmdb.VerifyProof(qroot, p) {
 				fmt.Printf("  ❌ storage %x/%x: proof does not verify\n", addr, slot)
+				stoFail++
+				continue
+			}
+			if !qmdb.VerifyEncodedProof(qroot, p.Marshal()) {
+				fmt.Printf("  ❌ storage %x/%x: encoded (wire) proof does not verify\n", addr, slot)
 				stoFail++
 				continue
 			}

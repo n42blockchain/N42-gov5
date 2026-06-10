@@ -19,6 +19,8 @@ const (
 	RootSchemeVerkle RootScheme = "verkle"
 	// RootSchemeEthereumMPT is the canonical Ethereum account/storage MPT root.
 	RootSchemeEthereumMPT RootScheme = "ethereum-mpt"
+	// RootSchemeQMDB is the QMDB append-only twig-forest world root (Blake3).
+	RootSchemeQMDB RootScheme = "qmdb"
 )
 
 // RootSchemeReporter is an optional extension for RootComputer implementations

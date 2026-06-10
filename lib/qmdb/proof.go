@@ -5,6 +5,12 @@
 
 package qmdb
 
+import (
+	"encoding/binary"
+	"errors"
+	"fmt"
+)
+
 // Proof is a membership proof that (KeyHash -> Value) is a live entry committed
 // in the world root. It folds the leaf up its twig (TwigHeight siblings) and then
 // the twig root up the upper tree (one sibling per upper level).
@@ -74,6 +80,95 @@ func VerifyProof(root Hash, p *Proof) bool {
 		twigID >>= 1
 	}
 	return node == root
+}
+
+// proofCodecVersion tags the wire encoding so consumers can detect a QMDB proof
+// (vs an MPT/JMT proof) and route to VerifyEncodedProof.
+const proofCodecVersion = 0x01
+
+// Marshal encodes a membership proof to a self-describing byte blob:
+//
+//	[0]        version (0x01)
+//	[1..33]    KeyHash (32B)
+//	[33..41]   Slot (8B LE)
+//	[41]       TwigHeight (1B, sanity)
+//	           TwigPath: TwigHeight × 32B
+//	[..]       upperLen (1B)
+//	           UpperPath: upperLen × 32B
+//	[..]       valueLen (4B LE) + Value
+func (p *Proof) Marshal() []byte {
+	out := make([]byte, 0, 1+32+8+1+TwigHeight*32+1+len(p.UpperPath)*32+4+len(p.Value))
+	out = append(out, proofCodecVersion)
+	out = append(out, p.KeyHash[:]...)
+	var slot [8]byte
+	binary.LittleEndian.PutUint64(slot[:], p.Slot)
+	out = append(out, slot[:]...)
+	out = append(out, byte(TwigHeight))
+	for i := 0; i < TwigHeight; i++ {
+		out = append(out, p.TwigPath[i][:]...)
+	}
+	out = append(out, byte(len(p.UpperPath)))
+	for _, h := range p.UpperPath {
+		out = append(out, h[:]...)
+	}
+	var vl [4]byte
+	binary.LittleEndian.PutUint32(vl[:], uint32(len(p.Value)))
+	out = append(out, vl[:]...)
+	out = append(out, p.Value...)
+	return out
+}
+
+// UnmarshalProof decodes a blob produced by Proof.Marshal.
+func UnmarshalProof(b []byte) (*Proof, error) {
+	if len(b) < 1+32+8+1 || b[0] != proofCodecVersion {
+		return nil, errors.New("qmdb: not a v1 proof blob")
+	}
+	p := &Proof{}
+	pos := 1
+	copy(p.KeyHash[:], b[pos:pos+32])
+	pos += 32
+	p.Slot = binary.LittleEndian.Uint64(b[pos : pos+8])
+	pos += 8
+	th := int(b[pos])
+	pos++
+	if th != TwigHeight {
+		return nil, fmt.Errorf("qmdb: twig height %d != %d", th, TwigHeight)
+	}
+	if len(b) < pos+TwigHeight*32+1 {
+		return nil, errors.New("qmdb: proof truncated in twig path")
+	}
+	for i := 0; i < TwigHeight; i++ {
+		copy(p.TwigPath[i][:], b[pos:pos+32])
+		pos += 32
+	}
+	ul := int(b[pos])
+	pos++
+	if len(b) < pos+ul*32+4 {
+		return nil, errors.New("qmdb: proof truncated in upper path")
+	}
+	p.UpperPath = make([]Hash, ul)
+	for i := 0; i < ul; i++ {
+		copy(p.UpperPath[i][:], b[pos:pos+32])
+		pos += 32
+	}
+	vl := int(binary.LittleEndian.Uint32(b[pos : pos+4]))
+	pos += 4
+	if len(b) < pos+vl {
+		return nil, errors.New("qmdb: proof truncated in value")
+	}
+	p.Value = make([]byte, vl)
+	copy(p.Value, b[pos:pos+vl])
+	return p, nil
+}
+
+// VerifyEncodedProof decodes a marshaled proof and verifies it against a world
+// root — the client-side check for QMDB-native eth_getProof data.
+func VerifyEncodedProof(root Hash, blob []byte) bool {
+	p, err := UnmarshalProof(blob)
+	if err != nil {
+		return false
+	}
+	return VerifyProof(root, p)
 }
 
 // SlotEntry is one occupied slot in the twig log (for snapshot export/import).
