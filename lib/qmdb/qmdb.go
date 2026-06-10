@@ -197,6 +197,13 @@ type Tree struct {
 	root        Hash
 	rootDirty   bool
 
+	// nDirtyTwigs counts twigs with stale internal nodes (dirty=true). Steady
+	// state is ZERO (setLeaf keeps roots current), letting recomputeDirtyTwigs
+	// return without scanning the O(numTwigs) forest on every block — the scan
+	// was ~2.6% CPU at 24K twigs. Only ForceDirty and bulk snapshot import dirty
+	// twigs, and both go through markTwigDirty.
+	nDirtyTwigs int
+
 	// deadFlushed collects slots whose entry row is already ON DISK (below the
 	// evicted/flushed watermark) and was deactivated afterwards. Dead rows are
 	// never read again (cold faults go through the live index, rehydration uses
@@ -267,10 +274,19 @@ func (t *Tree) ForceDirty() {
 		// Only resident twigs can be recomputed; an evicted twig already holds its
 		// current root (recompute would need its freed nodes).
 		if tw != nil && !tw.pruned && tw.nodes != nil {
-			tw.dirty = true
+			t.markTwigDirty(tw)
 		}
 	}
 	t.rootDirty = true
+}
+
+// markTwigDirty marks a twig's internal nodes stale, maintaining the dirty
+// count that lets Root() skip the forest scan when nothing is stale.
+func (t *Tree) markTwigDirty(tw *twig) {
+	if !tw.dirty {
+		tw.dirty = true
+		t.nDirtyTwigs++
+	}
 }
 
 // NextSlot exposes the append cursor (total entries ever appended) — for tests
@@ -433,20 +449,15 @@ func (t *Tree) Root() Hash {
 var ParallelRoot = true
 
 func (t *Tree) recomputeDirtyTwigs() {
-	// Count first, allocate only if needed: Root() calls this once per block and
-	// the steady state has ZERO dirty twigs (setLeaf keeps roots current), but the
-	// previous version allocated an O(numTwigs) slice before discovering there was
-	// nothing to do — at chain scale that was 40% of ALL process allocations and
-	// the main GC feeder (~46 KB/block at 10M blocks).
-	nDirty := 0
-	for _, tw := range t.twigs {
-		if tw.dirty {
-			nDirty++
-		}
-	}
+	// Steady state has ZERO dirty twigs (setLeaf keeps roots current); the
+	// maintained counter makes that case free — no O(numTwigs) forest scan per
+	// block (the scan itself was ~2.6% CPU at 24K twigs, and the slice the
+	// original version allocated before counting was 40% of ALL allocations).
+	nDirty := t.nDirtyTwigs
 	if nDirty == 0 {
 		return
 	}
+	defer func() { t.nDirtyTwigs = 0 }() // every dirty twig is recomputed below
 	if !ParallelRoot || nDirty == 1 {
 		for id, tw := range t.twigs {
 			if tw.dirty {

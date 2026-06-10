@@ -215,6 +215,14 @@ func (w *PlainStateWriter) WriteChangeSets() error {
 	return nil
 }
 
+// SetHistoryAggregator routes history-index updates into a batch aggregator
+// (see HistoryAggregator). No-op without a changeset writer.
+func (w *PlainStateWriter) SetHistoryAggregator(agg *HistoryAggregator) {
+	if w.csw != nil {
+		w.csw.SetHistoryAggregator(agg)
+	}
+}
+
 func (w *PlainStateWriter) WriteHistory() error {
 	if w.csw != nil {
 		return w.csw.WriteHistory()
@@ -226,4 +234,3 @@ func (w *PlainStateWriter) WriteHistory() error {
 func (w *PlainStateWriter) ChangeSetWriter() *ChangeSetWriter {
 	return w.csw
 }
-

@@ -133,7 +133,7 @@ func FromSnapshotLog(log []SlotEntry) *Tree {
 			tw.live++
 			t.idx.Put(se.KeyHash, se.Slot)
 		}
-		tw.dirty = true
+		t.markTwigDirty(tw)
 	}
 	t.rootDirty = true
 	return t

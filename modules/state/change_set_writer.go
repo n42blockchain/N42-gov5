@@ -47,6 +47,7 @@ import (
 // kv.RwTx.
 type ChangeSetWriter struct {
 	db             kv.Tx
+	historyAgg     *HistoryAggregator // batch-level history sink (nil = per-block writeIndex)
 	accountChanges map[types.Address][]byte
 	storageChanged map[types.Address]bool
 	// storageChanges keys on the inline composite [addr(20)|slot(32)]
@@ -250,21 +251,31 @@ func (w *ChangeSetWriter) WriteChangeSets() error {
 	})
 }
 
+// SetHistoryAggregator routes WriteHistory into a batch-level aggregator
+// instead of the per-block read-modify-write (see HistoryAggregator).
+func (w *ChangeSetWriter) SetHistoryAggregator(agg *HistoryAggregator) { w.historyAgg = agg }
+
 func (w *ChangeSetWriter) WriteHistory() error {
-	rwTx, ok := w.db.(kv.RwTx)
-	if !ok {
-		return fmt.Errorf("WriteHistory requires a kv.RwTx; got %T", w.db)
-	}
 	accountChanges, err := w.GetAccountChanges()
 	if err != nil {
 		return err
 	}
-	if err = writeIndex(w.blockNumber, accountChanges, modules.AccountsHistory, rwTx); err != nil {
-		return err
-	}
-
 	storageChanges, err := w.GetStorageChanges()
 	if err != nil {
+		return err
+	}
+	// Batch mode: accumulate (key, block) in memory; the engine flushes once per
+	// batch — one bitmap round-trip per distinct key instead of per key-block.
+	if w.historyAgg != nil {
+		w.historyAgg.AddChanges(w.blockNumber, accountChanges, modules.AccountsHistory)
+		w.historyAgg.AddChanges(w.blockNumber, storageChanges, modules.StorageHistory)
+		return nil
+	}
+	rwTx, ok := w.db.(kv.RwTx)
+	if !ok {
+		return fmt.Errorf("WriteHistory requires a kv.RwTx; got %T", w.db)
+	}
+	if err = writeIndex(w.blockNumber, accountChanges, modules.AccountsHistory, rwTx); err != nil {
 		return err
 	}
 	return writeIndex(w.blockNumber, storageChanges, modules.StorageHistory, rwTx)
