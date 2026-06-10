@@ -511,6 +511,10 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	}
 
 	if err := chainKv.View(ctx, func(tx kv.Tx) error {
+		// Chains converted with --virtual-td carry a DatabaseInfo marker instead
+		// of per-block all-zero TD rows; ReadTd then synthesizes TD 0 for known
+		// headers (and keeps nil => ErrUnknownAncestor for unknown ones).
+		rawdb.SetupVirtualTdFromDB(tx)
 		genesisHash, err = rawdb.ReadCanonicalHash(tx, 0)
 		if genesisHash == (types.Hash{}) && err != nil {
 			return internal.ErrGenesisNoConfig

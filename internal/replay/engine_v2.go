@@ -213,6 +213,23 @@ func (e *EngineV2) Run(ctx context.Context) (*Stats, error) {
 		return nil, fmt.Errorf("replay-v2: open target DB: %w", err)
 	}
 
+	// Virtual TD: mark the target database and enable the synthesized-read mode
+	// BEFORE any block (and its TD) is written. Resume keeps whatever mode the
+	// target was created with (the marker is the source of truth).
+	if e.cfg.VirtualTd {
+		if err := e.dstDB.Update(ctx, func(tx kv.RwTx) error {
+			return rawdb.WriteVirtualTdMarker(tx)
+		}); err != nil {
+			return nil, fmt.Errorf("replay-v2: write virtual-td marker: %w", err)
+		}
+		rawdb.VirtualTd = true
+	} else if err := e.dstDB.View(ctx, func(tx kv.Tx) error {
+		rawdb.SetupVirtualTdFromDB(tx)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
 	// Detect end block from source if not specified.
 	if e.cfg.ToBlock == 0 {
 		if err := e.srcDB.View(ctx, func(tx kv.Tx) error {

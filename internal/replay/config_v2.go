@@ -31,6 +31,7 @@ type ConfigV2 struct {
 	GapPeriod    uint64
 	GapTolerance uint64
 	GapMaxBlocks uint64 // cap on synthetic empty blocks per gap (0 = unlimited); guards OOM on a huge gap (startup/outage)
+	VirtualTd    bool   // skip all-zero TD rows; ReadTd synthesizes 0 for known headers (marker in DatabaseInfo)
 
 	ExportEraE      bool
 	EraESegmentSize uint64
