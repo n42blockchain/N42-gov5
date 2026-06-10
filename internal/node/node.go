@@ -35,6 +35,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"encoding/hex"
 	"strings"
 	"sync"
 	"time"
@@ -75,6 +76,7 @@ import (
 	"github.com/n42blockchain/N42/internal/bridge"
 	"github.com/n42blockchain/N42/internal/bundler"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/blspool"
 	"github.com/n42blockchain/N42/internal/consensus/apoa"
 	"github.com/n42blockchain/N42/internal/consensus/apos"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
@@ -1375,7 +1377,51 @@ func (n *Node) authorizeMiningEngine(etherbase types.Address) error {
 		if err := hs.InitEngineFromConfig(); err != nil {
 			return fmt.Errorf("hotstuff engine init failed: %w", err)
 		}
+
+		// Wire the live BLS committee-evidence pool (continues the resealed
+		// chain's multi-sig for newly produced blocks). No-op unless enabled.
+		if err := n.wireCommitteePool(hs); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+// wireCommitteePool constructs the simulated BLS committee pool from config and
+// injects it into the HotStuff engine (ParentBeaconRoot link + VerifyHeader) and
+// the blockchain (per-block evidence write), so live block production keeps the
+// BLS multi-sig that the replay reseal stamped onto historical blocks. The seed
+// and sizes must match the resealer's for byte-identical continuation. No-op
+// when the pool is not configured/enabled.
+func (n *Node) wireCommitteePool(hs *hotstuff.HotStuff) error {
+	hsCfg := n.config.ChainCfg.HotStuff
+	if hsCfg == nil || hsCfg.CommitteePool == nil || !hsCfg.CommitteePool.Enabled {
+		return nil
+	}
+	cp := hsCfg.CommitteePool
+	seedBytes, err := hex.DecodeString(strings.TrimPrefix(cp.SeedHex, "0x"))
+	if err != nil || len(seedBytes) != 32 {
+		return fmt.Errorf("hotstuff committee pool: seedHex must be 32-byte hex (got %d bytes): %v", len(seedBytes), err)
+	}
+	var seed [32]byte
+	copy(seed[:], seedBytes)
+	pool, err := blspool.NewSimulatedPool(blspool.PoolConfig{
+		Seed:          seed,
+		PoolSize:      cp.PoolSize,
+		CommitteeSize: cp.CommitteeSize,
+		RampBlocks:    cp.RampBlocks,
+	})
+	if err != nil {
+		return fmt.Errorf("hotstuff committee pool: %w", err)
+	}
+	realBC, ok := n.blockChain.(*internal.BlockChain)
+	if !ok {
+		return errors.New("hotstuff committee pool: concrete blockchain unavailable")
+	}
+	realBC.SetCommitteePool(pool)
+	hs.SetCommitteeEvidence(pool, realBC)
+	log.Info("HotStuff live BLS committee pool wired",
+		"poolSize", cp.PoolSize, "committee", cp.CommitteeSize, "rampBlocks", cp.RampBlocks)
 	return nil
 }
 

@@ -30,6 +30,7 @@ import (
 	blscommon "github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
@@ -58,6 +59,22 @@ var extraMagic = [extraMagicLen]byte{'N', '4', '2', 'H'}
 // circular dependency between hotstuff and apos packages.
 type RewardFunc func(chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, chain consensus.N42ChainHeaderReader) ([]*block.Reward, map[types.Address]*uint256.Int, error)
 
+// CommitteePool produces and verifies the per-block BLS committee evidence (the
+// simulated 200K-voter / 512-committee multi-sig that carries over from the
+// replay reseal). Implemented by *blspool.Pool; an interface here keeps the
+// hotstuff package decoupled from blspool.
+type CommitteePool interface {
+	// VerifyCE re-derives the committee and checks the aggregate signature,
+	// returning the number of covered signers.
+	VerifyCE(ce *rawdb.ConsensusEvidence) (covered int, ok bool, err error)
+}
+
+// CEReader reads stored consensus evidence by block number (parent-CE lookup
+// for the ParentBeaconRoot link). Backed by the chain DB; injected by node.go.
+type CEReader interface {
+	ReadConsensusEvidence(blockNum uint64) (*rawdb.ConsensusEvidence, error)
+}
+
 // HotStuff implements the consensus.Engine interface for HotStuff-2 BFT consensus.
 type HotStuff struct {
 	config      *params.HotStuffConfig
@@ -83,6 +100,23 @@ type HotStuff struct {
 
 	// Block reward function, injected to avoid import cycles.
 	rewardFn RewardFunc
+
+	// Live BLS committee evidence (optional). When both are set, Prepare stamps
+	// each header's ParentBeaconRoot = parent CE's BeaconRoot and VerifyHeader
+	// checks that link, continuing the resealed chain's BLS multi-sig.
+	committeePool CommitteePool
+	ceReader      CEReader
+}
+
+// SetCommitteeEvidence injects the live BLS committee pool and the consensus-
+// evidence reader. With both set, the engine maintains the ParentBeaconRoot
+// chain (EIP-4788) that commits to per-block committee evidence. Safe to leave
+// unset — the engine then behaves exactly as before.
+func (h *HotStuff) SetCommitteeEvidence(pool CommitteePool, ce CEReader) {
+	h.lock.Lock()
+	defer h.lock.Unlock()
+	h.committeePool = pool
+	h.ceReader = ce
 }
 
 // SetRewardFunc injects the block reward function (typically apos.doReward).
@@ -305,6 +339,23 @@ func (h *HotStuff) VerifyHeader(chain consensus.ChainHeaderReader, iHeader block
 		}
 	}
 
+	// EIP-4788 / committee-evidence link: when the engine maintains BLS committee
+	// evidence, every header must commit to the parent's evidence through
+	// ParentBeaconRoot = Blake3(parent CE). This transitively validates that the
+	// producer used the same deterministic committee evidence we hold locally.
+	h.lock.RLock()
+	ceReader := h.ceReader
+	h.lock.RUnlock()
+	if ceReader != nil {
+		expected := parentBeaconRoot(ceReader, header.Number.Uint64())
+		switch {
+		case expected == nil && header.ParentBeaconRoot != nil && *header.ParentBeaconRoot != (types.Hash{}):
+			return fmt.Errorf("unexpected ParentBeaconRoot at block %s (no parent evidence)", header.Number)
+		case expected != nil && (header.ParentBeaconRoot == nil || *header.ParentBeaconRoot != *expected):
+			return fmt.Errorf("ParentBeaconRoot mismatch at block %s: committee-evidence link broken", header.Number)
+		}
+	}
+
 	return nil
 }
 
@@ -371,6 +422,19 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 		return err
 	}
 	header.Extra = extra
+
+	// EIP-4788 link: commit this block to the parent's consensus evidence via
+	// ParentBeaconRoot = Blake3(parent CE). Mirrors the replay resealer so a node
+	// producing block N+1 on a resealed chain continues the BLS multi-sig chain
+	// byte-identically. No-op until SetCommitteeEvidence is wired.
+	h.lock.RLock()
+	ceReader := h.ceReader
+	h.lock.RUnlock()
+	if ceReader != nil && !header.Number.IsZero() {
+		if pbr := parentBeaconRoot(ceReader, header.Number.Uint64()); pbr != nil {
+			header.ParentBeaconRoot = pbr
+		}
+	}
 
 	// Set timestamp (skip for genesis).
 	if header.Number.IsZero() {
@@ -536,6 +600,21 @@ func sealHash(header *block.Header) types.Hash {
 		cpy.Extra = cpy.Extra[:len(cpy.Extra)-extraSealLen]
 	}
 	return cpy.Hash()
+}
+
+// parentBeaconRoot returns the ParentBeaconRoot a block at blockNum must carry:
+// the BeaconRoot of block blockNum-1's consensus evidence, or nil for
+// genesis/block 1 or when no parent evidence exists.
+func parentBeaconRoot(r CEReader, blockNum uint64) *types.Hash {
+	if blockNum <= 1 {
+		return nil
+	}
+	parentCE, err := r.ReadConsensusEvidence(blockNum - 1)
+	if err != nil || parentCE == nil {
+		return nil
+	}
+	root := parentCE.BeaconRoot()
+	return &root
 }
 
 // ExtractViewFromExtra extracts the view number from header extra-data.

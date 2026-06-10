@@ -40,6 +40,7 @@ import (
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/zkverifier"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/modules/state/commitment"
@@ -186,6 +187,19 @@ type BlockChain struct {
 
 	forker    *ForkChoice
 	validator Validator
+
+	// committeePool, when set, builds the per-block BLS committee evidence (the
+	// simulated 200K-voter / 512-committee multi-sig carried over from the replay
+	// reseal) and persists it alongside each block. Optional — nil leaves the
+	// chain's write path unchanged.
+	committeePool CommitteeEvidenceBuilder
+}
+
+// CommitteeEvidenceBuilder builds the consensus evidence for a freshly persisted
+// block. Implemented by *blspool.Pool (via BuildSimulatedCE); an interface keeps
+// the blockchain decoupled from the blspool package and its BLS types.
+type CommitteeEvidenceBuilder interface {
+	BuildSimulatedCE(blockNum uint64, blockHash, receiptRoot types.Hash) (*rawdb.ConsensusEvidence, error)
 }
 
 type insertStats struct {

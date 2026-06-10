@@ -508,10 +508,50 @@ func (bc *BlockChain) persistBlock(db kv.RwDB, blk block.IBlock, source string) 
 			return err
 		}
 		rawdb.WriteHeadBlockHash(tx, blk.Hash())
+		// Persist the per-block BLS committee evidence (multi-sig QC + mobile
+		// attestation) in the same atomic batch as the block, continuing the
+		// resealed chain's consensus-evidence chain. No-op until a pool is set.
+		if bc.committeePool != nil {
+			hdr, ok := concreteBlock.Header().(*block.Header)
+			if ok && hdr != nil {
+				num := concreteBlock.Number64().Uint64()
+				ce, err := bc.committeePool.BuildSimulatedCE(num, blk.Hash(), hdr.ReceiptHash)
+				if err != nil {
+					return fmt.Errorf("build consensus evidence block %d: %w", num, err)
+				}
+				if err := rawdb.WriteConsensusEvidence(tx, num, ce); err != nil {
+					return fmt.Errorf("write consensus evidence block %d: %w", num, err)
+				}
+			}
+		}
 		return nil
 	}); err != nil {
 		log.Errorf("failed to write block from %s: %v", source, err)
 	}
+}
+
+// SetCommitteePool injects the BLS committee-evidence builder. With it set, each
+// persisted block also writes its consensus evidence (continuing the resealed
+// chain's multi-sig). Pass nil to disable.
+func (bc *BlockChain) SetCommitteePool(pool CommitteeEvidenceBuilder) {
+	bc.committeePool = pool
+}
+
+// CommitteePool returns the configured committee-evidence builder, or nil.
+func (bc *BlockChain) CommitteePool() CommitteeEvidenceBuilder {
+	return bc.committeePool
+}
+
+// ReadConsensusEvidence reads the stored consensus evidence for a block number,
+// satisfying the hotstuff.CEReader interface (parent-CE lookup for the
+// ParentBeaconRoot link).
+func (bc *BlockChain) ReadConsensusEvidence(blockNum uint64) (*rawdb.ConsensusEvidence, error) {
+	tx, err := bc.ChainDB.BeginRo(bc.ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	return rawdb.ReadConsensusEvidence(tx, blockNum)
 }
 
 // =============================================================================
