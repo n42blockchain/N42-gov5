@@ -47,6 +47,7 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/lib/trie"
 	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state/commitment"
 )
@@ -149,6 +150,8 @@ func main() {
 		die("usage: n42-datc build|verify [flags]")
 	}
 	fs := flag.NewFlagSet("build", flag.ExitOnError)
+	srcMode := fs.String("src", "mainnet", "source: mainnet (acctcs/storcs freezer + headerc gold check) | n42 (erigon-style MDBX changesets, internal root oracle + final-state check)")
+	chainDir := fs.String("chain", "", "n42 mode: source chaindata dir (e.g. D:/mainnet-bls-full/chaindata)")
 	csDir := fs.String("changesets", `D:/N42-eth1177/chain/freezer`, "acctcs/storcs freezer dir")
 	hdrDir := fs.String("headers", `D:/n42-eth1/chain/freezer`, "headerc freezer dir (root verification)")
 	out := fs.String("out", "", "output MDBX dir")
@@ -172,22 +175,34 @@ func main() {
 	}
 
 	logger := log.New()
-	acctTbl := openCS(*csDir, "acctcs")
-	defer acctTbl.Close()
-	storTbl := openCS(*csDir, "storcs")
-	defer storTbl.Close()
-	hdrs, err := ethel.OpenHeaderCompact(*hdrDir)
-	if err != nil {
-		die("open headerc: %v", err)
-	}
-	defer hdrs.Close()
-
-	avail := uint64(acctTbl.Items())
-	if *endBlock > avail {
-		*endBlock = avail
-	}
-	if *endBlock > hdrs.MaxBlock() {
-		*endBlock = hdrs.MaxBlock()
+	fwdMode := *srcMode == "n42"
+	var acctTbl, storTbl *freezer.FreezerTable
+	var hdrs *ethel.HeaderCompactReader
+	var srcDB kv.RoDB
+	if fwdMode {
+		if *chainDir == "" {
+			die("--src n42 requires --chain")
+		}
+		srcDB = openN42Chain(*chainDir, *mapGB)
+		defer srcDB.Close()
+	} else {
+		acctTbl = openCS(*csDir, "acctcs")
+		defer acctTbl.Close()
+		storTbl = openCS(*csDir, "storcs")
+		defer storTbl.Close()
+		var err error
+		hdrs, err = ethel.OpenHeaderCompact(*hdrDir)
+		if err != nil {
+			die("open headerc: %v", err)
+		}
+		defer hdrs.Close()
+		avail := uint64(acctTbl.Items())
+		if *endBlock > avail {
+			*endBlock = avail
+		}
+		if *endBlock > hdrs.MaxBlock() {
+			*endBlock = hdrs.MaxBlock()
+		}
 	}
 
 	modules.N42Init()
@@ -199,7 +214,7 @@ func main() {
 			for name, item := range kv.ChaindataTablesCfg {
 				d[name] = item
 			}
-			for _, t := range []string{tDatcAccNode, tDatcStoNode, tDatcAccChg, tDatcStoChg, tDatcLeafA, tDatcLeafS, tDatcMeta} {
+			for _, t := range []string{tDatcAccNode, tDatcStoNode, tDatcAccChg, tDatcStoChg, tDatcLeafA, tDatcLeafS, tDatcMeta, tFwdAcctCS, tFwdStorCS, tDatcRoots} {
 				d[t] = kv.TableCfgItem{}
 			}
 			return d
@@ -231,6 +246,61 @@ func main() {
 		b.stoDirty[d] = make(map[string]uint16, 1<<10)
 	}
 	b.resumed = *startBlock > 0
+	b.fwdMode = fwdMode
+
+	if fwdMode {
+		srcTx, err := srcDB.BeginRo(context.Background())
+		if err != nil {
+			die("begin src: %v", err)
+		}
+		// End block: the chain's current head + 1 (build covers [0, head]).
+		if headPtr := rawdb.ReadCurrentBlockNumber(srcTx); headPtr != nil {
+			if *endBlock == 0 || *endBlock > *headPtr+1 {
+				*endBlock = *headPtr + 1
+			}
+		}
+		// Phase 1 (idempotent): derive forward changesets if not present yet.
+		need := true
+		if otx, e := db.BeginRo(context.Background()); e == nil {
+			if c, e2 := otx.Cursor(tFwdAcctCS); e2 == nil {
+				if k, _, _ := c.First(); k != nil {
+					need = false
+				}
+				c.Close()
+			}
+			otx.Rollback()
+		}
+		if need {
+			fmt.Printf("[convert] deriving forward changesets from %s …\n", *chainDir)
+			if err := convertN42Changesets(srcTx, db, *endBlock); err != nil {
+				die("convert: %v", err)
+			}
+		} else {
+			fmt.Printf("[convert] forward changesets already present, skipping\n")
+		}
+
+		if err := b.run(*startBlock, *endBlock, *batch); err != nil {
+			die("%v", err)
+		}
+		// External gate: final state equality vs source PlainState — only
+		// meaningful for a FULL build (PlainState is the head state).
+		headPtr := rawdb.ReadCurrentBlockNumber(srcTx)
+		if headPtr != nil && *endBlock == *headPtr+1 {
+			btx, err := db.BeginRo(context.Background())
+			if err != nil {
+				die("begin build ro: %v", err)
+			}
+			defer btx.Rollback()
+			if err := finalStateCheck(btx, srcTx, b); err != nil {
+				die("FINAL STATE CHECK FAILED: %v", err)
+			}
+		} else if headPtr != nil {
+			fmt.Printf("[final-check] skipped (partial build %d ≤ head %d)\n", *endBlock, *headPtr)
+		}
+		srcTx.Rollback()
+		return
+	}
+
 	if err := b.run(*startBlock, *endBlock, *batch); err != nil {
 		die("%v", err)
 	}
@@ -279,6 +349,12 @@ type builder struct {
 	slotHashCache map[types.Hash][32]byte
 
 	resumed bool // resumed builds always write tombstones (cold lastFull maps)
+
+	// fwdMode: n42-chain source — changesets come from the FwdAcctCS/FwdStorCS
+	// tables (derived by convertN42Changesets), there is no external header
+	// oracle (the chain's header roots are QMDB roots), so each block's
+	// computed MPT root is recorded into DatcRoots as the verify oracle.
+	fwdMode bool
 
 	leafAPuts, leafSPuts, chgPuts, nodePuts uint64
 }
@@ -517,62 +593,101 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 // block applies one block's changesets, verifies the root against the real
 // header, and records leaf history + change-index entries.
 func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64) error {
-	accBlob, err := b.acctTbl.Retrieve(n)
-	if err != nil {
-		return fmt.Errorf("acctcs: %w", err)
-	}
-	stoBlob, err := b.storTbl.Retrieve(n)
-	if err != nil {
-		return fmt.Errorf("storcs: %w", err)
-	}
-
 	dirtyA := make(map[types.Address]*account.StateAccount)
 	dirtyS := make(map[types.Address]map[types.Hash]*uint256.Int)
 
-	if len(accBlob) > 0 {
-		entries, err := ethel.DecodeAccountChanges(accBlob)
-		if err != nil {
-			return fmt.Errorf("decode acctcs: %w", err)
+	addAcct := func(addr types.Address, newVal []byte) error {
+		if len(newVal) == 0 {
+			dirtyA[addr] = nil
+			return nil
 		}
-		for _, e := range entries {
-			if len(e.NewValue) == 0 {
-				dirtyA[e.Address] = nil
-				continue
-			}
-			var acct account.StateAccount
-			if err := acct.DecodeForStorage(e.NewValue); err != nil {
-				return fmt.Errorf("decode account %x: %w", e.Address, err)
-			}
-			dirtyA[e.Address] = &acct
+		var acct account.StateAccount
+		if err := acct.DecodeForStorage(newVal); err != nil {
+			return fmt.Errorf("decode account %x: %w", addr, err)
+		}
+		dirtyA[addr] = &acct
+		return nil
+	}
+	addSlot := func(addr types.Address, slot types.Hash, newVal []byte) {
+		// Account deleted this block: drop its WRITES (intra-block values
+		// that don't survive), but KEEP its wipe entries (new = empty) —
+		// they are the per-slot tombstones the leaf history needs
+		// (collectPreWipeSlots emits one per pre-existing slot).
+		if a, ok := dirtyA[addr]; ok && a == nil && len(newVal) != 0 {
+			return
+		}
+		inner, ok := dirtyS[addr]
+		if !ok {
+			inner = make(map[types.Hash]*uint256.Int, 8)
+			dirtyS[addr] = inner
+		}
+		if len(newVal) == 0 {
+			inner[slot] = nil // delete
+		} else {
+			inner[slot] = new(uint256.Int).SetBytes(newVal)
 		}
 	}
-	if len(stoBlob) > 0 {
-		entries, err := ethel.DecodeStorageChanges(stoBlob)
+
+	if b.fwdMode {
+		// Forward changesets derived from the n42 chain's MDBX changesets.
+		var k8 [8]byte
+		binary.BigEndian.PutUint64(k8[:], n)
+		accBlob, err := tx.GetOne(tFwdAcctCS, k8[:])
 		if err != nil {
-			return fmt.Errorf("decode storcs: %w", err)
+			return err
 		}
-		for _, e := range entries {
+		if err := decodeFwdBlob(accBlob, 20, func(key, val []byte) error {
+			var addr types.Address
+			copy(addr[:], key)
+			return addAcct(addr, val)
+		}); err != nil {
+			return fmt.Errorf("fwd acct blob block %d: %w", n, err)
+		}
+		stoBlob, err := tx.GetOne(tFwdStorCS, k8[:])
+		if err != nil {
+			return err
+		}
+		if err := decodeFwdBlob(stoBlob, 52, func(key, val []byte) error {
 			var addr types.Address
 			var slot types.Hash
-			copy(addr[:], e.CompositeKey[:20])
-			copy(slot[:], e.CompositeKey[20:])
-			// Account deleted this block: drop its WRITES (intra-block values
-			// that don't survive), but KEEP its wipe entries (new = empty) —
-			// they are the per-slot tombstones the leaf history needs
-			// (collectPreWipeSlots emits one per pre-existing slot).
-			if a, ok := dirtyA[addr]; ok && a == nil && len(e.NewValue) != 0 {
-				continue
+			copy(addr[:], key[:20])
+			copy(slot[:], key[20:])
+			addSlot(addr, slot, val)
+			return nil
+		}); err != nil {
+			return fmt.Errorf("fwd stor blob block %d: %w", n, err)
+		}
+	} else {
+		accBlob, err := b.acctTbl.Retrieve(n)
+		if err != nil {
+			return fmt.Errorf("acctcs: %w", err)
+		}
+		stoBlob, err := b.storTbl.Retrieve(n)
+		if err != nil {
+			return fmt.Errorf("storcs: %w", err)
+		}
+		if len(accBlob) > 0 {
+			entries, err := ethel.DecodeAccountChanges(accBlob)
+			if err != nil {
+				return fmt.Errorf("decode acctcs: %w", err)
 			}
-			inner, ok := dirtyS[addr]
-			if !ok {
-				inner = make(map[types.Hash]*uint256.Int, 8)
-				dirtyS[addr] = inner
+			for _, e := range entries {
+				if err := addAcct(e.Address, e.NewValue); err != nil {
+					return err
+				}
 			}
-			if len(e.NewValue) == 0 {
-				inner[slot] = nil // delete
-			} else {
-				v := new(uint256.Int).SetBytes(e.NewValue)
-				inner[slot] = v
+		}
+		if len(stoBlob) > 0 {
+			entries, err := ethel.DecodeStorageChanges(stoBlob)
+			if err != nil {
+				return fmt.Errorf("decode storcs: %w", err)
+			}
+			for _, e := range entries {
+				var addr types.Address
+				var slot types.Hash
+				copy(addr[:], e.CompositeKey[:20])
+				copy(slot[:], e.CompositeKey[20:])
+				addSlot(addr, slot, e.NewValue)
 			}
 		}
 	}
@@ -640,12 +755,23 @@ func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64) 
 	if err != nil {
 		return fmt.Errorf("ComputeRoot: %w", err)
 	}
-	hdr, err := b.hdrs.ReadHeader(n)
-	if err != nil {
-		return fmt.Errorf("read header: %w", err)
-	}
-	if root != hdr.Root {
-		return fmt.Errorf("ROOT MISMATCH: computed %x != header %x", root, hdr.Root)
+	if b.fwdMode {
+		// No external MPT oracle (the chain's header roots are QMDB roots):
+		// record the computed root as the verify oracle. The external gate is
+		// the end-of-build final-state equality check against PlainState.
+		var rk [8]byte
+		binary.BigEndian.PutUint64(rk[:], n)
+		if err := tx.Put(tDatcRoots, rk[:], root[:]); err != nil {
+			return err
+		}
+	} else {
+		hdr, err := b.hdrs.ReadHeader(n)
+		if err != nil {
+			return fmt.Errorf("read header: %w", err)
+		}
+		if root != hdr.Root {
+			return fmt.Errorf("ROOT MISMATCH: computed %x != header %x", root, hdr.Root)
+		}
 	}
 
 	// Record leaf history + change-index entries + pending changed paths.
