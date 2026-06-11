@@ -136,6 +136,10 @@ func main() {
 		runFoldDiff(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "stor" {
+		runStor(os.Args[2:])
+		return
+	}
 	if os.Args[1] != "build" {
 		die("usage: n42-datc build|verify [flags]")
 	}
@@ -459,8 +463,11 @@ func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64) 
 			var slot types.Hash
 			copy(addr[:], e.CompositeKey[:20])
 			copy(slot[:], e.CompositeKey[20:])
-			// Stale pre-SELFDESTRUCT entries: account deleted this block.
-			if a, ok := dirtyA[addr]; ok && a == nil {
+			// Account deleted this block: drop its WRITES (intra-block values
+			// that don't survive), but KEEP its wipe entries (new = empty) —
+			// they are the per-slot tombstones the leaf history needs
+			// (collectPreWipeSlots emits one per pre-existing slot).
+			if a, ok := dirtyA[addr]; ok && a == nil && len(e.NewValue) != 0 {
 				continue
 			}
 			inner, ok := dirtyS[addr]
@@ -515,19 +522,22 @@ func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64) 
 			continue
 		}
 		ah := b.addrHash(addr)
-		addrHash := ah[:]
-		c, cerr := tx.Cursor(modules.HashedStorage)
+		// HashedStorage is DupSort: the cursor yields key=addrHash+inc (40B)
+		// with the slotHash in the VALUE (slotHash32 || slotValue). A plain
+		// 72-byte-key scan never matches.
+		c, cerr := tx.CursorDupSort(modules.HashedStorage)
 		if cerr != nil {
 			return cerr
 		}
 		prefix := make([]byte, 40)
-		copy(prefix, addrHash)
-		for k, _, e := c.Seek(prefix); k != nil && e == nil; k, _, e = c.Next() {
-			if len(k) < 72 || !bytesEqualPrefix(k, prefix) {
-				break
+		copy(prefix, ah[:])
+		for v, e := c.SeekBothRange(prefix, nil); v != nil && e == nil; _, v, e = c.NextDup() {
+			if len(v) < 32 {
+				continue
 			}
 			var ws wipedSlot
-			copy(ws.composite[:], k[:72])
+			copy(ws.composite[:40], prefix)
+			copy(ws.composite[40:], v[:32])
 			wiped = append(wiped, ws)
 		}
 		c.Close()
