@@ -41,9 +41,13 @@ func runFoldDiff(args []string) {
 		}
 		return db
 	}
-	bigDB, refDB := open(*out), open(*ref)
+	bigDB := open(*out)
 	defer bigDB.Close()
-	defer refDB.Close()
+	refDB := bigDB
+	if *ref != *out {
+		refDB = open(*ref)
+		defer refDB.Close()
+	}
 	btx, _ := bigDB.BeginRo(context.Background())
 	defer btx.Rollback()
 	rtx, _ := refDB.BeginRo(context.Background())
@@ -217,6 +221,60 @@ func runFoldDiff(args []string) {
 		}
 	}
 	fmt.Printf("missing=%d extra=%d valuediff=%d\n", miss, extra, diff)
+}
+
+// runStor dumps HashedStorage rows under an addrHash prefix in a DB.
+func runStor(args []string) {
+	fs := flag.NewFlagSet("stor", flag.ExitOnError)
+	db := fs.String("db", "", "DB dir")
+	pfx := fs.String("prefix", "", "addrHash hex prefix")
+	_ = fs.Parse(args)
+	logger := log.New()
+	modules.N42Init()
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	d, err := mdbxkv.NewMDBX(logger).Path(*db).Label(kv.ChainDB).
+		MapSize(512 * datasize.GB).Accede().Readonly().Open(context.Background())
+	if err != nil {
+		die("open: %v", err)
+	}
+	defer d.Close()
+	tx, _ := d.BeginRo(context.Background())
+	defer tx.Rollback()
+	want, err := hexDecode(*pfx)
+	if err != nil {
+		die("prefix: %v", err)
+	}
+	c, _ := tx.Cursor(modules.HashedStorage)
+	defer c.Close()
+	cnt := 0
+	for k, v, e := c.Seek(want); k != nil && e == nil; k, v, e = c.Next() {
+		if len(k) < len(want) || string(k[:len(want)]) != string(want) {
+			break
+		}
+		fmt.Printf("HashedStorage %x = %x\n", k, v)
+		cnt++
+		if cnt > 10 {
+			break
+		}
+	}
+	fmt.Printf("(%d rows under %x)\n", cnt, want)
+	// Also the account row.
+	if len(want) == 32 {
+		av, _ := tx.GetOne(modules.HashedAccounts, want)
+		fmt.Printf("HashedAccount row: %x\n", av)
+	}
+}
+
+func hexDecode(s string) ([]byte, error) {
+	out := make([]byte, len(s)/2)
+	for i := 0; i < len(out); i++ {
+		var b byte
+		if _, err := fmt.Sscanf(s[2*i:2*i+2], "%02x", &b); err != nil {
+			return nil, err
+		}
+		out[i] = b
+	}
+	return out, nil
 }
 
 func runDiag(args []string) {
