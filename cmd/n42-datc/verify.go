@@ -38,6 +38,7 @@ func runVerify(args []string) {
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
 	out := fs.String("out", "", "DATC MDBX dir (from build)")
 	hdrDir := fs.String("headers", `D:/n42-eth1/chain/freezer`, "headerc freezer dir")
+	internalRoots := fs.Bool("internal-roots", false, "n42-mode oracle: expected roots from the build's DatcRoots table (no headerc)")
 	samples := fs.Int("samples", 50, "sampled historical heights")
 	foldDepth := fs.Int("fold-depth", 4, "account-trie depth at/below which subtrees fold from leaf history")
 	at := fs.Uint64("at", 0, "verify exactly this height (overrides sampling)")
@@ -58,11 +59,15 @@ func runVerify(args []string) {
 		die("open: %v", err)
 	}
 	defer db.Close()
-	hdrs, err := ethel.OpenHeaderCompact(*hdrDir)
-	if err != nil {
-		die("open headerc: %v", err)
+	var hdrs *ethel.HeaderCompactReader
+	if !*internalRoots {
+		var err error
+		hdrs, err = ethel.OpenHeaderCompact(*hdrDir)
+		if err != nil {
+			die("open headerc: %v", err)
+		}
+		defer hdrs.Close()
 	}
-	defer hdrs.Close()
 
 	tx, err := db.BeginRo(context.Background())
 	if err != nil {
@@ -94,9 +99,22 @@ func runVerify(args []string) {
 			n = *at
 			*samples = 1
 		}
-		hdr, err := hdrs.ReadHeader(n)
-		if err != nil {
-			die("header %d: %v", n, err)
+		// Expected root: real header (mainnet mode) or the build's recorded
+		// per-block MPT root (n42 mode — DatcRoots oracle). Blocks with no
+		// recorded root (state-unchanged blocks) resolve to the previous one.
+		var want types.Hash
+		if *internalRoots {
+			rv, found, err := floorRoot(tx, n)
+			if err != nil || !found {
+				die("DatcRoots floor for block %d: %v", n, err)
+			}
+			want = rv
+		} else {
+			hdr, err := hdrs.ReadHeader(n)
+			if err != nil {
+				die("header %d: %v", n, err)
+			}
+			want = hdr.Root
 		}
 		q.folds, q.recs, q.leafReads = 0, 0, 0
 		t0 := time.Now()
@@ -110,15 +128,15 @@ func runVerify(args []string) {
 		}
 		lat = append(lat, el)
 		status := "OK "
-		if root != hdr.Root {
+		if root != want {
 			status = "FAIL"
 		} else {
 			okCnt++
 		}
-		fmt.Printf("  [%s] N=%-8d root=%x.. hdr=%x..  %6s  (recs=%d folds=%d leafReads=%d)\n",
-			status, n, root[:6], hdr.Root[:6], el.Round(time.Millisecond), q.recs, q.folds, q.leafReads)
+		fmt.Printf("  [%s] N=%-8d root=%x.. want=%x..  %6s  (recs=%d folds=%d leafReads=%d)\n",
+			status, n, root[:6], want[:6], el.Round(time.Millisecond), q.recs, q.folds, q.leafReads)
 		if status == "FAIL" {
-			die("root mismatch at block %d: datc=%x header=%x", n, root, hdr.Root)
+			die("root mismatch at block %d: datc=%x want=%x", n, root, want)
 		}
 	}
 	sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
@@ -131,6 +149,33 @@ func runVerify(args []string) {
 		(sum / time.Duration(len(lat))).Round(time.Millisecond),
 		lat[len(lat)/2].Round(time.Millisecond),
 		lat[len(lat)*99/100].Round(time.Millisecond))
+}
+
+// floorRoot returns the last recorded MPT root ≤ n from DatcRoots (blocks
+// that changed no state record no root; their root equals the previous one).
+func floorRoot(tx kv.Tx, n uint64) (types.Hash, bool, error) {
+	var h types.Hash
+	c, err := tx.Cursor(tDatcRoots)
+	if err != nil {
+		return h, false, err
+	}
+	defer c.Close()
+	var seek [8]byte
+	binary.BigEndian.PutUint64(seek[:], n+1)
+	k, v, err := c.Seek(seek[:])
+	if err != nil {
+		return h, false, err
+	}
+	if k == nil {
+		k, v, err = c.Last()
+	} else {
+		k, v, err = c.Prev()
+	}
+	if err != nil || k == nil || len(v) != 32 {
+		return h, false, err
+	}
+	copy(h[:], v)
+	return h, true, nil
 }
 
 // querier reconstructs node hashes at historical heights from DATC data.
