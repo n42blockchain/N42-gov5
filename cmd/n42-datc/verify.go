@@ -163,22 +163,22 @@ func (q *querier) nodeHashAt(domain, path []byte, n uint64) (types.Hash, bool, e
 	if d >= fold {
 		return q.foldAt(domain, path, n)
 	}
-	rec, recEpoch, ok, err := q.floorRecord(domain, path, n)
+	st, recEpoch, ok, err := q.floorRecord(domain, path, n)
 	if err != nil {
 		return types.Hash{}, false, err
 	}
-	if !ok || len(rec) == 0 {
+	if !ok {
 		if domain == nil && d == 0 {
 			// The account-trie root has no TrieAccount row by convention —
 			// synthesize it from its 16 depth-1 children.
 			return q.synthesizeRoot(n)
 		}
-		// Never a persisted branch up to N (or tombstone) — resolve from leaves.
+		// Never a persisted branch up to N (or tombstone/undecodable chain) —
+		// resolve from leaves.
 		return q.foldAt(domain, path, n)
 	}
 	q.recs++
-	hasState, _, hasHash, hashes, _ := trie.UnmarshalTrieNode(rec)
-	if hasState != hasHash || hasState == 0 {
+	if st.hasState != st.hasHash || st.hasState == 0 {
 		// Mixed/inline children — the plain 17-RLP assembly below would be
 		// wrong; the fold handles every shape correctly.
 		return q.foldAt(domain, path, n)
@@ -191,16 +191,15 @@ func (q *querier) nodeHashAt(domain, path []byte, n uint64) (types.Hash, bool, e
 	curEpoch := q.sched.epochOf(d, n)
 	eLen := q.sched.e[d]
 	if recEpoch == curEpoch && (n+1)%eLen != 0 {
-		rec2, recEpoch2, ok2, err2 := q.floorRecordBefore(domain, path, curEpoch)
+		st2, recEpoch2, ok2, err2 := q.floorRecordBefore(domain, path, curEpoch)
 		if err2 != nil {
 			return types.Hash{}, false, err2
 		}
-		if !ok2 || len(rec2) == 0 {
+		if !ok2 {
 			return q.foldAt(domain, path, n)
 		}
-		rec, recEpoch = rec2, recEpoch2
-		hasState, _, hasHash, hashes, _ = trie.UnmarshalTrieNode(rec)
-		if hasState != hasHash || hasState == 0 {
+		st, recEpoch = st2, recEpoch2
+		if st.hasState != st.hasHash || st.hasState == 0 {
 			return q.foldAt(domain, path, n)
 		}
 	}
@@ -216,15 +215,8 @@ func (q *querier) nodeHashAt(domain, path []byte, n uint64) (types.Hash, bool, e
 	// recursively at N.
 	var slots [16]*types.Hash
 	nKids := 0
-	hashIdx := 0
 	for nib := byte(0); nib < 16; nib++ {
 		bit := uint16(1) << nib
-		inBase := hasState&bit != 0
-		var baseHash types.Hash
-		if inBase {
-			copy(baseHash[:], hashes[hashIdx*32:hashIdx*32+32])
-			hashIdx++
-		}
 		if changed[nib] {
 			h, exists, err := q.nodeHashAt(domain, append(append([]byte{}, path...), nib), n)
 			if err != nil {
@@ -237,8 +229,8 @@ func (q *querier) nodeHashAt(domain, path []byte, n uint64) (types.Hash, bool, e
 			}
 			continue
 		}
-		if inBase {
-			hc := baseHash
+		if st.hasState&bit != 0 {
+			hc := types.Hash(st.hash[nib])
 			slots[nib] = &hc
 			nKids++
 		}
@@ -321,14 +313,77 @@ func branch17Hash(slots [16]*types.Hash) types.Hash {
 	return out
 }
 
-// floorRecord returns the newest node record with epoch ≤ epochOf(d, n).
-func (q *querier) floorRecord(domain, path []byte, n uint64) ([]byte, uint64, bool, error) {
+// nodeState is a reconstructed node record: masks plus per-nibble child hashes
+// (valid where the hasHash bit is set).
+type nodeState struct {
+	hasState, hasTree, hasHash uint16
+	hash                       [16][32]byte
+}
+
+// decodeFullRecord parses a FULL record body (MarshalTrieNode bytes).
+func decodeFullRecord(body []byte) (st nodeState, ok bool) {
+	hasState, hasTree, hasHash, hashes, _ := trie.UnmarshalTrieNode(body)
+	st.hasState, st.hasTree, st.hasHash = hasState, hasTree, hasHash
+	hi := 0
+	for nib := 0; nib < 16; nib++ {
+		if hasHash&(1<<nib) == 0 {
+			continue
+		}
+		if (hi+1)*32 > len(hashes) {
+			return st, false
+		}
+		copy(st.hash[nib][:], hashes[hi*32:])
+		hi++
+	}
+	return st, true
+}
+
+// applyDiff folds one DIFF record onto the previous state: masks are replaced;
+// changed children take the diff's hashes; unchanged hashed children carry
+// over (they must have existed before — else the chain is inconsistent).
+func applyDiff(prev nodeState, rec []byte) (st nodeState, ok bool) {
+	if len(rec) < 9 {
+		return st, false
+	}
+	st.hasState = binary.BigEndian.Uint16(rec[1:])
+	st.hasTree = binary.BigEndian.Uint16(rec[3:])
+	st.hasHash = binary.BigEndian.Uint16(rec[5:])
+	changed := binary.BigEndian.Uint16(rec[7:])
+	pos := 9
+	for nib := 0; nib < 16; nib++ {
+		bit := uint16(1) << nib
+		if st.hasHash&bit == 0 {
+			continue
+		}
+		if changed&bit != 0 {
+			if pos+32 > len(rec) {
+				return st, false
+			}
+			copy(st.hash[nib][:], rec[pos:])
+			pos += 32
+			continue
+		}
+		if prev.hasHash&bit == 0 {
+			return st, false // unchanged hashed child with no prior hash
+		}
+		st.hash[nib] = prev.hash[nib]
+	}
+	return st, pos == len(rec)
+}
+
+// floorRecord returns the reconstructed node state of the newest record with
+// epoch ≤ epochOf(d, n). ok=false covers absent, tombstone, and undecodable
+// chains alike — the caller falls back to the fold, which is always correct.
+func (q *querier) floorRecord(domain, path []byte, n uint64) (nodeState, uint64, bool, error) {
 	d := len(path)
 	return q.floorRecordBefore(domain, path, q.sched.epochOf(d, n)+1)
 }
 
-// floorRecordBefore returns the newest record with epoch < beforeEpoch.
-func (q *querier) floorRecordBefore(domain, path []byte, beforeEpoch uint64) ([]byte, uint64, bool, error) {
+// floorRecordBefore reconstructs the newest record with epoch < beforeEpoch by
+// walking the DIFF chain back to its FULL anchor (bounded by the builder's
+// fullEvery superblock rule) and folding forward.
+func (q *querier) floorRecordBefore(domain, path []byte, beforeEpoch uint64) (nodeState, uint64, bool, error) {
+	var zero nodeState
 	table := tDatcAccNode
 	full := path
 	if domain != nil {
@@ -341,32 +396,59 @@ func (q *querier) floorRecordBefore(domain, path []byte, beforeEpoch uint64) ([]
 
 	c, err := q.tx.Cursor(table)
 	if err != nil {
-		return nil, 0, false, err
+		return zero, 0, false, err
 	}
 	defer c.Close()
 	seek := append(append([]byte{}, prefix...), 0, 0, 0, 0)
 	binary.BigEndian.PutUint32(seek[len(prefix):], uint32(beforeEpoch))
 	k, v, err := c.Seek(seek)
 	if err != nil {
-		return nil, 0, false, err
+		return zero, 0, false, err
 	}
-	// Step back to the last key strictly below `seek`.
 	if k == nil {
 		k, v, err = c.Last()
 	} else {
 		k, v, err = c.Prev()
 	}
 	if err != nil || k == nil {
-		return nil, 0, false, err
+		return zero, 0, false, err
 	}
 	if len(k) != len(prefix)+4 || !bytes.HasPrefix(k, prefix) {
-		return nil, 0, false, nil
+		return zero, 0, false, nil
 	}
 	epoch := uint64(binary.BigEndian.Uint32(k[len(prefix):]))
-	return append([]byte{}, v...), epoch, true, nil
+	if len(v) == 0 {
+		return zero, epoch, false, nil // tombstone
+	}
+
+	// Collect the DIFF chain back to its FULL anchor.
+	var diffs [][]byte
+	for v[0] == nodeRecDiff {
+		diffs = append(diffs, append([]byte{}, v...))
+		k, v, err = c.Prev()
+		if err != nil || k == nil || len(k) != len(prefix)+4 || !bytes.HasPrefix(k, prefix) || len(v) == 0 {
+			return zero, 0, false, err // diff without an anchor (or tombstone mid-chain)
+		}
+	}
+	if v[0] != nodeRecFull {
+		return zero, 0, false, nil
+	}
+	st, ok := decodeFullRecord(v[1:])
+	if !ok {
+		return zero, 0, false, nil
+	}
+	for i := len(diffs) - 1; i >= 0; i-- {
+		st, ok = applyDiff(st, diffs[i])
+		if !ok {
+			return zero, 0, false, nil
+		}
+	}
+	return st, epoch, true, nil
 }
 
-// changedChildren scans the change window (epochStart..n] of n's epoch.
+// changedChildren decodes the aggregated change rows of n's epoch: range scan
+// over (d|domain|path|epoch) — rows are batch segments keyed by their first
+// block — and collect events with block ≤ n.
 func (q *querier) changedChildren(domain, path []byte, epoch, n uint64) (map[byte]bool, error) {
 	d := len(path)
 	table := tDatcAccChg
@@ -385,21 +467,35 @@ func (q *querier) changedChildren(domain, path []byte, epoch, n uint64) (map[byt
 	}
 	defer c.Close()
 	out := make(map[byte]bool)
-	for k, _, err := c.Seek(prefix); k != nil; k, _, err = c.Next() {
+	for k, v, err := c.Seek(prefix); k != nil; k, v, err = c.Next() {
 		if err != nil {
 			return nil, err
 		}
 		if !bytes.HasPrefix(k, prefix) {
 			break
 		}
-		if len(k) != len(prefix)+5 {
+		if len(k) != len(prefix)+4 {
 			continue
 		}
-		blk := uint64(binary.BigEndian.Uint32(k[len(prefix):]))
-		if blk > n {
-			break // keys sort by block within the epoch
+		if uint64(binary.BigEndian.Uint32(k[len(prefix):])) > n {
+			break // segment starts past n — later segments only later
 		}
-		out[k[len(prefix)+4]] = true
+		blk := uint64(0)
+		pos := 0
+		for pos < len(v) {
+			dlt, m := binary.Uvarint(v[pos:])
+			if m <= 0 || pos+m >= len(v) {
+				break
+			}
+			pos += m
+			blk += dlt
+			nib := v[pos]
+			pos++
+			if blk > n {
+				break
+			}
+			out[nib] = true
+		}
 	}
 	return out, nil
 }
