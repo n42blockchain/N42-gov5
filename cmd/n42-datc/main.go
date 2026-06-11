@@ -380,6 +380,15 @@ func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64) 
 	}
 	for addr, slots := range dirtyS {
 		addrHash := crypto.Keccak256(addr[:])
+		// A storage-only change still changes the account-trie leaf (its
+		// storageRoot): mark the account path in the change index even though
+		// acctcs has no entry for it. (TrieRootComputer does the same when it
+		// adds storage-dirty addresses to the account RetainList.) No DatcLeafA
+		// entry is needed — the account VALUE is unchanged; the verifier's fold
+		// recomputes the storageRoot from the storage leaf history.
+		if _, also := dirtyA[addr]; !also {
+			b.recordChange(tx, false, nil, nibblesOf(addrHash), n)
+		}
 		domain := make([]byte, 40)
 		copy(domain, addrHash)
 		// incarnation 0 (matches TrieRootComputer composite keys)
@@ -452,6 +461,12 @@ func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
 			path := []byte(pk)
 			if len(path)-domLen != d {
 				continue // belongs to another level
+			}
+			if !storage && len(path) == 0 {
+				// The account-trie root has no TrieAccount row by convention;
+				// the verifier synthesizes it from the depth-1 children.
+				delete(pending, pk)
+				continue
 			}
 			// Full-key read works for both tables: the kv layer auto-converts
 			// DupSort keys exactly as trie_root_computer's own Put/Delete do.
