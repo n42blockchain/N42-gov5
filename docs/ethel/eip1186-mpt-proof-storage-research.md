@@ -330,3 +330,57 @@ AccNode 哈希置零后只剩 31.6MB —— 节点段的体积几乎纯由变更
 C̄ 增大而缩短(主网级 E_3≈262 块),每节点窗口解码 ~1ms,每查询 +~15-20ms,
 换 chg 段全免。早期链数据可压性偏乐观(空账户/重复余额多),25M 投影留
 ±30% 余量;剩余工程 = 段文件查询路径(帧索引 + 帧内 floor-seek),格式已证。
+
+---
+
+# 第四部分:全网方案对账(2026-06-11,论文 + 生产系统 + 协议生态三路调研)
+
+## 14. 新颖性检查(三路独立探测,结论一致)
+
+未发现任何已发表系统使用"**checkpoint 间隔按 trie 深度指数化、由期望变更率
+16^d/C̄ 解析推导**"的方案。最近的三个邻居:
+- **LETUS**(蚂蚁,SIGMOD'24):DMM-Tree 的 BasePage+DeltaPage 按**实际 delta
+  计数阈值**触发全量——同一原理的经验计数版(DATC 是解析先验版);窗口化
+  保留,非全历史,非 ETH 根兼容。
+- **MMR/timeline entanglement**:时间维的 2^k 指数分层——与 DATC 的键空间
+  深度维分层互为对偶,无键空间维。
+- **Merkle²**(S&P'21):时间×键空间二维,但每个时间尺度嵌完整键空间树
+  (O(log n) 写放大);DATC 是其"转置+负载感知"版,用 C̄ 统计把常数压下去。
+
+**可发表的新颖点** = 深度→期望变更间隔→checkpoint 间隔的解析模型 +
+EIP-1186 字节兼容全历史证明(LVMT/QMDB/COLE/LETUS 均不产 ETH 兼容历史证明)。
+
+## 15. 生产对标:Erigon v3.3 是现役 SOTA,DATC 小 10-25x
+
+| 系统 | 全历史证明 | 主网磁盘 | 机制 | 短板 |
+|---|---|---|---|---|
+| **Erigon 3.3+**(2025-11) | ✅ p50 3ms | **4.1 TB**(索引+2.3-2.5TB) | 存每个节点版本:不可变段+Hamming 排序+64 节点/组 zstd+EF/Roaring | 重新同步才能覆盖既往 |
+| Geth v1.17 | ✅ 窗口 | ~6.5 TB | `--history.trienode` 独立窗口 | forward-only |
+| op-reth sidecar | ✅ 窗口 | ~1 TB/4 周(Base) | ExEx→独立 MDBX 版本化分支节点 | forward-only |
+| Reth 上游 | ≤6 个月窗口 | — | changeset 反向 revert 现算 | 深历史内存爆炸 |
+| legacy hash archive | ✅ | >20 TB | 全节点版本 hash 键 | 经典爆炸 |
+| **DATC** | ✅ 目标 | **170-420 GB** | 稀疏检查点+diff+重算 | 查询时延换空间(p50 192ms→可优化) |
+
+**独占差异化**:① 体积 10-25x;② **回填能力**(从 changesets/witness 重放
+重建任意历史段)在全部 8 个被调研系统中无对应物;③ 下游生态确认(Herodotus/
+Lagrange/ZK coprocessor 全部以 archive getProof 为瓶颈输入 = 直接客户画像)。
+
+## 16. 采纳清单(按优先级)
+
+1. **Erigon 压缩配方**:节点按 Hamming 距离排序 + 64/组 zstd 批压 + EF/Roaring
+   块号定位 → 直接升级我们的静态段(与 RecSplit 栈同构);
+2. **LETUS 混合触发护栏**:E_d 解析调度 + "diff 计数 ≥K 强制 FULL"——治热点
+   节点 diff 链过长(p99 时延主因),冷节点自然跳过;
+3. **QMDB OldId 叶子版本链**(仓内已有实现!):稀更新 key 的历史值走 O(版本数)
+   回溯链,只在需要完整证明时才重建路径——直接砍掉重 fold 的 leafReads;
+4. **MMR 锚定 checkpoint 根**(Merkle²/Herodotus):32B 链上承诺让任意历史证明
+   可无信任验证,顺便打开 ZK coprocessor 消费接口;
+5. **Geth 双窗口解耦**:历史值 / 历史证明各自独立保留旋钮;
+6. **COLE+ CDC 段边界 + learned index**:段结构与写入顺序无关(reorg/重放安全);
+7. **Firewood FDL**:checkpoint 过期降采样用延迟删除日志,段文件 append-only +
+   整段删除,绝不细粒度 KV 删(Aptos compaction 风暴教训);
+8. **Reth DoS 防护**:proof-window 上限 + 并发 permits。
+
+定位一句话:**DATC = 唯一同时满足"全历史任意高度 + EIP-1186 字节兼容 +
+数百 GB 量级"的方案**;LETUS -75~88%(窗口化)、COLE -94%(自有根格式)、
+DATC -97~98%(ETH 兼容根,vs Erigon 4.1TB)。
