@@ -282,6 +282,13 @@ type Tree struct {
 	batchTouched []uint64 // absolute leaf slots written since the last fold
 	foldScratch  []uint64 // reusable packed (twigID<<12|nodeIdx) level scratch
 
+	// leafJobs defers hashLeaf itself in batch mode (AVX-512 only): Set records
+	// the (slot, key, value-view) and foldTouched hashes 16 leaves per ZMM pass
+	// before folding. Slot-ascending by construction. A job is killed (dead)
+	// when its slot is deactivated within the same batch — the leaf must stay
+	// null. Values are arena views, stable until eviction (post-flush).
+	leafJobs []leafJob
+
 	// arena is the current value-copy chunk: Set copies values into it instead
 	// of one heap object per op (the per-op malloc + GC mark was ~10% CPU in
 	// all-in-RAM runs). Chunks are append-ordered like slots, and entry
@@ -393,7 +400,15 @@ func (t *Tree) deactivate(slot uint64) {
 	t.ensureHydrated(id) // rehydrate this twig's nodes if they were evicted
 	tw := t.twigs[id]
 	local := slot % TwigSize
-	if tw.leaf(local) != nullHash {
+	if jb := t.pendingLeafJob(slot); jb != nil {
+		// The slot's leaf hash is still a deferred job (same key written then
+		// overwritten/deleted within one batch): kill the job — the leaf is
+		// null and must stay null — but account the liveness drop the eager
+		// path below would have.
+		jb.dead = true
+		tw.live--
+		t.markUpperDirty(id)
+	} else if tw.leaf(local) != nullHash {
 		t.writeLeaf(tw, id, local, nullHash) // eager O(log) fold, or deferred in batch mode
 		tw.live--
 		t.markUpperDirty(id)
@@ -426,7 +441,7 @@ func (t *Tree) Set(keyHash Hash, value []byte) {
 	local := slot % TwigSize
 	v := t.allocVal(value)
 	t.setEntry(slot, entry{keyHash: keyHash, value: v, active: true})
-	t.writeLeaf(tw, int(slot/TwigSize), local, hashLeaf(keyHash, v)) // eager O(log) fold, or deferred in batch mode
+	t.writeLeafEntry(tw, int(slot/TwigSize), local, slot, keyHash, v)
 	tw.live++
 	t.markUpperDirty(int(slot / TwigSize))
 	t.idx.Put(keyHash, slot)

@@ -13,6 +13,7 @@
 package qmdb
 
 import (
+	"slices"
 	"sort"
 	"unsafe"
 )
@@ -27,6 +28,97 @@ func (t *Tree) writeLeaf(tw *twig, id int, local uint64, h Hash) {
 	}
 	tw.nodes[TwigSize+local] = h
 	t.batchTouched = append(t.batchTouched, uint64(id)*TwigSize+local)
+}
+
+// leafJob is one deferred leaf hash (see Tree.leafJobs).
+type leafJob struct {
+	slot uint64
+	key  Hash
+	val  []byte
+	dead bool
+}
+
+// writeLeafEntry hashes-and-writes a live entry's leaf — or, in batch mode
+// with AVX-512, defers the hash itself so foldTouched computes 16 leaves per
+// ZMM pass. Eligibility = the two-block fast-path sizes (most state values).
+func (t *Tree) writeLeafEntry(tw *twig, id int, local, slot uint64, keyHash Hash, v []byte) {
+	if t.batchFolding && !tw.dirty && haveAVX512 {
+		if total := 33 + len(v); total > 64 && total <= 128 {
+			t.leafJobs = append(t.leafJobs, leafJob{slot: slot, key: keyHash, val: v})
+			t.batchTouched = append(t.batchTouched, slot)
+			return
+		}
+	}
+	t.writeLeaf(tw, id, local, hashLeaf(keyHash, v))
+}
+
+// pendingLeafJob returns the live deferred job for slot, if any. Jobs are
+// slot-ascending (append order), so this is a binary search.
+func (t *Tree) pendingLeafJob(slot uint64) *leafJob {
+	n := len(t.leafJobs)
+	if n == 0 || slot < t.leafJobs[0].slot || slot > t.leafJobs[n-1].slot {
+		return nil
+	}
+	i := sort.Search(n, func(i int) bool { return t.leafJobs[i].slot >= slot })
+	if i < n && t.leafJobs[i].slot == slot && !t.leafJobs[i].dead {
+		return &t.leafJobs[i]
+	}
+	return nil
+}
+
+// flushLeafJobs computes all deferred leaf hashes, 16 per AVX-512 pass, and
+// writes them into their twig leaves. Dead jobs (deactivated within the
+// batch) are skipped — their leaves stay null.
+func (t *Tree) flushLeafJobs() {
+	jobs := t.leafJobs
+	if len(jobs) == 0 {
+		return
+	}
+	var buf [2048]byte
+	var lens [16]uint32
+	var outs [16]Hash
+	var pend [16]int
+	np := 0
+	flush := func() {
+		if np == 16 {
+			hashLeaves16(&outs, &buf, &lens)
+			for m := 0; m < 16; m++ {
+				t.writeLeafHash(jobs[pend[m]].slot, outs[m])
+			}
+		} else {
+			for m := 0; m < np; m++ {
+				jb := &jobs[pend[m]]
+				t.writeLeafHash(jb.slot, hashLeaf(jb.key, jb.val))
+			}
+		}
+		np = 0
+	}
+	for i := range jobs {
+		if jobs[i].dead {
+			continue
+		}
+		lane := buf[np*128 : (np+1)*128]
+		lane[0] = 0x01
+		copy(lane[1:33], jobs[i].key[:])
+		n := copy(lane[33:], jobs[i].val)
+		clear(lane[33+n:]) // zero the pad (lanes are reused across flushes)
+		lens[np] = uint32(33 + n - 64)
+		pend[np] = i
+		np++
+		if np == 16 {
+			flush()
+		}
+	}
+	flush()
+	t.leafJobs = t.leafJobs[:0]
+}
+
+// writeLeafHash stores a computed leaf hash; the touched slot was already
+// recorded at Set time, so folding picks it up.
+func (t *Tree) writeLeafHash(slot uint64, h Hash) {
+	id := int(slot / TwigSize)
+	t.ensureHydrated(id)
+	t.twigs[id].nodes[TwigSize+slot%TwigSize] = h
 }
 
 // BeginLeafBatch defers internal-node folding for subsequent Set/Delete calls
@@ -87,8 +179,9 @@ func (t *Tree) foldTouched() {
 	if len(t.batchTouched) == 0 {
 		return
 	}
+	t.flushLeafJobs() // leaf values must exist before their paths fold
 	touched := t.batchTouched
-	sort.Slice(touched, func(i, j int) bool { return touched[i] < touched[j] })
+	slices.Sort(touched)
 	// Pack to (twigID<<12 | heap index); skip dirty (recompute rebuilds them
 	// in full) and evicted twigs (writes hydrate first; guard anyway), and
 	// collapse duplicate slots.
@@ -155,26 +248,41 @@ func (t *Tree) hashPackedList(g []uint64) {
 		}
 		return
 	}
-	var pairs [16]Hash
-	var out [8]Hash
-	var pendN [8]*[2 * TwigSize]Hash
-	var pendI [8]uint32
+	flushAt := 8
+	if haveAVX512 {
+		flushAt = 16
+	}
+	var pairs [32]Hash
+	var out [16]Hash
+	var pendN [16]*[2 * TwigSize]Hash
+	var pendI [16]uint32
 	np := 0
 	flush := func() {
-		if np == 8 {
+		n := 0
+		if np == 16 {
+			for m := 0; m < 16; m++ {
+				pairs[2*m] = pendN[m][2*pendI[m]]
+				pairs[2*m+1] = pendN[m][2*pendI[m]+1]
+			}
+			hashNodes16(&out, &pairs)
+			for m := 0; m < 16; m++ {
+				pendN[m][pendI[m]] = out[m]
+			}
+			n = 16
+		} else if np >= 8 {
 			for m := 0; m < 8; m++ {
 				pairs[2*m] = pendN[m][2*pendI[m]]
 				pairs[2*m+1] = pendN[m][2*pendI[m]+1]
 			}
-			hashNodes8(&out, &pairs)
+			hashNodes8((*[8]Hash)(out[:8]), (*[16]Hash)(pairs[:16]))
 			for m := 0; m < 8; m++ {
 				pendN[m][pendI[m]] = out[m]
 			}
-		} else {
-			for m := 0; m < np; m++ {
-				nodes, p := pendN[m], pendI[m]
-				nodes[p] = hashNode(nodes[2*p], nodes[2*p+1])
-			}
+			n = 8
+		}
+		for m := n; m < np; m++ {
+			nodes, p := pendN[m], pendI[m]
+			nodes[p] = hashNode(nodes[2*p], nodes[2*p+1])
 		}
 		np = 0
 	}
@@ -195,7 +303,7 @@ func (t *Tree) hashPackedList(g []uint64) {
 				pendN[np] = tw.nodes
 				pendI[np] = uint32(g[k] & 0xfff)
 				np++
-				if np == 8 {
+				if np == flushAt {
 					flush()
 				}
 			}

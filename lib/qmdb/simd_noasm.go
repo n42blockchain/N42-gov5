@@ -9,7 +9,10 @@ package qmdb
 
 import "unsafe"
 
-const haveAVX2 = false
+const (
+	haveAVX2   = false
+	haveAVX512 = false
+)
 
 func prefetcht0(p unsafe.Pointer) {}
 
@@ -17,6 +20,17 @@ func hashNodes8(out *[8]Hash, pairs *[16]Hash) {
 	for i := 0; i < 8; i++ {
 		out[i] = hashNode(pairs[2*i], pairs[2*i+1])
 	}
+}
+
+func hashNodes16(out *[16]Hash, pairs *[32]Hash) {
+	for i := 0; i < 16; i++ {
+		out[i] = hashNode(pairs[2*i], pairs[2*i+1])
+	}
+}
+
+// hashLeaves16 is only called when haveAVX512; never reached here.
+func hashLeaves16(out *[16]Hash, buf *[2048]byte, blockLens *[16]uint32) {
+	panic("qmdb: hashLeaves16 without AVX-512")
 }
 
 func hashNodesRun(nodes []Hash, base, n int) {

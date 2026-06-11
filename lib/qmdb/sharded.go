@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"math/bits"
 	"runtime"
-	"sync"
 	"sync/atomic"
 )
 
@@ -31,6 +30,103 @@ import (
 type ShardedTree struct {
 	shards []*Tree
 	shift  uint // keyHash[0] >> shift selects the shard (top bits)
+
+	// ApplyBatch partition scratch, reused across blocks (callers serialize
+	// ApplyBatch like every other mutator, so reuse is safe).
+	partCounts []int
+	partBuf    []Op
+	parts      [][]Op
+
+	pool *shardPool // lazily started persistent workers (see below)
+}
+
+// shardPool keeps ApplyBatch's workers alive across blocks. Spawning (or
+// waking parked) goroutines per block cost 5-25µs on Windows — comparable to
+// the whole parallel section once per-shard work shrank to tens of ops — so
+// workers SPIN briefly on the epoch counter before parking on a channel:
+// back-to-back blocks (the chain-import steady state) hit the spin window and
+// dispatch in nanoseconds. Publication order: parts/next/done are written
+// before the epoch bump (atomic = release); workers re-read them only after
+// observing the new epoch.
+type shardPool struct {
+	epoch  atomic.Uint64
+	next   atomic.Int64
+	done   atomic.Int64
+	parts  [][]Op
+	shards []*Tree
+	wake   chan struct{}
+	nw     int
+}
+
+const poolSpins = 1 << 13
+
+func newShardPool(shards []*Tree) *shardPool {
+	nw := runtime.GOMAXPROCS(0) - 1 // the ApplyBatch caller is worker #nw
+	if nw > len(shards)-1 {
+		nw = len(shards) - 1
+	}
+	if nw < 0 {
+		nw = 0
+	}
+	p := &shardPool{shards: shards, wake: make(chan struct{}, nw), nw: nw}
+	for w := 0; w < nw; w++ {
+		go p.run()
+	}
+	return p
+}
+
+func (p *shardPool) run() {
+	last := uint64(0)
+	for {
+		spins := 0
+		for p.epoch.Load() == last {
+			spins++
+			if spins >= poolSpins {
+				<-p.wake // park; dispatcher tops the channel up every block
+				spins = 0
+			}
+		}
+		last = p.epoch.Load()
+		p.work()
+		p.done.Add(1)
+	}
+}
+
+func (p *shardPool) work() {
+	for {
+		s := int(p.next.Add(1)) - 1
+		if s >= len(p.parts) {
+			return
+		}
+		if len(p.parts[s]) == 0 {
+			continue
+		}
+		p.shards[s].ApplyOps(p.parts[s])
+	}
+}
+
+// dispatch runs one block's shard parts across the pool plus the caller, and
+// returns when every shard is applied.
+func (p *shardPool) dispatch(parts [][]Op) {
+	p.parts = parts
+	p.next.Store(0)
+	p.done.Store(0)
+	p.epoch.Add(1)
+	// Top up the wake channel so any PARKED worker wakes; spinning workers see
+	// the epoch directly and consume the token later (channel is buffered nw).
+	for i := 0; i < p.nw; i++ {
+		select {
+		case p.wake <- struct{}{}:
+		default:
+		}
+	}
+	p.work() // caller participates instead of idling at the barrier
+	for spins := 1; p.done.Load() != int64(p.nw); spins++ {
+		if spins%poolSpins == 0 {
+			runtime.Gosched() // a straggler may need our core
+		}
+	}
+	p.parts = nil
 }
 
 // Op is one batched state operation. Value nil/empty = delete.
@@ -96,14 +192,23 @@ func (t *ShardedTree) LiveCount() int {
 // every shard's slice on its own goroutine — the lock-free hot path. Returns
 // the new world root.
 func (t *ShardedTree) ApplyBatch(ops []Op) Hash {
-	// Counting scatter into one backing array — no per-append reallocation, and
-	// the partition pass touches each op exactly twice.
-	counts := make([]int, len(t.shards))
+	// Counting scatter into one backing array — no per-append reallocation,
+	// scratch reused across blocks, and the partition pass touches each op
+	// exactly twice.
+	if t.partCounts == nil {
+		t.partCounts = make([]int, len(t.shards))
+		t.parts = make([][]Op, len(t.shards))
+	}
+	counts := t.partCounts
+	clear(counts)
 	for i := range ops {
 		counts[t.shardOf(ops[i].KeyHash)]++
 	}
-	buf := make([]Op, len(ops))
-	parts := make([][]Op, len(t.shards))
+	if cap(t.partBuf) < len(ops) {
+		t.partBuf = make([]Op, len(ops))
+	}
+	buf := t.partBuf[:len(ops)]
+	parts := t.parts
 	off := 0
 	for s, c := range counts {
 		parts[s] = buf[off : off : off+c]
@@ -113,31 +218,13 @@ func (t *ShardedTree) ApplyBatch(ops []Op) Hash {
 		s := t.shardOf(ops[i].KeyHash)
 		parts[s] = append(parts[s], ops[i])
 	}
-	// At most GOMAXPROCS workers claim shards off an atomic counter — spawning
-	// one goroutine per shard wasted ~7% of block time at 64 shards.
-	workers := runtime.GOMAXPROCS(0)
-	if workers > len(t.shards) {
-		workers = len(t.shards)
+	// Persistent spin-then-park workers claim shards off an atomic counter —
+	// per-block goroutine spawn/wakeup latency was comparable to the whole
+	// parallel section once per-shard work shrank to tens of ops.
+	if t.pool == nil {
+		t.pool = newShardPool(t.shards)
 	}
-	var next atomic.Int64
-	var wg sync.WaitGroup
-	wg.Add(workers)
-	for w := 0; w < workers; w++ {
-		go func() {
-			defer wg.Done()
-			for {
-				s := int(next.Add(1)) - 1
-				if s >= len(parts) {
-					return
-				}
-				if len(parts[s]) == 0 {
-					continue
-				}
-				t.shards[s].ApplyOps(parts[s])
-			}
-		}()
-	}
-	wg.Wait()
+	t.pool.dispatch(parts)
 	return t.Root()
 }
 
