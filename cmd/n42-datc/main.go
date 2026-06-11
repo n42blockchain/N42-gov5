@@ -161,6 +161,7 @@ func main() {
 	cbar := fs.Float64("cbar", 20, "assumed average changed keys per block")
 	batch := fs.Uint64("batch", 20_000, "blocks per MDBX commit (large batches spill MDBX dirty pages and stall)")
 	mapGB := fs.Int("map.gb", 1024, "MDBX map size GB")
+	leafSeg := fs.Bool("leaf-seg", false, "stream leaf history to zstd segment files instead of MDBX (mainnet-scale builds; ~10x smaller)")
 	pprofPort := fs.Int("pprof.port", 0, "serve net/http/pprof on this port (0=off)")
 	_ = fs.Parse(os.Args[2:])
 	if *out == "" {
@@ -237,9 +238,11 @@ func main() {
 		addrHashCache: make(map[types.Address][32]byte, 1<<16),
 		slotHashCache: make(map[types.Hash][32]byte, 1<<16),
 		accLastFull:   make(map[string]nodeRecState, 1<<16),
-		stoLastFull:   make(map[string]nodeRecState, 1<<16),
+		stoLastFull:   newLastFullCache(8 << 20), // ~8M entries ≈ 1 GB heap, read-back beyond
+
 		chgAccAgg:     make(map[string][]chgEvent, 1<<14),
 		chgStoAgg:     make(map[string][]chgEvent, 1<<14),
+		outDir:        *out,
 	}
 	for d := 0; d <= maxChgDepth; d++ {
 		b.accDirty[d] = make(map[string]uint16, 1<<10)
@@ -247,6 +250,13 @@ func main() {
 	}
 	b.resumed = *startBlock > 0
 	b.fwdMode = fwdMode
+	if *leafSeg {
+		sw, err := newLeafSpillWriter(*out)
+		if err != nil {
+			die("leaf spill: %v", err)
+		}
+		b.spill = sw
+	}
 
 	if fwdMode {
 		srcTx, err := srcDB.BeginRo(context.Background())
@@ -327,8 +337,14 @@ type builder struct {
 	// node record is written when no prior record exists (or it was a
 	// tombstone) or every F-th epoch, bounding the reader's walk-back to F.
 	// Lost on restart → next records degrade to FULL (safe, just larger).
+	//
+	// Account paths are bounded by construction (Σ16^d, d≤5 ≈ 1.12M) and stay
+	// a plain map. STORAGE paths grow with distinct (contract, path) — ~300M
+	// at mainnet-25M scale — so they live in a capped cache that reads the
+	// authoritative answer back from the already-written DatcStorNode records
+	// on a miss (lastFullCache below).
 	accLastFull map[string]nodeRecState
-	stoLastFull map[string]nodeRecState
+	stoLastFull *lastFullCache
 
 	// Aggregated change-event buffers for the CURRENT batch, keyed by the chg
 	// row prefix (d|domain|path|epoch4). One row per (path, epoch, batch
@@ -356,7 +372,30 @@ type builder struct {
 	// computed MPT root is recorded into DatcRoots as the verify oracle.
 	fwdMode bool
 
+	// spill, when non-nil (--leaf-seg), receives leaf-history rows instead of
+	// the MDBX tables; finalizeLeafSegments turns it into sorted static
+	// segments after the build (leafseg.go).
+	spill  *leafSpillWriter
+	outDir string
+
 	leafAPuts, leafSPuts, chgPuts, nodePuts uint64
+}
+
+// putLeaf routes one leaf-history row to the segment spill or the MDBX buffer.
+func (b *builder) putLeaf(storage bool, k, v []byte) error {
+	if b.spill != nil {
+		t := leafTableA
+		if storage {
+			t = leafTableS
+		}
+		return b.spill.add(t, k, v)
+	}
+	if storage {
+		b.leafSBuf = append(b.leafSBuf, kvPair{k: k, v: v})
+	} else {
+		b.leafABuf = append(b.leafABuf, kvPair{k: k, v: v})
+	}
+	return nil
 }
 
 type kvPair struct{ k, v []byte }
@@ -365,6 +404,116 @@ type kvPair struct{ k, v []byte }
 type nodeRecState struct {
 	lastFullEpoch uint32
 	exists        bool // false = no record yet or last was a tombstone
+}
+
+// lastFullCache is a capped nodeRecState map whose misses are answered from
+// the already-written node records (floor scan + ≤fullEvery walk-back to the
+// last FULL). Entries written during the CURRENT batch are never evicted —
+// their rows may still sit uncommitted in the sorted write buffer, where the
+// read-back cannot see them.
+type lastFullCache struct {
+	m      map[string]lfEntry
+	cap    int
+	seq    uint32
+	missRB uint64 // read-backs performed (stats)
+}
+
+type lfEntry struct {
+	nodeRecState
+	seq uint32
+}
+
+func newLastFullCache(capEntries int) *lastFullCache {
+	return &lastFullCache{m: make(map[string]lfEntry, 1<<16), cap: capEntries}
+}
+
+func (c *lastFullCache) newBatch() { c.seq++ }
+
+func (c *lastFullCache) put(pk string, st nodeRecState) {
+	if len(c.m) >= c.cap {
+		// Evict a slice of OLD-batch entries (map order is random); current-
+		// batch entries are pinned.
+		drop := c.cap / 8
+		for k, e := range c.m {
+			if e.seq == c.seq {
+				continue
+			}
+			delete(c.m, k)
+			if drop--; drop <= 0 {
+				break
+			}
+		}
+	}
+	c.m[pk] = lfEntry{nodeRecState: st, seq: c.seq}
+}
+
+// get returns the path's last-record state, reading it back from the node
+// table on a cache miss. `epoch` is the epoch about to be written — the floor
+// scan looks strictly below it.
+func (c *lastFullCache) get(tx kv.Tx, table string, pk string, epoch uint64) (nodeRecState, error) {
+	if e, ok := c.m[pk]; ok {
+		return e.nodeRecState, nil
+	}
+	c.missRB++
+	st, err := readBackLastFull(tx, table, []byte(pk), epoch)
+	if err != nil {
+		return nodeRecState{}, err
+	}
+	c.put(pk, st)
+	return st, nil
+}
+
+// readBackLastFull reconstructs nodeRecState from the committed records of
+// one path: floor record below `epoch`, then ≤fullEvery steps back to the
+// last FULL when the floor is a DIFF.
+func readBackLastFull(tx kv.Tx, table string, path []byte, epoch uint64) (nodeRecState, error) {
+	prefix := make([]byte, 0, 1+len(path))
+	prefix = append(prefix, byte(len(path)))
+	prefix = append(prefix, path...)
+	cur, err := tx.Cursor(table)
+	if err != nil {
+		return nodeRecState{}, err
+	}
+	defer cur.Close()
+	seek := make([]byte, 0, len(prefix)+4)
+	seek = append(seek, prefix...)
+	seek = binary.BigEndian.AppendUint32(seek, uint32(epoch))
+	k, v, err := cur.Seek(seek)
+	if err != nil {
+		return nodeRecState{}, err
+	}
+	if k == nil {
+		k, v, err = cur.Last()
+	} else {
+		k, v, err = cur.Prev()
+	}
+	for {
+		if err != nil {
+			return nodeRecState{}, err
+		}
+		if k == nil || !bytesEqualPrefix(k, prefix) || len(k) != len(prefix)+4 {
+			return nodeRecState{}, nil // no record below epoch: never existed
+		}
+		if len(v) == 0 {
+			return nodeRecState{}, nil // floor is a tombstone
+		}
+		if v[0] == nodeRecFull {
+			return nodeRecState{lastFullEpoch: binary.BigEndian.Uint32(k[len(prefix):]), exists: true}, nil
+		}
+		// DIFF: keep walking back to its FULL anchor (bounded by fullEvery).
+		// `exists` is true (the floor record is live); only lastFullEpoch is
+		// still unknown.
+		pk, pv, perr := cur.Prev()
+		if perr != nil {
+			return nodeRecState{}, perr
+		}
+		if pk == nil || !bytesEqualPrefix(pk, prefix) || len(pk) != len(prefix)+4 || len(pv) == 0 {
+			// Chain truncated (shouldn't happen for a valid DB): degrade to
+			// "due for a FULL now" — safe, just a larger next record.
+			return nodeRecState{lastFullEpoch: 0, exists: true}, nil
+		}
+		k, v, err = pk, pv, nil
+	}
 }
 
 // chgEvent is one change event inside an aggregated row.
@@ -579,6 +728,7 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		b.stoLastFull.newBatch() // committed: cache entries become evictable
 
 		var m runtime.MemStats
 		runtime.ReadMemStats(&m)
@@ -587,6 +737,17 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 			hi, end, bps, m.HeapAlloc>>20, b.leafAPuts, b.leafSPuts, b.chgPuts, b.nodePuts)
 	}
 	fmt.Printf("DATC build done: %d blocks in %s\n", blocksDone, time.Since(t0).Round(time.Second))
+	if b.spill != nil {
+		fmt.Printf("[leafseg] finalizing %d + %d spilled leaf rows …\n", b.spill.rows[leafTableA], b.spill.rows[leafTableS])
+		tFin := time.Now()
+		if err := b.spill.close(); err != nil {
+			return fmt.Errorf("leaf spill close: %w", err)
+		}
+		if err := finalizeLeafSegments(b.outDir); err != nil {
+			return fmt.Errorf("leaf finalize: %w", err)
+		}
+		fmt.Printf("[leafseg] done in %s\n", time.Since(tFin).Round(time.Second))
+	}
 	return nil
 }
 
@@ -779,7 +940,9 @@ func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64) 
 	binary.BigEndian.PutUint64(blk8[:], n)
 	for i := range wiped {
 		comp := wiped[i].composite
-		b.leafSBuf = append(b.leafSBuf, kvPair{k: append(comp[:], blk8[:]...)})
+		if err := b.putLeaf(true, append(comp[:], blk8[:]...), nil); err != nil {
+			return err
+		}
 		b.leafSPuts++
 		b.recordChange(true, comp[:40], nibblesOf(comp[40:]), n)
 	}
@@ -789,7 +952,9 @@ func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64) 
 		if acct != nil {
 			val = acct.MarshalV2()
 		}
-		b.leafABuf = append(b.leafABuf, kvPair{k: append(append([]byte{}, ah[:]...), blk8[:]...), v: val})
+		if err := b.putLeaf(false, append(append([]byte{}, ah[:]...), blk8[:]...), val); err != nil {
+			return err
+		}
 		b.leafAPuts++
 		b.recordChange(false, nil, nibblesOf(ah[:]), n)
 	}
@@ -821,7 +986,9 @@ func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64) 
 				}
 				val = append([]byte{}, bb[s:]...)
 			}
-			b.leafSBuf = append(b.leafSBuf, kvPair{k: append(composite, blk8[:]...), v: val})
+			if err := b.putLeaf(true, append(composite, blk8[:]...), val); err != nil {
+				return err
+			}
 			b.leafSPuts++
 			b.recordChange(true, domain, nibblesOf(sh[:]), n)
 		}
@@ -897,12 +1064,25 @@ func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
 			return nil
 		}
 		srcTable := modules.TrieOfAccounts
+		nodeTable := tDatcAccNode
 		buf := &b.nodeAccBuf
-		lastFull := b.accLastFull
 		if storage {
 			srcTable = modules.TrieOfStorage
+			nodeTable = tDatcStoNode
 			buf = &b.nodeStoBuf
-			lastFull = b.stoLastFull
+		}
+		getLF := func(pk string) (nodeRecState, error) {
+			if !storage {
+				return b.accLastFull[pk], nil
+			}
+			return b.stoLastFull.get(tx, nodeTable, pk, epoch)
+		}
+		putLF := func(pk string, st nodeRecState) {
+			if !storage {
+				b.accLastFull[pk] = st
+			} else {
+				b.stoLastFull.put(pk, st)
+			}
 		}
 		// Sorted iteration: the TrieOf* GetOne reads walk the B-tree in key
 		// order instead of map-random order.
@@ -935,26 +1115,31 @@ func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
 			k = append(k, path...)
 			k = binary.BigEndian.AppendUint32(k, uint32(epoch))
 
-			st := lastFull[pk]
+			st, err := getLF(pk)
+			if err != nil {
+				return err
+			}
 			var v []byte
 			switch {
 			case len(node) == 0: // tombstone
-				if !st.exists && !b.resumed {
+				if !st.exists && (!b.resumed || storage) {
 					// Never had a live record — a tombstone adds nothing (the
 					// verifier treats absent and tombstone identically). On a
-					// RESUMED build the map is cold, so tombstones are always
-					// written (skipping one for a pre-restart live node would
-					// resurrect it).
+					// RESUMED build the ACCOUNT map is cold, so account
+					// tombstones are always written (skipping one for a
+					// pre-restart live node would resurrect it); the storage
+					// cache reads back the committed truth, so elision stays
+					// safe there.
 					continue
 				}
-				lastFull[pk] = nodeRecState{exists: false}
+				putLF(pk, nodeRecState{exists: false})
 			case !st.exists || uint32(epoch) >= st.lastFullEpoch+fullEvery:
 				v = append([]byte{nodeRecFull}, node...)
-				lastFull[pk] = nodeRecState{lastFullEpoch: uint32(epoch), exists: true}
+				putLF(pk, nodeRecState{lastFullEpoch: uint32(epoch), exists: true})
 			default:
 				v = encodeNodeDiff(node, changed)
 				st.exists = true
-				lastFull[pk] = st
+				putLF(pk, st)
 			}
 			*buf = append(*buf, kvPair{k: k, v: v})
 			b.nodePuts++
