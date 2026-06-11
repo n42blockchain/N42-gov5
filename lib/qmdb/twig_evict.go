@@ -90,6 +90,7 @@ func (t *Tree) EvictTwigsThrough(through uint64) {
 	if t.cold == nil {
 		return
 	}
+	t.foldTouched() // eviction retains tw.root — settle deferred batch leaves first
 	maxID := int(through / TwigSize) // twigs with id < maxID are fully below `through`
 	if maxID > len(t.twigs) {
 		maxID = len(t.twigs)
