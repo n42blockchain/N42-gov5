@@ -233,3 +233,46 @@ proof(key, N) = [nodeAt(根..叶路径每层, N)] + 同层 sibling 即 base 中�
   (实测 59M+89M=148M 条/9.5GB)——主网全史 DATC 需要从 genesis 的完整
   changesets(可由 witness/重放重建,数据工程而非设计问题);
 - 存储 trie 用 (addrHash‖path) 键,同一套 epoch 调度天然 per-account 自适应。
+
+---
+
+# 第三部分:DATC 原型实测(2026-06-11,cmd/n42-datc,2M 真实主网块)
+
+## 9. 验证结果
+
+- **builder 金门**:genesis→2,000,000 每块重建 root == 真实主网 header.Root
+  (changesets→TrieRootComputer 增量,13m31s = 2465 blk/s,逐块校验全开)。
+- **verify 全验**:**100/100 随机历史高度的 state root 纯从 DATC 记录重建,
+  字节恒等**(浅层 record 路径 + fringe/存储叶史 fold);时延 p50 192ms /
+  p99 1.28s(被重合约存储 fold 主导,leafReads 最高 2.3M)。
+- verify 双层验证逼出 **5 个真 bug**(金门只保 trie 本身;叶史/索引完整性
+  必须靠历史重建来暴露):storage-only 变更漏标账户索引、SELFDESTRUCT 墓碑
+  跳丢(storcs 自带 wipe 条目被 skip 吞掉)、DupSort 枚举永空(40B key 假设)、
+  同块 create+destruct 幽灵存储、%x 自定义 Formatter 干扰诊断 grep。
+
+## 10. 存储常数实测(2M 块,T_w=15.86M 叶写,C̄≈7.9)
+
+| 表 | 条数 | 大小 | 备注 |
+|---|---|---|---|
+| DatcAccNode/StorNode | 6.98M / 8.67M | 6.4 + 1.0 GB | epoch 末**全节点快照**(上层 ffff 行 ~550B) |
+| DatcAccChg/StorChg | 63.3M / 17.0M | 3.0 + 2.0 GB | 变更窗口(MDBX key+页开销主导) |
+| DatcLeafA/LeafS | 12.4M / 3.4M | 1.5 + 0.65 GB | 叶史(≈changesets 的 key-major 重排,归档本有) |
+| **合计** | | **14.6 GB** | mdbx.dat 16 GB |
+
+**与设计估算的偏差(关键发现)**:node 表实测 ~918B/记录 vs 设计 36B/版本
+(差 ~25x)——设计假设 **diff 编码**(每版本只存变更子哈希),原型为了先
+验证正确性存了全节点。chg 表同理(聚合行可压 5-10x)。结论:**直存版机制
+正确但尺寸是设计的 ~40x;diff 编码 + chg 每 epoch 聚合行是 scale 必做项**,
+做完回到设计带(主网 25M ≈ 150-400GB)。
+
+## 11. 13M / 25M 外推与下一步
+
+- **N42 自有链 13M**(T_w≈1 亿,C̄~2.4):直存 ~10-20GB / build ~1.5h,
+  **现在就能跑**;diff 后 ~2-4GB。
+- **ETH 25M**(T_w≈5-7B):直存 ~5TB / build ~4-7 天 ✗ → 必须 diff 编码
+  (写入量与体积同降 ~5-10x)+ 可选并行化 → ~150-400GB / 1-2 天 ✓。
+- 时延优化(已知杠杆,未做):重合约存储树的 record 深度按子树规模自适应、
+  热点 (path, N) memo 缓存;p50 预期回 ~10ms 级。
+- builder 优化已落:按层分桶 pending(~8x)、排序批量写、keccak 缓存、
+  d0 变更行删除、batch 20K 防 MDBX spill;pprof 终态 = cgocall 42% +
+  keccak 10% + GenStructStep 22%(引擎地板)。
