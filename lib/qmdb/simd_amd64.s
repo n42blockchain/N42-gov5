@@ -139,7 +139,11 @@ TEXT ·compressNodes8AVX2(SB), NOSPLIT, $544-28
 	VPXOR        Y13, Y13, Y13
 	VPBROADCASTD seq<>+4(SB), Y14
 	VPSLLD       $0x06, Y14, Y14
-	VPBROADCASTD flags+24(FP), Y15
+	// flags loaded via GP register: vet's asmdecl false-positives on the
+	// broadcast-from-FP form (patch vs upstream, same semantics).
+	MOVL         flags+24(FP), DI
+	VMOVD        DI, X15
+	VPBROADCASTD X15, Y15
 	VMOVDQU      Y8, 512(SP)
 
 	// Round 1

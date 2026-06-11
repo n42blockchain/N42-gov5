@@ -33,6 +33,51 @@ func TestHashLeafFastPath(t *testing.T) {
 	}
 }
 
+// TestHashNodes16AndLeaves16 asserts the AVX-512 16-way kernels are
+// bit-identical to their scalar counterparts.
+func TestHashNodes16AndLeaves16(t *testing.T) {
+	var pairs [32]Hash
+	for i := range pairs {
+		pairs[i] = shKey(uint64(i) * 0x517C)
+	}
+	var out [16]Hash
+	hashNodes16(&out, &pairs)
+	for i := 0; i < 16; i++ {
+		if want := hashNode(pairs[2*i], pairs[2*i+1]); out[i] != want {
+			t.Fatalf("pair %d: hashNodes16 %x != hashNode %x", i, out[i][:8], want[:8])
+		}
+	}
+
+	if !haveAVX512 {
+		t.Skip("no AVX-512")
+	}
+	// 16 leaves with varying value lengths (32..95 = the two-block band).
+	var buf [2048]byte
+	var lens [16]uint32
+	keys := make([]Hash, 16)
+	vals := make([][]byte, 16)
+	for i := 0; i < 16; i++ {
+		keys[i] = shKey(uint64(1000 + i))
+		v := make([]byte, 32+(i*63/15)%64)
+		for j := range v {
+			v[j] = byte(i*31 + j)
+		}
+		vals[i] = v
+		lane := buf[i*128 : (i+1)*128]
+		lane[0] = 0x01
+		copy(lane[1:33], keys[i][:])
+		n := copy(lane[33:], v)
+		lens[i] = uint32(33 + n - 64)
+	}
+	var outs [16]Hash
+	hashLeaves16(&outs, &buf, &lens)
+	for i := 0; i < 16; i++ {
+		if want := hashLeaf(keys[i], vals[i]); outs[i] != want {
+			t.Fatalf("leaf %d (val %dB): hashLeaves16 %x != hashLeaf %x", i, len(vals[i]), outs[i][:8], want[:8])
+		}
+	}
+}
+
 // TestHashNodes8 asserts the 8-way batch compression is bit-identical to
 // hashNode — the root-compatibility requirement for the vendored asm (which
 // must apply the ChunkStart|ChunkEnd|Root flags VERBATIM, no FlagParent).
