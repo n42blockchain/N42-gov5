@@ -1,23 +1,24 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
-// leafseg — streaming leaf-history segment store.
+// leafseg — streaming segment store for the write-once DATC tables.
 //
-// The leaf-history tables (DatcLeafA/DatcLeafS) are the bulk of a DATC build
-// (~2.2 TB in MDBX format at mainnet 25M scale — over the disk budget), yet
-// the builder never reads them back and the rows are immutable on write. So
-// in --leaf-seg mode they bypass MDBX entirely:
+// The leaf-history (DatcLeafA/S) and change-index (DatcAccChg/StoChg) tables
+// are the bulk of a build (≈90% of the ~4 TB raw-MDBX projection at mainnet
+// 25M scale — far over the disk budget), yet the builder never reads them
+// back and their rows are immutable once written. In --leaf-seg mode they
+// bypass MDBX entirely:
 //
-//	build:    rows (key|block8 → value) arrive in block order and append to
-//	          256 per-bucket zstd spill streams (bucket = key[0]).
-//	finalize: per bucket, decode all rows, sort by full key (stable w.r.t.
-//	          arrival, and the key embeds the block, so this is (key, block)
-//	          order), write a static segment: zstd frames (~256 KiB raw) with
-//	          a footer index of each frame's first key.
-//	verify:   segLeafCursor implements the same Seek/Next/Prev/Last contract
-//	          asOfLeaves uses on an MDBX cursor, with an LRU of decompressed
-//	          frames. The frame index makes the floor jump (key|n+1 then
-//	          Prev) a binary search.
+//	build:    rows append, in arrival order, to per-bucket zstd spill streams
+//	          (bucket = the key's leading 1–2 bytes, so bucket order == key
+//	          order).
+//	finalize: per bucket, decode all rows, stable-sort by full key (the key
+//	          embeds block/epoch, and arrival order breaks ties → resume
+//	          overlaps stay deterministic), write a static segment: zstd
+//	          frames (~256 KiB raw) with a footer index of first keys.
+//	verify:   segCursor implements the Seek/Next/Prev/Last contract the MDBX
+//	          cursors satisfied, with an LRU of decompressed frames, so
+//	          asOfLeaves / changedChildren run unchanged on either source.
 package main
 
 import (
@@ -34,21 +35,46 @@ import (
 )
 
 const (
-	leafTableA = 0
-	leafTableS = 1
+	segTabLeafA = 0
+	segTabLeafS = 1
+	segTabChgA  = 2
+	segTabChgS  = 3
 
 	leafSegMagic   = "DATCLS1\n"
 	leafFrameRaw   = 256 << 10 // target uncompressed bytes per frame
 	leafSpillDir   = "leafspill"
 	leafSegDir     = "leafseg"
 	leafFrameCache = 192 // decompressed frames kept hot (~48 MB)
+
+	// Back-compat aliases (older call sites / tests).
+	leafTableA = segTabLeafA
+	leafTableS = segTabLeafS
 )
 
-func leafTableName(table int) string {
-	if table == leafTableA {
-		return "a"
+var segTabNames = [4]string{"a", "s", "ca", "cs"}
+
+// segPrefixLen is the number of leading key bytes that form the bucket id.
+// Leaves bucket on the hashed key's first byte (uniform). Chg rows bucket on
+// (level byte, second byte) — the second byte is domain[0] for storage rows
+// and the first path nibble for account rows.
+var segPrefixLen = [4]int{1, 1, 2, 2}
+
+func segBucketOf(table int, k []byte) int {
+	if segPrefixLen[table] == 1 {
+		return int(k[0])
 	}
-	return "s"
+	b := int(k[0]) << 8
+	if len(k) > 1 {
+		b |= int(k[1])
+	}
+	return b
+}
+
+func segFileName(table, bucket int) string {
+	if segPrefixLen[table] == 1 {
+		return fmt.Sprintf("%s.%02x", segTabNames[table], bucket)
+	}
+	return fmt.Sprintf("%s.%04x", segTabNames[table], bucket)
 }
 
 // ---------------------------------------------------------------------------
@@ -63,8 +89,8 @@ type spillStream struct {
 // leafSpillWriter appends rows to per-bucket compressed spill files.
 type leafSpillWriter struct {
 	dir     string
-	streams [2][256]*spillStream
-	rows    [2]uint64
+	streams map[int]*spillStream // key: table<<16 | bucket
+	rows    [4]uint64
 	scratch []byte
 }
 
@@ -73,14 +99,15 @@ func newLeafSpillWriter(outDir string) (*leafSpillWriter, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	return &leafSpillWriter{dir: dir}, nil
+	return &leafSpillWriter{dir: dir, streams: make(map[int]*spillStream)}, nil
 }
 
 func (w *leafSpillWriter) stream(table, bucket int) (*spillStream, error) {
-	if s := w.streams[table][bucket]; s != nil {
+	id := table<<16 | bucket
+	if s := w.streams[id]; s != nil {
 		return s, nil
 	}
-	name := filepath.Join(w.dir, fmt.Sprintf("%s.%02x.zspill", leafTableName(table), bucket))
+	name := filepath.Join(w.dir, segFileName(table, bucket)+".zspill")
 	f, err := os.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, err
@@ -95,14 +122,13 @@ func (w *leafSpillWriter) stream(table, bucket int) (*spillStream, error) {
 		return nil, err
 	}
 	s := &spillStream{f: f, bw: bw, zw: zw}
-	w.streams[table][bucket] = s
+	w.streams[id] = s
 	return s, nil
 }
 
-// add appends one row. k must start with the bucketing byte (hashed key /
-// domain addrHash first byte).
+// add appends one row.
 func (w *leafSpillWriter) add(table int, k, v []byte) error {
-	s, err := w.stream(table, int(k[0]))
+	s, err := w.stream(table, segBucketOf(table, k))
 	if err != nil {
 		return err
 	}
@@ -119,34 +145,32 @@ func (w *leafSpillWriter) add(table int, k, v []byte) error {
 }
 
 func (w *leafSpillWriter) close() error {
-	for t := range w.streams {
-		for b := range w.streams[t] {
-			s := w.streams[t][b]
-			if s == nil {
-				continue
-			}
-			if err := s.zw.Close(); err != nil {
-				return err
-			}
-			if err := s.bw.Flush(); err != nil {
-				return err
-			}
-			if err := s.f.Close(); err != nil {
-				return err
-			}
-			w.streams[t][b] = nil
+	for id, s := range w.streams {
+		if err := s.zw.Close(); err != nil {
+			return err
 		}
+		if err := s.bw.Flush(); err != nil {
+			return err
+		}
+		if err := s.f.Close(); err != nil {
+			return err
+		}
+		delete(w.streams, id)
 	}
 	return nil
 }
 
 // finalizeLeafSegments turns the spill files into sorted static segments and
 // removes the spill dir. One bucket is processed at a time (decoded rows for
-// a 25M-mainnet bucket are ~7 GB — in-RAM sortable).
+// a 25M-mainnet bucket are single-digit GB — in-RAM sortable).
 func finalizeLeafSegments(outDir string) error {
 	spill := filepath.Join(outDir, leafSpillDir)
 	segd := filepath.Join(outDir, leafSegDir)
 	if err := os.MkdirAll(segd, 0o755); err != nil {
+		return err
+	}
+	names, err := filepath.Glob(filepath.Join(spill, "*.zspill"))
+	if err != nil {
 		return err
 	}
 	zr, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
@@ -162,18 +186,13 @@ func finalizeLeafSegments(outDir string) error {
 	}
 	defer enc.Close()
 
-	for t := 0; t < 2; t++ {
-		for b := 0; b < 256; b++ {
-			src := filepath.Join(spill, fmt.Sprintf("%s.%02x.zspill", leafTableName(t), b))
-			if _, err := os.Stat(src); err != nil {
-				continue // bucket never written
-			}
-			if err := finalizeBucket(zr, enc, src,
-				filepath.Join(segd, fmt.Sprintf("%s.%02x.seg", leafTableName(t), b))); err != nil {
-				return fmt.Errorf("bucket %s.%02x: %w", leafTableName(t), b, err)
-			}
-			_ = os.Remove(src)
+	for _, src := range names {
+		base := filepath.Base(src)
+		dst := filepath.Join(segd, base[:len(base)-len(".zspill")]+".seg")
+		if err := finalizeBucket(zr, enc, src, dst); err != nil {
+			return fmt.Errorf("bucket %s: %w", base, err)
 		}
+		_ = os.Remove(src)
 	}
 	return os.RemoveAll(spill)
 }
@@ -217,9 +236,9 @@ func finalizeBucket(zr *zstd.Decoder, enc *zstd.Encoder, src, dst string) error 
 		vl, m2 := binary.Uvarint(raw[p:])
 		return p + uint64(m2) + vl
 	}
-	// Sort by full key (which embeds the block suffix → (key, block) order).
-	// STABLE: duplicate (key, block) rows (a resumed build re-spilling an
-	// overlap) keep arrival order, so output is deterministic.
+	// Sort by full key (which embeds the block/epoch suffix → version order).
+	// STABLE: duplicate keys (a resumed build re-spilling an overlap) keep
+	// arrival order, so output is deterministic.
 	sort.SliceStable(offs, func(i, j int) bool {
 		return bytes.Compare(recKey(offs[i]), recKey(offs[j])) < 0
 	})
@@ -307,9 +326,10 @@ type leafSegFile struct {
 	frames []frameMeta
 }
 
-// leafSegSet is the reader for one table's 256 bucket segments.
+// leafSegSet is the reader for one table's bucket segments.
 type leafSegSet struct {
-	buckets [256]*leafSegFile
+	buckets map[int]*leafSegFile
+	ids     []int // sorted bucket ids (bucket order == key order)
 	table   int
 	cache   *frameLRU
 }
@@ -320,14 +340,14 @@ type decodedFrame struct {
 }
 
 type frameLRU struct {
-	m   map[uint32]*decodedFrame // key: table<<24 | bucket<<16 | frameIdx
-	ord []uint32
+	m   map[uint64]*decodedFrame // key: table<<48 | bucket<<24 | frameIdx
+	ord []uint64
 }
 
-func newFrameLRU() *frameLRU { return &frameLRU{m: make(map[uint32]*decodedFrame)} }
+func newFrameLRU() *frameLRU { return &frameLRU{m: make(map[uint64]*decodedFrame)} }
 
-func (l *frameLRU) get(k uint32) *decodedFrame { return l.m[k] }
-func (l *frameLRU) put(k uint32, d *decodedFrame) {
+func (l *frameLRU) get(k uint64) *decodedFrame { return l.m[k] }
+func (l *frameLRU) put(k uint64, d *decodedFrame) {
 	if _, ok := l.m[k]; ok {
 		return
 	}
@@ -341,29 +361,47 @@ func (l *frameLRU) put(k uint32, d *decodedFrame) {
 }
 
 // openLeafSegSet opens <outDir>/leafseg for one table; ok=false when the
-// build did not use --leaf-seg.
+// build did not use --leaf-seg (or wrote no rows for it).
 func openLeafSegSet(outDir string, table int, cache *frameLRU) (*leafSegSet, bool, error) {
 	dir := filepath.Join(outDir, leafSegDir)
 	if _, err := os.Stat(dir); err != nil {
 		return nil, false, nil
 	}
-	s := &leafSegSet{table: table, cache: cache}
-	any := false
-	for b := 0; b < 256; b++ {
-		name := filepath.Join(dir, fmt.Sprintf("%s.%02x.seg", leafTableName(table), b))
+	pat := segTabNames[table] + ".*.seg"
+	names, err := filepath.Glob(filepath.Join(dir, pat))
+	if err != nil {
+		return nil, false, err
+	}
+	s := &leafSegSet{table: table, cache: cache, buckets: make(map[int]*leafSegFile)}
+	for _, name := range names {
+		base := filepath.Base(name)
+		var bucket int
+		if _, err := fmt.Sscanf(base, segTabNames[table]+".%x.seg", &bucket); err != nil {
+			continue
+		}
 		f, err := os.Open(name)
 		if err != nil {
-			continue
+			return nil, false, err
 		}
 		sf, err := loadLeafSegFile(f)
 		if err != nil {
 			f.Close()
 			return nil, false, fmt.Errorf("%s: %w", name, err)
 		}
-		s.buckets[b] = sf
-		any = true
+		s.buckets[bucket] = sf
+		s.ids = append(s.ids, bucket)
 	}
-	return s, any, nil
+	sort.Ints(s.ids)
+	return s, len(s.ids) > 0, nil
+}
+
+// Close releases the segment file handles.
+func (s *leafSegSet) Close() {
+	for b, sf := range s.buckets {
+		_ = sf.f.Close()
+		delete(s.buckets, b)
+	}
+	s.ids = nil
 }
 
 func loadLeafSegFile(f *os.File) (*leafSegFile, error) {
@@ -405,18 +443,8 @@ func loadLeafSegFile(f *os.File) (*leafSegFile, error) {
 	return sf, nil
 }
 
-// Close releases the segment file handles.
-func (s *leafSegSet) Close() {
-	for b := range s.buckets {
-		if s.buckets[b] != nil {
-			_ = s.buckets[b].f.Close()
-			s.buckets[b] = nil
-		}
-	}
-}
-
-func (s *leafSegSet) frameKey(bucket, fi int) uint32 {
-	return uint32(s.table)<<24 | uint32(bucket)<<16 | uint32(fi)
+func (s *leafSegSet) frameKey(bucket, fi int) uint64 {
+	return uint64(s.table)<<48 | uint64(bucket)<<24 | uint64(fi)
 }
 
 func (s *leafSegSet) decodeFrame(bucket, fi int) (*decodedFrame, error) {
@@ -463,10 +491,10 @@ func (d *decodedFrame) kv(i int) ([]byte, []byte) {
 }
 
 // segLeafCursor walks a leafSegSet with MDBX-cursor Seek/Next/Prev/Last
-// semantics (the asOfLeaves contract).
+// semantics (the asOfLeaves / changedChildren contract).
 type segLeafCursor struct {
 	set    *leafSegSet
-	bucket int
+	bi     int // index into set.ids
 	fi, ri int
 	cur    *decodedFrame
 	eof    bool
@@ -484,29 +512,29 @@ func (c *segLeafCursor) current() ([]byte, []byte, error) {
 	return k, v, nil
 }
 
-// position sets the cursor to (bucket, fi, ri) after decode.
-func (c *segLeafCursor) position(bucket, fi, ri int) error {
-	d, err := c.set.decodeFrame(bucket, fi)
+// position sets the cursor to (bucket-index, fi, ri) after decode.
+func (c *segLeafCursor) position(bi, fi, ri int) error {
+	d, err := c.set.decodeFrame(c.set.ids[bi], fi)
 	if err != nil {
 		return err
 	}
-	c.bucket, c.fi, c.ri, c.cur, c.eof = bucket, fi, ri, d, false
+	c.bi, c.fi, c.ri, c.cur, c.eof = bi, fi, ri, d, false
 	return nil
 }
 
 // Seek positions at the first entry >= k.
 func (c *segLeafCursor) Seek(k []byte) ([]byte, []byte, error) {
-	start := 0
-	if len(k) > 0 {
-		start = int(k[0])
-	}
-	for b := start; b < 256; b++ {
-		sf := c.set.buckets[b]
-		if sf == nil || len(sf.frames) == 0 {
+	probe := segBucketOf(c.set.table, k)
+	// First bucket id >= probe.
+	bi := sort.SearchInts(c.set.ids, probe)
+	for ; bi < len(c.set.ids); bi++ {
+		bucket := c.set.ids[bi]
+		sf := c.set.buckets[bucket]
+		if len(sf.frames) == 0 {
 			continue
 		}
 		var fi, ri int
-		if b > start {
+		if bucket > probe {
 			fi, ri = 0, 0 // everything in a later bucket is > k
 		} else {
 			// Last frame whose firstKey <= k (or frame 0 if k precedes all).
@@ -516,7 +544,7 @@ func (c *segLeafCursor) Seek(k []byte) ([]byte, []byte, error) {
 			if fi < 0 {
 				fi = 0
 			}
-			d, err := c.set.decodeFrame(b, fi)
+			d, err := c.set.decodeFrame(bucket, fi)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -533,7 +561,7 @@ func (c *segLeafCursor) Seek(k []byte) ([]byte, []byte, error) {
 				}
 			}
 		}
-		if err := c.position(b, fi, ri); err != nil {
+		if err := c.position(bi, fi, ri); err != nil {
 			return nil, nil, err
 		}
 		return c.current()
@@ -550,16 +578,16 @@ func (c *segLeafCursor) Next() ([]byte, []byte, error) {
 		c.ri++
 		return c.current()
 	}
-	sf := c.set.buckets[c.bucket]
+	sf := c.set.buckets[c.set.ids[c.bi]]
 	if c.fi+1 < len(sf.frames) {
-		if err := c.position(c.bucket, c.fi+1, 0); err != nil {
+		if err := c.position(c.bi, c.fi+1, 0); err != nil {
 			return nil, nil, err
 		}
 		return c.current()
 	}
-	for b := c.bucket + 1; b < 256; b++ {
-		if bf := c.set.buckets[b]; bf != nil && len(bf.frames) > 0 {
-			if err := c.position(b, 0, 0); err != nil {
+	for bi := c.bi + 1; bi < len(c.set.ids); bi++ {
+		if bf := c.set.buckets[c.set.ids[bi]]; len(bf.frames) > 0 {
+			if err := c.position(bi, 0, 0); err != nil {
 				return nil, nil, err
 			}
 			return c.current()
@@ -578,23 +606,23 @@ func (c *segLeafCursor) Prev() ([]byte, []byte, error) {
 		return c.current()
 	}
 	if c.fi > 0 {
-		d, err := c.set.decodeFrame(c.bucket, c.fi-1)
+		d, err := c.set.decodeFrame(c.set.ids[c.bi], c.fi-1)
 		if err != nil {
 			return nil, nil, err
 		}
-		if err := c.position(c.bucket, c.fi-1, len(d.offs)-1); err != nil {
+		if err := c.position(c.bi, c.fi-1, len(d.offs)-1); err != nil {
 			return nil, nil, err
 		}
 		return c.current()
 	}
-	for b := c.bucket - 1; b >= 0; b-- {
-		if bf := c.set.buckets[b]; bf != nil && len(bf.frames) > 0 {
+	for bi := c.bi - 1; bi >= 0; bi-- {
+		if bf := c.set.buckets[c.set.ids[bi]]; len(bf.frames) > 0 {
 			fi := len(bf.frames) - 1
-			d, err := c.set.decodeFrame(b, fi)
+			d, err := c.set.decodeFrame(c.set.ids[bi], fi)
 			if err != nil {
 				return nil, nil, err
 			}
-			if err := c.position(b, fi, len(d.offs)-1); err != nil {
+			if err := c.position(bi, fi, len(d.offs)-1); err != nil {
 				return nil, nil, err
 			}
 			return c.current()
@@ -605,14 +633,14 @@ func (c *segLeafCursor) Prev() ([]byte, []byte, error) {
 }
 
 func (c *segLeafCursor) Last() ([]byte, []byte, error) {
-	for b := 255; b >= 0; b-- {
-		if bf := c.set.buckets[b]; bf != nil && len(bf.frames) > 0 {
+	for bi := len(c.set.ids) - 1; bi >= 0; bi-- {
+		if bf := c.set.buckets[c.set.ids[bi]]; len(bf.frames) > 0 {
 			fi := len(bf.frames) - 1
-			d, err := c.set.decodeFrame(b, fi)
+			d, err := c.set.decodeFrame(c.set.ids[bi], fi)
 			if err != nil {
 				return nil, nil, err
 			}
-			if err := c.position(b, fi, len(d.offs)-1); err != nil {
+			if err := c.position(bi, fi, len(d.offs)-1); err != nil {
 				return nil, nil, err
 			}
 			return c.current()
