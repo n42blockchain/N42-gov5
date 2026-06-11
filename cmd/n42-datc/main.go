@@ -28,6 +28,8 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"runtime"
 	"time"
@@ -58,7 +60,11 @@ const (
 	tDatcMeta    = "DatcMeta"
 )
 
-const maxChgDepth = 8 // change-index depth cap (deeper levels use fringe rebuild)
+// maxChgDepth caps the change-index depth. Deeper levels are resolved by the
+// verifier's leaf-history fold, so their (huge-epoch) records and 8-level write
+// amplification buy nothing — depth 5 covers every record-driven level the
+// verifier consults at its default fold depth.
+const maxChgDepth = 5
 
 func die(f string, a ...any) {
 	fmt.Fprintf(os.Stderr, "error: "+f+"\n", a...)
@@ -132,11 +138,19 @@ func main() {
 	startBlock := fs.Uint64("start", 0, "start block (resume; state must match)")
 	alpha := fs.Float64("alpha", 16, "target changes per node per epoch")
 	cbar := fs.Float64("cbar", 20, "assumed average changed keys per block")
-	batch := fs.Uint64("batch", 50_000, "blocks per MDBX commit")
+	batch := fs.Uint64("batch", 20_000, "blocks per MDBX commit (large batches spill MDBX dirty pages and stall)")
 	mapGB := fs.Int("map.gb", 1024, "MDBX map size GB")
+	pprofPort := fs.Int("pprof.port", 0, "serve net/http/pprof on this port (0=off)")
 	_ = fs.Parse(os.Args[2:])
 	if *out == "" {
 		die("--out required")
+	}
+	if *pprofPort > 0 {
+		addr := fmt.Sprintf("127.0.0.1:%d", *pprofPort)
+		go func() {
+			fmt.Fprintf(os.Stderr, "pprof on http://%s/debug/pprof/\n", addr)
+			_ = http.ListenAndServe(addr, nil)
+		}()
 	}
 
 	logger := log.New()
@@ -187,8 +201,10 @@ func main() {
 	b := &builder{
 		sched: sched, db: db, hdrs: hdrs,
 		acctTbl: acctTbl, storTbl: storTbl,
-		accDirty: make(map[string]struct{}, 1<<16),
-		stoDirty: make(map[string]struct{}, 1<<16),
+	}
+	for d := 0; d <= maxChgDepth; d++ {
+		b.accDirty[d] = make(map[string]struct{}, 1<<10)
+		b.stoDirty[d] = make(map[string]struct{}, 1<<10)
 	}
 	if err := b.run(*startBlock, *endBlock, *batch); err != nil {
 		die("%v", err)
@@ -203,10 +219,13 @@ type builder struct {
 	acctTbl *freezer.FreezerTable
 	storTbl *freezer.FreezerTable
 
-	// Per-level pending changed-path sets since each level's last epoch flush.
+	// Per-LEVEL pending changed-path sets since each level's last epoch flush.
 	// Key = nibble path (account trie) / domainKey40+nibble path (storage).
-	accDirty map[string]struct{}
-	stoDirty map[string]struct{}
+	// Bucketing by level is load-bearing: level d's epoch flush iterates ONLY
+	// its own bucket — a shared map would make the d0 boundary (every block)
+	// scan every deeper level's accumulating entries, going quadratic.
+	accDirty [maxChgDepth + 1]map[string]struct{}
+	stoDirty [maxChgDepth + 1]map[string]struct{}
 
 	leafAPuts, leafSPuts, chgPuts, nodePuts uint64
 }
@@ -215,6 +234,8 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 	t0 := time.Now()
 	var trc *commitment.TrieRootComputer
 	var blocksDone uint64
+	lastBeat := time.Now()
+	lastBeatBlocks := uint64(0)
 
 	for lo := start; lo < end; lo += batchBlocks {
 		hi := lo + batchBlocks
@@ -247,6 +268,18 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 				}
 			}
 			blocksDone++
+			// Live heartbeat to STDERR (unbuffered through pipes): block height,
+			// instantaneous rate, ETA. Every 10s or 20K blocks, whichever first.
+			if blocksDone-lastBeatBlocks >= 20_000 || time.Since(lastBeat) > 10*time.Second {
+				inst := float64(blocksDone-lastBeatBlocks) / time.Since(lastBeat).Seconds()
+				var eta time.Duration
+				if inst > 0 {
+					eta = time.Duration(float64(end-n) / inst * float64(time.Second))
+				}
+				fmt.Fprintf(os.Stderr, "[datc] block %d / %d  %.0f blk/s  ETA %s\n",
+					n, end, inst, eta.Round(time.Minute))
+				lastBeat, lastBeatBlocks = time.Now(), blocksDone
+			}
 		}
 		if hi == end {
 			// Final flush of all partial epochs + meta.
@@ -419,9 +452,9 @@ func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64) 
 // recordChange writes the per-level change-index entries for one dirty key and
 // marks the ancestor paths pending for their next epoch flush.
 func (b *builder) recordChange(tx kv.RwTx, storage bool, domain []byte, keyNibbles []byte, n uint64) {
-	chgTable, dirty := tDatcAccChg, b.accDirty
+	chgTable, dirty := tDatcAccChg, &b.accDirty
 	if storage {
-		chgTable, dirty = tDatcStoChg, b.stoDirty
+		chgTable, dirty = tDatcStoChg, &b.stoDirty
 	}
 	maxD := maxChgDepth
 	if maxD > len(keyNibbles)-1 {
@@ -439,11 +472,11 @@ func (b *builder) recordChange(tx kv.RwTx, storage bool, domain []byte, keyNibbl
 		k = append(k, keyNibbles[d])
 		_ = tx.Put(chgTable, k, nil)
 		b.chgPuts++
-		// pending path for epoch flush: domain | path(d)
+		// pending path for epoch flush: domain | path(d), bucketed by level
 		pk := make([]byte, 0, len(domain)+d)
 		pk = append(pk, domain...)
 		pk = append(pk, keyNibbles[:d]...)
-		dirty[string(pk)] = struct{}{}
+		dirty[d][string(pk)] = struct{}{}
 	}
 }
 
@@ -452,16 +485,11 @@ func (b *builder) recordChange(tx kv.RwTx, storage bool, domain []byte, keyNibbl
 func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
 	flushOne := func(storage bool, pending map[string]struct{}) error {
 		srcTable, dstTable := modules.TrieOfAccounts, tDatcAccNode
-		domLen := 0
 		if storage {
 			srcTable, dstTable = modules.TrieOfStorage, tDatcStoNode
-			domLen = 40
 		}
 		for pk := range pending {
 			path := []byte(pk)
-			if len(path)-domLen != d {
-				continue // belongs to another level
-			}
 			if !storage && len(path) == 0 {
 				// The account-trie root has no TrieAccount row by convention;
 				// the verifier synthesizes it from the depth-1 children.
@@ -490,9 +518,9 @@ func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
 		}
 		return nil
 	}
-	if err := flushOne(false, b.accDirty); err != nil {
+	if err := flushOne(false, b.accDirty[d]); err != nil {
 		return err
 	}
-	return flushOne(true, b.stoDirty)
+	return flushOne(true, b.stoDirty[d])
 }
 
