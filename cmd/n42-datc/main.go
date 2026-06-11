@@ -45,6 +45,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	mdbxkv "github.com/n42blockchain/N42/lib/kv/mdbx"
 	log "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/lib/trie"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state/commitment"
@@ -216,11 +217,16 @@ func main() {
 		acctTbl: acctTbl, storTbl: storTbl,
 		addrHashCache: make(map[types.Address][32]byte, 1<<16),
 		slotHashCache: make(map[types.Hash][32]byte, 1<<16),
+		accLastFull:   make(map[string]nodeRecState, 1<<16),
+		stoLastFull:   make(map[string]nodeRecState, 1<<16),
+		chgAccAgg:     make(map[string][]chgEvent, 1<<14),
+		chgStoAgg:     make(map[string][]chgEvent, 1<<14),
 	}
 	for d := 0; d <= maxChgDepth; d++ {
-		b.accDirty[d] = make(map[string]struct{}, 1<<10)
-		b.stoDirty[d] = make(map[string]struct{}, 1<<10)
+		b.accDirty[d] = make(map[string]uint16, 1<<10)
+		b.stoDirty[d] = make(map[string]uint16, 1<<10)
 	}
+	b.resumed = *startBlock > 0
 	if err := b.run(*startBlock, *endBlock, *batch); err != nil {
 		die("%v", err)
 	}
@@ -234,13 +240,28 @@ type builder struct {
 	acctTbl *freezer.FreezerTable
 	storTbl *freezer.FreezerTable
 
-	// Per-LEVEL pending changed-path sets since each level's last epoch flush.
+	// Per-LEVEL pending changed paths since each level's last epoch flush, with
+	// the CHANGED-CHILDREN bitmap per path (drives node diff records).
 	// Key = nibble path (account trie) / domainKey40+nibble path (storage).
 	// Bucketing by level is load-bearing: level d's epoch flush iterates ONLY
 	// its own bucket — a shared map would make the d0 boundary (every block)
 	// scan every deeper level's accumulating entries, going quadratic.
-	accDirty [maxChgDepth + 1]map[string]struct{}
-	stoDirty [maxChgDepth + 1]map[string]struct{}
+	accDirty [maxChgDepth + 1]map[string]uint16
+	stoDirty [maxChgDepth + 1]map[string]uint16
+
+	// Per-path last-record bookkeeping for the diff superblock rule: a FULL
+	// node record is written when no prior record exists (or it was a
+	// tombstone) or every F-th epoch, bounding the reader's walk-back to F.
+	// Lost on restart → next records degrade to FULL (safe, just larger).
+	accLastFull map[string]nodeRecState
+	stoLastFull map[string]nodeRecState
+
+	// Aggregated change-event buffers for the CURRENT batch, keyed by the chg
+	// row prefix (d|domain|path|epoch4). One row per (path, epoch, batch
+	// segment) instead of one per event — the MDBX row overhead dominated the
+	// per-event format (~60B effective for a ~3B payload).
+	chgAccAgg map[string][]chgEvent
+	chgStoAgg map[string][]chgEvent
 
 	// Sorted-batch write buffers: DATC puts are collected per MDBX batch,
 	// sorted by key, and applied sequentially — near-append B-tree insertion
@@ -253,12 +274,78 @@ type builder struct {
 	addrHashCache map[types.Address][32]byte
 	slotHashCache map[types.Hash][32]byte
 
+	resumed bool // resumed builds always write tombstones (cold lastFull maps)
+
 	leafAPuts, leafSPuts, chgPuts, nodePuts uint64
 }
 
 type kvPair struct{ k, v []byte }
 
-const bufFlushThreshold = 4_000_000 // entries per buffer before an early sorted flush
+// nodeRecState tracks the last node record written for a path.
+type nodeRecState struct {
+	lastFullEpoch uint32
+	exists        bool // false = no record yet or last was a tombstone
+}
+
+// chgEvent is one change event inside an aggregated row.
+type chgEvent struct {
+	block  uint32
+	nibble byte
+}
+
+const (
+	bufFlushThreshold = 4_000_000 // entries per buffer before an early sorted flush
+
+	// Node record value flags (empty value = tombstone, as before).
+	nodeRecFull = 0x01 // flags | MarshalTrieNode bytes
+	nodeRecDiff = 0x00 // flags | newMasks(6) | changedMask(2) | 32B × (changed ∧ newHasHash)
+
+	// fullEvery bounds the reader's diff walk-back: at least every F-th epoch
+	// (per path) the record is FULL.
+	fullEvery = 8
+)
+
+// encodeNodeDiff builds a DIFF record from the current node bytes and the
+// epoch's changed-children bitmap. Only changed children's hashes are stored;
+// the reader fills unchanged ones from the previous record chain.
+func encodeNodeDiff(node []byte, changed uint16) []byte {
+	hasState, hasTree, hasHash, hashes, _ := trie.UnmarshalTrieNode(node)
+	out := make([]byte, 0, 9+32*4)
+	out = append(out, nodeRecDiff)
+	out = binary.BigEndian.AppendUint16(out, hasState)
+	out = binary.BigEndian.AppendUint16(out, hasTree)
+	out = binary.BigEndian.AppendUint16(out, hasHash)
+	out = binary.BigEndian.AppendUint16(out, changed)
+	hi := 0
+	for nib := 0; nib < 16; nib++ {
+		bit := uint16(1) << nib
+		if hasHash&bit == 0 {
+			continue
+		}
+		if changed&bit != 0 {
+			out = append(out, hashes[hi*32:hi*32+32]...)
+		}
+		hi++
+	}
+	return out
+}
+
+// encodeChgRow packs an event list (ascending block) into one aggregated row:
+// per event varint(Δblock from previous event) + nibble.
+func encodeChgRow(events []chgEvent) []byte {
+	out := make([]byte, 0, len(events)*3)
+	prev := uint32(0)
+	for i, e := range events {
+		d := e.block - prev
+		if i == 0 {
+			d = e.block // first event: absolute-within-epoch via block number
+		}
+		out = binary.AppendUvarint(out, uint64(d))
+		out = append(out, e.nibble)
+		prev = e.block
+	}
+	return out
+}
 
 func (b *builder) addrHash(addr types.Address) [32]byte {
 	if h, ok := b.addrHashCache[addr]; ok {
@@ -402,7 +489,9 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 				return err
 			}
 		}
-		// Drain the sorted-batch buffers into this tx before committing.
+		// Drain the aggregated change events, then the sorted-batch buffers,
+		// into this tx before committing.
+		b.flushChgAgg()
 		if err := b.flushAllBufs(tx); err != nil {
 			tx.Rollback()
 			return err
@@ -610,42 +699,60 @@ func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64) 
 	return b.maybeEarlyFlush(tx)
 }
 
-// recordChange buffers the per-level change-index entries for one dirty key
-// and marks the ancestor paths pending for their next epoch flush.
+// recordChange records one dirty key: the changed-children bitmap per ancestor
+// path (drives node diff records) and an aggregated change event per level.
 //
 // d0 change rows are deliberately NOT written: E_0 = 1 means the floor record
 // for any query already sits at block N itself (epoch == block), so the d0
 // change window is empty by construction and the verifier never reads it.
 func (b *builder) recordChange(storage bool, domain []byte, keyNibbles []byte, n uint64) {
-	buf, dirty := &b.chgAccBuf, &b.accDirty
+	agg, dirty := b.chgAccAgg, &b.accDirty
 	if storage {
-		buf, dirty = &b.chgStoBuf, &b.stoDirty
+		agg, dirty = b.chgStoAgg, &b.stoDirty
 	}
 	maxD := maxChgDepth
 	if maxD > len(keyNibbles)-1 {
 		maxD = len(keyNibbles) - 1
 	}
 	for d := 0; d <= maxD; d++ {
-		// pending path for epoch flush: domain | path(d), bucketed by level
+		// pending path + changed-child bit, bucketed by level
 		pk := make([]byte, 0, len(domain)+d)
 		pk = append(pk, domain...)
 		pk = append(pk, keyNibbles[:d]...)
-		dirty[d][string(pk)] = struct{}{}
+		dirty[d][string(pk)] |= uint16(1) << keyNibbles[d]
 		if d == 0 || b.sched.e[d] == 1 {
 			continue // empty-window levels: change rows are never consulted
 		}
 		epoch := b.sched.epochOf(d, n)
-		// change-index key: depth(1) | domain | path(d) | epoch(4) | block(4) | child(1)
-		k := make([]byte, 0, 1+len(domain)+d+4+4+1)
-		k = append(k, byte(d))
-		k = append(k, domain...)
-		k = append(k, keyNibbles[:d]...)
-		k = binary.BigEndian.AppendUint32(k, uint32(epoch))
-		k = binary.BigEndian.AppendUint32(k, uint32(n))
-		k = append(k, keyNibbles[d])
-		*buf = append(*buf, kvPair{k: k})
+		// aggregated row prefix: depth(1) | domain | path(d) | epoch(4)
+		ak := make([]byte, 0, 1+len(domain)+d+4)
+		ak = append(ak, byte(d))
+		ak = append(ak, domain...)
+		ak = append(ak, keyNibbles[:d]...)
+		ak = binary.BigEndian.AppendUint32(ak, uint32(epoch))
+		agg[string(ak)] = append(agg[string(ak)], chgEvent{block: uint32(n), nibble: keyNibbles[d]})
 		b.chgPuts++
 	}
+}
+
+// flushChgAgg drains the per-batch aggregated change buffers into the sorted
+// write buffers: one row per (prefix, batch segment), keyed by the segment's
+// first block so an epoch spanning batches concatenates in block order.
+func (b *builder) flushChgAgg() {
+	drain := func(agg map[string][]chgEvent, buf *[]kvPair) {
+		for ak, events := range agg {
+			if len(events) == 0 {
+				continue
+			}
+			k := make([]byte, 0, len(ak)+4)
+			k = append(k, ak...)
+			k = binary.BigEndian.AppendUint32(k, events[0].block)
+			*buf = append(*buf, kvPair{k: k, v: encodeChgRow(events)})
+			delete(agg, ak)
+		}
+	}
+	drain(b.chgAccAgg, &b.chgAccBuf)
+	drain(b.chgStoAgg, &b.chgStoBuf)
 }
 
 func bytesEqualPrefix(k, p []byte) bool {
@@ -655,15 +762,17 @@ func bytesEqualPrefix(k, p []byte) bool {
 // flushEpoch persists the epoch-end node bytes for every path changed during
 // the closing epoch of level d, reading the CURRENT TrieOf* rows.
 func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
-	flushOne := func(storage bool, pending map[string]struct{}) error {
+	flushOne := func(storage bool, pending map[string]uint16) error {
 		if len(pending) == 0 {
 			return nil
 		}
 		srcTable := modules.TrieOfAccounts
 		buf := &b.nodeAccBuf
+		lastFull := b.accLastFull
 		if storage {
 			srcTable = modules.TrieOfStorage
 			buf = &b.nodeStoBuf
+			lastFull = b.stoLastFull
 		}
 		// Sorted iteration: the TrieOf* GetOne reads walk the B-tree in key
 		// order instead of map-random order.
@@ -673,6 +782,7 @@ func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
 		}
 		sort.Strings(paths)
 		for _, pk := range paths {
+			changed := pending[pk]
 			path := []byte(pk)
 			delete(pending, pk)
 			if !storage && len(path) == 0 {
@@ -686,15 +796,37 @@ func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
 			if err != nil {
 				return err
 			}
-			// DATC node record: pathLen(1) | domain|path | epoch(4) → node bytes
-			// (nil = tombstone). The length prefix keeps different path lengths
-			// from interleaving with epoch bytes, so a floor-seek over epochs of
-			// ONE path never lands on another path's record.
+			// DATC node record: pathLen(1) | domain|path | epoch(4) → record.
+			// Empty value = tombstone; else flags byte (FULL | DIFF). A FULL is
+			// forced when no prior record exists (or it was a tombstone) and at
+			// least every fullEvery-th epoch, bounding the reader's walk-back.
 			k := make([]byte, 0, 1+len(path)+4)
 			k = append(k, byte(len(path)))
 			k = append(k, path...)
 			k = binary.BigEndian.AppendUint32(k, uint32(epoch))
-			*buf = append(*buf, kvPair{k: k, v: append([]byte{}, node...)})
+
+			st := lastFull[pk]
+			var v []byte
+			switch {
+			case len(node) == 0: // tombstone
+				if !st.exists && !b.resumed {
+					// Never had a live record — a tombstone adds nothing (the
+					// verifier treats absent and tombstone identically). On a
+					// RESUMED build the map is cold, so tombstones are always
+					// written (skipping one for a pre-restart live node would
+					// resurrect it).
+					continue
+				}
+				lastFull[pk] = nodeRecState{exists: false}
+			case !st.exists || uint32(epoch) >= st.lastFullEpoch+fullEvery:
+				v = append([]byte{nodeRecFull}, node...)
+				lastFull[pk] = nodeRecState{lastFullEpoch: uint32(epoch), exists: true}
+			default:
+				v = encodeNodeDiff(node, changed)
+				st.exists = true
+				lastFull[pk] = st
+			}
+			*buf = append(*buf, kvPair{k: k, v: v})
 			b.nodePuts++
 		}
 		return nil
