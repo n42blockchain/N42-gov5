@@ -122,3 +122,114 @@ erigon3 同款:对 (账户, slots) 集合跑 `GenerateWitness` → `witnessTrie.
 2. 真实数据:D:/N42-hashed 抽样 1000 账户 + 重合约(USDC 等)slots,
    逐个对 header.Root 验证 + 计时(目标 p99 < 10ms)。
 3. 交叉:同一 (addr,slot) 对 ../reth 节点的 eth_getProof 输出做字节 diff。
+
+---
+
+# 第二部分:全历史任意高度证明 —— 熵下界与"深度自适应时间检查点"设计
+
+日期:2026-06-10(目标升级:任意 (acct, slot, **任意历史块 N**) 的 EIP-1186 证明,
+涉及的 trie 数据极致压缩或突破传统实现)
+
+## 5. 问题的真正形状:熵下界
+
+**定理(非正式)**:全部历史上每个块的每个 trie 节点字节,都是
+`叶子 changesets + 创世状态` 的确定性函数(结构由键集导出,哈希自底向上重算)。
+所以**全历史证明的信息熵下界 = changesets 本身**——归档节点反正必须存它。
+一切额外存储都只是"用空间换查询时延"的缓存,设计空间是一条时延-空间曲线:
+
+| 设计 | 额外存储(主网 25M 块级) | 单证明时延 | 备注 |
+|---|---|---|---|
+| geth archive(全部节点版本,hash 键) | **10-20 TB** | <1ms | 每键 33B 无局部性,经典爆炸 |
+| 全部分支版本,path-major diff 编码(≈erigon3 commitment+history) | ~0.8-1.5 TB | ms | 哈希(33B/子×每写×每层)是随机数,zstd 压不动 |
+| 纯重算(只有 changesets) | **+0** | 分钟-小时 | 顶层 sibling 哈希要扫 as-of-N 的海量叶子,不可用 |
+| 惰性物化(查询驱动 memo 缓存) | 随查询增长 | 首查慢/复查 <1ms | 匹配真实负载(热点账户反复查),可与任何方案叠加 |
+| **深度自适应时间检查点(DATC,本研究提出)** | **~130-250 GB**(α=16) | **~5-20 ms** | 见 §6;比 geth archive 小 50-100× |
+
+关键的量纲事实:每个叶子写恰好触碰**每一层**的一个节点 → 节点版本总数
+= T_w(全史叶子写)× 平均深度,与怎么切分层无关。主网 25M 块 T_w≈5-10B、
+深度̄≈5 → **~25-50B 个节点版本**。存哈希(33B,随机不可压)就是 ~1-1.5TB
+的硬地板——**除非不存哈希而存"重算的入场券"**。这正是 DATC 的出发点。
+
+## 6. DATC:深度自适应时间检查点(Depth-Adaptive Temporal Checkpointing)
+
+### 6.1 核心洞察
+
+深度 d 的一个节点,每块被触碰的概率 ≈ min(1, C/16^d)(C=每块变更键数):
+根每块都变,深层节点几乎不变。传统方案对所有层用同一时间粒度存版本,
+深层存了海量"几乎没变"的版本。**让每层的检查点周期随深度指数增长**:
+
+```
+E_d = α · 16^d / C̄        (层 d 的 epoch 长度,α = 每节点每 epoch 期望变更数)
+```
+
+每个节点在"它自己的" epoch 里期望恰好变 α 次 —— **把变更率在所有深度上
+归一化**。这是把 QMDB undo 窗口的思想(存最小 delta、查询时 scratch 重算)
+推广到全历史:MPT 内部节点会变(QMDB slot 不变),所以窗口必须按深度分层。
+
+### 6.2 存储内容与算账
+
+每层 d、每个 epoch 结束时,对该 epoch 内**变过的**节点存一条记录:
+
+```
+key   = (d, path, epochIdx)                     — 排序后 delta≈0
+value = 节点字节(epoch 末状态,masks+children)  ≈ 36B 摊薄
+      + epoch 内变更表 [(childNibble, blockΔ)]  ≈ 3B × α
+```
+
+- 版本数 = 每层 T_w/α,共 depth̄ 层 → **T_w·depth̄/α 条**;
+- 变更表总条目 = T_w·depth̄(每叶写在每层祖先出现一次)× 3B;
+- **主网(T_w=7B, depth̄=5, α=16):版本 2.2B×~36B ≈ 79GB + 变更表 105GB
+  ≈ 184GB**;T_w=5B → ~130GB。α 是单旋钮:α=64 → 存储 ÷4、查询 ×4。
+- **N42 自有链(T_w≈1 亿, depth̄≈6):≈ 2-3 GB —— 全历史证明几乎免费**。
+- 死合约零成本(没变就没记录);USDC 这类热合约自动按其变更率付费。
+- 全部记录不可变、按 epoch 追加 → 完全契合静态月度分段哲学,build 后只增不改。
+
+### 6.3 查询算法(单证明 O(α·depth̄²) 级)
+
+```
+nodeAt(P, d, N):
+  rec   = seekFloor(d, P, epochOf(N,d))          # 1-2 次点读:版本+变更表
+  base  = rec.bytes                              # epoch 起点的节点状态
+  for (c, b) in rec.changes where b ≤ N:         # 期望 ≤ α 个
+      base.child[c] = hash(nodeAt(P+c, d+1, N))  # 递归;叶层 → historicalstate MPHF O(1)
+  return base
+proof(key, N) = [nodeAt(根..叶路径每层, N)] + 同层 sibling 即 base 中现成哈希
+```
+
+- 每层 ≤α 次递归、每次 1-2 点读 + 几次 hash → **~5-20ms/证明**(I/O 主导);
+- 根 = nodeAt("",0,N) 必须等于 header(N).Root —— 每次查询自带完备性校验
+  (和 QMDB 窗口 provider 同纪律:重建根≠header 根就拒绝出证明);
+- exclusion proof 自然支持(下降到分歧节点,sibling 都在 base 里);
+- 节点创建/删除跨 epoch:版本记录带墓碑/新建标记;
+- 最近一个未封口的 epoch 没有记录 → 路由给 latest/recent-window 路径(已有)。
+
+### 6.4 与已有资产的关系
+
+- **叶子值 as-of-N**:`historicalstate`(snapshot+MPHF+fp)已存在,O(1) 读;
+- **构建**:对 changesets 做一次顺序回放(无 EVM),按层维护 epoch 缓冲落盘
+  ——小时级,一次性;也可从 bpp witness 流导出;
+- **bpp witness 档案的再认识**:每块 BlockProof 恰好捕获该块新建的所有节点
+  版本 → 全史 witness 留存 = block-major 的全版本库(TB 级、查询局部性差)。
+  DATC 是同一信息的 path-major + 深度分层重组——查询友好且小一个量级;
+- **递进部署**:latest(路线A)→ 最近窗口(unwind overlay)→ DATC 全历史,
+  三层共享同一 provider 接口,查询按高度路由。
+
+## 7. 最终推荐(对齐"全历史任意高度"目标)
+
+1. **近期落地**:路线 A(latest,+0 存储)+ erigon 式 unwind 窗口(最近 N 块);
+2. **全历史**:实现 DATC —— 主网级 ~130-250GB(α=16)/ 自有链 ~2-3GB,
+   单证明 ~5-20ms,比 geth archive 小 50-100×,比"存全部分支版本"小 ~5-8×,
+   且贴着熵下界只差一个常数(α 可调);
+3. **先原型验证常数**:在 N42 自有链(2-3GB 全量)上 build DATC 并对
+   replay 留存的每块 header.Root 抽样万级 (key,N) 全验 + 计时 —— 数学假设
+   (键均匀分布、α 预算控住递归)在真实数据上的常数一锤定音,然后再决定
+   是否对 25M 块主网镜像构建。
+
+## 8. 风险与开放问题
+
+- 偏斜负载:热点前缀(交易所、USDC)让局部递归超 α 预算——按 6.2 的
+  per-node 计费天然自适应,但 p99 时延要实测;
+- changesets 完整性:D:/N42-hashed 的 changesets 仅从迁移点(~22.x M)开始
+  (实测 59M+89M=148M 条/9.5GB)——主网全史 DATC 需要从 genesis 的完整
+  changesets(可由 witness/重放重建,数据工程而非设计问题);
+- 存储 trie 用 (addrHash‖path) 键,同一套 epoch 调度天然 per-account 自适应。
