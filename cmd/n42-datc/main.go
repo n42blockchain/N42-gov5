@@ -415,6 +415,7 @@ type lastFullCache struct {
 	m      map[string]lfEntry
 	cap    int
 	seq    uint32
+	curN   int    // entries carrying the current seq (pinned, not evictable)
 	missRB uint64 // read-backs performed (stats)
 }
 
@@ -427,13 +428,25 @@ func newLastFullCache(capEntries int) *lastFullCache {
 	return &lastFullCache{m: make(map[string]lfEntry, 1<<16), cap: capEntries}
 }
 
-func (c *lastFullCache) newBatch() { c.seq++ }
+func (c *lastFullCache) newBatch() { c.seq++; c.curN = 0 }
 
 func (c *lastFullCache) put(pk string, st nodeRecState) {
-	if len(c.m) >= c.cap {
-		// Evict a slice of OLD-batch entries (map order is random); current-
-		// batch entries are pinned.
+	if e, ok := c.m[pk]; ok {
+		if e.seq != c.seq {
+			c.curN++
+		}
+		c.m[pk] = lfEntry{nodeRecState: st, seq: c.seq}
+		return
+	}
+	// Evict only when there ARE unpinned entries — a heavy batch can pin more
+	// than the whole cap, and scanning an all-pinned map on every insert is a
+	// quadratic stall (the 6M A/B froze exactly there). When everything is
+	// pinned the map simply grows past cap until newBatch unpins it.
+	if evictable := len(c.m) - c.curN; len(c.m) >= c.cap && evictable > 0 {
 		drop := c.cap / 8
+		if drop > evictable {
+			drop = evictable
+		}
 		for k, e := range c.m {
 			if e.seq == c.seq {
 				continue
@@ -445,6 +458,7 @@ func (c *lastFullCache) put(pk string, st nodeRecState) {
 		}
 	}
 	c.m[pk] = lfEntry{nodeRecState: st, seq: c.seq}
+	c.curN++
 }
 
 // get returns the path's last-record state, reading it back from the node
@@ -752,8 +766,9 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		var m runtime.MemStats
 		runtime.ReadMemStats(&m)
 		bps := float64(blocksDone) / time.Since(t0).Seconds()
-		fmt.Printf("  block %d / %d  %.0f blk/s  heap=%dMB  leafA=%d leafS=%d chg=%d nodes=%d\n",
-			hi, end, bps, m.HeapAlloc>>20, b.leafAPuts, b.leafSPuts, b.chgPuts, b.nodePuts)
+		fmt.Printf("  block %d / %d  %.0f blk/s  heap=%dMB  leafA=%d leafS=%d chg=%d nodes=%d  lfCache=%d(rb=%d)\n",
+			hi, end, bps, m.HeapAlloc>>20, b.leafAPuts, b.leafSPuts, b.chgPuts, b.nodePuts,
+			len(b.stoLastFull.m), b.stoLastFull.missRB)
 	}
 	fmt.Printf("DATC build done: %d blocks in %s\n", blocksDone, time.Since(t0).Round(time.Second))
 	if b.spill != nil {
