@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -88,6 +89,23 @@ func runVerify(args []string) {
 	}
 
 	q := &querier{tx: tx, sched: sched, foldDepth: *foldDepth}
+	// Leaf history source: zstd segment files when the build used --leaf-seg,
+	// MDBX tables otherwise.
+	{
+		cache := newFrameLRU()
+		segA, okA, err := openLeafSegSet(*out, leafTableA, cache)
+		if err != nil {
+			die("leafseg: %v", err)
+		}
+		segS, okS, err := openLeafSegSet(*out, leafTableS, cache)
+		if err != nil {
+			die("leafseg: %v", err)
+		}
+		if okA || okS {
+			q.segA, q.segS = segA, segS
+			fmt.Printf("leaf history: zstd segments (%s)\n", filepath.Join(*out, leafSegDir))
+		}
+	}
 	rng := rand.New(rand.NewSource(*seed))
 
 	fmt.Printf("DATC verify: head=%d samples=%d foldDepth=%d\n", head, *samples, *foldDepth)
@@ -184,7 +202,35 @@ type querier struct {
 	sched     epochSchedule
 	foldDepth int
 
+	// segA/segS, when non-nil, serve the leaf history from static zstd
+	// segments (leafseg.go) instead of the MDBX tables.
+	segA, segS *leafSegSet
+
 	folds, recs, leafReads int
+}
+
+// leafCur is the cursor contract asOfLeaves needs; satisfied by both
+// kv.Cursor (MDBX) and *segLeafCursor (segments).
+type leafCur interface {
+	Seek([]byte) ([]byte, []byte, error)
+	Next() ([]byte, []byte, error)
+	Prev() ([]byte, []byte, error)
+	Last() ([]byte, []byte, error)
+	Close()
+}
+
+// leafCursor opens the leaf-history cursor for one domain.
+func (q *querier) leafCursor(storage bool) (leafCur, error) {
+	if storage {
+		if q.segS != nil {
+			return q.segS.Cursor(), nil
+		}
+		return q.tx.Cursor(tDatcLeafS)
+	}
+	if q.segA != nil {
+		return q.segA.Cursor(), nil
+	}
+	return q.tx.Cursor(tDatcLeafA)
 }
 
 // nodeHashAt returns the hash of the trie node at `path` (nibbles, relative to
@@ -638,10 +684,8 @@ type foldLeaf struct {
 // asOfLeaves enumerates the leaves under `path` as of block N from the leaf
 // history: per key, the floor entry ≤ N is its value (empty = absent).
 func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) {
-	table := tDatcLeafA
 	keyLen := 32
 	if domain != nil {
-		table = tDatcLeafS
 		keyLen = 72
 	}
 	// Byte-prefix from the nibble path (odd nibble → filter below).
@@ -662,7 +706,7 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 		oddVal = fullNibbles[len(fullNibbles)-1]
 	}
 
-	c, err := q.tx.Cursor(table)
+	c, err := q.leafCursor(domain != nil)
 	if err != nil {
 		return nil, err
 	}
@@ -793,7 +837,7 @@ func ifFloor(have bool, v []byte) []byte {
 
 // seekNextKey positions the cursor at the first entry of the next distinct
 // hashed key after hk (hk + 1 in big-endian arithmetic).
-func seekNextKey(c kv.Cursor, hk []byte) ([]byte, []byte, error) {
+func seekNextKey(c leafCur, hk []byte) ([]byte, []byte, error) {
 	next := append([]byte{}, hk...)
 	for i := len(next) - 1; i >= 0; i-- {
 		next[i]++
