@@ -107,6 +107,7 @@ func (t *ShardedTree) ApplyBatch(ops []Op) Hash {
 		wg.Add(1)
 		go func(tr *Tree, part []Op) {
 			defer wg.Done()
+			tr.BeginLeafBatch() // defer path folds; batch appends share ancestors
 			for i := range part {
 				if len(part[i].Value) == 0 {
 					tr.Delete(part[i].KeyHash)
@@ -114,6 +115,7 @@ func (t *ShardedTree) ApplyBatch(ops []Op) Hash {
 					tr.Set(part[i].KeyHash, part[i].Value)
 				}
 			}
+			tr.EndLeafBatch()
 			tr.Root() // fold this shard's dirty paths in parallel with the others
 		}(t.shards[s], part)
 	}

@@ -228,11 +228,22 @@ type Tree struct {
 	// state + the cursor watermark) for the sliding-window historical proofs in
 	// undo.go. Nil (the default) adds zero overhead to Set/Delete.
 	rec *BlockUndo
+
+	// Batched leaf folding (batch.go): when batchFolding is on, leaf writes skip
+	// the eager 11-hash path fold and record the touched leaf position instead;
+	// foldTouched later folds the UNION of ancestor paths per twig with level-
+	// by-level dedup. Appends land in consecutive slots, so a block's worth of
+	// Sets shares almost all internal nodes — ~11 hashes/leaf drops toward the
+	// ~1 amortized hash/leaf of a contiguous fill.
+	batchFolding bool
+	batchTouched []uint64 // absolute leaf slots written since the last fold
+	batchScratch []uint32 // reusable per-twig node-index scratch
 }
 
-// New creates an empty tree with the default in-RAM index.
+// New creates an empty tree with the default in-RAM index (flat open-addressing
+// — see flatindex.go; the Go map's bucket pointer-chasing was ~2/3 of Set cost).
 func New() *Tree {
-	return &Tree{idx: newMapIndex(), rootDirty: true}
+	return &Tree{idx: newFlatIndex(), rootDirty: true}
 }
 
 // entryAt returns the entry at an absolute slot, transparently reading the cold
@@ -312,7 +323,7 @@ func (t *Tree) deactivate(slot uint64) {
 	tw := t.twigs[id]
 	local := slot % TwigSize
 	if tw.leaf(local) != nullHash {
-		tw.setLeaf(local, nullHash) // eager O(log) path-update
+		t.writeLeaf(tw, id, local, nullHash) // eager O(log) fold, or deferred in batch mode
 		tw.live--
 		t.markUpperDirty(id)
 	}
@@ -345,7 +356,7 @@ func (t *Tree) Set(keyHash Hash, value []byte) {
 	v := make([]byte, len(value))
 	copy(v, value)
 	t.setEntry(slot, entry{keyHash: keyHash, value: v, active: true})
-	tw.setLeaf(local, hashLeaf(keyHash, v)) // eager O(log) path-update
+	t.writeLeaf(tw, int(slot/TwigSize), local, hashLeaf(keyHash, v)) // eager O(log) fold, or deferred in batch mode
 	tw.live++
 	t.markUpperDirty(int(slot / TwigSize))
 	t.idx.Put(keyHash, slot)
@@ -423,6 +434,7 @@ func (t *Tree) updateUpperPath(id int) {
 
 // Root returns the world state root, recomputing dirty twigs + the upper tree.
 func (t *Tree) Root() Hash {
+	t.foldTouched() // settle deferred batch leaves first (no-op when empty)
 	if !t.rootDirty {
 		return t.root
 	}
