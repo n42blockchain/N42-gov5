@@ -276,3 +276,24 @@ proof(key, N) = [nodeAt(根..叶路径每层, N)] + 同层 sibling 即 base 中�
 - builder 优化已落:按层分桶 pending(~8x)、排序批量写、keccak 缓存、
   d0 变更行删除、batch 20K 防 MDBX spill;pprof 终态 = cgocall 42% +
   keccak 10% + GenStructStep 22%(引擎地板)。
+
+## 12. diff 编码 + 聚合行实测(2026-06-11,commit 1757bc5f)
+
+三项落地(重建 + verify **100/100 不变**,时延同级,build 13m31s→10m49s):
+
+| 表 | 直存版 | diff 版 | 倍率 |
+|---|---|---|---|
+| AccNode(FULL 每 8 epoch/路径 + DIFF=新掩码+变更子哈希) | 6.4 GB | 2.1 GB | 3.0x |
+| StorNode(**纯墓碑跳写**:从未存在的路径不写墓碑) | 1.0 GB / 8.67M 行 | **0** | ∞ |
+| AccChg(每 (path,epoch,批段) 一行,varint 事件包) | 3.0 GB / 63.3M 行 | 709 MB / 9.0M 行 | 4.2x |
+| StorChg | 2.0 GB | 1.1 GB | 1.8x |
+| 叶史(LeafA/S,≈changesets 重排,可换 historicalstate) | 2.15 GB | 2.15 GB | 下界 |
+| **合计** | **14.6 GB** | **6.5 GB** | **2.2x**(纯 DATC 开销 12.4→3.9 GB = 3.2x) |
+
+**摊薄成本:~410B/叶写(含叶史)/ ~245B/叶写(纯 DATC)** vs 设计估算 26B/写
+——剩余 ~10x 差距的构成与下一阶段杠杆:① MDBX 行开销(key ~40-50B+页)
+主导短行 → **静态段文件**(epoch 不可变,天然契合月度分段哲学)可消 2-4x;
+② d1 等上层每 epoch 全 16 子变 → diff≈full,可上层独立调参(更长 epoch
+或纯 full+zstd 段);③ F/α 调参。**外推修正**:当前格式 N42 13M 链
+(T_w≈1 亿)≈ **25-40GB 可直接跑**;ETH 25M(T_w≈5-7B)≈ 1.2-2.9TB,
+仍需段文件化(②①)落到数百 GB —— 机制已验证,剩余是存储工程而非设计风险。
