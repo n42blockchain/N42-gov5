@@ -146,39 +146,46 @@ func TestShardedScaling(t *testing.T) {
 	rng := uint64(0x243F6A8885A308D3)
 	next := func() uint64 { rng = rng*6364136223846793005 + 1442695040888963407; return rng >> 11 }
 
-	// Baseline: single tree.
-	single := New()
+	// Pre-generate the seed and every block's ops OUTSIDE the timed regions —
+	// serial keygen (a blake3 per key) inside the loop was ~30% of wall time
+	// and capped the apparent scaling (Amdahl), measuring the harness, not the
+	// tree.
+	seed := make([]Op, keys)
 	for i := uint64(0); i < keys; i++ {
-		single.Set(shKey(i), shVal(i, 0))
+		seed[i] = Op{KeyHash: shKey(i), Value: shVal(i, 0)}
+	}
+	blockOps := make([][]Op, blocks)
+	for b := range blockOps {
+		blockOps[b] = make([]Op, perBlock)
+		for op := 0; op < perBlock; op++ {
+			k := next() % keys
+			blockOps[b][op] = Op{KeyHash: shKey(k), Value: shVal(k, uint64(b)+1)}
+		}
+	}
+
+	// Baseline: single tree, identical op sequence.
+	single := New()
+	for i := range seed {
+		single.Set(seed[i].KeyHash, seed[i].Value)
 	}
 	single.Root()
 	t0 := time.Now()
 	for b := 0; b < blocks; b++ {
-		for op := 0; op < perBlock; op++ {
-			k := next() % keys
-			single.Set(shKey(k), shVal(k, uint64(b)+1))
+		single.BeginLeafBatch()
+		for i := range blockOps[b] {
+			single.Set(blockOps[b][i].KeyHash, blockOps[b][i].Value)
 		}
+		single.EndLeafBatch()
 		single.Root()
 	}
 	singleDur := time.Since(t0)
 
 	for _, shards := range []int{4, 16, 64} {
-		rng = 0x243F6A8885A308D3
 		tr, _ := NewSharded(shards)
-		var seed []Op
-		for i := uint64(0); i < keys; i++ {
-			seed = append(seed, Op{KeyHash: shKey(i), Value: shVal(i, 0)})
-		}
 		tr.ApplyBatch(seed)
 		t1 := time.Now()
-		ops := make([]Op, 0, perBlock)
 		for b := 0; b < blocks; b++ {
-			ops = ops[:0]
-			for op := 0; op < perBlock; op++ {
-				k := next() % keys
-				ops = append(ops, Op{KeyHash: shKey(k), Value: shVal(k, uint64(b)+1)})
-			}
-			tr.ApplyBatch(ops)
+			tr.ApplyBatch(blockOps[b])
 		}
 		dur := time.Since(t1)
 		fmt.Printf("  [scaling] shards=%-3d  %d upd in %s = %.2fM upd/s  (single: %s = %.2fM upd/s, speedup %.1fx, cores=%d)\n",

@@ -67,7 +67,48 @@ var leafDomain = [1]byte{0x01}
 
 // hashLeaf is the leaf hash of a live entry (domain-separated from internal
 // nodes by the 0x01 prefix).
+//
+// The message is 0x01 || keyHash || value = 33+len(value) bytes. State values
+// are short (storage slots 32 B, account V2 ~70 B), so the whole message is
+// almost always one Blake3 chunk of <= 2 blocks; hashing those with two direct
+// CompressNode calls skips the Hasher machinery (Reset/Write chunk accounting
+// + pool round-trip), ~2x on this path. Longer values fall back to the pooled
+// hasher. Both paths are bit-identical Blake3-256.
 func hashLeaf(keyHash Hash, value []byte) Hash {
+	if len(value) <= 95 { // 33+95 = 128 = two blocks max
+		var m [128]byte
+		m[0] = 0x01
+		copy(m[1:33], keyHash[:])
+		copy(m[33:], value)
+		total := 33 + len(value)
+		var out Hash
+		if total <= 64 {
+			words := guts.CompressNode(guts.Node{
+				CV:       guts.IV,
+				Block:    guts.BytesToWords(*(*[64]byte)(m[0:64])),
+				BlockLen: uint32(total),
+				Flags:    guts.FlagChunkStart | guts.FlagChunkEnd | guts.FlagRoot,
+			})
+			wb := guts.WordsToBytes(words)
+			copy(out[:], wb[:32])
+			return out
+		}
+		cv := guts.ChainingValue(guts.Node{
+			CV:       guts.IV,
+			Block:    guts.BytesToWords(*(*[64]byte)(m[0:64])),
+			BlockLen: 64,
+			Flags:    guts.FlagChunkStart,
+		})
+		words := guts.CompressNode(guts.Node{
+			CV:       cv,
+			Block:    guts.BytesToWords(*(*[64]byte)(m[64:128])),
+			BlockLen: uint32(total - 64),
+			Flags:    guts.FlagChunkEnd | guts.FlagRoot,
+		})
+		wb := guts.WordsToBytes(words)
+		copy(out[:], wb[:32])
+		return out
+	}
 	h := leafHasherPool.Get().(*blake3.Hasher)
 	h.Reset()
 	_, _ = h.Write(leafDomain[:])
@@ -170,8 +211,10 @@ func (tw *twig) setLeaf(local uint64, h Hash) {
 // state updates go through setLeaf's O(log) path instead. The twig must be
 // hydrated (nodes != nil); eviction never targets a dirty twig.
 func (tw *twig) recompute() {
-	for j := TwigSize - 1; j >= 1; j-- {
-		tw.nodes[j] = hashNode(tw.nodes[2*j], tw.nodes[2*j+1])
+	// Level by level, bottom-up: each level's children occupy a contiguous heap
+	// range, so the 8-way SIMD compression runs straight over the arrays.
+	for base := TwigSize / 2; base >= 1; base /= 2 {
+		hashNodesRun(tw.nodes[:], base, base)
 	}
 	tw.root = tw.nodes[1]
 	tw.dirty = false
@@ -237,7 +280,35 @@ type Tree struct {
 	// ~1 amortized hash/leaf of a contiguous fill.
 	batchFolding bool
 	batchTouched []uint64 // absolute leaf slots written since the last fold
-	batchScratch []uint32 // reusable per-twig node-index scratch
+	foldScratch  []uint64 // reusable packed (twigID<<12|nodeIdx) level scratch
+
+	// arena is the current value-copy chunk: Set copies values into it instead
+	// of one heap object per op (the per-op malloc + GC mark was ~10% CPU in
+	// all-in-RAM runs). Chunks are append-ordered like slots, and entry
+	// eviction drops a slot PREFIX, so a fully-evicted chunk has no surviving
+	// views and is collected — no pinning in the production sliding-window
+	// mode either.
+	arena []byte
+}
+
+// arenaChunkSize is the value-arena allocation unit.
+const arenaChunkSize = 1 << 20
+
+// allocVal copies v into the arena and returns the stable view.
+func (t *Tree) allocVal(v []byte) []byte {
+	if len(v) == 0 {
+		return nil
+	}
+	if cap(t.arena)-len(t.arena) < len(v) {
+		sz := arenaChunkSize
+		if len(v) > sz {
+			sz = len(v)
+		}
+		t.arena = make([]byte, 0, sz)
+	}
+	off := len(t.arena)
+	t.arena = append(t.arena, v...)
+	return t.arena[off:len(t.arena):len(t.arena)]
 }
 
 // New creates an empty tree with the default in-RAM index (flat open-addressing
@@ -353,8 +424,7 @@ func (t *Tree) Set(keyHash Hash, value []byte) {
 	t.nextSlot++
 	tw := t.twigFor(slot)
 	local := slot % TwigSize
-	v := make([]byte, len(value))
-	copy(v, value)
+	v := t.allocVal(value)
 	t.setEntry(slot, entry{keyHash: keyHash, value: v, active: true})
 	t.writeLeaf(tw, int(slot/TwigSize), local, hashLeaf(keyHash, v)) // eager O(log) fold, or deferred in batch mode
 	tw.live++
@@ -416,8 +486,8 @@ func (t *Tree) rebuildUpper() {
 			t.upper[t.upCap+i] = nullHash
 		}
 	}
-	for j := t.upCap - 1; j >= 1; j-- {
-		t.upper[j] = hashNode(t.upper[2*j], t.upper[2*j+1])
+	for base := t.upCap / 2; base >= 1; base /= 2 {
+		hashNodesRun(t.upper, base, base)
 	}
 	t.upRebuild = false
 	clear(t.upDirty)
