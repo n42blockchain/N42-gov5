@@ -141,6 +141,10 @@ func main() {
 		runStor(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "segexport" {
+		runSegExport(os.Args[2:])
+		return
+	}
 	if os.Args[1] != "build" {
 		die("usage: n42-datc build|verify [flags]")
 	}
