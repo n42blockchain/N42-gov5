@@ -11,7 +11,10 @@
 
 package qmdb
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"unsafe"
+)
 
 const (
 	fiEmpty = 0x00 // never used
@@ -107,6 +110,15 @@ func (f *flatIndex) Delete(k Hash) {
 }
 
 func (f *flatIndex) Len() int { return f.live }
+
+// prefetch warms the probe-start cache lines for k. A batch pre-pass issuing
+// these turns the apply loop's dependent DRAM misses into overlapped ones
+// (the table is far larger than L2 at chain scale, so probes otherwise miss).
+func (f *flatIndex) prefetch(k Hash) {
+	i := fiH1(k) & f.mask
+	prefetcht0(unsafe.Pointer(&f.ctrl[i]))
+	prefetcht0(unsafe.Pointer(&f.keys[i]))
+}
 
 // rehash doubles capacity (or rebuilds in place size when tombstones dominate)
 // and reinserts the live set.
