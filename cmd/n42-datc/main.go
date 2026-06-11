@@ -32,6 +32,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"runtime"
+	"sort"
 	"time"
 
 	"github.com/c2h5oh/datasize"
@@ -127,6 +128,14 @@ func main() {
 		runVerify(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "diag" {
+		runDiag(os.Args[2:])
+		return
+	}
+	if os.Args[1] == "folddiff" {
+		runFoldDiff(os.Args[2:])
+		return
+	}
 	if os.Args[1] != "build" {
 		die("usage: n42-datc build|verify [flags]")
 	}
@@ -201,6 +210,8 @@ func main() {
 	b := &builder{
 		sched: sched, db: db, hdrs: hdrs,
 		acctTbl: acctTbl, storTbl: storTbl,
+		addrHashCache: make(map[types.Address][32]byte, 1<<16),
+		slotHashCache: make(map[types.Hash][32]byte, 1<<16),
 	}
 	for d := 0; d <= maxChgDepth; d++ {
 		b.accDirty[d] = make(map[string]struct{}, 1<<10)
@@ -227,7 +238,88 @@ type builder struct {
 	accDirty [maxChgDepth + 1]map[string]struct{}
 	stoDirty [maxChgDepth + 1]map[string]struct{}
 
+	// Sorted-batch write buffers: DATC puts are collected per MDBX batch,
+	// sorted by key, and applied sequentially — near-append B-tree insertion
+	// instead of random-key thrash (the cgocall 42% of the profile). Flushed
+	// on threshold so heavy eras can't balloon a batch's memory.
+	chgAccBuf, chgStoBuf, leafABuf, leafSBuf, nodeAccBuf, nodeStoBuf []kvPair
+
+	// keccak caches: hot addresses (miners every block, hot contracts) and hot
+	// slots repeat across millions of blocks; hashing them once is ~free.
+	addrHashCache map[types.Address][32]byte
+	slotHashCache map[types.Hash][32]byte
+
 	leafAPuts, leafSPuts, chgPuts, nodePuts uint64
+}
+
+type kvPair struct{ k, v []byte }
+
+const bufFlushThreshold = 4_000_000 // entries per buffer before an early sorted flush
+
+func (b *builder) addrHash(addr types.Address) [32]byte {
+	if h, ok := b.addrHashCache[addr]; ok {
+		return h
+	}
+	var h [32]byte
+	copy(h[:], crypto.Keccak256(addr[:]))
+	if len(b.addrHashCache) > 2_000_000 {
+		b.addrHashCache = make(map[types.Address][32]byte, 1<<16)
+	}
+	b.addrHashCache[addr] = h
+	return h
+}
+
+func (b *builder) slotHash(slot types.Hash) [32]byte {
+	if h, ok := b.slotHashCache[slot]; ok {
+		return h
+	}
+	var h [32]byte
+	copy(h[:], crypto.Keccak256(slot[:]))
+	if len(b.slotHashCache) > 2_000_000 {
+		b.slotHashCache = make(map[types.Hash][32]byte, 1<<16)
+	}
+	b.slotHashCache[slot] = h
+	return h
+}
+
+// flushBuf sorts a buffer by key and applies it to the table sequentially.
+func flushBuf(tx kv.RwTx, table string, buf *[]kvPair) error {
+	if len(*buf) == 0 {
+		return nil
+	}
+	sort.Slice(*buf, func(i, j int) bool { return string((*buf)[i].k) < string((*buf)[j].k) })
+	for i := range *buf {
+		if err := tx.Put(table, (*buf)[i].k, (*buf)[i].v); err != nil {
+			return err
+		}
+	}
+	*buf = (*buf)[:0]
+	return nil
+}
+
+// flushAllBufs drains every sorted-batch buffer into the tx.
+func (b *builder) flushAllBufs(tx kv.RwTx) error {
+	for _, e := range []struct {
+		table string
+		buf   *[]kvPair
+	}{
+		{tDatcAccChg, &b.chgAccBuf}, {tDatcStoChg, &b.chgStoBuf},
+		{tDatcLeafA, &b.leafABuf}, {tDatcLeafS, &b.leafSBuf},
+		{tDatcAccNode, &b.nodeAccBuf}, {tDatcStoNode, &b.nodeStoBuf},
+	} {
+		if err := flushBuf(tx, e.table, e.buf); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *builder) maybeEarlyFlush(tx kv.RwTx) error {
+	if len(b.chgAccBuf) > bufFlushThreshold || len(b.chgStoBuf) > bufFlushThreshold ||
+		len(b.leafABuf) > bufFlushThreshold || len(b.leafSBuf) > bufFlushThreshold {
+		return b.flushAllBufs(tx)
+	}
+	return nil
 }
 
 func (b *builder) run(start, end, batchBlocks uint64) error {
@@ -305,6 +397,11 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 				tx.Rollback()
 				return err
 			}
+		}
+		// Drain the sorted-batch buffers into this tx before committing.
+		if err := b.flushAllBufs(tx); err != nil {
+			tx.Rollback()
+			return err
 		}
 		if err := tx.Commit(); err != nil {
 			return err
@@ -384,6 +481,58 @@ func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64) 
 		return nil // empty block: trie unchanged, nothing to record
 	}
 
+	// Same-block create+destruct ghost storage: a contract deployed AND
+	// selfdestructed within one block nets to "absent → absent", so acctcs has
+	// NO entry for it — but storcs still carries the intra-block SSTOREs (the
+	// wipes-sidecar gap rebuild_state documents). Those slots do not exist at
+	// end of block: writing them would plant ghost rows in the leaf history
+	// (resurrected by any later fold) and dark-matter HashedStorage rows.
+	// Detection: storage-only address whose account is absent in PRE-state —
+	// with no acctcs creation it cannot exist at block end either.
+	for addr := range dirtyS {
+		if _, inA := dirtyA[addr]; inA {
+			continue
+		}
+		ah := b.addrHash(addr)
+		if v, e := tx.GetOne(modules.HashedAccounts, ah[:]); e == nil && len(v) == 0 {
+			delete(dirtyS, addr)
+		}
+	}
+	if len(dirtyA) == 0 && len(dirtyS) == 0 {
+		return nil
+	}
+
+	// SELFDESTRUCT: TrieRootComputer wipes the whole storage subtree of a
+	// deleted account, but the LEAF HISTORY needs explicit per-slot tombstones
+	// or the verifier's fold resurrects pre-destruct slots at later heights.
+	// Enumerate the pre-state slots BEFORE ComputeRoot deletes them.
+	type wipedSlot struct {
+		composite [72]byte
+	}
+	var wiped []wipedSlot
+	for addr, acct := range dirtyA {
+		if acct != nil {
+			continue
+		}
+		ah := b.addrHash(addr)
+		addrHash := ah[:]
+		c, cerr := tx.Cursor(modules.HashedStorage)
+		if cerr != nil {
+			return cerr
+		}
+		prefix := make([]byte, 40)
+		copy(prefix, addrHash)
+		for k, _, e := c.Seek(prefix); k != nil && e == nil; k, _, e = c.Next() {
+			if len(k) < 72 || !bytesEqualPrefix(k, prefix) {
+				break
+			}
+			var ws wipedSlot
+			copy(ws.composite[:], k[:72])
+			wiped = append(wiped, ws)
+		}
+		c.Close()
+	}
+
 	root, err := trc.ComputeRoot(dirtyA, dirtyS)
 	if err != nil {
 		return fmt.Errorf("ComputeRoot: %w", err)
@@ -399,20 +548,24 @@ func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64) 
 	// Record leaf history + change-index entries + pending changed paths.
 	var blk8 [8]byte
 	binary.BigEndian.PutUint64(blk8[:], n)
+	for i := range wiped {
+		comp := wiped[i].composite
+		b.leafSBuf = append(b.leafSBuf, kvPair{k: append(comp[:], blk8[:]...)})
+		b.leafSPuts++
+		b.recordChange(true, comp[:40], nibblesOf(comp[40:]), n)
+	}
 	for addr, acct := range dirtyA {
-		addrHash := crypto.Keccak256(addr[:])
+		ah := b.addrHash(addr)
 		var val []byte
 		if acct != nil {
 			val = acct.MarshalV2()
 		}
-		if err := tx.Put(tDatcLeafA, append(append([]byte{}, addrHash...), blk8[:]...), val); err != nil {
-			return err
-		}
+		b.leafABuf = append(b.leafABuf, kvPair{k: append(append([]byte{}, ah[:]...), blk8[:]...), v: val})
 		b.leafAPuts++
-		b.recordChange(tx, false, nil, nibblesOf(addrHash), n)
+		b.recordChange(false, nil, nibblesOf(ah[:]), n)
 	}
 	for addr, slots := range dirtyS {
-		addrHash := crypto.Keccak256(addr[:])
+		ah := b.addrHash(addr)
 		// A storage-only change still changes the account-trie leaf (its
 		// storageRoot): mark the account path in the change index even though
 		// acctcs has no entry for it. (TrieRootComputer does the same when it
@@ -420,16 +573,16 @@ func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64) 
 		// entry is needed — the account VALUE is unchanged; the verifier's fold
 		// recomputes the storageRoot from the storage leaf history.
 		if _, also := dirtyA[addr]; !also {
-			b.recordChange(tx, false, nil, nibblesOf(addrHash), n)
+			b.recordChange(false, nil, nibblesOf(ah[:]), n)
 		}
 		domain := make([]byte, 40)
-		copy(domain, addrHash)
+		copy(domain, ah[:])
 		// incarnation 0 (matches TrieRootComputer composite keys)
 		for slot, v := range slots {
-			slotHash := crypto.Keccak256(slot[:])
+			sh := b.slotHash(slot)
 			composite := make([]byte, 0, 72+8)
 			composite = append(composite, domain...)
-			composite = append(composite, slotHash...)
+			composite = append(composite, sh[:]...)
 			var val []byte
 			if v != nil && !v.IsZero() {
 				bb := v.Bytes32()
@@ -439,28 +592,38 @@ func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64) 
 				}
 				val = append([]byte{}, bb[s:]...)
 			}
-			if err := tx.Put(tDatcLeafS, append(composite, blk8[:]...), val); err != nil {
-				return err
-			}
+			b.leafSBuf = append(b.leafSBuf, kvPair{k: append(composite, blk8[:]...), v: val})
 			b.leafSPuts++
-			b.recordChange(tx, true, domain, nibblesOf(slotHash), n)
+			b.recordChange(true, domain, nibblesOf(sh[:]), n)
 		}
 	}
-	return nil
+	return b.maybeEarlyFlush(tx)
 }
 
-// recordChange writes the per-level change-index entries for one dirty key and
-// marks the ancestor paths pending for their next epoch flush.
-func (b *builder) recordChange(tx kv.RwTx, storage bool, domain []byte, keyNibbles []byte, n uint64) {
-	chgTable, dirty := tDatcAccChg, &b.accDirty
+// recordChange buffers the per-level change-index entries for one dirty key
+// and marks the ancestor paths pending for their next epoch flush.
+//
+// d0 change rows are deliberately NOT written: E_0 = 1 means the floor record
+// for any query already sits at block N itself (epoch == block), so the d0
+// change window is empty by construction and the verifier never reads it.
+func (b *builder) recordChange(storage bool, domain []byte, keyNibbles []byte, n uint64) {
+	buf, dirty := &b.chgAccBuf, &b.accDirty
 	if storage {
-		chgTable, dirty = tDatcStoChg, &b.stoDirty
+		buf, dirty = &b.chgStoBuf, &b.stoDirty
 	}
 	maxD := maxChgDepth
 	if maxD > len(keyNibbles)-1 {
 		maxD = len(keyNibbles) - 1
 	}
 	for d := 0; d <= maxD; d++ {
+		// pending path for epoch flush: domain | path(d), bucketed by level
+		pk := make([]byte, 0, len(domain)+d)
+		pk = append(pk, domain...)
+		pk = append(pk, keyNibbles[:d]...)
+		dirty[d][string(pk)] = struct{}{}
+		if d == 0 || b.sched.e[d] == 1 {
+			continue // empty-window levels: change rows are never consulted
+		}
 		epoch := b.sched.epochOf(d, n)
 		// change-index key: depth(1) | domain | path(d) | epoch(4) | block(4) | child(1)
 		k := make([]byte, 0, 1+len(domain)+d+4+4+1)
@@ -470,30 +633,41 @@ func (b *builder) recordChange(tx kv.RwTx, storage bool, domain []byte, keyNibbl
 		k = binary.BigEndian.AppendUint32(k, uint32(epoch))
 		k = binary.BigEndian.AppendUint32(k, uint32(n))
 		k = append(k, keyNibbles[d])
-		_ = tx.Put(chgTable, k, nil)
+		*buf = append(*buf, kvPair{k: k})
 		b.chgPuts++
-		// pending path for epoch flush: domain | path(d), bucketed by level
-		pk := make([]byte, 0, len(domain)+d)
-		pk = append(pk, domain...)
-		pk = append(pk, keyNibbles[:d]...)
-		dirty[d][string(pk)] = struct{}{}
 	}
+}
+
+func bytesEqualPrefix(k, p []byte) bool {
+	return len(k) >= len(p) && string(k[:len(p)]) == string(p)
 }
 
 // flushEpoch persists the epoch-end node bytes for every path changed during
 // the closing epoch of level d, reading the CURRENT TrieOf* rows.
 func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
 	flushOne := func(storage bool, pending map[string]struct{}) error {
-		srcTable, dstTable := modules.TrieOfAccounts, tDatcAccNode
-		if storage {
-			srcTable, dstTable = modules.TrieOfStorage, tDatcStoNode
+		if len(pending) == 0 {
+			return nil
 		}
+		srcTable := modules.TrieOfAccounts
+		buf := &b.nodeAccBuf
+		if storage {
+			srcTable = modules.TrieOfStorage
+			buf = &b.nodeStoBuf
+		}
+		// Sorted iteration: the TrieOf* GetOne reads walk the B-tree in key
+		// order instead of map-random order.
+		paths := make([]string, 0, len(pending))
 		for pk := range pending {
+			paths = append(paths, pk)
+		}
+		sort.Strings(paths)
+		for _, pk := range paths {
 			path := []byte(pk)
+			delete(pending, pk)
 			if !storage && len(path) == 0 {
 				// The account-trie root has no TrieAccount row by convention;
 				// the verifier synthesizes it from the depth-1 children.
-				delete(pending, pk)
 				continue
 			}
 			// Full-key read works for both tables: the kv layer auto-converts
@@ -510,11 +684,8 @@ func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
 			k = append(k, byte(len(path)))
 			k = append(k, path...)
 			k = binary.BigEndian.AppendUint32(k, uint32(epoch))
-			if err := tx.Put(dstTable, k, node); err != nil {
-				return err
-			}
+			*buf = append(*buf, kvPair{k: k, v: append([]byte{}, node...)})
 			b.nodePuts++
-			delete(pending, pk)
 		}
 		return nil
 	}

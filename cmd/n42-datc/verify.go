@@ -156,6 +156,9 @@ func (q *querier) nodeHashAt(domain, path []byte, n uint64) (types.Hash, bool, e
 	fold := q.foldDepth
 	if domain != nil {
 		fold = 2 // storage tries are small; fold early
+		if q.foldDepth < 2 {
+			fold = q.foldDepth // diagnostic mode: --fold-depth 0/1 = truly pure fold
+		}
 	}
 	if d >= fold {
 		return q.foldAt(domain, path, n)
@@ -399,6 +402,51 @@ func (q *querier) changedChildren(domain, path []byte, epoch, n uint64) (map[byt
 		out[k[len(prefix)+4]] = true
 	}
 	return out, nil
+}
+
+// foldAtTraced is foldAt with branch capture: every GenStructStep branch
+// emission (path → MarshalTrieNode bytes) lands in `out` for diagnostics.
+func (q *querier) foldAtTraced(domain, path []byte, n uint64, out map[string][]byte) (types.Hash, bool, error) {
+	leaves, err := q.asOfLeaves(domain, path, n)
+	if err != nil {
+		return types.Hash{}, false, err
+	}
+	if len(leaves) == 0 {
+		return types.Hash{}, false, nil
+	}
+	hb := trie.NewHashBuilder(false)
+	var groups, hasTreeA, hasHashA []uint16
+	var curr, succ []byte
+	var currVal trie.GenStructStepLeafData
+	retain := func(_ []byte) bool { return false }
+	hc := func(keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
+		if hasState == 0 {
+			return nil
+		}
+		buf := make([]byte, 6+len(hashes)+len(rootHash))
+		v := trie.MarshalTrieNode(hasState, hasTree, hasHash, hashes, rootHash, buf)
+		out[string(append([]byte{}, keyHex...))] = append([]byte{}, v...)
+		return nil
+	}
+	for i := range leaves {
+		succ = append(succ[:0], leaves[i].remainder...)
+		if len(curr) > 0 {
+			groups, hasTreeA, hasHashA, err = trie.GenStructStep(retain, curr, succ, hb, hc, &currVal, groups, hasTreeA, hasHashA, false)
+			if err != nil {
+				return types.Hash{}, false, err
+			}
+		}
+		curr = append(curr[:0], succ...)
+		currVal.Value = leaves[i].value
+	}
+	if _, _, _, err := trie.GenStructStep(retain, curr, []byte{}, hb, hc, &currVal, groups, hasTreeA, hasHashA, false); err != nil {
+		return types.Hash{}, false, err
+	}
+	root, err := hb.RootHash()
+	if err != nil {
+		return types.Hash{}, false, err
+	}
+	return root, true, nil
 }
 
 // foldAt rebuilds the subtree at `path` from the leaf history as of block N
