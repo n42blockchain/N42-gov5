@@ -40,6 +40,7 @@ func runVerify(args []string) {
 	hdrDir := fs.String("headers", `D:/n42-eth1/chain/freezer`, "headerc freezer dir")
 	samples := fs.Int("samples", 50, "sampled historical heights")
 	foldDepth := fs.Int("fold-depth", 4, "account-trie depth at/below which subtrees fold from leaf history")
+	at := fs.Uint64("at", 0, "verify exactly this height (overrides sampling)")
 	seed := fs.Int64("seed", 42, "sampling seed")
 	mapGB := fs.Int("map.gb", 512, "MDBX map size GB")
 	_ = fs.Parse(args)
@@ -89,6 +90,10 @@ func runVerify(args []string) {
 	okCnt := 0
 	for i := 0; i < *samples; i++ {
 		n := rng.Uint64() % head
+		if *at > 0 {
+			n = *at
+			*samples = 1
+		}
 		hdr, err := hdrs.ReadHeader(n)
 		if err != nil {
 			die("header %d: %v", n, err)
@@ -160,6 +165,11 @@ func (q *querier) nodeHashAt(domain, path []byte, n uint64) (types.Hash, bool, e
 		return types.Hash{}, false, err
 	}
 	if !ok || len(rec) == 0 {
+		if domain == nil && d == 0 {
+			// The account-trie root has no TrieAccount row by convention —
+			// synthesize it from its 16 depth-1 children.
+			return q.synthesizeRoot(n)
+		}
 		// Never a persisted branch up to N (or tombstone) — resolve from leaves.
 		return q.foldAt(domain, path, n)
 	}
@@ -239,6 +249,31 @@ func (q *querier) nodeHashAt(domain, path []byte, n uint64) (types.Hash, bool, e
 		return q.foldAt(domain, path, n)
 	}
 	// keccak(RLP 17-list: 16 child slots + empty value)
+	return branch17Hash(slots), true, nil
+}
+
+// synthesizeRoot assembles the account-trie root node from its 16 depth-1
+// children (the root has no persisted row by erigon convention).
+func (q *querier) synthesizeRoot(n uint64) (types.Hash, bool, error) {
+	var slots [16]*types.Hash
+	nKids := 0
+	for nib := byte(0); nib < 16; nib++ {
+		h, exists, err := q.nodeHashAt(nil, []byte{nib}, n)
+		if err != nil {
+			return types.Hash{}, false, err
+		}
+		if exists {
+			hc := h
+			slots[nib] = &hc
+			nKids++
+		}
+	}
+	if nKids == 0 {
+		return types.Hash{}, false, nil
+	}
+	if nKids == 1 {
+		return q.foldAt(nil, nil, n) // degenerate early-chain trie
+	}
 	return branch17Hash(slots), true, nil
 }
 
@@ -454,6 +489,7 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 		}
 		nibs := nibblesOf(curKey[len(domain):]) // hashed key part
 		rem := append([]byte{}, nibs[len(fullNibbles):]...)
+		rem = append(rem, 0x10) // GenStructStep leaf terminator
 		var val rlphacks.RlpSerializable
 		if domain == nil {
 			var acct account.StateAccount
