@@ -624,27 +624,22 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 	defer c.Close()
 
 	var out []foldLeaf
-	var curKey []byte
-	var curVal []byte
-	var haveFloor bool
-	flush := func() error {
-		if curKey == nil || !haveFloor || len(curVal) == 0 {
-			return nil
+	emit := func(hk, val []byte) error {
+		if len(val) == 0 {
+			return nil // deleted/absent at n
 		}
-		nibs := nibblesOf(curKey[len(domain):]) // hashed key part
+		nibs := nibblesOf(hk[len(domain):]) // hashed key part
 		rem := append([]byte{}, nibs[len(fullNibbles):]...)
 		rem = append(rem, 0x10) // GenStructStep leaf terminator
-		var val rlphacks.RlpSerializable
+		var v rlphacks.RlpSerializable
 		if domain == nil {
 			var acct account.StateAccount
-			if err := acct.DecodeForStorage(curVal); err != nil {
+			if err := acct.DecodeForStorage(val); err != nil {
 				return fmt.Errorf("leaf account decode: %w", err)
 			}
 			// storage root at N for this account (emptyRoot for EOAs).
-			var addrHash types.Hash
-			copy(addrHash[:], curKey[:32])
 			sd := make([]byte, 40)
-			copy(sd, addrHash[:])
+			copy(sd, hk[:32])
 			sroot, hasStorage, err := q.nodeHashAt(sd, nil, n)
 			if err != nil {
 				return err
@@ -656,15 +651,27 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 			}
 			buf := make([]byte, acct.EncodingLengthForHashing())
 			acct.EncodeForHashing(buf)
-			val = rlphacks.RlpEncodedBytes(buf)
+			v = rlphacks.RlpEncodedBytes(buf)
 		} else {
-			val = rlphacks.RlpSerializableBytes(append([]byte{}, curVal...))
+			v = rlphacks.RlpSerializableBytes(append([]byte{}, val...))
 		}
-		out = append(out, foldLeaf{remainder: rem, value: val})
+		out = append(out, foldLeaf{remainder: rem, value: v})
 		return nil
 	}
 
-	for k, v, err := c.Seek(bytePrefix); k != nil; k, v, err = c.Next() {
+	// Adaptive distinct-key walk (the QMDB OldId idea adapted to the sorted
+	// (key | block) layout): per key we need only the FLOOR entry ≤ n, so after
+	// a few linear steps inside one key's version run we SEEK straight to the
+	// floor — (key | n+1) then Prev — and then jump to the next distinct key
+	// with another seek. Heavy contracts go from O(total history) reads to
+	// O(live keys × log); keys with 1-2 versions stay on the cheap linear path.
+	const linearBudget = 4
+	var curKey, curVal []byte
+	var haveFloor bool
+	linearSteps := 0
+
+	k, v, err := c.Seek(bytePrefix)
+	for k != nil {
 		if err != nil {
 			return nil, err
 		}
@@ -672,31 +679,82 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 			break
 		}
 		if len(k) != keyLen+8 {
+			k, v, err = c.Next()
 			continue
 		}
 		hk := k[:keyLen]
-		if oddNib {
-			nib := hk[len(bytePrefix)] >> 4
-			if nib != oddVal {
-				continue
-			}
+		if oddNib && hk[len(bytePrefix)]>>4 != oddVal {
+			// Wrong odd-nibble branch: skip this whole key.
+			k, v, err = seekNextKey(c, hk)
+			continue
 		}
-		blk := binary.BigEndian.Uint64(k[keyLen:])
 		if !bytes.Equal(hk, curKey) {
-			if err := flush(); err != nil {
+			if err := emit(curKey, ifFloor(haveFloor, curVal)); err != nil {
 				return nil, err
 			}
-			curKey = append([]byte{}, hk...)
-			curVal, haveFloor = nil, false
+			curKey = append(curKey[:0], hk...)
+			curVal, haveFloor, linearSteps = nil, false, 0
 		}
-		if blk <= n {
+		blk := binary.BigEndian.Uint64(k[keyLen:])
+		q.leafReads++
+		switch {
+		case blk > n:
+			// Versions are ascending: everything further in this key is past n.
+			k, v, err = seekNextKey(c, hk)
+			continue
+		case linearSteps < linearBudget:
 			curVal = append(curVal[:0], v...)
 			haveFloor = true
-			q.leafReads++
+			linearSteps++
+		default:
+			// Long version run: jump straight to the floor entry ≤ n.
+			seek := make([]byte, 0, keyLen+8)
+			seek = append(seek, hk...)
+			seek = binary.BigEndian.AppendUint64(seek, n+1)
+			fk, fv, ferr := c.Seek(seek)
+			if ferr != nil {
+				return nil, ferr
+			}
+			if fk == nil {
+				fk, fv, ferr = c.Last()
+			} else {
+				fk, fv, ferr = c.Prev()
+			}
+			if ferr != nil {
+				return nil, ferr
+			}
+			if fk != nil && len(fk) == keyLen+8 && bytes.Equal(fk[:keyLen], hk) {
+				curVal = append(curVal[:0], fv...)
+				haveFloor = true
+				q.leafReads++
+			}
+			k, v, err = seekNextKey(c, hk)
+			continue
 		}
+		k, v, err = c.Next()
 	}
-	if err := flush(); err != nil {
+	if err := emit(curKey, ifFloor(haveFloor, curVal)); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+func ifFloor(have bool, v []byte) []byte {
+	if !have {
+		return nil
+	}
+	return v
+}
+
+// seekNextKey positions the cursor at the first entry of the next distinct
+// hashed key after hk (hk + 1 in big-endian arithmetic).
+func seekNextKey(c kv.Cursor, hk []byte) ([]byte, []byte, error) {
+	next := append([]byte{}, hk...)
+	for i := len(next) - 1; i >= 0; i-- {
+		next[i]++
+		if next[i] != 0 {
+			return c.Seek(next)
+		}
+	}
+	return nil, nil, nil // key was all-0xFF: nothing after
 }
