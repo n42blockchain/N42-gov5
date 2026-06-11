@@ -93,17 +93,20 @@ func runVerify(args []string) {
 	// MDBX tables otherwise.
 	{
 		cache := newFrameLRU()
-		segA, okA, err := openLeafSegSet(*out, leafTableA, cache)
-		if err != nil {
-			die("leafseg: %v", err)
+		open := func(tab int) *leafSegSet {
+			s, ok, err := openLeafSegSet(*out, tab, cache)
+			if err != nil {
+				die("leafseg: %v", err)
+			}
+			if !ok {
+				return nil
+			}
+			return s
 		}
-		segS, okS, err := openLeafSegSet(*out, leafTableS, cache)
-		if err != nil {
-			die("leafseg: %v", err)
-		}
-		if okA || okS {
-			q.segA, q.segS = segA, segS
-			fmt.Printf("leaf history: zstd segments (%s)\n", filepath.Join(*out, leafSegDir))
+		q.segA, q.segS = open(segTabLeafA), open(segTabLeafS)
+		q.segCA, q.segCS = open(segTabChgA), open(segTabChgS)
+		if q.segA != nil || q.segS != nil {
+			fmt.Printf("leaf history + change index: zstd segments (%s)\n", filepath.Join(*out, leafSegDir))
 		}
 	}
 	rng := rand.New(rand.NewSource(*seed))
@@ -202,9 +205,9 @@ type querier struct {
 	sched     epochSchedule
 	foldDepth int
 
-	// segA/segS, when non-nil, serve the leaf history from static zstd
-	// segments (leafseg.go) instead of the MDBX tables.
-	segA, segS *leafSegSet
+	// seg*, when non-nil, serve the leaf history / change index from static
+	// zstd segments (leafseg.go) instead of the MDBX tables.
+	segA, segS, segCA, segCS *leafSegSet
 
 	folds, recs, leafReads int
 }
@@ -231,6 +234,20 @@ func (q *querier) leafCursor(storage bool) (leafCur, error) {
 		return q.segA.Cursor(), nil
 	}
 	return q.tx.Cursor(tDatcLeafA)
+}
+
+// chgCursor opens the change-index cursor for one domain.
+func (q *querier) chgCursor(storage bool) (leafCur, error) {
+	if storage {
+		if q.segCS != nil {
+			return q.segCS.Cursor(), nil
+		}
+		return q.tx.Cursor(tDatcStoChg)
+	}
+	if q.segCA != nil {
+		return q.segCA.Cursor(), nil
+	}
+	return q.tx.Cursor(tDatcAccChg)
 }
 
 // nodeHashAt returns the hash of the trie node at `path` (nibbles, relative to
@@ -542,17 +559,13 @@ func (q *querier) floorRecordBefore(domain, path []byte, beforeEpoch uint64) (no
 // block — and collect events with block ≤ n.
 func (q *querier) changedChildren(domain, path []byte, epoch, n uint64) (map[byte]bool, error) {
 	d := len(path)
-	table := tDatcAccChg
-	if domain != nil {
-		table = tDatcStoChg
-	}
 	prefix := make([]byte, 0, 1+len(domain)+d+4)
 	prefix = append(prefix, byte(d))
 	prefix = append(prefix, domain...)
 	prefix = append(prefix, path...)
 	prefix = binary.BigEndian.AppendUint32(prefix, uint32(epoch))
 
-	c, err := q.tx.Cursor(table)
+	c, err := q.chgCursor(domain != nil)
 	if err != nil {
 		return nil, err
 	}

@@ -619,6 +619,25 @@ func flushBuf(tx kv.RwTx, table string, buf *[]kvPair) error {
 
 // flushAllBufs drains every sorted-batch buffer into the tx.
 func (b *builder) flushAllBufs(tx kv.RwTx) error {
+	// In --leaf-seg mode the chg rows go to the segment spill like the leaf
+	// rows do (write-once, never read back by the builder; StorChg was the
+	// LARGEST table of the 6M calibration). Node records stay in MDBX — the
+	// lastFullCache read-back needs them queryable.
+	if b.spill != nil {
+		for _, e := range []struct {
+			tab int
+			buf *[]kvPair
+		}{
+			{segTabChgA, &b.chgAccBuf}, {segTabChgS, &b.chgStoBuf},
+		} {
+			for i := range *e.buf {
+				if err := b.spill.add(e.tab, (*e.buf)[i].k, (*e.buf)[i].v); err != nil {
+					return err
+				}
+			}
+			*e.buf = (*e.buf)[:0]
+		}
+	}
 	for _, e := range []struct {
 		table string
 		buf   *[]kvPair
