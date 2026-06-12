@@ -728,6 +728,11 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		defer pipe.Stop()
 	}
 
+	// TrieOf* writes go to a RAM overlay and flush once per batch: the
+	// incremental computer rewrites the same hot trie nodes every block, and
+	// those per-block MDBX puts (plus cursor read traffic) were >60% of CPU.
+	overlay := commitment.NewTrieOverlay()
+
 	for lo := start; lo < end; lo += batchBlocks {
 		hi := lo + batchBlocks
 		if hi > end {
@@ -737,8 +742,9 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		if err != nil {
 			return err
 		}
+		wtx := commitment.WrapTrieOverlay(tx, overlay)
 		trc = commitment.NewTrieRootComputer()
-		trc.SetRwTx(tx)
+		trc.SetRwTx(wtx)
 
 		for n := lo; n < hi; n++ {
 			var dec *decodedBlock
@@ -751,15 +757,16 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 			// Block 0 (genesis alloc) builds the trie from scratch (legacy full
 			// rebuild); every later block runs incrementally against TrieOf*.
 			trc.SetIncremental(n > 0)
-			if err := b.block(tx, trc, n, dec); err != nil {
+			if err := b.block(wtx, trc, n, dec); err != nil {
 				tx.Rollback()
 				return fmt.Errorf("block %d: %w", n, err)
 			}
 			// Epoch boundary flush per level: after block n, levels whose epoch
-			// ends at n persist their changed nodes' current TrieOf* bytes.
+			// ends at n persist their changed nodes' current TrieOf* bytes
+			// (read through the overlay — the freshest node state lives there).
 			for d := 0; d <= maxChgDepth; d++ {
 				if (n+1)%b.sched.e[d] == 0 {
-					if err := b.flushEpoch(tx, d, b.sched.epochOf(d, n)); err != nil {
+					if err := b.flushEpoch(wtx, d, b.sched.epochOf(d, n)); err != nil {
 						tx.Rollback()
 						return fmt.Errorf("epoch flush d=%d block %d: %w", d, n, err)
 					}
@@ -782,7 +789,7 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		if hi == end {
 			// Final flush of all partial epochs + meta.
 			for d := 0; d <= maxChgDepth; d++ {
-				if err := b.flushEpoch(tx, d, b.sched.epochOf(d, hi-1)); err != nil {
+				if err := b.flushEpoch(wtx, d, b.sched.epochOf(d, hi-1)); err != nil {
 					tx.Rollback()
 					return err
 				}
@@ -805,9 +812,14 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 			}
 		}
 		// Drain the aggregated change events, then the sorted-batch buffers,
-		// into this tx before committing.
+		// then the trie overlay (sorted, deduped — one final write per hot
+		// node instead of one per block) into this tx before committing.
 		b.flushChgAgg()
 		if err := b.flushAllBufs(tx); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := overlay.FlushTo(tx); err != nil {
 			tx.Rollback()
 			return err
 		}
