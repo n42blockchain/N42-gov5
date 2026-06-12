@@ -60,6 +60,9 @@ var segTabNames = [4]string{"a", "s", "ca", "cs"}
 var segPrefixLen = [4]int{1, 1, 2, 2}
 
 func segBucketOf(table int, k []byte) int {
+	if len(k) == 0 {
+		return 0
+	}
 	if segPrefixLen[table] == 1 {
 		return int(k[0])
 	}

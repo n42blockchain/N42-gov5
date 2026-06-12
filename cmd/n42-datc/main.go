@@ -146,6 +146,10 @@ func main() {
 		runSegExport(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "proof" {
+		runProof(os.Args[2:])
+		return
+	}
 	if os.Args[1] == "finalize-leaves" {
 		// Crash recovery: turn an interrupted build's leaf/chg spill files into
 		// queryable segments without re-running the build.
