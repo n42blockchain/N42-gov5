@@ -260,6 +260,34 @@ func (q *querier) chgCursor(storage bool) (leafCur, error) {
 // children, branch collapses natively) at/below foldDepth, when no record
 // exists, or when the record shape is not a clean fully-hashed branch.
 func (q *querier) nodeHashAt(domain, path []byte, n uint64) (types.Hash, bool, error) {
+	slots, nKids, usable, err := q.branchSlotsAt(domain, path, n)
+	if err != nil {
+		return types.Hash{}, false, err
+	}
+	if !usable {
+		if domain == nil && len(path) == 0 {
+			// The account-trie root has no TrieAccount row by convention —
+			// synthesize it from its 16 depth-1 children.
+			return q.synthesizeRoot(n)
+		}
+		// Below foldDepth / no clean record / collapsed branch — resolve from
+		// leaves (handles extensions, inline children, collapses natively).
+		return q.foldAt(domain, path, n)
+	}
+	if nKids == 0 {
+		return types.Hash{}, false, nil
+	}
+	// keccak(RLP 17-list: 16 child slots + empty value)
+	return branch17Hash(slots), true, nil
+}
+
+// branchSlotsAt assembles the 16 child hashes of the branch at `path` as of
+// block N from the record path (floor record + change-window recursion).
+// usable=false means the record path cannot answer this node (at/below
+// foldDepth, no clean fully-hashed record, or the branch collapsed to <2
+// children) — callers fall back to the leaf fold. Shared by nodeHashAt and
+// the proof builder (proof.go), so both follow the exact same logic.
+func (q *querier) branchSlotsAt(domain, path []byte, n uint64) (slots [16]*types.Hash, nKids int, usable bool, err error) {
 	d := len(path)
 	fold := q.foldDepth
 	if domain != nil {
@@ -269,27 +297,19 @@ func (q *querier) nodeHashAt(domain, path []byte, n uint64) (types.Hash, bool, e
 		}
 	}
 	if d >= fold {
-		return q.foldAt(domain, path, n)
+		return slots, 0, false, nil
 	}
 	st, recEpoch, ok, err := q.floorRecord(domain, path, n)
 	if err != nil {
-		return types.Hash{}, false, err
+		return slots, 0, false, err
 	}
 	if !ok {
-		if domain == nil && d == 0 {
-			// The account-trie root has no TrieAccount row by convention —
-			// synthesize it from its 16 depth-1 children.
-			return q.synthesizeRoot(n)
-		}
-		// Never a persisted branch up to N (or tombstone/undecodable chain) —
-		// resolve from leaves.
-		return q.foldAt(domain, path, n)
+		return slots, 0, false, nil
 	}
 	q.recs++
 	if st.hasState != st.hasHash || st.hasState == 0 {
-		// Mixed/inline children — the plain 17-RLP assembly below would be
-		// wrong; the fold handles every shape correctly.
-		return q.foldAt(domain, path, n)
+		// Mixed/inline children — the plain 17-RLP assembly would be wrong.
+		return slots, 0, false, nil
 	}
 
 	// Children changed since the record: only N's own epoch can hold changes
@@ -301,34 +321,32 @@ func (q *querier) nodeHashAt(domain, path []byte, n uint64) (types.Hash, bool, e
 	if recEpoch == curEpoch && (n+1)%eLen != 0 {
 		st2, recEpoch2, ok2, err2 := q.floorRecordBefore(domain, path, curEpoch)
 		if err2 != nil {
-			return types.Hash{}, false, err2
+			return slots, 0, false, err2
 		}
 		if !ok2 {
-			return q.foldAt(domain, path, n)
+			return slots, 0, false, nil
 		}
 		st, recEpoch = st2, recEpoch2
 		if st.hasState != st.hasHash || st.hasState == 0 {
-			return q.foldAt(domain, path, n)
+			return slots, 0, false, nil
 		}
 	}
 	var changed map[byte]bool
 	if recEpoch < curEpoch {
 		changed, err = q.changedChildren(domain, path, curEpoch, n)
 		if err != nil {
-			return types.Hash{}, false, err
+			return slots, 0, false, err
 		}
 	} // recEpoch == curEpoch with N at epoch end → no window
 
 	// Assemble the branch: unchanged children from the record, changed ones
 	// recursively at N.
-	var slots [16]*types.Hash
-	nKids := 0
 	for nib := byte(0); nib < 16; nib++ {
 		bit := uint16(1) << nib
 		if changed[nib] {
 			h, exists, err := q.nodeHashAt(domain, append(append([]byte{}, path...), nib), n)
 			if err != nil {
-				return types.Hash{}, false, err
+				return slots, 0, false, err
 			}
 			if exists {
 				hc := h
@@ -343,16 +361,12 @@ func (q *querier) nodeHashAt(domain, path []byte, n uint64) (types.Hash, bool, e
 			nKids++
 		}
 	}
-	if nKids == 0 {
-		return types.Hash{}, false, nil
-	}
 	if nKids == 1 {
 		// Branch collapsed at N — the node is a leaf/extension now; only the
 		// fold knows its true shape.
-		return q.foldAt(domain, path, n)
+		return slots, nKids, false, nil
 	}
-	// keccak(RLP 17-list: 16 child slots + empty value)
-	return branch17Hash(slots), true, nil
+	return slots, nKids, true, nil
 }
 
 // synthesizeRoot assembles the account-trie root node from its 16 depth-1
