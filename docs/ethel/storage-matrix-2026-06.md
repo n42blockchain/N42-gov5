@@ -20,8 +20,8 @@
 | txindex | n42-eth1/freezer | 12.3 GB | 分段+LFP+自校验+mmap,~25.7-33.7bit/tx | ✓ 已达熵线(~30bit/tx 排列熵下限)|
 | headerc | n42-eth1/freezer | 4.5 GB | compact 2.5x | ✓ 完成(待刷新到 tip>24.998M)|
 | codes | **三份**(两库+独立 25252)| 5.6+5.7+5.7 | 内容寻址 | **5.7 单份**(−11.3)|
-| MDBX 状态(1177)| N42-eth1177/mdbx.dat | **278 GB** | Hashed*+Trie*+Code+PlainState(replay/witness/DATC 源库)| 见 §3 合并议题 |
-| MDBX 状态(hashed)| N42-hashed/chaindata | **218 GB** | 生产 full 节点(Hashed* ~129+TrieOf* ~30+Code ~18)| 同上 |
+| MDBX 状态(1177)| N42-eth1177/mdbx.dat | **278 GB** | 实测 live 168:Account 24.4+Storage 127.5(plain)+Code 16;**110 GB = freelist 空洞** | 压实 −110(#2b);合并见 §3 |
+| MDBX 状态(hashed)| N42-hashed/chaindata | **218 GB** | 实测 live 184:HashedAccount 31.2+HashedStorage 97.5+Trie* 30.4+Code 15.8+近期CS 9.5 | Code 与 1177 重复 16 GB;合并见 §3 |
 | snapshot | N42-snap | 68.3 GB | .ef/.idx/.val/**.val.zst 双份**+codedict+引导 mdbx 16GB | **~35 GB**(去 .val 明文双份 −28.4;引导 mdbx 可再生)|
 | DATC(在建)| n42-datc-eth25m | 143→投影 ~150-250 | node MDBX + leaf/chg zstd 段(W=1024)| **lean 变体 −60-70%**(key-only 叶 + EF 索引,值回源 changesets)|
 | anchors | n42-idc-anchors-25m | 4.6 GB | anchorc 压缩 freezer + blocks 边车 | ✓ |
@@ -39,7 +39,7 @@ anchors          IDC↓      ✓        ✓        ✓(生产侧)
 witness          IDC按需    -        -        ✓(服务 mobile + 重放)
 codes            IDC按需    ✓        ✓        ✓
 snapshot          -        ✓     引导可选       -
-Hashed*+TrieOf*   -        ✓**      ✓        ✓
+Hashed*+TrieOf*   -        -        ✓        ✓
 bodyc 热段(F2)    -        -        ✓        ✓
 bodyc 冷段        -        -      torrent    torrent(1-of-N 做种)
 receipts(compact) -        -        ✓        ✓
@@ -50,10 +50,32 @@ DATC              -        -        -        ✓(全历史 getProof)
 accthist/storhist -        -        -        退役(被 DATC 取代)
 ```
 `IDC↓` = 从 full/archive 节点(IDC)按需拉取并本地校验(code 验 keccak、witness 验 stateRoot、anchor 验 header 链)。
-`✓**` = minimal 由 snapshot-direct 引导出头部状态,不回放历史。
 
-本地落盘量级:mobile ~MB 级;minimal ~250 GB(状态+快照);
-full ~400 GB(压榨后);archive ~1.1-1.4 TB(压榨后,现状 ~2.5 TB)。
+### 各模式实际账(2026-06-12 修订,区分"下载"与"落盘")
+
+**minimal ≈ 30 GB 下载**(用户口径实测吻合):周 snapshot zst 24 GB
+(accounts.val.zst 3.46 + storage.val.zst 18.33 + ef/idx ~2.1 + codedict 0.07)
++ headerc 4.5 GB → 追赶到高度后 12s 跟随。
+**验证模型 = anchor 信任,本地无任何完整 trie/树结构**:状态正确性由
+多 IDC 签名的 anchor(BlockProof 对 header.Root 自验 + distinct-signer
+阈值)背书 —— minimal 不下载 HashedAccount/HashedStorage,不持有也不
+维护 TrieOf*,不本地计算 state root;执行读直接走 snapshot
+.ef/.idx/.val + 追块 overlay。落盘 = 下载 + 小型 overlay(每周新快照
+重置)。Hashed* / Trie* 全套只存在于 full 与 archive。
+
+**full ≈ 158 GB 下载 / ~316 GB 落盘**:
+- 下载:snapshot 25 + 热 bodies F2 91.5 + receipts(compact)19 + txindex 12.3
+  + headerc 4.5 + anchors 4.6 ≈ 157 GB。
+  **senders 不下载**:F2 格式内嵌 From(AddrDict 驻留,toF2Tx 编码时写入),
+  热段自带;冷段 torrent 原始体含签名可 ecrecover。38 GB 全史 senders 出账。
+- 落盘额外:snapshot 物化为 Hashed*(HashedAccount 31.2 + HashedStorage 97.5,
+  N42-hashed 实测)+ TrieOf*(30.4,可本地 rebuild-trie 重建,下载可免)
+  + Code 15.8 + 近期 changesets 9.5(unwind 窗口)。
+
+**archive ≈ 1.0-1.2 TB 落盘**(压榨后;现状 ~2.5 TB):
+full 之上 + acctcs/storcs 405 + witness 171.6 + DATC lean ~80-150
++ plain 态(replay 源,压实后 ~168;见 §2 #2b)+ senders 一份 38
+(witness-replay 管线输入;改读 F2 内嵌可再省,排研究项)。
 
 ## 2. 压榨路线(按 GB 排序,均为语义级)
 
@@ -61,9 +83,10 @@ full ~400 GB(压榨后);archive ~1.1-1.4 TB(压榨后,现状 ~2.5 TB)。
 |---|---|---|---|---|
 | 1 | bodyc → F2 + EIP-4444 冷卸载 | **−482 GB** | DATC 构建完成(IO 互斥);工具 n42-bodyc-f2/n42-history-expiry/n42-cold-seed 已实测 | 排队 |
 | 2 | bpp 临时 trie 删除 | −252 GB | 确认 anchors 完整 + 用户批准(可再生) | 待确认 |
+| 2b | eth1177 MDBX 压实(mdbx_copy -c) | **−110 GB** | 实测 live 仅 168 GB(Account 24.4+Storage 127.5+Code 16),文件 278 GB = 110 GB freelist 空洞;零语义风险 | 排队(等 DATC 释放 IO)|
 | 3 | receipts → compact 9x | −151 GB | DATC 完成;compact 编解码已是全局默认 | 排队 |
 | 4 | DATC lean 转换(key-only 叶+EF) | −90~170 GB | 25M 构建+verify 完成 | 排队 |
-| 5 | senders 去重(单份共享) | −38 GB | 两管线指向同一副本(路径参数化已支持) | 可执行 |
+| 5 | senders:full 模式整表出账(F2 内嵌 From);archive 留单份 | **−76→−38 GB** | F2 已含 From 字段(toF2Tx);eth1 份是 eth1177 份的严格字节前缀,删 eth1 份;witness-replay 管线指向 eth1177 份 | 可执行 |
 | 6 | accthist/storhist 退役 | −38.7 GB | DATC 25M verify 100/100 + historicalstate 切换 DATC 读路径 | 排队 |
 | 7 | snapshot 去 .val 明文双份 | −28.4 GB | 确认 snapshot-import 读 .zst 路径 | 待验证 |
 | 8 | codes 三份→一份 | −11.3 GB | 各工具 --codes 参数指向单份 | 可执行 |
