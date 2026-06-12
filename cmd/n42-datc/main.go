@@ -146,6 +146,21 @@ func main() {
 		runSegExport(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "finalize-leaves" {
+		// Crash recovery: turn an interrupted build's leaf/chg spill files into
+		// queryable segments without re-running the build.
+		ffs := flag.NewFlagSet("finalize-leaves", flag.ExitOnError)
+		fout := ffs.String("out", "", "DATC dir containing leafspill/")
+		_ = ffs.Parse(os.Args[2:])
+		if *fout == "" {
+			die("--out required")
+		}
+		if err := finalizeLeafSegments(*fout); err != nil {
+			die("finalize: %v", err)
+		}
+		fmt.Println("leaf segments finalized")
+		return
+	}
 	if os.Args[1] != "build" {
 		die("usage: n42-datc build|verify [flags]")
 	}
@@ -249,6 +264,7 @@ func main() {
 		b.stoDirty[d] = make(map[string]uint16, 1<<10)
 	}
 	b.resumed = *startBlock > 0
+	b.stoLastFull.resumed = b.resumed
 	b.fwdMode = fwdMode
 	if *leafSeg {
 		sw, err := newLeafSpillWriter(*out)
@@ -412,16 +428,22 @@ type nodeRecState struct {
 // their rows may still sit uncommitted in the sorted write buffer, where the
 // read-back cannot see them.
 type lastFullCache struct {
-	m      map[string]lfEntry
-	cap    int
-	seq    uint32
-	curN   int    // entries carrying the current seq (pinned, not evictable)
-	missRB uint64 // read-backs performed (stats)
+	m       map[string]lfEntry
+	cap     int
+	seq     uint32
+	curN    int    // entries carrying the current seq (pinned, not evictable)
+	missRB  uint64 // read-backs performed (stats)
+	resumed bool   // resumed build: read-back results are degraded (see lfEntry)
 }
 
 type lfEntry struct {
 	nodeRecState
 	seq uint32
+	// degraded marks a read-back result in a RESUMED build: the in-RAM epoch
+	// dirty bitmaps were lost at restart, so a DIFF written for this path's
+	// first post-restart flush could under-report changed children. The first
+	// flush is forced FULL instead (complete state, no bitmap reliance).
+	degraded bool
 }
 
 func newLastFullCache(capEntries int) *lastFullCache {
@@ -431,11 +453,16 @@ func newLastFullCache(capEntries int) *lastFullCache {
 func (c *lastFullCache) newBatch() { c.seq++; c.curN = 0 }
 
 func (c *lastFullCache) put(pk string, st nodeRecState) {
+	c.putEntry(pk, lfEntry{nodeRecState: st, seq: c.seq})
+}
+
+func (c *lastFullCache) putEntry(pk string, ne lfEntry) {
+	st := ne.nodeRecState
 	if e, ok := c.m[pk]; ok {
 		if e.seq != c.seq {
 			c.curN++
 		}
-		c.m[pk] = lfEntry{nodeRecState: st, seq: c.seq}
+		c.m[pk] = lfEntry{nodeRecState: st, seq: c.seq, degraded: ne.degraded}
 		return
 	}
 	// Evict only when there ARE unpinned entries — a heavy batch can pin more
@@ -457,24 +484,26 @@ func (c *lastFullCache) put(pk string, st nodeRecState) {
 			}
 		}
 	}
-	c.m[pk] = lfEntry{nodeRecState: st, seq: c.seq}
+	c.m[pk] = lfEntry{nodeRecState: st, seq: c.seq, degraded: ne.degraded}
 	c.curN++
 }
 
-// get returns the path's last-record state, reading it back from the node
-// table on a cache miss. `epoch` is the epoch about to be written — the floor
-// scan looks strictly below it.
-func (c *lastFullCache) get(tx kv.Tx, table string, pk string, epoch uint64) (nodeRecState, error) {
+// get returns the path's last-record state (and whether it is degraded — a
+// resumed build's first post-restart flush must be FULL), reading it back
+// from the node table on a cache miss. `epoch` is the epoch about to be
+// written — the floor scan looks strictly below it.
+func (c *lastFullCache) get(tx kv.Tx, table string, pk string, epoch uint64) (nodeRecState, bool, error) {
 	if e, ok := c.m[pk]; ok {
-		return e.nodeRecState, nil
+		return e.nodeRecState, e.degraded, nil
 	}
 	c.missRB++
 	st, err := readBackLastFull(tx, table, []byte(pk), epoch)
 	if err != nil {
-		return nodeRecState{}, err
+		return nodeRecState{}, false, err
 	}
-	c.put(pk, st)
-	return st, nil
+	degraded := c.resumed && st.exists
+	c.putEntry(pk, lfEntry{nodeRecState: st, seq: c.seq, degraded: degraded})
+	return st, degraded, nil
 }
 
 // readBackLastFull reconstructs nodeRecState from the committed records of
@@ -1105,9 +1134,11 @@ func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
 			nodeTable = tDatcStoNode
 			buf = &b.nodeStoBuf
 		}
-		getLF := func(pk string) (nodeRecState, error) {
+		getLF := func(pk string) (nodeRecState, bool, error) {
 			if !storage {
-				return b.accLastFull[pk], nil
+				// Accounts: the plain map is cold after a restart, which makes
+				// the first flush FULL by itself (!st.exists).
+				return b.accLastFull[pk], false, nil
 			}
 			return b.stoLastFull.get(tx, nodeTable, pk, epoch)
 		}
@@ -1149,7 +1180,7 @@ func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
 			k = append(k, path...)
 			k = binary.BigEndian.AppendUint32(k, uint32(epoch))
 
-			st, err := getLF(pk)
+			st, degraded, err := getLF(pk)
 			if err != nil {
 				return err
 			}
@@ -1167,7 +1198,7 @@ func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
 					continue
 				}
 				putLF(pk, nodeRecState{exists: false})
-			case !st.exists || uint32(epoch) >= st.lastFullEpoch+fullEvery:
+			case !st.exists || degraded || uint32(epoch) >= st.lastFullEpoch+fullEvery:
 				v = append([]byte{nodeRecFull}, node...)
 				putLF(pk, nodeRecState{lastFullEpoch: uint32(epoch), exists: true})
 			default:

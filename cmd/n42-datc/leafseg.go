@@ -243,72 +243,224 @@ func finalizeBucket(zr *zstd.Decoder, enc *zstd.Encoder, src, dst string) error 
 		return bytes.Compare(recKey(offs[i]), recKey(offs[j])) < 0
 	})
 
-	out, err := os.Create(dst)
+	// A RESUMED build appends to a bucket that was already finalized: merge
+	// the existing segment (sorted, streamed frame by frame) with the new
+	// rows. Equal keys keep the OLD row first — arrival order, deterministic.
+	var old *oldSegIter
+	if f, err := os.Open(dst); err == nil {
+		sf, lerr := loadLeafSegFile(f)
+		if lerr != nil {
+			f.Close()
+			return fmt.Errorf("existing segment: %w", lerr)
+		}
+		old = &oldSegIter{sf: sf, zr: zr2()}
+		defer old.close()
+	}
+
+	tmp := dst + ".tmp"
+	sw, err := newSegFrameWriter(tmp, enc)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	bw := bufio.NewWriterSize(out, 1<<20)
-	if _, err := bw.WriteString(leafSegMagic); err != nil {
+	ni := 0
+	emitNew := func() error {
+		end := recEnd(offs[ni])
+		err := sw.add(raw[offs[ni]:end], recKey(offs[ni]))
+		ni++
 		return err
 	}
-
-	// Emit frames of ~leafFrameRaw uncompressed bytes.
-	type frameMetaW struct {
-		comp, rawLen int
-		firstKey     []byte
-	}
-	var metas []frameMetaW
-	var frame []byte
-	var firstKey []byte
-	flush := func() error {
-		if len(frame) == 0 {
-			return nil
+	for old != nil && old.valid() {
+		ok, oerr := old.ensure()
+		if oerr != nil {
+			return oerr
 		}
-		comp := enc.EncodeAll(frame, nil)
-		if _, err := bw.Write(comp); err != nil {
-			return err
+		if !ok {
+			break
 		}
-		metas = append(metas, frameMetaW{comp: len(comp), rawLen: len(frame), firstKey: firstKey})
-		frame = nil
-		firstKey = nil
-		return nil
-	}
-	for _, off := range offs {
-		end := recEnd(off)
-		if firstKey == nil {
-			firstKey = append([]byte{}, recKey(off)...)
-		}
-		frame = append(frame, raw[off:end]...)
-		if len(frame) >= leafFrameRaw {
-			if err := flush(); err != nil {
+		for ni < len(offs) && bytes.Compare(recKey(offs[ni]), old.key()) < 0 {
+			if err := emitNew(); err != nil {
 				return err
 			}
 		}
+		if err := sw.add(old.rec(), old.key()); err != nil {
+			return err
+		}
+		old.next()
 	}
-	if err := flush(); err != nil {
+	for ni < len(offs) {
+		if err := emitNew(); err != nil {
+			return err
+		}
+	}
+	if err := sw.finish(); err != nil {
 		return err
 	}
+	if old != nil {
+		old.close() // release the handle before replacing the file (Windows)
+	}
+	if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return os.Rename(tmp, dst)
+}
 
-	// Footer: frameCount, then per frame comp|raw|firstKey.
+// segFrameWriter emits the frames + footer format of one segment file.
+type segFrameWriter struct {
+	f     *os.File
+	bw    *bufio.Writer
+	enc   *zstd.Encoder
+	metas []struct {
+		comp, rawLen int
+		firstKey     []byte
+	}
+	frame    []byte
+	firstKey []byte
+}
+
+func newSegFrameWriter(path string, enc *zstd.Encoder) (*segFrameWriter, error) {
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, err
+	}
+	w := &segFrameWriter{f: f, bw: bufio.NewWriterSize(f, 1<<20), enc: enc}
+	if _, err := w.bw.WriteString(leafSegMagic); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return w, nil
+}
+
+func (w *segFrameWriter) add(rec, key []byte) error {
+	if w.firstKey == nil {
+		w.firstKey = append([]byte{}, key...)
+	}
+	w.frame = append(w.frame, rec...)
+	if len(w.frame) >= leafFrameRaw {
+		return w.flush()
+	}
+	return nil
+}
+
+func (w *segFrameWriter) flush() error {
+	if len(w.frame) == 0 {
+		return nil
+	}
+	comp := w.enc.EncodeAll(w.frame, nil)
+	if _, err := w.bw.Write(comp); err != nil {
+		return err
+	}
+	w.metas = append(w.metas, struct {
+		comp, rawLen int
+		firstKey     []byte
+	}{len(comp), len(w.frame), w.firstKey})
+	w.frame = w.frame[:0]
+	w.firstKey = nil
+	return nil
+}
+
+func (w *segFrameWriter) finish() error {
+	if err := w.flush(); err != nil {
+		return err
+	}
 	var foot []byte
-	foot = binary.AppendUvarint(foot, uint64(len(metas)))
-	for _, m := range metas {
+	foot = binary.AppendUvarint(foot, uint64(len(w.metas)))
+	for _, m := range w.metas {
 		foot = binary.AppendUvarint(foot, uint64(m.comp))
 		foot = binary.AppendUvarint(foot, uint64(m.rawLen))
 		foot = binary.AppendUvarint(foot, uint64(len(m.firstKey)))
 		foot = append(foot, m.firstKey...)
 	}
-	if _, err := bw.Write(foot); err != nil {
+	if _, err := w.bw.Write(foot); err != nil {
 		return err
 	}
 	var tail [16]byte
 	binary.BigEndian.PutUint64(tail[:8], uint64(len(foot)))
 	copy(tail[8:], leafSegMagic)
-	if _, err := bw.Write(tail[:]); err != nil {
+	if _, err := w.bw.Write(tail[:]); err != nil {
 		return err
 	}
-	return bw.Flush()
+	if err := w.bw.Flush(); err != nil {
+		return err
+	}
+	return w.f.Close()
+}
+
+// oldSegIter streams an existing segment's records in order, one decompressed
+// frame at a time.
+type oldSegIter struct {
+	sf     *leafSegFile
+	zr     *zstd.Decoder
+	fi, ri int
+	raw    []byte
+	offs   []uint32
+	closed bool
+}
+
+func zr2() *zstd.Decoder {
+	d, _ := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
+	return d
+}
+
+func (it *oldSegIter) valid() bool { return !it.closed && it.fi < len(it.sf.frames) }
+
+// ensure decodes the current frame; returns false at end.
+func (it *oldSegIter) ensure() (bool, error) {
+	for {
+		if !it.valid() {
+			return false, nil
+		}
+		if it.raw == nil {
+			fm := it.sf.frames[it.fi]
+			comp := make([]byte, fm.comp)
+			if _, err := it.sf.f.ReadAt(comp, fm.off); err != nil {
+				return false, err
+			}
+			raw, err := it.zr.DecodeAll(comp, make([]byte, 0, fm.raw))
+			if err != nil {
+				return false, err
+			}
+			it.raw = raw
+			it.offs = it.offs[:0]
+			pos := uint32(0)
+			for pos < uint32(len(raw)) {
+				it.offs = append(it.offs, pos)
+				kl, m := binary.Uvarint(raw[pos:])
+				pos += uint32(m) + uint32(kl)
+				vl, m2 := binary.Uvarint(raw[pos:])
+				pos += uint32(m2) + uint32(vl)
+			}
+			it.ri = 0
+		}
+		if it.ri < len(it.offs) {
+			return true, nil
+		}
+		it.fi++
+		it.raw = nil
+	}
+}
+
+func (it *oldSegIter) key() []byte {
+	off := it.offs[it.ri]
+	kl, m := binary.Uvarint(it.raw[off:])
+	return it.raw[off+uint32(m) : off+uint32(m)+uint32(kl)]
+}
+
+func (it *oldSegIter) rec() []byte {
+	off := it.offs[it.ri]
+	kl, m := binary.Uvarint(it.raw[off:])
+	p := off + uint32(m) + uint32(kl)
+	vl, m2 := binary.Uvarint(it.raw[p:])
+	return it.raw[off : p+uint32(m2)+uint32(vl)]
+}
+
+func (it *oldSegIter) next() { it.ri++ }
+
+func (it *oldSegIter) close() {
+	if !it.closed {
+		it.closed = true
+		_ = it.sf.f.Close()
+		it.zr.Close()
+	}
 }
 
 // ---------------------------------------------------------------------------
