@@ -53,3 +53,21 @@ func TestBalanceReadHook(t *testing.T) {
 		t.Fatal("cleared hook still firing")
 	}
 }
+
+// TestBalanceReadHook_Empty asserts the lazy-coinbase fix for the EIP-161
+// Empty() observation path: Empty(coinbase) (the new-account CALL surcharge /
+// SELFDESTRUCT-to-coinbase gas check) reads the balance component and MUST
+// fire the hook, even though it does not go through GetBalance.
+func TestBalanceReadHook_Empty(t *testing.T) {
+	reader := newMVMockReader()
+	ibs := New(reader)
+
+	coinbase := mkAddr(0xcb)
+	var observed []types.Address
+	ibs.SetBalanceReadHook(func(a types.Address) { observed = append(observed, a) })
+
+	_ = ibs.Empty(coinbase)
+	if len(observed) != 1 || observed[0] != coinbase {
+		t.Fatalf("Empty(coinbase) did not fire the hook: %v", observed)
+	}
+}

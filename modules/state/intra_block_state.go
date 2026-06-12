@@ -549,6 +549,15 @@ func (sdb *IntraBlockState) ExistPure(addr types.Address) bool {
 // Empty returns whether the state object is either non-existent
 // or empty according to the EIP161 specification (balance = nonce = code = 0)
 func (sdb *IntraBlockState) Empty(addr types.Address) bool {
+	// The emptiness verdict depends on the BALANCE component (so.empty reads
+	// balance.IsZero), so this is an implicit balance observation — fire the
+	// hook so lazy-coinbase detects a tx that branches on Empty(coinbase)
+	// (EIP-161 new-account CALL surcharge, SELFDESTRUCT-to-coinbase) and
+	// re-runs the block non-lazy. Conservative: fires even when balance is
+	// non-zero (cost is a redundant non-lazy re-run, never a wrong root).
+	if sdb.balanceReadHook != nil {
+		sdb.balanceReadHook(addr)
+	}
 	sdb.traceAccountRead(addr)
 	so := sdb.getStateObject(addr)
 	return so == nil || so.deleted || so.empty()

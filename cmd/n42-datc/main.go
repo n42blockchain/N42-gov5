@@ -792,6 +792,16 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 			return fmt.Errorf("--batch %d too small for window mode (W=%d)", batchBlocks, W)
 		}
 		if start > 0 {
+			// A resumed window build MUST restart on a window boundary: batch
+			// commits snap to hi/W*W, so a clean prior run's progress is always
+			// a multiple of W. A non-aligned start would put lastRoot (=root of
+			// start-1) out of sync with the MDBX incremental base (the last
+			// committed boundary), and the first window's ComputeRoot would be
+			// missing the [boundary,start) deltas — a confusing first-window
+			// gold-check MISMATCH instead of a clear error here.
+			if start%W != 0 {
+				return fmt.Errorf("window mode: --start %d must be a multiple of W=%d (resume on a window boundary; last committed block is logged as '  block N')", start, W)
+			}
 			hdr, err := b.hdrs.ReadHeader(start - 1)
 			if err != nil {
 				return fmt.Errorf("window mode resume: read header %d: %w", start-1, err)
@@ -1173,6 +1183,16 @@ func (b *builder) accumulateBlock(tx kv.RwTx, n uint64,
 	}
 
 	// Leaf history + chg events + change bitmaps (identical to blockApply).
+	//
+	// Invariant (why flushBuf's non-stable sort is safe for the leaf table):
+	// the wipe enumeration above and emitBlock below can both emit a row at
+	// the SAME (domain||slotHash||block) key, but ONLY ever with value nil.
+	// The wipe loop runs only for dirtyA[addr]==nil (SELFDESTRUCT), and the
+	// pipeline's decodeOne drops every NON-empty storage write for such an
+	// address (a==nil && len(NewValue)!=0 -> skipped), so dirtyS[addr] then
+	// holds nil values exclusively -> emitBlock emits nil. When dirtyA[addr]
+	// is non-nil the wipe loop skips it entirely (no collision). Hence a
+	// key collision is always nil-vs-nil and the sort order is immaterial.
 	if err := b.emitBlock(n, dirtyA, dirtyS, blk8); err != nil {
 		return err
 	}

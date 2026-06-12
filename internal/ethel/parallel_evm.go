@@ -133,12 +133,20 @@ func (e *RealParallelEVM) Execute(
 	// negligible compared to the per-tx EVM work.
 	ibs := state.New(reader)
 
-	// Observer guard: detect EXPLICIT balance reads of the coinbase during
-	// execution (BALANCE/SELFBALANCE/CanTransfer). The hook does not fire
-	// for the finalize-time balanceInc materialization, so an ordinary tx
-	// whose only coinbase interaction is the blind tip credit stays clean.
+	// Observer guard: detect any tx that OBSERVES the coinbase balance during
+	// execution (BALANCE/SELFBALANCE/CanTransfer via GetBalance, and the
+	// EIP-161 Empty() check via stateObject.empty()). Under lazy-coinbase the
+	// MV holds no coinbase entry for the deferred tips, so such a read sees a
+	// stale (prefix-tip-missing) balance — the block must re-run non-lazy.
+	//
+	// The hook is installed for EVERY tx when lazy is enabled, NOT only those
+	// with cbw: a sender==coinbase (MEV builder) tx is NOT skip-wrapped, but
+	// it can still read the coinbase balance and see the same stale value
+	// (other txs' tips were dropped from the MV). The finalize-time
+	// balanceInc materialization goes through ReadAccountData (not GetBalance/
+	// Empty), so an ordinary tip-only tx never trips the hook.
 	var coinbaseObserved bool
-	if cbw != nil {
+	if e.skipCoinbase != (types.Address{}) {
 		cb := e.skipCoinbase
 		ibs.SetBalanceReadHook(func(addr types.Address) {
 			if addr == cb {
@@ -185,11 +193,12 @@ func (e *RealParallelEVM) Execute(
 		return state.TxOutput{}, state.AbortRetry()
 	}
 
-	// Lazy-coinbase soundness gate: an observed coinbase balance or a
-	// non-commutative coinbase mutation means the deferred Σtip model is
-	// wrong for this BLOCK — surface the typed error so the caller re-runs
-	// without lazy-coinbase.
-	if cbw != nil && (coinbaseObserved || cbw.unsound) {
+	// Lazy-coinbase soundness gate: an observed coinbase balance (any tx,
+	// including a sender==coinbase builder tx) or a non-commutative coinbase
+	// mutation (skip-wrapped txs only) means the deferred Σtip model is wrong
+	// for this BLOCK — surface the typed error so the caller re-runs without
+	// lazy-coinbase.
+	if e.skipCoinbase != (types.Address{}) && (coinbaseObserved || (cbw != nil && cbw.unsound)) {
 		return state.TxOutput{Err: ErrCoinbaseObserved}, ErrCoinbaseObserved
 	}
 
