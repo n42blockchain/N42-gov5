@@ -42,9 +42,9 @@ snapshot          -        ✓     引导可选       -
 Hashed*+TrieOf*   -        -        ✓        ✓
 bodyc 热段(F2)    -        -        ✓        ✓
 bodyc 冷段        -        -      torrent    torrent(1-of-N 做种)
-receipts(compact) -        -        ✓        ✓
-txindex           -        -        ✓        ✓
-senders           -        -        ✓        ✓(单份共享)
+receipts(compact) -        -      热段~3GB    ✓ 全史19GB
+txindex           -        -      热段~2GB    ✓ 全史12.3GB
+senders           -        -        -        ✓ 单份38GB(witness-replay 输入)
 acctcs/storcs     -        -        -        ✓(权威增量+DATC 值库)
 DATC              -        -        -        ✓(全历史 getProof)
 accthist/storhist -        -        -        退役(被 DATC 取代)
@@ -63,9 +63,16 @@ accthist/storhist -        -        -        退役(被 DATC 取代)
 .ef/.idx/.val + 追块 overlay。落盘 = 下载 + 小型 overlay(每周新快照
 重置)。Hashed* / Trie* 全套只存在于 full 与 archive。
 
-**full ≈ 142 GB 下载 / ~300 GB 落盘**:
-- 下载:snapshot 25 + 热 bodies F2 91.5 + receipts(compact)19 + txindex 12.3
-  + headerc 4.5 + anchors 4.6 ≈ 157 → **senders、codes 双双出账后 ~142 GB**。
+**full ≈ 126 GB 下载 / ~285 GB 落盘**(**除 headerc 外全部只取热段**):
+- 下载:snapshot 25(头部状态,定义即"热")+ 热 bodies F2 91.5
+  + **热段 receipts(compact)~3**(19 GB 是全史口径,归 archive;
+    或更激进:receipts 也按需 IDC + header.ReceiptHash 验证 → 0 下载,
+    代价 = eth_getLogs 无本地 bloom 扫描)
+  + **热段 txindex ~2**(全史 12.3 归 archive;冷 tx 查询本就无 body 可服务,
+    转发 IDC)
+  + headerc 4.5(**唯一全史项**:header 链连续性验证)
+  + 热段 anchors ~0.1(k-recent 节奏;全史 4.6 归 archive 服务 mobile)
+  ≈ **~126 GB**;senders、codes 双双出账(见下)。
   **senders 不下载**:F2 格式内嵌 From(AddrDict 驻留,toF2Tx 编码时写入),
   热段自带;冷段 torrent 原始体含签名可 ecrecover。38 GB 全史 senders 出账。
   **codes 不整表下载**:热段部署的合约 code 从 F2 体提取(constructor 内嵌
