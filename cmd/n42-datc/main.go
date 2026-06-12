@@ -842,6 +842,15 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 				}
 			}
 			if b.windowing {
+				// Same cap as addrHash()/slotHash(): the direct merge was
+				// bypassing it and the slot cache grew to 33 GB live (GC mark
+				// was 23% CPU at the DeFi plateau).
+				if len(b.addrHashCache) > 2_000_000 {
+					b.addrHashCache = make(map[types.Address][32]byte, 1<<16)
+				}
+				if len(b.slotHashCache) > 2_000_000 {
+					b.slotHashCache = make(map[types.Hash][32]byte, 1<<16)
+				}
 				for a, h := range dec.ahash {
 					b.addrHashCache[a] = h
 				}
@@ -968,7 +977,14 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64, dec *decodedBlock) error {
 	if dec != nil {
 		// Pre-decoded by the pipeline: adopt the dirty maps and merge the
-		// worker-computed key hashes into the caches the apply path reads.
+		// worker-computed key hashes into the caches the apply path reads
+		// (capped like addrHash()/slotHash() — the merge must not bypass it).
+		if len(b.addrHashCache) > 2_000_000 {
+			b.addrHashCache = make(map[types.Address][32]byte, 1<<16)
+		}
+		if len(b.slotHashCache) > 2_000_000 {
+			b.slotHashCache = make(map[types.Hash][32]byte, 1<<16)
+		}
 		for a, h := range dec.ahash {
 			b.addrHashCache[a] = h
 		}
