@@ -99,7 +99,7 @@ func main() {
 		&cli.Uint64Flag{Name: "cache-storage-gb", Usage: "Storage S3-FIFO cache budget (GB)", Value: 4},
 		&cli.Uint64Flag{Name: "cache-code-gb", Usage: "Code LRU cache budget (GB)", Value: 2},
 		&cli.IntFlag{Name: "code-analysis-cache", Usage: "JUMPDEST analysis LRU capacity (entries). Avoids re-running O(n) bytecode scan per contract call", Value: 32768},
-		&cli.BoolFlag{Name: "parallel-evm", Usage: "EXPERIMENTAL: use Block-STM parallel EVM for block tx execution. See docs/parallel_evm_plan.md. Default: off (sequential path, same as before)"},
+		&cli.BoolFlag{Name: "parallel-evm", Usage: "EXPERIMENTAL: use Block-STM parallel EVM for block tx execution. See docs/parallel_evm_plan.md. Default: off (sequential path, same as before). NOTE: intra-block parallelism only pays when execution is SINGLE-STREAM (live/tip-following, single sequential replay); do NOT combine with block-level parallel pipelines (e.g. witness-replay --workers N) that already saturate the cores — stacking the two oversubscribes and slows both"},
 		&cli.IntFlag{Name: "parallel-workers", Usage: "Worker count for --parallel-evm. Default 8 (sweet spot per conflict-analyze data; values >= 16 can stall on heavy contention until Phase 5 adds condvar-based dependency blocking)", Value: 8},
 		&cli.IntFlag{Name: "timing-interval", Usage: "Blocks between P50/P99 timing log lines. Default 10000", Value: 10000},
 		&cli.BoolFlag{Name: "prefetch-speculative", Usage: "Use reth-style prewarm: speculatively execute block N's txs through a NoopWriter to warm the read LRU with everything internal CALL/SLOAD touches. Falls back to static AccessList path on small blocks (<5 txs) or missing senders. Default true", Value: true},

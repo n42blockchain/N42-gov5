@@ -74,6 +74,12 @@ type ExecutorConfig struct {
 	// ParallelEVM if true, use Block-STM parallel EVM for tx execution.
 	// EXPERIMENTAL — see docs/parallel_evm_plan.md. Default false keeps
 	// the sequential path; the parallel path is opt-in and additive.
+	//
+	// Deployment rule: intra-block parallelism only pays when execution is
+	// SINGLE-STREAM (live/tip-following, single sequential replay). Pipelines
+	// that already run BLOCK-LEVEL parallelism (witness-replay --workers N)
+	// saturate the cores by themselves — never stack ParallelEVM on top:
+	// the two tiers compete for the same cores and both get slower.
 	ParallelEVM bool
 	// ParallelWorkers is the Block-STM worker count when ParallelEVM is on.
 	// 0 defaults to 8 (sweet spot per cmd/conflict-analyze).
