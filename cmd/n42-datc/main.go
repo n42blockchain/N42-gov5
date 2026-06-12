@@ -183,6 +183,7 @@ func main() {
 	mapGB := fs.Int("map.gb", 1024, "MDBX map size GB")
 	leafSeg := fs.Bool("leaf-seg", false, "stream leaf history to zstd segment files instead of MDBX (mainnet-scale builds; ~10x smaller)")
 	gogc := fs.Int("gogc", 400, "GOGC percent (GC was ~25% CPU at the default 100; the live heap is stable so a high target is safe)")
+	window := fs.Bool("window", true, "mainnet: batch the root per E_1 window (bpp Path C) instead of per block — identical records, gold check per window")
 	pprofPort := fs.Int("pprof.port", 0, "serve net/http/pprof on this port (0=off)")
 	_ = fs.Parse(os.Args[2:])
 	if *out == "" {
@@ -275,6 +276,9 @@ func main() {
 	b.resumed = *startBlock > 0
 	b.stoLastFull.resumed = b.resumed
 	b.fwdMode = fwdMode
+	b.windowing = !fwdMode && *window
+	b.winA = make(map[types.Address]*account.StateAccount, 64)
+	b.winS = make(map[types.Address]map[types.Hash]*uint256.Int, 16)
 	if *leafSeg {
 		sw, err := newLeafSpillWriter(*out)
 		if err != nil {
@@ -402,6 +406,22 @@ type builder struct {
 	// segments after the build (leafseg.go).
 	spill  *leafSpillWriter
 	outDir string
+
+	// Window mode (bpp "Path C" adapted): non-boundary blocks only EMIT their
+	// DATC records (leaf history, chg events, change bitmaps — all derived
+	// from the changesets, no trie access) and accumulate a last-write-wins
+	// net; ONE incremental ComputeRoot at each window boundary brings the trie
+	// to the boundary block and is gold-checked against header.Root there.
+	// The window length is E_1 (the smallest recorded epoch), and every E_d is
+	// an exact multiple of it, so the trie is materialized at PRECISELY the
+	// epoch-flush boundaries — the resulting node records are byte-identical
+	// to per-block construction (applying a window's net equals applying its
+	// blocks sequentially). The gold check moves from per-block to per-window
+	// (12 blocks on the mainnet schedule); failures name the window.
+	windowing bool
+	winA      map[types.Address]*account.StateAccount
+	winS      map[types.Address]map[types.Hash]*uint256.Int
+	lastRoot  types.Hash // root at the last boundary (for empty-window checks)
 
 	leafAPuts, leafSPuts, chgPuts, nodePuts uint64
 }
@@ -728,6 +748,31 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		defer pipe.Stop()
 	}
 
+	// Window mode (mainnet): one ComputeRoot per W blocks instead of per
+	// block. Requires every recorded epoch to be a multiple of W so the trie
+	// materializes exactly at epoch-flush boundaries.
+	var W uint64
+	if b.windowing {
+		W = b.sched.e[1]
+		for d := 1; d <= maxChgDepth; d++ {
+			if b.sched.e[d]%W != 0 {
+				return fmt.Errorf("window mode needs e[%d]=%d divisible by W=%d", d, b.sched.e[d], W)
+			}
+		}
+		if batchBlocks < W*4 {
+			return fmt.Errorf("--batch %d too small for window mode (W=%d)", batchBlocks, W)
+		}
+		if start > 0 {
+			hdr, err := b.hdrs.ReadHeader(start - 1)
+			if err != nil {
+				return fmt.Errorf("window mode resume: read header %d: %w", start-1, err)
+			}
+			b.lastRoot = hdr.Root
+		}
+		fmt.Printf("window mode: W=%d (root + gold check per window)\n", W)
+	}
+	firstWindow := start == 0
+
 	// TrieOf* writes go to a RAM overlay and flush once per batch: the
 	// incremental computer rewrites the same hot trie nodes every block, and
 	// those per-block MDBX puts (plus cursor read traffic) were >60% of CPU.
@@ -735,6 +780,14 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 
 	for lo := start; lo < end; lo += batchBlocks {
 		hi := lo + batchBlocks
+		if b.windowing {
+			// Commits must land on window boundaries: an uncommitted window net
+			// would be lost across a restart.
+			hi = hi / W * W
+			if hi <= lo {
+				hi = lo + W
+			}
+		}
 		if hi > end {
 			hi = end
 		}
@@ -754,18 +807,44 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 					return fmt.Errorf("block %d: %w", n, err)
 				}
 			}
-			// Block 0 (genesis alloc) builds the trie from scratch (legacy full
-			// rebuild); every later block runs incrementally against TrieOf*.
-			trc.SetIncremental(n > 0)
-			if err := b.block(wtx, trc, n, dec); err != nil {
-				tx.Rollback()
-				return fmt.Errorf("block %d: %w", n, err)
+			if b.windowing {
+				for a, h := range dec.ahash {
+					b.addrHashCache[a] = h
+				}
+				for s, h := range dec.shash {
+					b.slotHashCache[s] = h
+				}
+				if err := b.accumulateBlock(wtx, n, dec.dirtyA, dec.dirtyS); err != nil {
+					tx.Rollback()
+					return fmt.Errorf("block %d: %w", n, err)
+				}
+				if (n+1)%W == 0 || n+1 == end {
+					trc.SetIncremental(!firstWindow)
+					firstWindow = false
+					if err := b.applyWindow(wtx, trc, n); err != nil {
+						tx.Rollback()
+						return err
+					}
+				}
+			} else {
+				// Block 0 (genesis alloc) builds the trie from scratch (legacy
+				// full rebuild); later blocks run incrementally against TrieOf*.
+				trc.SetIncremental(n > 0)
+				if err := b.block(wtx, trc, n, dec); err != nil {
+					tx.Rollback()
+					return fmt.Errorf("block %d: %w", n, err)
+				}
 			}
 			// Epoch boundary flush per level: after block n, levels whose epoch
 			// ends at n persist their changed nodes' current TrieOf* bytes
 			// (read through the overlay — the freshest node state lives there).
+			// In window mode every epoch end coincides with a window boundary,
+			// so the trie is exactly at block n here.
 			for d := 0; d <= maxChgDepth; d++ {
 				if (n+1)%b.sched.e[d] == 0 {
+					if b.windowing && (n+1)%W != 0 {
+						continue // d0 (E=1) mid-window: nothing materializes (all elided)
+					}
 					if err := b.flushEpoch(wtx, d, b.sched.epochOf(d, n)); err != nil {
 						tx.Rollback()
 						return fmt.Errorf("epoch flush d=%d block %d: %w", d, n, err)
@@ -965,6 +1044,140 @@ func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64, 
 	return b.blockApply(tx, trc, n, dirtyA, dirtyS)
 }
 
+// accumulateBlock is the WINDOW-MODE per-block path: emit the block's DATC
+// records (net-aware ghost/wipe handling — the pre-block state is the window
+// net over the MDBX window-start state) and fold the changes into the window
+// net. No trie access, no root.
+func (b *builder) accumulateBlock(tx kv.RwTx, n uint64,
+	dirtyA map[types.Address]*account.StateAccount, dirtyS map[types.Address]map[types.Hash]*uint256.Int) error {
+
+	if len(dirtyA) == 0 && len(dirtyS) == 0 {
+		return nil
+	}
+
+	// Ghost-storage drop (same rule as blockApply, net-aware pre-state).
+	for addr := range dirtyS {
+		if _, inA := dirtyA[addr]; inA {
+			continue
+		}
+		exists := false
+		if a, ok := b.winA[addr]; ok {
+			exists = a != nil
+		} else {
+			ah := b.addrHash(addr)
+			if v, e := tx.GetOne(modules.HashedAccounts, ah[:]); e == nil && len(v) > 0 {
+				exists = true
+			}
+		}
+		if !exists {
+			delete(dirtyS, addr)
+		}
+	}
+	if len(dirtyA) == 0 && len(dirtyS) == 0 {
+		return nil
+	}
+
+	// SELFDESTRUCT wipe tombstones: pre-block live slots = MDBX (window-start)
+	// adjusted by the window net so far.
+	var blk8 [8]byte
+	binary.BigEndian.PutUint64(blk8[:], n)
+	for addr, acct := range dirtyA {
+		if acct != nil {
+			continue
+		}
+		ah := b.addrHash(addr)
+		live := make(map[[32]byte]bool)
+		c, cerr := tx.CursorDupSort(modules.HashedStorage)
+		if cerr != nil {
+			return cerr
+		}
+		prefix := make([]byte, 40)
+		copy(prefix, ah[:])
+		for v, e := c.SeekBothRange(prefix, nil); v != nil && e == nil; _, v, e = c.NextDup() {
+			if len(v) < 32 {
+				continue
+			}
+			var sh [32]byte
+			copy(sh[:], v[:32])
+			live[sh] = true
+		}
+		c.Close()
+		for slot, v := range b.winS[addr] {
+			sh := b.slotHash(slot)
+			if v == nil {
+				delete(live, sh)
+			} else {
+				live[sh] = true
+			}
+		}
+		for sh := range live {
+			var comp [72]byte
+			copy(comp[:40], prefix)
+			copy(comp[40:], sh[:])
+			if err := b.putLeaf(true, append(comp[:], blk8[:]...), nil); err != nil {
+				return err
+			}
+			b.leafSPuts++
+			b.recordChange(true, comp[:40], nibblesOf(comp[40:]), n)
+		}
+	}
+
+	// Leaf history + chg events + change bitmaps (identical to blockApply).
+	if err := b.emitBlock(n, dirtyA, dirtyS, blk8); err != nil {
+		return err
+	}
+
+	// Fold into the window net (last write wins; changesets are faithful
+	// per-block deltas, so deletes are explicit).
+	for a, v := range dirtyA {
+		if v == nil {
+			// SELFDESTRUCT: nil out the account's accumulated window writes so
+			// the boundary ComputeRoot deletes them even if this block's
+			// changeset missed an explicit per-slot wipe (the trie-side
+			// counterpart of the wipe-tombstone enumeration above).
+			for s := range b.winS[a] {
+				b.winS[a][s] = nil
+			}
+		}
+		b.winA[a] = v
+	}
+	for a, slots := range dirtyS {
+		m := b.winS[a]
+		if m == nil {
+			m = make(map[types.Hash]*uint256.Int, len(slots))
+			b.winS[a] = m
+		}
+		for s, v := range slots {
+			m[s] = v
+		}
+	}
+	return b.maybeEarlyFlush(tx)
+}
+
+// applyWindow brings the trie to boundary block n with one incremental
+// ComputeRoot over the window net and gold-checks against header[n].Root.
+func (b *builder) applyWindow(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64) error {
+	root := b.lastRoot
+	if len(b.winA) > 0 || len(b.winS) > 0 {
+		r, err := trc.ComputeRoot(b.winA, b.winS)
+		if err != nil {
+			return fmt.Errorf("window ComputeRoot →%d: %w", n, err)
+		}
+		root = r
+		b.winA = make(map[types.Address]*account.StateAccount, 64)
+		b.winS = make(map[types.Address]map[types.Hash]*uint256.Int, 16)
+	}
+	hdr, err := b.hdrs.ReadHeader(n)
+	if err != nil {
+		return fmt.Errorf("read header: %w", err)
+	}
+	if root != hdr.Root {
+		return fmt.Errorf("WINDOW ROOT MISMATCH at block %d (window end): computed %x != header %x", n, root, hdr.Root)
+	}
+	b.lastRoot = root
+	return nil
+}
+
 // blockApply runs the tx-dependent part of a block: ghost-storage drop, wipe
 // enumeration, root gold check, and DATC record emission.
 func (b *builder) blockApply(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64,
@@ -1063,6 +1276,17 @@ func (b *builder) blockApply(tx kv.RwTx, trc *commitment.TrieRootComputer, n uin
 		b.leafSPuts++
 		b.recordChange(true, comp[:40], nibblesOf(comp[40:]), n)
 	}
+	if err := b.emitBlock(n, dirtyA, dirtyS, blk8); err != nil {
+		return err
+	}
+	return b.maybeEarlyFlush(tx)
+}
+
+// emitBlock writes one block's leaf-history rows + change events for the
+// dirty maps (shared by the per-block and window paths).
+func (b *builder) emitBlock(n uint64,
+	dirtyA map[types.Address]*account.StateAccount, dirtyS map[types.Address]map[types.Hash]*uint256.Int,
+	blk8 [8]byte) error {
 	for addr, acct := range dirtyA {
 		ah := b.addrHash(addr)
 		var val []byte
@@ -1110,7 +1334,7 @@ func (b *builder) blockApply(tx kv.RwTx, trc *commitment.TrieRootComputer, n uin
 			b.recordChange(true, domain, nibblesOf(sh[:]), n)
 		}
 	}
-	return b.maybeEarlyFlush(tx)
+	return nil
 }
 
 // recordChange records one dirty key: the changed-children bitmap per ancestor
