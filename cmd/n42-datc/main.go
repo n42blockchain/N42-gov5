@@ -32,6 +32,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"time"
 
@@ -181,6 +182,7 @@ func main() {
 	batch := fs.Uint64("batch", 20_000, "blocks per MDBX commit (large batches spill MDBX dirty pages and stall)")
 	mapGB := fs.Int("map.gb", 1024, "MDBX map size GB")
 	leafSeg := fs.Bool("leaf-seg", false, "stream leaf history to zstd segment files instead of MDBX (mainnet-scale builds; ~10x smaller)")
+	gogc := fs.Int("gogc", 400, "GOGC percent (GC was ~25% CPU at the default 100; the live heap is stable so a high target is safe)")
 	pprofPort := fs.Int("pprof.port", 0, "serve net/http/pprof on this port (0=off)")
 	_ = fs.Parse(os.Args[2:])
 	if *out == "" {
@@ -244,8 +246,11 @@ func main() {
 	}
 	defer db.Close()
 
+	debug.SetGCPercent(*gogc)
+	debug.SetMemoryLimit(100 << 30) // hard ceiling well under the 128 GB box
+
 	sched := newSchedule(*alpha, *cbar)
-	fmt.Printf("DATC build: blocks [%d, %d) α=%.0f C̄=%.0f\n  epochs/depth: ", *startBlock, *endBlock, *alpha, *cbar)
+	fmt.Printf("DATC build: blocks [%d, %d) α=%.0f C̄=%.0f GOGC=%d\n  epochs/depth: ", *startBlock, *endBlock, *alpha, *cbar, *gogc)
 	for d := 0; d <= maxChgDepth; d++ {
 		fmt.Printf("d%d=%d ", d, sched.e[d])
 	}
@@ -715,6 +720,14 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 	lastBeat := time.Now()
 	lastBeatBlocks := uint64(0)
 
+	// Mainnet mode: pre-decode blocks on a worker pool (changeset decode +
+	// key keccaks were ~12% of the single-threaded loop).
+	var pipe *decodePipeline
+	if !b.fwdMode {
+		pipe = startDecodePipeline(b, start, end, 3)
+		defer pipe.Stop()
+	}
+
 	for lo := start; lo < end; lo += batchBlocks {
 		hi := lo + batchBlocks
 		if hi > end {
@@ -728,10 +741,17 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		trc.SetRwTx(tx)
 
 		for n := lo; n < hi; n++ {
+			var dec *decodedBlock
+			if pipe != nil {
+				if dec, err = pipe.Next(n); err != nil {
+					tx.Rollback()
+					return fmt.Errorf("block %d: %w", n, err)
+				}
+			}
 			// Block 0 (genesis alloc) builds the trie from scratch (legacy full
 			// rebuild); every later block runs incrementally against TrieOf*.
 			trc.SetIncremental(n > 0)
-			if err := b.block(tx, trc, n); err != nil {
+			if err := b.block(tx, trc, n, dec); err != nil {
 				tx.Rollback()
 				return fmt.Errorf("block %d: %w", n, err)
 			}
@@ -820,7 +840,18 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 
 // block applies one block's changesets, verifies the root against the real
 // header, and records leaf history + change-index entries.
-func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64) error {
+func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64, dec *decodedBlock) error {
+	if dec != nil {
+		// Pre-decoded by the pipeline: adopt the dirty maps and merge the
+		// worker-computed key hashes into the caches the apply path reads.
+		for a, h := range dec.ahash {
+			b.addrHashCache[a] = h
+		}
+		for s, h := range dec.shash {
+			b.slotHashCache[s] = h
+		}
+		return b.blockApply(tx, trc, n, dec.dirtyA, dec.dirtyS)
+	}
 	dirtyA := make(map[types.Address]*account.StateAccount)
 	dirtyS := make(map[types.Address]map[types.Hash]*uint256.Int)
 
@@ -919,6 +950,13 @@ func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64) 
 			}
 		}
 	}
+	return b.blockApply(tx, trc, n, dirtyA, dirtyS)
+}
+
+// blockApply runs the tx-dependent part of a block: ghost-storage drop, wipe
+// enumeration, root gold check, and DATC record emission.
+func (b *builder) blockApply(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64,
+	dirtyA map[types.Address]*account.StateAccount, dirtyS map[types.Address]map[types.Hash]*uint256.Int) error {
 
 	if len(dirtyA) == 0 && len(dirtyS) == 0 {
 		return nil // empty block: trie unchanged, nothing to record
