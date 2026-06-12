@@ -46,9 +46,15 @@ type TrieOverlay struct {
 }
 
 func NewTrieOverlay() *TrieOverlay {
+	// NoLocks: the computer/builder is single-threaded, and the default
+	// tree's iterator holds an internal RLock until Release — a cursor left
+	// open across a Delete (the wipe paths use `defer cursor.Close()`)
+	// self-deadlocks. Cursors additionally iterate an O(1) COW Copy of the
+	// tree (newMergedCursor), so a mutation never invalidates a live cursor.
+	opts := btree.Options{NoLocks: true}
 	return &TrieOverlay{
-		acc:  btree.NewBTreeG[overlayKV](overlayLess),
-		stor: btree.NewBTreeG[overlayKV](overlayLess),
+		acc:  btree.NewBTreeGOptions[overlayKV](overlayLess, opts),
+		stor: btree.NewBTreeGOptions[overlayKV](overlayLess, opts),
 	}
 }
 
@@ -203,7 +209,11 @@ type mergedCursor struct {
 }
 
 func newMergedCursor(base kv.Cursor, tree *btree.BTreeG[overlayKV]) *mergedCursor {
-	return &mergedCursor{base: base, tree: tree, it: tree.Iter()}
+	// Iterate a COW snapshot: O(1) to take, and later overlay mutations
+	// (e.g. the wipe paths deleting while their cursor is still deferred-
+	// open) cannot invalidate or deadlock a live cursor.
+	snap := tree.Copy()
+	return &mergedCursor{base: base, tree: snap, it: snap.Iter()}
 }
 
 func (m *mergedCursor) Close()        { m.it.Release(); m.base.Close() }
