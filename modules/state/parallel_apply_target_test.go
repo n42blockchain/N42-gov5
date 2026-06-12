@@ -41,6 +41,72 @@ func TestPlainStateBufferApplyTarget_AccountRoundtrip(t *testing.T) {
 	}
 }
 
+// TestPlainStateBufferApplyTarget_AddBalance covers the lazy-coinbase Σtip
+// application: composing onto an existing account (incl. one the block's own
+// Writes just updated), creating an absent coinbase, and the fail-loud
+// contract when no account reader is wired.
+func TestPlainStateBufferApplyTarget_AddBalance(t *testing.T) {
+	buf := NewPlainStateBuffer()
+	writer := NewBufferedPlainStateWriterNoHistory(buf)
+	target := NewPlainStateBufferApplyTarget(writer)
+
+	coinbase := mkAddr(0xcb)
+	delta := uint256.NewInt(5000)
+
+	// Without a reader: invariant break, loud error.
+	if err := target.AddBalance(coinbase, delta); err == nil {
+		t.Fatal("AddBalance without reader must error")
+	}
+
+	// Reader = buffer-first, mirroring the production closure.
+	readAcct := func(addr types.Address) (*account.StateAccount, error) {
+		if enc, ok := buf.accounts[addr]; ok {
+			if len(enc) == 0 {
+				return nil, nil
+			}
+			var a account.StateAccount
+			if err := a.DecodeForStorage(enc); err != nil {
+				return nil, err
+			}
+			return &a, nil
+		}
+		return nil, nil
+	}
+	target.SetAccountReader(readAcct)
+
+	// Absent coinbase: created with exactly the delta.
+	if err := target.AddBalance(coinbase, delta); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readAcct(coinbase)
+	if err != nil || got == nil {
+		t.Fatalf("coinbase not created: %v", err)
+	}
+	if got.Balance.Uint64() != 5000 {
+		t.Fatalf("balance = %s, want 5000", got.Balance.String())
+	}
+
+	// Composes with a direct account write (the sender==coinbase tx path):
+	// PutAccount first (block writes), then the Σtip lands on top.
+	var a account.StateAccount
+	a.Initialised = true
+	a.Nonce = 3
+	a.Balance.SetUint64(100)
+	if err := target.PutAccount(coinbase, a.MarshalV2()); err != nil {
+		t.Fatal(err)
+	}
+	if err := target.AddBalance(coinbase, uint256.NewInt(11)); err != nil {
+		t.Fatal(err)
+	}
+	got, err = readAcct(coinbase)
+	if err != nil || got == nil {
+		t.Fatal("coinbase missing after compose")
+	}
+	if got.Balance.Uint64() != 111 || got.Nonce != 3 {
+		t.Fatalf("composed account = balance %s nonce %d, want 111/3", got.Balance.String(), got.Nonce)
+	}
+}
+
 func TestPlainStateBufferApplyTarget_StorageRoundtrip(t *testing.T) {
 	buf := NewPlainStateBuffer()
 	writer := NewBufferedPlainStateWriterNoHistory(buf)

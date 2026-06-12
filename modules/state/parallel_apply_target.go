@@ -28,6 +28,13 @@ import (
 // when the block's BlockCommit.Apply completes.
 type PlainStateBufferApplyTarget struct {
 	writer *BufferedPlainStateWriter
+
+	// readAccount, when set (SetAccountReader), serves AddBalance: it must
+	// return the CURRENT account as visible at apply time — i.e. through the
+	// same buffer this target writes into, falling back to the base store —
+	// so the Σtip credit composes with any direct coinbase update the block's
+	// Writes already applied (Apply runs AddBalance last). Nil for absent.
+	readAccount func(types.Address) (*account.StateAccount, error)
 }
 
 // NewPlainStateBufferApplyTarget constructs an adapter. Use the
@@ -35,6 +42,11 @@ type PlainStateBufferApplyTarget struct {
 // parallel-aware changeset writing is a separate follow-up task.
 func NewPlainStateBufferApplyTarget(w *BufferedPlainStateWriter) *PlainStateBufferApplyTarget {
 	return &PlainStateBufferApplyTarget{writer: w}
+}
+
+// SetAccountReader enables AddBalance (lazy-coinbase Σtip application).
+func (t *PlainStateBufferApplyTarget) SetAccountReader(r func(types.Address) (*account.StateAccount, error)) {
+	t.readAccount = r
 }
 
 // PutAccount decodes the V2-encoded account and routes to the buffer.
@@ -72,15 +84,30 @@ func (t *PlainStateBufferApplyTarget) PutCode(codeHash types.Hash, code []byte) 
 	return t.writer.UpdateAccountCode(types.Address{}, codeHash, code)
 }
 
-// AddBalance adds delta to addr. Phase 5 contract: this method is NEVER
-// called because RealParallelEVM does not populate TxOutput.CoinbaseTip
-// (the coinbase credit flows through IntraBlockState → MVStateWriter
-// via the regular account update path inside ApplyTransaction). If this
-// fires it means the invariant has been broken — fail loudly to catch
-// the regression.
+// AddBalance adds delta to addr — the lazy-coinbase Σtip credit, applied by
+// BlockCommit.Apply AFTER all Writes so it composes with any direct coinbase
+// account update from the block (e.g. a sender==coinbase tx, whose update
+// bypassed the skip). Requires SetAccountReader; without it the lazy path is
+// not wired and a non-zero delta is an invariant break — fail loudly.
 func (t *PlainStateBufferApplyTarget) AddBalance(addr types.Address, delta *uint256.Int) error {
-	return fmt.Errorf("PlainStateBufferApplyTarget.AddBalance called (addr=%x delta=%s); Phase 5 expects CoinbaseDelta==0 because RealParallelEVM does not set TxOutput.CoinbaseTip — see parallel_evm.go",
-		addr, delta)
+	if t.readAccount == nil {
+		return fmt.Errorf("PlainStateBufferApplyTarget.AddBalance called (addr=%x delta=%s) without an account reader; lazy-coinbase needs SetAccountReader — see parallel_evm.go",
+			addr, delta)
+	}
+	cur, err := t.readAccount(addr)
+	if err != nil {
+		return fmt.Errorf("AddBalance read %x: %w", addr, err)
+	}
+	var acct account.StateAccount
+	if cur != nil {
+		acct = *cur
+	} else {
+		// Mirrors IntraBlockState.AddBalance on an absent account: create it
+		// with the credited balance (the tip makes it non-empty).
+		acct = account.NewAccount()
+	}
+	acct.Balance.Add(&acct.Balance, delta)
+	return t.writer.UpdateAccountData(addr, cur, &acct)
 }
 
 // WipeStorage clears all storage entries for addr. Routed to
