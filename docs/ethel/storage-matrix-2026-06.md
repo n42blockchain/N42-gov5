@@ -37,7 +37,7 @@ n42-release 1005GB、pevm 728GB、n42-chaindata.bak 246GB、N42 469GB、e340 857
 headerc          IDC↓      ✓        ✓        ✓
 anchors          IDC↓      ✓        ✓        ✓(生产侧)
 witness          IDC按需    -        -        ✓(服务 mobile + 重放)
-codes            IDC按需    ✓        ✓        ✓
+codes          IDC按需  codedict   F2提取+IDC按需  ✓(全量,服务下游)
 snapshot          -        ✓     引导可选       -
 Hashed*+TrieOf*   -        -        ✓        ✓
 bodyc 热段(F2)    -        -        ✓        ✓
@@ -63,14 +63,18 @@ accthist/storhist -        -        -        退役(被 DATC 取代)
 .ef/.idx/.val + 追块 overlay。落盘 = 下载 + 小型 overlay(每周新快照
 重置)。Hashed* / Trie* 全套只存在于 full 与 archive。
 
-**full ≈ 158 GB 下载 / ~316 GB 落盘**:
+**full ≈ 142 GB 下载 / ~300 GB 落盘**:
 - 下载:snapshot 25 + 热 bodies F2 91.5 + receipts(compact)19 + txindex 12.3
-  + headerc 4.5 + anchors 4.6 ≈ 157 GB。
+  + headerc 4.5 + anchors 4.6 ≈ 157 → **senders、codes 双双出账后 ~142 GB**。
   **senders 不下载**:F2 格式内嵌 From(AddrDict 驻留,toF2Tx 编码时写入),
   热段自带;冷段 torrent 原始体含签名可 ecrecover。38 GB 全史 senders 出账。
+  **codes 不整表下载**:热段部署的合约 code 从 F2 体提取(constructor 内嵌
+  runtime code 的标准形态),其余按需 IDC RPC(内容寻址 keccak 自验 + 本地
+  永续缓存 —— 与 mobile 同一套已 E2E 验证机制,4872 distinct code 实测);
+  15.8 GB Code 表变成按热度自然增长的缓存(热工作集 ~1-3 GB)。
 - 落盘额外:snapshot 物化为 Hashed*(HashedAccount 31.2 + HashedStorage 97.5,
   N42-hashed 实测)+ TrieOf*(30.4,可本地 rebuild-trie 重建,下载可免)
-  + Code 15.8 + 近期 changesets 9.5(unwind 窗口)。
+  + Code 缓存(增长态)+ 近期 changesets 9.5(unwind 窗口)。
 
 **archive ≈ 1.0-1.2 TB 落盘**(压榨后;现状 ~2.5 TB):
 full 之上 + acctcs/storcs 405 + witness 171.6 + DATC lean ~80-150
