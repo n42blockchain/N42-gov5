@@ -21,6 +21,8 @@
 package ethel
 
 import (
+	"errors"
+
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common"
@@ -131,6 +133,20 @@ func (e *RealParallelEVM) Execute(
 	// negligible compared to the per-tx EVM work.
 	ibs := state.New(reader)
 
+	// Observer guard: detect EXPLICIT balance reads of the coinbase during
+	// execution (BALANCE/SELFBALANCE/CanTransfer). The hook does not fire
+	// for the finalize-time balanceInc materialization, so an ordinary tx
+	// whose only coinbase interaction is the blind tip credit stays clean.
+	var coinbaseObserved bool
+	if cbw != nil {
+		cb := e.skipCoinbase
+		ibs.SetBalanceReadHook(func(addr types.Address) {
+			if addr == cb {
+				coinbaseObserved = true
+			}
+		})
+	}
+
 	// Set tx context on IBS (thash, bhash, txIndex) matching the
 	// sequential ProcessBlock.Prepare() call. blockHash = header hash.
 	// We don't have a canonical txIdx here — the scheduler knows it
@@ -163,9 +179,18 @@ func (e *RealParallelEVM) Execute(
 	// If any read during execution observed an MVEstimate, the
 	// result is speculative-garbage — tell scheduler to retry.
 	// Check AbortPending BEFORE surfacing err so a reader-hit-estimate
-	// doesn't leak as a terminal tx error.
+	// doesn't leak as a terminal tx error (and so a garbage run's
+	// coinbase observation doesn't fail the block spuriously).
 	if view.Inner().AbortPending() {
 		return state.TxOutput{}, state.AbortRetry()
+	}
+
+	// Lazy-coinbase soundness gate: an observed coinbase balance or a
+	// non-commutative coinbase mutation means the deferred Σtip model is
+	// wrong for this BLOCK — surface the typed error so the caller re-runs
+	// without lazy-coinbase.
+	if cbw != nil && (coinbaseObserved || cbw.unsound) {
+		return state.TxOutput{Err: ErrCoinbaseObserved}, ErrCoinbaseObserved
 	}
 
 	if err != nil {
@@ -231,10 +256,22 @@ var _ state.ParallelEVM = (*RealParallelEVM)(nil)
 // coinbase address (lazy-coinbase). The coinbase receives only a balance credit
 // via UpdateAccountData, so dropping it removes the coinbase write-set entry and
 // the universal per-tx Block-STM conflict on that key. See RealParallelEVM.skipCoinbase.
+// ErrCoinbaseObserved is the terminal tx error for a block that cannot run
+// under lazy-coinbase: a tx OBSERVED the coinbase state in a way the deferred
+// Σtip credit cannot reproduce — an explicit balance read (BALANCE /
+// SELFBALANCE / CanTransfer on the coinbase would see the block-start value
+// instead of the serial prefix value), or a non-tip coinbase mutation
+// (nonce/code/incarnation change, balance decrease, account deletion) that is
+// not a commutative credit. The caller must discard the parallel result and
+// re-run the block with lazy-coinbase DISABLED (plain parallel is correct,
+// just slower) or serially.
+var ErrCoinbaseObserved = errors.New("lazy-coinbase: tx observed coinbase state; re-run block non-lazy")
+
 type coinbaseSkipWriter struct {
 	state.StateWriter
 	coinbase types.Address
 	tip      uint256.Int // captured coinbase balance delta (new-old) = this tx's tip
+	unsound  bool        // coinbase mutation was NOT a pure balance credit
 }
 
 func (w *coinbaseSkipWriter) UpdateAccountData(address types.Address, original, acct *account.StateAccount) error {
@@ -244,15 +281,32 @@ func (w *coinbaseSkipWriter) UpdateAccountData(address types.Address, original, 
 		// taken from the value ApplyTransaction actually computed (no formula
 		// re-derivation, so it can't drift from the serial path).
 		if acct != nil {
+			// Lazy-coinbase models the update as a COMMUTATIVE balance add.
+			// Anything else changing — nonce bump, code deployed AT the
+			// coinbase address, incarnation — cannot be deferred: flag it so
+			// Execute fails the block over to the non-lazy path.
+			if original != nil &&
+				(acct.Nonce != original.Nonce || acct.CodeHash != original.CodeHash) {
+				w.unsound = true
+			}
+			if original == nil && acct.Nonce != 0 {
+				w.unsound = true
+			}
 			newBal := acct.Balance
 			var oldBal uint256.Int
 			if original != nil {
 				oldBal = original.Balance
 			}
-			if newBal.Cmp(&oldBal) > 0 {
+			switch newBal.Cmp(&oldBal) {
+			case 1:
 				var d uint256.Int
 				d.Sub(&newBal, &oldBal)
 				w.tip.Add(&w.tip, &d)
+			case -1:
+				// A balance DECREASE is not a tip credit (coinbase spending
+				// without being the tx sender — e.g. coinbase-as-contract
+				// pushing value out).
+				w.unsound = true
 			}
 		}
 		return nil
@@ -262,6 +316,8 @@ func (w *coinbaseSkipWriter) UpdateAccountData(address types.Address, original, 
 
 func (w *coinbaseSkipWriter) DeleteAccount(address types.Address, original *account.StateAccount) error {
 	if address == w.coinbase {
+		// Deleting the coinbase is not expressible as a deferred credit.
+		w.unsound = true
 		return nil
 	}
 	return w.StateWriter.DeleteAccount(address, original)

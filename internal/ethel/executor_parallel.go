@@ -38,9 +38,11 @@ package ethel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	iinternal "github.com/n42blockchain/N42/internal"
@@ -103,27 +105,57 @@ func (e *Executor) executeBlockParallel(ctx context.Context, tx kv.Tx, blockNum 
 
 	totalGas := uint64(0)
 	if len(body.Transactions) > 0 {
-		mvBase := state.NewMVBaseFromStateReader(bufReader)
-		parallelEVM := NewRealParallelEVM(
-			e.chainCfg, e.engine, vm2.Config{},
-			header, e.makeBlockHashFunc(header), nil,
-		)
 		numWorkers := e.cfg.ParallelWorkers
 		if numWorkers <= 0 {
 			numWorkers = 8
 		}
 
-		outputs := make([]state.TxOutput, len(body.Transactions))
-		// state.BlockContext is unused by RealParallelEVM (it consults the
-		// header directly) but the signature requires one — pass zero.
-		runnerBlock := &state.BlockContext{}
-		runner := state.ParallelTxRunner(parallelEVM, body.Transactions, senders, runnerBlock, outputs)
+		// Run lazy-coinbase first: the per-tx coinbase credit is deferred to
+		// one Σtip apply, removing the universal per-tx Block-STM conflict on
+		// the coinbase key (the O(n²) cascade). The observer guard inside
+		// RealParallelEVM detects the rare block where a tx OBSERVES the
+		// coinbase state (balance read / non-tip mutation) — those re-run
+		// with lazy disabled, which is always correct, just slower.
+		var outputs []state.TxOutput
+		var mv *state.MVHashMap
+		for attempt, lazy := 0, true; ; attempt++ {
+			mvBase := state.NewMVBaseFromStateReader(bufReader)
+			parallelEVM := NewRealParallelEVM(
+				e.chainCfg, e.engine, vm2.Config{},
+				header, e.makeBlockHashFunc(header), nil,
+			)
+			if lazy {
+				parallelEVM.SetSkipCoinbase(header.Coinbase)
+			}
+			outputs = make([]state.TxOutput, len(body.Transactions))
+			// state.BlockContext is unused by RealParallelEVM (it consults the
+			// header directly) but the signature requires one — pass zero.
+			runnerBlock := &state.BlockContext{}
+			runner := state.ParallelTxRunner(parallelEVM, body.Transactions, senders, runnerBlock, outputs)
 
-		_, mv, err := state.ExecuteBlockParallel(
-			len(body.Transactions), numWorkers, mvBase, runner,
-		)
-		if err != nil {
-			return fmt.Errorf("ExecuteBlockParallel: %w", err)
+			var err error
+			_, mv, err = state.ExecuteBlockParallel(
+				len(body.Transactions), numWorkers, mvBase, runner,
+			)
+			observed := errors.Is(err, ErrCoinbaseObserved)
+			if !observed {
+				for i := range outputs {
+					if errors.Is(outputs[i].Err, ErrCoinbaseObserved) {
+						observed = true
+						break
+					}
+				}
+			}
+			if observed && lazy && attempt == 0 {
+				log.Debug("lazy-coinbase observed; re-running block non-lazy",
+					"block", blockNum)
+				lazy = false
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("ExecuteBlockParallel: %w", err)
+			}
+			break
 		}
 
 		for _, out := range outputs {
@@ -142,6 +174,11 @@ func (e *Executor) executeBlockParallel(ctx context.Context, tx kv.Tx, blockNum 
 			return fmt.Errorf("FinalizeBlock: %w", err)
 		}
 		target := state.NewPlainStateBufferApplyTarget(bufWriter)
+		// Σtip application (lazy-coinbase) needs the current coinbase account
+		// as visible THROUGH the buffer (composing with the block's writes).
+		target.SetAccountReader(func(addr types.Address) (*account.StateAccount, error) {
+			return bufReader.ReadAccountData(addr)
+		})
 		if err := bc.Apply(target); err != nil {
 			return fmt.Errorf("BlockCommit.Apply: %w", err)
 		}

@@ -118,6 +118,15 @@ type IntraBlockState struct {
 	accessList     *accessList
 	balanceInc     map[types.Address]*BalanceIncrease // Map of balance increases (without first reading the account)
 
+	// balanceReadHook, when non-nil, observes every EXPLICIT balance read
+	// (GetBalance — the entry point of the BALANCE/SELFBALANCE opcodes and
+	// the EVM's CanTransfer). It deliberately does NOT fire for the
+	// finalize-time balanceInc materialization (which goes through
+	// getStateObject), so a lazy-coinbase parallel executor can use it to
+	// detect precisely the txs that OBSERVE the coinbase balance — the only
+	// case where deferring the tip credit changes semantics. Nil = zero cost.
+	balanceReadHook func(types.Address)
+
 	snap    *Snapshot
 	codeMap map[types.Hash][]byte
 	height  uint64
@@ -591,8 +600,17 @@ func (sdb *IntraBlockState) HasNonEmptyStorage(addr types.Address) bool {
 	return false
 }
 
+// SetBalanceReadHook installs (or clears, with nil) the explicit-balance-read
+// observer. See the field doc.
+func (sdb *IntraBlockState) SetBalanceReadHook(h func(types.Address)) {
+	sdb.balanceReadHook = h
+}
+
 // GetBalance retrieves the balance from the given address or 0 if object not found.
 func (sdb *IntraBlockState) GetBalance(addr types.Address) *uint256.Int {
+	if sdb.balanceReadHook != nil {
+		sdb.balanceReadHook(addr)
+	}
 	sdb.traceAccountRead(addr)
 	stateObject := sdb.getStateObject(addr)
 	if stateObject != nil && !stateObject.deleted {
