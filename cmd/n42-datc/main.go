@@ -822,6 +822,11 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		wtx := commitment.WrapTrieOverlay(tx, overlay)
 		trc = commitment.NewTrieRootComputer()
 		trc.SetRwTx(wtx)
+		// Ascending-key Hashed* leaf writes: with W=1024 windows the boundary
+		// root's Phase 1/2 puts ~200K random keys into ~100GB B-trees — 68% of
+		// all cgocall at the CryptoKitties peak. Sorted application restores
+		// B-tree locality (the same lever bpp ships with).
+		trc.SetSortedWrites(true)
 
 		for n := lo; n < hi; n++ {
 			var dec *decodedBlock
