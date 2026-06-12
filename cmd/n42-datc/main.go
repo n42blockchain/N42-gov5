@@ -230,8 +230,13 @@ func main() {
 
 	modules.N42Init()
 	kv.ChaindataTablesCfg = modules.N42TableCfg
+	// DirtySpace: the kv default is 128 MB — a heavy window dirties 2-3 GB of
+	// Hashed*/node pages, so every window was SPILLING dirty pages to disk
+	// ~20x over (the ~33µs/put mystery across all earlier runs). 16 GB keeps
+	// a full batch's dirty set in RAM; commit then writes it once.
 	db, err := mdbxkv.NewMDBX(logger).Path(*out).Label(kv.ChainDB).
-		MapSize(datasize.ByteSize(*mapGB) * datasize.GB).
+		MapSize(datasize.ByteSize(*mapGB)*datasize.GB).
+		DirtySpace(uint64(16*datasize.GB)).
 		WithTableCfg(func(_ kv.TableCfg) kv.TableCfg {
 			d := kv.TableCfg{}
 			for name, item := range kv.ChaindataTablesCfg {
