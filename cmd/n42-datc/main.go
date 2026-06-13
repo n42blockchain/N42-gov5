@@ -31,8 +31,11 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/c2h5oh/datasize"
@@ -50,6 +53,12 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state/commitment"
 )
+
+// stopRequested is set by the SIGINT/SIGTERM handler. The build loop checks it
+// at each batch boundary and exits cleanly (batch committed + spill cut at a
+// frame boundary), so Ctrl+C is SAFE and resumable with --start. Never kill -9
+// (truncates the in-flight spill frame — the 2026-06-13 data-loss).
+var stopRequested atomic.Bool
 
 // DATC table names (prototype-local; registered via WithTableCfg).
 const (
@@ -149,6 +158,17 @@ func main() {
 	if *out == "" {
 		die("--out required")
 	}
+	// Graceful shutdown: Ctrl+C (SIGINT) / SIGTERM sets stopRequested; the build
+	// loop finishes the current batch (commit + spill frame-cut) then exits
+	// cleanly, so the run resumes safely with --start. Safe to interrupt — do
+	// NOT kill -9.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		fmt.Fprintln(os.Stderr, "\n[datc] interrupt received — finishing current batch, then stopping cleanly (resumable). Do NOT kill -9.")
+		stopRequested.Store(true)
+	}()
 	if *pprofPort > 0 {
 		addr := fmt.Sprintf("127.0.0.1:%d", *pprofPort)
 		go func() {
@@ -603,8 +623,8 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 				if inst > 0 {
 					eta = time.Duration(float64(end-n) / inst * float64(time.Second))
 				}
-				fmt.Fprintf(os.Stderr, "[datc] block %d / %d  %.0f blk/s  ETA %s\n",
-					n, end, inst, eta.Round(time.Minute))
+				fmt.Fprintf(os.Stderr, "[datc] %5.1f%%  block %d / %d  %5.0f blk/s  ETA %s\n",
+					100*float64(n)/float64(end), n, end, inst, eta.Round(time.Minute))
 				lastBeat, lastBeatBlocks = time.Now(), blocksDone
 			}
 		}
@@ -649,6 +669,15 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 			return err
 		}
 		b.stoLastFull.newBatch() // committed: cache entries become evictable
+		// Cut the leaf-seg spill at a frame boundary per committed batch: a
+		// later hard kill then truncates only the in-flight batch's frame
+		// (finalize skips it cleanly) rather than one giant whole-run frame.
+		// See [[feedback-human-time-is-precious]] — the 2026-06-13 data-loss.
+		if b.spill != nil {
+			if err := b.spill.flushBatch(); err != nil {
+				return fmt.Errorf("spill flushBatch: %w", err)
+			}
+		}
 
 		var m runtime.MemStats
 		runtime.ReadMemStats(&m)
@@ -656,6 +685,14 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		fmt.Printf("  block %d / %d  %.0f blk/s  heap=%dMB  leafA=%d leafS=%d chg=%d nodes=%d  lfCache=%d(rb=%d)\n",
 			hi, end, bps, m.HeapAlloc>>20, b.leafAPuts, b.leafSPuts, b.chgPuts, b.nodePuts,
 			len(b.stoLastFull.m), b.stoLastFull.missRB)
+		// Graceful stop point: the batch is committed and the spill is cut at a
+		// frame boundary, so this is the safe place to honor Ctrl+C. Skip
+		// finalize (run is incomplete); spill is retained for resume.
+		if stopRequested.Load() && hi < end {
+			fmt.Printf("\n[datc] graceful stop at block %d (committed; spill cut at frame boundary).\n"+
+				"  Resume: re-run with --start %d (same --out / --end / --cbar / --leaf-seg). Spill retained.\n", hi, hi)
+			return nil
+		}
 	}
 	fmt.Printf("DATC build done: %d blocks in %s\n", blocksDone, time.Since(t0).Round(time.Second))
 	if b.spill != nil {
@@ -829,6 +866,15 @@ func (b *builder) accumulateBlock(tx kv.RwTx, n uint64,
 
 	// SELFDESTRUCT wipe tombstones: pre-block live slots = MDBX (window-start)
 	// adjusted by the window net so far.
+	//
+	// MEMORY: never materialize the full live-slot set. The earlier code built
+	// `live := map[[32]byte]bool` over EVERY slot of the wiped contract — a
+	// single big-storage SELFDESTRUCT ballooned it to 7–18 GB (pprof inuse_space
+	// 2026-06-13 showed this as ~25 GB / 67% of live heap, the dominant OOM risk
+	// against the 100 GB ceiling). Instead stream the live slots straight from
+	// the HashedStorage cursor and keep ONLY the window-net delta (bounded by
+	// the W-block window's writes) in memory. The emitted tombstone set is
+	// byte-identical: (MDBX slots ∪ window-written) \ window-deleted, each once.
 	var blk8 [8]byte
 	binary.BigEndian.PutUint64(blk8[:], n)
 	for addr, acct := range dirtyA {
@@ -836,31 +882,27 @@ func (b *builder) accumulateBlock(tx kv.RwTx, n uint64,
 			continue
 		}
 		ah := b.addrHash(addr)
-		live := make(map[[32]byte]bool)
-		c, cerr := tx.CursorDupSort(modules.HashedStorage)
-		if cerr != nil {
-			return cerr
-		}
 		prefix := make([]byte, 40)
 		copy(prefix, ah[:])
-		for v, e := c.SeekBothRange(prefix, nil); v != nil && e == nil; _, v, e = c.NextDup() {
-			if len(v) < 32 {
-				continue
+
+		// Window-net delta for this addr (size ≤ this window's writes — small):
+		// deleted slots are no longer live; written slots are live and may or
+		// may not also be in MDBX (winPend tracks the not-yet-in-MDBX ones).
+		var winDel, winPend map[[32]byte]bool
+		if wn := b.winS[addr]; len(wn) > 0 {
+			winDel = make(map[[32]byte]bool, len(wn))
+			winPend = make(map[[32]byte]bool, len(wn))
+			for slot, v := range wn {
+				sh := b.slotHash(slot)
+				if v == nil {
+					winDel[sh] = true
+				} else {
+					winPend[sh] = true
+				}
 			}
-			var sh [32]byte
-			copy(sh[:], v[:32])
-			live[sh] = true
 		}
-		c.Close()
-		for slot, v := range b.winS[addr] {
-			sh := b.slotHash(slot)
-			if v == nil {
-				delete(live, sh)
-			} else {
-				live[sh] = true
-			}
-		}
-		for sh := range live {
+
+		emit := func(sh [32]byte) error {
 			var comp [72]byte
 			copy(comp[:40], prefix)
 			copy(comp[40:], sh[:])
@@ -869,6 +911,40 @@ func (b *builder) accumulateBlock(tx kv.RwTx, n uint64,
 			}
 			b.leafSPuts++
 			b.recordChange(true, comp[:40], nibblesOf(comp[40:]), n)
+			return nil
+		}
+
+		// Stream MDBX live slots — no full-set map. A slot deleted by the
+		// window net is no longer live (skip). A slot also written this window
+		// is still live: emit here ONCE and drop it from winPend so the tail
+		// loop below doesn't double-emit it (a duplicate would append a
+		// redundant chgEvent in recordChangeStorage).
+		c, cerr := tx.CursorDupSort(modules.HashedStorage)
+		if cerr != nil {
+			return cerr
+		}
+		for v, e := c.SeekBothRange(prefix, nil); v != nil && e == nil; _, v, e = c.NextDup() {
+			if len(v) < 32 {
+				continue
+			}
+			var sh [32]byte
+			copy(sh[:], v[:32])
+			if winDel[sh] {
+				continue
+			}
+			delete(winPend, sh)
+			if err := emit(sh); err != nil {
+				c.Close()
+				return err
+			}
+		}
+		c.Close()
+		// Slots created this window that aren't in MDBX yet are still live
+		// pre-block — emit their tombstones too.
+		for sh := range winPend {
+			if err := emit(sh); err != nil {
+				return err
+			}
 		}
 	}
 

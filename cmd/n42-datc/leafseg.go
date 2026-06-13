@@ -147,6 +147,33 @@ func (w *leafSpillWriter) add(table int, k, v []byte) error {
 	return nil
 }
 
+// cut ends the current zstd frame on one stream and opens a fresh one,
+// flushing bytes to the OS file buffer. After a cut, every prior batch sits in
+// its own COMPLETE frame; a hard kill then loses only the in-flight (uncut)
+// batch's frame, which finalize skips cleanly — instead of truncating one
+// giant whole-run frame and losing the entire run (the 2026-06-13 incident).
+func (s *spillStream) cut() error {
+	if err := s.zw.Close(); err != nil {
+		return err
+	}
+	if err := s.bw.Flush(); err != nil {
+		return err
+	}
+	s.zw.Reset(s.bw) // next Write starts a new frame (new magic)
+	return nil
+}
+
+// flushBatch cuts every open stream at a frame boundary. Call once per build
+// batch commit so a kill never truncates more than the in-flight batch.
+func (w *leafSpillWriter) flushBatch() error {
+	for _, s := range w.streams {
+		if err := s.cut(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (w *leafSpillWriter) close() error {
 	for id, s := range w.streams {
 		if err := s.zw.Close(); err != nil {
@@ -189,45 +216,116 @@ func finalizeLeafSegments(outDir string) error {
 	}
 	defer enc.Close()
 
+	totalCorrupt := 0
 	for _, src := range names {
 		base := filepath.Base(src)
 		dst := filepath.Join(segd, base[:len(base)-len(".zspill")]+".seg")
-		if err := finalizeBucket(zr, enc, src, dst); err != nil {
+		cf := 0
+		if err := finalizeBucket(zr, enc, src, dst, &cf); err != nil {
 			return fmt.Errorf("bucket %s: %w", base, err)
 		}
-		_ = os.Remove(src)
+		totalCorrupt += cf
+		if cf == 0 {
+			_ = os.Remove(src) // clean bucket → drop its spill
+		}
+	}
+	if totalCorrupt > 0 {
+		// SAFETY (feedback-human-time-is-precious, 2026-06-13): corrupt/truncated
+		// frames were skipped, so rows may be MISSING from the segments. Do NOT
+		// delete the spill — keep every .zspill so the loss stays recoverable and
+		// inspectable. The operator verifies the segments, then removes the spill
+		// manually once satisfied. (The prior version deleted the spill regardless,
+		// turning a kill-truncation into permanent multi-day data loss.)
+		fmt.Printf("[leafseg] WARNING: skipped %d corrupt frame(s) across buckets — "+
+			"segments may be INCOMPLETE. Spill dir RETAINED at %s (NOT deleted). "+
+			"Run `n42-datc verify` before removing it; re-build the affected range if verify fails.\n",
+			totalCorrupt, spill)
+		return nil
 	}
 	return os.RemoveAll(spill)
 }
 
-func finalizeBucket(zr *zstd.Decoder, enc *zstd.Encoder, src, dst string) error {
+func finalizeBucket(zr *zstd.Decoder, enc *zstd.Encoder, src, dst string, corruptOut *int) error {
 	f, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	if err := zr.Reset(bufio.NewReaderSize(f, 1<<20)); err != nil {
-		return err
-	}
-	raw, err := io.ReadAll(zr)
+	// Kill-resilient decode: a hard-killed --leaf-seg build leaves a TRUNCATED
+	// zstd frame at the tail of that run's stream; a resumed build then appends
+	// a SECOND, cleanly-closed zstd stream to the same file. A plain
+	// io.ReadAll over the concatenation dies at the truncated frame
+	// ("reserved bits not zero"). Recover by decoding frame-by-frame (split on
+	// the 4-byte zstd magic), accumulating consecutive good frames into one
+	// contiguous group, and resyncing at the next frame whenever one fails to
+	// decode. Rows are parsed per group, so a group's trailing partial row —
+	// and the rows in the dropped truncated frame — are simply discarded; the
+	// next group begins at a fresh frame boundary (a resumed run's stream
+	// starts row-aligned, and a single frame never spans two runs). Loss is
+	// bounded to the few rows buffered in the kill-tail frame.
+	comp, err := io.ReadAll(bufio.NewReaderSize(f, 1<<20))
 	if err != nil {
 		return err
 	}
-	// Decode row boundaries.
+	zstdMagic := []byte{0x28, 0xb5, 0x2f, 0xfd}
+	var frameStarts []int
+	for i := 0; i+4 <= len(comp); {
+		j := bytes.Index(comp[i:], zstdMagic)
+		if j < 0 {
+			break
+		}
+		frameStarts = append(frameStarts, i+j)
+		i += j + 4
+	}
+	var raw []byte    // recovered, row-aligned concatenation
 	var offs []uint64 // start of each record in raw
-	pos := uint64(0)
-	for pos < uint64(len(raw)) {
-		offs = append(offs, pos)
-		kl, m := binary.Uvarint(raw[pos:])
-		if m <= 0 {
-			return fmt.Errorf("corrupt spill at %d", pos)
+	appendGroup := func(g []byte) {
+		p := 0
+		for p < len(g) {
+			kl, m := binary.Uvarint(g[p:])
+			if m <= 0 || kl > uint64(len(g)) {
+				return // partial/garbage tail of this group — stop here
+			}
+			ks := p + m
+			ke := ks + int(kl)
+			if ke > len(g) {
+				return
+			}
+			vl, m2 := binary.Uvarint(g[ke:])
+			if m2 <= 0 || vl > uint64(len(g)) {
+				return
+			}
+			ve := ke + m2 + int(vl)
+			if ve > len(g) {
+				return
+			}
+			offs = append(offs, uint64(len(raw)))
+			raw = append(raw, g[p:ve]...)
+			p = ve
 		}
-		pos += uint64(m) + kl
-		vl, m2 := binary.Uvarint(raw[pos:])
-		if m2 <= 0 {
-			return fmt.Errorf("corrupt spill at %d", pos)
+	}
+	var group []byte
+	corruptFrames := 0
+	for fi := 0; fi < len(frameStarts); fi++ {
+		end := len(comp)
+		if fi+1 < len(frameStarts) {
+			end = frameStarts[fi+1]
 		}
-		pos += uint64(m2) + vl
+		dec, derr := zr.DecodeAll(comp[frameStarts[fi]:end], nil)
+		if derr != nil {
+			// Truncated/corrupt frame: flush the current contiguous group's
+			// complete rows and resync at the next frame boundary.
+			appendGroup(group)
+			group = group[:0]
+			corruptFrames++
+			continue
+		}
+		group = append(group, dec...)
+	}
+	appendGroup(group)
+	if corruptFrames > 0 {
+		fmt.Printf("[leafseg] %s: skipped %d corrupt frame(s) (kill-tail), recovered %d rows\n",
+			filepath.Base(src), corruptFrames, len(offs))
 	}
 	recKey := func(off uint64) []byte {
 		kl, m := binary.Uvarint(raw[off:])
@@ -303,6 +401,9 @@ func finalizeBucket(zr *zstd.Decoder, enc *zstd.Encoder, src, dst string) error 
 	}
 	if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
 		return err
+	}
+	if corruptOut != nil {
+		*corruptOut = corruptFrames
 	}
 	return os.Rename(tmp, dst)
 }
