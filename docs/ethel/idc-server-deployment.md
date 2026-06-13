@@ -336,7 +336,61 @@ enabled, behind `agg.idc.example.net`.
 
 ---
 
-## 9. Related docs
+## 9. Switching to fresh replay data + verification checklist
+
+**Support check (2026-06-12).** The serve/produce/client tools all take data
+directories as command-line flags (§3/§4); the replay output formats are
+stable — headerc (columnar Marshal), witness (proto v1, length-prefixed),
+anchorc (compact-wire `BlockProof`), codes (keccak content-addressed) — so
+switching to a fresh replay is a **path change, not a code change**. The
+producer-side gold gate (`header.Root`, checked per block in bpp / per E_1
+window in n42-datc) means data is verified before it ever reaches an IDC.
+
+> **Gap — historical proofs not yet served.** `n42-datc proof` produces
+> full-history EIP-1186 proofs at any height, but `/account-proof` (§4.1) only
+> serves *latest* via the MDBX trie. A phone verifying a **historical-height**
+> account/slot proof needs a `/datc-proof?addr=&slot=&at=N` endpoint wired to
+> the DATC store (TODO, after the 25M build completes). Today: latest proof +
+> historical anchor-root trust.
+
+**Run after every data switch (any red ⇒ do not ship):**
+
+| # | Check | Command |
+|---|-------|---------|
+| A | Code regression (synthetic, seconds, CI) | `go test -tags 'nosqlite,noboltdb' ./internal/ethel/stateless/...` |
+| B | Real-freezer smoke (①header + ②real witness replay + ③anchor) | `n42-stateless-e2e --headers <d> --bodies <d> --witness <d> --codes <d> --datadir <mdbx\|""> --anchors <d> --from <recent> --count 100 --k 1000` |
+| C | Live IDC over HTTP (transport stack) | start `n42-stateless-serve` then `n42-stateless-client-test --idc <url> --from N --count 50` (pure-online `--datadir "" --codes ""` = phone shape) |
+| D | DATC full-history proof (after 25M build) | `n42-datc verify --out <d> --samples 100` + `n42-datc proof --out <d> --addr 0x.. --slots 0x.. --at <historical>` (self-verifies via an independent hash-chain walk to the real header root) |
+
+Check B note: keep witness/codes/senders heights **≥** the test block height
+(codes-freezer is complete by-addr; MDBX by-hash is not). Failing blocks at the
+data's coverage edge are alignment issues, not verification bugs.
+
+## 10. Test-coverage matrix & gaps
+
+| Verification path | Coverage | Test |
+|---|---|---|
+| ① HeaderChain extend/prune/gap | ✅ unit | `headerchain_test.go` |
+| ③ real anchor produce + verify | ✅ unit | `anchor_test.go`, `producer_proof_test.go` |
+| ③ anchor compact-wire codec | ✅ unit | `proofwire_test.go` |
+| serve→HTTP→client roundtrip (empty ①③) | ✅ unit | `serve/http_test.go::TestHTTPEndToEnd` |
+| serve→HTTP→client roundtrip (real ③ + code) | ✅ unit | `serve/state_e2e_test.go::TestHTTPStateAnchorEndToEnd` |
+| `/code` roundtrip + keccak self-check | ✅ unit | `serve/server_test.go` + above |
+| multi-sig aggregation finalize/fork-split | ✅ unit | `aggregator_test.go` |
+| ② witness replay (synthetic empty block) | ✅ unit | `minimal_verify_test.go` |
+| ② witness replay (real mainnet freezer) | ⚠️ E2E tool only | `cmd/n42-stateless-e2e` (no go-test regression) |
+| code tiers (cold→hot→IDC fetch) | ⚠️ E2E tool only | same |
+| DATC historical proof → serve endpoint | ❌ unwired | TODO (§9 gap) |
+| multi-IDC network producer→aggregator | ⚠️ single-node aggregation tested | no distributed E2E |
+| anchorc.blocks sidecar fault tolerance | ⚠️ path exists | no corruption test |
+
+TODO priority: (1) wire DATC proof to serve `/datc-proof` (phone verifies
+historical heights); (2) real-witness-replay go-test regression (needs a small
+fixed freezer fixture); (3) multi-IDC network E2E.
+
+---
+
+## 11. Related docs
 
 - `docs/ethel/idc-stateless-node-architecture.md` — full architecture + roles.
 - `docs/ethel/caplin-independent-forkchoice-runbook.md` — archive CL (#34).
