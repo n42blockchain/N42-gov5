@@ -16,6 +16,88 @@ uses `--cbar 0.25` (so `E_0=64`, `E_1=W=1024`). In window mode the trie
 materializes only at W-block boundaries and the root is gold-checked against
 the real header there.
 
+## Principle and data flow
+
+### Goal
+
+Serve `eth_getProof` (EIP-1186) at ANY historical height without keeping a full
+archive trie per block. Instead of storing every block's whole trie, DATC keeps
+**sparse epoch snapshots of trie nodes** plus **per-block deltas** (which child
+changed, and the leaf values), and reconstructs any historical root by taking
+the nearest snapshot and rolling the deltas forward.
+
+### Record types
+
+| Table | Key | Value | Meaning |
+|-------|-----|-------|---------|
+| `DatcAccNode` / `DatcStorNode` | `(path, epochIdx)` | `MarshalTrieNode` bytes (FULL, or a DIFF chain back to a FULL anchor); empty = tombstone | the node's state at the END of that epoch |
+| `DatcAccChg` / `DatcStorChg` | `(depth, path, epochIdx)` | aggregated `{block, childNibble}` events | which child of a node changed, and at which block, within the epoch |
+| `DatcLeafA` / `DatcLeafS` | `(hashedKey, block)` | value (empty = deleted) | leaf-level history (account leaves / storage slots) |
+| `DatcMeta` | `head` / `sched` | head block, per-depth epoch lengths | build extent + schedule contract |
+
+In `--leaf-seg` mode the two bulk tables (leaf history + change index) are
+streamed to per-bucket zstd spill files and finalized into `.seg` segments;
+node records and meta stay in MDBX.
+
+### Epoch schedule
+
+Per-depth epoch length `E_d = clamp(alpha * 16^d / cbar, 1, 2^22)`. Deeper
+levels (more nodes) get longer epochs so each node sees roughly `alpha` changes
+per its own epoch — equalizing the record rate across depths and bounding total
+node records. `cbar` is the assumed avg changed keys per block; larger `cbar`
+=> shorter epochs => more records. The build/verify sides share this single
+definition (stored in `DatcMeta.sched`) so they never drift.
+
+### Build flow (per block, from genesis)
+
+1. Decode the block's `acctcs` / `storcs` changesets into `dirtyA` (accounts)
+   and `dirtyS` (storage), with ghost-storage drops and SELFDESTRUCT handling.
+2. **Window mode (default):** emit the block's DATC records — leaf history
+   (`DatcLeaf*`), change events (`recordChange` -> `Datc*Chg`), and changed-child
+   bitmaps — all derived from the changesets with NO trie access, and fold the
+   changes into a per-window net (`winA`/`winS`). The window length is `W = E_1`.
+3. **At each W boundary:** one incremental `ComputeRoot` over the window net
+   brings the erigon-layout trie to that block; the computed root is
+   **gold-checked against the real `headerc` root** (the correctness gate). Then
+   each level `d` whose epoch ends here flushes its changed nodes' current bytes
+   to `Datc*Node` at `epochOf(d, n)`. Because every `E_d` is a multiple of `W`,
+   nodes materialize exactly at epoch boundaries, so window-mode records are
+   byte-identical to per-block construction.
+4. **Per batch:** drain aggregated change events + sorted buffers + the trie
+   overlay into one MDBX commit, then cut the spill at a frame boundary.
+5. **At end:** write `DatcMeta` (head, schedule) and finalize the spill into
+   sorted segments.
+
+Note: depth-0 (root) change rows are deliberately not written — the root has no
+persisted node row and is synthesized from its depth-1 children at query time.
+
+### Reconstruction flow (verify / proof at height N)
+
+1. `synthesizeRoot(N)`: assemble the account-trie root from its 16 depth-1
+   child hashes (the root itself has no row).
+2. For each branch node at path `P` with `depth < foldDepth`, `branchSlotsAt`:
+   a. `floorRecord(P, N)`: newest node record with `epoch <= epochOf(d, N)`,
+      reconstructed by walking the DIFF chain back to its FULL anchor.
+   b. If that record is at N's own epoch and N is not the epoch's last block,
+      step back to the previous epoch's record (otherwise the record reflects a
+      later, end-of-epoch state).
+   c. `changedChildren(P, curEpoch, N)`: from the change index, the set of
+      children that changed in `(recEpoch, N]`. Unchanged children are taken
+      straight from the record; changed children are resolved recursively
+      (`nodeHashAt`) and ultimately folded from leaf history.
+3. At/below `foldDepth` (or when there is no clean fully-hashed record, or the
+   branch collapsed), `foldAt` rebuilds the subtree purely from leaf history
+   as-of N using `GenStructStep` (the same builder production loaders use),
+   handling extensions / leaves / inline children natively.
+4. The reconstructed root is compared to the `headerc` root (mainnet mode) or to
+   `DatcRoots` (n42-chain mode). A proof emits the node path + boundary hashes
+   for the queried account/slots.
+
+So: **floor snapshot + roll-forward of change/leaf deltas**. Upper levels are
+served cheaply from node records; the leaf-dense lower levels are folded from
+leaf history. Storage footprint for full mainnet history is ~170–420 GB
+(vs ~4 TB for an Erigon archive at the time), tunable via `cbar`.
+
 ## The 2026-06-13 incident (root cause of the data loss)
 
 1. A running `--leaf-seg` build was hard-killed (SIGKILL/TerminateProcess). The
