@@ -14,7 +14,7 @@
 | Need | Value |
 |------|-------|
 | Build | `go build -tags "n42el,nosqlite,noboltdb" -o build/bin/eth-el ./cmd/eth-el` (CGO on, Go 1.25) |
-| Tools | `n42-stateless-serve`, `n42-stateless-e2e`, `n42-verify-root`, `n42-witness-size` |
+| Tools | `n42-stateless-serve`, `n42-stateless-e2e`, `n42-stateless-client-test`, `n42-datc`, `n42-verify-root`, `n42-witness-size` |
 | IDC under test | one or more reachable IDC URLs (see deployment guide); record the sentinel ENR |
 | Network | mainnet (`--caplin.network mainnet`, chainid 1) unless testing a private net |
 
@@ -238,6 +238,69 @@ The headline feature. Beyond §2.4:
   tip advances; `--eldevp2p.bootnodes` append (or `--eldevp2p.bootnodes-replace`
   replaces) the mainnet defaults.
 
+### 3.10 DATC — full-history EIP-1186 proofs (`cmd/n42-datc`, 2026-06)
+
+DATC produces an EIP-1186 proof for **any historical height** (contrast §3.5
+mptproof: latest + state-as-of from the live trie; DATC covers all of history
+in its own compact store). Build keys records by a per-depth epoch schedule and
+gold-checks each E₁ window against the real `header.Root`.
+
+```bash
+# Build (mainnet source; W=E_1 window batch root; leaf history → zstd segments)
+n42-datc build --src mainnet --out <d> --leaf-seg --window --cbar 0.25
+# Verify: 100 random historical-height roots rebuilt BYTE-EXACT from DATC records
+n42-datc verify --out <d> --samples 100
+# Proof: EIP-1186 result, self-verified by an independent hash-chain walk to the
+# real header.Root (only emitted if it verifies)
+n42-datc proof  --out <d> --addr 0xde0b295669a9fd93d5f28d9ec85e40f4cb697bae \
+  --slots 0x0,0x1 --at <historical-height>
+```
+
+- Spot-check EF multisig `0xde0b29…bae` and USDT `0xdac17f…ec7` slot `0x0` at
+  several heights; each must print `proof VERIFIED against header root …`.
+- **Partial-window edge**: if `--end` is not a multiple of W, the last `<W`
+  blocks are a partial window — verify a few `--at` heights inside that range
+  explicitly (chg-replay must reconstruct them correctly).
+- **Known gap**: DATC historical proofs are **not yet wired to a serve
+  endpoint** (a phone trusts historical roots via the anchor; `/account-proof`
+  is latest-only). See `idc-server-deployment.md` §9.
+
+### 3.11 Parallel EVM + lazy-coinbase (`--parallel-evm`, 2026-06)
+
+Block-STM intra-block parallel execution, opt-in (default off). lazy-coinbase
+defers the per-tx coinbase tip to one Σtip credit, removing the universal
+per-tx conflict; an observer guard trips on any tx that reads the coinbase
+balance (BALANCE/SELFBALANCE/`Empty`) → re-runs the block non-lazy.
+
+- Unit: `go test -tags 'nosqlite,noboltdb' ./internal/ethel/ -run Coinbase` and
+  `./modules/state/ -run BalanceReadHook`.
+- **Deployment rule (must enforce):** do **NOT** stack `--parallel-evm` on a
+  block-level parallel pipeline (`witness-replay --workers N`) — the two tiers
+  oversubscribe the cores and both slow down. parallel-evm is for SINGLE-STREAM
+  execution only (live tip-following / single sequential replay).
+
+### 3.12 Storage footprint + switching to fresh data
+
+- Per-mode download/on-disk budget: `docs/ethel/storage-matrix-2026-06.md`
+  (mobile ~MB / minimal ~30 GB / full ~126 GB download / archive ~1.1–1.4 TB
+  post-squeeze). Hot-segment-only except headerc; senders/codes come from the F2
+  body / on-demand IDC, not downloaded.
+- Switching the IDC/clients to a fresh replay + the run-after-switch checklist
+  A–D: `idc-server-deployment.md` §9-10.
+
+### 3.13 Regression suite (run before any data switch / release)
+
+```bash
+go test -tags 'nosqlite,noboltdb' \
+  ./internal/ethel/stateless/... ./internal/ethel/ \
+  ./modules/state/ ./modules/state/commitment/ \
+  ./cmd/n42-datc/ ./lib/qmdb/ -count=1
+```
+Covers: stateless ①②③ + serve→client roundtrip incl. the 2026-06
+`TestHTTPStateAnchorEndToEnd` (real-state anchor + code over HTTP),
+lazy-coinbase observer guard, DATC build/verify equivalence, QMDB
+sharding/SIMD/batched-fold root-identity. **Any red ⇒ do not ship.**
+
 ---
 
 ## 4. Cross-node consistency (the real acceptance gate)
@@ -277,5 +340,7 @@ fresh datadir).
 - `docs/ethel/caplin-el-follower-runbook.md` — minimal/full CL (#31).
 - `docs/ethel/real-chain-three-mode-runbook.md` — snapshot modes.
 - `docs/ethel/stateless-verification.md` — trust layers ①②③.
+- `docs/ethel/storage-matrix-2026-06.md` — per-mode footprint + squeeze queue.
+- `docs/ethel/eip1186-mpt-proof-storage-research.md` — DATC design (§3.10).
 - `docs/ethel/n42-eth-distribution-test-plan.md` — distribution IT cases.
 - `docs/ethel/architecture-framework-and-plan.md` — **N42 native chain** + overview.
