@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"os"
 	"path/filepath"
 	"sort"
 	"time"
@@ -34,6 +35,9 @@ import (
 )
 
 var emptyTrieRoot = types.HexToHash("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
+
+// traceDatc gates verbose branch-resolution diagnostics (DATC_TRACE=1).
+var traceDatc = os.Getenv("DATC_TRACE") != ""
 
 func runVerify(args []string) {
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
@@ -105,6 +109,12 @@ func runVerify(args []string) {
 		}
 		q.segA, q.segS = open(segTabLeafA), open(segTabLeafS)
 		q.segCA, q.segCS = open(segTabChgA), open(segTabChgS)
+		if os.Getenv("DATC_CHG_MDBX") != "" {
+			// Diagnostic: force the change index through MDBX (ignore chg
+			// segments) — used to locate change rows written by a different
+			// (mixed) binary that routed them to MDBX rather than spill.
+			q.segCA, q.segCS = nil, nil
+		}
 		if q.segA != nil || q.segS != nil {
 			fmt.Printf("leaf history + change index: zstd segments (%s)\n", filepath.Join(*out, leafSegDir))
 		}
@@ -338,6 +348,15 @@ func (q *querier) branchSlotsAt(domain, path []byte, n uint64) (slots [16]*types
 			return slots, 0, false, err
 		}
 	} // recEpoch == curEpoch with N at epoch end → no window
+	if traceDatc && domain == nil && d <= 1 {
+		// Also dump how many change rows exist for THIS epoch and the next few,
+		// to see whether the changes for N's window were recorded under a
+		// different epoch than curEpoch (the W-vs-e[d] suspicion).
+		cc1, _ := q.changedChildren(domain, path, curEpoch, n)
+		cc0, _ := q.changedChildren(domain, path, curEpoch-1, n)
+		fmt.Fprintf(os.Stderr, "TRACE d=%d path=%x n=%d recEpoch=%d curEpoch=%d eLen=%d nChanged(cur)=%d nChanged(cur-1)=%d hasState=%04x\n",
+			d, path, n, recEpoch, curEpoch, eLen, len(cc1), len(cc0), st.hasState)
+	}
 
 	// Assemble the branch: unchanged children from the record, changed ones
 	// recursively at N.
@@ -584,6 +603,31 @@ func (q *querier) changedChildren(domain, path []byte, epoch, n uint64) (map[byt
 		return nil, err
 	}
 	defer c.Close()
+	if traceDatc && domain == nil && d == 1 {
+		wide := append([]byte{byte(d)}, path...) // [d][path], no epoch
+		if dc, derr := q.chgCursor(false); derr == nil {
+			cnt := 0
+			for k, _, _ := dc.Seek(wide); k != nil && cnt < 6; k, _, _ = dc.Next() {
+				if !bytes.HasPrefix(k, wide) {
+					break
+				}
+				ep := uint64(0)
+				if len(k) >= len(wide)+4 {
+					ep = uint64(binary.BigEndian.Uint32(k[len(wide) : len(wide)+4]))
+				}
+				kt := k
+				if len(kt) > 16 {
+					kt = kt[:16]
+				}
+				fmt.Fprintf(os.Stderr, "  CHGSCAN path=%x wantEpoch=%d key=%x foundEpoch=%d\n", path, epoch, kt, ep)
+				cnt++
+			}
+			if cnt == 0 {
+				fmt.Fprintf(os.Stderr, "  CHGSCAN path=%x wantEpoch=%d: NO rows in bucket [d=1|path]\n", path, epoch)
+			}
+			dc.Close()
+		}
+	}
 	out := make(map[byte]bool)
 	for k, v, err := c.Seek(prefix); k != nil; k, v, err = c.Next() {
 		if err != nil {
