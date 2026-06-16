@@ -153,6 +153,7 @@ func main() {
 	leafSeg := fs.Bool("leaf-seg", false, "stream leaf history to zstd segment files instead of MDBX (mainnet-scale builds; ~10x smaller)")
 	gogc := fs.Int("gogc", 400, "GOGC percent (GC was ~25% CPU at the default 100; the live heap is stable so a high target is safe)")
 	window := fs.Bool("window", true, "mainnet: batch the root per E_1 window (bpp Path C) instead of per block — identical records, gold check per window")
+	concurrentRoot := fs.Bool("concurrent-root", false, "parallelize the per-window root across 16 top-nibble shards over a 4-table StateOverlay (each window still gold-checked vs header)")
 	pprofPort := fs.Int("pprof.port", 0, "serve net/http/pprof on this port (0=off)")
 	_ = fs.Parse(os.Args[2:])
 	if *out == "" {
@@ -266,6 +267,10 @@ func main() {
 	b.stoLastFull.resumed = b.resumed
 	b.fwdMode = fwdMode
 	b.windowing = !fwdMode && *window
+	b.concurrentRoot = *concurrentRoot
+	if b.concurrentRoot && !b.windowing {
+		die("--concurrent-root requires window mode (the shard fan-out is per-window)")
+	}
 	b.winA = make(map[types.Address]*account.StateAccount, 64)
 	b.winS = make(map[types.Address]map[types.Hash]*uint256.Int, 16)
 	if *leafSeg {
@@ -426,6 +431,15 @@ type builder struct {
 	winS      map[types.Address]map[types.Hash]*uint256.Int
 	lastRoot  types.Hash // root at the last boundary (for empty-window checks)
 
+	// concurrentRoot: --concurrent-root. When set, the per-window root fans the
+	// CalcTrieRoot into 16 top-nibble shards (each on its own RoTx over the
+	// committed DB ⊕ a 4-table StateOverlay holding this batch's uncommitted
+	// writes), instead of the serial 2-table TrieOverlay path. The combined root
+	// is byte-identical to serial (proven by trie_root_concurrent_test.go) and
+	// every window still gold-checks against the header — a mismatch HALTS the
+	// build naming the window, so this is safe to validate on real data.
+	concurrentRoot bool
+
 	leafAPuts, leafSPuts, chgPuts, nodePuts uint64
 }
 
@@ -525,7 +539,30 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 	// TrieOf* writes go to a RAM overlay and flush once per batch: the
 	// incremental computer rewrites the same hot trie nodes every block, and
 	// those per-block MDBX puts (plus cursor read traffic) were >60% of CPU.
-	overlay := commitment.NewTrieOverlay()
+	//
+	// --concurrent-root uses the 4-table StateOverlay instead (it ALSO absorbs
+	// HashedAccounts/HashedStorage, so the 16 read-only shard workers can read
+	// committed-DB ⊕ this batch's uncommitted writes via per-worker RoTx). The
+	// serial path keeps the lighter 2-table TrieOverlay. Exactly one is non-nil.
+	var overlay *commitment.TrieOverlay
+	var stateOverlay *commitment.StateOverlay
+	if b.concurrentRoot {
+		stateOverlay = commitment.NewStateOverlay()
+	} else {
+		overlay = commitment.NewTrieOverlay()
+	}
+	wrap := func(tx kv.RwTx) kv.RwTx {
+		if b.concurrentRoot {
+			return commitment.WrapStateOverlayRW(tx, stateOverlay)
+		}
+		return commitment.WrapTrieOverlay(tx, overlay)
+	}
+	flushOverlay := func(tx kv.RwTx) error {
+		if b.concurrentRoot {
+			return stateOverlay.FlushTo(tx)
+		}
+		return overlay.FlushTo(tx)
+	}
 
 	for lo := start; lo < end; lo += batchBlocks {
 		hi := lo + batchBlocks
@@ -544,9 +581,14 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		if err != nil {
 			return err
 		}
-		wtx := commitment.WrapTrieOverlay(tx, overlay)
+		wtx := wrap(tx)
 		trc = commitment.NewTrieRootComputer()
 		trc.SetRwTx(wtx)
+		if b.concurrentRoot {
+			// Fan the per-window CalcTrieRoot across 16 nibble shards reading
+			// b.db committed ⊕ stateOverlay (this batch's uncommitted writes).
+			trc.SetConcurrentRoot(b.db, stateOverlay, 16)
+		}
 		// Ascending-key Hashed* leaf writes: with W=1024 windows the boundary
 		// root's Phase 1/2 puts ~200K random keys into ~100GB B-trees — 68% of
 		// all cgocall at the CryptoKitties peak. Sorted application restores
@@ -661,7 +703,7 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 			tx.Rollback()
 			return err
 		}
-		if err := overlay.FlushTo(tx); err != nil {
+		if err := flushOverlay(tx); err != nil {
 			tx.Rollback()
 			return err
 		}
