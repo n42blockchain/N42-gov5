@@ -965,7 +965,15 @@ func (b *builder) accumulateBlock(tx kv.RwTx, n uint64,
 		if cerr != nil {
 			return cerr
 		}
-		for v, e := c.SeekBothRange(prefix, nil); v != nil && e == nil; _, v, e = c.NextDup() {
+		// HashedStorage is AutoDupSort with DupToLen=32: the physical DupSort key is
+		// the 32-byte addrHash (incarnation removed), and each dup value is
+		// slotHash32||slotValue. SeekBothRange must use the 32-byte addrHash — NOT
+		// the 40-byte leaf-domain prefix (addrHash+8-byte incarnation), which never
+		// matches a physical key and returns zero rows, silently dropping the
+		// tombstones for every slot that pre-existed this window (the leaf-history
+		// fold would then resurrect them after the SELFDESTRUCT). The 40-byte domain
+		// is still used to build the 72-byte DatcLeafS composite key below.
+		for v, e := c.SeekBothRange(ah[:], nil); v != nil && e == nil; _, v, e = c.NextDup() {
 			if len(v) < 32 {
 				continue
 			}
@@ -1099,16 +1107,21 @@ func (b *builder) blockApply(tx kv.RwTx, trc *commitment.TrieRootComputer, n uin
 			continue
 		}
 		ah := b.addrHash(addr)
-		// HashedStorage is DupSort: the cursor yields key=addrHash+inc (40B)
-		// with the slotHash in the VALUE (slotHash32 || slotValue). A plain
-		// 72-byte-key scan never matches.
+		// HashedStorage is AutoDupSort with DupToLen=32: the physical DupSort key is
+		// the 32-byte addrHash (incarnation removed) and each dup value is
+		// slotHash32||slotValue. SeekBothRange must use the 32-byte addrHash; the
+		// earlier 40-byte prefix (addrHash+8-byte incarnation) never matches a
+		// physical key and returned zero rows, silently dropping the per-slot
+		// tombstones for a SELFDESTRUCT-ed contract (the leaf-history fold then
+		// resurrects pre-destruct slots at later heights). The 40-byte domain is
+		// still used to build the 72-byte DatcLeafS composite key.
 		c, cerr := tx.CursorDupSort(modules.HashedStorage)
 		if cerr != nil {
 			return cerr
 		}
 		prefix := make([]byte, 40)
 		copy(prefix, ah[:])
-		for v, e := c.SeekBothRange(prefix, nil); v != nil && e == nil; _, v, e = c.NextDup() {
+		for v, e := c.SeekBothRange(ah[:], nil); v != nil && e == nil; _, v, e = c.NextDup() {
 			if len(v) < 32 {
 				continue
 			}
