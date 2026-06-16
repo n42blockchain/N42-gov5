@@ -206,6 +206,12 @@ type mergedCursor struct {
 	bk, bv []byte // base current (nil bk = exhausted)
 	ok_    bool   // overlay iterator valid
 	emit   int    // which side emitted last: 0 none, 1 base, 2 overlay, 3 both(equal)
+	// tolerateBaseSeekEOF: only the AutoDupSort HashedStorage base cursor can
+	// surface a non-NOTFOUND "end of file" error from its flat Seek (seekDupSort's
+	// bare Next() after a GetBothRange miss at end-of-data); for it that error
+	// MEANS "no base row >= seek". The other three tables' base.Seek already maps
+	// NOTFOUND→nil and only errors on a real fault, so they must NOT swallow it.
+	tolerateBaseSeekEOF bool
 }
 
 func newMergedCursor(base kv.Cursor, tree *btree.BTreeG[overlayKV]) *mergedCursor {
@@ -216,7 +222,7 @@ func newMergedCursor(base kv.Cursor, tree *btree.BTreeG[overlayKV]) *mergedCurso
 	return &mergedCursor{base: base, tree: snap, it: snap.Iter()}
 }
 
-func (m *mergedCursor) Close()        { m.it.Release(); m.base.Close() }
+func (m *mergedCursor) Close()           { m.it.Release(); m.base.Close() }
 func (m *mergedCursor) overlayK() []byte { return m.it.Item().k }
 
 // current returns the merged (k,v) at the lookahead, resolving tombstones by
@@ -268,7 +274,22 @@ func (m *mergedCursor) advanceBase() error {
 func (m *mergedCursor) Seek(seek []byte) ([]byte, []byte, error) {
 	k, v, err := m.base.Seek(seek)
 	if err != nil {
-		return nil, nil, err
+		if !m.tolerateBaseSeekEOF {
+			return nil, nil, err
+		}
+		// HashedStorage only: the AutoDupSort base cursor driven through the FLAT
+		// Seek interface (seekDupSort) can, after a GetBothRange miss (no dup >= the
+		// slot-part of seek under that account), advance via a bare Next() from an
+		// undefined cursor position and surface a non-NOTFOUND error
+		// ("mdbx_cursor_get: Reached the end of the file"). That only happens when
+		// the account has NO base row >= seek, so the correct merged answer is
+		// "base contributes nothing at/after seek": treat the base as exhausted and
+		// fall through to the overlay. Propagating it (the original code) made
+		// stateDupCursor.SeekBothRange return nil and silently DROP an
+		// overlay-resident slot — the --concurrent-root 64511/103423 gold-check
+		// mismatch. Cursor REUSE positions it to trigger; a fresh cursor returns nil
+		// cleanly. See merged_cursor_base_error_test.go.
+		k, v = nil, nil
 	}
 	m.bk, m.bv = k, v
 	m.ok_ = m.it.Seek(overlayKV{k: seek})

@@ -81,6 +81,24 @@ type TrieRootComputer struct {
 	// same root — only the write order changes. Off by default (per-block callers
 	// with few keys gain nothing); the batched anchor producer opts in.
 	sortedWrites bool
+
+	// Concurrent root (--concurrent-root): when cworkers>1, flushTrieRoot fans the
+	// CalcTrieRoot out into 16 top-nibble shards, each on its OWN RoTx opened from
+	// cdb and reading cdb-committed ⊕ coverlay (this batch's uncommitted writes,
+	// via WrapStateOverlay's COW snapshots). The combined root is byte-identical to
+	// the serial loader (proven by trie_root_concurrent_test.go); the node updates
+	// flush to TrieOf* exactly as the serial path. cworkers==0 → serial (unchanged).
+	cdb      kv.RoDB
+	coverlay *StateOverlay
+	cworkers int
+}
+
+// SetConcurrentRoot enables the parallel per-window root: db is the env to open
+// per-worker RoTx from, ov is the 4-table overlay holding this batch's uncommitted
+// writes (the same one wrapping t's RwTx), workers caps fan-out (use 16). Pass
+// workers<=1 to keep the serial path.
+func (t *TrieRootComputer) SetConcurrentRoot(db kv.RoDB, ov *StateOverlay, workers int) {
+	t.cdb, t.coverlay, t.cworkers = db, ov, workers
 }
 
 // SetSortedWrites toggles ascending-key-order leaf writes in Phase 1/2 (a large-
@@ -334,6 +352,16 @@ func (t *TrieRootComputer) ComputeRoot(
 // updated intermediate nodes to TrieOfAccounts/TrieOfStorage (Phase 3/4). Shared
 // by the immediate (ComputeRoot) and deferred/batch (FinalizeRoot) paths.
 func (t *TrieRootComputer) flushTrieRoot(rl *trie.RetainList) (types.Hash, error) {
+	// Concurrent per-window root (incremental only — needs a populated TrieOf*).
+	if t.cworkers > 1 && t.incremental {
+		return t.flushTrieRootConcurrent(rl)
+	}
+	return t.flushTrieRootSerial(rl)
+}
+
+// flushTrieRootSerial is the original single-threaded Phase 3/4 (CalcTrieRoot +
+// TrieOf* flush). The concurrent path falls back to it for non-16-branch tops.
+func (t *TrieRootComputer) flushTrieRootSerial(rl *trie.RetainList) (types.Hash, error) {
 	// Phase 3: CalcTrieRoot. In legacy mode, ClearBucket TrieOf* so the
 	// rebuild is full (empty RetainList, every subtree recomputed from
 	// HashedAccounts/HashedStorage). In incremental mode, leave TrieOf*
