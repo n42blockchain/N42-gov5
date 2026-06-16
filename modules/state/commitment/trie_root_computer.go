@@ -30,6 +30,15 @@ import (
 	"github.com/n42blockchain/N42/modules"
 )
 
+// Cached debug-env checks, read ONCE at startup. ComputeRoot / flushTrieRoot
+// run per window, so calling os.Getenv inline added avoidable allocations.
+// Empty / false unless the env var is explicitly set.
+var (
+	dump160Enabled   = os.Getenv("N42_DUMP160") != ""
+	traceStorCollV   = os.Getenv("N42_TRACE_STORCOLL") == "1"
+	dropStaleAddrEnv = os.Getenv("N42_DROP_STALE_ADDR")
+)
+
 // TrieRootComputer computes standard Ethereum MPT state roots incrementally
 // using erigon2.7's CalcTrieRoot (FlatDBTrieLoader).
 //
@@ -299,7 +308,7 @@ func (t *TrieRootComputer) ComputeRoot(
 	// `0xf88630...`; if dropping the cache yields the mainnet expected root,
 	// the bug is incremental writes never propagate the new root back to
 	// the keylen-32 record.
-	if hexAddr := os.Getenv("N42_DROP_STALE_ADDR"); hexAddr != "" {
+	if hexAddr := dropStaleAddrEnv; hexAddr != "" {
 		// Scoped variant: drop ONLY the listed addrHash(es) (comma-separated
 		// 64-hex). Used to isolate one contract's stale cache rather than
 		// blow away the cache for every dirty-storage account.
@@ -342,7 +351,7 @@ func (t *TrieRootComputer) ComputeRoot(
 	if err != nil {
 		return types.Hash{}, err
 	}
-	if os.Getenv("N42_DUMP160") != "" {
+	if dump160Enabled {
 		t.diagnose160(accounts, storage, root)
 	}
 	return root, nil
@@ -396,7 +405,7 @@ func (t *TrieRootComputer) flushTrieRootSerial(rl *trie.RetainList) (types.Hash,
 		accTrieUpdates = append(accTrieUpdates, kvPair{k, append([]byte{}, v...)})
 		return nil
 	}
-	traceStor := os.Getenv("N42_TRACE_STORCOLL") == "1"
+	traceStor := traceStorCollV
 	storCollector := func(accWithInc []byte, keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
 		k := append(append(make([]byte, 0, len(accWithInc)+len(keyHex)), accWithInc...), keyHex...)
 		if traceStor && len(accWithInc) >= 4 && accWithInc[0] == 0x6c && accWithInc[1] == 0x9d && accWithInc[2] == 0x57 && accWithInc[3] == 0xbe {
