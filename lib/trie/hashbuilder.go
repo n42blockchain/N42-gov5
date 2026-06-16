@@ -14,14 +14,21 @@ import (
 	"github.com/holiman/uint256"
 	"golang.org/x/crypto/sha3"
 
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/rlphacks"
 )
 
 const hashStackStride = length.Hash + 1 // + 1 byte for RLP encoding
 
 var EmptyCodeHash = crypto.Keccak256Hash(nil)
+
+// leafTraceEnabled / traceStorCollTop cache their debug env checks ONCE at
+// startup. accountLeafHash and the storage genStruct callback are per-node hot
+// paths; calling os.Getenv there allocated ~360 GB over a full DATC build
+// (pprof alloc_space). Off unless the env var is explicitly set.
+var leafTraceEnabled = os.Getenv("N42_LEAFTRACE") != ""
+var traceStorCollTop = os.Getenv("N42_TRACE_STORCOLL_TOP") == "1"
 
 // HashBuilder implements the interface `structInfoReceiver` and opcodes that the structural information of the trie
 // is comprised of
@@ -31,7 +38,7 @@ type HashBuilder struct {
 
 	hashStack []byte                // Stack of sub-slices, each 33 bytes each, containing RLP encodings of node hashes (or of nodes themselves, if shorter than 32 bytes)
 	nodeStack []node                // Stack of nodes
-	acc       account.StateAccount      // Working account instance (to avoid extra allocations)
+	acc       account.StateAccount  // Working account instance (to avoid extra allocations)
 	sha       keccakState           // Keccak primitive that can absorb data (Write), and get squeezed to the hash out (Read)
 	hashBuf   [hashStackStride]byte // RLP representation of hash (or un-hashes value)
 	keyPrefix [1]byte
@@ -435,7 +442,7 @@ func (hb *HashBuilder) accountLeafHash(keyLength int, keyHex []byte, balance *ui
 	// hb.acc encodes via EncodeForHashing, and the popped count for stack
 	// invariant. Used to bisect block 25,191,537 stateRoot mismatch against
 	// trusted mainnet RPC.
-	if os.Getenv("N42_LEAFTRACE") != "" {
+	if leafTraceEnabled {
 		fmt.Fprintf(os.Stderr,
 			"LEAFACC keyHex=%x len=%d fieldSet=%04b nonce=%d balance=%s root=%x codeHash=%x popped=%d\n",
 			keyHex, keyLength, fieldSet, nonce, hb.acc.Balance.Dec(), hb.acc.Root[:], hb.acc.CodeHash[:], popped)

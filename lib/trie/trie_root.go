@@ -11,11 +11,10 @@ import (
 
 	"github.com/n42blockchain/N42/lib/log/v3"
 
-	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/common/length"
 	"github.com/n42blockchain/N42/lib/kv"
-
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/lib/rlphacks"
@@ -107,9 +106,9 @@ type RootHashAggregator struct {
 	succStorage    bytes.Buffer
 	valueStorage   []byte // Current value to be used as the value tape for the hash builder
 	hadTreeStorage bool
-	hashAccount    types.Hash // Current value to be used as the value tape for the hash builder
-	hashStorage    types.Hash // Current value to be used as the value tape for the hash builder
-	curr           bytes.Buffer   // Current key for the structure generation algorithm, as well as the input tape for the hash builder
+	hashAccount    types.Hash   // Current value to be used as the value tape for the hash builder
+	hashStorage    types.Hash   // Current value to be used as the value tape for the hash builder
+	curr           bytes.Buffer // Current key for the structure generation algorithm, as well as the input tape for the hash builder
 	succ           bytes.Buffer
 	currAccK       []byte
 	value          []byte // Current value to be used as the value tape for the hash builder
@@ -680,7 +679,7 @@ func (r *RootHashAggregator) genStructStorage() error {
 		// (0x6c9d57be...). Cross-checks the rootHash GenStructStepEx hands us
 		// against an independent r.hb.topHash() read — they must agree if the
 		// stack really has the storage subtree root on top.
-		if os.Getenv("N42_TRACE_STORCOLL_TOP") == "1" && len(r.currAccK) >= 4 &&
+		if traceStorCollTop && len(r.currAccK) >= 4 &&
 			r.currAccK[0] == 0x6c && r.currAccK[1] == 0x9d && r.currAccK[2] == 0x57 && r.currAccK[3] == 0xbe {
 			top := r.hb.topHash()
 			nHashes := 0
