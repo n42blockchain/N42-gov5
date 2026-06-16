@@ -411,6 +411,26 @@ func (rl *RetainList) AddHex(hex []byte) {
 	rl.hexes = append(rl.hexes, hex)
 }
 
+// NibbleSublist returns a FRESH RetainList holding only the hexes whose first
+// nibble == nib (markers and minLength preserved). Each parallel nibble-shard
+// gets its own sublist because RetainWithMarker's lteIndex cursor is stateful
+// and cannot be shared across goroutines. A shard for nibble n only ever queries
+// prefixes starting with n, so entries for other nibbles are irrelevant to it.
+func (rl *RetainList) NibbleSublist(nib byte) *RetainList {
+	out := &RetainList{minLength: rl.minLength, codeTouches: rl.codeTouches}
+	for i, h := range rl.hexes {
+		if len(h) > 0 && h[0] == nib {
+			out.hexes = append(out.hexes, h)
+			if i < len(rl.markers) {
+				out.markers = append(out.markers, rl.markers[i])
+			} else {
+				out.markers = append(out.markers, false)
+			}
+		}
+	}
+	return out
+}
+
 // AddCodeTouch adds a new code touch into the resolve set
 func (rl *RetainList) AddCodeTouch(codeHash types.Hash) {
 	rl.codeTouches[codeHash] = struct{}{}
