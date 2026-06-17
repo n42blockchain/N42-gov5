@@ -119,7 +119,14 @@ func (w *leafSpillWriter) stream(table, bucket int) (*spillStream, error) {
 	zw, err := zstd.NewWriter(bw,
 		zstd.WithEncoderLevel(zstd.SpeedDefault),
 		zstd.WithEncoderConcurrency(1),
-		zstd.WithWindowSize(1<<18))
+		// 64 KiB window (was 256 KiB): all 256 buckets/table stay open for the
+		// whole run, so each open encoder's window+doubleFast history is resident
+		// (~512 encoders × ~9 MB = ~4.6 GB heap at 256 KiB). Leaf rows are tiny
+		// (72 B key + small value) and bucketed by the hashed key's first byte, so
+		// intra-bucket redundancy is local — 64 KiB captures it with negligible
+		// ratio loss while cutting resident encoder memory ~3 GB. The window is
+		// recorded in each frame header, so existing 256 KiB frames still decode.
+		zstd.WithWindowSize(1<<16))
 	if err != nil {
 		f.Close()
 		return nil, err
