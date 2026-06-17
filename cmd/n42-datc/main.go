@@ -731,6 +731,11 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 					return fmt.Errorf("block %d: %w", n, err)
 				}
 			}
+			// dec is fully consumed (winA/winS hold the retained pointers, hash
+			// caches hold the key hashes) — recycle its maps for the next block.
+			if dec != nil {
+				releaseDecodedBlock(dec)
+			}
 			// Epoch boundary flush per level: after block n, levels whose epoch
 			// ends at n persist their changed nodes' current TrieOf* bytes
 			// (read through the overlay — the freshest node state lives there).

@@ -29,40 +29,56 @@ type kvPair struct{ k, v []byte }
 
 // byteArena is a chunked bump allocator for the per-shard collector's key/value
 // copies. Sub-slices returned by alloc/copyOf stay valid as more is allocated:
-// the current chunk is only ever resliced within its capacity, and when it fills
-// a fresh chunk is started (the old one is retained by chunks). reset rewinds for
-// the next window while keeping the current chunk's backing array for reuse, so a
-// steady-state window allocates nothing.
+// the active chunk is only ever resliced within its capacity, and when it fills a
+// different chunk becomes active (the full one is left untouched). reset rewinds
+// to the first chunk for the next window but RETAINS every allocated slab (a
+// chunk's len is zeroed only when it becomes active again), so once the arena has
+// grown to a window's working set, steady-state windows allocate nothing.
 type byteArena struct {
-	chunks [][]byte
-	cur    []byte
+	chunks [][]byte // retained across resets; ci indexes the active chunk
+	ci     int
 }
 
 const arenaChunkSize = 1 << 20
 
+func (a *byteArena) newChunk(n int) []byte {
+	sz := arenaChunkSize
+	if n > sz {
+		sz = n
+	}
+	return make([]byte, 0, sz)
+}
+
 func (a *byteArena) reset() {
-	a.chunks = a.chunks[:0]
-	if a.cur != nil {
-		a.cur = a.cur[:0]
+	a.ci = 0
+	if len(a.chunks) > 0 {
+		a.chunks[0] = a.chunks[0][:0]
 	}
 }
 
 // alloc returns a zeroed slice of length n whose backing array won't move while
 // other arena slices are live (cap == len, so callers can't append into it).
 func (a *byteArena) alloc(n int) []byte {
-	if cap(a.cur)-len(a.cur) < n {
-		sz := arenaChunkSize
-		if n > sz {
-			sz = n
-		}
-		if len(a.cur) > 0 {
-			a.chunks = append(a.chunks, a.cur)
-		}
-		a.cur = make([]byte, 0, sz)
+	if a.ci == len(a.chunks) { // first use / arena empty
+		a.chunks = append(a.chunks, a.newChunk(n))
 	}
-	start := len(a.cur)
-	a.cur = a.cur[:start+n]
-	return a.cur[start : start+n : start+n]
+	cur := a.chunks[a.ci]
+	if cap(cur)-len(cur) < n {
+		a.ci++
+		switch {
+		case a.ci == len(a.chunks):
+			a.chunks = append(a.chunks, a.newChunk(n))
+		case cap(a.chunks[a.ci]) < n: // retained slab too small for this alloc
+			a.chunks[a.ci] = a.newChunk(n)
+		default:
+			a.chunks[a.ci] = a.chunks[a.ci][:0] // reuse retained slab
+		}
+		cur = a.chunks[a.ci]
+	}
+	start := len(cur)
+	cur = cur[:start+n]
+	a.chunks[a.ci] = cur
+	return cur[start : start+n : start+n]
 }
 
 func (a *byteArena) copyOf(b []byte) []byte {
