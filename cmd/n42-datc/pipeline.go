@@ -29,6 +29,60 @@ type decodedBlock struct {
 	ahash  map[types.Address][32]byte
 	shash  map[types.Hash][32]byte
 	err    error
+
+	// innerFree holds cleared dirtyS inner maps for reuse across this pooled
+	// block's lives (one inner map per dirty contract per block was a top
+	// allocator). See getDecodedBlock / releaseDecodedBlock.
+	innerFree []map[types.Hash]*uint256.Int
+}
+
+// decodedBlockPool recycles decodedBlock structs and their maps. The maps are
+// safe to reuse: the main loop copies the only retained references OUT of them
+// (StateAccount/uint256 pointers into winA/winS, key hashes into b's caches) —
+// the maps themselves are never retained past one block's consumption.
+var decodedBlockPool = sync.Pool{New: func() any {
+	return &decodedBlock{
+		dirtyA: make(map[types.Address]*account.StateAccount),
+		dirtyS: make(map[types.Address]map[types.Hash]*uint256.Int),
+		ahash:  make(map[types.Address][32]byte, 8),
+		shash:  make(map[types.Hash][32]byte, 8),
+	}
+}}
+
+// getDecodedBlock returns a cleared decodedBlock for block n.
+func getDecodedBlock(n uint64) *decodedBlock {
+	d := decodedBlockPool.Get().(*decodedBlock)
+	d.n = n
+	d.err = nil
+	return d
+}
+
+// innerMap returns a (cleared) inner storage map, reusing one from the free list.
+func (d *decodedBlock) innerMap() map[types.Hash]*uint256.Int {
+	if k := len(d.innerFree); k > 0 {
+		m := d.innerFree[k-1]
+		d.innerFree = d.innerFree[:k-1]
+		return m
+	}
+	return make(map[types.Hash]*uint256.Int, 8)
+}
+
+// releaseDecodedBlock clears a fully-consumed block's maps (retaining their
+// backing) and returns it to the pool. Call only after the main loop has copied
+// everything it needs out of d (winA/winS pointers + hash caches).
+func releaseDecodedBlock(d *decodedBlock) {
+	if d == nil {
+		return
+	}
+	for _, inner := range d.dirtyS {
+		clear(inner)
+		d.innerFree = append(d.innerFree, inner)
+	}
+	clear(d.dirtyA)
+	clear(d.dirtyS)
+	clear(d.ahash)
+	clear(d.shash)
+	decodedBlockPool.Put(d)
 }
 
 // decodePipeline pre-decodes [next, end) on `workers` goroutines, delivering
@@ -110,20 +164,14 @@ func (p *decodePipeline) Stop() {
 }
 
 func decodeOne(b *builder, n uint64, ac map[types.Address][32]byte, sc map[types.Hash][32]byte) *decodedBlock {
-	d := &decodedBlock{
-		n:      n,
-		dirtyA: make(map[types.Address]*account.StateAccount),
-		dirtyS: make(map[types.Address]map[types.Hash]*uint256.Int),
-		ahash:  make(map[types.Address][32]byte, 8),
-		shash:  make(map[types.Hash][32]byte, 8),
-	}
+	d := getDecodedBlock(n)
 	hashAddr := func(addr types.Address) {
 		if _, ok := d.ahash[addr]; ok {
 			return
 		}
 		h, ok := ac[addr]
 		if !ok {
-			copy(h[:], crypto.Keccak256(addr[:]))
+			h = [32]byte(crypto.Keccak256Hash(addr[:])) // pooled hasher, no per-call alloc
 			ac[addr] = h
 		}
 		d.ahash[addr] = h
@@ -134,7 +182,7 @@ func decodeOne(b *builder, n uint64, ac map[types.Address][32]byte, sc map[types
 		}
 		h, ok := sc[slot]
 		if !ok {
-			copy(h[:], crypto.Keccak256(slot[:]))
+			h = [32]byte(crypto.Keccak256Hash(slot[:]))
 			sc[slot] = h
 		}
 		d.shash[slot] = h
@@ -190,7 +238,7 @@ func decodeOne(b *builder, n uint64, ac map[types.Address][32]byte, sc map[types
 			hashSlot(slot)
 			inner, ok := d.dirtyS[addr]
 			if !ok {
-				inner = make(map[types.Hash]*uint256.Int, 8)
+				inner = d.innerMap()
 				d.dirtyS[addr] = inner
 			}
 			if len(e.NewValue) == 0 {
