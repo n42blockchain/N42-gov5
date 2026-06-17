@@ -74,6 +74,11 @@ func (b *builder) flushAllBufs(tx kv.RwTx) error {
 }
 
 func (b *builder) maybeEarlyFlush(tx kv.RwTx) error {
+	// Cap the unbounded storage change-aggregation map: drain it to the (compact,
+	// length-capped) sorted buffers, which the buffer check below then flushes.
+	if b.chgAggCapBytes > 0 && b.chgStoAggBytes > b.chgAggCapBytes {
+		b.flushChgAgg()
+	}
 	if len(b.chgAccBuf) > bufFlushThreshold || len(b.chgStoBuf) > bufFlushThreshold ||
 		len(b.leafABuf) > bufFlushThreshold || len(b.leafSBuf) > bufFlushThreshold {
 		return b.flushAllBufs(tx)
@@ -219,10 +224,13 @@ func (b *builder) recordChangeStorage(domain []byte, keyNibbles []byte, n uint64
 		binary.BigEndian.PutUint32(ak[len(ak)-4:], uint32(epoch))
 		if p, ok := b.chgStoAgg[string(ak)]; ok {
 			*p = append(*p, chgEvent{block: uint32(n), nibble: keyNibbles[d]})
+			b.chgStoAggBytes += chgEventSize // amortized event growth
 		} else {
 			evs := make([]chgEvent, 0, 8)
 			evs = append(evs, chgEvent{block: uint32(n), nibble: keyNibbles[d]})
 			b.chgStoAgg[string(ak)] = &evs
+			// new entry: map bucket + key string + slice header/backing overhead.
+			b.chgStoAggBytes += len(ak) + 8*chgEventSize + 80
 		}
 		b.chgPuts++
 	}
@@ -273,6 +281,7 @@ func (b *builder) flushChgAgg() {
 		}
 		delete(b.chgStoAgg, ak)
 	}
+	b.chgStoAggBytes = 0
 }
 
 // flushEpoch persists the epoch-end node bytes for every path changed during

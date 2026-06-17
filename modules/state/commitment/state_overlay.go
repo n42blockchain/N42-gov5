@@ -304,18 +304,42 @@ func (t *stateOverlayTx) CursorDupSort(table string) (kv.CursorDupSort, error) {
 
 type stateDupCursor struct {
 	*mergedCursor
-	curAddr []byte // physical 32B key (addrHash) bounding NextDup
+	curAddr []byte    // physical 32B key (addrHash) bounding NextDup
+	seekBuf []byte    // reused seek key (key||valPrefix); not retained by the caller
+	dupBuf  [2][]byte // ping-pong dup-value buffers (see dupVal)
+	dupIdx  int
 }
 
+// dupVal returns the DupSort dup value (slotHash(32)||storageValue) for the
+// current entry. The trie loader's aggregator retains the PREVIOUS dup value one
+// step (saveValueStorage stashes it; the next Receive's genStructStorage consumes
+// it — i.e. after the next NextDup). The real mdbx cursor satisfies that with
+// non-aliasing mmap values; we replicate it with a 2-slot ping-pong so the value
+// just produced never overwrites the still-retained previous one. (A single
+// reused buffer WOULD alias and corrupt the retained value; a fresh alloc per
+// call is what this replaces.) Any slip is also caught at runtime by the
+// per-window gold check, which halts on a root mismatch.
 func (c *stateDupCursor) dupVal(fullKey, v []byte) []byte {
-	// dup value = key suffix after the physical key (slotHash) || stored value.
-	return append(append([]byte{}, fullKey[len(c.curAddr):]...), v...)
+	suf := fullKey[len(c.curAddr):]
+	n := len(suf) + len(v)
+	c.dupIdx ^= 1
+	buf := c.dupBuf[c.dupIdx]
+	if cap(buf) < n {
+		buf = make([]byte, n)
+	} else {
+		buf = buf[:n]
+	}
+	copy(buf, suf)
+	copy(buf[len(suf):], v)
+	c.dupBuf[c.dupIdx] = buf
+	return buf
 }
 
 func (c *stateDupCursor) SeekBothRange(key, valPrefix []byte) ([]byte, error) {
 	c.curAddr = append(c.curAddr[:0], key...)
-	seek := append(append([]byte{}, key...), valPrefix...)
-	k, v, err := c.mergedCursor.Seek(seek)
+	c.seekBuf = append(c.seekBuf[:0], key...)
+	c.seekBuf = append(c.seekBuf, valPrefix...)
+	k, v, err := c.mergedCursor.Seek(c.seekBuf)
 	if err != nil {
 		return nil, err
 	}
@@ -329,7 +353,9 @@ func (c *stateDupCursor) SeekBothRange(key, valPrefix []byte) ([]byte, error) {
 // SeekBothRange overwrites in place — the returned key is valid only until then.
 // The trie loader discards it (`for _,vS,_ := …; vS!=nil; _,vS,_ = NextDup()`);
 // any caller that needs to retain the key across a SeekBothRange must copy it.
-// The dup value is freshly allocated each call and is safe to retain.
+// The dup value (see dupVal) survives exactly ONE further SeekBothRange/NextDup
+// (2-slot ping-pong) — enough for the loader's one-step retention; a caller that
+// needs it longer must copy.
 func (c *stateDupCursor) NextDup() ([]byte, []byte, error) {
 	k, v, err := c.mergedCursor.Next()
 	if err != nil {
