@@ -152,6 +152,7 @@ func main() {
 	mapGB := fs.Int("map.gb", 1024, "MDBX map size GB")
 	dirtyGB := fs.Int("dirty.gb", 16, "MDBX DirtySpace GB — raise so a dense batch's dirty pages stay in RAM and commit doesn't spill (cures the multi-minute commit stalls in DeFi-dense regions)")
 	stoCacheM := fs.Int("stocache.m", 8, "storage lastFull node cache size, in millions of entries — raise to cut late-block read-back (rb) cgo reads; ~150 B/entry (64 ≈ 10 GB)")
+	chgCapGB := fs.Float64("chgcap.gb", 1.5, "drain the storage change-aggregation map mid-batch once its estimated heap exceeds this (0=off, only at batch commit). Caps the one unbounded per-batch buffer in DeFi-dense regions; records are identical (drained segments concatenate in block order)")
 	leavesTotal := fs.Uint64("leaves-total", 4_726_265_247+8_599_658_943, "total leaf-change workload (AccountChangeSets+StorageChangeSets rows) — denominator for the leaf-workload progress %")
 	leavesBase := fs.Uint64("leaves-base", 0, "leaves already processed before --start (resume baseline). Auto-loaded from DatcMeta/leafprog when present; only needed to seed a resume from a binary that predated leafprog persistence")
 	leafSeg := fs.Bool("leaf-seg", false, "stream leaf history to zstd segment files instead of MDBX (mainnet-scale builds; ~10x smaller)")
@@ -327,6 +328,7 @@ func main() {
 	b.fwdMode = fwdMode
 	b.windowing = !fwdMode && *window
 	b.concurrentRoot = *concurrentRoot
+	b.chgAggCapBytes = int(*chgCapGB * float64(datasize.GB))
 	if b.concurrentRoot && !b.windowing {
 		die("--concurrent-root requires window mode (the shard fan-out is per-window)")
 	}
@@ -446,6 +448,14 @@ type builder struct {
 	chgAccAgg        [maxChgDepth + 1][]chgSlot
 	chgAccAggTouched [maxChgDepth + 1][]uint32
 	chgStoAgg        map[string]*[]chgEvent
+	// chgStoAgg is the only per-batch buffer with unbounded live growth (one
+	// entry per touched (level,domain,path,epoch); DeFi-dense batches put it at
+	// ~3 GB). chgStoAggBytes estimates its heap; when it exceeds chgAggCapBytes
+	// (>0), maybeEarlyFlush drains it mid-batch — flushChgAgg already keys each
+	// drained segment by its first block, so segments concatenate in block order
+	// and an early drain is just an earlier batch boundary (records unchanged).
+	chgStoAggBytes int
+	chgAggCapBytes int
 
 	// Sorted-batch write buffers: DATC puts are collected per MDBX batch,
 	// sorted by key, and applied sequentially — near-append B-tree insertion
