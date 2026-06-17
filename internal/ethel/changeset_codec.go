@@ -292,18 +292,41 @@ func DecodeAccountChanges(data []byte) ([]AccountChange, error) {
 
 // DecodeStorageChanges parses a storage changeset blob.
 func DecodeStorageChanges(data []byte) ([]StorageChange, error) {
+	var out []StorageChange
+	err := DecodeStorageChangesFunc(data, func(addr, slot, oldVal, newVal []byte) error {
+		ck := make([]byte, 52)
+		copy(ck[:20], addr)
+		copy(ck[20:], slot)
+		out = append(out, StorageChange{
+			CompositeKey: ck,
+			OldValue:     copyBytes(oldVal),
+			NewValue:     copyBytes(newVal),
+		})
+		return nil
+	})
+	return out, err
+}
+
+// DecodeStorageChangesFunc parses a storage changeset blob and invokes fn once
+// per slot with SUB-SLICES of data (addr 20B, slot 32B, oldVal, newVal) — no
+// per-slot allocation. The slices alias data and are only valid for the duration
+// of the call; a callback that retains any of them must copy. DecodeStorageChanges
+// is the copying wrapper for callers that keep the entries. (Used by the DATC
+// decode pipeline, which consumes each slot in place — hashing the key and
+// SetBytes'ing the value — so the intermediate []StorageChange + per-slot copies
+// are pure churn there.)
+func DecodeStorageChangesFunc(data []byte, fn func(addr, slot, oldVal, newVal []byte) error) error {
 	if len(data) == 0 {
-		return nil, nil
+		return nil
 	}
 	if len(data) < 2 {
-		return nil, fmt.Errorf("storage changeset: truncated header")
+		return fmt.Errorf("storage changeset: truncated header")
 	}
 	addrCount := int(binary.LittleEndian.Uint16(data[0:2]))
 	pos := 2
-	var out []StorageChange
 	for g := 0; g < addrCount; g++ {
 		if pos+22 > len(data) {
-			return nil, fmt.Errorf("storage changeset: truncated addr group %d", g)
+			return fmt.Errorf("storage changeset: truncated addr group %d", g)
 		}
 		addrBytes := data[pos : pos+20]
 		pos += 20
@@ -311,11 +334,9 @@ func DecodeStorageChanges(data []byte) ([]StorageChange, error) {
 		pos += 2
 		for s := 0; s < slotCount; s++ {
 			if pos+34 > len(data) { // slot(32) + oldLen(1) + newLen(1) minimum
-				return nil, fmt.Errorf("storage changeset: truncated slot %d in group %d", s, g)
+				return fmt.Errorf("storage changeset: truncated slot %d in group %d", s, g)
 			}
-			compositeKey := make([]byte, 52)
-			copy(compositeKey[:20], addrBytes)
-			copy(compositeKey[20:], data[pos:pos+32])
+			slotBytes := data[pos : pos+32]
 			pos += 32
 
 			oldLen := int(data[pos])
@@ -325,35 +346,33 @@ func DecodeStorageChanges(data []byte) ([]StorageChange, error) {
 			// first bad slot instead of chasing a misaligned blob for
 			// thousands of slots and surfacing a less obvious error.
 			if oldLen > maxStorageValueLen {
-				return nil, fmt.Errorf("storage changeset: oldLen %d > %d at group=%d slot=%d pos=%d",
+				return fmt.Errorf("storage changeset: oldLen %d > %d at group=%d slot=%d pos=%d",
 					oldLen, maxStorageValueLen, g, s, pos-1)
 			}
 			if pos+oldLen+1 > len(data) {
-				return nil, fmt.Errorf("storage changeset: truncated slot old value")
+				return fmt.Errorf("storage changeset: truncated slot old value")
 			}
-			oldVal := copyBytes(data[pos : pos+oldLen])
+			oldVal := data[pos : pos+oldLen]
 			pos += oldLen
 
 			newLen := int(data[pos])
 			pos++
 			if newLen > maxStorageValueLen {
-				return nil, fmt.Errorf("storage changeset: newLen %d > %d at group=%d slot=%d pos=%d",
+				return fmt.Errorf("storage changeset: newLen %d > %d at group=%d slot=%d pos=%d",
 					newLen, maxStorageValueLen, g, s, pos-1)
 			}
 			if pos+newLen > len(data) {
-				return nil, fmt.Errorf("storage changeset: truncated slot new value")
+				return fmt.Errorf("storage changeset: truncated slot new value")
 			}
-			newVal := copyBytes(data[pos : pos+newLen])
+			newVal := data[pos : pos+newLen]
 			pos += newLen
 
-			out = append(out, StorageChange{
-				CompositeKey: compositeKey,
-				OldValue:     oldVal,
-				NewValue:     newVal,
-			})
+			if err := fn(addrBytes, slotBytes, oldVal, newVal); err != nil {
+				return err
+			}
 		}
 	}
-	return out, nil
+	return nil
 }
 
 func copyBytes(b []byte) []byte {

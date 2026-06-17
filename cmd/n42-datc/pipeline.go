@@ -219,20 +219,18 @@ func decodeOne(b *builder, n uint64, ac map[types.Address][32]byte, sc map[types
 		}
 	}
 	if len(stoBlob) > 0 {
-		entries, err := ethel.DecodeStorageChanges(stoBlob)
-		if err != nil {
-			d.err = fmt.Errorf("decode storcs: %w", err)
-			return d
-		}
-		for _, e := range entries {
+		// Stream slots straight from the blob (no intermediate []StorageChange /
+		// per-slot copies): each is consumed in place here — key hashed, value
+		// SetBytes'd into a uint256 — so the sub-slices needn't outlive the call.
+		err := ethel.DecodeStorageChangesFunc(stoBlob, func(addrB, slotB, _, newVal []byte) error {
 			var addr types.Address
 			var slot types.Hash
-			copy(addr[:], e.CompositeKey[:20])
-			copy(slot[:], e.CompositeKey[20:])
+			copy(addr[:], addrB)
+			copy(slot[:], slotB)
 			// Account deleted this block: drop its WRITES, keep its wipes —
 			// mirrors addSlot in block().
-			if a, ok := d.dirtyA[addr]; ok && a == nil && len(e.NewValue) != 0 {
-				continue
+			if a, ok := d.dirtyA[addr]; ok && a == nil && len(newVal) != 0 {
+				return nil
 			}
 			hashAddr(addr)
 			hashSlot(slot)
@@ -241,11 +239,16 @@ func decodeOne(b *builder, n uint64, ac map[types.Address][32]byte, sc map[types
 				inner = d.innerMap()
 				d.dirtyS[addr] = inner
 			}
-			if len(e.NewValue) == 0 {
+			if len(newVal) == 0 {
 				inner[slot] = nil
 			} else {
-				inner[slot] = new(uint256.Int).SetBytes(e.NewValue)
+				inner[slot] = new(uint256.Int).SetBytes(newVal)
 			}
+			return nil
+		})
+		if err != nil {
+			d.err = fmt.Errorf("decode storcs: %w", err)
+			return d
 		}
 	}
 	return d
