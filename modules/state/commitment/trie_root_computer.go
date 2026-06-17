@@ -100,6 +100,17 @@ type TrieRootComputer struct {
 	cdb      kv.RoDB
 	coverlay *StateOverlay
 	cworkers int
+
+	// Per-shard reusable collector buffers for flushTrieRootConcurrent. The
+	// per-window node updates were the build's #1 allocator (~1.65 TB cumulative:
+	// per-node key/value copies + repeated slice growth). Each top nibble's shard
+	// goroutine owns index [nib] exclusively (16 disjoint nibbles, one set of 16
+	// goroutines at a time), so no synchronization is needed; the byte data lives
+	// in cArena (chunked, stable sub-slices) and the kvPair slices reuse their
+	// backing arrays across windows.
+	cArena   [16]byteArena
+	cAccUpd  [16][]kvPair
+	cStorUpd [16][]kvPair
 }
 
 // SetConcurrentRoot enables the parallel per-window root: db is the env to open

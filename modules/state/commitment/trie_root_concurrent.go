@@ -22,8 +22,56 @@ import (
 	"github.com/n42blockchain/N42/modules"
 )
 
+// kvPair is one collected TrieOf* node update (k=path key, v=node bytes; v==nil
+// is a delete). Package-level so the per-shard reuse buffers on TrieRootComputer
+// can hold them across windows.
+type kvPair struct{ k, v []byte }
+
+// byteArena is a chunked bump allocator for the per-shard collector's key/value
+// copies. Sub-slices returned by alloc/copyOf stay valid as more is allocated:
+// the current chunk is only ever resliced within its capacity, and when it fills
+// a fresh chunk is started (the old one is retained by chunks). reset rewinds for
+// the next window while keeping the current chunk's backing array for reuse, so a
+// steady-state window allocates nothing.
+type byteArena struct {
+	chunks [][]byte
+	cur    []byte
+}
+
+const arenaChunkSize = 1 << 20
+
+func (a *byteArena) reset() {
+	a.chunks = a.chunks[:0]
+	if a.cur != nil {
+		a.cur = a.cur[:0]
+	}
+}
+
+// alloc returns a zeroed slice of length n whose backing array won't move while
+// other arena slices are live (cap == len, so callers can't append into it).
+func (a *byteArena) alloc(n int) []byte {
+	if cap(a.cur)-len(a.cur) < n {
+		sz := arenaChunkSize
+		if n > sz {
+			sz = n
+		}
+		if len(a.cur) > 0 {
+			a.chunks = append(a.chunks, a.cur)
+		}
+		a.cur = make([]byte, 0, sz)
+	}
+	start := len(a.cur)
+	a.cur = a.cur[:start+n]
+	return a.cur[start : start+n : start+n]
+}
+
+func (a *byteArena) copyOf(b []byte) []byte {
+	s := a.alloc(len(b))
+	copy(s, b)
+	return s
+}
+
 func (t *TrieRootComputer) flushTrieRootConcurrent(rl *trie.RetainList) (types.Hash, error) {
-	type kvPair struct{ k, v []byte }
 	type shardOut struct {
 		hash    []byte // depth-1 subtrie hash; nil for an empty nibble
 		accUpd  []kvPair
@@ -53,33 +101,42 @@ func (t *TrieRootComputer) flushTrieRootConcurrent(rl *trie.RetainList) (types.H
 			defer roTx.Rollback()
 			rtx := WrapStateOverlay(roTx, t.coverlay)
 
-			var accUpd, storUpd []kvPair
+			// Reuse this shard's arena + slice backing across windows (index [nib]
+			// is owned solely by this goroutine). copyOf/alloc carve stable
+			// sub-slices, and MarshalTrieNode writes in place into the arena buf so
+			// v is stored directly — no extra per-node copy.
+			ar := &t.cArena[nib]
+			ar.reset()
+			accUpd := t.cAccUpd[nib][:0]
+			storUpd := t.cStorUpd[nib][:0]
 			accColl := func(keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
 				if len(keyHex) == 0 { // depth-0 root has no persisted node (serial skips it too)
 					return nil
 				}
-				k := append([]byte{}, keyHex...)
+				k := ar.copyOf(keyHex)
 				if hasState == 0 {
 					accUpd = append(accUpd, kvPair{k, nil})
 					return nil
 				}
-				buf := make([]byte, len(hashes)+len(rootHash)+6)
+				buf := ar.alloc(len(hashes) + len(rootHash) + 6)
 				v := trie.MarshalTrieNode(hasState, hasTree, hasHash, hashes, rootHash, buf)
-				accUpd = append(accUpd, kvPair{k, append([]byte{}, v...)})
+				accUpd = append(accUpd, kvPair{k, v})
 				return nil
 			}
 			storColl := func(accWithInc, keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
-				k := append(append([]byte{}, accWithInc...), keyHex...)
-				if len(k) == 0 {
+				if len(accWithInc)+len(keyHex) == 0 {
 					return nil
 				}
+				k := ar.alloc(len(accWithInc) + len(keyHex))
+				copy(k, accWithInc)
+				copy(k[len(accWithInc):], keyHex)
 				if hasState == 0 {
 					storUpd = append(storUpd, kvPair{k, nil})
 					return nil
 				}
-				buf := make([]byte, len(hashes)+len(rootHash)+6)
+				buf := ar.alloc(len(hashes) + len(rootHash) + 6)
 				v := trie.MarshalTrieNode(hasState, hasTree, hasHash, hashes, rootHash, buf)
-				storUpd = append(storUpd, kvPair{k, append([]byte{}, v...)})
+				storUpd = append(storUpd, kvPair{k, v})
 				return nil
 			}
 
@@ -94,6 +151,9 @@ func (t *TrieRootComputer) flushTrieRootConcurrent(rl *trie.RetainList) (types.H
 				copy(hb, h[:])
 				outs[nib].hash = hb
 			}
+			// Keep the (possibly grown) slice backing for the next window's reuse.
+			t.cAccUpd[nib] = accUpd
+			t.cStorUpd[nib] = storUpd
 			outs[nib].accUpd = accUpd
 			outs[nib].storUpd = storUpd
 		}(nib)
