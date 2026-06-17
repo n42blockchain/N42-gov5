@@ -56,8 +56,11 @@ func (a *byteArena) reset() {
 	}
 }
 
-// alloc returns a zeroed slice of length n whose backing array won't move while
-// other arena slices are live (cap == len, so callers can't append into it).
+// alloc returns a length-n slice whose backing array won't move while other
+// arena slices are live (cap == len, so callers can't append into it). NOTE: the
+// bytes are NOT zeroed — a reused chunk holds the previous window's data — so the
+// caller MUST fully overwrite all n bytes (copyOf and the MarshalTrieNode/ key
+// builders do).
 func (a *byteArena) alloc(n int) []byte {
 	if a.ci == len(a.chunks) { // first use / arena empty
 		a.chunks = append(a.chunks, a.newChunk(n))
