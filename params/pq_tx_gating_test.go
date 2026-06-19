@@ -35,3 +35,19 @@ func TestIsPQTxGating(t *testing.T) {
 		t.Fatal("Rules.IsPQTx should be false before activation")
 	}
 }
+
+func TestIsBatchTxGating(t *testing.T) {
+	if (&ChainConfig{}).IsBatchTx(1 << 62) {
+		t.Fatal("IsBatchTx should be false when BatchTxTime is nil")
+	}
+	cfg := &ChainConfig{BatchTxTime: big.NewInt(1000)}
+	if cfg.IsBatchTx(999) {
+		t.Fatal("IsBatchTx(999) should be false")
+	}
+	if !cfg.IsBatchTx(1000) {
+		t.Fatal("IsBatchTx(1000) should be true")
+	}
+	if !cfg.RulesWithTimestamp(1, 2000).IsBatchTx {
+		t.Fatal("Rules.IsBatchTx should be true after activation")
+	}
+}

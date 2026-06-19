@@ -203,6 +203,30 @@ func (tx *CompressedBatchTx) Expand() ([]*Transaction, error) {
 	return out, nil
 }
 
+// IsBatch reports whether tx is a batch container (single-sig 0x06 or
+// aggregate-sig 0x07) that must be expanded into sub-txs before pooling/execution.
+func (tx *Transaction) IsBatch() bool {
+	switch tx.inner.(type) {
+	case *CompressedBatchTx, *AggregateBatchTx:
+		return true
+	}
+	return false
+}
+
+// ExpandBatch verifies a single-signature batch (0x06) and returns its sub-txs as
+// ordinary DynamicFee txs (From set to the recovered signer). For an
+// aggregate-signature batch (0x07) use ExpandAggregateBatch (it needs a BLS
+// pubkey resolver from state).
+func (tx *Transaction) ExpandBatch() ([]*Transaction, error) {
+	if b, ok := tx.inner.(*CompressedBatchTx); ok {
+		return b.Expand() // Expand recovers the single sender (one ecrecover)
+	}
+	if _, ok := tx.inner.(*AggregateBatchTx); ok {
+		return nil, fmt.Errorf("aggregate batch (0x07) requires a BLS resolver: use ExpandAggregateBatch")
+	}
+	return nil, fmt.Errorf("not a batch transaction (type 0x%02x)", tx.Type())
+}
+
 // --- compact columnar codec ---------------------------------------------------
 
 // encode produces the compact wire form: 0x06 || header || columns [|| sig].

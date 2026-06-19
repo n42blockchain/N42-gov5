@@ -132,6 +132,43 @@ func (pool *TxsPool) AddRemotes(txs []*transaction.Transaction) []error {
 	return pool.addTxs(txs, false, false)
 }
 
+// AddBatch accepts a compressed batch transaction (0x06 single-signature), gated
+// by ChainConfig.BatchTxTime. It verifies the ONE batch signature (a single
+// ecrecover, amortised over all sub-txs), expands the batch into N ordinary
+// sub-txs whose senders are already authenticated, and inserts them — so the
+// expanded sub-txs SKIP per-tx signature validation (validateSender), but still
+// undergo the normal nonce/gas/balance checks in validateTx. The batch container
+// itself is never stored or executed.
+//
+// 0x07 (aggregate BLS) is not handled here yet: its verify needs the on-chain BLS
+// pubkey registry (a state resolver) — the productionize follow-up.
+func (pool *TxsPool) AddBatch(tx *transaction.Transaction) error {
+	if !tx.IsBatch() {
+		return internal.ErrTxTypeNotSupported
+	}
+	cur := pool.bc.CurrentBlock()
+	if pool.chainconfig == nil || cur == nil || !pool.chainconfig.IsBatchTx(cur.Time()) {
+		return internal.ErrTxTypeNotSupported
+	}
+	subs, err := tx.ExpandBatch() // verifies the batch signature (one ecrecover) + expands
+	if err != nil {
+		return err
+	}
+	if len(subs) == 0 {
+		return nil
+	}
+	pool.mu.Lock()
+	errsLocked, dirty := pool.addTxsLocked(subs, true)
+	pool.mu.Unlock()
+	pool.requestPromoteExecutables(dirty)
+	for _, e := range errsLocked {
+		if e != nil {
+			return e // surface the first sub-tx error (PoC: per-sub-tx results not separated)
+		}
+	}
+	return nil
+}
+
 // Has returns whether the pool has a transaction cached with the given hash.
 func (pool *TxsPool) Has(hash types.Hash) bool {
 	return pool.all.Get(hash) != nil

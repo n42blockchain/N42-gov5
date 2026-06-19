@@ -65,6 +65,7 @@ type Rules struct {
 	IsParlia, IsStarknet, IsAura, IsBeijing                     bool
 	IsPQPrecompiles                                             bool // N42 extension: post-quantum precompiles enabled
 	IsPQTx                                                      bool // N42 extension: post-quantum transaction type (0x05) enabled
+	IsBatchTx                                                   bool // N42 extension: compressed batch tx types (0x06/0x07) enabled
 	IsContentStore                                              bool // N42 extension: content-addressed storage precompile
 	IsAIInference                                               bool // N42 extension: AI inference precompile
 	IsRandomness                                                bool // N42 extension: on-chain randomness beacon precompile
@@ -126,6 +127,7 @@ func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 		IsBeijing:             c.IsBeijing(num),
 		IsPQPrecompiles:       c.IsPQPrecompiles(timestamp),
 		IsPQTx:                c.IsPQTx(timestamp),
+		IsBatchTx:             c.IsBatchTx(timestamp),
 		IsContentStore:        c.IsContentStore(timestamp),
 		IsAIInference:         c.IsAIInference(timestamp),
 		IsRandomness:          c.IsRandomness(timestamp),
@@ -353,6 +355,12 @@ func (c *ChainConfig) IsPQPrecompiles(time uint64) bool {
 // of the PQ verify precompiles (PQPrecompilesTime).
 func (c *ChainConfig) IsPQTx(time uint64) bool {
 	return isForked(c.PQTxTime, time)
+}
+
+// IsBatchTx returns whether time is at or past the compressed batch tx (0x06/0x07)
+// activation. N42-specific extension.
+func (c *ChainConfig) IsBatchTx(time uint64) bool {
+	return isForked(c.BatchTxTime, time)
 }
 
 // IsContentStore returns whether time is at or past the content-addressed storage precompile activation.
