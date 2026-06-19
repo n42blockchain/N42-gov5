@@ -64,6 +64,7 @@ type Rules struct {
 	IsEip1559FeeCollector                                       bool
 	IsParlia, IsStarknet, IsAura, IsBeijing                     bool
 	IsPQPrecompiles                                             bool // N42 extension: post-quantum precompiles enabled
+	IsPQTx                                                      bool // N42 extension: post-quantum transaction type (0x05) enabled
 	IsContentStore                                              bool // N42 extension: content-addressed storage precompile
 	IsAIInference                                               bool // N42 extension: AI inference precompile
 	IsRandomness                                                bool // N42 extension: on-chain randomness beacon precompile
@@ -124,6 +125,7 @@ func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 		IsAura:                c.UsesAuraRules(),
 		IsBeijing:             c.IsBeijing(num),
 		IsPQPrecompiles:       c.IsPQPrecompiles(timestamp),
+		IsPQTx:                c.IsPQTx(timestamp),
 		IsContentStore:        c.IsContentStore(timestamp),
 		IsAIInference:         c.IsAIInference(timestamp),
 		IsRandomness:          c.IsRandomness(timestamp),
@@ -344,6 +346,13 @@ func (c *ChainConfig) IsGlamsterdam(time uint64) bool {
 // This is an N42-specific extension independent of standard Ethereum forks.
 func (c *ChainConfig) IsPQPrecompiles(time uint64) bool {
 	return isForked(c.PQPrecompilesTime, time)
+}
+
+// IsPQTx returns whether time is at or past the post-quantum transaction (0x05)
+// activation. N42-specific extension, independent of standard Ethereum forks and
+// of the PQ verify precompiles (PQPrecompilesTime).
+func (c *ChainConfig) IsPQTx(time uint64) bool {
+	return isForked(c.PQTxTime, time)
 }
 
 // IsContentStore returns whether time is at or past the content-addressed storage precompile activation.

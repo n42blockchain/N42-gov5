@@ -521,10 +521,20 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
 	isPrague := pool.chainconfig != nil && current != nil && pool.chainconfig.IsPrague(current.Time())
 	isShanghai := pool.chainconfig != nil && current != nil && current.Number64() != nil && pool.chainconfig.IsShanghai(current.Number64().Uint64()+1)
 	isGlamsterdam := pool.chainconfig != nil && current != nil && pool.chainconfig.IsGlamsterdam(current.Time())
+	// Post-quantum tx (0x05) fork gate: rejected until PQTxTime is active.
+	if tx.Type() == transaction.PostQuantumTxType {
+		if pool.chainconfig == nil || current == nil || !pool.chainconfig.IsPQTx(current.Time()) {
+			return internal.ErrTxTypeNotSupported
+		}
+	}
 	intrGas, err := internal.IntrinsicGas(tx.Data(), tx.AccessList(), tx.AuthList(), tx.To() == nil, true, pool.istanbul, isShanghai, isPrague, isGlamsterdam)
 	if err != nil {
 		return err
 	}
+	// Type-specific surcharge (PQ verify + signature/pubkey bytes); 0 for standard
+	// txs. Mirrors the consensus charge in StateTransition so the pool's gas check
+	// matches execution.
+	intrGas += tx.IntrinsicGasExtra()
 	if tx.Gas() < intrGas {
 		return internal.ErrIntrinsicGas
 	}

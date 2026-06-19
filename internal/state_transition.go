@@ -134,6 +134,10 @@ type Message interface {
 	AuthList() transaction.AuthorizationList // EIP-7702
 
 	IsFree() bool
+
+	// IntrinsicGasExtra is the type-specific intrinsic-gas surcharge (e.g. PQ
+	// signature verify + bytes); 0 for standard transactions.
+	IntrinsicGasExtra() uint64
 }
 
 // ExecutionResult includes all output after executing given evm message
@@ -464,6 +468,11 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 	gas, err := IntrinsicGas(st.data, st.msg.AccessList(), st.msg.AuthList(), contractCreation, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai, rules.IsPrague, rules.IsGlamsterdam)
 	if err != nil {
 		return nil, err
+	}
+	// Type-specific surcharge (e.g. post-quantum signature verify + bytes), set
+	// at AsMessage. Folds into the consensus intrinsic-gas charge.
+	if extra := st.msg.IntrinsicGasExtra(); extra > 0 {
+		gas += extra
 	}
 	if st.gas < gas {
 		return nil, fmt.Errorf("%w: have %d, want %d", ErrIntrinsicGas, st.gas, gas)
