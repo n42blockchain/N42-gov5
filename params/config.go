@@ -228,6 +228,10 @@ type ChainConfig struct {
 	// Independent of PQPrecompilesTime (which gates the 0x14-0x17 verify precompiles).
 	PQTxTime *big.Int `json:"pqTxTime,omitempty"`
 
+	// N42 extension: compressed batch TRANSACTION types (0x06 single-signature,
+	// 0x07 BLS aggregate) activation. Before it, batch txs are rejected by the pool.
+	BatchTxTime *big.Int `json:"batchTxTime,omitempty"`
+
 	// N42 extension: content-addressed storage precompile (0x0300).
 	// When set, the CAS precompile becomes available for storing/loading
 	// arbitrary data by content hash at the specified timestamp.

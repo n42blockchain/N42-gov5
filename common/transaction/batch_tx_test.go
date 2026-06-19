@@ -124,6 +124,44 @@ func TestBatchTxTamperDetected(t *testing.T) {
 	}
 }
 
+func TestExpandBatchAndIsBatch(t *testing.T) {
+	b1, signer := buildBatch(t, 8)
+	tx06 := NewTxOwned(b1)
+	if !tx06.IsBatch() {
+		t.Fatal("0x06 should be IsBatch")
+	}
+	if NewTxOwned(&DynamicFeeTx{}).IsBatch() {
+		t.Fatal("DynamicFee should not be IsBatch")
+	}
+
+	// ExpandBatch verifies (one ecrecover) + expands.
+	subs, err := tx06.ExpandBatch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subs) != 8 {
+		t.Fatalf("ExpandBatch -> %d subs, want 8", len(subs))
+	}
+	for i, s := range subs {
+		if from := s.From(); from == nil || *from != signer {
+			t.Fatalf("sub %d From mismatch", i)
+		}
+		if s.Nonce() != b1.BaseNonce+uint64(i) {
+			t.Fatalf("sub %d nonce mismatch", i)
+		}
+	}
+
+	// 0x07 needs a BLS resolver -> ExpandBatch must refuse.
+	tx07 := NewTxOwned(&AggregateBatchTx{Gas: []uint64{1}, To: []*types.Address{nil},
+		Value: []*uint256.Int{uint256.NewInt(0)}, Data: [][]byte{nil}, Sender: []*types.Address{{}}, Nonce: []uint64{0}})
+	if !tx07.IsBatch() {
+		t.Fatal("0x07 should be IsBatch")
+	}
+	if _, err := tx07.ExpandBatch(); err == nil {
+		t.Fatal("ExpandBatch on 0x07 should error (needs resolver)")
+	}
+}
+
 func TestBatchTxCompression(t *testing.T) {
 	const n = 10000
 	tx, _ := buildBatch(t, n)
