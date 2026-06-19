@@ -212,15 +212,7 @@ func (tx *CompressedBatchTx) encode(withSig bool) []byte {
 	b = appendU256(b, tx.GasTipCap)
 	b = appendU256(b, tx.GasFeeCap)
 	b = binary.AppendUvarint(b, uint64(n))
-	// to[] : 1-byte present flag + 20B addr (absent => contract creation)
-	for _, a := range tx.To {
-		if a == nil {
-			b = append(b, 0)
-		} else {
-			b = append(b, 1)
-			b = append(b, a[:]...)
-		}
-	}
+	b = encodeToColumn(b, tx.To)
 	for _, v := range tx.Value {
 		b = appendU256(b, v)
 	}
@@ -267,22 +259,8 @@ func DecodeBatch(data []byte) (*CompressedBatchTx, error) {
 		return nil, err
 	}
 	n := int(nn)
-	tx.To = make([]*types.Address, n)
-	for i := 0; i < n; i++ {
-		if p >= len(data) {
-			return nil, fmt.Errorf("batch tx: truncated to[]")
-		}
-		flag := data[p]
-		p++
-		if flag == 1 {
-			if p+20 > len(data) {
-				return nil, fmt.Errorf("batch tx: truncated addr")
-			}
-			var a types.Address
-			copy(a[:], data[p:p+20])
-			tx.To[i] = &a
-			p += 20
-		}
+	if tx.To, p, err = decodeToColumn(data, p, n); err != nil {
+		return nil, err
 	}
 	tx.Value = make([]*uint256.Int, n)
 	for i := 0; i < n; i++ {
@@ -318,6 +296,112 @@ func DecodeBatch(data []byte) (*CompressedBatchTx, error) {
 		return nil, err
 	}
 	return tx, nil
+}
+
+// encodeToColumn writes the To column with an adaptive scheme: mode 0 = raw
+// (1 present-flag byte + 20 B addr each), mode 1 = dictionary (distinct addrs
+// once + a varint index per sub-tx, 0 = nil/creation). Dict is chosen when
+// recipients repeat enough to beat raw — the lever toward ~12 B/tx for batches
+// that pay a bounded recipient set; all-distinct recipients stay on raw.
+func encodeToColumn(b []byte, to []*types.Address) []byte {
+	n := len(to)
+	idx := make(map[types.Address]int, n) // addr -> 1-based dict index
+	var dict []types.Address
+	for _, a := range to {
+		if a == nil {
+			continue
+		}
+		if _, ok := idx[*a]; !ok {
+			dict = append(dict, *a)
+			idx[*a] = len(dict)
+		}
+	}
+	// Dict pays off only with reuse: raw ≈ n*(1+20); dict ≈ 1+varint(D)+D*20+n*~2.
+	useDict := len(dict) < n && len(dict)*20+n*2 < n*21
+	if !useDict {
+		b = append(b, 0)
+		for _, a := range to {
+			if a == nil {
+				b = append(b, 0)
+			} else {
+				b = append(b, 1)
+				b = append(b, a[:]...)
+			}
+		}
+		return b
+	}
+	b = append(b, 1)
+	b = binary.AppendUvarint(b, uint64(len(dict)))
+	for i := range dict {
+		b = append(b, dict[i][:]...)
+	}
+	for _, a := range to {
+		if a == nil {
+			b = binary.AppendUvarint(b, 0)
+		} else {
+			b = binary.AppendUvarint(b, uint64(idx[*a]))
+		}
+	}
+	return b
+}
+
+func decodeToColumn(data []byte, p, n int) ([]*types.Address, int, error) {
+	if p >= len(data) {
+		return nil, p, fmt.Errorf("batch tx: truncated to column")
+	}
+	mode := data[p]
+	p++
+	to := make([]*types.Address, n)
+	switch mode {
+	case 0:
+		for i := 0; i < n; i++ {
+			if p >= len(data) {
+				return nil, p, fmt.Errorf("batch tx: truncated to[]")
+			}
+			flag := data[p]
+			p++
+			if flag == 1 {
+				if p+20 > len(data) {
+					return nil, p, fmt.Errorf("batch tx: truncated addr")
+				}
+				var a types.Address
+				copy(a[:], data[p:p+20])
+				to[i] = &a
+				p += 20
+			}
+		}
+	case 1:
+		d, m := binary.Uvarint(data[p:])
+		if m <= 0 {
+			return nil, p, fmt.Errorf("batch tx: bad dict len")
+		}
+		p += m
+		dict := make([]types.Address, d)
+		for i := 0; i < int(d); i++ {
+			if p+20 > len(data) {
+				return nil, p, fmt.Errorf("batch tx: truncated dict addr")
+			}
+			copy(dict[i][:], data[p:p+20])
+			p += 20
+		}
+		for i := 0; i < n; i++ {
+			ix, m := binary.Uvarint(data[p:])
+			if m <= 0 {
+				return nil, p, fmt.Errorf("batch tx: bad to index")
+			}
+			p += m
+			if ix > 0 {
+				if int(ix) > len(dict) {
+					return nil, p, fmt.Errorf("batch tx: to index out of range")
+				}
+				a := dict[ix-1]
+				to[i] = &a
+			}
+		}
+	default:
+		return nil, p, fmt.Errorf("batch tx: bad to mode %d", mode)
+	}
+	return to, p, nil
 }
 
 // --- small codec helpers ------------------------------------------------------

@@ -15,15 +15,28 @@
 
 package transaction
 
+// Per-algorithm signature-verification gas, CALIBRATED from measured verify cost
+// (perf_bench_test.go, Ryzen 9 9950X) against the secp256k1 ecrecover reference
+// (3000 gas @ 21608 ns → 0.139 gas/ns). PQ verify turned out CHEAPER than
+// ecrecover (no key recovery — the pubkey is supplied), so these are well below
+// 3000. Note: the dominant PQ tx cost is the BYTE charge below (sigs are
+// 0.7–3.3 KB), not the verify CPU — so precision here barely moves total cost.
+//
+//	algo         verify ns/op   ×0.139 gas/ns   set (rounded up, margin)
+//	Falcon-512        5104           709            1000
+//	Dilithium2        8666          1203            1500
+//	Dilithium3       10981          1524            2000
+//	(ecrecover ref)  21608          3000            —)
 const (
-	// Per-algorithm signature-verification gas (CPU cost of one verify).
-	pqVerifyGasFalcon512  uint64 = 8000  // lattice, fast
-	pqVerifyGasSQIsign    uint64 = 24000 // isogeny, slow
-	pqVerifyGasDilithium2 uint64 = 12000 // lattice
-	pqVerifyGasDilithium3 uint64 = 16000 // lattice, higher security
+	pqVerifyGasFalcon512  uint64 = 1000  // measured 5104 ns
+	pqVerifyGasSQIsign    uint64 = 24000 // verify UNIMPLEMENTED → unbenchmarked; keep conservative (isogeny is slow)
+	pqVerifyGasDilithium2 uint64 = 1500  // measured 8666 ns
+	pqVerifyGasDilithium3 uint64 = 2000  // measured 10981 ns
 
 	// Per-byte gas for the PQ signature + public-key bytes carried in the tx,
-	// charged at the non-zero calldata rate (the bytes are real network/storage load).
+	// charged at the non-zero calldata rate (the bytes are real network/storage
+	// load and DOMINATE the surcharge: Falcon ~1.5 KB→~25k gas, Dilithium2
+	// ~3.7 KB→~60k gas).
 	pqSigByteGas uint64 = 16
 )
 
