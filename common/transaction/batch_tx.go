@@ -99,7 +99,7 @@ func (tx *CompressedBatchTx) setSignatureValues(chainID, v, r, s *uint256.Int) {
 }
 
 func (tx *CompressedBatchTx) hash() types.Hash {
-	return crypto.Keccak256Hash(tx.encode(true))
+	return crypto.Keccak256Hash(tx.encode(true, nil))
 }
 
 func (tx *CompressedBatchTx) copy() TxData {
@@ -131,9 +131,12 @@ func (tx *CompressedBatchTx) copy() TxData {
 // --- signing / recovery -------------------------------------------------------
 
 // SigningHash is the message signed by the single ECDSA signature: the typed
-// (0x06-prefixed) encoding of every field EXCEPT V/R/S.
+// (0x06-prefixed) encoding of every field EXCEPT V/R/S. Always uses reg=nil so it
+// is registry-INDEPENDENT — re-encoding the wire with registry indices does not
+// change what was signed (decode reconstructs the addresses, recover recomputes
+// this canonically).
 func (tx *CompressedBatchTx) SigningHash() types.Hash {
-	return crypto.Keccak256Hash(tx.encode(false))
+	return crypto.Keccak256Hash(tx.encode(false, nil))
 }
 
 // Sign signs the batch with one secp256k1 key and fills V/R/S. The signer becomes
@@ -203,7 +206,7 @@ func (tx *CompressedBatchTx) Expand() ([]*Transaction, error) {
 // --- compact columnar codec ---------------------------------------------------
 
 // encode produces the compact wire form: 0x06 || header || columns [|| sig].
-func (tx *CompressedBatchTx) encode(withSig bool) []byte {
+func (tx *CompressedBatchTx) encode(withSig bool, reg AddrRegistry) []byte {
 	n := tx.SubCount()
 	b := make([]byte, 0, 64+n*32)
 	b = append(b, CompressedBatchTxType)
@@ -212,7 +215,7 @@ func (tx *CompressedBatchTx) encode(withSig bool) []byte {
 	b = appendU256(b, tx.GasTipCap)
 	b = appendU256(b, tx.GasFeeCap)
 	b = binary.AppendUvarint(b, uint64(n))
-	b = encodeToColumn(b, tx.To)
+	b = encodeToColumn(b, tx.To, reg)
 	for _, v := range tx.Value {
 		b = appendU256(b, v)
 	}
@@ -231,11 +234,23 @@ func (tx *CompressedBatchTx) encode(withSig bool) []byte {
 	return b
 }
 
-// EncodeBatch returns the signed compact wire bytes (0x06 || ... || sig).
-func (tx *CompressedBatchTx) EncodeBatch() []byte { return tx.encode(true) }
+// EncodeBatch returns the signed compact wire bytes (0x06 || ... || sig), with
+// raw/dict address columns (no registry).
+func (tx *CompressedBatchTx) EncodeBatch() []byte { return tx.encode(true, nil) }
 
-// DecodeBatch parses the compact wire form produced by EncodeBatch.
-func DecodeBatch(data []byte) (*CompressedBatchTx, error) {
+// EncodeBatchReg encodes with registry-index address columns when recipients are
+// registered (item 2 compression) — far smaller for all-distinct recipients.
+func (tx *CompressedBatchTx) EncodeBatchReg(reg AddrRegistry) []byte { return tx.encode(true, reg) }
+
+// DecodeBatch parses the compact wire form (no registry; fails on a registry-index column).
+func DecodeBatch(data []byte) (*CompressedBatchTx, error) { return decodeBatch(data, nil) }
+
+// DecodeBatchReg parses the compact wire form, resolving registry-index columns via reg.
+func DecodeBatchReg(data []byte, reg AddrRegistry) (*CompressedBatchTx, error) {
+	return decodeBatch(data, reg)
+}
+
+func decodeBatch(data []byte, reg AddrRegistry) (*CompressedBatchTx, error) {
 	if len(data) == 0 || data[0] != CompressedBatchTxType {
 		return nil, fmt.Errorf("batch tx: bad type byte")
 	}
@@ -259,7 +274,7 @@ func DecodeBatch(data []byte) (*CompressedBatchTx, error) {
 		return nil, err
 	}
 	n := int(nn)
-	if tx.To, p, err = decodeToColumn(data, p, n); err != nil {
+	if tx.To, p, err = decodeToColumn(data, p, n, reg); err != nil {
 		return nil, err
 	}
 	tx.Value = make([]*uint256.Int, n)
@@ -303,7 +318,22 @@ func DecodeBatch(data []byte) (*CompressedBatchTx, error) {
 // once + a varint index per sub-tx, 0 = nil/creation). Dict is chosen when
 // recipients repeat enough to beat raw — the lever toward ~12 B/tx for batches
 // that pay a bounded recipient set; all-distinct recipients stay on raw.
-func encodeToColumn(b []byte, to []*types.Address) []byte {
+func encodeToColumn(b []byte, to []*types.Address, reg AddrRegistry) []byte {
+	// Mode 2 (registry index): if every non-nil address is registered on-chain,
+	// reference each by its compact registry index (varint, 0 = nil) — no addr
+	// bytes in the tx at all. Beats raw/dict even for all-distinct recipients.
+	if allRegistered(to, reg) {
+		b = append(b, 2)
+		for _, a := range to {
+			if a == nil {
+				b = binary.AppendUvarint(b, 0)
+			} else {
+				ix, _ := reg.IndexOf(*a)
+				b = binary.AppendUvarint(b, ix)
+			}
+		}
+		return b
+	}
 	n := len(to)
 	idx := make(map[types.Address]int, n) // addr -> 1-based dict index
 	var dict []types.Address
@@ -345,7 +375,7 @@ func encodeToColumn(b []byte, to []*types.Address) []byte {
 	return b
 }
 
-func decodeToColumn(data []byte, p, n int) ([]*types.Address, int, error) {
+func decodeToColumn(data []byte, p, n int, reg AddrRegistry) ([]*types.Address, int, error) {
 	if p >= len(data) {
 		return nil, p, fmt.Errorf("batch tx: truncated to column")
 	}
@@ -353,6 +383,25 @@ func decodeToColumn(data []byte, p, n int) ([]*types.Address, int, error) {
 	p++
 	to := make([]*types.Address, n)
 	switch mode {
+	case 2:
+		if reg == nil {
+			return nil, p, fmt.Errorf("batch tx: registry-index column but no registry")
+		}
+		for i := 0; i < n; i++ {
+			ix, m := binary.Uvarint(data[p:])
+			if m <= 0 {
+				return nil, p, fmt.Errorf("batch tx: bad registry index")
+			}
+			p += m
+			if ix > 0 {
+				a, ok := reg.AddrAt(ix)
+				if !ok {
+					return nil, p, fmt.Errorf("batch tx: registry index %d unknown", ix)
+				}
+				ac := a
+				to[i] = &ac
+			}
+		}
 	case 0:
 		for i := 0; i < n; i++ {
 			if p >= len(data) {

@@ -105,7 +105,7 @@ func (tx *AggregateBatchTx) rawSignatureValues() (v, r, s *uint256.Int) { return
 func (tx *AggregateBatchTx) setSignatureValues(chainID, v, r, s *uint256.Int) {
 	tx.ChainID = chainID
 }
-func (tx *AggregateBatchTx) hash() types.Hash { return crypto.Keccak256Hash(tx.encode()) }
+func (tx *AggregateBatchTx) hash() types.Hash { return crypto.Keccak256Hash(tx.encode(nil)) }
 
 func (tx *AggregateBatchTx) copy() TxData {
 	cpy := &AggregateBatchTx{
@@ -240,7 +240,7 @@ func (tx *AggregateBatchTx) Expand() ([]*Transaction, error) {
 
 // --- compact columnar codec ---------------------------------------------------
 
-func (tx *AggregateBatchTx) encode() []byte {
+func (tx *AggregateBatchTx) encode(reg AddrRegistry) []byte {
 	n := tx.SubCount()
 	b := make([]byte, 0, 128+n*48)
 	b = append(b, AggregateBatchTxType)
@@ -248,11 +248,11 @@ func (tx *AggregateBatchTx) encode() []byte {
 	b = appendU256(b, tx.GasTipCap)
 	b = appendU256(b, tx.GasFeeCap)
 	b = binary.AppendUvarint(b, uint64(n))
-	b = encodeToColumn(b, tx.Sender) // senders (dict if they repeat)
+	b = encodeToColumn(b, tx.Sender, reg) // senders (registry index / dict / raw)
 	for _, nn := range tx.Nonce {
 		b = binary.AppendUvarint(b, nn)
 	}
-	b = encodeToColumn(b, tx.To)
+	b = encodeToColumn(b, tx.To, reg)
 	for _, v := range tx.Value {
 		b = appendU256(b, v)
 	}
@@ -268,11 +268,23 @@ func (tx *AggregateBatchTx) encode() []byte {
 	return b
 }
 
-// EncodeBatch returns the compact wire bytes.
-func (tx *AggregateBatchTx) EncodeBatch() []byte { return tx.encode() }
+// EncodeBatch returns the compact wire bytes (raw/dict address columns).
+func (tx *AggregateBatchTx) EncodeBatch() []byte { return tx.encode(nil) }
 
-// DecodeAggregateBatch parses the compact wire form.
+// EncodeBatchReg encodes with registry-index sender+to columns (item 2 compression).
+func (tx *AggregateBatchTx) EncodeBatchReg(reg AddrRegistry) []byte { return tx.encode(reg) }
+
+// DecodeAggregateBatch parses the compact wire form (no registry).
 func DecodeAggregateBatch(data []byte) (*AggregateBatchTx, error) {
+	return decodeAggregateBatch(data, nil)
+}
+
+// DecodeAggregateBatchReg parses the wire form, resolving registry-index columns.
+func DecodeAggregateBatchReg(data []byte, reg AddrRegistry) (*AggregateBatchTx, error) {
+	return decodeAggregateBatch(data, reg)
+}
+
+func decodeAggregateBatch(data []byte, reg AddrRegistry) (*AggregateBatchTx, error) {
 	if len(data) == 0 || data[0] != AggregateBatchTxType {
 		return nil, fmt.Errorf("agg batch: bad type byte")
 	}
@@ -293,7 +305,7 @@ func DecodeAggregateBatch(data []byte) (*AggregateBatchTx, error) {
 		return nil, err
 	}
 	n := int(nn)
-	if tx.Sender, p, err = decodeToColumn(data, p, n); err != nil {
+	if tx.Sender, p, err = decodeToColumn(data, p, n, reg); err != nil {
 		return nil, err
 	}
 	tx.Nonce = make([]uint64, n)
@@ -302,7 +314,7 @@ func DecodeAggregateBatch(data []byte) (*AggregateBatchTx, error) {
 			return nil, err
 		}
 	}
-	if tx.To, p, err = decodeToColumn(data, p, n); err != nil {
+	if tx.To, p, err = decodeToColumn(data, p, n, reg); err != nil {
 		return nil, err
 	}
 	tx.Value = make([]*uint256.Int, n)
