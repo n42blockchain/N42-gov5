@@ -14,10 +14,18 @@ Status: plan (2026-06). Grounded in a code survey of `lib/qmdb`, `common/transac
    as `--tree qmdb`. zkEVM tooling, however, expects **Keccak 16-ary MPT** proofs;
    N42 supplies that via **DATC** (full-history EIP-1186 archive — "archive plus",
    since geth/reth/erigon archives don't serve full-history proofs).
-2. **Transactions**: two custom types beyond the standard 0x00–0x04 —
-   **(A) post-quantum signed** (`0x05`, *already largely built*) and
-   **(B) ultra-compressed batch** (`0x06`, new) that merges up to ~10⁴ txs under
-   one aggregate signature.
+2. **Transactions**: custom types beyond the standard 0x00–0x04 —
+   **(A) post-quantum signed** (`0x05`, *already largely built*; Feature A
+   gating+gas now landed) and **two** ultra-compressed batch types that each pack
+   ~10⁴ txs at ~12 B/tx:
+   - **(B1) single-signature batch** (`0x06`) — one signer authorizes the WHOLE
+     bundle with ONE secp256k1 ECDSA signature (same-sender / single-authority,
+     e.g. an exchange/payment-processor doing thousands of its own ops).
+   - **(B2) aggregate-signature batch** (`0x07`) — N *different* senders, each
+     signs its own sub-tx; the N BLS signatures aggregate into ONE (96 B), so the
+     batch authenticates many distinct users.
+   They are different trust models (one authority vs many users), not two impls of
+   the same thing — both are wanted.
 
 Guiding principle throughout: **minimize changes on the consensus/execution hot
 path.** Both tx types decode/expand into ordinary messages before execution, so
@@ -108,13 +116,13 @@ Sizes (pubkey+sig total): secp256k1 129 B · BLS 144 B · **SQIsign 241 B** ·
 txs reference a 32 B hash (saves ~865 B Falcon / ~1280 B Dilithium2 per later tx).
 
 ### Gaps → work
-| gap | action |
+| gap | status |
 |-----|--------|
-| `0x05` not in the **Eth RLP wire** switch (protobuf-only) | add decode/encode case in `ethereum_rlp.go` *iff* PQ txs must traverse the eth-el/devp2p wire; otherwise document N42-native-only |
-| **no fork gating** | add `PQTxTime` to `ChainConfig` + `IsPQTx`; gate in `validateTx` (mirror Prague/SetCode) |
-| **gas table** missing | per-algo intrinsic-gas surcharge = verify cost + sig bytes × calldata-rate (Dilithium2 sig is 37× secp256k1 → must be priced or it is a DoS) |
-| precompiles `0x14–0x17` reserved, **unimplemented** | implement Falcon/Dilithium2/Dilithium3/SQIsign verify precompiles in `internal/vm/precompiles` (gated by existing `PQPrecompilesTime`) — lets *contracts* verify PQ sigs; independent of the tx type |
-| SQIsign verify TODO | integrate a vetted SQIsign lib or drop `0x01` until then |
+| **fork gating** | ✅ DONE — `ChainConfig.PQTxTime` + `Rules.IsPQTx` + `IsPQTx(time)`; txpool rejects `0x05` until active (commit 667f7fbe) |
+| **gas table** | ✅ DONE — `common/transaction/pq_gas.go`: per-algo verify gas + per-byte sig/pubkey cost, wired into txpool pre-check AND consensus (`Message.intrinsicGasExtra` → `StateTransition`). Per-algo constants are calibration placeholders — **benchmark before mainnet** |
+| `0x05` not in the **Eth RLP wire** switch (protobuf-only) | TODO — add decode/encode case in `ethereum_rlp.go` *iff* PQ txs must traverse the eth-el/devp2p wire; otherwise document N42-native-only |
+| precompiles `0x14–0x17` reserved, **unimplemented** | TODO — implement Falcon/Dilithium2/Dilithium3/SQIsign verify precompiles in `internal/vm/precompiles` (gated by existing `PQPrecompilesTime`) — lets *contracts* verify PQ sigs; independent of the tx type |
+| SQIsign verify TODO | TODO — integrate a vetted SQIsign lib or drop `0x01` until then |
 
 ### Notes
 - PQ address = `Keccak256(pubKey)[12:]` (distinct from secp256k1 accounts) — decide
@@ -124,11 +132,35 @@ txs reference a 32 B hash (saves ~865 B Falcon / ~1280 B Dilithium2 per later tx
 
 ---
 
-## 4. Feature B — Ultra-compressed batch transaction (`0x06`)
+## 4. Feature B — Ultra-compressed batch transactions (`0x06`, `0x07`)
 
-**Goal**: merge up to ~10⁴ txs under **one aggregate signature**, ~12 B/tx for
-ledger fields (Vitalik rollup-compression model), with the txpool accepting and
-expanding batches.
+**Goal**: pack up to ~10⁴ txs at ~12 B/tx (ledger fields, Vitalik
+rollup-compression model), with the txpool accepting and expanding batches. Two
+types with different signature/trust models:
+
+### 4.0 Two types, and the ECDSA-vs-Ed25519 question
+
+| | **B1 single-sig batch `0x06`** | **B2 aggregate-sig batch `0x07`** |
+|---|---|---|
+| signature | ONE ECDSA over the whole bundle (merkle root) | N BLS sigs → one 96 B aggregate |
+| who signs | one signer (same-sender / single authority) | N different senders, each signs own sub-tx |
+| authenticates | the batch submitter for all sub-txs | each distinct user independently |
+| verify cost | **one** ecrecover, amortised → ~0/tx | O(N) pairings (size win, not CPU) |
+| use case | exchange / processor batching its own ops | general cross-user mempool compression |
+| crypto status | reuse secp256k1 (no new crypto) | `VerifyMultipleSignatures` exists (HotStuff) |
+
+**ECDSA vs Ed25519 for B1** (your question — amortised they're ~equal, correct):
+one signature over the whole batch → verify cost ÷ N ≈ 0 either way, so raw
+per-verify speed is irrelevant. The real difference is **recovery**: secp256k1
+has `ecrecover` (pubkey from sig) → the signer is a plain N42 account with **zero
+pubkey bytes/storage**; Ed25519 has **no recovery** → must carry/register a 32 B
+pubkey and adds a new key/address scheme. **Decision: B1 uses secp256k1 ECDSA**
+(reuses ecrecover, signer = normal account, nothing new). Ed25519 only wins when
+batch-verifying *many independent* sigs — not the case here (it is *one* sig).
+
+The rest of this section (4.1–4.6) details the columnar encoding, pubkey-registry,
+txpool expand, and execution — **shared by both B1 and B2**; only the signature
+field + acceptance check differ (B1: one ecrecover; B2: one aggregate verify).
 
 ### 4.1 Crypto choice — BLS distinct-message aggregation
 `crypto/bls` (blst, BLS12-381) already provides **`VerifyMultipleSignatures` /
@@ -200,14 +232,16 @@ nonce lists. Plan:
   aggregate verify or expansion would exceed a per-block budget. A bad aggregate
   sig fails the whole batch atomically at acceptance (cheap — one VerifyMultiple).
 
-### 4.7 Phasing
-- **Phase 1 (MVP, no new crypto)**: same-sender ECDSA batch — one secp256k1 sig
-  over N sequential nonces from one account; expansion only. Proves the
-  txpool/encode/expand plumbing. (~2 weeks per the survey effort map.)
-- **Phase 2 (headline)**: cross-account **BLS aggregate** batch via
-  `VerifyMultipleSignatures` + on-chain BLS pubkey registry. This is the "10⁴ txs,
-  one signature" feature. Reuses Phase 1 plumbing; adds registry + agg-verify +
-  per-sub-tx pricing.
+### 4.7 Build order (two types, shared plumbing)
+- **B1 `0x06` first (no new crypto)**: single-signature batch — one secp256k1
+  ECDSA over the bundle (same-sender / single authority); decode + columnar
+  encode + txpool accept(one ecrecover)+expand. Lands the shared
+  encode/expand/pricing plumbing. (~2 weeks per the survey effort map.)
+- **B2 `0x07` next (headline)**: aggregate-signature batch — reuses B1's plumbing;
+  swaps the acceptance check to one `VerifyMultipleSignatures` over N distinct
+  sub-tx hashes, adds the **on-chain BLS pubkey registry** (reuse the `pqregistry`
+  pattern) so sub-txs reference sender by index → 0 pubkey bytes/tx, plus
+  per-sub-tx O(N) pricing. This is the "10⁴ txs, one signature" cross-user feature.
 
 ---
 
@@ -243,11 +277,13 @@ nonce lists. Plan:
 
 1. **DATC** (in flight): finish genesis→tip build → verify/proof acceptance →
    land segment format + proof RPC (with limiter). *Gate before 1.x below.*
-2. **Feature A (PQ 0x05)**: fork gating + gas table + (optional) RLP wire +
-   precompiles 0x14–0x17 + SQIsign. Mostly hardening.
-3. **Feature B Phase 1**: same-sender ECDSA batch (txpool accept/expand, encode).
-4. **Feature B Phase 2**: BLS aggregate batch + on-chain BLS pubkey registry +
-   per-sub-tx pricing. The "10⁴ txs / one signature" headline.
+2. **Feature A (PQ 0x05)**: ✅ fork gating + gas table landed (667f7fbe);
+   remaining = (optional) RLP wire + precompiles 0x14–0x17 + SQIsign.
+3. **Feature B1 (`0x06` single-sig ECDSA batch)**: txpool accept(one ecrecover)/
+   expand, columnar encode. Lands shared batch plumbing.
+4. **Feature B2 (`0x07` aggregate-sig BLS batch)**: reuse B1 plumbing + on-chain
+   BLS pubkey registry + `VerifyMultipleSignatures` acceptance + per-sub-tx
+   pricing. The "10⁴ txs / one signature" cross-user headline.
 5. **State dual-root**: commit `MPTStateRoot` alongside QMDB `WorldRoot` live;
    wire zkEVM proof anchoring.
 
