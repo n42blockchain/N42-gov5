@@ -123,6 +123,15 @@ func NewBls12381MapG2() PrecompiledContract {
 	return vm.GetBls12381MapG2()
 }
 
+// NewPQFalconVerify creates a Falcon-512 verify precompile (address 0x14).
+func NewPQFalconVerify() PrecompiledContract { return vm.GetFalconVerify() }
+
+// NewPQDilithium2Verify creates a Dilithium2 verify precompile (address 0x15).
+func NewPQDilithium2Verify() PrecompiledContract { return vm.GetDilithium2Verify() }
+
+// NewPQDilithium3Verify creates a Dilithium3 verify precompile (address 0x16).
+func NewPQDilithium3Verify() PrecompiledContract { return vm.GetDilithium3Verify() }
+
 // NewP256Verify creates a P-256 ECDSA signature verification precompile (address 0x100).
 func NewP256Verify() PrecompiledContract {
 	return vm.GetP256Verify()
