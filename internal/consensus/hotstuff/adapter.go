@@ -547,7 +547,18 @@ func (h *HotStuff) Seal(chain consensus.ChainHeaderReader, b block.IBlock, resul
 
 	// Copy header before mutating Extra to avoid corrupting the original block's header.
 	sealedHeader := block.CopyHeader(header)
-	sealedHeader.Extra = append(sealedHeader.Extra, sig.Marshal()...)
+	// Fill the reserved trailing seal area in place (buildHeaderExtra reserved
+	// extraSealLen bytes) rather than appending, so SealHash strips the SAME
+	// region before and after sealing and resultLoop's pendingTasks lookup
+	// (keyed by SealHash) matches. Appending would grow Extra past the reserve
+	// and desync the unsealed vs sealed SealHash for QC-bearing blocks.
+	sigBytes := sig.Marshal()
+	if len(sealedHeader.Extra) >= extraSealLen {
+		copy(sealedHeader.Extra[len(sealedHeader.Extra)-extraSealLen:], sigBytes)
+	} else {
+		sealedHeader.Extra = append(sealedHeader.Extra, sigBytes...)
+	}
+	sealedHeader.ResetHashCache()
 
 	sealed := b.WithSeal(sealedHeader)
 
@@ -626,6 +637,14 @@ func sealHash(header *block.Header) types.Hash {
 	if len(cpy.Extra) > extraSealLen {
 		cpy.Extra = cpy.Extra[:len(cpy.Extra)-extraSealLen]
 	}
+	// The struct copy also copied the cached hash. After stripping the seal from
+	// Extra we MUST clear it so Hash() recomputes over the stripped header —
+	// otherwise a sealed header (whose hash is already cached) returns its full
+	// hash here, while an unsealed header recomputes the stripped hash. The miner
+	// keys pendingTasks by SealHash(unsealed) but resultLoop looks it up by
+	// SealHash(sealed); the mismatch yields "Block found but no relative pending
+	// task" and the produced block is dropped, stalling the chain height.
+	cpy.ResetHashCache()
 	return cpy.Hash()
 }
 
