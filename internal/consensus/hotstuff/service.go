@@ -56,6 +56,12 @@ type BlockProducer interface {
 	CommitToCanonical(hash types.Hash) error
 }
 
+// BlockFetcher fetches a proposed block by hash when it isn't already local
+// (fetch-on-miss). Implemented by the sync layer.
+type BlockFetcher interface {
+	FetchBlockByHash(hash types.Hash)
+}
+
 // Service is the integration layer that connects the HotStuff consensus engine
 // with the P2P network, persistence, and block production.
 //
@@ -73,6 +79,7 @@ type Service struct {
 	rpcTopic    string // fully qualified RPC topic string
 
 	blockProducer    BlockProducer
+	blockFetcher     BlockFetcher
 	slashingExecutor *SlashingExecutor
 
 	// Rotor single-hop relay for proposal broadcast.
@@ -118,6 +125,11 @@ func NewService(engine *HotStuff, p2p P2PPublisher, db kv.RwDB, gossipTopic, rpc
 // SetBlockProducer sets the block producer for leader-driven block production.
 func (s *Service) SetBlockProducer(bp BlockProducer) {
 	s.blockProducer = bp
+}
+
+// SetBlockFetcher sets the fetch-on-miss block fetcher (sync layer).
+func (s *Service) SetBlockFetcher(bf BlockFetcher) {
+	s.blockFetcher = bf
 }
 
 // SetSlashingExecutor injects the equivocation slashing executor.
@@ -207,12 +219,20 @@ func (s *Service) handleOutput(output EngineOutput) {
 	case OutputSendToValidator:
 		s.handleSendToValidator(output)
 	case OutputExecuteBlock:
-		// Record pending execution — when the block arrives via gossip and is
-		// imported, NotifyBlockImported will fire EventBlockImported.
-		log.Debug("hotstuff: execute block requested, awaiting gossip import", "hash", output.Hash)
+		// A Proposal references this block. When it is imported (via direct push
+		// or fetch), NotifyBlockImported fires EventBlockImported and the engine
+		// casts its import-gated vote.
+		log.Debug("hotstuff: execute block requested", "hash", output.Hash)
 		s.pendingMu.Lock()
 		s.pendingExecutions[output.Hash] = struct{}{}
 		s.pendingMu.Unlock()
+		// Fetch-on-miss: if we don't already have the proposed block (its direct
+		// push was dropped), fetch it by hash so we can import and vote. Without
+		// this, a single dropped push stalls the view to the full timeout and the
+		// chain head never advances. FetchBlockByHash is a no-op if we have it.
+		if s.blockFetcher != nil {
+			s.blockFetcher.FetchBlockByHash(output.Hash)
+		}
 	case OutputBlockCommitted:
 		log.Info("hotstuff: block committed", "view", output.View, "hash", output.Hash)
 		// Make the committed block the canonical head so every node's chain follows

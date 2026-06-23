@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/holiman/uint256"
@@ -466,11 +465,14 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 			if period == 0 {
 				period = 3 // default 3 second blocks
 			}
+			// Deterministic block time: parent time + period, with NO now-floor.
+			// A now-floor makes the timestamp (and thus the block hash) change on
+			// every build attempt; a leader triggered several times for the same
+			// parent/view would then produce DIFFERENT blocks (multi-produce) and
+			// followers could never agree which one to import. Determinism makes the
+			// leader produce exactly one block per height — taskLoop dedups repeat
+			// builds by sealHash, and propose/push/import all reference one block.
 			header.Time = parentHeader.Time + period
-			now := uint64(time.Now().Unix())
-			if header.Time < now {
-				header.Time = now
-			}
 		}
 	}
 
