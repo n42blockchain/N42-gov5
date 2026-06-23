@@ -88,6 +88,7 @@ func runReplayV2(cliCtx *cli.Context) error {
 
 	// Resolve chain config
 	chainName := cliCtx.String("chain")
+	cfg.ChainName = chainName
 	if cc := params.ChainConfigByChainName(chainName); cc != nil {
 		cfg.ChainConfig = cc
 	}

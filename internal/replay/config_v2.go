@@ -18,6 +18,7 @@ type ConfigV2 struct {
 	SourcePath  string
 	TargetPath  string
 	ChainConfig *params.ChainConfig
+	ChainName   string // chain name for GenesisByChainName (genesis alloc + consensus + state scheme); empty = mainnet_v2
 	FromBlock   uint64
 	ToBlock     uint64
 	BatchSize   int

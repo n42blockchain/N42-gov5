@@ -541,7 +541,11 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 			treeEmpty = tree == nil || tree.Root() == jmt.EmptyHash
 		}
 		if from <= 1 && (treeEmpty || !e.cfg.EnableJMT) {
-			genesis := internal.GenesisByChainName("mainnet_v2")
+			chainName := e.cfg.ChainName
+			if chainName == "" {
+				chainName = "mainnet_v2"
+			}
+			genesis := internal.GenesisByChainName(chainName)
 			if genesis != nil {
 				// Extract APoS signers from source genesis Extra → inject into genesis.Miners.
 				// buildConsensusExtraData will produce the correct Extra for snapshot init.
@@ -587,6 +591,16 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				}
 				if err := rawdb.WriteConsensusEvidence(dstTx, 0, genCE); err != nil {
 					return fmt.Errorf("write genesis consensus evidence: %w", err)
+				}
+
+				// Persist the chain config so a node opening this target reads the
+				// correct consensus engine + state scheme. replay otherwise never
+				// writes ChainConfig, and node startup fails at ReadChainConfig
+				// ("ChainConfig is empty").
+				if genesis.Config != nil {
+					if err := rawdb.WriteChainConfig(dstTx, genHash, genesis.Config); err != nil {
+						return fmt.Errorf("write chain config: %w", err)
+					}
 				}
 			}
 			// Also apply hard-fork allocs and system contracts on top.
