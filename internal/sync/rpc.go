@@ -47,6 +47,14 @@ func (s *Service) registerRPCHandlers() {
 	s.registerRPC(p2p.RPCGetSnapshotAccountRangeTopicV1, s.snapshotAccountRangeRPCHandler)
 	s.registerRPC(p2p.RPCGetSnapshotStorageRangeTopicV1, s.snapshotStorageRangeRPCHandler)
 	s.registerRPC(p2p.RPCGetChangeSetRangeTopicV1, s.changeSetRangeRPCHandler)
+
+	// Block push: reliable leader→peer block delivery. Not via registerRPC (which
+	// SSZ-decodes a request message); this is a raw chunked-block stream handled
+	// directly by blockPushStreamHandler.
+	s.cfg.p2p.SetStreamHandler(
+		p2p.RPCBlockPushTopicV1+s.cfg.p2p.Encoding().ProtocolSuffix(),
+		s.blockPushStreamHandler,
+	)
 }
 
 // unregisterHandlers removes all registered RPC stream handlers.
@@ -67,6 +75,7 @@ func (s *Service) unregisterHandlers() {
 		p2p.RPCGetSnapshotAccountRangeTopicV1,
 		p2p.RPCGetSnapshotStorageRangeTopicV1,
 		p2p.RPCGetChangeSetRangeTopicV1,
+		p2p.RPCBlockPushTopicV1,
 	}
 	for _, t := range topics {
 		s.cfg.p2p.Host().RemoveStreamHandler(protocol.ID(t + suffix))

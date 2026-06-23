@@ -1,0 +1,45 @@
+// Copyright 2022-2026 The N42 Authors
+// This file is part of the N42 library.
+
+package sync
+
+import (
+	"github.com/libp2p/go-libp2p/core/network"
+
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/log"
+)
+
+// blockPushStreamHandler receives a block pushed directly by a HotStuff leader
+// and imports it, so a follower can vote on / finalize the matching hash-only
+// Proposal. This is the reliable alternative to single-publisher block gossip:
+// when only the current leader publishes the block topic, the gossipsub mesh
+// does not form and followers never receive the block. The leader therefore
+// opens a direct stream to each peer and writes the block here (see
+// p2p.RPCBlockPushTopicV1 and BlockChain.DirectPushBlock).
+func (s *Service) blockPushStreamHandler(stream network.Stream) {
+	defer func() { _ = stream.Close() }()
+
+	blkProto, err := ReadChunkedBlock(stream, s.cfg.p2p, true)
+	if err != nil {
+		log.Info("block push: read failed", "peer", stream.Conn().RemotePeer().String()[:12], "err", err)
+		return
+	}
+	var blk block.Block
+	if err := blk.FromProtoMessage(blkProto); err != nil {
+		log.Info("block push: decode failed", "err", err)
+		return
+	}
+	if _, err := s.cfg.chain.InsertChain([]block.IBlock{&blk}); err != nil {
+		log.Info("block push: insert failed", "number", blk.Number64().Uint64(), "err", err)
+		return
+	}
+	log.Info("block push: received", "number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12])
+	// Notify the HotStuff engine that this block is imported so a deferred
+	// import-gated prepare vote can be cast. The gossip path does this in
+	// subscriber_blocks.go; the direct-push path must do it too, otherwise a
+	// pushed block never triggers EventBlockImported and the round stalls.
+	if n := s.cfg.blockImportNotifier; n != nil {
+		n.NotifyBlockImported(blk.Hash(), blk.TxHash())
+	}
+}
