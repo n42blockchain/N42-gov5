@@ -110,6 +110,7 @@ type ConsensusEngine struct {
 	// Block tracking
 	importedBlocks     map[types.Hash]bool
 	pendingTxRoots     map[types.Hash]types.Hash // blockHash → expected TxRootHash (DA verification)
+	pendingProposals   map[ViewNumber]types.Hash // view → proposed blockHash awaiting local import before the prepare vote (import-gated voting)
 	equivocationTracker       map[ValidatorIndex]types.Hash
 	commitEquivocationTracker map[ValidatorIndex]types.Hash
 
@@ -184,6 +185,7 @@ func NewConsensusEngineWithEpochManager(
 		outputCh:            outputCh,
 		importedBlocks:      make(map[types.Hash]bool),
 		pendingTxRoots:      make(map[types.Hash]types.Hash),
+		pendingProposals:    make(map[ViewNumber]types.Hash),
 		equivocationTracker: make(map[ValidatorIndex]types.Hash),
 		commitEquivocationTracker: make(map[ValidatorIndex]types.Hash),
 		futureMsgBuffer:     make([]futureMsg, 0),
@@ -219,6 +221,7 @@ func WithRecoveredState(
 		outputCh:            outputCh,
 		importedBlocks:      make(map[types.Hash]bool),
 		pendingTxRoots:      make(map[types.Hash]types.Hash),
+		pendingProposals:    make(map[ViewNumber]types.Hash),
 		equivocationTracker: make(map[ValidatorIndex]types.Hash),
 		commitEquivocationTracker: make(map[ValidatorIndex]types.Hash),
 		futureMsgBuffer:     make([]futureMsg, 0),
@@ -500,6 +503,7 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	e.prepareQC = nil
 	e.importedBlocks = make(map[types.Hash]bool)
 	e.pendingTxRoots = make(map[types.Hash]types.Hash)
+	e.pendingProposals = make(map[ViewNumber]types.Hash)
 	e.equivocationTracker = make(map[ValidatorIndex]types.Hash)
 	e.commitEquivocationTracker = make(map[ValidatorIndex]types.Hash)
 	e.prepareVoteBuf = e.prepareVoteBuf[:0]

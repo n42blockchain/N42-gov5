@@ -157,11 +157,23 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
 		log.Debug("suppressing duplicate prepare vote", "view", view)
 		return nil
 	}
-	// Record vote BEFORE sending to prevent re-attempt if emit fails.
-	e.roundState.RecordVote(view, proposal.BlockHash)
-	log.Info("optimistic vote: voting immediately after proposal validation",
+
+	// Import-gated voting (NOT optimistic): vote only once the block is imported
+	// locally, so a CommitQC proves a quorum actually holds the block — not just
+	// its hash. This couples view progress to block propagation; the head can only
+	// advance as fast as blocks reach a quorum, which is what stops the engine
+	// from spinning thousands of views ahead of the chain. If the block is already
+	// imported (a direct push arrived before the Proposal), vote now; otherwise
+	// defer until EventBlockImported fires onBlockImported, which casts the vote.
+	e.pendingProposals[view] = proposal.BlockHash
+	if e.importedBlocks[proposal.BlockHash] {
+		log.Info("import-gated vote: block already imported, voting now", "view", view, "blockHash", proposal.BlockHash)
+		e.roundState.RecordVote(view, proposal.BlockHash)
+		return e.sendVote(view, proposal.BlockHash)
+	}
+	log.Info("import-gated vote: deferring until block imported",
 		"view", view, "blockHash", proposal.BlockHash)
-	return e.sendVote(view, proposal.BlockHash)
+	return nil
 }
 
 // processPrepareQC processes a PrepareQC from the leader.
@@ -261,6 +273,19 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 		}
 		log.Debug("DA verification passed", "blockHash", blockHash, "txRoot", expectedTxRoot)
 	}
+
+	// Import-gated voting: now that this block is imported, cast the deferred
+	// prepare vote if it is the block we are waiting to vote on in the current
+	// view (recorded by processProposal). This is what advances the round once
+	// the block has actually propagated to and been imported by us.
+	view := e.roundState.CurrentView()
+	if pending, ok := e.pendingProposals[view]; ok && pending == blockHash &&
+		!e.roundState.HasVotedInView(view) {
+		e.roundState.RecordVote(view, blockHash)
+		log.Info("import-gated vote: casting deferred vote after import", "view", view, "blockHash", blockHash)
+		return e.sendVote(view, blockHash)
+	}
+	log.Info("import-gated vote: block imported but no matching pending proposal", "view", view, "blockHash", blockHash, "hasPending", e.pendingProposals[view])
 
 	return nil
 }

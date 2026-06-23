@@ -325,7 +325,11 @@ func (h *HotStuff) VerifyHeader(chain consensus.ChainHeaderReader, iHeader block
 	parentNum.Sub(header.Number, uint256.NewInt(1))
 	parent := chain.GetHeaderByNumber(&parentNum)
 	if parent == nil {
-		return errors.New("unknown parent")
+		// Return ErrUnknownAncestor (not a generic error) so InsertChain
+		// future-queues this block instead of rejecting it as bad. Direct-pushed
+		// HotStuff blocks can arrive before their parent; they import once the
+		// parent lands.
+		return consensus.ErrUnknownAncestor
 	}
 	parentHeader, ok := parent.(*block.Header)
 	if !ok {
@@ -529,7 +533,6 @@ func (h *HotStuff) Seal(chain consensus.ChainHeaderReader, b block.IBlock, resul
 
 	h.lock.RLock()
 	sk := h.secretKey
-	ce := h.engine
 	h.lock.RUnlock()
 
 	if sk == nil {
@@ -546,19 +549,13 @@ func (h *HotStuff) Seal(chain consensus.ChainHeaderReader, b block.IBlock, resul
 
 	sealed := b.WithSeal(sealedHeader)
 
-	// Feed the block hash into the consensus engine so the leader can
-	// broadcast a Proposal to start the HotStuff voting round.
-	if ce != nil {
-		blockHash := sealed.Hash()
-		if err := ce.ProcessEvent(ConsensusEvent{
-			Type:       EventBlockReady,
-			Hash:       blockHash,
-			TxRootHash: sealed.TxHash(), // Baby Raptr: DA commitment
-		}); err != nil {
-			log.Debug("hotstuff: seal block event ignored", "err", err)
-		}
-	}
-
+	// Deliver the sealed block to the miner's resultLoop. The Proposal is NOT
+	// started here — it is started from resultLoop via NotifyBlockSealed, AFTER
+	// resultLoop has written and direct-pushed THIS exact sealed block. That makes
+	// the proposed (hence committed) block byte-for-byte the one followers receive
+	// and import, so import-gated voting and CommitToCanonical can find it.
+	// Proposing here (potentially from a seal that resultLoop's HasBlock check
+	// skips) would propose a different block than the one actually pushed.
 	go func() {
 		select {
 		case results <- sealed:
@@ -567,6 +564,22 @@ func (h *HotStuff) Seal(chain consensus.ChainHeaderReader, b block.IBlock, resul
 	}()
 
 	return nil
+}
+
+// NotifyBlockSealed feeds a just-sealed-and-pushed block into the consensus
+// engine to start a Proposal. The miner's resultLoop calls this immediately
+// after it persists and direct-pushes the sealed block, so the proposed block is
+// exactly the one followers receive (see Seal).
+func (h *HotStuff) NotifyBlockSealed(hash types.Hash, txHash types.Hash) {
+	if ce := h.Engine(); ce != nil {
+		if err := ce.ProcessEvent(ConsensusEvent{
+			Type:       EventBlockReady,
+			Hash:       hash,
+			TxRootHash: txHash, // Baby Raptr: DA commitment
+		}); err != nil {
+			log.Debug("hotstuff: seal block event ignored", "err", err)
+		}
+	}
 }
 
 // SealHash returns the hash of a block prior to it being sealed.
