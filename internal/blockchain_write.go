@@ -328,7 +328,13 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		status = SideStatTy
 	}
 
-	if status == CanonStatTy {
+	// For leader-driven consensus (HotStuff), a block (miner-produced or received
+	// via direct push) is stored — block + state were written above — but NOT made
+	// canonical here. It becomes canonical only once HotStuff commits it
+	// (BlockChain.CommitToCanonical), so every node follows the single committed
+	// chain instead of racing ahead on its own locally-inserted candidate.
+	leaderDriven := bc.engine != nil && !bc.engine.Type().UsesTimerDrivenSealing()
+	if status == CanonStatTy && !leaderDriven {
 		if err := bc.writeHeadBlock(nil, blk); err != nil {
 			log.Errorf("failed to save latest blocks, err: %v", err)
 			return NonStatTy, err

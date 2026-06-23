@@ -69,6 +69,34 @@ func usesTimerDrivenSealing(engine consensus.Engine) bool {
 	return engine == nil || engine.Type().UsesTimerDrivenSealing()
 }
 
+// blockSealNotifier is implemented by leader-driven consensus engines (HotStuff)
+// so the miner can start a Proposal for a block right after it has sealed,
+// persisted, and direct-pushed THAT block — binding propose and push to the same
+// block (required by import-gated voting).
+type blockSealNotifier interface {
+	NotifyBlockSealed(hash, txHash types.Hash)
+}
+
+// leaderAware is implemented by leader-driven consensus engines (HotStuff) so
+// the miner can gate block production on leadership.
+type leaderAware interface {
+	IsCurrentLeader() bool
+}
+
+// shouldProduceNow reports whether this node should build a block now. Timer/PoW
+// engines always produce. Leader-driven engines (HotStuff) produce only when this
+// node is the current view's leader, so a single node produces each block (then
+// direct-pushes it to peers); otherwise every node forks its own chain.
+func (w *worker) shouldProduceNow() bool {
+	if usesTimerDrivenSealing(w.engine) {
+		return true
+	}
+	if la, ok := w.engine.(leaderAware); ok {
+		return la.IsCurrentLeader()
+	}
+	return true
+}
+
 type task struct {
 	receipts  []*block.Receipt
 	state     *state.IntraBlockState
@@ -403,6 +431,14 @@ func (w *worker) resultLoop() error {
 				log.Error("Failed Broadcast block to p2p network", "err", err)
 				continue
 			}
+			// For leader-driven consensus (HotStuff), start the Proposal for THIS
+			// exact sealed block — the one we just persisted and direct-pushed — so
+			// the proposed (and committed) block is byte-for-byte what followers
+			// receive and import. Doing this here (not in Seal) binds propose↔push to
+			// the same block, which import-gated voting requires.
+			if bsn, ok := w.engine.(blockSealNotifier); ok {
+				bsn.NotifyBlockSealed(blk.Hash(), blk.TxHash())
+			}
 			if concrete, ok := blk.(*block.Block); ok {
 				event.GlobalEvent.Send(common.ChainHighestBlock{Block: *concrete, Inserted: true})
 			}
@@ -448,6 +484,11 @@ func (w *worker) taskLoop() error {
 
 			hash := task.block.Hash()
 			stateRoot := task.block.StateRoot()
+			// NOTE: do NOT push task.block here — it is unsealed. HotStuff seals the
+			// block (appends the BLS sig to Extra), changing its hash, and proposes/
+			// commits the SEALED block. The reliable direct push happens in
+			// resultLoop after sealing, so followers receive the same sealed block
+			// that consensus commits (otherwise CommitToCanonical can't find it).
 			if err := w.engine.Seal(w.chain, task.block, w.resultCh, stopCh); err != nil {
 				w.mu.Lock()
 				delete(w.pendingTasks, sealHash)
@@ -619,11 +660,17 @@ func (w *worker) workLoop(recommit time.Duration) error {
 
 		case <-w.startCh:
 			clearPending(w.chain.CurrentBlock().Number64())
+			if !w.shouldProduceNow() {
+				continue
+			}
 			timestamp = time.Now().Unix()
 			commit(false, commitInterruptNewHead)
 
 		case blockEvent := <-newBlockCh:
 			clearPending(blockEvent.Block.Number64())
+			if !w.shouldProduceNow() {
+				continue
+			}
 			timestamp = time.Now().Unix()
 			commit(false, commitInterruptNewHead)
 
