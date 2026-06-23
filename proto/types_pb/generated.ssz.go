@@ -926,8 +926,13 @@ func (h *Header) MarshalSSZTo(buf []byte) (dst []byte, err error) {
 	}
 
 	// Field (12) 'Extra'
-	if size := len(h.Extra); size > 117 {
-		err = ssz.ErrBytesLengthFn("--.Extra", size, 117)
+	// NOTE: limit raised from 117 to 1MB — HotStuff sealed headers carry the
+	// view+QC (aggregate BLS sig + signers bitmap) + BLS seal in Extra (~314B),
+	// which the original 117B SSZ limit truncated, changing the block hash on the
+	// wire and breaking consensus. (The proper fix is to stop SSZ-encoding blocks
+	// and use RLP; this keeps the generated codec consistent meanwhile.)
+	if size := len(h.Extra); size > 1048576 {
+		err = ssz.ErrBytesLengthFn("--.Extra", size, 1048576)
 		return
 	}
 	dst = append(dst, h.Extra...)
@@ -1092,7 +1097,7 @@ func (h *Header) UnmarshalSSZ(buf []byte) error {
 	// Field (12) 'Extra'
 	{
 		buf = tail[o12:]
-		if len(buf) > 117 {
+		if len(buf) > 1048576 { // raised from 117; see MarshalSSZTo note
 			return ssz.ErrBytesLength
 		}
 		if cap(h.Extra) == 0 {
@@ -1178,12 +1183,12 @@ func (h *Header) HashTreeRootWith(hh *ssz.Hasher) (err error) {
 	{
 		elemIndx := hh.Index()
 		byteLen := uint64(len(h.Extra))
-		if byteLen > 117 {
+		if byteLen > 1048576 { // raised from 117; see MarshalSSZTo note
 			err = ssz.ErrIncorrectListSize
 			return
 		}
 		hh.PutBytes(h.Extra)
-		hh.MerkleizeWithMixin(elemIndx, byteLen, (117+31)/32)
+		hh.MerkleizeWithMixin(elemIndx, byteLen, (1048576+31)/32)
 	}
 
 	// Field (13) 'Signature'

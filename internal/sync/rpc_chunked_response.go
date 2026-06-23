@@ -6,6 +6,7 @@ import (
 
 	libp2pcore "github.com/libp2p/go-libp2p/core"
 	"github.com/pkg/errors"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common"
@@ -40,9 +41,34 @@ func WriteBlockChunk(stream libp2pcore.Stream, chain common.IBlockChain, encodin
 		return err
 	}
 
-	protoMsg := blk.ToProtoMessage()
-	_, err = encoding.EncodeWithMaxLength(stream, protoMsg.(*types_pb.Block))
+	// Encode the block as PROTO bytes (not SSZ): the generated SSZ schema for
+	// types_pb.Header is missing the Cancun/Shanghai fields (WithdrawalsHash,
+	// BlobGasUsed, ExcessBlobGas, ParentBeaconRoot) and caps Extra at 117 bytes,
+	// so SSZ-encoding silently drops fields and a too-large HotStuff Extra,
+	// changing the block hash on the wire and breaking consensus. Proto carries
+	// every field, so the receiver recomputes the identical hash. The bytes still
+	// travel through the existing length/snappy framing via rawSSZBytes. (Longer
+	// term, consensus blocks should move to RLP for ETH compatibility.)
+	data, err := proto.Marshal(blk.ToProtoMessage())
+	if err != nil {
+		return err
+	}
+	_, err = encoding.EncodeWithMaxLength(stream, &rawSSZBytes{data: data})
 	return err
+}
+
+// rawSSZBytes carries arbitrary bytes through the SSZ length/snappy framing of
+// EncodeWithMaxLength/DecodeWithMaxLength without imposing any SSZ schema, so we
+// can ship proto-encoded blocks (which keep every header field and an
+// arbitrary-length Extra, unlike the generated SSZ schema).
+type rawSSZBytes struct{ data []byte }
+
+func (r *rawSSZBytes) MarshalSSZ() ([]byte, error)             { return r.data, nil }
+func (r *rawSSZBytes) MarshalSSZTo(buf []byte) ([]byte, error) { return append(buf, r.data...), nil }
+func (r *rawSSZBytes) SizeSSZ() int                            { return len(r.data) }
+func (r *rawSSZBytes) UnmarshalSSZ(buf []byte) error {
+	r.data = append([]byte(nil), buf...)
+	return nil
 }
 
 // ReadChunkedBlock handles each response chunk that is sent by the peer and
@@ -70,9 +96,13 @@ func readFirstChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (
 	}
 	log.Debug("First chunk context", "forkDigest", fmt.Sprintf("%x", ctx), "peer", stream.Conn().RemotePeer().String())
 
-	blk := &types_pb.Block{}
-	if err = p2p.Encoding().DecodeWithMaxLength(stream, blk); err != nil {
+	raw := &rawSSZBytes{}
+	if err = p2p.Encoding().DecodeWithMaxLength(stream, raw); err != nil {
 		return nil, errors.Wrapf(err, "failed to decode block from first chunk (forkDigest=%x)", ctx)
+	}
+	blk := &types_pb.Block{}
+	if err = proto.Unmarshal(raw.data, blk); err != nil {
+		return nil, errors.Wrapf(err, "failed to proto-unmarshal block from first chunk (forkDigest=%x)", ctx)
 	}
 	log.Debug("First chunk decoded successfully", "blockNumber", blk.Header.Number, "peer", stream.Conn().RemotePeer().String())
 	return blk, nil
@@ -114,9 +144,13 @@ func readResponseChunk(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (*typ
 	}
 	log.Debug("Received chunk context", "forkDigest", fmt.Sprintf("%x", forkDigest), "peer", stream.Conn().RemotePeer().String())
 
-	blk := &types_pb.Block{}
-	if err = p2p.Encoding().DecodeWithMaxLength(stream, blk); err != nil {
+	raw := &rawSSZBytes{}
+	if err = p2p.Encoding().DecodeWithMaxLength(stream, raw); err != nil {
 		return nil, errors.Wrapf(err, "failed to decode block from chunk (forkDigest=%x)", forkDigest)
+	}
+	blk := &types_pb.Block{}
+	if err = proto.Unmarshal(raw.data, blk); err != nil {
+		return nil, errors.Wrapf(err, "failed to proto-unmarshal block from chunk (forkDigest=%x)", forkDigest)
 	}
 	return blk, nil
 }
