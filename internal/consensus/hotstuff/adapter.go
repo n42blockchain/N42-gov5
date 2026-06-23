@@ -253,6 +253,18 @@ func (h *HotStuff) Config() *params.HotStuffConfig {
 	return h.config
 }
 
+// IsCurrentLeader reports whether this node is the leader for the current view.
+// The miner gates block production on this: only the current view's leader
+// builds and broadcasts a block; followers import it via gossip. Without the
+// gate every node produces and locally inserts its own block and the chain
+// forks.
+func (h *HotStuff) IsCurrentLeader() bool {
+	if ce := h.Engine(); ce != nil {
+		return ce.IsCurrentLeader()
+	}
+	return false
+}
+
 // OutputCh returns the channel for receiving consensus output actions.
 func (h *HotStuff) OutputCh() <-chan EngineOutput {
 	return h.outputCh
