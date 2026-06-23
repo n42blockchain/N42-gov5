@@ -227,24 +227,12 @@ func (s *Service) downloadRange(start, count uint64, peers []peer.ID) ([]*block.
 		default:
 		}
 
-		pbBlocks, err := n42sync.SendBodiesByRangeRequest(s.ctx, s.chain, s.p2p, pid, req, nil)
-		if err != nil || len(pbBlocks) == 0 {
+		blocks, err := n42sync.SendBodiesByRangeRequest(s.ctx, s.chain, s.p2p, pid, req, nil)
+		if err != nil || len(blocks) == 0 {
 			continue
 		}
-
-		// Convert protobuf blocks
-		result := make([]*block.Block, 0, len(pbBlocks))
-		for _, pb := range pbBlocks {
-			blk := new(block.Block)
-			if err := blk.FromProtoMessage(pb); err != nil {
-				continue
-			}
-			result = append(result, blk)
-		}
-
-		if len(result) > 0 {
-			return result, nil
-		}
+		// SendBodiesByRangeRequest already RLP-decodes to *block.Block.
+		return blocks, nil
 	}
 
 	return nil, nil

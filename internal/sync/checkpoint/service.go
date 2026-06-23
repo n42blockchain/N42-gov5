@@ -212,14 +212,8 @@ func (s *Service) downloadBlock(ctx context.Context, blockNum uint64) (*block.Bl
 				continue
 			}
 
-			// Convert protobuf block to native block type.
-			blk := new(block.Block)
-			if err := blk.FromProtoMessage(pbBlocks[0]); err != nil {
-				log.Debug("Failed to decode checkpoint block from peer",
-					"peer", pid.String(), "err", err)
-				lastErr = fmt.Errorf("decode block: %w", err)
-				continue
-			}
+			// SendBodiesByRangeRequest already RLP-decodes to *block.Block.
+			blk := pbBlocks[0]
 
 			log.Info("Checkpoint block downloaded successfully",
 				"block", blockNum, "peer", pid.String())

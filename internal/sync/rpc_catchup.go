@@ -71,27 +71,20 @@ func (s *Service) CatchUp() {
 
 	for _, pid := range peers {
 		ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
-		blocksProto, err := SendBodiesByRangeRequest(ctx, s.cfg.chain, s.cfg.p2p, pid, req, nil)
+		fetched, err := SendBodiesByRangeRequest(ctx, s.cfg.chain, s.cfg.p2p, pid, req, nil)
 		cancel()
 		if err != nil {
 			log.Debug("hotstuff catch-up: range request failed",
 				"peer", pid.String()[:12], "from", start, "to", highest.Uint64(), "err", err)
 			continue
 		}
-		if len(blocksProto) == 0 {
+		if len(fetched) == 0 {
 			log.Debug("hotstuff catch-up: range returned 0 blocks", "peer", pid.String()[:12])
 			continue
 		}
-		blocks := make([]block.IBlock, 0, len(blocksProto))
-		for _, bp := range blocksProto {
-			var b block.Block
-			if err := b.FromProtoMessage(bp); err != nil {
-				continue
-			}
-			blocks = append(blocks, &b)
-		}
-		if len(blocks) == 0 {
-			continue
+		blocks := make([]block.IBlock, 0, len(fetched))
+		for _, b := range fetched {
+			blocks = append(blocks, b)
 		}
 		// InsertChain triggers ForkChoice.ReorgNeeded; a taller fetched chain
 		// reorgs us off the startup fork automatically.

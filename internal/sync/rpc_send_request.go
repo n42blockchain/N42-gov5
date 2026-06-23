@@ -9,8 +9,8 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/n42blockchain/N42/proto/sync_pb"
-	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common"
+	types "github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/common/utils"
@@ -21,10 +21,10 @@ var ErrInvalidFetchedData = errors.New("invalid data returned from peer")
 
 // BlockProcessor defines a block processing function, which allows to start utilizing
 // blocks even before all blocks are ready.
-type BlockProcessor func(block *types_pb.Block) error
+type BlockProcessor func(block *types.Block) error
 
 // SendBodiesByRangeRequest sends BeaconBlocksByRange and returns fetched blocks, if any.
-func SendBodiesByRangeRequest(ctx context.Context, chain common.IBlockChain, p2pProvider p2p.SenderEncoder, pid peer.ID, req *sync_pb.BodiesByRangeRequest, blockProcessor BlockProcessor) ([]*types_pb.Block, error) {
+func SendBodiesByRangeRequest(ctx context.Context, chain common.IBlockChain, p2pProvider p2p.SenderEncoder, pid peer.ID, req *sync_pb.BodiesByRangeRequest, blockProcessor BlockProcessor) ([]*types.Block, error) {
 	if req.Step == 0 {
 		return nil, errors.New("request step cannot be zero")
 	}
@@ -46,8 +46,8 @@ func SendBodiesByRangeRequest(ctx context.Context, chain common.IBlockChain, p2p
 	}
 	defer closeStream(stream)
 
-	blocks := make([]*types_pb.Block, 0, req.Count)
-	process := func(blk *types_pb.Block) error {
+	blocks := make([]*types.Block, 0, req.Count)
+	process := func(blk *types.Block) error {
 		blocks = append(blocks, blk)
 		if blockProcessor != nil {
 			return blockProcessor(blk)
@@ -76,7 +76,7 @@ func SendBodiesByRangeRequest(ctx context.Context, chain common.IBlockChain, p2p
 			return nil, ErrInvalidFetchedData
 		}
 
-		blockNr := utils.ConvertH256ToUint256Int(blk.Header.Number)
+		blockNr := blk.Number64()
 
 		// Returned blocks MUST be in the slot range [start_slot, start_slot + count * step).
 		if blockNr.Cmp(blockStart) < 0 || blockNr.Cmp(blockEnd) >= 0 {

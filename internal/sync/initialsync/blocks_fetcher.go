@@ -327,7 +327,20 @@ func (f *blocksFetcher) requestBlocks(ctx context.Context, req *sync_pb.BodiesBy
 	}
 	f.rateLimiter.Add(pid.String(), int64(req.Count))
 	l.Unlock()
-	return n42sync.SendBodiesByRangeRequest(ctx, f.chain, f.p2p, pid, req, nil)
+	blocks, err := n42sync.SendBodiesByRangeRequest(ctx, f.chain, f.p2p, pid, req, nil)
+	if err != nil {
+		return nil, err
+	}
+	// The wire transport is now RLP (SendBodiesByRangeRequest RLP-decodes to
+	// *block.Block). initialsync's internal pipeline still threads the proto block
+	// type, so adapt here — converting the in-memory structure does not affect the
+	// wire encoding. TODO: migrate initialsync's pipeline to *block.Block to drop
+	// proto entirely.
+	pb := make([]*types_pb.Block, len(blocks))
+	for i, b := range blocks {
+		pb[i] = b.ToProtoMessage().(*types_pb.Block)
+	}
+	return pb, nil
 }
 
 // waitForBandwidth blocks up until peer's bandwidth is restored.
