@@ -43,6 +43,12 @@ const (
 
 	// Witness protocol message name.
 	GetBlockWitnessMessageName = "/get_block_witness"
+
+	// Block push protocol: a HotStuff leader directly pushes its produced block
+	// to each peer over a reliable stream (single-publisher gossip is unreliable
+	// because the topic mesh doesn't form), so followers receive the block data
+	// to import + vote alongside the hash-only Proposal.
+	BlockPushMessageName = "/block_push"
 )
 
 // V1 RPC topic constants.
@@ -73,6 +79,9 @@ const (
 
 	// Witness protocol topic.
 	RPCGetBlockWitnessTopicV1 = protocolPrefix + GetBlockWitnessMessageName + SchemaVersionV1
+
+	// Block push protocol topic (leader → peers reliable block delivery).
+	RPCBlockPushTopicV1 = protocolPrefix + BlockPushMessageName + SchemaVersionV1
 )
 
 // RPCTopicMappings maps each RPC topic to its expected request message type.
