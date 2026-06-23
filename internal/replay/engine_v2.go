@@ -51,7 +51,6 @@ import (
 // Precomputed hashes for empty blocks.
 var (
 	emptyReceiptHash   = hash.DeriveSha(block.Receipts(nil))
-	emptyTxHash        = hash.DeriveSha(transaction.Transactions(nil))
 	emptyCodeHashValue = crypto.Keccak256Hash(nil)
 	emptyUncleHash     = hash.EmptyUncleHash // rlpHash([]*Header(nil)) = 0x1dcc4de8...
 	emptyRewardsHash   = hash.DeriveSha(block.Rewards(nil))
@@ -97,6 +96,10 @@ func NewEngineV2(cfg ConfigV2) (*EngineV2, error) {
 	if cfg.ChainConfig == nil {
 		cfg.ChainConfig = params.MainnetChainConfig
 	}
+	// Select the transaction-root encoding to match the target chain (mainnet_qmdb
+	// uses the Ethereum-standard RLP MPT root; legacy native chains keep proto).
+	// Must be set before replaying any block so block.TxRoot agrees with node.
+	block.UseEthereumTxRoot = cfg.ChainConfig.StateScheme == "qmdb"
 	if cfg.SkipAddresses == nil {
 		cfg.SkipAddresses = DefaultSkipAddresses
 	}
@@ -788,7 +791,7 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 							Number:           uint256.NewInt(newBlockNum),
 							Time:             gapTime,
 							Root:             gapTreeRoot,
-							TxHash:           emptyTxHash,
+							TxHash:           block.TxRoot(nil),
 							ReceiptHash:      emptyReceiptHash,
 							Difficulty:       uint256.NewInt(0),
 							GasLimit:         srcHeader.GasLimit,
@@ -997,7 +1000,7 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 
 				// Compute receipt/tx roots and bloom (reuse existing hash infrastructure).
 				receiptHash := hash.DeriveSha(block.Receipts(receipts))
-				txHash := hash.DeriveSha(transaction.Transactions(replayedTxs))
+				txHash := block.TxRoot(replayedTxs)
 				bloom := block.CreateBloom(receipts)
 
 				// Compute rewards hash (withdrawalsRoot = hash of block rewards).

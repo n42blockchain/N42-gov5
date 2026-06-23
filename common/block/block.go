@@ -206,10 +206,30 @@ func NewBlockFromReceipt(h IHeader, txs []*transaction.Transaction, _ []IHeader,
 	}
 
 	block.header.Bloom = CreateBloom(receipts)
-	block.header.TxHash = hash.DeriveSha(transaction.Transactions(txs))
+	block.header.TxHash = TxRoot(txs)
 	block.header.ReceiptHash = hash.DeriveSha(Receipts(receipts))
 
 	return block
+}
+
+// UseEthereumTxRoot, when true, computes the block transactions root with the
+// Ethereum-standard MPT trie root over EIP-2718 raw transactions
+// (DeriveShaErigon + EthTransactions) instead of N42's native keccak-concat over
+// proto bytes (DeriveSha + Transactions). Set once at startup from the chain
+// config: mainnet_qmdb uses ETH RLP; legacy native chains (e.g. n42 mainnet)
+// keep the proto encoding so their historical block hashes stay continuous.
+// Changing it changes TxHash and therefore the block hash, so it must be paired
+// with a chain reset.
+var UseEthereumTxRoot bool
+
+// TxRoot computes a block's transactions root, honoring UseEthereumTxRoot. It is
+// the single definition shared by block production, replay and validation so
+// they always agree on the canonical TxHash.
+func TxRoot(txs []*transaction.Transaction) types.Hash {
+	if UseEthereumTxRoot {
+		return hash.DeriveShaErigon(transaction.EthTransactions(txs))
+	}
+	return hash.DeriveSha(transaction.Transactions(txs))
 }
 
 func (b *Block) Header() IHeader {

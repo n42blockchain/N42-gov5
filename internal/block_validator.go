@@ -27,7 +27,6 @@ import (
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
-	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/internal/consensus"
@@ -96,7 +95,7 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 	}
 
 	blockNum := blockNumber.Uint64()
-	txHash := DeriveSha(transaction.Transactions(b.Transactions()))
+	txHash := block.TxRoot(b.Transactions())
 	if txHash != b.TxHash() {
 		return fmt.Errorf("transaction root hash mismatch: have %x, want %x", txHash, b.TxHash())
 	}
