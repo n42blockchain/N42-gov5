@@ -50,6 +50,10 @@ type P2PDirectSender interface {
 // BlockProducer abstracts the miner for leader block production.
 type BlockProducer interface {
 	TriggerBlockProduction()
+	// CommitToCanonical forces the HotStuff-committed block to be the canonical
+	// head, so every node's chain follows the single committed chain rather than
+	// the candidate each node happened to insert locally.
+	CommitToCanonical(hash types.Hash) error
 }
 
 // Service is the integration layer that connects the HotStuff consensus engine
@@ -211,6 +215,16 @@ func (s *Service) handleOutput(output EngineOutput) {
 		s.pendingMu.Unlock()
 	case OutputBlockCommitted:
 		log.Info("hotstuff: block committed", "view", output.View, "hash", output.Hash)
+		// Make the committed block the canonical head so every node's chain follows
+		// the single committed chain (the miner may have locally inserted a
+		// different same-height candidate via resultLoop). Skipped silently if the
+		// block isn't in the DB yet — it reconciles on a later commit / future-block
+		// import once the block arrives via direct push.
+		if s.blockProducer != nil {
+			if err := s.blockProducer.CommitToCanonical(output.Hash); err != nil {
+				log.Debug("hotstuff: commit-to-canonical deferred", "hash", output.Hash, "err", err)
+			}
+		}
 		updateMetricsBlockCommitted(output.View)
 		// Mark pending reconfigurations as committed now that the block has a CommitQC.
 		if rm := s.engine.Engine().ReconfigManager(); rm != nil && rm.HasPendingChanges() {
@@ -251,30 +265,14 @@ func (s *Service) handleOutput(output EngineOutput) {
 			delete(s.pendingExecutions, k)
 		}
 		s.pendingMu.Unlock()
-		// Trigger block production if we are the new leader.
+		// Trigger block production immediately if we are the new leader. NO delay:
+		// views can rotate faster than the old FastPropose delay (~200ms), and any
+		// delay lets the view advance past us — after which IsCurrentLeader is false
+		// and production is skipped, so the miner never produces and HotStuff spins
+		// on non-miner proposals while the chain head never advances. Direct block
+		// push (resultLoop) makes the old gossip-warmup delay unnecessary.
 		if s.engine.Engine().IsCurrentLeader() && s.blockProducer != nil {
-			cfg := s.engine.Config()
-			if cfg != nil && cfg.FastPropose {
-				// Fast Propose: skip slot boundary wait, propose after minimum delay.
-				// Reduces consensus latency by ~72% (1950ms → 551ms typical).
-				delay := time.Duration(cfg.MinProposeDelayMs) * time.Millisecond
-				if delay == 0 {
-					delay = 200 * time.Millisecond
-				}
-				capturedView := output.View
-				go func() {
-					select {
-					case <-time.After(delay):
-						if s.engine.Engine().CurrentView() == capturedView {
-							s.blockProducer.TriggerBlockProduction()
-						}
-					case <-s.ctx.Done():
-						return
-					}
-				}()
-			} else {
-				s.blockProducer.TriggerBlockProduction()
-			}
+			s.blockProducer.TriggerBlockProduction()
 		}
 		// Rate-limited persistence.
 		if output.View-s.lastPersistedView >= s.persistInterval {
@@ -688,23 +686,21 @@ func (s *Service) broadcastBlockData(_ types.Hash) {
 // Matches against pending execution requests and notifies the engine.
 func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 	s.pendingMu.Lock()
-	_, pending := s.pendingExecutions[hash]
-	if pending {
-		delete(s.pendingExecutions, hash)
-	}
+	delete(s.pendingExecutions, hash) // clear if present; no longer used to gate
 	s.pendingMu.Unlock()
 
-	if pending {
-		if ce := s.engine.Engine(); ce != nil {
-			if err := ce.ProcessEvent(ConsensusEvent{
-				Type:       EventBlockImported,
-				Hash:       hash,
-				TxRootHash: txHash,
-			}); err != nil {
-				log.Debug("hotstuff: EventBlockImported processing failed", "hash", hash, "err", err)
-			} else {
-				log.Debug("hotstuff: block imported, notified consensus engine", "hash", hash)
-			}
+	// Always notify the engine — do NOT gate on pendingExecutions, which
+	// advanceToView clears every view. With import-gated voting, the engine's
+	// onBlockImported decides (via pendingProposals) whether this import unblocks
+	// the current view's deferred prepare vote. Gating here dropped the very event
+	// that lets the round progress, so views timed out forever.
+	if ce := s.engine.Engine(); ce != nil {
+		if err := ce.ProcessEvent(ConsensusEvent{
+			Type:       EventBlockImported,
+			Hash:       hash,
+			TxRootHash: txHash,
+		}); err != nil {
+			log.Debug("hotstuff: EventBlockImported processing failed", "hash", hash, "err", err)
 		}
 	}
 }
