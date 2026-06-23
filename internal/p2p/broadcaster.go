@@ -62,3 +62,29 @@ func (s *Service) broadcastObject(ctx context.Context, obj ssz.Marshaler, topic 
 	}
 	return nil
 }
+
+// rawGossipBytes carries pre-encoded bytes (an RLP block) through EncodeGossip's
+// MarshalSSZ+snappy framing without imposing an SSZ schema.
+type rawGossipBytes struct{ data []byte }
+
+func (r *rawGossipBytes) MarshalSSZ() ([]byte, error)             { return r.data, nil }
+func (r *rawGossipBytes) MarshalSSZTo(buf []byte) ([]byte, error) { return append(buf, r.data...), nil }
+func (r *rawGossipBytes) SizeSSZ() int                            { return len(r.data) }
+func (r *rawGossipBytes) UnmarshalSSZ(buf []byte) error {
+	r.data = append([]byte(nil), buf...)
+	return nil
+}
+
+// BroadcastBlock gossips an already-RLP-encoded block to the block topic. Used
+// instead of Broadcast(proto.Message) so consensus blocks travel as RLP (ETH
+// standard, hash-stable) rather than the schema-limited SSZ of types_pb.Block.
+func (s *Service) BroadcastBlock(ctx context.Context, rlpBytes []byte) error {
+	ctx, cancel := context.WithTimeout(ctx, maxBroadcastTime)
+	defer cancel()
+	forkDigest, err := s.currentForkDigest()
+	if err != nil {
+		return errors.Wrap(err, "could not retrieve fork digest")
+	}
+	topic := fmt.Sprintf(BlockTopicFormat, forkDigest)
+	return s.broadcastObject(ctx, &rawGossipBytes{data: rlpBytes}, topic)
+}

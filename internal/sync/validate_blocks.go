@@ -10,9 +10,9 @@ import (
 	"github.com/pkg/errors"
 	"go.opencensus.io/trace"
 
-	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/rlp"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -46,14 +46,17 @@ func (s *Service) validateBlockPubSub(ctx context.Context, pid peer.ID, msg *pub
 	s.validateBlockLock.Lock()
 	defer s.validateBlockLock.Unlock()
 
-	blk, ok := m.(*types_pb.Block)
+	// Block gossip travels as RLP (see decodePubsubMessage); decode the raw
+	// carrier into a *block.Block. The block hash is keccak(rlp(header)), so the
+	// decoded block recomputes the identical hash.
+	raw, ok := m.(*rawSSZBytes)
 	if !ok {
-		return pubsub.ValidationReject, errors.New("msg is not types_pb.Block")
+		return pubsub.ValidationReject, errors.New("gossip block message is not a raw RLP carrier")
 	}
 
 	iBlock := new(block.Block)
-	if err = iBlock.FromProtoMessage(blk); err != nil {
-		return pubsub.ValidationReject, errors.New("block.Block is nil")
+	if err = rlp.DecodeBytes(raw.data, iBlock); err != nil {
+		return pubsub.ValidationReject, errors.Wrap(err, "could not RLP-decode gossip block")
 	}
 
 	iHeader, iBody := iBlock.Header(), iBlock.Body()

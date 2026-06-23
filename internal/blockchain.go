@@ -690,8 +690,13 @@ func (bc *BlockChain) SealedBlock(b block.IBlock) error {
 	// never receive the block (so they can't import/vote on the hash-only
 	// Proposal). Mirrors the Rust node's send_block_direct_reliable.
 	bc.directPushBlock(b)
-	// Also gossip as a best-effort fallback.
-	return bc.p2p.Broadcast(bc.ctx, b.ToProtoMessage())
+	// Also gossip as a best-effort fallback, RLP-encoded (ETH standard, hash-stable)
+	// rather than the schema-limited SSZ of the proto block.
+	data, err := rlp.EncodeToBytes(b)
+	if err != nil {
+		return err
+	}
+	return bc.p2p.BroadcastBlock(bc.ctx, data)
 }
 
 // directPushBlock opens a stream to each connected peer and writes the block as
