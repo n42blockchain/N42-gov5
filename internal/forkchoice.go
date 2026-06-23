@@ -109,6 +109,14 @@ func (f *ForkChoice) ReorgNeeded(current block.IHeader, header block.IHeader) (b
 				currentPreserve, externPreserve = f.preserve(current), f.preserve(header)
 			}
 			reorg = !currentPreserve && (externPreserve || misc.SecureFloat64() < 0.5)
+		} else {
+			// number > headNumber at equal TD: a strictly higher block extends the
+			// head. On a PoS/HotStuff chain with virtual (all-zero) TD, every block
+			// has the same effective TD, so block height — not TD — is the
+			// fork-choice signal. Without this, externTd = parentTd(0) + 1 is
+			// constant across all live blocks and the canonical head never advances
+			// past the first produced block.
+			reorg = true
 		}
 	}
 	return reorg, nil

@@ -38,6 +38,7 @@ import (
 	nodeMetrics "github.com/n42blockchain/N42/internal/metrics"
 	"github.com/n42blockchain/N42/internal/tracing"
 	"github.com/n42blockchain/N42/lib/jmt"
+	"github.com/n42blockchain/N42/lib/qmdb"
 	bmtstore "github.com/n42blockchain/N42/lib/bmt/store"
 	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	verklestore "github.com/n42blockchain/N42/lib/verkle/store"
@@ -241,6 +242,30 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		if ibs != nil && bc.mptEnabled && bc.mptRootComputer != nil {
 			if err := bc.mptRootComputer.SaveCheckpoint(tx, blockNumber.Uint64(), blk.StateRoot()); err != nil {
 				return fmt.Errorf("MPT checkpoint for block %d failed: %w", blockNumber.Uint64(), err)
+			}
+		}
+
+		// Flush QMDB positional entry log + twig meta into the current MDBX tx,
+		// evict the just-flushed window from RAM, and record the per-block undo
+		// for the recent-blocks eth_getProof window. The world root is carried by
+		// header.Root (ComputeRoot returned it), so no separate root row is needed.
+		if ibs != nil && bc.qmdbEnabled && bc.qmdbRootComputer != nil {
+			if _, err := bc.qmdbRootComputer.FlushTo(tx); err != nil {
+				return fmt.Errorf("flushing QMDB entries for block %d failed: %w", blockNumber.Uint64(), err)
+			}
+			bc.qmdbRootComputer.EvictFlushed()
+			undo := bc.qmdbRootComputer.TakeUndo()
+			if undo == nil {
+				undo = &qmdb.BlockUndo{PrevNextSlot: bc.qmdbRootComputer.Tree().NextSlot()}
+			}
+			if err := rawdb.WriteQMDBUndo(tx, blockNumber.Uint64(), undo); err != nil {
+				return fmt.Errorf("writing QMDB undo for block %d failed: %w", blockNumber.Uint64(), err)
+			}
+			const qmdbUndoWindow = 256
+			if bn := blockNumber.Uint64(); bn > qmdbUndoWindow {
+				if err := rawdb.PruneQMDBUndoBelow(tx, bn-qmdbUndoWindow); err != nil {
+					return fmt.Errorf("pruning QMDB undo window for block %d failed: %w", bn, err)
+				}
 			}
 		}
 

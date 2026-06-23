@@ -163,6 +163,9 @@ type BlockChain struct {
 	mptRootComputer *commitment.MPTRootComputer
 	mptEnabled      bool
 
+	qmdbRootComputer *commitment.QMDBRootComputer
+	qmdbEnabled      bool
+
 	ltHashCommitment   *commitment.LtHashCommitment
 	ltHashEnabled      bool
 	rootComputer       state.RootComputer

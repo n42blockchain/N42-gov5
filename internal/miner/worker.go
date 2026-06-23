@@ -501,6 +501,16 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 
 	stateWriter := state.NewNoopWriter()
 	ibs := state.New(stateReader)
+	// Inject an isolated root computer so the assembled block's stateRoot uses
+	// the active commitment scheme (e.g. QMDB twig forest). Speculative builds
+	// must not mutate the live tree, so this is a fresh DB-backed instance,
+	// discarded with the block. Without it, IntermediateRoot falls back to an
+	// empty MPT root and the produced block can never become canonical.
+	if bcForRoot, ok := w.chain.(*internal.BlockChain); ok {
+		if rc := bcForRoot.NewMinerRootComputer(tx); rc != nil {
+			ibs.SetRootComputer(rc)
+		}
+	}
 	ibs.BeginWriteSnapshot()
 	ibs.BeginWriteCodes()
 
