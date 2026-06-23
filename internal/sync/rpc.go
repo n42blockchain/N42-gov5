@@ -55,6 +55,13 @@ func (s *Service) registerRPCHandlers() {
 		p2p.RPCBlockPushTopicV1+s.cfg.p2p.Encoding().ProtocolSuffix(),
 		s.blockPushStreamHandler,
 	)
+
+	// Block-by-hash request: fetch-on-miss server side (raw 32-byte hash in,
+	// chunked block out). Handled directly by blockByHashStreamHandler.
+	s.cfg.p2p.SetStreamHandler(
+		p2p.RPCBlockByHashTopicV1+s.cfg.p2p.Encoding().ProtocolSuffix(),
+		s.blockByHashStreamHandler,
+	)
 }
 
 // unregisterHandlers removes all registered RPC stream handlers.
@@ -76,6 +83,7 @@ func (s *Service) unregisterHandlers() {
 		p2p.RPCGetSnapshotStorageRangeTopicV1,
 		p2p.RPCGetChangeSetRangeTopicV1,
 		p2p.RPCBlockPushTopicV1,
+		p2p.RPCBlockByHashTopicV1,
 	}
 	for _, t := range topics {
 		s.cfg.p2p.Host().RemoveStreamHandler(protocol.ID(t + suffix))

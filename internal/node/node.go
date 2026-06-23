@@ -1550,8 +1550,11 @@ func (n *Node) Start() error {
 		}
 		n.hotstuffService = svc
 
-		// Wire sync layer → HotStuff: notify engine when gossip blocks are imported.
+		// Wire sync layer → HotStuff: notify engine when blocks are imported, and
+		// let the engine fetch a proposed block by hash when it's missing locally
+		// (fetch-on-miss).
 		n.sync.SetBlockImportNotifier(svc)
+		svc.SetBlockFetcher(n.sync)
 	}
 
 	log.PrintStartupProgress(2, 6, "JSON-RPC services")
