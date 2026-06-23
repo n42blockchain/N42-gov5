@@ -291,7 +291,9 @@ func (s *Service) handleOutput(output EngineOutput) {
 		// and production is skipped, so the miner never produces and HotStuff spins
 		// on non-miner proposals while the chain head never advances. Direct block
 		// push (resultLoop) makes the old gossip-warmup delay unnecessary.
-		if s.engine.Engine().IsCurrentLeader() && s.blockProducer != nil {
+		isLeader := s.engine.Engine().IsCurrentLeader()
+		log.Info("hotstuff: view changed", "view", output.View, "isLeader", isLeader, "hasProducer", s.blockProducer != nil)
+		if isLeader && s.blockProducer != nil {
 			s.blockProducer.TriggerBlockProduction()
 		}
 		// Rate-limited persistence.

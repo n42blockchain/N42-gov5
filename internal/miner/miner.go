@@ -187,7 +187,11 @@ func (m *Miner) TriggerBlockProduction() {
 	}
 	interrupt := new(atomic.Int32)
 	select {
-	case m.worker.newWorkCh <- &newWorkReq{interrupt: interrupt, noempty: true, timestamp: time.Now().Unix()}:
+	// noempty=false: a leader-driven engine (HotStuff) must produce one block per
+	// view to advance the chain, even with an empty mempool. noempty=true would
+	// skip empty blocks, so the height would stall whenever there are no pending
+	// transactions — exactly the live mainnet_qmdb case.
+	case m.worker.newWorkCh <- &newWorkReq{interrupt: interrupt, noempty: false, timestamp: time.Now().Unix()}:
 	default:
 		// Channel full — a block build is already in progress.
 	}

@@ -24,14 +24,21 @@ func buildHeaderExtra(view ViewNumber, committedQC *QuorumCertificate) ([]byte, 
 	binary.LittleEndian.PutUint64(extra[extraMagicLen:], view)
 
 	if isEmptyHeaderQC(committedQC) {
-		return extra, nil
+		// Reserve the trailing seal area (filled in place by Seal) so SealHash —
+		// which strips the last extraSealLen bytes — yields the SAME hash before
+		// and after sealing. Without this reserve, an unsealed header with a large
+		// Extra (QC present) gets its QC truncated by the strip while a sealed one
+		// only loses the seal, so the miner's pendingTasks key never matches.
+		return append(extra, make([]byte, extraSealLen)...), nil
 	}
 
 	qcBytes, err := encodeQC(committedQC)
 	if err != nil {
 		return nil, fmt.Errorf("encode header QC: %w", err)
 	}
-	return append(extra, qcBytes...), nil
+	extra = append(extra, qcBytes...)
+	// Reserve the trailing seal area (see above).
+	return append(extra, make([]byte, extraSealLen)...), nil
 }
 
 func decodeHeaderExtra(extra []byte) (ViewNumber, *QuorumCertificate, bool, error) {
