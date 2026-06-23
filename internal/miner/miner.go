@@ -193,6 +193,18 @@ func (m *Miner) TriggerBlockProduction() {
 	}
 }
 
+// CommitToCanonical forces the HotStuff-committed block to be the canonical
+// head, reconciling the locally-inserted candidate with the committed chain.
+func (m *Miner) CommitToCanonical(hash types.Hash) error {
+	type canonicalCommitter interface {
+		CommitToCanonical(types.Hash) error
+	}
+	if cc, ok := m.worker.chain.(canonicalCommitter); ok {
+		return cc.CommitToCanonical(hash)
+	}
+	return nil
+}
+
 // SetZKProverService sets the ZK prover service on the miner's worker.
 // Must be called before Start() for the miner to submit proof requests.
 func (m *Miner) SetZKProverService(svc interface {

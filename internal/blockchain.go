@@ -39,11 +39,13 @@ import (
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/exex"
 	"github.com/n42blockchain/N42/internal/p2p"
@@ -61,6 +63,7 @@ import (
 	"github.com/n42blockchain/N42/modules/state/witness"
 	"github.com/n42blockchain/N42/params"
 	"github.com/n42blockchain/N42/proto/msg_proto"
+	"github.com/n42blockchain/N42/proto/types_pb"
 )
 
 // =============================================================================
@@ -564,6 +567,56 @@ func (bc *BlockChain) persistBlock(db kv.RwDB, blk block.IBlock, source string) 
 	}
 }
 
+// CommitToCanonical forces the HotStuff-committed block to be the canonical
+// head. The miner can produce several candidate blocks at a height and the local
+// node may have inserted a different one as canonical (via resultLoop) than the
+// one consensus actually committed; this reconciles the two so every node's
+// canonical chain follows the single committed chain. The committed block must
+// already be in the DB (inserted by the leader's seal or received via direct
+// push); if it isn't, this returns an error and the caller skips (it imports and
+// retries once the block arrives). It walks back from the committed block,
+// rewriting the canonical number→hash mapping until it reaches an ancestor that
+// is already canonical, then updates the head pointers.
+func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
+	return bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+		blk, err := rawdb.ReadBlockByHash(tx, hash)
+		if err != nil {
+			return err
+		}
+		if blk == nil {
+			return fmt.Errorf("committed block %s not in db", hash.Hex())
+		}
+		// Rewrite canonical mapping from the committed block back to the fork
+		// point (the first ancestor already mapped canonical to this hash).
+		cur := blk
+		for cur != nil {
+			num := cur.Number64().Uint64()
+			existing, rerr := rawdb.ReadCanonicalHash(tx, num)
+			if rerr != nil {
+				return rerr
+			}
+			if existing == cur.Hash() {
+				break // reached the existing canonical chain
+			}
+			if werr := rawdb.WriteCanonicalHash(tx, cur.Hash(), num); werr != nil {
+				return werr
+			}
+			if num == 0 {
+				break
+			}
+			parent, perr := rawdb.ReadBlockByHash(tx, cur.ParentHash())
+			if perr != nil {
+				return perr
+			}
+			cur = parent
+		}
+		rawdb.WriteHeadBlockHash(tx, hash)
+		bc.currentBlock.Store(blk)
+		log.Info("commit-to-canonical applied", "number", blk.Number64().Uint64(), "hash", hash.Hex())
+		return nil
+	})
+}
+
 // SetCommitteePool injects the BLS committee-evidence builder. With it set, each
 // persisted block also writes its consensus evidence (continuing the resealed
 // chain's multi-sig). Pass nil to disable.
@@ -626,7 +679,55 @@ func (bc *BlockChain) NewBlockHandler(payload []byte, peer peer.ID) error {
 }
 
 func (bc *BlockChain) SealedBlock(b block.IBlock) error {
+	// Reliable direct push to each connected peer. Single-publisher gossip is
+	// unreliable for HotStuff block delivery — when only the current leader
+	// publishes the block topic, the gossipsub mesh doesn't form and followers
+	// never receive the block (so they can't import/vote on the hash-only
+	// Proposal). Mirrors the Rust node's send_block_direct_reliable.
+	bc.directPushBlock(b)
+	// Also gossip as a best-effort fallback.
 	return bc.p2p.Broadcast(bc.ctx, b.ToProtoMessage())
+}
+
+// directPushBlock opens a stream to each connected peer and writes the block as
+// a single chunked response (status code + fork digest + encoded block) — the
+// same wire format ReadChunkedBlock decodes in the sync block-push handler.
+func (bc *BlockChain) directPushBlock(b block.IBlock) {
+	if bc.p2p == nil {
+		return
+	}
+	pbMsg, ok := b.ToProtoMessage().(*types_pb.Block)
+	if !ok {
+		return
+	}
+	digest, err := utils.CreateForkDigest(b.Number64(), bc.genesisBlock.Hash())
+	if err != nil {
+		return
+	}
+	protoID := protocol.ID(p2p.RPCBlockPushTopicV1 + bc.p2p.Encoding().ProtocolSuffix())
+	peers := bc.p2p.Peers().Connected()
+	log.Info("direct-push block", "number", b.Number64().Uint64(), "peers", len(peers))
+	for _, pid := range peers {
+		go func(pid peer.ID) {
+			ctx, cancel := context.WithTimeout(bc.ctx, 5*time.Second)
+			defer cancel()
+			stream, err := bc.p2p.Host().NewStream(ctx, pid, protoID)
+			if err != nil {
+				log.Info("direct-push stream failed", "peer", pid.String()[:12], "err", err)
+				return
+			}
+			defer func() { _ = stream.Close() }()
+			if _, err := stream.Write([]byte{0x00}); err != nil { // success status code
+				return
+			}
+			if _, err := stream.Write(digest[:]); err != nil {
+				return
+			}
+			if _, err := bc.p2p.Encoding().EncodeWithMaxLength(stream, pbMsg); err != nil {
+				return
+			}
+		}(pid)
+	}
 }
 
 func (bc *BlockChain) SetEngine(engine interface{}) {
@@ -697,9 +798,10 @@ func (bc *BlockChain) AddFutureBlock(blk block.IBlock) error {
 	if blk.Time() > max {
 		return fmt.Errorf("future block timestamp %v > allowed %v", blk.Time(), max)
 	}
-	if blk.Difficulty().Uint64() == 0 {
-		return nil
-	}
+	// Note: difficulty-0 (PoS/HotStuff) blocks are NOT skipped. HotStuff blocks
+	// pushed directly from the leader can arrive before their parent and must be
+	// queued so processFutureBlocks imports them once the parent lands; skipping
+	// them here would silently drop out-of-order blocks and stall the follower.
 	concreteBlock, err := requireConcreteBlock(blk, "unexpected block type")
 	if err != nil {
 		return err
@@ -809,7 +911,11 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 		log.Debug("Pruned ancestor, inserting as sidechain", "number", blk.Number64(), "hash", blk.Hash())
 		return bc.insertSideChain(blk, it)
 
-	case errors.Is(err, ErrFutureBlock) || (errors.Is(err, ErrUnknownAncestor) && bc.futureBlocks.Contains(it.first().ParentHash())):
+	case errors.Is(err, ErrFutureBlock) || errors.Is(err, ErrUnknownAncestor):
+		// Queue any block whose parent we don't have yet (not only when the parent
+		// is already queued). Direct-pushed HotStuff blocks can arrive out of order
+		// (e.g. block N+1 before N); future-queue them so they import once the
+		// parent arrives, instead of rejecting them as bad blocks.
 		for blk != nil && (it.index == 0 || errors.Is(err, ErrUnknownAncestor)) {
 			log.Debug("Future block, postponing import", "number", blk.Number64(), "hash", blk.Hash())
 			if err := bc.AddFutureBlock(blk); err != nil {
@@ -875,6 +981,20 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 
 		log.Tracef("Current block: number=%v, hash=%v, difficult=%v | Insert block block: number=%v, hash=%v, difficult= %v",
 			bc.CurrentBlock().Number64(), bc.CurrentBlock().Hash(), bc.CurrentBlock().Difficulty(), blk.Number64(), blk.Hash(), blk.Difficulty())
+
+		// Out-of-order direct-pushed block: if the parent isn't imported yet,
+		// future-queue this block instead of executing it. EVM execution would fail
+		// to read the missing parent state and report a bad block; queuing lets it
+		// import once the parent arrives and processFutureBlocks retries it. This is
+		// the norm for HotStuff blocks pushed directly from the leader, which can
+		// arrive before their parent.
+		if n := blk.Number64().Uint64(); n > 0 && !bc.HasBlock(blk.ParentHash(), n-1) {
+			if aerr := bc.AddFutureBlock(blk); aerr != nil {
+				return it.index, aerr
+			}
+			stats.queued++
+			continue
+		}
 
 		// ZK fast path: if the block has a valid ZK proof and ZK verification
 		// is enabled, skip EVM re-execution and trust the proven state root.
