@@ -57,9 +57,11 @@ type BlockProducer interface {
 }
 
 // BlockFetcher fetches a proposed block by hash when it isn't already local
-// (fetch-on-miss). Implemented by the sync layer.
+// (fetch-on-miss), and catches a lagging/forked node up to the converged chain
+// by range (CatchUp). Implemented by the sync layer.
 type BlockFetcher interface {
 	FetchBlockByHash(hash types.Hash)
+	CatchUp()
 }
 
 // Service is the integration layer that connects the HotStuff consensus engine
@@ -316,6 +318,13 @@ func (s *Service) handleOutput(output EngineOutput) {
 		}
 	case OutputSyncRequired:
 		log.Warn("hotstuff: sync required", "localView", output.LocalView, "targetView", output.TargetView)
+		// We are behind (a Decide arrived far ahead of our view). Pull the
+		// converged chain by range and reorg onto it. Run async so the event
+		// loop isn't blocked by InsertChain; CatchUp self-guards against
+		// concurrent runs.
+		if s.blockFetcher != nil {
+			go s.blockFetcher.CatchUp()
+		}
 	case OutputEquivocationDetected:
 		log.Warn("hotstuff: EQUIVOCATION detected",
 			"view", output.View, "validator", output.Validator,

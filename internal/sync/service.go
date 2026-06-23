@@ -158,6 +158,15 @@ func (s *Service) Start() {
 	// Update sync metrics.
 	s.wg.Add(1)
 	utils.RunEveryWithWG(s.ctx, syncMetricsInterval, s.updateMetrics, &s.wg)
+
+	// HotStuff height-based catch-up: a node that committed a view but failed to
+	// import the block (or produced a startup fork) lags in HEIGHT while its VIEW
+	// stays in sync, so the view-gap OutputSyncRequired never fires and, worse,
+	// import-gated voting then withholds its vote and stalls quorum for everyone.
+	// Poll height against peers and pull the converged chain by range. No-op on
+	// classic chains (catchUpTick is gated on the HotStuff block import notifier).
+	s.wg.Add(1)
+	utils.RunEveryWithWG(s.ctx, catchUpInterval, s.catchUpTick, &s.wg)
 }
 
 // Stop the regular sync service.
