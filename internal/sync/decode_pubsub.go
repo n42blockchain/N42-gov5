@@ -31,6 +31,17 @@ func (s *Service) decodePubsubMessage(msg *pubsub.Message) (ssz.Unmarshaler, err
 		return nil, err
 	}
 
+	// Block gossip is RLP-encoded (not the proto/SSZ of types_pb.Block), so decode
+	// it into a raw byte carrier; validateBlockPubSub then RLP-decodes it into a
+	// *block.Block.
+	if topic == p2p.BlockTopicFormat {
+		raw := &rawSSZBytes{}
+		if err := s.cfg.p2p.Encoding().DecodeGossip(msg.Data, raw); err != nil {
+			return nil, err
+		}
+		return raw, nil
+	}
+
 	base := p2p.GossipTopicMappings(topic)
 	if base == nil {
 		return nil, p2p.ErrMessageNotMapped

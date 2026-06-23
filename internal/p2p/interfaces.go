@@ -60,6 +60,9 @@ type P2P interface {
 // Broadcaster broadcasts messages to peers over the p2p pubsub protocol.
 type Broadcaster interface {
 	Broadcast(context.Context, proto.Message) error
+	// BroadcastBlock gossips an already-RLP-encoded block to the block topic
+	// (consensus blocks travel as RLP, not the schema-limited SSZ).
+	BroadcastBlock(context.Context, []byte) error
 }
 
 // SetStreamHandler configures p2p to handle streams of a certain topic ID.
