@@ -15,6 +15,7 @@ const (
 	StateCommitmentPresetBMT         StateCommitmentPreset = "bmt-blake3"
 	StateCommitmentPresetVerkle      StateCommitmentPreset = "verkle"
 	StateCommitmentPresetEthereumMPT StateCommitmentPreset = "ethereum-mpt"
+	StateCommitmentPresetQMDB        StateCommitmentPreset = "qmdb"
 )
 
 type NetworkPreset struct {
@@ -97,6 +98,16 @@ func ResolveNetworkPreset(chain, rawProfile string) (NetworkPreset, error) {
 			Profile:    profile,
 			Commitment: StateCommitmentPresetJMT,
 		}, nil
+	case "mainnet_qmdb":
+		profile, err := resolveExpectedProfile(ExecutionProfileN42)
+		if err != nil {
+			return NetworkPreset{}, err
+		}
+		return NetworkPreset{
+			Chain:      "mainnet_qmdb",
+			Profile:    profile,
+			Commitment: StateCommitmentPresetQMDB,
+		}, nil
 	case networkname.EthereumMainnetChainName:
 		profile, err := resolveExpectedProfile(ExecutionProfileEthereumEL)
 		if err != nil {
@@ -163,6 +174,10 @@ func InferNetworkPresetFromChainConfig(chainCfg *ChainConfig) (NetworkPreset, bo
 	case 94:
 		targetChain := networkname.MainnetChainName
 		switch {
+		case chainCfg.StateScheme == string(StateCommitmentPresetQMDB):
+			// mainnet_qmdb reuses chainId 94 but is distinguished by the qmdb
+			// state scheme (hotstuff live production over replay-converted state).
+			targetChain = "mainnet_qmdb"
 		case chainCfg.ShanghaiBlock == nil && chainCfg.CancunBlock == nil:
 			targetChain = "mainnet_compat"
 		case isZeroBigInt(chainCfg.ShanghaiBlock) && isZeroBigInt(chainCfg.CancunBlock) && isZeroBigInt(chainCfg.BeijingBlock):

@@ -856,12 +856,25 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			)
 
 		case state.RootSchemeQMDB:
-			// QMDB chains are built offline by the replay engine; the node serves
-			// them read-only. No live commitment is wired for block production —
-			// only the QMDB-native eth_getProof provider (lazily reloads the twig
-			// forest from the persisted entry log to serve membership proofs).
+			// QMDB live block production: reload the twig forest from the
+			// persisted positional log (history-dependent root, so we replay the
+			// exact slot layout, not a key-set rebuild), then drive it as the
+			// block-processing root computer — writeBlockWithState flushes the
+			// entry log per block. The in-RAM key->slot index is used because the
+			// per-block evmRecord tx is read-only (cannot back the index with
+			// MDBX on the live path). Also serve QMDB-native eth_getProof.
+			qmdbRC := commitment.NewQMDBRootComputer()
+			if rtx, err := chainKv.BeginRo(ctx); err == nil {
+				if err := qmdbRC.LoadFrom(rtx); err != nil {
+					log.Warn("QMDB forest reload failed (starting from empty forest)", "err", err)
+				}
+				rtx.Rollback()
+			}
+			qmdbRC.EnableUndoRecording()
+			realBC.SetQMDBRootComputer(qmdbRC)
 			realBC.SetStateProofProvider(internal.NewQMDBStateProofProvider())
-			log.Info("State commitment: QMDB (twig forest, read-only; eth_getProof = QMDB membership proofs)")
+			log.Info("State commitment: QMDB (twig forest, live block production)",
+				"root", fmt.Sprintf("%x", qmdbRC.Root()))
 
 		case state.RootSchemeLegacyKeccak:
 			log.Info("State commitment: Legacy-Keccak (no tree)")
@@ -2785,7 +2798,7 @@ func OpenDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logger, nam
 		WriteMergeThreshold(4 * 8192).
 		Path(dbPath).Label(kv.ChainDB).
 		DBVerbosity(kv.DBVerbosityLvl(2)).RoTxsLimiter(roTxsLimiter).
-		MapSize(8 * datasize.TB).
+		MapSize(mdbxMapSizeOr(8 * datasize.TB)).
 		Open(ctx)
 	if err != nil {
 		return nil, err
@@ -2797,6 +2810,19 @@ func OpenDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logger, nam
 		return nil, err
 	}
 	return chainKv, nil
+}
+
+// mdbxMapSizeOr returns sz, or an override from N42_MDBX_MAPSIZE_GB when set.
+// Running several local nodes on Windows, each reserving an 8 TB map, exhausts
+// the system page file (mdbx_env_open: "paging file is too small"); this lets a
+// local test harness shrink the per-node reservation.
+func mdbxMapSizeOr(sz datasize.ByteSize) datasize.ByteSize {
+	if v := os.Getenv("N42_MDBX_MAPSIZE_GB"); v != "" {
+		if gb, err := strconv.ParseUint(v, 10, 64); err == nil && gb > 0 {
+			return datasize.ByteSize(gb) * datasize.GB
+		}
+	}
+	return sz
 }
 
 // openLayeredDatabase creates a LayeredDB with separate state and history

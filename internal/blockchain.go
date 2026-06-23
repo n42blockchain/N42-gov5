@@ -259,6 +259,40 @@ func (bc *BlockChain) RootComputer() state.RootComputer {
 	return bc.rootComputer
 }
 
+// SetQMDBRootComputer installs the QMDB twig-forest root computer for live
+// block production and marks QMDB enabled so writeBlockWithState flushes the
+// positional entry log per block. Unlike JMT, QMDB injection is gated by its
+// own flag (not jmtForBlockProcessing) and uses the default in-RAM key->slot
+// index: the per-block evmRecord tx is read-only, so the index cannot be
+// MDBX-backed on the live path.
+func (bc *BlockChain) SetQMDBRootComputer(rc *commitment.QMDBRootComputer) {
+	bc.qmdbRootComputer = rc
+	bc.qmdbEnabled = true
+}
+
+// NewMinerRootComputer returns an ISOLATED root computer for speculative block
+// building. The miner/worker assembles candidate blocks that may never be
+// committed (another validator's proposal may win the HotStuff round), so it
+// must NOT mutate the live commitment tree. For QMDB this reloads a fresh twig
+// forest from the DB at the current head — bc.qmdbRootComputer is untouched and
+// there is no concurrent-mutation race. The instance is discarded with the
+// block. Returns nil when no tree-based commitment is active (the miner then
+// falls back to the default MPT state root). tx must be a read tx at the parent
+// head; the QMDB DB state tracks the head because writeBlockWithState flushes
+// per block.
+func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx) state.RootComputer {
+	if bc.qmdbEnabled {
+		rc := commitment.NewQMDBRootComputer()
+		if err := rc.LoadFrom(tx); err != nil {
+			log.Warn("miner QMDB speculative reload failed; block uses default root", "err", err)
+			return nil
+		}
+		rc.SetCold(tx)
+		return rc
+	}
+	return nil
+}
+
 // JMTCommitment returns the JMT commitment layer, or nil if not enabled.
 func (bc *BlockChain) JMTCommitment() *commitment.JMTCommitment {
 	return bc.jmtCommitment
@@ -817,6 +851,12 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 			bc.mptRootComputer.SetReadTx(tx)
 			bc.mptRootComputer.SetStateReader(commitment.NewPlainStateMPTReader(tx))
 			ibs.SetRootComputer(bc.mptRootComputer)
+		}
+		if bc.qmdbEnabled && bc.qmdbRootComputer != nil {
+			// QMDB faults flushed entries back from the committed positional log
+			// via this block's read tx; the in-RAM index keeps key->slot resident.
+			bc.qmdbRootComputer.SetCold(tx)
+			ibs.SetRootComputer(bc.qmdbRootComputer)
 		}
 		stateWriter := state.NewNoopWriter()
 
