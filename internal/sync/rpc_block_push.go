@@ -20,17 +20,12 @@ import (
 func (s *Service) blockPushStreamHandler(stream network.Stream) {
 	defer func() { _ = stream.Close() }()
 
-	blkProto, err := ReadChunkedBlock(stream, s.cfg.p2p, true)
+	blk, err := ReadChunkedBlock(stream, s.cfg.p2p, true)
 	if err != nil {
 		log.Info("block push: read failed", "peer", stream.Conn().RemotePeer().String()[:12], "err", err)
 		return
 	}
-	var blk block.Block
-	if err := blk.FromProtoMessage(blkProto); err != nil {
-		log.Info("block push: decode failed", "err", err)
-		return
-	}
-	if _, err := s.cfg.chain.InsertChain([]block.IBlock{&blk}); err != nil {
+	if _, err := s.cfg.chain.InsertChain([]block.IBlock{blk}); err != nil {
 		log.Info("block push: insert failed", "number", blk.Number64().Uint64(), "err", err)
 		return
 	}

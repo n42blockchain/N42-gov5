@@ -53,6 +53,7 @@ import (
 	"github.com/n42blockchain/N42/internal/zkverifier"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/layered"
+	"github.com/n42blockchain/N42/lib/rlp"
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -63,7 +64,6 @@ import (
 	"github.com/n42blockchain/N42/modules/state/witness"
 	"github.com/n42blockchain/N42/params"
 	"github.com/n42blockchain/N42/proto/msg_proto"
-	"github.com/n42blockchain/N42/proto/types_pb"
 )
 
 // =============================================================================
@@ -696,8 +696,11 @@ func (bc *BlockChain) directPushBlock(b block.IBlock) {
 	if bc.p2p == nil {
 		return
 	}
-	pbMsg, ok := b.ToProtoMessage().(*types_pb.Block)
-	if !ok {
+	// Encode the block as ETH-standard RLP (matches ReadChunkedBlock in the
+	// block-push handler). The hash is keccak(rlp(header)) and the header
+	// round-trips byte-identically, so the receiver recomputes the same hash.
+	data, err := rlp.EncodeToBytes(b)
+	if err != nil {
 		return
 	}
 	digest, err := utils.CreateForkDigest(b.Number64(), bc.genesisBlock.Hash())
@@ -723,11 +726,24 @@ func (bc *BlockChain) directPushBlock(b block.IBlock) {
 			if _, err := stream.Write(digest[:]); err != nil {
 				return
 			}
-			if _, err := bc.p2p.Encoding().EncodeWithMaxLength(stream, pbMsg); err != nil {
+			if _, err := bc.p2p.Encoding().EncodeWithMaxLength(stream, &rawBlockBytes{data: data}); err != nil {
 				return
 			}
 		}(pid)
 	}
+}
+
+// rawBlockBytes carries pre-encoded RLP block bytes through the SSZ length/snappy
+// framing of EncodeWithMaxLength without imposing an SSZ schema. Mirrors the sync
+// package's rawSSZBytes; defined here to avoid an import cycle with internal/sync.
+type rawBlockBytes struct{ data []byte }
+
+func (r *rawBlockBytes) MarshalSSZ() ([]byte, error)             { return r.data, nil }
+func (r *rawBlockBytes) MarshalSSZTo(buf []byte) ([]byte, error) { return append(buf, r.data...), nil }
+func (r *rawBlockBytes) SizeSSZ() int                            { return len(r.data) }
+func (r *rawBlockBytes) UnmarshalSSZ(buf []byte) error {
+	r.data = append([]byte(nil), buf...)
+	return nil
 }
 
 func (bc *BlockChain) SetEngine(engine interface{}) {

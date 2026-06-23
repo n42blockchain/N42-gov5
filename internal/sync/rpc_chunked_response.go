@@ -6,14 +6,13 @@ import (
 
 	libp2pcore "github.com/libp2p/go-libp2p/core"
 	"github.com/pkg/errors"
-	"google.golang.org/protobuf/proto"
 
-	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common"
 	types "github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
 	"github.com/n42blockchain/N42/internal/p2p/p2ptypes"
+	"github.com/n42blockchain/N42/lib/rlp"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/common/utils"
 )
@@ -41,15 +40,12 @@ func WriteBlockChunk(stream libp2pcore.Stream, chain common.IBlockChain, encodin
 		return err
 	}
 
-	// Encode the block as PROTO bytes (not SSZ): the generated SSZ schema for
-	// types_pb.Header is missing the Cancun/Shanghai fields (WithdrawalsHash,
-	// BlobGasUsed, ExcessBlobGas, ParentBeaconRoot) and caps Extra at 117 bytes,
-	// so SSZ-encoding silently drops fields and a too-large HotStuff Extra,
-	// changing the block hash on the wire and breaking consensus. Proto carries
-	// every field, so the receiver recomputes the identical hash. The bytes still
-	// travel through the existing length/snappy framing via rawSSZBytes. (Longer
-	// term, consensus blocks should move to RLP for ETH compatibility.)
-	data, err := proto.Marshal(blk.ToProtoMessage())
+	// Encode the block as ETH-standard RLP (stage 1 of the proto->RLP migration).
+	// The block hash is keccak(rlp(header)) and the header round-trips
+	// byte-identically (see Block.EncodeRLP / Header rlp:"optional" tags), so the
+	// receiver recomputes the identical hash. The bytes travel through the
+	// existing length/snappy framing via rawSSZBytes.
+	data, err := rlp.EncodeToBytes(blk)
 	if err != nil {
 		return err
 	}
@@ -73,7 +69,7 @@ func (r *rawSSZBytes) UnmarshalSSZ(buf []byte) error {
 
 // ReadChunkedBlock handles each response chunk that is sent by the peer and
 // converts it into a block. The first chunk has different deadline handling.
-func ReadChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider, isFirstChunk bool) (*types_pb.Block, error) {
+func ReadChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider, isFirstChunk bool) (*types.Block, error) {
 	if isFirstChunk {
 		return readFirstChunkedBlock(stream, p2p)
 	}
@@ -81,7 +77,7 @@ func ReadChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider, isFirs
 }
 
 // readFirstChunkedBlock reads the first chunked block with appropriate deadlines.
-func readFirstChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (*types_pb.Block, error) {
+func readFirstChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (*types.Block, error) {
 	code, errMsg, err := ReadStatusCode(stream, p2p.Encoding())
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to read status code from first chunk")
@@ -100,16 +96,16 @@ func readFirstChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (
 	if err = p2p.Encoding().DecodeWithMaxLength(stream, raw); err != nil {
 		return nil, errors.Wrapf(err, "failed to decode block from first chunk (forkDigest=%x)", ctx)
 	}
-	blk := &types_pb.Block{}
-	if err = proto.Unmarshal(raw.data, blk); err != nil {
-		return nil, errors.Wrapf(err, "failed to proto-unmarshal block from first chunk (forkDigest=%x)", ctx)
+	blk := &types.Block{}
+	if err = rlp.DecodeBytes(raw.data, blk); err != nil {
+		return nil, errors.Wrapf(err, "failed to RLP-decode block from first chunk (forkDigest=%x)", ctx)
 	}
-	log.Debug("First chunk decoded successfully", "blockNumber", blk.Header.Number, "peer", stream.Conn().RemotePeer().String())
+	log.Debug("First chunk decoded successfully", "blockNumber", blk.Number64().Uint64(), "peer", stream.Conn().RemotePeer().String())
 	return blk, nil
 }
 
 // readResponseChunk reads a subsequent response chunk from the stream.
-func readResponseChunk(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (*types_pb.Block, error) {
+func readResponseChunk(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (*types.Block, error) {
 	SetStreamReadDeadline(stream, respTimeout)
 
 	// Read status code (1 byte). Use stack-allocated array to avoid
@@ -148,9 +144,9 @@ func readResponseChunk(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (*typ
 	if err = p2p.Encoding().DecodeWithMaxLength(stream, raw); err != nil {
 		return nil, errors.Wrapf(err, "failed to decode block from chunk (forkDigest=%x)", forkDigest)
 	}
-	blk := &types_pb.Block{}
-	if err = proto.Unmarshal(raw.data, blk); err != nil {
-		return nil, errors.Wrapf(err, "failed to proto-unmarshal block from chunk (forkDigest=%x)", forkDigest)
+	blk := &types.Block{}
+	if err = rlp.DecodeBytes(raw.data, blk); err != nil {
+		return nil, errors.Wrapf(err, "failed to RLP-decode block from chunk (forkDigest=%x)", forkDigest)
 	}
 	return blk, nil
 }

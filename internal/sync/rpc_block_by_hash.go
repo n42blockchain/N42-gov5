@@ -68,21 +68,16 @@ func (s *Service) FetchBlockByHash(hash types.Hash) {
 			// then writes the block back on the same stream. Closing the write half
 			// here tears the stream down before the response can be read (observed
 			// as "read status code: EOF").
-			blkProto, err := ReadChunkedBlock(stream, s.cfg.p2p, true)
+			blk, err := ReadChunkedBlock(stream, s.cfg.p2p, true)
 			if err != nil {
 				log.Info("fetch-on-miss: read failed", "hash", hash.Hex()[:12], "err", err)
-				return
-			}
-			var blk block.Block
-			if err := blk.FromProtoMessage(blkProto); err != nil {
-				log.Info("fetch-on-miss: decode failed", "err", err)
 				return
 			}
 			if blk.Hash() != hash {
 				log.Info("fetch-on-miss: hash mismatch", "want", hash.Hex()[:12], "got", blk.Hash().Hex()[:12])
 				return // peer returned the wrong block
 			}
-			if _, err := s.cfg.chain.InsertChain([]block.IBlock{&blk}); err != nil {
+			if _, err := s.cfg.chain.InsertChain([]block.IBlock{blk}); err != nil {
 				log.Debug("fetch-on-miss: insert failed", "number", blk.Number64().Uint64(), "err", err)
 				return
 			}
