@@ -49,6 +49,11 @@ const (
 	// because the topic mesh doesn't form), so followers receive the block data
 	// to import + vote alongside the hash-only Proposal.
 	BlockPushMessageName = "/block_push"
+
+	// Block-by-hash request: a follower that received a Proposal but not the
+	// referenced block (direct push missed it) fetches the block by hash so it
+	// can import and cast its import-gated vote (fetch-on-miss).
+	BlockByHashMessageName = "/block_by_hash"
 )
 
 // V1 RPC topic constants.
@@ -82,6 +87,9 @@ const (
 
 	// Block push protocol topic (leader → peers reliable block delivery).
 	RPCBlockPushTopicV1 = protocolPrefix + BlockPushMessageName + SchemaVersionV1
+
+	// Block-by-hash request topic (follower fetch-on-miss).
+	RPCBlockByHashTopicV1 = protocolPrefix + BlockByHashMessageName + SchemaVersionV1
 )
 
 // RPCTopicMappings maps each RPC topic to its expected request message type.
