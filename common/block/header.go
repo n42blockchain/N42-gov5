@@ -82,15 +82,15 @@ type Header struct {
 	BaseFee *uint256.Int `json:"baseFeePerGas" rlp:"optional"` // 16
 
 	// --- EIP-4895 (Shanghai) ---
-	WithdrawalsHash *types.Hash `json:"withdrawalsRoot,omitempty"` // 17 NEW
+	WithdrawalsHash *types.Hash `json:"withdrawalsRoot,omitempty" rlp:"optional"` // 17 NEW
 
 	// --- EIP-4844 (Cancun) ---
-	BlobGasUsed      *uint64     `json:"blobGasUsed,omitempty"`      // 18 CHANGED: pointer
-	ExcessBlobGas    *uint64     `json:"excessBlobGas,omitempty"`    // 19 CHANGED: pointer
-	ParentBeaconRoot *types.Hash `json:"parentBeaconBlockRoot,omitempty"` // 20 NEW
+	BlobGasUsed      *uint64     `json:"blobGasUsed,omitempty" rlp:"optional"`            // 18 CHANGED: pointer
+	ExcessBlobGas    *uint64     `json:"excessBlobGas,omitempty" rlp:"optional"`          // 19 CHANGED: pointer
+	ParentBeaconRoot *types.Hash `json:"parentBeaconBlockRoot,omitempty" rlp:"optional"`  // 20 NEW
 
 	// --- EIP-7685 (Prague/Pectra) ---
-	RequestsHash *types.Hash `json:"requestsRoot,omitempty"` // 21 NEW
+	RequestsHash *types.Hash `json:"requestsRoot,omitempty" rlp:"optional"` // 21 NEW
 
 	hash atomic.Value
 }

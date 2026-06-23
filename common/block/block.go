@@ -26,6 +26,7 @@ package block
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -134,6 +135,59 @@ func (b *Block) Unmarshal(data []byte) error {
 		return err
 	}
 	return b.FromProtoMessage(&pBlock)
+}
+
+// blockRLP is the ETH-standard RLP wire form of a Block: the header, each
+// transaction as EIP-2718 raw bytes (legacy RLP or typed envelope), and N42's
+// verifiers/rewards/zkproof. This replaces the proto transport encoding. The
+// block hash is unaffected — it is keccak(rlp(header)) and the header
+// round-trips byte-identically (see header RLP optional tags).
+type blockRLP struct {
+	Header    *Header
+	TxData    [][]byte
+	Verifiers []*Verify
+	Rewards   []*Reward
+	ZkProof   []byte `rlp:"optional"`
+}
+
+// EncodeRLP implements rlp.Encoder, emitting the ETH-standard wire form.
+func (b *Block) EncodeRLP(w io.Writer) error {
+	txData := make([][]byte, len(b.body.Txs))
+	for i, tx := range b.body.Txs {
+		enc, err := transaction.EncodeEthereumTransaction(tx)
+		if err != nil {
+			return err
+		}
+		txData[i] = enc
+	}
+	return rlp.Encode(w, &blockRLP{
+		Header:    b.header,
+		TxData:    txData,
+		Verifiers: b.body.Verifiers,
+		Rewards:   b.body.Rewards,
+		ZkProof:   b.body.ZkProof,
+	})
+}
+
+// DecodeRLP implements rlp.Decoder.
+func (b *Block) DecodeRLP(s *rlp.Stream) error {
+	var dec blockRLP
+	if err := s.Decode(&dec); err != nil {
+		return err
+	}
+	txs := make([]*transaction.Transaction, len(dec.TxData))
+	for i, enc := range dec.TxData {
+		tx, err := transaction.DecodeEthereumTransaction(enc)
+		if err != nil {
+			return err
+		}
+		txs[i] = tx
+	}
+	b.header = dec.Header
+	b.body = &Body{Txs: txs, Verifiers: dec.Verifiers, Rewards: dec.Rewards, ZkProof: dec.ZkProof}
+	b.hash = atomic.Value{}
+	b.size = atomic.Value{}
+	return nil
 }
 
 func NewBlock(h IHeader, txs []*transaction.Transaction) IBlock {
