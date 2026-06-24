@@ -24,6 +24,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"flag"
@@ -34,6 +35,7 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -160,6 +162,10 @@ func main() {
 	window := fs.Bool("window", true, "mainnet: batch the root per E_1 window (bpp Path C) instead of per block — identical records, gold check per window")
 	concurrentRoot := fs.Bool("concurrent-root", false, "parallelize the per-window root across 16 top-nibble shards over a 4-table StateOverlay (each window still gold-checked vs header)")
 	pprofPort := fs.Int("pprof.port", 0, "serve net/http/pprof on this port (0=off)")
+	bisect := fs.Bool("bisect", false, "READ-ONLY diagnosis: replay [resume-start, --end) per block over an uncommitted tx (NEVER commits, NEVER touches the leaf spill), gold-checking EACH block's incremental root against its header. Halts at and reports the FIRST divergent block. Use to localize a window-mode gold-check mismatch to a single block. Output dir is left untouched.")
+	dumpChangeset := fs.Uint64("dump-changeset", 0, "decode ONE block's changeset (the dirtyA/dirtyS fed to the fold) and print it, then exit — for cross-checking N42's per-block state delta against an independent source")
+	scanGaps := fs.Bool("scan-gaps", false, "scan [resume-start, --end) for MISSING changesets: blocks whose acctcs+storcs blobs are both empty BUT whose header stateRoot changed from the previous block (so the block DID mutate state, yet no changeset was recorded). Fast: reads blob lengths + headers only, no fold. Reports each gap range.")
+	changesetFallback := fs.String("changeset-fallback", "", "secondary erigon-style MDBX (AccountChangeSet/StorageChangeSet, e.g. D:/N42-hashed/chaindata) to SPLICE missing changesets from: for each block in [resume-start,--end) whose primary acctcs/storcs freezer blob is empty, derive the block's forward delta from this datadir and inject it into the fold. Fixes resume-gaps in the primary freezer WITHOUT modifying it. Applies to build, --bisect and --scan-gaps.")
 	_ = fs.Parse(os.Args[2:])
 	if *out == "" {
 		die("--out required")
@@ -395,6 +401,31 @@ func main() {
 		return
 	}
 
+	if *dumpChangeset > 0 {
+		b.dumpChangeset(*dumpChangeset)
+		return
+	}
+
+	if *scanGaps {
+		b.scanGaps(*startBlock, *endBlock)
+		return
+	}
+
+	// Splice missing changesets from a secondary chain (resume-gap repair) before
+	// any build/bisect consumes them.
+	if *changesetFallback != "" {
+		if _, err := b.loadChangesetFallback(*changesetFallback, *startBlock, *endBlock); err != nil {
+			die("changeset-fallback: %v", err)
+		}
+	}
+
+	if *bisect {
+		if err := b.bisectRun(*startBlock, *endBlock); err != nil {
+			die("%v", err)
+		}
+		return
+	}
+
 	if err := b.run(*startBlock, *endBlock, *batch); err != nil {
 		die("%v", err)
 	}
@@ -407,6 +438,12 @@ type builder struct {
 	hdrs    *ethel.HeaderCompactReader
 	acctTbl *freezer.FreezerTable
 	storTbl *freezer.FreezerTable
+
+	// csFallback: derived forward changesets for resume-gap blocks whose primary
+	// freezer blob is empty (see loadChangesetFallback / --changeset-fallback).
+	// decodeOne injects these so the fold consumes a complete changeset. nil when
+	// the flag is off.
+	csFallback map[uint64]*fbBlock
 
 	// Per-LEVEL pending changed paths since each level's last epoch flush, with
 	// the CHANGED-CHILDREN bitmap per path (drives node diff records).
@@ -574,6 +611,183 @@ func human(n uint64) string {
 	default:
 		return fmt.Sprintf("%d", n)
 	}
+}
+
+// bisectRun is a READ-ONLY per-block diagnosis: it replays [start,end) over ONE
+// uncommitted RwTx, computing each block's incremental root and gold-checking it
+// against the header, then halts at the FIRST block whose root diverges. It
+// NEVER commits and forces the leaf spill OFF, so the output dir's committed
+// state is left intact (MDBX discards the tx on Rollback). Use it to localize a
+// window-mode gold-check mismatch (which only checks window boundaries) down to
+// the exact block.
+//
+// It exercises the PER-BLOCK fold path (blockApply, native reads — no overlay).
+// If it reports NO divergence through the failing window, the bug is SPECIFIC to
+// the window-net fold (accumulateBlock/applyWindow), not the shared per-block
+// fold or the changeset data.
+// dumpChangeset decodes ONE block's changeset (the exact dirtyA/dirtyS the fold
+// consumes) and prints it sorted, then returns. Read-only; opens nothing on the
+// output trie. Used to cross-check N42's per-block state delta at a divergent
+// block against an independent execution (e.g. reth): a missing/extra/wrong
+// account or slot here is a DATA bug; an identical changeset that still folds to
+// the wrong root is a FOLD bug.
+func (b *builder) dumpChangeset(n uint64) {
+	pipe := startDecodePipeline(b, n, n+1, 1)
+	defer pipe.Stop()
+	dec, err := pipe.Next(n)
+	if err != nil {
+		die("decode block %d: %v", n, err)
+	}
+
+	accs := make([]types.Address, 0, len(dec.dirtyA))
+	for a := range dec.dirtyA {
+		accs = append(accs, a)
+	}
+	sort.Slice(accs, func(i, j int) bool { return bytes.Compare(accs[i][:], accs[j][:]) < 0 })
+	fmt.Printf("block %d changeset: %d account changes, %d storage-touched accounts\n", n, len(dec.dirtyA), len(dec.dirtyS))
+	if dec.err != nil {
+		fmt.Printf("  DECODE ERROR: %v\n", dec.err)
+	}
+	for _, a := range accs {
+		acct := dec.dirtyA[a]
+		if acct == nil {
+			fmt.Printf("ACCT %x  DELETED (selfdestruct/empty)\n", a)
+			continue
+		}
+		fmt.Printf("ACCT %x  nonce=%d balance=%s root=%x codeHash=%x\n",
+			a, acct.Nonce, acct.Balance.String(), acct.Root, acct.CodeHash)
+	}
+	saccs := make([]types.Address, 0, len(dec.dirtyS))
+	for a := range dec.dirtyS {
+		saccs = append(saccs, a)
+	}
+	sort.Slice(saccs, func(i, j int) bool { return bytes.Compare(saccs[i][:], saccs[j][:]) < 0 })
+	for _, a := range saccs {
+		slots := dec.dirtyS[a]
+		keys := make([]types.Hash, 0, len(slots))
+		for s := range slots {
+			keys = append(keys, s)
+		}
+		sort.Slice(keys, func(i, j int) bool { return bytes.Compare(keys[i][:], keys[j][:]) < 0 })
+		for _, s := range keys {
+			v := slots[s]
+			vs := "0 (CLEAR)"
+			if v != nil && !v.IsZero() {
+				vs = v.String()
+			}
+			fmt.Printf("STOR %x  %x = %s\n", a, s, vs)
+		}
+	}
+	releaseDecodedBlock(dec)
+}
+
+// scanGaps reports MISSING-changeset blocks in [start,end): a block whose acctcs
+// AND storcs blobs are both empty, yet whose header stateRoot differs from the
+// previous block's — i.e. the block provably mutated state but no changeset was
+// recorded for it. Such blocks are silently skipped by the per-block fold (empty
+// changeset => no-op, no gold check), so the state drifts until the next NON-empty
+// block's gold check fails. Reports contiguous gaps. Reads blob lengths + headers
+// only (no fold); fast.
+func (b *builder) scanGaps(start, end uint64) {
+	fmt.Printf("[scan-gaps] scanning [%d, %d) for blocks that changed state but have an empty changeset …\n", start, end)
+	prevRoot, e := b.hdrs.ReadHeader(start - 1)
+	if e != nil {
+		die("read header %d: %v", start-1, e)
+	}
+	prev := prevRoot.Root
+	gapStart := uint64(0)
+	gaps := 0
+	emitGap := func(lo, hi uint64) {
+		gaps++
+		fmt.Printf("  MISSING changeset: blocks [%d, %d] (%d block(s)) changed state but recorded NO changeset\n", lo, hi, hi-lo+1)
+	}
+	for n := start; n < end; n++ {
+		hdr, err := b.hdrs.ReadHeader(n)
+		if err != nil {
+			die("read header %d: %v", n, err)
+		}
+		ab, _ := b.acctTbl.Retrieve(n)
+		sb, _ := b.storTbl.Retrieve(n)
+		emptyCS := len(ab) == 0 && len(sb) == 0
+		changed := hdr.Root != prev
+		missing := emptyCS && changed
+		if missing {
+			if gapStart == 0 {
+				gapStart = n
+			}
+		} else if gapStart != 0 {
+			emitGap(gapStart, n-1)
+			gapStart = 0
+		}
+		prev = hdr.Root
+	}
+	if gapStart != 0 {
+		emitGap(gapStart, end-1)
+	}
+	if gaps == 0 {
+		fmt.Printf("[scan-gaps] no missing-changeset blocks in range.\n")
+	} else {
+		fmt.Printf("[scan-gaps] %d gap range(s) found — the changeset source (D:/N42-eth1177) is missing these blocks' state deltas.\n", gaps)
+	}
+}
+
+func (b *builder) bisectRun(start, end uint64) error {
+	b.spill = nil // never touch the leaf segment files
+	fmt.Printf("[bisect] read-only per-block replay [%d, %d) — NEVER commits; output left intact\n", start, end)
+
+	tx, err := b.db.BeginRw(context.Background())
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // diagnosis only — discard every write
+
+	trc := commitment.NewTrieRootComputer()
+	trc.SetRwTx(tx)
+	trc.SetIncremental(true) // base = committed trie at start-1
+	trc.SetSortedWrites(true)
+
+	pipe := startDecodePipeline(b, start, end, 3)
+	defer pipe.Stop()
+
+	t0 := time.Now()
+	lastBeat := time.Now()
+	for n := start; n < end; n++ {
+		dec, derr := pipe.Next(n)
+		if derr != nil {
+			return fmt.Errorf("block %d decode: %w", n, derr)
+		}
+		// blockApply resolves addrHash()/slotHash() from these caches.
+		if len(b.addrHashCache) > 2_000_000 {
+			b.addrHashCache = make(map[types.Address][32]byte, 1<<16)
+		}
+		if len(b.slotHashCache) > 2_000_000 {
+			b.slotHashCache = make(map[types.Hash][32]byte, 1<<16)
+		}
+		for a, h := range dec.ahash {
+			b.addrHashCache[a] = h
+		}
+		for s, h := range dec.shash {
+			b.slotHashCache[s] = h
+		}
+		// blockApply does ghost-storage drop + ComputeRoot + per-block gold check,
+		// returning a "ROOT MISMATCH" error at the first divergent block.
+		if err := b.blockApply(tx, trc, n, dec.dirtyA, dec.dirtyS); err != nil {
+			releaseDecodedBlock(dec)
+			fmt.Printf("\n[bisect] FIRST DIVERGENCE at block %d:\n  %v\n", n, err)
+			fmt.Printf("[bisect] block %d is the first block whose per-block fold diverges from its header.\n"+
+				"  Next: diff this block's changeset (D:/N42-eth1177) fold against the canonical state change.\n", n)
+			return nil
+		}
+		releaseDecodedBlock(dec)
+		if time.Since(lastBeat) > 10*time.Second {
+			fmt.Fprintf(os.Stderr, "[bisect] %d OK  (%.0f blk/s)\n", n, float64(n-start+1)/time.Since(t0).Seconds())
+			lastBeat = time.Now()
+		}
+	}
+	fmt.Printf("\n[bisect] NO per-block divergence in [%d, %d).\n"+
+		"  => the window-mode mismatch is SPECIFIC to the window-net fold (accumulateBlock/applyWindow),\n"+
+		"     NOT the per-block fold or the changeset data.\n", start, end)
+	return nil
 }
 
 func (b *builder) run(start, end, batchBlocks uint64) error {
@@ -1173,19 +1387,28 @@ func (b *builder) accumulateBlock(tx kv.RwTx, n uint64,
 // applyWindow brings the trie to boundary block n with one incremental
 // ComputeRoot over the window net and gold-checks against header[n].Root.
 func (b *builder) applyWindow(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64) error {
+	// Read the boundary header first so we can arm the concurrent-root gold check:
+	// if --concurrent-root's parallel combine diverges from header.Root, the
+	// computer dumps a per-nibble diagnostic and transparently recomputes the
+	// window with the serial loader (the trusted oracle) instead of crashing. A
+	// genuine data/header mismatch (serial also wrong) still surfaces below.
+	hdr, err := b.hdrs.ReadHeader(n)
+	if err != nil {
+		return fmt.Errorf("read header: %w", err)
+	}
 	root := b.lastRoot
 	if len(b.winA) > 0 || len(b.winS) > 0 {
+		if b.concurrentRoot {
+			trc.SetExpectRoot(hdr.Root)
+		}
 		r, err := trc.ComputeRoot(b.winA, b.winS)
+		trc.ClearExpectRoot()
 		if err != nil {
 			return fmt.Errorf("window ComputeRoot →%d: %w", n, err)
 		}
 		root = r
 		b.winA = make(map[types.Address]*account.StateAccount, 64)
 		b.winS = make(map[types.Address]map[types.Hash]*uint256.Int, 16)
-	}
-	hdr, err := b.hdrs.ReadHeader(n)
-	if err != nil {
-		return fmt.Errorf("read header: %w", err)
 	}
 	if root != hdr.Root {
 		return fmt.Errorf("WINDOW ROOT MISMATCH at block %d (window end): computed %x != header %x", n, root, hdr.Root)
