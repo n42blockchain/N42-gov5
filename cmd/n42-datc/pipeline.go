@@ -251,5 +251,38 @@ func decodeOne(b *builder, n uint64, ac map[types.Address][32]byte, sc map[types
 			return d
 		}
 	}
+
+	// Resume-gap repair: the primary freezer contributed NO changes for this block
+	// (a 0-length OR count=0 blob), but --changeset-fallback derived its real
+	// forward delta from a secondary chain. Inject it so the fold sees a complete
+	// changeset. Keyed on the DECODED result (not blob length) so a count=0 stub
+	// blob is repaired too. Mirror the account-deleted-drops-storage-writes rule.
+	if len(d.dirtyA) == 0 && len(d.dirtyS) == 0 && b.csFallback != nil {
+		if fb, ok := b.csFallback[n]; ok {
+			for addr, acct := range fb.dirtyA {
+				hashAddr(addr)
+				d.dirtyA[addr] = acct
+			}
+			for addr, slots := range fb.dirtyS {
+				deleted := false
+				if a, ok := d.dirtyA[addr]; ok && a == nil {
+					deleted = true
+				}
+				hashAddr(addr)
+				var inner map[types.Hash]*uint256.Int
+				for slot, val := range slots {
+					if deleted && val != nil {
+						continue // account deleted this block: drop writes, keep wipes
+					}
+					if inner == nil {
+						inner = d.innerMap()
+						d.dirtyS[addr] = inner
+					}
+					hashSlot(slot)
+					inner[slot] = val
+				}
+			}
+		}
+	}
 	return d
 }

@@ -13,8 +13,10 @@
 package commitment
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -202,6 +204,55 @@ func (t *TrieRootComputer) flushTrieRootConcurrent(rl *trie.RetainList) (types.H
 	root, err := trie.CombineNibbleSubtries(subs)
 	if err != nil {
 		return types.Hash{}, err
+	}
+
+	// Gold-check the concurrent root against the caller-supplied expected (header)
+	// root. A mismatch means the parallel read path (per-worker RoTx ⊕ overlay
+	// merged cursors) diverged from what the serial loader sees — a data shape the
+	// equivalence tests don't cover. N42_CROOT_DEBUG forces the diagnostic on every
+	// window regardless of the expected value.
+	mismatch := t.expectRootSet && root != t.expectRoot
+	if mismatch || os.Getenv("N42_CROOT_DEBUG") != "" {
+		// Read-only serial root on the SAME overlay state (t.tx = committed ⊕
+		// overlay). If it differs from the concurrent combine, the shards read the
+		// overlay wrong; the per-nibble compare (serial shard on t.tx vs the
+		// concurrent shard's hash) localizes which subtree, separating a
+		// merged-cursor / shard READ bug from a top-combine bug.
+		for nib := 0; nib < 16; nib++ {
+			sd := trie.NewFlatDBTrieLoader("croot-dbg", rl.NibbleSublist(byte(nib)), nil, nil, false)
+			sh, _ := sd.CalcTrieRootShard(t.tx, byte(nib), nil)
+			ch := outs[nib].hash
+			same := (ch == nil && sh == trie.EmptyRoot) || (ch != nil && bytes.Equal(ch, sh[:]))
+			if !same {
+				fmt.Fprintf(os.Stderr, "CROOT nibble %x DIVERGE: concurrent-shard=%x serial-shard-on-tx=%x\n", nib, ch, sh[:8])
+			}
+		}
+	}
+
+	// On a verified mismatch, fall back to the serial loader for this window. The
+	// shards have only collected node updates in RAM (outs[*] arena); nothing has
+	// been written to TrieOf* yet, so flushTrieRootSerial recomputes the root from
+	// the SAME overlay leaf state (HashedAccounts/HashedStorage, written in
+	// ComputeRoot Phase 1/2) over the unchanged prior-window TrieOf*, and writes the
+	// CORRECT nodes itself. The build self-heals instead of dying, and the operator
+	// keeps the concurrent speedup on every window that matches.
+	if mismatch {
+		fmt.Fprintf(os.Stderr,
+			"[croot] concurrent root %x != expected %x — recomputing this window with the serial loader\n",
+			root[:8], t.expectRoot[:8])
+		rl.Rewind() // reset the lteIndex cursor consumed by the shards
+		sroot, serr := t.flushTrieRootSerial(rl)
+		if serr != nil {
+			return types.Hash{}, serr
+		}
+		if sroot == t.expectRoot {
+			fmt.Fprintf(os.Stderr, "[croot] serial fallback recovered the correct root %x (concurrent shards diverged)\n", sroot[:8])
+		} else {
+			fmt.Fprintf(os.Stderr,
+				"[croot] serial loader ALSO yields %x != expected %x — genuine data/header mismatch, NOT a concurrent-root bug\n",
+				sroot[:8], t.expectRoot[:8])
+		}
+		return sroot, nil
 	}
 
 	// Phase 4: flush merged node updates to TrieOf*. The shards' key spaces are

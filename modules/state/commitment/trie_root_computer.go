@@ -111,7 +111,31 @@ type TrieRootComputer struct {
 	cArena   [16]byteArena
 	cAccUpd  [16][]kvPair
 	cStorUpd [16][]kvPair
+
+	// expectRoot: optional per-call gold value for the concurrent root. The
+	// parallel shards read this batch's uncommitted state through per-worker
+	// RoTx ⊕ overlay merged cursors — a surface the serial loader never uses
+	// (it reads HashedAccounts/HashedStorage natively from the live RwTx). If a
+	// data shape makes that emulation diverge, the combined root is silently
+	// wrong. When the caller knows the boundary block's header root, it sets
+	// this before ComputeRoot; flushTrieRootConcurrent then verifies the
+	// combined root against it and, on mismatch, dumps a per-nibble diagnostic
+	// and falls back to the serial loader (the trusted oracle) for that window.
+	// Zero-cost when matching; the serial recompute runs only on the rare miss.
+	expectRoot    types.Hash
+	expectRootSet bool
 }
+
+// SetExpectRoot arms the concurrent-root gold check for the NEXT ComputeRoot:
+// if the parallel combined root differs from want, flushTrieRootConcurrent logs
+// a per-nibble diagnostic and transparently recomputes via the serial loader.
+// Only meaningful in concurrent mode; harmless otherwise. Re-arm per window.
+func (t *TrieRootComputer) SetExpectRoot(want types.Hash) {
+	t.expectRoot, t.expectRootSet = want, true
+}
+
+// ClearExpectRoot disarms the concurrent-root gold check.
+func (t *TrieRootComputer) ClearExpectRoot() { t.expectRootSet = false }
 
 // SetConcurrentRoot enables the parallel per-window root: db is the env to open
 // per-worker RoTx from, ov is the 4-table overlay holding this batch's uncommitted

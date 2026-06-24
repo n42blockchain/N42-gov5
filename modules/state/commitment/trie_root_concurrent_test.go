@@ -538,6 +538,80 @@ func TestConcurrentEmbeddedStorageTransitions(t *testing.T) {
 	}
 }
 
+// TestConcurrentRootSerialFallback verifies the gold-check safety net: when the
+// concurrent combined root does not match the expected (header) root, the
+// computer transparently recomputes the window with the serial loader and
+// returns the CORRECT root with byte-identical TrieOf* — rather than persisting
+// a wrong root. We force the path by arming SetExpectRoot with a bogus value;
+// the real concurrent root then "mismatches", triggering the fallback. The
+// returned root and trie tables must equal a pure-serial run on the same window.
+func TestConcurrentRootSerialFallback(t *testing.T) {
+	dbS := buildBootstrappedState(t)
+	defer dbS.Close()
+	waS, wsS := genWindow()
+	txS, err := dbS.BeginRw(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	trcS := NewTrieRootComputer()
+	trcS.SetRwTx(txS)
+	trcS.SetIncremental(true)
+	rS, err := trcS.ComputeRoot(waS, wsS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := txS.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	dbP := buildBootstrappedState(t)
+	defer dbP.Close()
+	waP, wsP := genWindow()
+	txP, err := dbP.BeginRw(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ov := NewStateOverlay()
+	wtx := WrapStateOverlayRW(txP, ov)
+	trcP := NewTrieRootComputer()
+	trcP.SetRwTx(wtx)
+	trcP.SetIncremental(true)
+	trcP.SetConcurrentRoot(dbP, ov, 16)
+	trcP.SetExpectRoot(types.Hash{0xde, 0xad, 0xbe, 0xef}) // bogus → mismatch → serial fallback
+	rP, err := trcP.ComputeRoot(waP, wsP)
+	if err != nil {
+		t.Fatalf("fallback ComputeRoot: %v", err)
+	}
+	if err := ov.FlushTo(txP); err != nil {
+		t.Fatal(err)
+	}
+	if err := txP.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	if rP != rS {
+		t.Fatalf("fallback root mismatch:\n  serial   = %s\n  fallback = %s", rS.Hex(), rP.Hex())
+	}
+	for _, tbl := range []string{modules.TrieOfAccounts, modules.TrieOfStorage} {
+		s := dumpTbl(t, dbS, tbl)
+		p := dumpTbl(t, dbP, tbl)
+		if len(s) != len(p) {
+			t.Errorf("%s count: serial=%d fallback=%d", tbl, len(s), len(p))
+		}
+		for k, sv := range s {
+			if pv, ok := p[k]; !ok || pv != sv {
+				t.Errorf("%s key=%x: serial=%x fallback(ok=%v)=%x", tbl, []byte(k), []byte(sv), ok, []byte(pv))
+			}
+		}
+		for k := range p {
+			if _, ok := s[k]; !ok {
+				t.Errorf("%s key=%x only in fallback", tbl, []byte(k))
+			}
+		}
+	}
+	t.Logf("MATCH serial-fallback recovered correct root %s with byte-identical TrieOf*", rS.Hex())
+}
+
 func TestConcurrentComputeRootEquivalence(t *testing.T) {
 	dbS := buildBootstrappedState(t)
 	defer dbS.Close()
