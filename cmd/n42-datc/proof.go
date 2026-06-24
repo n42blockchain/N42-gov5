@@ -230,13 +230,15 @@ func (q *querier) proofPath(domain, fullNib []byte, n uint64) ([][]byte, error) 
 		if err != nil {
 			return nil, err
 		}
-		if !usable && domain == nil && len(path) == 0 {
-			// The account-trie root has no record by convention: synthesize
-			// the root branch from its 16 depth-1 children (mirrors
-			// synthesizeRoot) instead of folding the whole trie.
+		if !usable && len(path) == 0 {
+			// The root node (account trie, domain==nil, OR a storage trie, domain
+			// set) has no trustworthy empty-path record: synthesize the root
+			// branch from its 16 depth-1 children (mirrors synthesizeRoot). A
+			// storage root with <2 branch children is degenerate (leaf/extension)
+			// — fall through to the subtree fold below, which builds it natively.
 			nKids = 0
 			for nib := byte(0); nib < 16; nib++ {
-				h, exists, err := q.nodeHashAt(nil, []byte{nib}, n)
+				h, exists, err := q.nodeHashAt(domain, []byte{nib}, n)
 				if err != nil {
 					return nil, err
 				}
@@ -246,10 +248,9 @@ func (q *querier) proofPath(domain, fullNib []byte, n uint64) ([][]byte, error) 
 					nKids++
 				}
 			}
-			if nKids < 2 {
-				return nil, fmt.Errorf("degenerate root (%d children) — unsupported", nKids)
+			if nKids >= 2 {
+				usable = true
 			}
-			usable = true
 		}
 		if !usable {
 			leaves, err := q.subtreeLeaves(domain, path, n)
