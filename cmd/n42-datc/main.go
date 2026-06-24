@@ -166,6 +166,8 @@ func main() {
 	dumpChangeset := fs.Uint64("dump-changeset", 0, "decode ONE block's changeset (the dirtyA/dirtyS fed to the fold) and print it, then exit — for cross-checking N42's per-block state delta against an independent source")
 	scanGaps := fs.Bool("scan-gaps", false, "scan [resume-start, --end) for MISSING changesets: blocks whose acctcs+storcs blobs are both empty BUT whose header stateRoot changed from the previous block (so the block DID mutate state, yet no changeset was recorded). Fast: reads blob lengths + headers only, no fold. Reports each gap range.")
 	changesetFallback := fs.String("changeset-fallback", "", "secondary erigon-style MDBX (AccountChangeSet/StorageChangeSet, e.g. D:/N42-hashed/chaindata) to SPLICE missing changesets from: for each block in [resume-start,--end) whose primary acctcs/storcs freezer blob is empty, derive the block's forward delta from this datadir and inject it into the fold. Fixes resume-gaps in the primary freezer WITHOUT modifying it. Applies to build, --bisect and --scan-gaps.")
+	spliceChangesets := fs.String("splice-changesets", "", "like --changeset-fallback, but PERMANENTLY write the derived gap-block deltas INTO the primary acctcs/storcs freezer (Append-overwrite from the first gap block; non-gap tail blocks are read back and re-appended unchanged). Backs up the affected tail .cdat segments + cidx to <backup-dir> first. Requires --splice-backup. Verify afterwards with --bisect (no fallback).")
+	spliceBackup := fs.String("splice-backup", "", "directory to copy the affected acctcs/storcs tail segments + cidx into before --splice-changesets mutates them (required for --splice-changesets)")
 	_ = fs.Parse(os.Args[2:])
 	if *out == "" {
 		die("--out required")
@@ -408,6 +410,17 @@ func main() {
 
 	if *scanGaps {
 		b.scanGaps(*startBlock, *endBlock)
+		return
+	}
+
+	// Permanently splice missing changesets INTO the primary freezer, then exit.
+	if *spliceChangesets != "" {
+		if *spliceBackup == "" {
+			die("--splice-changesets requires --splice-backup <dir>")
+		}
+		if err := b.spliceChangesetsToFreezer(*spliceChangesets, *csDir, *spliceBackup, *startBlock, *endBlock); err != nil {
+			die("splice-changesets: %v", err)
+		}
 		return
 	}
 
