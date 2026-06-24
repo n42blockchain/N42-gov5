@@ -8,7 +8,7 @@ import (
 	"github.com/pkg/errors"
 	"go.opencensus.io/trace"
 
-	"github.com/n42blockchain/N42/proto/types_pb"
+	block "github.com/n42blockchain/N42/common/block"
 )
 
 // forkData represents alternative chain path supported by a given peer.
@@ -16,7 +16,7 @@ import (
 // either in DB or initial sync cache.
 type forkData struct {
 	peer   peer.ID
-	blocks []*types_pb.Block
+	blocks []*block.Block
 }
 
 // nonSkippedSlotAfter is not implemented - returns nil.
@@ -40,7 +40,7 @@ func (f *blocksFetcher) findForkWithPeer(ctx context.Context, pid peer.ID, block
 }
 
 // findAncestor is not yet implemented -- returns error unconditionally.
-func (f *blocksFetcher) findAncestor(ctx context.Context, pid peer.ID, b *types_pb.Block) (*forkData, error) {
+func (f *blocksFetcher) findAncestor(ctx context.Context, pid peer.ID, b *block.Block) (*forkData, error) {
 	return nil, errors.New("no common ancestor found")
 }
 

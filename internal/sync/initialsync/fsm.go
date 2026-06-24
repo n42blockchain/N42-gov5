@@ -9,7 +9,7 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/n42blockchain/N42/proto/types_pb"
+	block "github.com/n42blockchain/N42/common/block"
 )
 
 const (
@@ -46,7 +46,7 @@ type stateMachine struct {
 	start   *uint256.Int
 	state   stateID
 	pid     peer.ID
-	blocks  []*types_pb.Block
+	blocks  []*block.Block
 	updated time.Time
 }
 
@@ -78,7 +78,7 @@ func (smm *stateMachineManager) addStateMachine(startBlockNr *uint256.Int) *stat
 		smm:     smm,
 		start:   startBlockNr.Clone(),
 		state:   stateNew,
-		blocks:  []*types_pb.Block{},
+		blocks:  []*block.Block{},
 		updated: time.Now(),
 	}
 	smm.recalculateMachineAttribs()

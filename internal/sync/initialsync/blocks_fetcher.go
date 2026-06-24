@@ -11,8 +11,8 @@ import (
 	"go.opencensus.io/trace"
 
 	"github.com/n42blockchain/N42/proto/sync_pb"
-	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common"
+	block "github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/crypto/rand"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/p2p/leakybucket"
@@ -99,7 +99,7 @@ type fetchRequestResponse struct {
 	pid    peer.ID
 	start  *uint256.Int
 	count  uint64
-	blocks []*types_pb.Block
+	blocks []*block.Block
 	err    error
 }
 
@@ -240,7 +240,7 @@ func (f *blocksFetcher) handleRequest(ctx context.Context, start *uint256.Int, c
 	response := &fetchRequestResponse{
 		start:  start,
 		count:  count,
-		blocks: []*types_pb.Block{},
+		blocks: []*block.Block{},
 	}
 
 	if ctx.Err() != nil {
@@ -259,7 +259,7 @@ func (f *blocksFetcher) handleRequest(ctx context.Context, start *uint256.Int, c
 }
 
 // fetchBlocksFromPeer fetches blocks from a single randomly selected peer.
-func (f *blocksFetcher) fetchBlocksFromPeer(ctx context.Context, start *uint256.Int, count uint64, peers []peer.ID) ([]*types_pb.Block, peer.ID, error) {
+func (f *blocksFetcher) fetchBlocksFromPeer(ctx context.Context, start *uint256.Int, count uint64, peers []peer.ID) ([]*block.Block, peer.ID, error) {
 	ctx, span := trace.StartSpan(ctx, "initialsync.fetchBlocksFromPeer")
 	defer span.End()
 
@@ -304,7 +304,7 @@ func logBlockRangeError(err error) {
 }
 
 // requestBlocks is a wrapper for handling BeaconBlocksByRangeRequest requests/streams.
-func (f *blocksFetcher) requestBlocks(ctx context.Context, req *sync_pb.BodiesByRangeRequest, pid peer.ID) ([]*types_pb.Block, error) {
+func (f *blocksFetcher) requestBlocks(ctx context.Context, req *sync_pb.BodiesByRangeRequest, pid peer.ID) ([]*block.Block, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -327,20 +327,7 @@ func (f *blocksFetcher) requestBlocks(ctx context.Context, req *sync_pb.BodiesBy
 	}
 	f.rateLimiter.Add(pid.String(), int64(req.Count))
 	l.Unlock()
-	blocks, err := n42sync.SendBodiesByRangeRequest(ctx, f.chain, f.p2p, pid, req, nil)
-	if err != nil {
-		return nil, err
-	}
-	// The wire transport is now RLP (SendBodiesByRangeRequest RLP-decodes to
-	// *block.Block). initialsync's internal pipeline still threads the proto block
-	// type, so adapt here — converting the in-memory structure does not affect the
-	// wire encoding. TODO: migrate initialsync's pipeline to *block.Block to drop
-	// proto entirely.
-	pb := make([]*types_pb.Block, len(blocks))
-	for i, b := range blocks {
-		pb[i] = b.ToProtoMessage().(*types_pb.Block)
-	}
-	return pb, nil
+	return n42sync.SendBodiesByRangeRequest(ctx, f.chain, f.p2p, pid, req, nil)
 }
 
 // waitForBandwidth blocks up until peer's bandwidth is restored.
