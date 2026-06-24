@@ -99,7 +99,7 @@ func NewEngineV2(cfg ConfigV2) (*EngineV2, error) {
 	// Select the transaction-root encoding to match the target chain (mainnet_qmdb
 	// uses the Ethereum-standard RLP MPT root; legacy native chains keep proto).
 	// Must be set before replaying any block so block.TxRoot agrees with node.
-	block.UseEthereumTxRoot = cfg.ChainConfig.StateScheme == "qmdb"
+	block.UseEthereumTxRoot = cfg.ChainConfig.StateScheme == string(params.StateCommitmentPresetQMDB)
 	if cfg.SkipAddresses == nil {
 		cfg.SkipAddresses = DefaultSkipAddresses
 	}

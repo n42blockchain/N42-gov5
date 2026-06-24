@@ -131,47 +131,22 @@ func (h *Header) ResetHashCache() { h.hash = atomic.Value{} }
 // v actually equals keccak256(rlp(header)) for the canonical form.
 func (h *Header) SetHash(v types.Hash) { h.hash.Store(v) }
 
-// rlpHash computes keccak256(rlp(header)) following Ethereum Pectra field order.
+// rlpHash computes keccak256(rlp(header)) via the RLP struct codec (the
+// rlp:"optional" tags on the post-London fields, in Ethereum Pectra order), so
+// the consensus hash is byte-identical to the P2P/gossip wire form
+// (Block.EncodeRLP) by construction.
+//
+// The previous hand-written []interface{} appended each present optional
+// contiguously based on its own non-nil check; the struct codec instead emits
+// every field up to the last non-zero one, writing an empty-string placeholder
+// for any nil gap. The two diverged whenever an earlier optional was nil while a
+// later one was set (same header -> two different hashes, plus a decode shift on
+// the wire). Routing both the hash and the wire form through one codec
+// eliminates that entire divergence class. Equality for the continuous tiers is
+// verified in header_rlp_test.go (TestHeaderStructRLPMatchesManualHash); a
+// discontinuous-optional guard covers the previously-divergent case.
 func (h *Header) rlpHash() types.Hash {
-	// Pre-London: 15 fields, London: +baseFee, Shanghai: +withdrawalsRoot,
-	// Cancun: +blobGasUsed +excessBlobGas +parentBeaconBlockRoot,
-	// Pectra: +requestsRoot
-	enc := []interface{}{
-		h.ParentHash,
-		h.UncleHash,
-		h.Coinbase,
-		h.Root,
-		h.TxHash,
-		h.ReceiptHash,
-		h.Bloom,
-		h.Difficulty,
-		h.Number,
-		h.GasLimit,
-		h.GasUsed,
-		h.Time,
-		h.Extra,
-		h.MixDigest,
-		h.Nonce,
-	}
-	if h.BaseFee != nil {
-		enc = append(enc, h.BaseFee)
-	}
-	if h.WithdrawalsHash != nil {
-		enc = append(enc, h.WithdrawalsHash)
-	}
-	if h.BlobGasUsed != nil {
-		enc = append(enc, h.BlobGasUsed)
-	}
-	if h.ExcessBlobGas != nil {
-		enc = append(enc, h.ExcessBlobGas)
-	}
-	if h.ParentBeaconRoot != nil {
-		enc = append(enc, h.ParentBeaconRoot)
-	}
-	if h.RequestsHash != nil {
-		enc = append(enc, h.RequestsHash)
-	}
-	return hash.RlpHash(enc)
+	return hash.RlpHash(h)
 }
 
 // IsLegacyHeader returns true for pre-Shanghai headers (no post-Shanghai fields set).

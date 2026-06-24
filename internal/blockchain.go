@@ -76,7 +76,7 @@ func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consen
 	// Ethereum-standard MPT root over RLP txs (block.TxRoot -> DeriveShaErigon);
 	// legacy native chains keep the proto keccak-concat root for historical hash
 	// continuity. Must be set before any block is produced or validated.
-	block.UseEthereumTxRoot = config.StateScheme == "qmdb"
+	block.UseEthereumTxRoot = config.StateScheme == string(params.StateCommitmentPresetQMDB)
 	concreteGenesis, err := requireConcreteBlock(genesisBlock, "unexpected genesis block type")
 	if err != nil {
 		cancel()
@@ -689,28 +689,25 @@ func (bc *BlockChain) SealedBlock(b block.IBlock) error {
 	// publishes the block topic, the gossipsub mesh doesn't form and followers
 	// never receive the block (so they can't import/vote on the hash-only
 	// Proposal). Mirrors the Rust node's send_block_direct_reliable.
-	bc.directPushBlock(b)
-	// Also gossip as a best-effort fallback, RLP-encoded (ETH standard, hash-stable)
-	// rather than the schema-limited SSZ of the proto block.
+	// Encode the block to ETH-standard RLP once and reuse the bytes for both the
+	// direct push and the gossip fallback (the hash is keccak(rlp(header)), so the
+	// same bytes are semantically identical on every path). Avoids re-encoding the
+	// block twice per seal on the producer's hot path.
 	data, err := rlp.EncodeToBytes(b)
 	if err != nil {
 		return err
 	}
+	bc.directPushBlock(b, data)
+	// Also gossip as a best-effort fallback.
 	return bc.p2p.BroadcastBlock(bc.ctx, data)
 }
 
 // directPushBlock opens a stream to each connected peer and writes the block as
 // a single chunked response (status code + fork digest + encoded block) — the
-// same wire format ReadChunkedBlock decodes in the sync block-push handler.
-func (bc *BlockChain) directPushBlock(b block.IBlock) {
+// same wire format ReadChunkedBlock decodes in the sync block-push handler. The
+// RLP-encoded block bytes are passed in (encoded once by SealedBlock).
+func (bc *BlockChain) directPushBlock(b block.IBlock, data []byte) {
 	if bc.p2p == nil {
-		return
-	}
-	// Encode the block as ETH-standard RLP (matches ReadChunkedBlock in the
-	// block-push handler). The hash is keccak(rlp(header)) and the header
-	// round-trips byte-identically, so the receiver recomputes the same hash.
-	data, err := rlp.EncodeToBytes(b)
-	if err != nil {
 		return
 	}
 	digest, err := utils.CreateForkDigest(b.Number64(), bc.genesisBlock.Hash())
