@@ -105,6 +105,7 @@ tests/*.json
 tests/*.txt
 tests/*.bin
 tests/*.log
+tests/results/
 
 # Temporary push/release documents
 PUSH_*.md

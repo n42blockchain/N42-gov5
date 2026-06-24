@@ -12,8 +12,6 @@
 // receipts, etc.); the goal is just enough surface to satisfy the
 // EL-CL contract for execution-layer driving.
 
-//go:build n42el
-
 package engineapi
 
 import (
@@ -117,7 +115,7 @@ func NewWeb3APIMinimal() *Web3APIMinimal { return &Web3APIMinimal{} }
 
 // ClientVersion returns a human-readable identifier for the EL.
 func (Web3APIMinimal) ClientVersion() string {
-	return "n42-eth-el/v0/n42el"
+	return "n42-eth-el/v0"
 }
 
 // uint64FromBytes is a helper used in some readers; kept here so the

@@ -477,12 +477,11 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	}
 	if usedGas != header.GasUsed {
 		if gasDiag {
-			log.Warn("GAS161 mismatch (non-fatal)", "block", blockNum, "got", usedGas, "want", header.GasUsed, "diff", int64(header.GasUsed)-int64(usedGas))
-		} else {
-			return &enginePayloadExecutionResult{
-				validationError: fmt.Errorf("gas mismatch: got %d, want %d", usedGas, header.GasUsed),
-			}, nil
+			log.Warn("GAS161 mismatch", "block", blockNum, "got", usedGas, "want", header.GasUsed, "diff", int64(header.GasUsed)-int64(usedGas))
 		}
+		return &enginePayloadExecutionResult{
+			validationError: fmt.Errorf("gas mismatch: got %d, want %d", usedGas, header.GasUsed),
+		}, nil
 	}
 	if err := finalizeExecutionStateChanges(a.chainCfg, header, ibs); err != nil {
 		return nil, err
@@ -528,22 +527,20 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	}
 	if expected != nil && actualReceiptHash != expected.receiptsRoot {
 		if gasDiag {
-			log.Warn("GAS161 receipts root mismatch (non-fatal)", "block", blockNum,
+			log.Warn("GAS161 receipts root mismatch", "block", blockNum,
 				"computed", actualReceiptHash.Hex(), "expected", expected.receiptsRoot.Hex())
-		} else {
-			return &enginePayloadExecutionResult{
-				validationError: fmt.Errorf("receipts root mismatch"),
-			}, nil
 		}
+		return &enginePayloadExecutionResult{
+			validationError: fmt.Errorf("receipts root mismatch"),
+		}, nil
 	}
 	if expected != nil && !bytes.Equal(actualBloom.Bytes(), expected.logsBloom) {
 		if gasDiag {
-			log.Warn("GAS161 logs bloom mismatch (non-fatal)", "block", blockNum)
-		} else {
-			return &enginePayloadExecutionResult{
-				validationError: fmt.Errorf("logs bloom mismatch"),
-			}, nil
+			log.Warn("GAS161 logs bloom mismatch", "block", blockNum)
 		}
+		return &enginePayloadExecutionResult{
+			validationError: fmt.Errorf("logs bloom mismatch"),
+		}, nil
 	}
 	header.ReceiptHash = actualReceiptHash
 	header.Bloom = actualBloom
