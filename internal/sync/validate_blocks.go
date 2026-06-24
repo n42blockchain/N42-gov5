@@ -95,6 +95,13 @@ func (s *Service) validateBlockPubSub(ctx context.Context, pid peer.ID, msg *pub
 	// This avoids rejecting legitimate blocks during rapid gossip bursts
 	// where the parent may arrive moments later.
 
+	// ValidatorData carries the proto form so the generic subscriber path
+	// (subscriber.go casts ValidatorData to proto.Message) works unchanged. This
+	// is a block->proto->block round-trip — hash-preserving but a residual proto
+	// dependency. It rarely fires: direct push usually arrives first, so the block
+	// is already known and validation returns ValidationIgnore above before
+	// reaching here. TODO: store *block.Block + a block-typed handler to drop it
+	// (needs the generic subscriber cast to accept a non-proto block topic).
 	msg.ValidatorData = iBlock.ToProtoMessage() // Used in downstream subscriber
 
 	log.Debug("Received block")

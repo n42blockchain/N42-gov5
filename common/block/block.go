@@ -152,8 +152,12 @@ type blockRLP struct {
 
 // EncodeRLP implements rlp.Encoder, emitting the ETH-standard wire form.
 func (b *Block) EncodeRLP(w io.Writer) error {
-	txData := make([][]byte, len(b.body.Txs))
-	for i, tx := range b.body.Txs {
+	body := b.body
+	if body == nil {
+		body = &Body{}
+	}
+	txData := make([][]byte, len(body.Txs))
+	for i, tx := range body.Txs {
 		enc, err := transaction.EncodeEthereumTransaction(tx)
 		if err != nil {
 			return err
@@ -163,9 +167,9 @@ func (b *Block) EncodeRLP(w io.Writer) error {
 	return rlp.Encode(w, &blockRLP{
 		Header:    b.header,
 		TxData:    txData,
-		Verifiers: b.body.Verifiers,
-		Rewards:   b.body.Rewards,
-		ZkProof:   b.body.ZkProof,
+		Verifiers: body.Verifiers,
+		Rewards:   body.Rewards,
+		ZkProof:   body.ZkProof,
 	})
 }
 
@@ -220,6 +224,13 @@ func NewBlockFromReceipt(h IHeader, txs []*transaction.Transaction, _ []IHeader,
 // keep the proto encoding so their historical block hashes stay continuous.
 // Changing it changes TxHash and therefore the block hash, so it must be paired
 // with a chain reset.
+//
+// INVARIANT: process-global, set by plain assignment with no synchronization. It
+// is safe only because there is exactly one chain (one setter) per process — the
+// node sets it in NewBlockChain, the replay CLI in NewEngineV2. Running two
+// chains with different schemes in one process (or a test exercising both) would
+// race and corrupt this flag; that setup must instead carry the decision on the
+// chain/engine and thread it into TxRoot.
 var UseEthereumTxRoot bool
 
 // TxRoot computes a block's transactions root, honoring UseEthereumTxRoot. It is

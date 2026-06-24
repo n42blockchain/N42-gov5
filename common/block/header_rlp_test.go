@@ -118,3 +118,39 @@ func TestBlockRLPRoundTrip(t *testing.T) {
 		t.Errorf("block hash changed after RLP round trip: want %s got %s", want.Hex(), got.Hex())
 	}
 }
+
+// TestHeaderRLPDiscontinuousOptional guards the previously-divergent case: a
+// header with a nil optional before a set one (BaseFee nil + WithdrawalsHash
+// set). The old hand-written rlpHash() packed present optionals contiguously and
+// disagreed with the struct codec here (different hash + a decode slot-shift);
+// now that rlpHash() routes through the struct codec, Hash() and the
+// EncodeRLP/DecodeRLP wire form agree by construction. This header isn't produced
+// in practice but the codec must stay self-consistent.
+func TestHeaderRLPDiscontinuousOptional(t *testing.T) {
+	h := sampleRLPHeaders()[0] // legacy base: BaseFee nil
+	wh := types.HexToHash("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
+	h.WithdrawalsHash = &wh // set a later optional while BaseFee stays nil -> discontinuous
+	h.ResetHashCache()
+	want := h.Hash()
+
+	enc, err := rlp.EncodeToBytes(h)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	var h2 Header
+	if err := rlp.DecodeBytes(enc, &h2); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	h2.ResetHashCache()
+	if got := h2.Hash(); got != want {
+		t.Errorf("discontinuous-optional header hash changed after RLP round trip: want %s got %s", want.Hex(), got.Hex())
+	}
+	// The RLP struct codec encodes a nil *uint256.Int and a zero one identically
+	// (empty string), so BaseFee decodes back as zero rather than nil — expected
+	// and hash-neutral (the hash assert above passed). The key guarantee is that
+	// WithdrawalsHash did NOT shift into the BaseFee slot — the exact corruption
+	// the old hand-written rlpHash produced on a discontinuous optional.
+	if h2.WithdrawalsHash == nil || *h2.WithdrawalsHash != wh {
+		t.Errorf("WithdrawalsHash lost/shifted after round trip: %v", h2.WithdrawalsHash)
+	}
+}
