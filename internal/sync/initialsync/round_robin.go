@@ -10,10 +10,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/paulbellamy/ratecounter"
 
-	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common/block"
 	astLog "github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/common/utils"
 )
 
 const (
@@ -98,18 +96,14 @@ func (s *Service) processFetchedData(ctx context.Context, startBlockNr *uint256.
 	}
 }
 
-func (s *Service) processBatchedBlocks(ctx context.Context, blks []*types_pb.Block, bFunc batchBlockReceiverFn) (int, error) {
+func (s *Service) processBatchedBlocks(ctx context.Context, blks []*block.Block, bFunc batchBlockReceiverFn) (int, error) {
 	if len(blks) == 0 {
 		return 0, errors.New("0 blocks provided into method")
 	}
 
 	blocks := make([]block.IBlock, 0, len(blks))
 	for _, blk := range blks {
-		block := new(block.Block)
-		if err := block.FromProtoMessage(blk); err != nil {
-			return 0, err
-		}
-		blocks = append(blocks, block)
+		blocks = append(blocks, blk)
 	}
 
 	blocks, err := s.skipProcessedBlocks(ctx, blocks)
@@ -201,11 +195,11 @@ func (s *Service) updatePeerScorerStats(pid peer.ID, startBlockNr *uint256.Int) 
 
 // logBatchSyncStatus increments the block processing counter and logs sync progress.
 // Throttled to log every 5 seconds or every 10000 blocks to reduce log spam.
-func (s *Service) logBatchSyncStatus(blks []*types_pb.Block) {
+func (s *Service) logBatchSyncStatus(blks []*block.Block) {
 	s.counter.Incr(int64(len(blks)))
 
 	lastBlock := blks[len(blks)-1]
-	currentBlockNum := utils.ConvertH256ToUint256Int(lastBlock.Header.Number).Uint64()
+	currentBlockNum := lastBlock.Number64().Uint64()
 
 	if s.syncStartTime.IsZero() {
 		s.syncStartTime = time.Now()

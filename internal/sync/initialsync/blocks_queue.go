@@ -8,8 +8,8 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common"
+	block "github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/internal/p2p"
 	n42sync "github.com/n42blockchain/N42/internal/sync"
 )
@@ -82,7 +82,7 @@ type blocksQueue struct {
 // blocksQueueFetchedData is a data container that is returned from a queue on each step.
 type blocksQueueFetchedData struct {
 	pid    peer.ID
-	blocks []*types_pb.Block
+	blocks []*block.Block
 }
 
 // newBlocksQueue creates initialized priority queue.

@@ -5,8 +5,6 @@ import (
 	"errors"
 
 	"github.com/holiman/uint256"
-
-	"github.com/n42blockchain/N42/common/utils"
 )
 
 // resetWithBlocks removes all state machines, then re-adds enough machines to contain all provided
@@ -28,7 +26,7 @@ func (q *blocksQueue) resetFromFork(fork *forkData) error {
 	if err := q.smm.removeAllStateMachines(); err != nil {
 		return err
 	}
-	firstBlockNr := utils.ConvertH256ToUint256Int(firstBlock.Header.Number)
+	firstBlockNr := firstBlock.Number64()
 	fsm := q.smm.addStateMachine(firstBlockNr)
 	fsm.pid = fork.peer
 	fsm.blocks = fork.blocks
