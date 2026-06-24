@@ -13,13 +13,13 @@ import (
 
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
-	"github.com/n42blockchain/N42/log"
+	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
 func main() {
 	dir := flag.String("dir", "D:/N42-eth1177-test/chaindata", "chaindata path")
 	flag.Parse()
-	db, err := mdbx.NewMDBX(log.New()).Path(*dir).Readonly().Open()
+	db, err := mdbx.NewMDBX(log.New()).Path(*dir).Readonly().Open(context.Background())
 	if err != nil {
 		fmt.Println("open:", err)
 		os.Exit(1)
