@@ -69,6 +69,38 @@ Encode to wire format: `ethel.EncodeAccountChanges(csA, getNewA)` / `ethel.Encod
 
 Gap constant: **blocks [25101824, 25101866]** (43 blocks). Source freezer D:/N42-eth1177/chain/freezer; secondary D:/N42-hashed/chaindata (erigon, covers 25096156–25208641, aligned to mainnet ≤25,191,536).
 
+## §5 Extending the eth-el freezer tables to a new tip (production runbook)
+
+Tables in `D:/N42-eth1177/chain/freezer`: acctcs, storcs, witness, senders (block-keyed, NCIX comp+batch except senders=legacy), codes (addr-keyed). Authoritative docs: `freezer-tables.md`, `witness-input-pipeline.md`, `n42-eth1-freezer-catalogue.md`, `catchup-from-eth1177-recipe.md`.
+
+**Producers + sources**:
+- **acctcs / storcs / witness** = `ethexec run` **re-executes blocks** from Geth ancient (`D:\geth\geth\chaindata\ancient\chain`). HEAVY (EVM, ~0.3–3 s/block). All five output tables commit in lockstep on BatchSize=64 boundaries (`executor.go:221`, `output_batcher.go`).
+- **senders** = `ethexec sender-recovery --ancient …` (ecrecover from Geth bodies, or reth `TransactionSenders`). lighter.
+- **codes** = `code-import2fz` from reth `Bytecodes`. light.
+- headers/bodies/receipts (the n42-eth1 columnar set) = `ethexec header-compact / body-compact / receipt-copy --ancient …`. light (copy/compress).
+
+**Extend 25311094 → tip (e.g. 25389305)** — auto-resume, append-only, idempotent:
+```
+ethexec run --ancient D:\geth\geth\chaindata\ancient\chain --datadir D:\N42-eth1177 --end 25389305 --commit 10000
+```
+**OMIT --start** → auto-resume from the progress marker (appends from `tbl.Items()`). Pass `--start` ONLY to intentionally truncate.
+
+**Gap-avoidance (the [25101824,25101866] gap lesson)**: that gap was a **resume-marker bug** — `DbInfo/ethel_progress` went STALE (12.5M, a crashed rebuild) while `SyncStageProgress/ethel-last-block` (25.1M) was authoritative; auto-resume read the stale one and a staged backfill skipped blocks. FIXED to prefer the larger marker + Warn on mismatch. Rules: (1) omit --start (auto-resume reads the authoritative marker), (2) commits auto-align on BatchSize=64, (3) never manually truncate, (4) a new output table MUST be added to `outputBatcher.alignOnResume`'s tables slice (`output_batcher.go:430`) or it drifts → "freezer lags MDBX". After extending, re-run `cmd/gap-scan` to confirm no new empties.
+
+**Heights (2026-06-24)**: geth ancient ~25,389,305 (fresh); N42-eth1177 freezer 25,311,094; reth `D:\reth2k\db` claimed 25389304. **Caveat**: re-exec extension competes with a running DATC build for CPU/RAM — don't run both at once.
+
+## §5.1 Local working copy vs release "archive pro" packaging (POLICY)
+
+**Local working copy — KEEP EVERYTHING, never delete leafspill.** The DATC out dir (e.g. D:/n42-datc-eth25m-v4/v5) is ~775GB: mdbx.dat (~292GB, mostly free pages from churn — real table data ~36-40GB), leafseg (~282GB zstd leaf+chg, the read path), **leafspill (~201GB)**, plus tries. **leafspill is REQUIRED to resume/continue the build (续跑) — do NOT delete it locally** even though `finalizeLeafSegments` is documented to remove it; keep it for resumability. (Corrects an earlier "leafspill is redundant, delete it" note — that is WRONG for the working copy.)
+
+**Release "archive pro" package — copy only the necessary serving files + compact the mdbx.** When packaging the distributable archive-pro version, do NOT ship the working dir as-is. Instead:
+- `mdbx_copy` with compaction: ~292GB → ~36-40GB (reclaims the churn free pages; lossless). Optionally drop TrieAccount/TrieStorage (build scaffolding, the verifier/proof never read them — only `flushStoLevel` reads TrieStorage at build time), leaving just the node records (DatcAccNode ~3.84GB + DatcStorNode ~4.3GB) + DatcRoots.
+- Copy the leafseg segments (the leaf+chg read path) — already zstd-sealed.
+- **EXCLUDE leafspill** (build-only intermediate) and exclude the uncompacted mdbx.
+- Result ≈ leafseg (~282GB) + node records (~8GB) + compacted-mdbx residue ≈ **~290-320GB delivered** (matches datc-segment-format.md's 170-420GB target; further diff+segment of node records can push lower).
+
+So: **local = full (~775GB, keep leafspill for resume); release archive-pro = ~290-320GB (compact mdbx + necessary files only, no leafspill).** V5 size mirrors V4 (+~4GB DatcStorNode).
+
 ## §4 incarnation / storage-records (emit.go, verify.go, proof.go @ 0fc8feaf)
 
 System dropped incarnation. **External tables** (HashedStorage, TrieOfStorage) physical key = 32-byte addrHash; reads MUST use 32 bytes (HashedStorage=AutoDupSort folds long keys; TrieOfStorage={Flags:DupSort} plain, no fold → 40-byte read misses). DATC's own 40-byte "domain" (addrHash32‖8 zero) is a leaf-composite-only convention (72-byte DatcLeafS key); harmless internally, fatal when used to read TrieOfStorage. The **root node** (account or storage trie) is never read from a stored empty-path record — synthesized from depth-1 children (storage tries' keylen-32 entry is stale under reth/incremental; mirrors `StorageTrieCursor.SeekToAccount`). Both fixed @ 0fc8feaf. See [[project_datc_concurrent_root_serial_fallback]].
