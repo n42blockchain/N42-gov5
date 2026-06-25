@@ -251,30 +251,12 @@ func (s *Service) handleOutput(output EngineOutput) {
 			delete(s.pendingExecutions, k)
 		}
 		s.pendingMu.Unlock()
-		// Trigger block production if we are the new leader.
+		// Trigger block production if we are the new leader — but gated on a
+		// quorum of connected validator peers (see proposeWhenQuorum) so that a
+		// leader starting before its peers during a non-simultaneous multi-IDC
+		// bootstrap does not propose an orphan block to a sub-quorum network.
 		if s.engine.Engine().IsCurrentLeader() && s.blockProducer != nil {
-			cfg := s.engine.Config()
-			if cfg != nil && cfg.FastPropose {
-				// Fast Propose: skip slot boundary wait, propose after minimum delay.
-				// Reduces consensus latency by ~72% (1950ms → 551ms typical).
-				delay := time.Duration(cfg.MinProposeDelayMs) * time.Millisecond
-				if delay == 0 {
-					delay = 200 * time.Millisecond
-				}
-				capturedView := output.View
-				go func() {
-					select {
-					case <-time.After(delay):
-						if s.engine.Engine().CurrentView() == capturedView {
-							s.blockProducer.TriggerBlockProduction()
-						}
-					case <-s.ctx.Done():
-						return
-					}
-				}()
-			} else {
-				s.blockProducer.TriggerBlockProduction()
-			}
+			s.proposeWhenQuorum(output.View)
 		}
 		// Rate-limited persistence.
 		if output.View-s.lastPersistedView >= s.persistInterval {
@@ -423,6 +405,97 @@ func (s *Service) handleSendToValidator(output EngineOutput) {
 
 	// Fallback to gossip broadcast.
 	s.handleBroadcast(output)
+}
+
+// quorumPeersNeeded returns how many connected validator peers (besides self) a
+// leader needs before a proposal can possibly gather a quorum (2f+1) of votes.
+// For n=7 (f=2, quorum=5) this is 4.
+func (s *Service) quorumPeersNeeded() int {
+	ce := s.engine.Engine()
+	if ce == nil {
+		return 0
+	}
+	n := int(ce.ValidatorCount())
+	if n <= 1 {
+		return 0
+	}
+	f := (n - 1) / 3
+	return (2*f + 1) - 1 // quorum minus self
+}
+
+// connectedPeerCount returns the number of currently-connected peers, or -1 when
+// the P2P layer cannot report it (the quorum gate then fails open).
+func (s *Service) connectedPeerCount() int {
+	if ds, ok := s.p2p.(P2PDirectSender); ok && ds != nil {
+		return len(ds.ConnectedPeers())
+	}
+	return -1
+}
+
+// hasQuorumPeers reports whether enough validator peers are connected for a
+// proposal to be able to reach quorum. An unknown peer count fails open (true).
+func (s *Service) hasQuorumPeers() bool {
+	c := s.connectedPeerCount()
+	return c < 0 || c >= s.quorumPeersNeeded()
+}
+
+// proposeWhenQuorum triggers block production for the given view, but only once
+// a quorum of validator peers is connected. This prevents a leader that starts
+// before its IDC peers (non-simultaneous multi-IDC bootstrap, or a transient
+// partition) from proposing an orphan block to a sub-quorum network that cannot
+// vote it into a QC. The node keeps listening / voting / syncing while it waits;
+// if a quorum never connects the view simply makes no progress (correct BFT
+// liveness behaviour). The wait aborts if the view advances meanwhile (e.g. a
+// TC carried the network forward) so the stale proposal is dropped.
+func (s *Service) proposeWhenQuorum(view ViewNumber) {
+	trigger := func() {
+		cfg := s.engine.Config()
+		if cfg != nil && cfg.FastPropose {
+			// Fast Propose: skip slot boundary wait, propose after minimum delay.
+			delay := time.Duration(cfg.MinProposeDelayMs) * time.Millisecond
+			if delay == 0 {
+				delay = 200 * time.Millisecond
+			}
+			go func() {
+				select {
+				case <-time.After(delay):
+					if s.engine.Engine().CurrentView() == view {
+						s.blockProducer.TriggerBlockProduction()
+					}
+				case <-s.ctx.Done():
+				}
+			}()
+			return
+		}
+		s.blockProducer.TriggerBlockProduction()
+	}
+
+	if s.hasQuorumPeers() {
+		trigger()
+		return
+	}
+	log.Info("hotstuff: leader waiting for a quorum of validator peers before proposing",
+		"connected", s.connectedPeerCount(), "needed", s.quorumPeersNeeded(), "view", uint64(view))
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if s.engine.Engine().CurrentView() != view {
+					return // view advanced (e.g. via TC); this proposal is moot
+				}
+				if s.hasQuorumPeers() {
+					log.Info("hotstuff: quorum of validator peers reached — proposing",
+						"connected", s.connectedPeerCount(), "view", uint64(view))
+					trigger()
+					return
+				}
+			case <-s.ctx.Done():
+				return
+			}
+		}
+	}()
 }
 
 // subscribeMessages subscribes to the HotStuff gossip topic and processes incoming messages.
