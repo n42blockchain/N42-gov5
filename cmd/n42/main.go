@@ -29,6 +29,7 @@ import (
 
 	"github.com/urfave/cli/v2"
 
+	"github.com/n42blockchain/N42/cmd/n42-eth-snapshot/snapshot"
 	"github.com/n42blockchain/N42/params"
 	// Force-load the tracer engines to trigger registration
 	_ "github.com/n42blockchain/N42/internal/tracers/js"
@@ -61,7 +62,7 @@ func main() {
 	// 使用新的参数结构（已整合所有旧参数）
 	flags := AllFlags()
 
-	rootCmd = append(rootCmd, walletCommand, accountCommand, exportCommand, dbCommand, initCommand)
+	rootCmd = append(rootCmd, walletCommand, accountCommand, exportCommand, dbCommand, initCommand, snapshot.DownloadCommand())
 	commands := rootCmd
 
 	app := &cli.App{

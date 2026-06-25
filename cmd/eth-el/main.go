@@ -26,6 +26,7 @@ import (
 	"github.com/c2h5oh/datasize"
 	"github.com/urfave/cli/v2"
 
+	"github.com/n42blockchain/N42/cmd/n42-eth-snapshot/snapshot"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	storagetorrent "github.com/n42blockchain/N42/internal/distributed/storage/torrent"
@@ -48,10 +49,11 @@ import (
 
 func main() {
 	app := &cli.App{
-		Name:   "eth-el",
-		Usage:  "N42 Ethereum mainnet execution-layer node",
-		Flags:  flags(),
-		Action: run,
+		Name:     "eth-el",
+		Usage:    "N42 Ethereum mainnet execution-layer node",
+		Flags:    flags(),
+		Action:   run,
+		Commands: []*cli.Command{snapshot.DownloadCommand()},
 	}
 
 	// pprof endpoint for ad-hoc profiling.
