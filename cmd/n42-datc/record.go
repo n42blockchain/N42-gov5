@@ -26,6 +26,10 @@ type chgEvent struct {
 	nibble byte
 }
 
+// chgEventSize is the in-slice size of a chgEvent (uint32 + byte, padded to the
+// uint32 alignment) — used to estimate chgStoAgg heap for the mid-batch drain.
+const chgEventSize = 8
+
 // chgSlot is one account-side aggregation slot (flat-indexed by path).
 type chgSlot struct {
 	epoch  uint32

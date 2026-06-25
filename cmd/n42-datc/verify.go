@@ -275,10 +275,16 @@ func (q *querier) nodeHashAt(domain, path []byte, n uint64) (types.Hash, bool, e
 		return types.Hash{}, false, err
 	}
 	if !usable {
-		if domain == nil && len(path) == 0 {
-			// The account-trie root has no TrieAccount row by convention —
-			// synthesize it from its 16 depth-1 children.
-			return q.synthesizeRoot(n)
+		if len(path) == 0 {
+			// The root node of the account trie (domain==nil) OR any storage
+			// trie (domain set) is synthesized from its 16 depth-1 children,
+			// never read from a stored empty-path record. Accounts never persist
+			// one; reth storage tries omit it and any keylen-32 entry is left
+			// stale by incremental builds — the trie loader synthesizes a virtual
+			// lvl-0 root (StorageTrieCursor.SeekToAccount, lib/trie/trie_root.go),
+			// so the verifier must too, or it would trust a stale storage root and
+			// produce a wrong account leaf. branchSlotsAt returns !usable for d==0.
+			return q.synthesizeRoot(domain, n)
 		}
 		// Below foldDepth / no clean record / collapsed branch — resolve from
 		// leaves (handles extensions, inline children, collapses natively).
@@ -299,6 +305,13 @@ func (q *querier) nodeHashAt(domain, path []byte, n uint64) (types.Hash, bool, e
 // the proof builder (proof.go), so both follow the exact same logic.
 func (q *querier) branchSlotsAt(domain, path []byte, n uint64) (slots [16]*types.Hash, nKids int, usable bool, err error) {
 	d := len(path)
+	if d == 0 {
+		// The root node (account or storage trie) is never served from a stored
+		// empty-path record: accounts omit it; storage tries' keylen-32 entry is
+		// left stale by incremental/reth builds. Callers (nodeHashAt, proofPath)
+		// synthesize the root from its depth-1 children instead.
+		return slots, 0, false, nil
+	}
 	fold := q.foldDepth
 	if domain != nil {
 		fold = 2 // storage tries are small; fold early
@@ -388,13 +401,16 @@ func (q *querier) branchSlotsAt(domain, path []byte, n uint64) (slots [16]*types
 	return slots, nKids, true, nil
 }
 
-// synthesizeRoot assembles the account-trie root node from its 16 depth-1
-// children (the root has no persisted row by erigon convention).
-func (q *querier) synthesizeRoot(n uint64) (types.Hash, bool, error) {
+// synthesizeRoot assembles a trie root node from its 16 depth-1 children:
+// the account trie (domain==nil) or a storage trie (domain set). The root is
+// never read from a persisted empty-path record — accounts omit it by erigon
+// convention and storage tries' keylen-32 entry is unreliable under reth/
+// incremental builds (mirrors StorageTrieCursor.SeekToAccount's virtual root).
+func (q *querier) synthesizeRoot(domain []byte, n uint64) (types.Hash, bool, error) {
 	var slots [16]*types.Hash
 	nKids := 0
 	for nib := byte(0); nib < 16; nib++ {
-		h, exists, err := q.nodeHashAt(nil, []byte{nib}, n)
+		h, exists, err := q.nodeHashAt(domain, []byte{nib}, n)
 		if err != nil {
 			return types.Hash{}, false, err
 		}
@@ -408,7 +424,7 @@ func (q *querier) synthesizeRoot(n uint64) (types.Hash, bool, error) {
 		return types.Hash{}, false, nil
 	}
 	if nKids == 1 {
-		return q.foldAt(nil, nil, n) // degenerate early-chain trie
+		return q.foldAt(domain, nil, n) // degenerate (leaf/extension) trie
 	}
 	return branch17Hash(slots), true, nil
 }

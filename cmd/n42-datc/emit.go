@@ -74,6 +74,11 @@ func (b *builder) flushAllBufs(tx kv.RwTx) error {
 }
 
 func (b *builder) maybeEarlyFlush(tx kv.RwTx) error {
+	// Cap the unbounded storage change-aggregation map: drain it to the (compact,
+	// length-capped) sorted buffers, which the buffer check below then flushes.
+	if b.chgAggCapBytes > 0 && b.chgStoAggBytes > b.chgAggCapBytes {
+		b.flushChgAgg()
+	}
 	if len(b.chgAccBuf) > bufFlushThreshold || len(b.chgStoBuf) > bufFlushThreshold ||
 		len(b.leafABuf) > bufFlushThreshold || len(b.leafSBuf) > bufFlushThreshold {
 		return b.flushAllBufs(tx)
@@ -111,7 +116,12 @@ func (b *builder) emitBlock(n uint64,
 		}
 		domain := make([]byte, 40)
 		copy(domain, ah[:])
-		// incarnation 0 (matches TrieRootComputer composite keys)
+		// domain = addrHash(32) ‖ 8 zero bytes. The 8 trailing bytes are a
+		// DATC-internal leaf-composite convention only (the 72-byte DatcLeafS
+		// key = domain‖slotHash); they are NOT an incarnation — the system
+		// dropped incarnation, and the physical HashedStorage/TrieOfStorage
+		// keys are addrHash(32)-prefixed. Any read of those external tables
+		// must use ah[:] (32 bytes), never this 40-byte domain.
 		for slot, v := range slots {
 			sh := b.slotHash(slot)
 			composite := make([]byte, 0, 72+8)
@@ -219,10 +229,13 @@ func (b *builder) recordChangeStorage(domain []byte, keyNibbles []byte, n uint64
 		binary.BigEndian.PutUint32(ak[len(ak)-4:], uint32(epoch))
 		if p, ok := b.chgStoAgg[string(ak)]; ok {
 			*p = append(*p, chgEvent{block: uint32(n), nibble: keyNibbles[d]})
+			b.chgStoAggBytes += chgEventSize // amortized event growth
 		} else {
 			evs := make([]chgEvent, 0, 8)
 			evs = append(evs, chgEvent{block: uint32(n), nibble: keyNibbles[d]})
 			b.chgStoAgg[string(ak)] = &evs
+			// new entry: map bucket + key string + slice header/backing overhead.
+			b.chgStoAggBytes += len(ak) + 8*chgEventSize + 80
 		}
 		b.chgPuts++
 	}
@@ -273,6 +286,7 @@ func (b *builder) flushChgAgg() {
 		}
 		delete(b.chgStoAgg, ak)
 	}
+	b.chgStoAggBytes = 0
 }
 
 // flushEpoch persists the epoch-end node bytes for every path changed during
@@ -365,9 +379,23 @@ func (b *builder) flushStoLevel(tx kv.RwTx, d int, epoch uint64) error {
 			changed := *pending[pk]
 			path := []byte(pk)
 			delete(pending, pk)
-			// Full-key read works for the DupSort table: the kv layer auto-
-			// converts keys exactly as trie_root_computer's own Put/Delete do.
-			node, err := tx.GetOne(srcTable, path)
+			// Read the live storage-trie node from TrieOfStorage. The system
+			// dropped incarnation: the trie computer keys TrieOfStorage by
+			// addrHash(32)‖nibblePath with NO incarnation (storCollector in
+			// modules/state/commitment/trie_root_computer.go). DATC's internal
+			// `path` carries an 8-byte zero incarnation after the addrHash
+			// (addrHash32‖inc8‖nibblePath) — a leaf-composite-only convention
+			// that never appears in the physical key. TrieOfStorage is a PLAIN
+			// DupSort (not AutoDupSort), so there is no key-length folding to
+			// absorb the extra 8 bytes: a 40-byte-prefixed read misses every
+			// node and the record is silently elided as a tombstone (this is
+			// why DatcStorNode came out empty). Strip the incarnation for the
+			// external read — same lesson as the HashedStorage SeekBothRange
+			// reads in main.go.
+			stoKey := make([]byte, 0, len(path)-8)
+			stoKey = append(stoKey, path[:32]...)
+			stoKey = append(stoKey, path[40:]...)
+			node, err := tx.GetOne(srcTable, stoKey)
 			if err != nil {
 				return err
 			}

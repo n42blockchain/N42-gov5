@@ -30,6 +30,15 @@ import (
 	"github.com/n42blockchain/N42/modules"
 )
 
+// Cached debug-env checks, read ONCE at startup. ComputeRoot / flushTrieRoot
+// run per window, so calling os.Getenv inline added avoidable allocations.
+// Empty / false unless the env var is explicitly set.
+var (
+	dump160Enabled   = os.Getenv("N42_DUMP160") != ""
+	traceStorCollV   = os.Getenv("N42_TRACE_STORCOLL") == "1"
+	dropStaleAddrEnv = os.Getenv("N42_DROP_STALE_ADDR")
+)
+
 // TrieRootComputer computes standard Ethereum MPT state roots incrementally
 // using erigon2.7's CalcTrieRoot (FlatDBTrieLoader).
 //
@@ -81,6 +90,59 @@ type TrieRootComputer struct {
 	// same root — only the write order changes. Off by default (per-block callers
 	// with few keys gain nothing); the batched anchor producer opts in.
 	sortedWrites bool
+
+	// Concurrent root (--concurrent-root): when cworkers>1, flushTrieRoot fans the
+	// CalcTrieRoot out into 16 top-nibble shards, each on its OWN RoTx opened from
+	// cdb and reading cdb-committed ⊕ coverlay (this batch's uncommitted writes,
+	// via WrapStateOverlay's COW snapshots). The combined root is byte-identical to
+	// the serial loader (proven by trie_root_concurrent_test.go); the node updates
+	// flush to TrieOf* exactly as the serial path. cworkers==0 → serial (unchanged).
+	cdb      kv.RoDB
+	coverlay *StateOverlay
+	cworkers int
+
+	// Per-shard reusable collector buffers for flushTrieRootConcurrent. The
+	// per-window node updates were the build's #1 allocator (~1.65 TB cumulative:
+	// per-node key/value copies + repeated slice growth). Each top nibble's shard
+	// goroutine owns index [nib] exclusively (16 disjoint nibbles, one set of 16
+	// goroutines at a time), so no synchronization is needed; the byte data lives
+	// in cArena (chunked, stable sub-slices) and the kvPair slices reuse their
+	// backing arrays across windows.
+	cArena   [16]byteArena
+	cAccUpd  [16][]kvPair
+	cStorUpd [16][]kvPair
+
+	// expectRoot: optional per-call gold value for the concurrent root. The
+	// parallel shards read this batch's uncommitted state through per-worker
+	// RoTx ⊕ overlay merged cursors — a surface the serial loader never uses
+	// (it reads HashedAccounts/HashedStorage natively from the live RwTx). If a
+	// data shape makes that emulation diverge, the combined root is silently
+	// wrong. When the caller knows the boundary block's header root, it sets
+	// this before ComputeRoot; flushTrieRootConcurrent then verifies the
+	// combined root against it and, on mismatch, dumps a per-nibble diagnostic
+	// and falls back to the serial loader (the trusted oracle) for that window.
+	// Zero-cost when matching; the serial recompute runs only on the rare miss.
+	expectRoot    types.Hash
+	expectRootSet bool
+}
+
+// SetExpectRoot arms the concurrent-root gold check for the NEXT ComputeRoot:
+// if the parallel combined root differs from want, flushTrieRootConcurrent logs
+// a per-nibble diagnostic and transparently recomputes via the serial loader.
+// Only meaningful in concurrent mode; harmless otherwise. Re-arm per window.
+func (t *TrieRootComputer) SetExpectRoot(want types.Hash) {
+	t.expectRoot, t.expectRootSet = want, true
+}
+
+// ClearExpectRoot disarms the concurrent-root gold check.
+func (t *TrieRootComputer) ClearExpectRoot() { t.expectRootSet = false }
+
+// SetConcurrentRoot enables the parallel per-window root: db is the env to open
+// per-worker RoTx from, ov is the 4-table overlay holding this batch's uncommitted
+// writes (the same one wrapping t's RwTx), workers caps fan-out (use 16). Pass
+// workers<=1 to keep the serial path.
+func (t *TrieRootComputer) SetConcurrentRoot(db kv.RoDB, ov *StateOverlay, workers int) {
+	t.cdb, t.coverlay, t.cworkers = db, ov, workers
 }
 
 // SetSortedWrites toggles ascending-key-order leaf writes in Phase 1/2 (a large-
@@ -281,7 +343,7 @@ func (t *TrieRootComputer) ComputeRoot(
 	// `0xf88630...`; if dropping the cache yields the mainnet expected root,
 	// the bug is incremental writes never propagate the new root back to
 	// the keylen-32 record.
-	if hexAddr := os.Getenv("N42_DROP_STALE_ADDR"); hexAddr != "" {
+	if hexAddr := dropStaleAddrEnv; hexAddr != "" {
 		// Scoped variant: drop ONLY the listed addrHash(es) (comma-separated
 		// 64-hex). Used to isolate one contract's stale cache rather than
 		// blow away the cache for every dirty-storage account.
@@ -324,7 +386,7 @@ func (t *TrieRootComputer) ComputeRoot(
 	if err != nil {
 		return types.Hash{}, err
 	}
-	if os.Getenv("N42_DUMP160") != "" {
+	if dump160Enabled {
 		t.diagnose160(accounts, storage, root)
 	}
 	return root, nil
@@ -334,6 +396,16 @@ func (t *TrieRootComputer) ComputeRoot(
 // updated intermediate nodes to TrieOfAccounts/TrieOfStorage (Phase 3/4). Shared
 // by the immediate (ComputeRoot) and deferred/batch (FinalizeRoot) paths.
 func (t *TrieRootComputer) flushTrieRoot(rl *trie.RetainList) (types.Hash, error) {
+	// Concurrent per-window root (incremental only — needs a populated TrieOf*).
+	if t.cworkers > 1 && t.incremental {
+		return t.flushTrieRootConcurrent(rl)
+	}
+	return t.flushTrieRootSerial(rl)
+}
+
+// flushTrieRootSerial is the original single-threaded Phase 3/4 (CalcTrieRoot +
+// TrieOf* flush). The concurrent path falls back to it for non-16-branch tops.
+func (t *TrieRootComputer) flushTrieRootSerial(rl *trie.RetainList) (types.Hash, error) {
 	// Phase 3: CalcTrieRoot. In legacy mode, ClearBucket TrieOf* so the
 	// rebuild is full (empty RetainList, every subtree recomputed from
 	// HashedAccounts/HashedStorage). In incremental mode, leave TrieOf*
@@ -368,7 +440,7 @@ func (t *TrieRootComputer) flushTrieRoot(rl *trie.RetainList) (types.Hash, error
 		accTrieUpdates = append(accTrieUpdates, kvPair{k, append([]byte{}, v...)})
 		return nil
 	}
-	traceStor := os.Getenv("N42_TRACE_STORCOLL") == "1"
+	traceStor := traceStorCollV
 	storCollector := func(accWithInc []byte, keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
 		k := append(append(make([]byte, 0, len(accWithInc)+len(keyHex)), accWithInc...), keyHex...)
 		if traceStor && len(accWithInc) >= 4 && accWithInc[0] == 0x6c && accWithInc[1] == 0x9d && accWithInc[2] == 0x57 && accWithInc[3] == 0xbe {

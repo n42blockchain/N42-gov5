@@ -132,6 +132,43 @@ func (pool *TxsPool) AddRemotes(txs []*transaction.Transaction) []error {
 	return pool.addTxs(txs, false, false)
 }
 
+// AddBatch accepts a compressed batch transaction (0x06 single-signature), gated
+// by ChainConfig.BatchTxTime. It verifies the ONE batch signature (a single
+// ecrecover, amortised over all sub-txs), expands the batch into N ordinary
+// sub-txs whose senders are already authenticated, and inserts them — so the
+// expanded sub-txs SKIP per-tx signature validation (validateSender), but still
+// undergo the normal nonce/gas/balance checks in validateTx. The batch container
+// itself is never stored or executed.
+//
+// 0x07 (aggregate BLS) is not handled here yet: its verify needs the on-chain BLS
+// pubkey registry (a state resolver) — the productionize follow-up.
+func (pool *TxsPool) AddBatch(tx *transaction.Transaction) error {
+	if !tx.IsBatch() {
+		return internal.ErrTxTypeNotSupported
+	}
+	cur := pool.bc.CurrentBlock()
+	if pool.chainconfig == nil || cur == nil || !pool.chainconfig.IsBatchTx(cur.Time()) {
+		return internal.ErrTxTypeNotSupported
+	}
+	subs, err := tx.ExpandBatch() // verifies the batch signature (one ecrecover) + expands
+	if err != nil {
+		return err
+	}
+	if len(subs) == 0 {
+		return nil
+	}
+	pool.mu.Lock()
+	errsLocked, dirty := pool.addTxsLocked(subs, true)
+	pool.mu.Unlock()
+	pool.requestPromoteExecutables(dirty)
+	for _, e := range errsLocked {
+		if e != nil {
+			return e // surface the first sub-tx error (PoC: per-sub-tx results not separated)
+		}
+	}
+	return nil
+}
+
 // Has returns whether the pool has a transaction cached with the given hash.
 func (pool *TxsPool) Has(hash types.Hash) bool {
 	return pool.all.Get(hash) != nil
@@ -521,10 +558,20 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
 	isPrague := pool.chainconfig != nil && current != nil && pool.chainconfig.IsPrague(current.Time())
 	isShanghai := pool.chainconfig != nil && current != nil && current.Number64() != nil && pool.chainconfig.IsShanghai(current.Number64().Uint64()+1)
 	isGlamsterdam := pool.chainconfig != nil && current != nil && pool.chainconfig.IsGlamsterdam(current.Time())
+	// Post-quantum tx (0x05) fork gate: rejected until PQTxTime is active.
+	if tx.Type() == transaction.PostQuantumTxType {
+		if pool.chainconfig == nil || current == nil || !pool.chainconfig.IsPQTx(current.Time()) {
+			return internal.ErrTxTypeNotSupported
+		}
+	}
 	intrGas, err := internal.IntrinsicGas(tx.Data(), tx.AccessList(), tx.AuthList(), tx.To() == nil, true, pool.istanbul, isShanghai, isPrague, isGlamsterdam)
 	if err != nil {
 		return err
 	}
+	// Type-specific surcharge (PQ verify + signature/pubkey bytes); 0 for standard
+	// txs. Mirrors the consensus charge in StateTransition so the pool's gas check
+	// matches execution.
+	intrGas += tx.IntrinsicGasExtra()
 	if tx.Gas() < intrGas {
 		return internal.ErrIntrinsicGas
 	}

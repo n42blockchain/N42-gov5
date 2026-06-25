@@ -11,11 +11,10 @@ import (
 
 	"github.com/n42blockchain/N42/lib/log/v3"
 
-	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/common/length"
 	"github.com/n42blockchain/N42/lib/kv"
-
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/lib/rlphacks"
@@ -107,9 +106,9 @@ type RootHashAggregator struct {
 	succStorage    bytes.Buffer
 	valueStorage   []byte // Current value to be used as the value tape for the hash builder
 	hadTreeStorage bool
-	hashAccount    types.Hash // Current value to be used as the value tape for the hash builder
-	hashStorage    types.Hash // Current value to be used as the value tape for the hash builder
-	curr           bytes.Buffer   // Current key for the structure generation algorithm, as well as the input tape for the hash builder
+	hashAccount    types.Hash   // Current value to be used as the value tape for the hash builder
+	hashStorage    types.Hash   // Current value to be used as the value tape for the hash builder
+	curr           bytes.Buffer // Current key for the structure generation algorithm, as well as the input tape for the hash builder
 	succ           bytes.Buffer
 	currAccK       []byte
 	value          []byte // Current value to be used as the value tape for the hash builder
@@ -317,6 +316,111 @@ func (l *FlatDBTrieLoader) CalcTrieRoot(tx kv.Tx, quit <-chan struct{}) (types.H
 	}
 
 	if err := l.receiver.Receive(CutoffStreamItem, nil, nil, nil, nil, nil, false, 0); err != nil {
+		return EmptyRoot, err
+	}
+	return l.receiver.Root(), nil
+}
+
+// LeafIter pulls the next sorted leaf from a stream. ok=false signals end-of-stream.
+// key/value need only stay valid until the next call.
+type LeafIter func() (key, value []byte, ok bool, err error)
+
+// CalcTrieRootStreaming computes the state root from two globally-sorted hashed
+// leaf streams WITHOUT reading HashedAccounts/HashedStorage from the DB — the
+// streaming analogue of CalcTrieRoot for a FULL rebuild. It drives the exact same
+// RootHashAggregator.Receive sequence the cursor loop produces when TrieOfAccounts
+// /TrieOfStorage are empty (no intermediate-hash skipping): for each account leaf,
+// AccountStreamItem then StorageStreamItem for each of its storage leaves, then a
+// final CutoffStreamItem. The result is byte-identical to CalcTrieRoot on the same
+// HashedAccounts/HashedStorage content (pinned by a test).
+//
+//   - accNext yields (hashedAddr[32], account-MarshalV2 bytes), sorted by hashedAddr.
+//   - stoNext yields (hashedAddr[32]||hashedSlot[32], storage value), globally sorted.
+//
+// Use it with a full-rebuild loader: NewFlatDBTrieLoader(_, NewRetainList(0), nil,
+// nil, false). HashCollectors must be nil (no TrieOf* persistence in streaming mode).
+func (l *FlatDBTrieLoader) CalcTrieRootStreaming(accNext, stoNext LeafIter) (types.Hash, error) {
+	return l.CalcTrieRootStreamingCutoff(accNext, stoNext, 0)
+}
+
+// CombineNibbleSubtries assembles the state root from 16 precomputed depth-1
+// subtrie hashes (one per top nibble; empty slice = absent nibble). It feeds each
+// as an AHashStreamItem at its 1-nibble prefix into a fresh aggregator and folds
+// the top branch — the same path FlatDBTrieLoader uses for cached intermediate
+// hashes. Used to combine the results of 16 parallel CalcTrieRootStreamingCutoff(…,1)
+// subtrie builds into the final root.
+func CombineNibbleSubtries(subtrieHashes [16][]byte) (types.Hash, error) {
+	r := NewRootHashAggregator()
+	for i := 0; i < 16; i++ {
+		h := subtrieHashes[i]
+		if len(h) == 0 {
+			continue
+		}
+		if err := r.Receive(AHashStreamItem, []byte{byte(i)}, nil, nil, nil, h, false, 0); err != nil {
+			return EmptyRoot, err
+		}
+	}
+	if err := r.Receive(CutoffStreamItem, nil, nil, nil, nil, nil, false, 0); err != nil {
+		return EmptyRoot, err
+	}
+	return r.Root(), nil
+}
+
+// CalcTrieRootStreamingCutoff is CalcTrieRootStreaming with an explicit account-key
+// cutoff. cutoff=0 yields the full root; cutoff=1 yields the depth-1 subtrie hash
+// (the node the top branch's child points to) — used when the input streams are a
+// single top-nibble shard, so the 16 shard results can be combined via
+// CombineNibbleSubtries.
+func (l *FlatDBTrieLoader) CalcTrieRootStreamingCutoff(accNext, stoNext LeafIter, cutoff int) (types.Hash, error) {
+	// One-leaf lookahead on the storage stream so we can group storage by account.
+	var stoK, stoV []byte
+	var stoOK bool
+	advanceSto := func() error {
+		k, v, ok, err := stoNext()
+		stoK, stoV, stoOK = k, v, ok
+		return err
+	}
+	if err := advanceSto(); err != nil {
+		return EmptyRoot, err
+	}
+
+	for {
+		accK, accV, ok, err := accNext()
+		if err != nil {
+			return EmptyRoot, err
+		}
+		if !ok {
+			break
+		}
+		if len(accK) != 32 {
+			return EmptyRoot, fmt.Errorf("CalcTrieRootStreaming: account key len=%d want 32", len(accK))
+		}
+		hexutil.DecompressNibbles(accK, &l.kHex)
+		if err := l.accountValue.DecodeForStorage(accV); err != nil {
+			return EmptyRoot, fmt.Errorf("CalcTrieRootStreaming: decode account: %w", err)
+		}
+		if err := l.receiver.Receive(AccountStreamItem, l.kHex, nil, &l.accountValue, nil, nil, false, 0); err != nil {
+			return EmptyRoot, err
+		}
+		copy(l.accAddrHashWithInc[:], accK)
+		accWithInc := l.accAddrHashWithInc[:]
+
+		// Drain storage leaves belonging to this account (prefix == hashed addr).
+		for stoOK {
+			if len(stoK) < 64 || !bytes.Equal(stoK[:32], accK) {
+				break
+			}
+			hexutil.DecompressNibbles(stoK[32:64], &l.kHexS)
+			if err := l.receiver.Receive(StorageStreamItem, accWithInc, l.kHexS, nil, stoV, nil, false, 0); err != nil {
+				return EmptyRoot, err
+			}
+			if err := advanceSto(); err != nil {
+				return EmptyRoot, err
+			}
+		}
+	}
+
+	if err := l.receiver.Receive(CutoffStreamItem, nil, nil, nil, nil, nil, false, cutoff); err != nil {
 		return EmptyRoot, err
 	}
 	return l.receiver.Root(), nil
@@ -575,7 +679,7 @@ func (r *RootHashAggregator) genStructStorage() error {
 		// (0x6c9d57be...). Cross-checks the rootHash GenStructStepEx hands us
 		// against an independent r.hb.topHash() read — they must agree if the
 		// stack really has the storage subtree root on top.
-		if os.Getenv("N42_TRACE_STORCOLL_TOP") == "1" && len(r.currAccK) >= 4 &&
+		if traceStorCollTop && len(r.currAccK) >= 4 &&
 			r.currAccK[0] == 0x6c && r.currAccK[1] == 0x9d && r.currAccK[2] == 0x57 && r.currAccK[3] == 0xbe {
 			top := r.hb.topHash()
 			nHashes := 0

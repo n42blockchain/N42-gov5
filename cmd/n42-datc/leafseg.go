@@ -117,9 +117,21 @@ func (w *leafSpillWriter) stream(table, bucket int) (*spillStream, error) {
 	}
 	bw := bufio.NewWriterSize(f, 1<<16)
 	zw, err := zstd.NewWriter(bw,
+		// SpeedDefault (kept deliberately, favouring spill compression ratio).
+		// EVERY spill stream keeps its encoder open for the whole run — the 2 leaf
+		// tables (256 buckets each) PLUS the 2 chg tables (2-byte buckets) total
+		// ~1.8k resident encoders at ~2.63 MB each (doubleFast, two hash tables) =
+		// ~4.7 GB steady-state heap. NOTE: the WithWindowSize 256 KiB->64 KiB below
+		// is NEARLY a no-op for memory — the hash tables are window-INDEPENDENT, so
+		// only the small window buffer shrank (~100 MB total); an earlier claim that
+		// it saved ~3 GB was wrong (it compared an early-resume heap, before all
+		// encoders existed, against a steady-state one). The single-table
+		// SpeedFastest would cut per-encoder memory ~38% (-> ~2.9 GB) but trades
+		// spill ratio, which we keep. zstd frames are self-describing, so either
+		// window still decodes (resume-safe).
 		zstd.WithEncoderLevel(zstd.SpeedDefault),
 		zstd.WithEncoderConcurrency(1),
-		zstd.WithWindowSize(1<<18))
+		zstd.WithWindowSize(1<<16))
 	if err != nil {
 		f.Close()
 		return nil, err
