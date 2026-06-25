@@ -69,6 +69,14 @@ type Stats struct {
 	ReceiptMatch    atomic.Uint64 // blocks where receipt hash matches source
 	ReceiptMismatch atomic.Uint64 // blocks where receipt hash differs from source
 	GasUsedTotal    atomic.Uint64 // cumulative gas used by replayed transactions
+
+	// Consensus-evidence completeness (only meaningful with --bls-reseal):
+	// every resealed block is threshold-checked (committee signers present and
+	// >= minMobileVerifiers mobile participants); a 1-in-N sample is additionally
+	// full-BLS-aggregate-verified. Validates the cleaned chain's consensus info.
+	CEIncomplete atomic.Uint64 // resealed blocks failing the threshold check
+	CEVerifyOK   atomic.Uint64 // sampled blocks whose CE aggregate signature verified
+	CEVerifyFail atomic.Uint64 // sampled blocks whose CE aggregate signature FAILED
 }
 
 // NewStats creates a Stats instance with initialized skip reason counters.

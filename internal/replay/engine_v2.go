@@ -362,6 +362,17 @@ func (e *EngineV2) Run(ctx context.Context) (*Stats, error) {
 		"receiptMismatch", e.stats.ReceiptMismatch.Load(),
 		"elapsed", e.stats.Elapsed(),
 	)
+	if e.resealer != nil {
+		e.log.Info("replay-v2 consensus-evidence check",
+			"ceIncomplete", e.stats.CEIncomplete.Load(),
+			"ceVerifyOK", e.stats.CEVerifyOK.Load(),
+			"ceVerifyFail", e.stats.CEVerifyFail.Load(),
+			"sampleInterval", ceVerifyInterval, "minMobile", minMobileVerifiers)
+		if e.stats.CEIncomplete.Load() != 0 || e.stats.CEVerifyFail.Load() != 0 {
+			e.log.Error("replay-v2 consensus info INCOMPLETE/INVALID — cleaned chain consensus data is not fully verified",
+				"incomplete", e.stats.CEIncomplete.Load(), "verifyFail", e.stats.CEVerifyFail.Load())
+		}
+	}
 	return e.stats, nil
 }
 
@@ -791,6 +802,7 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 						gapCE.BlockHash = gapBlk.Hash()
 						if e.resealer != nil {
 							gapCE = e.resealer.BuildCE(newBlockNum, gapBlk.Hash(), emptyReceiptHash)
+							e.verifyResealCE(gapCE, newBlockNum)
 						}
 						if err := rawdb.WriteConsensusEvidence(dstTx, newBlockNum, gapCE); err != nil {
 							return fmt.Errorf("write gap consensus evidence %d: %w", newBlockNum, err)
@@ -1041,6 +1053,7 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				ce.BlockHash = newBlk.Hash()
 				if e.resealer != nil {
 					ce = e.resealer.BuildCE(newBlockNum, newBlk.Hash(), receiptHash)
+					e.verifyResealCE(ce, newBlockNum)
 				}
 				if err := rawdb.WriteConsensusEvidence(dstTx, newBlockNum, ce); err != nil {
 					return fmt.Errorf("write consensus evidence block %d: %w", newBlockNum, err)
@@ -1427,6 +1440,46 @@ func (e *EngineV2) readParentInfo(dstTx kv.Tx, from uint64) (types.Hash, uint64,
 	}
 	parentHeader := parentBlk.Header().(*block.Header)
 	return h, parentHeader.Time, nil
+}
+
+// minMobileVerifiers is the floor on mobile parallel-verification participants
+// a resealed block's ConsensusEvidence must carry to be considered complete.
+const minMobileVerifiers = 21
+
+// ceVerifyInterval samples 1-in-N resealed blocks for full BLS aggregate-
+// signature verification. Per-block verification (a CommitteeSize≈512 pubkey
+// aggregation + pairing) would dominate replay time over millions of blocks,
+// so the expensive signature check is sampled while the cheap threshold check
+// runs on every block.
+const ceVerifyInterval = 50000
+
+// verifyResealCE validates a freshly-resealed block's ConsensusEvidence so the
+// cleaned chain's consensus info is checked, not merely trusted (BuildCE signs
+// by construction). Every block: cheap threshold asserts — the committee QC has
+// signers and, when a mobile layer is present, >= minMobileVerifiers
+// participants. Sampled: a full aggregate-signature verification. Failures are
+// counted in stats and reported at end-of-replay (non-fatal so the run finishes
+// and the operator sees the totals).
+func (e *EngineV2) verifyResealCE(ce *rawdb.ConsensusEvidence, blockNum uint64) {
+	if e.resealer == nil || ce == nil {
+		return
+	}
+	if ce.SignerCount == 0 || (ce.HasMobile && ce.MobParticipantCount < minMobileVerifiers) {
+		if e.stats.CEIncomplete.Add(1) <= 20 {
+			e.log.Warn("reseal CE incomplete consensus info",
+				"block", blockNum, "committeeSigners", ce.SignerCount,
+				"hasMobile", ce.HasMobile, "mobile", ce.MobParticipantCount, "minMobile", minMobileVerifiers)
+		}
+		return
+	}
+	if blockNum%ceVerifyInterval == 0 {
+		if ok, err := e.resealer.VerifyCE(ce); err != nil || !ok {
+			e.stats.CEVerifyFail.Add(1)
+			e.log.Error("reseal CE aggregate-signature verify FAILED", "block", blockNum, "ok", ok, "err", err)
+		} else {
+			e.stats.CEVerifyOK.Add(1)
+		}
+	}
 }
 
 // buildConsensusEvidence extracts APoS data from source header Extra
