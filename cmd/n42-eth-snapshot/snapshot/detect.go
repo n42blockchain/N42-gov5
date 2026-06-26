@@ -19,7 +19,9 @@ func DetectMode(datadir string) (*DetectResult, error) {
 	tiers := []string{"archive", "full", "minimal"}
 	for _, mode := range tiers {
 		sel, _ := manifest.SelectorFor(mode)
-		missing, err := manifest.MissingSections(datadir, sel)
+		// Completeness ignores Optional sections (Caplin beacon seed is absent
+		// until #31, and never present on the n42 HotStuff-2 self-chain).
+		missing, err := manifest.RequiredMissingSections(datadir, sel)
 		if err != nil {
 			return nil, err
 		}
@@ -28,18 +30,18 @@ func DetectMode(datadir string) (*DetectResult, error) {
 			if m, err := ManifestFor(datadir, mode); err == nil {
 				res.Height = m.Height
 			}
-			// Report what's needed to climb to the next tier.
+			// Report the REQUIRED sections needed to climb to the next tier.
 			if next := nextTier(mode); next != "" {
 				nextSel, _ := manifest.SelectorFor(next)
-				nm, _ := manifest.MissingSections(datadir, nextSel)
+				nm, _ := manifest.RequiredMissingSections(datadir, nextSel)
 				res.MissingSections = nm
 			}
 			return res, nil
 		}
 	}
-	// Not even minimal is complete; report partial state.
+	// Not even minimal is complete; report partial state (required gaps only).
 	sel, _ := manifest.SelectorFor("minimal")
-	missing, _ := manifest.MissingSections(datadir, sel)
+	missing, _ := manifest.RequiredMissingSections(datadir, sel)
 	return &DetectResult{Mode: "", Intact: false, MissingSections: missing}, nil
 }
 

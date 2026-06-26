@@ -23,6 +23,13 @@ type Selector struct {
 type Section struct {
 	Name     string
 	Patterns []string
+	// Optional marks a section that is part of a tier's eventual shape but is
+	// NOT required for the tier to be considered present/complete (e.g. the
+	// Caplin beacon seed, which is an eth-el+CL convenience absent until #31,
+	// and which the n42 self-developed HotStuff-2 chain never has). Completeness
+	// checks (RequiredMissingSections / DetectMode) skip optional sections; they
+	// are still reported informationally as a known gap.
+	Optional bool
 }
 
 // Manifest is the on-disk JSON shape. Mirrors the spec in
@@ -120,6 +127,7 @@ var snapshotSections = []Section{
 var beaconCheckpointSection = Section{
 	Name:     "beacon-checkpoint",
 	Patterns: []string{"caplin/checkpoint/state.*.ssz.zst"},
+	Optional: true, // eth-el+Caplin seed; absent until #31, never on the n42 h2 chain
 }
 
 // beaconArchiveSection is the full-history beacon-block archive, extreme-compressed
@@ -128,6 +136,7 @@ var beaconCheckpointSection = Section{
 var beaconArchiveSection = Section{
 	Name:     "beacon-archive",
 	Patterns: []string{"caplin/beacon-archive.*.zst", "caplin/beacon-archive.*.idx"},
+	Optional: true, // eth-el+Caplin archive; absent until #31, never on the n42 h2 chain
 }
 
 // minimal: compact state snapshot + caplin checkpoint-sync seed (~25.7 GB +

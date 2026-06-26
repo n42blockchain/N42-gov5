@@ -83,7 +83,7 @@ func SectionsPresent(root string, sel *Selector) ([]string, error) {
 }
 
 // MissingSections is the inverse: sections in the selector that
-// have ZERO matched files.
+// have ZERO matched files. Includes optional sections (informational).
 func MissingSections(root string, sel *Selector) ([]string, error) {
 	files, err := WalkFiles(root, sel)
 	if err != nil {
@@ -95,6 +95,33 @@ func MissingSections(root string, sel *Selector) ([]string, error) {
 	}
 	var out []string
 	for _, sec := range sel.Sections {
+		if _, ok := present[sec.Name]; !ok {
+			out = append(out, sec.Name)
+		}
+	}
+	return out, nil
+}
+
+// RequiredMissingSections is like MissingSections but skips sections marked
+// Optional, so a tier counts as present when all of its REQUIRED sections have
+// files even if an optional one (e.g. the Caplin beacon seed, absent until #31,
+// and never present on the n42 HotStuff-2 self-chain) is missing. Used for
+// completeness/mode detection; MissingSections stays for the informational
+// "what could you add" report.
+func RequiredMissingSections(root string, sel *Selector) ([]string, error) {
+	files, err := WalkFiles(root, sel)
+	if err != nil {
+		return nil, err
+	}
+	present := make(map[string]struct{}, 8)
+	for _, f := range files {
+		present[f.Section] = struct{}{}
+	}
+	var out []string
+	for _, sec := range sel.Sections {
+		if sec.Optional {
+			continue
+		}
 		if _, ok := present[sec.Name]; !ok {
 			out = append(out, sec.Name)
 		}
