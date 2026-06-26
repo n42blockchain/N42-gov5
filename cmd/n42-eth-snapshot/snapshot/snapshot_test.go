@@ -52,12 +52,12 @@ func TestDetectMode_Archive(t *testing.T) {
 	dir := touchFakeArchive(t,
 		"chain/freezer/bodyc.cidx",
 		"chain/freezer/bodyc.0000.cdat",
-		"chain/freezer/receipts.cidx",
-		"chain/freezer/accthist.cidx",
-		"chain/freezer/storhist.cidx",
 		"chain/freezer/txindex.cidx",
 		"chain/freezer/witness.cidx",
 		"chain/freezer/witness.0000.cdat",
+		"chain/freezer/anchorc.cidx",
+		"chain/freezer/anchorc.0000.cdat",
+		"chain/freezer/anchorc.blocks",
 	)
 	d, err := DetectMode(dir)
 	if err != nil {
@@ -151,8 +151,9 @@ func TestVerify_DetectsCorruption(t *testing.T) {
 	dst := t.TempDir()
 	_, _ = Fetch("file://"+src, dst, "minimal", false, false, 2)
 
-	// Corrupt one file.
-	target := filepath.Join(dst, "chain", "freezer", "headerc.cidx")
+	// Corrupt one file that is actually part of the minimal tier (the minimal
+	// snapshot ships state, not headers — headers are fetched live).
+	target := filepath.Join(dst, "snapshot", "accounts.0-25099999.idx")
 	if err := os.WriteFile(target, []byte("corrupted"), 0o644); err != nil {
 		t.Fatalf("corrupt: %v", err)
 	}
@@ -162,8 +163,8 @@ func TestVerify_DetectsCorruption(t *testing.T) {
 	}
 	found := false
 	for _, p := range rep.Mismatches {
-		if filepath.ToSlash(p) == "chain/freezer/headerc.cidx — blake2b mismatch" ||
-			(len(p) > 0 && p[0] == 'c') { // path-prefix check
+		if filepath.ToSlash(p) == "snapshot/accounts.0-25099999.idx — blake2b mismatch" ||
+			(len(p) > 0 && p[0] == 's') { // path-prefix check
 			found = true
 			break
 		}

@@ -23,16 +23,18 @@ func TestIT2_DeltaApply_RoundTrip(t *testing.T) {
 
 	// === Setup target archive B ===
 	archB := touchFakeArchive(t)
-	// Mutate a file in B.
+	// Mutate a file in B that is part of the minimal tier (snapshot state;
+	// headers are not shipped in minimal, so mutating them would not change the
+	// minimal manifest).
 	if err := os.WriteFile(
-		filepath.Join(archB, "chain", "freezer", "headerc.cidx"),
-		[]byte("UPDATED-content-headerc.cidx"), 0o644); err != nil {
+		filepath.Join(archB, "snapshot", "accounts.0-25099999.val.zst"),
+		[]byte("UPDATED-content-accounts"), 0o644); err != nil {
 		t.Fatalf("mutate B: %v", err)
 	}
-	// Add a new file in B.
+	// Add a new minimal-tier file in B.
 	if err := os.WriteFile(
-		filepath.Join(archB, "chain", "freezer", "headerc.0001.cdat"),
-		[]byte("new-rotated-cdat-segment"), 0o644); err != nil {
+		filepath.Join(archB, "snapshot", "accounts.1-25199999.idx"),
+		[]byte("new-rotated-snapshot-segment"), 0o644); err != nil {
 		t.Fatalf("add B: %v", err)
 	}
 	if err := writeFakeManifestWithHeight(t, archB, "minimal", 2000000); err != nil {
@@ -116,7 +118,9 @@ func TestIT3_DeltaApply_WrongBaseline(t *testing.T) {
 		t.Fatalf("write A: %v", err)
 	}
 	archB := touchFakeArchive(t)
-	if err := os.WriteFile(filepath.Join(archB, "chain/freezer/headerc.cidx"),
+	// Mutate a minimal-tier file (snapshot state) so B's minimal manifest_id
+	// actually differs from A's.
+	if err := os.WriteFile(filepath.Join(archB, "snapshot", "accounts.0-25099999.val.zst"),
 		[]byte("X"), 0o644); err != nil {
 		t.Fatalf("mutate B: %v", err)
 	}
@@ -128,9 +132,10 @@ func TestIT3_DeltaApply_WrongBaseline(t *testing.T) {
 		t.Fatalf("buildDeltaTree: %v", err)
 	}
 
-	// Client has a DIFFERENT baseline (archC with its own manifest_id).
+	// Client has a DIFFERENT baseline (archC with its own manifest_id) — mutate a
+	// different minimal-tier file so C differs from both A and B.
 	archC := touchFakeArchive(t)
-	if err := os.WriteFile(filepath.Join(archC, "chain/freezer/codes.cidx"),
+	if err := os.WriteFile(filepath.Join(archC, "snapshot", "storage.0-25099999.val.zst"),
 		[]byte("totally-different-C"), 0o644); err != nil {
 		t.Fatalf("mutate C: %v", err)
 	}
