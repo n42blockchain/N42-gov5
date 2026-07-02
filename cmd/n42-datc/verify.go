@@ -39,6 +39,14 @@ var emptyTrieRoot = types.HexToHash("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b9
 // traceDatc gates verbose branch-resolution diagnostics (DATC_TRACE=1).
 var traceDatc = os.Getenv("DATC_TRACE") != ""
 
+// foldStats (DATC_FOLD_STATS=1): histogram of foldAt calls by domain/depth.
+var foldStats = func() map[string]int {
+	if os.Getenv("DATC_FOLD_STATS") != "" {
+		return map[string]int{}
+	}
+	return nil
+}()
+
 func runVerify(args []string) {
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
 	out := fs.String("out", "", "DATC MDBX dir (from build)")
@@ -219,7 +227,77 @@ type querier struct {
 	// zstd segments (leafseg.go) instead of the MDBX tables.
 	segA, segS, segCA, segCS *leafSegSet
 
+	// fastEOA short-circuits the per-account storage-root reconstruction for
+	// empty-code accounts (EOAs cannot hold storage) — a diagnostic/fast path
+	// that avoids ~16 storage-segment seeks per EOA during an account fold.
+	fastEOA bool
+
 	folds, recs, leafReads int
+
+	// Dense storage-root history reader (tDatcStoRoot; per-block builds).
+	// Lazily opened; absent table (older/window DBs) → permanent fallback to
+	// nodeHashAt reconstruction. stoRootTrust: the DB's meta says the layer is
+	// complete from genesis — a MISS is then authoritative "no storage" (EOAs
+	// and never-storage contracts skip the 16-way empty-subtree probe).
+	stoRootCur     kv.Cursor
+	stoRootAbsent  bool
+	stoRootChecked bool
+	stoRootTrust   bool
+}
+
+// storageRootAt reads a contract's storage root as of block n from the dense
+// storage-root history: floor row ≤ n under addrHash. found=false → no row /
+// no table — the caller reconstructs via nodeHashAt instead. An empty row
+// value is a tombstone: the storage emptied at that block (has=false).
+func (q *querier) storageRootAt(ah []byte, n uint64) (root types.Hash, has bool, found bool) {
+	if q.stoRootAbsent {
+		return types.Hash{}, false, false
+	}
+	if !q.stoRootChecked {
+		q.stoRootChecked = true
+		// Layer completeness: builds stamp meta stoRootFrom with their fresh-
+		// build start block; 0 = complete from genesis ⇒ misses are authoritative.
+		if mv, err := q.tx.GetOne(tDatcMeta, []byte("stoRootFrom")); err == nil && len(mv) == 8 {
+			q.stoRootTrust = binary.BigEndian.Uint64(mv) == 0
+		}
+	}
+	if q.stoRootCur == nil {
+		c, err := q.tx.Cursor(tDatcStoRoot)
+		if err != nil {
+			q.stoRootAbsent = true
+			return types.Hash{}, false, false
+		}
+		q.stoRootCur = c
+	}
+	miss := func() (types.Hash, bool, bool) {
+		if q.stoRootTrust {
+			return types.Hash{}, false, true // authoritative: never had storage ≤ n
+		}
+		return types.Hash{}, false, false
+	}
+	seek := make([]byte, 40)
+	copy(seek, ah[:32])
+	binary.BigEndian.PutUint64(seek[32:], n+1)
+	k, v, err := q.stoRootCur.Seek(seek)
+	if err != nil {
+		return types.Hash{}, false, false
+	}
+	if k == nil {
+		k, v, err = q.stoRootCur.Last()
+	} else {
+		k, v, err = q.stoRootCur.Prev()
+	}
+	if err != nil {
+		return types.Hash{}, false, false
+	}
+	if k == nil || len(k) != 40 || !bytes.Equal(k[:32], ah[:32]) {
+		return miss()
+	}
+	if len(v) != 32 {
+		return types.Hash{}, false, true // tombstone: storage emptied at the floor block
+	}
+	copy(root[:], v)
+	return root, true, true
 }
 
 // leafCur is the cursor contract asOfLeaves needs; satisfied by both
@@ -327,11 +405,33 @@ func (q *querier) branchSlotsAt(domain, path []byte, n uint64) (slots [16]*types
 		return slots, 0, false, err
 	}
 	if !ok {
+		if foldStats != nil {
+			foldStats[fmt.Sprintf("why-norec-d%d", d)]++
+		}
 		return slots, 0, false, nil
 	}
 	q.recs++
-	if st.hasState != st.hasHash || st.hasState == 0 {
-		// Mixed/inline children — the plain 17-RLP assembly would be wrong.
+	if st.hasState == 0 {
+		if foldStats != nil {
+			foldStats[fmt.Sprintf("why-empty-d%d", d)]++
+		}
+		return slots, 0, false, nil
+	}
+	// hasHash may be a strict subset of hasState: by erigon collector
+	// convention a child with its OWN deeper record (hasTree bit) does not
+	// store its hash in the parent — the reader recurses into the child
+	// instead. Only a child with NEITHER hash NOR tree (embedded/inline) makes
+	// the 17-RLP assembly impossible; then the whole node folds. Treating any
+	// hasState≠hasHash as unusable folded a full depth-3 subtree for EVERY
+	// changed child — the actual mechanism behind the 32s non-boundary cascade.
+	if st.hasState&^(st.hasHash|st.hasTree) != 0 && domain != nil {
+		if foldStats != nil {
+			foldStats[fmt.Sprintf("why-embed-d%d", d)]++
+		}
+		// STORAGE tries can embed a <32B leaf inline in the parent branch RLP —
+		// only the whole-node fold reproduces that byte-exactly. ACCOUNT-trie
+		// children are always ≥33B (leaf ≥ ~70B ⇒ hashed refs), so state-only
+		// children resolve per-child in the loop below instead.
 		return slots, 0, false, nil
 	}
 
@@ -371,11 +471,12 @@ func (q *querier) branchSlotsAt(domain, path []byte, n uint64) (slots [16]*types
 			d, path, n, recEpoch, curEpoch, eLen, len(cc1), len(cc0), st.hasState)
 	}
 
-	// Assemble the branch: unchanged children from the record, changed ones
-	// recursively at N.
+	// Assemble the branch: unchanged hashed children from the record; changed
+	// children AND unchanged hasTree-without-hash children (their hash lives in
+	// their own record chain, not the parent's) resolve recursively at N.
 	for nib := byte(0); nib < 16; nib++ {
 		bit := uint16(1) << nib
-		if changed[nib] {
+		if changed[nib] || (st.hasState&bit != 0 && st.hasHash&bit == 0) {
 			h, exists, err := q.nodeHashAt(domain, append(append([]byte{}, path...), nib), n)
 			if err != nil {
 				return slots, 0, false, err
@@ -728,6 +829,13 @@ func (q *querier) foldAtTraced(domain, path []byte, n uint64, out map[string][]b
 // GenStructStep — the same machinery production loaders use).
 func (q *querier) foldAt(domain, path []byte, n uint64) (types.Hash, bool, error) {
 	q.folds++
+	if foldStats != nil {
+		k := fmt.Sprintf("acc-d%d", len(path))
+		if domain != nil {
+			k = fmt.Sprintf("sto-d%d", len(path))
+		}
+		foldStats[k]++
+	}
 	leaves, err := q.asOfLeaves(domain, path, n)
 	if err != nil {
 		return types.Hash{}, false, err
@@ -814,16 +922,27 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 				return fmt.Errorf("leaf account decode: %w", err)
 			}
 			// storage root at N for this account (emptyRoot for EOAs).
-			sd := make([]byte, 40)
-			copy(sd, hk[:32])
-			sroot, hasStorage, err := q.nodeHashAt(sd, nil, n)
-			if err != nil {
-				return err
-			}
-			if hasStorage {
-				acct.Root = sroot
-			} else {
+			if q.fastEOA && acct.IsEmptyCodeHash() {
+				// An empty-code account cannot hold storage at a block boundary,
+				// so its storage root is the empty-trie root — skip the ~16
+				// storage-segment seeks nodeHashAt would otherwise do.
 				acct.Root = emptyTrieRoot
+			} else {
+				sroot, hasStorage, found := q.storageRootAt(hk[:32], n)
+				if !found {
+					sd := make([]byte, 40)
+					copy(sd, hk[:32])
+					var err error
+					sroot, hasStorage, err = q.nodeHashAt(sd, nil, n)
+					if err != nil {
+						return err
+					}
+				}
+				if hasStorage {
+					acct.Root = sroot
+				} else {
+					acct.Root = emptyTrieRoot
+				}
 			}
 			buf := make([]byte, acct.EncodingLengthForHashing())
 			acct.EncodeForHashing(buf)

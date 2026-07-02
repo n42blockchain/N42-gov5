@@ -65,6 +65,7 @@ func (b *builder) flushAllBufs(tx kv.RwTx) error {
 		{tDatcAccChg, &b.chgAccBuf}, {tDatcStoChg, &b.chgStoBuf},
 		{tDatcLeafA, &b.leafABuf}, {tDatcLeafS, &b.leafSBuf},
 		{tDatcAccNode, &b.nodeAccBuf}, {tDatcStoNode, &b.nodeStoBuf},
+		{tDatcStoRoot, &b.stoRootBuf},
 	} {
 		if err := flushBuf(tx, e.table, e.buf); err != nil {
 			return err
@@ -338,11 +339,19 @@ func (b *builder) flushAccPath(tx kv.RwTx, path []byte, changed uint16, epoch ui
 			return nil // never had a live record: elide
 		}
 		b.accLastFull[string(path)] = nodeRecState{exists: false}
-	case !st.exists || uint32(epoch) >= st.lastFullEpoch+fullEvery:
+	case !st.exists || st.lastFullEpoch >= accFullEvery-1:
+		// Account-side FULL cadence counts RECORDS, not epochs (the reader's
+		// floorRecordBefore walks the record chain, never epoch distance).
+		// The old epoch-distance rule made EVERY record FULL for any node
+		// changing less often than fullEvery blocks under a dense (e=1)
+		// schedule — 529 B/record instead of ~45 (the 2M B′ measurement).
+		// lastFullEpoch is repurposed on this side as the DIFFs-since-FULL
+		// counter; a restart loses the map and safely degrades to FULL.
 		v = append([]byte{nodeRecFull}, node...)
-		b.accLastFull[string(path)] = nodeRecState{lastFullEpoch: uint32(epoch), exists: true}
+		b.accLastFull[string(path)] = nodeRecState{lastFullEpoch: 0, exists: true}
 	default:
 		v = encodeNodeDiff(node, changed)
+		st.lastFullEpoch++
 		st.exists = true
 		b.accLastFull[string(path)] = st
 	}
