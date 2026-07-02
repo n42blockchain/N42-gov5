@@ -191,6 +191,14 @@ func NewRecSplit(args RecSplitArgs, logger log.Logger) (*RecSplit, error) {
 		rs.offsetCollector.LogLvl(log.LvlDebug)
 	}
 	rs.lessFalsePositives = args.LessFalsePositives
+	if !rs.enums && rs.lessFalsePositives {
+		// The existence fingerprint is only materialized (and its feature bit
+		// only written) in Enums mode — without Enums the flag silently does
+		// nothing and every out-of-set key phantom-resolves. Callers relying
+		// on LFP for multi-segment correctness must either enable Enums or
+		// verify candidates externally (e.g. txlookup.Service.SetVerifier).
+		logger.Warn("recsplit: LessFalsePositives requested without Enums — fingerprint NOT built, lookups will phantom-hit", "file", fname)
+	}
 	if rs.enums && args.KeyCount > 0 && rs.lessFalsePositives {
 		bufferFile, err := os.CreateTemp(rs.tmpDir, "erigon-lfp-buf-")
 		if err != nil {

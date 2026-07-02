@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -502,6 +503,17 @@ func main() {
 					&cli.Uint64Flag{Name: "end", Usage: "End block (0=all)", Value: 0},
 				},
 				Action: runTxLookupBuild,
+			},
+			{
+				Name:  "txlookup-query",
+				Usage: "Query / self-verify txlookup segments (tx hash -> block number)",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "dir", Usage: "Segment directory (holds txindex.cidx/cdat)", Required: true},
+					&cli.StringFlag{Name: "tx", Usage: "Single tx hash (hex) to look up"},
+					&cli.StringFlag{Name: "ancient", Usage: "Geth ancient dir: self-verify sampled txs against real bodies"},
+					&cli.StringFlag{Name: "blocks", Usage: "Comma-separated block numbers to sample for self-verify"},
+				},
+				Action: runTxLookupQuery,
 			},
 			{
 				Name:  "cs-analyze",
@@ -1313,6 +1325,136 @@ func runHistoryBuild(c *cli.Context) error {
 		return stoBuilder.BuildFromChangesets(ctx, startBlock, endBlock)
 	}
 	return stoBuilder.BuildRange(ctx, startBlock, endBlock)
+}
+
+// runTxLookupQuery looks up a single tx hash, or self-verifies the segments:
+// for each sampled block it decodes the real body from the geth ancient
+// freezer, hashes first/middle/last tx, and checks Lookup returns exactly that
+// block; plus a random-hash negative probe. Exits non-zero on any mismatch.
+func runTxLookupQuery(c *cli.Context) error {
+	dir := c.String("dir")
+	svc, err := txlookup.NewService(dir)
+	if err != nil {
+		return fmt.Errorf("open segments: %w", err)
+	}
+
+	if txHex := c.String("tx"); txHex != "" {
+		h := types.HexToHash(txHex)
+		blk, err := svc.Lookup(nil, h)
+		if err != nil {
+			return err
+		}
+		if blk == nil {
+			fmt.Printf("%s -> NOT FOUND\n", h.Hex())
+		} else {
+			fmt.Printf("%s -> block %d\n", h.Hex(), *blk)
+		}
+		return nil
+	}
+
+	ancientPath := c.String("ancient")
+	if ancientPath == "" {
+		return fmt.Errorf("--tx or --ancient required")
+	}
+	f, err := freezer.NewReadOnly(ancientPath)
+	if err != nil {
+		return fmt.Errorf("open input freezer: %w", err)
+	}
+	defer f.Close()
+
+	// The segments are effectively no-LFP (recsplit only materializes the
+	// existence fingerprint when Enums is on), so a bare Lookup phantom-hits
+	// the newest segment for any foreign hash. Production wiring therefore
+	// REQUIRES the verifier: confirm each candidate block really contains the
+	// hash, else keep probing older segments. Mirror that here.
+	svc.SetVerifier(func(blockNum uint64, txHash types.Hash) (uint64, bool) {
+		bodyData, err := f.Ancient(freezer.TableBodies, blockNum)
+		if err != nil {
+			return 0, false
+		}
+		body, err := ethel.DecodeGethBody(bodyData)
+		if err != nil {
+			return 0, false
+		}
+		for i, tx := range body.Transactions {
+			if tx.Hash() == txHash {
+				return uint64(i), true
+			}
+		}
+		return 0, false
+	})
+
+	var blocks []uint64
+	for _, s := range strings.Split(c.String("blocks"), ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		n, err := strconv.ParseUint(s, 10, 64)
+		if err != nil {
+			return fmt.Errorf("bad block %q: %w", s, err)
+		}
+		blocks = append(blocks, n)
+	}
+	if len(blocks) == 0 {
+		return fmt.Errorf("--blocks required with --ancient")
+	}
+
+	failed := 0
+	checked := 0
+	for _, blockNum := range blocks {
+		bodyData, err := f.Ancient(freezer.TableBodies, blockNum)
+		if err != nil {
+			return fmt.Errorf("read body %d: %w", blockNum, err)
+		}
+		body, err := ethel.DecodeGethBody(bodyData)
+		if err != nil {
+			return fmt.Errorf("decode body %d: %w", blockNum, err)
+		}
+		if len(body.Transactions) == 0 {
+			fmt.Printf("block %d: empty, skipped\n", blockNum)
+			continue
+		}
+		samples := []int{0, len(body.Transactions) / 2, len(body.Transactions) - 1}
+		for _, i := range samples {
+			h := body.Transactions[i].Hash()
+			got, err := svc.Lookup(nil, h)
+			checked++
+			switch {
+			case err != nil:
+				fmt.Printf("FAIL block %d tx[%d] %s: %v\n", blockNum, i, h.Hex(), err)
+				failed++
+			case got == nil:
+				fmt.Printf("FAIL block %d tx[%d] %s: not found\n", blockNum, i, h.Hex())
+				failed++
+			case *got != blockNum:
+				fmt.Printf("FAIL block %d tx[%d] %s: resolved to block %d\n", blockNum, i, h.Hex(), *got)
+				failed++
+			default:
+				fmt.Printf("ok   block %d tx[%d] %s\n", blockNum, i, h.Hex())
+			}
+		}
+	}
+
+	// Negative probe: a hash that cannot exist must not resolve.
+	var bogus types.Hash
+	copy(bogus[:], []byte("txlookup-negative-probe-hash!!!!"))
+	if got, err := svc.Lookup(nil, bogus); err != nil {
+		fmt.Printf("FAIL negative probe: %v\n", err)
+		failed++
+	} else if got != nil {
+		fmt.Printf("FAIL negative probe resolved to block %d (phantom)\n", *got)
+		failed++
+	} else {
+		fmt.Printf("ok   negative probe not found\n")
+	}
+	checked++
+
+	fmt.Printf("txlookup-query: %d checked, %d failed\n", checked, failed)
+	if failed > 0 {
+		return fmt.Errorf("%d verification failures", failed)
+	}
+	return nil
 }
 
 func runTxLookupBuild(c *cli.Context) error {
