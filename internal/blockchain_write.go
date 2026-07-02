@@ -168,6 +168,25 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			return err
 		}
 
+		// Persist the per-block BLS committee evidence in the same atomic batch —
+		// on EVERY node, not just the producing leader. The simulated pool is
+		// deterministic (same seed on all nodes), so followers regenerate the
+		// byte-identical CE at import. Without this, only each block's leader
+		// held its own CE; under leader rotation the NEXT leader had no parent
+		// CE to derive ParentBeaconRoot from and the resealed chain's evidence
+		// chain broke at the first live block (7-node smoke, blocks 1001+).
+		if bc.committeePool != nil {
+			if hdr, ok := concreteBlock.Header().(*block.Header); ok && hdr != nil {
+				ce, cerr := bc.committeePool.BuildBlockEvidence(blockNumber.Uint64(), blk.Hash(), hdr.ReceiptHash)
+				if cerr != nil {
+					return fmt.Errorf("build consensus evidence block %d: %w", blockNumber.Uint64(), cerr)
+				}
+				if err := rawdb.WriteConsensusEvidence(tx, blockNumber.Uint64(), ce); err != nil {
+					return fmt.Errorf("write consensus evidence block %d: %w", blockNumber.Uint64(), err)
+				}
+			}
+		}
+
 		var stateWriter state.WriterWithChangeSets = state.NewPlainStateWriter(tx, tx, blockNumber.Uint64())
 		if cache := layered.ExtractCache(bc.ChainDB); cache != nil {
 			stateWriter = state.NewCachedStateWriter(stateWriter, cache)
