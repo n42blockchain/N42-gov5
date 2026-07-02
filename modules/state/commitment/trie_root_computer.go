@@ -82,6 +82,11 @@ type TrieRootComputer struct {
 	captureProof  bool
 	capturedProof [][]byte
 
+	// accRootEmitter, when set, is wired into the serial loader so every folded
+	// account's storage root is surfaced per root computation (DATC dense
+	// storage-root history).
+	accRootEmitter func(accKeyNibbles []byte, root types.Hash)
+
 	// sortedWrites: when set, Phase 1/2 collects the dirty HashedAccounts/
 	// HashedStorage leaf writes and applies them in ASCENDING KEY ORDER instead of
 	// Go-map (random) order. For a large batch on a large DB (e.g. a 10k-block
@@ -161,6 +166,13 @@ func (t *TrieRootComputer) CapturedProof() [][]byte { return t.capturedProof }
 // SetWriteOnly toggles staged-catch-up write-only mode (per-block root deferred to
 // MerkleStageIncremental). TrieOf* is NOT maintained per block while set.
 func (t *TrieRootComputer) SetWriteOnly(v bool) { t.writeOnly = v }
+
+// SetAccRootEmitter arms the per-account storage-root hook (see
+// trie.FlatDBTrieLoader.SetAccRootEmitter). Serial root path only — the
+// concurrent-root shards do not fire it.
+func (t *TrieRootComputer) SetAccRootEmitter(fn func(accKeyNibbles []byte, root types.Hash)) {
+	t.accRootEmitter = fn
+}
 
 type hash256 interface {
 	Reset()
@@ -483,6 +495,9 @@ func (t *TrieRootComputer) flushTrieRootSerial(rl *trie.RetainList) (types.Hash,
 		retainer = rl
 	}
 	loader := trie.NewFlatDBTrieLoader("trie-root", retainer, accCollector, storCollector, false)
+	if t.accRootEmitter != nil {
+		loader.SetAccRootEmitter(t.accRootEmitter)
+	}
 	var wr *trie.WitnessRetainer
 	if t.captureProof && t.incremental {
 		// Capture the touched-path multiproof over the SAME dirty RetainList the

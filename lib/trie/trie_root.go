@@ -94,6 +94,13 @@ type FlatDBTrieLoader struct {
 	shc      StorageHashCollector2
 }
 
+// SetAccRootEmitter arms the per-account storage-root hook on the underlying
+// HashBuilder: fn receives each folded account's hashed key (64 nibbles) and
+// its storage root as the account leaf is built. Serial loader path only.
+func (l *FlatDBTrieLoader) SetAccRootEmitter(fn func(accKeyNibbles []byte, root types.Hash)) {
+	l.receiver.hb.AccRootEmitter = fn
+}
+
 // RootHashAggregator - calculates Merkle trie root hash from incoming data stream
 type RootHashAggregator struct {
 	trace          bool

@@ -48,6 +48,13 @@ type HashBuilder struct {
 	prefixBuf [8]byte
 	trace     bool // Set to true when HashBuilder is required to print trace information for diagnostics
 
+	// AccRootEmitter, when set, receives every folded account leaf's hashed key
+	// (full 64 nibbles, terminator stripped) and its storage root, at the moment
+	// the root is popped off the hash stack. Fires only for accounts WITH a
+	// storage subtree (fieldSet has AccountFieldStorageOnly) — the dense
+	// storage-root-history hook (DATC): O(1) per account, no extra hashing.
+	AccRootEmitter func(accKeyNibbles []byte, root types.Hash)
+
 	topHashesCopy []byte
 
 	// proofElement is set when the next element computation should have its RLP
@@ -362,6 +369,9 @@ func (hb *HashBuilder) accountLeaf(keyLength int, keyHex []byte, balance *uint25
 			}
 		}
 		popped++
+		if hb.AccRootEmitter != nil && len(keyHex) == 65 {
+			hb.AccRootEmitter(keyHex[:64], hb.acc.Root)
+		}
 	}
 	var accountCode codeNode
 	if fieldSet&uint32(8) != 0 {
@@ -426,6 +436,9 @@ func (hb *HashBuilder) accountLeafHash(keyLength int, keyHex []byte, balance *ui
 	if fieldSet&AccountFieldStorageOnly != 0 {
 		copy(hb.acc.Root[:], hb.hashStack[len(hb.hashStack)-popped*hashStackStride-length.Hash:len(hb.hashStack)-popped*hashStackStride])
 		popped++
+		if hb.AccRootEmitter != nil && len(keyHex) == 65 {
+			hb.AccRootEmitter(keyHex[:64], hb.acc.Root)
+		}
 	} else {
 		copy(hb.acc.Root[:], EmptyRoot[:])
 	}
