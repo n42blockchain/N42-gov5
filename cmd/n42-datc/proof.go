@@ -26,8 +26,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"os"
 	"path/filepath"
+	"runtime/pprof"
 	"strings"
+	"time"
 
 	"github.com/c2h5oh/datasize"
 	"golang.org/x/crypto/sha3"
@@ -225,8 +228,16 @@ func (q *querier) subtreeLeaves(domain, path []byte, n uint64) ([]mleaf, error) 
 func (q *querier) proofPath(domain, fullNib []byte, n uint64) ([][]byte, error) {
 	var nodes [][]byte
 	path := []byte{}
+	dbg := os.Getenv("N42_DATC_PROOF_DEBUG") != ""
+	if dbg {
+		fmt.Fprintf(os.Stderr, "[pp] sched.e=%v foldDepth=%d\n", q.sched.e, q.foldDepth)
+	}
 	for {
+		tb := time.Now()
 		slots, nKids, usable, err := q.branchSlotsAt(domain, path, n)
+		if dbg {
+			fmt.Fprintf(os.Stderr, "[pp] path=%x branchSlotsAt=%v usable=%v nKids=%d\n", path, time.Since(tb), usable, nKids)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -236,11 +247,17 @@ func (q *querier) proofPath(domain, fullNib []byte, n uint64) ([][]byte, error) 
 			// branch from its 16 depth-1 children (mirrors synthesizeRoot). A
 			// storage root with <2 branch children is degenerate (leaf/extension)
 			// — fall through to the subtree fold below, which builds it natively.
+			tr := time.Now()
 			nKids = 0
 			for nib := byte(0); nib < 16; nib++ {
+				tn := time.Now()
+				r0 := q.recs
 				h, exists, err := q.nodeHashAt(domain, []byte{nib}, n)
 				if err != nil {
 					return nil, err
+				}
+				if dbg {
+					fmt.Fprintf(os.Stderr, "[pp]   root child nib=%x nodeHashAt=%v recs=%d exists=%v\n", nib, time.Since(tn), q.recs-r0, exists)
 				}
 				if exists {
 					hc := h
@@ -248,12 +265,19 @@ func (q *querier) proofPath(domain, fullNib []byte, n uint64) ([][]byte, error) 
 					nKids++
 				}
 			}
+			if dbg {
+				fmt.Fprintf(os.Stderr, "[pp] root synth 16x nodeHashAt=%v nKids=%d\n", time.Since(tr), nKids)
+			}
 			if nKids >= 2 {
 				usable = true
 			}
 		}
 		if !usable {
+			tl := time.Now()
 			leaves, err := q.subtreeLeaves(domain, path, n)
+			if dbg {
+				fmt.Fprintf(os.Stderr, "[pp] path=%x subtreeLeaves=%v nLeaves=%d\n", path, time.Since(tl), len(leaves))
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -523,8 +547,22 @@ func runProof(args []string) {
 	slotsHex := fs.String("slots", "", "comma-separated storage slot keys (0x…)")
 	at := fs.Uint64("at", 0, "historical block height")
 	foldDepth := fs.Int("fold-depth", 4, "account-trie fold depth (must match data density)")
+	fastEOA := fs.Bool("fast-eoa", false, "skip storage-root probes for empty-code accounts (no dense storage-root layer; mainnet-safe: EIP-161 code-less accounts hold no storage)")
 	mapGB := fs.Int("map.gb", 512, "MDBX map size GB")
+	wantRootHex := fs.String("want-root", "", "expected state root hex; bypasses the (slow, random-access) headerc oracle — for timing / offline verification")
+	timeSteps := fs.Bool("time", false, "print per-step wall time to stderr")
+	cpuProfile := fs.String("cpuprofile", "", "write a CPU profile to this path")
 	_ = fs.Parse(args)
+	if *cpuProfile != "" {
+		pf, perr := os.Create(*cpuProfile)
+		if perr != nil {
+			die("cpuprofile: %v", perr)
+		}
+		if serr := pprof.StartCPUProfile(pf); serr != nil {
+			die("start cpuprofile: %v", serr)
+		}
+		defer pprof.StopCPUProfile()
+	}
 	if *out == "" || *addrHex == "" {
 		die("--out and --addr required")
 	}
@@ -566,7 +604,7 @@ func runProof(args []string) {
 		sched.e[d] = binary.BigEndian.Uint64(schedV[d*8:])
 	}
 
-	q := &querier{tx: tx, sched: sched, foldDepth: *foldDepth}
+	q := &querier{tx: tx, sched: sched, foldDepth: *foldDepth, fastEOA: *fastEOA}
 	{
 		cache := newFrameLRU()
 		open := func(tab int) *leafSegSet {
@@ -580,9 +618,20 @@ func runProof(args []string) {
 		q.segCA, q.segCS = open(segTabChgA), open(segTabChgS)
 	}
 
+	tstep := time.Now()
+	step := func(name string) {
+		if *timeSteps {
+			fmt.Fprintf(os.Stderr, "[t] %-16s %v\n", name, time.Since(tstep))
+			tstep = time.Now()
+		}
+	}
+	step("open+segments")
+
 	// Expected root (the trust anchor).
 	var wantRoot types.Hash
-	if *internalRoots {
+	if *wantRootHex != "" {
+		wantRoot = types.HexToHash(*wantRootHex)
+	} else if *internalRoots {
 		var rk [8]byte
 		binary.BigEndian.PutUint64(rk[:], *at)
 		rv, err := tx.GetOne(tDatcRoots, rk[:])
@@ -602,6 +651,7 @@ func runProof(args []string) {
 		}
 		wantRoot = hdr.Root
 	}
+	step("oracle root")
 
 	ah := keccak(addr[:])
 	accNib := nibblesOfBytes(ah[:])
@@ -610,6 +660,10 @@ func runProof(args []string) {
 	accNodes, err := q.proofPath(nil, accNib, *at)
 	if err != nil {
 		die("account proof: %v", err)
+	}
+	step("acc proofPath")
+	if foldStats != nil {
+		fmt.Fprintf(os.Stderr, "[foldStats] %v (folds=%d leafReads=%d)\n", foldStats, q.folds, q.leafReads)
 	}
 	res := &account.AccProofResult{Address: addr, Balance: "0x0", Nonce: 0}
 	res.AccountProof = accNodes
@@ -622,6 +676,7 @@ func runProof(args []string) {
 	if err != nil {
 		die("account value: %v", err)
 	}
+	step("acc leafFloor")
 	var acct account.StateAccount
 	if accLive {
 		if err := acct.DecodeForStorage(accRaw); err != nil {
@@ -630,13 +685,28 @@ func runProof(args []string) {
 		res.Balance = "0x" + acct.Balance.Hex()
 		res.Nonce = acct.Nonce
 		res.CodeHash = acct.CodeHash
-		sroot, hasStorage, err := q.nodeHashAt(domain, nil, *at)
-		if err != nil {
-			die("storage root: %v", err)
+		sroot, hasStorage, found := q.storageRootAt(ah[:], *at)
+		if !found {
+			var err error
+			sroot, hasStorage, err = q.nodeHashAt(domain, nil, *at)
+			if err != nil {
+				die("storage root: %v", err)
+			}
 		}
 		if hasStorage {
 			res.StorageHash = sroot
 		}
+	}
+
+	// Stop the CPU profile here — the reconstruction (proofPath + fold) is the
+	// part we profile; the oracle walk below may die() and skip the deferred stop.
+	if *cpuProfile != "" {
+		pprof.StopCPUProfile()
+	}
+
+	if *timeSteps && len(accNodes) > 0 {
+		rh := keccak(accNodes[0])
+		fmt.Fprintf(os.Stderr, "[root] reconstructed=%x  wantRoot=%x\n", rh[:], wantRoot[:])
 	}
 
 	// Independent verification: hash-chain walk from the EXPECTED root.

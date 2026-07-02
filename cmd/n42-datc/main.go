@@ -36,6 +36,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -71,6 +72,11 @@ const (
 	tDatcLeafA   = "DatcLeafA"
 	tDatcLeafS   = "DatcLeafS"
 	tDatcMeta    = "DatcMeta"
+	// tDatcStoRoot — dense per-contract storage-root history: addrHash32|block8 →
+	// root32 (empty value = storage emptied that block). Written only by
+	// per-block (non-window) builds via the AccRootEmitter hook; the querier
+	// falls back to nodeHashAt when a row/table is absent (older DBs).
+	tDatcStoRoot = "DatcStoRoot"
 )
 
 // maxChgDepth caps the change-index depth. Deeper levels are resolved by the
@@ -150,6 +156,7 @@ func main() {
 	startBlock := fs.Uint64("start", 0, "start block (resume; state must match)")
 	alpha := fs.Float64("alpha", 16, "target changes per node per epoch")
 	cbar := fs.Float64("cbar", 20, "assumed average changed keys per block")
+	schedOverride := fs.String("sched", "", "explicit epoch schedule: comma-separated e[0..5] overriding alpha/cbar (M2 dense shallow = 1,1,1,1,4194304,4194304 — per-block records at depths 0-3, no windows, AsOf point reads)")
 	batch := fs.Uint64("batch", 20_000, "blocks per MDBX commit (large batches spill MDBX dirty pages and stall)")
 	mapGB := fs.Int("map.gb", 1024, "MDBX map size GB")
 	dirtyGB := fs.Int("dirty.gb", 16, "MDBX DirtySpace GB — raise so a dense batch's dirty pages stay in RAM and commit doesn't spill (cures the multi-minute commit stalls in DeFi-dense regions)")
@@ -244,7 +251,7 @@ func main() {
 			for name, item := range kv.ChaindataTablesCfg {
 				d[name] = item
 			}
-			for _, t := range []string{tDatcAccNode, tDatcStoNode, tDatcAccChg, tDatcStoChg, tDatcLeafA, tDatcLeafS, tDatcMeta, tFwdAcctCS, tFwdStorCS, tDatcRoots} {
+			for _, t := range []string{tDatcAccNode, tDatcStoNode, tDatcAccChg, tDatcStoChg, tDatcLeafA, tDatcLeafS, tDatcMeta, tDatcStoRoot, tFwdAcctCS, tFwdStorCS, tDatcRoots} {
 				d[t] = kv.TableCfgItem{}
 			}
 			return d
@@ -292,6 +299,19 @@ func main() {
 	debug.SetMemoryLimit(100 << 30) // hard ceiling well under the 128 GB box
 
 	sched := newSchedule(*alpha, *cbar)
+	if *schedOverride != "" {
+		parts := strings.Split(*schedOverride, ",")
+		if len(parts) != maxChgDepth+1 {
+			die("--sched needs exactly %d comma-separated values", maxChgDepth+1)
+		}
+		for d, p := range parts {
+			var v uint64
+			if _, err := fmt.Sscanf(strings.TrimSpace(p), "%d", &v); err != nil || v == 0 {
+				die("--sched entry %d (%q) must be a positive integer", d, p)
+			}
+			sched.e[d] = v
+		}
+	}
 	fmt.Printf("DATC build: blocks [%d, %d) α=%.0f C̄=%.0f GOGC=%d\n  epochs/depth: ", *startBlock, *endBlock, *alpha, *cbar, *gogc)
 	for d := 0; d <= maxChgDepth; d++ {
 		fmt.Printf("d%d=%d ", d, sched.e[d])
@@ -512,6 +532,13 @@ type builder struct {
 	// instead of random-key thrash (the cgocall 42% of the profile). Flushed
 	// on threshold so heavy eras can't balloon a batch's memory.
 	chgAccBuf, chgStoBuf, leafABuf, leafSBuf, nodeAccBuf, nodeStoBuf []kvPair
+
+	// Dense storage-root history (per-block builds only): the AccRootEmitter
+	// hook fills stoRootEmits during ComputeRoot; blockApply then writes one
+	// tDatcStoRoot row per storage-dirty contract (absent emit ⇒ tombstone:
+	// the contract's storage emptied this block).
+	stoRootEmits map[string]types.Hash
+	stoRootBuf   []kvPair
 
 	// keccak caches: hot addresses (miners every block, hot contracts) and hot
 	// slots repeat across millions of blocks; hashing them once is ~free.
@@ -902,6 +929,28 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		wtx := wrap(tx)
 		trc = commitment.NewTrieRootComputer()
 		trc.SetRwTx(wtx)
+		if !b.windowing {
+			if b.concurrentRoot {
+				// The AccRootEmitter fires only on the SERIAL loader; a
+				// concurrent-root build would silently produce an INCOMPLETE
+				// storage-root history — refuse instead.
+				die("--concurrent-root is incompatible with the dense storage-root history (per-block serial builds only)")
+			}
+			// Dense storage-root history: per-block roots surface every folded
+			// contract's storage root — capture them for tDatcStoRoot. Window
+			// builds skip this (a window-end root is not the root at inner
+			// blocks; the querier falls back to nodeHashAt).
+			trc.SetAccRootEmitter(func(accNib []byte, root types.Hash) {
+				if b.stoRootEmits == nil {
+					return
+				}
+				var ah [32]byte
+				for i := 0; i < 32; i++ {
+					ah[i] = accNib[2*i]<<4 | accNib[2*i+1]
+				}
+				b.stoRootEmits[string(ah[:])] = root
+			})
+		}
 		if b.concurrentRoot {
 			// Fan the per-window CalcTrieRoot across 16 nibble shards reading
 			// b.db committed ⊕ stateOverlay (this batch's uncommitted writes).
@@ -1032,6 +1081,19 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 			if err := tx.Put(tDatcMeta, []byte("sched"), sb); err != nil {
 				tx.Rollback()
 				return err
+			}
+			if !b.windowing {
+				// Storage-root history completeness stamp: the layer covers
+				// [stoRootFrom, head]. Written once (first commit); 0 = complete
+				// from genesis ⇒ the querier treats misses as "no storage".
+				if ex, _ := tx.GetOne(tDatcMeta, []byte("stoRootFrom")); len(ex) != 8 {
+					var sf [8]byte
+					binary.BigEndian.PutUint64(sf[:], start)
+					if err := tx.Put(tDatcMeta, []byte("stoRootFrom"), sf[:]); err != nil {
+						tx.Rollback()
+						return err
+					}
+				}
 			}
 		}
 		// Drain the aggregated change events, then the sorted-batch buffers,
@@ -1499,9 +1561,31 @@ func (b *builder) blockApply(tx kv.RwTx, trc *commitment.TrieRootComputer, n uin
 		c.Close()
 	}
 
+	if !b.windowing {
+		if b.stoRootEmits == nil {
+			b.stoRootEmits = make(map[string]types.Hash, 64)
+		} else {
+			clear(b.stoRootEmits)
+		}
+	}
 	root, err := trc.ComputeRoot(dirtyA, dirtyS)
 	if err != nil {
 		return fmt.Errorf("ComputeRoot: %w", err)
+	}
+	if !b.windowing && len(dirtyS) > 0 {
+		var rk8 [8]byte
+		binary.BigEndian.PutUint64(rk8[:], n)
+		for addr := range dirtyS {
+			ah := b.addrHash(addr)
+			k := make([]byte, 40)
+			copy(k, ah[:])
+			copy(k[32:], rk8[:])
+			var v []byte
+			if r, ok := b.stoRootEmits[string(ah[:])]; ok {
+				v = append([]byte{}, r[:]...)
+			}
+			b.stoRootBuf = append(b.stoRootBuf, kvPair{k: k, v: v})
+		}
 	}
 	if b.fwdMode {
 		// No external MPT oracle (the chain's header roots are QMDB roots):
