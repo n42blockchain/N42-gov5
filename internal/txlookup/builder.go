@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/n42blockchain/N42/internal/cscompact"
@@ -62,6 +63,17 @@ func SegmentFileName(startBlock, endBlock uint64) string {
 	return fmt.Sprintf("txlookup-%06d-%06d", startBlock/1000, endBlock/1000)
 }
 
+// etlTmpDir returns N42_ETL_TMPDIR when set (RecSplit spill for a full
+// segment is GBs — keep it off the small system drive), else the OS temp.
+func etlTmpDir() string {
+	if d := os.Getenv("N42_ETL_TMPDIR"); d != "" {
+		if err := os.MkdirAll(d, 0755); err == nil {
+			return d
+		}
+	}
+	return os.TempDir()
+}
+
 // BuildRange builds all segments for the given block range using freezer-style storage.
 func (b *SegmentBuilder) BuildRange(ctx context.Context, startBlock, endBlock uint64) error {
 	store, err := cscompact.NewSegmentStoreWriter(b.outputDir, "txindex")
@@ -70,10 +82,24 @@ func (b *SegmentBuilder) BuildRange(ctx context.Context, startBlock, endBlock ui
 	}
 	defer store.Close()
 
-	// Resume from existing segments.
+	// A store that does not begin at block 0 must record its base block so
+	// the reader (readSegmentBase) maps segment N to base+N*SegmentSize —
+	// without the marker a range-built index silently resolves every hash to
+	// a block number offset by the base (found by query verification).
+	alignedStart := (startBlock / SegmentSize) * SegmentSize
 	existingSegs := store.SegmentCount()
-	resumeBlock := existingSegs * SegmentSize
-	if resumeBlock > startBlock {
+	if existingSegs == 0 && alignedStart > 0 {
+		basePath := filepath.Join(b.outputDir, "txindex.base")
+		if err := os.WriteFile(basePath, []byte(strconv.FormatUint(alignedStart, 10)), 0644); err != nil {
+			return fmt.Errorf("write txindex.base: %w", err)
+		}
+		log.Info("Recorded txindex base", "base", alignedStart)
+	}
+
+	// Resume from existing segments, honoring a previously recorded base
+	// (0 for legacy full builds without a base file).
+	resumeBlock := readSegmentBase(b.outputDir) + existingSegs*SegmentSize
+	if existingSegs > 0 && resumeBlock > startBlock {
 		startBlock = resumeBlock
 		log.Info("Resuming txlookup build", "from", startBlock, "segments", existingSegs)
 	}
@@ -148,7 +174,7 @@ func (b *SegmentBuilder) buildOne(ctx context.Context, startBlock, endBlock uint
 			LessFalsePositives: b.lessFalsePositives,
 			IndexFile:          idxPath,
 			BaseDataID:         startBlock,
-			TmpDir:             os.TempDir(),
+			TmpDir:             etlTmpDir(),
 		}, log2.New())
 	}
 
