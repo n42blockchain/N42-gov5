@@ -288,6 +288,54 @@ type testAccount struct {
 	addrHex string
 }
 
+// fundFromFaucet seeds the deterministic test accounts from a user-provided
+// funded key: one legacy transfer per account, half the faucet balance spread
+// evenly (capped at 1000 ETH each), signed locally and sent as raw txs.
+func fundFromFaucet(rpc *rpcClient, keyHex string, accounts []*testAccount, chainID *big.Int) error {
+	kb, err := hex.DecodeString(strings.TrimPrefix(keyHex, "0x"))
+	if err != nil || len(kb) != 32 {
+		return fmt.Errorf("faucet key must be 32-byte hex")
+	}
+	key, err := crypto.ToECDSA(kb)
+	if err != nil {
+		return err
+	}
+	addr := avmutil.BytesToAddress(crypto.PubkeyToAddress(key.PublicKey).Bytes())
+	bal, err := rpc.getBalance(addr.Hex())
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Faucet %s balance: %s wei\n", addr.Hex(), bal)
+	if bal.Sign() <= 0 {
+		return fmt.Errorf("faucet account has zero balance")
+	}
+	nonce, err := rpc.getNonce(addr.Hex())
+	if err != nil {
+		return err
+	}
+	fundCount := 10
+	if fundCount > len(accounts) {
+		fundCount = len(accounts)
+	}
+	per := new(big.Int).Div(bal, big.NewInt(int64(fundCount*2)))
+	cap1000 := new(big.Int).Mul(big.NewInt(1e18), big.NewInt(1000))
+	if per.Cmp(cap1000) > 0 {
+		per = cap1000
+	}
+	gasPrice := big.NewInt(1_000_000_000) // 1 gwei floor; legacy tx
+	for i := 0; i < fundCount; i++ {
+		raw, err := buildNativeTransfer(key, nonce+uint64(i), accounts[i].address, per, gasPrice, chainID)
+		if err != nil {
+			return err
+		}
+		if _, err := rpc.sendRawTx("0x" + hex.EncodeToString(raw)); err != nil {
+			return fmt.Errorf("faucet tx %d: %w", i, err)
+		}
+	}
+	fmt.Printf("Sent %d faucet txs of %s wei each\n", fundCount, per)
+	return nil
+}
+
 func generateAccounts(n int) []*testAccount {
 	accounts := make([]*testAccount, n)
 	for i := 0; i < n; i++ {
@@ -775,6 +823,7 @@ func main() {
 	duration := 3600 // seconds
 	noERC20 := false
 	useAccounts := numAccounts
+	faucetKeyHex := ""
 
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
@@ -801,6 +850,11 @@ func main() {
 			}
 		case "--no-erc20":
 			noERC20 = true
+		case "--faucet-key", "-faucet-key":
+			if i+1 < len(args) {
+				faucetKeyHex = args[i+1]
+				i++
+			}
 		case "--help", "-h":
 			fmt.Println("N42 Stress Test")
 			fmt.Println()
@@ -811,6 +865,8 @@ func main() {
 			fmt.Println("  --tps N          Target TPS (default: 30)")
 			fmt.Println("  --duration N     Duration in seconds (default: 3600)")
 			fmt.Println("  --no-erc20       Skip ERC-20 deployment")
+			fmt.Println("  --faucet-key K   32-byte hex key of a FUNDED account; seeds the test accounts")
+			fmt.Println("                   (needed on chains without an unlockable coinbase, e.g. HotStuff)")
 			fmt.Println("  --help           Show this help")
 			os.Exit(0)
 		}
@@ -866,6 +922,29 @@ func main() {
 		}
 	}
 	fmt.Printf("Funded accounts: %d/5 checked\n", funded)
+	if funded == 0 && faucetKeyHex != "" {
+		// Seed from a user-provided funded key. HotStuff self-chains have no
+		// unlockable coinbase (validator addresses are BLS-derived, no ECDSA
+		// key), so eth_sendTransaction from the etherbase can never work there.
+		if err := fundFromFaucet(rpc, faucetKeyHex, accounts, chainID); err != nil {
+			fmt.Printf("Faucet funding failed: %v\n", err)
+		} else {
+			fmt.Print("Waiting for faucet funding to be mined...")
+			for attempt := 0; attempt < 20; attempt++ {
+				time.Sleep(2 * time.Second)
+				bal, balErr := rpc.getBalance(accounts[0].addrHex)
+				if balErr == nil && bal.Sign() > 0 {
+					fmt.Println(" OK")
+					funded = 1
+					break
+				}
+				fmt.Print(".")
+			}
+			if funded == 0 {
+				fmt.Println(" TIMEOUT")
+			}
+		}
+	}
 	if funded == 0 {
 		// Try to fund accounts from the node's coinbase (etherbase) via eth_sendTransaction.
 		// This works when the etherbase account is unlocked (e.g., --dev mode).
