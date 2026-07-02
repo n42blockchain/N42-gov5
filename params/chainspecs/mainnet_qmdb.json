@@ -18,9 +18,10 @@
   "beijingBlock": 0,
   "shanghaiBlock": 0,
   "cancunBlock": 0,
-  "pectraTime": null,
-  "osakaTime": null,
-  "fusakaTime": null,
+  "pragueTime": 1780894800,
+  "pectraTime": 1780894800,
+  "osakaTime": 1780894800,
+  "fusakaTime": 1780894800,
   "glamsterdamTime": null,
   "ltHashTime": 0,
   "stateScheme": "qmdb",
@@ -32,6 +33,13 @@
     "epochLength": 1000000,
     "fastPropose": true,
     "minProposeDelayMs": 200,
+    "committeePool": {
+      "enabled": true,
+      "seedHex": "0x03c75de6b57f3563919956d11700f1d0c932e3c157506b23ed2c40d3ca47bb2f",
+      "poolSize": 200000,
+      "committeeSize": 512,
+      "rampBlocks": 1000000
+    },
     "validators": [
       {"address": "0xd2a316a1cd3a777141cb7e5aace46fb01df90eac", "blsKey": "0xae05c725f988dba181cd77d1d5eb2116ac25170fdc428e6e1dd23178d412451824a493ed5776a8ecb222fe6a18b68ab0"},
       {"address": "0xf7dc5c92fa9e812eb0c3157492da65457ae5de46", "blsKey": "0x81bf2bdc42c311f9f175d4cd58f5f79b3ca1ac5f981c6298b475bc08699dc9e22008ac8b649c0c6f336323cb77af06b9"},
