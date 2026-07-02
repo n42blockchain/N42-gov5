@@ -34,10 +34,12 @@ func newRateLimiter(p2pProvider p2p.P2P) *limiter {
 		return topic + p2pProvider.Encoding().ProtocolSuffix()
 	}
 
-	// Block rate limits with defaults for nil P2PLimit.
+	// Block rate limits with defaults for nil P2PLimit — match the config
+	// default (1024 per 1s = the protocol's per-request ceiling) so serving a
+	// full range request never throttles mid-stream.
 	var (
-		allowedBlocksPerSecond float64 = 500
-		allowedBlocksBurst     int64   = 1000
+		allowedBlocksPerSecond float64 = 1024
+		allowedBlocksBurst     int64   = 4096
 		blockLimiterPeriod             = 1 * time.Second
 	)
 
