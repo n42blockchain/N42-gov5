@@ -124,6 +124,30 @@ func main() {
 		runSegExport(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "fold-bench" {
+		runFoldBench(os.Args[2:])
+		return
+	}
+	if os.Args[1] == "node-hist-size" {
+		runNodeHistSize(os.Args[2:])
+		return
+	}
+	if os.Args[1] == "chg-at" {
+		runChgAt(os.Args[2:])
+		return
+	}
+	if os.Args[1] == "leaf-audit" {
+		runLeafAudit(os.Args[2:])
+		return
+	}
+	if os.Args[1] == "spill-heal" {
+		runSpillHeal(os.Args[2:])
+		return
+	}
+	if os.Args[1] == "bench-proof" {
+		runBenchProof(os.Args[2:])
+		return
+	}
 	if os.Args[1] == "proof" {
 		runProof(os.Args[2:])
 		return
