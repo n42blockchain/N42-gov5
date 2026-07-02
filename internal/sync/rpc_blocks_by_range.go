@@ -131,8 +131,17 @@ func (s *Service) bodiesByRangeRPCHandler(ctx context.Context, msg interface{}, 
 			break
 		}
 
-		// Wait for ticker before resuming streaming blocks to remote peer.
-		<-ticker.C
+		// Pace the next sub-batch only when the peer's bucket lacks capacity
+		// for it — validateRequest rejects (not waits) on an empty bucket, so
+		// streaming ahead of the refill would self-inflict ErrRateLimited.
+		// Burst capacity (BlockBatchLimitBurstFactor×) lets several
+		// sub-batches go back-to-back, and with the default limit
+		// (== maxRequestBlocks) a request is a single batch and never waits;
+		// the old unconditional tick stalled 1s after EVERY sub-batch, capping
+		// serving at limit-per-second regardless of remaining capacity.
+		if blockLimiter.Remaining(stream.Conn().RemotePeer().String()) < int64(allowedBlocksPerSecond) {
+			<-ticker.C
+		}
 	}
 
 	closeStream(stream)

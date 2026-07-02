@@ -117,9 +117,15 @@ var DefaultConfig = conf.Config{
 		StaticPeerID: true,
 		NoDiscovery:  false,
 		P2PLimit: &conf.P2PLimit{
-			BlockBatchLimit:            64,
-			BlockBatchLimitBurstFactor: 2,
-			BlockBatchLimiterPeriod:    5,
+			// 1024 = maxRequestBlocks/rangeLimit (the protocol's per-request
+			// ceiling), leaked per 1s period: a peer can stream a full range
+			// request every second instead of the old 64-per-5s (~13 blk/s)
+			// trickle that capped whole-network sync at ~150 blk/s. The same
+			// values drive BOTH the initial-sync fetcher's per-peer budget and
+			// the serving-side topic collectors (rate_limiter.go).
+			BlockBatchLimit:            1024,
+			BlockBatchLimitBurstFactor: 4,
+			BlockBatchLimiterPeriod:    1,
 		},
 	},
 
