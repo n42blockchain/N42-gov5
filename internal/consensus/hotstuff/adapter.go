@@ -23,6 +23,7 @@ import (
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto/bls"
@@ -518,6 +519,38 @@ func (h *HotStuff) FinalizeAndAssemble(chain consensus.ChainHeaderReader, iHeade
 	rewards, balanceChanges, err := h.Finalize(chain, iHeader, ibs, txs, uncles)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+
+	// Fork-mandated header fields, mirroring replay-v2's resealed shape so a
+	// live block N+1 continues the chain with the same wire form. This also
+	// keeps the header's RLP optional chain CONTINUOUS: with the committee
+	// pool wired, Prepare sets ParentBeaconRoot (optional #20), and a nil
+	// *Hash before it (WithdrawalsHash, #17) encodes as an empty string that
+	// cannot decode back into types.Hash — block push/fetch transport then
+	// rejects every produced block ("input string too short", found by the
+	// 7-node smoke after enabling committeePool).
+	if cfg := chain.Config(); cfg != nil {
+		num := header.Number.Uint64()
+		if cfg.IsShanghaiAt(num, header.Time) && header.WithdrawalsHash == nil {
+			// N42 repurposes the withdrawals slot as the rewards commitment
+			// (same derivation as replay-v2).
+			rh := hash.DeriveSha(block.Rewards(rewards))
+			header.WithdrawalsHash = &rh
+		}
+		if cfg.IsCancunAt(num, header.Time) {
+			if header.BlobGasUsed == nil {
+				z := uint64(0)
+				header.BlobGasUsed = &z
+			}
+			if header.ExcessBlobGas == nil {
+				z := uint64(0)
+				header.ExcessBlobGas = &z
+			}
+		}
+		if cfg.IsPrague(header.Time) && header.RequestsHash == nil {
+			rq := hash.EmptyRootHash // keccak256(RLP([])): no EIP-7685 requests
+			header.RequestsHash = &rq
+		}
 	}
 
 	// Assemble the block with computed TxHash and ReceiptHash.
