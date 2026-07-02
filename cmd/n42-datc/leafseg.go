@@ -237,9 +237,11 @@ func finalizeLeafSegments(outDir string) error {
 			return fmt.Errorf("bucket %s: %w", base, err)
 		}
 		totalCorrupt += cf
-		if cf == 0 {
-			_ = os.Remove(src) // clean bucket → drop its spill
-		}
+		// NEVER delete the spill (operator rule): every .zspill is kept as the
+		// durable, resumable recovery source — segments are derived, the spill
+		// is the truth. Finalized buckets are relocated out of leafspill/ by the
+		// operator's resume wrapper (to a done dir, NOT deleted) so a re-run does
+		// not re-merge them; removal is always a manual op after `verify`.
 	}
 	if totalCorrupt > 0 {
 		// SAFETY (feedback-human-time-is-precious, 2026-06-13): corrupt/truncated
@@ -254,10 +256,22 @@ func finalizeLeafSegments(outDir string) error {
 			totalCorrupt, spill)
 		return nil
 	}
-	return os.RemoveAll(spill)
+	// NEVER delete the spill (operator rule) even when every bucket was clean:
+	// it stays as the resumable recovery source. Remove it manually after a
+	// successful `verify` if the space is ever needed.
+	return nil
 }
 
 func finalizeBucket(zr *zstd.Decoder, enc *zstd.Encoder, src, dst string, corruptOut *int) error {
+	// Judge by size: an oversized bucket (a hot-storage prefix whose decompressed
+	// rows exceed RAM) is sorted by a bounded-memory external merge sort. Loading
+	// it whole — as the path below does — exhausts physical memory, fills the
+	// system drive via paging, and can hard-crash marginal hardware. The 84
+	// mainnet-25M buckets that fit in RAM are all well under extSpillThreshold;
+	// only true monster prefixes cross it.
+	if fi, serr := os.Stat(src); serr == nil && fi.Size() > extThreshold() {
+		return finalizeBucketExternal(zr, enc, src, dst, corruptOut)
+	}
 	f, err := os.Open(src)
 	if err != nil {
 		return err
@@ -316,23 +330,44 @@ func finalizeBucket(zr *zstd.Decoder, enc *zstd.Encoder, src, dst string, corrup
 			p = ve
 		}
 	}
+	// The magic-scan yields FALSE candidates too: a row is uvarint(keyLen)+key,
+	// so bucket a.b5's rows all start 28 B5 (keyLen 40 = 0x28) and a key
+	// beginning b5 2f fd stored as raw literals completes the zstd magic
+	// 28 B5 2F FD inside a healthy frame. Decoding start→next-candidate then
+	// splits that frame and BOTH halves fail — the whole real frame's rows were
+	// discarded as "corrupt" (the v5 a.b5 61-frame / 425k-row loss, bug #2).
+	// Heal: extend the end across subsequent candidates until the slice
+	// decodes; only a genuinely truncated frame (kill-tail) remains corrupt.
 	var group []byte
 	corruptFrames := 0
-	for fi := 0; fi < len(frameStarts); fi++ {
-		end := len(comp)
-		if fi+1 < len(frameStarts) {
-			end = frameStarts[fi+1]
+	for fi := 0; fi < len(frameStarts); {
+		start := frameStarts[fi]
+		decoded := false
+		for ei := fi + 1; ei <= len(frameStarts); ei++ {
+			end := len(comp)
+			if ei < len(frameStarts) {
+				end = frameStarts[ei]
+			}
+			if end-start > 256<<20 {
+				break // no real frame is this large — truly corrupt
+			}
+			dec, derr := zr.DecodeAll(comp[start:end], nil)
+			if derr != nil {
+				continue // false-magic split candidate — extend further
+			}
+			group = append(group, dec...)
+			fi = ei
+			decoded = true
+			break
 		}
-		dec, derr := zr.DecodeAll(comp[frameStarts[fi]:end], nil)
-		if derr != nil {
-			// Truncated/corrupt frame: flush the current contiguous group's
-			// complete rows and resync at the next frame boundary.
+		if !decoded {
+			// Truncated/corrupt frame (kill-tail): flush the current contiguous
+			// group's complete rows and resync at the next frame boundary.
 			appendGroup(group)
 			group = group[:0]
 			corruptFrames++
-			continue
+			fi++
 		}
-		group = append(group, dec...)
 	}
 	appendGroup(group)
 	if corruptFrames > 0 {
