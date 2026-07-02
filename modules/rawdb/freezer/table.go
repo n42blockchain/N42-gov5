@@ -67,16 +67,25 @@ var cidxMagic = CidxMagic
 // Wire layout (16 bytes, little-endian where applicable):
 //
 //	[0:4]   magic = "NCIX"
-//	[4]     version  (currently 1)
+//	[4]     version  (1; 2 when start != 0 — see downgrade note on start)
 //	[5]     flags    (cidxFlag* bitfield)
 //	[6]     batchSize (typically 64; 0 = unset / non-batch)
 //	[7]     entrySize (typically indexEntrySize=6)
-//	[8:16]  reserved (zero, future use)
+//	[8:16]  start: absolute item number of the first index entry (BE;
+//	        zero on all pre-retrim files, so legacy cidx decode as start=0)
 type cidxHeader struct {
 	version   uint8
 	flags     uint8
 	batchSize uint8
 	entrySize uint8
+	// start is the absolute item number of the FIRST index entry (bytes
+	// [8:16] BE, previously reserved-zero so every pre-existing cidx decodes
+	// as start=0). A retrimmed table (RetrimIndex) begins mid-history: items
+	// below start are pruned (ErrPruned) and entry positions are relative to
+	// it. NOTE downgrade hazard: binaries predating this field ignore the
+	// bytes and misaddress a start>0 table — such tables write version=2 as a
+	// marker.
+	start uint64
 }
 
 func encodeCidxHeader(h cidxHeader) []byte {
@@ -86,7 +95,7 @@ func encodeCidxHeader(h cidxHeader) []byte {
 	buf[5] = h.flags
 	buf[6] = h.batchSize
 	buf[7] = h.entrySize
-	// bytes [8:16] reserved, left as zero
+	binary.BigEndian.PutUint64(buf[8:16], h.start)
 	return buf
 }
 
@@ -102,6 +111,7 @@ func decodeCidxHeader(buf []byte) (cidxHeader, bool) {
 		flags:     buf[5],
 		batchSize: buf[6],
 		entrySize: buf[7],
+		start:     binary.BigEndian.Uint64(buf[8:16]),
 	}, true
 }
 
@@ -326,10 +336,17 @@ func newFreezerTable(path, name, ext string, readonly bool) (*FreezerTable, erro
 			log.Warn("Freezer: truncated partial index entry", "table", name, "removed", rem)
 		}
 	}
-	t.items.Store(uint64(dataSize) / indexEntrySize)
+	// items is the ABSOLUTE logical head: header start (0 for legacy /
+	// untrimmed tables) + number of index entries. Items below start are
+	// pruned; entry positions are (item - start)-relative (see readIndex).
+	t.items.Store(t.idxHeader.start + uint64(dataSize)/indexEntrySize)
+	if t.idxHeader.start > 0 {
+		log.Info("Freezer: table starts mid-history (retrimmed)",
+			"table", name, "start", t.idxHeader.start, "items", t.items.Load())
+	}
 
 	// Open the head data file if items exist.
-	if t.items.Load() > 0 {
+	if t.items.Load() > t.startItem() {
 		lastIdx, err := t.readIndex(t.items.Load() - 1)
 		if err != nil {
 			idxFile.Close()
@@ -368,12 +385,19 @@ func newFreezerTableCompressed(path, name, ext string, readonly bool) (*FreezerT
 	}
 	t.compressed = true
 	t.maybePatchHeader(func(h *cidxHeader) { h.flags |= cidxFlagCompressed })
-	// Auto-detect batch format: check if two consecutive mid-file entries
-	// share the same (fileNum, offset). Only need >= 2 items.
-	if t.items.Load() >= 2 {
-		mid := t.items.Load() / 2
-		if mid == 0 {
-			mid = 1
+	// Restore batch mode from the header when recorded — authoritative, and
+	// immune to the probe's false negative when the midpoint lands exactly on
+	// a batch boundary (see ForceBatchSize).
+	if t.idxHeaderSize > 0 && t.idxHeader.flags&cidxFlagBatchMode != 0 && t.idxHeader.batchSize > 0 {
+		t.batchSize = int(t.idxHeader.batchSize)
+	} else if t.items.Load() >= t.startItem()+2 {
+		// Legacy headerless fallback — auto-detect batch format: check if two
+		// consecutive mid-file entries share the same (fileNum, offset). The
+		// probe midpoint must stay within [startItem, items) — items/2 would
+		// land in the pruned region of a retrimmed table.
+		mid := t.startItem() + (t.items.Load()-t.startItem())/2
+		if mid == t.startItem() {
+			mid = t.startItem() + 1
 		}
 		if i1, err1 := t.readIndex(mid - 1); err1 == nil {
 			if i2, err2 := t.readIndex(mid); err2 == nil {
@@ -419,9 +443,24 @@ func newFreezerTableCompressed(path, name, ext string, readonly bool) (*FreezerT
 	return t, nil
 }
 
-// Items returns the total number of items in the table.
+// Items returns the table's logical head: the absolute item number the next
+// Append expects. For a retrimmed table (cidx header start > 0) this still
+// counts from item 0 — items below StartItem() are pruned, not absent.
 func (t *FreezerTable) Items() uint64 {
 	return t.items.Load()
+}
+
+// StartItem returns the absolute number of the first retained item. 0 for
+// legacy / untrimmed tables; >0 when the cidx was retrimmed (RetrimIndex) to
+// begin mid-history. Reads below it return ErrPruned.
+func (t *FreezerTable) StartItem() uint64 {
+	return t.startItem()
+}
+
+// startItem is the internal accessor (idxHeader zero-value covers legacy
+// headerless cidx files).
+func (t *FreezerTable) startItem() uint64 {
+	return t.idxHeader.start
 }
 
 // Append adds a data item to the table. The item number must equal Items()
@@ -654,6 +693,9 @@ func (t *FreezerTable) Retrieve(item uint64) ([]byte, error) {
 	if item >= t.items.Load() {
 		return nil, ErrOutOfBounds
 	}
+	if item < t.startItem() {
+		return nil, ErrPruned
+	}
 
 	// Batch mode: if batchSize is set, always use batch retrieval.
 	// All entries in a batch share the same cidx offset.
@@ -789,10 +831,12 @@ func (t *FreezerTable) retrieveBatch(item uint64) ([]byte, error) {
 		return nil, err
 	}
 
-	// Scan backward (max batchSize steps) to find batch start.
+	// Scan backward (max batchSize steps) to find batch start. Never scan
+	// below startItem — RetrimIndex snaps the trim point to a batch boundary,
+	// so no batch straddles it; the guard is defense-in-depth.
 	bs := uint64(t.batchSize)
 	batchStart := item
-	for batchStart > 0 && (item-batchStart) < bs {
+	for batchStart > t.startItem() && (item-batchStart) < bs {
 		prev, err := t.readIndex(batchStart - 1)
 		if err != nil || prev.fileNum != itemIdx.fileNum || prev.offset != itemIdx.offset {
 			break
@@ -904,7 +948,7 @@ func (t *FreezerTable) getDataFileSize(fileNum uint16) (uint32, error) {
 
 // Has checks whether an item exists in the index (may still be pruned on disk).
 func (t *FreezerTable) Has(item uint64) bool {
-	return item < t.items.Load()
+	return item >= t.startItem() && item < t.items.Load()
 }
 
 // Sync flushes all data and index files to disk.
@@ -983,7 +1027,10 @@ func (t *FreezerTable) Close() error {
 // readIndex reads the index entry for the given item. Caller must hold at least RLock.
 func (t *FreezerTable) readIndex(item uint64) (indexEntry, error) {
 	var buf [indexEntrySize]byte
-	if _, err := t.indexFile.ReadAt(buf[:], t.idxHeaderSize+int64(item)*indexEntrySize); err != nil {
+	if item < t.startItem() {
+		return indexEntry{}, ErrPruned
+	}
+	if _, err := t.indexFile.ReadAt(buf[:], t.idxHeaderSize+int64(item-t.startItem())*indexEntrySize); err != nil {
 		return indexEntry{}, fmt.Errorf("freezer: read index item %d: %w", item, err)
 	}
 	return decodeIndex(buf[:]), nil
@@ -1074,6 +1121,10 @@ func (t *FreezerTable) truncateHeadLocked(from uint64) error {
 	if from >= t.items.Load() {
 		return nil
 	}
+	if from < t.startItem() {
+		return fmt.Errorf("freezer: truncate %s to %d below retrimmed start %d: %w",
+			t.name, from, t.startItem(), ErrPruned)
+	}
 
 	// Flush and reset buffers before truncation.
 	if t.indexBuf != nil {
@@ -1099,7 +1150,7 @@ func (t *FreezerTable) truncateHeadLocked(from uint64) error {
 		}
 	}
 
-	if err := t.indexFile.Truncate(t.idxHeaderSize + int64(from)*indexEntrySize); err != nil {
+	if err := t.indexFile.Truncate(t.idxHeaderSize + int64(from-t.startItem())*indexEntrySize); err != nil {
 		return fmt.Errorf("freezer: truncate index: %w", err)
 	}
 	if _, err := t.indexFile.Seek(0, io.SeekEnd); err != nil {
@@ -1116,6 +1167,19 @@ func (t *FreezerTable) truncateHeadLocked(from uint64) error {
 		t.headSize = 0
 		// Delete all .cdat — orphan bytes after kill+restart drift rotation math.
 		return t.deleteOrphanFilesLocked(0)
+	}
+	if from == t.startItem() {
+		// Retrimmed table truncated to empty: no retained entry to read the
+		// head position from — resume appends where the first (now removed)
+		// entry used to live.
+		if haveRemovedIdx {
+			t.headFile = removedIdx.fileNum
+			t.headSize = int64(removedIdx.offset)
+			if df, derr := t.createDataFile(removedIdx.fileNum); derr == nil {
+				df.Truncate(int64(removedIdx.offset))
+			}
+		}
+		return nil
 	}
 
 	lastIdx, err := t.readIndex(from - 1)
