@@ -30,19 +30,32 @@ import (
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/lib/mmap"
 	"github.com/n42blockchain/N42/lib/recsplit"
 	"github.com/n42blockchain/N42/lib/recsplit/eliasfano32"
 )
 
 var emptyCodeHash = crypto.Keccak256Hash(nil)
 
-// table holds one RecSplit MPHF + EF offsets + decompressed .val for a single
-// snapshot table (accounts or storage).
+// table holds one RecSplit MPHF + EF offsets + .val bytes for a single
+// snapshot table (accounts or storage). The .ef and .val are mmapped read-only
+// (like the .idx): mainnet .val is ~30 GB, and a heap copy would be private
+// (pagefile-backed) memory, whereas file-backed mappings let the OS evict cold
+// pages and re-fault them from the snapshot file itself.
 type table struct {
 	idx *recsplit.Index
 	rd  *recsplit.IndexReader
 	ef  *eliasfano32.EliasFano
 	val []byte
+
+	// mmap bookkeeping; nil handles mean the buffer is heap-owned (zstd
+	// fallback, N42_SNAP_MMAP=0, or tests) and needs no munmap. efRaw is the
+	// original .ef mapping slice (ef itself keeps interior references).
+	valF  *os.File
+	valM2 *[mmap.MaxMapSize]byte
+	efRaw []byte
+	efF   *os.File
+	efM2  *[mmap.MaxMapSize]byte
 }
 
 func openTable(idxPath, efPath, valPath string) (*table, error) {
@@ -50,18 +63,50 @@ func openTable(idxPath, efPath, valPath string) (*table, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open idx %s: %w", idxPath, err)
 	}
-	efData, err := os.ReadFile(efPath)
+	efData, efF, efM2, err := mapOrRead(efPath)
 	if err != nil {
 		idx.Close()
 		return nil, fmt.Errorf("read ef %s: %w", efPath, err)
 	}
 	ef, _ := eliasfano32.ReadEliasFano(efData)
-	val, err := readMaybeZstd(valPath)
+	val, valF, valM2, err := readMaybeZstd(valPath)
 	if err != nil {
+		closeMapping(efData, efF, efM2)
 		idx.Close()
 		return nil, fmt.Errorf("read val %s: %w", valPath, err)
 	}
-	return &table{idx: idx, rd: recsplit.NewIndexReader(idx), ef: ef, val: val}, nil
+	return &table{
+		idx: idx, rd: recsplit.NewIndexReader(idx), ef: ef, val: val,
+		valF: valF, valM2: valM2, efRaw: efData, efF: efF, efM2: efM2,
+	}, nil
+}
+
+// mapOrRead returns the file's bytes as a read-only mmap (file-backed pages —
+// no heap, no pagefile) with its keep-alive handles, falling back to a heap
+// read when mmap is disabled (N42_SNAP_MMAP=0) or fails.
+func mapOrRead(path string) (data []byte, f *os.File, m2 *[mmap.MaxMapSize]byte, err error) {
+	if os.Getenv("N42_SNAP_MMAP") != "0" {
+		if f, err = os.Open(path); err == nil {
+			if st, serr := f.Stat(); serr == nil && st.Size() > 0 {
+				if h1, h2, merr := mmap.Mmap(f, int(st.Size())); merr == nil {
+					return h1[:st.Size()], f, h2, nil
+				}
+			}
+			f.Close()
+		}
+	}
+	data, err = os.ReadFile(path)
+	return data, nil, nil, err
+}
+
+// closeMapping releases one mapOrRead result (no-op for heap buffers).
+func closeMapping(data []byte, f *os.File, m2 *[mmap.MaxMapSize]byte) {
+	if m2 != nil {
+		_ = mmap.Munmap(data, m2)
+	}
+	if f != nil {
+		f.Close()
+	}
 }
 
 // lookup returns the value (payload after the 4B fingerprint) for key, verifying
@@ -95,22 +140,29 @@ func (t *table) lookup(key []byte) ([]byte, bool) {
 }
 
 func (t *table) Close() {
-	if t != nil && t.idx != nil {
+	if t == nil {
+		return
+	}
+	if t.idx != nil {
 		t.idx.Close()
 	}
+	closeMapping(t.val, t.valF, t.valM2)
+	closeMapping(t.efRaw, t.efF, t.efM2)
 }
 
-// readMaybeZstd reads valPath+".zst" (zstd-decompressed) if present, else valPath.
-func readMaybeZstd(valPath string) ([]byte, error) {
+// readMaybeZstd loads valPath+".zst" (zstd → heap, can't mmap compressed) if
+// present, else mmaps (or heap-reads, see mapOrRead) the raw valPath.
+func readMaybeZstd(valPath string) ([]byte, *os.File, *[mmap.MaxMapSize]byte, error) {
 	if data, err := os.ReadFile(valPath + ".zst"); err == nil {
 		dec, derr := zstd.NewReader(nil)
 		if derr != nil {
-			return nil, derr
+			return nil, nil, nil, derr
 		}
 		defer dec.Close()
-		return dec.DecodeAll(data, nil)
+		out, err := dec.DecodeAll(data, nil)
+		return out, nil, nil, err
 	}
-	return os.ReadFile(valPath)
+	return mapOrRead(valPath)
 }
 
 // Segment is one snapshot segment: accounts + storage tables + the codeHash dict.
