@@ -192,6 +192,7 @@ func main() {
 	gogc := fs.Int("gogc", 400, "GOGC percent (GC was ~25% CPU at the default 100; the live heap is stable so a high target is safe)")
 	window := fs.Bool("window", true, "mainnet: batch the root per E_1 window (bpp Path C) instead of per block — identical records, gold check per window")
 	concurrentRoot := fs.Bool("concurrent-root", false, "parallelize the per-window root across 16 top-nibble shards over a 4-table StateOverlay (each window still gold-checked vs header)")
+	stateOverlayF := fs.Bool("state-overlay", false, "SERIAL builds: absorb HashedAccounts/HashedStorage writes in the 4-table RAM StateOverlay too (not just TrieOf*), flushing once per batch — at DeFi-era density the per-block Hashed* MDBX puts are ~38% of CPU")
 	pprofPort := fs.Int("pprof.port", 0, "serve net/http/pprof on this port (0=off)")
 	bisect := fs.Bool("bisect", false, "READ-ONLY diagnosis: replay [resume-start, --end) per block over an uncommitted tx (NEVER commits, NEVER touches the leaf spill), gold-checking EACH block's incremental root against its header. Halts at and reports the FIRST divergent block. Use to localize a window-mode gold-check mismatch to a single block. Output dir is left untouched.")
 	dumpChangeset := fs.Uint64("dump-changeset", 0, "decode ONE block's changeset (the dirtyA/dirtyS fed to the fold) and print it, then exit — for cross-checking N42's per-block state delta against an independent source")
@@ -380,6 +381,7 @@ func main() {
 	b.fwdMode = fwdMode
 	b.windowing = !fwdMode && *window
 	b.concurrentRoot = *concurrentRoot
+	b.stateOverlayOn = *stateOverlayF
 	b.chgAggCapBytes = int(*chgCapGB * float64(datasize.GB))
 	if b.concurrentRoot && !b.windowing {
 		die("--concurrent-root requires window mode (the shard fan-out is per-window)")
@@ -609,6 +611,7 @@ type builder struct {
 	// every window still gold-checks against the header — a mismatch HALTS the
 	// build naming the window, so this is safe to validate on real data.
 	concurrentRoot bool
+	stateOverlayOn bool
 
 	leafAPuts, leafSPuts, chgPuts, nodePuts uint64
 
@@ -915,19 +918,21 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 	// serial path keeps the lighter 2-table TrieOverlay. Exactly one is non-nil.
 	var overlay *commitment.TrieOverlay
 	var stateOverlay *commitment.StateOverlay
-	if b.concurrentRoot {
+	if b.concurrentRoot || b.stateOverlayOn {
+		// 4-table overlay: also absorbs the per-block Hashed* puts (~38% of
+		// CPU in DeFi-dense eras); one sorted, deduped flush per batch.
 		stateOverlay = commitment.NewStateOverlay()
 	} else {
 		overlay = commitment.NewTrieOverlay()
 	}
 	wrap := func(tx kv.RwTx) kv.RwTx {
-		if b.concurrentRoot {
+		if stateOverlay != nil {
 			return commitment.WrapStateOverlayRW(tx, stateOverlay)
 		}
 		return commitment.WrapTrieOverlay(tx, overlay)
 	}
 	flushOverlay := func(tx kv.RwTx) error {
-		if b.concurrentRoot {
+		if stateOverlay != nil {
 			return stateOverlay.FlushTo(tx)
 		}
 		return overlay.FlushTo(tx)
