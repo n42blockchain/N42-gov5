@@ -109,6 +109,30 @@ func MerkleStageIncremental(tx kv.RwTx, from, to uint64) (types.Hash, error) {
 	return root, nil
 }
 
+// MerkleStageIncrementalRL is MerkleStageIncremental with a caller-built
+// dirty RetainList (e.g. ethel.BuildRetainListMerged, which reads acctcs/
+// storcs freezer blobs with MDBX changeset fallback). Writes TrieOf* back.
+func MerkleStageIncrementalRL(tx kv.RwTx, rl *trie.RetainList) (types.Hash, error) {
+	trc := NewTrieRootComputer()
+	trc.SetRwTx(tx)
+	trc.SetIncremental(true)
+	return trc.flushTrieRoot(rl)
+}
+
+// MerkleStageIncrementalWithProofRL is the proof-capturing twin of
+// MerkleStageIncrementalRL.
+func MerkleStageIncrementalWithProofRL(tx kv.RwTx, rl *trie.RetainList) (types.Hash, [][]byte, error) {
+	trc := NewTrieRootComputer()
+	trc.SetRwTx(tx)
+	trc.SetIncremental(true)
+	trc.EnableProofCapture(true)
+	root, err := trc.flushTrieRoot(rl)
+	if err != nil {
+		return types.Hash{}, nil, err
+	}
+	return root, trc.CapturedProof(), nil
+}
+
 // MerkleStageIncrementalWithProof is MerkleStageIncremental plus block-witness
 // capture: it returns the standard-RLP multiproof for the touched keys of
 // [from,to] alongside the computed root. The multiproof reconstructs to the

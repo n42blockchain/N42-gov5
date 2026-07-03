@@ -119,6 +119,44 @@ func RetrimIndexToItem(dir, name, ext string, wantStart uint64) (newStart, dropp
 	return newStart, uint64(lo), nil
 }
 
+// SetStartItem declares that an EMPTY table begins mid-history at start: the
+// next Append must be item `start` (an archive node's live acctcs/storcs
+// tables begin at its snapshot head, not at genesis). Idempotent when the
+// table's start already equals the request. Errors on a non-empty table with
+// a different origin, on legacy headerless tables, and on read-only handles.
+func (t *FreezerTable) SetStartItem(start uint64) error {
+	if t.closed.Load() {
+		return ErrClosed
+	}
+	if t.readonly {
+		return fmt.Errorf("freezer: table %s is read-only", t.name)
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.idxHeader.start == start {
+		return nil
+	}
+	if t.idxHeaderSize == 0 {
+		return fmt.Errorf("freezer: %s is a legacy headerless table — cannot set start", t.name)
+	}
+	// Any ZERO-ENTRY table may re-declare its origin (there is no data whose
+	// addressing could shift) — needed when a reorg unwind moves the head
+	// below a previously adopted start.
+	if t.items.Load() != t.startItem() {
+		return fmt.Errorf("freezer: %s not empty (start %d, items %d) — cannot move start to %d",
+			t.name, t.startItem(), t.items.Load(), start)
+	}
+	t.idxHeader.start = start
+	if start > 0 {
+		t.idxHeader.version = 2 // downgrade tripwire, matches RetrimIndex
+	}
+	if _, err := t.indexFile.WriteAt(encodeCidxHeader(t.idxHeader), 0); err != nil {
+		return fmt.Errorf("freezer: patch %s cidx start: %w", t.name, err)
+	}
+	t.items.Store(start)
+	return nil
+}
+
 // RetrimIndexToFile retrims so the first retained entry is the first item
 // stored in data file keepFromFile (fileNums are monotonic across entries).
 // Convenience wrapper for "I kept .cdat files N.. and want the cidx to match".

@@ -374,7 +374,13 @@ func run(c *cli.Context) error {
 	// warm overlay and PlainState is empty. A full-mode datadir whose bodyc
 	// head is above the H0 marker would otherwise "catch up" 100k+ blocks on
 	// top of nothing. eldevp2p (warm-overlay adapter) owns all execution.
-	if cfg.Bootstrap.Mode != "snapshot" {
+	// Also skip it for eldevp2p-driven nodes outside the leaves-rebuild flow
+	// (archive hashed-canonical): their chain/freezer holds OUTPUT artifacts
+	// (acctcs/storcs from the cs sink) — the catch-up executor would misread
+	// those as input blocks (Frozen falls back to max-across-tables) and its
+	// alignOnResume would fight the sink's mid-history start.
+	eldevp2pOwnsSync := c.Bool("eldevp2p.enabled") && cfg.Bootstrap.Mode != "leaves"
+	if cfg.Bootstrap.Mode != "snapshot" && !eldevp2pOwnsSync {
 		node.RegisterFactory(func(n *ethel.Node) ethel.Service {
 			return catchup.New(catchup.Config{
 				CatchUp:  cfg.CatchUp,
@@ -382,7 +388,7 @@ func run(c *cli.Context) error {
 			}, n, fetcher)
 		})
 	} else {
-		log.Info("eth-el: catch-up executor skipped (snapshot-direct — eldevp2p owns execution)")
+		log.Info("eth-el: catch-up executor skipped (eldevp2p/snapshot-direct owns execution)")
 	}
 	node.RegisterFactory(func(n *ethel.Node) ethel.Service {
 		return engineapi.New(cfg.EngineAPI, n.ChainConfig(), n.Engine(), n.RwDB(), n.OutFreezer())

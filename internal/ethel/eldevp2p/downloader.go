@@ -61,6 +61,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/cs"
 	"github.com/n42blockchain/N42/internal/devp2p"
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/internal/ethel/stateless"
@@ -152,6 +153,11 @@ type Downloader struct {
 	// frontier for boundary math); the persisted marker only at join, so a
 	// crash mid-flight just recomputes the window in the startup reconcile.
 	merkleInflight *merkleAsyncJob
+
+	// csSink, when non-nil, routes per-block changesets to acctcs/storcs
+	// freezer tables (archive data layout) instead of MDBX; commitBatch
+	// flushes+fsyncs it before every MDBX commit. N42_CS_FREEZER=0 disables.
+	csSink *ethel.CSFreezerSink
 
 	// anchorDir, when set (N42_ANCHOR_DIR), makes each completed staged Merkle
 	// ALSO emit the block's MPT-stateless anchor proof (compact wire) to
@@ -406,6 +412,28 @@ func (d *Downloader) coordinator(ctx context.Context) {
 			}
 		}
 		log.Info("eldevp2p: staged catch-up enabled", "subBatch", d.subBatch, "lastMerkle", d.lastMerkle)
+		// CS -> freezer (archive data layout): per-block changesets append to
+		// acctcs/storcs segment files instead of MDBX, keeping chaindata
+		// bounded to the hashed state. Default on; N42_CS_FREEZER=0 reverts.
+		// Initialized AFTER the startup reconcile so the alignment head is the
+		// reconciled one; the retain-list builder (BuildRetainListMerged) reads
+		// freezer blobs where covered and legacy MDBX changesets for older
+		// blocks, so the transition point needs no migration.
+		if os.Getenv("N42_CS_FREEZER") != "0" && d.hashedCanonical {
+			if head, err := d.localHead(ctx); err == nil {
+				sink, serr := ethel.NewCSFreezerSink(d.exec.OutFreezer(), head)
+				if serr != nil {
+					log.Error("eldevp2p: cs freezer sink init failed — falling back to MDBX changesets", "err", serr)
+				} else {
+					d.csSink = sink
+					d.adapter.SetCSFreezerSink(sink)
+					// Unwind reads the same freezer blobs (adapter.Reorg →
+					// ReorgWithSource) for the freezer-covered range.
+					d.adapter.WithCSSource(cs.NewFreezerSource(d.exec.OutFreezer()))
+					log.Info("eldevp2p: changesets -> freezer enabled (acctcs/storcs)", "from", head+1)
+				}
+			}
+		}
 	}
 
 	for {
@@ -759,6 +787,7 @@ func (d *Downloader) executeRange(ctx context.Context, local uint64, headers []*
 		if newHead-committed >= ci {
 			if err := d.commitBatch(tx, newHead); err != nil {
 				log.Error("eldevp2p: batch commit failed", "head", newHead, "err", err)
+				tx.Rollback() // never leak the write tx (BeginRw would be MDBX_BUSY forever)
 				return committed - local, committed
 			}
 			committed = newHead
@@ -774,6 +803,9 @@ func (d *Downloader) executeRange(ctx context.Context, local uint64, headers []*
 	if newHead > committed {
 		if err := d.commitBatch(tx, newHead); err != nil {
 			log.Error("eldevp2p: batch commit (tail) failed", "head", newHead, "err", err)
+			// commitBatch can fail BEFORE tx.Commit (cs freezer flush) — the
+			// write tx must not leak or every later BeginRw is MDBX_BUSY.
+			tx.Rollback()
 			return committed - local, committed
 		}
 		committed = newHead
@@ -864,9 +896,15 @@ func (d *Downloader) startMerkleAsync(ctx context.Context, from, to uint64) erro
 	go func() {
 		defer close(job.done)
 		defer tx.Rollback()
-		root, upd, err := commitment.MerkleStageIncrementalCollect(tx, from, to)
+		rl, nAcc, nSto, err := ethel.BuildRetainListMerged(tx, d.exec.OutFreezer(), from, to)
 		if err != nil {
-			job.err = fmt.Errorf("MerkleStageIncrementalCollect [%d,%d]: %w", from, to, err)
+			job.err = fmt.Errorf("retain list [%d,%d]: %w", from, to, err)
+			return
+		}
+		log.Info("MerkleStageIncrementalCollect", "from", from, "to", to, "accKeys", nAcc, "stoKeys", nSto)
+		root, upd, err := commitment.CollectTrieUpdates(tx, rl)
+		if err != nil {
+			job.err = fmt.Errorf("CollectTrieUpdates [%d,%d]: %w", from, to, err)
 			return
 		}
 		// Verify against the wire header on the same snapshot.
@@ -937,6 +975,92 @@ func (d *Downloader) joinMerkleAsync(ctx context.Context) error {
 	return nil
 }
 
+// handleReorgHashed unwinds exactly ONE orphaned head block on a
+// hashed-canonical (archive) node via its recorded changeset — the freezer
+// blob when the cs sink covers it, the legacy MDBX changesets otherwise. The
+// unwind rewrites HashedAccounts/HashedStorage + TrieOf* incrementally and
+// the recomputed root is verified against the parent header before anything
+// commits. Unlike an in-memory reverse-diff journal this survives restarts,
+// so a tip reorg that lands while the node is down no longer halts sync.
+// Invoked by the reorg-detection coordinator when hashedCanonical is set.
+func (d *Downloader) handleReorgHashed(ctx context.Context) {
+	tx, err := d.exec.RwDB().BeginRw(ctx)
+	if err != nil {
+		log.Warn("eldevp2p: reorg begin tx failed", "err", err)
+		return
+	}
+	defer tx.Rollback()
+
+	head := ethel.ReadProgress(tx)
+	if head == 0 {
+		log.Error("eldevp2p: reorg with no head marker — halting")
+		time.Sleep(12 * time.Second)
+		return
+	}
+	var provider commitment.BlockChangesProvider
+	if d.csSink != nil {
+		provider = d.csSink.BlockChangesProvider()
+	}
+	root, err := commitment.UnwindHashedCanonicalWith(tx, head, head-1, provider)
+	if err != nil {
+		log.Error("eldevp2p: changeset unwind failed — halting (re-sync required)",
+			"block", head, "err", err)
+		time.Sleep(12 * time.Second)
+		return
+	}
+	// Verify the unwound state against the parent header's root — an unwind
+	// that does not land exactly on the parent state must not commit.
+	parentCanon, err := rawdb.ReadCanonicalHash(tx, head-1)
+	if err != nil || parentCanon == (types.Hash{}) {
+		log.Error("eldevp2p: reorg unwind: no canonical parent", "block", head-1)
+		return
+	}
+	if hdr := rawdb.ReadHeader(tx, parentCanon, head-1); hdr == nil || root != hdr.Root {
+		var want string
+		if hdr != nil {
+			want = hdr.Root.Hex()
+		}
+		log.Error("eldevp2p: reorg unwind root mismatch — halting",
+			"block", head-1, "computed", root.Hex(), "want", want)
+		time.Sleep(12 * time.Second)
+		return
+	}
+	if terr := rawdb.TruncateCanonicalHash(tx, head, true); terr != nil {
+		log.Error("eldevp2p: reorg truncate canonical failed", "num", head, "err", terr)
+		return
+	}
+	// TrieOf* is now at head-1 (the unwind maintained it); rewind the staged
+	// Merkle frontier with it so boundary math never underflows.
+	if d.staged && d.lastMerkle >= head {
+		var v [8]byte
+		binary.BigEndian.PutUint64(v[:], head-1)
+		if err := tx.Put(progressTable, merkleProgressKey, v[:]); err != nil {
+			log.Error("eldevp2p: reorg merkle marker rewind failed", "err", err)
+			return
+		}
+		d.lastMerkle = head - 1
+	}
+	// The unwind rewrote hashed state outside the read cache's invalidation
+	// hooks — drop it before any re-execution reads through it.
+	d.adapter.PurgeHashedReadCache()
+	// Re-align the cs freezer sink to the unwound head: the replacement block
+	// appends at head, which may sit below the tables' previously adopted
+	// origin (SetStartItem re-declares it on the emptied tables).
+	if d.csSink != nil {
+		if rerr := d.csSink.Rewind(head - 1); rerr != nil {
+			log.Error("eldevp2p: cs sink rewind failed — halting", "err", rerr)
+			return
+		}
+	}
+	if cerr := d.commitBatch(tx, head-1); cerr != nil {
+		log.Error("eldevp2p: reorg commit failed", "num", head, "err", cerr)
+		return
+	}
+	d.buffer.prune(head - 1)
+	log.Info("eldevp2p: reorg unwound one block via changesets", "orphan", head,
+		"newHead", head-1, "root", root.Hex())
+}
+
 func (d *Downloader) runMerkleStage(ctx context.Context, from, to uint64) error {
 	if to < from {
 		return nil
@@ -951,12 +1075,19 @@ func (d *Downloader) runMerkleStage(ctx context.Context, from, to uint64) error 
 	// capture the MPT-stateless multiproof as a byproduct of the same Merkle
 	// (one walk); else plain root.
 	mptVerifyDue := d.mptVerifyInterval > 0 && to/d.mptVerifyInterval > d.lastMptVerify/d.mptVerifyInterval
+	// Retain list from acctcs/storcs freezer blobs where covered, legacy MDBX
+	// changesets otherwise (transition-safe).
+	rl, nAcc, nSto, err := ethel.BuildRetainListMerged(tx, d.exec.OutFreezer(), from, to)
+	if err != nil {
+		return fmt.Errorf("retain list [%d,%d]: %w", from, to, err)
+	}
+	log.Info("MerkleStageIncremental", "from", from, "to", to, "accKeys", nAcc, "stoKeys", nSto)
 	var root types.Hash
 	var anchorProof [][]byte
 	if d.anchorDir != "" || mptVerifyDue {
-		root, anchorProof, err = commitment.MerkleStageIncrementalWithProof(tx, from, to)
+		root, anchorProof, err = commitment.MerkleStageIncrementalWithProofRL(tx, rl)
 	} else {
-		root, err = commitment.MerkleStageIncremental(tx, from, to)
+		root, err = commitment.MerkleStageIncrementalRL(tx, rl)
 	}
 	if err != nil {
 		return fmt.Errorf("MerkleStageIncremental [%d,%d]: %w", from, to, err)
@@ -1081,8 +1212,16 @@ func signAndPostAttestation(key *ecdsa.PrivateKey, aggregatorURL string, blockNu
 }
 
 // commitBatch writes the head marker INTO the batch tx and commits it, so the
-// block state and the head advance persist atomically.
+// block state and the head advance persist atomically. The cs freezer sink is
+// flushed+fsynced FIRST, keeping freezer-head >= MDBX-head: after a crash the
+// importer re-executes at most one commit interval and the re-appends
+// overwrite the freezer tail.
 func (d *Downloader) commitBatch(tx kv.RwTx, head uint64) error {
+	if d.csSink != nil {
+		if err := d.csSink.Flush(); err != nil {
+			return fmt.Errorf("cs freezer flush: %w", err)
+		}
+	}
 	var v [8]byte
 	binary.BigEndian.PutUint64(v[:], head)
 	if err := tx.Put(progressTable, progressKey, v[:]); err != nil {

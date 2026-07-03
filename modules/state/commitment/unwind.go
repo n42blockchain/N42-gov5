@@ -40,19 +40,50 @@ import (
 // the post-state of block `to` (from > to). Returns the recomputed state root at
 // `to`. Consumed changesets for the reverted blocks are deleted.
 func UnwindHashedCanonical(tx kv.RwTx, from, to uint64) (types.Hash, error) {
+	return UnwindHashedCanonicalWith(tx, from, to, nil)
+}
+
+// BlockChangesProvider returns block n's pre-value maps from an alternate
+// changeset store (e.g. acctcs/storcs freezer blobs; see the archive data
+// layout). found=false means the store does not cover n and the caller falls
+// back to the MDBX changesets.
+type BlockChangesProvider func(n uint64) (
+	map[types.Address]*account.StateAccount,
+	map[types.Address]map[types.Hash]*uint256.Int,
+	bool, error)
+
+// UnwindHashedCanonicalWith is UnwindHashedCanonical with an optional
+// alternate changeset provider consulted FIRST. Blocks the provider does not
+// cover unwind via the legacy MDBX changesets.
+func UnwindHashedCanonicalWith(tx kv.RwTx, from, to uint64, extra BlockChangesProvider) (types.Hash, error) {
 	trc := NewTrieRootComputer()
 	trc.SetRwTx(tx)
 	trc.SetIncremental(true)
 
 	var root types.Hash
 	for n := from; n > to; n-- {
-		accounts, storage, err := readBlockChangeset(tx, n)
-		if err != nil {
-			return root, err
+		var accounts map[types.Address]*account.StateAccount
+		var storage map[types.Address]map[types.Hash]*uint256.Int
+		var covered bool
+		var err error
+		if extra != nil {
+			accounts, storage, covered, err = extra(n)
+			if err != nil {
+				return root, err
+			}
+		}
+		if !covered {
+			accounts, storage, err = readBlockChangeset(tx, n)
+			if err != nil {
+				return root, err
+			}
 		}
 		if root, err = trc.ComputeRoot(accounts, storage); err != nil {
 			return root, err
 		}
+		// MDBX rows are deleted regardless (no-op when the block's changesets
+		// live in the freezer — those get overwritten by the re-imported
+		// canonical block's Append).
 		if err := deleteBlockChangeset(tx, n); err != nil {
 			return root, err
 		}

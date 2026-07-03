@@ -103,7 +103,23 @@ type EngineStateAdapter struct {
 	// invalidation is wired into the TrieRootComputer each block. Purged on
 	// any state rewind (see Reorg) and on batch-tx teardown.
 	hashedReadCache *state.HashedReadCache
+
+	// csFreezerSink, when non-nil, routes hashed-canonical per-block
+	// changesets to acctcs/storcs freezer tables (ethel.CSFreezerWriter)
+	// instead of MDBX AccountChangeSet/StorageChangeSet, and drops MDBX
+	// history-index writes (archive data layout). The importer owns
+	// flush+fsync at its commit boundary.
+	csFreezerSink *ethel.CSFreezerSink
 }
+
+// SetCSFreezerSink switches hashed-canonical changeset persistence to the
+// freezer sink (nil restores MDBX changesets + history).
+func (a *EngineStateAdapter) SetCSFreezerSink(s *ethel.CSFreezerSink) { a.csFreezerSink = s }
+
+// PurgeHashedReadCache drops the cross-block read cache. Callers that rewrite
+// hashed state outside the TrieRootComputer's invalidation hooks (e.g. the
+// downloader's changeset reorg unwind) must call this before reads resume.
+func (a *EngineStateAdapter) PurgeHashedReadCache() { a.hashedReadCache.PurgeAll() }
 
 // SetBatchTx routes executePayloadDetailed onto a caller-owned tx (no internal
 // commit). Pass nil to restore standalone (open+commit-per-call) behavior.
@@ -320,7 +336,11 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 		}
 		hr.SetCache(a.hashedReadCache)
 		reader = hr
-		writer = state.NewHashedCanonicalWriter(tx, blockNum)
+		if a.csFreezerSink != nil {
+			writer = ethel.NewCSFreezerWriter(tx, blockNum, a.csFreezerSink)
+		} else {
+			writer = state.NewHashedCanonicalWriter(tx, blockNum)
+		}
 	} else if a.snapshotCold != nil {
 		// snapshot-direct (minimal/full): warm MDBX delta overlaid on the
 		// immutable H0 snapshot; tombstone-aware writer so SSTORE slot->0 does
