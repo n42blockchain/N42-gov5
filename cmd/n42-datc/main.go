@@ -383,9 +383,10 @@ func main() {
 	b.concurrentRoot = *concurrentRoot
 	b.stateOverlayOn = *stateOverlayF
 	b.chgAggCapBytes = int(*chgCapGB * float64(datasize.GB))
-	if b.concurrentRoot && !b.windowing {
-		die("--concurrent-root requires window mode (the shard fan-out is per-window)")
-	}
+	// concurrent-root works per-window AND per-block: the shard fan-out runs on
+	// whatever RetainList one ComputeRoot carries. Per-block mode arms the
+	// header root before each fold so a shard divergence self-heals via the
+	// serial fallback (and the AccRootEmitter re-fires there — no double emit).
 	b.winA = make(map[types.Address]*account.StateAccount, 64)
 	b.winS = make(map[types.Address]map[types.Hash]*uint256.Int, 16)
 	if *leafSeg {
@@ -959,12 +960,6 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		trc = commitment.NewTrieRootComputer()
 		trc.SetRwTx(wtx)
 		if !b.windowing {
-			if b.concurrentRoot {
-				// The AccRootEmitter fires only on the SERIAL loader; a
-				// concurrent-root build would silently produce an INCOMPLETE
-				// storage-root history — refuse instead.
-				die("--concurrent-root is incompatible with the dense storage-root history (per-block serial builds only)")
-			}
 			// Dense storage-root history: per-block roots surface every folded
 			// contract's storage root — capture them for tDatcStoRoot. Window
 			// builds skip this (a window-end root is not the root at inner
@@ -1597,6 +1592,20 @@ func (b *builder) blockApply(tx kv.RwTx, trc *commitment.TrieRootComputer, n uin
 			clear(b.stoRootEmits)
 		}
 	}
+	// Arm the expected root BEFORE the fold so the concurrent path can gold-check
+	// its combine against the header and self-heal via the serial fallback (the
+	// AccRootEmitter then re-fires from the serial loader — no double emits).
+	var expectRootSet bool
+	var expectRoot types.Hash
+	if !b.fwdMode && b.concurrentRoot {
+		hdr, herr := b.hdrs.ReadHeader(n)
+		if herr != nil {
+			return fmt.Errorf("read header: %w", herr)
+		}
+		expectRoot, expectRootSet = hdr.Root, true
+		trc.SetExpectRoot(hdr.Root)
+		defer trc.ClearExpectRoot()
+	}
 	root, err := trc.ComputeRoot(dirtyA, dirtyS)
 	if err != nil {
 		return fmt.Errorf("ComputeRoot: %w", err)
@@ -1626,12 +1635,16 @@ func (b *builder) blockApply(tx kv.RwTx, trc *commitment.TrieRootComputer, n uin
 			return err
 		}
 	} else {
-		hdr, err := b.hdrs.ReadHeader(n)
-		if err != nil {
-			return fmt.Errorf("read header: %w", err)
+		want := expectRoot
+		if !expectRootSet {
+			hdr, herr := b.hdrs.ReadHeader(n)
+			if herr != nil {
+				return fmt.Errorf("read header: %w", herr)
+			}
+			want = hdr.Root
 		}
-		if root != hdr.Root {
-			return fmt.Errorf("ROOT MISMATCH: computed %x != header %x", root, hdr.Root)
+		if root != want {
+			return fmt.Errorf("ROOT MISMATCH: computed %x != header %x", root, want)
 		}
 	}
 
