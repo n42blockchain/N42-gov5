@@ -295,8 +295,12 @@ func VerifyShardedProof(root Hash, p *ShardedProof) bool {
 // foldProof folds a single-tree proof to its (shard) root — the same math as
 // VerifyProof without the final comparison.
 func foldProof(p *Proof) Hash {
+	local := p.Slot % TwigSize
+	if p.Bits[local/8]&(1<<uint(local%8)) == 0 {
+		return Hash{} // slot not live in the presented bitmap
+	}
 	node := hashLeaf(p.KeyHash, p.Value)
-	idx := int(p.Slot % TwigSize)
+	idx := int(local)
 	for L := 0; L < TwigHeight; L++ {
 		if idx&1 == 0 {
 			node = hashNode(node, p.TwigPath[L])
@@ -305,6 +309,8 @@ func foldProof(p *Proof) Hash {
 		}
 		idx >>= 1
 	}
+	bits := p.Bits
+	node = hashNode(node, hashBits(&bits))
 	twigID := int(p.Slot / TwigSize)
 	for L := 0; L < len(p.UpperPath); L++ {
 		if twigID&1 == 0 {

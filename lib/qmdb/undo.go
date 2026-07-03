@@ -234,9 +234,13 @@ func (t *Tree) ProofAt(keyHash Hash, undos []*BlockUndo) (proof *Proof, root Has
 	twigCount := int((targetNext-1)/TwigSize) + 1
 	boundaryTwig := int(targetNext / TwigSize) // == twigCount when the tail twig was exactly full
 
-	// Twigs whose target root differs from (or cannot be read off) the live tree:
-	// any with restored leaves, plus the partial tail twig (in-window appends made
-	// its live leaves non-null beyond the target cursor).
+	// SPLIT COMMITMENT: a twig's LEAF tree is frozen — identical at the target
+	// and now — for every twig except the boundary twig (in-window appends grew
+	// its leaf tree past the target cursor). Everything else that changed
+	// in-window is bits-only: restored slots flip their bit back to 1, slots
+	// appended in-window flip to 0. So reconstruction hydrates AT MOST two
+	// twigs (target + boundary); other affected twigs recombine
+	// hashNode(retainedLeafRoot, bitsRoot(targetBits)) with zero rehashing.
 	affected := make(map[int]bool)
 	for s := range restored {
 		affected[int(s/TwigSize)] = true
@@ -247,11 +251,24 @@ func (t *Tree) ProofAt(keyHash Hash, undos []*BlockUndo) (proof *Proof, root Has
 	targetTwig := -1
 	if found {
 		targetTwig = int(tSlot / TwigSize)
-		affected[targetTwig] = true // need its scratch nodes for the sibling path
+		affected[targetTwig] = true
 	}
 
-	// Target twig roots: live roots for unaffected twigs (no in-window change
-	// below the cursor), scratch recomputes for affected ones.
+	// bitsAt reconstructs a twig's activeBits at the target.
+	bitsAt := func(id int) [TwigSize / 8]byte {
+		bits := t.twigs[id].bits
+		lo := uint64(id) * TwigSize
+		for local := uint64(0); local < TwigSize; local++ {
+			s := lo + local
+			if s >= targetNext {
+				bits[local/8] &^= 1 << uint(local%8) // not appended yet at target
+			} else if _, ok := restored[s]; ok {
+				bits[local/8] |= 1 << uint(local%8) // died in-window ⇒ live at target
+			}
+		}
+		return bits
+	}
+
 	upCapT := 1
 	for upCapT < twigCount {
 		upCapT <<= 1
@@ -261,15 +278,26 @@ func (t *Tree) ProofAt(keyHash Hash, undos []*BlockUndo) (proof *Proof, root Has
 		rootsT[i] = t.twigs[i].root
 	}
 	var targetNodes *[2 * TwigSize]Hash
+	var targetBits [TwigSize / 8]byte
 	for id := range affected {
-		nodes, err := t.scratchTwigAt(id, targetNext, restored)
-		if err != nil {
-			return nil, Hash{}, false, err
+		bits := bitsAt(id)
+		var leafRoot Hash
+		if id == boundaryTwig || id == targetTwig {
+			// Need the leaf NODES (path siblings / target-cursor truncation).
+			nodes, err := t.scratchLeafTreeAt(id, targetNext)
+			if err != nil {
+				return nil, Hash{}, false, err
+			}
+			leafRoot = nodes[1]
+			if id == targetTwig {
+				targetNodes = nodes
+				targetBits = bits
+			}
+		} else {
+			leafRoot = t.twigs[id].leafRoot // frozen: identical at the target
 		}
-		rootsT[id] = nodes[1]
-		if id == targetTwig {
-			targetNodes = nodes
-		}
+		b := bits
+		rootsT[id] = hashNode(leafRoot, hashBits(&b))
 	}
 
 	// Upper tree at the target on a scratch heap (the live heap may differ in
@@ -285,7 +313,7 @@ func (t *Tree) ProofAt(keyHash Hash, undos []*BlockUndo) (proof *Proof, root Has
 		return nil, root, false, nil
 	}
 
-	p := &Proof{KeyHash: keyHash, Slot: tSlot}
+	p := &Proof{KeyHash: keyHash, Slot: tSlot, Bits: targetBits}
 	p.Value = make([]byte, len(tVal))
 	copy(p.Value, tVal)
 	j := TwigSize + tSlot%TwigSize
@@ -301,19 +329,47 @@ func (t *Tree) ProofAt(keyHash Hash, undos []*BlockUndo) (proof *Proof, root Has
 	return p, root, true, nil
 }
 
-// scratchTwigAt rebuilds twig id's node heap as of the target cursor: live
-// leaves, minus in-window appends (slots >= targetNext → null), plus restored
-// in-window deactivations. Never mutates the live twig.
-func (t *Tree) scratchTwigAt(id int, targetNext uint64, restored map[uint64]*UndoEntry) (*[2 * TwigSize]Hash, error) {
+// scratchLeafTreeAt rebuilds twig id's FROZEN leaf tree as of the target
+// cursor: the live leaf array with slots >= targetNext nulled (they had not
+// been appended yet). Deactivations never touch leaves under the split
+// commitment, so no restoration is needed. Never mutates the live twig.
+func (t *Tree) scratchLeafTreeAt(id int, targetNext uint64) (*[2 * TwigSize]Hash, error) {
 	if id >= len(t.twigs) {
 		return nil, fmt.Errorf("qmdb: twig %d out of range", id)
 	}
-	nodes := new([2 * TwigSize]Hash)
 	tw := t.twigs[id]
-	if !tw.pruned {
-		// Live leaves are the base. A pruned twig was fully dead at prune time, so
-		// its base is all-null — every leaf live at the target was deactivated
-		// in-window and is in `restored`.
+	nodes := new([2 * TwigSize]Hash)
+	if tw.pruned {
+		// Node storage is gone; the frozen leaves live in the persisted leaf
+		// blob, or — when no store is wired (all-in-RAM trees) — the retained
+		// entry records (markPruned keeps them in that case).
+		hydrated := false
+		if t.leafStore != nil {
+			if blob, ok := t.leafStore.Leaves(id); ok && len(blob) == TwigSize*32 {
+				for i := 0; i < TwigSize; i++ {
+					copy(nodes[TwigSize+i][:], blob[i*32:(i+1)*32])
+				}
+				hydrated = true
+			}
+		}
+		if !hydrated {
+			// Last resort: rebuild from entry records. A pruned twig is fully
+			// appended, so EVERY slot must yield a record — a freed/absent one
+			// means the frozen leaves are unrecoverable: fail loudly.
+			lo := uint64(id) * TwigSize
+			for local := uint64(0); local < TwigSize; local++ {
+				s := lo + local
+				if s >= t.nextSlot {
+					break
+				}
+				e, ok := t.entryAt(s)
+				if !ok || (e.keyHash == (Hash{}) && e.value == nil) {
+					return nil, fmt.Errorf("qmdb: twig %d is pruned and its frozen leaves are unrecoverable (no leaf blob, entry record for slot %d freed)", id, s)
+				}
+				nodes[TwigSize+local] = hashLeaf(e.keyHash, e.value)
+			}
+		}
+	} else {
 		t.ensureHydrated(id)
 		if tw.nodes == nil {
 			return nil, fmt.Errorf("qmdb: twig %d could not be hydrated", id)
@@ -322,11 +378,8 @@ func (t *Tree) scratchTwigAt(id int, targetNext uint64, restored map[uint64]*Und
 	}
 	lo := uint64(id) * TwigSize
 	for local := uint64(0); local < TwigSize; local++ {
-		s := lo + local
-		if s >= targetNext {
+		if lo+local >= targetNext {
 			nodes[TwigSize+local] = nullHash
-		} else if e, ok := restored[s]; ok {
-			nodes[TwigSize+local] = hashLeaf(e.KeyHash, e.Value)
 		}
 	}
 	for j := TwigSize - 1; j >= 1; j-- {

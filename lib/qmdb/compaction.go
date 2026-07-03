@@ -30,25 +30,26 @@ package qmdb
 
 import "sort"
 
-// nullTwigRoot is the root of an all-empty (pruned) twig — the precomputed
-// all-null subtree root at twig height.
-var nullTwigRoot = nullLevel[TwigHeight]
-
-// markPruned drops a fully-dead twig's node storage, freeing memory; its root
-// becomes the constant null-twig root so the upper tree stays well-formed.
+// markPruned drops a fully-dead twig's node storage, freeing memory. Under the
+// split commitment a dead twig's root is hashNode(itsFrozenLeafRoot,
+// zeroBitsRoot) — PER-TWIG, not a constant — so pruning keeps the retained
+// roots verbatim (it is still root-preserving: only storage is dropped; the
+// last deactivation already recombined the committed root over all-zero bits).
 func (t *Tree) markPruned(id int) {
 	tw := t.twigs[id]
 	if tw == nil || tw.live != 0 {
 		return
 	}
-	// Drop the node heap; a pruned twig contributes nullTwigRoot.
 	tw.nodes = nil
-	tw.root = nullTwigRoot
 	tw.dirty = false
 	tw.pruned = true
 	t.markUpperDirty(id)
 	// Free the entry records for this twig's slot range (resident slots only;
-	// evicted slots are already out of RAM).
+	// evicted slots are already out of RAM). NOTE (split commitment): the
+	// frozen leaf tree of a pruned twig is afterwards recoverable only from
+	// the persisted leaf blob (or retained cold rows) — historical
+	// reconstruction across a pruned twig without a leaf source fails LOUDLY
+	// in scratchLeafTreeAt rather than fabricating a wrong root.
 	lo := uint64(id) * TwigSize
 	hi := lo + TwigSize
 	for s := lo; s < hi; s++ {
