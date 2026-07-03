@@ -140,6 +140,115 @@ func MerkleStageIncrementalWithProof(tx kv.RwTx, from, to uint64) (types.Hash, [
 	return root, proof, nil
 }
 
+// TrieKV is one collected TrieOf* node write; V == nil means delete.
+type TrieKV struct {
+	K, V []byte
+}
+
+// TrieUpdates holds one Merkle window's collected TrieOfAccounts/TrieOfStorage
+// node writes, produced read-only by MerkleStageIncrementalCollect and applied
+// later (possibly from another goroutine's join point) via Apply. This is the
+// async split of MerkleStageIncremental: compute on an MDBX RoTx snapshot
+// while execution keeps writing, then land the nodes in a short write burst.
+type TrieUpdates struct {
+	Acc  []TrieKV
+	Stor []TrieKV
+}
+
+// MerkleStageIncrementalCollect is the READ-ONLY half of MerkleStageIncremental:
+// it computes the state root at the post-state of block `to` over an MDBX
+// snapshot (any kv.Tx — safe on a RoTx while a writer runs concurrently) and
+// COLLECTS the updated TrieOf* nodes instead of writing them. The caller
+// verifies the returned root against block `to`'s header and then lands the
+// nodes with TrieUpdates.Apply on a write tx.
+//
+// Correctness contract (same as MerkleStageIncremental): the snapshot must
+// contain the post-state of `to` (HashedAccounts/HashedStorage + changesets of
+// [from,to]) and the TrieOf* of block from-1 — i.e. the previous window's
+// updates must have been APPLIED AND COMMITTED before this snapshot was taken.
+func MerkleStageIncrementalCollect(tx kv.Tx, from, to uint64) (types.Hash, *TrieUpdates, error) {
+	rl, nAcc, nSto, err := BuildRetainListFromChangesets(tx, from, to)
+	if err != nil {
+		return types.Hash{}, nil, err
+	}
+	root, u, err := CollectTrieUpdates(tx, rl)
+	if err != nil {
+		return types.Hash{}, nil, err
+	}
+	log.Info("MerkleStageIncrementalCollect", "from", from, "to", to,
+		"accKeys", nAcc, "stoKeys", nSto,
+		"accNodes", len(u.Acc), "stoNodes", len(u.Stor), "root", root.Hex())
+	return root, u, nil
+}
+
+// CollectTrieUpdates runs the incremental root over an already-built dirty
+// RetainList, read-only, collecting the TrieOf* node writes for a later Apply.
+func CollectTrieUpdates(tx kv.Tx, rl *trie.RetainList) (types.Hash, *TrieUpdates, error) {
+	u := &TrieUpdates{}
+	accCollector := func(keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
+		if len(keyHex) == 0 {
+			return nil
+		}
+		k := append([]byte{}, keyHex...)
+		if hasState == 0 {
+			u.Acc = append(u.Acc, TrieKV{K: k})
+			return nil
+		}
+		buf := make([]byte, len(hashes)+len(rootHash)+6)
+		v := trie.MarshalTrieNode(hasState, hasTree, hasHash, hashes, rootHash, buf)
+		u.Acc = append(u.Acc, TrieKV{K: k, V: append([]byte{}, v...)})
+		return nil
+	}
+	storCollector := func(accWithInc []byte, keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
+		k := append(append(make([]byte, 0, len(accWithInc)+len(keyHex)), accWithInc...), keyHex...)
+		if len(k) == 0 {
+			return nil
+		}
+		if hasState == 0 {
+			u.Stor = append(u.Stor, TrieKV{K: k})
+			return nil
+		}
+		buf := make([]byte, len(hashes)+len(rootHash)+6)
+		v := trie.MarshalTrieNode(hasState, hasTree, hasHash, hashes, rootHash, buf)
+		u.Stor = append(u.Stor, TrieKV{K: k, V: append([]byte{}, v...)})
+		return nil
+	}
+
+	loader := trie.NewFlatDBTrieLoader("merkle-async", rl, accCollector, storCollector, false)
+	root, err := loader.CalcTrieRoot(tx, nil)
+	if err != nil {
+		return types.Hash{}, nil, err
+	}
+	return root, u, nil
+}
+
+// Apply lands the collected TrieOf* nodes. Semantics match the synchronous
+// Phase 4 exactly — in particular TrieOfStorage is DupSort, so every path key
+// is DELETED first (dropping all stale node versions) before the current node
+// is put; a nil V is a pure delete for both tables.
+func (u *TrieUpdates) Apply(tx kv.RwTx) error {
+	for _, n := range u.Acc {
+		if n.V == nil {
+			_ = tx.Delete(modules.TrieOfAccounts, n.K)
+			continue
+		}
+		if err := tx.Put(modules.TrieOfAccounts, n.K, n.V); err != nil {
+			return err
+		}
+	}
+	for _, n := range u.Stor {
+		if err := tx.Delete(modules.TrieOfStorage, n.K); err != nil {
+			return err
+		}
+		if n.V != nil {
+			if err := tx.Put(modules.TrieOfStorage, n.K, n.V); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // ExtractBlockMultiproof is the READ-ONLY twin of MerkleStageIncrementalWithProof:
 // it captures the same touched-path multiproof for blocks [from,to] and returns
 // the root the current trie reconstructs to, WITHOUT writing TrieOf* back (no-op
