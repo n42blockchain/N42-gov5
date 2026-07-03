@@ -340,6 +340,11 @@ type Tree struct {
 	// undo.go. Nil (the default) adds zero overhead to Set/Delete.
 	rec *BlockUndo
 
+	// hist, when non-nil, journals FULL-history data (death stamps, key
+	// versions, per-block cursor, top band) — see history.go. Forces archival
+	// entry-row retention at flush.
+	hist *HistoryRecorder
+
 	// Batched leaf folding (batch.go): when batchFolding is on, leaf writes skip
 	// the eager 11-hash path fold and record the touched leaf position instead;
 	// foldTouched later folds the UNION of ancestor paths per twig with level-
@@ -480,6 +485,9 @@ func (t *Tree) deactivate(slot uint64) {
 	if tw.bit(local) {
 		t.setTwigBit(tw, id, local, false)
 		tw.live--
+		if t.hist != nil {
+			t.hist.recordDeath(slot)
+		}
 	}
 	// Only resident entries carry a mutable active flag; cold entries derive it
 	// from the index, so an evicted slot needs no record mutation here (its twig
@@ -531,6 +539,13 @@ func (t *Tree) Set(keyHash Hash, value []byte) {
 	tw.live++
 	t.markUpperDirty(int(slot / TwigSize))
 	t.idx.Put(keyHash, slot)
+	if t.hist != nil {
+		if err := t.hist.store.AppendKeyVersion(keyHash, slot); err != nil {
+			// Sets have no error path; a failing history sink poisons the
+			// recorder loudly at EndBlock instead of silently dropping versions.
+			t.hist.appendErr = err
+		}
+	}
 	t.rootDirty = true
 }
 
