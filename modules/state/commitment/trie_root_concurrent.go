@@ -93,11 +93,16 @@ func (a *byteArena) copyOf(b []byte) []byte {
 }
 
 func (t *TrieRootComputer) flushTrieRootConcurrent(rl *trie.RetainList) (types.Hash, error) {
+	type shardAccRoot struct {
+		nib  []byte // account hashed key, 64 nibbles (arena-backed)
+		root types.Hash
+	}
 	type shardOut struct {
-		hash    []byte // depth-1 subtrie hash; nil for an empty nibble
-		accUpd  []kvPair
-		storUpd []kvPair
-		err     error
+		hash     []byte // depth-1 subtrie hash; nil for an empty nibble
+		accUpd   []kvPair
+		storUpd  []kvPair
+		accRoots []shardAccRoot // per-account storage roots (AccRootEmitter capture)
+		err      error
 	}
 	var outs [16]shardOut
 	var wg sync.WaitGroup
@@ -162,6 +167,16 @@ func (t *TrieRootComputer) flushTrieRootConcurrent(rl *trie.RetainList) (types.H
 			}
 
 			loader := trie.NewFlatDBTrieLoader("croot", rl.NibbleSublist(byte(nib)), accColl, storColl, false)
+			if t.accRootEmitter != nil {
+				// Capture per-account storage roots SHARD-LOCALLY (zero locking);
+				// the caller replays them into the real emitter only after the
+				// combined root is accepted (fallback paths re-fire it from the
+				// serial loader instead, so nothing double-emits).
+				loader.SetAccRootEmitter(func(accNib []byte, root types.Hash) {
+					outs[nib].accRoots = append(outs[nib].accRoots,
+						shardAccRoot{nib: ar.copyOf(accNib), root: root})
+				})
+			}
 			h, err := loader.CalcTrieRootShard(rtx, byte(nib), nil)
 			if err != nil {
 				outs[nib].err = err
@@ -253,6 +268,17 @@ func (t *TrieRootComputer) flushTrieRootConcurrent(rl *trie.RetainList) (types.H
 				sroot[:8], t.expectRoot[:8])
 		}
 		return sroot, nil
+	}
+
+	// Combined root accepted: replay the shards' per-account storage roots into
+	// the real emitter (main goroutine — the builder's sink is single-threaded).
+	// Shards are nibble-disjoint, so no account appears twice.
+	if t.accRootEmitter != nil {
+		for nib := 0; nib < 16; nib++ {
+			for i := range outs[nib].accRoots {
+				t.accRootEmitter(outs[nib].accRoots[i].nib, outs[nib].accRoots[i].root)
+			}
+		}
 	}
 
 	// Phase 4: flush merged node updates to TrieOf*. The shards' key spaces are
