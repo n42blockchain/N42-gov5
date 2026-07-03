@@ -81,7 +81,27 @@ type TrieRootComputer struct {
 	// same root — only the write order changes. Off by default (per-block callers
 	// with few keys gain nothing); the batched anchor producer opts in.
 	sortedWrites bool
+
+	// readCache: optional cross-block read cache (state.HashedReadCache via
+	// the narrow interface below). ComputeRoot invalidates every dirtied
+	// hashed key so a subsequent read refills from MDBX with byte-true
+	// values; an account deletion purges the whole storage tier (its cached
+	// slots cannot be enumerated). nil = no cache wired.
+	readCache ReadCacheInvalidator
 }
+
+// ReadCacheInvalidator is the write-side surface of the cross-block hashed
+// read cache (implemented by state.HashedReadCache; defined here to avoid a
+// commitment→state import edge).
+type ReadCacheInvalidator interface {
+	InvalidateAccount(addrHash [32]byte)
+	InvalidateStorage(composite [64]byte)
+	PurgeAccountStorage(addrHash [32]byte)
+	PurgeAll()
+}
+
+// SetReadCache wires the cross-block read cache for write invalidation.
+func (t *TrieRootComputer) SetReadCache(c ReadCacheInvalidator) { t.readCache = c }
 
 // SetSortedWrites toggles ascending-key-order leaf writes in Phase 1/2 (a large-
 // batch optimization; see the field doc). Correctness-neutral.
@@ -163,6 +183,12 @@ func (t *TrieRootComputer) ComputeRoot(
 		// dirty keys is correct and simpler — an extra bounded leaf scan is
 		// harmless.
 		rl.AddKeyWithMarker(addrHash[:], true)
+		// Cross-block read cache: every dirtied account misses on next read
+		// (covers both the inline and sortedWrites apply paths; the storage
+		// tier of a DELETED account is purged inside deleteAccountStorage).
+		if t.readCache != nil {
+			t.readCache.InvalidateAccount(addrHash)
+		}
 
 		var enc []byte
 		if acct != nil {
@@ -205,6 +231,9 @@ func (t *TrieRootComputer) ComputeRoot(
 			// accounts: a brand-new storage slot must force a HashedStorage leaf
 			// scan around its (cached-parent-unknown) nibble position.
 			rl.AddKeyWithMarker(compositeKey[:], true)
+			if t.readCache != nil {
+				t.readCache.InvalidateStorage(compositeKey)
+			}
 
 			var enc []byte
 			if !(val == nil || val.IsZero()) {
@@ -674,6 +703,9 @@ func (t *TrieRootComputer) InitFromPlainState() error {
 	if t.tx == nil {
 		return fmt.Errorf("TrieRootComputer: tx not set")
 	}
+	if t.readCache != nil {
+		t.readCache.PurgeAll() // wholesale rewrite below
+	}
 
 	// Clear existing.
 	for _, bucket := range []string{modules.HashedAccounts, modules.HashedStorage, modules.TrieOfAccounts, modules.TrieOfStorage} {
@@ -739,6 +771,12 @@ func (t *TrieRootComputer) InitFromPlainState() error {
 }
 
 func (t *TrieRootComputer) deleteAccountStorage(addrHash types.Hash) error {
+	// Invalidate the wiped account's cached slots via its wipe generation.
+	// NOTE: this also fires for the every-block EIP-158 empty-account
+	// deletions, so it must stay O(1) — never a whole-tier purge.
+	if t.readCache != nil {
+		t.readCache.PurgeAccountStorage(addrHash)
+	}
 	// Delete all storage entries for this account from HashedStorage.
 	// HashedStorage is DupSort with key prefix = addrHash[32] + incarnation[8].
 	// We scan for any key starting with addrHash and delete.
