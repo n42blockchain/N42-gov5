@@ -445,6 +445,11 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 						// watermark) so eth_getProof can serve the last N heights.
 						rc.EnableUndoRecording()
 					}
+					if e.cfg.QMDBHistory {
+						// Journal the FULL-history layer (death stamps, key versions,
+						// top band) for any-height ProofAtHeight. Archival mode.
+						rc.EnableHistory(dstTx)
+					}
 					e.qmdbRC = rc
 				}
 				qmdbRC = e.qmdbRC
@@ -452,6 +457,7 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				// batch's tx is rolled back); faults/index reads use committed data.
 				qmdbRC.SetCold(dstTx)
 				qmdbRC.SetIndexTx(dstTx)
+				qmdbRC.SetHistoryTx(dstTx)
 
 			case useBMT:
 				// BMT path — Binary Merkle Tree (Blake3, content-addressed)
@@ -857,6 +863,13 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					ibs.SetRootComputer(bmtRC)
 				} else if useQMDB && qmdbRC != nil {
 					ibs.SetRootComputer(qmdbRC)
+					if e.cfg.QMDBHistory {
+						// Bracket this block's full-history journaling (death
+						// stamps land under this block number).
+						if err := qmdbRC.BeginBlockHistory(newBlockNum); err != nil {
+							return fmt.Errorf("qmdb history begin block %d: %w", newBlockNum, err)
+						}
+					}
 				} else if ltRC != nil {
 					ibs.SetRootComputer(ltRC)
 				}
@@ -950,6 +963,14 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 							return fmt.Errorf("MPT ROOT MISMATCH at block %d: incremental=%x rebuild=%x accounts=%d storage=%d dirty=%d%s",
 								newBlockNum, stateRoot, verifyRoot, len(verifyAccts), len(verifyStor), len(accts), diff)
 						}
+					}
+				}
+
+				// Settle this block's full-history journal: E(block) + top band
+				// (death stamps accumulate and flush per batch via FlushTo).
+				if useQMDB && qmdbRC != nil && e.cfg.QMDBHistory {
+					if err := qmdbRC.EndBlockHistory(); err != nil {
+						return fmt.Errorf("qmdb history end block %d: %w", newBlockNum, err)
 					}
 				}
 

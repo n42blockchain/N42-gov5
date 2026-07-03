@@ -35,6 +35,33 @@ type QMDBRootComputer struct {
 
 	undoRecording bool            // capture per-block undo data in ComputeRoot
 	lastUndo      *qmdb.BlockUndo // undo record of the most recent ComputeRoot
+
+	histStore *MDBXQMDBHistoryStore // non-nil when full-history journaling is on
+}
+
+// EnableHistory attaches the full-history recorder (death stamps, key
+// versions, top band — lib/qmdb/history.go) writing through tx. Re-point the
+// tx each batch with SetHistoryTx. Forces archival entry-row retention.
+func (r *QMDBRootComputer) EnableHistory(tx kv.Tx) {
+	r.histStore = NewMDBXQMDBHistoryStore(tx)
+	r.t.SetHistoryRecorder(qmdb.NewHistoryRecorder(r.histStore))
+}
+
+// SetHistoryTx re-points the history store at the current batch's tx.
+func (r *QMDBRootComputer) SetHistoryTx(tx kv.Tx) {
+	if r.histStore != nil {
+		r.histStore.SetTx(tx)
+	}
+}
+
+// BeginBlockHistory / EndBlockHistory bracket one block's history journaling.
+func (r *QMDBRootComputer) BeginBlockHistory(block uint64) error { return r.t.BeginBlock(block) }
+func (r *QMDBRootComputer) EndBlockHistory() error               { return r.t.EndBlock() }
+
+// ProofAtHeight reconstructs a membership proof + root at height h from the
+// journaled history. The caller verifies the root against the block header.
+func (r *QMDBRootComputer) ProofAtHeight(keyHash qmdb.Hash, h uint64) (*qmdb.Proof, qmdb.Hash, bool, error) {
+	return r.t.ProofAtHeight(keyHash, h)
 }
 
 // EnableUndoRecording makes every subsequent ComputeRoot capture the block's
@@ -82,6 +109,11 @@ func (r *QMDBRootComputer) LoadFrom(g qmdb.Getter) error {
 // FlushTo persists entries appended since the last flush plus twig metadata and
 // recovery meta (positional, sequential). Returns bytes written.
 func (r *QMDBRootComputer) FlushTo(p qmdb.Putter) (int, error) {
+	// Settle the batch's accumulated death-stamp deltas first (one
+	// read-modify-write per touched twig per batch), same tx as the flush.
+	if err := r.t.FlushHistory(); err != nil {
+		return 0, err
+	}
 	next, n, err := r.t.FlushTo(p, r.flushedThrough)
 	if err != nil {
 		return n, err

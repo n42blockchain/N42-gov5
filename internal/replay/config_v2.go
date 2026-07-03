@@ -34,6 +34,12 @@ type ConfigV2 struct {
 	// 0 disables recording.
 	QMDBUndoWindow int
 
+	// QMDBHistory (qmdb tree only): journal the FULL-history layer (per-slot
+	// death stamps, per-key versions, per-block cursor, top band) so
+	// ProofAtHeight can serve membership proofs at ANY height. Forces archival
+	// entry-row retention. See lib/qmdb/history.go.
+	QMDBHistory bool
+
 	FillGaps     bool
 	GapPeriod    uint64
 	GapTolerance uint64

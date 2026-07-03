@@ -130,25 +130,10 @@ func (t *Tree) EndBlock() error {
 	}
 	t.Root() // settle twig + upper heaps (also flushes batch folding)
 
-	// Death stamps: read-modify-write each touched twig's blob.
-	for twigID, locals := range r.stampDelta {
-		blob, err := r.store.GetDeathStamps(twigID)
-		if err != nil {
-			return err
-		}
-		if len(blob) != TwigSize*4 {
-			blob = make([]byte, TwigSize*4)
-		} else {
-			blob = append([]byte(nil), blob...) // never alias the store's memory
-		}
-		for local, death := range locals {
-			binary.LittleEndian.PutUint32(blob[local*4:], death)
-		}
-		if err := r.store.PutDeathStamps(twigID, blob); err != nil {
-			return err
-		}
-		delete(r.stampDelta, twigID)
-	}
+	// Death stamps stay ACCUMULATED in stampDelta and flush once per batch
+	// (FlushHistory) — a per-block read-modify-write of each touched twig's
+	// 8 KiB blob would be ruinous write amplification in the replay hot loop.
+	// Reads before the flush overlay the pending delta (stampsAt).
 
 	if err := r.store.PutBlockPos(r.block, t.nextSlot); err != nil {
 		return err
@@ -184,6 +169,56 @@ func (r *HistoryRecorder) recordDeath(slot uint64) {
 		r.stampDelta[twigID] = m
 	}
 	m[local] = uint32(r.block)
+}
+
+// stampsAt returns twigID's death-stamp blob as of NOW: the persisted blob
+// overlaid with the batch's pending delta.
+func (r *HistoryRecorder) stampsAt(twigID uint64) ([]byte, error) {
+	blob, err := r.store.GetDeathStamps(twigID)
+	if err != nil {
+		return nil, err
+	}
+	delta := r.stampDelta[twigID]
+	if len(delta) == 0 {
+		return blob, nil
+	}
+	merged := make([]byte, TwigSize*4)
+	copy(merged, blob)
+	for local, death := range delta {
+		binary.LittleEndian.PutUint32(merged[local*4:], death)
+	}
+	return merged, nil
+}
+
+// FlushHistory writes the accumulated death-stamp deltas through the store —
+// one read-modify-write per touched twig per BATCH. Call right before the
+// batch commit (alongside Tree.FlushTo).
+func (t *Tree) FlushHistory() error {
+	if t.hist == nil {
+		return nil
+	}
+	r := t.hist
+	for twigID, locals := range r.stampDelta {
+		blob, err := r.store.GetDeathStamps(twigID)
+		if err != nil {
+			return err
+		}
+		if len(blob) != TwigSize*4 {
+			nb := make([]byte, TwigSize*4)
+			copy(nb, blob)
+			blob = nb
+		} else {
+			blob = append([]byte(nil), blob...) // never alias the store's memory
+		}
+		for local, death := range locals {
+			binary.LittleEndian.PutUint32(blob[local*4:], death)
+		}
+		if err := r.store.PutDeathStamps(twigID, blob); err != nil {
+			return err
+		}
+		delete(r.stampDelta, twigID)
+	}
+	return nil
 }
 
 // historyBitsAt reconstructs a twig's activeBits at height H from its death
@@ -260,7 +295,7 @@ func (t *Tree) ProofAtHeight(keyHash Hash, h uint64) (proof *Proof, root Hash, f
 			continue
 		}
 		tSlot = versions[i]
-		stamps, err := store.GetDeathStamps(tSlot / TwigSize)
+		stamps, err := t.hist.stampsAt(tSlot / TwigSize)
 		if err != nil {
 			return nil, Hash{}, false, err
 		}
@@ -311,7 +346,7 @@ func (t *Tree) ProofAtHeight(keyHash Hash, h uint64) (proof *Proof, root Hash, f
 			if twigID >= uint64(twigCountH) {
 				return nullHash, nil // padding
 			}
-			stamps, err := store.GetDeathStamps(twigID)
+			stamps, err := t.hist.stampsAt(twigID)
 			if err != nil {
 				return Hash{}, err
 			}
@@ -353,7 +388,7 @@ func (t *Tree) ProofAtHeight(keyHash Hash, h uint64) (proof *Proof, root Hash, f
 	if err != nil {
 		return nil, Hash{}, false, err
 	}
-	stamps, err := store.GetDeathStamps(targetTwig)
+	stamps, err := t.hist.stampsAt(targetTwig)
 	if err != nil {
 		return nil, Hash{}, false, err
 	}
