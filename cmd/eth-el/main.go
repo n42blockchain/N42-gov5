@@ -368,12 +368,22 @@ func run(c *cli.Context) error {
 	node.RegisterFactory(func(n *ethel.Node) ethel.Service {
 		return bootstrap.New(cfg.Bootstrap, n, fetcher)
 	})
-	node.RegisterFactory(func(n *ethel.Node) ethel.Service {
-		return catchup.New(catchup.Config{
-			CatchUp:  cfg.CatchUp,
-			Manifest: cfg.CatchUp.Manifest,
-		}, n, fetcher)
-	})
+	// Snapshot-direct (minimal/full) nodes must NOT run the freezer catch-up
+	// executor: it replays input-freezer blocks against PlainState, but in
+	// snapshot-direct mode the state at H0 lives in the RecSplit snapshot +
+	// warm overlay and PlainState is empty. A full-mode datadir whose bodyc
+	// head is above the H0 marker would otherwise "catch up" 100k+ blocks on
+	// top of nothing. eldevp2p (warm-overlay adapter) owns all execution.
+	if cfg.Bootstrap.Mode != "snapshot" {
+		node.RegisterFactory(func(n *ethel.Node) ethel.Service {
+			return catchup.New(catchup.Config{
+				CatchUp:  cfg.CatchUp,
+				Manifest: cfg.CatchUp.Manifest,
+			}, n, fetcher)
+		})
+	} else {
+		log.Info("eth-el: catch-up executor skipped (snapshot-direct — eldevp2p owns execution)")
+	}
 	node.RegisterFactory(func(n *ethel.Node) ethel.Service {
 		return engineapi.New(cfg.EngineAPI, n.ChainConfig(), n.Engine(), n.RwDB(), n.OutFreezer())
 	})
