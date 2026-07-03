@@ -219,6 +219,17 @@ const (
 	// 2048 random entry+index lookups.
 	QMDBTwigLeaves = "qmdbTwigLeaves"
 
+	// QMDB full-history layer (split twig commitment; lib/qmdb/history.go).
+	// QMDBDeathStamps: BE8(twigID) -> 2048 * u32 LE death blocks (0 = alive)
+	QMDBDeathStamps = "qmdbDeathStamps"
+	// QMDBBlockPos: BE8(block) -> BE8(nextSlot) — E(block), the append cursor.
+	QMDBBlockPos = "qmdbBlockPos"
+	// QMDBKeyVers: keyHash(32) -> BE8(slot), DupSort — per-key version positions.
+	QMDBKeyVers = "qmdbKeyVers"
+	// QMDBTopBand: BE8(block) -> upCap(8 LE) || upper[1..64)*32B — shallow upper
+	// nodes journal for historical proofs.
+	QMDBTopBand = "qmdbTopBand"
+
 	// VerkleNode stores content-addressed Verkle nodes.
 	// key: commitment_bytes (64 bytes)   value: serialized_node (97B internal / 288B+ leaf)
 	VerkleNode = "VerkleNode"
@@ -378,6 +389,10 @@ var n42Tables = []string{
 	QMDBMeta,
 	QMDBIndex,
 	QMDBTwigLeaves,
+	QMDBDeathStamps,
+	QMDBBlockPos,
+	QMDBKeyVers,
+	QMDBTopBand,
 	VerkleNode,
 	VerkleRoot,
 	ConsensusEvidence,
@@ -400,6 +415,7 @@ var n42Tables = []string{
 var N42TableCfg = kv.TableCfg{
 	AccountChangeSet: {Flags: kv.DupSort},
 	StorageChangeSet: {Flags: kv.DupSort},
+	QMDBKeyVers:      {Flags: kv.DupSort},
 	Storage: {
 		Flags:                     kv.DupSort,
 		AutoDupSortKeysConversion: true,

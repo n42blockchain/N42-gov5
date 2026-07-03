@@ -43,6 +43,7 @@ var replayV2Command = &cli.Command{
 		&cli.StringFlag{Name: "chain", Usage: "Chain config name", Value: "mainnet_v2"},
 		&cli.StringFlag{Name: "tree", Usage: "Tree type: jmt, bmt, qmdb, mpt, or trie", Value: "jmt"},
 		&cli.IntFlag{Name: "qmdb-undo-window", Usage: "qmdb only: keep per-block undo records for the last N blocks (recent-height eth_getProof); 0 disables", Value: 64},
+		&cli.BoolFlag{Name: "qmdb-history", Usage: "qmdb only: journal the full-history layer (death stamps, key versions, top band) for any-height proofs; forces archival entry retention", Value: false},
 		&cli.BoolFlag{Name: "jmt", Usage: "Enable JMT state commitment", Value: true},
 		&cli.BoolFlag{Name: "lthash", Usage: "Enable LtHash digest", Value: true},
 		&cli.BoolFlag{Name: "no-gc", Usage: "Disable JMT GC (full history)", Value: true},
@@ -95,6 +96,7 @@ func runReplayV2(cliCtx *cli.Context) error {
 
 	cfg.TreeType = cliCtx.String("tree")
 	cfg.QMDBUndoWindow = cliCtx.Int("qmdb-undo-window")
+	cfg.QMDBHistory = cliCtx.Bool("qmdb-history")
 	cfg.EnableJMT = cliCtx.Bool("jmt")
 	cfg.EnableLtHash = cliCtx.Bool("lthash")
 	cfg.DisableGC = cliCtx.Bool("no-gc")
