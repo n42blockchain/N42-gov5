@@ -97,11 +97,39 @@ type EngineStateAdapter struct {
 	// OverlayStateWriter (empty-value tombstones on delete). Set by the node
 	// when --bootstrap.mode=snapshot.
 	snapshotCold state.StateReader
+
+	// hashedReadCache: cross-block LRU over HashedAccounts/HashedStorage/Code
+	// reads (hashed-canonical mode). Created lazily on first block; write
+	// invalidation is wired into the TrieRootComputer each block. Purged on
+	// any state rewind (see Reorg) and on batch-tx teardown.
+	hashedReadCache *state.HashedReadCache
 }
 
 // SetBatchTx routes executePayloadDetailed onto a caller-owned tx (no internal
 // commit). Pass nil to restore standalone (open+commit-per-call) behavior.
-func (a *EngineStateAdapter) SetBatchTx(tx kv.RwTx) { a.batchTx = tx }
+func (a *EngineStateAdapter) SetBatchTx(tx kv.RwTx) {
+	a.batchTx = tx
+	if tx != nil {
+		// Mid-range rotation (commit → new tx): everything previously cached
+		// is either committed or visible in the new tx — keep the cache warm.
+		// Purging here (every commitInterval=256) capped hit rates at ~30%.
+		return
+	}
+	// Batch teardown (deferred SetBatchTx(nil) runs on BOTH success and error
+	// exits of executeRange): an errored range rolled its tx back, so entries
+	// memoized from that tx's uncommitted writes are stale — drop everything.
+	// Once per multi-thousand-block range, the cold restart is noise.
+	if a.hashedReadCache != nil {
+		ah, am, sh, sm, ch, cm := a.hashedReadCache.StatsAndReset()
+		if ah+am+sh+sm > 0 {
+			log.Info("hashed read cache range stats",
+				"accHit", ah, "accMiss", am,
+				"stoHit", sh, "stoMiss", sm,
+				"codeHit", ch, "codeMiss", cm)
+		}
+	}
+	a.hashedReadCache.PurgeAll()
+}
 
 // SetStaged toggles staged catch-up execution (writeOnly root, per-sub-batch Merkle).
 func (a *EngineStateAdapter) SetStaged(v bool) { a.staged = v }
@@ -239,7 +267,15 @@ func (a *EngineStateAdapter) recoverSenders(txns []*transaction.Transaction, sig
 	wg.Wait()
 }
 
-func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal) (*enginePayloadExecutionResult, error) {
+func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal) (_ *enginePayloadExecutionResult, retErr error) {
+	// A failed block leaves the read cache holding values memoized from this
+	// (about to be rolled back) tx — drop them. The batch path additionally
+	// purges on batch-tx teardown (SetBatchTx(nil)).
+	defer func() {
+		if retErr != nil {
+			a.hashedReadCache.PurgeAll()
+		}
+	}()
 	header := blk.Header().(*block.Header)
 	if header == nil || header.Number == nil {
 		return nil, fmt.Errorf("payload header missing block number")
@@ -274,7 +310,16 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 		// trie, so it needs an explicit writer — newly deployed contracts and
 		// EIP-7702 delegation designators must reach modules.Code, else a later
 		// block CALLing them reads empty code and diverges (block-160 bug).
-		reader = state.NewHashedStateReader(tx)
+		hr := state.NewHashedStateReader(tx)
+		if a.hashedReadCache == nil {
+			// Cross-block read cache: hot accounts/slots/code hit the Go-heap
+			// LRU instead of a keccak + MDBX cgocall on every access (~35% of
+			// archive catch-up CPU was cursor_get_val). Write invalidation is
+			// wired into the TrieRootComputer below.
+			a.hashedReadCache = state.NewHashedReadCache()
+		}
+		hr.SetCache(a.hashedReadCache)
+		reader = hr
 		writer = state.NewHashedCanonicalWriter(tx, blockNum)
 	} else if a.snapshotCold != nil {
 		// snapshot-direct (minimal/full): warm MDBX delta overlaid on the
@@ -292,6 +337,7 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	if a.hashedCanonical {
 		// Reuse the migrated TrieOfAccounts/TrieOfStorage: O(dirty) per block.
 		trc.SetIncremental(true)
+		trc.SetReadCache(a.hashedReadCache)
 		if a.staged {
 			// Staged catch-up: write hashed state but defer the root + TrieOf*
 			// to the per-sub-batch MerkleStageIncremental.
@@ -760,6 +806,9 @@ func (a *EngineStateAdapter) ForkchoiceUpdated(headHash, safeHash, finalizedHash
 
 // Reorg rolls back state to the given block number using changesets.
 func (a *EngineStateAdapter) Reorg(targetBlock uint64) error {
+	// Changeset unwind rewrites hashed state outside the TrieRootComputer's
+	// invalidation hooks — drop the whole read cache.
+	a.hashedReadCache.PurgeAll()
 	if a.csSource != nil {
 		return ethel.ReorgWithSource(a.db, a.csSource, targetBlock)
 	}

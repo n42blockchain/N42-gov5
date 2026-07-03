@@ -83,6 +83,7 @@ func (w *HashedCanonicalWriter) UpdateAccountCode(address types.Address, codeHas
 type HashedStateReader struct {
 	tx      kv.Tx
 	codeSrc CodeSource // optional codes.cdat fast path (same as PlainState)
+	cache   *HashedReadCache
 	trace   bool
 }
 
@@ -93,12 +94,27 @@ func NewHashedStateReader(tx kv.Tx) *HashedStateReader {
 func (r *HashedStateReader) SetCodeSource(c CodeSource) { r.codeSrc = c }
 func (r *HashedStateReader) SetTrace(t bool)            { r.trace = t }
 
+// SetCache attaches the cross-block read cache (see HashedReadCache). The
+// reader itself is per-block; the cache outlives it. nil = uncached.
+func (r *HashedStateReader) SetCache(c *HashedReadCache) { r.cache = c }
+
 func (r *HashedStateReader) ReadAccountData(address types.Address) (*account.StateAccount, error) {
-	addrHash := crypto.Keccak256(address[:])
-	enc, err := r.tx.GetOne(modules.HashedAccounts, addrHash)
+	addrHash := r.cache.AddrHash(address) // memoized keccak; plain keccak when cache nil
+	if enc, present, ok := r.cache.GetAccount(addrHash); ok {
+		if !present {
+			return nil, nil
+		}
+		var a account.StateAccount
+		if err := a.DecodeForStorage(enc); err != nil {
+			return nil, err
+		}
+		return &a, nil
+	}
+	enc, err := r.tx.GetOne(modules.HashedAccounts, addrHash[:])
 	if err != nil {
 		return nil, err
 	}
+	r.cache.PutAccount(addrHash, enc)
 	if len(enc) == 0 {
 		return nil, nil
 	}
@@ -113,12 +129,21 @@ func (r *HashedStateReader) ReadAccountStorage(address types.Address, key *types
 	// HashedStorage logical key = keccak(addr)(32) + keccak(slot)(32) = 64B.
 	// AutoDupSortKeysConversion splits it transparently on read.
 	var composite [64]byte
-	copy(composite[:32], crypto.Keccak256(address[:]))
-	copy(composite[32:], crypto.Keccak256(key[:]))
+	ah := r.cache.AddrHash(address)
+	sh := r.cache.SlotHash(*key)
+	copy(composite[:32], ah[:])
+	copy(composite[32:], sh[:])
+	if val, present, ok := r.cache.GetStorage(composite); ok {
+		if !present {
+			return nil, nil
+		}
+		return val, nil
+	}
 	enc, err := r.tx.GetOne(modules.HashedStorage, composite[:])
 	if err != nil {
 		return nil, err
 	}
+	r.cache.PutStorage(composite, enc)
 	if len(enc) == 0 {
 		return nil, nil
 	}
@@ -129,9 +154,13 @@ func (r *HashedStateReader) ReadAccountCode(address types.Address, codeHash type
 	if bytes.Equal(codeHash[:], emptyCodeHashBytes) {
 		return nil, nil
 	}
+	if raw, ok := r.cache.GetCode(codeHash); ok {
+		return raw, nil
+	}
 	if r.codeSrc != nil {
 		code, err := r.codeSrc.GetCode(address)
 		if err == nil && len(code) > 0 && crypto.Keccak256Hash(code) == codeHash {
+			r.cache.PutCode(codeHash, code)
 			return code, nil
 		}
 	}
@@ -152,6 +181,7 @@ func (r *HashedStateReader) ReadAccountCode(address types.Address, codeHash type
 		log.Warn("CODETRACE WRONG code", "addr", address.Hex(), "codeHash", codeHash.Hex(),
 			"gotKeccak", crypto.Keccak256Hash(raw).Hex(), "len", len(raw))
 	}
+	r.cache.PutCode(codeHash, raw)
 	return raw, nil
 }
 
