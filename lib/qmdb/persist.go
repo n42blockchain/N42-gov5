@@ -160,8 +160,8 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 		if !ok {
 			continue
 		}
-		if !e.active && t.leafStore != nil {
-			continue // dead at flush; blob carries its frozen leaf
+		if !e.active && t.leafStore != nil && t.hist == nil {
+			continue // dead at flush; blob carries its frozen leaf (non-archive)
 		}
 		val := make([]byte, 0, 32+len(e.value))
 		val = append(val, e.keyHash[:]...)
@@ -175,7 +175,7 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 	// ONLY when a leaf store is wired: the persisted leaf blob then carries the
 	// dead slots' frozen hashes, so their rows are never needed again. Without
 	// a leaf store the rows are the only leaf-recovery source — keep them.
-	if d, ok := p.(Deleter); ok && t.leafStore != nil && len(t.deadFlushed) > 0 {
+	if d, ok := p.(Deleter); ok && t.leafStore != nil && t.hist == nil && len(t.deadFlushed) > 0 {
 		for _, s := range t.deadFlushed {
 			if err := d.Delete(EntryTable, be8(s)); err != nil {
 				return flushedThrough, bytesW, err
