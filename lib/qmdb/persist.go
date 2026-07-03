@@ -12,7 +12,19 @@
 
 package qmdb
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"errors"
+)
+
+var (
+	// errPreSplitMeta: the on-disk twig metadata predates the split twig
+	// commitment (root formula change). There is no in-place migration — the
+	// chain must be re-replayed under the new format.
+	errPreSplitMeta = errors.New("qmdb: pre-split-commitment twig metadata — re-replay this database under the split twig commitment")
+	// errTwigMetaInconsistent: stored root ≠ recomputed/combined root.
+	errTwigMetaInconsistent = errors.New("qmdb: twig metadata inconsistent (stored root does not match leafRoot+bits)")
+)
 
 // Putter is the minimal sink the tree flushes into (an adapter over kv.RwTx or a
 // byte counter for benchmarks).
@@ -138,13 +150,18 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 	// dirty twig would flush a stale root.
 	root := t.Root()
 	// Append new entries [flushedThrough, nextSlot). These are always in the
-	// resident window (eviction only drops already-flushed slots). Slots already
-	// DEAD at flush time are skipped entirely — their row would never be read
-	// (readers only touch live slots; absent rows read as pruned).
+	// resident window (eviction only drops already-flushed slots). Under the
+	// split commitment DEAD slots' frozen leaf hashes stay part of the twig
+	// commitment forever, so their rows may be elided ONLY when a leaf store
+	// persists the blobs (the alternate leaf-recovery source); a blob-less
+	// tree writes every row so a reload can rebuild the frozen leaves.
 	for s := flushedThrough; s < t.nextSlot; s++ {
-		e, _ := t.entryAt(s)
-		if !e.active {
+		e, ok := t.entryAt(s)
+		if !ok {
 			continue
+		}
+		if !e.active && t.leafStore != nil {
+			continue // dead at flush; blob carries its frozen leaf
 		}
 		val := make([]byte, 0, 32+len(e.value))
 		val = append(val, e.keyHash[:]...)
@@ -154,8 +171,11 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 		}
 		bytesW += 8 + len(val)
 	}
-	// Reclaim rows of slots that were flushed earlier but have since died.
-	if d, ok := p.(Deleter); ok && len(t.deadFlushed) > 0 {
+	// Reclaim rows of slots that were flushed earlier but have since died —
+	// ONLY when a leaf store is wired: the persisted leaf blob then carries the
+	// dead slots' frozen hashes, so their rows are never needed again. Without
+	// a leaf store the rows are the only leaf-recovery source — keep them.
+	if d, ok := p.(Deleter); ok && t.leafStore != nil && len(t.deadFlushed) > 0 {
 		for _, s := range t.deadFlushed {
 			if err := d.Delete(EntryTable, be8(s)); err != nil {
 				return flushedThrough, bytesW, err
@@ -163,35 +183,32 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 		}
 		t.deadFlushed = t.deadFlushed[:0]
 	}
-	// Twig metadata: root + activeBits (256 bytes for 2048 slots). Skip twigs
-	// whose leaves were EVICTED (leaves==nil, not pruned): their meta was already
-	// persisted before eviction and an evicted twig is, by construction, unchanged
-	// since (any mutation rehydrates it). Pruned twigs (leaves==nil, pruned) still
-	// flush their constant null-twig meta.
+	// Twig metadata v2: root + leafRoot + activeBits. Skip twigs whose leaves
+	// were EVICTED (nodes==nil, not pruned) ONLY when their meta is clean —
+	// under the split commitment a deactivation flips bits WITHOUT rehydrating,
+	// so an evicted twig's meta can go stale (metaDirty tracks this). Pruned
+	// twigs still flush their meta.
 	for id, tw := range t.twigs {
 		if tw == nil {
 			continue
 		}
-		if tw.nodes == nil && !tw.pruned {
+		if tw.nodes == nil && !tw.pruned && !tw.metaDirty {
 			continue // evicted-clean: on-disk meta is current
 		}
-		meta := make([]byte, 32+TwigSize/8)
+		meta := make([]byte, 32+32+TwigSize/8)
 		copy(meta[:32], tw.root[:])
-		// activeBits from live leaves (non-null = active in this prototype).
-		if !tw.pruned && tw.nodes != nil {
-			for slot := 0; slot < TwigSize; slot++ {
-				if tw.nodes[TwigSize+slot] != nullHash {
-					meta[32+slot/8] |= 1 << uint(slot%8)
-				}
-			}
-		}
+		copy(meta[32:64], tw.leafRoot[:])
+		copy(meta[64:], tw.bits[:])
 		if err := p.Put(TwigTable, be8(uint64(id)), meta); err != nil {
 			return flushedThrough, bytesW, err
 		}
 		bytesW += 8 + len(meta)
-		// Persist the leaf blob (one read rehydration) when a leaf store is in use,
-		// in the sparse format (bitmap + non-null leaves) — sealed twigs are mostly
-		// dead slots. Skipped for evicted/pruned twigs (nodes==nil): blob is current.
+		tw.metaDirty = false
+		// Persist the leaf blob (one-read rehydration) when a leaf store is in
+		// use. Under the split commitment the blob holds every APPENDED slot's
+		// entry hash — dead slots included, since the frozen leaf tree commits
+		// them forever (sparse encoding still elides never-appended tail slots).
+		// Skipped for evicted twigs (nodes==nil): their frozen blob is current.
 		if t.leafStore != nil && tw.nodes != nil {
 			blob := encodeSparseLeaves(tw.nodes)
 			if err := p.Put(LeavesTable, be8(uint64(id)), blob); err != nil {
@@ -250,63 +267,80 @@ func (t *Tree) LoadFrom(g Getter) error {
 		if e != nil {
 			return e
 		}
-		var activeBits []byte
-		var storedRoot Hash
-		if len(meta) >= 32+TwigSize/8 {
+		var storedRoot, storedLeafRoot Hash
+		haveMeta := false
+		switch {
+		case len(meta) >= 32+32+TwigSize/8: // v2: root || leafRoot || bits
 			copy(storedRoot[:], meta[:32])
-			activeBits = meta[32 : 32+TwigSize/8]
+			copy(storedLeafRoot[:], meta[32:64])
+			copy(tw.bits[:], meta[64:64+TwigSize/8])
+			haveMeta = true
+		case len(meta) >= 32+TwigSize/8:
+			return errPreSplitMeta // v1 (pre-split-commitment) DB: re-replay required
 		}
-		// Fast path: a sealed twig with a persistent index trusts its stored root
-		// and skips the per-slot entry scan entirely — O(numTwigs) resume, O(1) RAM.
-		if !rebuildIndex && id < activeTwig {
+		live := 0
+		for _, b := range tw.bits {
+			live += popcount8(b)
+		}
+		tw.live = live
+		// Fast path: a sealed twig with a persistent index trusts its stored
+		// roots and skips the per-slot entry scan — O(numTwigs) resume, O(1) RAM.
+		if !rebuildIndex && id < activeTwig && haveMeta {
+			tw.leafRoot = storedLeafRoot
+			tw.bitsRoot = hashBits(&tw.bits)
 			tw.root = storedRoot
 			tw.dirty = false
 			tw.nodes = nil // sealed: no node storage resident
-			// recover live count from activeBits for compaction sparsity decisions
-			if activeBits != nil {
-				cnt := 0
-				lim := TwigSize
-				if rem := int(nextSlot - uint64(id)*TwigSize); rem < lim {
-					lim = rem
-				}
-				for local := 0; local < lim; local++ {
-					if activeBits[local/8]&(1<<uint(local%8)) != 0 {
-						cnt++
-					}
-				}
-				tw.live = cnt
+			if hashNode(tw.leafRoot, tw.bitsRoot) != tw.root {
+				return errTwigMetaInconsistent
 			}
 			continue
 		}
-		if activeBits != nil {
-			lo := uint64(id) * TwigSize
-			for local := 0; local < TwigSize; local++ {
-				slot := lo + uint64(local)
-				if slot >= nextSlot {
-					break
-				}
-				if activeBits[local/8]&(1<<uint(local%8)) == 0 {
-					continue
-				}
-				v, e := g.GetOne(EntryTable, be8(slot))
-				if e != nil {
-					return e
-				}
-				if len(v) < 32 {
-					continue
-				}
-				var kh Hash
-				copy(kh[:], v[:32])
+		// Slow path: materialize the leaf tree. Prefer the persisted blob (it
+		// carries dead slots' frozen leaves, whose entry rows may be deleted);
+		// fall back to the entry log.
+		hydrated := false
+		if t.leafStore == nil {
+			t.leafStore = LeafStoreFromGetter(g)
+		}
+		if blob, ok := t.leafStore.Leaves(id); ok && len(blob) == TwigSize*32 {
+			for i := 0; i < TwigSize; i++ {
+				copy(tw.nodes[TwigSize+i][:], blob[i*32:(i+1)*32])
+			}
+			hydrated = true
+		}
+		lo := uint64(id) * TwigSize
+		for local := 0; local < TwigSize; local++ {
+			slot := lo + uint64(local)
+			if slot >= nextSlot {
+				break
+			}
+			needKey := rebuildIndex && tw.bit(uint64(local))
+			if hydrated && !needKey {
+				continue
+			}
+			v, e := g.GetOne(EntryTable, be8(slot))
+			if e != nil {
+				return e
+			}
+			if len(v) < 32 {
+				continue
+			}
+			var kh Hash
+			copy(kh[:], v[:32])
+			if !hydrated {
 				tw.nodes[TwigSize+local] = hashLeaf(kh, v[32:]) // bulk raw write
-				tw.live++
-				if rebuildIndex {
-					t.idx.Put(kh, slot)
-				}
+			}
+			if needKey {
+				t.idx.Put(kh, slot)
 			}
 		}
 		tw.recompute() // one full rebuild from the bulk-written leaves
+		if haveMeta && tw.root != storedRoot {
+			return errTwigMetaInconsistent
+		}
 		if id < activeTwig {
-			tw.nodes = nil // sealed: keep only the 32-byte root, free the array
+			tw.nodes = nil // sealed: keep only the roots, free the array
 		}
 	}
 	// Entry records are not retained — start the resident window empty at the

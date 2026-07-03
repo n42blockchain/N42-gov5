@@ -46,38 +46,55 @@ func (t *Tree) ensureHydrated(id int) {
 		return
 	}
 	a := new([2 * TwigSize]Hash)
-	live := 0
-	// Fast path: one blob read.
+	// Fast path: one blob read. Under the split commitment the blob holds the
+	// FROZEN entry-hash leaves (dead slots keep their hash; liveness lives in
+	// the resident activeBits, which eviction never drops).
 	hydrated := false
 	if t.leafStore != nil {
 		if blob, ok := t.leafStore.Leaves(id); ok && len(blob) == TwigSize*32 {
 			for i := 0; i < TwigSize; i++ {
 				copy(a[TwigSize+i][:], blob[i*32:(i+1)*32])
-				if a[TwigSize+i] != nullHash {
-					live++
-				}
 			}
 			hydrated = true
 		}
 	}
 	if !hydrated {
-		// Fallback: reconstruct from the entry log (random reads).
+		// Fallback: reconstruct from the entry log (random reads). Dead slots'
+		// rows may have been deleted at flush — the frozen leaf tree is then
+		// unrecoverable from the log alone; the root check below catches that
+		// loudly instead of silently committing a wrong root.
 		lo := uint64(id) * TwigSize
 		for local := 0; local < TwigSize; local++ {
 			slot := lo + uint64(local)
 			if slot >= t.nextSlot {
 				break
 			}
-			e, ok := t.entryAt(slot)
-			if ok && e.active {
+			if e, ok := t.entryAt(slot); ok {
 				a[TwigSize+local] = hashLeaf(e.keyHash, e.value)
-				live++
 			}
 		}
 	}
+	want := tw.root
 	tw.nodes = a
-	tw.live = live // reconcile (should already match; cheap to be exact)
-	tw.recompute() // restore internal nodes; root must equal the retained root
+	// live derives from the resident bitmap, not leaf nullness (dead leaves are
+	// no longer null under the split commitment).
+	live := 0
+	for _, b := range tw.bits {
+		live += popcount8(b)
+	}
+	tw.live = live
+	tw.recompute() // restore internal nodes + roots
+	if tw.root != want {
+		panic("qmdb: twig rehydration root mismatch — leaf blob missing/stale for a twig with dead entries")
+	}
+}
+
+func popcount8(b byte) int {
+	n := 0
+	for ; b != 0; b &= b - 1 {
+		n++
+	}
+	return n
 }
 
 // EvictTwigsThrough frees the leaf arrays of every twig that lies fully below the

@@ -14,7 +14,6 @@ package qmdb
 
 import (
 	"slices"
-	"sort"
 	"unsafe"
 )
 
@@ -30,12 +29,13 @@ func (t *Tree) writeLeaf(tw *twig, id int, local uint64, h Hash) {
 	t.batchTouched = append(t.batchTouched, uint64(id)*TwigSize+local)
 }
 
-// leafJob is one deferred leaf hash (see Tree.leafJobs).
+// leafJob is one deferred leaf hash (see Tree.leafJobs). Under the split
+// commitment a job never dies: a same-batch overwrite/delete only clears the
+// slot's liveness BIT — the leaf keeps the entry hash it was appended with.
 type leafJob struct {
 	slot uint64
 	key  Hash
 	val  []byte
-	dead bool
 }
 
 // writeLeafEntry hashes-and-writes a live entry's leaf — or, in batch mode
@@ -52,23 +52,8 @@ func (t *Tree) writeLeafEntry(tw *twig, id int, local, slot uint64, keyHash Hash
 	t.writeLeaf(tw, id, local, hashLeaf(keyHash, v))
 }
 
-// pendingLeafJob returns the live deferred job for slot, if any. Jobs are
-// slot-ascending (append order), so this is a binary search.
-func (t *Tree) pendingLeafJob(slot uint64) *leafJob {
-	n := len(t.leafJobs)
-	if n == 0 || slot < t.leafJobs[0].slot || slot > t.leafJobs[n-1].slot {
-		return nil
-	}
-	i := sort.Search(n, func(i int) bool { return t.leafJobs[i].slot >= slot })
-	if i < n && t.leafJobs[i].slot == slot && !t.leafJobs[i].dead {
-		return &t.leafJobs[i]
-	}
-	return nil
-}
-
 // flushLeafJobs computes all deferred leaf hashes, 16 per AVX-512 pass, and
-// writes them into their twig leaves. Dead jobs (deactivated within the
-// batch) are skipped — their leaves stay null.
+// writes them into their twig leaves.
 func (t *Tree) flushLeafJobs() {
 	jobs := t.leafJobs
 	if len(jobs) == 0 {
@@ -94,9 +79,6 @@ func (t *Tree) flushLeafJobs() {
 		np = 0
 	}
 	for i := range jobs {
-		if jobs[i].dead {
-			continue
-		}
 		lane := buf[np*128 : (np+1)*128]
 		lane[0] = 0x01
 		copy(lane[1:33], jobs[i].key[:])
@@ -149,9 +131,9 @@ func (t *Tree) ApplyOps(ops []Op) {
 		for i := range ops {
 			if old, ok := fi.Get(ops[i].KeyHash); ok {
 				if id := int(old / TwigSize); id < len(t.twigs) {
-					if tw := t.twigs[id]; tw.nodes != nil {
-						prefetcht0(unsafe.Pointer(&tw.nodes[TwigSize+old%TwigSize]))
-					}
+					// Deactivation only flips the old twig's liveness bit now —
+					// warm the bitmap byte, not the (possibly evicted) leaf heap.
+					prefetcht0(unsafe.Pointer(&t.twigs[id].bits[(old%TwigSize)/8]))
 				}
 			}
 		}
@@ -177,6 +159,7 @@ func (t *Tree) ApplyOps(ops []Op) {
 // append side) keep the zero-copy direct path. Safe to call mid-batch.
 func (t *Tree) foldTouched() {
 	if len(t.batchTouched) == 0 {
+		t.recombineBitsTouched() // delete-only batches still recombine bits
 		return
 	}
 	t.flushLeafJobs() // leaf values must exist before their paths fold
@@ -227,12 +210,27 @@ func (t *Tree) foldTouched() {
 		g = g[:w]
 		t.hashPackedList(g)
 	}
-	// Each surviving element is (twigID, nodeIdx 1): publish the new roots.
+	// Each surviving element is (twigID, nodeIdx 1): publish the new leaf roots
+	// and recombine each twig's committed root with its (current) bitsRoot.
 	for _, v := range g {
 		tw := t.twigs[v>>12]
-		tw.root = tw.nodes[1]
+		tw.leafRoot = tw.nodes[1]
+		delete(t.bitsTouched, int(v>>12)) // recombined right here
+		tw.refreshBitsRoot()
 	}
 	t.foldScratch = g[:0]
+	t.recombineBitsTouched()
+}
+
+// recombineBitsTouched refreshes bitsRoot + committed root for twigs whose
+// bitmap changed this batch but whose leaf tree did not (pure deactivations).
+func (t *Tree) recombineBitsTouched() {
+	for id := range t.bitsTouched {
+		if tw := t.twigs[id]; !tw.dirty {
+			tw.refreshBitsRoot()
+		}
+	}
+	clear(t.bitsTouched)
 }
 
 // hashPackedList computes nodes[p] = hashNode(nodes[2p], nodes[2p+1]) for a

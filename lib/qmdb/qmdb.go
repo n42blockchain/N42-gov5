@@ -150,20 +150,82 @@ type entry struct {
 }
 
 type twig struct {
-	// nodes is the twig's complete binary Merkle heap (128 KiB): nodes[1] is the
-	// twig root, internal nodes occupy [1, TwigSize), and the 2048 leaves occupy
+	// nodes is the twig's LEAF-tree binary Merkle heap (128 KiB): nodes[1] is the
+	// leaf root, internal nodes occupy [1, TwigSize), and the 2048 leaves occupy
 	// [TwigSize, 2*TwigSize) — node j's children are 2j and 2j+1. Keeping the
 	// internal nodes resident is what makes leaf changes O(log): setLeaf folds
 	// just the 11-node path to the root instead of rebuilding all 4095 hashes
 	// (profiling showed the full rebuild dominating conversion CPU at ~50%).
 	// It is a POINTER so a sealed twig's node storage can be evicted (set to nil)
-	// while its 32-byte root is retained; the nodes are rebuilt on demand from
+	// while its 32-byte roots are retained; the nodes are rebuilt on demand from
 	// the persisted leaf blob or cold entry log (see twig_evict.go).
-	nodes  *[2 * TwigSize]Hash // nil = evicted (node storage freed, root kept)
-	live   int
-	root   Hash // current twig root (== nodes[1] when resident and not dirty)
-	dirty  bool // internal nodes stale; full recompute needed (bulk-load/ForceDirty)
-	pruned bool // nodes dropped (fully dead); root is the constant null-twig root
+	//
+	// SPLIT COMMITMENT: leaves are ENTRY hashes and are never overwritten on
+	// deactivation — once all 2048 slots are appended the leaf tree is FROZEN
+	// forever. Liveness lives in the activeBits bitmap, committed separately:
+	//
+	//	twigRoot = hashNode(leafRoot, bitsRoot),  bitsRoot = Blake3(0x03 || bits)
+	//
+	// This is what makes FULL-HISTORY proofs cheap: activeBits at any height H
+	// reconstruct from per-entry death stamps (each bit dies at most once), and
+	// the frozen leaf tree is stored/derived exactly once. It also means a
+	// deactivation never hydrates or rehashes an old twig's leaf heap — only
+	// its 256-byte bitmap.
+	nodes    *[2 * TwigSize]Hash // nil = evicted (node storage freed, roots kept)
+	bits     [TwigSize / 8]byte  // activeBits: bit set ⇒ slot live
+	live     int
+	leafRoot Hash // root of the leaf tree (== nodes[1] when resident and clean)
+	bitsRoot Hash // Blake3(0x03 || bits)
+	root     Hash // committed twig root = hashNode(leafRoot, bitsRoot)
+	dirty    bool // internal nodes stale; full recompute needed (bulk-load/ForceDirty)
+	pruned   bool // fully dead; nodes dropped, roots retained
+	// metaDirty: bits/roots changed since the last flush. Load-bearing for
+	// EVICTED twigs: a deactivation no longer rehydrates the node heap, so
+	// "evicted ⇒ unchanged since its last flush" stopped holding — FlushTo now
+	// skips an evicted twig only when its meta is clean.
+	metaDirty bool
+}
+
+var bitsDomain = [1]byte{0x03}
+
+// hashBits commits a twig's activeBits bitmap: Blake3(0x03 || bits[256]).
+// Domain-separated from leaves (0x01) and internal nodes (raw 64-byte block).
+func hashBits(bits *[TwigSize / 8]byte) Hash {
+	h := leafHasherPool.Get().(*blake3.Hasher)
+	h.Reset()
+	_, _ = h.Write(bitsDomain[:])
+	_, _ = h.Write(bits[:])
+	var out Hash
+	h.Sum(out[:0])
+	leafHasherPool.Put(h)
+	return out
+}
+
+// zeroBitsRoot is hashBits of an all-zero bitmap (fresh/fully-dead twig).
+var zeroBitsRoot = func() Hash {
+	var b [TwigSize / 8]byte
+	return hashBits(&b)
+}()
+
+// refreshBitsRoot recomputes bitsRoot + the committed root after bit flips.
+func (tw *twig) refreshBitsRoot() {
+	tw.bitsRoot = hashBits(&tw.bits)
+	tw.root = hashNode(tw.leafRoot, tw.bitsRoot)
+}
+
+// bit returns slot `local`'s liveness bit.
+func (tw *twig) bit(local uint64) bool {
+	return tw.bits[local/8]&(1<<uint(local%8)) != 0
+}
+
+// setBit flips slot `local`'s liveness bit WITHOUT recombining roots; callers
+// batch flips and call refreshBitsRoot once (or go through Tree.setTwigBit).
+func (tw *twig) setBit(local uint64, on bool) {
+	if on {
+		tw.bits[local/8] |= 1 << uint(local%8)
+	} else {
+		tw.bits[local/8] &^= 1 << uint(local%8)
+	}
 }
 
 // nullLevel[h] is the root of an all-null subtree of height h (nullLevel[0] is
@@ -184,16 +246,19 @@ func newTwig() *twig {
 			t.nodes[j] = v
 		}
 	}
-	t.root = nullLevel[TwigHeight]
+	t.leafRoot = nullLevel[TwigHeight]
+	t.bitsRoot = zeroBitsRoot
+	t.root = hashNode(t.leafRoot, t.bitsRoot)
 	return t
 }
 
 // leaf returns leaf `local`'s hash. The twig must be hydrated.
 func (tw *twig) leaf(local uint64) Hash { return tw.nodes[TwigSize+local] }
 
-// setLeaf writes leaf `local` and eagerly folds the 11-node path to the twig
+// setLeaf writes leaf `local` and eagerly folds the 11-node path to the leaf
 // root — O(log) instead of the full 4095-hash rebuild. If the internal nodes are
 // stale (dirty), only the leaf is written; recompute will rebuild everything.
+// The committed root recombines with the (unchanged) bitsRoot.
 func (tw *twig) setLeaf(local uint64, h Hash) {
 	j := TwigSize + local
 	tw.nodes[j] = h
@@ -203,7 +268,8 @@ func (tw *twig) setLeaf(local uint64, h Hash) {
 	for j >>= 1; j >= 1; j >>= 1 {
 		tw.nodes[j] = hashNode(tw.nodes[2*j], tw.nodes[2*j+1])
 	}
-	tw.root = tw.nodes[1]
+	tw.leafRoot = tw.nodes[1]
+	tw.root = hashNode(tw.leafRoot, tw.bitsRoot)
 }
 
 // recompute rebuilds all internal nodes from the 2048 leaves (4095 hashes).
@@ -216,7 +282,9 @@ func (tw *twig) recompute() {
 	for base := TwigSize / 2; base >= 1; base /= 2 {
 		hashNodesRun(tw.nodes[:], base, base)
 	}
-	tw.root = tw.nodes[1]
+	tw.leafRoot = tw.nodes[1]
+	tw.bitsRoot = hashBits(&tw.bits)
+	tw.root = hashNode(tw.leafRoot, tw.bitsRoot)
 	tw.dirty = false
 }
 
@@ -281,6 +349,11 @@ type Tree struct {
 	batchFolding bool
 	batchTouched []uint64 // absolute leaf slots written since the last fold
 	foldScratch  []uint64 // reusable packed (twigID<<12|nodeIdx) level scratch
+
+	// bitsTouched collects twig IDs whose activeBits changed during the batch;
+	// foldTouched recombines each touched twig's bitsRoot + committed root once
+	// per batch instead of per bit flip.
+	bitsTouched map[int]struct{}
 
 	// leafJobs defers hashLeaf itself in batch mode (AVX-512 only): Set records
 	// the (slot, key, value-view) and foldTouched hashes 16 leaves per ZMM pass
@@ -396,26 +469,21 @@ func (t *Tree) twigFor(slot uint64) *twig {
 }
 
 func (t *Tree) deactivate(slot uint64) {
+	// SPLIT COMMITMENT: a deactivation flips ONLY the twig's liveness bit —
+	// the leaf tree keeps the entry hash forever (frozen once the twig fills).
+	// No hydration, no leaf rehash: an old twig's evicted node heap stays
+	// evicted, and history reconstruction later derives bits(H) from death
+	// stamps against the immutable leaf tree.
 	id := int(slot / TwigSize)
-	t.ensureHydrated(id) // rehydrate this twig's nodes if they were evicted
 	tw := t.twigs[id]
 	local := slot % TwigSize
-	if jb := t.pendingLeafJob(slot); jb != nil {
-		// The slot's leaf hash is still a deferred job (same key written then
-		// overwritten/deleted within one batch): kill the job — the leaf is
-		// null and must stay null — but account the liveness drop the eager
-		// path below would have.
-		jb.dead = true
+	if tw.bit(local) {
+		t.setTwigBit(tw, id, local, false)
 		tw.live--
-		t.markUpperDirty(id)
-	} else if tw.leaf(local) != nullHash {
-		t.writeLeaf(tw, id, local, nullHash) // eager O(log) fold, or deferred in batch mode
-		tw.live--
-		t.markUpperDirty(id)
 	}
 	// Only resident entries carry a mutable active flag; cold entries derive it
 	// from the index, so an evicted slot needs no record mutation here (its twig
-	// leaf — the source of truth for the root — is nulled above).
+	// bit — the source of truth for liveness — is cleared above).
 	if slot >= t.entriesBase {
 		if i := slot - t.entriesBase; i < uint64(len(t.entries)) {
 			t.entries[i].active = false
@@ -426,6 +494,23 @@ func (t *Tree) deactivate(slot uint64) {
 		t.deadFlushed = append(t.deadFlushed, slot)
 	}
 	t.rootDirty = true
+}
+
+// setTwigBit flips a liveness bit and recombines the twig's committed root —
+// eagerly, or deferred to foldTouched in batch mode (one bitmap hash per
+// touched twig per batch instead of per flip).
+func (t *Tree) setTwigBit(tw *twig, id int, local uint64, on bool) {
+	tw.setBit(local, on)
+	tw.metaDirty = true
+	if t.batchFolding {
+		if t.bitsTouched == nil {
+			t.bitsTouched = make(map[int]struct{}, 16)
+		}
+		t.bitsTouched[id] = struct{}{}
+	} else if !tw.dirty {
+		tw.refreshBitsRoot()
+	}
+	t.markUpperDirty(id)
 }
 
 // Set inserts or updates keyHash -> value (append-only: a new slot is consumed
@@ -442,6 +527,7 @@ func (t *Tree) Set(keyHash Hash, value []byte) {
 	v := t.allocVal(value)
 	t.setEntry(slot, entry{keyHash: keyHash, value: v, active: true})
 	t.writeLeafEntry(tw, int(slot/TwigSize), local, slot, keyHash, v)
+	t.setTwigBit(tw, int(slot/TwigSize), local, true)
 	tw.live++
 	t.markUpperDirty(int(slot / TwigSize))
 	t.idx.Put(keyHash, slot)

@@ -29,8 +29,11 @@ func TestSetLeafEqualsRecompute(t *testing.T) {
 			if eager.root != ref.root {
 				t.Fatalf("step %d: eager root %x != recomputed %x", step, eager.root, ref.root)
 			}
-			if eager.root != eager.nodes[1] {
-				t.Fatalf("step %d: root field out of sync with nodes[1]", step)
+			if eager.leafRoot != eager.nodes[1] {
+				t.Fatalf("step %d: leafRoot field out of sync with nodes[1]", step)
+			}
+			if eager.root != hashNode(eager.leafRoot, eager.bitsRoot) {
+				t.Fatalf("step %d: committed root out of sync with leafRoot+bitsRoot", step)
 			}
 		}
 	}
@@ -47,7 +50,10 @@ func TestNewTwigNullInternals(t *testing.T) {
 			t.Fatalf("node %d: precomputed %x != recomputed %x", j, fresh.nodes[j], ref.nodes[j])
 		}
 	}
-	if fresh.root != nullTwigRoot {
-		t.Fatalf("fresh root %x != nullTwigRoot %x", fresh.root, nullTwigRoot)
+	if fresh.leafRoot != nullLevel[TwigHeight] {
+		t.Fatalf("fresh leafRoot %x != null-subtree root %x", fresh.leafRoot, nullLevel[TwigHeight])
+	}
+	if fresh.root != hashNode(nullLevel[TwigHeight], zeroBitsRoot) {
+		t.Fatalf("fresh root %x != combined null root", fresh.root)
 	}
 }

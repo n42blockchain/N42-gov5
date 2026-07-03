@@ -228,6 +228,10 @@ func TestBlockUndoCodecRoundTrip(t *testing.T) {
 // recorded block containing a compaction still reproduces prior roots.
 func TestProofAtAfterCompaction(t *testing.T) {
 	tr := New()
+	// Split commitment: reconstructing history across a PRUNED twig needs its
+	// frozen leaf blob — wire the production leaf-store path.
+	store := newMapStore()
+	tr.SetLeafStore(LeafStoreFromGetter(store))
 	// Fill twig 0 fully, then kill most of it so it becomes sparse.
 	for i := 0; i < TwigSize; i++ {
 		tr.Set(uKey(i), uVal(i, 0))
@@ -239,6 +243,10 @@ func TestProofAtAfterCompaction(t *testing.T) {
 	// the active twig and exits when only one twig exists).
 	tr.Set(uKey(TwigSize+1000), uVal(TwigSize+1000, 0))
 	preRoot := tr.Root()
+	// Persist the frozen leaf blobs BEFORE compaction prunes twig 0.
+	if _, _, err := tr.FlushTo(store, 0); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
 
 	// One recorded block: compaction relocates the 100 survivors and prunes twig 0.
 	tr.StartUndoRecording()
