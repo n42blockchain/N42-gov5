@@ -144,6 +144,15 @@ type Downloader struct {
 	subBatch   uint64
 	lastMerkle uint64
 
+	// merkleInflight is the async Merkle window in flight (N42_ASYNC_MERKLE,
+	// default on for large catch-up windows): the window's root is computed on
+	// an MDBX RoTx snapshot in a background goroutine while execution proceeds
+	// into the next window; the collected TrieOf* nodes + progress marker land
+	// at the next boundary's join. lastMerkle advances at START (in-memory
+	// frontier for boundary math); the persisted marker only at join, so a
+	// crash mid-flight just recomputes the window in the startup reconcile.
+	merkleInflight *merkleAsyncJob
+
 	// anchorDir, when set (N42_ANCHOR_DIR), makes each completed staged Merkle
 	// ALSO emit the block's MPT-stateless anchor proof (compact wire) to
 	// anchorDir/anchor-<to>.bin — the live producer path. Set subBatch to the
@@ -473,9 +482,32 @@ func (d *Downloader) coordinator(ctx context.Context) {
 			// in ONE incremental pass and persist TrieOf*. Also fire when near the
 			// tip (so TrieOf* stays fresh for the live 12s handoff).
 			if d.staged && (newHead-d.lastMerkle >= d.subBatch || (target > newHead && target-newHead <= commitInterval)) {
-				if err := d.runMerkleStage(ctx, d.lastMerkle+1, newHead); err != nil {
-					log.Error("eldevp2p: staged Merkle FAILED", "from", d.lastMerkle+1, "to", newHead, "err", err)
-					return // state committed but unverified past lastMerkle; operator investigates
+				// Land the in-flight async window first — its TrieOf* nodes
+				// must be committed before the next window's snapshot.
+				if err := d.joinMerkleAsync(ctx); err != nil {
+					log.Error("eldevp2p: staged Merkle (async) FAILED", "err", err)
+					return // state committed but unverified past the failed window
+				}
+				mFrom, mTo := d.lastMerkle+1, newHead
+				if mTo >= mFrom {
+					// Async pipeline for big catch-up windows (no anchor/verify
+					// side-channels — those need the synchronous path); the root
+					// computes on a RoTx snapshot while execution continues.
+					mptVerifyDue := d.mptVerifyInterval > 0 && mTo/d.mptVerifyInterval > d.lastMptVerify/d.mptVerifyInterval
+					useAsync := asyncMerkleEnabled && d.anchorDir == "" && !mptVerifyDue &&
+						mTo-mFrom+1 >= asyncMerkleMinWindow
+					if useAsync {
+						if err := d.startMerkleAsync(ctx, mFrom, mTo); err != nil {
+							log.Warn("eldevp2p: async Merkle start failed — falling back to sync", "err", err)
+							useAsync = false
+						}
+					}
+					if !useAsync {
+						if err := d.runMerkleStage(ctx, mFrom, mTo); err != nil {
+							log.Error("eldevp2p: staged Merkle FAILED", "from", mFrom, "to", mTo, "err", err)
+							return // state committed but unverified past lastMerkle; operator investigates
+						}
+					}
 				}
 			}
 		} else {
@@ -801,6 +833,110 @@ func (d *Downloader) readMerkleProgress(ctx context.Context) uint64 {
 // commits (TrieOf* + merkle-progress marker atomic). On mismatch it rolls back the
 // whole pass and returns an error (a block in the range produced bad state — the
 // caller stops; the sub-batch can be unwound via UnwindHashedCanonical + bisected).
+// merkleAsyncJob is one in-flight async Merkle window.
+type merkleAsyncJob struct {
+	from, to uint64
+	started  time.Time
+	done     chan struct{}
+	root     types.Hash
+	upd      *commitment.TrieUpdates
+	err      error
+}
+
+// asyncMerkleEnabled gates the async pipeline (default on; N42_ASYNC_MERKLE=0
+// reverts to the synchronous stage).
+var asyncMerkleEnabled = os.Getenv("N42_ASYNC_MERKLE") != "0"
+
+// asyncMerkleMinWindow: below this the window is cheap enough that pipelining
+// buys nothing — run synchronously (also keeps the near-tip/live path, which
+// merkles every small delta, semantically identical to before).
+const asyncMerkleMinWindow = 1024
+
+// startMerkleAsync kicks off the read-only root computation for [from,to] on
+// its own RoTx snapshot and advances the in-memory Merkle frontier. The
+// persisted marker moves only when joinMerkleAsync applies the result.
+func (d *Downloader) startMerkleAsync(ctx context.Context, from, to uint64) error {
+	tx, err := d.exec.RwDB().BeginRo(ctx)
+	if err != nil {
+		return err
+	}
+	job := &merkleAsyncJob{from: from, to: to, started: time.Now(), done: make(chan struct{})}
+	go func() {
+		defer close(job.done)
+		defer tx.Rollback()
+		root, upd, err := commitment.MerkleStageIncrementalCollect(tx, from, to)
+		if err != nil {
+			job.err = fmt.Errorf("MerkleStageIncrementalCollect [%d,%d]: %w", from, to, err)
+			return
+		}
+		// Verify against the wire header on the same snapshot.
+		canon, err := rawdb.ReadCanonicalHash(tx, to)
+		if err != nil || canon == (types.Hash{}) {
+			job.err = fmt.Errorf("no canonical hash at %d", to)
+			return
+		}
+		hdr := rawdb.ReadHeader(tx, canon, to)
+		if hdr == nil {
+			job.err = fmt.Errorf("no header at %d", to)
+			return
+		}
+		if root != hdr.Root {
+			job.err = fmt.Errorf("staged Merkle root mismatch at %d: computed %s wire %s",
+				to, root.Hex(), hdr.Root.Hex())
+			return
+		}
+		job.root, job.upd = root, upd
+	}()
+	d.merkleInflight = job
+	d.lastMerkle = to
+	log.Info("eldevp2p: staged Merkle started (async)", "from", from, "to", to, "blocks", to-from+1)
+	return nil
+}
+
+// joinMerkleAsync waits for the in-flight window (if any), lands its TrieOf*
+// nodes + progress marker, and clears the slot. Called before every new
+// Merkle boundary so windows chain: window N's nodes are committed before
+// window N+1's snapshot is taken.
+func (d *Downloader) joinMerkleAsync(ctx context.Context) error {
+	job := d.merkleInflight
+	if job == nil {
+		return nil
+	}
+	select {
+	case <-job.done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	d.merkleInflight = nil
+	if job.err != nil {
+		// Execution has run past the failed window (the async tradeoff) —
+		// state is committed but unverified from job.from onward.
+		return job.err
+	}
+	tx, err := d.exec.RwDB().BeginRw(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	t0 := time.Now()
+	if err := job.upd.Apply(tx); err != nil {
+		return fmt.Errorf("apply TrieOf* updates [%d,%d]: %w", job.from, job.to, err)
+	}
+	var v [8]byte
+	binary.BigEndian.PutUint64(v[:], job.to)
+	if err := tx.Put(progressTable, merkleProgressKey, v[:]); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	log.Info("eldevp2p: staged Merkle OK (async)", "from", job.from, "to", job.to,
+		"blocks", job.to-job.from+1, "root", job.root.Hex(),
+		"compute", time.Since(job.started).Round(time.Millisecond),
+		"apply", time.Since(t0).Round(time.Millisecond))
+	return nil
+}
+
 func (d *Downloader) runMerkleStage(ctx context.Context, from, to uint64) error {
 	if to < from {
 		return nil
