@@ -509,7 +509,14 @@ func (d *Downloader) coordinator(ctx context.Context) {
 			// (writeOnly), compute + verify the root for [lastMerkle+1, newHead]
 			// in ONE incremental pass and persist TrieOf*. Also fire when near the
 			// tip (so TrieOf* stays fresh for the live 12s handoff).
-			if d.staged && (newHead-d.lastMerkle >= d.subBatch || (target > newHead && target-newHead <= commitInterval)) {
+			// Fire the Merkle stage on a full sub-batch, OR whenever we are at/
+			// near the tip with ANY un-merkled debt. The old `target > newHead`
+			// guard never held once fully caught up (single-block live rounds
+			// end exactly at target), so live mode silently starved the stage —
+			// TrieOf* lagged until the next restart's reconcile, and a reorg
+			// unwind in that window would have used a stale trie.
+			if d.staged && (newHead-d.lastMerkle >= d.subBatch ||
+				(target-newHead <= commitInterval && newHead > d.lastMerkle)) {
 				// Land the in-flight async window first — its TrieOf* nodes
 				// must be committed before the next window's snapshot.
 				if err := d.joinMerkleAsync(ctx); err != nil {
