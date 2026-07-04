@@ -529,21 +529,27 @@ func NewBodyCompactStage(input *freezer.Freezer, outputDir string) *BodyCompactS
 
 type bodyIdxEntry struct {
 	fileNum uint16
-	offset  uint32
+	offset  uint64 // 48-bit on disk: low 32 in [4:8], high 16 in [2:4]
 }
 
 func encodeBodyIdx(e bodyIdxEntry) []byte {
+	// 48-bit offset: low 32 bits stay in [4:8] and the previously reserved
+	// [2:4] carries the high 16 bits, so every legacy entry (high == 0)
+	// decodes unchanged. uint32 offsets silently WRAPPED once a dat file
+	// grew past 4.29 GB (legacy orphan bytes pushed appends there), making
+	// entries point into stale bytes — the "magic number mismatch" class.
 	var buf [8]byte
 	binary.LittleEndian.PutUint16(buf[0:2], e.fileNum)
-	// buf[2:4] reserved
-	binary.LittleEndian.PutUint32(buf[4:8], e.offset)
+	binary.LittleEndian.PutUint16(buf[2:4], uint16(e.offset>>32))
+	binary.LittleEndian.PutUint32(buf[4:8], uint32(e.offset))
 	return buf[:]
 }
 
 func decodeBodyIdx(buf []byte) bodyIdxEntry {
 	return bodyIdxEntry{
 		fileNum: binary.LittleEndian.Uint16(buf[0:2]),
-		offset:  binary.LittleEndian.Uint32(buf[4:8]),
+		offset: uint64(binary.LittleEndian.Uint32(buf[4:8])) |
+			uint64(binary.LittleEndian.Uint16(buf[2:4]))<<32,
 	}
 }
 
@@ -571,6 +577,30 @@ func (s *BodyCompactStage) Run(ctx context.Context) error {
 		return err
 	}
 	existingSegments := uint64(idxInfo.Size()) / 8
+	// A PARTIAL final segment must be REWRITTEN, not counted — same hole
+	// class as header_compact (see its resume comment): probing the last
+	// expected index detects it; rewind + truncate rewrites it from source.
+	for existingSegments > 0 {
+		rd, rerr := OpenBodyCompact(s.outputDir)
+		if rerr != nil {
+			break
+		}
+		lastFull := existingSegments*HeaderSegmentSize - 1
+		_, perr := rd.ReadBody(lastFull)
+		rd.Close()
+		if perr == nil {
+			break // final segment is full — resume after it
+		}
+		// Historical sessions each ended mid-segment, so partials can stack:
+		// peel them one at a time (each truncation exposes the previous
+		// session's tail segment as the new final).
+		log.Warn("Body compact: final segment PARTIAL — rewinding to rewrite it",
+			"segment", existingSegments-1, "probe", lastFull, "err", perr)
+		existingSegments--
+		if err := idxFile.Truncate(int64(existingSegments) * 8); err != nil {
+			return fmt.Errorf("truncate partial idx entry: %w", err)
+		}
+	}
 	startBlock := existingSegments * HeaderSegmentSize
 	if startBlock >= endBlock {
 		log.Info("Body compact: already up to date", "at", startBlock)
@@ -700,10 +730,17 @@ func (s *BodyCompactStage) Run(ctx context.Context) error {
 			if err := openDat(); err != nil {
 				return err
 			}
+			// The rotated-to file may NOT be fresh (orphan bytes from killed
+			// sessions): appends land at its END, so the entry offset must
+			// reflect the real size — assuming 0 pointed entries into the
+			// orphan prefix (observed on bodyc.0341 at 5.4 GB).
+			if fi, ferr := os.Stat(filepath.Join(s.outputDir, fmt.Sprintf("bodyc.%04d.cdat", headFile))); ferr == nil {
+				headSize = fi.Size()
+			}
 		}
 
 		// Write idx entry.
-		idxEntry := encodeBodyIdx(bodyIdxEntry{fileNum: headFile, offset: uint32(headSize)})
+		idxEntry := encodeBodyIdx(bodyIdxEntry{fileNum: headFile, offset: uint64(headSize)})
 		if _, err := idxBuf.Write(idxEntry); err != nil {
 			return err
 		}
