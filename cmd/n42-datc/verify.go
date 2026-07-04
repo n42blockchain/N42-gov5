@@ -99,8 +99,16 @@ func runVerify(args []string) {
 	for d := 0; d <= maxChgDepth && (d+1)*8 <= len(schedV); d++ {
 		sched.e[d] = binary.BigEndian.Uint64(schedV[d*8:])
 	}
+	// Storage-trie schedule: independent since --sto-sched; absent key
+	// (pre-split DBs) means the storage side used the account schedule.
+	stoSched := sched
+	if ssV, _ := tx.GetOne(tDatcMeta, []byte("stoSched")); len(ssV) >= (maxChgDepth+1)*8 {
+		for d := 0; d <= maxChgDepth; d++ {
+			stoSched.e[d] = binary.BigEndian.Uint64(ssV[d*8:])
+		}
+	}
 
-	q := &querier{tx: tx, sched: sched, foldDepth: *foldDepth}
+	q := &querier{tx: tx, sched: sched, stoSched: stoSched, foldDepth: *foldDepth}
 	// Leaf history source: zstd segment files when the build used --leaf-seg,
 	// MDBX tables otherwise.
 	{
@@ -221,6 +229,7 @@ func floorRoot(tx kv.Tx, n uint64) (types.Hash, bool, error) {
 type querier struct {
 	tx        kv.Tx
 	sched     epochSchedule
+	stoSched  epochSchedule // storage-trie schedule (== sched on pre-split DBs)
 	foldDepth int
 
 	// seg*, when non-nil, serve the leaf history / change index from static
@@ -439,8 +448,9 @@ func (q *querier) branchSlotsAt(domain, path []byte, n uint64) (slots [16]*types
 	// (no record in a later epoch ⇒ untouched in it). If the record IS at N's
 	// epoch, it is the end-of-epoch state: usable directly only when N is the
 	// epoch's last block; otherwise step back and replay the window.
-	curEpoch := q.sched.epochOf(d, n)
-	eLen := q.sched.e[d]
+	sch := q.schedFor(domain)
+	curEpoch := sch.epochOf(d, n)
+	eLen := sch.e[d]
 	if recEpoch == curEpoch && (n+1)%eLen != 0 {
 		st2, recEpoch2, ok2, err2 := q.floorRecordBefore(domain, path, curEpoch)
 		if err2 != nil {
@@ -632,9 +642,18 @@ func applyDiff(prev nodeState, rec []byte) (st nodeState, ok bool) {
 // floorRecord returns the reconstructed node state of the newest record with
 // epoch ≤ epochOf(d, n). ok=false covers absent, tombstone, and undecodable
 // chains alike — the caller falls back to the fold, which is always correct.
+func (q *querier) schedFor(domain []byte) epochSchedule {
+	// Zero-value stoSched (diagnostic tools that build a bare querier) falls
+	// back to the account schedule — pre-split semantics, never a divide-by-0.
+	if domain != nil && q.stoSched.e[0] != 0 {
+		return q.stoSched
+	}
+	return q.sched
+}
+
 func (q *querier) floorRecord(domain, path []byte, n uint64) (nodeState, uint64, bool, error) {
 	d := len(path)
-	return q.floorRecordBefore(domain, path, q.sched.epochOf(d, n)+1)
+	return q.floorRecordBefore(domain, path, q.schedFor(domain).epochOf(d, n)+1)
 }
 
 // floorRecordBefore reconstructs the newest record with epoch < beforeEpoch by

@@ -603,8 +603,16 @@ func runProof(args []string) {
 	for d := 0; d <= maxChgDepth && (d+1)*8 <= len(schedV); d++ {
 		sched.e[d] = binary.BigEndian.Uint64(schedV[d*8:])
 	}
+	// Storage-trie schedule: independent since --sto-sched; absent key
+	// (pre-split DBs) means the storage side used the account schedule.
+	stoSched := sched
+	if ssV, _ := tx.GetOne(tDatcMeta, []byte("stoSched")); len(ssV) >= (maxChgDepth+1)*8 {
+		for d := 0; d <= maxChgDepth; d++ {
+			stoSched.e[d] = binary.BigEndian.Uint64(ssV[d*8:])
+		}
+	}
 
-	q := &querier{tx: tx, sched: sched, foldDepth: *foldDepth, fastEOA: *fastEOA}
+	q := &querier{tx: tx, sched: sched, stoSched: stoSched, foldDepth: *foldDepth, fastEOA: *fastEOA}
 	{
 		cache := newFrameLRU()
 		open := func(tab int) *leafSegSet {

@@ -14,6 +14,17 @@ func newMarkBuilder(t *testing.T) *builder {
 	t.Helper()
 	b := &builder{}
 	b.sched = epochSchedule{e: [maxChgDepth + 1]uint64{4, 8, 16, 1, 64, 64}}
+	// Storage schedule: the production auto-derivation (dense levels widened).
+	b.stoSched = b.sched
+	for d := 0; d <= maxChgDepth; d++ {
+		if b.stoSched.e[d] == 1 {
+			if d == 0 {
+				b.stoSched.e[d] = 16
+			} else {
+				b.stoSched.e[d] = b.stoSched.e[d-1] * 16
+			}
+		}
+	}
 	size := 1
 	for d := 0; d <= maxChgDepth; d++ {
 		b.accDirty[d] = make([]uint16, size)
@@ -25,20 +36,25 @@ func newMarkBuilder(t *testing.T) *builder {
 	return b
 }
 
-// clearEpochMarks mimics what flushEpoch/flushStoLevel do to the mark state
-// at an epoch boundary for level d: consume and reset.
-func clearEpochMarks(b *builder, d int) {
+// clearAccEpochMarks / clearStoEpochMarks mimic what flushEpoch (account) and
+// flushStoLevel (storage) do to the mark state at their respective epoch
+// boundaries: consume and reset. Separate since --sto-sched split them.
+func clearAccEpochMarks(b *builder, d int) {
 	for _, idx := range b.accTouched[d] {
 		b.accDirty[d][idx] = 0
 	}
 	b.accTouched[d] = b.accTouched[d][:0]
+}
+
+func clearStoEpochMarks(b *builder, d int) {
 	b.stoDirty[d] = make(map[string]*uint16, 16)
 }
 
 // clearAllMarks mimics a process restart: every in-memory mark is gone.
 func clearAllMarks(b *builder) {
 	for d := 0; d <= maxChgDepth; d++ {
-		clearEpochMarks(b, d)
+		clearAccEpochMarks(b, d)
+		clearStoEpochMarks(b, d)
 		// chg agg state is irrelevant here (drained at every batch commit in
 		// the real build), but reset it for symmetry.
 		for i := range b.chgAccAgg[d] {
@@ -69,7 +85,10 @@ func applyLive(b *builder, n uint64, evs []markEvent) {
 	}
 	for d := 0; d <= maxChgDepth; d++ {
 		if (n+1)%b.sched.e[d] == 0 {
-			clearEpochMarks(b, d)
+			clearAccEpochMarks(b, d)
+		}
+		if (n+1)%b.stoSched.e[d] == 0 {
+			clearStoEpochMarks(b, d)
 		}
 	}
 }
@@ -139,11 +158,15 @@ func TestBackfillRestoresMarks(t *testing.T) {
 	crash.resumed = true
 	from := uint64(S)
 	for d := 0; d <= maxChgDepth; d++ {
-		if crash.sched.e[d] <= 1 {
-			continue
+		if crash.sched.e[d] > 1 {
+			if es := uint64(S) - uint64(S)%crash.sched.e[d]; es < from {
+				from = es
+			}
 		}
-		if es := uint64(S) - uint64(S)%crash.sched.e[d]; es < from {
-			from = es
+		if crash.stoSched.e[d] > 1 {
+			if es := uint64(S) - uint64(S)%crash.stoSched.e[d]; es < from {
+				from = es
+			}
 		}
 	}
 	for n := from; n < S; n++ {
@@ -177,8 +200,12 @@ func TestBackfillRestoresMarks(t *testing.T) {
 		compareMarks(t, live, crash, "pre-flush at block "+itoa(n))
 		for d := 0; d <= maxChgDepth; d++ {
 			if (n+1)%live.sched.e[d] == 0 {
-				clearEpochMarks(live, d)
-				clearEpochMarks(crash, d)
+				clearAccEpochMarks(live, d)
+				clearAccEpochMarks(crash, d)
+			}
+			if (n+1)%live.stoSched.e[d] == 0 {
+				clearStoEpochMarks(live, d)
+				clearStoEpochMarks(crash, d)
 			}
 		}
 	}
@@ -188,15 +215,19 @@ func TestBackfillRestoresMarks(t *testing.T) {
 // must not require (or produce) any marks.
 func TestBackfillNoopOnBoundary(t *testing.T) {
 	b := newMarkBuilder(t)
-	// lcm(4,8,16,64) = 64 → block 128 is a boundary for every e>1 level.
-	const S = 128
+	// lcm of both schedules (4,8,16,64 acc; 4,8,16,256,64,64 sto) = 256.
+	const S = 256
 	from := uint64(S)
 	for d := 0; d <= maxChgDepth; d++ {
-		if b.sched.e[d] <= 1 {
-			continue
+		if b.sched.e[d] > 1 {
+			if es := uint64(S) - uint64(S)%b.sched.e[d]; es < from {
+				from = es
+			}
 		}
-		if es := uint64(S) - uint64(S)%b.sched.e[d]; es < from {
-			from = es
+		if b.stoSched.e[d] > 1 {
+			if es := uint64(S) - uint64(S)%b.stoSched.e[d]; es < from {
+				from = es
+			}
 		}
 	}
 	if from != S {
