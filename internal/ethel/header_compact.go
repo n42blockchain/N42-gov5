@@ -349,21 +349,23 @@ func NewHeaderCompactStage(input *freezer.Freezer, outputDir string) *HeaderComp
 // headerIdxEntry stores fileNum (2B) + reserved (2B) + offset (4B) = 8B, matching body idx layout.
 type headerIdxEntry struct {
 	fileNum uint16
-	offset  uint32
+	offset  uint64 // 48-bit on disk: low 32 in [4:8], high 16 in [2:4]
 }
 
 func encodeHeaderIdx(e headerIdxEntry) []byte {
+	// 48-bit offset — see encodeBodyIdx for the layout and rationale.
 	var buf [8]byte
 	binary.LittleEndian.PutUint16(buf[0:2], e.fileNum)
-	// buf[2:4] reserved
-	binary.LittleEndian.PutUint32(buf[4:8], e.offset)
+	binary.LittleEndian.PutUint16(buf[2:4], uint16(e.offset>>32))
+	binary.LittleEndian.PutUint32(buf[4:8], uint32(e.offset))
 	return buf[:]
 }
 
 func decodeHeaderIdx(buf []byte) headerIdxEntry {
 	return headerIdxEntry{
 		fileNum: binary.LittleEndian.Uint16(buf[0:2]),
-		offset:  binary.LittleEndian.Uint32(buf[4:8]),
+		offset: uint64(binary.LittleEndian.Uint32(buf[4:8])) |
+			uint64(binary.LittleEndian.Uint16(buf[2:4]))<<32,
 	}
 }
 
@@ -391,6 +393,33 @@ func (s *HeaderCompactStage) Run(ctx context.Context) error {
 		return err
 	}
 	existingSegments := uint64(idxInfo.Size()) / 8
+	// A PARTIAL final segment (a previous run's source ended mid-segment)
+	// must be REWRITTEN, not counted: treating it as full resumes at the next
+	// boundary and leaves a permanent hole (observed: headerc segment 3089
+	// held 6007/8192 headers → blocks 25311095..25313279 were unreadable).
+	// Probe the last expected index of the final segment; out-of-range ⇒
+	// partial ⇒ rewind one segment and truncate its idx entry.
+	for existingSegments > 0 {
+		rd, rerr := OpenHeaderCompact(s.outputDir)
+		if rerr != nil {
+			break
+		}
+		lastFull := existingSegments*HeaderSegmentSize - 1
+		_, perr := rd.ReadHeader(lastFull)
+		rd.Close()
+		if perr == nil {
+			break // final segment is full — resume after it
+		}
+		// Historical sessions each ended mid-segment, so partials can stack:
+		// peel them one at a time (each truncation exposes the previous
+		// session's tail segment as the new final).
+		log.Warn("Header compact: final segment PARTIAL — rewinding to rewrite it",
+			"segment", existingSegments-1, "probe", lastFull, "err", perr)
+		existingSegments--
+		if err := idxFile.Truncate(int64(existingSegments) * 8); err != nil {
+			return fmt.Errorf("truncate partial idx entry: %w", err)
+		}
+	}
 	startBlock := existingSegments * HeaderSegmentSize
 	if startBlock >= endBlock {
 		log.Info("Header compact: already up to date", "at", startBlock)
@@ -513,10 +542,15 @@ func (s *HeaderCompactStage) Run(ctx context.Context) error {
 			if err := openDat(); err != nil {
 				return err
 			}
+			// Rotated-to file may hold orphan bytes from killed sessions —
+			// offsets must reflect the real size (see body_compact).
+			if fi, ferr := os.Stat(filepath.Join(s.outputDir, fmt.Sprintf("headerc.%04d.cdat", headFile))); ferr == nil {
+				headSize = fi.Size()
+			}
 		}
 
 		// Write idx entry.
-		idxEntry := encodeHeaderIdx(headerIdxEntry{fileNum: headFile, offset: uint32(headSize)})
+		idxEntry := encodeHeaderIdx(headerIdxEntry{fileNum: headFile, offset: uint64(headSize)})
 		if _, err := idxBuf.Write(idxEntry); err != nil {
 			return err
 		}
