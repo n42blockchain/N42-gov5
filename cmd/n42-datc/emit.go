@@ -206,13 +206,23 @@ func (b *builder) recordChangeStorage(domain []byte, keyNibbles []byte, n uint64
 	}
 	// One shared key buffer: d(1) | domain | path nibbles | epoch(4); the
 	// dirty key is the [1:1+len(domain)+d] slice, the agg key the whole thing.
+	//
+	// The loop MUST run d = maxD..0 (descending): the agg key for depth d
+	// writes epoch(4) at kb[1+len(domain)+d:], which CLOBBERS the nibble
+	// slots for depths d+1..d+4. Ascending order corrupted every stoDirty pk
+	// and chg agg key at d>=2 into domain|nib0|epoch-bytes (0x00...) — the
+	// deep storage node/chg rows landed under keys the querier (which builds
+	// clean path keys) can never hit, i.e. dead rows + permanent record MISS
+	// at storage depths >= 2 (the reader's fold fallback masked it). With the
+	// descending order each depth consumes its nibbles BEFORE any shallower
+	// depth's epoch write can touch them.
 	kb := b.chgKeyScratch[:0]
 	kb = append(kb, 0)
 	kb = append(kb, domain...)
 	kb = append(kb, keyNibbles[:maxD]...)
 	kb = append(kb, 0, 0, 0, 0)
 	b.chgKeyScratch = kb
-	for d := 0; d <= maxD; d++ {
+	for d := maxD; d >= 0; d-- {
 		bit := uint16(1) << keyNibbles[d]
 		pk := kb[1 : 1+len(domain)+d]
 		if p, ok := b.stoDirty[d][string(pk)]; ok {
