@@ -193,6 +193,7 @@ func main() {
 	window := fs.Bool("window", true, "mainnet: batch the root per E_1 window (bpp Path C) instead of per block — identical records, gold check per window")
 	concurrentRoot := fs.Bool("concurrent-root", false, "parallelize the per-window root across 16 top-nibble shards over a 4-table StateOverlay (each window still gold-checked vs header)")
 	stateOverlayF := fs.Bool("state-overlay", false, "SERIAL builds: absorb HashedAccounts/HashedStorage writes in the 4-table RAM StateOverlay too (not just TrieOf*), flushing once per batch — at DeFi-era density the per-block Hashed* MDBX puts are ~38% of CPU")
+	backfillDirtyF := fs.Bool("backfill-dirty", true, "on resume, replay changeset dirty MARKS from each level's current epoch start so the next epoch flush doesn't omit records dirtied before the restart (reads changesets only; no rows written during the replay)")
 	pprofPort := fs.Int("pprof.port", 0, "serve net/http/pprof on this port (0=off)")
 	bisect := fs.Bool("bisect", false, "READ-ONLY diagnosis: replay [resume-start, --end) per block over an uncommitted tx (NEVER commits, NEVER touches the leaf spill), gold-checking EACH block's incremental root against its header. Halts at and reports the FIRST divergent block. Use to localize a window-mode gold-check mismatch to a single block. Output dir is left untouched.")
 	dumpChangeset := fs.Uint64("dump-changeset", 0, "decode ONE block's changeset (the dirtyA/dirtyS fed to the fold) and print it, then exit — for cross-checking N42's per-block state delta against an independent source")
@@ -378,6 +379,7 @@ func main() {
 	}
 	b.resumed = *startBlock > 0
 	b.stoLastFull.resumed = b.resumed
+	b.backfillOn = *backfillDirtyF
 	b.fwdMode = fwdMode
 	b.windowing = !fwdMode && *window
 	b.concurrentRoot = *concurrentRoot
@@ -574,7 +576,8 @@ type builder struct {
 
 	chgKeyScratch []byte // reusable storage-side chg key buffer
 
-	resumed bool // resumed builds always write tombstones (cold lastFull maps)
+	resumed    bool // resumed builds always write tombstones (cold lastFull maps)
+	backfillOn bool // resume dirty-mark backfill (backfill.go); --backfill-dirty
 
 	// fwdMode: n42-chain source — changesets come from the FwdAcctCS/FwdStorCS
 	// tables (derived by convertN42Changesets), there is no external header
@@ -865,6 +868,15 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 	lastBeat := time.Now()
 	lastBeatBlocks := uint64(0)
 	lastBeatLeaves := b.leavesBase + b.leafAPuts + b.leafSPuts
+
+	// Resumed build landing mid-epoch: restore the node-flush dirty marks
+	// lost with the previous process (see backfill.go). Before the main
+	// pipeline so the scratch buffers and caches are quiet.
+	if b.resumed && !b.fwdMode && b.backfillOn {
+		if err := b.backfillDirty(start); err != nil {
+			return fmt.Errorf("dirty-mark backfill: %w", err)
+		}
+	}
 
 	// Mainnet mode: pre-decode blocks on a worker pool (changeset decode +
 	// key keccaks were ~12% of the single-threaded loop).
