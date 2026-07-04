@@ -382,6 +382,17 @@ func (f *Freezer) Table(name string) *FreezerTable {
 	return f.tables[name]
 }
 
+// TableNames returns the names of every open table (diagnostics).
+func (f *Freezer) TableNames() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.tables))
+	for name := range f.tables {
+		out = append(out, name)
+	}
+	return out
+}
+
 // SetColdResolver installs a cold-offload resolver on the named table (e.g.
 // "receipts") so trimmed data files are fetched on demand. Returns false if the
 // table is not open. Call at startup before reads.
