@@ -181,6 +181,7 @@ func main() {
 	alpha := fs.Float64("alpha", 16, "target changes per node per epoch")
 	cbar := fs.Float64("cbar", 20, "assumed average changed keys per block")
 	schedOverride := fs.String("sched", "", "explicit epoch schedule: comma-separated e[0..5] overriding alpha/cbar (M2 dense shallow = 1,1,1,1,4194304,4194304 — per-block records at depths 0-3, no windows, AsOf point reads)")
+	stoSchedOverride := fs.String("sto-sched", "", "STORAGE-trie epoch schedule (comma-separated e[0..5]). Default: derived from --sched with every dense (e==1) level widened to e[d-1]*16 — dense levels exist for the ACCOUNT trie (B-prime d3); mirroring them on storage wrote a node row per dirty path per block (356 GB by 45%% of the chain). Storage depth queries anchor on per-block DatcStoRoot + leaf folds instead.")
 	batch := fs.Uint64("batch", 20_000, "blocks per MDBX commit (large batches spill MDBX dirty pages and stall)")
 	mapGB := fs.Int("map.gb", 1024, "MDBX map size GB")
 	dirtyGB := fs.Int("dirty.gb", 16, "MDBX DirtySpace GB — raise so a dense batch's dirty pages stay in RAM and commit doesn't spill (cures the multi-minute commit stalls in DeFi-dense regions)")
@@ -389,6 +390,36 @@ func main() {
 	// whatever RetainList one ComputeRoot carries. Per-block mode arms the
 	// header root before each fold so a shard divergence self-heals via the
 	// serial fallback (and the AccRootEmitter re-fires there — no double emit).
+	// Storage-trie schedule: never dense. Derive from the account schedule by
+	// widening e==1 levels geometrically unless --sto-sched overrides.
+	b.stoSched = b.sched
+	for d := 0; d <= maxChgDepth; d++ {
+		if b.stoSched.e[d] == 1 {
+			if d == 0 {
+				b.stoSched.e[d] = 16
+			} else {
+				b.stoSched.e[d] = b.stoSched.e[d-1] * 16
+			}
+		}
+	}
+	if *stoSchedOverride != "" {
+		parts := strings.Split(*stoSchedOverride, ",")
+		if len(parts) != maxChgDepth+1 {
+			die("--sto-sched needs exactly %d comma-separated values", maxChgDepth+1)
+		}
+		for d, ps := range parts {
+			var v uint64
+			if _, err := fmt.Sscanf(strings.TrimSpace(ps), "%d", &v); err != nil || v == 0 {
+				die("--sto-sched entry %d (%q) must be a positive integer", d, ps)
+			}
+			b.stoSched.e[d] = v
+		}
+	}
+	fmt.Printf("  sto epochs/depth: ")
+	for d := 0; d <= maxChgDepth; d++ {
+		fmt.Printf("d%d=%d ", d, b.stoSched.e[d])
+	}
+	fmt.Println()
 	b.winA = make(map[types.Address]*account.StateAccount, 64)
 	b.winS = make(map[types.Address]map[types.Hash]*uint256.Int, 16)
 	if *leafSeg {
@@ -577,6 +608,7 @@ type builder struct {
 	chgKeyScratch []byte // reusable storage-side chg key buffer
 
 	resumed    bool // resumed builds always write tombstones (cold lastFull maps)
+	stoSched   epochSchedule // storage-trie epoch schedule (never dense; see --sto-sched)
 	backfillOn bool // resume dirty-mark backfill (backfill.go); --backfill-dirty
 
 	// fwdMode: n42-chain source — changesets come from the FwdAcctCS/FwdStorCS
@@ -896,6 +928,9 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 			if b.sched.e[d]%W != 0 {
 				return fmt.Errorf("window mode needs e[%d]=%d divisible by W=%d", d, b.sched.e[d], W)
 			}
+			if b.stoSched.e[d]%W != 0 {
+				return fmt.Errorf("window mode needs sto e[%d]=%d divisible by W=%d", d, b.stoSched.e[d], W)
+			}
 		}
 		if batchBlocks < W*4 {
 			return fmt.Errorf("--batch %d too small for window mode (W=%d)", batchBlocks, W)
@@ -1063,6 +1098,15 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 						return fmt.Errorf("epoch flush d=%d block %d: %w", d, n, err)
 					}
 				}
+				if (n+1)%b.stoSched.e[d] == 0 {
+					if b.windowing && (n+1)%W != 0 {
+						continue
+					}
+					if err := b.flushStoLevel(wtx, d, b.stoSched.epochOf(d, n)); err != nil {
+						tx.Rollback()
+						return fmt.Errorf("sto epoch flush d=%d block %d: %w", d, n, err)
+					}
+				}
 			}
 			blocksDone++
 			// Live heartbeat to STDERR (unbuffered through pipes): block height,
@@ -1101,6 +1145,10 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 					tx.Rollback()
 					return err
 				}
+				if err := b.flushStoLevel(wtx, d, b.stoSched.epochOf(d, hi-1)); err != nil {
+					tx.Rollback()
+					return err
+				}
 			}
 			meta := make([]byte, 8+8+8)
 			binary.BigEndian.PutUint64(meta[0:], hi)
@@ -1115,6 +1163,14 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 				sb = binary.BigEndian.AppendUint64(sb, b.sched.e[d])
 			}
 			if err := tx.Put(tDatcMeta, []byte("sched"), sb); err != nil {
+				tx.Rollback()
+				return err
+			}
+			var ssb []byte
+			for d := 0; d <= maxChgDepth; d++ {
+				ssb = binary.BigEndian.AppendUint64(ssb, b.stoSched.e[d])
+			}
+			if err := tx.Put(tDatcMeta, []byte("stoSched"), ssb); err != nil {
 				tx.Rollback()
 				return err
 			}

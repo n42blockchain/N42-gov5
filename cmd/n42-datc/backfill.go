@@ -40,11 +40,15 @@ import (
 func (b *builder) backfillDirty(start uint64) error {
 	from := start
 	for d := 0; d <= maxChgDepth; d++ {
-		if b.sched.e[d] <= 1 {
-			continue // epoch == block: flushed every block, no cross-restart state
+		if b.sched.e[d] > 1 {
+			if es := start - start%b.sched.e[d]; es < from {
+				from = es
+			}
 		}
-		if es := start - start%b.sched.e[d]; es < from {
-			from = es
+		if b.stoSched.e[d] > 1 {
+			if es := start - start%b.stoSched.e[d]; es < from {
+				from = es
+			}
 		}
 	}
 	if from >= start {
@@ -135,7 +139,7 @@ func (b *builder) backfillStoMarks(domain []byte, slotNibs []byte, n, start uint
 	kb = append(kb, slotNibs[:maxD]...)
 	b.chgKeyScratch = kb
 	for d := 0; d <= maxD; d++ {
-		if b.sched.e[d] <= 1 || n < start-start%b.sched.e[d] {
+		if b.stoSched.e[d] <= 1 || n < start-start%b.stoSched.e[d] {
 			continue
 		}
 		pk := kb[:len(domain)+d]

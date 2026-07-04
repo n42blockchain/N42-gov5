@@ -231,10 +231,10 @@ func (b *builder) recordChangeStorage(domain []byte, keyNibbles []byte, n uint64
 			v := bit
 			b.stoDirty[d][string(pk)] = &v
 		}
-		if d == 0 || b.sched.e[d] == 1 {
+		if d == 0 || b.stoSched.e[d] == 1 {
 			continue // empty-window levels: change rows are never consulted
 		}
-		epoch := b.sched.epochOf(d, n)
+		epoch := b.stoSched.epochOf(d, n)
 		kb[0] = byte(d)
 		ak := kb[:1+len(domain)+d+4]
 		binary.BigEndian.PutUint32(ak[len(ak)-4:], uint32(epoch))
@@ -328,7 +328,10 @@ func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
 		}
 		b.accTouched[d] = touched[:0]
 	}
-	return b.flushStoLevel(tx, d, epoch)
+	// Storage-side records flush separately on b.stoSched boundaries (the
+	// account schedule may be dense at d3 for B-prime; mirroring that on the
+	// storage trie wrote a full node row per dirty depth-3 path PER BLOCK).
+	return nil
 }
 
 // flushAccPath emits one account-trie node record (FULL/DIFF/tombstone).
