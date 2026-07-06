@@ -416,6 +416,8 @@ func GenesisByChainName(chain string) *conf.Genesis {
 		return mainnetCompatGenesisBlock()
 	case "mainnet_v2":
 		return mainnetV2GenesisBlock()
+	case "mainnet_v2_staggered":
+		return mainnetV2StaggeredGenesisBlock()
 	case "mainnet_mpt":
 		return mainnetMPTGenesisBlock()
 	case "mainnet_qmdb":
@@ -448,6 +450,39 @@ func mainnetV2GenesisBlock() *conf.Genesis {
 		Config:    params.MainnetV2ChainConfig,
 		Nonce:     0,
 		Alloc:     mustReadGenesisAlloc("allocs/mainnet.json"),
+		Timestamp: 1678174066,
+		Miners:    []string{"0xA2142AB3F25EAA9985F22C3F5B1FF9FA378DAC21"},
+		Number:    0,
+	}
+}
+
+// mainnetV2StaggeredGenesisBlock is identical to mainnetV2GenesisBlock (same
+// timestamp/miners, i.e. the same real chain data) but selects
+// MainnetV2StaggeredChainConfig, which activates Shanghai/Cancun/Pectra/
+// Osaka/Fusaka/Glamsterdam at N42-block heights/times calendar-matched to
+// their real Ethereum mainnet activation dates instead of all-at-genesis.
+//
+// Alloc uses allocs/mainnet_v2_staggered.json, a copy of allocs/mainnet.json
+// with 6 addresses topped up by +50,000 ETH each. Under this staggered
+// schedule, replaying real chain history hits "insufficient funds" /
+// cascading "nonce too high" failures for these 6 addresses shortly after
+// the Shanghai-equivalent height (~block 305,000) — they were observed
+// running low by ~0.02-1.3 ETH for a single real historical transaction
+// each (blocks 538482/1265544/1274618/1308625/1308679/1324122). This does
+// NOT happen replaying the same blocks under mainnet_v2 (Shanghai active
+// since genesis) or mainnet_compat (Shanghai never active), which is why
+// this is believed to be a real interaction between N42's apos
+// reward/funding path and a Shanghai-era EVM/gas change, not a general
+// data problem — root cause not isolated. This alloc patch is a pragmatic
+// workaround (top up the 6 known-affected addresses) chosen instead of
+// debugging the interaction, so this chain is NOT a faithful replay of
+// real N42 history — only use it to check whether each EIP's *mechanics*
+// work when active at a sane height, not for balance-accurate history.
+func mainnetV2StaggeredGenesisBlock() *conf.Genesis {
+	return &conf.Genesis{
+		Config:    params.MainnetV2StaggeredChainConfig,
+		Nonce:     0,
+		Alloc:     mustReadGenesisAlloc("allocs/mainnet_v2_staggered.json"),
 		Timestamp: 1678174066,
 		Miners:    []string{"0xA2142AB3F25EAA9985F22C3F5B1FF9FA378DAC21"},
 		Number:    0,

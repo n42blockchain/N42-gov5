@@ -126,12 +126,13 @@ var (
 // ---------------------------------------------------------------------------
 
 var (
-	MainnetChainConfig       = readChainSpec("chainspecs/mainnet.json")
-	MainnetCompatChainConfig = readChainSpec("chainspecs/mainnet_compat.json") // backward-compatible (no Shanghai+), matches legacy genesis hash
-	MainnetV2ChainConfig     = readChainSpec("chainspecs/mainnet_v2.json")    // all forks from genesis (replay-v2)
-	MainnetMPTChainConfig    = readChainSpec("chainspecs/mainnet_mpt.json")  // replay-v2 with ethereum-mpt state roots
-	MainnetQMDBChainConfig   = readChainSpec("chainspecs/mainnet_qmdb.json") // replay-v2 qmdb state roots + hotstuff live production
-	TestnetChainConfig       = readChainSpec("chainspecs/testnet.json")
+	MainnetChainConfig            = readChainSpec("chainspecs/mainnet.json")
+	MainnetCompatChainConfig      = readChainSpec("chainspecs/mainnet_compat.json")       // backward-compatible (no Shanghai+), matches legacy genesis hash
+	MainnetV2ChainConfig          = readChainSpec("chainspecs/mainnet_v2.json")           // all forks from genesis (replay-v2)
+	MainnetV2StaggeredChainConfig = readChainSpec("chainspecs/mainnet_v2_staggered.json") // forks staggered at N42-block heights/times calendar-matched to real Ethereum mainnet activation dates (Shanghai/Cancun by block; Pectra/Osaka/Fusaka/Glamsterdam by real-world Unix time, since N42 block timestamps are real wall-clock)
+	MainnetMPTChainConfig         = readChainSpec("chainspecs/mainnet_mpt.json")          // replay-v2 with ethereum-mpt state roots
+	MainnetQMDBChainConfig        = readChainSpec("chainspecs/mainnet_qmdb.json")         // replay-v2 qmdb state roots + hotstuff live production
+	TestnetChainConfig            = readChainSpec("chainspecs/testnet.json")
 
 	TestChainConfig = &ChainConfig{
 		ChainID:               big.NewInt(1),
@@ -558,6 +559,8 @@ func ChainConfigByChainName(chain string) *ChainConfig {
 		return MainnetCompatChainConfig
 	case "mainnet_v2":
 		return MainnetV2ChainConfig
+	case "mainnet_v2_staggered":
+		return MainnetV2StaggeredChainConfig
 	case "mainnet_mpt":
 		return MainnetMPTChainConfig
 	case "mainnet_qmdb":
@@ -582,6 +585,8 @@ func GenesisHashByChainName(chain string) *types.Hash {
 	case networkname.TestnetChainName, networkname.N42TestnetAlias:
 		return &TestnetGenesisHash
 	case "mainnet_v2":
+		return &MainnetGenesisHash
+	case "mainnet_v2_staggered":
 		return &MainnetGenesisHash
 	case "mainnet_qmdb":
 		return &MainnetGenesisHash
