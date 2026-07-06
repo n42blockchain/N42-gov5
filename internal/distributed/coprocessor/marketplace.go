@@ -77,8 +77,9 @@ func (m *Marketplace) SubmitBid(taskID types.Hash, providerAddr types.Address, p
 		return types.Hash{}, ErrTaskAlreadyAssigned
 	}
 
-	// Verify provider exists and is active
-	provider, ok := m.providers.Get(providerAddr)
+	// Verify provider exists and is active. Snapshot read: the live pointer's
+	// Status field races with concurrent UpdateStatus writers.
+	provider, ok := m.providers.GetSnapshot(providerAddr)
 	if !ok {
 		return types.Hash{}, ErrProviderNotFound
 	}
@@ -198,7 +199,7 @@ func (m *Marketplace) selectHighestReputation(bids []*Bid) *Bid {
 	var best *Bid
 	var bestRep uint64
 	for _, b := range bids {
-		provider, ok := m.providers.Get(b.ProviderID)
+		provider, ok := m.providers.GetSnapshot(b.ProviderID)
 		if !ok {
 			continue
 		}
