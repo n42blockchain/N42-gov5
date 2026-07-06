@@ -86,12 +86,13 @@ func NewSlashManager(providers *ProviderRegistry, slashPercent int) *SlashManage
 // stake and updates their reputation and status.
 // Provider operations are called without holding sm.mu to avoid nested locks.
 func (sm *SlashManager) Slash(providerAddr types.Address, condition SlashCondition, taskID types.Hash) {
-	provider, ok := sm.providers.Get(providerAddr)
+	// Snapshot read: the live pointer's Stake field races with concurrent
+	// DeductStake writers (caught by the scheduler's -race suite).
+	provider, ok := sm.providers.GetSnapshot(providerAddr)
 	if !ok {
 		return
 	}
 
-	// Calculate slash amount from snapshot (provider.Stake is read under provider lock)
 	amount := provider.Stake * uint64(sm.slashPercent) / 100
 	if amount == 0 && provider.Stake > 0 {
 		amount = 1 // slash at least 1 wei

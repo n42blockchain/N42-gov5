@@ -213,7 +213,9 @@ func (s *Service) SubmitChallenge(taskID types.Hash, challenger types.Address, b
 
 // ClaimTask allows a provider to claim an unassigned pending task.
 func (s *Service) ClaimTask(taskID types.Hash, providerAddr types.Address) error {
-	provider, ok := s.providers.Get(providerAddr)
+	// Snapshot read: the live pointer's Status field races with concurrent
+	// UpdateStatus writers.
+	provider, ok := s.providers.GetSnapshot(providerAddr)
 	if !ok {
 		return ErrProviderNotFound
 	}

@@ -115,11 +115,27 @@ func (pr *ProviderRegistry) Unregister(addr types.Address) error {
 }
 
 // Get returns a provider by address.
+// NOTE: the returned pointer references the live provider object; reading its
+// mutable fields (Stake, Reputation, Status, counters) concurrently with
+// registry writes is racy. Use GetSnapshot for a race-free copy.
 func (pr *ProviderRegistry) Get(addr types.Address) (*Provider, bool) {
 	pr.mu.RLock()
 	defer pr.mu.RUnlock()
 	p, ok := pr.providers[addr]
 	return p, ok
+}
+
+// GetSnapshot returns a copy of the provider, safe to read without locks.
+func (pr *ProviderRegistry) GetSnapshot(addr types.Address) (Provider, bool) {
+	pr.mu.RLock()
+	defer pr.mu.RUnlock()
+	p, ok := pr.providers[addr]
+	if !ok {
+		return Provider{}, false
+	}
+	snap := *p
+	snap.Capabilities = append([]Capability(nil), p.Capabilities...)
+	return snap, true
 }
 
 // UpdateStatus changes a provider's status.
