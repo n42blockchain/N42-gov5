@@ -193,8 +193,27 @@ Submitted → Auctioned → Assigned → Executing → ResultSubmitted
    scheduler.Executor,验签+身份匹配+ctx 超时)。**8 个验收测试全绿**:签名往返/
    伪造签名拒收/可用性门控/离线静默超时/迟到响应丢弃不串台/切片一调度器全管线过总线
    (quorum 3副本投毒者被拒)/并发请求隔离/spec 线上保真。`-race -count=3` 干净。
-   **剩余**:messaging Transport 适配器、evmsdk 手机端集成(gomobile,独立代码库)、
-   session key 结算接线(ai/wallet.ValidateSessionKey 已有,等支付路径)
-3. **切片三(AI)**:0x0301 推理请求 → 手机 quorum(int8 小模型)真机延迟/正确率数据
-4. 待测数字:手机 NPU int8 吞吐/瓦、quorum r 的正确率-成本曲线、opML 挑战真机耗时、
+2b. **messaging Transport 适配器 — ✅ 已落地(2026-07-06)**:`MessagingTransport`
+   把地址路由的 `worker.Transport` 映射到 topic 化 messaging 服务(每个端点地址一个
+   topic,Register 订阅、Send 发布到目标 topic);进程内走 `Service.Publish` 本地派发,
+   跨节点走 relay + `Service.DeliverFromRelay` 派发到同一批 handler。5 个集成测试
+   (真实 messaging.Service,含双实例跨节点 relay 桥接)。**关键结论:无需给 compute
+   加 P2P topic 或改 pubsub_filter** —— relay 把任意 Service topic 字符串当作
+   Envelope 内部字段(`env.Topic`),再哈希分片到已有的 8 个 `/n42/msg/shard/N`
+   gossip topic 传输(`topicShard` 对任意字符串哈希);P2P 层只见 `/n42/msg/` 前缀
+   (CanSubscribe 早已放行),compute topic 只是 envelope 里的字符串,接收端
+   DecodeEnvelope 还原后按原 topic 本地派发。故适配器对真实 P2P relay **已生产就绪**,
+   `relayBridge` 跨节点测试验证的正是这条路径。
+3. **切片三(AI)— ✅ 已落地(2026-07-06)**:`SchedulerInferenceExecutor` 实现
+   `inference.InferenceExecutor`,把每次推理调度成 scheduler 验证任务(quorum/乐观)
+   而非单机可信 WASM 执行;模型 WASM 随 TaskSpec 下发,任何 worker 可执行。
+   precompile 0x0301 → InferenceService → 此执行器 → scheduler → workers 在执行器
+   接缝以上一行未动。5 测试:单元(fake scheduler 的 spec 构建+verified/failed/expired/
+   unknown-model 映射)+ 全栈(真 scheduler+3 签名 worker 过总线,拜占庭 worker 被
+   honest quorum 否决,经真实 InferenceService 驱动如 precompile)。
+4. **剩余(依赖外部工程,非本仓库核心)**:evmsdk 手机端 gomobile 集成(独立代码库)、
+   session key 支付结算实际接线(`ai/wallet.ValidateSessionKey` 已有,等支付路径)、
+   ZK/训练任务类型的 Runner 实现、opML 挑战路径接 `zkprover`/`compute/inference`
+   欺诈证明。**传输层跨节点已完整,不欠 P2P topic 注册项。**
+5. **待测数字**:手机 NPU int8 吞吐/瓦、quorum r 的正确率-成本曲线、opML 挑战真机耗时、
    BLS 聚合回执的结算吞吐上限
