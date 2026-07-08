@@ -25,6 +25,7 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/modules/state"
 )
 
@@ -52,19 +53,21 @@ type SystemContract struct {
 // DefaultSystemContracts returns Prague/Pectra system contracts to pre-deploy.
 func DefaultSystemContracts() []SystemContract {
 	return []SystemContract{
-		{ // EIP-2935 History Storage
-			Address: types.HexToAddress("0x0000F90827F1C53a10CB7A02335B175320002935"),
-			Code:    types.Hex2Bytes("3373fffffffffffffffffffffffffffffffffffffffe1460575767ffffffffffffffff5765015150a06020527f0167ffffffffffffffff8111615058578060005b905b60008360408203523390523661003f57610000565b6020357f806101c557610000576000604035523290"),
+		{ // EIP-2935 History Storage — canonical Pectra bytecode (the previous
+			// hardcoded blob had a JUMP to 0x0000 => "invalid jump destination"
+			// when the live block-production path invokes it under Prague).
+			Address: vm.HistoryStorageAddress,
+			Code:    vm.HistoryStorageCode,
 			Nonce:   1,
 		},
-		{ // EIP-7002 Withdrawal Requests
-			Address: types.HexToAddress("0x00000961EF480EB55E80D19AD83579A64C007002"),
-			Code:    types.Hex2Bytes("3373fffffffffffffffffffffffffffffffffffffffe14604457602036146024575f5ffd5b620180005f350680515f80fd5b5f35801560495762018000153560495763ffffffff60023516545f5260205ff35b5f5ffd"),
+		{ // EIP-7002 Withdrawal Requests — canonical Pectra bytecode.
+			Address: vm.WithdrawalRequestsAddress,
+			Code:    vm.WithdrawalRequestQueueCode,
 			Nonce:   1,
 		},
-		{ // EIP-7251 Consolidation Requests
-			Address: types.HexToAddress("0x0000BBDDC7CE488642FB579F8B00F3A590007251"),
-			Code:    types.Hex2Bytes("3373fffffffffffffffffffffffffffffffffffffffe14604457602036146024575f5ffd5b620180005f350680515f80fd5b5f35801560495762018000153560495763ffffffff60023516545f5260205ff35b5f5ffd"),
+		{ // EIP-7251 Consolidation Requests — canonical Pectra bytecode.
+			Address: vm.ConsolidationRequestsAddress,
+			Code:    vm.ConsolidationRequestQueueCode,
 			Nonce:   1,
 		},
 		{ // EIP-4788 Beacon Roots
