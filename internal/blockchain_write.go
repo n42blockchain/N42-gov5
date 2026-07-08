@@ -47,6 +47,7 @@ import (
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules/changeset"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
 	statesnapshot "github.com/n42blockchain/N42/modules/state/snapshot"
@@ -205,6 +206,16 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		if ibs != nil {
 			if err := ibs.CommitBlock(bc.chainConfig.Rules(blockNumber.Uint64()), stateWriter); err != nil {
 				return err
+			}
+			// A prior attempt at this height (hotstuff view-change re-production,
+			// a competing same-height proposal, or a reorg re-import) may have
+			// already written AccountChangeSet/StorageChangeSet rows for this
+			// blockNum. Those tables are AppendDup (strictly-increasing key,data);
+			// re-writing the same height collides → MDBX_EKEYMISMATCH and the node
+			// wedges. Clear any rows ≥ this height first — a no-op on the
+			// strictly-forward happy path, and safe (same tx as the re-append).
+			if err := changeset.Truncate(tx, blockNumber.Uint64()); err != nil {
+				return fmt.Errorf("truncating stale changesets for block %d failed: %w", blockNumber.Uint64(), err)
 			}
 			if err := stateWriter.WriteChangeSets(); err != nil {
 				return fmt.Errorf("writing changesets for block %d failed: %w", blockNumber.Uint64(), err)
