@@ -65,6 +65,8 @@ var replayV2Command = &cli.Command{
 		&cli.StringFlag{Name: "log", Usage: "Structured log file (empty=stderr only)", Value: ""},
 		&cli.StringFlag{Name: "leaf-journal", Usage: "Leaf change journal file for tree building (empty=disabled)", Value: ""},
 		&cli.BoolFlag{Name: "verify-mpt", Usage: "Per-block: rebuild MPT root from PlainState and verify (slow)", Value: false},
+		&cli.BoolFlag{Name: "auto-topup", Usage: "Diagnostic: credit the exact deficit to any sender that hits 'insufficient funds' and retry, so it executes instead of skipping; reports the cumulative minimum genesis balance per address", Value: false},
+		&cli.StringFlag{Name: "topup-dump", Usage: "auto-topup: write the per-address minimum-topup table to this file", Value: ""},
 		&cli.BoolFlag{Name: "bls-reseal", Usage: "Re-seal every block with a simulated mobile-voter BLS committee QC (written to ConsensusEvidence)", Value: false},
 		&cli.StringFlag{Name: "bls-seed", Usage: "32-byte hex master seed for the BLS voter pool (must match the generated pool)"},
 		&cli.IntFlag{Name: "bls-pool-size", Usage: "Total mobile-voter pool size", Value: 200000},
@@ -118,6 +120,8 @@ func runReplayV2(cliCtx *cli.Context) error {
 	cfg.LeafJournal = cliCtx.String("leaf-journal")
 	cfg.StatsFile = cliCtx.String("output")
 	cfg.VerifyMPT = cliCtx.Bool("verify-mpt")
+	cfg.AutoTopup = cliCtx.Bool("auto-topup")
+	cfg.TopupDumpFile = cliCtx.String("topup-dump")
 
 	cfg.BLSReseal = cliCtx.Bool("bls-reseal")
 	if cfg.BLSReseal {

@@ -16,6 +16,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/c2h5oh/datasize"
@@ -83,6 +85,10 @@ type EngineV2 struct {
 	witnessReader *WitnessStateReader          // records per-block state access
 	leafJournal   *LeafJournal                 // per-block leaf changes for tree building
 	resealer      *BLSResealer                 // BLS mobile-voter re-seal (nil = disabled)
+
+	// topups accumulates the exact deficit credited per sender under AutoTopup
+	// (diagnostic minimum-genesis-balance computation).
+	topups map[types.Address]*uint256.Int
 }
 
 // NewEngineV2 creates a replay-v2 engine. Call Run() to execute.
@@ -129,9 +135,10 @@ func NewEngineV2(cfg ConfigV2) (*EngineV2, error) {
 	}
 
 	e := &EngineV2{
-		cfg:   cfg,
-		stats: NewStats(),
-		log:   logger,
+		cfg:    cfg,
+		stats:  NewStats(),
+		log:    logger,
+		topups: make(map[types.Address]*uint256.Int),
 	}
 
 	// Open leaf journal if configured.
@@ -365,6 +372,7 @@ func (e *EngineV2) Run(ctx context.Context) (*Stats, error) {
 		"receiptMismatch", e.stats.ReceiptMismatch.Load(),
 		"elapsed", e.stats.Elapsed(),
 	)
+	e.dumpTopups()
 	return e.stats, nil
 }
 
@@ -1306,6 +1314,64 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 	})
 }
 
+// parseHaveWant extracts the balance and required amount from an
+// "insufficient funds ... have <H> want <W>" error message.
+func parseHaveWant(msg string) (have, want *uint256.Int, ok bool) {
+	hi := strings.Index(msg, "have ")
+	wi := strings.Index(msg, " want ")
+	if hi < 0 || wi < 0 || wi < hi+len("have ") {
+		return nil, nil, false
+	}
+	hStr := strings.TrimSpace(msg[hi+len("have ") : wi])
+	wStr := strings.TrimSpace(msg[wi+len(" want "):])
+	h, err1 := uint256.FromDecimal(hStr)
+	w, err2 := uint256.FromDecimal(wStr)
+	if err1 != nil || err2 != nil {
+		return nil, nil, false
+	}
+	return h, w, true
+}
+
+// dumpTopups writes the accumulated per-sender minimum genesis top-ups (the
+// AutoTopup diagnostic result), sorted descending by amount.
+func (e *EngineV2) dumpTopups() {
+	if !e.cfg.AutoTopup || len(e.topups) == 0 {
+		return
+	}
+	type te struct {
+		addr types.Address
+		amt  *uint256.Int
+	}
+	list := make([]te, 0, len(e.topups))
+	total := new(uint256.Int)
+	for a, v := range e.topups {
+		list = append(list, te{a, v})
+		total.Add(total, v)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].amt.Cmp(list[j].amt) > 0 })
+
+	weiPerEth := new(uint256.Int).Exp(uint256.NewInt(10), uint256.NewInt(18))
+	var b strings.Builder
+	fmt.Fprintf(&b, "# auto-topup minimum genesis balances (%d addresses)\n", len(list))
+	fmt.Fprintf(&b, "# address\tmin_topup_wei\tmin_topup_eth\n")
+	for _, t := range list {
+		eth := new(uint256.Int).Div(t.amt, weiPerEth)
+		rem := new(uint256.Int).Mod(t.amt, weiPerEth)
+		fmt.Fprintf(&b, "0x%x\t%s\t%s.%018s\n", t.addr[:], t.amt.Dec(), eth.Dec(), rem.Dec())
+	}
+	fmt.Fprintf(&b, "# TOTAL addresses=%d wei=%s\n", len(list), total.Dec())
+	if e.cfg.TopupDumpFile != "" {
+		if werr := os.WriteFile(e.cfg.TopupDumpFile, []byte(b.String()), 0644); werr != nil {
+			e.log.Warn("auto-topup dump write failed", "file", e.cfg.TopupDumpFile, "err", werr)
+		}
+	}
+	e.log.Info("auto-topup report",
+		"addresses", len(list),
+		"totalWei", total.Dec(),
+		"file", e.cfg.TopupDumpFile,
+	)
+}
+
 // replayBlockTxs executes the source block's transactions through the full EVM.
 // Uses the same ApplyTransaction path as sync and mining — no wheel reinvention.
 // Returns the replayed transactions, receipts, and total gas used.
@@ -1344,14 +1410,59 @@ func (e *EngineV2) replayBlockTxs(
 			e.cfg.ChainConfig, blockHashFunc, nil, &srcHeader.Coinbase,
 			gp, ibs, stateWriter, srcHeader, tx, &usedGas, vmCfg,
 		)
+		// AutoTopup diagnostic: if the tx cannot pay (insufficient funds), credit
+		// the sender the exact deficit and retry, so it executes rather than being
+		// skipped (which would desync the nonce and cascade). The cumulative credit
+		// per sender is that address's minimum required genesis balance. Anchored to
+		// the insufficient-funds error specifically — buyGas raises it BEFORE
+		// gp.SubGas, so the retry never double-charges gas; other "have…want…"
+		// errors (e.g. intrinsic-gas) are post-SubGas and must NOT be retried.
+		if err != nil && e.cfg.AutoTopup && strings.Contains(err.Error(), "insufficient funds") {
+			for tries := 0; tries < 4 && err != nil; tries++ {
+				have, want, ok := parseHaveWant(err.Error())
+				if !ok || want.Cmp(have) <= 0 {
+					break
+				}
+				from := tx.From()
+				if from == nil {
+					break
+				}
+				deficit := new(uint256.Int).Sub(want, have)
+				ibs.AddBalance(*from, deficit)
+				acc := e.topups[*from]
+				if acc == nil {
+					acc = new(uint256.Int)
+					e.topups[*from] = acc
+				}
+				acc.Add(acc, deficit)
+				ibs.Prepare(tx.Hash(), srcBlk.Hash(), i)
+				receipt, _, err = internal.ApplyTransaction(
+					e.cfg.ChainConfig, blockHashFunc, nil, &srcHeader.Coinbase,
+					gp, ibs, stateWriter, srcHeader, tx, &usedGas, vmCfg,
+				)
+			}
+		}
 		if err != nil {
 			e.stats.TxFailed.Add(1)
 			e.stats.skipReason("evm_error")
-			// Log first few errors for diagnosis.
-			if e.stats.TxFailed.Load() <= 10 {
+			// Log failures with the sending address + nonce. The default path keeps
+			// the original small cap; the AutoTopup diagnostic raises it to capture
+			// the (rare) residual failures it cannot fund, without spamming normal
+			// production replays that legitimately skip many txs.
+			logCap := uint64(10)
+			if e.cfg.AutoTopup {
+				logCap = 200000
+			}
+			if e.stats.TxFailed.Load() <= logCap {
+				sender := "unknown"
+				if f := tx.From(); f != nil {
+					sender = fmt.Sprintf("0x%x", f[:])
+				}
 				e.log.Warn("tx apply failed",
 					"block", srcHeader.Number.Uint64(),
 					"txIdx", i,
+					"sender", sender,
+					"nonce", tx.Nonce(),
 					"err", err,
 				)
 			}
