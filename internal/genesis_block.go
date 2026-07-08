@@ -463,21 +463,22 @@ func mainnetV2GenesisBlock() *conf.Genesis {
 // their real Ethereum mainnet activation dates instead of all-at-genesis.
 //
 // Alloc uses allocs/mainnet_v2_staggered.json, a copy of allocs/mainnet.json
-// with 6 addresses topped up by +50,000 ETH each. Under this staggered
+// with 624 addresses topped up by their EXACT minimum deficit (total ~7,488
+// ETH; 95% need <1 ETH, one outlier ~6,590 ETH). Under this staggered
 // schedule, replaying real chain history hits "insufficient funds" /
-// cascading "nonce too high" failures for these 6 addresses shortly after
-// the Shanghai-equivalent height (~block 305,000) — they were observed
-// running low by ~0.02-1.3 ETH for a single real historical transaction
-// each (blocks 538482/1265544/1274618/1308625/1308679/1324122). This does
-// NOT happen replaying the same blocks under mainnet_v2 (Shanghai active
-// since genesis) or mainnet_compat (Shanghai never active), which is why
-// this is believed to be a real interaction between N42's apos
-// reward/funding path and a Shanghai-era EVM/gas change, not a general
-// data problem — root cause not isolated. This alloc patch is a pragmatic
-// workaround (top up the 6 known-affected addresses) chosen instead of
-// debugging the interaction, so this chain is NOT a faithful replay of
-// real N42 history — only use it to check whether each EIP's *mechanics*
-// work when active at a sane height, not for balance-accurate history.
+// cascading "nonce too high" failures because a Shanghai-era EVM/gas change
+// interacts with N42's apos reward/funding path, leaving these senders short
+// for individual historical transactions — this does NOT happen under
+// mainnet_v2 (Shanghai active since genesis) or mainnet_compat (Shanghai
+// never active), so it is a real fork-schedule interaction, root cause not
+// isolated. The exact per-address minimums were computed by the replay-v2
+// `--auto-topup` diagnostic (credit want-have and retry; the cumulative
+// credit per sender is its minimum required genesis balance) and eliminate
+// all 1,505 tx-apply failures (txFailed=0). Receipt mismatches (~2,930)
+// remain — those are the fork-semantics gas divergence, not a balance
+// shortfall, and cannot be fixed by funding. So this chain is NOT a
+// balance-faithful replay of real N42 history — only use it to check whether
+// each EIP's *mechanics* work when active at a sane height.
 func mainnetV2StaggeredGenesisBlock() *conf.Genesis {
 	return &conf.Genesis{
 		Config:    params.MainnetV2StaggeredChainConfig,
