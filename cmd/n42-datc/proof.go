@@ -195,7 +195,7 @@ func mptNodeRLP(leaves []mleaf, depth int, target []byte, pathOut *[][]byte) []b
 // subtreeLeaves loads the as-of-N leaves under (domain, path) and converts
 // them to mleaf form (nibbles relative to the SUBTREE root, full RLP items).
 func (q *querier) subtreeLeaves(domain, path []byte, n uint64) ([]mleaf, error) {
-	raw, err := q.asOfLeaves(domain, path, n)
+	raw, err := q.asOfLeavesEntry(domain, path, n)
 	if err != nil {
 		return nil, err
 	}
@@ -235,6 +235,7 @@ func (q *querier) proofPath(domain, fullNib []byte, n uint64) ([][]byte, error) 
 	for {
 		tb := time.Now()
 		slots, nKids, usable, err := q.branchSlotsAt(domain, path, n)
+		authEmpty := q.missAuthEmpty // capture before the root-synth block below recurses and clobbers it
 		if dbg {
 			fmt.Fprintf(os.Stderr, "[pp] path=%x branchSlotsAt=%v usable=%v nKids=%d\n", path, time.Since(tb), usable, nKids)
 		}
@@ -273,6 +274,9 @@ func (q *querier) proofPath(domain, fullNib []byte, n uint64) ([][]byte, error) 
 			}
 		}
 		if !usable {
+			if authEmpty {
+				return nodes, nil // authoritatively empty subtree at N: absence proven by parent, no fold
+			}
 			tl := time.Now()
 			leaves, err := q.subtreeLeaves(domain, path, n)
 			if dbg {

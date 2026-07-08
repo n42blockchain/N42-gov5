@@ -750,6 +750,9 @@ func (s *leafSegSet) frameKey(bucket, fi int) uint64 {
 	return uint64(s.table)<<48 | uint64(bucket)<<24 | uint64(fi)
 }
 
+// Diagnostic counters (proof-bench --profile): frame decompressions and bytes.
+var dbgFrameDecodes, dbgFrameCompBytes, dbgFrameRawBytes int64
+
 func (s *leafSegSet) decodeFrame(bucket, fi int) (*decodedFrame, error) {
 	ck := s.frameKey(bucket, fi)
 	if d := s.cache.get(ck); d != nil {
@@ -757,6 +760,9 @@ func (s *leafSegSet) decodeFrame(bucket, fi int) (*decodedFrame, error) {
 	}
 	sf := s.buckets[bucket]
 	fm := sf.frames[fi]
+	dbgFrameDecodes++
+	dbgFrameCompBytes += int64(fm.comp)
+	dbgFrameRawBytes += int64(fm.raw)
 	comp := make([]byte, fm.comp)
 	if _, err := sf.f.ReadAt(comp, fm.off); err != nil {
 		return nil, err
