@@ -60,10 +60,18 @@ func newTestPool(t *testing.T) *blspool.Pool {
 func TestPrepareStampsParentBeaconRoot(t *testing.T) {
 	pool := newTestPool(t)
 
-	// Build CE for parent block N=5 and stash it in the reader.
+	// The parent's committee evidence is a deterministic function of the parent
+	// header's (number, hash, receiptRoot) — exactly as production builds it at
+	// import via BuildBlockEvidence. Prepare/VerifyHeader re-derive it from the
+	// actual parent header (not a by-number CE store, which a speculative
+	// same-height candidate can overwrite), so build the expected CE from the
+	// header's own hash + receipt root here too.
 	const parentNum = uint64(5)
-	parentHash := types.Hash{0x11}
-	parentCE, err := pool.BuildSimulatedCE(parentNum, parentHash, types.Hash{0xaa})
+	parentHeader := &block.Header{
+		Number: uint256.NewInt(parentNum),
+		Time:   1000,
+	}
+	parentCE, err := pool.BuildSimulatedCE(parentNum, parentHeader.Hash(), parentHeader.ReceiptHash)
 	if err != nil {
 		t.Fatalf("BuildSimulatedCE: %v", err)
 	}
@@ -72,10 +80,6 @@ func TestPrepareStampsParentBeaconRoot(t *testing.T) {
 	h := New(nil, params.TestChainConfig)
 	h.SetCommitteeEvidence(pool, reader)
 
-	parentHeader := &block.Header{
-		Number: uint256.NewInt(parentNum),
-		Time:   1000,
-	}
 	chain := &fakeChain{parent: parentHeader}
 
 	// Prepare block N+1 = 6.

@@ -67,6 +67,12 @@ type CommitteePool interface {
 	// VerifyCE re-derives the committee and checks the aggregate signature,
 	// returning the number of covered signers.
 	VerifyCE(ce *rawdb.ConsensusEvidence) (covered int, ok bool, err error)
+	// BuildSimulatedCE deterministically rebuilds a block's committee evidence
+	// from (blockNum, blockHash, receiptRoot). Used to re-derive a parent's CE
+	// from the actual parent header for the ParentBeaconRoot link, instead of
+	// trusting the by-number CE store (which a speculative same-height candidate
+	// may have overwritten). Implemented by *blspool.Pool.
+	BuildSimulatedCE(blockNum uint64, blockHash, receiptRoot types.Hash) (*rawdb.ConsensusEvidence, error)
 }
 
 // CEReader reads stored consensus evidence by block number (parent-CE lookup
@@ -360,10 +366,16 @@ func (h *HotStuff) VerifyHeader(chain consensus.ChainHeaderReader, iHeader block
 	// ParentBeaconRoot = Blake3(parent CE). This transitively validates that the
 	// producer used the same deterministic committee evidence we hold locally.
 	h.lock.RLock()
-	ceReader := h.ceReader
+	pool := h.committeePool
 	h.lock.RUnlock()
-	if ceReader != nil {
-		expected := parentBeaconRoot(ceReader, header.Number.Uint64())
+	if pool != nil {
+		// Re-derive the parent's committee evidence from the ACTUAL parent header
+		// (fetched above) rather than the by-number CE store, so the link is
+		// immune to speculative same-height overwrites (see parentBeaconRootFromHeader).
+		expected, cerr := parentBeaconRootFromHeader(pool, parentHeader)
+		if cerr != nil {
+			return fmt.Errorf("deriving parent committee evidence for block %s: %w", header.Number, cerr)
+		}
 		switch {
 		case expected == nil && header.ParentBeaconRoot != nil && *header.ParentBeaconRoot != (types.Hash{}):
 			return fmt.Errorf("unexpected ParentBeaconRoot at block %s (no parent evidence)", header.Number)
@@ -443,16 +455,7 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 	// ParentBeaconRoot = Blake3(parent CE). Mirrors the replay resealer so a node
 	// producing block N+1 on a resealed chain continues the BLS multi-sig chain
 	// byte-identically. No-op until SetCommitteeEvidence is wired.
-	h.lock.RLock()
-	ceReader := h.ceReader
-	h.lock.RUnlock()
-	if ceReader != nil && !header.Number.IsZero() {
-		if pbr := parentBeaconRoot(ceReader, header.Number.Uint64()); pbr != nil {
-			header.ParentBeaconRoot = pbr
-		}
-	}
-
-	// Set timestamp (skip for genesis).
+	// Set timestamp (skip for genesis; genesis carries no parent evidence).
 	if header.Number.IsZero() {
 		return nil
 	}
@@ -474,6 +477,19 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 			// leader produce exactly one block per height — taskLoop dedups repeat
 			// builds by sealHash, and propose/push/import all reference one block.
 			header.Time = parentHeader.Time + period
+
+			// EIP-4788 committee-evidence link: stamp ParentBeaconRoot from the
+			// actual parent header via deterministic CE re-derivation, matching
+			// exactly what VerifyHeader recomputes. No-op until the committee pool
+			// is wired (SetCommitteeEvidence).
+			h.lock.RLock()
+			pool := h.committeePool
+			h.lock.RUnlock()
+			if pbr, perr := parentBeaconRootFromHeader(pool, parentHeader); perr != nil {
+				return perr
+			} else if pbr != nil {
+				header.ParentBeaconRoot = pbr
+			}
 		}
 	}
 
@@ -681,19 +697,34 @@ func sealHash(header *block.Header) types.Hash {
 	return cpy.Hash()
 }
 
-// parentBeaconRoot returns the ParentBeaconRoot a block at blockNum must carry:
-// the BeaconRoot of block blockNum-1's consensus evidence, or nil for
-// genesis/block 1 or when no parent evidence exists.
-func parentBeaconRoot(r CEReader, blockNum uint64) *types.Hash {
-	if blockNum <= 1 {
-		return nil
+// parentBeaconRootFromHeader derives the ParentBeaconRoot a block must carry
+// given the specific parent header it extends: Blake3 of the parent's committee
+// evidence, rebuilt deterministically from (parentNum, parentHash,
+// parentReceiptRoot) via the committee pool. Returns nil for a genesis parent
+// (block 1 carries no parent evidence).
+//
+// This binds the ParentBeaconRoot link to the block actually being extended,
+// NOT to whatever the by-number ConsensusEvidence store happens to hold. Under
+// HotStuff-2 a height can be speculatively imported more than once (view-change
+// re-production / competing same-height proposals), each overwriting the
+// by-number CE row; reading that row would make the link depend on import order
+// rather than on the committed/extended block. Because CE is a pure function of
+// (num, hash, receiptRoot), re-deriving from the parent header always matches
+// the parent the producer actually built on — and never a losing same-height
+// candidate.
+func parentBeaconRootFromHeader(pool CommitteePool, parentHeader *block.Header) (*types.Hash, error) {
+	if pool == nil || parentHeader == nil || parentHeader.Number == nil || parentHeader.Number.IsZero() {
+		return nil, nil
 	}
-	parentCE, err := r.ReadConsensusEvidence(blockNum - 1)
-	if err != nil || parentCE == nil {
-		return nil
+	ce, err := pool.BuildSimulatedCE(parentHeader.Number.Uint64(), parentHeader.Hash(), parentHeader.ReceiptHash)
+	if err != nil {
+		return nil, err
 	}
-	root := parentCE.BeaconRoot()
-	return &root
+	if ce == nil {
+		return nil, nil
+	}
+	root := ce.BeaconRoot()
+	return &root, nil
 }
 
 // ExtractViewFromExtra extracts the view number from header extra-data.
