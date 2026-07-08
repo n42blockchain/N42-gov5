@@ -193,6 +193,10 @@ func main() {
 		runCSToSpill(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "fork-state" {
+		runForkState(os.Args[2:])
+		return
+	}
 	if os.Args[1] == "cs-spill-compare" {
 		runCSSpillCompare(os.Args[2:])
 		return
@@ -225,6 +229,8 @@ func main() {
 	concurrentRoot := fs.Bool("concurrent-root", false, "parallelize the per-window root across 16 top-nibble shards over a 4-table StateOverlay (each window still gold-checked vs header)")
 	stateOverlayF := fs.Bool("state-overlay", false, "SERIAL builds: absorb HashedAccounts/HashedStorage writes in the 4-table RAM StateOverlay too (not just TrieOf*), flushing once per batch — at DeFi-era density the per-block Hashed* MDBX puts are ~38% of CPU")
 	backfillDirtyF := fs.Bool("backfill-dirty", true, "on resume, replay changeset dirty MARKS from each level's current epoch start so the next epoch flush doesn't omit records dirtied before the restart (reads changesets only; no rows written during the replay)")
+	backfillSegsF := fs.String("backfill-segs", "", "DATC dir whose chg SEGMENTS (leafseg/ca.*,cs.*) supply the resume dirty marks instead of the changeset replay: a streaming scan filtered to each level's current epoch — no per-key keccak, no decode pipeline (the 2.64M-block replay that OOMed). Usually the fork-state --src dir.")
+	recordsOnlyF := fs.Bool("records-only", false, "Pipeline B: emit only node records + DatcStoRoot + gold checks; leaf/chg rows come from cs-to-spill (Pipeline A)")
 	pprofPort := fs.Int("pprof.port", 0, "serve net/http/pprof on this port (0=off)")
 	bisect := fs.Bool("bisect", false, "READ-ONLY diagnosis: replay [resume-start, --end) per block over an uncommitted tx (NEVER commits, NEVER touches the leaf spill), gold-checking EACH block's incremental root against its header. Halts at and reports the FIRST divergent block. Use to localize a window-mode gold-check mismatch to a single block. Output dir is left untouched.")
 	dumpChangeset := fs.Uint64("dump-changeset", 0, "decode ONE block's changeset (the dirtyA/dirtyS fed to the fold) and print it, then exit — for cross-checking N42's per-block state delta against an independent source")
@@ -411,6 +417,8 @@ func main() {
 	b.resumed = *startBlock > 0
 	b.stoLastFull.resumed = b.resumed
 	b.backfillOn = *backfillDirtyF
+	b.backfillSegs = *backfillSegsF
+	b.recordsOnly = *recordsOnlyF
 	b.fwdMode = fwdMode
 	b.windowing = !fwdMode && *window
 	b.concurrentRoot = *concurrentRoot
@@ -639,7 +647,8 @@ type builder struct {
 
 	resumed    bool // resumed builds always write tombstones (cold lastFull maps)
 	stoSched   epochSchedule // storage-trie epoch schedule (never dense; see --sto-sched)
-	backfillOn bool // resume dirty-mark backfill (backfill.go); --backfill-dirty
+	backfillOn   bool   // resume dirty-mark backfill (backfill.go); --backfill-dirty
+	backfillSegs string // --backfill-segs: source the marks from chg segments (no CS replay)
 
 	// fwdMode: n42-chain source — changesets come from the FwdAcctCS/FwdStorCS
 	// tables (derived by convertN42Changesets), there is no external header
@@ -679,6 +688,13 @@ type builder struct {
 	concurrentRoot bool
 	stateOverlayOn bool
 
+	// recordsOnly (--records-only, Pipeline B): emit ONLY node records +
+	// DatcStoRoot + gold checks. Leaf-history rows and chg-index rows are
+	// skipped — cs-to-spill (Pipeline A) already derived them from the
+	// changesets. Dirty marks (accDirty/stoDirty) stay: they drive the
+	// epoch-boundary node flushes.
+	recordsOnly bool
+
 	leafAPuts, leafSPuts, chgPuts, nodePuts uint64
 
 	// Leaf-workload progress: block% is misleading (the DeFi-dense back half
@@ -691,6 +707,9 @@ type builder struct {
 
 // putLeaf routes one leaf-history row to the segment spill or the MDBX buffer.
 func (b *builder) putLeaf(storage bool, k, v []byte) error {
+	if b.recordsOnly {
+		return nil // Pipeline A (cs-to-spill) already produced the leaf rows
+	}
 	if b.spill != nil {
 		t := leafTableA
 		if storage {
@@ -980,7 +999,11 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 	// lost with the previous process (see backfill.go). Before the main
 	// pipeline so the scratch buffers and caches are quiet.
 	if b.resumed && !b.fwdMode && b.backfillOn {
-		if err := b.backfillDirty(start); err != nil {
+		if b.backfillSegs != "" {
+			if err := b.backfillDirtyFromSegs(start); err != nil {
+				return fmt.Errorf("dirty-mark backfill (segs): %w", err)
+			}
+		} else if err := b.backfillDirty(start); err != nil {
 			return fmt.Errorf("dirty-mark backfill: %w", err)
 		}
 	}

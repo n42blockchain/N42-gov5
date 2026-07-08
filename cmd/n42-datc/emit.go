@@ -173,7 +173,7 @@ func (b *builder) recordChange(storage bool, domain []byte, keyNibbles []byte, n
 		} else if cur&bit == 0 {
 			b.accDirty[d][idx] = cur | bit
 		}
-		if d != 0 && b.sched.e[d] != 1 {
+		if d != 0 && b.sched.e[d] != 1 && !b.recordsOnly {
 			epoch := uint32(b.sched.epochOf(d, n))
 			slot := &b.chgAccAgg[d][idx]
 			if len(slot.events) > 0 && slot.epoch != epoch {
@@ -231,8 +231,8 @@ func (b *builder) recordChangeStorage(domain []byte, keyNibbles []byte, n uint64
 			v := bit
 			b.stoDirty[d][string(pk)] = &v
 		}
-		if d == 0 || b.stoSched.e[d] == 1 {
-			continue // empty-window levels: change rows are never consulted
+		if d == 0 || b.stoSched.e[d] == 1 || b.recordsOnly {
+			continue // empty-window levels / records-only: change rows not aggregated
 		}
 		epoch := b.stoSched.epochOf(d, n)
 		kb[0] = byte(d)
