@@ -422,6 +422,8 @@ func GenesisByChainName(chain string) *conf.Genesis {
 		return mainnetMPTGenesisBlock()
 	case "mainnet_qmdb":
 		return mainnetQMDBGenesisBlock()
+	case "mainnet_qmdb_staggered":
+		return mainnetQMDBStaggeredGenesisBlock()
 	case networkname.TestnetChainName:
 		return testnetGenesisBlock()
 	default:
@@ -499,6 +501,26 @@ func mainnetQMDBGenesisBlock() *conf.Genesis {
 		Config:    params.MainnetQMDBChainConfig,
 		Nonce:     0,
 		Alloc:     mustReadGenesisAlloc("allocs/mainnet.json"),
+		Timestamp: 1678174066,
+		Miners:    []string{"0xA2142AB3F25EAA9985F22C3F5B1FF9FA378DAC21"},
+		Number:    0,
+	}
+}
+
+// mainnetQMDBStaggeredGenesisBlock is the base for the 7-node HotStuff live
+// network: qmdb state scheme + hotstuff consensus (with the simulated
+// committee pool) + the staggered (calendar-parity) fork schedule, so the
+// replayed history is low-mismatch and the nodes can continue producing
+// blocks past the head. Alloc uses allocs/mainnet_qmdb_staggered.json — a copy
+// of allocs/mainnet.json topped up by the exact per-address minimums computed
+// by replay-v2 --auto-topup under THIS chain's hotstuff reward path (which
+// differs from the apos path of mainnet_v2_staggered, so the top-up set is
+// recomputed here). NOT balance-faithful; for live-network / EIP-mechanics use.
+func mainnetQMDBStaggeredGenesisBlock() *conf.Genesis {
+	return &conf.Genesis{
+		Config:    params.MainnetQMDBStaggeredChainConfig,
+		Nonce:     0,
+		Alloc:     mustReadGenesisAlloc("allocs/mainnet_qmdb_staggered.json"),
 		Timestamp: 1678174066,
 		Miners:    []string{"0xA2142AB3F25EAA9985F22C3F5B1FF9FA378DAC21"},
 		Number:    0,
