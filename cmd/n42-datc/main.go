@@ -128,6 +128,18 @@ func main() {
 		runFoldBench(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "proof-bench" {
+		runProofBench(os.Args[2:])
+		return
+	}
+	if os.Args[1] == "leaf-dist" {
+		runLeafDist(os.Args[2:])
+		return
+	}
+	if os.Args[1] == "checkpoint-build" {
+		runCheckpointBuild(os.Args[2:])
+		return
+	}
 	if os.Args[1] == "node-hist-size" {
 		runNodeHistSize(os.Args[2:])
 		return
@@ -893,6 +905,51 @@ func (b *builder) bisectRun(start, end uint64) error {
 	return nil
 }
 
+// writeBuildMeta persists head/sched/stoSched on EVERY commit and stoRootFrom
+// once (value = the fresh-build start block, write-once so resumes never
+// overwrite a genesis 0). Called per batch so a stopped/resumed PARTIAL build
+// is fully queryable — previously these lived only in the hi==end final flush,
+// so an interrupted build had no head/sched/stoRootFrom and its querier fell
+// back to full-history folds (minutes-long p99). See
+// project_datc_proof_latency_rootcause.
+func (b *builder) writeBuildMeta(tx kv.RwTx, hi, start uint64) error {
+	meta := make([]byte, 8+8+8)
+	binary.BigEndian.PutUint64(meta[0:], hi)
+	binary.BigEndian.PutUint64(meta[8:], uint64(b.sched.e[0]))
+	binary.BigEndian.PutUint64(meta[16:], uint64(maxChgDepth))
+	if err := tx.Put(tDatcMeta, []byte("head"), meta); err != nil {
+		return err
+	}
+	var sb []byte
+	for d := 0; d <= maxChgDepth; d++ {
+		sb = binary.BigEndian.AppendUint64(sb, b.sched.e[d])
+	}
+	if err := tx.Put(tDatcMeta, []byte("sched"), sb); err != nil {
+		return err
+	}
+	var ssb []byte
+	for d := 0; d <= maxChgDepth; d++ {
+		ssb = binary.BigEndian.AppendUint64(ssb, b.stoSched.e[d])
+	}
+	if err := tx.Put(tDatcMeta, []byte("stoSched"), ssb); err != nil {
+		return err
+	}
+	if !b.windowing {
+		// Storage-root completeness stamp: [stoRootFrom, head]; 0 = complete
+		// from genesis ⇒ the querier treats DatcStoRoot misses as authoritative
+		// "no storage" (no fold). Write-once: a genesis build's first commit
+		// stamps 0; resumes (already present) never overwrite it.
+		if ex, _ := tx.GetOne(tDatcMeta, []byte("stoRootFrom")); len(ex) != 8 {
+			var sf [8]byte
+			binary.BigEndian.PutUint64(sf[:], start)
+			if err := tx.Put(tDatcMeta, []byte("stoRootFrom"), sf[:]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (b *builder) run(start, end, batchBlocks uint64) error {
 	t0 := time.Now()
 	var trc *commitment.TrieRootComputer
@@ -1150,42 +1207,9 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 					return err
 				}
 			}
-			meta := make([]byte, 8+8+8)
-			binary.BigEndian.PutUint64(meta[0:], hi)
-			binary.BigEndian.PutUint64(meta[8:], uint64(b.sched.e[0]))
-			binary.BigEndian.PutUint64(meta[16:], uint64(maxChgDepth))
-			if err := tx.Put(tDatcMeta, []byte("head"), meta); err != nil {
+			if err := b.writeBuildMeta(tx, hi, start); err != nil {
 				tx.Rollback()
 				return err
-			}
-			var sb []byte
-			for d := 0; d <= maxChgDepth; d++ {
-				sb = binary.BigEndian.AppendUint64(sb, b.sched.e[d])
-			}
-			if err := tx.Put(tDatcMeta, []byte("sched"), sb); err != nil {
-				tx.Rollback()
-				return err
-			}
-			var ssb []byte
-			for d := 0; d <= maxChgDepth; d++ {
-				ssb = binary.BigEndian.AppendUint64(ssb, b.stoSched.e[d])
-			}
-			if err := tx.Put(tDatcMeta, []byte("stoSched"), ssb); err != nil {
-				tx.Rollback()
-				return err
-			}
-			if !b.windowing {
-				// Storage-root history completeness stamp: the layer covers
-				// [stoRootFrom, head]. Written once (first commit); 0 = complete
-				// from genesis ⇒ the querier treats misses as "no storage".
-				if ex, _ := tx.GetOne(tDatcMeta, []byte("stoRootFrom")); len(ex) != 8 {
-					var sf [8]byte
-					binary.BigEndian.PutUint64(sf[:], start)
-					if err := tx.Put(tDatcMeta, []byte("stoRootFrom"), sf[:]); err != nil {
-						tx.Rollback()
-						return err
-					}
-				}
 			}
 		}
 		// Drain the aggregated change events, then the sorted-batch buffers,
@@ -1197,6 +1221,14 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 			return err
 		}
 		if err := flushOverlay(tx); err != nil {
+			tx.Rollback()
+			return err
+		}
+		// Persist head/sched/stoSched/stoRootFrom every batch (idempotent) so a
+		// PARTIAL build — stopped before --end — is fully queryable. Previously
+		// only the hi==end final flush wrote these, leaving interrupted builds
+		// without them (querier then fell back to minute-long folds).
+		if err := b.writeBuildMeta(tx, hi, start); err != nil {
 			tx.Rollback()
 			return err
 		}
