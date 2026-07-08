@@ -64,7 +64,7 @@ func extChunkBytes() int {
 
 // finalizeBucketExternal sorts one oversized bucket spill into dst with a fixed
 // memory budget. corruptOut receives the count of kill-tail frames skipped.
-func finalizeBucketExternal(zr *zstd.Decoder, enc *zstd.Encoder, src, dst string, corruptOut *int) error {
+func finalizeBucketExternal(zr *zstd.Decoder, enc *zstd.Encoder, src, oldSeg, dst string, corruptOut *int) error {
 	comp, err := os.ReadFile(src)
 	if err != nil {
 		return err
@@ -223,7 +223,7 @@ func finalizeBucketExternal(zr *zstd.Decoder, enc *zstd.Encoder, src, dst string
 	}
 	comp = nil // free the compressed input before the merge phase
 
-	if err := mergeRuns(enc, dst, runPaths); err != nil {
+	if err := mergeRuns(enc, oldSeg, dst, runPaths); err != nil {
 		return err
 	}
 	// Runs are scratch, regenerable from the retained spill — safe to drop. The
@@ -269,7 +269,7 @@ func (h *mergeHeap) Pop() any {
 
 // mergeRuns k-way merges the existing segment (if any, index 0 — oldest) and
 // the sorted runs into dst via a min-heap, streaming one frame per input.
-func mergeRuns(enc *zstd.Encoder, dst string, runPaths []string) error {
+func mergeRuns(enc *zstd.Encoder, oldSeg, dst string, runPaths []string) error {
 	var iters []*oldSegIter
 	defer func() {
 		for _, it := range iters {
@@ -290,8 +290,10 @@ func mergeRuns(enc *zstd.Encoder, dst string, runPaths []string) error {
 		return nil
 	}
 	// Existing segment first so equal keys keep the OLD row ahead of new rows.
-	if _, err := os.Stat(dst); err == nil {
-		if err := open(dst); err != nil {
+	// (oldSeg == dst on the in-place build path; a distinct read-only source on
+	// the recast path.)
+	if _, err := os.Stat(oldSeg); err == nil {
+		if err := open(oldSeg); err != nil {
 			return err
 		}
 	}
