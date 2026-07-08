@@ -166,17 +166,35 @@ func main() {
 	}
 	if os.Args[1] == "finalize-leaves" {
 		// Crash recovery: turn an interrupted build's leaf/chg spill files into
-		// queryable segments without re-running the build.
+		// queryable segments without re-running the build. With --seg-out !=
+		// --seg-old this is the RECAST path: old segments merge-stream read-only
+		// with the new spill into a fresh segment dir at --frame-kb frames.
 		ffs := flag.NewFlagSet("finalize-leaves", flag.ExitOnError)
-		fout := ffs.String("out", "", "DATC dir containing leafspill/")
+		fout := ffs.String("out", "", "DATC dir containing the spill dir")
+		fspill := ffs.String("spill", leafSpillDir, "spill subdir (cs-to-spill writes leafspill2)")
+		fsegOld := ffs.String("seg-old", "", "merge-source segment subdir (default = --seg-out: in-place)")
+		fsegOut := ffs.String("seg-out", leafSegDir, "output segment subdir")
+		fframeKB := ffs.Int("frame-kb", leafFrameRaw>>10, "uncompressed frame-size target KiB (32 = fine frames: point reads decompress ~8x less)")
 		_ = ffs.Parse(os.Args[2:])
 		if *fout == "" {
 			die("--out required")
 		}
-		if err := finalizeLeafSegments(*fout); err != nil {
+		if *fsegOld == "" {
+			*fsegOld = *fsegOut
+		}
+		segFrameRawTarget = *fframeKB << 10
+		if err := finalizeLeafSegmentsOpts(*fout, *fspill, *fsegOld, *fsegOut); err != nil {
 			die("finalize: %v", err)
 		}
 		fmt.Println("leaf segments finalized")
+		return
+	}
+	if os.Args[1] == "cs-to-spill" {
+		runCSToSpill(os.Args[2:])
+		return
+	}
+	if os.Args[1] == "cs-spill-compare" {
+		runCSSpillCompare(os.Args[2:])
 		return
 	}
 	if os.Args[1] != "build" {
