@@ -29,6 +29,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 	"time"
@@ -101,6 +102,131 @@ func (b *builder) backfillDirty(start uint64) error {
 	}
 	fmt.Printf("[datc] dirty-mark backfill done: %d blocks in %s\n",
 		start-from, time.Since(t0).Round(time.Second))
+	return nil
+}
+
+// backfillDirtyFromSegs rebuilds the same marks as backfillDirty but from the
+// chg SEGMENTS (--backfill-segs, usually the fork-state src dir) instead of a
+// changeset replay: the chg rows for each level's CURRENT epoch already carry
+// exactly (path → changed child nibbles ≤ start), so a skip-scan — Seek each
+// path group straight to the current epoch, skip all older rows — recovers the
+// marks with zero per-key keccak and zero decode-pipeline RAM (the 2.64M-block
+// replay this replaces was the resume OOM).
+//
+// Coverage note: d0 chg rows are never written on either side; account d0
+// flushes emit no record by convention and storage d0 records are never read
+// (the querier synthesizes every trie root from its depth-1 children), so the
+// d0 marks are inconsequential.
+func (b *builder) backfillDirtyFromSegs(start uint64) error {
+	cache := newFrameLRU()
+	t0 := time.Now()
+	fmt.Printf("[datc] resume dirty-mark backfill from chg segments (%s)\n", b.backfillSegs)
+
+	scan := func(tab int, storage bool) error {
+		segs, ok, err := openLeafSegSet(b.backfillSegs, tab, cache)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("chg segments for table %d not found under %s", tab, b.backfillSegs)
+		}
+		sch := b.sched
+		if storage {
+			sch = b.stoSched
+		}
+		var marks, rows uint64
+		for d := 1; d <= maxChgDepth; d++ {
+			if sch.e[d] <= 1 {
+				continue // dense level: no cross-restart state
+			}
+			curEpoch := uint32(sch.epochOf(d, start))
+			c := segs.Cursor()
+			k, v, err := c.Seek([]byte{byte(d)})
+			for k != nil && err == nil && len(k) > 0 && k[0] == byte(d) {
+				if len(k) < 1+8 {
+					k, v, err = c.Next()
+					continue
+				}
+				prefix := k[:len(k)-8] // [d][domain?][path]
+				epoch := binary.BigEndian.Uint32(k[len(k)-8 : len(k)-4])
+				if epoch < curEpoch {
+					// Skip this path group straight to its current-epoch rows.
+					seek := make([]byte, 0, len(prefix)+4)
+					seek = append(seek, prefix...)
+					seek = binary.BigEndian.AppendUint32(seek, curEpoch)
+					k, v, err = c.Seek(seek)
+					continue
+				}
+				if epoch == curEpoch {
+					rows++
+					// Decode events: uvarint block-delta + nibble, absolute blocks.
+					blk := uint64(0)
+					pos := 0
+					for pos < len(v) {
+						dlt, m := binary.Uvarint(v[pos:])
+						if m <= 0 || pos+m >= len(v) {
+							break
+						}
+						pos += m
+						blk += dlt
+						nib := v[pos]
+						pos++
+						if blk >= start {
+							break // events at/after the resume point re-emit live
+						}
+						path := prefix[1:]
+						if storage {
+							pk := string(path) // domain(40) + d nibbles
+							if p, ok := b.stoDirty[d][pk]; ok {
+								*p |= 1 << nib
+							} else {
+								bit := uint16(1) << nib
+								b.stoDirty[d][pk] = &bit
+							}
+						} else {
+							idx := uint32(0)
+							for _, pn := range path {
+								idx = idx*16 + uint32(pn)
+							}
+							bit := uint16(1) << nib
+							if cur := b.accDirty[d][idx]; cur == 0 {
+								b.accTouched[d] = append(b.accTouched[d], idx)
+								b.accDirty[d][idx] = bit
+							} else if cur&bit == 0 {
+								b.accDirty[d][idx] = cur | bit
+							}
+						}
+						marks++
+					}
+					k, v, err = c.Next()
+					continue
+				}
+				// epoch > curEpoch cannot exist for committed rows (< start); be
+				// safe and move to the next path group.
+				next := make([]byte, 0, len(prefix)+8)
+				next = append(next, prefix...)
+				next = append(next, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff)
+				k, v, err = c.Seek(next)
+			}
+			c.Close()
+			if err != nil {
+				return err
+			}
+		}
+		side := "acct"
+		if storage {
+			side = "sto"
+		}
+		fmt.Printf("[datc] backfill(segs) %s: %d rows → %d marks\n", side, rows, marks)
+		return nil
+	}
+	if err := scan(segTabChgA, false); err != nil {
+		return err
+	}
+	if err := scan(segTabChgS, true); err != nil {
+		return err
+	}
+	fmt.Printf("[datc] dirty-mark backfill (segs) done in %s\n", time.Since(t0).Round(time.Second))
 	return nil
 }
 
