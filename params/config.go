@@ -132,6 +132,7 @@ var (
 	MainnetV2StaggeredChainConfig = readChainSpec("chainspecs/mainnet_v2_staggered.json") // forks staggered at N42-block heights/times calendar-matched to real Ethereum mainnet activation dates (Shanghai/Cancun by block; Pectra/Osaka/Fusaka/Glamsterdam by real-world Unix time, since N42 block timestamps are real wall-clock)
 	MainnetMPTChainConfig         = readChainSpec("chainspecs/mainnet_mpt.json")          // replay-v2 with ethereum-mpt state roots
 	MainnetQMDBChainConfig        = readChainSpec("chainspecs/mainnet_qmdb.json")         // replay-v2 qmdb state roots + hotstuff live production
+	MainnetQMDBStaggeredChainConfig = readChainSpec("chainspecs/mainnet_qmdb_staggered.json") // qmdb + hotstuff live production with the staggered (calendar-parity) fork schedule — 7-node live network base
 	TestnetChainConfig            = readChainSpec("chainspecs/testnet.json")
 
 	TestChainConfig = &ChainConfig{
@@ -565,6 +566,8 @@ func ChainConfigByChainName(chain string) *ChainConfig {
 		return MainnetMPTChainConfig
 	case "mainnet_qmdb":
 		return MainnetQMDBChainConfig
+	case "mainnet_qmdb_staggered":
+		return MainnetQMDBStaggeredChainConfig
 	case networkname.TestnetChainName:
 		return TestnetChainConfig
 	case networkname.EthereumMainnetChainName:
@@ -589,6 +592,8 @@ func GenesisHashByChainName(chain string) *types.Hash {
 	case "mainnet_v2_staggered":
 		return &MainnetGenesisHash
 	case "mainnet_qmdb":
+		return &MainnetGenesisHash
+	case "mainnet_qmdb_staggered":
 		return &MainnetGenesisHash
 	case networkname.EthereumMainnetChainName:
 		return &EthereumMainnetGenesisHash

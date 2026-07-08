@@ -78,7 +78,7 @@ func (p ProfileDescriptor) SupportsConfiguredChain(chain string) bool {
 	switch strings.TrimSpace(strings.ToLower(chain)) {
 	case "private":
 		return true
-	case networkname.MainnetChainName, networkname.TestnetChainName, "mainnet_compat", "mainnet_v2", "mainnet_qmdb":
+	case networkname.MainnetChainName, networkname.TestnetChainName, "mainnet_compat", "mainnet_v2", "mainnet_qmdb", "mainnet_qmdb_staggered":
 		return p.IsN42()
 	case networkname.EthereumMainnetChainName, networkname.EthereumSepoliaChainName, networkname.EthereumTestnetAlias:
 		return p.IsEthereumEL()

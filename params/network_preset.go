@@ -108,6 +108,16 @@ func ResolveNetworkPreset(chain, rawProfile string) (NetworkPreset, error) {
 			Profile:    profile,
 			Commitment: StateCommitmentPresetQMDB,
 		}, nil
+	case "mainnet_qmdb_staggered":
+		profile, err := resolveExpectedProfile(ExecutionProfileN42)
+		if err != nil {
+			return NetworkPreset{}, err
+		}
+		return NetworkPreset{
+			Chain:      "mainnet_qmdb_staggered",
+			Profile:    profile,
+			Commitment: StateCommitmentPresetQMDB,
+		}, nil
 	case networkname.EthereumMainnetChainName:
 		profile, err := resolveExpectedProfile(ExecutionProfileEthereumEL)
 		if err != nil {
@@ -177,7 +187,13 @@ func InferNetworkPresetFromChainConfig(chainCfg *ChainConfig) (NetworkPreset, bo
 		case chainCfg.StateScheme == string(StateCommitmentPresetQMDB):
 			// mainnet_qmdb reuses chainId 94 but is distinguished by the qmdb
 			// state scheme (hotstuff live production over replay-converted state).
-			targetChain = "mainnet_qmdb"
+			// mainnet_qmdb_staggered is the same but with a staggered fork
+			// schedule (Shanghai at a non-genesis height), so split on that.
+			if chainCfg.ShanghaiBlock != nil && chainCfg.ShanghaiBlock.Sign() > 0 {
+				targetChain = "mainnet_qmdb_staggered"
+			} else {
+				targetChain = "mainnet_qmdb"
+			}
 		case chainCfg.ShanghaiBlock == nil && chainCfg.CancunBlock == nil:
 			targetChain = "mainnet_compat"
 		case isZeroBigInt(chainCfg.ShanghaiBlock) && isZeroBigInt(chainCfg.CancunBlock) && isZeroBigInt(chainCfg.BeijingBlock):
