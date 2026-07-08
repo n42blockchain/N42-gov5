@@ -54,6 +54,14 @@ type ConfigV2 struct {
 
 	VerifyMPT bool // per-block: rebuild MPT from PlainState and verify root
 
+	// AutoTopup (diagnostic): when a tx fails with "insufficient funds", credit
+	// the sender the exact deficit (want-have) and retry, so the tx executes
+	// instead of being skipped (no nonce cascade). The cumulative credit per
+	// sender is the MINIMUM genesis balance that address needs for the chain to
+	// replay cleanly under this fork schedule. Written to TopupDumpFile.
+	AutoTopup     bool
+	TopupDumpFile string
+
 	LogFile     string // structured log output file (empty = stderr only)
 	StatsFile   string // stats JSON output file (updated every batch)
 	LeafJournal string // leaf change journal file (empty = disabled)
