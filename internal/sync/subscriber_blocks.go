@@ -48,6 +48,11 @@ func (s *Service) blockSubscriber(ctx context.Context, msg proto.Message) error 
 		if isAncestorError(err) {
 			log.Debug("Block parent not yet available, queuing as future",
 				"number", blockNumber.Uint64(), "hash", blockHash)
+			// Actively fetch the missing parent by hash: it can be a committed
+			// same-height sibling from an already-passed view that will never
+			// be gossiped again — waiting passively leaves the queued child
+			// (and the whole chain) stuck forever. No-op if it arrives first.
+			s.FetchBlockByHash(blk.ParentHash())
 			return s.cfg.chain.AddFutureBlock(blk)
 		}
 		s.setBadBlock(ctx, blk.Hash())

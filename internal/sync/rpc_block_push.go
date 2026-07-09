@@ -26,6 +26,16 @@ func (s *Service) blockPushStreamHandler(stream network.Stream) {
 		return
 	}
 	if _, err := s.cfg.chain.InsertChain([]block.IBlock{blk}); err != nil {
+		if isAncestorError(err) {
+			// Missing parent (e.g. a committed same-height sibling this node
+			// never received): queue the child and actively fetch the parent
+			// by hash — mirroring the gossip path — instead of dropping it.
+			log.Debug("block push: parent missing, queuing + fetching parent",
+				"number", blk.Number64().Uint64(), "parent", blk.ParentHash().Hex()[:12])
+			_ = s.cfg.chain.AddFutureBlock(blk)
+			s.FetchBlockByHash(blk.ParentHash())
+			return
+		}
 		log.Info("block push: insert failed", "number", blk.Number64().Uint64(), "err", err)
 		return
 	}
