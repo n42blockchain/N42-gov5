@@ -46,12 +46,10 @@ import (
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/lib/kv"
 	mdbxkv "github.com/n42blockchain/N42/lib/kv/mdbx"
 	log "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/modules"
-	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
 
 // Side-DB tables: in-range liveness overlay over the old segments' boundary
@@ -171,9 +169,12 @@ func runCSToSpill(args []string) {
 	}
 
 	// Lean builder: ONLY the emission machinery (emitBlock/recordChange/
-	// flushChgAgg) — no trie, no node records, no gold check.
+	// flushChgAgg) — no trie, no node records, no gold check. acctTbl/storTbl
+	// feed the parallel decode pipeline (decode + key keccaks off the main
+	// thread — the single-threaded loop measured ~100 blk/s in DeFi density).
 	b := &builder{
 		sched: sched, stoSched: stoSched,
+		acctTbl: acctTbl, storTbl: storTbl,
 		addrHashCache: make(map[types.Address][32]byte, 1<<16),
 		slotHashCache: make(map[types.Hash][32]byte, 1<<16),
 		chgStoAgg:     make(map[string]*[]chgEvent, 1<<14),
@@ -191,7 +192,8 @@ func runCSToSpill(args []string) {
 	}
 	b.chgAggCapBytes = 2 << 30
 
-	conv := &csConverter{q: q, b: b, sdb: sdb, boundary: *start}
+	conv := &csConverter{q: q, b: b, sdb: sdb, boundary: *start,
+		acctLiveCache: make(map[[32]byte]byte, 1<<20)}
 	fmt.Printf("cs-to-spill: blocks [%d, %d) → %s (batch %d)\n", *start, *end, *spillSub, *batch)
 
 	t0 := time.Now()
@@ -234,10 +236,31 @@ func runCSToSpill(args []string) {
 		}
 	}
 
+	pipe := startDecodePipeline(b, *start, *end, 8)
+	defer pipe.Stop()
 	for n := *start; n < *end; n++ {
-		if err := conv.block(stx, acctTbl, storTbl, n); err != nil {
+		dec, err := pipe.Next(n)
+		if err != nil {
+			die("decode block %d: %v", n, err)
+		}
+		// Merge worker-computed key hashes into the emission caches (capped,
+		// same rule as the build's apply path).
+		if len(b.addrHashCache) > 2_000_000 {
+			b.addrHashCache = make(map[types.Address][32]byte, 1<<16)
+		}
+		if len(b.slotHashCache) > 2_000_000 {
+			b.slotHashCache = make(map[types.Hash][32]byte, 1<<16)
+		}
+		for a, h := range dec.ahash {
+			b.addrHashCache[a] = h
+		}
+		for s, h := range dec.shash {
+			b.slotHashCache[s] = h
+		}
+		if err := conv.block(stx, dec.dirtyA, dec.dirtyS, n); err != nil {
 			die("block %d: %v", n, err)
 		}
+		releaseDecodedBlock(dec)
 		if (n+1)%*batch == 0 {
 			commit(n + 1)
 			if (n+1)%(*batch*16) == 0 {
@@ -287,23 +310,47 @@ type csConverter struct {
 	sdb      kv.RwDB
 	boundary uint64 // conversion start: old segments answer pre-state below this
 
+	// acctLiveCache: RAM front for acctLive. Hot contracts recur every block;
+	// without this every storage-only touch of an in-range-unwritten account
+	// costs an old-segment frame decode. 0=dead 1=live; overwritten on every
+	// side-table write, reset when oversized.
+	acctLiveCache map[[32]byte]byte
+
 	beltTombstones uint64 // wipe tombstones the belt ADDED (storcs lacked them)
 	ghostDrops     uint64
 }
 
-// acctLive: account existence in pre-state of block n = side overlay, else the
-// old segments' floor (all old rows are < boundary ≤ n-1, so floor at n-1).
+// acctLive: account existence in pre-state of block n = RAM cache, else side
+// overlay, else the old segments' floor (all old rows are < boundary ≤ n-1).
 func (c *csConverter) acctLive(stx kv.Tx, ah [32]byte, n uint64) (bool, error) {
+	if v, ok := c.acctLiveCache[ah]; ok {
+		return v == 1, nil
+	}
+	live := false
 	if v, err := stx.GetOne(tSideAcct, ah[:]); err != nil {
 		return false, err
 	} else if len(v) == 1 {
-		return v[0] == 1, nil
+		live = v[0] == 1
+	} else {
+		val, ok, err := c.q.leafFloor(false, ah[:], n-1)
+		if err != nil {
+			return false, err
+		}
+		live = ok && len(val) > 0
 	}
-	val, ok, err := c.q.leafFloor(false, ah[:], n-1)
-	if err != nil {
-		return false, err
+	c.cacheAcctLive(ah, live)
+	return live, nil
+}
+
+func (c *csConverter) cacheAcctLive(ah [32]byte, live bool) {
+	if len(c.acctLiveCache) > 24_000_000 { // ~1.6 GB; full mainnet account set fits
+		c.acctLiveCache = make(map[[32]byte]byte, 1<<20)
 	}
-	return ok && len(val) > 0, nil
+	v := byte(0)
+	if live {
+		v = 1
+	}
+	c.acctLiveCache[ah] = v
 }
 
 // slotLiveSet returns the pre-state live slotHashes of addr: the old segments'
@@ -403,64 +450,11 @@ func (c *csConverter) slotLiveSet(stx kv.Tx, ah [32]byte, n uint64) (map[[32]byt
 	return live, nil
 }
 
-// block converts one block: decode CS → dirty maps → ghost drop → wipe belt →
-// emitBlock → side-table updates. Mirrors blockApply minus trie/node records.
-func (c *csConverter) block(stx kv.RwTx, acctTbl, storTbl *freezer.FreezerTable, n uint64) error {
-	dirtyA := make(map[types.Address]*account.StateAccount)
-	dirtyS := make(map[types.Address]map[types.Hash]*uint256.Int)
-
-	accBlob, err := acctTbl.Retrieve(n)
-	if err != nil {
-		return fmt.Errorf("acctcs: %w", err)
-	}
-	stoBlob, err := storTbl.Retrieve(n)
-	if err != nil {
-		return fmt.Errorf("storcs: %w", err)
-	}
-	if len(accBlob) > 0 {
-		entries, err := ethel.DecodeAccountChanges(accBlob)
-		if err != nil {
-			return fmt.Errorf("decode acctcs: %w", err)
-		}
-		for _, e := range entries {
-			if len(e.NewValue) == 0 {
-				dirtyA[e.Address] = nil
-				continue
-			}
-			var acct account.StateAccount
-			if err := acct.DecodeForStorage(e.NewValue); err != nil {
-				return fmt.Errorf("decode account %x: %w", e.Address, err)
-			}
-			dirtyA[e.Address] = &acct
-		}
-	}
-	if len(stoBlob) > 0 {
-		entries, err := ethel.DecodeStorageChanges(stoBlob)
-		if err != nil {
-			return fmt.Errorf("decode storcs: %w", err)
-		}
-		for _, e := range entries {
-			var addr types.Address
-			var slot types.Hash
-			copy(addr[:], e.CompositeKey[:20])
-			copy(slot[:], e.CompositeKey[20:])
-			// Same rule as addSlot: drop intra-block WRITES of an account
-			// deleted this block, keep its wipe entries (new = empty).
-			if a, ok := dirtyA[addr]; ok && a == nil && len(e.NewValue) != 0 {
-				continue
-			}
-			inner, ok := dirtyS[addr]
-			if !ok {
-				inner = make(map[types.Hash]*uint256.Int, 8)
-				dirtyS[addr] = inner
-			}
-			if len(e.NewValue) == 0 {
-				inner[slot] = nil
-			} else {
-				inner[slot] = new(uint256.Int).SetBytes(e.NewValue)
-			}
-		}
-	}
+// block converts one pre-decoded block: ghost drop → wipe belt → emitBlock →
+// side-table updates. Mirrors blockApply minus trie/node records. dirtyA/S
+// come from the parallel decode pipeline (same construction as addAcct/addSlot).
+func (c *csConverter) block(stx kv.RwTx, dirtyA map[types.Address]*account.StateAccount,
+	dirtyS map[types.Address]map[types.Hash]*uint256.Int, n uint64) error {
 	if len(dirtyA) == 0 && len(dirtyS) == 0 {
 		return nil
 	}
@@ -558,6 +552,7 @@ func (c *csConverter) block(stx kv.RwTx, acctTbl, storTbl *freezer.FreezerTable,
 		if err := stx.Put(tSideAcct, ah[:], v); err != nil {
 			return err
 		}
+		c.cacheAcctLive(ah, acct != nil)
 	}
 	for addr, slots := range dirtyS {
 		ah := c.b.addrHash(addr)
