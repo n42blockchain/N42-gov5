@@ -140,6 +140,20 @@ func (s *Service) CatchUp() {
 	}
 }
 
+// HeightBehind reports how many blocks the local head trails the best peer,
+// or 0 when synced, ahead, or no peer height is known yet. It is the block-
+// production sync-gate signal for the HotStuff service (hotstuff.BlockFetcher):
+// a validator this far behind must catch up before producing, or it builds on a
+// stale head and self-forks. Uses the same BestPeers height source as CatchUp.
+func (s *Service) HeightBehind() uint64 {
+	self := currentBlockNumber(s.cfg.chain)
+	highest, peers := s.cfg.p2p.Peers().BestPeers(5, self)
+	if highest == nil || len(peers) == 0 || highest.Cmp(self) <= 0 {
+		return 0
+	}
+	return highest.Uint64() - self.Uint64()
+}
+
 // catchUpTick triggers a height-based catch-up if we lag peers. Gated to
 // leader-driven (HotStuff) chains, which register a block import notifier;
 // classic chains rely on InitialSync's resyncIfBehind. CatchUp self-guards
