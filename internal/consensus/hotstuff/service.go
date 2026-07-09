@@ -219,14 +219,25 @@ func (s *Service) processOutputs() {
 func (s *Service) handleOutput(output EngineOutput) {
 	switch output.Type {
 	case OutputBroadcast:
-		// Leader: broadcast block data via gossip BEFORE sending Proposal,
-		// so followers can import the block and vote on it.
-		if output.Message != nil && output.Message.Type == MsgProposal {
-			s.broadcastBlockData(output.Hash)
-		}
-		s.handleBroadcast(output)
+		// Off the serial output loop: handleOutput also runs heavyweight work
+		// inline (CommitToCanonical unwind+re-execute, persistState MDBX
+		// commits), and PublishToTopic can spin up to 30s waiting for topic
+		// peers on a degraded mesh. A vote/timeout broadcast queued behind
+		// either misses its view window and the round times out — liveness
+		// death spiral. Gossip publish is concurrency-safe, and every message
+		// carries its view, so cross-message ordering is not load-bearing
+		// (the proposal's block-data pre-broadcast stays ordered inside the
+		// same goroutine).
+		go func(out EngineOutput) {
+			// Leader: broadcast block data via gossip BEFORE sending Proposal,
+			// so followers can import the block and vote on it.
+			if out.Message != nil && out.Message.Type == MsgProposal {
+				s.broadcastBlockData(out.Hash)
+			}
+			s.handleBroadcast(out)
+		}(output)
 	case OutputSendToValidator:
-		s.handleSendToValidator(output)
+		go s.handleSendToValidator(output)
 	case OutputExecuteBlock:
 		// A Proposal references this block. When it is imported (via direct push
 		// or fetch), NotifyBlockImported fires EventBlockImported and the engine

@@ -44,6 +44,18 @@ func (e *ConsensusEngine) onTimeout() error {
 			return err
 		}
 
+		// Re-send this view's vote alongside the timeout re-broadcast: votes are
+		// single-shot; on a lossy/degraded mesh the leader may have missed the
+		// vote even though this node cast it (observed live: all nodes logged
+		// "voting now" yet no QC formed). The leader's collector treats a
+		// duplicate vote as a no-op, so the re-send is harmless when the first
+		// one did arrive.
+		if h, ok := e.roundState.VotedHashInView(view); ok {
+			if verr := e.sendVote(view, h); verr != nil {
+				log.Debug("timeout vote re-send failed", "view", view, "err", verr)
+			}
+		}
+
 		// Check if quorum was reached while waiting.
 		quorumSize := e.validatorSet().QuorumSize()
 		nextView := view + 1
