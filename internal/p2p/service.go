@@ -85,13 +85,31 @@ func NewService(ctx context.Context, genesisHash types.Hash, cfg *conf.P2PConfig
 	_ = cancel // govet fix for lost cancel. Cancel is handled in service.Stop().
 
 	s := &Service{
-		ctx:          ctx,
-		cancel:       cancel,
-		cfg:          cfg,
-		joinedTopics: make(map[string]*pubsub.Topic, len(gossipTopicMappings)),
-		genesisHash:  genesisHash,
+		ctx:            ctx,
+		cancel:         cancel,
+		cfg:            cfg,
+		joinedTopics:   make(map[string]*pubsub.Topic, len(gossipTopicMappings)),
+		genesisHash:    genesisHash,
+		protectedPeers: make(map[peer.ID]struct{}),
 	}
 	s.isPreGenesis.Store(true)
+
+	// Static peers form the permanent mesh of a fixed validator set: protect
+	// them from the connection gater's bad-score rejection so a transient
+	// scoring episode (status revalidation timeouts under import load,
+	// rate-limit penalties) can never permanently exile a validator. Populated
+	// here, before any connection exists — the gater reads it lock-free.
+	if len(cfg.StaticPeers) > 0 {
+		if maddrs, perr := PeersFromStringAddrs(cfg.StaticPeers); perr == nil {
+			for _, ma := range maddrs {
+				if ai, aerr := peer.AddrInfoFromP2pAddr(ma); aerr == nil {
+					s.protectedPeers[ai.ID] = struct{}{}
+				}
+			}
+		} else {
+			log.Warn("Could not parse static peers for gater protection", "err", perr)
+		}
+	}
 
 	s.ping, err = getSeqNumber(s.cfg)
 	if err != nil {
@@ -143,6 +161,18 @@ func NewService(ctx context.Context, genesisHash types.Hash, cfg *conf.P2PConfig
 			},
 		},
 	})
+	// Static peers are trusted at the scoring layer too: IsBad drives BOTH the
+	// gater's reconnect rejection AND the sync layer's goodbye+disconnect on
+	// status revalidation — exempting only the gater still let transient score
+	// episodes disconnect validators every few seconds (observed live: mesh
+	// oscillating 6→4→6 with gossip losing proposals during churn).
+	if len(s.protectedPeers) > 0 {
+		ids := make([]peer.ID, 0, len(s.protectedPeers))
+		for id := range s.protectedPeers {
+			ids = append(ids, id)
+		}
+		s.peers.SetTrusted(ids)
+	}
 
 	return s, nil
 }
@@ -209,6 +239,13 @@ func (s *Service) Start() {
 			log.Info("Parsed static peer multiaddrs", "count", len(addrs))
 		}
 		s.connectWithAllPeers(addrs)
+		// Static peers are the permanent mesh (a fixed validator set runs with
+		// --p2p.no-discovery): keep them WATCHED so ensurePeerConnections
+		// re-dials on any disconnect. Without this, a static peer that drops
+		// (status revalidation timeout under import load, goodbye, rate-limit
+		// scoring) is NEVER re-dialed — no discovery, no reconnect loop — and
+		// the mesh only ever degrades until consensus loses quorum.
+		peersToWatch = append(peersToWatch, s.cfg.StaticPeers...)
 	} else {
 		log.Info("No static peers configured")
 	}
