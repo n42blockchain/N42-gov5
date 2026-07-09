@@ -81,6 +81,29 @@ func rethRawCode(v []byte) []byte {
 	return v[4 : 4+pl]
 }
 
+// decodeRethAccountCodeHash extracts the bytecode_hash from a reth Compact
+// PlainAccountState value (flags u16 LE: nonceLen 0-3, balLen 4-9, hasHash bit
+// 10 — the proven layout from acct-probe/acct-diff-vs-reth). ok=false when the
+// account has no code or the value doesn't parse.
+func decodeRethAccountCodeHash(v []byte) (ch [32]byte, ok bool) {
+	if len(v) < 2 {
+		return
+	}
+	flags := uint16(v[0]) | uint16(v[1])<<8
+	nonceLen := int(flags & 0x0f)
+	balLen := int((flags >> 4) & 0x3f)
+	hasHash := (flags>>10)&1 == 1
+	if !hasHash {
+		return
+	}
+	want := 2 + nonceLen + balLen + 32
+	if len(v) != want {
+		return
+	}
+	copy(ch[:], v[2+nonceLen+balLen:])
+	return ch, true
+}
+
 func main() {
 	if len(os.Args) < 5 || os.Args[1] != "--db" || os.Args[3] != "--outdir" {
 		fmt.Fprintln(os.Stderr, "usage: code-import2fz --db RETH_MDBX_PATH --outdir OUTPUT_DIR")
@@ -115,6 +138,7 @@ func main() {
 			defaults["PlainCodeHash"] = kv.TableCfgItem{}
 			defaults["Code"] = kv.TableCfgItem{}
 			defaults["Bytecodes"] = kv.TableCfgItem{}
+			defaults["PlainAccountState"] = kv.TableCfgItem{}
 			return defaults
 		}).
 		Open(context.Background())
@@ -166,6 +190,45 @@ func main() {
 	}
 	fmt.Fprintf(os.Stderr, "Using table: %s\n", tableName)
 
+	// Reth's Bytecodes table is keyed by CODEHASH (32B) — copying k[:20] as the
+	// "address" produced a codeHash-prefix-keyed cidx that the address-keyed
+	// reader (CodesFreezerReader.LookupByAddress) can never hit: every GetCode
+	// missed, and the first post-Prague block died on a 7702 sender ("sender
+	// not an eoa" — the delegation designator code was unreadable). The join
+	// below maps codeHash → the addresses referencing it via PlainAccountState.
+	var hashToAddrs map[[32]byte][][20]byte
+	if tableName == "Bytecodes" {
+		fmt.Fprintf(os.Stderr, "Scanning PlainAccountState for address→codeHash join...\n")
+		hashToAddrs = make(map[[32]byte][][20]byte, 1<<21)
+		ac, aerr := tx.Cursor("PlainAccountState")
+		if aerr != nil {
+			fmt.Fprintln(os.Stderr, "PlainAccountState:", aerr)
+			os.Exit(1)
+		}
+		nAcc, nWithCode := 0, 0
+		for k, v, err := ac.First(); k != nil; k, v, err = ac.Next() {
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "acct iterate:", err)
+				os.Exit(1)
+			}
+			nAcc++
+			if len(k) != 20 {
+				continue
+			}
+			if ch, ok := decodeRethAccountCodeHash(v); ok {
+				var a [20]byte
+				copy(a[:], k)
+				hashToAddrs[ch] = append(hashToAddrs[ch], a)
+				nWithCode++
+			}
+			if nAcc%20000000 == 0 {
+				fmt.Fprintf(os.Stderr, "  accounts %dM, with-code %d\n", nAcc/1000000, nWithCode)
+			}
+		}
+		ac.Close()
+		fmt.Fprintf(os.Stderr, "Join: %d accounts, %d with code, %d distinct hashes\n", nAcc, nWithCode, len(hashToAddrs))
+	}
+
 	var entries []codeEntry
 	for k, v, err := cursor.First(); k != nil; k, v, err = cursor.Next() {
 		if err != nil {
@@ -173,6 +236,30 @@ func main() {
 			os.Exit(1)
 		}
 		if len(v) == 0 {
+			continue
+		}
+		if hashToAddrs != nil {
+			// Bytecodes: one entry per referencing address; the decoded code
+			// slice is SHARED across them (proxy fleets would otherwise blow RAM).
+			var h [32]byte
+			copy(h[:], k)
+			addrs := hashToAddrs[h]
+			if len(addrs) == 0 {
+				continue // unreferenced code (historical/self-destructed)
+			}
+			raw := rethRawCode(v)
+			if raw == nil {
+				fmt.Fprintf(os.Stderr, "  WARN undecodable reth bytecode (valLen=%d) for key %x — skipping\n", len(v), k[:min(len(k), 8)])
+				continue
+			}
+			code := make([]byte, len(raw))
+			copy(code, raw)
+			for _, a := range addrs {
+				entries = append(entries, codeEntry{addr: a, code: code})
+			}
+			if len(entries)%1000000 < len(addrs) {
+				fmt.Fprintf(os.Stderr, "  entries %dM\n", len(entries)/1000000)
+			}
 			continue
 		}
 		var a [20]byte

@@ -16,13 +16,18 @@ import (
 func main() {
 	dir := flag.String("dir", "", "datadir")
 	target := flag.Uint64("target", 0, "block number")
+	create := flag.Bool("create", false, "create the database if absent (fresh snapshot-direct datadir bootstrap)")
 	flag.Parse()
 	if *dir == "" || *target == 0 {
-		fmt.Fprintln(os.Stderr, "usage: write-progress --dir <DIR> --target <BLOCK>")
+		fmt.Fprintln(os.Stderr, "usage: write-progress --dir <DIR> --target <BLOCK> [--create]")
 		os.Exit(1)
 	}
 	logger := log.New()
-	db, err := mdbx.NewMDBX(logger).Path(*dir).Label(kv.ChainDB).Accede().Open(context.Background())
+	opts := mdbx.NewMDBX(logger).Path(*dir).Label(kv.ChainDB)
+	if !*create {
+		opts = opts.Accede()
+	}
+	db, err := opts.Open(context.Background())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "open:", err)
 		os.Exit(1)
