@@ -53,15 +53,41 @@ func (s *Service) blockByHashStreamHandler(stream network.Stream) {
 // proposed block we don't yet have. Implements hotstuff.BlockFetcher.
 func (s *Service) FetchBlockByHash(hash types.Hash) {
 	// Already have the block BODY: don't just return — the caller needs it
-	// APPLIED. On a branch switch the parent sibling is already in the DB from
-	// an earlier round but was never executed onto the world state; re-insert
-	// it so the import path unwinds to its parent and executes it (a plain
-	// already-applied block short-circuits as known — cheap no-op).
+	// APPLIED. On a branch switch the whole ancestor sub-branch may already be
+	// in the DB from earlier rounds but never executed onto the world state.
+	// Align SYNCHRONOUSLY along the parent chain in ONE pass: walk back until
+	// a block imports (its parent is applied — the unwind-on-switch import
+	// path reverts the sibling branch), then replay descendants in order.
+	// Doing this asynchronously per block (the previous behavior) let several
+	// stale same-height candidates' retries tug the applied head between
+	// sibling branches every 2s, so the CURRENT proposal's parent never
+	// stayed aligned long enough for its import to succeed.
 	if blk, _ := s.cfg.chain.GetBlockByHash(hash); blk != nil {
 		go func() {
-			if _, err := s.cfg.chain.InsertChain([]block.IBlock{blk}); err != nil {
-				log.Debug("fetch-on-miss: local re-insert failed", "hash", hash.Hex()[:12], "err", err)
-				return
+			cur := blk
+			pending := []block.IBlock{}
+			for depth := 0; depth < 32; depth++ {
+				if _, err := s.cfg.chain.InsertChain([]block.IBlock{cur}); err == nil {
+					break
+				}
+				p, _ := s.cfg.chain.GetBlockByHash(cur.ParentHash())
+				if p == nil {
+					// Genuinely missing ancestor: fall back to the remote fetch
+					// for it; this block stays in the future queue meanwhile.
+					s.FetchBlockByHash(cur.ParentHash())
+					return
+				}
+				pending = append(pending, cur)
+				cur = p
+			}
+			// Replay the collected descendants oldest-first down to the target.
+			for i := len(pending) - 1; i >= 0; i-- {
+				if _, err := s.cfg.chain.InsertChain([]block.IBlock{pending[i]}); err != nil {
+					log.Debug("fetch-on-miss: chain-align replay failed",
+						"number", pending[i].Number64().Uint64(),
+						"hash", pending[i].Hash().Hex()[:12], "err", err)
+					return
+				}
 			}
 			if n := s.cfg.blockImportNotifier; n != nil {
 				n.NotifyBlockImported(blk.Hash(), blk.TxHash())

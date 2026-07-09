@@ -246,3 +246,39 @@ spread and every advance restarts collection. Directions, in order of preference
    committed view and let the first timeout round elect a leader (slower but converges).
 Reproduce: seed 7 nodes from E:/n42-qmdb-staggered-7node, run to the first wedge,
 restart all 7 — they restore to spread views and never form a TC.
+
+### RESOLUTION — pivot from polluted-DB archaeology to the HotStuff-2 restart model (2026-07-09)
+
+The "post-restart view synchronization" framing above proved WRONG in two steps:
+
+1. **View sync was never broken.** With patient verification (baseTimeout=60s ×
+   2^backoff → TC forms in 2-4 min), the whole pipeline was traced live and fixed
+   link by link: TC forms → leader claims → build triggers (newWorkCh buffering)
+   → the deterministic rebuild reaches Seal (sealHash dedup now timer-engine-only)
+   → an already-imported candidate is re-proposed (resultLoop re-push +
+   NotifyBlockSealed) → proposals extend the LockedQC block, pinned through
+   TriggerBlockProduction(parentHash) + AlignAppliedBranch (HotStuff-2 safety) →
+   followers chain-align synchronously along stored parents. Commits 9329990f,
+   8df411a0, c1ef48a7 + the chain-align fix.
+
+2. **The remaining non-convergence was an invalid test fixture, not a code bug.**
+   The wedged-height DB had accumulated 10+ same-height sibling candidates across
+   many experiment rounds with different (buggy) code versions: nodes restored
+   with divergent applied heads and locked QCs, and the future queue kept tugging
+   the applied head between dead siblings. That state cannot arise in production
+   and is not what the paper's recovery model addresses.
+
+Per HotStuff-2, a recovering validator trusts only COMMITTED blocks and converges
+via consensus (proposals carrying JustifyQC), not by replaying stale local
+candidates. Implemented as `revertSpeculativeOnStartup` (blockchain.go Start):
+if the tracked applied head differs from the canonical (= commit-driven) head,
+revert the speculative blocks in one pass via AlignAppliedBranch. Uncommitted
+candidates become inert sidechain archive.
+
+Validation plan: reseed all 7 node dirs from the pristine replay DB
+(E:\n42-qmdb-staggered-7node), run the current code from the replayed head —
+the original 5-6-block run had none of the L5 unwind / mesh / extend-HighQC
+fixes, so a clean start should now produce blocks continuously; then kill/restart
+nodes to exercise revertSpeculativeOnStartup against a REAL crash state (own
+consistent DB + converged network), which is the production scenario. Polluted
+fixture archived at E:\qs-node0-polluted-archive + qs-logs-archive-20260709.
