@@ -278,7 +278,12 @@ func finalizeLeafSegmentsOpts(outDir, spillSub, oldSegSub, outSegSub string) err
 	if workers > len(names) {
 		workers = len(names)
 	}
-	heavyBytes := int64(3) << 30 // >3 GiB compressed ⇒ heavy (whole-file read)
+	heavyBytes := int64(3) << 30 // >N GiB compressed ⇒ heavy (whole-file read)
+	if v := os.Getenv("N42_DATC_FINALIZE_HEAVY_GB"); v != "" {
+		if f, e := strconv.ParseFloat(v, 64); e == nil && f > 0 {
+			heavyBytes = int64(f * float64(int64(1)<<30))
+		}
+	}
 	heavyMax := 2
 	if v := os.Getenv("N42_DATC_FINALIZE_HEAVY"); v != "" {
 		if n, e := strconv.Atoi(v); e == nil && n > 0 {
