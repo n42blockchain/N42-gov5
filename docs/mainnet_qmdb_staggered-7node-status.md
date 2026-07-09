@@ -162,4 +162,50 @@ indicates the block-by-hash serving stream misbehaves under load. Suspects, in o
 3. vote/QC message loss across the degraded mesh.
 Also noted: every node prints a "Genesis Hash Mismatch" banner at startup (the patched
 alloc changes the genesis root/hash vs the registered MainnetGenesisHash) — it does not
-block P2P or sync but should be reconciled (register the real staggered genesis hash).
+block P2P or sync (the fork digest is derived from the registered canonical constant on
+all nodes) but should be reconciled (register the real staggered genesis hash).
+
+### Layer-6 fixes landed (necessary, not yet sufficient)
+
+Six fixes, each independently correct and live-fire informed:
+1. Static peers joined `peersToWatch` — re-dialed every 10s on disconnect (previously a
+   dropped static peer was NEVER re-dialed: no discovery, no reconnect loop; the mesh
+   was a one-way ratchet down). Verified live: mesh now recovers 4→6.
+2. Connection gater exempts static peers from bad-score rejection (dial/addr/secured)
+   and loopback from the per-IP inbound rate limit (7 local nodes share 127.0.0.1's
+   bucket; reconnect bursts had them rejecting each other).
+3. `peers.Status.SetTrusted` — static peers are never classified bad at the SCORING
+   layer, covering every IsBad consumer at once (gater + the sync layer's
+   goodbye+disconnect on status revalidation).
+4. Consensus broadcasts moved off the serial output loop (goroutine) — vote/timeout
+   broadcasts no longer queue behind CommitToCanonical/persistState heavy work or
+   PublishToTopic's 30s topic-peer spin.
+5. Timeout re-broadcast also RE-SENDS this view's vote (votes were single-shot; observed
+   live: all nodes logged "voting now" yet no QC formed). Duplicate votes are no-ops at
+   the leader (DuplicateVoteError).
+6. fetch-on-miss not-found now writes an explicit error response instead of silently
+   closing (naked EOF was indistinguishable from transport faults and drowned the logs),
+   and per-peer misses log at Debug.
+
+### Layer-6 REMAINING (next session)
+
+Live-fire after the six fixes still stalls at 0 new blocks on restart with two clear
+signals:
+1. **Control-message rate limiting still scores/disconnects trusted peers**: goodbye /
+   status topics are limited to ~1/s burst 1 (`internal/sync/rate_limiter.go:57-59`) and
+   over-limit requests penalize the sender (`:126-129`) — a 7-node simultaneous restart
+   storm trips this immediately (observed: `validate Request failure …
+   /rpc/goodbye/1/ssz_snappy remaining=0` followed by disconnects). Trusted peers need a
+   rate-limiter exemption (or control topics need sane burst sizes for a validator mesh).
+2. **Restart liveness**: nodes restore persisted HotStuff state to different views
+   (engine restored to view 15/16/17), then everyone is a follower waiting for a
+   proposal that keeps getting lost in the churn; no block is ever built. Needs a
+   post-restart proposal recovery path (leader re-proposes on view entry even without a
+   fresh trigger, or view sync on startup).
+3. Mid-term (from L6 investigation): the direct-vote path is dead code (rotor's
+   `RegisterValidator` is never called in production and `p2p.Service` doesn't implement
+   `P2PDirectSender`) — every vote is a gossip broadcast today. Implementing real direct
+   send would shrink the vote path's exposure to mesh churn.
+The overall pattern: the scoring/limiting stack was tuned for a large open network and
+fights a small fixed validator mesh point by point. Consider a "validator mesh" P2P mode
+that switches these heuristics off wholesale instead of exempting one at a time.
