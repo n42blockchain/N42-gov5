@@ -1464,6 +1464,16 @@ func (bc *BlockChain) reorg(tx kv.RwTx, oldBlock, newBlock block.IBlock) error {
 	if newBlock == nil {
 		return errors.New("invalid new chain")
 	}
+	// No-op reorg: old and new head are the same block. The common-ancestor walk
+	// would match on its first iteration, leaving both chains empty and tripping
+	// the "Impossible reorg" ERROR below — a false alarm that also spins when an
+	// applied≠canonical node repeatedly asks to align onto its own canonical head.
+	// Nothing to reorg; return quietly (at debug) instead of erroring.
+	if oldBlock.Hash() == newBlock.Hash() {
+		log.Debug("reorg no-op: old and new head are identical",
+			"number", newBlock.Number64(), "hash", newBlock.Hash())
+		return nil
+	}
 	oldNumber, err := requireBlockNumber(oldBlock, "old block number unavailable")
 	if err != nil {
 		return err
