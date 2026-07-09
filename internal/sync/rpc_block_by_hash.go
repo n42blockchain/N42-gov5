@@ -32,8 +32,14 @@ func (s *Service) blockByHashStreamHandler(stream network.Stream) {
 	hash := types.BytesToHash(hb[:])
 	blk, err := s.cfg.chain.GetBlockByHash(hash)
 	if err != nil || blk == nil {
-		log.Info("block by hash: not found locally", "hash", hash.Hex()[:12])
-		return // we don't have it either
+		log.Debug("block by hash: not found locally", "hash", hash.Hex()[:12])
+		// Say so explicitly instead of silently closing: a bare close makes the
+		// requester read a naked EOF ("failed to read status code from first
+		// chunk"), indistinguishable from a real transport fault — and since
+		// the fetch fans out to every peer while typically only the leader has
+		// the block, the log drowned in phantom EOF errors.
+		writeErrorResponseToStream(responseCodeServerError, "block not found", stream, s.cfg.p2p)
+		return
 	}
 	log.Info("block by hash: serving", "reqHash", hash.Hex()[:12], "blkHash", blk.Hash().Hex()[:12], "number", blk.Number64().Uint64())
 	if err := WriteBlockChunk(stream, s.cfg.chain, s.cfg.p2p.Encoding(), blk); err != nil {
@@ -70,7 +76,9 @@ func (s *Service) FetchBlockByHash(hash types.Hash) {
 			// as "read status code: EOF").
 			blk, err := ReadChunkedBlock(stream, s.cfg.p2p, true)
 			if err != nil {
-				log.Info("fetch-on-miss: read failed", "hash", hash.Hex()[:12], "err", err)
+				// Debug: with the fan-out, most peers legitimately answer
+				// "block not found" — only aggregate failure is interesting.
+				log.Debug("fetch-on-miss: read failed", "hash", hash.Hex()[:12], "err", err)
 				return
 			}
 			if blk.Hash() != hash {
