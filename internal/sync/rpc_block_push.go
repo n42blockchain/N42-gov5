@@ -25,6 +25,14 @@ func (s *Service) blockPushStreamHandler(stream network.Stream) {
 		log.Info("block push: read failed", "peer", stream.Conn().RemotePeer().String()[:12], "err", err)
 		return
 	}
+	// Already stored (a re-pushed uncommitted leader block): skip re-entering
+	// InsertChain's reorg path and just notify the engine (deduped downstream).
+	if s.cfg.chain.HasBlock(blk.Hash(), blk.Number64().Uint64()) {
+		if n := s.cfg.blockImportNotifier; n != nil {
+			n.NotifyBlockImported(blk.Hash(), blk.TxHash())
+		}
+		return
+	}
 	if _, err := s.cfg.chain.InsertChain([]block.IBlock{blk}); err != nil {
 		if isAncestorError(err) {
 			// Missing parent (e.g. a committed same-height sibling this node

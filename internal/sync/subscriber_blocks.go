@@ -40,6 +40,19 @@ func (s *Service) blockSubscriber(ctx context.Context, msg proto.Message) error 
 		return s.cfg.chain.AddFutureBlock(blk)
 	}
 
+	// Already stored (typically a re-gossiped uncommitted leader block, resent
+	// once per failing view by every peer). Do NOT re-enter InsertChain: for a
+	// non-canonical same-height sibling it takes the reorg path on every arrival,
+	// which — at tens of hits a second — starves the import pipeline. Canonical
+	// selection is a consensus decision (CommitToCanonical), not a gossip one.
+	// Just (idempotently, deduped downstream) notify the engine.
+	if s.cfg.chain.HasBlock(blockHash, blockNumber.Uint64()) {
+		if n := s.cfg.blockImportNotifier; n != nil {
+			n.NotifyBlockImported(blockHash, blk.TxHash())
+		}
+		return nil
+	}
+
 	if _, err := s.cfg.chain.InsertChain([]block.IBlock{blk}); err != nil {
 		// If parent is missing, queue as future block instead of marking bad.
 		// The parent may arrive moments later via gossip.

@@ -103,6 +103,14 @@ type Service struct {
 	pendingMu         sync.Mutex
 	pendingExecutions map[types.Hash]struct{}
 
+	// notifiedImports dedups EventBlockImported: an uncommitted leader block is
+	// re-gossiped once per failing view by every peer, so the same hash arrives
+	// tens of times a second. Notifying the engine once per hash (bounded FIFO)
+	// stops that storm from spinning the engine mutex and starving the vote path.
+	// Protected by pendingMu.
+	notifiedImports map[types.Hash]struct{}
+	notifiedFIFO    []types.Hash
+
 	// pendingCommit is a committed block whose CommitToCanonical was deferred
 	// because the block hadn't arrived yet. Retried when that block imports —
 	// without the retry, nodes that missed the commit-time import never mark
@@ -135,6 +143,7 @@ func NewService(engine *HotStuff, p2p P2PPublisher, db kv.RwDB, gossipTopic, rpc
 		cancel:            cancel,
 		persistInterval:   10,
 		pendingExecutions: make(map[types.Hash]struct{}),
+		notifiedImports:   make(map[types.Hash]struct{}),
 	}
 }
 
@@ -760,6 +769,25 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 	if retryCommit {
 		s.pendingCommit = types.Hash{}
 	}
+	// Dedup the engine notification: skip if we already notified this hash (unless
+	// this is a commit retry, which must always run). The engine keeps its own
+	// imported-block memory across views, so one notify per hash is enough to let
+	// the import-gated prepare vote fire; re-notifying on every re-gossip only
+	// spins the engine mutex and starves the vote path.
+	alreadyNotified := false
+	if hash != (types.Hash{}) {
+		if _, ok := s.notifiedImports[hash]; ok {
+			alreadyNotified = true
+		} else {
+			s.notifiedImports[hash] = struct{}{}
+			s.notifiedFIFO = append(s.notifiedFIFO, hash)
+			if len(s.notifiedFIFO) > maxNotifiedImports {
+				oldest := s.notifiedFIFO[0]
+				s.notifiedFIFO = s.notifiedFIFO[1:]
+				delete(s.notifiedImports, oldest)
+			}
+		}
+	}
 	s.pendingMu.Unlock()
 
 	// A commit that was deferred because this block hadn't arrived: finish it
@@ -773,11 +801,16 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 		}
 	}
 
-	// Always notify the engine — do NOT gate on pendingExecutions, which
-	// advanceToView clears every view. With import-gated voting, the engine's
-	// onBlockImported decides (via pendingProposals) whether this import unblocks
-	// the current view's deferred prepare vote. Gating here dropped the very event
-	// that lets the round progress, so views timed out forever.
+	// Notify the engine once per hash (dedup above). Do NOT gate on
+	// pendingExecutions, which advanceToView clears every view. With import-gated
+	// voting, the engine's onBlockImported decides (via pendingProposals) whether
+	// this import unblocks the current view's deferred prepare vote. A re-gossiped
+	// already-notified block carries no new information for the engine — the
+	// engine retains imported-block memory across views — so re-notifying only
+	// spins the engine mutex.
+	if alreadyNotified {
+		return
+	}
 	if ce := s.engine.Engine(); ce != nil {
 		if err := ce.ProcessEvent(ConsensusEvent{
 			Type:       EventBlockImported,
@@ -788,3 +821,6 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 		}
 	}
 }
+
+// maxNotifiedImports bounds the NotifyBlockImported dedup set (see notifiedImports).
+const maxNotifiedImports = 256
