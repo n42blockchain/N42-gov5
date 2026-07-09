@@ -25,9 +25,20 @@ const (
 	highWatermarkBuffer = 10
 )
 
+// isProtectedPeer reports whether pid is a configured static peer — the
+// permanent mesh of a fixed validator set. Protected peers bypass bad-score
+// rejection: a transient scoring episode (status revalidation timeouts under
+// import load, rate-limit penalties) must never permanently exile a validator,
+// or the mesh only ever degrades until consensus loses quorum. The map is
+// populated once in NewService before any connection exists (lock-free reads).
+func (s *Service) isProtectedPeer(pid peer.ID) bool {
+	_, ok := s.protectedPeers[pid]
+	return ok
+}
+
 // InterceptPeerDial tests whether we're permitted to Dial the specified peer.
 func (s *Service) InterceptPeerDial(pid peer.ID) (allow bool) {
-	if s.peers.IsBad(pid) {
+	if s.peers.IsBad(pid) && !s.isProtectedPeer(pid) {
 		log.Debug("Rejecting dial to bad peer", "peer", pid)
 		return false
 	}
@@ -37,7 +48,7 @@ func (s *Service) InterceptPeerDial(pid peer.ID) (allow bool) {
 // InterceptAddrDial tests whether we're permitted to dial the specified
 // multiaddr for the given peer.
 func (s *Service) InterceptAddrDial(pid peer.ID, m multiaddr.Multiaddr) (allow bool) {
-	if s.peers.IsBad(pid) {
+	if s.peers.IsBad(pid) && !s.isProtectedPeer(pid) {
 		return false
 	}
 	return filterConnections(s.addrFilter, m)
@@ -66,7 +77,7 @@ func (s *Service) InterceptAccept(n network.ConnMultiaddrs) (allow bool) {
 // InterceptSecured tests whether a given connection, now authenticated,
 // is allowed. Rejects bad peers and inbound connections at peer limit.
 func (s *Service) InterceptSecured(dir network.Direction, pid peer.ID, _ network.ConnMultiaddrs) (allow bool) {
-	if s.peers.IsBad(pid) {
+	if s.peers.IsBad(pid) && !s.isProtectedPeer(pid) {
 		log.Debug("Rejecting secured connection from bad peer", "peer", pid, "direction", dir)
 		return false
 	}
@@ -86,6 +97,13 @@ func (s *Service) validateDial(addr multiaddr.Multiaddr) bool {
 	ip, err := manet.ToIP(addr)
 	if err != nil {
 		return false
+	}
+	// Loopback is exempt from the per-IP inbound rate limit: a local multi-node
+	// mesh (all validators on 127.0.0.1) shares one bucket, so a reconnect
+	// burst after a transient drop would have the nodes rejecting EACH OTHER
+	// ("exceeded dial limit") — and there is no DoS case for the local host.
+	if ip.IsLoopback() {
+		return true
 	}
 	return s.ipLimiter.Add(ip.String(), 1) > 0
 }

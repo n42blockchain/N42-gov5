@@ -81,6 +81,14 @@ type Status struct {
 	store     *peerdata.Store
 	ipTracker map[string]uint64
 	rand      *rand.Rand
+
+	// trusted peers are never reported bad, regardless of score — the fixed
+	// validator mesh of a static-peer deployment. A transient bad-score episode
+	// (status revalidation timeouts under import load, rate-limit penalties)
+	// otherwise goodbyes+disconnects a validator and gates its reconnect,
+	// degrading the mesh until consensus loses quorum. Set once at startup
+	// (SetTrusted) before any connection; read-only afterwards.
+	trusted map[peer.ID]struct{}
 }
 
 // StatusConfig represents peer status service params.
@@ -336,8 +344,21 @@ func (p *Status) IsBad(pid peer.ID) bool {
 	return p.isBad(pid)
 }
 
+// SetTrusted marks peers as permanently exempt from bad-peer classification
+// (static validator mesh). Call once at startup before connections exist.
+func (p *Status) SetTrusted(ids []peer.ID) {
+	m := make(map[peer.ID]struct{}, len(ids))
+	for _, id := range ids {
+		m[id] = struct{}{}
+	}
+	p.trusted = m
+}
+
 // isBad is the lock-free version of IsBad.
 func (p *Status) isBad(pid peer.ID) bool {
+	if _, ok := p.trusted[pid]; ok {
+		return false
+	}
 	return p.isfromBadIP(pid) || p.scorers.IsBadPeerNoLock(pid)
 }
 
