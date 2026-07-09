@@ -46,7 +46,14 @@ func (m *mockChainHeaderReader) GetHeaderByNumber(number *uint256.Int) block.IHe
 	return m.headers[number.Uint64()]
 }
 
-func (m *mockChainHeaderReader) GetHeaderByHash(_ types.Hash) (block.IHeader, error) {
+func (m *mockChainHeaderReader) GetHeaderByHash(hash types.Hash) (block.IHeader, error) {
+	// Mirror real storage semantics: headers are retrievable by hash whether or
+	// not they are canonical (VerifyHeader resolves the parent by ParentHash).
+	for _, h := range m.headers {
+		if h != nil && h.Hash() == hash {
+			return h, nil
+		}
+	}
 	return nil, nil
 }
 
@@ -261,11 +268,13 @@ func TestVerifyHeader_ValidQC(t *testing.T) {
 		Number: uint256.NewInt(0),
 		Time:   1000,
 	}
-	// Child header at block 1.
+	// Child header at block 1 (ParentHash links to the actual parent — the
+	// verifier resolves the parent by hash, not by number).
 	childHeader := &block.Header{
-		Number: uint256.NewInt(1),
-		Time:   1003,
-		Extra:  extra,
+		Number:     uint256.NewInt(1),
+		ParentHash: parentHeader.Hash(),
+		Time:       1003,
+		Extra:      extra,
 	}
 
 	chain := newMockChainReader()
