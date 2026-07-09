@@ -123,6 +123,14 @@ func (s *Service) insertAuthorized(blocks []block.IBlock) (int, error) {
 // descendants oldest-first, and finally notify the engine so the deferred
 // import-gated vote fires. One pass, no async tug-of-war between candidates.
 func (s *Service) alignAndImport(blk block.IBlock) {
+	// Already stored: the walk-back + authorized replay is unnecessary (and would
+	// re-enter the reorg path for a non-canonical sibling). Just notify the engine.
+	if s.cfg.chain.HasBlock(blk.Hash(), blk.Number64().Uint64()) {
+		if n := s.cfg.blockImportNotifier; n != nil {
+			n.NotifyBlockImported(blk.Hash(), blk.TxHash())
+		}
+		return
+	}
 	cur := blk
 	pending := []block.IBlock{}
 	for depth := 0; depth < 32; depth++ {
