@@ -209,3 +209,40 @@ signals:
 The overall pattern: the scoring/limiting stack was tuned for a large open network and
 fights a small fixed validator mesh point by point. Consider a "validator mesh" P2P mode
 that switches these heuristics off wholesale instead of exempting one at a time.
+
+### Validator-mesh mode + parent-fetch + leader-trigger fixes (landed, second batch)
+
+- **Validator-mesh mode**: trusted (static) peers are fully exempt from request rate
+  limiting (`rate_limiter.go` validateRequest/validateRawRpcRequest via
+  `peers.Status.IsTrusted`) — the 1/s control-message buckets penalized restart storms
+  into disconnects. **Live-fire verified: 0 disconnects across a full run** (previously
+  the mesh oscillated every few seconds).
+- **Missing-parent recovery**: `insertSideChain`'s bare "missing parent" now returns
+  ErrUnknownAncestor (a bare error marked the child BAD and dropped it permanently);
+  both the gossip and direct-push import paths future-queue the child AND actively
+  `FetchBlockByHash(parent)` — a committed same-height sibling from a passed view is
+  never re-gossiped, so passive waiting deadlocked at the first divergence (observed:
+  "insert failed err=missing parent" at 146 on every node).
+- **Leader trigger drop**: `newWorkCh` was UNBUFFERED and TriggerBlockProduction sends
+  non-blocking — the leader's one build request per view was silently dropped whenever
+  runLoop wasn't parked exactly on the receive. Observed live: "TC formed, I am the new
+  leader" followed by nothing on all 7 nodes. Now capacity 1 (one pending build queues).
+
+### FINAL REMAINING — post-restart view synchronization (pacemaker level)
+
+With the mesh stable (0 disconnects) and all state/import layers fixed, a 7-node
+restart from a wedged height still fails to converge: nodes restore persisted HotStuff
+state to different views; in the latest run NO node ever claimed leadership (zero
+"TC formed" — timeout collectors never reach quorum because nodes sit in different
+views, and each advance resets the collector). handleFutureViewTimeout exists (a
+future-view timeout advances the receiver) but convergence appears racy when views are
+spread and every advance restarts collection. Directions, in order of preference:
+1. On startup, don't trust the persisted view alone: broadcast a view-sync probe (or
+   simply the timeout for the persisted view) immediately, and adopt max(persisted,
+   highest-observed) BEFORE starting the pacemaker timer.
+2. Bracha-style fast-forward: on receiving f+1 distinct timeouts for views > current,
+   jump to the (f+1)-th highest view even mid-collection, carrying collected timeouts.
+3. Blunt fallback: don't persist/restore the view at all — restart from the highest
+   committed view and let the first timeout round elect a leader (slower but converges).
+Reproduce: seed 7 nodes from E:/n42-qmdb-staggered-7node, run to the first wedge,
+restart all 7 — they restore to spread views and never form a TC.
