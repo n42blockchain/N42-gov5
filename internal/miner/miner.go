@@ -183,6 +183,7 @@ func (m *Miner) PendingBlockAndReceipts() (block.IBlock, block.Receipts) {
 // node becomes the leader for a new view.
 func (m *Miner) TriggerBlockProduction() {
 	if !m.worker.isRunning() {
+		log.Warn("miner: build trigger while worker not running")
 		return
 	}
 	interrupt := new(atomic.Int32)
@@ -192,8 +193,10 @@ func (m *Miner) TriggerBlockProduction() {
 	// skip empty blocks, so the height would stall whenever there are no pending
 	// transactions — exactly the live mainnet_qmdb case.
 	case m.worker.newWorkCh <- &newWorkReq{interrupt: interrupt, noempty: false, timestamp: time.Now().Unix()}:
+		log.Info("miner: build triggered (leader view)")
 	default:
-		// Channel full — a block build is already in progress.
+		// One build request already queued — it will produce for this head.
+		log.Info("miner: build request already pending, trigger skipped")
 	}
 }
 
