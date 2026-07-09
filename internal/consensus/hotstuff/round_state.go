@@ -21,8 +21,9 @@ import "github.com/n42blockchain/N42/common/types"
 type RoundState struct {
 	currentView         ViewNumber
 	phase               Phase
-	lockedQC            QuorumCertificate // highest QC (safety lock)
-	lastCommittedQC     QuorumCertificate // most recently committed
+	lockedQC            QuorumCertificate   // highest QC (safety lock)
+	lastCommittedQC     QuorumCertificate   // most recently committed
+	highestTC           *TimeoutCertificate // highest known TC (SyncInfo piggyback)
 	consecutiveTimeouts uint32
 
 	// Double-vote prevention: track which view we've already voted in.
@@ -160,6 +161,25 @@ func (rs *RoundState) ResetConsecutiveTimeouts() {
 func (rs *RoundState) UpdateLockedQC(qc *QuorumCertificate) {
 	if qc.View > rs.lockedQC.View {
 		rs.lockedQC = qc.Clone()
+	}
+}
+
+// HighestTC returns the highest TC seen so far (nil if none). The returned
+// pointer is the stored value; callers must not mutate it. It is piggybacked
+// (SyncInfo-style) on votes/timeouts so a lagging validator can jump views.
+func (rs *RoundState) HighestTC() *TimeoutCertificate {
+	return rs.highestTC
+}
+
+// UpdateHighestTC records tc as the highest known TC if it advances past the
+// current one (by view).
+func (rs *RoundState) UpdateHighestTC(tc *TimeoutCertificate) {
+	if tc == nil {
+		return
+	}
+	if rs.highestTC == nil || tc.View > rs.highestTC.View {
+		clone := tc.Clone()
+		rs.highestTC = &clone
 	}
 }
 

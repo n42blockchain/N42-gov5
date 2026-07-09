@@ -207,6 +207,7 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg) error {
 		BlockHash: pqc.BlockHash,
 		Voter:     e.myIndex,
 		Signature: commitSig.Marshal(),
+		HighTC:    e.roundState.HighestTC(),
 	}
 
 	now := time.Now()
@@ -234,6 +235,7 @@ func (e *ConsensusEngine) sendVote(view ViewNumber, blockHash types.Hash) error 
 		BlockHash: blockHash,
 		Voter:     e.myIndex,
 		Signature: voteSig.Marshal(),
+		HighTC:    e.roundState.HighestTC(),
 	}
 
 	now := time.Now()

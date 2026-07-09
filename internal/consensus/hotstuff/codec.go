@@ -150,6 +150,24 @@ func decodeTC(data []byte) (*TimeoutCertificate, error) {
 	}, nil
 }
 
+// encodeOptionalTC encodes a piggybacked (SyncInfo) TC, returning nil bytes
+// when the TC is absent so the wire field stays 0-length.
+func encodeOptionalTC(tc *TimeoutCertificate) ([]byte, error) {
+	if tc == nil {
+		return nil, nil
+	}
+	return encodeTC(tc)
+}
+
+// decodeOptionalTC decodes a piggybacked (SyncInfo) TC, returning nil when the
+// wire field is absent (0-length).
+func decodeOptionalTC(data []byte) (*TimeoutCertificate, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	return decodeTC(data)
+}
+
 // ============================================================================
 // Message-specific codecs
 // ============================================================================
@@ -210,11 +228,16 @@ func decodeProposal(data []byte) (*Proposal, error) {
 }
 
 func encodeVote(v *Vote) ([]byte, error) {
+	highTCBytes, err := encodeOptionalTC(v.HighTC)
+	if err != nil {
+		return nil, err
+	}
 	wire := &sync_pb.HotStuffVote{
 		View:      v.View,
 		BlockHash: v.BlockHash[:],
 		Voter:     v.Voter,
 		Signature: v.Signature,
+		HighTC:    highTCBytes,
 	}
 	return wire.MarshalSSZ()
 }
@@ -226,20 +249,30 @@ func decodeVote(data []byte) (*Vote, error) {
 	}
 	var hash types.Hash
 	copy(hash[:], wire.BlockHash)
+	highTC, err := decodeOptionalTC(wire.HighTC)
+	if err != nil {
+		return nil, fmt.Errorf("decode vote high_tc: %w", err)
+	}
 	return &Vote{
 		View:      wire.View,
 		BlockHash: hash,
 		Voter:     wire.Voter,
 		Signature: wire.Signature,
+		HighTC:    highTC,
 	}, nil
 }
 
 func encodeCommitVote(cv *CommitVote) ([]byte, error) {
+	highTCBytes, err := encodeOptionalTC(cv.HighTC)
+	if err != nil {
+		return nil, err
+	}
 	wire := &sync_pb.HotStuffCommitVote{
 		View:      cv.View,
 		BlockHash: cv.BlockHash[:],
 		Voter:     cv.Voter,
 		Signature: cv.Signature,
+		HighTC:    highTCBytes,
 	}
 	return wire.MarshalSSZ()
 }
@@ -251,11 +284,16 @@ func decodeCommitVote(data []byte) (*CommitVote, error) {
 	}
 	var hash types.Hash
 	copy(hash[:], wire.BlockHash)
+	highTC, err := decodeOptionalTC(wire.HighTC)
+	if err != nil {
+		return nil, fmt.Errorf("decode commit_vote high_tc: %w", err)
+	}
 	return &CommitVote{
 		View:      wire.View,
 		BlockHash: hash,
 		Voter:     wire.Voter,
 		Signature: wire.Signature,
+		HighTC:    highTC,
 	}, nil
 }
 
@@ -295,11 +333,16 @@ func encodeTimeoutMsg(tm *TimeoutMessage) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	highTCBytes, err := encodeOptionalTC(tm.HighTC)
+	if err != nil {
+		return nil, err
+	}
 	wire := &sync_pb.HotStuffTimeoutMsg{
 		View:      tm.View,
 		HighQC:    highQCBytes,
 		Sender:    tm.Sender,
 		Signature: tm.Signature,
+		HighTC:    highTCBytes,
 	}
 	return wire.MarshalSSZ()
 }
@@ -313,11 +356,16 @@ func decodeTimeoutMsg(data []byte) (*TimeoutMessage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode timeout high_qc: %w", err)
 	}
+	highTC, err := decodeOptionalTC(wire.HighTC)
+	if err != nil {
+		return nil, fmt.Errorf("decode timeout high_tc: %w", err)
+	}
 	return &TimeoutMessage{
 		View:      wire.View,
 		HighQC:    *highQC,
 		Sender:    wire.Sender,
 		Signature: wire.Signature,
+		HighTC:    highTC,
 	}, nil
 }
 

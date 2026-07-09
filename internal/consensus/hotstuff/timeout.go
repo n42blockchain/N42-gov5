@@ -33,6 +33,7 @@ func (e *ConsensusEngine) onTimeout() error {
 			HighQC:    e.roundState.LockedQC().Clone(),
 			Sender:    e.myIndex,
 			Signature: signature.Marshal(),
+			HighTC:    e.roundState.HighestTC(),
 		}
 		if err := e.emit(EngineOutput{
 			Type: OutputBroadcast,
@@ -97,6 +98,7 @@ func (e *ConsensusEngine) onTimeout() error {
 		HighQC:    e.roundState.LockedQC().Clone(),
 		Sender:    e.myIndex,
 		Signature: signature.Marshal(),
+		HighTC:    e.roundState.HighestTC(),
 	}
 
 	if err := e.emit(EngineOutput{
@@ -223,6 +225,7 @@ func (e *ConsensusEngine) handleFutureViewTimeout(currentView ViewNumber, timeou
 		HighQC:    e.roundState.LockedQC().Clone(),
 		Sender:    e.myIndex,
 		Signature: ownSig.Marshal(),
+		HighTC:    e.roundState.HighestTC(),
 	}
 
 	if err := e.emit(EngineOutput{
@@ -278,6 +281,7 @@ func (e *ConsensusEngine) processNewView(nv *NewViewMsg) error {
 	}
 
 	e.roundState.UpdateLockedQC(&nv.TimeoutCert.HighQC)
+	e.roundState.UpdateHighestTC(&nv.TimeoutCert)
 
 	log.Info("received NewView, advancing", "oldView", view, "newView", nv.View)
 
@@ -370,6 +374,7 @@ func (e *ConsensusEngine) tryFormTCAndAdvance(currentView, nextView ViewNumber) 
 	log.Info("TC formed, I am the new leader", "view", currentView, "nextView", nextView)
 
 	e.roundState.UpdateLockedQC(&tc.HighQC)
+	e.roundState.UpdateHighestTC(tc)
 
 	nvMessage := NewViewSigningMessage(nextView)
 	nvSig := e.secretKey.Sign(nvMessage)
