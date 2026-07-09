@@ -129,6 +129,7 @@ func flags() []cli.Flag {
 		// Snapshot mirror pre-start sync (Stage 2 G3).
 		&cli.StringFlag{Name: "snapshot.source", Usage: "Publisher mirror URL (file:// or http(s)://). When set, runs status + auto-catchup before Engine API opens"},
 		&cli.StringFlag{Name: "snapshot.mode", Usage: "Snapshot mode (minimal|full|archive)", Value: "archive"},
+		&cli.StringFlag{Name: "codes.reth-db", Usage: "Resolve H0 contract bytecode directly from this reth MDBX (PlainAccountState→Bytecodes) instead of the exported codes freezer (local/dev)", Value: ""},
 		&cli.Uint64Flag{Name: "snapshot.max-gap", Usage: "Refuse auto-catchup if behind by more than N blocks (0 = no cap)", Value: 1_000_000},
 		&cli.IntFlag{Name: "snapshot.max-iterations", Usage: "Per-CatchUp delta-apply iteration cap (0 = no cap)"},
 		&cli.DurationFlag{Name: "snapshot.timeout", Usage: "Total budget for the pre-start sync"},
@@ -419,7 +420,7 @@ func run(c *cli.Context) error {
 		// immutable H0 snapshot segment. Open it here so the downloader's
 		// adapter reads via WarmOverlayReader + OverlayStateWriter.
 		if cfg.Bootstrap.Mode == "snapshot" {
-			if cold, err := openSnapshotCold(cfg.DataDir); err != nil {
+			if cold, err := openSnapshotCold(cfg.DataDir, c.String("codes.reth-db")); err != nil {
 				log.Error("eth-el: snapshot-direct open failed, falling back to plain state", "err", err)
 			} else {
 				eldcfg.SnapshotCold = cold
@@ -528,7 +529,9 @@ func withShutdown() (context.Context, context.CancelFunc) {
 
 // openSnapshotCold opens the H0 snapshot segment under <dataDir>/snapshot and
 // wraps it as a cold StateReader for snapshot-direct (minimal/full) mode.
-func openSnapshotCold(dataDir string) (state.StateReader, error) {
+// rethDB non-empty selects the direct reth-MDBX code source (local/dev: two
+// point reads per H0 code lookup) over the exported codes freezer.
+func openSnapshotCold(dataDir, rethDB string) (state.StateReader, error) {
 	snapDir := filepath.Join(dataDir, "snapshot")
 	accPrefix, err := snapshotPrefix(snapDir, "accounts")
 	if err != nil {
@@ -547,7 +550,14 @@ func openSnapshotCold(dataDir string) (state.StateReader, error) {
 	// so CALL targets resolve. Optional: if absent, H0 contract code reads
 	// empty (warm/catch-up-deployed code still resolves via the warm Code table).
 	var codeSrc state.CodeSource
-	if cr, cerr := ethel.NewCodesFreezerReader(filepath.Join(dataDir, "chain", "freezer")); cerr == nil {
+	if rethDB != "" {
+		cr, cerr := ethel.NewRethCodesReader(rethDB)
+		if cerr != nil {
+			return nil, fmt.Errorf("codes.reth-db %s: %w", rethDB, cerr)
+		}
+		codeSrc = cr
+		log.Info("eth-el: snapshot-direct: H0 code source = reth MDBX (direct)", "db", rethDB)
+	} else if cr, cerr := ethel.NewCodesFreezerReader(filepath.Join(dataDir, "chain", "freezer")); cerr == nil {
 		codeSrc = cr
 	} else {
 		log.Warn("eth-el: snapshot-direct: codes freezer unavailable, H0 contract code reads empty", "err", cerr)
