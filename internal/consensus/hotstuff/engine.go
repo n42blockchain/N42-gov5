@@ -540,6 +540,12 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 // Message processing
 
 func (e *ConsensusEngine) processMessage(msg ConsensusMsg) error {
+	// SyncInfo: adopt any piggybacked TC before view gating, so a lagging node
+	// catches up from a vote/timeout even if it missed the NewView.
+	if err := e.processEmbeddedTC(&msg); err != nil {
+		return err
+	}
+
 	msgView := messageView(msg)
 	currentView := e.roundState.CurrentView()
 
@@ -709,6 +715,76 @@ func extractQCFromMessage(msg *ConsensusMsg) *QuorumCertificate {
 		}
 	}
 	return nil
+}
+
+// extractHighTCFromMessage returns the piggybacked (SyncInfo) TC carried on a
+// vote/commit-vote/timeout message, or nil if none. NewView carries its TC on
+// its own dedicated path (processNewView) and is intentionally excluded here.
+func extractHighTCFromMessage(msg *ConsensusMsg) *TimeoutCertificate {
+	if msg == nil || msg.Payload == nil {
+		return nil
+	}
+	switch msg.Type {
+	case MsgVote:
+		if v, ok := msg.Payload.(*Vote); ok && v != nil {
+			return v.HighTC
+		}
+	case MsgCommitVote:
+		if cv, ok := msg.Payload.(*CommitVote); ok && cv != nil {
+			return cv.HighTC
+		}
+	case MsgTimeout:
+		if tm, ok := msg.Payload.(*TimeoutMessage); ok && tm != nil {
+			return tm.HighTC
+		}
+	}
+	return nil
+}
+
+// processEmbeddedTC implements the SyncInfo view-sync rule (Jolteon/Aptos): a
+// TC piggybacked on any vote/timeout is the network's proof that view tc.View
+// completed, so a lagging validator adopts it immediately — advancing to
+// tc.View+1 and locking on tc.HighQC — without waiting for a NewView it may
+// have missed. Runs before the view-gated buffering in processMessage so the
+// jump happens even for far-future messages. Safety is unaffected: advancing
+// views never violates the voting rule.
+func (e *ConsensusEngine) processEmbeddedTC(msg *ConsensusMsg) error {
+	tc := extractHighTCFromMessage(msg)
+	if tc == nil || tc.View == 0 {
+		return nil
+	}
+
+	currentView := e.roundState.CurrentView()
+	targetView := tc.View + 1
+
+	// Nothing to gain if the TC doesn't move us forward. Still record it (if
+	// higher than what we hold) so we keep re-propagating the freshest TC.
+	if targetView <= currentView {
+		e.roundState.UpdateHighestTC(tc)
+		return nil
+	}
+
+	// Verify the TC and its embedded high_qc before acting on it.
+	if err := VerifyTC(tc, e.validatorSet()); err != nil {
+		log.Debug("ignoring piggybacked TC with invalid signature", "tcView", tc.View, "err", err)
+		return nil
+	}
+	if err := e.verifyEmbeddedQC(&tc.HighQC); err != nil {
+		log.Debug("ignoring piggybacked TC with invalid high_qc", "tcView", tc.View, "err", err)
+		return nil
+	}
+
+	log.Info("SyncInfo TC view jump: catching up to network",
+		"currentView", currentView, "targetView", targetView, "tcView", tc.View)
+
+	e.roundState.UpdateHighestTC(tc)
+	e.roundState.UpdateLockedQC(&tc.HighQC)
+	e.roundState.ResetConsecutiveTimeouts()
+
+	if err := e.advanceToView(targetView); err != nil {
+		return err
+	}
+	return e.emit(EngineOutput{Type: OutputViewChanged, View: e.roundState.CurrentView()})
 }
 
 func (e *ConsensusEngine) tryQCViewJump(msg *ConsensusMsg, msgView ViewNumber) (bool, error) {

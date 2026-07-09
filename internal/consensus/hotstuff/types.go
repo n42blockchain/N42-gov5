@@ -125,6 +125,23 @@ type TimeoutCertificate struct {
 	HighQC             QuorumCertificate // Highest QC known among timeouts
 }
 
+// Clone returns a deep copy of the TC.
+func (tc *TimeoutCertificate) Clone() TimeoutCertificate {
+	clone := TimeoutCertificate{
+		View:   tc.View,
+		HighQC: tc.HighQC.Clone(),
+	}
+	if tc.AggregateSignature != nil {
+		clone.AggregateSignature = make([]byte, len(tc.AggregateSignature))
+		copy(clone.AggregateSignature, tc.AggregateSignature)
+	}
+	if tc.Signers != nil {
+		clone.Signers = make([]bool, len(tc.Signers))
+		copy(clone.Signers, tc.Signers)
+	}
+	return clone
+}
+
 // Proposal is a block proposal from the leader.
 type Proposal struct {
 	View       ViewNumber
@@ -142,6 +159,7 @@ type Vote struct {
 	BlockHash types.Hash
 	Voter     ValidatorIndex
 	Signature []byte
+	HighTC    *TimeoutCertificate // SyncInfo: highest known TC (optional, for view sync)
 }
 
 // CommitVote is a Round 2 (Commit) vote from a validator.
@@ -150,6 +168,7 @@ type CommitVote struct {
 	BlockHash types.Hash
 	Voter     ValidatorIndex
 	Signature []byte
+	HighTC    *TimeoutCertificate // SyncInfo: highest known TC (optional, for view sync)
 }
 
 // PrepareQCMsg is a message from the leader broadcasting the PrepareQC.
@@ -172,6 +191,7 @@ type TimeoutMessage struct {
 	HighQC    QuorumCertificate
 	Sender    ValidatorIndex
 	Signature []byte
+	HighTC    *TimeoutCertificate // SyncInfo: highest known TC (optional, for view sync)
 }
 
 // NewViewMsg is sent by the new leader after forming a TC.

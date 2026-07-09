@@ -38,6 +38,7 @@ type HotStuffVote struct {
 	BlockHash []byte `ssz-size:"32"`
 	Voter     uint32 `ssz-size:"4"`
 	Signature []byte `ssz-max:"256"`
+	HighTC    []byte `ssz-max:"4096"` // SyncInfo: highest known TC (0 length = absent)
 }
 
 // HotStuffCommitVote is the wire format for a Round 2 (Commit) vote.
@@ -46,6 +47,7 @@ type HotStuffCommitVote struct {
 	BlockHash []byte `ssz-size:"32"`
 	Voter     uint32 `ssz-size:"4"`
 	Signature []byte `ssz-max:"256"`
+	HighTC    []byte `ssz-max:"4096"` // SyncInfo: highest known TC (0 length = absent)
 }
 
 // HotStuffPrepareQCMsg is the wire format for a PrepareQC broadcast.
@@ -61,6 +63,7 @@ type HotStuffTimeoutMsg struct {
 	HighQC    []byte `ssz-max:"2048"` // encoded HotStuffQC
 	Sender    uint32 `ssz-size:"4"`
 	Signature []byte `ssz-max:"256"`
+	HighTC    []byte `ssz-max:"4096"` // SyncInfo: highest known TC (0 length = absent)
 }
 
 // HotStuffNewViewMsg is the wire format for a NewView message.

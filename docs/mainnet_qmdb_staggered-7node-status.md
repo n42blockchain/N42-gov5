@@ -299,10 +299,28 @@ chains (Aptos/Jolteon+SyncInfo, Flow pacemaker, Monad MonadBFT tail-fork):
    (revertSpeculativeOnStartup), consensus converges via proposals carrying
    JustifyQC. Aptos ships the same shape as `SyncInfo` piggybacked on every
    proposal/vote: highest_qc + highest_tc, and any node behind adopts it
-   immediately. OURS: proposal carries JustifyQC (adopted via UpdateLockedQC)
-   but votes/timeouts don't carry the highest TC — adding SyncInfo-style
-   piggyback on timeout/vote messages closes the last view-sync gap without a
-   new protocol.
+   immediately. **DONE (2026-07-09)**: SyncInfo-style TC piggyback landed.
+   - Wire: optional trailing `HighTC` ([]byte encoded TC, 0-len = absent) on
+     `HotStuffVote`/`HotStuffCommitVote`/`HotStuffTimeoutMsg` (hand-written SSZ,
+     tolerant unmarshal for version skew). Engine `Vote`/`CommitVote`/
+     `TimeoutMessage` gain `HighTC *TimeoutCertificate`; codec via
+     encode/decodeOptionalTC. `TimeoutCertificate.Clone()` added.
+   - RoundState tracks `highestTC` (`HighestTC()`/`UpdateHighestTC()`, monotone
+     by view, stores a clone). Populated in tryFormTCAndAdvance (leader) and
+     processNewView (followers learn the TC), then attached to every outgoing
+     vote/commit-vote/timeout (all 3 timeout emit sites).
+   - Receive: `processEmbeddedTC` runs at the TOP of processMessage, BEFORE
+     view-gated buffering — extracts HighTC from vote/commit-vote/timeout
+     (NewView keeps its own path), verifies VerifyTC + verifyEmbeddedQC, then
+     advances to tc.View+1 and locks tc.HighQC. A lagging validator now catches
+     up from ANY vote/timeout even if it missed the NewView. Safety unaffected:
+     advancing views never violates the voting rule.
+   - Tests: internal/consensus/hotstuff/syncinfo_tc_test.go (codec round-trip
+     incl. nil, highestTC monotonicity+clone isolation, view-jump, no-jump-
+     backwards) — all green. Pre-existing 10 chaos/byzantine WIP reds unchanged.
+   - NOT yet run on the 7-node fixture; next: reseed E:\qs-node0..6 and confirm
+     the wedge at 13013145/146 clears (nodes were stuck timing out with a TC
+     formed on node6 that never propagated).
 3. **Disconnect tolerance without losing safety**: safety is vote-signature
    based (quorum 5/7) and never depends on liveness heuristics; disconnects
    only hurt liveness. Done: static-peer keepalive + trusted exemption from

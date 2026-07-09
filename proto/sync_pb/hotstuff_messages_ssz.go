@@ -143,7 +143,7 @@ func (m *HotStuffProposal) UnmarshalSSZ(buf []byte) error {
 // ============================================================================
 
 func (m *HotStuffVote) SizeSSZ() int {
-	return 8 + sizeBytes(m.BlockHash) + 4 + sizeBytes(m.Signature)
+	return 8 + sizeBytes(m.BlockHash) + 4 + sizeBytes(m.Signature) + sizeBytes(m.HighTC)
 }
 
 func (m *HotStuffVote) MarshalSSZ() ([]byte, error) {
@@ -157,6 +157,7 @@ func (m *HotStuffVote) MarshalSSZTo(buf []byte) ([]byte, error) {
 	dst = putBytes(dst, m.BlockHash)
 	dst = putUint32(dst, m.Voter)
 	dst = putBytes(dst, m.Signature)
+	dst = putBytes(dst, m.HighTC)
 	return dst, nil
 }
 
@@ -172,8 +173,15 @@ func (m *HotStuffVote) UnmarshalSSZ(buf []byte) error {
 	if m.Voter, off, err = readUint32(buf, off); err != nil {
 		return err
 	}
-	if m.Signature, _, err = readBytes(buf, off); err != nil {
+	if m.Signature, off, err = readBytes(buf, off); err != nil {
 		return err
+	}
+	// HighTC is an optional trailing SyncInfo field; tolerate its absence for
+	// forward/backward compatibility across binary versions.
+	if off < len(buf) {
+		if m.HighTC, _, err = readBytes(buf, off); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -183,7 +191,7 @@ func (m *HotStuffVote) UnmarshalSSZ(buf []byte) error {
 // ============================================================================
 
 func (m *HotStuffCommitVote) SizeSSZ() int {
-	return 8 + sizeBytes(m.BlockHash) + 4 + sizeBytes(m.Signature)
+	return 8 + sizeBytes(m.BlockHash) + 4 + sizeBytes(m.Signature) + sizeBytes(m.HighTC)
 }
 
 func (m *HotStuffCommitVote) MarshalSSZ() ([]byte, error) {
@@ -197,6 +205,7 @@ func (m *HotStuffCommitVote) MarshalSSZTo(buf []byte) ([]byte, error) {
 	dst = putBytes(dst, m.BlockHash)
 	dst = putUint32(dst, m.Voter)
 	dst = putBytes(dst, m.Signature)
+	dst = putBytes(dst, m.HighTC)
 	return dst, nil
 }
 
@@ -212,8 +221,14 @@ func (m *HotStuffCommitVote) UnmarshalSSZ(buf []byte) error {
 	if m.Voter, off, err = readUint32(buf, off); err != nil {
 		return err
 	}
-	if m.Signature, _, err = readBytes(buf, off); err != nil {
+	if m.Signature, off, err = readBytes(buf, off); err != nil {
 		return err
+	}
+	// HighTC is an optional trailing SyncInfo field; tolerate its absence.
+	if off < len(buf) {
+		if m.HighTC, _, err = readBytes(buf, off); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -259,7 +274,7 @@ func (m *HotStuffPrepareQCMsg) UnmarshalSSZ(buf []byte) error {
 // ============================================================================
 
 func (m *HotStuffTimeoutMsg) SizeSSZ() int {
-	return 8 + sizeBytes(m.HighQC) + 4 + sizeBytes(m.Signature)
+	return 8 + sizeBytes(m.HighQC) + 4 + sizeBytes(m.Signature) + sizeBytes(m.HighTC)
 }
 
 func (m *HotStuffTimeoutMsg) MarshalSSZ() ([]byte, error) {
@@ -273,6 +288,7 @@ func (m *HotStuffTimeoutMsg) MarshalSSZTo(buf []byte) ([]byte, error) {
 	dst = putBytes(dst, m.HighQC)
 	dst = putUint32(dst, m.Sender)
 	dst = putBytes(dst, m.Signature)
+	dst = putBytes(dst, m.HighTC)
 	return dst, nil
 }
 
@@ -288,8 +304,14 @@ func (m *HotStuffTimeoutMsg) UnmarshalSSZ(buf []byte) error {
 	if m.Sender, off, err = readUint32(buf, off); err != nil {
 		return err
 	}
-	if m.Signature, _, err = readBytes(buf, off); err != nil {
+	if m.Signature, off, err = readBytes(buf, off); err != nil {
 		return err
+	}
+	// HighTC is an optional trailing SyncInfo field; tolerate its absence.
+	if off < len(buf) {
+		if m.HighTC, _, err = readBytes(buf, off); err != nil {
+			return err
+		}
 	}
 	return nil
 }
