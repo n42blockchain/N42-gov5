@@ -53,8 +53,10 @@ import (
 	"github.com/n42blockchain/N42/internal/zkverifier"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/layered"
+	"github.com/n42blockchain/N42/lib/qmdb"
 	"github.com/n42blockchain/N42/lib/rlp"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
@@ -1068,6 +1070,26 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 			return it.index, err
 		}
 
+		// HotStuff branch switch: if the applied world state is not the state of
+		// this block's parent (same-height sibling re-import / view-change
+		// re-proposal), cleanly revert applied blocks until it is — the EVM must
+		// read the parent's state and the QMDB tree must re-append at identical
+		// slots (its root is append-order-dependent). Committed BEFORE evmRecord
+		// so the execution's read snapshot sees the reverted state. No-op on the
+		// plain forward path.
+		if uerr := bc.unwindForReimport(blockNumber.Uint64(), blk.ParentHash()); uerr != nil {
+			if errors.Is(uerr, consensus.ErrUnknownAncestor) {
+				// The incoming block's parent is a sibling this node never
+				// applied — future-queue and let the parent import first.
+				if aerr := bc.AddFutureBlock(blk); aerr != nil {
+					return it.index, aerr
+				}
+				stats.queued++
+				continue
+			}
+			return it.index, uerr
+		}
+
 		ibs, nopay, err := evmRecord(bc.ctx, bc.ChainDB, blockNumber.Uint64(), func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error) {
 			getHeader := func(hash types.Hash, number uint64) *block.Header {
 				return rawdb.ReadHeader(tx, hash, number)
@@ -1543,6 +1565,135 @@ Error: %v
 
 // tryZKFastPath attempts to verify the block's ZK proof. Returns true if
 // the proof is valid and EVM re-execution can be skipped.
+// unwindForReimport reverts the applied world state to just before block n
+// when a block at height >= n has already been applied — the HotStuff
+// same-height sibling switch (a view-change re-proposal arriving after a
+// competing candidate was speculatively imported). Without this, the sibling
+// re-executes on DIRTY state: PlainState keys the loser touched keep its
+// values, and the append-order-dependent QMDB tree appends at shifted slots,
+// forking its root permanently vs nodes that only ever applied the winner.
+//
+// Detection is the QMDB undo record itself: every applied block writes one
+// (blockchain_write.go), so undo rows at heights >= n mean applied state that
+// must be cleanly reverted first. Per reverted height h (newest→oldest):
+// QMDB tree via RevertBlock (undo), PlainState via the block's changeset
+// pre-values, and the by-number derived rows (receipts/logs truncate, CE,
+// the undo row itself). History-index rows are left (inflation only, no
+// correctness impact — tracked in the status doc). Forward-path cost: one
+// missing-key read of undo[n].
+//
+// NOTE: the in-memory QMDB tree mutates inside the tx; if the tx later fails
+// to commit, tree and disk disagree until restart (LoadFrom rebuilds from
+// disk). The error is propagated, so the node does not continue on the
+// mismatched state.
+func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash) error {
+	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil || n == 0 {
+		return nil
+	}
+	return bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+		appliedNum, appliedHash, ok, err := rawdb.ReadQMDBApplied(tx)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			// Fresh replay data: the applied chain is the stored head.
+			hn := rawdb.ReadCurrentBlockNumber(tx)
+			if hn == nil {
+				return nil
+			}
+			appliedNum = *hn
+			ch, cerr := rawdb.ReadCanonicalHash(tx, appliedNum)
+			if cerr != nil {
+				return cerr
+			}
+			appliedHash = ch
+		}
+		if appliedNum == n-1 && appliedHash == parentHash {
+			return nil // plain forward import — the incoming block extends the applied head
+		}
+		if appliedNum < n-1 {
+			return nil // parent's state not applied yet — ValidateBody/future-queue handles it
+		}
+		// READ-ONLY pre-check first (no side effects on failure): walk the
+		// applied lineage down to height n-1 and require it to BE the incoming
+		// block's parent. If it isn't, the parent is a competing sibling this
+		// node never applied — it cannot be "unwound into"; it must import
+		// first (ErrUnknownAncestor → future-queue), and nothing may be
+		// reverted yet (a partial revert with a rolled-back tx would desync the
+		// in-memory QMDB tree from disk).
+		lineage := make([]types.Hash, 0, appliedNum-(n-1)+1)
+		curNum, curHash := appliedNum, appliedHash
+		for {
+			lineage = append(lineage, curHash)
+			if curNum == n-1 {
+				break
+			}
+			hdr := rawdb.ReadHeader(tx, curHash, curNum)
+			if hdr == nil {
+				return fmt.Errorf("branch switch at %d: applied header %d/%x missing", n, curNum, curHash[:8])
+			}
+			curNum--
+			curHash = hdr.ParentHash
+		}
+		if curHash != parentHash {
+			return fmt.Errorf("branch switch at %d: applied lineage at %d is %x, incoming parent is %x (sibling parent not applied): %w",
+				n, n-1, curHash[:8], parentHash[:8], consensus.ErrUnknownAncestor)
+		}
+
+		depth := appliedNum - (n - 1)
+		log.Warn("branch switch: unwinding applied blocks to the incoming block's parent",
+			"incoming", n, "incomingParent", fmt.Sprintf("%x", parentHash[:8]),
+			"appliedHead", appliedNum, "appliedHash", fmt.Sprintf("%x", appliedHash[:8]), "depth", depth)
+
+		// Revert the applied chain head-first down to the parent. Each step
+		// needs the applied block's undo record (the window is 256 blocks — a
+		// deeper switch is outside HotStuff's view-change reach and is rejected
+		// rather than mis-unwound). lineage[i] is the applied hash at height
+		// appliedNum-i.
+		for i := 0; appliedNum >= n; i++ {
+			key := modules.EncodeBlockNumber(appliedNum)
+			raw, gerr := tx.GetOne(modules.QMDBUndoWindow, key)
+			if gerr != nil {
+				return gerr
+			}
+			if len(raw) == 0 {
+				return fmt.Errorf("branch switch at %d: no undo record for applied block %d (beyond the undo window)", n, appliedNum)
+			}
+			undo, derr := qmdb.UnmarshalBlockUndo(raw)
+			if derr != nil {
+				return fmt.Errorf("unwind block %d: decode undo: %w", appliedNum, derr)
+			}
+			if err := bc.qmdbRootComputer.RevertBlock(tx, undo); err != nil {
+				return fmt.Errorf("unwind block %d: qmdb revert: %w", appliedNum, err)
+			}
+			if err := commitment.UnwindPlainStateBlock(tx, appliedNum); err != nil {
+				return fmt.Errorf("unwind block %d: plain state: %w", appliedNum, err)
+			}
+			if err := tx.Delete(modules.QMDBUndoWindow, key); err != nil {
+				return err
+			}
+			if err := tx.Delete(modules.ConsensusEvidence, key); err != nil {
+				return err
+			}
+			appliedNum--
+			appliedHash = lineage[i+1]
+			if err := rawdb.WriteQMDBApplied(tx, appliedNum, appliedHash); err != nil {
+				return err
+			}
+		}
+		// Receipts + logs for the reverted range (append-keyed; the re-executed
+		// blocks re-append them).
+		if err := rawdb.TruncateReceipts(tx, n); err != nil {
+			return fmt.Errorf("unwind receipts from %d: %w", n, err)
+		}
+		// Invalidate any read-through caches that bypassed the unwind.
+		if cache := layered.ExtractCache(bc.ChainDB); cache != nil {
+			cache.Clear()
+		}
+		return nil
+	})
+}
+
 func (bc *BlockChain) tryZKFastPath(blk block.IBlock) bool {
 	body := blk.Body()
 	if body == nil || len(body.ZKProof()) == 0 {
