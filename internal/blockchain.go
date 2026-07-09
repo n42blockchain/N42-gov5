@@ -913,10 +913,24 @@ func (bc *BlockChain) InsertChain(chain []block.IBlock) (int, error) {
 	}
 	bc.lock.Lock()
 	defer bc.lock.Unlock()
-	return bc.insertChain(chain)
+	return bc.insertChain(chain, false)
 }
 
-func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
+// InsertChainAuthorized imports blocks WITH branch-switch authority: if a
+// block's parent is a sibling of the applied head, the applied branch is
+// reverted onto the incoming branch. Reserved for consensus-driven imports
+// (the proposal chain-align in fetch-on-miss); passive paths (gossip, push,
+// future-queue) must use InsertChain, which refuses to revert.
+func (bc *BlockChain) InsertChainAuthorized(chain []block.IBlock) (int, error) {
+	if len(chain) == 0 {
+		return 0, nil
+	}
+	bc.lock.Lock()
+	defer bc.lock.Unlock()
+	return bc.insertChain(chain, true)
+}
+
+func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (int, error) {
 	if bc.insertStopped() {
 		return 0, nil
 	}
@@ -984,7 +998,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 	switch {
 	case errors.Is(err, ErrPrunedAncestor):
 		log.Debug("Pruned ancestor, inserting as sidechain", "number", blk.Number64(), "hash", blk.Hash())
-		return bc.insertSideChain(blk, it)
+		return bc.insertSideChain(blk, it, authorizedSwitch)
 
 	case errors.Is(err, ErrFutureBlock) || errors.Is(err, ErrUnknownAncestor):
 		// Queue any block whose parent we don't have yet (not only when the parent
@@ -1127,7 +1141,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 		// slots (its root is append-order-dependent). Committed BEFORE evmRecord
 		// so the execution's read snapshot sees the reverted state. No-op on the
 		// plain forward path.
-		if uerr := bc.unwindForReimport(blockNumber.Uint64(), blk.ParentHash()); uerr != nil {
+		if uerr := bc.unwindForReimport(blockNumber.Uint64(), blk.ParentHash(), authorizedSwitch); uerr != nil {
 			if errors.Is(uerr, consensus.ErrUnknownAncestor) {
 				// The incoming block's parent is a sibling this node never
 				// applied — future-queue and let the parent import first.
@@ -1240,7 +1254,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock) (int, error) {
 // Sidechain Insertion
 // =============================================================================
 
-func (bc *BlockChain) insertSideChain(blk block.IBlock, it *insertIterator) (int, error) {
+func (bc *BlockChain) insertSideChain(blk block.IBlock, it *insertIterator, authorizedSwitch bool) (int, error) {
 	var (
 		externTd      uint256.Int
 		lastBlock     = blk
@@ -1355,7 +1369,7 @@ func (bc *BlockChain) insertSideChain(blk block.IBlock, it *insertIterator) (int
 
 		if len(blocks) >= 2048 {
 			log.Info("Importing heavy sidechain segment", "blocks", len(blocks), "start", blocks[0].Number64(), "end", b.Number64())
-			if _, err := bc.insertChain(blocks); err != nil {
+			if _, err := bc.insertChain(blocks, authorizedSwitch); err != nil {
 				return 0, err
 			}
 			blocks = blocks[:0]
@@ -1367,7 +1381,7 @@ func (bc *BlockChain) insertSideChain(blk block.IBlock, it *insertIterator) (int
 	}
 	if len(blocks) > 0 {
 		log.Info("Importing sidechain segment", "start", blocks[0].Number64(), "end", blocks[len(blocks)-1].Number64())
-		return bc.insertChain(blocks)
+		return bc.insertChain(blocks, authorizedSwitch)
 	}
 	return 0, nil
 }
@@ -1376,7 +1390,7 @@ func (bc *BlockChain) insertSideChain(blk block.IBlock, it *insertIterator) (int
 // Ancestor Recovery
 // =============================================================================
 
-func (bc *BlockChain) recoverAncestors(blk block.IBlock) (types.Hash, error) {
+func (bc *BlockChain) recoverAncestors(blk block.IBlock, authorizedSwitch bool) (types.Hash, error) {
 	var (
 		hashes  []types.Hash
 		numbers []uint256.Int
@@ -1409,7 +1423,7 @@ func (bc *BlockChain) recoverAncestors(blk block.IBlock) (types.Hash, error) {
 		} else {
 			b = bc.GetBlock(hashes[i], numbers[i].Uint64())
 		}
-		if _, err := bc.insertChain([]block.IBlock{b}); err != nil {
+		if _, err := bc.insertChain([]block.IBlock{b}, authorizedSwitch); err != nil {
 			return b.ParentHash(), err
 		}
 	}
@@ -1650,10 +1664,10 @@ Error: %v
 // head. No-op when already aligned; ErrUnknownAncestor when the parent itself
 // was never applied and must import first.
 func (bc *BlockChain) AlignAppliedBranch(childNum uint64, parentHash types.Hash) error {
-	return bc.unwindForReimport(childNum, parentHash)
+	return bc.unwindForReimport(childNum, parentHash, true)
 }
 
-func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash) error {
+func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authorizedSwitch bool) error {
 	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil || n == 0 {
 		return nil
 	}
@@ -1705,6 +1719,21 @@ func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash) error {
 		if curHash != parentHash {
 			return fmt.Errorf("branch switch at %d: applied lineage at %d is %x, incoming parent is %x (sibling parent not applied): %w",
 				n, n-1, curHash[:8], parentHash[:8], consensus.ErrUnknownAncestor)
+		}
+
+		// Only CONSENSUS-DRIVEN imports may revert applied blocks. A passively
+		// received block (gossip, direct push, future-queue retry) whose branch
+		// requires a revert is a stale sibling candidate from an old view — it
+		// carries no new QC and has no authority over the applied head. Letting
+		// it switch tugs the network between sibling branches (observed live:
+		// a node applied through the CURRENT proposal got reverted 2 deep by a
+		// dead same-height candidate, destroying the vote window every round).
+		// Authorized callers: the proposal-driven chain-align (fetch-on-miss),
+		// the leader's pre-build AlignAppliedBranch, and startup revert — all
+		// funnel through InsertChainAuthorized / AlignAppliedBranch.
+		if !authorizedSwitch {
+			return fmt.Errorf("branch switch at %d requires consensus authority (passive import of a sibling branch): %w",
+				n, consensus.ErrUnknownAncestor)
 		}
 
 		depth := appliedNum - (n - 1)

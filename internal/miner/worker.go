@@ -563,7 +563,15 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 				return fmt.Errorf("consensus parent %x not in local db", parentHash[:8])
 			}
 			if err := bc.AlignAppliedBranch(pblk.Number64().Uint64()+1, parentHash); err != nil {
-				return fmt.Errorf("align applied branch to consensus parent %x: %w", parentHash[:8], err)
+				// The QC block is in the DB but on a branch this node never
+				// applied (it didn't vote in that view). Import it WITH switch
+				// authority — the QC is the consensus mandate — then re-align.
+				if _, ierr := bc.InsertChainAuthorized([]block.IBlock{pblk}); ierr != nil {
+					return fmt.Errorf("import consensus parent %x: %w (align: %v)", parentHash[:8], ierr, err)
+				}
+				if err = bc.AlignAppliedBranch(pblk.Number64().Uint64()+1, parentHash); err != nil {
+					return fmt.Errorf("align applied branch to consensus parent %x: %w", parentHash[:8], err)
+				}
 			}
 		}
 	}
