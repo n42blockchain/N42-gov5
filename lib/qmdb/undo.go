@@ -370,7 +370,9 @@ func (t *Tree) scratchLeafTreeAt(id int, targetNext uint64) (*[2 * TwigSize]Hash
 			}
 		}
 	} else {
-		t.ensureHydrated(id)
+		if err := t.ensureHydrated(id); err != nil {
+			return nil, err
+		}
 		if tw.nodes == nil {
 			return nil, fmt.Errorf("qmdb: twig %d could not be hydrated", id)
 		}

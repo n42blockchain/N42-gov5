@@ -58,6 +58,31 @@ func (t *Tree) ApplyUndo(u *BlockUndo) error {
 
 	prev := u.PrevNextSlot
 
+	// --- 0. Precompute the boundary twig's pre-block leaf tree. ------------
+	// scratchLeafTreeAt is the only fallible step (it may hit a stale/missing
+	// leaf blob and return an error rather than panic). Do it BEFORE any
+	// mutation so a failure returns with the live tree completely untouched —
+	// the caller then future-queues/rejects the block instead of operating on a
+	// half-reverted, inconsistent in-memory tree. Step 1 below only clears bits
+	// (never leaf nodes), so the boundary leaves are identical here and there.
+	twigCountPrev := 0
+	if prev > 0 {
+		twigCountPrev = int((prev-1)/TwigSize) + 1
+	}
+	var boundaryNodes *[2 * TwigSize]Hash
+	boundaryID := -1
+	if t.nextSlot > prev && twigCountPrev > 0 {
+		bID := twigCountPrev - 1
+		if uint64(bID) == prev/TwigSize { // prev cuts through this twig
+			nodes, err := t.scratchLeafTreeAt(bID, prev)
+			if err != nil {
+				return fmt.Errorf("qmdb: revert boundary twig %d: %w", bID, err)
+			}
+			boundaryNodes = nodes
+			boundaryID = bID
+		}
+	}
+
 	// --- 1. Truncate the block's appends: [prev, nextSlot). ---------------
 	// Only LIVE appended slots still hold an index mapping (a dead appended
 	// slot was overwritten/deleted within the block itself and its bit is
@@ -81,30 +106,18 @@ func (t *Tree) ApplyUndo(u *BlockUndo) error {
 		tw.metaDirty = true
 	}
 
-	// --- 2. Rebuild the twig set as of prev. -------------------------------
-	twigCountPrev := 0
-	if prev > 0 {
-		twigCountPrev = int((prev-1)/TwigSize) + 1
-	}
-	// The boundary twig (partially appended at prev) needs its in-window
-	// leaves nulled. scratchLeafTreeAt reproduces exactly the pre-block leaf
-	// tree (leaves are append-only within a twig); install it as the resident
+	// --- 2. Install the precomputed boundary twig + drop tail twigs. -------
+	// The boundary twig (partially appended at prev) needs its in-window leaves
+	// nulled; install the pre-block leaf tree computed in step 0 as the resident
 	// node heap. Do this BEFORE dropping tail twigs (it indexes t.twigs).
-	if t.nextSlot > prev && twigCountPrev > 0 {
-		bID := twigCountPrev - 1
-		if uint64(bID) == prev/TwigSize { // prev cuts through this twig
-			nodes, err := t.scratchLeafTreeAt(bID, prev)
-			if err != nil {
-				return fmt.Errorf("qmdb: revert boundary twig %d: %w", bID, err)
-			}
-			tw := t.twigs[bID]
-			tw.nodes = nodes
-			tw.dirty = false
-			tw.pruned = false
-			tw.leafRoot = nodes[1]
-			tw.refreshBitsRoot()
-			tw.metaDirty = true
-		}
+	if boundaryNodes != nil {
+		tw := t.twigs[boundaryID]
+		tw.nodes = boundaryNodes
+		tw.dirty = false
+		tw.pruned = false
+		tw.leafRoot = boundaryNodes[1]
+		tw.refreshBitsRoot()
+		tw.metaDirty = true
 	}
 	if len(t.twigs) > twigCountPrev {
 		t.twigs = t.twigs[:twigCountPrev]

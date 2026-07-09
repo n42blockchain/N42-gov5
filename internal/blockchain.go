@@ -1143,9 +1143,15 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		// so the execution's read snapshot sees the reverted state. No-op on the
 		// plain forward path.
 		if uerr := bc.unwindForReimport(blockNumber.Uint64(), blk.ParentHash(), authorizedSwitch); uerr != nil {
-			if errors.Is(uerr, consensus.ErrUnknownAncestor) {
-				// The incoming block's parent is a sibling this node never
-				// applied — future-queue and let the parent import first.
+			if errors.Is(uerr, consensus.ErrUnknownAncestor) || errors.Is(uerr, errRevertUnavailable) {
+				// Either the incoming block's parent is a sibling this node never
+				// applied, or the revert hit a recoverable local QMDB condition
+				// (stale/missing leaf blob). Both are non-fatal: future-queue the
+				// block and let it retry — never crash, never mark it BAD.
+				if errors.Is(uerr, errRevertUnavailable) {
+					log.Warn("branch-switch revert unavailable; future-queuing block",
+						"number", blockNumber.Uint64(), "hash", fmt.Sprintf("%x", blk.Hash().Bytes()[:8]), "err", uerr)
+				}
 				if aerr := bc.AddFutureBlock(blk); aerr != nil {
 					return it.index, aerr
 				}
@@ -1779,7 +1785,15 @@ func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authori
 				return fmt.Errorf("unwind block %d: decode undo: %w", appliedNum, derr)
 			}
 			if err := bc.qmdbRootComputer.RevertBlock(tx, undo); err != nil {
-				return fmt.Errorf("unwind block %d: qmdb revert: %w", appliedNum, err)
+				// A revert that cannot reconstruct a twig's frozen leaves (stale/
+				// missing leaf blob) is a recoverable LOCAL condition, not proof the
+				// incoming block is invalid. Tag it so the caller future-queues the
+				// block instead of marking it BAD BLOCK — and so a single rogue block
+				// can no longer panic-crash the node (the QMDB layer now returns this
+				// error rather than panicking). Step 0 of ApplyUndo runs the only
+				// fallible reconstruction before mutating, so this first-block failure
+				// leaves the in-memory tree untouched; the tx rolls back on return.
+				return fmt.Errorf("unwind block %d: qmdb revert: %w: %w", appliedNum, err, errRevertUnavailable)
 			}
 			if err := commitment.UnwindPlainStateBlock(tx, appliedNum); err != nil {
 				return fmt.Errorf("unwind block %d: plain state: %w", appliedNum, err)

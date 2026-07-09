@@ -21,6 +21,8 @@
 
 package qmdb
 
+import "fmt"
+
 // LeafStore serves a twig's persisted leaf array (TwigSize*32 raw bytes) so an
 // evicted twig rehydrates in ONE read instead of a 2048-entry cold scan. Optional:
 // without it, ensureHydrated falls back to rebuilding leaves from the entry log.
@@ -37,13 +39,20 @@ func (t *Tree) SetLeafStore(ls LeafStore) { t.leafStore = ls }
 // one recompute restores the internal nodes (which proofs and setLeaf's O(log)
 // path-updates read). No-op for resident, absent, or pruned twigs (a pruned twig
 // has no live leaves).
-func (t *Tree) ensureHydrated(id int) {
+//
+// It returns an error (instead of panicking) when the reconstructed leaf tree
+// does not reproduce the retained root — a stale/missing leaf blob for a twig
+// with dead entries. On that error the twig is left EVICTED (nodes still nil), so
+// the tree stays internally consistent and a revert caller can reject/future-queue
+// the offending block rather than crash the whole node. Reaching this on the
+// forward path is genuine corruption; those callers still fail loudly.
+func (t *Tree) ensureHydrated(id int) error {
 	if id < 0 || id >= len(t.twigs) {
-		return
+		return nil
 	}
 	tw := t.twigs[id]
 	if tw == nil || tw.nodes != nil || tw.pruned {
-		return
+		return nil
 	}
 	a := new([2 * TwigSize]Hash)
 	// Fast path: one blob read. Under the split commitment the blob holds the
@@ -74,8 +83,22 @@ func (t *Tree) ensureHydrated(id int) {
 			}
 		}
 	}
-	want := tw.root
+	// Rebuild the internal nodes on the SCRATCH array and check the recomputed
+	// root against the retained one BEFORE committing to the twig, so a bad blob
+	// leaves the twig evicted (recoverable) instead of half-hydrated with a wrong
+	// root. This mirrors twig.recompute() but on `a`, not tw.nodes.
+	for base := TwigSize / 2; base >= 1; base /= 2 {
+		hashNodesRun(a[:], base, base)
+	}
+	leafRoot := a[1]
+	bitsRoot := hashBits(&tw.bits)
+	if hashNode(leafRoot, bitsRoot) != tw.root {
+		return fmt.Errorf("qmdb: twig %d rehydration root mismatch — leaf blob missing/stale for a twig with dead entries", id)
+	}
+	// Proven identical to the retained root: commit the scratch heap.
 	tw.nodes = a
+	tw.leafRoot = leafRoot
+	tw.bitsRoot = bitsRoot
 	// live derives from the resident bitmap, not leaf nullness (dead leaves are
 	// no longer null under the split commitment).
 	live := 0
@@ -83,10 +106,8 @@ func (t *Tree) ensureHydrated(id int) {
 		live += popcount8(b)
 	}
 	tw.live = live
-	tw.recompute() // restore internal nodes + roots
-	if tw.root != want {
-		panic("qmdb: twig rehydration root mismatch — leaf blob missing/stale for a twig with dead entries")
-	}
+	tw.dirty = false
+	return nil
 }
 
 func popcount8(b byte) int {

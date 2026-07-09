@@ -64,6 +64,11 @@ var (
 	errInsertionInterrupted = errors.New("insertion is interrupted")
 	errBlockDoesNotExist    = errors.New("block does not exist in blockchain")
 	errZKProofRequired      = errors.New("block rejected: valid ZK proof required but not provided")
+	// errRevertUnavailable marks a branch-switch revert that could not complete
+	// due to a recoverable local state condition (e.g. a QMDB twig whose leaf
+	// blob is stale/missing) rather than the block being invalid. Treated like an
+	// unknown ancestor: future-queue and retry instead of marking the block BAD.
+	errRevertUnavailable = errors.New("branch-switch revert unavailable (recoverable)")
 )
 
 // =============================================================================

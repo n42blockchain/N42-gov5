@@ -99,7 +99,12 @@ func (t *Tree) flushLeafJobs() {
 // recorded at Set time, so folding picks it up.
 func (t *Tree) writeLeafHash(slot uint64, h Hash) {
 	id := int(slot / TwigSize)
-	t.ensureHydrated(id)
+	// Forward-path hydration failure is genuine corruption (valid persisted data
+	// always reproduces the retained root); fail loudly. The graceful-degradation
+	// path that matters for network robustness is the revert (scratchLeafTreeAt).
+	if err := t.ensureHydrated(id); err != nil {
+		panic(err)
+	}
 	t.twigs[id].nodes[TwigSize+slot%TwigSize] = h
 }
 

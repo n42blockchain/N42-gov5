@@ -35,7 +35,9 @@ func (t *Tree) GetProof(keyHash Hash) (*Proof, bool) {
 
 	twigID := slot / TwigSize
 	local := slot % TwigSize
-	t.ensureHydrated(int(twigID)) // rebuild nodes if this twig was evicted
+	if err := t.ensureHydrated(int(twigID)); err != nil { // rebuild nodes if this twig was evicted
+		panic(err) // a proof for a live key over a corrupt twig is unrecoverable
+	}
 	tw := t.twigs[twigID]
 
 	pe, _ := t.entryAt(slot) // faults from cold if the slot was evicted
