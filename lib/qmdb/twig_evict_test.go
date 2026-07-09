@@ -70,6 +70,84 @@ func TestLeafBlobRehydrationNoEntryScan(t *testing.T) {
 	}
 }
 
+// corruptLeafStore returns a byte-mangled blob for one twig id, to exercise the
+// stale/missing-leaf-blob path in ensureHydrated. Set badID to -1 to disable.
+type corruptLeafStore struct {
+	inner LeafStore
+	badID int
+}
+
+func (c *corruptLeafStore) Leaves(id int) ([]byte, bool) {
+	blob, ok := c.inner.Leaves(id)
+	if ok && id == c.badID {
+		bad := make([]byte, len(blob))
+		copy(bad, blob)
+		bad[0] ^= 0xFF // one flipped leaf byte -> recomputed root won't match
+		return bad, true
+	}
+	return blob, ok
+}
+
+// TestEnsureHydratedGracefulOnStaleBlob: a sealed, evicted twig whose leaf blob is
+// stale/missing must make ensureHydrated RETURN AN ERROR (not panic) and leave the
+// twig evicted (nodes still nil, retained root unchanged) so the tree stays
+// consistent — the robustness fix that stops one rogue block from panic-crashing a
+// node in the branch-switch revert path. A subsequent clean read must recover.
+func TestEnsureHydratedGracefulOnStaleBlob(t *testing.T) {
+	store := newMapStore()
+	tr := New()
+	tr.SetCold(ColdReaderFromGetter(store))
+	cs := &corruptLeafStore{inner: LeafStoreFromGetter(store), badID: -1}
+	tr.SetLeafStore(cs) // attached before flush so leaf blobs get persisted
+
+	const n = 8000 // several twigs
+	for i := uint64(0); i < n; i++ {
+		tr.Set(key(i), val(i))
+	}
+	next, _, err := tr.FlushTo(store, 0)
+	if err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	tr.EvictThrough(next)
+	tr.EvictTwigsThrough(next)
+
+	if tr.twigs[0] == nil || tr.twigs[0].nodes != nil || tr.twigs[0].pruned {
+		t.Skipf("twig 0 not in the evicted non-pruned state (nodes=%v pruned=%v)",
+			tr.twigs[0] != nil && tr.twigs[0].nodes != nil, tr.twigs[0] != nil && tr.twigs[0].pruned)
+	}
+	wantRoot := tr.twigs[0].root
+
+	cs.badID = 0 // corrupt twig 0's blob
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("ensureHydrated panicked instead of returning an error: %v", r)
+			}
+		}()
+		if err := tr.ensureHydrated(0); err == nil {
+			t.Fatal("expected an error for a corrupt leaf blob, got nil")
+		}
+	}()
+	if tr.twigs[0].nodes != nil {
+		t.Fatal("failed hydration must leave the twig evicted (nodes still nil)")
+	}
+	if tr.twigs[0].root != wantRoot {
+		t.Fatalf("failed hydration must not alter the retained root: got %x want %x", tr.twigs[0].root, wantRoot)
+	}
+
+	// Recovery: a correct blob now hydrates cleanly and commits the node heap.
+	cs.badID = -1
+	if err := tr.ensureHydrated(0); err != nil {
+		t.Fatalf("clean rehydration failed: %v", err)
+	}
+	if tr.twigs[0].nodes == nil {
+		t.Fatal("clean rehydration should have committed the node heap")
+	}
+	if tr.twigs[0].root != wantRoot {
+		t.Fatalf("clean rehydration changed the root: got %x want %x", tr.twigs[0].root, wantRoot)
+	}
+}
+
 // flushEvictAll mirrors the engine's per-batch maintenance with BOTH tiers:
 // persist new entries, then evict entry records AND sealed twig leaves below the
 // flushed cursor.
