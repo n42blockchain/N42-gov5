@@ -276,6 +276,13 @@ type querier struct {
 	stoRootAbsent  bool
 	stoRootChecked bool
 	stoRootTrust   bool
+
+	// tx2: fresh continuation DB (fork-state + records-only build). Node
+	// records and DatcStoRoot rows ≥ forkedAt live here and are tried FIRST;
+	// the old DB (tx) answers only paths/blocks the fresh DB has no row for.
+	// nil = single-DB mode.
+	tx2         kv.Tx
+	stoRootCur2 kv.Cursor
 }
 
 // storageRootAt reads a contract's storage root as of block n from the dense
@@ -302,29 +309,48 @@ func (q *querier) storageRootAt(ah []byte, n uint64) (root types.Hash, has bool,
 		}
 		q.stoRootCur = c
 	}
-	miss := func() (types.Hash, bool, bool) {
-		if q.stoRootTrust {
-			return types.Hash{}, false, true // authoritative: never had storage ≤ n
+	// Two-DB overlay: the fresh DB's floor row (blocks ≥ forkedAt) wins when
+	// present; a contract untouched since the fork falls back to the old DB.
+	if q.tx2 != nil {
+		if q.stoRootCur2 == nil {
+			if c, err := q.tx2.Cursor(tDatcStoRoot); err == nil {
+				q.stoRootCur2 = c
+			}
 		}
-		return types.Hash{}, false, false
+		if q.stoRootCur2 != nil {
+			root, has, hit := stoRootFloorScan(q.stoRootCur2, ah, n)
+			if hit {
+				return root, has, true
+			}
+		}
 	}
+	root, has, hit := stoRootFloorScan(q.stoRootCur, ah, n)
+	if hit {
+		return root, has, true
+	}
+	if q.stoRootTrust {
+		return types.Hash{}, false, true // authoritative: never had storage ≤ n
+	}
+	return types.Hash{}, false, false
+}
+
+// stoRootFloorScan reads the floor row ≤ n under addrHash on one cursor.
+// hit=false → no row for this contract ≤ n in that DB.
+func stoRootFloorScan(cur kv.Cursor, ah []byte, n uint64) (root types.Hash, has bool, hit bool) {
 	seek := make([]byte, 40)
 	copy(seek, ah[:32])
 	binary.BigEndian.PutUint64(seek[32:], n+1)
-	k, v, err := q.stoRootCur.Seek(seek)
+	k, v, err := cur.Seek(seek)
 	if err != nil {
 		return types.Hash{}, false, false
 	}
 	if k == nil {
-		k, v, err = q.stoRootCur.Last()
+		k, v, err = cur.Last()
 	} else {
-		k, v, err = q.stoRootCur.Prev()
+		k, v, err = cur.Prev()
 	}
-	if err != nil {
+	if err != nil || k == nil || len(k) != 40 || !bytes.Equal(k[:32], ah[:32]) {
 		return types.Hash{}, false, false
-	}
-	if k == nil || len(k) != 40 || !bytes.Equal(k[:32], ah[:32]) {
-		return miss()
 	}
 	if len(v) != 32 {
 		return types.Hash{}, false, true // tombstone: storage emptied at the floor block
@@ -694,10 +720,27 @@ func (q *querier) floorRecord(domain, path []byte, n uint64) (nodeState, uint64,
 	return q.floorRecordBefore(domain, path, q.schedFor(domain).epochOf(d, n)+1)
 }
 
-// floorRecordBefore reconstructs the newest record with epoch < beforeEpoch by
-// walking the DIFF chain back to its FULL anchor (bounded by the builder's
-// fullEvery superblock rule) and folding forward.
+// floorRecordBefore is the two-DB overlay entry: the fresh continuation DB
+// (tx2, records ≥ forkedAt) is tried FIRST — every path's first record there
+// is a FULL anchor (cold accLastFull/stoLastFull force it), so a DIFF chain
+// never crosses DBs, and the epoch spaces are disjoint (old DB flushed only
+// epochs that CLOSED before the fork head). A row in tx2 — even a tombstone —
+// is newer than anything in the old DB and wins; only a path with NO tx2 row
+// falls back.
 func (q *querier) floorRecordBefore(domain, path []byte, beforeEpoch uint64) (nodeState, uint64, bool, error) {
+	if q.tx2 != nil {
+		st, epoch, ok, err := q.floorRecordBeforeIn(q.tx2, domain, path, beforeEpoch)
+		if err != nil || ok || epoch > 0 { // epoch>0 && !ok = tombstone: authoritative, no fallback
+			return st, epoch, ok, err
+		}
+	}
+	return q.floorRecordBeforeIn(q.tx, domain, path, beforeEpoch)
+}
+
+// floorRecordBeforeIn reconstructs the newest record with epoch < beforeEpoch
+// in ONE DB by walking the DIFF chain back to its FULL anchor (bounded by the
+// builder's fullEvery superblock rule) and folding forward.
+func (q *querier) floorRecordBeforeIn(tx kv.Tx, domain, path []byte, beforeEpoch uint64) (nodeState, uint64, bool, error) {
 	var zero nodeState
 	table := tDatcAccNode
 	full := path
@@ -709,7 +752,7 @@ func (q *querier) floorRecordBefore(domain, path []byte, beforeEpoch uint64) (no
 	prefix = append(prefix, byte(len(full)))
 	prefix = append(prefix, full...)
 
-	c, err := q.tx.Cursor(table)
+	c, err := tx.Cursor(table)
 	if err != nil {
 		return zero, 0, false, err
 	}
