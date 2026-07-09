@@ -33,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -1000,12 +1001,12 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		log.Debug("Pruned ancestor, inserting as sidechain", "number", blk.Number64(), "hash", blk.Hash())
 		return bc.insertSideChain(blk, it, authorizedSwitch)
 
-	case errors.Is(err, ErrFutureBlock) || errors.Is(err, ErrUnknownAncestor):
+	case errors.Is(err, ErrFutureBlock) || isUnknownAncestorErr(err):
 		// Queue any block whose parent we don't have yet (not only when the parent
 		// is already queued). Direct-pushed HotStuff blocks can arrive out of order
 		// (e.g. block N+1 before N); future-queue them so they import once the
 		// parent arrives, instead of rejecting them as bad blocks.
-		for blk != nil && (it.index == 0 || errors.Is(err, ErrUnknownAncestor)) {
+		for blk != nil && (it.index == 0 || isUnknownAncestorErr(err)) {
 			log.Debug("Future block, postponing import", "number", blk.Number64(), "hash", blk.Hash())
 			if err := bc.AddFutureBlock(blk); err != nil {
 				return it.index, err
@@ -1612,6 +1613,24 @@ func (bc *BlockChain) reorg(tx kv.RwTx, oldBlock, newBlock block.IBlock) error {
 		}
 	}
 	return nil
+}
+
+// isUnknownAncestorErr reports whether err signals a missing parent, across the
+// several independent "unknown ancestor" errors defined in different packages
+// (internal.ErrUnknownAncestor, consensus.ErrUnknownAncestor, consensus/misc,
+// plus bare errors.New in apoa/apos). A child that arrives before its parent
+// must be future-queued, not reported as a bad block. Matching only
+// internal.ErrUnknownAncestor let the consensus-package sentinel returned by
+// hotstuff VerifyHeader fall through to reportBlock, spinning a joining node on
+// BAD BLOCK while it waited for the gap to fill.
+func isUnknownAncestorErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrUnknownAncestor) || errors.Is(err, consensus.ErrUnknownAncestor) {
+		return true
+	}
+	return strings.Contains(err.Error(), "unknown ancestor")
 }
 
 // reportBlock logs a bad block error.
