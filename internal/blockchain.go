@@ -1290,7 +1290,12 @@ func (bc *BlockChain) insertSideChain(blk block.IBlock, it *insertIterator) (int
 		parent = bc.GetHeader(parentHeader.ParentHash, uint256.NewInt(0).Sub(parentNumber, uint256.NewInt(1)))
 	}
 	if parent == nil {
-		return it.index, errors.New("missing parent")
+		// Semantic sentinel, not a bare error: the side chain's ancestry walks
+		// off blocks we don't hold (e.g. a committed same-height sibling whose
+		// direct push we missed). The gossip/push handlers future-queue on
+		// unknown-ancestor and actively fetch the missing parent by hash;
+		// a bare error would mark the block BAD and drop it permanently.
+		return it.index, consensus.ErrUnknownAncestor
 	}
 
 	var blocks []block.IBlock
@@ -1343,7 +1348,9 @@ func (bc *BlockChain) recoverAncestors(blk block.IBlock) (types.Hash, error) {
 		parent = bc.GetBlock(parent.ParentHash(), parentNumber.Uint64()-1)
 	}
 	if parent == nil {
-		return types.Hash{}, errors.New("missing parent")
+		// See insertSideChain: unknown-ancestor semantics so callers can
+		// future-queue + fetch instead of marking the block bad.
+		return types.Hash{}, consensus.ErrUnknownAncestor
 	}
 	for i := len(hashes) - 1; i >= 0; i-- {
 		var b block.IBlock
