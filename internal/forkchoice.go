@@ -30,6 +30,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules/rawdb"
 )
 
 // ChainReader defines a small collection of methods needed to access the local
@@ -84,6 +85,16 @@ func (f *ForkChoice) ReorgNeeded(current block.IHeader, header block.IHeader) (b
 		externTd = f.chain.GetTd(header.Hash(), headerNumber)
 	)
 	if localTD == nil || externTd == nil {
+		// Virtual-TD chains (PoS/HotStuff, difficulty≡1, TD rows elided) synthesize
+		// TD from header presence, which can race tx visibility during an import.
+		// Height is the fork-choice signal on those chains anyway (see the equal-TD
+		// branch below), so fall back to a pure height comparison instead of
+		// failing the import: strictly higher wins; an equal-height sibling does
+		// NOT reorg here — under HotStuff the commit (CommitToCanonical) is the
+		// canonicalization authority.
+		if rawdb.VirtualTd {
+			return headerNumber.Cmp(currentNumber) > 0, nil
+		}
 		log.Warnf("ForkChoice.ReorgNeeded: missing td, localTD=%v, externTd=%v, currentHash=%s, currentNum=%d, headerHash=%s, headerNum=%d",
 			localTD, externTd, current.Hash().String(), currentNumber.Uint64(), header.Hash().String(), headerNumber.Uint64())
 		return false, errors.New("missing td")
