@@ -228,17 +228,25 @@ type worker struct {
 func newWorker(ctx context.Context, group *errgroup.Group, chainConfig *params.ChainConfig, engine consensus.Engine, bc common.IBlockChain, txsPool common.ITxsPool, isLocalBlock func(header *block.Header) bool, init bool, minerConf conf.MinerConfig) *worker {
 	c, cancel := context.WithCancel(ctx)
 	worker := &worker{
-		engine:           engine,
-		chain:            bc,
-		txsPool:          txsPool,
-		chainConfig:      chainConfig,
-		startCh:          make(chan struct{}, 1),
-		group:            group,
-		isLocalBlock:     isLocalBlock,
-		ctx:              c,
-		cancel:           cancel,
-		taskCh:           make(chan *task),
-		newWorkCh:        make(chan *newWorkReq),
+		engine:       engine,
+		chain:        bc,
+		txsPool:      txsPool,
+		chainConfig:  chainConfig,
+		startCh:      make(chan struct{}, 1),
+		group:        group,
+		isLocalBlock: isLocalBlock,
+		ctx:          c,
+		cancel:       cancel,
+		taskCh:       make(chan *task),
+		// Capacity 1: TriggerBlockProduction (leader-driven HotStuff) sends with
+		// a non-blocking select — an UNBUFFERED channel silently dropped the
+		// request whenever runLoop wasn't parked exactly on the receive (e.g.
+		// mid clearPending or a previous build), so the leader never proposed
+		// for its view and every view timed out (observed live: "TC formed,
+		// I am the new leader" followed by nothing, on all 7 nodes). One slot
+		// queues exactly one pending build; runLoop drains it when free, and a
+		// full slot means a build is already pending — dropping then is correct.
+		newWorkCh:        make(chan *newWorkReq, 1),
 		resultCh:         make(chan block.IBlock),
 		pendingTasks:     make(map[types.Hash]*task),
 		minerConf:        minerConf,
