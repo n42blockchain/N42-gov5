@@ -60,6 +60,7 @@ type storSample struct {
 func runProofBench(args []string) {
 	fs := flag.NewFlagSet("proof-bench", flag.ExitOnError)
 	out := fs.String("out", "", "DATC dir (from build)")
+	out2 := fs.String("out2", "", "fresh continuation DB (fork-state + records-only build): node records/StoRoot ≥ forkedAt, tried FIRST; --out serves segments/ckpt + older records")
 	hdrDir := fs.String("headers", `D:/n42-eth1/chain/freezer`, "headerc freezer dir (root oracle)")
 	nIter := fs.Int("n", 10000, "number of proofs to run")
 	seed := fs.Int64("seed", 42, "rng seed")
@@ -98,12 +99,32 @@ func runProofBench(args []string) {
 	}
 	defer tx.Rollback()
 
+	var tx2 kv.Tx
+	if *out2 != "" {
+		db2, err := mdbxkv.NewMDBX(logger).Path(*out2).Label(kv.ChainDB).
+			MapSize(datasize.ByteSize(*mapGB) * datasize.GB).Accede().Readonly().
+			Open(context.Background())
+		if err != nil {
+			die("open out2: %v", err)
+		}
+		defer db2.Close()
+		if tx2, err = db2.BeginRo(context.Background()); err != nil {
+			die("begin out2: %v", err)
+		}
+		defer tx2.Rollback()
+	}
+
 	// Head: prefer meta "head", fall back to "progress" (last committed block).
-	// A concurrent-root stop may commit "progress" without "head".
+	// A concurrent-root stop may commit "progress" without "head". With --out2
+	// the continuation DB's head is the queryable head.
+	headTx := tx
+	if tx2 != nil {
+		headTx = tx2
+	}
 	var head uint64
-	if hv, _ := tx.GetOne(tDatcMeta, []byte("head")); len(hv) >= 8 {
+	if hv, _ := headTx.GetOne(tDatcMeta, []byte("head")); len(hv) >= 8 {
 		head = binary.BigEndian.Uint64(hv[:8])
-	} else if pv, _ := tx.GetOne(tDatcMeta, []byte("progress")); len(pv) >= 8 {
+	} else if pv, _ := headTx.GetOne(tDatcMeta, []byte("progress")); len(pv) >= 8 {
 		head = binary.BigEndian.Uint64(pv[:8])
 		fmt.Printf("note: meta 'head' absent — using 'progress'=%d as the queryable head\n", head)
 	} else {
@@ -149,7 +170,7 @@ func runProofBench(args []string) {
 		}
 	}
 
-	q := &querier{tx: tx, sched: sched, stoSched: stoSched, foldDepth: *foldDepth}
+	q := &querier{tx: tx, tx2: tx2, sched: sched, stoSched: stoSched, foldDepth: *foldDepth}
 	if *trustStoRoot {
 		// Force the completeness stamp the concurrent-root build failed to write:
 		// misses become authoritative "no storage" instead of a full-history fold.
