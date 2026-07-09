@@ -354,6 +354,16 @@ func (p *Status) SetTrusted(ids []peer.ID) {
 	p.trusted = m
 }
 
+// IsTrusted reports whether pid is a configured static/validator-mesh peer.
+// Trusted peers form a fully mutual-trust channel: exempt from bad-peer
+// classification, request rate limiting, and the scoring penalties both
+// impose — the open-network heuristics that otherwise fight a small fixed
+// validator mesh point by point.
+func (p *Status) IsTrusted(pid peer.ID) bool {
+	_, ok := p.trusted[pid]
+	return ok
+}
+
 // isBad is the lock-free version of IsBad.
 func (p *Status) isBad(pid peer.ID) bool {
 	if _, ok := p.trusted[pid]; ok {

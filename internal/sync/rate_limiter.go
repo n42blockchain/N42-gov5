@@ -73,6 +73,15 @@ func (l *limiter) topicCollector(topic string) (*leakybucket.Collector, error) {
 
 // validateRequest checks whether a request with the given cost is within rate limits.
 func (l *limiter) validateRequest(stream network.Stream, amt uint64) error {
+	// Validator-mesh mode: trusted (static) peers are never rate limited — the
+	// limits are DoS heuristics for open networks, and over-limit handling
+	// penalizes the peer's score. A fixed validator mesh restarting together
+	// trips the 1/s control-message buckets instantly (observed live:
+	// goodbye/status storms scoring peers into disconnects), so the mesh's own
+	// members are exempt wholesale.
+	if l.p2p.Peers().IsTrusted(stream.Conn().RemotePeer()) {
+		return nil
+	}
 	l.RLock()
 	defer l.RUnlock()
 
@@ -105,6 +114,10 @@ func (l *limiter) validateRequest(stream network.Stream, amt uint64) error {
 // validateRawRpcRequest validates all incoming RPC streams from external peers
 // against the general RPC rate limit.
 func (l *limiter) validateRawRpcRequest(stream network.Stream) error {
+	// Validator-mesh mode: see validateRequest.
+	if l.p2p.Peers().IsTrusted(stream.Conn().RemotePeer()) {
+		return nil
+	}
 	l.RLock()
 	defer l.RUnlock()
 
