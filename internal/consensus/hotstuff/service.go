@@ -69,6 +69,29 @@ type BlockProducer interface {
 type BlockFetcher interface {
 	FetchBlockByHash(hash types.Hash)
 	CatchUp()
+	// HeightBehind reports how many blocks the local head trails the best peer
+	// (0 when synced, ahead, or when no peer height is known yet). Used as the
+	// block-production sync-gate: a far-behind validator that produces a block
+	// builds on a stale head and self-forks, spawning a rogue candidate that can
+	// propagate and destabilize the network.
+	HeightBehind() uint64
+}
+
+// blockProductionSyncGate is the height lag (in blocks) above which a leader
+// pauses block production and catches up first. A small allowance absorbs the
+// transient one-block lag of normal operation (a leader that just committed a
+// height its peers already have) without halting production, while still
+// catching the startup self-fork case where a node trails by many blocks.
+const blockProductionSyncGate = 2
+
+// heightBehind returns how far the local head trails the network, or 0 when no
+// block fetcher is wired (preserving unconditional production for chains without
+// the sync layer).
+func (s *Service) heightBehind() uint64 {
+	if s.blockFetcher == nil {
+		return 0
+	}
+	return s.blockFetcher.HeightBehind()
 }
 
 // Service is the integration layer that connects the HotStuff consensus engine
@@ -338,12 +361,27 @@ func (s *Service) handleOutput(output EngineOutput) {
 		isLeader := s.engine.Engine().IsCurrentLeader()
 		log.Info("hotstuff: view changed", "view", output.View, "isLeader", isLeader, "hasProducer", s.blockProducer != nil)
 		if isLeader && s.blockProducer != nil {
-			// Extend the LockedQC (HighQC) block — HotStuff-2's safety rule. A
-			// leader that extends its own local head instead proposes on top of
-			// an UNCOMMITTED same-height candidate, and the network oscillates
-			// between sibling branches without ever forming a quorum.
-			lq := s.engine.Engine().LockedQC()
-			s.blockProducer.TriggerBlockProduction(lq.BlockHash)
+			// Sync-gate: a validator whose local head trails the network must NOT
+			// produce a block. It would build on a stale head and self-fork —
+			// spawning a rogue candidate that, once its view is committed
+			// elsewhere, propagates and destabilizes the whole network (observed
+			// live: a reseeded node produced its own block one above its stale
+			// head the instant it started, before view/range sync caught up).
+			// Catch up first; a later view we lead will find us current.
+			if behind := s.heightBehind(); behind > blockProductionSyncGate {
+				log.Warn("hotstuff: behind peers, skipping block production and catching up",
+					"view", output.View, "behind", behind, "gate", blockProductionSyncGate)
+				if s.blockFetcher != nil {
+					go s.blockFetcher.CatchUp()
+				}
+			} else {
+				// Extend the LockedQC (HighQC) block — HotStuff-2's safety rule. A
+				// leader that extends its own local head instead proposes on top of
+				// an UNCOMMITTED same-height candidate, and the network oscillates
+				// between sibling branches without ever forming a quorum.
+				lq := s.engine.Engine().LockedQC()
+				s.blockProducer.TriggerBlockProduction(lq.BlockHash)
+			}
 		}
 		// Rate-limited persistence.
 		if output.View-s.lastPersistedView >= s.persistInterval {
