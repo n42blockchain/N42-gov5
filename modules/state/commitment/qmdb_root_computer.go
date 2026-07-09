@@ -69,6 +69,34 @@ func (r *QMDBRootComputer) ProofAtHeight(keyHash qmdb.Hash, h uint64) (*qmdb.Pro
 // LastUndo right after the ComputeRoot call.
 func (r *QMDBRootComputer) EnableUndoRecording() { r.undoRecording = true }
 
+// RevertBlock rolls the live QMDB tree back across one block using its undo
+// record, repairing the persisted positional layout in the same tx and
+// adopting the rewound flush cursor. This is the state half of a HotStuff
+// same-height sibling switch: the QMDB root is append-history-dependent, so a
+// competing block MUST be re-executed on the reverted tree — executing it on
+// top of the un-reverted one appends at shifted slots and forks the root
+// permanently vs nodes that only ever applied the winner.
+//
+// Call with the most recently applied block's undo first (newest→oldest for
+// deeper unwinds). tx must be the same RwTx the subsequent re-execution
+// flushes through.
+func (r *QMDBRootComputer) RevertBlock(tx kv.RwTx, undo *qmdb.BlockUndo) error {
+	// Re-point the cold entry reader + leaf store at THIS tx first: the tree's
+	// attached readers still reference whatever tx the last execution ran with
+	// (evmRecord re-points them per block, then closes that tx) — reading
+	// through a closed tx segfaults inside MDBX cursor open.
+	r.SetCold(tx)
+	if r.mdbxIdx != nil {
+		r.mdbxIdx.setTx(tx)
+	}
+	ft, err := r.t.ApplyUndoWithStorage(tx, undo, r.flushedThrough)
+	if err != nil {
+		return err
+	}
+	r.flushedThrough = ft
+	return nil
+}
+
 // LastUndo returns the undo record captured by the most recent ComputeRoot
 // (nil if recording is disabled or no block was computed yet).
 func (r *QMDBRootComputer) LastUndo() *qmdb.BlockUndo { return r.lastUndo }

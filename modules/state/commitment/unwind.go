@@ -174,3 +174,49 @@ func deleteBlockChangeset(tx kv.RwTx, n uint64) error {
 	}
 	return nil
 }
+
+// UnwindPlainStateBlock reverts block n's PLAIN state (modules.Account /
+// modules.Storage) using the block's changeset pre-values, then deletes the
+// consumed changeset rows. This is the world-state half of a HotStuff
+// same-height sibling switch (the QMDB tree half is
+// QMDBRootComputer.RevertBlock): the re-executed sibling must read the
+// PARENT's PlainState, not the orphaned block's leftovers — an un-reverted key
+// the sibling doesn't re-touch would silently keep the loser's value.
+//
+// nil account pre-value = the account was created in n → delete; zero slot
+// pre-value = the slot was empty before n → delete. Code stays (hash-keyed,
+// immutable; orphaned entries are harmless).
+func UnwindPlainStateBlock(tx kv.RwTx, n uint64) error {
+	accounts, storage, err := readBlockChangeset(tx, n)
+	if err != nil {
+		return err
+	}
+	for addr, acc := range accounts {
+		if acc == nil {
+			if err := tx.Delete(modules.Account, addr[:]); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := tx.Put(modules.Account, addr[:], acc.MarshalV2()); err != nil {
+			return err
+		}
+	}
+	for addr, slots := range storage {
+		for slot, val := range slots {
+			ck := modules.PlainGenerateCompositeStorageKey(addr.Bytes(), slot.Bytes())
+			if val == nil || val.IsZero() {
+				if err := tx.Delete(modules.Storage, ck); err != nil {
+					return err
+				}
+				continue
+			}
+			v := make([]byte, val.ByteLen())
+			val.WriteToSlice(v)
+			if err := tx.Put(modules.Storage, ck, v); err != nil {
+				return err
+			}
+		}
+	}
+	return deleteBlockChangeset(tx, n)
+}
