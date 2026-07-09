@@ -96,6 +96,13 @@ type Service struct {
 	pendingMu         sync.Mutex
 	pendingExecutions map[types.Hash]struct{}
 
+	// pendingCommit is a committed block whose CommitToCanonical was deferred
+	// because the block hadn't arrived yet. Retried when that block imports —
+	// without the retry, nodes that missed the commit-time import never mark
+	// the height canonical (observed on-disk: canonical rows missing on 6/7
+	// nodes at the first view-changed height). Protected by pendingMu.
+	pendingCommit types.Hash
+
 	// Epoch schedule for pre-staging future validator sets (loaded from file).
 	epochSchedule *EpochSchedule
 
@@ -245,6 +252,14 @@ func (s *Service) handleOutput(output EngineOutput) {
 		if s.blockProducer != nil {
 			if err := s.blockProducer.CommitToCanonical(output.Hash); err != nil {
 				log.Debug("hotstuff: commit-to-canonical deferred", "hash", output.Hash, "err", err)
+				// Remember it — NotifyBlockImported retries when the block lands.
+				s.pendingMu.Lock()
+				s.pendingCommit = output.Hash
+				s.pendingMu.Unlock()
+			} else {
+				s.pendingMu.Lock()
+				s.pendingCommit = types.Hash{}
+				s.pendingMu.Unlock()
 			}
 		}
 		updateMetricsBlockCommitted(output.View)
@@ -718,7 +733,22 @@ func (s *Service) broadcastBlockData(_ types.Hash) {
 func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 	s.pendingMu.Lock()
 	delete(s.pendingExecutions, hash) // clear if present; no longer used to gate
+	retryCommit := s.pendingCommit == hash && hash != (types.Hash{})
+	if retryCommit {
+		s.pendingCommit = types.Hash{}
+	}
 	s.pendingMu.Unlock()
+
+	// A commit that was deferred because this block hadn't arrived: finish it
+	// now, so the canonical marker and head advance on every node, not just the
+	// ones that held the block at commit time.
+	if retryCommit && s.blockProducer != nil {
+		if err := s.blockProducer.CommitToCanonical(hash); err != nil {
+			log.Debug("hotstuff: deferred commit-to-canonical retry failed", "hash", hash, "err", err)
+		} else {
+			log.Info("hotstuff: deferred commit-to-canonical completed", "hash", hash)
+		}
+	}
 
 	// Always notify the engine — do NOT gate on pendingExecutions, which
 	// advanceToView clears every view. With import-gated voting, the engine's

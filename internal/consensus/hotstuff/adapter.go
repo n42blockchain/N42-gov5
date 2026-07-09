@@ -326,11 +326,16 @@ func (h *HotStuff) VerifyHeader(chain consensus.ChainHeaderReader, iHeader block
 		return err
 	}
 
-	// Verify timestamp is after parent.
-	var parentNum uint256.Int
-	parentNum.Sub(header.Number, uint256.NewInt(1))
-	parent := chain.GetHeaderByNumber(&parentNum)
-	if parent == nil {
+	// Resolve the parent by the header's OWN ParentHash — not by number. A
+	// by-number lookup returns the locally-canonical header, but under HotStuff-2
+	// a view-change can leave competing same-height siblings and nodes may not
+	// have converged on which one is canonical yet (CommitToCanonical is the
+	// authority, and it can lag). Validating a child against the by-number parent
+	// mis-rejects any block built on the non-canonical sibling. Headers are
+	// stored keyed by (number, hash) for non-canonical blocks too, so the true
+	// parent is retrievable regardless of local canonical choice.
+	parent, perr := chain.GetHeaderByHash(header.ParentHash)
+	if perr != nil || parent == nil {
 		// Return ErrUnknownAncestor (not a generic error) so InsertChain
 		// future-queues this block instead of rejecting it as bad. Direct-pushed
 		// HotStuff blocks can arrive before their parent; they import once the
@@ -338,8 +343,14 @@ func (h *HotStuff) VerifyHeader(chain consensus.ChainHeaderReader, iHeader block
 		return consensus.ErrUnknownAncestor
 	}
 	parentHeader, ok := parent.(*block.Header)
-	if !ok {
-		return errors.New("invalid parent header type")
+	if !ok || parentHeader == nil {
+		return consensus.ErrUnknownAncestor
+	}
+	// Sanity: the referenced parent must sit exactly one height below.
+	var wantParentNum uint256.Int
+	wantParentNum.Sub(header.Number, uint256.NewInt(1))
+	if parentHeader.Number == nil || parentHeader.Number.Cmp(&wantParentNum) != 0 {
+		return fmt.Errorf("parent %x has height %v, want %v", header.ParentHash[:8], parentHeader.Number, &wantParentNum)
 	}
 
 	if header.Time <= parentHeader.Time {
@@ -459,12 +470,14 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 	if header.Number.IsZero() {
 		return nil
 	}
-	var pNum uint256.Int
-	pNum.Sub(header.Number, uint256.NewInt(1))
-	parent := chain.GetHeaderByNumber(&pNum)
+	// Resolve the parent by the header's ParentHash (set by the miner before
+	// Prepare), mirroring VerifyHeader — the leader may be extending a block
+	// that is not yet locally canonical (commit lag), and the timestamp + PBR
+	// must derive from the block actually extended.
+	parent, _ := chain.GetHeaderByHash(header.ParentHash)
 	if parent != nil {
 		parentHeader, ok := parent.(*block.Header)
-		if ok {
+		if ok && parentHeader != nil {
 			period := h.config.Period
 			if period == 0 {
 				period = 3 // default 3 second blocks
