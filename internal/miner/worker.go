@@ -362,6 +362,22 @@ func (w *worker) resultLoop() error {
 
 			// Short circuit when receiving duplicate result caused by resubmitting.
 			if w.chain.HasBlock(blk.Hash(), blockNumber.Uint64()) {
+				if usesTimerDrivenSealing(w.engine) {
+					continue
+				}
+				// Leader-driven (HotStuff): the deterministic rebuild collides
+				// with a block already imported in an EARLIER round (restart at a
+				// stalled height re-enters overlapping views, so the identical
+				// candidate is already in the DB — imported but never committed).
+				// It still must be proposed for THIS view: skip the state
+				// re-write, but re-push and notify so the Proposal goes out.
+				log.Info("miner: re-proposing already-imported block", "number", blockNumber.Uint64(), "hash", blk.Hash().Hex()[:12])
+				if err := w.chain.SealedBlock(blk); err != nil {
+					log.Warn("miner: re-push of existing block failed", "err", err)
+				}
+				if bsn, ok := w.engine.(blockSealNotifier); ok {
+					bsn.NotifyBlockSealed(blk.Hash(), blk.TxHash())
+				}
 				continue
 			}
 
@@ -481,7 +497,16 @@ func (w *worker) taskLoop() error {
 			}
 
 			sealHash := w.engine.SealHash(task.block.Header())
-			if sealHash == prev {
+			if sealHash == prev && usesTimerDrivenSealing(w.engine) {
+				// Timer/PoW engines: the recommit loop re-submits identical work —
+				// skip. Leader-driven engines (HotStuff) must NOT dedup here: block
+				// time is deterministic (parent time + period), so a NEW view's
+				// leader legitimately rebuilds the IDENTICAL block and must re-enter
+				// Seal to propose it in that view. Swallowing the retry wedges the
+				// chain: the first build (possibly as a follower) poisons `prev`,
+				// and every later leader's rebuild is silently dropped — no proposal
+				// ever goes out while views time out forever (observed live on a
+				// 7-node restart at a stalled height).
 				continue
 			}
 			interrupt()
@@ -514,6 +539,7 @@ func (w *worker) taskLoop() error {
 }
 
 func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int64) error {
+	log.Info("miner: commitWork begin") // diagnostic: pairs with "build triggered"
 	start := time.Now()
 	w.mu.RLock()
 	coinbase := w.coinbase
