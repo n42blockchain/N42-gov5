@@ -382,11 +382,56 @@ func (bc *BlockChain) AncientReader() *freezer.AncientReader {
 // =============================================================================
 
 func (bc *BlockChain) Start() error {
+	bc.revertSpeculativeOnStartup()
 	bc.wg.Add(3)
 	go bc.runLoop()
 	go bc.updateFutureBlocksLoop()
 	go bc.runNewBlockMessage()
 	return nil
+}
+
+// revertSpeculativeOnStartup restores the HotStuff-2 restart invariant: a
+// recovering validator trusts only COMMITTED blocks. Speculative imports move
+// the applied world state ahead of the canonical (= commit-driven) head; after
+// a crash those uncommitted blocks — possibly losing sibling candidates — must
+// be reverted so the node rejoins the network from its last committed state
+// and converges via consensus (proposals + JustifyQC), not by replaying stale
+// local candidates against live traffic.
+func (bc *BlockChain) revertSpeculativeOnStartup() {
+	var (
+		appliedNum  uint64
+		appliedHash types.Hash
+		haveMarker  bool
+	)
+	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		n, h, ok, err := rawdb.ReadQMDBApplied(tx)
+		if err == nil && ok {
+			appliedNum, appliedHash, haveMarker = n, types.Hash(h), true
+		}
+		return nil
+	})
+	if !haveMarker {
+		return // fresh / non-speculative data — nothing tracked to revert
+	}
+	cur := bc.CurrentBlock()
+	if cur == nil {
+		return
+	}
+	canonNum := cur.Number64().Uint64()
+	canonHash := cur.Hash()
+	if appliedHash == canonHash {
+		return // applied == committed: clean shutdown
+	}
+	log.Info("startup: reverting speculative (uncommitted) blocks to last committed head",
+		"applied", appliedNum, "appliedHash", appliedHash.Hex()[:12],
+		"committed", canonNum, "committedHash", canonHash.Hex()[:12])
+	// CommitToCanonical only canonicalizes applied blocks, so the committed
+	// head is on the applied lineage and the branch-switch unwind reaches it
+	// directly. If the DB was left mid-switch in a state where it does not,
+	// don't block startup — consensus catch-up aligns the branch later.
+	if err := bc.AlignAppliedBranch(canonNum+1, canonHash); err != nil {
+		log.Warn("startup speculative revert incomplete; consensus catch-up will align the branch", "err", err)
+	}
 }
 
 func (bc *BlockChain) Close() error {
