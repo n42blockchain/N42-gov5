@@ -29,7 +29,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
+	"sync"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -254,36 +257,136 @@ func finalizeLeafSegmentsOpts(outDir, spillSub, oldSegSub, outSegSub string) err
 			}
 		}
 	}
-	zr, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
-	if err != nil {
-		return err
-	}
-	defer zr.Close()
-	enc, err := zstd.NewWriter(nil,
-		zstd.WithEncoderLevel(zstd.SpeedBetterCompression),
-		zstd.WithEncoderConcurrency(2))
-	if err != nil {
-		return err
-	}
-	defer enc.Close()
-
-	totalCorrupt := 0
-	for _, src := range names {
-		base := filepath.Base(src)
-		segName := base[:len(base)-len(".zspill")] + ".seg"
-		dst := filepath.Join(segd, segName)
-		oldSeg := filepath.Join(oldd, segName)
-		cf := 0
-		if err := finalizeBucket(zr, enc, src, oldSeg, dst, &cf); err != nil {
-			return fmt.Errorf("bucket %s: %w", base, err)
+	// Bucket-parallel recast: buckets are independent (disjoint key prefixes),
+	// so re-compression — the ~470 GB SpeedBetterCompression bottleneck — fans
+	// across cores. Each worker owns a decoder+encoder (EncodeAll on a shared
+	// encoder is safe, but per-worker avoids WithEncoderConcurrency
+	// oversubscription). Memory is gated two ways: a total worker cap, and a
+	// SEPARATE heavy-bucket semaphore — a bucket whose compressed spill exceeds
+	// heavyBytes reads the whole file into RAM (in-RAM sort) or streams it via
+	// the external sort's whole-file read (~17 GB for s.ab), so only a few may
+	// run at once. Small buckets (the vast majority) run up to the worker cap.
+	workers := runtime.NumCPU() - 2
+	if v := os.Getenv("N42_DATC_FINALIZE_WORKERS"); v != "" {
+		if n, e := strconv.Atoi(v); e == nil && n > 0 {
+			workers = n
 		}
-		totalCorrupt += cf
-		// NEVER delete the spill (operator rule): every .zspill is kept as the
-		// durable, resumable recovery source — segments are derived, the spill
-		// is the truth. Finalized buckets are relocated out of leafspill/ by the
-		// operator's resume wrapper (to a done dir, NOT deleted) so a re-run does
-		// not re-merge them; removal is always a manual op after `verify`.
 	}
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > len(names) {
+		workers = len(names)
+	}
+	heavyBytes := int64(3) << 30 // >3 GiB compressed ⇒ heavy (whole-file read)
+	heavyMax := 2
+	if v := os.Getenv("N42_DATC_FINALIZE_HEAVY"); v != "" {
+		if n, e := strconv.Atoi(v); e == nil && n > 0 {
+			heavyMax = n
+		}
+	}
+
+	// Big buckets first: better load balance (a 17 GB bucket started last would
+	// tail the whole run).
+	sort.Slice(names, func(i, j int) bool {
+		fi, _ := os.Stat(names[i])
+		fj, _ := os.Stat(names[j])
+		var si, sj int64
+		if fi != nil {
+			si = fi.Size()
+		}
+		if fj != nil {
+			sj = fj.Size()
+		}
+		return si > sj
+	})
+
+	fmt.Printf("[leafseg] recast %d buckets: %d workers, heavy(>%dGiB) cap %d, %d KiB frames\n",
+		len(names), workers, heavyBytes>>30, heavyMax, segFrameRawTarget>>10)
+
+	jobs := make(chan string, len(names))
+	for _, src := range names {
+		jobs <- src
+	}
+	close(jobs)
+
+	heavySem := make(chan struct{}, heavyMax)
+	var mu sync.Mutex
+	totalCorrupt := 0
+	var firstErr error
+	var done int64
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			zr := zr2()
+			defer zr.Close()
+			enc, eerr := zstd.NewWriter(nil,
+				zstd.WithEncoderLevel(zstd.SpeedBetterCompression),
+				zstd.WithEncoderConcurrency(1))
+			if eerr != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = eerr
+				}
+				mu.Unlock()
+				return
+			}
+			defer enc.Close()
+			for src := range jobs {
+				mu.Lock()
+				stop := firstErr != nil
+				mu.Unlock()
+				if stop {
+					return
+				}
+				base0 := filepath.Base(src)
+				dst0 := filepath.Join(segd, base0[:len(base0)-len(".zspill")]+".seg")
+				// Resume: a complete .seg (atomic tmp→rename) means this bucket
+				// already recast — skip it (only meaningful when segd != oldd).
+				if segd != oldd {
+					if _, e := os.Stat(dst0); e == nil {
+						mu.Lock()
+						done++
+						mu.Unlock()
+						continue
+					}
+				}
+				heavy := false
+				if fi, e := os.Stat(src); e == nil && fi.Size() > heavyBytes {
+					heavy = true
+					heavySem <- struct{}{}
+				}
+				base := filepath.Base(src)
+				segName := base[:len(base)-len(".zspill")] + ".seg"
+				dst := filepath.Join(segd, segName)
+				oldSeg := filepath.Join(oldd, segName)
+				cf := 0
+				err := finalizeBucket(zr, enc, src, oldSeg, dst, &cf)
+				if heavy {
+					<-heavySem
+				}
+				mu.Lock()
+				if err != nil && firstErr == nil {
+					firstErr = fmt.Errorf("bucket %s: %w", base, err)
+				}
+				totalCorrupt += cf
+				done++
+				if done%64 == 0 || done == int64(len(names)) {
+					fmt.Printf("[leafseg] recast %d/%d buckets\n", done, len(names))
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+	// NEVER delete the spill (operator rule): every .zspill is kept as the
+	// durable, resumable recovery source — segments are derived, the spill is
+	// the truth. Removal is always a manual op after `verify`.
 	if totalCorrupt > 0 {
 		// SAFETY (feedback-human-time-is-precious, 2026-06-13): corrupt/truncated
 		// frames were skipped, so rows may be MISSING from the segments. Do NOT
