@@ -52,8 +52,21 @@ func (s *Service) blockByHashStreamHandler(stream network.Stream) {
 // client side of fetch-on-miss, invoked when the engine asks to execute a
 // proposed block we don't yet have. Implements hotstuff.BlockFetcher.
 func (s *Service) FetchBlockByHash(hash types.Hash) {
-	// Already have it (direct push or a previous fetch arrived): nothing to do.
+	// Already have the block BODY: don't just return — the caller needs it
+	// APPLIED. On a branch switch the parent sibling is already in the DB from
+	// an earlier round but was never executed onto the world state; re-insert
+	// it so the import path unwinds to its parent and executes it (a plain
+	// already-applied block short-circuits as known — cheap no-op).
 	if blk, _ := s.cfg.chain.GetBlockByHash(hash); blk != nil {
+		go func() {
+			if _, err := s.cfg.chain.InsertChain([]block.IBlock{blk}); err != nil {
+				log.Debug("fetch-on-miss: local re-insert failed", "hash", hash.Hex()[:12], "err", err)
+				return
+			}
+			if n := s.cfg.blockImportNotifier; n != nil {
+				n.NotifyBlockImported(blk.Hash(), blk.TxHash())
+			}
+		}()
 		return
 	}
 	protoID := protocol.ID(p2p.RPCBlockByHashTopicV1 + s.cfg.p2p.Encoding().ProtocolSuffix())
