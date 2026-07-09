@@ -67,7 +67,7 @@ func (s *Service) FetchBlockByHash(hash types.Hash) {
 			cur := blk
 			pending := []block.IBlock{}
 			for depth := 0; depth < 32; depth++ {
-				if _, err := s.cfg.chain.InsertChain([]block.IBlock{cur}); err == nil {
+				if _, err := s.insertAuthorized([]block.IBlock{cur}); err == nil {
 					break
 				}
 				p, _ := s.cfg.chain.GetBlockByHash(cur.ParentHash())
@@ -82,7 +82,7 @@ func (s *Service) FetchBlockByHash(hash types.Hash) {
 			}
 			// Replay the collected descendants oldest-first down to the target.
 			for i := len(pending) - 1; i >= 0; i-- {
-				if _, err := s.cfg.chain.InsertChain([]block.IBlock{pending[i]}); err != nil {
+				if _, err := s.insertAuthorized([]block.IBlock{pending[i]}); err != nil {
 					log.Debug("fetch-on-miss: chain-align replay failed",
 						"number", pending[i].Number64().Uint64(),
 						"hash", pending[i].Hash().Hex()[:12], "err", err)
@@ -124,7 +124,7 @@ func (s *Service) FetchBlockByHash(hash types.Hash) {
 				log.Info("fetch-on-miss: hash mismatch", "want", hash.Hex()[:12], "got", blk.Hash().Hex()[:12])
 				return // peer returned the wrong block
 			}
-			if _, err := s.cfg.chain.InsertChain([]block.IBlock{blk}); err != nil {
+			if _, err := s.insertAuthorized([]block.IBlock{blk}); err != nil {
 				log.Debug("fetch-on-miss: insert failed", "number", blk.Number64().Uint64(), "err", err)
 				return
 			}
@@ -134,4 +134,17 @@ func (s *Service) FetchBlockByHash(hash types.Hash) {
 			}
 		}(pid)
 	}
+}
+
+// insertAuthorized imports consensus-requested blocks WITH branch-switch
+// authority (the engine named this block/branch via a proposal, so reverting
+// a losing applied sibling is legitimate). Falls back to the plain insert if
+// the chain implementation doesn't support authorization.
+func (s *Service) insertAuthorized(blocks []block.IBlock) (int, error) {
+	if a, ok := s.cfg.chain.(interface {
+		InsertChainAuthorized([]block.IBlock) (int, error)
+	}); ok {
+		return a.InsertChainAuthorized(blocks)
+	}
+	return s.cfg.chain.InsertChain(blocks)
 }
