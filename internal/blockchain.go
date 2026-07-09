@@ -486,20 +486,25 @@ func (bc *BlockChain) processFutureBlocks() {
 		return
 	}
 
-	if n, err := bc.InsertChain(blocks); err != nil {
-		log.Warn("insert future block failed", err)
-	} else {
-		for _, k := range bc.futureBlocks.Keys() {
-			bc.futureBlocks.Remove(k)
+	// Insert one block at a time: under HotStuff the queue can hold SEVERAL
+	// same-height sibling candidates (competing views), and a batch insert
+	// trips InsertChain's contiguity check ("non contiguous insert: item 0 is
+	// #N, item 1 is #N") — rejecting the WHOLE batch forever, in a retry loop.
+	// Per-block inserts let each candidate succeed or fail on its own; a block
+	// that imports (or is already known) leaves the queue, a still-unready one
+	// stays for the next pass.
+	inserted := 0
+	for _, b := range blocks {
+		if _, err := bc.InsertChain([]block.IBlock{b}); err != nil {
+			log.Debug("insert future block failed", "number", b.Number64().Uint64(),
+				"hash", b.Hash().Hex()[:12], "err", err)
+			continue
 		}
-		if n > 0 {
-			lastNumber, numberErr := requireBlockNumber(blocks[n-1], "future block number unavailable")
-			if numberErr != nil {
-				log.Infof("insert %d future block success", n)
-			} else {
-				log.Infof("insert %d future block success, for %d to %d", n, firstNumber.Uint64(), lastNumber.Uint64())
-			}
-		}
+		bc.futureBlocks.Remove(b.Hash())
+		inserted++
+	}
+	if inserted > 0 {
+		log.Infof("insert %d future block(s) success from %d queued", inserted, len(blocks))
 	}
 }
 
