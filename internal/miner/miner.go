@@ -181,7 +181,7 @@ func (m *Miner) PendingBlockAndReceipts() (block.IBlock, block.Receipts) {
 // TriggerBlockProduction triggers an immediate block production attempt.
 // Used by BFT consensus (e.g., HotStuff) to start block building when the
 // node becomes the leader for a new view.
-func (m *Miner) TriggerBlockProduction() {
+func (m *Miner) TriggerBlockProduction(parentHash types.Hash) {
 	if !m.worker.isRunning() {
 		log.Warn("miner: build trigger while worker not running")
 		return
@@ -192,8 +192,10 @@ func (m *Miner) TriggerBlockProduction() {
 	// view to advance the chain, even with an empty mempool. noempty=true would
 	// skip empty blocks, so the height would stall whenever there are no pending
 	// transactions — exactly the live mainnet_qmdb case.
-	case m.worker.newWorkCh <- &newWorkReq{interrupt: interrupt, noempty: false, timestamp: time.Now().Unix()}:
-		log.Info("miner: build triggered (leader view)")
+	// parentHash (when non-zero) pins the proposal to the consensus-mandated
+	// parent (the HighQC block) instead of the local head.
+	case m.worker.newWorkCh <- &newWorkReq{interrupt: interrupt, noempty: false, timestamp: time.Now().Unix(), parentHash: parentHash}:
+		log.Info("miner: build triggered (leader view)", "parent", parentHash.Hex()[:12])
 	default:
 		// One build request already queued — it will produce for this head.
 		log.Info("miner: build request already pending, trigger skipped")
