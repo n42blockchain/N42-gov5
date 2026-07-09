@@ -1598,6 +1598,16 @@ Error: %v
 // to commit, tree and disk disagree until restart (LoadFrom rebuilds from
 // disk). The error is propagated, so the node does not continue on the
 // mismatched state.
+// AlignAppliedBranch makes the applied world state be the post-state of
+// parentHash (at height childNum-1), reverting any locally-applied uncommitted
+// sibling branch first — the precondition for building/executing a block on
+// the consensus-mandated parent (HotStuff HighQC block) rather than the local
+// head. No-op when already aligned; ErrUnknownAncestor when the parent itself
+// was never applied and must import first.
+func (bc *BlockChain) AlignAppliedBranch(childNum uint64, parentHash types.Hash) error {
+	return bc.unwindForReimport(childNum, parentHash)
+}
+
 func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash) error {
 	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil || n == 0 {
 		return nil

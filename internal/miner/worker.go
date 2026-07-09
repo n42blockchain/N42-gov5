@@ -109,6 +109,10 @@ type newWorkReq struct {
 	interrupt *atomic.Int32
 	noempty   bool
 	timestamp int64
+	// parentHash, when non-zero, pins the build to this parent — the
+	// consensus-mandated HighQC block for a leader-driven proposal — instead
+	// of the local chain head.
+	parentHash types.Hash
 }
 
 type generateParams struct {
@@ -334,7 +338,7 @@ func (w *worker) runLoop() error {
 		case <-w.ctx.Done():
 			return w.ctx.Err()
 		case req := <-w.newWorkCh:
-			err := w.commitWork(req.interrupt, req.noempty, req.timestamp)
+			err := w.commitWork(req.interrupt, req.noempty, req.timestamp, req.parentHash)
 			if err != nil {
 				log.Error("runLoop error", "err", err)
 			}
@@ -538,7 +542,7 @@ func (w *worker) taskLoop() error {
 	}
 }
 
-func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int64) error {
+func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int64, parentHash types.Hash) error {
 	log.Info("miner: commitWork begin") // diagnostic: pairs with "build triggered"
 	start := time.Now()
 	w.mu.RLock()
@@ -548,7 +552,23 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		return errors.New("coinbase is empty")
 	}
 
-	current, err := w.prepareWork(&generateParams{timestamp: uint64(timestamp), coinbase: coinbase})
+	// Consensus-pinned parent (HotStuff HighQC block): the world state must BE
+	// that parent's post-state before we execute the payload — align it first
+	// (reverts any locally-applied uncommitted sibling; no-op when already
+	// aligned). Without this the build reads the loser candidate's dirty state.
+	if parentHash != (types.Hash{}) {
+		if bc, ok := w.chain.(*internal.BlockChain); ok {
+			pblk, _ := w.chain.GetBlockByHash(parentHash)
+			if pblk == nil {
+				return fmt.Errorf("consensus parent %x not in local db", parentHash[:8])
+			}
+			if err := bc.AlignAppliedBranch(pblk.Number64().Uint64()+1, parentHash); err != nil {
+				return fmt.Errorf("align applied branch to consensus parent %x: %w", parentHash[:8], err)
+			}
+		}
+	}
+
+	current, err := w.prepareWork(&generateParams{timestamp: uint64(timestamp), coinbase: coinbase, parentHash: parentHash})
 	if err != nil {
 		log.Error("cannot prepare work", "err", err)
 		return err

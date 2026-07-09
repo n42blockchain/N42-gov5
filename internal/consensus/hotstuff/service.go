@@ -49,7 +49,14 @@ type P2PDirectSender interface {
 
 // BlockProducer abstracts the miner for leader block production.
 type BlockProducer interface {
-	TriggerBlockProduction()
+	// TriggerBlockProduction starts building a block for the current view.
+	// parentHash, when non-zero, is the block the proposal MUST extend — the
+	// HighQC/LockedQC block per HotStuff-2's safety rule. Building on the
+	// local head instead makes each leader extend ITS OWN uncommitted
+	// same-height candidate, forcing a branch switch on every node each view,
+	// oscillating the network so a quorum never forms. Zero = local head
+	// (genesis / no lock).
+	TriggerBlockProduction(parentHash types.Hash)
 	// CommitToCanonical forces the HotStuff-committed block to be the canonical
 	// head, so every node's chain follows the single committed chain rather than
 	// the candidate each node happened to insert locally.
@@ -322,7 +329,12 @@ func (s *Service) handleOutput(output EngineOutput) {
 		isLeader := s.engine.Engine().IsCurrentLeader()
 		log.Info("hotstuff: view changed", "view", output.View, "isLeader", isLeader, "hasProducer", s.blockProducer != nil)
 		if isLeader && s.blockProducer != nil {
-			s.blockProducer.TriggerBlockProduction()
+			// Extend the LockedQC (HighQC) block — HotStuff-2's safety rule. A
+			// leader that extends its own local head instead proposes on top of
+			// an UNCOMMITTED same-height candidate, and the network oscillates
+			// between sibling branches without ever forming a quorum.
+			lq := s.engine.Engine().LockedQC()
+			s.blockProducer.TriggerBlockProduction(lq.BlockHash)
 		}
 		// Rate-limited persistence.
 		if output.View-s.lastPersistedView >= s.persistInterval {
