@@ -38,6 +38,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/c2h5oh/datasize"
@@ -78,6 +79,7 @@ func runCSToSpill(args []string) {
 	start := fs.Uint64("start", 0, "first block (0 = resume from side progress; REQUIRED on first run)")
 	end := fs.Uint64("end", 0, "end block (exclusive)")
 	batch := fs.Uint64("batch", 8192, "blocks per spill frame-cut + side commit")
+	cancun := fs.Uint64("cancun-block", 19426587, "EIP-6780 activation: from here SELFDESTRUCT wipes only same-tx creations (storcs carries their rows) — the wipe belt and SSlot insurance switch off")
 	mapGB := fs.Int("map.gb", 512, "MDBX map size GB")
 	_ = fs.Parse(args)
 	if *out == "" || *end == 0 {
@@ -193,7 +195,10 @@ func runCSToSpill(args []string) {
 	b.chgAggCapBytes = 2 << 30
 
 	conv := &csConverter{q: q, b: b, sdb: sdb, boundary: *start,
-		acctLiveCache: make(map[[32]byte]byte, 1<<20)}
+		acctLiveCache: make(map[[32]byte]byte, 1<<20),
+		pendAcct:      make(map[[32]byte]byte, 1<<16),
+		pendSlot:      make(map[[64]byte]byte, 1<<18),
+		cancunBlock:   *cancun}
 	fmt.Printf("cs-to-spill: blocks [%d, %d) → %s (batch %d)\n", *start, *end, *spillSub, *batch)
 
 	t0 := time.Now()
@@ -210,6 +215,9 @@ func runCSToSpill(args []string) {
 		}
 		if err := spill.flushBatch(); err != nil {
 			die("spill cut: %v", err)
+		}
+		if err := conv.flushSide(stx); err != nil {
+			die("side flush: %v", err)
 		}
 		var p [8]byte
 		binary.BigEndian.PutUint64(p[:], n)
@@ -316,14 +324,32 @@ type csConverter struct {
 	// side-table write, reset when oversized.
 	acctLiveCache map[[32]byte]byte
 
+	// Batch-pending side rows: per-block random-key MDBX Puts into the growing
+	// side DB pegged the sequential stage (~230 slot puts/block, 29 GB tree at
+	// 16M and climbing — the measured rate decay). Rows buffer here, DEDUP by
+	// key (hot slots rewrite every block; only the batch-final state matters)
+	// and flush SORTED at each commit. Reads overlay this map over the DB.
+	pendAcct map[[32]byte]byte
+	pendSlot map[[64]byte]byte
+
+	// cancunBlock (EIP-6780): from this block a SELFDESTRUCT wipes storage only
+	// for same-transaction creations, whose slot writes AND wipes are all in
+	// the SAME block's storcs (kept by the addSlot rule). The wipe belt and the
+	// SSlot insurance rows are provably unnecessary — both switch off.
+	cancunBlock uint64
+
 	beltTombstones uint64 // wipe tombstones the belt ADDED (storcs lacked them)
 	ghostDrops     uint64
 }
 
-// acctLive: account existence in pre-state of block n = RAM cache, else side
-// overlay, else the old segments' floor (all old rows are < boundary ≤ n-1).
+// acctLive: account existence in pre-state of block n = RAM cache, else the
+// batch-pending rows, else the side DB, else the old segments' floor (all old
+// rows are < boundary ≤ n-1).
 func (c *csConverter) acctLive(stx kv.Tx, ah [32]byte, n uint64) (bool, error) {
 	if v, ok := c.acctLiveCache[ah]; ok {
+		return v == 1, nil
+	}
+	if v, ok := c.pendAcct[ah]; ok {
 		return v == 1, nil
 	}
 	live := false
@@ -426,7 +452,8 @@ func (c *csConverter) slotLiveSet(stx kv.Tx, ah [32]byte, n uint64) (map[[32]byt
 	}
 	flush()
 	// Side overlay: in-range liveness wins (covers writes, deletes, and the
-	// dead marks written at earlier wipes).
+	// dead marks written at earlier wipes). DB rows first, then the batch-
+	// pending rows (newer) on top.
 	sc, err := stx.Cursor(tSideSlot)
 	if err != nil {
 		return nil, err
@@ -442,6 +469,18 @@ func (c *csConverter) slotLiveSet(stx kv.Tx, ah [32]byte, n uint64) (map[[32]byt
 		var sh [32]byte
 		copy(sh[:], k[32:64])
 		if len(v) == 1 && v[0] == 1 {
+			live[sh] = true
+		} else {
+			delete(live, sh)
+		}
+	}
+	for k, v := range c.pendSlot {
+		if !bytes.Equal(k[:32], ah[:]) {
+			continue
+		}
+		var sh [32]byte
+		copy(sh[:], k[32:64])
+		if v == 1 {
 			live[sh] = true
 		} else {
 			delete(live, sh)
@@ -496,6 +535,9 @@ func (c *csConverter) block(stx kv.RwTx, dirtyA map[types.Address]*account.State
 		if acct != nil {
 			continue
 		}
+		if n >= c.cancunBlock {
+			continue // EIP-6780: same-tx-creation wipes only — storcs carries them
+		}
 		ah := c.b.addrHash(addr)
 		liveSlots, err := c.slotLiveSet(stx, ah, n)
 		if err != nil {
@@ -536,39 +578,71 @@ func (c *csConverter) block(stx kv.RwTx, dirtyA map[types.Address]*account.State
 		return err
 	}
 
-	// Side-table updates: end-of-block liveness. Wipe dead-marks first so a
-	// same-block re-create (storcs write row) wins with live=1.
+	// Side-table updates: end-of-block liveness, buffered per batch (dedup by
+	// key — batch-final state wins; flushed sorted at commit). Wipe dead-marks
+	// first so a same-block re-create (storcs write row) wins with live=1.
+	// SSlot rows exist ONLY for the pre-Cancun wipe belt; past Cancun they are
+	// provably unread and skipped entirely.
 	for _, wm := range wipeMarks {
-		if err := stx.Put(tSideSlot, wm.k[:], []byte{0}); err != nil {
-			return err
-		}
+		c.pendSlot[wm.k] = 0
 	}
 	for addr, acct := range dirtyA {
 		ah := c.b.addrHash(addr)
-		v := []byte{0}
+		v := byte(0)
 		if acct != nil {
-			v[0] = 1
+			v = 1
 		}
-		if err := stx.Put(tSideAcct, ah[:], v); err != nil {
-			return err
-		}
+		c.pendAcct[ah] = v
 		c.cacheAcctLive(ah, acct != nil)
 	}
-	for addr, slots := range dirtyS {
-		ah := c.b.addrHash(addr)
-		for slot, val := range slots {
-			sh := c.b.slotHash(slot)
-			k := make([]byte, 64)
-			copy(k, ah[:])
-			copy(k[32:], sh[:])
-			v := []byte{0}
-			if val != nil && !val.IsZero() {
-				v[0] = 1
+	if n < c.cancunBlock {
+		for addr, slots := range dirtyS {
+			ah := c.b.addrHash(addr)
+			for slot, val := range slots {
+				sh := c.b.slotHash(slot)
+				var k [64]byte
+				copy(k[:32], ah[:])
+				copy(k[32:], sh[:])
+				v := byte(0)
+				if val != nil && !val.IsZero() {
+					v = 1
+				}
+				c.pendSlot[k] = v
 			}
-			if err := stx.Put(tSideSlot, k, v); err != nil {
+		}
+	}
+	return nil
+}
+
+// flushSide writes the batch-pending side rows SORTED into the tx (ordered
+// B-tree insertion — the random per-block Puts were the sequential-stage
+// bottleneck) and resets the buffers.
+func (c *csConverter) flushSide(stx kv.RwTx) error {
+	if len(c.pendAcct) > 0 {
+		keys := make([][32]byte, 0, len(c.pendAcct))
+		for k := range c.pendAcct {
+			keys = append(keys, k)
+		}
+		sort.Slice(keys, func(i, j int) bool { return bytes.Compare(keys[i][:], keys[j][:]) < 0 })
+		for _, k := range keys {
+			if err := stx.Put(tSideAcct, k[:], []byte{c.pendAcct[k]}); err != nil {
 				return err
 			}
 		}
+		c.pendAcct = make(map[[32]byte]byte, 1<<16)
+	}
+	if len(c.pendSlot) > 0 {
+		keys := make([][64]byte, 0, len(c.pendSlot))
+		for k := range c.pendSlot {
+			keys = append(keys, k)
+		}
+		sort.Slice(keys, func(i, j int) bool { return bytes.Compare(keys[i][:], keys[j][:]) < 0 })
+		for _, k := range keys {
+			if err := stx.Put(tSideSlot, k[:], []byte{c.pendSlot[k]}); err != nil {
+				return err
+			}
+		}
+		c.pendSlot = make(map[[64]byte]byte, 1<<18)
 	}
 	return nil
 }
