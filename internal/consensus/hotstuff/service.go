@@ -823,4 +823,8 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 }
 
 // maxNotifiedImports bounds the NotifyBlockImported dedup set (see notifiedImports).
-const maxNotifiedImports = 256
+// It MUST stay below the engine's MaxImportedBlocks (64): the sync dedup must
+// forget a hash BEFORE the engine forgets it, so that if a long-uncommitted
+// block is somehow re-proposed after the engine evicted it, the next re-gossip
+// re-notifies and re-populates the engine instead of being deduped into a stall.
+const maxNotifiedImports = 32
