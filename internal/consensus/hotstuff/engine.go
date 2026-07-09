@@ -109,6 +109,7 @@ type ConsensusEngine struct {
 
 	// Block tracking
 	importedBlocks     map[types.Hash]bool
+	importedFIFO       []types.Hash              // insertion order for bounded eviction; blocks stay known-imported across view changes
 	pendingTxRoots     map[types.Hash]types.Hash // blockHash → expected TxRootHash (DA verification)
 	pendingProposals   map[ViewNumber]types.Hash // view → proposed blockHash awaiting local import before the prepare vote (import-gated voting)
 	equivocationTracker       map[ValidatorIndex]types.Hash
@@ -501,9 +502,19 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	e.commitCollector = nil
 	e.timeoutCollector = nil
 	e.prepareQC = nil
-	e.importedBlocks = make(map[types.Hash]bool)
-	e.pendingTxRoots = make(map[types.Hash]types.Hash)
-	e.pendingProposals = make(map[ViewNumber]types.Hash)
+	// Keep importedBlocks/importedFIFO across the view change: a block we have
+	// imported we still have, and the next leader typically RE-proposes the same
+	// (uncommitted) block in the new view. Wiping it made the re-proposed block
+	// look un-imported, so processProposal deferred the vote — but the block was
+	// already imported and never re-emits an import event, so the vote was never
+	// cast and the round could only ever time out (import-gated-vote deadlock).
+	// Drop only pending proposals for views we have already left (they are stale;
+	// a vote for a past view is rejected by the leader anyway).
+	for v := range e.pendingProposals {
+		if v < newView {
+			delete(e.pendingProposals, v)
+		}
+	}
 	e.equivocationTracker = make(map[ValidatorIndex]types.Hash)
 	e.commitEquivocationTracker = make(map[ValidatorIndex]types.Hash)
 	e.prepareVoteBuf = e.prepareVoteBuf[:0]

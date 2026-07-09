@@ -251,11 +251,27 @@ func (e *ConsensusEngine) sendVote(view ViewNumber, blockHash types.Hash) error 
 	})
 }
 
+// rememberImported records that this block is locally imported, retained across
+// view changes (bounded FIFO). Because importedBlocks now survives view changes,
+// it needs its own eviction: evict the oldest hash once at MaxImportedBlocks so a
+// new import is always recorded (a stuck round re-imports the SAME hash, which
+// occupies one slot, so the recent-block window is never starved).
+func (e *ConsensusEngine) rememberImported(h types.Hash) {
+	if e.importedBlocks[h] {
+		return
+	}
+	if len(e.importedFIFO) >= MaxImportedBlocks {
+		oldest := e.importedFIFO[0]
+		e.importedFIFO = e.importedFIFO[1:]
+		delete(e.importedBlocks, oldest)
+	}
+	e.importedBlocks[h] = true
+	e.importedFIFO = append(e.importedFIFO, h)
+}
+
 // onBlockImported handles the BlockImported event and verifies DA commitment.
 func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot types.Hash) error {
-	if len(e.importedBlocks) < MaxImportedBlocks {
-		e.importedBlocks[blockHash] = true
-	}
+	e.rememberImported(blockHash)
 
 	// Baby Raptr DA verification: compare the proposal's TxRootHash with
 	// the actual transaction root computed during block import.

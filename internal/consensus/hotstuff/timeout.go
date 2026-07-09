@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/crypto/bls"
-	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -80,9 +79,9 @@ func (e *ConsensusEngine) onTimeout() error {
 	e.roundState.Timeout()
 	e.pacemaker.ResetForView(view, e.roundState.ConsecutiveTimeouts())
 
-	// Clear pending block data.
-	e.importedBlocks = make(map[types.Hash]bool)
-	e.pendingTxRoots = make(map[types.Hash]types.Hash)
+	// Keep importedBlocks/pendingTxRoots across the timeout: a block we imported
+	// we still have, and the new-view leader re-proposes it. Wiping here caused
+	// the same import-gated-vote deadlock as wiping on advance (see advanceToView).
 
 	// Preserve any already-collected timeouts.
 	nValidators := e.validatorSet().Len()
