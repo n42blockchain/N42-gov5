@@ -63,36 +63,7 @@ func (s *Service) FetchBlockByHash(hash types.Hash) {
 	// sibling branches every 2s, so the CURRENT proposal's parent never
 	// stayed aligned long enough for its import to succeed.
 	if blk, _ := s.cfg.chain.GetBlockByHash(hash); blk != nil {
-		go func() {
-			cur := blk
-			pending := []block.IBlock{}
-			for depth := 0; depth < 32; depth++ {
-				if _, err := s.insertAuthorized([]block.IBlock{cur}); err == nil {
-					break
-				}
-				p, _ := s.cfg.chain.GetBlockByHash(cur.ParentHash())
-				if p == nil {
-					// Genuinely missing ancestor: fall back to the remote fetch
-					// for it; this block stays in the future queue meanwhile.
-					s.FetchBlockByHash(cur.ParentHash())
-					return
-				}
-				pending = append(pending, cur)
-				cur = p
-			}
-			// Replay the collected descendants oldest-first down to the target.
-			for i := len(pending) - 1; i >= 0; i-- {
-				if _, err := s.insertAuthorized([]block.IBlock{pending[i]}); err != nil {
-					log.Debug("fetch-on-miss: chain-align replay failed",
-						"number", pending[i].Number64().Uint64(),
-						"hash", pending[i].Hash().Hex()[:12], "err", err)
-					return
-				}
-			}
-			if n := s.cfg.blockImportNotifier; n != nil {
-				n.NotifyBlockImported(blk.Hash(), blk.TxHash())
-			}
-		}()
+		go s.alignAndImport(blk)
 		return
 	}
 	protoID := protocol.ID(p2p.RPCBlockByHashTopicV1 + s.cfg.p2p.Encoding().ProtocolSuffix())
@@ -124,14 +95,10 @@ func (s *Service) FetchBlockByHash(hash types.Hash) {
 				log.Info("fetch-on-miss: hash mismatch", "want", hash.Hex()[:12], "got", blk.Hash().Hex()[:12])
 				return // peer returned the wrong block
 			}
-			if _, err := s.insertAuthorized([]block.IBlock{blk}); err != nil {
-				log.Debug("fetch-on-miss: insert failed", "number", blk.Number64().Uint64(), "err", err)
-				return
-			}
-			log.Info("fetch-on-miss: imported block", "number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12])
-			if n := s.cfg.blockImportNotifier; n != nil {
-				n.NotifyBlockImported(blk.Hash(), blk.TxHash())
-			}
+			// A one-shot insert is not enough: the proposal block's parent may
+			// be a QC branch this node never applied. Chain-align exactly like
+			// the local-hit path (walk back, switch with authority, replay).
+			s.alignAndImport(blk)
 		}(pid)
 	}
 }
@@ -147,4 +114,41 @@ func (s *Service) insertAuthorized(blocks []block.IBlock) (int, error) {
 		return a.InsertChainAuthorized(blocks)
 	}
 	return s.cfg.chain.InsertChain(blocks)
+}
+
+// alignAndImport imports a consensus-requested block, aligning the applied
+// branch SYNCHRONOUSLY along its parent chain in one pass: walk back through
+// locally stored ancestors until one imports (its parent is applied — the
+// authorized unwind reverts the losing sibling branch), then replay the
+// descendants oldest-first, and finally notify the engine so the deferred
+// import-gated vote fires. One pass, no async tug-of-war between candidates.
+func (s *Service) alignAndImport(blk block.IBlock) {
+	cur := blk
+	pending := []block.IBlock{}
+	for depth := 0; depth < 32; depth++ {
+		if _, err := s.insertAuthorized([]block.IBlock{cur}); err == nil {
+			break
+		}
+		p, _ := s.cfg.chain.GetBlockByHash(cur.ParentHash())
+		if p == nil {
+			// Genuinely missing ancestor: fetch it remotely; the current
+			// blocks stay future-queued until it arrives and aligns.
+			s.FetchBlockByHash(cur.ParentHash())
+			return
+		}
+		pending = append(pending, cur)
+		cur = p
+	}
+	for i := len(pending) - 1; i >= 0; i-- {
+		if _, err := s.insertAuthorized([]block.IBlock{pending[i]}); err != nil {
+			log.Debug("fetch-on-miss: chain-align replay failed",
+				"number", pending[i].Number64().Uint64(),
+				"hash", pending[i].Hash().Hex()[:12], "err", err)
+			return
+		}
+	}
+	log.Info("fetch-on-miss: aligned and imported", "number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12], "walkback", len(pending))
+	if n := s.cfg.blockImportNotifier; n != nil {
+		n.NotifyBlockImported(blk.Hash(), blk.TxHash())
+	}
 }

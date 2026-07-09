@@ -282,3 +282,38 @@ fixes, so a clean start should now produce blocks continuously; then kill/restar
 nodes to exercise revertSpeculativeOnStartup against a REAL crash state (own
 consistent DB + converged network), which is the production scenario. Polluted
 fixture archived at E:\qs-node0-polluted-archive + qs-logs-archive-20260709.
+
+### DESIGN NOTES — production hardening (2026-07-09, per operator direction)
+
+Referencing HotStuff-2 (Malkhi&Nayak) fine print and production HotStuff-family
+chains (Aptos/Jolteon+SyncInfo, Flow pacemaker, Monad MonadBFT tail-fork):
+
+1. **Time-jump boundary (replay head → live)**: prepareWork uses now (not
+   parent.Time+period) when parent time is historical, so the first live block
+   after a replayed head jumps months — VERIFIED SAFE: VerifyHeader only
+   rejects time<=parent, no upper bound. TODO(prod): add `header.Time <=
+   now+maxDrift` (leader can currently claim any future time) — Aptos bounds
+   timestamps by round; Ethereum uses 15s drift.
+2. **Continuous vs breakpoint production**: implemented per paper — startup
+   reverts speculative (uncommitted) blocks to last committed
+   (revertSpeculativeOnStartup), consensus converges via proposals carrying
+   JustifyQC. Aptos ships the same shape as `SyncInfo` piggybacked on every
+   proposal/vote: highest_qc + highest_tc, and any node behind adopts it
+   immediately. OURS: proposal carries JustifyQC (adopted via UpdateLockedQC)
+   but votes/timeouts don't carry the highest TC — adding SyncInfo-style
+   piggyback on timeout/vote messages closes the last view-sync gap without a
+   new protocol.
+3. **Disconnect tolerance without losing safety**: safety is vote-signature
+   based (quorum 5/7) and never depends on liveness heuristics; disconnects
+   only hurt liveness. Done: static-peer keepalive + trusted exemption from
+   scoring/rate limits. TODO(prod): call swarm ClearBackoff (or
+   host.Network().Peerstore addr refresh) before redial — observed dial
+   backoff keeping a restarted node out for minutes; Aptos/Flow use persistent
+   validator connections with immediate reconnect and no backoff among
+   validators.
+4. **Validator set changes (node addition)**: chainspec committeePool exists;
+   production needs epoch-boundary reconfiguration (HotStuff-2 §reconfig =
+   commit a config block, activate at epoch boundary; Aptos does 2-chain
+   commit of an epoch-change transaction, then restarts consensus with the new
+   set). Session-key/mobile-committee handover via
+   consensus_registerCommitteeValidator follows the same shape.
