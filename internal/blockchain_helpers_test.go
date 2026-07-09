@@ -312,7 +312,7 @@ func TestRecoverAncestorsRejectsNilBlockNumber(t *testing.T) {
 		BaseFee:    uint256.NewInt(0),
 	}, &block.Body{})
 
-	_, err := bc.recoverAncestors(blk)
+	_, err := bc.recoverAncestors(blk, false)
 	if err == nil || err.Error() != "ancestor block number unavailable" {
 		t.Fatalf("recoverAncestors() error = %v", err)
 	}
