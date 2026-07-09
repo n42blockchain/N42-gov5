@@ -121,6 +121,17 @@ func (rs *RoundState) RecordVote(view ViewNumber, hash types.Hash) {
 	rs.votedHash = hash
 }
 
+// VotedHashInView returns the block hash this node voted for in view, if it
+// voted — used to RE-SEND the vote on a timeout re-broadcast (votes are
+// single-shot gossip; on a lossy mesh the leader may have missed the vote even
+// though the node cast it, and without a re-send the round can only time out).
+func (rs *RoundState) VotedHashInView(view ViewNumber) (types.Hash, bool) {
+	if rs.votedInView == view && view > 0 {
+		return rs.votedHash, true
+	}
+	return types.Hash{}, false
+}
+
 // HasCommitVotedInView returns true if a Round 2 commit vote was already sent.
 func (rs *RoundState) HasCommitVotedInView(view ViewNumber) bool {
 	return rs.commitVotedInView == view && view > 0
