@@ -78,6 +78,7 @@ func runProofBench(args []string) {
 	trustDense := fs.Bool("trust-dense", false, "force denseTrust=true: a node-record floorRecord MISS is authoritative 'empty at N' (skip the leaf fold). Kills the early-block 100M-leafRead folds. verify catches any coverage gap.")
 	prunedFold := fs.Bool("pruned-fold", false, "route the subtree fold through the change-index traversal (visit only the subtree existing at N) instead of scanning the whole prefix. Kills the early-block shallow-tree folds. verify catches any error.")
 	ckptFold := fs.Bool("ckpt-fold", false, "route the subtree fold through the live-key checkpoints (ckpt/ dir): candidate keys from the checkpoints bracketing N, bounding the fold to the state existing at N. Falls back to scan when N is past the last checkpoint. verify catches any error.")
+	ckptMaxBlock := fs.Int64("ckpt-max-block", 0, "checkpoint routing gate: 0 = auto (default; per-file live-key-count gate — large sets are excluded because the record path is faster there), >0 = hard cutoff (use checkpoints ≤ this block), -1 = use all checkpoints present")
 	_ = fs.Parse(args)
 	if *out == "" {
 		die("--out required")
@@ -187,7 +188,7 @@ func runProofBench(args []string) {
 		fmt.Printf("prunedFold=ON (change-index traversal fold; verify catches errors)\n")
 	}
 	if *ckptFold {
-		q.ckpt = openCkptStore(*out)
+		q.ckpt = openCkptStore(*out, *ckptMaxBlock)
 		q.ckptFold = true
 		fmt.Printf("ckptFold=ON (live-key checkpoint fold; acct ckpts=%v storage ckpts=%v)\n",
 			q.ckpt.blocks[0], q.ckpt.blocks[1])

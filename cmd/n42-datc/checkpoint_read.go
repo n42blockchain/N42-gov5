@@ -218,7 +218,22 @@ type ckptStore struct {
 	fcap   int64
 }
 
-func openCkptStore(outDir string) *ckptStore {
+// autoCkptMaxKeys is the auto-gate threshold: checkpoints whose live-key-set
+// exceeds this are excluded from the fold routing. Measured on the 15.22M
+// bprime2 archive (seed 42, n=200, verified): routing mid/late-N folds through
+// large candidate sets is ~7× SLOWER than the dense-record path they would
+// otherwise take (p50 1.1s vs 130ms), while small early-block sets are the
+// whole point of ckpt-fold (kill the 100M-key future-scan). 32M keeps the
+// validated ≤4M set (23.2M acct / 9.4M sto keys) and gates 5M+ (44.7M/48.1M).
+// Var, not const: tests tighten it.
+var autoCkptMaxKeys = uint64(32_000_000)
+
+// openCkptStore scans <outDir>/ckpt and selects the checkpoints to route folds
+// through. maxBlock: 0 = auto (per-file key-count gate at autoCkptMaxKeys),
+// >0 = hard block cutoff (keep blocks ≤ maxBlock), <0 = keep everything.
+// Blocks past the kept set fall back to the record/scan path — which the
+// benchmark shows is faster there anyway.
+func openCkptStore(outDir string, maxBlock int64) *ckptStore {
 	st := &ckptStore{
 		dir:    filepath.Join(outDir, ckptDir),
 		loaded: map[uint64]*ckptSet{},
@@ -234,6 +249,7 @@ func openCkptStore(outDir string) *ckptStore {
 	st.keyLens = [2]int{32, 72}
 	for tab := 0; tab < 2; tab++ {
 		matches, _ := filepath.Glob(filepath.Join(st.dir, strconv.Itoa(tab)+".*.ckpt"))
+		var gated []uint64
 		for _, m := range matches {
 			// base = "<tab>.<block>.ckpt"
 			parts := strings.Split(strings.TrimSuffix(filepath.Base(m), ".ckpt"), ".")
@@ -244,33 +260,75 @@ func openCkptStore(outDir string) *ckptStore {
 			if err != nil {
 				continue
 			}
-			if !ckptFileIsV2(m) {
+			estKeys, v2 := ckptPeek(m)
+			if !v2 {
 				fmt.Fprintf(os.Stderr, "ckpt: SKIP %s — legacy v1 (single zstd stream, reader would materialize the whole set); rebuild with `n42-datc checkpoint-build`\n", filepath.Base(m))
+				continue
+			}
+			switch {
+			case maxBlock > 0 && b > uint64(maxBlock):
+				gated = append(gated, b)
+				continue
+			case maxBlock == 0 && estKeys > autoCkptMaxKeys:
+				gated = append(gated, b)
 				continue
 			}
 			st.blocks[tab] = append(st.blocks[tab], b)
 		}
 		sort.Slice(st.blocks[tab], func(i, j int) bool { return st.blocks[tab][i] < st.blocks[tab][j] })
+		if len(gated) > 0 {
+			sort.Slice(gated, func(i, j int) bool { return gated[i] < gated[j] })
+			reason := fmt.Sprintf("> --ckpt-max-block %d", maxBlock)
+			if maxBlock == 0 {
+				reason = fmt.Sprintf("auto: > ~%dM live keys", autoCkptMaxKeys/1_000_000)
+			}
+			fmt.Printf("ckpt: table=%d gated %d checkpoint(s) %d..%d (%s — the record path is faster for large sets)\n",
+				tab, len(gated), gated[0], gated[len(gated)-1], reason)
+		}
 	}
 	return st
 }
 
-// ckptFileIsV2 checks the trailing magic without reading the body.
-func ckptFileIsV2(path string) bool {
+// ckptPeek reads a checkpoint's tail + footer head only: v2 magic check and an
+// estimated live-key count (frameCount × keys-per-full-frame; overestimates by
+// at most one partial frame). No key data is touched.
+func ckptPeek(path string) (estKeys uint64, v2 bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return false
+		return 0, false
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil || st.Size() < int64(len(ckptMagic))+16 {
-		return false
+		return 0, false
 	}
 	var tail [16]byte
 	if _, err := f.ReadAt(tail[:], st.Size()-16); err != nil {
-		return false
+		return 0, false
 	}
-	return string(tail[8:]) == ckptMagic
+	if string(tail[8:]) != ckptMagic {
+		return 0, false
+	}
+	footLen := int64(binary.BigEndian.Uint64(tail[:8]))
+	if footLen <= 0 || footLen > st.Size()-16-int64(len(ckptMagic)) {
+		return 0, false
+	}
+	head := make([]byte, 24)
+	if int64(len(head)) > footLen {
+		head = head[:footLen]
+	}
+	if _, err := f.ReadAt(head, st.Size()-16-footLen); err != nil {
+		return 0, false
+	}
+	kl, m := binary.Uvarint(head)
+	if m <= 0 || kl == 0 {
+		return 0, false
+	}
+	nFrames, m2 := binary.Uvarint(head[m:])
+	if m2 <= 0 {
+		return 0, false
+	}
+	return nFrames * (ckptFrameRaw / kl), true
 }
 
 // Close releases the opened checkpoint file handles and the frame cache.

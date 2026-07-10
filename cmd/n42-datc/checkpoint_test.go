@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -55,11 +56,49 @@ func buildTestCkpt(t *testing.T, path string, keyLen, n int, seed int64) [][]byt
 
 func openTestCkptStore(t *testing.T, dir string) *ckptStore {
 	t.Helper()
-	// openCkptStore expects <dir>/ckpt; callers pass the parent.
-	st := openCkptStore(dir)
+	// openCkptStore expects <dir>/ckpt; callers pass the parent. -1 = no gate.
+	st := openCkptStore(dir, -1)
 	t.Cleanup(st.Close)
 	return st
 }
+
+func TestCkptMaxBlockGate(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ckptDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Three checkpoints of growing size: 1K, 10K, 40K keys.
+	sizes := map[uint64]int{1000: 1000, 2000: 10000, 3000: 40000}
+	for b, n := range sizes {
+		buildTestCkpt(t, filepath.Join(dir, ckptDir, "0."+strconvFormatUint(b)+".ckpt"), 32, n, int64(b))
+	}
+
+	// Hard cutoff: keep blocks ≤ 2000.
+	st := openCkptStore(dir, 2000)
+	t.Cleanup(st.Close)
+	if got := st.blocks[0]; len(got) != 2 || got[0] != 1000 || got[1] != 2000 {
+		t.Fatalf("hard cutoff: got %v, want [1000 2000]", got)
+	}
+
+	// No gate: all three.
+	st2 := openCkptStore(dir, -1)
+	t.Cleanup(st2.Close)
+	if got := st2.blocks[0]; len(got) != 3 {
+		t.Fatalf("no gate: got %v, want 3 blocks", got)
+	}
+
+	// Auto gate: threshold between 10K and 40K keys excludes only block 3000.
+	old := autoCkptMaxKeys
+	autoCkptMaxKeys = 20000
+	defer func() { autoCkptMaxKeys = old }()
+	st3 := openCkptStore(dir, 0)
+	t.Cleanup(st3.Close)
+	if got := st3.blocks[0]; len(got) != 2 || got[1] != 2000 {
+		t.Fatalf("auto gate: got %v, want [1000 2000]", got)
+	}
+}
+
+func strconvFormatUint(b uint64) string { return fmt.Sprintf("%d", b) }
 
 func TestCkptRoundTripPrefixIter(t *testing.T) {
 	dir := t.TempDir()
