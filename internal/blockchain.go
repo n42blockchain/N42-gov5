@@ -384,6 +384,7 @@ func (bc *BlockChain) AncientReader() *freezer.AncientReader {
 // =============================================================================
 
 func (bc *BlockChain) Start() error {
+	bc.alignCanonicalToAppliedOnStartup()
 	bc.repairCanonicalLinkageOnStartup()
 	bc.revertSpeculativeOnStartup()
 	bc.wg.Add(3)
@@ -393,10 +394,62 @@ func (bc *BlockChain) Start() error {
 	return nil
 }
 
-// canonicalRepairDepth bounds the startup canonical-linkage scan. Holes are
-// created within the branch-switch window of live consensus activity, so a
-// window-plus-margin depth is sufficient without a full-chain walk.
-const canonicalRepairDepth = 1024
+// alignCanonicalToAppliedOnStartup pulls the canonical head BACK to the QMDB
+// applied head when a pre-guard bug (embedded-QC canonicalization of a stored
+// but never-executed block) left canonical/HeadBlockHash ahead of the executed
+// chain. Such a database is wedged: catch-up starts above the unexecuted span,
+// every replayed block fails with nonce-too-high (the span's transactions are
+// missing from the world state), and nothing re-executes the span because the
+// canonical head claims it is already done. Truncating canonical back to the
+// applied head makes the next catch-up re-fetch and EXECUTE the span. Runs
+// before the linkage repair so the repair walks from the corrected head.
+func (bc *BlockChain) alignCanonicalToAppliedOnStartup() {
+	if !bc.qmdbEnabled {
+		return
+	}
+	if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+		appliedNum, appliedHash, ok, err := rawdb.ReadQMDBApplied(tx)
+		if err != nil || !ok {
+			return err
+		}
+		headHash := rawdb.ReadHeadBlockHash(tx)
+		headNum := rawdb.ReadHeaderNumber(tx, headHash)
+		if headNum == nil || *headNum <= appliedNum {
+			return nil // canonical at or behind the executed chain — healthy
+		}
+		blk, berr := rawdb.ReadBlockByHash(tx, appliedHash)
+		if berr != nil || blk == nil {
+			return fmt.Errorf("applied head block %d/%x unreadable: %w", appliedNum, appliedHash[:8], berr)
+		}
+		log.Warn("canonical head ran ahead of the executed chain; pulling it back to the applied head",
+			"canonicalHead", *headNum, "appliedHead", appliedNum)
+		if terr := rawdb.TruncateCanonicalHash(tx, appliedNum+1, false); terr != nil {
+			return terr
+		}
+		rawdb.WriteHeadBlockHash(tx, appliedHash)
+		if werr := rawdb.WriteHotStuffCommittedHead(tx, appliedHash); werr != nil {
+			return werr
+		}
+		bc.currentBlock.Store(blk)
+		return nil
+	}); err != nil {
+		log.Error("align canonical to applied failed", "err", err)
+	}
+}
+
+// canonicalRepairMaxScan caps the startup canonical-linkage walk. The walk's
+// real terminator is the consensus-era boundary (the first header without the
+// hotstuff N42H extra magic — replay-written canonical rows below it were never
+// touched by any consensus-era writer); the cap is defense so a pathological
+// table cannot turn startup into a 13M-header walk. NOTE: damage is NOT
+// necessarily adjacent to the head — observed live: a non-linked span at
+// head-2334 buried under 2.3k clean blocks (the network kept producing above
+// it), which both a fixed depth (1024) and a quiet-streak heuristic missed.
+const canonicalRepairMaxScan = 1_000_000
+
+// hotstuffExtraMagic mirrors hotstuff.extraMagic ("N42H") — checked inline to
+// avoid an internal -> consensus/hotstuff import (same pattern as internal/sync).
+var hotstuffExtraMagic = []byte("N42H")
 
 // repairCanonicalLinkageOnStartup heals holes in the canonical number→hash
 // mapping: heights where canonical[n]'s parent is not canonical[n-1]. The old
@@ -419,13 +472,21 @@ func (bc *BlockChain) repairCanonicalLinkageOnStartup() {
 		}
 		num := *headNum
 		curHash := headHash
-		repaired := 0
-		for depth := 0; num > 0 && depth < canonicalRepairDepth; depth++ {
+		repaired, scanned := 0, 0
+		for num > 0 && scanned < canonicalRepairMaxScan {
 			hdr := rawdb.ReadHeader(tx, curHash, num)
 			if hdr == nil {
 				log.Error("canonical repair: header missing for canonical block, stopping",
 					"number", num, "hash", fmt.Sprintf("%x", curHash[:8]))
 				return nil
+			}
+			// Crossed below the consensus era into the replay prefix: those
+			// canonical rows were written once by the replay tool and never
+			// touched since — nothing to repair, and the prefix is millions of
+			// blocks deep.
+			if len(hdr.Extra) < len(hotstuffExtraMagic) ||
+				!bytes.Equal(hdr.Extra[:len(hotstuffExtraMagic)], hotstuffExtraMagic) {
+				break
 			}
 			below, berr := rawdb.ReadCanonicalHash(tx, num-1)
 			if berr != nil {
@@ -442,9 +503,10 @@ func (bc *BlockChain) repairCanonicalLinkageOnStartup() {
 			}
 			curHash = hdr.ParentHash
 			num--
+			scanned++
 		}
 		if repaired > 0 {
-			log.Warn("canonical repair: completed", "relinked", repaired, "scanned", canonicalRepairDepth)
+			log.Warn("canonical repair: completed", "relinked", repaired, "scanned", scanned)
 		}
 		return nil
 	}); err != nil {
@@ -663,7 +725,14 @@ func (bc *BlockChain) persistBlock(db kv.RwDB, blk block.IBlock, source string) 
 		if err := rawdb.WriteBlock(tx, concreteBlock); err != nil {
 			return err
 		}
-		rawdb.WriteHeadBlockHash(tx, blk.Hash())
+		// Leader-driven chains: HeadBlockHash is the committed-head anchor for
+		// unwindForReimport's finality floor and the startup canonical repair;
+		// only CommitToCanonical may move it. Writing it here for ANY block that
+		// arrives on the legacy gossip path silently redefines "committed" to an
+		// arbitrary uncommitted candidate.
+		if !bc.canonicalByCommitOnly() {
+			rawdb.WriteHeadBlockHash(tx, blk.Hash())
+		}
 		// Persist the per-block BLS committee evidence (multi-sig QC + mobile
 		// attestation) in the same atomic batch as the block, continuing the
 		// resealed chain's consensus-evidence chain. No-op until a pool is set.
@@ -686,6 +755,43 @@ func (bc *BlockChain) persistBlock(db kv.RwDB, blk block.IBlock, source string) 
 	}
 }
 
+// knownBlockNeedsAuthorizedReplay reports whether an already-stored block's
+// STATE is not the applied world state — i.e. the QMDB applied head sits on a
+// same-height sibling or below — so an authorized import must re-process it
+// (unwind the sibling + re-execute) instead of skipping it as known. Canonical
+// membership is NOT the test: the canonical row can point at this block while
+// the applied state is still the losing sibling's (they are maintained by
+// different writers and can be one block apart after a crash or a wedge).
+func (bc *BlockChain) knownBlockNeedsAuthorizedReplay(blk block.IBlock) bool {
+	if !bc.qmdbEnabled {
+		return false
+	}
+	need := false
+	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		appliedNum, appliedHash, ok, err := rawdb.ReadQMDBApplied(tx)
+		if err != nil || !ok {
+			return nil // fresh replay data: stored == applied
+		}
+		n := blk.Number64().Uint64()
+		if n > appliedNum {
+			need = true // above the applied head: state never applied
+		} else if n == appliedNum && blk.Hash() != appliedHash {
+			need = true // applied head is a same-height sibling
+		}
+		return nil
+	})
+	return need
+}
+
+// canonicalByCommitOnly reports whether this chain's canonical mapping, head
+// pointers and in-memory head are advanced exclusively by the consensus commit
+// (CommitToCanonical) rather than by import-time fork choice — true for
+// leader-driven engines (HotStuff). Import paths must not touch
+// HeaderCanonical/HeadBlockHash/currentBlock when this is set.
+func (bc *BlockChain) canonicalByCommitOnly() bool {
+	return bc.engine != nil && !bc.engine.Type().UsesTimerDrivenSealing()
+}
+
 // CommitToCanonical forces the HotStuff-committed block to be the canonical
 // head. The miner can produce several candidate blocks at a height and the local
 // node may have inserted a different one as canonical (via resultLoop) than the
@@ -704,6 +810,33 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 		}
 		if blk == nil {
 			return fmt.Errorf("committed block %s not in db", hash.Hex())
+		}
+		// Applied-state guard: canonicalization must never run ahead of the
+		// EXECUTED chain. The embedded-QC catch-up path can name a block that
+		// is STORED locally but was never executed here (a known-skip during a
+		// range import); advancing canonical/HeadBlockHash past the applied
+		// head makes the next catch-up start ABOVE the unexecuted span, whose
+		// transactions are then permanently missing from the world state —
+		// observed live: three nodes wedged in a BAD BLOCK loop with
+		// "nonce too high" (state 23 nonces behind) after replaying past a
+		// skipped tx-bearing block. Returning an error keeps the commit
+		// retryable (pendingCommit / the next import notification) until the
+		// executor catches up.
+		if bc.qmdbEnabled {
+			if an, _, ok, aerr := rawdb.ReadQMDBApplied(tx); aerr == nil && ok && blk.Number64().Uint64() > an {
+				return fmt.Errorf("commit-to-canonical %d ahead of applied head %d (block stored but not executed)",
+					blk.Number64().Uint64(), an)
+			}
+		}
+		// Monotonicity guard: a commit for a height at or below the current
+		// committed head whose block is ALREADY canonical is a late or duplicate
+		// commit (the embedded-QC catch-up path racing the live Decide). The
+		// higher commit's walk already canonicalized this lineage; re-running
+		// would truncate the newer rows above it.
+		if hn := rawdb.ReadHeaderNumber(tx, rawdb.ReadHeadBlockHash(tx)); hn != nil && *hn >= blk.Number64().Uint64() {
+			if existing, rerr := rawdb.ReadCanonicalHash(tx, blk.Number64().Uint64()); rerr == nil && existing == hash {
+				return nil
+			}
 		}
 		// Rewrite canonical mapping from the committed block back to the fork
 		// point. Walk via HEADERS, not bodies: the previous ReadBlockByHash walk
@@ -751,7 +884,30 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 			curHash = curParent
 			curParent = hdr.ParentHash
 		}
+		// Canonical rows ABOVE the committed height are dead-branch leftovers
+		// (written by the retired import-time reorg path, or by an interrupted
+		// higher rewrite). The canonical table must be exactly the committed-
+		// chain prefix, or the by-number range server hands catching-up peers a
+		// non-linked tail. TruncateCanonicalHash deletes every row >= from, so
+		// one call self-heals a previously poisoned table.
+		headNum := blk.Number64().Uint64()
+		if above, aerr := rawdb.ReadCanonicalHash(tx, headNum+1); aerr != nil {
+			return aerr
+		} else if above != (types.Hash{}) {
+			if terr := rawdb.TruncateCanonicalHash(tx, headNum+1, false); terr != nil {
+				return terr
+			}
+			rewrote = true
+		}
 		rawdb.WriteHeadBlockHash(tx, hash)
+		// QC-backed finality marker: written ONLY here. unwindForReimport's
+		// committed floor trusts this key — not HeadBlockHash, which legacy
+		// import-time writers polluted (a losing sibling stamped as "head"
+		// permanently blocked the authorized branch switch that would have let
+		// the node rejoin the committed chain).
+		if werr := rawdb.WriteHotStuffCommittedHead(tx, hash); werr != nil {
+			return werr
+		}
 		bc.currentBlock.Store(blk)
 		// Canonical rows changed under any read-through layer: invalidate it, or
 		// by-number readers (RPC, the catch-up range SERVER) keep returning the
@@ -1098,47 +1254,99 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 
 	// Skip already-known blocks
 	if bc.skipBlock(err) {
-		var (
-			reorg         bool
-			current       = bc.CurrentBlock()
-			currentNumber *uint256.Int
-		)
-		currentNumber, err = requireBlockNumber(current, "current block number unavailable")
-		if err != nil {
-			return it.index, err
-		}
-		for blk != nil && bc.skipBlock(err) {
-			reorg, err = bc.forker.ReorgNeeded(current.Header(), blk.Header())
+		// Leader-driven chains: an already-known block never moves the canonical
+		// chain at import time — canonicalization is commit-driven
+		// (CommitToCanonical is the single authority). writeKnownBlock would
+		// re-enter the reorg/head-write path for a non-canonical sibling and
+		// fight the commit authority over the canonical table.
+		if bc.canonicalByCommitOnly() {
+			for blk != nil && bc.skipBlock(err) {
+				// A block that is STORED (even canonical) is not necessarily
+				// APPLIED: the QMDB world state may sit on a same-height
+				// sibling (the node's own dead candidate). On an AUTHORIZED
+				// import (consensus/catch-up named this branch) such a block
+				// must NOT be skipped — nothing else will ever move the
+				// applied state off the sibling and onto it (observed live: a
+				// node held the committed block in its DB, canonical even
+				// pointed at it, but the applied head was its own candidate;
+				// every fetched range was "already known" at that height and
+				// the child failed unknown-ancestor forever). The main loop
+				// accepts ErrKnownBlock and performs the unwind + re-exec.
+				if authorizedSwitch && bc.knownBlockNeedsAuthorizedReplay(blk) {
+					break
+				}
+				log.Debug("Ignoring already known block", "number", blk.Number64(), "hash", blk.Hash())
+				stats.ignored++
+				blk, err = it.next()
+			}
+		} else {
+			var (
+				reorg         bool
+				current       = bc.CurrentBlock()
+				currentNumber *uint256.Int
+			)
+			currentNumber, err = requireBlockNumber(current, "current block number unavailable")
 			if err != nil {
 				return it.index, err
 			}
-			if reorg {
-				blockNumber, numberErr := requireBlockNumber(blk, "block number unavailable")
-				if numberErr != nil {
-					return it.index, numberErr
+			for blk != nil && bc.skipBlock(err) {
+				reorg, err = bc.forker.ReorgNeeded(current.Header(), blk.Header())
+				if err != nil {
+					return it.index, err
 				}
-				if blockNumber.Uint64() > currentNumber.Uint64() || bc.GetCanonicalHash(blockNumber) != blk.Hash() {
-					break
+				if reorg {
+					blockNumber, numberErr := requireBlockNumber(blk, "block number unavailable")
+					if numberErr != nil {
+						return it.index, numberErr
+					}
+					if blockNumber.Uint64() > currentNumber.Uint64() || bc.GetCanonicalHash(blockNumber) != blk.Hash() {
+						break
+					}
 				}
+				log.Debug("Ignoring already known block", "number", blk.Number64(), "hash", blk.Hash())
+				stats.ignored++
+				blk, err = it.next()
 			}
-			log.Debug("Ignoring already known block", "number", blk.Number64(), "hash", blk.Hash())
-			stats.ignored++
-			blk, err = it.next()
-		}
-		for blk != nil && bc.skipBlock(err) {
-			log.Debug("Writing previously known block", "number", blk.Number64(), "hash", blk.Hash())
-			if err := bc.writeKnownBlock(nil, blk); err != nil {
-				return it.index, err
+			for blk != nil && bc.skipBlock(err) {
+				log.Debug("Writing previously known block", "number", blk.Number64(), "hash", blk.Hash())
+				if err := bc.writeKnownBlock(nil, blk); err != nil {
+					return it.index, err
+				}
+				lastCanon = blk
+				blk, err = it.next()
 			}
-			lastCanon = blk
-			blk, err = it.next()
 		}
 	}
 
 	switch {
 	case errors.Is(err, ErrPrunedAncestor):
-		log.Debug("Pruned ancestor, inserting as sidechain", "number", blk.Number64(), "hash", blk.Hash())
-		return bc.insertSideChain(blk, it, authorizedSwitch)
+		// Authorized branch switch: the parent's STATE is missing because the
+		// applied head is a LOSING same-height sibling of this block (the
+		// world state sits on the sibling, so the parent has a header but no
+		// state → ErrPrunedAncestor). insertSideChain cannot resolve this —
+		// it walks down looking for a stateful ancestor it will never find
+		// (QMDB keeps state only at the applied head) and the whole range is
+		// rejected forever (observed live: a laggard spinning on
+		// pruned-ancestor for every fetched range). The remedy is the same
+		// authorized unwind the main loop performs: revert the applied
+		// sibling branch so the parent's state is restored, then process this
+		// block on the normal path.
+		if authorizedSwitch {
+			if bn, nerr := requireBlockNumber(blk, "block number unavailable"); nerr == nil {
+				if uerr := bc.unwindForReimport(bn.Uint64(), blk.ParentHash(), true); uerr == nil {
+					log.Info("authorized sibling switch: applied branch unwound for pruned-ancestor import",
+						"number", bn.Uint64(), "hash", blk.Hash().Hex()[:12])
+					err = nil // parent state restored — fall through to normal processing
+				} else {
+					log.Warn("authorized sibling switch failed; falling back to sidechain path",
+						"number", bn.Uint64(), "err", uerr)
+				}
+			}
+		}
+		if err != nil {
+			log.Debug("Pruned ancestor, inserting as sidechain", "number", blk.Number64(), "hash", blk.Hash())
+			return bc.insertSideChain(blk, it, authorizedSwitch)
+		}
 
 	case errors.Is(err, ErrFutureBlock) || isUnknownAncestorErr(err):
 		// Queue any block whose parent we don't have yet (not only when the parent
@@ -1869,19 +2077,25 @@ func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authori
 		if appliedNum < n-1 {
 			return nil // parent's state not applied yet — ValidateBody/future-queue handles it
 		}
-		// Committed-height floor (HotStuff-2: only the 2-chain-committed block is
-		// final). The canonical head — advanced solely by CommitToCanonical — is the
-		// committed head; a block at or below it must never be reverted for a
-		// competing sibling. This revert only touches heights n..appliedNum, so
-		// require n to be strictly above the committed head. revertSpeculativeOnStartup
-		// calls with n = committedHead+1, which is still allowed.
+		// Committed-BLOCK floor (HotStuff-2: only the 2-chain-committed block is
+		// final): a block ON the committed chain must never be reverted.
+		// Finality evidence is the HotStuffCommittedHead marker — written
+		// EXCLUSIVELY by CommitToCanonical, not HeadBlockHash (legacy
+		// import-time writers stamped losing siblings into HeadBlockHash and
+		// froze such nodes forever). Crucially the floor protects BLOCKS, not
+		// HEIGHTS: reverting a losing sibling AT (or below) the committed
+		// height, in order to replay the committed block itself, is exactly
+		// the recovery path — a height-only check bricked it (observed live:
+		// a node whose canonical/marker pointed at the committed 13016802
+		// while its applied state sat on a same-height sibling rejected every
+		// range with unknown-ancestor; the sibling could never be reverted).
+		// The block-identity check runs against the applied lineage AFTER the
+		// walk below; here we only resolve the committed height.
 		var committedHead uint64
-		if hn := rawdb.ReadHeaderNumber(tx, rawdb.ReadHeadBlockHash(tx)); hn != nil {
-			committedHead = *hn
-		}
-		if n <= committedHead {
-			return fmt.Errorf("branch switch at %d rejected: at/below committed head %d (committed blocks are final): %w",
-				n, committedHead, consensus.ErrUnknownAncestor)
+		if ch := rawdb.ReadHotStuffCommittedHead(tx); ch != (types.Hash{}) {
+			if hn := rawdb.ReadHeaderNumber(tx, ch); hn != nil {
+				committedHead = *hn
+			}
 		}
 		// READ-ONLY pre-check first (no side effects on failure): walk the
 		// applied lineage down to height n-1 and require it to BE the incoming
@@ -1907,6 +2121,27 @@ func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authori
 		if curHash != parentHash {
 			return fmt.Errorf("branch switch at %d: applied lineage at %d is %x, incoming parent is %x (sibling parent not applied): %w",
 				n, n-1, curHash[:8], parentHash[:8], consensus.ErrUnknownAncestor)
+		}
+
+		// Committed-BLOCK floor enforcement (see the marker resolution above):
+		// none of the applied blocks about to be reverted (heights
+		// n..appliedNum, lineage[i] = height appliedNum-i) may sit ON the
+		// committed chain — the canonical table is the committed prefix
+		// (single writer + truncate), so "at/below the committed height AND
+		// canonical" identifies a committed block. Reverting a same-height
+		// LOSING sibling is allowed: that is the recovery path.
+		for i, h := 0, appliedNum; h >= n; i, h = i+1, h-1 {
+			if h > committedHead {
+				continue
+			}
+			ch, cerr := rawdb.ReadCanonicalHash(tx, h)
+			if cerr != nil {
+				return cerr
+			}
+			if ch == lineage[i] {
+				return fmt.Errorf("branch switch at %d rejected: would revert committed block %d/%x: %w",
+					n, h, lineage[i][:8], consensus.ErrUnknownAncestor)
+			}
 		}
 
 		// Only CONSENSUS-DRIVEN imports may revert applied blocks. A passively

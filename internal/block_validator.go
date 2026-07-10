@@ -107,6 +107,19 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 		if !v.bc.HasBlock(b.ParentHash(), blockNum-1) {
 			return ErrUnknownAncestor
 		}
+		// Leader-driven chains: HasState is canonical membership, and canonical
+		// advances ONLY on QC commit — so a SPECULATIVE parent (imported and
+		// applied, not yet committed) always fails it even though its state IS
+		// the applied head. That is not "pruned": every proposal executes on an
+		// uncommitted parent by design (import-gated voting), and a fetched
+		// catch-up range would be rejected from its second block onward
+		// (observed live: a laggard rejecting every 1024-block range with
+		// pruned-ancestor). State availability/alignment is enforced by
+		// unwindForReimport on the import path, which future-queues via
+		// ErrUnknownAncestor when the parent's state is genuinely unreachable.
+		if v.bc.canonicalByCommitOnly() {
+			return nil
+		}
 		return ErrPrunedAncestor
 	}
 	return nil
