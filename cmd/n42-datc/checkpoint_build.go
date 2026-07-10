@@ -8,15 +8,25 @@
 // the fold read only the keys that EXIST at N (checkpoint ∪ bounded delta),
 // killing the minutes-long early-block folds.
 //
-// Output: <out>/ckpt/<table>.<block>.ckpt — a zstd-compressed, key-sorted list
-// of the keys live at that block (floor version ≤ block, non-deleted). Values
-// are read from the leaf segments at query time (floor ≤ N), so the checkpoint
-// stores keys only. Keys are emitted in scan (key) order = already sorted.
+// Output: <out>/ckpt/<table>.<block>.ckpt — a FRAMED zstd file (v2) of the
+// key-sorted live-key-set at that block (floor version ≤ block, non-deleted).
+// Values are read from the leaf segments at query time (floor ≤ N), so the
+// checkpoint stores keys only. Keys are emitted in scan (key) order = sorted.
+//
+// v2 framing (mirrors the leafseg layout): the reader must NOT have to
+// materialize the whole set — the largest storage checkpoint is ~68 GB raw
+// (947M × 72B keys), and the v1 single-stream format forced ReadFile +
+// DecodeAll of exactly that, which OOMed the 128 GB build host. Frames are
+// ~256 KiB raw each; a footer indexes (compLen, rows, firstKey) per frame so
+// a prefix query touches only the bracketing frames.
+//
+//	[8B magic] [frame 0: zstd(keys)] ... [footer] [8B BE footLen] [8B magic]
+//	footer: uvarint keyLen, uvarint frameCount,
+//	        per frame: uvarint compLen, uvarint rows, firstKey[keyLen]
 
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/binary"
 	"flag"
@@ -34,7 +44,91 @@ import (
 	"github.com/n42blockchain/N42/modules"
 )
 
-const ckptDir = "ckpt"
+const (
+	ckptDir      = "ckpt"
+	ckptMagic    = "DATCCK2\n" // header AND trailing magic of the v2 framed format
+	ckptFrameRaw = 256 << 10   // target uncompressed bytes per frame
+)
+
+// ckptWriter streams one checkpoint file in the v2 framed format.
+type ckptWriter struct {
+	f       *os.File
+	enc     *zstd.Encoder // shared, EncodeAll-only
+	keyLen  int
+	buf     []byte // pending raw keys for the current frame
+	scratch []byte // reused compression output buffer
+	foot    []byte // accumulated per-frame footer entries
+	frames  uint64
+	n       int64 // total keys written
+}
+
+func newCkptWriter(path string, keyLen int, enc *zstd.Encoder) (*ckptWriter, error) {
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := f.Write([]byte(ckptMagic)); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return &ckptWriter{f: f, enc: enc, keyLen: keyLen}, nil
+}
+
+func (w *ckptWriter) add(key []byte) error {
+	w.buf = append(w.buf, key...)
+	w.n++
+	if len(w.buf) >= ckptFrameRaw {
+		return w.flushFrame()
+	}
+	return nil
+}
+
+func (w *ckptWriter) flushFrame() error {
+	if len(w.buf) == 0 {
+		return nil
+	}
+	comp := w.enc.EncodeAll(w.buf, w.scratch[:0])
+	if _, err := w.f.Write(comp); err != nil {
+		return err
+	}
+	var tmp [binary.MaxVarintLen64]byte
+	w.foot = append(w.foot, tmp[:binary.PutUvarint(tmp[:], uint64(len(comp)))]...)
+	w.foot = append(w.foot, tmp[:binary.PutUvarint(tmp[:], uint64(len(w.buf)/w.keyLen))]...)
+	w.foot = append(w.foot, w.buf[:w.keyLen]...)
+	w.frames++
+	w.scratch = comp
+	w.buf = w.buf[:0]
+	return nil
+}
+
+// close flushes the last frame, writes footer + tail, and returns the file size.
+func (w *ckptWriter) close() (int64, error) {
+	if err := w.flushFrame(); err != nil {
+		return 0, err
+	}
+	var tmp [binary.MaxVarintLen64]byte
+	foot := append([]byte{}, tmp[:binary.PutUvarint(tmp[:], uint64(w.keyLen))]...)
+	foot = append(foot, tmp[:binary.PutUvarint(tmp[:], w.frames)]...)
+	foot = append(foot, w.foot...)
+	if _, err := w.f.Write(foot); err != nil {
+		return 0, err
+	}
+	var tail [16]byte
+	binary.BigEndian.PutUint64(tail[:8], uint64(len(foot)))
+	copy(tail[8:], ckptMagic)
+	if _, err := w.f.Write(tail[:]); err != nil {
+		return 0, err
+	}
+	fi, serr := w.f.Stat()
+	var sz int64
+	if fi != nil {
+		sz = fi.Size()
+	}
+	if cerr := w.f.Close(); cerr != nil {
+		return sz, cerr
+	}
+	return sz, serr
+}
 
 func runCheckpointBuild(args []string) {
 	fs := flag.NewFlagSet("checkpoint-build", flag.ExitOnError)
@@ -99,26 +193,20 @@ func buildCheckpointsForTable(outDir string, tab, keyLen int, blocks []uint64) {
 	}
 	c := seg.Cursor()
 
-	// One output writer per checkpoint block.
-	type wtr struct {
-		f   *os.File
-		bw  *bufio.Writer
-		enc *zstd.Encoder
-		n   int64
+	// One output writer per checkpoint block; the frame encoder is shared.
+	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
+	if err != nil {
+		die("zstd writer: %v", err)
 	}
-	wtrs := make([]*wtr, len(blocks))
+	defer enc.Close()
+	wtrs := make([]*ckptWriter, len(blocks))
 	for i, b := range blocks {
 		path := filepath.Join(outDir, ckptDir, fmt.Sprintf("%d.%d.ckpt", tab, b))
-		f, err := os.Create(path)
+		w, err := newCkptWriter(path, keyLen, enc)
 		if err != nil {
 			die("create %s: %v", path, err)
 		}
-		bw := bufio.NewWriterSize(f, 1<<20)
-		enc, err := zstd.NewWriter(bw, zstd.WithEncoderLevel(zstd.SpeedDefault))
-		if err != nil {
-			die("zstd writer: %v", err)
-		}
-		wtrs[i] = &wtr{f: f, bw: bw, enc: enc}
+		wtrs[i] = w
 	}
 
 	// Per-key state: EVER-APPEARED semantics — a key belongs to checkpoint C iff
@@ -136,10 +224,9 @@ func buildCheckpointsForTable(outDir string, tab, keyLen int, blocks []uint64) {
 		}
 		for i, cb := range blocks {
 			if curFirstBlk <= cb {
-				if _, err := wtrs[i].enc.Write(curKey); err != nil {
+				if err := wtrs[i].add(curKey); err != nil {
 					die("write ckpt: %v", err)
 				}
-				wtrs[i].n++
 			}
 		}
 	}
@@ -167,19 +254,12 @@ func buildCheckpointsForTable(outDir string, tab, keyLen int, blocks []uint64) {
 	}
 
 	for i, b := range blocks {
-		if e := wtrs[i].enc.Close(); e != nil {
-			die("close enc: %v", e)
+		sz, e := wtrs[i].close()
+		if e != nil {
+			die("close ckpt: %v", e)
 		}
-		if e := wtrs[i].bw.Flush(); e != nil {
-			die("flush: %v", e)
-		}
-		fi, _ := wtrs[i].f.Stat()
-		wtrs[i].f.Close()
-		var szMB float64
-		if fi != nil {
-			szMB = float64(fi.Size()) / (1 << 20)
-		}
-		fmt.Printf("table=%d ckpt block=%-9d live_keys=%-12d file=%.1f MB\n", tab, b, wtrs[i].n, szMB)
+		fmt.Printf("table=%d ckpt block=%-9d live_keys=%-12d frames=%-8d file=%.1f MB\n",
+			tab, b, wtrs[i].n, wtrs[i].frames, float64(sz)/(1<<20))
 	}
 	fmt.Printf("table=%d: scanned %d leaf entries\n", tab, scanned)
 }
