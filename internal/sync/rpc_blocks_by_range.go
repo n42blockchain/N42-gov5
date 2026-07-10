@@ -166,6 +166,18 @@ func (s *Service) writeBodiesRangeToStream(ctx context.Context, startSlot, endSl
 			s.writeErrorResponseToStream(responseCodeServerError, p2ptypes.ErrInvalidBlockNr.Error(), stream)
 			return err
 		}
+		// Linkage guard (step 1 only): never serve a non-linked by-number
+		// sequence. A canonical hole (dead-branch rows left by a historical
+		// canonical writer) otherwise poisons the requester — its contiguity
+		// check rejects the whole range and it retries forever (observed live:
+		// a laggard spinning on a span whose canonical rows were three
+		// different dead siblings). Truncate at the break; the linked prefix
+		// is still importable, and the local canonical repair heals the table.
+		if step == 1 && len(blks) > 0 && b.ParentHash() != blks[len(blks)-1].Hash() {
+			log.Warn("bodies-by-range: canonical break, truncating response",
+				"at", startSlot.Uint64(), "parent", b.ParentHash(), "prev", blks[len(blks)-1].Hash())
+			break
+		}
 		blks = append(blks, b)
 	}
 

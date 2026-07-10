@@ -107,35 +107,69 @@ func (s *Service) CatchUp() {
 		fetched, err := SendBodiesByRangeRequest(ctx, s.cfg.chain, s.cfg.p2p, pid, req, nil)
 		cancel()
 		if err != nil {
-			log.Debug("hotstuff catch-up: range request failed",
+			log.Warn("hotstuff catch-up: range request failed",
 				"peer", pid.String()[:12], "from", start, "to", highest.Uint64(), "err", err)
 			continue
 		}
 		if len(fetched) == 0 {
-			log.Debug("hotstuff catch-up: range returned 0 blocks", "peer", pid.String()[:12])
+			log.Warn("hotstuff catch-up: range returned 0 blocks", "peer", pid.String()[:12])
 			continue
 		}
+		// Drop nil entries defensively — a partially decoded chunk stream can
+		// leave holes, and a nil block panics every downstream .Hash()/.Number64()
+		// (observed live: the catch-up tick panic-recover looping every 8s).
 		blocks := make([]block.IBlock, 0, len(fetched))
 		for _, b := range fetched {
-			blocks = append(blocks, b)
+			if b != nil {
+				blocks = append(blocks, b)
+			}
+		}
+		if len(blocks) == 0 {
+			log.Warn("hotstuff catch-up: range contained only nil blocks", "peer", pid.String()[:12])
+			continue
 		}
 		// A taller fetched chain reorgs us off the fork. In the equal-height-fork
 		// case we insert with branch-switch authority so the losing applied
 		// sibling is reverted; otherwise plain InsertChain (which refuses to
 		// revert an applied branch) suffices for a pure height lag.
 		var ierr error
+		var imported int
 		if authorized {
-			_, ierr = s.insertAuthorized(blocks)
+			imported, ierr = s.insertAuthorized(blocks)
 		} else {
-			_, ierr = s.cfg.chain.InsertChain(blocks)
+			imported, ierr = s.cfg.chain.InsertChain(blocks)
 		}
 		if ierr != nil {
-			log.Debug("hotstuff catch-up: insert failed", "err", ierr, "authorized", authorized)
+			log.Warn("hotstuff catch-up: insert failed", "err", ierr, "authorized", authorized,
+				"from", blocks[0].Number64().Uint64(), "count", len(blocks), "imported", imported)
+			// A PARTIAL import still advanced the applied head. Canonicalize the
+			// imported prefix (via its tail block's embedded CommitQC) so the
+			// next round starts ABOVE it — otherwise the canonical head stays
+			// put and every 8s tick unwinds and re-executes the same prefix
+			// (observed live: +1 block per round with a full replay each time).
+			// If the guessed tail didn't actually land, CommitToCanonical skips
+			// it harmlessly (block not in DB).
+			if n := s.cfg.blockImportNotifier; n != nil && imported > 0 && imported <= len(blocks) {
+				tail := blocks[imported-1]
+				n.NotifyBlockImported(tail.Hash(), tail.TxHash())
+			}
 			continue
 		}
-		newHead := currentBlockNumber(s.cfg.chain)
+		// Notify the engine about the imported range tail. Import paths no longer
+		// touch the canonical table (commit-authority-only), so a catching-up
+		// node advances its committed head exclusively via the header-embedded
+		// CommitQC processed by NotifyBlockImported; the commit walk back-fills
+		// the whole imported range from the tail block's QC.
+		if n := s.cfg.blockImportNotifier; n != nil {
+			tail := blocks[len(blocks)-1]
+			n.NotifyBlockImported(tail.Hash(), tail.TxHash())
+		}
+		var newHeadNum uint64
+		if newHead := currentBlockNumber(s.cfg.chain); newHead != nil {
+			newHeadNum = newHead.Uint64()
+		}
 		log.Info("hotstuff catch-up: imported range",
-			"fetched", len(blocks), "newHead", newHead.Uint64(), "authorized", authorized)
+			"fetched", len(blocks), "newHead", newHeadNum, "authorized", authorized)
 		return
 	}
 }
