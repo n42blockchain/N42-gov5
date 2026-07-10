@@ -33,6 +33,7 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/edsrzf/mmap-go"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -46,7 +47,13 @@ func extThreshold() int64 {
 			return n
 		}
 	}
-	return 4 << 30 // 4 GiB
+	// 512 MiB. Anything above → the bounded external sort (now mmap-backed, so a
+	// giant bucket costs ~one chunk of resident heap, not its whole compressed
+	// size). Kept deliberately low: the in-RAM path below decompresses the WHOLE
+	// bucket, and a 3 GiB-compressed leaf bucket inflates to ~20 GB — a couple of
+	// those on the worker pool is an OOM. Only genuinely small buckets stay
+	// in-RAM now.
+	return 512 << 20
 }
 
 // extChunkBytes: decoded bytes accumulated per sorted run. Peak memory is the
@@ -62,13 +69,73 @@ func extChunkBytes() int {
 	return 2 << 30 // 2 GiB decoded per run
 }
 
+// segHasTrailingMagic reports whether path ends in a complete segment's 16-byte
+// trailer (footer-length + leafSegMagic). Used to distinguish a finished run
+// checkpoint from one truncated by a killed process.
+func segHasTrailingMagic(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || st.Size() < 16 {
+		return false
+	}
+	var tail [16]byte
+	if _, err := f.ReadAt(tail[:], st.Size()-16); err != nil {
+		return false
+	}
+	return string(tail[8:]) == leafSegMagic
+}
+
 // finalizeBucketExternal sorts one oversized bucket spill into dst with a fixed
 // memory budget. corruptOut receives the count of kill-tail frames skipped.
 func finalizeBucketExternal(zr *zstd.Decoder, enc *zstd.Encoder, src, oldSeg, dst string, corruptOut *int) error {
-	comp, err := os.ReadFile(src)
+	// mmap the compressed spill READ-ONLY rather than os.ReadFile'ing it whole
+	// into the heap. A hot-contract storage prefix (e.g. s.ab ≈ 17 GB compressed)
+	// would otherwise pin its entire compressed size in committed heap — which
+	// defeats the whole point of the external sort (bounded memory) and caused
+	// the 2026-07-09 OOM: with 3 giant buckets external-sorted concurrently,
+	// os.ReadFile alone pinned 17+15+11 = 43 GB before a single row was sorted,
+	// then the in-RAM light workers pushed the process past 113 GB. A read-only
+	// file mapping is backed by the file itself (no commit charge) and its clean
+	// pages are reclaimed by the OS under pressure, so the resident set here
+	// stays bounded by the chunk budget, not the bucket size.
+	f, err := os.Open(src)
 	if err != nil {
 		return err
 	}
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return err
+	}
+	var comp []byte
+	var mm mmap.MMap
+	if sz := fi.Size(); sz > 0 {
+		mm, err = mmap.MapRegion(f, int(sz), mmap.RDONLY, 0, 0)
+		if err != nil {
+			f.Close()
+			return err
+		}
+		comp = mm
+	}
+	// unmapComp releases the mapping + handle. Called before the merge phase
+	// (which never touches comp) so the giant mapping is gone while the k-way
+	// merge runs, and again via defer for the error paths.
+	unmapComp := func() {
+		if mm != nil {
+			_ = mm.Unmap()
+			mm = nil
+		}
+		if f != nil {
+			_ = f.Close()
+			f = nil
+		}
+		comp = nil
+	}
+	defer unmapComp()
 	// Frame boundaries: split on the 4-byte zstd magic (one frame == one flush
 	// of the spill writer; a frame never spans two build runs).
 	var frameStarts []int
@@ -86,6 +153,23 @@ func finalizeBucketExternal(zr *zstd.Decoder, enc *zstd.Encoder, src, oldSeg, ds
 
 	runDir := dst + ".runs"
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return err
+	}
+	// Runs are checkpoints reused across resumes — but ONLY when they were cut at
+	// the SAME chunk budget. A resume that changed N42_DATC_EXT_CHUNK_BYTES spliced
+	// 2 GiB-chunk runs with 1 GiB-chunk runs by index, silently gapping/duplicating
+	// rows (the 2026-07-09 corruption). Fingerprint the run set with its budget; on
+	// mismatch (or first use), discard the stale runs and regenerate from the spill.
+	budgetMark := filepath.Join(runDir, "budget")
+	if b, e := os.ReadFile(budgetMark); e == nil && string(b) != strconv.Itoa(budget) {
+		if err := os.RemoveAll(runDir); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(runDir, 0o755); err != nil {
+			return err
+		}
+	}
+	if err := os.WriteFile(budgetMark, []byte(strconv.Itoa(budget)), 0o644); err != nil {
 		return err
 	}
 
@@ -149,8 +233,13 @@ func finalizeBucketExternal(zr *zstd.Decoder, enc *zstd.Encoder, src, oldSeg, ds
 		runPaths = append(runPaths, runPath)
 		idx := runIdx
 		runIdx++
-		if fi, serr := os.Stat(runPath); serr == nil && fi.Size() > 0 {
-			raw, offs = raw[:0], offs[:0] // resume: run already a checkpoint
+		// Resume only over a COMPLETE run: a size>0 file whose trailing magic is
+		// present. A run written by a process that was killed mid-flush (OOM) is
+		// size>0 but truncated (no footer/magic) — reusing it blindly fed a
+		// corrupt "bad trailing magic" segment straight into the merge and aborted
+		// the whole recast (2026-07-09). A truncated checkpoint is regenerated.
+		if segHasTrailingMagic(runPath) {
+			raw, offs = raw[:0], offs[:0] // resume: run already a valid checkpoint
 			return nil
 		}
 		sort.SliceStable(offs, func(i, j int) bool {
@@ -221,7 +310,7 @@ func finalizeBucketExternal(zr *zstd.Decoder, enc *zstd.Encoder, src, oldSeg, ds
 	if err := flushRun(); err != nil {
 		return err
 	}
-	comp = nil // free the compressed input before the merge phase
+	unmapComp() // release the (mmap'd) compressed input before the merge phase
 
 	if err := mergeRuns(enc, oldSeg, dst, runPaths); err != nil {
 		return err
