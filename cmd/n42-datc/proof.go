@@ -556,6 +556,8 @@ func runProof(args []string) {
 	wantRootHex := fs.String("want-root", "", "expected state root hex; bypasses the (slow, random-access) headerc oracle — for timing / offline verification")
 	timeSteps := fs.Bool("time", false, "print per-step wall time to stderr")
 	cpuProfile := fs.String("cpuprofile", "", "write a CPU profile to this path")
+	ckptFold := fs.Bool("ckpt-fold", true, "route early-block subtree folds through the live-key checkpoints (ckpt/ dir) when present — kills the minutes-long early-block future-scan folds. No-op when the DB has no (v2) checkpoints.")
+	ckptMaxBlock := fs.Int64("ckpt-max-block", 0, "checkpoint routing gate: 0 = auto (default; live-key-count gate — large sets are excluded because the record path is faster there), >0 = hard cutoff (checkpoints ≤ this block), -1 = use all present")
 	_ = fs.Parse(args)
 	if *cpuProfile != "" {
 		pf, perr := os.Create(*cpuProfile)
@@ -628,6 +630,14 @@ func runProof(args []string) {
 		}
 		q.segA, q.segS = open(segTabLeafA), open(segTabLeafS)
 		q.segCA, q.segCS = open(segTabChgA), open(segTabChgS)
+	}
+	if *ckptFold {
+		st := openCkptStore(*out, *ckptMaxBlock)
+		if st.available(segTabLeafA) || st.available(segTabLeafS) {
+			q.ckpt, q.ckptFold = st, true
+		} else {
+			st.Close()
+		}
 	}
 
 	tstep := time.Now()
