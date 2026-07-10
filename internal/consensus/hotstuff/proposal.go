@@ -166,7 +166,11 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
 	// imported (a direct push arrived before the Proposal), vote now; otherwise
 	// defer until EventBlockImported fires onBlockImported, which casts the vote.
 	e.pendingProposals[view] = proposal.BlockHash
+	e.pendingJustifyBlocks[view] = proposal.JustifyQC.BlockHash
 	if e.importedBlocks[proposal.BlockHash] {
+		if !e.extendsJustify(view, proposal.BlockHash) {
+			return nil // extends-rule violation logged; do not vote
+		}
 		log.Info("import-gated vote: block already imported, voting now", "view", view, "blockHash", proposal.BlockHash)
 		e.roundState.RecordVote(view, proposal.BlockHash)
 		return e.sendVote(view, proposal.BlockHash)
@@ -256,22 +260,54 @@ func (e *ConsensusEngine) sendVote(view ViewNumber, blockHash types.Hash) error 
 // it needs its own eviction: evict the oldest hash once at MaxImportedBlocks so a
 // new import is always recorded (a stuck round re-imports the SAME hash, which
 // occupies one slot, so the recent-block window is never starved).
-func (e *ConsensusEngine) rememberImported(h types.Hash) {
+func (e *ConsensusEngine) rememberImported(h types.Hash, parent types.Hash) {
 	if e.importedBlocks[h] {
+		if parent != (types.Hash{}) {
+			e.importedParents[h] = parent // backfill if the first notify lacked it
+		}
 		return
 	}
 	if len(e.importedFIFO) >= MaxImportedBlocks {
 		oldest := e.importedFIFO[0]
 		e.importedFIFO = e.importedFIFO[1:]
 		delete(e.importedBlocks, oldest)
+		delete(e.importedParents, oldest)
 	}
 	e.importedBlocks[h] = true
+	if parent != (types.Hash{}) {
+		e.importedParents[h] = parent
+	}
 	e.importedFIFO = append(e.importedFIFO, h)
 }
 
+// extendsJustify enforces the HotStuff extends rule at vote time: the proposed
+// block's parent must be the proposal's JustifyQC block. Without it a proposal
+// can pair a high-view JustifyQC with a block on a DIFFERENT branch and voters
+// certify a conflicting chain (observed live: a dead same-height sibling
+// re-proposed at a committed height seeded conflicting commits at 13014242).
+// Fail-open when either side is unknown (genesis justify, parent not tracked) —
+// the rule tightens as information is available, never blocks the honest path.
+func (e *ConsensusEngine) extendsJustify(view ViewNumber, blockHash types.Hash) bool {
+	justify, ok := e.pendingJustifyBlocks[view]
+	if !ok || justify == (types.Hash{}) {
+		return true
+	}
+	parent, known := e.importedParents[blockHash]
+	if !known || parent == (types.Hash{}) {
+		return true
+	}
+	if parent != justify {
+		log.Warn("import-gated vote REFUSED: proposal does not extend its JustifyQC block",
+			"view", view, "blockHash", blockHash,
+			"blockParent", parent, "justifyBlock", justify)
+		return false
+	}
+	return true
+}
+
 // onBlockImported handles the BlockImported event and verifies DA commitment.
-func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot types.Hash) error {
-	e.rememberImported(blockHash)
+func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot types.Hash, parentHash types.Hash) error {
+	e.rememberImported(blockHash, parentHash)
 
 	// Baby Raptr DA verification: compare the proposal's TxRootHash with
 	// the actual transaction root computed during block import.
@@ -299,6 +335,9 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 	view := e.roundState.CurrentView()
 	if pending, ok := e.pendingProposals[view]; ok && pending == blockHash &&
 		!e.roundState.HasVotedInView(view) {
+		if !e.extendsJustify(view, blockHash) {
+			return nil // extends-rule violation logged; do not vote
+		}
 		e.roundState.RecordVote(view, blockHash)
 		log.Info("import-gated vote: casting deferred vote after import", "view", view, "blockHash", blockHash)
 		return e.sendVote(view, blockHash)
