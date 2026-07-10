@@ -640,6 +640,16 @@ func (p *Status) PeersToPrune() []peer.ID {
 	peersToPrune := make([]*peerResp, 0)
 	// Select connected and inbound peers to prune.
 	for pid, peerData := range p.store.Peers() {
+		// Static validator-mesh peers are NEVER pruned. Same-host meshes end up
+		// with all-inbound connections on later-started nodes (dial dedup keeps
+		// one direction), so the inbound-limit heuristic goodbyed a validator
+		// every maintainPeerStatuses tick — observed live as a deterministic
+		// ~4-minute disconnect wave (6→4→6 peers) that dropped proposals/votes
+		// and produced a view-timeout cluster every ~33 views. Trust exemption
+		// already covers scoring (SetTrusted); pruning must honor it too.
+		if _, trusted := p.trusted[pid]; trusted {
+			continue
+		}
 		if peerData.ConnState == PeerConnected &&
 			peerData.Direction == network.DirInbound {
 			peersToPrune = append(peersToPrune, &peerResp{
