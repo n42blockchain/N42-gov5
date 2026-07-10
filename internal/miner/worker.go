@@ -23,6 +23,7 @@
 package miner
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -75,6 +76,13 @@ func usesTimerDrivenSealing(engine consensus.Engine) bool {
 // block (required by import-gated voting).
 type blockSealNotifier interface {
 	NotifyBlockSealed(hash, txHash types.Hash)
+}
+
+// siblingLookup is implemented by the blockchain so the leader can converge on a
+// single same-height candidate (fix A): the lowest-hash locally-known block at a
+// height extending a given parent. See BlockChain.LowestSiblingAtHeight.
+type siblingLookup interface {
+	LowestSiblingAtHeight(number uint64, parentHash types.Hash) (block.IBlock, bool)
 }
 
 // leaderAware is implemented by leader-driven consensus engines (HotStuff) so
@@ -397,6 +405,35 @@ func (w *worker) resultLoop() error {
 				continue
 			}
 
+			parentHash := blk.ParentHash()
+
+			// Fix A — cross-view same-height convergence: if a strictly-lower-hash
+			// sibling extending THIS parent is already known locally (sealed here or
+			// received from another view's leader), re-propose it instead of
+			// importing this divergent higher-hash candidate. When a height misses
+			// its first commit, each later view's leader otherwise builds a distinct
+			// block (different ConsensusEvidence per view), scattering import-gated
+			// votes so no candidate reaches the 2f+1 quorum — the multi-minute
+			// convergence stall. Deterministic lowest-hash selection (matches the
+			// forkchoice tie-break) makes every leader pick the SAME candidate, so
+			// votes stack on one block. See docs/hotstuff-view-convergence-followup.md.
+			if sl, ok := w.chain.(siblingLookup); ok {
+				if low, exists := sl.LowestSiblingAtHeight(blockNumber.Uint64(), parentHash); exists &&
+					low.Hash() != blk.Hash() &&
+					bytes.Compare(low.Hash().Bytes(), blk.Hash().Bytes()) < 0 {
+					log.Info("miner: converging on lowest-hash sibling; re-proposing it",
+						"number", blockNumber.Uint64(), "parent", parentHash.Hex()[:12],
+						"kept", low.Hash().Hex()[:12], "dropped", blk.Hash().Hex()[:12])
+					if err := w.chain.SealedBlock(low); err != nil {
+						log.Warn("miner: re-push of lowest sibling failed", "err", err)
+					}
+					if bsn, ok := w.engine.(blockSealNotifier); ok {
+						bsn.NotifyBlockSealed(low.Hash(), low.TxHash())
+					}
+					continue
+				}
+			}
+
 			// Height-level single-candidate guard (HotStuff-2): keep only the first
 			// block sealed on a given parent. A later view's leader re-entering Seal
 			// on the same still-uncommitted parent produces a divergent sibling;
@@ -404,7 +441,6 @@ func (w *worker) resultLoop() error {
 			// unwind between the two siblings forever. Re-propose the kept block for
 			// THIS view instead — it is already imported and is what consensus is
 			// building on. Checked BEFORE import so the sibling never touches state.
-			parentHash := blk.ParentHash()
 			if kept := w.firstSealedOnParent(parentHash); kept != nil && kept.Hash() != blk.Hash() {
 				log.Info("miner: suppressing divergent same-height sibling; re-proposing first sealed block",
 					"number", blockNumber.Uint64(), "parent", parentHash.Hex()[:12],

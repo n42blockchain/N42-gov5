@@ -29,6 +29,7 @@ package internal
 // Read methods: blockchain_reader.go
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -673,6 +674,52 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 		log.Info("commit-to-canonical applied", "number", blk.Number64().Uint64(), "hash", hash.Hex())
 		return nil
 	})
+}
+
+// LowestSiblingAtHeight returns the locally-known block at `number` with the
+// lowest hash among those whose parent is `parentHash`, and whether one exists.
+// The leader uses it (fix A) to converge on a single same-height candidate: when
+// a height misses its first commit, later views' leaders each build a divergent
+// block, scattering import-gated votes so no candidate reaches quorum. Having
+// every leader re-propose the same deterministic (lowest-hash) candidate stacks
+// the votes on one block. Header enumeration is a cheap number-prefix cursor
+// scan (siblings share the number prefix in the Headers table).
+func (bc *BlockChain) LowestSiblingAtHeight(number uint64, parentHash types.Hash) (block.IBlock, bool) {
+	var result block.IBlock
+	if err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		headers, err := rawdb.ReadHeadersByNumber(tx, number)
+		if err != nil {
+			return err
+		}
+		var lowest types.Hash
+		found := false
+		for _, h := range headers {
+			if h.ParentHash != parentHash {
+				continue
+			}
+			hh := h.Hash()
+			if !found || bytes.Compare(hh.Bytes(), lowest.Bytes()) < 0 {
+				lowest, found = hh, true
+			}
+		}
+		if !found {
+			return nil
+		}
+		blk, err := rawdb.ReadBlockByHash(tx, lowest)
+		if err != nil {
+			return err
+		}
+		if blk != nil {
+			result = blk
+		}
+		return nil
+	}); err != nil {
+		return nil, false
+	}
+	if result == nil {
+		return nil, false
+	}
+	return result, true
 }
 
 // SetCommitteePool injects the BLS committee-evidence builder. With it set, each
