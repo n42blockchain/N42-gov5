@@ -854,14 +854,24 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 	// certify a block that extends its proposal's JustifyQC block). Zero when
 	// unavailable — the check fails open.
 	var parentHash types.Hash
+	var headerExtra []byte
 	if s.db != nil {
 		_ = s.db.View(s.ctx, func(tx kv.Tx) error {
 			if hdr, herr := rawdb.ReadHeaderByHash(tx, hash); herr == nil && hdr != nil {
 				parentHash = hdr.ParentHash
+				headerExtra = hdr.Extra
 			}
 			return nil
 		})
 	}
+	// Catch-up canonicalization: the imported block's extra carries the leader's
+	// latest CommitQC — the network's transferable, BLS-verifiable proof that the
+	// QC's target block is committed. Live commits flow through
+	// OutputBlockCommitted, but a node importing HISTORICAL blocks (range
+	// catch-up, future-queue drain) sees views that are long gone, so this is its
+	// only legitimate way to advance the canonical head — import-time fork choice
+	// is disabled on leader-driven chains (canonical is commit-authority-only).
+	s.maybeCommitFromHeaderQC(headerExtra)
 	if ce := s.engine.Engine(); ce != nil {
 		if err := ce.ProcessEvent(ConsensusEvent{
 			Type:       EventBlockImported,
@@ -871,6 +881,54 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 		}); err != nil {
 			log.Debug("hotstuff: EventBlockImported processing failed", "hash", hash, "err", err)
 		}
+	}
+}
+
+// maybeCommitFromHeaderQC advances the canonical chain from the CommitQC a
+// just-imported block carries in its header extra (buildHeaderExtra embeds the
+// leader's LastCommittedQC into every block). Import-time fork choice is
+// disabled on leader-driven chains, so a catching-up node's canonical head can
+// only follow commit proofs; the embedded QC is exactly that — a 2f+1
+// BLS-verifiable statement that its target block is committed — and needs no
+// live view context. Cheap height gate first: signature verification runs only
+// when the QC's target is locally known AND ahead of the committed head, so the
+// synced steady state pays one header read per import. A QC signed by an older
+// validator set (cross-epoch catch-up) fails verification and is skipped —
+// fail-closed; such a node converges via live commits once its view syncs.
+func (s *Service) maybeCommitFromHeaderQC(extra []byte) {
+	if s.blockProducer == nil || s.db == nil || len(extra) == 0 {
+		return
+	}
+	qc, err := ExtractHeaderQC(extra)
+	if err != nil || qc == nil || qc.View == 0 || qc.BlockHash == (types.Hash{}) {
+		return
+	}
+	var qcNum *uint64
+	var committedHead uint64
+	_ = s.db.View(s.ctx, func(tx kv.Tx) error {
+		qcNum = rawdb.ReadHeaderNumber(tx, qc.BlockHash)
+		if hn := rawdb.ReadHeaderNumber(tx, rawdb.ReadHeadBlockHash(tx)); hn != nil {
+			committedHead = *hn
+		}
+		return nil
+	})
+	if qcNum == nil || *qcNum <= committedHead {
+		return // target not imported yet, or not ahead of the committed head
+	}
+	ce := s.engine.Engine()
+	if ce == nil {
+		return
+	}
+	if verr := VerifyQCAnyDomain(qc, ce.CurrentValidatorSet()); verr != nil {
+		log.Debug("hotstuff: header-QC canonicalize skipped (verify failed)",
+			"qcBlock", qc.BlockHash, "qcView", qc.View, "err", verr)
+		return
+	}
+	if cerr := s.blockProducer.CommitToCanonical(qc.BlockHash); cerr != nil {
+		log.Debug("hotstuff: header-QC commit-to-canonical deferred", "hash", qc.BlockHash, "err", cerr)
+	} else {
+		log.Info("hotstuff: canonical advanced from header-embedded CommitQC",
+			"number", *qcNum, "hash", qc.BlockHash)
 	}
 }
 

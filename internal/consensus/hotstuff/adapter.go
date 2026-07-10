@@ -307,6 +307,17 @@ func (h *HotStuff) Type() params.ConsensusType {
 
 // VerifyHeader checks whether a header conforms to the HotStuff consensus rules.
 func (h *HotStuff) VerifyHeader(chain consensus.ChainHeaderReader, iHeader block.IHeader, seal bool) error {
+	return h.verifyHeaderWithBatch(chain, iHeader, nil)
+}
+
+// verifyHeaderWithBatch is VerifyHeader with an optional in-batch parent index.
+// A range import verifies all headers BEFORE any block is written, so a
+// header's parent that is earlier in the same batch is not in the DB yet — a
+// DB-only lookup returns ErrUnknownAncestor for every block past the stored
+// prefix, and a 1024-block catch-up range degrades to one accepted block per
+// attempt with a full unwind/replay each round (observed live: a laggard
+// advancing exactly +1 block per 8s tick while re-executing everything).
+func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHeader block.IHeader, batch map[types.Hash]*block.Header) error {
 	header, ok := iHeader.(*block.Header)
 	if !ok {
 		return errors.New("invalid header type: expected *block.Header")
@@ -334,17 +345,24 @@ func (h *HotStuff) VerifyHeader(chain consensus.ChainHeaderReader, iHeader block
 	// mis-rejects any block built on the non-canonical sibling. Headers are
 	// stored keyed by (number, hash) for non-canonical blocks too, so the true
 	// parent is retrievable regardless of local canonical choice.
-	parent, perr := chain.GetHeaderByHash(header.ParentHash)
-	if perr != nil || parent == nil {
-		// Return ErrUnknownAncestor (not a generic error) so InsertChain
-		// future-queues this block instead of rejecting it as bad. Direct-pushed
-		// HotStuff blocks can arrive before their parent; they import once the
-		// parent lands.
-		return consensus.ErrUnknownAncestor
+	var parentHeader *block.Header
+	if batch != nil {
+		parentHeader = batch[header.ParentHash] // in-batch parent (range import)
 	}
-	parentHeader, ok := parent.(*block.Header)
-	if !ok || parentHeader == nil {
-		return consensus.ErrUnknownAncestor
+	if parentHeader == nil {
+		parent, perr := chain.GetHeaderByHash(header.ParentHash)
+		if perr != nil || parent == nil {
+			// Return ErrUnknownAncestor (not a generic error) so InsertChain
+			// future-queues this block instead of rejecting it as bad. Direct-pushed
+			// HotStuff blocks can arrive before their parent; they import once the
+			// parent lands.
+			return consensus.ErrUnknownAncestor
+		}
+		var pok bool
+		parentHeader, pok = parent.(*block.Header)
+		if !pok || parentHeader == nil {
+			return consensus.ErrUnknownAncestor
+		}
 	}
 	// Sanity: the referenced parent must sit exactly one height below.
 	var wantParentNum uint256.Int
@@ -403,6 +421,16 @@ func (h *HotStuff) VerifyHeaders(chain consensus.ChainHeaderReader, headers []bl
 	abort := make(chan struct{})
 	results := make(chan error, len(headers))
 
+	// Index the batch by hash so a header can resolve a parent that precedes
+	// it in the SAME batch (none of the batch is in the DB yet during a range
+	// import) — see verifyHeaderWithBatch.
+	batch := make(map[types.Hash]*block.Header, len(headers))
+	for _, ih := range headers {
+		if hd, ok := ih.(*block.Header); ok && hd != nil {
+			batch[hd.Hash()] = hd
+		}
+	}
+
 	go func() {
 		defer close(results)
 		for _, header := range headers {
@@ -411,7 +439,7 @@ func (h *HotStuff) VerifyHeaders(chain consensus.ChainHeaderReader, headers []bl
 				return
 			default:
 			}
-			err := h.VerifyHeader(chain, header, true)
+			err := h.verifyHeaderWithBatch(chain, header, batch)
 			select {
 			case results <- err:
 			case <-abort:
