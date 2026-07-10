@@ -109,9 +109,17 @@ type ConsensusEngine struct {
 
 	// Block tracking
 	importedBlocks     map[types.Hash]bool
+	importedParents    map[types.Hash]types.Hash // imported blockHash → its parent hash (extends-check at vote time)
 	importedFIFO       []types.Hash              // insertion order for bounded eviction; blocks stay known-imported across view changes
 	pendingTxRoots     map[types.Hash]types.Hash // blockHash → expected TxRootHash (DA verification)
 	pendingProposals   map[ViewNumber]types.Hash // view → proposed blockHash awaiting local import before the prepare vote (import-gated voting)
+	// pendingJustifyBlocks records, per view, the proposal's JustifyQC.BlockHash
+	// so the import-gated vote can enforce the HotStuff extends rule (the
+	// proposed block's parent MUST be the justify block). Without it a proposal
+	// can carry a high-view JustifyQC while extending a DIFFERENT branch, and
+	// voters certify a chain conflicting with the justified one (observed live:
+	// a dead same-height sibling re-proposed at a committed height).
+	pendingJustifyBlocks      map[ViewNumber]types.Hash
 	equivocationTracker       map[ValidatorIndex]types.Hash
 	commitEquivocationTracker map[ValidatorIndex]types.Hash
 
@@ -185,8 +193,10 @@ func NewConsensusEngineWithEpochManager(
 		pacemaker:           NewPacemaker(baseTimeoutMs, maxTimeoutMs),
 		outputCh:            outputCh,
 		importedBlocks:      make(map[types.Hash]bool),
+		importedParents:     make(map[types.Hash]types.Hash),
 		pendingTxRoots:      make(map[types.Hash]types.Hash),
 		pendingProposals:    make(map[ViewNumber]types.Hash),
+		pendingJustifyBlocks: make(map[ViewNumber]types.Hash),
 		equivocationTracker: make(map[ValidatorIndex]types.Hash),
 		commitEquivocationTracker: make(map[ValidatorIndex]types.Hash),
 		futureMsgBuffer:     make([]futureMsg, 0),
@@ -221,8 +231,10 @@ func WithRecoveredState(
 		pacemaker:           NewPacemaker(baseTimeoutMs, maxTimeoutMs),
 		outputCh:            outputCh,
 		importedBlocks:      make(map[types.Hash]bool),
+		importedParents:     make(map[types.Hash]types.Hash),
 		pendingTxRoots:      make(map[types.Hash]types.Hash),
 		pendingProposals:    make(map[ViewNumber]types.Hash),
+		pendingJustifyBlocks: make(map[ViewNumber]types.Hash),
 		equivocationTracker: make(map[ValidatorIndex]types.Hash),
 		commitEquivocationTracker: make(map[ValidatorIndex]types.Hash),
 		futureMsgBuffer:     make([]futureMsg, 0),
@@ -343,7 +355,7 @@ func (e *ConsensusEngine) ProcessEvent(event ConsensusEvent) error {
 	case EventBlockReady:
 		return e.onBlockReady(event.Hash, event.TxRootHash)
 	case EventBlockImported:
-		return e.onBlockImported(event.Hash, event.TxRootHash)
+		return e.onBlockImported(event.Hash, event.TxRootHash, event.ParentHash)
 	default:
 		return nil
 	}
@@ -380,6 +392,7 @@ type ConsensusEvent struct {
 	Msg        ConsensusMsg
 	Hash       types.Hash
 	TxRootHash types.Hash // DA commitment: transaction root hash (Baby Raptr)
+	ParentHash types.Hash // EventBlockImported only: imported block's parent (extends-check; zero = unknown, check skipped)
 }
 
 // ConsensusEventType identifies the type of consensus event.
@@ -513,6 +526,11 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	for v := range e.pendingProposals {
 		if v < newView {
 			delete(e.pendingProposals, v)
+		}
+	}
+	for v := range e.pendingJustifyBlocks {
+		if v < newView {
+			delete(e.pendingJustifyBlocks, v)
 		}
 	}
 	e.equivocationTracker = make(map[ValidatorIndex]types.Hash)

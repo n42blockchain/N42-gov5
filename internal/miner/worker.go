@@ -417,7 +417,14 @@ func (w *worker) resultLoop() error {
 			// convergence stall. Deterministic lowest-hash selection (matches the
 			// forkchoice tie-break) makes every leader pick the SAME candidate, so
 			// votes stack on one block. See docs/hotstuff-view-convergence-followup.md.
-			if sl, ok := w.chain.(siblingLookup); ok {
+			// Only at the single legitimate proposal height (committed head + 1):
+			// a stale leader building at an already-committed height must NOT be
+			// redirected to a dead sibling there — that re-injects a candidate
+			// conflicting with the committed block (observed live at 13014242:
+			// sibling re-proposal at a committed height seeded a canonical-chain
+			// discontinuity). Let the normal import/duplicate path absorb it.
+			if sl, ok := w.chain.(siblingLookup); ok &&
+				blockNumber.Uint64() == w.chain.CurrentBlock().Number64().Uint64()+1 {
 				if low, exists := sl.LowestSiblingAtHeight(blockNumber.Uint64(), parentHash); exists &&
 					low.Hash() != blk.Hash() &&
 					bytes.Compare(low.Hash().Bytes(), blk.Hash().Bytes()) < 0 {

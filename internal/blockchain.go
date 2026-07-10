@@ -384,12 +384,72 @@ func (bc *BlockChain) AncientReader() *freezer.AncientReader {
 // =============================================================================
 
 func (bc *BlockChain) Start() error {
+	bc.repairCanonicalLinkageOnStartup()
 	bc.revertSpeculativeOnStartup()
 	bc.wg.Add(3)
 	go bc.runLoop()
 	go bc.updateFutureBlocksLoop()
 	go bc.runNewBlockMessage()
 	return nil
+}
+
+// canonicalRepairDepth bounds the startup canonical-linkage scan. Holes are
+// created within the branch-switch window of live consensus activity, so a
+// window-plus-margin depth is sufficient without a full-chain walk.
+const canonicalRepairDepth = 1024
+
+// repairCanonicalLinkageOnStartup heals holes in the canonical number→hash
+// mapping: heights where canonical[n]'s parent is not canonical[n-1]. The old
+// CommitToCanonical walk-back exited silently when an ancestor's BODY was
+// missing locally, freezing such a hole permanently (its stop condition assumed
+// prefix consistency). A holed chain is served by-number to catch-up peers as a
+// non-linked sequence, wedging them (observed live at 13014242/243). The walk
+// repairs every inconsistent link within canonicalRepairDepth of the head using
+// header parent hashes — the header of a canonical block is always local.
+func (bc *BlockChain) repairCanonicalLinkageOnStartup() {
+	if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+		// Head via HeadBlockHash — the key CommitToCanonical writes. The
+		// header-head key (ReadCurrentBlockNumber) is NOT maintained on the
+		// leader-driven path and points at the replay head forever, which made
+		// this walk start far below the live range and find nothing.
+		headHash := rawdb.ReadHeadBlockHash(tx)
+		headNum := rawdb.ReadHeaderNumber(tx, headHash)
+		if headNum == nil || *headNum == 0 {
+			return nil
+		}
+		num := *headNum
+		curHash := headHash
+		repaired := 0
+		for depth := 0; num > 0 && depth < canonicalRepairDepth; depth++ {
+			hdr := rawdb.ReadHeader(tx, curHash, num)
+			if hdr == nil {
+				log.Error("canonical repair: header missing for canonical block, stopping",
+					"number", num, "hash", fmt.Sprintf("%x", curHash[:8]))
+				return nil
+			}
+			below, berr := rawdb.ReadCanonicalHash(tx, num-1)
+			if berr != nil {
+				return berr
+			}
+			if below != hdr.ParentHash {
+				if werr := rawdb.WriteCanonicalHash(tx, hdr.ParentHash, num-1); werr != nil {
+					return werr
+				}
+				log.Warn("canonical repair: relinked broken canonical mapping",
+					"number", num-1, "was", fmt.Sprintf("%x", below[:8]),
+					"now", fmt.Sprintf("%x", hdr.ParentHash[:8]))
+				repaired++
+			}
+			curHash = hdr.ParentHash
+			num--
+		}
+		if repaired > 0 {
+			log.Warn("canonical repair: completed", "relinked", repaired, "scanned", canonicalRepairDepth)
+		}
+		return nil
+	}); err != nil {
+		log.Error("canonical repair failed", "err", err)
+	}
 }
 
 // revertSpeculativeOnStartup restores the HotStuff-2 restart invariant: a
@@ -646,31 +706,63 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 			return fmt.Errorf("committed block %s not in db", hash.Hex())
 		}
 		// Rewrite canonical mapping from the committed block back to the fork
-		// point (the first ancestor already mapped canonical to this hash).
-		cur := blk
-		for cur != nil {
-			num := cur.Number64().Uint64()
-			existing, rerr := rawdb.ReadCanonicalHash(tx, num)
+		// point. Walk via HEADERS, not bodies: the previous ReadBlockByHash walk
+		// exited SILENTLY when an ancestor's body was missing locally, leaving a
+		// permanent hole in the canonical chain (observed live: canonical[n]
+		// whose parent is not canonical[n-1] — served by-number to catch-up
+		// peers as a non-linked chain, wedging them). Headers exist for every
+		// block on a committed lineage (they arrive with the proposal/import).
+		// The stop condition requires BOTH the current mapping to match AND the
+		// link below to be consistent — "existing == hash" alone re-froze holes
+		// left by the old walk (prefix-consistency assumption).
+		curNum := blk.Number64().Uint64()
+		curHash := hash
+		curParent := blk.ParentHash()
+		rewrote := false
+		for {
+			existing, rerr := rawdb.ReadCanonicalHash(tx, curNum)
 			if rerr != nil {
 				return rerr
 			}
-			if existing == cur.Hash() {
-				break // reached the existing canonical chain
+			if existing != curHash {
+				if werr := rawdb.WriteCanonicalHash(tx, curHash, curNum); werr != nil {
+					return werr
+				}
+				rewrote = true
 			}
-			if werr := rawdb.WriteCanonicalHash(tx, cur.Hash(), num); werr != nil {
-				return werr
-			}
-			if num == 0 {
+			if curNum == 0 {
 				break
 			}
-			parent, perr := rawdb.ReadBlockByHash(tx, cur.ParentHash())
-			if perr != nil {
-				return perr
+			below, berr := rawdb.ReadCanonicalHash(tx, curNum-1)
+			if berr != nil {
+				return berr
 			}
-			cur = parent
+			if existing == curHash && below == curParent {
+				break // mapping and link both consistent — reached the canonical chain
+			}
+			hdr := rawdb.ReadHeader(tx, curParent, curNum-1)
+			if hdr == nil {
+				// Ancestor header not local (should not happen for a committed
+				// lineage). Do NOT leave a silent hole: surface it — the
+				// pendingCommit retry re-runs this walk when the block lands.
+				return fmt.Errorf("commit-to-canonical: ancestor header %d/%x missing, canonical rewrite incomplete", curNum-1, curParent[:8])
+			}
+			curNum--
+			curHash = curParent
+			curParent = hdr.ParentHash
 		}
 		rawdb.WriteHeadBlockHash(tx, hash)
 		bc.currentBlock.Store(blk)
+		// Canonical rows changed under any read-through layer: invalidate it, or
+		// by-number readers (RPC, the catch-up range SERVER) keep returning the
+		// pre-rewrite chain indefinitely — observed live: a peer catching up was
+		// fed a stale, non-linked canonical sequence and wedged. unwindForReimport
+		// already does this; the commit-time rewrite needs it just as much.
+		if rewrote {
+			if cache := layered.ExtractCache(bc.ChainDB); cache != nil {
+				cache.Clear()
+			}
+		}
 		log.Info("commit-to-canonical applied", "number", blk.Number64().Uint64(), "hash", hash.Hex())
 		return nil
 	})
@@ -1784,7 +1876,7 @@ func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authori
 		// require n to be strictly above the committed head. revertSpeculativeOnStartup
 		// calls with n = committedHead+1, which is still allowed.
 		var committedHead uint64
-		if hn := rawdb.ReadCurrentBlockNumber(tx); hn != nil {
+		if hn := rawdb.ReadHeaderNumber(tx, rawdb.ReadHeadBlockHash(tx)); hn != nil {
 			committedHead = *hn
 		}
 		if n <= committedHead {

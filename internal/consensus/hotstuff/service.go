@@ -26,6 +26,7 @@ import (
 	vm "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules/rawdb"
 )
 
 // P2PPublisher abstracts the P2P layer for broadcasting and subscribing.
@@ -849,11 +850,24 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 	if alreadyNotified {
 		return
 	}
+	// Best-effort parent lookup for the engine's extends-check (vote must only
+	// certify a block that extends its proposal's JustifyQC block). Zero when
+	// unavailable — the check fails open.
+	var parentHash types.Hash
+	if s.db != nil {
+		_ = s.db.View(s.ctx, func(tx kv.Tx) error {
+			if hdr, herr := rawdb.ReadHeaderByHash(tx, hash); herr == nil && hdr != nil {
+				parentHash = hdr.ParentHash
+			}
+			return nil
+		})
+	}
 	if ce := s.engine.Engine(); ce != nil {
 		if err := ce.ProcessEvent(ConsensusEvent{
 			Type:       EventBlockImported,
 			Hash:       hash,
 			TxRootHash: txHash,
+			ParentHash: parentHash,
 		}); err != nil {
 			log.Debug("hotstuff: EventBlockImported processing failed", "hash", hash, "err", err)
 		}
