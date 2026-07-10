@@ -228,11 +228,14 @@ type ckptStore struct {
 
 // autoCkptMaxKeys is the auto-gate threshold: checkpoints whose live-key-set
 // exceeds this are excluded from the fold routing. Measured on the 15.22M
-// bprime2 archive (seed 42, n=200, verified): routing mid/late-N folds through
-// large candidate sets is ~7× SLOWER than the dense-record path they would
-// otherwise take (p50 1.1s vs 130ms), while small early-block sets are the
-// whole point of ckpt-fold (kill the 100M-key future-scan). 32M keeps the
-// validated ≤4M set (23.2M acct / 9.4M sto keys) and gates 5M+ (44.7M/48.1M).
+// bprime2 archive (seed 42, n=200, warm cache, all verified): set size is
+// LATENCY-NEUTRAL with the framed reader — a fold touches only the prefix
+// slice (~keys/16^foldDepth), so ≤4M-gated and the full 21-level set both
+// bench p50 ~130-156ms / max ~1.7s. Large checkpoints therefore add no
+// benefit over the ≤4M ones that kill the early-block future-scan tails
+// (4m02s worst-case without them), while costing ~208 GB on disk. The gate
+// keeps only the sets that pay their way, making the big files safe to
+// delete. 32M keeps ≤4M (23.2M acct / 9.4M sto keys), gates 5M+.
 // Var, not const: tests tighten it.
 var autoCkptMaxKeys = uint64(32_000_000)
 
@@ -290,7 +293,7 @@ func openCkptStore(outDir string, maxBlock int64) *ckptStore {
 			if maxBlock == 0 {
 				reason = fmt.Sprintf("auto: > ~%dM live keys", autoCkptMaxKeys/1_000_000)
 			}
-			fmt.Printf("ckpt: table=%d gated %d checkpoint(s) %d..%d (%s — the record path is faster for large sets)\n",
+			fmt.Printf("ckpt: table=%d gated %d checkpoint(s) %d..%d (%s — large sets are latency-neutral but pay no rent; safe to delete)\n",
 				tab, len(gated), gated[0], gated[len(gated)-1], reason)
 		}
 	}
