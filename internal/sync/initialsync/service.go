@@ -200,8 +200,20 @@ func (s *Service) waitForMinimumPeers() (highestExpectedBlockNr *uint256.Int) {
 	required := s.cfg.P2P.GetConfig().MinSyncPeers
 
 	if s.shouldSkipPeerWait() {
+		// Standalone/dev mode (MinSyncPeers==0): don't WAIT for peers. But if peers
+		// are already connected and ahead — a static-mesh validator that booted
+		// behind the live head — sync UP TO their height. Returning currentBlock
+		// made roundRobinSync a no-op (target == head), so a behind node looped
+		// "Still behind peers" forever without ever downloading the gap (observed
+		// live: node5 stuck at replay head 13013133 while peers were at 13013282).
+		cur := currentBlockNumber(s.cfg.Chain)
+		if best, peers := s.cfg.P2P.Peers().BestPeers(1, cur); len(peers) > 0 && best != nil && best.Cmp(cur) > 0 {
+			log.Info("Standalone mode: peers ahead, syncing up to them",
+				"current", cur.Uint64(), "target", best.Uint64())
+			return best
+		}
 		log.Info("Skipping peer discovery (genesis/standalone mode)")
-		return currentBlockNumber(s.cfg.Chain)
+		return cur
 	}
 
 	var peers []peer.ID
