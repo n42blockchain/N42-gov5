@@ -39,7 +39,10 @@ type subHandler func(context.Context, proto.Message) error
 func (s *Service) noopValidator(_ context.Context, _ peer.ID, msg *pubsub.Message) (pubsub.ValidationResult, error) {
 	m, err := s.decodePubsubMessage(msg)
 	if err != nil {
-		log.Debug("Could not decode message", "err", err)
+		// Warn, not Debug: a systematic decode failure silently kills the
+		// whole topic (every message rejected) — observed while chasing the
+		// transaction-gossip pipeline, where all failure paths hid at Debug.
+		log.Warn("Could not decode gossip message", "topic", *msg.Topic, "err", err)
 		return pubsub.ValidationReject, nil
 	}
 	msg.ValidatorData = m
@@ -61,13 +64,19 @@ func (s *Service) registerSubscribers(digest [4]byte) {
 		digest,
 	)
 	if s.cfg.txGossipEnabled {
-		s.subscribe(
+		// Log success only when the subscription actually took: subscribe()
+		// returns nil on failure (validator registration, scoring params,
+		// filter) — the old unconditional log masked a dead tx pipeline.
+		if sub := s.subscribe(
 			p2p.TransactionTopicFormat,
 			s.noopValidator,
 			s.txSubscriber,
 			digest,
-		)
-		log.Info("Subscribed to transaction gossip topic")
+		); sub != nil {
+			log.Info("Subscribed to transaction gossip topic")
+		} else {
+			log.Error("Transaction gossip subscription FAILED — transactions will not propagate")
+		}
 	}
 }
 
