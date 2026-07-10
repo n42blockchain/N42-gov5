@@ -7,15 +7,81 @@ vote-time extends-rule enforcement. Crash-recovery (hard-kill of all 7 →
 restart) validated: nodes restore to the same persisted view and resume
 committing immediately.
 
-**OPEN (next session):** by-number reads (RPC `eth_getBlockByNumber`, and thus
-the catch-up range server) return a DIFFERENT chain at old heights (241–243)
-than the on-disk HeaderCanonical table — and the discrepancy SURVIVES a process
-restart, so it is not the in-process layered cache. A read-only probe of the
-live MDBX shows canonical[13014242]=1f66ad (linked) while RPC returns 8558ac.
-Suspect a long-lived read transaction / overlay in the chain-DB stack; note the
-working tree carries in-flight WIP in `lib/kv/mdbx/kv_mdbx_opts.go` and
-`modules/state/warm_overlay_reader.go`. This is what actually fed the wedged
-laggard a non-linked chain. Direction B (view fast-forward) remains optional.
+**RESOLVED (2026-07-10) — stale by-number serving root cause found & fixed.**
+The discrepancy was not a cache or a long-lived read txn: the canonical table
+had THREE concurrent writers that disagree by design, so its content depended
+on which writer ran last — and the poisoned `HeadBlockHash` re-poisoned the
+table on every restart via the startup repair (hence "survives restart"):
+
+1. `CommitToCanonical` (QC authority, hotstuff output loop),
+2. the height-first fork-choice reorg inside `writeBlockWithState` — the
+   leaderDriven gate only skipped the DIRECT `writeHeadBlock` call, while the
+   `bc.reorg` branch above it still ran for every speculative import on a
+   sibling branch, rewriting canonical ancestor rows + `HeadBlockHash` +
+   `currentBlock`, and TRUNCATING the canonical rows at the new head height
+   (reorg writes `newChain[1:]` only) — manufacturing exactly the observed
+   non-linked canonical shape; `writeKnownBlock` had no gate at all,
+3. `persistBlock` (legacy gossip path) wrote `HeadBlockHash` for ANY arriving
+   block — silently redefining the committed-finality floor and the startup
+   repair anchor.
+
+Fix batch (this session) — single-canonicalization-authority, the standard
+BFT shape (a committed ledger has no fork choice):
+- `writeBlockWithState` skips `ReorgNeeded`/`bc.reorg` entirely on
+  leader-driven chains (import stores block+state only, returns SideStatTy).
+- already-known-block path no longer calls `writeKnownBlock` (reorg+head write)
+  on leader-driven chains; `persistBlock` no longer writes `HeadBlockHash`.
+- miner `workLoop` no longer builds on `startCh`/`ChainHighestBlock` events for
+  leader-driven engines (unpinned builds = sibling generator racing the
+  LockedQC-pinned proposal); production is TriggerBlockProduction-only.
+- `CommitToCanonical`: monotonicity guard (late/duplicate lower-height commit
+  is a no-op), truncates canonical rows ABOVE the committed height (self-heals
+  a previously poisoned table on the first commit), single writer invariant.
+- Catch-up canonicalization without height heuristics: every block's header
+  extra embeds the leader's `LastCommittedQC`; `NotifyBlockImported` now
+  verifies it (BLS 2f+1, `VerifyQCAnyDomain`) and calls `CommitToCanonical`
+  on its target (`maybeCommitFromHeaderQC`) — the exact analogue of Aptos
+  LedgerInfo-driven state sync. The catch-up range client notifies the range
+  tail so an imported range canonicalizes itself.
+
+Validation: build + vet clean; hotstuff test-red set unchanged (pre-existing
+WIP suite only); `internal/`, `internal/miner/`, `internal/sync/` green (one
+pre-existing nil-config panic from c3bc7cf9, unrelated). Direction B (view
+fast-forward) remains optional.
+
+**LIVE-FIRE SESSION (2026-07-10 PM) — resumed the 7-node net (node2 wedged
+2334 behind as the test case) on the fixed binary; five diagnose-fix rounds:**
+
+1. **The "non-linked canonical chain" observation was an artifact.** RPC's
+   `hash` field is the ETH-compatible re-hash (`overlayBlockHash` →
+   `ethCompatibleHeaderHash`, Blockscout-era) while `parentHash` is the
+   INTERNAL hash — comparing them across heights fabricates a "broken" chain.
+   A probe walk (`qs-canon-probe -walk`) over the live MDBX shows every link
+   intact on every node. The prior session's OPEN item rested on this mix-up.
+2. **node2's real wedge: `pruned ancestor` on every fetched range.**
+   `HasState(hash)` is implemented as `IsCanonicalHash(hash)`; with canonical
+   now commit-only, a range import fails from its 2nd block (parent imported
+   but not yet committed). Fix: `ValidateBody` returns nil instead of
+   ErrPrunedAncestor on leader-driven chains (state alignment is
+   unwindForReimport's job).
+3. **Committed floor poisonable via HeadBlockHash.** New `HotStuffCommittedHead`
+   marker (written ONLY by CommitToCanonical) is now the finality floor;
+   zero marker (legacy DB) → floor 0, gated by authorizedSwitch + lineage
+   pre-check. Plus: insertChain's pruned-ancestor branch performs the
+   authorized sibling unwind instead of detouring into insertSideChain.
+4. **`VerifyHeaders` resolved parents from the DB only** → a 1024-block range
+   died at "stored prefix + 1", net +1 block per 8s tick with a FULL
+   unwind/replay each round (O(n²) catch-up). Fix: in-batch parent index
+   (geth pattern) via `verifyHeaderWithBatch`.
+5. **Partial range import never canonicalized** → next tick unwound and
+   re-executed the same prefix. Fix: catch-up notifies the imported prefix
+   tail even on partial failure (embedded-QC canonicalize collects it).
+
+Also landed: adaptive startup canonical repair (walks to the consensus-era
+N42H boundary, not a fixed depth), server-side bodies-by-range linkage
+truncation (defense in depth), catch-up failure logs Debug→Warn, and loud
+logging on the two silent onBlockReady proposal-drop branches (RC4) — one
+live hit observed ("not leader for current view", view rotated mid-build).
 **Scope:** `mainnet_qmdb_staggered` 7-node live network (chainId 94, hotstuff, qmdb).
 **Prereq context:** `docs/mainnet_qmdb_staggered-7node-status.md` (L5/L6 history).
 
@@ -214,6 +280,27 @@ Make view convergence deterministic instead of a random walk:
    view-convergence machinery and should benefit from B.
 
 ---
+
+## 6.5 Alignment with HotStuff-2 (paper) and production BFT chains
+
+Reference points: HotStuff-2 (Malkhi–Nayak 2023), Aptos/DiemBFT (Jolteon +
+Quorum Store), Flow, Monad(BFT). Where we now stand:
+
+| Dimension | Paper / production standard | N42 after this fix batch |
+|---|---|---|
+| Canonical authority | ONE: the committed ledger. BFT has no fork choice; uncommitted blocks live in a block tree, only commit writes the ledger. | ✅ aligned — CommitToCanonical is the only writer; import-time fork choice removed for leader-driven chains. |
+| Laggard sync | Commit-proof driven (Aptos LedgerInfo = aggregate-signed commit proof). | ✅ aligned — header-embedded CommitQC, BLS-verified, drives CommitToCanonical. |
+| Proposal trigger | Consensus-only (view leader). | ✅ aligned — event-driven unpinned builds removed. |
+| Block payload | Proposal carries payload, or a DA layer + fetch (Quorum Store). | ~ acceptable — hash + direct push + fetch-on-miss approximates payload-fetch. |
+| Vote condition | Verify proposal + safety rule, vote immediately. Execution is AFTER ordering (order-then-execute: Aptos, Monad). | ❌ REMAINING DEVIATION — voting is import-gated on full EVM execution + state write. This couples the pacemaker to data-plane latency and is the root of the residual view-timeout clustering (§3). The early-2026 stable build voted optimistically, per the standard. |
+| Re-proposal at a missed height | New leader extends HighQC; same-height rebuilds are normal (QCs aggregate per (view, block), never across views). | ~ lowest-hash sibling re-proposal (da843ca4) is a non-standard heuristic made necessary only by the import gate; removable once voting is decoupled from execution. |
+
+Direction for the remaining deviation (needs sign-off, protocol-adjacent):
+lower the vote gate from "fully executed + persisted" to "block data available
++ statically valid" (signature/parent/tx-root checks), executing after commit —
+the order-then-execute shape every production HotStuff descendant uses. That
+removes the data-plane coupling that caused the candidate storm without
+touching wire formats.
 
 ## 7. Notes
 
