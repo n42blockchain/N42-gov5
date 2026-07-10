@@ -278,7 +278,12 @@ func finalizeLeafSegmentsOpts(outDir, spillSub, oldSegSub, outSegSub string) err
 	if workers > len(names) {
 		workers = len(names)
 	}
-	heavyBytes := int64(3) << 30 // >N GiB compressed ⇒ heavy (whole-file read)
+	// Match the external-sort threshold (512 MiB): every bucket that takes the
+	// external path is also gated by the heavy semaphore, so the count of
+	// concurrent big-memory buckets is bounded by heavyMax regardless of how
+	// many workers are free. (Pre-mmap this gated whole-file reads; post-mmap it
+	// gates the per-bucket chunk-budget heap of the external sort.)
+	heavyBytes := int64(512) << 20
 	if v := os.Getenv("N42_DATC_FINALIZE_HEAVY_GB"); v != "" {
 		if f, e := strconv.ParseFloat(v, 64); e == nil && f > 0 {
 			heavyBytes = int64(f * float64(int64(1)<<30))
@@ -793,6 +798,7 @@ type leafSegSet struct {
 	ids     []int // sorted bucket ids (bucket order == key order)
 	table   int
 	cache   *frameLRU
+	zr      *zstd.Decoder // reused across frame decodes (see decodeFrame)
 }
 
 type decodedFrame struct {
@@ -824,7 +830,14 @@ func (l *frameLRU) put(k uint64, d *decodedFrame) {
 // openLeafSegSet opens <outDir>/leafseg for one table; ok=false when the
 // build did not use --leaf-seg (or wrote no rows for it).
 func openLeafSegSet(outDir string, table int, cache *frameLRU) (*leafSegSet, bool, error) {
-	dir := filepath.Join(outDir, leafSegDir)
+	// N42_DATC_LEAFSEG_DIR overrides the segment subdir (default "leafseg") so a
+	// freshly-recast set (e.g. leafseg2 at 32 KiB fine frames) can be proof-benched
+	// side-by-side without touching the original.
+	sub := leafSegDir
+	if v := os.Getenv("N42_DATC_LEAFSEG_DIR"); v != "" {
+		sub = v
+	}
+	dir := filepath.Join(outDir, sub)
 	if _, err := os.Stat(dir); err != nil {
 		return nil, false, nil
 	}
@@ -833,7 +846,7 @@ func openLeafSegSet(outDir string, table int, cache *frameLRU) (*leafSegSet, boo
 	if err != nil {
 		return nil, false, err
 	}
-	s := &leafSegSet{table: table, cache: cache, buckets: make(map[int]*leafSegFile)}
+	s := &leafSegSet{table: table, cache: cache, buckets: make(map[int]*leafSegFile), zr: zr2()}
 	for _, name := range names {
 		base := filepath.Base(name)
 		var bucket int
@@ -861,6 +874,10 @@ func (s *leafSegSet) Close() {
 	for b, sf := range s.buckets {
 		_ = sf.f.Close()
 		delete(s.buckets, b)
+	}
+	if s.zr != nil {
+		s.zr.Close()
+		s.zr = nil
 	}
 	s.ids = nil
 }
@@ -925,12 +942,13 @@ func (s *leafSegSet) decodeFrame(bucket, fi int) (*decodedFrame, error) {
 	if _, err := sf.f.ReadAt(comp, fm.off); err != nil {
 		return nil, err
 	}
-	zr, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
-	if err != nil {
-		return nil, err
-	}
-	raw, err := zr.DecodeAll(comp, make([]byte, 0, fm.raw))
-	zr.Close()
+	// Reuse the set's decoder rather than allocating (and Close-ing) a fresh
+	// zstd.Decoder per frame: a fold decodes hundreds of frames, and at 32 KiB
+	// fine frames that per-frame NewReader/Close churn dominated wall time —
+	// making fine frames 4.5x SLOWER at p50 than 256 KiB frames despite ~4x less
+	// decompressed data (the 2026-07-09 A/B). DecodeAll on a shared decoder is
+	// safe for concurrent use.
+	raw, err := s.zr.DecodeAll(comp, make([]byte, 0, fm.raw))
 	if err != nil {
 		return nil, err
 	}
