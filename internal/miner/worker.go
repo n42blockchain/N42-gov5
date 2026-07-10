@@ -835,6 +835,15 @@ func (w *worker) workLoop(recommit time.Duration) error {
 
 		case <-w.startCh:
 			clearPending(w.chain.CurrentBlock().Number64())
+			// Leader-driven engines (HotStuff) produce ONLY via
+			// TriggerBlockProduction, which pins the build to the consensus-
+			// mandated parent (the HighQC/LockedQC block). An event-driven
+			// commit() here builds on the local head with no pin — for a current
+			// leader that is a second, competing build at the same height (a
+			// sibling generator racing the pinned proposal).
+			if !usesTimerDrivenSealing(w.engine) {
+				continue
+			}
 			if !w.shouldProduceNow() {
 				continue
 			}
@@ -843,6 +852,11 @@ func (w *worker) workLoop(recommit time.Duration) error {
 
 		case blockEvent := <-newBlockCh:
 			clearPending(blockEvent.Block.Number64())
+			// See the startCh case: no event-driven unpinned builds on
+			// leader-driven engines.
+			if !usesTimerDrivenSealing(w.engine) {
+				continue
+			}
 			if !w.shouldProduceNow() {
 				continue
 			}

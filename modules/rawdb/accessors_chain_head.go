@@ -83,6 +83,28 @@ func WriteHeadBlockHash(db kv.Putter, hash types.Hash) {
 	}
 }
 
+// hotStuffCommittedHeadKey stores the hash of the highest block canonicalized
+// by a QC-backed commit (BlockChain.CommitToCanonical). Unlike HeadBlockKey —
+// which historical import-time writers also used to touch — this marker is
+// written ONLY on the commit path, so it is trustworthy evidence of HotStuff
+// finality. Kept in the HeadBlockKey single-row table under its own key.
+const hotStuffCommittedHeadKey = "HotStuffCommittedHead"
+
+// WriteHotStuffCommittedHead records the QC-committed head hash.
+func WriteHotStuffCommittedHead(db kv.Putter, hash types.Hash) error {
+	return db.Put(modules.HeadBlockKey, []byte(hotStuffCommittedHeadKey), hash.Bytes())
+}
+
+// ReadHotStuffCommittedHead returns the QC-committed head hash, or the zero
+// hash when no commit has ever been recorded (pre-marker databases).
+func ReadHotStuffCommittedHead(db kv.Getter) types.Hash {
+	data, err := db.GetOne(modules.HeadBlockKey, []byte(hotStuffCommittedHeadKey))
+	if err != nil || len(data) == 0 {
+		return types.Hash{}
+	}
+	return types.BytesToHash(data)
+}
+
 // WriteHeadHeaderHash stores the hash of the current canonical head header.
 func WriteHeadHeaderHash(db kv.Putter, hash types.Hash) error {
 	if err := db.Put(modules.HeadHeaderKey, []byte(modules.HeadHeaderKey), hash.Bytes()); err != nil {

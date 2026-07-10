@@ -348,6 +348,24 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		bc.tdCache.Add(blk.Hash(), externTd)
 	}
 
+	// For leader-driven consensus (HotStuff) the canonical table, the head
+	// pointers and the in-memory head advance ONLY via CommitToCanonical — the
+	// QC commit is the single canonicalization authority. The height-first
+	// fork-choice below must not run AT ALL for these chains: bc.reorg rewrites
+	// canonical ancestor rows and HeadBlockHash via writeHeadBlock and truncates
+	// the rows above the fork, so running it for every speculative import on a
+	// sibling branch races the commit path — the canonical table goes through
+	// non-linked intermediate shapes that the by-number range server feeds to
+	// catching-up peers (wedging them; observed live at 13014242), and a
+	// HeadBlockHash left on an uncommitted branch poisons both the committed-
+	// height floor in unwindForReimport and the startup canonical repair.
+	if bc.canonicalByCommitOnly() {
+		if _, ok := bc.futureBlocks.Get(blk.Hash()); ok {
+			bc.futureBlocks.Remove(blk.Hash())
+		}
+		return SideStatTy, nil
+	}
+
 	reorg, err := bc.forker.ReorgNeeded(bc.CurrentBlock().Header(), blk.Header())
 	if err != nil {
 		return NonStatTy, err
@@ -364,13 +382,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		status = SideStatTy
 	}
 
-	// For leader-driven consensus (HotStuff), a block (miner-produced or received
-	// via direct push) is stored — block + state were written above — but NOT made
-	// canonical here. It becomes canonical only once HotStuff commits it
-	// (BlockChain.CommitToCanonical), so every node follows the single committed
-	// chain instead of racing ahead on its own locally-inserted candidate.
-	leaderDriven := bc.engine != nil && !bc.engine.Type().UsesTimerDrivenSealing()
-	if status == CanonStatTy && !leaderDriven {
+	if status == CanonStatTy {
 		if err := bc.writeHeadBlock(nil, blk); err != nil {
 			log.Errorf("failed to save latest blocks, err: %v", err)
 			return NonStatTy, err
