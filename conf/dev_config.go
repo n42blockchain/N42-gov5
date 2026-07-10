@@ -37,6 +37,13 @@ type DevConfig struct {
 
 	// TxGenGasPrice is the gas price for generated transactions (in wei)
 	TxGenGasPrice uint64 `json:"tx_gen_gas_price" yaml:"tx_gen_gas_price"`
+
+	// TxGenKey is a hex-encoded secp256k1 private key for the faucet/coinbase
+	// account. When set, the generator signs faucet transactions with it
+	// directly instead of looking the coinbase up in the keystore — validator
+	// deployments typically carry only BLS keys in the keystore, so the
+	// keystore path never finds a wallet there.
+	TxGenKey string `json:"tx_gen_key" yaml:"tx_gen_key"`
 }
 
 // DefaultDevConfig returns the default development configuration.

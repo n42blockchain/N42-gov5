@@ -21,6 +21,8 @@ import (
 	"context"
 	"crypto/ecdsa"
 	crand "crypto/rand"
+	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,6 +46,7 @@ type Config struct {
 	GasLimit       uint64        // Gas limit per transaction
 	Value          uint64        // Value to transfer in wei
 	FaucetAmount   uint64        // Amount to fund each test account (in wei)
+	CoinbaseKey    string        // Hex secp256k1 private key for the coinbase (faucet); bypasses the keystore
 }
 
 // DefaultConfig returns the default configuration.
@@ -66,8 +69,9 @@ type Generator struct {
 	chainID *uint256.Int
 
 	// Coinbase (faucet source)
-	coinbase types.Address
-	accman   *accounts.Manager
+	coinbase    types.Address
+	accman      *accounts.Manager
+	coinbaseKey *ecdsa.PrivateKey // direct signing key (CoinbaseKey config); nil → keystore lookup
 
 	// Test accounts (generated at startup)
 	accounts []*testAccount
@@ -100,6 +104,22 @@ func New(ctx context.Context, config *Config, txPool common.ITxsPool, chainID *u
 
 	// Generate test accounts
 	g.generateTestAccounts(10)
+
+	// Direct faucet key (validator deployments carry only BLS keys in the
+	// keystore, so the accman lookup can never find the coinbase wallet).
+	if config.CoinbaseKey != "" {
+		key, err := crypto.HexToECDSA(strings.TrimPrefix(config.CoinbaseKey, "0x"))
+		if err != nil {
+			log.Warn("TxGen: invalid dev.txgen.key, falling back to keystore", "err", err)
+		} else if derived := crypto.PubkeyToAddress(key.PublicKey); derived != coinbase {
+			log.Warn("TxGen: dev.txgen.key does not match the coinbase; using the key's own address as faucet",
+				"keyAddr", derived.Hex(), "coinbase", coinbase.Hex())
+			g.coinbaseKey = key
+			g.coinbase = derived
+		} else {
+			g.coinbaseKey = key
+		}
+	}
 
 	return g
 }
@@ -178,54 +198,66 @@ func (g *Generator) Stop() {
 
 // fundTestAccounts sends funds from coinbase to all test accounts (auto faucet).
 func (g *Generator) fundTestAccounts() {
-	// Already funded or attempted
 	if g.funded.Load() {
 		return
 	}
-	
-	// Only attempt once
+	// Single in-flight attempt; RETRYABLE on failure. The old once-only version
+	// wedged silently forever when the coinbase wallet wasn't in the keystore
+	// (validator deployments carry only BLS keys) or when the coinbase balance
+	// was still zero (dev reward accrues one leader turn at a time) — observed
+	// live: "TxGen started" then 300+ blocks of zero transactions.
 	if !g.funding.CompareAndSwap(false, true) {
 		return
 	}
-	
-	if g.coinbase == (types.Address{}) || g.accman == nil {
-		return
-	}
-	
-	// Find coinbase wallet
-	wallet, err := g.accman.Find(accounts.Account{Address: g.coinbase})
-	if err != nil || wallet == nil {
-		return
-	}
-	
-	// Get current nonce from txpool
-	nonce := g.txPool.Nonce(g.coinbase)
+	defer g.funding.Store(false)
 
+	if g.coinbase == (types.Address{}) {
+		return
+	}
+
+	// Signing function: direct key (dev.txgen.key) or keystore wallet.
+	sign := func(tx *transaction.Transaction) (*transaction.Transaction, error) {
+		if g.coinbaseKey != nil {
+			return g.signTx(tx, g.coinbaseKey)
+		}
+		if g.accman == nil {
+			return nil, errors.New("no coinbase key and no keystore")
+		}
+		wallet, err := g.accman.Find(accounts.Account{Address: g.coinbase})
+		if err != nil || wallet == nil {
+			return nil, errors.New("coinbase wallet not in keystore (BLS-only keystore?) — set --dev.txgen.key")
+		}
+		return wallet.SignTx(accounts.Account{Address: g.coinbase}, tx, g.chainID.ToBig())
+	}
+
+	nonce := g.txPool.Nonce(g.coinbase)
 	successCount := 0
+	var lastErr error
 	for _, acc := range g.accounts {
 		tx := g.createFundingTx(acc.address, nonce)
 		if tx == nil {
 			continue
 		}
-		
-		signedTx, err := wallet.SignTx(accounts.Account{Address: g.coinbase}, tx, g.chainID.ToBig())
+		signedTx, err := sign(tx)
 		if err != nil {
-			continue
+			lastErr = err
+			break // signing won't recover mid-loop
 		}
-		
 		if err := g.txPool.AddLocal(signedTx); err != nil {
+			lastErr = err // typically insufficient funds while rewards accrue — retry next tick
 			continue
 		}
-		
 		nonce++
 		successCount++
 	}
 
-	// Mark as funded regardless of success (only try once)
-	g.funded.Store(true)
-	if successCount > 0 {
+	if successCount == len(g.accounts) {
+		g.funded.Store(true)
 		log.Info("Auto-faucet complete", "funded", successCount)
+		return
 	}
+	log.Warn("TxGen: faucet incomplete, will retry", "funded", successCount,
+		"total", len(g.accounts), "err", lastErr)
 }
 
 // createFundingTx creates a transaction to fund a test account from coinbase.

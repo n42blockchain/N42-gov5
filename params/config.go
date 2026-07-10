@@ -455,6 +455,22 @@ type HotStuffConfig struct {
 	// for live block production: each new block is stamped with consensus
 	// evidence and a ParentBeaconRoot link, continuing the resealed chain.
 	CommitteePool *HotStuffCommitteePoolConfig `json:"committeePool,omitempty"`
+
+	// DevBlockReward, when positive, credits the block's coinbase with a fixed
+	// per-block reward (wei) in Finalize. Dev/test chains only: replay-seeded
+	// meshes have no staking deposits, so the APoS reward module pays nothing
+	// and validator accounts stay at zero balance — which starves the txgen
+	// faucet. Consensus-relevant (part of state-root validation); every node
+	// carries it via the compiled-in chainspec. Zero/absent = no behavior
+	// change.
+	DevBlockReward uint64 `json:"devBlockReward,omitempty"`
+
+	// DevFaucetAddress, when set together with DevBlockReward, receives the
+	// same per-block credit as the coinbase. Needed on chains whose validator
+	// addresses are BLS-derived (no secp key exists), so no validator account
+	// can ever sign an EVM transaction — the faucet must be a separate,
+	// well-known dev account.
+	DevFaucetAddress *types.Address `json:"devFaucetAddress,omitempty"`
 }
 
 // HotStuffCommitteePoolConfig configures the live BLS committee-evidence pool.
