@@ -1,7 +1,21 @@
 # HotStuff-2 View Convergence — Residual Stall Follow-up
 
 **Status:** Direction A LANDED (`da843ca4`) — maxStall 240s → 20s live-fire.
-Direction B (view fast-forward) remains optional further hardening.
+Hardening batch LANDED (`c78f5ab6`): canonical header-walk + rewrote-cache
+invalidation, startup canonical-linkage repair, fix-A gated to committedHead+1,
+vote-time extends-rule enforcement. Crash-recovery (hard-kill of all 7 →
+restart) validated: nodes restore to the same persisted view and resume
+committing immediately.
+
+**OPEN (next session):** by-number reads (RPC `eth_getBlockByNumber`, and thus
+the catch-up range server) return a DIFFERENT chain at old heights (241–243)
+than the on-disk HeaderCanonical table — and the discrepancy SURVIVES a process
+restart, so it is not the in-process layered cache. A read-only probe of the
+live MDBX shows canonical[13014242]=1f66ad (linked) while RPC returns 8558ac.
+Suspect a long-lived read transaction / overlay in the chain-DB stack; note the
+working tree carries in-flight WIP in `lib/kv/mdbx/kv_mdbx_opts.go` and
+`modules/state/warm_overlay_reader.go`. This is what actually fed the wedged
+laggard a non-linked chain. Direction B (view fast-forward) remains optional.
 **Scope:** `mainnet_qmdb_staggered` 7-node live network (chainId 94, hotstuff, qmdb).
 **Prereq context:** `docs/mainnet_qmdb_staggered-7node-status.md` (L5/L6 history).
 
