@@ -540,6 +540,18 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		return nil, err
 	}
 
+	// Built-in chains: the COMPILED chainspec is authoritative (erigon model) —
+	// parameter and fork-schedule upgrades ship with the binary, and every node
+	// of the network runs the same build. The stored copy remains authoritative
+	// only for private/unknown chains (it is the sole record of their config).
+	// Preferring the stored copy for built-ins silently froze every chainspec
+	// change made after a datadir was seeded — observed live: a hotstuff
+	// parameter added to the spec parsed correctly but never took effect,
+	// because the copy written at seeding time kept winning on every start.
+	if chainConfig != nil && configuredGenesis.chainConfig != nil && !configuredGenesis.isPrivate {
+		chainConfig = configuredGenesis.chainConfig
+	}
+
 	// Acquire the instance directory lock.
 	if err := node.openDataDir(cfg); err != nil {
 		return nil, err
