@@ -29,6 +29,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -177,7 +179,10 @@ func (it *ckptIter) next() ([]byte, bool, error) {
 // frame returns frame i's decompressed keys, via the store's byte-bounded LRU.
 func (s *ckptSet) frame(i int) ([]byte, error) {
 	k := ckptFrameCacheKey(s.tab, s.block, i)
-	if raw, ok := s.st.fcache[k]; ok {
+	s.st.mu.Lock()
+	raw, ok := s.st.fcache[k]
+	s.st.mu.Unlock()
+	if ok {
 		return raw, nil
 	}
 	fm := s.frames[i]
@@ -189,9 +194,9 @@ func (s *ckptSet) frame(i int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	dbgFrameDecodes++
-	dbgFrameCompBytes += int64(fm.comp)
-	dbgFrameRawBytes += int64(len(raw))
+	atomic.AddInt64(&dbgFrameDecodes, 1)
+	atomic.AddInt64(&dbgFrameCompBytes, int64(fm.comp))
+	atomic.AddInt64(&dbgFrameRawBytes, int64(len(raw)))
 	s.st.fput(k, raw)
 	return raw, nil
 }
@@ -203,17 +208,20 @@ func ckptFrameCacheKey(tab int, block uint64, idx int) uint64 {
 
 // ckptStore lazily opens and caches checkpoint frame indexes per (table,
 // block), plus a byte-bounded FIFO cache of decompressed frames shared across
-// all checkpoints. Single-goroutine use (the bench/verify queriers are
-// sequential) — no locking.
+// all checkpoints. Safe for concurrent queriers: mu guards the two caches;
+// frame decompression runs outside the lock (zstd.Decoder.DecodeAll is
+// concurrent-safe), so a miss raced by two goroutines costs one duplicate
+// decode, never a wrong result. blocks/keyLens are immutable after open.
 type ckptStore struct {
 	dir     string
-	blocks  [2][]uint64         // [table] sorted checkpoint blocks present
-	loaded  map[uint64]*ckptSet // key: table<<40 | block
+	blocks  [2][]uint64 // [table] sorted checkpoint blocks present
 	keyLens [2]int
 	zr      *zstd.Decoder
 
-	fcache map[uint64][]byte // decompressed frames
-	ford   []uint64          // insertion order (FIFO eviction)
+	mu     sync.Mutex
+	loaded map[uint64]*ckptSet // key: table<<40 | block
+	fcache map[uint64][]byte   // decompressed frames
+	ford   []uint64            // insertion order (FIFO eviction)
 	fbytes int64
 	fcap   int64
 }
@@ -333,6 +341,8 @@ func ckptPeek(path string) (estKeys uint64, v2 bool) {
 
 // Close releases the opened checkpoint file handles and the frame cache.
 func (st *ckptStore) Close() {
+	st.mu.Lock()
+	defer st.mu.Unlock()
 	for k, s := range st.loaded {
 		_ = s.f.Close()
 		delete(st.loaded, k)
@@ -347,6 +357,8 @@ func (st *ckptStore) Close() {
 
 // fput inserts a decompressed frame, evicting FIFO past the byte cap.
 func (st *ckptStore) fput(k uint64, raw []byte) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
 	if _, ok := st.fcache[k]; ok {
 		return
 	}
@@ -388,8 +400,13 @@ func (st *ckptStore) bracket(tab int, n uint64) (below, above uint64, haveBelow,
 	return
 }
 
-// load opens a checkpoint's frame index (footer only — no key data).
+// load opens a checkpoint's frame index (footer only — no key data). The
+// store lock covers the whole open: it runs once per (table, block) for the
+// store's lifetime, so holding mu through the footer parse is cheap and keeps
+// concurrent callers from double-opening the file handle.
 func (st *ckptStore) load(tab int, block uint64) (*ckptSet, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
 	key := uint64(tab)<<40 | block
 	if s, ok := st.loaded[key]; ok {
 		return s, nil

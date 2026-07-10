@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
@@ -99,6 +100,65 @@ func TestCkptMaxBlockGate(t *testing.T) {
 }
 
 func strconvFormatUint(b uint64) string { return fmt.Sprintf("%d", b) }
+
+// TestCkptConcurrentReaders exercises the shared-store path a concurrent proof
+// service uses: many goroutines lazily loading sets and iterating prefixes
+// through the byte-bounded frame cache. Run with -race.
+func TestCkptConcurrentReaders(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ckptDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	keys := buildTestCkpt(t, filepath.Join(dir, ckptDir, "0.1000.ckpt"), 32, 50000, 7)
+	buildTestCkpt(t, filepath.Join(dir, ckptDir, "0.2000.ckpt"), 32, 30000, 8)
+
+	st := openTestCkptStore(t, dir)
+	st.fcap = 300 << 10 // force heavy eviction under contention
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(int64(g)))
+			for i := 0; i < 200; i++ {
+				block := uint64(1000)
+				if i%2 == 1 {
+					block = 2000
+				}
+				s, err := st.load(0, block)
+				if err != nil {
+					errs <- err
+					return
+				}
+				p := keys[rng.Intn(len(keys))][:1+rng.Intn(2)]
+				it := s.iterUnder(p)
+				prev := []byte(nil)
+				for {
+					k, ok, err := it.next()
+					if err != nil {
+						errs <- err
+						return
+					}
+					if !ok {
+						break
+					}
+					if !bytes.HasPrefix(k, p) || (prev != nil && bytes.Compare(prev, k) >= 0) {
+						errs <- fmt.Errorf("goroutine %d: bad iteration order/prefix", g)
+						return
+					}
+					prev = append(prev[:0], k...)
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+}
 
 func TestCkptRoundTripPrefixIter(t *testing.T) {
 	dir := t.TempDir()
