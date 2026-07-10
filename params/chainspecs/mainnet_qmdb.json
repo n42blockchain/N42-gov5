@@ -28,8 +28,8 @@
   "consensus": "hotstuff",
   "hotstuff": {
     "period": 3,
-    "baseTimeout": 60000,
-    "maxTimeout": 120000,
+    "baseTimeout": 6000,
+    "maxTimeout": 30000,
     "epochLength": 1000000,
     "fastPropose": true,
     "minProposeDelayMs": 200,
