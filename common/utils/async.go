@@ -2,6 +2,8 @@ package utils
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"reflect"
 	"runtime"
 	"sync"
@@ -33,8 +35,13 @@ func RunEveryWithWG(ctx context.Context, period time.Duration, f func(), wg *syn
 				func() {
 					defer func() {
 						if r := recover(); r != nil {
-							buf := make([]byte, 4096)
+							buf := make([]byte, 8192)
 							n := runtime.Stack(buf, false)
+							// The console encoder truncates structured fields,
+							// leaving only the goroutine header of a recovered
+							// panic's stack. Mirror the full stack to stderr,
+							// where nothing shortens it.
+							fmt.Fprintf(os.Stderr, "panic in periodic %s: %v\n%s\n", funcName, r, buf[:n])
 							log.Error("panic in periodic function, recovered", "function", funcName, "panic", r, "stack", string(buf[:n]))
 						}
 					}()
