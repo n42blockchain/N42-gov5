@@ -199,6 +199,17 @@ type worker struct {
 	isLocalBlock func(header *block.Header) bool
 	pendingTasks map[types.Hash]*task
 
+	// sealedOnParent records the FIRST block this node sealed on a given parent
+	// (keyed by parentHash). A leader re-elected across several views at the same
+	// height — before that height commits — would otherwise seal a second,
+	// byte-different block on the same parent; the two uncommitted siblings then
+	// drive an endless branch-switch livelock (each re-proposed via
+	// NotifyBlockSealed, each reverting the other's applied state — observed live
+	// at 13013248: 0cd6e42a vs 0976bead, 1219 switches). Keeping only the first
+	// candidate per parent makes each node produce exactly one block per height.
+	// Guarded by mu; pruned below the branch-switch window as heights advance.
+	sealedOnParent map[types.Hash]block.IBlock
+
 	wg sync.WaitGroup
 	mu sync.RWMutex
 
@@ -253,6 +264,7 @@ func newWorker(ctx context.Context, group *errgroup.Group, chainConfig *params.C
 		newWorkCh:        make(chan *newWorkReq, 1),
 		resultCh:         make(chan block.IBlock),
 		pendingTasks:     make(map[types.Hash]*task),
+		sealedOnParent:   make(map[types.Hash]block.IBlock),
 		minerConf:        minerConf,
 		resubmitAdjustCh: make(chan *intervalAdjust, resubmitAdjustChanSize),
 		bundlePool:       builder.NewBundlePool(),
@@ -385,6 +397,27 @@ func (w *worker) resultLoop() error {
 				continue
 			}
 
+			// Height-level single-candidate guard (HotStuff-2): keep only the first
+			// block sealed on a given parent. A later view's leader re-entering Seal
+			// on the same still-uncommitted parent produces a divergent sibling;
+			// importing it would fork the applied state and thrash the branch-switch
+			// unwind between the two siblings forever. Re-propose the kept block for
+			// THIS view instead — it is already imported and is what consensus is
+			// building on. Checked BEFORE import so the sibling never touches state.
+			parentHash := blk.ParentHash()
+			if kept := w.firstSealedOnParent(parentHash); kept != nil && kept.Hash() != blk.Hash() {
+				log.Info("miner: suppressing divergent same-height sibling; re-proposing first sealed block",
+					"number", blockNumber.Uint64(), "parent", parentHash.Hex()[:12],
+					"kept", kept.Hash().Hex()[:12], "dropped", blk.Hash().Hex()[:12])
+				if err := w.chain.SealedBlock(kept); err != nil {
+					log.Warn("miner: re-push of kept sibling failed", "err", err)
+				}
+				if bsn, ok := w.engine.(blockSealNotifier); ok {
+					bsn.NotifyBlockSealed(kept.Hash(), kept.TxHash())
+				}
+				continue
+			}
+
 			var (
 				sealhash = w.engine.SealHash(blk.Header())
 				hash     = blk.Hash()
@@ -467,9 +500,46 @@ func (w *worker) resultLoop() error {
 			if bsn, ok := w.engine.(blockSealNotifier); ok {
 				bsn.NotifyBlockSealed(blk.Hash(), blk.TxHash())
 			}
+			// Record this as the one candidate for its parent (after a successful
+			// import), so a later view's divergent sibling is suppressed above.
+			w.recordSealedOnParent(parentHash, blk)
 			if concrete, ok := blk.(*block.Block); ok {
 				event.GlobalEvent.Send(common.ChainHighestBlock{Block: *concrete, Inserted: true})
 			}
+		}
+	}
+}
+
+// firstSealedOnParent returns the first block this node sealed+imported on the
+// given parent, or nil. Used to suppress a later view's divergent same-height
+// sibling (see the sealedOnParent field doc).
+func (w *worker) firstSealedOnParent(parent types.Hash) block.IBlock {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.sealedOnParent[parent]
+}
+
+// recordSealedOnParent records blk as the sole candidate for its parent (first
+// write wins) and prunes entries older than the 256-block branch-switch window —
+// a sibling that far back can no longer be unwound/switched, so it needs no
+// suppression record.
+func (w *worker) recordSealedOnParent(parent types.Hash, blk block.IBlock) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, ok := w.sealedOnParent[parent]; !ok {
+		w.sealedOnParent[parent] = blk
+	}
+	if len(w.sealedOnParent) <= 512 {
+		return
+	}
+	number := blk.Number64().Uint64()
+	if number <= 256 {
+		return
+	}
+	cutoff := number - 256
+	for p, b := range w.sealedOnParent {
+		if b.Number64().Uint64() < cutoff {
+			delete(w.sealedOnParent, p)
 		}
 	}
 }

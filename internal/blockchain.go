@@ -1730,6 +1730,20 @@ func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authori
 		if appliedNum < n-1 {
 			return nil // parent's state not applied yet — ValidateBody/future-queue handles it
 		}
+		// Committed-height floor (HotStuff-2: only the 2-chain-committed block is
+		// final). The canonical head — advanced solely by CommitToCanonical — is the
+		// committed head; a block at or below it must never be reverted for a
+		// competing sibling. This revert only touches heights n..appliedNum, so
+		// require n to be strictly above the committed head. revertSpeculativeOnStartup
+		// calls with n = committedHead+1, which is still allowed.
+		var committedHead uint64
+		if hn := rawdb.ReadCurrentBlockNumber(tx); hn != nil {
+			committedHead = *hn
+		}
+		if n <= committedHead {
+			return fmt.Errorf("branch switch at %d rejected: at/below committed head %d (committed blocks are final): %w",
+				n, committedHead, consensus.ErrUnknownAncestor)
+		}
 		// READ-ONLY pre-check first (no side effects on failure): walk the
 		// applied lineage down to height n-1 and require it to BE the incoming
 		// block's parent. If it isn't, the parent is a competing sibling this

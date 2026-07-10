@@ -22,13 +22,13 @@
 package internal
 
 import (
+	"bytes"
 	"errors"
 
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 )
@@ -119,7 +119,14 @@ func (f *ForkChoice) ReorgNeeded(current block.IHeader, header block.IHeader) (b
 			if f.preserve != nil {
 				currentPreserve, externPreserve = f.preserve(current), f.preserve(header)
 			}
-			reorg = !currentPreserve && (externPreserve || misc.SecureFloat64() < 0.5)
+			// Deterministic tie-break: at equal height and equal TD, the lower
+			// block hash wins on EVERY node. The previous misc.SecureFloat64()<0.5
+			// coin flip made each node pick a same-height sibling at random, so a
+			// competing pair never converged network-wide. Lower-hash-wins is
+			// stable and identical across nodes; preserve (local-mined preference)
+			// still overrides when set.
+			reorg = !currentPreserve && (externPreserve ||
+				bytes.Compare(header.Hash().Bytes(), current.Hash().Bytes()) < 0)
 		} else {
 			// number > headNumber at equal TD: a strictly higher block extends the
 			// head. On a PoS/HotStuff chain with virtual (all-zero) TD, every block
