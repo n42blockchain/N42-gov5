@@ -10,6 +10,7 @@ package sync
 
 import (
 	"context"
+	"sync/atomic"
 
 	"google.golang.org/protobuf/proto"
 
@@ -17,6 +18,10 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/log"
 )
+
+// txGossipReceived counts transactions accepted from gossip (diagnostic; the
+// first and every 500th are logged at Info so a dead pipeline is visible).
+var txGossipReceived atomic.Uint64
 
 // txSubscriber handles incoming transaction messages from GossipSub.
 // Each message contains a single SSZ-encoded Transaction.
@@ -28,13 +33,17 @@ func (s *Service) txSubscriber(ctx context.Context, msg proto.Message) error {
 
 	tx, err := transaction.FromProtoMessage(pbTx)
 	if err != nil {
-		log.Debug("Failed to decode gossiped transaction", "err", err)
+		log.Warn("Failed to decode gossiped transaction", "err", err)
 		return nil // don't return error to avoid penalizing peer
 	}
 
 	errs := s.cfg.txPool.AddRemotes([]*transaction.Transaction{tx})
 	if errs != nil && errs[0] != nil {
 		log.Debug("Gossiped transaction rejected by pool", "hash", tx.Hash(), "err", errs[0])
+		return nil
+	}
+	if n := txGossipReceived.Add(1); n == 1 || n%500 == 0 {
+		log.Info("tx gossip: receiving", "received", n)
 	}
 	return nil
 }

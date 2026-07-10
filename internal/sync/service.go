@@ -154,6 +154,7 @@ func (s *Service) RegisterHandlers() {
 func (s *Service) Start() {
 	s.maintainPeerStatuses()
 	s.resyncIfBehind()
+	s.broadcastTxs()
 
 	// Update sync metrics.
 	s.wg.Add(1)

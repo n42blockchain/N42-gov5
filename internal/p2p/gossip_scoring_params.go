@@ -65,6 +65,14 @@ func (s *Service) topicScoreParams(topic string) (*pubsub.TopicScoreParams, erro
 		return hotstuffConsensusTopicParams(), nil
 	case strings.Contains(topic, GossipMessagePrefix):
 		return messagingTopicParams(), nil
+	case strings.Contains(topic, GossipTransactionMessage):
+		// Same lightweight, non-critical scoring shape as the messaging topics:
+		// mempool transactions are high-frequency best-effort traffic. Without
+		// this branch the scoring registration REJECTED the subscription — and
+		// the caller logged success anyway, so the whole transaction gossip
+		// pipeline was silently dead (publishers published into a topic no
+		// node was actually subscribed to).
+		return messagingTopicParams(), nil
 	default:
 		return nil, errors.Errorf("unrecognized topic for parameter registration: %s", topic)
 	}

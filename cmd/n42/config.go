@@ -116,6 +116,12 @@ var DefaultConfig = conf.Config{
 		MinSyncPeers: DefaultMinSyncPeers,
 		StaticPeerID: true,
 		NoDiscovery:  false,
+		// Transaction gossip ON by default: this flag had no default and no
+		// CLI flag, so the transaction topic subscription NEVER activated —
+		// local transactions reached only the submitting node's own leader
+		// turns (observed live: 1-in-7 blocks carried transactions, the rest
+		// sealed empty while the submitter's pool backlog grew unbounded).
+		TxGossipEnabled: true,
 		P2PLimit: &conf.P2PLimit{
 			// 1024 = maxRequestBlocks/rangeLimit (the protocol's per-request
 			// ceiling), leaked per 1s period: a peer can stream a full range
