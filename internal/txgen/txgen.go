@@ -78,6 +78,15 @@ type Generator struct {
 	funded   atomic.Bool // Whether test accounts have been funded
 	funding  atomic.Bool // Whether funding is in progress (prevent duplicate runs)
 
+	// Load-test ERC20 (deployed by the faucet key once funding completes).
+	erc20Addr     types.Address
+	erc20Deployed atomic.Bool // deploy tx submitted
+	erc20Seeded   atomic.Bool // test accounts hold token balances
+
+	// skipTick marks senders to avoid for the current batch (e.g. insufficient
+	// funds) so the generator never keeps submitting unviable transactions.
+	skipTick map[types.Address]bool
+
 	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
@@ -177,10 +186,15 @@ func (g *Generator) Start() {
 				if !g.funded.Load() {
 					g.fundTestAccounts()
 				}
-				// Generate transactions after funding
-				if g.funded.Load() {
-					g.generateAndSubmitTxs()
+				if !g.funded.Load() {
+					continue
 				}
+				// Deploy + seed the load-test ERC20 (contract-path coverage),
+				// then generate the mixed native/ERC20 load.
+				if g.coinbaseKey != nil && !g.erc20Seeded.Load() {
+					g.setupERC20()
+				}
+				g.generateAndSubmitTxs()
 			}
 		}
 	}()
@@ -278,29 +292,155 @@ func (g *Generator) createFundingTx(to types.Address, nonce uint64) *transaction
 	return transaction.NewTx(innerTx)
 }
 
-// generateAndSubmitTxs generates and submits a batch of transactions.
+// setupERC20 deploys the load-test ERC20 from the faucet key, then seeds every
+// test account with a token balance. Retryable: each stage is guarded by its
+// own flag and re-attempted on the next tick until it lands.
+func (g *Generator) setupERC20() {
+	if !g.erc20Deployed.Load() {
+		nonce := g.txPool.Nonce(g.coinbase)
+		deployTx := transaction.NewTx(&transaction.LegacyTx{
+			Nonce:    nonce,
+			GasPrice: uint256.NewInt(g.config.GasPrice),
+			Gas:      300000,
+			To:       nil, // contract creation
+			Value:    uint256.NewInt(0),
+			Data:     erc20DeployCode(),
+			From:     &g.coinbase,
+		})
+		signed, err := g.signTx(deployTx, g.coinbaseKey)
+		if err != nil {
+			log.Warn("TxGen: ERC20 deploy sign failed", "err", err)
+			return
+		}
+		if err := g.txPool.AddLocal(signed); err != nil {
+			log.Warn("TxGen: ERC20 deploy submit failed, will retry", "err", err)
+			return
+		}
+		g.erc20Addr = crypto.CreateAddress(g.coinbase, nonce)
+		g.erc20Deployed.Store(true)
+		log.Info("TxGen: ERC20 deployed", "address", g.erc20Addr.Hex(), "nonce", nonce)
+		return // let the deployment mine before seeding
+	}
+
+	// Seed each test account with tokens from the deployer's supply.
+	nonce := g.txPool.Nonce(g.coinbase)
+	seeded := 0
+	for _, acc := range g.accounts {
+		tx := transaction.NewTx(&transaction.LegacyTx{
+			Nonce:    nonce,
+			GasPrice: uint256.NewInt(g.config.GasPrice),
+			Gas:      60000,
+			To:       &g.erc20Addr,
+			Value:    uint256.NewInt(0),
+			Data:     erc20TransferCalldata(acc.address, uint256.MustFromDecimal("1000000000000000000000")), // 1e21
+			From:     &g.coinbase,
+		})
+		signed, err := g.signTx(tx, g.coinbaseKey)
+		if err != nil {
+			log.Warn("TxGen: ERC20 seed sign failed", "err", err)
+			return
+		}
+		if err := g.txPool.AddLocal(signed); err != nil {
+			log.Warn("TxGen: ERC20 seed submit failed, will retry", "seeded", seeded, "err", err)
+			return
+		}
+		nonce++
+		seeded++
+	}
+	g.erc20Seeded.Store(true)
+	log.Info("TxGen: ERC20 test accounts seeded", "accounts", seeded, "token", g.erc20Addr.Hex())
+}
+
+// generateAndSubmitTxs generates and submits a batch of transactions: ~70%
+// native transfers, ~30% ERC20 transfers once the token is seeded.
+//
+// Failure adaptation — the generator must never keep submitting transactions
+// it knows cannot land:
+//   - nonce errors invalidate the local nonce view for that sender (the next
+//     use re-queries the pool, which reconciles against post-replay state)
+//   - insufficient funds sidelines the sender for the rest of the batch
+//   - a full pool aborts the batch (back-off to the next tick)
 func (g *Generator) generateAndSubmitTxs() {
 	if len(g.accounts) < 2 {
 		return
 	}
 
-	// Random number of transactions (1 to maxTxsPerBlock)
-	numTxs := misc.SecureIntn(g.config.MaxTxsPerBlock) + 1
+	// Per-batch nonce ledger: within one tick the pool's pending view may lag
+	// our own submissions, so consecutive txs from one sender must self-assign.
+	nonces := make(map[types.Address]uint64, len(g.accounts))
+	g.skipTick = make(map[types.Address]bool)
+	nextNonce := func(addr types.Address) uint64 {
+		if n, ok := nonces[addr]; ok {
+			return n
+		}
+		n := g.txPool.Nonce(addr)
+		nonces[addr] = n
+		return n
+	}
 
-	successCount := 0
-	failCount := 0
+	numTxs := misc.SecureIntn(g.config.MaxTxsPerBlock) + 1
+	successCount, failCount := 0, 0
 	for i := 0; i < numTxs; i++ {
-		tx := g.createRandomTx()
-		if tx == nil {
+		senderIdx := misc.SecureIntn(len(g.accounts))
+		sender := g.accounts[senderIdx]
+		if sender == nil || g.skipTick[sender.address] {
+			continue
+		}
+		receiver := g.accounts[(senderIdx+1+misc.SecureIntn(len(g.accounts)-1))%len(g.accounts)]
+		if receiver == nil {
+			continue
+		}
+
+		nonce := nextNonce(sender.address)
+		var inner *transaction.LegacyTx
+		if g.erc20Seeded.Load() && misc.SecureIntn(10) < 3 {
+			// ERC20 transfer (~30%): contract execution + storage + Transfer log.
+			inner = &transaction.LegacyTx{
+				Nonce:    nonce,
+				GasPrice: uint256.NewInt(g.config.GasPrice),
+				Gas:      60000,
+				To:       &g.erc20Addr,
+				Value:    uint256.NewInt(0),
+				Data:     erc20TransferCalldata(receiver.address, uint256.NewInt(uint64(misc.SecureIntn(1000)+1))),
+				From:     &sender.address,
+			}
+		} else {
+			inner = &transaction.LegacyTx{
+				Nonce:    nonce,
+				GasPrice: uint256.NewInt(g.config.GasPrice),
+				Gas:      g.config.GasLimit,
+				To:       &receiver.address,
+				Value:    uint256.NewInt(uint64(misc.SecureIntn(1000) + 1)),
+				From:     &sender.address,
+			}
+		}
+
+		signedTx, err := g.signTx(transaction.NewTx(inner), sender.privateKey)
+		if err != nil {
 			failCount++
 			continue
 		}
-		if err := g.txPool.AddLocal(tx); err != nil {
+		if err := g.txPool.AddLocal(signedTx); err != nil {
 			failCount++
-			log.Debug("TxGen: AddLocal failed", "err", err)
-		} else {
-			successCount++
+			msg := err.Error()
+			switch {
+			case strings.Contains(msg, "nonce"):
+				// Stale nonce view (post-unwind/replay reconciliation): drop the
+				// cached value so the next use re-queries the pool. Do NOT retry
+				// this exact tx — it is unviable by construction.
+				delete(nonces, sender.address)
+			case strings.Contains(msg, "insufficient funds"):
+				g.skipTick[sender.address] = true
+			case strings.Contains(msg, "txpool is full") || strings.Contains(msg, "pool is full"):
+				log.Warn("TxGen: pool full, backing off", "submitted", successCount)
+				return
+			default:
+				log.Debug("TxGen: AddLocal failed", "err", err)
+			}
+			continue
 		}
+		nonces[sender.address] = nonce + 1
+		successCount++
 	}
 
 	if successCount > 0 || failCount > 0 {
