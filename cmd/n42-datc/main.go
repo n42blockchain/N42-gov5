@@ -124,6 +124,10 @@ func main() {
 		runSegExport(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "stroot-export" {
+		runStoRootExport(os.Args[2:])
+		return
+	}
 	if os.Args[1] == "fold-bench" {
 		runFoldBench(os.Args[2:])
 		return
