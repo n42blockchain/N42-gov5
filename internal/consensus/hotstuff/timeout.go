@@ -56,11 +56,12 @@ func (e *ConsensusEngine) onTimeout() error {
 			}
 		}
 
-		// Check if quorum was reached while waiting.
+		// Check if quorum was reached while waiting. ANY node holding a
+		// timeout quorum forms the TC and advances — view progression must
+		// not depend on the next leader being alive (see tryFormTCAndAdvance).
 		quorumSize := e.validatorSet().QuorumSize()
 		nextView := view + 1
-		nextLeader := LeaderForView(nextView, e.validatorSet())
-		if e.timeoutCollector != nil && e.timeoutCollector.HasQuorum(quorumSize) && nextLeader == e.myIndex {
+		if e.timeoutCollector != nil && e.timeoutCollector.HasQuorum(quorumSize) {
 			return e.tryFormTCAndAdvance(view, nextView)
 		}
 		return nil
@@ -145,7 +146,6 @@ func (e *ConsensusEngine) processTimeout(timeout *TimeoutMessage) error {
 	nValidators := e.validatorSet().Len()
 	quorumSize := e.validatorSet().QuorumSize()
 	nextView := view + 1
-	nextLeader := LeaderForView(nextView, e.validatorSet())
 
 	if e.timeoutCollector == nil {
 		e.timeoutCollector = NewTimeoutCollector(view, nValidators)
@@ -163,7 +163,10 @@ func (e *ConsensusEngine) processTimeout(timeout *TimeoutMessage) error {
 		return err
 	}
 
-	if e.timeoutCollector.HasQuorum(quorumSize) && nextLeader == e.myIndex {
+	// ANY node holding a timeout quorum forms the TC and advances — view
+	// progression must not depend on the next leader being alive (see
+	// tryFormTCAndAdvance).
+	if e.timeoutCollector.HasQuorum(quorumSize) {
 		return e.tryFormTCAndAdvance(view, nextView)
 	}
 
@@ -370,29 +373,43 @@ func (e *ConsensusEngine) tryFormTCAndAdvance(currentView, nextView ViewNumber) 
 		return err
 	}
 
-	log.Info("TC formed, I am the new leader", "view", currentView, "nextView", nextView)
-
 	e.roundState.UpdateLockedQC(&tc.HighQC)
 	e.roundState.UpdateHighestTC(tc)
 
-	nvMessage := NewViewSigningMessage(nextView)
-	nvSig := e.secretKey.Sign(nvMessage)
+	// Only the legitimate next-view leader announces the NewView; every other
+	// node advances LOCALLY on its own quorum and the TC travels via the
+	// SyncInfo piggyback (HighTC on subsequent votes/timeouts). View
+	// progression must never depend on the next leader being alive: with the
+	// mesh at exactly quorum size and the next leader among the dead, the old
+	// leader-only rule left every survivor holding a complete TC it was not
+	// allowed to act on — the whole network spun on a single view
+	// re-broadcasting timeouts forever (observed live: 5/7 nodes wedged on
+	// view 5408, +0 blocks in 4 minutes, timeout counters climbing).
+	if LeaderForView(nextView, e.validatorSet()) == e.myIndex {
+		log.Info("TC formed, I am the new leader", "view", currentView, "nextView", nextView)
 
-	newView := &NewViewMsg{
-		View:        nextView,
-		TimeoutCert: *tc,
-		Leader:      e.myIndex,
-		Signature:   nvSig.Marshal(),
-	}
+		nvMessage := NewViewSigningMessage(nextView)
+		nvSig := e.secretKey.Sign(nvMessage)
 
-	if err := e.emit(EngineOutput{
-		Type: OutputBroadcast,
-		Message: &ConsensusMsg{
-			Type:    MsgNewView,
-			Payload: newView,
-		},
-	}); err != nil {
-		return err
+		newView := &NewViewMsg{
+			View:        nextView,
+			TimeoutCert: *tc,
+			Leader:      e.myIndex,
+			Signature:   nvSig.Marshal(),
+		}
+
+		if err := e.emit(EngineOutput{
+			Type: OutputBroadcast,
+			Message: &ConsensusMsg{
+				Type:    MsgNewView,
+				Payload: newView,
+			},
+		}); err != nil {
+			return err
+		}
+	} else {
+		log.Info("TC formed locally, advancing without the next leader",
+			"view", currentView, "nextView", nextView)
 	}
 
 	if err := e.advanceToView(nextView); err != nil {
