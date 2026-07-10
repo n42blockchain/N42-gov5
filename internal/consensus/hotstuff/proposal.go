@@ -22,10 +22,17 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 	view := e.roundState.CurrentView()
 
 	if !IsLeader(e.myIndex, view, e.validatorSet()) {
+		// The build was triggered for an earlier view we led; by seal time the
+		// view rotated. Loud, not silent: this drop means the sealed block will
+		// never be proposed and the view can only time out.
+		log.Warn("hotstuff: sealed block dropped — not leader for current view",
+			"view", view, "block", blockHash.Hex()[:12])
 		return nil
 	}
 
 	if e.roundState.Phase() != PhaseWaitingForProposal {
+		log.Warn("hotstuff: sealed block dropped — phase left WaitingForProposal",
+			"view", view, "phase", e.roundState.Phase(), "block", blockHash.Hex()[:12])
 		return nil
 	}
 
