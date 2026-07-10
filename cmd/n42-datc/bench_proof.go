@@ -97,6 +97,7 @@ func runBenchProof(args []string) {
 	}
 	q.segA, q.segS = openSeg(segTabLeafA), openSeg(segTabLeafS)
 	q.segCA, q.segCS = openSeg(segTabChgA), openSeg(segTabChgS)
+	q.segSR = openSeg(segTabStoRoot)
 
 	hdrs, err := ethel.OpenHeaderCompact(*hdrDir)
 	if err != nil {

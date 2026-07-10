@@ -38,10 +38,11 @@ import (
 )
 
 const (
-	segTabLeafA = 0
-	segTabLeafS = 1
-	segTabChgA  = 2
-	segTabChgS  = 3
+	segTabLeafA   = 0
+	segTabLeafS   = 1
+	segTabChgA    = 2
+	segTabChgS    = 3
+	segTabStoRoot = 4 // dense storage-root history (addrHash32|block8 → root32/tombstone), exported from DatcStoRoot
 
 	leafSegMagic   = "DATCLS1\n"
 	leafFrameRaw   = 256 << 10 // target uncompressed bytes per frame
@@ -54,13 +55,14 @@ const (
 	leafTableS = segTabLeafS
 )
 
-var segTabNames = [4]string{"a", "s", "ca", "cs"}
+var segTabNames = [5]string{"a", "s", "ca", "cs", "sr"}
 
 // segPrefixLen is the number of leading key bytes that form the bucket id.
 // Leaves bucket on the hashed key's first byte (uniform). Chg rows bucket on
 // (level byte, second byte) — the second byte is domain[0] for storage rows
-// and the first path nibble for account rows.
-var segPrefixLen = [4]int{1, 1, 2, 2}
+// and the first path nibble for account rows. StoRoot rows bucket on
+// addrHash[0] (uniform, like leaves).
+var segPrefixLen = [5]int{1, 1, 2, 2, 1}
 
 func segBucketOf(table int, k []byte) int {
 	if len(k) == 0 {

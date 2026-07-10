@@ -125,6 +125,7 @@ func runVerify(args []string) {
 		}
 		q.segA, q.segS = open(segTabLeafA), open(segTabLeafS)
 		q.segCA, q.segCS = open(segTabChgA), open(segTabChgS)
+		q.segSR = open(segTabStoRoot)
 		if os.Getenv("DATC_CHG_MDBX") != "" {
 			// Diagnostic: force the change index through MDBX (ignore chg
 			// segments) — used to locate change rows written by a different
@@ -235,6 +236,7 @@ type querier struct {
 	// seg*, when non-nil, serve the leaf history / change index from static
 	// zstd segments (leafseg.go) instead of the MDBX tables.
 	segA, segS, segCA, segCS *leafSegSet
+	segSR                    *leafSegSet // dense storage-root history segments (sr.*.seg); nil → MDBX DatcStoRoot
 
 	// fastEOA short-circuits the per-account storage-root reconstruction for
 	// empty-code accounts (EOAs cannot hold storage) — a diagnostic/fast path
@@ -272,7 +274,7 @@ type querier struct {
 	// nodeHashAt reconstruction. stoRootTrust: the DB's meta says the layer is
 	// complete from genesis — a MISS is then authoritative "no storage" (EOAs
 	// and never-storage contracts skip the 16-way empty-subtree probe).
-	stoRootCur     kv.Cursor
+	stoRootCur     leafCur
 	stoRootAbsent  bool
 	stoRootChecked bool
 	stoRootTrust   bool
@@ -282,7 +284,7 @@ type querier struct {
 	// the old DB (tx) answers only paths/blocks the fresh DB has no row for.
 	// nil = single-DB mode.
 	tx2         kv.Tx
-	stoRootCur2 kv.Cursor
+	stoRootCur2 leafCur
 }
 
 // storageRootAt reads a contract's storage root as of block n from the dense
@@ -302,8 +304,8 @@ func (q *querier) storageRootAt(ah []byte, n uint64) (root types.Hash, has bool,
 		}
 	}
 	if q.stoRootCur == nil {
-		c, err := q.tx.Cursor(tDatcStoRoot)
-		if err != nil {
+		c, ok := openStoRootCursor(q)
+		if !ok {
 			q.stoRootAbsent = true
 			return types.Hash{}, false, false
 		}
@@ -334,9 +336,10 @@ func (q *querier) storageRootAt(ah []byte, n uint64) (root types.Hash, has bool,
 	return types.Hash{}, false, false
 }
 
-// stoRootFloorScan reads the floor row ≤ n under addrHash on one cursor.
-// hit=false → no row for this contract ≤ n in that DB.
-func stoRootFloorScan(cur kv.Cursor, ah []byte, n uint64) (root types.Hash, has bool, hit bool) {
+// stoRootFloorScan reads the floor row ≤ n under addrHash on one cursor
+// (MDBX kv.Cursor or *segLeafCursor — both satisfy leafCur with identical
+// Seek/Prev/Last semantics). hit=false → no row for this contract ≤ n.
+func stoRootFloorScan(cur leafCur, ah []byte, n uint64) (root types.Hash, has bool, hit bool) {
 	seek := make([]byte, 40)
 	copy(seek, ah[:32])
 	binary.BigEndian.PutUint64(seek[32:], n+1)

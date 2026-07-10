@@ -630,6 +630,7 @@ func runProof(args []string) {
 		}
 		q.segA, q.segS = open(segTabLeafA), open(segTabLeafS)
 		q.segCA, q.segCS = open(segTabChgA), open(segTabChgS)
+		q.segSR = open(segTabStoRoot)
 	}
 	if *ckptFold {
 		st := openCkptStore(*out, *ckptMaxBlock)
