@@ -623,6 +623,7 @@ var (
 	devFlags = []cli.Flag{
 		DevTxGenFlag,
 		DevTxGenMaxFlag,
+		DevTxGenKeyFlag,
 	}
 )
 
@@ -640,5 +641,12 @@ var (
 		Category:    "DEVELOPMENT",
 		Value:       10,
 		Destination: &DefaultConfig.DevCfg.TxGenMaxPerBlock,
+	}
+	DevTxGenKeyFlag = &cli.StringFlag{
+		Name:        "dev.txgen.key",
+		Usage:       "faucet/coinbase 的 secp256k1 私钥 (hex, 开发测试用; keystore 仅有 BLS key 时必需)",
+		Category:    "DEVELOPMENT",
+		Value:       "",
+		Destination: &DefaultConfig.DevCfg.TxGenKey,
 	}
 )

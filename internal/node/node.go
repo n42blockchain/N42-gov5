@@ -1842,7 +1842,12 @@ func (n *Node) startTxGenerator() {
 		GasPrice:       uint64(n.config.DevCfg.TxGenGasPrice),
 		GasLimit:       21000,
 		Value:          1000,
-		FaucetAmount:   1000000000000000000, // 1 ETH per test account
+		// 0.1 ETH per test account: enough for millions of 1000-wei transfers,
+		// and small enough that a coinbase living off hotstuff.devBlockReward
+		// (1 ETH/block, one leader turn in 7) can fund all ten accounts within
+		// its first few reward blocks instead of tens of minutes.
+		FaucetAmount: 100000000000000000,
+		CoinbaseKey:  n.config.DevCfg.TxGenKey,
 	}
 
 	chainID, _ := uint256.FromBig(n.config.ChainCfg.ChainID)
