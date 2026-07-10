@@ -1,6 +1,7 @@
 # HotStuff-2 View Convergence — Residual Stall Follow-up
 
-**Status:** OPEN — dedicated multi-session pacemaker/liveness item.
+**Status:** Direction A LANDED (`da843ca4`) — maxStall 240s → 20s live-fire.
+Direction B (view fast-forward) remains optional further hardening.
 **Scope:** `mainnet_qmdb_staggered` 7-node live network (chainId 94, hotstuff, qmdb).
 **Prereq context:** `docs/mainnet_qmdb_staggered-7node-status.md` (L5/L6 history).
 
@@ -138,7 +139,7 @@ The two levers are: (A) **shrink the candidate storm** so a single candidate
 gathers votes; (B) **converge views faster** so a TC forms without a random
 walk. They are complementary — do A first (smaller blast radius), then B.
 
-### A. Leader re-proposes the deterministic existing candidate (highest leverage, contained)
+### A. Leader re-proposes the deterministic existing candidate (LANDED — `da843ca4`)
 
 When a leader is about to build at height *H* and one or more candidates at *H*
 extending the same LockedQC parent are already imported locally, it should
