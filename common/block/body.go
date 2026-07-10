@@ -136,7 +136,21 @@ func (b *Body) rewardAddress() []types.Address {
 func (b *Body) SendersFromTxs() []types.Address {
 	senders := make([]types.Address, len(b.Transactions()))
 	for i, tx := range b.Transactions() {
-		senders[i] = *tx.From()
+		if from := tx.From(); from != nil {
+			senders[i] = *from
+			continue
+		}
+		// Wire-decoded transactions carry no sender cache (From is derived
+		// locally, never serialized). Recover from the signature instead of
+		// dereferencing nil — observed live: a catching-up node importing the
+		// network's first transaction-bearing blocks panicked here in
+		// WriteBody on every 8s retry and wedged permanently. Sender() also
+		// populates the tx cache, so the recovery cost is paid once.
+		// An unrecoverable sender leaves the zero address; such a transaction
+		// cannot pass body validation anyway (invalid signature).
+		if from, err := transaction.Sender(transaction.LatestSignerForChainID(tx.ChainId().ToBig()), tx); err == nil {
+			senders[i] = from
+		}
 	}
 	return senders
 }
