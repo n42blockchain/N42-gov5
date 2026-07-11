@@ -877,10 +877,20 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			// MDBX on the live path). Also serve QMDB-native eth_getProof.
 			qmdbRC := commitment.NewQMDBRootComputer()
 			if rtx, err := chainKv.BeginRo(ctx); err == nil {
+				// Wire the cold/leaf getters BEFORE LoadFrom: the rebuild
+				// faults frozen leaves and cold entries through them, and
+				// without the wiring it silently took degraded reconstruction
+				// paths — every node's startup self-check flagged a reloaded
+				// root matching no nearby header, each node drifting
+				// differently from a logically identical chain.
+				qmdbRC.SetCold(rtx)
 				if err := qmdbRC.LoadFrom(rtx); err != nil {
 					log.Warn("QMDB forest reload failed (starting from empty forest)", "err", err)
 				}
 				rtx.Rollback()
+				// rtx is dead from here; detach so nothing faults through it
+				// (the first block's execution re-points at a live tx).
+				qmdbRC.SetCold(nil)
 			}
 			qmdbRC.EnableUndoRecording()
 			realBC.SetQMDBRootComputer(qmdbRC)
