@@ -745,6 +745,16 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		return h
 	}
 
+	// Start-of-block system operations (EIP-4788 beacon root, EIP-2935 parent
+	// blockhash ring buffer) — the SAME hooks StateProcessor.Process runs on
+	// the import side. Building without them produced a state root missing the
+	// system contracts' storage writes, so with import-side root verification
+	// on, every follower rejected every locally built block (proposer/computed
+	// mismatch on the very first sealed block).
+	if err := internal.ProcessExecutionBlockStart(current.header.ParentBeaconRoot, w.chainConfig, ibs, current.header, w.engine); err != nil {
+		return fmt.Errorf("miner block-start system calls: %w", err)
+	}
+
 	err = w.fillTransactions(interrupt, current, ibs, getHeader)
 	switch {
 	case err == nil:
@@ -759,6 +769,13 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 			ratio: ratio,
 			inc:   true,
 		}
+	}
+
+	// End-of-block system calls (EIP-7002 withdrawal / EIP-7251 consolidation
+	// requests) — mirror of StateProcessor.Process before Finalize, for the
+	// same build/verify state-root equivalence as the block-start hooks above.
+	if _, err := internal.ProcessExecutionBlockEnd(nil, w.chainConfig, ibs, current.header, w.engine); err != nil {
+		return fmt.Errorf("miner block-end system calls: %w", err)
 	}
 
 	if err = w.commit(current, stateWriter, ibs, start, headers, tracingReader); err != nil {
