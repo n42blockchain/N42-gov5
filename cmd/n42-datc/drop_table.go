@@ -39,8 +39,21 @@ func runDropTable(args []string) {
 
 	modules.N42Init()
 	kv.ChaindataTablesCfg = modules.N42TableCfg
+	// DropBucket only accepts tables marked deprecated — that is the guard
+	// against fat-fingering a live table. --yes IS that deliberate decision
+	// here, so mark the one target table deprecated for this open.
 	db, err := mdbxkv.NewMDBX(log.New()).Path(*out).Label(kv.ChainDB).
-		MapSize(datasize.ByteSize(*mapGB) * datasize.GB).Accede().Open(context.Background())
+		MapSize(datasize.ByteSize(*mapGB) * datasize.GB).Accede().
+		WithTableCfg(func(_ kv.TableCfg) kv.TableCfg {
+			d := kv.TableCfg{}
+			for n, it := range kv.ChaindataTablesCfg {
+				d[n] = it
+			}
+			it := d[*table]
+			it.IsDeprecated = true
+			d[*table] = it
+			return d
+		}).Open(context.Background())
 	if err != nil {
 		die("open: %v", err)
 	}
