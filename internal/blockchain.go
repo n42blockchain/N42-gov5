@@ -81,7 +81,7 @@ func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consen
 	// Ethereum-standard MPT root over RLP txs (block.TxRoot -> DeriveShaErigon);
 	// legacy native chains keep the proto keccak-concat root for historical hash
 	// continuity. Must be set before any block is produced or validated.
-	block.UseEthereumTxRoot = config.StateScheme == string(params.StateCommitmentPresetQMDB)
+	block.UseEthereumTxRoot = config != nil && config.StateScheme == string(params.StateCommitmentPresetQMDB)
 	concreteGenesis, err := requireConcreteBlock(genesisBlock, "unexpected genesis block type")
 	if err != nil {
 		cancel()
