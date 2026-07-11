@@ -33,6 +33,13 @@ type mapIndex map[Hash]uint64
 
 func newMapIndex() mapIndex { return make(mapIndex) }
 
+// NewMapIndex returns a fresh in-RAM index. Callers reloading a live tree from
+// disk mid-run (recovery paths) must install one BEFORE LoadFrom: LoadFrom's
+// "non-empty index → trust it, skip the rebuild scan" fast path exists for the
+// persistent MDBX index only — a leftover in-RAM index reflects the pre-reload
+// tree, and stale mappings make later overwrites deactivate the wrong slots.
+func NewMapIndex() Index { return newMapIndex() }
+
 func (m mapIndex) Get(k Hash) (uint64, bool) { s, ok := m[k]; return s, ok }
 func (m mapIndex) Put(k Hash, s uint64)      { m[k] = s }
 func (m mapIndex) Delete(k Hash)             { delete(m, k) }

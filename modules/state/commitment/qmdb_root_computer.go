@@ -127,6 +127,16 @@ func (r *QMDBRootComputer) Root() types.Hash { return types.Hash(r.t.Root()) }
 // replay positions, not rebuild from the key set). flushedThrough advances to the
 // reloaded cursor so the next flush is incremental.
 func (r *QMDBRootComputer) LoadFrom(g qmdb.Getter) error {
+	if r.mdbxIdx == nil {
+		// In-RAM index: force the rebuild scan. On a mid-run recovery reload
+		// the index still reflects the PRE-reload in-memory tree (e.g. reverts
+		// a rolled-back tx discarded); Tree.LoadFrom's non-empty-index fast
+		// path would keep those stale mappings and later overwrites would
+		// deactivate the wrong slots — observed live as cross-node activeBits
+		// divergence. The persistent MDBX index is transactional with the
+		// store, so it stays consistent and must NOT be rescanned.
+		r.t.SetIndex(qmdb.NewMapIndex())
+	}
 	if err := r.t.LoadFrom(g); err != nil {
 		return err
 	}
@@ -158,6 +168,14 @@ func (r *QMDBRootComputer) FlushTo(p qmdb.Putter) (int, error) {
 // attaches the leaf-blob store (same backing tx) so an evicted twig rehydrates in
 // one read. The engine re-points both at the current batch's tx each batch.
 func (r *QMDBRootComputer) SetCold(g qmdb.Getter) {
+	if g == nil {
+		// Detach: a getter wrapping an expired transaction is a delayed nil
+		// panic on the next cold fault (observed live). Callers re-point at a
+		// live tx before the next block executes.
+		r.t.SetCold(nil)
+		r.t.SetLeafStore(nil)
+		return
+	}
 	r.t.SetCold(qmdb.ColdReaderFromGetter(g))
 	r.t.SetLeafStore(qmdb.LeafStoreFromGetter(g))
 }
