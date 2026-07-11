@@ -1664,6 +1664,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				// reported.
 				if !strings.Contains(err.Error(), "nonce too high") {
 					bc.reportBlock(blk, receipts, err)
+					return nil, fmt.Errorf("%w: %w", consensus.ErrExecutionInvalid, err)
 				}
 				return nil, err
 			}
@@ -1672,7 +1673,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			vstart := time.Now()
 			if err := bc.validator.ValidateState(blk, ibs, receipts, usedGas); err != nil {
 				bc.reportBlock(blk, receipts, err)
-				return nil, err
+				return nil, fmt.Errorf("%w: %w", consensus.ErrExecutionInvalid, err)
 			}
 			vtime := time.Since(vstart)
 

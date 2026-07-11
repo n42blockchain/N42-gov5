@@ -5,6 +5,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"io"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/log"
 )
@@ -52,6 +54,10 @@ func (s *Service) blockByHashStreamHandler(stream network.Stream) {
 // client side of fetch-on-miss, invoked when the engine asks to execute a
 // proposed block we don't yet have. Implements hotstuff.BlockFetcher.
 func (s *Service) FetchBlockByHash(hash types.Hash) {
+	if s.hasBadBlock(hash) {
+		log.Debug("fetch-on-miss: dropping known bad block", "hash", hash.Hex()[:12])
+		return
+	}
 	// Already have the block BODY: don't just return — the caller needs it
 	// APPLIED. On a branch switch the whole ancestor sub-branch may already be
 	// in the DB from earlier rounds but never executed onto the world state.
@@ -149,6 +155,9 @@ func (s *Service) BlockApplied(hash types.Hash, number uint64) bool {
 // Every "imported" decision below is judged by applied-state evidence, never
 // by a nil insert error alone (future-queued blocks return nil too).
 func (s *Service) alignAndImport(blk block.IBlock) {
+	if blk == nil || s.rejectBadBlock(s.ctx, blk) {
+		return
+	}
 	// Already applied: the walk-back + authorized replay is unnecessary (and
 	// would re-enter the reorg path for a non-canonical sibling). Just notify
 	// the engine. A block that is merely STORED falls through to the
@@ -162,9 +171,15 @@ func (s *Service) alignAndImport(blk block.IBlock) {
 	cur := blk
 	pending := []block.IBlock{}
 	for depth := 0; depth < 32; depth++ {
+		if s.rejectBadBlock(s.ctx, cur) {
+			return
+		}
 		if _, err := s.insertAuthorized([]block.IBlock{cur}); err == nil &&
 			s.blockApplied(cur.Hash(), cur.Number64().Uint64()) {
 			break
+		} else if errors.Is(err, consensus.ErrExecutionInvalid) {
+			s.setBadBlock(s.ctx, cur.Hash())
+			return
 		}
 		p, _ := s.cfg.chain.GetBlockByHash(cur.ParentHash())
 		if p == nil {
@@ -178,6 +193,9 @@ func (s *Service) alignAndImport(blk block.IBlock) {
 	}
 	for i := len(pending) - 1; i >= 0; i-- {
 		if _, err := s.insertAuthorized([]block.IBlock{pending[i]}); err != nil {
+			if errors.Is(err, consensus.ErrExecutionInvalid) {
+				s.setBadBlock(s.ctx, pending[i].Hash())
+			}
 			log.Debug("fetch-on-miss: chain-align replay failed",
 				"number", pending[i].Number64().Uint64(),
 				"hash", pending[i].Hash().Hex()[:12], "err", err)

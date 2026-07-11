@@ -155,17 +155,15 @@ func (s *Service) catchUpRange(req *sync_pb.BodiesByRangeRequest, peers []peer.I
 			log.Warn("hotstuff catch-up: range contained only nil blocks", "peer", pid.String()[:12])
 			continue
 		}
+		blocks, imported, ierr := s.insertCatchUpBlocks(s.ctx, blocks, authorized)
+		if len(blocks) == 0 {
+			log.Debug("hotstuff catch-up: dropped known bad range", "peer", pid.String()[:12])
+			continue
+		}
 		// A taller fetched chain reorgs us off the fork. In the equal-height-fork
 		// case we insert with branch-switch authority so the losing applied
 		// sibling is reverted; otherwise plain InsertChain (which refuses to
 		// revert an applied branch) suffices for a pure height lag.
-		var ierr error
-		var imported int
-		if authorized {
-			imported, ierr = s.insertAuthorized(blocks)
-		} else {
-			imported, ierr = s.cfg.chain.InsertChain(blocks)
-		}
 		if ierr != nil {
 			if errors.Is(ierr, consensus.ErrUnknownAncestor) ||
 				strings.Contains(ierr.Error(), "sibling parent not applied") ||

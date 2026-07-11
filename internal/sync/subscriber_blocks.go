@@ -2,11 +2,13 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"google.golang.org/protobuf/proto"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -69,7 +71,9 @@ func (s *Service) blockSubscriber(ctx context.Context, msg proto.Message) error 
 			s.FetchBlockByHash(blk.ParentHash())
 			return s.cfg.chain.AddFutureBlock(blk)
 		}
-		s.setBadBlock(ctx, blk.Hash())
+		if errors.Is(err, consensus.ErrExecutionInvalid) {
+			s.setBadBlock(ctx, blk.Hash())
+		}
 		return err
 	}
 
