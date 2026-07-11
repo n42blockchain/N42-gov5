@@ -69,6 +69,10 @@ var (
 	// blob is stale/missing) rather than the block being invalid. Treated like an
 	// unknown ancestor: future-queue and retry instead of marking the block BAD.
 	errRevertUnavailable = errors.New("branch-switch revert unavailable (recoverable)")
+	// errQMDBBehindParent: the live tree simply has not reached the incoming
+	// block's parent yet (out-of-order arrival) — future-queue silently, this
+	// is not a tree/marker discontinuity.
+	errQMDBBehindParent = errors.New("qmdb applied state behind the incoming parent")
 )
 
 // =============================================================================
