@@ -78,6 +78,11 @@ func TestByzantine_DoubleVoteSuppressed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("first proposal: %v", err)
 	}
+	// Votes are execution-gated: the proposal requests execution first, and the
+	// vote is emitted only after the matching block import is confirmed.
+	if err := follower.ProcessEvent(ConsensusEvent{Type: EventBlockImported, Hash: blockHash}); err != nil {
+		t.Fatalf("import proposed block: %v", err)
+	}
 	out1 := drainOutputs(outputCh)
 	votes1 := countOutputs(out1, OutputSendToValidator, MsgVote)
 	if votes1 != 1 {
