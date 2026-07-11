@@ -22,7 +22,10 @@ package snapshotreader
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
+	"math/bits"
 	"os"
+	"path/filepath"
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/klauspost/compress/zstd"
@@ -37,15 +40,21 @@ import (
 
 var emptyCodeHash = crypto.Keccak256Hash(nil)
 
-// table holds one RecSplit MPHF + EF offsets + .val bytes for a single
-// snapshot table (accounts or storage). The .ef and .val are mmapped read-only
-// (like the .idx): mainnet .val is ~30 GB, and a heap copy would be private
-// (pagefile-backed) memory, whereas file-backed mappings let the OS evict cold
-// pages and re-fault them from the snapshot file itself.
+// table holds one NoValues RecSplit MPHF + a slot→offset Elias-Fano + .val
+// bytes for a single snapshot shard. The layout is identical for the v1
+// monolithic segment and each v2 shard: Lookup(key) returns a perfect-hash
+// slot, ef.Get(slot) gives the byte offset into the slot-ordered .val. ef is
+// nil only for an empty shard (KeyCount()==0), which the lookup guard rejects
+// before touching it.
+//
+// The .ef and .val are mmapped read-only (like the .idx): mainnet .val is
+// ~30 GB, and a heap copy would be private (pagefile-backed) memory, whereas
+// file-backed mappings let the OS evict cold pages and re-fault them from the
+// snapshot file itself.
 type table struct {
 	idx *recsplit.Index
 	rd  *recsplit.IndexReader
-	ef  *eliasfano32.EliasFano
+	ef  *eliasfano32.EliasFano // nil only for an empty shard
 	val []byte
 
 	// mmap bookkeeping; nil handles mean the buffer is heap-owned (zstd
@@ -68,11 +77,16 @@ func openTable(idxPath, efPath, valPath string) (*table, error) {
 		idx.Close()
 		return nil, fmt.Errorf("read ef %s: %w", efPath, err)
 	}
-	ef, _ := eliasfano32.ReadEliasFano(efData)
+	// An empty shard (.ef is 0 bytes) has KeyCount()==0; leave ef nil — the
+	// lookup guard returns before it is ever dereferenced.
+	var ef *eliasfano32.EliasFano
+	if len(efData) >= 16 {
+		ef, _ = eliasfano32.ReadEliasFano(efData)
+	}
 	val, valF, valM2, err := readMaybeZstd(valPath)
 	if err != nil {
-		closeMapping(efData, efF, efM2)
 		idx.Close()
+		closeMapping(efData, efF, efM2)
 		return nil, fmt.Errorf("read val %s: %w", valPath, err)
 	}
 	return &table{
@@ -109,10 +123,15 @@ func closeMapping(data []byte, f *os.File, m2 *[mmap.MaxMapSize]byte) {
 	}
 }
 
-// lookup returns the value (payload after the 4B fingerprint) for key, verifying
-// the fingerprint to reject phantom keys (MPHF returns an ordinal for ANY key;
-// the fp confirms the key was actually present). (nil,false) if absent.
-func (t *table) lookup(key []byte) ([]byte, bool) {
+// lookupWithHash returns the value (payload after the 4B fingerprint) for key,
+// verifying the fingerprint to reject phantom keys (MPHF returns an ordinal
+// for ANY key; the fp confirms the key was actually present). keyHash must be
+// xxhash.Sum64(key) — passed in so a sharded segment hashes each key once for
+// both shard routing and the fingerprint. (nil,false) if absent.
+func (t *table) lookupWithHash(key []byte, keyHash uint64) ([]byte, bool) {
+	if t.idx.KeyCount() == 0 {
+		return nil, false
+	}
 	ord, found := t.rd.Lookup(key)
 	if !found {
 		return nil, false
@@ -120,7 +139,10 @@ func (t *table) lookup(key []byte) ([]byte, bool) {
 	if ord >= t.idx.KeyCount() {
 		return nil, false
 	}
-	off := t.ef.Get(ord)
+	if t.ef == nil {
+		return nil, false
+	}
+	off := t.ef.Get(ord) // slot→offset EF (external .ef, v1 and v2b)
 	if off >= uint64(len(t.val)) {
 		return nil, false
 	}
@@ -133,7 +155,7 @@ func (t *table) lookup(key []byte) ([]byte, bool) {
 	if len(payload) < 4 {
 		return nil, false
 	}
-	if binary.BigEndian.Uint32(payload[:4]) != uint32(xxhash.Sum64(key)) {
+	if binary.BigEndian.Uint32(payload[:4]) != uint32(keyHash) {
 		return nil, false // phantom: key not actually in this segment
 	}
 	return payload[4:], true
@@ -150,39 +172,95 @@ func (t *table) Close() {
 	closeMapping(t.efRaw, t.efF, t.efM2)
 }
 
-// readMaybeZstd loads valPath+".zst" (zstd → heap, can't mmap compressed) if
-// present, else mmaps (or heap-reads, see mapOrRead) the raw valPath.
+// readMaybeZstd mmaps valPath (see mapOrRead). If valPath is absent but
+// valPath+".zst" exists, the archive is first decompressed to valPath on disk
+// (streaming — never buffered on the heap: a whole-file DecodeAll of the
+// multi-GB storage .val once exhausted the machine's commit charge and took
+// down every collocated node) and the result is mmapped like any other .val.
+// A pre-existing .val always wins over a stale sibling .zst.
 func readMaybeZstd(valPath string) ([]byte, *os.File, *[mmap.MaxMapSize]byte, error) {
-	if data, err := os.ReadFile(valPath + ".zst"); err == nil {
-		dec, derr := zstd.NewReader(nil)
-		if derr != nil {
-			return nil, nil, nil, derr
+	if _, err := os.Stat(valPath); os.IsNotExist(err) {
+		if _, zerr := os.Stat(valPath + ".zst"); zerr == nil {
+			if derr := decompressZstToFile(valPath+".zst", valPath); derr != nil {
+				return nil, nil, nil, fmt.Errorf("decompress %s.zst: %w", valPath, derr)
+			}
 		}
-		defer dec.Close()
-		out, err := dec.DecodeAll(data, nil)
-		return out, nil, nil, err
 	}
 	return mapOrRead(valPath)
 }
 
+// decompressZstToFile streams zstPath into dstPath via a temp file + rename so
+// a crash mid-decompress never leaves a truncated .val behind.
+func decompressZstToFile(zstPath, dstPath string) error {
+	in, err := os.Open(zstPath)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	dec, err := zstd.NewReader(in)
+	if err != nil {
+		return err
+	}
+	defer dec.Close()
+	tmp := dstPath + ".tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	if _, err = io.Copy(out, dec.IOReadCloser()); err != nil {
+		out.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err = out.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, dstPath)
+}
+
+// shardedTable routes lookups across a table's hash shards. v1 monolithic
+// segments are a single shard with shift=64 (every hash routes to shard 0);
+// v2 segments route by the top log2(n) bits of xxhash64(key), matching the
+// writer in cmd/reth-snapshot-export.
+type shardedTable struct {
+	shards []*table
+	shift  uint // 64 - log2(len(shards))
+}
+
+func (st *shardedTable) lookup(key []byte) ([]byte, bool) {
+	h := xxhash.Sum64(key)
+	return st.shards[h>>st.shift].lookupWithHash(key, h)
+}
+
+func (st *shardedTable) Close() {
+	if st == nil {
+		return
+	}
+	for _, t := range st.shards {
+		t.Close()
+	}
+}
+
 // Segment is one snapshot segment: accounts + storage tables + the codeHash dict.
 type Segment struct {
-	acc      *table
-	sto      *table
+	acc      *shardedTable
+	sto      *shardedTable
 	codeDict [][32]byte // id -> codeHash
 }
 
-// OpenSegment opens <dir>/<accPrefix>.{idx,ef,val[.zst],codedict} and
-// <dir>/<stoPrefix>.{idx,ef,val[.zst]}. Typical prefixes: "accounts.0-25999999"
-// / "storage.0-25999999" (H.3 segment naming) or plain "accounts"/"storage".
+// OpenSegment opens one snapshot segment from dir. Two layouts are detected
+// per table prefix (typical prefixes: "accounts.0-25999999" / plain "accounts"):
+//
+//   - v2 sharded: <prefix>.s00..sNN.{idx,ef,val[.zst]} — one power-of-two set
+//     of shards, each in the same layout as v1;
+//   - v1 monolithic: <prefix>.{idx,ef,val[.zst]}.
 func OpenSegment(dir, accPrefix, stoPrefix string) (*Segment, error) {
-	acc, err := openTable(
-		dir+"/"+accPrefix+".idx", dir+"/"+accPrefix+".ef", dir+"/"+accPrefix+".val")
+	acc, err := openShardedTable(dir, accPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("accounts: %w", err)
 	}
-	sto, err := openTable(
-		dir+"/"+stoPrefix+".idx", dir+"/"+stoPrefix+".ef", dir+"/"+stoPrefix+".val")
+	sto, err := openShardedTable(dir, stoPrefix)
 	if err != nil {
 		acc.Close()
 		return nil, fmt.Errorf("storage: %w", err)
@@ -194,6 +272,41 @@ func OpenSegment(dir, accPrefix, stoPrefix string) (*Segment, error) {
 		return nil, fmt.Errorf("codedict: %w", err)
 	}
 	return &Segment{acc: acc, sto: sto, codeDict: cd}, nil
+}
+
+// openShardedTable opens <dir>/<prefix> in whichever layout is present,
+// preferring v2 shards when both exist.
+func openShardedTable(dir, prefix string) (*shardedTable, error) {
+	shardIdxs, err := filepath.Glob(dir + "/" + prefix + ".s*.idx")
+	if err != nil {
+		return nil, err
+	}
+	if len(shardIdxs) == 0 {
+		t, err := openTable(
+			dir+"/"+prefix+".idx", dir+"/"+prefix+".ef", dir+"/"+prefix+".val")
+		if err != nil {
+			return nil, err
+		}
+		return &shardedTable{shards: []*table{t}, shift: 64}, nil
+	}
+	n := len(shardIdxs)
+	if bits.OnesCount(uint(n)) != 1 {
+		return nil, fmt.Errorf("%s: found %d shard .idx files, want a power of two", prefix, n)
+	}
+	st := &shardedTable{
+		shards: make([]*table, n),
+		shift:  uint(64 - bits.TrailingZeros(uint(n))),
+	}
+	for s := 0; s < n; s++ {
+		base := fmt.Sprintf("%s/%s.s%02d", dir, prefix, s)
+		t, terr := openTable(base+".idx", base+".ef", base+".val")
+		if terr != nil {
+			st.Close()
+			return nil, fmt.Errorf("shard %02d: %w", s, terr)
+		}
+		st.shards[s] = t
+	}
+	return st, nil
 }
 
 func loadCodeDict(path string) ([][32]byte, error) {
