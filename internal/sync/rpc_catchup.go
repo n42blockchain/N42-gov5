@@ -5,16 +5,20 @@ package sync
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/holiman/uint256"
+	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/n42blockchain/N42/proto/sync_pb"
 	"github.com/n42blockchain/N42/common"
 	block "github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/utils"
+	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/proto/sync_pb"
 )
 
 // hotStuffExtraMagic is the 4-byte prefix HotStuff writes into every consensus
@@ -86,29 +90,52 @@ func (s *Service) CatchUp() {
 		start = self.Uint64()
 		authorized = true
 	}
-	if start > highest.Uint64() {
-		return
+	// Deep-fork backtrack: a node that applied MORE than one losing block
+	// (view-change churn) rejects the fetched range with unknown-ancestor —
+	// the winning sibling at start-1 is not in the range, so its parent is
+	// never importable. Walk the start down one block per unknown-ancestor
+	// failure (bounded well inside the 256-block undo window) until the range
+	// reaches back to the common ancestor. Only meaningful on the authorized
+	// path; a plain height lag never unwinds.
+	const maxForkBacktrack = 32
+	for attempt := 0; attempt <= maxForkBacktrack; attempt++ {
+		if start > highest.Uint64() {
+			return
+		}
+		count := highest.Uint64() - start + 1
+		if count > maxRequestBlocks {
+			count = maxRequestBlocks
+		}
+		req := &sync_pb.BodiesByRangeRequest{
+			StartBlockNumber: utils.ConvertUint256IntToH256(uint256.NewInt(start)),
+			Count:            count,
+			Step:             1,
+		}
+		log.Info("hotstuff catch-up: requesting range",
+			"from", start, "to", highest.Uint64(), "self", self.Uint64(), "peers", len(peers), "attempt", attempt)
+		if s.catchUpRange(req, peers, authorized, start, highest.Uint64()) {
+			return
+		}
+		if !authorized || start <= 1 {
+			return
+		}
+		start-- // unknown-ancestor on every peer: reach one block deeper
 	}
-	count := highest.Uint64() - start + 1
-	if count > maxRequestBlocks {
-		count = maxRequestBlocks
-	}
+}
 
-	req := &sync_pb.BodiesByRangeRequest{
-		StartBlockNumber: utils.ConvertUint256IntToH256(uint256.NewInt(start)),
-		Count:            count,
-		Step:             1,
-	}
-	log.Info("hotstuff catch-up: requesting range",
-		"from", start, "to", highest.Uint64(), "self", self.Uint64(), "peers", len(peers))
-
+// catchUpRange fetches [start, highest] from the given peers and inserts it.
+// Returns true when the round is DONE (imported, or failed for a reason that
+// deeper backtracking cannot fix); false when every peer failed with
+// unknown-ancestor and the caller should retry one block lower.
+func (s *Service) catchUpRange(req *sync_pb.BodiesByRangeRequest, peers []peer.ID, authorized bool, start, highest uint64) bool {
+	sawUnknownAncestor := false
 	for _, pid := range peers {
 		ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 		fetched, err := SendBodiesByRangeRequest(ctx, s.cfg.chain, s.cfg.p2p, pid, req, nil)
 		cancel()
 		if err != nil {
 			log.Warn("hotstuff catch-up: range request failed",
-				"peer", pid.String()[:12], "from", start, "to", highest.Uint64(), "err", err)
+				"peer", pid.String()[:12], "from", start, "to", highest, "err", err)
 			continue
 		}
 		if len(fetched) == 0 {
@@ -140,6 +167,11 @@ func (s *Service) CatchUp() {
 			imported, ierr = s.cfg.chain.InsertChain(blocks)
 		}
 		if ierr != nil {
+			if errors.Is(ierr, consensus.ErrUnknownAncestor) ||
+				strings.Contains(ierr.Error(), "sibling parent not applied") ||
+				strings.Contains(ierr.Error(), "unknown ancestor") {
+				sawUnknownAncestor = true
+			}
 			log.Warn("hotstuff catch-up: insert failed", "err", ierr, "authorized", authorized,
 				"from", blocks[0].Number64().Uint64(), "count", len(blocks), "imported", imported)
 			// A PARTIAL import still advanced the applied head. Canonicalize the
@@ -170,8 +202,12 @@ func (s *Service) CatchUp() {
 		}
 		log.Info("hotstuff catch-up: imported range",
 			"fetched", len(blocks), "newHead", newHeadNum, "authorized", authorized)
-		return
+		return true
 	}
+	// Every peer failed. Only a consistent unknown-ancestor is fixable by
+	// reaching one block deeper; anything else ends the round (the next tick
+	// retries from scratch).
+	return !sawUnknownAncestor
 }
 
 // HeightBehind reports how many blocks the local head trails the best peer,
