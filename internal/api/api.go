@@ -116,6 +116,25 @@ type API struct {
 
 	txIndex        *txlookup.Service       // optional cold tx-hash→block index; nil until SetTxIndexService
 	blockHashIndex *blockhashindex.Service // optional cold blockHash→number index; nil until SetBlockHashIndex
+
+	// stateReaderProvider, when set, supplies the state reader for State()
+	// instead of the default PlainState path. eth-el sets it to a hashed-canonical
+	// reader (WarmOverlayReader latest / historicalstate historical), since eth-el
+	// keeps no PlainState. blockNum is the block whose post-state is requested.
+	stateReaderProvider func(tx kv.Tx, blockNum uint64) (state.StateReader, error)
+}
+
+// SetStateReaderProvider installs a custom state-reader factory used by State()
+// (and the trace backend) in place of PlainState. Used by the eth-el public RPC
+// service to read the hashed-canonical state. No-op guard: nil clears it.
+func (n *API) SetStateReaderProvider(fn func(tx kv.Tx, blockNum uint64) (state.StateReader, error)) {
+	n.stateReaderProvider = fn
+}
+
+// StateReaderProvider exposes the installed provider (nil on n42), so trace
+// backends can build state-at-block over the same reader.
+func (n *API) StateReaderProvider() func(tx kv.Tx, blockNum uint64) (state.StateReader, error) {
+	return n.stateReaderProvider
 }
 
 // SetBlockHashIndex installs the cold-tier blockHash → number lookup (RecSplit
@@ -282,6 +301,16 @@ func (n *API) State(tx kv.Tx, blockNrOrHash jsonrpc.BlockNumberOrHash) evmtypes.
 	blockNr := rawdb.ReadHeaderNumber(tx, blockHash)
 	if nil == blockNr {
 		return nil
+	}
+
+	// eth-el (or any hashed-canonical backend) plugs its own reader here; the
+	// default n42 path reads PlainState as-of blockNr+1.
+	if n.stateReaderProvider != nil {
+		reader, err := n.stateReaderProvider(tx, *blockNr)
+		if err != nil || reader == nil {
+			return nil
+		}
+		return state.New(reader)
 	}
 
 	stateReader := state.NewPlainState(tx, *blockNr+1)

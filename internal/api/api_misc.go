@@ -10,6 +10,7 @@ import (
 	"github.com/holiman/uint256"
 	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
@@ -399,6 +400,56 @@ func (s *TxsPoolAPI) Content() map[string]map[string]map[string]*RPCTransaction 
 		dump := make(map[string]*RPCTransaction)
 		for _, tx := range txs {
 			dump[fmt.Sprintf("%d", tx.Nonce())] = newRPCPendingTransaction(tx, curHeader)
+		}
+		content["queued"][avmtypes.FromastAddress(&account).Hex()] = dump
+	}
+	return content
+}
+
+// Status returns the number of pending and queued transaction in the pool.
+// Blockscout / geth clients call txpool_status for a lightweight pool summary.
+func (s *TxsPoolAPI) Status() map[string]hexutil.Uint {
+	pending, queue := s.api.TxsPool().Content()
+	var nPending, nQueued int
+	for _, txs := range pending {
+		nPending += len(txs)
+	}
+	for _, txs := range queue {
+		nQueued += len(txs)
+	}
+	return map[string]hexutil.Uint{
+		"pending": hexutil.Uint(nPending),
+		"queued":  hexutil.Uint(nQueued),
+	}
+}
+
+// Inspect retrieves the content of the transaction pool and flattens it into an
+// easily inspectable "from: to value gas gasPrice" summary string per tx
+// (txpool_inspect), matching go-ethereum's shape.
+func (s *TxsPoolAPI) Inspect() map[string]map[string]map[string]string {
+	content := map[string]map[string]map[string]string{
+		"pending": make(map[string]map[string]string),
+		"queued":  make(map[string]map[string]string),
+	}
+	pending, queue := s.api.TxsPool().Content()
+	format := func(tx *transaction.Transaction) string {
+		to := "contract creation"
+		if tx.To() != nil {
+			to = avmtypes.FromastAddress(tx.To()).Hex()
+		}
+		return fmt.Sprintf("%s: %v wei + %v gas × %v wei", to, tx.Value(), tx.Gas(), tx.GasPrice())
+	}
+	for account, txs := range pending {
+		dump := make(map[string]string)
+		for _, tx := range txs {
+			dump[fmt.Sprintf("%d", tx.Nonce())] = format(tx)
+		}
+		content["pending"][avmtypes.FromastAddress(&account).Hex()] = dump
+	}
+	for account, txs := range queue {
+		dump := make(map[string]string)
+		for _, tx := range txs {
+			dump[fmt.Sprintf("%d", tx.Nonce())] = format(tx)
 		}
 		content["queued"][avmtypes.FromastAddress(&account).Hex()] = dump
 	}

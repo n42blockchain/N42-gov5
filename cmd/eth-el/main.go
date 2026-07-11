@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -37,6 +38,7 @@ import (
 	"github.com/n42blockchain/N42/internal/ethel/coldseed"
 	"github.com/n42blockchain/N42/internal/ethel/eldevp2p"
 	"github.com/n42blockchain/N42/internal/ethel/engineapi"
+	"github.com/n42blockchain/N42/internal/ethel/publicrpc"
 	"github.com/n42blockchain/N42/internal/ethel/fetch"
 	"github.com/n42blockchain/N42/internal/ethel/snapshotprestart"
 	"github.com/n42blockchain/N42/internal/ethel/snapshotreader"
@@ -137,6 +139,10 @@ func flags() []cli.Flag {
 		&cli.IntFlag{Name: "snapshot.fetch-parallel", Usage: "Worker count for the initial AutoFetch download (0 = default 4)", Value: 8},
 
 		// EL devp2p — direct mainnet EL p2p sync, bypasses CL when beacon p2p (port 9000) is blocked.
+		&cli.BoolFlag{Name: "publicrpc.enabled", Usage: "Serve a public (non-JWT) JSON-RPC endpoint for explorers (Blockscout): eth/net/web3 + debug_/trace_, gated per data mode"},
+		&cli.StringFlag{Name: "publicrpc.host", Value: "127.0.0.1", Usage: "Public JSON-RPC listen host"},
+		&cli.IntFlag{Name: "publicrpc.port", Value: 20015, Usage: "Public JSON-RPC listen port"},
+		&cli.StringFlag{Name: "publicrpc.mode", Value: "archive", Usage: "Data-availability mode for RPC capability gating: archive|full|m1|m0"},
 		&cli.BoolFlag{Name: "eldevp2p.enabled", Usage: "Run an embedded Ethereum devp2p (eth/68-69) listener so eth-el catches up via EL p2p directly, bypassing a CL"},
 		&cli.StringFlag{Name: "eldevp2p.listen", Usage: "EL devp2p TCP listen address (default :30303)", Value: ":30303"},
 		&cli.IntFlag{Name: "eldevp2p.max-peers", Usage: "Maximum simultaneous EL devp2p peers", Value: 50},
@@ -395,6 +401,24 @@ func run(c *cli.Context) error {
 		return engineapi.New(cfg.EngineAPI, n.ChainConfig(), n.Engine(), n.RwDB(), n.OutFreezer())
 	})
 
+	// Public (non-JWT) JSON-RPC — the Blockscout-facing endpoint. Reuses the
+	// shared eth/net/web3 + debug_/trace_ handlers over the eth-el datadir,
+	// gated per data mode by rpccaps. Off unless --publicrpc.enabled.
+	node.RegisterFactory(func(n *ethel.Node) ethel.Service {
+		svc, err := publicrpc.New(publicrpc.Config{
+			Enabled:         c.Bool("publicrpc.enabled"),
+			Host:            c.String("publicrpc.host"),
+			Port:            c.Int("publicrpc.port"),
+			Mode:            publicrpc.ParseMode(c.String("publicrpc.mode")),
+			HashedCanonical: c.Bool("hashed-canonical"),
+		}, n.ChainConfig(), n.Engine(), n.RwDB())
+		if err != nil {
+			log.Error("eth-el: public RPC init failed", "err", err)
+			return publicrpc.Disabled()
+		}
+		return svc
+	})
+
 	// EL devp2p service — bypasses the CL entirely. Dials Ethereum mainnet
 	// peers on TCP 30303 directly so eth-el can catch up its head from EL
 	// p2p when CL beacon p2p (port 9000) is filtered by the operator's ISP.
@@ -566,7 +590,10 @@ func openSnapshotCold(dataDir, rethDB string) (state.StateReader, error) {
 }
 
 // snapshotPrefix finds a table's segment prefix (e.g. "accounts.0-25999999") by
-// globbing <dir>/<table>*.idx and stripping ".idx".
+// globbing <dir>/<table>*.idx and stripping ".idx". v2 sharded segments name
+// their indexes <prefix>.s00..sNN.idx — the shard suffix is stripped too, so
+// both layouts resolve to the same base prefix (snapshotreader re-detects the
+// shards from that prefix).
 func snapshotPrefix(dir, table string) (string, error) {
 	matches, err := filepath.Glob(filepath.Join(dir, table+"*.idx"))
 	if err != nil {
@@ -575,5 +602,11 @@ func snapshotPrefix(dir, table string) (string, error) {
 	if len(matches) == 0 {
 		return "", fmt.Errorf("no %s snapshot segment (.idx) under %s", table, dir)
 	}
-	return strings.TrimSuffix(filepath.Base(matches[0]), ".idx"), nil
+	prefix := strings.TrimSuffix(filepath.Base(matches[0]), ".idx")
+	if m := shardSuffixRe.FindStringIndex(prefix); m != nil {
+		prefix = prefix[:m[0]]
+	}
+	return prefix, nil
 }
+
+var shardSuffixRe = regexp.MustCompile(`\.s\d{2,}$`)

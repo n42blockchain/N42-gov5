@@ -98,10 +98,19 @@ type EngineStateAdapter struct {
 	// when --bootstrap.mode=snapshot.
 	snapshotCold state.StateReader
 
+	// reorgJournal, when non-nil (snapshot-direct only), captures each executed
+	// block's warm-table reverse-diff into an in-memory ring so a shallow tip
+	// reorg can be unwound without on-disk changesets (minimal mode has none).
+	// journalActive gates capture to blocks near the tip — bulk catch-up of old
+	// (finalized) blocks never reorgs, so the per-write pre-image read is skipped
+	// there to keep catch-up at full speed.
+	reorgJournal  *overlayReorgJournal
+	journalActive bool
+
 	// hashedReadCache: cross-block LRU over HashedAccounts/HashedStorage/Code
 	// reads (hashed-canonical mode). Created lazily on first block; write
 	// invalidation is wired into the TrieRootComputer each block. Purged on
-	// any state rewind (see Reorg) and on batch-tx teardown.
+	// any state rewind (see Reorg).
 	hashedReadCache *state.HashedReadCache
 
 	// csFreezerSink, when non-nil, routes hashed-canonical per-block
@@ -123,6 +132,12 @@ func (a *EngineStateAdapter) PurgeHashedReadCache() { a.hashedReadCache.PurgeAll
 
 // SetBatchTx routes executePayloadDetailed onto a caller-owned tx (no internal
 // commit). Pass nil to restore standalone (open+commit-per-call) behavior.
+//
+// The hashed read cache is purged here: reads inside a batch memoize values
+// the batch tx has written but not yet committed, so if the caller ROLLED the
+// previous batch back those entries are stale. Purging at every batch
+// boundary (success or failure — we can't tell which) costs one extra MDBX
+// read per hot key per batch, which is noise against the within-batch reuse.
 func (a *EngineStateAdapter) SetBatchTx(tx kv.RwTx) {
 	a.batchTx = tx
 	if tx != nil {
@@ -145,6 +160,55 @@ func (a *EngineStateAdapter) SetBatchTx(tx kv.RwTx) {
 		}
 	}
 	a.hashedReadCache.PurgeAll()
+}
+
+// EnableReorgJournal turns on in-memory reverse-diff capture for shallow-reorg
+// unwind (snapshot-direct minimal/full mode; no-op semantics for other modes
+// since only OverlayStateWriter writes are journaled). n is the ring depth
+// (blocks retained); geth uses 128.
+func (a *EngineStateAdapter) EnableReorgJournal(n int) {
+	a.reorgJournal = newOverlayReorgJournal(n)
+}
+
+// SetJournalActive toggles reverse-diff capture. The downloader turns it on only
+// when the executed head is within the journal window of the tip, so bulk
+// catch-up runs capture-free at full speed. No-op when journaling is off.
+func (a *EngineStateAdapter) SetJournalActive(v bool) { a.journalActive = v }
+
+// FlushReorgJournal promotes the in-flight batch's captured diffs into the ring.
+// Call after a successful commitBatch. No-op when journaling is off.
+func (a *EngineStateAdapter) FlushReorgJournal() {
+	if a.reorgJournal != nil {
+		a.reorgJournal.flush()
+	}
+}
+
+// DiscardReorgJournal drops the in-flight batch's captured diffs. Call when a
+// batch tx is rolled back. No-op when journaling is off.
+func (a *EngineStateAdapter) DiscardReorgJournal() {
+	if a.reorgJournal != nil {
+		a.reorgJournal.discard()
+	}
+}
+
+// UnwindOverlayBlock restores the highest journaled block's warm state into tx
+// and pops it, returning its number+hash. ok=false when journaling is off or the
+// ring is empty (reorg deeper than the journal). The caller clears the canonical
+// mapping for the returned number and rolls the progress marker back to num-1 in
+// the SAME tx.
+func (a *EngineStateAdapter) UnwindOverlayBlock(tx kv.RwTx) (uint64, types.Hash, bool, error) {
+	if a.reorgJournal == nil {
+		return 0, types.Hash{}, false, nil
+	}
+	return a.reorgJournal.unwindOne(tx)
+}
+
+// ReorgJournalDepth reports how many blocks are currently unwindable.
+func (a *EngineStateAdapter) ReorgJournalDepth() int {
+	if a.reorgJournal == nil {
+		return 0
+	}
+	return a.reorgJournal.depth()
 }
 
 // SetStaged toggles staged catch-up execution (writeOnly root, per-sub-batch Merkle).
@@ -286,7 +350,7 @@ func (a *EngineStateAdapter) recoverSenders(txns []*transaction.Transaction, sig
 func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal) (_ *enginePayloadExecutionResult, retErr error) {
 	// A failed block leaves the read cache holding values memoized from this
 	// (about to be rolled back) tx — drop them. The batch path additionally
-	// purges on batch-tx teardown (SetBatchTx(nil)).
+	// purges on every SetBatchTx.
 	defer func() {
 		if retErr != nil {
 			a.hashedReadCache.PurgeAll()
@@ -319,6 +383,7 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	// account metadata such as code hashes reconstructed from change history.
 	var reader state.StateReader
 	var writer state.WriterWithChangeSets
+	var revDiff *state.BlockRevDiff // non-nil only in journaled snapshot-direct mode
 	if a.hashedCanonical {
 		// reth-2.2-style: read/execute against hashed state; the dirty hashed
 		// account/storage leaves are persisted by the incremental
@@ -345,8 +410,17 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 		// snapshot-direct (minimal/full): warm MDBX delta overlaid on the
 		// immutable H0 snapshot; tombstone-aware writer so SSTORE slot->0 does
 		// not fall through to a stale snapshot value.
-		reader = state.NewWarmOverlayReader(tx, a.snapshotCold)
-		writer = state.NewOverlayStateWriter(tx)
+		wor := state.NewWarmOverlayReader(tx, a.snapshotCold)
+		defer wor.Close() // release the block's cached warm cursors
+		reader = wor
+		if a.reorgJournal != nil && a.journalActive {
+			// Capture this block's warm-table pre-images so a shallow reorg can
+			// unwind it from memory (no on-disk changesets in minimal mode).
+			revDiff = state.NewBlockRevDiff()
+			writer = state.NewOverlayStateWriter(state.NewCapturingTx(tx, revDiff))
+		} else {
+			writer = state.NewOverlayStateWriter(tx)
+		}
 	} else {
 		reader = state.NewPlainState(tx, blockNum)
 		writer = state.NewPlainStateWriter(tx, tx, blockNum)
@@ -769,6 +843,12 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	}
 	if err := rawdb.WriteCanonicalHash(tx, storedHash, blockNum); err != nil {
 		return nil, err
+	}
+	// Journal this block's reverse-diff (pending until the batch commits) so a
+	// later shallow reorg can unwind it. storedHash is what canonical(blockNum)
+	// now resolves to; header.ParentHash links to blockNum-1.
+	if revDiff != nil {
+		a.reorgJournal.addPending(blockNum, storedHash, header.ParentHash, revDiff)
 	}
 
 	// Standalone: commit our own tx. Batch: leave it to the caller, who
