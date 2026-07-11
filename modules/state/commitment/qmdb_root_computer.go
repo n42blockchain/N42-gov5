@@ -89,6 +89,12 @@ func (r *QMDBRootComputer) RevertBlock(tx kv.RwTx, undo *qmdb.BlockUndo) error {
 	if r.mdbxIdx != nil {
 		r.mdbxIdx.setTx(tx)
 	}
+	// Any not-yet-consumed lastUndo describes appends relative to the tree
+	// position this revert is about to abandon; replaying it later (the
+	// dangling-candidate peel) would double-revert against the rewound tree.
+	// The caller peels dangling appends BEFORE reverting, so at this point a
+	// leftover record is stale by construction — drop it.
+	r.lastUndo = nil
 	ft, err := r.t.ApplyUndoWithStorage(tx, undo, r.flushedThrough)
 	if err != nil {
 		return err

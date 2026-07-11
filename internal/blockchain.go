@@ -2447,6 +2447,15 @@ func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authori
 	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil || n == 0 {
 		return nil
 	}
+	// The revert chain must start from the tree the applied marker describes.
+	// A dangling candidate's appends (a leader whose sealed block lost the
+	// view before this switch arrived) sit between the live tree head and the
+	// marker's first undo record; reverting over them either wedges (the undo
+	// no longer matches the tree head) or leaves a stale lastUndo behind that
+	// the NEXT import's peel replays against the rewound tree — observed live
+	// as "undo record is ahead of this tree" followed by a disk reload whose
+	// root matched no header in the undo window. Peel before unwinding.
+	bc.PeelDanglingQMDBAppends()
 	mutated := false
 	err := bc.unwindForReimportTx(n, parentHash, authorizedSwitch, &mutated)
 	if err != nil && !mutated {
