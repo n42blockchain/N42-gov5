@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -18,6 +19,76 @@ import (
 	"github.com/n42blockchain/N42/lib/trie"
 	"github.com/n42blockchain/N42/modules/state/commitment"
 )
+
+// appendWriter does SORTED bulk writes into a dst table via cursor Append (the
+// fast path: no B-tree search per row, sequential page fill — 3-10× faster than
+// Put for sorted input). Works for non-dup AND AutoDupSort tables (plain Append;
+// the cursor splits AutoDupSort keys internally, matching etl.Collector.Load).
+// It commits every commitEvery rows and reopens the tx+cursor (Append stays valid
+// because the source is sorted, so the next key > the committed table's max key).
+// newAppendWriter returns the dst table's current last key so the caller can SEEK
+// the (sorted) source PAST it and RESUME without re-writing — supporting "续传".
+type appendWriter struct {
+	db          kv.RwDB
+	table       string
+	commitEvery uint64
+	tx          kv.RwTx
+	c           kv.RwCursor
+	n           uint64
+}
+
+func newAppendWriter(ctx context.Context, db kv.RwDB, table string, commitEvery uint64) (*appendWriter, []byte, error) {
+	w := &appendWriter{db: db, table: table, commitEvery: commitEvery}
+	var err error
+	if w.tx, err = db.BeginRw(ctx); err != nil {
+		return nil, nil, err
+	}
+	if w.c, err = w.tx.RwCursor(table); err != nil {
+		return nil, nil, err
+	}
+	lastK, _, err := w.c.Last()
+	if err != nil {
+		return nil, nil, err
+	}
+	return w, append([]byte(nil), lastK...), nil
+}
+
+func (w *appendWriter) append(k, v []byte) error {
+	if err := w.c.Append(k, v); err != nil {
+		return fmt.Errorf("append %s k=%x: %w", w.table, k, err)
+	}
+	w.n++
+	if w.commitEvery > 0 && w.n%w.commitEvery == 0 {
+		if err := w.tx.Commit(); err != nil {
+			return err
+		}
+		var err error
+		if w.tx, err = w.db.BeginRw(context.Background()); err != nil {
+			return err
+		}
+		if w.c, err = w.tx.RwCursor(w.table); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// flush commits the final tx. Safe to call once; sets tx nil.
+func (w *appendWriter) flush() error {
+	if w.tx == nil {
+		return nil
+	}
+	err := w.tx.Commit()
+	w.tx = nil
+	return err
+}
+
+func (w *appendWriter) rollback() {
+	if w.tx != nil {
+		w.tx.Rollback()
+		w.tx = nil
+	}
+}
 
 // decodeRethBytecode extracts the raw deployed EVM bytecode from reth's
 // stored Bytecode Compact value, verified against the codehash key.
@@ -86,10 +157,11 @@ func (p *prog) tick(n uint64) {
 }
 
 // migrateHashedAccounts: key copy, value reth-Compact → N42 MarshalV2.
-func migrateHashedAccounts(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, logger log.Logger) error {
-	say("PHASE acc: HashedAccounts (reth Compact -> MarshalV2)")
+// Append (sorted bulk) + resume (skip already-written) + graceful SIGINT.
+func migrateHashedAccounts(ctx context.Context, reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, logger log.Logger) error {
+	say("PHASE acc: HashedAccounts (reth Compact -> MarshalV2, Append+resume)")
 	p := newProg("acc", logger)
-	rtx, err := reth.BeginRo(context.Background())
+	rtx, err := reth.BeginRo(ctx)
 	if err != nil {
 		return err
 	}
@@ -100,18 +172,23 @@ func migrateHashedAccounts(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64,
 	}
 	defer rc.Close()
 
-	wtx, err := dst.BeginRw(context.Background())
+	w, lastK, err := newAppendWriter(ctx, dst, n42HashedAccounts, commitEvery)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if wtx != nil {
-			wtx.Rollback()
+	defer w.rollback()
+
+	var k, v []byte
+	if len(lastK) > 0 {
+		for k, v, err = rc.Seek(lastK); k != nil && err == nil && bytes.Compare(k, lastK) <= 0; k, v, err = rc.Next() {
 		}
-	}()
+		say("acc resume: dst last=%x", lastK)
+	} else {
+		k, v, err = rc.First()
+	}
 
 	var written, decodeFail, skipEmpty uint64
-	for k, v, err := rc.First(); k != nil; k, v, err = rc.Next() {
+	for ; k != nil; k, v, err = rc.Next() {
 		if err != nil {
 			return fmt.Errorf("reth iter: %w", err)
 		}
@@ -131,27 +208,27 @@ func migrateHashedAccounts(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64,
 			continue
 		}
 		acc := account.StateAccount{Nonce: nonce, Balance: bal, CodeHash: codeHash}
-		if err := wtx.Put(n42HashedAccounts, k, acc.MarshalV2()); err != nil {
-			return fmt.Errorf("put: %w", err)
+		if err := w.append(k, acc.MarshalV2()); err != nil {
+			return err
 		}
 		written++
-		if written%commitEvery == 0 {
-			if err := wtx.Commit(); err != nil {
-				return err
-			}
-			if wtx, err = dst.BeginRw(context.Background()); err != nil {
-				return err
-			}
-		}
 		p.tick(written)
+		select {
+		case <-ctx.Done():
+			if e := w.flush(); e != nil {
+				return e
+			}
+			say("PHASE acc interrupted: committed written=%d (resume next run)", written)
+			return ctx.Err()
+		default:
+		}
 		if limit > 0 && written >= limit {
 			break
 		}
 	}
-	if err := wtx.Commit(); err != nil {
+	if err := w.flush(); err != nil {
 		return err
 	}
-	wtx = nil
 	say("PHASE acc done: written=%d decodeFail=%d skipEmpty=%d", written, decodeFail, skipEmpty)
 	return nil
 }
@@ -160,10 +237,10 @@ func migrateHashedAccounts(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64,
 // trimmed U256; N42 (post-incarnation) identical. We reconstruct the 64B
 // logical key (addrHash + slotHash) and Put via AutoConv, which splits it
 // back into the same dup-key/dup-value.
-func migrateHashedStorages(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, logger log.Logger) error {
-	say("PHASE sto: HashedStorages (DupSort byte-copy)")
+func migrateHashedStorages(ctx context.Context, reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, logger log.Logger) error {
+	say("PHASE sto: HashedStorages (AutoDupSort, Append+resume)")
 	p := newProg("sto", logger)
-	rtx, err := reth.BeginRo(context.Background())
+	rtx, err := reth.BeginRo(ctx)
 	if err != nil {
 		return err
 	}
@@ -174,26 +251,41 @@ func migrateHashedStorages(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64,
 	}
 	defer rc.Close()
 
-	wtx, err := dst.BeginRw(context.Background())
+	w, lastK, err := newAppendWriter(ctx, dst, n42HashedStorage, commitEvery)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if wtx != nil {
-			wtx.Rollback()
+	defer w.rollback()
+
+	// Resume: dst last key is the composite addrHash(32)+slotHash(32). Seek the
+	// source to that addrHash, then skip every (addr,slot) pair whose composite
+	// is <= lastK (one account's already-written slots), landing on the first >.
+	var k, v []byte
+	if len(lastK) >= 64 {
+		for k, v, err = rc.Seek(lastK[:32]); k != nil && err == nil; k, v, err = rc.Next() {
+			if len(k) != 32 || len(v) < 32 {
+				continue
+			}
+			comp := append(append(make([]byte, 0, 64), k...), v[:32]...)
+			if bytes.Compare(comp, lastK) > 0 {
+				break
+			}
 		}
-	}()
+		say("sto resume: dst last=%x", lastK)
+	} else {
+		k, v, err = rc.First()
+	}
 
 	composite := make([]byte, 64)
 	var written, shortVal uint64
-	for k, v, err := rc.First(); k != nil; k, v, err = rc.Next() {
+	for ; k != nil; k, v, err = rc.Next() {
 		if err != nil {
 			return fmt.Errorf("reth iter: %w", err)
 		}
-		if len(k) != 32 { // dup-key = 32B addrHash
+		if len(k) != 32 {
 			continue
 		}
-		if len(v) < 32 { // dup-value = 32B slotHash + value
+		if len(v) < 32 {
 			shortVal++
 			continue
 		}
@@ -204,27 +296,27 @@ func migrateHashedStorages(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64,
 		}
 		copy(composite[:32], k)
 		copy(composite[32:], slotHash)
-		if err := wtx.Put(n42HashedStorage, composite, val); err != nil {
-			return fmt.Errorf("put: %w", err)
+		if err := w.append(composite, val); err != nil {
+			return err
 		}
 		written++
-		if written%commitEvery == 0 {
-			if err := wtx.Commit(); err != nil {
-				return err
-			}
-			if wtx, err = dst.BeginRw(context.Background()); err != nil {
-				return err
-			}
-		}
 		p.tick(written)
+		select {
+		case <-ctx.Done():
+			if e := w.flush(); e != nil {
+				return e
+			}
+			say("PHASE sto interrupted: committed written=%d (resume next run)", written)
+			return ctx.Err()
+		default:
+		}
 		if limit > 0 && written >= limit {
 			break
 		}
 	}
-	if err := wtx.Commit(); err != nil {
+	if err := w.flush(); err != nil {
 		return err
 	}
-	wtx = nil
 	say("PHASE sto done: written=%d shortVal=%d", written, shortVal)
 	return nil
 }
@@ -244,7 +336,7 @@ func migrateHashedStorages(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64,
 // 25,191,537) + cmd/n42-reth-trie-probe (account/storage empty-path shapes).
 // The `vtrie` verify phase confirms the imported trie root before head is set;
 // the `rtrie` rebuild remains available as a fallback if vtrie ever mismatches.
-func migrateAccountsTrie(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, logger log.Logger) error {
+func migrateAccountsTrie(ctx context.Context, reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, logger log.Logger) error {
 	say("PHASE tacc: AccountsTrie -> TrieOfAccounts (byte-copy)")
 	p := newProg("tacc", logger)
 	rtx, err := reth.BeginRo(context.Background())
@@ -288,6 +380,16 @@ func migrateAccountsTrie(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, l
 			}
 		}
 		p.tick(written)
+		select {
+		case <-ctx.Done():
+			if err := wtx.Commit(); err != nil {
+				return err
+			}
+			wtx = nil
+			say("PHASE tacc interrupted: committed written=%d", written)
+			return ctx.Err()
+		default:
+		}
 		if limit > 0 && written >= limit {
 			break
 		}
@@ -311,7 +413,7 @@ func migrateAccountsTrie(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, l
 // 2755 incremental rounds (through block 25,191,537) and verbatim incremental
 // matches full rebuild exactly. `vtrie` verifies the whole-state root post-
 // import; `rtrie` rebuild stays as a fallback.
-func migrateStoragesTrie(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, logger log.Logger) error {
+func migrateStoragesTrie(ctx context.Context, reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, logger log.Logger) error {
 	say("PHASE tsto: StoragesTrie -> TrieOfStorage (extract nibble path)")
 	p := newProg("tsto", logger)
 	rtx, err := reth.BeginRo(context.Background())
@@ -373,6 +475,16 @@ func migrateStoragesTrie(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, l
 			}
 		}
 		p.tick(written)
+		select {
+		case <-ctx.Done():
+			if err := wtx.Commit(); err != nil {
+				return err
+			}
+			wtx = nil
+			say("PHASE tsto interrupted: committed written=%d", written)
+			return ctx.Err()
+		default:
+		}
 		if limit > 0 && written >= limit {
 			break
 		}
@@ -386,7 +498,8 @@ func migrateStoragesTrie(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, l
 }
 
 // migrateBytecodes: key copy, strip reth 1B BytecodeType prefix (0=Raw).
-func migrateBytecodes(reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, logger log.Logger) error {
+func migrateBytecodes(ctx context.Context, reth kv.RoDB, dst kv.RwDB, commitEvery, limit uint64, logger log.Logger) error {
+	_ = ctx // code phase is small; runs to completion (re-run on resume is cheap)
 	say("PHASE code: Bytecodes -> Code (strip 1B type prefix)")
 	p := newProg("code", logger)
 	rtx, err := reth.BeginRo(context.Background())

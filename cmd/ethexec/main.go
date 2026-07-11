@@ -258,6 +258,7 @@ func main() {
 					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory", Required: true},
 					&cli.StringFlag{Name: "datadir", Usage: "Path to MDBX with existing PlainState", Required: true},
 					&cli.Uint64Flag{Name: "block", Usage: "Block number to verify against", Required: true},
+					&cli.IntFlag{Name: "workers", Usage: "Parallel re-hash workers (per-worker RoTx over disjoint addr ranges); 0=NumCPU capped at 16, 1=sequential", Value: 0},
 				},
 				Action: runVerifyRoot,
 			},
@@ -1826,7 +1827,7 @@ func runRebuildState(c *cli.Context) error {
 		}
 		t.Close()
 	}
-	ethel.VerifyRebuildRoot(ctx, db, inputF, verifyEnd)
+	ethel.VerifyRebuildRoot(ctx, db, inputF, verifyEnd, min(runtime.NumCPU(), 16))
 	return nil
 }
 
@@ -1859,9 +1860,13 @@ func runVerifyRoot(c *cli.Context) error {
 	}
 	defer inputF.Close()
 
+	workers := c.Int("workers")
+	if workers <= 0 {
+		workers = min(runtime.NumCPU(), 16)
+	}
 	// VerifyRebuildRoot takes endBlock (exclusive), verifies at endBlock-1.
 	// Pass blockNum+1 so it verifies AT blockNum.
-	ethel.VerifyRebuildRoot(context.Background(), db, inputF, blockNum+1)
+	ethel.VerifyRebuildRoot(context.Background(), db, inputF, blockNum+1, workers)
 	return nil
 }
 
@@ -2226,7 +2231,7 @@ func runVerifyCSRoot(c *cli.Context) error {
 			log.Info("Resuming rebuild from existing state", "progress", saved, "target", targetBlock)
 		} else if saved >= targetBlock {
 			log.Info("MDBX already at or past target, skipping rebuild", "progress", saved, "target", targetBlock)
-			ethel.VerifyRebuildRoot(ctx, db, inputF, targetBlock+1)
+			ethel.VerifyRebuildRoot(ctx, db, inputF, targetBlock+1, min(runtime.NumCPU(), 16))
 			return nil
 		}
 	}
@@ -2269,7 +2274,7 @@ func runVerifyCSRoot(c *cli.Context) error {
 	}
 
 	// 4. Verify state root at targetBlock via MPT.
-	ethel.VerifyRebuildRoot(ctx, db, inputF, endBlock)
+	ethel.VerifyRebuildRoot(ctx, db, inputF, endBlock, min(runtime.NumCPU(), 16))
 	return nil
 }
 
