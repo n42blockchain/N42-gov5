@@ -42,7 +42,12 @@ type BlockUndo struct {
 	// broken poisons the record when a deactivated slot's entry could not be
 	// read back at record time (entry log / index disagreement) — ProofAt
 	// refuses poisoned records instead of producing a wrong historical root.
-	broken bool
+	// brokenSlot/brokenKey pin the first offending mapping so the incident
+	// can be diagnosed from the refusing error alone (which live store shape
+	// planted the unreadable pointer: slot vs the tree's windows).
+	broken     bool
+	brokenSlot uint64
+	brokenKey  Hash
 }
 
 // StartUndoRecording begins capturing undo data for the operations that follow
@@ -71,7 +76,12 @@ func (t *Tree) recordDeactivation(slot uint64, keyHash Hash) {
 	if !ok {
 		// Live slots are always readable; reaching here means the entry log and
 		// index disagree. Poison the record rather than silently producing wrong
-		// historical roots.
+		// historical roots — and pin the offending mapping plus the tree's
+		// window state so the incident is diagnosable from the error alone.
+		if !t.rec.broken {
+			t.rec.brokenSlot = slot
+			t.rec.brokenKey = keyHash
+		}
 		t.rec.broken = true
 		return
 	}
@@ -177,7 +187,8 @@ func (t *Tree) ProofAt(keyHash Hash, undos []*BlockUndo) (proof *Proof, root Has
 			return nil, Hash{}, false, errors.New("qmdb: nil undo record")
 		}
 		if u.broken {
-			return nil, Hash{}, false, errors.New("qmdb: undo record is poisoned (entry log / index mismatch at record time)")
+			return nil, Hash{}, false, fmt.Errorf("qmdb: undo record is poisoned (entry log / index mismatch at record time: key %x -> slot %d unreadable)",
+				u.brokenKey[:8], u.brokenSlot)
 		}
 	}
 	// Sanity: each block's PrevNextSlot must not exceed the next one's (the
