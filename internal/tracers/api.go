@@ -400,12 +400,19 @@ func (api *API) traceTx(ctx context.Context, message *transaction.Message, txctx
 	return tracer.GetResult()
 }
 
-// APIs returns the collection of RPC services the tracer package offers.
+// APIs returns the collection of RPC services the tracer package offers: the
+// geth-style debug_ tracer and the Parity/Erigon-style trace_ namespace
+// (trace_block / trace_replayBlockTransactions etc.) that Blockscout's Erigon
+// variant uses for internal-transaction indexing.
 func APIs(backend Backend) []rpc.API {
 	return []rpc.API{
 		{
 			Namespace: "debug",
 			Service:   NewAPI(backend),
+		},
+		{
+			Namespace: "trace",
+			Service:   NewTraceAPI(backend),
 		},
 	}
 }

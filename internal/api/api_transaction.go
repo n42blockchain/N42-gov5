@@ -227,7 +227,11 @@ func (s *TransactionAPI) GetTransactionReceipt(ctx context.Context, hash avmcomm
 	// Add blob gas fields for EIP-4844 blob transactions
 	if tx.Type() == transaction.BlobTxType {
 		fields["blobGasUsed"] = hexutil.Uint64(tx.BlobGas())
-		fields["blobGasPrice"] = (*hexutil.Big)(big.NewInt(1)) // minimum blob gas price
+		var excessBlobGas uint64
+		if bh, ok := header.(*block.Header); ok && bh != nil && bh.ExcessBlobGas != nil {
+			excessBlobGas = *bh.ExcessBlobGas
+		}
+		fields["blobGasPrice"] = (*hexutil.Big)(transaction.CalcBlobFee(excessBlobGas).ToBig()) // real fee from excessBlobGas (matches eth_getBlockReceipts)
 	}
 	// Assign receipt status or post state.
 	if len(receipt.PostState) > 0 {
