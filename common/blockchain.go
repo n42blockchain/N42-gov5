@@ -98,6 +98,14 @@ type IBlockChain interface {
 	// Uses interface{} to avoid dependency on modules/state.
 	// At runtime, ibs should be a *state.IntraBlockState from modules/state.
 	WriteBlockWithState(block block.IBlock, receipts []*block.Receipt, ibs interface{}, nopay map[types.Address]*uint256.Int) error
+
+	// PeelDanglingQMDBAppends reverts appends a DISCARDED candidate block left
+	// on the live QMDB tree (block production ran IntermediateRoot but the
+	// candidate never reached WriteBlockWithState — sealing lost the view, the
+	// task was replaced, or persisting failed). Must be called before building
+	// or executing the next block; a no-op when nothing is dangling or QMDB is
+	// not the root engine.
+	PeelDanglingQMDBAppends()
 }
 
 // IMiner defines the miner interface.
