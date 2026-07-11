@@ -45,9 +45,10 @@ func (s *Service) blockSubscriber(ctx context.Context, msg proto.Message) error 
 	// non-canonical same-height sibling it takes the reorg path on every arrival,
 	// which — at tens of hits a second — starves the import pipeline. Canonical
 	// selection is a consensus decision (CommitToCanonical), not a gossip one.
-	// Just (idempotently, deduped downstream) notify the engine.
+	// Notify the engine (idempotently, deduped downstream) only when the block
+	// is actually APPLIED — body presence alone must not unlock a vote.
 	if s.cfg.chain.HasBlock(blockHash, blockNumber.Uint64()) {
-		if n := s.cfg.blockImportNotifier; n != nil {
+		if n := s.cfg.blockImportNotifier; n != nil && s.blockApplied(blockHash, blockNumber.Uint64()) {
 			n.NotifyBlockImported(blockHash, blk.TxHash())
 		}
 		return nil
@@ -74,7 +75,9 @@ func (s *Service) blockSubscriber(ctx context.Context, msg proto.Message) error 
 
 	// Notify HotStuff consensus that this block is now locally available.
 	// This allows validators to vote on proposals that reference this block.
-	if n := s.cfg.blockImportNotifier; n != nil {
+	// A nil insert error is not proof of execution (future-queued blocks
+	// return nil too) — require applied-state evidence.
+	if n := s.cfg.blockImportNotifier; n != nil && s.blockApplied(blockHash, blockNumber.Uint64()) {
 		n.NotifyBlockImported(blockHash, blk.TxHash())
 	}
 

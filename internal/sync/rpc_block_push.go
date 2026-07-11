@@ -26,9 +26,12 @@ func (s *Service) blockPushStreamHandler(stream network.Stream) {
 		return
 	}
 	// Already stored (a re-pushed uncommitted leader block): skip re-entering
-	// InsertChain's reorg path and just notify the engine (deduped downstream).
+	// InsertChain's reorg path. Notify the engine only when the block is
+	// actually APPLIED — a stored-but-never-executed body must not unlock an
+	// import-gated vote (alignment is driven by the engine's per-proposal
+	// fetch-on-miss, not by every re-push, to avoid unwind storms).
 	if s.cfg.chain.HasBlock(blk.Hash(), blk.Number64().Uint64()) {
-		if n := s.cfg.blockImportNotifier; n != nil {
+		if n := s.cfg.blockImportNotifier; n != nil && s.blockApplied(blk.Hash(), blk.Number64().Uint64()) {
 			n.NotifyBlockImported(blk.Hash(), blk.TxHash())
 		}
 		return
@@ -52,7 +55,9 @@ func (s *Service) blockPushStreamHandler(stream network.Stream) {
 	// import-gated prepare vote can be cast. The gossip path does this in
 	// subscriber_blocks.go; the direct-push path must do it too, otherwise a
 	// pushed block never triggers EventBlockImported and the round stalls.
-	if n := s.cfg.blockImportNotifier; n != nil {
+	// A nil insert error is not proof of execution (future-queued blocks
+	// return nil too) — require applied-state evidence.
+	if n := s.cfg.blockImportNotifier; n != nil && s.blockApplied(blk.Hash(), blk.Number64().Uint64()) {
 		n.NotifyBlockImported(blk.Hash(), blk.TxHash())
 	}
 }
