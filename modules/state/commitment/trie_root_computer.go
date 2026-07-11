@@ -82,6 +82,29 @@ type TrieRootComputer struct {
 	// with few keys gain nothing); the batched anchor producer opts in.
 	sortedWrites bool
 
+	// Concurrent root (--concurrent-root): when cworkers>1, flushTrieRoot fans the
+	// CalcTrieRoot out into 16 top-nibble shards, each on its OWN RoTx opened from
+	// cdb and reading cdb-committed ⊕ coverlay (this batch's uncommitted writes,
+	// via WrapStateOverlay's COW snapshots). The combined root is byte-identical to
+	// the serial loader (proven by trie_root_concurrent_test.go); the node updates
+	// flush to TrieOf* exactly as the serial path. cworkers==0 → serial (unchanged).
+	cdb      kv.RoDB
+	coverlay *StateOverlay
+	cworkers int
+
+	// expectRoot: optional per-call gold value for the concurrent root. The
+	// parallel shards read this batch's uncommitted state through per-worker
+	// RoTx ⊕ overlay merged cursors — a surface the serial loader never uses
+	// (it reads HashedAccounts/HashedStorage natively from the live RwTx). If a
+	// data shape makes that emulation diverge, the combined root is silently
+	// wrong. When the caller knows the boundary block's header root, it sets
+	// this before ComputeRoot; flushTrieRootConcurrent then verifies the
+	// combined root against it and, on mismatch, dumps a per-nibble diagnostic
+	// and falls back to the serial loader (the trusted oracle) for that window.
+	// Zero-cost when matching; the serial recompute runs only on the rare miss.
+	expectRoot    types.Hash
+	expectRootSet bool
+
 	// readCache: optional cross-block read cache (state.HashedReadCache via
 	// the narrow interface below). ComputeRoot invalidates every dirtied
 	// hashed key so a subsequent read refills from MDBX with byte-true
@@ -102,6 +125,25 @@ type ReadCacheInvalidator interface {
 
 // SetReadCache wires the cross-block read cache for write invalidation.
 func (t *TrieRootComputer) SetReadCache(c ReadCacheInvalidator) { t.readCache = c }
+
+// SetExpectRoot arms the concurrent-root gold check for the NEXT ComputeRoot:
+// if the parallel combined root differs from want, flushTrieRootConcurrent logs
+// a per-nibble diagnostic and transparently recomputes via the serial loader.
+// Only meaningful in concurrent mode; harmless otherwise. Re-arm per window.
+func (t *TrieRootComputer) SetExpectRoot(want types.Hash) {
+	t.expectRoot, t.expectRootSet = want, true
+}
+
+// ClearExpectRoot disarms the concurrent-root gold check.
+func (t *TrieRootComputer) ClearExpectRoot() { t.expectRootSet = false }
+
+// SetConcurrentRoot enables the parallel per-window root: db is the env to open
+// per-worker RoTx from, ov is the 4-table overlay holding this batch's uncommitted
+// writes (the same one wrapping t's RwTx), workers caps fan-out (use 16). Pass
+// workers<=1 to keep the serial path.
+func (t *TrieRootComputer) SetConcurrentRoot(db kv.RoDB, ov *StateOverlay, workers int) {
+	t.cdb, t.coverlay, t.cworkers = db, ov, workers
+}
 
 // SetSortedWrites toggles ascending-key-order leaf writes in Phase 1/2 (a large-
 // batch optimization; see the field doc). Correctness-neutral.
@@ -363,6 +405,16 @@ func (t *TrieRootComputer) ComputeRoot(
 // updated intermediate nodes to TrieOfAccounts/TrieOfStorage (Phase 3/4). Shared
 // by the immediate (ComputeRoot) and deferred/batch (FinalizeRoot) paths.
 func (t *TrieRootComputer) flushTrieRoot(rl *trie.RetainList) (types.Hash, error) {
+	// Concurrent per-window root (incremental only — needs a populated TrieOf*).
+	if t.cworkers > 1 && t.incremental {
+		return t.flushTrieRootConcurrent(rl)
+	}
+	return t.flushTrieRootSerial(rl)
+}
+
+// flushTrieRootSerial is the original single-threaded Phase 3/4 (CalcTrieRoot +
+// TrieOf* flush). The concurrent path falls back to it for non-16-branch tops.
+func (t *TrieRootComputer) flushTrieRootSerial(rl *trie.RetainList) (types.Hash, error) {
 	// Phase 3: CalcTrieRoot. In legacy mode, ClearBucket TrieOf* so the
 	// rebuild is full (empty RetainList, every subtree recomputed from
 	// HashedAccounts/HashedStorage). In incremental mode, leave TrieOf*
