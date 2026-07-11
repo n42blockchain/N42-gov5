@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/crypto/bls/common"
-	"github.com/n42blockchain/N42/common/types"
 )
 
 // testSetup creates a validator set with n validators using real BLS keys.
@@ -1015,11 +1015,23 @@ func TestFollowerReceivesProposal(t *testing.T) {
 	}
 
 	outputs := drainOutputs(outputCh)
-	var hasExecuteBlock, hasVote bool
+	var hasExecuteBlock bool
 	for _, o := range outputs {
 		if o.Type == OutputExecuteBlock && o.Hash == blockHash {
 			hasExecuteBlock = true
 		}
+		if o.Type == OutputSendToValidator && o.Message != nil && o.Message.Type == MsgVote {
+			t.Fatal("must not vote before the proposed block is imported")
+		}
+	}
+	if !hasExecuteBlock {
+		t.Fatal("should request block execution")
+	}
+	if err := follower.ProcessEvent(ConsensusEvent{Type: EventBlockImported, Hash: blockHash}); err != nil {
+		t.Fatalf("block import failed: %v", err)
+	}
+	var hasVote bool
+	for _, o := range drainOutputs(outputCh) {
 		if o.Type == OutputSendToValidator && o.Message != nil && o.Message.Type == MsgVote {
 			hasVote = true
 			vote := o.Message.Payload.(*Vote)
@@ -1028,11 +1040,8 @@ func TestFollowerReceivesProposal(t *testing.T) {
 			}
 		}
 	}
-	if !hasExecuteBlock {
-		t.Fatal("should request block execution")
-	}
 	if !hasVote {
-		t.Fatal("should send vote to leader")
+		t.Fatal("should send vote to leader after import")
 	}
 }
 
