@@ -1575,6 +1575,22 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			return it.index, err
 		}
 
+		// Applied-evidence known-block gate. The validator's ErrKnownBlock uses
+		// HasBlockAndState = IsCanonicalHash, which on a commit-authority-only
+		// chain is FALSE for a block that was just written but not yet
+		// committed — so a concurrent re-import of the very block this node
+		// just applied (fetch-on-miss racing the leader's own write; observed
+		// live) sailed past every known-block skip, and unwindForReimport
+		// "branch-switched" the block onto itself: a pointless revert+re-execute
+		// of an identical block that destabilized the live tree under the
+		// next build. A block whose state IS the applied lineage needs nothing
+		// from this loop.
+		if bc.qmdbEnabled && bc.HasAppliedBlock(blk.Hash(), blockNumber.Uint64()) {
+			log.Debug("Ignoring already applied block", "number", blockNumber.Uint64(), "hash", blk.Hash())
+			stats.ignored++
+			continue
+		}
+
 		// HotStuff branch switch: if the applied world state is not the state of
 		// this block's parent (same-height sibling re-import / view-change
 		// re-proposal), cleanly revert applied blocks until it is — the EVM must

@@ -106,6 +106,17 @@ func (bc *BlockChain) WriteBlockWithState(blk block.IBlock, receipts []*block.Re
 		return errors.New("WriteBlockWithState: ibs must be *state.IntraBlockState")
 	}
 	_, err := bc.writeBlockWithState(blk, receipts, stateDB, nopay)
+	if err != nil && bc.qmdbEnabled {
+		// The leader path replays the sealed dirty set onto the LIVE tree
+		// inside writeBlockWithState; a failure after that replay (e.g. the
+		// reproduce-sealed-root guard) rolls the tx back but leaves the
+		// replayed appends and their undo dangling on the in-memory tree.
+		// Peel them here, while this lock still serializes the tree —
+		// leaving them for the next import's peel is how a later view found
+		// a stale (and once, poisoned) undo record (observed live). No-op
+		// when the failure happened before the replay (TakeUndo is nil).
+		bc.revertUncommittedQMDBAppends(blk.Number64().Uint64())
+	}
 	return err
 }
 
