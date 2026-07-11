@@ -68,6 +68,16 @@ func appRun(ctx *cli.Context) error {
 
 	log.Init(DefaultConfig.NodeCfg, DefaultConfig.LoggerCfg)
 
+	releasePID, err := acquirePIDFile(DefaultConfig.NodeCfg.DataDir, os.Getpid())
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := releasePID(); err != nil {
+			log.Warn("failed to remove PID file", "err", err)
+		}
+	}()
+
 	if DefaultConfig.PprofCfg.Pprof {
 		if DefaultConfig.PprofCfg.MaxCpu > 0 {
 			runtime.GOMAXPROCS(DefaultConfig.PprofCfg.MaxCpu)

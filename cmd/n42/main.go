@@ -46,6 +46,7 @@ const usageText = `n42 [options] [command]
 
 数据同步：
   n42 --data.dir /data/n42        指定数据目录
+  n42 stop --data.dir /data/n42   优雅停止运行中的节点
   n42 init --profile eth --chain eth-mainnet --data.dir /data/eth <genesis.json>
                                   初始化专用 Ethereum 数据目录
 
@@ -61,7 +62,7 @@ func main() {
 	// 使用新的参数结构（已整合所有旧参数）
 	flags := AllFlags()
 
-	rootCmd = append(rootCmd, walletCommand, accountCommand, exportCommand, dbCommand, initCommand)
+	rootCmd = append(rootCmd, walletCommand, accountCommand, exportCommand, dbCommand, initCommand, stopCommand)
 	commands := rootCmd
 
 	app := &cli.App{
