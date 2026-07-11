@@ -150,6 +150,11 @@ func main() {
 	cbar := fs.Float64("cbar", 20, "assumed average changed keys per block")
 	batch := fs.Uint64("batch", 20_000, "blocks per MDBX commit (large batches spill MDBX dirty pages and stall)")
 	mapGB := fs.Int("map.gb", 1024, "MDBX map size GB")
+	dirtyGB := fs.Int("dirty.gb", 16, "MDBX DirtySpace GB — raise so a dense batch's dirty pages stay in RAM and commit doesn't spill (cures the multi-minute commit stalls in DeFi-dense regions)")
+	stoCacheM := fs.Int("stocache.m", 8, "storage lastFull node cache size, in millions of entries — raise to cut late-block read-back (rb) cgo reads; ~150 B/entry (64 ≈ 10 GB)")
+	leavesTotal := fs.Uint64("leaves-total", 4_726_265_247+8_599_658_943, "total leaf-change workload (AccountChangeSets+StorageChangeSets rows) — denominator for the leaf-workload progress %")
+	leavesBase := fs.Uint64("leaves-base", 0, "leaves already processed before --start (resume baseline). Auto-loaded from DatcMeta/leafprog when present; only needed to seed a resume from a binary that predated leafprog persistence")
+	concurrentRoot := fs.Bool("concurrent-root", false, "parallel per-window root: 16 top-nibble shards on per-worker RoTx ⊕ a 4-table StateOverlay; byte-identical to serial (and gold-checked each window). Window/incremental mode only; ~7-8x on the per-window ComputeRoot (the build's dominant cost in the DeFi-dense region)")
 	leafSeg := fs.Bool("leaf-seg", false, "stream leaf history to zstd segment files instead of MDBX (mainnet-scale builds; ~10x smaller)")
 	gogc := fs.Int("gogc", 400, "GOGC percent (GC was ~25% CPU at the default 100; the live heap is stable so a high target is safe)")
 	window := fs.Bool("window", true, "mainnet: batch the root per E_1 window (bpp Path C) instead of per block — identical records, gold check per window")
@@ -158,6 +163,14 @@ func main() {
 	if *out == "" {
 		die("--out required")
 	}
+	// Was --start given explicitly? If not, we auto-resume from saved progress
+	// (an explicit --start, even 0, overrides; 0 = deliberate fresh build).
+	startSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "start" {
+			startSet = true
+		}
+	})
 	// Graceful shutdown: Ctrl+C (SIGINT) / SIGTERM sets stopRequested; the build
 	// loop finishes the current batch (commit + spill frame-cut) then exits
 	// cleanly, so the run resumes safely with --start. Safe to interrupt — do
@@ -216,7 +229,7 @@ func main() {
 	// a full batch's dirty set in RAM; commit then writes it once.
 	db, err := mdbxkv.NewMDBX(logger).Path(*out).Label(kv.ChainDB).
 		MapSize(datasize.ByteSize(*mapGB) * datasize.GB).
-		DirtySpace(uint64(16 * datasize.GB)).
+		DirtySpace(uint64(*dirtyGB) * uint64(datasize.GB)).
 		WithTableCfg(func(_ kv.TableCfg) kv.TableCfg {
 			d := kv.TableCfg{}
 			for name, item := range kv.ChaindataTablesCfg {
@@ -231,6 +244,40 @@ func main() {
 		die("open out mdbx: %v", err)
 	}
 	defer db.Close()
+
+	// Auto-resume: when --start is omitted, continue from the per-batch progress
+	// block saved in DatcMeta/progress — the operator no longer hand-computes the
+	// resume point. Guard: never silently rebuild from 0 over an output that
+	// already holds data but has no saved progress (e.g. built by an older binary
+	// predating progress persistence) — that would re-append the leaf spill and
+	// corrupt it. Require one explicit --start in that case.
+	if !startSet {
+		if otx, e := db.BeginRo(context.Background()); e == nil {
+			pv, _ := otx.GetOne(tDatcMeta, []byte("progress"))
+			if len(pv) >= 8 {
+				*startBlock = binary.BigEndian.Uint64(pv)
+				fmt.Printf("[datc] auto-resume from saved progress: --start %d\n", *startBlock)
+			} else {
+				hasData := false
+				if lp, _ := otx.GetOne(tDatcMeta, []byte("leafprog")); len(lp) >= 8 {
+					hasData = true
+				}
+				if !hasData {
+					if c, ce := otx.Cursor(tDatcAccNode); ce == nil {
+						k, _, _ := c.First()
+						hasData = k != nil
+						c.Close()
+					}
+				}
+				if hasData {
+					die("output %s already has data but no saved 'progress' (built by an older binary).\n"+
+						"  Pass --start <last window boundary> explicitly ONCE; subsequent runs auto-resume.", *out)
+				}
+				// Truly empty output -> fresh build from block 0.
+			}
+			otx.Rollback()
+		}
+	}
 
 	debug.SetGCPercent(*gogc)
 	debug.SetMemoryLimit(100 << 30) // hard ceiling well under the 128 GB box
@@ -248,10 +295,23 @@ func main() {
 		addrHashCache: make(map[types.Address][32]byte, 1<<16),
 		slotHashCache: make(map[types.Hash][32]byte, 1<<16),
 		accLastFull:   make(map[string]nodeRecState, 1<<16),
-		stoLastFull:   newLastFullCache(8 << 20), // ~8M entries ≈ 1 GB heap, read-back beyond
+		stoLastFull:   newLastFullCache(*stoCacheM << 20), // tunable via --stocache.m; read-back on miss
 
 		chgStoAgg: make(map[string]*[]chgEvent, 1<<14),
 		outDir:    *out,
+
+		leavesBase:  *leavesBase,
+		leavesTotal: *leavesTotal,
+	}
+	// Prefer the persisted leaf-progress baseline (exact across resumes); fall
+	// back to --leaves-base only when it's absent (resume from an older binary).
+	if *startBlock > 0 {
+		if otx, e := db.BeginRo(context.Background()); e == nil {
+			if lp, _ := otx.GetOne(tDatcMeta, []byte("leafprog")); len(lp) >= 8 {
+				b.leavesBase = binary.BigEndian.Uint64(lp)
+			}
+			otx.Rollback()
+		}
 	}
 	for d := 0; d <= maxChgDepth; d++ {
 		size := 1
@@ -262,6 +322,7 @@ func main() {
 		b.chgAccAgg[d] = make([]chgSlot, size)
 		b.stoDirty[d] = make(map[string]*uint16, 1<<10)
 	}
+	b.concurrentRoot = *concurrentRoot
 	b.resumed = *startBlock > 0
 	b.stoLastFull.resumed = b.resumed
 	b.fwdMode = fwdMode
@@ -427,6 +488,16 @@ type builder struct {
 	lastRoot  types.Hash // root at the last boundary (for empty-window checks)
 
 	leafAPuts, leafSPuts, chgPuts, nodePuts uint64
+
+	// Leaf-workload progress: block% is misleading (the DeFi-dense back half
+	// carries most leaf changes), so report against the total leaf-change count.
+	// leavesBase = leaves processed in blocks before --start (resume baseline);
+	// leaves-done-so-far = leavesBase + leafAPuts + leafSPuts.
+	leavesBase  uint64
+	leavesTotal uint64
+
+	// concurrentRoot: parallel per-window ComputeRoot (--concurrent-root).
+	concurrentRoot bool
 }
 
 // putLeaf routes one leaf-history row to the segment spill or the MDBX buffer.
@@ -472,12 +543,27 @@ func (b *builder) slotHash(slot types.Hash) [32]byte {
 	return h
 }
 
+// human formats large counts compactly for the heartbeat (1.64B, 285K, 13.33B).
+func human(n uint64) string {
+	switch {
+	case n >= 1_000_000_000:
+		return fmt.Sprintf("%.2fB", float64(n)/1e9)
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1e6)
+	case n >= 1_000:
+		return fmt.Sprintf("%.0fK", float64(n)/1e3)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
 func (b *builder) run(start, end, batchBlocks uint64) error {
 	t0 := time.Now()
 	var trc *commitment.TrieRootComputer
 	var blocksDone uint64
 	lastBeat := time.Now()
 	lastBeatBlocks := uint64(0)
+	lastBeatLeaves := b.leavesBase + b.leafAPuts + b.leafSPuts
 
 	// Mainnet mode: pre-decode blocks on a worker pool (changeset decode +
 	// key keccaks were ~12% of the single-threaded loop).
@@ -525,7 +611,16 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 	// TrieOf* writes go to a RAM overlay and flush once per batch: the
 	// incremental computer rewrites the same hot trie nodes every block, and
 	// those per-block MDBX puts (plus cursor read traffic) were >60% of CPU.
-	overlay := commitment.NewTrieOverlay()
+	// --concurrent-root uses the 4-table StateOverlay (so 16 read-only shard
+	// workers can read this batch's uncommitted Hashed*/TrieOf* via per-worker
+	// RoTx ⊕ overlay); otherwise the 2-table TrieOverlay (serial, unchanged).
+	var trieOv *commitment.TrieOverlay
+	var stateOv *commitment.StateOverlay
+	if b.concurrentRoot {
+		stateOv = commitment.NewStateOverlay()
+	} else {
+		trieOv = commitment.NewTrieOverlay()
+	}
 
 	for lo := start; lo < end; lo += batchBlocks {
 		hi := lo + batchBlocks
@@ -544,9 +639,20 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		if err != nil {
 			return err
 		}
-		wtx := commitment.WrapTrieOverlay(tx, overlay)
+		var wtx kv.RwTx
+		if b.concurrentRoot {
+			wtx = commitment.WrapStateOverlayRW(tx, stateOv)
+		} else {
+			wtx = commitment.WrapTrieOverlay(tx, trieOv)
+		}
 		trc = commitment.NewTrieRootComputer()
 		trc.SetRwTx(wtx)
+		if b.concurrentRoot {
+			// Per-window root fans into 16 nibble shards, each opening its own
+			// RoTx from b.db and reading committed ⊕ stateOv. Byte-identical to
+			// serial; gold-checked at every window boundary.
+			trc.SetConcurrentRoot(b.db, stateOv, 16)
+		}
 		// Ascending-key Hashed* leaf writes: with W=1024 windows the boundary
 		// root's Phase 1/2 puts ~200K random keys into ~100GB B-trees — 68% of
 		// all cgocall at the CryptoKitties peak. Sorted application restores
@@ -618,14 +724,30 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 			// Live heartbeat to STDERR (unbuffered through pipes): block height,
 			// instantaneous rate, ETA. Every 10s or 20K blocks, whichever first.
 			if blocksDone-lastBeatBlocks >= 20_000 || time.Since(lastBeat) > 10*time.Second {
-				inst := float64(blocksDone-lastBeatBlocks) / time.Since(lastBeat).Seconds()
-				var eta time.Duration
+				dt := time.Since(lastBeat).Seconds()
+				inst := float64(blocksDone-lastBeatBlocks) / dt
+				var blkEta time.Duration
 				if inst > 0 {
-					eta = time.Duration(float64(end-n) / inst * float64(time.Second))
+					blkEta = time.Duration(float64(end-n) / inst * float64(time.Second))
 				}
-				fmt.Fprintf(os.Stderr, "[datc] %5.1f%%  block %d / %d  %5.0f blk/s  ETA %s\n",
-					100*float64(n)/float64(end), n, end, inst, eta.Round(time.Minute))
-				lastBeat, lastBeatBlocks = time.Now(), blocksDone
+				// Leaf-workload progress is the honest one: the DeFi-dense back
+				// half carries most leaf changes, so block% runs far ahead of the
+				// real work. Lead with leaf%, keep block as a reference.
+				leavesDone := b.leavesBase + b.leafAPuts + b.leafSPuts
+				lfRate := float64(leavesDone-lastBeatLeaves) / dt
+				var lfPct float64
+				var lfEta time.Duration
+				if b.leavesTotal > 0 {
+					lfPct = 100 * float64(leavesDone) / float64(b.leavesTotal)
+					if lfRate > 0 && leavesDone < b.leavesTotal {
+						lfEta = time.Duration(float64(b.leavesTotal-leavesDone) / lfRate * float64(time.Second))
+					}
+				}
+				fmt.Fprintf(os.Stderr,
+					"[datc] leaf %4.1f%% %s/%s  %s lf/s  ETA %s | block %4.1f%% %d/%d %.0f blk/s ETA %s\n",
+					lfPct, human(leavesDone), human(b.leavesTotal), human(uint64(lfRate)), lfEta.Round(time.Minute),
+					100*float64(n)/float64(end), n, end, inst, blkEta.Round(time.Minute))
+				lastBeat, lastBeatBlocks, lastBeatLeaves = time.Now(), blocksDone, leavesDone
 			}
 		}
 		if hi == end {
@@ -661,7 +783,30 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 			tx.Rollback()
 			return err
 		}
-		if err := overlay.FlushTo(tx); err != nil {
+		var flushErr error
+		if b.concurrentRoot {
+			flushErr = stateOv.FlushTo(tx)
+		} else {
+			flushErr = trieOv.FlushTo(tx)
+		}
+		if err := flushErr; err != nil {
+			tx.Rollback()
+			return err
+		}
+		// Persist the cumulative leaf-workload progress atomically with the batch
+		// so a resume picks up the exact baseline (no need for --leaves-base).
+		var lp [8]byte
+		binary.BigEndian.PutUint64(lp[:], b.leavesBase+b.leafAPuts+b.leafSPuts)
+		if err := tx.Put(tDatcMeta, []byte("leafprog"), lp[:]); err != nil {
+			tx.Rollback()
+			return err
+		}
+		// Resume point: hi is the exclusive end of this committed batch = the next
+		// block to process = exactly the --start a resume needs. Saved atomically
+		// so an omitted --start auto-resumes here.
+		var prog [8]byte
+		binary.BigEndian.PutUint64(prog[:], hi)
+		if err := tx.Put(tDatcMeta, []byte("progress"), prog[:]); err != nil {
 			tx.Rollback()
 			return err
 		}
@@ -690,7 +835,8 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		// finalize (run is incomplete); spill is retained for resume.
 		if stopRequested.Load() && hi < end {
 			fmt.Printf("\n[datc] graceful stop at block %d (committed; spill cut at frame boundary).\n"+
-				"  Resume: re-run with --start %d (same --out / --end / --cbar / --leaf-seg). Spill retained.\n", hi, hi)
+				"  Resume: re-run the SAME command — --start is auto-loaded from saved progress (%d).\n"+
+				"  (Spill retained. Pass --start only to override.)\n", hi, hi)
 			return nil
 		}
 	}
@@ -993,19 +1139,28 @@ func (b *builder) accumulateBlock(tx kv.RwTx, n uint64,
 // applyWindow brings the trie to boundary block n with one incremental
 // ComputeRoot over the window net and gold-checks against header[n].Root.
 func (b *builder) applyWindow(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64) error {
+	// Read the boundary header first so we can arm the concurrent-root gold check:
+	// if --concurrent-root's parallel combine diverges from header.Root, the
+	// computer dumps a per-nibble diagnostic and transparently recomputes the
+	// window with the serial loader (the trusted oracle) instead of crashing. A
+	// genuine data/header mismatch (serial also wrong) still surfaces below.
+	hdr, err := b.hdrs.ReadHeader(n)
+	if err != nil {
+		return fmt.Errorf("read header: %w", err)
+	}
 	root := b.lastRoot
 	if len(b.winA) > 0 || len(b.winS) > 0 {
+		if b.concurrentRoot {
+			trc.SetExpectRoot(hdr.Root)
+		}
 		r, err := trc.ComputeRoot(b.winA, b.winS)
+		trc.ClearExpectRoot()
 		if err != nil {
 			return fmt.Errorf("window ComputeRoot →%d: %w", n, err)
 		}
 		root = r
 		b.winA = make(map[types.Address]*account.StateAccount, 64)
 		b.winS = make(map[types.Address]map[types.Hash]*uint256.Int, 16)
-	}
-	hdr, err := b.hdrs.ReadHeader(n)
-	if err != nil {
-		return fmt.Errorf("read header: %w", err)
 	}
 	if root != hdr.Root {
 		return fmt.Errorf("WINDOW ROOT MISMATCH at block %d (window end): computed %x != header %x", n, root, hdr.Root)
@@ -1078,7 +1233,23 @@ func (b *builder) blockApply(tx kv.RwTx, trc *commitment.TrieRootComputer, n uin
 		c.Close()
 	}
 
+	// Arm the concurrent-root gold check (same safety net as applyWindow): when
+	// the header root is known, a diverging parallel combine recomputes serially
+	// instead of crashing. fwdMode has no header oracle, so it stays unarmed.
+	var hdrRoot types.Hash
+	var hdrKnown bool
+	if !b.fwdMode {
+		hdr, herr := b.hdrs.ReadHeader(n)
+		if herr != nil {
+			return fmt.Errorf("read header: %w", herr)
+		}
+		hdrRoot, hdrKnown = hdr.Root, true
+		if b.concurrentRoot {
+			trc.SetExpectRoot(hdrRoot)
+		}
+	}
 	root, err := trc.ComputeRoot(dirtyA, dirtyS)
+	trc.ClearExpectRoot()
 	if err != nil {
 		return fmt.Errorf("ComputeRoot: %w", err)
 	}
@@ -1091,14 +1262,8 @@ func (b *builder) blockApply(tx kv.RwTx, trc *commitment.TrieRootComputer, n uin
 		if err := tx.Put(tDatcRoots, rk[:], root[:]); err != nil {
 			return err
 		}
-	} else {
-		hdr, err := b.hdrs.ReadHeader(n)
-		if err != nil {
-			return fmt.Errorf("read header: %w", err)
-		}
-		if root != hdr.Root {
-			return fmt.Errorf("ROOT MISMATCH: computed %x != header %x", root, hdr.Root)
-		}
+	} else if hdrKnown && root != hdrRoot {
+		return fmt.Errorf("ROOT MISMATCH: computed %x != header %x", root, hdrRoot)
 	}
 
 	// Record leaf history + change-index entries + pending changed paths.

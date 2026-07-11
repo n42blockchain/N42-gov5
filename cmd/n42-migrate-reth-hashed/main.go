@@ -39,9 +39,12 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/c2h5oh/datasize"
@@ -187,31 +190,39 @@ func main() {
 		return false
 	}
 
+	// Graceful stop: SIGINT/SIGTERM cancels ctx; phases commit their current tx and
+	// return context.Canceled so the partial output is durable and a re-run resumes
+	// (acc/sto Append-resume; tacc/tsto/code re-run cheaply). NEVER hard-kill.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	handle := func(name string, err error) {
+		if err == nil {
+			return
+		}
+		if errors.Is(err, context.Canceled) {
+			say("interrupted during %s — progress committed; re-run with same flags to RESUME", name)
+			dstDB.Close()
+			rethDB.Close()
+			os.Exit(0)
+		}
+		fail(name, err)
+	}
+
 	t0 := time.Now()
 	if run("acc") {
-		if err := migrateHashedAccounts(rethDB, dstDB, *commitEvery, *limit, logger); err != nil {
-			fail("hashed accounts", err)
-		}
+		handle("hashed accounts", migrateHashedAccounts(ctx, rethDB, dstDB, *commitEvery, *limit, logger))
 	}
 	if run("sto") {
-		if err := migrateHashedStorages(rethDB, dstDB, *commitEvery, *limit, logger); err != nil {
-			fail("hashed storages", err)
-		}
+		handle("hashed storages", migrateHashedStorages(ctx, rethDB, dstDB, *commitEvery, *limit, logger))
 	}
 	if run("tacc") {
-		if err := migrateAccountsTrie(rethDB, dstDB, *commitEvery, *limit, logger); err != nil {
-			fail("accounts trie", err)
-		}
+		handle("accounts trie", migrateAccountsTrie(ctx, rethDB, dstDB, *commitEvery, *limit, logger))
 	}
 	if run("tsto") {
-		if err := migrateStoragesTrie(rethDB, dstDB, *commitEvery, *limit, logger); err != nil {
-			fail("storages trie", err)
-		}
+		handle("storages trie", migrateStoragesTrie(ctx, rethDB, dstDB, *commitEvery, *limit, logger))
 	}
 	if run("code") {
-		if err := migrateBytecodes(rethDB, dstDB, *commitEvery, *limit, logger); err != nil {
-			fail("bytecodes", err)
-		}
+		handle("bytecodes", migrateBytecodes(ctx, rethDB, dstDB, *commitEvery, *limit, logger))
 	}
 	if run("rtrie") {
 		if err := rebuildTrieFromLeaves(dstDB, *expectRoot, *tmpdir, *accBufGB, *stoBufGB, logger); err != nil {
