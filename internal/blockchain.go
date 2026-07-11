@@ -384,6 +384,7 @@ func (bc *BlockChain) AncientReader() *freezer.AncientReader {
 // =============================================================================
 
 func (bc *BlockChain) Start() error {
+	bc.verifyAppliedStateOnStartup()
 	bc.alignCanonicalToAppliedOnStartup()
 	bc.repairCanonicalLinkageOnStartup()
 	bc.revertSpeculativeOnStartup()
@@ -392,6 +393,49 @@ func (bc *BlockChain) Start() error {
 	go bc.updateFutureBlocksLoop()
 	go bc.runNewBlockMessage()
 	return nil
+}
+
+// verifyAppliedStateOnStartup cross-checks the QMDBApplied marker against the
+// state the QMDB tree ACTUALLY holds (its root vs the applied block's
+// header.Root). Observed live: a node's applied marker sat on a tx-bearing
+// block whose transactions were never executed here — the marker said
+// 13017704 while the world state was 13017703's, so the known-block replay
+// decision skipped the block forever and every later replay failed with
+// nonce-too-high. Root cause still under investigation (see the fingerprint
+// log in writeBlockWithState); this check makes any such divergence
+// self-healing: step the marker back to the parent when the tree root
+// matches the parent's, so catch-up re-fetches and re-EXECUTES the block.
+func (bc *BlockChain) verifyAppliedStateOnStartup() {
+	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil {
+		return
+	}
+	if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+		appliedNum, appliedHash, ok, err := rawdb.ReadQMDBApplied(tx)
+		if err != nil || !ok || appliedNum == 0 {
+			return err
+		}
+		hdr := rawdb.ReadHeader(tx, appliedHash, appliedNum)
+		if hdr == nil {
+			return nil
+		}
+		treeRoot := bc.qmdbRootComputer.Root()
+		if treeRoot == hdr.Root {
+			return nil // marker and executed state agree
+		}
+		parent := rawdb.ReadHeader(tx, hdr.ParentHash, appliedNum-1)
+		if parent != nil && treeRoot == parent.Root {
+			log.Warn("applied marker was one block ahead of the executed state; stepping it back",
+				"marker", appliedNum, "markerRoot", fmt.Sprintf("%x", hdr.Root[:8]),
+				"treeRoot", fmt.Sprintf("%x", treeRoot[:8]))
+			return rawdb.WriteQMDBApplied(tx, appliedNum-1, hdr.ParentHash)
+		}
+		log.Error("applied marker inconsistent with the QMDB tree beyond one block — manual attention needed",
+			"marker", appliedNum, "markerRoot", fmt.Sprintf("%x", hdr.Root[:8]),
+			"treeRoot", fmt.Sprintf("%x", treeRoot[:8]))
+		return nil
+	}); err != nil {
+		log.Error("applied-state verification failed", "err", err)
+	}
 }
 
 // alignCanonicalToAppliedOnStartup pulls the canonical head BACK to the QMDB
@@ -2053,6 +2097,31 @@ func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authori
 	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil || n == 0 {
 		return nil
 	}
+	err := bc.unwindForReimportTx(n, parentHash, authorizedSwitch)
+	if err != nil {
+		// A multi-block unwind that fails MIDWAY leaves the in-memory QMDB
+		// tree holding reverts the rolled-back transaction discarded: block N
+		// reverted in memory AND in the tx, block N-1's revert failed, the tx
+		// rolled back (disk keeps N applied) — but the memory tree already
+		// dropped N. The node then keeps running on the diverged tree and the
+		// next FlushTo writes the divergence to disk permanently. Observed
+		// live: three nodes whose tree roots matched NO nearby header after a
+		// degraded-mesh period of repeated sibling switches, wedged with
+		// nonce errors. Reload the tree from disk to restore the invariant —
+		// the inline version of the "until restart" the old comment settled
+		// for.
+		if rerr := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+			return bc.qmdbRootComputer.LoadFrom(tx)
+		}); rerr != nil {
+			log.Error("qmdb tree reload after failed unwind FAILED — state may diverge", "err", rerr)
+		} else {
+			log.Warn("qmdb tree reloaded from disk after failed unwind", "unwindErr", err)
+		}
+	}
+	return err
+}
+
+func (bc *BlockChain) unwindForReimportTx(n uint64, parentHash types.Hash, authorizedSwitch bool) error {
 	return bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
 		appliedNum, appliedHash, ok, err := rawdb.ReadQMDBApplied(tx)
 		if err != nil {
