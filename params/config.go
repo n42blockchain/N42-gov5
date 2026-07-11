@@ -471,6 +471,14 @@ type HotStuffConfig struct {
 	// can ever sign an EVM transaction — the faucet must be a separate,
 	// well-known dev account.
 	DevFaucetAddress *types.Address `json:"devFaucetAddress,omitempty"`
+
+	// TwoPhaseVoteGate moves the execution guarantee from Round 1 to Round 2
+	// (order-then-execute): Round-1 prepare votes fire on static validation,
+	// decoupling view progress from execution latency; the Round-2 CommitVote
+	// waits for the local import, so a CommitQC still proves 2f+1 validators
+	// executed the block before it commits. Consensus-behavior switch — all
+	// validators must agree. Off (default) = classic import-gated Round 1.
+	TwoPhaseVoteGate bool `json:"twoPhaseVoteGate,omitempty"`
 }
 
 // HotStuffCommitteePoolConfig configures the live BLS committee-evidence pool.

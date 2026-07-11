@@ -191,6 +191,11 @@ func (h *HotStuff) InitEngine(validators []ValidatorInfo, faultTolerance uint32)
 		h.outputCh,
 	)
 
+	if h.config.TwoPhaseVoteGate {
+		h.engine.SetTwoPhaseVote(true)
+		log.Info("HotStuff two-phase vote gate ENABLED (order-then-execute: R1 static, R2 import-gated)")
+	}
+
 	log.Info("HotStuff consensus engine initialized",
 		"signer", h.signer, "index", myIndex,
 		"validators", vs.Len(), "quorum", vs.QuorumSize())
