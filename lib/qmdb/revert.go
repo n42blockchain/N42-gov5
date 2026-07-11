@@ -42,7 +42,8 @@ func (t *Tree) ApplyUndo(u *BlockUndo) error {
 		return errors.New("qmdb: nil undo record")
 	}
 	if u.broken {
-		return errors.New("qmdb: undo record is poisoned (entry log / index mismatch at record time)")
+		return fmt.Errorf("qmdb: undo record is poisoned (entry log / index mismatch at record time: key %x -> slot %d unreadable; tree entriesBase=%d evicted=%d next=%d)",
+			u.brokenKey[:8], u.brokenSlot, t.entriesBase, t.evicted, t.nextSlot)
 	}
 	if u.PrevNextSlot > t.nextSlot {
 		return fmt.Errorf("qmdb: undo record is ahead of this tree (prev=%d next=%d)", u.PrevNextSlot, t.nextSlot)
