@@ -848,6 +848,7 @@ func TestChaos7Node_FastPropose(t *testing.T) {
 	start := time.Now()
 	for view := ViewNumber(1); view <= 5; view++ {
 		blockHash := crypto.Keccak256Hash([]byte(fmt.Sprintf("fast-block-%d", view)))
+		h.markBlockImported(blockHash)
 		h.runConsensusRound(view, blockHash)
 	}
 	elapsed := time.Since(start)
