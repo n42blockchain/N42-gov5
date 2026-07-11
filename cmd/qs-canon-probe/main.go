@@ -18,6 +18,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	mdbxkv "github.com/n42blockchain/N42/lib/kv/mdbx"
 	log "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/qmdb"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -30,7 +31,21 @@ func main() {
 	walk := flag.Bool("walk", false, "walk parent chain down from HeadBlockHash; print derived vs canonical hash over [from,to]")
 	qmdbRoot := flag.Bool("qmdbroot", false, "LoadFrom the QMDB forest twice and print both roots vs the applied marker's header root (fidelity + determinism probe)")
 	qmdbDiff := flag.Bool("qmdbdiff", false, "diff the QMDB twig tables of exactly two chaindata dirs (same applied history must be byte-identical; a differing twig localizes an unwind repair bug)")
+	qmdbOps := flag.Bool("qmdbops", false, "load the forest twice from one store and apply an identical synthetic op sequence to both instances; roots must match (miner-isolated vs live instance equivalence probe)")
+	revertDepth := flag.Uint64("qmdbrevert", 0, "N>0: load the forest at the applied marker and ApplyUndo N blocks newest-to-oldest, comparing the tree root against the canonical header root after every step — the first mismatch pinpoints an unfaithful revert (in-memory only, store untouched)")
 	flag.Parse()
+	if *revertDepth > 0 {
+		modules.N42Init()
+		kv.ChaindataTablesCfg = modules.N42TableCfg
+		revertLadder(flag.Arg(0), *revertDepth)
+		return
+	}
+	if *qmdbOps {
+		modules.N42Init()
+		kv.ChaindataTablesCfg = modules.N42TableCfg
+		opsQMDB(flag.Arg(0))
+		return
+	}
 	if *qmdbDiff {
 		if flag.NArg() != 2 {
 			fmt.Fprintln(os.Stderr, "-qmdbdiff needs exactly two chaindata dirs")
@@ -177,6 +192,185 @@ func main() {
 		tx.Rollback()
 		db.Close()
 	}
+}
+
+// revertLadder reproduces the live "unwound node diverges from the cluster"
+// failure offline: rebuild the forest at the applied marker, then ApplyUndo
+// one block at a time (newest→oldest, exactly the branch-switch loop), and
+// after every step compare the in-memory tree root against the canonical
+// header root at that height. Every header on the ladder was accepted under
+// import-side root verification, so the header root is the ground truth for
+// "a tree that never saw the reverted blocks". The first mismatching step is
+// the smallest failing revert; its undo record is then dumped for shape
+// analysis (kills, twig spread, boundary position).
+func revertLadder(dir string, depth uint64) {
+	db, err := mdbxkv.NewMDBX(log.New()).Path(dir).Label(kv.ChainDB).
+		MapSize(64 * datasize.GB).Accede().Readonly().Open(context.Background())
+	if err != nil {
+		fmt.Printf("open: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+	tx, err := db.BeginRo(context.Background())
+	if err != nil {
+		fmt.Printf("begin: %v\n", err)
+		os.Exit(1)
+	}
+	defer tx.Rollback()
+
+	an, ah, aok, _ := rawdb.ReadQMDBApplied(tx)
+	if !aok {
+		fmt.Println("no applied marker")
+		return
+	}
+	hdr := rawdb.ReadHeader(tx, ah, an)
+	if hdr == nil {
+		fmt.Println("applied header missing")
+		return
+	}
+	rc := commitment.NewQMDBRootComputer()
+	rc.SetCold(tx)
+	if err := rc.LoadFrom(tx); err != nil {
+		fmt.Printf("LoadFrom: %v\n", err)
+		return
+	}
+	got := rc.Root()
+	fmt.Printf("marker=%d reload=%x headerRoot=%x match=%v\n", an, got[:8], hdr.Root[:8], types.Hash(got) == hdr.Root)
+	if types.Hash(got) != hdr.Root {
+		fmt.Println("baseline already diverged (this store's flushed state is not the marker state); pick another node")
+		return
+	}
+	cur, curHash := an, ah
+	for step := uint64(0); step < depth && cur > 0; step++ {
+		undos, uerr := rawdb.ReadQMDBUndos(tx, cur-1, cur)
+		if uerr != nil || len(undos) != 1 {
+			fmt.Printf("step %d: no undo row for %d (err=%v) — ladder ends\n", step, cur, uerr)
+			return
+		}
+		undo := undos[0]
+		h := rawdb.ReadHeader(tx, curHash, cur)
+		if h == nil {
+			fmt.Printf("step %d: header %d missing\n", step, cur)
+			return
+		}
+		if aerr := rc.Tree().ApplyUndo(undo); aerr != nil {
+			fmt.Printf("step %d: ApplyUndo(%d) failed: %v\n", step, cur, aerr)
+			return
+		}
+		parent := rawdb.ReadHeader(tx, h.ParentHash, cur-1)
+		if parent == nil {
+			fmt.Printf("step %d: parent header %d missing\n", step, cur-1)
+			return
+		}
+		r := rc.Root()
+		match := types.Hash(r) == parent.Root
+		fmt.Printf("revert %d: tree=%x parentHeader=%x kills=%d prevNext=%d %s\n",
+			cur, r[:8], parent.Root[:8], len(undo.Entries), undo.PrevNextSlot,
+			map[bool]string{true: "ok", false: "MISMATCH"}[match])
+		if !match {
+			fmt.Printf("  smallest failing revert found at block %d — undo shape: entries=%d prevNextSlot=%d\n",
+				cur, len(undo.Entries), undo.PrevNextSlot)
+			seen := map[uint64]int{}
+			for i := range undo.Entries {
+				seen[undo.Entries[i].Slot/qmdb.TwigSize]++
+			}
+			fmt.Printf("  revived-slot twig spread: %d twigs\n", len(seen))
+			return
+		}
+		cur, curHash = cur-1, h.ParentHash
+	}
+	fmt.Printf("ladder clean for %d steps\n", depth)
+}
+
+// opsQMDB loads the forest twice from one store — instance A wired like the
+// LIVE computer (SetCold before LoadFrom) and instance B like the miner's
+// ISOLATED computer (LoadFrom then SetCold) — applies the identical op
+// sequence to both (overwrite live keys, delete live keys, insert new keys),
+// and compares roots after every phase. Divergence reproduces the live
+// "sealed root not reproduced by the live tree" failure in isolation.
+func opsQMDB(dir string) {
+	db, err := mdbxkv.NewMDBX(log.New()).Path(dir).Label(kv.ChainDB).
+		MapSize(64 * datasize.GB).Accede().Readonly().Open(context.Background())
+	if err != nil {
+		fmt.Printf("open: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+	tx, err := db.BeginRo(context.Background())
+	if err != nil {
+		fmt.Printf("begin: %v\n", err)
+		os.Exit(1)
+	}
+	defer tx.Rollback()
+
+	a := commitment.NewQMDBRootComputer() // live-style wiring
+	a.SetCold(tx)
+	if err := a.LoadFrom(tx); err != nil {
+		fmt.Printf("A LoadFrom: %v\n", err)
+		return
+	}
+	b := commitment.NewQMDBRootComputer() // miner-style wiring
+	if err := b.LoadFrom(tx); err != nil {
+		fmt.Printf("B LoadFrom: %v\n", err)
+		return
+	}
+	b.SetCold(tx)
+	fmt.Printf("baseline: A=%x B=%x next A=%d B=%d\n", a.Root().Bytes()[:8], b.Root().Bytes()[:8], a.Tree().NextSlot(), b.Tree().NextSlot())
+
+	// Harvest real live keyHashes from the tail of the entry log.
+	var keys []qmdb.Hash
+	next := a.Tree().NextSlot()
+	lo := uint64(0)
+	if next > 5000 {
+		lo = next - 5000
+	}
+	for s := lo; s < next && len(keys) < 600; s++ {
+		v, e := tx.GetOne(qmdb.EntryTable, be8p(s))
+		if e != nil || len(v) < 32 {
+			continue
+		}
+		var kh qmdb.Hash
+		copy(kh[:], v[:32])
+		if _, ok := a.Tree().Get(kh); ok {
+			keys = append(keys, kh)
+		}
+	}
+	fmt.Printf("harvested %d live keys\n", len(keys))
+
+	apply := func(name string, f func(t *qmdb.Tree)) {
+		f(a.Tree())
+		f(b.Tree())
+		ra, rb := a.Root(), b.Root()
+		match := "ok"
+		if ra != rb {
+			match = "MISMATCH"
+		}
+		fmt.Printf("phase %-10s A=%x B=%x nextA=%d nextB=%d %s\n", name, ra[:8], rb[:8], a.Tree().NextSlot(), b.Tree().NextSlot(), match)
+	}
+	third := len(keys) / 3
+	apply("overwrite", func(t *qmdb.Tree) {
+		for i := 0; i < third; i++ {
+			t.Set(keys[i], []byte{0xde, 0xad, byte(i), byte(i >> 8)})
+		}
+	})
+	apply("delete", func(t *qmdb.Tree) {
+		for i := third; i < 2*third; i++ {
+			t.Delete(keys[i])
+		}
+	})
+	apply("insert", func(t *qmdb.Tree) {
+		for i := 0; i < 500; i++ {
+			var kh qmdb.Hash
+			kh[0], kh[1], kh[2] = 0xAB, byte(i), byte(i>>8)
+			t.Set(kh, []byte{0xbe, 0xef, byte(i)})
+		}
+	})
+}
+
+func be8p(v uint64) []byte {
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], v)
+	return b[:]
 }
 
 // diffQMDB compares the persisted QMDB positional layout of two stores. The

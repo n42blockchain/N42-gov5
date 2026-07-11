@@ -1568,6 +1568,23 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		// compute a shifted root. The miner peels on its own path — this covers
 		// the import path racing ahead of it.
 		bc.PeelDanglingQMDBAppends()
+		// Pre-execution invariant: the live tree must BE the parent's
+		// post-state. Any tree/marker discontinuity (observed live: a store
+		// rewound by an unwind while the marker claimed blocks the tree never
+		// held) would otherwise execute on the wrong base and produce a root
+		// the cluster rejects — silently before root verification existed,
+		// loudly-but-wastefully after. Realign the marker to the tree and
+		// future-queue the block; catch-up then replays forward from the
+		// tree's true height.
+		if qerr := bc.ensureQMDBTreeAtParent(blk); qerr != nil {
+			log.Warn("QMDB tree/marker discontinuity before execution; realigned and queueing",
+				"number", blockNumber.Uint64(), "err", qerr)
+			if aerr := bc.AddFutureBlock(blk); aerr != nil {
+				return it.index, aerr
+			}
+			stats.queued++
+			continue
+		}
 		ibs, nopay, err := evmRecord(bc.ctx, bc.ChainDB, blockNumber.Uint64(), func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error) {
 			getHeader := func(hash types.Hash, number uint64) *block.Header {
 				return rawdb.ReadHeader(tx, hash, number)
@@ -2155,6 +2172,53 @@ func (bc *BlockChain) AlignAppliedBranch(childNum uint64, parentHash types.Hash)
 // revertUncommittedQMDBAppends — same mechanism, caller-facing entry).
 func (bc *BlockChain) PeelDanglingQMDBAppends() {
 	bc.revertUncommittedQMDBAppends(0)
+}
+
+// ensureQMDBTreeAtParent enforces the pre-execution invariant that the live
+// QMDB tree's root equals the incoming block's PARENT header root — i.e. the
+// world state actually is the state the block builds on. On a mismatch it
+// realigns the applied marker to the height whose header root the tree DOES
+// match (walking the parent lineage down through the undo window), so the
+// regular catch-up/future-queue machinery replays forward from the tree's
+// true position instead of executing on a wrong base. Returns nil when
+// aligned (or QMDB inactive / parent unknown — later checks own those).
+func (bc *BlockChain) ensureQMDBTreeAtParent(blk block.IBlock) error {
+	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil {
+		return nil
+	}
+	parent, err := bc.GetHeaderByHash(blk.ParentHash())
+	if err != nil || parent == nil {
+		return nil // unknown ancestor is handled by the normal import path
+	}
+	pHdr, ok := parent.(*block.Header)
+	if !ok {
+		return nil
+	}
+	treeRoot := bc.qmdbRootComputer.Root()
+	if treeRoot == pHdr.Root {
+		return nil
+	}
+	// Walk down from the parent through the undo window looking for the
+	// header whose root the tree matches; realign the marker there.
+	cur := pHdr
+	for depth := 0; depth < 256 && cur != nil; depth++ {
+		if treeRoot == cur.Root {
+			if werr := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+				return rawdb.WriteQMDBApplied(tx, cur.Number.Uint64(), cur.Hash())
+			}); werr != nil {
+				return fmt.Errorf("tree at %d/%x but marker realign failed: %w", cur.Number.Uint64(), cur.Hash().Bytes()[:8], werr)
+			}
+			return fmt.Errorf("tree root %x matches header %d, not the incoming parent %d — marker realigned",
+				treeRoot[:8], cur.Number.Uint64(), pHdr.Number.Uint64())
+		}
+		p, perr := bc.GetHeaderByHash(cur.ParentHash)
+		if perr != nil || p == nil {
+			break
+		}
+		cur, _ = p.(*block.Header)
+	}
+	return fmt.Errorf("tree root %x matches no header within the undo window below parent %d/%x",
+		treeRoot[:8], pHdr.Number.Uint64(), pHdr.Root[:8])
 }
 
 func (bc *BlockChain) revertUncommittedQMDBAppends(blockNum uint64) {
