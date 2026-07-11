@@ -429,7 +429,17 @@ func (bc *BlockChain) verifyAppliedStateOnStartup() {
 				"treeRoot", fmt.Sprintf("%x", treeRoot[:8]))
 			return rawdb.WriteQMDBApplied(tx, appliedNum-1, hdr.ParentHash)
 		}
-		log.Error("applied marker inconsistent with the QMDB tree beyond one block — manual attention needed",
+		// Root cause found (qs-canon-probe -qmdbroot/-qmdbdiff): failed-block
+		// executions used to leave their appends on the live tree (no undo row
+		// ever persisted → unrevertable), and the mid-run recovery reload kept
+		// a stale in-RAM index — both fixed (insertChain peel +
+		// QMDBRootComputer.LoadFrom index rebuild). Stores that diverged
+		// BEFORE those fixes carry the divergence baked into the persisted
+		// layout, so this line keeps firing on them after every restart; it is
+		// historical damage, not fresh. Chain validity is still enforced by
+		// per-block execution (ValidateState). A re-replay/resync of the
+		// store is the only way to clear it.
+		log.Warn("applied marker does not match the reloaded QMDB tree root (pre-fix divergence baked into this store)",
 			"marker", appliedNum, "markerRoot", fmt.Sprintf("%x", hdr.Root[:8]),
 			"treeRoot", fmt.Sprintf("%x", treeRoot[:8]))
 		return nil
@@ -1580,7 +1590,14 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				receipts, nopay, logs, usedGas, err = bc.process.Process(concreteBlock, ibs, reader, writer, blockHashFunc)
 			}
 			if err != nil {
-				bc.reportBlock(blk, receipts, err)
+				// A nonce-too-high gap is a RETRYABLE ordering condition (the
+				// block ran ahead of the executed state — out-of-order direct
+				// push, or a prefix block still in the future queue), not a
+				// bad block; the outer loop queues it. Everything else is
+				// reported.
+				if !strings.Contains(err.Error(), "nonce too high") {
+					bc.reportBlock(blk, receipts, err)
+				}
 				return nil, err
 			}
 			ptime := time.Since(pstart)
@@ -1597,6 +1614,28 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			return nopay, nil
 		})
 		if err != nil {
+			// The execution tx above rolled back, but the live QMDB tree is
+			// NOT transactional: if execution got as far as ComputeRoot (a
+			// ValidateState root mismatch always does), the failed block's
+			// appends are already on the tree, undo row never persisted —
+			// they could never be unwound and every later root would be
+			// silently shifted (observed live as disk/tree/cluster
+			// divergence). Peel them off with the in-memory undo record.
+			bc.revertUncommittedQMDBAppends(blockNumber.Uint64())
+			if strings.Contains(err.Error(), "nonce too high") {
+				// Execution ran ahead of the applied state (see evmRecord):
+				// queue the block for replay once its prefix lands — the same
+				// treatment as an unknown ancestor. Under transaction load
+				// this fired about once a minute as a transient, self-healing
+				// "BAD BLOCK" that was never actually bad.
+				log.Debug("nonce gap during execution; future-queuing block",
+					"number", blk.Number64().Uint64(), "err", err)
+				if aerr := bc.AddFutureBlock(blk); aerr != nil {
+					return it.index, aerr
+				}
+				stats.queued++
+				continue
+			}
 			return it.index, err
 		}
 
@@ -2093,6 +2132,49 @@ func (bc *BlockChain) AlignAppliedBranch(childNum uint64, parentHash types.Hash)
 	return bc.unwindForReimport(childNum, parentHash, true)
 }
 
+// revertUncommittedQMDBAppends peels a FAILED block's appends off the live
+// QMDB tree. Execution mutates the tree (ComputeRoot appends) inside a tx that
+// then rolls back on validation failure — but the tree itself is not
+// transactional, and the block's undo row is only persisted by
+// writeBlockWithState, so those appends could never be unwound later: every
+// subsequent block would append at shifted slots and the node's roots would
+// silently diverge from the cluster until a restart reload. The undo record
+// captured by that very ComputeRoot is still in RAM — apply it (memory-only:
+// nothing of the block ever reached disk). TakeUndo doubles as the "did
+// execution reach ComputeRoot" test: it is cleared by every successful
+// writeBlockWithState and by this function, so a non-nil record here always
+// belongs to the failed block.
+func (bc *BlockChain) revertUncommittedQMDBAppends(blockNum uint64) {
+	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil {
+		return
+	}
+	undo := bc.qmdbRootComputer.TakeUndo()
+	if undo == nil {
+		return // failed before ComputeRoot — nothing was appended
+	}
+	err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		// The tree's cold getter still points at the rolled-back execution
+		// tx; the boundary-twig reconstruction inside ApplyUndo may fault
+		// leaves through it. Re-point at a live tx for the duration.
+		bc.qmdbRootComputer.SetCold(tx)
+		defer bc.qmdbRootComputer.SetCold(nil)
+		return bc.qmdbRootComputer.Tree().ApplyUndo(undo)
+	})
+	if err == nil {
+		log.Debug("peeled failed block's appends off the QMDB tree", "number", blockNum)
+		return
+	}
+	log.Warn("failed to peel failed block's QMDB appends; reloading tree from disk",
+		"number", blockNum, "err", err)
+	if rerr := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+		bc.qmdbRootComputer.SetCold(tx)
+		defer bc.qmdbRootComputer.SetCold(nil)
+		return bc.qmdbRootComputer.LoadFrom(tx)
+	}); rerr != nil {
+		log.Error("qmdb tree reload after failed block FAILED — state may diverge", "err", rerr)
+	}
+}
+
 func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authorizedSwitch bool) error {
 	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil || n == 0 {
 		return nil
@@ -2128,7 +2210,11 @@ func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authori
 		// nodes).
 		if rerr := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
 			bc.qmdbRootComputer.SetCold(tx)
-			return bc.qmdbRootComputer.LoadFrom(tx)
+			lerr := bc.qmdbRootComputer.LoadFrom(tx)
+			// The tx dies when this callback returns; detach so nothing
+			// faults through it before the next block re-points the getter.
+			bc.qmdbRootComputer.SetCold(nil)
+			return lerr
 		}); rerr != nil {
 			log.Error("qmdb tree reload after failed unwind FAILED — state may diverge", "err", rerr)
 		} else {
