@@ -128,6 +128,10 @@ func main() {
 		runStoRootExport(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "stroot-merge" {
+		runStoRootMerge(os.Args[2:])
+		return
+	}
 	if os.Args[1] == "drop-table" {
 		runDropTable(os.Args[2:])
 		return
