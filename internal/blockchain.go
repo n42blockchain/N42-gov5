@@ -2110,7 +2110,15 @@ func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authori
 		// nonce errors. Reload the tree from disk to restore the invariant —
 		// the inline version of the "until restart" the old comment settled
 		// for.
-		if rerr := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		// Use an Update (not a View): the MDBX write lock serializes this
+		// reload against any concurrent unwind's tree mutations. And refresh
+		// the tree's cold getter FIRST — LoadFrom faults some leaves through
+		// the getter the tree already holds, which at this point is a
+		// long-dead read transaction from the previous block's execution
+		// (observed live: reload panicked on a nil mdbx txn and killed six
+		// nodes).
+		if rerr := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+			bc.qmdbRootComputer.SetCold(tx)
 			return bc.qmdbRootComputer.LoadFrom(tx)
 		}); rerr != nil {
 			log.Error("qmdb tree reload after failed unwind FAILED — state may diverge", "err", rerr)
