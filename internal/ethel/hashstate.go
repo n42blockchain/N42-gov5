@@ -16,9 +16,13 @@ package ethel
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/c2h5oh/datasize"
@@ -206,6 +210,14 @@ func RebuildHashedStateETL(ctx context.Context, tx kv.RwTx, tmpdir string, logge
 	}
 	var stoCount int
 	tProgress = time.Now()
+	// #1: memoize keccak(addr). PlainState "Storage" is sorted by addr(20)+slot,
+	// so consecutive rows share the same 20-byte address. keccak(addr) was being
+	// recomputed once per slot — for an account with N slots that's N identical
+	// hashes. Cache the last addr's hash and reuse it: per-row keccaks drop from
+	// 2 → ~1 (addr hash amortizes to one per account), ~2× on the storage phase.
+	var prevAddr [20]byte
+	var prevHashedAddr [32]byte
+	var hasPrev bool
 	for k, v, err := stoCur.First(); k != nil; k, v, err = stoCur.Next() {
 		if err != nil {
 			stoCur.Close()
@@ -215,7 +227,14 @@ func RebuildHashedStateETL(ctx context.Context, tx kv.RwTx, tmpdir string, logge
 			continue
 		}
 		var compositeKey [64]byte
-		copy(compositeKey[:32], crypto.Keccak256(k[:20]))
+		if hasPrev && bytes.Equal(k[:20], prevAddr[:]) {
+			copy(compositeKey[:32], prevHashedAddr[:])
+		} else {
+			copy(compositeKey[:32], crypto.Keccak256(k[:20]))
+			copy(prevAddr[:], k[:20])
+			copy(prevHashedAddr[:], compositeKey[:32])
+			hasPrev = true
+		}
 		copy(compositeKey[32:64], crypto.Keccak256(k[20:52]))
 		if err := stoColl.Collect(compositeKey[:], v); err != nil {
 			stoCur.Close()
@@ -267,6 +286,562 @@ func RebuildHashedStateETL(ctx context.Context, tx kv.RwTx, tmpdir string, logge
 	return nil
 }
 
+// RebuildHashedStateETLParallel is the parallel variant of RebuildHashedStateETL.
+// It shards the PlainState Account/Storage keyspace by the first address byte
+// into `workers` ranges, scans each range CONCURRENTLY on its own RoTx, keccaks
+// into a per-worker etl.Collector, then merge-loads all collectors into
+// HashedAccounts / HashedStorage in globally-sorted order via etl.LoadMerged.
+//
+// At chain scale the single-RoTx sequential scan (MDBX page read+decompress) is
+// the bottleneck — N per-worker RoTx over disjoint first-byte ranges parallelize
+// the reads (and the keccak) near-linearly. The merge-load runs single-threaded
+// through the passed RwTx after all workers finish. Per-account #1 memoization of
+// keccak(addr) is preserved within each shard (a shard never splits an address,
+// since sharding is by addr's first byte).
+//
+// db supplies the per-worker RoTx (reads see committed PlainState; the uncommitted
+// ClearBucket on the hashed tables in tx is invisible to them — different tables).
+// Falls back to the sequential path when workers<=1 or db==nil.
+func RebuildHashedStateETLParallel(ctx context.Context, db kv.RoDB, tx kv.RwTx, workers int, tmpdir string, logger log2.Logger) error {
+	if workers <= 1 || db == nil {
+		return RebuildHashedStateETL(ctx, tx, tmpdir, logger)
+	}
+	if tmpdir == "" {
+		base := os.Getenv("N42_ETL_TMPDIR")
+		if base != "" {
+			if err := os.MkdirAll(base, 0755); err != nil {
+				return fmt.Errorf("create N42_ETL_TMPDIR=%s: %w", base, err)
+			}
+		}
+		dir, err := os.MkdirTemp(base, "hashed-state-etl-par-*")
+		if err != nil {
+			return fmt.Errorf("mkdir tmp: %w", err)
+		}
+		defer os.RemoveAll(dir)
+		tmpdir = dir
+	}
+	for _, tbl := range []string{kv.HashedAccounts, kv.HashedStorage} {
+		if err := tx.ClearBucket(tbl); err != nil {
+			return fmt.Errorf("clear %s: %w", tbl, err)
+		}
+	}
+
+	emptyCodeHash := crypto.Keccak256Hash(nil)
+	accBufPer := perWorkerBuf("N42_ETL_BUFFER_ACCT_GB", 4, workers, 64*datasize.MB)
+	stoBufPer := perWorkerBuf("N42_ETL_BUFFER_STO_GB", 12, workers, 128*datasize.MB)
+	log.Info("RebuildHashedStateETLParallel: starting",
+		"workers", workers, "acctBufPerMB", uint64(accBufPer/datasize.MB),
+		"stoBufPerMB", uint64(stoBufPer/datasize.MB))
+
+	// scanShard walks [loByte, hiByte) of the first key byte on table `plainTable`,
+	// invoking hash() per row to fill the worker's collector.
+	scanShard := func(plainTable string, loByte, hiByte int, hash func(k, v []byte) error) error {
+		roTx, err := db.BeginRo(ctx)
+		if err != nil {
+			return err
+		}
+		defer roTx.Rollback()
+		cur, err := roTx.Cursor(plainTable)
+		if err != nil {
+			return err
+		}
+		defer cur.Close()
+		seek := []byte{byte(loByte)}
+		for k, v, err := cur.Seek(seek); k != nil; k, v, err = cur.Next() {
+			if err != nil {
+				return err
+			}
+			if int(k[0]) >= hiByte {
+				break
+			}
+			if err := hash(k, v); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	// ---- Accounts: shard by first addr byte, keccak(addr) → HashedAccounts ----
+	t0 := time.Now()
+	accColls := make([]*etl.Collector, workers)
+	var accCounts []int64 = make([]int64, workers)
+	if err := runShards(workers, func(w, lo, hi int) error {
+		accColls[w] = etl.NewCollector(fmt.Sprintf("rehash-acct-%d", w),
+			filepath.Join(tmpdir, fmt.Sprintf("acct-%d", w)),
+			etl.NewSortableBuffer(accBufPer), logger)
+		return scanShard("Account", lo, hi, func(k, v []byte) error {
+			if len(k) != 20 {
+				return nil
+			}
+			var acc account.StateAccount
+			if err := acc.DecodeForStorage(v); err != nil {
+				return fmt.Errorf("decode account: %w", err)
+			}
+			if acc.CodeHash == (types.Hash{}) {
+				acc.CodeHash = emptyCodeHash
+			}
+			accCounts[w]++
+			return accColls[w].Collect(crypto.Keccak256(k), acc.MarshalV2())
+		})
+	}); err != nil {
+		closeColls(accColls)
+		return fmt.Errorf("parallel hash accounts: %w", err)
+	}
+	if err := etl.LoadMerged(tx, kv.HashedAccounts, etl.IdentityLoadFunc, etl.TransformArgs{}, accColls...); err != nil {
+		closeColls(accColls)
+		return fmt.Errorf("load HashedAccounts: %w", err)
+	}
+	closeColls(accColls)
+	log.Info("RebuildHashedStateETLParallel: accounts done",
+		"count", sumInt64(accCounts), "elapsed", time.Since(t0).Truncate(time.Millisecond))
+
+	// ---- Storage: shard by first addr byte, keccak(addr)+keccak(slot) ----
+	tSto := time.Now()
+	stoColls := make([]*etl.Collector, workers)
+	var stoCounts []int64 = make([]int64, workers)
+	if err := runShards(workers, func(w, lo, hi int) error {
+		stoColls[w] = etl.NewCollector(fmt.Sprintf("rehash-sto-%d", w),
+			filepath.Join(tmpdir, fmt.Sprintf("sto-%d", w)),
+			etl.NewSortableBuffer(stoBufPer), logger)
+		// #1 memoize keccak(addr) within this shard (a shard never splits an addr).
+		var prevAddr [20]byte
+		var prevHashedAddr [32]byte
+		var hasPrev bool
+		return scanShard("Storage", lo, hi, func(k, v []byte) error {
+			if len(k) < 52 {
+				return nil
+			}
+			var compositeKey [64]byte
+			if hasPrev && bytes.Equal(k[:20], prevAddr[:]) {
+				copy(compositeKey[:32], prevHashedAddr[:])
+			} else {
+				copy(compositeKey[:32], crypto.Keccak256(k[:20]))
+				copy(prevAddr[:], k[:20])
+				copy(prevHashedAddr[:], compositeKey[:32])
+				hasPrev = true
+			}
+			copy(compositeKey[32:64], crypto.Keccak256(k[20:52]))
+			stoCounts[w]++
+			return stoColls[w].Collect(compositeKey[:], v)
+		})
+	}); err != nil {
+		closeColls(stoColls)
+		return fmt.Errorf("parallel hash storage: %w", err)
+	}
+	if err := etl.LoadMerged(tx, kv.HashedStorage, etl.IdentityLoadFunc, etl.TransformArgs{}, stoColls...); err != nil {
+		closeColls(stoColls)
+		return fmt.Errorf("load HashedStorage: %w", err)
+	}
+	closeColls(stoColls)
+	log.Info("RebuildHashedStateETLParallel done",
+		"accts", sumInt64(accCounts), "sto", sumInt64(stoCounts),
+		"storageElapsed", time.Since(tSto).Truncate(time.Millisecond),
+		"total", time.Since(t0).Truncate(time.Millisecond))
+	return nil
+}
+
+// processByteShards runs `workers` goroutines that pull single-byte shards
+// (first-key-byte b in [0,256)) from a shared work-stealing queue, invoking
+// fn(workerIdx, b) for each. Unlike runShards' fixed equal ranges, this balances
+// SKEWED inputs: a mega-contract whose whole storage falls in one byte shard is
+// bounded to 1/256 of the keyspace while the other workers drain the rest — so
+// the straggler is one heavy byte, not a 16-byte range that happened to contain
+// it. Each worker writes only to its own collector (fn closes over workerIdx),
+// so there is no cross-worker contention.
+func processByteShards(workers int, fn func(w, b int) error) error {
+	var next int64
+	var wg sync.WaitGroup
+	errs := make([]error, workers)
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for {
+				b := int(atomic.AddInt64(&next, 1)) - 1
+				if b >= 256 {
+					return
+				}
+				if err := fn(w, b); err != nil {
+					errs[w] = err
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
+// runShards splits the 0..256 first-byte space into `workers` contiguous ranges
+// and runs fn(workerIdx, loByte, hiByte) concurrently, returning the first error.
+func runShards(workers int, fn func(w, lo, hi int) error) error {
+	var wg sync.WaitGroup
+	errs := make([]error, workers)
+	for w := 0; w < workers; w++ {
+		lo := w * 256 / workers
+		hi := (w + 1) * 256 / workers
+		wg.Add(1)
+		go func(w, lo, hi int) {
+			defer wg.Done()
+			errs[w] = fn(w, lo, hi)
+		}(w, lo, hi)
+	}
+	wg.Wait()
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
+func perWorkerBuf(env string, defGB uint64, workers int, floor datasize.ByteSize) datasize.ByteSize {
+	per := (envBufSize(env, defGB) * datasize.GB) / datasize.ByteSize(workers)
+	if per < floor {
+		per = floor
+	}
+	return per
+}
+
+func closeColls(colls []*etl.Collector) {
+	for _, c := range colls {
+		if c != nil {
+			c.Close()
+		}
+	}
+}
+
+func sumInt64(xs []int64) int64 {
+	var s int64
+	for _, x := range xs {
+		s += x
+	}
+	return s
+}
+
+// hashPlainStateToCollectors parallel-hashes PlainState Account/Storage into
+// `workers` per-worker etl.Collectors (work-stealing 256 byte shards, keccak(addr)
+// memoized per shard). Returns the flushed-but-open collectors (caller closes);
+// closes them itself on error. Shared by the streaming root builders.
+func hashPlainStateToCollectors(ctx context.Context, db kv.RoDB, workers int, tmpdir string, accBufPer, stoBufPer datasize.ByteSize, logger log2.Logger) ([]*etl.Collector, []*etl.Collector, error) {
+	emptyCodeHash := crypto.Keccak256Hash(nil)
+	scanShard := func(plainTable string, lo, hi int, hash func(k, v []byte) error) error {
+		roTx, err := db.BeginRo(ctx)
+		if err != nil {
+			return err
+		}
+		defer roTx.Rollback()
+		cur, err := roTx.Cursor(plainTable)
+		if err != nil {
+			return err
+		}
+		defer cur.Close()
+		for k, v, err := cur.Seek([]byte{byte(lo)}); k != nil; k, v, err = cur.Next() {
+			if err != nil {
+				return err
+			}
+			if int(k[0]) >= hi {
+				break
+			}
+			if err := hash(k, v); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	accColls := make([]*etl.Collector, workers)
+	stoColls := make([]*etl.Collector, workers)
+	for w := 0; w < workers; w++ {
+		accColls[w] = etl.NewCollector(fmt.Sprintf("hash-acct-%d", w),
+			filepath.Join(tmpdir, fmt.Sprintf("acct-%d", w)), etl.NewSortableBuffer(accBufPer), logger)
+		stoColls[w] = etl.NewCollector(fmt.Sprintf("hash-sto-%d", w),
+			filepath.Join(tmpdir, fmt.Sprintf("sto-%d", w)), etl.NewSortableBuffer(stoBufPer), logger)
+	}
+	if err := processByteShards(workers, func(w, b int) error {
+		return scanShard("Account", b, b+1, func(k, v []byte) error {
+			if len(k) != 20 {
+				return nil
+			}
+			var acc account.StateAccount
+			if err := acc.DecodeForStorage(v); err != nil {
+				return fmt.Errorf("decode account: %w", err)
+			}
+			if acc.CodeHash == (types.Hash{}) {
+				acc.CodeHash = emptyCodeHash
+			}
+			return accColls[w].Collect(crypto.Keccak256(k), acc.MarshalV2())
+		})
+	}); err != nil {
+		closeColls(accColls)
+		closeColls(stoColls)
+		return nil, nil, fmt.Errorf("parallel hash accounts: %w", err)
+	}
+	if err := processByteShards(workers, func(w, b int) error {
+		var prevAddr [20]byte
+		var prevHashedAddr [32]byte
+		var hasPrev bool
+		return scanShard("Storage", b, b+1, func(k, v []byte) error {
+			if len(k) < 52 {
+				return nil
+			}
+			var compositeKey [64]byte
+			if hasPrev && bytes.Equal(k[:20], prevAddr[:]) {
+				copy(compositeKey[:32], prevHashedAddr[:])
+			} else {
+				copy(compositeKey[:32], crypto.Keccak256(k[:20]))
+				copy(prevAddr[:], k[:20])
+				copy(prevHashedAddr[:], compositeKey[:32])
+				hasPrev = true
+			}
+			copy(compositeKey[32:64], crypto.Keccak256(k[20:52]))
+			return stoColls[w].Collect(compositeKey[:], v)
+		})
+	}); err != nil {
+		closeColls(accColls)
+		closeColls(stoColls)
+		return nil, nil, fmt.Errorf("parallel hash storage: %w", err)
+	}
+	return accColls, stoColls, nil
+}
+
+// WARNING (2026-06-14): correct on unit fixtures but NOT production-ready — at real
+// 2B-leaf scale the demux pipeline below serializes and balloons RAM to ~104 GB
+// (two global-sorted demux goroutines feeding 16 lockstep consumers + ungoverned
+// per-leaf copies). Needs a redesign to per-nibble PARTITIONED collectors (built
+// during the hash phase) so the 16 subtrie builds are genuinely independent. Kept
+// for the proven MPT mechanism (cutoff-1 subtrie + CombineNibbleSubtries); callers
+// should use StreamingFullStateRoot until this is reworked.
+//
+// StreamingFullStateRootC2 is StreamingFullStateRoot with a PARALLEL trie build.
+// After the parallel hash it demuxes the two globally-sorted hashed-leaf streams by
+// top account nibble into 16 INDEPENDENT subtrie builds (CalcTrieRootStreamingCutoff
+// cutoff=1) run concurrently, then folds the 16 subtrie hashes into the root via
+// CombineNibbleSubtries. This attacks the serial GenStructStep trie-build floor that
+// StreamingFullStateRoot still pays (~40min at 25M scale → ~subtrie-parallel). A
+// storage composite key's first nibble == its account's hashed-key first nibble
+// (both keccak(addr)[0]), so demuxing by first nibble keeps each account together
+// with its storage. Root is byte-identical to FullStateRootVerify (pinned by tests).
+// Requires the top node to be a clean 16-branch (no top extension) — true for any
+// non-trivial mainnet state; for tiny/empty states use StreamingFullStateRoot.
+func StreamingFullStateRootC2(ctx context.Context, db kv.RoDB, workers int, tmpdir string, logger log2.Logger) (types.Hash, error) {
+	if workers < 1 {
+		workers = 1
+	}
+	if tmpdir == "" {
+		base := os.Getenv("N42_ETL_TMPDIR")
+		if base != "" {
+			if err := os.MkdirAll(base, 0755); err != nil {
+				return types.Hash{}, fmt.Errorf("create N42_ETL_TMPDIR=%s: %w", base, err)
+			}
+		}
+		dir, err := os.MkdirTemp(base, "stream-root-c2-*")
+		if err != nil {
+			return types.Hash{}, fmt.Errorf("mkdir tmp: %w", err)
+		}
+		defer os.RemoveAll(dir)
+		tmpdir = dir
+	}
+	accBufPer := perWorkerBuf("N42_ETL_BUFFER_ACCT_GB", 4, workers, 64*datasize.MB)
+	stoBufPer := perWorkerBuf("N42_ETL_BUFFER_STO_GB", 12, workers, 128*datasize.MB)
+
+	t0 := time.Now()
+	accColls, stoColls, err := hashPlainStateToCollectors(ctx, db, workers, tmpdir, accBufPer, stoBufPer, logger)
+	if err != nil {
+		return types.Hash{}, err
+	}
+	defer closeColls(accColls)
+	defer closeColls(stoColls)
+	tHash := time.Since(t0)
+
+	sctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type kvCopy struct{ k, v []byte }
+	var accNib, stoNib [16]chan kvCopy
+	for i := 0; i < 16; i++ {
+		accNib[i] = make(chan kvCopy, 256)
+		stoNib[i] = make(chan kvCopy, 256)
+	}
+	var accErr, stoErr error
+	demux := func(chans *[16]chan kvCopy, errp *error, colls []*etl.Collector) {
+		*errp = etl.StreamMerged(func(k, v []byte) error {
+			sel := kvCopy{append([]byte(nil), k...), append([]byte(nil), v...)}
+			select {
+			case (*chans)[k[0]>>4] <- sel:
+				return nil
+			case <-sctx.Done():
+				return sctx.Err()
+			}
+		}, colls...)
+		for i := 0; i < 16; i++ {
+			close((*chans)[i])
+		}
+	}
+	go demux(&accNib, &accErr, accColls)
+	go demux(&stoNib, &stoErr, stoColls)
+
+	var subs [16][]byte
+	var subErrs [16]error
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			accNext := func() ([]byte, []byte, bool, error) {
+				p, ok := <-accNib[i]
+				if !ok {
+					return nil, nil, false, nil
+				}
+				return p.k, p.v, true, nil
+			}
+			stoNext := func() ([]byte, []byte, bool, error) {
+				p, ok := <-stoNib[i]
+				if !ok {
+					return nil, nil, false, nil
+				}
+				return p.k, p.v, true, nil
+			}
+			loader := trie.NewFlatDBTrieLoader(fmt.Sprintf("c2-nib-%x", i), trie.NewRetainList(0), nil, nil, false)
+			h, e := loader.CalcTrieRootStreamingCutoff(accNext, stoNext, 1)
+			if e != nil {
+				subErrs[i] = e
+				return
+			}
+			if h != trie.EmptyRoot { // empty nibble → leave subs[i] nil (no branch child)
+				hb := make([]byte, 32)
+				copy(hb, h[:])
+				subs[i] = hb
+			}
+		}(i)
+	}
+	wg.Wait()
+	cancel()
+	for i := 0; i < 16; i++ {
+		if subErrs[i] != nil {
+			return types.Hash{}, fmt.Errorf("nibble %x subtrie: %w", i, subErrs[i])
+		}
+	}
+	if accErr != nil && !errors.Is(accErr, context.Canceled) {
+		return types.Hash{}, fmt.Errorf("account stream: %w", accErr)
+	}
+	if stoErr != nil && !errors.Is(stoErr, context.Canceled) {
+		return types.Hash{}, fmt.Errorf("storage stream: %w", stoErr)
+	}
+	root, err := trie.CombineNibbleSubtries(subs)
+	if err != nil {
+		return types.Hash{}, fmt.Errorf("combine subtries: %w", err)
+	}
+	log.Info("StreamingFullStateRootC2 done", "root", root.Hex(), "workers", workers,
+		"hashElapsed", tHash.Truncate(time.Millisecond), "total", time.Since(t0).Truncate(time.Millisecond))
+	return root, nil
+}
+
+// StreamingFullStateRoot computes the full ETH state root WITHOUT materializing
+// HashedAccounts/HashedStorage into MDBX. It parallel-hashes PlainState into
+// per-worker etl.Collectors (sharded by first addr byte, #1 keccak(addr)
+// memoization), then merge-streams the two sorted leaf sets directly into a
+// full-rebuild FlatDBTrieLoader via CalcTrieRootStreaming — fusing the sort with
+// the root build. This skips the ~50min single-threaded HashedStorage MDBX load
+// that RebuildHashedStateETL(Parallel)+CalcTrieRoot pays (the hashed tables are
+// transient for verification anyway). Root is byte-identical to FullStateRootVerify
+// (pinned by TestStreamingFullStateRootMatchesFlatDB).
+//
+// db supplies per-worker RoTx over committed PlainState; reads only. workers<=1
+// runs a single shard. Returns the state root; does not write to the DB.
+func StreamingFullStateRoot(ctx context.Context, db kv.RoDB, workers int, tmpdir string, logger log2.Logger) (types.Hash, error) {
+	if workers < 1 {
+		workers = 1
+	}
+	if tmpdir == "" {
+		base := os.Getenv("N42_ETL_TMPDIR")
+		if base != "" {
+			if err := os.MkdirAll(base, 0755); err != nil {
+				return types.Hash{}, fmt.Errorf("create N42_ETL_TMPDIR=%s: %w", base, err)
+			}
+		}
+		dir, err := os.MkdirTemp(base, "stream-root-etl-*")
+		if err != nil {
+			return types.Hash{}, fmt.Errorf("mkdir tmp: %w", err)
+		}
+		defer os.RemoveAll(dir)
+		tmpdir = dir
+	}
+
+	accBufPer := perWorkerBuf("N42_ETL_BUFFER_ACCT_GB", 4, workers, 64*datasize.MB)
+	stoBufPer := perWorkerBuf("N42_ETL_BUFFER_STO_GB", 12, workers, 128*datasize.MB)
+
+	t0 := time.Now()
+	accColls, stoColls, err := hashPlainStateToCollectors(ctx, db, workers, tmpdir, accBufPer, stoBufPer, logger)
+	if err != nil {
+		return types.Hash{}, err
+	}
+	defer closeColls(accColls)
+	defer closeColls(stoColls)
+	log.Info("StreamingFullStateRoot: hashed, streaming into trie builder",
+		"workers", workers, "hashElapsed", time.Since(t0).Truncate(time.Millisecond))
+
+	// Two goroutines turn the per-worker collectors into globally-sorted pull
+	// streams; the merge-walk in CalcTrieRootStreaming consumes them.
+	sctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type kvCopy struct{ k, v []byte }
+	accCh := make(chan kvCopy, 1024)
+	stoCh := make(chan kvCopy, 1024)
+	var accErr, stoErr error
+	pump := func(ch chan kvCopy, errp *error, colls []*etl.Collector) {
+		*errp = etl.StreamMerged(func(k, v []byte) error {
+			sel := kvCopy{append([]byte(nil), k...), append([]byte(nil), v...)}
+			select {
+			case ch <- sel:
+				return nil
+			case <-sctx.Done():
+				return sctx.Err()
+			}
+		}, colls...)
+		close(ch)
+	}
+	go pump(accCh, &accErr, accColls)
+	go pump(stoCh, &stoErr, stoColls)
+
+	accNext := func() ([]byte, []byte, bool, error) {
+		p, ok := <-accCh
+		if !ok {
+			return nil, nil, false, accErr
+		}
+		return p.k, p.v, true, nil
+	}
+	stoNext := func() ([]byte, []byte, bool, error) {
+		p, ok := <-stoCh
+		if !ok {
+			return nil, nil, false, stoErr
+		}
+		return p.k, p.v, true, nil
+	}
+
+	loader := trie.NewFlatDBTrieLoader("stream-verify", trie.NewRetainList(0), nil, nil, false)
+	root, err := loader.CalcTrieRootStreaming(accNext, stoNext)
+	cancel()
+	if err != nil {
+		return types.Hash{}, fmt.Errorf("CalcTrieRootStreaming: %w", err)
+	}
+	// Surface a producer error the consumer didn't observe (e.g. a provider Wait
+	// failed). context.Canceled is the normal teardown signal (cancel() above when
+	// a stream had unconsumed leftovers) — not a real error.
+	if accErr != nil && !errors.Is(accErr, context.Canceled) {
+		return types.Hash{}, fmt.Errorf("account stream: %w", accErr)
+	}
+	if stoErr != nil && !errors.Is(stoErr, context.Canceled) {
+		return types.Hash{}, fmt.Errorf("storage stream: %w", stoErr)
+	}
+	log.Info("StreamingFullStateRoot done", "root", root.Hex(),
+		"total", time.Since(t0).Truncate(time.Millisecond))
+	return root, nil
+}
+
 // FullStateRootVerify does a complete re-hash and MPT root computation.
 // It clears HashedAccounts/HashedStorage/TrieOfAccounts/TrieOfStorage,
 // re-hashes everything from Account/Storage, then runs CalcTrieRoot.
@@ -275,16 +850,18 @@ func RebuildHashedStateETL(ctx context.Context, tx kv.RwTx, tmpdir string, logge
 // Uses RebuildHashedStateETL (etl.Collector + sorted bulk-load) for the
 // re-hash phase — orders of magnitude faster than the legacy random-Put
 // path on 10M+ block states.
-func FullStateRootVerify(tx kv.RwTx) (types.Hash, error) {
+// db + workers enable the parallel re-hash (per-worker RoTx). Pass db=nil or
+// workers<=1 for the sequential path (RebuildHashedStateETLParallel falls back).
+func FullStateRootVerify(db kv.RoDB, tx kv.RwTx, workers int) (types.Hash, error) {
 	// Clear trie tables here; HashedAccounts/HashedStorage are cleared
-	// inside RebuildHashedStateETL.
+	// inside the re-hash.
 	for _, tbl := range []string{kv.TrieOfAccounts, kv.TrieOfStorage} {
 		if err := tx.ClearBucket(tbl); err != nil {
 			return types.Hash{}, fmt.Errorf("clear %s: %w", tbl, err)
 		}
 	}
 
-	if err := RebuildHashedStateETL(context.Background(), tx, "", log2.New()); err != nil {
+	if err := RebuildHashedStateETLParallel(context.Background(), db, tx, workers, "", log2.New()); err != nil {
 		return types.Hash{}, fmt.Errorf("rebuild hashed state: %w", err)
 	}
 
