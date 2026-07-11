@@ -80,7 +80,7 @@ func (v *JournalVerifier) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		genRoot, err := FullStateRootVerify(genTx)
+		genRoot, err := FullStateRootVerify(nil, genTx, 1)
 		genTx.Rollback()
 		if err != nil {
 			log.Error("Genesis root computation failed", "err", err)
@@ -220,7 +220,7 @@ func (v *JournalVerifier) Run(ctx context.Context) error {
 				return err
 			}
 
-			computedRoot, err := FullStateRootVerify(tx)
+			computedRoot, err := FullStateRootVerify(nil, tx, 1)
 			if err != nil {
 				return fmt.Errorf("block %d: compute root: %w", blockNum, err)
 			}
@@ -381,7 +381,7 @@ func (v *JournalVerifier) revertTest(ctx context.Context, endBlock uint64) error
 			if err != nil {
 				return err
 			}
-			computedRoot, err := FullStateRootVerify(tx)
+			computedRoot, err := FullStateRootVerify(nil, tx, 1)
 			tx.Rollback()
 			if err != nil {
 				return fmt.Errorf("revert verify %d: %w", revertFrom, err)

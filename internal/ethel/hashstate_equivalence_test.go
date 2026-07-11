@@ -257,6 +257,153 @@ func runEquivalence(t *testing.T, seed func(*testing.T, kv.RwTx)) {
 	}
 }
 
+// runParallelEquivalence pins that RebuildHashedStateETLParallel (per-worker
+// RoTx sharded by first addr byte + LoadMerged) produces byte-identical
+// HashedAccounts/HashedStorage as the sequential RebuildHashedStateETL — i.e.
+// the #3 parallelization and the keccak(addr) memoization (#1) change nothing
+// about the result, only the speed.
+func runParallelEquivalence(t *testing.T, seed func(*testing.T, kv.RwTx), workers int) {
+	ctx := context.Background()
+
+	seqDB := memdb.New(t.TempDir())
+	defer seqDB.Close()
+	{
+		tx, err := seqDB.BeginRw(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seed(t, tx)
+		if err := RebuildHashedStateETL(ctx, tx, t.TempDir(), nil); err != nil {
+			t.Fatalf("RebuildHashedStateETL (sequential): %v", err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	parDB := memdb.New(t.TempDir())
+	defer parDB.Close()
+	// Commit PlainState first so the per-worker RoTx see it as committed state.
+	{
+		tx, err := parDB.BeginRw(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seed(t, tx)
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	{
+		tx, err := parDB.BeginRw(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := RebuildHashedStateETLParallel(ctx, parDB, tx, workers, t.TempDir(), nil); err != nil {
+			t.Fatalf("RebuildHashedStateETLParallel (workers=%d): %v", workers, err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rotxS, _ := seqDB.BeginRo(ctx)
+	defer rotxS.Rollback()
+	rotxP, _ := parDB.BeginRo(ctx)
+	defer rotxP.Rollback()
+	for _, table := range []string{kv.HashedAccounts, kv.HashedStorage} {
+		s := dumpTable(t, rotxS, table)
+		p := dumpTable(t, rotxP, table)
+		if len(s) != len(p) {
+			t.Errorf("%s: row count mismatch sequential=%d parallel=%d", table, len(s), len(p))
+			continue
+		}
+		for i := range s {
+			if !bytes.Equal(s[i][0], p[i][0]) {
+				t.Errorf("%s row %d KEY mismatch seq=%x par=%x", table, i, s[i][0], p[i][0])
+			}
+			if !bytes.Equal(s[i][1], p[i][1]) {
+				t.Errorf("%s row %d VAL mismatch key=%x seq=%x par=%x", table, i, s[i][0], s[i][1], p[i][1])
+			}
+		}
+	}
+}
+
+// runStreamingEquivalence pins that StreamingFullStateRoot (parallel hash →
+// CalcTrieRootStreaming, NO HashedAccounts/HashedStorage MDBX materialization)
+// computes the SAME state root as the MDBX-load + FlatDBTrieLoader.CalcTrieRoot
+// path (FullStateRootVerify). If these ever diverge, the streaming root is wrong
+// → a false verification, so this is the gate that lets us trust the fused path.
+func runStreamingEquivalence(t *testing.T, seed func(*testing.T, kv.RwTx), workers int) {
+	ctx := context.Background()
+
+	refDB := memdb.New(t.TempDir())
+	defer refDB.Close()
+	var refRoot types.Hash
+	{
+		tx, err := refDB.BeginRw(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seed(t, tx)
+		r, err := FullStateRootVerify(nil, tx, 1) // MDBX-load + FlatDBTrieLoader
+		if err != nil {
+			t.Fatalf("FullStateRootVerify: %v", err)
+		}
+		refRoot = r
+		tx.Rollback()
+	}
+
+	strmDB := memdb.New(t.TempDir())
+	defer strmDB.Close()
+	{
+		tx, err := strmDB.BeginRw(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seed(t, tx)
+		if err := tx.Commit(); err != nil { // commit so per-worker RoTx see PlainState
+			t.Fatal(err)
+		}
+	}
+	root, err := StreamingFullStateRoot(ctx, strmDB, workers, t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("StreamingFullStateRoot (workers=%d): %v", workers, err)
+	}
+	if root != refRoot {
+		t.Errorf("streaming root != FlatDBTrieLoader root:\n  FlatDB    = %s\n  streaming = %s",
+			refRoot.Hex(), root.Hex())
+	}
+}
+
+func TestStreamingFullStateRootMatchesFlatDB(t *testing.T) {
+	runStreamingEquivalence(t, seedPlainStateLarge, 4)
+}
+
+func TestStreamingFullStateRootMatchesFlatDB_8w(t *testing.T) {
+	runStreamingEquivalence(t, seedPlainStateLarge, 8)
+}
+
+func TestStreamingFullStateRootMatchesFlatDB_1w(t *testing.T) {
+	runStreamingEquivalence(t, seedPlainStateLarge, 1)
+}
+
+func TestStreamingFullStateRootMatchesFlatDB_Small(t *testing.T) {
+	runStreamingEquivalence(t, seedPlainState, 4)
+}
+
+func TestRebuildHashedStateETLParallelMatchesSequential(t *testing.T) {
+	runParallelEquivalence(t, seedPlainStateLarge, 4)
+}
+
+func TestRebuildHashedStateETLParallelMatchesSequential_8w(t *testing.T) {
+	runParallelEquivalence(t, seedPlainStateLarge, 8)
+}
+
+func TestRebuildHashedStateETLParallelMatchesSequential_Small(t *testing.T) {
+	runParallelEquivalence(t, seedPlainState, 4)
+}
+
 func TestRebuildHashedStateETLMatchesLegacy(t *testing.T) {
 	runEquivalence(t, seedPlainState)
 }
@@ -290,7 +437,7 @@ func TestVerifyStateRoot_vs_FullStateRootVerify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifyStateRoot (in-memory MPT): %v", err)
 	}
-	rootETL, err := FullStateRootVerify(tx)
+	rootETL, err := FullStateRootVerify(nil, tx, 1)
 	if err != nil {
 		t.Fatalf("FullStateRootVerify (streaming MPT): %v", err)
 	}

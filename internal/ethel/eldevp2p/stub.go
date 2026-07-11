@@ -10,6 +10,7 @@ import (
 	"errors"
 
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -22,6 +23,9 @@ type Config struct {
 	MaxPeers        int
 	BootNodes       []string
 	HashedCanonical bool
+	// SnapshotCold mirrors service.go's snapshot-direct cold reader; unused
+	// by the stub but required so cmd/eth-el compiles without -tags n42el.
+	SnapshotCold state.StateReader
 }
 
 func DefaultConfig() Config {

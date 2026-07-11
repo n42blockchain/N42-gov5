@@ -246,7 +246,7 @@ func RebuildStateWith(ctx context.Context, db kv.RwDB, ancientDir string, endBlo
 		// past ~10M blocks (32M+ accounts). FullStateRootVerify clears
 		// + repopulates HashedAccounts/HashedStorage and TrieOf* via
 		// streaming, peak ~5-10 GB regardless of state size.
-		root, err := FullStateRootVerify(tx2)
+		root, err := FullStateRootVerify(nil, tx2, 1)
 		if err != nil {
 			tx2.Rollback()
 			return fmt.Errorf("calc state root at block %d: %w", blockNum, err)
@@ -778,7 +778,7 @@ func deleteBatch(ctx context.Context, db kv.RwDB, table string, limit int) (int,
 }
 
 // VerifyRebuildRoot verifies rebuilt PlainState against header state root.
-func VerifyRebuildRoot(ctx context.Context, db kv.RwDB, inputFreezer *freezer.Freezer, endBlock uint64) {
+func VerifyRebuildRoot(ctx context.Context, db kv.RwDB, inputFreezer *freezer.Freezer, endBlock uint64, workers int) {
 	if endBlock == 0 {
 		return
 	}
@@ -797,15 +797,21 @@ func VerifyRebuildRoot(ctx context.Context, db kv.RwDB, inputFreezer *freezer.Fr
 		return
 	}
 
-	tx2, _ := db.BeginRw(ctx)
-	// Streaming MPT verify (FullStateRootVerify → FlatDBTrieLoader),
-	// not in-memory MPT (VerifyStateRoot). The in-memory path OOMs at
-	// 10M+ blocks per the comment in executor.go:verifyBlockCap; this
-	// path is bounded ~5-10 GB regardless of state size.
-	root, err := FullStateRootVerify(tx2)
-	tx2.Rollback()
+	// Fused streaming verify: parallel-hash PlainState (work-stealing byte shards,
+	// keccak(addr) memoized) → merge-stream the sorted hashed leaves DIRECTLY into a
+	// single serial trie builder, skipping the ~75min HashedAccounts/HashedStorage
+	// MDBX load. Read-only — nothing written/committed. Byte-identical root to
+	// FullStateRootVerify (pinned by tests). ~40min total at 25M scale (vs 3h36m).
+	//
+	// NOTE: StreamingFullStateRootC2 (16-way parallel subtrie) is correct on unit
+	// fixtures but DEADLOCKS / blows memory to ~104 GB at real 2B-leaf scale — its
+	// two global-sorted demux goroutines feeding 16 lockstep consumers serialize and
+	// pile per-leaf copies (verify-root sets no GOMEMLIMIT). It needs a redesign
+	// (per-nibble partitioned collectors so the 16 builds are truly independent)
+	// before it can replace this path.
+	root, err := StreamingFullStateRoot(ctx, db, workers, "", nil)
 	if err != nil {
-		log.Warn("FullStateRootVerify failed", "err", err)
+		log.Warn("StreamingFullStateRoot failed", "err", err)
 		return
 	}
 	if root == header.Root {
