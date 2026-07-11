@@ -808,30 +808,13 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 	if retryCommit {
 		s.pendingCommit = types.Hash{}
 	}
-	// Dedup the engine notification: skip if we already notified this hash (unless
-	// this is a commit retry, which must always run). The engine keeps its own
-	// imported-block memory across views, so one notify per hash is enough to let
-	// the import-gated prepare vote fire; re-notifying on every re-gossip only
-	// spins the engine mutex and starves the vote path.
-	alreadyNotified := false
-	if hash != (types.Hash{}) {
-		if _, ok := s.notifiedImports[hash]; ok {
-			alreadyNotified = true
-		} else {
-			s.notifiedImports[hash] = struct{}{}
-			s.notifiedFIFO = append(s.notifiedFIFO, hash)
-			if len(s.notifiedFIFO) > maxNotifiedImports {
-				oldest := s.notifiedFIFO[0]
-				s.notifiedFIFO = s.notifiedFIFO[1:]
-				delete(s.notifiedImports, oldest)
-			}
-		}
-	}
 	s.pendingMu.Unlock()
 
 	// A commit that was deferred because this block hadn't arrived: finish it
 	// now, so the canonical marker and head advance on every node, not just the
-	// ones that held the block at commit time.
+	// ones that held the block at commit time. (Not applied-gated: the block
+	// already holds a CommitQC — canonicalizing it needs its body, not its
+	// local execution.)
 	if retryCommit && s.blockProducer != nil {
 		if err := s.blockProducer.CommitToCanonical(hash); err != nil {
 			log.Debug("hotstuff: deferred commit-to-canonical retry failed", "hash", hash, "err", err)
@@ -839,6 +822,63 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 			log.Info("hotstuff: deferred commit-to-canonical completed", "hash", hash)
 		}
 	}
+
+	// Best-effort parent lookup for the engine's extends-check (vote must only
+	// certify a block that extends its proposal's JustifyQC block). Zero when
+	// unavailable — the check fails open.
+	var parentHash types.Hash
+	var headerExtra []byte
+	var blockNum uint64
+	haveHeader := false
+	if s.db != nil {
+		_ = s.db.View(s.ctx, func(tx kv.Tx) error {
+			if hdr, herr := rawdb.ReadHeaderByHash(tx, hash); herr == nil && hdr != nil {
+				parentHash = hdr.ParentHash
+				headerExtra = hdr.Extra
+				blockNum = hdr.Number.Uint64()
+				haveHeader = true
+			}
+			return nil
+		})
+	}
+	// Applied-evidence gate: the engine treats EventBlockImported as "this
+	// node EXECUTED the block", and the import-gated vote certifies exactly
+	// that. Callers historically fired it on body arrival or a nil insert
+	// error — a future-queued block returns nil too — which let six
+	// validators vote a forked leader's inexecutable block into a CommitQC
+	// and wedge the whole network's committed head. No applied state, no
+	// engine notification; the dedup set is NOT stamped, so the notify that
+	// arrives after the block really executes still passes.
+	if !haveHeader {
+		return
+	}
+	if bf, ok := s.blockFetcher.(interface {
+		BlockApplied(types.Hash, uint64) bool
+	}); ok && !bf.BlockApplied(hash, blockNum) {
+		log.Debug("hotstuff: import notification withheld (block not applied)",
+			"hash", hash, "number", blockNum)
+		return
+	}
+
+	// Dedup the engine notification: skip if we already notified this hash.
+	// The engine keeps its own imported-block memory across views, so one
+	// notify per hash is enough to let the import-gated prepare vote fire;
+	// re-notifying on every re-gossip only spins the engine mutex and starves
+	// the vote path.
+	s.pendingMu.Lock()
+	alreadyNotified := false
+	if _, ok := s.notifiedImports[hash]; ok {
+		alreadyNotified = true
+	} else {
+		s.notifiedImports[hash] = struct{}{}
+		s.notifiedFIFO = append(s.notifiedFIFO, hash)
+		if len(s.notifiedFIFO) > maxNotifiedImports {
+			oldest := s.notifiedFIFO[0]
+			s.notifiedFIFO = s.notifiedFIFO[1:]
+			delete(s.notifiedImports, oldest)
+		}
+	}
+	s.pendingMu.Unlock()
 
 	// Notify the engine once per hash (dedup above). Do NOT gate on
 	// pendingExecutions, which advanceToView clears every view. With import-gated
@@ -849,20 +889,6 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 	// spins the engine mutex.
 	if alreadyNotified {
 		return
-	}
-	// Best-effort parent lookup for the engine's extends-check (vote must only
-	// certify a block that extends its proposal's JustifyQC block). Zero when
-	// unavailable — the check fails open.
-	var parentHash types.Hash
-	var headerExtra []byte
-	if s.db != nil {
-		_ = s.db.View(s.ctx, func(tx kv.Tx) error {
-			if hdr, herr := rawdb.ReadHeaderByHash(tx, hash); herr == nil && hdr != nil {
-				parentHash = hdr.ParentHash
-				headerExtra = hdr.Extra
-			}
-			return nil
-		})
 	}
 	// Catch-up canonicalization: the imported block's extra carries the leader's
 	// latest CommitQC — the network's transferable, BLS-verifiable proof that the

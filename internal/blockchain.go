@@ -2365,6 +2365,53 @@ func (bc *BlockChain) clearReadThroughCache() {
 	}
 }
 
+// HasAppliedBlock reports whether the block's state has actually been
+// EXECUTED onto the world state — it sits on the applied-marker lineage —
+// as opposed to merely having its body stored, future-queued, or named by a
+// proposal. This is the evidence level consensus voting needs: an import-
+// gated vote certified by body presence let a quorum commit a block whose
+// state no honest node could ever reach (observed live: a forked leader's
+// block was "already imported" on six nodes that had only stored it, got its
+// QC, and wedged the whole network's committed head on an inexecutable
+// block). Chains without an applied marker fall back to body presence — the
+// pre-gate behavior.
+func (bc *BlockChain) HasAppliedBlock(hash types.Hash, number uint64) bool {
+	applied := false
+	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		an, ah, ok, err := rawdb.ReadQMDBApplied(tx)
+		if err != nil {
+			return nil
+		}
+		if !ok {
+			applied = rawdb.ReadHeader(tx, hash, number) != nil
+			return nil
+		}
+		if number > an {
+			return nil // above the applied head — cannot have been executed
+		}
+		// Canonical fast path: the canonical table is the committed prefix,
+		// and a committed block at or below the marker is necessarily applied.
+		if ch, cerr := rawdb.ReadCanonicalHash(tx, number); cerr == nil && ch == hash {
+			applied = true
+			return nil
+		}
+		// Not (yet) canonical: an applied-but-uncommitted block lives within
+		// the recent window — walk the applied lineage down from the marker.
+		cur, curN := ah, an
+		for curN > number && an-curN < 256 {
+			hdr := rawdb.ReadHeader(tx, cur, curN)
+			if hdr == nil {
+				return nil
+			}
+			cur = hdr.ParentHash
+			curN--
+		}
+		applied = curN == number && cur == hash
+		return nil
+	})
+	return applied
+}
+
 func (bc *BlockChain) revertUncommittedQMDBAppends(blockNum uint64) {
 	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil {
 		return

@@ -116,16 +116,44 @@ func (s *Service) insertAuthorized(blocks []block.IBlock) (int, error) {
 	return s.cfg.chain.InsertChain(blocks)
 }
 
+// blockApplied reports whether the chain has EXECUTED the block onto the
+// world state (it is on the applied lineage) — the evidence level a consensus
+// vote needs. Body presence and a nil InsertChain error are NOT that
+// evidence: a future-queued block returns nil from InsertChain, and a stored-
+// but-never-executed block satisfies HasBlock (observed live: six validators
+// voted a forked leader's inexecutable block into a CommitQC on exactly that
+// confusion). Falls back to body presence for chain implementations without
+// the applied-lineage query.
+func (s *Service) blockApplied(hash types.Hash, number uint64) bool {
+	if a, ok := s.cfg.chain.(interface {
+		HasAppliedBlock(types.Hash, uint64) bool
+	}); ok {
+		return a.HasAppliedBlock(hash, number)
+	}
+	return s.cfg.chain.HasBlock(hash, number)
+}
+
+// BlockApplied exposes the applied-state probe to the consensus layer
+// (hotstuff asserts for it on its BlockFetcher): the import-gated vote must
+// be certified by executed state, not stored bytes.
+func (s *Service) BlockApplied(hash types.Hash, number uint64) bool {
+	return s.blockApplied(hash, number)
+}
+
 // alignAndImport imports a consensus-requested block, aligning the applied
 // branch SYNCHRONOUSLY along its parent chain in one pass: walk back through
 // locally stored ancestors until one imports (its parent is applied — the
 // authorized unwind reverts the losing sibling branch), then replay the
 // descendants oldest-first, and finally notify the engine so the deferred
 // import-gated vote fires. One pass, no async tug-of-war between candidates.
+// Every "imported" decision below is judged by applied-state evidence, never
+// by a nil insert error alone (future-queued blocks return nil too).
 func (s *Service) alignAndImport(blk block.IBlock) {
-	// Already stored: the walk-back + authorized replay is unnecessary (and would
-	// re-enter the reorg path for a non-canonical sibling). Just notify the engine.
-	if s.cfg.chain.HasBlock(blk.Hash(), blk.Number64().Uint64()) {
+	// Already applied: the walk-back + authorized replay is unnecessary (and
+	// would re-enter the reorg path for a non-canonical sibling). Just notify
+	// the engine. A block that is merely STORED falls through to the
+	// walk-back — it still needs its ancestors executed.
+	if s.blockApplied(blk.Hash(), blk.Number64().Uint64()) {
 		if n := s.cfg.blockImportNotifier; n != nil {
 			n.NotifyBlockImported(blk.Hash(), blk.TxHash())
 		}
@@ -134,7 +162,8 @@ func (s *Service) alignAndImport(blk block.IBlock) {
 	cur := blk
 	pending := []block.IBlock{}
 	for depth := 0; depth < 32; depth++ {
-		if _, err := s.insertAuthorized([]block.IBlock{cur}); err == nil {
+		if _, err := s.insertAuthorized([]block.IBlock{cur}); err == nil &&
+			s.blockApplied(cur.Hash(), cur.Number64().Uint64()) {
 			break
 		}
 		p, _ := s.cfg.chain.GetBlockByHash(cur.ParentHash())
@@ -154,6 +183,14 @@ func (s *Service) alignAndImport(blk block.IBlock) {
 				"hash", pending[i].Hash().Hex()[:12], "err", err)
 			return
 		}
+	}
+	// The replay may have future-queued (rather than executed) the target —
+	// e.g. its branch is inexecutable on this node's state. No evidence, no
+	// notification: a vote must never certify a block this node hasn't run.
+	if !s.blockApplied(blk.Hash(), blk.Number64().Uint64()) {
+		log.Debug("fetch-on-miss: chain-align left the block unapplied; not notifying",
+			"number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12])
+		return
 	}
 	log.Info("fetch-on-miss: aligned and imported", "number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12], "walkback", len(pending))
 	if n := s.cfg.blockImportNotifier; n != nil {
