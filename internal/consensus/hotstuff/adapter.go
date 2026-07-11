@@ -586,7 +586,22 @@ func (h *HotStuff) Finalize(chain consensus.ChainHeaderReader, iHeader block.IHe
 		}
 	}
 
-	header.Root = ibs.IntermediateRoot()
+	// Build-vs-verify split on the state root. On the BUILD path (miner →
+	// FinalizeAndAssemble) header.Root is still zero: set it from the locally
+	// computed root. On the VERIFY path (importing a proposer's block) it
+	// carries the proposer's root: COMPARE and reject on mismatch. The old
+	// unconditional overwrite silently discarded the proposer's root on
+	// import, so no state-root check existed anywhere in the pipeline
+	// (BlockValidator.ValidateState's root check is disabled for legacy
+	// replay reasons) — validator QMDB trees could drift apart indefinitely,
+	// surfacing only as nonce anomalies under load and as startup
+	// marker/tree-root mismatches.
+	localRoot := ibs.IntermediateRoot()
+	if header.Root != (types.Hash{}) && header.Root != localRoot {
+		return nil, nil, fmt.Errorf("state root mismatch at block %d: proposer %x, locally computed %x",
+			header.Number.Uint64(), header.Root[:8], localRoot[:8])
+	}
+	header.Root = localRoot
 	return rewards, unpayMap, nil
 }
 
