@@ -280,6 +280,25 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		// for the recent-blocks eth_getProof window. The world root is carried by
 		// header.Root (ComputeRoot returned it), so no separate root row is needed.
 		if ibs != nil && bc.qmdbEnabled && bc.qmdbRootComputer != nil {
+			// Leader path: the miner computes the sealed root on an ISOLATED
+			// computer (speculative builds must not touch the live tree), so
+			// at this point the live tree has NOT applied the block — flushing
+			// would be a no-op, the undo row would be synthesized empty, and
+			// the applied marker would advance over state the tree never saw
+			// (the zero-receipts fingerprint; every block this node led then
+			// desynced its committed state from the importing majority).
+			// Re-run the root computation on the LIVE computer: same dirty
+			// set, so it must reproduce the sealed header root byte-for-byte
+			// — a mismatch aborts the write before anything is persisted.
+			if rc := ibs.GetRootComputer(); rc != nil && rc != state.RootComputer(bc.qmdbRootComputer) {
+				bc.qmdbRootComputer.SetCold(tx)
+				ibs.SetRootComputer(bc.qmdbRootComputer)
+				liveRoot := ibs.IntermediateRoot()
+				if liveRoot != blk.StateRoot() {
+					return fmt.Errorf("live QMDB tree root %x does not reproduce sealed root %x at block %d",
+						liveRoot[:8], blk.StateRoot().Bytes()[:8], blockNumber.Uint64())
+				}
+			}
 			if _, err := bc.qmdbRootComputer.FlushTo(tx); err != nil {
 				return fmt.Errorf("flushing QMDB entries for block %d failed: %w", blockNumber.Uint64(), err)
 			}
