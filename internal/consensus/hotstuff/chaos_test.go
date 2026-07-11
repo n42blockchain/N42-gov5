@@ -898,6 +898,7 @@ func TestChaos7Node_50RoundContinuousBlockProduction(t *testing.T) {
 			t.Fatalf("view %d: expected leader %d, got %d", view, expectedLeader, leader)
 		}
 
+		h.markBlockImported(blockHash)
 		h.runConsensusRound(view, blockHash)
 	}
 
