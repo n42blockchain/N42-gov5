@@ -458,6 +458,11 @@ func TestByzantine_NetworkPartition(t *testing.T) {
 			Type: EventMessage,
 			Msg:  ConsensusMsg{Type: MsgProposal, Payload: proposal},
 		})
+		// Block data is available inside the majority partition. Confirm import
+		// separately because prepare votes are execution-gated.
+		if err := h.engines[i].ProcessEvent(ConsensusEvent{Type: EventBlockImported, Hash: blockHash}); err != nil {
+			t.Fatalf("majority node %d import: %v", i, err)
+		}
 	}
 
 	// Collect prepare votes from majority followers, route to leader.
