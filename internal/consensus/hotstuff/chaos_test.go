@@ -371,6 +371,7 @@ func TestChaos7Node_TimeoutRecovery(t *testing.T) {
 	// Run 3 normal rounds (views 1..3).
 	for view := ViewNumber(1); view <= 3; view++ {
 		blockHash := blockHashForView(view)
+		h.markBlockImported(blockHash)
 		h.runConsensusRound(view, blockHash)
 	}
 
@@ -399,6 +400,7 @@ func TestChaos7Node_TimeoutRecovery(t *testing.T) {
 
 	// View 5: resume normal consensus.
 	blockHash5 := blockHashForView(5)
+	h.markBlockImported(blockHash5)
 	h.runConsensusRound(5, blockHash5)
 
 	// Verify view 5 committed.
