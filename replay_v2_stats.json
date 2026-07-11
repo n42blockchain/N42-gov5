@@ -1,24 +1,24 @@
 {
   "fromBlock": 1,
-  "toBlock": 11719350,
-  "currentBlock": 11719350,
-  "blocksProcessed": 11719350,
-  "blocksEmpty": 1926909,
+  "toBlock": 12973899,
+  "currentBlock": 12973899,
+  "blocksProcessed": 12973899,
+  "blocksEmpty": 1969563,
   "blocksMissing": 0,
-  "txTotal": 21477418,
-  "txReplayed": 21477417,
+  "txTotal": 24575874,
+  "txReplayed": 24574369,
   "txSkipped": 0,
-  "txFailed": 1,
+  "txFailed": 1505,
   "skipReasons": {
     "deposit_contract": 0,
     "empty_create": 0,
-    "evm_error": 1,
+    "evm_error": 1505,
     "sender_unknown": 0
   },
-  "startTime": "2026-04-01T14:39:49.6053704-04:00",
-  "elapsed": "56m49s",
-  "blkPerSec": 3437.5621869452407,
-  "receiptMatch": 1926909,
-  "receiptMismatch": 9792441,
-  "gasUsedTotal": 102560448426
+  "startTime": "2026-07-06T04:30:27.5340083-04:00",
+  "elapsed": "1h32m11s",
+  "blkPerSec": 2345.6462379846525,
+  "receiptMatch": 12969579,
+  "receiptMismatch": 4320,
+  "gasUsedTotal": 521316005606
 }
