@@ -4,9 +4,12 @@
 package sync
 
 import (
+	"errors"
+
 	"github.com/libp2p/go-libp2p/core/network"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -23,6 +26,10 @@ func (s *Service) blockPushStreamHandler(stream network.Stream) {
 	blk, err := ReadChunkedBlock(stream, s.cfg.p2p, true)
 	if err != nil {
 		log.Info("block push: read failed", "peer", stream.Conn().RemotePeer().String()[:12], "err", err)
+		return
+	}
+	if s.rejectBadBlock(s.ctx, blk) {
+		log.Debug("block push: dropping known bad branch", "number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12])
 		return
 	}
 	// Already stored (a re-pushed uncommitted leader block): skip re-entering
@@ -46,6 +53,9 @@ func (s *Service) blockPushStreamHandler(stream network.Stream) {
 			_ = s.cfg.chain.AddFutureBlock(blk)
 			s.FetchBlockByHash(blk.ParentHash())
 			return
+		}
+		if errors.Is(err, consensus.ErrExecutionInvalid) {
+			s.setBadBlock(s.ctx, blk.Hash())
 		}
 		log.Info("block push: insert failed", "number", blk.Number64().Uint64(), "err", err)
 		return

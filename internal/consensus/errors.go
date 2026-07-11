@@ -50,4 +50,11 @@ var (
 	// ErrNotEnoughSign is returned when there are insufficient BLS signatures
 	// to meet the consensus threshold.
 	ErrNotEnoughSign = errors.New("not enough sign")
+
+	// ErrExecutionInvalid marks a block that was executed against its parent
+	// state and failed a deterministic execution or post-state consensus check.
+	// Callers may safely cache the block as bad. Local availability and ordering
+	// failures (unknown/pruned ancestors, future blocks, or unavailable reverts)
+	// must never wrap this sentinel.
+	ErrExecutionInvalid = errors.New("block execution invalid")
 )

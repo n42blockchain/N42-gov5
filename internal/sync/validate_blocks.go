@@ -76,6 +76,9 @@ func (s *Service) validateBlockPubSub(ctx context.Context, pid peer.ID, msg *pub
 	if s.cfg.chain.HasBlock(blockHash, headerNumber.Uint64()) {
 		return pubsub.ValidationIgnore, nil
 	}
+	if s.hasBadBlock(blockHash) {
+		return pubsub.ValidationReject, fmt.Errorf("received known bad block %#x", blockHash)
+	}
 
 	// Check if parent is a bad block and then reject the block.
 	if s.hasBadBlock(header.ParentHash) {
