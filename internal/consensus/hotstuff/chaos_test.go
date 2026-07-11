@@ -22,8 +22,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 )
 
 // chaosHarness manages a cluster of 7 HotStuff-2 consensus engines for
@@ -64,6 +64,18 @@ func (h *chaosHarness) drainAll() [][]EngineOutput {
 		all[i] = drainOutputs(ch)
 	}
 	return all
+}
+
+// markBlockImported models successful execution-layer propagation independently
+// from consensus-message routing. Import-gated validators may vote only after
+// receiving this evidence.
+func (h *chaosHarness) markBlockImported(blockHash types.Hash) {
+	h.t.Helper()
+	for i, engine := range h.engines {
+		if err := engine.ProcessEvent(ConsensusEvent{Type: EventBlockImported, Hash: blockHash}); err != nil {
+			h.t.Fatalf("node %d import block %s: %v", i, blockHash, err)
+		}
+	}
 }
 
 // blockHashForView generates a deterministic block hash for a given view.
@@ -316,6 +328,7 @@ func TestChaos7Node_NormalConsensus(t *testing.T) {
 	// Run 10 rounds (views 1..10).
 	for view := ViewNumber(1); view <= 10; view++ {
 		blockHash := blockHashForView(view)
+		h.markBlockImported(blockHash)
 		h.runConsensusRound(view, blockHash)
 	}
 
