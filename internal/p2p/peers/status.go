@@ -610,8 +610,16 @@ func (p *Status) BestPeers(wantPeers int, ourCurrentHeight *uint256.Int) (*uint2
 		return uint256.NewInt(0), []peer.ID{}
 	}
 
-	// Select the target block number from the lowest-ranked peer in the selected set.
-	targetBlockNumber := pidHead[potentialPIDs[len(potentialPIDs)-1]]
+	// Target the HIGHEST advertised height. The old lowest-of-the-set pick
+	// (conservative against one lying peer) pinned equal-height-fork recovery:
+	// with the cluster split across a same-height sibling, the target froze at
+	// the LAGGING group's height, so the fetched range never included the
+	// blocks whose embedded CommitQC commits past the fork — the canonical
+	// head could not advance and the catch-up tick looped forever (observed
+	// live: from=13019397 to=13019398 every 8s while peers sat at 13019490).
+	// A lying peer's inflated height is harmless here: fetching from it fails
+	// or returns nothing and the fetch loop falls through to the next peer.
+	targetBlockNumber := pidHead[potentialPIDs[0]]
 	return targetBlockNumber, potentialPIDs
 }
 
