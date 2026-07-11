@@ -323,7 +323,13 @@ func (opts MdbxOpts) Open(ctx context.Context) (kv.RwDB, error) {
 			return nil, fmt.Errorf("db verbosity set: %w", err)
 		}
 	}
-	if err = env.SetOption(mdbx.OptMaxDB, 200); err != nil {
+	// 256, not 200: N42TableCfg grew to 213 tables (beacon/bor/clique/qmdb/
+	// changeset families). With the old 200 ceiling, any RW open that had to
+	// CREATE a missing table past the 200th failed with MDBX_DBS_FULL (e.g.
+	// creating qmdbMeta on an older archive). 256 leaves headroom over 213.
+	// Raising maxdbs on reopen is safe — it only adds runtime dbi slots and
+	// never rewrites data.
+	if err = env.SetOption(mdbx.OptMaxDB, 256); err != nil {
 		return nil, err
 	}
 	if err = env.SetOption(mdbx.OptMaxReaders, kv.ReadersLimit); err != nil {

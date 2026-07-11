@@ -272,6 +272,131 @@ func (c *Collector) Load(db kv.RwTx, toBucket string, loadFunc LoadFunc, args Tr
 	return nil
 }
 
+// LoadMerged streams the on-disk sorted runs of SEVERAL collectors into a single
+// globally-sorted bulk load into toBucket — the multi-collector analogue of
+// Load. Use it when N collectors were filled in parallel over disjoint INPUT
+// ranges but their OUTPUT keys (e.g. keccak-hashed) interleave across the whole
+// keyspace: each collector's runs are individually sorted, and mergeSortFiles
+// heap-merges all of them so the final load is globally ordered (and can Append
+// into an empty bucket). Collectors are flushed but NOT closed; the caller closes
+// them. loadFunc is typically IdentityLoadFunc.
+func LoadMerged(db kv.RwTx, toBucket string, loadFunc LoadFunc, args TransformArgs, collectors ...*Collector) error {
+	var providers []dataProvider
+	var bufType int
+	var scratch Buffer
+	for _, c := range collectors {
+		if c == nil {
+			continue
+		}
+		if !c.allFlushed {
+			if err := c.flushBuffer(false); err != nil {
+				return err
+			}
+		}
+		providers = append(providers, c.dataProviders...)
+		bufType = c.bufType
+		if scratch == nil {
+			scratch = c.buf
+		}
+	}
+	if len(providers) == 0 {
+		return nil
+	}
+	args.BufferType = bufType
+
+	bucket := toBucket
+	var cursor kv.RwCursor
+	haveSortingGuaranties := isIdentityLoadFunc(loadFunc)
+	var lastKey []byte
+	if bucket != "" {
+		var err error
+		cursor, err = db.RwCursor(bucket)
+		if err != nil {
+			return err
+		}
+		defer cursor.Close()
+		var errLast error
+		lastKey, _, errLast = cursor.Last()
+		if errLast != nil {
+			return errLast
+		}
+	}
+
+	var canUseAppend bool
+	isDupSort := kv.ChaindataTablesCfg[bucket].Flags&kv.DupSort != 0 && !kv.ChaindataTablesCfg[bucket].AutoDupSortKeysConversion
+
+	i := 0
+	loadNextFunc := func(_, k, v []byte) error {
+		if i == 0 {
+			isEndOfBucket := lastKey == nil || bytes.Compare(lastKey, k) == -1
+			canUseAppend = haveSortingGuaranties && isEndOfBucket
+		}
+		i++
+		isNil := (bufType == SortableSliceBuffer && v == nil) ||
+			(bufType == SortableAppendBuffer && len(v) == 0) ||
+			(bufType == SortableOldestAppearedBuffer && len(v) == 0)
+		if isNil {
+			if canUseAppend {
+				return nil
+			}
+			return cursor.Delete(k)
+		}
+		if canUseAppend {
+			if isDupSort {
+				if err := cursor.(kv.RwCursorDupSort).AppendDup(k, v); err != nil {
+					return fmt.Errorf("loadMerged: bucket=%s appendDup: %w", bucket, err)
+				}
+			} else {
+				if err := cursor.Append(k, v); err != nil {
+					return fmt.Errorf("loadMerged: bucket=%s append: %w", bucket, err)
+				}
+			}
+			return nil
+		}
+		return cursor.Put(k, v)
+	}
+
+	currentTable := &currentTableReader{db, bucket}
+	simpleLoad := func(k, v []byte) error {
+		return loadFunc(k, v, currentTable, loadNextFunc)
+	}
+	if err := mergeSortFiles("load-merged", providers, simpleLoad, args, scratch); err != nil {
+		return fmt.Errorf("loadMerged %s: %w", toBucket, err)
+	}
+	return nil
+}
+
+// StreamMerged heap-merges the on-disk sorted runs of several collectors and
+// invokes fn(k, v) for every entry in GLOBAL sorted order — like LoadMerged but
+// streaming to a callback instead of writing to a bucket. Use it to fuse a sort
+// with a consumer (e.g. feeding sorted hashed leaves straight into a trie root
+// builder) and skip materializing an intermediate table. NOTE: k and v are only
+// valid for the duration of the fn call — copy them if you keep references.
+// Collectors are flushed but NOT closed.
+func StreamMerged(fn func(k, v []byte) error, collectors ...*Collector) error {
+	var providers []dataProvider
+	var scratch Buffer
+	for _, c := range collectors {
+		if c == nil {
+			continue
+		}
+		if !c.allFlushed {
+			if err := c.flushBuffer(false); err != nil {
+				return err
+			}
+		}
+		providers = append(providers, c.dataProviders...)
+		if scratch == nil {
+			scratch = c.buf
+		}
+	}
+	if len(providers) == 0 {
+		return nil
+	}
+	simple := func(k, v []byte) error { return fn(k, v) }
+	return mergeSortFiles("stream-merged", providers, simple, TransformArgs{}, scratch)
+}
+
 func (c *Collector) reset() {
 	if c.dataProviders != nil {
 		for _, p := range c.dataProviders {

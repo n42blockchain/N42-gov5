@@ -243,6 +243,10 @@ func (idx *Index) DataHandle() unsafe.Pointer {
 func (idx *Index) Size() int64        { return idx.size }
 func (idx *Index) ModTime() time.Time { return idx.modTime }
 func (idx *Index) BaseDataID() uint64 { return idx.baseDataID }
+
+// Enums reports whether this index is two-level (Lookup returns an insertion
+// ordinal; OrdinalLookup maps it to the stored offset via the built-in EF).
+func (idx *Index) Enums() bool { return idx.enums }
 func (idx *Index) FilePath() string   { return idx.filePath }
 func (idx *Index) FileName() string   { return idx.fileName }
 func (idx *Index) IsOpen() bool       { return idx != nil && idx.f != nil }
