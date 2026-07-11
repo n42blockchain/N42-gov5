@@ -1562,6 +1562,12 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			return it.index, uerr
 		}
 
+		// Second line of defense against a dangling candidate: a leader whose
+		// sealed block lost the view (or never sealed) left that candidate's
+		// appends on the live tree; executing the incoming winner on top would
+		// compute a shifted root. The miner peels on its own path — this covers
+		// the import path racing ahead of it.
+		bc.PeelDanglingQMDBAppends()
 		ibs, nopay, err := evmRecord(bc.ctx, bc.ChainDB, blockNumber.Uint64(), func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error) {
 			getHeader := func(hash types.Hash, number uint64) *block.Header {
 				return rawdb.ReadHeader(tx, hash, number)
@@ -2144,6 +2150,13 @@ func (bc *BlockChain) AlignAppliedBranch(childNum uint64, parentHash types.Hash)
 // execution reach ComputeRoot" test: it is cleared by every successful
 // writeBlockWithState and by this function, so a non-nil record here always
 // belongs to the failed block.
+// PeelDanglingQMDBAppends implements common.IBlockChain: revert appends a
+// discarded miner candidate left on the live tree (see
+// revertUncommittedQMDBAppends — same mechanism, caller-facing entry).
+func (bc *BlockChain) PeelDanglingQMDBAppends() {
+	bc.revertUncommittedQMDBAppends(0)
+}
+
 func (bc *BlockChain) revertUncommittedQMDBAppends(blockNum uint64) {
 	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil {
 		return

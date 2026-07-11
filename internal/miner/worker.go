@@ -665,6 +665,12 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		return errors.New("coinbase is empty")
 	}
 
+	// A previous candidate that never reached WriteBlockWithState (sealing
+	// lost the view, the task was replaced) left its appends on the live QMDB
+	// tree — peel them before building on it, or this candidate's root is
+	// computed on a poisoned tree and diverges from every follower.
+	w.chain.PeelDanglingQMDBAppends()
+
 	// Consensus-pinned parent (HotStuff HighQC block): the world state must BE
 	// that parent's post-state before we execute the payload — align it first
 	// (reverts any locally-applied uncommitted sibling; no-op when already
