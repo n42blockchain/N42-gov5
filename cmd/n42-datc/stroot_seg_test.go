@@ -180,6 +180,149 @@ func TestStoRootSegFloorEquivalence(t *testing.T) {
 	t.Logf("floor equivalence: %d probes identical (%d rows, 1KiB frames)", checks, rows)
 }
 
+// TestStoRootMergeWeekly simulates the weekly cadence: full export → table
+// dropped → continuation writes a delta (new blocks for old addrs + brand-new
+// addrs) → stroot-merge folds segments ∪ delta into fresh segments. The merged
+// set must answer every floor probe identically to a reference DB that holds
+// ALL rows.
+func TestStoRootMergeWeekly(t *testing.T) {
+	ctx := context.Background()
+	mkKey := func(ah []byte, blk uint64) []byte {
+		k := make([]byte, 40)
+		copy(k, ah)
+		binary.BigEndian.PutUint64(k[32:], blk)
+		return k
+	}
+	rng := rand.New(rand.NewSource(11))
+	mkAddr := func(b0 byte) []byte {
+		ah := make([]byte, 32)
+		rng.Read(ah)
+		ah[0] = b0
+		return ah
+	}
+	mkRoot := func() []byte { v := make([]byte, 32); rng.Read(v); return v }
+
+	// Week-1 rows.
+	type row struct {
+		k, v []byte
+	}
+	var week1, week2 []row
+	var oldAddrs [][]byte
+	for i := 0; i < 30; i++ {
+		ah := mkAddr([]byte{0x00, 0x33, 0xcc}[i%3])
+		oldAddrs = append(oldAddrs, ah)
+		blk := uint64(10 + rng.Intn(500))
+		week1 = append(week1, row{mkKey(ah, blk), mkRoot()})
+		if i%3 == 0 {
+			week1 = append(week1, row{mkKey(ah, blk+100), nil}) // tombstone
+		}
+	}
+	// Week-2 delta: new blocks for half the old addrs + 10 brand-new addrs
+	// (incl. a bucket 0x77 that week 1 never touched).
+	for i, ah := range oldAddrs {
+		if i%2 == 0 {
+			week2 = append(week2, row{mkKey(ah, 1000+uint64(rng.Intn(500))), mkRoot()})
+		}
+	}
+	for i := 0; i < 10; i++ {
+		ah := mkAddr([]byte{0x77, 0x33}[i%2])
+		week2 = append(week2, row{mkKey(ah, 1200+uint64(rng.Intn(300))), mkRoot()})
+	}
+
+	put := func(db kv.RwDB, rows []row) {
+		rw, err := db.BeginRw(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rows {
+			if err := rw.Put(tDatcStoRoot, r.k, r.v); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := rw.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Live DB: week 1 → export → clear (≈drop) → week 2 delta → merge.
+	live := openStoRootTestDB(t)
+	put(live, week1)
+	segd := t.TempDir()
+	tx1, err := live.BeginRo(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exportStoRoot(tx1, segd, 1); err != nil {
+		t.Fatal(err)
+	}
+	tx1.Rollback()
+	rw, err := live.BeginRw(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rw.ClearBucket(tDatcStoRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := rw.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	put(live, week2)
+
+	t.Setenv("N42_DATC_LEAFSEG_DIR", ".")
+	tx2, err := live.BeginRo(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx2.Rollback()
+	merged, err := mergeStoRoot(tx2, segd, segd, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := uint64(len(week1) + len(week2)); merged != want {
+		t.Fatalf("merged %d rows, want %d", merged, want)
+	}
+
+	// Reference DB with ALL rows.
+	ref := openStoRootTestDB(t)
+	put(ref, week1)
+	put(ref, week2)
+	refTx, err := ref.BeginRo(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer refTx.Rollback()
+	rc, err := refTx.Cursor(tDatcStoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+
+	set, ok, err := openLeafSegSet(segd, segTabStoRoot, newFrameLRU())
+	if err != nil || !ok {
+		t.Fatalf("open merged segments: %v ok=%v", err, ok)
+	}
+	defer set.Close()
+	sc := set.Cursor()
+
+	probes := 0
+	allAddrs := append([][]byte{}, oldAddrs...)
+	for _, r := range week2 {
+		allAddrs = append(allAddrs, r.k[:32])
+	}
+	for _, ah := range allAddrs {
+		for _, at := range []uint64{0, 50, 300, 700, 1100, 1600} {
+			mr, mh, mhit := stoRootFloorScan(rc, ah, at)
+			sr, sh, shit := stoRootFloorScan(sc, ah, at)
+			if mr != sr || mh != sh || mhit != shit {
+				t.Fatalf("ah=%x at=%d: ref=(%x,%v,%v) merged=(%x,%v,%v)",
+					ah[:4], at, mr[:4], mh, mhit, sr[:4], sh, shit)
+			}
+			probes++
+		}
+	}
+	t.Logf("weekly merge equivalence: %d probes identical (%d merged rows)", probes, merged)
+}
+
 // TestStoRootSegQuerierRouting: a querier with segSR set must answer
 // storageRootAt from segments even when the MDBX table is ABSENT (post-drop).
 func TestStoRootSegQuerierRouting(t *testing.T) {

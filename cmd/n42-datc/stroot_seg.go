@@ -17,6 +17,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"flag"
@@ -163,6 +164,193 @@ func exportStoRoot(tx kv.Tx, segd string, frameKB int) (uint64, error) {
 		return rows, fmt.Errorf("scan: %w", err)
 	}
 	return rows, finishBucket()
+}
+
+// runStoRootMerge — WEEKLY incremental update: merges the existing sr.*.seg
+// history with the CURRENT MDBX DatcStoRoot rows (the delta a continuation
+// build wrote since the last export/merge) into fresh segments. Both inputs
+// stream in key order (2-way merge; on a duplicate key40 the MDBX side wins),
+// so memory stays flat. Buckets swap one at a time — each swapped bucket is
+// complete for its prefix, so a kill mid-swap just leaves some buckets one
+// week older; rerun to finish. After a verified merge the MDBX table can be
+// dropped again (drop-table) to keep the DB lean.
+//
+//	n42-datc stroot-merge --out D:/n42-datc-... [--frame-kb 32] [--spot 2000]
+func runStoRootMerge(args []string) {
+	fs := flag.NewFlagSet("stroot-merge", flag.ExitOnError)
+	out := fs.String("out", "", "DATC dir (MDBX with DatcStoRoot delta + leafseg dir with sr.*.seg)")
+	frameKB := fs.Int("frame-kb", 32, "uncompressed frame-size target (KiB)")
+	mapGB := fs.Int("map.gb", 2048, "MDBX map GB")
+	spot := fs.Int("spot", 2000, "post-merge random floor A/B checks against (segments ∪ table) (0 = skip)")
+	_ = fs.Parse(args)
+	if *out == "" {
+		die("--out required")
+	}
+	segd := segDirOf(*out)
+
+	modules.N42Init()
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	db, err := mdbxkv.NewMDBX(log.New()).Path(*out).Label(kv.ChainDB).
+		MapSize(datasize.ByteSize(*mapGB) * datasize.GB).Accede().Readonly().Open(context.Background())
+	if err != nil {
+		die("open: %v", err)
+	}
+	defer db.Close()
+	tx, err := db.BeginRo(context.Background())
+	if err != nil {
+		die("begin: %v", err)
+	}
+	defer tx.Rollback()
+
+	t0 := time.Now()
+	rows, err := mergeStoRoot(tx, *out, segd, *frameKB)
+	if err != nil {
+		die("merge: %v", err)
+	}
+	fmt.Printf("[stroot-merge] done: %d rows in %s → %s\n", rows, time.Since(t0).Truncate(time.Second), segd)
+	if *spot > 0 {
+		spotCheckStoRoot(tx, segd, *out, *spot, rows)
+	}
+}
+
+// mergeStoRoot 2-way-merges the existing sr segments with the MDBX delta into
+// fresh segments (written as .merge tmp files, then swapped bucket by bucket).
+func mergeStoRoot(tx kv.Tx, outDir, segd string, frameKB int) (uint64, error) {
+	oldSet, hasOld, err := openLeafSegSet(outDir, segTabStoRoot, newFrameLRU())
+	if err != nil {
+		return 0, fmt.Errorf("open sr segments: %w", err)
+	}
+	var oldCur leafCur
+	if hasOld {
+		defer oldSet.Close() // idempotent; the swap phase closes it earlier
+		oldCur = oldSet.Cursor()
+	}
+	mdbxCur, err := tx.Cursor(tDatcStoRoot)
+	if err != nil {
+		return 0, fmt.Errorf("cursor %s (nothing to merge?): %w", tDatcStoRoot, err)
+	}
+	defer mdbxCur.Close()
+
+	oldTarget := segFrameRawTarget
+	segFrameRawTarget = frameKB << 10
+	defer func() { segFrameRawTarget = oldTarget }()
+	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
+	if err != nil {
+		return 0, err
+	}
+	defer enc.Close()
+
+	var ok, ov []byte
+	if oldCur != nil {
+		if ok, ov, err = oldCur.Seek(nil); err != nil {
+			return 0, err
+		}
+	}
+	mk, mv, err := mdbxCur.First()
+	if err != nil {
+		return 0, err
+	}
+
+	var (
+		w          *segFrameWriter
+		wBucket    = -1
+		wTmp, wDst string
+		rows       uint64
+		rec        []byte
+		swaps      [][2]string // {tmp, dst} — applied after the old set's handles close
+	)
+	finishBucket := func() error {
+		if w == nil {
+			return nil
+		}
+		if err := w.finish(); err != nil {
+			return fmt.Errorf("finish bucket %02x: %w", wBucket, err)
+		}
+		w = nil
+		// Swap deferred: the OLD segment file is still open (oldSet handle) and
+		// Windows cannot delete/rename-over an open file. Collect and apply
+		// after all buckets are written and the old set is closed.
+		swaps = append(swaps, [2]string{wTmp, wDst})
+		return nil
+	}
+	emit := func(k, v []byte) error {
+		if len(k) != 40 {
+			return fmt.Errorf("unexpected key length %d (want 40)", len(k))
+		}
+		bucket := segBucketOf(segTabStoRoot, k)
+		if bucket != wBucket {
+			if err := finishBucket(); err != nil {
+				return err
+			}
+			wDst = filepath.Join(segd, segFileName(segTabStoRoot, bucket)+".seg")
+			wTmp = wDst + ".merge"
+			var e error
+			if w, e = newSegFrameWriter(wTmp, enc); e != nil {
+				return fmt.Errorf("create %s: %w", wTmp, e)
+			}
+			wBucket = bucket
+		}
+		rec = rec[:0]
+		rec = binary.AppendUvarint(rec, uint64(len(k)))
+		rec = append(rec, k...)
+		rec = binary.AppendUvarint(rec, uint64(len(v)))
+		rec = append(rec, v...)
+		rows++
+		return w.add(rec, k)
+	}
+
+	for ok != nil || mk != nil {
+		var c int
+		switch {
+		case ok == nil:
+			c = 1
+		case mk == nil:
+			c = -1
+		default:
+			c = bytes.Compare(ok, mk)
+		}
+		switch {
+		case c < 0: // old only
+			if err := emit(ok, ov); err != nil {
+				return rows, err
+			}
+			if ok, ov, err = oldCur.Next(); err != nil {
+				return rows, err
+			}
+		case c > 0: // delta only
+			if err := emit(mk, mv); err != nil {
+				return rows, err
+			}
+			if mk, mv, err = mdbxCur.Next(); err != nil {
+				return rows, err
+			}
+		default: // duplicate key: MDBX (newer write) wins
+			if err := emit(mk, mv); err != nil {
+				return rows, err
+			}
+			if ok, ov, err = oldCur.Next(); err != nil {
+				return rows, err
+			}
+			if mk, mv, err = mdbxCur.Next(); err != nil {
+				return rows, err
+			}
+		}
+	}
+	if err := finishBucket(); err != nil {
+		return rows, err
+	}
+	if hasOld {
+		oldSet.Close() // release Windows file handles before rename-over
+	}
+	for _, sw := range swaps {
+		if err := os.Remove(sw[1]); err != nil && !os.IsNotExist(err) {
+			return rows, err
+		}
+		if err := os.Rename(sw[0], sw[1]); err != nil {
+			return rows, err
+		}
+	}
+	return rows, nil
 }
 
 // spotCheckStoRoot compares floor(≤N) answers between the MDBX table and the
