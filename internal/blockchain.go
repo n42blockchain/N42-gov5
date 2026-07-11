@@ -2097,7 +2097,16 @@ func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authori
 	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil || n == 0 {
 		return nil
 	}
-	err := bc.unwindForReimportTx(n, parentHash, authorizedSwitch)
+	mutated := false
+	err := bc.unwindForReimportTx(n, parentHash, authorizedSwitch, &mutated)
+	if err != nil && !mutated {
+		// Pre-check rejections (finality floor, lineage mismatch → future
+		// queue, unauthorized passive switch) fail BEFORE any tree mutation:
+		// nothing to restore, and reloading the whole tree for each of them
+		// turned routine catch-up traffic into a stream of expensive reloads
+		// (observed: 34-54 "failed unwind" reloads per replay, most benign).
+		return err
+	}
 	if err != nil {
 		// A multi-block unwind that fails MIDWAY leaves the in-memory QMDB
 		// tree holding reverts the rolled-back transaction discarded: block N
@@ -2129,7 +2138,7 @@ func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authori
 	return err
 }
 
-func (bc *BlockChain) unwindForReimportTx(n uint64, parentHash types.Hash, authorizedSwitch bool) error {
+func (bc *BlockChain) unwindForReimportTx(n uint64, parentHash types.Hash, authorizedSwitch bool, mutated *bool) error {
 	return bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
 		appliedNum, appliedHash, ok, err := rawdb.ReadQMDBApplied(tx)
 		if err != nil {
@@ -2270,6 +2279,10 @@ func (bc *BlockChain) unwindForReimportTx(n uint64, parentHash types.Hash, autho
 				// leaves the in-memory tree untouched; the tx rolls back on return.
 				return fmt.Errorf("unwind block %d: qmdb revert: %w: %w", appliedNum, err, errRevertUnavailable)
 			}
+			// The tree is mutated from here on: a failure below this point
+			// (or in a LATER iteration) leaves the in-memory tree ahead of
+			// the rolled-back transaction — the caller must reload it.
+			*mutated = true
 			if err := commitment.UnwindPlainStateBlock(tx, appliedNum); err != nil {
 				return fmt.Errorf("unwind block %d: plain state: %w", appliedNum, err)
 			}
