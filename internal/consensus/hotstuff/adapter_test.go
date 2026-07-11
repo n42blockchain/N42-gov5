@@ -4,6 +4,7 @@
 package hotstuff
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/hex"
 	"testing"
@@ -498,15 +499,19 @@ func TestPrepareEmbedsLastCommittedQCInExtra(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	view, qc, hasSeal, err := decodeHeaderExtra(childHeader.Extra)
+	view, qc, hasSealSlot, err := decodeHeaderExtra(childHeader.Extra)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if view != 2 {
 		t.Fatalf("view = %d, want 2", view)
 	}
-	if hasSeal {
-		t.Fatal("did not expect seal before Seal()")
+	if !hasSealSlot {
+		t.Fatal("expected Prepare() to reserve the seal slot")
+	}
+	sealSlot := childHeader.Extra[len(childHeader.Extra)-extraSealLen:]
+	if !bytes.Equal(sealSlot, make([]byte, extraSealLen)) {
+		t.Fatal("expected reserved seal slot to remain zero before Seal()")
 	}
 	if qc == nil {
 		t.Fatal("expected committed QC to be embedded in extra")
