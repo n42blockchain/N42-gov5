@@ -817,6 +817,7 @@ func TestChaos7Node_ConvergenceFromDifferentViews(t *testing.T) {
 		}
 
 		blockHash := blockHashForView(currentView)
+		h.markBlockImported(blockHash)
 		h.runConsensusRound(currentView, blockHash)
 		successfulRounds++
 	}
