@@ -33,7 +33,21 @@ func main() {
 	qmdbDiff := flag.Bool("qmdbdiff", false, "diff the QMDB twig tables of exactly two chaindata dirs (same applied history must be byte-identical; a differing twig localizes an unwind repair bug)")
 	qmdbOps := flag.Bool("qmdbops", false, "load the forest twice from one store and apply an identical synthetic op sequence to both instances; roots must match (miner-isolated vs live instance equivalence probe)")
 	revertDepth := flag.Uint64("qmdbrevert", 0, "N>0: load the forest at the applied marker and ApplyUndo N blocks newest-to-oldest, comparing the tree root against the canonical header root after every step — the first mismatch pinpoints an unfaithful revert (in-memory only, store untouched)")
+	audit := flag.Bool("stateaudit", false, "cross-check every PlainState row against the reloaded QMDB tree (the network-verified commitment); splits a deterministic wrong-root wedge into corrupt-flat-input vs execution/index fault")
+	csAddr := flag.String("csgrep", "", "hex address: list every changeset row recording a pre-value for it (did this key's writes go through the changeset writer?)")
 	flag.Parse()
+	if *csAddr != "" {
+		modules.N42Init()
+		kv.ChaindataTablesCfg = modules.N42TableCfg
+		csGrep(flag.Arg(0), *csAddr)
+		return
+	}
+	if *audit {
+		modules.N42Init()
+		kv.ChaindataTablesCfg = modules.N42TableCfg
+		stateAudit(flag.Arg(0))
+		return
+	}
 	if *revertDepth > 0 {
 		modules.N42Init()
 		kv.ChaindataTablesCfg = modules.N42TableCfg
