@@ -165,6 +165,22 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
 		return nil
 	}
 
+	e.pendingProposals[view] = proposal.BlockHash
+	e.pendingJustifyBlocks[view] = proposal.JustifyQC.BlockHash
+
+	// Two-phase mode: Round 1 votes on static validation alone (order-then-
+	// execute) — the leader's signature, JustifyQC and DA commitment were
+	// verified above; the execution guarantee moves to Round 2 (the
+	// CommitVote in processPrepareQC waits for the local import). The
+	// extends-rule is still enforced when the parent is already known.
+	if e.twoPhaseVote {
+		if e.importedBlocks[proposal.BlockHash] && !e.extendsJustify(view, proposal.BlockHash) {
+			return nil // extends-rule violation logged; do not vote
+		}
+		e.roundState.RecordVote(view, proposal.BlockHash)
+		return e.sendVote(view, proposal.BlockHash)
+	}
+
 	// Import-gated voting (NOT optimistic): vote only once the block is imported
 	// locally, so a CommitQC proves a quorum actually holds the block — not just
 	// its hash. This couples view progress to block propagation; the head can only
@@ -172,8 +188,6 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
 	// from spinning thousands of views ahead of the chain. If the block is already
 	// imported (a direct push arrived before the Proposal), vote now; otherwise
 	// defer until EventBlockImported fires onBlockImported, which casts the vote.
-	e.pendingProposals[view] = proposal.BlockHash
-	e.pendingJustifyBlocks[view] = proposal.JustifyQC.BlockHash
 	if e.importedBlocks[proposal.BlockHash] {
 		if !e.extendsJustify(view, proposal.BlockHash) {
 			return nil // extends-rule violation logged; do not vote
@@ -202,6 +216,18 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg) error {
 	// Double-vote prevention: only send one Round 2 commit vote per view.
 	if e.roundState.HasCommitVotedInView(view) {
 		log.Debug("suppressing duplicate commit vote", "view", view)
+		return nil
+	}
+
+	// Two-phase R2 gate: the CommitVote is the execution attestation — hold
+	// it until the block is imported locally, so a CommitQC still proves
+	// 2f+1 validators EXECUTED the block. onBlockImported re-enters this
+	// function with the held message once the import lands.
+	if e.twoPhaseVote && !e.importedBlocks[pqc.BlockHash] {
+		held := *pqc
+		e.pendingCommitQC = &held
+		log.Info("two-phase vote: holding commit vote until block imports",
+			"view", view, "blockHash", pqc.BlockHash)
 		return nil
 	}
 
@@ -333,6 +359,21 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 			}
 		}
 		log.Debug("DA verification passed", "blockHash", blockHash, "txRoot", expectedTxRoot)
+	}
+
+	// Two-phase mode: a held Round-2 CommitVote fires as soon as its block
+	// imports (processPrepareQC parked it; re-entering is idempotent via
+	// HasCommitVotedInView).
+	if e.twoPhaseVote && e.pendingCommitQC != nil && e.pendingCommitQC.BlockHash == blockHash {
+		held := e.pendingCommitQC
+		e.pendingCommitQC = nil
+		if held.View == e.roundState.CurrentView() {
+			log.Info("two-phase vote: casting held commit vote after import",
+				"view", held.View, "blockHash", blockHash)
+			if err := e.processPrepareQC(held); err != nil {
+				log.Debug("two-phase held commit vote failed", "err", err)
+			}
+		}
 	}
 
 	// Import-gated voting: now that this block is imported, cast the deferred

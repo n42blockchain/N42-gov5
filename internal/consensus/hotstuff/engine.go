@@ -123,6 +123,16 @@ type ConsensusEngine struct {
 	equivocationTracker       map[ValidatorIndex]types.Hash
 	commitEquivocationTracker map[ValidatorIndex]types.Hash
 
+	// twoPhaseVote (chainspec hotstuff.twoPhaseVoteGate) moves the execution
+	// guarantee from Round 1 to Round 2 — the order-then-execute shape every
+	// production HotStuff descendant uses. Round 1 votes on static validation
+	// (leader signature, JustifyQC, DA commitment), decoupling view progress
+	// from execution latency; the CommitVote is what waits for the local
+	// import, so a CommitQC still proves 2f+1 validators executed the block
+	// before it can commit. Off (default) = classic import-gated Round 1.
+	twoPhaseVote    bool
+	pendingCommitQC *PrepareQCMsg // two-phase R2 gate: PrepareQC held until the block imports
+
 	// Batch BLS verification buffers (votes await batch pairing before
 	// being added to the collector). Reset on every view change.
 	prepareVoteBuf []pendingVote
@@ -410,6 +420,15 @@ func (e *ConsensusEngine) validatorSet() *ValidatorSet {
 	return e.epochManager.CurrentValidatorSet()
 }
 
+// SetTwoPhaseVote switches between classic import-gated Round-1 voting
+// (false) and two-phase voting (true): R1 on static validation, R2 gated on
+// local import. Call before Start; thread-safe.
+func (e *ConsensusEngine) SetTwoPhaseVote(on bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.twoPhaseVote = on
+}
+
 // CurrentValidatorSet returns the active validator set (thread-safe).
 func (e *ConsensusEngine) CurrentValidatorSet() *ValidatorSet {
 	e.mu.Lock()
@@ -515,6 +534,7 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	e.commitCollector = nil
 	e.timeoutCollector = nil
 	e.prepareQC = nil
+	e.pendingCommitQC = nil // a held two-phase CommitVote is view-scoped
 	// Keep importedBlocks/importedFIFO across the view change: a block we have
 	// imported we still have, and the next leader typically RE-proposes the same
 	// (uncommitted) block in the new view. Wiping it made the re-proposed block
