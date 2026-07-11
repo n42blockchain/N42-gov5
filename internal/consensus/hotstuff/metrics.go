@@ -16,12 +16,13 @@ import (
 
 // HotStuff consensus Prometheus metrics.
 var (
-	metricCurrentView     = prometheus.GetOrCreateCounter("hotstuff_current_view", true)
-	metricBlocksCommitted = prometheus.GetOrCreateCounter("hotstuff_blocks_committed", false)
-	metricViewChanges     = prometheus.GetOrCreateCounter("hotstuff_view_changes", false)
-	metricTimeouts        = prometheus.GetOrCreateCounter("hotstuff_timeouts", false)
-	metricEquivocations   = prometheus.GetOrCreateCounter("hotstuff_equivocations", false)
-	mxOutputDrops         = prometheus.GetOrCreateCounter("hotstuff_output_drops", false)
+	metricCurrentView         = prometheus.GetOrCreateCounter("hotstuff_current_view", true)
+	metricBlocksCommitted     = prometheus.GetOrCreateCounter("hotstuff_blocks_committed", false)
+	metricViewChanges         = prometheus.GetOrCreateCounter("hotstuff_view_changes", false)
+	metricTimeouts            = prometheus.GetOrCreateCounter("hotstuff_timeouts", false)
+	metricEquivocations       = prometheus.GetOrCreateCounter("hotstuff_equivocations", false)
+	metricCommittedUnexecuted = prometheus.GetOrCreateCounter("hotstuff_committed_unexecuted_total", false)
+	mxOutputDrops             = prometheus.GetOrCreateCounter("hotstuff_output_drops", false)
 )
 
 func updateMetricsBlockCommitted(view ViewNumber) {

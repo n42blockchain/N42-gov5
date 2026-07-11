@@ -17,11 +17,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/libp2p/go-libp2p/core/peer"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
 	vm "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -85,6 +85,11 @@ type BlockFetcher interface {
 // catching the startup self-fork case where a node trails by many blocks.
 const blockProductionSyncGate = 2
 
+// committedUnexecutedRetryLimit is the number of consecutive local execution
+// checks that may fail for the same committed hash before leaders refuse to
+// extend it. A short grace period covers normal block-arrival skew.
+const committedUnexecutedRetryLimit = 3
+
 // heightBehind returns how far the local head trails the network, or 0 when no
 // block fetcher is wired (preserving unconditional production for chains without
 // the sync layer).
@@ -93,6 +98,99 @@ func (s *Service) heightBehind() uint64 {
 		return 0
 	}
 	return s.blockFetcher.HeightBehind()
+}
+
+// blockExecutionStatus checks the applied-lineage evidence exposed by the sync
+// layer. The bool result is false only when the probe is unavailable; a missing
+// local header is a checked, unexecuted result.
+func (s *Service) blockExecutionStatus(hash types.Hash) (applied, checked bool, number uint64) {
+	probe, ok := s.blockFetcher.(interface {
+		BlockApplied(types.Hash, uint64) bool
+	})
+	if !ok {
+		return false, false, 0
+	}
+	if s.db == nil {
+		return false, true, 0
+	}
+	haveHeader := false
+	_ = s.db.View(s.ctx, func(tx kv.Tx) error {
+		if hdr, err := rawdb.ReadHeaderByHash(tx, hash); err == nil && hdr != nil && hdr.Number != nil {
+			number = hdr.Number.Uint64()
+			haveHeader = true
+		}
+		return nil
+	})
+	if !haveHeader {
+		return false, true, 0
+	}
+	return probe.BlockApplied(hash, number), true, number
+}
+
+// observeCommittedExecution records high-visibility evidence that a committed
+// block has not executed locally. countMetric is true only for the CommitQC
+// event; retry observations update the consecutive-failure guard without
+// inflating the event counter.
+func (s *Service) observeCommittedExecution(hash types.Hash, countMetric bool) (bool, uint8) {
+	applied, checked, number := s.blockExecutionStatus(hash)
+	if !checked {
+		return true, 0 // compatibility for deployments without the applied probe
+	}
+	s.pendingMu.Lock()
+	if applied {
+		s.unexecutedCommitHash = types.Hash{}
+		s.unexecutedCommitFailures = 0
+		s.pendingMu.Unlock()
+		return true, 0
+	}
+	if s.unexecutedCommitHash != hash {
+		s.unexecutedCommitHash = hash
+		s.unexecutedCommitFailures = 1
+	} else if s.unexecutedCommitFailures < ^uint8(0) {
+		s.unexecutedCommitFailures++
+	}
+	failures := s.unexecutedCommitFailures
+	s.pendingMu.Unlock()
+
+	if countMetric {
+		metricCommittedUnexecuted.Inc()
+	}
+	log.Error("hotstuff: committed block not executed locally",
+		"hash", hash, "number", number, "failures", failures)
+	return false, failures
+}
+
+// committedParentBlocked rechecks a tracked committed parent and fails closed
+// after repeated local execution failures. Other parents are unaffected.
+func (s *Service) committedParentBlocked(parentHash types.Hash) bool {
+	s.pendingMu.Lock()
+	tracked := s.unexecutedCommitHash == parentHash && parentHash != (types.Hash{})
+	s.pendingMu.Unlock()
+	if !tracked {
+		return false
+	}
+	applied, failures := s.observeCommittedExecution(parentHash, false)
+	if applied || failures < committedUnexecutedRetryLimit {
+		return false
+	}
+	log.Error("hotstuff: refusing block production on unexecuted committed parent",
+		"hash", parentHash, "failures", failures)
+	return true
+}
+
+func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash) {
+	if behind := s.heightBehind(); behind > blockProductionSyncGate {
+		log.Warn("hotstuff: behind peers, skipping block production and catching up",
+			"view", view, "behind", behind, "gate", blockProductionSyncGate)
+		if s.blockFetcher != nil {
+			go s.blockFetcher.CatchUp()
+		}
+		return
+	}
+	if s.committedParentBlocked(parentHash) {
+		return
+	}
+	s.blockProducer.TriggerBlockProduction(parentHash)
 }
 
 // Service is the integration layer that connects the HotStuff consensus engine
@@ -141,6 +239,12 @@ type Service struct {
 	// the height canonical (observed on-disk: canonical rows missing on 6/7
 	// nodes at the first view-changed height). Protected by pendingMu.
 	pendingCommit types.Hash
+
+	// A CommitQC may arrive before this node executes the committed block. Keep
+	// the consecutive failed execution observations so a leader does not extend
+	// a persistently unexecutable committed parent. Protected by pendingMu.
+	unexecutedCommitHash     types.Hash
+	unexecutedCommitFailures uint8
 
 	// Epoch schedule for pre-staging future validator sets (loaded from file).
 	epochSchedule *EpochSchedule
@@ -295,6 +399,7 @@ func (s *Service) handleOutput(output EngineOutput) {
 		}
 	case OutputBlockCommitted:
 		log.Info("hotstuff: block committed", "view", output.View, "hash", output.Hash)
+		s.observeCommittedExecution(output.Hash, true)
 		// Make the committed block the canonical head so every node's chain follows
 		// the single committed chain (the miner may have locally inserted a
 		// different same-height candidate via resultLoop). Skipped silently if the
@@ -369,20 +474,12 @@ func (s *Service) handleOutput(output EngineOutput) {
 			// live: a reseeded node produced its own block one above its stale
 			// head the instant it started, before view/range sync caught up).
 			// Catch up first; a later view we lead will find us current.
-			if behind := s.heightBehind(); behind > blockProductionSyncGate {
-				log.Warn("hotstuff: behind peers, skipping block production and catching up",
-					"view", output.View, "behind", behind, "gate", blockProductionSyncGate)
-				if s.blockFetcher != nil {
-					go s.blockFetcher.CatchUp()
-				}
-			} else {
-				// Extend the LockedQC (HighQC) block — HotStuff-2's safety rule. A
-				// leader that extends its own local head instead proposes on top of
-				// an UNCOMMITTED same-height candidate, and the network oscillates
-				// between sibling branches without ever forming a quorum.
-				lq := s.engine.Engine().LockedQC()
-				s.blockProducer.TriggerBlockProduction(lq.BlockHash)
-			}
+			// Extend the LockedQC (HighQC) block — HotStuff-2's safety rule. A
+			// leader that extends its own local head instead proposes on top of
+			// an UNCOMMITTED same-height candidate, and the network oscillates
+			// between sibling branches without ever forming a quorum.
+			lq := s.engine.Engine().LockedQC()
+			s.triggerBlockProduction(output.View, lq.BlockHash)
 		}
 		// Rate-limited persistence.
 		if output.View-s.lastPersistedView >= s.persistInterval {
@@ -802,6 +899,16 @@ func (s *Service) broadcastBlockData(_ types.Hash) {
 // Called by the sync layer after a gossip block is successfully imported.
 // Matches against pending execution requests and notifies the engine.
 func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
+	// Import notifications are execution retry opportunities for a committed
+	// block. A successful applied probe clears the production guard; a body-only
+	// or future-queued notification counts as another failed observation.
+	s.pendingMu.Lock()
+	trackExecution := s.unexecutedCommitHash == hash && hash != (types.Hash{})
+	s.pendingMu.Unlock()
+	if trackExecution {
+		s.observeCommittedExecution(hash, false)
+	}
+
 	s.pendingMu.Lock()
 	delete(s.pendingExecutions, hash) // clear if present; no longer used to gate
 	retryCommit := s.pendingCommit == hash && hash != (types.Hash{})
