@@ -31,6 +31,7 @@ package internal
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sort"
@@ -384,6 +385,7 @@ func (bc *BlockChain) AncientReader() *freezer.AncientReader {
 // =============================================================================
 
 func (bc *BlockChain) Start() error {
+	bc.healPlainStateAheadOfMarkerOnStartup()
 	bc.verifyAppliedStateOnStartup()
 	bc.alignCanonicalToAppliedOnStartup()
 	bc.repairCanonicalLinkageOnStartup()
@@ -393,6 +395,43 @@ func (bc *BlockChain) Start() error {
 	go bc.updateFutureBlocksLoop()
 	go bc.runNewBlockMessage()
 	return nil
+}
+
+// healPlainStateAheadOfMarkerOnStartup detects and repairs the half-healed
+// shape the old marker-only discontinuity realign left behind (observed live:
+// a validator whose marker and tree sat at height T while PlainState still
+// held blocks above T — every block it built carried stale nonces and the
+// whole network rejected them). The changeset head is the detector:
+// writeBlockWithState persists PlainState, changesets and marker in one
+// transaction, so a changeset block above the marker proves PlainState is
+// ahead. Roll it back to the marker; catch-up re-imports forward from there.
+func (bc *BlockChain) healPlainStateAheadOfMarkerOnStartup() {
+	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil {
+		return
+	}
+	healed := false
+	if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+		appliedNum, appliedHash, ok, err := rawdb.ReadQMDBApplied(tx)
+		if err != nil || !ok {
+			return err
+		}
+		last, err := highestChangesetBlock(tx)
+		if err != nil || last <= appliedNum {
+			return err
+		}
+		log.Warn("PlainState is ahead of the applied marker (half-healed discontinuity); rolling it back",
+			"plainState", last, "marker", appliedNum)
+		if err := realignAppliedToTree(tx, appliedNum, appliedHash); err != nil {
+			return err
+		}
+		healed = true
+		return nil
+	}); err != nil {
+		log.Error("PlainState/marker startup heal failed — the node may build on phantom state", "err", err)
+	}
+	if healed {
+		bc.clearReadThroughCache()
+	}
 }
 
 // verifyAppliedStateOnStartup cross-checks the QMDBApplied marker against the
@@ -424,10 +463,10 @@ func (bc *BlockChain) verifyAppliedStateOnStartup() {
 		}
 		parent := rawdb.ReadHeader(tx, hdr.ParentHash, appliedNum-1)
 		if parent != nil && treeRoot == parent.Root {
-			log.Warn("applied marker was one block ahead of the executed state; stepping it back",
+			log.Warn("applied marker was one block ahead of the executed state; rolling PlainState and marker back",
 				"marker", appliedNum, "markerRoot", fmt.Sprintf("%x", hdr.Root[:8]),
 				"treeRoot", fmt.Sprintf("%x", treeRoot[:8]))
-			return rawdb.WriteQMDBApplied(tx, appliedNum-1, hdr.ParentHash)
+			return realignAppliedToTree(tx, appliedNum-1, hdr.ParentHash)
 		}
 		// Root cause found (qs-canon-probe -qmdbroot/-qmdbdiff): failed-block
 		// executions used to leave their appends on the live tree (no undo row
@@ -2215,17 +2254,26 @@ func (bc *BlockChain) ensureQMDBTreeAtParent(blk block.IBlock) error {
 		return err
 	}
 	// Walk down from the parent through the undo window looking for the
-	// header whose root the tree matches; realign the marker there.
+	// header whose root the tree matches, then roll the OTHER two states back
+	// to it. A marker-only realign proved insufficient live: PlainState kept
+	// the blocks the tree had lost, catch-up re-executed them on that phantom
+	// world state, and the node built nonce-stale blocks the whole network
+	// rejected. The realign is now three-state atomic — PlainState unwound
+	// block-by-block from its changeset pre-values down to the tree's height,
+	// per-block bookkeeping consumed, marker moved — in one transaction, so a
+	// failure leaves everything exactly as it was.
 	cur := pHdr
 	for depth := 0; depth < 256 && cur != nil; depth++ {
 		if treeRoot == cur.Root {
+			target, targetHash := cur.Number.Uint64(), cur.Hash()
 			if werr := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
-				return rawdb.WriteQMDBApplied(tx, cur.Number.Uint64(), cur.Hash())
+				return realignAppliedToTree(tx, target, targetHash)
 			}); werr != nil {
-				return fmt.Errorf("tree at %d/%x but marker realign failed: %w", cur.Number.Uint64(), cur.Hash().Bytes()[:8], werr)
+				return fmt.Errorf("tree at %d/%x but three-state realign failed: %w", target, targetHash[:8], werr)
 			}
-			return fmt.Errorf("tree root %x matches header %d, not the incoming parent %d — marker realigned",
-				treeRoot[:8], cur.Number.Uint64(), pHdr.Number.Uint64())
+			bc.clearReadThroughCache()
+			return fmt.Errorf("tree root %x matches header %d, not the incoming parent %d — PlainState and marker realigned to the tree",
+				treeRoot[:8], target, pHdr.Number.Uint64())
 		}
 		p, perr := bc.GetHeaderByHash(cur.ParentHash)
 		if perr != nil || p == nil {
@@ -2235,6 +2283,86 @@ func (bc *BlockChain) ensureQMDBTreeAtParent(blk block.IBlock) error {
 	}
 	return fmt.Errorf("tree root %x matches no header within the undo window below parent %d/%x",
 		treeRoot[:8], pHdr.Number.Uint64(), pHdr.Root[:8])
+}
+
+// qmdbRealignMaxDepth caps how many blocks a discontinuity realign may roll
+// back. It mirrors (with slack) the 256-block undo/lineage window: a span
+// beyond it means the changesets needed for a faithful PlainState rewind may
+// already be consumed, and a partial heal is worse than staying wedged behind
+// the root/nonce verification walls.
+const qmdbRealignMaxDepth = 512
+
+// realignAppliedToTree rolls PlainState and the applied marker back to
+// `target` — the height whose header root the live QMDB tree ALREADY holds —
+// restoring the tree/PlainState/marker three-state invariant. The tree itself
+// is never touched: it is the reference the other two are aligned to.
+//
+// PlainState's true height is taken from the changeset head, not the marker:
+// writeBlockWithState persists PlainState, its changesets and the marker in
+// one transaction, so the highest changeset block number IS the last block
+// PlainState absorbed — even when an earlier marker-only realign already
+// moved the marker away (the half-healed shape observed live on node4).
+// Everything above target is unwound via the changeset pre-values and its
+// per-block bookkeeping (undo record, consensus evidence, receipts) consumed;
+// the re-imported blocks rewrite all of it.
+func realignAppliedToTree(tx kv.RwTx, target uint64, targetHash types.Hash) error {
+	from, err := highestChangesetBlock(tx)
+	if err != nil {
+		return err
+	}
+	if from > target {
+		if from-target > qmdbRealignMaxDepth {
+			return fmt.Errorf("refusing to realign %d blocks (PlainState at %d, tree at %d): beyond the changeset window", from-target, from, target)
+		}
+		for h := from; h > target; h-- {
+			if err := commitment.UnwindPlainStateBlock(tx, h); err != nil {
+				return fmt.Errorf("plain-state unwind of block %d: %w", h, err)
+			}
+			key := modules.EncodeBlockNumber(h)
+			if err := tx.Delete(modules.QMDBUndoWindow, key); err != nil {
+				return err
+			}
+			if err := tx.Delete(modules.ConsensusEvidence, key); err != nil {
+				return err
+			}
+		}
+		if err := rawdb.TruncateReceipts(tx, target+1); err != nil {
+			return fmt.Errorf("truncate receipts from %d: %w", target+1, err)
+		}
+	}
+	return rawdb.WriteQMDBApplied(tx, target, targetHash)
+}
+
+// highestChangesetBlock returns the highest block number present in the
+// account/storage changesets — PlainState's true height (see
+// realignAppliedToTree). 0 when both tables are empty.
+func highestChangesetBlock(tx kv.Tx) (uint64, error) {
+	var last uint64
+	for _, table := range []string{modules.AccountChangeSet, modules.StorageChangeSet} {
+		c, err := tx.Cursor(table)
+		if err != nil {
+			return 0, err
+		}
+		k, _, err := c.Last()
+		c.Close()
+		if err != nil {
+			return 0, err
+		}
+		if len(k) >= 8 {
+			if n := binary.BigEndian.Uint64(k[:8]); n > last {
+				last = n
+			}
+		}
+	}
+	return last, nil
+}
+
+// clearReadThroughCache invalidates the layered read-through cache after a
+// direct PlainState mutation that bypassed the normal import path.
+func (bc *BlockChain) clearReadThroughCache() {
+	if cache := layered.ExtractCache(bc.ChainDB); cache != nil {
+		cache.Clear()
+	}
 }
 
 func (bc *BlockChain) revertUncommittedQMDBAppends(blockNum uint64) {
