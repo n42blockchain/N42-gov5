@@ -294,6 +294,16 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			// Track the applied-chain head (which block's state the world state
 			// reflects) — the branch-switch unwind reverts to this marker's
 			// lineage until it matches an incoming block's parent.
+			// FINGERPRINT: a tx-bearing block advancing the marker with zero
+			// receipts is exactly the live-fire divergence signature (marker
+			// ahead of the executed state → permanent nonce-too-high replay
+			// wedge). Root cause under investigation — this line identifies
+			// the guilty code path the moment it happens again.
+			if len(blk.Transactions()) > 0 && len(receipts) == 0 {
+				log.Warn("applied marker advancing over a tx-bearing block with ZERO receipts",
+					"number", blockNumber.Uint64(), "hash", blk.Hash().Hex()[:14],
+					"txs", len(blk.Transactions()))
+			}
 			if err := rawdb.WriteQMDBApplied(tx, blockNumber.Uint64(), blk.Hash()); err != nil {
 				return fmt.Errorf("writing QMDB applied marker for block %d failed: %w", blockNumber.Uint64(), err)
 			}

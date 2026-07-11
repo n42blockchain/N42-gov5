@@ -50,7 +50,18 @@ func main() {
 		if head != nil {
 			headStr = fmt.Sprintf("%d", *head)
 		}
-		fmt.Printf("== %s  head=%s\n", dir, headStr)
+		hbh := rawdb.ReadHeadBlockHash(tx)
+		hbn := rawdb.ReadHeaderNumber(tx, hbh)
+		hbnStr := "?"
+		if hbn != nil {
+			hbnStr = fmt.Sprintf("%d", *hbn)
+		}
+		an, ah, aok, _ := rawdb.ReadQMDBApplied(tx)
+		appliedStr := "unset"
+		if aok {
+			appliedStr = fmt.Sprintf("%d/%x", an, ah[:8])
+		}
+		fmt.Printf("== %s  head=%s headBlockHash=%s/%x qmdbApplied=%s\n", dir, headStr, hbnStr, hbh[:8], appliedStr)
 		for n := *from; n <= *to; n++ {
 			ch, _ := rawdb.ReadCanonicalHash(tx, n)
 			hdr := rawdb.ReadHeader(tx, ch, n)
