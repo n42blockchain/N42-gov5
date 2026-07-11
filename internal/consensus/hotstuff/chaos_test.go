@@ -440,6 +440,7 @@ func TestChaos7Node_PacketDrop(t *testing.T) {
 	// Run 3 clean rounds.
 	for view := ViewNumber(1); view <= 3; view++ {
 		blockHash := blockHashForView(view)
+		h.markBlockImported(blockHash)
 		h.runConsensusRound(view, blockHash)
 	}
 
@@ -459,6 +460,9 @@ func TestChaos7Node_PacketDrop(t *testing.T) {
 
 		blockHash := blockHashForView(currentView)
 		leaderIdx := int(currentView % uint64(n))
+		// Block propagation is modeled independently from the 20% consensus
+		// message drop; validators that receive the Proposal have executed it.
+		h.markBlockImported(blockHash)
 
 		// Step 1: Leader proposes.
 		err := h.engines[leaderIdx].ProcessEvent(ConsensusEvent{
