@@ -31,11 +31,20 @@ import (
 
 // WarmOverlayReader overlays a warm MDBX tier (H0+1..tip deltas + tombstones)
 // on top of a cold snapshot StateReader (the immutable H0 snapshot).
+//
+// The reader is created once per block and consulted on the first touch of each
+// account/slot (IBS caches subsequent touches), so a busy block issues thousands
+// of warmGet reads. Each read is a cursor SeekExact; rather than open+close a
+// fresh MDBX cursor every time, cursors are cached per table and reused across
+// the block's reads, then released by Close(). All reads happen before the
+// block's writes (the executor flushes to MDBX only at CommitBlock, after the
+// read phase), so a long-lived read cursor never straddles a write to its table.
 type WarmOverlayReader struct {
 	tx       kv.Tx
 	cold     StateReader // snapshot (H0), e.g. snapshotreader.StateReader
 	accTable string
 	stoTable string
+	curs     map[string]kv.Cursor // lazily opened, reused per read, freed by Close
 }
 
 // NewWarmOverlayReader builds the overlay. cold serves keys absent from warm.
@@ -48,15 +57,32 @@ func NewWarmOverlayReader(tx kv.Tx, cold StateReader) *WarmOverlayReader {
 	}
 }
 
+// Close releases the cached cursors. Call once per block after execution; safe
+// to call multiple times. Cursors would otherwise be freed when the tx ends, but
+// the batch tx spans many blocks, so closing per block keeps cursor count bounded.
+func (r *WarmOverlayReader) Close() {
+	for _, c := range r.curs {
+		c.Close()
+	}
+	r.curs = nil
+}
+
 // warmGet distinguishes a present key (found=true; value may be empty =
 // tombstone) from an absent key (found=false). Uses SeekExact so the DupSort
-// AutoConv on the Storage table (52B composite -> 20B dup-key) is handled.
+// AutoConv on the Storage table (52B composite -> 20B dup-key) is handled. The
+// per-table cursor is opened once and reused across reads (see type doc).
 func (r *WarmOverlayReader) warmGet(table string, key []byte) (val []byte, found bool, err error) {
-	c, err := r.tx.Cursor(table)
-	if err != nil {
-		return nil, false, err
+	c := r.curs[table]
+	if c == nil {
+		c, err = r.tx.Cursor(table)
+		if err != nil {
+			return nil, false, err
+		}
+		if r.curs == nil {
+			r.curs = make(map[string]kv.Cursor, 2)
+		}
+		r.curs[table] = c
 	}
-	defer c.Close()
 	k, v, err := c.SeekExact(key)
 	if err != nil {
 		return nil, false, err
