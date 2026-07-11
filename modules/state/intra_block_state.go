@@ -156,6 +156,13 @@ type IntraBlockState struct {
 	// Zero if LtHash is not active.
 	ltHashRoot types.Hash
 
+	// lastRootAccounts/lastRootStorage snapshot the exact dirty set the most
+	// recent computeRootViaComputer call fed to the root computer, so the
+	// leader path can replay the sealed block onto the live tree byte-exactly
+	// (see LastRootDirtySet).
+	lastRootAccounts map[types.Address]*account.StateAccount
+	lastRootStorage  map[types.Address]map[types.Hash]*uint256.Int
+
 	// wipedStorageSlots holds, per wiped address, the COMPLETE pre-block storage
 	// slot set (slot → original value) captured at storage-wipe registration time
 	// (Selfdestruct / contract CreateAccount), via a StorageEnumerator reader.
@@ -1442,6 +1449,7 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 			panic("JMT+LtHash root computation failed: " + err.Error())
 		}
 		s.ltHashRoot = ltRoot
+		s.lastRootAccounts, s.lastRootStorage = accounts, storage
 		return jmtRoot
 	}
 
@@ -1449,7 +1457,22 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 	if err != nil {
 		panic("JMT root computation failed: " + err.Error())
 	}
+	// Snapshot the EXACT dirty set this root was computed from. The miner
+	// computes the sealed root on an isolated computer; the same block must
+	// later be applied to the live tree, and for an append-only commitment
+	// (QMDB) that application has to use the byte-identical op set — a fresh
+	// collection is NOT guaranteed to be identical (the collection itself
+	// faults objects and merges journal dirties), and any extra no-op entry
+	// still consumes an append slot and shifts the root.
+	s.lastRootAccounts, s.lastRootStorage = accounts, storage
 	return root
+}
+
+// LastRootDirtySet returns the account/storage dirty set the most recent
+// computeRootViaComputer call fed to the root computer (nil before any call).
+// Used to replay the leader's sealed block onto the live tree byte-exactly.
+func (s *IntraBlockState) LastRootDirtySet() (map[types.Address]*account.StateAccount, map[types.Address]map[types.Hash]*uint256.Int) {
+	return s.lastRootAccounts, s.lastRootStorage
 }
 
 // DirtyAccountData returns dirty accounts and their storage for leaf journal.

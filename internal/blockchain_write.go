@@ -287,13 +287,25 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			// the applied marker would advance over state the tree never saw
 			// (the zero-receipts fingerprint; every block this node led then
 			// desynced its committed state from the importing majority).
-			// Re-run the root computation on the LIVE computer: same dirty
-			// set, so it must reproduce the sealed header root byte-for-byte
-			// — a mismatch aborts the write before anything is persisted.
+			// Replay the SNAPSHOTTED dirty set (the exact ops the sealed root
+			// was computed from) on the live computer: it must reproduce the
+			// sealed header root byte-for-byte — a mismatch aborts the write
+			// before anything is persisted. Re-collecting from the ibs is NOT
+			// equivalent: collection faults objects and merges journal
+			// dirties, and on an append-only commitment one extra no-op entry
+			// shifts the root (observed live: isolated and live instances of
+			// the same store agreed on synthetic ops but the second
+			// IntermediateRoot collection diverged).
 			if rc := ibs.GetRootComputer(); rc != nil && rc != state.RootComputer(bc.qmdbRootComputer) {
+				accts, stor := ibs.LastRootDirtySet()
+				if accts == nil && stor == nil {
+					return fmt.Errorf("leader block %d has no snapshotted dirty set to replay onto the live QMDB tree", blockNumber.Uint64())
+				}
 				bc.qmdbRootComputer.SetCold(tx)
-				ibs.SetRootComputer(bc.qmdbRootComputer)
-				liveRoot := ibs.IntermediateRoot()
+				liveRoot, cerr := bc.qmdbRootComputer.ComputeRoot(accts, stor)
+				if cerr != nil {
+					return fmt.Errorf("replaying sealed block %d onto the live QMDB tree: %w", blockNumber.Uint64(), cerr)
+				}
 				if liveRoot != blk.StateRoot() {
 					return fmt.Errorf("live QMDB tree root %x does not reproduce sealed root %x at block %d",
 						liveRoot[:8], blk.StateRoot().Bytes()[:8], blockNumber.Uint64())
