@@ -101,7 +101,10 @@ func TestReorgAuditStartEnd(t *testing.T) {
 		t.Error("NewHead not set correctly")
 	}
 
-	// End reorg
+	// End reorg. Sleep past the Windows clock granularity so the duration
+	// stamp is measurably nonzero (observed flaking at duration=0s when the
+	// warm full-suite run finished within one timer tick).
+	time.Sleep(time.Millisecond)
 	oldChain := []block.IBlock{oldHead}
 	newChain := []block.IBlock{newHead}
 	audit.EndReorg(event, commonBlock, oldChain, newChain, 5, 3, nil)
