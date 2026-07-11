@@ -1577,8 +1577,13 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		// future-queue the block; catch-up then replays forward from the
 		// tree's true height.
 		if qerr := bc.ensureQMDBTreeAtParent(blk); qerr != nil {
-			log.Warn("QMDB tree/marker discontinuity before execution; realigned and queueing",
-				"number", blockNumber.Uint64(), "err", qerr)
+			if errors.Is(qerr, errQMDBBehindParent) {
+				log.Debug("block ahead of the applied state; future-queuing",
+					"number", blockNumber.Uint64())
+			} else {
+				log.Warn("QMDB tree/marker discontinuity before execution; realigned and queueing",
+					"number", blockNumber.Uint64(), "err", qerr)
+			}
 			if aerr := bc.AddFutureBlock(blk); aerr != nil {
 				return it.index, aerr
 			}
@@ -2197,6 +2202,17 @@ func (bc *BlockChain) ensureQMDBTreeAtParent(blk block.IBlock) error {
 	treeRoot := bc.qmdbRootComputer.Root()
 	if treeRoot == pHdr.Root {
 		return nil
+	}
+	// Out-of-order arrival, not a discontinuity: the applied state simply has
+	// not reached the parent yet (block N+1 gossiped before N imported). The
+	// regular future-queue/catch-up path owns this — stay silent.
+	if err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		if an, _, ok, aerr := rawdb.ReadQMDBApplied(tx); aerr == nil && ok && an < pHdr.Number.Uint64() {
+			return errQMDBBehindParent
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	// Walk down from the parent through the undo window looking for the
 	// header whose root the tree matches; realign the marker there.
