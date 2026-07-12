@@ -73,6 +73,11 @@ var (
 	// block's parent yet (out-of-order arrival) — future-queue silently, this
 	// is not a tree/marker discontinuity.
 	errQMDBBehindParent = errors.New("qmdb applied state behind the incoming parent")
+	// ErrStaleSeal: a leader's sealed block reached the write path after the
+	// applied head had already moved past its parent (a competing same-height
+	// candidate imported first). The seal lost the race - the miner drops it
+	// quietly; nothing is wrong with the node.
+	ErrStaleSeal = errors.New("sealed block is stale (applied head moved past its parent)")
 )
 
 // =============================================================================
