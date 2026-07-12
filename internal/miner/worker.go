@@ -709,6 +709,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		return err
 	}
 
+	tAlign := time.Since(start)
 	tx, err := w.chain.DB().BeginRo(w.ctx)
 	if err != nil {
 		log.Error("work.commitWork failed", err)
@@ -741,6 +742,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 			ibs.SetRootComputer(rc)
 		}
 	}
+	tReload := time.Since(start)
 	ibs.BeginWriteSnapshot()
 	ibs.BeginWriteCodes()
 
@@ -763,6 +765,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		return fmt.Errorf("miner block-start system calls: %w", err)
 	}
 
+	tPrep := time.Since(start)
 	err = w.fillTransactions(interrupt, current, ibs, getHeader)
 	switch {
 	case err == nil:
@@ -786,6 +789,11 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		return fmt.Errorf("miner block-end system calls: %w", err)
 	}
 
+	// Build-phase breakdown: the dropped-seal hunt found ~6s builds with a
+	// 6ms seal and no visible spender - this line is the missing evidence.
+	log.Info("miner: build phases",
+		"align", tAlign, "reload", tReload-tAlign, "syscalls", tPrep-tReload,
+		"fillTx", time.Since(start)-tPrep, "total", time.Since(start))
 	if err = w.commit(current, stateWriter, ibs, start, headers, tracingReader); err != nil {
 		log.Errorf("w.commit failed, error %v\n", err)
 		return err

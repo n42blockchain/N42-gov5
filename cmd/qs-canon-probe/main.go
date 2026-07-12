@@ -37,6 +37,7 @@ func main() {
 	revertDepth := flag.Uint64("qmdbrevert", 0, "N>0: load the forest at the applied marker and ApplyUndo N blocks newest-to-oldest, comparing the tree root against the canonical header root after every step — the first mismatch pinpoints an unfaithful revert (in-memory only, store untouched)")
 	audit := flag.Bool("stateaudit", false, "cross-check every PlainState row against the reloaded QMDB tree (the network-verified commitment); splits a deterministic wrong-root wedge into corrupt-flat-input vs execution/index fault")
 	cpuprofile := flag.String("cpuprofile", "", "write a CPU profile of the probe run to this file")
+	follow := flag.Bool("qmdbfollow", false, "full-load the forest, wait for the LIVE chain to advance, then attempt the trusted-index fast reload against the new layout - measures whether in-window deletes break the reconciliation baseline (the miner ReloadForBuild fallback trigger)")
 	csAddr := flag.String("csgrep", "", "hex address: list every changeset row recording a pre-value for it (did this key's writes go through the changeset writer?)")
 	flag.Parse()
 	if *cpuprofile != "" {
@@ -50,6 +51,12 @@ func main() {
 		modules.N42Init()
 		kv.ChaindataTablesCfg = modules.N42TableCfg
 		csGrep(flag.Arg(0), *csAddr)
+		return
+	}
+	if *follow {
+		modules.N42Init()
+		kv.ChaindataTablesCfg = modules.N42TableCfg
+		qmdbFollow(flag.Arg(0))
 		return
 	}
 	if *audit {
