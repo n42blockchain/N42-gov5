@@ -380,6 +380,7 @@ func (g *Generator) generateAndSubmitTxs() {
 
 	numTxs := misc.SecureIntn(g.config.MaxTxsPerBlock) + 1
 	successCount, failCount := 0, 0
+	insufficientSeen := false
 	for i := 0; i < numTxs; i++ {
 		senderIdx := misc.SecureIntn(len(g.accounts))
 		sender := g.accounts[senderIdx]
@@ -437,6 +438,7 @@ func (g *Generator) generateAndSubmitTxs() {
 				delete(nonces, sender.address)
 			case strings.Contains(msg, "insufficient funds"):
 				g.skipTick[sender.address] = true
+				insufficientSeen = true
 			case strings.Contains(msg, "txpool is full") || strings.Contains(msg, "pool is full"):
 				log.Warn("TxGen: pool full, backing off", "submitted", successCount)
 				return
@@ -451,6 +453,14 @@ func (g *Generator) generateAndSubmitTxs() {
 
 	if successCount > 0 || failCount > 0 {
 		log.Info("TxGen", "submitted", successCount, "failed", failCount)
+	}
+	// The test accounts bleed gas on every transfer; a whole tick of
+	// insufficient-funds with zero submissions means the initial seeding has
+	// been spent (observed live: ~20h in, every block went empty). Re-arm the
+	// faucet - fundTestAccounts tops every account back up on the next tick.
+	if successCount == 0 && insufficientSeen {
+		g.funded.Store(false)
+		log.Warn("TxGen: test accounts depleted; re-funding from the faucet")
 	}
 }
 

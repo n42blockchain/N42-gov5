@@ -308,6 +308,8 @@ func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx) state.RootComputer {
 	//
 	// Serialization: only the miner worker's single build goroutine calls
 	// this, so the computer needs no lock of its own.
+	bc.minerRCMu.Lock()
+	defer bc.minerRCMu.Unlock()
 	rc := bc.minerRC
 	if rc == nil {
 		rc = commitment.NewQMDBRootComputer()
@@ -411,6 +413,23 @@ func (bc *BlockChain) AncientReader() *freezer.AncientReader {
 
 func (bc *BlockChain) Start() error {
 	bc.healPlainStateAheadOfMarkerOnStartup()
+	// Pre-warm the speculative build computer off the leader's critical path:
+	// the FIRST build after a restart otherwise pays the full ~5s index
+	// rebuild inside its 6s view window (caught by the build-phase breakdown -
+	// every other build rides the ~0.4s trusted reload).
+	if bc.qmdbEnabled {
+		go func() {
+			_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+				if rc := bc.NewMinerRootComputer(tx); rc != nil {
+					if q, ok := rc.(*commitment.QMDBRootComputer); ok {
+						q.SetCold(nil) // detach before this tx dies
+					}
+					log.Info("miner speculative computer pre-warmed")
+				}
+				return nil
+			})
+		}()
+	}
 	bc.verifyAppliedStateOnStartup()
 	bc.alignCanonicalToAppliedOnStartup()
 	bc.repairCanonicalLinkageOnStartup()
