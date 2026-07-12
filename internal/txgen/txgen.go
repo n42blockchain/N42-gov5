@@ -422,6 +422,12 @@ func (g *Generator) generateAndSubmitTxs() {
 		}
 		if err := g.txPool.AddLocal(signedTx); err != nil {
 			failCount++
+			// First failure per tick surfaces at Warn regardless of class - a
+			// persistently failing generator was invisible below (observed
+			// live: hours of failed=N submitted=0 with no reason in the log).
+			if failCount == 1 {
+				log.Warn("TxGen: AddLocal failed (first this tick)", "err", err)
+			}
 			msg := err.Error()
 			switch {
 			case strings.Contains(msg, "nonce"):

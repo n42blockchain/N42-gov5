@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"sort"
 
+	"time"
+
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/account"
@@ -25,6 +27,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/qmdb"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/log"
 )
 
 // QMDBRootComputer maintains a qmdb.Tree across blocks.
@@ -178,13 +181,20 @@ func (r *QMDBRootComputer) ReloadForBuild(g qmdb.Getter) error {
 	if r.mdbxIdx != nil || r.indexTrusted == 0 {
 		return r.LoadFrom(g) // persistent index / first load: already right
 	}
+	t0 := time.Now()
 	if err := r.t.LoadFromTrustedIndex(g, r.indexTrusted, r.indexDelta); err != nil {
 		// Stale or inconsistent index (in-window delete, revert window,
-		// unpeeled mutation): rebuild from scratch.
+		// unpeeled mutation): rebuild from scratch. This is the multi-second
+		// path - make it VISIBLE (a silent fallback here was an observation
+		// blind spot during the dropped-seal hunt).
+		log.Warn("qmdb speculative reload fell back to a full index rebuild",
+			"reason", err, "fastAttempt", time.Since(t0))
+		t1 := time.Now()
 		r.t.SetIndex(qmdb.NewMapIndex())
 		if err2 := r.t.LoadFrom(g); err2 != nil {
 			return err2
 		}
+		log.Warn("qmdb speculative full rebuild done", "elapsed", time.Since(t1))
 	}
 	r.flushedThrough = r.t.NextSlot()
 	r.indexTrusted = r.t.NextSlot()
