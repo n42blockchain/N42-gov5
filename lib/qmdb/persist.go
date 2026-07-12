@@ -15,6 +15,7 @@ package qmdb
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 )
 
 var (
@@ -236,6 +237,66 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 // which LoadFrom attaches to g itself — so Get/GetProof work immediately after a
 // load without the caller holding the whole entry log in RAM.
 func (t *Tree) LoadFrom(g Getter) error {
+	// A persistent index (MDBX-backed) already holds the live key set across
+	// restarts, so it must NOT be rescanned; only a fresh in-RAM index (Len()==0)
+	// needs rebuilding from the entry log.
+	trusted := uint64(0)
+	if t.idx.Len() != 0 {
+		trusted = ^uint64(0)
+	}
+	return t.loadFrom(g, trusted)
+}
+
+// LoadFromTrustedIndex reloads the forest trusting the CURRENT index for slots
+// below trustedThrough — they must reflect THIS store's layout as of that
+// cursor (a persistent computer whose candidate appends were peeled with
+// ApplyUndo qualifies; a mid-run recovery reload does NOT: its index carries
+// mutations of a rolled-back tx). Only [trustedThrough, nextSlot) is rescanned
+// into the index, so sealed twigs below the boundary ride the O(meta) fast
+// path — the difference between a multi-second full rescan and a sub-second
+// reload for a per-build miner computer.
+//
+// An in-window DELETE appends nothing for the rescan to observe, so the index
+// could retain a dead key; the post-load reconciliation (index population vs
+// the live-bit population) catches that and returns ErrIndexReconcile — the
+// caller falls back to a full rebuild.
+//
+// expectDelta is the live-bits-minus-index-size baseline measured after the
+// last FULL rebuild: stores damaged by the historical deadFlushed-carryover
+// bug carry "fossil" live bits whose entry rows are gone (they can never be
+// indexed, by any scan), and the whole fleet shares them — the invariant that
+// must hold across a trusted reload is that the delta DID NOT CHANGE, not
+// that it is zero.
+func (t *Tree) LoadFromTrustedIndex(g Getter, trustedThrough uint64, expectDelta int) error {
+	if err := t.loadFrom(g, trustedThrough); err != nil {
+		return err
+	}
+	if d := t.LiveBits() - t.idx.Len(); d != expectDelta {
+		return fmt.Errorf("%w: live-bits-minus-index=%d, want %d (baseline)", ErrIndexReconcile, d, expectDelta)
+	}
+	return nil
+}
+
+// LiveBits returns the total live-bit population across all twigs — the
+// number of slots the commitment considers live. It normally equals the index
+// size; a persistent excess marks fossil slots whose entry rows were lost to
+// the (fixed) deadFlushed carryover bug.
+func (t *Tree) LiveBits() int {
+	live := 0
+	for _, tw := range t.twigs {
+		if tw != nil {
+			live += tw.live
+		}
+	}
+	return live
+}
+
+// ErrIndexReconcile: after a trusted-index reload the index population did not
+// match the live-bit population (an in-window delete or an untracked index
+// mutation). The index cannot be trusted — rebuild it.
+var ErrIndexReconcile = errors.New("qmdb: trusted-index reload reconciliation failed")
+
+func (t *Tree) loadFrom(g Getter, trustedThrough uint64) error {
 	nsRaw, err := g.GetOne(MetaTable, []byte("nextSlot"))
 	if err != nil {
 		return err
@@ -252,10 +313,6 @@ func (t *Tree) LoadFrom(g Getter) error {
 	activeTwig := int((nextSlot - 1) / TwigSize) // twig holding the last live slot
 
 	t.twigs = make([]*twig, numTwigs)
-	// A persistent index (MDBX-backed) already holds the live key set across
-	// restarts, so it must NOT be rescanned; only a fresh in-RAM index (Len()==0)
-	// needs rebuilding from the entry log.
-	rebuildIndex := t.idx.Len() == 0
 
 	// Build twig-by-twig and evict each sealed twig's leaves as soon as its root is
 	// computed, so at most one twig's leaves (+ the active twig) are resident at a
@@ -283,9 +340,11 @@ func (t *Tree) LoadFrom(g Getter) error {
 			live += popcount8(b)
 		}
 		tw.live = live
-		// Fast path: a sealed twig with a persistent index trusts its stored
-		// roots and skips the per-slot entry scan — O(numTwigs) resume, O(1) RAM.
-		if !rebuildIndex && id < activeTwig && haveMeta {
+		// Fast path: a sealed twig fully below the index-trust boundary keeps
+		// its stored roots and skips the per-slot entry scan — O(numTwigs)
+		// resume, O(1) RAM.
+		twigEnd := uint64(id+1) * TwigSize
+		if twigEnd <= trustedThrough && id < activeTwig && haveMeta {
 			tw.leafRoot = storedLeafRoot
 			tw.bitsRoot = hashBits(&tw.bits)
 			tw.root = storedRoot
@@ -315,7 +374,7 @@ func (t *Tree) LoadFrom(g Getter) error {
 			if slot >= nextSlot {
 				break
 			}
-			needKey := rebuildIndex && tw.bit(uint64(local))
+			needKey := slot >= trustedThrough && tw.bit(uint64(local))
 			if hydrated && !needKey {
 				continue
 			}
@@ -349,6 +408,15 @@ func (t *Tree) LoadFrom(g Getter) error {
 	t.entriesBase = nextSlot
 	t.evicted = nextSlot
 	t.nextSlot = nextSlot
+	// Drop pre-reload in-memory bookkeeping that refers to the abandoned tree
+	// state. deadFlushed is the load-bearing one: a failed execution marks
+	// flushed slots dead in RAM, its tx rolls back (rows survive on disk), and
+	// a recovery reload lands here — carrying the stale list forward let the
+	// NEXT FlushTo delete LIVE slots' rows (observed live: 7 ghost live-bits
+	// with no entry row on every store of the fleet, the exact precondition of
+	// the "undo record is poisoned" incident).
+	t.deadFlushed = nil
+	t.rec = nil
 	t.rootDirty = true
 	t.upRebuild = true // twig set replaced wholesale; rebuild the upper heap
 	t.Root()           // materialize twig + world roots
