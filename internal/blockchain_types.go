@@ -178,6 +178,7 @@ type BlockChain struct {
 	mptEnabled      bool
 
 	qmdbRootComputer *commitment.QMDBRootComputer
+	minerRC          *commitment.QMDBRootComputer // persistent speculative-build computer (miner goroutine only; see NewMinerRootComputer)
 	qmdbEnabled      bool
 
 	ltHashCommitment   *commitment.LtHashCommitment
