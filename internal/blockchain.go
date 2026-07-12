@@ -294,16 +294,41 @@ func (bc *BlockChain) SetQMDBRootComputer(rc *commitment.QMDBRootComputer) {
 // head; the QMDB DB state tracks the head because writeBlockWithState flushes
 // per block.
 func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx) state.RootComputer {
-	if bc.qmdbEnabled {
-		rc := commitment.NewQMDBRootComputer()
-		if err := rc.LoadFrom(tx); err != nil {
-			log.Warn("miner QMDB speculative reload failed; block uses default root", "err", err)
-			return nil
-		}
-		rc.SetCold(tx)
-		return rc
+	if !bc.qmdbEnabled {
+		return nil
 	}
-	return nil
+	// PERSISTENT speculative computer: a fresh instance pays a full index
+	// rescan (5.9M point reads, ~5s IO-bound — invisible on CPU profiles) on
+	// EVERY build, which alone consumed most of the 6s view window and kept
+	// the network in its slow, timeout-riddled steady state. Reusing one
+	// instance rides the sealed-twig O(meta) fast path: peel the previous
+	// candidate's appends (restoring tree AND index to the last loaded
+	// layout), then reload trusting the index below that cursor. Every doubt
+	// falls back to the full rebuild inside ReloadForBuild.
+	//
+	// Serialization: only the miner worker's single build goroutine calls
+	// this, so the computer needs no lock of its own.
+	rc := bc.minerRC
+	if rc == nil {
+		rc = commitment.NewQMDBRootComputer()
+		rc.EnableUndoRecording() // the candidate peel below needs per-build undo
+		bc.minerRC = rc
+	}
+	rc.SetCold(tx)
+	if undo := rc.TakeUndo(); undo != nil {
+		// Previous build's candidate ops are still on the speculative tree;
+		// peel them so the index matches the last loaded layout again. A
+		// failed peel just voids the trust — ReloadForBuild rebuilds.
+		if err := rc.Tree().ApplyUndo(undo); err != nil {
+			log.Debug("miner speculative tree candidate peel failed; full reload", "err", err)
+			rc.VoidIndexTrust()
+		}
+	}
+	if err := rc.ReloadForBuild(tx); err != nil {
+		log.Warn("miner QMDB speculative reload failed; block uses default root", "err", err)
+		return nil
+	}
+	return rc
 }
 
 // JMTCommitment returns the JMT commitment layer, or nil if not enabled.

@@ -13,6 +13,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/pprof"
+	"time"
 
 	"github.com/c2h5oh/datasize"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -34,8 +36,16 @@ func main() {
 	qmdbOps := flag.Bool("qmdbops", false, "load the forest twice from one store and apply an identical synthetic op sequence to both instances; roots must match (miner-isolated vs live instance equivalence probe)")
 	revertDepth := flag.Uint64("qmdbrevert", 0, "N>0: load the forest at the applied marker and ApplyUndo N blocks newest-to-oldest, comparing the tree root against the canonical header root after every step — the first mismatch pinpoints an unfaithful revert (in-memory only, store untouched)")
 	audit := flag.Bool("stateaudit", false, "cross-check every PlainState row against the reloaded QMDB tree (the network-verified commitment); splits a deterministic wrong-root wedge into corrupt-flat-input vs execution/index fault")
+	cpuprofile := flag.String("cpuprofile", "", "write a CPU profile of the probe run to this file")
 	csAddr := flag.String("csgrep", "", "hex address: list every changeset row recording a pre-value for it (did this key's writes go through the changeset writer?)")
 	flag.Parse()
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err == nil {
+			_ = pprof.StartCPUProfile(f)
+			defer pprof.StopCPUProfile()
+		}
+	}
 	if *csAddr != "" {
 		modules.N42Init()
 		kv.ChaindataTablesCfg = modules.N42TableCfg
@@ -189,17 +199,41 @@ func main() {
 				if hdr != nil {
 					want = fmt.Sprintf("%x", hdr.Root[:8])
 				}
-				for pass := 1; pass <= 2; pass++ {
-					rc := commitment.NewQMDBRootComputer()
+				var reuse *commitment.QMDBRootComputer
+				for pass := 1; pass <= 3; pass++ {
+					// pass 1+2: fresh computer each (cold, index rebuild — the
+					// determinism probe). pass 3: RELOAD pass 2's computer with
+					// its index retained — times the sealed-twig fast path that
+					// a persistent miner computer would ride.
+					rc := reuse
+					if rc == nil {
+						rc = commitment.NewQMDBRootComputer()
+					}
 					rc.SetCold(tx)
-					if err := rc.LoadFrom(tx); err != nil {
-						fmt.Printf("  qmdbroot pass%d: LoadFrom error: %v\n", pass, err)
+					t0 := time.Now()
+					var lerr error
+					if pass == 3 {
+						// Trusted-index fast reload (the persistent miner
+						// computer's path, incl. the fossil-delta baseline).
+						fossils := rc.Tree().LiveBits() - rc.Tree().LiveCount()
+						if fossils != 0 {
+							fmt.Printf("  qmdbroot pass3: %d fossil live-bits (entry rows lost; deadFlushed-carryover damage)\n", fossils)
+						}
+						lerr = rc.ReloadForBuild(tx)
+					} else {
+						lerr = rc.LoadFrom(tx)
+					}
+					if lerr != nil {
+						fmt.Printf("  qmdbroot pass%d: LoadFrom error: %v\n", pass, lerr)
 						continue
 					}
 					got := rc.Root()
 					rc.SetCold(nil)
-					fmt.Printf("  qmdbroot pass%d: tree=%x markerHeader=%s applied=%d next=%d\n",
-						pass, got[:8], want, an, rc.Tree().NextSlot())
+					fmt.Printf("  qmdbroot pass%d: tree=%x markerHeader=%s applied=%d next=%d elapsed=%s\n",
+						pass, got[:8], want, an, rc.Tree().NextSlot(), time.Since(t0))
+					if pass == 2 {
+						reuse = rc
+					}
 				}
 			}
 		}

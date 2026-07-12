@@ -32,6 +32,8 @@ type QMDBRootComputer struct {
 	t              *qmdb.Tree
 	flushedThrough uint64         // entry-log slots already persisted (for incremental flush)
 	mdbxIdx        *qmdbMDBXIndex // non-nil when the live-key index is MDBX-backed
+	indexTrusted   uint64         // slot cursor below which the in-RAM index matches the store (ReloadForBuild fast path); 0 = never fully loaded
+	indexDelta     int            // live-bits minus index-size baseline after the last full rebuild (fossil slots; see LoadFromTrustedIndex)
 
 	undoRecording bool            // capture per-block undo data in ComputeRoot
 	lastUndo      *qmdb.BlockUndo // undo record of the most recent ComputeRoot
@@ -122,6 +124,11 @@ func NewQMDBRootComputer() *QMDBRootComputer {
 	return &QMDBRootComputer{t: qmdb.New()}
 }
 
+// VoidIndexTrust marks the in-RAM index untrusted, forcing the next
+// ReloadForBuild to rebuild it from the entry log (used when a candidate
+// peel failed and the index may carry unpeeled mutations).
+func (r *QMDBRootComputer) VoidIndexTrust() { r.indexTrusted = 0 }
+
 // Tree exposes the underlying tree (for snapshot/proof tests).
 func (r *QMDBRootComputer) Tree() *qmdb.Tree { return r.t }
 
@@ -147,6 +154,40 @@ func (r *QMDBRootComputer) LoadFrom(g qmdb.Getter) error {
 		return err
 	}
 	r.flushedThrough = r.t.NextSlot()
+	r.indexTrusted = r.t.NextSlot()
+	// Baseline for trusted-reload reconciliation: fossil live bits (rows lost
+	// to the fixed deadFlushed carryover bug) make this nonzero fleet-wide;
+	// the reload invariant is that it stays CONSTANT.
+	r.indexDelta = r.t.LiveBits() - r.t.LiveCount()
+	return nil
+}
+
+// ReloadForBuild reloads a PERSISTENT speculative-build computer against the
+// store's current layout, riding the sealed-twig O(meta) fast path instead of
+// the multi-second full index rescan a fresh computer pays (observed live:
+// every leader build burned ~5s in LoadFrom -> IO-bound, invisible on CPU
+// profiles -> chronic view timeouts).
+//
+// Contract: between calls, the ONLY tree mutations must be candidate-build
+// ComputeRoot ops, and they must have been peeled back with ApplyUndo before
+// this call — then the in-RAM index is exact for every slot below the
+// previous load's cursor and only the delta needs scanning. Any doubt
+// (peel failure, reconciliation mismatch, first use) falls back to the full
+// rebuild automatically.
+func (r *QMDBRootComputer) ReloadForBuild(g qmdb.Getter) error {
+	if r.mdbxIdx != nil || r.indexTrusted == 0 {
+		return r.LoadFrom(g) // persistent index / first load: already right
+	}
+	if err := r.t.LoadFromTrustedIndex(g, r.indexTrusted, r.indexDelta); err != nil {
+		// Stale or inconsistent index (in-window delete, revert window,
+		// unpeeled mutation): rebuild from scratch.
+		r.t.SetIndex(qmdb.NewMapIndex())
+		if err2 := r.t.LoadFrom(g); err2 != nil {
+			return err2
+		}
+	}
+	r.flushedThrough = r.t.NextSlot()
+	r.indexTrusted = r.t.NextSlot()
 	return nil
 }
 
