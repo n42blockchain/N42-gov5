@@ -497,6 +497,14 @@ func (w *worker) resultLoop() error {
 
 			err = w.chain.WriteBlockWithState(blk, receipts, task.state, task.nopay)
 			if err != nil {
+				if errors.Is(err, internal.ErrStaleSeal) {
+					// The applied head moved past this seal's parent while it
+					// was in flight (a competing same-height candidate won).
+					// An expected race under view churn, not a node fault.
+					log.Info("Sealed block lost to a competing candidate; dropping",
+						"number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12])
+					continue
+				}
 				log.Error("Failed writing block to chain", "err", err)
 				miningErrorsCounter.Inc()
 				continue

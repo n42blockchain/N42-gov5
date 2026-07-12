@@ -308,6 +308,21 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			// the same store agreed on synthetic ops but the second
 			// IntermediateRoot collection diverged).
 			if rc := ibs.GetRootComputer(); rc != nil && rc != state.RootComputer(bc.qmdbRootComputer) {
+				// Stale-seal gate: the sealed block extends its PARENT, but the
+				// applied head may have moved past it while the seal was in
+				// flight (a competing same-height candidate imported first —
+				// observed live as a burst of reproduce-guard trips: the
+				// replay ran on a tree already holding the sibling, failed
+				// deterministically, and burned the leader's view with a
+				// scary error for a block that had simply lost the race).
+				// A seal whose parent is no longer the applied head has lost;
+				// drop it quietly instead of replaying onto the wrong base.
+				if an, ah, ok, aerr := rawdb.ReadQMDBApplied(tx); aerr == nil && ok {
+					if an != blockNumber.Uint64()-1 || ah != blk.ParentHash() {
+						return fmt.Errorf("sealed block %d parent %x is no longer the applied head (%d/%x): %w",
+							blockNumber.Uint64(), blk.ParentHash().Bytes()[:8], an, ah[:8], ErrStaleSeal)
+					}
+				}
 				accts, stor := ibs.LastRootDirtySet()
 				if accts == nil && stor == nil {
 					return fmt.Errorf("leader block %d has no snapshotted dirty set to replay onto the live QMDB tree", blockNumber.Uint64())
