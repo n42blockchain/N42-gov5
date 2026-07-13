@@ -333,34 +333,6 @@ func RebuildHashedStateETLParallel(ctx context.Context, db kv.RoDB, tx kv.RwTx, 
 		"workers", workers, "acctBufPerMB", uint64(accBufPer/datasize.MB),
 		"stoBufPerMB", uint64(stoBufPer/datasize.MB))
 
-	// scanShard walks [loByte, hiByte) of the first key byte on table `plainTable`,
-	// invoking hash() per row to fill the worker's collector.
-	scanShard := func(plainTable string, loByte, hiByte int, hash func(k, v []byte) error) error {
-		roTx, err := db.BeginRo(ctx)
-		if err != nil {
-			return err
-		}
-		defer roTx.Rollback()
-		cur, err := roTx.Cursor(plainTable)
-		if err != nil {
-			return err
-		}
-		defer cur.Close()
-		seek := []byte{byte(loByte)}
-		for k, v, err := cur.Seek(seek); k != nil; k, v, err = cur.Next() {
-			if err != nil {
-				return err
-			}
-			if int(k[0]) >= hiByte {
-				break
-			}
-			if err := hash(k, v); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
 	// ---- Accounts: shard by first addr byte, keccak(addr) → HashedAccounts ----
 	t0 := time.Now()
 	accColls := make([]*etl.Collector, workers)
@@ -369,7 +341,7 @@ func RebuildHashedStateETLParallel(ctx context.Context, db kv.RoDB, tx kv.RwTx, 
 		accColls[w] = etl.NewCollector(fmt.Sprintf("rehash-acct-%d", w),
 			filepath.Join(tmpdir, fmt.Sprintf("acct-%d", w)),
 			etl.NewSortableBuffer(accBufPer), logger)
-		return scanShard("Account", lo, hi, func(k, v []byte) error {
+		return scanPlainStateShard(ctx, db, "Account", lo, hi, func(k, v []byte) error {
 			if len(k) != 20 {
 				return nil
 			}
@@ -407,7 +379,7 @@ func RebuildHashedStateETLParallel(ctx context.Context, db kv.RoDB, tx kv.RwTx, 
 		var prevAddr [20]byte
 		var prevHashedAddr [32]byte
 		var hasPrev bool
-		return scanShard("Storage", lo, hi, func(k, v []byte) error {
+		return scanPlainStateShard(ctx, db, "Storage", lo, hi, func(k, v []byte) error {
 			if len(k) < 52 {
 				return nil
 			}
@@ -437,6 +409,47 @@ func RebuildHashedStateETLParallel(ctx context.Context, db kv.RoDB, tx kv.RwTx, 
 		"accts", sumInt64(accCounts), "sto", sumInt64(stoCounts),
 		"storageElapsed", time.Since(tSto).Truncate(time.Millisecond),
 		"total", time.Since(t0).Truncate(time.Millisecond))
+	return nil
+}
+
+// scanPlainStateShard walks [loByte, hiByte) of a table's first-key-byte
+// range. Keep the initial Seek error separate from the loop condition: a failed
+// Seek commonly returns (nil, nil, err), and putting it in a `k != nil` loop
+// initializer silently turns that storage failure into an empty shard.
+func scanPlainStateShard(ctx context.Context, db kv.RoDB, plainTable string, loByte, hiByte int, visit func(k, v []byte) error) error {
+	if loByte < 0 || loByte >= 256 || hiByte <= loByte || hiByte > 256 {
+		return fmt.Errorf("invalid %s byte shard [%d,%d)", plainTable, loByte, hiByte)
+	}
+	roTx, err := db.BeginRo(ctx)
+	if err != nil {
+		return err
+	}
+	defer roTx.Rollback()
+	cur, err := roTx.Cursor(plainTable)
+	if err != nil {
+		return err
+	}
+	defer cur.Close()
+
+	k, v, err := cur.Seek([]byte{byte(loByte)})
+	if err != nil {
+		return err
+	}
+	for k != nil {
+		if len(k) == 0 {
+			return fmt.Errorf("%s contains an empty key", plainTable)
+		}
+		if int(k[0]) >= hiByte {
+			break
+		}
+		if err := visit(k, v); err != nil {
+			return err
+		}
+		k, v, err = cur.Next()
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -530,30 +543,6 @@ func sumInt64(xs []int64) int64 {
 // closes them itself on error. Shared by the streaming root builders.
 func hashPlainStateToCollectors(ctx context.Context, db kv.RoDB, workers int, tmpdir string, accBufPer, stoBufPer datasize.ByteSize, logger log2.Logger) ([]*etl.Collector, []*etl.Collector, error) {
 	emptyCodeHash := crypto.Keccak256Hash(nil)
-	scanShard := func(plainTable string, lo, hi int, hash func(k, v []byte) error) error {
-		roTx, err := db.BeginRo(ctx)
-		if err != nil {
-			return err
-		}
-		defer roTx.Rollback()
-		cur, err := roTx.Cursor(plainTable)
-		if err != nil {
-			return err
-		}
-		defer cur.Close()
-		for k, v, err := cur.Seek([]byte{byte(lo)}); k != nil; k, v, err = cur.Next() {
-			if err != nil {
-				return err
-			}
-			if int(k[0]) >= hi {
-				break
-			}
-			if err := hash(k, v); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
 	accColls := make([]*etl.Collector, workers)
 	stoColls := make([]*etl.Collector, workers)
 	for w := 0; w < workers; w++ {
@@ -563,7 +552,7 @@ func hashPlainStateToCollectors(ctx context.Context, db kv.RoDB, workers int, tm
 			filepath.Join(tmpdir, fmt.Sprintf("sto-%d", w)), etl.NewSortableBuffer(stoBufPer), logger)
 	}
 	if err := processByteShards(workers, func(w, b int) error {
-		return scanShard("Account", b, b+1, func(k, v []byte) error {
+		return scanPlainStateShard(ctx, db, "Account", b, b+1, func(k, v []byte) error {
 			if len(k) != 20 {
 				return nil
 			}
@@ -585,7 +574,7 @@ func hashPlainStateToCollectors(ctx context.Context, db kv.RoDB, workers int, tm
 		var prevAddr [20]byte
 		var prevHashedAddr [32]byte
 		var hasPrev bool
-		return scanShard("Storage", b, b+1, func(k, v []byte) error {
+		return scanPlainStateShard(ctx, db, "Storage", b, b+1, func(k, v []byte) error {
 			if len(k) < 52 {
 				return nil
 			}
@@ -970,14 +959,14 @@ func BootstrapHPH(tx kv.RwTx) (types.Hash, error) {
 // MDBX_MAP_FULL at 10M+ block scale.
 //
 // Phases (each its own RwTx):
-//   1. Clear HashedAccounts/HashedStorage/TrieOfAccounts/TrieOfStorage
-//   2. hashAllAccountsBatched — commit every accountBatchN entries
-//   3. hashAllStorageBatched — commit every storageBatchN entries
-//      (HashedStorage is DupSort, which inflates dirty-page cost; keep this
-//       batch size modest — a few million per commit)
-//   4. CalcTrieRoot + flush TrieOf* intermediate nodes (single RwTx; the
-//      intermediate-node set is small relative to plain state, ~1-3 GB
-//      dirty at 12.5M, well within any reasonable DirtySpace).
+//  1. Clear HashedAccounts/HashedStorage/TrieOfAccounts/TrieOfStorage
+//  2. hashAllAccountsBatched — commit every accountBatchN entries
+//  3. hashAllStorageBatched — commit every storageBatchN entries
+//     (HashedStorage is DupSort, which inflates dirty-page cost; keep this
+//     batch size modest — a few million per commit)
+//  4. CalcTrieRoot + flush TrieOf* intermediate nodes (single RwTx; the
+//     intermediate-node set is small relative to plain state, ~1-3 GB
+//     dirty at 12.5M, well within any reasonable DirtySpace).
 //
 // Pass 0 for batch sizes to use defaults (2M accounts, 3M storage).
 func BootstrapHPHBatched(ctx context.Context, db kv.RwDB, accountBatchN, storageBatchN int) (types.Hash, error) {

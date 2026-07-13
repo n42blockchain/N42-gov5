@@ -132,6 +132,7 @@ func TestConcurrentComputeRootEquivalence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer txS.Rollback()
 	trcS := NewTrieRootComputer()
 	trcS.SetRwTx(txS)
 	trcS.SetIncremental(true)
@@ -149,6 +150,7 @@ func TestConcurrentComputeRootEquivalence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer txP.Rollback()
 	ov := NewStateOverlay()
 	wtx := WrapStateOverlayRW(txP, ov)
 	trcP := NewTrieRootComputer()

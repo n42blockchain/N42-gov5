@@ -162,7 +162,14 @@ func (c *MdbxCursor) seekDupSort(seek []byte) (k, v []byte, err error) {
 	if seek2 != nil && bytes.Equal(seek1, k) {
 		v, err = c.getBothRange(seek1, seek2)
 		if err != nil && mdbx.IsNotFound(err) {
-			k, v, err = c.next()
+			// GetBothRange leaves the cursor unpositioned when the physical key
+			// exists but none of its duplicate values is >= seek2. Reposition it
+			// before advancing to the next physical key; calling Next directly
+			// here returns MDBX_ENODATA instead of behaving like a logical Seek.
+			k, v, err = c.setRange(seek1)
+			if err == nil && bytes.Equal(seek1, k) {
+				k, v, err = c.nextNoDup()
+			}
 			if err != nil {
 				if mdbx.IsNotFound(err) {
 					return nil, nil, nil
