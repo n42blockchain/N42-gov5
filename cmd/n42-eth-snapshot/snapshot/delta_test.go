@@ -23,16 +23,17 @@ func TestIT2_DeltaApply_RoundTrip(t *testing.T) {
 
 	// === Setup target archive B ===
 	archB := touchFakeArchive(t)
-	// Mutate a file in B.
+	// Mutate a minimal-tier state file in B. Headers are fetched live and are
+	// not selected into a minimal manifest.
 	if err := os.WriteFile(
-		filepath.Join(archB, "chain", "freezer", "headerc.cidx"),
-		[]byte("UPDATED-content-headerc.cidx"), 0o644); err != nil {
+		filepath.Join(archB, "snapshot", "accounts.0-25099999.val.zst"),
+		[]byte("UPDATED-content-accounts"), 0o644); err != nil {
 		t.Fatalf("mutate B: %v", err)
 	}
-	// Add a new file in B.
+	// Add a new minimal-tier state file in B.
 	if err := os.WriteFile(
-		filepath.Join(archB, "chain", "freezer", "headerc.0001.cdat"),
-		[]byte("new-rotated-cdat-segment"), 0o644); err != nil {
+		filepath.Join(archB, "snapshot", "accounts.1-25199999.idx"),
+		[]byte("new-rotated-snapshot-segment"), 0o644); err != nil {
 		t.Fatalf("add B: %v", err)
 	}
 	if err := writeFakeManifestWithHeight(t, archB, "minimal", 2000000); err != nil {
@@ -116,7 +117,7 @@ func TestIT3_DeltaApply_WrongBaseline(t *testing.T) {
 		t.Fatalf("write A: %v", err)
 	}
 	archB := touchFakeArchive(t)
-	if err := os.WriteFile(filepath.Join(archB, "chain/freezer/headerc.cidx"),
+	if err := os.WriteFile(filepath.Join(archB, "snapshot", "accounts.0-25099999.val.zst"),
 		[]byte("X"), 0o644); err != nil {
 		t.Fatalf("mutate B: %v", err)
 	}
@@ -130,7 +131,7 @@ func TestIT3_DeltaApply_WrongBaseline(t *testing.T) {
 
 	// Client has a DIFFERENT baseline (archC with its own manifest_id).
 	archC := touchFakeArchive(t)
-	if err := os.WriteFile(filepath.Join(archC, "chain/freezer/codes.cidx"),
+	if err := os.WriteFile(filepath.Join(archC, "snapshot", "storage.0-25099999.val.zst"),
 		[]byte("totally-different-C"), 0o644); err != nil {
 		t.Fatalf("mutate C: %v", err)
 	}
@@ -337,13 +338,13 @@ func buildDeltaTree(t *testing.T, fromArch, toArch, mode, outDir string) error {
 		return deltaFiles[i].Path < deltaFiles[j].Path
 	})
 	dm := DeltaManifest{
-		Network:            toMan.Network,
-		FromHeight:         fromMan.Height,
-		ToHeight:           toMan.Height,
-		Mode:               mode,
-		BasedOnManifestID:  fromMan.ManifestID,
-		ManifestID:         toMan.ManifestID, // not strictly the delta's id, but unique enough
-		Files:              deltaFiles,
+		Network:           toMan.Network,
+		FromHeight:        fromMan.Height,
+		ToHeight:          toMan.Height,
+		Mode:              mode,
+		BasedOnManifestID: fromMan.ManifestID,
+		ManifestID:        toMan.ManifestID, // not strictly the delta's id, but unique enough
+		Files:             deltaFiles,
 	}
 	f, err := os.Create(filepath.Join(outDir, "delta-manifest-"+mode+".json"))
 	if err != nil {

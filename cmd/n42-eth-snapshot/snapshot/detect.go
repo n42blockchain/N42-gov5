@@ -19,7 +19,7 @@ func DetectMode(datadir string) (*DetectResult, error) {
 	tiers := []string{"archive", "full", "minimal"}
 	for _, mode := range tiers {
 		sel, _ := manifest.SelectorFor(mode)
-		missing, err := manifest.MissingSections(datadir, sel)
+		missing, err := manifest.RequiredMissingSections(datadir, sel)
 		if err != nil {
 			return nil, err
 		}
@@ -28,18 +28,18 @@ func DetectMode(datadir string) (*DetectResult, error) {
 			if m, err := ManifestFor(datadir, mode); err == nil {
 				res.Height = m.Height
 			}
-			// Report what's needed to climb to the next tier.
+			// Report the required sections needed to climb to the next tier.
 			if next := nextTier(mode); next != "" {
 				nextSel, _ := manifest.SelectorFor(next)
-				nm, _ := manifest.MissingSections(datadir, nextSel)
+				nm, _ := manifest.RequiredMissingSections(datadir, nextSel)
 				res.MissingSections = nm
 			}
 			return res, nil
 		}
 	}
-	// Not even minimal is complete; report partial state.
+	// Not even minimal is complete; report required gaps in the partial state.
 	sel, _ := manifest.SelectorFor("minimal")
-	missing, _ := manifest.MissingSections(datadir, sel)
+	missing, _ := manifest.RequiredMissingSections(datadir, sel)
 	return &DetectResult{Mode: "", Intact: false, MissingSections: missing}, nil
 }
 

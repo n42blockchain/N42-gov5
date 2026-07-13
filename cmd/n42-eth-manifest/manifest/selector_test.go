@@ -86,10 +86,10 @@ func TestWalkFiles_FullExcludesSendersAndWitness(t *testing.T) {
 		"chain/freezer/accthist.cidx",
 		"chain/freezer/storhist.cidx",
 		"chain/freezer/txindex.cidx",
-		"chain/freezer/senders.cidx",          // must NOT be included
-		"chain/freezer/senders.0000.cdat",     // must NOT be included
-		"chain/freezer/witness.cidx",          // must NOT be included
-		"chain/freezer/witness.0000.cdat",     // must NOT be included
+		"chain/freezer/senders.cidx",      // must NOT be included
+		"chain/freezer/senders.0000.cdat", // must NOT be included
+		"chain/freezer/witness.cidx",      // must NOT be included
+		"chain/freezer/witness.0000.cdat", // must NOT be included
 	})
 	sel, _ := SelectorFor("full")
 	files, err := WalkFiles(root, sel)
@@ -211,5 +211,28 @@ func TestMissingSections_ReportsGaps(t *testing.T) {
 	}
 	if len(wantMissing) > 0 {
 		t.Errorf("expected sections missing but not reported: %v", wantMissing)
+	}
+}
+
+func TestRequiredMissingSectionsSkipsOptionalBeaconSeed(t *testing.T) {
+	root := touchTree(t, []string{
+		"snapshot/accounts.0-25099999.idx",
+		"snapshot/storage.0-25099999.idx",
+	})
+	sel, _ := SelectorFor("minimal")
+	missing, err := RequiredMissingSections(root, sel)
+	if err != nil {
+		t.Fatalf("RequiredMissingSections: %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("optional beacon seed made minimal tier incomplete: %v", missing)
+	}
+
+	allMissing, err := MissingSections(root, sel)
+	if err != nil {
+		t.Fatalf("MissingSections: %v", err)
+	}
+	if !reflect.DeepEqual(allMissing, []string{"beacon-checkpoint"}) {
+		t.Fatalf("informational missing sections = %v, want beacon-checkpoint", allMissing)
 	}
 }
