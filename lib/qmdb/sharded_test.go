@@ -196,3 +196,26 @@ func TestShardedScaling(t *testing.T) {
 			float64(singleDur)/float64(dur), runtime.GOMAXPROCS(0))
 	}
 }
+
+func TestShardPoolRepeatedDispatchDoesNotLoseWakeups(t *testing.T) {
+	oldProcs := runtime.GOMAXPROCS(4)
+	t.Cleanup(func() { runtime.GOMAXPROCS(oldProcs) })
+
+	tr, err := NewSharded(16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 5_000; i++ {
+			tr.ApplyBatch(nil)
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("shard pool lost a worker wakeup")
+	}
+}

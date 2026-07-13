@@ -218,9 +218,14 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 			bytesW += 8 + len(blob)
 		}
 	}
-	_ = p.Put(MetaTable, []byte("root"), root[:])
-	_ = p.Put(MetaTable, []byte("nextSlot"), be8(t.nextSlot))
-	bytesW += 32 + 8
+	if err := p.Put(MetaTable, []byte("root"), root[:]); err != nil {
+		return flushedThrough, bytesW, err
+	}
+	bytesW += 32
+	if err := p.Put(MetaTable, []byte("nextSlot"), be8(t.nextSlot)); err != nil {
+		return flushedThrough, bytesW, err
+	}
+	bytesW += 8
 	return t.nextSlot, bytesW, nil
 }
 
@@ -296,6 +301,33 @@ func (t *Tree) LiveBits() int {
 // mutation). The index cannot be trusted — rebuild it.
 var ErrIndexReconcile = errors.New("qmdb: trusted-index reload reconciliation failed")
 
+// resetForLoad drops every tree-owned value derived from a previous layout while
+// preserving the caller-owned index and storage readers. LoadFrom may run on a
+// reused speculative computer, so an empty store must replace the old tree just
+// as decisively as a non-empty store does.
+func (t *Tree) resetForLoad() {
+	t.twigs = nil
+	t.entries = nil
+	t.entriesBase = 0
+	t.evicted = 0
+	t.nextSlot = 0
+	t.root = nullHash
+	t.rootDirty = true
+	t.nDirtyTwigs = 0
+	t.deadFlushed = nil
+	t.upper = nil
+	t.upCap = 0
+	t.upDirty = nil
+	t.upRebuild = true
+	t.rec = nil
+	t.batchFolding = false
+	t.batchTouched = nil
+	t.foldScratch = t.foldScratch[:0]
+	t.bitsTouched = nil
+	t.leafJobs = nil
+	t.arena = nil
+}
+
 func (t *Tree) loadFrom(g Getter, trustedThrough uint64) error {
 	nsRaw, err := g.GetOne(MetaTable, []byte("nextSlot"))
 	if err != nil {
@@ -305,10 +337,25 @@ func (t *Tree) loadFrom(g Getter, trustedThrough uint64) error {
 	if t.cold == nil {
 		t.cold = ColdReaderFromGetter(g)
 	}
-	if len(nsRaw) < 8 {
+	t.resetForLoad()
+	if len(nsRaw) == 0 {
+		t.Root()
+		if n := t.idx.Len(); n != 0 {
+			return fmt.Errorf("%w: empty store has %d indexed keys", ErrIndexReconcile, n)
+		}
 		return nil // nothing persisted yet
 	}
+	if len(nsRaw) != 8 {
+		return fmt.Errorf("qmdb: invalid nextSlot metadata length %d", len(nsRaw))
+	}
 	nextSlot := binary.BigEndian.Uint64(nsRaw)
+	if nextSlot == 0 {
+		t.Root()
+		if n := t.idx.Len(); n != 0 {
+			return fmt.Errorf("%w: zero-slot store has %d indexed keys", ErrIndexReconcile, n)
+		}
+		return nil
+	}
 	numTwigs := int((nextSlot + TwigSize - 1) / TwigSize)
 	activeTwig := int((nextSlot - 1) / TwigSize) // twig holding the last live slot
 
@@ -415,8 +462,6 @@ func (t *Tree) loadFrom(g Getter, trustedThrough uint64) error {
 	// NEXT FlushTo delete LIVE slots' rows (observed live: 7 ghost live-bits
 	// with no entry row on every store of the fleet, the exact precondition of
 	// the "undo record is poisoned" incident).
-	t.deadFlushed = nil
-	t.rec = nil
 	t.rootDirty = true
 	t.upRebuild = true // twig set replaced wholesale; rebuild the upper heap
 	t.Root()           // materialize twig + world roots

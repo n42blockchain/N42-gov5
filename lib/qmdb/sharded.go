@@ -54,7 +54,7 @@ type shardPool struct {
 	done   atomic.Int64
 	parts  [][]Op
 	shards []*Tree
-	wake   chan struct{}
+	wake   []chan struct{}
 	nw     int
 }
 
@@ -68,21 +68,22 @@ func newShardPool(shards []*Tree) *shardPool {
 	if nw < 0 {
 		nw = 0
 	}
-	p := &shardPool{shards: shards, wake: make(chan struct{}, nw), nw: nw}
+	p := &shardPool{shards: shards, wake: make([]chan struct{}, nw), nw: nw}
 	for w := 0; w < nw; w++ {
-		go p.run()
+		p.wake[w] = make(chan struct{}, 1)
+		go p.run(p.wake[w])
 	}
 	return p
 }
 
-func (p *shardPool) run() {
+func (p *shardPool) run(wake <-chan struct{}) {
 	last := uint64(0)
 	for {
 		spins := 0
 		for p.epoch.Load() == last {
 			spins++
 			if spins >= poolSpins {
-				<-p.wake // park; dispatcher tops the channel up every block
+				<-wake // park; dispatcher wakes every worker individually
 				spins = 0
 			}
 		}
@@ -112,11 +113,13 @@ func (p *shardPool) dispatch(parts [][]Op) {
 	p.next.Store(0)
 	p.done.Store(0)
 	p.epoch.Add(1)
-	// Top up the wake channel so any PARKED worker wakes; spinning workers see
-	// the epoch directly and consume the token later (channel is buffered nw).
-	for i := 0; i < p.nw; i++ {
+	// Wake every worker through its own one-slot mailbox. A shared buffered
+	// channel is not a broadcast: one fast worker can consume several tokens
+	// while the others remain parked, leaving the done barrier short forever.
+	// Per-worker mailboxes preserve the spin fast path without lost wakeups.
+	for _, wake := range p.wake {
 		select {
-		case p.wake <- struct{}{}:
+		case wake <- struct{}{}:
 		default:
 		}
 	}
