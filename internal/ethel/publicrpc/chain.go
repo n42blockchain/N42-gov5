@@ -240,8 +240,8 @@ func (c *ethelChain) GetLogs(blockHash types.Hash) ([][]*block.Log, error) {
 	return logs, nil
 }
 
-func (c *ethelChain) SetHead(head uint64) error            { return errReadOnly }
-func (c *ethelChain) AddFutureBlock(b block.IBlock) error  { return errReadOnly }
+func (c *ethelChain) SetHead(head uint64) error           { return errReadOnly }
+func (c *ethelChain) AddFutureBlock(b block.IBlock) error { return errReadOnly }
 
 func (c *ethelChain) GetBlock(hash types.Hash, number uint64) block.IBlock {
 	var out block.IBlock
@@ -273,9 +273,9 @@ func (c *ethelChain) HasBlock(hash types.Hash, number uint64) bool {
 	return has
 }
 
-func (c *ethelChain) DB() kv.RwDB              { return c.db }
-func (c *ethelChain) Quit() <-chan struct{}    { return c.quit }
-func (c *ethelChain) EarliestBlock() uint64    { return 0 }
+func (c *ethelChain) DB() kv.RwDB           { return c.db }
+func (c *ethelChain) Quit() <-chan struct{} { return c.quit }
+func (c *ethelChain) EarliestBlock() uint64 { return 0 }
 
 func (c *ethelChain) Close() error {
 	select {
@@ -289,9 +289,5 @@ func (c *ethelChain) Close() error {
 func (c *ethelChain) WriteBlockWithState(b block.IBlock, receipts []*block.Receipt, ibs interface{}, nopay map[types.Address]*uint256.Int) error {
 	return errReadOnly
 }
-
-// PeelDanglingQMDBAppends is a no-op: the ethel public-RPC chain is read-only
-// and runs no QMDB root engine.
-func (c *ethelChain) PeelDanglingQMDBAppends() {}
 
 var _ common.IBlockChain = (*ethelChain)(nil)

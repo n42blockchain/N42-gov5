@@ -85,6 +85,14 @@ type siblingLookup interface {
 	LowestSiblingAtHeight(number uint64, parentHash types.Hash) (block.IBlock, bool)
 }
 
+// danglingQMDBPeeler is implemented by the concrete blockchain when QMDB is
+// available. Keep this engine-specific lifecycle hook out of common.IBlockChain:
+// read-only chains and lightweight test doubles do not own a speculative QMDB
+// tree and should not need dummy methods just to satisfy the global interface.
+type danglingQMDBPeeler interface {
+	PeelDanglingQMDBAppends()
+}
+
 // leaderAware is implemented by leader-driven consensus engines (HotStuff) so
 // the miner can gate block production on leadership.
 type leaderAware interface {
@@ -677,7 +685,9 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// lost the view, the task was replaced) left its appends on the live QMDB
 	// tree — peel them before building on it, or this candidate's root is
 	// computed on a poisoned tree and diverges from every follower.
-	w.chain.PeelDanglingQMDBAppends()
+	if peeler, ok := w.chain.(danglingQMDBPeeler); ok {
+		peeler.PeelDanglingQMDBAppends()
+	}
 
 	// Consensus-pinned parent (HotStuff HighQC block): the world state must BE
 	// that parent's post-state before we execute the payload — align it first
