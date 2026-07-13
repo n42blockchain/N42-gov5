@@ -19,6 +19,7 @@ package state
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
@@ -39,23 +40,33 @@ type HashedHistoricalReader struct {
 	storageHistoryC kv.Cursor
 	accChangesC     kv.CursorDupSort
 	storageChangesC kv.CursorDupSort
+	initErr         error
 }
 
 // NewHashedHistoricalReader opens the history/changeset cursors and the tip base.
 func NewHashedHistoricalReader(tx kv.Tx, blockNr uint64) *HashedHistoricalReader {
-	c1, _ := tx.Cursor(modules.AccountsHistory)
-	c2, _ := tx.Cursor(modules.StorageHistory)
-	c3, _ := tx.CursorDupSort(modules.AccountChangeSet)
-	c4, _ := tx.CursorDupSort(modules.StorageChangeSet)
-	return &HashedHistoricalReader{
-		tx:              tx,
-		base:            NewHashedStateReader(tx),
-		blockNr:         blockNr,
-		accHistoryC:     c1,
-		storageHistoryC: c2,
-		accChangesC:     c3,
-		storageChangesC: c4,
+	r := &HashedHistoricalReader{
+		tx:      tx,
+		base:    NewHashedStateReader(tx),
+		blockNr: blockNr,
 	}
+	var err error
+	if r.accHistoryC, err = tx.Cursor(modules.AccountsHistory); err != nil {
+		r.initErr = fmt.Errorf("open account history cursor: %w", err)
+		return r
+	}
+	if r.storageHistoryC, err = tx.Cursor(modules.StorageHistory); err != nil {
+		r.initErr = fmt.Errorf("open storage history cursor: %w", err)
+		return r
+	}
+	if r.accChangesC, err = tx.CursorDupSort(modules.AccountChangeSet); err != nil {
+		r.initErr = fmt.Errorf("open account changes cursor: %w", err)
+		return r
+	}
+	if r.storageChangesC, err = tx.CursorDupSort(modules.StorageChangeSet); err != nil {
+		r.initErr = fmt.Errorf("open storage changes cursor: %w", err)
+	}
+	return r
 }
 
 // SetCodeSource wires the codes.cdat fast path onto the tip base.
@@ -65,6 +76,9 @@ func (r *HashedHistoricalReader) SetCodeSource(c CodeSource) { r.base.SetCodeSou
 func (r *HashedHistoricalReader) SetCache(c *HashedReadCache) { r.base.SetCache(c) }
 
 func (r *HashedHistoricalReader) ReadAccountData(address types.Address) (*account.StateAccount, error) {
+	if r.initErr != nil {
+		return nil, r.initErr
+	}
 	enc, err := FindByHistory(r.tx, r.accHistoryC, r.accChangesC, false /* storage */, address[:], r.blockNr)
 	if err != nil {
 		if errors.Is(err, ethdb.ErrKeyNotFound) {
@@ -84,6 +98,9 @@ func (r *HashedHistoricalReader) ReadAccountData(address types.Address) (*accoun
 }
 
 func (r *HashedHistoricalReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
+	if r.initErr != nil {
+		return nil, r.initErr
+	}
 	compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
 	enc, err := FindByHistory(r.tx, r.storageHistoryC, r.storageChangesC, true /* storage */, compositeKey, r.blockNr)
 	if err != nil {

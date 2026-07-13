@@ -79,6 +79,8 @@ func (l *FlatDBTrieLoader) CalcTrieRootShard(tx kv.Tx, nibble byte, quit <-chan 
 			return EmptyRoot, err
 		}
 		var firstPrefix []byte
+		var k, kHex, v []byte
+		var err1 error
 		var done bool
 		if accTrie.SkipState {
 			goto SkipAccounts
@@ -89,10 +91,11 @@ func (l *FlatDBTrieLoader) CalcTrieRootShard(tx kv.Tx, nibble byte, quit <-chan 
 			goto SkipAccounts
 		}
 
-		for k, kHex, v, err1 := accs.Seek(firstPrefix); k != nil; k, kHex, v, err1 = accs.Next() {
-			if err1 != nil {
-				return EmptyRoot, err1
-			}
+		k, kHex, v, err1 = accs.Seek(firstPrefix)
+		if err1 != nil {
+			return EmptyRoot, fmt.Errorf("account state seek: %w", err1)
+		}
+		for k != nil {
 			if len(kHex) == 0 || kHex[0] != nibble {
 				break // left the shard's nibble range (AccTrie prefix bound does not bound the state cursor)
 			}
@@ -108,6 +111,8 @@ func (l *FlatDBTrieLoader) CalcTrieRootShard(tx kv.Tx, nibble byte, quit <-chan 
 			copy(l.accAddrHashWithInc[:], k)
 			accWithInc := l.accAddrHashWithInc[:]
 			for ihKS, ihVS, hasTreeS, err2 := storageTrie.SeekToAccount(accWithInc); ; ihKS, ihVS, hasTreeS, err2 = storageTrie.Next() {
+				var vS []byte
+				var err3 error
 				if err2 != nil {
 					return EmptyRoot, err2
 				}
@@ -121,16 +126,21 @@ func (l *FlatDBTrieLoader) CalcTrieRootShard(tx kv.Tx, nibble byte, quit <-chan 
 					goto SkipStorage
 				}
 
-				for vS, err3 := ss.SeekBothRange(accWithInc, firstPrefix); vS != nil; _, vS, err3 = ss.NextDup() {
-					if err3 != nil {
-						return EmptyRoot, err3
-					}
+				vS, err3 = ss.SeekBothRange(accWithInc, firstPrefix)
+				if err3 != nil {
+					return EmptyRoot, fmt.Errorf("storage state seek: %w", err3)
+				}
+				for vS != nil {
 					hexutil.DecompressNibbles(vS[:32], &l.kHexS)
 					if keyIsBefore(ihKS, l.kHexS) {
 						break
 					}
 					if err = l.receiver.Receive(StorageStreamItem, accWithInc, l.kHexS, nil, vS[32:], nil, false, 0); err != nil {
 						return EmptyRoot, err
+					}
+					_, vS, err3 = ss.NextDup()
+					if err3 != nil {
+						return EmptyRoot, fmt.Errorf("storage state next: %w", err3)
 					}
 				}
 
@@ -144,6 +154,10 @@ func (l *FlatDBTrieLoader) CalcTrieRootShard(tx kv.Tx, nibble byte, quit <-chan 
 				if len(ihKS) == 0 {
 					break
 				}
+			}
+			k, kHex, v, err1 = accs.Next()
+			if err1 != nil {
+				return EmptyRoot, fmt.Errorf("account state next: %w", err1)
 			}
 		}
 

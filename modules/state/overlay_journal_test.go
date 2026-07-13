@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -13,6 +14,15 @@ import (
 	log "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/modules"
 )
+
+type journalCursorErrorTx struct {
+	kv.RwTx
+	err error
+}
+
+func (tx *journalCursorErrorTx) Cursor(string) (kv.Cursor, error) {
+	return nil, tx.err
+}
 
 func journalTestCfg(d kv.TableCfg) kv.TableCfg {
 	d[modules.Account] = kv.TableCfgItem{}
@@ -148,6 +158,33 @@ func TestBlockRevDiffRestore(t *testing.T) {
 		if want.p {
 			require.Equal(t, want.v, gotV, "value mismatch after restore for %s/%x", s.table, s.key)
 		}
+	}
+}
+
+// TestCaptureFailureAbortsWrite prevents a missing pre-image from being encoded
+// as "previously absent". That approximation would make a later reorg delete a
+// value that actually existed before the block.
+func TestCaptureFailureAbortsWrite(t *testing.T) {
+	ctx := context.Background()
+	db := mdbx.NewMDBX(log.New()).InMem(t.TempDir()).WithTableCfg(journalTestCfg).MustOpen()
+	defer db.Close()
+
+	tx, err := db.BeginRw(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback()
+
+	wantErr := errors.New("injected cursor failure")
+	diff := NewBlockRevDiff()
+	capturing := NewCapturingTx(&journalCursorErrorTx{RwTx: tx, err: wantErr}, diff)
+	key := []byte("account")
+	if err := capturing.Put(modules.Account, key, []byte("new")); !errors.Is(err, wantErr) {
+		t.Fatalf("Put error = %v, want %v", err, wantErr)
+	}
+	if diff.Len() != 0 {
+		t.Fatalf("failed capture recorded %d bogus reverse entries", diff.Len())
+	}
+	if got, err := tx.GetOne(modules.Account, key); err != nil || got != nil {
+		t.Fatalf("write proceeded after capture failure: value=%x err=%v", got, err)
 	}
 }
 

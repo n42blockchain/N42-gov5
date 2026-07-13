@@ -9,6 +9,7 @@ package trie_test
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"sync"
 	"testing"
 
@@ -18,6 +19,48 @@ import (
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/lib/trie"
 )
+
+type shardSeekErrorCursor struct {
+	kv.Cursor
+	err error
+}
+
+func (c *shardSeekErrorCursor) Seek([]byte) ([]byte, []byte, error) {
+	return nil, nil, c.err
+}
+
+type shardSeekErrorTx struct {
+	kv.Tx
+	err error
+}
+
+func (tx *shardSeekErrorTx) Cursor(table string) (kv.Cursor, error) {
+	c, err := tx.Tx.Cursor(table)
+	if err != nil {
+		return nil, err
+	}
+	if table == kv.HashedAccounts {
+		return &shardSeekErrorCursor{Cursor: c, err: tx.err}, nil
+	}
+	return c, nil
+}
+
+func TestCalcTrieRootShardPropagatesAccountSeekError(t *testing.T) {
+	db := memdb.New(t.TempDir())
+	defer db.Close()
+	tx, err := db.BeginRo(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+
+	wantErr := errors.New("injected account seek failure")
+	loader := trie.NewFlatDBTrieLoader("seek-error", trie.NewRetainList(0), nil, nil, false)
+	_, err = loader.CalcTrieRootShard(&shardSeekErrorTx{Tx: tx, err: wantErr}, 0, nil)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("CalcTrieRootShard error = %v, want %v", err, wantErr)
+	}
+}
 
 func TestCalcTrieRootShardConcurrentMatchesSerial(t *testing.T) {
 	ctx := context.Background()

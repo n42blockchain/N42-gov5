@@ -101,35 +101,39 @@ func NewCapturingTx(tx kv.RwTx, diff *BlockRevDiff) kv.RwTx {
 }
 
 func (c *capturingPutDel) Put(table string, k, v []byte) error {
-	c.capture(table, k)
+	if err := c.capture(table, k); err != nil {
+		return err
+	}
 	return c.RwTx.Put(table, k, v)
 }
 
 func (c *capturingPutDel) Delete(table string, k []byte) error {
-	c.capture(table, k)
+	if err := c.capture(table, k); err != nil {
+		return err
+	}
 	return c.RwTx.Delete(table, k)
 }
 
 // capture reads the current warm entry for (table,key) and records it as the
 // pre-image. Uses a cursor SeekExact — matching WarmOverlayReader — so the
 // Storage table's DupSort AutoConv (52B composite -> 20B dup-key) is handled.
-func (c *capturingPutDel) capture(table string, k []byte) {
+func (c *capturingPutDel) capture(table string, k []byte) error {
 	if _, ok := c.diff.seen[table+string(k)]; ok {
-		return // already captured this block; skip the read
+		return nil // already captured this block; skip the read
 	}
 	cur, err := c.RwTx.Cursor(table)
 	if err != nil {
-		// Best-effort: without the pre-image this block can't be unwound. Record
-		// an absent entry so a later unwind at least deletes the new write rather
-		// than leaving it; callers treat a capture gap conservatively.
-		c.diff.record(table, k, nil, false)
-		return
+		return err
 	}
 	kk, vv, err := cur.SeekExact(k)
 	cur.Close()
-	if err != nil || kk == nil {
+	if err != nil {
+		return err
+	}
+	if kk == nil {
 		c.diff.record(table, k, nil, false)
-		return
+		return nil
 	}
 	c.diff.record(table, k, vv, true)
+	return nil
 }

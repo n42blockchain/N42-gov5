@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -9,9 +10,19 @@ import (
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/modules"
 )
+
+type historicalCursorErrorTx struct {
+	kv.Tx
+	err error
+}
+
+func (tx *historicalCursorErrorTx) Cursor(string) (kv.Cursor, error) {
+	return nil, tx.err
+}
 
 // TestHashedHistoricalReader verifies the hashed-canonical state-as-of reader:
 // a value that changed at block 5 must read as its pre-block-5 (old) value for
@@ -77,5 +88,13 @@ func TestHashedHistoricalReader(t *testing.T) {
 	other[0] = 0xCD
 	if a, err := r6.ReadAccountData(other); err != nil || a != nil {
 		t.Fatalf("unknown account: got (%v, %v), want (nil, nil)", a, err)
+	}
+}
+
+func TestHashedHistoricalReaderReportsCursorInitError(t *testing.T) {
+	wantErr := errors.New("injected cursor failure")
+	r := NewHashedHistoricalReader(&historicalCursorErrorTx{err: wantErr}, 1)
+	if _, err := r.ReadAccountData(types.Address{}); !errors.Is(err, wantErr) {
+		t.Fatalf("ReadAccountData error = %v, want %v", err, wantErr)
 	}
 }

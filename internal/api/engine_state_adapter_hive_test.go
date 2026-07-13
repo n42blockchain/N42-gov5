@@ -477,7 +477,9 @@ func TestStablePragueModexpCallcodeFixtureTouchesExpectedExecutionState(t *testi
 		verifyErr := error(nil)
 		verifiedRoot, verifyErr = ethel.VerifyStateRoot(txdb)
 		require.NoError(t, verifyErr)
-		fullVerifiedRoot, verifyErr = ethel.FullStateRootVerify(txdb)
+		// The fixture state is still uncommitted in txdb, so verification must use
+		// the sequential path over this transaction rather than worker RoTxs.
+		fullVerifiedRoot, verifyErr = ethel.FullStateRootVerify(nil, txdb, 1)
 		require.NoError(t, verifyErr)
 		return nil
 	})
