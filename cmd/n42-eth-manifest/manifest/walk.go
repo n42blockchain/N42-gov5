@@ -82,8 +82,8 @@ func SectionsPresent(root string, sel *Selector) ([]string, error) {
 	return out, nil
 }
 
-// MissingSections is the inverse: sections in the selector that
-// have ZERO matched files.
+// MissingSections is the inverse: sections in the selector that have ZERO
+// matched files. Optional sections are included for informational reporting.
 func MissingSections(root string, sel *Selector) ([]string, error) {
 	files, err := WalkFiles(root, sel)
 	if err != nil {
@@ -95,6 +95,30 @@ func MissingSections(root string, sel *Selector) ([]string, error) {
 	}
 	var out []string
 	for _, sec := range sel.Sections {
+		if _, ok := present[sec.Name]; !ok {
+			out = append(out, sec.Name)
+		}
+	}
+	return out, nil
+}
+
+// RequiredMissingSections reports required sections with no matching files.
+// Optional sections remain part of manifests and MissingSections reports, but
+// their absence must not make a usable distribution tier undetectable.
+func RequiredMissingSections(root string, sel *Selector) ([]string, error) {
+	files, err := WalkFiles(root, sel)
+	if err != nil {
+		return nil, err
+	}
+	present := make(map[string]struct{}, 8)
+	for _, f := range files {
+		present[f.Section] = struct{}{}
+	}
+	var out []string
+	for _, sec := range sel.Sections {
+		if sec.Optional {
+			continue
+		}
 		if _, ok := present[sec.Name]; !ok {
 			out = append(out, sec.Name)
 		}

@@ -23,6 +23,10 @@ type Selector struct {
 type Section struct {
 	Name     string
 	Patterns []string
+	// Optional marks files that belong to the eventual tier shape but are not
+	// required to identify a usable tier. Caplin seeds are optional because the
+	// HotStuff chain never produces them and eth-el can start before they exist.
+	Optional bool
 }
 
 // Manifest is the on-disk JSON shape. Mirrors the spec in
@@ -57,10 +61,10 @@ type TorrentInfo struct {
 
 // FileEntry is one row in Manifest.Files.
 type FileEntry struct {
-	Path       string `json:"path"`        // relative to datadir
-	Section    string `json:"section"`     // logical grouping
-	Size       int64  `json:"size"`        // bytes
-	Blake2b256 string `json:"blake2b256"`  // hex-encoded
+	Path       string `json:"path"`       // relative to datadir
+	Section    string `json:"section"`    // logical grouping
+	Size       int64  `json:"size"`       // bytes
+	Blake2b256 string `json:"blake2b256"` // hex-encoded
 }
 
 // SelectorFor returns the Selector for a named mode. Unknown
@@ -120,6 +124,7 @@ var snapshotSections = []Section{
 var beaconCheckpointSection = Section{
 	Name:     "beacon-checkpoint",
 	Patterns: []string{"caplin/checkpoint/state.*.ssz.zst"},
+	Optional: true,
 }
 
 // beaconArchiveSection is the full-history beacon-block archive, extreme-compressed
@@ -128,6 +133,7 @@ var beaconCheckpointSection = Section{
 var beaconArchiveSection = Section{
 	Name:     "beacon-archive",
 	Patterns: []string{"caplin/beacon-archive.*.zst", "caplin/beacon-archive.*.idx"},
+	Optional: true,
 }
 
 // minimal: compact state snapshot + caplin checkpoint-sync seed (~25.7 GB +
@@ -175,4 +181,3 @@ func archiveSelector() *Selector {
 		beaconArchiveSection, // full-history beacon archive, extreme-compressed
 	}}
 }
-
