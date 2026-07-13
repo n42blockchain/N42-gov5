@@ -1,6 +1,9 @@
 package qmdb
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // mapStore implements both Putter and Getter over an in-memory table->key->value
 // map, so a FlushTo can be reloaded by LoadFrom in the same test.
@@ -100,5 +103,71 @@ func TestReloadEmptyStore(t *testing.T) {
 	}
 	if dst.Root() != nullHash || dst.LiveCount() != 0 {
 		t.Fatal("empty-store reload should yield empty tree")
+	}
+}
+
+// TestReloadEmptyStoreClearsReusedTree covers the persistent miner computer's
+// first-build/recovery path: replacing its index before a reload must not leave
+// speculative twigs behind when the canonical store has no QMDB metadata yet.
+func TestReloadEmptyStoreClearsReusedTree(t *testing.T) {
+	dst := New()
+	dst.Set(key(1), val(1))
+	if dst.Root() == nullHash {
+		t.Fatal("test setup did not build a non-empty tree")
+	}
+
+	// QMDBRootComputer.LoadFrom replaces an in-memory index before reloading.
+	dst.SetIndex(NewMapIndex())
+	if err := dst.LoadFrom(newMapStore()); err != nil {
+		t.Fatalf("load empty over reused tree: %v", err)
+	}
+	if dst.Root() != nullHash || dst.LiveCount() != 0 || dst.NextSlot() != 0 {
+		t.Fatalf("empty reload retained speculative state: root=%x live=%d next=%d",
+			dst.Root(), dst.LiveCount(), dst.NextSlot())
+	}
+}
+
+func TestReloadRejectsMalformedNextSlotMetadata(t *testing.T) {
+	store := newMapStore()
+	if err := store.Put(MetaTable, []byte("nextSlot"), []byte{1, 2, 3}); err != nil {
+		t.Fatal(err)
+	}
+	if err := New().LoadFrom(store); err == nil {
+		t.Fatal("LoadFrom accepted truncated nextSlot metadata")
+	}
+}
+
+type failingPutter struct {
+	mapStore
+	key string
+	err error
+}
+
+func (p *failingPutter) Put(table string, key, value []byte) error {
+	if table == MetaTable && string(key) == p.key {
+		return p.err
+	}
+	return p.mapStore.Put(table, key, value)
+}
+
+// TestFlushPropagatesRecoveryMetaErrors ensures callers never commit a QMDB
+// batch whose recovery cursor/root failed to persist. Returning success here
+// would advance QMDBRootComputer.flushedThrough past data that cannot reload.
+func TestFlushPropagatesRecoveryMetaErrors(t *testing.T) {
+	for _, metaKey := range []string{"root", "nextSlot"} {
+		t.Run(metaKey, func(t *testing.T) {
+			tr := New()
+			tr.Set(key(1), val(1))
+			wantErr := errors.New("injected metadata write failure")
+			store := &failingPutter{mapStore: newMapStore(), key: metaKey, err: wantErr}
+
+			next, _, err := tr.FlushTo(store, 0)
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("FlushTo error = %v, want %v", err, wantErr)
+			}
+			if next != 0 {
+				t.Fatalf("FlushTo advanced cursor to %d after %s write failed", next, metaKey)
+			}
+		})
 	}
 }

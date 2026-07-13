@@ -413,13 +413,20 @@ func (bc *BlockChain) AncientReader() *freezer.AncientReader {
 
 func (bc *BlockChain) Start() error {
 	bc.healPlainStateAheadOfMarkerOnStartup()
+	bc.verifyAppliedStateOnStartup()
+	bc.alignCanonicalToAppliedOnStartup()
+	bc.repairCanonicalLinkageOnStartup()
+	bc.revertSpeculativeOnStartup()
+
 	// Pre-warm the speculative build computer off the leader's critical path:
 	// the FIRST build after a restart otherwise pays the full ~5s index
 	// rebuild inside its 6s view window (caught by the build-phase breakdown -
-	// every other build rides the ~0.4s trusted reload).
+	// every other build rides the ~0.4s trusted reload). This must run AFTER all
+	// startup state repair/revert operations: an earlier snapshot can leave the
+	// trusted miner index pointing at slots that a startup unwind removed.
 	if bc.qmdbEnabled {
 		go func() {
-			_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+			err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
 				if rc := bc.NewMinerRootComputer(tx); rc != nil {
 					if q, ok := rc.(*commitment.QMDBRootComputer); ok {
 						q.SetCold(nil) // detach before this tx dies
@@ -428,12 +435,11 @@ func (bc *BlockChain) Start() error {
 				}
 				return nil
 			})
+			if err != nil && bc.ctx.Err() == nil {
+				log.Warn("miner speculative computer pre-warm failed", "err", err)
+			}
 		}()
 	}
-	bc.verifyAppliedStateOnStartup()
-	bc.alignCanonicalToAppliedOnStartup()
-	bc.repairCanonicalLinkageOnStartup()
-	bc.revertSpeculativeOnStartup()
 	bc.wg.Add(3)
 	go bc.runLoop()
 	go bc.updateFutureBlocksLoop()

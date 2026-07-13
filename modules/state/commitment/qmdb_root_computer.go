@@ -26,8 +26,8 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/qmdb"
-	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules/state"
 )
 
 // QMDBRootComputer maintains a qmdb.Tree across blocks.
@@ -198,6 +198,7 @@ func (r *QMDBRootComputer) ReloadForBuild(g qmdb.Getter) error {
 	}
 	r.flushedThrough = r.t.NextSlot()
 	r.indexTrusted = r.t.NextSlot()
+	r.indexDelta = r.t.LiveBits() - r.t.LiveCount()
 	return nil
 }
 
