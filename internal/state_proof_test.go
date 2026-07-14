@@ -62,6 +62,20 @@ func TestJMTProofDescriptorSeparatesProofAndHeaderSchemes(t *testing.T) {
 	}
 }
 
+func TestQMDBProofDescriptorReportsQMDBHeaderScheme(t *testing.T) {
+	bc := &BlockChain{}
+	bc.SetQMDBRootComputer(commitment.NewQMDBRootComputer())
+	bc.SetStateProofProvider(NewQMDBStateProofProvider())
+
+	desc := bc.StateProofDescriptor()
+	if desc.Backend != StateProofBackendQMDB {
+		t.Fatalf("expected QMDB backend, got %q", desc.Backend)
+	}
+	if desc.HeaderStateRootScheme != state.RootSchemeQMDB {
+		t.Fatalf("expected QMDB header root scheme, got %q", desc.HeaderStateRootScheme)
+	}
+}
+
 func TestJMTStateProofProviderStorageHashMatchesCurrentQueryTupleScheme(t *testing.T) {
 	provider := NewJMTStateProofProvider(newTestJMTCommitment())
 	slots := []types.Hash{

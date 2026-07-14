@@ -97,6 +97,15 @@ func (bc *BlockChain) HeaderStateRootScheme() state.RootScheme {
 	if bc == nil {
 		return state.RootSchemeUnknown
 	}
+	// QMDB and persistent MPT have dedicated live-processing gates instead of
+	// jmtForBlockProcessing. Report them before the legacy/JMT branch or a live
+	// QMDB chain advertises QMDB proofs anchored to "legacy-keccak" headers.
+	if bc.qmdbEnabled && bc.qmdbRootComputer != nil {
+		return bc.qmdbRootComputer.RootScheme()
+	}
+	if bc.mptEnabled && bc.mptRootComputer != nil {
+		return bc.mptRootComputer.RootScheme()
+	}
 	if bc.rootComputer == nil || !bc.jmtForBlockProcessing {
 		return state.RootSchemeLegacyKeccak
 	}
