@@ -24,7 +24,6 @@ package sync
 import (
 	"context"
 
-	"google.golang.org/protobuf/proto"
 
 	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common/block"
@@ -36,8 +35,8 @@ import (
 
 // blobSidecarSubscriber handles incoming blob sidecar messages from gossip.
 // It validates the sidecar and stores it in the database.
-func (s *Service) blobSidecarSubscriber(ctx context.Context, msg proto.Message) error {
-	pbSidecar, ok := msg.(*types_pb.BlobSidecar)
+func (s *Service) blobSidecarSubscriber(ctx context.Context, data any) error {
+	pbSidecar, ok := data.(*types_pb.BlobSidecar)
 	if !ok {
 		log.Error("Blob sidecar subscriber received wrong message type")
 		return errWrongMessage

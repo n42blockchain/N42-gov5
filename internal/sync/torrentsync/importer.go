@@ -16,6 +16,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/rlp"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/era"
@@ -82,8 +83,8 @@ func (imp *Importer) ImportFile(ctx context.Context, eraPath string) (imported u
 			}
 
 			var blk block.Block
-			if err := blk.Unmarshal(blockData); err != nil {
-				return fmt.Errorf("unmarshal block %d: %w", num, err)
+			if err := rlp.DecodeBytes(blockData, &blk); err != nil {
+				return fmt.Errorf("rlp-decode block %d: %w", num, err)
 			}
 
 			// Verify block hash chain: parent hash must match previous block's hash.

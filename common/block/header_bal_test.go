@@ -24,6 +24,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/rlp"
 	"github.com/n42blockchain/N42/proto/types_pb"
 )
 
@@ -107,13 +108,40 @@ func TestHeaderBALMarshalTrailerRoundTrip(t *testing.T) {
 	}
 }
 
-// TestHeaderBALProtoPathDropsHash documents the KNOWN GAP that blocks P2P
-// activation: Block transport marshals the header via ToProtoMessage (raw proto,
-// no trailer), and types_pb.Header has no BlockAccessListHash field yet, so the
-// proto round trip drops it. Until types.proto is regenerated with the field, the
-// BAL fork must stay disabled (BALTime nil) — activating it would make followers
-// reconstruct a different header hash. This test pins that limitation so it is
-// not silently "fixed" without the proto regeneration.
+// TestBlockRLPRoundTripCarriesBALHash pins the activation-critical guarantee: the
+// consensus block wire form (Block.EncodeRLP — used by gossip broadcast and sync
+// chunked responses) round-trips BlockAccessListHash and reproduces the identical
+// header hash. protoc is NOT needed; the RLP path already carries the field.
+func TestBlockRLPRoundTripCarriesBALHash(t *testing.T) {
+	h := balSampleHeader()
+	blah := types.HexToHash("0x99aabbccddeeff00112233445566778899aabbccddeeff0011223344556677ff")
+	h.BlockAccessListHash = &blah
+	want := h.Hash()
+	blk := &Block{header: h, body: &Body{}}
+
+	var buf bytes.Buffer
+	if err := blk.EncodeRLP(&buf); err != nil {
+		t.Fatalf("EncodeRLP: %v", err)
+	}
+	var got Block
+	if err := rlp.DecodeBytes(buf.Bytes(), &got); err != nil {
+		t.Fatalf("DecodeRLP: %v", err)
+	}
+	if got.header.BlockAccessListHash == nil || *got.header.BlockAccessListHash != blah {
+		t.Fatalf("BlockAccessListHash lost over Block RLP: %v", got.header.BlockAccessListHash)
+	}
+	if got.header.Hash() != want {
+		t.Fatalf("header hash changed over Block RLP: want %s got %s", want.Hex(), got.header.Hash().Hex())
+	}
+}
+
+// TestHeaderBALProtoPathDropsHash documents the ONE remaining proto path that
+// still discards BlockAccessListHash: the legacy types_pb.Header form produced by
+// ToProtoMessage, which the direct-push (blockchain import) and download paths
+// still use. Those must be moved to RLP (like gossip/sync/torrentsync already
+// were) before the BAL fork can safely activate — otherwise a follower importing
+// via the proto path would reconstruct a different header hash. protoc/proto
+// regeneration is explicitly NOT the fix; de-proto-ing those paths is.
 func TestHeaderBALProtoPathDropsHash(t *testing.T) {
 	h := balSampleHeader()
 	blah := types.HexToHash("0x99aabbccddeeff00112233445566778899aabbccddeeff0011223344556677ff")
@@ -132,7 +160,7 @@ func TestHeaderBALProtoPathDropsHash(t *testing.T) {
 		t.Fatalf("FromProtoMessage: %v", err)
 	}
 	if h2.BlockAccessListHash != nil {
-		t.Fatal("unexpected: proto now carries BlockAccessListHash — regenerate types.pb.go " +
-			"then update ToProtoMessage/FromProtoMessage and lift the BALTime activation guard")
+		t.Fatal("proto path now carries BlockAccessListHash — the direct-push/download " +
+			"paths can rely on it; lift the corresponding BALTime activation guard note")
 	}
 }

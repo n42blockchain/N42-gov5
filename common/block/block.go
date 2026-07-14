@@ -125,16 +125,18 @@ func (b *Block) Hash() types.Hash {
 	return b.header.Hash()
 }
 
+// Marshal encodes the block as ETH-standard RLP (the same wire form as
+// EncodeRLP / the consensus block hash), NOT protobuf. This keeps proto-external
+// header fields — including the EIP-7928 BlockAccessListHash — intact and drops a
+// proto dependency; the schema-limited types_pb.Block form is only retained via
+// ToProtoMessage for the legacy direct-push / download paths.
 func (b *Block) Marshal() ([]byte, error) {
-	return proto.Marshal(b.ToProtoMessage())
+	return rlp.EncodeToBytes(b)
 }
 
+// Unmarshal decodes an ETH-standard RLP block produced by Marshal / EncodeRLP.
 func (b *Block) Unmarshal(data []byte) error {
-	var pBlock types_pb.Block
-	if err := proto.Unmarshal(data, &pBlock); err != nil {
-		return err
-	}
-	return b.FromProtoMessage(&pBlock)
+	return rlp.DecodeBytes(data, b)
 }
 
 // blockRLP is the ETH-standard RLP wire form of a Block: the header, each

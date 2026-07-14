@@ -12,7 +12,6 @@ import (
 	"context"
 	"sync/atomic"
 
-	"google.golang.org/protobuf/proto"
 
 	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common/transaction"
@@ -25,8 +24,8 @@ var txGossipReceived atomic.Uint64
 
 // txSubscriber handles incoming transaction messages from GossipSub.
 // Each message contains a single SSZ-encoded Transaction.
-func (s *Service) txSubscriber(ctx context.Context, msg proto.Message) error {
-	pbTx, ok := msg.(*types_pb.Transaction)
+func (s *Service) txSubscriber(ctx context.Context, data any) error {
+	pbTx, ok := data.(*types_pb.Transaction)
 	if !ok {
 		return nil
 	}
