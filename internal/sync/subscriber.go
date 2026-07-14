@@ -12,7 +12,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"go.opencensus.io/trace"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/hexutil"
@@ -33,7 +32,12 @@ const maxConcurrentPipelines = 256
 type wrappedVal func(context.Context, peer.ID, *pubsub.Message) (pubsub.ValidationResult, error)
 
 // subHandler represents handler for a given subscription.
-type subHandler func(context.Context, proto.Message) error
+// subHandler receives the validator's ValidatorData. For proto gossip topics
+// (blob sidecars, transactions) that is a proto.Message; for the block topic it
+// is the already-RLP-decoded *block.Block, so no proto round-trip is imposed on
+// the consensus block (which also preserves RLP-only header fields such as the
+// EIP-7928 BlockAccessListHash). Each handler type-asserts what it expects.
+type subHandler func(context.Context, any) error
 
 // noopValidator is a no-op that only decodes the message, but does not check its contents.
 func (s *Service) noopValidator(_ context.Context, _ peer.ID, msg *pubsub.Message) (pubsub.ValidationResult, error) {
@@ -138,14 +142,7 @@ func (s *Service) subscribeWithBase(topic string, validator wrappedVal, handle s
 			return
 		}
 
-		protoMsg, ok := msg.ValidatorData.(proto.Message)
-		if !ok {
-			log.Error("ValidatorData is not a proto.Message", "type", fmt.Sprintf("%T", msg.ValidatorData))
-			messageFailedProcessingCounter.WithLabelValues(topic).Inc()
-			return
-		}
-
-		if err := handle(ctx, protoMsg); err != nil {
+		if err := handle(ctx, msg.ValidatorData); err != nil {
 			log.Error("Could not handle p2p pubsub", "err", err, "topic", topic)
 			messageFailedProcessingCounter.WithLabelValues(topic).Inc()
 			return

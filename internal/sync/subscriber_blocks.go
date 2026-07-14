@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 
-	"google.golang.org/protobuf/proto"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/internal/consensus"
@@ -16,10 +15,10 @@ import (
 // Future blocks (ahead of the current chain tip) are queued; all others
 // are inserted immediately. After successful import, the HotStuff consensus
 // engine is notified so it can proceed with voting on the proposed block.
-func (s *Service) blockSubscriber(ctx context.Context, msg proto.Message) error {
-	blk := new(block.Block)
-	if err := blk.FromProtoMessage(msg); err != nil {
-		return err
+func (s *Service) blockSubscriber(ctx context.Context, data any) error {
+	blk, ok := data.(*block.Block)
+	if !ok {
+		return errWrongMessage
 	}
 	blockNumber, err := requireBlockNumber(blk, "block number unavailable")
 	if err != nil {

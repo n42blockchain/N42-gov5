@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/rlp"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/era"
@@ -110,9 +111,9 @@ func (e *Exporter) exportSegment(ctx context.Context, from, to uint64) (*Segment
 				return fmt.Errorf("block %d not found", num)
 			}
 
-			blockData, err := blk.Marshal()
+			blockData, err := rlp.EncodeToBytes(blk)
 			if err != nil {
-				return fmt.Errorf("marshal block %d: %w", num, err)
+				return fmt.Errorf("rlp-encode block %d: %w", num, err)
 			}
 
 			// We store empty receipts data — the EraE format requires it.
