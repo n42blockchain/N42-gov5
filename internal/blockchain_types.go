@@ -147,7 +147,6 @@ type BlockChain struct {
 
 	peers map[peer.ID]bool
 
-	chBlocks chan block.IBlock
 
 	p2p p2p.P2P
 
