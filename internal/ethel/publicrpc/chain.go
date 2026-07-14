@@ -16,7 +16,6 @@ import (
 	"errors"
 
 	"github.com/holiman/uint256"
-	libp2ppeer "github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
@@ -188,8 +187,7 @@ func (c *ethelChain) GenesisBlock() block.IBlock {
 	return b
 }
 
-func (c *ethelChain) NewBlockHandler(payload []byte, peer libp2ppeer.ID) error { return errReadOnly }
-func (c *ethelChain) InsertChain(blocks []block.IBlock) (int, error)           { return 0, errReadOnly }
+func (c *ethelChain) InsertChain(blocks []block.IBlock) (int, error) { return 0, errReadOnly }
 func (c *ethelChain) InsertBlock(blocks []block.IBlock, isSync bool) (int, error) {
 	return 0, errReadOnly
 }

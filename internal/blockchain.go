@@ -43,7 +43,6 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
@@ -68,7 +67,6 @@ import (
 	"github.com/n42blockchain/N42/modules/state/snapshot"
 	"github.com/n42blockchain/N42/modules/state/witness"
 	"github.com/n42blockchain/N42/params"
-	"github.com/n42blockchain/N42/proto/msg_proto"
 )
 
 // =============================================================================
@@ -126,7 +124,6 @@ func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consen
 		cancel:        cancel,
 		insertLock:    make(chan struct{}, 1),
 		peers:         make(map[peer.ID]bool),
-		chBlocks:      make(chan block.IBlock, 100),
 		errorCh:       make(chan error, 1),
 		p2p:           p2p,
 		latestBlockCh: make(chan block.IBlock, 50),
@@ -443,7 +440,6 @@ func (bc *BlockChain) Start() error {
 	bc.wg.Add(3)
 	go bc.runLoop()
 	go bc.updateFutureBlocksLoop()
-	go bc.runNewBlockMessage()
 	return nil
 }
 
@@ -829,83 +825,11 @@ func (bc *BlockChain) processFutureBlocks() {
 	}
 }
 
-func (bc *BlockChain) runNewBlockMessage() {
-	defer bc.wg.Done()
-	newBlockCh := make(chan *msg_proto.NewBlockMessageData, 10)
-	sub, err := event.GlobalEvent.Subscribe(newBlockCh)
-	if err != nil {
-		log.Error("failed to subscribe to NewBlockMessageData events", "err", err)
-		return
-	}
-	defer sub.Unsubscribe()
-	db := bc.ChainDB
-
-	for {
-		select {
-		case <-bc.ctx.Done():
-			return
-		case err := <-sub.Err():
-			log.Errorf("failed subscribe new block at blockchain err :%v", err)
-			return
-		case blk, ok := <-bc.chBlocks:
-			if ok {
-				bc.persistBlock(db, blk, "chBlocks")
-			}
-		case msg, ok := <-newBlockCh:
-			if ok {
-				var blk block.Block
-				if err := blk.FromProtoMessage(msg.Block); err == nil {
-					bc.persistBlock(db, &blk, "newBlockCh")
-				}
-			}
-		}
-	}
-}
-
-// persistBlock writes a block to the database and updates head hash.
-func (bc *BlockChain) persistBlock(db kv.RwDB, blk block.IBlock, source string) {
-	concreteBlock, err := requireConcreteBlock(blk, "unexpected block type")
-	if err != nil {
-		log.Errorf("failed to write block from %s: %v", source, err)
-		return
-	}
-	if _, err := requireBlockNumber(concreteBlock, "block number unavailable"); err != nil {
-		log.Errorf("failed to write block from %s: %v", source, err)
-		return
-	}
-	if err := db.Update(bc.ctx, func(tx kv.RwTx) error {
-		if err := rawdb.WriteBlock(tx, concreteBlock); err != nil {
-			return err
-		}
-		// Leader-driven chains: HeadBlockHash is the committed-head anchor for
-		// unwindForReimport's finality floor and the startup canonical repair;
-		// only CommitToCanonical may move it. Writing it here for ANY block that
-		// arrives on the legacy gossip path silently redefines "committed" to an
-		// arbitrary uncommitted candidate.
-		if !bc.canonicalByCommitOnly() {
-			rawdb.WriteHeadBlockHash(tx, blk.Hash())
-		}
-		// Persist the per-block BLS committee evidence (multi-sig QC + mobile
-		// attestation) in the same atomic batch as the block, continuing the
-		// resealed chain's consensus-evidence chain. No-op until a pool is set.
-		if bc.committeePool != nil {
-			hdr, ok := concreteBlock.Header().(*block.Header)
-			if ok && hdr != nil {
-				num := concreteBlock.Number64().Uint64()
-				ce, err := bc.committeePool.BuildBlockEvidence(num, blk.Hash(), hdr.ReceiptHash)
-				if err != nil {
-					return fmt.Errorf("build consensus evidence block %d: %w", num, err)
-				}
-				if err := rawdb.WriteConsensusEvidence(tx, num, ce); err != nil {
-					return fmt.Errorf("write consensus evidence block %d: %w", num, err)
-				}
-			}
-		}
-		return nil
-	}); err != nil {
-		log.Errorf("failed to write block from %s: %v", source, err)
-	}
-}
+// runNewBlockMessage, persistBlock and NewBlockHandler were the legacy
+// proto (msg_proto.NewBlockMessageData) direct-push receive path. They have been
+// removed: block delivery now travels as ETH-standard RLP end to end — SealedBlock
+// RLP-encodes once and reaches peers via directPushBlock (RPCBlockPushTopicV1,
+// decoded by ReadChunkedBlock) and the RLP gossip fallback (BroadcastBlock).
 
 // knownBlockNeedsAuthorizedReplay reports whether an already-stored block's
 // STATE is not the applied world state — i.e. the QMDB applied head sits on a
@@ -1165,24 +1089,6 @@ func (bc *BlockChain) AddPeer(hash string, remoteBlock uint64, peerID peer.ID) e
 
 	log.Debugf("local height:%d --> remote height: %d", bc.CurrentBlock().Number64(), remoteBlock)
 	bc.peers[peerID] = true
-	return nil
-}
-
-func (bc *BlockChain) NewBlockHandler(payload []byte, peer peer.ID) error {
-	var nweBlock msg_proto.NewBlockMessageData
-	if err := proto.Unmarshal(payload, &nweBlock); err != nil {
-		log.Errorf("failed unmarshal to msg, from peer:%s", peer)
-		return err
-	}
-
-	var blk block.Block
-	if err := blk.FromProtoMessage(nweBlock.GetBlock()); err == nil {
-		select {
-		case bc.chBlocks <- &blk:
-		case <-bc.ctx.Done():
-			return bc.ctx.Err()
-		}
-	}
 	return nil
 }
 

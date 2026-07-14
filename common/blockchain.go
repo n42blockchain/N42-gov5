@@ -25,7 +25,6 @@ package common
 
 import (
 	"github.com/holiman/uint256"
-	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
@@ -52,7 +51,6 @@ type IBlockChain interface {
 	Blocks() []block.IBlock
 	Start() error
 	GenesisBlock() block.IBlock
-	NewBlockHandler(payload []byte, peer peer.ID) error
 	InsertChain(blocks []block.IBlock) (int, error)
 	InsertBlock(blocks []block.IBlock, isSync bool) (int, error)
 

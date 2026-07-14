@@ -129,25 +129,6 @@ func TestAddFutureBlockRejectsUnexpectedType(t *testing.T) {
 	}
 }
 
-func TestPersistBlockRejectsUnexpectedTypeWithoutPanicking(t *testing.T) {
-	bc := &BlockChain{ctx: context.Background()}
-	blk := &nonConcreteBlockStub{
-		header: &block.Header{
-			Number:     uint256.NewInt(1),
-			Difficulty: uint256.NewInt(1),
-			BaseFee:    uint256.NewInt(0),
-		},
-		body: &block.Body{},
-	}
-
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("persistBlock panicked: %v", r)
-		}
-	}()
-	bc.persistBlock(nil, blk, "test")
-}
-
 func TestWriteBlockWithoutStateRejectsUnexpectedType(t *testing.T) {
 	bc := &BlockChain{}
 
