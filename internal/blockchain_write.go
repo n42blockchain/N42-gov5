@@ -37,16 +37,16 @@ import (
 	"github.com/n42blockchain/N42/internal/exex"
 	nodeMetrics "github.com/n42blockchain/N42/internal/metrics"
 	"github.com/n42blockchain/N42/internal/tracing"
-	"github.com/n42blockchain/N42/lib/jmt"
-	"github.com/n42blockchain/N42/lib/qmdb"
 	bmtstore "github.com/n42blockchain/N42/lib/bmt/store"
+	"github.com/n42blockchain/N42/lib/jmt"
 	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
-	verklestore "github.com/n42blockchain/N42/lib/verkle/store"
 	"github.com/n42blockchain/N42/lib/kv"
-	"github.com/n42blockchain/N42/lib/lthash"
-	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/lib/kv/layered"
+	"github.com/n42blockchain/N42/lib/lthash"
+	"github.com/n42blockchain/N42/lib/qmdb"
+	verklestore "github.com/n42blockchain/N42/lib/verkle/store"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/changeset"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
@@ -120,6 +120,27 @@ func (bc *BlockChain) WriteBlockWithState(blk block.IBlock, receipts []*block.Re
 	return err
 }
 
+// checkQMDBLeaderSealParent rejects a speculative leader seal whose parent is
+// no longer the live QMDB applied head. This must run before any append-only
+// table writes: after a slow build, a competing proposal can be imported and
+// committed at the same height, leaving receipt/log cursors ahead of the stale
+// candidate. Letting AppendReceipts discover that race surfaces a misleading
+// MDBX_EKEYMISMATCH instead of the expected ErrStaleSeal.
+func checkQMDBLeaderSealParent(tx kv.Tx, blockNumber uint64, parentHash types.Hash) error {
+	if blockNumber == 0 {
+		return nil
+	}
+	appliedNumber, appliedHash, ok, err := rawdb.ReadQMDBApplied(tx)
+	if err != nil {
+		return fmt.Errorf("reading QMDB applied head for sealed block %d: %w", blockNumber, err)
+	}
+	if ok && (appliedNumber != blockNumber-1 || appliedHash != parentHash) {
+		return fmt.Errorf("sealed block %d parent %x is no longer the applied head (%d/%x): %w",
+			blockNumber, parentHash[:8], appliedNumber, appliedHash[:8], ErrStaleSeal)
+	}
+	return nil
+}
+
 // writeBlockWithState persists block, receipts, state, and reward data, then
 // decides whether a reorg is needed. Returns the resulting WriteStatus.
 func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Receipt, ibs *state.IntraBlockState, nopay map[types.Address]*uint256.Int) (status WriteStatus, retErr error) {
@@ -150,8 +171,22 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 	}()
 
 	var externTd *uint256.Int
+	isolatedQMDBSeal := false
+	if ibs != nil && bc.qmdbEnabled && bc.qmdbRootComputer != nil {
+		if rc := ibs.GetRootComputer(); rc != nil && rc != state.RootComputer(bc.qmdbRootComputer) {
+			isolatedQMDBSeal = true
+		}
+	}
 
 	if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+		// Reject an in-flight leader candidate before touching receipts, logs,
+		// changesets, or any other append-only table. The applied head can move
+		// while the isolated candidate is being built.
+		if isolatedQMDBSeal {
+			if err := checkQMDBLeaderSealParent(tx, blockNumber.Uint64(), blk.ParentHash()); err != nil {
+				return err
+			}
+		}
 		ptd, err := rawdb.ReadTd(tx, blk.ParentHash(), uint256.NewInt(0).Sub(blockNumber, uint256.NewInt(1)).Uint64())
 		if err != nil {
 			return fmt.Errorf("reading parent td for block %d: %w", blockNumber.Uint64(), err)
@@ -317,11 +352,8 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 				// scary error for a block that had simply lost the race).
 				// A seal whose parent is no longer the applied head has lost;
 				// drop it quietly instead of replaying onto the wrong base.
-				if an, ah, ok, aerr := rawdb.ReadQMDBApplied(tx); aerr == nil && ok {
-					if an != blockNumber.Uint64()-1 || ah != blk.ParentHash() {
-						return fmt.Errorf("sealed block %d parent %x is no longer the applied head (%d/%x): %w",
-							blockNumber.Uint64(), blk.ParentHash().Bytes()[:8], an, ah[:8], ErrStaleSeal)
-					}
+				if err := checkQMDBLeaderSealParent(tx, blockNumber.Uint64(), blk.ParentHash()); err != nil {
+					return err
 				}
 				accts, stor := ibs.LastRootDirtySet()
 				if accts == nil && stor == nil {
