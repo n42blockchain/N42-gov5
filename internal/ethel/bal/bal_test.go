@@ -127,6 +127,45 @@ func TestBuildBALDeterministic(t *testing.T) {
 	}
 }
 
+// TestBuildBALDedupsUnchangedBalanceNonce checks that a tx which writes an
+// account without changing its balance (only its nonce) does not appear in
+// balance_changes, and vice-versa — only txs that actually changed the field
+// are listed. The first entry per account is always kept.
+func TestBuildBALDedupsUnchangedBalanceNonce(t *testing.T) {
+	a := addr(0x01)
+	txs := []TxAccess{
+		{TxIndex: 1,
+			BalanceChanges: []AccountBalance{{a, *uint256.NewInt(100)}},
+			NonceChanges:   []AccountNonce{{a, 5}}},
+		// tx2: nonce bumps to 6, balance unchanged at 100.
+		{TxIndex: 2,
+			BalanceChanges: []AccountBalance{{a, *uint256.NewInt(100)}},
+			NonceChanges:   []AccountNonce{{a, 6}}},
+		// tx3: balance changes to 200, nonce unchanged at 6.
+		{TxIndex: 3,
+			BalanceChanges: []AccountBalance{{a, *uint256.NewInt(200)}},
+			NonceChanges:   []AccountNonce{{a, 6}}},
+	}
+	b := BuildBAL(txs)
+	if len(b.Accounts) != 1 {
+		t.Fatalf("accounts = %d, want 1", len(b.Accounts))
+	}
+	bc := b.Accounts[0].BalanceChanges
+	if len(bc) != 2 || bc[0].TxIndex != 1 || bc[1].TxIndex != 3 {
+		t.Fatalf("balance changes should be tx1,tx3 (tx2 redundant): %+v", bc)
+	}
+	if bc[0].PostBalance.Uint64() != 100 || bc[1].PostBalance.Uint64() != 200 {
+		t.Fatalf("balance post-values wrong: %+v", bc)
+	}
+	nc := b.Accounts[0].NonceChanges
+	if len(nc) != 2 || nc[0].TxIndex != 1 || nc[1].TxIndex != 2 {
+		t.Fatalf("nonce changes should be tx1,tx2 (tx3 redundant): %+v", nc)
+	}
+	if nc[0].NewNonce != 5 || nc[1].NewNonce != 6 {
+		t.Fatalf("nonce values wrong: %+v", nc)
+	}
+}
+
 // TestBuildBALEmpty checks an empty block produces an empty, well-formed BAL.
 func TestBuildBALEmpty(t *testing.T) {
 	b := BuildBAL(nil)

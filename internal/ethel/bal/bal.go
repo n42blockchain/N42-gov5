@@ -215,13 +215,16 @@ func BuildBAL(txs []TxAccess) *BlockAccessList {
 		sort.Slice(reads, func(i, j int) bool { return bytes.Compare(reads[i][:], reads[j][:]) < 0 })
 		ac.StorageReads = reads
 
-		// Balance/nonce/code changes: stable order by tx index.
-		ac.BalanceChanges = a.balances
-		sort.SliceStable(ac.BalanceChanges, func(i, j int) bool { return ac.BalanceChanges[i].TxIndex < ac.BalanceChanges[j].TxIndex })
-		ac.NonceChanges = a.nonces
-		sort.SliceStable(ac.NonceChanges, func(i, j int) bool { return ac.NonceChanges[i].TxIndex < ac.NonceChanges[j].TxIndex })
-		ac.CodeChanges = a.codes
-		sort.SliceStable(ac.CodeChanges, func(i, j int) bool { return ac.CodeChanges[i].TxIndex < ac.CodeChanges[j].TxIndex })
+		// Balance/nonce/code changes: stable order by tx index, then drop entries
+		// equal to the previous kept value so only txs that actually changed the
+		// field are listed (EIP-7928). The very first entry per account is always
+		// kept: without the pre-block base value it cannot be proven redundant.
+		sort.SliceStable(a.balances, func(i, j int) bool { return a.balances[i].TxIndex < a.balances[j].TxIndex })
+		ac.BalanceChanges = dedupBalances(a.balances)
+		sort.SliceStable(a.nonces, func(i, j int) bool { return a.nonces[i].TxIndex < a.nonces[j].TxIndex })
+		ac.NonceChanges = dedupNonces(a.nonces)
+		sort.SliceStable(a.codes, func(i, j int) bool { return a.codes[i].TxIndex < a.codes[j].TxIndex })
+		ac.CodeChanges = dedupCodes(a.codes)
 
 		bal.Accounts = append(bal.Accounts, ac)
 	}
@@ -230,6 +233,48 @@ func BuildBAL(txs []TxAccess) *BlockAccessList {
 		return bytes.Compare(bal.Accounts[i].Address[:], bal.Accounts[j].Address[:]) < 0
 	})
 	return bal
+}
+
+// dedupBalances drops changes whose post balance equals the previous kept one.
+func dedupBalances(in []BalanceChange) []BalanceChange {
+	if len(in) == 0 {
+		return nil
+	}
+	out := in[:1]
+	for _, c := range in[1:] {
+		if c.PostBalance.Cmp(&out[len(out)-1].PostBalance) != 0 {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// dedupNonces drops changes whose nonce equals the previous kept one.
+func dedupNonces(in []NonceChange) []NonceChange {
+	if len(in) == 0 {
+		return nil
+	}
+	out := in[:1]
+	for _, c := range in[1:] {
+		if c.NewNonce != out[len(out)-1].NewNonce {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// dedupCodes drops changes whose code bytes equal the previous kept one.
+func dedupCodes(in []CodeChange) []CodeChange {
+	if len(in) == 0 {
+		return nil
+	}
+	out := in[:1]
+	for _, c := range in[1:] {
+		if !bytes.Equal(c.NewCode, out[len(out)-1].NewCode) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // --- RLP wire form ----------------------------------------------------------

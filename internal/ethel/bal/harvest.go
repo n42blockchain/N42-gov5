@@ -64,9 +64,15 @@ func HarvestTxAccess(txIndex uint16, v AccessView) TxAccess {
 			}
 			ta.BalanceChanges = append(ta.BalanceChanges, AccountBalance{Address: addr, PostBalance: acc.Balance})
 			ta.NonceChanges = append(ta.NonceChanges, AccountNonce{Address: addr, NewNonce: acc.Nonce})
+			// Code change: SetCode writes the code body under its code-hash key in
+			// the same view, so a matching code-key write means this account's code
+			// was (re)set this tx. Correlate hash -> bytes directly.
+			if code := v.WriteSet()[string(state.EncodeCodeKey(acc.CodeHash))]; len(code) > 0 {
+				ta.CodeChanges = append(ta.CodeChanges, AccountCode{Address: addr, NewCode: code})
+			}
 			continue
 		}
-		// code / wipe keys: not part of the phase-2 harvest.
+		// code / wipe keys: consumed via the account correlation above / not in BAL.
 	}
 
 	for _, rr := range v.ReadSet() {

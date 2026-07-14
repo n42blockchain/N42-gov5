@@ -17,12 +17,14 @@
 package bal
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/modules/state"
 )
 
@@ -92,6 +94,31 @@ func TestHarvestBuildsBALFromViews(t *testing.T) {
 	}
 	if len(a2.StorageReads) != 1 || a2.StorageReads[0] != slot(0x09) {
 		t.Fatalf("addr02 reads wrong: %+v", a2.StorageReads)
+	}
+}
+
+// TestHarvestCodeChange checks that a SetCode (account codeHash write + matching
+// code-key write in the same view) is harvested as a CodeChange with the bytes.
+func TestHarvestCodeChange(t *testing.T) {
+	code := []byte{0x60, 0x00, 0x60, 0x00, 0xf3}
+	codeHash := crypto.Keccak256Hash(code)
+
+	acc := account.StateAccount{Nonce: 1, Balance: *uint256.NewInt(1), CodeHash: codeHash}
+	writes := map[string][]byte{
+		string(state.EncodeAccountKey(addr(0x01))): acc.MarshalV2(),
+		string(state.EncodeCodeKey(codeHash)):      code,
+	}
+	b := BuildBALFromViews([]AccessView{&fakeView{writes: writes}}, 1)
+
+	if len(b.Accounts) != 1 {
+		t.Fatalf("accounts = %d, want 1", len(b.Accounts))
+	}
+	cc := b.Accounts[0].CodeChanges
+	if len(cc) != 1 || cc[0].TxIndex != 1 {
+		t.Fatalf("code changes wrong: %+v", cc)
+	}
+	if !bytes.Equal(cc[0].NewCode, code) {
+		t.Fatalf("code bytes = %x, want %x", cc[0].NewCode, code)
 	}
 }
 
