@@ -27,11 +27,11 @@ import (
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/bmt"
 	"github.com/n42blockchain/N42/lib/jmt"
-	"github.com/n42blockchain/N42/lib/qmdb"
 	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	"github.com/n42blockchain/N42/lib/kv"
 	mdbxkv "github.com/n42blockchain/N42/lib/kv/mdbx"
 	log "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/lib/qmdb"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state/commitment"
@@ -66,20 +66,32 @@ func main() {
 	}
 	defer tx.Rollback()
 
-	headPtr := rawdb.ReadCurrentBlockNumber(tx)
+	headPtr := rawdb.ReadCurrentFullBlockNumber(tx)
 	if headPtr == nil {
 		die("head block number unavailable")
 	}
 	head := *headPtr
 	hash, _ := rawdb.ReadCanonicalHash(tx, head)
+	headLabel := "committed block"
+	// The live QMDB forest reflects the applied state, which can be one or more
+	// executed proposals ahead of HotStuff's committed head. Verify against the
+	// applied marker's header rather than reporting that normal speculative
+	// window as state corruption.
+	if *treeType == "qmdb" {
+		if appliedNum, appliedHash, ok, rerr := rawdb.ReadQMDBApplied(tx); rerr != nil {
+			die("read QMDB applied head: %v", rerr)
+		} else if ok {
+			head, hash, headLabel = appliedNum, appliedHash, "applied block"
+		}
+	}
 	header := rawdb.ReadHeader(tx, hash, head)
 	if header == nil {
-		die("head header %d unavailable", head)
+		die("%s header %d/%x unavailable", headLabel, head, hash[:8])
 	}
 	headerRoot := header.Root
 
 	fmt.Printf("=== n42-state-verify (tree=%s): %s ===\n", *treeType, *datadir)
-	fmt.Printf("head block      : %d\n", head)
+	fmt.Printf("%-16s: %d\n", headLabel, head)
 	fmt.Printf("header.Root     : %x\n", headerRoot)
 	if *treeType == "jmt" {
 		storedJMT, _ := jmtstore.ReadJMTRoot(tx)

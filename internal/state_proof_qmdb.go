@@ -82,20 +82,20 @@ func (p *QMDBStateProofProvider) StorageProof(tx kv.Tx, address types.Address, s
 // directly off the loaded forest for the latest block, via the recent-blocks
 // undo window (qmdb.Tree.ProofAt) for an older height within the window.
 func (p *QMDBStateProofProvider) proofFor(tx kv.Tx, kh qmdb.Hash, blockNrOrHash jsonrpc.BlockNumberOrHash) ([]string, error) {
-	head, headRoot, err := latestHead(tx)
+	heads, err := readQMDBProofHeads(tx)
 	if err != nil {
 		return nil, err
 	}
-	tree, err := p.ensureTree(tx, headRoot)
+	tree, err := p.ensureTree(tx, heads.appliedRoot)
 	if err != nil {
 		return nil, err
 	}
 
-	target, ok := resolveProofTarget(tx, blockNrOrHash, head)
+	target, ok := resolveProofTarget(tx, blockNrOrHash, heads.committed)
 	if !ok {
 		return nil, errQMDBHistorical
 	}
-	if target == head {
+	if target == heads.applied {
 		proof, found := tree.GetProof(kh)
 		if !found {
 			return []string{}, nil
@@ -103,8 +103,12 @@ func (p *QMDBStateProofProvider) proofFor(tx kv.Tx, kh qmdb.Hash, blockNrOrHash 
 		return []string{hexutil.Encode(proof.Marshal())}, nil
 	}
 
-	// Recent-height path: replay the undo window down to the target.
-	undos, err := rawdb.ReadQMDBUndos(tx, target, head)
+	// Recent-height path: replay the undo window from the actually-applied
+	// state down to the requested committed height. HotStuff may have one or
+	// more executed candidates above the committed head; loading the live tree
+	// against the committed root would reject every latest proof in that
+	// normal speculative window.
+	undos, err := rawdb.ReadQMDBUndos(tx, target, heads.applied)
 	if err != nil {
 		return nil, err
 	}
@@ -161,21 +165,52 @@ func (p *QMDBStateProofProvider) ensureTree(tx kv.Tx, headRoot types.Hash) (*qmd
 	return rc.Tree(), nil
 }
 
-// latestHead reads the head block number and its stateRoot.
-func latestHead(tx kv.Tx) (uint64, types.Hash, error) {
-	headPtr := rawdb.ReadCurrentBlockNumber(tx)
-	if headPtr == nil {
-		return 0, types.Hash{}, fmt.Errorf("qmdb proof: head block number unavailable")
+type qmdbProofHeads struct {
+	applied     uint64
+	appliedRoot types.Hash
+	committed   uint64
+}
+
+// readQMDBProofHeads separates the state the live QMDB forest reflects from
+// the RPC-visible committed head. Under HotStuff, importing a proposal executes
+// it before the QC commits it, so applied can legitimately be ahead by a small
+// speculative window. The undo records bridge that gap for latest proofs.
+func readQMDBProofHeads(tx kv.Tx) (qmdbProofHeads, error) {
+	committedPtr := rawdb.ReadCurrentFullBlockNumber(tx)
+	if committedPtr == nil {
+		return qmdbProofHeads{}, fmt.Errorf("qmdb proof: head block number unavailable")
 	}
-	hash, err := rawdb.ReadCanonicalHash(tx, *headPtr)
+	committedHash, err := rawdb.ReadCanonicalHash(tx, *committedPtr)
 	if err != nil {
-		return 0, types.Hash{}, err
+		return qmdbProofHeads{}, err
 	}
-	header := rawdb.ReadHeader(tx, hash, *headPtr)
-	if header == nil {
-		return 0, types.Hash{}, fmt.Errorf("qmdb proof: head header %d unavailable", *headPtr)
+	committedHeader := rawdb.ReadHeader(tx, committedHash, *committedPtr)
+	if committedHeader == nil {
+		return qmdbProofHeads{}, fmt.Errorf("qmdb proof: committed header %d unavailable", *committedPtr)
 	}
-	return *headPtr, header.Root, nil
+
+	heads := qmdbProofHeads{
+		applied:     *committedPtr,
+		appliedRoot: committedHeader.Root,
+		committed:   *committedPtr,
+	}
+	appliedNum, appliedHash, ok, err := rawdb.ReadQMDBApplied(tx)
+	if err != nil {
+		return qmdbProofHeads{}, err
+	}
+	if !ok {
+		return heads, nil
+	}
+	if appliedNum < heads.committed {
+		return qmdbProofHeads{}, fmt.Errorf("qmdb proof: applied head %d behind committed head %d", appliedNum, heads.committed)
+	}
+	appliedHeader := rawdb.ReadHeader(tx, appliedHash, appliedNum)
+	if appliedHeader == nil {
+		return qmdbProofHeads{}, fmt.Errorf("qmdb proof: applied header %d/%x unavailable", appliedNum, appliedHash[:8])
+	}
+	heads.applied = appliedNum
+	heads.appliedRoot = appliedHeader.Root
+	return heads, nil
 }
 
 // resolveProofTarget maps the request to a concrete block number ≤ head.
@@ -198,7 +233,11 @@ func resolveProofTarget(tx kv.Tx, blockNrOrHash jsonrpc.BlockNumberOrHash, head 
 			return 0, false
 		}
 		n := header.Number.Uint64()
-		return n, n <= head
+		if n > head {
+			return 0, false
+		}
+		canonical, err := rawdb.ReadCanonicalHash(tx, n)
+		return n, err == nil && canonical == hash
 	}
 	return 0, false
 }
