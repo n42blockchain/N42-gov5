@@ -119,6 +119,41 @@ func TestBlockRLPRoundTrip(t *testing.T) {
 	}
 }
 
+// TestBlockRLPRoundTripWithCommitteeLinkBeforeShanghai reproduces the live
+// staggered-chain wire shape: London is active, Shanghai/Cancun are not, but
+// the HotStuff committee-evidence link already stamps ParentBeaconRoot. The
+// nil hash/scalar gaps must decode back to nil instead of being treated as
+// malformed fixed-size values.
+func TestBlockRLPRoundTripWithCommitteeLinkBeforeShanghai(t *testing.T) {
+	h := sampleRLPHeaders()[1] // London: BaseFee set, all later fields nil.
+	pbr := types.HexToHash("0x1111111111111111111111111111111111111111111111111111111111111111")
+	h.ParentBeaconRoot = &pbr
+	h.ResetHashCache()
+	blk := NewBlock(h, nil).(*Block)
+	want := blk.Hash()
+
+	enc, err := rlp.EncodeToBytes(blk)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	var decoded Block
+	if err := rlp.DecodeBytes(enc, &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	gotHeader := decoded.Header().(*Header)
+	if gotHeader.WithdrawalsHash != nil || gotHeader.BlobGasUsed != nil || gotHeader.ExcessBlobGas != nil {
+		t.Fatalf("optional gaps decoded non-nil: withdrawals=%v blobGas=%v excessBlobGas=%v",
+			gotHeader.WithdrawalsHash, gotHeader.BlobGasUsed, gotHeader.ExcessBlobGas)
+	}
+	if gotHeader.ParentBeaconRoot == nil || *gotHeader.ParentBeaconRoot != pbr {
+		t.Fatalf("ParentBeaconRoot = %v, want %s", gotHeader.ParentBeaconRoot, pbr.Hex())
+	}
+	gotHeader.ResetHashCache()
+	if got := gotHeader.Hash(); got != want {
+		t.Fatalf("block hash changed after RLP round trip: want %s got %s", want.Hex(), got.Hex())
+	}
+}
+
 // TestHeaderRLPDiscontinuousOptional guards the previously-divergent case: a
 // header with a nil optional before a set one (BaseFee nil + WithdrawalsHash
 // set). The old hand-written rlpHash() packed present optionals contiguously and
@@ -145,11 +180,11 @@ func TestHeaderRLPDiscontinuousOptional(t *testing.T) {
 	if got := h2.Hash(); got != want {
 		t.Errorf("discontinuous-optional header hash changed after RLP round trip: want %s got %s", want.Hex(), got.Hex())
 	}
-	// The RLP struct codec encodes a nil *uint256.Int and a zero one identically
-	// (empty string), so BaseFee decodes back as zero rather than nil — expected
-	// and hash-neutral (the hash assert above passed). The key guarantee is that
-	// WithdrawalsHash did NOT shift into the BaseFee slot — the exact corruption
-	// the old hand-written rlpHash produced on a discontinuous optional.
+	// uint256's custom decoder maps the canonical empty-string placeholder to a
+	// zero value, so BaseFee may decode as zero rather than nil; this is
+	// hash-neutral. The key guarantee is that WithdrawalsHash did NOT shift into
+	// the BaseFee slot — the exact corruption the old hand-written rlpHash
+	// produced on a discontinuous optional.
 	if h2.WithdrawalsHash == nil || *h2.WithdrawalsHash != wh {
 		t.Errorf("WithdrawalsHash lost/shifted after round trip: %v", h2.WithdrawalsHash)
 	}
