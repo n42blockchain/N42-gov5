@@ -79,18 +79,18 @@ type Header struct {
 	Nonce       BlockNonce    `json:"nonce"`                                // 15 always 0 post-merge
 
 	// --- EIP-1559 (London) ---
-	BaseFee *uint256.Int `json:"baseFeePerGas" rlp:"optional"` // 16
+	BaseFee *uint256.Int `json:"baseFeePerGas" rlp:"optional,nilString"` // 16
 
 	// --- EIP-4895 (Shanghai) ---
-	WithdrawalsHash *types.Hash `json:"withdrawalsRoot,omitempty" rlp:"optional"` // 17 NEW
+	WithdrawalsHash *types.Hash `json:"withdrawalsRoot,omitempty" rlp:"optional,nil"` // 17 NEW
 
 	// --- EIP-4844 (Cancun) ---
-	BlobGasUsed      *uint64     `json:"blobGasUsed,omitempty" rlp:"optional"`            // 18 CHANGED: pointer
-	ExcessBlobGas    *uint64     `json:"excessBlobGas,omitempty" rlp:"optional"`          // 19 CHANGED: pointer
-	ParentBeaconRoot *types.Hash `json:"parentBeaconBlockRoot,omitempty" rlp:"optional"`  // 20 NEW
+	BlobGasUsed      *uint64     `json:"blobGasUsed,omitempty" rlp:"optional,nil"`           // 18 CHANGED: pointer
+	ExcessBlobGas    *uint64     `json:"excessBlobGas,omitempty" rlp:"optional,nil"`         // 19 CHANGED: pointer
+	ParentBeaconRoot *types.Hash `json:"parentBeaconBlockRoot,omitempty" rlp:"optional,nil"` // 20 NEW
 
 	// --- EIP-7685 (Prague/Pectra) ---
-	RequestsHash *types.Hash `json:"requestsRoot,omitempty" rlp:"optional"` // 21 NEW
+	RequestsHash *types.Hash `json:"requestsRoot,omitempty" rlp:"optional,nil"` // 21 NEW
 
 	hash atomic.Value
 }
@@ -158,24 +158,23 @@ func IsLegacyHeader(h *Header) bool {
 	return true
 }
 
-
 func (h *Header) ToProtoMessage() proto.Message {
 	pbh := &types_pb.Header{
-		ParentHash:    utils.ConvertHashToH256(h.ParentHash),
-		Coinbase:      utils.ConvertAddressToH160(h.Coinbase),
-		Root:          utils.ConvertHashToH256(h.Root),
-		TxHash:        utils.ConvertHashToH256(h.TxHash),
-		ReceiptHash:   utils.ConvertHashToH256(h.ReceiptHash),
-		Difficulty:    utils.ConvertUint256IntToH256(h.Difficulty),
-		Number:        utils.ConvertUint256IntToH256(h.Number),
-		GasLimit:      h.GasLimit,
-		GasUsed:       h.GasUsed,
-		Time:          h.Time,
-		Nonce:         h.Nonce.Uint64(),
-		BaseFee:       utils.ConvertUint256IntToH256(h.BaseFee),
-		Extra:         h.Extra,
-		Bloom:         utils.ConvertBytesToH2048(h.Bloom.Bytes()),
-		MixDigest:     utils.ConvertHashToH256(h.MixDigest),
+		ParentHash:       utils.ConvertHashToH256(h.ParentHash),
+		Coinbase:         utils.ConvertAddressToH160(h.Coinbase),
+		Root:             utils.ConvertHashToH256(h.Root),
+		TxHash:           utils.ConvertHashToH256(h.TxHash),
+		ReceiptHash:      utils.ConvertHashToH256(h.ReceiptHash),
+		Difficulty:       utils.ConvertUint256IntToH256(h.Difficulty),
+		Number:           utils.ConvertUint256IntToH256(h.Number),
+		GasLimit:         h.GasLimit,
+		GasUsed:          h.GasUsed,
+		Time:             h.Time,
+		Nonce:            h.Nonce.Uint64(),
+		BaseFee:          utils.ConvertUint256IntToH256(h.BaseFee),
+		Extra:            h.Extra,
+		Bloom:            utils.ConvertBytesToH2048(h.Bloom.Bytes()),
+		MixDigest:        utils.ConvertHashToH256(h.MixDigest),
 		BlobGasUsed:      ptrToUint64(h.BlobGasUsed),
 		ExcessBlobGas:    ptrToUint64(h.ExcessBlobGas),
 		HasBlobGasUsed:   h.BlobGasUsed != nil,
@@ -337,27 +336,35 @@ func (h *Header) Unmarshal(data []byte) error {
 }
 
 func (h *Header) parseTrailer(t []byte) {
-	if len(t) < 37 { return } // magic(4)+flags(1)+UncleHash(32)
+	if len(t) < 37 {
+		return
+	} // magic(4)+flags(1)+UncleHash(32)
 	pos := 4 // skip magic
-	flags := t[pos]; pos++
-	copy(h.UncleHash[:], t[pos:]); pos += 32
+	flags := t[pos]
+	pos++
+	copy(h.UncleHash[:], t[pos:])
+	pos += 32
 	if flags&0x01 != 0 && pos+32 <= len(t) {
 		var wh types.Hash
-		copy(wh[:], t[pos:]); pos += 32
+		copy(wh[:], t[pos:])
+		pos += 32
 		h.WithdrawalsHash = &wh
 	}
 	if flags&0x02 != 0 && pos+32 <= len(t) {
 		var pbr types.Hash
-		copy(pbr[:], t[pos:]); pos += 32
+		copy(pbr[:], t[pos:])
+		pos += 32
 		h.ParentBeaconRoot = &pbr
 	}
 	if flags&0x04 != 0 && pos+32 <= len(t) {
 		var rh types.Hash
-		copy(rh[:], t[pos:]); pos += 32
+		copy(rh[:], t[pos:])
+		pos += 32
 		h.RequestsHash = &rh
 	}
 	if flags&0x08 != 0 && pos+8 <= len(t) {
-		v := binary.LittleEndian.Uint64(t[pos:]); pos += 8
+		v := binary.LittleEndian.Uint64(t[pos:])
+		pos += 8
 		h.BlobGasUsed = &v
 	}
 	if flags&0x10 != 0 && pos+8 <= len(t) {
