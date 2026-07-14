@@ -121,6 +121,10 @@ func privKeyFromFile(path string) (*ecdsa.PrivateKey, error) {
 		log.Error("Error reading private key from file", "err", err)
 		return nil, err
 	}
+	// Key files are commonly created by shell/PowerShell text writers, which
+	// append a trailing newline. Match the BLS keystore loader and accept
+	// surrounding ASCII whitespace instead of rejecting an otherwise valid key.
+	src = bytes.TrimSpace(src)
 	dst := make([]byte, hex.DecodedLen(len(src)))
 	if _, err = hex.Decode(dst, src); err != nil {
 		return nil, errors.Wrap(err, "failed to decode hex string")
