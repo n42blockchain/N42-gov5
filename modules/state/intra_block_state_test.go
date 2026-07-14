@@ -111,6 +111,64 @@ func TestFinalizeTxDeletesCreatedSelfdestructedContract(t *testing.T) {
 	}
 }
 
+// TestFinalizeTxDeletesNewAccountNetZeroedByTransfer covers the non-selfdestruct
+// analogue of reth's "elide empty new accounts from hashed state": an account
+// that did not exist before the block is funded (a plain transfer in) and then
+// has its whole balance transferred back out within the same block, netting to
+// empty (nonce 0, balance 0, no code). EIP-158 must emit a deletion at tx end,
+// not an empty leaf — otherwise a stale zero-value leaf pollutes the hashed
+// state and corrupts the root. The delete decision must not depend on whether
+// the account pre-existed.
+func TestFinalizeTxDeletesNewAccountNetZeroedByTransfer(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() {
+		kv.ChaindataTablesCfg = prevTables
+	})
+
+	newAddr := types.HexToAddress("0x20000000000000000000000000000000000000aa")
+	drain := types.HexToAddress("0x20000000000000000000000000000000000000bb")
+	db := memdb.NewTestDB(t)
+
+	err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		writer := NewPlainStateWriter(tx, tx, 1)
+		statedb := New(NewPlainState(tx, 1))
+
+		// newAddr is created purely by receiving a transfer this block, then the
+		// full amount leaves again — no CreateAccount, no code, no nonce bump.
+		statedb.AddBalance(newAddr, uint256.NewInt(5))
+		if !statedb.Exist(newAddr) {
+			t.Fatal("expected newAddr to exist after being funded")
+		}
+		statedb.SubBalance(newAddr, uint256.NewInt(5))
+		statedb.AddBalance(drain, uint256.NewInt(5))
+
+		if err := statedb.FinalizeTx(&params.Rules{IsSpuriousDragon: true, IsCancun: true}, writer); err != nil {
+			return err
+		}
+
+		if statedb.Exist(newAddr) {
+			t.Fatal("expected net-zeroed new account to be removed after FinalizeTx, not written as an empty leaf")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = db.View(context.Background(), func(tx kv.Tx) error {
+		reloaded := New(NewPlainStateReader(tx))
+		if reloaded.Exist(newAddr) {
+			t.Fatal("expected net-zeroed new account to stay deleted when reloaded")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCodeHashesSkipsCreatedSelfdestructedContract(t *testing.T) {
 	modules.N42Init()
 	prevTables := kv.ChaindataTablesCfg
