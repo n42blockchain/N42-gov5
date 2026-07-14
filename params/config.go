@@ -244,6 +244,22 @@ type ChainConfig struct {
 	// and stores BLAKE3(digest) in Header.LtHashRoot.
 	LtHashTime *big.Int `json:"ltHashTime,omitempty"`
 
+	// N42 extension: EIP-7928 Block-Level Access List activation.
+	// When set, blocks carry the keccak256 of the canonical BAL RLP in
+	// Header.BlockAccessListHash (produced from the block-STM execution views),
+	// enabling parallel state prefetch and validation. Nil = disabled (the
+	// header field stays nil and is omitted from the RLP, so pre-fork block
+	// hashes are byte-identical).
+	//
+	// ACTIVATION GUARD: keep this nil until types_pb.Header carries the field.
+	// Block P2P transport marshals the header via ToProtoMessage (proto, no
+	// trailer), and the proto schema has no BlockAccessListHash yet, so an
+	// activated fork would let followers reconstruct a different header hash and
+	// split consensus (pinned by block.TestHeaderBALProtoPathDropsHash). Enable
+	// only after regenerating types.pb.go with the field and wiring
+	// ToProtoMessage / FromProtoMessage.
+	BALTime *big.Int `json:"balTime,omitempty"`
+
 	// StateScheme determines the state commitment algorithm for Header.Root.
 	// Set at genesis, immutable thereafter. Nodes MUST refuse to start if the
 	// configured scheme does not match the database.
