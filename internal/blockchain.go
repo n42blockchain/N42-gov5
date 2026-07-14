@@ -2214,6 +2214,12 @@ Error: %v
 // head. No-op when already aligned; ErrUnknownAncestor when the parent itself
 // was never applied and must import first.
 func (bc *BlockChain) AlignAppliedBranch(childNum uint64, parentHash types.Hash) error {
+	// Miner alignment races ordinary block import. Both paths can peel or
+	// unwind the live QMDB tree, whose in-memory mutations are not covered by
+	// the MDBX transaction. Serialize the whole operation with InsertChain and
+	// WriteBlockWithState so a leader cannot consume an import's in-flight undo.
+	bc.lock.Lock()
+	defer bc.lock.Unlock()
 	return bc.unwindForReimport(childNum, parentHash, true)
 }
 
