@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/holiman/uint256"
 
@@ -52,5 +53,35 @@ func TestWriteBlockWithStateRejectsStaleQMDBSealBeforeOtherWrites(t *testing.T) 
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAlignAppliedBranchWaitsForChainMutationLock(t *testing.T) {
+	bc := &BlockChain{}
+	bc.lock.Lock()
+
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		done <- bc.AlignAppliedBranch(1, types.Hash{0xAA})
+	}()
+	<-started
+
+	select {
+	case err := <-done:
+		bc.lock.Unlock()
+		t.Fatalf("AlignAppliedBranch returned before the mutation lock was released: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	bc.lock.Unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("AlignAppliedBranch() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("AlignAppliedBranch did not proceed after the mutation lock was released")
 	}
 }
