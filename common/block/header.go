@@ -92,6 +92,12 @@ type Header struct {
 	// --- EIP-7685 (Prague/Pectra) ---
 	RequestsHash *types.Hash `json:"requestsRoot,omitempty" rlp:"optional,nil"` // 21 NEW
 
+	// --- EIP-7928 (N42 BAL fork) ---
+	// keccak256 of the canonical block access list RLP. Present only when the BAL
+	// fork is active; nil otherwise, in which case the rlp:"optional,nil" tag omits
+	// it entirely so pre-fork header hashes are byte-identical.
+	BlockAccessListHash *types.Hash `json:"blockAccessListHash,omitempty" rlp:"optional,nil"` // 22 NEW
+
 	hash atomic.Value
 }
 
@@ -152,7 +158,7 @@ func (h *Header) rlpHash() types.Hash {
 // IsLegacyHeader returns true for pre-Shanghai headers (no post-Shanghai fields set).
 func IsLegacyHeader(h *Header) bool {
 	if h.WithdrawalsHash != nil || h.BlobGasUsed != nil || h.ExcessBlobGas != nil ||
-		h.ParentBeaconRoot != nil || h.RequestsHash != nil {
+		h.ParentBeaconRoot != nil || h.RequestsHash != nil || h.BlockAccessListHash != nil {
 		return false
 	}
 	return true
@@ -262,9 +268,10 @@ func (h *Header) Marshal() ([]byte, error) {
 	// Append trailer with ETH Pectra fields not in proto.
 	// Format: [proto bytes][magic:4B][flags:1B][UncleHash:32B][field data...]
 	// flags: bit0=WithdrawalsHash, bit1=ParentBeaconRoot, bit2=RequestsHash,
-	//        bit3=BlobGasUsed present, bit4=ExcessBlobGas present
+	//        bit3=BlobGasUsed present, bit4=ExcessBlobGas present,
+	//        bit5=BlockAccessListHash present
 	var flags byte
-	trailer := make([]byte, 0, 4+1+32+32*3+8*2)
+	trailer := make([]byte, 0, 4+1+32+32*4+8*2)
 	trailer = append(trailer, headerTrailerMagic[:]...)
 	flagPos := len(trailer)
 	trailer = append(trailer, 0) // placeholder for flags
@@ -292,6 +299,10 @@ func (h *Header) Marshal() ([]byte, error) {
 		var buf [8]byte
 		binary.LittleEndian.PutUint64(buf[:], *h.ExcessBlobGas)
 		trailer = append(trailer, buf[:]...)
+	}
+	if h.BlockAccessListHash != nil {
+		flags |= 0x20
+		trailer = append(trailer, h.BlockAccessListHash[:]...)
 	}
 	trailer[flagPos] = flags
 
@@ -369,8 +380,16 @@ func (h *Header) parseTrailer(t []byte) {
 	}
 	if flags&0x10 != 0 && pos+8 <= len(t) {
 		v := binary.LittleEndian.Uint64(t[pos:])
+		pos += 8
 		h.ExcessBlobGas = &v
 	}
+	if flags&0x20 != 0 && pos+32 <= len(t) {
+		var blah types.Hash
+		copy(blah[:], t[pos:])
+		pos += 32
+		h.BlockAccessListHash = &blah
+	}
+	_ = pos
 }
 
 func CopyHeader(h *Header) *Header {
@@ -400,6 +419,7 @@ func CopyHeader(h *Header) *Header {
 	cpy.ExcessBlobGas = cloneUint64Ptr(h.ExcessBlobGas)
 	cpy.ParentBeaconRoot = cloneHashPtr(h.ParentBeaconRoot)
 	cpy.RequestsHash = cloneHashPtr(h.RequestsHash)
+	cpy.BlockAccessListHash = cloneHashPtr(h.BlockAccessListHash)
 	return &cpy
 }
 

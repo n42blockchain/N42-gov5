@@ -67,6 +67,7 @@ type Rules struct {
 	IsContentStore                                              bool // N42 extension: content-addressed storage precompile
 	IsAIInference                                               bool // N42 extension: AI inference precompile
 	IsRandomness                                                bool // N42 extension: on-chain randomness beacon precompile
+	IsBAL                                                       bool // N42 extension: EIP-7928 block-level access list
 }
 
 // Rules ensures c's ChainID is not nil.
@@ -127,6 +128,7 @@ func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 		IsContentStore:        c.IsContentStore(timestamp),
 		IsAIInference:         c.IsAIInference(timestamp),
 		IsRandomness:          c.IsRandomness(timestamp),
+		IsBAL:                 c.IsBAL(timestamp),
 	}
 	rules.applyForkInheritance()
 	rulesCacheMu.Lock()
@@ -364,6 +366,12 @@ func (c *ChainConfig) IsRandomness(time uint64) bool {
 // IsLtHash returns whether time is at or past the LtHash lattice state digest activation.
 func (c *ChainConfig) IsLtHash(time uint64) bool {
 	return isForked(c.LtHashTime, time)
+}
+
+// IsBAL returns whether time is at or past the EIP-7928 block-level access list
+// activation. When enabled, blocks bind the canonical BAL hash into the header.
+func (c *ChainConfig) IsBAL(time uint64) bool {
+	return isForked(c.BALTime, time)
 }
 
 // IsEip1559FeeCollector returns whether num has reached the EIP-1559 fee collector transition.
