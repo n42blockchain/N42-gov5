@@ -94,6 +94,31 @@ func DecodeKeyTag(key []byte) (byte, error) {
 	return key[0], nil
 }
 
+// DecodeAccountKey reports whether key is an account key and, if so, the address.
+// Read-only inverse of EncodeAccountKey, exposed for out-of-consensus consumers
+// (e.g. EIP-7928 block-access-list harvesting) to classify MVHashMap keys.
+func DecodeAccountKey(key []byte) (types.Address, bool) {
+	if len(key) != 1+20 || key[0] != mvKeyTagAccount {
+		return types.Address{}, false
+	}
+	var a types.Address
+	copy(a[:], key[1:])
+	return a, true
+}
+
+// DecodeStorageKey reports whether key is a storage key and, if so, the address
+// and slot. Read-only inverse of EncodeStorageKey.
+func DecodeStorageKey(key []byte) (types.Address, types.Hash, bool) {
+	if len(key) != 1+20+32 || key[0] != mvKeyTagStorage {
+		return types.Address{}, types.Hash{}, false
+	}
+	var a types.Address
+	var s types.Hash
+	copy(a[:], key[1:21])
+	copy(s[:], key[21:])
+	return a, s, true
+}
+
 // --- Typed view API ---
 
 // EVMStateView wraps an MVStateView with account / storage / code
