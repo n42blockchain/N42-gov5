@@ -61,7 +61,7 @@ func main() {
 	tx, _ := db.BeginRo(context.Background())
 	defer tx.Rollback()
 
-	head := *rawdb.ReadCurrentBlockNumber(tx)
+	head := *rawdb.ReadCurrentFullBlockNumber(tx)
 	hash, _ := rawdb.ReadCanonicalHash(tx, head)
 	hdr := rawdb.ReadHeader(tx, hash, head)
 	root := hdr.Root

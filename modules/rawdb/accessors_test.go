@@ -360,6 +360,13 @@ func TestHeadBlockHashStorage(t *testing.T) {
 	if hash != writeHash {
 		t.Fatalf("Head block hash mismatch: have %v, want %v", hash, writeHash)
 	}
+	const number = uint64(42)
+	if err := WriteHeaderNumber(tx, writeHash, number); err != nil {
+		t.Fatalf("WriteHeaderNumber failed: %v", err)
+	}
+	if got := ReadCurrentFullBlockNumber(tx); got == nil || *got != number {
+		t.Fatalf("Current full block number = %v, want %d", got, number)
+	}
 }
 
 func TestVerifiesStorage(t *testing.T) {
