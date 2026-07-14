@@ -867,31 +867,44 @@ func PruneTable(tx kv.RwTx, table string, pruneTo uint64, ctx context.Context, l
 	return nil
 }
 
-func PruneTableDupSort(tx kv.RwTx, table string, logPrefix string, pruneTo uint64, logEvery *time.Ticker, ctx context.Context) error {
+// PruneTableDupSort prunes a DupSort table (key = 8-byte big-endian blockNum
+// prefix) by deleting every duplicate group whose blockNum < pruneTo. It stops
+// after `limit` block-key groups and returns done=false so the caller can commit
+// the batch and resume in a fresh transaction. Without this row budget a first
+// prune of a large backlog deletes every group below pruneTo in a single commit,
+// which balloons the MDBX dirty-page list and OOMs under Windows WriteMap.
+// Returns done=true when it reaches pruneTo (nothing older remains) or the cursor
+// is exhausted.
+func PruneTableDupSort(tx kv.RwTx, table string, logPrefix string, pruneTo uint64, limit int, logEvery *time.Ticker, ctx context.Context) (bool, error) {
 	c, err := tx.RwCursorDupSort(table)
 	if err != nil {
-		return fmt.Errorf("failed to create cursor for pruning: %w", err)
+		return false, fmt.Errorf("failed to create cursor for pruning: %w", err)
 	}
 	defer c.Close()
 
+	i := 0
 	for k, _, err := c.First(); k != nil; k, _, err = c.NextNoDup() {
 		if err != nil {
-			return fmt.Errorf("failed to move %s cleanup cursor: %w", table, err)
+			return false, fmt.Errorf("failed to move %s cleanup cursor: %w", table, err)
 		}
 		blockNum := binary.BigEndian.Uint64(k)
 		if blockNum >= pruneTo {
-			break
+			return true, nil // reached retention boundary: nothing older remains
 		}
+		if i >= limit {
+			return false, nil // row budget hit: more groups remain below pruneTo
+		}
+		i++
 		select {
 		case <-logEvery.C:
 			log.Info(fmt.Sprintf("[%s]", logPrefix), "table", table, "block", blockNum)
 		case <-ctx.Done():
-			return common2.ErrStopped
+			return false, common2.ErrStopped
 		default:
 		}
 		if err = c.DeleteCurrentDuplicates(); err != nil {
-			return fmt.Errorf("failed to remove for block %d: %w", blockNum, err)
+			return false, fmt.Errorf("failed to remove for block %d: %w", blockNum, err)
 		}
 	}
-	return nil
+	return true, nil // cursor exhausted
 }

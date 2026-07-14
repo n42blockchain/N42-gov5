@@ -151,20 +151,23 @@ func (p *Pruner) prune(pruneTo uint64) error {
 	start := time.Now()
 	limit := p.config.PruneBatchLimit
 
+	logEvery := time.NewTicker(30 * time.Second)
+	defer logEvery.Stop()
+
+	// Drain the two DupSort changeset tables in bounded, separately-committed
+	// batches. Each batch is its own MDBX write transaction, so dirty pages flush
+	// between commits — a first-time prune of a large backlog no longer deletes
+	// every changeset group in one unbounded transaction (Windows WriteMap OOM).
+	if err := p.pruneDupSortBatched(modules.AccountChangeSet, pruneTo, limit, logEvery); err != nil {
+		return err
+	}
+	if err := p.pruneDupSortBatched(modules.StorageChangeSet, pruneTo, limit, logEvery); err != nil {
+		return err
+	}
+
+	// History and receipts/logs are regular tables already capped at `limit`
+	// rows per cycle; keep them in a single bounded transaction.
 	err := p.db.Update(p.ctx, func(tx kv.RwTx) error {
-		logEvery := time.NewTicker(30 * time.Second)
-		defer logEvery.Stop()
-
-		// Prune account changesets (DupSort table)
-		if err := rawdb.PruneTableDupSort(tx, modules.AccountChangeSet, "prune", pruneTo, logEvery, p.ctx); err != nil {
-			return err
-		}
-
-		// Prune storage changesets (DupSort table)
-		if err := rawdb.PruneTableDupSort(tx, modules.StorageChangeSet, "prune", pruneTo, logEvery, p.ctx); err != nil {
-			return err
-		}
-
 		// Prune account history (regular table, key = address + shard_id)
 		if err := pruneHistoryTable(tx, modules.AccountsHistory, pruneTo, limit, p.ctx); err != nil {
 			return err
@@ -195,6 +198,32 @@ func (p *Pruner) prune(pruneTo uint64) error {
 	elapsed := time.Since(start)
 	log.Info("Pruning completed", "pruneTo", pruneTo, "elapsed", elapsed.Truncate(time.Millisecond))
 	return nil
+}
+
+// pruneDupSortBatched deletes changesets below pruneTo from a DupSort table in
+// bounded batches, committing each batch in its own transaction so no single
+// commit accumulates an unbounded dirty-page set. It loops until the table is
+// drained to pruneTo or the context is cancelled.
+func (p *Pruner) pruneDupSortBatched(table string, pruneTo uint64, limit int, logEvery *time.Ticker) error {
+	for {
+		select {
+		case <-p.ctx.Done():
+			return p.ctx.Err()
+		default:
+		}
+		var done bool
+		err := p.db.Update(p.ctx, func(tx kv.RwTx) error {
+			var e error
+			done, e = rawdb.PruneTableDupSort(tx, table, "prune", pruneTo, limit, logEvery, p.ctx)
+			return e
+		})
+		if err != nil {
+			return err
+		}
+		if done {
+			return nil
+		}
+	}
 }
 
 // pruneHistoryTable prunes a history table where the last 8 bytes of the key

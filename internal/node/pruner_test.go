@@ -309,6 +309,89 @@ func TestPruneConfig_IsEnabled(t *testing.T) {
 	}
 }
 
+// TestPruner_DupSortBatchedDrainsBacklog verifies that when the changeset
+// backlog far exceeds PruneBatchLimit, the row-budgeted DupSort prune still
+// drains everything below pruneTo across multiple committed batches (rather
+// than deleting it all in one unbounded transaction). This locks the Windows
+// WriteMap OOM fix: each batch is bounded, but the loop finishes the job.
+func TestPruner_DupSortBatchedDrainsBacklog(t *testing.T) {
+	db := memdb.NewTestDB(t)
+
+	// 500 block groups, each with several duplicate slots in both DupSort tables.
+	const blocks = 500
+	if err := db.Update(testCtx(), func(tx kv.RwTx) error {
+		for i := uint64(1); i <= blocks; i++ {
+			key := make([]byte, 8)
+			binary.BigEndian.PutUint64(key, i)
+			for d := 0; d < 4; d++ {
+				val := append([]byte{byte(d)}, []byte("changeset")...)
+				if err := tx.Put(modules.AccountChangeSet, key, val); err != nil {
+					return err
+				}
+				if err := tx.Put(modules.StorageChangeSet, key, val); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Small batch limit forces pruneDupSortBatched to loop many times.
+	config := conf.PruneConfig{
+		Mode:            conf.PruneModeFull,
+		BlockRetention:  50,
+		PruneInterval:   10,
+		PruneBatchLimit: 30,
+	}
+	hp := &staticBlockProvider{block: blocks}
+
+	pruner := NewPruner(db, config, hp, nil)
+	pruner.maybePrune()
+
+	if pruner.lastPrunedBlock != blocks {
+		t.Fatalf("expected lastPrunedBlock=%d, got %d", blocks, pruner.lastPrunedBlock)
+	}
+
+	// pruneTo = 500 - 50 = 450. Everything below 450 must be gone in BOTH tables,
+	// everything >= 450 must remain — proving full drainage, not just one batch.
+	pruneTo := uint64(blocks - config.BlockRetention)
+	for _, table := range []string{modules.AccountChangeSet, modules.StorageChangeSet} {
+		if err := db.View(testCtx(), func(tx kv.Tx) error {
+			c, err := tx.CursorDupSort(table)
+			if err != nil {
+				return err
+			}
+			defer c.Close()
+			k, _, err := c.First()
+			if err != nil {
+				return err
+			}
+			if k == nil {
+				t.Fatalf("%s: everything pruned, expected blocks >= %d to remain", table, pruneTo)
+			}
+			if first := binary.BigEndian.Uint64(k); first != pruneTo {
+				t.Errorf("%s: first remaining block = %d, want %d (below-pruneTo backlog not fully drained)", table, first, pruneTo)
+			}
+			groups := 0
+			for k, _, err := c.First(); k != nil; k, _, err = c.NextNoDup() {
+				if err != nil {
+					return err
+				}
+				groups++
+			}
+			// blocks 450..500 inclusive = 51 groups
+			if groups != int(blocks-pruneTo+1) {
+				t.Errorf("%s: %d remaining groups, want %d", table, groups, blocks-pruneTo+1)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func testCtx() context.Context {
 	return context.Background()
 }
