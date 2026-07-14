@@ -135,13 +135,14 @@ func TestBlockRLPRoundTripCarriesBALHash(t *testing.T) {
 	}
 }
 
-// TestHeaderBALProtoPathDropsHash documents the ONE remaining proto path that
-// still discards BlockAccessListHash: the legacy types_pb.Header form produced by
-// ToProtoMessage, which the direct-push (blockchain import) and download paths
-// still use. Those must be moved to RLP (like gossip/sync/torrentsync already
-// were) before the BAL fork can safely activate — otherwise a follower importing
-// via the proto path would reconstruct a different header hash. protoc/proto
-// regeneration is explicitly NOT the fix; de-proto-ing those paths is.
+// TestHeaderBALProtoPathDropsHash records that the types_pb.Header proto form
+// (ToProtoMessage/FromProtoMessage) does not carry BlockAccessListHash. This is
+// no longer an activation blocker: every consensus-critical block path was moved
+// to RLP and the proto reconstruction paths (legacy direct-push, sync_proto
+// download) were removed. The proto methods survive only for the sszdiag
+// diagnostic tool, which is off the consensus path. The test stays as a guard so
+// nobody reintroduces a proto block-reconstruction path and silently drops the
+// field.
 func TestHeaderBALProtoPathDropsHash(t *testing.T) {
 	h := balSampleHeader()
 	blah := types.HexToHash("0x99aabbccddeeff00112233445566778899aabbccddeeff0011223344556677ff")

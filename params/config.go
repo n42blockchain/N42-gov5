@@ -251,15 +251,14 @@ type ChainConfig struct {
 	// header field stays nil and is omitted from the RLP, so pre-fork block
 	// hashes are byte-identical).
 	//
-	// ACTIVATION GUARD: keep this nil until the remaining proto block paths are
-	// on RLP. The consensus hash, gossip broadcast, sync chunked responses,
-	// rawdb header storage and torrent export all carry BlockAccessListHash via
-	// RLP already (protoc is NOT required). The direct-push (blockchain import)
-	// and download paths still reconstruct blocks via types_pb (ToProtoMessage /
-	// FromProtoMessage), which has no such field and would drop it — an activated
-	// fork would then let those importers compute a different header hash and
-	// split consensus (pinned by block.TestHeaderBALProtoPathDropsHash). Enable
-	// only after those two paths are moved to RLP.
+	// Every consensus-critical block path now carries BlockAccessListHash via RLP
+	// (protoc was never required): the consensus hash, gossip send+receive, direct
+	// push, sync chunked responses, block download, rawdb header trailer and torrent
+	// export. The former proto reconstruction paths (legacy direct-push and the
+	// sync_proto download package) have been removed. Remaining activation work
+	// before setting this: wire miner generation (BuildBALFromViews -> bind hash)
+	// and import verification (recompute + compare) behind Rules.IsBAL, then
+	// validate and soak. Keep nil until that wiring lands.
 	BALTime *big.Int `json:"balTime,omitempty"`
 
 	// StateScheme determines the state commitment algorithm for Header.Root.
