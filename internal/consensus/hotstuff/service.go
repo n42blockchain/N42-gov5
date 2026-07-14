@@ -600,9 +600,40 @@ func (s *Service) handleBroadcast(output EngineOutput) {
 		return
 	}
 
-	if err := s.p2p.PublishToTopic(s.ctx, topic, gossipBytes); err != nil {
+	publishCtx := s.ctx
+	publishOpts := []pubsub.PubOpt(nil)
+	var cancel context.CancelFunc
+	if output.Message.Type == MsgTimeout {
+		// Timeout messages are deterministic for (view, validator). If the first
+		// copy is published while only a startup fragment of the mesh is ready,
+		// later copies are suppressed by GossipSub's seen cache and the other
+		// validators can remain below TC quorum forever. Wait until this node has
+		// enough subscribed topic peers to make a quorum with itself. Bound the
+		// wait so repeated timeout events cannot leak blocked publishers when the
+		// network genuinely lacks quorum.
+		if eng := s.engine.Engine(); eng != nil {
+			peerTarget := timeoutPublishPeerTarget(eng.CurrentValidatorSet().QuorumSize())
+			if peerTarget > 0 {
+				publishOpts = append(publishOpts, pubsub.WithReadiness(pubsub.MinTopicSize(peerTarget)))
+				publishCtx, cancel = context.WithTimeout(s.ctx, 30*time.Second)
+				defer cancel()
+			}
+		}
+	}
+
+	if err := s.p2p.PublishToTopic(publishCtx, topic, gossipBytes, publishOpts...); err != nil {
 		log.Warn("hotstuff: broadcast failed", "err", err)
 	}
+}
+
+// timeoutPublishPeerTarget returns the number of remote topic subscribers a
+// validator needs before publishing its deterministic timeout. The sender
+// processes its own timeout locally, so quorum-1 remote recipients suffice.
+func timeoutPublishPeerTarget(quorumSize int) int {
+	if quorumSize <= 1 {
+		return 0
+	}
+	return quorumSize - 1
 }
 
 func (s *Service) handleSendToValidator(output EngineOutput) {
