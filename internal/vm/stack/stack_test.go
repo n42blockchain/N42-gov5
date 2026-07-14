@@ -57,6 +57,79 @@ func TestStackPushPop(t *testing.T) {
 	}
 }
 
+func TestStackPopPtr(t *testing.T) {
+	s := New()
+	defer ReturnNormalStack(s)
+
+	s.Push(uint256.NewInt(7))
+	s.Push(uint256.NewInt(42))
+
+	// PopPtr returns the top value and shrinks the stack, like Pop.
+	p := s.PopPtr()
+	if p.Uint64() != 42 {
+		t.Errorf("PopPtr() = %v, want 42", p)
+	}
+	if s.Len() != 1 {
+		t.Errorf("after PopPtr, Len() = %d, want 1", s.Len())
+	}
+	if s.Peek().Uint64() != 7 {
+		t.Errorf("new top = %v, want 7", s.Peek())
+	}
+}
+
+// TestStackPopPtrArithmeticOrder mirrors how the arithmetic opcodes consume the
+// stack: `x, y := PopPtr(), Peek()` must yield x=old-top, y=new-top as distinct
+// live slots, so folding x into y (y = y - x) matches Pop()+Peek() semantics.
+func TestStackPopPtrArithmeticOrder(t *testing.T) {
+	s := New()
+	defer ReturnNormalStack(s)
+
+	s.Push(uint256.NewInt(10)) // becomes y (second-from-top)
+	s.Push(uint256.NewInt(3))  // becomes x (top)
+
+	x, y := s.PopPtr(), s.Peek()
+	if x.Uint64() != 3 || y.Uint64() != 10 {
+		t.Fatalf("x=%v y=%v, want x=3 y=10", x, y)
+	}
+	y.Sub(y, x) // SUB: second - top = 10 - 3
+	if s.Len() != 1 || s.Peek().Uint64() != 7 {
+		t.Errorf("result top = %v (len %d), want 7 (len 1)", s.Peek(), s.Len())
+	}
+}
+
+// TestStackPopPtrAliasingContract documents the invariant every caller relies on:
+// the pointer aliases the vacated slot and stays valid only until the next Push,
+// which overwrites it. Opcodes always consume the value before any Push.
+func TestStackPopPtrAliasingContract(t *testing.T) {
+	s := New()
+	defer ReturnNormalStack(s)
+
+	s.Push(uint256.NewInt(99))
+	p := s.PopPtr()
+	if p.Uint64() != 99 {
+		t.Fatalf("PopPtr() = %v, want 99", p)
+	}
+	// A subsequent Push reuses the backing slot the pointer aliases.
+	s.Push(uint256.NewInt(123))
+	if p.Uint64() != 123 {
+		t.Errorf("after Push, aliased slot = %v, want 123 (backing slot must be reused)", p)
+	}
+}
+
+func TestStackPopPtrUnderflowSafe(t *testing.T) {
+	s := New()
+	defer ReturnNormalStack(s)
+
+	// Must not panic and must not return nil on empty stack.
+	p := s.PopPtr()
+	if p == nil {
+		t.Fatal("PopPtr() on empty stack returned nil")
+	}
+	if !p.IsZero() {
+		t.Errorf("PopPtr() underflow = %v, want 0", p)
+	}
+}
+
 func TestStackPushN(t *testing.T) {
 	s := New()
 	defer ReturnNormalStack(s)

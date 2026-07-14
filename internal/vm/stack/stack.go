@@ -76,6 +76,23 @@ func (st *Stack) Pop() (ret uint256.Int) {
 	return
 }
 
+// PopPtr removes the top item and returns a pointer to it, avoiding the 32-byte
+// value copy that Pop performs. The returned pointer aliases the just-vacated
+// backing slot and is valid ONLY until the next Push, which overwrites that slot.
+// Callers must therefore consume the value before pushing anything; every opcode
+// that uses PopPtr (arithmetic/comparison/bitwise/shift/modular) folds the popped
+// operand into the surviving Peek'd operand immediately and never pushes.
+func (st *Stack) PopPtr() *uint256.Int {
+	// Security: bounds check before accessing - prevents panic on empty stack
+	if len(st.Data) == 0 {
+		log.Error("Stack underflow: PopPtr called on empty stack", "len", 0)
+		return new(uint256.Int)
+	}
+	ptr := &st.Data[len(st.Data)-1]
+	st.Data = st.Data[:len(st.Data)-1]
+	return ptr
+}
+
 func (st *Stack) Cap() int {
 	return cap(st.Data)
 }
