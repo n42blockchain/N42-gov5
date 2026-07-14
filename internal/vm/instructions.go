@@ -38,44 +38,44 @@ import (
 )
 
 func opAdd(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	x, y := scope.Stack.Pop(), scope.Stack.Peek()
-	y.Add(&x, y)
+	x, y := scope.Stack.PopPtr(), scope.Stack.Peek()
+	y.Add(x, y)
 	return nil, nil
 }
 
 func opSub(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	x, y := scope.Stack.Pop(), scope.Stack.Peek()
-	y.Sub(&x, y)
+	x, y := scope.Stack.PopPtr(), scope.Stack.Peek()
+	y.Sub(x, y)
 	return nil, nil
 }
 
 func opMul(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	x, y := scope.Stack.Pop(), scope.Stack.Peek()
-	y.Mul(&x, y)
+	x, y := scope.Stack.PopPtr(), scope.Stack.Peek()
+	y.Mul(x, y)
 	return nil, nil
 }
 
 func opDiv(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	x, y := scope.Stack.Pop(), scope.Stack.Peek()
-	y.Div(&x, y)
+	x, y := scope.Stack.PopPtr(), scope.Stack.Peek()
+	y.Div(x, y)
 	return nil, nil
 }
 
 func opSdiv(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	x, y := scope.Stack.Pop(), scope.Stack.Peek()
-	y.SDiv(&x, y)
+	x, y := scope.Stack.PopPtr(), scope.Stack.Peek()
+	y.SDiv(x, y)
 	return nil, nil
 }
 
 func opMod(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	x, y := scope.Stack.Pop(), scope.Stack.Peek()
-	y.Mod(&x, y)
+	x, y := scope.Stack.PopPtr(), scope.Stack.Peek()
+	y.Mod(x, y)
 	return nil, nil
 }
 
 func opSmod(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	x, y := scope.Stack.Pop(), scope.Stack.Peek()
-	y.SMod(&x, y)
+	x, y := scope.Stack.PopPtr(), scope.Stack.Peek()
+	y.SMod(x, y)
 	return nil, nil
 }
 
@@ -109,8 +109,8 @@ func opExp(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte
 }
 
 func opSignExtend(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	back, num := scope.Stack.Pop(), scope.Stack.Peek()
-	num.ExtendSign(num, &back)
+	back, num := scope.Stack.PopPtr(), scope.Stack.Peek()
+	num.ExtendSign(num, back)
 	return nil, nil
 }
 
@@ -121,7 +121,7 @@ func opNot(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte
 }
 
 func opLt(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	x, y := scope.Stack.Pop(), scope.Stack.Peek()
+	x, y := scope.Stack.PopPtr(), scope.Stack.Peek()
 	if x.Lt(y) {
 		y.SetOne()
 	} else {
@@ -131,7 +131,7 @@ func opLt(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte,
 }
 
 func opGt(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	x, y := scope.Stack.Pop(), scope.Stack.Peek()
+	x, y := scope.Stack.PopPtr(), scope.Stack.Peek()
 	if x.Gt(y) {
 		y.SetOne()
 	} else {
@@ -141,7 +141,7 @@ func opGt(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte,
 }
 
 func opSlt(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	x, y := scope.Stack.Pop(), scope.Stack.Peek()
+	x, y := scope.Stack.PopPtr(), scope.Stack.Peek()
 	if x.Slt(y) {
 		y.SetOne()
 	} else {
@@ -151,7 +151,7 @@ func opSlt(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte
 }
 
 func opSgt(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	x, y := scope.Stack.Pop(), scope.Stack.Peek()
+	x, y := scope.Stack.PopPtr(), scope.Stack.Peek()
 	if x.Sgt(y) {
 		y.SetOne()
 	} else {
@@ -161,7 +161,7 @@ func opSgt(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte
 }
 
 func opEq(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	x, y := scope.Stack.Pop(), scope.Stack.Peek()
+	x, y := scope.Stack.PopPtr(), scope.Stack.Peek()
 	if x.Eq(y) {
 		y.SetOne()
 	} else {
@@ -181,41 +181,41 @@ func opIszero(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]b
 }
 
 func opAnd(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	x, y := scope.Stack.Pop(), scope.Stack.Peek()
-	y.And(&x, y)
+	x, y := scope.Stack.PopPtr(), scope.Stack.Peek()
+	y.And(x, y)
 	return nil, nil
 }
 
 func opOr(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	x, y := scope.Stack.Pop(), scope.Stack.Peek()
-	y.Or(&x, y)
+	x, y := scope.Stack.PopPtr(), scope.Stack.Peek()
+	y.Or(x, y)
 	return nil, nil
 }
 
 func opXor(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	x, y := scope.Stack.Pop(), scope.Stack.Peek()
-	y.Xor(&x, y)
+	x, y := scope.Stack.PopPtr(), scope.Stack.Peek()
+	y.Xor(x, y)
 	return nil, nil
 }
 
 func opByte(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	th, val := scope.Stack.Pop(), scope.Stack.Peek()
-	val.Byte(&th)
+	th, val := scope.Stack.PopPtr(), scope.Stack.Peek()
+	val.Byte(th)
 	return nil, nil
 }
 
 func opAddmod(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	x, y, z := scope.Stack.Pop(), scope.Stack.Pop(), scope.Stack.Peek()
+	x, y, z := scope.Stack.PopPtr(), scope.Stack.PopPtr(), scope.Stack.Peek()
 	if !z.IsZero() {
-		z.AddMod(&x, &y, z)
+		z.AddMod(x, y, z)
 	}
 	return nil, nil
 }
 
 func opMulmod(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	x, y, z := scope.Stack.Pop(), scope.Stack.Pop(), scope.Stack.Peek()
+	x, y, z := scope.Stack.PopPtr(), scope.Stack.PopPtr(), scope.Stack.Peek()
 	if !z.IsZero() {
-		z.MulMod(&x, &y, z)
+		z.MulMod(x, y, z)
 	}
 	return nil, nil
 }
@@ -225,7 +225,7 @@ func opMulmod(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]b
 // and pushes on the stack arg2 shifted to the left by arg1 number of bits.
 func opSHL(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	// Note, second operand is left in the stack; accumulate result into it, and no need to push it afterwards
-	shift, value := scope.Stack.Pop(), scope.Stack.Peek()
+	shift, value := scope.Stack.PopPtr(), scope.Stack.Peek()
 	if shift.LtUint64(256) {
 		value.Lsh(value, uint(shift.Uint64()))
 	} else {
@@ -239,7 +239,7 @@ func opSHL(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte
 // and pushes on the stack arg2 shifted to the right by arg1 number of bits with zero fill.
 func opSHR(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	// Note, second operand is left in the stack; accumulate result into it, and no need to push it afterwards
-	shift, value := scope.Stack.Pop(), scope.Stack.Peek()
+	shift, value := scope.Stack.PopPtr(), scope.Stack.Peek()
 	if shift.LtUint64(256) {
 		value.Rsh(value, uint(shift.Uint64()))
 	} else {
@@ -252,7 +252,7 @@ func opSHR(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte
 // The SAR instruction (arithmetic shift right) pops 2 values from the stack, first arg1 and then arg2,
 // and pushes on the stack arg2 shifted to the right by arg1 number of bits with sign extension.
 func opSAR(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	shift, value := scope.Stack.Pop(), scope.Stack.Peek()
+	shift, value := scope.Stack.PopPtr(), scope.Stack.Peek()
 	if shift.GtUint64(255) {
 		if value.Sign() >= 0 {
 			value.Clear()
