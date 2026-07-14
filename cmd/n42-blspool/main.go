@@ -93,7 +93,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error: mkdir %s: %v\n", out, err)
 			os.Exit(1)
 		}
-		f, err := os.Create(out)
+		f, err := openPrivateOutput(out)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: create %s: %v\n", out, err)
 			os.Exit(1)
@@ -123,4 +123,18 @@ func main() {
 		fmt.Printf("Wrote %s (%.1f MB)\n", out, float64(fi.Size())/1e6)
 	}
 	fmt.Printf("Done in %s. Master seed (KEEP SAFE): 0x%s\n", time.Since(start), hex.EncodeToString(seed[:]))
+}
+
+func openPrivateOutput(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	// OpenFile preserves an existing file's mode. Force private-key material
+	// back to owner-only permissions even when overwriting an older output.
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
 }
