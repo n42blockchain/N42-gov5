@@ -37,6 +37,15 @@ func ReadCurrentBlockNumber(db kv.Getter) *uint64 {
 	return ReadHeaderNumber(db, headHash)
 }
 
+// ReadCurrentFullBlockNumber resolves the full-block head through
+// HeadBlockHash. Leader-driven consensus can advance the committed block head
+// independently of a header-sync head, so state/proof consumers must use this
+// accessor instead of ReadCurrentBlockNumber.
+func ReadCurrentFullBlockNumber(db kv.Getter) *uint64 {
+	headHash := ReadHeadBlockHash(db)
+	return ReadHeaderNumber(db, headHash)
+}
+
 func ReadCurrentHeader(db kv.Getter) *block.Header {
 	headHash := ReadHeadHeaderHash(db)
 	headNumber := ReadHeaderNumber(db, headHash)

@@ -328,7 +328,7 @@ func (s *Server) resolveID(ctx context.Context, id string) (uint64, error) {
 			return 0, err
 		}
 		defer tx.Rollback()
-		n := rawdb.ReadCurrentBlockNumber(tx)
+		n := rawdb.ReadCurrentFullBlockNumber(tx)
 		if n == nil {
 			return 0, fmt.Errorf("head unavailable")
 		}

@@ -343,7 +343,7 @@ func main() {
 			die("begin src: %v", err)
 		}
 		// End block: the chain's current head + 1 (build covers [0, head]).
-		if headPtr := rawdb.ReadCurrentBlockNumber(srcTx); headPtr != nil {
+		if headPtr := rawdb.ReadCurrentFullBlockNumber(srcTx); headPtr != nil {
 			if *endBlock == 0 || *endBlock > *headPtr+1 {
 				*endBlock = *headPtr + 1
 			}
@@ -373,7 +373,7 @@ func main() {
 		}
 		// External gate: final state equality vs source PlainState — only
 		// meaningful for a FULL build (PlainState is the head state).
-		headPtr := rawdb.ReadCurrentBlockNumber(srcTx)
+		headPtr := rawdb.ReadCurrentFullBlockNumber(srcTx)
 		if headPtr != nil && *endBlock == *headPtr+1 {
 			btx, err := db.BeginRo(context.Background())
 			if err != nil {

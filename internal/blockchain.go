@@ -570,6 +570,9 @@ func (bc *BlockChain) alignCanonicalToAppliedOnStartup() {
 			return terr
 		}
 		rawdb.WriteHeadBlockHash(tx, appliedHash)
+		if werr := rawdb.WriteHeadHeaderHash(tx, appliedHash); werr != nil {
+			return werr
+		}
 		if werr := rawdb.WriteHotStuffCommittedHead(tx, appliedHash); werr != nil {
 			return werr
 		}
@@ -604,14 +607,20 @@ var hotstuffExtraMagic = []byte("N42H")
 // header parent hashes — the header of a canonical block is always local.
 func (bc *BlockChain) repairCanonicalLinkageOnStartup() {
 	if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
-		// Head via HeadBlockHash — the key CommitToCanonical writes. The
-		// header-head key (ReadCurrentBlockNumber) is NOT maintained on the
-		// leader-driven path and points at the replay head forever, which made
-		// this walk start far below the live range and find nothing.
+		// Head via HeadBlockHash — the key CommitToCanonical writes. Older
+		// leader-driven databases did not maintain HeadHeaderHash, so heal that
+		// compatibility marker before walking the canonical lineage.
 		headHash := rawdb.ReadHeadBlockHash(tx)
 		headNum := rawdb.ReadHeaderNumber(tx, headHash)
 		if headNum == nil || *headNum == 0 {
 			return nil
+		}
+		if rawdb.ReadHeadHeaderHash(tx) != headHash {
+			if werr := rawdb.WriteHeadHeaderHash(tx, headHash); werr != nil {
+				return werr
+			}
+			log.Warn("canonical repair: advanced stale header-head marker to committed block head",
+				"number", *headNum, "hash", fmt.Sprintf("%x", headHash[:8]))
 		}
 		num := *headNum
 		curHash := headHash
@@ -1043,6 +1052,9 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 			rewrote = true
 		}
 		rawdb.WriteHeadBlockHash(tx, hash)
+		if werr := rawdb.WriteHeadHeaderHash(tx, hash); werr != nil {
+			return werr
+		}
 		// QC-backed finality marker: written ONLY here. unwindForReimport's
 		// committed floor trusts this key — not HeadBlockHash, which legacy
 		// import-time writers polluted (a losing sibling stamped as "head"
