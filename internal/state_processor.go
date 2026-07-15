@@ -111,9 +111,24 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 
 	noop := state.NewNoopWriter()
 
+	// EIP-7928: when the BAL fork is active, wrap the per-tx finalize writer to
+	// harvest each transaction's post-execution access changes, then verify the
+	// recomputed block-access-list hash against the header below. The wrapper is a
+	// pure observer (delegates to noop), so execution is unchanged; when the fork
+	// is off, balCap is nil and there is zero overhead.
+	var writer state.StateWriter = noop
+	var balCap *BALCapture
+	if chainConfig.IsBAL(concreteHeader.Time) {
+		balCap = NewBALCapture(noop)
+		writer = balCap
+	}
+
 	for i, tx := range b.Transactions() {
 		ibs.Prepare(tx.Hash(), b.Hash(), i)
-		receipt, _, err := ApplyTransaction(chainConfig, blockHashFunc, p.engine, nil, gp, ibs, noop, concreteHeader, tx, usedGas, cfg)
+		if balCap != nil {
+			balCap.BeginTx(tx.Hash())
+		}
+		receipt, _, err := ApplyTransaction(chainConfig, blockHashFunc, p.engine, nil, gp, ibs, writer, concreteHeader, tx, usedGas, cfg)
 		if err != nil {
 			if !cfg.StatelessExec {
 				return nil, nil, nil, 0, fmt.Errorf("could not apply tx %d from block %d [%v]: %w", i, b.Number64(), tx.Hash().String(), err)
@@ -132,6 +147,22 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 
 	if !cfg.StatelessExec && *usedGas != concreteHeader.GasUsed {
 		return nil, nil, nil, 0, fmt.Errorf("gas used by execution: %d, in header: %d", *usedGas, concreteHeader.GasUsed)
+	}
+
+	// EIP-7928 verification gate: the recomputed block-access-list hash must match
+	// the one bound into the header by the block producer. Covers the block's
+	// transactions (system-call writes are not yet harvested — miner and importer
+	// omit them identically, so the binding stays consistent).
+	if balCap != nil && !cfg.StatelessExec {
+		order := blockTxHashes(b)
+		got, err := balCap.HashFor(order)
+		if err != nil {
+			return nil, nil, nil, 0, fmt.Errorf("compute block access list hash for block %d: %w", b.Number64(), err)
+		}
+		want := concreteHeader.BlockAccessListHash
+		if want == nil || *want != got {
+			return nil, nil, nil, 0, fmt.Errorf("block access list hash mismatch at block %d: header %v, computed %s", b.Number64(), want, got.Hex())
+		}
 	}
 	if _, err := ProcessExecutionBlockEnd(nil, chainConfig, ibs, concreteHeader, p.engine); err != nil {
 		return nil, nil, nil, 0, err
