@@ -127,7 +127,20 @@ func (oracle *Oracle) processBlock(bf *blockFees, percentiles []float64) {
 		bf.err = errors.New("block is nil in processBlock")
 		return
 	}
-	bf.results.gasUsedRatio = float64(bf.block.GasUsed()) / float64(bf.block.GasLimit())
+	// Gas basis for the ratio and reward-percentile threshold must be the sum of
+	// the transactions' receipt gas, not header.GasUsed. The percentile numerator
+	// accumulates receipt.GasUsed, so a header.GasUsed that exceeds Σ receipt gas
+	// (possible under EIP-8037's per-tx gas floor) would skew both. Falls back to
+	// the header value when there are no receipts (mirrors reth's 6d38c7373).
+	blockGasUsed := bf.block.GasUsed()
+	if len(bf.receipts) > 0 {
+		var sum uint64
+		for _, r := range bf.receipts {
+			sum += r.GasUsed
+		}
+		blockGasUsed = sum
+	}
+	bf.results.gasUsedRatio = float64(blockGasUsed) / float64(bf.block.GasLimit())
 	if len(percentiles) == 0 {
 		// rewards were not requested, return null
 		return
