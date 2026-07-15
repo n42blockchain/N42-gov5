@@ -91,3 +91,41 @@ func TestPrewarmFromBALNilSafe(t *testing.T) {
 	PrewarmFromBAL(nil, nil)          // must not panic
 	PrewarmFromBAL(newSpyReader(), nil) // must not panic
 }
+
+// buildRealisticBAL constructs a BAL the size of a busy block: nAcct accounts,
+// each writing/reading slotsPer storage slots, plus balance changes.
+func buildRealisticBAL(nAcct, slotsPer int) *bal.BlockAccessList {
+	txs := make([]bal.TxAccess, 0, nAcct)
+	for a := 0; a < nAcct; a++ {
+		var ad types.Address
+		ad[18], ad[19] = byte(a>>8), byte(a)
+		ta := bal.TxAccess{
+			TxIndex:        uint16(a + 1),
+			BalanceChanges: []bal.AccountBalance{{Address: ad, PostBalance: *uint256.NewInt(uint64(a) + 1)}},
+		}
+		for s := 0; s < slotsPer; s++ {
+			var sl, vv types.Hash
+			sl[30], sl[31] = byte(s>>8), byte(s)
+			vv[31] = byte(s + 1)
+			ta.StorageWrites = append(ta.StorageWrites, bal.SlotWrite{Address: ad, Slot: sl, NewValue: vv})
+		}
+		txs = append(txs, ta)
+	}
+	return bal.BuildBAL(txs)
+}
+
+// BenchmarkPrewarmFromBAL measures the per-block cost of the prewarm dispatch (the
+// controllable overhead of the QMDB-native prefetch mechanism) against a no-op
+// reader — isolating the mechanism cost from backing-store read latency. The
+// actual benefit (overlapping QMDB cold reads with execution) scales with the
+// backing store's read latency and must be measured on a replay run; on a fast
+// (cached/mem) reader the delta is small by design.
+func BenchmarkPrewarmFromBAL(b *testing.B) {
+	blk := buildRealisticBAL(200, 8) // ~200 accts, ~1600 slots — a busy block
+	spy := newSpyReader()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		PrewarmFromBAL(spy, blk)
+	}
+}
