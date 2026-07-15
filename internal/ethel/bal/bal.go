@@ -28,6 +28,7 @@ package bal
 
 import (
 	"bytes"
+	"fmt"
 	"sort"
 
 	"github.com/holiman/uint256"
@@ -359,4 +360,68 @@ func (b *BlockAccessList) Hash() (types.Hash, error) {
 		return types.Hash{}, err
 	}
 	return crypto.Keccak256Hash(enc), nil
+}
+
+// DecodeBAL parses the canonical RLP encoding produced by EncodeRLP back into a
+// BlockAccessList. Used by the out-of-band BAL service so a consumer that
+// received a full BAL (rather than only the header hash) can drive prefetch and
+// verify it against the header hash without re-executing. Fixed 32-byte slots and
+// values are length-checked.
+func DecodeBAL(raw []byte) (*BlockAccessList, error) {
+	var w wireBAL
+	if err := rlp.DecodeBytes(raw, &w); err != nil {
+		return nil, err
+	}
+	toHash := func(b []byte) (types.Hash, error) {
+		if len(b) != len(types.Hash{}) {
+			return types.Hash{}, fmt.Errorf("bal: expected %d-byte value, got %d", len(types.Hash{}), len(b))
+		}
+		var h types.Hash
+		copy(h[:], b)
+		return h, nil
+	}
+	bal := &BlockAccessList{Accounts: make([]AccountChanges, 0, len(w.Accounts))}
+	for _, wa := range w.Accounts {
+		if len(wa.Address) != len(types.Address{}) {
+			return nil, fmt.Errorf("bal: expected %d-byte address, got %d", len(types.Address{}), len(wa.Address))
+		}
+		var ac AccountChanges
+		copy(ac.Address[:], wa.Address)
+		for _, ws := range wa.StorageChanges {
+			slot, err := toHash(ws.Slot)
+			if err != nil {
+				return nil, err
+			}
+			sc := SlotChanges{Slot: slot}
+			for _, w := range ws.Writes {
+				nv, err := toHash(w.NewValue)
+				if err != nil {
+					return nil, err
+				}
+				sc.Writes = append(sc.Writes, StorageWrite{TxIndex: uint16(w.TxIndex), NewValue: nv})
+			}
+			ac.StorageChanges = append(ac.StorageChanges, sc)
+		}
+		for _, r := range wa.StorageReads {
+			slot, err := toHash(r)
+			if err != nil {
+				return nil, err
+			}
+			ac.StorageReads = append(ac.StorageReads, slot)
+		}
+		for _, wb := range wa.BalanceChanges {
+			ac.BalanceChanges = append(ac.BalanceChanges, BalanceChange{
+				TxIndex:     uint16(wb.TxIndex),
+				PostBalance: *new(uint256.Int).SetBytes(wb.PostBalance),
+			})
+		}
+		for _, wn := range wa.NonceChanges {
+			ac.NonceChanges = append(ac.NonceChanges, NonceChange{TxIndex: uint16(wn.TxIndex), NewNonce: wn.NewNonce})
+		}
+		for _, wc := range wa.CodeChanges {
+			ac.CodeChanges = append(ac.CodeChanges, CodeChange{TxIndex: uint16(wc.TxIndex), NewCode: wc.NewCode})
+		}
+		bal.Accounts = append(bal.Accounts, ac)
+	}
+	return bal, nil
 }
