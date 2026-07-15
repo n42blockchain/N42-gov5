@@ -166,6 +166,41 @@ func TestBuildBALDedupsUnchangedBalanceNonce(t *testing.T) {
 	}
 }
 
+// TestBALCanonicalEncoding pins the canonical RLP shape (cf. erigon's BAL decoder
+// rejecting non-canonical integers / ambiguous slot keys, 2a0b89ce7a): balances
+// encode as minimal big-endian with no leading zero, and slots/values are always
+// a fixed 32 bytes — so there is no 0x0001-vs-0x01 collision surface that a
+// variable-length integer encoding would introduce.
+func TestBALCanonicalEncoding(t *testing.T) {
+	b := BuildBAL([]TxAccess{{
+		TxIndex:        1,
+		StorageWrites:  []SlotWrite{{addr(0x01), slot(0x01), val(0x01)}},
+		BalanceChanges: []AccountBalance{{addr(0x01), *uint256.NewInt(0x0100)}},
+	}})
+	enc, err := b.EncodeRLP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w wireBAL
+	if err := rlp.DecodeBytes(enc, &w); err != nil {
+		t.Fatal(err)
+	}
+	a := w.Accounts[0]
+
+	// Balance 0x0100 -> minimal big-endian [0x01,0x00], NOT [0x00,0x01,0x00].
+	pb := a.BalanceChanges[0].PostBalance
+	if len(pb) != 2 || pb[0] != 0x01 || pb[1] != 0x00 {
+		t.Fatalf("balance not canonical minimal big-endian: %x", pb)
+	}
+	// Slot and value are always full 32 bytes (no trimming -> no 0x01/0x0001 ambiguity).
+	if got := len(a.StorageChanges[0].Slot); got != 32 {
+		t.Fatalf("slot encoded as %d bytes, want fixed 32", got)
+	}
+	if got := len(a.StorageChanges[0].Writes[0].NewValue); got != 32 {
+		t.Fatalf("value encoded as %d bytes, want fixed 32", got)
+	}
+}
+
 // TestBuildBALEmpty checks an empty block produces an empty, well-formed BAL.
 func TestBuildBALEmpty(t *testing.T) {
 	b := BuildBAL(nil)
