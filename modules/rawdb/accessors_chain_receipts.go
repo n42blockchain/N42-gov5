@@ -79,6 +79,14 @@ func ReadReceipts(db kv.Tx, block *block.Block, senders []types.Address) block.R
 	if receipts == nil {
 		return nil
 	}
+	// Completeness gate: a truncated/partial receipt store must not surface as a
+	// short list that callers silently accept (feehistory, log filters). If the
+	// stored receipt count disagrees with the body's tx count the data is
+	// inconsistent — return nil rather than a partial slice (mirrors reth's
+	// receipts_by_block returning None on mismatch).
+	if len(receipts) != len(block.Transactions()) {
+		return nil
+	}
 	if len(senders) > 0 {
 		block.SendersToTxs(senders)
 	}
