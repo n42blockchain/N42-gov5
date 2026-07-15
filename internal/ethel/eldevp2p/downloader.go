@@ -281,6 +281,15 @@ type inflightResp struct {
 	headers  [][]byte
 	bodies   []devp2p.BlockBody
 	receipts [][]rlp.RawValue
+	bals     [][]byte
+}
+
+// getBlockAccessListsRequest is the eth/71-style GetBlockAccessLists (0x12)
+// request; its RLP shape matches the server-side getBlockAccessListsPacket so a
+// plain gethp2p.Send round-trips.
+type getBlockAccessListsRequest struct {
+	RequestID uint64
+	Hashes    []types.Hash
 }
 
 // NewDownloader builds the orchestrator without starting it.
@@ -389,6 +398,12 @@ func (d *Downloader) OnBlockBodies(peerID string, reqID uint64, bodies []devp2p.
 // OnReceipts forwards to the matching inflight request.
 func (d *Downloader) OnReceipts(peerID string, reqID uint64, receipts [][]rlp.RawValue) {
 	d.dispatch(peerID, reqID, "r", inflightResp{receipts: receipts})
+}
+
+// OnBlockAccessLists routes an out-of-band BlockAccessLists (0x13) response to the
+// matching in-flight request. Satisfies the devp2p balResponseHandler interface.
+func (d *Downloader) OnBlockAccessLists(peerID string, reqID uint64, bals [][]byte) {
+	d.dispatch(peerID, reqID, "a", inflightResp{bals: bals})
 }
 
 // OnNewBlock is the live tip push from a peer. v1 ignores — we only
@@ -1691,6 +1706,54 @@ func (d *Downloader) requestReceipts(ctx context.Context, peerID string, rw geth
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// requestBlockAccessLists fetches the out-of-band EIP-7928 BALs for the given
+// block hashes from a peer (eth/71-style GetBlockAccessLists 0x12). Returns the
+// raw BAL RLP per requested hash, in request order (nil where the peer has none),
+// so a consumer can decode + verify against the header hash and drive prefetch.
+func (d *Downloader) requestBlockAccessLists(ctx context.Context, peerID string, rw gethp2p.MsgReadWriter, hashes []types.Hash) ([][]byte, error) {
+	reqID := d.reqSeq.Add(1)
+	key := fmt.Sprintf("%s:a:%d", peerID, reqID)
+	ch := make(chan inflightResp, 1)
+	d.mu.Lock()
+	d.inflight[key] = ch
+	d.mu.Unlock()
+	defer func() {
+		d.mu.Lock()
+		delete(d.inflight, key)
+		d.mu.Unlock()
+	}()
+
+	req := getBlockAccessListsRequest{RequestID: reqID, Hashes: hashes}
+	if err := gethp2p.Send(rw, 0x12, &req); err != nil {
+		return nil, fmt.Errorf("send GetBlockAccessLists: %w", err)
+	}
+	select {
+	case resp := <-ch:
+		out := make([][]byte, len(resp.bals))
+		for i, b := range resp.bals {
+			out[i] = []byte(b)
+		}
+		return out, nil
+	case <-time.After(requestTimeout):
+		return nil, errors.New("block access lists timeout")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// FetchBlockAccessLists fetches the out-of-band EIP-7928 BALs for the given block
+// hashes from any available peer at atHeight. Public entry for the BAL
+// prefetch/verify path: the caller decodes each raw BAL (bal.DecodeBAL), verifies
+// it against the header's BlockAccessListHash, and can prewarm state from it.
+func (d *Downloader) FetchBlockAccessLists(ctx context.Context, atHeight uint64, hashes []types.Hash) ([][]byte, error) {
+	pp := d.pickPeer(atHeight)
+	if pp == nil {
+		return nil, errors.New("no peer for block access lists")
+	}
+	defer d.releasePeer(pp)
+	return d.requestBlockAccessLists(ctx, pp.id, pp.rw, hashes)
 }
 
 // dumpMainnetReceipts (N42_RCPTDIFF diag) fetches block n's canonical receipts

@@ -55,6 +55,21 @@ type ResponseHandler interface {
 	OnNewBlock(peerID string, hdr *n42block.Header, txs [][]byte)
 }
 
+// balServer is the optional out-of-band BAL capability a BlockProvider may also
+// implement: return a block's stored raw EIP-7928 BAL (canonical RLP), or nil if
+// none is held. Kept as an optional interface so existing BlockProviders need not
+// change.
+type balServer interface {
+	BlockAccessList(hash types.Hash) []byte
+}
+
+// balResponseHandler is the optional capability a ResponseHandler may also
+// implement to receive BlockAccessLists (0x13) responses. The eldevp2p downloader
+// implements it to route full-BAL replies to the matching in-flight request.
+type balResponseHandler interface {
+	OnBlockAccessLists(peerID string, reqID uint64, bals [][]byte)
+}
+
 // EthHandler processes eth/68-69 protocol messages.
 type EthHandler struct {
 	chainConfig *params.ChainConfig
@@ -270,6 +285,21 @@ func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter,
 	case 17:
 		return nil // eth/69 range update, log only
 
+	case 18:
+		// 0x12 GetBlockAccessLists — serve the out-of-band EIP-7928 BALs.
+		return h.handleGetBlockAccessLists(rw, msg)
+
+	case 19:
+		// 0x13 BlockAccessLists — full-BAL response; route to the downloader.
+		var resp blockAccessListsPacket
+		if err := msg.Decode(&resp); err != nil {
+			return fmt.Errorf("decode BlockAccessLists: %w", err)
+		}
+		if bh, ok := h.rh.(balResponseHandler); ok {
+			bh.OnBlockAccessLists(peerID, resp.RequestID, resp.BALs)
+		}
+		return nil
+
 	default:
 		// Unknown / not-yet-handled codes must NOT disconnect — that's
 		// what was happening with geth right after handshake. Log so we
@@ -309,4 +339,22 @@ func (h *EthHandler) handleGetBlockBodies(rw gethp2p.MsgReadWriter, msg gethp2p.
 		Bodies:    nil,
 	}
 	return gethp2p.Send(rw, 6, &resp)
+}
+
+// handleGetBlockAccessLists serves the out-of-band EIP-7928 BALs a peer requested
+// by block hash. Answers with the stored raw BAL per hash (empty when the provider
+// does not implement BAL serving or does not hold that block's BAL), preserving
+// request order so the requester can pair by index.
+func (h *EthHandler) handleGetBlockAccessLists(rw gethp2p.MsgReadWriter, msg gethp2p.Msg) error {
+	var req getBlockAccessListsPacket
+	if err := msg.Decode(&req); err != nil {
+		return err
+	}
+	resp := blockAccessListsPacket{RequestID: req.RequestID, BALs: make([][]byte, len(req.Hashes))}
+	if srv, ok := h.provider.(balServer); ok {
+		for i, hash := range req.Hashes {
+			resp.BALs[i] = srv.BlockAccessList(hash) // nil -> empty entry
+		}
+	}
+	return gethp2p.Send(rw, 19, &resp)
 }

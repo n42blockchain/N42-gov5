@@ -125,6 +125,23 @@ type blockBodiesPacket struct {
 	Bodies    []BlockBody
 }
 
+// getBlockAccessListsPacket is the eth/71-style GetBlockAccessLists (0x12)
+// request: the block hashes whose full EIP-7928 BAL is wanted (out of band; the
+// header only carries the BAL hash).
+type getBlockAccessListsPacket struct {
+	RequestID uint64
+	Hashes    []types.Hash
+}
+
+// blockAccessListsPacket is the BlockAccessLists (0x13) response: the raw BAL RLP
+// per requested hash, in request order, each carried as a byte string (an empty
+// string = "not held", encoded as 0x80 — avoids the malformed-RawValue decode
+// break geth hit in 3006c4411).
+type blockAccessListsPacket struct {
+	RequestID uint64
+	BALs      [][]byte
+}
+
 // blockReceiptsPacket is the eth/68-69 Receipts (0x10) response. Each receipt is
 // kept as rlp.RawValue (mixed shapes: legacy receipts are RLP lists, typed ones
 // are RLP strings wrapping type||payload) — a []byte element would reject legacy.
