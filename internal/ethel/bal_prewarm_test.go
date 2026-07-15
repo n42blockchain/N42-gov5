@@ -92,6 +92,48 @@ func TestPrewarmFromBALNilSafe(t *testing.T) {
 	PrewarmFromBAL(newSpyReader(), nil) // must not panic
 }
 
+// TestVerifyAndPrewarmBAL checks the import-side consumer: a raw BAL that matches
+// the expected hash prewarms; a wrong hash or garbage is rejected (and does not
+// prewarm), so the caller safely falls back to executing without prefetch.
+func TestVerifyAndPrewarmBAL(t *testing.T) {
+	b := bal.BuildBAL([]bal.TxAccess{{
+		TxIndex:       1,
+		StorageWrites: []bal.SlotWrite{{Address: addr(0x01), Slot: slot(0x02), NewValue: slot(0x02)}},
+	}})
+	raw, err := b.EncodeRLP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := b.Hash()
+
+	// Matching hash -> prewarms.
+	spy := newSpyReader()
+	if err := VerifyAndPrewarmBAL(spy, raw, &want); err != nil {
+		t.Fatalf("valid BAL rejected: %v", err)
+	}
+	if spy.accounts[addr(0x01)] != 1 {
+		t.Fatal("valid BAL did not prewarm the touched account")
+	}
+
+	// Wrong expected hash -> rejected, no prewarm.
+	bad := slot(0xff) // reuse as a wrong hash
+	spy2 := newSpyReader()
+	if err := VerifyAndPrewarmBAL(spy2, raw, &bad); err == nil {
+		t.Fatal("BAL with mismatched hash accepted")
+	}
+	if len(spy2.accounts) != 0 {
+		t.Fatal("rejected BAL must not prewarm")
+	}
+
+	// Garbage / empty -> error.
+	if err := VerifyAndPrewarmBAL(newSpyReader(), nil, nil); err == nil {
+		t.Fatal("empty BAL accepted")
+	}
+	if err := VerifyAndPrewarmBAL(newSpyReader(), []byte{0xff, 0xff}, nil); err == nil {
+		t.Fatal("garbage BAL accepted")
+	}
+}
+
 // buildRealisticBAL constructs a BAL the size of a busy block: nAcct accounts,
 // each writing/reading slotsPer storage slots, plus balance changes.
 func buildRealisticBAL(nAcct, slotsPer int) *bal.BlockAccessList {

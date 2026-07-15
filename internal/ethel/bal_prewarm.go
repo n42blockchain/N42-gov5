@@ -23,6 +23,9 @@
 package ethel
 
 import (
+	"errors"
+	"fmt"
+
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/ethel/bal"
@@ -38,6 +41,34 @@ type BALPrewarmReader interface {
 
 // The production reader must satisfy the prewarm contract.
 var _ BALPrewarmReader = (*state.BufferedPlainStateReader)(nil)
+
+// VerifyAndPrewarmBAL decodes a raw out-of-band BAL (fetched via
+// eldevp2p.FetchBlockAccessLists), verifies it against the header's
+// BlockAccessListHash, and prewarms the reader from it before execution. Returns
+// an error if the BAL is empty, malformed, or does not match the expected hash —
+// the caller then executes without prefetch (correctness is unaffected; only the
+// prefetch speedup is lost). This is the import-side consumer of the out-of-band
+// BAL: the header carries only the hash, the full BAL arrives out of band.
+func VerifyAndPrewarmBAL(reader BALPrewarmReader, rawBAL []byte, expected *types.Hash) error {
+	if len(rawBAL) == 0 {
+		return errors.New("bal: empty")
+	}
+	b, err := bal.DecodeBAL(rawBAL)
+	if err != nil {
+		return err
+	}
+	if expected != nil {
+		got, err := b.Hash()
+		if err != nil {
+			return err
+		}
+		if got != *expected {
+			return fmt.Errorf("bal: hash mismatch, got %s want %s", got.Hex(), expected.Hex())
+		}
+	}
+	PrewarmFromBAL(reader, b)
+	return nil
+}
 
 // PrewarmFromBAL preloads the read cache from a block access list: every account
 // it touches, plus every storage slot it writes or reads. Errors are ignored — a
