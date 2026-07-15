@@ -501,10 +501,24 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	if txns := blk.Transactions(); len(txns) > 1 {
 		a.recoverSenders(txns, transaction.MakeSignerWithTimestamp(a.chainCfg, header.Number.ToBig(), header.Time))
 	}
+	// EIP-7928 (eth-el live path): harvest each tx's post-value writes so the block
+	// access list hash can be verified against the header and the raw BAL stored for
+	// the out-of-band service. Pure observer wrapping the per-tx noop; nil and
+	// zero-overhead when the fork is off. The parallel EVM below is a discarded
+	// shadow benchmark, so the serial path is the only one to capture.
+	var balCap *internalcore.BALCapture
+	if a.chainCfg.IsBAL(header.Time) {
+		balCap = internalcore.NewBALCapture(state.NewNoopWriter())
+	}
 	for i, txn := range blk.Transactions() {
 		ibs.Prepare(txn.Hash(), blk.Hash(), i)
 		prevUsed := usedGas
-		receipt, retData, err := internalcore.ApplyTransaction(a.chainCfg, blockHashFunc, a.engine, nil, gasPool, ibs, state.NewNoopWriter(), header, txn, &usedGas, vm2.Config{})
+		var perTxWriter state.StateWriter = state.NewNoopWriter()
+		if balCap != nil {
+			balCap.BeginTx(txn.Hash())
+			perTxWriter = balCap
+		}
+		receipt, retData, err := internalcore.ApplyTransaction(a.chainCfg, blockHashFunc, a.engine, nil, gasPool, ibs, perTxWriter, header, txn, &usedGas, vm2.Config{})
 		if err != nil {
 			if os.Getenv("N42_TXERR") != "" {
 				enc, _ := transaction.EncodeEthereumTransaction(txn)
@@ -528,6 +542,23 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 		}
 		if receipt != nil {
 			receipts = append(receipts, receipt)
+		}
+	}
+	if balCap != nil {
+		b := balCap.BALFor(internalcore.TxHashes(blk.Transactions()))
+		got, gerr := b.Hash()
+		if gerr != nil {
+			return nil, fmt.Errorf("compute block access list hash: %w", gerr)
+		}
+		// Verify against the hash bound in the header (producer computed the same
+		// BAL from the same execution); reject on mismatch. Then store the raw BAL so
+		// the out-of-band BAL service can serve it. System-call writes are not yet
+		// harvested; producer and verifier omit them identically.
+		if want := header.BlockAccessListHash; want == nil || *want != got {
+			return nil, fmt.Errorf("block access list hash mismatch: header %v, computed %s", want, got.Hex())
+		}
+		if raw, eerr := b.EncodeRLP(); eerr == nil {
+			_ = rawdb.WriteBlockAccessList(tx, blk.Hash(), raw)
 		}
 	}
 	dEVM = time.Since(tPhase)
