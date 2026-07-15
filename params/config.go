@@ -255,10 +255,13 @@ type ChainConfig struct {
 	// (protoc was never required): the consensus hash, gossip send+receive, direct
 	// push, sync chunked responses, block download, rawdb header trailer and torrent
 	// export. The former proto reconstruction paths (legacy direct-push and the
-	// sync_proto download package) have been removed. Remaining activation work
-	// before setting this: wire miner generation (BuildBALFromViews -> bind hash)
-	// and import verification (recompute + compare) behind Rules.IsBAL, then
-	// validate and soak. Keep nil until that wiring lands.
+	// sync_proto download package) have been removed. Miner generation (BALCapture
+	// -> header.BlockAccessListHash) and import verification (recompute + compare)
+	// are wired behind Rules.IsBAL and dormant while this is nil. Keep nil until
+	// cross-node determinism is validated on a test chain (every node must compute
+	// an identical BAL hash for each block); only then set an activation time.
+	// Note: system-call writes are not yet harvested and the full BAL is not
+	// transmitted (only the header hash), so BAL-driven prefetch is not yet active.
 	BALTime *big.Int `json:"balTime,omitempty"`
 
 	// StateScheme determines the state commitment algorithm for Header.Root.
