@@ -41,6 +41,10 @@ type BlockResult struct {
 	GasUsed  uint64
 	Receipts block.Receipts
 	Senders  []types.Address
+	// BALRaw is the canonical RLP of the block's EIP-7928 BAL, set only when the
+	// BAL fork is active. The executor stores it (keyed by block hash) so the
+	// out-of-band BAL service can serve it. nil when the fork is off.
+	BALRaw []byte
 }
 
 // Trace-mode env vars resolved once at process startup. Reading
@@ -145,6 +149,17 @@ func ProcessBlock(
 
 	noop := state.NewNoopWriter()
 
+	// EIP-7928 (eth-el): when the BAL fork is active, wrap the per-tx finalize
+	// writer to harvest each tx's post-value writes, so the block access list hash
+	// can be verified against the header and the raw BAL stored for serving. A pure
+	// observer (delegates to noop); nil and zero-overhead when the fork is off.
+	writer := state.StateWriter(noop)
+	var balCap *iinternal.BALCapture
+	if chainCfg.IsBAL(header.Time) {
+		balCap = iinternal.NewBALCapture(noop)
+		writer = balCap
+	}
+
 	// One EVM per block, reused across all txs via EVM.Reset(txCtx, ibs).
 	// Block context is constant within a block, so we only rebuild txCtx
 	// inside applyTransaction. Tracer-attached txs still take a per-tx
@@ -172,6 +187,9 @@ func ProcessBlock(
 			}
 		}
 		ibs.Prepare(txn.Hash(), blockHash, i)
+		if balCap != nil {
+			balCap.BeginTx(txn.Hash())
+		}
 
 		txCfg := cfg
 		// Probe: attach NoopTracer + Debug=true unconditionally to test
@@ -234,7 +252,7 @@ func ProcessBlock(
 			evm := vm2.NewEVM(blockContext, txContext, ibs, chainCfg, txCfg)
 			result, applyErr := iinternal.ApplyMessage(evm, msg, gp, true, true)
 			if applyErr == nil && result != nil {
-				_ = ibs.FinalizeTx(chainCfg.Rules(header.Number.Uint64()), noop)
+				_ = ibs.FinalizeTx(chainCfg.Rules(header.Number.Uint64()), writer)
 				*usedGas += result.UsedGas
 				receipt = &block.Receipt{
 					Type:              txn.Type(),
@@ -258,12 +276,12 @@ func ProcessBlock(
 			if txCfg.Tracer != nil || txCfg.Debug {
 				receipt, _, err = iinternal.ApplyTransaction(
 					chainCfg, blockHashFunc, engine, nil, gp,
-					ibs, noop, header, txn, usedGas, txCfg,
+					ibs, writer, header, txn, usedGas, txCfg,
 				)
 			} else {
 				receipt, _, err = iinternal.ApplyTransactionWithEVM(
 					sharedEVM, chainCfg, engine, gp,
-					ibs, noop, header, txn, usedGas, txCfg,
+					ibs, writer, header, txn, usedGas, txCfg,
 				)
 			}
 		}
@@ -333,6 +351,25 @@ func ProcessBlock(
 		}
 	}
 
-	return &BlockResult{GasUsed: *usedGas, Receipts: receipts, Senders: senders}, nil
+	var balRaw []byte
+	if balCap != nil {
+		b := balCap.BALFor(iinternal.TxHashes(txs))
+		got, err := b.Hash()
+		if err != nil {
+			return nil, fmt.Errorf("compute block access list hash: %w", err)
+		}
+		// Verify against the hash bound in the header (block producer computed the
+		// same BAL from the same execution) and keep the raw RLP so the executor can
+		// store it for the out-of-band BAL service. System-call writes are not yet
+		// harvested; producer and verifier omit them identically.
+		if want := header.BlockAccessListHash; want == nil || *want != got {
+			return nil, fmt.Errorf("block access list hash mismatch: header %v, computed %s", want, got.Hex())
+		}
+		if balRaw, err = b.EncodeRLP(); err != nil {
+			return nil, fmt.Errorf("encode block access list: %w", err)
+		}
+	}
+
+	return &BlockResult{GasUsed: *usedGas, Receipts: receipts, Senders: senders, BALRaw: balRaw}, nil
 }
 

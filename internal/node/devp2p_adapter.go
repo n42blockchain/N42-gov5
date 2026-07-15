@@ -9,6 +9,7 @@
 package node
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/holiman/uint256"
@@ -17,6 +18,7 @@ import (
 	n42types "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/devp2p"
+	"github.com/n42blockchain/N42/modules/rawdb"
 )
 
 type devp2pBlockProvider struct {
@@ -99,6 +101,25 @@ func (p *devp2pBlockProvider) GetHeaderByHash(hash n42types.Hash) (*n42block.Hea
 		return nil, fmt.Errorf("unexpected header type %T", header)
 	}
 	return n42block.CopyHeader(concrete), nil
+}
+
+// BlockAccessList returns a block's stored raw EIP-7928 BAL, or nil if none is
+// held. Satisfies the devp2p balServer interface so this node can answer
+// out-of-band GetBlockAccessLists requests from the rawdb store.
+func (p *devp2pBlockProvider) BlockAccessList(hash n42types.Hash) []byte {
+	if p == nil || p.node == nil || p.node.blockChain == nil {
+		return nil
+	}
+	db := p.node.blockChain.DB()
+	if db == nil {
+		return nil
+	}
+	tx, err := db.BeginRo(context.Background())
+	if err != nil {
+		return nil
+	}
+	defer tx.Rollback()
+	return rawdb.ReadBlockAccessList(tx, hash)
 }
 
 func (n *Node) startEthereumDevP2P() error {
