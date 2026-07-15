@@ -58,6 +58,12 @@ type EngineStateAdapter struct {
 	// csSource overrides Reorg's data source. nil falls back to a.freezer.
 	csSource cs.Source
 
+	// balPrefetch, when set, returns the raw EIP-7928 BAL for a block hash so
+	// executePayloadDetailed can prewarm state before executing (out-of-band BAL
+	// consume side). nil = no prewarm. Wire it to eldevp2p.FetchBlockAccessLists on
+	// the sync path, or leave nil and fall back to the locally stored BAL.
+	balPrefetch func(hash types.Hash) []byte
+
 	// fastVerify skips the full-MPT VerifyStateRoot pass at end of
 	// executePayloadDetailed and trusts the HPH IntermediateRoot
 	// computed during execution. Set true for the wire-driven sync
@@ -124,6 +130,13 @@ type EngineStateAdapter struct {
 // SetCSFreezerSink switches hashed-canonical changeset persistence to the
 // freezer sink (nil restores MDBX changesets + history).
 func (a *EngineStateAdapter) SetCSFreezerSink(s *ethel.CSFreezerSink) { a.csFreezerSink = s }
+
+// SetBALPrefetch wires the out-of-band BAL source used to prewarm state before
+// executing a block (EIP-7928 consume side). The func returns the raw BAL for a
+// block hash, or nil if unavailable; typically eldevp2p.FetchBlockAccessLists on
+// the sync path. nil disables the fetch-based prefetch (the locally stored BAL is
+// still used when present).
+func (a *EngineStateAdapter) SetBALPrefetch(fn func(hash types.Hash) []byte) { a.balPrefetch = fn }
 
 // PurgeHashedReadCache drops the cross-block read cache. Callers that rewrite
 // hashed state outside the TrieRootComputer's invalidation hooks (e.g. the
@@ -501,6 +514,25 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	if txns := blk.Transactions(); len(txns) > 1 {
 		a.recoverSenders(txns, transaction.MakeSignerWithTimestamp(a.chainCfg, header.Number.ToBig(), header.Time))
 	}
+	// EIP-7928 consume: if a full BAL is available out of band (fetched from a peer
+	// via balPrefetch, or stored locally from a prior execution), verify it against
+	// the header hash and prewarm state before executing so reads overlap execution.
+	// A bad/mismatched BAL is skipped (execution proceeds without prefetch).
+	if a.chainCfg.IsBAL(header.Time) {
+		var raw []byte
+		if a.balPrefetch != nil {
+			raw = a.balPrefetch(blk.Hash())
+		}
+		if len(raw) == 0 {
+			raw = rawdb.ReadBlockAccessList(tx, blk.Hash())
+		}
+		if len(raw) > 0 {
+			if err := ethel.VerifyAndPrewarmBAL(reader, raw, header.BlockAccessListHash); err != nil {
+				log.Debug("BAL prewarm skipped", "block", blockNum, "err", err)
+			}
+		}
+	}
+
 	// EIP-7928 (eth-el live path): harvest each tx's post-value writes so the block
 	// access list hash can be verified against the header and the raw BAL stored for
 	// the out-of-band service. Pure observer wrapping the per-tx noop; nil and
