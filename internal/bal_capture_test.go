@@ -23,7 +23,9 @@ import (
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/params"
 )
 
 func balAddr(b byte) types.Address { var a types.Address; a[19] = b; return a }
@@ -72,6 +74,62 @@ func TestBALCaptureMinerImporterAgree(t *testing.T) {
 	}
 	if (minerHash == types.Hash{}) {
 		t.Fatal("non-empty block hashed BAL to zero")
+	}
+}
+
+// TestBALCaptureFinalizeTxDeterministic is the integration proof: two independent
+// but identical executions drive IntraBlockState.FinalizeTx into a BALCapture and
+// must yield the same block-access-list hash. This exercises the real finalize ->
+// capture path the miner and importer both rely on (they execute the same block,
+// so they feed FinalizeTx the same writes and compute the same hash) — the
+// cross-node determinism reduces to the state-execution determinism the chain
+// already guarantees for the state root.
+func TestBALCaptureFinalizeTxDeterministic(t *testing.T) {
+	sender := types.HexToAddress("0x1000000000000000000000000000000000000001")
+	recip := types.HexToAddress("0x1000000000000000000000000000000000000002")
+	hA := balSlot(0xa1)
+	hB := balSlot(0xb2)
+
+	run := func() types.Hash {
+		db := memdb.NewTestDB(t)
+		tx := memdb.BeginRw(t, db)
+		ibs := state.New(state.NewPlainState(tx, 1))
+		ibs.CreateAccount(sender, false)
+		ibs.AddBalance(sender, uint256.NewInt(1_000_000))
+		rules := &params.Rules{IsSpuriousDragon: true}
+		cap := NewBALCapture(state.NewNoopWriter())
+
+		// tx A: transfer 100 sender -> recip
+		ibs.Prepare(hA, types.Hash{}, 0)
+		cap.BeginTx(hA)
+		ibs.SubBalance(sender, uint256.NewInt(100))
+		ibs.AddBalance(recip, uint256.NewInt(100))
+		if err := ibs.FinalizeTx(rules, cap); err != nil {
+			t.Fatal(err)
+		}
+		// tx B: transfer 50 sender -> recip
+		ibs.Prepare(hB, types.Hash{}, 1)
+		cap.BeginTx(hB)
+		ibs.SubBalance(sender, uint256.NewInt(50))
+		ibs.AddBalance(recip, uint256.NewInt(50))
+		if err := ibs.FinalizeTx(rules, cap); err != nil {
+			t.Fatal(err)
+		}
+
+		h, err := cap.HashFor([]types.Hash{hA, hB})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+
+	h1 := run()
+	h2 := run()
+	if h1 != h2 {
+		t.Fatalf("BAL hash not deterministic across identical executions: %s vs %s", h1.Hex(), h2.Hex())
+	}
+	if (h1 == types.Hash{}) {
+		t.Fatal("non-empty execution produced a zero BAL hash — FinalizeTx writes not captured")
 	}
 }
 
