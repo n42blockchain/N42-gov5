@@ -1641,16 +1641,19 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				receipts, nopay, logs, usedGas, err = bc.process.Process(concreteBlock, ibs, reader, writer, blockHashFunc)
 			}
 			if err != nil {
-				// A nonce-too-high gap is a RETRYABLE ordering condition (the
-				// block ran ahead of the executed state — out-of-order direct
-				// push, or a prefix block still in the future queue), not a
-				// bad block; the outer loop queues it. Everything else is
-				// reported.
-				if !strings.Contains(err.Error(), "nonce too high") {
-					bc.reportBlock(blk, receipts, err)
-					return nil, fmt.Errorf("%w: %w", consensus.ErrExecutionInvalid, err)
+				// Only a deterministic execution / consensus violation is a bad
+				// block. Transient/internal failures — a nonce-too-high ordering
+				// gap (block ran ahead of the executed state), context
+				// cancellation, an unavailable ancestor, or a DB/IO error wrapped
+				// as consensus.ErrInternal — are RETRYABLE: the outer loop queues
+				// or retries them. Marking those BAD cached a healthy block as bad
+				// until a restart cleared the LRU (the recurring QMDB pain); the
+				// is_validation_error split (mirroring reth) prevents it.
+				if consensus.IsInternalError(err) || strings.Contains(err.Error(), "nonce too high") {
+					return nil, err
 				}
-				return nil, err
+				bc.reportBlock(blk, receipts, err)
+				return nil, fmt.Errorf("%w: %w", consensus.ErrExecutionInvalid, err)
 			}
 			ptime := time.Since(pstart)
 

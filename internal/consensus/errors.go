@@ -23,6 +23,7 @@
 package consensus
 
 import (
+	"context"
 	"errors"
 )
 
@@ -57,4 +58,35 @@ var (
 	// failures (unknown/pruned ancestors, future blocks, or unavailable reverts)
 	// must never wrap this sentinel.
 	ErrExecutionInvalid = errors.New("block execution invalid")
+
+	// ErrInternal marks a transient/internal failure encountered while trying to
+	// import a block — database or storage-engine I/O, an unavailable reader, or
+	// a shutdown — as opposed to a deterministic execution/consensus violation.
+	// A block failing with ErrInternal is NOT bad: it may import cleanly once the
+	// transient condition clears. Wrap internal errors with this before they reach
+	// the bad-block gate so they are never cached as bad.
+	ErrInternal = errors.New("internal block import error")
 )
+
+// IsInternalError reports whether err is a transient/internal import failure
+// rather than a deterministic execution or consensus violation, and therefore
+// must NOT mark the block bad. This mirrors reth's is_validation_error() split:
+// only genuine validation errors may be cached as bad; context cancellation,
+// missing/pruned/future ancestors and anything explicitly wrapped as ErrInternal
+// are retryable and bubble up instead.
+func IsInternalError(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch {
+	case errors.Is(err, ErrInternal),
+		errors.Is(err, context.Canceled),
+		errors.Is(err, context.DeadlineExceeded),
+		errors.Is(err, ErrUnknownAncestor),
+		errors.Is(err, ErrUnknownAncestorTD),
+		errors.Is(err, ErrPrunedAncestor),
+		errors.Is(err, ErrFutureBlock):
+		return true
+	}
+	return false
+}
