@@ -955,14 +955,29 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	noop := state.NewNoopWriter()
 	vmConfig := vm2.Config{}
 
+	// EIP-7928: when the BAL fork is active, harvest each committed tx's post-value
+	// writes via the shared BALCapture (a pure observer wrapping noop) so the block
+	// access list hash can be bound into the header below. The importer recomputes
+	// it the same way (StateProcessor.Process), so the two agree by construction.
+	// balCap is nil (zero overhead) when the fork is off.
+	var writer state.StateWriter = noop
+	var balCap *internal.BALCapture
+	if w.chainConfig.IsBAL(env.header.Time) {
+		balCap = internal.NewBALCapture(noop)
+		writer = balCap
+	}
+
 	commitTx := func(txn *transaction.Transaction) error {
 		ibs.Prepare(txn.Hash(), types.Hash{}, env.tcount)
 		gasSnap := env.gasPool.Gas()
 		snap := ibs.Snapshot()
 		log.Debug("addTransactionsToMiningBlock", "txn hash", txn.Hash())
 
+		if balCap != nil {
+			balCap.BeginTx(txn.Hash())
+		}
 		coinbase := env.coinbase
-		receipt, _, err := internal.ApplyTransaction(w.chainConfig, internal.GetHashFn(header, getHeader), w.engine, &coinbase, env.gasPool, ibs, noop, env.header, txn, &header.GasUsed, vmConfig)
+		receipt, _, err := internal.ApplyTransaction(w.chainConfig, internal.GetHashFn(header, getHeader), w.engine, &coinbase, env.gasPool, ibs, writer, env.header, txn, &header.GasUsed, vmConfig)
 		if err != nil {
 			ibs.RevertToSnapshot(snap)
 			env.gasPool = new(common.GasPool).AddGas(gasSnap)
@@ -1057,6 +1072,17 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	// Prune old bundles.
 	if w.bundlePool != nil {
 		w.bundlePool.PruneBundles(blockNumber)
+	}
+
+	// EIP-7928: bind the block access list hash for the finally-included txs into
+	// the header before it is finalized/sealed. HashFor filters the captured
+	// buckets to env.txs in block order, matching the importer exactly.
+	if balCap != nil {
+		if h, err := balCap.HashFor(internal.TxHashes(env.txs)); err == nil {
+			env.header.BlockAccessListHash = &h
+		} else {
+			log.Error("BAL: failed to compute block access list hash", "err", err)
+		}
 	}
 
 	return nil
