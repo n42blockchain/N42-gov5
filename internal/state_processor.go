@@ -130,11 +130,17 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 		}
 		receipt, _, err := ApplyTransaction(chainConfig, blockHashFunc, p.engine, nil, gp, ibs, writer, concreteHeader, tx, usedGas, cfg)
 		if err != nil {
+			if balCap != nil {
+				balCap.DiscardTx()
+			}
 			if !cfg.StatelessExec {
 				return nil, nil, nil, 0, fmt.Errorf("could not apply tx %d from block %d [%v]: %w", i, b.Number64(), tx.Hash().String(), err)
 			}
 			rejectedTxs = append(rejectedTxs, &RejectedTx{i, err.Error()})
 		} else {
+			if balCap != nil {
+				balCap.CommitTx()
+			}
 			includedTxs = append(includedTxs, tx)
 			if !cfg.NoReceipts {
 				receipts = append(receipts, receipt)

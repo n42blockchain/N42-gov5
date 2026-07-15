@@ -54,11 +54,11 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/cs"
@@ -291,6 +291,8 @@ type getBlockAccessListsRequest struct {
 	RequestID uint64
 	Hashes    []types.Hash
 }
+
+const maxBlockAccessListsRequest = 256
 
 // NewDownloader builds the orchestrator without starting it.
 func NewDownloader(exec executionProvider, hashedCanonical bool, snapshotCold state.StateReader) *Downloader {
@@ -1713,6 +1715,9 @@ func (d *Downloader) requestReceipts(ctx context.Context, peerID string, rw geth
 // raw BAL RLP per requested hash, in request order (nil where the peer has none),
 // so a consumer can decode + verify against the header hash and drive prefetch.
 func (d *Downloader) requestBlockAccessLists(ctx context.Context, peerID string, rw gethp2p.MsgReadWriter, hashes []types.Hash) ([][]byte, error) {
+	if len(hashes) > maxBlockAccessListsRequest {
+		return nil, fmt.Errorf("too many block access lists requested: %d > %d", len(hashes), maxBlockAccessListsRequest)
+	}
 	reqID := d.reqSeq.Add(1)
 	key := fmt.Sprintf("%s:a:%d", peerID, reqID)
 	ch := make(chan inflightResp, 1)
@@ -1731,6 +1736,9 @@ func (d *Downloader) requestBlockAccessLists(ctx context.Context, peerID string,
 	}
 	select {
 	case resp := <-ch:
+		if len(resp.bals) > len(hashes) {
+			return nil, fmt.Errorf("block access lists response has %d entries for %d requested hashes", len(resp.bals), len(hashes))
+		}
 		out := make([][]byte, len(resp.bals))
 		for i, b := range resp.bals {
 			out[i] = []byte(b)

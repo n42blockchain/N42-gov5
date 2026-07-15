@@ -350,9 +350,13 @@ func (h *EthHandler) handleGetBlockAccessLists(rw gethp2p.MsgReadWriter, msg get
 	if err := msg.Decode(&req); err != nil {
 		return err
 	}
-	resp := blockAccessListsPacket{RequestID: req.RequestID, BALs: make([][]byte, len(req.Hashes))}
+	n := len(req.Hashes)
+	if n > maxBlockAccessListsRequest {
+		n = maxBlockAccessListsRequest
+	}
+	resp := blockAccessListsPacket{RequestID: req.RequestID, BALs: make([][]byte, n)}
 	if srv, ok := h.provider.(balServer); ok {
-		for i, hash := range req.Hashes {
+		for i, hash := range req.Hashes[:n] {
 			resp.BALs[i] = srv.BlockAccessList(hash) // nil -> empty entry
 		}
 	}

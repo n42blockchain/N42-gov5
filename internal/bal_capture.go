@@ -83,6 +83,39 @@ func (c *BALCapture) BeginTx(txHash types.Hash) {
 	c.cur = &c.txs[len(c.txs)-1]
 }
 
+// CommitTx closes the current capture bucket after a successful transaction.
+func (c *BALCapture) CommitTx() {
+	c.cur = nil
+}
+
+// DiscardTx drops the current bucket after a failed transaction. This matters
+// when the same transaction hash was already included through a bundle: a later
+// nonce-too-low retry from the public pool must not replace the successful
+// capture with an empty bucket.
+func (c *BALCapture) DiscardTx() {
+	if c.cur == nil || len(c.txs) == 0 {
+		return
+	}
+	c.txs = c.txs[:len(c.txs)-1]
+	c.hashes = c.hashes[:len(c.hashes)-1]
+	c.cur = nil
+}
+
+// Snapshot returns a capture checkpoint for an atomic group such as an MEV
+// bundle. RevertToSnapshot removes all buckets added after it.
+func (c *BALCapture) Snapshot() int {
+	return len(c.txs)
+}
+
+func (c *BALCapture) RevertToSnapshot(snapshot int) {
+	if snapshot < 0 || snapshot > len(c.txs) {
+		return
+	}
+	c.txs = c.txs[:snapshot]
+	c.hashes = c.hashes[:snapshot]
+	c.cur = nil
+}
+
 // BALFor builds the canonical block access list for the finally-included
 // transactions, in block order. Buckets whose tx is not in order (reverted or
 // dropped during block building) are excluded; when a tx hash was captured more

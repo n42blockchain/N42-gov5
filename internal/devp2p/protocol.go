@@ -17,6 +17,8 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 )
 
+const maxBlockAccessListsRequest = 256
+
 type forkID struct {
 	Hash [4]byte
 	Next uint64

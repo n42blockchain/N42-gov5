@@ -29,7 +29,8 @@ import (
 
 // balFakeProvider implements BlockProvider + the optional balServer.
 type balFakeProvider struct {
-	bals map[types.Hash][]byte
+	bals  map[types.Hash][]byte
+	calls int
 }
 
 func (p *balFakeProvider) CurrentHead() (*n42block.Header, types.Hash, error) {
@@ -39,7 +40,10 @@ func (p *balFakeProvider) GetHeaderByNumber(uint64) (*n42block.Header, error) { 
 func (p *balFakeProvider) GetHeaderByHash(types.Hash) (*n42block.Header, error) {
 	return nil, nil
 }
-func (p *balFakeProvider) BlockAccessList(hash types.Hash) []byte { return p.bals[hash] }
+func (p *balFakeProvider) BlockAccessList(hash types.Hash) []byte {
+	p.calls++
+	return p.bals[hash]
+}
 
 func TestHandleGetBlockAccessListsServes(t *testing.T) {
 	h1 := types.HexToHash("0x11")
@@ -129,5 +133,39 @@ func TestHandleGetBlockAccessListsEmptyWhenUnsupported(t *testing.T) {
 	}
 	if len(resp.BALs) != 1 || len(resp.BALs[0]) != 0 {
 		t.Fatalf("provider without balServer must answer empty entries, got %+v", resp.BALs)
+	}
+}
+
+func TestHandleGetBlockAccessListsCapsRequest(t *testing.T) {
+	hashes := make([]types.Hash, maxBlockAccessListsRequest+50)
+	provider := &balFakeProvider{}
+	h := &EthHandler{provider: provider}
+	enc, err := rlp.EncodeToBytes(&getBlockAccessListsPacket{RequestID: 7, Hashes: hashes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := gethp2p.Msg{Code: 18, Size: uint32(len(enc)), Payload: bytes.NewReader(enc)}
+	rw1, rw2 := gethp2p.MsgPipe()
+	defer rw1.Close()
+	defer rw2.Close()
+	errCh := make(chan error, 1)
+	go func() { errCh <- h.handleGetBlockAccessLists(rw1, msg) }()
+
+	respMsg, err := rw2.ReadMsg()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp blockAccessListsPacket
+	if err := respMsg.Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.BALs) != maxBlockAccessListsRequest {
+		t.Fatalf("response len = %d, want cap %d", len(resp.BALs), maxBlockAccessListsRequest)
+	}
+	if provider.calls != maxBlockAccessListsRequest {
+		t.Fatalf("provider calls = %d, want cap %d", provider.calls, maxBlockAccessListsRequest)
 	}
 }
