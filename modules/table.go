@@ -108,6 +108,12 @@ const (
 	Receipts = "Receipt"        // block_num_u64 -> canonical block receipts (non-canonical are not stored)
 	Log      = "TransactionLog" // block_num_u64 + txId -> logs of transaction
 
+	// BlockAccessLists stores the raw canonical RLP of a block's EIP-7928 Block
+	// Access List, keyed by block hash, so the out-of-band BAL service can serve
+	// it to peers without re-deriving it. Only written on eth-el when the BAL fork
+	// is active.
+	BlockAccessLists = "BlockAccessList" // block_hash -> raw BAL RLP
+
 	// Stores bitmap indices - in which block numbers saw logs of given 'address' or 'topic'
 	// [addr or topic] + [4 bytes shard number] -> bitmap(blockN)
 	// indices are sharded - because some bitmaps are >1Mb and when new incoming blocks process it
@@ -331,6 +337,7 @@ var n42Tables = []string{
 
 	DatabaseInfo,
 	ChainConfig,
+	BlockAccessLists,
 
 	AccountsHistory,
 	AccountChangeSet,
