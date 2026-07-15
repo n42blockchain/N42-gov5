@@ -136,6 +136,14 @@ func (oracle *Oracle) processBlock(bf *blockFees, percentiles []float64) {
 	if len(bf.receipts) > 0 {
 		var sum uint64
 		for _, r := range bf.receipts {
+			if r == nil {
+				bf.err = errors.New("nil receipt in processBlock")
+				return
+			}
+			if math.MaxUint64-sum < r.GasUsed {
+				bf.err = errors.New("receipt gas overflow in processBlock")
+				return
+			}
 			sum += r.GasUsed
 		}
 		blockGasUsed = sum
@@ -182,7 +190,7 @@ func (oracle *Oracle) processBlock(bf *blockFees, percentiles []float64) {
 	sumGasUsed := sorter[0].gasUsed
 
 	for i, p := range percentiles {
-		thresholdGasUsed := uint64(float64(bf.block.GasUsed()) * p / 100)
+		thresholdGasUsed := uint64(float64(blockGasUsed) * p / 100)
 		for sumGasUsed < thresholdGasUsed && txIndex < len(sorter)-1 {
 			txIndex++
 			sumGasUsed += sorter[txIndex].gasUsed

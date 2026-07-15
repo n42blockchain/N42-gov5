@@ -1054,10 +1054,22 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 		balCap = internal.NewBALCapture(noop)
 		writer = balCap
 	}
+	finalizeBAL := func() error {
+		if balCap == nil {
+			return nil
+		}
+		h, err := balCap.HashFor(internal.TxHashes(env.txs))
+		if err != nil {
+			return fmt.Errorf("compute block access list hash: %w", err)
+		}
+		env.header.BlockAccessListHash = &h
+		return nil
+	}
 
 	commitTx := func(txn *transaction.Transaction) error {
 		ibs.Prepare(txn.Hash(), types.Hash{}, env.tcount)
 		gasSnap := env.gasPool.Gas()
+		gasUsedSnap := header.GasUsed
 		snap := ibs.Snapshot()
 		log.Debug("addTransactionsToMiningBlock", "txn hash", txn.Hash())
 
@@ -1067,9 +1079,16 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 		coinbase := env.coinbase
 		receipt, _, err := internal.ApplyTransaction(w.chainConfig, internal.GetHashFn(header, getHeader), w.engine, &coinbase, env.gasPool, ibs, writer, env.header, txn, &header.GasUsed, vmConfig)
 		if err != nil {
+			if balCap != nil {
+				balCap.DiscardTx()
+			}
 			ibs.RevertToSnapshot(snap)
 			env.gasPool = new(common.GasPool).AddGas(gasSnap)
+			header.GasUsed = gasUsedSnap
 			return err
+		}
+		if balCap != nil {
+			balCap.CommitTx()
 		}
 
 		env.txs = append(env.txs, txn)
@@ -1089,8 +1108,14 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			// Try to commit entire bundle atomically.
 			snap := ibs.Snapshot()
 			gasSnap := env.gasPool.Gas()
+			gasUsedSnap := header.GasUsed
 			startTxCount := len(env.txs)
 			startReceiptCount := len(env.receipts)
+			startTCount := env.tcount
+			balSnap := 0
+			if balCap != nil {
+				balSnap = balCap.Snapshot()
+			}
 			bundleOk := true
 
 			for _, tx := range bundle.Txs {
@@ -1109,8 +1134,13 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 				// Revert entire bundle.
 				ibs.RevertToSnapshot(snap)
 				env.gasPool = new(common.GasPool).AddGas(gasSnap)
+				header.GasUsed = gasUsedSnap
 				env.txs = env.txs[:startTxCount]
 				env.receipts = env.receipts[:startReceiptCount]
+				env.tcount = startTCount
+				if balCap != nil {
+					balCap.RevertToSnapshot(balSnap)
+				}
 			}
 		}
 	}
@@ -1118,7 +1148,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	// Phase 2: Fill remaining space with regular transactions sorted by effective tip.
 	pending := w.txsPool.Pending(false)
 	if len(pending) == 0 {
-		return nil
+		return finalizeBAL()
 	}
 
 	txSet := builder.NewTxByPriceAndNonce(pending, header.BaseFee)
@@ -1162,18 +1192,9 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 		w.bundlePool.PruneBundles(blockNumber)
 	}
 
-	// EIP-7928: bind the block access list hash for the finally-included txs into
-	// the header before it is finalized/sealed. HashFor filters the captured
-	// buckets to env.txs in block order, matching the importer exactly.
-	if balCap != nil {
-		if h, err := balCap.HashFor(internal.TxHashes(env.txs)); err == nil {
-			env.header.BlockAccessListHash = &h
-		} else {
-			log.Error("BAL: failed to compute block access list hash", "err", err)
-		}
-	}
-
-	return nil
+	// Bind the BAL hash even for an empty block or a block containing only bundle
+	// transactions. Once the fork is active the header field is mandatory.
+	return finalizeBAL()
 }
 
 func (w *worker) prepareWork(param *generateParams) (*environment, error) {

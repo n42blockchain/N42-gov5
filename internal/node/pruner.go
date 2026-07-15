@@ -150,6 +150,9 @@ func (p *Pruner) maybePrune() {
 func (p *Pruner) prune(pruneTo uint64) error {
 	start := time.Now()
 	limit := p.config.PruneBatchLimit
+	if limit <= 0 {
+		limit = conf.DefaultPruneBatchLimit
+	}
 
 	logEvery := time.NewTicker(30 * time.Second)
 	defer logEvery.Stop()
@@ -266,4 +269,3 @@ func pruneHistoryTable(tx kv.RwTx, table string, pruneTo uint64, limit int, ctx 
 	}
 	return nil
 }
-

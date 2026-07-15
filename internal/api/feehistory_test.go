@@ -8,6 +8,7 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/params"
 )
@@ -60,6 +61,62 @@ func TestProcessBlockRejectsNilBlock(t *testing.T) {
 
 	oracle.processBlock(bf, nil)
 	if bf.err == nil || bf.err.Error() != "block is nil in processBlock" {
+		t.Fatalf("processBlock() error = %v", bf.err)
+	}
+}
+
+func TestProcessBlockUsesReceiptGasForRewardPercentiles(t *testing.T) {
+	header := &block.Header{
+		Number:     uint256.NewInt(1),
+		Difficulty: uint256.NewInt(0),
+		BaseFee:    uint256.NewInt(0),
+		GasLimit:   1_000,
+		GasUsed:    200,
+	}
+	txs := []*transaction.Transaction{
+		transaction.NewTx(&transaction.LegacyTx{GasPrice: uint256.NewInt(1), Gas: 60}),
+		transaction.NewTx(&transaction.LegacyTx{GasPrice: uint256.NewInt(10), Gas: 40}),
+	}
+	bf := &blockFees{
+		blockNumber: 1,
+		header:      header,
+		block:       block.NewBlock(header, txs),
+		receipts: block.Receipts{
+			{GasUsed: 60},
+			{GasUsed: 40},
+		},
+	}
+	oracle := &Oracle{chainConfig: &params.ChainConfig{LondonBlock: big.NewInt(10)}}
+
+	oracle.processBlock(bf, []float64{50})
+	if bf.err != nil {
+		t.Fatalf("processBlock() error = %v", bf.err)
+	}
+	if got, want := bf.results.gasUsedRatio, 0.1; got != want {
+		t.Fatalf("gasUsedRatio = %v, want %v", got, want)
+	}
+	if len(bf.results.reward) != 1 || bf.results.reward[0].Cmp(big.NewInt(1)) != 0 {
+		t.Fatalf("50th percentile reward = %v, want 1", bf.results.reward)
+	}
+}
+
+func TestProcessBlockRejectsNilReceipt(t *testing.T) {
+	header := &block.Header{
+		Number:     uint256.NewInt(1),
+		Difficulty: uint256.NewInt(0),
+		BaseFee:    uint256.NewInt(0),
+		GasLimit:   1_000,
+	}
+	bf := &blockFees{
+		blockNumber: 1,
+		header:      header,
+		block:       block.NewBlock(header, []*transaction.Transaction{transaction.NewTx(&transaction.LegacyTx{GasPrice: uint256.NewInt(1)})}),
+		receipts:    block.Receipts{nil},
+	}
+	oracle := &Oracle{chainConfig: &params.ChainConfig{LondonBlock: big.NewInt(10)}}
+
+	oracle.processBlock(bf, []float64{50})
+	if bf.err == nil || bf.err.Error() != "nil receipt in processBlock" {
 		t.Fatalf("processBlock() error = %v", bf.err)
 	}
 }

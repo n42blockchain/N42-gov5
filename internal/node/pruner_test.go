@@ -392,6 +392,47 @@ func TestPruner_DupSortBatchedDrainsBacklog(t *testing.T) {
 	}
 }
 
+func TestPruner_ZeroBatchLimitUsesDefault(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	if err := db.Update(testCtx(), func(tx kv.RwTx) error {
+		key := make([]byte, 8)
+		binary.BigEndian.PutUint64(key, 1)
+		return tx.Put(modules.AccountChangeSet, key, []byte("change"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pruner := NewPruner(db, conf.PruneConfig{
+		Mode:           conf.PruneModeFull,
+		BlockRetention: 1,
+		PruneInterval:  1,
+		// Zero is possible for programmatic construction before defaults are
+		// applied and must not make the batched loop spin forever.
+		PruneBatchLimit: 0,
+	}, &staticBlockProvider{block: 3}, nil)
+	pruner.maybePrune()
+
+	if err := db.View(testCtx(), func(tx kv.Tx) error {
+		c, err := tx.CursorDupSort(modules.AccountChangeSet)
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+		k, _, err := c.First()
+		if err != nil {
+			return err
+		}
+		if k != nil {
+			t.Fatalf("zero-limit fallback left prunable key %d", binary.BigEndian.Uint64(k))
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if pruner.lastPrunedBlock != 3 {
+		t.Fatalf("pruner did not finish with zero configured limit: last=%d", pruner.lastPrunedBlock)
+	}
+}
+
 func testCtx() context.Context {
 	return context.Background()
 }

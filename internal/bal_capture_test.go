@@ -37,6 +37,7 @@ func feedTx(c *BALCapture, hash types.Hash, addr types.Address, slot types.Hash,
 	_ = c.WriteAccountStorage(addr, slot, uint256.Int{}, *uint256.NewInt(val))
 	acc := &account.StateAccount{Nonce: nonce, Balance: *uint256.NewInt(val)}
 	_ = c.UpdateAccountData(addr, nil, acc)
+	c.CommitTx()
 }
 
 // TestBALCaptureMinerImporterAgree is the activation-critical invariant: the miner
@@ -151,6 +152,40 @@ func TestBALCaptureExcludesDroppedTx(t *testing.T) {
 	b, _ := clean.HashFor(order)
 	if a != b {
 		t.Fatalf("dropped tx leaked into BAL: %s vs %s", a.Hex(), b.Hex())
+	}
+}
+
+func TestBALCaptureFailedDuplicateDoesNotReplaceIncludedTx(t *testing.T) {
+	h := balSlot(0xa1)
+	want := NewBALCapture(state.NewNoopWriter())
+	feedTx(want, h, balAddr(0x01), balSlot(0x02), 100, 1)
+
+	got := NewBALCapture(state.NewNoopWriter())
+	feedTx(got, h, balAddr(0x01), balSlot(0x02), 100, 1)
+	got.BeginTx(h) // same tx retried from the public pool after bundle inclusion
+	got.DiscardTx()
+
+	wantHash, _ := want.HashFor([]types.Hash{h})
+	gotHash, _ := got.HashFor([]types.Hash{h})
+	if gotHash != wantHash {
+		t.Fatalf("failed duplicate replaced successful capture: got %s want %s", gotHash.Hex(), wantHash.Hex())
+	}
+}
+
+func TestBALCaptureBundleRollback(t *testing.T) {
+	hA, hB := balSlot(0xa1), balSlot(0xb2)
+	c := NewBALCapture(state.NewNoopWriter())
+	feedTx(c, hA, balAddr(0x01), balSlot(0x02), 100, 1)
+	snap := c.Snapshot()
+	feedTx(c, hB, balAddr(0x02), balSlot(0x03), 200, 1)
+	c.RevertToSnapshot(snap)
+
+	withRollback, _ := c.HashFor([]types.Hash{hA})
+	clean := NewBALCapture(state.NewNoopWriter())
+	feedTx(clean, hA, balAddr(0x01), balSlot(0x02), 100, 1)
+	want, _ := clean.HashFor([]types.Hash{hA})
+	if withRollback != want {
+		t.Fatalf("rolled-back bundle leaked into BAL: got %s want %s", withRollback.Hex(), want.Hex())
 	}
 }
 
