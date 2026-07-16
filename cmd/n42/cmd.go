@@ -193,6 +193,13 @@ var consensusFlag = []cli.Flag{
 		Value:       0,
 		Destination: &DefaultConfig.MobileVerifyCfg.RegisterPoWBits,
 	},
+	&cli.BoolFlag{
+		Name:        "coprocessor",
+		Usage:       "启用分布式计算 coprocessor (n42 原生链生产默认开启, --coprocessor=false 可关; eth-el 默认关)",
+		Category:    "MINER",
+		Value:       false,
+		Destination: &DefaultConfig.CoprocessorCfg.Enabled,
+	},
 	&cli.Uint64Flag{
 		Name:        "block-interval-ms",
 		Usage:       "出块间隔节流 (毫秒, 无长程漂移; 默认 2000=2秒一块; 设 0 关闭限制即飞速出块)",
