@@ -216,6 +216,25 @@ func (tm *TaskManager) AssignProvider(id types.Hash, provider types.Address, bid
 	return nil
 }
 
+// SetTierAndBond sets a task's verification tier and bond before it is proven.
+// Optimistic verification requires a non-zero bond (the value put at risk of
+// slashing); this lets a submitter route a task through the bond+challenge tier
+// instead of the default ZK tier. Only valid while Pending.
+func (tm *TaskManager) SetTierAndBond(id types.Hash, tier VerificationTier, bond uint64) error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	t, ok := tm.tasks[id]
+	if !ok {
+		return ErrTaskNotFound
+	}
+	if t.Status != TaskPending {
+		return ErrTaskNotPending
+	}
+	t.VerificationTier = tier
+	t.Bond = bond
+	return nil
+}
+
 // ListByStatus returns all tasks with the given status.
 func (tm *TaskManager) ListByStatus(status TaskStatus) []*Task {
 	tm.mu.RLock()

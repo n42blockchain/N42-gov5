@@ -1693,6 +1693,16 @@ func (n *Node) Start() error {
 		})
 	}
 
+	// coprocessor_* namespace: submit/claim tasks, register providers, query
+	// status, file challenges. The engine (tiered verify, marketplace,
+	// slashing) was constructed but had no external surface before this.
+	if n.coprocessorService != nil {
+		n.rpcAPIs = append(n.rpcAPIs, jsonrpc.API{
+			Namespace: "coprocessor",
+			Service:   dcoprocessor.NewAPI(n.coprocessorService),
+		})
+	}
+
 	if rpcPlan.registerHotStuffAdminAPI {
 		hs, ok := resolveHotStuffEngine(n.engine)
 		if !ok {
@@ -2184,6 +2194,10 @@ func (n *Node) startMobileVerify() {
 	if addr := n.config.MobileVerifyCfg.HTTPAddr; addr != "" {
 		httpSrv := mobileverify.NewHTTPServer(addr, n.mobileRegistry, svc, n.mobileWindows, n.mobileCertStore)
 		httpSrv.SetAlarms(n.mobileAlarms)
+		// Sybil gate (design §7 item 2): registration proof-of-work. A device
+		// attestor (Play Integrity / DeviceCheck adapter) can be wired here
+		// once an operator supplies one; the HTTP gate is already in place.
+		httpSrv.SetRegisterPoWBits(n.config.MobileVerifyCfg.RegisterPoWBits)
 		if err := httpSrv.Start(); err != nil {
 			log.Error("mobileverify: http server failed to start", "err", err)
 		} else {

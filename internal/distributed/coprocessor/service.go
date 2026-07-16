@@ -129,6 +129,31 @@ func (s *Service) SubmitTask(programHash types.Hash, input []byte, submitter typ
 	return s.tasks.Submit(programHash, input, submitter)
 }
 
+// RegisterProgram registers a program (with its verification key) so tasks can
+// be submitted against it. Convenience wrapper over the internal registry so
+// the RPC surface does not have to reach through Registry().
+func (s *Service) RegisterProgram(programHash types.Hash, verificationKey []byte, name string) error {
+	return s.registry.Register(programHash, verificationKey, name)
+}
+
+// SubmitTaskWithTier submits a task and routes it through a specific
+// verification tier. TierOptimistic requires a non-zero bond (bond+challenge
+// window); it is the tier a WASM/general provider uses when it cannot produce
+// a succinct ZK proof. Returns the task ID.
+func (s *Service) SubmitTaskWithTier(programHash types.Hash, input []byte, submitter types.Address, tier VerificationTier, bond uint64) (types.Hash, error) {
+	if tier == TierOptimistic && bond == 0 {
+		return types.Hash{}, ErrBondRequired
+	}
+	id, err := s.SubmitTask(programHash, input, submitter)
+	if err != nil {
+		return types.Hash{}, err
+	}
+	if err := s.tasks.SetTierAndBond(id, tier, bond); err != nil {
+		return types.Hash{}, err
+	}
+	return id, nil
+}
+
 // SubmitProof validates and records a proof for a task using tiered verification.
 // Uses atomic status check-and-update to prevent TOCTOU races.
 func (s *Service) SubmitProof(taskID types.Hash, proofData, publicOutputs []byte) (bool, error) {
