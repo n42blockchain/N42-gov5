@@ -9,7 +9,10 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/crypto/bls/common"
+	"github.com/n42blockchain/N42/lib/bmt"
 )
+
+func bmtVerify(root types.Hash, proof *bmt.Proof) bool { return bmt.VerifyProof(root, proof) }
 
 // device is a test mobile: a BLS key with registration helpers.
 type device struct {
@@ -47,21 +50,64 @@ func (d *device) receipt(blockHash types.Hash, number uint64, root types.Hash) *
 
 func h(b byte) types.Hash { var x types.Hash; x[31] = b; return x }
 
+// registerCommitted registers a device and commits the epoch so it can
+// attest, returning its committed index.
+func registerCommitted(t *testing.T, reg *Registry, pubkey [48]byte, pop [96]byte) MobileIndex {
+	t.Helper()
+	if _, _, err := reg.Register(pubkey, pop); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	reg.CommitEpoch()
+	idx, ok := reg.Lookup(pubkey)
+	if !ok {
+		t.Fatal("device not committed after CommitEpoch")
+	}
+	return idx
+}
+
 func TestRegistryPoPAndIdempotence(t *testing.T) {
 	reg := NewRegistry()
 	d := newDevice(t)
 
-	idx, err := reg.Register(d.pubkey, d.pop())
+	// Registration lands in pending — not committed, cannot attest yet.
+	if _, committed, err := reg.Register(d.pubkey, d.pop()); err != nil || committed {
+		t.Fatalf("first register = (committed=%v, %v), want (false, nil)", committed, err)
+	}
+	if reg.PendingCount() != 1 || reg.Count() != 0 {
+		t.Fatalf("pending=%d committed=%d, want 1/0", reg.PendingCount(), reg.Count())
+	}
+	// Re-register while pending is a no-op.
+	if _, committed, _ := reg.Register(d.pubkey, d.pop()); committed {
+		t.Fatal("re-register reported committed while pending")
+	}
+	if reg.PendingCount() != 1 {
+		t.Fatalf("pending grew on re-register: %d", reg.PendingCount())
+	}
+
+	// Commit: the device gets index 0 and a non-empty accumulator root.
+	root, n := reg.CommitEpoch()
+	if n != 1 || reg.Count() != 1 {
+		t.Fatalf("commit n=%d count=%d, want 1/1", n, reg.Count())
+	}
+	if root == (types.Hash{}) {
+		t.Fatal("committed root is empty")
+	}
+	idx, ok := reg.Lookup(d.pubkey)
+	if !ok || idx != 0 {
+		t.Fatalf("committed index = (%d, %v), want (0, true)", idx, ok)
+	}
+	// Re-register a committed key returns its index.
+	if ri, committed, _ := reg.Register(d.pubkey, d.pop()); !committed || ri != 0 {
+		t.Fatalf("re-register committed = (%d, %v), want (0, true)", ri, committed)
+	}
+
+	// Membership proof verifies against the root.
+	proof, err := reg.MembershipProof(d.pubkey)
 	if err != nil {
-		t.Fatalf("register: %v", err)
+		t.Fatalf("membership proof: %v", err)
 	}
-	// Idempotent: same key, same index.
-	idx2, err := reg.Register(d.pubkey, d.pop())
-	if err != nil || idx2 != idx {
-		t.Fatalf("re-register = (%d, %v), want (%d, nil)", idx2, err, idx)
-	}
-	if reg.Count() != 1 {
-		t.Fatalf("count = %d, want 1", reg.Count())
+	if !bmtVerify(reg.Root(), proof) {
+		t.Fatal("membership proof does not verify against the committed root")
 	}
 
 	// Rogue-key defense: a PoP signed by a DIFFERENT key must be rejected.
@@ -69,19 +115,14 @@ func TestRegistryPoPAndIdempotence(t *testing.T) {
 	var stolenPoP [96]byte
 	copy(stolenPoP[:], rogue.sk.Sign(PoPMessage(d.pubkey)).Marshal())
 	other := newDevice(t)
-	if _, err := reg.Register(other.pubkey, stolenPoP); err == nil {
+	if _, _, err := reg.Register(other.pubkey, stolenPoP); err == nil {
 		t.Fatal("registration with a foreign PoP accepted")
 	}
 
 	// A receipt signature must not double as a PoP (domain separation).
-	rcpt := d.receipt(h(1), 7, h(2))
-	if _, err := reg.Register(d.pubkey, rcpt.Signature); err == nil {
-		// Same key already registered — use a fresh key to make the check real.
-		t.Fatal("unexpected acceptance")
-	}
 	fresh := newDevice(t)
 	freshReceipt := fresh.receipt(h(1), 7, h(2))
-	if _, err := reg.Register(fresh.pubkey, freshReceipt.Signature); err == nil {
+	if _, _, err := reg.Register(fresh.pubkey, freshReceipt.Signature); err == nil {
 		t.Fatal("receipt signature accepted as PoP — domain separation broken")
 	}
 }
@@ -147,10 +188,11 @@ func TestCollectorEndToEnd(t *testing.T) {
 	devices := make([]*device, fleet)
 	for i := range devices {
 		devices[i] = newDevice(t)
-		if _, err := reg.Register(devices[i].pubkey, devices[i].pop()); err != nil {
+		if _, _, err := reg.Register(devices[i].pubkey, devices[i].pop()); err != nil {
 			t.Fatalf("register %d: %v", i, err)
 		}
 	}
+	reg.CommitEpoch() // all devices become committed and can attest
 
 	col := NewCollector(reg, blockHash, number)
 	for i, d := range devices {
@@ -220,9 +262,7 @@ func TestCollectorEndToEnd(t *testing.T) {
 func TestCollectorGates(t *testing.T) {
 	reg := NewRegistry()
 	registered := newDevice(t)
-	if _, err := reg.Register(registered.pubkey, registered.pop()); err != nil {
-		t.Fatal(err)
-	}
+	registerCommitted(t, reg, registered.pubkey, registered.pop())
 	col := NewCollector(reg, h(0xBB), 42)
 
 	// Unregistered device rejected even with a valid signature.

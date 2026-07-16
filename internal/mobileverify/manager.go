@@ -42,6 +42,10 @@ type WindowManager struct {
 	window time.Duration
 	certs  *CertStore
 
+	// onDivergence, when set, fires for every window that closes into more
+	// than one receipts-root cohort (the design §6 alarm).
+	onDivergence func(DivergenceAlarm)
+
 	mu      sync.Mutex
 	open    map[types.Hash]*Collector
 	timers  map[types.Hash]*time.Timer
@@ -62,6 +66,14 @@ func NewWindowManager(reg *Registry, lookup HeaderLookup, window time.Duration, 
 		open:   make(map[types.Hash]*Collector),
 		timers: make(map[types.Hash]*time.Timer),
 	}
+}
+
+// SetDivergenceSink installs the alarm callback fired on multi-cohort
+// windows. Set once at startup.
+func (m *WindowManager) SetDivergenceSink(fn func(DivergenceAlarm)) {
+	m.mu.Lock()
+	m.onDivergence = fn
+	m.mu.Unlock()
 }
 
 // Submit routes one receipt into its block's collection window,
@@ -104,6 +116,7 @@ func (m *WindowManager) closeWindow(hash types.Hash) {
 	col, ok := m.open[hash]
 	delete(m.open, hash)
 	delete(m.timers, hash)
+	sink := m.onDivergence
 	m.mu.Unlock()
 	if !ok {
 		return
@@ -119,6 +132,14 @@ func (m *WindowManager) closeWindow(hash types.Hash) {
 		// signal the pipeline exists for.
 		log.Warn("mobileverify: divergent attestation cohorts",
 			"block", certs[0].BlockNumber, "hash", hash.Hex()[:12], "cohorts", len(certs))
+		if sink != nil {
+			sink(DivergenceAlarm{
+				BlockHash:   hash,
+				BlockNumber: certs[0].BlockNumber,
+				Cohorts:     len(certs),
+				AtMs:        NowMs(),
+			})
+		}
 	}
 	log.Debug("mobileverify: window closed",
 		"block", certs[0].BlockNumber, "cohorts", len(certs))

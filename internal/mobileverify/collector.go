@@ -143,8 +143,8 @@ func (c *Collector) Close(nowMs uint64) ([]*MobileAttestationCert, error) {
 		certs = append(certs, cert)
 	}
 	sort.Slice(certs, func(i, j int) bool {
-		ci, _ := DecodeMask(certs[i].SignerMask, c.reg.Count())
-		cj, _ := DecodeMask(certs[j].SignerMask, c.reg.Count())
+		ci, _ := DecodeMask(certs[i].SignerMask, c.reg.IndexBound())
+		cj, _ := DecodeMask(certs[j].SignerMask, c.reg.IndexBound())
 		if len(ci) != len(cj) {
 			return len(ci) > len(cj)
 		}

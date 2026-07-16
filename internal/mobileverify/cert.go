@@ -38,7 +38,7 @@ var ErrBadCert = errors.New("mobileverify: certificate verification failed")
 // Verify because the canonical message is 72 bytes, not a 32-byte
 // digest).
 func (c *MobileAttestationCert) Verify(reg *Registry) ([]MobileIndex, error) {
-	indices, err := DecodeMask(c.SignerMask, reg.Count())
+	indices, err := DecodeMask(c.SignerMask, reg.IndexBound())
 	if err != nil {
 		return nil, err
 	}
