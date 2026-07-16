@@ -23,6 +23,11 @@ type MobileVerifyCfg struct {
 	// (design §5b target form); requires TorrentDistCfg to be enabled
 	// too — the mobile pipeline reuses that client.
 	TorrentEnabled bool `json:"torrent_enabled" yaml:"torrent_enabled"`
+	// RegisterPoWBits, when > 0, demands a registration proof-of-work of
+	// that many leading zero bits at the phone-facing register endpoint
+	// (design §7 item 2 — Sybil resistance without staking). 20 bits ≈ one
+	// million hashes ≈ sub-second on a modern phone. 0 disables (default).
+	RegisterPoWBits int `json:"register_pow_bits" yaml:"register_pow_bits"`
 }
 
 // DefaultMobileVerifyCfg returns the default (disabled) configuration.

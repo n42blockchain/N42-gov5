@@ -186,6 +186,13 @@ var consensusFlag = []cli.Flag{
 		Value:       "",
 		Destination: &DefaultConfig.MobileVerifyCfg.HTTPAddr,
 	},
+	&cli.IntFlag{
+		Name:        "mobileverify.pow-bits",
+		Usage:       "移动端注册工作量证明难度 (前导零bit; 0=关; ~20≈手机亚秒级; 抗Sybil无需质押)",
+		Category:    "MINER",
+		Value:       0,
+		Destination: &DefaultConfig.MobileVerifyCfg.RegisterPoWBits,
+	},
 	&cli.Uint64Flag{
 		Name:        "block-interval-ms",
 		Usage:       "出块间隔节流 (毫秒, 无长程漂移; 默认 2000=2秒一块; 设 0 关闭限制即飞速出块)",

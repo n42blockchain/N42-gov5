@@ -16,13 +16,17 @@ package evmsdk
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
+
+	"golang.org/x/crypto/sha3"
 
 	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/params"
@@ -73,26 +77,126 @@ func NewMobileVerifyClient(baseURL, privKeyHex string) (*MobileVerifyClient, err
 // Pubkey returns the device's BLS public key.
 func (c *MobileVerifyClient) Pubkey() [48]byte { return c.pubkey }
 
+// mobileVerifyPoWTag mirrors internal/mobileverify's registration
+// proof-of-work domain tag (same restatement discipline as the PoP tag;
+// TestPoWMessageMatchesSDK pins the bytes).
+var mobileVerifyPoWTag = []byte("n42/mobileverify/pow/v1")
+
+// PoWMessage is the byte string hashed for registration proof-of-work.
+func PoWMessage(pubkey [48]byte, nonce uint64) []byte {
+	msg := make([]byte, 0, len(mobileVerifyPoWTag)+48+8)
+	msg = append(msg, mobileVerifyPoWTag...)
+	msg = append(msg, pubkey[:]...)
+	var nb [8]byte
+	binary.BigEndian.PutUint64(nb[:], nonce)
+	return append(msg, nb[:]...)
+}
+
+// SolveRegistrationPoW grinds a nonce whose Keccak256(PoWMessage) digest has
+// at least `bits` leading zero bits — the server's Sybil gate. Bounded; a
+// modern phone solves 20 bits well under a second.
+func SolveRegistrationPoW(pubkey [48]byte, bits int) (uint64, error) {
+	if bits <= 0 {
+		return 0, nil
+	}
+	if bits > 32 {
+		return 0, fmt.Errorf("mobileverify: pow difficulty %d too high", bits)
+	}
+	budget := uint64(1) << uint(bits+4)
+	for nonce := uint64(0); nonce < budget; nonce++ {
+		h := sha3.NewLegacyKeccak256()
+		h.Write(PoWMessage(pubkey, nonce))
+		if leadingZeroBits(h.Sum(nil)) >= bits {
+			return nonce, nil
+		}
+	}
+	return 0, errors.New("mobileverify: pow budget exhausted")
+}
+
+func leadingZeroBits(b []byte) int {
+	n := 0
+	for _, c := range b {
+		if c == 0 {
+			n += 8
+			continue
+		}
+		for mask := byte(0x80); mask != 0; mask >>= 1 {
+			if c&mask != 0 {
+				return n
+			}
+			n++
+		}
+	}
+	return n
+}
+
 // Register submits the device's pubkey with a fresh proof of
 // possession and returns its stable MobileIndex. Idempotent: the server
 // returns the same index for a known key, so calling on every app
 // launch is safe.
 func (c *MobileVerifyClient) Register(ctx context.Context) (uint32, error) {
 	pop := c.sk.Sign(PoPSigningMessage(c.pubkey))
-	body, err := json.Marshal(map[string]string{
+	fields := map[string]string{
 		"pubkey": hex.EncodeToString(c.pubkey[:]),
 		"pop":    hex.EncodeToString(pop.Marshal()),
-	})
-	if err != nil {
-		return 0, err
 	}
 	var out struct {
 		Index uint32 `json:"index"`
 	}
-	if err := c.postJSON(ctx, "/mobileverify/register", body, &out); err != nil {
+	body, err := json.Marshal(fields)
+	if err != nil {
+		return 0, err
+	}
+	powBits, err := c.postRegister(ctx, body, &out)
+	if err == nil {
+		return out.Index, nil
+	}
+	if powBits <= 0 {
+		return 0, err
+	}
+	// Server demands a registration proof-of-work (HTTP 428 + pow_bits):
+	// solve locally and retry once with the nonce attached.
+	nonce, serr := SolveRegistrationPoW(c.pubkey, powBits)
+	if serr != nil {
+		return 0, serr
+	}
+	fields["pow_nonce"] = strconv.FormatUint(nonce, 10)
+	if body, err = json.Marshal(fields); err != nil {
+		return 0, err
+	}
+	if _, err = c.postRegister(ctx, body, &out); err != nil {
 		return 0, err
 	}
 	return out.Index, nil
+}
+
+// postRegister posts a registration and, on HTTP 428, surfaces the demanded
+// proof-of-work difficulty so Register can solve and retry.
+func (c *MobileVerifyClient) postRegister(ctx context.Context, body []byte, out any) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/mobileverify/register", bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusPreconditionRequired {
+		var pre struct {
+			Error   string `json:"error"`
+			PowBits int    `json:"pow_bits"`
+		}
+		if derr := json.NewDecoder(resp.Body).Decode(&pre); derr == nil && pre.PowBits > 0 {
+			return pre.PowBits, errors.New(pre.Error)
+		}
+		return 0, errors.New("registration precondition failed")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, httpErrorFrom(resp)
+	}
+	return 0, json.NewDecoder(resp.Body).Decode(out)
 }
 
 // FetchPacket downloads and decodes a block's StreamPacket.
