@@ -379,8 +379,8 @@ func (c *ChainConfig) IsBAL(time uint64) bool {
 // IsMobileAnchor returns whether time is at or past the mobile-attestation
 // accumulator anchor activation (n42 native chain only; eth-el chainspecs
 // leave MobileAnchorTime nil, so this is always false there). When enabled,
-// the n42 build/import paths bind the mobile-registry root into the header and
-// write it to a ring-buffer system contract.
+// the n42 leader binds the committed mobile-registry root into the header
+// (Header.MobileRegistryRoot) as a pure header commitment — no state write.
 func (c *ChainConfig) IsMobileAnchor(time uint64) bool {
 	return isForked(c.MobileAnchorTime, time)
 }
