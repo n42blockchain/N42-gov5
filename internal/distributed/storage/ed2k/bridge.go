@@ -5,6 +5,14 @@
 // HashMapping stores the content hash, the ed2k hash, size and name
 // so that ComputeAndMap can publish local content to eDonkey networks
 // and reverse lookups can recover the CAS key from an ed2k identifier.
+//
+// Deprecated: package ed2k is deprecated and not wired into any live path.
+// The eDonkey2000 network has no realistic 2026 use case for N42, Resolve()
+// has zero production callers, and the sole real content-distribution bridge
+// is internal/distributed/storage/torrent (BitTorrent swarm, reused by the
+// mobile attestation pipeline). Retained only so historical references
+// compile; do not build new features on it. See
+// project_distributed_compute_storage_wiring_plan for the decision.
 
 package ed2k
 

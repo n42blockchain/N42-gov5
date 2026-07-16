@@ -15,6 +15,16 @@
 // Redundancy in slice 1 is replication (r full copies). Erasure coding
 // (RS(k,n)) is a documented later slice; the economic/challenge/repair
 // machinery here is redundancy-scheme agnostic.
+//
+// Deprecated: package deal is not wired into any live path and has zero
+// external callers. Its economics overlap almost entirely with the
+// now-wired combination of internal/distributed/coprocessor (provider
+// stake + Verify-or-Slash settlement) and internal/distributed/storage/
+// torrent (content distribution). Rather than maintain a parallel
+// stake/challenge/repair stack, fold any genuinely unique storage-deal need
+// into coprocessor settlement when one is demonstrated. Retained for
+// reference only; do not build new features on it. See
+// project_distributed_compute_storage_wiring_plan for the decision.
 package deal
 
 import (
