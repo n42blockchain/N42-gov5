@@ -42,6 +42,7 @@ import (
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/node"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/params"
 )
 
 func appRun(ctx *cli.Context) error {
@@ -60,6 +61,13 @@ func appRun(ctx *cli.Context) error {
 		DefaultConfig.P2PCfg.BootstrapNodeAddr = p2pBootstrapNode.Value()
 		DefaultConfig.P2PCfg.DenyListCIDR = p2pDenyList.Value()
 		DefaultConfig.P2PCfg.DataDir = DefaultConfig.NodeCfg.DataDir
+
+		// Only applied in flag-driven mode (no --config file): a config file is
+		// treated as fully explicit, same precedent as the P2P overrides above.
+		// A bool zero-value cannot distinguish "config file said false" from
+		// "never mentioned it", so auto-enabling under a config file would risk
+		// silently overriding an explicit `enabled: false`.
+		applyN42NativeProductionDefaults(ctx)
 	}
 
 	if err := conf.ValidateAndApplyDefaults(&DefaultConfig); err != nil {
@@ -153,6 +161,57 @@ func appRun(ctx *cli.Context) error {
 	stack.Wait()
 
 	return nil
+}
+
+// applyN42NativeProductionDefaults flips mobileverify and coprocessor from
+// opt-in to opt-out for the n42 native chain profile — production n42
+// deployments should carry both by default; eth-el deployments are untouched
+// (mobile attestation is an n42-native feature and must not activate there,
+// see docs/mobile-attestation-design.md; coprocessor default-enable is scoped
+// the same way for consistency and because it has never been exercised on an
+// eth-el node). Only takes effect when the operator did not pass the flag
+// explicitly (ctx.IsSet), so --mobileverify=false / --coprocessor=false still
+// win. Coprocessor's non-Enabled fields are filled from
+// DefaultCoprocessorCfg() when this flips it on, mirroring the equivalent
+// fill ApplyDefaults already does for MobileVerifyCfg.
+func applyN42NativeProductionDefaults(ctx *cli.Context) {
+	profile, err := params.ResolveExecutionProfile(DefaultConfig.NodeCfg.Profile)
+	if err != nil || profile.IsEthereumEL() {
+		return
+	}
+	if !ctx.IsSet("mobileverify") {
+		DefaultConfig.MobileVerifyCfg.Enabled = true
+	}
+	if !ctx.IsSet("coprocessor") {
+		DefaultConfig.CoprocessorCfg.Enabled = true
+	}
+	if DefaultConfig.CoprocessorCfg.Enabled {
+		d := conf.DefaultCoprocessorCfg()
+		if DefaultConfig.CoprocessorCfg.MaxConcurrentTasks == 0 {
+			DefaultConfig.CoprocessorCfg.MaxConcurrentTasks = d.MaxConcurrentTasks
+		}
+		if DefaultConfig.CoprocessorCfg.TaskTimeoutSec == 0 {
+			DefaultConfig.CoprocessorCfg.TaskTimeoutSec = d.TaskTimeoutSec
+		}
+		if DefaultConfig.CoprocessorCfg.MaxPendingTasks == 0 {
+			DefaultConfig.CoprocessorCfg.MaxPendingTasks = d.MaxPendingTasks
+		}
+		if DefaultConfig.CoprocessorCfg.PruneIntervalSec == 0 {
+			DefaultConfig.CoprocessorCfg.PruneIntervalSec = d.PruneIntervalSec
+		}
+		if DefaultConfig.CoprocessorCfg.OptimisticChallengeSec == 0 {
+			DefaultConfig.CoprocessorCfg.OptimisticChallengeSec = d.OptimisticChallengeSec
+		}
+		if DefaultConfig.CoprocessorCfg.OptimisticBondWei == 0 {
+			DefaultConfig.CoprocessorCfg.OptimisticBondWei = d.OptimisticBondWei
+		}
+		if DefaultConfig.CoprocessorCfg.MinProviderStake == 0 {
+			DefaultConfig.CoprocessorCfg.MinProviderStake = d.MinProviderStake
+		}
+		if DefaultConfig.CoprocessorCfg.SlashPercentage == 0 {
+			DefaultConfig.CoprocessorCfg.SlashPercentage = d.SlashPercentage
+		}
+	}
 }
 
 // unlockAccounts unlocks any account specifically requested.
