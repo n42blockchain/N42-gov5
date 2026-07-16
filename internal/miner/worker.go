@@ -760,6 +760,16 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		} else {
 			target := w.pacingAnchorWall.Add(time.Duration(num-w.pacingAnchorNum) * interval)
 			wait := time.Until(target)
+			// Cap a single wait at one interval. With rotating leaders each node
+			// seals only every Nth block, so its own grid can demand up to
+			// N*interval in one go — long enough to trip the view timeout and
+			// start a TC storm. One-interval waits still pace the NETWORK to
+			// ~interval per block (every leader holds its slot), and the solo
+			// case (num advances by 1 per seal) is unaffected.
+			if wait > interval {
+				wait = interval
+				w.pacingAnchorWall, w.pacingAnchorNum = time.Now().Add(interval), num
+			}
 			// Re-anchor if we have fallen more than one full interval behind the
 			// grid (clock jump, long stall) so catch-up bursts stay bounded.
 			if wait < -interval {
