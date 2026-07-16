@@ -659,6 +659,18 @@ func (s *Service) handleSendToValidator(output EngineOutput) {
 								s.logVoteRouting()
 								return // direct send succeeded
 							}
+							// The stream failed — the mapped peer is gone or the
+							// connection is dead. Drop the stale mapping now so
+							// subsequent sends skip the doomed dial instead of
+							// re-timing-out per message; the next gossip message
+							// from that validator re-learns the fresh peer.ID
+							// (learnValidatorPeer). Safety is unaffected either
+							// way — this path already falls back to broadcast.
+							if addr, aerr := vs.GetAddress(output.Target); aerr == nil {
+								s.rotor.UnregisterValidator(addr)
+								log.Debug("hotstuff: dropped stale rotor peer mapping after failed direct send",
+									"validator", addr, "peer", pid)
+							}
 						}
 					}
 				}

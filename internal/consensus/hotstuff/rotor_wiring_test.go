@@ -123,3 +123,31 @@ func TestLearnValidatorPeerNilSafe(t *testing.T) {
 	noRotor := &Service{engine: svc.engine} // rotor == nil
 	noRotor.learnValidatorPeer(&ConsensusMsg{Type: MsgVote, Payload: &Vote{Voter: 0}}, peer.ID("peer-w"))
 }
+
+// TestUnregisterValidatorDropsMapping pins the disconnect-cleanup contract:
+// after a failed direct send the service drops the mapping via
+// UnregisterValidator, and the next message from that validator re-learns it.
+func TestUnregisterValidatorDropsMapping(t *testing.T) {
+	svc, setup := newRotorWiringService(t, 4)
+	const idx = ValidatorIndex(1)
+	const oldPeer = peer.ID("peer-old")
+	const newPeer = peer.ID("peer-new")
+
+	svc.learnValidatorPeer(&ConsensusMsg{Type: MsgVote, Payload: &Vote{Voter: idx}}, oldPeer)
+	addr, err := setup.vs.GetAddress(idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc.rotor.UnregisterValidator(addr)
+	if _, ok := svc.rotor.LookupPeer(setup.vs, idx); ok {
+		t.Fatal("mapping should be gone after UnregisterValidator")
+	}
+
+	// Re-learn from the validator's next message — self-healing.
+	svc.learnValidatorPeer(&ConsensusMsg{Type: MsgVote, Payload: &Vote{Voter: idx}}, newPeer)
+	pid, ok := svc.rotor.LookupPeer(setup.vs, idx)
+	if !ok || pid != newPeer {
+		t.Fatalf("re-learn failed: got (%q, %v), want (%q, true)", pid, ok, newPeer)
+	}
+}
