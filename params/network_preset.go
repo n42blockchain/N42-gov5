@@ -162,7 +162,11 @@ func ResolveNetworkPreset(chain, rawProfile string) (NetworkPreset, error) {
 		if err != nil {
 			return NetworkPreset{}, err
 		}
-		commitment := StateCommitmentPresetJMT
+		// N42 native custom chains use QMDB (twig-forest, Blake3) — JMT is
+		// deprecated for the custom chain and eth-el (eth-el uses the Ethereum
+		// MPT). QMDB is the production commitment for n42 native block
+		// production, so a fresh `--chain private` node bootstraps on it.
+		commitment := StateCommitmentPresetQMDB
 		if profile.IsEthereumEL() {
 			commitment = StateCommitmentPresetEthereumMPT
 		}
