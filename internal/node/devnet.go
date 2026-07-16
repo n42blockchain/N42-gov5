@@ -67,6 +67,11 @@ func devnetGenesisBlock(cfg *conf.Config) *conf.Genesis {
 		ContentStoreTime:  zero,
 		AIInferenceTime:   zero,
 		RandomnessTime:    zero,
+		// N42 native custom chains commit state with QMDB (twig-forest, Blake3);
+		// JMT is deprecated for the custom chain. Pinning it here makes the
+		// start-time state-scheme immutability guard expect qmdb for `--chain
+		// private`, matching a qmdb genesis.
+		StateScheme:       string(params.StateCommitmentPresetQMDB),
 		Consensus:         params.HotStuffConsensus,
 		HotStuff: &params.HotStuffConfig{
 			Period:            period,
