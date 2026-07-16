@@ -12,16 +12,41 @@ import (
 // answerable from the call site — it never is). Read-only queries over
 // the pipeline's stores; mutation happens only through the phone-facing
 // HTTP endpoints.
+// AnchorView is one persisted accumulator anchor, JSON-shaped for the RPC.
+type AnchorView struct {
+	Epoch     uint64 `json:"epoch"`
+	Root      string `json:"root"`
+	HeadBlock uint64 `json:"headBlock"`
+	TimeMs    uint64 `json:"timeMs"`
+}
+
 type API struct {
-	reg    *Registry
-	certs  *CertStore
-	wins   *WindowManager
-	alarms *AlarmBuffer
+	reg     *Registry
+	certs   *CertStore
+	wins    *WindowManager
+	alarms  *AlarmBuffer
+	anchors func(n int) []AnchorView // injected reader over the rawdb anchor log
 }
 
 // NewAPI creates the RPC service.
 func NewAPI(reg *Registry, certs *CertStore, wins *WindowManager, alarms *AlarmBuffer) *API {
 	return &API{reg: reg, certs: certs, wins: wins, alarms: alarms}
+}
+
+// SetAnchorReader injects the persistent anchor-log reader (kept out of
+// this package so it carries no rawdb dependency; the node wires it).
+func (a *API) SetAnchorReader(fn func(n int) []AnchorView) { a.anchors = fn }
+
+// GetAnchors returns up to n most-recent persisted accumulator anchors
+// (design §3.3), newest epoch first.
+func (a *API) GetAnchors(n int) []AnchorView {
+	if a.anchors == nil {
+		return []AnchorView{}
+	}
+	if n <= 0 || n > 512 {
+		n = 100
+	}
+	return a.anchors(n)
 }
 
 // GetCertificates returns a block's attestation certificates (majority
