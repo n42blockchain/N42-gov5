@@ -437,7 +437,11 @@ func (bc *BlockChain) Start() error {
 			}
 		}()
 	}
-	bc.wg.Add(3)
+	// One Add per goroutine started right here — an Add larger than the
+	// number of goroutines makes Close()'s wg.Wait() block forever and every
+	// shutdown die on the 30s watchdog (observed fleet-wide when the third
+	// loop was removed but the Add(3) stayed behind).
+	bc.wg.Add(2)
 	go bc.runLoop()
 	go bc.updateFutureBlocksLoop()
 	return nil
