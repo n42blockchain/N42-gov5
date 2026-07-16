@@ -217,6 +217,10 @@ type Node struct {
 	inferenceExecutor  *inference.WazeroExecutor       // AI inference WASM executor (nil if disabled)
 
 	mobilePacketService *mobileverify.PacketService // mobile attestation packet distribution (nil if disabled)
+	mobileRegistry      *mobileverify.Registry      // mobile BLS registry (nil if disabled)
+	mobileWindows       *mobileverify.WindowManager // receipt collection windows (nil if disabled)
+	mobileCertStore     *mobileverify.CertStore     // attestation certificates (nil if disabled)
+	mobileHTTPServer    *mobileverify.HTTPServer    // phone-facing HTTP surface (nil if disabled)
 
 	zkProverService *zkprover.Service    // ZK prover gRPC client (nil if disabled)
 	zkVerifier      *zkverifier.Verifier // ZK proof verifier (nil if disabled)
@@ -1658,6 +1662,15 @@ func (n *Node) Start() error {
 		n.rpcAPIs = append(n.rpcAPIs, api.OtterscanApis(n.api)...)
 	}
 
+	// mobileverify_* namespace: read-only queries over the attestation
+	// pipeline (its own namespace by design — never consensus input).
+	if n.mobileRegistry != nil {
+		n.rpcAPIs = append(n.rpcAPIs, jsonrpc.API{
+			Namespace: "mobileverify",
+			Service:   mobileverify.NewAPI(n.mobileRegistry, n.mobileCertStore, n.mobileWindows),
+		})
+	}
+
 	if rpcPlan.registerHotStuffAdminAPI {
 		hs, ok := resolveHotStuffEngine(n.engine)
 		if !ok {
@@ -2047,8 +2060,42 @@ func (n *Node) startMobileVerify() {
 			}
 		})
 	}
-	log.Info("Mobile attestation packet pipeline enabled",
-		"window", n.config.MobileVerifyCfg.PacketWindow, "topic", topic, "producer", n.miner != nil)
+
+	// Receipt intake: registry + collection windows + certificate store
+	// (design §3, §5c, §6). The header lookup pins receipts to blocks this
+	// node actually has — no allocation for arbitrary hashes.
+	n.mobileRegistry = mobileverify.NewRegistry()
+	n.mobileCertStore = mobileverify.NewCertStore(n.config.MobileVerifyCfg.CertBlocks)
+	lookup := func(hash types.Hash) (uint64, bool) {
+		var number uint64
+		var ok bool
+		_ = n.db.View(context.Background(), func(tx kv.Tx) error {
+			if num := rawdb.ReadHeaderNumber(tx, hash); num != nil {
+				number, ok = *num, true
+			}
+			return nil
+		})
+		return number, ok
+	}
+	n.mobileWindows = mobileverify.NewWindowManager(
+		n.mobileRegistry, lookup,
+		time.Duration(n.config.MobileVerifyCfg.CollectWindowSec)*time.Second,
+		n.mobileCertStore,
+	)
+
+	// Phone-facing HTTP surface — its own listener, never the RPC ports.
+	if addr := n.config.MobileVerifyCfg.HTTPAddr; addr != "" {
+		httpSrv := mobileverify.NewHTTPServer(addr, n.mobileRegistry, svc, n.mobileWindows, n.mobileCertStore)
+		if err := httpSrv.Start(); err != nil {
+			log.Error("mobileverify: http server failed to start", "err", err)
+		} else {
+			n.mobileHTTPServer = httpSrv
+		}
+	}
+
+	log.Info("Mobile attestation pipeline enabled",
+		"window", n.config.MobileVerifyCfg.PacketWindow, "topic", topic,
+		"producer", n.miner != nil, "http", n.config.MobileVerifyCfg.HTTPAddr)
 }
 
 func (n *Node) startDistributedRuntime() {
@@ -2535,6 +2582,14 @@ func (n *Node) stopServices() []error {
 			return nil
 		}},
 		{"Mobile attestation", func() error {
+			if n.mobileHTTPServer != nil {
+				n.mobileHTTPServer.Stop()
+				n.mobileHTTPServer = nil
+			}
+			if n.mobileWindows != nil {
+				n.mobileWindows.Stop()
+				n.mobileWindows = nil
+			}
 			if n.mobilePacketService != nil {
 				n.mobilePacketService.Stop()
 				n.mobilePacketService = nil
