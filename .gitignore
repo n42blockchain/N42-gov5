@@ -38,8 +38,11 @@ genesis*.json
 # N42 Node Runtime Files
 # ===========================================
 
-# Compiled binary
-n42
+# Compiled binary (actual output is build/bin/, already ignored above; this
+# is anchored to the exact legacy path, NOT a bare "n42" pattern — a bare
+# pattern matches any path component named "n42" anywhere, which silently
+# swallowed new files under the cmd/n42/ SOURCE directory, invisible in a
+# bare `git status`).
 cmd/n42/n42
 clef
 verify
