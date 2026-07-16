@@ -13,6 +13,12 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 )
 
+// decodePacketForTest decodes encoded packet bytes back to a
+// StreamPacket, for tests that need to feed PublishLocal.
+func decodePacketForTest(encoded []byte) (*evmsdk.StreamPacket, error) {
+	return evmsdk.DecodeStreamPacket(encoded)
+}
+
 func TestPacketCacheWindowEviction(t *testing.T) {
 	c := NewPacketCache(4)
 	mk := func(b byte) types.Hash { var h types.Hash; h[0] = b; return h }

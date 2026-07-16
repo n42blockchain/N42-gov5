@@ -38,6 +38,10 @@ type PacketService struct {
 	p2p   PacketPublisher
 	topic string
 
+	// Swarm distribution (design §5b target form): optional, via SetSeeder.
+	seeder Seeder
+	seeds  *packetSeeds
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -60,6 +64,7 @@ func (s *PacketService) PublishLocal(pkt *evmsdk.StreamPacket, blockNumber uint6
 		return fmt.Errorf("mobileverify: encode packet: %w", err)
 	}
 	s.cache.Put(pkt.BlockHash, blockNumber, encoded)
+	s.seedAsync(pkt.BlockHash, encoded)
 	if s.p2p == nil {
 		return nil // cache-only mode (no gossip wired)
 	}
@@ -113,6 +118,7 @@ func (s *PacketService) receiveLoop(sub *pubsub.Subscription) {
 			log.Debug("mobileverify: dropping invalid packet", "err", err)
 		} else {
 			s.cache.Put(hash, number, encoded)
+			s.seedAsync(hash, encoded)
 		}
 	}
 }
