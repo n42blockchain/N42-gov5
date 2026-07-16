@@ -278,7 +278,7 @@ func (h *Header) Marshal() ([]byte, error) {
 	// Format: [proto bytes][magic:4B][flags:1B][UncleHash:32B][field data...]
 	// flags: bit0=WithdrawalsHash, bit1=ParentBeaconRoot, bit2=RequestsHash,
 	//        bit3=BlobGasUsed present, bit4=ExcessBlobGas present,
-	//        bit5=BlockAccessListHash present
+	//        bit5=BlockAccessListHash present, bit6=MobileRegistryRoot present
 	var flags byte
 	trailer := make([]byte, 0, 4+1+32+32*4+8*2)
 	trailer = append(trailer, headerTrailerMagic[:]...)

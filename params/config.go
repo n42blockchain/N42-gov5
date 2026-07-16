@@ -265,15 +265,17 @@ type ChainConfig struct {
 	BALTime *big.Int `json:"balTime,omitempty"`
 
 	// N42 extension: mobile-attestation accumulator anchor activation
-	// (docs/mobile-attestation-design.md §3.5, phase 6c). When set, blocks
-	// carry the committed mobile-registry accumulator root in
-	// Header.MobileRegistryRoot, and a system call writes it into a
-	// ring-buffer system contract (the EIP-4788 beacon-root pattern), so the
-	// root becomes part of the state root — tamper-evident and state-proof
-	// verifiable. The root is a HEADER-PROVIDED value stamped by the leader;
+	// (docs/mobile-attestation-design.md §3.5, phase 6c). When set, the leader
+	// stamps the committed mobile-registry accumulator root into
+	// Header.MobileRegistryRoot. This is a HEADER commitment only — exactly the
+	// mechanism the 200K/512 committee uses (header hash-link + rawdb side
+	// table): the root is bound into the block hash via RLP, with NO state-trie
+	// write, so it needs no system contract, no genesis alloc and no replay to
+	// activate. The root is a HEADER-PROVIDED value stamped by the leader;
 	// followers store it verbatim (no recomputation), so it can never fork
-	// consensus. Nil = disabled (header field omitted from RLP, pre-fork
-	// block hashes byte-identical). Keep nil until validated on a test chain.
+	// consensus. The full history lives in the rawdb anchor log (phase 6b).
+	// Nil = disabled (header field omitted from RLP, pre-fork block hashes
+	// byte-identical). Keep nil until validated on a test chain.
 	MobileAnchorTime *big.Int `json:"mobileAnchorTime,omitempty"`
 
 	// StateScheme determines the state commitment algorithm for Header.Root.
