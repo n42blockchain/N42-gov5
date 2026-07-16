@@ -89,6 +89,13 @@ production-hardened**. Everything new in this design is server-side.
 
 ### 3.0 Three identity tiers (why this is not the staking registry)
 
+**Scope: this whole system is a feature of the N42 native chain (HotStuff
+consensus), NOT eth-el.** The eth-el `mobile_minimal` stateless client is
+a separate, complementary capability (see §11 non-goals); nothing here
+runs on the eth-el execution paths. The consensus-path anchor (§3.5) is
+wired only into the n42 native miner and importer and is dormant on
+eth-el by fork gate.
+
 The chain has three distinct identity spaces; do not conflate them:
 
 - **T1 — staked consensus validators.** ETH-style stake (deposit
@@ -198,14 +205,36 @@ Two distinct things, only the first of which is built:
   is a durable, per-node, cross-checkable record: every node's anchor log
   should converge, and a divergence between nodes' logs is itself a
   signal. It is **not** in the state root.
-- **State-root-committed anchor (deferred, consensus-path).** Committing
-  the root into consensus state — the EIP-4788 pattern: an optional header
-  field the leader stamps and a system call writes to a system-contract
-  ring buffer, followers storing the header-provided bytes verbatim (no
-  recomputation, so it cannot fork), OR a regular transaction to a
-  registry contract. Either form changes the consensus-critical block
-  path and is deliberately NOT wired onto a live chain here — it deserves
-  an isolated hardening pass, not a change slipped into a running soak.
+- **State-root-committed anchor (phase 6c, built in an isolated worktree,
+  n42 native chain only, DORMANT).** Committing the root into consensus
+  state via the EIP-4788 pattern:
+  - An optional header field `Header.MobileRegistryRoot`
+    (`rlp:"optional,nil"`, trailer flag 0x40) the leader stamps from its
+    committed registry; nil ⇒ omitted ⇒ pre-fork/eth-el header hashes
+    byte-identical.
+  - A system call `ProcessMobileRegistryAnchor` that writes the
+    header-provided root into an 8191-slot ring-buffer system contract at
+    `MobileAnchorAddress` — the SAME generic bytecode as EIP-4788 beacon
+    roots, reused verbatim (the write is a direct `SetState` like beacon;
+    the code makes the account non-empty so EIP-158 does not prune it, and
+    provides read access). n42 native chainspecs that activate the fork
+    MUST alloc this code at genesis.
+  - **No-fork guarantee**: the call is a pure function of the header
+    field. Build stamps + writes; import writes the SAME header field.
+    Followers never recompute the root, so their state write is identical
+    — a wrong or stale root cannot fork consensus (its correctness is
+    checked off-chain against the gossiped membership, exactly like the
+    beacon root's correctness is not EL-validated).
+  - **n42 native ONLY, not eth-el.** The system call is wired only into
+    the n42 miner (`worker.commitWork`) and `StateProcessor.Process`
+    (native import) — deliberately NOT into the shared
+    `ProcessExecutionBlockStart` that the three eth-el paths
+    (`engine_state_adapter`, `ethel.ProcessBlock`,
+    `executor_parallel`) call. The `MobileAnchorTime` fork gate (nil on
+    eth-el chainspecs) is the second layer of separation.
+  - **Dormant.** `MobileAnchorTime` is nil everywhere; the feature is
+    byte-inert until a test chain sets it and validates cross-node
+    determinism. Not deployed to the live soak.
 
 ## 4. Component 2 — Leader produces verification data with the block
 
@@ -356,7 +385,8 @@ leader seals block
 | 5 | CDN deployment recipe; torrent-swarm distribution (reuse storage/torrent) | |
 | 6 | Accumulator registry (BMT root), gossip replication, epoch committer, divergence alarms | **done** |
 | 6b | Key lifecycle (revoke / rotate / inactivity prune); persistent anchor log + `mobileverify_getAnchors` | **done** |
-| 6c | State-root-committed anchor (header field + system call, or registry-contract tx) — the consensus-path step, isolated | |
+| 6c | State-root-committed anchor: `Header.MobileRegistryRoot` + `ProcessMobileRegistryAnchor` system call (n42 native only, EIP-4788 pattern, fork-gated dormant) | **done (worktree, dormant)** |
+| 6d | Genesis alloc of `MobileAnchorAddress` code + test-chain activation + cross-node determinism validation; then live rollout | |
 
 Each phase lands independently testable; nothing activates outside the
 `mobileverify` namespace until phase 3 wires endpoints, and consensus

@@ -38,6 +38,26 @@ var (
 	// BeaconRootsAddress is the EIP-4788 system contract that stores parent beacon roots.
 	BeaconRootsAddress = types.HexToAddress("0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02")
 
+	// MobileAnchorAddress is the N42-native ring-buffer system contract that
+	// stores the mobile-attestation accumulator root per block (phase 6c),
+	// following the EIP-4788 storage pattern. N42 native chain only — never
+	// written on eth-el (the MobileAnchorTime fork is nil there). The 0x…4d6231
+	// suffix is ASCII "Mb1".
+	MobileAnchorAddress = types.HexToAddress("0x0000000000000000000000000000000000004d6231")
+
+	// MobileAnchorHistoryBufferLen is the ring-buffer size of the mobile-anchor
+	// system contract, mirroring the EIP-4788 8191-slot design.
+	MobileAnchorHistoryBufferLen = 8191
+
+	// MobileAnchorCode is the deployed bytecode of the mobile-anchor ring-buffer
+	// contract — the SAME generic 8191-slot ring buffer as EIP-4788, reused
+	// verbatim (writes go through a direct SetState in the system call, exactly
+	// like beacon roots; the bytecode provides read access and, crucially,
+	// makes the account non-empty so EIP-158 does not prune its storage). N42
+	// native chainspecs that activate MobileAnchorTime MUST alloc this code at
+	// MobileAnchorAddress in genesis.
+	MobileAnchorCode = types.Hex2Bytes("3373fffffffffffffffffffffffffffffffffffffffe14604d57602036146024575f5ffd5b5f35801560495762001fff810690815414603c575f5ffd5b62001fff01545f5260205ff35b5f5ffd5b62001fff42064281555f359062001fff015500")
+
 	// BeaconRootsCode is the canonical deployed bytecode of the EIP-4788
 	// beacon roots contract.
 	BeaconRootsCode = types.Hex2Bytes("3373fffffffffffffffffffffffffffffffffffffffe14604d57602036146024575f5ffd5b5f35801560495762001fff810690815414603c575f5ffd5b62001fff01545f5260205ff35b5f5ffd5b62001fff42064281555f359062001fff015500")

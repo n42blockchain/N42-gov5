@@ -111,6 +111,14 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 
 	noop := state.NewNoopWriter()
 
+	// N42 native chain (phase 6c): apply the mobile-registry anchor system call
+	// so the import recomputes the identical state write the leader made. Wired
+	// only on this native import path — NOT in the shared ProcessExecutionBlockStart
+	// the eth-el paths call. Dormant unless the MobileAnchor fork is active.
+	if err := ProcessMobileRegistryAnchor(chainConfig, ibs, concreteHeader, noop); err != nil {
+		return nil, nil, nil, 0, err
+	}
+
 	// EIP-7928: when the BAL fork is active, wrap the per-tx finalize writer to
 	// harvest each transaction's post-execution access changes, then verify the
 	// recomputed block-access-list hash against the header below. The wrapper is a

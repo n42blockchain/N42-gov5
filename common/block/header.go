@@ -98,6 +98,14 @@ type Header struct {
 	// it entirely so pre-fork header hashes are byte-identical.
 	BlockAccessListHash *types.Hash `json:"blockAccessListHash,omitempty" rlp:"optional,nil"` // 22 NEW
 
+	// --- N42 native chain: mobile-attestation accumulator anchor (phase 6c) ---
+	// The committed mobile-registry BMT root, stamped by the leader when the
+	// MobileAnchor fork is active. Present only on the n42 native chain; nil on
+	// eth-el (its chainspec never activates the fork), in which case the
+	// rlp:"optional,nil" tag omits it so pre-fork / eth-el header hashes are
+	// byte-identical.
+	MobileRegistryRoot *types.Hash `json:"mobileRegistryRoot,omitempty" rlp:"optional,nil"` // 23 NEW
+
 	hash atomic.Value
 }
 
@@ -158,7 +166,8 @@ func (h *Header) rlpHash() types.Hash {
 // IsLegacyHeader returns true for pre-Shanghai headers (no post-Shanghai fields set).
 func IsLegacyHeader(h *Header) bool {
 	if h.WithdrawalsHash != nil || h.BlobGasUsed != nil || h.ExcessBlobGas != nil ||
-		h.ParentBeaconRoot != nil || h.RequestsHash != nil || h.BlockAccessListHash != nil {
+		h.ParentBeaconRoot != nil || h.RequestsHash != nil || h.BlockAccessListHash != nil ||
+		h.MobileRegistryRoot != nil {
 		return false
 	}
 	return true
@@ -304,6 +313,10 @@ func (h *Header) Marshal() ([]byte, error) {
 		flags |= 0x20
 		trailer = append(trailer, h.BlockAccessListHash[:]...)
 	}
+	if h.MobileRegistryRoot != nil {
+		flags |= 0x40
+		trailer = append(trailer, h.MobileRegistryRoot[:]...)
+	}
 	trailer[flagPos] = flags
 
 	// Append 4-byte proto length at end of trailer for precise split on read.
@@ -389,6 +402,12 @@ func (h *Header) parseTrailer(t []byte) {
 		pos += 32
 		h.BlockAccessListHash = &blah
 	}
+	if flags&0x40 != 0 && pos+32 <= len(t) {
+		var mrr types.Hash
+		copy(mrr[:], t[pos:])
+		pos += 32
+		h.MobileRegistryRoot = &mrr
+	}
 	_ = pos
 }
 
@@ -420,6 +439,7 @@ func CopyHeader(h *Header) *Header {
 	cpy.ParentBeaconRoot = cloneHashPtr(h.ParentBeaconRoot)
 	cpy.RequestsHash = cloneHashPtr(h.RequestsHash)
 	cpy.BlockAccessListHash = cloneHashPtr(h.BlockAccessListHash)
+	cpy.MobileRegistryRoot = cloneHashPtr(h.MobileRegistryRoot)
 	return &cpy
 }
 

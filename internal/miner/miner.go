@@ -247,3 +247,10 @@ func (m *Miner) BundlePool() *builder.BundlePool {
 func (m *Miner) SetMobilePacketSink(sink func(pkt *evmsdk.StreamPacket, blockNumber uint64)) {
 	m.worker.mobilePacketSink = sink
 }
+
+// SetMobileAnchorRoot wires the provider of the committed mobile-registry
+// accumulator root the leader stamps into the header when the MobileAnchor
+// fork is active (n42 native chain, phase 6c). Must be set before building.
+func (m *Miner) SetMobileAnchorRoot(fn func() *types.Hash) {
+	m.worker.mobileAnchorRoot = fn
+}
