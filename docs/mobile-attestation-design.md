@@ -205,36 +205,39 @@ Two distinct things, only the first of which is built:
   is a durable, per-node, cross-checkable record: every node's anchor log
   should converge, and a divergence between nodes' logs is itself a
   signal. It is **not** in the state root.
-- **State-root-committed anchor (phase 6c, built in an isolated worktree,
-  n42 native chain only, DORMANT).** Committing the root into consensus
-  state via the EIP-4788 pattern:
+- **Header-committed anchor (phase 6c, n42 native chain only, DORMANT).**
+  Bind the committed accumulator root into the block hash — the SAME
+  mechanism the 200K/512 CommitteePool uses, so activation needs no state
+  contract, no genesis alloc, and **no replay**:
   - An optional header field `Header.MobileRegistryRoot`
     (`rlp:"optional,nil"`, trailer flag 0x40) the leader stamps from its
-    committed registry; nil ⇒ omitted ⇒ pre-fork/eth-el header hashes
-    byte-identical.
-  - A system call `ProcessMobileRegistryAnchor` that writes the
-    header-provided root into an 8191-slot ring-buffer system contract at
-    `MobileAnchorAddress` — the SAME generic bytecode as EIP-4788 beacon
-    roots, reused verbatim (the write is a direct `SetState` like beacon;
-    the code makes the account non-empty so EIP-158 does not prune it, and
-    provides read access). n42 native chainspecs that activate the fork
-    MUST alloc this code at genesis.
-  - **No-fork guarantee**: the call is a pure function of the header
-    field. Build stamps + writes; import writes the SAME header field.
-    Followers never recompute the root, so their state write is identical
-    — a wrong or stale root cannot fork consensus (its correctness is
-    checked off-chain against the gossiped membership, exactly like the
-    beacon root's correctness is not EL-validated).
-  - **n42 native ONLY, not eth-el.** The system call is wired only into
-    the n42 miner (`worker.commitWork`) and `StateProcessor.Process`
-    (native import) — deliberately NOT into the shared
-    `ProcessExecutionBlockStart` that the three eth-el paths
-    (`engine_state_adapter`, `ethel.ProcessBlock`,
-    `executor_parallel`) call. The `MobileAnchorTime` fork gate (nil on
-    eth-el chainspecs) is the second layer of separation.
-  - **Dormant.** `MobileAnchorTime` is nil everywhere; the feature is
-    byte-inert until a test chain sets it and validates cross-node
-    determinism. Not deployed to the live soak.
+    committed registry when `IsMobileAnchor` is active; nil ⇒ omitted ⇒
+    pre-fork/eth-el header hashes byte-identical. It participates in the
+    consensus block hash via RLP — tamper-evident and light-client
+    readable straight from the header, exactly like the committee's
+    `ParentBeaconRoot = Blake3(parent CE)` link.
+  - **No state-trie write.** Stamping the header does NOT touch the state
+    root: there is no system contract, no `SetState`, nothing to
+    genesis-alloc or self-deploy. This is why activation is just a
+    chainspec flag, like turning on the committee — no chain replay.
+    (An earlier draft mirrored EIP-4788 with a ring-buffer system
+    contract; that was over-engineering — the committee proves a header
+    commitment plus the rawdb side-table is sufficient, and it was the
+    state-trie contract that would have needed genesis-alloc/replay. It
+    was removed.)
+  - **Persistence** of the full root history is the phase-6b rawdb anchor
+    log (`MobileRegistryAnchors`), the analogue of the committee's
+    `ConsensusEvidence` MDBX table.
+  - **No-fork guarantee**: the header field is carried, not consensus-
+    validated for correctness (like `ParentBeaconRoot`). Build stamps it,
+    import carries it in the block hash — no recomputation, no divergence.
+    Correctness is checked off-chain against gossiped membership.
+  - **n42 native ONLY, not eth-el.** Stamped only in the n42 miner
+    (`worker.commitWork`), gated on `IsMobileAnchor`; eth-el chainspecs
+    leave `MobileAnchorTime` nil so the field is never set there.
+  - **Dormant.** `MobileAnchorTime` is nil everywhere; byte-inert until a
+    test chain sets it. Activation = set the flag on the chainspec, no
+    replay — identical to enabling the CommitteePool.
 
 ## 4. Component 2 — Leader produces verification data with the block
 
@@ -385,8 +388,8 @@ leader seals block
 | 5 | CDN deployment recipe; torrent-swarm distribution (reuse storage/torrent) | |
 | 6 | Accumulator registry (BMT root), gossip replication, epoch committer, divergence alarms | **done** |
 | 6b | Key lifecycle (revoke / rotate / inactivity prune); persistent anchor log + `mobileverify_getAnchors` | **done** |
-| 6c | State-root-committed anchor: `Header.MobileRegistryRoot` + `ProcessMobileRegistryAnchor` system call (n42 native only, EIP-4788 pattern, fork-gated dormant) | **done (worktree, dormant)** |
-| 6d | Genesis alloc of `MobileAnchorAddress` code + test-chain activation + cross-node determinism validation; then live rollout | |
+| 6c | Header-committed anchor: `Header.MobileRegistryRoot` stamped by the leader (n42 native only, committee-style header commitment, fork-gated dormant, NO state contract / NO replay) | **done (worktree, dormant)** |
+| 6d | Set `MobileAnchorTime` on a test chainspec, validate cross-node determinism, then live rollout — no genesis alloc, no replay (just the flag, like enabling CommitteePool) | |
 
 Each phase lands independently testable; nothing activates outside the
 `mobileverify` namespace until phase 3 wires endpoints, and consensus

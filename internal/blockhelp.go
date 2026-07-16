@@ -190,45 +190,6 @@ func processBeaconBlockRoot(beaconRoot *types.Hash, chainConfig *params.ChainCon
 	return ibs.FinalizeTx(rules, writer)
 }
 
-// ProcessMobileRegistryAnchor writes the header's mobile-registry accumulator
-// root into the N42-native ring-buffer system contract (phase 6c), mirroring
-// the EIP-4788 beacon-root pattern. The root is a HEADER-PROVIDED value: the
-// leader stamps header.MobileRegistryRoot from its committed registry, and
-// this call writes exactly that value — build and import both write the same
-// header field, so the state write is identical on every node and can never
-// fork consensus.
-//
-// N42 native chain ONLY. This is deliberately NOT part of the shared
-// ProcessExecutionBlockStart (which the eth-el paths also call): it is wired
-// only into the n42 miner and StateProcessor.Process. The IsMobileAnchor fork
-// gate (nil on eth-el chainspecs) is the second layer of separation.
-func ProcessMobileRegistryAnchor(chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, writer state.StateWriter) error {
-	if chainConfig == nil || ibs == nil || header == nil || header.MobileRegistryRoot == nil {
-		return nil
-	}
-	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
-	if err != nil {
-		return err
-	}
-	num := headerNumber.Uint64()
-	rules := chainConfig.RulesWithTimestamp(num, header.Time)
-	if rules == nil || !rules.IsMobileAnchor {
-		return nil
-	}
-
-	buf := uint64(params.MobileAnchorHistoryBufferLen)
-	numberSlot := types.Hash{}
-	uint256.NewInt(num % buf).WriteToSlice(numberSlot[:])
-	rootSlot := types.Hash{}
-	uint256.NewInt((num % buf) + buf).WriteToSlice(rootSlot[:])
-
-	numberValue := uint256.NewInt(num)
-	rootValue := uint256.NewInt(0).SetBytes(header.MobileRegistryRoot[:])
-	ibs.SetState(params.MobileAnchorAddress, &numberSlot, *numberValue)
-	ibs.SetState(params.MobileAnchorAddress, &rootSlot, *rootValue)
-	return ibs.FinalizeTx(rules, writer)
-}
-
 // ProcessExecutionBlockStart applies shared start-of-block execution hooks in
 // canonical order.
 func ProcessExecutionBlockStart(parentBeaconRoot *types.Hash, chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, engine consensus.Engine) error {
