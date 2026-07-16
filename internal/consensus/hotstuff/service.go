@@ -655,6 +655,8 @@ func (s *Service) handleSendToValidator(output EngineOutput) {
 						enc := s.p2p.Encoding()
 						if _, encErr := enc.EncodeGossip(&buf, &rawSSZMarshaler{data: data}); encErr == nil {
 							if sendErr := sender.SendRawBytes(s.ctx, buf.Bytes(), s.rpcTopic, pid); sendErr == nil {
+								s.rotor.RecordVoteDirect()
+								s.logVoteRouting()
 								return // direct send succeeded
 							}
 						}
@@ -665,7 +667,24 @@ func (s *Service) handleSendToValidator(output EngineOutput) {
 	}
 
 	// Fallback to gossip broadcast.
+	if s.rotor != nil {
+		s.rotor.RecordVoteFallback()
+		s.logVoteRouting()
+	}
 	s.handleBroadcast(output)
+}
+
+// logVoteRouting periodically reports the Rotor direct-send vs fallback ratio
+// for targeted vote/timeout sends, so a field deployment can confirm the
+// RegisterValidator wiring (see learnValidatorPeer) is actually resolving
+// peers — instead of silently falling back to full gossip broadcast for every
+// message, as it did before that fix.
+func (s *Service) logVoteRouting() {
+	direct, fallback := s.rotor.VoteStats()
+	total := direct + fallback
+	if total <= 5 || total%200 == 0 {
+		log.Info("hotstuff: vote routing stats", "direct", direct, "fallback", fallback)
+	}
 }
 
 // subscribeMessages subscribes to the HotStuff gossip topic and processes incoming messages.
@@ -704,11 +723,11 @@ func (s *Service) subscribeMessages() {
 		if msgCount <= 5 || msgCount%100 == 0 {
 			log.Info("hotstuff: received gossip message", "count", msgCount, "bytes", len(msg.Data))
 		}
-		s.processGossipMessage(msg.Data, enc)
+		s.processGossipMessage(msg.Data, enc, msg.ReceivedFrom)
 	}
 }
 
-func (s *Service) processGossipMessage(data []byte, enc encoder.NetworkEncoding) {
+func (s *Service) processGossipMessage(data []byte, enc encoder.NetworkEncoding, from peer.ID) {
 	// Decompress snappy.
 	raw := &rawSSZMarshaler{}
 	if err := enc.DecodeGossip(data, raw); err != nil {
@@ -727,11 +746,85 @@ func (s *Service) processGossipMessage(data []byte, enc encoder.NetworkEncoding)
 		return
 	}
 
+	// Learn the (validator address, peer.ID) mapping regardless of whether the
+	// engine ends up accepting this specific message. Gating registration on
+	// ProcessEvent's success made it depend on view-timing races (a gossiped
+	// vote/timeout for a view we've already advanced past returns a non-nil
+	// ViewMismatchError even though the message is perfectly legitimate and its
+	// sender/peer.ID pairing is still true) — in practice that starved the
+	// registry and every send stayed on the fallback broadcast path. The
+	// mapping only affects routing, not consensus safety (see learnValidatorPeer),
+	// so learning it from any successfully decoded message is sufficient.
+	s.learnValidatorPeer(consensusMsg, from)
+
 	if err := ce.ProcessEvent(ConsensusEvent{
 		Type: EventMessage,
 		Msg:  *consensusMsg,
 	}); err != nil {
 		log.Debug("hotstuff: message processing error", "type", consensusMsg.Type, "err", err)
+	}
+}
+
+// messageSenderIndex extracts the originating validator index from a decoded
+// consensus message, for the message types that carry one. Used by
+// learnValidatorPeer to discover which peer.ID a validator address maps to.
+func messageSenderIndex(msg *ConsensusMsg) (ValidatorIndex, bool) {
+	if msg == nil {
+		return 0, false
+	}
+	switch p := msg.Payload.(type) {
+	case *Proposal:
+		return p.Proposer, true
+	case *Vote:
+		return p.Voter, true
+	case *CommitVote:
+		return p.Voter, true
+	case *TimeoutMessage:
+		return p.Sender, true
+	case *NewViewMsg:
+		return p.Leader, true
+	default:
+		return 0, false
+	}
+}
+
+// learnValidatorPeer records the (validator address, peer.ID) mapping Rotor
+// needs for direct sends, inferred from a successfully processed consensus
+// message: the message names its sender's validator index, and the pubsub/
+// relay-stream layer tells us which peer.ID delivered it. This is the only
+// call site that ever feeds Rotor's peer registry — without it the registry
+// stays empty forever (as it did before this fix), LookupPeer always misses,
+// and every OutputSendToValidator falls back to full gossip broadcast instead
+// of the intended leader-direct/relay path.
+//
+// Precision caveat: on the gossip path, `from` is pubsub's ReceivedFrom — the
+// LAST-HOP propagator, which on a sparse mesh may not be the message's author
+// (on the direct relay-stream path it always is). A mis-mapping is not a
+// safety issue: consensus messages are signature-verified regardless of the
+// delivering peer, and handleSendToValidator falls back to broadcast when the
+// direct send errors — a bad entry costs one wasted send attempt until the
+// author's own next direct/adjacent message overwrites it.
+func (s *Service) learnValidatorPeer(msg *ConsensusMsg, from peer.ID) {
+	if s.rotor == nil || from == "" {
+		return
+	}
+	idx, ok := messageSenderIndex(msg)
+	if !ok {
+		return
+	}
+	ce := s.engine.Engine()
+	if ce == nil {
+		return
+	}
+	addr, err := ce.CurrentValidatorSet().GetAddress(idx)
+	if err != nil {
+		return
+	}
+	s.rotor.RegisterValidator(addr, from)
+
+	events := s.rotor.RegistrationEvents()
+	if events <= 10 || events%200 == 0 {
+		log.Info("hotstuff: rotor peer registry", "events", events, "knownPeers", s.rotor.RegisteredPeerCount())
 	}
 }
 
@@ -882,7 +975,7 @@ func (s *Service) setupRotorStreamHandler() {
 	sender.SetStreamHandler(s.rpcTopic, func(data []byte, from peer.ID) {
 		// Process the message as if received via gossip.
 		enc := s.p2p.Encoding()
-		s.processGossipMessage(data, enc)
+		s.processGossipMessage(data, enc, from)
 
 		// If we are a relay for the current view, forward to our assigned targets.
 		if s.rotor == nil || !s.rotor.Enabled() {

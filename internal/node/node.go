@@ -1565,7 +1565,7 @@ func (n *Node) Start() error {
 		forkDigest := utils.ToBytes4(n.p2pGenesisHash[:])
 		gossipTopic := fmt.Sprintf(p2p.HotStuffConsensusTopicFormat, forkDigest)
 		rpcTopic := p2p.RPCHotStuffDirectTopicV1
-		svc := hotstuff.NewService(hs, n.p2p, n.db, gossipTopic, rpcTopic)
+		svc := hotstuff.NewService(hs, newHotstuffP2PAdapter(n.p2p), n.db, gossipTopic, rpcTopic)
 		svc.SetBlockProducer(n.miner)
 		if err := svc.Start(); err != nil {
 			log.Warn("HotStuff service failed to start", "err", err)
