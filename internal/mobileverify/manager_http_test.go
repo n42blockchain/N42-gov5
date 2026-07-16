@@ -27,9 +27,7 @@ func fixedLookup(known map[types.Hash]uint64) HeaderLookup {
 func TestWindowManagerLifecycle(t *testing.T) {
 	reg := NewRegistry()
 	d := newDevice(t)
-	if _, err := reg.Register(d.pubkey, d.pop()); err != nil {
-		t.Fatal(err)
-	}
+	registerCommitted(t, reg, d.pubkey, d.pop())
 	blockHash := h(0x77)
 	store := NewCertStore(8)
 	m := NewWindowManager(reg, fixedLookup(map[types.Hash]uint64{blockHash: 99}), 50*time.Millisecond, store)
@@ -119,6 +117,9 @@ func TestHTTPServerEndToEnd(t *testing.T) {
 		t.Fatalf("register: %v status=%v", err, resp.Status)
 	}
 	resp.Body.Close()
+
+	// Registration lands in pending; commit the epoch so the device can attest.
+	reg.CommitEpoch()
 
 	// Bad PoP is refused.
 	badBody, _ := json.Marshal(registerRequest{

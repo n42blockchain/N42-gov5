@@ -71,6 +71,9 @@ func (s *Service) topicScoreParams(topic string) (*pubsub.TopicScoreParams, erro
 		// (Without a branch here, scoring registration rejects the
 		// subscription outright — see the transaction-topic case below.)
 		return messagingTopicParams(), nil
+	case strings.Contains(topic, GossipMobileRegistrationMessage):
+		// Mobile registration announcements: same lightweight scoring.
+		return messagingTopicParams(), nil
 	case strings.Contains(topic, GossipTransactionMessage):
 		// Same lightweight, non-critical scoring shape as the messaging topics:
 		// mempool transactions are high-frequency best-effort traffic. Without

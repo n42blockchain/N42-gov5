@@ -35,10 +35,15 @@ type HTTPServer struct {
 	packets *PacketService
 	windows *WindowManager
 	certs   *CertStore
+	alarms  *AlarmBuffer
 
 	srv     *http.Server
 	regRate *ipRateLimiter
 }
+
+// SetAlarms wires the divergence alarm buffer so GET /mobileverify/alarms
+// can serve it. Optional; nil alarms just report empty.
+func (s *HTTPServer) SetAlarms(a *AlarmBuffer) { s.alarms = a }
 
 // NewHTTPServer wires the server against the pipeline components.
 func NewHTTPServer(addr string, reg *Registry, packets *PacketService, windows *WindowManager, certs *CertStore) *HTTPServer {
@@ -55,6 +60,7 @@ func NewHTTPServer(addr string, reg *Registry, packets *PacketService, windows *
 	mux.HandleFunc("/mobileverify/receipt", s.handleReceipt)
 	mux.HandleFunc("/mobileverify/cert/", s.handleCert)
 	mux.HandleFunc("/mobileverify/magnet/", s.handleMagnet)
+	mux.HandleFunc("/mobileverify/alarms", s.handleAlarms)
 	mux.HandleFunc("/mobileverify/health", s.handleHealth)
 	s.srv = &http.Server{
 		Addr:              addr,
@@ -114,12 +120,14 @@ func (s *HTTPServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "pubkey must be 48 hex bytes, pop 96")
 		return
 	}
-	idx, err := s.reg.Register(pubkey, pop)
+	idx, committed, err := s.reg.Register(pubkey, pop)
 	if err != nil {
 		httpError(w, http.StatusForbidden, err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{"index": idx})
+	// committed=false means "registered, effective next epoch" — report it
+	// so a client knows its attestations do not count until then.
+	writeJSON(w, map[string]any{"index": idx, "committed": committed})
 }
 
 func (s *HTTPServer) handlePacket(w http.ResponseWriter, r *http.Request) {
@@ -208,7 +216,7 @@ func (s *HTTPServer) handleCert(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusNotFound, "no certificates for block")
 		return
 	}
-	writeJSON(w, encodeCerts(certs, s.reg.Count()))
+	writeJSON(w, encodeCerts(certs, s.reg.IndexBound()))
 }
 
 // handleMagnet returns the swarm URI for a seeded packet (design §5b
@@ -233,11 +241,31 @@ func (s *HTTPServer) handleMagnet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"magnet": magnet})
 }
 
+// handleAlarms serves recent divergence alarms (design §6) newest-first.
+func (s *HTTPServer) handleAlarms(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	if s.alarms == nil {
+		writeJSON(w, []DivergenceAlarm{})
+		return
+	}
+	writeJSON(w, s.alarms.Recent(100))
+}
+
 func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
+	alarmCount := 0
+	if s.alarms != nil {
+		alarmCount = s.alarms.Len()
+	}
 	writeJSON(w, map[string]any{
 		"registry":    s.reg.Count(),
+		"pending":     s.reg.PendingCount(),
+		"accumulator": s.reg.Root().Hex(),
 		"openWindows": s.windows.OpenWindows(),
 		"certBlocks":  s.certs.Len(),
+		"alarms":      alarmCount,
 	})
 }
 

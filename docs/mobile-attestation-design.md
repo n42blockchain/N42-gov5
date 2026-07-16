@@ -85,32 +85,100 @@ What §2 buys us: the two hardest client-side pieces (deterministic
 re-execution and the attestation format) are **already built and
 production-hardened**. Everything new in this design is server-side.
 
-## 3. Component 1 — Mobile registry (BLS pubkey + PoP)
+## 3. Component 1 — Mobile registry (accumulator-anchored)
 
-New component. Replaces the offline simulated pool (`cmd/n42-blspool`),
-which remains only as a tool for backfilling legacy chain evidence.
+### 3.0 Three identity tiers (why this is not the staking registry)
+
+The chain has three distinct identity spaces; do not conflate them:
+
+- **T1 — staked consensus validators.** ETH-style stake (deposit
+  contract), HotStuff validator set, committee sampling for voting.
+  Economic security; inside consensus.
+- **T2 — the CommitteePool bridge** (`params/config.go`
+  `HotStuffCommitteePoolConfig`): the 200K-voter / 512-committee pool
+  carried over from the replay reseal, committed on-chain via each
+  block's ConsensusEvidence + ParentBeaconRoot link, with an
+  `AllowHandover` path where real staked keys replace simulated pool
+  slots. A transitional consensus-evidence layer — still inside
+  consensus.
+- **T3 — mobile verifiers** (this document). Zero-stake, outside
+  consensus, produce bypass attestations.
+
+The mobile registry is T3. It **reuses the on-chain *anchoring pattern*
+of T2** (a seed/root committed on-chain, advanced over time) but **not
+its trust model** (no stake, no consensus weight). The old
+`cmd/n42-blspool` 200K simulated pool is a T2 artifact for backfilling
+legacy chain evidence; it is **not** the seed of the T3 registry, which
+is built fresh from real device registrations.
+
+### 3.1 The registry is an accumulator, not a map
+
+Registrations settle into an **append-only committed set anchored by a
+BMT root** (`lib/bmt` — the Blake3 binary Merkle tree validated across
+11.7M replay blocks). Anchoring on the accumulator is what makes the
+signer index **globally canonical** — a device's `MobileIndex` is its
+append position in the committed set, identical on every node — instead
+of a per-node guess. (An earlier sketch tried per-node integer indices
+propagated by gossip with first-writer-wins conflict resolution; it
+could not guarantee two nodes agree on a device's index, so a cert built
+on one node could fail to verify on another. The accumulator removes
+that failure class.)
+
+Two layers, mempool-and-settled shaped:
+
+- **pending** — PoP-verified registrations gossiped between IDC nodes
+  but not yet committed; they cannot attest yet.
+- **committed** — the append-only ordered set under the BMT root. A
+  device gets a stable index and may attest. `CommitEpoch` folds the
+  pending set in, **sorted by BMT key hash** so every node that commits
+  the same batch derives the identical index assignment and the
+  identical root. Append-only: an index never moves across epochs.
+
+### 3.2 Registration and PoP
 
 - **First-launch auto-registration.** The device generates a BLS
-  keypair locally; on install/first run the client automatically
-  submits `(pubkey 48B, PoP)` to any IDC node's registration endpoint
-  and receives a stable `MobileIndex` (uint32 to start; widen when the
-  population demands it).
-- **Proof of possession is mandatory.** Without verifying a PoP per
-  registered key, an attacker can register a rogue key (constructed as
-  the inverse of other registered keys' product) and forge aggregate
-  signatures they could never produce individually. This is a
-  correctness requirement of BLS aggregation, not hardening. PoP =
-  BLS signature over the registrant's own pubkey bytes under a
-  dedicated domain-separation tag (distinct from the receipt signing
-  domain, so a PoP can never be replayed as an attestation and vice
-  versa).
-- **Zero-cost registration, no stake** (boundary #2). Lightweight
-  Sybil resistance per §8.2.
-- **Replication across IDC nodes.** The registry plays the role
-  `ValidatorSet` plays for validators but at 10⁷–10⁸ scale, so it
-  replicates via gossip/CAS incremental sync, never a startup bulk
-  load. Registration is idempotent: re-registering the same pubkey
-  returns the same `MobileIndex`.
+  keypair locally; on install/first run the client submits
+  `(pubkey 48B, PoP)` to any IDC node. The registration lands in
+  *pending* and becomes effective (attestable) at the next epoch commit
+  — the endpoint reports `committed: false` until then.
+- **Proof of possession is mandatory.** Without a PoP per registered
+  key, an attacker registers a rogue key (the inverse of other keys'
+  product) and forges aggregate signatures. This is a correctness
+  requirement of BLS aggregation, not hardening. PoP = BLS signature
+  over the registrant's own pubkey under a dedicated domain tag
+  (`n42/mobileverify/pop/v1`), structurally disjoint from the 72-byte
+  receipt message so a PoP can never be replayed as an attestation or
+  vice versa.
+- **Zero-cost, no stake** (boundary #2). Lightweight Sybil resistance
+  per §8.2.
+
+### 3.3 On-chain anchoring and the consistency model (honest)
+
+The committed accumulator **root** is the value an epoch batch anchors
+on-chain (roadmap phase 6b). The batch transaction lists the batch's
+members, so a node that missed a gossiped registration still adopts the
+exact committed set from the chain — making the root canonical across
+the fleet.
+
+Consistency model, stated plainly:
+
+- Within one node the accumulator is fully deterministic.
+- Cross-node **canonical** agreement on the root requires the epoch
+  batch to be settled on-chain. Until a batch is anchored, roots are
+  per-node advisory and converge as gossip does (a node that has the
+  same committed membership computes the same root and verifies the same
+  certs). The on-chain batch write is the anchoring seam — built up to
+  `Registry.Root()` + `EpochCommitter` today; the block-production write
+  itself is phase 6b, kept out of the consensus path (a batch is a
+  regular transaction / system write, never a header field followers
+  reject on, so mobile registration can never fork liveness).
+
+### 3.4 Key lifecycle (open, honest gap)
+
+Current registrations are permanent. Real deployment needs key rotation,
+inactivity pruning (the committed set must not grow unbounded), and
+revocation. Not yet built; flagged as a required follow-up, distinct
+from "just scale it up".
 
 ## 4. Component 2 — Leader produces verification data with the block
 
@@ -259,7 +327,8 @@ leader seals block
 | 3 | HTTP endpoints (`/mobileverify/register`, `/packet/{hash}`, `/receipt`) + `mobileverify_*` RPC for cert queries | |
 | 4 | Client facade convergence: SDK + standalone app on the unified pipeline (registration call, receipt submission) | |
 | 5 | CDN deployment recipe; torrent-swarm distribution (reuse storage/torrent) | |
-| 6 | Registry replication across IDC nodes; divergence alarms; dashboards | |
+| 6 | Accumulator registry (BMT root), gossip replication, epoch committer, divergence alarms | **done** |
+| 6b | On-chain batch anchoring of the accumulator root; key lifecycle (rotation / pruning / revocation) | |
 
 Each phase lands independently testable; nothing activates outside the
 `mobileverify` namespace until phase 3 wires endpoints, and consensus

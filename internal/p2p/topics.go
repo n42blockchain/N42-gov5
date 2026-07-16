@@ -9,11 +9,12 @@ const (
 	GossipExitMessage        = "voluntary_exit"
 	GossipTransactionMessage = "transaction"
 
-	GossipBlobSidecarMessage       = "blob_sidecar"
-	GossipDataColumnMessage        = "data_column_sidecar"
-	GossipHotStuffConsensusMessage = "hotstuff_consensus"
-	GossipZKProofMessage           = "zk_proof"
-	GossipMobilePacketMessage      = "mobileverify_packet"
+	GossipBlobSidecarMessage        = "blob_sidecar"
+	GossipDataColumnMessage         = "data_column_sidecar"
+	GossipHotStuffConsensusMessage  = "hotstuff_consensus"
+	GossipZKProofMessage            = "zk_proof"
+	GossipMobilePacketMessage       = "mobileverify_packet"
+	GossipMobileRegistrationMessage = "mobileverify_registration"
 
 	// Topic format strings combining the protocol prefix with message type.
 	BlockTopicFormat              = GossipProtocolAndDigest + GossipBlockMessage
@@ -24,6 +25,7 @@ const (
 	HotStuffConsensusTopicFormat  = GossipProtocolAndDigest + GossipHotStuffConsensusMessage
 	ZKProofTopicFormat            = GossipProtocolAndDigest + GossipZKProofMessage
 	MobilePacketTopicFormat       = GossipProtocolAndDigest + GossipMobilePacketMessage
+	MobileRegistrationTopicFormat = GossipProtocolAndDigest + GossipMobileRegistrationMessage
 
 	// Message relay topics (8 shards, Waku-style)
 	GossipMessagePrefix = "message/shard/"

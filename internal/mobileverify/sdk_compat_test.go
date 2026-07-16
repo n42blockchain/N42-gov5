@@ -68,9 +68,7 @@ func TestSDKReceiptVerifiesHere(t *testing.T) {
 	reg := NewRegistry()
 	var pop [96]byte
 	copy(pop[:], sk.Sign(PoPMessage(pubkey)).Marshal())
-	if _, err := reg.Register(pubkey, pop); err != nil {
-		t.Fatalf("register: %v", err)
-	}
+	registerCommitted(t, reg, pubkey, pop)
 	serverReceipt := &Receipt{
 		BlockHash:            sdkReceipt.BlockHash,
 		BlockNumber:          sdkReceipt.BlockNumber,

@@ -60,14 +60,21 @@ func TestSDKClientEndToEnd(t *testing.T) {
 
 	ctx := context.Background()
 
-	// 1. Register — and idempotently re-register (app relaunch shape).
-	idx, err := client.Register(ctx)
-	if err != nil {
+	// 1. Register — lands in pending, idempotent re-register (app relaunch shape).
+	if _, err := client.Register(ctx); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	idx2, err := client.Register(ctx)
-	if err != nil || idx2 != idx {
-		t.Fatalf("re-register = (%d, %v), want (%d, nil)", idx2, err, idx)
+	if _, err := client.Register(ctx); err != nil {
+		t.Fatalf("re-register: %v", err)
+	}
+	if reg.PendingCount() != 1 {
+		t.Fatalf("pending count = %d, want 1", reg.PendingCount())
+	}
+	// Commit the epoch so the device is a committed member and can attest.
+	reg.CommitEpoch()
+	idx, ok := reg.Lookup(client.Pubkey())
+	if !ok {
+		t.Fatal("device not committed after CommitEpoch")
 	}
 	if reg.Count() != 1 {
 		t.Fatalf("registry count = %d, want 1", reg.Count())

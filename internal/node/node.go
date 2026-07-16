@@ -217,12 +217,15 @@ type Node struct {
 	attestationService *attestation.AttestationService // Inference attestation (nil if disabled)
 	inferenceExecutor  *inference.WazeroExecutor       // AI inference WASM executor (nil if disabled)
 
-	mobilePacketService *mobileverify.PacketService // mobile attestation packet distribution (nil if disabled)
-	mobileRegistry      *mobileverify.Registry      // mobile BLS registry (nil if disabled)
-	mobileWindows       *mobileverify.WindowManager // receipt collection windows (nil if disabled)
-	mobileCertStore     *mobileverify.CertStore     // attestation certificates (nil if disabled)
-	mobileHTTPServer    *mobileverify.HTTPServer    // phone-facing HTTP surface (nil if disabled)
-	mobileTorrentClient *dtorrent.Client            // swarm seeding client for packets (nil if disabled)
+	mobilePacketService *mobileverify.PacketService       // mobile attestation packet distribution (nil if disabled)
+	mobileRegistry      *mobileverify.Registry            // mobile BLS registry (nil if disabled)
+	mobileWindows       *mobileverify.WindowManager       // receipt collection windows (nil if disabled)
+	mobileCertStore     *mobileverify.CertStore           // attestation certificates (nil if disabled)
+	mobileHTTPServer    *mobileverify.HTTPServer          // phone-facing HTTP surface (nil if disabled)
+	mobileTorrentClient *dtorrent.Client                  // swarm seeding client for packets (nil if disabled)
+	mobileRegService    *mobileverify.RegistrationService // registration gossip replication (nil if disabled)
+	mobileCommitter     *mobileverify.EpochCommitter      // epoch accumulator committer (nil if disabled)
+	mobileAlarms        *mobileverify.AlarmBuffer         // divergence alarm ring (nil if disabled)
 
 	zkProverService *zkprover.Service    // ZK prover gRPC client (nil if disabled)
 	zkVerifier      *zkverifier.Verifier // ZK proof verifier (nil if disabled)
@@ -1669,7 +1672,7 @@ func (n *Node) Start() error {
 	if n.mobileRegistry != nil {
 		n.rpcAPIs = append(n.rpcAPIs, jsonrpc.API{
 			Namespace: "mobileverify",
-			Service:   mobileverify.NewAPI(n.mobileRegistry, n.mobileCertStore, n.mobileWindows),
+			Service:   mobileverify.NewAPI(n.mobileRegistry, n.mobileCertStore, n.mobileWindows, n.mobileAlarms),
 		})
 	}
 
@@ -2105,9 +2108,35 @@ func (n *Node) startMobileVerify() {
 		n.mobileCertStore,
 	)
 
+	// Divergence alarms (design §6): multi-cohort windows land in a bounded
+	// ring exposed via the status/RPC surface.
+	n.mobileAlarms = mobileverify.NewAlarmBuffer(256)
+	n.mobileWindows.SetDivergenceSink(n.mobileAlarms.Record)
+
+	// Registration replication (design §3): gossip new registrations across
+	// the fleet so every node holds the same pending batch by epoch commit.
+	regTopic := fmt.Sprintf(p2p.MobileRegistrationTopicFormat, utils.ToBytes4(n.p2pGenesisHash[:]))
+	if n.p2p != nil {
+		regTopic += n.p2p.Encoding().ProtocolSuffix()
+	}
+	regSvc := mobileverify.NewRegistrationService(n.mobileRegistry, n.p2p, regTopic)
+	if n.p2p != nil {
+		if err := regSvc.Start(); err != nil {
+			log.Error("mobileverify: registration replication failed to start", "err", err)
+		}
+	}
+	n.mobileRegService = regSvc
+
+	// Epoch committer (design §3): periodically folds pending into the
+	// committed accumulator and advances the on-chain-anchorable root.
+	n.mobileCommitter = mobileverify.NewEpochCommitter(n.mobileRegistry,
+		time.Duration(n.config.MobileVerifyCfg.CollectWindowSec)*time.Second)
+	n.mobileCommitter.Start()
+
 	// Phone-facing HTTP surface — its own listener, never the RPC ports.
 	if addr := n.config.MobileVerifyCfg.HTTPAddr; addr != "" {
 		httpSrv := mobileverify.NewHTTPServer(addr, n.mobileRegistry, svc, n.mobileWindows, n.mobileCertStore)
+		httpSrv.SetAlarms(n.mobileAlarms)
 		if err := httpSrv.Start(); err != nil {
 			log.Error("mobileverify: http server failed to start", "err", err)
 		} else {
@@ -2607,6 +2636,14 @@ func (n *Node) stopServices() []error {
 			if n.mobileHTTPServer != nil {
 				n.mobileHTTPServer.Stop()
 				n.mobileHTTPServer = nil
+			}
+			if n.mobileRegService != nil {
+				n.mobileRegService.Stop()
+				n.mobileRegService = nil
+			}
+			if n.mobileCommitter != nil {
+				n.mobileCommitter.Stop() // final commit drains pending
+				n.mobileCommitter = nil
 			}
 			if n.mobileWindows != nil {
 				n.mobileWindows.Stop()
