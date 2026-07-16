@@ -47,6 +47,12 @@ func headersForCompactTest() map[string]*Header {
 	full.Bloom[0], full.Bloom[255] = 0x80, 0x01
 	wh, pbr, rh := hashOf(7), hashOf(8), hashOf(9)
 	full.WithdrawalsHash, full.ParentBeaconRoot, full.RequestsHash = &wh, &pbr, &rh
+	// The trailing native optionals must survive the compact storage round-trip
+	// too — a dropped field silently changes the stored header's hash and breaks
+	// block import ("unknown ancestor"). MobileRegistryRoot regressed exactly
+	// this way before the codec learned to carry it.
+	bah, mrr := hashOf(14), hashOf(15)
+	full.BlockAccessListHash, full.MobileRegistryRoot = &bah, &mrr
 
 	emptyConst := hash.EmptyRootHash
 	resealEmpty := &Header{ // the dominant shape in a resealed chain

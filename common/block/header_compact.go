@@ -64,6 +64,14 @@ const (
 	hcfParentBeaconRoot = 1 << 16 // ParentBeaconRoot != nil (32 B)
 	hcfRequestsHash     = 1 << 17 // RequestsHash != nil and != EmptyRootHash (32 B)
 	hcfRequestsEmpty    = 1 << 18 // RequestsHash != nil and == EmptyRootHash (no payload)
+	// The compact codec must carry EVERY consensus header field, or the stored
+	// header's hash diverges from the RLP-derived head hash and block import
+	// fails with "unknown ancestor". These two trailing optionals were added to
+	// the proto/trailer Marshal but originally missed here: BlockAccessListHash
+	// (EIP-7928, dormant everywhere) never bit, but MobileRegistryRoot broke
+	// solo production the moment the MobileAnchor fork stamped it.
+	hcfBlockAccessListHash = 1 << 19 // BlockAccessListHash != nil (32 B)
+	hcfMobileRegistryRoot  = 1 << 20 // MobileRegistryRoot != nil (32 B)
 )
 
 // emptyListRoot is DeriveSha of an empty list — the value of TxHash/ReceiptHash/
@@ -175,6 +183,14 @@ func (h *Header) MarshalCompact() []byte {
 			flags |= hcfRequestsHash
 			out = append(out, h.RequestsHash[:]...)
 		}
+	}
+	if h.BlockAccessListHash != nil {
+		flags |= hcfBlockAccessListHash
+		out = append(out, h.BlockAccessListHash[:]...)
+	}
+	if h.MobileRegistryRoot != nil {
+		flags |= hcfMobileRegistryRoot
+		out = append(out, h.MobileRegistryRoot[:]...)
 	}
 
 	out[2] = byte(flags)
@@ -365,6 +381,22 @@ func (h *Header) unmarshalCompact(data []byte) error {
 	} else if flags&hcfRequestsEmpty != 0 {
 		rh := emptyListRoot
 		h.RequestsHash = &rh
+	}
+	if flags&hcfBlockAccessListHash != 0 {
+		if b, err = take(32); err != nil {
+			return err
+		}
+		var bah types.Hash
+		copy(bah[:], b)
+		h.BlockAccessListHash = &bah
+	}
+	if flags&hcfMobileRegistryRoot != 0 {
+		if b, err = take(32); err != nil {
+			return err
+		}
+		var mrr types.Hash
+		copy(mrr[:], b)
+		h.MobileRegistryRoot = &mrr
 	}
 	return nil
 }
