@@ -65,6 +65,12 @@ func (s *Service) topicScoreParams(topic string) (*pubsub.TopicScoreParams, erro
 		return hotstuffConsensusTopicParams(), nil
 	case strings.Contains(topic, GossipMessagePrefix):
 		return messagingTopicParams(), nil
+	case strings.Contains(topic, GossipMobilePacketMessage):
+		// Mobile verification packets are best-effort auxiliary traffic —
+		// same lightweight, non-critical scoring as the messaging topics.
+		// (Without a branch here, scoring registration rejects the
+		// subscription outright — see the transaction-topic case below.)
+		return messagingTopicParams(), nil
 	case strings.Contains(topic, GossipTransactionMessage):
 		// Same lightweight, non-critical scoring shape as the messaging topics:
 		// mempool transactions are high-frequency best-effort traffic. Without

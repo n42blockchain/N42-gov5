@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/cmd/evmsdk"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
@@ -236,4 +237,13 @@ func (m *Miner) SetAIOptimizer(optimizer AIOptimizer) {
 // BundlePool returns the MEV bundle pool for submitting transaction bundles.
 func (m *Miner) BundlePool() *builder.BundlePool {
 	return m.worker.bundlePool
+}
+
+// SetMobilePacketSink wires the mobile-verification packet consumer
+// (docs/mobile-attestation-design.md §4). A non-nil sink turns on
+// read-log capture during block building; each sealed block's
+// StreamPacket is handed to the sink with its number. Must be set
+// before the worker starts building.
+func (m *Miner) SetMobilePacketSink(sink func(pkt *evmsdk.StreamPacket, blockNumber uint64)) {
+	m.worker.mobilePacketSink = sink
 }

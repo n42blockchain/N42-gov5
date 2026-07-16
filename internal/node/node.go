@@ -52,6 +52,7 @@ import (
 	"github.com/n42blockchain/N42/accounts"
 	"github.com/n42blockchain/N42/accounts/external"
 	"github.com/n42blockchain/N42/accounts/keystore"
+	"github.com/n42blockchain/N42/cmd/evmsdk"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
@@ -96,6 +97,7 @@ import (
 	"github.com/n42blockchain/N42/internal/mcp"
 	nodeMetrics "github.com/n42blockchain/N42/internal/metrics"
 	"github.com/n42blockchain/N42/internal/miner"
+	"github.com/n42blockchain/N42/internal/mobileverify"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/peerdas"
 	"github.com/n42blockchain/N42/internal/snapshot"
@@ -213,6 +215,8 @@ type Node struct {
 	trainingProver     *training.TrainingProver        // ZK training verification (nil if disabled)
 	attestationService *attestation.AttestationService // Inference attestation (nil if disabled)
 	inferenceExecutor  *inference.WazeroExecutor       // AI inference WASM executor (nil if disabled)
+
+	mobilePacketService *mobileverify.PacketService // mobile attestation packet distribution (nil if disabled)
 
 	zkProverService *zkprover.Service    // ZK prover gRPC client (nil if disabled)
 	zkVerifier      *zkverifier.Verifier // ZK proof verifier (nil if disabled)
@@ -1518,6 +1522,11 @@ func (n *Node) Start() error {
 		n.exexManager.Start(n.ctx)
 	}
 
+	// Mobile attestation packet pipeline: wired before the miner starts (the
+	// sink is the worker's read-log capture switch), and on non-miner nodes
+	// too — every IDC node subscribes and caches the fleet's packets.
+	n.startMobileVerify()
+
 	if n.config.NodeCfg.Miner {
 		eb, err := n.Etherbase()
 		if err != nil {
@@ -2007,6 +2016,41 @@ func (n *Node) startAIInference() {
 	)
 }
 
+// startMobileVerify assembles the mobile attestation packet pipeline
+// (docs/mobile-attestation-design.md §4-5a): a rolling-window cache of
+// encoded StreamPackets, a gossip service distributing them across the
+// IDC fleet, and — when this node mines — the worker sink that produces
+// a packet for every block this node seals. Disabled by default;
+// consensus paths are untouched either way.
+func (n *Node) startMobileVerify() {
+	if !n.config.MobileVerifyCfg.Enabled {
+		return
+	}
+	cache := mobileverify.NewPacketCache(n.config.MobileVerifyCfg.PacketWindow)
+	topic := fmt.Sprintf(p2p.MobilePacketTopicFormat, utils.ToBytes4(n.p2pGenesisHash[:]))
+	if n.p2p != nil {
+		topic += n.p2p.Encoding().ProtocolSuffix()
+	}
+	svc := mobileverify.NewPacketService(cache, n.p2p, topic)
+	if n.p2p != nil {
+		if err := svc.Start(); err != nil {
+			log.Error("mobileverify: packet service failed to start", "err", err)
+			return
+		}
+	}
+	n.mobilePacketService = svc
+
+	if n.miner != nil {
+		n.miner.SetMobilePacketSink(func(pkt *evmsdk.StreamPacket, blockNumber uint64) {
+			if err := svc.PublishLocal(pkt, blockNumber); err != nil {
+				log.Warn("mobileverify: packet publish failed", "number", blockNumber, "err", err)
+			}
+		})
+	}
+	log.Info("Mobile attestation packet pipeline enabled",
+		"window", n.config.MobileVerifyCfg.PacketWindow, "topic", topic, "producer", n.miner != nil)
+}
+
 func (n *Node) startDistributedRuntime() {
 	if !n.runtimePlan.startDistributed {
 		return
@@ -2487,6 +2531,13 @@ func (n *Node) stopServices() []error {
 					log.Warn("AI inference executor close failed", "err", err)
 				}
 				n.inferenceExecutor = nil
+			}
+			return nil
+		}},
+		{"Mobile attestation", func() error {
+			if n.mobilePacketService != nil {
+				n.mobilePacketService.Stop()
+				n.mobilePacketService = nil
 			}
 			return nil
 		}},

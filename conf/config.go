@@ -33,26 +33,26 @@ import (
 )
 
 type Config struct {
-	NodeCfg     NodeConfig          `json:"node" yaml:"node"`
-	NetworkCfg  NetWorkConfig       `json:"network" yaml:"network"`
-	LoggerCfg   LoggerConfig        `json:"logger" yaml:"logger"`
-	DatabaseCfg DatabaseConfig      `json:"database" yaml:"database"`
-	PprofCfg    PprofConfig         `json:"pprof" yaml:"pprof"`
-	ChainCfg    *params.ChainConfig `json:"chain" yaml:"chain"`
-	AccountCfg  AccountConfig       `json:"account" yaml:"account"`
-	MetricsCfg  MetricsConfig       `json:"metrics" yaml:"metrics"`
-	P2PCfg      *P2PConfig          `json:"p2p" yaml:"p2p"`
-	GPO      GpoConfig   `json:"gpo" yaml:"gpo"`
-	Miner    MinerConfig `json:"miner" yaml:"miner"`
-	DevCfg   DevConfig   `json:"dev" yaml:"dev"`
+	NodeCfg          NodeConfig          `json:"node" yaml:"node"`
+	NetworkCfg       NetWorkConfig       `json:"network" yaml:"network"`
+	LoggerCfg        LoggerConfig        `json:"logger" yaml:"logger"`
+	DatabaseCfg      DatabaseConfig      `json:"database" yaml:"database"`
+	PprofCfg         PprofConfig         `json:"pprof" yaml:"pprof"`
+	ChainCfg         *params.ChainConfig `json:"chain" yaml:"chain"`
+	AccountCfg       AccountConfig       `json:"account" yaml:"account"`
+	MetricsCfg       MetricsConfig       `json:"metrics" yaml:"metrics"`
+	P2PCfg           *P2PConfig          `json:"p2p" yaml:"p2p"`
+	GPO              GpoConfig           `json:"gpo" yaml:"gpo"`
+	Miner            MinerConfig         `json:"miner" yaml:"miner"`
+	DevCfg           DevConfig           `json:"dev" yaml:"dev"`
 	PruneCfg         PruneConfig         `json:"prune" yaml:"prune"`
 	HistoryExpiryCfg HistoryExpiryConfig `json:"history_expiry" yaml:"history_expiry"`
-	SnapSyncCfg    SnapSyncConfig   `json:"snap_sync" yaml:"snap_sync"`
-	CheckpointCfg  CheckpointConfig `json:"checkpoint" yaml:"checkpoint"`
-	SnapshotCfg    SnapshotConfig   `json:"snapshot" yaml:"snapshot"`
-	LayeredDBCfg   LayeredDBConfig  `json:"layered_db" yaml:"layered_db"`
-	BundlerCfg     BundlerConfig    `json:"bundler" yaml:"bundler"`
-	TracingCfg     TracingConfig    `json:"tracing" yaml:"tracing"`
+	SnapSyncCfg      SnapSyncConfig      `json:"snap_sync" yaml:"snap_sync"`
+	CheckpointCfg    CheckpointConfig    `json:"checkpoint" yaml:"checkpoint"`
+	SnapshotCfg      SnapshotConfig      `json:"snapshot" yaml:"snapshot"`
+	LayeredDBCfg     LayeredDBConfig     `json:"layered_db" yaml:"layered_db"`
+	BundlerCfg       BundlerConfig       `json:"bundler" yaml:"bundler"`
+	TracingCfg       TracingConfig       `json:"tracing" yaml:"tracing"`
 	PeerDASCfg       PeerDASConfig       `json:"peerdas" yaml:"peerdas"`
 	SnapshotAccelCfg SnapshotAccelConfig `json:"snapshot_accel" yaml:"snapshot_accel"`
 	MCPCfg           MCPCfg              `json:"mcp" yaml:"mcp"`
@@ -63,31 +63,34 @@ type Config struct {
 	DeferredExec     DeferredExecConfig  `json:"deferred_exec" yaml:"deferred_exec"`
 
 	// Web3 gateway
-	Web3GatewayCfg   Web3GatewayCfg   `json:"web3_gateway" yaml:"web3_gateway"`
+	Web3GatewayCfg Web3GatewayCfg `json:"web3_gateway" yaml:"web3_gateway"`
 
 	// Distributed infrastructure
-	ComputeCfg       ComputeCfg       `json:"compute" yaml:"compute"`
-	CoprocessorCfg   CoprocessorCfg   `json:"coprocessor" yaml:"coprocessor"`
-	MessagingCfg     MessagingCfg     `json:"messaging" yaml:"messaging"`
-	StorageCfg       StorageCfg       `json:"storage" yaml:"storage"`
-	NotifyCfg        NotifyCfg        `json:"notify" yaml:"notify"`
-	TorrentDistCfg   TorrentDistCfg   `json:"torrent_dist" yaml:"torrent_dist"`
-	Ed2kCfg          Ed2kCfg          `json:"ed2k" yaml:"ed2k"`
+	ComputeCfg     ComputeCfg     `json:"compute" yaml:"compute"`
+	CoprocessorCfg CoprocessorCfg `json:"coprocessor" yaml:"coprocessor"`
+	MessagingCfg   MessagingCfg   `json:"messaging" yaml:"messaging"`
+	StorageCfg     StorageCfg     `json:"storage" yaml:"storage"`
+	NotifyCfg      NotifyCfg      `json:"notify" yaml:"notify"`
+	TorrentDistCfg TorrentDistCfg `json:"torrent_dist" yaml:"torrent_dist"`
+	Ed2kCfg        Ed2kCfg        `json:"ed2k" yaml:"ed2k"`
 
 	// Storage tiering (NVMe/HDD split)
-	StorageTierCfg   StorageTierCfg   `json:"storage_tier" yaml:"storage_tier"`
+	StorageTierCfg StorageTierCfg `json:"storage_tier" yaml:"storage_tier"`
 
 	// AI infrastructure (unified)
-	AICfg            AICfg            `json:"ai" yaml:"ai"`
+	AICfg AICfg `json:"ai" yaml:"ai"`
+
+	// Mobile attestation pipeline (docs/mobile-attestation-design.md)
+	MobileVerifyCfg MobileVerifyCfg `json:"mobile_verify" yaml:"mobile_verify"`
 
 	// OtterSync (BitTorrent-based chain sync)
-	TorrentSyncCfg   TorrentSyncCfg   `json:"torrent_sync" yaml:"torrent_sync"`
+	TorrentSyncCfg TorrentSyncCfg `json:"torrent_sync" yaml:"torrent_sync"`
 
 	// Ingest server (stress testing)
-	IngestCfg        IngestCfg        `json:"ingest" yaml:"ingest"`
+	IngestCfg IngestCfg `json:"ingest" yaml:"ingest"`
 
 	// Cross-chain bridge (ZK proof + Hyperlane multi-chain)
-	BridgeCfg        BridgeCfg        `json:"bridge" yaml:"bridge"`
+	BridgeCfg BridgeCfg `json:"bridge" yaml:"bridge"`
 }
 
 func SaveConfigToFile(file string, config Config) error {
