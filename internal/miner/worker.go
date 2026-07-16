@@ -266,6 +266,16 @@ type worker struct {
 	// via Miner.SetMobileAnchorRoot.
 	mobileAnchorRoot func() *types.Hash
 
+	// Block-production pacing (minerConf.BlockIntervalMs > 0). The header
+	// timestamp is already drift-free (parent.Time + period, an absolute grid);
+	// this throttles the WALL-CLOCK rate at which the leader seals blocks to a
+	// fixed interval, anchored to an absolute grid so it never accumulates drift
+	// over a long run. Zero interval = no throttle (produce flat out). These
+	// fields are touched only from the single commitWork goroutine.
+	pacingAnchorWall time.Time
+	pacingAnchorNum  uint64
+	pacingAnchorSet  bool
+
 	snapshotMu       sync.RWMutex
 	snapshotBlock    block.IBlock
 	snapshotReceipts block.Receipts
@@ -732,6 +742,38 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	if err != nil {
 		log.Error("cannot prepare work", "err", err)
 		return err
+	}
+
+	// Block-production pacing: throttle the wall-clock seal rate to a fixed
+	// interval on an absolute grid (drift-free over long runs). Set the anchor
+	// on the first paced block, then hold each subsequent block until its grid
+	// slot (anchor + (num-anchorNum)*interval). A block that runs late has a
+	// slot already in the past, so it seals immediately and the schedule
+	// self-corrects with no accumulated drift. Interval 0 disables the throttle
+	// entirely (produce flat out — e.g. benchmarking). Consensus is unaffected:
+	// header.Time stays the deterministic parent.Time+period value.
+	if iv := w.minerConf.BlockIntervalMs; iv > 0 && w.isRunning() {
+		num := current.header.Number.Uint64()
+		interval := time.Duration(iv) * time.Millisecond
+		if !w.pacingAnchorSet || num < w.pacingAnchorNum {
+			w.pacingAnchorWall, w.pacingAnchorNum, w.pacingAnchorSet = time.Now(), num, true
+		} else {
+			target := w.pacingAnchorWall.Add(time.Duration(num-w.pacingAnchorNum) * interval)
+			wait := time.Until(target)
+			// Re-anchor if we have fallen more than one full interval behind the
+			// grid (clock jump, long stall) so catch-up bursts stay bounded.
+			if wait < -interval {
+				w.pacingAnchorWall, w.pacingAnchorNum = time.Now(), num
+			} else if wait > 0 {
+				timer := time.NewTimer(wait)
+				select {
+				case <-timer.C:
+				case <-w.ctx.Done():
+					timer.Stop()
+					return w.ctx.Err()
+				}
+			}
+		}
 	}
 
 	tAlign := time.Since(start)

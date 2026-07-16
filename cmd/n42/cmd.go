@@ -172,6 +172,27 @@ var consensusFlag = []cli.Flag{
 		Value:       "",
 		Destination: &DefaultConfig.Miner.Etherbase,
 	},
+	&cli.BoolFlag{
+		Name:        "mobileverify",
+		Usage:       "启用移动端证明流水线 (n42 原生链; 见 docs/mobile-attestation-design.md)",
+		Category:    "MINER",
+		Value:       false,
+		Destination: &DefaultConfig.MobileVerifyCfg.Enabled,
+	},
+	&cli.StringFlag{
+		Name:        "mobileverify.http",
+		Usage:       "移动端证明 HTTP 监听地址 (空则关闭手机端 HTTP 面, 仍走 gossip/缓存)",
+		Category:    "MINER",
+		Value:       "",
+		Destination: &DefaultConfig.MobileVerifyCfg.HTTPAddr,
+	},
+	&cli.Uint64Flag{
+		Name:        "block-interval-ms",
+		Usage:       "出块间隔节流 (毫秒, 无长程漂移; 默认 2000=2秒一块; 设 0 关闭限制即飞速出块)",
+		Category:    "MINER",
+		Value:       2000,
+		Destination: &DefaultConfig.Miner.BlockIntervalMs,
+	},
 }
 
 var configFlag = []cli.Flag{

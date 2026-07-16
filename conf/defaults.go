@@ -103,6 +103,22 @@ func ApplyDefaults(cfg *Config) {
 		}
 	}
 
+	// Mobile-attestation pipeline: when enabled (e.g. via --mobileverify) fill
+	// any zero-valued sizing fields from the package defaults so the packet
+	// window / collection span / cert retention are sane. Disabled by default.
+	if cfg.MobileVerifyCfg.Enabled {
+		d := DefaultMobileVerifyCfg()
+		if cfg.MobileVerifyCfg.PacketWindow == 0 {
+			cfg.MobileVerifyCfg.PacketWindow = d.PacketWindow
+		}
+		if cfg.MobileVerifyCfg.CollectWindowSec == 0 {
+			cfg.MobileVerifyCfg.CollectWindowSec = d.CollectWindowSec
+		}
+		if cfg.MobileVerifyCfg.CertBlocks == 0 {
+			cfg.MobileVerifyCfg.CertBlocks = d.CertBlocks
+		}
+	}
+
 	if cfg.GPO.Blocks == 0 {
 		cfg.GPO.Blocks = 20
 	}
