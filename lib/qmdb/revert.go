@@ -84,25 +84,47 @@ func (t *Tree) ApplyUndo(u *BlockUndo) error {
 		}
 	}
 
-	// --- 1. Truncate the block's appends: [prev, nextSlot). ---------------
-	// Only LIVE appended slots still hold an index mapping (a dead appended
-	// slot was overwritten/deleted within the block itself and its bit is
-	// already clear); live slots are always readable by invariant.
+	// --- 1a. Resolve the live appends' keyHashes: [prev, nextSlot). --------
+	// READ-ONLY: every fallible lookup happens here, BEFORE the first
+	// mutation, so a failure returns with the live tree untouched (the same
+	// discipline step 0 already follows). The pre-two-pass code failed
+	// mid-loop with bits already cleared — a half-reverted tree the caller
+	// could only throw away. Only LIVE appended slots still hold an index
+	// mapping (a dead appended slot was overwritten/deleted within the block
+	// itself and its bit is already clear). The keyHash comes from the undo
+	// record's AppendedKeys when present (v2 records — immune to entry
+	// readability), falling back to an entry read for legacy v1 records.
+	type liveAppend struct {
+		slot    uint64
+		keyHash Hash
+	}
+	appends := make([]liveAppend, 0, t.nextSlot-prev)
 	for s := prev; s < t.nextSlot; s++ {
-		id := int(s / TwigSize)
-		tw := t.twigs[id]
-		local := s % TwigSize
-		if !tw.bit(local) {
+		tw := t.twigs[int(s/TwigSize)]
+		if !tw.bit(s % TwigSize) {
 			continue
 		}
-		e, ok := t.entryAt(s)
-		if !ok {
-			return fmt.Errorf("qmdb: live appended slot %d unreadable during revert", s)
+		var kh Hash
+		if i := s - prev; i < uint64(len(u.AppendedKeys)) {
+			kh = u.AppendedKeys[i]
+		} else {
+			e, ok := t.entryAt(s)
+			if !ok {
+				return fmt.Errorf("qmdb: live appended slot %d unreadable during revert (undo record has no appended-keys section)", s)
+			}
+			kh = e.keyHash
 		}
-		if got, ok2 := t.idx.Get(e.keyHash); ok2 && got == s {
-			t.idx.Delete(e.keyHash)
+		appends = append(appends, liveAppend{slot: s, keyHash: kh})
+	}
+
+	// --- 1b. Truncate the block's appends (infallible mutation). ----------
+	for _, a := range appends {
+		id := int(a.slot / TwigSize)
+		tw := t.twigs[id]
+		if got, ok := t.idx.Get(a.keyHash); ok && got == a.slot {
+			t.idx.Delete(a.keyHash)
 		}
-		tw.setBit(local, false)
+		tw.setBit(a.slot%TwigSize, false)
 		tw.live--
 		tw.metaDirty = true
 	}
