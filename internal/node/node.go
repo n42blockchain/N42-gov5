@@ -1536,6 +1536,17 @@ func (n *Node) Start() error {
 	// too — every IDC node subscribes and caches the fleet's packets.
 	n.startMobileVerify()
 
+	// Distributed runtime (coprocessor, messaging, etc.) must be constructed
+	// before the JSON-RPC API list is assembled below, or a namespace like
+	// coprocessor_* — gated on n.coprocessorService != nil — is silently
+	// dropped from n.rpcAPIs even though the service itself started fine (it
+	// used to run near the end of Start(), well after rpcAPIs was already
+	// built and startRPC() had resolved the HTTP module list). Nothing in
+	// startDistributedRuntime depends on the miner/consensus/RPC setup that
+	// follows — it only reads n.config and (for messaging) the already-ready
+	// n.p2p, exactly like startMobileVerify just above.
+	n.startDistributedRuntime()
+
 	if n.config.NodeCfg.Miner {
 		eb, err := n.Etherbase()
 		if err != nil {
@@ -1883,7 +1894,6 @@ func (n *Node) Start() error {
 	}
 
 	n.startAIRuntime()
-	n.startDistributedRuntime()
 	n.startWeb3Gateway()
 	n.startIngestServer()
 	n.startBridgeRuntime()
