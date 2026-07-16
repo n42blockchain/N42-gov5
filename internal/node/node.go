@@ -91,6 +91,7 @@ import (
 	dnotify "github.com/n42blockchain/N42/internal/distributed/notify"
 	dstorage "github.com/n42blockchain/N42/internal/distributed/storage"
 	dstorageEd2k "github.com/n42blockchain/N42/internal/distributed/storage/ed2k"
+	dtorrent "github.com/n42blockchain/N42/internal/distributed/storage/torrent"
 	"github.com/n42blockchain/N42/internal/exex"
 	"github.com/n42blockchain/N42/internal/exex/extensions"
 	"github.com/n42blockchain/N42/internal/ingest"
@@ -221,6 +222,7 @@ type Node struct {
 	mobileWindows       *mobileverify.WindowManager // receipt collection windows (nil if disabled)
 	mobileCertStore     *mobileverify.CertStore     // attestation certificates (nil if disabled)
 	mobileHTTPServer    *mobileverify.HTTPServer    // phone-facing HTTP surface (nil if disabled)
+	mobileTorrentClient *dtorrent.Client            // swarm seeding client for packets (nil if disabled)
 
 	zkProverService *zkprover.Service    // ZK prover gRPC client (nil if disabled)
 	zkVerifier      *zkverifier.Verifier // ZK proof verifier (nil if disabled)
@@ -2045,6 +2047,26 @@ func (n *Node) startMobileVerify() {
 		topic += n.p2p.Encoding().ProtocolSuffix()
 	}
 	svc := mobileverify.NewPacketService(cache, n.p2p, topic)
+
+	// Swarm distribution (design §5b target form): seed cached packets on
+	// the BitTorrent bridge when both this pipeline and the torrent client
+	// are enabled. Reuses the same bridge/client as eth-el cold-segment
+	// distribution. Seeding is best-effort; failure never blocks the cache
+	// or gossip. Wired before Start so the receive loop seeds inbound too.
+	if n.config.MobileVerifyCfg.TorrentEnabled && n.config.TorrentDistCfg.Enabled {
+		client, err := dtorrent.NewClient(&n.config.TorrentDistCfg)
+		if err != nil {
+			log.Error("mobileverify: torrent client init failed", "err", err)
+		} else {
+			client.Start()
+			n.mobileTorrentClient = client
+			bridge := dtorrent.NewBridge(client)
+			svc.SetSeeder(&torrentPacketSeeder{bridge: bridge, pieceSize: n.config.TorrentDistCfg.PieceSize},
+				int(n.config.MobileVerifyCfg.PacketWindow))
+			log.Info("mobileverify: swarm seeding enabled")
+		}
+	}
+
 	if n.p2p != nil {
 		if err := svc.Start(); err != nil {
 			log.Error("mobileverify: packet service failed to start", "err", err)
@@ -2593,6 +2615,10 @@ func (n *Node) stopServices() []error {
 			if n.mobilePacketService != nil {
 				n.mobilePacketService.Stop()
 				n.mobilePacketService = nil
+			}
+			if n.mobileTorrentClient != nil {
+				n.mobileTorrentClient.Stop()
+				n.mobileTorrentClient = nil
 			}
 			return nil
 		}},

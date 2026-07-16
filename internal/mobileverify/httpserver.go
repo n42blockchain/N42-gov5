@@ -54,6 +54,7 @@ func NewHTTPServer(addr string, reg *Registry, packets *PacketService, windows *
 	mux.HandleFunc("/mobileverify/packet/", s.handlePacket)
 	mux.HandleFunc("/mobileverify/receipt", s.handleReceipt)
 	mux.HandleFunc("/mobileverify/cert/", s.handleCert)
+	mux.HandleFunc("/mobileverify/magnet/", s.handleMagnet)
 	mux.HandleFunc("/mobileverify/health", s.handleHealth)
 	s.srv = &http.Server{
 		Addr:              addr,
@@ -208,6 +209,28 @@ func (s *HTTPServer) handleCert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, encodeCerts(certs, s.reg.Count()))
+}
+
+// handleMagnet returns the swarm URI for a seeded packet (design §5b
+// target form) — phones that prefer the torrent transport resolve the
+// magnet here (or from any IDC node; the URI is identical everywhere
+// since the torrent is derived from the packet bytes).
+func (s *HTTPServer) handleMagnet(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	hash, ok := hashFromPath(r.URL.Path, "/mobileverify/magnet/")
+	if !ok {
+		httpError(w, http.StatusBadRequest, "bad block hash")
+		return
+	}
+	magnet, found := s.packets.Magnet(hash)
+	if !found {
+		httpError(w, http.StatusNotFound, "packet not seeded")
+		return
+	}
+	writeJSON(w, map[string]string{"magnet": magnet})
 }
 
 func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {

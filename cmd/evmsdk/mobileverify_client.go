@@ -116,6 +116,34 @@ func (c *MobileVerifyClient) FetchPacket(ctx context.Context, blockHashHex strin
 	return DecodeStreamPacket(data)
 }
 
+// FetchMagnet returns the swarm (BitTorrent) magnet URI for a block's
+// packet, when the IDC node is seeding it (design §5b target form). A
+// client that prefers the torrent transport resolves the magnet here,
+// then joins the swarm out of band; the decoded packet is verified the
+// same way regardless of transport. Returns an error (404-wrapped) when
+// the node is not seeding.
+func (c *MobileVerifyClient) FetchMagnet(ctx context.Context, blockHashHex string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/mobileverify/magnet/"+blockHashHex, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", httpErrorFrom(resp)
+	}
+	var out struct {
+		Magnet string `json:"magnet"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	return out.Magnet, nil
+}
+
 // SubmitReceipt posts a signed VerificationReceipt to the collection
 // endpoint and returns the device's index as acknowledged by the server.
 func (c *MobileVerifyClient) SubmitReceipt(ctx context.Context, r *VerificationReceipt) (uint32, error) {

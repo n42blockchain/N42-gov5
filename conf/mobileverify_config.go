@@ -19,6 +19,10 @@ type MobileVerifyCfg struct {
 	CollectWindowSec int `json:"collect_window_sec" yaml:"collect_window_sec"`
 	// CertBlocks is how many recent blocks' certificates to retain (§6).
 	CertBlocks int `json:"cert_blocks" yaml:"cert_blocks"`
+	// TorrentEnabled seeds cached packets on the BitTorrent bridge
+	// (design §5b target form); requires TorrentDistCfg to be enabled
+	// too — the mobile pipeline reuses that client.
+	TorrentEnabled bool `json:"torrent_enabled" yaml:"torrent_enabled"`
 }
 
 // DefaultMobileVerifyCfg returns the default (disabled) configuration.
