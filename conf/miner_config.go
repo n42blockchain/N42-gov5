@@ -31,4 +31,11 @@ type MinerConfig struct {
 	GasCeil   uint64
 	GasPrice  *big.Int
 	Recommit  time.Duration
+	// BlockIntervalMs throttles the wall-clock rate at which a leader seals
+	// blocks to a fixed, drift-free interval (default 2000ms = 2s). The header
+	// timestamp stays the deterministic parent.Time+period value; this only
+	// paces real production. 0 disables the throttle — blocks are produced flat
+	// out (bounded only by execution + consensus round-trips), which is the
+	// "fast" mode used for benchmarking.
+	BlockIntervalMs uint64
 }
