@@ -180,7 +180,17 @@ func (g *GenesisBlock) ToBlock() (*block.Block, *state.IntraBlockState, error) {
 			return
 		}
 		root = statedb.GenerateRootHash()
-		if g.GenesisConfig.StateRoot == (types.Hash{}) && !useLegacyGenesisTrieRoots(g.GenesisConfig.Config) {
+		if g.GenesisConfig.StateRoot == (types.Hash{}) && usesQMDBGenesis(g.GenesisConfig.Config.StateScheme) {
+			// QMDB native chain: the genesis header root is the QMDB twig-forest
+			// root over the alloc (not the ethcompat MPT root), so block 1's
+			// QMDB commitment continues from a seeded genesis. Computed on the
+			// throwaway tx here; SeedQMDBGenesis persists the forest later.
+			root, err = QMDBGenesisRoot(tx)
+			if err != nil {
+				errCh <- fmt.Errorf("failed to compute qmdb genesis root: %w", err)
+				return
+			}
+		} else if g.GenesisConfig.StateRoot == (types.Hash{}) && !useLegacyGenesisTrieRoots(g.GenesisConfig.Config) {
 			root, err = ethcompat.VerifyStateRoot(tx)
 			if err != nil {
 				errCh <- fmt.Errorf("failed to verify ethereum genesis state root: %w", err)
@@ -384,7 +394,19 @@ func (g *GenesisBlock) WriteGenesisState(tx kv.RwTx) (*block.Block, *state.Intra
 	// above). Native N42 chains (APoS, legacy genesis trie roots) set the header
 	// root via statedb.GenerateRootHash(); verifying those against the ETH MPT root
 	// is meaningless and would falsely reject genesis initialization.
-	if !useLegacyGenesisTrieRoots(g.GenesisConfig.Config) {
+	if usesQMDBGenesis(g.GenesisConfig.Config.StateScheme) {
+		// Seed the QMDB twig forest from the alloc and persist it to the genesis
+		// tx (committed by the caller), so the node's block-producing computer
+		// reloads a non-empty forest. Cross-check the seeded root against the
+		// header root the block was built with.
+		qroot, err := SeedQMDBGenesis(tx)
+		if err != nil {
+			return nil, statedb, fmt.Errorf("cannot seed qmdb genesis forest: %w", err)
+		}
+		if g.GenesisConfig.StateRoot == (types.Hash{}) && block.StateRoot() != qroot {
+			return nil, statedb, fmt.Errorf("qmdb genesis root mismatch: header=%s computed=%s", block.StateRoot(), qroot)
+		}
+	} else if !useLegacyGenesisTrieRoots(g.GenesisConfig.Config) {
 		if verifiedRoot, err := ethcompat.VerifyStateRoot(tx); err != nil {
 			return nil, statedb, fmt.Errorf("cannot verify genesis state root: %w", err)
 		} else if g.GenesisConfig.StateRoot == (types.Hash{}) && block.StateRoot() != verifiedRoot {
