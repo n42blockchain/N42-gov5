@@ -2108,6 +2108,18 @@ func (n *Node) startMobileVerify() {
 	// node actually has — no allocation for arbitrary hashes.
 	n.mobileRegistry = mobileverify.NewRegistry()
 	n.mobileCertStore = mobileverify.NewCertStore(n.config.MobileVerifyCfg.CertBlocks)
+
+	// Phase 6c (n42 native chain): supply the committed accumulator root the
+	// leader stamps into the header when the MobileAnchor fork is active.
+	// Dormant while MobileAnchorTime is nil (eth-el, and any n42 chainspec that
+	// has not activated it) — the stamp only happens under IsMobileAnchor.
+	if n.miner != nil {
+		reg := n.mobileRegistry
+		n.miner.SetMobileAnchorRoot(func() *types.Hash {
+			root := reg.Root()
+			return &root
+		})
+	}
 	lookup := func(hash types.Hash) (uint64, bool) {
 		var number uint64
 		var ok bool

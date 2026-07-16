@@ -260,6 +260,12 @@ type worker struct {
 	// Injected via Miner.SetMobilePacketSink.
 	mobilePacketSink func(pkt *evmsdk.StreamPacket, blockNumber uint64)
 
+	// mobileAnchorRoot, when non-nil, supplies the committed mobile-registry
+	// accumulator root the leader stamps into Header.MobileRegistryRoot when
+	// the MobileAnchor fork is active (n42 native chain, phase 6c). Injected
+	// via Miner.SetMobileAnchorRoot.
+	mobileAnchorRoot func() *types.Hash
+
 	snapshotMu       sync.RWMutex
 	snapshotBlock    block.IBlock
 	snapshotReceipts block.Receipts
@@ -791,6 +797,18 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// mismatch on the very first sealed block).
 	if err := internal.ProcessExecutionBlockStart(current.header.ParentBeaconRoot, w.chainConfig, ibs, current.header, w.engine); err != nil {
 		return fmt.Errorf("miner block-start system calls: %w", err)
+	}
+
+	// N42 native chain (phase 6c): stamp the committed mobile-registry root
+	// into the header, then apply the anchor system call so the built state
+	// root matches what StateProcessor.Process recomputes on import. Both gated
+	// on IsMobileAnchor; a nil provider or inactive fork leaves the build path
+	// byte-identical. Not on eth-el (its miner path and chainspec never engage).
+	if w.mobileAnchorRoot != nil && w.chainConfig.IsMobileAnchor(current.header.Time) {
+		current.header.MobileRegistryRoot = w.mobileAnchorRoot()
+	}
+	if err := internal.ProcessMobileRegistryAnchor(w.chainConfig, ibs, current.header, state.NewNoopWriter()); err != nil {
+		return fmt.Errorf("miner mobile-anchor system call: %w", err)
 	}
 
 	tPrep := time.Since(start)

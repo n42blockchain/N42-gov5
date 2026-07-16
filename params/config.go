@@ -126,14 +126,14 @@ var (
 // ---------------------------------------------------------------------------
 
 var (
-	MainnetChainConfig            = readChainSpec("chainspecs/mainnet.json")
-	MainnetCompatChainConfig      = readChainSpec("chainspecs/mainnet_compat.json")       // backward-compatible (no Shanghai+), matches legacy genesis hash
-	MainnetV2ChainConfig          = readChainSpec("chainspecs/mainnet_v2.json")           // all forks from genesis (replay-v2)
-	MainnetV2StaggeredChainConfig = readChainSpec("chainspecs/mainnet_v2_staggered.json") // forks staggered at N42-block heights/times calendar-matched to real Ethereum mainnet activation dates (Shanghai/Cancun by block; Pectra/Osaka/Fusaka/Glamsterdam by real-world Unix time, since N42 block timestamps are real wall-clock)
-	MainnetMPTChainConfig         = readChainSpec("chainspecs/mainnet_mpt.json")          // replay-v2 with ethereum-mpt state roots
-	MainnetQMDBChainConfig        = readChainSpec("chainspecs/mainnet_qmdb.json")         // replay-v2 qmdb state roots + hotstuff live production
+	MainnetChainConfig              = readChainSpec("chainspecs/mainnet.json")
+	MainnetCompatChainConfig        = readChainSpec("chainspecs/mainnet_compat.json")         // backward-compatible (no Shanghai+), matches legacy genesis hash
+	MainnetV2ChainConfig            = readChainSpec("chainspecs/mainnet_v2.json")             // all forks from genesis (replay-v2)
+	MainnetV2StaggeredChainConfig   = readChainSpec("chainspecs/mainnet_v2_staggered.json")   // forks staggered at N42-block heights/times calendar-matched to real Ethereum mainnet activation dates (Shanghai/Cancun by block; Pectra/Osaka/Fusaka/Glamsterdam by real-world Unix time, since N42 block timestamps are real wall-clock)
+	MainnetMPTChainConfig           = readChainSpec("chainspecs/mainnet_mpt.json")            // replay-v2 with ethereum-mpt state roots
+	MainnetQMDBChainConfig          = readChainSpec("chainspecs/mainnet_qmdb.json")           // replay-v2 qmdb state roots + hotstuff live production
 	MainnetQMDBStaggeredChainConfig = readChainSpec("chainspecs/mainnet_qmdb_staggered.json") // qmdb + hotstuff live production with the staggered (calendar-parity) fork schedule — 7-node live network base
-	TestnetChainConfig            = readChainSpec("chainspecs/testnet.json")
+	TestnetChainConfig              = readChainSpec("chainspecs/testnet.json")
 
 	TestChainConfig = &ChainConfig{
 		ChainID:               big.NewInt(1),
@@ -263,6 +263,18 @@ type ChainConfig struct {
 	// Note: system-call writes are not yet harvested and the full BAL is not
 	// transmitted (only the header hash), so BAL-driven prefetch is not yet active.
 	BALTime *big.Int `json:"balTime,omitempty"`
+
+	// N42 extension: mobile-attestation accumulator anchor activation
+	// (docs/mobile-attestation-design.md §3.5, phase 6c). When set, blocks
+	// carry the committed mobile-registry accumulator root in
+	// Header.MobileRegistryRoot, and a system call writes it into a
+	// ring-buffer system contract (the EIP-4788 beacon-root pattern), so the
+	// root becomes part of the state root — tamper-evident and state-proof
+	// verifiable. The root is a HEADER-PROVIDED value stamped by the leader;
+	// followers store it verbatim (no recomputation), so it can never fork
+	// consensus. Nil = disabled (header field omitted from RLP, pre-fork
+	// block hashes byte-identical). Keep nil until validated on a test chain.
+	MobileAnchorTime *big.Int `json:"mobileAnchorTime,omitempty"`
 
 	// StateScheme determines the state commitment algorithm for Header.Root.
 	// Set at genesis, immutable thereafter. Nodes MUST refuse to start if the

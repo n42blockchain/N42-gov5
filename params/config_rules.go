@@ -68,6 +68,7 @@ type Rules struct {
 	IsAIInference                                               bool // N42 extension: AI inference precompile
 	IsRandomness                                                bool // N42 extension: on-chain randomness beacon precompile
 	IsBAL                                                       bool // N42 extension: EIP-7928 block-level access list
+	IsMobileAnchor                                              bool // N42 native chain: mobile-attestation accumulator root anchor (NOT eth-el)
 }
 
 // Rules ensures c's ChainID is not nil.
@@ -129,6 +130,7 @@ func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 		IsAIInference:         c.IsAIInference(timestamp),
 		IsRandomness:          c.IsRandomness(timestamp),
 		IsBAL:                 c.IsBAL(timestamp),
+		IsMobileAnchor:        c.IsMobileAnchor(timestamp),
 	}
 	rules.applyForkInheritance()
 	rulesCacheMu.Lock()
@@ -372,6 +374,15 @@ func (c *ChainConfig) IsLtHash(time uint64) bool {
 // activation. When enabled, blocks bind the canonical BAL hash into the header.
 func (c *ChainConfig) IsBAL(time uint64) bool {
 	return isForked(c.BALTime, time)
+}
+
+// IsMobileAnchor returns whether time is at or past the mobile-attestation
+// accumulator anchor activation (n42 native chain only; eth-el chainspecs
+// leave MobileAnchorTime nil, so this is always false there). When enabled,
+// the n42 build/import paths bind the mobile-registry root into the header and
+// write it to a ring-buffer system contract.
+func (c *ChainConfig) IsMobileAnchor(time uint64) bool {
+	return isForked(c.MobileAnchorTime, time)
 }
 
 // IsEip1559FeeCollector returns whether num has reached the EIP-1559 fee collector transition.
