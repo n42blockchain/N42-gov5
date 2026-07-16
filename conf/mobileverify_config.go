@@ -12,11 +12,20 @@ type MobileVerifyCfg struct {
 	Enabled bool `json:"enabled" yaml:"enabled"`
 	// PacketWindow is how many recent blocks' packets to retain (design §4).
 	PacketWindow uint64 `json:"packet_window" yaml:"packet_window"`
+	// HTTPAddr is the phone-facing listen address (design §3, §5b/c);
+	// empty disables the HTTP surface (packet gossip/cache still run).
+	HTTPAddr string `json:"http_addr" yaml:"http_addr"`
+	// CollectWindowSec is the receipt collection span per block (§5c).
+	CollectWindowSec int `json:"collect_window_sec" yaml:"collect_window_sec"`
+	// CertBlocks is how many recent blocks' certificates to retain (§6).
+	CertBlocks int `json:"cert_blocks" yaml:"cert_blocks"`
 }
 
 // DefaultMobileVerifyCfg returns the default (disabled) configuration.
 func DefaultMobileVerifyCfg() MobileVerifyCfg {
 	return MobileVerifyCfg{
-		PacketWindow: 256,
+		PacketWindow:     256,
+		CollectWindowSec: 45,
+		CertBlocks:       512,
 	}
 }
