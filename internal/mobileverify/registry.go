@@ -381,3 +381,99 @@ func (r *Registry) IndexBound() int {
 	defer r.mu.RUnlock()
 	return len(r.committed)
 }
+
+// snapshotMagic + version prefix the committed-set snapshot wire format.
+const (
+	snapshotMagic   = 0x4d565253 // "MVRS"
+	snapshotVersion = 0x01
+	snapshotEntrySz = 48 + 96 + 1 + 8 // pubkey ‖ pop ‖ active ‖ lastSeenMs(BE)
+)
+
+// ExportCommitted serializes the committed member set in index order — the
+// canonical bulk-sync payload a node serves to peers doing initial catch-up
+// (the gossip path only carries incremental new registrations). The order is
+// the append order, which is deterministic across nodes (CommitEpoch appends
+// keyHash-sorted), so ImportCommitted reproduces the identical BMT and root.
+// Layout: [magic:4][ver:1][count:4] then count × (pubkey:48 ‖ pop:96 ‖
+// active:1 ‖ lastSeenMs:8), all big-endian.
+func (r *Registry) ExportCommitted() []byte {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]byte, 0, 9+len(r.committed)*snapshotEntrySz)
+	var hdr [9]byte
+	binary.BigEndian.PutUint32(hdr[0:4], snapshotMagic)
+	hdr[4] = snapshotVersion
+	binary.BigEndian.PutUint32(hdr[5:9], uint32(len(r.committed)))
+	out = append(out, hdr[:]...)
+	for i := range r.committed {
+		e := &r.committed[i]
+		out = append(out, e.pubkey[:]...)
+		out = append(out, e.pop[:]...)
+		if e.active {
+			out = append(out, 1)
+		} else {
+			out = append(out, 0)
+		}
+		var ls [8]byte
+		binary.BigEndian.PutUint64(ls[:], e.lastSeenMs)
+		out = append(out, ls[:]...)
+	}
+	return out
+}
+
+// ImportCommitted rebuilds the committed set from an ExportCommitted payload
+// and returns the resulting accumulator root. The caller MUST verify that
+// root against the on-chain / header-anchored root before trusting the set —
+// a peer that serves a tampered snapshot yields a different root and is
+// rejected, so the bulk-sync path needs no trust in the serving node. Only
+// valid on a registry with no committed members yet (fresh catch-up); pending
+// entries are left untouched.
+func (r *Registry) ImportCommitted(data []byte) (types.Hash, error) {
+	if len(data) < 9 {
+		return types.Hash{}, fmt.Errorf("mobileverify: snapshot too short")
+	}
+	if binary.BigEndian.Uint32(data[0:4]) != snapshotMagic || data[4] != snapshotVersion {
+		return types.Hash{}, fmt.Errorf("mobileverify: bad snapshot header")
+	}
+	count := int(binary.BigEndian.Uint32(data[5:9]))
+	body := data[9:]
+	if len(body) != count*snapshotEntrySz {
+		return types.Hash{}, fmt.Errorf("mobileverify: snapshot length %d != %d entries", len(body), count)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.committed) != 0 {
+		return types.Hash{}, fmt.Errorf("mobileverify: ImportCommitted requires an empty committed set")
+	}
+	committed := make([]committedEntry, 0, count)
+	byKey := make(map[[48]byte]MobileIndex, count)
+	tree := bmt.New(bmt.NewMemStore())
+	for i := 0; i < count; i++ {
+		off := i * snapshotEntrySz
+		var pub [48]byte
+		var pop [96]byte
+		copy(pub[:], body[off:off+48])
+		copy(pop[:], body[off+48:off+144])
+		active := body[off+144] == 1
+		lastSeen := binary.BigEndian.Uint64(body[off+145 : off+153])
+		pk, err := bls.PublicKeyFromBytes(pub[:])
+		if err != nil {
+			return types.Hash{}, fmt.Errorf("mobileverify: snapshot entry %d bad pubkey: %w", i, err)
+		}
+		idx := MobileIndex(len(committed))
+		committed = append(committed, committedEntry{
+			pubkey: pub, pk: pk, pop: pop, active: active, lastSeenMs: lastSeen,
+		})
+		byKey[pub] = idx
+		var v [8]byte
+		binary.BigEndian.PutUint64(v[:], uint64(idx))
+		if err := tree.Put(bmt.HashKey(pub[:]), v[:]); err != nil {
+			return types.Hash{}, fmt.Errorf("mobileverify: snapshot tree put %d: %w", i, err)
+		}
+	}
+	r.committed = committed
+	r.byKey = byKey
+	r.tree = tree
+	return r.tree.Root(), nil
+}

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,11 +40,29 @@ type HTTPServer struct {
 
 	srv     *http.Server
 	regRate *ipRateLimiter
+
+	// Sybil gates for /register (design §7 item 2). powBits > 0 demands a
+	// registration proof-of-work; a non-nil attestor demands (and verifies) a
+	// platform device attestation. Both default off.
+	powBits  int
+	attestor DeviceAttestor
 }
 
 // SetAlarms wires the divergence alarm buffer so GET /mobileverify/alarms
 // can serve it. Optional; nil alarms just report empty.
 func (s *HTTPServer) SetAlarms(a *AlarmBuffer) { s.alarms = a }
+
+// SetRegisterPoWBits enables the registration proof-of-work gate at the given
+// difficulty (leading zero bits, capped at MaxRegisterPoWBits). 0 disables.
+func (s *HTTPServer) SetRegisterPoWBits(bits int) {
+	if bits > MaxRegisterPoWBits {
+		bits = MaxRegisterPoWBits
+	}
+	s.powBits = bits
+}
+
+// SetDeviceAttestor enables the device-attestation gate. nil disables.
+func (s *HTTPServer) SetDeviceAttestor(a DeviceAttestor) { s.attestor = a }
 
 // NewHTTPServer wires the server against the pipeline components.
 func NewHTTPServer(addr string, reg *Registry, packets *PacketService, windows *WindowManager, certs *CertStore) *HTTPServer {
@@ -61,6 +80,7 @@ func NewHTTPServer(addr string, reg *Registry, packets *PacketService, windows *
 	mux.HandleFunc("/mobileverify/cert/", s.handleCert)
 	mux.HandleFunc("/mobileverify/magnet/", s.handleMagnet)
 	mux.HandleFunc("/mobileverify/alarms", s.handleAlarms)
+	mux.HandleFunc("/mobileverify/snapshot", s.handleSnapshot)
 	mux.HandleFunc("/mobileverify/health", s.handleHealth)
 	s.srv = &http.Server{
 		Addr:              addr,
@@ -98,6 +118,12 @@ func (s *HTTPServer) Stop() {
 type registerRequest struct {
 	Pubkey string `json:"pubkey"`
 	PoP    string `json:"pop"`
+	// PowNonce is the registration proof-of-work solution (decimal uint64
+	// string) — required when the server enforces RegisterPoWBits (§7 item 2).
+	PowNonce string `json:"pow_nonce,omitempty"`
+	// Attestation is an opaque platform device-attestation blob (hex) —
+	// required when the server has a DeviceAttestor configured.
+	Attestation string `json:"attestation,omitempty"`
 }
 
 func (s *HTTPServer) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -119,6 +145,31 @@ func (s *HTTPServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if !hexInto(req.Pubkey, pubkey[:]) || !hexInto(req.PoP, pop[:]) {
 		httpError(w, http.StatusBadRequest, "pubkey must be 48 hex bytes, pop 96")
 		return
+	}
+	// Sybil gates run BEFORE the (more expensive) PoP signature check inside
+	// Register. PoW first — one hash to verify; a missing/invalid solution is
+	// answered with 428 + the demanded difficulty so clients can solve+retry.
+	if s.powBits > 0 {
+		nonce, perr := strconv.ParseUint(req.PowNonce, 10, 64)
+		if req.PowNonce == "" || perr != nil || !VerifyPoW(pubkey, nonce, s.powBits) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusPreconditionRequired)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": ErrPoWRequired.Error(), "pow_bits": s.powBits,
+			})
+			return
+		}
+	}
+	if s.attestor != nil {
+		att, aerr := hex.DecodeString(strings.TrimPrefix(req.Attestation, "0x"))
+		if req.Attestation == "" || aerr != nil {
+			httpError(w, http.StatusForbidden, ErrAttestationRequired.Error())
+			return
+		}
+		if verr := s.attestor.VerifyDevice(pubkey, att); verr != nil {
+			httpError(w, http.StatusForbidden, "device attestation rejected: "+verr.Error())
+			return
+		}
 	}
 	idx, committed, err := s.reg.Register(pubkey, pop)
 	if err != nil {
@@ -252,6 +303,23 @@ func (s *HTTPServer) handleAlarms(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, s.alarms.Recent(100))
+}
+
+// handleSnapshot serves the committed member set for peer bulk-sync. The body
+// is the raw ExportCommitted payload; the fetching peer imports it into a
+// fresh registry and MUST verify the resulting root against the header-anchored
+// root before trusting it (a tampered snapshot yields a different root). The
+// current root is echoed in a header for a cheap pre-check.
+func (s *HTTPServer) handleSnapshot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		httpError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	blob := s.reg.ExportCommitted()
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("X-Mobileverify-Root", s.reg.Root().Hex())
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(blob)
 }
 
 func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
