@@ -530,6 +530,13 @@ func (t *Tree) Set(keyHash Hash, value []byte) {
 	}
 	slot := t.nextSlot
 	t.nextSlot++
+	if t.rec != nil {
+		// AppendedKeys[slot-PrevNextSlot] == keyHash: recording started at
+		// PrevNextSlot and every append lands here, so the positions line up
+		// by construction. ApplyUndo's truncation pass depends on this to
+		// drop index mappings without reading entries back (see BlockUndo).
+		t.rec.AppendedKeys = append(t.rec.AppendedKeys, keyHash)
+	}
 	tw := t.twigFor(slot)
 	local := slot % TwigSize
 	v := t.allocVal(value)

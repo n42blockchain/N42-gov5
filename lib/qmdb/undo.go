@@ -39,6 +39,19 @@ type BlockUndo struct {
 	PrevNextSlot uint64 // append cursor BEFORE the block's operations
 	Entries      []UndoEntry
 
+	// AppendedKeys[i] is the keyHash appended at slot PrevNextSlot+i, captured
+	// at Set time (the key is a function argument there — free to record).
+	// ApplyUndo's truncation pass needs exactly these keys to drop the index
+	// mappings; reading them back from the tree instead (the pre-v2 behavior)
+	// relied on "live slots are always readable", which breaks when a failed
+	// block's mid-execution flush/evict pushed its appends into an MDBX tx
+	// that was then rolled back — the cold rows vanish with the rollback and
+	// the revert dies half-way through mutating the tree (observed live:
+	// "live appended slot 89399985 unreadable during revert" wedging a
+	// validator permanently). With the keys in the record, the truncation
+	// pass never needs an entry read at all.
+	AppendedKeys []Hash
+
 	// broken poisons the record when a deactivated slot's entry could not be
 	// read back at record time (entry log / index disagreement) — ProofAt
 	// refuses poisoned records instead of producing a wrong historical root.
@@ -90,19 +103,28 @@ func (t *Tree) recordDeactivation(slot uint64, keyHash Hash) {
 	t.rec.Entries = append(t.rec.Entries, UndoEntry{Slot: slot, KeyHash: keyHash, Value: v})
 }
 
-const blockUndoVersion = 0x01
+const (
+	blockUndoVersion   = 0x01 // legacy: no appended-keys section
+	blockUndoVersionV2 = 0x02 // v1 body + appended-keys section
+)
 
 // Marshal encodes the undo record:
 //
 //	[0] version | uvarint prevNextSlot | uvarint count
 //	per entry: uvarint slot | keyHash 32B | uvarint valueLen | value
+//	v2 only:   uvarint appendedCount | appendedCount * 32B keyHashes
+//
+// Records are always written as v2 now; UnmarshalBlockUndo still reads v1
+// (records persisted by pre-v2 binaries). Downgrading a node past this
+// version leaves its recent undo window unreadable to the old binary —
+// one-way, like every other qmdb schema bump.
 func (u *BlockUndo) Marshal() []byte {
-	size := 1 + 2*binary.MaxVarintLen64
+	size := 1 + 3*binary.MaxVarintLen64 + 32*len(u.AppendedKeys)
 	for _, e := range u.Entries {
 		size += binary.MaxVarintLen64*2 + 32 + len(e.Value)
 	}
 	out := make([]byte, 0, size)
-	out = append(out, blockUndoVersion)
+	out = append(out, blockUndoVersionV2)
 	out = binary.AppendUvarint(out, u.PrevNextSlot)
 	out = binary.AppendUvarint(out, uint64(len(u.Entries)))
 	for _, e := range u.Entries {
@@ -111,14 +133,19 @@ func (u *BlockUndo) Marshal() []byte {
 		out = binary.AppendUvarint(out, uint64(len(e.Value)))
 		out = append(out, e.Value...)
 	}
+	out = binary.AppendUvarint(out, uint64(len(u.AppendedKeys)))
+	for i := range u.AppendedKeys {
+		out = append(out, u.AppendedKeys[i][:]...)
+	}
 	return out
 }
 
-// UnmarshalBlockUndo decodes a record produced by Marshal.
+// UnmarshalBlockUndo decodes a record produced by Marshal (v1 or v2).
 func UnmarshalBlockUndo(b []byte) (*BlockUndo, error) {
-	if len(b) < 3 || b[0] != blockUndoVersion {
-		return nil, errors.New("qmdb: not a v1 block-undo record")
+	if len(b) < 3 || (b[0] != blockUndoVersion && b[0] != blockUndoVersionV2) {
+		return nil, errors.New("qmdb: not a v1/v2 block-undo record")
 	}
+	hasAppendedKeys := b[0] == blockUndoVersionV2
 	p := b[1:]
 	uvarint := func() (uint64, error) {
 		v, n := binary.Uvarint(p)
@@ -159,6 +186,22 @@ func UnmarshalBlockUndo(b []byte) (*BlockUndo, error) {
 		copy(e.Value, p[:vl])
 		p = p[vl:]
 		u.Entries = append(u.Entries, e)
+	}
+	if hasAppendedKeys {
+		akCount, err := uvarint()
+		if err != nil {
+			return nil, err
+		}
+		// Overflow-safe form of len(p) < akCount*32: a corrupt huge count must
+		// fail the length check, not wrap around it into a giant allocation.
+		if akCount > uint64(len(p))/32 {
+			return nil, errors.New("qmdb: block-undo truncated at appended keys")
+		}
+		u.AppendedKeys = make([]Hash, akCount)
+		for i := uint64(0); i < akCount; i++ {
+			copy(u.AppendedKeys[i][:], p[:32])
+			p = p[32:]
+		}
 	}
 	if len(p) != 0 {
 		return nil, fmt.Errorf("qmdb: block-undo %d trailing bytes", len(p))
