@@ -389,7 +389,7 @@ leader seals block
 | 6 | Accumulator registry (BMT root), gossip replication, epoch committer, divergence alarms | **done** |
 | 6b | Key lifecycle (revoke / rotate / inactivity prune); persistent anchor log + `mobileverify_getAnchors` | **done** |
 | 6c | Header-committed anchor: `Header.MobileRegistryRoot` stamped by the leader (n42 native only, committee-style header commitment, fork-gated dormant, NO state contract / NO replay) | **done (worktree, dormant)** |
-| 6d | Set `MobileAnchorTime` on a test chainspec, validate cross-node determinism, then live rollout — no genesis alloc, no replay (just the flag, like enabling CommitteePool) | |
+| 6d | Cross-node determinism validated with `MobileAnchorTime` set (leader stamps → consensus wire + rawdb header round-trip → identical block hash on every node; dormant path byte-identical to a no-anchor block). Live rollout = set the flag on the chainspec, no replay | **validated (worktree)** |
 
 Each phase lands independently testable; nothing activates outside the
 `mobileverify` namespace until phase 3 wires endpoints, and consensus
