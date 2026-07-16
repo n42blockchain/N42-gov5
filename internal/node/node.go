@@ -26,6 +26,7 @@ package node
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -35,7 +36,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"encoding/hex"
 	"strings"
 	"sync"
 	"time"
@@ -73,10 +73,10 @@ import (
 	"github.com/n42blockchain/N42/internal/api/consensusrest"
 	"github.com/n42blockchain/N42/internal/api/graphql"
 	"github.com/n42blockchain/N42/internal/blockhashindex"
+	"github.com/n42blockchain/N42/internal/blspool"
 	"github.com/n42blockchain/N42/internal/bridge"
 	"github.com/n42blockchain/N42/internal/bundler"
 	"github.com/n42blockchain/N42/internal/consensus"
-	"github.com/n42blockchain/N42/internal/blspool"
 	"github.com/n42blockchain/N42/internal/consensus/apoa"
 	"github.com/n42blockchain/N42/internal/consensus/apos"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
@@ -84,6 +84,7 @@ import (
 	"github.com/n42blockchain/N42/internal/debug"
 	"github.com/n42blockchain/N42/internal/deferred"
 	ethdevp2p "github.com/n42blockchain/N42/internal/devp2p"
+	"github.com/n42blockchain/N42/internal/distributed/compute/inference"
 	dcoprocessor "github.com/n42blockchain/N42/internal/distributed/coprocessor"
 	dmessaging "github.com/n42blockchain/N42/internal/distributed/messaging"
 	dnotify "github.com/n42blockchain/N42/internal/distributed/notify"
@@ -211,6 +212,7 @@ type Node struct {
 	dataGovernance     *governance.Committee           // Data governance (nil if disabled)
 	trainingProver     *training.TrainingProver        // ZK training verification (nil if disabled)
 	attestationService *attestation.AttestationService // Inference attestation (nil if disabled)
+	inferenceExecutor  *inference.WazeroExecutor       // AI inference WASM executor (nil if disabled)
 
 	zkProverService *zkprover.Service    // ZK prover gRPC client (nil if disabled)
 	zkVerifier      *zkverifier.Verifier // ZK proof verifier (nil if disabled)
@@ -363,7 +365,8 @@ func resolveAuxiliaryRuntimePlan(cfg *conf.Config, profile params.ProfileDescrip
 	aiConfigured := cfg.AICfg.Wallet.Enabled ||
 		cfg.AICfg.Governance.Enabled ||
 		cfg.AICfg.Training.Enabled ||
-		cfg.AICfg.Attestation.Enabled
+		cfg.AICfg.Attestation.Enabled ||
+		cfg.AICfg.Inference.Enabled
 	distributedConfigured := cfg.CoprocessorCfg.Enabled ||
 		cfg.MessagingCfg.Enabled ||
 		cfg.StorageCfg.Enabled ||
@@ -1966,6 +1969,42 @@ func (n *Node) startAIRuntime() {
 			"maxAgents", maxAgents,
 		)
 	}
+	if n.config.AICfg.Inference.Enabled {
+		n.startAIInference()
+	}
+}
+
+// startAIInference wires the AI inference precompile (0x0301) to a real WASM
+// execution backend: ModelRegistry (metadata) + a keccak256 in-memory CAS
+// (input/output blobs) + WazeroExecutor (genuine wazero-backed execution,
+// see internal/distributed/compute/wasm/wazero_runtime.go) + InferenceService
+// (opML request lifecycle) + PrecompileBackend (the vm.InferenceBackend
+// adapter). Before this wiring, vm.SetInferenceBackend was called only from
+// a unit test — every requestInference call in a real chain hit
+// errAIInferenceNoBackend regardless of chain config activation.
+//
+// The model registry starts empty: there is no admin RPC yet to register a
+// model's WASM bytecode at runtime (a follow-up), so until one is registered,
+// requestInference correctly fails with "model not registered" instead of
+// "no backend" — an accurate, not a misleading, error.
+func (n *Node) startAIInference() {
+	models := inference.NewModelRegistry()
+	cas := inference.NewMemCAS()
+	executor := inference.NewWazeroExecutor(n.ctx, inference.WazeroExecutorConfig{
+		FuncName:  n.config.AICfg.Inference.FuncName,
+		FuelLimit: n.config.AICfg.Inference.FuelLimit,
+	})
+	svc := inference.NewInferenceService(models)
+	svc.SetExecutor(executor)
+	backend := inference.NewPrecompileBackend(svc, cas.Load, cas.Store)
+
+	vm2.SetInferenceBackend(backend)
+	n.inferenceExecutor = executor
+	log.Info("AI inference precompile backend enabled",
+		"address", vm2.AIInferenceAddress.Hex(),
+		"funcName", n.config.AICfg.Inference.FuncName,
+		"fuelLimit", n.config.AICfg.Inference.FuelLimit,
+	)
 }
 
 func (n *Node) startDistributedRuntime() {
@@ -2440,6 +2479,15 @@ func (n *Node) stopServices() []error {
 			n.trainingProver = nil
 			n.dataGovernance = nil
 			n.agentRegistry = nil
+			return nil
+		}},
+		{"AI inference", func() error {
+			if n.inferenceExecutor != nil {
+				if err := n.inferenceExecutor.Close(context.Background()); err != nil {
+					log.Warn("AI inference executor close failed", "err", err)
+				}
+				n.inferenceExecutor = nil
+			}
 			return nil
 		}},
 		// 2d. Cross-chain bridge

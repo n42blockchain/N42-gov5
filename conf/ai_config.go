@@ -24,6 +24,18 @@ type AICfg struct {
 	Attestation AttestationCfg `json:"attestation" yaml:"attestation"`
 	// MEV AI optimizer: transaction ordering, fairness guard
 	MEVOptimizer MEVOptimizerCfg `json:"mev_optimizer" yaml:"mev_optimizer"`
+	// AI inference precompile (0x0301) backend: real WASM execution via wazero
+	Inference InferenceCfg `json:"inference" yaml:"inference"`
+}
+
+// InferenceCfg configures the AI inference precompile's execution backend.
+type InferenceCfg struct {
+	Enabled bool `json:"enabled" yaml:"enabled"`
+	// FuncName is the WASM export invoked for every inference request.
+	FuncName string `json:"func_name" yaml:"func_name"`
+	// FuelLimit bounds each execution (wall-clock-derived — see
+	// internal/distributed/compute/wasm/wazero_runtime.go).
+	FuelLimit uint64 `json:"fuel_limit" yaml:"fuel_limit"`
 }
 
 // WalletCfg configures AI agent wallet management.
@@ -101,6 +113,10 @@ func DefaultAICfg() AICfg {
 			OptimizationLevel: 1,
 			FallbackOnError:   true,
 			WindowSize:        32,
+		},
+		Inference: InferenceCfg{
+			FuncName:  "infer",
+			FuelLimit: 10_000_000,
 		},
 	}
 }

@@ -93,6 +93,7 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.6
 	github.com/spaolacci/murmur3 v1.1.0
 	github.com/spf13/afero v1.15.0
+	github.com/tetratelabs/wazero v1.12.0
 	github.com/thomaso-mirodin/intmath v0.0.0-20160323211736-5dc6d854e46e
 	github.com/tidwall/btree v1.8.1
 	github.com/ugorji/go/codec v1.3.1
