@@ -55,6 +55,16 @@ type Rotor struct {
 	directSends  atomic.Int64
 	relayedMsgs  atomic.Int64
 	fallbackUsed atomic.Int64
+
+	// Vote/timeout targeted-send metrics (handleSendToValidator), tracked
+	// separately from the proposal relay stats above: these count how often
+	// the direct-to-leader path (enabled by RegisterValidator wiring) actually
+	// resolves a peer vs. falling back to full gossip broadcast.
+	voteDirectSends   atomic.Int64
+	voteFallbackSends atomic.Int64
+
+	// registrations counts RegisterValidator calls (diagnostic only).
+	registrations atomic.Int64
 }
 
 // RelayAssignment maps a relay validator to its target validators.
@@ -88,6 +98,21 @@ func (r *Rotor) RegisterValidator(addr types.Address, pid peer.ID) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.peerRegistry[addr] = pid
+	r.registrations.Add(1)
+}
+
+// RegisteredPeerCount returns how many (address, peer.ID) mappings are
+// currently known, for diagnostics.
+func (r *Rotor) RegisteredPeerCount() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.peerRegistry)
+}
+
+// RegistrationEvents returns the cumulative count of RegisterValidator calls
+// (including overwrites of an existing mapping), for diagnostics.
+func (r *Rotor) RegistrationEvents() int64 {
+	return r.registrations.Load()
 }
 
 // UnregisterValidator removes a validator's peer mapping (e.g., on disconnect).
@@ -350,4 +375,18 @@ func (r *Rotor) Enabled() bool {
 // Stats returns Rotor metrics.
 func (r *Rotor) Stats() (directSends, relayed, fallbacks int64) {
 	return r.directSends.Load(), r.relayedMsgs.Load(), r.fallbackUsed.Load()
+}
+
+// RecordVoteDirect counts a targeted vote/timeout send that resolved a peer
+// via the registry and was handed to the transport successfully.
+func (r *Rotor) RecordVoteDirect() { r.voteDirectSends.Add(1) }
+
+// RecordVoteFallback counts a targeted vote/timeout send that fell back to
+// full gossip broadcast (peer unknown, or the direct send failed).
+func (r *Rotor) RecordVoteFallback() { r.voteFallbackSends.Add(1) }
+
+// VoteStats returns the targeted-send metrics recorded by
+// RecordVoteDirect/RecordVoteFallback.
+func (r *Rotor) VoteStats() (direct, fallback int64) {
+	return r.voteDirectSends.Load(), r.voteFallbackSends.Load()
 }
