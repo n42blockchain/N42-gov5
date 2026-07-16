@@ -43,7 +43,11 @@ func (s *Service) blockByHashStreamHandler(stream network.Stream) {
 		writeErrorResponseToStream(responseCodeServerError, "block not found", stream, s.cfg.p2p)
 		return
 	}
-	log.Info("block by hash: serving", "reqHash", hash.Hex()[:12], "blkHash", blk.Hash().Hex()[:12], "number", blk.Number64().Uint64())
+	// Debug, not Info: this fires once PER PEER PER FAN-OUT of a single
+	// fetch-on-miss, so at Info a single wedged requester re-fetching in a
+	// loop turned every healthy peer's run.log into a sustained multi-MB/s
+	// write stream (observed live: 7/7 nodes' logs ballooning in lockstep).
+	log.Debug("block by hash: serving", "reqHash", hash.Hex()[:12], "blkHash", blk.Hash().Hex()[:12], "number", blk.Number64().Uint64())
 	if err := WriteBlockChunk(stream, s.cfg.chain, s.cfg.p2p.Encoding(), blk); err != nil {
 		log.Debug("block by hash: write failed", "hash", hash.Hex()[:12], "err", err)
 	}
@@ -68,6 +72,22 @@ func (s *Service) FetchBlockByHash(hash types.Hash) {
 	// stale same-height candidates' retries tug the applied head between
 	// sibling branches every 2s, so the CURRENT proposal's parent never
 	// stayed aligned long enough for its import to succeed.
+	// Per-hash rate limit, covering BOTH paths below: the engine re-requests
+	// a missing proposal on every event that touches it, several times a
+	// second. The remote path fans out to EVERY connected peer — a node
+	// wedged on one unimportable block hammered the same hashes 1.5M times in
+	// a few hours, network spam plus a serve-log line on all six peers per
+	// copy. The local path spawns an alignAndImport per call — the same wedge
+	// re-ran the discontinuity realign (an MDBX-write + log line each time)
+	// in a tight loop for hours. One attempt per fetchMissInterval per hash
+	// keeps liveness (retries still land every interval) and caps both.
+	s.fetchMissLock.Lock()
+	if last, ok := s.fetchMissCache.Get(hash); ok && time.Since(last) < fetchMissInterval {
+		s.fetchMissLock.Unlock()
+		return
+	}
+	s.fetchMissCache.Add(hash, time.Now())
+	s.fetchMissLock.Unlock()
 	if blk, _ := s.cfg.chain.GetBlockByHash(hash); blk != nil {
 		go s.alignAndImport(blk)
 		return

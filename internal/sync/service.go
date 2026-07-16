@@ -52,7 +52,25 @@ var (
 	newSeenBlockCache = func() (*lru.Cache[types.Hash, *block.Block], error) {
 		return lru.New[types.Hash, *block.Block](seenBlockSize)
 	}
+	newFetchMissCache = func() (*lru.Cache[types.Hash, time.Time], error) {
+		return lru.New[types.Hash, time.Time](fetchMissLimitSize)
+	}
 )
+
+// fetchMissLimitSize bounds the fetch-on-miss rate-limit cache; a few hundred
+// distinct in-flight hashes is far beyond anything a healthy or even wedged
+// node produces per interval.
+const fetchMissLimitSize = 512
+
+// fetchMissInterval is the minimum spacing between full peer fan-outs for the
+// SAME block hash. The consensus engine re-requests a missing proposal on
+// every event that touches it (deferring votes, view retries — several times
+// a second), and a wedged node repeated that fan-out 1.5 million times over a
+// few hours: every peer served (and Info-logged) each copy, so ONE stuck
+// validator turned into sustained multi-MB/s log writes on ALL seven nodes.
+// One fan-out per interval preserves liveness (the fetch still happens,
+// retries still happen) while capping the damage.
+const fetchMissInterval = 2 * time.Second
 
 // validationFn is a functional type for p2p validation options.
 type validationFn func(ctx context.Context) (pubsub.ValidationResult, error)
@@ -95,6 +113,10 @@ type Service struct {
 	seenBlockLock  sync.RWMutex
 	badBlockLock   sync.RWMutex
 	badBlockCache  *lru.Cache[types.Hash, bool]
+
+	// fetch-on-miss per-hash rate limit (see fetchMissInterval).
+	fetchMissLock  sync.Mutex
+	fetchMissCache *lru.Cache[types.Hash, time.Time]
 
 	validateBlockLock sync.RWMutex
 }
@@ -215,6 +237,10 @@ func (s *Service) initCaches() error {
 	s.seenBlockCache, err = newSeenBlockCache()
 	if err != nil {
 		return fmt.Errorf("create seen block cache: %w", err)
+	}
+	s.fetchMissCache, err = newFetchMissCache()
+	if err != nil {
+		return fmt.Errorf("create fetch-miss cache: %w", err)
 	}
 	return nil
 }
