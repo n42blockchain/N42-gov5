@@ -37,6 +37,7 @@ import (
 	"github.com/holiman/uint256"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/n42blockchain/N42/cmd/evmsdk"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/metrics"
@@ -48,6 +49,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/internal/miner/builder"
+	"github.com/n42blockchain/N42/internal/streamverify"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/zkprover"
 	"github.com/n42blockchain/N42/lib/kv/layered"
@@ -250,6 +252,13 @@ type worker struct {
 		SubmitBlock(blockHash types.Hash, blockNum uint64, guestInput []byte) error
 	}
 	aiOptimizer AIOptimizer // AI transaction ordering optimizer (nil if disabled)
+
+	// mobilePacketSink, when non-nil, receives the StreamPacket produced
+	// for each sealed block (read log captured during build, final header
+	// from FinalizeAndAssemble). Non-nil is the enable switch: without a
+	// sink no recorder is wrapped and the build path is unchanged.
+	// Injected via Miner.SetMobilePacketSink.
+	mobilePacketSink func(pkt *evmsdk.StreamPacket, blockNumber uint64)
 
 	snapshotMu       sync.RWMutex
 	snapshotBlock    block.IBlock
@@ -740,6 +749,15 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		stateReader = tracingReader
 	}
 
+	// Wrap with the mobile-verification read-log recorder when a packet
+	// sink is wired (docs/mobile-attestation-design.md §4). Same observer
+	// pattern as TracingReader above: capture-only, execution unchanged.
+	var readLogRecorder *streamverify.ReadLogRecorder
+	if w.mobilePacketSink != nil {
+		readLogRecorder = streamverify.NewReadLogRecorder(stateReader, nil)
+		stateReader = readLogRecorder
+	}
+
 	stateWriter := state.NewNoopWriter()
 	ibs := state.New(stateReader)
 	// Inject an isolated root computer so the assembled block's stateRoot uses
@@ -804,7 +822,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	log.Info("miner: build phases",
 		"align", tAlign, "reload", tReload-tAlign, "syscalls", tPrep-tReload,
 		"fillTx", time.Since(start)-tPrep, "total", time.Since(start))
-	if err = w.commit(current, stateWriter, ibs, start, headers, tracingReader); err != nil {
+	if err = w.commit(current, stateWriter, ibs, start, headers, tracingReader, readLogRecorder); err != nil {
 		log.Errorf("w.commit failed, error %v\n", err)
 		return err
 	}
@@ -1173,7 +1191,7 @@ func (w *worker) makeEnv(parent *block.Header, header *block.Header, coinbase ty
 	return env
 }
 
-func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs *state.IntraBlockState, start time.Time, needHeaders []*block.Header, tracingReader *witness.TracingReader) error {
+func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs *state.IntraBlockState, start time.Time, needHeaders []*block.Header, tracingReader *witness.TracingReader, readLogRecorder *streamverify.ReadLogRecorder) error {
 	if !w.isRunning() {
 		return nil
 	}
@@ -1182,6 +1200,21 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	iblock, rewards, unpay, err := w.engine.FinalizeAndAssemble(w.chain, envCopy.header, ibs, envCopy.txs, nil, envCopy.receipts)
 	if err != nil {
 		return err
+	}
+
+	// Mobile-verification packet: the recorder captured this block's read
+	// log during the build; pair it with the FINAL header (receipts root,
+	// state root, gas used are set by FinalizeAndAssemble) and hand off to
+	// the sink. Best-effort by design — packet production must never fail
+	// a block.
+	if w.mobilePacketSink != nil && readLogRecorder != nil {
+		if finalHeader, ok := iblock.Header().(*block.Header); ok {
+			if pkt, perr := streamverify.BuildStreamPacket(finalHeader, envCopy.txs, readLogRecorder); perr != nil {
+				log.Warn("mobileverify: packet build failed", "number", finalHeader.Number.Uint64(), "err", perr)
+			} else if num, nerr := requireBlockNumber(iblock, "sealed block number unavailable"); nerr == nil {
+				w.mobilePacketSink(pkt, num.Uint64())
+			}
+		}
 	}
 
 	// Generate witness after FinalizeAndAssemble when JMT + TracingReader are active.
