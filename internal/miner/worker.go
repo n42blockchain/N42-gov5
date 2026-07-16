@@ -799,16 +799,16 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		return fmt.Errorf("miner block-start system calls: %w", err)
 	}
 
-	// N42 native chain (phase 6c): stamp the committed mobile-registry root
-	// into the header, then apply the anchor system call so the built state
-	// root matches what StateProcessor.Process recomputes on import. Both gated
-	// on IsMobileAnchor; a nil provider or inactive fork leaves the build path
-	// byte-identical. Not on eth-el (its miner path and chainspec never engage).
+	// N42 native chain (phase 6c): stamp the committed mobile-registry root into
+	// the header when the MobileAnchor fork is active. This is a HEADER
+	// commitment only — like the CommitteePool's ParentBeaconRoot link, it binds
+	// the root into the block hash (RLP) with NO state-trie write, so it needs no
+	// system contract, no genesis alloc and no replay to activate. The full
+	// history lives in the rawdb anchor log (phase 6b). Gated on IsMobileAnchor;
+	// a nil provider or inactive fork leaves the header field nil (byte-identical
+	// pre-fork / on eth-el).
 	if w.mobileAnchorRoot != nil && w.chainConfig.IsMobileAnchor(current.header.Time) {
 		current.header.MobileRegistryRoot = w.mobileAnchorRoot()
-	}
-	if err := internal.ProcessMobileRegistryAnchor(w.chainConfig, ibs, current.header, state.NewNoopWriter()); err != nil {
-		return fmt.Errorf("miner mobile-anchor system call: %w", err)
 	}
 
 	tPrep := time.Since(start)
