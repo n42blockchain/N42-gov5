@@ -108,7 +108,12 @@ func (m *WindowManager) Submit(r *Receipt) (MobileIndex, error) {
 		m.timers[hash] = time.AfterFunc(m.window, func() { m.closeWindow(hash) })
 	}
 	m.mu.Unlock()
-	return col.Add(r)
+	idx, err := col.Add(r)
+	if err == nil {
+		// Refresh the device's liveness so inactivity pruning spares it.
+		m.reg.MarkActive(r.VerifierPubkey)
+	}
+	return idx, err
 }
 
 func (m *WindowManager) closeWindow(hash types.Hash) {

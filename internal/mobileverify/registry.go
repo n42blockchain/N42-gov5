@@ -72,11 +72,16 @@ var (
 	ErrUnknownIndex = errors.New("mobileverify: unknown mobile index")
 )
 
-// committedEntry pins a device's committed identity.
+// committedEntry pins a device's committed identity. The pubkey stays in
+// the index-addressed slice even after revocation so historical certs
+// that reference its index still resolve (PublicKey), while active
+// membership (byKey + the BMT) drops it.
 type committedEntry struct {
-	pubkey [48]byte
-	pk     common.PublicKey
-	pop    [96]byte // retained so a batch commit can be re-announced on-chain
+	pubkey     [48]byte
+	pk         common.PublicKey
+	pop        [96]byte // retained so a batch commit can be re-announced on-chain
+	active     bool
+	lastSeenMs uint64 // wall clock of last attestation (commit time until first attest)
 }
 
 // Registry accumulates mobile memberships under a BMT root.
@@ -189,6 +194,7 @@ func (r *Registry) AdoptPending(pubkey [48]byte, pop [96]byte) (bool, error) {
 // number of devices committed in this batch. The returned root is what an
 // epoch batch anchors on-chain (design §3).
 func (r *Registry) CommitEpoch() (root types.Hash, committedNow int) {
+	nowMs := NowMs()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(r.pending) == 0 {
@@ -213,7 +219,9 @@ func (r *Registry) CommitEpoch() (root types.Hash, committedNow int) {
 			continue // PoP-verified at admission; unreachable
 		}
 		idx := MobileIndex(len(r.committed))
-		r.committed = append(r.committed, committedEntry{pubkey: e.pubkey, pk: parsed, pop: e.pop})
+		r.committed = append(r.committed, committedEntry{
+			pubkey: e.pubkey, pk: parsed, pop: e.pop, active: true, lastSeenMs: nowMs,
+		})
 		r.byKey[e.pubkey] = idx
 		var v [8]byte
 		binary.BigEndian.PutUint64(v[:], uint64(idx))
@@ -245,13 +253,81 @@ func (r *Registry) MembershipProof(pubkey [48]byte) (*bmt.Proof, error) {
 	return r.tree.GetProof(bmt.HashKey(pubkey[:]))
 }
 
-// Lookup returns the committed index for a pubkey. Pending (uncommitted)
-// keys report false — they cannot attest until the next epoch.
+// Lookup returns the committed index for an ACTIVE pubkey. Pending
+// (uncommitted) or revoked keys report false — they cannot attest.
 func (r *Registry) Lookup(pubkey [48]byte) (MobileIndex, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	idx, ok := r.byKey[pubkey]
 	return idx, ok
+}
+
+// MarkActive records that a committed device attested just now, refreshing
+// its liveness so PruneInactive does not revoke it. No-op for unknown keys.
+func (r *Registry) MarkActive(pubkey [48]byte) {
+	now := NowMs()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if idx, ok := r.byKey[pubkey]; ok {
+		r.committed[idx].lastSeenMs = now
+	}
+}
+
+// Revoke drops a committed device from active membership (design §3.4 —
+// key rotation / revocation): it leaves the BMT (membership no longer
+// proves), its byKey entry is removed (it cannot attest), and the root
+// advances. Its index slot and pubkey are RETAINED so historical certs
+// that reference the index still resolve. Returns the new root and
+// whether a device was revoked.
+func (r *Registry) Revoke(pubkey [48]byte) (types.Hash, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	idx, ok := r.byKey[pubkey]
+	if !ok {
+		return r.tree.Root(), false
+	}
+	_ = r.tree.Delete(bmt.HashKey(pubkey[:]))
+	r.committed[idx].active = false
+	delete(r.byKey, pubkey)
+	return r.tree.Root(), true
+}
+
+// Rotate revokes oldPubkey and admits newPubkey (with its PoP) to the
+// pending set — the device continues under a fresh key at the next commit.
+// Returns the post-revocation root.
+func (r *Registry) Rotate(oldPubkey [48]byte, newPubkey [48]byte, newPoP [96]byte) (types.Hash, error) {
+	if _, err := verifyPoP(newPubkey, newPoP); err != nil {
+		return types.Hash{}, err
+	}
+	root, _ := r.Revoke(oldPubkey)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.byKey[newPubkey]; !ok {
+		if _, ok := r.pending[newPubkey]; !ok {
+			r.pending[newPubkey] = newPoP
+		}
+	}
+	return root, nil
+}
+
+// PruneInactive revokes every active committed device whose last
+// attestation predates cutoffMs (design §3.4 — the committed set must not
+// grow unbounded). Returns the new root and the number pruned.
+func (r *Registry) PruneInactive(cutoffMs uint64) (types.Hash, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pruned := 0
+	for i := range r.committed {
+		e := &r.committed[i]
+		if !e.active || e.lastSeenMs >= cutoffMs {
+			continue
+		}
+		_ = r.tree.Delete(bmt.HashKey(e.pubkey[:]))
+		e.active = false
+		delete(r.byKey, e.pubkey)
+		pruned++
+	}
+	return r.tree.Root(), pruned
 }
 
 // PublicKey returns the committed key at an index.
@@ -281,11 +357,12 @@ func (r *Registry) PublicKeys(indices []MobileIndex) ([]common.PublicKey, error)
 	return out, nil
 }
 
-// Count returns the number of committed devices.
+// Count returns the number of ACTIVE committed devices (revoked
+// tombstones excluded).
 func (r *Registry) Count() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return len(r.committed)
+	return len(r.byKey)
 }
 
 // PendingCount returns the number of registrations awaiting the next commit.

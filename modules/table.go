@@ -114,6 +114,12 @@ const (
 	// is active.
 	BlockAccessLists = "BlockAccessList" // block_hash -> raw BAL RLP
 
+	// MobileRegistryAnchors persists the mobile attestation accumulator root
+	// per epoch (docs/mobile-attestation-design.md §3.3): epoch_u64 -> root(32)
+	// || headBlock(8) || timeMs(8). A durable, per-node, cross-checkable anchor
+	// log — NOT state-root-committed (that is the deferred consensus-path step).
+	MobileRegistryAnchors = "MobileRegistryAnchor" // epoch_u64 -> root||headBlock||timeMs
+
 	// Stores bitmap indices - in which block numbers saw logs of given 'address' or 'topic'
 	// [addr or topic] + [4 bytes shard number] -> bitmap(blockN)
 	// indices are sharded - because some bitmaps are >1Mb and when new incoming blocks process it
@@ -338,6 +344,7 @@ var n42Tables = []string{
 	DatabaseInfo,
 	ChainConfig,
 	BlockAccessLists,
+	MobileRegistryAnchors,
 
 	AccountsHistory,
 	AccountChangeSet,

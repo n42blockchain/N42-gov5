@@ -173,12 +173,39 @@ Consistency model, stated plainly:
   regular transaction / system write, never a header field followers
   reject on, so mobile registration can never fork liveness).
 
-### 3.4 Key lifecycle (open, honest gap)
+### 3.4 Key lifecycle
 
-Current registrations are permanent. Real deployment needs key rotation,
-inactivity pruning (the committed set must not grow unbounded), and
-revocation. Not yet built; flagged as a required follow-up, distinct
-from "just scale it up".
+Implemented (phase 6b):
+
+- **Revoke** removes a device from active membership: it leaves the BMT
+  (its membership proof and any new attestation are refused) and the root
+  advances, but its index slot and pubkey are RETAINED so historical
+  certs referencing that index still verify.
+- **Rotate** = revoke the old key, admit the new key to pending — the
+  device continues under a fresh key at the next commit.
+- **PruneInactive(cutoff)** revokes every active device whose last
+  attestation predates the cutoff, so the committed set does not grow
+  unbounded. Liveness is refreshed by `MarkActive`, called when a receipt
+  is admitted.
+
+### 3.5 Anchor persistence vs on-chain commitment (honest split)
+
+Two distinct things, only the first of which is built:
+
+- **Persistent anchor log (phase 6b, done).** Each epoch commit writes
+  `(epoch → root, headBlock, timeMs)` to a dedicated rawdb table
+  (`MobileRegistryAnchors`), queryable via `mobileverify_getAnchors`. This
+  is a durable, per-node, cross-checkable record: every node's anchor log
+  should converge, and a divergence between nodes' logs is itself a
+  signal. It is **not** in the state root.
+- **State-root-committed anchor (deferred, consensus-path).** Committing
+  the root into consensus state — the EIP-4788 pattern: an optional header
+  field the leader stamps and a system call writes to a system-contract
+  ring buffer, followers storing the header-provided bytes verbatim (no
+  recomputation, so it cannot fork), OR a regular transaction to a
+  registry contract. Either form changes the consensus-critical block
+  path and is deliberately NOT wired onto a live chain here — it deserves
+  an isolated hardening pass, not a change slipped into a running soak.
 
 ## 4. Component 2 — Leader produces verification data with the block
 
@@ -328,7 +355,8 @@ leader seals block
 | 4 | Client facade convergence: SDK + standalone app on the unified pipeline (registration call, receipt submission) | |
 | 5 | CDN deployment recipe; torrent-swarm distribution (reuse storage/torrent) | |
 | 6 | Accumulator registry (BMT root), gossip replication, epoch committer, divergence alarms | **done** |
-| 6b | On-chain batch anchoring of the accumulator root; key lifecycle (rotation / pruning / revocation) | |
+| 6b | Key lifecycle (revoke / rotate / inactivity prune); persistent anchor log + `mobileverify_getAnchors` | **done** |
+| 6c | State-root-committed anchor (header field + system call, or registry-contract tx) — the consensus-path step, isolated | |
 
 Each phase lands independently testable; nothing activates outside the
 `mobileverify` namespace until phase 3 wires endpoints, and consensus

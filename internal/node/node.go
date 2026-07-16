@@ -1670,9 +1670,26 @@ func (n *Node) Start() error {
 	// mobileverify_* namespace: read-only queries over the attestation
 	// pipeline (its own namespace by design — never consensus input).
 	if n.mobileRegistry != nil {
+		mvAPI := mobileverify.NewAPI(n.mobileRegistry, n.mobileCertStore, n.mobileWindows, n.mobileAlarms)
+		mvAPI.SetAnchorReader(func(count int) []mobileverify.AnchorView {
+			var out []mobileverify.AnchorView
+			_ = n.db.View(context.Background(), func(tx kv.Tx) error {
+				recs, err := rawdb.RecentMobileAnchors(tx, count)
+				if err != nil {
+					return err
+				}
+				for _, r := range recs {
+					out = append(out, mobileverify.AnchorView{
+						Epoch: r.Epoch, Root: r.Root.Hex(), HeadBlock: r.HeadBlock, TimeMs: r.TimeMs,
+					})
+				}
+				return nil
+			})
+			return out
+		})
 		n.rpcAPIs = append(n.rpcAPIs, jsonrpc.API{
 			Namespace: "mobileverify",
-			Service:   mobileverify.NewAPI(n.mobileRegistry, n.mobileCertStore, n.mobileWindows, n.mobileAlarms),
+			Service:   mvAPI,
 		})
 	}
 
@@ -2128,9 +2145,27 @@ func (n *Node) startMobileVerify() {
 	n.mobileRegService = regSvc
 
 	// Epoch committer (design §3): periodically folds pending into the
-	// committed accumulator and advances the on-chain-anchorable root.
+	// committed accumulator and advances the on-chain-anchorable root. Each
+	// commit persists the root to the anchor log (design §3.3) — a durable,
+	// cross-checkable record; the state-root-committed anchor is the deferred
+	// consensus-path step.
 	n.mobileCommitter = mobileverify.NewEpochCommitter(n.mobileRegistry,
 		time.Duration(n.config.MobileVerifyCfg.CollectWindowSec)*time.Second)
+	var mobileEpoch uint64
+	n.mobileCommitter.SetOnCommit(func(root types.Hash, _ int) {
+		mobileEpoch++
+		var head uint64
+		if cur := n.blockChain.CurrentBlock(); cur != nil {
+			head = cur.Number64().Uint64()
+		}
+		if err := n.db.Update(context.Background(), func(tx kv.RwTx) error {
+			return rawdb.WriteMobileAnchor(tx, rawdb.MobileAnchorRecord{
+				Epoch: mobileEpoch, Root: root, HeadBlock: head, TimeMs: mobileverify.NowMs(),
+			})
+		}); err != nil {
+			log.Warn("mobileverify: anchor persist failed", "epoch", mobileEpoch, "err", err)
+		}
+	})
 	n.mobileCommitter.Start()
 
 	// Phone-facing HTTP surface — its own listener, never the RPC ports.
