@@ -203,4 +203,3 @@ func httpErrorFrom(resp *http.Response) error {
 	}
 	return fmt.Errorf("mobileverify client: server status %d", resp.StatusCode)
 }
-
