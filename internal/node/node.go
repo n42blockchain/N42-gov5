@@ -64,6 +64,7 @@ import (
 	"github.com/n42blockchain/N42/contracts/deposit/nftstake"
 	"github.com/n42blockchain/N42/contracts/deposit/testnet"
 	"github.com/n42blockchain/N42/contracts/deposit/token"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/ai/attestation"
 	"github.com/n42blockchain/N42/internal/ai/coord"
@@ -219,7 +220,8 @@ type Node struct {
 
 	mobilePacketService *mobileverify.PacketService       // mobile attestation packet distribution (nil if disabled)
 	mobileRegistry      *mobileverify.Registry            // mobile BLS registry (nil if disabled)
-	mobileWindows       *mobileverify.WindowManager       // receipt collection windows (nil if disabled)
+	mobileCohort        *mobileverify.CohortCoordinator   // block-height cross-node cohort cert merge (nil if disabled)
+	mobileCohortRelay   *mobileverify.CohortRelay         // gossip wiring for the cohort merge protocol (nil if disabled)
 	mobileCertStore     *mobileverify.CertStore           // attestation certificates (nil if disabled)
 	mobileHTTPServer    *mobileverify.HTTPServer          // phone-facing HTTP surface (nil if disabled)
 	mobileTorrentClient *dtorrent.Client                  // swarm seeding client for packets (nil if disabled)
@@ -1681,7 +1683,7 @@ func (n *Node) Start() error {
 	// mobileverify_* namespace: read-only queries over the attestation
 	// pipeline (its own namespace by design — never consensus input).
 	if n.mobileRegistry != nil {
-		mvAPI := mobileverify.NewAPI(n.mobileRegistry, n.mobileCertStore, n.mobileWindows, n.mobileAlarms)
+		mvAPI := mobileverify.NewAPI(n.mobileRegistry, n.mobileCertStore, n.mobileCohort, n.mobileAlarms)
 		mvAPI.SetAnchorReader(func(count int) []mobileverify.AnchorView {
 			var out []mobileverify.AnchorView
 			_ = n.db.View(context.Background(), func(tx kv.Tx) error {
@@ -2071,6 +2073,30 @@ func (n *Node) startAIInference() {
 	)
 }
 
+// mobileSelfIdentity returns a stable per-node identity for CohortCoordinator's
+// cross-node cert/index announcements. Prefers Etherbase (the same identity
+// every other N42 subsystem uses), since it needs no new derivation and
+// stays consistent if the operator inspects logs/metrics across subsystems.
+// Falls back to a hash of this node's libp2p peer ID for a pure follower
+// with no configured account/keystore — startMobileVerify explicitly runs
+// on non-miner nodes too, so Etherbase() erroring here must not be fatal.
+// The value is never used for anything security-critical (only as a
+// dedup/reporter tag in the cohort-merge gossip protocol), so an unstable
+// fallback across restarts is a non-issue: it only ever needs to be stable
+// for the lifetime of one run.
+func (n *Node) mobileSelfIdentity() types.Address {
+	if eb, err := n.Etherbase(); err == nil {
+		return eb
+	}
+	if n.p2p != nil {
+		h := crypto.Keccak256([]byte(n.p2p.PeerID().String()))
+		var addr types.Address
+		copy(addr[:], h[:20])
+		return addr
+	}
+	return types.Address{}
+}
+
 // startMobileVerify assembles the mobile attestation packet pipeline
 // (docs/mobile-attestation-design.md §4-5a): a rolling-window cache of
 // encoded StreamPackets, a gossip service distributing them across the
@@ -2151,16 +2177,49 @@ func (n *Node) startMobileVerify() {
 		})
 		return number, ok
 	}
-	n.mobileWindows = mobileverify.NewWindowManager(
-		n.mobileRegistry, lookup,
-		time.Duration(n.config.MobileVerifyCfg.CollectWindowSec)*time.Second,
-		n.mobileCertStore,
+	// Block-height-coordinated cross-node cohort merge (replaces the earlier
+	// per-node wall-clock WindowManager): at up to hundreds of IDC nodes, a
+	// phone submitting to "any one node" meant every block could produce as
+	// many small, unrelated certs as nodes that happened to receive a
+	// submission — routing fragmentation, not the receipts-root divergence
+	// the alarm pipeline exists to catch. CohortCoordinator merges every
+	// node's cohort into one certificate per genuine outcome, using block
+	// height (not each node's own clock) as the coordination primitive.
+	n.mobileCohort = mobileverify.NewCohortCoordinator(
+		n.mobileRegistry, lookup, n.mobileCertStore,
+		n.mobileSelfIdentity(), mobileverify.DefaultCohortConfig(),
 	)
 
-	// Divergence alarms (design §6): multi-cohort windows land in a bounded
-	// ring exposed via the status/RPC surface.
+	// Divergence alarms (design §6): a genuine post-merge multi-root outcome
+	// lands in a bounded ring exposed via the status/RPC surface.
 	n.mobileAlarms = mobileverify.NewAlarmBuffer(256)
-	n.mobileWindows.SetDivergenceSink(n.mobileAlarms.Record)
+	n.mobileCohort.SetDivergenceSink(n.mobileAlarms.Record)
+
+	// Height is the shared clock every node's CohortCoordinator advances on
+	// — wired generically through BlockChain so this package stays decoupled
+	// from mobileverify (see SetOnBlockCommitted's doc comment).
+	if realBC, ok := n.blockChain.(*internal.BlockChain); ok {
+		realBC.SetOnBlockCommitted(n.mobileCohort.OnBlockCommitted)
+	}
+
+	// Cross-node cohort-merge gossip: index announcements (pre-aggregation
+	// conflict exclusion) and cert announcements (the disjoint per-node
+	// certs actually being merged). Both topics are cheap, best-effort
+	// traffic — same lightweight scoring as the packet/registration topics.
+	digest := utils.ToBytes4(n.p2pGenesisHash[:])
+	cohortIndexTopic := fmt.Sprintf(p2p.MobileCohortIndexTopicFormat, digest)
+	cohortCertTopic := fmt.Sprintf(p2p.MobileCohortCertTopicFormat, digest)
+	if n.p2p != nil {
+		cohortIndexTopic += n.p2p.Encoding().ProtocolSuffix()
+		cohortCertTopic += n.p2p.Encoding().ProtocolSuffix()
+	}
+	cohortRelay := mobileverify.NewCohortRelay(n.mobileCohort, n.p2p, n.mobileRegistry, cohortIndexTopic, cohortCertTopic)
+	if n.p2p != nil {
+		if err := cohortRelay.Start(); err != nil {
+			log.Error("mobileverify: cohort relay failed to start", "err", err)
+		}
+	}
+	n.mobileCohortRelay = cohortRelay
 
 	// Registration replication (design §3): gossip new registrations across
 	// the fleet so every node holds the same pending batch by epoch commit.
@@ -2202,7 +2261,7 @@ func (n *Node) startMobileVerify() {
 
 	// Phone-facing HTTP surface — its own listener, never the RPC ports.
 	if addr := n.config.MobileVerifyCfg.HTTPAddr; addr != "" {
-		httpSrv := mobileverify.NewHTTPServer(addr, n.mobileRegistry, svc, n.mobileWindows, n.mobileCertStore)
+		httpSrv := mobileverify.NewHTTPServer(addr, n.mobileRegistry, svc, n.mobileCohort, n.mobileCertStore)
 		httpSrv.SetAlarms(n.mobileAlarms)
 		// Sybil gate (design §7 item 2): registration proof-of-work. A device
 		// attestor (Play Integrity / DeviceCheck adapter) can be wired here
@@ -2716,9 +2775,13 @@ func (n *Node) stopServices() []error {
 				n.mobileCommitter.Stop() // final commit drains pending
 				n.mobileCommitter = nil
 			}
-			if n.mobileWindows != nil {
-				n.mobileWindows.Stop()
-				n.mobileWindows = nil
+			if n.mobileCohortRelay != nil {
+				n.mobileCohortRelay.Stop()
+				n.mobileCohortRelay = nil
+			}
+			if n.mobileCohort != nil {
+				n.mobileCohort.Stop()
+				n.mobileCohort = nil
 			}
 			if n.mobilePacketService != nil {
 				n.mobilePacketService.Stop()

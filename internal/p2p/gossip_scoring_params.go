@@ -74,6 +74,13 @@ func (s *Service) topicScoreParams(topic string) (*pubsub.TopicScoreParams, erro
 	case strings.Contains(topic, GossipMobileRegistrationMessage):
 		// Mobile registration announcements: same lightweight scoring.
 		return messagingTopicParams(), nil
+	case strings.Contains(topic, GossipMobileCohortIndexMessage):
+		// Cross-node cohort index announcements (no signatures, tiny):
+		// same lightweight scoring as the other mobileverify topics.
+		return messagingTopicParams(), nil
+	case strings.Contains(topic, GossipMobileCohortCertMessage):
+		// Cross-node cohort cert announcements: same lightweight scoring.
+		return messagingTopicParams(), nil
 	case strings.Contains(topic, GossipTransactionMessage):
 		// Same lightweight, non-critical scoring shape as the messaging topics:
 		// mempool transactions are high-frequency best-effort traffic. Without

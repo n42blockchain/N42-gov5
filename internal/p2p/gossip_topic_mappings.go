@@ -58,6 +58,8 @@ var gossipTopicMappings = map[string]proto.Message{
 	ZKProofTopicFormat:            &types_pb.H256{}, // ZK proofs use custom serialization; H256 placeholder for topic registration
 	MobilePacketTopicFormat:       &types_pb.H256{}, // StreamPackets use the evmsdk V2 wire format; H256 placeholder for topic registration
 	MobileRegistrationTopicFormat: &types_pb.H256{}, // registration announcements are raw pubkey||pop; H256 placeholder for topic registration
+	MobileCohortIndexTopicFormat:  &types_pb.H256{}, // cross-node cohort index announcements use a custom compact wire format; H256 placeholder for topic registration
+	MobileCohortCertTopicFormat:   &types_pb.H256{}, // cross-node cohort cert announcements use a custom compact wire format; H256 placeholder for topic registration
 }
 
 // GossipTypeMapping is the inverse mapping (message type -> topic) used by broadcaster.go.

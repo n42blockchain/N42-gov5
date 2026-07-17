@@ -34,7 +34,7 @@ import (
 type HTTPServer struct {
 	reg     *Registry
 	packets *PacketService
-	windows *WindowManager
+	windows WindowSubmitter
 	certs   *CertStore
 	alarms  *AlarmBuffer
 
@@ -65,7 +65,7 @@ func (s *HTTPServer) SetRegisterPoWBits(bits int) {
 func (s *HTTPServer) SetDeviceAttestor(a DeviceAttestor) { s.attestor = a }
 
 // NewHTTPServer wires the server against the pipeline components.
-func NewHTTPServer(addr string, reg *Registry, packets *PacketService, windows *WindowManager, certs *CertStore) *HTTPServer {
+func NewHTTPServer(addr string, reg *Registry, packets *PacketService, windows WindowSubmitter, certs *CertStore) *HTTPServer {
 	s := &HTTPServer{
 		reg:     reg,
 		packets: packets,
