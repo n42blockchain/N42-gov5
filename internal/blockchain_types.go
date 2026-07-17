@@ -147,7 +147,6 @@ type BlockChain struct {
 
 	peers map[peer.ID]bool
 
-
 	p2p p2p.P2P
 
 	errorCh chan error
@@ -161,6 +160,7 @@ type BlockChain struct {
 	ancientReader *freezer.AncientReader
 
 	exexManager           *exex.Manager
+	onBlockCommitted      func(number uint64) // optional, package-agnostic canonical-commit hook (any node, not just the leader)
 	snapshotTree          *snapshot.Tree
 	jmtCommitment         *commitment.JMTCommitment
 	jmtEnabled            bool

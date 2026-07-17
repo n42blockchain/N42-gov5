@@ -200,6 +200,17 @@ func (bc *BlockChain) ExExManager() *exex.Manager {
 	return bc.exexManager
 }
 
+// SetOnBlockCommitted installs a generic canonical-commit hook, called
+// alongside the ExEx notification for every newly-canonical block on every
+// node (leader or follower) — unlike consensus.BlockImportNotifier, which is
+// a single HotStuff-owned slot, this is a plain callback any package-agnostic
+// consumer can attach without introducing a blockchain -> consumer import
+// (e.g. mobile-attestation cohort merge uses block height as its
+// cross-node coordination clock; see internal/mobileverify/coordinator.go).
+func (bc *BlockChain) SetOnBlockCommitted(fn func(number uint64)) {
+	bc.onBlockCommitted = fn
+}
+
 // SetSnapshotTree attaches a snapshot acceleration tree to the blockchain.
 // The tree caches recent block state diffs for fast reads without DB access.
 func (bc *BlockChain) SetSnapshotTree(tree *snapshot.Tree) {

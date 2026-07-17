@@ -23,13 +23,13 @@ type AnchorView struct {
 type API struct {
 	reg     *Registry
 	certs   *CertStore
-	wins    *WindowManager
+	wins    WindowSubmitter
 	alarms  *AlarmBuffer
 	anchors func(n int) []AnchorView // injected reader over the rawdb anchor log
 }
 
 // NewAPI creates the RPC service.
-func NewAPI(reg *Registry, certs *CertStore, wins *WindowManager, alarms *AlarmBuffer) *API {
+func NewAPI(reg *Registry, certs *CertStore, wins WindowSubmitter, alarms *AlarmBuffer) *API {
 	return &API{reg: reg, certs: certs, wins: wins, alarms: alarms}
 }
 

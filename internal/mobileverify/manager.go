@@ -36,6 +36,18 @@ var (
 // block, closes it after the configured window, and hands the resulting
 // certificates to the CertStore. Divergent cohorts surface via a Warn
 // log — the phase-6 alarm pipeline replaces that with a real signal.
+//
+// WindowSubmitter is the receipt-intake surface HTTPServer and API depend
+// on, satisfied by both WindowManager (this file, a per-node wall-clock
+// window — the original design) and CohortCoordinator (coordinator.go, the
+// block-height cross-node merge that replaces it for multi-IDC-node
+// deployments). A node wires whichever it constructs; nothing downstream
+// needs to know which.
+type WindowSubmitter interface {
+	Submit(r *Receipt) (MobileIndex, error)
+	OpenWindows() int
+}
+
 type WindowManager struct {
 	reg    *Registry
 	lookup HeaderLookup

@@ -15,6 +15,8 @@ const (
 	GossipZKProofMessage            = "zk_proof"
 	GossipMobilePacketMessage       = "mobileverify_packet"
 	GossipMobileRegistrationMessage = "mobileverify_registration"
+	GossipMobileCohortIndexMessage  = "mobileverify_cohort_index"
+	GossipMobileCohortCertMessage   = "mobileverify_cohort_cert"
 
 	// Topic format strings combining the protocol prefix with message type.
 	BlockTopicFormat              = GossipProtocolAndDigest + GossipBlockMessage
@@ -26,6 +28,8 @@ const (
 	ZKProofTopicFormat            = GossipProtocolAndDigest + GossipZKProofMessage
 	MobilePacketTopicFormat       = GossipProtocolAndDigest + GossipMobilePacketMessage
 	MobileRegistrationTopicFormat = GossipProtocolAndDigest + GossipMobileRegistrationMessage
+	MobileCohortIndexTopicFormat  = GossipProtocolAndDigest + GossipMobileCohortIndexMessage
+	MobileCohortCertTopicFormat   = GossipProtocolAndDigest + GossipMobileCohortCertMessage
 
 	// Message relay topics (8 shards, Waku-style)
 	GossipMessagePrefix = "message/shard/"
