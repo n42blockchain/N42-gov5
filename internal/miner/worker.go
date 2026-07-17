@@ -1145,6 +1145,13 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	for {
 		if interrupt != nil {
 			if signal := interrupt.Load(); signal != commitInterruptNone {
+				// The caller seals the block even on an interrupt signal (the
+				// switch after fillTransactions only adjusts the resubmit
+				// interval), so the BAL hash must be bound here too or an
+				// interrupted build produces a block every importer rejects.
+				if err := finalizeBAL(); err != nil {
+					return err
+				}
 				return signalToErr(signal)
 			}
 		}
