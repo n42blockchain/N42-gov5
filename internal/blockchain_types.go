@@ -160,6 +160,7 @@ type BlockChain struct {
 	ancientReader *freezer.AncientReader
 
 	exexManager           *exex.Manager
+	onBlockCommittedMu    sync.RWMutex
 	onBlockCommitted      func(number uint64) // optional, package-agnostic canonical-commit hook (any node, not just the leader)
 	snapshotTree          *snapshot.Tree
 	jmtCommitment         *commitment.JMTCommitment

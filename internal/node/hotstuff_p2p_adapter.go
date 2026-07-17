@@ -24,6 +24,7 @@ import (
 
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/internal/p2p"
+	"github.com/n42blockchain/N42/internal/p2p/encoder"
 )
 
 // Compile-time check: *hotstuffP2PAdapter must satisfy hotstuff.P2PDirectSender,
@@ -90,13 +91,28 @@ func (a *hotstuffP2PAdapter) SetStreamHandler(topic string, handler func(data []
 	h.SetStreamHandler(protocol.ID(topic), func(stream network.Stream) {
 		defer stream.Close()
 		_ = stream.SetReadDeadline(time.Now().Add(rotorStreamDeadline))
-		data, err := io.ReadAll(stream)
+		data, err := readRotorStream(stream)
 		if err != nil {
 			_ = stream.Reset()
 			return
 		}
 		handler(data, stream.Conn().RemotePeer())
 	})
+}
+
+func readRotorStream(r io.Reader) ([]byte, error) {
+	// Direct streams bypass GossipSub's WithMaxMessageSize gate but carry the
+	// same snappy gossip envelope. Apply the same 1 MiB bound before allocating
+	// the full body so a peer cannot hold many handlers on unbounded io.ReadAll.
+	limit := int64(encoder.MaxGossipSize)
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("hotstuff p2p adapter: stream exceeds %d bytes", limit)
+	}
+	return data, nil
 }
 
 // ConnectedPeers returns the peer IDs of all currently connected peers, read

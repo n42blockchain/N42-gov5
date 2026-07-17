@@ -44,8 +44,20 @@ func TestCommitToCanonicalAdvancesBlockAndHeaderHeads(t *testing.T) {
 
 	bc := &BlockChain{ChainDB: db, ctx: context.Background()}
 	bc.currentBlock.Store(parent)
+	var committed []uint64
+	bc.SetOnBlockCommitted(func(number uint64) { committed = append(committed, number) })
 	if err := bc.CommitToCanonical(child.Hash()); err != nil {
 		t.Fatal(err)
+	}
+	if len(committed) != 1 || committed[0] != 9 {
+		t.Fatalf("commit callback = %v, want [9]", committed)
+	}
+	// A duplicate QC/Decide is idempotent and must not advance consumers twice.
+	if err := bc.CommitToCanonical(child.Hash()); err != nil {
+		t.Fatal(err)
+	}
+	if len(committed) != 1 {
+		t.Fatalf("duplicate commit fired callback again: %v", committed)
 	}
 
 	if err := db.View(context.Background(), func(tx kv.Tx) error {

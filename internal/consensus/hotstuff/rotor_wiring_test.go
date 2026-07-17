@@ -4,10 +4,38 @@
 package hotstuff
 
 import (
+	"context"
 	"testing"
 
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	"github.com/n42blockchain/N42/internal/p2p/encoder"
 )
+
+type routingTestP2P struct {
+	publishes int
+	sends     int
+}
+
+func (p *routingTestP2P) PublishToTopic(context.Context, string, []byte, ...pubsub.PubOpt) error {
+	p.publishes++
+	return nil
+}
+
+func (p *routingTestP2P) SubscribeToTopic(string, ...pubsub.SubOpt) (*pubsub.Subscription, error) {
+	return nil, nil
+}
+
+func (p *routingTestP2P) Encoding() encoder.NetworkEncoding { return &encoder.SszNetworkEncoder{} }
+
+func (p *routingTestP2P) SendRawBytes(context.Context, []byte, string, peer.ID) error {
+	p.sends++
+	return nil
+}
+
+func (p *routingTestP2P) SetStreamHandler(string, func([]byte, peer.ID)) {}
+func (p *routingTestP2P) ConnectedPeers() []peer.ID                      { return nil }
 
 // TestMessageSenderIndex covers every message type that carries an explicit
 // sender/proposer validator index, plus the types that don't (PrepareQCMsg,
@@ -149,5 +177,39 @@ func TestUnregisterValidatorDropsMapping(t *testing.T) {
 	pid, ok := svc.rotor.LookupPeer(setup.vs, idx)
 	if !ok || pid != newPeer {
 		t.Fatalf("re-learn failed: got (%q, %v), want (%q, true)", pid, ok, newPeer)
+	}
+}
+
+// A decoded gossip message does not cryptographically bind its claimed
+// validator index to pubsub's ReceivedFrom (the network uses StrictNoSign and
+// no author). Even when direct delivery succeeds, broadcast remains mandatory
+// so a poisoned/last-hop mapping cannot black-hole the target's vote.
+func TestDirectVoteSuccessStillGossipsForLiveness(t *testing.T) {
+	svc, setup := newRotorWiringService(t, 4)
+	p2p := new(routingTestP2P)
+	svc.p2p = p2p
+	svc.ctx = context.Background()
+	svc.gossipTopic = "/hotstuff/test"
+	svc.rpcTopic = "/hotstuff/direct/test"
+
+	const target = ValidatorIndex(1)
+	addr, err := setup.vs.GetAddress(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.rotor.RegisterValidator(addr, peer.ID("untrusted-last-hop"))
+	svc.handleSendToValidator(EngineOutput{
+		Type:   OutputSendToValidator,
+		Target: target,
+		Message: &ConsensusMsg{Type: MsgVote, Payload: &Vote{
+			View: 1, Voter: 0,
+		}},
+	})
+
+	if p2p.sends != 1 {
+		t.Fatalf("direct sends = %d, want 1", p2p.sends)
+	}
+	if p2p.publishes != 1 {
+		t.Fatalf("gossip publishes = %d, want 1 safety broadcast", p2p.publishes)
 	}
 }

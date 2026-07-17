@@ -9,6 +9,12 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 )
 
+// A healthy seven-validator HotStuff deployment can transiently have one
+// candidate per validator at a height. Bound unsigned peer input just above
+// that shape so fabricated self-consistent headers cannot grow byNum/byHash
+// without limit at one height.
+const maxPeerPacketsPerHeight = 8
+
 // PacketCache is the rolling window of encoded StreamPackets an IDC
 // node serves to mobile verifiers (design §4): content-addressed by
 // block hash, bounded to the most recent N blocks by number. Every IDC
@@ -40,14 +46,28 @@ func NewPacketCache(window uint64) *PacketCache {
 // everything older than the window. Idempotent per hash (packets are
 // content-addressed: same hash, same bytes).
 func (c *PacketCache) Put(blockHash types.Hash, blockNumber uint64, encoded []byte) {
+	c.put(blockHash, blockNumber, encoded, false)
+}
+
+// PutPeer stores an unsigned-gossip packet with a per-height fork bound.
+// Returns true only when a new packet was inserted.
+func (c *PacketCache) PutPeer(blockHash types.Hash, blockNumber uint64, encoded []byte) bool {
+	return c.put(blockHash, blockNumber, encoded, true)
+}
+
+func (c *PacketCache) put(blockHash types.Hash, blockNumber uint64, encoded []byte, peerBound bool) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, ok := c.byHash[blockHash]; !ok {
-		cp := make([]byte, len(encoded))
-		copy(cp, encoded)
-		c.byHash[blockHash] = cp
-		c.byNum[blockNumber] = append(c.byNum[blockNumber], blockHash)
+	if _, ok := c.byHash[blockHash]; ok {
+		return false
 	}
+	if peerBound && len(c.byNum[blockNumber]) >= maxPeerPacketsPerHeight {
+		return false
+	}
+	cp := make([]byte, len(encoded))
+	copy(cp, encoded)
+	c.byHash[blockHash] = cp
+	c.byNum[blockNumber] = append(c.byNum[blockNumber], blockHash)
 	if blockNumber > c.maxNum {
 		c.maxNum = blockNumber
 		if c.maxNum > c.window {
@@ -62,6 +82,7 @@ func (c *PacketCache) Put(blockHash types.Hash, blockNumber uint64, encoded []by
 			}
 		}
 	}
+	return true
 }
 
 // Get returns the encoded packet for a block hash.
@@ -69,7 +90,10 @@ func (c *PacketCache) Get(blockHash types.Hash) ([]byte, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	data, ok := c.byHash[blockHash]
-	return data, ok
+	if !ok {
+		return nil, false
+	}
+	return append([]byte(nil), data...), true
 }
 
 // Len returns the number of cached packets.

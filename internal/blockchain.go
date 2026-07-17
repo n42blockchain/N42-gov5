@@ -208,7 +208,18 @@ func (bc *BlockChain) ExExManager() *exex.Manager {
 // (e.g. mobile-attestation cohort merge uses block height as its
 // cross-node coordination clock; see internal/mobileverify/coordinator.go).
 func (bc *BlockChain) SetOnBlockCommitted(fn func(number uint64)) {
+	bc.onBlockCommittedMu.Lock()
 	bc.onBlockCommitted = fn
+	bc.onBlockCommittedMu.Unlock()
+}
+
+func (bc *BlockChain) notifyBlockCommitted(number uint64) {
+	bc.onBlockCommittedMu.RLock()
+	fn := bc.onBlockCommitted
+	bc.onBlockCommittedMu.RUnlock()
+	if fn != nil {
+		fn(number)
+	}
 }
 
 // SetSnapshotTree attaches a snapshot acceleration tree to the blockchain.
@@ -895,6 +906,7 @@ func (bc *BlockChain) canonicalByCommitOnly() bool {
 // is already canonical, then updates the head pointers.
 func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 	var committedNumber uint64
+	var notify bool
 	err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
 		blk, err := rawdb.ReadBlockByHash(tx, hash)
 		if err != nil {
@@ -1016,21 +1028,20 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 			}
 		}
 		log.Info("commit-to-canonical applied", "number", blk.Number64().Uint64(), "hash", hash.Hex())
+		committedNumber = blk.Number64().Uint64()
+		notify = true
 		return nil
 	})
-	if err == nil && bc.onBlockCommitted != nil {
-		// This — not writeBlockWithState's CanonStatTy branch — is the
-		// ACTUAL canonicalization point for leader-driven consensus
-		// (HotStuff): canonicalByCommitOnly() makes writeBlockWithState
-		// return SideStatTy unconditionally for these chains (see its own
-		// comment on why the height-first fork-choice must not run for
-		// them), so a hook placed only in that CanonStatTy branch never
-		// fires in production. Calling out to consumer code AFTER the DB
-		// transaction has committed (not from inside it) keeps a slow or
-		// panicking callback from holding the write transaction open.
-		bc.onBlockCommitted(committedNumber)
+	if err != nil {
+		return err
 	}
-	return err
+	// HotStuff imports candidates as side blocks and advances the canonical
+	// head only here. Notify after the database transaction commits: the
+	// import-time canonical callback is intentionally bypassed on this path.
+	if notify {
+		bc.notifyBlockCommitted(committedNumber)
+	}
+	return nil
 }
 
 // LowestSiblingAtHeight returns the locally-known block at `number` with the

@@ -70,6 +70,10 @@ var (
 	ErrBadPoP = errors.New("mobileverify: invalid proof of possession")
 	// ErrUnknownIndex reports a MobileIndex with no committed key.
 	ErrUnknownIndex = errors.New("mobileverify: unknown mobile index")
+	// ErrKeyPreviouslyRegistered prevents a revoked BLS key from receiving a
+	// second append index. Reusing one key at two indices lets the same signature
+	// be counted twice when nodes at different lifecycle epochs merge certs.
+	ErrKeyPreviouslyRegistered = errors.New("mobileverify: key was already registered; rotate to a fresh key")
 )
 
 // committedEntry pins a device's committed identity. The pubkey stays in
@@ -91,6 +95,7 @@ type Registry struct {
 	// Committed set (append-only, index-addressed).
 	committed []committedEntry
 	byKey     map[[48]byte]MobileIndex
+	known     map[[48]byte]MobileIndex // active and revoked; indices are never reusable
 
 	// Pending set (PoP-verified, awaiting the next epoch commit).
 	pending map[[48]byte][96]byte
@@ -108,6 +113,7 @@ type Registry struct {
 func NewRegistry() *Registry {
 	return &Registry{
 		byKey:   make(map[[48]byte]MobileIndex),
+		known:   make(map[[48]byte]MobileIndex),
 		pending: make(map[[48]byte][96]byte),
 		tree:    bmt.New(bmt.NewMemStore()),
 	}
@@ -152,6 +158,10 @@ func (r *Registry) Register(pubkey [48]byte, pop [96]byte) (index MobileIndex, c
 		r.mu.Unlock()
 		return idx, true, nil // already committed
 	}
+	if _, ok := r.known[pubkey]; ok {
+		r.mu.Unlock()
+		return 0, false, ErrKeyPreviouslyRegistered
+	}
 	if _, ok := r.pending[pubkey]; ok {
 		r.mu.Unlock()
 		return 0, false, nil // already pending
@@ -178,6 +188,9 @@ func (r *Registry) AdoptPending(pubkey [48]byte, pop [96]byte) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.byKey[pubkey]; ok {
+		return false, nil
+	}
+	if _, ok := r.known[pubkey]; ok {
 		return false, nil
 	}
 	if _, ok := r.pending[pubkey]; ok {
@@ -214,6 +227,11 @@ func (r *Registry) CommitEpoch() (root types.Hash, committedNow int) {
 		return string(batch[i].keyHash[:]) < string(batch[j].keyHash[:])
 	})
 	for _, e := range batch {
+		// ImportCommitted may race with registration gossip during catch-up.
+		// An already-active key must never receive a second append index.
+		if _, exists := r.known[e.pubkey]; exists {
+			continue
+		}
 		parsed, err := bls.PublicKeyFromBytes(e.pubkey[:])
 		if err != nil {
 			continue // PoP-verified at admission; unreachable
@@ -223,6 +241,7 @@ func (r *Registry) CommitEpoch() (root types.Hash, committedNow int) {
 			pubkey: e.pubkey, pk: parsed, pop: e.pop, active: true, lastSeenMs: nowMs,
 		})
 		r.byKey[e.pubkey] = idx
+		r.known[e.pubkey] = idx
 		var v [8]byte
 		binary.BigEndian.PutUint64(v[:], uint64(idx))
 		_ = r.tree.Put(e.keyHash, v[:])
@@ -299,15 +318,21 @@ func (r *Registry) Rotate(oldPubkey [48]byte, newPubkey [48]byte, newPoP [96]byt
 	if _, err := verifyPoP(newPubkey, newPoP); err != nil {
 		return types.Hash{}, err
 	}
-	root, _ := r.Revoke(oldPubkey)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.byKey[newPubkey]; !ok {
-		if _, ok := r.pending[newPubkey]; !ok {
-			r.pending[newPubkey] = newPoP
-		}
+	if _, ok := r.known[newPubkey]; ok {
+		return r.tree.Root(), ErrKeyPreviouslyRegistered
 	}
-	return root, nil
+	if _, ok := r.pending[newPubkey]; ok {
+		return r.tree.Root(), ErrKeyPreviouslyRegistered
+	}
+	if idx, ok := r.byKey[oldPubkey]; ok {
+		_ = r.tree.Delete(bmt.HashKey(oldPubkey[:]))
+		r.committed[idx].active = false
+		delete(r.byKey, oldPubkey)
+	}
+	r.pending[newPubkey] = newPoP
+	return r.tree.Root(), nil
 }
 
 // PruneInactive revokes every active committed device whose last
@@ -373,9 +398,8 @@ func (r *Registry) PendingCount() int {
 }
 
 // IndexBound returns one past the highest committed index — the exclusive
-// upper bound a signer mask's indices must fall under. Append-only
-// commits mean this equals Count(); it stays a distinct method so mask
-// decoding reads intent, not a coincidence.
+// upper bound a signer mask's indices must fall under. It can exceed Count()
+// because revoked entries retain their historical index.
 func (r *Registry) IndexBound() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -448,6 +472,8 @@ func (r *Registry) ImportCommitted(data []byte) (types.Hash, error) {
 	}
 	committed := make([]committedEntry, 0, count)
 	byKey := make(map[[48]byte]MobileIndex, count)
+	seen := make(map[[48]byte]struct{}, count)
+	known := make(map[[48]byte]MobileIndex, count)
 	tree := bmt.New(bmt.NewMemStore())
 	for i := 0; i < count; i++ {
 		off := i * snapshotEntrySz
@@ -455,25 +481,41 @@ func (r *Registry) ImportCommitted(data []byte) (types.Hash, error) {
 		var pop [96]byte
 		copy(pub[:], body[off:off+48])
 		copy(pop[:], body[off+48:off+144])
-		active := body[off+144] == 1
+		activeByte := body[off+144]
+		if activeByte > 1 {
+			return types.Hash{}, fmt.Errorf("mobileverify: snapshot entry %d bad active flag %d", i, activeByte)
+		}
+		active := activeByte == 1
 		lastSeen := binary.BigEndian.Uint64(body[off+145 : off+153])
-		pk, err := bls.PublicKeyFromBytes(pub[:])
+		if _, exists := seen[pub]; exists {
+			return types.Hash{}, fmt.Errorf("mobileverify: snapshot entry %d duplicates a pubkey", i)
+		}
+		seen[pub] = struct{}{}
+		// Snapshots are served by untrusted peers. The anchored tree root commits
+		// the active pubkey/index mapping, but not the retained PoP bytes, so the
+		// PoP must still be verified before it can be imported and re-served.
+		pk, err := verifyPoP(pub, pop)
 		if err != nil {
-			return types.Hash{}, fmt.Errorf("mobileverify: snapshot entry %d bad pubkey: %w", i, err)
+			return types.Hash{}, fmt.Errorf("mobileverify: snapshot entry %d bad proof of possession: %w", i, err)
 		}
 		idx := MobileIndex(len(committed))
 		committed = append(committed, committedEntry{
 			pubkey: pub, pk: pk, pop: pop, active: active, lastSeenMs: lastSeen,
 		})
-		byKey[pub] = idx
-		var v [8]byte
-		binary.BigEndian.PutUint64(v[:], uint64(idx))
-		if err := tree.Put(bmt.HashKey(pub[:]), v[:]); err != nil {
-			return types.Hash{}, fmt.Errorf("mobileverify: snapshot tree put %d: %w", i, err)
+		known[pub] = idx
+		delete(r.pending, pub)
+		if active {
+			byKey[pub] = idx
+			var v [8]byte
+			binary.BigEndian.PutUint64(v[:], uint64(idx))
+			if err := tree.Put(bmt.HashKey(pub[:]), v[:]); err != nil {
+				return types.Hash{}, fmt.Errorf("mobileverify: snapshot tree put %d: %w", i, err)
+			}
 		}
 	}
 	r.committed = committed
 	r.byKey = byKey
+	r.known = known
 	r.tree = tree
 	return r.tree.Root(), nil
 }

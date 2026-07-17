@@ -445,3 +445,48 @@ func TestSubmitAnchorsCheckpointsToReceiptHeightNotSubmitTimeHeight(t *testing.T
 		t.Fatalf("cert store has %d entries, want 1", len(got))
 	}
 }
+
+func TestCohortCoordinatorRejectsForgedPeerCertificate(t *testing.T) {
+	blockHash, number, root := h(1), uint64(1000), h(2)
+	reg := NewRegistry()
+	store := NewCertStore(64)
+	coord := NewCohortCoordinator(reg, fixedLookupAt(blockHash, number), store, types.Address{19: 1}, DefaultCohortConfig())
+
+	local := newDevice(t)
+	registerCommitted(t, reg, local.pubkey, local.pop())
+	if _, err := coord.Submit(local.receipt(blockHash, number, root)); err != nil {
+		t.Fatal(err)
+	}
+
+	peerDevice := newDevice(t)
+	registerCommitted(t, reg, peerDevice.pubkey, peerDevice.pop())
+	peerCollector := NewCollector(reg, blockHash, number)
+	if _, err := peerCollector.Add(peerDevice.receipt(blockHash, number, root)); err != nil {
+		t.Fatal(err)
+	}
+	peerCerts, err := peerCollector.Close(NowMs())
+	if err != nil || len(peerCerts) != 1 {
+		t.Fatalf("peer close: %v/%d", err, len(peerCerts))
+	}
+
+	forged := *peerCerts[0]
+	forged.SignerMask = append([]byte(nil), peerCerts[0].SignerMask...)
+	forged.AggregateSig[0] ^= 0x01
+	coord.OnPeerCert(types.Address{19: 2}, &forged)
+
+	coord.mu.Lock()
+	w := coord.windows[blockHash]
+	gotForged := len(w.peerCerts)
+	coord.mu.Unlock()
+	if gotForged != 0 {
+		t.Fatal("forged peer certificate entered a merge bucket")
+	}
+
+	coord.OnPeerCert(types.Address{19: 2}, peerCerts[0])
+	coord.mu.Lock()
+	gotValid := len(w.peerCerts[root])
+	coord.mu.Unlock()
+	if gotValid != 1 {
+		t.Fatalf("valid peer certificate was not admitted: reporters=%d", gotValid)
+	}
+}
