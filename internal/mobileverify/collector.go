@@ -161,5 +161,49 @@ func (c *Collector) Size() int {
 	return len(c.byIndex)
 }
 
+// Indices returns the currently-admitted MobileIndex set, sorted ascending,
+// WITHOUT closing the window. This is the cross-node index-reconciliation
+// round's announcement payload (design: every IDC node broadcasts "who I
+// have so far" for this block BEFORE any node commits to a final local
+// aggregate, so a device whose signature reached more than one node can be
+// excluded everywhere before aggregation — see ExcludeIndices).
+func (c *Collector) Indices() []MobileIndex {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]MobileIndex, 0, len(c.byIndex))
+	for idx := range c.byIndex {
+		out = append(out, idx)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// ExcludeIndices removes the given devices from this window's admitted set
+// before Close(). Used after cross-node reconciliation identifies indices
+// that reached more than one IDC node for this block: removing them here —
+// where the raw individual signature still exists — is the only clean way
+// to keep them from ever being counted, since a BLS aggregate signature
+// cannot be selectively decomposed after the fact without that same raw
+// signature (see certmerge.go). Returns the number actually removed. A no-op
+// after Close() (returns 0): the exclusion round must run before Close.
+func (c *Collector) ExcludeIndices(banned []MobileIndex) int {
+	if len(banned) == 0 {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return 0
+	}
+	removed := 0
+	for _, idx := range banned {
+		if _, ok := c.byIndex[idx]; ok {
+			delete(c.byIndex, idx)
+			removed++
+		}
+	}
+	return removed
+}
+
 // NowMs is a convenience for callers wiring Close.
 func NowMs() uint64 { return uint64(time.Now().UnixMilli()) }
