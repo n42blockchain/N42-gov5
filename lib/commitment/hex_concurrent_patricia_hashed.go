@@ -62,7 +62,7 @@ func (p *ConcurrentPatriciaHashed) RootTrie() *HexPatriciaHashed {
 }
 
 func (p *ConcurrentPatriciaHashed) foldNibble(ctx context.Context, nib int) error {
-	c, err := p.mounts[nib].foldMounted(ctx, nib)
+	c, fromRoot, err := p.mounts[nib].foldMounted(ctx, nib)
 	if err != nil {
 		return err
 	}
@@ -71,7 +71,13 @@ func (p *ConcurrentPatriciaHashed) foldNibble(ctx context.Context, nib int) erro
 	defer p.rootMu.Unlock()
 
 	// fmt.Printf("mounted %02x => %s\n", prevByte, c.String())
-	if c.extLen > 0 { // trim first byte (2 nibbles) from extension, if any, since it's also a nibble in that row
+	// Trim the leading nibble ONLY when foldMounted returned the subtrie's
+	// absolute root cell, whose extension still carries the mount nibble. A
+	// grid[0][nib] slot cell (early-mount / non-root fold) already excludes it,
+	// and trimming there deletes a real nibble and underflows hashedExtLen —
+	// the concurrent-vs-sequential divergence in
+	// TestConcurrentMPTIncrementalExtension.
+	if fromRoot && c.extLen > 0 { // trim first byte (2 nibbles) from extension, since it's also a nibble in that row
 		c.extLen--
 		copy(c.extension[:], c.extension[1:])
 		c.hashedExtLen -= 2

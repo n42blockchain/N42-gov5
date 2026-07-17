@@ -2415,7 +2415,15 @@ func (hph *HexPatriciaHashed) followAndUpdate(hashedKey, plainKey []byte, stateU
 	return nil
 }
 
-func (hph *HexPatriciaHashed) foldMounted(ctx context.Context, nib int) (cell, error) {
+// foldMounted collapses a mounted subtrie into a single cell for splicing into
+// the root grid at column mountedNib. The returned bool (fromRoot) reports
+// whether that cell is the subtrie's absolute root cell (whose extension still
+// carries the mount nibble as its leading nibble and must be trimmed by the
+// caller) versus a grid[0][nib] slot cell (whose extension already excludes the
+// mount nibble — trimming it would delete a real extension nibble and drive
+// hashedExtLen negative, silently diverging the root; see
+// TestConcurrentMPTIncrementalExtension).
+func (hph *HexPatriciaHashed) foldMounted(ctx context.Context, nib int) (cell, bool, error) {
 	if nib != hph.mountedNib {
 		panic(fmt.Sprintf("foldMounted: nib (%x)!= mountedNib (%x)", nib, hph.mountedNib))
 	}
@@ -2427,7 +2435,7 @@ func (hph *HexPatriciaHashed) foldMounted(ctx context.Context, nib int) (cell, e
 
 	for hph.activeRows > 0 {
 		if err := ctx.Err(); err != nil {
-			return cell{}, err
+			return cell{}, false, err
 		}
 		// fmt.Printf("===[%x] folding prefix %x (len %d)\n", hph.mountedNib, hph.currentKey[:hph.currentKeyLen], hph.currentKeyLen)
 		if hph.activeRows == 1 && hph.depths[hph.activeRows-1] == 1 {
@@ -2435,10 +2443,10 @@ func (hph *HexPatriciaHashed) foldMounted(ctx context.Context, nib int) (cell, e
 				fmt.Printf("mount early as nibble %02x %s\n", hph.mountedNib, hph.grid[0][hph.mountedNib].String())
 			}
 			// fmt.Printf("===[%x] stop folding at %x\n", hph.mountedNib, hph.currentKey[:hph.currentKeyLen])
-			return hph.grid[0][hph.mountedNib], nil
+			return hph.grid[0][hph.mountedNib], false, nil
 		}
 		if err := hph.fold(); err != nil {
-			return cell{}, fmt.Errorf("final fold: %w", err)
+			return cell{}, false, fmt.Errorf("final fold: %w", err)
 		}
 	}
 
@@ -2449,13 +2457,13 @@ func (hph *HexPatriciaHashed) foldMounted(ctx context.Context, nib int) (cell, e
 		if hph.trace {
 			fmt.Printf("mount root as %02x %s\n", hph.mountedNib, hph.root.String())
 		}
-		return hph.root, nil
+		return hph.root, true, nil
 	}
 	if hph.trace {
 		fmt.Printf("mount as nibble %02x %s\n", hph.mountedNib, hph.grid[0][hph.mountedNib].String())
 	}
 	// todo potential bug
-	return hph.grid[0][hph.mountedNib], nil
+	return hph.grid[0][hph.mountedNib], false, nil
 }
 
 // Generate the block witness. This works by loading each key from the list of updates (they are not really updates since we won't modify the trie,
