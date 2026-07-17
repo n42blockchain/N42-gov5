@@ -149,8 +149,11 @@ func decodeIndexCommitments(data []byte, registryCount int) ([]IndexCommitment, 
 		return nil, fmt.Errorf("%w: bad count", ErrBadMask)
 	}
 	p := data[n:]
-	if count > uint64(registryCount) {
-		return nil, fmt.Errorf("%w: count %d implausible (registry=%d)", ErrBadMask, count, registryCount)
+	// Each entry costs at least one varint byte plus a 32-byte commitment;
+	// a count exceeding what the remaining bytes can hold (or the registry)
+	// is corrupt — reject before allocating to registry size.
+	if count > uint64(len(p)) || count > uint64(registryCount) {
+		return nil, fmt.Errorf("%w: count %d implausible (bytes=%d registry=%d)", ErrBadMask, count, len(p), registryCount)
 	}
 	out := make([]IndexCommitment, 0, count)
 	cur := uint64(0)
@@ -163,7 +166,16 @@ func decodeIndexCommitments(data []byte, registryCount int) ([]IndexCommitment, 
 		if i == 0 {
 			cur = d
 		} else {
-			cur += d + 1
+			// See DecodeMask: guard the delta step against uint64 overflow
+			// so a duplicate/wrapped index cannot survive decode.
+			if d == ^uint64(0) {
+				return nil, fmt.Errorf("%w: delta overflow at entry %d", ErrBadMask, i)
+			}
+			next := cur + d + 1
+			if next < cur {
+				return nil, fmt.Errorf("%w: index overflow at entry %d", ErrBadMask, i)
+			}
+			cur = next
 		}
 		if cur >= uint64(registryCount) {
 			return nil, fmt.Errorf("%w: index %d beyond registry size %d", ErrBadMask, cur, registryCount)

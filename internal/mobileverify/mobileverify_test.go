@@ -174,6 +174,20 @@ func TestMaskRoundTripAndCanonicality(t *testing.T) {
 	if _, err := DecodeMask(append(enc2, 0x00), 10); err == nil {
 		t.Fatal("trailing bytes accepted")
 	}
+
+	// Delta-overflow hardening: a crafted mask whose delta varint is
+	// MaxUint64 must be rejected, not decoded to a duplicate index. Left
+	// unchecked, `cur += d + 1` wraps the step to 0 and emits the same
+	// index repeatedly — which, via BLS linearity, lets one key forge an
+	// N-signer aggregate certificate.
+	// count=3, first index 5, then two 0xFFFF... deltas.
+	maxDelta := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01}
+	crafted := []byte{0x03, 0x05}
+	crafted = append(crafted, maxDelta...)
+	crafted = append(crafted, maxDelta...)
+	if out, err := DecodeMask(crafted, 4000001); err == nil {
+		t.Fatalf("delta-overflow mask accepted, decoded to %v", out)
+	}
 }
 
 // TestCollectorEndToEnd drives the full phase-1 pipeline: register a
