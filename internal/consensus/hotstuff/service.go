@@ -1198,7 +1198,14 @@ func (s *Service) maybeCommitFromHeaderQC(extra []byte) {
 	if ce == nil {
 		return
 	}
-	if verr := VerifyQCAnyDomain(qc, ce.CurrentValidatorSet()); verr != nil {
+	// Canonicalization must follow a COMMIT proof only. The producer embeds
+	// LastCommittedQC (commit domain) here, so require the commit domain:
+	// VerifyQCAnyDomain would also accept a PrepareQC, and a PrepareQC can
+	// form for a block that is later abandoned (leader crash, lower-highQC TC,
+	// a conflicting block committing at that height). Accepting one would let a
+	// crafted header embedding a stale PrepareQC drive a catching-up node to
+	// canonicalize a never-committed block, diverging its canonical head.
+	if verr := VerifyCommitQC(qc, ce.CurrentValidatorSet()); verr != nil {
 		log.Debug("hotstuff: header-QC canonicalize skipped (verify failed)",
 			"qcBlock", qc.BlockHash, "qcView", qc.View, "err", verr)
 		return
