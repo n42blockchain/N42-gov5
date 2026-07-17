@@ -31,29 +31,29 @@ const (
 	certAnnHeaderLen = 20 + 32 + 8 + 32 + 96 + 8
 )
 
-func encodeIndexAnnouncement(blockHash types.Hash, blockNumber uint64, reporter types.Address, indices []MobileIndex) ([]byte, error) {
-	mask, err := EncodeMask(indices)
+func encodeIndexAnnouncement(blockHash types.Hash, blockNumber uint64, reporter types.Address, indices []IndexCommitment) ([]byte, error) {
+	body, err := encodeIndexCommitments(indices)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]byte, 0, indexAnnHeaderLen+len(mask))
+	out := make([]byte, 0, indexAnnHeaderLen+len(body))
 	out = append(out, blockHash[:]...)
 	var nb [8]byte
 	binary.BigEndian.PutUint64(nb[:], blockNumber)
 	out = append(out, nb[:]...)
 	out = append(out, reporter[:]...)
-	out = append(out, mask...)
+	out = append(out, body...)
 	return out, nil
 }
 
-func decodeIndexAnnouncement(b []byte, registryBound int) (blockHash types.Hash, blockNumber uint64, reporter types.Address, indices []MobileIndex, err error) {
+func decodeIndexAnnouncement(b []byte, registryBound int) (blockHash types.Hash, blockNumber uint64, reporter types.Address, indices []IndexCommitment, err error) {
 	if len(b) < indexAnnHeaderLen {
 		return blockHash, 0, reporter, nil, fmt.Errorf("mobileverify: index announcement too short (%d bytes)", len(b))
 	}
 	copy(blockHash[:], b[:32])
 	blockNumber = binary.BigEndian.Uint64(b[32:40])
 	copy(reporter[:], b[40:60])
-	indices, err = DecodeMask(b[60:], registryBound)
+	indices, err = decodeIndexCommitments(b[60:], registryBound)
 	return blockHash, blockNumber, reporter, indices, err
 }
 
@@ -120,7 +120,7 @@ type CohortRelay struct {
 func NewCohortRelay(coord *CohortCoordinator, p2p PacketPublisher, reg *Registry, indexTopic, certTopic string) *CohortRelay {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &CohortRelay{coord: coord, p2p: p2p, reg: reg, indexTopic: indexTopic, certTopic: certTopic, ctx: ctx, cancel: cancel}
-	coord.SetIndexAnnounceSink(func(blockHash types.Hash, blockNumber uint64, reporter types.Address, indices []MobileIndex) {
+	coord.SetIndexAnnounceSink(func(blockHash types.Hash, blockNumber uint64, reporter types.Address, indices []IndexCommitment) {
 		if r.p2p == nil {
 			return
 		}

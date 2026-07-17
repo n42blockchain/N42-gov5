@@ -59,7 +59,7 @@ func TestMergeCertsDisjointUnion(t *testing.T) {
 	blockHash, root := h(1), h(2)
 	certA, certB, reg, devicesA, devicesB := twoNodeCerts(t, blockHash, 100, root, 40, 35)
 
-	merged, dropped, err := MergeCerts([]*MobileAttestationCert{certA, certB}, reg.IndexBound())
+	merged, dropped, _, err := MergeCerts([]*MobileAttestationCert{certA, certB}, reg)
 	if err != nil {
 		t.Fatalf("MergeCerts: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestMergeCertsSingleInputPassthrough(t *testing.T) {
 		t.Fatalf("close: %v/%d", err, len(certs))
 	}
 
-	merged, dropped, err := MergeCerts([]*MobileAttestationCert{certs[0]}, reg.IndexBound())
+	merged, dropped, _, err := MergeCerts([]*MobileAttestationCert{certs[0]}, reg)
 	if err != nil {
 		t.Fatalf("MergeCerts single: %v", err)
 	}
@@ -138,12 +138,12 @@ func TestMergeCertsMismatchRejected(t *testing.T) {
 	reg := NewRegistry()
 	certA := buildOne(h(1), 100, h(2), reg)
 	certOtherBlock := buildOne(h(9), 100, h(2), reg)
-	if _, _, err := MergeCerts([]*MobileAttestationCert{certA, certOtherBlock}, reg.IndexBound()); err == nil {
+	if _, _, _, err := MergeCerts([]*MobileAttestationCert{certA, certOtherBlock}, reg); err == nil {
 		t.Fatal("merging certs for different blocks must fail")
 	}
 
 	certOtherRoot := buildOne(h(1), 100, h(3), reg)
-	if _, _, err := MergeCerts([]*MobileAttestationCert{certA, certOtherRoot}, reg.IndexBound()); err == nil {
+	if _, _, _, err := MergeCerts([]*MobileAttestationCert{certA, certOtherRoot}, reg); err == nil {
 		t.Fatal("merging certs for different receipts roots must fail")
 	}
 }
@@ -194,7 +194,7 @@ func TestMergeCertsOverlapFallbackKeepsLarger(t *testing.T) {
 		t.Fatalf("small close: %v / %d", err, len(certsSmall))
 	}
 
-	merged, dropped, err := MergeCerts([]*MobileAttestationCert{certsBig[0], certsSmall[0]}, reg.IndexBound())
+	merged, dropped, _, err := MergeCerts([]*MobileAttestationCert{certsBig[0], certsSmall[0]}, reg)
 	if err != nil {
 		t.Fatalf("MergeCerts: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestMergeCertsUbiquitousConflictDemonstratesWhyReconciliationMustRunFirst(t
 		certs = append(certs, got[0])
 	}
 
-	merged, dropped, err := MergeCerts(certs, reg.IndexBound())
+	merged, dropped, _, err := MergeCerts(certs, reg)
 	if err != nil {
 		t.Fatalf("MergeCerts: %v", err)
 	}
@@ -353,5 +353,113 @@ func TestSelectMajorityBucketDeterministicTie(t *testing.T) {
 	}
 	if winner1.ReceiptsRoot != certLow.ReceiptsRoot {
 		t.Fatalf("tie-break winner = %x, want the lexicographically smaller root %x", winner1.ReceiptsRoot, certLow.ReceiptsRoot)
+	}
+}
+
+// TestMergeCertsRejectsForgedCertWithoutAbortingMerge is the fix for a real
+// exploit: MergeCerts must authenticate every input via Verify() BEFORE it
+// is allowed to influence the merge algebraically. A forged cert — a
+// disjoint (so undetected-by-overlap), unused registry index paired with
+// arbitrary signature bytes — must be dropped (reported via invalid), and
+// the merge must still succeed over the remaining genuine certs. Before
+// this fix, MergeCerts combined every input's signature unconditionally
+// (corrupting the whole bucket) and aborted the entire call on the first
+// decode/signature failure (letting one malformed message censor an entire
+// block's attestation).
+func TestMergeCertsRejectsForgedCertWithoutAbortingMerge(t *testing.T) {
+	blockHash, number, root := h(1), uint64(100), h(2)
+	reg := NewRegistry()
+
+	var honest []*device
+	for i := 0; i < 10; i++ {
+		d := newDevice(t)
+		registerCommitted(t, reg, d.pubkey, d.pop())
+		honest = append(honest, d)
+	}
+	col := NewCollector(reg, blockHash, number)
+	for _, d := range honest {
+		if _, err := col.Add(d.receipt(blockHash, number, root)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	genuineCerts, err := col.Close(NowMs())
+	if err != nil || len(genuineCerts) != 1 {
+		t.Fatalf("close: %v/%d", err, len(genuineCerts))
+	}
+
+	// A registered device NOT among the honest signers above — the forger
+	// doesn't need to compromise anyone; it just claims an unused index
+	// with a signature it never actually produced correctly.
+	unusedDevice := newDevice(t)
+	registerCommitted(t, reg, unusedDevice.pubkey, unusedDevice.pop())
+	unusedIdx, _ := reg.Lookup(unusedDevice.pubkey)
+	mask, err := EncodeMask([]MobileIndex{unusedIdx})
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged := &MobileAttestationCert{
+		BlockHash:    blockHash,
+		BlockNumber:  number,
+		ReceiptsRoot: root,
+		SignerMask:   mask,
+		// Garbage signature bytes: doesn't correspond to unusedDevice's key
+		// at all (the forger has never seen unusedDevice's real signature).
+	}
+	for i := range forged.AggregateSig {
+		forged.AggregateSig[i] = 0xAB
+	}
+
+	merged, dropped, invalid, err := MergeCerts([]*MobileAttestationCert{genuineCerts[0], forged}, reg)
+	if err != nil {
+		t.Fatalf("MergeCerts must not abort on a forged input, got error: %v", err)
+	}
+	if len(invalid) != 1 || invalid[0] != forged {
+		t.Fatalf("forged cert should be reported via invalid, got invalid=%v dropped=%v", invalid, dropped)
+	}
+	if len(dropped) != 0 {
+		t.Fatalf("the forged cert should be caught by authentication, not the overlap fallback: dropped=%v", dropped)
+	}
+
+	signers, verr := merged.Verify(reg)
+	if verr != nil {
+		t.Fatalf("merged cert (over only the genuine input) failed to verify: %v", verr)
+	}
+	if len(signers) != len(honest) {
+		t.Fatalf("merged signer count = %d, want %d (only the genuine cert's signers)", len(signers), len(honest))
+	}
+	for _, idx := range signers {
+		if idx == unusedIdx {
+			t.Fatal("the forged claim's index made it into the merged, verifying certificate")
+		}
+	}
+}
+
+// TestMergeCertsAllForgedReturnsEmptySetError: if every input is forged,
+// MergeCerts must report that plainly (ErrEmptyCertSet after filtering),
+// not panic or silently return a zero-value cert that would then pass
+// through as if it were valid.
+func TestMergeCertsAllForgedReturnsEmptySetError(t *testing.T) {
+	reg := NewRegistry()
+	d := newDevice(t)
+	registerCommitted(t, reg, d.pubkey, d.pop())
+	idx, _ := reg.Lookup(d.pubkey)
+	mask, err := EncodeMask([]MobileIndex{idx})
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged := &MobileAttestationCert{BlockHash: h(1), BlockNumber: 100, ReceiptsRoot: h(2), SignerMask: mask}
+	for i := range forged.AggregateSig {
+		forged.AggregateSig[i] = 0xCD
+	}
+
+	merged, _, invalid, err := MergeCerts([]*MobileAttestationCert{forged}, reg)
+	if err == nil {
+		t.Fatal("all-forged input must return an error, not a usable merged cert")
+	}
+	if merged != nil {
+		t.Fatal("merged must be nil when nothing survived authentication")
+	}
+	if len(invalid) != 1 {
+		t.Fatalf("invalid = %d, want 1", len(invalid))
 	}
 }

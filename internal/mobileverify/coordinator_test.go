@@ -4,6 +4,7 @@
 package mobileverify
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -38,7 +39,7 @@ func newSimFleet(t *testing.T, reg *Registry, lookup HeaderLookup, n int, cfg Co
 	// its own announcement locally in announceIndex/reconcileAndClose).
 	for i := range f.nodes {
 		i := i
-		f.nodes[i].SetIndexAnnounceSink(func(blockHash types.Hash, blockNumber uint64, reporter types.Address, indices []MobileIndex) {
+		f.nodes[i].SetIndexAnnounceSink(func(blockHash types.Hash, blockNumber uint64, reporter types.Address, indices []IndexCommitment) {
 			for j := range f.nodes {
 				if j != i {
 					f.nodes[j].OnPeerIndexSet(blockHash, reporter, indices)
@@ -156,7 +157,7 @@ func TestCohortCoordinatorExcludesCrossNodeDuplicate(t *testing.T) {
 	}
 	for i := range coords {
 		i := i
-		coords[i].SetIndexAnnounceSink(func(blockHash types.Hash, blockNumber uint64, reporter types.Address, indices []MobileIndex) {
+		coords[i].SetIndexAnnounceSink(func(blockHash types.Hash, blockNumber uint64, reporter types.Address, indices []IndexCommitment) {
 			for j := range coords {
 				if j != i {
 					coords[j].OnPeerIndexSet(blockHash, reporter, indices)
@@ -312,5 +313,135 @@ func TestCohortCoordinatorSingleNodeStillWorks(t *testing.T) {
 	}
 	if len(signers) != len(devices) {
 		t.Fatalf("signer count = %d, want %d", len(signers), len(devices))
+	}
+}
+
+// TestOnBlockCommittedConcurrentCallsDoNotDuplicateAlarms is the regression
+// test for a real concurrency bug an audit caught: OnBlockCommitted's phase
+// transitions were originally decided (read w.phase) and CLAIMED (write
+// w.phase) in two separate lock sections, so two concurrent calls could both
+// observe the same pre-transition phase and both invoke the same handler —
+// most visibly, mergeAndFinalize running twice for one window and firing
+// the divergence alarm twice. The fix claims each transition atomically with
+// the decision (single lock section). Drive many concurrent
+// OnBlockCommitted calls for the same heights and assert the alarm and the
+// final cert store each reflect exactly one merge, not N.
+func TestOnBlockCommittedConcurrentCallsDoNotDuplicateAlarms(t *testing.T) {
+	blockHash, number := h(1), uint64(1000)
+	majorityRoot, minorityRoot := h(10), h(11)
+	reg := NewRegistry()
+	lookup := fixedLookupAt(blockHash, number)
+	cfg := CohortConfig{IndexAnnounceDelay: 1, ReconcileDelay: 2, MergeDelay: 4}
+
+	store := NewCertStore(64)
+	var addr types.Address
+	addr[19] = 1
+	coord := NewCohortCoordinator(reg, lookup, store, addr, cfg)
+	var mu sync.Mutex
+	var alarms []DivergenceAlarm
+	coord.SetDivergenceSink(func(a DivergenceAlarm) {
+		mu.Lock()
+		alarms = append(alarms, a)
+		mu.Unlock()
+	})
+
+	for i := 0; i < 20; i++ {
+		d := newDevice(t)
+		registerCommitted(t, reg, d.pubkey, d.pop())
+		if _, err := coord.Submit(d.receipt(blockHash, number, majorityRoot)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 6; i++ {
+		d := newDevice(t)
+		registerCommitted(t, reg, d.pubkey, d.pop())
+		if _, err := coord.Submit(d.receipt(blockHash, number, minorityRoot)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Fire many concurrent, overlapping OnBlockCommitted calls across every
+	// checkpoint height — the exact race the fix closes.
+	var wg sync.WaitGroup
+	for round := 0; round < 8; round++ {
+		for height := number; height <= number+cfg.MergeDelay; height++ {
+			height := height
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				coord.OnBlockCommitted(height)
+			}()
+		}
+	}
+	wg.Wait()
+	// A couple of settling calls in case any goroutine's height arrived out
+	// of scheduling order relative to another.
+	coord.OnBlockCommitted(number + cfg.MergeDelay)
+	coord.OnBlockCommitted(number + cfg.MergeDelay)
+
+	got := store.Get(blockHash)
+	if len(got) != 1 {
+		t.Fatalf("cert store has %d entries for the block, want exactly 1 (no duplicate merge)", len(got))
+	}
+	if got[0].ReceiptsRoot != majorityRoot {
+		t.Fatalf("winning root = %x, want the majority %x", got[0].ReceiptsRoot, majorityRoot)
+	}
+	mu.Lock()
+	n := len(alarms)
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("divergence alarms fired = %d, want exactly 1 (concurrent OnBlockCommitted calls must not double-finalize)", n)
+	}
+}
+
+// TestSubmitAnchorsCheckpointsToReceiptHeightNotSubmitTimeHeight is the
+// regression test for a related bug an audit caught: Submit originally
+// stamped a window's openedHeight from c.currentHeight (whatever height this
+// node happened to know about AT SUBMIT TIME — 0 if no OnBlockCommitted had
+// run yet), not from the receipt's own (already lookup-verified) block
+// height. A receipt for an OLD, already-well-past block would then measure
+// its checkpoints from "now" instead of the block's real height, letting an
+// attacker (or just a slow phone) hold a window open for MergeDelay MORE
+// blocks into the future purely by referencing a stale-but-known block hash
+// — compounding the maxOpenWindows cap into a resource-exhaustion vector.
+// Anchoring to the receipt's real height means a stale submission's
+// checkpoints are already in the past relative to the current height, so it
+// flushes on the very next OnBlockCommitted call instead of staying open.
+func TestSubmitAnchorsCheckpointsToReceiptHeightNotSubmitTimeHeight(t *testing.T) {
+	blockHash, number, root := h(1), uint64(1000), h(2)
+	reg := NewRegistry()
+	lookup := fixedLookupAt(blockHash, number)
+	cfg := CohortConfig{IndexAnnounceDelay: 1, ReconcileDelay: 2, MergeDelay: 4}
+	store := NewCertStore(64)
+	var addr types.Address
+	addr[19] = 1
+	coord := NewCohortCoordinator(reg, lookup, store, addr, cfg)
+
+	// Advance this node's own clock WAY past the block's height BEFORE the
+	// receipt ever arrives — simulating a phone submitting a receipt for an
+	// old block long after the fact.
+	coord.OnBlockCommitted(number + 500)
+
+	d := newDevice(t)
+	registerCommitted(t, reg, d.pubkey, d.pop())
+	if _, err := coord.Submit(d.receipt(blockHash, number, root)); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if coord.OpenWindows() != 1 {
+		t.Fatalf("open windows = %d, want 1 right after submit", coord.OpenWindows())
+	}
+
+	// A single further height notification (this node's clock is already
+	// far past every checkpoint relative to the block's REAL height) must
+	// flush the window all the way to finalization in one shot — not stay
+	// open waiting MergeDelay MORE blocks from "now".
+	coord.OnBlockCommitted(number + 501)
+
+	if coord.OpenWindows() != 0 {
+		t.Fatalf("open windows = %d, want 0 — a stale receipt must flush promptly, not linger", coord.OpenWindows())
+	}
+	got := store.Get(blockHash)
+	if len(got) != 1 {
+		t.Fatalf("cert store has %d entries, want 1", len(got))
 	}
 }
