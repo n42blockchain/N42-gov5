@@ -894,7 +894,8 @@ func (bc *BlockChain) canonicalByCommitOnly() bool {
 // rewriting the canonical number→hash mapping until it reaches an ancestor that
 // is already canonical, then updates the head pointers.
 func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
-	return bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+	var committedNumber uint64
+	err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
 		blk, err := rawdb.ReadBlockByHash(tx, hash)
 		if err != nil {
 			return err
@@ -902,6 +903,7 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 		if blk == nil {
 			return fmt.Errorf("committed block %s not in db", hash.Hex())
 		}
+		committedNumber = blk.Number64().Uint64()
 		// Applied-state guard: canonicalization must never run ahead of the
 		// EXECUTED chain. The embedded-QC catch-up path can name a block that
 		// is STORED locally but was never executed here (a known-skip during a
@@ -1016,6 +1018,19 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 		log.Info("commit-to-canonical applied", "number", blk.Number64().Uint64(), "hash", hash.Hex())
 		return nil
 	})
+	if err == nil && bc.onBlockCommitted != nil {
+		// This — not writeBlockWithState's CanonStatTy branch — is the
+		// ACTUAL canonicalization point for leader-driven consensus
+		// (HotStuff): canonicalByCommitOnly() makes writeBlockWithState
+		// return SideStatTy unconditionally for these chains (see its own
+		// comment on why the height-first fork-choice must not run for
+		// them), so a hook placed only in that CanonStatTy branch never
+		// fires in production. Calling out to consumer code AFTER the DB
+		// transaction has committed (not from inside it) keeps a slow or
+		// panicking callback from holding the write transaction open.
+		bc.onBlockCommitted(committedNumber)
+	}
+	return err
 }
 
 // LowestSiblingAtHeight returns the locally-known block at `number` with the
