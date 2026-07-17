@@ -641,6 +641,7 @@ func (s *Service) handleSendToValidator(output EngineOutput) {
 		return
 	}
 
+	directDelivered := false
 	// Try direct send if peer registry is available.
 	if s.rotor != nil && s.rotor.Enabled() {
 		eng := s.engine.Engine()
@@ -657,7 +658,14 @@ func (s *Service) handleSendToValidator(output EngineOutput) {
 							if sendErr := sender.SendRawBytes(s.ctx, buf.Bytes(), s.rpcTopic, pid); sendErr == nil {
 								s.rotor.RecordVoteDirect()
 								s.logVoteRouting()
-								return // direct send succeeded
+								directDelivered = true
+								// Do not return here. GossipSub is configured StrictNoSign/
+								// WithNoAuthor, so learnValidatorPeer can only associate a
+								// validator with the last-hop relayer, not authenticate that
+								// the mapped peer owns the validator key. A wrong peer can
+								// accept the stream successfully and black-hole the vote.
+								// Keep direct delivery as a latency optimization, with gossip
+								// as the mandatory liveness path until peer bindings are signed.
 							}
 							// The stream failed — the mapped peer is gone or the
 							// connection is dead. Drop the stale mapping now so
@@ -678,8 +686,10 @@ func (s *Service) handleSendToValidator(output EngineOutput) {
 		}
 	}
 
-	// Fallback to gossip broadcast.
-	if s.rotor != nil {
+	// Gossip is always sent. It is a fallback when direct delivery failed or no
+	// mapping existed, and a safety net when an unauthenticated mapping accepted
+	// the direct stream but does not belong to the target validator.
+	if s.rotor != nil && !directDelivered {
 		s.rotor.RecordVoteFallback()
 		s.logVoteRouting()
 	}

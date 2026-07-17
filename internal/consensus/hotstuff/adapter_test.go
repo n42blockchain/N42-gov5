@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"math/big"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -20,6 +21,7 @@ import (
 // mockChainHeaderReader implements consensus.ChainHeaderReader for testing.
 type mockChainHeaderReader struct {
 	headers map[uint64]block.IHeader
+	config  *params.ChainConfig
 }
 
 func newMockChainReader() *mockChainHeaderReader {
@@ -29,6 +31,9 @@ func newMockChainReader() *mockChainHeaderReader {
 }
 
 func (m *mockChainHeaderReader) Config() *params.ChainConfig {
+	if m.config != nil {
+		return m.config
+	}
 	return &params.ChainConfig{}
 }
 
@@ -284,6 +289,36 @@ func TestVerifyHeader_ValidQC(t *testing.T) {
 	err = h.VerifyHeader(chain, childHeader, true)
 	if err != nil {
 		t.Fatalf("VerifyHeader with valid QC should pass: %v", err)
+	}
+}
+
+func TestVerifyHeader_MobileAnchorForkShape(t *testing.T) {
+	h := New(&params.HotStuffConfig{}, nil)
+	chain := newMockChainReader()
+	chain.config = &params.ChainConfig{MobileAnchorTime: big.NewInt(100)}
+	parent := &block.Header{Number: uint256.NewInt(0), Time: 90}
+	chain.headers[0] = parent
+
+	extra := make([]byte, extraMinLen)
+	copy(extra[:extraMagicLen], extraMagic[:])
+	child := &block.Header{
+		Number:     uint256.NewInt(1),
+		ParentHash: parent.Hash(),
+		Time:       100,
+		Extra:      extra,
+	}
+	if err := h.VerifyHeader(chain, child, false); err == nil {
+		t.Fatal("post-fork header without MobileRegistryRoot was accepted")
+	}
+	root := types.Hash{0x42}
+	child.MobileRegistryRoot = &root
+	if err := h.VerifyHeader(chain, child, false); err != nil {
+		t.Fatalf("post-fork header with MobileRegistryRoot rejected: %v", err)
+	}
+
+	child.Time = 99
+	if err := h.VerifyHeader(chain, child, false); err == nil {
+		t.Fatal("pre-fork header with MobileRegistryRoot was accepted")
 	}
 }
 

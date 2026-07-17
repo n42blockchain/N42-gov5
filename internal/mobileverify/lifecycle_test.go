@@ -4,6 +4,7 @@
 package mobileverify
 
 import (
+	"errors"
 	"testing"
 
 	"time"
@@ -55,6 +56,38 @@ func TestRevokeRemovesActiveMembershipKeepsHistory(t *testing.T) {
 	col2 := NewCollector(reg, h(0xB2), 6)
 	if _, err := col2.Add(d.receipt(h(0xB2), 6, root)); err == nil {
 		t.Fatal("revoked device attested to a new block")
+	}
+}
+
+func TestRevokedKeyCannotReceiveSecondIndex(t *testing.T) {
+	reg := NewRegistry()
+	d := newDevice(t)
+	idx := registerCommitted(t, reg, d.pubkey, d.pop())
+	if _, ok := reg.Revoke(d.pubkey); !ok {
+		t.Fatal("fixture key was not revoked")
+	}
+	if _, _, err := reg.Register(d.pubkey, d.pop()); !errors.Is(err, ErrKeyPreviouslyRegistered) {
+		t.Fatalf("revoked key re-registration error = %v", err)
+	}
+	reg.CommitEpoch()
+	if reg.IndexBound() != int(idx)+1 {
+		t.Fatalf("revoked key received a second index: bound=%d", reg.IndexBound())
+	}
+}
+
+func TestRotateRejectsPreviouslyUsedReplacementWithoutRevokingOld(t *testing.T) {
+	reg := NewRegistry()
+	oldDevice := newDevice(t)
+	replacement := newDevice(t)
+	registerCommitted(t, reg, oldDevice.pubkey, oldDevice.pop())
+	registerCommitted(t, reg, replacement.pubkey, replacement.pop())
+	reg.Revoke(replacement.pubkey)
+
+	if _, err := reg.Rotate(oldDevice.pubkey, replacement.pubkey, replacement.pop()); !errors.Is(err, ErrKeyPreviouslyRegistered) {
+		t.Fatalf("rotate to previously used key error = %v", err)
+	}
+	if _, ok := reg.Lookup(oldDevice.pubkey); !ok {
+		t.Fatal("failed rotation revoked the still-valid old key")
 	}
 }
 

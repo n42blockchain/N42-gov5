@@ -866,6 +866,8 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 			ratio: ratio,
 			inc:   true,
 		}
+	default:
+		return fmt.Errorf("fill transactions: %w", err)
 	}
 
 	// End-of-block system calls (EIP-7002 withdrawal / EIP-7251 consolidation
@@ -1012,7 +1014,7 @@ func (w *worker) workLoop(recommit time.Duration) error {
 	}
 }
 
-func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs *state.IntraBlockState, getHeader func(hash types.Hash, number uint64) *block.Header) error {
+func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs *state.IntraBlockState, getHeader func(hash types.Hash, number uint64) *block.Header) (retErr error) {
 	header := env.header
 	headerNumber, err := requireHeaderNumber(header, "mining header number unavailable")
 	if err != nil {
@@ -1053,6 +1055,11 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 		env.header.BlockAccessListHash = &h
 		return nil
 	}
+	defer func() {
+		if err := finalizeBAL(); err != nil && retErr == nil {
+			retErr = err
+		}
+	}()
 
 	commitTx := func(txn *transaction.Transaction) error {
 		ibs.Prepare(txn.Hash(), types.Hash{}, env.tcount)
@@ -1136,7 +1143,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	// Phase 2: Fill remaining space with regular transactions sorted by effective tip.
 	pending := w.txsPool.Pending(false)
 	if len(pending) == 0 {
-		return finalizeBAL()
+		return nil
 	}
 
 	txSet := builder.NewTxByPriceAndNonce(pending, header.BaseFee)
@@ -1189,7 +1196,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 
 	// Bind the BAL hash even for an empty block or a block containing only bundle
 	// transactions. Once the fork is active the header field is mandatory.
-	return finalizeBAL()
+	return nil
 }
 
 func (w *worker) prepareWork(param *generateParams) (*environment, error) {

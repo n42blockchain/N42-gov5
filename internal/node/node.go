@@ -1510,6 +1510,15 @@ func (n *Node) Start() error {
 	n.startStopLock.Lock()
 	defer n.startStopLock.Unlock()
 
+	// A scheduled MobileAnchor fork makes MobileRegistryRoot mandatory in
+	// HotStuff headers. Fail before starting any service if this node can become
+	// leader but has no registry/root provider; otherwise it would appear healthy
+	// until its turn, then repeatedly propose headers every follower rejects.
+	if n.config.NodeCfg.Miner && n.config.ChainCfg != nil &&
+		n.config.ChainCfg.MobileAnchorTime != nil && !n.config.MobileVerifyCfg.Enabled {
+		return errors.New("mobileverify must be enabled on a mining node when MobileAnchorTime is configured")
+	}
+
 	n.lock.Lock()
 	switch n.state {
 	case runningState:
@@ -1711,8 +1720,9 @@ func (n *Node) Start() error {
 	// slashing) was constructed but had no external surface before this.
 	if n.coprocessorService != nil {
 		n.rpcAPIs = append(n.rpcAPIs, jsonrpc.API{
-			Namespace: "coprocessor",
-			Service:   dcoprocessor.NewAPI(n.coprocessorService),
+			Namespace:     "coprocessor",
+			Service:       dcoprocessor.NewAPI(n.coprocessorService),
+			Authenticated: true,
 		})
 	}
 
@@ -2113,6 +2123,12 @@ func (n *Node) startMobileVerify() {
 		topic += n.p2p.Encoding().ProtocolSuffix()
 	}
 	svc := mobileverify.NewPacketService(cache, n.p2p, topic)
+	svc.SetHeadNumber(func() uint64 {
+		if head := n.blockChain.CurrentBlock(); head != nil && head.Number64() != nil {
+			return head.Number64().Uint64()
+		}
+		return 0
+	})
 
 	// Swarm distribution (design §5b target form): seed cached packets on
 	// the BitTorrent bridge when both this pipeline and the torrent client
@@ -2242,7 +2258,22 @@ func (n *Node) startMobileVerify() {
 	// consensus-path step.
 	n.mobileCommitter = mobileverify.NewEpochCommitter(n.mobileRegistry,
 		time.Duration(n.config.MobileVerifyCfg.CollectWindowSec)*time.Second)
+	// Continue the durable epoch sequence across restarts. The registry member
+	// snapshot still needs its own persistence path (reported by the audit), but
+	// a restart must at least not overwrite anchor records starting again at 1.
 	var mobileEpoch uint64
+	if err := n.db.View(context.Background(), func(tx kv.Tx) error {
+		recent, err := rawdb.RecentMobileAnchors(tx, 1)
+		if err != nil {
+			return err
+		}
+		if len(recent) == 1 {
+			mobileEpoch = recent[0].Epoch
+		}
+		return nil
+	}); err != nil {
+		log.Warn("mobileverify: failed to restore anchor epoch", "err", err)
+	}
 	n.mobileCommitter.SetOnCommit(func(root types.Hash, _ int) {
 		mobileEpoch++
 		var head uint64

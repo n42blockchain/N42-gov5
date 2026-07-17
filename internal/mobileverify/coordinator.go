@@ -271,10 +271,18 @@ func (c *CohortCoordinator) OnPeerCert(reporter types.Address, cert *MobileAttes
 	if cert == nil {
 		return
 	}
+	// Cohort gossip is application-level data carried over an unsigned pubsub
+	// transport. Never let a syntactically valid mask stand in for aggregate
+	// signature verification: otherwise a peer can claim an arbitrarily large
+	// signer set and win SelectMajorityBucket with a forged certificate.
+	if _, err := cert.Verify(c.reg); err != nil {
+		log.Debug("mobileverify: rejected invalid peer certificate", "err", err)
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	w, ok := c.windows[cert.BlockHash]
-	if !ok {
+	if !ok || cert.BlockNumber != w.blockNumber {
 		return
 	}
 	byReporter, ok := w.peerCerts[cert.ReceiptsRoot]

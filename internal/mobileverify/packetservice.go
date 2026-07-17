@@ -37,6 +37,10 @@ type PacketService struct {
 	cache *PacketCache
 	p2p   PacketPublisher
 	topic string
+	// headNumber bounds unsigned gossip to the local chain neighborhood. A
+	// packet carries a self-hashing header, but anyone can manufacture one with
+	// MaxUint64 as its number and otherwise evict the rolling cache.
+	headNumber func() uint64
 
 	// Swarm distribution (design §5b target form): optional, via SetSeeder.
 	seeder Seeder
@@ -46,6 +50,10 @@ type PacketService struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
+
+// SetHeadNumber wires the local canonical/applied head used to reject packets
+// far outside the node's current chain window. Call before Start.
+func (s *PacketService) SetHeadNumber(fn func() uint64) { s.headNumber = fn }
 
 // NewPacketService creates the service. topic is the fully-qualified
 // gossip topic (fork-digest formatted, encoding suffix included by the
@@ -117,10 +125,32 @@ func (s *PacketService) receiveLoop(sub *pubsub.Subscription) {
 		if hash, number, encoded, err := ValidatePacketBytes(msg.Data); err != nil {
 			log.Debug("mobileverify: dropping invalid packet", "err", err)
 		} else {
-			s.cache.Put(hash, number, encoded)
-			s.seedAsync(hash, encoded)
+			if !s.acceptPeerNumber(number) {
+				log.Debug("mobileverify: dropping packet outside local head window", "number", number)
+				continue
+			}
+			if s.cache.PutPeer(hash, number, encoded) {
+				s.seedAsync(hash, encoded)
+			}
 		}
 	}
+}
+
+func (s *PacketService) acceptPeerNumber(number uint64) bool {
+	if s.headNumber == nil {
+		return true
+	}
+	head := s.headNumber()
+	// A packet is produced immediately before its candidate block is inserted,
+	// so permit a small future skew. Larger gaps must wait until local sync
+	// advances the supplied head.
+	if number > head && number-head > 2 {
+		return false
+	}
+	if head > s.cache.window && number < head-s.cache.window {
+		return false
+	}
+	return true
 }
 
 // ValidatePacketBytes decodes an inbound packet and checks the

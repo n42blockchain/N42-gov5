@@ -380,6 +380,20 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 		return errors.New("timestamp must be after parent")
 	}
 
+	// MobileAnchor is a scheduled header fork, not an optional producer hint.
+	// Enforce the RLP shape on both sides of the boundary so a validator started
+	// without the mobile pipeline cannot silently produce nil-root blocks after
+	// activation, and a pre-fork producer cannot change historical wire form.
+	if cfg := chain.Config(); cfg != nil {
+		active := cfg.IsMobileAnchor(header.Time)
+		switch {
+		case active && header.MobileRegistryRoot == nil:
+			return fmt.Errorf("missing MobileRegistryRoot at block %s after MobileAnchor activation", header.Number)
+		case !active && header.MobileRegistryRoot != nil:
+			return fmt.Errorf("unexpected MobileRegistryRoot at block %s before MobileAnchor activation", header.Number)
+		}
+	}
+
 	if qc != nil {
 		if qc.View > headerView {
 			return fmt.Errorf("QC view %d exceeds header view %d", qc.View, headerView)

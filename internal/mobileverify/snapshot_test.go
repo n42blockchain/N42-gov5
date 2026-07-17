@@ -91,3 +91,50 @@ func TestImportRequiresEmpty(t *testing.T) {
 		t.Fatal("import over a populated registry should fail")
 	}
 }
+
+// Revoked entries remain in the append-only index for historical certificate
+// verification, but they must not be restored into active membership or the
+// accumulator tree by snapshot import.
+func TestSnapshotPreservesRevokedMembership(t *testing.T) {
+	a := NewRegistry()
+	d := newDevice(t)
+	idx := registerCommitted(t, a, d.pubkey, d.pop())
+	anchored, revoked := a.Revoke(d.pubkey)
+	if !revoked {
+		t.Fatal("fixture device was not revoked")
+	}
+
+	b := NewRegistry()
+	got, err := b.ImportCommitted(a.ExportCommitted())
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if got != anchored {
+		t.Fatalf("imported root %s != post-revocation root %s", got.Hex(), anchored.Hex())
+	}
+	if b.Count() != 0 {
+		t.Fatalf("revoked member restored as active: count=%d", b.Count())
+	}
+	if _, ok := b.Lookup(d.pubkey); ok {
+		t.Fatal("revoked member restored into active lookup")
+	}
+	if b.IndexBound() != 1 {
+		t.Fatalf("historical index bound = %d, want 1", b.IndexBound())
+	}
+	if _, err := b.PublicKey(idx); err != nil {
+		t.Fatalf("revoked historical key was not retained: %v", err)
+	}
+}
+
+func TestSnapshotRejectsTamperedPoP(t *testing.T) {
+	a := NewRegistry()
+	registerAndCommit(t, a, 1)
+	blob := a.ExportCommitted()
+	// First entry's PoP starts after header(9)+pubkey(48).
+	blob[9+48] ^= 0x01
+
+	b := NewRegistry()
+	if _, err := b.ImportCommitted(blob); err == nil {
+		t.Fatal("snapshot with tampered proof of possession was accepted")
+	}
+}

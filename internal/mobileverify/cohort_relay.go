@@ -85,9 +85,9 @@ func decodeCertAnnouncement(b []byte, registryBound int) (reporter types.Address
 	copy(c.AggregateSig[:], b[92:188])
 	c.WindowClosedAt = binary.BigEndian.Uint64(b[188:196])
 	c.SignerMask = append([]byte(nil), b[196:]...)
-	// Validate the mask decodes cleanly (and the cert verifies) before it is
-	// ever handed to MergeCerts — a malformed or forged announcement must
-	// fail here, not corrupt a merge downstream.
+	// Validate the mask framing here. CohortCoordinator.OnPeerCert performs the
+	// load-bearing aggregate-signature verification against the registry before
+	// admitting the certificate to a merge bucket.
 	if _, derr := DecodeMask(c.SignerMask, registryBound); derr != nil {
 		return reporter, nil, fmt.Errorf("mobileverify: cert announcement mask: %w", derr)
 	}
@@ -157,6 +157,7 @@ func (r *CohortRelay) Start() error {
 	}
 	certSub, err := r.p2p.SubscribeToTopic(r.certTopic)
 	if err != nil {
+		indexSub.Cancel()
 		return fmt.Errorf("mobileverify: subscribe cohort cert topic: %w", err)
 	}
 	r.wg.Add(2)

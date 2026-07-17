@@ -497,9 +497,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 				Number:   blockNumber.Uint64(),
 			})
 		}
-		if bc.onBlockCommitted != nil {
-			bc.onBlockCommitted(blockNumber.Uint64())
-		}
+		bc.notifyBlockCommitted(blockNumber.Uint64())
 	}
 
 	if _, ok := bc.futureBlocks.Get(blk.Hash()); ok {

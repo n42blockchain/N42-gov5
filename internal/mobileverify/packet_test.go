@@ -47,6 +47,48 @@ func TestPacketCacheWindowEviction(t *testing.T) {
 	}
 }
 
+func TestPacketCacheBoundsUnsignedForksAndCopiesReads(t *testing.T) {
+	c := NewPacketCache(4)
+	for i := 0; i < maxPeerPacketsPerHeight; i++ {
+		var hash types.Hash
+		hash[0] = byte(i + 1)
+		if !c.PutPeer(hash, 10, []byte{byte(i + 1)}) {
+			t.Fatalf("peer packet %d rejected before per-height cap", i)
+		}
+	}
+	var overflow types.Hash
+	overflow[0] = 0xff
+	if c.PutPeer(overflow, 10, []byte{0xff}) {
+		t.Fatal("peer packet above per-height fork cap was accepted")
+	}
+
+	first := types.Hash{0: 1}
+	got, ok := c.Get(first)
+	if !ok {
+		t.Fatal("cached packet missing")
+	}
+	got[0] = 0xff
+	again, _ := c.Get(first)
+	if again[0] != 1 {
+		t.Fatal("Get exposed mutable cache storage")
+	}
+}
+
+func TestPacketServiceRejectsNumbersOutsideLocalHeadWindow(t *testing.T) {
+	svc := NewPacketService(NewPacketCache(8), nil, "/test")
+	svc.SetHeadNumber(func() uint64 { return 100 })
+	for _, number := range []uint64{92, 100, 101, 102} {
+		if !svc.acceptPeerNumber(number) {
+			t.Fatalf("number %d inside local window was rejected", number)
+		}
+	}
+	for _, number := range []uint64{91, 103, ^uint64(0)} {
+		if svc.acceptPeerNumber(number) {
+			t.Fatalf("number %d outside local window was accepted", number)
+		}
+	}
+}
+
 // buildTestPacket makes a minimal but WELL-FORMED packet: real header
 // bytes whose hash matches BlockHash — the self-certification invariant
 // ValidatePacketBytes enforces.
