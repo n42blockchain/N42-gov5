@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/crypto/bls/common"
 )
@@ -39,6 +40,14 @@ type Collector struct {
 
 	mu     sync.Mutex
 	closed bool
+	// frozen seals intake against new Add calls without discarding what's
+	// already admitted (unlike closed). Set by Freeze() the moment this
+	// window's index set is snapshotted for cross-node announcement —
+	// closing the gap where a receipt landing between "snapshot taken" and
+	// "phase advanced" would be aggregated locally without ever being
+	// reconciled against peers, silently reopening the double-counting risk
+	// reconciliation exists to prevent (see reconcile.go).
+	frozen bool
 	// latest receipt per device; bucketing happens at Close so a device
 	// that re-submits with a different root cleanly moves buckets.
 	byIndex map[MobileIndex]*Receipt
@@ -76,7 +85,7 @@ func (c *Collector) Add(r *Receipt) (MobileIndex, error) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
+	if c.closed || c.frozen {
 		return 0, ErrWindowClosed
 	}
 	cp := *r
@@ -162,11 +171,10 @@ func (c *Collector) Size() int {
 }
 
 // Indices returns the currently-admitted MobileIndex set, sorted ascending,
-// WITHOUT closing the window. This is the cross-node index-reconciliation
-// round's announcement payload (design: every IDC node broadcasts "who I
-// have so far" for this block BEFORE any node commits to a final local
-// aggregate, so a device whose signature reached more than one node can be
-// excluded everywhere before aggregation — see ExcludeIndices).
+// WITHOUT closing OR freezing the window — a non-committing peek, safe for
+// diagnostics/tests. The cross-node index-reconciliation round's actual
+// announcement payload is Freeze(), not this method (see its doc comment for
+// why a non-sealing snapshot is unsafe for that purpose).
 func (c *Collector) Indices() []MobileIndex {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -175,6 +183,44 @@ func (c *Collector) Indices() []MobileIndex {
 		out = append(out, idx)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// Freeze atomically snapshots the currently-admitted set AND seals the
+// window against further Add calls (via the frozen flag) — closing a real
+// race an unsealed snapshot would leave open: a receipt landing after the
+// snapshot is read but before the caller gets around to advancing this
+// window's phase would still be admitted (Add only checked closed/frozen,
+// neither of which had been set yet), so it would be aggregated into this
+// node's local cert without ever having been part of the announced set any
+// peer reconciled against — silently reopening the double-counting risk
+// reconciliation exists to close. Freezing atomically with the read removes
+// the gap entirely: any Add racing this call either lands before the freeze
+// (and is correctly included in the snapshot) or after it (and is correctly
+// rejected with ErrWindowClosed), with no window where it does neither.
+//
+// Each returned entry pairs its index with Keccak256(signature) — a
+// commitment to the specific device's actual signature, not just a bare
+// claim of the index. BLS signing is deterministic for a fixed key and
+// message, so two nodes that genuinely both received the identical device's
+// signature for this block will always produce the IDENTICAL commitment; a
+// node that never actually collected that device's signature cannot forge a
+// matching commitment without already knowing the real signature bytes.
+// This is what lets cross-node reconciliation require PROOF of a genuine
+// duplicate submission (see reconcile.go) instead of trusting a bare,
+// unauthenticated index claim — which would otherwise let any single
+// dishonest node censor an arbitrary honest device fleet-wide just by
+// naming its index in an announcement, without ever having its signature.
+func (c *Collector) Freeze() []IndexCommitment {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.frozen = true
+	out := make([]IndexCommitment, 0, len(c.byIndex))
+	for idx, r := range c.byIndex {
+		sig := r.Signature
+		out = append(out, IndexCommitment{Index: idx, Commitment: crypto.Keccak256Hash(sig[:])})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Index < out[j].Index })
 	return out
 }
 

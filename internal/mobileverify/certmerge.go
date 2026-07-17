@@ -11,6 +11,20 @@
 // pre-aggregation step's job; MergeCerts here still checks for it
 // defensively (a degraded-path node may have skipped reconciliation) but
 // must never rely on it running.
+//
+// MergeCerts's inputs arrive over an open gossip topic (cohort_relay.go) —
+// they are NOT pre-authenticated the way a locally-produced cert is. Every
+// input is therefore run through cert.Verify(reg) before it is allowed to
+// influence the merge at all: without this, a single forged cert (a
+// disjoint, unused SignerMask index paired with arbitrary signature bytes)
+// would get folded into the real aggregate via bls.AggregateSignatures,
+// producing a merged signature that no longer corresponds to its claimed
+// signer set — corrupting the output for every HONEST signer in that
+// bucket, not just excluding the forgery. A cert that fails to verify (or
+// fails to even decode) is dropped and reported via the invalid return, not
+// treated as a reason to abort the whole call — a single malformed
+// announcement must never be able to censor an entire block's attestation
+// with one message.
 
 package mobileverify
 
@@ -39,37 +53,31 @@ var (
 
 // MergeCerts combines multiple certificates for the SAME (BlockHash,
 // BlockNumber, ReceiptsRoot) into one covering the union of their signers.
-// Returns the merged cert, plus any inputs dropped due to a detected signer
-// overlap (should be empty when upstream reconciliation ran — a non-empty
-// return here is itself worth alerting on, since it means the disjointness
-// invariant was violated somewhere upstream).
+// Returns the merged cert; invalid holds inputs that failed authentication
+// (see the package doc comment above — expected background noise on an open
+// gossip topic, not necessarily a local bug); droppedForOverlap holds
+// otherwise-valid inputs dropped due to a detected signer overlap (should be
+// empty when upstream reconciliation ran — a non-empty return here is
+// itself worth alerting on, since it means the disjointness invariant was
+// violated somewhere upstream).
 //
-// Overlap resolution (defense in depth only): certs are processed largest
-// first, in descending signer-count order with a deterministic tie-break;
-// a cert that shares any index with an already-accepted cert is dropped
-// whole, not partially — a BLS aggregate signature cannot be selectively
-// decomposed to drop just the conflicting signer without that signer's raw
-// individual signature, which is no longer available once a cert has
-// already been aggregated. This is exactly why reconciliation excludes
-// conflicting indices BEFORE aggregation instead of relying on this
-// fallback: a single index present in every input cert would otherwise
-// collapse the merge down to just one surviving cert, discarding every
-// other node's honest, non-conflicting signers as collateral damage.
-func MergeCerts(certs []*MobileAttestationCert, registryBound int) (merged *MobileAttestationCert, droppedForOverlap []*MobileAttestationCert, err error) {
+// Overlap resolution (defense in depth only, for certs that DID pass
+// authentication): certs are processed largest first, in descending
+// signer-count order with a deterministic tie-break; a cert that shares any
+// index with an already-accepted cert is dropped whole, not partially — a
+// BLS aggregate signature cannot be selectively decomposed to drop just the
+// conflicting signer without that signer's raw individual signature, which
+// is no longer available once a cert has already been aggregated. This is
+// exactly why reconciliation excludes conflicting indices BEFORE
+// aggregation instead of relying on this fallback: a single index present
+// in every input cert would otherwise collapse the merge down to just one
+// surviving cert, discarding every other node's honest, non-conflicting
+// signers as collateral damage.
+func MergeCerts(certs []*MobileAttestationCert, reg *Registry) (merged *MobileAttestationCert, droppedForOverlap []*MobileAttestationCert, invalid []*MobileAttestationCert, err error) {
 	if len(certs) == 0 {
-		return nil, nil, ErrEmptyCertSet
+		return nil, nil, nil, ErrEmptyCertSet
 	}
-	first := certs[0]
-	for _, c := range certs[1:] {
-		if !sameCohortKey(first, c) {
-			return nil, nil, fmt.Errorf("%w: %x/%d/%x vs %x/%d/%x", ErrCertMismatch,
-				first.BlockHash[:8], first.BlockNumber, first.ReceiptsRoot[:8],
-				c.BlockHash[:8], c.BlockNumber, c.ReceiptsRoot[:8])
-		}
-	}
-	if len(certs) == 1 {
-		return certs[0], nil, nil
-	}
+	registryBound := reg.IndexBound()
 
 	type decoded struct {
 		cert    *MobileAttestationCert
@@ -78,16 +86,51 @@ func MergeCerts(certs []*MobileAttestationCert, registryBound int) (merged *Mobi
 	}
 	ds := make([]decoded, 0, len(certs))
 	for _, c := range certs {
+		if c == nil {
+			continue
+		}
+		// Authenticate BEFORE this cert is allowed to touch the merge at
+		// all: decoding+combining an unverified cert's fields would let a
+		// single forged announcement corrupt the aggregate for every
+		// honest signer sharing its (disjoint, so undetected-by-overlap)
+		// bucket.
+		if _, verr := c.Verify(reg); verr != nil {
+			invalid = append(invalid, c)
+			continue
+		}
 		idxs, derr := DecodeMask(c.SignerMask, registryBound)
 		if derr != nil {
-			return nil, nil, fmt.Errorf("mobileverify: decode mask: %w", derr)
+			invalid = append(invalid, c)
+			continue
 		}
 		sig, serr := bls.SignatureFromBytes(c.AggregateSig[:])
 		if serr != nil {
-			return nil, nil, fmt.Errorf("mobileverify: decode signature: %w", serr)
+			invalid = append(invalid, c)
+			continue
 		}
 		ds = append(ds, decoded{cert: c, indices: idxs, sig: sig})
 	}
+	if len(ds) == 0 {
+		return nil, nil, invalid, ErrEmptyCertSet
+	}
+
+	// The mismatch check runs only over AUTHENTICATED survivors: an attacker
+	// cannot forge a cert that both verifies AND claims a mismatched
+	// block/root (Verify checks the signature against exactly those
+	// header fields), so this can no longer be triggered by an unverified
+	// forgery the way it could before authentication ran first.
+	first := ds[0].cert
+	for _, d := range ds[1:] {
+		if !sameCohortKey(first, d.cert) {
+			return nil, nil, invalid, fmt.Errorf("%w: %x/%d/%x vs %x/%d/%x", ErrCertMismatch,
+				first.BlockHash[:8], first.BlockNumber, first.ReceiptsRoot[:8],
+				d.cert.BlockHash[:8], d.cert.BlockNumber, d.cert.ReceiptsRoot[:8])
+		}
+	}
+	if len(ds) == 1 {
+		return ds[0].cert, nil, invalid, nil
+	}
+
 	// Largest cohort first, so the (should-be-unreachable) overlap fallback
 	// deterministically favors keeping more signers; deterministic tie-break
 	// keeps the fold order — and thus the eventual result in the disjoint
@@ -122,13 +165,13 @@ func MergeCerts(certs []*MobileAttestationCert, registryBound int) (merged *Mobi
 		acceptedSig = append(acceptedSig, d.sig)
 	}
 	if len(acceptedSig) == 0 {
-		return nil, droppedForOverlap, ErrAllCertsConflicted
+		return nil, droppedForOverlap, invalid, ErrAllCertsConflicted
 	}
 
 	sort.Slice(acceptedIdx, func(i, j int) bool { return acceptedIdx[i] < acceptedIdx[j] })
 	mask, merr := EncodeMask(acceptedIdx)
 	if merr != nil {
-		return nil, droppedForOverlap, merr
+		return nil, droppedForOverlap, invalid, merr
 	}
 	agg := bls.AggregateSignatures(acceptedSig)
 	merged = &MobileAttestationCert{
@@ -139,7 +182,7 @@ func MergeCerts(certs []*MobileAttestationCert, registryBound int) (merged *Mobi
 	}
 	copy(merged.AggregateSig[:], agg.Marshal())
 	merged.WindowClosedAt = NowMs()
-	return merged, droppedForOverlap, nil
+	return merged, droppedForOverlap, invalid, nil
 }
 
 // SelectMajorityBucket picks the single largest-cohort cert among certs for

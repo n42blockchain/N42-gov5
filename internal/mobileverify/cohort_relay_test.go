@@ -14,7 +14,12 @@ func TestIndexAnnouncementRoundTrip(t *testing.T) {
 	blockHash, number := h(7), uint64(555)
 	var reporter types.Address
 	reporter[19] = 0xAB
-	indices := []MobileIndex{1, 5, 100, 9999}
+	indices := []IndexCommitment{
+		{Index: 1, Commitment: h(101)},
+		{Index: 5, Commitment: h(102)},
+		{Index: 100, Commitment: h(103)},
+		{Index: 9999, Commitment: h(104)},
+	}
 
 	payload, err := encodeIndexAnnouncement(blockHash, number, reporter, indices)
 	if err != nil {

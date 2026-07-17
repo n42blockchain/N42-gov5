@@ -10,20 +10,25 @@ import (
 
 func TestReconcileIndicesNoOverlap(t *testing.T) {
 	banned := ReconcileIndices(
-		[]MobileIndex{1, 2, 3},
-		[]MobileIndex{4, 5, 6},
-		[]MobileIndex{7},
+		[]IndexCommitment{{Index: 1, Commitment: h(11)}, {Index: 2, Commitment: h(12)}, {Index: 3, Commitment: h(13)}},
+		[]IndexCommitment{{Index: 4, Commitment: h(14)}, {Index: 5, Commitment: h(15)}, {Index: 6, Commitment: h(16)}},
+		[]IndexCommitment{{Index: 7, Commitment: h(17)}},
 	)
 	if len(banned) != 0 {
 		t.Fatalf("banned = %v, want none", banned)
 	}
 }
 
+// TestReconcileIndicesDetectsCrossSetOverlap: indices 3 and 5 each appear in
+// two sets WITH THE SAME commitment — proof of a genuine duplicate
+// submission (BLS signing is deterministic, so two honest observations of
+// the same device's signature always hash identically) — and must be
+// banned; index 6 (unique) must not be.
 func TestReconcileIndicesDetectsCrossSetOverlap(t *testing.T) {
 	banned := ReconcileIndices(
-		[]MobileIndex{1, 2, 3},
-		[]MobileIndex{3, 4, 5},
-		[]MobileIndex{5, 6},
+		[]IndexCommitment{{Index: 1, Commitment: h(21)}, {Index: 2, Commitment: h(22)}, {Index: 3, Commitment: h(23)}},
+		[]IndexCommitment{{Index: 3, Commitment: h(23)}, {Index: 4, Commitment: h(24)}, {Index: 5, Commitment: h(25)}},
+		[]IndexCommitment{{Index: 5, Commitment: h(25)}, {Index: 6, Commitment: h(26)}},
 	)
 	want := []MobileIndex{3, 5}
 	if !reflect.DeepEqual(banned, want) {
@@ -31,13 +36,41 @@ func TestReconcileIndicesDetectsCrossSetOverlap(t *testing.T) {
 	}
 }
 
+// TestReconcileIndicesRejectsUnauthenticatedForgery is the fix for the
+// censorship vulnerability this commitment scheme exists to close: an index
+// named by two sets with DIFFERING commitments must NOT be banned. At most
+// one of the two claims can be genuine (a real device's signature hashes to
+// exactly one value), and without the raw signature there is no way to tell
+// which — so a lone dishonest node cannot silently censor an honest device
+// merely by naming its index; it would need to also produce the matching
+// commitment, which requires already knowing the real signature bytes.
+func TestReconcileIndicesRejectsUnauthenticatedForgery(t *testing.T) {
+	victim := MobileIndex(42)
+	realCommitment := h(99)   // what the honest node that actually collected the signature computed
+	forgedCommitment := h(66) // an attacker's claim, naming the same index but a DIFFERENT (fabricated) commitment
+
+	banned := ReconcileIndices(
+		[]IndexCommitment{{Index: victim, Commitment: realCommitment}}, // the one honest observer
+		[]IndexCommitment{{Index: victim, Commitment: forgedCommitment}}, // attacker names the index without the real signature
+	)
+	if len(banned) != 0 {
+		t.Fatalf("banned = %v, want none — a non-matching (forged) claim must not censor the honest observation", banned)
+	}
+}
+
 // TestReconcileIndicesUbiquitousIndex is the exact scenario
 // certmerge_test.go's collapse test warns about: one index present in
-// EVERY set must be caught (it will conflict with every other set).
+// EVERY set, all with the SAME commitment (a genuine cross-node duplicate,
+// not a forgery), must be caught.
 func TestReconcileIndicesUbiquitousIndex(t *testing.T) {
-	sets := make([][]MobileIndex, 5)
+	ubiquitousCommitment := h(199)
+	sets := make([][]IndexCommitment, 5)
 	for i := range sets {
-		sets[i] = []MobileIndex{99, MobileIndex(i * 10), MobileIndex(i*10 + 1)}
+		sets[i] = []IndexCommitment{
+			{Index: 99, Commitment: ubiquitousCommitment},
+			{Index: MobileIndex(i * 10), Commitment: h(byte(i*10 + 1))},
+			{Index: MobileIndex(i*10 + 1), Commitment: h(byte(i*10 + 2))},
+		}
 	}
 	banned := ReconcileIndices(sets[0], sets[1], sets[2], sets[3], sets[4])
 	if len(banned) != 1 || banned[0] != 99 {
@@ -46,11 +79,15 @@ func TestReconcileIndicesUbiquitousIndex(t *testing.T) {
 }
 
 // TestReconcileIndicesRepeatWithinOneSetIsNotAConflict: a single set
-// containing the same index twice (shouldn't happen from Collector.Indices,
-// which is built from a map, but defend against a hand-built input) must
-// not by itself count as a cross-node conflict.
+// containing the same (index, commitment) pair twice (shouldn't happen from
+// Collector.Freeze, which is built from a map, but defend against a
+// hand-built input) must not by itself count as a cross-node conflict.
 func TestReconcileIndicesRepeatWithinOneSetIsNotAConflict(t *testing.T) {
-	banned := ReconcileIndices([]MobileIndex{1, 1, 1}, []MobileIndex{2})
+	c := h(1)
+	banned := ReconcileIndices(
+		[]IndexCommitment{{Index: 1, Commitment: c}, {Index: 1, Commitment: c}},
+		[]IndexCommitment{{Index: 2, Commitment: h(2)}},
+	)
 	if len(banned) != 0 {
 		t.Fatalf("banned = %v, want none (repeat was within one set)", banned)
 	}
@@ -60,15 +97,16 @@ func TestReconcileIndicesEmpty(t *testing.T) {
 	if banned := ReconcileIndices(); len(banned) != 0 {
 		t.Fatalf("no sets at all: banned = %v, want none", banned)
 	}
-	if banned := ReconcileIndices(nil, []MobileIndex{}); len(banned) != 0 {
+	if banned := ReconcileIndices(nil, []IndexCommitment{}); len(banned) != 0 {
 		t.Fatalf("empty sets: banned = %v, want none", banned)
 	}
 }
 
 // TestExcludeIndicesBeforeCloseCoexistsWithReconcile: the full pre-aggregation
-// pipeline this design relies on — Indices() announces, ReconcileIndices
-// computes the banned set, ExcludeIndices removes it, THEN Close() aggregates
-// over what remains. Confirms Collector's public surface composes correctly.
+// pipeline this design relies on — Freeze() announces (index, commitment)
+// pairs, ReconcileIndices computes the banned set, ExcludeIndices removes
+// it, THEN Close() aggregates over what remains. Confirms Collector's public
+// surface composes correctly.
 func TestExcludeIndicesBeforeCloseCoexistsWithReconcile(t *testing.T) {
 	blockHash, number, root := h(1), uint64(100), h(2)
 	reg := NewRegistry()
@@ -86,17 +124,28 @@ func TestExcludeIndicesBeforeCloseCoexistsWithReconcile(t *testing.T) {
 		}
 	}
 
-	mine := col.Indices()
+	mine := col.Freeze()
 	if len(mine) != 6 {
-		t.Fatalf("Indices() = %d, want 6", len(mine))
+		t.Fatalf("Freeze() = %d, want 6", len(mine))
 	}
 	victimIdx, _ := reg.Lookup(devices[2].pubkey)
-	// Simulate a peer's announcement that also reports the same device —
-	// the cross-node conflict this whole pipeline exists to catch.
+	var victimCommitment [32]byte
+	for _, ic := range mine {
+		if ic.Index == victimIdx {
+			victimCommitment = ic.Commitment
+		}
+	}
+
+	// Simulate a peer that genuinely ALSO collected the victim's signature
+	// (a real cross-node duplicate submission — the exact commitment must
+	// match, since it's the identical deterministic BLS signature).
 	otherDevice := newDevice(t)
 	registerCommitted(t, reg, otherDevice.pubkey, otherDevice.pop())
 	otherIdx, _ := reg.Lookup(otherDevice.pubkey)
-	peerSet := []MobileIndex{victimIdx, otherIdx}
+	peerSet := []IndexCommitment{
+		{Index: victimIdx, Commitment: victimCommitment},
+		{Index: otherIdx, Commitment: h(200)},
+	}
 
 	banned := ReconcileIndices(mine, peerSet)
 	if len(banned) != 1 || banned[0] != victimIdx {
@@ -129,6 +178,31 @@ func TestExcludeIndicesBeforeCloseCoexistsWithReconcile(t *testing.T) {
 	}
 }
 
+// TestFreezeSealsAgainstLateAdd: the TOCTOU fix — once Freeze() has run, a
+// receipt arriving afterward must be rejected, not silently added to a
+// cohort that was already snapshotted and announced.
+func TestFreezeSealsAgainstLateAdd(t *testing.T) {
+	blockHash, number, root := h(1), uint64(100), h(2)
+	reg := NewRegistry()
+	col := NewCollector(reg, blockHash, number)
+	d1 := newDevice(t)
+	registerCommitted(t, reg, d1.pubkey, d1.pop())
+	if _, err := col.Add(d1.receipt(blockHash, number, root)); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = col.Freeze() // seals intake, same as announceIndex does
+
+	d2 := newDevice(t)
+	registerCommitted(t, reg, d2.pubkey, d2.pop())
+	if _, err := col.Add(d2.receipt(blockHash, number, root)); err == nil {
+		t.Fatal("Add after Freeze must be rejected — this is exactly the race the freeze closes")
+	}
+	if col.Size() != 1 {
+		t.Fatalf("collector size = %d, want 1 (only the pre-freeze receipt)", col.Size())
+	}
+}
+
 // TestReconciliationPreventsUbiquitousConflictCollapse is the payoff test:
 // run the SAME scenario as
 // TestMergeCertsUbiquitousConflictDemonstratesWhyReconciliationMustRunFirst,
@@ -146,10 +220,13 @@ func TestReconciliationPreventsUbiquitousConflictCollapse(t *testing.T) {
 	const nodes = 5
 	const honestPerNode = 10
 	cols := make([]*Collector, nodes)
-	allSets := make([][]MobileIndex, nodes)
+	allSets := make([][]IndexCommitment, nodes)
 	totalHonest := 0
 	for n := 0; n < nodes; n++ {
 		col := NewCollector(reg, blockHash, number)
+		// The poison device's REAL signature (deterministic BLS) reaches
+		// every node — a genuine cross-node duplicate submission, so every
+		// node's Freeze() independently computes the SAME commitment for it.
 		if _, err := col.Add(poison.receipt(blockHash, number, root)); err != nil {
 			t.Fatal(err)
 		}
@@ -162,7 +239,7 @@ func TestReconciliationPreventsUbiquitousConflictCollapse(t *testing.T) {
 			totalHonest++
 		}
 		cols[n] = col
-		allSets[n] = col.Indices()
+		allSets[n] = col.Freeze()
 	}
 
 	// Reconciliation round: every node sees every announcement (a healthy,
@@ -184,12 +261,15 @@ func TestReconciliationPreventsUbiquitousConflictCollapse(t *testing.T) {
 		certs = append(certs, got[0])
 	}
 
-	merged, dropped, err := MergeCerts(certs, reg.IndexBound())
+	merged, dropped, invalid, err := MergeCerts(certs, reg)
 	if err != nil {
 		t.Fatalf("MergeCerts: %v", err)
 	}
 	if len(dropped) != 0 {
 		t.Fatalf("with reconciliation, certs must already be disjoint — got %d dropped", len(dropped))
+	}
+	if len(invalid) != 0 {
+		t.Fatalf("all inputs are genuine local certs — got %d flagged invalid", len(invalid))
 	}
 	signers, verr := merged.Verify(reg)
 	if verr != nil {
