@@ -2617,7 +2617,11 @@ func (n *Node) startRPC() error {
 		if err := n.http.setListenAddr(n.config.NodeCfg.HTTPHost, port); err != nil {
 			return err
 		}
-		if err := n.http.enableRPC(n.rpcAPIs, config); err != nil {
+		// Public HTTP must only ever see unauthenticated APIs. Passing the full
+		// set here made the API Authenticated flag a no-op for this endpoint:
+		// the JWT-only namespaces (engine, coprocessor, hotstuff admin) were
+		// servable to anyone who put them in --http.api.
+		if err := n.http.enableRPC(openAPIs, config); err != nil {
 			return err
 		}
 		if err := n.http.start(); err != nil {
@@ -2659,7 +2663,7 @@ func (n *Node) startRPC() error {
 			jwtSecret:   []byte{},
 			rateLimiter: n.rateLimiter, // share the HTTP per-IP limiter; bounds WS upgrades
 		}
-		if err := n.ws.enableWS(n.rpcAPIs, config); err != nil {
+		if err := n.ws.enableWS(openAPIs, config); err != nil {
 			return err
 		}
 		if err := n.ws.start(); err != nil {
