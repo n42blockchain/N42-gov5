@@ -71,7 +71,20 @@ func DecodeMask(data []byte, registryCount int) ([]MobileIndex, error) {
 		if i == 0 {
 			cur = d
 		} else {
-			cur += d + 1
+			// step = d + 1 must not overflow, and cur must strictly
+			// increase. Unchecked `cur += d + 1` lets d == MaxUint64 wrap
+			// the step to 0 (duplicate index) or wrap cur past the modulus,
+			// breaking the ascending/duplicate-free invariant Verify and
+			// MergeCerts rely on — a duplicated index lets one key forge an
+			// N-signer aggregate (BLS is linear).
+			if d == ^uint64(0) {
+				return nil, fmt.Errorf("%w: delta overflow at entry %d", ErrBadMask, i)
+			}
+			next := cur + d + 1
+			if next < cur {
+				return nil, fmt.Errorf("%w: index overflow at entry %d", ErrBadMask, i)
+			}
+			cur = next
 		}
 		if cur >= uint64(registryCount) {
 			return nil, fmt.Errorf("%w: index %d beyond registry size %d", ErrBadMask, cur, registryCount)
