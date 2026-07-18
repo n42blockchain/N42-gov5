@@ -71,27 +71,52 @@ func (p *ReferenceProvider) Serve(ctx context.Context, taskID types.Hash, gasLim
 	if !ok {
 		return nil, ErrTaskNotFound
 	}
-	// Claim if nobody holds it yet.
+	// This provider submits its raw WASM output as the proof (proofData ==
+	// publicOutputs), which is exactly what the optimistic tier verifies. A
+	// ZK/TEE task expects a proof envelope, not raw output, so serving one
+	// here would submit garbage and the verifier would drive the task to
+	// Failed. Only serve optimistic-tier tasks; leave the rest untouched.
+	if task.VerificationTier != TierOptimistic {
+		return nil, fmt.Errorf("task %s tier %s not servable by WASM provider", taskID.Hex()[:10], task.VerificationTier)
+	}
+
+	// Claim atomically if nobody holds it yet.
+	claimed := false
 	if task.AssignedProvider == (types.Address{}) {
-		if err := p.svc.ClaimTask(taskID, p.addr); err != nil {
+		if err := p.svc.Tasks().ClaimIfPending(taskID, p.addr, 0); err != nil {
 			return nil, fmt.Errorf("claim: %w", err)
 		}
+		claimed = true
 	} else if task.AssignedProvider != p.addr {
 		return nil, fmt.Errorf("task %s assigned to another provider", taskID.Hex()[:10])
 	}
 
+	// From here on, any failure before a successful proof submission must
+	// release the claim we just took — otherwise the task sits Pending with
+	// our address on it until it expires, and slashExpiredAssignments slashes
+	// us for a task we never could have completed (e.g. malformed input the
+	// program rejects). Release only what we claimed this call.
+	release := func() {
+		if claimed {
+			_ = p.svc.Tasks().ReleaseAssignment(taskID, p.addr)
+		}
+	}
+
 	bytecode, ok := p.bytecodeFor(task.ProgramHash)
 	if !ok {
+		release()
 		return nil, fmt.Errorf("no bytecode registered for program %s", task.ProgramHash.Hex()[:10])
 	}
 
 	res, err := p.engine.Execute(ctx, task.ProgramHash, bytecode, p.funcName, task.Input, gasLimit)
 	if err != nil {
+		release()
 		return nil, fmt.Errorf("wasm execute: %w", err)
 	}
 	// The optimistic tier stores the claimed result as the "proof"; a
 	// challenger who recomputes a different output wins the challenge.
 	if _, err := p.svc.SubmitProof(taskID, res.Output, res.Output); err != nil {
+		release()
 		return nil, fmt.Errorf("submit proof: %w", err)
 	}
 	return res.Output, nil
@@ -114,12 +139,12 @@ func (p *ReferenceProvider) bytecodeFor(programHash types.Hash) ([]byte, bool) {
 }
 
 // AttachProvider runs prov as this node's resident compute provider: a
-// background loop polls for unassigned Pending tasks whose program bytecode
-// is available (locally or via the program registry) and serves them. The
-// loop lives under the service's lifecycle — Stop() terminates it and then
-// calls cleanup (e.g. closing the provider's WASM engine). This is the
-// "node opts in to being a provider" switch the wiring plan left open;
-// register the provider (stake + capabilities) before attaching.
+// background loop polls for unassigned optimistic-tier Pending tasks whose
+// program bytecode is available (locally or via the program registry) and
+// serves them. The loop lives under the service's lifecycle — Stop()
+// terminates it and then calls cleanup (e.g. closing the provider's WASM
+// engine). This is the "node opts in to being a provider" switch the wiring
+// plan left open; register the provider (stake + capabilities) before attaching.
 func (s *Service) AttachProvider(prov *ReferenceProvider, poll time.Duration, gasLimit uint64, cleanup func()) {
 	if poll <= 0 {
 		poll = 5 * time.Second
@@ -130,6 +155,12 @@ func (s *Service) AttachProvider(prov *ReferenceProvider, poll time.Duration, ga
 		if cleanup != nil {
 			defer cleanup()
 		}
+		// Tasks whose execution failed on this provider (e.g. malformed
+		// input the program rejects). We release the claim on failure, so
+		// without this the loop would re-claim and re-fail the same task
+		// every poll. Bounded by task lifetime — pruned entries never
+		// re-appear in ListByStatus(TaskPending).
+		failed := make(map[types.Hash]struct{})
 		ticker := time.NewTicker(poll)
 		defer ticker.Stop()
 		for {
@@ -137,7 +168,7 @@ func (s *Service) AttachProvider(prov *ReferenceProvider, poll time.Duration, ga
 			case <-s.ctx.Done():
 				return
 			case <-ticker.C:
-				s.serveClaimable(prov, gasLimit)
+				s.serveClaimable(prov, gasLimit, failed)
 			}
 		}
 	}()
@@ -145,11 +176,12 @@ func (s *Service) AttachProvider(prov *ReferenceProvider, poll time.Duration, ga
 		"provider", prov.Address().Hex(), "poll", poll)
 }
 
-// serveClaimable runs one poll round: serve every unassigned Pending task
-// this provider has bytecode for. Tasks without bytecode are left for other
-// providers; failures are logged at debug level to keep a busy queue from
-// flooding the logs.
-func (s *Service) serveClaimable(prov *ReferenceProvider, gasLimit uint64) {
+// serveClaimable runs one poll round: serve every unassigned optimistic-tier
+// Pending task this provider has bytecode for and has not already failed on.
+// Non-optimistic tiers, tasks without bytecode, and previously-failed tasks
+// are left alone; failures are logged at debug level to keep a busy queue
+// from flooding the logs.
+func (s *Service) serveClaimable(prov *ReferenceProvider, gasLimit uint64, failed map[types.Hash]struct{}) {
 	for _, task := range s.tasks.ListByStatus(TaskPending) {
 		select {
 		case <-s.ctx.Done():
@@ -160,10 +192,17 @@ func (s *Service) serveClaimable(prov *ReferenceProvider, gasLimit uint64) {
 		if !ok || snap.AssignedProvider != (types.Address{}) {
 			continue
 		}
+		if snap.VerificationTier != TierOptimistic {
+			continue
+		}
+		if _, done := failed[snap.ID]; done {
+			continue
+		}
 		if _, ok := prov.bytecodeFor(snap.ProgramHash); !ok {
 			continue
 		}
 		if _, err := prov.Serve(s.ctx, snap.ID, gasLimit); err != nil {
+			failed[snap.ID] = struct{}{}
 			log.Debug("Resident provider serve failed",
 				"task", snap.ID.Hex()[:10], "err", err)
 		}

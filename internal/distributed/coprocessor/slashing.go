@@ -93,7 +93,12 @@ func (sm *SlashManager) Slash(providerAddr types.Address, condition SlashConditi
 		return
 	}
 
-	amount := provider.Stake * uint64(sm.slashPercent) / 100
+	// Compute Stake*pct/100 without overflowing uint64. Stakes are wei-scale
+	// (default 10 ETH = 1e19), so Stake*pct wraps for any pct>1 — the naive
+	// form under-slashed a 10 ETH / 10% stake by ~92%. Split into whole and
+	// remainder so no intermediate exceeds uint64 (remainder<100, *pct<=1e4).
+	pct := uint64(sm.slashPercent)
+	amount := (provider.Stake/100)*pct + (provider.Stake%100)*pct/100
 	if amount == 0 && provider.Stake > 0 {
 		amount = 1 // slash at least 1 wei
 	}

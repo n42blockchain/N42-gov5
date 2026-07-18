@@ -216,6 +216,48 @@ func (tm *TaskManager) AssignProvider(id types.Hash, provider types.Address, bid
 	return nil
 }
 
+// ClaimIfPending atomically assigns an unclaimed Pending task to provider. It
+// is the race-free claim primitive: the check ("is it Pending and
+// unassigned?") and the act (assign) happen under one lock hold, so two
+// concurrent claimers cannot both succeed (the second gets ErrTaskAlreadyClaimed).
+func (tm *TaskManager) ClaimIfPending(id types.Hash, provider types.Address, bidPrice uint64) error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	t, ok := tm.tasks[id]
+	if !ok {
+		return ErrTaskNotFound
+	}
+	if t.Status != TaskPending {
+		return ErrTaskNotPending
+	}
+	if t.AssignedProvider != (types.Address{}) {
+		return ErrTaskAlreadyAssigned
+	}
+	t.AssignedProvider = provider
+	t.BidPrice = bidPrice
+	return nil
+}
+
+// ReleaseAssignment clears a Pending task's assignment if it is currently
+// held by provider. Used when a provider claims a task but then cannot
+// execute it (e.g. malformed input): releasing the claim keeps the task
+// available for another provider and, crucially, stops the claimant from
+// being timeout-slashed for a task it never could have completed. A no-op
+// (nil) if the task is not Pending or not held by provider.
+func (tm *TaskManager) ReleaseAssignment(id types.Hash, provider types.Address) error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	t, ok := tm.tasks[id]
+	if !ok {
+		return ErrTaskNotFound
+	}
+	if t.Status == TaskPending && t.AssignedProvider == provider {
+		t.AssignedProvider = types.Address{}
+		t.BidPrice = 0
+	}
+	return nil
+}
+
 // SetTierAndBond sets a task's verification tier and bond before it is proven.
 // Optimistic verification requires a non-zero bond (the value put at risk of
 // slashing); this lets a submitter route a task through the bond+challenge tier
