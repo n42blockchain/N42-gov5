@@ -635,205 +635,111 @@ func TestChaos7Node_PacketDrop(t *testing.T) {
 	}
 }
 
-// TestChaos7Node_ConvergenceFromDifferentViews tests that engines starting
-// at scattered views can converge through the timeout protocol and then
-// resume normal consensus.
-func TestChaos7Node_ConvergenceFromDifferentViews(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping long chaos test in -short mode")
+// buildTestTC builds a valid TimeoutCertificate for `view`, signed by a quorum
+// of validators, embedding a real high_qc at `highQCView` (0 for the genesis
+// QC). It is the only way to legitimately justify a view jump — a single node
+// cannot forge it.
+func buildTestTC(t *testing.T, setup *testSetup, view, highQCView ViewNumber) *TimeoutCertificate {
+	t.Helper()
+	n := setup.vs.Len()
+	q := setup.vs.QuorumSize()
+
+	highQC := GenesisQC()
+	if highQCView > 0 {
+		hash := types.Hash{byte(highQCView)}
+		vc := NewVoteCollector(highQCView, hash, n)
+		for i := 0; i < q; i++ {
+			_ = vc.AddVote(ValidatorIndex(i), setup.keys[i].Sign(SigningMessage(highQCView, hash)))
+		}
+		built, err := vc.BuildQC(setup.vs)
+		if err != nil {
+			t.Fatalf("buildTestTC high_qc(view=%d): %v", highQCView, err)
+		}
+		highQC = *built
 	}
 
+	tc := NewTimeoutCollector(view, n)
+	msg := TimeoutSigningMessage(view)
+	for i := 0; i < q; i++ {
+		if err := tc.AddVerifiedTimeout(ValidatorIndex(i), setup.keys[i].Sign(msg), highQC); err != nil {
+			t.Fatalf("buildTestTC timeout(%d): %v", i, err)
+		}
+	}
+	built, err := tc.BuildTC(setup.vs)
+	if err != nil {
+		t.Fatalf("buildTestTC: %v", err)
+	}
+	return built
+}
+
+// TestLaggingNodeCatchesUpViaTC is the legitimate-catch-up counterpart to the
+// H2 fix: a validator far behind adopts a HIGHER view the instant it sees a
+// message carrying a valid TimeoutCertificate (a quorum proof the network
+// reached that view), via processEmbeddedTC — no raw single-timeout jump
+// required. This is how real scattered/recovered nodes converge, and it keeps
+// working after the raw future-view jump is removed.
+func TestLaggingNodeCatchesUpViaTC(t *testing.T) {
 	setup := newTestSetup(t, 7)
-	scatteredViews := []ViewNumber{10, 14, 18, 22, 12, 16, 20}
-
-	engines := make([]*ConsensusEngine, 7)
-	channels := make([]chan EngineOutput, 7)
-
-	for i := 0; i < 7; i++ {
-		outputCh := make(chan EngineOutput, 256)
-		engines[i] = WithRecoveredState(
-			ValidatorIndex(i),
-			setup.keys[i],
-			NewEpochManager(setup.vs),
-			1000, 10000,
-			outputCh,
-			scatteredViews[i],
-			GenesisQC(),
-			GenesisQC(),
-			0,
-		)
-		channels[i] = outputCh
+	engine, _ := newTestEngine(t, setup, 0) // starts at view 1
+	if engine.CurrentView() != 1 {
+		t.Fatalf("expected starting view 1, got %d", engine.CurrentView())
 	}
 
-	h := &chaosHarness{
-		t:        t,
-		engines:  engines,
-		channels: channels,
-		setup:    setup,
+	// The network genuinely reached view 21: it holds a TC for view 20.
+	tc := buildTestTC(t, setup, 20, 0)
+
+	// Any message from the network piggybacks that TC. Deliver a timeout for
+	// view 21 carrying it; the lagging node must jump to view 21 (= tc.View+1).
+	netTimeout := &TimeoutMessage{
+		View:      21,
+		HighQC:    GenesisQC(),
+		Sender:    1,
+		Signature: setup.keys[1].Sign(TimeoutSigningMessage(21)).Marshal(),
+		HighTC:    tc,
 	}
-
-	// Verify engines start at scattered views.
-	for i, e := range h.engines {
-		cv := e.CurrentView()
-		if cv != scatteredViews[i] {
-			t.Fatalf("engine %d: expected view %d, got %d", i, scatteredViews[i], cv)
-		}
+	if err := engine.ProcessEvent(ConsensusEvent{
+		Type: EventMessage,
+		Msg:  ConsensusMsg{Type: MsgTimeout, Payload: netTimeout},
+	}); err != nil {
+		t.Fatalf("process: %v", err)
 	}
+	if got := engine.CurrentView(); got != 21 {
+		t.Fatalf("lagging node did not catch up via TC: view = %d, want 21", got)
+	}
+}
 
-	// Run timeouts to converge. We repeatedly have all engines timeout
-	// and exchange timeout messages. Engines at lower views will advance
-	// through future timeout handling.
-	maxIterations := 30
-	converged := false
+// TestRawFutureTimeoutDoesNotAdvanceView is the H2 regression: a single
+// validator's timeout for a far-future view, carrying NO justifying TC, must
+// NOT advance a healthy node's view or make it broadcast its own timeout there.
+// Otherwise one Byzantine validator could sign timeout(view+k) in a loop and
+// drag the whole fleet forward forever, stalling liveness within the f
+// tolerance.
+func TestRawFutureTimeoutDoesNotAdvanceView(t *testing.T) {
+	setup := newTestSetup(t, 7)
+	engine, outputCh := newTestEngine(t, setup, 0)
+	startView := engine.CurrentView()
 
-	for iter := 0; iter < maxIterations; iter++ {
-		// All engines call OnTimeout.
-		for i := 0; i < 7; i++ {
-			_ = timeoutNow(h.engines[i])
-		}
-
-		// Collect all timeout messages.
-		allOutputs := h.drainAll()
-		var timeoutMsgs []*TimeoutMessage
-		for _, outputs := range allOutputs {
-			for _, o := range outputs {
-				if o.Type == OutputBroadcast && o.Message != nil && o.Message.Type == MsgTimeout {
-					tm := o.Message.Payload.(*TimeoutMessage)
-					timeoutMsgs = append(timeoutMsgs, tm)
-				}
-			}
-		}
-
-		// Route timeout messages to all engines.
-		for _, tm := range timeoutMsgs {
-			for i := 0; i < 7; i++ {
-				if ValidatorIndex(i) == tm.Sender {
-					continue
-				}
-				_ = h.engines[i].ProcessEvent(ConsensusEvent{
-					Type: EventMessage,
-					Msg:  ConsensusMsg{Type: MsgTimeout, Payload: tm},
-				})
-			}
-		}
-
-		// Collect and route NewView messages.
-		allOutputs = h.drainAll()
-		for _, outputs := range allOutputs {
-			for _, o := range outputs {
-				if o.Type == OutputBroadcast && o.Message != nil && o.Message.Type == MsgNewView {
-					nv := o.Message.Payload.(*NewViewMsg)
-					for j := 0; j < 7; j++ {
-						if ValidatorIndex(j) == nv.Leader {
-							continue
-						}
-						_ = h.engines[j].ProcessEvent(ConsensusEvent{
-							Type: EventMessage,
-							Msg:  ConsensusMsg{Type: MsgNewView, Payload: nv},
-						})
-					}
-				}
-			}
-		}
-
-		// Drain remaining.
-		h.drainAll()
-
-		// Check convergence: all engines within +/- 1 view of each other.
-		minView := h.engines[0].CurrentView()
-		maxView := h.engines[0].CurrentView()
-		for _, e := range h.engines[1:] {
-			cv := e.CurrentView()
-			if cv < minView {
-				minView = cv
-			}
-			if cv > maxView {
-				maxView = cv
-			}
-		}
-
-		if maxView-minView <= 1 {
-			converged = true
-			t.Logf("converged after %d iterations: views in range [%d, %d]", iter+1, minView, maxView)
-			break
+	byzTimeout := &TimeoutMessage{
+		View:      startView + 40, // within FutureViewWindow, but unjustified
+		HighQC:    GenesisQC(),
+		Sender:    1,
+		Signature: setup.keys[1].Sign(TimeoutSigningMessage(startView + 40)).Marshal(),
+		HighTC:    nil, // no quorum proof
+	}
+	if err := engine.ProcessEvent(ConsensusEvent{
+		Type: EventMessage,
+		Msg:  ConsensusMsg{Type: MsgTimeout, Payload: byzTimeout},
+	}); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if got := engine.CurrentView(); got != startView {
+		t.Fatalf("raw future timeout advanced the view %d -> %d (H2 not closed)", startView, got)
+	}
+	for _, o := range drainOutputs(outputCh) {
+		if o.Type == OutputBroadcast && o.Message != nil && o.Message.Type == MsgTimeout {
+			t.Fatal("raw future timeout triggered a self-broadcast (H2 amplification)")
 		}
 	}
-
-	if !converged {
-		views := make([]ViewNumber, 7)
-		for i, e := range h.engines {
-			views[i] = e.CurrentView()
-		}
-		t.Fatalf("engines did not converge after %d iterations, views: %v", maxIterations, views)
-	}
-
-	// After convergence, run 3 normal consensus rounds.
-	// First, synchronize all engines to the same view by running one more timeout round.
-	maxView := h.engines[0].CurrentView()
-	for _, e := range h.engines[1:] {
-		if e.CurrentView() > maxView {
-			maxView = e.CurrentView()
-		}
-	}
-
-	// If engines are not exactly aligned, run one more timeout to align.
-	allSame := true
-	for _, e := range h.engines {
-		if e.CurrentView() != maxView {
-			allSame = false
-			break
-		}
-	}
-	if !allSame {
-		h.runTimeoutViewChange(maxView)
-		// Re-check
-		maxView = h.engines[0].CurrentView()
-		for _, e := range h.engines[1:] {
-			if e.CurrentView() > maxView {
-				maxView = e.CurrentView()
-			}
-		}
-	}
-
-	startView := maxView
-
-	// Run 3 normal rounds from the converged view.
-	successfulRounds := 0
-	for r := 0; r < 3; r++ {
-		currentView := h.engines[0].CurrentView()
-
-		// All engines should be at the same view for a clean round.
-		allAligned := true
-		for _, e := range h.engines {
-			if e.CurrentView() != currentView {
-				allAligned = false
-				break
-			}
-		}
-		if !allAligned {
-			// Try one more timeout to align.
-			h.runTimeoutViewChange(currentView)
-			currentView = h.engines[0].CurrentView()
-		}
-
-		blockHash := blockHashForView(currentView)
-		h.markBlockImported(blockHash)
-		h.runConsensusRound(currentView, blockHash)
-		successfulRounds++
-	}
-
-	if successfulRounds < 3 {
-		t.Fatalf("expected 3 successful rounds after convergence, got %d", successfulRounds)
-	}
-
-	// Verify we advanced at least 3 views from the converged start.
-	endView := h.engines[0].CurrentView()
-	if endView < startView+3 {
-		t.Errorf("expected to advance at least 3 views from %d, but ended at %d", startView, endView)
-	}
-
-	t.Logf("convergence test: started at scattered views %v, converged, then ran %d rounds ending at view %d",
-		scatteredViews, successfulRounds, endView)
 }
 
 // TestChaos7Node_FastPropose verifies that consensus rounds complete quickly
