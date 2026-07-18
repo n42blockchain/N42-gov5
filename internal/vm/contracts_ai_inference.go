@@ -21,6 +21,15 @@
 // PrecompiledAddressesAIInference is populated in init(). Activation is
 // gated on ChainConfig.AIInferenceTime; it lives outside the standard
 // fork precompile sets.
+//
+// Determinism: request IDs are pure functions of the submission and
+// model listings are hash-sorted, so those outputs are reproducible.
+// However getResult/getModel/listModels still read the node-local model
+// registry, CAS and execution progress — state that is NOT synchronized
+// by consensus. Do not set AIInferenceTime on a multi-validator network
+// until model registration and result settlement live in consensus
+// state; otherwise validators with different registries or execution
+// timing will produce different precompile outputs and split.
 
 package vm
 
