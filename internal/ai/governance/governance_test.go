@@ -751,10 +751,15 @@ func TestCommittee_ConfigValidation(t *testing.T) {
 		t.Errorf("Quorum=2: got %d, want 2", got)
 	}
 
-	// Threshold=-0.5 should be clamped to 0.0.
+	// Threshold<=0 is fail-open (ratio >= 0 is always true) and must clamp UP
+	// to a default majority, not to 0.
 	c3 := NewCommittee(CommitteeConfig{Quorum: 1, Threshold: -0.5}, reg)
-	if got := c3.config.Threshold; got != 0.0 {
-		t.Errorf("Threshold=-0.5: got %f, want 0.0", got)
+	if got := c3.config.Threshold; got != 0.5 {
+		t.Errorf("Threshold=-0.5: got %f, want 0.5 (fail-open guard)", got)
+	}
+	c3b := NewCommittee(CommitteeConfig{Quorum: 1, Threshold: 0}, reg)
+	if got := c3b.config.Threshold; got != 0.5 {
+		t.Errorf("Threshold=0: got %f, want 0.5 (fail-open guard)", got)
 	}
 
 	// Negative quorum should also default to 1.

@@ -53,8 +53,12 @@ func NewCommittee(cfg CommitteeConfig, registry *DatasetRegistry) *Committee {
 	if cfg.Quorum < 1 {
 		cfg.Quorum = 1
 	}
-	if cfg.Threshold < 0 {
-		cfg.Threshold = 0
+	// A zero (or negative) threshold is fail-open: the tally does
+	// passed = ratio >= Threshold, and ratio >= 0 is always true, so a dataset
+	// with zero approvals and any number of rejections would be Approved and
+	// pass the training gate. Clamp up to a sane default majority instead.
+	if cfg.Threshold <= 0 {
+		cfg.Threshold = 0.5
 	}
 	if cfg.Threshold > 1.0 {
 		cfg.Threshold = 1.0
