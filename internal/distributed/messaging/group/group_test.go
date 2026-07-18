@@ -4,6 +4,7 @@
 package group
 
 import (
+	"crypto/ed25519"
 	"testing"
 	"time"
 )
@@ -389,7 +390,7 @@ func TestProcessCommitAdd(t *testing.T) {
 		t.Fatalf("initial Epoch = %d, want 0", gs.Epoch)
 	}
 
-	// Process a commit that adds a new member
+	// A commit must carry the sender's signature to be processed.
 	newMemberKey := [32]byte{0xDE, 0xAD}
 	commit := &Commit{
 		GroupID:         groupID,
@@ -398,6 +399,7 @@ func TestProcessCommitAdd(t *testing.T) {
 		Type:            CommitAdd,
 		MemberPublicKey: newMemberKey,
 	}
+	commit.Signature = ed25519.Sign(kp.Signer(), commitSigBytes(commit))
 
 	if err := gs.ProcessCommit(commit); err != nil {
 		t.Fatalf("ProcessCommit: %v", err)
@@ -408,6 +410,86 @@ func TestProcessCommitAdd(t *testing.T) {
 	}
 	if gs.ActiveMembers() != 2 {
 		t.Errorf("ActiveMembers after commit = %d, want 2", gs.ActiveMembers())
+	}
+}
+
+func TestProcessCommitRejectsForgery(t *testing.T) {
+	kp, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	var groupID [32]byte
+	copy(groupID[:], []byte("test-commit-forgery"))
+	gs, err := CreateGroup(groupID, kp)
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+
+	mk := func() *Commit {
+		return &Commit{
+			GroupID:         groupID,
+			Epoch:           1,
+			Sender:          0,
+			Type:            CommitRemove,
+			MemberIndex:     0,
+			MemberPublicKey: [32]byte{0x01},
+		}
+	}
+
+	// Unsigned commit: rejected.
+	if err := gs.ProcessCommit(mk()); err == nil {
+		t.Fatal("unsigned commit must be rejected")
+	}
+
+	// Signed by a key that is NOT the sender's: rejected.
+	outsider, _ := GenerateKeyPair()
+	c := mk()
+	c.Signature = ed25519.Sign(outsider.Signer(), commitSigBytes(c))
+	if err := gs.ProcessCommit(c); err == nil {
+		t.Fatal("outsider-signed commit must be rejected")
+	}
+
+	// Valid signature but tampered content: rejected.
+	c = mk()
+	c.Signature = ed25519.Sign(kp.Signer(), commitSigBytes(c))
+	c.MemberIndex = 42 // redirect the removal after signing
+	if err := gs.ProcessCommit(c); err == nil {
+		t.Fatal("tampered commit must be rejected")
+	}
+
+	// Sender index that is not a member: rejected.
+	c = mk()
+	c.Sender = 7
+	c.Signature = ed25519.Sign(kp.Signer(), commitSigBytes(c))
+	if err := gs.ProcessCommit(c); err == nil {
+		t.Fatal("unknown-sender commit must be rejected")
+	}
+
+	// A removed member must not be able to commit: build a two-member group,
+	// remove the second member, then replay a commit it signed.
+	memberKP, _ := GenerateKeyPair()
+	pkg, _, err := CreateKeyPackage(memberKP.PrivateKey, []byte("member-2"))
+	if err != nil {
+		t.Fatalf("CreateKeyPackage: %v", err)
+	}
+	if _, _, err := gs.AddMember(pkg); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+	removed := gs.Members[1]
+	if _, err := gs.RemoveMember(removed.Index); err != nil {
+		t.Fatalf("RemoveMember: %v", err)
+	}
+	evicted := &Commit{
+		GroupID: groupID,
+		Epoch:   gs.Epoch + 1,
+		Sender:  removed.Index,
+		Type:    CommitRemove,
+		// tries to remove the creator
+		MemberIndex: 0,
+	}
+	evicted.Signature = ed25519.Sign(ed25519.NewKeyFromSeed(memberKP.PrivateKey[:]), commitSigBytes(evicted))
+	if err := gs.ProcessCommit(evicted); err == nil {
+		t.Fatal("commit from an evicted member must be rejected")
 	}
 }
 

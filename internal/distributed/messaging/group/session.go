@@ -7,6 +7,7 @@
 package group
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -32,6 +33,11 @@ type GroupSession struct {
 	Members    []GroupMember
 	SecretTree *SecretTree
 
+	// Local member identity: the commits this session emits are signed with
+	// signer and carry selfIndex as the sender.
+	signer    ed25519.PrivateKey
+	selfIndex uint32
+
 	// Current epoch secrets
 	epochSecret   [32]byte
 	senderSecret  [32]byte
@@ -42,7 +48,8 @@ type GroupSession struct {
 type GroupMember struct {
 	Index      uint32
 	PublicKey  [32]byte
-	Credential []byte // opaque identity credential
+	SigningKey [32]byte // Ed25519 public key commits from this member must verify against
+	Credential []byte   // opaque identity credential
 	Removed    bool
 }
 
@@ -63,9 +70,12 @@ func CreateGroup(groupID [32]byte, creatorKeyPair *KeyPair) (*GroupSession, erro
 		Epoch:   0,
 		Tree:    tree,
 		Members: []GroupMember{{
-			Index:     memberIdx,
-			PublicKey: creatorKeyPair.PublicKey,
+			Index:      memberIdx,
+			PublicKey:  creatorKeyPair.PublicKey,
+			SigningKey: creatorKeyPair.PublicKey,
 		}},
+		signer:    creatorKeyPair.Signer(),
+		selfIndex: memberIdx,
 	}
 
 	// Derive initial epoch secrets
@@ -85,6 +95,10 @@ func (gs *GroupSession) AddMember(pkg *KeyPackage) (*Welcome, *Commit, error) {
 	if len(gs.Members) >= DefaultMaxGroupSize {
 		return nil, nil, errors.New("group at maximum capacity")
 	}
+	// A forged or expired KeyPackage must not enter the tree.
+	if err := ValidateKeyPackage(pkg); err != nil {
+		return nil, nil, fmt.Errorf("invalid key package: %w", err)
+	}
 
 	// Add leaf to ratchet tree
 	memberIdx := gs.Tree.AddLeaf(LeafNode{
@@ -94,6 +108,7 @@ func (gs *GroupSession) AddMember(pkg *KeyPackage) (*Welcome, *Commit, error) {
 	member := GroupMember{
 		Index:      memberIdx,
 		PublicKey:  pkg.InitKey,
+		SigningKey: pkg.SigningKey,
 		Credential: pkg.Credential,
 	}
 	gs.Members = append(gs.Members, member)
@@ -102,7 +117,7 @@ func (gs *GroupSession) AddMember(pkg *KeyPackage) (*Welcome, *Commit, error) {
 	gs.Epoch++
 
 	// Update path secrets
-	gs.Tree.UpdatePath(0) // creator updates path
+	gs.Tree.UpdatePath(gs.selfIndex)
 
 	if err := gs.deriveEpochSecrets(); err != nil {
 		return nil, nil, fmt.Errorf("derive epoch secrets: %w", err)
@@ -117,12 +132,14 @@ func (gs *GroupSession) AddMember(pkg *KeyPackage) (*Welcome, *Commit, error) {
 	}
 
 	commit := &Commit{
-		GroupID:         gs.GroupID,
-		Epoch:           gs.Epoch,
-		Sender:          0,
-		Type:            CommitAdd,
-		MemberPublicKey: pkg.InitKey,
+		GroupID:          gs.GroupID,
+		Epoch:            gs.Epoch,
+		Sender:           gs.selfIndex,
+		Type:             CommitAdd,
+		MemberPublicKey:  pkg.InitKey,
+		MemberSigningKey: pkg.SigningKey,
 	}
+	commit.Signature = ed25519.Sign(gs.signer, commitSigBytes(commit))
 
 	return welcome, commit, nil
 }
@@ -146,19 +163,21 @@ func (gs *GroupSession) RemoveMember(memberIndex uint32) (*Commit, error) {
 
 	gs.Tree.BlankLeaf(memberIndex)
 	gs.Epoch++
-	gs.Tree.UpdatePath(0)
+	gs.Tree.UpdatePath(gs.selfIndex)
 
 	if err := gs.deriveEpochSecrets(); err != nil {
 		return nil, fmt.Errorf("derive epoch secrets: %w", err)
 	}
 
-	return &Commit{
+	commit := &Commit{
 		GroupID:     gs.GroupID,
 		Epoch:      gs.Epoch,
-		Sender:     0,
+		Sender:     gs.selfIndex,
 		Type:       CommitRemove,
 		MemberIndex: memberIndex,
-	}, nil
+	}
+	commit.Signature = ed25519.Sign(gs.signer, commitSigBytes(commit))
+	return commit, nil
 }
 
 // Encrypt encrypts plaintext for the group.
@@ -231,7 +250,10 @@ func (gs *GroupSession) Decrypt(data []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
-// ProcessCommit processes a Commit message from another member.
+// ProcessCommit processes a Commit message from another member. The commit
+// must carry a valid Ed25519 signature from a current, non-removed member —
+// group membership changes are exactly the operations an outsider (or an
+// evicted member) must not be able to forge.
 func (gs *GroupSession) ProcessCommit(commit *Commit) error {
 	gs.mu.Lock()
 	defer gs.mu.Unlock()
@@ -243,14 +265,32 @@ func (gs *GroupSession) ProcessCommit(commit *Commit) error {
 		return fmt.Errorf("epoch mismatch: got %d, expected %d", commit.Epoch, gs.Epoch+1)
 	}
 
+	var sender *GroupMember
+	for i := range gs.Members {
+		if gs.Members[i].Index == commit.Sender {
+			sender = &gs.Members[i]
+			break
+		}
+	}
+	if sender == nil {
+		return fmt.Errorf("commit sender %d is not a group member", commit.Sender)
+	}
+	if sender.Removed {
+		return fmt.Errorf("commit sender %d was removed from the group", commit.Sender)
+	}
+	if !ed25519.Verify(sender.SigningKey[:], commitSigBytes(commit), commit.Signature) {
+		return errors.New("commit signature verification failed")
+	}
+
 	switch commit.Type {
 	case CommitAdd:
 		memberIdx := gs.Tree.AddLeaf(LeafNode{
 			PublicKey: commit.MemberPublicKey,
 		})
 		gs.Members = append(gs.Members, GroupMember{
-			Index:     memberIdx,
-			PublicKey: commit.MemberPublicKey,
+			Index:      memberIdx,
+			PublicKey:  commit.MemberPublicKey,
+			SigningKey: commit.MemberSigningKey,
 		})
 	case CommitRemove:
 		for i, m := range gs.Members {
@@ -262,6 +302,8 @@ func (gs *GroupSession) ProcessCommit(commit *Commit) error {
 		gs.Tree.BlankLeaf(commit.MemberIndex)
 	case CommitUpdate:
 		gs.Tree.UpdateLeafKey(commit.Sender, commit.MemberPublicKey)
+	default:
+		return fmt.Errorf("unknown commit type %d", commit.Type)
 	}
 
 	gs.Epoch = commit.Epoch
@@ -314,14 +356,36 @@ type Welcome struct {
 	TreeHash    [32]byte
 }
 
-// Commit represents a group state change.
+// Commit represents a group state change, authenticated by the sender's
+// Ed25519 signature over commitSigBytes.
 type Commit struct {
-	GroupID         [32]byte
-	Epoch           uint64
-	Sender          uint32
-	Type            CommitType
-	MemberIndex     uint32   // for Remove
-	MemberPublicKey [32]byte // for Add/Update
+	GroupID          [32]byte
+	Epoch            uint64
+	Sender           uint32
+	Type             CommitType
+	MemberIndex      uint32   // for Remove
+	MemberPublicKey  [32]byte // for Add/Update
+	MemberSigningKey [32]byte // for Add: the new member's Ed25519 key
+	Signature        []byte   // sender's Ed25519 signature over commitSigBytes
+}
+
+// commitSigBytes is the canonical signing input: every field except the
+// signature itself, fixed-width encoded.
+func commitSigBytes(c *Commit) []byte {
+	buf := make([]byte, 0, 32+8+4+1+4+32+32)
+	buf = append(buf, c.GroupID[:]...)
+	var u64 [8]byte
+	binary.BigEndian.PutUint64(u64[:], c.Epoch)
+	buf = append(buf, u64[:]...)
+	var u32 [4]byte
+	binary.BigEndian.PutUint32(u32[:], c.Sender)
+	buf = append(buf, u32[:]...)
+	buf = append(buf, byte(c.Type))
+	binary.BigEndian.PutUint32(u32[:], c.MemberIndex)
+	buf = append(buf, u32[:]...)
+	buf = append(buf, c.MemberPublicKey[:]...)
+	buf = append(buf, c.MemberSigningKey[:]...)
+	return buf
 }
 
 // CommitType identifies the type of group change.
@@ -333,20 +397,25 @@ const (
 	CommitUpdate CommitType = 3
 )
 
-// KeyPair is a simple public/private key pair for group operations.
+// KeyPair is an Ed25519 key pair for group operations. PrivateKey is the
+// 32-byte Ed25519 seed; PublicKey the corresponding verification key.
 type KeyPair struct {
 	PublicKey  [32]byte
 	PrivateKey [32]byte
 }
 
-// GenerateKeyPair generates a random key pair for group membership.
+// Signer expands the seed into the Ed25519 signing key.
+func (kp *KeyPair) Signer() ed25519.PrivateKey {
+	return ed25519.NewKeyFromSeed(kp.PrivateKey[:])
+}
+
+// GenerateKeyPair generates a random Ed25519 key pair for group membership.
 func GenerateKeyPair() (*KeyPair, error) {
 	var kp KeyPair
 	if _, err := rand.Read(kp.PrivateKey[:]); err != nil {
 		return nil, err
 	}
-	// Derive public key (simplified: hash of private key)
-	h := sha256.Sum256(kp.PrivateKey[:])
-	kp.PublicKey = h
+	priv := ed25519.NewKeyFromSeed(kp.PrivateKey[:])
+	copy(kp.PublicKey[:], priv.Public().(ed25519.PublicKey))
 	return &kp, nil
 }
