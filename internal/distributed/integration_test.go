@@ -38,6 +38,12 @@ func TestCoprocessorEndToEnd(t *testing.T) {
 	if err := svc.Registry().Register(programHash, vk, "fibonacci"); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
+	// ZK tier is fail-closed: wire a backend that accepts the blob.
+	if err := svc.Verifier().SetZKBlobVerifier(func(*coprocessor.Program, []byte, types.Hash, types.Hash) (bool, error) {
+		return true, nil
+	}); err != nil {
+		t.Fatalf("SetZKBlobVerifier: %v", err)
+	}
 
 	// 2. Submit a task
 	input := []byte(`{"n": 10}`)
@@ -57,7 +63,7 @@ func TestCoprocessorEndToEnd(t *testing.T) {
 	// 4. Submit proof: the ZK tier requires the v1 envelope binding this
 	// task's program, input and claimed outputs.
 	outputs := []byte(`{"result": 55}`)
-	proof := coprocessor.BuildZKProofEnvelope(programHash, task.InputHash, outputs,
+	proof := coprocessor.BuildZKProofEnvelope(task.ID, programHash, task.InputHash, outputs,
 		[]byte("stark-proof-data-for-fibonacci-10"))
 	verified, err := svc.SubmitProof(taskID, proof, outputs)
 	if err != nil {
@@ -349,6 +355,11 @@ func TestProviderMarketplaceEndToEnd(t *testing.T) {
 	if err := svc.Registry().Register(programHash, []byte("vk-marketplace"), "marketplace-program"); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
+	if err := svc.Verifier().SetZKBlobVerifier(func(*coprocessor.Program, []byte, types.Hash, types.Hash) (bool, error) {
+		return true, nil
+	}); err != nil {
+		t.Fatalf("SetZKBlobVerifier: %v", err)
+	}
 
 	// 2. Register a provider with sufficient stake
 	providerAddr := types.HexToAddress("0xABCDEF1234567890ABcdef1234567890AbCdEf12")
@@ -394,7 +405,7 @@ func TestProviderMarketplaceEndToEnd(t *testing.T) {
 	// 7. Set a reward amount and submit proof (TierZK by default)
 	task.RewardAmount = 500
 	outputs := []byte(`{"result": "done"}`)
-	proof := coprocessor.BuildZKProofEnvelope(programHash, task.InputHash, outputs,
+	proof := coprocessor.BuildZKProofEnvelope(task.ID, programHash, task.InputHash, outputs,
 		[]byte("zk-proof-for-marketplace-task"))
 	verified, err := svc.SubmitProof(taskID, proof, outputs)
 	if err != nil {
@@ -557,12 +568,17 @@ func TestCrossModuleIntegration(t *testing.T) {
 	// Register program and submit task
 	ph := types.HexToHash("0xbeef")
 	coprocSvc.Registry().Register(ph, []byte("vk"), "test")
+	if err := coprocSvc.Verifier().SetZKBlobVerifier(func(*coprocessor.Program, []byte, types.Hash, types.Hash) (bool, error) {
+		return true, nil
+	}); err != nil {
+		t.Fatalf("SetZKBlobVerifier: %v", err)
+	}
 	taskID, _ := coprocSvc.SubmitTask(ph, []byte("data"), submitter)
 
 	// Submit proof (ZK tier: v1 envelope bound to the task)
 	ctask, _ := coprocSvc.Tasks().GetTask(taskID)
 	output := []byte("output")
-	coprocSvc.SubmitProof(taskID, coprocessor.BuildZKProofEnvelope(ph, ctask.InputHash, output, []byte("proof")), output)
+	coprocSvc.SubmitProof(taskID, coprocessor.BuildZKProofEnvelope(ctask.ID, ph, ctask.InputHash, output, []byte("proof")), output)
 
 	// Simulate: after proof verification, dispatch notification
 	task, _ := coprocSvc.Tasks().GetTask(taskID)

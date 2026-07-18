@@ -21,9 +21,11 @@ var (
 	ErrUnsupportedTier        = errors.New("coprocessor: unsupported verification tier")
 	ErrBondRequired           = errors.New("coprocessor: optimistic verification requires bond")
 	ErrInvalidAttestation     = errors.New("coprocessor: invalid TEE attestation")
-	ErrProofBindingMismatch   = errors.New("coprocessor: proof envelope does not bind this task's program/input/outputs")
+	ErrProofBindingMismatch   = errors.New("coprocessor: proof envelope does not bind this task's id/program/input/outputs")
 	ErrTEEVerifierUnavailable = errors.New("coprocessor: no TEE quote verifier configured (fail-closed)")
+	ErrZKVerifierUnavailable  = errors.New("coprocessor: no ZK proof backend configured (fail-closed)")
 	ErrResultOutputsMismatch  = errors.New("coprocessor: optimistic claimed result does not match public outputs")
+	ErrVerifierTierReplaced   = errors.New("coprocessor: standard tier verifier was replaced; cannot configure backend")
 
 	// Challenge errors
 	ErrTaskNotChallengeable  = errors.New("coprocessor: task not in optimistic-verified state")

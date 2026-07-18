@@ -120,6 +120,12 @@ func TestServiceSubmitAndVerify(t *testing.T) {
 
 	ph := types.HexToHash("0xee")
 	svc.Registry().Register(ph, []byte("vk"), "test-prog")
+	// ZK tier is fail-closed: wire a backend that accepts the blob.
+	if err := svc.Verifier().SetZKBlobVerifier(func(*Program, []byte, types.Hash, types.Hash) (bool, error) {
+		return true, nil
+	}); err != nil {
+		t.Fatalf("SetZKBlobVerifier: %v", err)
+	}
 
 	taskID, err := svc.SubmitTask(ph, []byte("input-data"), types.Address{})
 	if err != nil {
@@ -128,7 +134,7 @@ func TestServiceSubmitAndVerify(t *testing.T) {
 
 	task0, _ := svc.Tasks().GetTask(taskID)
 	outputs := []byte("output-data")
-	proof := BuildZKProofEnvelope(ph, task0.InputHash, outputs, []byte("proof-data"))
+	proof := BuildZKProofEnvelope(task0.ID, ph, task0.InputHash, outputs, []byte("proof-data"))
 	ok, err := svc.SubmitProof(taskID, proof, outputs)
 	if err != nil || !ok {
 		t.Fatalf("SubmitProof: ok=%v err=%v", ok, err)

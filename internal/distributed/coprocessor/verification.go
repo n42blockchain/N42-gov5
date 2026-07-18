@@ -90,18 +90,27 @@ func (v *TEEVerifier) Verify(task *Task, proofData, publicOutputs []byte) (bool,
 	return fn(task, proofData, publicOutputs)
 }
 
-// ZK proof envelope v1. The header binds the proof to one specific task and
-// result; the tail carries the backend's succinct proof blob:
+// ZK proof envelope v1. The header binds the proof to one specific task
+// INSTANCE and result; the tail carries the backend's succinct proof blob:
 //
-//	[0:32]   program hash — must equal task.ProgramHash
-//	[32:64]  input hash   — must equal task.InputHash
-//	[64:96]  outputs hash — must equal Keccak256(publicOutputs)
-//	[96:]    backend proof blob (non-empty)
-const zkEnvelopeSize = 96
+//	[0]       version (zkEnvelopeVersion)
+//	[1:33]    task ID      — must equal task.ID (defeats sibling-task free-riding)
+//	[33:65]   program hash — must equal task.ProgramHash
+//	[65:97]   input hash   — must equal task.InputHash
+//	[97:129]  outputs hash — must equal Keccak256(publicOutputs)
+//	[129:]    backend proof blob (non-empty)
+const (
+	zkEnvelopeVersion = 1
+	zkEnvelopeSize    = 1 + 32 + 32 + 32 + 32 // 129
+)
 
-// BuildZKProofEnvelope assembles the v1 envelope a ZK prover submits.
-func BuildZKProofEnvelope(programHash, inputHash types.Hash, publicOutputs, proofBlob []byte) []byte {
+// BuildZKProofEnvelope assembles the v1 envelope a ZK prover submits. taskID
+// binds the proof to one specific task instance, so a valid proof for a sibling
+// task with the same program+input cannot be replayed to collect its reward.
+func BuildZKProofEnvelope(taskID, programHash, inputHash types.Hash, publicOutputs, proofBlob []byte) []byte {
 	out := make([]byte, 0, zkEnvelopeSize+len(proofBlob))
+	out = append(out, zkEnvelopeVersion)
+	out = append(out, taskID[:]...)
 	out = append(out, programHash[:]...)
 	out = append(out, inputHash[:]...)
 	outputsHash := crypto.Keccak256Hash(publicOutputs)
@@ -110,25 +119,29 @@ func BuildZKProofEnvelope(programHash, inputHash types.Hash, publicOutputs, proo
 	return out
 }
 
+// ZKBlobVerifier is the succinct-proof backend. It MUST check both that the
+// proof blob is valid for the program's circuit AND that the proof's public
+// inputs equal the passed inputHash/outputsHash — the envelope header is
+// attacker-supplied plaintext, so without this cross-check a valid blob for one
+// (input, output) could be wrapped in a header claiming a different output.
+type ZKBlobVerifier func(program *Program, blob []byte, inputHash, outputsHash types.Hash) (bool, error)
+
 // ZKVerifier validates the task/result binding of a ZK proof envelope and
-// delegates the succinct blob to a pluggable backend.
-//
-// Remaining trust assumption: without a backend the blob itself is only
-// checked for presence — the envelope stops a valid-looking proof from being
-// replayed against a different task, program or claimed output, but it does
-// not prove the computation. Wire a real proof system through SetBlobVerifier
-// (or replace the whole tier via RegisterVerifier / SetZKMLVerifier).
+// delegates the succinct blob to a pluggable backend. It FAILS CLOSED: with no
+// backend it cannot attest the computation (the envelope binding alone only
+// prevents cross-task replay, it does not prove the output), so it rejects
+// rather than accept. Wire a real proof system through SetBlobVerifier, or
+// replace the whole tier via RegisterVerifier / SetZKMLVerifier.
 type ZKVerifier struct {
 	registry *Registry
 
 	mu         sync.RWMutex
-	verifyBlob func(program *Program, blob []byte) (bool, error)
+	verifyBlob ZKBlobVerifier
 }
 
-// SetBlobVerifier installs the succinct-proof backend. It receives the
-// registered program (whose VerificationKey identifies the circuit) and the
-// envelope's proof blob.
-func (v *ZKVerifier) SetBlobVerifier(fn func(program *Program, blob []byte) (bool, error)) {
+// SetBlobVerifier installs the succinct-proof backend (see ZKBlobVerifier for
+// the contract it must uphold).
+func (v *ZKVerifier) SetBlobVerifier(fn ZKBlobVerifier) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.verifyBlob = fn
@@ -138,16 +151,20 @@ func (v *ZKVerifier) Verify(task *Task, proofData, publicOutputs []byte) (bool, 
 	if len(proofData) <= zkEnvelopeSize {
 		return false, ErrInvalidProof
 	}
+	if proofData[0] != zkEnvelopeVersion {
+		return false, fmt.Errorf("%w: unsupported envelope version %d", ErrInvalidProof, proofData[0])
+	}
 	program, ok := v.registry.Get(task.ProgramHash)
 	if !ok {
 		return false, ErrProgramNotRegistered
 	}
-	var envProgram, envInput, envOutputs types.Hash
-	copy(envProgram[:], proofData[0:32])
-	copy(envInput[:], proofData[32:64])
-	copy(envOutputs[:], proofData[64:96])
-	if envProgram != task.ProgramHash || envInput != task.InputHash {
-		return false, fmt.Errorf("%w: program/input header mismatch", ErrProofBindingMismatch)
+	var envTask, envProgram, envInput, envOutputs types.Hash
+	copy(envTask[:], proofData[1:33])
+	copy(envProgram[:], proofData[33:65])
+	copy(envInput[:], proofData[65:97])
+	copy(envOutputs[:], proofData[97:129])
+	if envTask != task.ID || envProgram != task.ProgramHash || envInput != task.InputHash {
+		return false, fmt.Errorf("%w: task/program/input header mismatch", ErrProofBindingMismatch)
 	}
 	if envOutputs != crypto.Keccak256Hash(publicOutputs) {
 		return false, fmt.Errorf("%w: outputs hash mismatch", ErrProofBindingMismatch)
@@ -155,10 +172,10 @@ func (v *ZKVerifier) Verify(task *Task, proofData, publicOutputs []byte) (bool, 
 	v.mu.RLock()
 	fn := v.verifyBlob
 	v.mu.RUnlock()
-	if fn != nil {
-		return fn(program, proofData[zkEnvelopeSize:])
+	if fn == nil {
+		return false, ErrZKVerifierUnavailable
 	}
-	return true, nil
+	return fn(program, proofData[zkEnvelopeSize:], envInput, envOutputs)
 }
 
 // TieredVerifier routes proof verification to the appropriate verifier
@@ -198,25 +215,32 @@ func (tv *TieredVerifier) RegisterVerifier(tier VerificationTier, v Verifier) {
 }
 
 // SetTEEQuoteVerifier installs the attestation validator on the standard TEE
-// tier (no-op if the tier was replaced with a custom Verifier).
-func (tv *TieredVerifier) SetTEEQuoteVerifier(fn TEEQuoteVerifier) {
+// tier. Returns an error (rather than silently no-op'ing) if the TEE tier has
+// been replaced with a custom Verifier — a silent failure would leave the
+// operator believing a real validator was wired when it was not.
+func (tv *TieredVerifier) SetTEEQuoteVerifier(fn TEEQuoteVerifier) error {
 	tv.mu.RLock()
 	v, ok := tv.verifiers[TierTEE].(*TEEVerifier)
 	tv.mu.RUnlock()
-	if ok {
-		v.SetQuoteVerifier(fn)
+	if !ok {
+		return fmt.Errorf("%w: TEE tier is not the standard TEEVerifier", ErrVerifierTierReplaced)
 	}
+	v.SetQuoteVerifier(fn)
+	return nil
 }
 
 // SetZKBlobVerifier installs the succinct-proof backend on the standard ZK
-// tier (no-op if the tier was replaced with a custom Verifier).
-func (tv *TieredVerifier) SetZKBlobVerifier(fn func(program *Program, blob []byte) (bool, error)) {
+// tier. Returns an error (rather than silently no-op'ing) if the ZK tier has
+// been replaced with a custom Verifier.
+func (tv *TieredVerifier) SetZKBlobVerifier(fn ZKBlobVerifier) error {
 	tv.mu.RLock()
 	v, ok := tv.verifiers[TierZK].(*ZKVerifier)
 	tv.mu.RUnlock()
-	if ok {
-		v.SetBlobVerifier(fn)
+	if !ok {
+		return fmt.Errorf("%w: ZK tier is not the standard ZKVerifier", ErrVerifierTierReplaced)
 	}
+	v.SetBlobVerifier(fn)
+	return nil
 }
 
 // ZKMLVerifierFunc is a function type that adapts ZKML proof verification
