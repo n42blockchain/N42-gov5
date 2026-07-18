@@ -82,11 +82,22 @@ func (p *QMDBStateProofProvider) StorageProof(tx kv.Tx, address types.Address, s
 // directly off the loaded forest for the latest block, via the recent-blocks
 // undo window (qmdb.Tree.ProofAt) for an older height within the window.
 func (p *QMDBStateProofProvider) proofFor(tx kv.Tx, kh qmdb.Hash, blockNrOrHash jsonrpc.BlockNumberOrHash) ([]string, error) {
+	// Hold the lock across the whole proof, not just the (re)load. The cached
+	// tree's cold/leaf stores are bound to a request tx, and its per-twig
+	// hydration mutates shared node state — two concurrent requests sharing the
+	// tree would race (corrupt hydration) and, worse, the second request would
+	// fault against the first request's already-rolled-back tx (nil-deref
+	// panic, recovered per-method but crashing every proof after the first at a
+	// given head). Serializing proof generation is cheap once the forest is
+	// loaded and removes both hazards.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	heads, err := readQMDBProofHeads(tx)
 	if err != nil {
 		return nil, err
 	}
-	tree, err := p.ensureTree(tx, heads.appliedRoot)
+	tree, err := p.ensureTreeLocked(tx, heads.appliedRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -145,12 +156,15 @@ func (*QMDBStateProofProvider) StorageHash(_ kv.Tx, _ types.Address, _ []types.H
 	return types.Hash{}, nil
 }
 
-// ensureTree returns the loaded QMDB tree for the latest state, reloading from
-// the persisted entry log when the head root has changed.
-func (p *QMDBStateProofProvider) ensureTree(tx kv.Tx, headRoot types.Hash) (*qmdb.Tree, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+// ensureTreeLocked returns the loaded QMDB tree for the latest state, reloading
+// from the persisted entry log when the head root has changed. The caller must
+// hold p.mu. It always re-points the tree's cold/leaf stores at the current
+// request's tx: the cached tree was loaded against an earlier request's tx that
+// has since been rolled back, and a cold fault against an expired tx is a
+// delayed nil-deref panic (see QMDBRootComputer.SetCold).
+func (p *QMDBStateProofProvider) ensureTreeLocked(tx kv.Tx, headRoot types.Hash) (*qmdb.Tree, error) {
 	if p.rc != nil && p.loadedRoot == headRoot {
+		p.rc.SetCold(tx)
 		return p.rc.Tree(), nil
 	}
 	rc := commitment.NewQMDBRootComputer()
@@ -160,6 +174,7 @@ func (p *QMDBStateProofProvider) ensureTree(tx kv.Tx, headRoot types.Hash) (*qmd
 	if rc.Root() != headRoot {
 		return nil, fmt.Errorf("qmdb proof: reloaded root %x != head root %x", rc.Root(), headRoot)
 	}
+	rc.SetCold(tx)
 	p.rc = rc
 	p.loadedRoot = headRoot
 	return rc.Tree(), nil
