@@ -22,6 +22,11 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
+// maxRatchetSkip bounds how far ahead of RecvCounter a single frame may skip
+// the receive chain in one Decrypt, so an attacker-supplied counter cannot
+// force an unbounded pre-authentication ratchet loop.
+const maxRatchetSkip = 10000
+
 // Session represents a bilateral encrypted session with chain key ratcheting.
 // Each message uses a unique message key derived from the chain key, providing
 // forward secrecy: compromising the current state does not reveal past messages.
@@ -140,6 +145,16 @@ func (s *Session) Decrypt(data []byte) ([]byte, error) {
 	counter := binary.BigEndian.Uint64(data[:8])
 	nonce := data[8 : 8+chacha20poly1305.NonceSizeX]
 	ciphertext := data[8+chacha20poly1305.NonceSizeX:]
+
+	// Bound the out-of-order skip BEFORE looping: counter is attacker-controlled
+	// (read straight from the frame) and the ratchet runs ahead of AEAD
+	// authentication, so a frame with counter=2^64-1 would spin ~1.8e19 hash
+	// steps while holding s.mu and permanently wedge the session. A genuine gap
+	// is small; reject anything beyond the window (the AEAD tag would fail such
+	// a frame anyway — this just refuses to do the work first).
+	if counter > s.RecvCounter && counter-s.RecvCounter > maxRatchetSkip {
+		return nil, fmt.Errorf("message counter gap too large: %d", counter-s.RecvCounter)
+	}
 
 	// Handle out-of-order messages: ratchet recv chain to match counter
 	chainKey := s.RecvChainKey

@@ -32,10 +32,32 @@ func (m *mockProvider) Publish(topic string, payload []byte, contentType string,
 	return [32]byte{}, nil
 }
 
-func (m *mockProvider) Subscribe(topic string, handler func(msg *StreamMessage)) {
+func (m *mockProvider) Subscribe(topic string, handler func(msg *StreamMessage)) func() {
 	m.mu.Lock()
+	idx := len(m.handlers[topic])
 	m.handlers[topic] = append(m.handlers[topic], handler)
 	m.mu.Unlock()
+	return func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if idx < len(m.handlers[topic]) {
+			m.handlers[topic][idx] = nil // tombstone; emit skips nil
+		}
+	}
+}
+
+// handlerCount returns the number of non-nil handlers for a topic (test helper
+// to assert unsubscription actually released the subscription).
+func (m *mockProvider) handlerCount(topic string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, h := range m.handlers[topic] {
+		if h != nil {
+			n++
+		}
+	}
+	return n
 }
 
 func (m *mockProvider) GetMessages(topic string, from, to time.Time, limit int) []*StreamMessage {
@@ -49,7 +71,9 @@ func (m *mockProvider) emit(topic string, msg *StreamMessage) {
 	handlers = append(handlers, m.handlers[topic]...)
 	m.mu.Unlock()
 	for _, h := range handlers {
-		h(msg)
+		if h != nil {
+			h(msg)
+		}
 	}
 }
 

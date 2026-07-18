@@ -35,7 +35,11 @@ const (
 // MessageProvider is the interface for message publishing and querying.
 type MessageProvider interface {
 	Publish(topic string, payload []byte, contentType string, senderID string) ([32]byte, error)
-	Subscribe(topic string, handler func(msg *StreamMessage))
+	// Subscribe registers handler for topic and returns an unsubscribe func the
+	// caller MUST invoke when done — otherwise every SSE connect leaks its
+	// closure (and client + send channel) into the provider's handler list
+	// forever, and each publish walks an ever-growing slice.
+	Subscribe(topic string, handler func(msg *StreamMessage)) func()
 	GetMessages(topic string, from, to time.Time, limit int) []*StreamMessage
 }
 
@@ -215,14 +219,20 @@ func (ss *StreamServer) handleWebSocket(w http.ResponseWriter, r *http.Request) 
 	}
 	ss.clients.Store(clientID, c)
 
+	var unsubs []func()
 	defer func() {
+		for _, u := range unsubs {
+			if u != nil {
+				u()
+			}
+		}
 		ss.clients.Delete(clientID)
 	}()
 
 	// Subscribe to topics for push notifications
 	for _, t := range topicParams {
 		topicCopy := t
-		ss.provider.Subscribe(topicCopy, func(msg *StreamMessage) {
+		unsub := ss.provider.Subscribe(topicCopy, func(msg *StreamMessage) {
 			data, err := json.Marshal(&Notification{
 				Method: "message",
 				Params: msg,
@@ -236,6 +246,7 @@ func (ss *StreamServer) handleWebSocket(w http.ResponseWriter, r *http.Request) 
 				// Client too slow, skip message
 			}
 		})
+		unsubs = append(unsubs, unsub)
 	}
 
 	log.Debug("SSE client connected", "id", clientID, "topics", topicParams)

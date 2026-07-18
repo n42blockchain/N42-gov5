@@ -170,12 +170,15 @@ func (r *Relay) handleIncoming(data []byte) {
 		return
 	}
 
-	// Dedup check
+	// Dedup check. Only skip work for an already-seen id here — do NOT mark
+	// seen yet: EnvelopeID covers every field except the signature, so an
+	// attacker could replay a genuine message's id with a corrupted signature,
+	// have it marked seen, then dropped as invalid — suppressing the real
+	// message that arrives afterward. Mark seen only AFTER validation passes.
 	id := EnvelopeID(env)
 	if r.isSeen(id) {
 		return
 	}
-	r.markSeen(id)
 
 	// Validate envelope
 	maxSize := r.cfg.MaxEnvelopeSize
@@ -186,6 +189,7 @@ func (r *Relay) handleIncoming(data []byte) {
 		log.Debug("Invalid message envelope", "err", err)
 		return
 	}
+	r.markSeen(id)
 
 	// Convert to internal Message and deliver to service
 	msg := &Message{
