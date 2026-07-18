@@ -71,6 +71,7 @@ func TestQMDBHistoryMDBXStoreFullScan(t *testing.T) {
 			if _, err := rc.FlushTo(tx); err != nil { // also flushes death stamps
 				t.Fatalf("flush: %v", err)
 			}
+			rc.CommitFlushed() // single long-lived test tx: adopt eagerly
 		}
 	}
 

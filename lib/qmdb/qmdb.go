@@ -324,6 +324,13 @@ type Tree struct {
 	// harmless garbage (never read), just unreclaimed.
 	deadFlushed []uint64
 
+	// stagedDead holds the deadFlushed slots whose Delete was issued by the last
+	// FlushTo but whose surrounding transaction has not committed yet. CommitFlush
+	// drops them (the deletes are durable); AbortFlush returns them to deadFlushed
+	// so the reclaim is re-issued by the next flush (a rolled-back tx restored the
+	// rows on disk).
+	stagedDead []uint64
+
 	// Incremental upper tree (binary Merkle over twig roots). upper is a heap of
 	// size 2*upCap (upCap = pow2 >= len(twigs)): upper[1] is the world root and
 	// the twig roots occupy [upCap, upCap+len(twigs)), padded with nullHash. Twig
