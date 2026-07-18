@@ -197,6 +197,11 @@ var (
 	// ErrInvalidSignature is returned when attestation signature verification fails.
 	ErrInvalidSignature = errors.New("attestation: invalid signature")
 
+	// ErrOperatorMismatch is returned when the signing/recovered key does not
+	// correspond to the attestation's declared Operator address — the signature
+	// must prove the named operator authorized it, not an arbitrary key.
+	ErrOperatorMismatch = errors.New("attestation: signer does not match operator")
+
 	// ErrNilPrivateKey is returned when a nil private key is provided for signing.
 	ErrNilPrivateKey = errors.New("attestation: nil private key")
 
