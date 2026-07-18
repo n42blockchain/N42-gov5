@@ -197,8 +197,15 @@ func (s *Service) SubmitProof(taskID types.Hash, proofData, publicOutputs []byte
 		return true, nil
 	}
 
-	// TierZK or TierTEE: immediate final verification
-	s.tasks.UpdateStatus(taskID, TaskVerified, proofData, publicOutputs, "")
+	// TierZK or TierTEE: immediate final verification. The status transition is
+	// the concurrency gate: TransitionToProving admits Proving→Proving, so two
+	// concurrent valid submissions for one task can both reach here. If a racing
+	// SubmitProof already drove the task to the terminal TaskVerified, this
+	// transition is rejected — and we must NOT reward again, or the provider is
+	// paid twice for one task.
+	if err := s.tasks.UpdateStatus(taskID, TaskVerified, proofData, publicOutputs, ""); err != nil {
+		return false, err
+	}
 	log.Debug("Coprocessor task proof verified",
 		"taskID", taskID.Hex()[:10],
 		"tier", task.VerificationTier.String(),
@@ -206,7 +213,7 @@ func (s *Service) SubmitProof(taskID types.Hash, proofData, publicOutputs []byte
 		"outputSize", len(publicOutputs),
 	)
 
-	// Reward provider if assigned
+	// Reward provider if assigned (only on the transition WE performed).
 	if task.AssignedProvider != (types.Address{}) {
 		s.slasher.Reward(task.AssignedProvider, task.RewardAmount, taskID)
 	}

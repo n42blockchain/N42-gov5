@@ -9,22 +9,35 @@ import (
 	"github.com/n42blockchain/N42/crypto"
 )
 
+// passingZKBackend is a blob backend that accepts everything — for tests that
+// exercise the envelope binding, not the succinct proof itself.
+func passingZKBackend(t *testing.T, tv *TieredVerifier) {
+	t.Helper()
+	if err := tv.SetZKBlobVerifier(func(program *Program, blob []byte, inputHash, outputsHash types.Hash) (bool, error) {
+		return true, nil
+	}); err != nil {
+		t.Fatalf("SetZKBlobVerifier: %v", err)
+	}
+}
+
 func TestTieredVerifierZK(t *testing.T) {
 	r := NewRegistry()
 	ph := types.HexToHash("0xaabb")
 	r.Register(ph, []byte("vk"), "test-zk")
 
 	tv := NewTieredVerifier(r)
+	passingZKBackend(t, tv)
 
 	input := []byte("task-input")
 	outputs := []byte("task-outputs")
 	task := &Task{
+		ID:               types.HexToHash("0x1234"),
 		ProgramHash:      ph,
 		InputHash:        crypto.Keccak256Hash(input),
 		VerificationTier: TierZK,
 	}
 
-	proof := BuildZKProofEnvelope(ph, task.InputHash, outputs, []byte("succinct-blob"))
+	proof := BuildZKProofEnvelope(task.ID, ph, task.InputHash, outputs, []byte("succinct-blob"))
 	ok, err := tv.Verify(task, proof, outputs)
 	if err != nil {
 		t.Fatalf("ZK verify: %v", err)
@@ -34,14 +47,33 @@ func TestTieredVerifierZK(t *testing.T) {
 	}
 }
 
-func TestTieredVerifierZKRejectsBindingMismatch(t *testing.T) {
+// TestTieredVerifierZKFailsClosed pins the fail-closed default: with no backend
+// wired, even a perfectly-bound envelope is rejected (the binding alone does
+// not prove the computation).
+func TestTieredVerifierZKFailsClosed(t *testing.T) {
 	r := NewRegistry()
 	ph := types.HexToHash("0xaabb")
 	r.Register(ph, []byte("vk"), "test-zk")
 	tv := NewTieredVerifier(r)
 
+	outputs := []byte("outputs")
+	task := &Task{ID: types.HexToHash("0x1"), ProgramHash: ph, VerificationTier: TierZK}
+	proof := BuildZKProofEnvelope(task.ID, ph, task.InputHash, outputs, []byte("blob"))
+	if _, err := tv.Verify(task, proof, outputs); err != ErrZKVerifierUnavailable {
+		t.Fatalf("no-backend ZK verify: err=%v want ErrZKVerifierUnavailable", err)
+	}
+}
+
+func TestTieredVerifierZKRejectsBindingMismatch(t *testing.T) {
+	r := NewRegistry()
+	ph := types.HexToHash("0xaabb")
+	r.Register(ph, []byte("vk"), "test-zk")
+	tv := NewTieredVerifier(r)
+	passingZKBackend(t, tv)
+
 	outputs := []byte("task-outputs")
 	task := &Task{
+		ID:               types.HexToHash("0x1234"),
 		ProgramHash:      ph,
 		InputHash:        crypto.Keccak256Hash([]byte("task-input")),
 		VerificationTier: TierZK,
@@ -50,15 +82,22 @@ func TestTieredVerifierZKRejectsBindingMismatch(t *testing.T) {
 	// Envelope bound to a DIFFERENT program: replaying someone else's valid
 	// proof against this task must fail.
 	otherProgram := types.HexToHash("0xffff")
-	proof := BuildZKProofEnvelope(otherProgram, task.InputHash, outputs, []byte("blob"))
+	proof := BuildZKProofEnvelope(task.ID, otherProgram, task.InputHash, outputs, []byte("blob"))
 	if _, err := tv.Verify(task, proof, outputs); !errors.Is(err, ErrProofBindingMismatch) {
 		t.Fatalf("foreign-program envelope: err=%v want ErrProofBindingMismatch", err)
 	}
 
 	// Correct header but the claimed outputs were swapped after proving.
-	proof = BuildZKProofEnvelope(ph, task.InputHash, outputs, []byte("blob"))
+	proof = BuildZKProofEnvelope(task.ID, ph, task.InputHash, outputs, []byte("blob"))
 	if _, err := tv.Verify(task, proof, []byte("different-outputs")); !errors.Is(err, ErrProofBindingMismatch) {
 		t.Fatalf("swapped outputs: err=%v want ErrProofBindingMismatch", err)
+	}
+
+	// A valid proof for a SIBLING task (same program+input, different ID) must
+	// not be replayable to collect this task's reward.
+	sibling := BuildZKProofEnvelope(types.HexToHash("0x9999"), ph, task.InputHash, outputs, []byte("blob"))
+	if _, err := tv.Verify(task, sibling, outputs); !errors.Is(err, ErrProofBindingMismatch) {
+		t.Fatalf("sibling-task envelope: err=%v want ErrProofBindingMismatch", err)
 	}
 }
 
@@ -68,13 +107,14 @@ func TestTieredVerifierZKRejectsEmpty(t *testing.T) {
 	r.Register(ph, []byte("vk"), "test-zk")
 
 	tv := NewTieredVerifier(r)
-	task := &Task{ProgramHash: ph, VerificationTier: TierZK}
+	passingZKBackend(t, tv)
+	task := &Task{ID: types.HexToHash("0x1"), ProgramHash: ph, VerificationTier: TierZK}
 
 	if _, err := tv.Verify(task, nil, nil); err != ErrInvalidProof {
 		t.Fatalf("expected ErrInvalidProof, got %v", err)
 	}
 	// A bare header with no succinct blob is not a proof either.
-	bare := BuildZKProofEnvelope(ph, types.Hash{}, nil, nil)
+	bare := BuildZKProofEnvelope(task.ID, ph, types.Hash{}, nil, nil)
 	if _, err := tv.Verify(task, bare, nil); err != ErrInvalidProof {
 		t.Fatalf("blobless envelope: expected ErrInvalidProof, got %v", err)
 	}
@@ -87,20 +127,39 @@ func TestTieredVerifierZKBlobBackend(t *testing.T) {
 	tv := NewTieredVerifier(r)
 
 	var gotVK, gotBlob []byte
-	tv.SetZKBlobVerifier(func(program *Program, blob []byte) (bool, error) {
-		gotVK, gotBlob = program.VerificationKey, blob
+	var gotIn, gotOut types.Hash
+	if err := tv.SetZKBlobVerifier(func(program *Program, blob []byte, inputHash, outputsHash types.Hash) (bool, error) {
+		gotVK, gotBlob, gotIn, gotOut = program.VerificationKey, blob, inputHash, outputsHash
 		return false, nil // backend says the succinct proof is bogus
-	})
+	}); err != nil {
+		t.Fatalf("SetZKBlobVerifier: %v", err)
+	}
 
 	outputs := []byte("outputs")
-	task := &Task{ProgramHash: ph, VerificationTier: TierZK}
-	proof := BuildZKProofEnvelope(ph, task.InputHash, outputs, []byte("bogus-blob"))
+	task := &Task{ID: types.HexToHash("0x1"), ProgramHash: ph, VerificationTier: TierZK}
+	proof := BuildZKProofEnvelope(task.ID, ph, task.InputHash, outputs, []byte("bogus-blob"))
 	ok, err := tv.Verify(task, proof, outputs)
 	if ok || err != nil {
 		t.Fatalf("backend rejection must propagate: ok=%v err=%v", ok, err)
 	}
 	if string(gotVK) != "vk" || string(gotBlob) != "bogus-blob" {
 		t.Fatalf("backend got vk=%q blob=%q", gotVK, gotBlob)
+	}
+	// The backend must receive the bound public inputs so it can cross-check
+	// the proof against them.
+	if gotIn != task.InputHash || gotOut != crypto.Keccak256Hash(outputs) {
+		t.Fatalf("backend got wrong bound inputs: in=%x out=%x", gotIn, gotOut)
+	}
+}
+
+// TestTieredVerifierSetOnReplacedTier verifies configuring a backend on a tier
+// that was swapped for a custom Verifier returns an error instead of silently
+// no-op'ing.
+func TestTieredVerifierSetOnReplacedTier(t *testing.T) {
+	tv := NewTieredVerifier(NewRegistry())
+	tv.RegisterVerifier(TierZK, &mockVerifier{fn: func(*Task, []byte) (bool, error) { return true, nil }})
+	if err := tv.SetZKBlobVerifier(func(*Program, []byte, types.Hash, types.Hash) (bool, error) { return true, nil }); !errors.Is(err, ErrVerifierTierReplaced) {
+		t.Fatalf("SetZKBlobVerifier on replaced tier: err=%v want ErrVerifierTierReplaced", err)
 	}
 }
 
@@ -162,10 +221,12 @@ func TestTieredVerifierTEEFailsClosed(t *testing.T) {
 	}
 
 	called := false
-	tv.SetTEEQuoteVerifier(func(task *Task, quote, publicOutputs []byte) (bool, error) {
+	if err := tv.SetTEEQuoteVerifier(func(task *Task, quote, publicOutputs []byte) (bool, error) {
 		called = true
 		return true, nil
-	})
+	}); err != nil {
+		t.Fatalf("SetTEEQuoteVerifier: %v", err)
+	}
 	ok, err := tv.Verify(task, attestation, nil)
 	if err != nil || !ok || !called {
 		t.Fatalf("configured quote verifier not honored: ok=%v err=%v called=%v", ok, err, called)
@@ -281,7 +342,7 @@ func TestTieredVerifierZKUnregisteredProgram(t *testing.T) {
 		VerificationTier: TierZK,
 	}
 
-	proof := BuildZKProofEnvelope(task.ProgramHash, task.InputHash, nil, []byte("blob"))
+	proof := BuildZKProofEnvelope(task.ID, task.ProgramHash, task.InputHash, nil, []byte("blob"))
 	_, err := tv.Verify(task, proof, nil)
 	if err != ErrProgramNotRegistered {
 		t.Fatalf("expected ErrProgramNotRegistered, got %v", err)
