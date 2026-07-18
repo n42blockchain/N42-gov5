@@ -82,6 +82,23 @@ func (e *ConsensusEngine) processVote(vote *Vote) error {
 		return nil
 	}
 	if vote.BlockHash != e.voteCollector.BlockHash() {
+		// A first-seen vote whose hash differs from the collector's is dropped
+		// here (it never enters the QC), but must still be recorded — once
+		// verified — so a LATER collector-hash vote from the same voter is
+		// caught as equivocation regardless of arrival order. Verify
+		// individually since this vote bypasses the batch path; a forged one is
+		// dropped without polluting the tracker. Fires only on the anomalous
+		// non-proposal-hash path.
+		if _, exists := e.equivocationTracker[vote.Voter]; !exists {
+			pk, err := vs.GetPublicKey(vote.Voter)
+			if err != nil {
+				return err
+			}
+			if !VerifyBLSSignature(vote.Signature, pk, SigningMessage(view, vote.BlockHash)) {
+				return &InvalidSignatureError{View: view, ValidatorIndex: vote.Voter}
+			}
+			e.equivocationTracker[vote.Voter] = vote.BlockHash
+		}
 		return nil
 	}
 
@@ -243,6 +260,19 @@ func (e *ConsensusEngine) processCommitVote(cv *CommitVote) error {
 		return nil
 	}
 	if cv.BlockHash != e.commitCollector.BlockHash() {
+		// Record a first-seen non-collector-hash commit vote (once verified) so
+		// a later collector-hash vote from the same voter is caught as
+		// equivocation regardless of order. Mirrors processVote.
+		if _, exists := e.commitEquivocationTracker[cv.Voter]; !exists {
+			pk, err := vs.GetPublicKey(cv.Voter)
+			if err != nil {
+				return err
+			}
+			if !VerifyBLSSignature(cv.Signature, pk, CommitSigningMessage(view, cv.BlockHash)) {
+				return &InvalidSignatureError{View: view, ValidatorIndex: cv.Voter}
+			}
+			e.commitEquivocationTracker[cv.Voter] = cv.BlockHash
+		}
 		return nil
 	}
 

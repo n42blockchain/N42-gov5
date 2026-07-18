@@ -320,7 +320,7 @@ func (rm *ReconfigurationManager) PendingRemoveCount() int {
 // ValidateTransition checks that a proposed validator set transition is safe.
 // This implements the safety checks from HotStuff-2 § 5:
 //   - New set has at least 4 validators (for f >= 1)
-//   - Quorum size is correctly computed as 2f+1
+//   - Quorum size is correctly computed as n-f (= 2f+1 only at n=3f+1)
 //   - There is sufficient overlap between old and new sets for liveness
 func ValidateTransition(oldSet, newSet *ValidatorSet) error {
 	if newSet.Len() < 4 {

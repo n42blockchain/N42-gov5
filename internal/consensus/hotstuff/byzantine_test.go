@@ -292,6 +292,52 @@ func TestForgedConflictingVoteDoesNotFabricateEquivocation(t *testing.T) {
 	})
 }
 
+// TestEquivocationDetectedRegardlessOfArrivalOrder covers the ordering where the
+// NON-proposal (non-collector-hash) vote arrives FIRST: it is recorded (after
+// individual verification) so the later proposal-hash vote from the same voter
+// is still surfaced as equivocation. Both votes are genuinely signed.
+func TestEquivocationDetectedRegardlessOfArrivalOrder(t *testing.T) {
+	hashA := types.Hash{0xA} // becomes the collector/proposal hash
+	hashB := types.Hash{0xB} // conflicting, arrives first
+
+	t.Run("prepare", func(t *testing.T) {
+		setup := newTestSetup(t, 4)
+		leader, outputCh := newTestEngine(t, setup, 1)
+		if err := leader.ProcessEvent(ConsensusEvent{Type: EventBlockReady, Hash: hashA}); err != nil {
+			t.Fatalf("onBlockReady: %v", err)
+		}
+		drainOutputs(outputCh)
+
+		// Conflicting (non-collector) vote for hashB arrives FIRST, genuinely signed.
+		sigB := setup.keys[0].Sign(SigningMessage(1, hashB))
+		if err := leader.ProcessEvent(ConsensusEvent{Type: EventMessage,
+			Msg: ConsensusMsg{Type: MsgVote, Payload: &Vote{
+				View: 1, BlockHash: hashB, Voter: 0, Signature: sigB.Marshal(),
+			}}}); err != nil {
+			t.Fatalf("first (hashB) vote: %v", err)
+		}
+		drainOutputs(outputCh)
+
+		// Then the proposal-hash vote for hashA.
+		sigA := setup.keys[0].Sign(SigningMessage(1, hashA))
+		if err := leader.ProcessEvent(ConsensusEvent{Type: EventMessage,
+			Msg: ConsensusMsg{Type: MsgVote, Payload: &Vote{
+				View: 1, BlockHash: hashA, Voter: 0, Signature: sigA.Marshal(),
+			}}}); err != nil {
+			t.Fatalf("second (hashA) vote: %v", err)
+		}
+		var found bool
+		for _, o := range drainOutputs(outputCh) {
+			if o.Type == OutputEquivocationDetected && o.Validator == 0 {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("equivocation missed when conflicting vote arrived first")
+		}
+	})
+}
+
 // ----------------------------------------------------------------------------
 // SR6 — A QC with fewer than 2f+1 valid signers must be rejected.
 //
