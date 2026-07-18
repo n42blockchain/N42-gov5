@@ -24,6 +24,12 @@ type HeaderLookup func(hash types.Hash) (number uint64, ok bool)
 // the cap is DoS depth, not a tunable.
 const maxOpenWindows = 128
 
+// maxReportersPerWindow bounds distinct cohort reporters tracked per window
+// (index sets and certs). reporter addresses arrive unauthenticated over
+// cohort gossip, so this caps the memory a spoofing peer can force. The
+// legitimate reporter set is the IDC cohort, well under this bound.
+const maxReportersPerWindow = 256
+
 var (
 	// ErrUnknownBlock reports a receipt for a block this node does not have.
 	ErrUnknownBlock = errors.New("mobileverify: unknown block")
