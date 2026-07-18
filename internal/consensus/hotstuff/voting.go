@@ -48,22 +48,33 @@ func (e *ConsensusEngine) processVote(vote *Vote) error {
 		return err
 	}
 
-	// Equivocation detection.
-	if prevHash, exists := e.equivocationTracker[vote.Voter]; exists {
-		if prevHash != vote.BlockHash {
-			log.Warn("equivocation detected: validator voted for two different blocks",
-				"view", view, "validator", vote.Voter, "prevHash", prevHash, "newHash", vote.BlockHash)
-			_ = e.emit(EngineOutput{
-				Type:      OutputEquivocationDetected,
-				View:      view,
-				Validator: vote.Voter,
-				Hash1:     prevHash,
-				Hash2:     vote.BlockHash,
-			})
-			return nil
+	// Equivocation detection. The tracker holds only VERIFIED votes (recorded in
+	// flushPrepareVotes after batch verification), so a recorded prevHash is
+	// authentic. A conflicting hash from the same voter is treated as
+	// equivocation — and can produce slashing evidence — only after THIS vote's
+	// signature is individually verified: the consensus gossip topic is
+	// unsigned, so an attacker could otherwise inject two Vote payloads naming a
+	// victim for two hashes and fabricate an equivocation. This individual
+	// verify fires only on the rare conflicting-hash path; the normal
+	// same-hash path stays on batch verification.
+	if prevHash, exists := e.equivocationTracker[vote.Voter]; exists && prevHash != vote.BlockHash {
+		pk, err := vs.GetPublicKey(vote.Voter)
+		if err != nil {
+			return err
 		}
-	} else {
-		e.equivocationTracker[vote.Voter] = vote.BlockHash
+		if !VerifyBLSSignature(vote.Signature, pk, SigningMessage(view, vote.BlockHash)) {
+			return &InvalidSignatureError{View: view, ValidatorIndex: vote.Voter}
+		}
+		log.Warn("equivocation detected: validator voted for two different blocks",
+			"view", view, "validator", vote.Voter, "prevHash", prevHash, "newHash", vote.BlockHash)
+		_ = e.emit(EngineOutput{
+			Type:      OutputEquivocationDetected,
+			View:      view,
+			Validator: vote.Voter,
+			Hash1:     prevHash,
+			Hash2:     vote.BlockHash,
+		})
+		return nil
 	}
 
 	// Check collector exists and block hash matches.
@@ -114,7 +125,16 @@ func (e *ConsensusEngine) flushPrepareVotes() error {
 	e.prepareVoteBuf = e.prepareVoteBuf[:0] // reset
 
 	valid := batchVerifyVotes(buf)
+	// All buffered prepare votes share the collector's block hash (they passed
+	// the block-hash gate in processVote). Record the first VERIFIED vote per
+	// voter into the equivocation tracker here — so the tracker only ever holds
+	// authentic hashes, and a later conflicting-hash vote is checked against a
+	// real prior vote (see processVote).
+	collectorHash := e.voteCollector.BlockHash()
 	for _, pv := range valid {
+		if _, exists := e.equivocationTracker[pv.voter]; !exists {
+			e.equivocationTracker[pv.voter] = collectorHash
+		}
 		if err := e.voteCollector.AddVerifiedVoteFromBytes(pv.voter, pv.sigBytes); err != nil {
 			if _, ok := err.(*DuplicateVoteError); ok {
 				continue
@@ -194,22 +214,29 @@ func (e *ConsensusEngine) processCommitVote(cv *CommitVote) error {
 		return err
 	}
 
-	// CommitVote equivocation detection (mirrors processVote tracker).
-	if prevHash, exists := e.commitEquivocationTracker[cv.Voter]; exists {
-		if prevHash != cv.BlockHash {
-			log.Warn("commit-vote equivocation detected",
-				"view", view, "validator", cv.Voter, "prevHash", prevHash, "newHash", cv.BlockHash)
-			_ = e.emit(EngineOutput{
-				Type:      OutputEquivocationDetected,
-				View:      view,
-				Validator: cv.Voter,
-				Hash1:     prevHash,
-				Hash2:     cv.BlockHash,
-			})
-			return nil // discard conflicting commit vote
+	// CommitVote equivocation detection (mirrors processVote): the tracker holds
+	// only VERIFIED commit votes (recorded in flushCommitVotes), and a
+	// conflicting hash produces evidence only after THIS vote's signature is
+	// individually verified — the gossip topic is unsigned, so an unverified
+	// payload naming a victim must not fabricate an equivocation.
+	if prevHash, exists := e.commitEquivocationTracker[cv.Voter]; exists && prevHash != cv.BlockHash {
+		pk, err := vs.GetPublicKey(cv.Voter)
+		if err != nil {
+			return err
 		}
-	} else {
-		e.commitEquivocationTracker[cv.Voter] = cv.BlockHash
+		if !VerifyBLSSignature(cv.Signature, pk, CommitSigningMessage(view, cv.BlockHash)) {
+			return &InvalidSignatureError{View: view, ValidatorIndex: cv.Voter}
+		}
+		log.Warn("commit-vote equivocation detected",
+			"view", view, "validator", cv.Voter, "prevHash", prevHash, "newHash", cv.BlockHash)
+		_ = e.emit(EngineOutput{
+			Type:      OutputEquivocationDetected,
+			View:      view,
+			Validator: cv.Voter,
+			Hash1:     prevHash,
+			Hash2:     cv.BlockHash,
+		})
+		return nil // discard conflicting commit vote
 	}
 
 	if e.commitCollector == nil {
@@ -258,7 +285,11 @@ func (e *ConsensusEngine) flushCommitVotes() error {
 	e.commitVoteBuf = e.commitVoteBuf[:0]
 
 	valid := batchVerifyVotes(buf)
+	collectorHash := e.commitCollector.BlockHash()
 	for _, pv := range valid {
+		if _, exists := e.commitEquivocationTracker[pv.voter]; !exists {
+			e.commitEquivocationTracker[pv.voter] = collectorHash
+		}
 		if err := e.commitCollector.AddVerifiedVoteFromBytes(pv.voter, pv.sigBytes); err != nil {
 			if _, ok := err.(*DuplicateVoteError); ok {
 				continue
