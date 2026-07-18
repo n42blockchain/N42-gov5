@@ -219,6 +219,79 @@ func TestByzantine_CommitEquivocationDetected(t *testing.T) {
 	}
 }
 
+// TestForgedConflictingVoteDoesNotFabricateEquivocation is the H1 regression:
+// the consensus gossip topic is unsigned, so an attacker can inject a Vote
+// naming a victim for a second block hash. That conflicting vote must NOT
+// surface OutputEquivocationDetected (which persists slashing evidence) unless
+// its signature actually verifies — otherwise anyone can fabricate evidence
+// against any validator. Covers both the Round 1 (prepare) and Round 2 (commit)
+// trackers.
+func TestForgedConflictingVoteDoesNotFabricateEquivocation(t *testing.T) {
+	hashA := types.Hash{0xA}
+	hashB := types.Hash{0xB}
+
+	t.Run("prepare", func(t *testing.T) {
+		setup := newTestSetup(t, 4)
+		leader, outputCh := newTestEngine(t, setup, 1)
+		if err := leader.ProcessEvent(ConsensusEvent{Type: EventBlockReady, Hash: hashA}); err != nil {
+			t.Fatalf("onBlockReady: %v", err)
+		}
+		drainOutputs(outputCh)
+
+		// Validator 0 casts a genuine, signed prepare vote for hashA.
+		sigA := setup.keys[0].Sign(SigningMessage(1, hashA))
+		if err := leader.ProcessEvent(ConsensusEvent{Type: EventMessage,
+			Msg: ConsensusMsg{Type: MsgVote, Payload: &Vote{
+				View: 1, BlockHash: hashA, Voter: 0, Signature: sigA.Marshal(),
+			}}}); err != nil {
+			t.Fatalf("genuine vote: %v", err)
+		}
+		drainOutputs(outputCh)
+
+		// Attacker injects a conflicting prepare vote for hashB naming validator
+		// 0 with a GARBAGE signature. Must be dropped, not surfaced.
+		forged := make([]byte, len(sigA.Marshal()))
+		_ = leader.ProcessEvent(ConsensusEvent{Type: EventMessage,
+			Msg: ConsensusMsg{Type: MsgVote, Payload: &Vote{
+				View: 1, BlockHash: hashB, Voter: 0, Signature: forged,
+			}}})
+		for _, o := range drainOutputs(outputCh) {
+			if o.Type == OutputEquivocationDetected {
+				t.Fatal("forged prepare vote fabricated equivocation evidence")
+			}
+		}
+	})
+
+	t.Run("commit", func(t *testing.T) {
+		setup := newTestSetup(t, 4)
+		leader, outputCh := newTestEngine(t, setup, 1)
+		if err := leader.ProcessEvent(ConsensusEvent{Type: EventBlockReady, Hash: hashA}); err != nil {
+			t.Fatalf("onBlockReady: %v", err)
+		}
+		drainOutputs(outputCh)
+
+		sigA := setup.keys[0].Sign(CommitSigningMessage(1, hashA))
+		if err := leader.ProcessEvent(ConsensusEvent{Type: EventMessage,
+			Msg: ConsensusMsg{Type: MsgCommitVote, Payload: &CommitVote{
+				View: 1, BlockHash: hashA, Voter: 0, Signature: sigA.Marshal(),
+			}}}); err != nil {
+			t.Fatalf("genuine commit vote: %v", err)
+		}
+		drainOutputs(outputCh)
+
+		forged := make([]byte, len(sigA.Marshal()))
+		_ = leader.ProcessEvent(ConsensusEvent{Type: EventMessage,
+			Msg: ConsensusMsg{Type: MsgCommitVote, Payload: &CommitVote{
+				View: 1, BlockHash: hashB, Voter: 0, Signature: forged,
+			}}})
+		for _, o := range drainOutputs(outputCh) {
+			if o.Type == OutputEquivocationDetected {
+				t.Fatal("forged commit vote fabricated equivocation evidence")
+			}
+		}
+	})
+}
+
 // ----------------------------------------------------------------------------
 // SR6 — A QC with fewer than 2f+1 valid signers must be rejected.
 //
