@@ -378,6 +378,7 @@ func resolveAuxiliaryRuntimePlan(cfg *conf.Config, profile params.ProfileDescrip
 	}
 
 	aiConfigured := cfg.AICfg.Wallet.Enabled ||
+		cfg.AICfg.Coord.Enabled ||
 		cfg.AICfg.Governance.Enabled ||
 		cfg.AICfg.Training.Enabled ||
 		cfg.AICfg.Attestation.Enabled ||
@@ -1545,7 +1546,9 @@ func (n *Node) Start() error {
 	// Mobile attestation packet pipeline: wired before the miner starts (the
 	// sink is the worker's read-log capture switch), and on non-miner nodes
 	// too — every IDC node subscribes and caches the fleet's packets.
-	n.startMobileVerify()
+	if err := n.startMobileVerify(); err != nil {
+		return err
+	}
 
 	// Distributed runtime (coprocessor, messaging, etc.) must be constructed
 	// before the JSON-RPC API list is assembled below, or a namespace like
@@ -1611,7 +1614,12 @@ func (n *Node) Start() error {
 		svc := hotstuff.NewService(hs, newHotstuffP2PAdapter(n.p2p), n.db, gossipTopic, rpcTopic)
 		svc.SetBlockProducer(n.miner)
 		if err := svc.Start(); err != nil {
-			log.Warn("HotStuff service failed to start", "err", err)
+			// A consensus service that failed to start (topic-join / gossip
+			// registration error) leaves the node unable to vote or propose,
+			// yet it would otherwise report "All services started" and appear
+			// healthy while silently withholding participation — losing >f such
+			// nodes halts BFT liveness. Fail Start instead of wiring a dead svc.
+			return fmt.Errorf("hotstuff service failed to start: %w", err)
 		}
 		n.hotstuffService = svc
 
@@ -1737,6 +1745,12 @@ func (n *Node) Start() error {
 			Authenticated: true,
 		})
 	}
+
+	// Bridge runtime registers bridge_* RPC APIs, so it must run BEFORE the RPC
+	// server snapshots n.rpcAPIs (same dead-registration class fixed for
+	// coprocessor). All its dependencies — blockChain, engine validator set,
+	// etherbase, zkprover — are ready by here. Off by default (BridgeCfg.Enabled).
+	n.startBridgeRuntime()
 
 	if err := n.startRPC(); err != nil {
 		log.Error("failed start jsonrpc service", zap.Error(err))
@@ -1908,7 +1922,7 @@ func (n *Node) Start() error {
 	n.startAIRuntime()
 	n.startWeb3Gateway()
 	n.startIngestServer()
-	n.startBridgeRuntime()
+	// startBridgeRuntime moved above startRPC so its bridge_* APIs register.
 
 	if n.runtimePlan.startTxGenerator {
 		n.startTxGenerator()
@@ -2113,9 +2127,9 @@ func (n *Node) mobileSelfIdentity() types.Address {
 // IDC fleet, and — when this node mines — the worker sink that produces
 // a packet for every block this node seals. Disabled by default;
 // consensus paths are untouched either way.
-func (n *Node) startMobileVerify() {
+func (n *Node) startMobileVerify() error {
 	if !n.config.MobileVerifyCfg.Enabled {
-		return
+		return nil
 	}
 	cache := mobileverify.NewPacketCache(n.config.MobileVerifyCfg.PacketWindow)
 	topic := fmt.Sprintf(p2p.MobilePacketTopicFormat, utils.ToBytes4(n.p2pGenesisHash[:]))
@@ -2151,8 +2165,16 @@ func (n *Node) startMobileVerify() {
 
 	if n.p2p != nil {
 		if err := svc.Start(); err != nil {
+			// On a mining node with a scheduled MobileAnchor fork, a failed
+			// mobileverify start means the registry/root provider below is never
+			// wired, so post-fork the leader would stamp a nil MobileRegistryRoot
+			// that every follower rejects. That is the exact state the pre-start
+			// guard exists to prevent — make it fatal here too, not a log line.
+			if n.config.NodeCfg.Miner && n.config.ChainCfg != nil && n.config.ChainCfg.MobileAnchorTime != nil {
+				return fmt.Errorf("mobileverify packet service failed to start on a MobileAnchor mining node: %w", err)
+			}
 			log.Error("mobileverify: packet service failed to start", "err", err)
-			return
+			return nil
 		}
 	}
 	n.mobilePacketService = svc
@@ -2308,6 +2330,7 @@ func (n *Node) startMobileVerify() {
 	log.Info("Mobile attestation pipeline enabled",
 		"window", n.config.MobileVerifyCfg.PacketWindow, "topic", topic,
 		"producer", n.miner != nil, "http", n.config.MobileVerifyCfg.HTTPAddr)
+	return nil
 }
 
 func (n *Node) startDistributedRuntime() {
@@ -2582,6 +2605,15 @@ func (n *Node) startRPC() error {
 
 	if err := n.startInProc(); err != nil {
 		return err
+	}
+
+	// IPC endpoint: constructed at NewNode but never started, so --ipcpath was a
+	// silent no-op (clients hitting <datadir>/n42.ipc got connection refused).
+	// Serve the full API set over the local socket; empty IPCPath disables it.
+	if n.config.NodeCfg.IPCPath != "" {
+		if err := n.ipc.start(n.rpcAPIs); err != nil {
+			log.Warn("IPC endpoint failed to start", "err", err)
+		}
 	}
 
 	// Create rate limiter if configured
