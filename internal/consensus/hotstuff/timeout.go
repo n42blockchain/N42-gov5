@@ -20,6 +20,19 @@ import (
 func (e *ConsensusEngine) onTimeout() error {
 	view := e.roundState.CurrentView()
 
+	// Guard against a stale timer fire. The pacemaker reuses one timer that the
+	// loop re-arms only after it fires; ResetForView (called on every view
+	// advance) moves the deadline forward but does NOT re-arm the timer. So a
+	// timer armed for an earlier view fires ~base-timeout after that view began,
+	// by which point many healthy views may have committed — declaring the
+	// CURRENT view timed out here would be a spurious timeout every base-timeout
+	// interval, churning a needless view change. Ignore a fire whose deadline
+	// has not actually passed; the loop re-arms to the current deadline on its
+	// next iteration, so a genuine timeout still fires at the correct time.
+	if !e.pacemaker.IsTimedOut() {
+		return nil
+	}
+
 	if e.roundState.Phase() == PhaseTimedOut {
 		// Already timed out: re-broadcast timeout for late arrivals.
 		log.Warn("view timed out (repeat, re-broadcasting)", "view", view)
