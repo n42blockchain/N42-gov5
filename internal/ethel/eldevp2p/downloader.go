@@ -193,6 +193,18 @@ type Downloader struct {
 	// journal before the next fetch round.
 	reorgPending bool
 
+	// reorgFailed latches an UNRECOVERABLE reorg unwind (journal exhausted,
+	// changeset unwind error, or a recomputed root that does not match the
+	// parent header). Without it the coordinator re-detected the identical
+	// reorg every round and re-ran the same failing unwind forever — the
+	// ~1400x spin observed stuck at block 25462234, where the "halting
+	// (re-sync required)" log was a misnomer because nothing actually halted.
+	// Set here, checked at the top of the coordinator's reorg branch, which
+	// then stops live-follow cleanly (one operator-facing error) instead of
+	// spinning. reorgFailReason carries the cause for that log.
+	reorgFailed     bool
+	reorgFailReason string
+
 	// staged enables staged catch-up (writeOnly execution + per-sub-batch
 	// incremental Merkle), gated by env N42_STAGED=1. subBatch is the Merkle
 	// cadence in blocks (N42_SUBBATCH, default 8192). lastMerkle is the head of
@@ -627,6 +639,13 @@ func (d *Downloader) coordinator(ctx context.Context) {
 			// in-memory reverse-diff journal, then loop to re-fetch the canonical
 			// block at that height (depth-1 links immediately; deeper repeats).
 			d.handleReorg(ctx)
+			if d.reorgFailed {
+				// Unrecoverable: re-running the same unwind would spin forever
+				// (the 25462234 loop). Stop live-follow so the operator re-syncs.
+				log.Error("eldevp2p: live-follow halted after an unrecoverable reorg unwind — re-sync required",
+					"reason", d.reorgFailReason)
+				return
+			}
 			continue
 		}
 		if imported > 0 {
@@ -1185,7 +1204,8 @@ func (d *Downloader) handleReorg(ctx context.Context) {
 		// rather than corrupt state; the operator re-syncs.
 		log.Error("eldevp2p: reorg deeper than reverse-diff journal — cannot unwind; halting (re-sync required)",
 			"journalDepth", d.adapter.ReorgJournalDepth())
-		time.Sleep(12 * time.Second)
+		d.reorgFailed = true
+		d.reorgFailReason = "reorg deeper than reverse-diff journal"
 		return
 	}
 	if terr := rawdb.TruncateCanonicalHash(tx, num, true); terr != nil {
@@ -1222,7 +1242,8 @@ func (d *Downloader) handleReorgHashed(ctx context.Context) {
 	head := ethel.ReadProgress(tx)
 	if head == 0 {
 		log.Error("eldevp2p: reorg with no head marker — halting")
-		time.Sleep(12 * time.Second)
+		d.reorgFailed = true
+		d.reorgFailReason = "reorg with no head marker"
 		return
 	}
 	var provider commitment.BlockChangesProvider
@@ -1233,7 +1254,8 @@ func (d *Downloader) handleReorgHashed(ctx context.Context) {
 	if err != nil {
 		log.Error("eldevp2p: changeset unwind failed — halting (re-sync required)",
 			"block", head, "err", err)
-		time.Sleep(12 * time.Second)
+		d.reorgFailed = true
+		d.reorgFailReason = fmt.Sprintf("changeset unwind failed at block %d: %v", head, err)
 		return
 	}
 	// Verify the unwound state against the parent header's root — an unwind
@@ -1250,7 +1272,8 @@ func (d *Downloader) handleReorgHashed(ctx context.Context) {
 		}
 		log.Error("eldevp2p: reorg unwind root mismatch — halting",
 			"block", head-1, "computed", root.Hex(), "want", want)
-		time.Sleep(12 * time.Second)
+		d.reorgFailed = true
+		d.reorgFailReason = fmt.Sprintf("reorg unwind root mismatch at block %d", head-1)
 		return
 	}
 	if terr := rawdb.TruncateCanonicalHash(tx, head, true); terr != nil {
