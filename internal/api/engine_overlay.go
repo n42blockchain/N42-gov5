@@ -189,6 +189,29 @@ func ethCompatibleBlockHash(blk block.IBlock, cfg *params.ChainConfig) types.Has
 	return ethCompatibleHeaderHash(blk.Header(), cfg)
 }
 
+// rpcHeaderHash selects the externally addressable hash namespace. N42
+// consensus persists and links blocks by the native header hash, which also
+// includes N42 extension fields. Advertising a stripped Ethereum-only hash for
+// those blocks makes eth_getBlockByHash unable to resolve the hash returned by
+// eth_getBlockByNumber and disagrees with receipt/log blockHash fields.
+// Ethereum EL profiles retain the standard Ethereum-compatible hash.
+func rpcHeaderHash(head block.IHeader, cfg *params.ChainConfig) types.Hash {
+	if head == nil {
+		return types.Hash{}
+	}
+	if cfg != nil && (cfg.Consensus == params.HotStuffConsensus || cfg.Consensus == params.AposConsensu) {
+		return head.Hash()
+	}
+	return ethCompatibleHeaderHash(head, cfg)
+}
+
+func rpcBlockHash(blk block.IBlock, cfg *params.ChainConfig) types.Hash {
+	if blk == nil {
+		return types.Hash{}
+	}
+	return rpcHeaderHash(blk.Header(), cfg)
+}
+
 type enginePayloadHashOptions struct {
 	includeWithdrawals bool
 	withdrawals        []*Withdrawal
@@ -1138,6 +1161,18 @@ func (o *engineOverlay) hashForBlock(blk block.IBlock, cfg *params.ChainConfig) 
 		}
 	}
 	return ethCompatibleBlockHash(blk, cfg)
+}
+
+func (o *engineOverlay) hashOverrideForBlock(blk block.IBlock) (types.Hash, bool) {
+	if o == nil || blk == nil || blk.Number64() == nil {
+		return types.Hash{}, false
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	number := blk.Number64().Uint64()
+	canonicalBlk, ok := o.blocksByNum[number]
+	hashOverride, hashOK := o.hashesByNum[number]
+	return hashOverride, ok && hashOK && canonicalBlk == blk
 }
 
 func cloneOverlayCodeMap(src map[types.Hash][]byte) map[types.Hash][]byte {
