@@ -54,9 +54,11 @@ func TestCoprocessorEndToEnd(t *testing.T) {
 		t.Fatalf("task should be pending, got %v", task)
 	}
 
-	// 4. Submit proof
-	proof := []byte("stark-proof-data-for-fibonacci-10")
+	// 4. Submit proof: the ZK tier requires the v1 envelope binding this
+	// task's program, input and claimed outputs.
 	outputs := []byte(`{"result": 55}`)
+	proof := coprocessor.BuildZKProofEnvelope(programHash, task.InputHash, outputs,
+		[]byte("stark-proof-data-for-fibonacci-10"))
 	verified, err := svc.SubmitProof(taskID, proof, outputs)
 	if err != nil {
 		t.Fatalf("SubmitProof: %v", err)
@@ -288,10 +290,10 @@ func TestTieredVerificationEndToEnd(t *testing.T) {
 	task.VerificationTier = coprocessor.TierOptimistic
 	task.Bond = 1_000_000_000_000_000_000 // 1 ETH bond
 
-	// 4. Submit proof — should result in TaskOptimisticVerified, not TaskVerified
-	proof := []byte("optimistic-result-data")
+	// 4. Submit proof — should result in TaskOptimisticVerified, not TaskVerified.
+	// The optimistic "proof" IS the claimed result, so both copies must match.
 	outputs := []byte(`{"result": "optimistic"}`)
-	verified, err := svc.SubmitProof(taskID, proof, outputs)
+	verified, err := svc.SubmitProof(taskID, outputs, outputs)
 	if err != nil {
 		t.Fatalf("SubmitProof: %v", err)
 	}
@@ -391,8 +393,9 @@ func TestProviderMarketplaceEndToEnd(t *testing.T) {
 
 	// 7. Set a reward amount and submit proof (TierZK by default)
 	task.RewardAmount = 500
-	proof := []byte("zk-proof-for-marketplace-task")
 	outputs := []byte(`{"result": "done"}`)
+	proof := coprocessor.BuildZKProofEnvelope(programHash, task.InputHash, outputs,
+		[]byte("zk-proof-for-marketplace-task"))
 	verified, err := svc.SubmitProof(taskID, proof, outputs)
 	if err != nil {
 		t.Fatalf("SubmitProof: %v", err)
@@ -465,8 +468,10 @@ func TestChallengeFlowEndToEnd(t *testing.T) {
 	task.VerificationTier = coprocessor.TierOptimistic
 	task.Bond = 500_000_000_000_000_000 // 0.5 ETH
 
-	// 4. Submit proof → should land in TaskOptimisticVerified
-	verified, err := svc.SubmitProof(taskID, []byte("optimistic-result"), []byte(`{"val":42}`))
+	// 4. Submit proof → should land in TaskOptimisticVerified. The claimed
+	// result is the proof, so both copies must be identical.
+	claimed := []byte(`{"val":42}`)
+	verified, err := svc.SubmitProof(taskID, claimed, claimed)
 	if err != nil {
 		t.Fatalf("SubmitProof: %v", err)
 	}
@@ -554,8 +559,10 @@ func TestCrossModuleIntegration(t *testing.T) {
 	coprocSvc.Registry().Register(ph, []byte("vk"), "test")
 	taskID, _ := coprocSvc.SubmitTask(ph, []byte("data"), submitter)
 
-	// Submit proof
-	coprocSvc.SubmitProof(taskID, []byte("proof"), []byte("output"))
+	// Submit proof (ZK tier: v1 envelope bound to the task)
+	ctask, _ := coprocSvc.Tasks().GetTask(taskID)
+	output := []byte("output")
+	coprocSvc.SubmitProof(taskID, coprocessor.BuildZKProofEnvelope(ph, ctask.InputHash, output, []byte("proof")), output)
 
 	// Simulate: after proof verification, dispatch notification
 	task, _ := coprocSvc.Tasks().GetTask(taskID)

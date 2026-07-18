@@ -1,10 +1,12 @@
 package coprocessor
 
 import (
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 )
 
 func TestTieredVerifierZK(t *testing.T) {
@@ -14,17 +16,49 @@ func TestTieredVerifierZK(t *testing.T) {
 
 	tv := NewTieredVerifier(r)
 
+	input := []byte("task-input")
+	outputs := []byte("task-outputs")
 	task := &Task{
 		ProgramHash:      ph,
+		InputHash:        crypto.Keccak256Hash(input),
 		VerificationTier: TierZK,
 	}
 
-	ok, err := tv.Verify(task, []byte("proof-data"))
+	proof := BuildZKProofEnvelope(ph, task.InputHash, outputs, []byte("succinct-blob"))
+	ok, err := tv.Verify(task, proof, outputs)
 	if err != nil {
 		t.Fatalf("ZK verify: %v", err)
 	}
 	if !ok {
 		t.Fatal("ZK verify should return true")
+	}
+}
+
+func TestTieredVerifierZKRejectsBindingMismatch(t *testing.T) {
+	r := NewRegistry()
+	ph := types.HexToHash("0xaabb")
+	r.Register(ph, []byte("vk"), "test-zk")
+	tv := NewTieredVerifier(r)
+
+	outputs := []byte("task-outputs")
+	task := &Task{
+		ProgramHash:      ph,
+		InputHash:        crypto.Keccak256Hash([]byte("task-input")),
+		VerificationTier: TierZK,
+	}
+
+	// Envelope bound to a DIFFERENT program: replaying someone else's valid
+	// proof against this task must fail.
+	otherProgram := types.HexToHash("0xffff")
+	proof := BuildZKProofEnvelope(otherProgram, task.InputHash, outputs, []byte("blob"))
+	if _, err := tv.Verify(task, proof, outputs); !errors.Is(err, ErrProofBindingMismatch) {
+		t.Fatalf("foreign-program envelope: err=%v want ErrProofBindingMismatch", err)
+	}
+
+	// Correct header but the claimed outputs were swapped after proving.
+	proof = BuildZKProofEnvelope(ph, task.InputHash, outputs, []byte("blob"))
+	if _, err := tv.Verify(task, proof, []byte("different-outputs")); !errors.Is(err, ErrProofBindingMismatch) {
+		t.Fatalf("swapped outputs: err=%v want ErrProofBindingMismatch", err)
 	}
 }
 
@@ -36,9 +70,37 @@ func TestTieredVerifierZKRejectsEmpty(t *testing.T) {
 	tv := NewTieredVerifier(r)
 	task := &Task{ProgramHash: ph, VerificationTier: TierZK}
 
-	_, err := tv.Verify(task, nil)
-	if err != ErrInvalidProof {
+	if _, err := tv.Verify(task, nil, nil); err != ErrInvalidProof {
 		t.Fatalf("expected ErrInvalidProof, got %v", err)
+	}
+	// A bare header with no succinct blob is not a proof either.
+	bare := BuildZKProofEnvelope(ph, types.Hash{}, nil, nil)
+	if _, err := tv.Verify(task, bare, nil); err != ErrInvalidProof {
+		t.Fatalf("blobless envelope: expected ErrInvalidProof, got %v", err)
+	}
+}
+
+func TestTieredVerifierZKBlobBackend(t *testing.T) {
+	r := NewRegistry()
+	ph := types.HexToHash("0xaabb")
+	r.Register(ph, []byte("vk"), "test-zk")
+	tv := NewTieredVerifier(r)
+
+	var gotVK, gotBlob []byte
+	tv.SetZKBlobVerifier(func(program *Program, blob []byte) (bool, error) {
+		gotVK, gotBlob = program.VerificationKey, blob
+		return false, nil // backend says the succinct proof is bogus
+	})
+
+	outputs := []byte("outputs")
+	task := &Task{ProgramHash: ph, VerificationTier: TierZK}
+	proof := BuildZKProofEnvelope(ph, task.InputHash, outputs, []byte("bogus-blob"))
+	ok, err := tv.Verify(task, proof, outputs)
+	if ok || err != nil {
+		t.Fatalf("backend rejection must propagate: ok=%v err=%v", ok, err)
+	}
+	if string(gotVK) != "vk" || string(gotBlob) != "bogus-blob" {
+		t.Fatalf("backend got vk=%q blob=%q", gotVK, gotBlob)
 	}
 }
 
@@ -50,7 +112,8 @@ func TestTieredVerifierOptimistic(t *testing.T) {
 		Bond:             1_000_000,
 	}
 
-	ok, err := tv.Verify(task, []byte("claimed-result"))
+	claimed := []byte("claimed-result")
+	ok, err := tv.Verify(task, claimed, claimed)
 	if err != nil {
 		t.Fatalf("Optimistic verify: %v", err)
 	}
@@ -67,24 +130,45 @@ func TestTieredVerifierOptimisticRequiresBond(t *testing.T) {
 		Bond:             0, // no bond
 	}
 
-	_, err := tv.Verify(task, []byte("claimed-result"))
+	claimed := []byte("claimed-result")
+	_, err := tv.Verify(task, claimed, claimed)
 	if err != ErrBondRequired {
 		t.Fatalf("expected ErrBondRequired, got %v", err)
 	}
 }
 
-func TestTieredVerifierTEE(t *testing.T) {
+func TestTieredVerifierOptimisticRejectsDivergentOutputs(t *testing.T) {
+	tv := NewTieredVerifier(NewRegistry())
+	task := &Task{VerificationTier: TierOptimistic, Bond: 1_000_000}
+
+	// The claimed result IS the challenge target — two diverging copies would
+	// let the provider point at whichever survives a dispute.
+	_, err := tv.Verify(task, []byte("result-A"), []byte("result-B"))
+	if err != ErrResultOutputsMismatch {
+		t.Fatalf("expected ErrResultOutputsMismatch, got %v", err)
+	}
+}
+
+func TestTieredVerifierTEEFailsClosed(t *testing.T) {
 	tv := NewTieredVerifier(NewRegistry())
 
 	task := &Task{VerificationTier: TierTEE}
-	attestation := make([]byte, 128) // mock attestation report
+	attestation := make([]byte, 128) // structurally plausible quote
 
-	ok, err := tv.Verify(task, attestation)
-	if err != nil {
-		t.Fatalf("TEE verify: %v", err)
+	// No quote verifier configured: accepting an unchecked quote would be a
+	// bond-free optimistic tier, so the tier must reject.
+	if _, err := tv.Verify(task, attestation, nil); err != ErrTEEVerifierUnavailable {
+		t.Fatalf("expected ErrTEEVerifierUnavailable, got %v", err)
 	}
-	if !ok {
-		t.Fatal("TEE verify should return true")
+
+	called := false
+	tv.SetTEEQuoteVerifier(func(task *Task, quote, publicOutputs []byte) (bool, error) {
+		called = true
+		return true, nil
+	})
+	ok, err := tv.Verify(task, attestation, nil)
+	if err != nil || !ok || !called {
+		t.Fatalf("configured quote verifier not honored: ok=%v err=%v called=%v", ok, err, called)
 	}
 }
 
@@ -93,7 +177,7 @@ func TestTieredVerifierTEERejectsShort(t *testing.T) {
 
 	task := &Task{VerificationTier: TierTEE}
 
-	_, err := tv.Verify(task, []byte("short"))
+	_, err := tv.Verify(task, []byte("short"), nil)
 	if err != ErrInvalidAttestation {
 		t.Fatalf("expected ErrInvalidAttestation, got %v", err)
 	}
@@ -112,7 +196,7 @@ func TestTieredVerifierCustom(t *testing.T) {
 	})
 
 	task := &Task{VerificationTier: VerificationTier(99)}
-	ok, err := tv.Verify(task, []byte("proof"))
+	ok, err := tv.Verify(task, []byte("proof"), nil)
 	if err != nil || !ok || !called {
 		t.Fatal("custom verifier not called correctly")
 	}
@@ -122,7 +206,7 @@ func TestTieredVerifierUnsupportedTier(t *testing.T) {
 	tv := NewTieredVerifier(NewRegistry())
 	task := &Task{VerificationTier: VerificationTier(99)}
 
-	_, err := tv.Verify(task, []byte("proof"))
+	_, err := tv.Verify(task, []byte("proof"), nil)
 	if err == nil {
 		t.Fatal("expected error for unsupported tier")
 	}
@@ -152,7 +236,8 @@ func TestServiceOptimisticFlow(t *testing.T) {
 	task.Bond = 1_000_000
 	svc.Tasks().mu.Unlock()
 
-	ok, err := svc.SubmitProof(taskID, []byte("proof"), []byte("output"))
+	claimed := []byte("claimed-output")
+	ok, err := svc.SubmitProof(taskID, claimed, claimed)
 	if err != nil || !ok {
 		t.Fatalf("SubmitProof: ok=%v err=%v", ok, err)
 	}
@@ -182,7 +267,7 @@ type mockVerifier struct {
 	fn func(task *Task, proof []byte) (bool, error)
 }
 
-func (m *mockVerifier) Verify(task *Task, proof []byte) (bool, error) {
+func (m *mockVerifier) Verify(task *Task, proof, publicOutputs []byte) (bool, error) {
 	return m.fn(task, proof)
 }
 
@@ -196,7 +281,8 @@ func TestTieredVerifierZKUnregisteredProgram(t *testing.T) {
 		VerificationTier: TierZK,
 	}
 
-	_, err := tv.Verify(task, []byte("some-proof"))
+	proof := BuildZKProofEnvelope(task.ProgramHash, task.InputHash, nil, []byte("blob"))
+	_, err := tv.Verify(task, proof, nil)
 	if err != ErrProgramNotRegistered {
 		t.Fatalf("expected ErrProgramNotRegistered, got %v", err)
 	}

@@ -126,7 +126,10 @@ func TestServiceSubmitAndVerify(t *testing.T) {
 		t.Fatalf("SubmitTask: %v", err)
 	}
 
-	ok, err := svc.SubmitProof(taskID, []byte("proof-data"), []byte("output-data"))
+	task0, _ := svc.Tasks().GetTask(taskID)
+	outputs := []byte("output-data")
+	proof := BuildZKProofEnvelope(ph, task0.InputHash, outputs, []byte("proof-data"))
+	ok, err := svc.SubmitProof(taskID, proof, outputs)
 	if err != nil || !ok {
 		t.Fatalf("SubmitProof: ok=%v err=%v", ok, err)
 	}

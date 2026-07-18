@@ -173,7 +173,7 @@ func (s *Service) SubmitProof(taskID types.Hash, proofData, publicOutputs []byte
 	}
 
 	// Tiered verification
-	valid, verifyErr := s.verifier.Verify(task, proofData)
+	valid, verifyErr := s.verifier.Verify(task, proofData, publicOutputs)
 	if verifyErr != nil || !valid {
 		errMsg := "verification failed"
 		if verifyErr != nil {

@@ -143,7 +143,8 @@ func TestServiceSubmitChallenge(t *testing.T) {
 	task.Bond = 1_000_000
 	svc.Tasks().mu.Unlock()
 
-	svc.SubmitProof(taskID, []byte("proof"), []byte("output"))
+	claimed := []byte("output")
+	svc.SubmitProof(taskID, claimed, claimed)
 
 	// Submit challenge
 	challenger := types.HexToAddress("0xcc")
