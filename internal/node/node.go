@@ -87,6 +87,7 @@ import (
 	"github.com/n42blockchain/N42/internal/deferred"
 	ethdevp2p "github.com/n42blockchain/N42/internal/devp2p"
 	"github.com/n42blockchain/N42/internal/distributed/compute/inference"
+	dwasm "github.com/n42blockchain/N42/internal/distributed/compute/wasm"
 	dcoprocessor "github.com/n42blockchain/N42/internal/distributed/coprocessor"
 	dmessaging "github.com/n42blockchain/N42/internal/distributed/messaging"
 	dnotify "github.com/n42blockchain/N42/internal/distributed/notify"
@@ -2348,6 +2349,7 @@ func (n *Node) startDistributedRuntime() {
 				"tier", n.config.CoprocessorCfg.DefaultVerificationTier,
 				"marketplace", n.config.CoprocessorCfg.EnableMarketplace,
 			)
+			n.startCoprocessorProvider(svc)
 		}
 	}
 	// Log compute engine availability (engines are started on-demand by coprocessor).
@@ -2416,6 +2418,32 @@ func (n *Node) startDistributedRuntime() {
 		n.notifyService.Start()
 		log.Info("Push notification service enabled")
 	}
+}
+
+// startCoprocessorProvider opts this node in as a resident compute provider
+// (CoprocessorCfg.ProviderEnabled): register the configured identity with
+// stake and WASM capability, then serve claimable tasks with the built-in
+// wazero engine. The serve loop lives under the coprocessor service's
+// lifecycle, so Stop() tears it down and closes the engine.
+func (n *Node) startCoprocessorProvider(svc *dcoprocessor.Service) {
+	cfg := &n.config.CoprocessorCfg
+	if !cfg.ProviderEnabled {
+		return
+	}
+	if !types.IsHexAddress(cfg.ProviderAddress) {
+		log.Error("Coprocessor provider disabled: invalid provider_address", "addr", cfg.ProviderAddress)
+		return
+	}
+	addr := types.HexToAddress(cfg.ProviderAddress)
+	if err := svc.RegisterProvider(addr, cfg.ProviderStakeWei, []dcoprocessor.Capability{dcoprocessor.CapWASM}); err != nil {
+		log.Error("Coprocessor provider disabled: registration failed", "err", err)
+		return
+	}
+	engine := dwasm.NewEngine(dwasm.NewWazeroRuntime(context.Background()), 64, cfg.TaskTimeoutSec, 1.0)
+	prov := dcoprocessor.NewReferenceProvider(svc, addr, engine, cfg.ProviderEntryPoint)
+	svc.AttachProvider(prov, time.Duration(cfg.ProviderPollSec)*time.Second, cfg.ProviderGasLimit, func() {
+		_ = engine.Close(context.Background())
+	})
 }
 
 func (n *Node) startBridgeRuntime() {

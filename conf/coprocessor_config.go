@@ -31,6 +31,16 @@ type CoprocessorCfg struct {
 	EnableMarketplace bool   `json:"enable_marketplace" yaml:"enable_marketplace"`
 	MinProviderStake  uint64 `json:"min_provider_stake" yaml:"min_provider_stake"`
 	SlashPercentage   int    `json:"slash_percentage" yaml:"slash_percentage"` // 0-100
+
+	// Resident provider: when enabled, this node registers itself as a
+	// compute provider and serves claimable WASM tasks with the built-in
+	// wazero engine (bytecode comes from the program registry).
+	ProviderEnabled    bool   `json:"provider_enabled" yaml:"provider_enabled"`
+	ProviderAddress    string `json:"provider_address" yaml:"provider_address"` // hex address, provider identity for stake/rewards
+	ProviderStakeWei   uint64 `json:"provider_stake_wei" yaml:"provider_stake_wei"`
+	ProviderPollSec    int    `json:"provider_poll_sec" yaml:"provider_poll_sec"`
+	ProviderGasLimit   uint64 `json:"provider_gas_limit" yaml:"provider_gas_limit"`
+	ProviderEntryPoint string `json:"provider_entry_point" yaml:"provider_entry_point"` // WASM export invoked per task
 }
 
 func DefaultCoprocessorCfg() CoprocessorCfg {
@@ -46,6 +56,11 @@ func DefaultCoprocessorCfg() CoprocessorCfg {
 		EnableMarketplace:      false,
 		MinProviderStake:       10_000_000_000_000_000_000, // 10 ETH
 		SlashPercentage:        10,
+		ProviderEnabled:        false,
+		ProviderStakeWei:       10_000_000_000_000_000_000, // matches MinProviderStake
+		ProviderPollSec:        5,
+		ProviderGasLimit:       10_000_000,
+		ProviderEntryPoint:     "run",
 	}
 }
 
@@ -58,6 +73,17 @@ func (c *CoprocessorCfg) Validate() error {
 	}
 	if c.TaskTimeoutSec <= 0 {
 		return fmt.Errorf("coprocessor: task_timeout must be > 0")
+	}
+	if c.ProviderEnabled {
+		if c.ProviderAddress == "" {
+			return fmt.Errorf("coprocessor: provider_address required when provider_enabled")
+		}
+		if c.ProviderStakeWei == 0 {
+			return fmt.Errorf("coprocessor: provider_stake_wei must be > 0 when provider_enabled")
+		}
+		if c.ProviderEntryPoint == "" {
+			return fmt.Errorf("coprocessor: provider_entry_point required when provider_enabled")
+		}
 	}
 	return nil
 }
