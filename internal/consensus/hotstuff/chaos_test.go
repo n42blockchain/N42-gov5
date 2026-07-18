@@ -253,7 +253,7 @@ func (h *chaosHarness) runTimeoutViewChange(view ViewNumber) {
 
 	// All engines call OnTimeout.
 	for i := 0; i < n; i++ {
-		err := h.engines[i].OnTimeout()
+		err := timeoutNow(h.engines[i])
 		if err != nil {
 			h.t.Fatalf("view %d: node %d OnTimeout failed: %v", view, i, err)
 		}
@@ -689,7 +689,7 @@ func TestChaos7Node_ConvergenceFromDifferentViews(t *testing.T) {
 	for iter := 0; iter < maxIterations; iter++ {
 		// All engines call OnTimeout.
 		for i := 0; i < 7; i++ {
-			_ = h.engines[i].OnTimeout()
+			_ = timeoutNow(h.engines[i])
 		}
 
 		// Collect all timeout messages.

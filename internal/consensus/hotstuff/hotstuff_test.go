@@ -957,13 +957,23 @@ func TestFourValidatorConsensus(t *testing.T) {
 	}
 }
 
+// timeoutNow expires the pacemaker deadline (so the current view is genuinely
+// timed out) and drives OnTimeout. onTimeout guards on IsTimedOut() to ignore a
+// stale timer fire, exactly as the production timer only fires at/after the
+// deadline — so tests that synthesize a timeout must first make the deadline
+// pass.
+func timeoutNow(e *ConsensusEngine) error {
+	e.Pacemaker().ExtendDeadline(-time.Hour)
+	return e.OnTimeout()
+}
+
 // Test timeout flow.
 func TestTimeoutFlow(t *testing.T) {
 	setup := newTestSetup(t, 4)
 	engine, outputCh := newTestEngine(t, setup, 0)
 
 	// Trigger timeout in view 1.
-	err := engine.OnTimeout()
+	err := timeoutNow(engine)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -984,6 +994,54 @@ func TestTimeoutFlow(t *testing.T) {
 	}
 	if engine.ConsecutiveTimeouts() != 1 {
 		t.Fatalf("expected 1 timeout, got %d", engine.ConsecutiveTimeouts())
+	}
+}
+
+// TestOnTimeoutIgnoresStaleTimerFire is the M1 regression: the pacemaker reuses
+// one timer that ResetForView does not re-arm, so a timer armed for an earlier
+// view can fire while the current view is healthy (deadline in the future).
+// onTimeout must ignore such a stale fire — otherwise a healthy view is timed
+// out every base-timeout interval. A genuine timeout (deadline passed) must
+// still act.
+func TestOnTimeoutIgnoresStaleTimerFire(t *testing.T) {
+	setup := newTestSetup(t, 4)
+	engine, outputCh := newTestEngine(t, setup, 0)
+	startView := engine.CurrentView()
+
+	timeoutBroadcast := func() bool {
+		for _, o := range drainOutputs(outputCh) {
+			if o.Type == OutputBroadcast && o.Message != nil && o.Message.Type == MsgTimeout {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Healthy view: deadline is in the future (base=1000ms from construction).
+	// A stale timer fire must be a no-op — no broadcast, no view/phase change.
+	if err := engine.OnTimeout(); err != nil {
+		t.Fatal(err)
+	}
+	if timeoutBroadcast() {
+		t.Fatal("stale timer fire on a healthy view produced a spurious timeout broadcast")
+	}
+	if engine.CurrentView() != startView {
+		t.Fatalf("stale timer fire advanced the view: %d -> %d", startView, engine.CurrentView())
+	}
+	if engine.CurrentPhase() == PhaseTimedOut {
+		t.Fatal("stale timer fire moved a healthy view into TimedOut phase")
+	}
+
+	// Genuine timeout: expire the deadline, OnTimeout must now act.
+	engine.Pacemaker().ExtendDeadline(-time.Hour)
+	if err := engine.OnTimeout(); err != nil {
+		t.Fatal(err)
+	}
+	if !timeoutBroadcast() {
+		t.Fatal("genuine timeout (deadline passed) produced no timeout broadcast")
+	}
+	if engine.CurrentPhase() != PhaseTimedOut {
+		t.Fatalf("genuine timeout did not enter TimedOut phase, got %s", engine.CurrentPhase())
 	}
 }
 
