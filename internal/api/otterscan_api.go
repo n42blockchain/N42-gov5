@@ -23,6 +23,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"math/big"
 
 	"github.com/n42blockchain/N42/common/hexutil"
@@ -220,6 +221,15 @@ func (o *OtterscanAPI) GetContractCreator(ctx context.Context, address types.Add
 
 // GetTransactionBySenderAndNonce returns the transaction hash for a given sender and nonce.
 // Scans blocks where the sender appeared via LogAddressIndex.
+// otsSenderNonceScanBudget bounds the number of full blocks
+// GetTransactionBySenderAndNonce will load. Legitimate queries never reach
+// it — a non-existent (future) nonce is rejected up front by the account-
+// nonce check, and an existing nonce is found by an ascending scan that
+// stops the moment the sender's nonce passes the target. The budget is a
+// backstop against a pathological index so a public, non-JWT call can never
+// grind through millions of block loads.
+const otsSenderNonceScanBudget = 100_000
+
 func (o *OtterscanAPI) GetTransactionBySenderAndNonce(ctx context.Context, sender types.Address, nonce uint64) (*types.Hash, error) {
 	tx, err := o.api.db.BeginRo(ctx)
 	if err != nil {
@@ -227,11 +237,28 @@ func (o *OtterscanAPI) GetTransactionBySenderAndNonce(ctx context.Context, sende
 	}
 	defer tx.Rollback()
 
+	// Short-circuit the main DoS vector: a tx with nonce N from sender exists
+	// only if N < the sender's current account nonce. Without this a query for
+	// an absurdly high (or simply future) nonce on a hot sender loaded every
+	// block the sender ever touched — millions of full-block decodes + sender
+	// recoveries — and returned nil anyway.
+	latest := jsonrpc.BlockNumberOrHashWithNumber(jsonrpc.LatestBlockNumber)
+	if ibs := o.api.State(tx, latest); ibs != nil {
+		if nonce >= ibs.GetNonce(sender) {
+			return nil, nil
+		}
+	}
+
 	blocks, err := rawdb.BlocksForAddress(tx, sender, 0, 0xFFFFFFFF)
 	if err != nil {
 		return nil, err
 	}
 
+	// blocks is ascending (roaring iterator) and a sender's nonces increase
+	// with block order, so scan ascending, stop as soon as the sender's nonce
+	// passes the target (the target was skipped / does not exist), and cap the
+	// number of blocks actually loaded.
+	loaded := 0
 	for _, blockNum := range blocks {
 		hash, err := rawdb.ReadCanonicalHash(tx, blockNum)
 		if err != nil {
@@ -241,14 +268,29 @@ func (o *OtterscanAPI) GetTransactionBySenderAndNonce(ctx context.Context, sende
 		if err != nil || b == nil {
 			continue
 		}
+		loaded++
+		if loaded > otsSenderNonceScanBudget {
+			return nil, fmt.Errorf("ots_getTransactionBySenderAndNonce: sender too active to resolve nonce %d within budget", nonce)
+		}
 		if len(senders) > 0 {
 			b.SendersToTxs(senders)
 		}
+		overshot := false
 		for _, txn := range b.Transactions() {
-			if txn.From() != nil && *txn.From() == sender && txn.Nonce() == nonce {
+			if txn.From() == nil || *txn.From() != sender {
+				continue
+			}
+			if txn.Nonce() == nonce {
 				h := txn.Hash()
 				return &h, nil
 			}
+			if txn.Nonce() > nonce {
+				overshot = true
+			}
+		}
+		if overshot {
+			// Passed the target nonce without a match — it does not exist.
+			return nil, nil
 		}
 	}
 	return nil, nil
