@@ -58,7 +58,7 @@ func NewReferenceProvider(svc *Service, addr types.Address, engine *wasm.Engine,
 // from CAS by the program's registered hash; here it is supplied directly.
 func (p *ReferenceProvider) RegisterBytecode(programHash types.Hash, bytecode []byte) {
 	p.mu.Lock()
-	p.programs[programHash] = bytecode
+	p.programs[programHash] = append([]byte(nil), bytecode...)
 	p.mu.Unlock()
 }
 
@@ -182,7 +182,10 @@ func (s *Service) AttachProvider(prov *ReferenceProvider, poll time.Duration, ga
 // are left alone; failures are logged at debug level to keep a busy queue
 // from flooding the logs.
 func (s *Service) serveClaimable(prov *ReferenceProvider, gasLimit uint64, failed map[types.Hash]struct{}) {
-	for _, task := range s.tasks.ListByStatus(TaskPending) {
+	pending := s.tasks.ListByStatus(TaskPending)
+	active := make(map[types.Hash]struct{}, len(pending))
+	for _, task := range pending {
+		active[task.ID] = struct{}{}
 		select {
 		case <-s.ctx.Done():
 			return
@@ -205,6 +208,13 @@ func (s *Service) serveClaimable(prov *ReferenceProvider, gasLimit uint64, faile
 			failed[snap.ID] = struct{}{}
 			log.Debug("Resident provider serve failed",
 				"task", snap.ID.Hex()[:10], "err", err)
+		}
+	}
+	// Failed IDs must not accumulate forever as terminal tasks are pruned and
+	// new invalid tasks arrive. Keep only failures that are still Pending.
+	for taskID := range failed {
+		if _, ok := active[taskID]; !ok {
+			delete(failed, taskID)
 		}
 	}
 }
