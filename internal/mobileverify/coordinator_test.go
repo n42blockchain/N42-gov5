@@ -490,3 +490,37 @@ func TestCohortCoordinatorRejectsForgedPeerCertificate(t *testing.T) {
 		t.Fatalf("valid peer certificate was not admitted: reporters=%d", gotValid)
 	}
 }
+
+// TestCohortReporterCapBoundsMemory: the unauthenticated, attacker-chosen
+// reporter address must not grow the per-window index-set map without bound.
+// Flooding OnPeerIndexSet with distinct spoofed reporters caps at
+// maxReportersPerWindow.
+func TestCohortReporterCapBoundsMemory(t *testing.T) {
+	blockHash, number, root := h(1), uint64(1000), h(2)
+	reg := NewRegistry()
+	store := NewCertStore(64)
+	coord := NewCohortCoordinator(reg, fixedLookupAt(blockHash, number), store, types.Address{19: 1}, DefaultCohortConfig())
+
+	local := newDevice(t)
+	registerCommitted(t, reg, local.pubkey, local.pop())
+	if _, err := coord.Submit(local.receipt(blockHash, number, root)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Flood with far more distinct reporters than the cap.
+	for i := 0; i < maxReportersPerWindow+500; i++ {
+		var reporter types.Address
+		reporter[0] = byte(i)
+		reporter[1] = byte(i >> 8)
+		reporter[2] = byte(i >> 16)
+		coord.OnPeerIndexSet(blockHash, reporter, []IndexCommitment{})
+	}
+
+	coord.mu.Lock()
+	w := coord.windows[blockHash]
+	got := len(w.peerIndexSets)
+	coord.mu.Unlock()
+	if got > maxReportersPerWindow {
+		t.Fatalf("peerIndexSets grew to %d, want <= cap %d", got, maxReportersPerWindow)
+	}
+}

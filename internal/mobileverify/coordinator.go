@@ -118,6 +118,16 @@ type cohortWindow struct {
 	peerCerts map[types.Hash]map[types.Address]*MobileAttestationCert
 }
 
+// peerCertCount returns the total number of distinct (root, reporter) cert
+// entries held for this window across all roots.
+func (w *cohortWindow) peerCertCount() int {
+	n := 0
+	for _, byReporter := range w.peerCerts {
+		n += len(byReporter)
+	}
+	return n
+}
+
 // CohortCoordinator owns the full per-block cohort-certificate lifecycle
 // (see package doc above). It is the drop-in replacement for WindowManager's
 // wall-clock scheme; construct one per node.
@@ -261,6 +271,15 @@ func (c *CohortCoordinator) OnPeerIndexSet(blockHash types.Hash, reporter types.
 	if !ok {
 		return
 	}
+	// reporter is unauthenticated — it is read straight from the gossip
+	// payload, with no signature binding it to the sender and the libp2p
+	// origin ignored (see cohort_relay). Cap distinct reporters per window so
+	// one peer replaying announcements under thousands of spoofed reporters
+	// cannot grow this map without bound (and inflate every ReconcileIndices
+	// pass). The legitimate reporter set is the IDC cohort, far below the cap.
+	if _, exists := w.peerIndexSets[reporter]; !exists && len(w.peerIndexSets) >= maxReportersPerWindow {
+		return
+	}
 	cp := make([]IndexCommitment, len(indices))
 	copy(cp, indices)
 	w.peerIndexSets[reporter] = cp
@@ -289,6 +308,20 @@ func (c *CohortCoordinator) OnPeerCert(reporter types.Address, cert *MobileAttes
 	if !ok {
 		byReporter = make(map[types.Address]*MobileAttestationCert)
 		w.peerCerts[cert.ReceiptsRoot] = byReporter
+	}
+	// Bound distinct (root, reporter) entries per window. cert.Verify above
+	// proves the signers really signed cert.ReceiptsRoot, but reporter is
+	// still the unauthenticated gossip-payload address, and an attacker can
+	// produce valid certs for many self-chosen roots with its own phones —
+	// so the per-root map alone is not a bound. Cap the total; the honest
+	// cohort is far below it. (This bounds the memory-growth DoS; a spoofed
+	// reporter overwriting an honest node's own slot only reduces which
+	// cohort this node's stored evidence credits — MergeCerts still dedups by
+	// signer index, so it cannot forge or double-count signatures. Full
+	// reporter authentication needs a signed announcement — a larger protocol
+	// change tracked separately.)
+	if _, exists := byReporter[reporter]; !exists && w.peerCertCount() >= maxReportersPerWindow {
+		return
 	}
 	byReporter[reporter] = cert
 }
