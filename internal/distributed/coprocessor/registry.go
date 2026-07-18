@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 )
 
 // Registry manages registered verifiable programs (programHash → verification key).
@@ -85,7 +85,7 @@ func (r *Registry) Bytecode(programHash types.Hash) ([]byte, bool) {
 	if !exists || len(p.Bytecode) == 0 {
 		return nil, false
 	}
-	return p.Bytecode, true
+	return append([]byte(nil), p.Bytecode...), true
 }
 
 // Unregister removes a program from the registry.

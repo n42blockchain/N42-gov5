@@ -30,9 +30,9 @@ import (
 // ReferenceProvider executes coprocessor tasks with the WASM engine and
 // submits results. One provider identity (addr) backed by one engine.
 type ReferenceProvider struct {
-	svc     *Service
-	addr    types.Address
-	engine  *wasm.Engine
+	svc      *Service
+	addr     types.Address
+	engine   *wasm.Engine
 	funcName string
 
 	mu       sync.RWMutex

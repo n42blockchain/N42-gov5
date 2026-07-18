@@ -14,8 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 )
 
 // TaskManager manages the lifecycle of compute tasks.
@@ -277,14 +277,17 @@ func (tm *TaskManager) SetTierAndBond(id types.Hash, tier VerificationTier, bond
 	return nil
 }
 
-// ListByStatus returns all tasks with the given status.
+// ListByStatus returns snapshots of all tasks with the given status. Returning
+// live pointers after releasing the manager lock made maintenance and resident
+// provider loops race concurrent status/assignment updates.
 func (tm *TaskManager) ListByStatus(status TaskStatus) []*Task {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 	var result []*Task
 	for _, t := range tm.tasks {
 		if t.Status == status {
-			result = append(result, t)
+			snapshot := *t
+			result = append(result, &snapshot)
 		}
 	}
 	return result
