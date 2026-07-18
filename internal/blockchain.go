@@ -940,6 +940,11 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 		// would truncate the newer rows above it.
 		if hn := rawdb.ReadHeaderNumber(tx, rawdb.ReadHeadBlockHash(tx)); hn != nil && *hn >= blk.Number64().Uint64() {
 			if existing, rerr := rawdb.ReadCanonicalHash(tx, blk.Number64().Uint64()); rerr == nil && existing == hash {
+				// HotStuff imports every candidate as a side block, so the normal
+				// writeHeadBlock path never creates TxLookup entries. Repair them
+				// even for an idempotent/duplicate commit; this also self-heals
+				// databases produced before commit-time indexing was added.
+				rawdb.WriteTxLookupEntries(tx, blk)
 				return nil
 			}
 		}
@@ -1016,6 +1021,11 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 		if werr := rawdb.WriteHotStuffCommittedHead(tx, hash); werr != nil {
 			return werr
 		}
+		// Leader-driven imports return SideStatTy before writeHeadBlock, which is
+		// the ordinary TxLookup writer. Persist the canonical block's lookup
+		// entries here so eth_getTransactionByHash/Receipt can resolve live
+		// HotStuff transactions as soon as the commit becomes durable.
+		rawdb.WriteTxLookupEntries(tx, blk)
 		bc.currentBlock.Store(blk)
 		// Canonical rows changed under any read-through layer: invalidate it, or
 		// by-number readers (RPC, the catch-up range SERVER) keep returning the

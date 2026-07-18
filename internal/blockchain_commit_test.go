@@ -7,6 +7,7 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -19,12 +20,15 @@ func TestCommitToCanonicalAdvancesBlockAndHeaderHeads(t *testing.T) {
 		Difficulty: uint256.NewInt(1),
 		Root:       types.Hash{0x08},
 	}, nil).(*block.Block)
+	from := types.HexToAddress("0x100")
+	to := types.HexToAddress("0x200")
+	txn := transaction.NewTransaction(0, from, &to, uint256.NewInt(1), 21000, uint256.NewInt(1), nil)
 	child := block.NewBlock(&block.Header{
 		Number:     uint256.NewInt(9),
 		ParentHash: parent.Hash(),
 		Difficulty: uint256.NewInt(1),
 		Root:       types.Hash{0x09},
-	}, nil).(*block.Block)
+	}, []*transaction.Transaction{txn}).(*block.Block)
 
 	if err := db.Update(context.Background(), func(tx kv.RwTx) error {
 		if err := rawdb.WriteBlock(tx, parent); err != nil {
@@ -69,6 +73,11 @@ func TestCommitToCanonicalAdvancesBlockAndHeaderHeads(t *testing.T) {
 		}
 		if got := rawdb.ReadCurrentBlockNumber(tx); got == nil || *got != 9 {
 			t.Fatalf("current header number = %v, want 9", got)
+		}
+		if got, err := rawdb.ReadTxLookupEntry(tx, txn.Hash()); err != nil {
+			t.Fatalf("read tx lookup: %v", err)
+		} else if got == nil || *got != 9 {
+			t.Fatalf("tx lookup block = %v, want 9", got)
 		}
 		return nil
 	}); err != nil {
