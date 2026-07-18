@@ -23,6 +23,7 @@ package snapsync
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -184,7 +185,17 @@ func (m *Manager) Run(ctx context.Context) error {
 		// Pick and execute the next unassigned task.
 		task := m.pickTask()
 		if task == nil {
-			// All tasks assigned, wait for completions or timeouts.
+			// No assignable task. If every remaining task has exhausted its
+			// retries and nothing is in flight, we are permanently wedged — fail
+			// hard so the caller can fall back rather than spin forever.
+			if m.stuck() {
+				m.wg.Wait()
+				m.mu.Lock()
+				remaining := len(m.accountTasks) + len(m.storageTasks) + len(m.codeTasks)
+				m.mu.Unlock()
+				return fmt.Errorf("snap sync stuck: %d task(s) exhausted %d retries with no assignable work", remaining, maxTaskRetries)
+			}
+			// Tasks are in flight; wait for completions or timeouts.
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
@@ -313,6 +324,27 @@ func (m *Manager) pickTask() *RangeTask {
 		}
 	}
 	return nil
+}
+
+// stuck reports whether snap sync can make no further progress: no task is
+// assigned (nothing in flight will complete or fail-then-retry) and every
+// remaining task has exhausted its retries. In that state pickTask returns nil
+// forever while allDone (all lists empty) never becomes true, so Run would spin
+// indefinitely — a single flaky or malicious peer failing one range
+// maxTaskRetries times is enough to trigger it. The caller turns this into a
+// hard error so the outer sync can fall back instead of hanging.
+func (m *Manager) stuck() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, list := range [][]*RangeTask{m.accountTasks, m.storageTasks, m.codeTasks} {
+		for _, t := range list {
+			if t.IsAssigned() || t.CanRetry() {
+				return false
+			}
+		}
+	}
+	// No assignable or in-flight work. If any task remains, we are wedged.
+	return len(m.accountTasks)+len(m.storageTasks)+len(m.codeTasks) > 0
 }
 
 // pickPeer returns the best-scoring connected peer for the next task.

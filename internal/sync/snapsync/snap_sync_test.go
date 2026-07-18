@@ -501,3 +501,35 @@ func countTableEntries(t *testing.T, db kv.RwDB, table string) int {
 	}
 	return count
 }
+
+// TestManagerStuckDetection covers the wedge fix: when every remaining task has
+// exhausted its retries and none is in flight, stuck() must report true so Run
+// fails hard instead of spinning forever (pickTask returns nil while allDone
+// never becomes true). Any in-flight (assigned) or still-retryable task means
+// progress is still possible.
+func TestManagerStuckDetection(t *testing.T) {
+	exhausted := func() *RangeTask { return &RangeTask{Kind: TaskAccount, Retries: maxTaskRetries} }
+	retryable := func() *RangeTask { return &RangeTask{Kind: TaskAccount, Retries: maxTaskRetries - 1} }
+	assigned := func() *RangeTask { return &RangeTask{Kind: TaskAccount, Retries: maxTaskRetries, Assigned: peer.ID("p1")} }
+
+	cases := []struct {
+		name  string
+		tasks []*RangeTask
+		want  bool
+	}{
+		{"empty", nil, false},                                    // allDone handles it
+		{"one retryable", []*RangeTask{retryable()}, false},      // can still pick
+		{"one in-flight", []*RangeTask{assigned()}, false},       // may complete/retry
+		{"one exhausted unassigned", []*RangeTask{exhausted()}, true}, // wedged
+		{"exhausted + retryable", []*RangeTask{exhausted(), retryable()}, false},
+		{"exhausted + in-flight", []*RangeTask{exhausted(), assigned()}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := &Manager{accountTasks: c.tasks}
+			if got := m.stuck(); got != c.want {
+				t.Fatalf("stuck() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
