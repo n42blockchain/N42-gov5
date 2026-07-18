@@ -6,7 +6,9 @@
 package inference
 
 import (
+	"bytes"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -130,7 +132,9 @@ func (r *ModelRegistry) Get(hash types.Hash) (*Model, bool) {
 	return m, ok
 }
 
-// List returns all registered models.
+// List returns all registered models, sorted by hash so the order is
+// deterministic (map iteration order is randomized; the 0x0301 precompile
+// exposes this list, and an unsorted result would differ per call).
 func (r *ModelRegistry) List() []*Model {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -138,10 +142,12 @@ func (r *ModelRegistry) List() []*Model {
 	for _, m := range r.models {
 		result = append(result, m)
 	}
+	sortModelsByHash(result)
 	return result
 }
 
-// FindByCapability returns models that advertise the given capability.
+// FindByCapability returns models that advertise the given capability,
+// sorted by hash for deterministic ordering.
 func (r *ModelRegistry) FindByCapability(capability string) []*Model {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -154,7 +160,14 @@ func (r *ModelRegistry) FindByCapability(capability string) []*Model {
 			}
 		}
 	}
+	sortModelsByHash(result)
 	return result
+}
+
+func sortModelsByHash(models []*Model) {
+	sort.Slice(models, func(i, j int) bool {
+		return bytes.Compare(models[i].Hash[:], models[j].Hash[:]) < 0
+	})
 }
 
 // Count returns the number of registered models.

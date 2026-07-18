@@ -1,6 +1,7 @@
 package inference
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -450,5 +451,128 @@ func TestInferenceServiceGetRequestNotFound(t *testing.T) {
 	_, _, _, err := svc.GetRequest(types.HexToHash("0xdeadbeef"))
 	if err == nil {
 		t.Fatal("expected error for non-existent request")
+	}
+}
+
+func TestSubmitRequestDeterministicID(t *testing.T) {
+	models := NewModelRegistry()
+	modelHash, _ := models.Register("det-model", FormatCustom, 64, "v1", nil)
+
+	svc := NewInferenceService(models)
+	svc.SetExecutor(&mockExecutor{output: []byte("out"), confidence: 1.0})
+
+	submitter := types.HexToAddress("0x0badc0de")
+	input := []byte("deterministic-input")
+
+	// The ID must be a pure function of the submission.
+	reqID, err := svc.SubmitRequest(modelHash, input, submitter)
+	if err != nil {
+		t.Fatalf("SubmitRequest: %v", err)
+	}
+	if want := ComputeRequestID(modelHash, input, submitter); reqID != want {
+		t.Fatalf("reqID = %s, want ComputeRequestID = %s", reqID.Hex(), want.Hex())
+	}
+
+	// A second service instance (fresh node) derives the same ID.
+	svc2 := NewInferenceService(models)
+	reqID2, err := svc2.SubmitRequest(modelHash, input, submitter)
+	if err != nil {
+		t.Fatalf("SubmitRequest (svc2): %v", err)
+	}
+	if reqID2 != reqID {
+		t.Fatal("same submission on a fresh service should derive the same request ID")
+	}
+
+	// Resubmission is idempotent and must not reset request state.
+	if _, err := svc.Execute(context.Background(), reqID); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	reqID3, err := svc.SubmitRequest(modelHash, input, submitter)
+	if err != nil {
+		t.Fatalf("resubmit: %v", err)
+	}
+	if reqID3 != reqID {
+		t.Fatal("resubmission should return the original request ID")
+	}
+	_, _, status, _ := svc.GetRequest(reqID)
+	if status != RequestOptimisticVerified {
+		t.Fatalf("status after resubmit = %v, want OptimisticVerified (state must not reset)", status)
+	}
+
+	// A different input must produce a different ID.
+	otherID, err := svc.SubmitRequest(modelHash, []byte("other-input"), submitter)
+	if err != nil {
+		t.Fatalf("SubmitRequest (other): %v", err)
+	}
+	if otherID == reqID {
+		t.Fatal("different input should produce a different request ID")
+	}
+}
+
+func TestModelRegistryDeterministicOrder(t *testing.T) {
+	r := NewModelRegistry()
+	names := []string{"m-echo", "m-alpha", "m-delta", "m-bravo", "m-charlie"}
+	for _, n := range names {
+		if _, err := r.Register(n, FormatONNX, 1, "v1", []string{"cap"}); err != nil {
+			t.Fatalf("Register %s: %v", n, err)
+		}
+	}
+
+	assertSorted := func(models []*Model, label string) {
+		t.Helper()
+		if len(models) != len(names) {
+			t.Fatalf("%s len = %d, want %d", label, len(models), len(names))
+		}
+		for i := 1; i < len(models); i++ {
+			if bytes.Compare(models[i-1].Hash[:], models[i].Hash[:]) >= 0 {
+				t.Fatalf("%s not sorted by hash at index %d", label, i)
+			}
+		}
+	}
+	assertSorted(r.List(), "List")
+	assertSorted(r.FindByCapability("cap"), "FindByCapability")
+
+	// Two consecutive calls must agree element-by-element.
+	a, b := r.List(), r.List()
+	for i := range a {
+		if a[i].Hash != b[i].Hash {
+			t.Fatalf("List order differs between calls at index %d", i)
+		}
+	}
+}
+
+func TestGetResultStableAfterCacheEviction(t *testing.T) {
+	models := NewModelRegistry()
+	modelHash, _ := models.Register("cache-model", FormatCustom, 64, "v1", nil)
+
+	svc := NewInferenceService(models)
+	svc.SetExecutor(&mockExecutor{output: []byte("payload"), confidence: 1.0})
+	backend := NewPrecompileBackend(svc, nil, nil)
+
+	reqID, err := svc.SubmitRequest(modelHash, []byte("in"), types.Address{})
+	if err != nil {
+		t.Fatalf("SubmitRequest: %v", err)
+	}
+	if _, err := svc.Execute(context.Background(), reqID); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	status1, output1, err := backend.GetResult(reqID)
+	if err != nil {
+		t.Fatalf("GetResult (cached): %v", err)
+	}
+	if output1 == (types.Hash{}) {
+		t.Fatal("completed request should report a non-zero output hash")
+	}
+
+	// Simulate TTL eviction: the answer must not change.
+	svc.ResultCacheRef().Delete(reqID)
+	status2, output2, err := backend.GetResult(reqID)
+	if err != nil {
+		t.Fatalf("GetResult (evicted): %v", err)
+	}
+	if status2 != status1 || output2 != output1 {
+		t.Fatalf("GetResult changed after cache eviction: status %d->%d output %s->%s",
+			status1, status2, output1.Hex(), output2.Hex())
 	}
 }

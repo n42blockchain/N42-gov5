@@ -72,7 +72,6 @@ type InferenceService struct {
 	requests    map[types.Hash]*trackedRequest
 	executor    InferenceExecutor
 	resultCache *ResultCache
-	nonce       uint64
 }
 
 // NewInferenceService creates an inference service with the given model registry.
@@ -94,22 +93,43 @@ func (s *InferenceService) SetExecutor(executor InferenceExecutor) {
 // Models returns the model registry.
 func (s *InferenceService) Models() *ModelRegistry { return s.models }
 
-// SubmitRequest creates a new inference request.
+// requestIDDomain separates inference request IDs from other Keccak uses.
+var requestIDDomain = []byte("n42-inference-request-v1")
+
+// ComputeRequestID derives the deterministic request ID for an inference
+// submission. It is a pure function of the submission — no node-local
+// state — so every node executing the same precompile call derives the
+// same ID. The previous scheme mixed in an in-memory nonce, which
+// diverges across nodes (restarts, local-only submissions) and would
+// split consensus if the 0x0301 precompile were activated.
+func ComputeRequestID(modelHash types.Hash, input []byte, submitter types.Address) types.Hash {
+	inputHash := crypto.Keccak256Hash(input)
+	data := make([]byte, 0, len(requestIDDomain)+96)
+	data = append(data, requestIDDomain...)
+	data = append(data, modelHash[:]...)
+	data = append(data, inputHash[:]...)
+	data = append(data, submitter[:]...)
+	return crypto.Keccak256Hash(data)
+}
+
+// SubmitRequest creates a new inference request. Submission is
+// idempotent: resubmitting the same (model, input, submitter) tuple while
+// the original request is still tracked returns the existing request ID
+// without resetting its state — the executor is deterministic, so a
+// duplicate run would produce the same output anyway.
 func (s *InferenceService) SubmitRequest(modelHash types.Hash, input []byte, submitter types.Address) (types.Hash, error) {
 	if _, ok := s.models.Get(modelHash); !ok {
 		return types.Hash{}, fmt.Errorf("inference: model %s not registered", modelHash.Hex())
 	}
 
+	requestID := ComputeRequestID(modelHash, input, submitter)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.nonce++
-	data := make([]byte, 0, 72)
-	data = append(data, modelHash[:]...)
-	data = append(data, submitter[:]...)
-	data = append(data, byte(s.nonce>>56), byte(s.nonce>>48), byte(s.nonce>>40), byte(s.nonce>>32),
-		byte(s.nonce>>24), byte(s.nonce>>16), byte(s.nonce>>8), byte(s.nonce))
-	requestID := crypto.Keccak256Hash(data)
+	if _, exists := s.requests[requestID]; exists {
+		return requestID, nil
+	}
 
 	inputCopy := make([]byte, len(input))
 	copy(inputCopy, input)

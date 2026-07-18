@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -91,11 +92,16 @@ func (b *PrecompileBackend) GetResult(requestID types.Hash) (status uint8, outpu
 	if cached, ok := b.svc.GetCachedResult(requestID); ok {
 		return uint8(cached.Status), cached.OutputCAS, nil
 	}
-	// Not finished (or not found) yet — report the tracked status with a
-	// zero output hash so callers can keep polling instead of erroring.
-	_, _, st, gerr := b.svc.GetRequest(requestID)
+	// Cache miss (not finished, never cached, or TTL-evicted) — fall back
+	// to the tracked request so the answer does not flap when a cache
+	// entry expires: a completed request keeps reporting its status and
+	// output hash for as long as it is tracked.
+	_, result, st, gerr := b.svc.GetRequest(requestID)
 	if gerr != nil {
 		return 0, types.Hash{}, gerr
+	}
+	if result != nil {
+		return uint8(st), crypto.Keccak256Hash(result.Output), nil
 	}
 	return uint8(st), types.Hash{}, nil
 }
