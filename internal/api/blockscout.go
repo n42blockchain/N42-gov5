@@ -336,7 +336,7 @@ func (s *BlockChainAPI) GetBlockReceipts(ctx context.Context, blockNrOrHash json
 	result := make([]*BlockReceipt, len(receipts))
 	for i, receipt := range receipts {
 		tx := txs[i]
-		from := tx.From()
+		from := rpcTransactionFrom(tx)
 
 		gasPrice := new(big.Int).Add(baseFee, tx.EffectiveGasTipValue(headerBaseFee).ToBig())
 
@@ -345,7 +345,7 @@ func (s *BlockChainAPI) GetBlockReceipts(ctx context.Context, blockNrOrHash json
 			BlockNumber:       hexutil.Uint64(blockNumber),
 			TransactionHash:   avmtypes.FromastHash(tx.Hash()),
 			TransactionIndex:  hexutil.Uint64(i),
-			From:              *avmtypes.FromastAddress(from),
+			From:              from,
 			GasUsed:           hexutil.Uint64(receipt.GasUsed),
 			CumulativeGasUsed: hexutil.Uint64(receipt.CumulativeGasUsed),
 			LogsBloom:         receipt.Bloom,
