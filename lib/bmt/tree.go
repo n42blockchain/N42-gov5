@@ -185,7 +185,11 @@ func (t *Tree) remove(nodeHash Hash, keyPath Path, keyHash Hash, depth int) (Has
 	}
 	data, err := t.getNode(nodeHash)
 	if err != nil {
-		return EmptyHash, ErrNotFound
+		// A store read failure is NOT key-absence: masking it as ErrNotFound
+		// silently no-ops the delete and leaves the (stale) subtree in the
+		// root. Propagate so the caller fails loud rather than diverging. Same
+		// class as the insert fix (ca03a2f4).
+		return EmptyHash, err
 	}
 	if isLeaf(data) {
 		storedKey, _ := extractLeafKeyHash(data)
@@ -213,14 +217,25 @@ func (t *Tree) remove(nodeHash Hash, keyPath Path, keyHash Hash, depth int) (Has
 	if newLeft == EmptyHash && newRight == EmptyHash {
 		return EmptyHash, nil
 	}
-	// Collapse: one side empty, other is leaf → promote leaf
+	// Collapse: one side empty, other is leaf → promote leaf. A getNode error
+	// here must propagate: treating it as "not a leaf" builds a different node
+	// (makeInternal with an empty child) than a store that has the node, so a
+	// missing node silently diverges the root instead of failing.
 	if newLeft == EmptyHash {
-		if rd, e := t.getNode(newRight); e == nil && isLeaf(rd) {
+		rd, e := t.getNode(newRight)
+		if e != nil {
+			return EmptyHash, e
+		}
+		if isLeaf(rd) {
 			return newRight, nil
 		}
 	}
 	if newRight == EmptyHash {
-		if ld, e := t.getNode(newLeft); e == nil && isLeaf(ld) {
+		ld, e := t.getNode(newLeft)
+		if e != nil {
+			return EmptyHash, e
+		}
+		if isLeaf(ld) {
 			return newLeft, nil
 		}
 	}

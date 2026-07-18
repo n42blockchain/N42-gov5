@@ -19,6 +19,7 @@ package bmt
 import (
 	"bytes"
 	"crypto/rand"
+	"errors"
 	"testing"
 )
 
@@ -399,5 +400,41 @@ func TestInsertOverMissingNodeErrorsNotSilentDiscard(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("PutBatch over a missing root node silently succeeded")
+	}
+}
+
+// errBoomStore returns a sentinel (non-ErrNotFound) error from Get, standing
+// in for a real store read failure (I/O error, corrupt page).
+type errBoomStore struct{ boom error }
+
+func (s errBoomStore) Get(Hash) (NodeValue, error) { return nil, s.boom }
+func (s errBoomStore) Put(Hash, NodeValue) error   { return nil }
+
+// TestDeleteOverStoreErrorPropagates is the delete-side counterpart to
+// TestInsertOverMissingNodeErrorsNotSilentDiscard: a store read failure during
+// remove must surface as an error, not be masked as ErrNotFound (which
+// silently no-ops the delete) nor collapse to a wrong root.
+func TestDeleteOverStoreErrorPropagates(t *testing.T) {
+	// Build a real two-key tree so the root is an internal node.
+	src := New(NewMemStore())
+	if err := src.Put(HashKey([]byte("alpha")), []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := src.Put(HashKey([]byte("beta")), []byte("2")); err != nil {
+		t.Fatal(err)
+	}
+	root := src.Root()
+	if root == EmptyHash {
+		t.Fatal("expected a non-empty root")
+	}
+
+	boom := errors.New("store read boom")
+	orphan := NewFromRoot(errBoomStore{boom: boom}, root)
+	err := orphan.Delete(HashKey([]byte("alpha")))
+	if err == nil {
+		t.Fatal("Delete over a failing store silently succeeded")
+	}
+	if err == ErrNotFound {
+		t.Fatal("store read failure was masked as ErrNotFound")
 	}
 }
