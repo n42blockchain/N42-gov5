@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -90,7 +91,52 @@ func ReadReceipts(db kv.Tx, block *block.Block, senders []types.Address) block.R
 	if len(senders) > 0 {
 		block.SendersToTxs(senders)
 	}
+	if !deriveReceiptMetadata(receipts, block, blockNumber.Uint64()) {
+		return nil
+	}
 	return receipts
+}
+
+// deriveReceiptMetadata restores the location fields intentionally omitted by
+// compact receipt storage. RPC consumers must receive canonical block and
+// transaction metadata rather than the zero values present on the raw path.
+func deriveReceiptMetadata(receipts block.Receipts, blk *block.Block, blockNumber uint64) bool {
+	txs := blk.Transactions()
+	if len(receipts) != len(txs) {
+		return false
+	}
+
+	blockHash := blk.Hash()
+	var previousCumulativeGas uint64
+	var logIndex uint
+	for i, receipt := range receipts {
+		if receipt == nil || txs[i] == nil || receipt.CumulativeGasUsed < previousCumulativeGas {
+			return false
+		}
+
+		txHash := txs[i].Hash()
+		receipt.Type = txs[i].Type()
+		receipt.TxHash = txHash
+		receipt.BlockHash = blockHash
+		receipt.BlockNumber = uint256.NewInt(blockNumber)
+		receipt.TransactionIndex = uint(i)
+		receipt.GasUsed = receipt.CumulativeGasUsed - previousCumulativeGas
+		previousCumulativeGas = receipt.CumulativeGasUsed
+
+		for _, lg := range receipt.Logs {
+			if lg == nil {
+				return false
+			}
+			lg.BlockNumber = uint256.NewInt(blockNumber)
+			lg.TxHash = txHash
+			lg.TxIndex = uint(i)
+			lg.BlockHash = blockHash
+			lg.Index = logIndex
+			lg.Removed = false
+			logIndex++
+		}
+	}
+	return true
 }
 
 func ReadReceiptsByHash(db kv.Tx, hash types.Hash) (block.Receipts, error) {

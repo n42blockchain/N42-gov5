@@ -26,6 +26,7 @@ type preciseChainStub struct {
 	db             kv.RwDB
 	blocksByHash   map[types.Hash]*block.Block
 	blocksByNumber map[uint64]*block.Block
+	receiptsByHash map[types.Hash]block.Receipts
 }
 
 func newPreciseChainStub(cfg *params.ChainConfig, db kv.RwDB, blocks ...*block.Block) *preciseChainStub {
@@ -34,6 +35,7 @@ func newPreciseChainStub(cfg *params.ChainConfig, db kv.RwDB, blocks ...*block.B
 		db:             db,
 		blocksByHash:   make(map[types.Hash]*block.Block),
 		blocksByNumber: make(map[uint64]*block.Block),
+		receiptsByHash: make(map[types.Hash]block.Receipts),
 	}
 	for _, blk := range blocks {
 		if blk == nil {
@@ -109,10 +111,12 @@ func (m *preciseChainStub) SetEngine(interface{})                            {}
 func (m *preciseChainStub) GetBlocksFromHash(types.Hash, int) []block.IBlock { return nil }
 func (m *preciseChainStub) SealedBlock(block.IBlock) error                   { return nil }
 func (m *preciseChainStub) Engine() interface{}                              { return nil }
-func (m *preciseChainStub) GetReceipts(types.Hash) (block.Receipts, error)   { return nil, nil }
-func (m *preciseChainStub) GetLogs(types.Hash) ([][]*block.Log, error)       { return nil, nil }
-func (m *preciseChainStub) SetHead(uint64) error                             { return nil }
-func (m *preciseChainStub) AddFutureBlock(block.IBlock) error                { return nil }
+func (m *preciseChainStub) GetReceipts(hash types.Hash) (block.Receipts, error) {
+	return m.receiptsByHash[hash], nil
+}
+func (m *preciseChainStub) GetLogs(types.Hash) ([][]*block.Log, error) { return nil, nil }
+func (m *preciseChainStub) SetHead(uint64) error                       { return nil }
+func (m *preciseChainStub) AddFutureBlock(block.IBlock) error          { return nil }
 func (m *preciseChainStub) GetBlock(hash types.Hash, number uint64) block.IBlock {
 	blk := m.blocksByHash[hash]
 	if blk == nil || blk.Number64().Uint64() != number {
@@ -687,5 +691,60 @@ func TestGetBlockByNumberFullTxRecoversSenderWhenUnset(t *testing.T) {
 	}
 	if rpcTx.From != *avmtypes.FromastAddress(&sender) {
 		t.Fatalf("rpcTx.From = %v, want %v", rpcTx.From, *avmtypes.FromastAddress(&sender))
+	}
+}
+
+func TestGetBlockReceiptsRecoversSenderWhenUnset(t *testing.T) {
+	cfg := &params.ChainConfig{ChainID: big.NewInt(1)}
+	senderKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	signer := transaction.NewLondonSigner(big.NewInt(1))
+	recipient := types.HexToAddress("0x4444444444444444444444444444444444444444")
+	tx := transaction.NewTx(&transaction.DynamicFeeTx{
+		ChainID:   uint256.NewInt(1),
+		GasTipCap: uint256.NewInt(2),
+		GasFeeCap: uint256.NewInt(10),
+		Gas:       21_000,
+		To:        &recipient,
+		Value:     uint256.NewInt(1),
+	})
+	signedTx, err := transaction.SignTx(tx, signer, senderKey)
+	if err != nil {
+		t.Fatalf("SignTx() error = %v", err)
+	}
+	if signedTx.From() != nil {
+		t.Fatalf("signedTx.From() unexpectedly set = %v", signedTx.From())
+	}
+
+	blk := block.NewBlock(&block.Header{
+		UncleHash:  hash.EmptyUncleHash,
+		Number:     uint256.NewInt(1),
+		GasLimit:   30_000_000,
+		GasUsed:    21_000,
+		Time:       2,
+		BaseFee:    uint256.NewInt(1),
+		Difficulty: uint256.NewInt(0),
+	}, []*transaction.Transaction{signedTx}).(*block.Block)
+	chain := newPreciseChainStub(cfg, nil, blk)
+	chain.receiptsByHash[blk.Hash()] = block.Receipts{{
+		Status:            block.ReceiptStatusSuccessful,
+		CumulativeGasUsed: 21_000,
+		GasUsed:           21_000,
+	}}
+	backend := &API{bc: chain, chainConfig: cfg, engineOverlay: newEngineOverlay()}
+
+	receipts, err := NewBlockChainAPI(backend).GetBlockReceipts(
+		context.Background(), jsonrpc.BlockNumberOrHashWithNumber(jsonrpc.LatestBlockNumber),
+	)
+	if err != nil {
+		t.Fatalf("GetBlockReceipts() error = %v", err)
+	}
+	if len(receipts) != 1 {
+		t.Fatalf("GetBlockReceipts() count = %d, want 1", len(receipts))
+	}
+	if receipts[0].From != rpcTransactionFrom(signedTx) {
+		t.Fatalf("receipt from = %v, want %v", receipts[0].From, rpcTransactionFrom(signedTx))
 	}
 }
