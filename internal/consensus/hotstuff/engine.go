@@ -855,10 +855,17 @@ func (e *ConsensusEngine) tryQCViewJump(msg *ConsensusMsg, msgView ViewNumber) (
 		return false, nil
 	}
 
+	// A QC only proves the network reached qc.View, so the highest view it
+	// can justify advancing to is qc.View+1. Do NOT bump to msgView: this
+	// path runs before the message's own signature/proposer is verified
+	// (dispatchMessage → processProposal happens later), and msgView is
+	// fully attacker-controlled. Trusting it would let a single node wrap a
+	// real, public QC in a message carrying an arbitrarily high view and
+	// push any peer's view permanently to that height (a liveness DoS, and
+	// persisted across restarts) — the same unbounded view-jump the H2 fix
+	// closed on the timeout path. Higher jumps must be proven by a TC via
+	// processEmbeddedTC, never by a bare view number.
 	targetView := qc.View + 1
-	if msgView > targetView {
-		targetView = msgView
-	}
 	if targetView <= currentView {
 		return false, nil
 	}
