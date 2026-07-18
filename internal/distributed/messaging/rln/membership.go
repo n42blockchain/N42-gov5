@@ -5,6 +5,18 @@
 // Based on Waku RLN v2: Shamir secret sharing + Poseidon hashing + Merkle membership proofs.
 // Members register identity commitments; each epoch allows a limited number of messages.
 // Exceeding the limit exposes the identity secret via Shamir reconstruction.
+//
+// NOT PRODUCTION-WIRED. RLN's guarantees require a ZK circuit proving, without
+// revealing the secret, that the nullifier and Shamir share were correctly
+// derived from a secret whose commitment is in the tree. This package has no
+// such circuit, and no non-test code calls the verifier — the messaging relay
+// does not invoke RLN validation. Without ZK there is no secure nullifier
+// choice: a secret-derived nullifier is unverifiable (a spammer mints a fresh
+// one per message and bypasses the limit), while the commitment-derived
+// nullifier used here is verifiable but forgeable (any third party can craft a
+// passing proof with an arbitrary in-range ShareY, pre-register a victim's
+// nullifier, and censor them). Do not wire RLN into any production path until a
+// vetted BN254 ZK circuit lands.
 package rln
 
 import (
@@ -112,7 +124,27 @@ func (mt *MembershipTree) Size() int {
 func (mt *MembershipTree) GenerateMerkleProof(index uint32) (*MerkleProof, error) {
 	mt.mu.RLock()
 	defer mt.mu.RUnlock()
+	return mt.generateMerkleProofLocked(index)
+}
 
+// ProofAndRoot returns a member's Merkle proof together with the root it was
+// generated against, captured under a single read lock. Callers that need a
+// proof consistent with a specific root must use this rather than calling
+// GenerateMerkleProof and Root() separately: a concurrent Register between the
+// two changes shared-ancestor siblings, yielding a (new root, old siblings)
+// pair that fails verification.
+func (mt *MembershipTree) ProofAndRoot(index uint32) (*MerkleProof, [32]byte, error) {
+	mt.mu.RLock()
+	defer mt.mu.RUnlock()
+	proof, err := mt.generateMerkleProofLocked(index)
+	if err != nil {
+		return nil, [32]byte{}, err
+	}
+	return proof, mt.root, nil
+}
+
+// generateMerkleProofLocked builds the proof; the caller must hold mt.mu.
+func (mt *MembershipTree) generateMerkleProofLocked(index uint32) (*MerkleProof, error) {
 	if int(index) >= mt.size {
 		return nil, fmt.Errorf("index %d out of range (size=%d)", index, mt.size)
 	}
@@ -166,7 +198,10 @@ type RLNProof struct {
 
 // GenerateProof generates an RLN proof for sending a message.
 func GenerateProof(identity *Identity, memberIndex uint32, tree *MembershipTree, epoch uint64, messageHash [32]byte) (*RLNProof, error) {
-	merkleProof, err := tree.GenerateMerkleProof(memberIndex)
+	// Capture the proof and the root it was built against atomically; see
+	// ProofAndRoot for why the separate GenerateMerkleProof + Root() calls
+	// raced under concurrent Register.
+	merkleProof, root, err := tree.ProofAndRoot(memberIndex)
 	if err != nil {
 		return nil, fmt.Errorf("generate merkle proof: %w", err)
 	}
@@ -177,8 +212,13 @@ func GenerateProof(identity *Identity, memberIndex uint32, tree *MembershipTree,
 	// fresh nullifier per message and bypass the rate limit entirely.
 	// The commitment is already public (the proof carries the member
 	// index), so deriving from it costs no anonymity and lets verifiers
-	// recompute the expected nullifier. Revert to the secret-derived form
-	// when a real ZK backend lands.
+	// recompute the expected nullifier. NOTE: this trade is not a net win
+	// without ZK — a verifiable commitment-derived nullifier is also
+	// forgeable by any third party (arbitrary in-range ShareY passes the
+	// non-ZK verifier), so anyone can pre-register a victim's nullifier and
+	// censor their per-epoch messages. RLN is therefore NOT wired into any
+	// production path (see the package doc) and must not be until a real ZK
+	// circuit makes both the nullifier and the share verifiable.
 	var epochBuf [8]byte
 	binary.BigEndian.PutUint64(epochBuf[:], epoch)
 	nullifier := PoseidonHash(identity.Commitment[:], epochBuf[:])
@@ -199,7 +239,7 @@ func GenerateProof(identity *Identity, memberIndex uint32, tree *MembershipTree,
 		Nullifier:   nullifier,
 		ShareX:      shareX,
 		ShareY:      shareY,
-		MerkleRoot:  tree.Root(),
+		MerkleRoot:  root,
 	}, nil
 }
 
