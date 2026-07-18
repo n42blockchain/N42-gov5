@@ -42,7 +42,6 @@ var (
 	errBlockNrIsTooHigh      = errors.New("block number is higher than the target block number")
 	errBlockAlreadyProcessed = errors.New("block is already processed")
 	errParentDoesNotExist    = errors.New("node doesn't have a parent in db with root")
-	errNoPeersWithAltBlocks  = errors.New("no peers with alternative blocks found")
 )
 
 var (
