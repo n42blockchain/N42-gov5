@@ -53,9 +53,25 @@ func (vs *ValidatorSet) IsEmpty() bool {
 	return len(vs.validators) == 0
 }
 
-// QuorumSize returns 2f+1, the minimum number of votes for quorum.
+// QuorumSize returns the minimum number of votes for a quorum: n - f.
+//
+// For the canonical n = 3f+1 this equals 2f+1, but for any n > 3f+1 (e.g. after
+// a validator is added by reconfiguration) 2f+1 no longer guarantees quorum
+// intersection. Two quorums of size q intersect in at least 2q - n nodes, and
+// safety needs that intersection to contain an honest node (> f), i.e.
+// q >= (n + f + 1) / 2 — satisfied by q = n - f whenever n >= 3f+1. Using 2f+1
+// for e.g. n = 8, f = 2 (q = 5) lets two quorums intersect in only 2 = f nodes,
+// so two conflicting blocks could both gather a "quorum" and commit.
 func (vs *ValidatorSet) QuorumSize() int {
-	return int(2*uint64(vs.faultTolerance) + 1)
+	n := len(vs.validators)
+	f := int(vs.faultTolerance)
+	q := n - f
+	if q < 1 {
+		// Degenerate/empty set: keep the quorum unreachable-by-zero so an
+		// empty vote set never satisfies it.
+		return 1
+	}
+	return q
 }
 
 // FaultTolerance returns f.

@@ -166,7 +166,7 @@ func TestValidatorSet(t *testing.T) {
 	if setup.vs.IsEmpty() {
 		t.Fatal("should not be empty")
 	}
-	if setup.vs.QuorumSize() != 3 { // 2*1+1
+	if setup.vs.QuorumSize() != 3 { // n-f = 4-1 (= 2f+1 at n=3f+1)
 		t.Fatalf("expected quorum 3, got %d", setup.vs.QuorumSize())
 	}
 	if setup.vs.FaultTolerance() != 1 {
