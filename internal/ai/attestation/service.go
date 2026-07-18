@@ -189,17 +189,31 @@ func (s *AttestationService) CreateAttestation(
 }
 
 // canonicalBytes produces the canonical byte representation of an attestation
-// for signing and verification:
-// attestID(32) || modelHash(32) || inputHash(32) || outputHash(32) || safetyLevel(1) || timestamp(8 big-endian)
+// for signing and verification. It MUST cover every security-critical field —
+// notably Operator, TrainingRecordID, ZKProofHash and OperatorDID — or those
+// fields can be mutated on a validly-signed attestation without invalidating
+// the signature (an attacker could swap the ZK proof or training provenance,
+// or re-attribute the operator, and still verify):
+//
+//	ID(32) || RequestID(32) || ModelHash(32) || InputHash(32) || OutputHash(32) ||
+//	TrainingRecordID(32) || ZKProofHash(32) || Operator(20) || SafetyLevel(1) ||
+//	timestamp(8 big-endian) || len(OperatorDID)(2 big-endian) || OperatorDID
 func canonicalBytes(att *InferenceAttestation) []byte {
-	const size = types.HashLength*4 + 1 + 8
+	did := []byte(att.OperatorDID)
+	size := types.HashLength*7 + types.AddressLength + 1 + 8 + 2 + len(did)
 	buf := make([]byte, 0, size)
 	buf = append(buf, att.ID.Bytes()...)
+	buf = append(buf, att.RequestID.Bytes()...)
 	buf = append(buf, att.ModelHash.Bytes()...)
 	buf = append(buf, att.InputHash.Bytes()...)
 	buf = append(buf, att.OutputHash.Bytes()...)
+	buf = append(buf, att.TrainingRecordID.Bytes()...)
+	buf = append(buf, att.ZKProofHash.Bytes()...)
+	buf = append(buf, att.Operator.Bytes()...)
 	buf = append(buf, byte(att.SafetyLevel))
 	buf = binary.BigEndian.AppendUint64(buf, uint64(att.CreatedAt.UnixNano()))
+	buf = binary.BigEndian.AppendUint16(buf, uint16(len(did)))
+	buf = append(buf, did...)
 	return buf
 }
 
@@ -242,6 +256,12 @@ func (s *AttestationService) SignAttestation(attestID types.Hash, privateKey *ec
 	if time.Now().After(att.ExpiresAt) {
 		att.Status = AttestExpired
 		return nil, ErrAttestationExpired
+	}
+
+	// The signing key MUST belong to the declared operator — otherwise any key
+	// could sign an attestation naming an arbitrary operator.
+	if crypto.PubkeyToAddress(privateKey.PublicKey) != att.Operator {
+		return nil, ErrOperatorMismatch
 	}
 
 	// Build canonical representation and hash.
@@ -297,10 +317,19 @@ func (s *AttestationService) VerifySignature(signed *SignedAttestation) (bool, e
 		return false, err
 	}
 
-	// Compress the recovered key and compare.
+	// Consistency: the recovered key must match the stored signer pubkey.
 	recoveredCompressed := crypto.CompressPubkey(recoveredPub)
 	if !bytes.Equal(recoveredCompressed, signed.SignerPubKey) {
 		return false, ErrInvalidSignature
+	}
+
+	// Load-bearing bind: the recovered signer must BE the declared operator.
+	// Without this the check is circular — an attacker signs with their own
+	// key, sets SignerPubKey to that key and Operator to a victim, and every
+	// verify passes. Requiring recovered-address == att.Operator makes the
+	// signature prove the named operator authorized this attestation.
+	if crypto.PubkeyToAddress(*recoveredPub) != signed.Attestation.Operator {
+		return false, ErrOperatorMismatch
 	}
 
 	return true, nil

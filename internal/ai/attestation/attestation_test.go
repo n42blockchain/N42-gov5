@@ -17,6 +17,7 @@
 package attestation
 
 import (
+	"crypto/ecdsa"
 	"errors"
 	"sync"
 	"testing"
@@ -70,15 +71,28 @@ func newTestService(requestID types.Hash, ttl time.Duration) *AttestationService
 	return NewAttestationService(zk, nil, ttl, 0)
 }
 
+// testOperatorKey returns a fixed private key and its derived operator address.
+// Attestations must be signed by the key that owns the declared Operator
+// address, so tests create the attestation with this key's address as operator
+// and sign with this same key.
+func testOperatorKey(t *testing.T) (*ecdsa.PrivateKey, types.Address) {
+	t.Helper()
+	key, err := crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
+	if err != nil {
+		t.Fatalf("HexToECDSA failed: %v", err)
+	}
+	return key, crypto.PubkeyToAddress(key.PublicKey)
+}
+
 // createTestAttestation is a helper that creates a standard attestation for testing.
 func createTestAttestation(t *testing.T, svc *AttestationService, requestID types.Hash) *InferenceAttestation {
 	t.Helper()
 	modelHash := testModelHash()
 	inputHash := types.HexToHash("0x2222222222222222222222222222222222222222222222222222222222222222")
 	outputHash := types.HexToHash("0x3333333333333333333333333333333333333333333333333333333333333333")
-	operator := types.HexToAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	_, operator := testOperatorKey(t)
 
-	att, err := svc.CreateAttestation(requestID, modelHash, inputHash, outputHash, types.Hash{}, SafetyStandard, operator, "did:n42:0xaaaa")
+	att, err := svc.CreateAttestation(requestID, modelHash, inputHash, outputHash, types.Hash{}, SafetyStandard, operator, "did:n42:"+operator.Hex())
 	if err != nil {
 		t.Fatalf("CreateAttestation failed: %v", err)
 	}
@@ -105,10 +119,7 @@ func TestAttestationService_CreateAndSign(t *testing.T) {
 	}
 
 	// Sign the attestation.
-	key, err := crypto.GenerateKey()
-	if err != nil {
-		t.Fatalf("GenerateKey failed: %v", err)
-	}
+	key, _ := testOperatorKey(t)
 
 	signed, err := svc.SignAttestation(att.ID, key)
 	if err != nil {
@@ -139,10 +150,7 @@ func TestAttestationService_VerifySignature(t *testing.T) {
 	svc := newTestService(requestID, time.Hour)
 	att := createTestAttestation(t, svc, requestID)
 
-	key, err := crypto.GenerateKey()
-	if err != nil {
-		t.Fatalf("GenerateKey failed: %v", err)
-	}
+	key, _ := testOperatorKey(t)
 
 	signed, err := svc.SignAttestation(att.ID, key)
 	if err != nil {
@@ -180,12 +188,9 @@ func TestAttestationService_VerifyAttestation(t *testing.T) {
 	svc := newTestService(requestID, time.Hour)
 	att := createTestAttestation(t, svc, requestID)
 
-	key, err := crypto.GenerateKey()
-	if err != nil {
-		t.Fatalf("GenerateKey failed: %v", err)
-	}
+	key, _ := testOperatorKey(t)
 
-	_, err = svc.SignAttestation(att.ID, key)
+	_, err := svc.SignAttestation(att.ID, key)
 	if err != nil {
 		t.Fatalf("SignAttestation failed: %v", err)
 	}
@@ -215,16 +220,13 @@ func TestAttestationService_Expiry(t *testing.T) {
 	svc := newTestService(requestID, time.Millisecond)
 	att := createTestAttestation(t, svc, requestID)
 
-	key, err := crypto.GenerateKey()
-	if err != nil {
-		t.Fatalf("GenerateKey failed: %v", err)
-	}
+	key, _ := testOperatorKey(t)
 
 	// Wait for the attestation to expire.
 	time.Sleep(5 * time.Millisecond)
 
 	// Attempt to sign — should fail with ErrAttestationExpired.
-	_, err = svc.SignAttestation(att.ID, key)
+	_, err := svc.SignAttestation(att.ID, key)
 	if err == nil {
 		t.Fatal("expected error for expired attestation")
 	}
@@ -238,12 +240,9 @@ func TestAttestationService_Revocation(t *testing.T) {
 	svc := newTestService(requestID, time.Hour)
 	att := createTestAttestation(t, svc, requestID)
 
-	key, err := crypto.GenerateKey()
-	if err != nil {
-		t.Fatalf("GenerateKey failed: %v", err)
-	}
+	key, _ := testOperatorKey(t)
 
-	_, err = svc.SignAttestation(att.ID, key)
+	_, err := svc.SignAttestation(att.ID, key)
 	if err != nil {
 		t.Fatalf("SignAttestation failed: %v", err)
 	}
@@ -283,7 +282,7 @@ func TestAttestationService_CreateChain(t *testing.T) {
 	svc := NewAttestationService(zk, nil, time.Hour, 0)
 
 	modelHash := testModelHash()
-	operator := types.HexToAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	_, operator := testOperatorKey(t)
 
 	// Attestation 1: input=hash1, output=hash2.
 	att1, err := svc.CreateAttestation(reqID1, modelHash, hash1, hash2, types.Hash{}, SafetyStandard, operator, "")
@@ -334,7 +333,7 @@ func TestAttestationService_BrokenChain(t *testing.T) {
 	svc := NewAttestationService(zk, nil, time.Hour, 0)
 
 	modelHash := testModelHash()
-	operator := types.HexToAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	_, operator := testOperatorKey(t)
 
 	// Attestation 1: input=hash1, output=hash2.
 	att1, err := svc.CreateAttestation(reqID1, modelHash, hash1, hash2, types.Hash{}, SafetyStandard, operator, "")
@@ -364,7 +363,7 @@ func TestAttestationService_SafetyCritical(t *testing.T) {
 	modelHash := testModelHash()
 	inputHash := types.HexToHash("0x2222222222222222222222222222222222222222222222222222222222222222")
 	outputHash := types.HexToHash("0x3333333333333333333333333333333333333333333333333333333333333333")
-	operator := types.HexToAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	_, operator := testOperatorKey(t)
 
 	// SafetyCritical without training record (zero hash) should fail.
 	_, err := svc.CreateAttestation(requestID, modelHash, inputHash, outputHash, types.Hash{}, SafetyCritical, operator, "")
@@ -390,7 +389,7 @@ func TestAttestationService_Prune(t *testing.T) {
 	modelHash := testModelHash()
 	inputHash := types.HexToHash("0x2222222222222222222222222222222222222222222222222222222222222222")
 	outputHash := types.HexToHash("0x3333333333333333333333333333333333333333333333333333333333333333")
-	operator := types.HexToAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	_, operator := testOperatorKey(t)
 
 	_, err := svc.CreateAttestation(requestID1, modelHash, inputHash, outputHash, types.Hash{}, SafetyStandard, operator, "")
 	if err != nil {
@@ -451,7 +450,7 @@ func TestAttestationService_ZeroHashRejected(t *testing.T) {
 	modelHash := testModelHash()
 	inputHash := types.HexToHash("0x2222222222222222222222222222222222222222222222222222222222222222")
 	outputHash := types.HexToHash("0x3333333333333333333333333333333333333333333333333333333333333333")
-	operator := types.HexToAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	_, operator := testOperatorKey(t)
 
 	// Zero requestID should be rejected.
 	_, err := svc.CreateAttestation(types.Hash{}, modelHash, inputHash, outputHash, types.Hash{}, SafetyStandard, operator, "")
@@ -495,7 +494,7 @@ func TestAttestationService_ServiceCapacity(t *testing.T) {
 	modelHash := testModelHash()
 	inputHash := types.HexToHash("0x2222222222222222222222222222222222222222222222222222222222222222")
 	outputHash := types.HexToHash("0x3333333333333333333333333333333333333333333333333333333333333333")
-	operator := types.HexToAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	_, operator := testOperatorKey(t)
 
 	// First two attestations should succeed.
 	_, err := svc.CreateAttestation(reqID1, modelHash, inputHash, outputHash, types.Hash{}, SafetyStandard, operator, "")
@@ -550,7 +549,7 @@ func TestAttestationService_ConcurrentSignVerify(t *testing.T) {
 	modelHash := testModelHash()
 	inputHash := types.HexToHash("0x2222222222222222222222222222222222222222222222222222222222222222")
 	outputHash := types.HexToHash("0x3333333333333333333333333333333333333333333333333333333333333333")
-	operator := types.HexToAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	opKey, operator := testOperatorKey(t)
 
 	var wg sync.WaitGroup
 	errs := make([]error, numGoroutines)
@@ -566,13 +565,7 @@ func TestAttestationService_ConcurrentSignVerify(t *testing.T) {
 				return
 			}
 
-			key, kErr := crypto.GenerateKey()
-			if kErr != nil {
-				errs[idx] = kErr
-				return
-			}
-
-			signed, sErr := svc.SignAttestation(att.ID, key)
+			signed, sErr := svc.SignAttestation(att.ID, opKey)
 			if sErr != nil {
 				errs[idx] = sErr
 				return
@@ -618,7 +611,7 @@ func TestAttestationService_VerifyChainAfterRevoke(t *testing.T) {
 	svc := NewAttestationService(zk, nil, time.Hour, 0)
 
 	modelHash := testModelHash()
-	operator := types.HexToAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	_, operator := testOperatorKey(t)
 
 	// Create two chained attestations.
 	att1, err := svc.CreateAttestation(reqID1, modelHash, hash1, hash2, types.Hash{}, SafetyStandard, operator, "")
@@ -631,10 +624,7 @@ func TestAttestationService_VerifyChainAfterRevoke(t *testing.T) {
 	}
 
 	// Sign both attestations.
-	key, err := crypto.GenerateKey()
-	if err != nil {
-		t.Fatalf("GenerateKey: %v", err)
-	}
+	key, _ := testOperatorKey(t)
 	if _, err := svc.SignAttestation(att1.ID, key); err != nil {
 		t.Fatalf("SignAttestation 1: %v", err)
 	}
@@ -669,5 +659,62 @@ func TestAttestationService_VerifyChainAfterRevoke(t *testing.T) {
 	}
 	if !errors.Is(err, ErrAttestationRevoked) {
 		t.Errorf("VerifyChain (after revoke): expected ErrAttestationRevoked, got: %v", err)
+	}
+}
+
+// TestAttestationOperatorBinding is the regression for the circular-verification
+// hole: the signature must prove the DECLARED operator authorized it. A key that
+// does not own the operator address must be rejected at both sign and verify,
+// and security-critical fields must be covered by the signature.
+func TestAttestationOperatorBinding(t *testing.T) {
+	requestID := testRequestID()
+	svc := newTestService(requestID, time.Hour)
+	att := createTestAttestation(t, svc, requestID) // operator = testOperatorKey addr
+	opKey, _ := testOperatorKey(t)
+
+	// 1. Signing with a key that isn't the operator must be rejected.
+	attackerKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SignAttestation(att.ID, attackerKey); !errors.Is(err, ErrOperatorMismatch) {
+		t.Fatalf("sign with non-operator key: got %v, want ErrOperatorMismatch", err)
+	}
+
+	// 2. A genuine operator signature verifies.
+	signed, err := svc.SignAttestation(att.ID, opKey)
+	if err != nil {
+		t.Fatalf("operator sign: %v", err)
+	}
+	valid, err := svc.VerifySignature(signed)
+	if err != nil || !valid {
+		t.Fatalf("genuine signature failed to verify: valid=%v err=%v", valid, err)
+	}
+
+	// 3. Circular-attack: attacker re-signs the canonical bytes with their own
+	// key and swaps in their own pubkey, but leaves the victim Operator. Verify
+	// must reject because the recovered signer != Operator.
+	forged := copySignedAttestation(signed)
+	hash := crypto.Keccak256(canonicalBytes(&forged.Attestation))
+	forgedSig, err := crypto.Sign(hash, attackerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged.Signature = forgedSig
+	forged.SignerPubKey = crypto.CompressPubkey(&attackerKey.PublicKey)
+	if v, err := svc.VerifySignature(forged); v || !errors.Is(err, ErrOperatorMismatch) {
+		t.Fatalf("forged-operator attestation verified: valid=%v err=%v", v, err)
+	}
+
+	// 4. Mutating a now-covered field (ZKProofHash) must break verification.
+	mutated := copySignedAttestation(signed)
+	mutated.Attestation.ZKProofHash[0] ^= 0xff
+	if v, _ := svc.VerifySignature(mutated); v {
+		t.Fatal("mutated ZKProofHash still verified — field not covered by signature")
+	}
+	mutated2 := copySignedAttestation(signed)
+	mutated2.Attestation.TrainingRecordID[0] ^= 0xff
+	if v, _ := svc.VerifySignature(mutated2); v {
+		t.Fatal("mutated TrainingRecordID still verified — field not covered by signature")
 	}
 }
