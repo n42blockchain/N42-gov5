@@ -132,6 +132,11 @@ type Program struct {
 	VerificationKey []byte     `json:"verificationKey"`
 	Name            string     `json:"name"`
 	RegisteredAt    time.Time  `json:"registeredAt"`
+
+	// Bytecode is the program's WASM module, optional at registration.
+	// When present it is guaranteed to hash (Keccak256) to Hash, so the
+	// registry doubles as a verified bytecode source for providers.
+	Bytecode []byte `json:"-"`
 }
 
 // ComputeTaskID derives a deterministic task ID from program hash, input, and nonce.

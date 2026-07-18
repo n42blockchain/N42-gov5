@@ -20,9 +20,11 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/distributed/compute/wasm"
+	"github.com/n42blockchain/N42/log"
 )
 
 // ReferenceProvider executes coprocessor tasks with the WASM engine and
@@ -78,9 +80,7 @@ func (p *ReferenceProvider) Serve(ctx context.Context, taskID types.Hash, gasLim
 		return nil, fmt.Errorf("task %s assigned to another provider", taskID.Hex()[:10])
 	}
 
-	p.mu.RLock()
-	bytecode, ok := p.programs[task.ProgramHash]
-	p.mu.RUnlock()
+	bytecode, ok := p.bytecodeFor(task.ProgramHash)
 	if !ok {
 		return nil, fmt.Errorf("no bytecode registered for program %s", task.ProgramHash.Hex()[:10])
 	}
@@ -99,3 +99,73 @@ func (p *ReferenceProvider) Serve(ctx context.Context, taskID types.Hash, gasLim
 
 // Address returns the provider's identity.
 func (p *ReferenceProvider) Address() types.Address { return p.addr }
+
+// bytecodeFor resolves a program's bytecode: locally supplied bytecode wins,
+// otherwise fall back to the bytecode attached to the program registration
+// (hash-verified by Registry.SetBytecode).
+func (p *ReferenceProvider) bytecodeFor(programHash types.Hash) ([]byte, bool) {
+	p.mu.RLock()
+	bytecode, ok := p.programs[programHash]
+	p.mu.RUnlock()
+	if ok {
+		return bytecode, true
+	}
+	return p.svc.Registry().Bytecode(programHash)
+}
+
+// AttachProvider runs prov as this node's resident compute provider: a
+// background loop polls for unassigned Pending tasks whose program bytecode
+// is available (locally or via the program registry) and serves them. The
+// loop lives under the service's lifecycle — Stop() terminates it and then
+// calls cleanup (e.g. closing the provider's WASM engine). This is the
+// "node opts in to being a provider" switch the wiring plan left open;
+// register the provider (stake + capabilities) before attaching.
+func (s *Service) AttachProvider(prov *ReferenceProvider, poll time.Duration, gasLimit uint64, cleanup func()) {
+	if poll <= 0 {
+		poll = 5 * time.Second
+	}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		if cleanup != nil {
+			defer cleanup()
+		}
+		ticker := time.NewTicker(poll)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-ticker.C:
+				s.serveClaimable(prov, gasLimit)
+			}
+		}
+	}()
+	log.Info("Coprocessor resident provider attached",
+		"provider", prov.Address().Hex(), "poll", poll)
+}
+
+// serveClaimable runs one poll round: serve every unassigned Pending task
+// this provider has bytecode for. Tasks without bytecode are left for other
+// providers; failures are logged at debug level to keep a busy queue from
+// flooding the logs.
+func (s *Service) serveClaimable(prov *ReferenceProvider, gasLimit uint64) {
+	for _, task := range s.tasks.ListByStatus(TaskPending) {
+		select {
+		case <-s.ctx.Done():
+			return
+		default:
+		}
+		snap, ok := s.tasks.GetTaskSnapshot(task.ID)
+		if !ok || snap.AssignedProvider != (types.Address{}) {
+			continue
+		}
+		if _, ok := prov.bytecodeFor(snap.ProgramHash); !ok {
+			continue
+		}
+		if _, err := prov.Serve(s.ctx, snap.ID, gasLimit); err != nil {
+			log.Debug("Resident provider serve failed",
+				"task", snap.ID.Hex()[:10], "err", err)
+		}
+	}
+}

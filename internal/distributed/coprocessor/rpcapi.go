@@ -30,6 +30,14 @@ func (a *API) RegisterProgram(programHash types.Hash, verificationKey []byte, na
 	return a.svc.RegisterProgram(programHash, verificationKey, name)
 }
 
+// RegisterProgramBytecode attaches WASM bytecode to a registered program.
+// The bytecode must keccak-hash to programHash; once attached, resident
+// providers (and any provider without a local copy) can execute tasks
+// against the program.
+func (a *API) RegisterProgramBytecode(programHash types.Hash, bytecode []byte) error {
+	return a.svc.Registry().SetBytecode(programHash, bytecode)
+}
+
 // SubmitTask posts a compute task against a registered program (default ZK
 // tier). Returns the task ID.
 func (a *API) SubmitTask(programHash types.Hash, input []byte, submitter types.Address) (types.Hash, error) {

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -52,6 +53,39 @@ func (r *Registry) Register(programHash types.Hash, verificationKey []byte, name
 		RegisteredAt:    time.Now(),
 	}
 	return nil
+}
+
+// SetBytecode attaches WASM bytecode to a registered program. The bytecode
+// must hash (Keccak256) to the program hash, making the registry a verified
+// bytecode source: a provider that fetches it can trust it executes the
+// program the submitter named.
+func (r *Registry) SetBytecode(programHash types.Hash, bytecode []byte) error {
+	if len(bytecode) == 0 {
+		return fmt.Errorf("bytecode required")
+	}
+	if got := crypto.Keccak256Hash(bytecode); got != programHash {
+		return fmt.Errorf("bytecode hash %s does not match program %s", got.Hex(), programHash.Hex())
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, exists := r.programs[programHash]
+	if !exists {
+		return fmt.Errorf("program %s not registered", programHash.Hex())
+	}
+	p.Bytecode = append([]byte(nil), bytecode...)
+	return nil
+}
+
+// Bytecode returns the WASM bytecode attached to a program, if any.
+func (r *Registry) Bytecode(programHash types.Hash) ([]byte, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, exists := r.programs[programHash]
+	if !exists || len(p.Bytecode) == 0 {
+		return nil, false
+	}
+	return p.Bytecode, true
 }
 
 // Unregister removes a program from the registry.
