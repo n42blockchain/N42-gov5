@@ -34,6 +34,8 @@ import (
 type QMDBRootComputer struct {
 	t              *qmdb.Tree
 	flushedThrough uint64         // entry-log slots already persisted (for incremental flush)
+	stagedFlushed  uint64         // FlushTo's advanced cursor, adopted only by CommitFlushed
+	stagedValid    bool           // stagedFlushed holds a not-yet-committed FlushTo
 	mdbxIdx        *qmdbMDBXIndex // non-nil when the live-key index is MDBX-backed
 	indexTrusted   uint64         // slot cursor below which the in-RAM index matches the store (ReloadForBuild fast path); 0 = never fully loaded
 	indexDelta     int            // live-bits minus index-size baseline after the last full rebuild (fossil slots; see LoadFromTrustedIndex)
@@ -98,8 +100,10 @@ func (r *QMDBRootComputer) RevertBlock(tx kv.RwTx, undo *qmdb.BlockUndo) error {
 	// position this revert is about to abandon; replaying it later (the
 	// dangling-candidate peel) would double-revert against the rewound tree.
 	// The caller peels dangling appends BEFORE reverting, so at this point a
-	// leftover record is stale by construction — drop it.
+	// leftover record is stale by construction — drop it. A staged flush from
+	// that abandoned position is equally stale.
 	r.lastUndo = nil
+	r.AbortFlushed()
 	ft, err := r.t.ApplyUndoWithStorage(tx, undo, r.flushedThrough)
 	if err != nil {
 		return err
@@ -157,6 +161,7 @@ func (r *QMDBRootComputer) LoadFrom(g qmdb.Getter) error {
 		return err
 	}
 	r.flushedThrough = r.t.NextSlot()
+	r.stagedValid = false // any staged flush described the abandoned layout
 	r.indexTrusted = r.t.NextSlot()
 	// Baseline for trusted-reload reconciliation: fossil live bits (rows lost
 	// to the fixed deadFlushed carryover bug) make this nonzero fleet-wide;
@@ -197,6 +202,7 @@ func (r *QMDBRootComputer) ReloadForBuild(g qmdb.Getter) error {
 		log.Warn("qmdb speculative full rebuild done", "elapsed", time.Since(t1))
 	}
 	r.flushedThrough = r.t.NextSlot()
+	r.stagedValid = false
 	r.indexTrusted = r.t.NextSlot()
 	r.indexDelta = r.t.LiveBits() - r.t.LiveCount()
 	return nil
@@ -204,6 +210,13 @@ func (r *QMDBRootComputer) ReloadForBuild(g qmdb.Getter) error {
 
 // FlushTo persists entries appended since the last flush plus twig metadata and
 // recovery meta (positional, sequential). Returns bytes written.
+//
+// The advanced flush cursor is only STAGED here: the writes live in p's
+// transaction, which may still roll back. The caller must follow up with
+// CommitFlushed once that tx commits (or AbortFlushed if it rolls back) —
+// adopting the cursor before the tx is durable is how a rollback used to
+// leave flushedThrough pointing past rows that never reached disk, silently
+// skipping them on every later flush.
 func (r *QMDBRootComputer) FlushTo(p qmdb.Putter) (int, error) {
 	// Settle the batch's accumulated death-stamp deltas first (one
 	// read-modify-write per touched twig per batch), same tx as the flush.
@@ -214,11 +227,33 @@ func (r *QMDBRootComputer) FlushTo(p qmdb.Putter) (int, error) {
 	if err != nil {
 		return n, err
 	}
-	r.flushedThrough = next
+	r.stagedFlushed = next
+	r.stagedValid = true
 	if r.mdbxIdx != nil {
 		r.mdbxIdx.persistCount() // index rows are already written through the tx
 	}
 	return n, nil
+}
+
+// CommitFlushed adopts the cursor staged by the last FlushTo after its
+// surrounding transaction committed. Call before EvictFlushed — eviction only
+// covers slots below the ADOPTED cursor, so an uncommitted flush never has its
+// rows dropped from RAM.
+func (r *QMDBRootComputer) CommitFlushed() {
+	if r.stagedValid {
+		r.flushedThrough = r.stagedFlushed
+		r.stagedValid = false
+	}
+	r.t.CommitFlush()
+}
+
+// AbortFlushed discards the staged cursor after the surrounding transaction
+// rolled back and re-queues the tree's staged dead-row reclaims. Call BEFORE
+// peeling the failed block's appends (TakeUndo + ApplyUndo) so the peel sees
+// the restored bookkeeping.
+func (r *QMDBRootComputer) AbortFlushed() {
+	r.stagedValid = false
+	r.t.AbortFlush()
 }
 
 // SetCold attaches the cold entry source (the persisted positional log) so the

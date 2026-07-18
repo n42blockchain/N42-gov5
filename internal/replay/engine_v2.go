@@ -1214,6 +1214,10 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				if ferr != nil {
 					return fmt.Errorf("QMDB flush: %w", ferr)
 				}
+				// Offline batch tool: a failed batch aborts the whole run and
+				// resume reloads from disk, so adopt the flush cursor eagerly
+				// (no rollback-with-live-tree path to protect).
+				qmdbRC.CommitFlushed()
 				// Evict the just-flushed entries from RAM (recoverable from the cold
 				// reader = this tx's persisted log). Bounds resident memory to the
 				// unflushed window instead of O(history).

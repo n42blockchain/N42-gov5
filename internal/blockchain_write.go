@@ -372,8 +372,14 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			if _, err := bc.qmdbRootComputer.FlushTo(tx); err != nil {
 				return fmt.Errorf("flushing QMDB entries for block %d failed: %w", blockNumber.Uint64(), err)
 			}
-			bc.qmdbRootComputer.EvictFlushed()
-			undo := bc.qmdbRootComputer.TakeUndo()
+			// EvictFlushed / TakeUndo / CommitFlushed run AFTER this tx commits
+			// (below, outside the Update): running them here consumed the undo
+			// and dropped the flushed window from RAM while the tx could still
+			// roll back — a late failure then had no undo to peel with, a flush
+			// cursor pointing past rows that never reached disk, and evicted
+			// entries recoverable from nowhere. Peek at the undo without
+			// consuming it; the failure path needs it intact.
+			undo := bc.qmdbRootComputer.LastUndo()
 			if undo == nil {
 				undo = &qmdb.BlockUndo{PrevNextSlot: bc.qmdbRootComputer.Tree().NextSlot()}
 			}
@@ -435,7 +441,24 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		}
 		return nil
 	}); err != nil {
+		if bc.qmdbEnabled && bc.qmdbRootComputer != nil {
+			// The tx rolled back: discard the staged flush cursor and re-queue
+			// the staged dead-row reclaims. lastUndo is intentionally KEPT —
+			// the peel (revertUncommittedQMDBAppends / the next import's
+			// dangling-candidate peel) needs it to strip this block's appends
+			// off the in-memory tree.
+			bc.qmdbRootComputer.AbortFlushed()
+		}
 		return NonStatTy, err
+	}
+	if ibs != nil && bc.qmdbEnabled && bc.qmdbRootComputer != nil {
+		// The tx is durable: adopt the staged flush cursor, then evict the
+		// flushed window (its rows are now recoverable from cold) and consume
+		// the undo so a LATER failure can't peel this committed block's appends
+		// with a stale record.
+		bc.qmdbRootComputer.CommitFlushed()
+		bc.qmdbRootComputer.EvictFlushed()
+		bc.qmdbRootComputer.TakeUndo()
 	}
 
 	// Refresh the JMT backing store's RO transaction so it sees the just-committed nodes.

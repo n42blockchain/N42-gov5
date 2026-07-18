@@ -182,6 +182,9 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 				return flushedThrough, bytesW, err
 			}
 		}
+		// Stage instead of dropping: the deletes live in the caller's tx, which
+		// may still roll back. CommitFlush finalizes, AbortFlush re-queues.
+		t.stagedDead = append(t.stagedDead, t.deadFlushed...)
 		t.deadFlushed = t.deadFlushed[:0]
 	}
 	// Twig metadata v2: root + leafRoot + activeBits. Skip twigs whose leaves
@@ -227,6 +230,19 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 	}
 	bytesW += 8
 	return t.nextSlot, bytesW, nil
+}
+
+// CommitFlush finalizes the last FlushTo after its surrounding transaction
+// committed: the staged dead-row deletes are durable and can be forgotten.
+func (t *Tree) CommitFlush() { t.stagedDead = t.stagedDead[:0] }
+
+// AbortFlush undoes the last FlushTo's in-memory bookkeeping after its
+// surrounding transaction rolled back: the dead-row deletes never reached disk,
+// so re-queue them for the next flush. Call BEFORE any ApplyUndo peel — the
+// peel prunes revived slots out of deadFlushed and must see the full list.
+func (t *Tree) AbortFlush() {
+	t.deadFlushed = append(t.deadFlushed, t.stagedDead...)
+	t.stagedDead = t.stagedDead[:0]
 }
 
 // LoadFrom rebuilds the in-memory forest from a previously-flushed positional
@@ -315,6 +331,7 @@ func (t *Tree) resetForLoad() {
 	t.rootDirty = true
 	t.nDirtyTwigs = 0
 	t.deadFlushed = nil
+	t.stagedDead = nil
 	t.upper = nil
 	t.upCap = 0
 	t.upDirty = nil

@@ -2451,6 +2451,10 @@ func (bc *BlockChain) revertUncommittedQMDBAppends(blockNum uint64) {
 	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil {
 		return
 	}
+	// Idempotent with the writeBlockWithState failure path: make sure the
+	// staged flush is discarded before the peel — ApplyUndo prunes revived
+	// slots out of deadFlushed and must see the re-queued reclaim list.
+	bc.qmdbRootComputer.AbortFlushed()
 	undo := bc.qmdbRootComputer.TakeUndo()
 	if undo == nil {
 		return // failed before ComputeRoot — nothing was appended

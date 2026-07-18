@@ -37,10 +37,11 @@ func rlApplyBlock(t *testing.T, db kv.RwDB, rc *QMDBRootComputer, accts map[type
 	if _, err := rc.FlushTo(tx); err != nil {
 		t.Fatalf("FlushTo: %v", err)
 	}
-	rc.EvictFlushed()
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+	rc.CommitFlushed()
+	rc.EvictFlushed()
 	rc.SetCold(nil)
 	return rc.TakeUndo(), root
 }
