@@ -99,9 +99,11 @@ func (cm *ChallengeManager) Submit(taskID types.Hash, challenger types.Address, 
 	return challengeID, nil
 }
 
-// Resolve marks a challenge as upheld or rejected.
-// If upheld, the original optimistic result is invalidated and the challenger is rewarded.
-// If rejected, the challenger's bond is forfeited.
+// Resolve records the outcome (upheld/rejected) on the challenge. It is a
+// status transition only; the economic settlement — slashing the provider and
+// forfeiting or returning the challenger's escrowed bond — is performed by the
+// scheduler at resolution time (see scheduler.SubmitChallenge), which owns the
+// escrow and provider registry.
 func (cm *ChallengeManager) Resolve(challengeID types.Hash, upheld bool) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()

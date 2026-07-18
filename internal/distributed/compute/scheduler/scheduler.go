@@ -592,6 +592,12 @@ func (s *Scheduler) SubmitChallenge(id types.Hash, challenger types.Address, bon
 		s.settleChallengedAsVerified(id, run)
 		return false, err
 	}
+	// Escrow the challenger's bond onto the task so challenging isn't free: a
+	// bad-faith (rejected) challenge forfeits it to the wronged provider, and a
+	// good-faith (upheld) challenge returns it. Without this the bond was a
+	// decorative number and a griefer could force unlimited referee
+	// re-executions at no cost.
+	s.escrow.Lock(id, bond)
 
 	// Referee re-execution under the task's own lease budget.
 	refCtx, cancel := context.WithTimeout(s.ctx, run.spec.Lease)
@@ -609,14 +615,20 @@ func (s *Scheduler) SubmitChallenge(id types.Hash, challenger types.Address, bon
 	if upheld {
 		_ = s.cfg.Tasks.UpdateStatus(id, coprocessor.TaskFailed, nil, nil, "challenge upheld: "+reason)
 		s.cfg.Slasher.Slash(winner, coprocessor.SlashChallengeUpheld, id)
+		// Good-faith challenge: return the challenger's bond, then refund the
+		// task's remaining reward (the failed provider is paid nothing).
+		_ = s.escrow.Pay(id, challenger, bond)
 		s.escrow.RefundRemainder(id)
 		run.finish(TaskResult{TaskID: id, Status: coprocessor.TaskFailed, Err: "challenge upheld"})
 		return true, nil
 	}
 
-	// Rejected: the original result stands; finalize immediately (slice-1
-	// single-challenger simplification — a production window would reopen
-	// for other challengers).
+	// Rejected: the original result stood, so the spurious challenger forfeits
+	// its bond to the wronged winner. Pay it out BEFORE settlement refunds the
+	// task remainder, or the bond would be refunded instead of forfeited.
+	_ = s.escrow.Pay(id, winner, bond)
+	// Finalize immediately (slice-1 single-challenger simplification — a
+	// production window would reopen for other challengers).
 	s.settleChallengedAsVerified(id, run)
 	return false, nil
 }
