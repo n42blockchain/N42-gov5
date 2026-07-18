@@ -375,6 +375,22 @@ func (t *ShardedTree) FlushTo(p Putter, flushedThrough []uint64) ([]uint64, int,
 	return next, total, nil
 }
 
+// CommitFlush finalizes the last FlushTo on every shard after the surrounding
+// tx committed (see Tree.CommitFlush).
+func (t *ShardedTree) CommitFlush() {
+	for _, s := range t.shards {
+		s.CommitFlush()
+	}
+}
+
+// AbortFlush re-queues every shard's staged dead-row reclaims after the
+// surrounding tx rolled back (see Tree.AbortFlush).
+func (t *ShardedTree) AbortFlush() {
+	for _, s := range t.shards {
+		s.AbortFlush()
+	}
+}
+
 // LoadFrom rebuilds every shard from a Getter written by FlushTo.
 func (t *ShardedTree) LoadFrom(g Getter) error {
 	for i, s := range t.shards {
