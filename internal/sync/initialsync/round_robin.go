@@ -17,6 +17,11 @@ import (
 const (
 	// counterSeconds is an interval over which an average rate will be calculated.
 	counterSeconds = 20
+
+	// maxNoProgressBatches bounds how many consecutive orphan (parent-missing)
+	// batches may be processed without the head advancing before initial sync
+	// aborts, so one bad peer serving an orphan range cannot spin it forever.
+	maxNoProgressBatches = 32
 )
 
 // batchBlockReceiverFn defines batch receiving function.
@@ -55,6 +60,13 @@ func (s *Service) syncToFinalizedBlockNr(ctx context.Context, highestExpectedBlo
 		return err
 	}
 
+	// Guard against an orphan-range spin: a peer serving blocks whose parent we
+	// never hold makes every batch fail with errParentDoesNotExist while the
+	// head never advances, and the queue keeps re-fetching the same range
+	// forever (observed: the same orphan reprocessed 1400+ times). Bound the
+	// consecutive no-progress batches, then abort so the outer sync can
+	// restart/fall back rather than hang.
+	guard := noProgressGuard{lastHead: currentBlockNumberOrZero(s.cfg.Chain)}
 	for data := range queue.fetchedData {
 		if ctx.Err() != nil {
 			continue // drain channel but skip processing
@@ -64,7 +76,13 @@ func (s *Service) syncToFinalizedBlockNr(ctx context.Context, highestExpectedBlo
 			log.Warn("Skipping fetched data with unavailable current block number", "err", err)
 			continue
 		}
-		s.processFetchedData(ctx, currentBlock, data)
+		procErr := s.processFetchedData(ctx, currentBlock, data)
+
+		if guard.observe(currentBlockNumberOrZero(s.cfg.Chain), errors.Is(procErr, errParentDoesNotExist)) {
+			queue.stop()
+			return fmt.Errorf("initial sync stalled: %d consecutive orphan batches at head %d without progress: %w",
+				guard.count, guard.lastHead, errParentDoesNotExist)
+		}
 	}
 
 	if ctx.Err() != nil {
@@ -80,20 +98,49 @@ func (s *Service) syncToFinalizedBlockNr(ctx context.Context, highestExpectedBlo
 	return nil
 }
 
-// processFetchedData processes data received from queue.
-func (s *Service) processFetchedData(ctx context.Context, startBlockNr *uint256.Int, data *blocksQueueFetchedData) {
+// noProgressGuard bounds how many consecutive parent-missing (orphan) batches
+// may be processed without the head advancing before the sync aborts.
+type noProgressGuard struct {
+	lastHead uint64
+	count    int
+}
+
+// observe records one processed batch: head is the chain head after processing,
+// parentMissing is whether the batch failed with errParentDoesNotExist. It
+// returns true when the sync should abort (too many consecutive orphan batches
+// with no progress). Any head advance resets the counter.
+func (g *noProgressGuard) observe(head uint64, parentMissing bool) bool {
+	if head > g.lastHead {
+		g.lastHead = head
+		g.count = 0
+		return false
+	}
+	if parentMissing {
+		g.count++
+		return g.count >= maxNoProgressBatches
+	}
+	return false
+}
+
+// processFetchedData processes data received from queue. It returns the
+// processing error (nil on success) so the caller can detect a batch that could
+// not be applied — notably errParentDoesNotExist, which repeats every fetch of
+// an orphan range and, unguarded, spins the sync loop forever.
+func (s *Service) processFetchedData(ctx context.Context, startBlockNr *uint256.Int, data *blocksQueueFetchedData) error {
 	defer s.updatePeerScorerStats(data.pid, startBlockNr)
 
 	if ctx.Err() != nil {
-		return
+		return ctx.Err()
 	}
 
 	if _, err := s.processBatchedBlocks(ctx, data.blocks, s.cfg.Chain.InsertChain); err != nil {
 		if ctx.Err() != nil {
-			return // suppress errors during shutdown
+			return ctx.Err() // suppress errors during shutdown
 		}
 		log.Warn("Skipped processing batched blocks", "err", err)
+		return err
 	}
+	return nil
 }
 
 func (s *Service) processBatchedBlocks(ctx context.Context, blks []*block.Block, bFunc batchBlockReceiverFn) (int, error) {
