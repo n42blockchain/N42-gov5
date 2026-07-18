@@ -93,6 +93,9 @@ func ValidateKeyPackage(pkg *KeyPackage) error {
 // expiry).
 func keyPackageDigest(pkg *KeyPackage) []byte {
 	h := sha256.New()
+	// Domain tag: separates key-package signatures from commit signatures made
+	// with the same identity key, so neither can be replayed as the other.
+	h.Write([]byte("n42-mls-keypackage-v1"))
 	h.Write([]byte{pkg.Version})
 	h.Write([]byte{byte(pkg.CipherSuite >> 8), byte(pkg.CipherSuite)})
 	h.Write(pkg.InitKey[:])

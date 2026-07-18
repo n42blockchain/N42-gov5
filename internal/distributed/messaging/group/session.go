@@ -138,6 +138,7 @@ func (gs *GroupSession) AddMember(pkg *KeyPackage) (*Welcome, *Commit, error) {
 		Type:             CommitAdd,
 		MemberPublicKey:  pkg.InitKey,
 		MemberSigningKey: pkg.SigningKey,
+		MemberCredential: pkg.Credential,
 	}
 	commit.Signature = ed25519.Sign(gs.signer, commitSigBytes(commit))
 
@@ -284,6 +285,15 @@ func (gs *GroupSession) ProcessCommit(commit *Commit) error {
 
 	switch commit.Type {
 	case CommitAdd:
+		// A zero signing key would produce a member whose every future commit
+		// fails verification (a "mute" member) and diverges from the committer's
+		// local roster, which stored the real key — reject it.
+		if commit.MemberSigningKey == ([32]byte{}) {
+			return errors.New("commit adds a member with an empty signing key")
+		}
+		if len(gs.Members) >= DefaultMaxGroupSize {
+			return errors.New("commit would exceed the group size limit")
+		}
 		memberIdx := gs.Tree.AddLeaf(LeafNode{
 			PublicKey: commit.MemberPublicKey,
 		})
@@ -291,13 +301,22 @@ func (gs *GroupSession) ProcessCommit(commit *Commit) error {
 			Index:      memberIdx,
 			PublicKey:  commit.MemberPublicKey,
 			SigningKey: commit.MemberSigningKey,
+			Credential: commit.MemberCredential,
 		})
 	case CommitRemove:
+		found := false
 		for i, m := range gs.Members {
-			if m.Index == commit.MemberIndex {
+			if m.Index == commit.MemberIndex && !m.Removed {
 				gs.Members[i].Removed = true
+				found = true
 				break
 			}
+		}
+		// Reject a remove that targets no live member: applying it would still
+		// advance the epoch (an attacker-signed no-op that desyncs key schedules
+		// across replicas), and BlankLeaf on an unknown index silently no-ops.
+		if !found {
+			return fmt.Errorf("commit removes unknown or already-removed member %d", commit.MemberIndex)
 		}
 		gs.Tree.BlankLeaf(commit.MemberIndex)
 	case CommitUpdate:
@@ -366,13 +385,21 @@ type Commit struct {
 	MemberIndex      uint32   // for Remove
 	MemberPublicKey  [32]byte // for Add/Update
 	MemberSigningKey [32]byte // for Add: the new member's Ed25519 key
+	MemberCredential []byte   // for Add: the new member's opaque credential
 	Signature        []byte   // sender's Ed25519 signature over commitSigBytes
 }
 
-// commitSigBytes is the canonical signing input: every field except the
-// signature itself, fixed-width encoded.
+// commitSigDomain separates commit signatures from any other Ed25519 signature
+// a member's identity key produces (e.g. key packages), so a message from one
+// context can never be reinterpreted as a valid one in another.
+const commitSigDomain = "n42-mls-commit-v1"
+
+// commitSigBytes is the canonical signing input: a domain tag plus every field
+// except the signature, fixed-width encoded (the variable-length credential is
+// length-prefixed so the encoding stays injective).
 func commitSigBytes(c *Commit) []byte {
-	buf := make([]byte, 0, 32+8+4+1+4+32+32)
+	buf := make([]byte, 0, len(commitSigDomain)+32+8+4+1+4+32+32+4+len(c.MemberCredential))
+	buf = append(buf, commitSigDomain...)
 	buf = append(buf, c.GroupID[:]...)
 	var u64 [8]byte
 	binary.BigEndian.PutUint64(u64[:], c.Epoch)
@@ -385,6 +412,9 @@ func commitSigBytes(c *Commit) []byte {
 	buf = append(buf, u32[:]...)
 	buf = append(buf, c.MemberPublicKey[:]...)
 	buf = append(buf, c.MemberSigningKey[:]...)
+	binary.BigEndian.PutUint32(u32[:], uint32(len(c.MemberCredential)))
+	buf = append(buf, u32[:]...)
+	buf = append(buf, c.MemberCredential...)
 	return buf
 }
 

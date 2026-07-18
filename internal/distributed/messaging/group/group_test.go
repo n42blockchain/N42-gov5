@@ -393,11 +393,12 @@ func TestProcessCommitAdd(t *testing.T) {
 	// A commit must carry the sender's signature to be processed.
 	newMemberKey := [32]byte{0xDE, 0xAD}
 	commit := &Commit{
-		GroupID:         groupID,
-		Epoch:           1, // must be current+1
-		Sender:          0,
-		Type:            CommitAdd,
-		MemberPublicKey: newMemberKey,
+		GroupID:          groupID,
+		Epoch:            1, // must be current+1
+		Sender:           0,
+		Type:             CommitAdd,
+		MemberPublicKey:  newMemberKey,
+		MemberSigningKey: [32]byte{0xBE, 0xEF}, // non-zero: a mute member is rejected
 	}
 	commit.Signature = ed25519.Sign(kp.Signer(), commitSigBytes(commit))
 
@@ -490,6 +491,66 @@ func TestProcessCommitRejectsForgery(t *testing.T) {
 	evicted.Signature = ed25519.Sign(ed25519.NewKeyFromSeed(memberKP.PrivateKey[:]), commitSigBytes(evicted))
 	if err := gs.ProcessCommit(evicted); err == nil {
 		t.Fatal("commit from an evicted member must be rejected")
+	}
+}
+
+// TestProcessCommitValidatesMembershipChange covers the CommitAdd/CommitRemove
+// sanity checks that keep replicas from diverging on an authenticated but
+// malformed change.
+func TestProcessCommitValidatesMembershipChange(t *testing.T) {
+	kp, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	var groupID [32]byte
+	copy(groupID[:], []byte("test-commit-validate"))
+	gs, err := CreateGroup(groupID, kp)
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	sign := func(c *Commit) *Commit {
+		c.Signature = ed25519.Sign(kp.Signer(), commitSigBytes(c))
+		return c
+	}
+
+	// CommitAdd with a zero signing key would create a mute member.
+	zeroKeyAdd := sign(&Commit{
+		GroupID: groupID, Epoch: 1, Sender: 0, Type: CommitAdd,
+		MemberPublicKey: [32]byte{0xAB}, // MemberSigningKey left zero
+	})
+	if err := gs.ProcessCommit(zeroKeyAdd); err == nil {
+		t.Fatal("CommitAdd with an empty signing key must be rejected")
+	}
+
+	// CommitRemove targeting a non-member must not advance the epoch.
+	epochBefore := gs.Epoch
+	badRemove := sign(&Commit{
+		GroupID: groupID, Epoch: gs.Epoch + 1, Sender: 0, Type: CommitRemove,
+		MemberIndex: 999,
+	})
+	if err := gs.ProcessCommit(badRemove); err == nil {
+		t.Fatal("CommitRemove of an unknown member must be rejected")
+	}
+	if gs.Epoch != epochBefore {
+		t.Fatalf("rejected remove advanced the epoch to %d", gs.Epoch)
+	}
+
+	// A well-formed signed add still succeeds (control).
+	memberKP, _ := GenerateKeyPair()
+	pkg, _, err := CreateKeyPackage(memberKP.PrivateKey, []byte("m2"))
+	if err != nil {
+		t.Fatalf("CreateKeyPackage: %v", err)
+	}
+	goodAdd := sign(&Commit{
+		GroupID: groupID, Epoch: gs.Epoch + 1, Sender: 0, Type: CommitAdd,
+		MemberPublicKey: pkg.InitKey, MemberSigningKey: pkg.SigningKey,
+		MemberCredential: pkg.Credential,
+	})
+	if err := gs.ProcessCommit(goodAdd); err != nil {
+		t.Fatalf("well-formed CommitAdd rejected: %v", err)
+	}
+	if gs.Members[len(gs.Members)-1].Credential == nil {
+		t.Fatal("added member's credential was not propagated from the commit")
 	}
 }
 
