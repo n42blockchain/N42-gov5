@@ -448,6 +448,11 @@ func (e *EngineAPIV1) canonicalHeader(hash types.Hash) *block.Header {
 	if head := e.canonicalHead(); head != nil && ethCompatibleBlockHash(head, e.chainConfig()) == hash {
 		return blockHeader(head)
 	}
+	if e != nil && e.stateAdapter != nil {
+		if hdr := e.stateAdapter.HeaderByHash(hash); hdr != nil {
+			return hdr
+		}
+	}
 	if e == nil || e.api == nil || e.api.api == nil || e.api.api.BlockChain() == nil {
 		return nil
 	}
@@ -491,6 +496,17 @@ func (e *EngineAPIV1) headerByHash(hash types.Hash) *block.Header {
 	if blk := e.blockByHash(hash); blk != nil {
 		return blockHeader(blk)
 	}
+	// EthEL mode: the in-memory overlay only holds recent blocks and
+	// BlockChain() is nil, so after a restart (empty overlay) or once a ref
+	// falls past maxOverlayBlocks the header must come from chaindata via the
+	// state adapter — mirroring parentHeader. Without this, forkchoiceUpdated
+	// hard-rejects a valid safe/finalized hash with -38002 instead of
+	// accepting it, until the CL happens to re-deliver those payloads.
+	if e != nil && e.stateAdapter != nil {
+		if hdr := e.stateAdapter.HeaderByHash(hash); hdr != nil {
+			return hdr
+		}
+	}
 	if e == nil || e.api == nil || e.api.api == nil || e.api.api.BlockChain() == nil {
 		return nil
 	}
@@ -528,7 +544,12 @@ func (e *EngineAPIV1) validateForkchoiceState(state *ForkchoiceStateV1) error {
 	}
 	safeKnown := false
 	if state.SafeBlockHash != (types.Hash{}) {
-		safeKnown = e.blockByHash(state.SafeBlockHash) != nil
+		// Existence is a header-level fact; use headerByHash so the eth-el
+		// state-adapter fallback resolves refs that are no longer in the
+		// overlay (post-restart, or older than maxOverlayBlocks). blockByHash
+		// has no such fallback and would spuriously report a valid finalized
+		// ref as unknown.
+		safeKnown = e.headerByHash(state.SafeBlockHash) != nil
 		if !safeKnown && !allowUnknownHeadRef(state.SafeBlockHash) {
 			return &engineInvalidForkchoiceStateError{msg: "unknown safe block hash"}
 		}
@@ -538,7 +559,7 @@ func (e *EngineAPIV1) validateForkchoiceState(state *ForkchoiceStateV1) error {
 	}
 	finalizedKnown := false
 	if state.FinalizedBlockHash != (types.Hash{}) {
-		finalizedKnown = e.blockByHash(state.FinalizedBlockHash) != nil
+		finalizedKnown = e.headerByHash(state.FinalizedBlockHash) != nil
 		if !finalizedKnown && !allowUnknownHeadRef(state.FinalizedBlockHash) {
 			return &engineInvalidForkchoiceStateError{msg: "unknown finalized block hash"}
 		}
