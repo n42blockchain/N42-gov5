@@ -329,6 +329,36 @@ func (filterApi *FilterAPI) NewFilter(crit FilterCriteria) (jsonrpc.ID, error) {
 	return logsSub.ID, nil
 }
 
+// maxFilterBlockRange bounds an eth_getLogs / getFilterLogs scan.
+const maxFilterBlockRange = 10000
+
+// checkBlockRange rejects a log query whose block span exceeds
+// maxFilterBlockRange. begin/end may be latest/pending/safe/finalized
+// sentinels (negative); those are resolved to the head number for the check
+// only, so a {fromBlock:0, toBlock:latest} query is bounded rather than
+// falling through to a full-chain scan. The original begin/end (still
+// carrying any pending sentinel) are what the caller passes to the filter.
+func (filterApi *FilterAPI) checkBlockRange(begin, end int64) error {
+	rb, re := begin, end
+	if rb < 0 || re < 0 {
+		if bc := filterApi.api.BlockChain(); bc != nil {
+			if cur := bc.CurrentBlock(); cur != nil {
+				head := int64(cur.Number64().Uint64())
+				if rb < 0 {
+					rb = head
+				}
+				if re < 0 {
+					re = head
+				}
+			}
+		}
+	}
+	if re >= rb && re-rb > maxFilterBlockRange {
+		return fmt.Errorf("query returned more than %d results, limit block range", maxFilterBlockRange)
+	}
+	return nil
+}
+
 // GetLogs returns logs matching the given argument that are stored within the state.
 func (filterApi *FilterAPI) GetLogs(ctx context.Context, crit FilterCriteria) ([]*block.Log, error) {
 	var filter *Filter
@@ -345,10 +375,13 @@ func (filterApi *FilterAPI) GetLogs(ctx context.Context, crit FilterCriteria) ([
 		if crit.ToBlock != nil {
 			end = crit.ToBlock.Int64()
 		}
-		// Limit the block range to prevent DoS.
-		const maxBlockRange = 10000
-		if end >= begin && end-begin > maxBlockRange {
-			return nil, fmt.Errorf("query returned more than %d results, limit block range", maxBlockRange)
+		// Limit the block range to prevent DoS. Resolve latest/pending
+		// sentinels to the head number first: the raw sentinels are negative
+		// (latest=-1), so the naive end-begin check never trips for the common
+		// {fromBlock:0, toBlock:latest} filter and it fell through to a full-
+		// chain scan (result count is capped downstream, CPU/IO is not).
+		if err := filterApi.checkBlockRange(begin, end); err != nil {
+			return nil, err
 		}
 		// Construct the range filter
 		filter = NewRangeFilter(filterApi.api, begin, end, crit.Addresses, crit.Topics)
@@ -402,12 +435,11 @@ func (filterApi *FilterAPI) GetFilterLogs(ctx context.Context, id jsonrpc.ID) ([
 		if f.crit.ToBlock != nil {
 			end = f.crit.ToBlock.Int64()
 		}
-		// Bound the block range like GetLogs: a filter installed with
-		// {fromBlock:0,toBlock:latest} would otherwise force an unbounded
-		// full-chain scan here (result count is capped downstream, CPU/IO is not).
-		const maxBlockRange = 10000
-		if end >= begin && end-begin > maxBlockRange {
-			return nil, fmt.Errorf("query returned more than %d results, limit block range", maxBlockRange)
+		// Bound the block range like GetLogs (resolving latest/pending
+		// sentinels first): a filter installed with {fromBlock:0,toBlock:latest}
+		// would otherwise force an unbounded full-chain scan here.
+		if err := filterApi.checkBlockRange(begin, end); err != nil {
+			return nil, err
 		}
 		// Construct the range filter
 		filter = NewRangeFilter(filterApi.api, begin, end, f.crit.Addresses, f.crit.Topics)
