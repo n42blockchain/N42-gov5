@@ -29,6 +29,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -315,9 +317,17 @@ func (h *httpServer) enableRPC(apis []jsonrpc.API, config httpConfig) error {
 		Handler: NewHTTPHandlerStack(srv, config.CorsAllowedOrigins, config.Vhosts, config.jwtSecret, config.rateLimiter),
 		server:  srv,
 	})
-	// Register /health endpoint
-	h.mux.Handle("/health", newHealthHandler(h.healthProvider))
-	h.handlerNames["/health"] = "health check"
+	// Register /health — but NOT on the JWT-protected port. Mux-mounted
+	// handlers are served directly by ServeHTTP, bypassing the middleware
+	// stack (CORS/JWT/rate-limit), so mounting /health here would expose an
+	// unauthenticated endpoint (uptime, head block, peer count) on the
+	// authenticated listener whose entire purpose is JWT. A non-empty
+	// jwtSecret marks that listener; only the public server (empty secret)
+	// gets the health endpoint.
+	if len(config.jwtSecret) == 0 {
+		h.mux.Handle("/health", newHealthHandler(h.healthProvider))
+		h.handlerNames["/health"] = "health check"
+	}
 	return nil
 }
 
@@ -469,7 +479,26 @@ type ipcServer struct {
 }
 
 func newIPCServer(config *conf.NodeConfig) *ipcServer {
-	return &ipcServer{endpoint: fmt.Sprintf("%s/%s", config.DataDir, config.IPCPath)}
+	return &ipcServer{endpoint: ipcEndpoint(config.IPCPath, config.DataDir)}
+}
+
+// ipcEndpoint resolves the platform-specific IPC address. On Windows the
+// transport is a named pipe, which npipe.Listen requires to be of the form
+// \\.\pipe\<name>; the previous datadir/ipcpath join produced a filesystem
+// path that npipe rejected with badAddr, so IPC was a silent no-op on every
+// Windows node. Elsewhere a bare filename is placed under the datadir (a
+// 0700 dir), matching geth's unix-socket convention.
+func ipcEndpoint(ipcPath, datadir string) string {
+	if runtime.GOOS == "windows" {
+		if strings.HasPrefix(ipcPath, `\\.\pipe\`) {
+			return ipcPath
+		}
+		return `\\.\pipe\` + filepath.Base(ipcPath)
+	}
+	if filepath.Base(ipcPath) == ipcPath {
+		return filepath.Join(datadir, ipcPath)
+	}
+	return ipcPath
 }
 
 func (is *ipcServer) start(apis []jsonrpc.API) error {

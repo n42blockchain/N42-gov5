@@ -207,6 +207,15 @@ func Validate(cfg *Config) error {
 		}
 	}
 
+	// The coprocessor is default-enabled on the n42 native fleet, so a bad
+	// stanza (e.g. provider_enabled with no address) must fail config load
+	// rather than surface only inside NewService at startup — where the error
+	// is logged and swallowed, leaving the node reporting healthy with the
+	// entire coprocessor_* namespace silently absent.
+	if err := cfg.CoprocessorCfg.Validate(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
