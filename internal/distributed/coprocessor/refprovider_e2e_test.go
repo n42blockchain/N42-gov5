@@ -495,3 +495,18 @@ func TestClaimIfPendingAtomic(t *testing.T) {
 		t.Fatalf("assigned = %s, want winner %s", snap.AssignedProvider.Hex(), winner.Hex())
 	}
 }
+
+func TestServeClaimablePrunesFailuresForGoneTasks(t *testing.T) {
+	svc := newE2EService(t)
+	failed := map[types.Hash]struct{}{
+		types.HexToHash("0xdead"): {},
+	}
+
+	// There are no pending tasks, so the provider is never dereferenced. A
+	// failure remembered for a task that has expired or been pruned must be
+	// removed on the next poll instead of leaking for the service lifetime.
+	svc.serveClaimable(nil, 0, failed)
+	if len(failed) != 0 {
+		t.Fatalf("stale resident-provider failures retained: %v", failed)
+	}
+}
