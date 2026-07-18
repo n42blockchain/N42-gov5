@@ -136,3 +136,29 @@ func TestSlashUnknownProvider(t *testing.T) {
 		t.Fatalf("expected 0 slash events for unknown provider, got %d", len(sm.SlashHistory()))
 	}
 }
+
+// TestSlashWeiScaleNoOverflow: at wei-scale stakes (10 ETH) the slash amount
+// must be computed without overflowing uint64. The naive Stake*pct/100 wraps
+// for any pct>1 and grossly under-slashes; the split formula must be exact.
+func TestSlashWeiScaleNoOverflow(t *testing.T) {
+	const tenETH = uint64(10_000_000_000_000_000_000) // 1e19 wei
+	pr := NewProviderRegistry(1)
+	addr := types.HexToAddress("0xaa")
+	pr.Register(addr, tenETH, nil)
+
+	sm := NewSlashManager(pr, 10) // 10%
+	sm.Slash(addr, SlashTimeout, types.HexToHash("0xbb"))
+
+	want := tenETH / 10 // exactly 1 ETH
+	events := sm.SlashHistory()
+	if len(events) != 1 {
+		t.Fatalf("slash events = %d, want 1", len(events))
+	}
+	if events[0].Amount != want {
+		t.Fatalf("slash amount = %d, want %d (naive overflow gives ~7.77e16)", events[0].Amount, want)
+	}
+	p, _ := pr.Get(addr)
+	if p.Stake != tenETH-want {
+		t.Fatalf("remaining stake = %d, want %d", p.Stake, tenETH-want)
+	}
+}

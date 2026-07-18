@@ -272,3 +272,134 @@ func TestRegistryBytecodeHashCheck(t *testing.T) {
 		t.Fatal("bytecode roundtrip failed")
 	}
 }
+
+// TestResidentProviderSkipsNonOptimisticTier: a default-tier (ZK) task must
+// NOT be touched by the resident WASM provider — submitting raw output as a
+// ZK proof would drive the honest submitter's task to Failed (regression for
+// the f4de645b tier-blindness bug).
+func TestResidentProviderSkipsNonOptimisticTier(t *testing.T) {
+	ctx := context.Background()
+	svc := newE2EService(t)
+
+	bytecode := facWasm(t)
+	programHash := crypto.Keccak256Hash(bytecode)
+	if err := svc.RegisterProgram(programHash, []byte("fac-vk"), "factorial"); err != nil {
+		t.Fatalf("register program: %v", err)
+	}
+	if err := svc.Registry().SetBytecode(programHash, bytecode); err != nil {
+		t.Fatalf("set bytecode: %v", err)
+	}
+
+	engine := wasm.NewEngine(wasm.NewWazeroRuntime(ctx), 16, 30, 1.0)
+	provAddr := types.HexToAddress("0xC0DE03")
+	if err := svc.RegisterProvider(provAddr, 100, []Capability{CapWASM}); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+	prov := NewReferenceProvider(svc, provAddr, engine, "fac-ssa")
+	svc.AttachProvider(prov, 100*time.Millisecond, 10_000_000, func() { _ = engine.Close(context.Background()) })
+
+	// Default-tier submit (TierZK).
+	taskID, err := svc.SubmitTask(programHash, i64BE(5), types.HexToAddress("0xABCD03"))
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	// Give the loop several polls; the task must stay Pending and unassigned.
+	time.Sleep(700 * time.Millisecond)
+	snap, ok := svc.Tasks().GetTaskSnapshot(taskID)
+	if !ok {
+		t.Fatal("task vanished")
+	}
+	if snap.Status != TaskPending {
+		t.Fatalf("ZK task was touched by resident provider: status = %s (want Pending)", snap.Status)
+	}
+	if snap.AssignedProvider != (types.Address{}) {
+		t.Fatalf("ZK task was claimed by resident provider: %s", snap.AssignedProvider.Hex())
+	}
+}
+
+// TestResidentProviderReleasesClaimOnExecFailure: a task whose input the
+// program cannot execute must not leave the provider holding the claim into
+// expiry (which slashExpiredAssignments would then slash). The provider
+// releases the claim and is never slashed (regression for the f4de645b
+// claim-leak/self-slash bug).
+func TestResidentProviderReleasesClaimOnExecFailure(t *testing.T) {
+	ctx := context.Background()
+	svc := newE2EService(t)
+
+	bytecode := facWasm(t)
+	programHash := crypto.Keccak256Hash(bytecode)
+	if err := svc.RegisterProgram(programHash, []byte("fac-vk"), "factorial"); err != nil {
+		t.Fatalf("register program: %v", err)
+	}
+	if err := svc.Registry().SetBytecode(programHash, bytecode); err != nil {
+		t.Fatalf("set bytecode: %v", err)
+	}
+
+	engine := wasm.NewEngine(wasm.NewWazeroRuntime(ctx), 16, 30, 1.0)
+	provAddr := types.HexToAddress("0xC0DE04")
+	if err := svc.RegisterProvider(provAddr, 100, []Capability{CapWASM}); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+	prov := NewReferenceProvider(svc, provAddr, engine, "fac-ssa")
+
+	// fac-ssa expects an 8-byte i64 argument; a 3-byte input makes Execute fail.
+	taskID, err := svc.SubmitTaskWithTier(programHash, []byte{1, 2, 3}, types.HexToAddress("0xABCD04"), TierOptimistic, 50)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	// One manual Serve must fail and release the claim.
+	if _, err := prov.Serve(ctx, taskID, 10_000_000); err == nil {
+		t.Fatal("Serve should fail on malformed input")
+	}
+	snap, _ := svc.Tasks().GetTaskSnapshot(taskID)
+	if snap.AssignedProvider != (types.Address{}) {
+		t.Fatalf("claim not released after exec failure: still assigned to %s", snap.AssignedProvider.Hex())
+	}
+	if snap.Status != TaskPending {
+		t.Fatalf("task status = %s, want Pending (available for retry)", snap.Status)
+	}
+
+	// Drive expiry + maintenance; the provider must NOT be slashed, because it
+	// no longer holds the claim.
+	engine.Close(context.Background())
+	time.Sleep(1500 * time.Millisecond)
+	for _, ev := range svc.Slasher().SlashHistory() {
+		if ev.Provider == provAddr {
+			t.Fatalf("provider was slashed for a task it released: %+v", ev)
+		}
+	}
+}
+
+// TestClaimIfPendingAtomic: two concurrent claims on the same task — exactly
+// one wins, the other gets ErrTaskAlreadyAssigned (regression for the
+// check-then-assign TOCTOU).
+func TestClaimIfPendingAtomic(t *testing.T) {
+	svc := newE2EService(t)
+	bytecode := facWasm(t)
+	programHash := crypto.Keccak256Hash(bytecode)
+	if err := svc.RegisterProgram(programHash, []byte("vk"), "p"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	taskID, err := svc.SubmitTaskWithTier(programHash, i64BE(5), types.HexToAddress("0xABCD05"), TierOptimistic, 50)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	a := types.HexToAddress("0xAA")
+	b := types.HexToAddress("0xBB")
+	errA := svc.Tasks().ClaimIfPending(taskID, a, 0)
+	errB := svc.Tasks().ClaimIfPending(taskID, b, 0)
+	if (errA == nil) == (errB == nil) {
+		t.Fatalf("exactly one claim should win: errA=%v errB=%v", errA, errB)
+	}
+	snap, _ := svc.Tasks().GetTaskSnapshot(taskID)
+	winner := a
+	if errB == nil {
+		winner = b
+	}
+	if snap.AssignedProvider != winner {
+		t.Fatalf("assigned = %s, want winner %s", snap.AssignedProvider.Hex(), winner.Hex())
+	}
+}
