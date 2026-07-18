@@ -368,15 +368,21 @@ func (oracle *Oracle) FeeHistory(ctx context.Context, blocks int, unresolvedLast
 						fees.results = p.(processedFees)
 						results <- fees
 					} else {
+						// Fetch the block/header for THIS iteration's blockNumber, not
+						// the range-end resolvedLastBlock: each worker covers a distinct
+						// block and its result is stored at index blockNumber-oldestBlock.
+						// Using resolvedLastBlock returned the last block's fees for the
+						// whole range (and cached them per-block, so persistently wrong).
+						blockNum256 := uint256.NewInt(blockNumber)
 						if len(rewardPercentiles) != 0 {
-							fees.block, fees.err = oracle.backend.GetBlockByNumber(resolvedLastBlock)
+							fees.block, fees.err = oracle.backend.GetBlockByNumber(blockNum256)
 							if fees.block != nil && fees.err == nil {
 								fees.receipts, fees.err = oracle.backend.GetReceipts(fees.block.Hash())
 								fees.header = fees.block.Header()
 							}
 						} else {
 							fees.err = nil
-							fees.header = oracle.backend.GetHeaderByNumber(resolvedLastBlock)
+							fees.header = oracle.backend.GetHeaderByNumber(blockNum256)
 						}
 						if fees.header != nil && fees.err == nil {
 							oracle.processBlock(fees, rewardPercentiles)

@@ -402,6 +402,13 @@ func (filterApi *FilterAPI) GetFilterLogs(ctx context.Context, id jsonrpc.ID) ([
 		if f.crit.ToBlock != nil {
 			end = f.crit.ToBlock.Int64()
 		}
+		// Bound the block range like GetLogs: a filter installed with
+		// {fromBlock:0,toBlock:latest} would otherwise force an unbounded
+		// full-chain scan here (result count is capped downstream, CPU/IO is not).
+		const maxBlockRange = 10000
+		if end >= begin && end-begin > maxBlockRange {
+			return nil, fmt.Errorf("query returned more than %d results, limit block range", maxBlockRange)
+		}
 		// Construct the range filter
 		filter = NewRangeFilter(filterApi.api, begin, end, f.crit.Addresses, f.crit.Topics)
 	}
