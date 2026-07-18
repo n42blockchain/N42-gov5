@@ -2537,6 +2537,14 @@ func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authori
 			log.Warn("qmdb tree reloaded from disk after failed unwind", "unwindErr", err)
 		}
 	}
+	if err == nil {
+		// The unwind's per-block RevertBlock flushed the rewound layout through
+		// the now-committed tx and staged its dead-row reclaims; adopt them so a
+		// later block's AbortFlushed can't re-queue deletes that are already
+		// durable. (A mutated failure took the reload branch above, which resets
+		// the staged state; a pre-mutation reject staged nothing.)
+		bc.qmdbRootComputer.CommitFlushed()
+	}
 	return err
 }
 

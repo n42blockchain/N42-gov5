@@ -332,6 +332,15 @@ func (t *Tree) resetForLoad() {
 	t.nDirtyTwigs = 0
 	t.deadFlushed = nil
 	t.stagedDead = nil
+	// A reload replaces the in-memory tree wholesale, so any death stamps still
+	// pending in the recorder describe the ABANDONED tree (e.g. a failed
+	// execution's recordDeath that never reached FlushHistory). Flushing them
+	// later would stamp still-live slots dead at a rolled-back block's height.
+	// Discard them with the tree they belong to. (No-op in the healthy replay
+	// path, where FlushHistory already drained stampDelta before the reload.)
+	if t.hist != nil {
+		t.hist.reset()
+	}
 	t.upper = nil
 	t.upCap = 0
 	t.upDirty = nil

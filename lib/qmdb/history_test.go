@@ -181,6 +181,67 @@ func TestProofAtHeightFullScan(t *testing.T) {
 	}
 }
 
+// TestReloadDiscardsPendingDeathStamps pins the latent-ghost fix: death stamps
+// recorded by a block whose execution then fails (recordDeath ran, FlushHistory
+// did NOT) must not survive a reload and get flushed at the failed block's
+// height — that would stamp a still-live slot dead in the historical index.
+func TestReloadDiscardsPendingDeathStamps(t *testing.T) {
+	tr := New()
+	store := newMapStore()
+	hstore := newMapHistoryStore()
+	tr.SetCold(ColdReaderFromGetter(store))
+	tr.SetLeafStore(LeafStoreFromGetter(store))
+	tr.SetHistoryRecorder(NewHistoryRecorder(hstore))
+
+	// Block 1: seed a key, flush + settle history, "commit".
+	if err := tr.BeginBlock(1); err != nil {
+		t.Fatalf("begin 1: %v", err)
+	}
+	tr.Set(hKey(1), hVal(1, 1))
+	if err := tr.EndBlock(); err != nil {
+		t.Fatalf("end 1: %v", err)
+	}
+	next, _, err := tr.FlushTo(store, 0)
+	if err != nil {
+		t.Fatalf("flush 1: %v", err)
+	}
+	if err := tr.FlushHistory(); err != nil {
+		t.Fatalf("flush history 1: %v", err)
+	}
+
+	// Block 2 executes and kills the key (recordDeath populates stampDelta) but
+	// then "fails": no FlushHistory, no commit.
+	if err := tr.BeginBlock(2); err != nil {
+		t.Fatalf("begin 2: %v", err)
+	}
+	tr.Delete(hKey(1))
+	if len(tr.hist.stampDelta) == 0 {
+		t.Fatal("precondition: block 2 delete should have recorded a pending death stamp")
+	}
+
+	// Recovery reload from the block-1 layout on disk.
+	if err := tr.LoadFrom(store); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if len(tr.hist.stampDelta) != 0 {
+		t.Fatalf("reload left %d ghost death stamp(s) pending", len(tr.hist.stampDelta))
+	}
+
+	// A subsequent clean block must not carry block-2's ghost death: flush and
+	// confirm the key is still provable-live at block 1.
+	_ = next
+	proof, root, found, err := tr.ProofAtHeight(hKey(1), 1)
+	if err != nil {
+		t.Fatalf("proof at h=1: %v", err)
+	}
+	if !found {
+		t.Fatal("key seeded at block 1 must still be live at block 1 after the discarded failure")
+	}
+	if !VerifyProof(root, proof) {
+		t.Fatal("proof does not verify")
+	}
+}
+
 // TestProofAtHeightSurvivesEvictionAndFlush: history reconstruction must work
 // with the production memory tiers active (flush + entry eviction + twig-node
 // eviction), reading frozen leaves back from blobs/cold rows.

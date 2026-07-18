@@ -160,6 +160,14 @@ func (t *Tree) EndBlock() error {
 	return nil
 }
 
+// reset drops all pending (not-yet-flushed) death-stamp deltas. Called when the
+// tree is reloaded from disk: the pending deltas belong to the discarded
+// in-memory tree, not the reloaded one.
+func (r *HistoryRecorder) reset() {
+	r.stampDelta = make(map[uint64]map[uint64]uint32)
+	r.appendErr = nil
+}
+
 // recordDeath stamps a slot killed in the current block.
 func (r *HistoryRecorder) recordDeath(slot uint64) {
 	twigID, local := slot/TwigSize, slot%TwigSize
