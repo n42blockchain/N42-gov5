@@ -24,7 +24,10 @@
 
 package bmt
 
-import "bytes"
+import (
+	"bytes"
+	"fmt"
+)
 
 // Tree is a content-addressed Binary Merkle Tree backed by a NodeStore.
 //
@@ -98,38 +101,52 @@ func (t *Tree) Put(keyHash Hash, value []byte) error {
 	t.setNode(leafHash, encoded)
 
 	keyPath := FromKeyHash(keyHash)
-	t.root = t.insert(t.root, keyPath, keyHash, 0, leafHash)
+	newRoot, err := t.insert(t.root, keyPath, keyHash, 0, leafHash)
+	if err != nil {
+		return err
+	}
+	t.root = newRoot
 	return nil
 }
 
-func (t *Tree) insert(nodeHash Hash, keyPath Path, keyHash Hash, depth int, leafHash Hash) Hash {
+func (t *Tree) insert(nodeHash Hash, keyPath Path, keyHash Hash, depth int, leafHash Hash) (Hash, error) {
 	if nodeHash == EmptyHash {
-		return leafHash
+		return leafHash, nil
 	}
 	data, err := t.getNode(nodeHash)
 	if err != nil {
-		return leafHash
+		// A missing node must NOT be treated as an empty slot: returning
+		// leafHash here silently discards the entire existing subtree at
+		// nodeHash and rebuilds from one leaf, diverging the root with no error
+		// (hit when a batch runs over a store lacking prior-batch nodes).
+		return EmptyHash, fmt.Errorf("bmt insert: missing node %x: %w", nodeHash[:8], err)
 	}
 	if isLeaf(data) {
 		existingKey, ok := extractLeafKeyHash(data)
 		if !ok {
-			return leafHash
+			return EmptyHash, fmt.Errorf("bmt insert: undecodable leaf %x", nodeHash[:8])
 		}
 		if existingKey == keyHash {
-			return leafHash // same key: replace
+			return leafHash, nil // same key: replace
 		}
 		// Different key: split
 		existingPath := FromKeyHash(existingKey)
-		return t.splitLeaves(nodeHash, existingPath, leafHash, keyPath, depth)
+		return t.splitLeaves(nodeHash, existingPath, leafHash, keyPath, depth), nil
 	}
 	// Internal: descend
 	left, right := decodeInternalNode(data)
 	if keyPath.Bit(depth) == 0 {
-		newLeft := t.insert(left, keyPath, keyHash, depth+1, leafHash)
-		return t.makeInternal(newLeft, right)
+		newLeft, err := t.insert(left, keyPath, keyHash, depth+1, leafHash)
+		if err != nil {
+			return EmptyHash, err
+		}
+		return t.makeInternal(newLeft, right), nil
 	}
-	newRight := t.insert(right, keyPath, keyHash, depth+1, leafHash)
-	return t.makeInternal(left, newRight)
+	newRight, err := t.insert(right, keyPath, keyHash, depth+1, leafHash)
+	if err != nil {
+		return EmptyHash, err
+	}
+	return t.makeInternal(left, newRight), nil
 }
 
 func (t *Tree) splitLeaves(existingHash Hash, existingPath Path, newHash Hash, newPath Path, depth int) Hash {
@@ -381,7 +398,11 @@ func (t *Tree) PutBatch(entries []BatchEntry) error {
 			deduped = append(deduped, it)
 		}
 	}
-	t.root = t.insertBatch(t.root, deduped, 0)
+	newRoot, err := t.insertBatch(t.root, deduped, 0)
+	if err != nil {
+		return err
+	}
+	t.root = newRoot
 	return nil
 }
 
@@ -411,9 +432,9 @@ func comparePath(a, b Hash) int {
 // insertBatch recursively inserts sorted items into the subtree rooted at nodeHash.
 // Items are partitioned by bit at current depth: left (bit=0) and right (bit=1).
 // Each internal node is created exactly once from the final children.
-func (t *Tree) insertBatch(nodeHash Hash, items []batchItem, depth int) Hash {
+func (t *Tree) insertBatch(nodeHash Hash, items []batchItem, depth int) (Hash, error) {
 	if len(items) == 0 {
-		return nodeHash
+		return nodeHash, nil
 	}
 	if len(items) == 1 {
 		// Single item: use regular insert (handles leaf splitting etc.)
@@ -430,27 +451,35 @@ func (t *Tree) insertBatch(nodeHash Hash, items []batchItem, depth int) Hash {
 
 	if nodeHash == EmptyHash {
 		// Empty subtree: build from scratch.
-		left := t.insertBatch(EmptyHash, leftItems, depth+1)
-		right := t.insertBatch(EmptyHash, rightItems, depth+1)
+		left, err := t.insertBatch(EmptyHash, leftItems, depth+1)
+		if err != nil {
+			return EmptyHash, err
+		}
+		right, err := t.insertBatch(EmptyHash, rightItems, depth+1)
+		if err != nil {
+			return EmptyHash, err
+		}
 		if left == EmptyHash {
-			return right
+			return right, nil
 		}
 		if right == EmptyHash {
-			return left
+			return left, nil
 		}
-		return t.makeInternal(left, right)
+		return t.makeInternal(left, right), nil
 	}
 
 	data, err := t.getNode(nodeHash)
 	if err != nil {
-		return t.insertBatch(EmptyHash, items, depth)
+		// Missing node: propagate instead of rebuilding from scratch (which
+		// would silently drop the existing subtree at nodeHash).
+		return EmptyHash, fmt.Errorf("bmt insertBatch: missing node %x: %w", nodeHash[:8], err)
 	}
 
 	if isLeaf(data) {
 		// Existing leaf: add it to items and rebuild.
 		existingKey, ok := extractLeafKeyHash(data)
 		if !ok {
-			return t.insertBatch(EmptyHash, items, depth)
+			return EmptyHash, fmt.Errorf("bmt insertBatch: undecodable leaf %x", nodeHash[:8])
 		}
 		// Check if any item replaces this leaf.
 		replaced := false
@@ -473,7 +502,13 @@ func (t *Tree) insertBatch(nodeHash Hash, items []batchItem, depth int) Hash {
 
 	// Internal node: recurse into both children.
 	left, right := decodeInternalNode(data)
-	newLeft := t.insertBatch(left, leftItems, depth+1)
-	newRight := t.insertBatch(right, rightItems, depth+1)
-	return t.makeInternal(newLeft, newRight)
+	newLeft, err := t.insertBatch(left, leftItems, depth+1)
+	if err != nil {
+		return EmptyHash, err
+	}
+	newRight, err := t.insertBatch(right, rightItems, depth+1)
+	if err != nil {
+		return EmptyHash, err
+	}
+	return t.makeInternal(newLeft, newRight), nil
 }

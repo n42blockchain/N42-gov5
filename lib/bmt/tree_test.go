@@ -364,3 +364,40 @@ func TestMemStore(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, val)
 	}
 }
+
+// TestInsertOverMissingNodeErrorsNotSilentDiscard is the regression for the
+// silent-subtree-loss bug: insert used to treat a getNode failure as an empty
+// slot and return just the new leaf, discarding the existing subtree and
+// diverging the root with no error (hit when a batch runs over a store lacking
+// prior-batch nodes). It must now surface an error instead.
+func TestInsertOverMissingNodeErrorsNotSilentDiscard(t *testing.T) {
+	// Build a real two-key tree so the root is an internal node.
+	src := New(NewMemStore())
+	if err := src.Put(HashKey([]byte("alpha")), []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := src.Put(HashKey([]byte("beta")), []byte("2")); err != nil {
+		t.Fatal(err)
+	}
+	root := src.Root()
+	if root == EmptyHash {
+		t.Fatal("expected a non-empty root")
+	}
+
+	// Point a new tree at that root but back it with an EMPTY store, so the
+	// root node lookup fails.
+	orphan := NewFromRoot(NewMemStore(), root)
+	if err := orphan.Put(HashKey([]byte("gamma")), []byte("3")); err == nil {
+		t.Fatal("Put over a missing root node silently succeeded (subtree discarded)")
+	}
+
+	// PutBatch must fail the same way, not rebuild from one leaf.
+	orphan2 := NewFromRoot(NewMemStore(), root)
+	err := orphan2.PutBatch([]BatchEntry{
+		{Key: HashKey([]byte("gamma")), Value: []byte("3")},
+		{Key: HashKey([]byte("delta")), Value: []byte("4")},
+	})
+	if err == nil {
+		t.Fatal("PutBatch over a missing root node silently succeeded")
+	}
+}

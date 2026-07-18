@@ -31,8 +31,11 @@ const (
 	MobileCohortIndexTopicFormat  = GossipProtocolAndDigest + GossipMobileCohortIndexMessage
 	MobileCohortCertTopicFormat   = GossipProtocolAndDigest + GossipMobileCohortCertMessage
 
-	// Message relay topics (8 shards, Waku-style)
-	GossipMessagePrefix = "message/shard/"
+	// Message relay topics (8 shards, Waku-style). The prefix must be a real
+	// substring of GossipMessageFormat, or the scoring switch in
+	// gossip_scoring_params.go falls through to the default error and every
+	// shard subscribe fails ("msg" != the old "message").
+	GossipMessagePrefix = "/n42/msg/shard/"
 	GossipMessageFormat = "/n42/msg/shard/%d"
 
 	// Store query protocol
