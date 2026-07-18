@@ -280,7 +280,12 @@ func (p *TrainingProver) VerifyTrainingProof(proof *TrainingProof) (bool, error)
 		return false, fmt.Errorf("%w: model hash", ErrPublicInputsMismatch)
 	}
 
-	// Verify proof data integrity: the first 32 bytes must be non-zero.
+	// Verify proof data integrity: the first 32 bytes must be non-zero. Guard
+	// the slice — a 1..31-byte ProofData would panic with slice bounds out of
+	// range on untrusted input (sibling verifier.go already guards this).
+	if len(proof.ProofData) < 32 {
+		return false, ErrInvalidTrainingProof
+	}
 	var zeroHash types.Hash
 	var proofPrefix types.Hash
 	copy(proofPrefix[:], proof.ProofData[:32])

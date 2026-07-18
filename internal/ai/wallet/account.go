@@ -279,8 +279,11 @@ func (a *Account) RecordSpend(keyID types.Hash, value *uint256.Int) error {
 // account lock.
 func checkSpendLimit(sk *SessionKey, value *uint256.Int) error {
 	if value != nil && !value.IsZero() {
-		projected := new(uint256.Int).Add(sk.SpentAmount, value)
-		if projected.Cmp(sk.SpendLimit) > 0 {
+		// uint256 Add is modular: a value near 2^256-1 would wrap projected
+		// BELOW SpentAmount and slip under the limit. Detect the carry (overflow)
+		// and reject — an overflowing spend can never be within any real limit.
+		projected, overflow := new(uint256.Int).AddOverflow(sk.SpentAmount, value)
+		if overflow || projected.Cmp(sk.SpendLimit) > 0 {
 			return ErrSpendLimitExceed
 		}
 	}
