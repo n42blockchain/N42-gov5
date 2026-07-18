@@ -37,7 +37,7 @@ flowchart TB
     NODE --> SHARED
 
     subgraph NATIVE["n42 native profile"]
-        hotstuff["consensus/hotstuff<br/>HotStuff-2 BFT · Rotor direct relay ·<br/>BLS QC/TC aggregation"]
+        hotstuff["consensus/hotstuff<br/>HotStuff-2 BFT · Rotor direct relay ·<br/>BLS QC/TC aggregation · n−f quorum ·<br/>TC-gated view advance · deadline-checked pacemaker"]
         miner["miner<br/>block build · BAL capture ·<br/>MobileAnchor stamping · 2s pacing"]
         mobile["mobileverify<br/>phone attestation pipeline (§3)"]
         qmdb["QMDB commitment<br/>twig forest · Blake3 · binary"]
@@ -110,12 +110,18 @@ reuses an index (revoked keys cannot re-register).
 ## 4. Distributed services (`internal/distributed`)
 
 - **coprocessor** — tiered verification (ZK → optimistic bond+challenge → TEE),
-  provider marketplace (stake, reverse auction), verify-or-slash. RPC is
-  JWT-only (`coprocessor_*`).
+  fail-closed with task-bound proof envelopes; provider marketplace (stake,
+  reverse auction), verify-or-slash with escrowed challenge bonds; optional
+  resident provider (node opts in, serves WASM tasks with bytecode from the
+  hash-verified program registry). RPC is JWT-only (`coprocessor_*`).
 - **compute** — WASM engine (fuel-metered wazero), MapReduce batch, AI
-  inference with opML fraud proofs.
-- **messaging** — 6-layer stack: gossip relay (8 shards) · X25519/XChaCha20 E2E ·
-  RLN anti-spam · CAS persistence · MLS groups · SSE stream + DID identity.
+  inference with opML fraud proofs (deterministic request IDs + hash-sorted
+  model listings).
+- **messaging** — 6-layer stack: gossip relay (8 shards, topic-scoped message
+  IDs) · X25519/XChaCha20 E2E · RLN anti-spam (BN254 Poseidon2,
+  verifier-recomputable nullifiers + message-bound Shamir shares) · CAS
+  persistence · MLS groups (Ed25519-authenticated commits/key packages) ·
+  SSE stream + DID identity.
 - **storage** — IPFS bridge, BitTorrent bridge (also serves eth-el cold
   segments and mobileverify packet swarm), ed2k (deprecated).
 - **notify** — contract events → wallet push streams.
@@ -125,8 +131,12 @@ reuses an index (revoked keys cannot re-register).
 - `internal/ai/wallet` + `coord` — agent wallets (session keys, spend policies,
   paymaster) and agent discovery/negotiation/reputation.
 - `internal/ai/governance` / `training` / `attestation` — dataset ethics
-  committee, ZK training verification, signed inference attestation chains.
-- `internal/vm` `0x0301` — AI inference precompile (wazero-backed).
+  committee, ZK training verification, signed inference attestation chains
+  (signatures bound to the declared operator over all canonical fields).
+- `internal/vm` `0x0301` — AI inference precompile (wazero-backed;
+  deterministic outputs, but the backend registry/results are node-local —
+  do not activate `AIInferenceTime` on multi-validator networks until they
+  live in consensus state).
 - `internal/mev` — AI block optimizer + gas predictor (miner-injected).
 - `internal/mcp` — MCP server for agent data/task/wallet tools.
 - `internal/exex` — execution extensions; AI data indexer.
