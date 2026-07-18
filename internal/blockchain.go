@@ -1738,6 +1738,20 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		wstart := time.Now()
 		status, err := bc.writeBlockWithState(blk, receipts, ibs, nopay)
 		if err != nil {
+			// writeBlockWithState rolled its tx back, but execution above already
+			// put this block's appends on the non-transactional live QMDB tree
+			// with the undo still in RAM. Peel them now under bc.lock — the same
+			// treatment the execution-failure path (above) and the leader-seal
+			// path (WriteBlockWithState) already apply. Leaving them dangling for
+			// "the next insertChain's PeelDanglingQMDBAppends" opens a race: a
+			// leader WriteBlockWithState acquiring bc.lock first would ComputeRoot
+			// over the dangling appends (its checkQMDBLeaderSealParent still sees
+			// marker==parent because this tx rolled back), trip the reproduce
+			// guard, and StartUndoRecording would overwrite the dangling undo —
+			// the appends then become un-peelable and the node wedges until a
+			// restart reloads the tree from disk. No-op for non-QMDB / nothing
+			// appended.
+			bc.revertUncommittedQMDBAppends(blockNumber.Uint64())
 			return it.index, err
 		}
 		blockWriteTimer.Observe(float64(time.Since(wstart)))
