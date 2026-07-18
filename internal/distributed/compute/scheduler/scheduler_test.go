@@ -263,6 +263,10 @@ func TestOptimisticChallengeSlash(t *testing.T) {
 	if got := h.sched.Escrow().Refunded(id); got != spec.MaxPrice {
 		t.Fatalf("refunded = %d, want %d", got, spec.MaxPrice)
 	}
+	// Good-faith challenger gets its 50 bond back.
+	if got := h.sched.Escrow().PaidTo(addr(0xCC)); got != 50 {
+		t.Fatalf("upheld challenger got %d back, want 50 (bond returned)", got)
+	}
 }
 
 // A3: rejected challenge — result was correct; challenger's bond is forfeited
@@ -294,8 +298,13 @@ func TestOptimisticChallengeRejected(t *testing.T) {
 	if res.Status != coprocessor.TaskVerified {
 		t.Fatalf("status = %v, want Verified", res.Status)
 	}
-	if got := h.sched.Escrow().PaidTo(honest); got != 100 {
-		t.Fatalf("honest provider paid %d, want 100", got)
+	// The spurious challenger's 50 bond is forfeited to the wronged honest
+	// provider on top of its 100 task reward — challenging is no longer free.
+	if got := h.sched.Escrow().PaidTo(honest); got != 150 {
+		t.Fatalf("honest provider paid %d, want 150 (100 reward + 50 forfeited bond)", got)
+	}
+	if got := h.sched.Escrow().PaidTo(addr(0xCC)); got != 0 {
+		t.Fatalf("rejected challenger got %d back, want 0 (bond forfeited)", got)
 	}
 }
 
