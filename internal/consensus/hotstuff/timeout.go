@@ -188,22 +188,17 @@ func (e *ConsensusEngine) processTimeout(timeout *TimeoutMessage) error {
 
 // handleFutureViewTimeout handles a timeout from a future view.
 //
-// It deliberately does NOT advance the local view to timeout.View on the raw
-// timeout. A single message is not a proof that the network legitimately
-// reached that view: if a bare future timeout advanced us — and we then
-// broadcast our own timeout there — one Byzantine validator could sign
-// timeout(currentView+k) in a loop and drag the whole fleet forward k views per
-// message, manufacturing a TC out of nothing and stalling liveness within the f
-// tolerance (H2).
-//
-// Legitimate catch-up needs no raw jump: a validator that genuinely reached a
-// higher view holds the TimeoutCertificate (a quorum of n-f timeouts) that took
-// it there and piggybacks it on every message, and processMessage adopts that
-// TC via processEmbeddedTC BEFORE this handler runs — a proof no single
-// Byzantine node can forge. So by the time a timeout is still "future" here, its
-// embedded TC has already advanced us as far as the network can prove; the
-// residual raw view number is unjustified and is ignored. We only verify the
-// message (rejecting forged signatures) and record its high_qc.
+// A single raw future timeout is not enough to advance: one Byzantine
+// validator could otherwise drag the fleet forward indefinitely (H2). A TC is
+// the strong synchronizer and is adopted by processEmbeddedTC before this
+// handler. There is also a necessary weak-synchronizer path for crash recovery:
+// nodes can legitimately restart at scattered persisted views before any one
+// view has a TC. Once f+1 distinct validators have sent valid future timeouts,
+// at least one report is honest. We may safely catch up to the highest reported
+// view within the bounded FutureViewWindow and broadcast our own timeout there.
+// The f Byzantine validators cannot trigger the jump alone, while choosing the
+// highest observed view avoids marooning honest validators on several lower
+// views that can never individually reach a timeout quorum.
 func (e *ConsensusEngine) handleFutureViewTimeout(currentView ViewNumber, timeout *TimeoutMessage) error {
 	if timeout.View > currentView+FutureViewWindow {
 		return nil
@@ -219,16 +214,101 @@ func (e *ConsensusEngine) handleFutureViewTimeout(currentView ViewNumber, timeou
 		return &InvalidSignatureError{View: timeout.View, ValidatorIndex: timeout.Sender}
 	}
 
-	// Verify (but do not act on the view of) the embedded high_qc. Its TC, if
-	// any, was already adopted by processEmbeddedTC upstream; the future view
-	// itself carries no quorum proof and is intentionally not followed.
+	// Its TC, if any, was already adopted by processEmbeddedTC upstream.
 	if err := e.verifyEmbeddedQC(&timeout.HighQC); err != nil {
 		return err
 	}
 
-	log.Debug("future-view timeout observed; not advancing without a TC",
-		"currentView", currentView, "timeoutView", timeout.View, "sender", timeout.Sender)
-	return nil
+	if e.futureTimeouts == nil {
+		e.futureTimeouts = make(map[ValidatorIndex]*TimeoutMessage)
+	}
+	if previous := e.futureTimeouts[timeout.Sender]; previous == nil || timeout.View > previous.View {
+		e.futureTimeouts[timeout.Sender] = &TimeoutMessage{
+			View:      timeout.View,
+			HighQC:    timeout.HighQC.Clone(),
+			Sender:    timeout.Sender,
+			Signature: append([]byte(nil), timeout.Signature...),
+		}
+	}
+
+	threshold := int(e.validatorSet().FaultTolerance()) + 1
+	views := make([]ViewNumber, 0, len(e.futureTimeouts))
+	for sender, observed := range e.futureTimeouts {
+		if observed.View <= currentView {
+			delete(e.futureTimeouts, sender)
+			continue
+		}
+		views = append(views, observed.View)
+	}
+	if len(views) < threshold {
+		log.Debug("future-view timeout observed; waiting for f+1 distinct validators",
+			"currentView", currentView, "timeoutView", timeout.View, "sender", timeout.Sender,
+			"observed", len(views), "required", threshold)
+		return nil
+	}
+
+	targetView := views[0]
+	for _, view := range views[1:] {
+		if view > targetView {
+			targetView = view
+		}
+	}
+	if targetView <= currentView {
+		return nil
+	}
+
+	// Keep already-verified reports exactly at the selected target so they
+	// can seed its collector after advanceToView clears old observations.
+	var targetTimeouts []*TimeoutMessage
+	for _, observed := range e.futureTimeouts {
+		if observed.View == targetView {
+			targetTimeouts = append(targetTimeouts, observed)
+		}
+	}
+
+	log.Warn("f+1 future timeouts observed; advancing weak synchronizer",
+		"currentView", currentView, "targetView", targetView,
+		"observed", len(views), "required", threshold)
+	if err := e.advanceToView(targetView); err != nil {
+		return err
+	}
+	if e.roundState.CurrentView() != targetView || e.removed {
+		return nil
+	}
+
+	// This is a timeout-driven catch-up, not a proposal view: enter timed-out
+	// phase immediately and help the target view form its strong TC.
+	e.roundState.Timeout()
+	e.pacemaker.ResetForView(targetView, e.roundState.ConsecutiveTimeouts())
+	e.timeoutCollector = NewTimeoutCollector(targetView, e.validatorSet().Len())
+
+	for _, observed := range targetTimeouts {
+		if err := e.processTimeout(observed); err != nil {
+			return err
+		}
+		if e.roundState.CurrentView() != targetView {
+			return nil // the retained reports already formed a TC
+		}
+	}
+
+	ownSignature := e.secretKey.Sign(TimeoutSigningMessage(targetView))
+	ownTimeout := &TimeoutMessage{
+		View:      targetView,
+		HighQC:    e.roundState.LockedQC().Clone(),
+		Sender:    e.myIndex,
+		Signature: ownSignature.Marshal(),
+		HighTC:    e.roundState.HighestTC(),
+	}
+	if err := e.emit(EngineOutput{
+		Type: OutputBroadcast,
+		Message: &ConsensusMsg{
+			Type:    MsgTimeout,
+			Payload: ownTimeout,
+		},
+	}); err != nil {
+		return err
+	}
+	return e.processTimeout(ownTimeout)
 }
 
 // processNewView processes a NewView message from the new leader.

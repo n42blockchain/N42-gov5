@@ -742,6 +742,178 @@ func TestRawFutureTimeoutDoesNotAdvanceView(t *testing.T) {
 	}
 }
 
+// TestFPlusOneFutureTimeoutsRecoverScatteredViews covers the restart state
+// observed by the seven-node fleet: clean rolling shutdowns can persist nearby
+// but different views without leaving any one node a complete TC. Distinct
+// verified reports from f+1 validators must coalesce the lagging node on the
+// highest bounded reported view, while fewer reports (including repeats from
+// one sender) must not move it.
+func TestFPlusOneFutureTimeoutsRecoverScatteredViews(t *testing.T) {
+	setup := newTestSetup(t, 7) // f=2, weak-synchronizer threshold=3
+	engine, outputCh := newTestEngine(t, setup, 0)
+	startView := engine.CurrentView()
+
+	deliver := func(sender int, view ViewNumber) {
+		t.Helper()
+		tm := &TimeoutMessage{
+			View:      view,
+			HighQC:    GenesisQC(),
+			Sender:    ValidatorIndex(sender),
+			Signature: setup.keys[sender].Sign(TimeoutSigningMessage(view)).Marshal(),
+		}
+		if err := engine.ProcessEvent(ConsensusEvent{
+			Type: EventMessage,
+			Msg:  ConsensusMsg{Type: MsgTimeout, Payload: tm},
+		}); err != nil {
+			t.Fatalf("deliver sender=%d view=%d: %v", sender, view, err)
+		}
+	}
+
+	deliver(1, startView+4)
+	deliver(1, startView+6) // same validator still counts only once
+	deliver(2, startView+5)
+	if got := engine.CurrentView(); got != startView {
+		t.Fatalf("fewer than f+1 validators advanced view: got %d, want %d", got, startView)
+	}
+	if outputs := drainOutputs(outputCh); len(outputs) != 0 {
+		t.Fatalf("fewer than f+1 validators emitted %d outputs", len(outputs))
+	}
+
+	// Reports are now [v+6, v+5, v+4], so recovery coalesces on their highest
+	// bounded view. The two Byzantine validators cannot reach this branch alone.
+	deliver(3, startView+4)
+	targetView := startView + 6
+	if got := engine.CurrentView(); got != targetView {
+		t.Fatalf("f+1 recovery view = %d, want %d", got, targetView)
+	}
+	if phase := engine.CurrentPhase(); phase != PhaseTimedOut {
+		t.Fatalf("recovery phase = %s, want TimedOut", phase)
+	}
+
+	foundOwnTimeout := false
+	for _, output := range drainOutputs(outputCh) {
+		if output.Type != OutputBroadcast || output.Message == nil || output.Message.Type != MsgTimeout {
+			continue
+		}
+		tm := output.Message.Payload.(*TimeoutMessage)
+		if tm.Sender == 0 && tm.View == targetView {
+			foundOwnTimeout = true
+		}
+	}
+	if !foundOwnTimeout {
+		t.Fatalf("f+1 recovery did not broadcast own timeout for view %d", targetView)
+	}
+
+	// The latest retained target report (validator 1) plus our own timeout seed
+	// two of the five quorum slots. Three more target timeouts must form a TC
+	// and advance, proving the weak jump can finish through the strong path.
+	deliver(4, targetView)
+	if got := engine.CurrentView(); got != targetView {
+		t.Fatalf("advanced before timeout quorum: got %d, want %d", got, targetView)
+	}
+	deliver(5, targetView)
+	if got := engine.CurrentView(); got != targetView {
+		t.Fatalf("advanced before timeout quorum: got %d, want %d", got, targetView)
+	}
+	deliver(6, targetView)
+	if got := engine.CurrentView(); got != targetView+1 {
+		t.Fatalf("timeout quorum did not advance: got %d, want %d", got, targetView+1)
+	}
+}
+
+// TestChaos7Node_ConvergesFromScatteredRecoveredViews reproduces the exact
+// production shape that motivated the weak synchronizer: all validators shut
+// down cleanly during a rolling update, but persist nearby different views and
+// restart without any process retaining a complete TC.
+func TestChaos7Node_ConvergesFromScatteredRecoveredViews(t *testing.T) {
+	setup := newTestSetup(t, 7)
+	views := []ViewNumber{100, 100, 100, 101, 102, 103, 104}
+	h := &chaosHarness{
+		t:        t,
+		setup:    setup,
+		engines:  make([]*ConsensusEngine, len(views)),
+		channels: make([]chan EngineOutput, len(views)),
+	}
+	for i, view := range views {
+		h.channels[i] = make(chan EngineOutput, 256)
+		h.engines[i] = WithRecoveredState(
+			ValidatorIndex(i), setup.keys[i], NewEpochManager(setup.vs),
+			1000, 10000, h.channels[i], view,
+			GenesisQC(), GenesisQC(), 0,
+		)
+	}
+
+	// Relay timeout and NewView broadcasts until all nodes coalesce. Outputs
+	// emitted while processing a message are drained by the next relay pass.
+	converged := false
+	for iteration := 0; iteration < 20 && !converged; iteration++ {
+		for i, engine := range h.engines {
+			if err := timeoutNow(engine); err != nil {
+				t.Fatalf("iteration %d node %d timeout: %v", iteration, i, err)
+			}
+		}
+		for relayPass := 0; relayPass < 20; relayPass++ {
+			allOutputs := h.drainAll()
+			delivered := 0
+			for _, outputs := range allOutputs {
+				for _, output := range outputs {
+					if output.Type != OutputBroadcast || output.Message == nil {
+						continue
+					}
+					for i := range h.engines {
+						sender, ok := messageSenderIndex(output.Message)
+						if ok && ValidatorIndex(i) == sender {
+							continue
+						}
+						if err := h.engines[i].ProcessEvent(ConsensusEvent{
+							Type: EventMessage,
+							Msg:  *output.Message,
+						}); err != nil {
+							t.Fatalf("iteration %d relay pass %d node %d: %v", iteration, relayPass, i, err)
+						}
+						delivered++
+					}
+				}
+			}
+			if delivered == 0 {
+				break
+			}
+		}
+
+		minView, maxView := h.engines[0].CurrentView(), h.engines[0].CurrentView()
+		for _, engine := range h.engines[1:] {
+			if view := engine.CurrentView(); view < minView {
+				minView = view
+			} else if view > maxView {
+				maxView = view
+			}
+		}
+		converged = minView == maxView
+	}
+	if !converged {
+		got := make([]ViewNumber, len(h.engines))
+		for i, engine := range h.engines {
+			got[i] = engine.CurrentView()
+		}
+		t.Fatalf("scattered recovered views did not converge: %v", got)
+	}
+
+	// One aligned timeout round puts every engine in the same fresh waiting
+	// view. A normal proposal must then commit, proving recovery is not merely
+	// numeric convergence.
+	view := h.engines[0].CurrentView()
+	h.runTimeoutViewChange(view)
+	view = h.engines[0].CurrentView()
+	for i, engine := range h.engines {
+		if got := engine.CurrentView(); got != view {
+			t.Fatalf("node %d not aligned after recovery: got %d, want %d", i, got, view)
+		}
+	}
+	blockHash := blockHashForView(view)
+	h.markBlockImported(blockHash)
+	h.runConsensusRound(view, blockHash)
+}
+
 // TestChaos7Node_FastPropose verifies that consensus rounds complete quickly
 // when using direct message routing (simulating FastPropose behavior where
 // there is no slot boundary wait). Five rounds should complete well under

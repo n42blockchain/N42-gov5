@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -92,10 +92,10 @@ type ConsensusEngine struct {
 	myIndex   ValidatorIndex
 	secretKey common.SecretKey
 
-	epochManager  *EpochManager
-	reconfigMgr   *ReconfigurationManager
-	roundState    *RoundState
-	pacemaker     *Pacemaker
+	epochManager *EpochManager
+	reconfigMgr  *ReconfigurationManager
+	roundState   *RoundState
+	pacemaker    *Pacemaker
 
 	voteCollector    *VoteCollector
 	commitCollector  *VoteCollector
@@ -108,11 +108,11 @@ type ConsensusEngine struct {
 	outputCh chan<- EngineOutput
 
 	// Block tracking
-	importedBlocks     map[types.Hash]bool
-	importedParents    map[types.Hash]types.Hash // imported blockHash → its parent hash (extends-check at vote time)
-	importedFIFO       []types.Hash              // insertion order for bounded eviction; blocks stay known-imported across view changes
-	pendingTxRoots     map[types.Hash]types.Hash // blockHash → expected TxRootHash (DA verification)
-	pendingProposals   map[ViewNumber]types.Hash // view → proposed blockHash awaiting local import before the prepare vote (import-gated voting)
+	importedBlocks   map[types.Hash]bool
+	importedParents  map[types.Hash]types.Hash // imported blockHash → its parent hash (extends-check at vote time)
+	importedFIFO     []types.Hash              // insertion order for bounded eviction; blocks stay known-imported across view changes
+	pendingTxRoots   map[types.Hash]types.Hash // blockHash → expected TxRootHash (DA verification)
+	pendingProposals map[ViewNumber]types.Hash // view → proposed blockHash awaiting local import before the prepare vote (import-gated voting)
 	// pendingJustifyBlocks records, per view, the proposal's JustifyQC.BlockHash
 	// so the import-gated vote can enforce the HotStuff extends rule (the
 	// proposed block's parent MUST be the justify block). Without it a proposal
@@ -140,9 +140,13 @@ type ConsensusEngine struct {
 
 	// Future message buffer
 	futureMsgBuffer []futureMsg
+	// Latest verified future timeout reported by each validator. A weak
+	// synchronizer may use f+1 distinct reports to recover from legitimately
+	// scattered persisted views without trusting a single sender.
+	futureTimeouts map[ValidatorIndex]*TimeoutMessage
 
 	// Timing
-	viewTiming         ViewTiming
+	viewTiming          ViewTiming
 	lastCommittedTiming *ViewTiming
 
 	// Set when this validator is removed at an epoch boundary.
@@ -196,21 +200,22 @@ func NewConsensusEngineWithEpochManager(
 	outputCh chan<- EngineOutput,
 ) *ConsensusEngine {
 	e := &ConsensusEngine{
-		myIndex:             myIndex,
-		secretKey:           secretKey,
-		epochManager:        epochManager,
-		roundState:          NewRoundState(),
-		pacemaker:           NewPacemaker(baseTimeoutMs, maxTimeoutMs),
-		outputCh:            outputCh,
-		importedBlocks:      make(map[types.Hash]bool),
-		importedParents:     make(map[types.Hash]types.Hash),
-		pendingTxRoots:      make(map[types.Hash]types.Hash),
-		pendingProposals:    make(map[ViewNumber]types.Hash),
-		pendingJustifyBlocks: make(map[ViewNumber]types.Hash),
-		equivocationTracker: make(map[ValidatorIndex]types.Hash),
+		myIndex:                   myIndex,
+		secretKey:                 secretKey,
+		epochManager:              epochManager,
+		roundState:                NewRoundState(),
+		pacemaker:                 NewPacemaker(baseTimeoutMs, maxTimeoutMs),
+		outputCh:                  outputCh,
+		importedBlocks:            make(map[types.Hash]bool),
+		importedParents:           make(map[types.Hash]types.Hash),
+		pendingTxRoots:            make(map[types.Hash]types.Hash),
+		pendingProposals:          make(map[ViewNumber]types.Hash),
+		pendingJustifyBlocks:      make(map[ViewNumber]types.Hash),
+		equivocationTracker:       make(map[ValidatorIndex]types.Hash),
 		commitEquivocationTracker: make(map[ValidatorIndex]types.Hash),
-		futureMsgBuffer:     make([]futureMsg, 0),
-		viewTiming:          newViewTiming(),
+		futureMsgBuffer:           make([]futureMsg, 0),
+		futureTimeouts:            make(map[ValidatorIndex]*TimeoutMessage),
+		viewTiming:                newViewTiming(),
 	}
 	e.reconfigMgr = NewReconfigurationManager(epochManager)
 	return e
@@ -234,21 +239,22 @@ func WithRecoveredState(
 	}
 
 	e := &ConsensusEngine{
-		myIndex:             myIndex,
-		secretKey:           secretKey,
-		epochManager:        epochManager,
-		roundState:          RoundStateFromSnapshot(recoveredView, lockedQC, lastCommittedQC, consecutiveTimeouts),
-		pacemaker:           NewPacemaker(baseTimeoutMs, maxTimeoutMs),
-		outputCh:            outputCh,
-		importedBlocks:      make(map[types.Hash]bool),
-		importedParents:     make(map[types.Hash]types.Hash),
-		pendingTxRoots:      make(map[types.Hash]types.Hash),
-		pendingProposals:    make(map[ViewNumber]types.Hash),
-		pendingJustifyBlocks: make(map[ViewNumber]types.Hash),
-		equivocationTracker: make(map[ValidatorIndex]types.Hash),
+		myIndex:                   myIndex,
+		secretKey:                 secretKey,
+		epochManager:              epochManager,
+		roundState:                RoundStateFromSnapshot(recoveredView, lockedQC, lastCommittedQC, consecutiveTimeouts),
+		pacemaker:                 NewPacemaker(baseTimeoutMs, maxTimeoutMs),
+		outputCh:                  outputCh,
+		importedBlocks:            make(map[types.Hash]bool),
+		importedParents:           make(map[types.Hash]types.Hash),
+		pendingTxRoots:            make(map[types.Hash]types.Hash),
+		pendingProposals:          make(map[ViewNumber]types.Hash),
+		pendingJustifyBlocks:      make(map[ViewNumber]types.Hash),
+		equivocationTracker:       make(map[ValidatorIndex]types.Hash),
 		commitEquivocationTracker: make(map[ValidatorIndex]types.Hash),
-		futureMsgBuffer:     make([]futureMsg, 0),
-		viewTiming:          newViewTiming(),
+		futureMsgBuffer:           make([]futureMsg, 0),
+		futureTimeouts:            make(map[ValidatorIndex]*TimeoutMessage),
+		viewTiming:                newViewTiming(),
 	}
 	e.reconfigMgr = NewReconfigurationManager(epochManager)
 	return e
@@ -468,6 +474,7 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	if newView <= e.roundState.CurrentView() {
 		return nil
 	}
+	epochBoundary := e.epochManager.EpochsEnabled() && e.epochManager.IsEpochBoundary(newView)
 
 	// Save current PrepareQC for piggybacking.
 	e.previousPrepareQC = e.prepareQC
@@ -557,6 +564,20 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	e.commitEquivocationTracker = make(map[ValidatorIndex]types.Hash)
 	e.prepareVoteBuf = e.prepareVoteBuf[:0]
 	e.commitVoteBuf = e.commitVoteBuf[:0]
+	// Retain verified observations above the new view. Timeout payloads are
+	// deterministic and GossipSub suppresses repeat publications, so clearing
+	// them here can strand a node after the first weak jump. Validator indexes
+	// can change at an epoch boundary, however, so observations verified under
+	// the old set must not survive that transition.
+	if epochBoundary {
+		e.futureTimeouts = make(map[ValidatorIndex]*TimeoutMessage)
+	} else {
+		for sender, observed := range e.futureTimeouts {
+			if observed.View <= newView {
+				delete(e.futureTimeouts, sender)
+			}
+		}
+	}
 
 	// Preserve timing from committed view.
 	if e.viewTiming.CommitQCFormed != nil {
