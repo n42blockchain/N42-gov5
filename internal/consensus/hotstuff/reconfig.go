@@ -295,7 +295,7 @@ func (rm *ReconfigurationManager) ApplyAtEpochBoundary() *ValidatorSet {
 		"epoch", rm.epochManager.CurrentEpoch()+1,
 		"validators", n,
 		"faultTolerance", f,
-		"quorum", 2*f+1,
+		"quorum", n-f,
 		"added", addCount,
 		"removed", removeCount,
 	)

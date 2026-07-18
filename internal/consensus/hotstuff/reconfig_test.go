@@ -63,8 +63,11 @@ func TestReconfigAddValidator(t *testing.T) {
 	if result.FaultTolerance() != 1 {
 		t.Fatalf("expected f=1 for n=5, got f=%d", result.FaultTolerance())
 	}
-	if result.QuorumSize() != 3 {
-		t.Fatalf("expected quorum=3 for n=5, got %d", result.QuorumSize())
+	// n=5, f=1: the safe quorum is n-f=4, NOT the old 2f+1=3. Two size-3
+	// quorums in a 5-set can intersect in only 2*3-5=1 node, which could be
+	// the single Byzantine one — so 3 admitted two conflicting commits.
+	if result.QuorumSize() != 4 {
+		t.Fatalf("expected quorum=4 (n-f) for n=5, got %d", result.QuorumSize())
 	}
 
 	// Verify new validator is in the set
