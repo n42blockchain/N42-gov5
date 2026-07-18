@@ -167,13 +167,13 @@ func (s *Service) SubmitProof(taskID types.Hash, proofData, publicOutputs []byte
 		return false, err
 	}
 
-	task, ok := s.tasks.GetTask(taskID)
+	task, ok := s.tasks.GetTaskSnapshot(taskID)
 	if !ok {
 		return false, ErrTaskNotFound
 	}
 
 	// Tiered verification
-	valid, verifyErr := s.verifier.Verify(task, proofData, publicOutputs)
+	valid, verifyErr := s.verifier.Verify(&task, proofData, publicOutputs)
 	if verifyErr != nil || !valid {
 		errMsg := "verification failed"
 		if verifyErr != nil {
@@ -255,18 +255,7 @@ func (s *Service) ClaimTask(taskID types.Hash, providerAddr types.Address) error
 		return ErrProviderSuspended
 	}
 
-	task, ok := s.tasks.GetTask(taskID)
-	if !ok {
-		return ErrTaskNotFound
-	}
-	if task.Status != TaskPending {
-		return ErrTaskNotPending
-	}
-	if task.AssignedProvider != (types.Address{}) {
-		return ErrTaskAlreadyAssigned
-	}
-
-	return s.tasks.AssignProvider(taskID, providerAddr, 0)
+	return s.tasks.ClaimIfPending(taskID, providerAddr, 0)
 }
 
 // RegisterProvider registers a new compute provider.
@@ -325,7 +314,7 @@ func (s *Service) finalizeOptimisticTasks() int {
 	readyIDs := s.challenges.ExpireWindow(optimistic)
 	for _, taskID := range readyIDs {
 		s.tasks.UpdateStatus(taskID, TaskVerified, nil, nil, "")
-		task, ok := s.tasks.GetTask(taskID)
+		task, ok := s.tasks.GetTaskSnapshot(taskID)
 		if ok && task.AssignedProvider != (types.Address{}) {
 			s.slasher.Reward(task.AssignedProvider, task.RewardAmount, taskID)
 		}

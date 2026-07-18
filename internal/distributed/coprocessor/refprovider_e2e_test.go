@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/binary"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,9 +42,9 @@ func i64BE(v uint64) []byte {
 func newE2EService(t *testing.T) *Service {
 	t.Helper()
 	cfg := testConfig()
-	cfg.MinProviderStake = 1        // low bar for the test provider
-	cfg.OptimisticChallengeSec = 1  // short window so finalize fires fast
-	cfg.PruneIntervalSec = 1        // maintenance ticks every second
+	cfg.MinProviderStake = 1       // low bar for the test provider
+	cfg.OptimisticChallengeSec = 1 // short window so finalize fires fast
+	cfg.PruneIntervalSec = 1       // maintenance ticks every second
 	svc, err := NewService(cfg)
 	if err != nil {
 		t.Fatalf("service: %v", err)
@@ -247,6 +248,92 @@ func TestResidentProviderAutoServe(t *testing.T) {
 	}
 }
 
+// TestResidentProviderSkipsNonOptimisticTasks ensures the built-in WASM
+// provider cannot claim a ZK/TEE task and then fail it by submitting raw output
+// to a verifier that expects a proof or attestation.
+func TestResidentProviderSkipsNonOptimisticTasks(t *testing.T) {
+	ctx := context.Background()
+	svc := newE2EService(t)
+
+	bytecode := facWasm(t)
+	programHash := crypto.Keccak256Hash(bytecode)
+	if err := svc.RegisterProgram(programHash, []byte("fac-vk"), "factorial"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Registry().SetBytecode(programHash, bytecode); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := wasm.NewEngine(wasm.NewWazeroRuntime(ctx), 16, 30, 1.0)
+	provAddr := types.HexToAddress("0xC0DE03")
+	if err := svc.RegisterProvider(provAddr, 100, []Capability{CapWASM}); err != nil {
+		t.Fatal(err)
+	}
+	prov := NewReferenceProvider(svc, provAddr, engine, "fac-ssa")
+	svc.AttachProvider(prov, 25*time.Millisecond, 10_000_000, func() {
+		_ = engine.Close(context.Background())
+	})
+
+	// SubmitTask uses the default ZK tier. Several provider polls must leave it
+	// pending and unassigned for a ZK-capable provider.
+	taskID, err := svc.SubmitTask(programHash, i64BE(7), types.HexToAddress("0xABCD03"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	snap, ok := svc.Tasks().GetTaskSnapshot(taskID)
+	if !ok {
+		t.Fatal("task disappeared")
+	}
+	if snap.Status != TaskPending || snap.AssignedProvider != (types.Address{}) {
+		t.Fatalf("resident provider touched ZK task: status=%s provider=%s", snap.Status, snap.AssignedProvider.Hex())
+	}
+}
+
+func TestClaimTaskIsAtomicAcrossProviders(t *testing.T) {
+	svc := newE2EService(t)
+	programHash := types.HexToHash("0x1234")
+	if err := svc.RegisterProgram(programHash, []byte("vk"), "claim-race"); err != nil {
+		t.Fatal(err)
+	}
+	providers := []types.Address{types.HexToAddress("0xCA01"), types.HexToAddress("0xCA02")}
+	for _, provider := range providers {
+		if err := svc.RegisterProvider(provider, 100, []Capability{CapWASM}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for iteration := 0; iteration < 100; iteration++ {
+		taskID, err := svc.SubmitTask(programHash, []byte{byte(iteration)}, types.Address{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		errs := make([]error, len(providers))
+		var wg sync.WaitGroup
+		for i, provider := range providers {
+			wg.Add(1)
+			go func(i int, provider types.Address) {
+				defer wg.Done()
+				<-start
+				errs[i] = svc.ClaimTask(taskID, provider)
+			}(i, provider)
+		}
+		close(start)
+		wg.Wait()
+
+		successes := 0
+		for _, err := range errs {
+			if err == nil {
+				successes++
+			}
+		}
+		if successes != 1 {
+			t.Fatalf("iteration %d: successful claims=%d, want 1 (errs=%v)", iteration, successes, errs)
+		}
+	}
+}
+
 // TestRegistryBytecodeHashCheck: bytecode that does not hash to the program
 // hash must be rejected, and lookups miss until valid bytecode is attached.
 func TestRegistryBytecodeHashCheck(t *testing.T) {
@@ -270,6 +357,11 @@ func TestRegistryBytecodeHashCheck(t *testing.T) {
 	got, ok := svc.Registry().Bytecode(programHash)
 	if !ok || len(got) != len(bytecode) {
 		t.Fatal("bytecode roundtrip failed")
+	}
+	got[0] ^= 0xff
+	again, ok := svc.Registry().Bytecode(programHash)
+	if !ok || crypto.Keccak256Hash(again) != programHash {
+		t.Fatal("Bytecode returned mutable registry storage")
 	}
 }
 
