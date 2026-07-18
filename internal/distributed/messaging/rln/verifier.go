@@ -2,13 +2,18 @@
 // This file is part of the N42 library.
 //
 // RLN proof Verifier. VerifyProof checks the MembershipTree root,
-// confirms the Merkle path for the prover's commitment index and
-// validates the Shamir share, so two shares in the same epoch let
-// a higher-level component recover the identity secret and slash.
+// confirms the Merkle path for the prover's commitment index, recomputes
+// the nullifier and the Shamir share x-coordinate, and range-checks the
+// share y-coordinate, so two shares in the same epoch let a higher-level
+// component recover the identity secret and slash. Without a ZK circuit
+// the share y-coordinate itself is unverifiable (only the secret holder
+// can evaluate it), so recovered secrets must be checked against the
+// member's commitment before slashing — see GossipSubValidator.
 
 package rln
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math/big"
 	"sync"
@@ -24,8 +29,15 @@ func NewVerifier(tree *MembershipTree) *Verifier {
 	return &Verifier{tree: tree}
 }
 
-// VerifyProof validates an RLN proof.
-func (v *Verifier) VerifyProof(proof *RLNProof) error {
+// VerifyProof validates an RLN proof against the message it claims to
+// authorize. Beyond the Merkle membership check it recomputes every
+// publicly derivable component: the nullifier must equal
+// PoseidonHash(commitment, epoch) — otherwise a spammer mints a fresh
+// nullifier per message and the rate limit never trips — and ShareX must
+// equal PoseidonHash(epoch, messageHash), binding the share to this
+// message. ShareY must be a canonical field element so Shamir recovery
+// operates on well-formed points.
+func (v *Verifier) VerifyProof(proof *RLNProof, messageHash [32]byte) error {
 	if proof == nil || proof.MerkleProof == nil {
 		return fmt.Errorf("nil proof")
 	}
@@ -43,15 +55,39 @@ func (v *Verifier) VerifyProof(proof *RLNProof) error {
 	}
 
 	// Get the leaf commitment
-	v.tree.mu.RLock()
-	leaf := v.tree.leaves[idx]
-	v.tree.mu.RUnlock()
+	leaf, err := v.LeafAt(idx)
+	if err != nil {
+		return err
+	}
 
 	if !proof.MerkleProof.Verify(proof.MerkleRoot, leaf) {
 		return fmt.Errorf("invalid merkle proof")
 	}
 
+	var epochBuf [8]byte
+	binary.BigEndian.PutUint64(epochBuf[:], proof.Epoch)
+
+	if expected := PoseidonHash(leaf[:], epochBuf[:]); proof.Nullifier != expected {
+		return fmt.Errorf("nullifier mismatch")
+	}
+	if expected := PoseidonHash(epochBuf[:], messageHash[:]); proof.ShareX != expected {
+		return fmt.Errorf("share x mismatch")
+	}
+	if new(big.Int).SetBytes(proof.ShareY[:]).Cmp(fieldPrime) >= 0 {
+		return fmt.Errorf("share y out of field range")
+	}
+
 	return nil
+}
+
+// LeafAt returns the commitment stored at the given member index.
+func (v *Verifier) LeafAt(index uint32) ([32]byte, error) {
+	v.tree.mu.RLock()
+	defer v.tree.mu.RUnlock()
+	if int(index) >= len(v.tree.leaves) {
+		return [32]byte{}, fmt.Errorf("member index out of range")
+	}
+	return v.tree.leaves[index], nil
 }
 
 // DetectSpam checks if two proofs from the same epoch+nullifier reveal the identity secret.
@@ -68,7 +104,8 @@ func DetectSpam(proof1, proof2 *RLNProof) (bool, [32]byte, error) {
 	}
 
 	// Shamir secret recovery: given two points (x1, y1) and (x2, y2)
-	// on the line y = secret + hash * x
+	// on the line y = secret + slope * x (the slope is identity+epoch
+	// bound, so both shares from one epoch lie on the same line)
 	// secret = (y1 * x2 - y2 * x1) / (x2 - x1)
 	x1 := new(big.Int).SetBytes(proof1.ShareX[:])
 	y1 := new(big.Int).SetBytes(proof1.ShareY[:])

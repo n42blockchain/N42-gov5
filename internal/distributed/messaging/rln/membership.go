@@ -14,8 +14,6 @@ import (
 	"fmt"
 	"math/big"
 	"sync"
-
-	"golang.org/x/crypto/sha3"
 )
 
 // Field prime for Poseidon (BN254 scalar field).
@@ -26,35 +24,22 @@ const DefaultMerkleDepth = 20
 
 // Identity represents an RLN member's secret identity.
 type Identity struct {
-	Secret     [32]byte // identity secret (random)
+	Secret     [32]byte // identity secret, canonical BN254 scalar (big-endian)
 	Commitment [32]byte // identity commitment = PoseidonHash(secret)
 }
 
-// GenerateIdentity creates a new random RLN identity.
+// GenerateIdentity creates a new random RLN identity. The secret is a
+// uniformly random canonical field element so Shamir recovery returns the
+// exact secret bytes.
 func GenerateIdentity() (*Identity, error) {
-	id := &Identity{}
-	if _, err := rand.Read(id.Secret[:]); err != nil {
+	secret, err := rand.Int(rand.Reader, fieldPrime)
+	if err != nil {
 		return nil, fmt.Errorf("generate identity secret: %w", err)
 	}
+	id := &Identity{}
+	secret.FillBytes(id.Secret[:])
 	id.Commitment = PoseidonHash(id.Secret[:])
 	return id, nil
-}
-
-// PoseidonHash is a simplified Poseidon-like hash using Keccak256 with domain separation.
-// In production, this would use a proper Poseidon implementation over BN254.
-// This provides the same interface and collision resistance properties.
-func PoseidonHash(data ...[]byte) [32]byte {
-	h := sha3.NewLegacyKeccak256()
-	h.Write([]byte("n42-rln-poseidon-v1"))
-	for _, d := range data {
-		var lenBuf [4]byte
-		binary.BigEndian.PutUint32(lenBuf[:], uint32(len(d)))
-		h.Write(lenBuf[:])
-		h.Write(d)
-	}
-	var result [32]byte
-	copy(result[:], h.Sum(nil))
-	return result
 }
 
 // MembershipTree is a Merkle tree of identity commitments.
@@ -186,15 +171,27 @@ func GenerateProof(identity *Identity, memberIndex uint32, tree *MembershipTree,
 		return nil, fmt.Errorf("generate merkle proof: %w", err)
 	}
 
-	// Compute nullifier = PoseidonHash(secret, epoch)
+	// Compute nullifier = PoseidonHash(commitment, epoch). The RLN spec
+	// derives the nullifier from the secret, but without a ZK circuit a
+	// secret-derived nullifier is unverifiable, letting a spammer mint a
+	// fresh nullifier per message and bypass the rate limit entirely.
+	// The commitment is already public (the proof carries the member
+	// index), so deriving from it costs no anonymity and lets verifiers
+	// recompute the expected nullifier. Revert to the secret-derived form
+	// when a real ZK backend lands.
 	var epochBuf [8]byte
 	binary.BigEndian.PutUint64(epochBuf[:], epoch)
-	nullifier := PoseidonHash(identity.Secret[:], epochBuf[:])
+	nullifier := PoseidonHash(identity.Commitment[:], epochBuf[:])
 
-	// Compute Shamir share: y = secret + messageHash * x (mod p)
-	// where x = PoseidonHash(epoch, messageHash)
+	// Compute Shamir share: y = secret + slope * x (mod p) where
+	// slope = PoseidonHash(secret, epoch) and x = PoseidonHash(epoch, messageHash).
+	// The slope must depend only on identity+epoch (RLN A(x) = a0 + a1*x):
+	// two shares from the same epoch then lie on one line and reveal the
+	// secret. Using the message hash as the slope put each share on a
+	// different line and recovery returned garbage.
+	slope := PoseidonHash(identity.Secret[:], epochBuf[:])
 	shareX := PoseidonHash(epochBuf[:], messageHash[:])
-	shareY := shamirEvaluate(identity.Secret, messageHash, shareX)
+	shareY := shamirEvaluate(identity.Secret, slope, shareX)
 
 	return &RLNProof{
 		MerkleProof: merkleProof,
@@ -206,13 +203,13 @@ func GenerateProof(identity *Identity, memberIndex uint32, tree *MembershipTree,
 	}, nil
 }
 
-// shamirEvaluate computes y = secret + hash * x (simplified Shamir evaluation).
-func shamirEvaluate(secret [32]byte, hash [32]byte, x [32]byte) [32]byte {
+// shamirEvaluate computes y = secret + slope * x (Shamir line evaluation).
+func shamirEvaluate(secret [32]byte, slope [32]byte, x [32]byte) [32]byte {
 	s := new(big.Int).SetBytes(secret[:])
-	h := new(big.Int).SetBytes(hash[:])
+	h := new(big.Int).SetBytes(slope[:])
 	xInt := new(big.Int).SetBytes(x[:])
 
-	// y = s + h * x mod p
+	// y = s + slope * x mod p
 	y := new(big.Int).Mul(h, xInt)
 	y.Add(y, s)
 	y.Mod(y, fieldPrime)
