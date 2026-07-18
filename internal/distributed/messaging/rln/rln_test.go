@@ -2,6 +2,7 @@ package rln
 
 import (
 	"encoding/binary"
+	"math/big"
 	"testing"
 	"time"
 )
@@ -77,6 +78,33 @@ func TestPoseidonHash(t *testing.T) {
 	h7 := PoseidonHash([]byte("ab"))
 	if h4 == h7 {
 		t.Fatal("concatenated single input should differ from two separate inputs")
+	}
+
+	// Output must be a canonical BN254 field element (< r).
+	if new(big.Int).SetBytes(h1[:]).Cmp(fieldPrime) >= 0 {
+		t.Fatal("hash output should be a canonical field element")
+	}
+
+	// Chunk-boundary lengths (31/32/62/63 bytes) and zero-padding
+	// variants must all hash distinctly.
+	seen := make(map[[32]byte]int)
+	for _, n := range []int{0, 1, 30, 31, 32, 33, 61, 62, 63, 64} {
+		buf := make([]byte, n)
+		for i := range buf {
+			buf[i] = 0xA5
+		}
+		h := PoseidonHash(buf)
+		if prev, dup := seen[h]; dup {
+			t.Fatalf("length %d collides with length %d", n, prev)
+		}
+		seen[h] = n
+	}
+	// Trailing zeros must change the hash (no zero-padding ambiguity).
+	if PoseidonHash([]byte{0xA5}) == PoseidonHash([]byte{0xA5, 0x00}) {
+		t.Fatal("trailing zero byte should change the hash")
+	}
+	if PoseidonHash() == PoseidonHash([]byte{}) {
+		t.Fatal("no input and one empty input should hash differently")
 	}
 }
 
@@ -208,18 +236,77 @@ func TestGenerateAndVerifyProof(t *testing.T) {
 		t.Fatalf("Epoch = %d, want %d", proof.Epoch, epoch)
 	}
 
-	// Verify the Merkle part.
+	// Verify the full proof.
 	verifier := NewVerifier(tree)
-	if err := verifier.VerifyProof(proof); err != nil {
+	if err := verifier.VerifyProof(proof, msgHash); err != nil {
 		t.Fatalf("VerifyProof: %v", err)
 	}
 
-	// Verify nullifier is PoseidonHash(secret, epoch).
+	// Verify nullifier is PoseidonHash(commitment, epoch).
 	var epochBuf [8]byte
 	binary.BigEndian.PutUint64(epochBuf[:], epoch)
-	expectedNullifier := PoseidonHash(id.Secret[:], epochBuf[:])
+	expectedNullifier := PoseidonHash(id.Commitment[:], epochBuf[:])
 	if proof.Nullifier != expectedNullifier {
-		t.Fatal("nullifier does not match expected PoseidonHash(secret, epoch)")
+		t.Fatal("nullifier does not match expected PoseidonHash(commitment, epoch)")
+	}
+}
+
+func TestVerifyProofRejectsForgery(t *testing.T) {
+	tree := NewMembershipTree(10)
+	id, err := GenerateIdentity()
+	if err != nil {
+		t.Fatalf("GenerateIdentity: %v", err)
+	}
+	idx, err := tree.Register(id.Commitment)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	epoch := uint64(7)
+	msgHash := MessageHashForRLN("topic", []byte("msg"), epoch)
+	verifier := NewVerifier(tree)
+
+	// A spammer randomizing the nullifier to dodge the registry must be
+	// rejected: the nullifier is recomputed from the leaf commitment.
+	proof, err := GenerateProof(id, idx, tree, epoch, msgHash)
+	if err != nil {
+		t.Fatalf("GenerateProof: %v", err)
+	}
+	proof.Nullifier[0] ^= 0x01
+	if err := verifier.VerifyProof(proof, msgHash); err == nil {
+		t.Fatal("forged nullifier should be rejected")
+	}
+
+	// A proof generated for one message must not authorize another.
+	proof, err = GenerateProof(id, idx, tree, epoch, msgHash)
+	if err != nil {
+		t.Fatalf("GenerateProof: %v", err)
+	}
+	otherHash := MessageHashForRLN("topic", []byte("other"), epoch)
+	if err := verifier.VerifyProof(proof, otherHash); err == nil {
+		t.Fatal("proof bound to a different message should be rejected")
+	}
+
+	// Tampered ShareX must be rejected.
+	proof, err = GenerateProof(id, idx, tree, epoch, msgHash)
+	if err != nil {
+		t.Fatalf("GenerateProof: %v", err)
+	}
+	proof.ShareX[0] ^= 0x01
+	if err := verifier.VerifyProof(proof, msgHash); err == nil {
+		t.Fatal("tampered ShareX should be rejected")
+	}
+
+	// Out-of-field ShareY must be rejected.
+	proof, err = GenerateProof(id, idx, tree, epoch, msgHash)
+	if err != nil {
+		t.Fatalf("GenerateProof: %v", err)
+	}
+	for i := range proof.ShareY {
+		proof.ShareY[i] = 0xFF
+	}
+	if err := verifier.VerifyProof(proof, msgHash); err == nil {
+		t.Fatal("out-of-field ShareY should be rejected")
 	}
 }
 
@@ -269,14 +356,15 @@ func TestDetectSpam(t *testing.T) {
 		t.Fatal("should detect spam")
 	}
 
-	// The recovered secret should match the original (mod field prime).
-	// Due to big.Int modular arithmetic, compare by recomputing.
-	// The secret bytes might differ if the original secret > fieldPrime,
-	// but the Shamir reconstruction yields the value mod p.
-	// Compute expected = secret mod p.
-	var zero [32]byte
-	if recovered == zero {
-		t.Fatal("recovered secret should not be zero")
+	// The secret is generated as a canonical field element, so Shamir
+	// reconstruction must return it byte-for-byte.
+	if recovered != id.Secret {
+		t.Fatal("recovered secret should equal the original identity secret")
+	}
+	// And it must reproduce the registered commitment — the check the
+	// validator uses to decide whether a recovery is slashable.
+	if PoseidonHash(recovered[:]) != id.Commitment {
+		t.Fatal("recovered secret should reproduce the identity commitment")
 	}
 }
 
@@ -373,13 +461,13 @@ func TestGossipSubValidator(t *testing.T) {
 	}
 
 	// Valid proof should be accepted.
-	result := validator.ValidateProof(proof)
+	result := validator.ValidateProof(proof, msgHash)
 	if result != ValidationAccept {
 		t.Fatalf("valid proof should be accepted, got %d", result)
 	}
 
 	// Nil proof should be rejected.
-	result = validator.ValidateProof(nil)
+	result = validator.ValidateProof(nil, msgHash)
 	if result != ValidationReject {
 		t.Fatalf("nil proof should be rejected, got %d", result)
 	}
@@ -391,7 +479,7 @@ func TestGossipSubValidator(t *testing.T) {
 	// Override the MerkleRoot to match current tree root (since verifier checks root).
 	staleProof.MerkleRoot = tree.Root()
 
-	result = validator.ValidateProof(staleProof)
+	result = validator.ValidateProof(staleProof, staleMsgHash)
 	if result != ValidationIgnore {
 		t.Fatalf("stale epoch proof should be ignored, got %d", result)
 	}
@@ -411,7 +499,7 @@ func TestGossipSubValidatorSpamReject(t *testing.T) {
 	// First message should pass.
 	msgHash1 := MessageHashForRLN("topic", []byte("first"), epoch)
 	proof1, _ := GenerateProof(id, idx, tree, epoch, msgHash1)
-	result := validator.ValidateProof(proof1)
+	result := validator.ValidateProof(proof1, msgHash1)
 	if result != ValidationAccept {
 		t.Fatalf("first proof should be accepted, got %d", result)
 	}
@@ -419,7 +507,7 @@ func TestGossipSubValidatorSpamReject(t *testing.T) {
 	// Second message with same identity in same epoch should be rejected (spam).
 	msgHash2 := MessageHashForRLN("topic", []byte("second"), epoch)
 	proof2, _ := GenerateProof(id, idx, tree, epoch, msgHash2)
-	result = validator.ValidateProof(proof2)
+	result = validator.ValidateProof(proof2, msgHash2)
 	if result != ValidationReject {
 		t.Fatalf("duplicate proof should be rejected, got %d", result)
 	}

@@ -48,8 +48,10 @@ func (v *GossipSubValidator) CurrentEpoch() uint64 {
 }
 
 // ValidateProof validates an RLN proof attached to a message.
+// The messageHash must be the value the sender committed to (see
+// MessageHashForRLN); VerifyProof binds the proof's Shamir share to it.
 // Returns ValidationAccept, ValidationReject, or ValidationIgnore.
-func (v *GossipSubValidator) ValidateProof(proof *RLNProof) ValidationResult {
+func (v *GossipSubValidator) ValidateProof(proof *RLNProof, messageHash [32]byte) ValidationResult {
 	if proof == nil {
 		return ValidationReject
 	}
@@ -65,8 +67,8 @@ func (v *GossipSubValidator) ValidateProof(proof *RLNProof) ValidationResult {
 		return ValidationIgnore
 	}
 
-	// Verify the RLN proof (Merkle proof validation)
-	if err := v.verifier.VerifyProof(proof); err != nil {
+	// Verify the RLN proof (membership, nullifier and share binding)
+	if err := v.verifier.VerifyProof(proof, messageHash); err != nil {
 		log.Debug("RLN: invalid proof", "err", err)
 		return ValidationReject
 	}
@@ -78,12 +80,24 @@ func (v *GossipSubValidator) ValidateProof(proof *RLNProof) ValidationResult {
 			"epoch", proof.Epoch,
 			"nullifier", proof.Nullifier[:8],
 		)
-		// Attempt to recover identity secret
+		// Attempt to recover the identity secret. Share y-coordinates are
+		// not publicly verifiable without a ZK circuit, so only treat the
+		// recovery as slashable when the recovered secret reproduces the
+		// member's registered commitment; otherwise one of the shares was
+		// forged by a third party and slashing would hit garbage.
 		isRecovered, secret, err := DetectSpam(duplicate, proof)
 		if err == nil && isRecovered {
-			log.Warn("RLN: identity secret recovered (slashable)",
-				"secret", secret[:8],
-			)
+			leaf, leafErr := v.verifier.LeafAt(proof.MerkleProof.Index)
+			if leafErr == nil && PoseidonHash(secret[:]) == leaf {
+				log.Warn("RLN: identity secret recovered (slashable)",
+					"secret", secret[:8],
+				)
+			} else {
+				log.Warn("RLN: share forgery detected, recovery not slashable",
+					"epoch", proof.Epoch,
+					"nullifier", proof.Nullifier[:8],
+				)
+			}
 		}
 		return ValidationReject
 	}

@@ -345,7 +345,7 @@ zkprover.ZKMLProver → used by attestation.ZKProofProvider
 
 **Layer 3 — RLN Anti-Spam** (`rln/`):
 - `MembershipTree`: Poseidon Merkle tree (depth 20 by default, ~1M members). Precomputed empty hashes for O(1) lookup.
-- `GenerateProof`: for each message, produces a Shamir share `y = secret + hash * x mod p` (BN254 scalar field). Same identity sending 2 messages in same epoch → 2 shares → Shamir recovery of identity secret → slash.
+- `GenerateProof`: for each message, produces a Shamir share `y = secret + slope * x mod p` (BN254 scalar field, `slope = Poseidon(secret, epoch)`, `x = Poseidon(epoch, messageHash)`). Same identity sending 2 messages in same epoch → 2 shares on one line → Shamir recovery of identity secret → slash.
 - `NullifierRegistry`: tracks seen nullifiers per epoch. Detects duplicate nullifiers as spam.
 - `GossipSubValidator`: returns Accept/Reject/Ignore. Rejects future epochs, ignores stale epochs, rejects invalid proofs, rejects spam (with secret recovery).
 
@@ -433,6 +433,6 @@ zkprover.ZKMLProver → used by attestation.ZKProofProvider
 - **Build version**: Auto-incremented on every `make n42` / `make build` via `scripts/bump_version.sh`. Version stored in `VERSION` file.
 - **Mobile builds**: `cmd/evmsdk/` provides iOS/Android SDK via gomobile (`make ios`, `make android`).
 - **Messaging crypto**: Uses pure Go `golang.org/x/crypto` (curve25519, chacha20poly1305, hkdf, sha3). No CGO dependency. Signing uses `common/crypto` (secp256k1 via libsecp256k1 CGO).
-- **RLN Poseidon hash**: Currently a Keccak256-based approximation with domain separation (`n42-rln-poseidon-v1`). Swap for a real BN254 Poseidon when a vetted Go implementation is available.
+- **RLN Poseidon hash**: Real Poseidon over BN254 via the gnark-crypto Poseidon2 permutation (width-2 compression, length-prefixed 31-byte chunk absorption, domain `n42-rln-poseidon2-v1`). No ZK circuit yet, so the nullifier is commitment-derived (verifier-recomputable); revert to the RLN-spec secret-derived nullifier when a ZK backend lands. Share y-coordinates stay unverifiable without ZK — recovered secrets are only slashable when they reproduce the member's commitment.
 - **protobuf is deprecated for internal encoding**: use compact bitmask codecs (`common/block/header_compact.go` `MarshalCompact`, `receipt_compact.go`) or the Erigon V2 account/storage codec instead. proto is retained ONLY where a cross-process / cross-language boundary makes it unavoidable (P2P wire, gRPC KV for RPCDaemon, cross-language SDK contracts). Do not add proto to new internal persistence.
 - **New consensus header field → update ALL codecs**: any field added to `common/block/header.go` that participates in the block hash MUST be handled in every codec — RLP (`rlpHash`), the proto/trailer `Marshal`/`parseTrailer`, AND the compact storage codec `MarshalCompact`/`unmarshalCompact` (the default for `WriteHeader`). Missing the compact codec silently drops the field on the storage round-trip, so the stored header's hash diverges from the consensus head hash and block import fails with `unknown ancestor`. Regression: `TestCompactHeaderRoundTrip`'s `full` header must include every optional field and assert the round-trip hash is unchanged.
