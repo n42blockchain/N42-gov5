@@ -77,6 +77,38 @@ func TestRPCMarshalHeaderUsesEthereumCompatibleHash(t *testing.T) {
 	}
 }
 
+func TestRPCMarshalHeaderUsesAddressableNativeHashForN42Consensus(t *testing.T) {
+	t.Parallel()
+
+	header := &block.Header{
+		ParentHash:  typesHashFromByte(0x01),
+		Root:        typesHashFromByte(0x02),
+		TxHash:      typesHashFromByte(0x03),
+		ReceiptHash: typesHashFromByte(0x04),
+		Difficulty:  uint256.NewInt(0),
+		Number:      uint256.NewInt(7),
+		GasLimit:    30_000_000,
+		Time:        9,
+		BaseFee:     uint256.NewInt(1),
+		// This N42-only extension is intentionally omitted from the Ethereum
+		// RPC header encoding, so the two hashes differ.
+		MobileRegistryRoot: ptrToHash(typesHashFromByte(0x05)),
+	}
+	cfg := &params.ChainConfig{Consensus: params.HotStuffConsensus}
+	fields := RPCMarshalHeader(header, cfg)
+	got, ok := fields["hash"].(avmutil.Hash)
+	if !ok {
+		t.Fatalf("RPCMarshalHeader() hash type = %T", fields["hash"])
+	}
+	want := avmutil.Hash(header.Hash())
+	if got != want {
+		t.Fatalf("RPCMarshalHeader() hash = %s, want addressable native hash %s", got.Hex(), want.Hex())
+	}
+	if got == avmutil.Hash(ethCompatibleHeaderHash(header, cfg)) {
+		t.Fatal("test fixture did not distinguish native and Ethereum-compatible hashes")
+	}
+}
+
 func TestRPCMarshalHeaderOmitsPostForkFieldsBeforeShanghai(t *testing.T) {
 	t.Parallel()
 

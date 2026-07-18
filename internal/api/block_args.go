@@ -159,7 +159,7 @@ func newRPCTransactionFromBlockIndex(b block.IBlock, index uint64, cfg *params.C
 	if index >= uint64(len(txs)) {
 		return nil
 	}
-	blockHash := ethCompatibleBlockHash(b, cfg)
+	blockHash := rpcBlockHash(b, cfg)
 	if blockHashOverride != nil {
 		blockHash = *blockHashOverride
 	}
@@ -176,7 +176,7 @@ func RPCMarshalHeader(head block.IHeader, cfg *params.ChainConfig) map[string]in
 
 	result := map[string]interface{}{
 		"number":           (*hexutil.Big)(uint256ToBigOrZero(head.Number64())),
-		"hash":             avmtypes.FromastHash(ethCompatibleHeaderHash(head, cfg)),
+		"hash":             avmtypes.FromastHash(rpcHeaderHash(head, cfg)),
 		"parentHash":       avmtypes.FromastHash(header.ParentHash),
 		"nonce":            header.Nonce,
 		"mixHash":          avmtypes.FromastHash(header.MixDigest),

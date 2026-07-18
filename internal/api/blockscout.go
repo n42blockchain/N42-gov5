@@ -153,8 +153,8 @@ func (s *BlockChainAPI) overlayBlockHash(blk block.IBlock) *types.Hash {
 	if s == nil || s.api == nil || s.api.engineOverlay == nil || blk == nil {
 		return nil
 	}
-	hash := s.api.engineOverlay.hashForBlock(blk, s.api.GetChainConfig())
-	if hash == (types.Hash{}) {
+	hash, ok := s.api.engineOverlay.hashOverrideForBlock(blk)
+	if !ok || hash == (types.Hash{}) {
 		return nil
 	}
 	return &hash
@@ -234,10 +234,15 @@ func (s *TransactionAPI) getBlockByHash(hash types.Hash) (block.IBlock, error) {
 }
 
 func (s *TransactionAPI) overlayBlockHash(blk block.IBlock) types.Hash {
-	if s == nil || s.api == nil || s.api.engineOverlay == nil || blk == nil {
-		return ethCompatibleBlockHash(blk, nil)
+	if s == nil || s.api == nil || blk == nil {
+		return types.Hash{}
 	}
-	return s.api.engineOverlay.hashForBlock(blk, s.api.GetChainConfig())
+	if s.api.engineOverlay != nil {
+		if hash, ok := s.api.engineOverlay.hashOverrideForBlock(blk); ok {
+			return hash
+		}
+	}
+	return rpcBlockHash(blk, s.api.GetChainConfig())
 }
 
 // GetTransactionByBlockNumberAndIndex returns the transaction for the given block number and index.
