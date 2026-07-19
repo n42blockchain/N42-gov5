@@ -323,6 +323,46 @@ func resolveBridgeValidatorSet(engine consensus.Engine) *hotstuff.ValidatorSet {
 	return hs.Engine().CurrentValidatorSet()
 }
 
+// buildCohortAuth returns the reporter-authentication hooks for the cohort
+// relay: a signer using this node's validator BLS key and a verifier that
+// accepts an announcement only if its reporter is a current validator and the
+// signature verifies against that validator's registered public key. Returns
+// nil,nil on a non-HotStuff engine or when the BLS key is unavailable — the
+// relay then runs unauthenticated (single-node / legacy chains that do not
+// gossip cohort announcements). The validator set is read fresh on every
+// verification so epoch rotations are honoured.
+func (n *Node) buildCohortAuth() (mobileverify.CohortSigner, mobileverify.CohortVerifier) {
+	if _, ok := resolveHotStuffEngine(n.engine); !ok {
+		return nil, nil
+	}
+	etherbase, err := n.Etherbase()
+	if err != nil {
+		return nil, nil
+	}
+	blsKey, err := hotstuff.LoadBLSKeyFromDir(n.keyDir, etherbase)
+	if err != nil {
+		log.Warn("mobileverify: cohort reporter authentication disabled (BLS key unavailable)", "err", err)
+		return nil, nil
+	}
+	signer := func(msg []byte) []byte { return blsKey.Sign(msg).Marshal() }
+	verifier := func(reporter types.Address, msg, sig []byte) bool {
+		vs := resolveBridgeValidatorSet(n.engine)
+		if vs == nil {
+			return false
+		}
+		idx := vs.FindByAddress(reporter)
+		if idx < 0 {
+			return false // reporter is not a current validator
+		}
+		pk, perr := vs.GetPublicKey(hotstuff.ValidatorIndex(idx))
+		if perr != nil {
+			return false
+		}
+		return hotstuff.VerifyBLSSignature(sig, pk, msg)
+	}
+	return signer, verifier
+}
+
 func hasRegisteredNamespace(apis []jsonrpc.API, namespace string) bool {
 	for _, api := range apis {
 		if api.Namespace == namespace {
@@ -2252,7 +2292,14 @@ func (n *Node) startMobileVerify() error {
 		cohortIndexTopic += n.p2p.Encoding().ProtocolSuffix()
 		cohortCertTopic += n.p2p.Encoding().ProtocolSuffix()
 	}
-	cohortRelay := mobileverify.NewCohortRelay(n.mobileCohort, n.p2p, n.mobileRegistry, cohortIndexTopic, cohortCertTopic)
+	// Layer 2C: raise the reconciliation ban threshold to f+1 distinct
+	// authenticated reporters, so a single malicious validator can no longer
+	// manufacture a ban. Falls back to the safe default (2) off HotStuff.
+	if vs := resolveBridgeValidatorSet(n.engine); vs != nil {
+		n.mobileCohort.SetBanThreshold(int(vs.FaultTolerance()) + 1)
+	}
+	cohortSign, cohortVerify := n.buildCohortAuth()
+	cohortRelay := mobileverify.NewCohortRelayWithAuth(n.mobileCohort, n.p2p, n.mobileRegistry, cohortIndexTopic, cohortCertTopic, cohortSign, cohortVerify)
 	if n.p2p != nil {
 		if err := cohortRelay.Start(); err != nil {
 			log.Error("mobileverify: cohort relay failed to start", "err", err)

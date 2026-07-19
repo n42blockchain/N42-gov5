@@ -81,7 +81,19 @@ type IndexCommitment struct {
 // A single set repeating an (index, commitment) pair does not by itself
 // count as a conflict — only agreement across more than one DISTINCT
 // announcement does.
-func ReconcileIndices(sets ...[]IndexCommitment) []MobileIndex {
+//
+// threshold is the number of distinct announcements that must agree on the
+// same (index, commitment) before the index is banned. With authenticated
+// reporters (cohort_auth.go) each distinct announcement is a distinct
+// validator, so a threshold of f+1 (Layer 2C) means a single malicious
+// validator can no longer, by itself, manufacture the count-of-2 that the old
+// threshold=2 rule banned on — it now takes a collusion of f, which Layer 2B's
+// commit-reveal proof-of-possession then exposes. A floor of 2 is enforced so
+// a degenerate threshold never bans a device reported by only one node.
+func ReconcileIndices(threshold int, sets ...[]IndexCommitment) []MobileIndex {
+	if threshold < 2 {
+		threshold = 2
+	}
 	// index -> commitment -> number of DISTINCT announcing sets reporting it
 	seen := make(map[MobileIndex]map[types.Hash]int, 64)
 	for _, s := range sets {
@@ -103,7 +115,7 @@ func ReconcileIndices(sets ...[]IndexCommitment) []MobileIndex {
 	var banned []MobileIndex
 	for idx, byCommitment := range seen {
 		for _, count := range byCommitment {
-			if count > 1 {
+			if count >= threshold {
 				banned = append(banned, idx)
 				break
 			}

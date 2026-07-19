@@ -148,10 +148,34 @@ type CohortCoordinator struct {
 	onIndexAnnounce func(blockHash types.Hash, blockNumber uint64, reporter types.Address, indices []IndexCommitment)
 	onCertAnnounce  func(reporter types.Address, cert *MobileAttestationCert)
 
+	// banThreshold is the number of distinct authenticated reporters that must
+	// agree on a device's (index, commitment) before ReconcileIndices bans it
+	// (Layer 2C). Set to f+1 from the validator set; 0 falls back to the safe
+	// default of 2. Read atomically-ish under mu via reconcileThreshold.
+	banThreshold int
+
 	mu            sync.Mutex
 	currentHeight uint64
 	windows       map[types.Hash]*cohortWindow
 	stopped       bool
+}
+
+// SetBanThreshold configures the Layer 2C reconciliation threshold (f+1). A
+// value below 2 is ignored (the ReconcileIndices floor still applies).
+func (c *CohortCoordinator) SetBanThreshold(threshold int) {
+	c.mu.Lock()
+	c.banThreshold = threshold
+	c.mu.Unlock()
+}
+
+func (c *CohortCoordinator) reconcileThreshold() int {
+	c.mu.Lock()
+	t := c.banThreshold
+	c.mu.Unlock()
+	if t < 2 {
+		return 2
+	}
+	return t
 }
 
 // NewCohortCoordinator creates a coordinator. selfAddr identifies this node
@@ -467,7 +491,7 @@ func (c *CohortCoordinator) reconcileAndClose(w *cohortWindow) {
 	}
 	c.mu.Unlock()
 
-	banned := ReconcileIndices(sets...)
+	banned := ReconcileIndices(c.reconcileThreshold(), sets...)
 	if len(banned) > 0 {
 		removed := w.col.ExcludeIndices(banned)
 		log.Debug("mobileverify: excluded cross-node conflicting devices before local aggregation",

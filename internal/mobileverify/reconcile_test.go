@@ -9,7 +9,7 @@ import (
 )
 
 func TestReconcileIndicesNoOverlap(t *testing.T) {
-	banned := ReconcileIndices(
+	banned := ReconcileIndices(2, 
 		[]IndexCommitment{{Index: 1, Commitment: h(11)}, {Index: 2, Commitment: h(12)}, {Index: 3, Commitment: h(13)}},
 		[]IndexCommitment{{Index: 4, Commitment: h(14)}, {Index: 5, Commitment: h(15)}, {Index: 6, Commitment: h(16)}},
 		[]IndexCommitment{{Index: 7, Commitment: h(17)}},
@@ -25,7 +25,7 @@ func TestReconcileIndicesNoOverlap(t *testing.T) {
 // the same device's signature always hash identically) — and must be
 // banned; index 6 (unique) must not be.
 func TestReconcileIndicesDetectsCrossSetOverlap(t *testing.T) {
-	banned := ReconcileIndices(
+	banned := ReconcileIndices(2, 
 		[]IndexCommitment{{Index: 1, Commitment: h(21)}, {Index: 2, Commitment: h(22)}, {Index: 3, Commitment: h(23)}},
 		[]IndexCommitment{{Index: 3, Commitment: h(23)}, {Index: 4, Commitment: h(24)}, {Index: 5, Commitment: h(25)}},
 		[]IndexCommitment{{Index: 5, Commitment: h(25)}, {Index: 6, Commitment: h(26)}},
@@ -49,7 +49,7 @@ func TestReconcileIndicesRejectsUnauthenticatedForgery(t *testing.T) {
 	realCommitment := h(99)   // what the honest node that actually collected the signature computed
 	forgedCommitment := h(66) // an attacker's claim, naming the same index but a DIFFERENT (fabricated) commitment
 
-	banned := ReconcileIndices(
+	banned := ReconcileIndices(2, 
 		[]IndexCommitment{{Index: victim, Commitment: realCommitment}}, // the one honest observer
 		[]IndexCommitment{{Index: victim, Commitment: forgedCommitment}}, // attacker names the index without the real signature
 	)
@@ -72,7 +72,7 @@ func TestReconcileIndicesUbiquitousIndex(t *testing.T) {
 			{Index: MobileIndex(i*10 + 1), Commitment: h(byte(i*10 + 2))},
 		}
 	}
-	banned := ReconcileIndices(sets[0], sets[1], sets[2], sets[3], sets[4])
+	banned := ReconcileIndices(2, sets[0], sets[1], sets[2], sets[3], sets[4])
 	if len(banned) != 1 || banned[0] != 99 {
 		t.Fatalf("banned = %v, want exactly [99]", banned)
 	}
@@ -84,7 +84,7 @@ func TestReconcileIndicesUbiquitousIndex(t *testing.T) {
 // hand-built input) must not by itself count as a cross-node conflict.
 func TestReconcileIndicesRepeatWithinOneSetIsNotAConflict(t *testing.T) {
 	c := h(1)
-	banned := ReconcileIndices(
+	banned := ReconcileIndices(2, 
 		[]IndexCommitment{{Index: 1, Commitment: c}, {Index: 1, Commitment: c}},
 		[]IndexCommitment{{Index: 2, Commitment: h(2)}},
 	)
@@ -94,10 +94,10 @@ func TestReconcileIndicesRepeatWithinOneSetIsNotAConflict(t *testing.T) {
 }
 
 func TestReconcileIndicesEmpty(t *testing.T) {
-	if banned := ReconcileIndices(); len(banned) != 0 {
+	if banned := ReconcileIndices(2); len(banned) != 0 {
 		t.Fatalf("no sets at all: banned = %v, want none", banned)
 	}
-	if banned := ReconcileIndices(nil, []IndexCommitment{}); len(banned) != 0 {
+	if banned := ReconcileIndices(2, nil, []IndexCommitment{}); len(banned) != 0 {
 		t.Fatalf("empty sets: banned = %v, want none", banned)
 	}
 }
@@ -147,7 +147,7 @@ func TestExcludeIndicesBeforeCloseCoexistsWithReconcile(t *testing.T) {
 		{Index: otherIdx, Commitment: h(200)},
 	}
 
-	banned := ReconcileIndices(mine, peerSet)
+	banned := ReconcileIndices(2, mine, peerSet)
 	if len(banned) != 1 || banned[0] != victimIdx {
 		t.Fatalf("banned = %v, want exactly [%d]", banned, victimIdx)
 	}
@@ -244,7 +244,7 @@ func TestReconciliationPreventsUbiquitousConflictCollapse(t *testing.T) {
 
 	// Reconciliation round: every node sees every announcement (a healthy,
 	// fully-connected gossip round) and computes the SAME banned set.
-	banned := ReconcileIndices(allSets[0], allSets[1], allSets[2], allSets[3], allSets[4])
+	banned := ReconcileIndices(2, allSets[0], allSets[1], allSets[2], allSets[3], allSets[4])
 	if len(banned) != 1 || banned[0] != poisonIdx {
 		t.Fatalf("banned = %v, want exactly [%d]", banned, poisonIdx)
 	}
@@ -287,4 +287,37 @@ func TestReconciliationPreventsUbiquitousConflictCollapse(t *testing.T) {
 	}
 	t.Logf("with reconciliation: %d honest signers across %d nodes fully preserved (vs %d without it)",
 		totalHonest, nodes, honestPerNode+1)
+}
+
+// TestReconcileThreshold is the Layer 2C fix: with an f+1 threshold a single
+// malicious reporter replaying a device's public (index, commitment) can no
+// longer trigger a ban (count reaches 2, below f+1=3), while a genuine f+1
+// agreement still bans.
+func TestReconcileThreshold(t *testing.T) {
+	victim := IndexCommitment{Index: 42, Commitment: h(7)}
+
+	// The victim's honest source announces it, plus ONE malicious replayer.
+	// threshold f+1 = 3 → not banned (attack fails).
+	honest := []IndexCommitment{victim}
+	replay := []IndexCommitment{victim}
+	if banned := ReconcileIndices(3, honest, replay); len(banned) != 0 {
+		t.Fatalf("single replayer (count=2) triggered a ban under threshold 3: %v", banned)
+	}
+
+	// The same two announcements DO ban under the old threshold-2 rule —
+	// exactly the censorship Layer 2C closes.
+	if banned := ReconcileIndices(2, honest, replay); len(banned) != 1 {
+		t.Fatalf("threshold 2 should still ban on count=2, got %v", banned)
+	}
+
+	// A genuine 3-way agreement (device really reached 3 nodes) bans at f+1.
+	if banned := ReconcileIndices(3, honest, replay, []IndexCommitment{victim}); len(banned) != 1 {
+		t.Fatalf("f+1 genuine agreement should ban, got %v", banned)
+	}
+
+	// The floor: a degenerate threshold below 2 never bans a device reported
+	// by only one node.
+	if banned := ReconcileIndices(1, honest); len(banned) != 0 {
+		t.Fatalf("threshold floor should not ban a single report, got %v", banned)
+	}
 }
