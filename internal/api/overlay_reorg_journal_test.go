@@ -15,7 +15,7 @@ import (
 
 // TestOverlayReorgJournalRing checks the ring semantics that keep the journal
 // consistent with committed state: pending diffs promote only on flush, drop on
-// discard, the ring is bounded to N, and unwindOne pops newest-first.
+// discard, the ring is bounded to N, and committed unwinds pop newest-first.
 func TestOverlayReorgJournalRing(t *testing.T) {
 	db := mdbx.NewMDBX(log.New()).InMem(t.TempDir()).WithTableCfg(func(d kv.TableCfg) kv.TableCfg {
 		return d
@@ -44,17 +44,29 @@ func TestOverlayReorgJournalRing(t *testing.T) {
 	j.flush()
 	require.Equal(t, 3, j.depth(), "ring bounded to N")
 
-	// unwindOne pops newest-first: 104, 103, 102, then empty
+	// A rolled-back unwind must retain the top entry so a retry restores the
+	// same block instead of silently consuming an extra layer.
+	tx := newTx()
+	num, _, ok, err := j.unwindOne(tx)
+	tx.Rollback()
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, uint64(104), num)
+	require.Equal(t, 3, j.depth(), "rolled-back unwind must retain journal entry")
+
+	// A durably committed unwind is finalized explicitly and pops newest-first:
+	// 104, 103, 102, then empty.
 	for _, want := range []uint64{104, 103, 102} {
-		tx := newTx()
-		num, _, ok, err := j.unwindOne(tx)
-		tx.Rollback()
+		tx = newTx()
+		num, _, ok, err = j.unwindOne(tx)
 		require.NoError(t, err)
 		require.True(t, ok)
 		require.Equal(t, want, num)
+		require.NoError(t, tx.Commit())
+		j.commitUnwind(num)
 	}
-	tx := newTx()
-	_, _, ok, err := j.unwindOne(tx)
+	tx = newTx()
+	_, _, ok, err = j.unwindOne(tx)
 	tx.Rollback()
 	require.NoError(t, err)
 	require.False(t, ok, "ring empty → cannot unwind (deep reorg / below finality)")
