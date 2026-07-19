@@ -86,8 +86,10 @@ type BlockFetcher interface {
 const blockProductionSyncGate = 2
 
 // committedUnexecutedRetryLimit is the number of consecutive local execution
-// checks that may fail for the same committed hash before leaders refuse to
-// extend it. A short grace period covers normal block-arrival skew.
+// checks that may fail before leaders refuse to extend an unavailable parent.
+// The streak deliberately spans distinct commit hashes: a lagging node sees a
+// new CommitQC every view, so resetting on hash change would keep the guard at
+// one forever. A short grace period still covers normal block-arrival skew.
 const committedUnexecutedRetryLimit = 3
 
 // heightBehind returns how far the local head trails the network, or 0 when no
@@ -131,22 +133,23 @@ func (s *Service) blockExecutionStatus(hash types.Hash) (applied, checked bool, 
 // block has not executed locally. countMetric is true only for the CommitQC
 // event; retry observations update the consecutive-failure guard without
 // inflating the event counter.
-func (s *Service) observeCommittedExecution(hash types.Hash, countMetric bool) (bool, uint8) {
+func (s *Service) observeCommittedExecution(hash types.Hash, countMetric bool) (bool, uint8, uint64) {
 	applied, checked, number := s.blockExecutionStatus(hash)
 	if !checked {
-		return true, 0 // compatibility for deployments without the applied probe
+		return true, 0, number // compatibility for deployments without the applied probe
 	}
 	s.pendingMu.Lock()
 	if applied {
 		s.unexecutedCommitHash = types.Hash{}
 		s.unexecutedCommitFailures = 0
 		s.pendingMu.Unlock()
-		return true, 0
+		return true, 0, number
 	}
-	if s.unexecutedCommitHash != hash {
-		s.unexecutedCommitHash = hash
-		s.unexecutedCommitFailures = 1
-	} else if s.unexecutedCommitFailures < ^uint8(0) {
+	// Do not reset the streak when the commit hash changes. A node whose
+	// execution head is falling behind observes a different missing committed
+	// block every view; per-hash counting never reaches the production gate.
+	s.unexecutedCommitHash = hash
+	if s.unexecutedCommitFailures < ^uint8(0) {
 		s.unexecutedCommitFailures++
 	}
 	failures := s.unexecutedCommitFailures
@@ -157,24 +160,42 @@ func (s *Service) observeCommittedExecution(hash types.Hash, countMetric bool) (
 	}
 	log.Error("hotstuff: committed block not executed locally",
 		"hash", hash, "number", number, "failures", failures)
-	return false, failures
+	return false, failures, number
 }
 
-// committedParentBlocked rechecks a tracked committed parent and fails closed
-// after repeated local execution failures. Other parents are unaffected.
+// requestCommittedCatchUp uses the CommitQC-authenticated block number as a
+// catch-up target. Peer status heights are refreshed much less frequently than
+// HotStuff commits, so relying only on advertised height can leave a restarted
+// validator permanently chasing a stale target.
+func (s *Service) requestCommittedCatchUp(hash types.Hash, number uint64) {
+	if s.blockFetcher == nil {
+		return
+	}
+	if targeted, ok := s.blockFetcher.(interface{ CatchUpTo(uint64) }); ok && number > 0 {
+		go targeted.CatchUpTo(number)
+		return
+	}
+	s.blockFetcher.FetchBlockByHash(hash)
+}
+
+// committedParentBlocked rechecks the proposed consensus parent and fails
+// closed after repeated local execution failures. The failure streak is
+// chain-wide rather than keyed by hash because commits keep advancing while a
+// restarted node's execution head is stalled.
 func (s *Service) committedParentBlocked(parentHash types.Hash) bool {
 	s.pendingMu.Lock()
-	tracked := s.unexecutedCommitHash == parentHash && parentHash != (types.Hash{})
+	hasExecutionGap := s.unexecutedCommitFailures > 0 && parentHash != (types.Hash{})
 	s.pendingMu.Unlock()
-	if !tracked {
+	if !hasExecutionGap {
 		return false
 	}
-	applied, failures := s.observeCommittedExecution(parentHash, false)
+	applied, failures, number := s.observeCommittedExecution(parentHash, false)
 	if applied || failures < committedUnexecutedRetryLimit {
 		return false
 	}
+	s.requestCommittedCatchUp(parentHash, number)
 	log.Error("hotstuff: refusing block production on unexecuted committed parent",
-		"hash", parentHash, "failures", failures)
+		"hash", parentHash, "number", number, "failures", failures)
 	return true
 }
 
@@ -399,7 +420,9 @@ func (s *Service) handleOutput(output EngineOutput) {
 		}
 	case OutputBlockCommitted:
 		log.Info("hotstuff: block committed", "view", output.View, "hash", output.Hash)
-		s.observeCommittedExecution(output.Hash, true)
+		if applied, _, number := s.observeCommittedExecution(output.Hash, true); !applied {
+			s.requestCommittedCatchUp(output.Hash, number)
+		}
 		// Make the committed block the canonical head so every node's chain follows
 		// the single committed chain (the miner may have locally inserted a
 		// different same-height candidate via resultLoop). Skipped silently if the

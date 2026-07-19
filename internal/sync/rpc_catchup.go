@@ -60,15 +60,47 @@ const catchUpInterval = 8 * time.Second
 // whose view is far ahead of ours means we are behind). Implements
 // hotstuff.BlockFetcher.CatchUp.
 func (s *Service) CatchUp() {
+	self := currentBlockNumber(s.cfg.chain)
+	highest, peers := s.cfg.p2p.Peers().BestPeers(5, self)
+	if highest == nil || len(peers) == 0 || highest.Cmp(self) <= 0 {
+		return // nobody is ahead of us
+	}
+	s.catchUpTo(highest.Uint64(), peers)
+}
+
+// CatchUpTo pulls through an authenticated consensus target without depending
+// on remote heights cached during the P2P status handshake. HotStuff can
+// advance several dozen blocks before the periodic status refresh, so a
+// restarted validator otherwise catches only to that stale advertised height
+// and then falls farther behind while new CommitQCs continue arriving.
+//
+// The caller obtains target from a verified CommitQC. Range responses still
+// undergo the normal block validation/import path; the target only selects how
+// far to ask connected peers for data.
+func (s *Service) CatchUpTo(target uint64) {
+	self := currentBlockNumber(s.cfg.chain)
+	if self == nil || target <= self.Uint64() {
+		return
+	}
+	peers := s.cfg.p2p.Peers().Connected()
+	if len(peers) > 5 {
+		peers = peers[:5]
+	}
+	if len(peers) == 0 {
+		return
+	}
+	s.catchUpTo(target, peers)
+}
+
+func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
 	if !catchUpInProgress.CompareAndSwap(false, true) {
 		return // a catch-up is already running
 	}
 	defer catchUpInProgress.Store(false)
 
 	self := currentBlockNumber(s.cfg.chain)
-	highest, peers := s.cfg.p2p.Peers().BestPeers(5, self)
-	if highest == nil || len(peers) == 0 || highest.Cmp(self) <= 0 {
-		return // nobody is ahead of us
+	if self == nil || target <= self.Uint64() {
+		return
 	}
 
 	// Default (pure height lag): pull only the blocks above our head.
@@ -99,10 +131,10 @@ func (s *Service) CatchUp() {
 	// path; a plain height lag never unwinds.
 	const maxForkBacktrack = 32
 	for attempt := 0; attempt <= maxForkBacktrack; attempt++ {
-		if start > highest.Uint64() {
+		if start > target {
 			return
 		}
-		count := highest.Uint64() - start + 1
+		count := target - start + 1
 		if count > maxRequestBlocks {
 			count = maxRequestBlocks
 		}
@@ -112,8 +144,8 @@ func (s *Service) CatchUp() {
 			Step:             1,
 		}
 		log.Info("hotstuff catch-up: requesting range",
-			"from", start, "to", highest.Uint64(), "self", self.Uint64(), "peers", len(peers), "attempt", attempt)
-		if s.catchUpRange(req, peers, authorized, start, highest.Uint64()) {
+			"from", start, "to", target, "self", self.Uint64(), "peers", len(peers), "attempt", attempt)
+		if s.catchUpRange(req, peers, authorized, start, target) {
 			return
 		}
 		if !authorized || start <= 1 {
