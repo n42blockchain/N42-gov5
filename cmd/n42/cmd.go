@@ -672,7 +672,7 @@ var (
 	}
 	DevTxGenMaxFlag = &cli.IntFlag{
 		Name:        "dev.txgen.max",
-		Usage:       "每个块的最大交易数 (0-31)",
+		Usage:       "每批次的最大交易数 (1-31; 0 使用默认值 10)",
 		Category:    "DEVELOPMENT",
 		Value:       10,
 		Destination: &DefaultConfig.DevCfg.TxGenMaxPerBlock,
