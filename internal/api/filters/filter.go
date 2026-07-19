@@ -111,10 +111,17 @@ func (f *Filter) Logs(ctx context.Context) ([]*block.Log, error) {
 		end     = uint64(f.end)
 		pending = f.end == jsonrpc.PendingBlockNumber.Int64()
 	)
-	if f.begin == jsonrpc.LatestBlockNumber.Int64() {
+	// Resolve every named-block sentinel (latest/pending/safe/finalized, all
+	// negative) to a concrete height. Handling only latest/pending left safe
+	// (-4) and finalized (-3) as raw negatives, which uint64() turned into
+	// enormous numbers so the scan matched nothing and the query silently
+	// returned empty. Under HotStuff a committed block IS final, so head is the
+	// correct resolution for safe/finalized here; on the CL-driven eth-el
+	// profile it is a superset (logs up to head), never empty.
+	if f.begin < 0 {
 		f.begin = int64(head)
 	}
-	if f.end == jsonrpc.LatestBlockNumber.Int64() || f.end == jsonrpc.PendingBlockNumber.Int64() {
+	if f.end < 0 {
 		end = head
 	}
 	// Try indexed log lookup first; fall back to unindexed if the index is

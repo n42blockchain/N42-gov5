@@ -438,3 +438,28 @@ func TestDeleteOverStoreErrorPropagates(t *testing.T) {
 		t.Fatal("store read failure was masked as ErrNotFound")
 	}
 }
+
+// TestGetOverStoreErrorPropagates: a store read failure during Get must surface
+// as the error, not be masked as ErrNotFound (which would make a corrupt tree
+// silently answer "absent" for keys that exist). Counterpart to the delete and
+// insert error-propagation tests.
+func TestGetOverStoreErrorPropagates(t *testing.T) {
+	src := New(NewMemStore())
+	if err := src.Put(HashKey([]byte("alpha")), []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := src.Put(HashKey([]byte("beta")), []byte("2")); err != nil {
+		t.Fatal(err)
+	}
+	root := src.Root()
+
+	boom := errors.New("store read boom")
+	orphan := NewFromRoot(errBoomStore{boom: boom}, root)
+	_, err := orphan.Get(HashKey([]byte("alpha")))
+	if err == nil {
+		t.Fatal("Get over a failing store silently succeeded")
+	}
+	if err == ErrNotFound {
+		t.Fatal("store read failure was masked as ErrNotFound")
+	}
+}

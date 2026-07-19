@@ -75,8 +75,14 @@ func (j *overlayReorgJournal) discard() {
 	j.mu.Unlock()
 }
 
-// unwindOne restores the highest committed block's warm state into tx and pops
-// it from the ring, returning its number. ok=false when the ring is empty —
+// unwindOne restores the highest committed block's warm state into tx WITHOUT
+// removing it from the ring. The caller must call commitUnwind(num) only after
+// tx has durably committed: popping here (before the caller's truncate +
+// commit) meant a later failure rolled the DB back while the in-memory ring
+// entry was already gone, permanently losing the undo — a retry would then
+// unwind an extra layer or falsely report the journal exhausted. Leaving the
+// entry in place makes the restore idempotent (it lives inside the rolled-back
+// tx), so a failed attempt retries cleanly. ok=false when the ring is empty —
 // the reorg is deeper than the journal (below finality; never happens on
 // mainnet), and the caller must halt rather than corrupt state.
 func (j *overlayReorgJournal) unwindOne(tx kv.RwTx) (num uint64, hash types.Hash, ok bool, err error) {
@@ -89,8 +95,20 @@ func (j *overlayReorgJournal) unwindOne(tx kv.RwTx) (num uint64, hash types.Hash
 	if rerr := last.diff.Restore(tx); rerr != nil {
 		return 0, types.Hash{}, false, rerr
 	}
-	j.ring = j.ring[:len(j.ring)-1]
 	return last.num, last.hash, true, nil
+}
+
+// commitUnwind finalizes an unwindOne by removing its ring entry, after the
+// caller's tx has durably committed. num must still be the ring's top (it is,
+// unless a concurrent flush advanced it, in which case there is nothing of
+// this unwind to finalize).
+func (j *overlayReorgJournal) commitUnwind(num uint64) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if len(j.ring) == 0 || j.ring[len(j.ring)-1].num != num {
+		return
+	}
+	j.ring = j.ring[:len(j.ring)-1]
 }
 
 // depth reports how many committed blocks are currently unwindable (diagnostics).

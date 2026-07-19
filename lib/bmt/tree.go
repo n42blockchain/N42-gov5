@@ -78,7 +78,12 @@ func (t *Tree) get(nodeHash Hash, keyPath Path, keyHash Hash, depth int) ([]byte
 	}
 	data, err := t.getNode(nodeHash)
 	if err != nil {
-		return nil, ErrNotFound
+		// A store read failure (I/O error, corrupt page) is NOT key-absence.
+		// Masking it as ErrNotFound makes a corrupted or partially-missing tree
+		// silently answer "no such key" for keys that exist. Propagate — same
+		// as the insert and remove paths. Callers that mean "absent" still get
+		// ErrNotFound from the EmptyHash branch above.
+		return nil, err
 	}
 	if isLeaf(data) {
 		storedKey, ok := extractLeafKeyHash(data)

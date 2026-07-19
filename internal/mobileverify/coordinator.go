@@ -304,24 +304,31 @@ func (c *CohortCoordinator) OnPeerCert(reporter types.Address, cert *MobileAttes
 	if !ok || cert.BlockNumber != w.blockNumber {
 		return
 	}
-	byReporter, ok := w.peerCerts[cert.ReceiptsRoot]
-	if !ok {
-		byReporter = make(map[types.Address]*MobileAttestationCert)
-		w.peerCerts[cert.ReceiptsRoot] = byReporter
-	}
 	// Bound distinct (root, reporter) entries per window. cert.Verify above
 	// proves the signers really signed cert.ReceiptsRoot, but reporter is
 	// still the unauthenticated gossip-payload address, and an attacker can
 	// produce valid certs for many self-chosen roots with its own phones —
 	// so the per-root map alone is not a bound. Cap the total; the honest
-	// cohort is far below it. (This bounds the memory-growth DoS; a spoofed
-	// reporter overwriting an honest node's own slot only reduces which
-	// cohort this node's stored evidence credits — MergeCerts still dedups by
-	// signer index, so it cannot forge or double-count signatures. Full
-	// reporter authentication needs a signed announcement — a larger protocol
-	// change tracked separately.)
+	// cohort is far below it. The cap MUST be checked before the per-root map
+	// is created: creating it first let a multi-root flood leave an unbounded
+	// number of empty root maps (each new ReceiptsRoot) that the cap never
+	// removed and peerCertCount() then walked — the cap was bypassed. Reading
+	// a nil byReporter map is safe (returns the zero value), so the existence
+	// check works whether or not the root map exists yet.
+	//
+	// This bounds the memory-growth DoS. It does NOT stop slot-squatting (one
+	// valid cert replayed under many spoofed reporters filling the cap and
+	// crowding out honest certs) or the reconcile-time censorship that shares
+	// the same root cause: reporter is unauthenticated. Both need authenticated
+	// reporter binding (signed announcement, dedup by authenticated identity),
+	// which is required before enabling real-device mobile committee signatures.
+	byReporter := w.peerCerts[cert.ReceiptsRoot]
 	if _, exists := byReporter[reporter]; !exists && w.peerCertCount() >= maxReportersPerWindow {
 		return
+	}
+	if byReporter == nil {
+		byReporter = make(map[types.Address]*MobileAttestationCert)
+		w.peerCerts[cert.ReceiptsRoot] = byReporter
 	}
 	byReporter[reporter] = cert
 }
