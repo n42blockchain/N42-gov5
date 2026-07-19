@@ -1218,6 +1218,10 @@ func (d *Downloader) handleReorg(ctx context.Context) {
 		log.Error("eldevp2p: reorg commit failed", "num", num, "err", cerr)
 		return
 	}
+	// The DB is now durable — only now finalize the journal pop. A failure in
+	// TruncateCanonicalHash or commitBatch above rolled the tx back with the
+	// journal entry intact, so the next attempt restores from it cleanly.
+	d.adapter.CommitOverlayUnwind(num)
 	d.buffer.prune(num - 1) // drop any stale buffered blocks at/below the unwound head
 	log.Info("eldevp2p: reorg unwound one block", "orphan", num, "orphanHash", hash.Hex(),
 		"newHead", num-1, "journalDepth", d.adapter.ReorgJournalDepth())

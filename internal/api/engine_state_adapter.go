@@ -216,6 +216,16 @@ func (a *EngineStateAdapter) UnwindOverlayBlock(tx kv.RwTx) (uint64, types.Hash,
 	return a.reorgJournal.unwindOne(tx)
 }
 
+// CommitOverlayUnwind finalizes an UnwindOverlayBlock (pops the journal entry)
+// after the caller's tx has durably committed. Skipping this — or calling it
+// before the commit — either leaks the entry or loses the undo on a failed
+// commit; see overlayReorgJournal.unwindOne.
+func (a *EngineStateAdapter) CommitOverlayUnwind(num uint64) {
+	if a.reorgJournal != nil {
+		a.reorgJournal.commitUnwind(num)
+	}
+}
+
 // ReorgJournalDepth reports how many blocks are currently unwindable.
 func (a *EngineStateAdapter) ReorgJournalDepth() int {
 	if a.reorgJournal == nil {

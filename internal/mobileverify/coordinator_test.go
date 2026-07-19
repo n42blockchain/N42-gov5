@@ -524,3 +524,57 @@ func TestCohortReporterCapBoundsMemory(t *testing.T) {
 		t.Fatalf("peerIndexSets grew to %d, want <= cap %d", got, maxReportersPerWindow)
 	}
 }
+
+// TestCohortCertCapBoundsRootMaps: a multi-root flood of valid certs under
+// spoofed reporters must not leave unbounded empty per-root maps in peerCerts.
+// The cap is checked before the root map is created, so distinct roots are
+// bounded by the cap, not unbounded.
+func TestCohortCertCapBoundsRootMaps(t *testing.T) {
+	blockHash, number := h(1), uint64(1000)
+	reg := NewRegistry()
+	store := NewCertStore(64)
+	coord := NewCohortCoordinator(reg, fixedLookupAt(blockHash, number), store, types.Address{19: 1}, DefaultCohortConfig())
+
+	local := newDevice(t)
+	registerCommitted(t, reg, local.pubkey, local.pop())
+	if _, err := coord.Submit(local.receipt(blockHash, number, h(2))); err != nil {
+		t.Fatal(err)
+	}
+
+	peer := newDevice(t)
+	registerCommitted(t, reg, peer.pubkey, peer.pop())
+
+	// Build many valid certs over DISTINCT receipts roots, each under a fresh
+	// spoofed reporter. Every cert verifies (real signer), so each would create
+	// a new root map without the pre-check.
+	for i := 0; i < maxReportersPerWindow+400; i++ {
+		var root types.Hash
+		root[0] = byte(i)
+		root[1] = byte(i >> 8)
+		pc := NewCollector(reg, blockHash, number)
+		if _, err := pc.Add(peer.receipt(blockHash, number, root)); err != nil {
+			t.Fatal(err)
+		}
+		certs, err := pc.Close(NowMs())
+		if err != nil || len(certs) != 1 {
+			t.Fatalf("peer close: %v/%d", err, len(certs))
+		}
+		var reporter types.Address
+		reporter[0] = byte(i)
+		reporter[1] = byte(i >> 8)
+		reporter[2] = 0xAA
+		coord.OnPeerCert(reporter, certs[0])
+	}
+
+	coord.mu.Lock()
+	w := coord.windows[blockHash]
+	roots := len(w.peerCerts)
+	total := w.peerCertCount()
+	coord.mu.Unlock()
+	if total > maxReportersPerWindow {
+		t.Fatalf("peerCertCount=%d exceeds cap %d", total, maxReportersPerWindow)
+	}
+	if roots > maxReportersPerWindow {
+		t.Fatalf("distinct root maps=%d exceeds cap %d (unbounded empty maps)", roots, maxReportersPerWindow)
+	}
+}
