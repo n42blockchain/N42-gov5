@@ -127,6 +127,12 @@ type Service struct {
 	// after every round.
 	catchUpInProgress atomic.Bool
 	catchUpTarget     atomic.Uint64
+
+	// Hashes authenticated by a CommitQC whose body/header had not arrived when
+	// consensus requested catch-up. Any block ingress path promotes the hash to
+	// a numeric range target as soon as the body becomes available.
+	committedTargetLock sync.Mutex
+	committedTargets    map[types.Hash]struct{}
 }
 
 // NewService initializes new regular sync service.
@@ -147,6 +153,7 @@ func NewService(ctx context.Context, opts ...Option) (*Service, error) {
 
 	r.subHandler = newSubTopicHandler()
 	r.rateLimiter = newRateLimiter(r.cfg.p2p)
+	r.committedTargets = make(map[types.Hash]struct{})
 	if err := r.initCaches(); err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to initialize sync caches: %w", err)

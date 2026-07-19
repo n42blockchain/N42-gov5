@@ -24,6 +24,15 @@ type executionTestFetcher struct {
 	targetCh   chan uint64
 }
 
+type executionHashTargetFetcher struct {
+	*executionTestFetcher
+	hashCh chan types.Hash
+}
+
+func (f *executionHashTargetFetcher) CatchUpToHash(hash types.Hash) {
+	f.hashCh <- hash
+}
+
 func (f *executionTestFetcher) FetchBlockByHash(types.Hash) {}
 func (f *executionTestFetcher) CatchUp()                    {}
 func (f *executionTestFetcher) HeightBehind() uint64        { return 0 }
@@ -141,6 +150,25 @@ func TestCommittedExecutionRecoveryUsesAuthenticatedTarget(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("CatchUpTo was not requested")
+	}
+}
+
+func TestCommittedExecutionRecoveryDelegatesMissingBodyHash(t *testing.T) {
+	svc, fetcher, hash := newExecutionTestService(t, false)
+	byHash := &executionHashTargetFetcher{
+		executionTestFetcher: fetcher,
+		hashCh:               make(chan types.Hash, 1),
+	}
+	svc.blockFetcher = byHash
+	svc.requestCommittedCatchUp(hash, 0)
+
+	select {
+	case got := <-byHash.hashCh:
+		if got != hash {
+			t.Fatalf("CatchUpToHash hash = %s, want %s", got, hash)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("CatchUpToHash was not requested")
 	}
 }
 

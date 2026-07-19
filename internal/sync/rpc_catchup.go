@@ -14,6 +14,7 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	block "github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/log"
@@ -48,6 +49,11 @@ func headIsConsensusBlock(chain common.IBlockChain) bool {
 // exactly that case.
 const catchUpInterval = 8 * time.Second
 
+// maxCommittedTargets bounds CommitQC hashes waiting for their block bodies.
+// Healthy operation keeps only a handful; the cap prevents an adversarial or
+// badly delayed stream from growing the map without limit.
+const maxCommittedTargets = 512
+
 // CatchUp pulls the canonical chain from the most-advanced peer by range and
 // inserts it, letting ForkChoice reorg us off a startup fork onto the converged
 // chain. It is invoked by the HotStuff engine via OutputSyncRequired (a Decide
@@ -77,6 +83,42 @@ func (s *Service) CatchUpTo(target uint64) {
 		return
 	}
 	s.enqueueCatchUp(target)
+}
+
+// CatchUpToHash records a CommitQC-authenticated hash whose block number is not
+// locally available yet. Whichever block ingress path sees the body first will
+// promote it to a numeric, coalesced range target.
+func (s *Service) CatchUpToHash(hash types.Hash) {
+	if hash == (types.Hash{}) {
+		return
+	}
+	s.committedTargetLock.Lock()
+	if len(s.committedTargets) >= maxCommittedTargets {
+		for oldest := range s.committedTargets {
+			delete(s.committedTargets, oldest)
+			break
+		}
+	}
+	s.committedTargets[hash] = struct{}{}
+	s.committedTargetLock.Unlock()
+
+	if blk, _ := s.cfg.chain.GetBlockByHash(hash); blk != nil {
+		s.promoteCommittedTarget(hash, blk.Number64().Uint64())
+		return
+	}
+	s.FetchBlockByHash(hash)
+}
+
+func (s *Service) promoteCommittedTarget(hash types.Hash, number uint64) {
+	s.committedTargetLock.Lock()
+	_, pending := s.committedTargets[hash]
+	if pending {
+		delete(s.committedTargets, hash)
+	}
+	s.committedTargetLock.Unlock()
+	if pending {
+		go s.enqueueCatchUp(number)
+	}
 }
 
 // enqueueCatchUp coalesces concurrent requests to their highest target and
