@@ -179,6 +179,90 @@ func (g *wireGrid) drive(number, mergeDelay uint64) {
 	}
 }
 
+// TestCohortL2BReactiveBackfillDefeated is the STRONGER P0 scenario an audit
+// surfaced: instead of naively replaying the public commitment during the
+// commit phase, a malicious authenticated validator waits, HARVESTS the
+// victim's raw device signature from an honest reveal, computes a valid
+// SELF-bound commitment Keccak256(sig‖itsOwnAddr), and backfills a commit +
+// reveal AFTER the reveal boundary. Without a commit cutoff this reaches the
+// ban threshold with a genuinely-valid self-bound witness and censors the
+// victim. The fix freezes the accepted commit set the moment this node reveals
+// or sees any peer reveal, so the post-reveal backfill is rejected and never
+// counted — the honest victim survives.
+func TestCohortL2BReactiveBackfillDefeated(t *testing.T) {
+	blockHash, number, root := h(1), uint64(1000), h(2)
+	reg := NewRegistry()
+	cfg := CohortConfig{IndexAnnounceDelay: 1, RevealDelay: 2, ReconcileDelay: 3, MergeDelay: 5}
+	g := newWireGrid(t, reg, blockHash, number, cfg, 3)
+	for _, c := range g.coords {
+		c.SetBanThreshold(2) // f+1 = 2; one honest witness + one backfill would suffice if uncaught
+	}
+	const atkNode = 2
+
+	// Honest filler devices so the finalized cert is non-trivial.
+	for i := 0; i < 4; i++ {
+		d := newDevice(t)
+		registerCommitted(t, reg, d.pubkey, d.pop())
+		if _, err := g.coords[i%2].Submit(d.receipt(blockHash, number, root)); err != nil {
+			t.Fatalf("submit filler %d: %v", i, err)
+		}
+	}
+	// The victim: a single honest submission to node0 only.
+	victim := newDevice(t)
+	victimIdx := registerCommitted(t, reg, victim.pubkey, victim.pop())
+	victimReceipt := victim.receipt(blockHash, number, root)
+	if _, err := g.coords[0].Submit(victimReceipt); err != nil {
+		t.Fatalf("victim submit: %v", err)
+	}
+
+	// Drive commit (N+1) and reveal (N+2). At N+2 node0 reveals — its reveal set
+	// contains the victim's raw signature, and it freezes its commit set.
+	for _, height := range []uint64{number, number + cfg.IndexAnnounceDelay, number + cfg.RevealDelay} {
+		for _, c := range g.coords {
+			c.OnBlockCommitted(height)
+		}
+	}
+
+	// The attacker now has the victim's raw signature (harvested from the reveal
+	// it observed on gossip; here taken directly) and backfills, AFTER the reveal
+	// boundary, a valid self-bound commitment plus the matching reveal.
+	harvested := victimReceipt.Signature
+	attackerBound := ReporterBoundCommitment(harvested, g.addrs[atkNode])
+	g.injectIndex(atkNode, []int{0, 1}, blockHash, number,
+		[]IndexCommitment{{Index: victimIdx, Commitment: attackerBound}})
+	g.injectReveal(atkNode, []int{0, 1}, blockHash, number,
+		map[MobileIndex]RevealedSig{victimIdx: {Sig: harvested, Root: root}})
+
+	// Finish reconcile (N+3) and merge (N+5).
+	for _, height := range []uint64{number + cfg.ReconcileDelay, number + 4, number + cfg.MergeDelay} {
+		for _, c := range g.coords {
+			c.OnBlockCommitted(height)
+		}
+	}
+
+	// The victim MUST survive: the post-reveal backfill was rejected by the
+	// frozen commit set, so the victim has only its one honest witness (< f+1)
+	// and is not banned.
+	got := g.stores[0].Get(blockHash)
+	if len(got) != 1 {
+		t.Fatalf("node0: got %d certs, want 1", len(got))
+	}
+	signers, err := got[0].Verify(reg)
+	if err != nil {
+		t.Fatalf("cert verify: %v", err)
+	}
+	found := false
+	for _, idx := range signers {
+		if idx == victimIdx {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("victim device %d was CENSORED by a reactive post-reveal backfill — the commit cutoff failed", victimIdx)
+	}
+}
+
 // TestCohortL2BReplayCensorshipOverWire is the P0 scenario end-to-end over the
 // real wire: an authenticated but malicious validator tries to censor an
 // honest device by replaying that device's PUBLIC commitment (which it can
