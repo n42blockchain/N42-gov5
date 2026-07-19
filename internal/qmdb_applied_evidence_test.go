@@ -17,6 +17,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
 )
 
@@ -101,5 +102,69 @@ func TestHasAppliedBlock_NoMarkerFallsBackToBody(t *testing.T) {
 	}
 	if bc.HasAppliedBlock(types.Hash{0xAB}, 5) {
 		t.Error("missing header without a marker must not count as applied")
+	}
+}
+
+// TestKnownBlockNeedsAuthorizedReplayBelowAppliedHead pins the long-soak
+// failure where canonical rows had switched to the committed branch while the
+// QMDB marker had advanced two blocks down a losing branch. The winning block
+// below the applied head must be replayed; skipping every known block below the
+// marker leaves its first child future-queued with unknown-ancestor forever.
+func TestKnownBlockNeedsAuthorizedReplayBelowAppliedHead(t *testing.T) {
+	db := newRealignTestDB(t)
+	mkBlock := func(n uint64, parent types.Hash, tag byte) *block.Block {
+		return block.NewBlock(&block.Header{
+			Number:     uint256.NewInt(n),
+			ParentHash: parent,
+			Difficulty: uint256.NewInt(1),
+			Extra:      []byte{tag},
+		}, nil).(*block.Block)
+	}
+
+	common8 := mkBlock(8, types.Hash{0x07}, 1)
+	losing9 := mkBlock(9, common8.Hash(), 1)
+	losing10 := mkBlock(10, losing9.Hash(), 1)
+	winning9 := mkBlock(9, common8.Hash(), 2)
+	winning10 := mkBlock(10, winning9.Hash(), 2)
+	above := mkBlock(11, winning10.Hash(), 2)
+
+	if err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		for _, b := range []*block.Block{common8, losing9, losing10, winning9, winning10} {
+			if err := rawdb.WriteBlock(tx, b); err != nil {
+				return err
+			}
+		}
+		// Canonical already names the committed winner, but applied state still
+		// follows losing9 -> losing10.
+		if err := rawdb.WriteCanonicalHash(tx, winning9.Hash(), 9); err != nil {
+			return err
+		}
+		return rawdb.WriteQMDBApplied(tx, 10, losing10.Hash())
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	bc := &BlockChain{ChainDB: db, ctx: context.Background(), qmdbEnabled: true}
+	if bc.HasAppliedBlock(winning9.Hash(), 9) {
+		t.Fatal("canonical winning block must not count as applied while QMDB follows the losing lineage")
+	}
+	cases := []struct {
+		name string
+		blk  block.IBlock
+		want bool
+	}{
+		{"common ancestor", common8, false},
+		{"applied ancestor", losing9, false},
+		{"applied head", losing10, false},
+		{"winning sibling below applied head", winning9, true},
+		{"winning sibling at applied head", winning10, true},
+		{"above applied head", above, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := bc.knownBlockNeedsAuthorizedReplay(tc.blk); got != tc.want {
+				t.Fatalf("knownBlockNeedsAuthorizedReplay() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
