@@ -142,7 +142,7 @@ func TestCohortCoordinatorExcludesCrossNodeDuplicate(t *testing.T) {
 	blockHash, number, root := h(1), uint64(1000), h(2)
 	reg := NewRegistry()
 	lookup := fixedLookupAt(blockHash, number)
-	cfg := CohortConfig{IndexAnnounceDelay: 1, ReconcileDelay: 2, MergeDelay: 4}
+	cfg := CohortConfig{IndexAnnounceDelay: 1, RevealDelay: 2, ReconcileDelay: 3, MergeDelay: 4}
 
 	const nodes = 3
 	stores := make([]*CertStore, nodes)
@@ -161,6 +161,13 @@ func TestCohortCoordinatorExcludesCrossNodeDuplicate(t *testing.T) {
 			for j := range coords {
 				if j != i {
 					coords[j].OnPeerIndexSet(blockHash, reporter, indices)
+				}
+			}
+		})
+		coords[i].SetRevealAnnounceSink(func(blockHash types.Hash, blockNumber uint64, reporter types.Address, reveal map[MobileIndex]RevealedSig) {
+			for j := range coords {
+				if j != i {
+					coords[j].OnPeerReveal(blockHash, reporter, reveal)
 				}
 			}
 		})

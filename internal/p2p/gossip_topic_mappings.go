@@ -59,6 +59,7 @@ var gossipTopicMappings = map[string]proto.Message{
 	MobilePacketTopicFormat:       &types_pb.H256{}, // StreamPackets use the evmsdk V2 wire format; H256 placeholder for topic registration
 	MobileRegistrationTopicFormat: &types_pb.H256{}, // registration announcements are raw pubkey||pop; H256 placeholder for topic registration
 	MobileCohortIndexTopicFormat:  &types_pb.H256{}, // cross-node cohort index announcements use a custom compact wire format; H256 placeholder for topic registration
+	MobileCohortRevealTopicFormat: &types_pb.H256{}, // cross-node cohort reveal announcements use a custom compact wire format; H256 placeholder for topic registration
 	MobileCohortCertTopicFormat:   &types_pb.H256{}, // cross-node cohort cert announcements use a custom compact wire format; H256 placeholder for topic registration
 }
 

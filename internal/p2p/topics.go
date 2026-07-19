@@ -16,6 +16,7 @@ const (
 	GossipMobilePacketMessage       = "mobileverify_packet"
 	GossipMobileRegistrationMessage = "mobileverify_registration"
 	GossipMobileCohortIndexMessage  = "mobileverify_cohort_index"
+	GossipMobileCohortRevealMessage = "mobileverify_cohort_reveal"
 	GossipMobileCohortCertMessage   = "mobileverify_cohort_cert"
 
 	// Topic format strings combining the protocol prefix with message type.
@@ -29,6 +30,7 @@ const (
 	MobilePacketTopicFormat       = GossipProtocolAndDigest + GossipMobilePacketMessage
 	MobileRegistrationTopicFormat = GossipProtocolAndDigest + GossipMobileRegistrationMessage
 	MobileCohortIndexTopicFormat  = GossipProtocolAndDigest + GossipMobileCohortIndexMessage
+	MobileCohortRevealTopicFormat = GossipProtocolAndDigest + GossipMobileCohortRevealMessage
 	MobileCohortCertTopicFormat   = GossipProtocolAndDigest + GossipMobileCohortCertMessage
 
 	// Message relay topics (8 shards, Waku-style). The prefix must be a real

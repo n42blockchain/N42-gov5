@@ -41,15 +41,21 @@ func ReporterBoundCommitment(deviceSig [96]byte, reporter types.Address) types.H
 	return crypto.Keccak256Hash(buf)
 }
 
+// RevealedSig is one device's raw signature plus the receipts root it attests
+// — both are needed to reconstruct the message the device signed and verify
+// the signature.
+type RevealedSig struct {
+	Sig  [96]byte
+	Root types.Hash
+}
+
 // ReporterReveal is one reporter's phase-2 reveal: the raw device signatures
-// behind the commitments it announced in phase 1, plus the receipts root those
-// signatures attest (needed to reconstruct the signed message). Reporter and
-// Root are authenticated at the transport layer (cohort_auth.go); the raw
+// (with their roots) behind the commitments it announced in phase 1. The
+// reporter is authenticated at the transport layer (cohort_auth.go); the raw
 // signatures are verified here.
 type ReporterReveal struct {
 	Reporter types.Address
-	Root     types.Hash
-	Sigs     map[MobileIndex][96]byte
+	Sigs     map[MobileIndex]RevealedSig
 }
 
 // ReconcileWithReveals is the Layer 2B replacement for ReconcileIndices. It
@@ -76,10 +82,10 @@ func ReconcileWithReveals(
 	for reporter, ics := range commits {
 		reveal, hasReveal := reveals[reporter]
 		for _, ic := range ics {
-			var sig [96]byte
+			var rs RevealedSig
 			ok := false
 			if hasReveal {
-				sig, ok = reveal.Sigs[ic.Index]
+				rs, ok = reveal.Sigs[ic.Index]
 			}
 			if !ok {
 				// Committed but never revealed the raw signature: cannot be
@@ -89,13 +95,13 @@ func ReconcileWithReveals(
 			}
 			// The reveal must reproduce THIS reporter's bound commitment — a
 			// copied (foreign-reporter-bound) commitment fails here.
-			if ReporterBoundCommitment(sig, reporter) != ic.Commitment {
+			if ReporterBoundCommitment(rs.Sig, reporter) != ic.Commitment {
 				misbehavedSet[reporter] = struct{}{}
 				continue
 			}
 			// The reveal must be the device's genuine registered signature —
 			// a fabricated (self-consistent but bogus) reveal fails here.
-			if !verifyDeviceSignature(reg, ic.Index, sig, blockHash, blockNumber, reveal.Root) {
+			if !verifyDeviceSignature(reg, ic.Index, rs.Sig, blockHash, blockNumber, rs.Root) {
 				misbehavedSet[reporter] = struct{}{}
 				continue
 			}

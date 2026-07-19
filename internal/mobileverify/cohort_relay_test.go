@@ -44,6 +44,87 @@ func TestIndexAnnouncementTruncatedRejected(t *testing.T) {
 	}
 }
 
+func TestRevealAnnouncementRoundTrip(t *testing.T) {
+	blockHash, number := h(7), uint64(555)
+	var reporter types.Address
+	reporter[19] = 0xAB
+	reveal := map[MobileIndex]RevealedSig{
+		1:    {Sig: [96]byte{1, 2, 3}, Root: h(201)},
+		5:    {Sig: [96]byte{4, 5, 6}, Root: h(202)},
+		9999: {Sig: [96]byte{7, 8, 9}, Root: h(203)},
+	}
+
+	payload := encodeRevealAnnouncement(blockHash, number, reporter, reveal, nil)
+	gotHash, gotNumber, gotReporter, gotReveal, err := decodeRevealAnnouncement(payload, 100000, nil)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if gotHash != blockHash || gotNumber != number || gotReporter != reporter {
+		t.Fatalf("header mismatch: hash=%v number=%d reporter=%v", gotHash, gotNumber, gotReporter)
+	}
+	if !reflect.DeepEqual(gotReveal, reveal) {
+		t.Fatalf("reveal = %v, want %v", gotReveal, reveal)
+	}
+}
+
+func TestRevealAnnouncementTruncatedRejected(t *testing.T) {
+	if _, _, _, _, err := decodeRevealAnnouncement([]byte{1, 2, 3}, 100, nil); err == nil {
+		t.Fatal("truncated payload must be rejected")
+	}
+	// A header-only payload with a claimed count larger than the bound must be
+	// rejected before allocating (DoS guard).
+	blockHash, number := h(7), uint64(555)
+	var reporter types.Address
+	huge := make(map[MobileIndex]RevealedSig)
+	for i := 0; i < 5; i++ {
+		huge[MobileIndex(i)] = RevealedSig{}
+	}
+	payload := encodeRevealAnnouncement(blockHash, number, reporter, huge, nil)
+	if _, _, _, _, err := decodeRevealAnnouncement(payload, 2, nil); err == nil {
+		t.Fatal("reveal count exceeding registry bound must be rejected")
+	}
+}
+
+func TestRevealAnnouncementAuth(t *testing.T) {
+	blockHash := h(7)
+	sk, err := bls.RandKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reporter types.Address
+	reporter[19] = 0xAB
+	var attacker types.Address
+	attacker[19] = 0x99
+	sign := func(msg []byte) []byte { return sk.Sign(msg).Marshal() }
+	verify := func(rep types.Address, msg, sig []byte) bool {
+		if rep != reporter {
+			return false
+		}
+		s, err := bls.SignatureFromBytes(sig)
+		if err != nil {
+			return false
+		}
+		return s.Verify(sk.PublicKey(), msg)
+	}
+	reveal := map[MobileIndex]RevealedSig{1: {Sig: [96]byte{1}, Root: h(1)}}
+
+	payload := encodeRevealAnnouncement(blockHash, 1000, reporter, reveal, sign)
+	if _, _, _, _, err := decodeRevealAnnouncement(payload, 100000, verify); err != nil {
+		t.Fatalf("authenticated reveal must verify: %v", err)
+	}
+	// Unsigned reveal rejected under a verifier.
+	unsigned := encodeRevealAnnouncement(blockHash, 1000, reporter, reveal, nil)
+	if _, _, _, _, err := decodeRevealAnnouncement(unsigned, 100000, verify); err == nil {
+		t.Fatal("unsigned reveal must be rejected under a verifier")
+	}
+	// A signature valid for the attacker's own reveal cannot be replayed as the
+	// honest reporter's (reporter is bound into the signed message).
+	spoof := encodeRevealAnnouncement(blockHash, 1000, attacker, reveal, sign)
+	if _, _, _, _, err := decodeRevealAnnouncement(spoof, 100000, verify); err == nil {
+		t.Fatal("reveal attributed to an unauthorized reporter must be rejected")
+	}
+}
+
 func TestCertAnnouncementRoundTrip(t *testing.T) {
 	blockHash, number, root := h(1), uint64(1000), h(2)
 	reg := NewRegistry()
