@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"sort"
 	"sync"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -32,6 +33,13 @@ const (
 	// blockNumber(8 BE) || receiptsRoot(32) || aggregateSig(96) ||
 	// windowClosedAt(8 BE), followed by the variable signer mask.
 	certAnnHeaderLen = 20 + CohortSigLen + 32 + 8 + 32 + 96 + 8
+	// revealAnnHeaderLen = blockHash(32) || blockNumber(8 BE) || reporter(20)
+	// || reporterSig(96), followed by the variable reveal body (count + per
+	// entry index||sig(96)||root(32)).
+	revealAnnHeaderLen = 32 + 8 + 20 + CohortSigLen
+	// revealEntryLen = sig(96) || root(32), the fixed part after each entry's
+	// uvarint index.
+	revealEntryLen = CohortSigLen + 32
 )
 
 // encodeIndexAnnouncement signs the (index,commitment) body with sign (the
@@ -72,6 +80,96 @@ func decodeIndexAnnouncement(b []byte, registryBound int, verify CohortVerifier)
 	}
 	indices, err = decodeIndexCommitments(body, registryBound)
 	return blockHash, blockNumber, reporter, indices, err
+}
+
+// encodeRevealAnnouncement lays out a Layer 2B reveal on the wire, signing the
+// reveal body with the reporter's validator BLS key. The body is deterministic
+// (entries sorted by index) so the signature is reproducible.
+func encodeRevealAnnouncement(blockHash types.Hash, blockNumber uint64, reporter types.Address, reveal map[MobileIndex]RevealedSig, sign CohortSigner) []byte {
+	body := encodeRevealBody(reveal)
+	sig := signOrZero(sign, cohortAuthMessage(cohortRevealAuthDomain, blockHash, blockNumber, reporter, body))
+	out := make([]byte, 0, revealAnnHeaderLen+len(body))
+	out = append(out, blockHash[:]...)
+	var nb [8]byte
+	binary.BigEndian.PutUint64(nb[:], blockNumber)
+	out = append(out, nb[:]...)
+	out = append(out, reporter[:]...)
+	out = append(out, sig...)
+	out = append(out, body...)
+	return out
+}
+
+// decodeRevealAnnouncement parses and, when verify!=nil, authenticates a reveal
+// announcement. registryBound caps the entry count so a malformed message
+// cannot force an unbounded allocation.
+func decodeRevealAnnouncement(b []byte, registryBound int, verify CohortVerifier) (blockHash types.Hash, blockNumber uint64, reporter types.Address, reveal map[MobileIndex]RevealedSig, err error) {
+	if len(b) < revealAnnHeaderLen {
+		return blockHash, 0, reporter, nil, fmt.Errorf("mobileverify: reveal announcement too short (%d bytes)", len(b))
+	}
+	copy(blockHash[:], b[:32])
+	blockNumber = binary.BigEndian.Uint64(b[32:40])
+	copy(reporter[:], b[40:60])
+	sig := b[60 : 60+CohortSigLen]
+	body := b[60+CohortSigLen:]
+	if verify != nil && !verify(reporter, cohortAuthMessage(cohortRevealAuthDomain, blockHash, blockNumber, reporter, body), sig) {
+		return blockHash, blockNumber, reporter, nil, fmt.Errorf("mobileverify: unauthenticated reveal announcement from %s", reporter)
+	}
+	reveal, err = decodeRevealBody(body, registryBound)
+	return blockHash, blockNumber, reporter, reveal, err
+}
+
+// encodeRevealBody serializes the reveal map deterministically: uvarint count,
+// then per entry uvarint index || sig(96) || root(32), ascending by index.
+func encodeRevealBody(reveal map[MobileIndex]RevealedSig) []byte {
+	idxs := make([]MobileIndex, 0, len(reveal))
+	for idx := range reveal {
+		idxs = append(idxs, idx)
+	}
+	sortMobileIndex(idxs)
+	var tmp [binary.MaxVarintLen64]byte
+	out := make([]byte, 0, binary.MaxVarintLen64+len(idxs)*(binary.MaxVarintLen64+revealEntryLen))
+	n := binary.PutUvarint(tmp[:], uint64(len(idxs)))
+	out = append(out, tmp[:n]...)
+	for _, idx := range idxs {
+		n := binary.PutUvarint(tmp[:], uint64(idx))
+		out = append(out, tmp[:n]...)
+		rs := reveal[idx]
+		out = append(out, rs.Sig[:]...)
+		out = append(out, rs.Root[:]...)
+	}
+	return out
+}
+
+func decodeRevealBody(b []byte, registryBound int) (map[MobileIndex]RevealedSig, error) {
+	count, n := binary.Uvarint(b)
+	if n <= 0 {
+		return nil, fmt.Errorf("mobileverify: reveal body bad count prefix")
+	}
+	if registryBound > 0 && count > uint64(registryBound) {
+		return nil, fmt.Errorf("mobileverify: reveal body count %d exceeds bound %d", count, registryBound)
+	}
+	b = b[n:]
+	out := make(map[MobileIndex]RevealedSig, count)
+	for i := uint64(0); i < count; i++ {
+		idxV, m := binary.Uvarint(b)
+		if m <= 0 {
+			return nil, fmt.Errorf("mobileverify: reveal body bad index at entry %d", i)
+		}
+		b = b[m:]
+		if len(b) < revealEntryLen {
+			return nil, fmt.Errorf("mobileverify: reveal body truncated at entry %d", i)
+		}
+		var rs RevealedSig
+		copy(rs.Sig[:], b[:CohortSigLen])
+		copy(rs.Root[:], b[CohortSigLen:revealEntryLen])
+		b = b[revealEntryLen:]
+		out[MobileIndex(idxV)] = rs
+	}
+	return out, nil
+}
+
+func sortMobileIndex(idxs []MobileIndex) {
+	sort.Slice(idxs, func(i, j int) bool { return idxs[i] < idxs[j] })
 }
 
 func encodeCertAnnouncement(reporter types.Address, cert *MobileAttestationCert, sign CohortSigner) []byte {
@@ -153,11 +251,12 @@ func signOrZero(sign CohortSigner, msg []byte) []byte {
 // mode (nothing to merge with, every window trivially finalizes on its own
 // local cert — see coordinator_test.go).
 type CohortRelay struct {
-	coord      *CohortCoordinator
-	p2p        PacketPublisher
-	reg        *Registry
-	indexTopic string
-	certTopic  string
+	coord       *CohortCoordinator
+	p2p         PacketPublisher
+	reg         *Registry
+	indexTopic  string
+	revealTopic string
+	certTopic   string
 
 	// sign authenticates this node's own announcements; verify authenticates
 	// inbound ones (reporter ∈ validators && signature valid). Both nil =
@@ -177,15 +276,16 @@ type CohortRelay struct {
 // pattern — a coordinator with a relay always announces, even before the
 // receive loops are subscribed.
 func NewCohortRelay(coord *CohortCoordinator, p2p PacketPublisher, reg *Registry, indexTopic, certTopic string) *CohortRelay {
-	return NewCohortRelayWithAuth(coord, p2p, reg, indexTopic, certTopic, nil, nil)
+	return NewCohortRelayWithAuth(coord, p2p, reg, indexTopic, "", certTopic, nil, nil)
 }
 
 // NewCohortRelayWithAuth is NewCohortRelay plus reporter authentication: sign
 // is applied to this node's outbound announcements and verify to inbound ones.
-// Pass nil/nil for the unauthenticated single-node/test behaviour.
-func NewCohortRelayWithAuth(coord *CohortCoordinator, p2p PacketPublisher, reg *Registry, indexTopic, certTopic string, sign CohortSigner, verify CohortVerifier) *CohortRelay {
+// Pass nil/nil for the unauthenticated single-node/test behaviour. revealTopic
+// may be "" to disable the Layer 2B reveal round (index/cert only).
+func NewCohortRelayWithAuth(coord *CohortCoordinator, p2p PacketPublisher, reg *Registry, indexTopic, revealTopic, certTopic string, sign CohortSigner, verify CohortVerifier) *CohortRelay {
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &CohortRelay{coord: coord, p2p: p2p, reg: reg, indexTopic: indexTopic, certTopic: certTopic, sign: sign, verify: verify, ctx: ctx, cancel: cancel}
+	r := &CohortRelay{coord: coord, p2p: p2p, reg: reg, indexTopic: indexTopic, revealTopic: revealTopic, certTopic: certTopic, sign: sign, verify: verify, ctx: ctx, cancel: cancel}
 	coord.SetIndexAnnounceSink(func(blockHash types.Hash, blockNumber uint64, reporter types.Address, indices []IndexCommitment) {
 		if r.p2p == nil {
 			return
@@ -197,6 +297,15 @@ func NewCohortRelayWithAuth(coord *CohortCoordinator, p2p PacketPublisher, reg *
 		}
 		if err := r.p2p.PublishToTopic(r.ctx, r.indexTopic, payload); err != nil {
 			log.Debug("mobileverify: index announcement publish failed", "err", err)
+		}
+	})
+	coord.SetRevealAnnounceSink(func(blockHash types.Hash, blockNumber uint64, reporter types.Address, reveal map[MobileIndex]RevealedSig) {
+		if r.p2p == nil || r.revealTopic == "" {
+			return
+		}
+		payload := encodeRevealAnnouncement(blockHash, blockNumber, reporter, reveal, r.sign)
+		if err := r.p2p.PublishToTopic(r.ctx, r.revealTopic, payload); err != nil {
+			log.Debug("mobileverify: reveal announcement publish failed", "err", err)
 		}
 	})
 	coord.SetCertAnnounceSink(func(reporter types.Address, cert *MobileAttestationCert) {
@@ -226,10 +335,23 @@ func (r *CohortRelay) Start() error {
 		indexSub.Cancel()
 		return fmt.Errorf("mobileverify: subscribe cohort cert topic: %w", err)
 	}
+	var revealSub *pubsub.Subscription
+	if r.revealTopic != "" {
+		revealSub, err = r.p2p.SubscribeToTopic(r.revealTopic)
+		if err != nil {
+			indexSub.Cancel()
+			certSub.Cancel()
+			return fmt.Errorf("mobileverify: subscribe cohort reveal topic: %w", err)
+		}
+	}
 	r.wg.Add(2)
 	go r.indexReceiveLoop(indexSub)
 	go r.certReceiveLoop(certSub)
-	log.Info("mobileverify: cohort relay started", "indexTopic", r.indexTopic, "certTopic", r.certTopic)
+	if revealSub != nil {
+		r.wg.Add(1)
+		go r.revealReceiveLoop(revealSub)
+	}
+	log.Info("mobileverify: cohort relay started", "indexTopic", r.indexTopic, "revealTopic", r.revealTopic, "certTopic", r.certTopic)
 	return nil
 }
 
@@ -256,6 +378,26 @@ func (r *CohortRelay) indexReceiveLoop(sub *pubsub.Subscription) {
 			continue
 		}
 		r.coord.OnPeerIndexSet(blockHash, reporter, indices)
+	}
+}
+
+func (r *CohortRelay) revealReceiveLoop(sub *pubsub.Subscription) {
+	defer r.wg.Done()
+	defer sub.Cancel()
+	for {
+		msg, err := sub.Next(r.ctx)
+		if err != nil {
+			if r.ctx.Err() != nil {
+				return
+			}
+			continue
+		}
+		blockHash, _, reporter, reveal, derr := decodeRevealAnnouncement(msg.Data, r.reg.IndexBound(), r.verify)
+		if derr != nil {
+			log.Debug("mobileverify: rejected malformed cohort reveal announcement", "err", derr)
+			continue
+		}
+		r.coord.OnPeerReveal(blockHash, reporter, reveal)
 	}
 }
 

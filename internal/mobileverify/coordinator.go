@@ -49,22 +49,30 @@ import (
 // this replaces (design's original 45s dwarfs the ~2-3s block cadence this
 // pipeline actually runs on).
 type CohortConfig struct {
-	IndexAnnounceDelay uint64 // blocks after open before announcing the index set
+	IndexAnnounceDelay uint64 // blocks after open before announcing the (commit) index set
+	RevealDelay        uint64 // blocks after open before revealing raw signatures (Layer 2B phase 2)
 	ReconcileDelay     uint64 // blocks after open before excluding conflicts + closing locally
 	MergeDelay         uint64 // blocks after open before merging peer certs + finalizing
 }
 
-// DefaultCohortConfig returns conservative defaults (1 / 2 / 4 blocks).
+// DefaultCohortConfig returns conservative defaults (1 / 2 / 3 / 5 blocks). The
+// reveal (Layer 2B) sits between commit and reconcile so every reporter's raw
+// signatures are fixed only after the commit round has closed — a replayer that
+// could not produce a reporter-bound commitment in the commit phase cannot
+// backfill one after seeing the reveals.
 func DefaultCohortConfig() CohortConfig {
-	return CohortConfig{IndexAnnounceDelay: 1, ReconcileDelay: 2, MergeDelay: 4}
+	return CohortConfig{IndexAnnounceDelay: 1, RevealDelay: 2, ReconcileDelay: 3, MergeDelay: 5}
 }
 
 func (c CohortConfig) sane() CohortConfig {
 	if c.IndexAnnounceDelay == 0 {
 		c.IndexAnnounceDelay = 1
 	}
-	if c.ReconcileDelay <= c.IndexAnnounceDelay {
-		c.ReconcileDelay = c.IndexAnnounceDelay + 1
+	if c.RevealDelay <= c.IndexAnnounceDelay {
+		c.RevealDelay = c.IndexAnnounceDelay + 1
+	}
+	if c.ReconcileDelay <= c.RevealDelay {
+		c.ReconcileDelay = c.RevealDelay + 1
 	}
 	if c.MergeDelay <= c.ReconcileDelay {
 		c.MergeDelay = c.ReconcileDelay + 2
@@ -77,6 +85,7 @@ type cohortPhase int
 const (
 	phaseCollecting cohortPhase = iota
 	phaseIndexAnnounced
+	phaseRevealed
 	phaseReconciled
 	phaseFinal
 )
@@ -116,6 +125,13 @@ type cohortWindow struct {
 	// peerCerts: root -> reporter -> cert, including this node's own entries
 	// (added under selfAddr at the same time as localCerts).
 	peerCerts map[types.Hash]map[types.Address]*MobileAttestationCert
+
+	// Layer 2B commit-reveal state. myReveal is this node's own raw signatures
+	// (captured at commit time by FreezeFor, broadcast at the reveal phase).
+	// peerReveals holds every reporter's reveal (including selfAddr) keyed by
+	// reporter; reconcileAndClose feeds it to ReconcileWithReveals.
+	myReveal    map[MobileIndex]RevealedSig
+	peerReveals map[types.Address]ReporterReveal
 }
 
 // peerCertCount returns the total number of distinct (root, reporter) cert
@@ -145,8 +161,12 @@ type CohortCoordinator struct {
 	// onIndexAnnounce / onCertAnnounce are the outbound gossip hooks a thin
 	// P2P wrapper wires to actual topics; nil is a valid single-node mode
 	// (no peers, so every window trivially "merges" to just its own cert).
-	onIndexAnnounce func(blockHash types.Hash, blockNumber uint64, reporter types.Address, indices []IndexCommitment)
-	onCertAnnounce  func(reporter types.Address, cert *MobileAttestationCert)
+	onIndexAnnounce  func(blockHash types.Hash, blockNumber uint64, reporter types.Address, indices []IndexCommitment)
+	onRevealAnnounce func(blockHash types.Hash, blockNumber uint64, reporter types.Address, reveal map[MobileIndex]RevealedSig)
+	onCertAnnounce   func(reporter types.Address, cert *MobileAttestationCert)
+	// onMisbehavior fires when a reporter committed to a device but could not
+	// back it with a valid reveal (a replayer or fabricator, Layer 2B).
+	onMisbehavior func(MisbehaviorReport)
 
 	// banThreshold is the number of distinct authenticated reporters that must
 	// agree on a device's (index, commitment) before ReconcileIndices bans it
@@ -208,6 +228,30 @@ func (c *CohortCoordinator) SetIndexAnnounceSink(fn func(blockHash types.Hash, b
 	c.mu.Unlock()
 }
 
+// SetRevealAnnounceSink installs the outbound hook for the Layer 2B reveal.
+func (c *CohortCoordinator) SetRevealAnnounceSink(fn func(blockHash types.Hash, blockNumber uint64, reporter types.Address, reveal map[MobileIndex]RevealedSig)) {
+	c.mu.Lock()
+	c.onRevealAnnounce = fn
+	c.mu.Unlock()
+}
+
+// SetMisbehaviorSink installs the callback for a reporter that committed to a
+// device without a valid reveal (Layer 2B). Wire it to slashing/alarms.
+func (c *CohortCoordinator) SetMisbehaviorSink(fn func(MisbehaviorReport)) {
+	c.mu.Lock()
+	c.onMisbehavior = fn
+	c.mu.Unlock()
+}
+
+// MisbehaviorReport identifies a reporter caught committing to a device it
+// could not prove possession of (a replayer or fabricator, Layer 2B).
+type MisbehaviorReport struct {
+	BlockHash   types.Hash
+	BlockNumber uint64
+	Reporter    types.Address
+	AtMs        uint64
+}
+
 // SetCertAnnounceSink installs the outbound hook for local-cert gossip.
 func (c *CohortCoordinator) SetCertAnnounceSink(fn func(reporter types.Address, cert *MobileAttestationCert)) {
 	c.mu.Lock()
@@ -264,6 +308,7 @@ func (c *CohortCoordinator) Submit(r *Receipt) (MobileIndex, error) {
 			peerIndexSets: make(map[types.Address][]IndexCommitment),
 			localCerts:    make(map[types.Hash]*MobileAttestationCert),
 			peerCerts:     make(map[types.Hash]map[types.Address]*MobileAttestationCert),
+			peerReveals:   make(map[types.Address]ReporterReveal),
 		}
 		c.windows[r.BlockHash] = w
 	}
@@ -307,6 +352,28 @@ func (c *CohortCoordinator) OnPeerIndexSet(blockHash types.Hash, reporter types.
 	cp := make([]IndexCommitment, len(indices))
 	copy(cp, indices)
 	w.peerIndexSets[reporter] = cp
+}
+
+// OnPeerReveal admits a peer's Layer 2B reveal (the raw signatures behind its
+// committed, reporter-bound commitments). reconcileAndClose verifies each
+// revealed signature; storing an unverified reveal here is harmless — a bad
+// one simply fails verification and flags the reporter as misbehaving. Capped
+// per window like the index sets.
+func (c *CohortCoordinator) OnPeerReveal(blockHash types.Hash, reporter types.Address, reveal map[MobileIndex]RevealedSig) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	w, ok := c.windows[blockHash]
+	if !ok {
+		return
+	}
+	if _, exists := w.peerReveals[reporter]; !exists && len(w.peerReveals) >= maxReportersPerWindow {
+		return
+	}
+	cp := make(map[MobileIndex]RevealedSig, len(reveal))
+	for idx, rs := range reveal {
+		cp[idx] = rs
+	}
+	w.peerReveals[reporter] = ReporterReveal{Reporter: reporter, Sigs: cp}
 }
 
 // OnPeerCert admits a peer's local (already exclusion-cleaned) certificate.
@@ -401,6 +468,8 @@ func (c *CohortCoordinator) windowHasPendingTransitionLocked(w *cohortWindow) bo
 	case phaseCollecting:
 		return c.currentHeight >= w.openedHeight+c.cfg.IndexAnnounceDelay
 	case phaseIndexAnnounced:
+		return c.currentHeight >= w.openedHeight+c.cfg.RevealDelay
+	case phaseRevealed:
 		return c.currentHeight >= w.openedHeight+c.cfg.ReconcileDelay
 	case phaseReconciled:
 		return c.currentHeight >= w.openedHeight+c.cfg.MergeDelay
@@ -427,6 +496,8 @@ func (c *CohortCoordinator) cascadeWindow(w *cohortWindow, force bool) {
 			case phaseCollecting:
 				w.phase, next, claimed = phaseIndexAnnounced, phaseIndexAnnounced, true
 			case phaseIndexAnnounced:
+				w.phase, next, claimed = phaseRevealed, phaseRevealed, true
+			case phaseRevealed:
 				w.phase, next, claimed = phaseReconciled, phaseReconciled, true
 			case phaseReconciled:
 				w.phase, next, claimed = phaseFinal, phaseFinal, true
@@ -435,7 +506,9 @@ func (c *CohortCoordinator) cascadeWindow(w *cohortWindow, force bool) {
 			switch {
 			case w.phase == phaseCollecting && c.currentHeight >= w.openedHeight+c.cfg.IndexAnnounceDelay:
 				w.phase, next, claimed = phaseIndexAnnounced, phaseIndexAnnounced, true
-			case w.phase == phaseIndexAnnounced && c.currentHeight >= w.openedHeight+c.cfg.ReconcileDelay:
+			case w.phase == phaseIndexAnnounced && c.currentHeight >= w.openedHeight+c.cfg.RevealDelay:
+				w.phase, next, claimed = phaseRevealed, phaseRevealed, true
+			case w.phase == phaseRevealed && c.currentHeight >= w.openedHeight+c.cfg.ReconcileDelay:
 				w.phase, next, claimed = phaseReconciled, phaseReconciled, true
 			case w.phase == phaseReconciled && c.currentHeight >= w.openedHeight+c.cfg.MergeDelay:
 				w.phase, next, claimed = phaseFinal, phaseFinal, true
@@ -454,6 +527,8 @@ func (c *CohortCoordinator) cascadeWindow(w *cohortWindow, force bool) {
 		switch next {
 		case phaseIndexAnnounced:
 			c.announceIndex(w)
+		case phaseRevealed:
+			c.announceReveal(w)
 		case phaseReconciled:
 			c.reconcileAndClose(w)
 		case phaseFinal:
@@ -466,18 +541,34 @@ func (c *CohortCoordinator) cascadeWindow(w *cohortWindow, force bool) {
 // announceIndex assumes the caller already claimed this window's transition
 // into phaseIndexAnnounced — it never touches w.phase itself.
 func (c *CohortCoordinator) announceIndex(w *cohortWindow) {
-	// Freeze (not Indices) atomically snapshots AND seals this window
-	// against further Add calls, inside Collector's own lock — closing the
-	// gap a plain read-then-flip-phase-later would leave open for a
-	// concurrent Submit to slip an unreconciled receipt into the local
-	// aggregate (see Collector.Freeze's doc comment).
-	mine := w.col.Freeze()
+	// FreezeFor atomically snapshots AND seals this window against further Add
+	// calls, inside Collector's own lock (closing the gap a plain read-then-
+	// flip-phase-later would leave for a concurrent Submit), and returns the
+	// reporter-BOUND commitments plus this node's raw reveal set (broadcast at
+	// the reveal phase). Reporter-binding is what makes the commitment a
+	// proof-of-possession: only a holder of the raw signatures can produce it.
+	commits, reveal := w.col.FreezeFor(c.selfAddr)
 	c.mu.Lock()
-	w.peerIndexSets[c.selfAddr] = mine
+	w.peerIndexSets[c.selfAddr] = commits
+	w.myReveal = reveal
 	sink := c.onIndexAnnounce
 	c.mu.Unlock()
 	if sink != nil {
-		sink(w.blockHash, w.blockNumber, c.selfAddr, mine)
+		sink(w.blockHash, w.blockNumber, c.selfAddr, commits)
+	}
+}
+
+// announceReveal (Layer 2B phase 2) broadcasts this node's raw signatures,
+// after the commit round has closed, and records its own reveal so
+// reconcileAndClose counts it.
+func (c *CohortCoordinator) announceReveal(w *cohortWindow) {
+	c.mu.Lock()
+	reveal := w.myReveal
+	w.peerReveals[c.selfAddr] = ReporterReveal{Reporter: c.selfAddr, Sigs: reveal}
+	sink := c.onRevealAnnounce
+	c.mu.Unlock()
+	if sink != nil && len(reveal) > 0 {
+		sink(w.blockHash, w.blockNumber, c.selfAddr, reveal)
 	}
 }
 
@@ -485,13 +576,27 @@ func (c *CohortCoordinator) announceIndex(w *cohortWindow) {
 // transition into phaseReconciled.
 func (c *CohortCoordinator) reconcileAndClose(w *cohortWindow) {
 	c.mu.Lock()
-	sets := make([][]IndexCommitment, 0, len(w.peerIndexSets))
-	for _, s := range w.peerIndexSets {
-		sets = append(sets, s)
+	commits := make(map[types.Address][]IndexCommitment, len(w.peerIndexSets))
+	for r, s := range w.peerIndexSets {
+		commits[r] = s
 	}
+	reveals := make(map[types.Address]ReporterReveal, len(w.peerReveals))
+	for r, rv := range w.peerReveals {
+		reveals[r] = rv
+	}
+	misbehaviorSink := c.onMisbehavior
 	c.mu.Unlock()
 
-	banned := ReconcileIndices(c.reconcileThreshold(), sets...)
+	// Layer 2B: a device is banned only when >= threshold reporters each backed
+	// a reporter-bound commitment with a valid reveal (genuine multi-node
+	// submission). Replayers/fabricators are surfaced as misbehaved, never
+	// counted — closing the censorship the old commitment-match rule allowed.
+	banned, misbehaved := ReconcileWithReveals(c.reconcileThreshold(), c.reg, w.blockHash, w.blockNumber, commits, reveals)
+	if misbehaviorSink != nil {
+		for _, reporter := range misbehaved {
+			misbehaviorSink(MisbehaviorReport{BlockHash: w.blockHash, BlockNumber: w.blockNumber, Reporter: reporter, AtMs: NowMs()})
+		}
+	}
 	if len(banned) > 0 {
 		removed := w.col.ExcludeIndices(banned)
 		log.Debug("mobileverify: excluded cross-node conflicting devices before local aggregation",

@@ -31,7 +31,7 @@ func TestReconcileWithReveals(t *testing.T) {
 		return []IndexCommitment{{Index: idx, Commitment: ReporterBoundCommitment(sig, r)}}
 	}
 	revealOf := func(r types.Address) ReporterReveal {
-		return ReporterReveal{Reporter: r, Root: root, Sigs: map[MobileIndex][96]byte{idx: sig}}
+		return ReporterReveal{Reporter: r, Sigs: map[MobileIndex]RevealedSig{idx: {Sig: sig, Root: root}}}
 	}
 
 	// Genuine 3-way submission → banned at threshold 3.
@@ -80,8 +80,8 @@ func TestReconcileWithReveals(t *testing.T) {
 	}
 	fabReveals := map[types.Address]ReporterReveal{
 		R1: revealOf(R1),
-		R2: {Reporter: R2, Root: root, Sigs: map[MobileIndex][96]byte{idx: fake}},
-		R3: {Reporter: R3, Root: root, Sigs: map[MobileIndex][96]byte{idx: fake}},
+		R2: {Reporter: R2, Sigs: map[MobileIndex]RevealedSig{idx: {Sig: fake, Root: root}}},
+		R3: {Reporter: R3, Sigs: map[MobileIndex]RevealedSig{idx: {Sig: fake, Root: root}}},
 	}
 	banned, misbehaved = ReconcileWithReveals(3, reg, blockHash, number, fabCommits, fabReveals)
 	if len(banned) != 0 {

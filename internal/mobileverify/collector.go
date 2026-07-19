@@ -224,6 +224,27 @@ func (c *Collector) Freeze() []IndexCommitment {
 	return out
 }
 
+// FreezeFor is the Layer 2B variant of Freeze: it seals the window and returns
+// reporter-BOUND commitments (ReporterBoundCommitment(sig, reporter)) together
+// with the raw reveal set (each device's signature + attested root) this node
+// broadcasts in the phase-2 reveal. Only a node that actually holds the raw
+// signatures can produce these bound commitments, and the reveal lets peers
+// verify them — a replayer can do neither. The raw signatures stay in byIndex
+// for the later reveal broadcast, exclusion, and Close.
+func (c *Collector) FreezeFor(reporter types.Address) (commits []IndexCommitment, reveals map[MobileIndex]RevealedSig) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.frozen = true
+	commits = make([]IndexCommitment, 0, len(c.byIndex))
+	reveals = make(map[MobileIndex]RevealedSig, len(c.byIndex))
+	for idx, r := range c.byIndex {
+		commits = append(commits, IndexCommitment{Index: idx, Commitment: ReporterBoundCommitment(r.Signature, reporter)})
+		reveals[idx] = RevealedSig{Sig: r.Signature, Root: r.ComputedReceiptsRoot}
+	}
+	sort.Slice(commits, func(i, j int) bool { return commits[i].Index < commits[j].Index })
+	return commits, reveals
+}
+
 // ExcludeIndices removes the given devices from this window's admitted set
 // before Close(). Used after cross-node reconciliation identifies indices
 // that reached more than one IDC node for this block: removing them here —

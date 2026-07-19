@@ -2287,9 +2287,11 @@ func (n *Node) startMobileVerify() error {
 	// traffic — same lightweight scoring as the packet/registration topics.
 	digest := utils.ToBytes4(n.p2pGenesisHash[:])
 	cohortIndexTopic := fmt.Sprintf(p2p.MobileCohortIndexTopicFormat, digest)
+	cohortRevealTopic := fmt.Sprintf(p2p.MobileCohortRevealTopicFormat, digest)
 	cohortCertTopic := fmt.Sprintf(p2p.MobileCohortCertTopicFormat, digest)
 	if n.p2p != nil {
 		cohortIndexTopic += n.p2p.Encoding().ProtocolSuffix()
+		cohortRevealTopic += n.p2p.Encoding().ProtocolSuffix()
 		cohortCertTopic += n.p2p.Encoding().ProtocolSuffix()
 	}
 	// Layer 2C: raise the reconciliation ban threshold to f+1 distinct
@@ -2298,8 +2300,16 @@ func (n *Node) startMobileVerify() error {
 	if vs := resolveBridgeValidatorSet(n.engine); vs != nil {
 		n.mobileCohort.SetBanThreshold(int(vs.FaultTolerance()) + 1)
 	}
+	// Layer 2B: log reporters caught committing to a device index without a
+	// valid proof-of-possession reveal (replay/fabrication attempts). These
+	// are attributable to an authenticated validator and never counted toward
+	// a ban — surfacing them is the accountability hook.
+	n.mobileCohort.SetMisbehaviorSink(func(r mobileverify.MisbehaviorReport) {
+		log.Warn("mobileverify: cohort reporter failed proof-of-possession reveal",
+			"block", r.BlockNumber, "reporter", r.Reporter)
+	})
 	cohortSign, cohortVerify := n.buildCohortAuth()
-	cohortRelay := mobileverify.NewCohortRelayWithAuth(n.mobileCohort, n.p2p, n.mobileRegistry, cohortIndexTopic, cohortCertTopic, cohortSign, cohortVerify)
+	cohortRelay := mobileverify.NewCohortRelayWithAuth(n.mobileCohort, n.p2p, n.mobileRegistry, cohortIndexTopic, cohortRevealTopic, cohortCertTopic, cohortSign, cohortVerify)
 	if n.p2p != nil {
 		if err := cohortRelay.Start(); err != nil {
 			log.Error("mobileverify: cohort relay failed to start", "err", err)

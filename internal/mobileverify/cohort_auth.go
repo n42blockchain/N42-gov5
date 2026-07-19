@@ -30,8 +30,9 @@ const CohortSigLen = 96
 // Domain tags separate the two announcement kinds so an index-announcement
 // signature can never be replayed as a cert-announcement signature.
 var (
-	cohortIndexAuthDomain = []byte("n42-cohort-index-auth-v1")
-	cohortCertAuthDomain  = []byte("n42-cohort-cert-auth-v1")
+	cohortIndexAuthDomain  = []byte("n42-cohort-index-auth-v1")
+	cohortRevealAuthDomain = []byte("n42-cohort-reveal-auth-v1")
+	cohortCertAuthDomain   = []byte("n42-cohort-cert-auth-v1")
 )
 
 // CohortSigner signs an announcement's canonical bytes with the local node's
