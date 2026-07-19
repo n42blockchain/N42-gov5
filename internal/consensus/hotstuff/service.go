@@ -171,11 +171,41 @@ func (s *Service) requestCommittedCatchUp(hash types.Hash, number uint64) {
 	if s.blockFetcher == nil {
 		return
 	}
-	if targeted, ok := s.blockFetcher.(interface{ CatchUpTo(uint64) }); ok && number > 0 {
+	targeted, hasTargetedCatchUp := s.blockFetcher.(interface{ CatchUpTo(uint64) })
+	if hasTargetedCatchUp && number > 0 {
 		go targeted.CatchUpTo(number)
 		return
 	}
 	s.blockFetcher.FetchBlockByHash(hash)
+	if !hasTargetedCatchUp {
+		return
+	}
+
+	// The CommitQC can beat the block body to this node, so the first probe has
+	// no header number. Fetch the authenticated hash, then briefly wait for its
+	// header to land and convert it into a range target. Without this bridge a
+	// restarted node falls back to one-parent-at-a-time fetches and cannot catch
+	// a chain that is producing faster than that retry loop.
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		deadline := time.NewTimer(5 * time.Second)
+		defer deadline.Stop()
+		for {
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-deadline.C:
+				return
+			case <-ticker.C:
+				_, checked, observedNumber := s.blockExecutionStatus(hash)
+				if checked && observedNumber > 0 {
+					targeted.CatchUpTo(observedNumber)
+					return
+				}
+			}
+		}
+	}()
 }
 
 // committedParentBlocked rechecks the proposed consensus parent and fails
