@@ -24,42 +24,62 @@ import (
 )
 
 const (
-	// indexAnnHeaderLen = blockHash(32) || blockNumber(8 BE) || reporter(20).
-	indexAnnHeaderLen = 32 + 8 + 20
-	// certAnnHeaderLen = reporter(20) || blockHash(32) || blockNumber(8 BE)
-	// || receiptsRoot(32) || aggregateSig(96) || windowClosedAt(8 BE).
-	certAnnHeaderLen = 20 + 32 + 8 + 32 + 96 + 8
+	// indexAnnHeaderLen = blockHash(32) || blockNumber(8 BE) || reporter(20)
+	// || reporterSig(96). The reporter signature sits before the variable
+	// (index,commitment) body, which runs to the end of the message.
+	indexAnnHeaderLen = 32 + 8 + 20 + CohortSigLen
+	// certAnnHeaderLen = reporter(20) || reporterSig(96) || blockHash(32) ||
+	// blockNumber(8 BE) || receiptsRoot(32) || aggregateSig(96) ||
+	// windowClosedAt(8 BE), followed by the variable signer mask.
+	certAnnHeaderLen = 20 + CohortSigLen + 32 + 8 + 32 + 96 + 8
 )
 
-func encodeIndexAnnouncement(blockHash types.Hash, blockNumber uint64, reporter types.Address, indices []IndexCommitment) ([]byte, error) {
+// encodeIndexAnnouncement signs the (index,commitment) body with sign (the
+// reporter's validator BLS key) and lays it out on the wire. sign==nil (or a
+// wrong-length signature) writes a zero signature — accepted only by a relay
+// whose verifier is also nil (single-node/test).
+func encodeIndexAnnouncement(blockHash types.Hash, blockNumber uint64, reporter types.Address, indices []IndexCommitment, sign CohortSigner) ([]byte, error) {
 	body, err := encodeIndexCommitments(indices)
 	if err != nil {
 		return nil, err
 	}
+	sig := signOrZero(sign, cohortIndexAuthMessage(blockHash, blockNumber, reporter, body))
 	out := make([]byte, 0, indexAnnHeaderLen+len(body))
 	out = append(out, blockHash[:]...)
 	var nb [8]byte
 	binary.BigEndian.PutUint64(nb[:], blockNumber)
 	out = append(out, nb[:]...)
 	out = append(out, reporter[:]...)
+	out = append(out, sig...)
 	out = append(out, body...)
 	return out, nil
 }
 
-func decodeIndexAnnouncement(b []byte, registryBound int) (blockHash types.Hash, blockNumber uint64, reporter types.Address, indices []IndexCommitment, err error) {
+// decodeIndexAnnouncement parses and, when verify!=nil, authenticates the
+// announcement: reporter must be an authorized validator and the signature
+// must verify over the body. An unauthenticated announcement is rejected.
+func decodeIndexAnnouncement(b []byte, registryBound int, verify CohortVerifier) (blockHash types.Hash, blockNumber uint64, reporter types.Address, indices []IndexCommitment, err error) {
 	if len(b) < indexAnnHeaderLen {
 		return blockHash, 0, reporter, nil, fmt.Errorf("mobileverify: index announcement too short (%d bytes)", len(b))
 	}
 	copy(blockHash[:], b[:32])
 	blockNumber = binary.BigEndian.Uint64(b[32:40])
 	copy(reporter[:], b[40:60])
-	indices, err = decodeIndexCommitments(b[60:], registryBound)
+	sig := b[60 : 60+CohortSigLen]
+	body := b[60+CohortSigLen:]
+	if verify != nil && !verify(reporter, cohortIndexAuthMessage(blockHash, blockNumber, reporter, body), sig) {
+		return blockHash, blockNumber, reporter, nil, fmt.Errorf("mobileverify: unauthenticated index announcement from %s", reporter)
+	}
+	indices, err = decodeIndexCommitments(body, registryBound)
 	return blockHash, blockNumber, reporter, indices, err
 }
 
-func encodeCertAnnouncement(reporter types.Address, cert *MobileAttestationCert) []byte {
+func encodeCertAnnouncement(reporter types.Address, cert *MobileAttestationCert, sign CohortSigner) []byte {
+	body := certAuthBody(cert)
+	sig := signOrZero(sign, cohortCertAuthMessage(cert.BlockHash, cert.BlockNumber, reporter, body))
 	out := make([]byte, 0, certAnnHeaderLen+len(cert.SignerMask))
 	out = append(out, reporter[:]...)
+	out = append(out, sig...)
 	out = append(out, cert.BlockHash[:]...)
 	var nb [8]byte
 	binary.BigEndian.PutUint64(nb[:], cert.BlockNumber)
@@ -73,18 +93,23 @@ func encodeCertAnnouncement(reporter types.Address, cert *MobileAttestationCert)
 	return out
 }
 
-func decodeCertAnnouncement(b []byte, registryBound int) (reporter types.Address, cert *MobileAttestationCert, err error) {
+func decodeCertAnnouncement(b []byte, registryBound int, verify CohortVerifier) (reporter types.Address, cert *MobileAttestationCert, err error) {
 	if len(b) < certAnnHeaderLen {
 		return reporter, nil, fmt.Errorf("mobileverify: cert announcement too short (%d bytes)", len(b))
 	}
 	copy(reporter[:], b[:20])
+	sig := b[20 : 20+CohortSigLen]
+	rest := b[20+CohortSigLen:]
 	c := &MobileAttestationCert{}
-	copy(c.BlockHash[:], b[20:52])
-	c.BlockNumber = binary.BigEndian.Uint64(b[52:60])
-	copy(c.ReceiptsRoot[:], b[60:92])
-	copy(c.AggregateSig[:], b[92:188])
-	c.WindowClosedAt = binary.BigEndian.Uint64(b[188:196])
-	c.SignerMask = append([]byte(nil), b[196:]...)
+	copy(c.BlockHash[:], rest[0:32])
+	c.BlockNumber = binary.BigEndian.Uint64(rest[32:40])
+	copy(c.ReceiptsRoot[:], rest[40:72])
+	copy(c.AggregateSig[:], rest[72:168])
+	c.WindowClosedAt = binary.BigEndian.Uint64(rest[168:176])
+	c.SignerMask = append([]byte(nil), rest[176:]...)
+	if verify != nil && !verify(reporter, cohortCertAuthMessage(c.BlockHash, c.BlockNumber, reporter, certAuthBody(c)), sig) {
+		return reporter, nil, fmt.Errorf("mobileverify: unauthenticated cert announcement from %s", reporter)
+	}
 	// Validate the mask framing here. CohortCoordinator.OnPeerCert performs the
 	// load-bearing aggregate-signature verification against the registry before
 	// admitting the certificate to a merge bucket.
@@ -92,6 +117,34 @@ func decodeCertAnnouncement(b []byte, registryBound int) (reporter types.Address
 		return reporter, nil, fmt.Errorf("mobileverify: cert announcement mask: %w", derr)
 	}
 	return reporter, c, nil
+}
+
+// certAuthBody is the canonical byte string a reporter's signature covers for a
+// cert announcement — every field it attests to, excluding the reporter and
+// signature themselves.
+func certAuthBody(c *MobileAttestationCert) []byte {
+	body := make([]byte, 0, 32+8+32+96+8+len(c.SignerMask))
+	body = append(body, c.BlockHash[:]...)
+	var nb [8]byte
+	binary.BigEndian.PutUint64(nb[:], c.BlockNumber)
+	body = append(body, nb[:]...)
+	body = append(body, c.ReceiptsRoot[:]...)
+	body = append(body, c.AggregateSig[:]...)
+	binary.BigEndian.PutUint64(nb[:], c.WindowClosedAt)
+	body = append(body, nb[:]...)
+	body = append(body, c.SignerMask...)
+	return body
+}
+
+// signOrZero returns sign(msg) when it yields a correctly-sized signature,
+// otherwise a zero signature (unsigned; only a nil-verifier relay accepts it).
+func signOrZero(sign CohortSigner, msg []byte) []byte {
+	if sign != nil {
+		if s := sign(msg); len(s) == CohortSigLen {
+			return s
+		}
+	}
+	return make([]byte, CohortSigLen)
 }
 
 // CohortRelay wires CohortCoordinator's outbound index/cert announcements to
@@ -106,6 +159,12 @@ type CohortRelay struct {
 	indexTopic string
 	certTopic  string
 
+	// sign authenticates this node's own announcements; verify authenticates
+	// inbound ones (reporter ∈ validators && signature valid). Both nil =
+	// single-node/test mode with no authentication.
+	sign   CohortSigner
+	verify CohortVerifier
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -118,13 +177,20 @@ type CohortRelay struct {
 // pattern — a coordinator with a relay always announces, even before the
 // receive loops are subscribed.
 func NewCohortRelay(coord *CohortCoordinator, p2p PacketPublisher, reg *Registry, indexTopic, certTopic string) *CohortRelay {
+	return NewCohortRelayWithAuth(coord, p2p, reg, indexTopic, certTopic, nil, nil)
+}
+
+// NewCohortRelayWithAuth is NewCohortRelay plus reporter authentication: sign
+// is applied to this node's outbound announcements and verify to inbound ones.
+// Pass nil/nil for the unauthenticated single-node/test behaviour.
+func NewCohortRelayWithAuth(coord *CohortCoordinator, p2p PacketPublisher, reg *Registry, indexTopic, certTopic string, sign CohortSigner, verify CohortVerifier) *CohortRelay {
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &CohortRelay{coord: coord, p2p: p2p, reg: reg, indexTopic: indexTopic, certTopic: certTopic, ctx: ctx, cancel: cancel}
+	r := &CohortRelay{coord: coord, p2p: p2p, reg: reg, indexTopic: indexTopic, certTopic: certTopic, sign: sign, verify: verify, ctx: ctx, cancel: cancel}
 	coord.SetIndexAnnounceSink(func(blockHash types.Hash, blockNumber uint64, reporter types.Address, indices []IndexCommitment) {
 		if r.p2p == nil {
 			return
 		}
-		payload, err := encodeIndexAnnouncement(blockHash, blockNumber, reporter, indices)
+		payload, err := encodeIndexAnnouncement(blockHash, blockNumber, reporter, indices, r.sign)
 		if err != nil {
 			log.Debug("mobileverify: encode index announcement failed", "err", err)
 			return
@@ -137,7 +203,7 @@ func NewCohortRelay(coord *CohortCoordinator, p2p PacketPublisher, reg *Registry
 		if r.p2p == nil {
 			return
 		}
-		if err := r.p2p.PublishToTopic(r.ctx, r.certTopic, encodeCertAnnouncement(reporter, cert)); err != nil {
+		if err := r.p2p.PublishToTopic(r.ctx, r.certTopic, encodeCertAnnouncement(reporter, cert, r.sign)); err != nil {
 			log.Debug("mobileverify: cert announcement publish failed", "err", err)
 		}
 	})
@@ -184,7 +250,7 @@ func (r *CohortRelay) indexReceiveLoop(sub *pubsub.Subscription) {
 			}
 			continue
 		}
-		blockHash, _, reporter, indices, derr := decodeIndexAnnouncement(msg.Data, r.reg.IndexBound())
+		blockHash, _, reporter, indices, derr := decodeIndexAnnouncement(msg.Data, r.reg.IndexBound(), r.verify)
 		if derr != nil {
 			log.Debug("mobileverify: rejected malformed cohort index announcement", "err", derr)
 			continue
@@ -204,7 +270,7 @@ func (r *CohortRelay) certReceiveLoop(sub *pubsub.Subscription) {
 			}
 			continue
 		}
-		reporter, cert, derr := decodeCertAnnouncement(msg.Data, r.reg.IndexBound())
+		reporter, cert, derr := decodeCertAnnouncement(msg.Data, r.reg.IndexBound(), r.verify)
 		if derr != nil {
 			log.Debug("mobileverify: rejected malformed cohort cert announcement", "err", derr)
 			continue
