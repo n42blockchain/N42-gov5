@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2"
@@ -19,9 +20,9 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/common/utils"
 )
 
 const (
@@ -82,14 +83,14 @@ type TxPool interface {
 }
 
 type config struct {
-	p2p                  p2p.P2P
-	chain                common.IBlockChain
-	initialSync          Checker
-	earliestBlock        func() uint64      // returns earliest available block, 0 = all available
-	overrideGenesisHash  *types.Hash        // if set, use this for fork digest instead of actual genesis hash
-	txPool               TxPool             // transaction pool for gossiped txs (nil disables)
-	txGossipEnabled      bool               // enable GossipSub transaction subscription
-	blockImportNotifier  BlockImportNotifier // notified after gossip block import (HotStuff)
+	p2p                 p2p.P2P
+	chain               common.IBlockChain
+	initialSync         Checker
+	earliestBlock       func() uint64       // returns earliest available block, 0 = all available
+	overrideGenesisHash *types.Hash         // if set, use this for fork digest instead of actual genesis hash
+	txPool              TxPool              // transaction pool for gossiped txs (nil disables)
+	txGossipEnabled     bool                // enable GossipSub transaction subscription
+	blockImportNotifier BlockImportNotifier // notified after gossip block import (HotStuff)
 }
 
 // SetBlockImportNotifier sets the notifier dynamically (used when HotStuff
@@ -119,6 +120,13 @@ type Service struct {
 	fetchMissCache *lru.Cache[types.Hash, time.Time]
 
 	validateBlockLock sync.RWMutex
+
+	// CommitQC-driven catch-up requests are coalesced to the highest target.
+	// New commits can arrive while a range import is running; dropping those
+	// targets leaves a restarted node permanently a few blocks farther behind
+	// after every round.
+	catchUpInProgress atomic.Bool
+	catchUpTarget     atomic.Uint64
 }
 
 // NewService initializes new regular sync service.
