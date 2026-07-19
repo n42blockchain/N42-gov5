@@ -26,7 +26,7 @@ func (s *Service) blockSubscriber(ctx context.Context, data any) error {
 
 	header := blk.Header()
 	blockHash := header.Hash()
-	s.promoteCommittedTarget(blockHash, blockNumber.Uint64())
+	s.observeCatchUpBlock(blockHash, blockNumber.Uint64())
 	log.Debug("Subscriber received new block",
 		"number", blockNumber.Uint64(),
 		"hash", blockHash,

@@ -54,6 +54,11 @@ const catchUpInterval = 8 * time.Second
 // badly delayed stream from growing the map without limit.
 const maxCommittedTargets = 512
 
+// maxObservedBlockNumbers retains recent hash->number bindings seen on any
+// block ingress path. The binding is safe to use only after the exact hash has
+// a verified CommitQC, which CatchUpToHash enforces.
+const maxObservedBlockNumbers = 2048
+
 // CatchUp pulls the canonical chain from the most-advanced peer by range and
 // inserts it, letting ForkChoice reorg us off a startup fork onto the converged
 // chain. It is invoked by the HotStuff engine via OutputSyncRequired (a Decide
@@ -93,6 +98,9 @@ func (s *Service) CatchUpToHash(hash types.Hash) {
 		return
 	}
 	s.committedTargetLock.Lock()
+	if s.committedTargets == nil {
+		s.committedTargets = make(map[types.Hash]struct{})
+	}
 	if len(s.committedTargets) >= maxCommittedTargets {
 		for oldest := range s.committedTargets {
 			delete(s.committedTargets, oldest)
@@ -100,17 +108,40 @@ func (s *Service) CatchUpToHash(hash types.Hash) {
 		}
 	}
 	s.committedTargets[hash] = struct{}{}
+	observedNumber, alreadyObserved := s.observedBlockNumber[hash]
+	if alreadyObserved {
+		delete(s.committedTargets, hash)
+	}
 	s.committedTargetLock.Unlock()
+	if alreadyObserved {
+		go s.enqueueCatchUp(observedNumber)
+		return
+	}
 
 	if blk, _ := s.cfg.chain.GetBlockByHash(hash); blk != nil {
-		s.promoteCommittedTarget(hash, blk.Number64().Uint64())
+		s.observeCatchUpBlock(hash, blk.Number64().Uint64())
 		return
 	}
 	s.FetchBlockByHash(hash)
 }
 
-func (s *Service) promoteCommittedTarget(hash types.Hash, number uint64) {
+// observeCatchUpBlock remembers a hash->number binding even when the block is
+// only future-queued and not yet in the database. CommitQC usually follows the
+// direct-pushed proposal body, so retaining this observation lets the later
+// CatchUpToHash immediately request a full range instead of waiting for the
+// same body to become executable one ancestor at a time.
+func (s *Service) observeCatchUpBlock(hash types.Hash, number uint64) {
 	s.committedTargetLock.Lock()
+	if s.observedBlockNumber == nil {
+		s.observedBlockNumber = make(map[types.Hash]uint64)
+	}
+	if _, exists := s.observedBlockNumber[hash]; !exists && len(s.observedBlockNumber) >= maxObservedBlockNumbers {
+		for oldest := range s.observedBlockNumber {
+			delete(s.observedBlockNumber, oldest)
+			break
+		}
+	}
+	s.observedBlockNumber[hash] = number
 	_, pending := s.committedTargets[hash]
 	if pending {
 		delete(s.committedTargets, hash)

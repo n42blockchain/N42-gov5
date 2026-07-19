@@ -32,7 +32,7 @@ func (s *Service) blockPushStreamHandler(stream network.Stream) {
 		log.Debug("block push: dropping known bad branch", "number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12])
 		return
 	}
-	s.promoteCommittedTarget(blk.Hash(), blk.Number64().Uint64())
+	s.observeCatchUpBlock(blk.Hash(), blk.Number64().Uint64())
 	// Already stored (a re-pushed uncommitted leader block): skip re-entering
 	// InsertChain's reorg path. Notify the engine only when the block is
 	// actually APPLIED — a stored-but-never-executed body must not unlock an

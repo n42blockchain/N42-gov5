@@ -133,6 +133,7 @@ type Service struct {
 	// a numeric range target as soon as the body becomes available.
 	committedTargetLock sync.Mutex
 	committedTargets    map[types.Hash]struct{}
+	observedBlockNumber map[types.Hash]uint64
 }
 
 // NewService initializes new regular sync service.
@@ -154,6 +155,7 @@ func NewService(ctx context.Context, opts ...Option) (*Service, error) {
 	r.subHandler = newSubTopicHandler()
 	r.rateLimiter = newRateLimiter(r.cfg.p2p)
 	r.committedTargets = make(map[types.Hash]struct{})
+	r.observedBlockNumber = make(map[types.Hash]uint64)
 	if err := r.initCaches(); err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to initialize sync caches: %w", err)

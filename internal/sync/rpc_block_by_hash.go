@@ -89,7 +89,7 @@ func (s *Service) FetchBlockByHash(hash types.Hash) {
 	s.fetchMissCache.Add(hash, time.Now())
 	s.fetchMissLock.Unlock()
 	if blk, _ := s.cfg.chain.GetBlockByHash(hash); blk != nil {
-		s.promoteCommittedTarget(hash, blk.Number64().Uint64())
+		s.observeCatchUpBlock(hash, blk.Number64().Uint64())
 		go s.alignAndImport(blk)
 		return
 	}
@@ -122,7 +122,7 @@ func (s *Service) FetchBlockByHash(hash types.Hash) {
 				log.Info("fetch-on-miss: hash mismatch", "want", hash.Hex()[:12], "got", blk.Hash().Hex()[:12])
 				return // peer returned the wrong block
 			}
-			s.promoteCommittedTarget(hash, blk.Number64().Uint64())
+			s.observeCatchUpBlock(hash, blk.Number64().Uint64())
 			// A one-shot insert is not enough: the proposal block's parent may
 			// be a QC branch this node never applied. Chain-align exactly like
 			// the local-hit path (walk back, switch with authority, replay).
