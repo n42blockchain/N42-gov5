@@ -176,6 +176,10 @@ func (s *Service) requestCommittedCatchUp(hash types.Hash, number uint64) {
 		go targeted.CatchUpTo(number)
 		return
 	}
+	if byHash, ok := s.blockFetcher.(interface{ CatchUpToHash(types.Hash) }); ok {
+		byHash.CatchUpToHash(hash)
+		return
+	}
 	s.blockFetcher.FetchBlockByHash(hash)
 	if !hasTargetedCatchUp {
 		return
