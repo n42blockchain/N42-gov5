@@ -283,8 +283,16 @@ func (e *ConsensusEngine) handleFutureViewTimeout(currentView ViewNumber, timeou
 	e.timeoutCollector = NewTimeoutCollector(targetView, e.validatorSet().Len())
 
 	for _, observed := range targetTimeouts {
+		// A retained report can fail re-verification if advanceToView crossed an
+		// epoch boundary (the validator set changed, so the old-set signature no
+		// longer verifies). That is not a reason to abort recovery: skip the
+		// stale seed and still broadcast our own timeout below so the new-set TC
+		// can form. Any other processTimeout outcome (added to collector, or it
+		// formed a TC and moved the view) is handled by the view re-check.
 		if err := e.processTimeout(observed); err != nil {
-			return err
+			log.Debug("hotstuff: skipping unverifiable retained timeout seed during recovery",
+				"targetView", targetView, "sender", observed.Sender, "err", err)
+			continue
 		}
 		if e.roundState.CurrentView() != targetView {
 			return nil // the retained reports already formed a TC

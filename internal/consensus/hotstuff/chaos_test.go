@@ -1021,3 +1021,62 @@ func TestChaos7Node_50RoundContinuousBlockProduction(t *testing.T) {
 	t.Logf("50-round continuous block production: %d commits in %v (avg %v/block)",
 		len(h.committed), elapsed, elapsed/time.Duration(totalRounds))
 }
+
+// TestFPlusOneFutureTimeoutsWithNonGenesisHighQC covers the embedded-QC
+// verification path the scattered-recovery tests skip by using GenesisQC
+// (view 0, which verifyEmbeddedQC exempts): f+1 future timeouts each carrying a
+// REAL non-genesis HighQC must be accepted and drive the weak-synchronizer
+// jump, and a timeout whose embedded QC is forged must be rejected without
+// contributing to the f+1 count.
+func TestFPlusOneFutureTimeoutsWithNonGenesisHighQC(t *testing.T) {
+	setup := newTestSetup(t, 7) // f=2, threshold=3
+	engine, _ := newTestEngine(t, setup, 0)
+	startView := engine.CurrentView()
+
+	// A genuine QC at view 2 (non-genesis) that all timeouts piggyback.
+	realQC := buildRealQC(t, setup, 2, types.Hash{0x9})
+
+	deliver := func(sender int, view ViewNumber, qc *QuorumCertificate) error {
+		tm := &TimeoutMessage{
+			View:      view,
+			HighQC:    *qc,
+			Sender:    ValidatorIndex(sender),
+			Signature: setup.keys[sender].Sign(TimeoutSigningMessage(view)).Marshal(),
+		}
+		return engine.ProcessEvent(ConsensusEvent{
+			Type: EventMessage,
+			Msg:  ConsensusMsg{Type: MsgTimeout, Payload: tm},
+		})
+	}
+
+	// A forged embedded QC must be rejected and must NOT count toward f+1.
+	forged := *realQC
+	forged.AggregateSignature = append([]byte(nil), realQC.AggregateSignature...)
+	forged.AggregateSignature[0] ^= 0xFF
+	if err := deliver(1, startView+3, &forged); err == nil {
+		t.Fatal("timeout carrying a forged embedded QC should be rejected")
+	}
+	if got := engine.CurrentView(); got != startView {
+		t.Fatalf("forged-QC timeout advanced the view: got %d", got)
+	}
+
+	// f+1 valid non-genesis-QC reports must drive the recovery jump.
+	if err := deliver(1, startView+3, realQC); err != nil {
+		t.Fatalf("deliver 1: %v", err)
+	}
+	if err := deliver(2, startView+5, realQC); err != nil {
+		t.Fatalf("deliver 2: %v", err)
+	}
+	if got := engine.CurrentView(); got != startView {
+		t.Fatalf("advanced before f+1: got %d", got)
+	}
+	if err := deliver(3, startView+4, realQC); err != nil {
+		t.Fatalf("deliver 3: %v", err)
+	}
+	if got := engine.CurrentView(); got != startView+5 { // max of {3,5,4}
+		t.Fatalf("f+1 non-genesis-QC recovery view = %d, want %d", got, startView+5)
+	}
+	if phase := engine.CurrentPhase(); phase != PhaseTimedOut {
+		t.Fatalf("recovery phase = %s, want TimedOut", phase)
+	}
+}
