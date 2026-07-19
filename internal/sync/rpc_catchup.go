@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/holiman/uint256"
@@ -42,11 +41,6 @@ func headIsConsensusBlock(chain common.IBlockChain) bool {
 	return string(h.Extra[:len(hotStuffExtraMagic)]) == string(hotStuffExtraMagic)
 }
 
-// catchUpInProgress guards against concurrent catch-up runs (the HotStuff engine
-// can emit OutputSyncRequired on every high-view Decide while we are still
-// importing).
-var catchUpInProgress atomic.Bool
-
 // catchUpInterval is how often a leader-driven node polls whether it has fallen
 // behind peers in HEIGHT. A node that committed a view but couldn't import the
 // block (or produced a startup fork) lags in height while its VIEW stays in
@@ -65,7 +59,7 @@ func (s *Service) CatchUp() {
 	if highest == nil || len(peers) == 0 || highest.Cmp(self) <= 0 {
 		return // nobody is ahead of us
 	}
-	s.catchUpTo(highest.Uint64(), peers)
+	s.enqueueCatchUp(highest.Uint64())
 }
 
 // CatchUpTo pulls through an authenticated consensus target without depending
@@ -82,22 +76,47 @@ func (s *Service) CatchUpTo(target uint64) {
 	if self == nil || target <= self.Uint64() {
 		return
 	}
-	peers := s.cfg.p2p.Peers().Connected()
-	if len(peers) > 5 {
-		peers = peers[:5]
+	s.enqueueCatchUp(target)
+}
+
+// enqueueCatchUp coalesces concurrent requests to their highest target and
+// drains targets that arrive during an import. A simple in-progress guard is
+// insufficient: it drops every newer CommitQC while the first range is being
+// inserted, so a fast chain outruns the restarted node forever.
+func (s *Service) enqueueCatchUp(target uint64) {
+	for {
+		previous := s.catchUpTarget.Load()
+		if target <= previous || s.catchUpTarget.CompareAndSwap(previous, target) {
+			break
+		}
 	}
-	if len(peers) == 0 {
+	if !s.catchUpInProgress.CompareAndSwap(false, true) {
 		return
 	}
-	s.catchUpTo(target, peers)
+
+	for {
+		nextTarget := s.catchUpTarget.Swap(0)
+		if nextTarget > 0 {
+			peers := s.cfg.p2p.Peers().Connected()
+			if len(peers) > 5 {
+				peers = peers[:5]
+			}
+			if len(peers) > 0 {
+				s.catchUpTo(nextTarget, peers)
+			}
+		}
+
+		// Release ownership, then close the race with a target enqueued just
+		// before the store. Either this goroutine reacquires and drains it, or
+		// the enqueuer acquired ownership and will do so.
+		s.catchUpInProgress.Store(false)
+		if s.catchUpTarget.Load() == 0 || !s.catchUpInProgress.CompareAndSwap(false, true) {
+			return
+		}
+	}
 }
 
 func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
-	if !catchUpInProgress.CompareAndSwap(false, true) {
-		return // a catch-up is already running
-	}
-	defer catchUpInProgress.Store(false)
-
 	self := currentBlockNumber(s.cfg.chain)
 	if self == nil || target <= self.Uint64() {
 		return
