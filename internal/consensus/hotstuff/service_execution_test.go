@@ -6,6 +6,7 @@ package hotstuff
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/holiman/uint256"
 
@@ -20,11 +21,17 @@ type executionTestFetcher struct {
 	applied    bool
 	lastHash   types.Hash
 	lastNumber uint64
+	targetCh   chan uint64
 }
 
 func (f *executionTestFetcher) FetchBlockByHash(types.Hash) {}
 func (f *executionTestFetcher) CatchUp()                    {}
 func (f *executionTestFetcher) HeightBehind() uint64        { return 0 }
+func (f *executionTestFetcher) CatchUpTo(number uint64) {
+	if f.targetCh != nil {
+		f.targetCh <- number
+	}
+}
 func (f *executionTestFetcher) BlockApplied(hash types.Hash, number uint64) bool {
 	f.lastHash = hash
 	f.lastNumber = number
@@ -66,9 +73,12 @@ func TestCommittedUnexecutedRaisesMetricAndTracksFailure(t *testing.T) {
 	svc, fetcher, hash := newExecutionTestService(t, false)
 	before := metricCommittedUnexecuted.Get()
 
-	applied, failures := svc.observeCommittedExecution(hash, true)
+	applied, failures, number := svc.observeCommittedExecution(hash, true)
 	if applied || failures != 1 {
 		t.Fatalf("observeCommittedExecution() = (%v, %d), want (false, 1)", applied, failures)
+	}
+	if number != 42 {
+		t.Fatalf("committed block number = %d, want 42", number)
 	}
 	if got := metricCommittedUnexecuted.Get(); got != before+1 {
 		t.Fatalf("hotstuff_committed_unexecuted_total = %d, want %d", got, before+1)
@@ -78,6 +88,56 @@ func TestCommittedUnexecutedRaisesMetricAndTracksFailure(t *testing.T) {
 	}
 	if svc.unexecutedCommitHash != hash || svc.unexecutedCommitFailures != 1 {
 		t.Fatal("unexecuted committed block was not tracked")
+	}
+}
+
+func TestDistinctUnexecutedCommitsAccumulateFailureStreak(t *testing.T) {
+	svc, _, first := newExecutionTestService(t, false)
+	writeHeader := func(number uint64, parent types.Hash) types.Hash {
+		t.Helper()
+		header := &block.Header{
+			ParentHash: parent,
+			Number:     uint256.NewInt(number),
+			Difficulty: uint256.NewInt(0),
+		}
+		if err := svc.db.Update(context.Background(), func(tx kv.RwTx) error {
+			rawdb.WriteHeader(tx, header)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return header.Hash()
+	}
+	second := writeHeader(43, first)
+	third := writeHeader(44, second)
+
+	for i, hash := range []types.Hash{first, second, third} {
+		applied, failures, _ := svc.observeCommittedExecution(hash, true)
+		if applied || failures != uint8(i+1) {
+			t.Fatalf("commit %d observation = (%v, %d), want (false, %d)", i, applied, failures, i+1)
+		}
+	}
+
+	producer := new(executionTestProducer)
+	svc.blockProducer = producer
+	svc.triggerBlockProduction(10, third)
+	if len(producer.parents) != 0 {
+		t.Fatalf("produced on the third consecutively unexecuted commit %s", producer.parents[0])
+	}
+}
+
+func TestCommittedExecutionRecoveryUsesAuthenticatedTarget(t *testing.T) {
+	svc, fetcher, hash := newExecutionTestService(t, false)
+	fetcher.targetCh = make(chan uint64, 1)
+	svc.requestCommittedCatchUp(hash, 42)
+
+	select {
+	case target := <-fetcher.targetCh:
+		if target != 42 {
+			t.Fatalf("CatchUpTo target = %d, want 42", target)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("CatchUpTo was not requested")
 	}
 }
 
