@@ -30,8 +30,10 @@ All of the code referenced here is on `main` (merge `6c3ebfe8`):
 make n42
 # → build/bin/n42  (or build/bin/n42.exe on Windows)
 
-# Windows note: cap the MDBX map size so 7 instances don't exhaust paging.
-export N42_MDBX_MAPSIZE_GB=8        # PowerShell: $env:N42_MDBX_MAPSIZE_GB="8"
+# Windows note: cap the MDBX map size so 7 instances don't reserve the 8-TB
+# default, but keep it larger than the existing mdbx.dat. The full replay-v2
+# database is ~35 GB, so use 64 GB; 8 GB is suitable only for a small smoke DB.
+export N42_MDBX_MAPSIZE_GB=64       # PowerShell: $env:N42_MDBX_MAPSIZE_GB="64"
 
 # External-sort temp dir for replay (point at a disk with >130GB free).
 export N42_ETL_TMPDIR='D:/etl-tmp'  # PowerShell: $env:N42_ETL_TMPDIR='D:/etl-tmp'
@@ -102,7 +104,7 @@ Each node gets its own copy of the replayed DB, its BLS key, its etherbase
 ### 2.1 PowerShell launch script (local 7-node mesh)
 
 ```powershell
-$env:N42_MDBX_MAPSIZE_GB="8"
+$env:N42_MDBX_MAPSIZE_GB="64" # must exceed D:/n42-qmdb-data/chaindata/mdbx.dat
 # priv[i] = (etherbase address, BLS key hex); nk[i] = network key; pid7[i] = peer id
 # (use the keys/ids generated in step 0.1; the values below are the deterministic test set)
 $priv=@(@('d2a316...','2fa3ad...'),@('f7dc5c...','5c359b...'), <#...7 entries...#> )
@@ -157,7 +159,7 @@ foreach($i in 0..6){
 | `--p2p.no-discovery` + `--p2p.peer <multiaddr>` ×6 | static full mesh; no DHT for a known validator set |
 | `--p2p.min-sync-peers 0` | same-height nodes would otherwise deadlock in initial-sync (`found=0 need=1`); 0 lets HotStuff take over immediately |
 | `--dev.txgen --dev.txgen.max 31 --dev.txgen.key ...` | optional node-0-only mixed load: auto-funds ten accounts, deploys/seeds a test ERC-20, then emits about 70% native and 30% ERC-20 transfers |
-| `N42_MDBX_MAPSIZE_GB=8` | bounds each MDBX map so 7 local instances fit in RAM/paging |
+| `N42_MDBX_MAPSIZE_GB=64` | bounds each full-chain MDBX map while remaining above the ~35 GB data file; map size is virtual capacity, not eager RAM allocation |
 
 > For a real multi-host deployment, replace `127.0.0.1` with routable IPs in the
 > `--p2p.peer` multiaddrs and run one node per host.
