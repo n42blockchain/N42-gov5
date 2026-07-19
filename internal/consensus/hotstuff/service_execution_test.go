@@ -129,7 +129,10 @@ func TestDistinctUnexecutedCommitsAccumulateFailureStreak(t *testing.T) {
 func TestCommittedExecutionRecoveryUsesAuthenticatedTarget(t *testing.T) {
 	svc, fetcher, hash := newExecutionTestService(t, false)
 	fetcher.targetCh = make(chan uint64, 1)
-	svc.requestCommittedCatchUp(hash, 42)
+	// Simulate CommitQC arriving before its block-number probe. The body fetch
+	// makes the already-present test header discoverable, and the bounded retry
+	// must still convert it into a targeted range catch-up.
+	svc.requestCommittedCatchUp(hash, 0)
 
 	select {
 	case target := <-fetcher.targetCh:
