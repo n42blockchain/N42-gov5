@@ -132,6 +132,36 @@ type cohortWindow struct {
 	// reporter; reconcileAndClose feeds it to ReconcileWithReveals.
 	myReveal    map[MobileIndex]RevealedSig
 	peerReveals map[types.Address]ReporterReveal
+
+	// committedSnapshot is the peer-commit set frozen at the reveal boundary.
+	// reconcileAndClose consumes ONLY this snapshot, never the live
+	// peerIndexSets. commitsFrozen is set the moment this node reveals OR sees
+	// the FIRST peer reveal — whichever is first. This is the load-bearing
+	// reactive-backfill defense: a reveal exposes raw device signatures, so any
+	// commit admitted after a reveal could be a malicious validator that
+	// harvested a victim's raw signature and manufactured a valid self-bound
+	// commitment Keccak256(sig‖itsOwnAddr) after the fact. Freezing on the first
+	// reveal seen (not merely on reaching the local reveal phase) means even a
+	// height-lagging node closes its commit window as soon as a reveal appears,
+	// before it can admit such a backfill. Relies on the fact that harvesting a
+	// signature requires SOME honest reveal to have been broadcast, and that
+	// reveal reaches every honest node (same gossip topic) no later than the
+	// attacker's derived backfill.
+	committedSnapshot map[types.Address][]IndexCommitment
+	commitsFrozen     bool
+}
+
+// freezeCommitsLocked snapshots the current peer-commit set and seals the commit
+// round against further admissions. Idempotent. Caller must hold c.mu.
+func (w *cohortWindow) freezeCommitsLocked() {
+	if w.commitsFrozen {
+		return
+	}
+	w.committedSnapshot = make(map[types.Address][]IndexCommitment, len(w.peerIndexSets))
+	for r, s := range w.peerIndexSets {
+		w.committedSnapshot[r] = s
+	}
+	w.commitsFrozen = true
 }
 
 // peerCertCount returns the total number of distinct (root, reporter) cert
@@ -340,12 +370,19 @@ func (c *CohortCoordinator) OnPeerIndexSet(blockHash types.Hash, reporter types.
 	if !ok {
 		return
 	}
-	// reporter is unauthenticated — it is read straight from the gossip
-	// payload, with no signature binding it to the sender and the libp2p
-	// origin ignored (see cohort_relay). Cap distinct reporters per window so
-	// one peer replaying announcements under thousands of spoofed reporters
-	// cannot grow this map without bound (and inflate every ReconcileIndices
-	// pass). The legitimate reporter set is the IDC cohort, far below the cap.
+	// Reactive-backfill defense (Layer 2B): once the commit round is frozen —
+	// this node has revealed or seen any peer reveal — reject further commits.
+	// After a reveal, raw device signatures are exposed, so a "new" commit could
+	// be a malicious validator backfilling a self-bound commitment for a
+	// signature it just harvested, which reconcile would otherwise count toward
+	// a ban and censor an honest device. See cohortWindow.committedSnapshot.
+	if w.commitsFrozen {
+		return
+	}
+	// reporter is authenticated at the wire boundary (cohort_auth); the cap
+	// bounds distinct reporters per window so a replay under many reporters
+	// cannot grow this map without bound. The legitimate reporter set is the
+	// IDC cohort, far below the cap.
 	if _, exists := w.peerIndexSets[reporter]; !exists && len(w.peerIndexSets) >= maxReportersPerWindow {
 		return
 	}
@@ -366,6 +403,13 @@ func (c *CohortCoordinator) OnPeerReveal(blockHash types.Hash, reporter types.Ad
 	if !ok {
 		return
 	}
+	// The arrival of ANY reveal means raw signatures are now exposed
+	// network-wide: freeze the accepted commit set before this reveal is
+	// recorded, so no post-reveal backfill commit can slip into the set
+	// reconcile counts. Freezing here (not only at the local reveal phase) is
+	// what protects a height-lagging node — it seals its commit window the
+	// instant it sees a reveal, ahead of any attacker-derived backfill.
+	w.freezeCommitsLocked()
 	if _, exists := w.peerReveals[reporter]; !exists && len(w.peerReveals) >= maxReportersPerWindow {
 		return
 	}
@@ -563,6 +607,10 @@ func (c *CohortCoordinator) announceIndex(w *cohortWindow) {
 // reconcileAndClose counts it.
 func (c *CohortCoordinator) announceReveal(w *cohortWindow) {
 	c.mu.Lock()
+	// Close the commit round BEFORE exposing this node's raw signatures — the
+	// commit set reconcile trusts must be fixed before any reveal leaks a
+	// signature an attacker could backfill against (see committedSnapshot).
+	w.freezeCommitsLocked()
 	reveal := w.myReveal
 	w.peerReveals[c.selfAddr] = ReporterReveal{Reporter: c.selfAddr, Sigs: reveal}
 	sink := c.onRevealAnnounce
@@ -576,8 +624,15 @@ func (c *CohortCoordinator) announceReveal(w *cohortWindow) {
 // transition into phaseReconciled.
 func (c *CohortCoordinator) reconcileAndClose(w *cohortWindow) {
 	c.mu.Lock()
-	commits := make(map[types.Address][]IndexCommitment, len(w.peerIndexSets))
-	for r, s := range w.peerIndexSets {
+	// Consume the frozen commit snapshot, NOT the live peerIndexSets: any commit
+	// admitted after the reveal boundary is excluded here (reactive-backfill
+	// defense). In the normal flow the snapshot was already taken at the reveal
+	// phase; freeze defensively so reconcile can never run against a live set.
+	if !w.commitsFrozen {
+		w.freezeCommitsLocked()
+	}
+	commits := make(map[types.Address][]IndexCommitment, len(w.committedSnapshot))
+	for r, s := range w.committedSnapshot {
 		commits[r] = s
 	}
 	reveals := make(map[types.Address]ReporterReveal, len(w.peerReveals))
