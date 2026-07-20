@@ -326,23 +326,26 @@ func resolveBridgeValidatorSet(engine consensus.Engine) *hotstuff.ValidatorSet {
 // buildCohortAuth returns the reporter-authentication hooks for the cohort
 // relay: a signer using this node's validator BLS key and a verifier that
 // accepts an announcement only if its reporter is a current validator and the
-// signature verifies against that validator's registered public key. Returns
-// nil,nil on a non-HotStuff engine or when the BLS key is unavailable — the
-// relay then runs unauthenticated (single-node / legacy chains that do not
-// gossip cohort announcements). The validator set is read fresh on every
-// verification so epoch rotations are honoured.
-func (n *Node) buildCohortAuth() (mobileverify.CohortSigner, mobileverify.CohortVerifier) {
+// signature verifies against that validator's registered public key. On a
+// non-HotStuff engine it returns nil,nil,nil — the relay runs unauthenticated,
+// which is correct only for single-node / legacy chains that do not gossip
+// cohort announcements. On a HotStuff engine (a real gossiping fleet) a missing
+// etherbase or BLS key returns a non-nil error instead of silently disabling
+// authentication: running a cohort participant with verify==nil is fail-OPEN
+// and re-opens the reporter-spoofing/censorship vector Layer 1 closes, so the
+// caller fails closed (fatal on a mining node). The validator set is read fresh
+// on every verification so epoch rotations are honoured.
+func (n *Node) buildCohortAuth() (mobileverify.CohortSigner, mobileverify.CohortVerifier, error) {
 	if _, ok := resolveHotStuffEngine(n.engine); !ok {
-		return nil, nil
+		return nil, nil, nil
 	}
 	etherbase, err := n.Etherbase()
 	if err != nil {
-		return nil, nil
+		return nil, nil, fmt.Errorf("cohort auth: etherbase unavailable: %w", err)
 	}
 	blsKey, err := hotstuff.LoadBLSKeyFromDir(n.keyDir, etherbase)
 	if err != nil {
-		log.Warn("mobileverify: cohort reporter authentication disabled (BLS key unavailable)", "err", err)
-		return nil, nil
+		return nil, nil, fmt.Errorf("cohort auth: BLS key unavailable for %s: %w", etherbase, err)
 	}
 	signer := func(msg []byte) []byte { return blsKey.Sign(msg).Marshal() }
 	verifier := func(reporter types.Address, msg, sig []byte) bool {
@@ -360,7 +363,7 @@ func (n *Node) buildCohortAuth() (mobileverify.CohortSigner, mobileverify.Cohort
 		}
 		return hotstuff.VerifyBLSSignature(sig, pk, msg)
 	}
-	return signer, verifier
+	return signer, verifier, nil
 }
 
 func hasRegisteredNamespace(apis []jsonrpc.API, namespace string) bool {
@@ -2296,10 +2299,18 @@ func (n *Node) startMobileVerify() error {
 	}
 	// Layer 2C: raise the reconciliation ban threshold to f+1 distinct
 	// authenticated reporters, so a single malicious validator can no longer
-	// manufacture a ban. Falls back to the safe default (2) off HotStuff.
-	if vs := resolveBridgeValidatorSet(n.engine); vs != nil {
-		n.mobileCohort.SetBanThreshold(int(vs.FaultTolerance()) + 1)
-	}
+	// manufacture a ban. Derived DYNAMICALLY at each reconcile from the live
+	// validator set: startMobileVerify runs during node startup, before the
+	// HotStuff validator set is populated, so a one-shot read here would be nil
+	// (or an empty set) and leave the threshold stuck at the floor of 2 instead
+	// of f+1 on a larger fleet. The closure re-reads the set each time and falls
+	// back to the safe default (2) off HotStuff or before the set exists.
+	n.mobileCohort.SetBanThresholdFn(func() int {
+		if vs := resolveBridgeValidatorSet(n.engine); vs != nil {
+			return int(vs.FaultTolerance()) + 1
+		}
+		return 2
+	})
 	// Layer 2B: log reporters caught committing to a device index without a
 	// valid proof-of-possession reveal (replay/fabrication attempts). These
 	// are attributable to an authenticated validator and never counted toward
@@ -2308,7 +2319,17 @@ func (n *Node) startMobileVerify() error {
 		log.Warn("mobileverify: cohort reporter failed proof-of-possession reveal",
 			"block", r.BlockNumber, "reporter", r.Reporter)
 	})
-	cohortSign, cohortVerify := n.buildCohortAuth()
+	cohortSign, cohortVerify, authErr := n.buildCohortAuth()
+	if authErr != nil {
+		// Fail closed on a cohort participant: a mining node that gossips
+		// announcements without authentication lets any peer spoof reporters and
+		// manufacture bans (Layer 1's exact threat). Refuse to start rather than
+		// run fail-open. Non-mining/legacy nodes fall through to a Warn.
+		if n.config.NodeCfg.Miner {
+			return fmt.Errorf("mobileverify: cohort reporter authentication unavailable on a mining node: %w", authErr)
+		}
+		log.Warn("mobileverify: cohort reporter authentication disabled", "err", authErr)
+	}
 	cohortRelay := mobileverify.NewCohortRelayWithAuth(n.mobileCohort, n.p2p, n.mobileRegistry, cohortIndexTopic, cohortRevealTopic, cohortCertTopic, cohortSign, cohortVerify)
 	if n.p2p != nil {
 		if err := cohortRelay.Start(); err != nil {

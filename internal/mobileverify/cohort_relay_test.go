@@ -85,6 +85,17 @@ func TestRevealAnnouncementTruncatedRejected(t *testing.T) {
 	}
 }
 
+func TestRevealBodyRejectsOversizedCount(t *testing.T) {
+	// uvarint(1000) followed by NO entries. count 1000 is well under a large
+	// registryBound (so the bound check passes) but far exceeds what the body
+	// can hold — the byte-length guard must reject it BEFORE allocating a map
+	// sized by the attacker-claimed count (allocation-amplification defense).
+	body := []byte{0xe8, 0x07} // uvarint 1000
+	if _, err := decodeRevealBody(body, 1<<20); err == nil {
+		t.Fatal("oversized count (1000) with an empty body must be rejected pre-allocation")
+	}
+}
+
 func TestRevealAnnouncementAuth(t *testing.T) {
 	blockHash := h(7)
 	sk, err := bls.RandKey()

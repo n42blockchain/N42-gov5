@@ -149,6 +149,15 @@ func decodeRevealBody(b []byte, registryBound int) (map[MobileIndex]RevealedSig,
 		return nil, fmt.Errorf("mobileverify: reveal body count %d exceeds bound %d", count, registryBound)
 	}
 	b = b[n:]
+	// Bound the count by the remaining body length before allocating: each entry
+	// needs at least 1 (uvarint index) + revealEntryLen bytes, so a count larger
+	// than the body can hold is malformed. Without this a tiny (but validly
+	// signed) payload could claim count == registryBound and force an oversized
+	// map pre-allocation on every receiving node — the sibling decoders
+	// (decodeIndexCommitments, DecodeMask) apply the same length guard.
+	if maxEntries := uint64(len(b))/uint64(1+revealEntryLen) + 1; count > maxEntries {
+		return nil, fmt.Errorf("mobileverify: reveal body count %d exceeds body capacity %d", count, maxEntries)
+	}
 	out := make(map[MobileIndex]RevealedSig, count)
 	for i := uint64(0); i < count; i++ {
 		idxV, m := binary.Uvarint(b)
