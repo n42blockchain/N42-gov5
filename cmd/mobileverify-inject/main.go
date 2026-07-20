@@ -76,7 +76,20 @@ func main() {
 	if len(nodes) < 2 {
 		log.Fatalf("need at least 2 nodes for a cross-node duplicate, got %d", len(nodes))
 	}
-	log.Printf("nodes=%d honest=%d rounds=%d settle=%d", len(nodes), *honestN, *rounds, *settle)
+	// The duplicate must reach f+1 distinct nodes to meet the production ban
+	// threshold (SetBanThresholdFn = FaultTolerance()+1 = f+1 on the fleet).
+	// f = (n-1)/3. Fewer than f+1 reporters holding the raw signature would
+	// (correctly) not trigger a ban, so a 2-node hardcode silently fails on any
+	// fleet with f >= 2 (n >= 7). At least 2 for a genuine cross-node duplicate.
+	f := (len(nodes) - 1) / 3
+	dupNodes := f + 1
+	if dupNodes < 2 {
+		dupNodes = 2
+	}
+	if dupNodes > len(nodes) {
+		dupNodes = len(nodes)
+	}
+	log.Printf("nodes=%d honest=%d rounds=%d settle=%d dupNodes=%d (f+1)", len(nodes), *honestN, *rounds, *settle, dupNodes)
 
 	// Health check every node's mobileverify surface up front.
 	for _, n := range nodes {
@@ -167,16 +180,18 @@ func main() {
 			wg.Add(1)
 			go submit(nodes[i%len(nodes)], d)
 		}
-		// The cross-node duplicate: same device, same block, TWO nodes.
-		wg.Add(2)
-		go submit(nodes[0], dup)
-		go submit(nodes[1], dup)
+		// The cross-node duplicate: same device, same block, submitted to f+1
+		// distinct nodes so it meets the production ban threshold.
+		wg.Add(dupNodes)
+		for k := 0; k < dupNodes; k++ {
+			go submit(nodes[k], dup)
+		}
 		wg.Wait()
 
-		if ok >= *honestN {
+		if ok >= *honestN+dupNodes {
 			done = append(done, injected{blk.hash, blk.number})
 			log.Printf("round %d/%d: injected block %d (%s) — %d/%d submissions accepted",
-				len(done), *rounds, blk.number, blk.hash.Hex()[:14], ok, *honestN+2)
+				len(done), *rounds, blk.number, blk.hash.Hex()[:14], ok, *honestN+dupNodes)
 		}
 	}
 
@@ -199,6 +214,12 @@ func main() {
 		dupIn, honestPresent := analyzeCert(res, dup, honest)
 		if dupIn {
 			log.Printf("block %d: FAIL — duplicate device (idx %d) was NOT excluded (censorship-defense broken)", inj.number, dup.index)
+			fail++
+		} else if honestPresent == 0 {
+			// dupIn=false with no honest signers means we could not decode a
+			// usable cert (empty/undecodable mask) — NOT evidence the dup was
+			// excluded. Treat as a failure to verify, never a silent pass.
+			log.Printf("block %d: INCONCLUSIVE — no decodable honest signers in cert (cannot confirm exclusion)", inj.number)
 			fail++
 		} else if honestPresent < *honestN {
 			log.Printf("block %d: PARTIAL — dup excluded ✓ but only %d/%d honest present (routing/timing)", inj.number, honestPresent, *honestN)
