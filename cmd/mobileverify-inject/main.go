@@ -91,11 +91,16 @@ func main() {
 	}
 	log.Printf("nodes=%d honest=%d rounds=%d settle=%d dupNodes=%d (f+1)", len(nodes), *honestN, *rounds, *settle, dupNodes)
 
-	// Health check every node's mobileverify surface up front.
-	for _, n := range nodes {
-		if err := getInto(n+"/mobileverify/health", nil); err != nil {
+	// Health check every node's mobileverify surface up front and remember its
+	// committed registry size. A reused fleet may already contain devices from
+	// an earlier run, so the readiness target is relative to this baseline.
+	baselines := make([]int, len(nodes))
+	for i, n := range nodes {
+		var health healthJSON
+		if err := getInto(n+"/mobileverify/health", &health); err != nil {
 			log.Fatalf("node %s health check failed (is --mobileverify.http set?): %v", n, err)
 		}
+		baselines[i] = health.Registry
 	}
 	log.Printf("all %d mobileverify HTTP surfaces healthy", len(nodes))
 
@@ -122,11 +127,13 @@ func main() {
 	}
 	log.Printf("dup device index=%d (will be submitted to node0 AND node1)", dup.index)
 
-	// Wait for the epoch to commit so the registry Lookup succeeds fleet-wide.
-	// Poll by attempting a receipt and watching for it to stop being rejected
-	// as "not registered".
+	// Wait for every node to commit the full registration batch. Epoch timers
+	// are local and nodes in a rolling restart need not cross the boundary at
+	// the same instant; treating the first accepting node as fleet readiness can
+	// race slower peers and make the subsequent idempotent register return the
+	// pending placeholder index.
 	log.Printf("waiting for epoch commit + fleet registry replication ...")
-	waitLive(nodes[0], *rpcURL, honest[0])
+	waitFleetCommitted(nodes, baselines, len(regAll))
 
 	// Register is idempotent: once the epoch has committed, re-registering a
 	// device returns its REAL assigned index (the first call, while pending,
@@ -276,19 +283,42 @@ func submitReceipt(node string, d *simDevice, blk blockInfo) error {
 	return postInto(node+"/mobileverify/receipt", body, nil)
 }
 
-// waitLive polls until the given device's receipt is accepted (epoch committed
-// + registry replicated), so the injection rounds don't waste blocks.
-func waitLive(node, rpc string, probe *simDevice) {
-	deadline := time.Now().Add(90 * time.Second)
+type healthJSON struct {
+	Registry    int    `json:"registry"`
+	Pending     int    `json:"pending"`
+	Accumulator string `json:"accumulator"`
+}
+
+// waitFleetCommitted waits until every node has committed this run's complete
+// registration batch and converged on the same accumulator. Checking the whole
+// fleet matters after a rolling restart because each node's epoch ticker has a
+// different phase.
+func waitFleetCommitted(nodes []string, baselines []int, added int) {
+	deadline := time.Now().Add(120 * time.Second)
 	for time.Now().Before(deadline) {
-		blk, err := latestBlock(rpc)
-		if err == nil && submitReceipt(node, probe, blk) == nil {
-			log.Printf("device live at block %d — epoch committed", blk.number)
+		allReady := true
+		root := ""
+		for i, node := range nodes {
+			var health healthJSON
+			if err := getInto(node+"/mobileverify/health", &health); err != nil ||
+				health.Registry < baselines[i]+added || health.Pending != 0 {
+				allReady = false
+				break
+			}
+			if root == "" {
+				root = health.Accumulator
+			} else if health.Accumulator != root {
+				allReady = false
+				break
+			}
+		}
+		if allReady {
+			log.Printf("all %d registries committed and converged at %s", len(nodes), root)
 			return
 		}
 		time.Sleep(1 * time.Second)
 	}
-	log.Fatalf("devices never became live within 90s (epoch commit / registry replication failed)")
+	log.Fatalf("registries did not commit and converge within 120s")
 }
 
 func waitBlocks(rpc string, targetNumber uint64) {
