@@ -2,9 +2,27 @@ package conf
 
 import (
 	"testing"
+	"time"
 
 	"github.com/n42blockchain/N42/params"
 )
+
+func TestValidateRejectsInvalidTxGenMax(t *testing.T) {
+	for _, max := range []int{-1, 32} {
+		cfg := &Config{
+			NodeCfg:  NodeConfig{Profile: "n42", Chain: "private"},
+			ChainCfg: &params.ChainConfig{Consensus: params.Faker},
+			DevCfg: DevConfig{
+				TxGenEnabled:     true,
+				TxGenMaxPerBlock: max,
+				TxGenInterval:    time.Second,
+			},
+		}
+		if err := Validate(cfg); err != ErrInvalidTxGenMax {
+			t.Fatalf("max=%d: Validate error = %v, want %v", max, err, ErrInvalidTxGenMax)
+		}
+	}
+}
 
 func TestApplyDefaultsSetsNodeProfile(t *testing.T) {
 	cfg := &Config{}

@@ -58,6 +58,7 @@ var (
 	ErrInvalidEtherbase     = errors.New("etherbase is required for mining")
 	ErrInvalidGasPrice      = errors.New("gas price must be positive")
 	ErrInvalidTxGenInterval = errors.New("txgen interval must be positive")
+	ErrInvalidTxGenMax      = errors.New("txgen max transactions per batch must be between 1 and 31")
 )
 
 func NormalizeNetworkSelection(cfg *Config) error {
@@ -204,6 +205,9 @@ func Validate(cfg *Config) error {
 	if cfg.DevCfg.TxGenEnabled {
 		if cfg.DevCfg.TxGenInterval <= 0 {
 			return ErrInvalidTxGenInterval
+		}
+		if cfg.DevCfg.TxGenMaxPerBlock < 1 || cfg.DevCfg.TxGenMaxPerBlock > 31 {
+			return ErrInvalidTxGenMax
 		}
 	}
 

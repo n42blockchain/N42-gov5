@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/holiman/uint256"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	block "github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/log"
@@ -42,11 +42,6 @@ func headIsConsensusBlock(chain common.IBlockChain) bool {
 	return string(h.Extra[:len(hotStuffExtraMagic)]) == string(hotStuffExtraMagic)
 }
 
-// catchUpInProgress guards against concurrent catch-up runs (the HotStuff engine
-// can emit OutputSyncRequired on every high-view Decide while we are still
-// importing).
-var catchUpInProgress atomic.Bool
-
 // catchUpInterval is how often a leader-driven node polls whether it has fallen
 // behind peers in HEIGHT. A node that committed a view but couldn't import the
 // block (or produced a startup fork) lags in height while its VIEW stays in
@@ -54,21 +49,150 @@ var catchUpInProgress atomic.Bool
 // exactly that case.
 const catchUpInterval = 8 * time.Second
 
+// maxCommittedTargets bounds CommitQC hashes waiting for their block bodies.
+// Healthy operation keeps only a handful; the cap prevents an adversarial or
+// badly delayed stream from growing the map without limit.
+const maxCommittedTargets = 512
+
+// maxObservedBlockNumbers retains recent hash->number bindings seen on any
+// block ingress path. The binding is safe to use only after the exact hash has
+// a verified CommitQC, which CatchUpToHash enforces.
+const maxObservedBlockNumbers = 2048
+
 // CatchUp pulls the canonical chain from the most-advanced peer by range and
 // inserts it, letting ForkChoice reorg us off a startup fork onto the converged
 // chain. It is invoked by the HotStuff engine via OutputSyncRequired (a Decide
 // whose view is far ahead of ours means we are behind). Implements
 // hotstuff.BlockFetcher.CatchUp.
 func (s *Service) CatchUp() {
-	if !catchUpInProgress.CompareAndSwap(false, true) {
-		return // a catch-up is already running
-	}
-	defer catchUpInProgress.Store(false)
-
 	self := currentBlockNumber(s.cfg.chain)
 	highest, peers := s.cfg.p2p.Peers().BestPeers(5, self)
 	if highest == nil || len(peers) == 0 || highest.Cmp(self) <= 0 {
 		return // nobody is ahead of us
+	}
+	s.enqueueCatchUp(highest.Uint64())
+}
+
+// CatchUpTo pulls through an authenticated consensus target without depending
+// on remote heights cached during the P2P status handshake. HotStuff can
+// advance several dozen blocks before the periodic status refresh, so a
+// restarted validator otherwise catches only to that stale advertised height
+// and then falls farther behind while new CommitQCs continue arriving.
+//
+// The caller obtains target from a verified CommitQC. Range responses still
+// undergo the normal block validation/import path; the target only selects how
+// far to ask connected peers for data.
+func (s *Service) CatchUpTo(target uint64) {
+	self := currentBlockNumber(s.cfg.chain)
+	if self == nil || target <= self.Uint64() {
+		return
+	}
+	s.enqueueCatchUp(target)
+}
+
+// CatchUpToHash records a CommitQC-authenticated hash whose block number is not
+// locally available yet. Whichever block ingress path sees the body first will
+// promote it to a numeric, coalesced range target.
+func (s *Service) CatchUpToHash(hash types.Hash) {
+	if hash == (types.Hash{}) {
+		return
+	}
+	s.committedTargetLock.Lock()
+	if s.committedTargets == nil {
+		s.committedTargets = make(map[types.Hash]struct{})
+	}
+	if len(s.committedTargets) >= maxCommittedTargets {
+		for oldest := range s.committedTargets {
+			delete(s.committedTargets, oldest)
+			break
+		}
+	}
+	s.committedTargets[hash] = struct{}{}
+	observedNumber, alreadyObserved := s.observedBlockNumber[hash]
+	if alreadyObserved {
+		delete(s.committedTargets, hash)
+	}
+	s.committedTargetLock.Unlock()
+	if alreadyObserved {
+		go s.enqueueCatchUp(observedNumber)
+		return
+	}
+
+	if blk, _ := s.cfg.chain.GetBlockByHash(hash); blk != nil {
+		s.observeCatchUpBlock(hash, blk.Number64().Uint64())
+		return
+	}
+	s.FetchBlockByHash(hash)
+}
+
+// observeCatchUpBlock remembers a hash->number binding even when the block is
+// only future-queued and not yet in the database. CommitQC usually follows the
+// direct-pushed proposal body, so retaining this observation lets the later
+// CatchUpToHash immediately request a full range instead of waiting for the
+// same body to become executable one ancestor at a time.
+func (s *Service) observeCatchUpBlock(hash types.Hash, number uint64) {
+	s.committedTargetLock.Lock()
+	if s.observedBlockNumber == nil {
+		s.observedBlockNumber = make(map[types.Hash]uint64)
+	}
+	if _, exists := s.observedBlockNumber[hash]; !exists && len(s.observedBlockNumber) >= maxObservedBlockNumbers {
+		for oldest := range s.observedBlockNumber {
+			delete(s.observedBlockNumber, oldest)
+			break
+		}
+	}
+	s.observedBlockNumber[hash] = number
+	_, pending := s.committedTargets[hash]
+	if pending {
+		delete(s.committedTargets, hash)
+	}
+	s.committedTargetLock.Unlock()
+	if pending {
+		go s.enqueueCatchUp(number)
+	}
+}
+
+// enqueueCatchUp coalesces concurrent requests to their highest target and
+// drains targets that arrive during an import. A simple in-progress guard is
+// insufficient: it drops every newer CommitQC while the first range is being
+// inserted, so a fast chain outruns the restarted node forever.
+func (s *Service) enqueueCatchUp(target uint64) {
+	for {
+		previous := s.catchUpTarget.Load()
+		if target <= previous || s.catchUpTarget.CompareAndSwap(previous, target) {
+			break
+		}
+	}
+	if !s.catchUpInProgress.CompareAndSwap(false, true) {
+		return
+	}
+
+	for {
+		nextTarget := s.catchUpTarget.Swap(0)
+		if nextTarget > 0 {
+			peers := s.cfg.p2p.Peers().Connected()
+			if len(peers) > 5 {
+				peers = peers[:5]
+			}
+			if len(peers) > 0 {
+				s.catchUpTo(nextTarget, peers)
+			}
+		}
+
+		// Release ownership, then close the race with a target enqueued just
+		// before the store. Either this goroutine reacquires and drains it, or
+		// the enqueuer acquired ownership and will do so.
+		s.catchUpInProgress.Store(false)
+		if s.catchUpTarget.Load() == 0 || !s.catchUpInProgress.CompareAndSwap(false, true) {
+			return
+		}
+	}
+}
+
+func (s *Service) catchUpTo(target uint64, peers []peer.ID) {
+	self := currentBlockNumber(s.cfg.chain)
+	if self == nil || target <= self.Uint64() {
+		return
 	}
 
 	// Default (pure height lag): pull only the blocks above our head.
@@ -99,10 +223,10 @@ func (s *Service) CatchUp() {
 	// path; a plain height lag never unwinds.
 	const maxForkBacktrack = 32
 	for attempt := 0; attempt <= maxForkBacktrack; attempt++ {
-		if start > highest.Uint64() {
+		if start > target {
 			return
 		}
-		count := highest.Uint64() - start + 1
+		count := target - start + 1
 		if count > maxRequestBlocks {
 			count = maxRequestBlocks
 		}
@@ -112,8 +236,8 @@ func (s *Service) CatchUp() {
 			Step:             1,
 		}
 		log.Info("hotstuff catch-up: requesting range",
-			"from", start, "to", highest.Uint64(), "self", self.Uint64(), "peers", len(peers), "attempt", attempt)
-		if s.catchUpRange(req, peers, authorized, start, highest.Uint64()) {
+			"from", start, "to", target, "self", self.Uint64(), "peers", len(peers), "attempt", attempt)
+		if s.catchUpRange(req, peers, authorized, start, target) {
 			return
 		}
 		if !authorized || start <= 1 {
