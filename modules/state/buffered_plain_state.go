@@ -236,6 +236,20 @@ type BufferSnapshot struct {
 	wipedStorage  map[types.Address]struct{}
 }
 
+// activeBufferView publishes the current write-buffer maps to readers as one
+// atomic generation. SnapshotForFlush swaps the entire view only after the old
+// generation has been installed as in-flight, so a reader sees either the old
+// active maps or the new active maps plus their in-flight predecessor. The
+// maps themselves remain single-writer, matching PlainStateBuffer's executor
+// ownership model; the atomic view makes the generation handoff race-free
+// without putting an RWMutex on the EVM hot-read path.
+type activeBufferView struct {
+	accounts     map[types.Address][]byte
+	storage      map[types.Address]map[types.Hash]storageEntry
+	code         map[types.Hash][]byte
+	wipedStorage map[types.Address]struct{}
+}
+
 // PlainStateBuffer holds write buffer + bounded LRU read caches.
 type PlainStateBuffer struct {
 	// Write buffer (single-writer, executor only).
@@ -244,6 +258,7 @@ type PlainStateBuffer struct {
 	code          map[types.Hash][]byte
 	contractWipes []types.Address            // addresses needing MDBX storage wipe on flush
 	wipedStorage  map[types.Address]struct{} // addresses whose storage was wiped — reads bypass cache/MDBX
+	active        atomic.Pointer[activeBufferView]
 
 	// inFlight is the snapshot currently being written to MDBX by the
 	// background flusher (if any). Reader path: active buffer →
@@ -292,9 +307,9 @@ type PlainStateBuffer struct {
 	// added 3M+ live heap objects in a 5h replay — top GC scan-set
 	// driver. Plain map[Address]uint64 has zero internal pointers and
 	// presents to GC as a single tracked object.
-	flushEpoch     atomic.Uint64
-	wipedEpochMu   sync.RWMutex
-	wipedAtEpoch   map[types.Address]uint64
+	flushEpoch   atomic.Uint64
+	wipedEpochMu sync.RWMutex
+	wipedAtEpoch map[types.Address]uint64
 
 	// Per-flush wipe records, used by StampWipes to auto-prune
 	// wipedAtEpoch entries older than wipeRingSize flushes. Without
@@ -335,7 +350,7 @@ func NewPlainStateBufferWithBudget(b CacheBudget) *PlainStateBuffer {
 	if b.CodeBytes <= 0 {
 		b.CodeBytes = def.CodeBytes
 	}
-	return &PlainStateBuffer{
+	buf := &PlainStateBuffer{
 		accounts:     make(map[types.Address][]byte, 4096),
 		storage:      make(map[types.Address]map[types.Hash]storageEntry, 4096),
 		code:         make(map[types.Hash][]byte, 64),
@@ -349,6 +364,13 @@ func NewPlainStateBufferWithBudget(b CacheBudget) *PlainStateBuffer {
 		readStorage:  newS3FIFO[[storageCompositeKeyLen]byte](b.StorageBytes, 32),
 		readCode:     newByteLRU[types.Hash](b.CodeBytes),
 	}
+	buf.active.Store(&activeBufferView{
+		accounts:     buf.accounts,
+		storage:      buf.storage,
+		code:         buf.code,
+		wipedStorage: buf.wipedStorage,
+	})
+	return buf
 }
 
 func (b *PlainStateBuffer) CacheStats() (hits, misses uint64) {
@@ -601,12 +623,13 @@ func (b *PlainStateBuffer) LookupReadCode(codeHash types.Hash) ([]byte, bool) {
 // At shutdown, ClearInFlight drops the pointer once the final flush is
 // committed.
 func (b *PlainStateBuffer) SnapshotForFlush() *BufferSnapshot {
+	active := b.active.Load()
 	snap := &BufferSnapshot{
-		accounts:      b.accounts,
-		storage:       b.storage,
-		code:          b.code,
+		accounts:      active.accounts,
+		storage:       active.storage,
+		code:          active.code,
 		contractWipes: b.contractWipes,
-		wipedStorage:  b.wipedStorage,
+		wipedStorage:  active.wipedStorage,
 	}
 	// Pre-size the next interval's maps from this interval's actuals so
 	// we don't pay 8+ rehash cycles per commit-interval at the 11M-block
@@ -614,13 +637,22 @@ func (b *PlainStateBuffer) SnapshotForFlush() *BufferSnapshot {
 	nextAcctCap := nextMapCap(len(b.accounts), 4096)
 	nextStoAddrCap := nextMapCap(len(b.storage), 4096)
 	nextCodeCap := nextMapCap(len(b.code), 64)
-	b.accounts = make(map[types.Address][]byte, nextAcctCap)
-	b.storage = make(map[types.Address]map[types.Hash]storageEntry, nextStoAddrCap)
-	b.code = make(map[types.Hash][]byte, nextCodeCap)
+	next := &activeBufferView{
+		accounts:     make(map[types.Address][]byte, nextAcctCap),
+		storage:      make(map[types.Address]map[types.Hash]storageEntry, nextStoAddrCap),
+		code:         make(map[types.Hash][]byte, nextCodeCap),
+		wipedStorage: make(map[types.Address]struct{}),
+	}
+	b.accounts = next.accounts
+	b.storage = next.storage
+	b.code = next.code
 	b.contractWipes = nil
-	b.wipedStorage = make(map[types.Address]struct{})
+	b.wipedStorage = next.wipedStorage
 
+	// Publish the predecessor first. Once readers can see the fresh active
+	// generation they must also be able to fall through to this snapshot.
 	b.inFlight.Store(snap)
+	b.active.Store(next)
 	return snap
 }
 
@@ -1110,10 +1142,11 @@ func (b *PlainStateBuffer) ResetReadCache() {
 func (b *PlainStateBuffer) ContractWipes() []types.Address { return b.contractWipes }
 
 func (b *PlainStateBuffer) Stats() (accounts, storage int) {
-	for _, slots := range b.storage {
+	active := b.active.Load()
+	for _, slots := range active.storage {
 		storage += len(slots)
 	}
-	return len(b.accounts), storage
+	return len(active.accounts), storage
 }
 
 // -----------------------------------------------------------------------
@@ -1248,7 +1281,8 @@ func (r *BufferedPlainStateReader) auditNilReturn(addr types.Address, tier strin
 func (r *BufferedPlainStateReader) ReadAccountData(address types.Address) (*account.StateAccount, error) {
 	tracked := isTracked(address)
 	// 1. Active write buffer.
-	if enc, ok := r.buf.accounts[address]; ok {
+	active := r.buf.active.Load()
+	if enc, ok := active.accounts[address]; ok {
 		r.buf.hits.Add(1)
 		r.buf.acctHits.Add(1)
 		if len(enc) == 0 {
@@ -1359,7 +1393,8 @@ func (r *BufferedPlainStateReader) ReadAccountData(address types.Address) (*acco
 func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	tracked := isTracked(address)
 	// 1. Active write buffer.
-	if slots, ok := r.buf.storage[address]; ok {
+	active := r.buf.active.Load()
+	if slots, ok := active.storage[address]; ok {
 		if entry, ok2 := slots[*key]; ok2 {
 			r.buf.hits.Add(1)
 			r.buf.stoHits.Add(1)
@@ -1380,8 +1415,8 @@ func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, key
 	// 1b. If storage was wiped (SELFDESTRUCT/CREATE within this batch),
 	// slots not in the write buffer are gone — stale cache/MDBX values
 	// from before the wipe must not be returned.
-	if len(r.buf.wipedStorage) > 0 {
-		if _, wiped := r.buf.wipedStorage[address]; wiped {
+	if len(active.wipedStorage) > 0 {
+		if _, wiped := active.wipedStorage[address]; wiped {
 			if tracked {
 				fmt.Printf("[TRACK] ReadAccountStorage addr=%x slot=%x src=buf.wipedStorage return_nil\n", address[:], key)
 			}
@@ -1467,7 +1502,8 @@ func (r *BufferedPlainStateReader) ReadAccountCode(address types.Address, codeHa
 	if bytes.Equal(codeHash[:], emptyCodeHash) {
 		return nil, nil
 	}
-	if code, ok := r.buf.code[codeHash]; ok {
+	active := r.buf.active.Load()
+	if code, ok := active.code[codeHash]; ok {
 		r.buf.hits.Add(1)
 		r.buf.codeHits.Add(1)
 		return code, nil
