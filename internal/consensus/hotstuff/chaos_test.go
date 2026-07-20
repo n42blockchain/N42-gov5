@@ -746,8 +746,9 @@ func TestRawFutureTimeoutDoesNotAdvanceView(t *testing.T) {
 // observed by the seven-node fleet: clean rolling shutdowns can persist nearby
 // but different views without leaving any one node a complete TC. Distinct
 // verified reports from f+1 validators must coalesce the lagging node on the
-// highest bounded reported view, while fewer reports (including repeats from
-// one sender) must not move it.
+// (f+1)-th highest bounded reported view, while fewer reports (including
+// repeats from one sender) must not move it. Taking max here would let one
+// Byzantine validator select a target that only its own report backs.
 func TestFPlusOneFutureTimeoutsRecoverScatteredViews(t *testing.T) {
 	setup := newTestSetup(t, 7) // f=2, weak-synchronizer threshold=3
 	engine, outputCh := newTestEngine(t, setup, 0)
@@ -779,10 +780,11 @@ func TestFPlusOneFutureTimeoutsRecoverScatteredViews(t *testing.T) {
 		t.Fatalf("fewer than f+1 validators emitted %d outputs", len(outputs))
 	}
 
-	// Reports are now [v+6, v+5, v+4], so recovery coalesces on their highest
-	// bounded view. The two Byzantine validators cannot reach this branch alone.
+	// Reports are now [v+6, v+5, v+4]. Treat the two highest reporters as
+	// Byzantine: recovery must select the f+1-th highest (v+4), not their
+	// unbacked max. The two Byzantine validators cannot reach this branch alone.
 	deliver(3, startView+4)
-	targetView := startView + 6
+	targetView := startView + 4
 	if got := engine.CurrentView(); got != targetView {
 		t.Fatalf("f+1 recovery view = %d, want %d", got, targetView)
 	}
@@ -1073,8 +1075,8 @@ func TestFPlusOneFutureTimeoutsWithNonGenesisHighQC(t *testing.T) {
 	if err := deliver(3, startView+4, realQC); err != nil {
 		t.Fatalf("deliver 3: %v", err)
 	}
-	if got := engine.CurrentView(); got != startView+5 { // max of {3,5,4}
-		t.Fatalf("f+1 non-genesis-QC recovery view = %d, want %d", got, startView+5)
+	if got := engine.CurrentView(); got != startView+3 { // f+1-th highest of {5,4,3}
+		t.Fatalf("f+1 non-genesis-QC recovery view = %d, want %d", got, startView+3)
 	}
 	if phase := engine.CurrentPhase(); phase != PhaseTimedOut {
 		t.Fatalf("recovery phase = %s, want TimedOut", phase)

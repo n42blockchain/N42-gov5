@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 
-
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/log"
@@ -27,6 +26,7 @@ func (s *Service) blockSubscriber(ctx context.Context, data any) error {
 
 	header := blk.Header()
 	blockHash := header.Hash()
+	s.observeCatchUpBlock(blockHash, blockNumber.Uint64())
 	log.Debug("Subscriber received new block",
 		"number", blockNumber.Uint64(),
 		"hash", blockHash,

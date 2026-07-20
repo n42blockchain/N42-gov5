@@ -30,12 +30,14 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/accounts"
 	"github.com/n42blockchain/N42/common"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/log"
 )
+
+const fundingSettlementGrace = 5 * time.Minute
 
 // Config holds configuration for the transaction generator.
 type Config struct {
@@ -77,6 +79,10 @@ type Generator struct {
 	accounts []*testAccount
 	funded   atomic.Bool // Whether test accounts have been funded
 	funding  atomic.Bool // Whether funding is in progress (prevent duplicate runs)
+	// fundingSubmittedAt keeps a just-accepted faucet batch from being mistaken
+	// for account depletion before the batch is mined. Without this guard every
+	// tick submitted another ten funding transactions during startup/restart.
+	fundingSubmittedAt atomic.Int64
 
 	// Load-test ERC20 (deployed by the faucet key once funding completes).
 	erc20Addr     types.Address
@@ -267,7 +273,8 @@ func (g *Generator) fundTestAccounts() {
 
 	if successCount == len(g.accounts) {
 		g.funded.Store(true)
-		log.Info("Auto-faucet complete", "funded", successCount)
+		g.fundingSubmittedAt.Store(time.Now().UnixNano())
+		log.Info("Auto-faucet batch submitted", "funded", successCount)
 		return
 	}
 	log.Warn("TxGen: faucet incomplete, will retry", "funded", successCount,
@@ -454,11 +461,21 @@ func (g *Generator) generateAndSubmitTxs() {
 	if successCount > 0 || failCount > 0 {
 		log.Info("TxGen", "submitted", successCount, "failed", failCount)
 	}
+	if successCount > 0 {
+		// A spend from a test account reached the pool, so the most recent
+		// funding batch is reflected in executable state/pool accounting.
+		g.fundingSubmittedAt.Store(0)
+	}
 	// The test accounts bleed gas on every transfer; a whole tick of
 	// insufficient-funds with zero submissions means the initial seeding has
 	// been spent (observed live: ~20h in, every block went empty). Re-arm the
 	// faucet - fundTestAccounts tops every account back up on the next tick.
 	if successCount == 0 && insufficientSeen {
+		if submittedAt := g.fundingSubmittedAt.Load(); submittedAt != 0 &&
+			time.Since(time.Unix(0, submittedAt)) < fundingSettlementGrace {
+			log.Debug("TxGen: waiting for faucet batch to settle")
+			return
+		}
 		g.funded.Store(false)
 		log.Warn("TxGen: test accounts depleted; re-funding from the faucet")
 	}

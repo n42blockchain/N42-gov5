@@ -858,12 +858,13 @@ func (bc *BlockChain) processFutureBlocks() {
 // decoded by ReadChunkedBlock) and the RLP gossip fallback (BroadcastBlock).
 
 // knownBlockNeedsAuthorizedReplay reports whether an already-stored block's
-// STATE is not the applied world state — i.e. the QMDB applied head sits on a
-// same-height sibling or below — so an authorized import must re-process it
-// (unwind the sibling + re-execute) instead of skipping it as known. Canonical
-// membership is NOT the test: the canonical row can point at this block while
-// the applied state is still the losing sibling's (they are maintained by
-// different writers and can be one block apart after a crash or a wedge).
+// STATE is not on the applied lineage — i.e. the QMDB applied head sits below
+// it or has followed a sibling branch — so an authorized import must re-process
+// it (unwind the sibling branch + re-execute) instead of skipping it as known.
+// Canonical membership is NOT the test: the canonical row can point at this
+// block while the applied state is still on a losing branch (they are maintained
+// by different writers and can diverge by more than one block after repeated
+// view changes or restarts).
 func (bc *BlockChain) knownBlockNeedsAuthorizedReplay(blk block.IBlock) bool {
 	if !bc.qmdbEnabled {
 		return false
@@ -877,9 +878,28 @@ func (bc *BlockChain) knownBlockNeedsAuthorizedReplay(blk block.IBlock) bool {
 		n := blk.Number64().Uint64()
 		if n > appliedNum {
 			need = true // above the applied head: state never applied
-		} else if n == appliedNum && blk.Hash() != appliedHash {
-			need = true // applied head is a same-height sibling
+			return nil
 		}
+		// Walk the actual applied lineage rather than consulting the canonical
+		// table. CommitToCanonical can already have rewritten canonical rows to
+		// the winning branch while QMDB still sits on a multi-block losing
+		// branch. Checking only n == appliedNum skipped the winning ancestor in
+		// that state, leaving its child future-queued with unknown-ancestor on
+		// every catch-up attempt.
+		curNum, curHash := appliedNum, appliedHash
+		for curNum > n {
+			hdr := rawdb.ReadHeader(tx, curHash, curNum)
+			if hdr == nil {
+				// Do not silently skip a block when the applied marker's lineage is
+				// incomplete. Authorized replay will return the actionable lineage
+				// error without treating the incoming block as invalid.
+				need = true
+				return nil
+			}
+			curHash = hdr.ParentHash
+			curNum--
+		}
+		need = curHash != blk.Hash()
 		return nil
 	})
 	return need
@@ -2432,8 +2452,10 @@ func (bc *BlockChain) clearReadThroughCache() {
 // state no honest node could ever reach (observed live: a forked leader's
 // block was "already imported" on six nodes that had only stored it, got its
 // QC, and wedged the whole network's committed head on an inexecutable
-// block). Chains without an applied marker fall back to body presence — the
-// pre-gate behavior.
+// block). Canonical membership is deliberately insufficient: commit can
+// rewrite canonical rows before a lagging QMDB state has switched off a losing
+// speculative branch. Chains without an applied marker fall back to body
+// presence — the pre-gate behavior.
 func (bc *BlockChain) HasAppliedBlock(hash types.Hash, number uint64) bool {
 	applied := false
 	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
@@ -2448,14 +2470,11 @@ func (bc *BlockChain) HasAppliedBlock(hash types.Hash, number uint64) bool {
 		if number > an {
 			return nil // above the applied head — cannot have been executed
 		}
-		// Canonical fast path: the canonical table is the committed prefix,
-		// and a committed block at or below the marker is necessarily applied.
-		if ch, cerr := rawdb.ReadCanonicalHash(tx, number); cerr == nil && ch == hash {
-			applied = true
-			return nil
-		}
-		// Not (yet) canonical: an applied-but-uncommitted block lives within
-		// the recent window — walk the applied lineage down from the marker.
+		// The applied marker's lineage is the only execution evidence. Do not
+		// trust the canonical table here: CommitToCanonical may already name a
+		// winning sibling while QMDB still sits on a losing speculative branch.
+		// Walk only the recent undo window; consensus proposals and catch-up
+		// branch switches are necessarily within it.
 		cur, curN := ah, an
 		for curN > number && an-curN < 256 {
 			hdr := rawdb.ReadHeader(tx, cur, curN)
