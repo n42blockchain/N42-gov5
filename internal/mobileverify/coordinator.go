@@ -198,11 +198,17 @@ type CohortCoordinator struct {
 	// back it with a valid reveal (a replayer or fabricator, Layer 2B).
 	onMisbehavior func(MisbehaviorReport)
 
-	// banThreshold is the number of distinct authenticated reporters that must
-	// agree on a device's (index, commitment) before ReconcileIndices bans it
-	// (Layer 2C). Set to f+1 from the validator set; 0 falls back to the safe
-	// default of 2. Read atomically-ish under mu via reconcileThreshold.
+	// banThreshold is a STATIC Layer 2C threshold (used by tests). 0 falls back
+	// to the safe default of 2. Read under mu via reconcileThreshold.
 	banThreshold int
+	// banThresholdFn, when set, is evaluated at each reconcile to derive the
+	// threshold DYNAMICALLY from the live validator set (f+1). This matters
+	// because the coordinator is constructed during node startup, before the
+	// consensus engine's validator set is populated — a threshold captured once
+	// at construction would be stuck at the floor (2) and never reach f+1 on a
+	// larger fleet. Evaluating per-reconcile lets it track the validator set as
+	// soon as it is available. Takes precedence over banThreshold when non-nil.
+	banThresholdFn func() int
 
 	mu            sync.Mutex
 	currentHeight uint64
@@ -210,18 +216,36 @@ type CohortCoordinator struct {
 	stopped       bool
 }
 
-// SetBanThreshold configures the Layer 2C reconciliation threshold (f+1). A
-// value below 2 is ignored (the ReconcileIndices floor still applies).
+// SetBanThreshold configures a STATIC Layer 2C reconciliation threshold. A
+// value below 2 is ignored (the ReconcileIndices floor still applies). Mainly
+// for tests; production wiring should use SetBanThresholdFn so the threshold
+// tracks the validator set as it becomes available.
 func (c *CohortCoordinator) SetBanThreshold(threshold int) {
 	c.mu.Lock()
 	c.banThreshold = threshold
 	c.mu.Unlock()
 }
 
+// SetBanThresholdFn installs a dynamic threshold provider (typically f+1 from
+// the live validator set), evaluated at each reconcile. Takes precedence over
+// SetBanThreshold. Wire this in production so the threshold is not frozen at
+// the floor when the coordinator is built before the validator set exists.
+func (c *CohortCoordinator) SetBanThresholdFn(fn func() int) {
+	c.mu.Lock()
+	c.banThresholdFn = fn
+	c.mu.Unlock()
+}
+
 func (c *CohortCoordinator) reconcileThreshold() int {
 	c.mu.Lock()
+	fn := c.banThresholdFn
 	t := c.banThreshold
 	c.mu.Unlock()
+	if fn != nil {
+		if dyn := fn(); dyn > t {
+			t = dyn
+		}
+	}
 	if t < 2 {
 		return 2
 	}

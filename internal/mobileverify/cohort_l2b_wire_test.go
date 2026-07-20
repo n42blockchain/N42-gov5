@@ -314,15 +314,18 @@ func TestCohortL2BReplayCensorshipOverWire(t *testing.T) {
 	for _, c := range g.coords {
 		c.OnBlockCommitted(number + cfg.IndexAnnounceDelay)
 	}
-	// The malicious validator replays the victim's public commitment as its
-	// OWN index announcement (reporter=node2), authenticated with node2's real
-	// validator key — L1 auth passes (node2 IS a validator); L2B must still
-	// defeat it. Delivered to the honest reconcilers.
+	// The malicious validator replays the victim's public commitment as its OWN
+	// index announcement (reporter=node2) AND, to try to be counted as a
+	// witness, provides the victim's raw signature (harvested from the honest
+	// reveal on gossip) as its reveal. L1 auth passes (node2 IS a validator);
+	// L2B must still defeat it. The reveal reproduces Keccak256(sig‖node2),
+	// which does NOT match the node0-bound commitment node2 replayed — a bound
+	// mismatch — so node2 is flagged misbehaved and never counted.
 	g.injectIndex(atkNode, []int{0, 1}, blockHash, number,
 		[]IndexCommitment{{Index: victimIdx, Commitment: victimPublicCommitment}})
+	g.injectReveal(atkNode, []int{0, 1}, blockHash, number,
+		map[MobileIndex]RevealedSig{victimIdx: {Sig: victimReceipt.Signature, Root: root}})
 
-	// Finish the phases. node2 never reveals a raw signature for the victim
-	// (it has none), so it is a "committed but not revealed" misbehavior.
 	g.drive(number, cfg.MergeDelay)
 
 	// The victim device MUST survive in node0's finalized certificate: it was

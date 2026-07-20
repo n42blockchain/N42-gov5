@@ -88,9 +88,14 @@ func ReconcileWithReveals(
 				rs, ok = reveal.Sigs[ic.Index]
 			}
 			if !ok {
-				// Committed but never revealed the raw signature: cannot be
-				// counted, and is suspicious (a genuine holder always can).
-				misbehavedSet[reporter] = struct{}{}
+				// Committed but no matching reveal arrived. NOT flagged as
+				// misbehavior: an honest reporter's reveal can be dropped or
+				// delayed by gossip (the reveal window is one block), and the
+				// misbehavior sink is the slashing/accountability hook — slashing
+				// on ordinary gossip loss would punish honest validators. It is
+				// simply not counted toward a ban (a witness requires a verified
+				// reveal). Only a reveal that DID arrive but fails verification
+				// (foreign-bound or fabricated, below) is genuine misbehavior.
 				continue
 			}
 			// The reveal must reproduce THIS reporter's bound commitment — a
