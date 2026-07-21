@@ -261,8 +261,9 @@ type Service struct {
 	p2p    P2PPublisher
 	db     kv.RwDB
 
-	gossipTopic string // fully qualified gossip topic string
-	rpcTopic    string // fully qualified RPC topic string
+	gossipTopic  string // fully qualified gossip topic string
+	rpcTopic     string // fully qualified RPC topic string
+	h2V4Identity *H2V4ChainIdentity
 
 	blockProducer    BlockProducer
 	blockFetcher     BlockFetcher
@@ -354,6 +355,12 @@ func (s *Service) SetEpochSchedule(schedule *EpochSchedule) {
 // P2P validator peer bindings (Rust: replace_expected_validator_peers_reliable).
 func (s *Service) SetPeerRefreshFn(fn func()) {
 	s.peerRefreshFn = fn
+}
+
+// SetH2V4Identity enables publication of chain-bound Decide proofs for
+// cross-client observers. Consensus messages continue on the existing topic.
+func (s *Service) SetH2V4Identity(identity H2V4ChainIdentity) {
+	s.h2V4Identity = &identity
 }
 
 // Start begins the service goroutines.
@@ -608,6 +615,9 @@ func (s *Service) handleBroadcast(output EngineOutput) {
 	if output.Message == nil || s.p2p == nil {
 		return
 	}
+	if output.Message.Type == MsgDecide && s.h2V4Identity != nil {
+		go s.publishH2V4Decide(output.Message)
+	}
 
 	data, err := EncodeConsensusMsg(output.Message)
 	if err != nil {
@@ -680,6 +690,27 @@ func (s *Service) handleBroadcast(output EngineOutput) {
 
 	if err := s.p2p.PublishToTopic(publishCtx, topic, gossipBytes, publishOpts...); err != nil {
 		log.Warn("hotstuff: broadcast failed", "err", err)
+	}
+}
+
+const h2V4GossipTopic = "/n42/h2/4/ssz_snappy"
+
+func (s *Service) publishH2V4Decide(message *ConsensusMsg) {
+	data, err := EncodeH2V4Gossip(H2V4Envelope{
+		Identity: *s.h2V4Identity,
+		// The first interoperable profile is intentionally static-validator.
+		// Dynamic validator-change encoding is a later protocol revision.
+		ChangesHash: types.Hash{},
+		Message:     message,
+	})
+	if err != nil {
+		log.Error("hotstuff: failed to encode H2-v4 Decide", "err", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
+	defer cancel()
+	if err := s.p2p.PublishToTopic(ctx, h2V4GossipTopic, data); err != nil {
+		log.Debug("hotstuff: H2-v4 Decide publish skipped", "err", err)
 	}
 }
 
@@ -1262,7 +1293,7 @@ func (s *Service) maybeCommitFromHeaderQC(extra []byte) {
 	// a conflicting block committing at that height). Accepting one would let a
 	// crafted header embedding a stale PrepareQC drive a catching-up node to
 	// canonicalize a never-committed block, diverging its canonical head.
-	if verr := VerifyCommitQC(qc, ce.CurrentValidatorSet()); verr != nil {
+	if verr := ce.verifyCommitQC(qc); verr != nil {
 		log.Debug("hotstuff: header-QC canonicalize skipped (verify failed)",
 			"qcBlock", qc.BlockHash, "qcView", qc.View, "err", verr)
 		return

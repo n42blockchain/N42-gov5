@@ -1656,6 +1656,18 @@ func (n *Node) Start() error {
 		gossipTopic := fmt.Sprintf(p2p.HotStuffConsensusTopicFormat, forkDigest)
 		rpcTopic := p2p.RPCHotStuffDirectTopicV1
 		svc := hotstuff.NewService(hs, newHotstuffP2PAdapter(n.p2p), n.db, gossipTopic, rpcTopic)
+		if hs.Config().InteropV4 {
+			if n.config.ChainCfg == nil || n.config.ChainCfg.ChainID == nil || !n.config.ChainCfg.ChainID.IsUint64() {
+				return errors.New("hotstuff H2-v4 requires a uint64 chain ID")
+			}
+			identity := hotstuff.H2V4ChainIdentity{
+				ChainID: n.config.ChainCfg.ChainID.Uint64(), GenesisHash: n.p2pGenesisHash,
+			}
+			if err := hs.EnableH2V4(identity); err != nil {
+				return fmt.Errorf("enable hotstuff H2-v4: %w", err)
+			}
+			svc.SetH2V4Identity(identity)
+		}
 		svc.SetBlockProducer(n.miner)
 		if err := svc.Start(); err != nil {
 			// A consensus service that failed to start (topic-join / gossip

@@ -92,6 +92,10 @@ type ConsensusEngine struct {
 	myIndex   ValidatorIndex
 	secretKey common.SecretKey
 
+	// h2V4Identity is set only for an explicitly configured cross-client
+	// network. Nil preserves the deployed legacy signing domains exactly.
+	h2V4Identity *H2V4ChainIdentity
+
 	epochManager *EpochManager
 	reconfigMgr  *ReconfigurationManager
 	roundState   *RoundState
@@ -835,7 +839,7 @@ func (e *ConsensusEngine) processEmbeddedTC(msg *ConsensusMsg) error {
 	}
 
 	// Verify the TC and its embedded high_qc before acting on it.
-	if err := VerifyTC(tc, e.validatorSet()); err != nil {
+	if err := e.verifyTC(tc); err != nil {
 		log.Debug("ignoring piggybacked TC with invalid signature", "tcView", tc.View, "err", err)
 		return nil
 	}
@@ -868,9 +872,9 @@ func (e *ConsensusEngine) tryQCViewJump(msg *ConsensusMsg, msgView ViewNumber) (
 	// Verify QC. Decide uses commit signing domain.
 	var verifyErr error
 	if msg.Type == MsgDecide {
-		verifyErr = VerifyCommitQC(qc, e.validatorSet())
+		verifyErr = e.verifyCommitQC(qc)
 	} else {
-		verifyErr = VerifyQC(qc, e.validatorSet())
+		verifyErr = e.verifyQC(qc)
 	}
 	if verifyErr != nil {
 		return false, nil
@@ -923,5 +927,5 @@ func (e *ConsensusEngine) verifyEmbeddedQC(qc *QuorumCertificate) error {
 	if qc.View == 0 {
 		return nil
 	}
-	return VerifyQCAnyDomain(qc, e.validatorSet())
+	return e.verifyQCAnyDomain(qc)
 }

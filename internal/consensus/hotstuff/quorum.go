@@ -12,10 +12,10 @@ package hotstuff
 import (
 	"fmt"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/common/types"
 )
 
 // VoteCollector accumulates votes for a specific view and produces a QuorumCertificate
@@ -219,12 +219,23 @@ func (tc *TimeoutCollector) HasQuorum(quorumSize int) bool {
 
 // BuildTC builds a TimeoutCertificate from collected timeout signatures.
 func (tc *TimeoutCollector) BuildTC(vs *ValidatorSet) (*TimeoutCertificate, error) {
+	return tc.BuildTCWithMessages(vs, TimeoutSigningMessage(tc.view), func(qc *QuorumCertificate) error {
+		return VerifyQCAnyDomain(qc, vs)
+	})
+}
+
+// BuildTCWithMessages builds a TC using an explicit signing profile. The
+// callback verifies the selected embedded high QC in the same profile.
+func (tc *TimeoutCollector) BuildTCWithMessages(
+	vs *ValidatorSet,
+	message []byte,
+	verifyHighQC func(*QuorumCertificate) error,
+) (*TimeoutCertificate, error) {
 	quorumSize := vs.QuorumSize()
 	if len(tc.timeouts) < quorumSize {
 		return nil, &InsufficientVotesError{View: tc.view, Have: len(tc.timeouts), Need: quorumSize}
 	}
 
-	message := TimeoutSigningMessage(tc.view)
 	var highestQC *QuorumCertificate
 	validSigs := make([]common.Signature, 0, len(tc.timeouts))
 	signers := make([]bool, tc.setSize)
@@ -271,7 +282,7 @@ func (tc *TimeoutCollector) BuildTC(vs *ValidatorSet) (*TimeoutCertificate, erro
 	// have already verified each embedded QC individually.
 	// Only verify if QC has signers (skip mock/test QCs with empty bitmap).
 	if highestQC.View > 0 && len(highestQC.Signers) > 0 {
-		if vErr := VerifyQCAnyDomain(highestQC, vs); vErr != nil {
+		if vErr := verifyHighQC(highestQC); vErr != nil {
 			log.Warn("BuildTC: highest QC failed verification, using genesis",
 				"view", tc.view, "highQC.view", highestQC.View, "err", vErr)
 			genesis := GenesisQC()
@@ -313,7 +324,10 @@ func VerifyQCAnyDomain(qc *QuorumCertificate, vs *ValidatorSet) error {
 
 // VerifyTC verifies a TimeoutCertificate against the validator set.
 func VerifyTC(tc *TimeoutCertificate, vs *ValidatorSet) error {
-	msg := TimeoutSigningMessage(tc.View)
+	return verifyTCAgainstMessage(tc, vs, TimeoutSigningMessage(tc.View))
+}
+
+func verifyTCAgainstMessage(tc *TimeoutCertificate, vs *ValidatorSet, msg []byte) error {
 	quorumSize := vs.QuorumSize()
 
 	if int(vs.Len()) != len(tc.Signers) {

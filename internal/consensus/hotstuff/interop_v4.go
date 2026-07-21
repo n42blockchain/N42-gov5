@@ -60,6 +60,84 @@ func H2V4NewViewSigningMessage(identity H2V4ChainIdentity, view ViewNumber) []by
 	return h2V4Base(identity, h2V4NewView, view)
 }
 
+// EnableH2V4 switches this engine to the chain-bound cross-client signing
+// profile. It must be called before the engine starts processing events.
+func (e *ConsensusEngine) EnableH2V4(identity H2V4ChainIdentity) {
+	e.h2V4Identity = &identity
+}
+
+func (e *ConsensusEngine) h2V4Enabled() bool { return e.h2V4Identity != nil }
+
+// H2V4Enabled reports whether the explicitly configured static-validator
+// cross-client profile is active.
+func (e *ConsensusEngine) H2V4Enabled() bool { return e.h2V4Enabled() }
+
+func (e *ConsensusEngine) proposalSigningMessage(view ViewNumber, blockHash types.Hash) []byte {
+	if e.h2V4Identity != nil {
+		return H2V4ProposalSigningMessage(*e.h2V4Identity, view, blockHash, types.Hash{})
+	}
+	return SigningMessage(view, blockHash)
+}
+
+func (e *ConsensusEngine) voteSigningMessage(view ViewNumber, blockHash types.Hash) []byte {
+	if e.h2V4Identity != nil {
+		return H2V4VoteSigningMessage(*e.h2V4Identity, view, blockHash)
+	}
+	return SigningMessage(view, blockHash)
+}
+
+func (e *ConsensusEngine) commitSigningMessage(view ViewNumber, blockHash types.Hash) []byte {
+	if e.h2V4Identity != nil {
+		return H2V4CommitSigningMessage(*e.h2V4Identity, view, blockHash, types.Hash{})
+	}
+	return CommitSigningMessage(view, blockHash)
+}
+
+func (e *ConsensusEngine) timeoutSigningMessage(view ViewNumber) []byte {
+	if e.h2V4Identity != nil {
+		return H2V4TimeoutSigningMessage(*e.h2V4Identity, view)
+	}
+	return TimeoutSigningMessage(view)
+}
+
+func (e *ConsensusEngine) newViewSigningMessage(view ViewNumber) []byte {
+	if e.h2V4Identity != nil {
+		return H2V4NewViewSigningMessage(*e.h2V4Identity, view)
+	}
+	return NewViewSigningMessage(view)
+}
+
+func (e *ConsensusEngine) verifyQC(qc *QuorumCertificate) error {
+	return e.verifyQCWithSet(qc, e.validatorSet())
+}
+
+func (e *ConsensusEngine) verifyCommitQC(qc *QuorumCertificate) error {
+	return e.verifyCommitQCWithSet(qc, e.validatorSet())
+}
+
+func (e *ConsensusEngine) verifyQCWithSet(qc *QuorumCertificate, vs *ValidatorSet) error {
+	return verifyAggregateSignature(qc, vs, e.voteSigningMessage(qc.View, qc.BlockHash), "QC")
+}
+
+func (e *ConsensusEngine) verifyCommitQCWithSet(qc *QuorumCertificate, vs *ValidatorSet) error {
+	return verifyAggregateSignature(qc, vs, e.commitSigningMessage(qc.View, qc.BlockHash), "CommitQC")
+}
+
+func (e *ConsensusEngine) verifyQCAnyDomain(qc *QuorumCertificate) error {
+	return e.verifyQCAnyDomainWithSet(qc, e.validatorSet())
+}
+
+func (e *ConsensusEngine) verifyQCAnyDomainWithSet(qc *QuorumCertificate, vs *ValidatorSet) error {
+	if err := e.verifyQCWithSet(qc, vs); err == nil {
+		return nil
+	}
+	return e.verifyCommitQCWithSet(qc, vs)
+}
+
+func (e *ConsensusEngine) verifyTC(tc *TimeoutCertificate) error {
+	return verifyTCAgainstMessage(tc, e.validatorSet(), e.timeoutSigningMessage(tc.View))
+}
+
 // VerifyH2V4Decide verifies a chain-bound H2-v4 finality proof without
 // advancing the local consensus engine. It is intended for non-voting
 // observers and cross-client sync consumers.

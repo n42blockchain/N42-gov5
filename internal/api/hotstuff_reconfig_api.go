@@ -15,8 +15,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/n42blockchain/N42/crypto/bls/blst"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto/bls/blst"
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 )
 
@@ -39,6 +39,9 @@ func (api *HotStuffReconfigAPI) ProposeAddValidator(ctx context.Context, address
 	hs := api.getEngine()
 	if hs == nil || hs.Engine() == nil {
 		return fmt.Errorf("HotStuff consensus engine not available")
+	}
+	if hs.Engine().H2V4Enabled() {
+		return fmt.Errorf("validator reconfiguration is not supported by the static-validator H2-v4 profile")
 	}
 	rm := hs.Engine().ReconfigManager()
 	if rm == nil {
@@ -66,6 +69,9 @@ func (api *HotStuffReconfigAPI) ProposeRemoveValidator(ctx context.Context, addr
 	hs := api.getEngine()
 	if hs == nil || hs.Engine() == nil {
 		return fmt.Errorf("HotStuff consensus engine not available")
+	}
+	if hs.Engine().H2V4Enabled() {
+		return fmt.Errorf("validator reconfiguration is not supported by the static-validator H2-v4 profile")
 	}
 	rm := hs.Engine().ReconfigManager()
 	if rm == nil {

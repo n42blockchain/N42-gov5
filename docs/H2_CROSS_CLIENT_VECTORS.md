@@ -31,3 +31,19 @@ magic, full chain identity, validator-change hash, and an exact payload length.
 It also pins gov5's Snappy output. Decoders reject identity mismatch, length
 mismatch, trailing bytes, decompression expansion, and non-canonical inner
 messages.
+
+## Opt-in production profile
+
+For a new static-validator chain, set `hotstuff.interopV4` to `true` in the
+genesis chain configuration on every validator. This switches the production
+Proposal, Vote, Commit, Timeout, NewView, QC, TC, and Decide signing and
+verification paths to the chain-bound v4 domains. A committed Decide is also
+published as a v4 envelope on `/n42/h2/4/ssz_snappy` for n42-26 observers.
+
+The option is deliberately off by default. Existing chains, including the
+seven-node performance network, retain their legacy wire bytes and databases
+without migration. The first production profile uses a zero validator-change
+hash and rejects validator reconfiguration through the admin API; do not
+configure epoch validator changes on an H2-v4 chain. Dynamic validator changes
+require a later protocol revision in which both clients derive the same
+`changes_hash`.

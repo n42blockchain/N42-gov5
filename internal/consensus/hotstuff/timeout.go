@@ -39,7 +39,7 @@ func (e *ConsensusEngine) onTimeout() error {
 		log.Warn("view timed out (repeat, re-broadcasting)", "view", view)
 		e.pacemaker.ResetForView(view, e.roundState.ConsecutiveTimeouts())
 
-		message := TimeoutSigningMessage(view)
+		message := e.timeoutSigningMessage(view)
 		signature := e.secretKey.Sign(message)
 		timeoutMsg := &TimeoutMessage{
 			View:      view,
@@ -104,7 +104,7 @@ func (e *ConsensusEngine) onTimeout() error {
 		e.timeoutCollector = NewTimeoutCollector(view, nValidators)
 	}
 
-	message := TimeoutSigningMessage(view)
+	message := e.timeoutSigningMessage(view)
 	signature := e.secretKey.Sign(message)
 
 	timeoutMsg := &TimeoutMessage{
@@ -145,7 +145,7 @@ func (e *ConsensusEngine) processTimeout(timeout *TimeoutMessage) error {
 	if err != nil {
 		return err
 	}
-	msg := TimeoutSigningMessage(view)
+	msg := e.timeoutSigningMessage(view)
 	if !VerifyBLSSignature(timeout.Signature, pk, msg) {
 		return &InvalidSignatureError{View: view, ValidatorIndex: timeout.Sender}
 	}
@@ -210,7 +210,7 @@ func (e *ConsensusEngine) handleFutureViewTimeout(currentView ViewNumber, timeou
 	if err != nil {
 		return err
 	}
-	msg := TimeoutSigningMessage(timeout.View)
+	msg := e.timeoutSigningMessage(timeout.View)
 	if !VerifyBLSSignature(timeout.Signature, pk, msg) {
 		return &InvalidSignatureError{View: timeout.View, ValidatorIndex: timeout.Sender}
 	}
@@ -296,7 +296,7 @@ func (e *ConsensusEngine) handleFutureViewTimeout(currentView ViewNumber, timeou
 		}
 	}
 
-	ownSignature := e.secretKey.Sign(TimeoutSigningMessage(targetView))
+	ownSignature := e.secretKey.Sign(e.timeoutSigningMessage(targetView))
 	ownTimeout := &TimeoutMessage{
 		View:      targetView,
 		HighQC:    e.roundState.LockedQC().Clone(),
@@ -334,7 +334,7 @@ func (e *ConsensusEngine) processNewView(nv *NewViewMsg) error {
 	if err != nil {
 		return err
 	}
-	nvMsg := NewViewSigningMessage(nv.View)
+	nvMsg := e.newViewSigningMessage(nv.View)
 	if !VerifyBLSSignature(nv.Signature, pk, nvMsg) {
 		return &InvalidSignatureError{View: nv.View, ValidatorIndex: nv.Leader}
 	}
@@ -346,7 +346,7 @@ func (e *ConsensusEngine) processNewView(nv *NewViewMsg) error {
 			Reason: "TC view does not match expected view (nv.view - 1)",
 		}
 	}
-	if err := VerifyTC(&nv.TimeoutCert, e.validatorSet()); err != nil {
+	if err := e.verifyTC(&nv.TimeoutCert); err != nil {
 		return err
 	}
 
@@ -393,7 +393,7 @@ func (e *ConsensusEngine) processDecide(decide *Decide) error {
 	}
 
 	// Verify CommitQC aggregate BLS signature.
-	if err := VerifyCommitQC(&decide.CommitQC, e.validatorSet()); err != nil {
+	if err := e.verifyCommitQC(&decide.CommitQC); err != nil {
 		return err
 	}
 
@@ -441,7 +441,11 @@ func (e *ConsensusEngine) tryFormTCAndAdvance(currentView, nextView ViewNumber) 
 		return nil
 	}
 
-	tc, err := e.timeoutCollector.BuildTC(e.validatorSet())
+	tc, err := e.timeoutCollector.BuildTCWithMessages(
+		e.validatorSet(),
+		e.timeoutSigningMessage(currentView),
+		e.verifyQCAnyDomain,
+	)
 	if err != nil {
 		return err
 	}
@@ -461,7 +465,7 @@ func (e *ConsensusEngine) tryFormTCAndAdvance(currentView, nextView ViewNumber) 
 	if LeaderForView(nextView, e.validatorSet()) == e.myIndex {
 		log.Info("TC formed, I am the new leader", "view", currentView, "nextView", nextView)
 
-		nvMessage := NewViewSigningMessage(nextView)
+		nvMessage := e.newViewSigningMessage(nextView)
 		nvSig := e.secretKey.Sign(nvMessage)
 
 		newView := &NewViewMsg{
