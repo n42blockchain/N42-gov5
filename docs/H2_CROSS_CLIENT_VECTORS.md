@@ -25,3 +25,9 @@ preimage starts with `N42H2V4`, a phase byte, chain id, genesis hash, and view;
 block-bearing phases also bind the block hash, and Proposal/Commit bind the
 validator-change hash. This prevents timeout/new-view signatures from being
 replayed between chains that reuse validator keys.
+
+`testdata/h2_v4_envelope_v1.json` wraps a canonical H2 payload with the v4
+magic, full chain identity, validator-change hash, and an exact payload length.
+It also pins gov5's Snappy output. Decoders reject identity mismatch, length
+mismatch, trailing bytes, decompression expansion, and non-canonical inner
+messages.
