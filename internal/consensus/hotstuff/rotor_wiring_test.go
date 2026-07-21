@@ -16,10 +16,14 @@ import (
 type routingTestP2P struct {
 	publishes int
 	sends     int
+	topics    []string
+	payloads  [][]byte
 }
 
-func (p *routingTestP2P) PublishToTopic(context.Context, string, []byte, ...pubsub.PubOpt) error {
+func (p *routingTestP2P) PublishToTopic(_ context.Context, topic string, data []byte, _ ...pubsub.PubOpt) error {
 	p.publishes++
+	p.topics = append(p.topics, topic)
+	p.payloads = append(p.payloads, append([]byte(nil), data...))
 	return nil
 }
 
