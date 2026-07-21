@@ -20,3 +20,8 @@ gov5's Round-2 signature is `commit || view_le || block_hash`; current Rust
 also binds validator changes. A versioned common domain is required before a
 QC from one implementation can be accepted by the other.
 
+`testdata/h2_v4_domains_v1.json` defines the replacement domain. Every
+preimage starts with `N42H2V4`, a phase byte, chain id, genesis hash, and view;
+block-bearing phases also bind the block hash, and Proposal/Commit bind the
+validator-change hash. This prevents timeout/new-view signatures from being
+replayed between chains that reuse validator keys.
