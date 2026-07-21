@@ -5,6 +5,7 @@ package hotstuff
 
 import (
 	"encoding/binary"
+	"errors"
 
 	"github.com/n42blockchain/N42/common/types"
 )
@@ -57,4 +58,33 @@ func H2V4TimeoutSigningMessage(identity H2V4ChainIdentity, view ViewNumber) []by
 
 func H2V4NewViewSigningMessage(identity H2V4ChainIdentity, view ViewNumber) []byte {
 	return h2V4Base(identity, h2V4NewView, view)
+}
+
+// VerifyH2V4Decide verifies a chain-bound H2-v4 finality proof without
+// advancing the local consensus engine. It is intended for non-voting
+// observers and cross-client sync consumers.
+func VerifyH2V4Decide(envelope *H2V4Envelope, vs *ValidatorSet) (*Decide, error) {
+	if envelope == nil || envelope.Message == nil {
+		return nil, errors.New("nil H2-v4 envelope")
+	}
+	if envelope.Message.Type != MsgDecide {
+		return nil, errors.New("H2-v4 envelope is not a Decide message")
+	}
+	decide, ok := envelope.Message.Payload.(*Decide)
+	if !ok || decide == nil {
+		return nil, errors.New("invalid H2-v4 Decide payload")
+	}
+	if decide.View != decide.CommitQC.View || decide.BlockHash != decide.CommitQC.BlockHash {
+		return nil, errors.New("H2-v4 Decide does not match its CommitQC")
+	}
+	message := H2V4CommitSigningMessage(
+		envelope.Identity,
+		decide.View,
+		decide.BlockHash,
+		envelope.ChangesHash,
+	)
+	if err := verifyAggregateSignature(&decide.CommitQC, vs, message, "H2V4CommitQC"); err != nil {
+		return nil, err
+	}
+	return decide, nil
 }
