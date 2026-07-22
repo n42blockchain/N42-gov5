@@ -133,6 +133,7 @@ var (
 	MainnetMPTChainConfig           = readChainSpec("chainspecs/mainnet_mpt.json")            // replay-v2 with ethereum-mpt state roots
 	MainnetQMDBChainConfig          = readChainSpec("chainspecs/mainnet_qmdb.json")           // replay-v2 qmdb state roots + hotstuff live production
 	MainnetQMDBStaggeredChainConfig = readChainSpec("chainspecs/mainnet_qmdb_staggered.json") // qmdb + hotstuff live production with the staggered (calendar-parity) fork schedule — 7-node live network base
+	QSEpochTestChainConfig          = readChainSpec("chainspecs/qs_epoch_test.json")          // isolated reconfig test chain (chainId 95, epochLength 20)
 	TestnetChainConfig              = readChainSpec("chainspecs/testnet.json")
 
 	TestChainConfig = &ChainConfig{
@@ -626,6 +627,8 @@ func ChainConfigByChainName(chain string) *ChainConfig {
 		return MainnetQMDBChainConfig
 	case "mainnet_qmdb_staggered":
 		return MainnetQMDBStaggeredChainConfig
+	case "qs_epoch_test":
+		return QSEpochTestChainConfig
 	case networkname.TestnetChainName:
 		return TestnetChainConfig
 	case networkname.EthereumMainnetChainName:
@@ -652,6 +655,8 @@ func GenesisHashByChainName(chain string) *types.Hash {
 	case "mainnet_qmdb":
 		return &MainnetGenesisHash
 	case "mainnet_qmdb_staggered":
+		return &MainnetGenesisHash
+	case "qs_epoch_test":
 		return &MainnetGenesisHash
 	case networkname.EthereumMainnetChainName:
 		return &EthereumMainnetGenesisHash

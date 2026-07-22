@@ -1,0 +1,5 @@
+# Generated locally by setup.ps1 — never commit (regenerate from the seed).
+# validators.md holds BLS PRIVATE KEYS; jwt.hex is the authrpc secret.
+validators.md
+jwt.hex
+*-log.txt

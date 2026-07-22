@@ -261,7 +261,7 @@ func TestReconfigEpochIntegration(t *testing.T) {
 	}
 
 	// Advance epoch
-	if !em.AdvanceEpoch() {
+	if !em.AdvanceEpoch(11) {
 		t.Fatal("expected epoch to advance")
 	}
 
@@ -404,5 +404,100 @@ func TestReconfigDoubleAddRejected(t *testing.T) {
 	err = rm.ProposeAddValidator(addr, sk.PublicKey())
 	if err == nil {
 		t.Fatal("duplicate add should fail")
+	}
+}
+
+// TestSeedCurrentEpochAlignsHistoricalSets verifies that after a mid-chain
+// restart, seeding the epoch counter from the recovered head view keeps
+// historicalSets keys (written by AdvanceEpoch under currentEpoch) aligned with
+// the EpochForView lookups in ValidatorSetForView. Without the seed, currentEpoch
+// stays at 0, historicalSets[0] is written, but ValidatorSetForView(oldView)
+// queries historicalSets[EpochForView(oldView)] and silently falls back to the
+// new set — returning the wrong validators for a historical view.
+func TestSeedCurrentEpochAlignsHistoricalSets(t *testing.T) {
+	const epochLen = uint64(10)
+	oldValidators := makeTestValidators(4)
+	oldSet := NewValidatorSet(oldValidators, 1)
+	em := NewEpochManagerWithLength(oldSet, epochLen)
+
+	// Simulate a mid-chain restart at head view 1000 → epoch 99.
+	const headView = uint64(1000)
+	em.SeedCurrentEpoch(headView)
+	wantEpoch := em.EpochForView(headView) // (1000-1)/10 = 99
+	if em.CurrentEpoch() != wantEpoch {
+		t.Fatalf("seeded epoch = %d, want %d", em.CurrentEpoch(), wantEpoch)
+	}
+
+	// A view inside the seeded epoch (epoch 99 = views 991..1000) resolves to
+	// the current (old) set.
+	oldView := headView - 5 // 995, still epoch 99
+	if got := em.ValidatorSetForView(oldView); got.Len() != oldSet.Len() {
+		t.Fatalf("pre-transition set len = %d, want %d", got.Len(), oldSet.Len())
+	}
+
+	// Stage + activate a reconfig at the next boundary (view 1011 → epoch 100).
+	em.StageNextEpoch(makeTestValidators(5), 1)
+	if !em.AdvanceEpoch(1001) {
+		t.Fatal("AdvanceEpoch should activate the staged set")
+	}
+	if em.CurrentEpoch() != wantEpoch+1 {
+		t.Fatalf("post-advance epoch = %d, want %d", em.CurrentEpoch(), wantEpoch+1)
+	}
+
+	// The old epoch's view must still resolve to the OLD set via historicalSets,
+	// keyed by EpochForView(oldView)=99 — which only matches because we seeded.
+	if got := em.ValidatorSetForView(oldView); got.Len() != oldSet.Len() {
+		t.Fatalf("historical set len = %d, want old %d (seed misaligned historicalSets)",
+			got.Len(), oldSet.Len())
+	}
+	// A view in the new epoch (100 = views 1001..1010) resolves to the new set.
+	newView := headView + 5 // 1005, epoch 100
+	if got := em.ValidatorSetForView(newView); got.Len() != 5 {
+		t.Fatalf("new-epoch set len = %d, want 5", got.Len())
+	}
+}
+
+// TestMarkCommittedStagesForVerification is the core property behind cross-boundary
+// catch-up: MarkCommitted (CommitQC time) stages the new set immediately, so it is
+// findable by size BEFORE the epoch boundary activates it. That is what lets a node
+// verify post-boundary blocks (whose QCs carry the new, larger signer bitmap) while
+// it is still on the old set — the chicken-and-egg that previously stalled catch-up.
+func TestMarkCommittedStagesForVerification(t *testing.T) {
+	validators := makeTestValidators(4) // n=4
+	vs := NewValidatorSet(validators, 1)
+	em := NewEpochManagerWithLength(vs, 10)
+	rm := NewReconfigurationManager(em)
+
+	sk, _ := blst.RandKey()
+	rm.ProposeAddValidator(types.BytesToAddress([]byte{0x10}), sk.PublicKey())
+
+	// Before commit: no staged set; size-5 lookup must miss.
+	if em.HasStagedNext() {
+		t.Fatal("must not be staged before commit")
+	}
+	if em.FindValidatorSetByLen(5) != nil {
+		t.Fatal("size-5 set must not exist before commit")
+	}
+
+	rm.MarkCommitted() // stages at commit, NOT at the boundary
+
+	// After commit, BEFORE any AdvanceEpoch: the size-5 set is staged and findable,
+	// while the active set is still size 4.
+	if !em.HasStagedNext() {
+		t.Fatal("MarkCommitted must stage the next set")
+	}
+	if em.CurrentValidatorSet().Len() != 4 {
+		t.Fatalf("active set must still be 4 before the boundary, got %d", em.CurrentValidatorSet().Len())
+	}
+	if got := em.FindValidatorSetByLen(5); got == nil || got.Len() != 5 {
+		t.Fatal("staged size-5 set must be findable by length before the boundary")
+	}
+
+	// Activation at the boundary swaps it in.
+	if !em.AdvanceEpoch(11) {
+		t.Fatal("AdvanceEpoch should activate the staged set")
+	}
+	if em.CurrentValidatorSet().Len() != 5 {
+		t.Fatalf("active set must be 5 after activation, got %d", em.CurrentValidatorSet().Len())
 	}
 }

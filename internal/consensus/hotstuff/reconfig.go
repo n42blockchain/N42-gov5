@@ -177,13 +177,23 @@ func (rm *ReconfigurationManager) MarkCommitted() {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
-	if rm.hasPendingChanges() {
-		rm.committed = true
-		log.Info("Reconfiguration changes committed",
-			"adds", len(rm.pendingAdds),
-			"removes", len(rm.pendingRemoves),
-		)
+	if !rm.hasPendingChanges() {
+		return
 	}
+	rm.committed = true
+	log.Info("Reconfiguration changes committed",
+		"adds", len(rm.pendingAdds),
+		"removes", len(rm.pendingRemoves),
+	)
+	// Stage the new validator set NOW (at CommitQC time), not at the epoch boundary.
+	// The staged set is then visible to QC verification (EpochManager.PeekNextSet /
+	// FindValidatorSetByLen → resolveQCValidatorSet) from commit onward, so a node —
+	// especially one catching up by block import, which never advances its own view
+	// via live messages — can verify the post-boundary blocks whose QCs are signed by
+	// the new, differently-sized set BEFORE it reaches the boundary. Activation (swap
+	// next→current) still happens at the boundary via EpochManager.AdvanceEpoch. This
+	// mirrors n42-consensus commit_pending_changes.
+	rm.stageCommittedLocked()
 }
 
 // HasPendingChanges returns true if there are uncommitted or committed
@@ -206,7 +216,11 @@ func (rm *ReconfigurationManager) IsCommitted() bool {
 }
 
 func (rm *ReconfigurationManager) isCommitted() bool {
-	return rm.committed && rm.hasPendingChanges()
+	// committed is set at CommitQC time (MarkCommitted), which now also stages the
+	// new set and clears the pending queues — so committed is no longer coupled to
+	// hasPendingChanges. It marks "a change has been committed and staged, awaiting
+	// boundary activation" and is reset by the next ProposeAdd/RemoveValidator.
+	return rm.committed
 }
 
 // ApplyAtEpochBoundary computes and stages the new validator set for the
@@ -225,6 +239,20 @@ func (rm *ReconfigurationManager) ApplyAtEpochBoundary() *ValidatorSet {
 	if !rm.isCommitted() {
 		return nil
 	}
+	// Staging normally happens at commit time (MarkCommitted → stageCommittedLocked).
+	// If a caller committed without staging (or calls this directly, e.g. tests),
+	// stage now; otherwise return the already-staged set.
+	if rm.hasPendingChanges() {
+		return rm.stageCommittedLocked()
+	}
+	return rm.epochManager.PeekNextSet()
+}
+
+// stageCommittedLocked computes, validates, and stages the next-epoch validator set
+// from the committed pending changes, then clears the pending queues. Returns the
+// staged set, or nil when epochs are disabled or the transition is unsafe. The
+// caller must hold rm.mu and must have set rm.committed.
+func (rm *ReconfigurationManager) stageCommittedLocked() *ValidatorSet {
 	if !rm.epochManager.EpochsEnabled() {
 		log.Warn("Reconfiguration ignored: epochs not enabled")
 		return nil
@@ -280,16 +308,18 @@ func (rm *ReconfigurationManager) ApplyAtEpochBoundary() *ValidatorSet {
 		return nil
 	}
 
-	// Stage the validated set
-	rm.epochManager.StageNextEpoch(newValidators, f)
-
 	addCount := len(rm.pendingAdds)
 	removeCount := len(rm.pendingRemoves)
 
-	// Clear pending changes
+	// Stage the validated set
+	rm.epochManager.StageNextEpoch(newValidators, f)
+
+	// Clear the pending queues (the change is now staged as next_set). committed
+	// stays true — it marks "staged, awaiting boundary activation"; the next
+	// ProposeAdd/RemoveValidator resets it. Keeping it lets IsCommitted report the
+	// staged state and blocks a second staging for the same boundary.
 	rm.pendingAdds = nil
 	rm.pendingRemoves = nil
-	rm.committed = false
 
 	log.Info("New validator set staged for next epoch",
 		"epoch", rm.epochManager.CurrentEpoch()+1,

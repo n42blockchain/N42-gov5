@@ -45,17 +45,44 @@ func (s *Service) insertCatchUpBlocks(ctx context.Context, blocks []block.IBlock
 	if len(blocks) == 0 {
 		return blocks, 0, nil
 	}
-	var (
-		imported int
-		err      error
-	)
-	if authorized {
-		imported, err = s.insertAuthorized(blocks)
-	} else {
-		imported, err = s.cfg.chain.InsertChain(blocks)
+	// Insert one block at a time, driving the consensus engine via
+	// NotifyBlockImported after each. A BULK insert verifies every header up-front
+	// against the engine's CURRENT validator set, so a range that crosses an
+	// epoch-boundary validator-set change (reconfiguration) fails to verify the
+	// post-boundary blocks — their QC carries a signer bitmap sized to the NEW set
+	// while the engine still holds the OLD one, and the batch never advances the
+	// engine's epoch mid-way. Advancing the view/epoch and applying the staged
+	// reconfiguration after each block, before the next block's header is verified,
+	// mirrors the live push path and lets a lagging node catch up ACROSS
+	// reconfigurations. Verify/execute of a single sequential block is equivalent
+	// to the batch; only the ordering relative to engine advancement changes.
+	notifier := s.cfg.blockImportNotifier
+	total := 0
+	for i := range blocks {
+		var (
+			imported int
+			err      error
+		)
+		one := blocks[i : i+1]
+		if authorized {
+			imported, err = s.insertAuthorized(one)
+		} else {
+			imported, err = s.cfg.chain.InsertChain(one)
+		}
+		if imported > 0 {
+			total++
+			if notifier != nil {
+				// Applies any epoch-boundary reconfig this block crosses, so the
+				// NEXT block's header verifies against the correct set.
+				notifier.NotifyBlockImported(blocks[i].Hash(), blocks[i].TxHash())
+			}
+		}
+		if err != nil {
+			if errors.Is(err, consensus.ErrExecutionInvalid) {
+				s.setBadBlock(ctx, blocks[i].Hash())
+			}
+			return blocks, total, err
+		}
 	}
-	if err != nil && errors.Is(err, consensus.ErrExecutionInvalid) && imported >= 0 && imported < len(blocks) {
-		s.setBadBlock(ctx, blocks[imported].Hash())
-	}
-	return blocks, imported, err
+	return blocks, total, nil
 }
