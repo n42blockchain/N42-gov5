@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto/bls"
 	blscommon "github.com/n42blockchain/N42/crypto/bls/common"
@@ -180,5 +181,60 @@ func TestServicePublishesEveryH2V4ConsensusEnvelope(t *testing.T) {
 		if !reflect.DeepEqual(envelope.Message, item.msg) || envelope.ChangesHash != (types.Hash{}) {
 			t.Fatalf("unexpected H2-v4 %s envelope: %+v", item.name, envelope)
 		}
+	}
+}
+
+func TestServiceAcceptsChainBoundH2V4Ingress(t *testing.T) {
+	setup := newTestSetup(t, 4)
+	engine, _ := newTestEngine(t, setup, 0)
+	identity := H2V4ChainIdentity{ChainID: 94, GenesisHash: repeatedHash(0x11)}
+	engine.EnableH2V4(identity)
+	service := &Service{
+		engine:       &HotStuff{engine: engine},
+		h2V4Identity: &identity,
+		rotor:        NewRotor(3),
+	}
+
+	timeout := &TimeoutMessage{
+		View:      1,
+		HighQC:    GenesisQC(),
+		Sender:    1,
+		Signature: setup.keys[1].Sign(H2V4TimeoutSigningMessage(identity, 1)).Marshal(),
+	}
+	gossip, err := EncodeH2V4Gossip(H2V4Envelope{
+		Identity: identity, ChangesHash: types.Hash{},
+		Message: &ConsensusMsg{Type: MsgTimeout, Payload: timeout},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := peer.ID("rust-validator")
+	if err := service.processH2V4GossipMessage(gossip, from); err != nil {
+		t.Fatalf("valid Rust H2-v4 message rejected: %v", err)
+	}
+	if got, ok := service.rotor.LookupPeer(setup.vs, 1); !ok || got != from {
+		t.Fatalf("H2-v4 sender was not registered: got (%q, %v)", got, ok)
+	}
+}
+
+func TestServiceRejectsNonzeroChangesHashOnH2V4Ingress(t *testing.T) {
+	setup := newTestSetup(t, 1)
+	engine, _ := newTestEngine(t, setup, 0)
+	identity := H2V4ChainIdentity{ChainID: 94, GenesisHash: repeatedHash(0x11)}
+	engine.EnableH2V4(identity)
+	service := &Service{engine: &HotStuff{engine: engine}, h2V4Identity: &identity}
+
+	gossip, err := EncodeH2V4Gossip(H2V4Envelope{
+		Identity: identity, ChangesHash: repeatedHash(0x44),
+		Message: &ConsensusMsg{Type: MsgTimeout, Payload: &TimeoutMessage{
+			View: 1, HighQC: GenesisQC(), Sender: 0,
+			Signature: setup.keys[0].Sign(H2V4TimeoutSigningMessage(identity, 1)).Marshal(),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.processH2V4GossipMessage(gossip, peer.ID("rust-validator")); err == nil {
+		t.Fatal("nonzero H2-v4 changes hash was accepted")
 	}
 }

@@ -357,9 +357,9 @@ func (s *Service) SetPeerRefreshFn(fn func()) {
 	s.peerRefreshFn = fn
 }
 
-// SetH2V4Identity enables publication of chain-bound consensus envelopes for
-// cross-client shadow validation. Consensus messages continue on the existing
-// topic until mixed-client voting is explicitly enabled.
+// SetH2V4Identity enables publication and subscription of chain-bound
+// consensus envelopes for mixed-client voting. Consensus messages continue on
+// the existing topic during migration.
 func (s *Service) SetH2V4Identity(identity H2V4ChainIdentity) {
 	s.h2V4Identity = &identity
 }
@@ -389,11 +389,66 @@ func (s *Service) Start() error {
 	go s.processOutputs()
 	go s.pacemakerLoop()
 	go s.subscribeMessages()
+	if s.h2V4Identity != nil {
+		s.wg.Add(1)
+		go s.subscribeH2V4Messages()
+	}
 
 	log.Info("HotStuff service started",
 		"view", s.engine.Engine().CurrentView(),
 		"validators", s.engine.Engine().ValidatorCount())
 	return nil
+}
+
+// subscribeH2V4Messages is the mixed-client ingress path. The legacy topic
+// remains active during migration, while this chain-bound topic admits Rust
+// peers whose messages cannot be represented by the legacy signing domain.
+func (s *Service) subscribeH2V4Messages() {
+	defer s.wg.Done()
+
+	if s.p2p == nil || s.h2V4Identity == nil {
+		return
+	}
+	sub, err := s.p2p.SubscribeToTopic(h2V4GossipTopic)
+	if err != nil {
+		log.Error("hotstuff: failed to subscribe to H2-v4 gossip topic", "err", err)
+		return
+	}
+	defer sub.Cancel()
+
+	log.Info("hotstuff: subscribed to H2-v4 gossip topic", "topic", h2V4GossipTopic)
+	for {
+		msg, err := sub.Next(s.ctx)
+		if err != nil {
+			if s.ctx.Err() != nil {
+				return
+			}
+			log.Warn("hotstuff: H2-v4 gossip receive error", "err", err)
+			continue
+		}
+		if err := s.processH2V4GossipMessage(msg.Data, msg.ReceivedFrom); err != nil {
+			log.Debug("hotstuff: rejected H2-v4 gossip message", "err", err)
+		}
+	}
+}
+
+func (s *Service) processH2V4GossipMessage(data []byte, from peer.ID) error {
+	if s.h2V4Identity == nil {
+		return fmt.Errorf("H2-v4 identity is not configured")
+	}
+	envelope, err := DecodeH2V4Gossip(data, *s.h2V4Identity)
+	if err != nil {
+		return err
+	}
+	if envelope.ChangesHash != (types.Hash{}) {
+		return fmt.Errorf("H2-v4 static-validator profile requires zero changes hash")
+	}
+	ce := s.engine.Engine()
+	if ce == nil {
+		return fmt.Errorf("H2-v4 consensus engine is not initialized")
+	}
+	s.learnValidatorPeer(envelope.Message, from)
+	return ce.ProcessEvent(ConsensusEvent{Type: EventMessage, Msg: *envelope.Message})
 }
 
 // Stop gracefully shuts down the service.

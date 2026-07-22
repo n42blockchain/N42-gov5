@@ -40,10 +40,15 @@ Proposal, Vote, Commit, Timeout, NewView, QC, TC, and Decide signing and
 verification paths to the chain-bound v4 domains. A committed Decide is also
 published as a v4 envelope on `/n42/h2/4/ssz_snappy` for n42-26 observers.
 
-The option is deliberately off by default. Existing chains, including the
-seven-node performance network, retain their legacy wire bytes and databases
-without migration. The first production profile uses a zero validator-change
-hash and rejects validator reconfiguration through the admin API; do not
-configure epoch validator changes on an H2-v4 chain. Dynamic validator changes
-require a later protocol revision in which both clients derive the same
-`changes_hash`.
+When enabled, the service publishes and subscribes to the v4 topic while
+retaining the legacy topic during migration. Incoming v4 frames must have the
+configured chain identity, canonical encoding, and a zero validator-change
+hash before the normal H2 state machine performs leader, signature, QC/TC and
+view checks. This is the ingress used by an n42-26 validator.
+
+The option is deliberately off by default. Existing chains that do not opt in
+retain their legacy wire bytes and databases without migration. The first
+production profile uses a zero validator-change hash and rejects validator
+reconfiguration through the admin API; do not configure epoch validator
+changes on an H2-v4 chain. Dynamic validator changes require a later protocol
+revision in which both clients derive the same `changes_hash`.
