@@ -409,6 +409,36 @@ func (em *EpochManager) HasStagedNext() bool {
 	return em.nextSet != nil
 }
 
+// CurrentEpochInfo returns the active validator set's epoch, members and fault
+// tolerance, for persistence across restarts. ok is false only if there is no set.
+func (em *EpochManager) CurrentEpochInfo() (uint64, []ValidatorInfo, uint32, bool) {
+	if em.currentSet == nil {
+		return 0, nil, 0, false
+	}
+	validators := make([]ValidatorInfo, em.currentSet.Len())
+	for i := uint32(0); i < em.currentSet.Len(); i++ {
+		addr, _ := em.currentSet.GetAddress(ValidatorIndex(i))
+		pk, _ := em.currentSet.GetPublicKey(ValidatorIndex(i))
+		validators[i] = ValidatorInfo{Address: addr, PublicKey: pk}
+	}
+	return em.currentEpoch, validators, em.currentSet.FaultTolerance(), true
+}
+
+// RestoreActiveSet replaces the current validator set with a persisted one after a
+// restart. Reconfiguration is in-memory only, so without this a restarted node
+// reverts to the genesis set and can no longer verify QCs signed by the reconfigured
+// set (observed as a "signers bitmap length mismatch" that stalls the chain). The
+// outgoing set is retained as prevSet so size-matching still resolves certificates
+// from just before the last change.
+func (em *EpochManager) RestoreActiveSet(epoch uint64, validators []ValidatorInfo, f uint32) {
+	newSet := NewValidatorSet(validators, f)
+	if em.currentSet != nil && em.currentSet.Len() != newSet.Len() {
+		em.prevSet = em.currentSet
+	}
+	em.currentSet = newSet
+	em.currentEpoch = epoch
+}
+
 // PeekNextSet returns the staged next-epoch validator set without activating it
 // (nil if none is staged). Staging happens at CommitQC time, so this set is
 // available for QC verification before the epoch boundary — a catching-up node

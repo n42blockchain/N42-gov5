@@ -357,6 +357,44 @@ func (e *ConsensusEngine) StagedEpochInfoSafe() (uint64, []ValidatorInfo, uint32
 	return e.epochManager.StagedEpochInfo()
 }
 
+// CurrentEpochInfoSafe returns the active validator set's epoch, members and fault
+// tolerance under the engine lock, for persisting the reconfigured set so it
+// survives a restart.
+func (e *ConsensusEngine) CurrentEpochInfoSafe() (uint64, []ValidatorInfo, uint32, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.epochManager.CurrentEpochInfo()
+}
+
+// RestoreValidatorSet restores a persisted active validator set after a restart and
+// re-derives this node's own index in it: a node still in the set resumes as a
+// member, one dropped from it becomes an observer. Without this a restarted node
+// falls back to the genesis set and cannot verify QCs from the reconfigured set.
+func (e *ConsensusEngine) RestoreValidatorSet(epoch uint64, validators []ValidatorInfo, f uint32) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.epochManager.RestoreActiveSet(epoch, validators, f)
+	if idx := e.epochManager.CurrentValidatorSet().FindByAddress(e.myAddr); idx >= 0 {
+		e.myIndex = ValidatorIndex(idx)
+		e.removed = false
+	} else {
+		e.myIndex = NonMemberIndex
+		e.removed = true
+	}
+	log.Info("hotstuff: restored active validator set after restart",
+		"epoch", epoch, "validators", len(validators), "myIndex", e.myIndex)
+}
+
+// RestoreStagedSet re-stages a validator set that was committed but not yet
+// activated before a restart, so the node still activates it at the next epoch
+// boundary. Complements RestoreValidatorSet (active set) on recovery.
+func (e *ConsensusEngine) RestoreStagedSet(validators []ValidatorInfo, f uint32) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.epochManager.StageNextEpoch(validators, f)
+	log.Info("hotstuff: restored staged validator set after restart", "validators", len(validators))
+}
+
 // PreStageFromScheduleSafe stages the next epoch under the engine lock.
 func (e *ConsensusEngine) PreStageFromScheduleSafe(schedule *EpochSchedule) bool {
 	e.mu.Lock()

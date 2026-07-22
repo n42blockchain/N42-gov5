@@ -581,8 +581,21 @@ func (s *Service) handleOutput(output EngineOutput) {
 	case OutputEpochTransition:
 		log.Info("hotstuff: epoch transition", "epoch", output.NewEpoch, "validators", output.ValidatorCount)
 
-		// Persist staged epoch state for crash recovery.
+		// Persist the now-ACTIVE validator set so a node that restarts after this
+		// reconfiguration restores the reconfigured set instead of reverting to the
+		// genesis set (in-memory-only reconfig would otherwise leave a restarted node
+		// unable to verify QCs from the new set — a chain-stalling bitmap mismatch).
+		// Then clear the consumed staged record.
 		if s.db != nil {
+			if ce := s.engine.Engine(); ce != nil {
+				if epoch, validators, f, ok := ce.CurrentEpochInfoSafe(); ok {
+					if err := s.db.Update(s.ctx, func(tx kv.RwTx) error {
+						return SaveActiveEpoch(tx, epoch, validators, f)
+					}); err != nil {
+						log.Error("failed to persist active epoch", "err", err)
+					}
+				}
+			}
 			if err := s.db.Update(s.ctx, func(tx kv.RwTx) error {
 				return ClearStagedEpoch(tx) // staged → active, clear persisted staged
 			}); err != nil {
@@ -970,8 +983,52 @@ func (s *Service) persistState() {
 	s.lastPersistedView = state.View
 }
 
+// recoverEpochState restores the persisted validator-set state after a restart.
+// Reconfiguration lives only in memory, so without this a restarted node reverts to
+// the genesis set and can no longer verify QCs signed by a reconfigured set — which
+// stalls the chain (a "signers bitmap length mismatch" livelock, reproducible by
+// crashing a node after a validator add/remove). Restores the ACTIVE set, and any
+// committed-but-unactivated STAGED set, before consensus resumes.
+func (s *Service) recoverEpochState() {
+	if s.db == nil {
+		return
+	}
+	ce := s.engine.Engine()
+	if ce == nil {
+		return
+	}
+	var (
+		aEpoch uint64
+		aVals  []ValidatorInfo
+		aF     uint32
+		aOk    bool
+		sVals  []ValidatorInfo
+		sF     uint32
+	)
+	if err := s.db.View(s.ctx, func(tx kv.Tx) error {
+		var e1 error
+		aEpoch, aVals, aF, aOk, e1 = LoadActiveEpoch(tx)
+		if e1 != nil {
+			return e1
+		}
+		_, sVals, sF, _ = LoadStagedEpoch(tx)
+		return nil
+	}); err != nil {
+		log.Warn("hotstuff: failed to load persisted epoch state", "err", err)
+		return
+	}
+	if aOk && len(aVals) > 0 {
+		ce.RestoreValidatorSet(aEpoch, aVals, aF)
+	}
+	if len(sVals) > 0 {
+		ce.RestoreStagedSet(sVals, sF)
+	}
+}
+
 // recoverState loads persisted consensus state and reinitializes the engine.
 func (s *Service) recoverState() error {
+	s.recoverEpochState()
+
 	var state *ConsensusState
 	if err := s.db.View(s.ctx, func(tx kv.Tx) error {
 		var err error
