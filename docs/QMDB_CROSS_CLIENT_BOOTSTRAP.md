@@ -31,3 +31,30 @@ Existing full replay acceptance on 2026-07-21:
   `be01f8f834d7b203170dc6127a8b3f2582a4fe90c621df48db8213593161084a`.
 
 The original replay and seven-node datadirs were opened read-only and retained.
+
+## Private/custom chain replay
+
+Private chains are not registered in the binary, so `--chain private` alone
+cannot supply their chain ID, fork schedule, genesis alloc, or HotStuff
+validator set. Pass the exact genesis JSON used to initialize the source. The
+replay computes its QMDB genesis hash and refuses to create the target if it
+does not match source block 0.
+
+```bash
+n42 replay-v2 \
+  --source <custom-source-datadir> \
+  --target <custom-qmdb-archive-datadir> \
+  --chain private \
+  --genesis <custom-genesis.json> \
+  --tree qmdb \
+  --qmdb-history \
+  --from 0 --to <checkpoint>
+```
+
+Live custom-chain acceptance on 2026-07-21 used chain ID 1143 and a seven-node
+HotStuff v4 network. All seven nodes converged on a transaction-bearing block,
+then replay-v2 processed blocks 1 through 49 with 247/247 transactions,
+`txFailed=0`, and 49/49 matching receipts. The portable checkpoint contained
+437 positional slots and 34 live keys. The independent Rust verifier
+recomputed the exact root
+`6fb33357c8db5eb206f506af271cf5fff885fc11bbd82b405b74a42943c98314`.
