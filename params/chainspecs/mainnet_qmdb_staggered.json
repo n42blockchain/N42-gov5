@@ -30,7 +30,7 @@
     "period": 3,
     "baseTimeout": 6000,
     "maxTimeout": 30000,
-    "epochLength": 1000000,
+    "epochLength": 200,
     "fastPropose": true,
     "minProposeDelayMs": 200,
     "committeePool": {
