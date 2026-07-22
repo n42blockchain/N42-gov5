@@ -2,6 +2,19 @@
 
 ---
 
+### 2026-07-21: Finalized-range and QMDB same-chain observer anchor
+
+- Added bounded, deterministic canonical block/header/compact-receipt range export to
+  `n42-qmdb-export`, including chain/genesis identity and a Blake3 content digest.
+- Rust now binds every declared number/parent/state/transaction/receipt field back to the
+  canonical header RLP and requires the range head to match the portable QMDB checkpoint.
+- Fixed fresh replay-v2 block 1 to use the newly written genesis canonical hash as its parent;
+  the retained old replay artifact remains untouched and a regression test locks the rule.
+- Existing seven-node runtime acceptance matched block 898 and its QMDB state root across the
+  128-block finalized tail and portable checkpoint. The Rust node remained observer-only.
+
+---
+
 ### 2026-07-21: Custom-chain replay-v2 QMDB cross-client bootstrap
 
 - Added `replay-v2 --genesis <path>` for private/custom networks; the custom
