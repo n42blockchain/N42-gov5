@@ -1,5 +1,5 @@
 {
-  "chainId": 94,
+  "chainId": 95,
   "homesteadBlock": 0,
   "daoForkBlock": null,
   "daoForkSupport": false,
@@ -30,7 +30,7 @@
     "period": 3,
     "baseTimeout": 6000,
     "maxTimeout": 30000,
-    "epochLength": 200,
+    "epochLength": 20,
     "fastPropose": true,
     "minProposeDelayMs": 200,
     "committeePool": {

@@ -289,7 +289,7 @@ func TestEpochAdvance(t *testing.T) {
 		t.Fatal("should have staged set")
 	}
 
-	advanced := em.AdvanceEpoch()
+	advanced := em.AdvanceEpoch(11)
 	if !advanced {
 		t.Fatal("should have advanced")
 	}
@@ -301,7 +301,7 @@ func TestEpochAdvance(t *testing.T) {
 	}
 
 	// Without staged set, AdvanceEpoch returns false.
-	if em.AdvanceEpoch() {
+	if em.AdvanceEpoch(21) {
 		t.Fatal("should not advance without staged set")
 	}
 }
@@ -1374,8 +1374,10 @@ func TestHotStuffType(t *testing.T) {
 func TestHotStuffCalcDifficulty(t *testing.T) {
 	h := New(nil, nil)
 	d := h.CalcDifficulty(nil, 0, nil)
-	if d.Uint64() != 1 {
-		t.Fatalf("expected difficulty 1, got %d", d.Uint64())
+	// HotStuff is BFT: difficulty is 0 (post-merge/PoS convention), not used for
+	// fork choice (commit-authority) nor verified. Consistent with zero ommers.
+	if d.Uint64() != 0 {
+		t.Fatalf("expected difficulty 0, got %d", d.Uint64())
 	}
 }
 
