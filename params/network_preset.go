@@ -118,6 +118,16 @@ func ResolveNetworkPreset(chain, rawProfile string) (NetworkPreset, error) {
 			Profile:    profile,
 			Commitment: StateCommitmentPresetQMDB,
 		}, nil
+	case "qs_epoch_test":
+		profile, err := resolveExpectedProfile(ExecutionProfileN42)
+		if err != nil {
+			return NetworkPreset{}, err
+		}
+		return NetworkPreset{
+			Chain:      "qs_epoch_test",
+			Profile:    profile,
+			Commitment: StateCommitmentPresetQMDB,
+		}, nil
 	case networkname.EthereumMainnetChainName:
 		profile, err := resolveExpectedProfile(ExecutionProfileEthereumEL)
 		if err != nil {
@@ -204,6 +214,11 @@ func InferNetworkPresetFromChainConfig(chainCfg *ChainConfig) (NetworkPreset, bo
 			targetChain = "mainnet_v2"
 		}
 		preset, err := ResolveNetworkPreset(targetChain, string(ExecutionProfileN42))
+		return preset, err == nil
+	case 95:
+		// qs_epoch_test: isolated HotStuff reconfiguration test chain — same
+		// validators/alloc as mainnet_qmdb_staggered but chainId 95 + epochLength 20.
+		preset, err := ResolveNetworkPreset("qs_epoch_test", string(ExecutionProfileN42))
 		return preset, err == nil
 	case 1142:
 		preset, err := ResolveNetworkPreset(networkname.TestnetChainName, string(ExecutionProfileN42))

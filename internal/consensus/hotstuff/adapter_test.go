@@ -580,3 +580,33 @@ func TestVerifyHeader_TimestampNotAfterParent(t *testing.T) {
 		t.Fatal("VerifyHeader with timestamp not after parent should fail")
 	}
 }
+
+// TestInitEngineObserverWhenEpochsEnabled verifies that with epochs enabled a
+// signer absent from the genesis set starts as a pending observer (no error) so
+// it can be added later via reconfig — the bootstrap path for brand-new
+// validators. Without epochs it must still fail fast (TestInitEngineFromConfig_SignerNotInSet).
+func TestInitEngineObserverWhenEpochsEnabled(t *testing.T) {
+	configs, _, setup := generateValidatorConfigs(t, 4)
+	cfg := &params.HotStuffConfig{
+		BaseTimeout: 60000,
+		MaxTimeout:  120000,
+		EpochLength: 20, // epochs enabled → observer mode allowed
+		Validators:  configs,
+	}
+	h := New(cfg, nil)
+	h.Authorize(types.Address{0xFF}, setup.keys[0]) // not in the genesis set
+
+	if err := h.InitEngineFromConfig(); err != nil {
+		t.Fatalf("with epochs enabled, an outsider signer should start as observer, not error: %v", err)
+	}
+	eng := h.Engine()
+	if eng == nil {
+		t.Fatal("expected engine initialized as observer")
+	}
+	if !eng.IsRemoved() {
+		t.Fatal("observer should be inactive (IsRemoved) until added via reconfig")
+	}
+	if eng.MyIndex() != NonMemberIndex {
+		t.Fatalf("observer MyIndex = %d, want NonMemberIndex", eng.MyIndex())
+	}
+}

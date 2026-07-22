@@ -1209,6 +1209,20 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 	// is disabled on leader-driven chains (canonical is commit-authority-only).
 	s.maybeCommitFromHeaderQC(headerExtra)
 	if ce := s.engine.Engine(); ce != nil {
+		// Observer/removed-node reconfig commit MUST run BEFORE processing the
+		// imported block. Such a node produces no commits, so its reconfigMgr never
+		// sees OutputBlockCommitted (which drives MarkCommitted for active
+		// validators); importing a committed block is its evidence that consensus
+		// progressed past the pending change. ProcessEvent(EventBlockImported) below
+		// may cross an epoch boundary and try to apply the pending reconfig, which
+		// requires IsCommitted already true — marking AFTER would always miss the
+		// boundary-crossing import and delay activation by a full epoch, leaving the
+		// node a phantom member (counted by the active set but not participating).
+		if ce.IsRemoved() {
+			if rm := ce.ReconfigManager(); rm != nil && rm.HasPendingChanges() {
+				rm.MarkCommitted()
+			}
+		}
 		if err := ce.ProcessEvent(ConsensusEvent{
 			Type:       EventBlockImported,
 			Hash:       hash,
@@ -1262,7 +1276,7 @@ func (s *Service) maybeCommitFromHeaderQC(extra []byte) {
 	// a conflicting block committing at that height). Accepting one would let a
 	// crafted header embedding a stale PrepareQC drive a catching-up node to
 	// canonicalize a never-committed block, diverging its canonical head.
-	if verr := VerifyCommitQC(qc, ce.CurrentValidatorSet()); verr != nil {
+	if verr := VerifyCommitQC(qc, ce.ResolveQCValidatorSet(qc.View, len(qc.Signers))); verr != nil {
 		log.Debug("hotstuff: header-QC canonicalize skipped (verify failed)",
 			"qcBlock", qc.BlockHash, "qcView", qc.View, "err", verr)
 		return
