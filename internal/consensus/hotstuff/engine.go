@@ -90,6 +90,7 @@ type ConsensusEngine struct {
 	mu sync.Mutex
 
 	myIndex   ValidatorIndex
+	myAddr    types.Address // own validator address; lets an observer/removed node (myIndex==NonMemberIndex) locate itself in a new set at an epoch boundary
 	secretKey common.SecretKey
 
 	// h2V4Identity is set only for an explicitly configured cross-client
@@ -289,6 +290,28 @@ func (e *ConsensusEngine) MyIndex() ValidatorIndex {
 	return e.myIndex
 }
 
+// NonMemberIndex marks a node whose signer is not in the active validator set:
+// a brand-new validator not yet added via reconfig, or one that was removed.
+// Such a node still imports blocks and processes consensus messages (so its view
+// advances and it can detect being added at an epoch boundary) but never
+// proposes, votes, or times out. IsLeader compares against a real index and so
+// is always false for it; GetAddress must never be called with it (use myAddr).
+const NonMemberIndex ValidatorIndex = ^ValidatorIndex(0)
+
+// isMember reports whether this node is in the active validator set (holds the
+// engine lock via its callers). Participation gates (vote, commit-vote, timeout)
+// check this so observer/removed nodes stay silent until reconfig activates them.
+func (e *ConsensusEngine) isMember() bool { return e.myIndex != NonMemberIndex }
+
+// SetSelfAddress records this node's own validator address. Required so an
+// observer/removed node (myIndex==NonMemberIndex) can find itself in a newly
+// applied set at an epoch boundary, where it cannot index the current set.
+func (e *ConsensusEngine) SetSelfAddress(addr types.Address) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.myAddr = addr
+}
+
 // RestoreState restores persisted consensus state for crash recovery.
 // Must only be called before the engine starts processing events.
 func (e *ConsensusEngine) RestoreState(view ViewNumber, lockedQC, committedQC QuorumCertificate, consecutiveTimeouts uint32) {
@@ -296,6 +319,10 @@ func (e *ConsensusEngine) RestoreState(view ViewNumber, lockedQC, committedQC Qu
 	defer e.mu.Unlock()
 	e.roundState = RoundStateFromSnapshot(view, lockedQC, committedQC, consecutiveTimeouts)
 	e.pacemaker.ResetForView(view, consecutiveTimeouts)
+	// Align the epoch counter with the recovered view. A mid-chain restart with
+	// epochs enabled would otherwise leave currentEpoch at 0 while the view is far
+	// ahead, decoupling historicalSets keys from ValidatorSetForView lookups.
+	e.epochManager.SeedCurrentEpoch(view)
 }
 
 func (e *ConsensusEngine) ValidatorCount() uint32 {
@@ -317,11 +344,58 @@ func (e *ConsensusEngine) ValidatorSetForView(view ViewNumber) *ValidatorSet {
 	return e.epochManager.ValidatorSetForView(uint64(view))
 }
 
+// ResolveQCValidatorSet is the locked, exported form of resolveQCValidatorSet for
+// out-of-engine callers. It resolves authority by view and returns nil when the
+// exact epoch set is unavailable or has a different bitmap width.
+func (e *ConsensusEngine) ResolveQCValidatorSet(view ViewNumber, bitmapLen int) *ValidatorSet {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.resolveQCValidatorSet(view, bitmapLen)
+}
+
 // StagedEpochInfoSafe returns staged epoch info under the engine lock.
 func (e *ConsensusEngine) StagedEpochInfoSafe() (uint64, []ValidatorInfo, uint32, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.epochManager.StagedEpochInfo()
+}
+
+// CurrentEpochInfoSafe returns the active validator set's epoch, members and fault
+// tolerance under the engine lock, for persisting the reconfigured set so it
+// survives a restart.
+func (e *ConsensusEngine) CurrentEpochInfoSafe() (uint64, []ValidatorInfo, uint32, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.epochManager.CurrentEpochInfo()
+}
+
+// RestoreValidatorSet restores a persisted active validator set after a restart and
+// re-derives this node's own index in it: a node still in the set resumes as a
+// member, one dropped from it becomes an observer. Without this a restarted node
+// falls back to the genesis set and cannot verify QCs from the reconfigured set.
+func (e *ConsensusEngine) RestoreValidatorSet(epoch uint64, validators []ValidatorInfo, f uint32) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.epochManager.RestoreActiveSet(epoch, validators, f)
+	if idx := e.epochManager.CurrentValidatorSet().FindByAddress(e.myAddr); idx >= 0 {
+		e.myIndex = ValidatorIndex(idx)
+		e.removed = false
+	} else {
+		e.myIndex = NonMemberIndex
+		e.removed = true
+	}
+	log.Info("hotstuff: restored active validator set after restart",
+		"epoch", epoch, "validators", len(validators), "myIndex", e.myIndex)
+}
+
+// RestoreStagedSet re-stages a validator set that was committed but not yet
+// activated before a restart, so the node still activates it at the next epoch
+// boundary. Complements RestoreValidatorSet (active set) on recovery.
+func (e *ConsensusEngine) RestoreStagedSet(validators []ValidatorInfo, f uint32) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.epochManager.StageNextEpoch(validators, f)
+	log.Info("hotstuff: restored staged validator set after restart", "validators", len(validators))
 }
 
 // PreStageFromScheduleSafe stages the next epoch under the engine lock.
@@ -365,9 +439,12 @@ func (e *ConsensusEngine) ConsecutiveTimeouts() uint32 {
 func (e *ConsensusEngine) ProcessEvent(event ConsensusEvent) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.removed {
-		return ErrValidatorRemoved
-	}
+	// Note: an observer/removed node (myIndex==NonMemberIndex) is NOT blocked here.
+	// It must process messages and imported blocks so its view advances and it can
+	// detect being added at an epoch boundary. Participation is gated downstream:
+	// onBlockReady via IsLeader, sendVote/sendCommitVote and the timeout paths via
+	// isMember. This is what lets a brand-new validator bootstrap and a removed one
+	// rejoin without a process restart.
 
 	switch event.Type {
 	case EventMessage:
@@ -385,8 +462,8 @@ func (e *ConsensusEngine) ProcessEvent(event ConsensusEvent) error {
 func (e *ConsensusEngine) OnTimeout() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.removed {
-		return ErrValidatorRemoved
+	if !e.isMember() {
+		return nil // observer/removed nodes do not drive timeouts
 	}
 	return e.onTimeout()
 }
@@ -428,6 +505,25 @@ const (
 
 func (e *ConsensusEngine) validatorSet() *ValidatorSet {
 	return e.epochManager.CurrentValidatorSet()
+}
+
+// validatorSetForView returns the validator set that was active at the given view
+// — the set that would have signed a QC/TC for it. Use this (not validatorSet)
+// for verifying any certificate that may predate the current set, so verification
+// stays correct across an epoch-boundary validator-set change.
+func (e *ConsensusEngine) validatorSetForView(view ViewNumber) *ValidatorSet {
+	return e.epochManager.ValidatorSetForView(uint64(view))
+}
+
+// resolveQCValidatorSet returns only the set authorized at view. An old set can
+// produce a valid BLS signature over a future view, so bitmap length must never
+// be used as a validator-set authorization fallback.
+func (e *ConsensusEngine) resolveQCValidatorSet(view ViewNumber, bitmapLen int) *ValidatorSet {
+	primary := e.validatorSetForView(view)
+	if primary == nil || int(primary.Len()) != bitmapLen {
+		return nil
+	}
+	return primary
 }
 
 // SetTwoPhaseVote switches between classic import-gated Round-1 voting
@@ -485,42 +581,53 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 
 	// Check epoch boundary — apply pending reconfigurations if committed.
 	if e.epochManager.EpochsEnabled() && e.epochManager.IsEpochBoundary(newView) {
-		// Apply committed reconfiguration changes before advancing epoch.
-		// Per HotStuff-2 § 5: changes take effect only after the old set commits them.
-		// Note: ApplyAtEpochBoundary() validates internally (ValidateTransition)
-		// and only stages the set if validation passes.
-		if e.reconfigMgr != nil && e.reconfigMgr.IsCommitted() {
-			// Capture own address before the set changes
-			myAddr, _ := e.validatorSet().GetAddress(e.myIndex)
-
-			if newSet := e.reconfigMgr.ApplyAtEpochBoundary(); newSet != nil {
-				// Emit staged event so Service persists it for crash recovery.
-				if err := e.emit(EngineOutput{
-					Type:           OutputEpochStaged,
-					NewEpoch:       e.epochManager.CurrentEpoch() + 1,
-					ValidatorCount: newSet.Len(),
-				}); err != nil {
-					return err
-				}
-				// Update own index in the new set
-				newIdx := newSet.FindByAddress(myAddr)
-				if newIdx >= 0 {
-					e.myIndex = ValidatorIndex(newIdx)
-				} else {
-					log.Warn("This node removed from validator set at epoch boundary",
-						"address", myAddr.Hex(), "epoch", e.epochManager.CurrentEpoch()+1)
-					_ = e.emit(EngineOutput{
-						Type:    OutputEpochTransition,
-						Removed: true,
-					})
-					e.removed = true
-					e.pacemaker.Stop()
-					return nil // stop consensus participation immediately
-				}
+		// The next-epoch validator set was already staged at CommitQC time
+		// (ReconfigurationManager.MarkCommitted -> EpochManager.StageNextEpoch), which
+		// is precisely what makes it visible to QC verification BEFORE this boundary —
+		// a catching-up node verifies post-boundary blocks against the staged set via
+		// view-bound certificate resolution. Here we only ACTIVATE it.
+		if e.epochManager.HasStagedNext() {
+			if err := e.emit(EngineOutput{
+				Type:           OutputEpochStaged,
+				NewEpoch:       e.epochManager.CurrentEpoch() + 1,
+				ValidatorCount: e.epochManager.PeekNextSet().Len(),
+			}); err != nil {
+				return err
 			}
 		}
 
-		if e.epochManager.AdvanceEpoch() {
+		if e.epochManager.AdvanceEpoch(uint64(newView)) {
+			// The set changed. Re-derive our own index in the now-active set. This also
+			// covers a node that joined/rejoined via block sync: without it the node
+			// keeps its stale observer index and fails BLS verification on every signed
+			// message it emits. myIndex may be NonMemberIndex here (an observer being
+			// added), so match on the stored self address, not a set index.
+			myAddr := e.myAddr
+			newIdx := e.validatorSet().FindByAddress(myAddr)
+			switch {
+			case newIdx >= 0:
+				wasInactive := !e.isMember()
+				e.myIndex = ValidatorIndex(newIdx)
+				if wasInactive {
+					// Just added (fresh bootstrap or rejoin after removal): resume
+					// participation. removed is cleared and the pacemaker is reset for
+					// the current view by the ResetForView at the end of advanceToView.
+					e.removed = false
+					log.Info("This node added to validator set at epoch boundary",
+						"address", myAddr.Hex(), "index", newIdx, "epoch", e.epochManager.CurrentEpoch())
+				}
+			case e.isMember():
+				// Was an active member, now removed from the set.
+				log.Warn("This node removed from validator set at epoch boundary",
+					"address", myAddr.Hex(), "epoch", e.epochManager.CurrentEpoch())
+				_ = e.emit(EngineOutput{Type: OutputEpochTransition, Removed: true})
+				e.removed = true
+				e.myIndex = NonMemberIndex // stay silent but keep processing to detect re-add
+				e.pacemaker.Stop()
+				return nil // stop consensus participation immediately
+				// default (already inactive and still not in the set): stay an observer.
+			}
+
 			newEpoch := e.epochManager.CurrentEpoch()
 			validatorCount := e.validatorSet().Len()
 			log.Info("epoch transition at view boundary",

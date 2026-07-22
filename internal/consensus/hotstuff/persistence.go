@@ -169,6 +169,74 @@ func ClearStagedEpoch(tx kv.RwTx) error {
 	return tx.Delete(modules.HotStuffState, stagedEpochKey)
 }
 
+// activeEpochKey stores the ACTIVE (applied) validator set, so a node that
+// restarts after a reconfiguration restores the reconfigured set instead of
+// reverting to the genesis set. LoadStagedEpoch's format is reused verbatim.
+var activeEpochKey = []byte("active_epoch")
+
+// SaveActiveEpoch persists the current active validator set + epoch. Called on
+// every epoch transition (activation), so the on-disk record always reflects the
+// live set. Reuses the staged-epoch wire format (same bytes, different key).
+func SaveActiveEpoch(tx kv.RwTx, epoch uint64, validators []ValidatorInfo, f uint32) error {
+	count := len(validators)
+	size := 16
+	for _, v := range validators {
+		size += 20 + 4 + len(v.PublicKey.Marshal())
+	}
+	buf := make([]byte, size)
+	binary.LittleEndian.PutUint64(buf[0:8], epoch)
+	binary.LittleEndian.PutUint32(buf[8:12], f)
+	binary.LittleEndian.PutUint32(buf[12:16], uint32(count))
+	offset := 16
+	for _, v := range validators {
+		copy(buf[offset:offset+20], v.Address[:])
+		offset += 20
+		pkBytes := v.PublicKey.Marshal()
+		binary.LittleEndian.PutUint32(buf[offset:offset+4], uint32(len(pkBytes)))
+		offset += 4
+		copy(buf[offset:offset+len(pkBytes)], pkBytes)
+		offset += len(pkBytes)
+	}
+	return tx.Put(modules.HotStuffState, activeEpochKey, buf[:offset])
+}
+
+// LoadActiveEpoch loads the persisted active validator set. Returns ok=false when
+// none has been recorded (no reconfiguration has ever applied on this node).
+func LoadActiveEpoch(tx kv.Tx) (epoch uint64, validators []ValidatorInfo, f uint32, ok bool, err error) {
+	val, gErr := tx.GetOne(modules.HotStuffState, activeEpochKey)
+	if gErr != nil {
+		return 0, nil, 0, false, fmt.Errorf("read active epoch: %w", gErr)
+	}
+	if val == nil || len(val) < 16 {
+		return 0, nil, 0, false, nil
+	}
+	epoch = binary.LittleEndian.Uint64(val[0:8])
+	f = binary.LittleEndian.Uint32(val[8:12])
+	count := binary.LittleEndian.Uint32(val[12:16])
+	validators = make([]ValidatorInfo, 0, count)
+	offset := 16
+	for i := uint32(0); i < count; i++ {
+		if offset+24 > len(val) {
+			return 0, nil, 0, false, fmt.Errorf("active epoch data truncated at validator %d", i)
+		}
+		var addr types.Address
+		copy(addr[:], val[offset:offset+20])
+		offset += 20
+		pkLen := binary.LittleEndian.Uint32(val[offset : offset+4])
+		offset += 4
+		if offset+int(pkLen) > len(val) {
+			return 0, nil, 0, false, fmt.Errorf("active epoch data truncated at validator %d pubkey", i)
+		}
+		pk, pErr := bls.PublicKeyFromBytes(val[offset : offset+int(pkLen)])
+		if pErr != nil {
+			return 0, nil, 0, false, fmt.Errorf("validator %d BLS key: %w", i, pErr)
+		}
+		offset += int(pkLen)
+		validators = append(validators, ValidatorInfo{Address: addr, PublicKey: pk})
+	}
+	return epoch, validators, f, true, nil
+}
+
 // --- Vote persistence for crash recovery ---
 
 var pendingVotesKey = []byte("pending_votes")

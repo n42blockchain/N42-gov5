@@ -589,8 +589,21 @@ func (s *Service) handleOutput(output EngineOutput) {
 	case OutputEpochTransition:
 		log.Info("hotstuff: epoch transition", "epoch", output.NewEpoch, "validators", output.ValidatorCount)
 
-		// Persist staged epoch state for crash recovery.
+		// Persist the now-ACTIVE validator set so a node that restarts after this
+		// reconfiguration restores the reconfigured set instead of reverting to the
+		// genesis set (in-memory-only reconfig would otherwise leave a restarted node
+		// unable to verify QCs from the new set — a chain-stalling bitmap mismatch).
+		// Then clear the consumed staged record.
 		if s.db != nil {
+			if ce := s.engine.Engine(); ce != nil {
+				if epoch, validators, f, ok := ce.CurrentEpochInfoSafe(); ok {
+					if err := s.db.Update(s.ctx, func(tx kv.RwTx) error {
+						return SaveActiveEpoch(tx, epoch, validators, f)
+					}); err != nil {
+						log.Error("failed to persist active epoch", "err", err)
+					}
+				}
+			}
 			if err := s.db.Update(s.ctx, func(tx kv.RwTx) error {
 				return ClearStagedEpoch(tx) // staged → active, clear persisted staged
 			}); err != nil {
@@ -1002,8 +1015,52 @@ func (s *Service) persistState() {
 	s.lastPersistedView = state.View
 }
 
+// recoverEpochState restores the persisted validator-set state after a restart.
+// Reconfiguration lives only in memory, so without this a restarted node reverts to
+// the genesis set and can no longer verify QCs signed by a reconfigured set — which
+// stalls the chain (a "signers bitmap length mismatch" livelock, reproducible by
+// crashing a node after a validator add/remove). Restores the ACTIVE set, and any
+// committed-but-unactivated STAGED set, before consensus resumes.
+func (s *Service) recoverEpochState() {
+	if s.db == nil {
+		return
+	}
+	ce := s.engine.Engine()
+	if ce == nil {
+		return
+	}
+	var (
+		aEpoch uint64
+		aVals  []ValidatorInfo
+		aF     uint32
+		aOk    bool
+		sVals  []ValidatorInfo
+		sF     uint32
+	)
+	if err := s.db.View(s.ctx, func(tx kv.Tx) error {
+		var e1 error
+		aEpoch, aVals, aF, aOk, e1 = LoadActiveEpoch(tx)
+		if e1 != nil {
+			return e1
+		}
+		_, sVals, sF, _ = LoadStagedEpoch(tx)
+		return nil
+	}); err != nil {
+		log.Warn("hotstuff: failed to load persisted epoch state", "err", err)
+		return
+	}
+	if aOk && len(aVals) > 0 {
+		ce.RestoreValidatorSet(aEpoch, aVals, aF)
+	}
+	if len(sVals) > 0 {
+		ce.RestoreStagedSet(sVals, sF)
+	}
+}
+
 // recoverState loads persisted consensus state and reinitializes the engine.
 func (s *Service) recoverState() error {
+	s.recoverEpochState()
+
 	var state *ConsensusState
 	if err := s.db.View(s.ctx, func(tx kv.Tx) error {
 		var err error
@@ -1241,6 +1298,20 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 	// is disabled on leader-driven chains (canonical is commit-authority-only).
 	s.maybeCommitFromHeaderQC(headerExtra)
 	if ce := s.engine.Engine(); ce != nil {
+		// Observer/removed-node reconfig commit MUST run BEFORE processing the
+		// imported block. Such a node produces no commits, so its reconfigMgr never
+		// sees OutputBlockCommitted (which drives MarkCommitted for active
+		// validators); importing a committed block is its evidence that consensus
+		// progressed past the pending change. ProcessEvent(EventBlockImported) below
+		// may cross an epoch boundary and try to apply the pending reconfig, which
+		// requires IsCommitted already true — marking AFTER would always miss the
+		// boundary-crossing import and delay activation by a full epoch, leaving the
+		// node a phantom member (counted by the active set but not participating).
+		if ce.IsRemoved() {
+			if rm := ce.ReconfigManager(); rm != nil && rm.HasPendingChanges() {
+				rm.MarkCommitted()
+			}
+		}
 		if err := ce.ProcessEvent(ConsensusEvent{
 			Type:       EventBlockImported,
 			Hash:       hash,
@@ -1294,7 +1365,7 @@ func (s *Service) maybeCommitFromHeaderQC(extra []byte) {
 	// a conflicting block committing at that height). Accepting one would let a
 	// crafted header embedding a stale PrepareQC drive a catching-up node to
 	// canonicalize a never-committed block, diverging its canonical head.
-	if verr := ce.verifyCommitQC(qc); verr != nil {
+	if verr := ce.VerifyCommitQCForView(qc); verr != nil {
 		log.Debug("hotstuff: header-QC canonicalize skipped (verify failed)",
 			"qcBlock", qc.BlockHash, "qcView", qc.View, "err", verr)
 		return

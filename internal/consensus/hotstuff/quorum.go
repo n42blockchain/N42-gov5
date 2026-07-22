@@ -328,6 +328,9 @@ func VerifyTC(tc *TimeoutCertificate, vs *ValidatorSet) error {
 }
 
 func verifyTCAgainstMessage(tc *TimeoutCertificate, vs *ValidatorSet, msg []byte) error {
+	if vs == nil {
+		return &InvalidTCError{View: tc.View, Reason: "validator set unavailable for certificate view"}
+	}
 	quorumSize := vs.QuorumSize()
 
 	if int(vs.Len()) != len(tc.Signers) {
@@ -371,6 +374,9 @@ func verifyTCAgainstMessage(tc *TimeoutCertificate, vs *ValidatorSet, msg []byte
 
 // verifyAggregateSignature is a shared helper for verifying QC aggregate signatures.
 func verifyAggregateSignature(qc *QuorumCertificate, vs *ValidatorSet, message []byte, certKind string) error {
+	if vs == nil {
+		return &InvalidQCError{View: qc.View, Reason: "validator set unavailable for certificate view"}
+	}
 	quorumSize := vs.QuorumSize()
 
 	if int(vs.Len()) != len(qc.Signers) {

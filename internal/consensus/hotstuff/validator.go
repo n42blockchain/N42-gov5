@@ -14,8 +14,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -168,6 +168,15 @@ type EpochManager struct {
 	currentSet     *ValidatorSet
 	nextSet        *ValidatorSet
 	historicalSets map[uint64]*ValidatorSet
+
+	// Cross-boundary QC/TC verification: a certificate formed at a view before the
+	// current set took effect must be verified against the set that was active
+	// then. prevSet is the set active immediately before the last change, and
+	// setSinceView is the boundary view at which currentSet took effect. Because
+	// set changes are at least one epoch apart and certificates are ~1 view old,
+	// the immediately previous set covers every legitimate cross-boundary check.
+	prevSet      *ValidatorSet
+	setSinceView uint64
 }
 
 const maxHistoricalEpochs = 3
@@ -318,6 +327,21 @@ func (em *EpochManager) EpochForView(view uint64) uint64 {
 	return (view - 1) / em.epochLength
 }
 
+// SeedCurrentEpoch aligns the epoch counter with a recovered view after a
+// mid-chain restart. Without it the manager stays at currentEpoch=0 while the
+// restored view is far ahead, so historicalSets (keyed by currentEpoch in
+// AdvanceEpoch) would never match the EpochForView(view) lookups in
+// ValidatorSetForView. Fast-forwarding is safe when no validator-set change happened
+// at or before this view — the case for a chain enabling epochs for the first
+// time, whose set has been static — so no historical set is lost. No-op when
+// epochs are disabled. Must be called under the engine lock.
+func (em *EpochManager) SeedCurrentEpoch(view uint64) {
+	if em.epochLength == 0 {
+		return
+	}
+	em.currentEpoch = em.EpochForView(view)
+}
+
 // IsEpochBoundary checks if a given view is the first view of a new epoch.
 func (em *EpochManager) IsEpochBoundary(view uint64) bool {
 	if em.epochLength == 0 || view <= 1 {
@@ -326,27 +350,29 @@ func (em *EpochManager) IsEpochBoundary(view uint64) bool {
 	return (view-1)%em.epochLength == 0
 }
 
-// ValidatorSetForView returns the validator set for verifying QCs at the given view.
-// Resolves: current epoch → currentSet, next epoch → staged nextSet (if available),
-// historical epoch → historicalSets, fallback → currentSet.
+// ValidatorSetForView returns the validator set authorized at the given view.
+// Unknown epochs fail closed: a known set with a matching bitmap width is not
+// necessarily authorized for that view.
 func (em *EpochManager) ValidatorSetForView(view uint64) *ValidatorSet {
 	if em.epochLength == 0 {
 		return em.currentSet
 	}
-	epoch := em.EpochForView(view)
-	if epoch == em.currentEpoch {
+	targetEpoch := em.EpochForView(view)
+	if targetEpoch == em.currentEpoch {
 		return em.currentSet
 	}
-	// Staged next epoch: resolve views in the transition window before advance.
-	if epoch == em.currentEpoch+1 && em.nextSet != nil {
+	// Committed changes are staged before the boundary so catch-up can verify the
+	// first certificate of the next epoch without activating the set early.
+	if targetEpoch == em.currentEpoch+1 && em.nextSet != nil {
 		return em.nextSet
 	}
-	if set, ok := em.historicalSets[epoch]; ok {
+	if targetEpoch+1 == em.currentEpoch && em.prevSet != nil {
+		return em.prevSet
+	}
+	if set, ok := em.historicalSets[targetEpoch]; ok {
 		return set
 	}
-	log.Warn("ValidatorSetForView: no set for epoch, using current",
-		"view", view, "epoch", epoch, "currentEpoch", em.currentEpoch)
-	return em.currentSet
+	return nil
 }
 
 // StageNextEpoch stages a new validator set for the next epoch.
@@ -359,14 +385,56 @@ func (em *EpochManager) HasStagedNext() bool {
 	return em.nextSet != nil
 }
 
+// CurrentEpochInfo returns the active validator set's epoch, members and fault
+// tolerance, for persistence across restarts. ok is false only if there is no set.
+func (em *EpochManager) CurrentEpochInfo() (uint64, []ValidatorInfo, uint32, bool) {
+	if em.currentSet == nil {
+		return 0, nil, 0, false
+	}
+	validators := make([]ValidatorInfo, em.currentSet.Len())
+	for i := uint32(0); i < em.currentSet.Len(); i++ {
+		addr, _ := em.currentSet.GetAddress(ValidatorIndex(i))
+		pk, _ := em.currentSet.GetPublicKey(ValidatorIndex(i))
+		validators[i] = ValidatorInfo{Address: addr, PublicKey: pk}
+	}
+	return em.currentEpoch, validators, em.currentSet.FaultTolerance(), true
+}
+
+// RestoreActiveSet replaces the current validator set with a persisted one after a
+// restart. Reconfiguration is in-memory only, so without this a restarted node
+// reverts to the genesis set and can no longer verify QCs signed by the reconfigured
+// set (observed as a "signers bitmap length mismatch" that stalls the chain). The
+// The previous set is deliberately cleared: the in-memory set constructed at
+// startup is not necessarily the actual predecessor of a persisted set after
+// multiple rotations. Treating it as such would authorize the wrong keys for
+// currentEpoch-1. Exact previous/history persistence can restore that liveness
+// optimization later without weakening view-bound authority.
+func (em *EpochManager) RestoreActiveSet(epoch uint64, validators []ValidatorInfo, f uint32) {
+	newSet := NewValidatorSet(validators, f)
+	em.prevSet = nil
+	em.currentSet = newSet
+	em.currentEpoch = epoch
+}
+
+// PeekNextSet returns the staged next-epoch validator set without activating it
+// (nil if none is staged). Staging happens at CommitQC time, so this set is
+// available for view-bound QC verification before the epoch boundary.
+func (em *EpochManager) PeekNextSet() *ValidatorSet {
+	return em.nextSet
+}
+
 // AdvanceEpoch activates the staged validator set.
 // Returns true if a transition occurred.
-func (em *EpochManager) AdvanceEpoch() bool {
+func (em *EpochManager) AdvanceEpoch(boundaryView uint64) bool {
 	if em.nextSet == nil {
 		return false
 	}
 	em.historicalSets[em.currentEpoch] = em.currentSet.Clone()
 	em.trimHistorical()
+	// Retain the outgoing set for cross-boundary certificate verification: QCs/TCs
+	// formed at views < boundaryView carry a signer bitmap sized to this set.
+	em.prevSet = em.currentSet
+	em.setSinceView = boundaryView
 	em.currentEpoch++
 	em.currentSet = em.nextSet
 	em.nextSet = nil

@@ -177,19 +177,57 @@ func (h *HotStuff) InitEngine(validators []ValidatorInfo, faultTolerance uint32)
 
 	vs := NewValidatorSet(validators, faultTolerance)
 	myIndex := vs.FindByAddress(h.signer)
-	if myIndex < 0 {
-		return fmt.Errorf("hotstuff: signer %s not found in validator set", h.signer.Hex())
+	// A signer absent from the genesis set is NOT a fatal error: it starts as a
+	// pending observer that syncs and processes consensus messages (so its view
+	// advances) but does not propose/vote/time out, until reconfig adds it at an
+	// epoch boundary and its engine activates. This is what lets a brand-new
+	// validator bootstrap — without it, InitEngine hard-failed and the node could
+	// never join. Requires epochs enabled for the add to ever take effect.
+	observer := myIndex < 0
+	if observer {
+		// Observer mode only makes sense with epochs enabled: without an epoch
+		// boundary there is no reconfig activation, so an outsider signer could
+		// never join. In that case fail fast (almost always a misconfigured
+		// etherbase) instead of starting a permanently-silent node.
+		if h.config == nil || h.config.EpochLength == 0 {
+			return fmt.Errorf("hotstuff: signer %s not found in validator set (epochs disabled — cannot join via reconfig)", h.signer.Hex())
+		}
+		log.Warn("hotstuff: signer not in genesis validator set — starting as PENDING OBSERVER (joins via reconfig at an epoch boundary)",
+			"signer", h.signer.Hex())
 	}
 
-	h.epochManager = NewEpochManager(vs)
+	// Wire the chainspec's epochLength into the EpochManager. Previously this
+	// always used NewEpochManager(vs) which hardcodes epochLength=0, leaving
+	// epoch transitions (and therefore validator reconfiguration, which
+	// activates at epoch boundaries) permanently dormant despite the chainspec
+	// setting and the fully-built ReconfigurationManager. With epochLength>0,
+	// ProposeAdd/RemoveValidator now take effect at the next boundary. A chain
+	// starting from genesis has currentEpoch=0 correctly; a mid-chain restart
+	// seeds currentEpoch from the recovered head view in RestoreState via
+	// EpochManager.SeedCurrentEpoch, so historicalSets stay aligned.
+	if h.config != nil && h.config.EpochLength > 0 {
+		h.epochManager = NewEpochManagerWithLength(vs, h.config.EpochLength)
+	} else {
+		h.epochManager = NewEpochManager(vs)
+	}
+	engineIndex := NonMemberIndex
+	if !observer {
+		engineIndex = ValidatorIndex(myIndex)
+	}
 	h.engine = NewConsensusEngineWithEpochManager(
-		ValidatorIndex(myIndex),
+		engineIndex,
 		h.secretKey,
 		h.epochManager,
 		h.config.BaseTimeout,
 		h.config.MaxTimeout,
 		h.outputCh,
 	)
+	// Record own address so the engine can find itself in a new set at an epoch
+	// boundary even while an observer (myIndex==NonMemberIndex can't index the set).
+	h.engine.SetSelfAddress(h.signer)
+	if observer {
+		h.engine.removed = true // inactive until reconfig adds it; still processes events
+	}
 
 	if h.config.TwoPhaseVoteGate {
 		h.engine.SetTwoPhaseVote(true)
@@ -412,11 +450,8 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 		}
 
 		if ce := h.Engine(); ce != nil {
-			vs := ce.ValidatorSetForView(qc.View)
-			if vs != nil && !vs.IsEmpty() {
-				if vErr := ce.verifyQCAnyDomainWithSet(qc, vs); vErr != nil {
-					return fmt.Errorf("QC verification failed: %w", vErr)
-				}
+			if vErr := ce.VerifyQCAnyDomainForView(qc); vErr != nil {
+				return fmt.Errorf("QC verification failed: %w", vErr)
 			}
 		}
 	}
@@ -501,8 +536,15 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 	// Set the coinbase to the signer.
 	header.Coinbase = signer
 
-	// Set difficulty to 1 (HotStuff uses view numbers, not difficulty).
-	header.Difficulty = uint256.NewInt(1)
+	// Difficulty is 0: HotStuff orders blocks by view number and chooses the
+	// canonical chain by commit authority (CommitToCanonical), never by total
+	// difficulty. Zero matches the post-merge/PoS convention (EIP-3675: a non-PoW
+	// block carries difficulty=0 alongside nonce=0 and ommersHash=EmptyUncleHash),
+	// lets ForkChoice.ReorgNeeded fall through to its height-based virtual-TD path,
+	// and lets the compact header codec omit the field entirely (it is stored only
+	// when non-zero). A non-zero placeholder here was a vestige of the Clique-style
+	// in-turn/no-turn difficulty that BFT consensus does not use.
+	header.Difficulty = uint256.NewInt(0)
 
 	// Encode view number in extra-data.
 	var view ViewNumber
@@ -759,9 +801,11 @@ func (h *HotStuff) SealHash(iHeader block.IHeader) types.Hash {
 	return sealHash(header)
 }
 
-// CalcDifficulty always returns 1 for HotStuff.
+// CalcDifficulty always returns 0 for HotStuff: block ordering is by view number
+// and canonicalization is by commit authority, not total difficulty. Zero is the
+// post-merge/PoS convention and keeps headers consistent with their zero ommers.
 func (h *HotStuff) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, parent block.IHeader) *uint256.Int {
-	return uint256.NewInt(1)
+	return uint256.NewInt(0)
 }
 
 // APIs returns the RPC APIs provided by the HotStuff consensus engine.
