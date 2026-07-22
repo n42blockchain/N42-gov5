@@ -10,6 +10,7 @@ package replay
 
 import (
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -19,9 +20,14 @@ type ConfigV2 struct {
 	TargetPath  string
 	ChainConfig *params.ChainConfig
 	ChainName   string // chain name for GenesisByChainName (genesis alloc + consensus + state scheme); empty = mainnet_v2
-	FromBlock   uint64
-	ToBlock     uint64
-	BatchSize   int
+	// Genesis overrides the embedded chain-name genesis. It is required for
+	// private/custom chains because their alloc and validator set are not
+	// registered in the binary. Run validates its computed hash against the
+	// source database before creating the replay target.
+	Genesis   *conf.Genesis
+	FromBlock uint64
+	ToBlock   uint64
+	BatchSize int
 
 	EnableJMT    bool
 	EnableLtHash bool

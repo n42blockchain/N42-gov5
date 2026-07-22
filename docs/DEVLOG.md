@@ -2,6 +2,20 @@
 
 ---
 
+### 2026-07-21: Custom-chain replay-v2 QMDB cross-client bootstrap
+
+- Added `replay-v2 --genesis <path>` for private/custom networks; the custom
+  chain config now owns transaction signing/fork rules instead of silently
+  falling back to mainnet chain ID 94.
+- Replay validates the computed custom QMDB genesis hash against source block 0
+  before opening the target and preserves the supplied HotStuff validator set.
+- Live acceptance: seven HotStuff v4 validators converged with transaction
+  load; 49 blocks and 247 transactions replayed with zero failures and all
+  receipts matching; Go exported 437 archive slots and Rust recomputed the
+  identical QMDB root.
+
+---
+
 ### 2026-03-25: ZK-Native Cross-Chain Bridge (Phase 1: N42 to ETH)
 
 #### ZK Bridge Core (`internal/bridge/`)

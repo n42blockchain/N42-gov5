@@ -25,6 +25,7 @@ import (
 
 	"github.com/urfave/cli/v2"
 
+	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/replay"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/params"
@@ -41,6 +42,7 @@ var replayV2Command = &cli.Command{
 		&cli.StringFlag{Name: "source", Usage: "Source chain data directory", Required: true},
 		&cli.StringFlag{Name: "target", Usage: "Target chain data directory", Required: true},
 		&cli.StringFlag{Name: "chain", Usage: "Chain config name", Value: "mainnet_v2"},
+		&cli.StringFlag{Name: "genesis", Usage: "Custom/private genesis JSON; its hash must match the source database"},
 		&cli.StringFlag{Name: "tree", Usage: "Tree type: jmt, bmt, qmdb, mpt, or trie", Value: "jmt"},
 		&cli.IntFlag{Name: "qmdb-undo-window", Usage: "qmdb only: keep per-block undo records for the last N blocks (recent-height eth_getProof); 0 disables", Value: 64},
 		&cli.BoolFlag{Name: "qmdb-history", Usage: "qmdb only: journal the full-history layer (death stamps, key versions, top band) for any-height proofs; forces archival entry retention", Value: false},
@@ -97,6 +99,29 @@ func runReplayV2(cliCtx *cli.Context) error {
 	}
 
 	cfg.TreeType = cliCtx.String("tree")
+	if genesisPath := strings.TrimSpace(cliCtx.String("genesis")); genesisPath != "" {
+		file, err := os.Open(genesisPath)
+		if err != nil {
+			return fmt.Errorf("open custom genesis: %w", err)
+		}
+		defer file.Close()
+		genesis := new(conf.Genesis)
+		if err := json.NewDecoder(file).Decode(genesis); err != nil {
+			return fmt.Errorf("decode custom genesis: %w", err)
+		}
+		conf.ApplyHiveGenesisEnv(genesis, os.LookupEnv)
+		if genesis.Config == nil {
+			return fmt.Errorf("custom genesis is missing chain config")
+		}
+		genesis.Config = params.NormalizeConsensus(genesis.Config)
+		if cfg.TreeType == "qmdb" {
+			// `n42 init --chain private` makes the same selection even when an
+			// older genesis JSON omits stateScheme. Reproduce that identity here.
+			params.ApplyStateCommitmentPreset(genesis.Config, params.StateCommitmentPresetQMDB)
+		}
+		cfg.Genesis = genesis
+		cfg.ChainConfig = genesis.Config
+	}
 	cfg.QMDBUndoWindow = cliCtx.Int("qmdb-undo-window")
 	cfg.QMDBHistory = cliCtx.Bool("qmdb-history")
 	cfg.EnableJMT = cliCtx.Bool("jmt")

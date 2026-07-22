@@ -99,6 +99,12 @@ func NewEngineV2(cfg ConfigV2) (*EngineV2, error) {
 	if cfg.TargetPath == "" {
 		return nil, fmt.Errorf("replay-v2: target path required")
 	}
+	if cfg.Genesis != nil {
+		if cfg.Genesis.Config == nil {
+			return nil, fmt.Errorf("replay-v2: custom genesis is missing chain config")
+		}
+		cfg.ChainConfig = cfg.Genesis.Config
+	}
 	if cfg.ChainConfig == nil {
 		cfg.ChainConfig = params.MainnetChainConfig
 	}
@@ -212,6 +218,27 @@ func (e *EngineV2) Run(ctx context.Context) (*Stats, error) {
 		return nil, fmt.Errorf("replay-v2: open source DB: %w", err)
 	}
 	// Source DB closed in Close(). Do NOT defer here — RunPostExport needs dstDB.
+	if e.cfg.Genesis != nil {
+		var sourceGenesisHash types.Hash
+		if err := e.srcDB.View(ctx, func(tx kv.Tx) error {
+			var readErr error
+			sourceGenesisHash, readErr = rawdb.ReadCanonicalHash(tx, 0)
+			return readErr
+		}); err != nil {
+			e.srcDB.Close()
+			return nil, fmt.Errorf("replay-v2: read source genesis hash: %w", err)
+		}
+		genesisBlock, _, hashErr := (&internal.GenesisBlock{GenesisConfig: e.cfg.Genesis}).ToBlock()
+		if hashErr != nil {
+			e.srcDB.Close()
+			return nil, fmt.Errorf("replay-v2: compute custom genesis hash: %w", hashErr)
+		}
+		if sourceGenesisHash == (types.Hash{}) || genesisBlock.Hash() != sourceGenesisHash {
+			e.srcDB.Close()
+			return nil, fmt.Errorf("replay-v2: custom genesis hash %s does not match source %s",
+				genesisBlock.Hash(), sourceGenesisHash)
+		}
+	}
 
 	// Open/create target DB with full table schema.
 	e.dstDB, err = mdbx.NewMDBX(e.log).
@@ -562,33 +589,39 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 			if chainName == "" {
 				chainName = "mainnet_v2"
 			}
-			genesis := internal.GenesisByChainName(chainName)
+			genesis := e.cfg.Genesis
+			if genesis == nil {
+				genesis = internal.GenesisByChainName(chainName)
+			}
 			if genesis != nil {
-				// Extract APoS signers from source genesis Extra → inject into genesis.Miners.
-				// buildConsensusExtraData will produce the correct Extra for snapshot init.
-				if err := e.srcDB.View(ctx, func(srcTx kv.Tx) error {
-					srcGenesis, _ := rawdb.ReadBlockByNumber(srcTx, 0)
-					if srcGenesis == nil {
+				// Embedded APoS conversions inherit the source signer set. A custom
+				// genesis is already authoritative (notably for HotStuff validators)
+				// and must remain byte-for-byte stable for the hash check above.
+				if e.cfg.Genesis == nil {
+					if err := e.srcDB.View(ctx, func(srcTx kv.Tx) error {
+						srcGenesis, _ := rawdb.ReadBlockByNumber(srcTx, 0)
+						if srcGenesis == nil {
+							return nil
+						}
+						srcHdr := srcGenesis.Header().(*block.Header)
+						if len(srcHdr.Extra) < 97 {
+							return nil
+						}
+						signerBytes := srcHdr.Extra[32 : len(srcHdr.Extra)-65]
+						n := len(signerBytes) / 20
+						miners := make([]string, n)
+						for i := 0; i < n; i++ {
+							miners[i] = fmt.Sprintf("0x%x", signerBytes[i*20:(i+1)*20])
+						}
+						// Append the deterministic test signer for single-node mining.
+						// Key: 46421e0087590765d2eba920834caa9ada08e30bb9aa0e6f54b16a3f57a5630a
+						miners = append(miners, "0x05057eb3f374ecd59a1368e85f704a2211963546")
+						genesis.Miners = miners
+						e.log.Info("genesis signers", "count", len(miners), "miners", miners)
 						return nil
+					}); err != nil {
+						e.log.Warn("failed to read source genesis signers", "err", err)
 					}
-					srcHdr := srcGenesis.Header().(*block.Header)
-					if len(srcHdr.Extra) < 97 {
-						return nil
-					}
-					signerBytes := srcHdr.Extra[32 : len(srcHdr.Extra)-65]
-					n := len(signerBytes) / 20
-					miners := make([]string, n)
-					for i := 0; i < n; i++ {
-						miners[i] = fmt.Sprintf("0x%x", signerBytes[i*20:(i+1)*20])
-					}
-					// Append the deterministic test signer for single-node mining.
-					// Key: 46421e0087590765d2eba920834caa9ada08e30bb9aa0e6f54b16a3f57a5630a
-					miners = append(miners, "0x05057eb3f374ecd59a1368e85f704a2211963546")
-					genesis.Miners = miners
-					e.log.Info("genesis signers", "count", len(miners), "miners", miners)
-					return nil
-				}); err != nil {
-					e.log.Warn("failed to read source genesis signers", "err", err)
 				}
 
 				gb := &internal.GenesisBlock{GenesisConfig: genesis}
