@@ -779,6 +779,20 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 				}
 			}
 		}
+		// readParentInfo runs before genesis initialization so resumed batches can
+		// cheaply pick up their existing parent. On a fresh target block 1 it
+		// necessarily observed an empty database; refresh it now that genesis is
+		// durable in this transaction. Otherwise block 1 is incorrectly linked to
+		// the zero hash and no external execution client can import from genesis.
+		if newBlockNum == 1 && parentHash == (types.Hash{}) {
+			parentHash, prevTime, err = e.readParentInfo(dstTx, newBlockNum)
+			if err != nil {
+				return fmt.Errorf("refresh genesis parent info: %w", err)
+			}
+			if parentHash == (types.Hash{}) {
+				return fmt.Errorf("genesis was initialized but block 1 parent is unavailable")
+			}
+		}
 
 		// Set MPT StateReader once per batch (dstTx is constant within batch).
 		if useMPT && mptRC != nil {
@@ -1593,7 +1607,7 @@ func (e *EngineV2) readAllState(tx kv.Tx) (
 }
 
 func (e *EngineV2) readParentInfo(dstTx kv.Tx, from uint64) (types.Hash, uint64, error) {
-	if from <= 1 {
+	if from == 0 {
 		return types.Hash{}, 0, nil
 	}
 

@@ -8,7 +8,10 @@ import (
 	"testing"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/lib/kv/memdb"
+	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -49,5 +52,25 @@ func TestNewEngineV2RejectsCustomGenesisWithoutConfig(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("custom genesis without chain config was accepted")
+	}
+}
+
+func TestEngineV2BlockOneReadsGenesisAsParent(t *testing.T) {
+	_, tx := memdb.NewTestTx(t)
+	genesisHash := types.HexToHash("0xb71c8bf2f99a83f37b4e6ea52c5acd940f0251bd5d0ee7694e6a03ced82092ec")
+	if err := rawdb.WriteCanonicalHash(tx, genesisHash, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := &EngineV2{}
+	parentHash, parentTime, err := engine.readParentInfo(tx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parentHash != genesisHash {
+		t.Fatalf("block 1 parent = %s, want genesis %s", parentHash, genesisHash)
+	}
+	if parentTime != 0 {
+		t.Fatalf("genesis timestamp = %d without stored block, want 0", parentTime)
 	}
 }
