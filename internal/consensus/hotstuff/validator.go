@@ -409,6 +409,14 @@ func (em *EpochManager) HasStagedNext() bool {
 	return em.nextSet != nil
 }
 
+// PeekNextSet returns the staged next-epoch validator set without activating it
+// (nil if none is staged). Staging happens at CommitQC time, so this set is
+// available for QC verification before the epoch boundary — a catching-up node
+// can verify post-boundary blocks against it via FindValidatorSetByLen.
+func (em *EpochManager) PeekNextSet() *ValidatorSet {
+	return em.nextSet
+}
+
 // AdvanceEpoch activates the staged validator set.
 // Returns true if a transition occurred.
 func (em *EpochManager) AdvanceEpoch(boundaryView uint64) bool {
