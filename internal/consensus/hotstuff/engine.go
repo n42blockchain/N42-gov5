@@ -90,6 +90,7 @@ type ConsensusEngine struct {
 	mu sync.Mutex
 
 	myIndex   ValidatorIndex
+	myAddr    types.Address // own validator address; lets an observer/removed node (myIndex==NonMemberIndex) locate itself in a new set at an epoch boundary
 	secretKey common.SecretKey
 
 	epochManager *EpochManager
@@ -285,6 +286,28 @@ func (e *ConsensusEngine) MyIndex() ValidatorIndex {
 	return e.myIndex
 }
 
+// NonMemberIndex marks a node whose signer is not in the active validator set:
+// a brand-new validator not yet added via reconfig, or one that was removed.
+// Such a node still imports blocks and processes consensus messages (so its view
+// advances and it can detect being added at an epoch boundary) but never
+// proposes, votes, or times out. IsLeader compares against a real index and so
+// is always false for it; GetAddress must never be called with it (use myAddr).
+const NonMemberIndex ValidatorIndex = ^ValidatorIndex(0)
+
+// isMember reports whether this node is in the active validator set (holds the
+// engine lock via its callers). Participation gates (vote, commit-vote, timeout)
+// check this so observer/removed nodes stay silent until reconfig activates them.
+func (e *ConsensusEngine) isMember() bool { return e.myIndex != NonMemberIndex }
+
+// SetSelfAddress records this node's own validator address. Required so an
+// observer/removed node (myIndex==NonMemberIndex) can find itself in a newly
+// applied set at an epoch boundary, where it cannot index the current set.
+func (e *ConsensusEngine) SetSelfAddress(addr types.Address) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.myAddr = addr
+}
+
 // RestoreState restores persisted consensus state for crash recovery.
 // Must only be called before the engine starts processing events.
 func (e *ConsensusEngine) RestoreState(view ViewNumber, lockedQC, committedQC QuorumCertificate, consecutiveTimeouts uint32) {
@@ -292,6 +315,10 @@ func (e *ConsensusEngine) RestoreState(view ViewNumber, lockedQC, committedQC Qu
 	defer e.mu.Unlock()
 	e.roundState = RoundStateFromSnapshot(view, lockedQC, committedQC, consecutiveTimeouts)
 	e.pacemaker.ResetForView(view, consecutiveTimeouts)
+	// Align the epoch counter with the recovered view. A mid-chain restart with
+	// epochs enabled would otherwise leave currentEpoch at 0 while the view is far
+	// ahead, decoupling historicalSets keys from ValidatorSetForView lookups.
+	e.epochManager.SeedCurrentEpoch(view)
 }
 
 func (e *ConsensusEngine) ValidatorCount() uint32 {
@@ -311,6 +338,16 @@ func (e *ConsensusEngine) ValidatorSetForView(view ViewNumber) *ValidatorSet {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.epochManager.ValidatorSetForView(uint64(view))
+}
+
+// ResolveQCValidatorSet is the locked, exported form of resolveQCValidatorSet for
+// out-of-engine callers (e.g. header/sync QC verification in the adapter). It
+// size-matches the certificate's signer bitmap against known sets so verification
+// stays correct across an epoch-boundary validator-set change.
+func (e *ConsensusEngine) ResolveQCValidatorSet(view ViewNumber, bitmapLen int) *ValidatorSet {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.resolveQCValidatorSet(view, bitmapLen)
 }
 
 // StagedEpochInfoSafe returns staged epoch info under the engine lock.
@@ -361,9 +398,12 @@ func (e *ConsensusEngine) ConsecutiveTimeouts() uint32 {
 func (e *ConsensusEngine) ProcessEvent(event ConsensusEvent) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.removed {
-		return ErrValidatorRemoved
-	}
+	// Note: an observer/removed node (myIndex==NonMemberIndex) is NOT blocked here.
+	// It must process messages and imported blocks so its view advances and it can
+	// detect being added at an epoch boundary. Participation is gated downstream:
+	// onBlockReady via IsLeader, sendVote/sendCommitVote and the timeout paths via
+	// isMember. This is what lets a brand-new validator bootstrap and a removed one
+	// rejoin without a process restart.
 
 	switch event.Type {
 	case EventMessage:
@@ -381,8 +421,8 @@ func (e *ConsensusEngine) ProcessEvent(event ConsensusEvent) error {
 func (e *ConsensusEngine) OnTimeout() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.removed {
-		return ErrValidatorRemoved
+	if !e.isMember() {
+		return nil // observer/removed nodes do not drive timeouts
 	}
 	return e.onTimeout()
 }
@@ -424,6 +464,32 @@ const (
 
 func (e *ConsensusEngine) validatorSet() *ValidatorSet {
 	return e.epochManager.CurrentValidatorSet()
+}
+
+// validatorSetForView returns the validator set that was active at the given view
+// — the set that would have signed a QC/TC for it. Use this (not validatorSet)
+// for verifying any certificate that may predate the current set, so verification
+// stays correct across an epoch-boundary validator-set change.
+func (e *ConsensusEngine) validatorSetForView(view ViewNumber) *ValidatorSet {
+	return e.epochManager.ValidatorSetForView(uint64(view))
+}
+
+// resolveQCValidatorSet returns the validator set to verify a certificate with
+// bitmapLen signer slots that was formed at the given view. It first tries the
+// view-derived set; if its size matches the bitmap it is used directly. On a size
+// mismatch (epoch drift — e.g. a certificate carried across a validator-set change
+// whose view no longer maps cleanly), it falls back to the same-sized known set.
+// The subsequent BLS aggregate check confirms correctness, so this can only ever
+// pick the RIGHT set or fail the signature — never admit a forged certificate.
+func (e *ConsensusEngine) resolveQCValidatorSet(view ViewNumber, bitmapLen int) *ValidatorSet {
+	primary := e.validatorSetForView(view)
+	if primary != nil && int(primary.Len()) == bitmapLen {
+		return primary
+	}
+	if vs := e.epochManager.FindValidatorSetByLen(uint32(bitmapLen)); vs != nil {
+		return vs
+	}
+	return primary
 }
 
 // SetTwoPhaseVote switches between classic import-gated Round-1 voting
@@ -486,8 +552,10 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 		// Note: ApplyAtEpochBoundary() validates internally (ValidateTransition)
 		// and only stages the set if validation passes.
 		if e.reconfigMgr != nil && e.reconfigMgr.IsCommitted() {
-			// Capture own address before the set changes
-			myAddr, _ := e.validatorSet().GetAddress(e.myIndex)
+			// Own address, stable across set changes. myIndex may be NonMemberIndex
+			// here (an observer being added), so use the stored self address rather
+			// than indexing the current set.
+			myAddr := e.myAddr
 
 			if newSet := e.reconfigMgr.ApplyAtEpochBoundary(); newSet != nil {
 				// Emit staged event so Service persists it for crash recovery.
@@ -501,7 +569,18 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 				// Update own index in the new set
 				newIdx := newSet.FindByAddress(myAddr)
 				if newIdx >= 0 {
+					wasInactive := !e.isMember()
 					e.myIndex = ValidatorIndex(newIdx)
+					if wasInactive {
+						// Just added (fresh bootstrap or rejoin after removal):
+						// resume participation. removed is cleared and the pacemaker
+						// is reset for the current view by the ResetForView at the end
+						// of advanceToView, so proposing/voting resumes immediately.
+						e.removed = false
+						log.Info("This node added to validator set at epoch boundary",
+							"address", myAddr.Hex(), "index", newIdx,
+							"epoch", e.epochManager.CurrentEpoch()+1)
+					}
 				} else {
 					log.Warn("This node removed from validator set at epoch boundary",
 						"address", myAddr.Hex(), "epoch", e.epochManager.CurrentEpoch()+1)
@@ -510,13 +589,14 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 						Removed: true,
 					})
 					e.removed = true
+					e.myIndex = NonMemberIndex // stay silent but keep processing to detect re-add
 					e.pacemaker.Stop()
 					return nil // stop consensus participation immediately
 				}
 			}
 		}
 
-		if e.epochManager.AdvanceEpoch() {
+		if e.epochManager.AdvanceEpoch(uint64(newView)) {
 			newEpoch := e.epochManager.CurrentEpoch()
 			validatorCount := e.validatorSet().Len()
 			log.Info("epoch transition at view boundary",
@@ -835,7 +915,7 @@ func (e *ConsensusEngine) processEmbeddedTC(msg *ConsensusMsg) error {
 	}
 
 	// Verify the TC and its embedded high_qc before acting on it.
-	if err := VerifyTC(tc, e.validatorSet()); err != nil {
+	if err := VerifyTC(tc, e.resolveQCValidatorSet(tc.View, len(tc.Signers))); err != nil {
 		log.Debug("ignoring piggybacked TC with invalid signature", "tcView", tc.View, "err", err)
 		return nil
 	}
@@ -868,9 +948,9 @@ func (e *ConsensusEngine) tryQCViewJump(msg *ConsensusMsg, msgView ViewNumber) (
 	// Verify QC. Decide uses commit signing domain.
 	var verifyErr error
 	if msg.Type == MsgDecide {
-		verifyErr = VerifyCommitQC(qc, e.validatorSet())
+		verifyErr = VerifyCommitQC(qc, e.resolveQCValidatorSet(qc.View, len(qc.Signers)))
 	} else {
-		verifyErr = VerifyQC(qc, e.validatorSet())
+		verifyErr = VerifyQC(qc, e.resolveQCValidatorSet(qc.View, len(qc.Signers)))
 	}
 	if verifyErr != nil {
 		return false, nil
@@ -923,5 +1003,5 @@ func (e *ConsensusEngine) verifyEmbeddedQC(qc *QuorumCertificate) error {
 	if qc.View == 0 {
 		return nil
 	}
-	return VerifyQCAnyDomain(qc, e.validatorSet())
+	return VerifyQCAnyDomain(qc, e.resolveQCValidatorSet(qc.View, len(qc.Signers)))
 }

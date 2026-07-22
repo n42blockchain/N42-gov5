@@ -346,7 +346,7 @@ func (e *ConsensusEngine) processNewView(nv *NewViewMsg) error {
 			Reason: "TC view does not match expected view (nv.view - 1)",
 		}
 	}
-	if err := VerifyTC(&nv.TimeoutCert, e.validatorSet()); err != nil {
+	if err := VerifyTC(&nv.TimeoutCert, e.resolveQCValidatorSet(nv.TimeoutCert.View, len(nv.TimeoutCert.Signers))); err != nil {
 		return err
 	}
 
@@ -393,7 +393,7 @@ func (e *ConsensusEngine) processDecide(decide *Decide) error {
 	}
 
 	// Verify CommitQC aggregate BLS signature.
-	if err := VerifyCommitQC(&decide.CommitQC, e.validatorSet()); err != nil {
+	if err := VerifyCommitQC(&decide.CommitQC, e.resolveQCValidatorSet(decide.CommitQC.View, len(decide.CommitQC.Signers))); err != nil {
 		return err
 	}
 

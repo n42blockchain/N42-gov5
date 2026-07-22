@@ -105,7 +105,7 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
 
 	// Verify justify_qc aggregate BLS signature (genesis QC is exempt).
 	if proposal.JustifyQC.View > 0 {
-		if vErr := VerifyQCAnyDomain(&proposal.JustifyQC, e.validatorSet()); vErr != nil {
+		if vErr := VerifyQCAnyDomain(&proposal.JustifyQC, e.resolveQCValidatorSet(proposal.JustifyQC.View, len(proposal.JustifyQC.Signers))); vErr != nil {
 			log.Warn("rejecting proposal with invalid justify_qc",
 				"view", view, "proposer", proposal.Proposer, "err", vErr)
 			return vErr
@@ -136,7 +136,7 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
 
 	// Process piggybacked PrepareQC (chained mode).
 	if proposal.PrepareQC != nil {
-		if vErr := VerifyQC(proposal.PrepareQC, e.validatorSet()); vErr == nil {
+		if vErr := VerifyQC(proposal.PrepareQC, e.resolveQCValidatorSet(proposal.PrepareQC.View, len(proposal.PrepareQC.Signers))); vErr == nil {
 			e.roundState.UpdateLockedQC(proposal.PrepareQC)
 		} else {
 			log.Warn("rejected invalid piggybacked PrepareQC", "view", view, "err", vErr)
@@ -209,7 +209,7 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg) error {
 		return &ViewMismatchError{Current: view, Received: pqc.View}
 	}
 
-	if err := VerifyQC(&pqc.QC, e.validatorSet()); err != nil {
+	if err := VerifyQC(&pqc.QC, e.resolveQCValidatorSet(pqc.QC.View, len(pqc.QC.Signers))); err != nil {
 		return err
 	}
 
@@ -229,6 +229,10 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg) error {
 		log.Info("two-phase vote: holding commit vote until block imports",
 			"view", view, "blockHash", pqc.BlockHash)
 		return nil
+	}
+
+	if !e.isMember() {
+		return nil // observer/removed nodes do not cast commit votes
 	}
 
 	e.roundState.UpdateLockedQC(&pqc.QC)
@@ -263,6 +267,9 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg) error {
 
 // sendVote sends a Round 1 vote for the given view and block hash.
 func (e *ConsensusEngine) sendVote(view ViewNumber, blockHash types.Hash) error {
+	if !e.isMember() {
+		return nil // observer/removed nodes do not cast votes
+	}
 	leader := LeaderForView(view, e.validatorSet())
 	voteMsg := SigningMessage(view, blockHash)
 	voteSig := e.secretKey.Sign(voteMsg)
