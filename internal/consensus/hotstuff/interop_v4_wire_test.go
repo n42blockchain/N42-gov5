@@ -158,22 +158,27 @@ func TestH2V4CrossClientFinalityProof(t *testing.T) {
 	}
 }
 
-func TestServicePublishesH2V4DecideEnvelope(t *testing.T) {
+func TestServicePublishesEveryH2V4ConsensusEnvelope(t *testing.T) {
 	identity := H2V4ChainIdentity{ChainID: 94, GenesisHash: repeatedHash(0x11)}
 	p2p := &routingTestP2P{}
 	service := &Service{p2p: p2p, ctx: context.Background(), h2V4Identity: &identity}
-	decide := &Decide{View: 7, BlockHash: repeatedHash(0x77), CommitQC: QuorumCertificate{
-		View: 7, BlockHash: repeatedHash(0x77), AggregateSignature: make([]byte, 96), Signers: []bool{true},
-	}}
-	service.publishH2V4Decide(&ConsensusMsg{Type: MsgDecide, Payload: decide})
-	if len(p2p.topics) != 1 || p2p.topics[0] != h2V4GossipTopic {
+	items := crossClientH2Messages(t)
+	for _, item := range items {
+		service.publishH2V4Message(item.msg)
+	}
+	if len(p2p.topics) != len(items) {
 		t.Fatalf("unexpected H2-v4 publications: %v", p2p.topics)
 	}
-	envelope, err := DecodeH2V4Gossip(p2p.payloads[0], identity)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if envelope.Message.Type != MsgDecide || envelope.ChangesHash != (types.Hash{}) {
-		t.Fatalf("unexpected H2-v4 Decide envelope: %+v", envelope)
+	for i, item := range items {
+		if p2p.topics[i] != h2V4GossipTopic {
+			t.Fatalf("message %s published on %q", item.name, p2p.topics[i])
+		}
+		envelope, err := DecodeH2V4Gossip(p2p.payloads[i], identity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(envelope.Message, item.msg) || envelope.ChangesHash != (types.Hash{}) {
+			t.Fatalf("unexpected H2-v4 %s envelope: %+v", item.name, envelope)
+		}
 	}
 }

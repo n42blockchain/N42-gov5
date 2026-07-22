@@ -357,8 +357,9 @@ func (s *Service) SetPeerRefreshFn(fn func()) {
 	s.peerRefreshFn = fn
 }
 
-// SetH2V4Identity enables publication of chain-bound Decide proofs for
-// cross-client observers. Consensus messages continue on the existing topic.
+// SetH2V4Identity enables publication of chain-bound consensus envelopes for
+// cross-client shadow validation. Consensus messages continue on the existing
+// topic until mixed-client voting is explicitly enabled.
 func (s *Service) SetH2V4Identity(identity H2V4ChainIdentity) {
 	s.h2V4Identity = &identity
 }
@@ -615,8 +616,8 @@ func (s *Service) handleBroadcast(output EngineOutput) {
 	if output.Message == nil || s.p2p == nil {
 		return
 	}
-	if output.Message.Type == MsgDecide && s.h2V4Identity != nil {
-		go s.publishH2V4Decide(output.Message)
+	if s.h2V4Identity != nil {
+		go s.publishH2V4Message(output.Message)
 	}
 
 	data, err := EncodeConsensusMsg(output.Message)
@@ -695,7 +696,7 @@ func (s *Service) handleBroadcast(output EngineOutput) {
 
 const h2V4GossipTopic = "/n42/h2/4/ssz_snappy"
 
-func (s *Service) publishH2V4Decide(message *ConsensusMsg) {
+func (s *Service) publishH2V4Message(message *ConsensusMsg) {
 	data, err := EncodeH2V4Gossip(H2V4Envelope{
 		Identity: *s.h2V4Identity,
 		// The first interoperable profile is intentionally static-validator.
@@ -704,13 +705,13 @@ func (s *Service) publishH2V4Decide(message *ConsensusMsg) {
 		Message:     message,
 	})
 	if err != nil {
-		log.Error("hotstuff: failed to encode H2-v4 Decide", "err", err)
+		log.Error("hotstuff: failed to encode H2-v4 consensus message", "type", message.Type, "err", err)
 		return
 	}
 	ctx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
 	defer cancel()
 	if err := s.p2p.PublishToTopic(ctx, h2V4GossipTopic, data); err != nil {
-		log.Debug("hotstuff: H2-v4 Decide publish skipped", "err", err)
+		log.Debug("hotstuff: H2-v4 consensus publish skipped", "type", message.Type, "err", err)
 	}
 }
 

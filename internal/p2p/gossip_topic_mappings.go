@@ -55,7 +55,7 @@ var gossipTopicMappings = map[string]proto.Message{
 	TransactionTopicFormat:        &types_pb.Transaction{},
 	BlobSidecarTopicFormat:        &types_pb.BlobSidecar{},
 	HotStuffConsensusTopicFormat:  &types_pb.H256{}, // HotStuff uses custom SSZ, not protobuf; H256 is a placeholder for topic registration
-	H2V4Topic:                     &types_pb.H256{}, // Chain-bound H2-v4 Decide proofs use a custom compact wire format.
+	H2V4Topic:                     &types_pb.H256{}, // Chain-bound H2-v4 consensus shadow envelopes use a custom compact wire format.
 	ZKProofTopicFormat:            &types_pb.H256{}, // ZK proofs use custom serialization; H256 placeholder for topic registration
 	MobilePacketTopicFormat:       &types_pb.H256{}, // StreamPackets use the evmsdk V2 wire format; H256 placeholder for topic registration
 	MobileRegistrationTopicFormat: &types_pb.H256{}, // registration announcements are raw pubkey||pop; H256 placeholder for topic registration
