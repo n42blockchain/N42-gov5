@@ -1,12 +1,30 @@
 package ethel
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/types"
 )
+
+func TestCompactNativeRootCrossClientVector(t *testing.T) {
+	receipts := block.Receipts{{
+		Type:              0,
+		Status:            block.ReceiptStatusSuccessful,
+		CumulativeGasUsed: 21000,
+		Logs:              []*block.Log{},
+	}}
+	if got, want := EncodeReceiptsCompact(receipts), []byte{0x14, 0x52, 0x08, 0x00}; !bytes.Equal(got, want) {
+		t.Fatalf("compact receipt = %x, want %x", got, want)
+	}
+	wantRoot := types.HexToHash("0x9ec602b25fc63e86a5feb8943d52cf66b24ed8e8021f3f74f077271ffae88c75")
+	if got := hash.DeriveSha(receipts); got != wantRoot {
+		t.Fatalf("native receipt root = %s, want %s", got, wantRoot)
+	}
+}
 
 func makeTestReceipts() block.Receipts {
 	return block.Receipts{
