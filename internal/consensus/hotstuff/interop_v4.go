@@ -108,11 +108,11 @@ func (e *ConsensusEngine) newViewSigningMessage(view ViewNumber) []byte {
 }
 
 func (e *ConsensusEngine) verifyQC(qc *QuorumCertificate) error {
-	return e.verifyQCWithSet(qc, e.validatorSet())
+	return e.verifyQCWithSet(qc, e.resolveQCValidatorSet(qc.View, len(qc.Signers)))
 }
 
 func (e *ConsensusEngine) verifyCommitQC(qc *QuorumCertificate) error {
-	return e.verifyCommitQCWithSet(qc, e.validatorSet())
+	return e.verifyCommitQCWithSet(qc, e.resolveQCValidatorSet(qc.View, len(qc.Signers)))
 }
 
 func (e *ConsensusEngine) verifyQCWithSet(qc *QuorumCertificate, vs *ValidatorSet) error {
@@ -124,7 +124,7 @@ func (e *ConsensusEngine) verifyCommitQCWithSet(qc *QuorumCertificate, vs *Valid
 }
 
 func (e *ConsensusEngine) verifyQCAnyDomain(qc *QuorumCertificate) error {
-	return e.verifyQCAnyDomainWithSet(qc, e.validatorSet())
+	return e.verifyQCAnyDomainWithSet(qc, e.resolveQCValidatorSet(qc.View, len(qc.Signers)))
 }
 
 func (e *ConsensusEngine) verifyQCAnyDomainWithSet(qc *QuorumCertificate, vs *ValidatorSet) error {
@@ -135,7 +135,23 @@ func (e *ConsensusEngine) verifyQCAnyDomainWithSet(qc *QuorumCertificate, vs *Va
 }
 
 func (e *ConsensusEngine) verifyTC(tc *TimeoutCertificate) error {
-	return verifyTCAgainstMessage(tc, e.validatorSet(), e.timeoutSigningMessage(tc.View))
+	return verifyTCAgainstMessage(tc, e.resolveQCValidatorSet(tc.View, len(tc.Signers)), e.timeoutSigningMessage(tc.View))
+}
+
+// VerifyQCAnyDomainForView is the locked external verification path used by
+// header and sync consumers. It preserves the configured H2 signing domain.
+func (e *ConsensusEngine) VerifyQCAnyDomainForView(qc *QuorumCertificate) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.verifyQCAnyDomain(qc)
+}
+
+// VerifyCommitQCForView is the locked external finality verification path and
+// preserves the configured H2 signing domain.
+func (e *ConsensusEngine) VerifyCommitQCForView(qc *QuorumCertificate) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.verifyCommitQC(qc)
 }
 
 // VerifyH2V4Decide verifies a chain-bound H2-v4 finality proof without

@@ -446,6 +446,8 @@ func GenesisByChainName(chain string) *conf.Genesis {
 		return mainnetQMDBGenesisBlock()
 	case "mainnet_qmdb_staggered":
 		return mainnetQMDBStaggeredGenesisBlock()
+	case "qs_epoch_test":
+		return qsEpochTestGenesisBlock()
 	case networkname.TestnetChainName:
 		return testnetGenesisBlock()
 	default:
@@ -546,6 +548,39 @@ func mainnetQMDBStaggeredGenesisBlock() *conf.Genesis {
 		Timestamp: 1678174066,
 		Miners:    []string{"0xA2142AB3F25EAA9985F22C3F5B1FF9FA378DAC21"},
 		Number:    0,
+	}
+}
+
+// qsEpochTestGenesisBlock is an ISOLATED copy of mainnetQMDBStaggeredGenesisBlock
+// for the HotStuff validator-reconfiguration test. It uses QSEpochTestChainConfig
+// (chainId 95, hotstuff epochLength 20) while keeping the SAME 7 validators, alloc
+// (allocs/mainnet_qmdb_staggered.json), timestamp and miners as the staggered chain
+// so the validator set and balances are identical. The different chainId keeps it
+// off the live chainId-94 fleet at the config level.
+//
+// P2P ISOLATION: the genesis HEADER does not incorporate chainId or epochLength
+// (see buildConsensusExtraData / ToBlock), and the P2P fork digest is the first 4
+// bytes of the genesis hash. So chainId alone would NOT isolate this from the live
+// chainId-94 fleet — an identical genesis would yield an identical fork digest and
+// the nodes could cross-connect. The Timestamp is therefore offset by +95 (the
+// chainId) from the staggered genesis: same minute (crosses no time-based fork
+// boundary, so activation behaviour is unchanged) but a DIFFERENT genesis hash,
+// hence a different fork digest — the live and test fleets reject each other at the
+// P2P handshake. Everything else (7 validators, alloc, miners) is identical.
+func qsEpochTestGenesisBlock() *conf.Genesis {
+	return &conf.Genesis{
+		Config: params.QSEpochTestChainConfig,
+		Nonce:  0,
+		Alloc:  mustReadGenesisAlloc("allocs/mainnet_qmdb_staggered.json"),
+		// difficulty=0 from genesis: HotStuff is BFT, so the whole chain follows the
+		// post-merge/PoS convention (difficulty=0 + nonce=0 + ommersHash=EmptyUncleHash)
+		// with virtual-TD height-based fork choice. The reference for new HotStuff
+		// chains. The live mainnet_qmdb_staggered genesis keeps its legacy 131072 —
+		// changing it would alter that chain's genesis hash and break its history.
+		Difficulty: uint256.NewInt(0),
+		Timestamp:  1678174161, // staggered 1678174066 + 95 (chainId) → distinct genesis hash / fork digest
+		Miners:     []string{"0xA2142AB3F25EAA9985F22C3F5B1FF9FA378DAC21"},
+		Number:     0,
 	}
 }
 

@@ -231,6 +231,10 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg) error {
 		return nil
 	}
 
+	if !e.isMember() {
+		return nil // observer/removed nodes do not cast commit votes
+	}
+
 	e.roundState.UpdateLockedQC(&pqc.QC)
 	e.roundState.EnterPreCommit()
 
@@ -263,6 +267,9 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg) error {
 
 // sendVote sends a Round 1 vote for the given view and block hash.
 func (e *ConsensusEngine) sendVote(view ViewNumber, blockHash types.Hash) error {
+	if !e.isMember() {
+		return nil // observer/removed nodes do not cast votes
+	}
 	leader := LeaderForView(view, e.validatorSet())
 	voteMsg := e.voteSigningMessage(view, blockHash)
 	voteSig := e.secretKey.Sign(voteMsg)
