@@ -1,9 +1,24 @@
 # HotStuff dynamic reconfiguration — catch-up across epoch boundaries (spec)
 
-Status: **open** — the last blocker for a full end-to-end validator scale test
-(7→11→4→7). The reconfiguration feature itself (observer bootstrap, activation,
-removal/rejoin, cross-boundary QC verification, PoS-style difficulty) landed in
-commit `284b71f7`; this document specifies the remaining core fix.
+Status: **RESOLVED**. The full `7→11→4→7` sequence now converges end-to-end — all
+14 transitions (4 adds, 7 removes incl. genesis validators, 3 re-adds) with all 11
+nodes agreeing on every block, no fork.
+
+Resolution (simpler than the driving approach sketched below): **stage the committed
+validator-set change at CommitQC time, not at the epoch boundary** — mirroring
+n42-consensus `commit_pending_changes`. `ReconfigurationManager.MarkCommitted` now
+calls `EpochManager.StageNextEpoch` immediately, so the new set is visible to QC
+verification (`resolveQCValidatorSet` / `FindValidatorSetByLen` find it by size)
+BEFORE the boundary. This breaks the chicken-and-egg — a catching-up node can verify
+post-boundary blocks against the staged set while still on the old one; activation
+(swap next→current) still happens at the boundary via `AdvanceEpoch`, where the node
+also re-derives its own index (R4). No advance-driving during catch-up was needed, so
+the reverted regression (§8) is moot. The original analysis below is retained for
+context.
+
+The reconfiguration feature (observer bootstrap, activation, removal/rejoin,
+cross-boundary QC verification, PoS-style difficulty) landed in commit `284b71f7`;
+the staging-at-commit fix followed.
 
 ## 1. Goal
 

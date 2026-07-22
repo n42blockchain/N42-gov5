@@ -456,3 +456,48 @@ func TestSeedCurrentEpochAlignsHistoricalSets(t *testing.T) {
 		t.Fatalf("new-epoch set len = %d, want 5", got.Len())
 	}
 }
+
+// TestMarkCommittedStagesForVerification is the core property behind cross-boundary
+// catch-up: MarkCommitted (CommitQC time) stages the new set immediately, so it is
+// findable by size BEFORE the epoch boundary activates it. That is what lets a node
+// verify post-boundary blocks (whose QCs carry the new, larger signer bitmap) while
+// it is still on the old set — the chicken-and-egg that previously stalled catch-up.
+func TestMarkCommittedStagesForVerification(t *testing.T) {
+	validators := makeTestValidators(4) // n=4
+	vs := NewValidatorSet(validators, 1)
+	em := NewEpochManagerWithLength(vs, 10)
+	rm := NewReconfigurationManager(em)
+
+	sk, _ := blst.RandKey()
+	rm.ProposeAddValidator(types.BytesToAddress([]byte{0x10}), sk.PublicKey())
+
+	// Before commit: no staged set; size-5 lookup must miss.
+	if em.HasStagedNext() {
+		t.Fatal("must not be staged before commit")
+	}
+	if em.FindValidatorSetByLen(5) != nil {
+		t.Fatal("size-5 set must not exist before commit")
+	}
+
+	rm.MarkCommitted() // stages at commit, NOT at the boundary
+
+	// After commit, BEFORE any AdvanceEpoch: the size-5 set is staged and findable,
+	// while the active set is still size 4.
+	if !em.HasStagedNext() {
+		t.Fatal("MarkCommitted must stage the next set")
+	}
+	if em.CurrentValidatorSet().Len() != 4 {
+		t.Fatalf("active set must still be 4 before the boundary, got %d", em.CurrentValidatorSet().Len())
+	}
+	if got := em.FindValidatorSetByLen(5); got == nil || got.Len() != 5 {
+		t.Fatal("staged size-5 set must be findable by length before the boundary")
+	}
+
+	// Activation at the boundary swaps it in.
+	if !em.AdvanceEpoch(11) {
+		t.Fatal("AdvanceEpoch should activate the staged set")
+	}
+	if em.CurrentValidatorSet().Len() != 5 {
+		t.Fatalf("active set must be 5 after activation, got %d", em.CurrentValidatorSet().Len())
+	}
+}

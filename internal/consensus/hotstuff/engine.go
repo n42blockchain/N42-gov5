@@ -547,56 +547,53 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 
 	// Check epoch boundary — apply pending reconfigurations if committed.
 	if e.epochManager.EpochsEnabled() && e.epochManager.IsEpochBoundary(newView) {
-		// Apply committed reconfiguration changes before advancing epoch.
-		// Per HotStuff-2 § 5: changes take effect only after the old set commits them.
-		// Note: ApplyAtEpochBoundary() validates internally (ValidateTransition)
-		// and only stages the set if validation passes.
-		if e.reconfigMgr != nil && e.reconfigMgr.IsCommitted() {
-			// Own address, stable across set changes. myIndex may be NonMemberIndex
-			// here (an observer being added), so use the stored self address rather
-			// than indexing the current set.
-			myAddr := e.myAddr
-
-			if newSet := e.reconfigMgr.ApplyAtEpochBoundary(); newSet != nil {
-				// Emit staged event so Service persists it for crash recovery.
-				if err := e.emit(EngineOutput{
-					Type:           OutputEpochStaged,
-					NewEpoch:       e.epochManager.CurrentEpoch() + 1,
-					ValidatorCount: newSet.Len(),
-				}); err != nil {
-					return err
-				}
-				// Update own index in the new set
-				newIdx := newSet.FindByAddress(myAddr)
-				if newIdx >= 0 {
-					wasInactive := !e.isMember()
-					e.myIndex = ValidatorIndex(newIdx)
-					if wasInactive {
-						// Just added (fresh bootstrap or rejoin after removal):
-						// resume participation. removed is cleared and the pacemaker
-						// is reset for the current view by the ResetForView at the end
-						// of advanceToView, so proposing/voting resumes immediately.
-						e.removed = false
-						log.Info("This node added to validator set at epoch boundary",
-							"address", myAddr.Hex(), "index", newIdx,
-							"epoch", e.epochManager.CurrentEpoch()+1)
-					}
-				} else {
-					log.Warn("This node removed from validator set at epoch boundary",
-						"address", myAddr.Hex(), "epoch", e.epochManager.CurrentEpoch()+1)
-					_ = e.emit(EngineOutput{
-						Type:    OutputEpochTransition,
-						Removed: true,
-					})
-					e.removed = true
-					e.myIndex = NonMemberIndex // stay silent but keep processing to detect re-add
-					e.pacemaker.Stop()
-					return nil // stop consensus participation immediately
-				}
+		// The next-epoch validator set was already staged at CommitQC time
+		// (ReconfigurationManager.MarkCommitted -> EpochManager.StageNextEpoch), which
+		// is precisely what makes it visible to QC verification BEFORE this boundary —
+		// a catching-up node verifies post-boundary blocks against the staged set via
+		// resolveQCValidatorSet/FindValidatorSetByLen. Here we only ACTIVATE it.
+		if e.epochManager.HasStagedNext() {
+			if err := e.emit(EngineOutput{
+				Type:           OutputEpochStaged,
+				NewEpoch:       e.epochManager.CurrentEpoch() + 1,
+				ValidatorCount: e.epochManager.PeekNextSet().Len(),
+			}); err != nil {
+				return err
 			}
 		}
 
 		if e.epochManager.AdvanceEpoch(uint64(newView)) {
+			// The set changed. Re-derive our own index in the now-active set. This also
+			// covers a node that joined/rejoined via block sync: without it the node
+			// keeps its stale observer index and fails BLS verification on every signed
+			// message it emits. myIndex may be NonMemberIndex here (an observer being
+			// added), so match on the stored self address, not a set index.
+			myAddr := e.myAddr
+			newIdx := e.validatorSet().FindByAddress(myAddr)
+			switch {
+			case newIdx >= 0:
+				wasInactive := !e.isMember()
+				e.myIndex = ValidatorIndex(newIdx)
+				if wasInactive {
+					// Just added (fresh bootstrap or rejoin after removal): resume
+					// participation. removed is cleared and the pacemaker is reset for
+					// the current view by the ResetForView at the end of advanceToView.
+					e.removed = false
+					log.Info("This node added to validator set at epoch boundary",
+						"address", myAddr.Hex(), "index", newIdx, "epoch", e.epochManager.CurrentEpoch())
+				}
+			case e.isMember():
+				// Was an active member, now removed from the set.
+				log.Warn("This node removed from validator set at epoch boundary",
+					"address", myAddr.Hex(), "epoch", e.epochManager.CurrentEpoch())
+				_ = e.emit(EngineOutput{Type: OutputEpochTransition, Removed: true})
+				e.removed = true
+				e.myIndex = NonMemberIndex // stay silent but keep processing to detect re-add
+				e.pacemaker.Stop()
+				return nil // stop consensus participation immediately
+				// default (already inactive and still not in the set): stay an observer.
+			}
+
 			newEpoch := e.epochManager.CurrentEpoch()
 			validatorCount := e.validatorSet().Len()
 			log.Info("epoch transition at view boundary",
