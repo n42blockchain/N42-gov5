@@ -184,9 +184,10 @@ type Downloader struct {
 	// WarmOverlayReader + OverlayStateWriter).
 	snapshotCold state.StateReader
 
-	// backfilled is set once the pre-migration BLOCKHASH-window headers have
-	// been fetched + persisted (see backfillBlockhashWindow).
-	backfilled bool
+	// freezerDir is the local input freezer (<datadir>/chain/freezer). When it
+	// holds a headerc.cidx + bodyc set, localCatchUp executes those blocks
+	// directly from disk (freezer-direct BLOCKHASH) instead of downloading them.
+	freezerDir string
 
 	// reorgPending is set by executeRange when it detects an orphaned head
 	// (parent mismatch) so the coordinator unwinds one block via the reverse-diff
@@ -307,13 +308,14 @@ type getBlockAccessListsRequest struct {
 const maxBlockAccessListsRequest = 256
 
 // NewDownloader builds the orchestrator without starting it.
-func NewDownloader(exec executionProvider, hashedCanonical bool, snapshotCold state.StateReader) *Downloader {
+func NewDownloader(exec executionProvider, hashedCanonical bool, snapshotCold state.StateReader, freezerDir string) *Downloader {
 	return &Downloader{
 		exec:            exec,
 		peers:           make(map[string]*peerState),
 		inflight:        make(map[string]chan inflightResp),
 		hashedCanonical: hashedCanonical,
 		snapshotCold:    snapshotCold,
+		freezerDir:      freezerDir,
 		buffer:          newBlockBuffer(),
 	}
 }
@@ -542,6 +544,28 @@ func (d *Downloader) coordinator(ctx context.Context) {
 			"inflightPerPeer", maxInflightPerPeer)
 	}
 
+	// Freezer-direct BLOCKHASH source, installed for the coordinator's whole life
+	// (local execution AND the peer transition — the first ~256 peer blocks reach
+	// BLOCKHASH below the local head). The adapter reads ancestor hashes straight
+	// from headerc's stored h.Hash() and falls back to the MDBX canonical index for
+	// blocks imported above the local freezer head. No window seed, no field
+	// reconstruction, no GetHashFn ParentHash walk.
+	var localHdrReader *ethel.HeaderCompactReader
+	if d.freezerDir != "" {
+		if hr, herr := ethel.OpenHeaderCompact(d.freezerDir); herr == nil {
+			localHdrReader = hr
+			defer hr.Close()
+			d.adapter.SetHeaderHashReader(hr)
+		}
+	}
+
+	// Peer-INDEPENDENT local block execution: drain [stateHead+1, localFreezerHead]
+	// straight from local headerc+bodyc — no peer download for blocks we already
+	// hold on disk ("已经有的数据不要再下载"). Blocks above the local freezer head
+	// (the live tip) fall through to the peer-gated loop below for live-follow.
+	// No-op when no local headerc/bodyc exists.
+	d.localCatchUp(ctx, localHdrReader)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -553,9 +577,6 @@ func (d *Downloader) coordinator(ctx context.Context) {
 		if len(peers) == 0 {
 			time.Sleep(2 * time.Second)
 			continue
-		}
-		if !d.backfilled {
-			d.backfillBlockhashWindow(ctx)
 		}
 		var tip uint64
 		for _, p := range peers {
@@ -876,7 +897,12 @@ func (d *Downloader) pickPeer(needHead uint64) *pickedPeer {
 	var bestID string
 	var best *peerState
 	for id, p := range d.peers {
-		if p.head < needHead || p.inflightN >= maxInflightPerPeer {
+		// head==0 means the peer's tip number is unknown — an eth/68 peer, whose
+		// Status carries the head hash but no number. Treat it as pickable: a
+		// mainnet full node serves any historical range, and the first header
+		// response bumps its head to the real value (see OnBlockHeaders). Only skip
+		// peers KNOWN to sit below the requested block.
+		if (p.head != 0 && p.head < needHead) || p.inflightN >= maxInflightPerPeer {
 			continue
 		}
 		if best == nil || p.inflightN < best.inflightN {
@@ -1015,6 +1041,155 @@ const commitInterval = 256
 // makes block-state and head-advance ATOMIC — a kill can never leave state
 // ahead of the head — and replaces per-block fsync with one commit per batch.
 // Returns the number of durably-committed blocks and the new (committed) head.
+// localCatchUp executes [stateHead+1, localFreezerHead] DIRECTLY from local
+// headerc+bodyc — NO peer download, NO MDBX header seeding, NO field
+// reconstruction — the "already have the data, don't re-download" fast path for a
+// state-height datadir (hashed-canonical / minimal / full) catching up to its own
+// frozen tip. Blocks above the local freezer head (the live tip) are left to the
+// peer loop.
+//
+// BLOCKHASH resolves FREEZER-DIRECT: the adapter's headerHashReader returns each
+// ancestor's stored h.Hash() straight from headerc (the ethexec/witness-block-
+// trace model), so the columnar-stripped ParentHash/UncleHash/Bloom fields are
+// irrelevant to BLOCKHASH and no window seed / recompute is needed. The canonical
+// index is written straight from the headerc header's stored hash (its stripped
+// fields make a recompute wrong; h.Hash() is authoritative). Old finalized blocks
+// never reorg → journal disabled. No local bodyc (leaves / archive-cs) → no-op.
+func (d *Downloader) localCatchUp(ctx context.Context, hr *ethel.HeaderCompactReader) {
+	if hr == nil {
+		return // no headerc → no freezer-direct source, nothing to execute locally
+	}
+	br, err := ethel.OpenBodyCompact(d.freezerDir)
+	if err != nil {
+		log.Info("eldevp2p: local catch-up skipped — no local bodyc", "dir", d.freezerDir, "err", err)
+		return
+	}
+	defer br.Close()
+
+	local, err := d.localHead(ctx)
+	if err != nil {
+		return
+	}
+	start := local
+
+	// The freezer-direct BLOCKHASH source (hr) is installed on the adapter by the
+	// coordinator and stays there for the peer path too. Old finalized blocks
+	// never reorg — no reverse-diff journal needed.
+	d.adapter.SetJournalActive(false)
+
+	tx, err := d.exec.RwDB().BeginRw(ctx)
+	if err != nil {
+		log.Warn("eldevp2p: local catch-up begin tx", "err", err)
+		return
+	}
+	d.adapter.SetBatchTx(tx)
+	txOpen := true
+	defer func() {
+		d.adapter.SetBatchTx(nil)
+		if txOpen {
+			tx.Rollback()
+		}
+	}()
+
+	// EIP-2935 (ProcessExecutionBlockStart → vm.StoreParentBlockHash) writes
+	// header.ParentHash into STATE, so it's a direct execution input — unlike
+	// BLOCKHASH (freezer-direct) it can't be sourced externally. headerc strips
+	// ParentHash, so reconstruct it from the prior block's canonical hash (same
+	// freezer-direct source: ReadHeader(n-1).Hash()). This is the ONLY field
+	// execution needs: UncleHash isn't an execution input, Bloom is filled by
+	// execution, and canonical[n] is written from h.Hash() (SetHash) below.
+	prevHash := types.Hash{}
+	if p, perr := hr.ReadHeader(local); perr == nil && p != nil {
+		prevHash = p.Hash()
+	}
+
+	committed := local
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		n := local + 1
+		hdr, herr := hr.ReadHeader(n)
+		if herr != nil || hdr == nil {
+			break // reached local header head
+		}
+		db, berr := br.ReadBody(n)
+		if berr != nil || db == nil {
+			break // reached local body head — hand off to peers
+		}
+		canonical := hdr.Hash() // headerc stored canonical hash (SetHash)
+		hdr.ParentHash = prevHash // EIP-2935 execution input (see above)
+		ws := make([]*api.Withdrawal, len(db.Withdrawals))
+		for i, w := range db.Withdrawals {
+			ws[i] = &api.Withdrawal{
+				Index:          hexutil.Uint64(w.Index),
+				ValidatorIndex: hexutil.Uint64(w.Validator),
+				Address:        w.Address,
+				Amount:         hexutil.Uint64(w.Amount),
+			}
+		}
+		blk, ok := block.NewBlock(hdr, db.Txs).(*block.Block)
+		if !ok {
+			log.Warn("eldevp2p: local catch-up assemble failed", "block", n)
+			break
+		}
+		okRes, root, xerr := d.adapter.ExecutePayloadFromWire(blk, ws)
+		if xerr != nil {
+			log.Warn("eldevp2p: local catch-up exec error — handing to peers", "block", n, "err", xerr)
+			break
+		}
+		if !okRes {
+			log.Warn("eldevp2p: local catch-up payload invalid — handing to peers",
+				"block", n, "computedRoot", root.Hex(), "declaredRoot", hdr.Root.Hex())
+			break
+		}
+		// Write canonical[n] straight from the stored headerc hash — the columnar
+		// header's fields are stripped so a recompute would be wrong; h.Hash() is
+		// the authoritative canonical value. This is what the peer handoff's
+		// parent-link check reads for canonical[localFreezerHead].
+		if werr := rawdb.WriteCanonicalHash(tx, canonical, n); werr != nil {
+			log.Warn("eldevp2p: local catch-up canonical write failed", "block", n, "err", werr)
+			break
+		}
+		local = n
+		prevHash = canonical // next block's EIP-2935 ParentHash input
+		if local-committed >= uint64(commitInterval) {
+			if err := d.commitBatch(tx, local); err != nil {
+				log.Error("eldevp2p: local catch-up commit failed", "head", local, "err", err)
+				tx.Rollback()
+				txOpen = false
+				return
+			}
+			committed = local
+			if tx, err = d.exec.RwDB().BeginRw(ctx); err != nil {
+				log.Warn("eldevp2p: local catch-up reopen tx", "err", err)
+				txOpen = false
+				return
+			}
+			d.adapter.SetBatchTx(tx)
+		}
+	}
+	// Flush the tail (or roll back an empty tx).
+	if local > committed {
+		if err := d.commitBatch(tx, local); err != nil {
+			log.Error("eldevp2p: local catch-up tail commit failed", "head", local, "err", err)
+			tx.Rollback()
+			txOpen = false
+			return
+		}
+		txOpen = false
+	} else {
+		tx.Rollback()
+		txOpen = false
+	}
+	if local > start {
+		log.Info("eldevp2p: local catch-up complete (freezer-direct BLOCKHASH, no peer download)",
+			"from", start+1, "head", local)
+	}
+}
+
 func (d *Downloader) executeRange(ctx context.Context, local uint64, headers []*block.Header, bodies map[uint64]devp2p.BlockBody) (uint64, uint64) {
 	sort.Slice(headers, func(i, j int) bool {
 		return headers[i].Number64().Uint64() < headers[j].Number64().Uint64()
@@ -1109,7 +1284,9 @@ func (d *Downloader) executeRange(ctx context.Context, local uint64, headers []*
 		}
 		if !ok {
 			log.Warn("eldevp2p: payload invalid", "block", n,
-				"computedRoot", root.Hex(), "declaredRoot", hdr.Root.Hex())
+				"computedRoot", root.Hex(), "declaredRoot", hdr.Root.Hex(),
+				"parentHash", hdr.ParentHash.Hex(), "uncleHash", hdr.UncleHash.Hex(),
+				"bloomZero", hdr.Bloom == (block.Bloom{}), "hdrHash", hdr.Hash().Hex())
 			if os.Getenv("N42_RCPTDIFF") != "" {
 				d.dumpMainnetReceipts(ctx, n, hdr.Hash())
 			}
@@ -1822,168 +1999,6 @@ func (d *Downloader) dumpMainnetReceipts(ctx context.Context, n uint64, blockHas
 		_ = rlp.DecodeBytes(fields[len(fields)-3], &status)
 		_ = rlp.DecodeBytes(fields[len(fields)-2], &cum)
 		log.Warn("RCPTDIFF mainnet tx", "block", n, "i", i, "status", status, "cumGas", cum)
-	}
-}
-
-// backfillBlockhashWindow fetches + persists the canonical headers for the
-// 256-block window below the current head. N42's BLOCKHASH opcode uses the
-// classic ancestor lookup (GetHashFn → rawdb.ReadHeader); the reth-migrated
-// datadir contains state but NO block headers, so blockhash() for any
-// pre-migration block returns zero — breaking contracts that verify a recent
-// block hash (e.g. Optimism's L2OutputOracle.proposeL2Output, which reverts
-// with "block hash does not match the hash at the expected height"). The
-// forward sync writes headers for every block it imports, so once the head has
-// advanced 256 blocks past the migration point the window is self-covered;
-// this one-time backfill bridges the gap. Headers are real canonical chain
-// data fetched from a peer, not synthesized.
-func (d *Downloader) backfillBlockhashWindow(ctx context.Context) {
-	local, err := d.localHead(ctx)
-	if err != nil || local == 0 {
-		return
-	}
-	const window = 256
-	from := uint64(1)
-	if local > window {
-		from = local - window
-	}
-	// Already covered (head advanced past the migration gap, or a prior run
-	// backfilled): every header in the BLOCKHASH window resolves canonically.
-	// Checking the whole range (not just the bottom) catches a mid-window hole
-	// from a truncated/sparse peer reply that would otherwise silently return a
-	// zero BLOCKHASH for that height later.
-	if d.haveHeaderRange(ctx, from, local) {
-		d.backfilled = true
-		return
-	}
-	headers := d.fetchHeaderRange(ctx, from, local)
-	if err := d.validateBackfillHeaders(ctx, from, local, headers); err != nil {
-		log.Warn("eldevp2p: blockhash-window backfill incomplete/invalid",
-			"from", from, "to", local, "got", len(headers), "err", err)
-		return
-	}
-	tx, err := d.exec.RwDB().BeginRw(ctx)
-	if err != nil {
-		return
-	}
-	defer tx.Rollback()
-	written := 0
-	for num := from; ; num++ {
-		h := headers[num]
-		rawdb.WriteHeader(tx, h)
-		if werr := rawdb.WriteCanonicalHash(tx, h.Hash(), num); werr != nil {
-			log.Warn("eldevp2p: backfill canonical-hash write failed", "n", num, "err", werr)
-			return
-		}
-		written++
-		if num == local {
-			break
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		log.Warn("eldevp2p: blockhash-window backfill commit failed", "err", err)
-		return
-	}
-	// Only consider it done if every header in the window [from, local] is now
-	// resolvable; a partial/truncated peer reply (which can leave a mid-window
-	// hole, not just a missing bottom) keeps the flag clear so the next round
-	// retries and fills the gap.
-	if d.haveHeaderRange(ctx, from, local) {
-		d.backfilled = true
-	}
-	log.Info("eldevp2p: backfilled blockhash-window headers", "from", from, "to", local, "written", written, "complete", d.backfilled)
-}
-
-func (d *Downloader) fetchHeaderRange(ctx context.Context, from, to uint64) map[uint64]*block.Header {
-	out := make(map[uint64]*block.Header, to-from+1)
-	for start := from; start <= to; start += headersPerBatch {
-		amount := uint64(headersPerBatch)
-		if to-start+1 < amount {
-			amount = to - start + 1
-		}
-		end := start + amount - 1
-		pp := d.pickPeer(end)
-		if pp == nil {
-			return out
-		}
-		raw, err := d.requestHeaders(ctx, pp.id, pp.rw, start, amount)
-		d.releasePeer(pp)
-		if err != nil {
-			log.Warn("eldevp2p: blockhash-window header chunk fetch failed",
-				"from", start, "to", end, "err", err)
-			return out
-		}
-		for _, r := range raw {
-			h, derr := ethel.DecodeUncleHeader(r)
-			if derr != nil {
-				continue
-			}
-			num := h.Number64().Uint64()
-			if num >= start && num <= end {
-				out[num] = h
-			}
-		}
-	}
-	return out
-}
-
-func (d *Downloader) validateBackfillHeaders(ctx context.Context, from, to uint64, headers map[uint64]*block.Header) error {
-	tx, err := d.exec.RwDB().BeginRo(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	var prevHash types.Hash
-	if from > 0 {
-		prevHash, _ = rawdb.ReadCanonicalHash(tx, from-1)
-	}
-	for num := from; ; num++ {
-		h := headers[num]
-		if h == nil {
-			return fmt.Errorf("missing header %d", num)
-		}
-		if num == from {
-			if prevHash != (types.Hash{}) && h.ParentHash != prevHash {
-				return fmt.Errorf("header %d parent mismatch: got %s want %s",
-					num, h.ParentHash.Hex(), prevHash.Hex())
-			}
-		} else {
-			parent := headers[num-1]
-			if parent == nil {
-				return fmt.Errorf("missing parent header %d", num-1)
-			}
-			if h.ParentHash != parent.Hash() {
-				return fmt.Errorf("header %d parent mismatch: got %s want %s",
-					num, h.ParentHash.Hex(), parent.Hash().Hex())
-			}
-		}
-		if existing, e := rawdb.ReadCanonicalHash(tx, num); e != nil {
-			return e
-		} else if existing != (types.Hash{}) && existing != h.Hash() {
-			return fmt.Errorf("existing canonical hash mismatch at %d: got %s new %s",
-				num, existing.Hex(), h.Hash().Hex())
-		}
-		if num == to {
-			break
-		}
-	}
-	return nil
-}
-
-func (d *Downloader) haveHeaderRange(ctx context.Context, from, to uint64) bool {
-	tx, err := d.exec.RwDB().BeginRo(ctx)
-	if err != nil {
-		return false
-	}
-	defer tx.Rollback()
-	for num := from; ; num++ {
-		h, _ := rawdb.ReadCanonicalHash(tx, num)
-		if h == (types.Hash{}) {
-			return false
-		}
-		if num == to {
-			return true
-		}
 	}
 }
 
