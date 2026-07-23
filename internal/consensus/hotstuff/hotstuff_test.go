@@ -300,9 +300,16 @@ func TestEpochAdvance(t *testing.T) {
 		t.Fatalf("expected 3 validators, got %d", em.CurrentValidatorSet().Len())
 	}
 
-	// Without staged set, AdvanceEpoch returns false.
-	if em.AdvanceEpoch(21) {
-		t.Fatal("should not advance without staged set")
+	// Epoch time advances even without another staged rotation; the active
+	// authority carries forward unchanged.
+	if !em.AdvanceEpoch(21) {
+		t.Fatal("static epoch boundary should advance")
+	}
+	if em.CurrentEpoch() != 2 {
+		t.Fatalf("expected epoch 2, got %d", em.CurrentEpoch())
+	}
+	if em.CurrentValidatorSet().Len() != 3 {
+		t.Fatalf("expected static 3-validator authority, got %d", em.CurrentValidatorSet().Len())
 	}
 }
 
@@ -470,6 +477,19 @@ func TestPacemakerResetForView(t *testing.T) {
 	remaining := p.Remaining()
 	if remaining <= 0 {
 		t.Fatal("should have positive remaining time")
+	}
+}
+
+func TestPacemakerResetAfterDoesNotReuseBackoff(t *testing.T) {
+	p := NewPacemaker(1000, 10000)
+	p.ResetAfter(20 * time.Millisecond)
+	remaining := p.Remaining()
+	if remaining <= 0 || remaining > 20*time.Millisecond {
+		t.Fatalf("remaining = %s, want (0, 20ms]", remaining)
+	}
+	time.Sleep(25 * time.Millisecond)
+	if !p.IsTimedOut() {
+		t.Fatal("pacemaker should expire after explicit retry interval")
 	}
 }
 
@@ -1321,6 +1341,24 @@ func TestHotStuffNew(t *testing.T) {
 	}
 }
 
+func TestHotStuffNewTimeoutEnvironmentOverride(t *testing.T) {
+	t.Setenv("N42_BASE_TIMEOUT_MS", "2000")
+	t.Setenv("N42_MAX_TIMEOUT_MS", "5000")
+	h := New(nil, nil)
+	if h.config.BaseTimeout != 2000 || h.config.MaxTimeout != 5000 {
+		t.Fatalf("timeouts = %d/%d, want 2000/5000", h.config.BaseTimeout, h.config.MaxTimeout)
+	}
+}
+
+func TestHotStuffNewRejectsInvalidTimeoutEnvironmentOverride(t *testing.T) {
+	t.Setenv("N42_BASE_TIMEOUT_MS", "6000")
+	t.Setenv("N42_MAX_TIMEOUT_MS", "5000")
+	h := New(nil, nil)
+	if h.config.BaseTimeout != 60000 || h.config.MaxTimeout != 120000 {
+		t.Fatalf("timeouts = %d/%d, want defaults", h.config.BaseTimeout, h.config.MaxTimeout)
+	}
+}
+
 func TestHotStuffAuthorize(t *testing.T) {
 	sk, _ := bls.RandKey()
 	addr := types.Address{1}
@@ -1499,5 +1537,21 @@ func TestRoundStateFromSnapshot(t *testing.T) {
 	}
 	if rs.ConsecutiveTimeouts() != 5 {
 		t.Fatal("timeout count mismatch")
+	}
+}
+
+func TestRestoreTimedOutPhaseExpiresPacemakerForImmediateReannounce(t *testing.T) {
+	setup := newTestSetup(t, 4)
+	engine := NewConsensusEngine(0, setup.keys[0], setup.vs, 60_000, 120_000, make(chan EngineOutput, 16))
+	locked := GenesisQC()
+	committed := GenesisQC()
+
+	engine.RestoreStateWithPhase(15, PhaseTimedOut, locked, committed, 2)
+
+	if engine.CurrentPhase() != PhaseTimedOut {
+		t.Fatalf("phase = %s, want TimedOut", engine.CurrentPhase())
+	}
+	if !engine.Pacemaker().IsTimedOut() {
+		t.Fatal("durably timed-out recovery must make the pacemaker fire immediately")
 	}
 }

@@ -594,7 +594,12 @@ func (s *BlockChainAPI) GetStorageAt(ctx context.Context, address types.Address,
 	var va uint256.Int
 	k := types.HexToHash(key)
 	state.GetState(address, &k, &va)
-	return va.Bytes(), nil
+	return canonicalStorageWord(&va), nil
+}
+
+func canonicalStorageWord(value *uint256.Int) hexutil.Bytes {
+	word := value.Bytes32()
+	return word[:]
 }
 
 // GetStorageValues returns multiple storage values for a contract in a single call.

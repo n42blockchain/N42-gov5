@@ -12,7 +12,10 @@ import (
 var finalizedRangeMagic = [8]byte{'N', '4', '2', 'F', 'R', 'N', 'G', 1}
 
 const (
-	MaxFinalizedRangeBlocks = 128
+	// MaxFinalizedRangeBlocks covers a complete 1,000-view epoch while remaining
+	// bounded by the cross-client decoder's aggregate 256 MiB materialization
+	// limit. Live sync requests retain their independent, smaller batch bound.
+	MaxFinalizedRangeBlocks = 1024
 	maxFinalizedRangeBlob   = 16 << 20
 )
 
@@ -40,7 +43,7 @@ type FinalizedRange struct {
 }
 
 // MarshalFinalizedRange encodes v1 and authenticates all preceding bytes with
-// Blake3. The 128-block cap matches the Rust sync request bound.
+// Blake3.
 func MarshalFinalizedRange(r *FinalizedRange) ([]byte, error) {
 	if err := validateFinalizedRange(r); err != nil {
 		return nil, err

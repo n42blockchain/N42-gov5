@@ -339,7 +339,20 @@ func (em *EpochManager) SeedCurrentEpoch(view uint64) {
 	if em.epochLength == 0 {
 		return
 	}
-	em.currentEpoch = em.EpochForView(view)
+	targetEpoch := em.EpochForView(view)
+	if targetEpoch > em.currentEpoch {
+		// This path seeds a chain whose authority has remained static. Preserve
+		// the same set under the skipped epoch keys so a recovered view at the
+		// first boundary can still verify its immediately preceding HighQC. A
+		// chain that actually reconfigured restores its exact active epoch/set
+		// from the separate durable active-epoch record before this method runs.
+		for epoch := em.currentEpoch; epoch < targetEpoch; epoch++ {
+			em.historicalSets[epoch] = em.currentSet.Clone()
+			em.trimHistorical()
+		}
+		em.prevSet = em.currentSet
+	}
+	em.currentEpoch = targetEpoch
 }
 
 // IsEpochBoundary checks if a given view is the first view of a new epoch.
@@ -363,8 +376,16 @@ func (em *EpochManager) ValidatorSetForView(view uint64) *ValidatorSet {
 	}
 	// Committed changes are staged before the boundary so catch-up can verify the
 	// first certificate of the next epoch without activating the set early.
-	if targetEpoch == em.currentEpoch+1 && em.nextSet != nil {
-		return em.nextSet
+	if targetEpoch == em.currentEpoch+1 {
+		if em.nextSet != nil {
+			return em.nextSet
+		}
+		// An epoch boundary does not itself rotate validator authority. When no
+		// reconfiguration was staged, the current set remains authorized in the
+		// immediately following epoch. Returning nil here wedges a static
+		// committee at every boundary: it cannot verify the first QC/TC signed in
+		// the new epoch and therefore cannot advance far enough to activate it.
+		return em.currentSet
 	}
 	if targetEpoch+1 == em.currentEpoch && em.prevSet != nil {
 		return em.prevSet
@@ -426,9 +447,6 @@ func (em *EpochManager) PeekNextSet() *ValidatorSet {
 // AdvanceEpoch activates the staged validator set.
 // Returns true if a transition occurred.
 func (em *EpochManager) AdvanceEpoch(boundaryView uint64) bool {
-	if em.nextSet == nil {
-		return false
-	}
 	em.historicalSets[em.currentEpoch] = em.currentSet.Clone()
 	em.trimHistorical()
 	// Retain the outgoing set for cross-boundary certificate verification: QCs/TCs
@@ -436,7 +454,12 @@ func (em *EpochManager) AdvanceEpoch(boundaryView uint64) bool {
 	em.prevSet = em.currentSet
 	em.setSinceView = boundaryView
 	em.currentEpoch++
-	em.currentSet = em.nextSet
+	// With no staged reconfiguration, epoch time still advances while validator
+	// authority remains unchanged. This keeps EpochForView and currentEpoch
+	// aligned and makes static-validator epochs first-class transitions.
+	if em.nextSet != nil {
+		em.currentSet = em.nextSet
+	}
 	em.nextSet = nil
 	return true
 }

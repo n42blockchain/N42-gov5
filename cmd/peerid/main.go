@@ -16,6 +16,14 @@ import (
 
 func main() {
 	for _, h := range os.Args[1:] {
+		if strings.HasPrefix(h, "@") {
+			keyBytes, err := os.ReadFile(strings.TrimPrefix(h, "@"))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "read private key file: %v\n", err)
+				os.Exit(1)
+			}
+			h = string(keyBytes)
+		}
 		h = strings.TrimPrefix(strings.TrimSpace(h), "0x")
 		b, err := hex.DecodeString(h)
 		if err != nil {

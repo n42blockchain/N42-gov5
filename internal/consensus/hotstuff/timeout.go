@@ -17,6 +17,8 @@ import (
 	"github.com/n42blockchain/N42/log"
 )
 
+const timedOutRebroadcastInterval = 5 * time.Second
+
 // onTimeout handles a view timeout triggered by the pacemaker.
 func (e *ConsensusEngine) onTimeout() error {
 	view := e.roundState.CurrentView()
@@ -37,7 +39,7 @@ func (e *ConsensusEngine) onTimeout() error {
 	if e.roundState.Phase() == PhaseTimedOut {
 		// Already timed out: re-broadcast timeout for late arrivals.
 		log.Warn("view timed out (repeat, re-broadcasting)", "view", view)
-		e.pacemaker.ResetForView(view, e.roundState.ConsecutiveTimeouts())
+		e.pacemaker.ResetAfter(timedOutRebroadcastInterval)
 
 		message := e.timeoutSigningMessage(view)
 		signature := e.secretKey.Sign(message)

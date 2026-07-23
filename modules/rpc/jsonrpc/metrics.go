@@ -24,12 +24,14 @@ package jsonrpc
 
 import (
 	"fmt"
+	"sync"
 
 	prometheus "github.com/n42blockchain/N42/common/metrics"
 )
 
 var (
-	rpcMetricsLabels = map[bool]map[string]string{
+	rpcMetricsLabelsMu sync.RWMutex
+	rpcMetricsLabels   = map[bool]map[string]string{
 		true:  {},
 		false: {},
 	}
@@ -46,10 +48,18 @@ func createRPCMetricsLabel(method string, valid bool) string {
 }
 
 func newRPCServingTimerMS(method string, valid bool) prometheus.Summary {
+	rpcMetricsLabelsMu.RLock()
 	label, ok := rpcMetricsLabels[valid][method]
+	rpcMetricsLabelsMu.RUnlock()
 	if !ok {
 		label = createRPCMetricsLabel(method, valid)
-		rpcMetricsLabels[valid][method] = label
+		rpcMetricsLabelsMu.Lock()
+		if existing, exists := rpcMetricsLabels[valid][method]; exists {
+			label = existing
+		} else {
+			rpcMetricsLabels[valid][method] = label
+		}
+		rpcMetricsLabelsMu.Unlock()
 	}
 	return prometheus.GetOrCreateSummary(label)
 }

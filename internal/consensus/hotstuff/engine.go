@@ -315,10 +315,21 @@ func (e *ConsensusEngine) SetSelfAddress(addr types.Address) {
 // RestoreState restores persisted consensus state for crash recovery.
 // Must only be called before the engine starts processing events.
 func (e *ConsensusEngine) RestoreState(view ViewNumber, lockedQC, committedQC QuorumCertificate, consecutiveTimeouts uint32) {
+	e.RestoreStateWithPhase(view, PhaseWaitingForProposal, lockedQC, committedQC, consecutiveTimeouts)
+}
+
+// RestoreStateWithPhase restores the exact durable round phase. In particular,
+// a TimedOut validator must re-announce its existing deterministic timeout
+// immediately after restart instead of silently waiting another max-backoff
+// interval.
+func (e *ConsensusEngine) RestoreStateWithPhase(view ViewNumber, phase Phase, lockedQC, committedQC QuorumCertificate, consecutiveTimeouts uint32) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.roundState = RoundStateFromSnapshot(view, lockedQC, committedQC, consecutiveTimeouts)
+	e.roundState = RoundStateFromSnapshotWithPhase(view, phase, lockedQC, committedQC, consecutiveTimeouts)
 	e.pacemaker.ResetForView(view, consecutiveTimeouts)
+	if phase == PhaseTimedOut {
+		e.pacemaker.ExpireNow()
+	}
 	// Align the epoch counter with the recovered view. A mid-chain restart with
 	// epochs enabled would otherwise leave currentEpoch at 0 while the view is far
 	// ahead, decoupling historicalSets keys from ValidatorSetForView lookups.
