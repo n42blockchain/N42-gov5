@@ -27,8 +27,8 @@ func (m mapCEReader) ReadConsensusEvidence(blockNum uint64) (*rawdb.ConsensusEvi
 // fakeChain returns a fixed parent header for the timestamp/parent lookups.
 type fakeChain struct{ parent *block.Header }
 
-func (c *fakeChain) Config() *params.ChainConfig      { return params.TestChainConfig }
-func (c *fakeChain) CurrentBlock() block.IBlock       { return nil }
+func (c *fakeChain) Config() *params.ChainConfig { return params.TestChainConfig }
+func (c *fakeChain) CurrentBlock() block.IBlock  { return nil }
 func (c *fakeChain) GetHeader(types.Hash, *uint256.Int) block.IHeader {
 	return c.parent
 }

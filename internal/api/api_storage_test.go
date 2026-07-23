@@ -4,6 +4,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math/big"
@@ -18,6 +19,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -125,6 +127,25 @@ func TestGetStorageValues_Basic(t *testing.T) {
 		if len(res) != 66 {
 			t.Errorf("result[%d] length = %d, expected 66", i, len(res))
 		}
+	}
+}
+
+func TestGetStorageAtReturnsCanonical32ByteWord(t *testing.T) {
+	bca := setupStorageTestAPI(t)
+	contract := types.HexToAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	latest := jsonrpc.BlockNumberOrHashWithNumber(jsonrpc.LatestBlockNumber)
+
+	got, err := bca.GetStorageAt(context.Background(), contract, "0xffff", latest)
+	if err != nil {
+		t.Fatalf("GetStorageAt(zero) error = %v", err)
+	}
+	if len(got) != 32 || !bytes.Equal(got, make([]byte, 32)) {
+		t.Fatalf("GetStorageAt(zero) = %x, want 32 zero bytes", got)
+	}
+
+	got = canonicalStorageWord(uint256.NewInt(0x0a))
+	if len(got) != 32 || got[31] != 0x0a {
+		t.Fatalf("canonicalStorageWord(non-zero) = %x, want a 32-byte word ending in 0a", got)
 	}
 }
 

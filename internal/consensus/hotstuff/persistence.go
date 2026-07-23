@@ -13,18 +13,20 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
 )
 
 // persistence key
 var hotstuffStateKey = []byte("state")
+var hotstuffPhaseKey = []byte("state_phase_v1")
 
 // ConsensusState holds the persisted consensus state for crash recovery.
 type ConsensusState struct {
 	View                ViewNumber
+	Phase               Phase
 	ConsecutiveTimeouts uint32
 	LockedQC            QuorumCertificate
 	LastCommittedQC     QuorumCertificate
@@ -51,7 +53,12 @@ func SaveConsensusState(tx kv.RwTx, state *ConsensusState) error {
 	copy(buf[16:16+len(lockedQCBytes)], lockedQCBytes)
 	copy(buf[16+len(lockedQCBytes):], committedQCBytes)
 
-	return tx.Put(modules.HotStuffState, hotstuffStateKey, buf)
+	if err := tx.Put(modules.HotStuffState, hotstuffStateKey, buf); err != nil {
+		return err
+	}
+	// Keep phase in a separate, versioned key so older binaries can still read
+	// the existing consensus-state encoding during rollback.
+	return tx.Put(modules.HotStuffState, hotstuffPhaseKey, []byte{byte(state.Phase)})
 }
 
 // LoadConsensusState loads the persisted consensus state from the database.
@@ -84,8 +91,21 @@ func LoadConsensusState(tx kv.Tx) (*ConsensusState, error) {
 		return nil, fmt.Errorf("decode committed_qc: %w", err)
 	}
 
+	phase := PhaseWaitingForProposal
+	phaseData, err := tx.GetOne(modules.HotStuffState, hotstuffPhaseKey)
+	if err != nil {
+		return nil, fmt.Errorf("read hotstuff phase: %w", err)
+	}
+	if len(phaseData) > 0 {
+		phase = Phase(phaseData[0])
+		if phase > PhaseTimedOut {
+			return nil, fmt.Errorf("hotstuff phase corrupted: %d", phase)
+		}
+	}
+
 	return &ConsensusState{
 		View:                view,
+		Phase:               phase,
 		ConsecutiveTimeouts: consecutiveTimeouts,
 		LockedQC:            *lockedQC,
 		LastCommittedQC:     *committedQC,
@@ -264,19 +284,29 @@ func SavePendingVotes(tx kv.RwTx, pv *PendingVotesState) error {
 	}
 	buf := make([]byte, size)
 	pos := 0
-	binary.LittleEndian.PutUint64(buf[pos:], uint64(pv.View)); pos += 8
-	copy(buf[pos:], pv.BlockHash[:]); pos += 32
-	binary.LittleEndian.PutUint32(buf[pos:], uint32(len(pv.PrepareVotes))); pos += 4
+	binary.LittleEndian.PutUint64(buf[pos:], uint64(pv.View))
+	pos += 8
+	copy(buf[pos:], pv.BlockHash[:])
+	pos += 32
+	binary.LittleEndian.PutUint32(buf[pos:], uint32(len(pv.PrepareVotes)))
+	pos += 4
 	for idx, sig := range pv.PrepareVotes {
-		binary.LittleEndian.PutUint32(buf[pos:], uint32(idx)); pos += 4
-		binary.LittleEndian.PutUint32(buf[pos:], uint32(len(sig))); pos += 4
-		copy(buf[pos:], sig); pos += len(sig)
+		binary.LittleEndian.PutUint32(buf[pos:], uint32(idx))
+		pos += 4
+		binary.LittleEndian.PutUint32(buf[pos:], uint32(len(sig)))
+		pos += 4
+		copy(buf[pos:], sig)
+		pos += len(sig)
 	}
-	binary.LittleEndian.PutUint32(buf[pos:], uint32(len(pv.CommitVotes))); pos += 4
+	binary.LittleEndian.PutUint32(buf[pos:], uint32(len(pv.CommitVotes)))
+	pos += 4
 	for idx, sig := range pv.CommitVotes {
-		binary.LittleEndian.PutUint32(buf[pos:], uint32(idx)); pos += 4
-		binary.LittleEndian.PutUint32(buf[pos:], uint32(len(sig))); pos += 4
-		copy(buf[pos:], sig); pos += len(sig)
+		binary.LittleEndian.PutUint32(buf[pos:], uint32(idx))
+		pos += 4
+		binary.LittleEndian.PutUint32(buf[pos:], uint32(len(sig)))
+		pos += 4
+		copy(buf[pos:], sig)
+		pos += len(sig)
 	}
 	return tx.Put(modules.HotStuffState, pendingVotesKey, buf[:pos])
 }
@@ -292,18 +322,26 @@ func LoadPendingVotes(tx kv.Tx) (*PendingVotesState, error) {
 		CommitVotes:  make(map[ValidatorIndex][]byte),
 	}
 	pos := 0
-	pv.View = ViewNumber(binary.LittleEndian.Uint64(data[pos:])); pos += 8
-	copy(pv.BlockHash[:], data[pos:]); pos += 32
+	pv.View = ViewNumber(binary.LittleEndian.Uint64(data[pos:]))
+	pos += 8
+	copy(pv.BlockHash[:], data[pos:])
+	pos += 32
 
 	readVotes := func() (map[ValidatorIndex][]byte, int) {
-		count := int(binary.LittleEndian.Uint32(data[pos:])); pos += 4
+		count := int(binary.LittleEndian.Uint32(data[pos:]))
+		pos += 4
 		m := make(map[ValidatorIndex][]byte, count)
 		for i := 0; i < count && pos+8 <= len(data); i++ {
-			idx := ValidatorIndex(binary.LittleEndian.Uint32(data[pos:])); pos += 4
-			sLen := int(binary.LittleEndian.Uint32(data[pos:])); pos += 4
-			if pos+sLen > len(data) { break }
+			idx := ValidatorIndex(binary.LittleEndian.Uint32(data[pos:]))
+			pos += 4
+			sLen := int(binary.LittleEndian.Uint32(data[pos:]))
+			pos += 4
+			if pos+sLen > len(data) {
+				break
+			}
 			sig := make([]byte, sLen)
-			copy(sig, data[pos:pos+sLen]); pos += sLen
+			copy(sig, data[pos:pos+sLen])
+			pos += sLen
 			m[idx] = sig
 		}
 		return m, pos

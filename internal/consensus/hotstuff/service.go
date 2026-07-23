@@ -376,6 +376,12 @@ func (s *Service) Start() error {
 			log.Warn("hotstuff: failed to recover persisted state", "err", err)
 		}
 	}
+	// Recovery establishes the active epoch. Only then is it safe to stage the
+	// schedule entry for the following epoch; staging in node wiring would use
+	// the genesis epoch on a mid-chain restart.
+	if s.epochSchedule != nil {
+		s.engine.Engine().PreStageFromScheduleSafe(s.epochSchedule)
+	}
 
 	// Auto-stop pacemaker timer on service shutdown.
 	if ce := s.engine.Engine(); ce != nil {
@@ -707,6 +713,31 @@ func (s *Service) handleBroadcast(output EngineOutput) {
 
 	log.Info("hotstuff: broadcasting consensus message", "type", output.Message.Type, "topic", topic, "bytes", len(gossipBytes))
 
+	// Timeout/NewView traffic must survive reconnects and GossipSub's duplicate
+	// cache. A deterministic timeout published before the mesh is complete can
+	// never be republished with a new message ID, leaving every validator below
+	// TC quorum after a restart. Fan control messages directly to every known
+	// validator as well as through gossip. The receiver deduplicates by
+	// (view,sender), so the two delivery paths are equivalent and idempotent.
+	if output.Message.Type == MsgTimeout || output.Message.Type == MsgNewView {
+		if output.Message.Type == MsgTimeout {
+			// Persist the phase before publishing. A crash after signing but
+			// before TC formation must restart in TimedOut and re-announce the
+			// same deterministic timeout, never reset to WaitingForProposal.
+			s.persistState()
+		}
+		if sender, ok := s.p2p.(P2PDirectSender); ok {
+			targets := viewChangeDirectTargets(sender.ConnectedPeers())
+			sendCtx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
+			defer cancel()
+			for _, pid := range targets {
+				if err := sender.SendRawBytes(sendCtx, gossipBytes, s.rpcTopic, pid); err != nil {
+					log.Debug("hotstuff: direct view-change fanout failed", "peer", pid, "err", err)
+				}
+			}
+		}
+	}
+
 	// Use Rotor single-hop relay for proposal broadcasts.
 	if output.Message.Type == MsgProposal && s.rotor != nil && s.rotor.Enabled() {
 		eng := s.engine.Engine()
@@ -791,6 +822,22 @@ func timeoutPublishPeerTarget(quorumSize int) int {
 		return 0
 	}
 	return quorumSize - 1
+}
+
+func viewChangeDirectTargets(connected []peer.ID) []peer.ID {
+	targets := make([]peer.ID, 0, len(connected))
+	seen := make(map[peer.ID]struct{}, len(connected))
+	for _, pid := range connected {
+		if pid == "" {
+			continue
+		}
+		if _, duplicate := seen[pid]; duplicate {
+			continue
+		}
+		seen[pid] = struct{}{}
+		targets = append(targets, pid)
+	}
+	return targets
 }
 
 func (s *Service) handleSendToValidator(output EngineOutput) {
@@ -1048,6 +1095,7 @@ func (s *Service) persistState() {
 
 	state := &ConsensusState{
 		View:                ce.CurrentView(),
+		Phase:               ce.CurrentPhase(),
 		ConsecutiveTimeouts: ce.ConsecutiveTimeouts(),
 		LockedQC:            ce.LockedQC(),
 		LastCommittedQC:     ce.LastCommittedQC(),
@@ -1129,7 +1177,7 @@ func (s *Service) recoverState() error {
 	}
 
 	log.Info("hotstuff: recovering persisted state",
-		"view", state.View, "timeouts", state.ConsecutiveTimeouts,
+		"view", state.View, "phase", state.Phase, "timeouts", state.ConsecutiveTimeouts,
 		"lockedQCView", state.LockedQC.View, "committedQCView", state.LastCommittedQC.View)
 
 	// The engine was already created by adapter.New(). We need to reinitialize
@@ -1139,17 +1187,47 @@ func (s *Service) recoverState() error {
 		return nil
 	}
 	currentView := ce.CurrentView()
-	if state.View > currentView {
-		// Sanity check: QC views must not exceed state view.
-		if state.LockedQC.View > state.View || state.LastCommittedQC.View > state.View {
-			log.Warn("hotstuff: corrupted persisted state — QC view exceeds state view, ignoring")
-			return nil
+	recoveryView := authenticatedRecoveryView(state)
+	if recoveryView >= currentView {
+		// A certificate may legitimately reach durable storage before the next
+		// view snapshot. Authenticate it before using it as a view-jump proof;
+		// unlike vote watermarks, QC.view+1 is protocol evidence and cannot cause
+		// an unproved restart transition.
+		if state.LockedQC.View > 0 {
+			if err := ce.VerifyQCAnyDomainForView(&state.LockedQC); err != nil {
+				return fmt.Errorf("verify recovered locked_qc: %w", err)
+			}
 		}
-		ce.RestoreState(state.View, state.LockedQC, state.LastCommittedQC, state.ConsecutiveTimeouts)
-		log.Info("hotstuff: engine restored to persisted state", "view", state.View)
+		if state.LastCommittedQC.View > 0 {
+			if err := ce.VerifyCommitQCForView(&state.LastCommittedQC); err != nil {
+				return fmt.Errorf("verify recovered committed_qc: %w", err)
+			}
+		}
+		phase := state.Phase
+		timeouts := state.ConsecutiveTimeouts
+		if recoveryView > state.View {
+			phase = PhaseWaitingForProposal
+			timeouts = 0
+		}
+		ce.RestoreStateWithPhase(recoveryView, phase, state.LockedQC, state.LastCommittedQC, timeouts)
+		log.Info("hotstuff: engine restored to persisted state",
+			"snapshotView", state.View, "recoveryView", recoveryView, "phase", phase)
 	}
 
 	return nil
+}
+
+func authenticatedRecoveryView(state *ConsensusState) ViewNumber {
+	if state == nil {
+		return 1
+	}
+	view := state.View
+	for _, certificateView := range []ViewNumber{state.LockedQC.View, state.LastCommittedQC.View} {
+		if certificateView >= view && certificateView < ^ViewNumber(0) {
+			view = certificateView + 1
+		}
+	}
+	return view
 }
 
 // rawSSZMarshaler wraps raw bytes to implement the ssz.Marshaler/Unmarshaler interfaces

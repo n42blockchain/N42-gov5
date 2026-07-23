@@ -17,6 +17,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -139,22 +141,50 @@ func New(config *params.HotStuffConfig, chainConfig *params.ChainConfig) *HotStu
 	// positive constant, so there is no meaningful runtime recovery path here.
 	signatures, _ := lru.NewARC(inmemorySignatures)
 
-	conf := config
-	if conf == nil {
-		conf = &params.HotStuffConfig{
+	var conf params.HotStuffConfig
+	if config == nil {
+		conf = params.HotStuffConfig{
 			BaseTimeout: 60000,
 			MaxTimeout:  120000,
+		}
+	} else {
+		conf = *config
+	}
+	overrideTimeoutFromEnv("N42_BASE_TIMEOUT_MS", &conf.BaseTimeout)
+	overrideTimeoutFromEnv("N42_MAX_TIMEOUT_MS", &conf.MaxTimeout)
+	if conf.BaseTimeout == 0 || conf.MaxTimeout == 0 || conf.BaseTimeout > conf.MaxTimeout {
+		log.Warn("ignoring invalid HotStuff timeout environment override",
+			"baseTimeout", conf.BaseTimeout, "maxTimeout", conf.MaxTimeout)
+		if config == nil {
+			conf.BaseTimeout = 60000
+			conf.MaxTimeout = 120000
+		} else {
+			conf = *config
 		}
 	}
 
 	return &HotStuff{
-		config:      conf,
+		config:      &conf,
 		chainConfig: chainConfig,
 		ctx:         ctx,
 		cancel:      cancel,
 		signatures:  signatures,
 		outputCh:    make(chan EngineOutput, 1024),
 	}
+}
+
+func overrideTimeoutFromEnv(name string, target *uint64) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return
+	}
+	value, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		log.Warn("ignoring malformed HotStuff timeout environment override",
+			"env", name, "value", raw, "err", err)
+		return
+	}
+	*target = value
 }
 
 // Authorize injects a BLS private key and the corresponding address into the engine.

@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
@@ -34,10 +35,20 @@ func main() {
 	rangeOutputPath := flag.String("range-out", "", "optional finalized-range v1 output file")
 	rangeFrom := flag.Uint64("range-from", 0, "first block in --range-out (default: bounded tail ending at checkpoint)")
 	rangeTo := flag.Uint64("range-to", 0, "last block in --range-out (default: canonical head/checkpoint)")
+	hotstuffStateOutputPath := flag.String("hotstuff-state-out", "", "optional output file for the persisted HotStuff state as 0x-prefixed hex")
 	checkpointNumber := flag.Uint64("checkpoint-number", 0, "optional historical checkpoint whose header root must equal the current QMDB forest root")
 	flag.Parse()
-	if *dbPath == "" || (*outputPath == "" && *rangeOutputPath == "") {
-		fatalf("usage: n42-qmdb-export --db <chaindata> [--out <snapshot>] [--range-out <bundle>]")
+	rangeFromProvided, rangeToProvided := false, false
+	flag.Visit(func(option *flag.Flag) {
+		switch option.Name {
+		case "range-from":
+			rangeFromProvided = true
+		case "range-to":
+			rangeToProvided = true
+		}
+	})
+	if *dbPath == "" || (*outputPath == "" && *rangeOutputPath == "" && *hotstuffStateOutputPath == "") {
+		fatalf("usage: n42-qmdb-export --db <chaindata> [--out <snapshot>] [--range-out <bundle>] [--hotstuff-state-out <hex-file>]")
 	}
 
 	modules.N42Init()
@@ -55,6 +66,28 @@ func main() {
 	}
 	defer tx.Rollback()
 
+	if *hotstuffStateOutputPath != "" {
+		state, stateErr := tx.GetOne(modules.HotStuffState, []byte("state"))
+		if stateErr != nil {
+			fatalf("read persisted HotStuff state: %v", stateErr)
+		}
+		if len(state) < 16 {
+			fatalf("persisted HotStuff state is missing or truncated")
+		}
+		encodedState := append([]byte("0x"), []byte(hex.EncodeToString(state))...)
+		written, writeErr := writeAtomic(*hotstuffStateOutputPath, func(w io.Writer) (int64, error) {
+			n, err := w.Write(encodedState)
+			return int64(n), err
+		})
+		if writeErr != nil || written != int64(len(encodedState)) {
+			fatalf("write persisted HotStuff state: %v", writeErr)
+		}
+		fmt.Printf("exported persisted HotStuff state bytes=%d to %s\n", len(state), *hotstuffStateOutputPath)
+		if *outputPath == "" && *rangeOutputPath == "" {
+			return
+		}
+	}
+
 	genesisHash, err := rawdb.ReadCanonicalHash(tx, 0)
 	if err != nil || genesisHash == ([32]byte{}) {
 		fatalf("read genesis hash: %v", err)
@@ -64,19 +97,14 @@ func main() {
 		fatalf("read uint64 chain id: %v", err)
 	}
 	if *outputPath == "" {
-		to := *rangeTo
-		if to == 0 {
-			headHash := rawdb.ReadHeadBlockHash(tx)
-			headNumber := rawdb.ReadHeaderNumber(tx, headHash)
-			if headNumber == nil {
-				fatalf("canonical head is unavailable")
-			}
-			to = *headNumber
+		headHash := rawdb.ReadHeadBlockHash(tx)
+		headNumber := rawdb.ReadHeaderNumber(tx, headHash)
+		if headNumber == nil {
+			fatalf("canonical head is unavailable")
 		}
-		from := *rangeFrom
-		if from == 0 && to >= qmdb.MaxFinalizedRangeBlocks {
-			from = to - qmdb.MaxFinalizedRangeBlocks + 1
-		}
+		from, to := resolveFinalizedRange(
+			*headNumber, *rangeFrom, *rangeTo, rangeFromProvided, rangeToProvided,
+		)
 		if err := exportFinalizedRange(tx, chainConfig.ChainID.Uint64(), genesisHash, from, to, *rangeOutputPath); err != nil {
 			fatalf("export finalized range: %v", err)
 		}
@@ -174,18 +202,28 @@ func main() {
 	fmt.Printf("exported chain_id=%d genesis=%x block=%d hash=%x root=%x slots=%d live=%d bytes=%d to %s\n",
 		metadata.ChainID, metadata.GenesisHash, blockNumber, blockHash, root, metadata.NextSlot, computer.Tree().LiveCount(), written, *outputPath)
 	if *rangeOutputPath != "" {
-		to := blockNumber
-		if *rangeTo != 0 {
-			to = *rangeTo
-		}
-		from := *rangeFrom
-		if from == 0 && to >= qmdb.MaxFinalizedRangeBlocks {
-			from = to - qmdb.MaxFinalizedRangeBlocks + 1
-		}
+		from, to := resolveFinalizedRange(
+			blockNumber, *rangeFrom, *rangeTo, rangeFromProvided, rangeToProvided,
+		)
 		if err := exportFinalizedRange(tx, metadata.ChainID, genesisHash, from, to, *rangeOutputPath); err != nil {
 			fatalf("export finalized range: %v", err)
 		}
 	}
+}
+
+func resolveFinalizedRange(head, requestedFrom, requestedTo uint64, fromProvided, toProvided bool) (uint64, uint64) {
+	to := head
+	if toProvided {
+		to = requestedTo
+	}
+	from := requestedFrom
+	if !fromProvided {
+		from = 0
+		if to >= qmdb.MaxFinalizedRangeBlocks {
+			from = to - qmdb.MaxFinalizedRangeBlocks + 1
+		}
+	}
+	return from, to
 }
 
 func exportFinalizedRange(tx kv.Tx, chainID uint64, genesisHash [32]byte, from, to uint64, outputPath string) error {

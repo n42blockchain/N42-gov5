@@ -43,6 +43,11 @@ func RPCMarshalBlock(block block.IBlock, chain common.IBlockChain, cfg *params.C
 	if blockHashOverride != nil {
 		fields["hash"] = avmtypes.FromastHash(*blockHashOverride)
 	}
+	size, err := rpcBlockRLPSize(block, cfg)
+	if err != nil {
+		return nil, err
+	}
+	fields["size"] = hexutil.Uint64(size)
 
 	if inclTx {
 		num := uint256ToUint64OrZero(block.Number64())
@@ -101,45 +106,69 @@ func RPCMarshalBlock(block block.IBlock, chain common.IBlockChain, cfg *params.C
 		}
 		fields["transactions"] = transactions
 
-		// verifiers
-		body := block.Body()
-		var verifiers []interface{}
-		if body != nil {
-			verifiers = make([]interface{}, len(body.Verifier()))
-			for i, verifier := range body.Verifier() {
-				verifiers[i] = verifier
-			}
-		}
-		fields["verifier"] = verifiers
-
-		// reward
-		type RPCReward struct {
-			Address types.Address
-			Amount  *uint256.Int
-		}
-		var rewards []*RPCReward
-		if body != nil {
-			rewards = make([]*RPCReward, len(body.Reward()))
-			for i, reward := range body.Reward() {
-				rewards[i] = &RPCReward{
-					reward.Address,
-					reward.Amount,
+		if !isHotStuffChain(cfg) {
+			// Legacy N42 RPC extensions are intentionally absent from HotStuff
+			// responses. HotStuff exposes the Ethereum-compatible block schema,
+			// which is also what the Rust/reth participant serves.
+			body := block.Body()
+			var verifiers []interface{}
+			if body != nil {
+				verifiers = make([]interface{}, len(body.Verifier()))
+				for i, verifier := range body.Verifier() {
+					verifiers[i] = verifier
 				}
 			}
+			fields["verifier"] = verifiers
+
+			type RPCReward struct {
+				Address types.Address
+				Amount  *uint256.Int
+			}
+			var rewards []*RPCReward
+			if body != nil {
+				rewards = make([]*RPCReward, len(body.Reward()))
+				for i, reward := range body.Reward() {
+					rewards[i] = &RPCReward{
+						reward.Address,
+						reward.Amount,
+					}
+				}
+			}
+			fields["rewards"] = rewards
 		}
-		fields["rewards"] = rewards
 	}
 
-	td := chain.GetTd(block.Hash(), block.Number64())
-	if td == nil {
-		td = new(uint256.Int)
+	if !isHotStuffChain(cfg) {
+		td := chain.GetTd(block.Hash(), block.Number64())
+		if td == nil {
+			td = new(uint256.Int)
+		}
+		fields["totalDifficulty"] = (*hexutil.Big)(td.ToBig())
 	}
-	fields["totalDifficulty"] = (*hexutil.Big)(td.ToBig())
 	// POA
 	uncleHashes := make([]types.Hash, 0)
 	fields["uncles"] = uncleHashes
 
 	return fields, nil
+}
+
+func isHotStuffChain(cfg *params.ChainConfig) bool {
+	return cfg != nil && (cfg.Consensus == params.HotStuffConsensus || cfg.HotStuff != nil)
+}
+
+// rpcBlockRLPSize returns the canonical Ethereum block-body encoding length
+// expected by eth_getBlock*. Header.Size reports approximate in-memory cache
+// usage and must never be exposed as the JSON-RPC block size.
+func rpcBlockRLPSize(blk block.IBlock, cfg *params.ChainConfig) (uint64, error) {
+	rawTxs := make([]hexutil.Bytes, len(blk.Transactions()))
+	for i, tx := range blk.Transactions() {
+		encoded, err := transaction.EncodeEthereumTransaction(tx)
+		if err != nil {
+			return 0, err
+		}
+		rawTxs[i] = encoded
+	}
+	return executionPayloadBlockRLPSize(blk, rawTxs, cfg, enginePayloadHashOptions{})
 }
 
 // newRPCTransactionFromBlockHash returns a transaction that will serialize to the RPC representation.
@@ -173,6 +202,14 @@ func RPCMarshalHeader(head block.IHeader, cfg *params.ChainConfig) map[string]in
 		return nil
 	}
 	ethHeader := avmtypes.FromN42Header(head)
+	uncleHash := hash.EmptyUncleHash
+	if cfg != nil && cfg.HotStuff != nil {
+		// H2's compact header codec intentionally preserves a zero ommers hash.
+		// Returning Ethereum's synthetic EmptyUncleHash here made
+		// eth_getBlock* disagree with the byte-identical Rust client even though
+		// both addressed the same native header hash.
+		uncleHash = header.UncleHash
+	}
 
 	result := map[string]interface{}{
 		"number":           (*hexutil.Big)(uint256ToBigOrZero(head.Number64())),
@@ -180,7 +217,7 @@ func RPCMarshalHeader(head block.IHeader, cfg *params.ChainConfig) map[string]in
 		"parentHash":       avmtypes.FromastHash(header.ParentHash),
 		"nonce":            header.Nonce,
 		"mixHash":          avmtypes.FromastHash(header.MixDigest),
-		"sha3Uncles":       avmtypes.FromastHash(hash.EmptyUncleHash),
+		"sha3Uncles":       avmtypes.FromastHash(uncleHash),
 		"miner":            avmtypes.FromastAddress(&header.Coinbase),
 		"difficulty":       (*hexutil.Big)(uint256ToBigOrZero(header.Difficulty)),
 		"extraData":        hexutil.Bytes(header.Extra),

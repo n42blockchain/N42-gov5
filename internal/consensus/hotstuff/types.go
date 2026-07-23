@@ -76,8 +76,8 @@ func (p Phase) String() string {
 type QuorumCertificate struct {
 	View               ViewNumber
 	BlockHash          types.Hash
-	AggregateSignature []byte   // Aggregated BLS signature bytes
-	Signers            []bool   // Bitmap of which validators signed
+	AggregateSignature []byte // Aggregated BLS signature bytes
+	Signers            []bool // Bitmap of which validators signed
 }
 
 // Genesis returns a genesis QC with view 0 and zero block hash.
@@ -146,11 +146,11 @@ func (tc *TimeoutCertificate) Clone() TimeoutCertificate {
 type Proposal struct {
 	View       ViewNumber
 	BlockHash  types.Hash
-	JustifyQC  QuorumCertificate        // QC justifying this proposal
+	JustifyQC  QuorumCertificate // QC justifying this proposal
 	Proposer   ValidatorIndex
-	Signature  []byte                   // BLS signature over (view, block_hash)
-	PrepareQC  *QuorumCertificate       // Piggybacked from previous view (chained mode)
-	TxRootHash types.Hash               // DA commitment: transaction root for data availability check (Baby Raptr)
+	Signature  []byte             // BLS signature over (view, block_hash)
+	PrepareQC  *QuorumCertificate // Piggybacked from previous view (chained mode)
+	TxRootHash types.Hash         // DA commitment: transaction root for data availability check (Baby Raptr)
 }
 
 // Vote is a Round 1 (Prepare) vote from a validator.
@@ -212,13 +212,13 @@ type ConsensusMsg struct {
 type ConsensusMsgType uint8
 
 const (
-	MsgProposal    ConsensusMsgType = 1
-	MsgVote        ConsensusMsgType = 2
-	MsgCommitVote  ConsensusMsgType = 3
-	MsgPrepareQC   ConsensusMsgType = 4
-	MsgTimeout     ConsensusMsgType = 5
-	MsgNewView     ConsensusMsgType = 6
-	MsgDecide      ConsensusMsgType = 7
+	MsgProposal   ConsensusMsgType = 1
+	MsgVote       ConsensusMsgType = 2
+	MsgCommitVote ConsensusMsgType = 3
+	MsgPrepareQC  ConsensusMsgType = 4
+	MsgTimeout    ConsensusMsgType = 5
+	MsgNewView    ConsensusMsgType = 6
+	MsgDecide     ConsensusMsgType = 7
 )
 
 // SigningMessage returns the message to sign for Round 1 votes: view (8 bytes LE) || block_hash (32 bytes).

@@ -15,8 +15,8 @@ import (
 	"os"
 	"sort"
 
-	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/log"
 )
 

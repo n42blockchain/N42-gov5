@@ -42,8 +42,8 @@ type Pacemaker struct {
 }
 
 const (
-	latencyWindow      = 20  // Number of recent latency samples to keep
-	maxBackoffExponent = 63  // Prevent overflow in 2^n calculation
+	latencyWindow      = 20 // Number of recent latency samples to keep
+	maxBackoffExponent = 63 // Prevent overflow in 2^n calculation
 )
 
 // NewPacemaker creates a new pacemaker with the given base and maximum timeout durations.
@@ -132,6 +132,16 @@ func (p *Pacemaker) ResetForView(view ViewNumber, consecutiveTimeouts uint32) {
 	p.mu.Unlock()
 }
 
+// ResetAfter schedules the next pacemaker event after an explicit duration.
+// It is used only to retry an already-timed-out round: the round has already
+// paid its exponential backoff, and waiting through that backoff again can
+// prevent a recovered validator from re-announcing to late peers.
+func (p *Pacemaker) ResetAfter(duration time.Duration) {
+	p.mu.Lock()
+	p.deadline = time.Now().Add(duration)
+	p.mu.Unlock()
+}
+
 // IsTimedOut returns true if the current view has timed out.
 func (p *Pacemaker) IsTimedOut() bool {
 	p.mu.RLock()
@@ -161,6 +171,15 @@ func (p *Pacemaker) Deadline() time.Time {
 func (p *Pacemaker) ExtendDeadline(extra time.Duration) {
 	p.mu.Lock()
 	p.deadline = p.deadline.Add(extra)
+	p.mu.Unlock()
+}
+
+// ExpireNow makes the current timer immediately eligible to fire. Recovery
+// uses this for a durably TimedOut round so the byte-identical timeout is
+// re-announced without waiting through another full backoff interval.
+func (p *Pacemaker) ExpireNow() {
+	p.mu.Lock()
+	p.deadline = time.Now()
 	p.mu.Unlock()
 }
 

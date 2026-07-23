@@ -45,9 +45,13 @@ func NewRoundState() *RoundState {
 
 // FromSnapshot restores state from a persisted snapshot (crash recovery).
 func RoundStateFromSnapshot(view ViewNumber, lockedQC, lastCommittedQC QuorumCertificate, consecutiveTimeouts uint32) *RoundState {
+	return RoundStateFromSnapshotWithPhase(view, PhaseWaitingForProposal, lockedQC, lastCommittedQC, consecutiveTimeouts)
+}
+
+func RoundStateFromSnapshotWithPhase(view ViewNumber, phase Phase, lockedQC, lastCommittedQC QuorumCertificate, consecutiveTimeouts uint32) *RoundState {
 	return &RoundState{
 		currentView:         view,
-		phase:               PhaseWaitingForProposal,
+		phase:               phase,
 		lockedQC:            lockedQC,
 		lastCommittedQC:     lastCommittedQC,
 		consecutiveTimeouts: consecutiveTimeouts,

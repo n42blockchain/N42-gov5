@@ -1656,6 +1656,14 @@ func (n *Node) Start() error {
 		gossipTopic := fmt.Sprintf(p2p.HotStuffConsensusTopicFormat, forkDigest)
 		rpcTopic := p2p.RPCHotStuffDirectTopicV1
 		svc := hotstuff.NewService(hs, newHotstuffP2PAdapter(n.p2p), n.db, gossipTopic, rpcTopic)
+		epochSchedulePath := filepath.Join(n.config.NodeCfg.DataDir, "epoch_schedule.json")
+		epochSchedule, err := hotstuff.LoadEpochSchedule(epochSchedulePath)
+		if err != nil {
+			return fmt.Errorf("load hotstuff epoch schedule %s: %w", epochSchedulePath, err)
+		}
+		if epochSchedule != nil {
+			svc.SetEpochSchedule(epochSchedule)
+		}
 		if hs.Config().InteropV4 {
 			if n.config.ChainCfg == nil || n.config.ChainCfg.ChainID == nil || !n.config.ChainCfg.ChainID.IsUint64() {
 				return errors.New("hotstuff H2-v4 requires a uint64 chain ID")

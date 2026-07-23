@@ -427,6 +427,9 @@ func TestSeedCurrentEpochAlignsHistoricalSets(t *testing.T) {
 	if em.CurrentEpoch() != wantEpoch {
 		t.Fatalf("seeded epoch = %d, want %d", em.CurrentEpoch(), wantEpoch)
 	}
+	if got := em.ValidatorSetForView(990); got == nil || got.Len() != oldSet.Len() {
+		t.Fatal("seeding a static boundary must preserve immediately previous authority")
+	}
 
 	// A view inside the seeded epoch (epoch 99 = views 991..1000) resolves to
 	// the current (old) set.
@@ -471,12 +474,13 @@ func TestMarkCommittedStagesForVerification(t *testing.T) {
 	sk, _ := blst.RandKey()
 	rm.ProposeAddValidator(types.BytesToAddress([]byte{0x10}), sk.PublicKey())
 
-	// Before commit: no staged set; the next epoch's view must be unresolved.
+	// Before commit: no staged set; an uncommitted proposal cannot change
+	// authority, so the current static set remains authorized next epoch.
 	if em.HasStagedNext() {
 		t.Fatal("must not be staged before commit")
 	}
-	if em.ValidatorSetForView(11) != nil {
-		t.Fatal("next epoch set must not resolve before commit")
+	if got := em.ValidatorSetForView(11); got != vs {
+		t.Fatal("uncommitted reconfiguration must leave next-epoch authority unchanged")
 	}
 
 	rm.MarkCommitted() // stages at commit, NOT at the boundary
@@ -530,6 +534,36 @@ func TestResolveQCValidatorSetBindsAuthorityToView(t *testing.T) {
 	engine = NewConsensusEngineWithEpochManager(0, sk, sameWidth, 1_000, 2_000, make(chan EngineOutput, 1))
 	if got := engine.resolveQCValidatorSet(11, 4); got != sameWidth.PeekNextSet() {
 		t.Fatal("same-width next epoch must resolve to its staged set, not the old set")
+	}
+}
+
+func TestStaticValidatorSetCarriesAcrossEpochBoundary(t *testing.T) {
+	current := NewValidatorSet(makeTestValidators(4), 1)
+	em := NewEpochManagerWithLength(current, 10)
+
+	// Before locally entering the boundary, certificates from the immediately
+	// following epoch must already resolve to the unchanged active authority.
+	if got := em.ValidatorSetForView(11); got != current {
+		t.Fatal("unstaged next epoch must inherit the current validator set")
+	}
+	if got := em.ValidatorSetForView(21); got != nil {
+		t.Fatal("authority must not be guessed more than one epoch ahead")
+	}
+
+	if !em.AdvanceEpoch(11) {
+		t.Fatal("a static epoch boundary must still advance epoch time")
+	}
+	if em.CurrentEpoch() != 1 {
+		t.Fatalf("current epoch = %d, want 1", em.CurrentEpoch())
+	}
+	if got := em.CurrentValidatorSet(); got != current {
+		t.Fatal("static epoch boundary must preserve validator authority")
+	}
+	if got := em.ValidatorSetForView(10); got == nil || got.Len() != current.Len() {
+		t.Fatal("previous epoch authority must remain available")
+	}
+	if got := em.ValidatorSetForView(11); got != current {
+		t.Fatal("current epoch must resolve to the unchanged validator set")
 	}
 }
 

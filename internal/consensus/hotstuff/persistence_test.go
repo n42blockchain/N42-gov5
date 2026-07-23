@@ -24,6 +24,7 @@ func TestSaveLoadConsensusState(t *testing.T) {
 
 	original := &ConsensusState{
 		View:                15,
+		Phase:               PhaseTimedOut,
 		ConsecutiveTimeouts: 3,
 		LockedQC: QuorumCertificate{
 			View:               10,
@@ -68,6 +69,9 @@ func TestSaveLoadConsensusState(t *testing.T) {
 	if loaded.ConsecutiveTimeouts != original.ConsecutiveTimeouts {
 		t.Fatalf("consecutive timeouts mismatch: got %d, want %d",
 			loaded.ConsecutiveTimeouts, original.ConsecutiveTimeouts)
+	}
+	if loaded.Phase != original.Phase {
+		t.Fatalf("phase mismatch: got %s, want %s", loaded.Phase, original.Phase)
 	}
 
 	// Verify LockedQC

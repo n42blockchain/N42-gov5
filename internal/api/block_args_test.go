@@ -109,6 +109,65 @@ func TestRPCMarshalHeaderUsesAddressableNativeHashForN42Consensus(t *testing.T) 
 	}
 }
 
+func TestRPCMarshalHeaderPreservesHotStuffZeroUncleHash(t *testing.T) {
+	header := &block.Header{
+		Number:     uint256.NewInt(1),
+		Difficulty: uint256.NewInt(0),
+		UncleHash:  types.Hash{},
+	}
+	cfg := &params.ChainConfig{HotStuff: &params.HotStuffConfig{}}
+
+	fields := RPCMarshalHeader(header, cfg)
+	got, ok := fields["sha3Uncles"].(avmutil.Hash)
+	if !ok {
+		t.Fatalf("RPCMarshalHeader() sha3Uncles type = %T", fields["sha3Uncles"])
+	}
+	if got != (avmutil.Hash{}) {
+		t.Fatalf("RPCMarshalHeader() sha3Uncles = %s, want zero", got.Hex())
+	}
+}
+
+func TestRPCMarshalBlockUsesCanonicalRLPSizeAndHotStuffSchema(t *testing.T) {
+	t.Parallel()
+
+	header := &block.Header{
+		ParentHash:  typesHashFromByte(0x01),
+		Root:        typesHashFromByte(0x02),
+		TxHash:      typesHashFromByte(0x03),
+		ReceiptHash: typesHashFromByte(0x04),
+		Difficulty:  uint256.NewInt(0),
+		Number:      uint256.NewInt(1000),
+		GasLimit:    30_000_000,
+		Time:        9,
+		BaseFee:     uint256.NewInt(7),
+		Extra:       make([]byte, 200),
+	}
+	cfg := &params.ChainConfig{
+		Consensus: params.HotStuffConsensus,
+		HotStuff:  &params.HotStuffConfig{},
+	}
+	blk := block.NewBlock(header, nil)
+	fields, err := RPCMarshalBlock(blk, nil, cfg, true, true, nil)
+	if err != nil {
+		t.Fatalf("RPCMarshalBlock() error = %v", err)
+	}
+	want, err := executionPayloadBlockRLPSize(blk, nil, cfg, enginePayloadHashOptions{})
+	if err != nil {
+		t.Fatalf("executionPayloadBlockRLPSize() error = %v", err)
+	}
+	if got := uint64(fields["size"].(hexutil.Uint64)); got != want {
+		t.Fatalf("RPCMarshalBlock() size = %d, want canonical RLP length %d", got, want)
+	}
+	if got := uint64(fields["size"].(hexutil.Uint64)); got == uint64(avmtypes.FromN42Header(header).Size()) {
+		t.Fatalf("RPCMarshalBlock() size = %d, still exposes approximate header memory size", got)
+	}
+	for _, key := range []string{"verifier", "rewards", "totalDifficulty"} {
+		if _, ok := fields[key]; ok {
+			t.Fatalf("RPCMarshalBlock() unexpectedly included legacy field %q for HotStuff", key)
+		}
+	}
+}
+
 func TestRPCMarshalHeaderOmitsPostForkFieldsBeforeShanghai(t *testing.T) {
 	t.Parallel()
 
