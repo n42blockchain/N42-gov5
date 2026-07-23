@@ -106,6 +106,18 @@ type getBlockHeadersPacket struct {
 	*getBlockHeadersQuery
 }
 
+// requestIDTail decodes just the leading request-id from any eth/66+ request
+// `[reqID, ...]`, tolerating whatever query shape follows. The GetXxx handlers
+// serve empty stub responses (we're not a serving node), so only the request-id
+// — which must be echoed back — matters; the query tail is irrelevant. A strict
+// full-struct decode of the query needlessly drops peers whose request encoding
+// differs by a field ("rlp: too many elements"), so prefer this for handlers
+// that don't read the query body.
+type requestIDTail struct {
+	RequestID uint64
+	Rest      []rlp.RawValue `rlp:"tail"`
+}
+
 // blockHeadersPacket carries headers as RAW RLP bytes per entry. The
 // alternative — decoding into `[]*n42block.Header` via reflect — fails
 // against real mainnet wire bytes because N42's Header struct has post-
