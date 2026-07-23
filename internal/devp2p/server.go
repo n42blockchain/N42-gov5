@@ -11,6 +11,8 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 
 	gethp2p "github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/enode"
@@ -46,8 +48,19 @@ type Server struct {
 
 // NewServer creates a new devp2p server.
 func NewServer(cfg ServerConfig, handler *EthHandler) *Server {
+	// PulseChain (network=369) forked from Ethereum and shares our discovery
+	// bootnodes AND forkHash (07c9462e) — only networkID differs, and networkID is
+	// NOT in the discv5 ENR, so discovery can't pre-filter it. Its nodes flood our
+	// inbound slots and evict scarce real mainnet peers right after handshake. A
+	// larger pool (plus trusted-pinning confirmed mainnet peers, see Start) keeps
+	// good peers alive. Override with N42_MAX_PEERS.
+	if v := os.Getenv("N42_MAX_PEERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.MaxPeers = n
+		}
+	}
 	if cfg.MaxPeers == 0 {
-		cfg.MaxPeers = 50
+		cfg.MaxPeers = 200
 	}
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = ":30303"
@@ -123,6 +136,17 @@ func (s *Server) Start() error {
 	if err := s.srv.Start(); err != nil {
 		return fmt.Errorf("devp2p start: %w", err)
 	}
+
+	// Pin confirmed mainnet peers (those that pass the eth network+genesis
+	// handshake) into the trusted set. Trusted conns are exempt from the p2p
+	// server's "too many peers" eviction, so a real mainnet peer that gets in is
+	// never pushed out by the PulseChain inbound flood that shares our bootnodes
+	// and forkid. The handler bounds how many it pins (maxTrustedPeers).
+	s.handler.setMarkTrusted(func(n *enode.Node) {
+		if n != nil {
+			s.srv.AddTrustedPeer(n)
+		}
+	})
 
 	// Subscribe to peer add/drop events so we can log the actual
 	// RLPx Disconnect reason from the remote side. That reason is

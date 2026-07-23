@@ -104,7 +104,7 @@ func DefaultConfig() Config {
 	return Config{
 		Enabled:    false,
 		ListenAddr: ":30303",
-		MaxPeers:   50,
+		MaxPeers:   200,
 		BootNodes:  params.EthereumMainnetBootnodes,
 	}
 }

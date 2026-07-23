@@ -600,13 +600,26 @@ func (d *Downloader) coordinator(ctx context.Context) {
 			// Caught up to the lagged tip. Post-merge mainnet EL peers don't push
 			// NewBlock/NewBlockHashes (block gossip moved to the CL) and a peer's
 			// head in our table is frozen at handshake, so actively probe past the
-			// KNOWN tip: a synced peer serves tip+1 even though its advertised head
+			// KNOWN tip: a synced peer serves floor+1 even though its advertised head
 			// says otherwise. This is what makes 12s live-follow advance for a
 			// pure-EL follower.
-			if d.probeForNewTip(ctx, tip) {
+			//
+			// Probe FLOOR = max(tip, local). eth/68 peers carry no head number in
+			// their Status (head==0), so when the pool holds only eth/68 peers tip
+			// collapses to 0 and probing tip+1 would request ancient block 1 — all
+			// below local, zero progress, an infinite "caught up tip=0" spin. Flooring
+			// at local makes us probe local+1, so a mainnet peer reveals the block
+			// ABOVE our head, its head is bumped to a real value, and the normal fetch
+			// path resumes. With a real eth/69 peer present, floor==tip → unchanged.
+			probeFloor := tip
+			if local > probeFloor {
+				probeFloor = local
+			}
+			if d.probeForNewTip(ctx, probeFloor) {
 				continue // tip advanced; loop to import the now-confirmed block
 			}
-			log.Info("eldevp2p: caught up", "head", local, "tip", tip, "lag", reorgLag, "peers", len(peers))
+			log.Info("eldevp2p: caught up", "head", local, "tip", tip, "probeFloor", probeFloor,
+				"lag", reorgLag, "peers", len(peers))
 			time.Sleep(12 * time.Second)
 			continue
 		}
@@ -805,7 +818,7 @@ func (d *Downloader) bufferedThrough(from, to uint64) bool {
 // the block it actually has; we buffer the returned headers and bump that peer's
 // head so the normal fetch+execute path imports them. Stops at the first peer
 // that yields a newer block. Returns true iff a new tip was discovered.
-func (d *Downloader) probeForNewTip(ctx context.Context, knownTip uint64) bool {
+func (d *Downloader) probeForNewTip(ctx context.Context, floor uint64) bool {
 	type probePeer struct {
 		id string
 		rw gethp2p.MsgReadWriter
@@ -834,7 +847,7 @@ func (d *Downloader) probeForNewTip(ctx context.Context, knownTip uint64) bool {
 	ch := make(chan probeResult, len(peers))
 	for _, pp := range peers {
 		go func(pp probePeer) {
-			raw, err := d.requestHeaders(pctx, pp.id, pp.rw, knownTip+1, headersPerBatch)
+			raw, err := d.requestHeaders(pctx, pp.id, pp.rw, floor+1, headersPerBatch)
 			if err != nil || len(raw) == 0 {
 				ch <- probeResult{}
 				return
@@ -847,7 +860,7 @@ func (d *Downloader) probeForNewTip(ctx context.Context, knownTip uint64) bool {
 					continue
 				}
 				n := h.Number64().Uint64()
-				if n > knownTip {
+				if n > floor {
 					hs[n] = h
 					if n > maxN {
 						maxN = n
@@ -861,7 +874,7 @@ func (d *Downloader) probeForNewTip(ctx context.Context, knownTip uint64) bool {
 	found := false
 	for range peers {
 		r := <-ch
-		if r.maxN <= knownTip {
+		if r.maxN <= floor {
 			continue
 		}
 		for n, h := range r.headers {
@@ -958,6 +971,7 @@ func (d *Downloader) ensureHeaders(ctx context.Context, from, to uint64) {
 			if err != nil {
 				return
 			}
+			var maxN uint64
 			for _, r := range raw {
 				h, err := ethel.DecodeUncleHeader(r)
 				if err != nil {
@@ -967,6 +981,20 @@ func (d *Downloader) ensureHeaders(ctx context.Context, from, to uint64) {
 				if n >= start && n <= end {
 					d.buffer.putHeader(n, h)
 				}
+				if n > maxN {
+					maxN = n
+				}
+			}
+			// A peer that served headers up to maxN clearly has at least that head;
+			// bump our record so tip reflects reality. eth/68 peers carry no head
+			// number in their Status (head==0), so without this the pool's tip can
+			// collapse to 0 under eth/68-only churn and stall the fetch path.
+			if maxN > 0 {
+				d.mu.Lock()
+				if p, ok := d.peers[pp.id]; ok && maxN > p.head {
+					p.head = maxN
+				}
+				d.mu.Unlock()
 			}
 		}(start, end, amount)
 	}
