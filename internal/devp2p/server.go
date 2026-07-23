@@ -57,11 +57,27 @@ func NewServer(cfg ServerConfig, handler *EthHandler) *Server {
 
 // Start starts the devp2p server.
 func (s *Server) Start() error {
-	ethProto := gethp2p.Protocol{
-		Name:    "eth",
-		Version: eth69.ETH69,
-		Length:  18,
-		Run:     s.handler.runPeer,
+	// Advertise BOTH eth/68 and eth/69. eth/69 is new (2025) and a large share of
+	// mainnet peers still speak only eth/68; advertising 69-only drops them at the
+	// Status handshake (their eth/68 Status mis-decodes as eth/69), starving block
+	// download. RLPx negotiates the highest COMMON eth version per peer and runs
+	// that Protocol's Run; runPeer receives the negotiated version and encodes/
+	// decodes the matching Status layout. eth/69 peers are unaffected.
+	ethProtos := make([]gethp2p.Protocol, 0, len(eth69.ProtocolVersions))
+	for _, v := range eth69.ProtocolVersions { // {ETH69, ETH68}
+		version := v
+		length := uint64(18) // eth/69 message-code span (0x00-0x11)
+		if version == eth69.ETH68 {
+			length = 17 // eth/68 message-code span (0x00-0x10)
+		}
+		ethProtos = append(ethProtos, gethp2p.Protocol{
+			Name:    "eth",
+			Version: version,
+			Length:  length,
+			Run: func(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error {
+				return s.handler.runPeer(peer, rw, version)
+			},
+		})
 	}
 	// snap/1 stub — without it every modern mainnet client (Geth /
 	// Nethermind / Erigon / Besu / Pulse / Bera) classifies us as a
@@ -86,7 +102,7 @@ func (s *Server) Start() error {
 			// we don't get penalised on string heuristics.
 			Name:       "Geth/v1.17.2-stable-7c8a8a8a/linux-amd64/go1.23.0",
 			ListenAddr: s.cfg.ListenAddr,
-			Protocols:  []gethp2p.Protocol{ethProto, snapProto},
+			Protocols:  append(ethProtos, snapProto),
 			// DiscoveryV4 + DiscoveryV5 are NOT enabled by default —
 			// without them BootstrapNodes are only used as static peers
 			// and we never walk the DHT to find real serving peers.

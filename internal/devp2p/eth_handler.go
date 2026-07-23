@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 
 	gethp2p "github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -107,9 +108,13 @@ func (h *EthHandler) currentForkID(head *n42block.Header) forkID {
 	return newForkID(h.chainConfig, h.genesis, h.genesisTime, head.Number64().Uint64(), head.Time)
 }
 
-// runPeer is called by the p2p server for each new peer connection.
-func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error {
-	log.Info("devp2p peer connected", "id", peer.ID().String()[:16], "name", peer.Name())
+// runPeer is called by the p2p server for each new peer connection. version is
+// the negotiated eth protocol version (68 or 69) — it selects the Status wire
+// layout for the handshake; all other messages (GetBlockHeaders/Bodies etc.) are
+// identical across eth/68-69 since eth/66's request-id wrapping, so they need no
+// branching.
+func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter, version uint) error {
+	log.Info("devp2p peer connected", "id", peer.ID().String()[:16], "name", peer.Name(), "eth", version)
 
 	// cleanExit translates any error our handler would return into a
 	// clean nil if the underlying cause is a TCP/RLPx shutdown (peer
@@ -128,28 +133,45 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error
 		return err
 	}
 
-	// Handshake: send our status.
+	// Handshake: send our status in the negotiated version's wire layout.
 	head, headHash, err := h.provider.CurrentHead()
 	if err != nil {
 		return cleanExit(fmt.Errorf("current head: %w", err))
 	}
-	status := statusPacket{
-		ProtocolVersion: uint32(69),
-		NetworkID:       h.networkID,
-		Genesis:         h.genesis,
-		ForkID:          h.currentForkID(head),
-		EarliestBlock:   0,
-		LatestBlock:     head.Number64().Uint64(),
-		LatestBlockHash: headHash,
-	}
-	log.Info("devp2p sending status",
-		"peer", peer.ID().String()[:16],
-		"network", h.networkID,
-		"head", status.LatestBlock,
-		"forkHash", fmt.Sprintf("%x", status.ForkID.Hash),
-		"forkNext", status.ForkID.Next)
-	if err := gethp2p.Send(rw, 0, &status); err != nil {
-		return cleanExit(fmt.Errorf("send status: %w", err))
+	fork := h.currentForkID(head)
+	if version >= 69 {
+		status := statusPacket{
+			ProtocolVersion: uint32(version),
+			NetworkID:       h.networkID,
+			Genesis:         h.genesis,
+			ForkID:          fork,
+			EarliestBlock:   0,
+			LatestBlock:     head.Number64().Uint64(),
+			LatestBlockHash: headHash,
+		}
+		log.Info("devp2p sending status", "peer", peer.ID().String()[:16], "eth", version,
+			"network", h.networkID, "head", status.LatestBlock,
+			"forkHash", fmt.Sprintf("%x", fork.Hash), "forkNext", fork.Next)
+		if err := gethp2p.Send(rw, 0, &status); err != nil {
+			return cleanExit(fmt.Errorf("send status: %w", err))
+		}
+	} else {
+		// eth/68: TD is informational post-merge (geth doesn't reject on it), so a
+		// zero placeholder is accepted; Head carries our head hash.
+		status := statusPacket68{
+			ProtocolVersion: uint32(version),
+			NetworkID:       h.networkID,
+			TD:              big.NewInt(0),
+			Head:            headHash,
+			Genesis:         h.genesis,
+			ForkID:          fork,
+		}
+		log.Info("devp2p sending status", "peer", peer.ID().String()[:16], "eth", version,
+			"network", h.networkID, "head", head.Number64().Uint64(),
+			"forkHash", fmt.Sprintf("%x", fork.Hash), "forkNext", fork.Next)
+		if err := gethp2p.Send(rw, 0, &status); err != nil {
+			return cleanExit(fmt.Errorf("send status: %w", err))
+		}
 	}
 
 	// Read peer's status. The handshake-phase ReadMsg is where ~all our
@@ -164,22 +186,44 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error
 	if msg.Code != 0 {
 		return fmt.Errorf("expected status message, got %d", msg.Code)
 	}
-	var peerStatus statusPacket
-	if err := msg.Decode(&peerStatus); err != nil {
-		return fmt.Errorf("decode peer status: %w", err)
+	// Decode into the layout matching the negotiated version. peerHead is the
+	// peer's head block NUMBER; eth/68 Status carries only the head hash (no
+	// number), so it stays 0 — the downloader treats head==0 as "unknown, still
+	// pickable" and learns the real number from the first header response.
+	var (
+		peerNetwork uint64
+		peerGenesis types.Hash
+		peerHead    uint64
+		peerHash    types.Hash
+		peerFork    forkID
+	)
+	if version >= 69 {
+		var ps statusPacket
+		if err := msg.Decode(&ps); err != nil {
+			return fmt.Errorf("decode peer status (eth/69): %w", err)
+		}
+		peerNetwork, peerGenesis, peerHead, peerHash, peerFork =
+			ps.NetworkID, ps.Genesis, ps.LatestBlock, ps.LatestBlockHash, ps.ForkID
+	} else {
+		var ps statusPacket68
+		if err := msg.Decode(&ps); err != nil {
+			return fmt.Errorf("decode peer status (eth/68): %w", err)
+		}
+		peerNetwork, peerGenesis, peerHead, peerHash, peerFork =
+			ps.NetworkID, ps.Genesis, 0, ps.Head, ps.ForkID
 	}
-	if peerStatus.NetworkID != h.networkID {
-		return fmt.Errorf("network ID mismatch: ours=%d theirs=%d", h.networkID, peerStatus.NetworkID)
+	if peerNetwork != h.networkID {
+		return fmt.Errorf("network ID mismatch: ours=%d theirs=%d", h.networkID, peerNetwork)
 	}
-	if peerStatus.Genesis != h.genesis {
-		return fmt.Errorf("genesis mismatch: ours=%s theirs=%s", h.genesis.Hex()[:10], peerStatus.Genesis.Hex()[:10])
+	if peerGenesis != h.genesis {
+		return fmt.Errorf("genesis mismatch: ours=%s theirs=%s", h.genesis.Hex()[:10], peerGenesis.Hex()[:10])
 	}
 
 	log.Info("devp2p handshake complete",
-		"peer", peer.ID().String()[:16],
-		"head", peerStatus.LatestBlock,
-		"peerForkHash", fmt.Sprintf("%x", peerStatus.ForkID.Hash),
-		"peerForkNext", peerStatus.ForkID.Next)
+		"peer", peer.ID().String()[:16], "eth", version,
+		"head", peerHead,
+		"peerForkHash", fmt.Sprintf("%x", peerFork.Hash),
+		"peerForkNext", peerFork.Next)
 
 	// IMPORTANT: do NOT send BlockRangeUpdate (msg 0x11) right after
 	// Status. The eth/69 spec sends BRU only on range CHANGE — the
@@ -191,7 +235,7 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error
 
 	peerID := peer.ID().String()
 	if h.rh != nil {
-		h.rh.OnPeerHandshake(peerID, rw, peerStatus.LatestBlock, peerStatus.LatestBlockHash)
+		h.rh.OnPeerHandshake(peerID, rw, peerHead, peerHash)
 		defer h.rh.OnPeerDisconnect(peerID)
 	}
 
