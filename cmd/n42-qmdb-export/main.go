@@ -34,6 +34,7 @@ func main() {
 	rangeOutputPath := flag.String("range-out", "", "optional finalized-range v1 output file")
 	rangeFrom := flag.Uint64("range-from", 0, "first block in --range-out (default: bounded tail ending at checkpoint)")
 	rangeTo := flag.Uint64("range-to", 0, "last block in --range-out (default: canonical head/checkpoint)")
+	checkpointNumber := flag.Uint64("checkpoint-number", 0, "optional historical checkpoint whose header root must equal the current QMDB forest root")
 	flag.Parse()
 	if *dbPath == "" || (*outputPath == "" && *rangeOutputPath == "") {
 		fatalf("usage: n42-qmdb-export --db <chaindata> [--out <snapshot>] [--range-out <bundle>]")
@@ -94,6 +95,13 @@ func main() {
 		}
 		blockNumber = *headerNumber
 	}
+	if *checkpointNumber != 0 {
+		blockNumber = *checkpointNumber
+		blockHash, err = rawdb.ReadCanonicalHash(tx, blockNumber)
+		if err != nil || blockHash == ([32]byte{}) {
+			fatalf("read canonical checkpoint hash at %d: %v", blockNumber, err)
+		}
+	}
 	header := rawdb.ReadHeader(tx, blockHash, blockNumber)
 	if header == nil {
 		fatalf("checkpoint header %d/%x is missing", blockNumber, blockHash)
@@ -106,7 +114,7 @@ func main() {
 	computer.SetCold(tx)
 	root := computer.Tree().Root()
 	if root != qmdb.Hash(header.Root) {
-		fatalf("QMDB root %x does not match checkpoint header root %x", root, header.Root)
+		fatalf("current QMDB root %x does not match checkpoint %d header root %x", root, blockNumber, header.Root)
 	}
 	metadata := qmdb.PortableSnapshotMetadata{
 		ChainID:     chainConfig.ChainID.Uint64(),
