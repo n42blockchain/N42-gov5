@@ -71,7 +71,7 @@ func TestEthCompatibleBlockHashMatchesHiveForkIDGenesisFixtures(t *testing.T) {
 func loadHiveEngineGenesisFixture(t *testing.T) *conf.Genesis {
 	t.Helper()
 
-	path := filepath.Join("testdata", "hive-engine-genesis.json")
+	path := filepath.Join("..", "..", "testdata", "hive-engine-genesis.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile(%q) error = %v", path, err)

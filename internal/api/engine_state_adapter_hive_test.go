@@ -43,7 +43,7 @@ func TestHiveEngineGenesisFixtureMatchesCurrentGethRoot(t *testing.T) {
 	_, currentFile, _, ok := runtime.Caller(0)
 	require.True(t, ok)
 
-	genesisPath := filepath.Join(filepath.Dir(currentFile), "..", "..", "tests", "eth-hive", "simulators", "ethereum", "engine", "init", "genesis.json")
+	genesisPath := filepath.Join(filepath.Dir(currentFile), "..", "..", "testdata", "hive-engine-genesis.json")
 	genesisJSON, err := os.ReadFile(genesisPath)
 	require.NoError(t, err)
 

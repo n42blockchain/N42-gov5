@@ -104,7 +104,7 @@ func TestGenesisUnmarshalAllowsLeadingZeroHexQuantities(t *testing.T) {
 func TestGenesisUnmarshalHiveEngineFixture(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join("..", "tests", "eth-hive", "simulators", "ethereum", "engine", "init", "genesis.json")
+	path := filepath.Join("..", "testdata", "hive-engine-genesis.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("os.ReadFile failed: %v", err)
