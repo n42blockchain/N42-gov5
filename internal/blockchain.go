@@ -2749,6 +2749,24 @@ func (bc *BlockChain) unwindForReimportTx(n uint64, parentHash types.Hash, autho
 				return cerr
 			}
 			if ch == lineage[i] {
+				// Loud, not silent. When this fires for a CONSENSUS-authorized
+				// switch (the leader's pre-build align, driven by the persisted
+				// LockedQC), the node's consensus state and its applied chain
+				// have forked and block production is wedged permanently — the
+				// failure that stopped a whole 7-node fleet, visible only as a
+				// miner runLoop error. Name the condition and the remedy here,
+				// where the condition is actually detected.
+				if authorizedSwitch {
+					log.Error("CONSENSUS STATE FORKED FROM APPLIED CHAIN: refusing to revert a committed block. "+
+						"The consensus-mandated parent is on a branch that would roll back an already-committed "+
+						"block, so this node cannot build or import on it and will stop producing. This normally "+
+						"means the persisted HotStuff state points at a branch this node never applied. Operator "+
+						"action: stop the node and clear the persisted consensus state with "+
+						"`go run ./cmd/hotstuff-reset -datadir <datadir>/chaindata -apply` (chain data is untouched).",
+						"incoming", n, "incomingParent", fmt.Sprintf("%x", parentHash[:8]),
+						"committedHeight", h, "committedBlock", fmt.Sprintf("%x", lineage[i][:8]),
+						"appliedHead", appliedNum, "committedHead", committedHead)
+				}
 				return fmt.Errorf("branch switch at %d rejected: would revert committed block %d/%x: %w",
 					n, h, lineage[i][:8], consensus.ErrUnknownAncestor)
 			}

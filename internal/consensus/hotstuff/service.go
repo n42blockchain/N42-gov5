@@ -369,6 +369,12 @@ func (s *Service) Start() error {
 		}
 	}
 
+	// Install the durable vote journal before any event can be processed. From
+	// here on every vote this node casts is on disk before it goes on the wire.
+	if ce := s.engine.Engine(); ce != nil {
+		ce.SetVoteJournal(s)
+	}
+
 	// Auto-stop pacemaker timer on service shutdown.
 	if ce := s.engine.Engine(); ce != nil {
 		ce.Pacemaker().WatchContext(s.ctx)
@@ -393,9 +399,12 @@ func (s *Service) Stop() {
 	s.cancel()
 	s.wg.Wait()
 
-	// Final state persist.
+	// Final state persist. NOT on s.ctx — that was just cancelled, and MDBX
+	// will not begin a write transaction on a cancelled context.
 	if s.db != nil {
-		s.persistState()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		s.persistStateCtx(ctx)
+		cancel()
 	}
 
 	log.Info("HotStuff service stopped")
@@ -962,8 +971,30 @@ func (s *Service) pacemakerLoop() {
 	}
 }
 
-// persistState saves the current consensus state to the database.
-func (s *Service) persistState() {
+// JournalVote implements VoteJournal: it makes a vote commitment durable before
+// the engine releases the vote. Called on the ENGINE goroutine with the engine
+// mutex held, so it must not touch any locked engine accessor — everything it
+// needs is already in state.
+func (s *Service) JournalVote(state *ConsensusState) error {
+	if s.db == nil {
+		return nil // no store configured (tests/embedded): journalling is a no-op
+	}
+	return s.db.Update(s.ctx, func(tx kv.RwTx) error {
+		return SaveConsensusState(tx, state)
+	})
+}
+
+// persistState saves the current consensus state to the database using the
+// service context.
+func (s *Service) persistState() { s.persistStateCtx(s.ctx) }
+
+// persistStateCtx is persistState with an explicit context. Shutdown must pass
+// a live one: MDBX refuses to open a write transaction on a cancelled context,
+// so the "final state persist" in Stop — which runs AFTER s.cancel() — could
+// never actually write anything. Every graceful stop therefore left the node
+// with whatever the last commit-time persist had stored, which is precisely how
+// a restart comes back on a view/lock that no longer matches the applied chain.
+func (s *Service) persistStateCtx(ctx context.Context) {
 	if s.db == nil {
 		return
 	}
@@ -973,20 +1004,28 @@ func (s *Service) persistState() {
 		return
 	}
 
-	state := &ConsensusState{
-		View:                ce.CurrentView(),
-		ConsecutiveTimeouts: ce.ConsecutiveTimeouts(),
-		LockedQC:            ce.LockedQC(),
-		LastCommittedQC:     ce.LastCommittedQC(),
-	}
+	// One locked snapshot: view, lock, last-committed QC AND the vote
+	// commitments. Reading them field by field could store a lock from one view
+	// with a vote from the next — and omitting the vote fields entirely (as this
+	// did before) would CLOBBER the journalled vote history with zeros on the
+	// next periodic persist, silently re-opening the equivocation window the
+	// journal exists to close.
+	state := ce.SnapshotState()
 
-	if err := s.db.Update(s.ctx, func(tx kv.RwTx) error {
+	// Both engine accessors are resolved BEFORE opening the write transaction.
+	// Calling a locked engine accessor from inside the transaction would let this
+	// goroutine hold the MDBX writer while waiting on the engine mutex, while the
+	// engine goroutine holds that mutex waiting for the writer inside
+	// JournalVote — a deadlock that stops the node dead.
+	stagedEpoch, stagedVals, stagedF, hasStaged := ce.StagedEpochInfoSafe()
+
+	if err := s.db.Update(ctx, func(tx kv.RwTx) error {
 		if err := SaveConsensusState(tx, state); err != nil {
 			return err
 		}
 		// Atomically persist staged epoch data in the same transaction.
-		if epoch, validators, f, ok := ce.StagedEpochInfoSafe(); ok {
-			return SaveStagedEpoch(tx, epoch, validators, f)
+		if hasStaged {
+			return SaveStagedEpoch(tx, stagedEpoch, stagedVals, stagedF)
 		}
 		return nil
 	}); err != nil {
@@ -1057,7 +1096,8 @@ func (s *Service) recoverState() error {
 
 	log.Info("hotstuff: recovering persisted state",
 		"view", state.View, "timeouts", state.ConsecutiveTimeouts,
-		"lockedQCView", state.LockedQC.View, "committedQCView", state.LastCommittedQC.View)
+		"lockedQCView", state.LockedQC.View, "committedQCView", state.LastCommittedQC.View,
+		"lastVotedView", state.LastVotedView, "lastCommitVotedView", state.LastCommitVotedView)
 
 	// The engine was already created by adapter.New(). We need to reinitialize
 	// with recovered state if the persisted view is ahead.
@@ -1076,7 +1116,101 @@ func (s *Service) recoverState() error {
 		log.Info("hotstuff: engine restored to persisted state", "view", state.View)
 	}
 
+	// Vote commitments are restored UNCONDITIONALLY — including when the
+	// persisted view was not ahead. They are the double-vote guard: skipping
+	// them would let this node cast a second, conflicting vote in a view it
+	// already voted in before the restart, which its own equivocation detector
+	// treats as a slashable offence.
+	ce.RestoreVoteCommitments(state.LastVotedView, state.LastVotedHash,
+		state.LastCommitVotedView, state.LastCommitVotedHash)
+
+	s.reportPersistedStateDivergence(state)
+
 	return nil
+}
+
+// persistedStateStatus classifies the recovered consensus state against the
+// locally applied chain.
+type persistedStateStatus uint8
+
+const (
+	persistedStateUncheckable  persistedStateStatus = iota // no store, genesis QC, or read failure
+	persistedStateConsistent                               // committed QC block is canonical locally
+	persistedStateBlockUnknown                             // committed QC names a block we do not have yet
+	persistedStateDiverged                                 // committed QC names a block that is NOT canonical here
+)
+
+// reportPersistedStateDivergence checks the recovered consensus state against
+// the locally applied chain and reports a mismatch LOUDLY.
+//
+// A persisted LastCommittedQC naming a block that is not on this node's
+// canonical chain is the signature of the wedge that took the whole fleet down:
+// consensus resumes locked on a branch the node never applied, every
+// block-production attempt then fails AlignAppliedBranch with "would revert
+// committed block", and the only symptom used to be a miner runLoop error while
+// the consensus layer said nothing at all. Read-only and best effort — it never
+// changes state, because silently rewriting a safety lock is far more dangerous
+// than a stalled node.
+func (s *Service) reportPersistedStateDivergence(state *ConsensusState) persistedStateStatus {
+	if s.db == nil || state == nil {
+		return persistedStateUncheckable
+	}
+	hash := state.LastCommittedQC.BlockHash
+	if hash == (types.Hash{}) {
+		return persistedStateUncheckable // genesis QC: nothing to compare against
+	}
+
+	var (
+		known       bool
+		number      uint64
+		canonical   types.Hash
+		canonHeight uint64
+	)
+	if err := s.db.View(s.ctx, func(tx kv.Tx) error {
+		if hdr, err := rawdb.ReadHeaderByHash(tx, hash); err == nil && hdr != nil && hdr.Number != nil {
+			known, number = true, hdr.Number.Uint64()
+		}
+		if cur := rawdb.ReadCurrentHeader(tx); cur != nil && cur.Number != nil {
+			canonHeight = cur.Number.Uint64()
+		}
+		if known {
+			c, err := rawdb.ReadCanonicalHash(tx, number)
+			if err != nil {
+				return err
+			}
+			canonical = c
+		}
+		return nil
+	}); err != nil {
+		log.Warn("hotstuff: could not cross-check persisted state against local chain", "err", err)
+		return persistedStateUncheckable
+	}
+
+	switch {
+	case !known:
+		// The block may still arrive by sync, so this alone is not fatal.
+		log.Warn("hotstuff: persisted committed QC names a block this node does not have",
+			"blockHash", hash, "qcView", state.LastCommittedQC.View, "localHead", canonHeight)
+		return persistedStateBlockUnknown
+	case canonical != hash:
+		log.Error("hotstuff: PERSISTED CONSENSUS STATE HAS DIVERGED FROM THE APPLIED CHAIN — "+
+			"the last committed QC names a block that is not canonical locally. Consensus will "+
+			"resume locked on a branch this node never applied, block production will fail with "+
+			"'would revert committed block', and the node will stop producing until this is "+
+			"resolved. Operator action: stop the node and clear the persisted consensus state "+
+			"with `go run ./cmd/hotstuff-reset -datadir <datadir>/chaindata -apply` "+
+			"(chain data is untouched; consensus restarts from the applied head).",
+			"committedQCBlock", hash, "committedQCView", state.LastCommittedQC.View,
+			"heightOfThatBlock", number, "canonicalAtThatHeight", canonical,
+			"localHead", canonHeight, "lockedQCBlock", state.LockedQC.BlockHash,
+			"lockedQCView", state.LockedQC.View)
+		metricPersistedStateDiverged.Inc()
+		return persistedStateDiverged
+	default:
+		log.Info("hotstuff: persisted consensus state agrees with the applied chain",
+			"committedQCBlock", hash, "height", number, "localHead", canonHeight)
+		return persistedStateConsistent
+	}
 }
 
 // rawSSZMarshaler wraps raw bytes to implement the ssz.Marshaler/Unmarshaler interfaces
