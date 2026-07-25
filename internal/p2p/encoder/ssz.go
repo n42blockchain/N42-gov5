@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
+	"strconv"
 	"sync"
 
 	"github.com/golang/snappy"
@@ -12,11 +14,47 @@ import (
 
 var _ NetworkEncoding = (*SszNetworkEncoder)(nil)
 
-// MaxGossipSize is the maximum allowed size for gossip messages (1 MiB).
-var MaxGossipSize = uint64(1 << 20)
+// MaxGossipSize is the maximum allowed size for gossip messages (1 MiB by
+// default). It caps the practical block size: a block whose encoded gossip
+// message exceeds it cannot propagate, so validators never import it, never
+// vote, and the chain livelocks. N42_MAX_GOSSIP_MB raises it for high-gas-limit
+// throughput testing — every node in the network MUST use the same value.
+var MaxGossipSize = sizeFromEnvMB("N42_MAX_GOSSIP_MB", 1<<20)
 
-// MaxChunkSize is the maximum allowed size for a single chunk (1 MiB).
-var MaxChunkSize = uint64(1 << 20)
+// MaxChunkSize is the maximum allowed size for a single chunk (1 MiB by
+// default). Raised together with MaxGossipSize: the block push stream framing
+// uses it, so a large block fails to decode ("failed to read varint: EOF")
+// if only the gossip cap is raised.
+var MaxChunkSize = sizeFromEnvMB("N42_MAX_GOSSIP_MB", 1<<20)
+
+// MaxWireMessageSize returns the largest payload the p2p layer can carry on
+// EITHER delivery path: gossip (EncodeGossip, bounded by MaxGossipSize) or a
+// direct libp2p stream (EncodeWithMaxLength, bounded by MaxChunkSize). Both
+// bounds are checked against the UNCOMPRESSED serialized bytes — snappy is
+// applied after the check — so producers must size their payload before
+// compression.
+//
+// Block producers derive their packing budget from this so a sealed block is
+// never too large to propagate (an unpropagatable block livelocks HotStuff:
+// followers cannot import it, import-gated voting never fires, no quorum ever
+// forms). Raising N42_MAX_GOSSIP_MB automatically raises the packing budget.
+func MaxWireMessageSize() uint64 {
+	if MaxChunkSize < MaxGossipSize {
+		return MaxChunkSize
+	}
+	return MaxGossipSize
+}
+
+// sizeFromEnvMB reads a size in MiB from env, falling back to def bytes when
+// unset or invalid.
+func sizeFromEnvMB(name string, def uint64) uint64 {
+	if v := os.Getenv(name); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 32); err == nil && n > 0 {
+			return n << 20
+		}
+	}
+	return def
+}
 
 var bufWriterPool = new(sync.Pool)
 var bufReaderPool = new(sync.Pool)

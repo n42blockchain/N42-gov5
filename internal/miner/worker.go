@@ -1030,6 +1030,13 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	env.txs = make([]*transaction.Transaction, 0, estCap)
 	env.receipts = make(block.Receipts, 0, estCap)
 
+	// Bound the packed size so the sealed block can actually propagate. Gas is
+	// NOT a proxy for wire size: ~9500 plain transfers fit comfortably inside a
+	// raised gas limit yet encode to >1 MiB, above the p2p bound, and a block no
+	// follower can receive livelocks import-gated HotStuff voting forever. See
+	// block_size.go.
+	sizeLimiter := newBlockSizeLimiter(header)
+
 	noop := state.NewNoopWriter()
 	vmConfig := vm2.Config{}
 
@@ -1100,6 +1107,21 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			if env.gasPool.Gas() < params.TxGas {
 				break
 			}
+			// Size-account the whole bundle up front: it is committed
+			// atomically, so it must fit atomically. The estimate is an upper
+			// bound (revert-allowed transactions that fail are dropped from the
+			// block but still counted), which only ever under-packs.
+			bundleSize, sizeErr := bundlePayloadSize(bundle.Txs)
+			if sizeErr != nil {
+				log.Warn("skipping unencodable MEV bundle", "err", sizeErr)
+				continue
+			}
+			if !sizeLimiter.fits(bundleSize) {
+				if sizeLimiter.exhausted() {
+					break
+				}
+				continue
+			}
 			// Try to commit entire bundle atomically.
 			snap := ibs.Snapshot()
 			gasSnap := env.gasPool.Gas()
@@ -1125,7 +1147,9 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 				env.tcount++
 			}
 
-			if !bundleOk {
+			if bundleOk {
+				sizeLimiter.add(bundleSize)
+			} else {
 				// Revert entire bundle.
 				ibs.RevertToSnapshot(snap)
 				env.gasPool = new(common.GasPool).AddGas(gasSnap)
@@ -1168,9 +1192,29 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			break
 		}
 
+		txSize, decision, sizeErr := sizeLimiter.admit(tx)
+		if decision == packStop {
+			log.Trace("Block size budget exhausted, stopping tx packing",
+				"txs", len(env.txs), "remaining", sizeLimiter.remaining())
+			break
+		}
+		if decision == packSkipAccount {
+			switch {
+			case sizeErr != nil:
+				log.Error("failed to encode pending transaction for size accounting",
+					"hash", tx.Hash(), "err", sizeErr)
+			case sizeLimiter.tooLargeForAnyBlock(txSize):
+				log.Warn("transaction too large to ever fit a block, skipping",
+					"hash", tx.Hash(), "size", txSize, "budget", sizeLimiter.budget)
+			}
+			txSet.Pop()
+			continue
+		}
+
 		err := commitTx(tx)
 		switch {
 		case err == nil:
+			sizeLimiter.add(txSize)
 			env.tcount++
 			txSet.Shift() // Move to next tx from same account
 		case errors.Is(err, internal.ErrGasLimitReached):

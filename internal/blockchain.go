@@ -51,6 +51,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/exex"
 	"github.com/n42blockchain/N42/internal/p2p"
+	"github.com/n42blockchain/N42/internal/p2p/encoder"
 	"github.com/n42blockchain/N42/internal/zkprover"
 	"github.com/n42blockchain/N42/internal/zkverifier"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -1177,6 +1178,16 @@ func (bc *BlockChain) SealedBlock(b block.IBlock) error {
 	if err != nil {
 		return err
 	}
+	// Defence in depth: the miner budgets the packed size against the same bound
+	// (see miner/block_size.go), so this must never trigger. If it does, fail
+	// loudly here instead of letting both delivery paths reject the block and
+	// livelock import-gated voting with only a low-level encoder error to go on.
+	if limit := encoder.MaxWireMessageSize(); uint64(len(data)) > limit {
+		log.Error("sealed block exceeds p2p wire limit and cannot propagate",
+			"number", b.Number64().Uint64(), "hash", b.Hash().Hex(),
+			"txs", len(b.Transactions()), "size", len(data), "limit", limit)
+		return fmt.Errorf("sealed block %d is %d bytes, above the %d byte p2p wire limit", b.Number64().Uint64(), len(data), limit)
+	}
 	bc.directPushBlock(b, data)
 	// Also gossip as a best-effort fallback.
 	return bc.p2p.BroadcastBlock(bc.ctx, data)
@@ -1214,6 +1225,11 @@ func (bc *BlockChain) directPushBlock(b block.IBlock, data []byte) {
 				return
 			}
 			if _, err := bc.p2p.Encoding().EncodeWithMaxLength(stream, &rawBlockBytes{data: data}); err != nil {
+				// Surfacing this matters: a silent failure here (e.g. an
+				// oversized block) leaves the follower with an opaque
+				// "failed to read varint: EOF" and no local explanation.
+				log.Error("direct-push encode failed", "peer", pid.String()[:12],
+					"number", b.Number64().Uint64(), "size", len(data), "err", err)
 				return
 			}
 		}(pid)
