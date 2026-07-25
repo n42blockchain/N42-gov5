@@ -16,6 +16,8 @@ package commitment
 
 import (
 	"bytes"
+	"errors"
+	"os"
 	"sort"
 
 	"time"
@@ -170,42 +172,125 @@ func (r *QMDBRootComputer) LoadFrom(g qmdb.Getter) error {
 	return nil
 }
 
+// reloadVerify enables the paranoid cross-check: after every fast reload, run an
+// INDEPENDENT full rebuild and assert the two agree. Costs a multi-second full
+// load per build — diagnostic only, never on by default.
+var reloadVerify = os.Getenv("N42_QMDB_RELOAD_VERIFY") == "1"
+
 // ReloadForBuild reloads a PERSISTENT speculative-build computer against the
-// store's current layout, riding the sealed-twig O(meta) fast path instead of
-// the multi-second full index rescan a fresh computer pays (observed live:
-// every leader build burned ~5s in LoadFrom -> IO-bound, invisible on CPU
-// profiles -> chronic view timeouts).
+// store's current layout. A fresh computer pays a full index rescan on every
+// build (observed live: ~5s in LoadFrom -> IO-bound, invisible on CPU profiles
+// -> chronic view timeouts), and even the sealed-twig O(meta) reload rebuilds
+// the WHOLE forest every block — a cost that grows with total history, measured
+// at ~0.5s idle / ~2.75s under load while executing the block itself took
+// ~0.17s. So the reload runs in three tiers, cheapest first:
+//
+//	1. incremental — advance the loaded forest across the delta only, and prove
+//	   it by reproducing the world root persisted with the twig metadata;
+//	2. meta-scan   — rebuild the forest from twig metadata, trusting the index
+//	   below the previous cursor;
+//	3. full rebuild — fresh index, rescan the entry log.
 //
 // Contract: between calls, the ONLY tree mutations must be candidate-build
 // ComputeRoot ops, and they must have been peeled back with ApplyUndo before
 // this call — then the in-RAM index is exact for every slot below the
 // previous load's cursor and only the delta needs scanning. Any doubt
-// (peel failure, reconciliation mismatch, first use) falls back to the full
-// rebuild automatically.
+// (peel failure, reconciliation mismatch, root mismatch, first use) drops to the
+// next tier automatically, so a tier-1 miss costs latency, never correctness.
 func (r *QMDBRootComputer) ReloadForBuild(g qmdb.Getter) error {
 	if r.mdbxIdx != nil || r.indexTrusted == 0 {
 		return r.LoadFrom(g) // persistent index / first load: already right
 	}
+	prev := r.indexTrusted
+	// Tier 1: advance the forest incrementally — cost proportional to what
+	// changed since the last build, not to the length of the chain's history.
+	// It self-verifies against the world root persisted next to the twig
+	// metadata, so a decline/mismatch can only cost a fallback, never a wrong
+	// root.
 	t0 := time.Now()
-	if err := r.t.LoadFromTrustedIndex(g, r.indexTrusted, r.indexDelta); err != nil {
-		// Stale or inconsistent index (in-window delete, revert window,
+	err := r.t.LoadIncremental(g, prev, r.indexDelta)
+	if err == nil {
+		r.afterReload(g, "incremental", t0)
+		return nil
+	}
+	if errors.Is(err, qmdb.ErrIncrementalUnavailable) {
+		log.Debug("qmdb incremental speculative reload declined", "reason", err)
+	} else {
+		// The delta scan could not account for everything that moved (in-window
+		// delete, revert, compaction). Keep it LOUD: it is the signal that the
+		// incremental path stopped carrying the fleet.
+		log.Warn("qmdb incremental speculative reload rejected; falling back to the full-forest reload",
+			"reason", err, "attempt", time.Since(t0))
+	}
+	// Tier 2: rebuild the whole forest from twig metadata, trusting the index
+	// below the previous cursor (O(twigs) point reads, seconds at chain scale).
+	t1 := time.Now()
+	if err := r.t.LoadFromTrustedIndex(g, prev, r.indexDelta); err != nil {
+		// Tier 3 — stale or inconsistent index (in-window delete, revert window,
 		// unpeeled mutation): rebuild from scratch. This is the multi-second
 		// path - make it VISIBLE (a silent fallback here was an observation
 		// blind spot during the dropped-seal hunt).
 		log.Warn("qmdb speculative reload fell back to a full index rebuild",
-			"reason", err, "fastAttempt", time.Since(t0))
-		t1 := time.Now()
+			"reason", err, "fastAttempt", time.Since(t1))
+		t2 := time.Now()
 		r.t.SetIndex(qmdb.NewMapIndex())
 		if err2 := r.t.LoadFrom(g); err2 != nil {
 			return err2
 		}
-		log.Warn("qmdb speculative full rebuild done", "elapsed", time.Since(t1))
+		log.Warn("qmdb speculative full rebuild done", "elapsed", time.Since(t2))
+		r.afterReload(g, "full-rebuild", t1)
+		return nil
 	}
+	r.afterReload(g, "meta-scan", t1)
+	return nil
+}
+
+// afterReload adopts the cursors a completed reload established and, when the
+// verify mode is armed, cross-checks the result against an independent rebuild.
+func (r *QMDBRootComputer) afterReload(g qmdb.Getter, path string, since time.Time) {
 	r.flushedThrough = r.t.NextSlot()
 	r.stagedValid = false
 	r.indexTrusted = r.t.NextSlot()
 	r.indexDelta = r.t.LiveBits() - r.t.LiveCount()
-	return nil
+	if reloadVerify {
+		r.verifyReload(g, path, time.Since(since))
+	}
+}
+
+// verifyReload rebuilds the forest from the same store into a THROWAWAY tree via
+// the from-scratch path (fresh index, no trust boundary, no reuse) and asserts
+// that the reload we just accepted agrees with it on the world root, the live-bit
+// population, the index population and the forest geometry. Armed with
+// N42_QMDB_RELOAD_VERIFY=1.
+//
+// This is the only way the incremental path earns trust on a live chain: it
+// compares against the exact computation the incremental path is allowed to skip.
+func (r *QMDBRootComputer) verifyReload(g qmdb.Getter, path string, elapsed time.Duration) {
+	t0 := time.Now()
+	ref := qmdb.New() // fresh in-RAM index => LoadFrom does the full rescan
+	ref.SetCold(qmdb.ColdReaderFromGetter(g))
+	ref.SetLeafStore(qmdb.LeafStoreFromGetter(g))
+	if err := ref.LoadFrom(g); err != nil {
+		log.Error("QMDB RELOAD VERIFY: reference full rebuild failed", "path", path, "err", err)
+		return
+	}
+	got, want := r.t.Root(), ref.Root()
+	gotBits, wantBits := r.t.LiveBits(), ref.LiveBits()
+	gotKeys, wantKeys := r.t.LiveCount(), ref.LiveCount()
+	gotTwigs, wantTwigs := r.t.NumTwigs(), ref.NumTwigs()
+	gotNext, wantNext := r.t.NextSlot(), ref.NextSlot()
+	if got != want || gotBits != wantBits || gotKeys != wantKeys || gotTwigs != wantTwigs || gotNext != wantNext {
+		log.Error("QMDB RELOAD VERIFY FAILED — reload diverged from an independent full rebuild",
+			"path", path,
+			"root", types.Hash(got), "wantRoot", types.Hash(want),
+			"liveBits", gotBits, "wantLiveBits", wantBits,
+			"indexKeys", gotKeys, "wantIndexKeys", wantKeys,
+			"twigs", gotTwigs, "wantTwigs", wantTwigs,
+			"nextSlot", gotNext, "wantNextSlot", wantNext)
+		return
+	}
+	log.Info("QMDB RELOAD VERIFY ok", "path", path, "reload", elapsed, "referenceRebuild", time.Since(t0),
+		"root", types.Hash(got), "twigs", gotTwigs, "nextSlot", gotNext, "indexKeys", gotKeys)
 }
 
 // FlushTo persists entries appended since the last flush plus twig metadata and

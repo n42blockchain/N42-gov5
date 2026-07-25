@@ -391,88 +391,8 @@ func (t *Tree) loadFrom(g Getter, trustedThrough uint64) error {
 	// computed, so at most one twig's leaves (+ the active twig) are resident at a
 	// time — the reload itself is memory-bounded, not O(history).
 	for id := 0; id < numTwigs; id++ {
-		tw := newTwig()
-		t.twigs[id] = tw
-		meta, e := g.GetOne(TwigTable, be8(uint64(id)))
-		if e != nil {
-			return e
-		}
-		var storedRoot, storedLeafRoot Hash
-		haveMeta := false
-		switch {
-		case len(meta) >= 32+32+TwigSize/8: // v2: root || leafRoot || bits
-			copy(storedRoot[:], meta[:32])
-			copy(storedLeafRoot[:], meta[32:64])
-			copy(tw.bits[:], meta[64:64+TwigSize/8])
-			haveMeta = true
-		case len(meta) >= 32+TwigSize/8:
-			return errPreSplitMeta // v1 (pre-split-commitment) DB: re-replay required
-		}
-		live := 0
-		for _, b := range tw.bits {
-			live += popcount8(b)
-		}
-		tw.live = live
-		// Fast path: a sealed twig fully below the index-trust boundary keeps
-		// its stored roots and skips the per-slot entry scan — O(numTwigs)
-		// resume, O(1) RAM.
-		twigEnd := uint64(id+1) * TwigSize
-		if twigEnd <= trustedThrough && id < activeTwig && haveMeta {
-			tw.leafRoot = storedLeafRoot
-			tw.bitsRoot = hashBits(&tw.bits)
-			tw.root = storedRoot
-			tw.dirty = false
-			tw.nodes = nil // sealed: no node storage resident
-			if hashNode(tw.leafRoot, tw.bitsRoot) != tw.root {
-				return errTwigMetaInconsistent
-			}
-			continue
-		}
-		// Slow path: materialize the leaf tree. Prefer the persisted blob (it
-		// carries dead slots' frozen leaves, whose entry rows may be deleted);
-		// fall back to the entry log.
-		hydrated := false
-		if t.leafStore == nil {
-			t.leafStore = LeafStoreFromGetter(g)
-		}
-		if blob, ok := t.leafStore.Leaves(id); ok && len(blob) == TwigSize*32 {
-			for i := 0; i < TwigSize; i++ {
-				copy(tw.nodes[TwigSize+i][:], blob[i*32:(i+1)*32])
-			}
-			hydrated = true
-		}
-		lo := uint64(id) * TwigSize
-		for local := 0; local < TwigSize; local++ {
-			slot := lo + uint64(local)
-			if slot >= nextSlot {
-				break
-			}
-			needKey := slot >= trustedThrough && tw.bit(uint64(local))
-			if hydrated && !needKey {
-				continue
-			}
-			v, e := g.GetOne(EntryTable, be8(slot))
-			if e != nil {
-				return e
-			}
-			if len(v) < 32 {
-				continue
-			}
-			var kh Hash
-			copy(kh[:], v[:32])
-			if !hydrated {
-				tw.nodes[TwigSize+local] = hashLeaf(kh, v[32:]) // bulk raw write
-			}
-			if needKey {
-				t.idx.Put(kh, slot)
-			}
-		}
-		tw.recompute() // one full rebuild from the bulk-written leaves
-		if haveMeta && tw.root != storedRoot {
-			return errTwigMetaInconsistent
-		}
-		if id < activeTwig {
-			tw.nodes = nil // sealed: keep only the roots, free the array
+		if err := t.loadTwigFrom(g, id, nextSlot, trustedThrough, activeTwig, nil); err != nil {
+			return err
 		}
 	}
 	// Entry records are not retained — start the resident window empty at the
@@ -491,6 +411,122 @@ func (t *Tree) loadFrom(g Getter, trustedThrough uint64) error {
 	t.rootDirty = true
 	t.upRebuild = true // twig set replaced wholesale; rebuild the upper heap
 	t.Root()           // materialize twig + world roots
+	return nil
+}
+
+// loadTwigFrom (re)builds twig `id` from the persisted positional layout and
+// installs it at t.twigs[id] (which must already be addressable).
+//
+// trustedThrough is the index-trust boundary (see LoadFromTrustedIndex) and
+// activeTwig is the id of the twig holding the last appended slot: a twig lying
+// fully below the boundary and below the active twig rides the O(meta) fast path
+// (stored roots adopted, no per-slot entry scan, no node heap materialized).
+//
+// onScanned, when non-nil, is invoked for EVERY slot of this twig at or above
+// trustedThrough, in ascending slot order, with the keyHash stored at that slot
+// (ok=false when the row is gone — a slot that died after it was flushed has its
+// row reclaimed). It is called BEFORE the slot's index mapping is installed, so a
+// caller can observe which key each new slot overwrites. The incremental reload
+// uses it to discover the pre-boundary slots the new appends killed; every other
+// caller passes nil and pays nothing.
+func (t *Tree) loadTwigFrom(g Getter, id int, nextSlot, trustedThrough uint64, activeTwig int,
+	onScanned func(slot uint64, kh Hash, ok bool)) error {
+	// Start BARE: the fast path below never needs a node heap, and the slow path
+	// recomputes every internal node from the leaves anyway.
+	tw := newBareTwig()
+	t.twigs[id] = tw
+	meta, e := g.GetOne(TwigTable, be8(uint64(id)))
+	if e != nil {
+		return e
+	}
+	var storedRoot, storedLeafRoot Hash
+	haveMeta := false
+	switch {
+	case len(meta) >= 32+32+TwigSize/8: // v2: root || leafRoot || bits
+		copy(storedRoot[:], meta[:32])
+		copy(storedLeafRoot[:], meta[32:64])
+		copy(tw.bits[:], meta[64:64+TwigSize/8])
+		haveMeta = true
+	case len(meta) >= 32+TwigSize/8:
+		return errPreSplitMeta // v1 (pre-split-commitment) DB: re-replay required
+	}
+	live := 0
+	for _, b := range tw.bits {
+		live += popcount8(b)
+	}
+	tw.live = live
+	// Fast path: a sealed twig fully below the index-trust boundary keeps
+	// its stored roots and skips the per-slot entry scan — O(numTwigs)
+	// resume, O(1) RAM.
+	twigEnd := uint64(id+1) * TwigSize
+	if twigEnd <= trustedThrough && id < activeTwig && haveMeta {
+		tw.leafRoot = storedLeafRoot
+		tw.bitsRoot = hashBits(&tw.bits)
+		tw.root = storedRoot
+		tw.dirty = false
+		tw.nodes = nil // sealed: no node storage resident
+		if hashNode(tw.leafRoot, tw.bitsRoot) != tw.root {
+			return errTwigMetaInconsistent
+		}
+		return nil
+	}
+	// Slow path: materialize the leaf tree. Prefer the persisted blob (it
+	// carries dead slots' frozen leaves, whose entry rows may be deleted);
+	// fall back to the entry log.
+	tw.nodes = new([2 * TwigSize]Hash) // zero-fill = null leaves; recompute rebuilds the rest
+	hydrated := false
+	if t.leafStore == nil {
+		t.leafStore = LeafStoreFromGetter(g)
+	}
+	if blob, ok := t.leafStore.Leaves(id); ok && len(blob) == TwigSize*32 {
+		for i := 0; i < TwigSize; i++ {
+			copy(tw.nodes[TwigSize+i][:], blob[i*32:(i+1)*32])
+		}
+		hydrated = true
+	}
+	lo := uint64(id) * TwigSize
+	for local := 0; local < TwigSize; local++ {
+		slot := lo + uint64(local)
+		if slot >= nextSlot {
+			break
+		}
+		needKey := slot >= trustedThrough && tw.bit(uint64(local))
+		// A reporting caller needs the key of every post-boundary slot, DEAD
+		// ones included: a slot that was appended and then overwritten in the
+		// same window still killed its predecessor.
+		report := onScanned != nil && slot >= trustedThrough
+		if hydrated && !needKey && !report {
+			continue
+		}
+		v, e := g.GetOne(EntryTable, be8(slot))
+		if e != nil {
+			return e
+		}
+		if len(v) < 32 {
+			if report {
+				onScanned(slot, Hash{}, false)
+			}
+			continue
+		}
+		var kh Hash
+		copy(kh[:], v[:32])
+		if !hydrated {
+			tw.nodes[TwigSize+local] = hashLeaf(kh, v[32:]) // bulk raw write
+		}
+		if report {
+			onScanned(slot, kh, true) // BEFORE the index is repointed at this slot
+		}
+		if needKey {
+			t.idx.Put(kh, slot)
+		}
+	}
+	tw.recompute() // one full rebuild from the bulk-written leaves
+	if haveMeta && tw.root != storedRoot {
+		return errTwigMetaInconsistent
+	}
+	if id < activeTwig {
+		tw.nodes = nil // sealed: keep only the roots, free the array
+	}
 	return nil
 }
 
