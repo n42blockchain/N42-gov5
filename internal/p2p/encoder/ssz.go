@@ -45,6 +45,19 @@ func MaxWireMessageSize() uint64 {
 	return MaxGossipSize
 }
 
+// MaxGossipWireSize is the largest number of bytes a legal gossip message can
+// occupy ON THE WIRE, i.e. the cap the pubsub router must be configured with.
+//
+// It is NOT MaxGossipSize. EncodeGossip bounds the UNCOMPRESSED payload and then
+// snappy-encodes it, and snappy expands incompressible input, so a payload that
+// is legal by MaxGossipSize can serialize to more bytes than that. Configuring
+// the router at MaxGossipSize would make the router drop messages this encoder
+// considers valid. Widening it costs nothing in safety: DecodeGossip still
+// rejects anything whose DECODED size exceeds MaxGossipSize.
+func MaxGossipWireSize() uint64 {
+	return uint64(snappy.MaxEncodedLen(int(MaxGossipSize)))
+}
+
 // sizeFromEnvMB reads a size in MiB from env, falling back to def bytes when
 // unset or invalid.
 func sizeFromEnvMB(name string, def uint64) uint64 {
