@@ -146,8 +146,12 @@ type ConsensusEngine struct {
 	// scattered persisted views without trusting a single sender.
 	futureTimeouts map[ValidatorIndex]*TimeoutMessage
 
-	// Timing
+	// Timing. viewTiming is engine state (guarded by e.mu); lastCommittedTiming
+	// is published for out-of-engine observers and guarded by its own leaf lock
+	// so a reader never contends with — or deadlocks against — the consensus
+	// hot path. timingMu is only ever taken while nothing else is acquired.
 	viewTiming          ViewTiming
+	timingMu            sync.RWMutex
 	lastCommittedTiming *ViewTiming
 
 	// Set when this validator is removed at an epoch boundary.
@@ -159,8 +163,27 @@ type futureMsg struct {
 	msg  ConsensusMsg
 }
 
-// ViewTiming tracks per-view timing for latency diagnostics.
+// ViewTiming tracks per-view timing for latency diagnostics. Which fields are
+// populated depends on this node's role in the view — see Phases() in
+// view_timing.go for the derived per-stage durations.
+//
+//	ViewStart        every node: the view was entered (advanceToView).
+//	ProposalSent     LEADER only: proposal broadcast (proposeBlock). The gap
+//	                 from ViewStart is the wait for the miner's sealed block.
+//	ProposalReceived FOLLOWER only: proposal verified and accepted
+//	                 (processProposal), before execution is requested.
+//	VoteSent         FOLLOWER only: Round 1 prepare vote sent (sendVote). Under
+//	                 import-gated voting this trails ProposalReceived by the
+//	                 local execution/import time. The leader self-votes inside
+//	                 proposeBlock and so never sets this.
+//	PrepareQCFormed  LEADER only: quorum of Round 1 votes reached
+//	                 (tryFormPrepareQC), together with PrepareVoteCount.
+//	CommitVoteSent   FOLLOWER only: Round 2 commit vote sent (processPrepareQC).
+//	CommitQCFormed   every node: the block committed — leader via
+//	                 tryFormCommitQC (also sets CommitVoteCount), follower via
+//	                 processDecide (leaves CommitVoteCount at 0).
 type ViewTiming struct {
+	View             ViewNumber
 	ViewStart        time.Time
 	ProposalSent     *time.Time
 	ProposalReceived *time.Time
@@ -172,8 +195,8 @@ type ViewTiming struct {
 	CommitVoteCount  uint32
 }
 
-func newViewTiming() ViewTiming {
-	return ViewTiming{ViewStart: time.Now()}
+func newViewTiming(view ViewNumber) ViewTiming {
+	return ViewTiming{View: view, ViewStart: time.Now()}
 }
 
 // NewConsensusEngine creates a new HotStuff-2 consensus engine.
@@ -216,8 +239,10 @@ func NewConsensusEngineWithEpochManager(
 		commitEquivocationTracker: make(map[ValidatorIndex]types.Hash),
 		futureMsgBuffer:           make([]futureMsg, 0),
 		futureTimeouts:            make(map[ValidatorIndex]*TimeoutMessage),
-		viewTiming:                newViewTiming(),
 	}
+	// Seed the first view's timing from the round state so the very first
+	// committed view is reported under its real view number.
+	e.viewTiming = newViewTiming(e.roundState.CurrentView())
 	e.reconfigMgr = NewReconfigurationManager(epochManager)
 	return e
 }
@@ -255,8 +280,8 @@ func WithRecoveredState(
 		commitEquivocationTracker: make(map[ValidatorIndex]types.Hash),
 		futureMsgBuffer:           make([]futureMsg, 0),
 		futureTimeouts:            make(map[ValidatorIndex]*TimeoutMessage),
-		viewTiming:                newViewTiming(),
 	}
+	e.viewTiming = newViewTiming(e.roundState.CurrentView())
 	e.reconfigMgr = NewReconfigurationManager(epochManager)
 	return e
 }
@@ -315,6 +340,7 @@ func (e *ConsensusEngine) RestoreState(view ViewNumber, lockedQC, committedQC Qu
 	defer e.mu.Unlock()
 	e.roundState = RoundStateFromSnapshot(view, lockedQC, committedQC, consecutiveTimeouts)
 	e.pacemaker.ResetForView(view, consecutiveTimeouts)
+	e.viewTiming = newViewTiming(view)
 	// Align the epoch counter with the recovered view. A mid-chain restart with
 	// epochs enabled would otherwise leave currentEpoch at 0 while the view is far
 	// ahead, decoupling historicalSets keys from ValidatorSetForView lookups.
@@ -694,12 +720,13 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 		}
 	}
 
-	// Preserve timing from committed view.
+	// Preserve timing from committed view, publish it to observers, and export
+	// the per-stage breakdown (metrics + one compact log line). Timed-out views
+	// never reach a CommitQC and are therefore not sampled.
 	if e.viewTiming.CommitQCFormed != nil {
-		timing := e.viewTiming
-		e.lastCommittedTiming = &timing
+		e.publishCommittedTiming(e.viewTiming)
 	}
-	e.viewTiming = newViewTiming()
+	e.viewTiming = newViewTiming(newView)
 
 	// Replay buffered messages for the new view.
 	drained := e.futureMsgBuffer
