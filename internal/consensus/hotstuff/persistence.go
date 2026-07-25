@@ -10,11 +10,12 @@
 package hotstuff
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 
-	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto/bls"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
 )
@@ -22,16 +23,61 @@ import (
 // persistence key
 var hotstuffStateKey = []byte("state")
 
+// consensusStateMagicV2 tags the versioned ConsensusState record. It doubles as
+// the version discriminator: a legacy (v1) record starts with the view as a
+// little-endian uint64, so its first eight bytes can never equal this magic —
+// interpreted that way the magic is ~3.6e18, a view number no chain can reach.
+// LoadConsensusState therefore distinguishes the two layouts with no ambiguity
+// and no migration step.
+var consensusStateMagicV2 = []byte("N42HSSv2")
+
+// consensusStateHeaderV2 is the fixed-size prefix of a v2 record:
+// magic(8) + view(8) + consecutiveTimeouts(4) + lastVotedView(8) +
+// lastVotedHash(32) + lastCommitVotedView(8) + lastCommitVotedHash(32).
+const consensusStateHeaderV2 = 8 + 8 + 4 + 8 + 32 + 8 + 32
+
 // ConsensusState holds the persisted consensus state for crash recovery.
+//
+// The LastVoted* fields are the durable record of this node's outstanding vote
+// commitments. HotStuff safety requires a vote to be on disk BEFORE it is
+// released to the network: without it a node that restarts inside a view can
+// cast a second, conflicting vote for the same view — equivocation, which this
+// node's own detector (voting.go) would slash — and can resume with a LockedQC
+// that names a branch it never applied, which wedges block production
+// permanently (see cmd/hotstuff-reset).
 type ConsensusState struct {
 	View                ViewNumber
 	ConsecutiveTimeouts uint32
 	LockedQC            QuorumCertificate
 	LastCommittedQC     QuorumCertificate
+
+	// LastVotedView/LastVotedHash record the Round 1 (Prepare) vote this node
+	// last released. Zero view = never voted.
+	LastVotedView ViewNumber
+	LastVotedHash types.Hash
+
+	// LastCommitVotedView/LastCommitVotedHash record the Round 2 (Commit) vote
+	// this node last released. Zero view = never commit-voted.
+	LastCommitVotedView ViewNumber
+	LastCommitVotedHash types.Hash
 }
 
 // SaveConsensusState persists the current consensus state to the database.
+// Always writes the v2 layout; LoadConsensusState still reads v1 records.
+//
+// The write is monotonic: it can only ever move the record FORWARD. Two
+// goroutines write this key — the engine goroutine via JournalVote (always
+// current, holding the engine mutex) and the service's periodic/shutdown
+// persistState, which snapshots under the mutex and writes later, so its
+// snapshot can be stale by the time its transaction runs. Without the merge
+// below, that stale write un-says a vote already on disk, and a restart in that
+// window re-votes in a view it had already committed to — the exact
+// equivocation the vote journal exists to prevent.
 func SaveConsensusState(tx kv.RwTx, state *ConsensusState) error {
+	state, err := mergeMonotonic(tx, state)
+	if err != nil {
+		return err
+	}
 	lockedQCBytes, err := encodeQC(&state.LockedQC)
 	if err != nil {
 		return fmt.Errorf("encode locked_qc: %w", err)
@@ -41,21 +87,85 @@ func SaveConsensusState(tx kv.RwTx, state *ConsensusState) error {
 		return fmt.Errorf("encode committed_qc: %w", err)
 	}
 
-	// Format: view(8) + consecutiveTimeouts(4) + lockedQC_len(4) + lockedQC + committedQC
-	size := 8 + 4 + 4 + len(lockedQCBytes) + len(committedQCBytes)
+	// v2: header + lockedQC_len(4) + lockedQC + committedQC_len(4) + committedQC.
+	// Both QCs are length-prefixed (v1 length-prefixed only the first and let the
+	// second run to the end of the buffer), so a future revision can append new
+	// trailing fields without breaking this decoder.
+	size := consensusStateHeaderV2 + 4 + len(lockedQCBytes) + 4 + len(committedQCBytes)
 	buf := make([]byte, size)
 
-	binary.LittleEndian.PutUint64(buf[0:8], state.View)
-	binary.LittleEndian.PutUint32(buf[8:12], state.ConsecutiveTimeouts)
-	binary.LittleEndian.PutUint32(buf[12:16], uint32(len(lockedQCBytes)))
-	copy(buf[16:16+len(lockedQCBytes)], lockedQCBytes)
-	copy(buf[16+len(lockedQCBytes):], committedQCBytes)
+	pos := copy(buf, consensusStateMagicV2)
+	binary.LittleEndian.PutUint64(buf[pos:], state.View)
+	pos += 8
+	binary.LittleEndian.PutUint32(buf[pos:], state.ConsecutiveTimeouts)
+	pos += 4
+	binary.LittleEndian.PutUint64(buf[pos:], state.LastVotedView)
+	pos += 8
+	pos += copy(buf[pos:], state.LastVotedHash[:])
+	binary.LittleEndian.PutUint64(buf[pos:], state.LastCommitVotedView)
+	pos += 8
+	pos += copy(buf[pos:], state.LastCommitVotedHash[:])
+
+	binary.LittleEndian.PutUint32(buf[pos:], uint32(len(lockedQCBytes)))
+	pos += 4
+	pos += copy(buf[pos:], lockedQCBytes)
+	binary.LittleEndian.PutUint32(buf[pos:], uint32(len(committedQCBytes)))
+	pos += 4
+	copy(buf[pos:], committedQCBytes)
 
 	return tx.Put(modules.HotStuffState, hotstuffStateKey, buf)
 }
 
+// mergeMonotonic folds the record already on disk into the state about to be
+// written so no field can regress. It runs inside the caller's write
+// transaction, and MDBX serializes writers, so the read-modify-write is atomic
+// against the other writer.
+//
+// Two independent groups are compared, each kept internally coherent:
+//
+//   - the vote commitments (LastVoted*, LastCommitVoted*) — a released vote is
+//     append-only and must never be withdrawn, so each pair keeps whichever
+//     record names the higher view;
+//   - the round snapshot (View, ConsecutiveTimeouts, LockedQC, LastCommittedQC)
+//     — these describe one view together, so they move as a unit: an older
+//     snapshot is dropped whole rather than mixed with a newer view's lock.
+//
+// Both reset tools (cmd/hotstuff-reset, cmd/qs-hsreset) DELETE the key rather
+// than writing a lower state, so deliberate rollback still works.
+func mergeMonotonic(tx kv.RwTx, state *ConsensusState) (*ConsensusState, error) {
+	prev, err := LoadConsensusState(tx)
+	if err != nil {
+		// An unreadable record must not silently become a blank slate: refusing
+		// the write keeps whatever is on disk, which is the safe direction.
+		return nil, fmt.Errorf("read previous hotstuff state: %w", err)
+	}
+	if prev == nil {
+		return state, nil
+	}
+
+	merged := *state
+	if prev.LastVotedView > merged.LastVotedView {
+		merged.LastVotedView = prev.LastVotedView
+		merged.LastVotedHash = prev.LastVotedHash
+	}
+	if prev.LastCommitVotedView > merged.LastCommitVotedView {
+		merged.LastCommitVotedView = prev.LastCommitVotedView
+		merged.LastCommitVotedHash = prev.LastCommitVotedHash
+	}
+	if prev.View > merged.View {
+		merged.View = prev.View
+		merged.ConsecutiveTimeouts = prev.ConsecutiveTimeouts
+		merged.LockedQC = prev.LockedQC
+		merged.LastCommittedQC = prev.LastCommittedQC
+	}
+	return &merged, nil
+}
+
 // LoadConsensusState loads the persisted consensus state from the database.
-// Returns nil if no state exists.
+// Returns nil if no state exists. Records written by a pre-v2 binary decode
+// with the vote fields left zero ("never voted"), which is the conservative
+// reading: the node treats every view as un-voted and re-derives its position
+// from the network.
 func LoadConsensusState(tx kv.Tx) (*ConsensusState, error) {
 	val, err := tx.GetOne(modules.HotStuffState, hotstuffStateKey)
 	if err != nil {
@@ -64,7 +174,55 @@ func LoadConsensusState(tx kv.Tx) (*ConsensusState, error) {
 	if val == nil || len(val) < 16 {
 		return nil, nil // no persisted state
 	}
+	if len(val) >= len(consensusStateMagicV2) && bytes.Equal(val[:len(consensusStateMagicV2)], consensusStateMagicV2) {
+		return decodeConsensusStateV2(val)
+	}
+	return decodeConsensusStateV1(val)
+}
 
+func decodeConsensusStateV2(val []byte) (*ConsensusState, error) {
+	if len(val) < consensusStateHeaderV2+8 {
+		return nil, fmt.Errorf("hotstuff state corrupted: v2 record too short (%d bytes)", len(val))
+	}
+	st := &ConsensusState{}
+	pos := len(consensusStateMagicV2)
+	st.View = binary.LittleEndian.Uint64(val[pos:])
+	pos += 8
+	st.ConsecutiveTimeouts = binary.LittleEndian.Uint32(val[pos:])
+	pos += 4
+	st.LastVotedView = binary.LittleEndian.Uint64(val[pos:])
+	pos += 8
+	copy(st.LastVotedHash[:], val[pos:pos+32])
+	pos += 32
+	st.LastCommitVotedView = binary.LittleEndian.Uint64(val[pos:])
+	pos += 8
+	copy(st.LastCommitVotedHash[:], val[pos:pos+32])
+	pos += 32
+
+	lockedQCBytes, next, err := readLenPrefixed(val, pos, "locked_qc")
+	if err != nil {
+		return nil, err
+	}
+	lockedQC, err := decodeQC(lockedQCBytes)
+	if err != nil {
+		return nil, fmt.Errorf("decode locked_qc: %w", err)
+	}
+	committedQCBytes, _, err := readLenPrefixed(val, next, "committed_qc")
+	if err != nil {
+		return nil, err
+	}
+	committedQC, err := decodeQC(committedQCBytes)
+	if err != nil {
+		return nil, fmt.Errorf("decode committed_qc: %w", err)
+	}
+	st.LockedQC = *lockedQC
+	st.LastCommittedQC = *committedQC
+	return st, nil
+}
+
+// decodeConsensusStateV1 reads the original layout:
+// view(8) + consecutiveTimeouts(4) + lockedQC_len(4) + lockedQC + committedQC.
+func decodeConsensusStateV1(val []byte) (*ConsensusState, error) {
 	view := binary.LittleEndian.Uint64(val[0:8])
 	consecutiveTimeouts := binary.LittleEndian.Uint32(val[8:12])
 	lockedQCLen := binary.LittleEndian.Uint32(val[12:16])
@@ -89,7 +247,22 @@ func LoadConsensusState(tx kv.Tx) (*ConsensusState, error) {
 		ConsecutiveTimeouts: consecutiveTimeouts,
 		LockedQC:            *lockedQC,
 		LastCommittedQC:     *committedQC,
+		// Vote fields intentionally zero: a v1 record carries no vote history.
 	}, nil
+}
+
+// readLenPrefixed reads a uint32 length prefix at pos and returns the payload
+// plus the offset just past it.
+func readLenPrefixed(val []byte, pos int, field string) ([]byte, int, error) {
+	if pos+4 > len(val) {
+		return nil, 0, fmt.Errorf("hotstuff state corrupted: missing %s length", field)
+	}
+	n := int(binary.LittleEndian.Uint32(val[pos:]))
+	pos += 4
+	if n < 0 || pos+n > len(val) {
+		return nil, 0, fmt.Errorf("hotstuff state corrupted: buffer too short for %s", field)
+	}
+	return val[pos : pos+n], pos + n, nil
 }
 
 // Staged epoch persistence key

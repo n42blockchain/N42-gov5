@@ -22,11 +22,25 @@
 
 package miner
 
-import "github.com/n42blockchain/N42/params"
+import (
+	"os"
+
+	"github.com/n42blockchain/N42/params"
+)
+
+// stressGasLimit is opt-in via N42_STRESS_GASLIMIT=1: it lets the miner jump the
+// block gas limit straight to the desired ceiling (bypassing the per-block
+// ±1/GasLimitBoundDivisor adjustment) so a throughput stress test can reach a high
+// gas limit immediately. Only sound when ALL validators run with the same env
+// (both this and the paired VerifyGaslimit relaxation must agree) — NOT for prod.
+var stressGasLimit = os.Getenv("N42_STRESS_GASLIMIT") == "1"
 
 func CalcGasLimit(parentGasLimit, desiredLimit uint64) uint64 {
 	if desiredLimit < params.MinGasLimit {
 		desiredLimit = params.MinGasLimit
+	}
+	if stressGasLimit {
+		return desiredLimit // instant jump; paired with the stress VerifyGaslimit bypass
 	}
 
 	// Maximum per-block adjustment (minus 1 to prevent exact-match overshooting).

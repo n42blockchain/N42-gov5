@@ -28,6 +28,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/holiman/uint256"
 
@@ -178,7 +179,33 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		}
 	}
 
+	// Block-write phase timings — OBSERVABILITY ONLY, no behaviour change.
+	// The write path is the dominant term in a leader's ViewStart→ProposalSent
+	// window (~1.5s measured live at 14k tx/block) and had no breakdown; these
+	// counters split it. Everything here is plain wall-clock arithmetic on the
+	// goroutine that already owns bc.lock, so no lock or ordering is added.
+	// The MDBX commit/fsync cost is not directly observable through
+	// ChainDB.Update, so it is derived: Update wall time minus the BeginRw wait
+	// (start of the closure) minus the time spent inside the closure.
+	var (
+		tUpdateStart  = time.Now()
+		tClosureStart time.Time
+		tPhase        time.Time
+		dInClosure    time.Duration
+		dReceipts     time.Duration
+		dBlock        time.Duration
+		dEvidence     time.Duration
+		dState        time.Duration
+		dChangeset    time.Duration
+		dRoot2        time.Duration
+		dQMDBFlush    time.Duration
+		dQMDBMeta     time.Duration
+		dSnapshot     time.Duration
+		dPost         time.Duration
+	)
+
 	if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+		tClosureStart = time.Now()
 		// Reject an in-flight leader candidate before touching receipts, logs,
 		// changesets, or any other append-only table. The applied head can move
 		// while the isolated candidate is being built.
@@ -202,6 +229,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		log.Trace("writeTd:", "number", blockNumber.Uint64(), "hash", blk.Hash(), "td", externTd.Uint64())
 
 		if len(receipts) > 0 {
+			tPhase = time.Now()
 			if err := rawdb.AppendReceipts(tx, blockNumber.Uint64(), receipts); err != nil {
 				log.Errorf("rawdb.AppendReceipts failed err= %v", err)
 				return err
@@ -210,10 +238,13 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 				log.Errorf("rawdb.WriteLogIndex failed err= %v", err)
 				return err
 			}
+			dReceipts = time.Since(tPhase)
 		}
+		tPhase = time.Now()
 		if err := rawdb.WriteBlock(tx, concreteBlock); err != nil {
 			return err
 		}
+		dBlock = time.Since(tPhase)
 
 		// Persist the per-block BLS committee evidence in the same atomic batch —
 		// on EVERY node, not just the producing leader. The simulated pool is
@@ -224,6 +255,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		// chain broke at the first live block (7-node smoke, blocks 1001+).
 		if bc.committeePool != nil {
 			if hdr, ok := concreteBlock.Header().(*block.Header); ok && hdr != nil {
+				tPhase = time.Now()
 				ce, cerr := bc.committeePool.BuildBlockEvidence(blockNumber.Uint64(), blk.Hash(), hdr.ReceiptHash)
 				if cerr != nil {
 					return fmt.Errorf("build consensus evidence block %d: %w", blockNumber.Uint64(), cerr)
@@ -231,6 +263,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 				if err := rawdb.WriteConsensusEvidence(tx, blockNumber.Uint64(), ce); err != nil {
 					return fmt.Errorf("write consensus evidence block %d: %w", blockNumber.Uint64(), err)
 				}
+				dEvidence = time.Since(tPhase)
 			}
 		}
 
@@ -250,9 +283,12 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		// (EVM re-execution skipped). In that case, skip state commit since
 		// the proven state root is trusted.
 		if ibs != nil {
+			tPhase = time.Now()
 			if err := ibs.CommitBlock(bc.chainConfig.Rules(blockNumber.Uint64()), stateWriter); err != nil {
 				return err
 			}
+			dState = time.Since(tPhase)
+			tPhase = time.Now()
 			// A prior attempt at this height (hotstuff view-change re-production,
 			// a competing same-height proposal, or a reorg re-import) may have
 			// already written AccountChangeSet/StorageChangeSet rows for this
@@ -269,6 +305,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			if err := stateWriter.WriteHistory(); err != nil {
 				return fmt.Errorf("writing history for block %d failed: %w", blockNumber.Uint64(), err)
 			}
+			dChangeset = time.Since(tPhase)
 		}
 
 		// Flush JMT dirty nodes into the current MDBX transaction and persist root.
@@ -359,6 +396,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 				if accts == nil && stor == nil {
 					return fmt.Errorf("leader block %d has no snapshotted dirty set to replay onto the live QMDB tree", blockNumber.Uint64())
 				}
+				tPhase = time.Now()
 				bc.qmdbRootComputer.SetCold(tx)
 				liveRoot, cerr := bc.qmdbRootComputer.ComputeRoot(accts, stor)
 				if cerr != nil {
@@ -368,10 +406,14 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 					return fmt.Errorf("live QMDB tree root %x does not reproduce sealed root %x at block %d",
 						liveRoot[:8], blk.StateRoot().Bytes()[:8], blockNumber.Uint64())
 				}
+				dRoot2 = time.Since(tPhase)
 			}
+			tPhase = time.Now()
 			if _, err := bc.qmdbRootComputer.FlushTo(tx); err != nil {
 				return fmt.Errorf("flushing QMDB entries for block %d failed: %w", blockNumber.Uint64(), err)
 			}
+			dQMDBFlush = time.Since(tPhase)
+			tPhase = time.Now()
 			// EvictFlushed / TakeUndo / CommitFlushed run AFTER this tx commits
 			// (below, outside the Update): running them here consumed the undo
 			// and dropped the flushed window from RAM while the tx could still
@@ -408,6 +450,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 					return fmt.Errorf("pruning QMDB undo window for block %d failed: %w", bn, err)
 				}
 			}
+			dQMDBMeta = time.Since(tPhase)
 		}
 
 		// Persist LtHash digest alongside JMT root.
@@ -419,6 +462,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 
 		// Update snapshot tree with collected diffs.
 		if diffCollector != nil && bc.snapshotTree != nil {
+			tPhase = time.Now()
 			if err := bc.snapshotTree.Update(
 				blockNumber.Uint64(),
 				blk.Hash(),
@@ -430,6 +474,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 				// Non-fatal: snapshot acceleration is best-effort.
 				log.Warn("Failed to update snapshot tree", "block", blockNumber.Uint64(), "err", err)
 			}
+			dSnapshot = time.Since(tPhase)
 		}
 
 		if nopay != nil {
@@ -439,6 +484,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 				}
 			}
 		}
+		dInClosure = time.Since(tClosureStart)
 		return nil
 	}); err != nil {
 		if bc.qmdbEnabled && bc.qmdbRootComputer != nil {
@@ -451,14 +497,50 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		}
 		return NonStatTy, err
 	}
+	// Captured the instant Update returns, so `dUpdate - begin - inClosure`
+	// isolates the MDBX Commit (fsync) from everything the closure did.
+	dUpdate := time.Since(tUpdateStart)
 	if ibs != nil && bc.qmdbEnabled && bc.qmdbRootComputer != nil {
 		// The tx is durable: adopt the staged flush cursor, then evict the
 		// flushed window (its rows are now recoverable from cold) and consume
 		// the undo so a LATER failure can't peel this committed block's appends
 		// with a stale record.
+		tPhase = time.Now()
 		bc.qmdbRootComputer.CommitFlushed()
 		bc.qmdbRootComputer.EvictFlushed()
 		bc.qmdbRootComputer.TakeUndo()
+		dPost = time.Since(tPhase)
+	}
+
+	// One compact, greppable line per written block. `commit` is the derived
+	// MDBX commit (fsync) cost — see the timing block above. Demoted to Debug
+	// for sub-5ms writes so a bulk catch-up import (thousands of blocks/s)
+	// cannot flood the log; every block on a live 3s chain clears that floor.
+	//
+	// role=leader is the isolated-seal replay path (this node sealed the block,
+	// so root2 re-runs the dirty set on the live tree); role=import is every
+	// other write — a follower importing a proposal, and any non-QMDB chain,
+	// where root2 is 0 because the root was computed on the live tree already.
+	{
+		role := "import"
+		if isolatedQMDBSeal {
+			role = "leader"
+		}
+		dTotal := time.Since(tUpdateStart)
+		dBegin := tClosureStart.Sub(tUpdateStart)
+		dCommit := dUpdate - dBegin - dInClosure
+		fields := []interface{}{
+			"n", blockNumber.Uint64(), "role", role, "txs", len(blk.Transactions()),
+			"begin", dBegin, "receipts", dReceipts, "block", dBlock, "ce", dEvidence,
+			"state", dState, "chgset", dChangeset, "root2", dRoot2,
+			"qflush", dQMDBFlush, "qmeta", dQMDBMeta, "snap", dSnapshot,
+			"commit", dCommit, "post", dPost, "total", dTotal,
+		}
+		if dTotal >= 5*time.Millisecond {
+			log.Info("blockwrite phases", fields...)
+		} else {
+			log.Debug("blockwrite phases", fields...)
+		}
 	}
 
 	// Refresh the JMT backing store's RO transaction so it sees the just-committed nodes.

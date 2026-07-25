@@ -24,6 +24,7 @@ package internal
 
 import (
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/n42blockchain/N42/common"
@@ -45,12 +46,43 @@ import (
 	"github.com/holiman/uint256"
 )
 
+// ProcessPhases is a per-block breakdown of StateProcessor.Process, recorded
+// for the import-path "blockimport phases" line. OBSERVABILITY ONLY — nothing
+// here feeds execution or consensus.
+//
+// The split that matters is Exec vs Finalize: Finalize is where the engine
+// computes state root #3 (engine.Finalize -> ibs.IntermediateRoot -> the live
+// commitment tree), which on the block-production side is billed to the miner's
+// separate "finalize" counter rather than to fillTx. Without the split, a
+// follower's whole Process reads as "EVM execution" and looks arbitrarily
+// slower than the leader's fillTx for the very same transactions.
+type ProcessPhases struct {
+	Recover  time.Duration // parallel sender recovery (see recoverBlockSenders)
+	Prep     time.Duration // start-of-block system calls (EIP-4788 / EIP-2935)
+	Exec     time.Duration // pure EVM: the per-transaction ApplyTransaction loop
+	Finalize time.Duration // engine.Finalize: rewards + state root #3
+}
+
 // StateProcessor implements Processor and handles state transitions.
 type StateProcessor struct {
 	config       *params.ChainConfig
 	bc           *BlockChain
 	engine       consensus.Engine
 	slotRecorder vm2.SlotAccessRecorder
+
+	// lastPhases holds the most recent successful Process breakdown. An atomic
+	// pointer (published once per block, never mutated in place) keeps this
+	// free of locks and of any effect on execution ordering.
+	lastPhases atomic.Pointer[ProcessPhases]
+}
+
+// LastPhases returns the phase breakdown of the most recent successful
+// Process call, or the zero value if none has completed.
+func (p *StateProcessor) LastPhases() ProcessPhases {
+	if ph := p.lastPhases.Load(); ph != nil {
+		return *ph
+	}
+	return ProcessPhases{}
 }
 
 // SetSlotRecorder enables SLOAD access recording for predictive prefetching.
@@ -105,9 +137,31 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 		misc.ApplyDAOHardFork(ibs)
 	}
 
+	// Phase timings (observability only) — see ProcessPhases.
+	var phases ProcessPhases
+	tPhase := time.Now()
+
+	// Warm every transaction's sender cache on a worker pool before the serial
+	// loop below. Transactions decoded from the wire carry no sender, so without
+	// this each AsMessage inside ApplyTransaction pays for a secp256k1 recovery
+	// on the critical path. Purely a prefetch — see recoverBlockSenders for why
+	// it cannot change any execution outcome. The signer is derived exactly as
+	// applyTransaction derives it; if the header number is unavailable the whole
+	// block is about to fail anyway, so recovery is simply skipped.
+	if hdrNum, hdrErr := requireHeaderNumber(concreteHeader, "header number unavailable"); hdrErr == nil {
+		recoverBlockSenders(
+			transaction.MakeSignerWithTimestamp(chainConfig, hdrNum.ToBig(), concreteHeader.Time),
+			b.Transactions(),
+		)
+	}
+	phases.Recover = time.Since(tPhase)
+	tPhase = time.Now()
+
 	if err := ProcessExecutionBlockStart(concreteHeader.ParentBeaconRoot, chainConfig, ibs, concreteHeader, p.engine); err != nil {
 		return nil, nil, nil, 0, err
 	}
+	phases.Prep = time.Since(tPhase)
+	tPhase = time.Now()
 
 	noop := state.NewNoopWriter()
 
@@ -173,6 +227,8 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 	if _, err := ProcessExecutionBlockEnd(nil, chainConfig, ibs, concreteHeader, p.engine); err != nil {
 		return nil, nil, nil, 0, err
 	}
+	phases.Exec = time.Since(tPhase)
+	tPhase = time.Now()
 
 	var nopay map[types.Address]*uint256.Int
 	if !cfg.ReadOnly {
@@ -183,6 +239,8 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 			return nil, nil, nil, 0, err
 		}
 	}
+	phases.Finalize = time.Since(tPhase)
+	p.lastPhases.Store(&phases)
 
 	// Suppress unused variable warnings
 	_ = rejectedTxs

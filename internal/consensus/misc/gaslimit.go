@@ -25,13 +25,26 @@ package misc
 import (
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/n42blockchain/N42/params"
 )
 
+// stressGasLimit (N42_STRESS_GASLIMIT=1) relaxes the per-block ±1/divisor bound so
+// a stress test can jump the gas limit straight to the miner's ceiling. Paired with
+// miner.CalcGasLimit's instant-jump; ALL validators must run the same env or they
+// reject each other's blocks. Min-floor is still enforced. NOT for production.
+var stressGasLimit = os.Getenv("N42_STRESS_GASLIMIT") == "1"
+
 // VerifyGaslimit verifies the header gas limit according increase/decrease
 // in relation to the parent gas limit.
 func VerifyGaslimit(parentGasLimit, headerGasLimit uint64) error {
+	if stressGasLimit {
+		if headerGasLimit < params.MinGasLimit {
+			return errors.New("invalid gas limit below 5000")
+		}
+		return nil // bypass the ±1/divisor bound for the throughput stress test
+	}
 	// Verify that the gas limit remains within allowed bounds
 	// Security: use unsigned arithmetic to avoid int64 overflow
 	var diff uint64

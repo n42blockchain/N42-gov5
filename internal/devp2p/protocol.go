@@ -11,6 +11,7 @@ package devp2p
 import (
 	"fmt"
 	"io"
+	"math/big"
 
 	"github.com/ethereum/go-ethereum/rlp"
 
@@ -33,6 +34,23 @@ type statusPacket struct {
 	EarliestBlock   uint64
 	LatestBlock     uint64
 	LatestBlockHash types.Hash
+}
+
+// statusPacket68 is the eth/68 (pre-eth/69) Status wire layout:
+// [version, networkid, td, head, genesis, forkid]. eth/69 dropped TD + head hash
+// and added the earliest/latest block range; the two are NOT interchangeable on
+// the wire, so the handshake must encode/decode the one matching the negotiated
+// eth version. Kept so eth-el can pair with the still-dominant eth/68 mainnet
+// peers (advertising only eth/69 drops them, starving block download). Note eth/68
+// Status carries the head HASH but no head NUMBER — the downloader learns the
+// number lazily from the first header response (see pickPeer's head==0 handling).
+type statusPacket68 struct {
+	ProtocolVersion uint32
+	NetworkID       uint64
+	TD              *big.Int
+	Head            types.Hash
+	Genesis         types.Hash
+	ForkID          forkID
 }
 
 // hashOrNumber is a union: exactly one of Hash / Number is on the
@@ -86,6 +104,18 @@ type getBlockHeadersQuery struct {
 type getBlockHeadersPacket struct {
 	RequestID uint64
 	*getBlockHeadersQuery
+}
+
+// requestIDTail decodes just the leading request-id from any eth/66+ request
+// `[reqID, ...]`, tolerating whatever query shape follows. The GetXxx handlers
+// serve empty stub responses (we're not a serving node), so only the request-id
+// — which must be echoed back — matters; the query tail is irrelevant. A strict
+// full-struct decode of the query needlessly drops peers whose request encoding
+// differs by a field ("rlp: too many elements"), so prefer this for handlers
+// that don't read the query body.
+type requestIDTail struct {
+	RequestID uint64
+	Rest      []rlp.RawValue `rlp:"tail"`
 }
 
 // blockHeadersPacket carries headers as RAW RLP bytes per entry. The

@@ -24,12 +24,24 @@ package jsonrpc
 
 import (
 	"fmt"
+	"sync"
 
 	prometheus "github.com/n42blockchain/N42/common/metrics"
 )
 
 var (
-	rpcMetricsLabels = map[bool]map[string]string{
+	// rpcMetricsLabelsMu guards rpcMetricsLabels. Every served JSON-RPC call
+	// reaches newRPCServingTimerMS from its own handler goroutine, so the
+	// unsynchronized map this used to be crashed the process outright once two
+	// calls for an unseen method raced:
+	//
+	//	fatal error: concurrent map writes
+	//	  jsonrpc.newRPCServingTimerMS metrics.go:52
+	//
+	// Observed on a live validator under concurrent eth_sendRawTransaction load
+	// — a public RPC endpoint is enough to take a node down.
+	rpcMetricsLabelsMu sync.RWMutex
+	rpcMetricsLabels   = map[bool]map[string]string{
 		true:  {},
 		false: {},
 	}
@@ -46,10 +58,14 @@ func createRPCMetricsLabel(method string, valid bool) string {
 }
 
 func newRPCServingTimerMS(method string, valid bool) prometheus.Summary {
+	rpcMetricsLabelsMu.RLock()
 	label, ok := rpcMetricsLabels[valid][method]
+	rpcMetricsLabelsMu.RUnlock()
 	if !ok {
 		label = createRPCMetricsLabel(method, valid)
+		rpcMetricsLabelsMu.Lock()
 		rpcMetricsLabels[valid][method] = label
+		rpcMetricsLabelsMu.Unlock()
 	}
 	return prometheus.GetOrCreateSummary(label)
 }

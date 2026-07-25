@@ -89,6 +89,13 @@ type Config struct {
 	// immutable H0 snapshot StateReader the adapter overlays the warm MDBX on.
 	// Set by cmd/eth-el when --bootstrap.mode=snapshot.
 	SnapshotCold state.StateReader
+	// FreezerDir is the local input freezer directory (<datadir>/chain/freezer)
+	// that may carry a headerc.cidx columnar header set. When present, the
+	// downloader fills the BLOCKHASH-window headers from it instead of
+	// re-downloading them from peers — needed when the state marker sits below
+	// the local headerc head (e.g. a hashed-canonical datadir catching up to the
+	// tip). Empty disables the local fill (peers only), preserving prior behavior.
+	FreezerDir string
 }
 
 // DefaultConfig is a follower-friendly default — listens on the standard
@@ -97,7 +104,7 @@ func DefaultConfig() Config {
 	return Config{
 		Enabled:    false,
 		ListenAddr: ":30303",
-		MaxPeers:   50,
+		MaxPeers:   200,
 		BootNodes:  params.EthereumMainnetBootnodes,
 	}
 }
@@ -167,7 +174,7 @@ func (s *Service) Start(_ context.Context) error {
 	// GetBlockHeaders/GetBlockBodies to each peer that completes
 	// handshake. Registered as the EthHandler ResponseHandler so the
 	// peer goroutine routes msg code 4 / 6 here.
-	dl := NewDownloader(s.node, s.cfg.HashedCanonical, s.cfg.SnapshotCold)
+	dl := NewDownloader(s.node, s.cfg.HashedCanonical, s.cfg.SnapshotCold, s.cfg.FreezerDir)
 	handler.SetResponseHandler(dl)
 
 	boot := make([]*enode.Node, 0, len(s.cfg.BootNodes))

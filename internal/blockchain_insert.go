@@ -23,6 +23,8 @@
 package internal
 
 import (
+	"time"
+
 	"github.com/n42blockchain/N42/common/block"
 )
 
@@ -34,6 +36,15 @@ type insertIterator struct {
 	errors  []error
 	index   int
 	validator Validator
+
+	// Per-block phase timings for the "blockimport phases" line — OBSERVABILITY
+	// ONLY. next() is where an importing node pays for header verification (the
+	// wait on the parallel VerifyHeaders result, which includes the HotStuff BLS
+	// seal check) and for ValidateBody (which recomputes the transaction root
+	// over every transaction in the block). Both sit outside every existing
+	// timer, so a slow import used to show up as unattributed wall clock.
+	lastVerifyWait time.Duration
+	lastBodyCheck  time.Duration
 }
 
 // newInsertIterator creates a new iterator for the given contiguous chain.
@@ -50,18 +61,24 @@ func newInsertIterator(chain []block.IBlock, results <-chan error, validator Val
 // next returns the next block and any validation error.
 // Returns (nil, nil) when the end is reached.
 func (it *insertIterator) next() (block.IBlock, error) {
+	it.lastVerifyWait, it.lastBodyCheck = 0, 0
 	if it.index+1 >= len(it.chain) {
 		it.index = len(it.chain)
 		return nil, nil
 	}
 	it.index++
 	if len(it.errors) <= it.index {
+		tVerify := time.Now()
 		it.errors = append(it.errors, <-it.results)
+		it.lastVerifyWait = time.Since(tVerify)
 	}
 	if it.errors[it.index] != nil {
 		return it.chain[it.index], it.errors[it.index]
 	}
-	return it.chain[it.index], it.validator.ValidateBody(it.chain[it.index])
+	tBody := time.Now()
+	err := it.validator.ValidateBody(it.chain[it.index])
+	it.lastBodyCheck = time.Since(tBody)
+	return it.chain[it.index], err
 }
 
 // peek returns the next block without advancing the iterator.

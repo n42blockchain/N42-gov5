@@ -146,12 +146,108 @@ type ConsensusEngine struct {
 	// scattered persisted views without trusting a single sender.
 	futureTimeouts map[ValidatorIndex]*TimeoutMessage
 
-	// Timing
+	// Timing. viewTiming is engine state (guarded by e.mu); lastCommittedTiming
+	// is published for out-of-engine observers and guarded by its own leaf lock
+	// so a reader never contends with — or deadlocks against — the consensus
+	// hot path. timingMu is only ever taken while nothing else is acquired.
 	viewTiming          ViewTiming
+	timingMu            sync.RWMutex
 	lastCommittedTiming *ViewTiming
 
 	// Set when this validator is removed at an epoch boundary.
 	removed bool
+
+	// voteJournal durably records a vote commitment before the vote is released
+	// to the network. Nil disables journalling (unit tests, embedded harnesses)
+	// and restores the pre-journal behaviour.
+	voteJournal VoteJournal
+}
+
+// VoteJournal persists the engine's safety state. Implementations MUST make the
+// record durable before returning: the engine releases a vote only after a
+// successful call, which is what makes the vote recoverable across a crash.
+//
+// Called with the engine mutex held and on the engine's own goroutine, so an
+// implementation must never call back into a locked ConsensusEngine accessor
+// (deadlock) — everything it needs is in the supplied snapshot.
+type VoteJournal interface {
+	JournalVote(state *ConsensusState) error
+}
+
+// SetVoteJournal installs the durable vote journal. Call before Start.
+func (e *ConsensusEngine) SetVoteJournal(j VoteJournal) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.voteJournal = j
+}
+
+// snapshotState builds the persistable consensus state from the round state.
+// Caller must hold e.mu.
+func (e *ConsensusEngine) snapshotState() *ConsensusState {
+	votedView, votedHash, commitVotedView, commitVotedHash := e.roundState.VoteCommitments()
+	return &ConsensusState{
+		View:                e.roundState.CurrentView(),
+		ConsecutiveTimeouts: e.roundState.ConsecutiveTimeouts(),
+		LockedQC:            e.roundState.LockedQC().Clone(),
+		LastCommittedQC:     e.roundState.LastCommittedQC().Clone(),
+		LastVotedView:       votedView,
+		LastVotedHash:       votedHash,
+		LastCommitVotedView: commitVotedView,
+		LastCommitVotedHash: commitVotedHash,
+	}
+}
+
+// SnapshotState returns the persistable consensus state under the engine lock,
+// for the service's periodic/commit-time persistence. Taking view, lock and
+// vote commitments in one critical section keeps the persisted record internally
+// consistent — a field-by-field read could otherwise store a lock from one view
+// with a vote from the next.
+func (e *ConsensusEngine) SnapshotState() *ConsensusState {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.snapshotState()
+}
+
+// journalPrepareVote durably records a Round 1 vote commitment and, only once it
+// is on disk, marks it in the round state. Returns an error when the commitment
+// could not be persisted — the caller MUST then abstain: releasing a vote that
+// is not on disk is exactly the failure that lets a restart equivocate.
+// Caller must hold e.mu.
+func (e *ConsensusEngine) journalPrepareVote(view ViewNumber, hash types.Hash) error {
+	// Non-members never release a vote (sendVote gates on isMember), so there is
+	// no commitment to make durable — skip the write, keep the in-memory
+	// bookkeeping exactly as it was before the journal existed.
+	if e.voteJournal == nil || !e.isMember() {
+		e.roundState.RecordVote(view, hash)
+		return nil
+	}
+	st := e.snapshotState()
+	st.LastVotedView, st.LastVotedHash = view, hash
+	if err := e.voteJournal.JournalVote(st); err != nil {
+		log.Error("hotstuff: ABSTAINING — could not journal prepare vote before sending",
+			"view", view, "blockHash", hash, "err", err)
+		return err
+	}
+	e.roundState.RecordVote(view, hash)
+	return nil
+}
+
+// journalCommitVote is journalPrepareVote for the Round 2 (Commit) vote.
+// Caller must hold e.mu.
+func (e *ConsensusEngine) journalCommitVote(view ViewNumber, hash types.Hash) error {
+	if e.voteJournal == nil || !e.isMember() {
+		e.roundState.RecordCommitVoteHash(view, hash)
+		return nil
+	}
+	st := e.snapshotState()
+	st.LastCommitVotedView, st.LastCommitVotedHash = view, hash
+	if err := e.voteJournal.JournalVote(st); err != nil {
+		log.Error("hotstuff: ABSTAINING — could not journal commit vote before sending",
+			"view", view, "blockHash", hash, "err", err)
+		return err
+	}
+	e.roundState.RecordCommitVoteHash(view, hash)
+	return nil
 }
 
 type futureMsg struct {
@@ -159,8 +255,27 @@ type futureMsg struct {
 	msg  ConsensusMsg
 }
 
-// ViewTiming tracks per-view timing for latency diagnostics.
+// ViewTiming tracks per-view timing for latency diagnostics. Which fields are
+// populated depends on this node's role in the view — see Phases() in
+// view_timing.go for the derived per-stage durations.
+//
+//	ViewStart        every node: the view was entered (advanceToView).
+//	ProposalSent     LEADER only: proposal broadcast (proposeBlock). The gap
+//	                 from ViewStart is the wait for the miner's sealed block.
+//	ProposalReceived FOLLOWER only: proposal verified and accepted
+//	                 (processProposal), before execution is requested.
+//	VoteSent         FOLLOWER only: Round 1 prepare vote sent (sendVote). Under
+//	                 import-gated voting this trails ProposalReceived by the
+//	                 local execution/import time. The leader self-votes inside
+//	                 proposeBlock and so never sets this.
+//	PrepareQCFormed  LEADER only: quorum of Round 1 votes reached
+//	                 (tryFormPrepareQC), together with PrepareVoteCount.
+//	CommitVoteSent   FOLLOWER only: Round 2 commit vote sent (processPrepareQC).
+//	CommitQCFormed   every node: the block committed — leader via
+//	                 tryFormCommitQC (also sets CommitVoteCount), follower via
+//	                 processDecide (leaves CommitVoteCount at 0).
 type ViewTiming struct {
+	View             ViewNumber
 	ViewStart        time.Time
 	ProposalSent     *time.Time
 	ProposalReceived *time.Time
@@ -172,8 +287,8 @@ type ViewTiming struct {
 	CommitVoteCount  uint32
 }
 
-func newViewTiming() ViewTiming {
-	return ViewTiming{ViewStart: time.Now()}
+func newViewTiming(view ViewNumber) ViewTiming {
+	return ViewTiming{View: view, ViewStart: time.Now()}
 }
 
 // NewConsensusEngine creates a new HotStuff-2 consensus engine.
@@ -216,8 +331,10 @@ func NewConsensusEngineWithEpochManager(
 		commitEquivocationTracker: make(map[ValidatorIndex]types.Hash),
 		futureMsgBuffer:           make([]futureMsg, 0),
 		futureTimeouts:            make(map[ValidatorIndex]*TimeoutMessage),
-		viewTiming:                newViewTiming(),
 	}
+	// Seed the first view's timing from the round state so the very first
+	// committed view is reported under its real view number.
+	e.viewTiming = newViewTiming(e.roundState.CurrentView())
 	e.reconfigMgr = NewReconfigurationManager(epochManager)
 	return e
 }
@@ -255,8 +372,8 @@ func WithRecoveredState(
 		commitEquivocationTracker: make(map[ValidatorIndex]types.Hash),
 		futureMsgBuffer:           make([]futureMsg, 0),
 		futureTimeouts:            make(map[ValidatorIndex]*TimeoutMessage),
-		viewTiming:                newViewTiming(),
 	}
+	e.viewTiming = newViewTiming(e.roundState.CurrentView())
 	e.reconfigMgr = NewReconfigurationManager(epochManager)
 	return e
 }
@@ -315,10 +432,23 @@ func (e *ConsensusEngine) RestoreState(view ViewNumber, lockedQC, committedQC Qu
 	defer e.mu.Unlock()
 	e.roundState = RoundStateFromSnapshot(view, lockedQC, committedQC, consecutiveTimeouts)
 	e.pacemaker.ResetForView(view, consecutiveTimeouts)
+	e.viewTiming = newViewTiming(view)
 	// Align the epoch counter with the recovered view. A mid-chain restart with
 	// epochs enabled would otherwise leave currentEpoch at 0 while the view is far
 	// ahead, decoupling historicalSets keys from ValidatorSetForView lookups.
 	e.epochManager.SeedCurrentEpoch(view)
+}
+
+// RestoreVoteCommitments reinstates the journalled vote commitments after a
+// restart. It must run on EVERY startup that finds a persisted record — not
+// only when the recovered view is ahead — because the double-vote guard is what
+// stops a node from casting a second, conflicting vote in a view it already
+// voted in before the restart. Must only be called before the engine starts
+// processing events.
+func (e *ConsensusEngine) RestoreVoteCommitments(votedView ViewNumber, votedHash types.Hash, commitVotedView ViewNumber, commitVotedHash types.Hash) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.roundState.RestoreVoteCommitments(votedView, votedHash, commitVotedView, commitVotedHash)
 }
 
 func (e *ConsensusEngine) ValidatorCount() uint32 {
@@ -694,12 +824,13 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 		}
 	}
 
-	// Preserve timing from committed view.
+	// Preserve timing from committed view, publish it to observers, and export
+	// the per-stage breakdown (metrics + one compact log line). Timed-out views
+	// never reach a CommitQC and are therefore not sampled.
 	if e.viewTiming.CommitQCFormed != nil {
-		timing := e.viewTiming
-		e.lastCommittedTiming = &timing
+		e.publishCommittedTiming(e.viewTiming)
 	}
-	e.viewTiming = newViewTiming()
+	e.viewTiming = newViewTiming(newView)
 
 	// Replay buffered messages for the new view.
 	drained := e.futureMsgBuffer

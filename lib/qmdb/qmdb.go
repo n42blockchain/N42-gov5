@@ -237,8 +237,26 @@ var nullLevel = func() (lv [TwigHeight + 1]Hash) {
 	return
 }()
 
+// emptyTwigRoot is the committed root of a twig with no appended slots.
+var emptyTwigRoot = hashNode(nullLevel[TwigHeight], zeroBitsRoot)
+
+// newBareTwig creates a twig WITHOUT its 128 KiB node heap (nodes == nil, i.e.
+// "evicted"), carrying the all-null leaf/bits/committed roots.
+//
+// LoadFrom builds one twig object per twig in the forest, and its O(meta) fast
+// path immediately drops the node heap again — so allocating + null-initializing
+// 128 KiB per twig cost ~200 KiB of memory traffic per twig for nothing. At
+// chain scale (10^5 twigs) that is >12 GB of allocation churn on EVERY
+// speculative miner reload, and it dominated the reload wall time (allocation +
+// GC, not the MDBX point reads). The loader now starts bare and materializes the
+// heap only on the slow path, which recomputes every internal node anyway.
+func newBareTwig() *twig {
+	return &twig{leafRoot: nullLevel[TwigHeight], bitsRoot: zeroBitsRoot, root: emptyTwigRoot}
+}
+
 func newTwig() *twig {
-	t := &twig{nodes: new([2 * TwigSize]Hash)} // zero-fill = null leaves
+	t := newBareTwig()
+	t.nodes = new([2 * TwigSize]Hash) // zero-fill = null leaves
 	// Internal depth d holds all-null subtrees of height TwigHeight-d.
 	for d := 0; d < TwigHeight; d++ {
 		v := nullLevel[TwigHeight-d]
@@ -246,9 +264,6 @@ func newTwig() *twig {
 			t.nodes[j] = v
 		}
 	}
-	t.leafRoot = nullLevel[TwigHeight]
-	t.bitsRoot = zeroBitsRoot
-	t.root = hashNode(t.leafRoot, t.bitsRoot)
 	return t
 }
 

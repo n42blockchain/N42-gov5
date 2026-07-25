@@ -138,22 +138,25 @@ func (h *SnapHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) erro
 	for {
 		msg, err := rw.ReadMsg()
 		if err != nil {
-			// EOF / closed-pipe from the underlying RLPx connection
-			// means the peer simply went away. Returning that error
-			// gets mapped to DiscSubprotocolError by p2p.Server, which
-			// in turn flags THIS subprotocol as the disconnect cause —
-			// even when eth/69 was perfectly happy. Return nil for the
-			// clean-shutdown errors so the disconnect reason reflects
-			// the real cause (the eth side, or geth's own reason).
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) {
-				return nil
+			// snap/1 here is a pure receive-only stub — it must NEVER be the
+			// disconnect cause. ANY ReadMsg error means the underlying RLPx
+			// connection is going away, essentially always because the ETH side
+			// (or the peer) tore it down. Returning the error gets mapped by
+			// p2p.Server to DiscSubprotocolError and blames snap, masking the real
+			// reason (this was the dominant "subprotocol error" drop). Always exit
+			// cleanly so the eth-side / peer reason surfaces in the logs.
+			if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrClosedPipe) {
+				log.Debug("snap/1 read ended — exiting clean so the real disconnect reason surfaces",
+					"peer", peerID, "err", err)
 			}
-			return err
+			return nil
 		}
 		if err := h.handle(peerID, rw, msg); err != nil {
-			log.Warn("snap/1 handler error",
+			// A malformed inbound snap request must not drop the peer either —
+			// snap is never the disconnect cause. Log and keep serving.
+			log.Debug("snap/1 handler error (ignored — snap never disconnects)",
 				"peer", peerID, "code", msg.Code, "err", err)
-			return err
+			continue
 		}
 	}
 }

@@ -76,13 +76,14 @@ func NewTxsPool(ctx context.Context, bc common.IBlockChain, depositContract *dep
 	pool.priced = newTxPricedList(pool.all)
 	pool.reset(nil, bc.CurrentBlock())
 
-	if loaded := pool.loadFromDB(); loaded > 0 {
-		log.Info("Restored persisted transactions", "count", loaded)
-	}
-
 	// Initialize effective slots to configured maximum.
 	pool.effectiveGlobalSlots.Store(pool.config.GlobalSlots)
 
+	// Set before the goroutine starts, not inside it: the flag means "a drainer
+	// for reqPromoteCh exists", and the unbuffered send simply waits for the
+	// goroutine to be scheduled. Setting it from inside would race with the
+	// restore below and skip a legitimate one.
+	pool.schedulerLive.Store(true)
 	pool.wg.Add(1)
 	go pool.scheduleLoop()
 
@@ -97,6 +98,16 @@ func NewTxsPool(ctx context.Context, bc common.IBlockChain, depositContract *dep
 			"maxSlots", pool.config.GlobalSlots,
 			"minSlots", pool.config.MinGlobalSlots,
 			"memoryLimitMB", pool.config.MemoryLimitMB)
+	}
+
+	// Restore the persisted journal only AFTER scheduleLoop is running. The
+	// restore goes through addTxs, which ends in requestPromoteExecutables ->
+	// an unbuffered send on reqPromoteCh; nothing reads that channel until
+	// scheduleLoop exists. Restoring first therefore blocked NewTxsPool
+	// forever the moment the journal was non-empty — a latent wedge that only
+	// surfaced once the shutdown flush started producing non-empty journals.
+	if loaded := pool.loadFromDB(); loaded > 0 {
+		log.Info("Restored persisted transactions", "count", loaded)
 	}
 
 	return pool, nil

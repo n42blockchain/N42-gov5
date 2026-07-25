@@ -141,6 +141,13 @@ var QuickStartFlags = []cli.Flag{
 		Category:    "QUICK START",
 		Destination: &DefaultConfig.Miner.Etherbase,
 	},
+	&cli.Uint64Flag{
+		Name:        "miner.gasceil",
+		Usage:       "目标区块 gas 上限 (miner GasCeil); 配合 N42_STRESS_GASLIMIT=1 可瞬间跳到该值做压测",
+		Value:       30000000,
+		Category:    "QUICK START",
+		Destination: &DefaultConfig.Miner.GasCeil,
+	},
 
 	// 同步模式
 	&cli.StringFlag{
