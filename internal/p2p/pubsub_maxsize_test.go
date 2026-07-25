@@ -35,6 +35,23 @@ func TestGossipMaxSizeTracksEncoderBound(t *testing.T) {
 	}
 }
 
+// TestGossipMaxSizeStaysPositiveAtAbsurdLimits guards the overflow edge:
+// snappy.MaxEncodedLen returns -1 above ~3.7 GiB, and passing that through would
+// wrap to a negative router cap — silently rejecting every gossip message, which
+// is the failure this bound exists to prevent.
+func TestGossipMaxSizeStaysPositiveAtAbsurdLimits(t *testing.T) {
+	for _, limit := range []uint64{1 << 20, 1 << 30, 4 << 30, 64 << 30} {
+		withEncoderGossipLimit(t, limit)
+		got := GossipMaxSize()
+		if got < limit {
+			t.Fatalf("limit %d yielded router cap %d, which is below the payload bound", limit, got)
+		}
+		if int(got) <= 0 {
+			t.Fatalf("limit %d yielded a non-positive router cap %d after int conversion", limit, int(got))
+		}
+	}
+}
+
 // TestGossipMaxSizeCoversSnappyExpansion pins the headroom: EncodeGossip bounds
 // the UNCOMPRESSED payload and then snappy-encodes it, and snappy expands
 // incompressible input. A router cap set exactly at MaxGossipSize would drop

@@ -55,7 +55,14 @@ func MaxWireMessageSize() uint64 {
 // considers valid. Widening it costs nothing in safety: DecodeGossip still
 // rejects anything whose DECODED size exceeds MaxGossipSize.
 func MaxGossipWireSize() uint64 {
-	return uint64(snappy.MaxEncodedLen(int(MaxGossipSize)))
+	if n := snappy.MaxEncodedLen(int(MaxGossipSize)); n > 0 {
+		return uint64(n)
+	}
+	// snappy.MaxEncodedLen returns -1 once the source exceeds ~3.7 GiB. Passing
+	// that through would wrap to a negative router cap and silently reject every
+	// gossip message — the exact failure this bound exists to prevent. Reproduce
+	// snappy's formula in uint64 instead, where no realistic value can overflow.
+	return 32 + MaxGossipSize + MaxGossipSize/6
 }
 
 // sizeFromEnvMB reads a size in MiB from env, falling back to def bytes when
