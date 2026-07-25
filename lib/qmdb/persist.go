@@ -16,6 +16,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"time"
+
+	"github.com/n42blockchain/N42/log"
 )
 
 var (
@@ -146,6 +149,26 @@ func be8(v uint64) []byte {
 // flushedThrough is the slot cursor already persisted (0 on first flush).
 func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 	bytesW := 0
+	// Per-table accounting. The MDBX commit that follows costs in proportion to
+	// the PAGES this flush dirties, and the three tables dirty pages very
+	// differently: EntryTable rows are strictly ascending appends (contiguous new
+	// pages), while TwigTable and especially LeavesTable OVERWRITE existing rows —
+	// a 64 KiB leaf blob per dirty twig, copied on write. Attribute them so the
+	// commit cost can be pinned on a table instead of guessed at.
+	var (
+		entryRows, twigRows, leafRows    int
+		entryBytes, twigBytes, leafBytes int
+		flushStart                       = time.Now()
+	)
+	defer func() {
+		if entryRows+twigRows+leafRows > 0 {
+			log.Debug("qmdb flush tables",
+				"entryRows", entryRows, "entryKB", entryBytes>>10,
+				"twigRows", twigRows, "twigKB", twigBytes>>10,
+				"leafRows", leafRows, "leafKB", leafBytes>>10,
+				"elapsed", time.Since(flushStart))
+		}
+	}()
 	// Recompute dirty twig roots FIRST so the per-twig meta below persists the
 	// CURRENT root (resume's fast path trusts these stored roots). Without this a
 	// dirty twig would flush a stale root.
@@ -171,6 +194,8 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 			return flushedThrough, bytesW, err
 		}
 		bytesW += 8 + len(val)
+		entryRows++
+		entryBytes += 8 + len(val)
 	}
 	// Reclaim rows of slots that were flushed earlier but have since died —
 	// ONLY when a leaf store is wired: the persisted leaf blob then carries the
@@ -207,6 +232,8 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 			return flushedThrough, bytesW, err
 		}
 		bytesW += 8 + len(meta)
+		twigRows++
+		twigBytes += 8 + len(meta)
 		tw.metaDirty = false
 		// Persist the leaf blob (one-read rehydration) when a leaf store is in
 		// use. Under the split commitment the blob holds every APPENDED slot's
@@ -219,6 +246,8 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 				return flushedThrough, bytesW, err
 			}
 			bytesW += 8 + len(blob)
+			leafRows++
+			leafBytes += 8 + len(blob)
 		}
 	}
 	if err := p.Put(MetaTable, []byte("root"), root[:]); err != nil {
