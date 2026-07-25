@@ -27,6 +27,11 @@ var (
 	metricCommittedUnexecuted = prometheus.GetOrCreateCounter("hotstuff_committed_unexecuted_total", false)
 	mxOutputDrops             = prometheus.GetOrCreateCounter("hotstuff_output_drops", false)
 
+	// Set at startup when the recovered consensus state names a committed block
+	// that is not on the local canonical chain — the node cannot produce blocks
+	// until an operator clears the persisted state (see cmd/hotstuff-reset).
+	metricPersistedStateDiverged = prometheus.GetOrCreateCounter("hotstuff_persisted_state_diverged_total", false)
+
 	// Vote counts of the last committed view (gauges).
 	metricPrepareVotes = prometheus.GetOrCreateCounter("hotstuff_prepare_votes", true)
 	metricCommitVotes  = prometheus.GetOrCreateCounter("hotstuff_commit_votes", true)
