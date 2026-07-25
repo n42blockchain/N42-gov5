@@ -36,6 +36,16 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 		return nil
 	}
 
+	// The proposal is signed over the SAME message as a Round 1 vote
+	// (SigningMessage(view, blockHash)) and the leader immediately self-votes
+	// with it, so proposing IS a vote commitment. Journal it before anything is
+	// signed or broadcast; if the journal fails we must not propose at all —
+	// the view times out and another leader takes over, which is recoverable,
+	// whereas an unjournalled commitment is not.
+	if err := e.journalPrepareVote(view, blockHash); err != nil {
+		return err
+	}
+
 	justifyQC := e.roundState.LockedQC().Clone()
 	message := SigningMessage(view, blockHash)
 	signature := e.secretKey.Sign(message)
@@ -177,7 +187,9 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
 		if e.importedBlocks[proposal.BlockHash] && !e.extendsJustify(view, proposal.BlockHash) {
 			return nil // extends-rule violation logged; do not vote
 		}
-		e.roundState.RecordVote(view, proposal.BlockHash)
+		if err := e.journalPrepareVote(view, proposal.BlockHash); err != nil {
+			return err // abstain: the commitment is not durable
+		}
 		return e.sendVote(view, proposal.BlockHash)
 	}
 
@@ -193,7 +205,9 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
 			return nil // extends-rule violation logged; do not vote
 		}
 		log.Info("import-gated vote: block already imported, voting now", "view", view, "blockHash", proposal.BlockHash)
-		e.roundState.RecordVote(view, proposal.BlockHash)
+		if err := e.journalPrepareVote(view, proposal.BlockHash); err != nil {
+			return err // abstain: the commitment is not durable
+		}
 		return e.sendVote(view, proposal.BlockHash)
 	}
 	log.Info("import-gated vote: deferring until block imported",
@@ -238,6 +252,14 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg) error {
 	e.roundState.UpdateLockedQC(&pqc.QC)
 	e.roundState.EnterPreCommit()
 
+	// Journal the Round 2 commitment BEFORE signing/sending it. The snapshot
+	// also carries the lock just advanced above, so the lock and the vote it
+	// justifies become durable together — a restart can never resume with a
+	// commit vote on disk and a staler lock, or vice versa.
+	if err := e.journalCommitVote(view, pqc.BlockHash); err != nil {
+		return err // abstain: the commitment is not durable
+	}
+
 	// Send CommitVote (Round 2).
 	commitMsg := CommitSigningMessage(view, pqc.BlockHash)
 	commitSig := e.secretKey.Sign(commitMsg)
@@ -253,7 +275,8 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg) error {
 
 	now := time.Now()
 	e.viewTiming.CommitVoteSent = &now
-	e.roundState.RecordCommitVote(view) // record before send to prevent re-attempt
+	// The commitment was already recorded (and made durable) by
+	// journalCommitVote above, which also prevents a re-attempt.
 
 	return e.emit(EngineOutput{
 		Type:   OutputSendToValidator,
@@ -393,7 +416,9 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 		if !e.extendsJustify(view, blockHash) {
 			return nil // extends-rule violation logged; do not vote
 		}
-		e.roundState.RecordVote(view, blockHash)
+		if err := e.journalPrepareVote(view, blockHash); err != nil {
+			return err // abstain: the commitment is not durable
+		}
 		log.Info("import-gated vote: casting deferred vote after import", "view", view, "blockHash", blockHash)
 		return e.sendVote(view, blockHash)
 	}

@@ -78,14 +78,35 @@ func (api *MevAPI) SendBundle(ctx context.Context, args SendBundleArgs) (*SendBu
 		return nil, errors.New("bundle must contain at least one transaction")
 	}
 
-	// Decode raw transactions.
+	// Decode raw transactions with the SAME decoder the block path uses.
+	//
+	// This previously used tx.Unmarshal, the protobuf codec, which reads the
+	// sender out of the payload (txDataFromProtoMessage sets From from the
+	// wire). AsMessage short-circuits on a non-nil From and skips signature
+	// recovery entirely, and a bundle never passes through the transaction
+	// pool, so nothing else checked the signature either: any unauthenticated
+	// caller of eth_sendBundle — a method served on the public eth namespace —
+	// could name an arbitrary account as the sender and have the builder
+	// execute a transfer out of it while building the next block.
+	//
+	// The RLP decoder never populates From, so the sender is recovered from the
+	// signature during execution exactly as it is for a transaction that
+	// arrives inside a block. RLP is also the format eth_sendBundle is defined
+	// to take (the same encoding eth_sendRawTransaction accepts), so the
+	// protobuf codec was the wrong decoder here regardless of the hole it left.
 	txs := make([]*transaction.Transaction, 0, len(args.Txs))
 	for i, raw := range args.Txs {
-		var tx transaction.Transaction
-		if err := tx.Unmarshal(raw); err != nil {
+		tx, err := transaction.DecodeEthereumTransaction(raw)
+		if err != nil {
 			return nil, fmt.Errorf("failed to decode transaction %d: %w", i, err)
 		}
-		txs = append(txs, &tx)
+		// Defence in depth: a decoder that ever starts carrying a sender must
+		// not be trusted here, since the bundle path has no pool admission
+		// check behind it.
+		if from := tx.From(); from != nil {
+			return nil, fmt.Errorf("transaction %d carries a sender; senders are recovered from the signature", i)
+		}
+		txs = append(txs, tx)
 	}
 
 	bundle := &builder.Bundle{

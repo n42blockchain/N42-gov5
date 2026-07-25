@@ -12,8 +12,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
+	"sync"
 
 	gethp2p "github.com/ethereum/go-ethereum/p2p"
+	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/rlp"
 
 	n42block "github.com/n42blockchain/N42/common/block"
@@ -80,11 +83,56 @@ type EthHandler struct {
 
 	// rh is the optional active-download callback. Nil = passive mode.
 	rh ResponseHandler
+
+	// markTrusted, when set, promotes a handshake-confirmed peer to the p2p
+	// server's trusted set (immune to "too many peers" eviction). Wired by the
+	// Server to srv.AddTrustedPeer. trustedIDs bounds how many we pin.
+	markTrusted func(*enode.Node)
+	trustedMu   sync.Mutex
+	trustedIDs  map[enode.ID]struct{}
 }
+
+// maxTrustedPeers caps how many confirmed mainnet peers we pin as trusted. Enough
+// to survive the PulseChain inbound flood while keeping the trusted set (and its
+// redial pressure) bounded.
+const maxTrustedPeers = 64
 
 // SetResponseHandler swaps in (or out) the active-download callback.
 // Must be called BEFORE Start so the peer loop reads it consistently.
 func (h *EthHandler) SetResponseHandler(rh ResponseHandler) { h.rh = rh }
+
+// setMarkTrusted wires the callback the Server uses to pin confirmed mainnet
+// peers into its trusted set. Set once at Start.
+func (h *EthHandler) setMarkTrusted(fn func(*enode.Node)) { h.markTrusted = fn }
+
+// markPeerTrusted pins a handshake-confirmed (real network+genesis) peer as
+// trusted so the p2p server never evicts it for "too many peers" — the scarce
+// good mainnet peers must survive the PulseChain flood that shares our bootnodes
+// and forkid. Idempotent and bounded by maxTrustedPeers.
+func (h *EthHandler) markPeerTrusted(node *enode.Node) {
+	if h.markTrusted == nil || node == nil {
+		return
+	}
+	h.trustedMu.Lock()
+	if h.trustedIDs == nil {
+		h.trustedIDs = make(map[enode.ID]struct{})
+	}
+	id := node.ID()
+	if _, ok := h.trustedIDs[id]; ok {
+		h.trustedMu.Unlock()
+		return
+	}
+	if len(h.trustedIDs) >= maxTrustedPeers {
+		h.trustedMu.Unlock()
+		return
+	}
+	h.trustedIDs[id] = struct{}{}
+	n := len(h.trustedIDs)
+	h.trustedMu.Unlock()
+	h.markTrusted(node)
+	log.Info("devp2p: pinned confirmed mainnet peer as trusted (immune to too-many-peers eviction)",
+		"peer", node.ID().String()[:16], "trustedCount", n)
+}
 
 // NewEthHandler creates a new eth protocol message handler.
 func NewEthHandler(cfg *params.ChainConfig, genesisHash types.Hash, genesisTime uint64, provider BlockProvider) (*EthHandler, error) {
@@ -107,9 +155,13 @@ func (h *EthHandler) currentForkID(head *n42block.Header) forkID {
 	return newForkID(h.chainConfig, h.genesis, h.genesisTime, head.Number64().Uint64(), head.Time)
 }
 
-// runPeer is called by the p2p server for each new peer connection.
-func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error {
-	log.Info("devp2p peer connected", "id", peer.ID().String()[:16], "name", peer.Name())
+// runPeer is called by the p2p server for each new peer connection. version is
+// the negotiated eth protocol version (68 or 69) — it selects the Status wire
+// layout for the handshake; all other messages (GetBlockHeaders/Bodies etc.) are
+// identical across eth/68-69 since eth/66's request-id wrapping, so they need no
+// branching.
+func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter, version uint) error {
+	log.Info("devp2p peer connected", "id", peer.ID().String()[:16], "name", peer.Name(), "eth", version)
 
 	// cleanExit translates any error our handler would return into a
 	// clean nil if the underlying cause is a TCP/RLPx shutdown (peer
@@ -128,28 +180,45 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error
 		return err
 	}
 
-	// Handshake: send our status.
+	// Handshake: send our status in the negotiated version's wire layout.
 	head, headHash, err := h.provider.CurrentHead()
 	if err != nil {
 		return cleanExit(fmt.Errorf("current head: %w", err))
 	}
-	status := statusPacket{
-		ProtocolVersion: uint32(69),
-		NetworkID:       h.networkID,
-		Genesis:         h.genesis,
-		ForkID:          h.currentForkID(head),
-		EarliestBlock:   0,
-		LatestBlock:     head.Number64().Uint64(),
-		LatestBlockHash: headHash,
-	}
-	log.Info("devp2p sending status",
-		"peer", peer.ID().String()[:16],
-		"network", h.networkID,
-		"head", status.LatestBlock,
-		"forkHash", fmt.Sprintf("%x", status.ForkID.Hash),
-		"forkNext", status.ForkID.Next)
-	if err := gethp2p.Send(rw, 0, &status); err != nil {
-		return cleanExit(fmt.Errorf("send status: %w", err))
+	fork := h.currentForkID(head)
+	if version >= 69 {
+		status := statusPacket{
+			ProtocolVersion: uint32(version),
+			NetworkID:       h.networkID,
+			Genesis:         h.genesis,
+			ForkID:          fork,
+			EarliestBlock:   0,
+			LatestBlock:     head.Number64().Uint64(),
+			LatestBlockHash: headHash,
+		}
+		log.Info("devp2p sending status", "peer", peer.ID().String()[:16], "eth", version,
+			"network", h.networkID, "head", status.LatestBlock,
+			"forkHash", fmt.Sprintf("%x", fork.Hash), "forkNext", fork.Next)
+		if err := gethp2p.Send(rw, 0, &status); err != nil {
+			return cleanExit(fmt.Errorf("send status: %w", err))
+		}
+	} else {
+		// eth/68: TD is informational post-merge (geth doesn't reject on it), so a
+		// zero placeholder is accepted; Head carries our head hash.
+		status := statusPacket68{
+			ProtocolVersion: uint32(version),
+			NetworkID:       h.networkID,
+			TD:              big.NewInt(0),
+			Head:            headHash,
+			Genesis:         h.genesis,
+			ForkID:          fork,
+		}
+		log.Info("devp2p sending status", "peer", peer.ID().String()[:16], "eth", version,
+			"network", h.networkID, "head", head.Number64().Uint64(),
+			"forkHash", fmt.Sprintf("%x", fork.Hash), "forkNext", fork.Next)
+		if err := gethp2p.Send(rw, 0, &status); err != nil {
+			return cleanExit(fmt.Errorf("send status: %w", err))
+		}
 	}
 
 	// Read peer's status. The handshake-phase ReadMsg is where ~all our
@@ -164,22 +233,83 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error
 	if msg.Code != 0 {
 		return fmt.Errorf("expected status message, got %d", msg.Code)
 	}
-	var peerStatus statusPacket
-	if err := msg.Decode(&peerStatus); err != nil {
-		return fmt.Errorf("decode peer status: %w", err)
+	// Decode the Status by what's actually on the wire, not just the negotiated
+	// version. Some mainnet peers advertise eth/69 caps but send an eth/68-layout
+	// Status (TD+head at fields 3-4 instead of the eth/69 32-byte genesis at field
+	// 3); decoding that with the eth/69 struct fails ("input string too short for
+	// Genesis") and needlessly drops an otherwise-good peer — the single largest
+	// source of handshake drops observed in live-follow. The two layouts have
+	// DIFFERENT element counts (eth/68=6, eth/69=7) and incompatible field-3 types
+	// (big.Int TD vs 32-byte hash), so RLP's strict struct decode reliably rejects
+	// the wrong layout: try the negotiated one first, fall back to the other.
+	// peerHead is the peer's head block NUMBER; eth/68 Status has only the head
+	// hash, so it stays 0 (the downloader treats head==0 as "unknown, pickable").
+	payload, perr := io.ReadAll(msg.Payload)
+	if perr != nil {
+		return cleanExit(fmt.Errorf("read status payload: %w", perr))
 	}
-	if peerStatus.NetworkID != h.networkID {
-		return fmt.Errorf("network ID mismatch: ours=%d theirs=%d", h.networkID, peerStatus.NetworkID)
+	var (
+		peerNetwork uint64
+		peerGenesis types.Hash
+		peerHead    uint64
+		peerHash    types.Hash
+		peerFork    forkID
+	)
+	var ps69 statusPacket
+	var ps68 statusPacket68
+	take69 := func() {
+		peerNetwork, peerGenesis, peerHead, peerHash, peerFork =
+			ps69.NetworkID, ps69.Genesis, ps69.LatestBlock, ps69.LatestBlockHash, ps69.ForkID
 	}
-	if peerStatus.Genesis != h.genesis {
-		return fmt.Errorf("genesis mismatch: ours=%s theirs=%s", h.genesis.Hex()[:10], peerStatus.Genesis.Hex()[:10])
+	take68 := func() {
+		peerNetwork, peerGenesis, peerHead, peerHash, peerFork =
+			ps68.NetworkID, ps68.Genesis, 0, ps68.Head, ps68.ForkID
+	}
+	switch {
+	case version >= 69 && rlp.DecodeBytes(payload, &ps69) == nil:
+		take69()
+	case version >= 69 && rlp.DecodeBytes(payload, &ps68) == nil:
+		take68()
+		log.Debug("devp2p: peer negotiated eth/69 but sent eth/68 Status — accepted",
+			"peer", peer.ID().String()[:16])
+	case version < 69 && rlp.DecodeBytes(payload, &ps68) == nil:
+		take68()
+	case version < 69 && rlp.DecodeBytes(payload, &ps69) == nil:
+		take69()
+		log.Debug("devp2p: peer negotiated eth/68 but sent eth/69 Status — accepted",
+			"peer", peer.ID().String()[:16])
+	default:
+		// Log the true reason: p2p.Server maps a returned handshake error to a
+		// generic DiscSubprotocolError, which is what masked these as "subprotocol
+		// error" drops. Make each rejection reason visible so the operator sees
+		// WHY peers are lost, not just that they are.
+		log.Info("devp2p handshake rejected — Status decode failed",
+			"peer", peer.ID().String()[:16], "eth", version, "size", len(payload))
+		return fmt.Errorf("decode peer status: neither eth/68 nor eth/69 layout matched (eth=%d size=%d)",
+			version, len(payload))
+	}
+	if peerNetwork != h.networkID {
+		log.Info("devp2p handshake rejected — network ID mismatch",
+			"peer", peer.ID().String()[:16], "ours", h.networkID, "theirs", peerNetwork)
+		return fmt.Errorf("network ID mismatch: ours=%d theirs=%d", h.networkID, peerNetwork)
+	}
+	if peerGenesis != h.genesis {
+		log.Info("devp2p handshake rejected — genesis mismatch",
+			"peer", peer.ID().String()[:16], "ours", h.genesis.Hex()[:10], "theirs", peerGenesis.Hex()[:10])
+		return fmt.Errorf("genesis mismatch: ours=%s theirs=%s", h.genesis.Hex()[:10], peerGenesis.Hex()[:10])
 	}
 
+	// Confirmed real mainnet peer (passed network+genesis). Pin it trusted so the
+	// p2p server never evicts it for "too many peers" — PulseChain (network=369)
+	// shares our bootnodes+forkid and floods the inbound pool, and would otherwise
+	// push the scarce good peers out right after handshake.
+	h.markPeerTrusted(peer.Node())
+
 	log.Info("devp2p handshake complete",
-		"peer", peer.ID().String()[:16],
-		"head", peerStatus.LatestBlock,
-		"peerForkHash", fmt.Sprintf("%x", peerStatus.ForkID.Hash),
-		"peerForkNext", peerStatus.ForkID.Next)
+		"peer", peer.ID().String()[:16], "eth", version,
+		"head", peerHead,
+		"peerForkHash", fmt.Sprintf("%x", peerFork.Hash),
+		"peerForkNext", peerFork.Next)
 
 	// IMPORTANT: do NOT send BlockRangeUpdate (msg 0x11) right after
 	// Status. The eth/69 spec sends BRU only on range CHANGE — the
@@ -191,20 +321,25 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error
 
 	peerID := peer.ID().String()
 	if h.rh != nil {
-		h.rh.OnPeerHandshake(peerID, rw, peerStatus.LatestBlock, peerStatus.LatestBlockHash)
+		h.rh.OnPeerHandshake(peerID, rw, peerHead, peerHash)
 		defer h.rh.OnPeerDisconnect(peerID)
 	}
 
-	// Message loop.
+	// Message loop. A ReadMsg error means the connection itself is gone → exit
+	// (cleanly for a peer-initiated shutdown). But a per-message HANDLING error
+	// (e.g. a response we couldn't decode, an unexpected request shape) must NOT
+	// tear the connection down: we're a receive-only stub, so the robust behavior
+	// is Discard+continue. Dropping the peer on message content was a needless
+	// source of "subprotocol error" churn and starves the downloader of peers.
 	for {
 		msg, err := rw.ReadMsg()
 		if err != nil {
 			return cleanExit(err)
 		}
 		if err := h.handleMessage(peer, rw, msg); err != nil {
-			log.Warn("devp2p message error", "peer", peer.ID().String()[:16],
-				"msg", msg.Code, "err", err)
-			return cleanExit(err)
+			log.Debug("devp2p message handling error (ignored — stub never disconnects on a message)",
+				"peer", peer.ID().String()[:16], "msg", msg.Code, "err", err)
+			// keep the peer
 		}
 	}
 }
@@ -320,7 +455,10 @@ func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter,
 // that ethel.DecodeUncleHeader expects. See header_compact.go for the
 // canonical encoder we'd reuse.
 func (h *EthHandler) handleGetBlockHeaders(rw gethp2p.MsgReadWriter, msg gethp2p.Msg) error {
-	var req getBlockHeadersPacket
+	// We serve an empty stub response, so only the request-id (echoed back) is
+	// needed — decode leniently over the query tail so a peer whose GetBlockHeaders
+	// query encoding differs by a field isn't dropped ("rlp: too many elements").
+	var req requestIDTail
 	if err := msg.Decode(&req); err != nil {
 		return err
 	}

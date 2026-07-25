@@ -18,12 +18,14 @@ package api
 
 import (
 	"context"
+	"math/big"
 	"strings"
 	"testing"
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/miner/builder"
 )
 
@@ -42,17 +44,62 @@ func (m *mockBundleSubmitter) BundlePool() *builder.BundlePool {
 	return m.pool
 }
 
-// makeLegacyTxBytes creates a serialized legacy transaction for testing.
+// makeLegacyTxBytes creates a SIGNED legacy transaction in the wire format
+// eth_sendBundle takes: Ethereum RLP, the same encoding eth_sendRawTransaction
+// accepts and the same one a transaction arrives in inside a block. The sender
+// is carried only by the signature — the bundle path recovers it during
+// execution and never reads it from the payload.
 func makeLegacyTxBytes(t *testing.T, nonce uint64, gasPrice uint64) []byte {
 	t.Helper()
-	to := types.HexToAddress("0x1234567890abcdef1234567890abcdef12345678")
-	from := types.HexToAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	tx := transaction.NewTransaction(nonce, from, &to, uint256.NewInt(1000), 21000, uint256.NewInt(gasPrice), nil)
-	data, err := tx.Marshal()
+	key, err := crypto.GenerateKey()
 	if err != nil {
-		t.Fatalf("failed to marshal tx: %v", err)
+		t.Fatalf("failed to generate key: %v", err)
+	}
+	to := types.HexToAddress("0x1234567890abcdef1234567890abcdef12345678")
+	from := crypto.PubkeyToAddress(key.PublicKey)
+	inner := &transaction.LegacyTx{
+		Nonce:    nonce,
+		GasPrice: uint256.NewInt(gasPrice),
+		Gas:      21000,
+		To:       &to,
+		Value:    uint256.NewInt(1000),
+		From:     &from,
+	}
+	signed, err := transaction.SignTx(transaction.NewTx(inner), transaction.NewLondonSigner(big.NewInt(1)), key)
+	if err != nil {
+		t.Fatalf("failed to sign tx: %v", err)
+	}
+	data, err := transaction.EncodeEthereumTransaction(signed)
+	if err != nil {
+		t.Fatalf("failed to encode tx: %v", err)
 	}
 	return data
+}
+
+// TestSendBundleRejectsWireSuppliedSender pins the fix for an unauthenticated
+// sender-forgery hole. eth_sendBundle used to decode with the protobuf codec,
+// which reads the sender straight out of the payload; AsMessage then skips
+// signature recovery for any transaction that already carries a sender, and a
+// bundle never passes through the transaction pool, so nothing verified the
+// signature at all. A caller could name any account as the sender and have the
+// builder execute a transfer out of it. The payload below is exactly that
+// attack: an unsigned transaction claiming to come from a victim address.
+func TestSendBundleRejectsWireSuppliedSender(t *testing.T) {
+	victim := types.HexToAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	to := types.HexToAddress("0x1234567890abcdef1234567890abcdef12345678")
+	forged := transaction.NewTransaction(0, victim, &to, uint256.NewInt(1000), 21000, uint256.NewInt(10), nil)
+	payload, err := forged.Marshal() // protobuf codec: carries From on the wire
+	if err != nil {
+		t.Fatalf("failed to marshal forged tx: %v", err)
+	}
+
+	api := NewMevAPI(newMockBundleSubmitter())
+	if _, err := api.SendBundle(context.Background(), SendBundleArgs{
+		Txs:         [][]byte{payload},
+		BlockNumber: 1,
+	}); err == nil {
+		t.Fatal("eth_sendBundle accepted a transaction with a wire-supplied sender")
+	}
 }
 
 func TestSendBundle_Success(t *testing.T) {
