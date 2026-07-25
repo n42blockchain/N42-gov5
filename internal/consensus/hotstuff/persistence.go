@@ -64,7 +64,20 @@ type ConsensusState struct {
 
 // SaveConsensusState persists the current consensus state to the database.
 // Always writes the v2 layout; LoadConsensusState still reads v1 records.
+//
+// The write is monotonic: it can only ever move the record FORWARD. Two
+// goroutines write this key — the engine goroutine via JournalVote (always
+// current, holding the engine mutex) and the service's periodic/shutdown
+// persistState, which snapshots under the mutex and writes later, so its
+// snapshot can be stale by the time its transaction runs. Without the merge
+// below, that stale write un-says a vote already on disk, and a restart in that
+// window re-votes in a view it had already committed to — the exact
+// equivocation the vote journal exists to prevent.
 func SaveConsensusState(tx kv.RwTx, state *ConsensusState) error {
+	state, err := mergeMonotonic(tx, state)
+	if err != nil {
+		return err
+	}
 	lockedQCBytes, err := encodeQC(&state.LockedQC)
 	if err != nil {
 		return fmt.Errorf("encode locked_qc: %w", err)
@@ -101,6 +114,51 @@ func SaveConsensusState(tx kv.RwTx, state *ConsensusState) error {
 	copy(buf[pos:], committedQCBytes)
 
 	return tx.Put(modules.HotStuffState, hotstuffStateKey, buf)
+}
+
+// mergeMonotonic folds the record already on disk into the state about to be
+// written so no field can regress. It runs inside the caller's write
+// transaction, and MDBX serializes writers, so the read-modify-write is atomic
+// against the other writer.
+//
+// Two independent groups are compared, each kept internally coherent:
+//
+//   - the vote commitments (LastVoted*, LastCommitVoted*) — a released vote is
+//     append-only and must never be withdrawn, so each pair keeps whichever
+//     record names the higher view;
+//   - the round snapshot (View, ConsecutiveTimeouts, LockedQC, LastCommittedQC)
+//     — these describe one view together, so they move as a unit: an older
+//     snapshot is dropped whole rather than mixed with a newer view's lock.
+//
+// Both reset tools (cmd/hotstuff-reset, cmd/qs-hsreset) DELETE the key rather
+// than writing a lower state, so deliberate rollback still works.
+func mergeMonotonic(tx kv.RwTx, state *ConsensusState) (*ConsensusState, error) {
+	prev, err := LoadConsensusState(tx)
+	if err != nil {
+		// An unreadable record must not silently become a blank slate: refusing
+		// the write keeps whatever is on disk, which is the safe direction.
+		return nil, fmt.Errorf("read previous hotstuff state: %w", err)
+	}
+	if prev == nil {
+		return state, nil
+	}
+
+	merged := *state
+	if prev.LastVotedView > merged.LastVotedView {
+		merged.LastVotedView = prev.LastVotedView
+		merged.LastVotedHash = prev.LastVotedHash
+	}
+	if prev.LastCommitVotedView > merged.LastCommitVotedView {
+		merged.LastCommitVotedView = prev.LastCommitVotedView
+		merged.LastCommitVotedHash = prev.LastCommitVotedHash
+	}
+	if prev.View > merged.View {
+		merged.View = prev.View
+		merged.ConsecutiveTimeouts = prev.ConsecutiveTimeouts
+		merged.LockedQC = prev.LockedQC
+		merged.LastCommittedQC = prev.LastCommittedQC
+	}
+	return &merged, nil
 }
 
 // LoadConsensusState loads the persisted consensus state from the database.
