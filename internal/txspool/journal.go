@@ -25,6 +25,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -32,6 +33,10 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 )
+
+// flushTimeout bounds the shutdown flush. Long enough for a large pool to
+// reach disk, short enough that a stuck writer cannot hold the process open.
+const flushTimeout = 10 * time.Second
 
 type persistedJournalScan struct {
 	txs            []*transaction.Transaction
@@ -97,7 +102,21 @@ func (pool *TxsPool) flushToDB() error {
 		return nil
 	}
 
-	err := db.Update(pool.ctx, func(dbTx kv.RwTx) error {
+	// Do NOT use pool.ctx here. This runs from Stop(), and by then the node has
+	// already cancelled the context pool.ctx derives from — MDBX's beginRw
+	// returns on a cancelled context before it opens a transaction, so the
+	// shutdown flush failed every single time and left one log.Warn behind
+	// ("Failed to persist transaction pool: context canceled"). The pool was
+	// never actually persisted across a restart. The same shape hid a far worse
+	// bug in the consensus service, where the unwritten state was a safety
+	// commitment; here it only costs the mempool.
+	//
+	// A shutdown flush needs a context that outlives the shutdown, bounded so a
+	// stuck write cannot hold the process open.
+	flushCtx, cancel := context.WithTimeout(context.Background(), flushTimeout)
+	defer cancel()
+
+	err := db.Update(flushCtx, func(dbTx kv.RwTx) error {
 		// Clear old entries first.
 		if err := dbTx.ClearBucket(modules.TxPoolJournal); err != nil {
 			return err
