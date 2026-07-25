@@ -420,7 +420,7 @@ func (tx *Transaction) WithSignatureValues(v, r, s *uint256.Int) (*Transaction, 
 // breaks N42 native chain compatibility. NOT the standard Ethereum raw
 // transaction encoding — use EncodeEthereumTransaction for ETH-compatible
 // serialization.
-func (tx Transaction) Marshal() ([]byte, error) {
+func (tx *Transaction) Marshal() ([]byte, error) {
 	pbTx := tx.toProtoFields()
 	v, r, s := tx.RawSignatureValues()
 	if v != nil {
@@ -438,7 +438,7 @@ func (tx Transaction) Marshal() ([]byte, error) {
 // MarshalV2 encodes the transaction using the new format (Shanghai+).
 // Includes AccessList, uses nil-safe conversions, and excludes V/R/S from
 // the hash-relevant encoding (they're in the Sign field).
-func (tx Transaction) MarshalV2() ([]byte, error) {
+func (tx *Transaction) MarshalV2() ([]byte, error) {
 	pbTx := tx.toProtoFields()
 	return proto.Marshal(pbTx)
 }
