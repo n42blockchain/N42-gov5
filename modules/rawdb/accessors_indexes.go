@@ -23,6 +23,9 @@
 package rawdb
 
 import (
+	"bytes"
+	"slices"
+
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
@@ -65,9 +68,28 @@ func WriteTxLookupEntries(db kv.Putter, block *block.Block) {
 	}
 
 	data := blockNumber.Bytes()
-	for _, tx := range block.Transactions() {
-		h := tx.Hash()
-		if err := db.Put(modules.TxLookup, h.Bytes(), data); err != nil {
+	txs := block.Transactions()
+	if len(txs) == 0 {
+		return
+	}
+
+	// Insert in ascending key order. The key is a transaction hash, so in
+	// transaction order these land on random leaves of a B+tree that already
+	// spans the whole chain's transactions: each Put descends to an unrelated
+	// page and dirties it, and the commit then has to copy out every one of
+	// those scattered pages. Sorting first turns one block's inserts into a
+	// small number of contiguous page runs — the same key/value pairs, far
+	// fewer dirty pages. At 14k transactions per block this is the largest
+	// random-write source in the block write path.
+	hashes := make([]types.Hash, len(txs))
+	for i, tx := range txs {
+		hashes[i] = tx.Hash()
+	}
+	slices.SortFunc(hashes, func(a, b types.Hash) int {
+		return bytes.Compare(a.Bytes(), b.Bytes())
+	})
+	for i := range hashes {
+		if err := db.Put(modules.TxLookup, hashes[i].Bytes(), data); err != nil {
 			log.Crit("Failed to store transaction lookup entry", "err", err)
 		}
 	}
