@@ -27,9 +27,24 @@ type Index interface {
 	Len() int
 }
 
+// IterableIndex is an Index that can enumerate its live set. Cross-checking a
+// reload against an independent rebuild needs the actual keyHash -> slot
+// mapping, not just its cardinality: an overwrite plus a delete inside the same
+// twig can reproduce the world root exactly while leaving the index pointing at
+// a dead slot, and Tree.Get does not consult the live bit — it would return the
+// deleted value. Optional; the MDBX-backed index does not implement it.
+type IterableIndex interface {
+	Index
+	// Range calls fn for every live mapping. Iteration stops early when fn
+	// returns false. Order is unspecified.
+	Range(fn func(keyHash Hash, slot uint64) bool)
+}
+
 // mapIndex is the default in-RAM index (a Go map). Identical to the original
 // behavior; selected automatically by New() when no index is injected.
 type mapIndex map[Hash]uint64
+
+var _ IterableIndex = mapIndex(nil)
 
 func newMapIndex() mapIndex { return make(mapIndex) }
 
@@ -45,6 +60,14 @@ func (m mapIndex) Put(k Hash, s uint64)      { m[k] = s }
 func (m mapIndex) Delete(k Hash)             { delete(m, k) }
 func (m mapIndex) Len() int                  { return len(m) }
 
+func (m mapIndex) Range(fn func(Hash, uint64) bool) {
+	for k, s := range m {
+		if !fn(k, s) {
+			return
+		}
+	}
+}
+
 // SetIndex injects an external index implementation (e.g. MDBX-backed). It must be
 // called on an EMPTY tree (before any Set) or with an index already holding the
 // tree's live set; the engine sets it right after New()/before LoadFrom. The
@@ -53,3 +76,20 @@ func (t *Tree) SetIndex(idx Index) { t.idx = idx }
 
 // LiveCount returns the number of live keys (Index.Len()).
 func (t *Tree) liveLen() int { return t.idx.Len() }
+
+// IndexLookup returns the slot the index currently maps keyHash to. It reads the
+// index only — like Tree.Get, it does NOT consult the live bit — so a caller
+// comparing two trees sees the raw mapping, including a stale one.
+func (t *Tree) IndexLookup(keyHash Hash) (uint64, bool) { return t.idx.Get(keyHash) }
+
+// IndexRange enumerates the live keyHash -> slot mappings, returning false when
+// the installed index cannot be iterated (the MDBX-backed one). Diagnostic use
+// only: the map it walks is the whole live key set.
+func (t *Tree) IndexRange(fn func(keyHash Hash, slot uint64) bool) bool {
+	it, ok := t.idx.(IterableIndex)
+	if !ok {
+		return false
+	}
+	it.Range(fn)
+	return true
+}

@@ -260,11 +260,19 @@ func (r *QMDBRootComputer) afterReload(g qmdb.Getter, path string, since time.Ti
 // verifyReload rebuilds the forest from the same store into a THROWAWAY tree via
 // the from-scratch path (fresh index, no trust boundary, no reuse) and asserts
 // that the reload we just accepted agrees with it on the world root, the live-bit
-// population, the index population and the forest geometry. Armed with
-// N42_QMDB_RELOAD_VERIFY=1.
+// population, the forest geometry AND the full keyHash -> slot index mapping.
+// Armed with N42_QMDB_RELOAD_VERIFY=1.
 //
 // This is the only way the incremental path earns trust on a live chain: it
 // compares against the exact computation the incremental path is allowed to skip.
+//
+// The index comparison is not redundant with the root. The QMDB root commits to
+// entries at their append slots, so an overwrite of A combined with a delete of
+// B inside the same twig can reproduce the root byte for byte while the index
+// still maps B to its dead slot — and Tree.Get resolves through the index
+// without checking the live bit, so that stale mapping is a SILENT wrong read,
+// not a detectable one. Cardinality alone cannot see it either: the stale entry
+// keeps the count right. Only the mapping itself does.
 func (r *QMDBRootComputer) verifyReload(g qmdb.Getter, path string, elapsed time.Duration) {
 	t0 := time.Now()
 	ref := qmdb.New() // fresh in-RAM index => LoadFrom does the full rescan
@@ -289,8 +297,55 @@ func (r *QMDBRootComputer) verifyReload(g qmdb.Getter, path string, elapsed time
 			"nextSlot", gotNext, "wantNextSlot", wantNext)
 		return
 	}
+	if !r.verifyReloadIndex(ref, path) {
+		return
+	}
 	log.Info("QMDB RELOAD VERIFY ok", "path", path, "reload", elapsed, "referenceRebuild", time.Since(t0),
 		"root", types.Hash(got), "twigs", gotTwigs, "nextSlot", gotNext, "indexKeys", gotKeys)
+}
+
+// verifyReloadIndex compares the reloaded tree's index against the reference
+// rebuild's, mapping by mapping. The caller has already established that the two
+// indexes hold the same NUMBER of keys, so checking that every reference mapping
+// is present and identical in the reload proves the two sets are equal — an
+// extra key in the reload would have to displace a reference one, which this
+// walk reports. Returns false (and logs) on divergence.
+func (r *QMDBRootComputer) verifyReloadIndex(ref *qmdb.Tree, path string) bool {
+	const maxReported = 8
+	var (
+		missing  int
+		mismatch int
+		samples  []any
+	)
+	iterable := ref.IndexRange(func(keyHash qmdb.Hash, wantSlot uint64) bool {
+		gotSlot, ok := r.t.IndexLookup(keyHash)
+		switch {
+		case !ok:
+			missing++
+		case gotSlot != wantSlot:
+			mismatch++
+		default:
+			return true
+		}
+		if len(samples) < maxReported*6 { // 6 log fields per reported mapping
+			samples = append(samples, "key", types.Hash(keyHash), "gotSlot", gotSlot, "wantSlot", wantSlot)
+		}
+		return true // keep counting: the totals say how deep the damage goes
+	})
+	if !iterable {
+		// The MDBX-backed index is transactional with the store and is never
+		// rebuilt by the reload tiers, so it is out of scope here — but say so
+		// rather than let the "ok" line imply a check that did not run.
+		log.Info("QMDB RELOAD VERIFY: index comparison skipped (non-iterable index)", "path", path)
+		return true
+	}
+	if missing == 0 && mismatch == 0 {
+		return true
+	}
+	log.Error("QMDB RELOAD VERIFY FAILED — index diverged from an independent full rebuild "+
+		"(the world root matched, so this is exactly the class of stale mapping a root check cannot see)",
+		append([]any{"path", path, "missing", missing, "mismatched", mismatch}, samples...)...)
+	return false
 }
 
 // FlushTo persists entries appended since the last flush plus twig metadata and
