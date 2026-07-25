@@ -175,6 +175,14 @@ type TxsPool struct {
 	// Dynamic sizing: effective slots may be lower than config.GlobalSlots
 	// when memory pressure is detected.
 	effectiveGlobalSlots atomic.Uint64
+
+	// schedulerLive is set once scheduleLoop is running. Every ingestion path
+	// ends in requestPromoteExecutables, an unbuffered send on reqPromoteCh
+	// that only scheduleLoop drains — so ingesting before it exists blocks the
+	// caller forever. NewTxsPool orders the two correctly; this flag makes a
+	// re-introduction a logged, survivable skip instead of a node that never
+	// finishes starting.
+	schedulerLive atomic.Bool
 }
 
 // addressByHeartbeat is an account address tagged with its last activity timestamp.
