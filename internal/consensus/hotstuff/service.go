@@ -454,15 +454,23 @@ func (s *Service) handleOutput(output EngineOutput) {
 		}
 	case OutputBlockCommitted:
 		log.Info("hotstuff: block committed", "view", output.View, "hash", output.Hash)
+		// Post-commit phase timings — OBSERVABILITY ONLY. Both steps run inline
+		// on the serial output loop and each opens its own MDBX write tx (a
+		// second and third fsync for the block), so they belong in the
+		// block-write cost picture alongside "blockwrite phases".
+		tObserve := time.Now()
 		if applied, _, number := s.observeCommittedExecution(output.Hash, true); !applied {
 			s.requestCommittedCatchUp(output.Hash, number)
 		}
+		dObserve := time.Since(tObserve)
+		var dCanon, dPersist time.Duration
 		// Make the committed block the canonical head so every node's chain follows
 		// the single committed chain (the miner may have locally inserted a
 		// different same-height candidate via resultLoop). Skipped silently if the
 		// block isn't in the DB yet — it reconciles on a later commit / future-block
 		// import once the block arrives via direct push.
 		if s.blockProducer != nil {
+			tCanon := time.Now()
 			if err := s.blockProducer.CommitToCanonical(output.Hash); err != nil {
 				log.Debug("hotstuff: commit-to-canonical deferred", "hash", output.Hash, "err", err)
 				// Remember it — NotifyBlockImported retries when the block lands.
@@ -474,13 +482,19 @@ func (s *Service) handleOutput(output EngineOutput) {
 				s.pendingCommit = types.Hash{}
 				s.pendingMu.Unlock()
 			}
+			dCanon = time.Since(tCanon)
 		}
 		updateMetricsBlockCommitted(output.View)
 		// Mark pending reconfigurations as committed now that the block has a CommitQC.
 		if rm := s.engine.Engine().ReconfigManager(); rm != nil && rm.HasPendingChanges() {
 			rm.MarkCommitted()
 		}
+		tPersist := time.Now()
 		s.persistState()
+		dPersist = time.Since(tPersist)
+		log.Info("hotstuff: commit phases",
+			"view", output.View, "observe", dObserve, "canon", dCanon, "persist", dPersist,
+			"total", time.Since(tObserve))
 
 		// Process pending equivocation slashing.
 		if s.slashingExecutor != nil {
