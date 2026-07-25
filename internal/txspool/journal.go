@@ -137,6 +137,15 @@ func (pool *TxsPool) flushToDB() error {
 // loadFromDB restores persisted transactions from the database.
 // Called during pool initialization to recover transactions from a previous session.
 func (pool *TxsPool) loadFromDB() int {
+	// The restore ingests through addTxs, whose tail (requestPromoteExecutables)
+	// blocks on an unbuffered channel until scheduleLoop drains it. Running it
+	// before the loop exists wedges startup permanently, so refuse instead: the
+	// journal survives on disk for the next start, and the node comes up.
+	if !pool.schedulerLive.Load() {
+		log.Error("BUG: txpool journal restore ran before the scheduler loop; skipping restore to avoid wedging startup")
+		return 0
+	}
+
 	txs, err := loadPersistedTransactions(pool.ctx, pool.bc.DB())
 	if err != nil {
 		log.Warn("Failed to load persisted transactions", "err", err)
