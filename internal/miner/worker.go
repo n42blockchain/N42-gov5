@@ -113,6 +113,26 @@ type task struct {
 	block     block.IBlock
 	createdAt time.Time
 	nopay     map[types.Address]*uint256.Int
+
+	// Seal-path phase timings — OBSERVABILITY ONLY. The leader's
+	// ViewStart→ProposalSent window spans three goroutines (commit → taskLoop →
+	// resultLoop); carrying the timings on the task lets resultLoop emit ONE
+	// line covering the whole window instead of three scattered ones.
+	//
+	// finalize/witness/assemble are written by commit() BEFORE the task is sent
+	// on taskCh, so the channel send publishes them safely.
+	finalize time.Duration // FinalizeAndAssemble: state root #1 on the isolated tree
+	witness  time.Duration // witness generation + ZK submit (JMT chains only)
+	assemble time.Duration // whole commit(): finalize + witness + entire-event
+
+	// sealStart is written by taskLoop under w.mu (same critical section that
+	// publishes the task into pendingTasks) and read by resultLoop under
+	// w.mu.RLock, so it needs no separate synchronisation.
+	sealStart time.Time
+	// blsNanos is written by taskLoop after Seal returns and read by resultLoop
+	// on another goroutine — atomic. Reads 0 if Seal's delivery goroutine beats
+	// the store, which is harmless for a diagnostic counter.
+	blsNanos atomic.Int64
 }
 
 type newWorkReq struct {
@@ -492,6 +512,10 @@ func (w *worker) resultLoop() error {
 			)
 			w.mu.RLock()
 			task, exist := w.pendingTasks[sealhash]
+			var sealStart time.Time
+			if exist {
+				sealStart = task.sealStart
+			}
 			w.mu.RUnlock()
 			if !exist {
 				log.Error("Block found but no relative pending task", "number", blockNumber.Uint64(), "sealhash", sealhash, "hash", hash)
@@ -520,7 +544,9 @@ func (w *worker) resultLoop() error {
 				logs = append(logs, receipt.Logs...)
 			}
 
+			tWrite := time.Now()
 			err = w.chain.WriteBlockWithState(blk, receipts, task.state, task.nopay)
+			dWrite := time.Since(tWrite)
 			if err != nil {
 				if errors.Is(err, internal.ErrStaleSeal) {
 					// The applied head moved past this seal's parent while it
@@ -564,18 +590,35 @@ func (w *worker) resultLoop() error {
 				"elapsed", common.PrettyDuration(time.Since(task.createdAt)),
 				"txs", len(blk.Transactions()))
 
+			tPush := time.Now()
 			if err = w.chain.SealedBlock(blk); err != nil {
 				log.Error("Failed Broadcast block to p2p network", "err", err)
 				continue
 			}
+			dPush := time.Since(tPush)
 			// For leader-driven consensus (HotStuff), start the Proposal for THIS
 			// exact sealed block — the one we just persisted and direct-pushed — so
 			// the proposed (and committed) block is byte-for-byte what followers
 			// receive and import. Doing this here (not in Seal) binds propose↔push to
 			// the same block, which import-gated voting requires.
+			tNotify := time.Now()
 			if bsn, ok := w.engine.(blockSealNotifier); ok {
 				bsn.NotifyBlockSealed(blk.Hash(), blk.TxHash())
 			}
+			dNotify := time.Since(tNotify)
+
+			// Leader seal→propose breakdown: ONE line per produced block covering
+			// the window "miner: build phases" stops measuring at (it is emitted
+			// before commit()) up to the Proposal being handed to the engine.
+			// `write` is the whole WriteBlockWithState — "blockwrite phases"
+			// (blockchain_write.go) splits it further.
+			log.Info("miner: propose phases",
+				"n", blockNumber.Uint64(), "txs", len(blk.Transactions()),
+				"finalize", task.finalize, "witness", task.witness, "assemble", task.assemble,
+				"bls", time.Duration(task.blsNanos.Load()), "seal2res", time.Since(sealStart),
+				"write", dWrite, "push", dPush, "notify", dNotify,
+				"total", time.Since(task.createdAt))
+
 			// Record this as the one candidate for its parent (after a successful
 			// import), so a later view's divergent sibling is suppressed above.
 			w.recordSealedOnParent(parentHash, blk)
@@ -662,11 +705,15 @@ func (w *worker) taskLoop() error {
 			interrupt()
 			stopCh, prev = make(chan struct{}), sealHash
 			w.mu.Lock()
+			// Same critical section that publishes the task, so resultLoop's
+			// pendingTasks read under RLock also observes sealStart.
+			task.sealStart = time.Now()
 			w.pendingTasks[sealHash] = task
 			w.mu.Unlock()
 
 			hash := task.block.Hash()
 			stateRoot := task.block.StateRoot()
+			tSeal := time.Now()
 			// NOTE: do NOT push task.block here — it is unsealed. HotStuff seals the
 			// block (appends the BLS sig to Extra), changing its hash, and proposes/
 			// commits the SEALED block. The reliable direct push happens in
@@ -682,6 +729,7 @@ func (w *worker) taskLoop() error {
 					w.startCh <- struct{}{}
 				}
 			} else {
+				task.blsNanos.Store(int64(time.Since(tSeal)))
 				log.Debug("send task", "sealHash", sealHash, "hash", hash, "stateRoot", stateRoot)
 			}
 		}
@@ -1329,11 +1377,19 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 		return nil
 	}
 
+	// Phase timings (observability only). NOTE: the "miner: build phases" line
+	// is emitted by commitWork BEFORE it calls commit(), so it does NOT cover
+	// FinalizeAndAssemble — and that is where state root #1 is computed
+	// (engine.Finalize → ibs.IntermediateRoot). These counters close that gap.
+	tCommitStart := time.Now()
+	var dWitness time.Duration
+
 	envCopy := env.copy()
 	iblock, rewards, unpay, err := w.engine.FinalizeAndAssemble(w.chain, envCopy.header, ibs, envCopy.txs, nil, envCopy.receipts)
 	if err != nil {
 		return err
 	}
+	dFinalize := time.Since(tCommitStart)
 
 	// Mobile-verification packet: the recorder captured this block's read
 	// log during the build; pair it with the FINAL header (receipts root,
@@ -1352,6 +1408,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 
 	// Generate witness after FinalizeAndAssemble when JMT + TracingReader are active.
 	if tracingReader != nil {
+		tWitness := time.Now()
 		if bc, ok := w.chain.(*internal.BlockChain); ok && bc.JMTCommitment() != nil {
 			gen, gerr := witness.NewGenerator(bc.JMTCommitment())
 			if gerr != nil {
@@ -1390,6 +1447,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 				}
 			}
 		}
+		dWitness = time.Since(tWitness)
 	}
 
 	envHeaderNumber, err := requireHeaderNumber(envCopy.header, "mining header number unavailable")
@@ -1441,7 +1499,10 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	}
 
 	select {
-	case w.taskCh <- &task{receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay}:
+	case w.taskCh <- &task{
+		receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay,
+		finalize: dFinalize, witness: dWitness, assemble: time.Since(tCommitStart),
+	}:
 		blockNumber := uint64(0)
 		if number := iblock.Number64(); number != nil {
 			blockNumber = number.Uint64()
