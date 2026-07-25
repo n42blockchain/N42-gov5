@@ -1564,6 +1564,14 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			break
 		}
 
+		// Import-path phase accounting (observability only). dHdr and dBody were
+		// already paid inside the it.next() that produced this block, so they are
+		// captured here and added back into the total below.
+		tIter := time.Now()
+		dHdr, dBody := it.lastVerifyWait, it.lastBodyCheck
+		var dAlign, dProcess, dValidate, dWrite time.Duration
+		var procPhases ProcessPhases
+
 		log.Tracef("Current block: number=%v, hash=%v, difficult=%v | Insert block block: number=%v, hash=%v, difficult= %v",
 			bc.CurrentBlock().Number64(), bc.CurrentBlock().Hash(), bc.CurrentBlock().Difficulty(), blk.Number64(), blk.Hash(), blk.Difficulty())
 
@@ -1653,6 +1661,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		// slots (its root is append-order-dependent). Committed BEFORE evmRecord
 		// so the execution's read snapshot sees the reverted state. No-op on the
 		// plain forward path.
+		tAlign := time.Now()
 		if uerr := bc.unwindForReimport(blockNumber.Uint64(), blk.ParentHash(), authorizedSwitch); uerr != nil {
 			if errors.Is(uerr, consensus.ErrUnknownAncestor) || errors.Is(uerr, errRevertUnavailable) {
 				// Either the incoming block's parent is a sibling this node never
@@ -1700,6 +1709,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			stats.queued++
 			continue
 		}
+		dAlign = time.Since(tAlign)
 		ibs, nopay, err := evmRecord(bc.ctx, bc.ChainDB, blockNumber.Uint64(), func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error) {
 			getHeader := func(hash types.Hash, number uint64) *block.Header {
 				return rawdb.ReadHeader(tx, hash, number)
@@ -1743,6 +1753,13 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				return nil, fmt.Errorf("%w: %w", consensus.ErrExecutionInvalid, err)
 			}
 			ptime := time.Since(pstart)
+			dProcess = ptime
+			// Split Process into EVM execution vs state root #3. Only the serial
+			// StateProcessor records the breakdown; the parallel path leaves the
+			// sub-phases zero (dProcess still covers the whole call).
+			if sp, ok := bc.process.(*StateProcessor); ok && !bc.parallelEVM {
+				procPhases = sp.LastPhases()
+			}
 
 			vstart := time.Now()
 			if err := bc.validator.ValidateState(blk, ibs, receipts, usedGas); err != nil {
@@ -1750,6 +1767,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				return nil, fmt.Errorf("%w: %w", consensus.ErrExecutionInvalid, err)
 			}
 			vtime := time.Since(vstart)
+			dValidate = vtime
 
 			blockExecutionTimer.Observe(float64(ptime))
 			blockValidationTimer.Observe(float64(vtime))
@@ -1800,8 +1818,45 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			bc.revertUncommittedQMDBAppends(blockNumber.Uint64())
 			return it.index, err
 		}
-		blockWriteTimer.Observe(float64(time.Since(wstart)))
+		dWrite = time.Since(wstart)
+		blockWriteTimer.Observe(float64(dWrite))
 		blockInsertTimer.Observe(float64(time.Since(start)))
+
+		// One compact, greppable line per imported block — the follower-side
+		// counterpart of "miner: build phases" (which covers only the leader's
+		// build) and of "blockwrite phases" (which covers only what happens once
+		// execution is done). Between them these three lines account for a block
+		// end to end on both roles.
+		//
+		//	hdr   wait on the parallel VerifyHeaders result (HotStuff BLS seal)
+		//	body  ValidateBody — recomputes the transaction root over every tx
+		//	align QMDB tree/marker alignment: unwindForReimport + dangling-append
+		//	      peel + ensureQMDBTreeAtParent. Zero on the plain forward path.
+		//	recov parallel sender recovery. Work that used to be hidden inside
+		//	      exec, one serial secp256k1 recovery per transaction; the miner
+		//	      never pays it because the pool cached the sender at admission.
+		//	exec  pure EVM: the per-transaction ApplyTransaction loop. This is the
+		//	      like-for-like counterpart of the miner's fillTx.
+		//	root  state root #3 (engine.Finalize -> ibs.IntermediateRoot on the
+		//	      LIVE commitment tree) — the counterpart of the miner's finalize,
+		//	      NOT of fillTx. proc is recov+prep+exec+root, i.e. all of Process.
+		//	valid ValidateState: receipt bloom + receipt root.
+		//	write writeBlockWithState in full; "blockwrite phases" breaks it down.
+		{
+			dTotal := dHdr + dBody + time.Since(tIter)
+			fields := []interface{}{
+				"n", blockNumber.Uint64(), "txs", len(blk.Transactions()), "gas", usedGas,
+				"hdr", dHdr, "body", dBody, "align", dAlign,
+				"recov", procPhases.Recover, "prep", procPhases.Prep,
+				"exec", procPhases.Exec, "root", procPhases.Finalize,
+				"proc", dProcess, "valid", dValidate, "write", dWrite, "total", dTotal,
+			}
+			if dTotal >= 5*time.Millisecond {
+				log.Info("blockimport phases", fields...)
+			} else {
+				log.Debug("blockimport phases", fields...)
+			}
+		}
 
 		stats.processed++
 		stats.usedGas += usedGas
