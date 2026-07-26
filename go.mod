@@ -77,7 +77,7 @@ require (
 	github.com/edsrzf/mmap-go v1.2.0
 	github.com/erigontech/fastkeccak v0.1.0
 	github.com/erigontech/interfaces v0.0.0-20260309190044-b1ca32817912
-	github.com/erigontech/secp256k1 v1.2.0
+	github.com/erigontech/secp256k1 v1.3.0
 	github.com/erigontech/speedtest v0.0.2
 	github.com/ethereum/go-verkle v0.2.2
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
