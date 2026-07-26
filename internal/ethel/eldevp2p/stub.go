@@ -26,6 +26,11 @@ type Config struct {
 	// SnapshotCold mirrors service.go's snapshot-direct cold reader; unused
 	// by the stub but required so cmd/eth-el compiles without -tags n42el.
 	SnapshotCold state.StateReader
+	// FreezerDir likewise mirrors service.go. Every field cmd/eth-el assigns
+	// MUST exist here too: the default build compiles this file instead of
+	// service.go, so a field added on one side only breaks `go build ./...`
+	// for everyone not passing -tags n42el.
+	FreezerDir string
 }
 
 func DefaultConfig() Config {
