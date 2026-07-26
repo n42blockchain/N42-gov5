@@ -13,7 +13,7 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
 	github.com/deckarep/golang-set v1.8.0
 	github.com/deckarep/golang-set/v2 v2.9.0
-	github.com/dop251/goja v0.0.0-20260701091749-b07b74453ea9
+	github.com/dop251/goja v0.0.0-20260723142020-b4aef50fa347
 	github.com/erigontech/mdbx-go v0.40.3
 	github.com/ethereum/go-ethereum v1.17.4
 	github.com/fjl/gencodec v0.1.2
@@ -86,7 +86,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58
 	github.com/pelletier/go-toml/v2 v2.4.3
-	github.com/pion/webrtc/v4 v4.2.16
+	github.com/pion/webrtc/v4 v4.2.17
 	github.com/prysmaticlabs/gohashtree v0.0.5-beta
 	github.com/puzpuzpuz/xsync/v4 v4.5.0
 	github.com/quasilyte/go-ruleguard/dsl v0.3.23
@@ -142,7 +142,7 @@ require (
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.7 // indirect
 	github.com/davidlazar/go-crypto v0.0.0-20200604182044-b73af7476f6c // indirect
-	github.com/dlclark/regexp2/v2 v2.2.2 // indirect
+	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/dunglas/httpsfv v1.1.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
@@ -217,14 +217,14 @@ require (
 	github.com/opencontainers/runtime-spec v1.3.0 // indirect
 	github.com/pion/datachannel v1.6.2 // indirect
 	github.com/pion/dtls/v3 v3.1.5 // indirect
-	github.com/pion/ice/v4 v4.2.7 // indirect
+	github.com/pion/ice/v4 v4.3.0 // indirect
 	github.com/pion/interceptor v0.1.45 // indirect
 	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/mdns/v2 v2.1.0 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/rtcp v1.2.17 // indirect
-	github.com/pion/rtp v1.10.3 // indirect
-	github.com/pion/sctp v1.10.3 // indirect
+	github.com/pion/rtp v1.10.4 // indirect
+	github.com/pion/sctp v1.11.0 // indirect
 	github.com/pion/sdp/v3 v3.0.19 // indirect
 	github.com/pion/srtp/v3 v3.0.12 // indirect
 	github.com/pion/stun/v3 v3.1.6 // indirect
