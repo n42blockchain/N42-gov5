@@ -50,7 +50,7 @@ require (
 	github.com/rs/cors v1.11.1
 	github.com/sirupsen/logrus v1.9.4
 	github.com/stretchr/testify v1.11.1
-	github.com/supranational/blst v0.3.16
+	github.com/supranational/blst v0.3.17
 	github.com/trailofbits/go-mutexasserts v0.0.0-20250514102930-c1f3d2e37561
 	github.com/urfave/cli/v2 v2.27.7
 	go.opencensus.io v0.24.0
