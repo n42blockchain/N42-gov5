@@ -14,7 +14,7 @@ require (
 	github.com/deckarep/golang-set v1.8.0
 	github.com/deckarep/golang-set/v2 v2.9.0
 	github.com/dop251/goja v0.0.0-20260723142020-b4aef50fa347
-	github.com/erigontech/mdbx-go v0.40.3
+	github.com/erigontech/mdbx-go v0.41.0
 	github.com/ethereum/go-ethereum v1.17.4
 	github.com/fjl/gencodec v0.1.2
 	github.com/fsnotify/fsnotify v1.10.1

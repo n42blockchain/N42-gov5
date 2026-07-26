@@ -200,6 +200,8 @@ github.com/erigontech/fastkeccak v0.1.0 h1:ByCXbDJTuT1YuDm3XntT0+Tp0ofdImfm+E5K8
 github.com/erigontech/fastkeccak v0.1.0/go.mod h1:CwJFJVKFVWpQyKSfRrQyY56IqV16sR5xnQoFThGHiZA=
 github.com/erigontech/mdbx-go v0.40.3 h1:tNFzVF4gs0DxCWGBb91jRKQNA+IeMonOK3LHvuxh5qo=
 github.com/erigontech/mdbx-go v0.40.3/go.mod h1:QmkpLmcJX5+Fyu9u8eGsyPwoBDrIZJBBLgJHBMFStWE=
+github.com/erigontech/mdbx-go v0.41.0 h1:9rWAGl08WFa06R2Bo+DdZY1HLCEipZJQUiUKq+I8Zbw=
+github.com/erigontech/mdbx-go v0.41.0/go.mod h1:Ps2n0MMTlU+BgecMWznc/Z7oGJWDJX/EQk+gUCTSaRo=
 github.com/erigontech/secp256k1 v1.2.0 h1:Q/HCBMdYYT0sh1xPZ9ZYEnU30oNyb/vt715cJhj7n7A=
 github.com/erigontech/secp256k1 v1.2.0/go.mod h1:GokhPepsMB+EYDs7I5JZCprxHW6+yfOcJKaKtoZ+Fls=
 github.com/erigontech/secp256k1 v1.3.0 h1:lf/lNUBtgZ21yJjn1sYNkYnEy4bkZIcxvcEdlrHs14I=
