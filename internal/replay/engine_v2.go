@@ -620,15 +620,15 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					}
 				}
 			}
-			// Also apply hard-fork allocs and system contracts on top.
-			r := state.NewPlainStateReader(dstTx)
-			w := state.NewPlainStateWriterNoHistory(dstTx)
-			ibs := state.New(r)
-			InitGenesisState(ibs)
-			rules := e.cfg.ChainConfig.Rules(0)
-			if err := ibs.FinalizeTx(rules, w); err != nil {
-				return fmt.Errorf("genesis finalize: %w", err)
-			}
+			// The hard-fork allocation and the Pectra system contracts are NOT
+			// applied here. They belong to the Pectra fork, which activates by
+			// timestamp long after genesis, and writing them here did two wrong
+			// things: it put fork-time state under the genesis header, and it
+			// wrote that state AFTER the header was sealed, so the genesis root
+			// did not cover it. A node initialising the same chainspec therefore
+			// computed a different genesis than replay produced, and could never
+			// validate the replayed chain. See the Pectra activation hook in the
+			// block loop below.
 
 			// MPT: feed all genesis accounts into HPH so the trie contains
 			// the full state from block 0.
@@ -880,6 +880,27 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					}
 				} else if ltRC != nil {
 					ibs.SetRootComputer(ltRC)
+				}
+
+				// Pectra activation: bring in the hard-fork allocation and the
+				// Pectra system contracts (EIP-2935 history storage, EIP-7002
+				// withdrawal requests, EIP-7251 consolidation requests, EIP-4788
+				// beacon roots) at the fork rather than at genesis. Nothing else
+				// deploys them — the node only checks whether they exist — so they
+				// have to be written here or Prague-rules blocks execute against
+				// undeployed contracts.
+				//
+				// Runs BEFORE the EIP-4788 call below, which writes into the beacon
+				// roots contract this block installs, and before tx execution, so
+				// transactions in the activation block already see them.
+				//
+				// Guarded on the history-storage code rather than on the fork edge:
+				// InitGenesisState credits the allocation unconditionally, so a
+				// resume that re-entered the activation block would otherwise pay
+				// it twice.
+				if e.cfg.ChainConfig.IsPectra(srcTime) && len(ibs.GetCode(vm2.HistoryStorageAddress)) == 0 {
+					InitGenesisState(ibs)
+					e.log.Info("pectra fork state applied", "block", newBlockNum, "time", srcTime)
 				}
 
 				// EIP-4788: feed the parent consensus evidence hash (the re-sealed
