@@ -4,8 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
-	"io/fs"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -73,15 +71,8 @@ func TestEthCompatibleBlockHashMatchesHiveForkIDGenesisFixtures(t *testing.T) {
 func loadHiveEngineGenesisFixture(t *testing.T) *conf.Genesis {
 	t.Helper()
 
-	path := filepath.Join("..", "..", "tests", "eth-hive", "simulators", "ethereum", "engine", "init", "genesis.json")
+	path := filepath.Join("testdata", "hive_engine_genesis.json")
 	data, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		// tests/eth-hive is an external hive checkout, not vendored and not a
-		// submodule, so a clean clone does not have it. Failing here made this
-		// test permanently red for everyone instead of telling them what is
-		// missing; skipping keeps it meaningful for anyone who has the checkout.
-		t.Skipf("hive fixture %s not present — clone ethereum/hive into tests/eth-hive to run this test", path)
-	}
 	if err != nil {
 		t.Fatalf("ReadFile(%q) error = %v", path, err)
 	}

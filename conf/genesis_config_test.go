@@ -2,8 +2,6 @@ package conf
 
 import (
 	"encoding/json"
-	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -106,14 +104,8 @@ func TestGenesisUnmarshalAllowsLeadingZeroHexQuantities(t *testing.T) {
 func TestGenesisUnmarshalHiveEngineFixture(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join("..", "tests", "eth-hive", "simulators", "ethereum", "engine", "init", "genesis.json")
+	path := filepath.Join("..", "internal", "api", "testdata", "hive_engine_genesis.json")
 	data, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		// tests/eth-hive is an external ethereum/hive checkout, absent from a
-		// clean clone. Skip rather than fail so the package is not permanently
-		// red for a missing optional fixture.
-		t.Skipf("hive fixture %s not present — clone ethereum/hive into tests/eth-hive to run this test", path)
-	}
 	if err != nil {
 		t.Fatalf("os.ReadFile failed: %v", err)
 	}

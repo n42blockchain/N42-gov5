@@ -3,8 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"io/fs"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -42,20 +40,7 @@ func TestHiveEngineGenesisFixtureMatchesCurrentGethRoot(t *testing.T) {
 		kv.ChaindataTablesCfg = prevTables
 	})
 
-	_, currentFile, _, ok := runtime.Caller(0)
-	require.True(t, ok)
-
-	genesisPath := filepath.Join(filepath.Dir(currentFile), "..", "..", "tests", "eth-hive", "simulators", "ethereum", "engine", "init", "genesis.json")
-	genesisJSON, err := os.ReadFile(genesisPath)
-	if errors.Is(err, fs.ErrNotExist) {
-		// See loadHiveEngineGenesisFixture: tests/eth-hive is an external hive
-		// checkout, absent from a clean clone.
-		t.Skipf("hive fixture %s not present — clone ethereum/hive into tests/eth-hive to run this test", genesisPath)
-	}
-	require.NoError(t, err)
-
-	var genesis conf.Genesis
-	require.NoError(t, json.Unmarshal(genesisJSON, &genesis))
+	genesis := loadHiveEngineGenesisFixture(t)
 
 	const (
 		expectedStateRoot = "0x84308e7d0abf860412f4a0c6fc25709a6e9eaba20a0d085a0344d271f40109ec"
@@ -63,8 +48,8 @@ func TestHiveEngineGenesisFixtureMatchesCurrentGethRoot(t *testing.T) {
 	)
 
 	db := memdb.NewTestDB(t)
-	err = db.Update(context.Background(), func(tx kv.RwTx) error {
-		blk, _, err := (&internalcore.GenesisBlock{GenesisConfig: &genesis}).WriteGenesisState(tx)
+	err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		blk, _, err := (&internalcore.GenesisBlock{GenesisConfig: genesis}).WriteGenesisState(tx)
 		require.NoError(t, err)
 
 		root, err := ethel.VerifyStateRoot(tx)
