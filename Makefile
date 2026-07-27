@@ -65,8 +65,8 @@ go-version:
 	rest=$${ver#*.}; \
 	minor=$${rest%%.*}; \
 	if [ -z "$$ver" ] || [ "$$major" -lt 1 ] || \
-	   { [ "$$major" -eq 1 ] && [ "$$minor" -lt 21 ]; }; then \
-		echo "minimum required Golang version is 1.21"; \
+	   { [ "$$major" -eq 1 ] && [ "$$minor" -lt 25 ]; }; then \
+		echo "minimum required Golang version is 1.25"; \
 		exit 1 ;\
 	fi
 gen:
@@ -78,7 +78,7 @@ deps: go-version
 	go mod tidy
 	@echo "deps done!"
 
-n42: deps version-bump
+n42: go-version
 	@echo "start build $(APP_NAME)..."
 	#go build -v ${LDFLAGS} -o $(BUILD_PATH)$(APP_NAME)  ${APP_PATH}
 	$(GOBUILD) -o $(BUILD_PATH)$(APP_NAME)  ${APP_PATH}
@@ -191,8 +191,8 @@ open-output:
 # 核心目标 (Core Targets)
 # =============================================================================
 
-# 全仓编译（不触发 go mod tidy，自动递增 build 号）
-build: go-version version-bump
+# 全仓编译（不触发 go mod tidy，也不修改版本文件）
+build: go-version
 	@echo "==> go build ./..."
 	$(GO) build $(GO_FLAGS) ./...
 
@@ -368,7 +368,7 @@ help:
 	@echo "N42 Makefile 目标:"
 	@echo ""
 	@echo "  构建 (Build):"
-	@echo "    n42           - 编译 n42 二进制文件 (带依赖检查)"
+	@echo "    n42           - 编译 n42 二进制文件 (不修改依赖或版本文件)"
 	@echo "    build         - 全仓编译 (不触发 go mod tidy)"
 	@echo "    install       - 安装到 \$$GOPATH/bin"
 	@echo "    clean         - 清理构建产物"
