@@ -79,6 +79,19 @@ func DefaultSystemContracts() []SystemContract {
 }
 
 // InitGenesisState applies hard-fork allocs and system contracts to genesis state.
+// Deprecated: the hard-fork allocation and the Pectra system contracts are now
+// declared in the chain's genesis alloc, so the sealed genesis root covers them
+// and a node initialising from the same chainspec reproduces them exactly.
+//
+// Injecting them from code could never satisfy that: it ran after the genesis
+// header was sealed, and the target chain's consensus (hotstuff) has no
+// hard-fork allocation mechanism at all, so nothing would re-apply them when a
+// node validated the produced chain. Pre-deployment is also what the EIPs
+// assume — 2935/7002/7251/4788 are deployed by transaction before their fork on
+// mainnet and placed in the genesis alloc on synthetic chains, and N42's own
+// Prague path only ever checks whether the contracts exist.
+//
+// Kept only so the values remain discoverable next to the replay engine.
 func InitGenesisState(ibs *state.IntraBlockState) {
 	for _, alloc := range DefaultHardForkAllocs() {
 		if !ibs.Exist(alloc.Address) {

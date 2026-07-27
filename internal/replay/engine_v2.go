@@ -882,27 +882,6 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					ibs.SetRootComputer(ltRC)
 				}
 
-				// Pectra activation: bring in the hard-fork allocation and the
-				// Pectra system contracts (EIP-2935 history storage, EIP-7002
-				// withdrawal requests, EIP-7251 consolidation requests, EIP-4788
-				// beacon roots) at the fork rather than at genesis. Nothing else
-				// deploys them — the node only checks whether they exist — so they
-				// have to be written here or Prague-rules blocks execute against
-				// undeployed contracts.
-				//
-				// Runs BEFORE the EIP-4788 call below, which writes into the beacon
-				// roots contract this block installs, and before tx execution, so
-				// transactions in the activation block already see them.
-				//
-				// Guarded on the history-storage code rather than on the fork edge:
-				// InitGenesisState credits the allocation unconditionally, so a
-				// resume that re-entered the activation block would otherwise pay
-				// it twice.
-				if e.cfg.ChainConfig.IsPectra(srcTime) && len(ibs.GetCode(vm2.HistoryStorageAddress)) == 0 {
-					InitGenesisState(ibs)
-					e.log.Info("pectra fork state applied", "block", newBlockNum, "time", srcTime)
-				}
-
 				// EIP-4788: feed the parent consensus evidence hash (the re-sealed
 				// BLS QC commitment) into the beacon-roots contract before tx
 				// execution, so the consensus commitment is part of EVM state.
