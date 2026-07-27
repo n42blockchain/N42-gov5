@@ -1376,7 +1376,7 @@ func TestHotStuffCalcDifficulty(t *testing.T) {
 	d := h.CalcDifficulty(nil, 0, nil)
 	// HotStuff is BFT: difficulty is 0 (post-merge/PoS convention), not used for
 	// fork choice (commit-authority) nor verified. Consistent with zero ommers.
-	if d.Uint64() != 0 {
+	if !d.IsZero() {
 		t.Fatalf("expected difficulty 0, got %d", d.Uint64())
 	}
 }

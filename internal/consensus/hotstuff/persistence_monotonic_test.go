@@ -208,3 +208,133 @@ func TestSaveConsensusStateOverV1RecordKeepsView(t *testing.T) {
 		t.Fatalf("vote should have been recorded: view=%d hash=%x", got.LastVotedView, got.LastVotedHash)
 	}
 }
+
+func TestSaveConsensusStateSameViewKeepsHighestQCs(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	saveState(t, db, &ConsensusState{
+		View:            20,
+		LockedQC:        monotonicTestQC(19, 0xA1),
+		LastCommittedQC: monotonicTestQC(18, 0xA2),
+	})
+	saveState(t, db, &ConsensusState{
+		View:            20,
+		LockedQC:        monotonicTestQC(17, 0xB1),
+		LastCommittedQC: monotonicTestQC(16, 0xB2),
+	})
+
+	got := loadState(t, db)
+	if got.LockedQC.View != 19 || got.LockedQC.BlockHash != (types.Hash{0xA1}) {
+		t.Fatalf("locked QC regressed: view=%d hash=%x", got.LockedQC.View, got.LockedQC.BlockHash)
+	}
+	if got.LastCommittedQC.View != 18 || got.LastCommittedQC.BlockHash != (types.Hash{0xA2}) {
+		t.Fatalf("committed QC regressed: view=%d hash=%x", got.LastCommittedQC.View, got.LastCommittedQC.BlockHash)
+	}
+}
+
+func TestSaveConsensusStateRejectsSameViewConflictingVote(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	saveState(t, db, &ConsensusState{
+		View:          7,
+		LastVotedView: 7,
+		LastVotedHash: types.Hash{0xA1},
+	})
+
+	err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		return SaveConsensusState(tx, &ConsensusState{
+			View:          7,
+			LastVotedView: 7,
+			LastVotedHash: types.Hash{0xB1},
+		})
+	})
+	if err == nil {
+		t.Fatal("expected same-view conflicting vote to be rejected")
+	}
+	got := loadState(t, db)
+	if got.LastVotedHash != (types.Hash{0xA1}) {
+		t.Fatalf("durable vote changed after rejected write: %x", got.LastVotedHash)
+	}
+}
+
+func TestSaveConsensusStateRejectsSameViewConflictingQC(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	saveState(t, db, &ConsensusState{
+		View:     8,
+		LockedQC: monotonicTestQC(7, 0xA1),
+	})
+
+	err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		return SaveConsensusState(tx, &ConsensusState{
+			View:     8,
+			LockedQC: monotonicTestQC(7, 0xB1),
+		})
+	})
+	if err == nil {
+		t.Fatal("expected same-view conflicting QC to be rejected")
+	}
+	got := loadState(t, db)
+	if got.LockedQC.BlockHash != (types.Hash{0xA1}) {
+		t.Fatalf("locked QC changed after rejected write: %x", got.LockedQC.BlockHash)
+	}
+}
+
+func TestActivatePersistedEpochPromotesAndClearsAtomically(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	validators := makeTestValidators(4)
+	if err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		return SaveStagedEpoch(tx, 2, validators, 1)
+	}); err != nil {
+		t.Fatalf("seed staged epoch: %v", err)
+	}
+	if err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		return ActivatePersistedEpoch(tx, 2, validators, 1)
+	}); err != nil {
+		t.Fatalf("activate epoch: %v", err)
+	}
+
+	if err := db.View(context.Background(), func(tx kv.Tx) error {
+		epoch, got, f, ok, err := LoadActiveEpoch(tx)
+		if err != nil {
+			return err
+		}
+		if !ok || epoch != 2 || len(got) != 4 || f != 1 {
+			t.Fatalf("unexpected active epoch: ok=%v epoch=%d validators=%d f=%d", ok, epoch, len(got), f)
+		}
+		_, staged, _, err := LoadStagedEpoch(tx)
+		if err != nil {
+			return err
+		}
+		if len(staged) != 0 {
+			t.Fatalf("staged epoch was not consumed: %d validators", len(staged))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("verify epoch transition: %v", err)
+	}
+}
+
+func TestActivatePersistedEpochRetainsStagedOnInvalidActiveSet(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	validators := makeTestValidators(4)
+	if err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		return SaveStagedEpoch(tx, 2, validators, 1)
+	}); err != nil {
+		t.Fatalf("seed staged epoch: %v", err)
+	}
+	if err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		return ActivatePersistedEpoch(tx, 2, nil, 1)
+	}); err == nil {
+		t.Fatal("expected empty active validator set to be rejected")
+	}
+	if err := db.View(context.Background(), func(tx kv.Tx) error {
+		_, staged, _, err := LoadStagedEpoch(tx)
+		if err != nil {
+			return err
+		}
+		if len(staged) != len(validators) {
+			t.Fatalf("staged epoch was cleared after failed activation: got %d", len(staged))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("verify staged epoch: %v", err)
+	}
+}
