@@ -21,26 +21,30 @@ var _ NetworkEncoding = (*SszNetworkEncoder)(nil)
 // throughput testing — every node in the network MUST use the same value.
 var MaxGossipSize = sizeFromEnvMB("N42_MAX_GOSSIP_MB", 1<<20)
 
-// MaxChunkSize is the maximum allowed size for a single chunk (1 MiB by
-// default). Raised together with MaxGossipSize: the block push stream framing
-// uses it, so a large block fails to decode ("failed to read varint: EOF")
-// if only the gossip cap is raised.
-var MaxChunkSize = sizeFromEnvMB("N42_MAX_GOSSIP_MB", 1<<20)
+// MaxChunkSize is the default maximum allowed size for ordinary RPC chunks.
+// Block transfer protocols use MaxBlockChunkSize so raising the throughput
+// profile does not widen memory exposure for unrelated RPC methods.
+var MaxChunkSize = uint64(1 << 20)
+
+// MaxBlockChunkSize is the block-only stream cap. The 64 MiB default preserves
+// the HotStuff cross-client stress profile; explicitly setting
+// N42_MAX_GOSSIP_MB keeps direct block transfer aligned with the gossip cap.
+var MaxBlockChunkSize = sizeFromEnvMB("N42_MAX_GOSSIP_MB", 64<<20)
 
 // MaxWireMessageSize returns the largest payload the p2p layer can carry on
 // EITHER delivery path: gossip (EncodeGossip, bounded by MaxGossipSize) or a
-// direct libp2p stream (EncodeWithMaxLength, bounded by MaxChunkSize). Both
-// bounds are checked against the UNCOMPRESSED serialized bytes — snappy is
-// applied after the check — so producers must size their payload before
-// compression.
+// direct block stream (EncodeWithMaxLengthLimit, bounded by
+// MaxBlockChunkSize). Both bounds are checked against the UNCOMPRESSED
+// serialized bytes — snappy is applied after the check — so producers must
+// size their payload before compression.
 //
 // Block producers derive their packing budget from this so a sealed block is
 // never too large to propagate (an unpropagatable block livelocks HotStuff:
 // followers cannot import it, import-gated voting never fires, no quorum ever
 // forms). Raising N42_MAX_GOSSIP_MB automatically raises the packing budget.
 func MaxWireMessageSize() uint64 {
-	if MaxChunkSize < MaxGossipSize {
-		return MaxChunkSize
+	if MaxBlockChunkSize < MaxGossipSize {
+		return MaxBlockChunkSize
 	}
 	return MaxGossipSize
 }
@@ -107,6 +111,12 @@ func (SszNetworkEncoder) EncodeGossip(w io.Writer, msg fastssz.Marshaler) (int, 
 // varint-encoded length, and writes snappy-compressed data to w.
 // Returns an error if the serialized message exceeds MaxChunkSize.
 func (SszNetworkEncoder) EncodeWithMaxLength(w io.Writer, msg fastssz.Marshaler) (int, error) {
+	return EncodeWithMaxLengthLimit(w, msg, MaxChunkSize)
+}
+
+// EncodeWithMaxLengthLimit is the same wire format as EncodeWithMaxLength but
+// allows block-only protocols to use their dedicated, explicitly bounded cap.
+func EncodeWithMaxLengthLimit(w io.Writer, msg fastssz.Marshaler, maxChunkSize uint64) (int, error) {
 	if msg == nil {
 		return 0, nil
 	}
@@ -114,8 +124,8 @@ func (SszNetworkEncoder) EncodeWithMaxLength(w io.Writer, msg fastssz.Marshaler)
 	if err != nil {
 		return 0, err
 	}
-	if uint64(len(b)) > MaxChunkSize {
-		return 0, fmt.Errorf("encoded message size %d exceeds max chunk size %d", len(b), MaxChunkSize)
+	if uint64(len(b)) > maxChunkSize {
+		return 0, fmt.Errorf("encoded message size %d exceeds max chunk size %d", len(b), maxChunkSize)
 	}
 	if _, err = w.Write(EncodeVarint(uint64(len(b)))); err != nil {
 		return 0, err
@@ -150,18 +160,24 @@ func DecodeSnappy(msg []byte, maxSize uint64) ([]byte, error) {
 // decompresses the snappy-encoded payload, and unmarshals it via SSZ into dst.
 // Returns an error if the declared message length exceeds MaxChunkSize.
 func (e SszNetworkEncoder) DecodeWithMaxLength(r io.Reader, dst fastssz.Unmarshaler) error {
+	return DecodeWithMaxLengthLimit(r, dst, MaxChunkSize)
+}
+
+// DecodeWithMaxLengthLimit decodes the standard varint + framed-Snappy wire
+// format with a protocol-specific uncompressed-size cap.
+func DecodeWithMaxLengthLimit(r io.Reader, dst fastssz.Unmarshaler, maxChunkSize uint64) error {
 	msgLen, err := readVarint(r)
 	if err != nil {
 		return fmt.Errorf("failed to read varint: %w", err)
 	}
-	if msgLen > MaxChunkSize {
-		return fmt.Errorf("message length %d exceeds max chunk size %d", msgLen, MaxChunkSize)
+	if msgLen > maxChunkSize {
+		return fmt.Errorf("message length %d exceeds max chunk size %d", msgLen, maxChunkSize)
 	}
 	if msgLen > uint64(math.MaxInt) {
 		return fmt.Errorf("message length %d exceeds maximum int value", msgLen)
 	}
 
-	msgMax, err := e.MaxLength(msgLen)
+	msgMax, err := (SszNetworkEncoder{}).MaxLength(msgLen)
 	if err != nil {
 		return err
 	}

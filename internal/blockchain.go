@@ -1224,7 +1224,7 @@ func (bc *BlockChain) directPushBlock(b block.IBlock, data []byte) {
 			if _, err := stream.Write(digest[:]); err != nil {
 				return
 			}
-			if _, err := bc.p2p.Encoding().EncodeWithMaxLength(stream, &rawBlockBytes{data: data}); err != nil {
+			if _, err := encoder.EncodeWithMaxLengthLimit(stream, &rawBlockBytes{data: data}, encoder.MaxBlockChunkSize); err != nil {
 				// Surfacing this matters: a silent failure here (e.g. an
 				// oversized block) leaves the follower with an opaque
 				// "failed to read varint: EOF" and no local explanation.
