@@ -144,6 +144,20 @@ func TestInitEngineFromConfig_NoValidators(t *testing.T) {
 	}
 }
 
+func TestEthELCompatIsChainConfigured(t *testing.T) {
+	if ethELCompatEnabled(nil) {
+		t.Fatal("nil chain config enabled ETH EL compatibility")
+	}
+	cfg := &params.ChainConfig{HotStuff: &params.HotStuffConfig{}}
+	if ethELCompatEnabled(cfg) {
+		t.Fatal("default HotStuff config enabled ETH EL compatibility")
+	}
+	cfg.HotStuff.EthELCompat = true
+	if !ethELCompatEnabled(cfg) {
+		t.Fatal("chainspec ETH EL compatibility was ignored")
+	}
+}
+
 func TestInitEngineFromConfig_InvalidBLSKey(t *testing.T) {
 	cfg := &params.HotStuffConfig{
 		BaseTimeout: 60000,

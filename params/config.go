@@ -527,6 +527,11 @@ type HotStuffConfig struct {
 	// well-known dev account.
 	DevFaucetAddress *types.Address `json:"devFaucetAddress,omitempty"`
 
+	// EthELCompat disables N42-native reward application so blocks are
+	// representable by the standard Ethereum Engine API execution model.
+	// Consensus-critical: all validators must use the same chainspec value.
+	EthELCompat bool `json:"ethELCompat,omitempty"`
+
 	// TwoPhaseVoteGate moves the execution guarantee from Round 1 to Round 2
 	// (order-then-execute): Round-1 prepare votes fire on static validation,
 	// decoupling view progress from execution latency; the Round-2 CommitVote

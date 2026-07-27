@@ -608,21 +608,19 @@ func (s *Service) handleOutput(output EngineOutput) {
 		// reconfiguration restores the reconfigured set instead of reverting to the
 		// genesis set (in-memory-only reconfig would otherwise leave a restarted node
 		// unable to verify QCs from the new set — a chain-stalling bitmap mismatch).
-		// Then clear the consumed staged record.
+		// Atomically clear the consumed staged record in the same transaction.
 		if s.db != nil {
 			if ce := s.engine.Engine(); ce != nil {
 				if epoch, validators, f, ok := ce.CurrentEpochInfoSafe(); ok {
 					if err := s.db.Update(s.ctx, func(tx kv.RwTx) error {
-						return SaveActiveEpoch(tx, epoch, validators, f)
+						return ActivatePersistedEpoch(tx, epoch, validators, f)
 					}); err != nil {
-						log.Error("failed to persist active epoch", "err", err)
+						log.Error("failed to atomically persist active epoch transition", "err", err)
 					}
+				} else {
+					log.Error("hotstuff: epoch transition has no active validator set; staged epoch retained",
+						"epoch", output.NewEpoch)
 				}
-			}
-			if err := s.db.Update(s.ctx, func(tx kv.RwTx) error {
-				return ClearStagedEpoch(tx) // staged → active, clear persisted staged
-			}); err != nil {
-				log.Error("failed to clear staged epoch", "err", err)
 			}
 		}
 
