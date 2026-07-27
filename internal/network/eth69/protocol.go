@@ -42,9 +42,11 @@ import (
 const (
 	ETH68 = 68
 	ETH69 = 69
+	ETH70 = 70
+	ETH71 = 71
 
 	// Current protocol version
-	ProtocolVersion = ETH69
+	ProtocolVersion = ETH71
 
 	// ProtocolName is the official short name of the `eth` protocol used during devp2p capability negotiation.
 	// For N42, we use a custom protocol identifier over libp2p instead of devp2p.
@@ -52,12 +54,14 @@ const (
 )
 
 // ProtocolVersions lists all supported eth protocol versions.
-var ProtocolVersions = []uint{ETH69, ETH68}
+var ProtocolVersions = []uint{ETH71, ETH70, ETH69, ETH68}
 
 // protocolLengths defines the number of message codes for each protocol version.
 var protocolLengths = map[uint]uint64{
 	ETH68: 17, // eth/68 has message codes 0x00-0x10
 	ETH69: 18, // eth/69 adds BlockRangeUpdateMsg (0x11)
+	ETH70: 18, // eth/70 retains the 0x00-0x11 span
+	ETH71: 20, // eth/71 adds GetBlockAccessLists/BlockAccessLists (0x12-0x13)
 }
 
 // Message codes as defined in the eth/69 specification.
@@ -77,6 +81,8 @@ const (
 	GetReceiptsMsg                = 0x0f // Request receipts
 	ReceiptsMsg                   = 0x10 // Deliver receipts
 	BlockRangeUpdateMsg           = 0x11 // Announce block range update (eth/69 only)
+	GetBlockAccessListsMsg        = 0x12 // Request EIP-7928 block access lists (eth/71 only)
+	BlockAccessListsMsg           = 0x13 // Deliver EIP-7928 block access lists (eth/71 only)
 )
 
 // StatusPacket represents the eth/69 status message format.
@@ -86,13 +92,13 @@ const (
 //   - Removing total difficulty (TD)
 //   - Adding earliestBlock, latestBlock, latestBlockHash for history expiry support
 type StatusPacket struct {
-	ProtocolVersion uint32      // Protocol version number (should be ETH69)
-	NetworkID       uint64      // Network identifier (1 = mainnet, etc.)
-	Genesis         types.Hash  // Genesis block hash for fork verification
-	ForkID          []byte      // EIP-2124 fork identifier
-	EarliestBlock   uint64      // Earliest available block number
-	LatestBlock     uint64      // Latest block number (replaces head)
-	LatestBlockHash types.Hash  // Hash of the latest block
+	ProtocolVersion uint32     // Protocol version number (should be ETH69)
+	NetworkID       uint64     // Network identifier (1 = mainnet, etc.)
+	Genesis         types.Hash // Genesis block hash for fork verification
+	ForkID          []byte     // EIP-2124 fork identifier
+	EarliestBlock   uint64     // Earliest available block number
+	LatestBlock     uint64     // Latest block number (replaces head)
+	LatestBlockHash types.Hash // Hash of the latest block
 }
 
 // BlockRangeUpdatePacket announces changes in the node's available block range.
