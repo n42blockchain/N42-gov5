@@ -3,7 +3,7 @@
 //
 // Package devp2p provides Ethereum devp2p networking for the ETH EL profile.
 // It wraps go-ethereum's p2p library for RLPx transport and peer discovery,
-// implementing eth/68-69 wire protocol for block/tx propagation and sync.
+// implementing eth/68-71 wire protocol for block/tx propagation and sync.
 
 package devp2p
 
@@ -70,18 +70,18 @@ func NewServer(cfg ServerConfig, handler *EthHandler) *Server {
 
 // Start starts the devp2p server.
 func (s *Server) Start() error {
-	// Advertise BOTH eth/68 and eth/69. eth/69 is new (2025) and a large share of
-	// mainnet peers still speak only eth/68; advertising 69-only drops them at the
+	// Advertise eth/68 through eth/71. A large share of mainnet peers still speak
+	// only older versions; advertising only the latest drops them at the
 	// Status handshake (their eth/68 Status mis-decodes as eth/69), starving block
 	// download. RLPx negotiates the highest COMMON eth version per peer and runs
 	// that Protocol's Run; runPeer receives the negotiated version and encodes/
-	// decodes the matching Status layout. eth/69 peers are unaffected.
+	// decodes the matching Status layout. Versions 69+ share the newer layout.
 	ethProtos := make([]gethp2p.Protocol, 0, len(eth69.ProtocolVersions))
-	for _, v := range eth69.ProtocolVersions { // {ETH69, ETH68}
+	for _, v := range eth69.ProtocolVersions {
 		version := v
-		length := uint64(18) // eth/69 message-code span (0x00-0x11)
-		if version == eth69.ETH68 {
-			length = 17 // eth/68 message-code span (0x00-0x10)
+		length, err := eth69.GetProtocolLength(version)
+		if err != nil {
+			return err
 		}
 		ethProtos = append(ethProtos, gethp2p.Protocol{
 			Name:    "eth",
@@ -133,20 +133,22 @@ func (s *Server) Start() error {
 		},
 	}
 
+	s.handler.setTrustedCallbacks(
+		func(n *enode.Node) {
+			if n != nil {
+				s.srv.AddTrustedPeer(n)
+			}
+		},
+		func(n *enode.Node) {
+			if n != nil {
+				s.srv.RemoveTrustedPeer(n)
+			}
+		},
+	)
+
 	if err := s.srv.Start(); err != nil {
 		return fmt.Errorf("devp2p start: %w", err)
 	}
-
-	// Pin confirmed mainnet peers (those that pass the eth network+genesis
-	// handshake) into the trusted set. Trusted conns are exempt from the p2p
-	// server's "too many peers" eviction, so a real mainnet peer that gets in is
-	// never pushed out by the PulseChain inbound flood that shares our bootnodes
-	// and forkid. The handler bounds how many it pins (maxTrustedPeers).
-	s.handler.setMarkTrusted(func(n *enode.Node) {
-		if n != nil {
-			s.srv.AddTrustedPeer(n)
-		}
-	})
 
 	// Subscribe to peer add/drop events so we can log the actual
 	// RLPx Disconnect reason from the remote side. That reason is

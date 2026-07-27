@@ -20,21 +20,21 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
-	"encoding/hex"
 	"strings"
 
 	"github.com/c2h5oh/datasize"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/hash"
-	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -150,7 +150,7 @@ func main() {
 				Amount:         hexutil.Uint64(w.Amount),
 			}
 		}
-		okRes, root, xerr := adapter.ExecutePayloadFromWire(blk, ws)
+		okRes, root, xerr := adapter.ExecutePayloadFromTrustedColumnar(blk, ws)
 		if xerr != nil {
 			fmt.Printf("block=%d EXEC ERROR: %v\n", n, xerr)
 			break
@@ -489,4 +489,3 @@ func readHeaderBody(dir string, n uint64) (*block.Header, *ethel.GethBodyResult,
 	}
 	return hdr, body, nil
 }
-
