@@ -158,7 +158,7 @@ func (r *HashedStateReader) ReadAccountCode(address types.Address, codeHash type
 		return raw, nil
 	}
 	if r.codeSrc != nil {
-		code, err := r.codeSrc.GetCode(address)
+		code, err := codeFromSource(r.codeSrc, address, codeHash)
 		if err == nil && len(code) > 0 && crypto.Keccak256Hash(code) == codeHash {
 			r.cache.PutCode(codeHash, code)
 			return code, nil
