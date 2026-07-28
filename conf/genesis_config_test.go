@@ -104,7 +104,7 @@ func TestGenesisUnmarshalAllowsLeadingZeroHexQuantities(t *testing.T) {
 func TestGenesisUnmarshalHiveEngineFixture(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join("..", "internal", "api", "testdata", "hive_engine_genesis.json")
+	path := resolveHiveEngineGenesisFixturePath(t)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("os.ReadFile failed: %v", err)
@@ -130,6 +130,23 @@ func TestGenesisUnmarshalHiveEngineFixture(t *testing.T) {
 	if len(genesis.Alloc) < 4 {
 		t.Fatalf("alloc should contain fixture accounts, got %d", len(genesis.Alloc))
 	}
+}
+
+func resolveHiveEngineGenesisFixturePath(t *testing.T) string {
+	t.Helper()
+
+	vendored := filepath.Join("..", "internal", "api", "testdata", "hive_engine_genesis.json")
+	if _, err := os.Stat(vendored); err == nil {
+		return vendored
+	}
+
+	external := filepath.Join("..", "tests", "eth-hive", "simulators", "ethereum", "engine", "init", "genesis.json")
+	if _, err := os.Stat(external); err == nil {
+		return external
+	}
+
+	t.Fatalf("hive engine genesis fixture not found at vendored path %q or external path %q", vendored, external)
+	return ""
 }
 
 func TestGenesisUnmarshalPreservesExplicitHeaderFields(t *testing.T) {
