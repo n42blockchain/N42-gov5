@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	n42crypto "github.com/n42blockchain/N42/crypto"
@@ -71,7 +72,7 @@ func TestEthCompatibleBlockHashMatchesHiveForkIDGenesisFixtures(t *testing.T) {
 func loadHiveEngineGenesisFixture(t *testing.T) *conf.Genesis {
 	t.Helper()
 
-	path := filepath.Join("testdata", "hive_engine_genesis.json")
+	path := resolveHiveEngineGenesisFixturePath(t)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile(%q) error = %v", path, err)
@@ -81,6 +82,29 @@ func loadHiveEngineGenesisFixture(t *testing.T) *conf.Genesis {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
 	return &genesis
+}
+
+func resolveHiveEngineGenesisFixturePath(t *testing.T) string {
+	t.Helper()
+
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(currentFile), "..", ".."))
+
+	vendored := filepath.Join(repoRoot, "internal", "api", "testdata", "hive_engine_genesis.json")
+	if _, err := os.Stat(vendored); err == nil {
+		return vendored
+	}
+
+	extExternal := filepath.Join(repoRoot, "tests", "eth-hive", "simulators", "ethereum", "engine", "init", "genesis.json")
+	if _, err := os.Stat(extExternal); err == nil {
+		return extExternal
+	}
+
+	t.Fatalf("hive engine genesis fixture not found at vendored path %q or external path %q", vendored, extExternal)
+	return ""
 }
 
 func addHiveEngineTestAccounts(genesis *conf.Genesis) {

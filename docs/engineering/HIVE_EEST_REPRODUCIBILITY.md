@@ -14,7 +14,9 @@
 
 这些改动的目标不是“为测试写特判”，而是把 Prague/Cancun 相关的 block hook、system contract 地址、部署字节码和 devnet 初始化收成共享入口，减少今后复测时出现“代码过了，但 Hive 用的还是旧路径/旧副本”的漂移。
 
-## 当前记录状态（2026-04-16）
+## 当前记录状态（2026-07-27）
+
+2026-07-27 已重新同步并使用 `tests/eth-hive` 最新主分支（`a74a5a70`）进行复跑尝试。`tests/eth-hive` 与本仓 `internal/api`、`conf` 的 16 个 hive genesis 相关回归在本地环境使用固定 fixture 均已通过；EEST 全量 Prague 运行在本机仍停在 client ready 检查阶段，尚未形成完整通过 run。
 
 当前仓库内可审计的结果产物显示：
 
