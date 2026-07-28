@@ -13,8 +13,8 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
 	github.com/deckarep/golang-set v1.8.0
 	github.com/deckarep/golang-set/v2 v2.9.0
-	github.com/dop251/goja v0.0.0-20260701091749-b07b74453ea9
-	github.com/erigontech/mdbx-go v0.40.3
+	github.com/dop251/goja v0.0.0-20260723142020-b4aef50fa347
+	github.com/erigontech/mdbx-go v0.41.0
 	github.com/ethereum/go-ethereum v1.17.4
 	github.com/fjl/gencodec v0.1.2
 	github.com/fsnotify/fsnotify v1.10.1
@@ -42,21 +42,21 @@ require (
 	github.com/paulbellamy/ratecounter v0.2.0
 	github.com/peterh/liner v1.2.2
 	github.com/pkg/errors v0.9.1
-	github.com/prometheus/client_golang v1.23.2
+	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2
-	github.com/prometheus/common v0.69.0
+	github.com/prometheus/common v0.70.1
 	github.com/prysmaticlabs/fastssz v0.0.0-20260421202104-7a6eb71e6e45
 	github.com/rcrowley/go-metrics v0.0.0-20250401214520-65e299d6c5c9
 	github.com/rs/cors v1.11.1
 	github.com/sirupsen/logrus v1.9.4
 	github.com/stretchr/testify v1.11.1
-	github.com/supranational/blst v0.3.16
+	github.com/supranational/blst v0.3.17
 	github.com/trailofbits/go-mutexasserts v0.0.0-20250514102930-c1f3d2e37561
 	github.com/urfave/cli/v2 v2.27.7
 	go.opencensus.io v0.24.0
 	go.uber.org/zap v1.28.0
 	golang.org/x/crypto v0.54.0
-	golang.org/x/exp v0.0.0-20260709172345-9ea1abe57597
+	golang.org/x/exp v0.0.0-20260718201538-764159d718ef
 	golang.org/x/sync v0.22.0
 	golang.org/x/sys v0.47.0
 	google.golang.org/protobuf v1.36.11
@@ -77,16 +77,16 @@ require (
 	github.com/edsrzf/mmap-go v1.2.0
 	github.com/erigontech/fastkeccak v0.1.0
 	github.com/erigontech/interfaces v0.0.0-20260309190044-b1ca32817912
-	github.com/erigontech/secp256k1 v1.2.0
+	github.com/erigontech/secp256k1 v1.3.0
 	github.com/erigontech/speedtest v0.0.2
 	github.com/ethereum/go-verkle v0.2.2
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
-	github.com/klauspost/compress v1.19.0
+	github.com/klauspost/compress v1.19.1
 	github.com/mattn/go-colorable v0.1.15
-	github.com/mattn/go-isatty v0.0.22
+	github.com/mattn/go-isatty v0.0.24
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58
 	github.com/pelletier/go-toml/v2 v2.4.3
-	github.com/pion/webrtc/v4 v4.2.16
+	github.com/pion/webrtc/v4 v4.2.17
 	github.com/prysmaticlabs/gohashtree v0.0.5-beta
 	github.com/puzpuzpuz/xsync/v4 v4.5.0
 	github.com/quasilyte/go-ruleguard/dsl v0.3.23
@@ -102,7 +102,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.44.0
 	go.uber.org/mock v0.6.0
 	golang.org/x/time v0.15.0
-	google.golang.org/grpc v1.82.0
+	google.golang.org/grpc v1.82.1
 	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.6.2
 	gopkg.in/yaml.v3 v3.0.1
 	lukechampine.com/blake3 v1.4.1
@@ -142,7 +142,7 @@ require (
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.7 // indirect
 	github.com/davidlazar/go-crypto v0.0.0-20200604182044-b73af7476f6c // indirect
-	github.com/dlclark/regexp2/v2 v2.2.2 // indirect
+	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/dunglas/httpsfv v1.1.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
@@ -217,14 +217,14 @@ require (
 	github.com/opencontainers/runtime-spec v1.3.0 // indirect
 	github.com/pion/datachannel v1.6.2 // indirect
 	github.com/pion/dtls/v3 v3.1.5 // indirect
-	github.com/pion/ice/v4 v4.2.7 // indirect
+	github.com/pion/ice/v4 v4.3.0 // indirect
 	github.com/pion/interceptor v0.1.45 // indirect
 	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/mdns/v2 v2.1.0 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/rtcp v1.2.17 // indirect
-	github.com/pion/rtp v1.10.3 // indirect
-	github.com/pion/sctp v1.10.3 // indirect
+	github.com/pion/rtp v1.10.4 // indirect
+	github.com/pion/sctp v1.11.0 // indirect
 	github.com/pion/sdp/v3 v3.0.19 // indirect
 	github.com/pion/srtp/v3 v3.0.12 // indirect
 	github.com/pion/stun/v3 v3.1.6 // indirect
@@ -281,14 +281,5 @@ require (
 //replace github.com/torquem-ch/mdbx-go v0.30.0 => github.com/N42/mdbx-go v0.0.0-20230203081605-fc0b6278d4f7
 
 replace github.com/VictoriaMetrics/metrics => github.com/ledgerwatch/victoria-metrics v0.0.4
-
-// S4 SECURITY NOTE: This fork is required for iOS build compatibility.
-// The official elastic/gosigar PR #134 was declined. Consider:
-// 1. Migrating to organization fork (github.com/n42blockchain/gosigar)
-// 2. Using build tags to exclude on mobile platforms
-// Risk: Third-party maintainer could introduce malicious code.
-replace github.com/elastic/gosigar => github.com/Jackmeng1985/gosigar v0.14.2-fix-ios
-
-replace github.com/erigontech/erigon-snapshot => github.com/ledgerwatch/erigon-snapshot v1.3.1-0.20240805114253-42da880260bb
 
 replace github.com/erigontech/interfaces => github.com/ledgerwatch/interfaces v0.0.0-20241024161200-024ffe1cabff

@@ -25,6 +25,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus/hotstuff"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
+	"github.com/n42blockchain/N42/log"
 )
 
 // Compile-time check: *hotstuffP2PAdapter must satisfy hotstuff.P2PDirectSender,
@@ -93,6 +94,11 @@ func (a *hotstuffP2PAdapter) SetStreamHandler(topic string, handler func(data []
 		_ = stream.SetReadDeadline(time.Now().Add(rotorStreamDeadline))
 		data, err := readRotorStream(stream)
 		if err != nil {
+			// Log rather than drop silently: an oversized payload here is the
+			// same class of failure as an unpropagatable block, and without a
+			// message the symptom is an unexplained consensus stall.
+			log.Debug("hotstuff rotor stream read failed", "topic", topic,
+				"peer", stream.Conn().RemotePeer().String(), "err", err)
 			_ = stream.Reset()
 			return
 		}

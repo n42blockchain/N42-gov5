@@ -51,6 +51,7 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/exex"
 	"github.com/n42blockchain/N42/internal/p2p"
+	"github.com/n42blockchain/N42/internal/p2p/encoder"
 	"github.com/n42blockchain/N42/internal/zkprover"
 	"github.com/n42blockchain/N42/internal/zkverifier"
 	"github.com/n42blockchain/N42/lib/kv"
@@ -1177,6 +1178,16 @@ func (bc *BlockChain) SealedBlock(b block.IBlock) error {
 	if err != nil {
 		return err
 	}
+	// Defence in depth: the miner budgets the packed size against the same bound
+	// (see miner/block_size.go), so this must never trigger. If it does, fail
+	// loudly here instead of letting both delivery paths reject the block and
+	// livelock import-gated voting with only a low-level encoder error to go on.
+	if limit := encoder.MaxWireMessageSize(); uint64(len(data)) > limit {
+		log.Error("sealed block exceeds p2p wire limit and cannot propagate",
+			"number", b.Number64().Uint64(), "hash", b.Hash().Hex(),
+			"txs", len(b.Transactions()), "size", len(data), "limit", limit)
+		return fmt.Errorf("sealed block %d is %d bytes, above the %d byte p2p wire limit", b.Number64().Uint64(), len(data), limit)
+	}
 	bc.directPushBlock(b, data)
 	// Also gossip as a best-effort fallback.
 	return bc.p2p.BroadcastBlock(bc.ctx, data)
@@ -1213,7 +1224,12 @@ func (bc *BlockChain) directPushBlock(b block.IBlock, data []byte) {
 			if _, err := stream.Write(digest[:]); err != nil {
 				return
 			}
-			if _, err := bc.p2p.Encoding().EncodeWithMaxLength(stream, &rawBlockBytes{data: data}); err != nil {
+			if _, err := encoder.EncodeWithMaxLengthLimit(stream, &rawBlockBytes{data: data}, encoder.MaxBlockChunkSize); err != nil {
+				// Surfacing this matters: a silent failure here (e.g. an
+				// oversized block) leaves the follower with an opaque
+				// "failed to read varint: EOF" and no local explanation.
+				log.Error("direct-push encode failed", "peer", pid.String()[:12],
+					"number", b.Number64().Uint64(), "size", len(data), "err", err)
 				return
 			}
 		}(pid)
@@ -1548,6 +1564,14 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			break
 		}
 
+		// Import-path phase accounting (observability only). dHdr and dBody were
+		// already paid inside the it.next() that produced this block, so they are
+		// captured here and added back into the total below.
+		tIter := time.Now()
+		dHdr, dBody := it.lastVerifyWait, it.lastBodyCheck
+		var dAlign, dProcess, dValidate, dWrite time.Duration
+		var procPhases ProcessPhases
+
 		log.Tracef("Current block: number=%v, hash=%v, difficult=%v | Insert block block: number=%v, hash=%v, difficult= %v",
 			bc.CurrentBlock().Number64(), bc.CurrentBlock().Hash(), bc.CurrentBlock().Difficulty(), blk.Number64(), blk.Hash(), blk.Difficulty())
 
@@ -1637,6 +1661,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		// slots (its root is append-order-dependent). Committed BEFORE evmRecord
 		// so the execution's read snapshot sees the reverted state. No-op on the
 		// plain forward path.
+		tAlign := time.Now()
 		if uerr := bc.unwindForReimport(blockNumber.Uint64(), blk.ParentHash(), authorizedSwitch); uerr != nil {
 			if errors.Is(uerr, consensus.ErrUnknownAncestor) || errors.Is(uerr, errRevertUnavailable) {
 				// Either the incoming block's parent is a sibling this node never
@@ -1684,6 +1709,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			stats.queued++
 			continue
 		}
+		dAlign = time.Since(tAlign)
 		ibs, nopay, err := evmRecord(bc.ctx, bc.ChainDB, blockNumber.Uint64(), func(tx kv.Tx, ibs *state.IntraBlockState, reader state.StateReader, writer state.WriterWithChangeSets) (map[types.Address]*uint256.Int, error) {
 			getHeader := func(hash types.Hash, number uint64) *block.Header {
 				return rawdb.ReadHeader(tx, hash, number)
@@ -1727,6 +1753,13 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				return nil, fmt.Errorf("%w: %w", consensus.ErrExecutionInvalid, err)
 			}
 			ptime := time.Since(pstart)
+			dProcess = ptime
+			// Split Process into EVM execution vs state root #3. Only the serial
+			// StateProcessor records the breakdown; the parallel path leaves the
+			// sub-phases zero (dProcess still covers the whole call).
+			if sp, ok := bc.process.(*StateProcessor); ok && !bc.parallelEVM {
+				procPhases = sp.LastPhases()
+			}
 
 			vstart := time.Now()
 			if err := bc.validator.ValidateState(blk, ibs, receipts, usedGas); err != nil {
@@ -1734,6 +1767,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				return nil, fmt.Errorf("%w: %w", consensus.ErrExecutionInvalid, err)
 			}
 			vtime := time.Since(vstart)
+			dValidate = vtime
 
 			blockExecutionTimer.Observe(float64(ptime))
 			blockValidationTimer.Observe(float64(vtime))
@@ -1784,8 +1818,45 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			bc.revertUncommittedQMDBAppends(blockNumber.Uint64())
 			return it.index, err
 		}
-		blockWriteTimer.Observe(float64(time.Since(wstart)))
+		dWrite = time.Since(wstart)
+		blockWriteTimer.Observe(float64(dWrite))
 		blockInsertTimer.Observe(float64(time.Since(start)))
+
+		// One compact, greppable line per imported block — the follower-side
+		// counterpart of "miner: build phases" (which covers only the leader's
+		// build) and of "blockwrite phases" (which covers only what happens once
+		// execution is done). Between them these three lines account for a block
+		// end to end on both roles.
+		//
+		//	hdr   wait on the parallel VerifyHeaders result (HotStuff BLS seal)
+		//	body  ValidateBody — recomputes the transaction root over every tx
+		//	align QMDB tree/marker alignment: unwindForReimport + dangling-append
+		//	      peel + ensureQMDBTreeAtParent. Zero on the plain forward path.
+		//	recov parallel sender recovery. Work that used to be hidden inside
+		//	      exec, one serial secp256k1 recovery per transaction; the miner
+		//	      never pays it because the pool cached the sender at admission.
+		//	exec  pure EVM: the per-transaction ApplyTransaction loop. This is the
+		//	      like-for-like counterpart of the miner's fillTx.
+		//	root  state root #3 (engine.Finalize -> ibs.IntermediateRoot on the
+		//	      LIVE commitment tree) — the counterpart of the miner's finalize,
+		//	      NOT of fillTx. proc is recov+prep+exec+root, i.e. all of Process.
+		//	valid ValidateState: receipt bloom + receipt root.
+		//	write writeBlockWithState in full; "blockwrite phases" breaks it down.
+		{
+			dTotal := dHdr + dBody + time.Since(tIter)
+			fields := []interface{}{
+				"n", blockNumber.Uint64(), "txs", len(blk.Transactions()), "gas", usedGas,
+				"hdr", dHdr, "body", dBody, "align", dAlign,
+				"recov", procPhases.Recover, "prep", procPhases.Prep,
+				"exec", procPhases.Exec, "root", procPhases.Finalize,
+				"proc", dProcess, "valid", dValidate, "write", dWrite, "total", dTotal,
+			}
+			if dTotal >= 5*time.Millisecond {
+				log.Info("blockimport phases", fields...)
+			} else {
+				log.Debug("blockimport phases", fields...)
+			}
+		}
 
 		stats.processed++
 		stats.usedGas += usedGas
@@ -2678,6 +2749,24 @@ func (bc *BlockChain) unwindForReimportTx(n uint64, parentHash types.Hash, autho
 				return cerr
 			}
 			if ch == lineage[i] {
+				// Loud, not silent. When this fires for a CONSENSUS-authorized
+				// switch (the leader's pre-build align, driven by the persisted
+				// LockedQC), the node's consensus state and its applied chain
+				// have forked and block production is wedged permanently — the
+				// failure that stopped a whole 7-node fleet, visible only as a
+				// miner runLoop error. Name the condition and the remedy here,
+				// where the condition is actually detected.
+				if authorizedSwitch {
+					log.Error("CONSENSUS STATE FORKED FROM APPLIED CHAIN: refusing to revert a committed block. "+
+						"The consensus-mandated parent is on a branch that would roll back an already-committed "+
+						"block, so this node cannot build or import on it and will stop producing. This normally "+
+						"means the persisted HotStuff state points at a branch this node never applied. Operator "+
+						"action: stop the node and clear the persisted consensus state with "+
+						"`go run ./cmd/hotstuff-reset -datadir <datadir>/chaindata -apply` (chain data is untouched).",
+						"incoming", n, "incomingParent", fmt.Sprintf("%x", parentHash[:8]),
+						"committedHeight", h, "committedBlock", fmt.Sprintf("%x", lineage[i][:8]),
+						"appliedHead", appliedNum, "committedHead", committedHead)
+				}
 				return fmt.Errorf("branch switch at %d rejected: would revert committed block %d/%x: %w",
 					n, h, lineage[i][:8], consensus.ErrUnknownAncestor)
 			}

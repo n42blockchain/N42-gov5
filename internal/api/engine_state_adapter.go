@@ -48,6 +48,10 @@ import (
 // N42_GAS161 consensus-bypass diagnostic is active (see executeBlock).
 var gas161WarnOnce sync.Once
 
+// noReadCacheLogOnce guards the one-time log emitted when the N42_NO_READCACHE
+// diagnostic disables the cross-block hashed read cache (see executePayloadDetailed).
+var noReadCacheLogOnce sync.Once
+
 // EngineStateAdapter bridges Engine API with persistent state execution.
 type EngineStateAdapter struct {
 	db       kv.RwDB
@@ -87,6 +91,10 @@ type EngineStateAdapter struct {
 	// per-block fsync is replaced by one commit per batch. Single-coordinator
 	// use only (the CL/NewPayload path leaves it nil → unchanged behavior).
 	batchTx kv.RwTx
+
+	// headerHashReader, when set, is the freezer-direct BLOCKHASH source (see
+	// SetHeaderHashReader). Preferred over internalcore.GetHashFn's ParentHash walk.
+	headerHashReader headerHashReader
 
 	// staged: staged catch-up execution. The trc runs writeOnly (writes
 	// HashedAccounts/HashedStorage + changesets, SKIPS per-block CalcTrieRoot),
@@ -137,6 +145,23 @@ func (a *EngineStateAdapter) SetCSFreezerSink(s *ethel.CSFreezerSink) { a.csFree
 // the sync path. nil disables the fetch-based prefetch (the locally stored BAL is
 // still used when present).
 func (a *EngineStateAdapter) SetBALPrefetch(fn func(hash types.Hash) []byte) { a.balPrefetch = fn }
+
+// headerHashReader reads a block header carrying its stored canonical hash — the
+// columnar headerc reader (h.Hash() returns the SetHash-stored value directly,
+// no ParentHash/Bloom reconstruction, no recompute).
+type headerHashReader interface {
+	ReadHeader(blockNum uint64) (*block.Header, error)
+}
+
+// SetHeaderHashReader installs a freezer-direct BLOCKHASH source. When set,
+// BLOCKHASH resolves block n's hash straight from this reader's stored
+// h.Hash() (falling back to the MDBX canonical index for blocks the reader
+// doesn't hold — i.e. blocks imported above the local freezer head). This is the
+// ethexec/witness-block-trace model: it does NOT walk MDBX header.ParentHash
+// fields (internalcore.GetHashFn), so a state-height datadir whose header chain
+// is absent/columnar-stripped resolves BLOCKHASH correctly with zero seeding or
+// field reconstruction. Pass nil to restore the default GetHashFn walk.
+func (a *EngineStateAdapter) SetHeaderHashReader(r headerHashReader) { a.headerHashReader = r }
 
 // PurgeHashedReadCache drops the cross-block read cache. Callers that rewrite
 // hashed state outside the TrieRootComputer's invalidation hooks (e.g. the
@@ -271,7 +296,7 @@ func (a *EngineStateAdapter) WithHashedCanonical(v bool) *EngineStateAdapter {
 // ExecutePayload executes a block from the CL, persists state, verifies root.
 // Returns (valid bool, stateRoot, error).
 func (a *EngineStateAdapter) ExecutePayload(blk *block.Block) (bool, types.Hash, error) {
-	result, err := a.executePayloadDetailed(blk, nil, nil, nil)
+	result, err := a.executePayloadDetailed(blk, nil, nil, nil, false)
 	if err != nil {
 		return false, types.Hash{}, err
 	}
@@ -292,6 +317,18 @@ func (a *EngineStateAdapter) ExecutePayload(blk *block.Block) (bool, types.Hash,
 // during execution (catchup-grade ~3000 blk/s); the full-MPT rebuild
 // VerifyStateRoot is skipped because it OOMs at 25M-state scale.
 func (a *EngineStateAdapter) ExecutePayloadFromWire(blk *block.Block, withdrawals []*Withdrawal) (bool, types.Hash, error) {
+	return a.executePayloadFromWire(blk, withdrawals, false)
+}
+
+// ExecutePayloadFromTrustedColumnar executes a block read from the local
+// columnar freezer. That codec deliberately strips logsBloom while retaining the
+// canonical header hash, so this trusted local-only path may reconstruct a
+// missing all-zero bloom from the already-validated receipts.
+func (a *EngineStateAdapter) ExecutePayloadFromTrustedColumnar(blk *block.Block, withdrawals []*Withdrawal) (bool, types.Hash, error) {
+	return a.executePayloadFromWire(blk, withdrawals, true)
+}
+
+func (a *EngineStateAdapter) executePayloadFromWire(blk *block.Block, withdrawals []*Withdrawal, allowMissingExpectedBloom bool) (bool, types.Hash, error) {
 	var parentBeaconRoot *types.Hash
 	if hdr, _ := blk.Header().(*block.Header); hdr != nil && hdr.ParentBeaconRoot != nil {
 		v := *hdr.ParentBeaconRoot
@@ -300,7 +337,7 @@ func (a *EngineStateAdapter) ExecutePayloadFromWire(blk *block.Block, withdrawal
 	prevFast := a.fastVerify
 	a.fastVerify = true
 	defer func() { a.fastVerify = prevFast }()
-	result, err := a.executePayloadDetailed(blk, parentBeaconRoot, nil, withdrawals)
+	result, err := a.executePayloadDetailed(blk, parentBeaconRoot, nil, withdrawals, allowMissingExpectedBloom)
 	if err != nil {
 		return false, types.Hash{}, err
 	}
@@ -370,7 +407,27 @@ func (a *EngineStateAdapter) recoverSenders(txns []*transaction.Transaction, sig
 	wg.Wait()
 }
 
-func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal) (_ *enginePayloadExecutionResult, retErr error) {
+// isAllZeroBytes reports whether b is empty or all zero.
+func isAllZeroBytes(b []byte) bool {
+	for _, x := range b {
+		if x != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func validateLogsBloom(actual, expected []byte, allowMissingExpected bool) error {
+	if allowMissingExpected && isAllZeroBytes(expected) {
+		return nil
+	}
+	if !bytes.Equal(actual, expected) {
+		return fmt.Errorf("logs bloom mismatch")
+	}
+	return nil
+}
+
+func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal, allowMissingExpectedBloom bool) (_ *enginePayloadExecutionResult, retErr error) {
 	// A failed block leaves the read cache holding values memoized from this
 	// (about to be rolled back) tx — drop them. The batch path additionally
 	// purges on every SetBatchTx.
@@ -407,6 +464,14 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	var reader state.StateReader
 	var writer state.WriterWithChangeSets
 	var revDiff *state.BlockRevDiff // non-nil only in journaled snapshot-direct mode
+	// N42_NO_READCACHE (DIAGNOSTIC): bypass the cross-block hashed read cache so
+	// every account/slot/code read hits the underlying hashed tables directly. Used
+	// to A/B whether a stale cached read causes a divergence. Nil-cache reads are
+	// safe (the reader's memoized-cache calls are nil-guarded → plain keccak +
+	// always-miss; the TrieRootComputer's invalidations are simply not wired below).
+	// Default (unset) = cache on, behavior unchanged. Hoisted to function scope so
+	// both a.hashedCanonical blocks (reader setup + TrieRootComputer) can see it.
+	noReadCache := os.Getenv("N42_NO_READCACHE") == "1"
 	if a.hashedCanonical {
 		// reth-2.2-style: read/execute against hashed state; the dirty hashed
 		// account/storage leaves are persisted by the incremental
@@ -415,14 +480,21 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 		// EIP-7702 delegation designators must reach modules.Code, else a later
 		// block CALLing them reads empty code and diverges (block-160 bug).
 		hr := state.NewHashedStateReader(tx)
-		if a.hashedReadCache == nil {
-			// Cross-block read cache: hot accounts/slots/code hit the Go-heap
-			// LRU instead of a keccak + MDBX cgocall on every access (~35% of
-			// archive catch-up CPU was cursor_get_val). Write invalidation is
-			// wired into the TrieRootComputer below.
-			a.hashedReadCache = state.NewHashedReadCache()
+		if noReadCache {
+			noReadCacheLogOnce.Do(func() {
+				log.Warn("hashedReadCache disabled (N42_NO_READCACHE) — every read hits the underlying hashed tables directly. DIAGNOSTIC ONLY.")
+			})
+			hr.SetCache(nil)
+		} else {
+			if a.hashedReadCache == nil {
+				// Cross-block read cache: hot accounts/slots/code hit the Go-heap
+				// LRU instead of a keccak + MDBX cgocall on every access (~35% of
+				// archive catch-up CPU was cursor_get_val). Write invalidation is
+				// wired into the TrieRootComputer below.
+				a.hashedReadCache = state.NewHashedReadCache()
+			}
+			hr.SetCache(a.hashedReadCache)
 		}
-		hr.SetCache(a.hashedReadCache)
 		reader = hr
 		if a.csFreezerSink != nil {
 			writer = ethel.NewCSFreezerWriter(tx, blockNum, a.csFreezerSink)
@@ -454,7 +526,13 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	if a.hashedCanonical {
 		// Reuse the migrated TrieOfAccounts/TrieOfStorage: O(dirty) per block.
 		trc.SetIncremental(true)
-		trc.SetReadCache(a.hashedReadCache)
+		// Skip wiring the read-cache invalidator when the cache is disabled
+		// (N42_NO_READCACHE) — leaving t.readCache as an untyped nil so its
+		// invalidation guards short-circuit; passing a typed-nil pointer would
+		// make the guards fire on a nil receiver.
+		if !noReadCache {
+			trc.SetReadCache(a.hashedReadCache)
+		}
 		if a.staged {
 			// Staged catch-up: write hashed state but defer the root + TrieOf*
 			// to the per-sub-batch MerkleStageIncremental.
@@ -494,6 +572,21 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 		return rawdb.ReadHeader(tx, canonicalHash, number)
 	}
 	blockHashFunc := internalcore.GetHashFn(header, getHeader)
+	if a.headerHashReader != nil {
+		// Freezer-direct BLOCKHASH (ethexec/witness-block-trace model): return the
+		// stored canonical hash straight from headerc (h.Hash() = SetHash value),
+		// and fall back to the MDBX canonical index for blocks the reader doesn't
+		// hold (imported above the local freezer head). No GetHashFn ParentHash
+		// walk, so a columnar-stripped / seed-less datadir resolves correctly.
+		reader := a.headerHashReader
+		blockHashFunc = func(m uint64) types.Hash {
+			if h, herr := reader.ReadHeader(m); herr == nil && h != nil {
+				return h.Hash()
+			}
+			ch, _ := rawdb.ReadCanonicalHash(tx, m)
+			return ch
+		}
+	}
 
 	gasPool := new(common.GasPool)
 	gasPool.AddGas(blk.GasLimit())
@@ -747,7 +840,9 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 			validationError: fmt.Errorf("receipts root mismatch"),
 		}, nil
 	}
-	if expected != nil && !bytes.Equal(actualBloom.Bytes(), expected.logsBloom) {
+	// Only the explicit trusted-columnar path may reconstruct a bloom omitted by
+	// headerc. Peer and Engine API payloads must match even when they claim zero.
+	if expected != nil && validateLogsBloom(actualBloom.Bytes(), expected.logsBloom, allowMissingExpectedBloom) != nil {
 		if gasDiag {
 			log.Warn("GAS161 logs bloom mismatch", "block", blockNum)
 		}

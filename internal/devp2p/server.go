@@ -3,7 +3,7 @@
 //
 // Package devp2p provides Ethereum devp2p networking for the ETH EL profile.
 // It wraps go-ethereum's p2p library for RLPx transport and peer discovery,
-// implementing eth/68-69 wire protocol for block/tx propagation and sync.
+// implementing eth/68-71 wire protocol for block/tx propagation and sync.
 
 package devp2p
 
@@ -11,6 +11,8 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 
 	gethp2p "github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/enode"
@@ -46,8 +48,19 @@ type Server struct {
 
 // NewServer creates a new devp2p server.
 func NewServer(cfg ServerConfig, handler *EthHandler) *Server {
+	// PulseChain (network=369) forked from Ethereum and shares our discovery
+	// bootnodes AND forkHash (07c9462e) — only networkID differs, and networkID is
+	// NOT in the discv5 ENR, so discovery can't pre-filter it. Its nodes flood our
+	// inbound slots and evict scarce real mainnet peers right after handshake. A
+	// larger pool (plus trusted-pinning confirmed mainnet peers, see Start) keeps
+	// good peers alive. Override with N42_MAX_PEERS.
+	if v := os.Getenv("N42_MAX_PEERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.MaxPeers = n
+		}
+	}
 	if cfg.MaxPeers == 0 {
-		cfg.MaxPeers = 50
+		cfg.MaxPeers = 200
 	}
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = ":30303"
@@ -57,11 +70,27 @@ func NewServer(cfg ServerConfig, handler *EthHandler) *Server {
 
 // Start starts the devp2p server.
 func (s *Server) Start() error {
-	ethProto := gethp2p.Protocol{
-		Name:    "eth",
-		Version: eth69.ETH69,
-		Length:  18,
-		Run:     s.handler.runPeer,
+	// Advertise eth/68 through eth/71. A large share of mainnet peers still speak
+	// only older versions; advertising only the latest drops them at the
+	// Status handshake (their eth/68 Status mis-decodes as eth/69), starving block
+	// download. RLPx negotiates the highest COMMON eth version per peer and runs
+	// that Protocol's Run; runPeer receives the negotiated version and encodes/
+	// decodes the matching Status layout. Versions 69+ share the newer layout.
+	ethProtos := make([]gethp2p.Protocol, 0, len(eth69.ProtocolVersions))
+	for _, v := range eth69.ProtocolVersions {
+		version := v
+		length, err := eth69.GetProtocolLength(version)
+		if err != nil {
+			return err
+		}
+		ethProtos = append(ethProtos, gethp2p.Protocol{
+			Name:    "eth",
+			Version: version,
+			Length:  length,
+			Run: func(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error {
+				return s.handler.runPeer(peer, rw, version)
+			},
+		})
 	}
 	// snap/1 stub — without it every modern mainnet client (Geth /
 	// Nethermind / Erigon / Besu / Pulse / Bera) classifies us as a
@@ -86,7 +115,7 @@ func (s *Server) Start() error {
 			// we don't get penalised on string heuristics.
 			Name:       "Geth/v1.17.2-stable-7c8a8a8a/linux-amd64/go1.23.0",
 			ListenAddr: s.cfg.ListenAddr,
-			Protocols:  []gethp2p.Protocol{ethProto, snapProto},
+			Protocols:  append(ethProtos, snapProto),
 			// DiscoveryV4 + DiscoveryV5 are NOT enabled by default —
 			// without them BootstrapNodes are only used as static peers
 			// and we never walk the DHT to find real serving peers.
@@ -103,6 +132,19 @@ func (s *Server) Start() error {
 			EnableMsgEvents: true,
 		},
 	}
+
+	s.handler.setTrustedCallbacks(
+		func(n *enode.Node) {
+			if n != nil {
+				s.srv.AddTrustedPeer(n)
+			}
+		},
+		func(n *enode.Node) {
+			if n != nil {
+				s.srv.RemoveTrustedPeer(n)
+			}
+		},
+	)
 
 	if err := s.srv.Start(); err != nil {
 		return fmt.Errorf("devp2p start: %w", err)

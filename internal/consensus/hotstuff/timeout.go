@@ -65,8 +65,13 @@ func (e *ConsensusEngine) onTimeout() error {
 		// vote even though this node cast it (observed live: all nodes logged
 		// "voting now" yet no QC formed). The leader's collector treats a
 		// duplicate vote as a no-op, so the re-send is harmless when the first
-		// one did arrive.
-		if h, ok := e.roundState.VotedHashInView(view); ok {
+		// one did arrive. Skipped when we ARE the leader for the view: the
+		// leader's own vote went straight into its local collector and was never
+		// on the wire, so re-sending it would only publish a vote addressed to
+		// ourselves. (The leader now records a vote commitment for its own
+		// proposal — the proposal is signed over the vote message — which is why
+		// this guard is needed.)
+		if h, ok := e.roundState.VotedHashInView(view); ok && !IsLeader(e.myIndex, view, e.validatorSet()) {
 			if verr := e.sendVote(view, h); verr != nil {
 				log.Debug("timeout vote re-send failed", "view", view, "err", verr)
 			}

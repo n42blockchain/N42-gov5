@@ -193,6 +193,19 @@ func (e *ConsensusEngine) tryFormPrepareQC() error {
 	blockHash := qc.BlockHash
 	prepareQCMsg := &PrepareQCMsg{View: view, BlockHash: blockHash, QC: qc.Clone()}
 
+	// Journal the lock just advanced above together with the Round 2 commitment
+	// the leader is about to make (its self commit-vote, which counts toward the
+	// CommitQC) — before either leaves this node. Abstaining on a journal failure
+	// stalls the view, which the pacemaker recovers from; releasing an
+	// unjournalled commitment is not recoverable.
+	if err := e.journalCommitVote(view, blockHash); err != nil {
+		// Release the formed-QC latch so the next arriving vote retries this
+		// step instead of leaving the view wedged behind a PrepareQC that was
+		// built but never broadcast.
+		e.prepareQC = nil
+		return err
+	}
+
 	if err := e.emit(EngineOutput{
 		Type: OutputBroadcast,
 		Message: &ConsensusMsg{

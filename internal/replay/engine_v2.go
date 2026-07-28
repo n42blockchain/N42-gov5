@@ -653,15 +653,15 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 					}
 				}
 			}
-			// Also apply hard-fork allocs and system contracts on top.
-			r := state.NewPlainStateReader(dstTx)
-			w := state.NewPlainStateWriterNoHistory(dstTx)
-			ibs := state.New(r)
-			InitGenesisState(ibs)
-			rules := e.cfg.ChainConfig.Rules(0)
-			if err := ibs.FinalizeTx(rules, w); err != nil {
-				return fmt.Errorf("genesis finalize: %w", err)
-			}
+			// The hard-fork allocation and the Pectra system contracts are NOT
+			// applied here. They belong to the Pectra fork, which activates by
+			// timestamp long after genesis, and writing them here did two wrong
+			// things: it put fork-time state under the genesis header, and it
+			// wrote that state AFTER the header was sealed, so the genesis root
+			// did not cover it. A node initialising the same chainspec therefore
+			// computed a different genesis than replay produced, and could never
+			// validate the replayed chain. See the Pectra activation hook in the
+			// block loop below.
 
 			// MPT: feed all genesis accounts into HPH so the trie contains
 			// the full state from block 0.

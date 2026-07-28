@@ -30,6 +30,16 @@ import (
 )
 
 var (
+	// rpcMetricsLabelsMu guards rpcMetricsLabels. Every served JSON-RPC call
+	// reaches newRPCServingTimerMS from its own handler goroutine, so the
+	// unsynchronized map this used to be crashed the process outright once two
+	// calls for an unseen method raced:
+	//
+	//	fatal error: concurrent map writes
+	//	  jsonrpc.newRPCServingTimerMS metrics.go:52
+	//
+	// Observed on a live validator under concurrent eth_sendRawTransaction load
+	// — a public RPC endpoint is enough to take a node down.
 	rpcMetricsLabelsMu sync.RWMutex
 	rpcMetricsLabels   = map[bool]map[string]string{
 		true:  {},

@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -45,6 +47,11 @@ func TestHiveEngineGenesisFixtureMatchesCurrentGethRoot(t *testing.T) {
 
 	genesisPath := filepath.Join(filepath.Dir(currentFile), "..", "..", "testdata", "hive-engine-genesis.json")
 	genesisJSON, err := os.ReadFile(genesisPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		// See loadHiveEngineGenesisFixture: tests/eth-hive is an external hive
+		// checkout, absent from a clean clone.
+		t.Skipf("hive fixture %s not present — clone ethereum/hive into tests/eth-hive to run this test", genesisPath)
+	}
 	require.NoError(t, err)
 
 	var genesis conf.Genesis
