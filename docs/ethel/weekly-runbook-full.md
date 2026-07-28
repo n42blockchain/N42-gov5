@@ -94,30 +94,63 @@ live qs fleet up (~75 GB) this OOMs — **gracefully stop the fleet first**:
 0..6 | % { C:\N42\N42-gov5\build\bin\n42-reconfig.exe stop --data.dir E:\qs-node$_ --timeout 90s }
 ```
 
-Then migrate (verbatim trie import + verify; ~1h20m; detached):
+Then migrate (verbatim trie import + verify; ~1h20m; detached). **`--dst` must be
+an EMPTY dir** — the phases are Append+resume, so pointing at last week's
+populated `D:/N42-hashed/chaindata` makes them seek to its last key and skip this
+week's source entirely, producing last week's state under this week's head marker.
+Nothing in the gate catches that. Migrate to a `<tip>`-suffixed dir and swap after
+the gate passes, which also keeps last week's copy until the new one is proven:
 
 ```powershell
 Start-Process C:\N42\N42-gov5\build\bin\n42-migrate-reth-hashed.exe -ArgumentList `
-  '--reth','d:/reth2k/db','--dst','D:/N42-hashed/chaindata',
+  '--reth','d:/reth2k/db','--dst','D:/N42-hashed-<tip>/chaindata',
   '--head-block','<reth-head>','--expect-root','<stateRoot@reth-head>' `
   -RedirectStandardOutput D:\weekly-<date>-migrate.log -RedirectStandardError D:\weekly-<date>-migrate.err.log
 ```
 
+Rebuild the binary first (`go build -tags nosqlite,noboltdb -o build/bin/... ./cmd/n42-migrate-reth-hashed`)
+— `build/bin` is not refreshed by anything else and a months-stale binary here
+silently produces a stale encoding.
+
 **Gate**: log shows `PHASE vtrie OK: … root == expect`; `ethel-last-block` =
-reth-head; `ethexec db-stats --datadir D:/N42-hashed/chaindata` tables non-empty.
-Memory is safe as long as **Commit** stays well under the limit (mmap WS is
-reclaimable — watch `\Memory\Committed Bytes`, not "free RAM"). Fresh dst ≈ 156 GB.
+reth-head; `ethexec db-stats --datadir D:/N42-hashed-<tip>/chaindata` tables
+non-empty. Memory is safe as long as **Commit** stays well under the limit (mmap
+WS is reclaimable — watch `\Memory\Committed Bytes`, not "free RAM"). Fresh dst
+≈ 156 GB. Only after the gate: swap `D:/N42-hashed` to the new dir.
+
+`--expect-root` = the stateRoot of `<reth-head>` read from the geth freezer
+(geth must be frozen past it — check with `freezer-heads.exe`):
+
+```bash
+build/bin/geth-hdr-probe.exe -ancient d:/geth/geth/chaindata/ancient/chain -blocks <reth-head>
+```
+
+Sanity-check the printed header against itself: its `number` must equal the block
+asked for and its `parent` must be the previous block's hash.
 
 ### 3b. codes freezer (published, content-addressed)
 
 ```powershell
 Start-Process C:\N42\N42-gov5\build\bin\code-import2fz.exe -ArgumentList `
-  '--db','d:/reth2k/db','--outdir','d:/n42-codes-<tip>' `
+  '--db','d:/reth2k/db','--outdir','d:/n42-codes-<tip>','--coverage-block','<reth-head>','--addr-index=false' `
   -RedirectStandardOutput D:\weekly-<date>-codes.log -RedirectStandardError D:\weekly-<date>-codes.err.log
 ```
 
-Produces `codes.cidx` + `codes.NNNN.cdat` (reads reth Bytecodes, joins
-PlainAccountState). ~2.5 M codes. This is the minimal/full H0 bytecode source.
+Produces `codes.NNNN.cdat` + `codes.hidx` + `codes.hoff` (+ an empty `codes.cidx`,
+which readers open unconditionally). Reads reth Bytecodes straight through — no
+PlainAccountState join. 2026-07-28: 2,599,255 codes, 6.0 GB, 10m41s, `codes.hidx`
+543 KB at 1.71 bits/key.
+
+`--addr-index=false` is the default choice now. Bytecode is content-addressed, so
+the address index only ever existed to serve callers that already had the
+codeHash; building it costs a join of Bytecodes against all ~405 M accounts (tens
+of GB resident, longer than the whole export) and it duplicates each blob once per
+referencing address — 22.5 GB in the 2026-07-22 run against 6.0 GB here. Drop the
+flag only if some consumer that predates `codes.hidx` is still in use.
+
+Verify before publishing: sample keys from the source `Bytecodes` table, read them
+back via `CodesFreezerReader.GetCodeByHash`, and check `keccak(code) == key`.
+2026-07-28: 70,250 sampled, 0 miss, 0 mismatch.
 
 ### 3c. state snapshot — the basis for minimal/full (from reth2k PlainState)
 
