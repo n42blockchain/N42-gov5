@@ -169,6 +169,24 @@ func (r *CodesFreezerReader) GetCode(addr types.Address) ([]byte, error) {
 // every caller verifies keccak(code) == codeHash; do not use this as a
 // membership test.
 func (r *CodesFreezerReader) GetCodeByHash(codeHash types.Hash) ([]byte, error) {
+	compressed, err := r.LookupCompressedByHash(codeHash)
+	if err != nil || compressed == nil {
+		return nil, err
+	}
+	decoded, err := r.zstdDec.DecodeAll(compressed, nil)
+	if err != nil {
+		// A wrong slot yields bytes that are not a valid zstd frame. That is
+		// an expected outcome for an out-of-set hash, not a corruption
+		// signal, so report a miss and let the caller fall through.
+		return nil, nil
+	}
+	return decoded, nil
+}
+
+// LookupCompressedByHash is GetCodeByHash without the decompression: the raw
+// single-frame zstd blob, for servers that ship compressed code over the wire.
+// Returns (nil, nil) on a miss.
+func (r *CodesFreezerReader) LookupCompressedByHash(codeHash types.Hash) ([]byte, error) {
 	fileNum, offset, length, ok := r.hashIdx.lookup(codeHash)
 	if !ok || length == 0 {
 		return nil, nil
@@ -182,14 +200,7 @@ func (r *CodesFreezerReader) GetCodeByHash(codeHash types.Hash) ([]byte, error) 
 		return nil, fmt.Errorf("codes-freezer: read cdat %d at %d (hash %x): %w",
 			fileNum, offset, codeHash[:6], err)
 	}
-	decoded, err := r.zstdDec.DecodeAll(compressed, nil)
-	if err != nil {
-		// A wrong slot yields bytes that are not a valid zstd frame. That is
-		// an expected outcome for an out-of-set hash, not a corruption
-		// signal, so report a miss and let the caller fall through.
-		return nil, nil
-	}
-	return decoded, nil
+	return compressed, nil
 }
 
 // HasHashIndex reports whether the content-addressed index is present.
