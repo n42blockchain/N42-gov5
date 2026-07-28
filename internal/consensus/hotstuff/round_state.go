@@ -26,10 +26,14 @@ type RoundState struct {
 	highestTC           *TimeoutCertificate // highest known TC (SyncInfo piggyback)
 	consecutiveTimeouts uint32
 
-	// Double-vote prevention: track which view we've already voted in.
+	// Double-vote prevention: track which view we've already voted in. These
+	// fields are the node's vote commitment and are journalled to disk BEFORE
+	// the corresponding vote leaves the node (see ConsensusEngine.journalVote),
+	// so a restart mid-view cannot produce a second, conflicting vote.
 	votedInView       ViewNumber // Round 1 (Prepare) vote sent for this view
 	commitVotedInView ViewNumber // Round 2 (Commit) vote sent for this view
 	votedHash         types.Hash // block hash voted for in votedInView
+	commitVotedHash   types.Hash // block hash commit-voted for in commitVotedInView
 }
 
 // NewRoundState creates a new round state starting at view 1.
@@ -142,9 +146,34 @@ func (rs *RoundState) HasCommitVotedInView(view ViewNumber) bool {
 	return rs.commitVotedInView == view && view > 0
 }
 
-// RecordCommitVote records that a Round 2 commit vote was sent for this view.
-func (rs *RoundState) RecordCommitVote(view ViewNumber) {
+// RecordCommitVoteHash records the Round 2 commit vote together with the block
+// hash it covers, so the durable journal can name the exact commitment.
+// (It replaces the former view-only RecordCommitVote: recording a commit vote
+// without its hash cannot be journalled, and every caller now goes through
+// ConsensusEngine.journalCommitVote.)
+func (rs *RoundState) RecordCommitVoteHash(view ViewNumber, hash types.Hash) {
 	rs.commitVotedInView = view
+	rs.commitVotedHash = hash
+}
+
+// VoteCommitments returns the durable vote commitments (Round 1 and Round 2)
+// this node has released. Used to build the persisted ConsensusState.
+func (rs *RoundState) VoteCommitments() (votedView ViewNumber, votedHash types.Hash, commitVotedView ViewNumber, commitVotedHash types.Hash) {
+	return rs.votedInView, rs.votedHash, rs.commitVotedInView, rs.commitVotedHash
+}
+
+// RestoreVoteCommitments reinstates vote commitments recovered from disk.
+// Only ever moves the recorded views FORWARD: a stale record must never be able
+// to unlock a view this node has already voted in during the current process.
+func (rs *RoundState) RestoreVoteCommitments(votedView ViewNumber, votedHash types.Hash, commitVotedView ViewNumber, commitVotedHash types.Hash) {
+	if votedView > rs.votedInView {
+		rs.votedInView = votedView
+		rs.votedHash = votedHash
+	}
+	if commitVotedView > rs.commitVotedInView {
+		rs.commitVotedInView = commitVotedView
+		rs.commitVotedHash = commitVotedHash
+	}
 }
 
 // Timeout transitions to timed-out phase and increments the backoff counter.

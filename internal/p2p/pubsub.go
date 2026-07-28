@@ -11,8 +11,9 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/pkg/errors"
 
-	"github.com/n42blockchain/N42/proto/msg_proto"
 	"github.com/n42blockchain/N42/common/utils"
+	"github.com/n42blockchain/N42/internal/p2p/encoder"
+	"github.com/n42blockchain/N42/proto/msg_proto"
 )
 
 const (
@@ -26,9 +27,6 @@ const (
 
 	gossipSubHeartbeatInterval = 700 * time.Millisecond
 
-	// GossipMaxSize is the maximum allowed gossip message size (1 MiB).
-	GossipMaxSize = 1 << 20
-
 	digestLength      = 4
 	gossipTopicPrefix = "/n42/"
 
@@ -36,6 +34,14 @@ const (
 )
 
 var errInvalidTopic = errors.New("invalid topic format")
+
+// GossipMaxSize is the message-size cap handed to the pubsub router. It tracks
+// the encoder's gossip bound — including N42_MAX_GOSSIP_MB — instead of being
+// pinned at 1 MiB. Pinned, it silently capped the network at the default no
+// matter what the knob said: block producers would size blocks to the raised
+// budget, the encoder would accept them, and libp2p would then refuse to
+// publish, leaving the chain on whatever direct-push path remained.
+func GossipMaxSize() uint64 { return encoder.MaxGossipWireSize() }
 
 // JoinTopic joins a PubSub topic, returning the existing handle if already joined.
 func (s *Service) JoinTopic(topic string, opts ...pubsub.TopicOpt) (*pubsub.Topic, error) {
@@ -128,7 +134,7 @@ func (s *Service) pubsubOptions() []pubsub.Option {
 		}),
 		pubsub.WithSubscriptionFilter(s),
 		pubsub.WithPeerOutboundQueueSize(pubsubQueueSize),
-		pubsub.WithMaxMessageSize(GossipMaxSize),
+		pubsub.WithMaxMessageSize(int(GossipMaxSize())),
 		pubsub.WithValidateQueueSize(pubsubQueueSize),
 		pubsub.WithPeerScore(peerScoringParams()),
 		pubsub.WithPeerScoreInspect(s.peerInspector, time.Minute),

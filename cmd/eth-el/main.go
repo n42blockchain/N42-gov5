@@ -440,6 +440,10 @@ func run(c *cli.Context) error {
 			}
 		}
 		eldcfg.HashedCanonical = c.Bool("hashed-canonical")
+		// Local input freezer: lets the downloader fill BLOCKHASH-window headers
+		// from the on-disk headerc (if any) instead of re-downloading them —
+		// needed when the state marker sits below the local headerc head.
+		eldcfg.FreezerDir = filepath.Join(cfg.DataDir, "chain", "freezer")
 		// snapshot-direct (minimal/full): overlay the warm MDBX on the
 		// immutable H0 snapshot segment. Open it here so the downloader's
 		// adapter reads via WarmOverlayReader + OverlayStateWriter.

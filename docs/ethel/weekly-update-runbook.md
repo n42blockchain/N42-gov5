@@ -137,6 +137,56 @@ build once for ≤4M only; larger sets are auto-gated and pay no rent),
 
 ## 8. Run log
 
+### 2026-07-22 (this run — geth-sourced part; reth-sourced deferred)
+
+Source: geth 1.17.4 ancient frozen **Items=25,587,116** → target last block
+**25,587,115** (prior week 25,503,167; Δ **83,948**). geth was STOPPED (last
+freeze 04:44); freezer-heads is the authority (strips the geth cidx sentinel:
+rawItems 25,587,117 → real 25,587,116).
+
+Both geth-sourced AND reth-sourced steps ran this session (reth2k finished
+syncing mid-session). reth2k head = **25,587,083** (its fixed `--debug.tip`
+`0x00017439…8762`, byte-for-byte == geth's canonical block 25,587,083 hash —
+cross-client verified; 32 blocks behind geth's 25,587,115 freeze, immaterial: the
+follower advances forward from the base state / geth changesets bridge the gap).
+
+- senders (both dirs): 25,503,168 → 25,587,116, ~70 s each @ ~1187 blk/s. ✅
+- headerc: partial-tail seg 3113 rewound, → 25,587,115, 11 segs, 1 s. ✅
+- bodyc: partial tail seg 3113 rewound, → 25,587,115, 354 files, 7m21s
+  (4.32 GB, 28% of raw RLP). ✅
+- receipts: → 25,587,116 (4m20s @ 322 blk/s). ✅
+- replay acctcs/storcs/witness: 25,503,168 → 25,587,115 (~1h9m @ ~15-24 blk/s,
+  async witness-buffer flush the bottleneck; blk/s dips to 15 on heavy-storage
+  tail). All four N42-eth1177 tables Items()=25,587,116; PlainState+Code written
+  as side effect. Clean exit, no anomalies. ✅ (the replay verifies gasUsed
+  per-block inline as it executes, so a clean run to tip is itself the exec gate.)
+- GATES: (a) freezer-heads all four tables = 25,587,116 ✅; (b) ethel-last-block
+  = 25,587,115 ✅. (c) witness spot-check via `witness-block-trace` **could not
+  run**: the tool is regressed — it fails with witness-stream misalignment
+  ("nonce too high state:0") even on a prior-verified FROZEN block (25,490,000,
+  which logged gas diff +0 on 2026-07-10 and whose witness is unchanged). Both
+  the stale May-10 binary and a fresh rebuild fail identically → tool-side
+  regression, NOT this week's data. `witness-replay` is a from-0 contiguous
+  builder (alignOnResume rejects a mid-range fresh-output spot-check), so it's
+  not a drop-in either. Flagged for separate investigation. Full authoritative
+  `verify-root` (~1h) available if extra assurance wanted; not auto-run (clean
+  replay, fleet box carrying the live qs consensus fleet).
+- **N42-hashed (§6, reth-sourced)**: `n42-migrate-reth-hashed --reth d:/reth2k/db
+  --dst D:/N42-hashed/chaindata --head-block 25587083 --expect-root 0x61099c71…5357`.
+  Fleet gracefully stopped first (`n42-reconfig stop --data.dir E:\qs-nodeN` ×7,
+  CTRL_BREAK) to free RAM — the migration WS peaked ~102 GB of reclaimable MDBX
+  mmap (Commit stayed 40/157 GB, no OOM; with the fleet up this would have OOM'd,
+  validating the stop). Phases (verbatim, ~1h20m): acc 404,233,408 / sto
+  1,614,514,021 (badSub 0) / tacc 30,200,591 / tsto 142,070,390 (badSub 0) / code
+  2,583,669 (decodeFail 0) / **vtrie OK: root == expect** / head. Fresh
+  D:/N42-hashed/chaindata = 156 GB; ethel-last-block = 25,587,083. ✅ GATE PASS.
+- codes freezer (§4, published n42-codes-<tip>): reth Bytecodes ARE now in the
+  N42-hashed Code table (2,583,669). Separate content-addressed freezer export
+  (for minimal/full clients) TBD — assess if the coverage marker needs bumping to
+  25,587,083 this week.
+- NOT run: DATC sr merge (§5, no DATC head advance), snapshot/anchors/manifests.
+  geth left STOPPED; live qs fleet gracefully stopped for the migration (restart TBD).
+
 ### 2026-07-10 (this run)
 - Source: geth ancient frozen **25,503,168** (prior week 25,439,371; Δ 63,797).
   geth+lighthouse were DOWN since the 00:37 OOM (see ckpt-v2 memory) — tip is

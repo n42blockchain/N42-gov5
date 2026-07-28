@@ -117,8 +117,28 @@ func (c ConsensusType) UsesBorTransferMode() bool {
 // ---------------------------------------------------------------------------
 
 var (
+	// MainnetGenesisHash and TestnetGenesisHash are the DEPLOYED identities of
+	// the two real networks. They no longer equal what WriteGenesisBlock
+	// computes from the chainspec, because the header struct evolved after
+	// those chains launched; the constant is what peers expect on the wire, so
+	// it stays. See GenesisHashByChainName.
 	MainnetGenesisHash = types.HexToHash("0x594aad383881f3af7a4e7ecfa0f07589f0211a9794bb4ff105ae13d1360e497f")
 	TestnetGenesisHash = types.HexToHash("0x5c0555d9ec963f58c63112862294e7e4836b12802304c23f2ec480a8f55cc5bb")
+
+	// The replay-built chains each carry their OWN genesis, computed from their
+	// own chainspec and alloc. They used to share MainnetGenesisHash, which
+	// collapsed their identities: the p2p fork digest is the first four bytes
+	// of this value, so six distinct networks — including chainId 95 — all
+	// advertised /n42/594aad38/ and their Status handshakes accepted each
+	// other, because the handshake compares only the fork digest and carries no
+	// chain id. TestGenesisHashesMatchChainspecs pins each of these against a
+	// freshly computed genesis, so they cannot drift again.
+	MainnetV2GenesisHash            = types.HexToHash("0x005d94ae40f0ec0b1cac522420a687d30f078e8d1717841e6a5e9f7257f873ea")
+	MainnetMPTGenesisHash           = types.HexToHash("0x005d94ae40f0ec0b1cac522420a687d30f078e8d1717841e6a5e9f7257f873ea")
+	MainnetV2StaggeredGenesisHash   = types.HexToHash("0x3f833433dcdd45938946ab7953aa35a926898de3ccee8b4fbe6c541d51e77f80")
+	MainnetQMDBGenesisHash          = types.HexToHash("0x5fcf94b7a5e7e337005c4b6333904983d9e5aa97e950bf1b63d42fb0be81ee69")
+	MainnetQMDBStaggeredGenesisHash = types.HexToHash("0xa2d2ff5d814552bb9a113b68ad7ed2b824fbb52caed42dbe573068845b57be99")
+	QSEpochTestGenesisHash          = types.HexToHash("0xb0ff0c044f867741ab595d2756cc5cfb873cff42c6f2ebb913ac4a73a6ad5271")
 )
 
 // ---------------------------------------------------------------------------
@@ -507,6 +527,11 @@ type HotStuffConfig struct {
 	// well-known dev account.
 	DevFaucetAddress *types.Address `json:"devFaucetAddress,omitempty"`
 
+	// EthELCompat disables N42-native reward application so blocks are
+	// representable by the standard Ethereum Engine API execution model.
+	// Consensus-critical: all validators must use the same chainspec value.
+	EthELCompat bool `json:"ethELCompat,omitempty"`
+
 	// TwoPhaseVoteGate moves the execution guarantee from Round 1 to Round 2
 	// (order-then-execute): Round-1 prepare votes fire on static validation,
 	// decoupling view progress from execution latency; the Round-2 CommitVote
@@ -654,15 +679,17 @@ func GenesisHashByChainName(chain string) *types.Hash {
 	case networkname.TestnetChainName, networkname.N42TestnetAlias:
 		return &TestnetGenesisHash
 	case "mainnet_v2":
-		return &MainnetGenesisHash
+		return &MainnetV2GenesisHash
+	case "mainnet_mpt":
+		return &MainnetMPTGenesisHash
 	case "mainnet_v2_staggered":
-		return &MainnetGenesisHash
+		return &MainnetV2StaggeredGenesisHash
 	case "mainnet_qmdb":
-		return &MainnetGenesisHash
+		return &MainnetQMDBGenesisHash
 	case "mainnet_qmdb_staggered":
-		return &MainnetGenesisHash
+		return &MainnetQMDBStaggeredGenesisHash
 	case "qs_epoch_test":
-		return &MainnetGenesisHash
+		return &QSEpochTestGenesisHash
 	case networkname.EthereumMainnetChainName:
 		return &EthereumMainnetGenesisHash
 	case networkname.EthereumSepoliaChainName, networkname.EthereumTestnetAlias:

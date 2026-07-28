@@ -57,6 +57,14 @@ const (
 
 var extraMagic = [extraMagicLen]byte{'N', '4', '2', 'H'}
 
+var ethELCompatLogOnce sync.Once
+
+// ethELCompatEnabled is consensus configuration, never a process-local
+// environment switch: every validator must apply identical reward semantics.
+func ethELCompatEnabled(cfg *params.ChainConfig) bool {
+	return cfg != nil && cfg.HotStuff != nil && cfg.HotStuff.EthELCompat
+}
+
 // RewardFunc computes and applies block rewards. Injected by node.go to avoid
 // circular dependency between hotstuff and apos packages.
 type RewardFunc func(chainConfig *params.ChainConfig, ibs *state.IntraBlockState, header *block.Header, chain consensus.N42ChainHeaderReader) ([]*block.Reward, map[types.Address]*uint256.Int, error)
@@ -571,9 +579,10 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 	// difficulty. Zero matches the post-merge/PoS convention (EIP-3675: a non-PoW
 	// block carries difficulty=0 alongside nonce=0 and ommersHash=EmptyUncleHash),
 	// lets ForkChoice.ReorgNeeded fall through to its height-based virtual-TD path,
-	// and lets the compact header codec omit the field entirely (it is stored only
-	// when non-zero). A non-zero placeholder here was a vestige of the Clique-style
-	// in-turn/no-turn difficulty that BFT consensus does not use.
+	// lets the compact header codec omit the field entirely, and ensures the block
+	// round-trips through the Engine API exactly as it does in the Rust/reth
+	// client. A non-zero placeholder was a vestige of Clique-style in-turn/no-turn
+	// difficulty that BFT consensus does not use.
 	header.Difficulty = uint256.NewInt(0)
 
 	// Encode view number in extra-data.
@@ -652,17 +661,23 @@ func (h *HotStuff) Finalize(chain consensus.ChainHeaderReader, iHeader block.IHe
 	var rewards []*block.Reward
 	var unpayMap map[types.Address]*uint256.Int
 
-	if h.rewardFn == nil {
-		return nil, nil, errors.New("hotstuff: reward function not set; call SetRewardFunc before block production")
-	}
-	n42Chain, ok := chain.(consensus.N42ChainHeaderReader)
-	if !ok {
-		return nil, nil, errors.New("hotstuff reward path requires n42 chain reward reader")
-	}
-	var err error
-	rewards, unpayMap, err = h.rewardFn(h.chainConfig, ibs, header, n42Chain)
-	if err != nil {
-		return nil, nil, err
+	if ethELCompatEnabled(h.chainConfig) {
+		ethELCompatLogOnce.Do(func() {
+			log.Warn("ETH-EL compatibility era enabled: native block rewards are disabled")
+		})
+	} else {
+		if h.rewardFn == nil {
+			return nil, nil, errors.New("hotstuff: reward function not set; call SetRewardFunc before block production")
+		}
+		n42Chain, ok := chain.(consensus.N42ChainHeaderReader)
+		if !ok {
+			return nil, nil, errors.New("hotstuff reward path requires n42 chain reward reader")
+		}
+		var err error
+		rewards, unpayMap, err = h.rewardFn(h.chainConfig, ibs, header, n42Chain)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 
 	// Dev-chain fixed block reward (chainspec hotstuff.devBlockReward): credit
@@ -671,7 +686,7 @@ func (h *HotStuff) Finalize(chain consensus.ChainHeaderReader, iHeader block.IHe
 	// (the txgen faucet loop needs a non-zero source). Consensus-relevant:
 	// runs identically on the build and the verify path, so the state root
 	// carries it and all nodes must share the chainspec. Zero = disabled.
-	if h.chainConfig.HotStuff != nil && h.chainConfig.HotStuff.DevBlockReward > 0 {
+	if !ethELCompatEnabled(h.chainConfig) && h.chainConfig.HotStuff != nil && h.chainConfig.HotStuff.DevBlockReward > 0 {
 		amount := uint256.NewInt(h.chainConfig.HotStuff.DevBlockReward)
 		ibs.AddBalance(header.Coinbase, amount)
 		rewards = append(rewards, &block.Reward{Address: header.Coinbase, Amount: amount})
@@ -833,7 +848,8 @@ func (h *HotStuff) SealHash(iHeader block.IHeader) types.Hash {
 
 // CalcDifficulty always returns 0 for HotStuff: block ordering is by view number
 // and canonicalization is by commit authority, not total difficulty. Zero is the
-// post-merge/PoS convention and keeps headers consistent with their zero ommers.
+// post-merge/PoS convention, keeps headers consistent with their zero ommers, and
+// preserves Engine API compatibility with the Rust/reth client.
 func (h *HotStuff) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, parent block.IHeader) *uint256.Int {
 	return uint256.NewInt(0)
 }
