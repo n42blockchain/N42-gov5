@@ -59,6 +59,7 @@ type CodesFreezerReader struct {
 	sizes   [maxCodesFiles]atomic.Int64
 	openMu  sync.Mutex // guards the cold-open path only
 	zstdDec *zstd.Decoder
+	hashIdx *codesHashIndex // optional content-addressed index; nil when absent
 }
 
 // NewCodesFreezerReader opens the codes.cidx file in dir and loads its
@@ -105,10 +106,18 @@ func NewCodesFreezerReader(dir string) (*CodesFreezerReader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("zstd reader: %w", err)
 	}
+	// Optional content-addressed index. Absent files are not an error: the
+	// reader then behaves exactly as before this index existed.
+	hashIdx, err := openCodesHashIndex(dir)
+	if err != nil {
+		dec.Close()
+		return nil, err
+	}
 	return &CodesFreezerReader{
 		dir:     dir,
 		entries: entries,
 		zstdDec: dec,
+		hashIdx: hashIdx,
 	}, nil
 }
 
@@ -135,6 +144,8 @@ func (r *CodesFreezerReader) Close() {
 		r.zstdDec.Close()
 		r.zstdDec = nil
 	}
+	r.hashIdx.close()
+	r.hashIdx = nil
 }
 
 // Items returns the number of contracts in the index (for diagnostics).
@@ -147,6 +158,42 @@ func (r *CodesFreezerReader) Items() int { return len(r.entries) }
 func (r *CodesFreezerReader) GetCode(addr types.Address) ([]byte, error) {
 	return r.LookupByAddress(addr)
 }
+
+// GetCodeByHash implements modules/state.CodeByHashSource: the
+// content-addressed path, served from the optional codes.hidx MPHF. Returns
+// (nil, nil) when the hash index is absent or the hash is not in it, so the
+// caller falls back to the address index and then to MDBX.
+//
+// A hash outside the build set can land on another entry's slot rather than
+// missing cleanly — the MPHF stores no keys. That is safe here only because
+// every caller verifies keccak(code) == codeHash; do not use this as a
+// membership test.
+func (r *CodesFreezerReader) GetCodeByHash(codeHash types.Hash) ([]byte, error) {
+	fileNum, offset, length, ok := r.hashIdx.lookup(codeHash)
+	if !ok || length == 0 {
+		return nil, nil
+	}
+	f, err := r.openFile(fileNum)
+	if err != nil {
+		return nil, err
+	}
+	compressed := make([]byte, length)
+	if _, err := f.ReadAt(compressed, int64(offset)); err != nil {
+		return nil, fmt.Errorf("codes-freezer: read cdat %d at %d (hash %x): %w",
+			fileNum, offset, codeHash[:6], err)
+	}
+	decoded, err := r.zstdDec.DecodeAll(compressed, nil)
+	if err != nil {
+		// A wrong slot yields bytes that are not a valid zstd frame. That is
+		// an expected outcome for an out-of-set hash, not a corruption
+		// signal, so report a miss and let the caller fall through.
+		return nil, nil
+	}
+	return decoded, nil
+}
+
+// HasHashIndex reports whether the content-addressed index is present.
+func (r *CodesFreezerReader) HasHashIndex() bool { return r.hashIdx != nil }
 
 // LookupByAddress returns the bytecode for addr, or nil if not present.
 func (r *CodesFreezerReader) LookupByAddress(addr types.Address) ([]byte, error) {
