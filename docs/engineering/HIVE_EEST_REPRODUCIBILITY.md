@@ -14,23 +14,24 @@
 
 这些改动的目标不是“为测试写特判”，而是把 Prague/Cancun 相关的 block hook、system contract 地址、部署字节码和 devnet 初始化收成共享入口，减少今后复测时出现“代码过了，但 Hive 用的还是旧路径/旧副本”的漂移。
 
-## 当前记录状态（2026-07-27）
+## 当前记录状态（2026-07-28）
 
-2026-07-27 已重新同步并使用 `tests/eth-hive` 最新主分支（`a74a5a70`）进行复跑尝试。`tests/eth-hive` 与本仓 `internal/api`、`conf` 的 16 个 hive genesis 相关回归在本地环境使用固定 fixture 均已通过；EEST 全量 Prague 运行在本机仍停在 client ready 检查阶段，尚未形成完整通过 run。
+已同步到最新：
 
-当前仓库内可审计的结果产物显示：
+- `tests/eth-hive`: `a74a5a70`
+- `tests/eth-tests/execution-spec-tests`: `main`（`10eaa63d`）
 
-- Hive `engine-auth` 已绿：`8/8 pass`
-- EEST broad consume-engine shard 已绿：
-  - Paris+Shanghai：`3573 passed`（`2026-04-13`）
-  - Cancun：`17783 passed`（`2026-04-13`）
-  - Prague：`20878 passed`（`2026-04-14`）
-  - Osaka：`21583 passed`（`2026-04-15`）
+本地复核结果：
 
-需要单独注意两点：
+- `go test -tags nosqlite,noboltdb -count=1 ./internal/api/ ./conf/` 通过，16 个 hive fixture 相关测试已恢复可跑。
+- `execution-spec-tests` 单条 `consume-engine` 用例重跑（`stable@latest`）在 6 分多失败，失败点为执行期连接超时：
+  - `HTTPConnectionPool(host='172.17.0.4', port=8551): ConnectTimeout`
 
-- `osaka` 的当前绿测口径是脚本默认的 `develop@latest`，不是 `stable@latest`
-- `tests/results/eest-shards/` 里仍有少量不完整产物目录，说明“结果已收口”不等于“结果归档/门禁自动化已完全收口”
+与 `connect` 相关的关键判断：`tests/eth-hive` 当前 API 的 `StartNodeResponse` 仅返回 `id` 与 `ip`（未包含 `rpcUrl`/`engineUrl`），在 macOS 上容器 `172.17.x.x` 直连仍不稳定；当前最小复现路径不在测试期望哈希层面。
+
+对应接口定义：
+
+- `tests/eth-hive/internal/simapi/simapi.go`：`StartNodeResponse{ID, IP}`
 
 ## 复测时必须满足的前提
 
