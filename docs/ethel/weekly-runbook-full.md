@@ -182,12 +182,14 @@ it's missing, so existing E:\qs-node0..6 just restart. Verify: 20012..20018
 ## 4. Build eth-el (once, or when the tree changed)
 
 ```bash
-cd C:/N42/N42-gov5 && go build -tags "nosqlite,noboltdb" -o build/bin/eth-el.exe ./cmd/eth-el
+cd C:/N42/N42-gov5 && go build -tags "nosqlite,noboltdb,n42el" -o build/bin/eth-el.exe ./cmd/eth-el
 ```
 
 Rebuild each week so eth-el's hashed-canonical reader matches the current
-`n42-migrate-reth-hashed` format. Add `-tags n42el` ONLY if you need the embedded
-Caplin CL; the self-contained test below uses `--eldevp2p.enabled` and doesn't.
+`n42-migrate-reth-hashed` format. `n42el` is **required** — without it the node
+starts and then dies with `start el-devp2p: eldevp2p requires building with -tags
+n42el`, so the three-mode test cannot run. (Earlier revisions said the tag was
+only for the embedded Caplin CL; that is wrong, `--eldevp2p.enabled` needs it too.)
 
 ---
 
@@ -198,20 +200,25 @@ All three run on E: copies. Ports: pick non-fleet ports (fleet uses http
 eth-el requires MDBX at `<datadir>/chaindata/mdbx.dat`, freezer at
 `<datadir>/chain/freezer`, snapshot segs at `<datadir>/snapshot`.
 
-> **MANDATORY — seed the BLOCKHASH window (all three modes).** N42's `BLOCKHASH`
-> opcode resolves via `getHeader` (canonical header lookup), **not** the EIP-2935
-> contract. A hashed-canonical/migrated datadir has state but **no header chain
-> below the head**, so `BLOCKHASH(n)` of any pre-migration block returns **zero** —
-> a wrong `gasUsed`/state root that slips past the root check (root doesn't commit
-> headers). Every mode's `<datadir>/chain/freezer` **must contain `headerc.*`
-> covering at least `[head-256, head]`** (full-history headerc is fine). With it,
-> the pre-loop `backfillBlockhashWindow(ctx,false)` fills the window from local
-> headerc with **zero peers** → `backfilled=true` → the import gate never blocks.
-> Without it the node depends on peers serving 256-block-old headers and the import
-> gate defers catch-up (log: `deferring import — blockhash-window not yet
-> backfilled have=X missing=Y`) until they do — which mainnet peers often won't.
-> Proven by `n42-hashed-exec-check --fill-headers` (block 25587088 diverged −49582
-> with the window empty; gas+root matched once seeded).
+> **MANDATORY — seed `headerc.*` (all three modes).** Every mode's
+> `<datadir>/chain/freezer` **must contain `headerc.*` covering at least
+> `[head-256, head]`** (full-history headerc is fine). It serves two things:
+>
+> - **`BLOCKHASH`**, which resolves *freezer-direct* — the adapter returns each
+>   ancestor's stored `h.Hash()` straight from headerc. A migrated datadir has
+>   state but no header chain below its head, so with no headerc `BLOCKHASH(n)`
+>   returns **zero**: a wrong `gasUsed`/state root that slips past the root check
+>   (the root does not commit headers). Proven by `n42-hashed-exec-check
+>   --fill-headers` — block 25587088 diverged −49582 with headerc absent, gas+root
+>   matched once present.
+> - **`canonical[head]`**, which `seedCanonicalHead` writes from the same stored
+>   hash at startup. The migration writes state tables and the progress marker and
+>   nothing else, so without this the peer loop's first parent-link check fails
+>   with `missing canonical parent hash at <head>` and every round imports 0.
+>
+> (Superseded 2026-07-28: earlier revisions described a pre-loop
+> `backfillBlockhashWindow` and a `deferring import — blockhash-window not yet
+> backfilled` gate. `d82ddb13` removed both when `BLOCKHASH` went freezer-direct.)
 
 ### ARCHIVE (ready as soon as §3a lands)
 
@@ -221,9 +228,9 @@ has NO header chain — you MUST also seed `headerc.*` into `chain/freezer`** (s
 the mandatory callout above), or `BLOCKHASH` returns zero and catch-up diverges:
 
 ```powershell
-robocopy D:\N42-hashed\chaindata E:\ethel-archive-test\chaindata /E /MT:16   # ~156 GB
-robocopy D:\n42-eth1 E:\ethel-archive-test\chain\freezer headerc.* /MT:16    # BLOCKHASH window seed (REQUIRED)
-C:\N42\N42-gov5\build\bin\eth-el.exe --datadir E:/ethel-archive-test --hashed-canonical `
+robocopy D:\N42-hashed-<tip>\chaindata E:\ethel-archive-<tip>\chaindata /E /MT:16   # ~156 GB
+robocopy D:\n42-eth1\chain\freezer E:\ethel-archive-<tip>\chain\freezer headerc.* /MT:8   # REQUIRED
+C:\N42\N42-gov5\build\bin\eth-el.exe --datadir E:/ethel-archive-<tip> --hashed-canonical `
   --bootstrap.enabled=false --eldevp2p.enabled --eldevp2p.listen :30403 --engine.enabled=false `
   --catch-up.mode auto --publicrpc.enabled --publicrpc.port 20115
 ```
