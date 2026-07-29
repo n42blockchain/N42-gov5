@@ -214,7 +214,7 @@ func (s *PlainState) ReadAccountCode(address types.Address, codeHash types.Hash)
 	// codes.cdat preferred path — see PlainStateReader.ReadAccountCode
 	// for the rationale and the keccak-verify trade-off.
 	if s.codeSrc != nil {
-		code, err := s.codeSrc.GetCode(address)
+		code, err := CodeFromSource(s.codeSrc, address, codeHash)
 		if err != nil {
 			return nil, err
 		}

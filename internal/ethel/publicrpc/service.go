@@ -24,6 +24,7 @@ import (
 
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/internal/ethel/rpccaps"
 	"github.com/n42blockchain/N42/internal/ethel/snapshotreader"
 	"github.com/n42blockchain/N42/internal/tracers"
@@ -233,6 +234,13 @@ func headBlockNumber(tx kv.Tx) uint64 {
 		if n := rawdb.ReadHeaderNumber(tx, hash); n != nil {
 			return *n
 		}
+	}
+	// eldevp2p advances the chain without writing either of the above, so on
+	// those datadirs both lookups miss and eth_blockNumber would report 0 for a
+	// node that is fully caught up — including to the weekly runbook's own
+	// external check. Fall back to the marker eldevp2p does write.
+	if n, ok := ethel.ReadHeadMarker(tx); ok {
+		return n
 	}
 	return 0
 }

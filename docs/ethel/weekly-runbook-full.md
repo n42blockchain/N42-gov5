@@ -94,30 +94,63 @@ live qs fleet up (~75 GB) this OOMs — **gracefully stop the fleet first**:
 0..6 | % { C:\N42\N42-gov5\build\bin\n42-reconfig.exe stop --data.dir E:\qs-node$_ --timeout 90s }
 ```
 
-Then migrate (verbatim trie import + verify; ~1h20m; detached):
+Then migrate (verbatim trie import + verify; ~1h20m; detached). **`--dst` must be
+an EMPTY dir** — the phases are Append+resume, so pointing at last week's
+populated `D:/N42-hashed/chaindata` makes them seek to its last key and skip this
+week's source entirely, producing last week's state under this week's head marker.
+Nothing in the gate catches that. Migrate to a `<tip>`-suffixed dir and swap after
+the gate passes, which also keeps last week's copy until the new one is proven:
 
 ```powershell
 Start-Process C:\N42\N42-gov5\build\bin\n42-migrate-reth-hashed.exe -ArgumentList `
-  '--reth','d:/reth2k/db','--dst','D:/N42-hashed/chaindata',
+  '--reth','d:/reth2k/db','--dst','D:/N42-hashed-<tip>/chaindata',
   '--head-block','<reth-head>','--expect-root','<stateRoot@reth-head>' `
   -RedirectStandardOutput D:\weekly-<date>-migrate.log -RedirectStandardError D:\weekly-<date>-migrate.err.log
 ```
 
+Rebuild the binary first (`go build -tags nosqlite,noboltdb -o build/bin/... ./cmd/n42-migrate-reth-hashed`)
+— `build/bin` is not refreshed by anything else and a months-stale binary here
+silently produces a stale encoding.
+
 **Gate**: log shows `PHASE vtrie OK: … root == expect`; `ethel-last-block` =
-reth-head; `ethexec db-stats --datadir D:/N42-hashed/chaindata` tables non-empty.
-Memory is safe as long as **Commit** stays well under the limit (mmap WS is
-reclaimable — watch `\Memory\Committed Bytes`, not "free RAM"). Fresh dst ≈ 156 GB.
+reth-head; `ethexec db-stats --datadir D:/N42-hashed-<tip>/chaindata` tables
+non-empty. Memory is safe as long as **Commit** stays well under the limit (mmap
+WS is reclaimable — watch `\Memory\Committed Bytes`, not "free RAM"). Fresh dst
+≈ 156 GB. Only after the gate: swap `D:/N42-hashed` to the new dir.
+
+`--expect-root` = the stateRoot of `<reth-head>` read from the geth freezer
+(geth must be frozen past it — check with `freezer-heads.exe`):
+
+```bash
+build/bin/geth-hdr-probe.exe -ancient d:/geth/geth/chaindata/ancient/chain -blocks <reth-head>
+```
+
+Sanity-check the printed header against itself: its `number` must equal the block
+asked for and its `parent` must be the previous block's hash.
 
 ### 3b. codes freezer (published, content-addressed)
 
 ```powershell
 Start-Process C:\N42\N42-gov5\build\bin\code-import2fz.exe -ArgumentList `
-  '--db','d:/reth2k/db','--outdir','d:/n42-codes-<tip>' `
+  '--db','d:/reth2k/db','--outdir','d:/n42-codes-<tip>','--coverage-block','<reth-head>','--addr-index=false' `
   -RedirectStandardOutput D:\weekly-<date>-codes.log -RedirectStandardError D:\weekly-<date>-codes.err.log
 ```
 
-Produces `codes.cidx` + `codes.NNNN.cdat` (reads reth Bytecodes, joins
-PlainAccountState). ~2.5 M codes. This is the minimal/full H0 bytecode source.
+Produces `codes.NNNN.cdat` + `codes.hidx` + `codes.hoff` (+ an empty `codes.cidx`,
+which readers open unconditionally). Reads reth Bytecodes straight through — no
+PlainAccountState join. 2026-07-28: 2,599,255 codes, 6.0 GB, 10m41s, `codes.hidx`
+543 KB at 1.71 bits/key.
+
+`--addr-index=false` is the default choice now. Bytecode is content-addressed, so
+the address index only ever existed to serve callers that already had the
+codeHash; building it costs a join of Bytecodes against all ~405 M accounts (tens
+of GB resident, longer than the whole export) and it duplicates each blob once per
+referencing address — 22.5 GB in the 2026-07-22 run against 6.0 GB here. Drop the
+flag only if some consumer that predates `codes.hidx` is still in use.
+
+Verify before publishing: sample keys from the source `Bytecodes` table, read them
+back via `CodesFreezerReader.GetCodeByHash`, and check `keccak(code) == key`.
+2026-07-28: 70,250 sampled, 0 miss, 0 mismatch.
 
 ### 3c. state snapshot — the basis for minimal/full (from reth2k PlainState)
 
@@ -149,12 +182,14 @@ it's missing, so existing E:\qs-node0..6 just restart. Verify: 20012..20018
 ## 4. Build eth-el (once, or when the tree changed)
 
 ```bash
-cd C:/N42/N42-gov5 && go build -tags "nosqlite,noboltdb" -o build/bin/eth-el.exe ./cmd/eth-el
+cd C:/N42/N42-gov5 && go build -tags "nosqlite,noboltdb,n42el" -o build/bin/eth-el.exe ./cmd/eth-el
 ```
 
 Rebuild each week so eth-el's hashed-canonical reader matches the current
-`n42-migrate-reth-hashed` format. Add `-tags n42el` ONLY if you need the embedded
-Caplin CL; the self-contained test below uses `--eldevp2p.enabled` and doesn't.
+`n42-migrate-reth-hashed` format. `n42el` is **required** — without it the node
+starts and then dies with `start el-devp2p: eldevp2p requires building with -tags
+n42el`, so the three-mode test cannot run. (Earlier revisions said the tag was
+only for the embedded Caplin CL; that is wrong, `--eldevp2p.enabled` needs it too.)
 
 ---
 
@@ -165,20 +200,25 @@ All three run on E: copies. Ports: pick non-fleet ports (fleet uses http
 eth-el requires MDBX at `<datadir>/chaindata/mdbx.dat`, freezer at
 `<datadir>/chain/freezer`, snapshot segs at `<datadir>/snapshot`.
 
-> **MANDATORY — seed the BLOCKHASH window (all three modes).** N42's `BLOCKHASH`
-> opcode resolves via `getHeader` (canonical header lookup), **not** the EIP-2935
-> contract. A hashed-canonical/migrated datadir has state but **no header chain
-> below the head**, so `BLOCKHASH(n)` of any pre-migration block returns **zero** —
-> a wrong `gasUsed`/state root that slips past the root check (root doesn't commit
-> headers). Every mode's `<datadir>/chain/freezer` **must contain `headerc.*`
-> covering at least `[head-256, head]`** (full-history headerc is fine). With it,
-> the pre-loop `backfillBlockhashWindow(ctx,false)` fills the window from local
-> headerc with **zero peers** → `backfilled=true` → the import gate never blocks.
-> Without it the node depends on peers serving 256-block-old headers and the import
-> gate defers catch-up (log: `deferring import — blockhash-window not yet
-> backfilled have=X missing=Y`) until they do — which mainnet peers often won't.
-> Proven by `n42-hashed-exec-check --fill-headers` (block 25587088 diverged −49582
-> with the window empty; gas+root matched once seeded).
+> **MANDATORY — seed `headerc.*` (all three modes).** Every mode's
+> `<datadir>/chain/freezer` **must contain `headerc.*` covering at least
+> `[head-256, head]`** (full-history headerc is fine). It serves two things:
+>
+> - **`BLOCKHASH`**, which resolves *freezer-direct* — the adapter returns each
+>   ancestor's stored `h.Hash()` straight from headerc. A migrated datadir has
+>   state but no header chain below its head, so with no headerc `BLOCKHASH(n)`
+>   returns **zero**: a wrong `gasUsed`/state root that slips past the root check
+>   (the root does not commit headers). Proven by `n42-hashed-exec-check
+>   --fill-headers` — block 25587088 diverged −49582 with headerc absent, gas+root
+>   matched once present.
+> - **`canonical[head]`**, which `seedCanonicalHead` writes from the same stored
+>   hash at startup. The migration writes state tables and the progress marker and
+>   nothing else, so without this the peer loop's first parent-link check fails
+>   with `missing canonical parent hash at <head>` and every round imports 0.
+>
+> (Superseded 2026-07-28: earlier revisions described a pre-loop
+> `backfillBlockhashWindow` and a `deferring import — blockhash-window not yet
+> backfilled` gate. `d82ddb13` removed both when `BLOCKHASH` went freezer-direct.)
 
 ### ARCHIVE (ready as soon as §3a lands)
 
@@ -188,34 +228,60 @@ has NO header chain — you MUST also seed `headerc.*` into `chain/freezer`** (s
 the mandatory callout above), or `BLOCKHASH` returns zero and catch-up diverges:
 
 ```powershell
-robocopy D:\N42-hashed\chaindata E:\ethel-archive-test\chaindata /E /MT:16   # ~156 GB
-robocopy D:\n42-eth1 E:\ethel-archive-test\chain\freezer headerc.* /MT:16    # BLOCKHASH window seed (REQUIRED)
-C:\N42\N42-gov5\build\bin\eth-el.exe --datadir E:/ethel-archive-test --hashed-canonical `
+robocopy D:\N42-hashed-<tip>\chaindata E:\ethel-archive-<tip>\chaindata /E /MT:16   # ~156 GB
+robocopy D:\n42-eth1\chain\freezer E:\ethel-archive-<tip>\chain\freezer headerc.* /MT:8   # REQUIRED
+C:\N42\N42-gov5\build\bin\eth-el.exe --datadir E:/ethel-archive-<tip> --hashed-canonical `
   --bootstrap.enabled=false --eldevp2p.enabled --eldevp2p.listen :30403 --engine.enabled=false `
   --catch-up.mode auto --publicrpc.enabled --publicrpc.port 20115
 ```
 
 ### MINIMAL (needs §3b codes + §3c snapshot)
 
-Assemble `E:\ethel-min-test\snapshot\` ← `d:/n42-snapshot-<tip>/accounts.* storage.*`;
-`E:\ethel-min-test\chain\freezer\` ← `d:/n42-eth1` `headerc.*` + `d:/n42-codes-<tip>` `codes.*`:
+Assemble `E:\ethel-min-<tip>\snapshot\` ← `d:/n42-snapshot/accounts.0-<tip>.*
+storage.0-<tip>.*`; `E:\ethel-min-<tip>\chain\freezer\` ← `d:/n42-eth1/chain/freezer`
+`headerc.*` + `d:/n42-codes-<tip>` `codes.*`.
+
+Then **set the H0 head marker** — a hand-assembled datadir has no
+`ethel-last-block`, so the node believes it is at height 0 and tries to sync
+mainnet from block 1 (`missing canonical parent hash at 0`, every round imports
+0, no error naming the cause). `--bootstrap.mode snapshot` does not write it:
+`bootstrap.startSnapshot` documents the marker as the job of the
+`--snapshot.source` pre-start sync, which a robocopy assembly bypasses.
 
 ```powershell
-C:\N42\N42-gov5\build\bin\eth-el.exe --datadir E:/ethel-min-test --snapshot.mode minimal `
-  --bootstrap.mode snapshot --eldevp2p.enabled --eldevp2p.listen :30403 --engine.enabled=false `
-  --publicrpc.enabled --publicrpc.port 20115
+# NOTE: --datadir here is the MDBX path itself, i.e. <datadir>\chaindata.
+# Pointing it one level up silently creates a stray mdbx.dat the node never reads.
+C:\N42\N42-gov5\build\bin\set-progress.exe --datadir E:\ethel-min-<tip>\chaindata --block <tip>
+C:\N42\N42-gov5\build\bin\ethexec.exe db-stats --datadir E:\ethel-min-<tip>\chaindata   # verify
+```
+
+Drop the `*.val.zst` copies from the assembled `snapshot\` — the reader mmaps
+`.val`, and having both present is what drove the 136 GB heap blow-up
+(`snapshotreader` used to decompress the whole `.val.zst` on the heap). Saves
+22 GB here too.
+
+```powershell
+C:\N42\N42-gov5\build\bin\eth-el.exe --datadir E:/ethel-min-<tip> --snapshot.mode minimal `
+  --bootstrap.mode snapshot --storage.mapsize.gb 512 --eldevp2p.enabled --eldevp2p.listen :30403 `
+  --engine.enabled=false --publicrpc.enabled --publicrpc.port 20115
 # (H0 code can come from reth directly instead of the freezer: --codes.reth-db d:/reth2k/db)
 ```
 
+`--storage.mapsize.gb` defaults to **64**, which is below the archive datadir's
+156 GB — the run dies mid-catch-up with `MDBX_MAP_FULL` wrapped in a panic that
+(before 2026-07-28) named JMT rather than the real cause. Pass it in every mode.
+
 ### FULL (minimal + the ledger freezers)
 
-Same as minimal plus copy `bodyc.* receipts.* accthist.* storhist.* txindex.*`
-into `E:\ethel-full-test\chain\freezer\`:
+Same as minimal — including the `set-progress` marker and the `.val.zst` drop —
+plus copy `bodyc.* receipts.* accthist.* storhist.* txindex.*` into
+`E:\ethel-full-<tip>\chain\freezer\`. With `bodyc` present this is the one mode
+where `localCatchUp` executes locally before handing off to peers.
 
 ```powershell
-C:\N42\N42-gov5\build\bin\eth-el.exe --datadir E:/ethel-full-test --snapshot.mode full `
-  --bootstrap.mode snapshot --history.mode full --eldevp2p.enabled --eldevp2p.listen :30403 `
-  --engine.enabled=false --publicrpc.enabled --publicrpc.port 20115
+C:\N42\N42-gov5\build\bin\eth-el.exe --datadir E:/ethel-full-<tip> --snapshot.mode full `
+  --bootstrap.mode snapshot --history.mode full --storage.mapsize.gb 512 --eldevp2p.enabled `
+  --eldevp2p.listen :30403 --engine.enabled=false --publicrpc.enabled --publicrpc.port 20115
 ```
 
 ### Catch-up + live acceptance (per mode)
