@@ -132,21 +132,27 @@ func (r *WitnessReplayReader) ReadAccountCode(address types.Address, codeHash ty
 			return code, nil
 		}
 	}
-	// Codes-freezer is tried first when configured. It is CONTENT-ADDRESSED:
-	// code-import2fz keys it by the codeHash[:20] of the source Code/Bytecodes
-	// table (not by account address), so we look it up by codeHash[:20] — the
-	// same key serve.Code(hash) uses. Querying by account address would always
+	// Codes-freezer is tried first when configured. It is CONTENT-ADDRESSED, so
+	// ask it by codeHash. Dirs built with codes.hidx answer that directly; older
+	// ones have only the address index, whose keys are the codeHash[:20] prefix
+	// of the source Code/Bytecodes key (code-import2fz truncated them), so the
+	// prefix fallback still hits there. Querying by account address would always
 	// miss (wrong key space), silently defeating the self-contained freezer and
 	// forcing every read onto the MDBX/codeFetch hot tier. The full 32-byte
 	// keccak check below disambiguates the rare 20-byte-prefix collision and
 	// catches a stale/corrupt entry, falling through to the hot tier rather than
 	// serving wrong bytecode.
 	if r.codes != nil {
-		var freezerKey types.Address
-		copy(freezerKey[:], codeHash[:20])
-		code, err := r.codes.LookupByAddress(freezerKey)
+		code, err := r.codes.GetCodeByHash(codeHash)
 		if err != nil {
 			return nil, fmt.Errorf("codes-freezer: %w", err)
+		}
+		if len(code) == 0 {
+			var freezerKey types.Address
+			copy(freezerKey[:], codeHash[:20])
+			if code, err = r.codes.LookupByAddress(freezerKey); err != nil {
+				return nil, fmt.Errorf("codes-freezer: %w", err)
+			}
 		}
 		if len(code) > 0 {
 			if h := crypto.Keccak256Hash(code); h == codeHash {

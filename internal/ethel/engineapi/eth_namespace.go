@@ -20,6 +20,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/params"
@@ -72,10 +73,19 @@ func (e *EthAPIMinimal) BlockNumber(ctx context.Context) (hexutil.Uint64, error)
 	defer tx.Rollback()
 	headHash := rawdb.ReadHeadBlockHash(tx)
 	if headHash == (types.Hash{}) {
+		// eldevp2p (snapshot-direct / hashed-canonical) never writes that
+		// record — it tracks the head in the progress marker. Without this a
+		// fully caught-up node answers 0.
+		if n, ok := ethel.ReadHeadMarker(tx); ok {
+			return hexutil.Uint64(n), nil
+		}
 		return 0, nil
 	}
 	num := rawdb.ReadHeaderNumber(tx, headHash)
 	if num == nil {
+		if n, ok := ethel.ReadHeadMarker(tx); ok {
+			return hexutil.Uint64(n), nil
+		}
 		return 0, nil
 	}
 	return hexutil.Uint64(*num), nil
