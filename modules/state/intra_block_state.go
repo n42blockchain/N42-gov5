@@ -1446,7 +1446,7 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 	if ltEnabled {
 		jmtRoot, ltRoot, err := ltRC.ComputeRootWithOriginals(accounts, originals, storage, originalStorage)
 		if err != nil {
-			panic("JMT+LtHash root computation failed: " + err.Error())
+			panic("state root computation failed (commitment+LtHash): " + err.Error())
 		}
 		s.ltHashRoot = ltRoot
 		s.lastRootAccounts, s.lastRootStorage = accounts, storage
@@ -1455,7 +1455,12 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 
 	root, err := s.rootComputer.ComputeRoot(accounts, storage)
 	if err != nil {
-		panic("JMT root computation failed: " + err.Error())
+		// rootComputer is whichever engine this chain commits with (MPT for
+		// eth-el, QMDB for the native chain, …) — not necessarily JMT, which is
+		// what this message used to say back when JMT was the only one. Naming a
+		// specific engine here sends the reader looking for a misconfiguration
+		// that isn't there; the error text below says what actually failed.
+		panic("state root computation failed: " + err.Error())
 	}
 	// Snapshot the EXACT dirty set this root was computed from. The miner
 	// computes the sealed root on an isolated computer; the same block must
