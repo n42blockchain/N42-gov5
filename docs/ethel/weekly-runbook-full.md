@@ -237,25 +237,51 @@ C:\N42\N42-gov5\build\bin\eth-el.exe --datadir E:/ethel-archive-<tip> --hashed-c
 
 ### MINIMAL (needs §3b codes + §3c snapshot)
 
-Assemble `E:\ethel-min-test\snapshot\` ← `d:/n42-snapshot-<tip>/accounts.* storage.*`;
-`E:\ethel-min-test\chain\freezer\` ← `d:/n42-eth1` `headerc.*` + `d:/n42-codes-<tip>` `codes.*`:
+Assemble `E:\ethel-min-<tip>\snapshot\` ← `d:/n42-snapshot/accounts.0-<tip>.*
+storage.0-<tip>.*`; `E:\ethel-min-<tip>\chain\freezer\` ← `d:/n42-eth1/chain/freezer`
+`headerc.*` + `d:/n42-codes-<tip>` `codes.*`.
+
+Then **set the H0 head marker** — a hand-assembled datadir has no
+`ethel-last-block`, so the node believes it is at height 0 and tries to sync
+mainnet from block 1 (`missing canonical parent hash at 0`, every round imports
+0, no error naming the cause). `--bootstrap.mode snapshot` does not write it:
+`bootstrap.startSnapshot` documents the marker as the job of the
+`--snapshot.source` pre-start sync, which a robocopy assembly bypasses.
 
 ```powershell
-C:\N42\N42-gov5\build\bin\eth-el.exe --datadir E:/ethel-min-test --snapshot.mode minimal `
-  --bootstrap.mode snapshot --eldevp2p.enabled --eldevp2p.listen :30403 --engine.enabled=false `
-  --publicrpc.enabled --publicrpc.port 20115
+# NOTE: --datadir here is the MDBX path itself, i.e. <datadir>\chaindata.
+# Pointing it one level up silently creates a stray mdbx.dat the node never reads.
+C:\N42\N42-gov5\build\bin\set-progress.exe --datadir E:\ethel-min-<tip>\chaindata --block <tip>
+C:\N42\N42-gov5\build\bin\ethexec.exe db-stats --datadir E:\ethel-min-<tip>\chaindata   # verify
+```
+
+Drop the `*.val.zst` copies from the assembled `snapshot\` — the reader mmaps
+`.val`, and having both present is what drove the 136 GB heap blow-up
+(`snapshotreader` used to decompress the whole `.val.zst` on the heap). Saves
+22 GB here too.
+
+```powershell
+C:\N42\N42-gov5\build\bin\eth-el.exe --datadir E:/ethel-min-<tip> --snapshot.mode minimal `
+  --bootstrap.mode snapshot --storage.mapsize.gb 512 --eldevp2p.enabled --eldevp2p.listen :30403 `
+  --engine.enabled=false --publicrpc.enabled --publicrpc.port 20115
 # (H0 code can come from reth directly instead of the freezer: --codes.reth-db d:/reth2k/db)
 ```
 
+`--storage.mapsize.gb` defaults to **64**, which is below the archive datadir's
+156 GB — the run dies mid-catch-up with `MDBX_MAP_FULL` wrapped in a panic that
+(before 2026-07-28) named JMT rather than the real cause. Pass it in every mode.
+
 ### FULL (minimal + the ledger freezers)
 
-Same as minimal plus copy `bodyc.* receipts.* accthist.* storhist.* txindex.*`
-into `E:\ethel-full-test\chain\freezer\`:
+Same as minimal — including the `set-progress` marker and the `.val.zst` drop —
+plus copy `bodyc.* receipts.* accthist.* storhist.* txindex.*` into
+`E:\ethel-full-<tip>\chain\freezer\`. With `bodyc` present this is the one mode
+where `localCatchUp` executes locally before handing off to peers.
 
 ```powershell
-C:\N42\N42-gov5\build\bin\eth-el.exe --datadir E:/ethel-full-test --snapshot.mode full `
-  --bootstrap.mode snapshot --history.mode full --eldevp2p.enabled --eldevp2p.listen :30403 `
-  --engine.enabled=false --publicrpc.enabled --publicrpc.port 20115
+C:\N42\N42-gov5\build\bin\eth-el.exe --datadir E:/ethel-full-<tip> --snapshot.mode full `
+  --bootstrap.mode snapshot --history.mode full --storage.mapsize.gb 512 --eldevp2p.enabled `
+  --eldevp2p.listen :30403 --engine.enabled=false --publicrpc.enabled --publicrpc.port 20115
 ```
 
 ### Catch-up + live acceptance (per mode)
