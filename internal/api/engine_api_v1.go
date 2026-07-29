@@ -731,7 +731,7 @@ func (e *EngineAPIV1) executeOrValidateWithBody(blk block.IBlock, blockHash, par
 		if !ok {
 			return invalidPayloadResponse("unexpected block type"), nil
 		}
-		result, err := e.stateAdapter.executePayloadDetailed(concreteBlock, parentBeaconRoot, expectedRequests, bodyWithdrawals(body))
+		result, err := e.stateAdapter.executePayloadDetailed(concreteBlock, parentBeaconRoot, expectedRequests, bodyWithdrawals(body), false)
 		if err != nil {
 			return e.invalidPayloadStatus(err.Error(), blk, blockHash, &parentHash, body), nil
 		}

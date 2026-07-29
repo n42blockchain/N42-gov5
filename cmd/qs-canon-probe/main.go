@@ -10,17 +10,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
 	"runtime/pprof"
+	"strings"
 	"time"
 
 	"github.com/c2h5oh/datasize"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	mdbxkv "github.com/n42blockchain/N42/lib/kv/mdbx"
 	log "github.com/n42blockchain/N42/lib/log/v3"
-	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/qmdb"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -34,6 +36,7 @@ func main() {
 	qmdbRoot := flag.Bool("qmdbroot", false, "LoadFrom the QMDB forest twice and print both roots vs the applied marker's header root (fidelity + determinism probe)")
 	qmdbDiff := flag.Bool("qmdbdiff", false, "diff the QMDB twig tables of exactly two chaindata dirs (same applied history must be byte-identical; a differing twig localizes an unwind repair bug)")
 	qmdbOps := flag.Bool("qmdbops", false, "load the forest twice from one store and apply an identical synthetic op sequence to both instances; roots must match (miner-isolated vs live instance equivalence probe)")
+	qmdbSet := flag.String("qmdbset", "", "comma-separated keyHash=valueHex QMDB sets to apply in order to a read-only loaded forest")
 	revertDepth := flag.Uint64("qmdbrevert", 0, "N>0: load the forest at the applied marker and ApplyUndo N blocks newest-to-oldest, comparing the tree root against the canonical header root after every step — the first mismatch pinpoints an unfaithful revert (in-memory only, store untouched)")
 	audit := flag.Bool("stateaudit", false, "cross-check every PlainState row against the reloaded QMDB tree (the network-verified commitment); splits a deterministic wrong-root wedge into corrupt-flat-input vs execution/index fault")
 	cpuprofile := flag.String("cpuprofile", "", "write a CPU profile of the probe run to this file")
@@ -75,6 +78,12 @@ func main() {
 		modules.N42Init()
 		kv.ChaindataTablesCfg = modules.N42TableCfg
 		opsQMDB(flag.Arg(0))
+		return
+	}
+	if *qmdbSet != "" {
+		modules.N42Init()
+		kv.ChaindataTablesCfg = modules.N42TableCfg
+		setQMDB(flag.Arg(0), *qmdbSet)
 		return
 	}
 	if *qmdbDiff {
@@ -249,6 +258,47 @@ func main() {
 	}
 }
 
+func setQMDB(dir, encoded string) {
+	db, err := mdbxkv.NewMDBX(log.New()).Path(dir).Label(kv.ChainDB).
+		MapSize(64 * datasize.GB).Accede().Readonly().Open(context.Background())
+	if err != nil {
+		fmt.Printf("open: %v\n", err)
+		return
+	}
+	defer db.Close()
+	tx, err := db.BeginRo(context.Background())
+	if err != nil {
+		fmt.Printf("begin: %v\n", err)
+		return
+	}
+	defer tx.Rollback()
+	rc := commitment.NewQMDBRootComputer()
+	rc.SetCold(tx)
+	if err := rc.LoadFrom(tx); err != nil {
+		fmt.Printf("LoadFrom: %v\n", err)
+		return
+	}
+	fmt.Printf("baseline=%x next=%d\n", rc.Root(), rc.Tree().NextSlot())
+	for i, field := range strings.Split(encoded, ",") {
+		parts := strings.SplitN(field, "=", 2)
+		if len(parts) != 2 {
+			fmt.Printf("set[%d]: expected key=value\n", i)
+			return
+		}
+		keyBytes, keyErr := hex.DecodeString(strings.TrimPrefix(parts[0], "0x"))
+		value, valueErr := hex.DecodeString(strings.TrimPrefix(parts[1], "0x"))
+		if keyErr != nil || len(keyBytes) != 32 || valueErr != nil {
+			fmt.Printf("set[%d]: invalid key/value keyErr=%v keyLen=%d valueErr=%v\n", i, keyErr, len(keyBytes), valueErr)
+			return
+		}
+		var key qmdb.Hash
+		copy(key[:], keyBytes)
+		rc.Tree().Set(key, value)
+		fmt.Printf("set[%d]: key=%x value=%x root=%x\n", i, key, value, rc.Root())
+	}
+	fmt.Printf("root=%x next=%d\n", rc.Root(), rc.Tree().NextSlot())
+}
+
 // revertLadder reproduces the live "unwound node diverges from the cluster"
 // failure offline: rebuild the forest at the applied marker, then ApplyUndo
 // one block at a time (newest→oldest, exactly the branch-switch loop), and
@@ -303,6 +353,18 @@ func revertLadder(dir string, depth uint64) {
 			return
 		}
 		undo := undos[0]
+		for i, entry := range undo.Entries {
+			fmt.Printf("revert %d killed[%d]: slot=%d key=%x oldValue=%x\n", cur, i, entry.Slot, entry.KeyHash, entry.Value)
+		}
+		for i, key := range undo.AppendedKeys {
+			slot := undo.PrevNextSlot + uint64(i)
+			row, rowErr := tx.GetOne(qmdb.EntryTable, be8p(slot))
+			value := row
+			if len(row) >= len(key) {
+				value = row[len(key):]
+			}
+			fmt.Printf("revert %d append[%d]: slot=%d key=%x value=%x rowErr=%v\n", cur, i, slot, key, value, rowErr)
+		}
 		h := rawdb.ReadHeader(tx, curHash, cur)
 		if h == nil {
 			fmt.Printf("step %d: header %d missing\n", step, cur)

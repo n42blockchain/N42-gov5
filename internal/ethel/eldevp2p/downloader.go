@@ -275,6 +275,7 @@ type peerState struct {
 	rw        gethp2p.MsgReadWriter
 	head      uint64
 	headHash  types.Hash
+	version   uint
 	inflightN int // concurrent requests currently dispatched to this peer
 }
 
@@ -377,9 +378,9 @@ func (d *Downloader) writeLocalHead(ctx context.Context, head uint64) error {
 
 // OnPeerHandshake registers a peer into the shared pool and ensures the
 // single coordinator goroutine is running.
-func (d *Downloader) OnPeerHandshake(peerID string, rw gethp2p.MsgReadWriter, peerHead uint64, peerHash types.Hash) {
+func (d *Downloader) OnPeerHandshake(peerID string, rw gethp2p.MsgReadWriter, peerHead uint64, peerHash types.Hash, version uint) {
 	d.mu.Lock()
-	d.peers[peerID] = &peerState{rw: rw, head: peerHead, headHash: peerHash}
+	d.peers[peerID] = &peerState{rw: rw, head: peerHead, headHash: peerHash, version: version}
 	d.mu.Unlock()
 	d.ensureCoordinator()
 }
@@ -905,11 +906,18 @@ func (d *Downloader) peerSnapshot() map[string]*peerState {
 // in-flight count is under the per-peer cap, incrementing its count. Returns
 // nil if none is available; the caller skips that batch this round.
 func (d *Downloader) pickPeer(needHead uint64) *pickedPeer {
+	return d.pickPeerWithMinVersion(needHead, 0)
+}
+
+func (d *Downloader) pickPeerWithMinVersion(needHead uint64, minVersion uint) *pickedPeer {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	var bestID string
 	var best *peerState
 	for id, p := range d.peers {
+		if p.version < minVersion {
+			continue
+		}
 		// head==0 means the peer's tip number is unknown — an eth/68 peer, whose
 		// Status carries the head hash but no number. Treat it as pickable: a
 		// mainnet full node serves any historical range, and the first header
@@ -1152,7 +1160,7 @@ func (d *Downloader) localCatchUp(ctx context.Context, hr *ethel.HeaderCompactRe
 		if berr != nil || db == nil {
 			break // reached local body head — hand off to peers
 		}
-		canonical := hdr.Hash() // headerc stored canonical hash (SetHash)
+		canonical := hdr.Hash()   // headerc stored canonical hash (SetHash)
 		hdr.ParentHash = prevHash // EIP-2935 execution input (see above)
 		ws := make([]*api.Withdrawal, len(db.Withdrawals))
 		for i, w := range db.Withdrawals {
@@ -1168,7 +1176,7 @@ func (d *Downloader) localCatchUp(ctx context.Context, hr *ethel.HeaderCompactRe
 			log.Warn("eldevp2p: local catch-up assemble failed", "block", n)
 			break
 		}
-		okRes, root, xerr := d.adapter.ExecutePayloadFromWire(blk, ws)
+		okRes, root, xerr := d.adapter.ExecutePayloadFromTrustedColumnar(blk, ws)
 		if xerr != nil {
 			log.Warn("eldevp2p: local catch-up exec error — handing to peers", "block", n, "err", xerr)
 			break
@@ -2031,7 +2039,7 @@ func (d *Downloader) requestBlockAccessLists(ctx context.Context, peerID string,
 	}()
 
 	req := getBlockAccessListsRequest{RequestID: reqID, Hashes: hashes}
-	if err := gethp2p.Send(rw, 0x12, &req); err != nil {
+	if err := gethp2p.Send(rw, eth69.GetBlockAccessListsMsg, &req); err != nil {
 		return nil, fmt.Errorf("send GetBlockAccessLists: %w", err)
 	}
 	select {
@@ -2056,7 +2064,7 @@ func (d *Downloader) requestBlockAccessLists(ctx context.Context, peerID string,
 // prefetch/verify path: the caller decodes each raw BAL (bal.DecodeBAL), verifies
 // it against the header's BlockAccessListHash, and can prewarm state from it.
 func (d *Downloader) FetchBlockAccessLists(ctx context.Context, atHeight uint64, hashes []types.Hash) ([][]byte, error) {
-	pp := d.pickPeer(atHeight)
+	pp := d.pickPeerWithMinVersion(atHeight, eth69.ETH71)
 	if pp == nil {
 		return nil, errors.New("no peer for block access lists")
 	}
