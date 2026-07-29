@@ -17,7 +17,6 @@ package publicrpc
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"net"
 	"net/http"
@@ -25,6 +24,7 @@ import (
 
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/internal/ethel/rpccaps"
 	"github.com/n42blockchain/N42/internal/ethel/snapshotreader"
 	"github.com/n42blockchain/N42/internal/tracers"
@@ -225,11 +225,6 @@ func buildStateReader(cfg Config, tx kv.Tx, postStateBlock uint64) (state.StateR
 	}
 }
 
-// ethelProgressKey is the head marker written by the eldevp2p downloader and by
-// ethexec's replay. It is the authoritative head for a snapshot-direct or
-// hashed-canonical datadir, which never writes the classic head records.
-var ethelProgressKey = []byte("ethel-last-block")
-
 // headBlockNumber reads the current canonical head number from the eth-el DB.
 func headBlockNumber(tx kv.Tx) uint64 {
 	if n := rawdb.ReadCurrentBlockNumber(tx); n != nil {
@@ -244,8 +239,8 @@ func headBlockNumber(tx kv.Tx) uint64 {
 	// those datadirs both lookups miss and eth_blockNumber would report 0 for a
 	// node that is fully caught up — including to the weekly runbook's own
 	// external check. Fall back to the marker eldevp2p does write.
-	if v, err := tx.GetOne(kv.SyncStageProgress, ethelProgressKey); err == nil && len(v) == 8 {
-		return binary.BigEndian.Uint64(v)
+	if n, ok := ethel.ReadHeadMarker(tx); ok {
+		return n
 	}
 	return 0
 }
