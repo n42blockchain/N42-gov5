@@ -66,9 +66,15 @@ type CodeByHashSource interface {
 	GetCodeByHash(codeHash types.Hash) ([]byte, error)
 }
 
-// codeFromSource resolves bytecode from src, preferring the content-addressed
-// path. Returns (nil, nil) when the source has no entry.
-func codeFromSource(src CodeSource, address types.Address, codeHash types.Hash) ([]byte, error) {
+// CodeFromSource resolves bytecode from src, preferring the content-addressed
+// path and falling back to the address index. Returns (nil, nil) when the
+// source has no entry.
+//
+// Every reader that holds a CodeSource must go through this rather than call
+// GetCode directly: a codes freezer exported with --addr-index=false has an
+// empty address index, so GetCode misses on everything and the first EIP-7702
+// sender fails with "sender not an eoa".
+func CodeFromSource(src CodeSource, address types.Address, codeHash types.Hash) ([]byte, error) {
 	if h, ok := src.(CodeByHashSource); ok && codeHash != (types.Hash{}) {
 		if code, err := h.GetCodeByHash(codeHash); err != nil || len(code) > 0 {
 			return code, err
@@ -137,7 +143,7 @@ func (r *PlainStateReader) ReadAccountCode(address types.Address, codeHash types
 	// through to MDBX if not. keccak on ~1 KB bytecode is ~200ns on
 	// Ryzen (~5 GB/s) — negligible vs MDBX GetOne lookup cost.
 	if r.codeSrc != nil {
-		code, err := codeFromSource(r.codeSrc, address, codeHash)
+		code, err := CodeFromSource(r.codeSrc, address, codeHash)
 		if err != nil {
 			return nil, err
 		}

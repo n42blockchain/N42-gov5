@@ -1527,7 +1527,7 @@ func (r *BufferedPlainStateReader) ReadAccountCode(address types.Address, codeHa
 	// bundle-end (where MDBX Code holds the new bytecode) falls through
 	// correctly. ~200ns/keccak on Ryzen — under 1% of GetCode latency.
 	if r.codeSrc != nil {
-		code, err := codeFromSource(r.codeSrc, address, codeHash)
+		code, err := CodeFromSource(r.codeSrc, address, codeHash)
 		if err != nil {
 			return nil, err
 		}
