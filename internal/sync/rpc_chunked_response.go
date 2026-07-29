@@ -9,12 +9,12 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	types "github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
 	"github.com/n42blockchain/N42/internal/p2p/p2ptypes"
 	"github.com/n42blockchain/N42/lib/rlp"
 	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/common/utils"
 )
 
 // chunkBlockWriter writes the given block as a chunked response to the stream.
@@ -93,7 +93,7 @@ func readFirstChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (
 	log.Debug("First chunk context", "forkDigest", fmt.Sprintf("%x", ctx), "peer", stream.Conn().RemotePeer().String())
 
 	raw := &rawSSZBytes{}
-	if err = p2p.Encoding().DecodeWithMaxLength(stream, raw); err != nil {
+	if err = encoder.DecodeWithMaxLengthLimit(stream, raw, encoder.MaxBlockChunkSize); err != nil {
 		return nil, errors.Wrapf(err, "failed to decode block from first chunk (forkDigest=%x)", ctx)
 	}
 	blk := &types.Block{}
@@ -141,7 +141,7 @@ func readResponseChunk(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (*typ
 	log.Debug("Received chunk context", "forkDigest", fmt.Sprintf("%x", forkDigest), "peer", stream.Conn().RemotePeer().String())
 
 	raw := &rawSSZBytes{}
-	if err = p2p.Encoding().DecodeWithMaxLength(stream, raw); err != nil {
+	if err = encoder.DecodeWithMaxLengthLimit(stream, raw, encoder.MaxBlockChunkSize); err != nil {
 		return nil, errors.Wrapf(err, "failed to decode block from chunk (forkDigest=%x)", forkDigest)
 	}
 	blk := &types.Block{}

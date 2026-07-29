@@ -121,14 +121,16 @@ func SaveConsensusState(tx kv.RwTx, state *ConsensusState) error {
 // transaction, and MDBX serializes writers, so the read-modify-write is atomic
 // against the other writer.
 //
-// Two independent groups are compared, each kept internally coherent:
+// The independent monotonic commitments are compared separately:
 //
 //   - the vote commitments (LastVoted*, LastCommitVoted*) — a released vote is
-//     append-only and must never be withdrawn, so each pair keeps whichever
-//     record names the higher view;
+//     append-only and must never be withdrawn. Conflicting non-zero hashes at
+//     the same view are rejected because accepting either would hide an SR9
+//     double-vote;
 //   - the round snapshot (View, ConsecutiveTimeouts, LockedQC, LastCommittedQC)
-//     — these describe one view together, so they move as a unit: an older
-//     snapshot is dropped whole rather than mixed with a newer view's lock.
+//     — the view and timeout counter follow the newer snapshot, while each QC is
+//     independently kept at its highest view. A delayed same-view snapshot must
+//     never overwrite a newer lock learned later in that view.
 //
 // Both reset tools (cmd/hotstuff-reset, cmd/qs-hsreset) DELETE the key rather
 // than writing a lower state, so deliberate rollback still works.
@@ -144,21 +146,70 @@ func mergeMonotonic(tx kv.RwTx, state *ConsensusState) (*ConsensusState, error) 
 	}
 
 	merged := *state
-	if prev.LastVotedView > merged.LastVotedView {
-		merged.LastVotedView = prev.LastVotedView
-		merged.LastVotedHash = prev.LastVotedHash
+	if err := mergeVoteCommitment(
+		&merged.LastVotedView, &merged.LastVotedHash,
+		prev.LastVotedView, prev.LastVotedHash,
+		"prepare",
+	); err != nil {
+		return nil, err
 	}
-	if prev.LastCommitVotedView > merged.LastCommitVotedView {
-		merged.LastCommitVotedView = prev.LastCommitVotedView
-		merged.LastCommitVotedHash = prev.LastCommitVotedHash
+	if err := mergeVoteCommitment(
+		&merged.LastCommitVotedView, &merged.LastCommitVotedHash,
+		prev.LastCommitVotedView, prev.LastCommitVotedHash,
+		"commit",
+	); err != nil {
+		return nil, err
 	}
 	if prev.View > merged.View {
 		merged.View = prev.View
 		merged.ConsecutiveTimeouts = prev.ConsecutiveTimeouts
-		merged.LockedQC = prev.LockedQC
-		merged.LastCommittedQC = prev.LastCommittedQC
+	} else if prev.View == merged.View && prev.ConsecutiveTimeouts > merged.ConsecutiveTimeouts {
+		merged.ConsecutiveTimeouts = prev.ConsecutiveTimeouts
+	}
+	if err := mergeQCMonotonic(&merged.LockedQC, prev.LockedQC, "locked"); err != nil {
+		return nil, err
+	}
+	if err := mergeQCMonotonic(&merged.LastCommittedQC, prev.LastCommittedQC, "last committed"); err != nil {
+		return nil, err
 	}
 	return &merged, nil
+}
+
+func mergeVoteCommitment(dstView *ViewNumber, dstHash *types.Hash, prevView ViewNumber, prevHash types.Hash, round string) error {
+	if prevView > *dstView {
+		*dstView = prevView
+		*dstHash = prevHash
+		return nil
+	}
+	if prevView != *dstView || prevView == 0 {
+		return nil
+	}
+	if *dstHash == (types.Hash{}) {
+		*dstHash = prevHash
+		return nil
+	}
+	if prevHash != (types.Hash{}) && prevHash != *dstHash {
+		return fmt.Errorf("conflicting durable %s votes at view %d: %x != %x", round, prevView, prevHash, *dstHash)
+	}
+	return nil
+}
+
+func mergeQCMonotonic(dst *QuorumCertificate, prev QuorumCertificate, name string) error {
+	if prev.View > dst.View {
+		*dst = prev
+		return nil
+	}
+	if prev.View != dst.View || prev.View == 0 {
+		return nil
+	}
+	if dst.BlockHash == (types.Hash{}) {
+		*dst = prev
+		return nil
+	}
+	if prev.BlockHash != (types.Hash{}) && prev.BlockHash != dst.BlockHash {
+		return fmt.Errorf("conflicting %s QCs at view %d: %x != %x", name, prev.View, prev.BlockHash, dst.BlockHash)
+	}
+	return nil
 }
 
 // LoadConsensusState loads the persisted consensus state from the database.
@@ -342,6 +393,19 @@ func ClearStagedEpoch(tx kv.RwTx) error {
 	return tx.Delete(modules.HotStuffState, stagedEpochKey)
 }
 
+// ActivatePersistedEpoch atomically promotes an epoch record and consumes its
+// staged record. Keeping both writes in one transaction prevents crash recovery
+// from observing a half-transition.
+func ActivatePersistedEpoch(tx kv.RwTx, epoch uint64, validators []ValidatorInfo, f uint32) error {
+	if len(validators) == 0 {
+		return fmt.Errorf("refuse to activate empty validator set for epoch %d", epoch)
+	}
+	if err := SaveActiveEpoch(tx, epoch, validators, f); err != nil {
+		return err
+	}
+	return ClearStagedEpoch(tx)
+}
+
 // activeEpochKey stores the ACTIVE (applied) validator set, so a node that
 // restarts after a reconfiguration restores the reconfigured set instead of
 // reverting to the genesis set. LoadStagedEpoch's format is reused verbatim.
@@ -437,19 +501,29 @@ func SavePendingVotes(tx kv.RwTx, pv *PendingVotesState) error {
 	}
 	buf := make([]byte, size)
 	pos := 0
-	binary.LittleEndian.PutUint64(buf[pos:], uint64(pv.View)); pos += 8
-	copy(buf[pos:], pv.BlockHash[:]); pos += 32
-	binary.LittleEndian.PutUint32(buf[pos:], uint32(len(pv.PrepareVotes))); pos += 4
+	binary.LittleEndian.PutUint64(buf[pos:], uint64(pv.View))
+	pos += 8
+	copy(buf[pos:], pv.BlockHash[:])
+	pos += 32
+	binary.LittleEndian.PutUint32(buf[pos:], uint32(len(pv.PrepareVotes)))
+	pos += 4
 	for idx, sig := range pv.PrepareVotes {
-		binary.LittleEndian.PutUint32(buf[pos:], uint32(idx)); pos += 4
-		binary.LittleEndian.PutUint32(buf[pos:], uint32(len(sig))); pos += 4
-		copy(buf[pos:], sig); pos += len(sig)
+		binary.LittleEndian.PutUint32(buf[pos:], uint32(idx))
+		pos += 4
+		binary.LittleEndian.PutUint32(buf[pos:], uint32(len(sig)))
+		pos += 4
+		copy(buf[pos:], sig)
+		pos += len(sig)
 	}
-	binary.LittleEndian.PutUint32(buf[pos:], uint32(len(pv.CommitVotes))); pos += 4
+	binary.LittleEndian.PutUint32(buf[pos:], uint32(len(pv.CommitVotes)))
+	pos += 4
 	for idx, sig := range pv.CommitVotes {
-		binary.LittleEndian.PutUint32(buf[pos:], uint32(idx)); pos += 4
-		binary.LittleEndian.PutUint32(buf[pos:], uint32(len(sig))); pos += 4
-		copy(buf[pos:], sig); pos += len(sig)
+		binary.LittleEndian.PutUint32(buf[pos:], uint32(idx))
+		pos += 4
+		binary.LittleEndian.PutUint32(buf[pos:], uint32(len(sig)))
+		pos += 4
+		copy(buf[pos:], sig)
+		pos += len(sig)
 	}
 	return tx.Put(modules.HotStuffState, pendingVotesKey, buf[:pos])
 }
@@ -465,18 +539,26 @@ func LoadPendingVotes(tx kv.Tx) (*PendingVotesState, error) {
 		CommitVotes:  make(map[ValidatorIndex][]byte),
 	}
 	pos := 0
-	pv.View = ViewNumber(binary.LittleEndian.Uint64(data[pos:])); pos += 8
-	copy(pv.BlockHash[:], data[pos:]); pos += 32
+	pv.View = ViewNumber(binary.LittleEndian.Uint64(data[pos:]))
+	pos += 8
+	copy(pv.BlockHash[:], data[pos:])
+	pos += 32
 
 	readVotes := func() (map[ValidatorIndex][]byte, int) {
-		count := int(binary.LittleEndian.Uint32(data[pos:])); pos += 4
+		count := int(binary.LittleEndian.Uint32(data[pos:]))
+		pos += 4
 		m := make(map[ValidatorIndex][]byte, count)
 		for i := 0; i < count && pos+8 <= len(data); i++ {
-			idx := ValidatorIndex(binary.LittleEndian.Uint32(data[pos:])); pos += 4
-			sLen := int(binary.LittleEndian.Uint32(data[pos:])); pos += 4
-			if pos+sLen > len(data) { break }
+			idx := ValidatorIndex(binary.LittleEndian.Uint32(data[pos:]))
+			pos += 4
+			sLen := int(binary.LittleEndian.Uint32(data[pos:]))
+			pos += 4
+			if pos+sLen > len(data) {
+				break
+			}
 			sig := make([]byte, sLen)
-			copy(sig, data[pos:pos+sLen]); pos += sLen
+			copy(sig, data[pos:pos+sLen])
+			pos += sLen
 			m[idx] = sig
 		}
 		return m, pos

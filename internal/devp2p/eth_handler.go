@@ -1,7 +1,7 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
-// EthHandler processes eth/68 and eth/69 wire messages for the ETH EL
+// EthHandler processes eth/68 through eth/71 wire messages for the ETH EL
 // profile. BlockProvider abstracts chain access (CurrentHead, lookup
 // by number and hash) so the handler can answer GetBlockHeaders and
 // related queries using the N42 chain state with the configured genesis.
@@ -21,6 +21,7 @@ import (
 
 	n42block "github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/network/eth69"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/params"
 )
@@ -40,7 +41,7 @@ type ResponseHandler interface {
 	// OnPeerHandshake fires once per peer after eth/69 Status exchange
 	// succeeds. Gives the downloader the peer's latest head so it can
 	// decide whether to fetch from this peer.
-	OnPeerHandshake(peerID string, rw gethp2p.MsgReadWriter, peerHead uint64, peerHash types.Hash)
+	OnPeerHandshake(peerID string, rw gethp2p.MsgReadWriter, peerHead uint64, peerHash types.Hash, version uint)
 	// OnPeerDisconnect fires when a peer's runPeer returns. Lets the
 	// downloader cancel any in-flight requests on this peer.
 	OnPeerDisconnect(peerID string)
@@ -73,7 +74,7 @@ type balResponseHandler interface {
 	OnBlockAccessLists(peerID string, reqID uint64, bals [][]byte)
 }
 
-// EthHandler processes eth/68-69 protocol messages.
+// EthHandler processes eth/68-71 protocol messages.
 type EthHandler struct {
 	chainConfig *params.ChainConfig
 	provider    BlockProvider
@@ -87,9 +88,10 @@ type EthHandler struct {
 	// markTrusted, when set, promotes a handshake-confirmed peer to the p2p
 	// server's trusted set (immune to "too many peers" eviction). Wired by the
 	// Server to srv.AddTrustedPeer. trustedIDs bounds how many we pin.
-	markTrusted func(*enode.Node)
-	trustedMu   sync.Mutex
-	trustedIDs  map[enode.ID]struct{}
+	markTrusted   func(*enode.Node)
+	unmarkTrusted func(*enode.Node)
+	trustedMu     sync.Mutex
+	trustedIDs    map[enode.ID]int
 }
 
 // maxTrustedPeers caps how many confirmed mainnet peers we pin as trusted. Enough
@@ -101,37 +103,75 @@ const maxTrustedPeers = 64
 // Must be called BEFORE Start so the peer loop reads it consistently.
 func (h *EthHandler) SetResponseHandler(rh ResponseHandler) { h.rh = rh }
 
-// setMarkTrusted wires the callback the Server uses to pin confirmed mainnet
-// peers into its trusted set. Set once at Start.
-func (h *EthHandler) setMarkTrusted(fn func(*enode.Node)) { h.markTrusted = fn }
+// setTrustedCallbacks wires the callbacks before the server accepts peers.
+func (h *EthHandler) setTrustedCallbacks(mark, unmark func(*enode.Node)) {
+	h.trustedMu.Lock()
+	defer h.trustedMu.Unlock()
+	h.markTrusted = mark
+	h.unmarkTrusted = unmark
+}
 
 // markPeerTrusted pins a handshake-confirmed (real network+genesis) peer as
 // trusted so the p2p server never evicts it for "too many peers" — the scarce
 // good mainnet peers must survive the PulseChain flood that shares our bootnodes
-// and forkid. Idempotent and bounded by maxTrustedPeers.
-func (h *EthHandler) markPeerTrusted(node *enode.Node) {
-	if h.markTrusted == nil || node == nil {
-		return
+// and forkid. Returns true when this connection owns a reference that must be
+// released with unmarkPeerTrusted.
+func (h *EthHandler) markPeerTrusted(node *enode.Node) bool {
+	if node == nil {
+		return false
 	}
 	h.trustedMu.Lock()
+	mark := h.markTrusted
+	if mark == nil {
+		h.trustedMu.Unlock()
+		return false
+	}
 	if h.trustedIDs == nil {
-		h.trustedIDs = make(map[enode.ID]struct{})
+		h.trustedIDs = make(map[enode.ID]int)
 	}
 	id := node.ID()
-	if _, ok := h.trustedIDs[id]; ok {
+	if refs := h.trustedIDs[id]; refs > 0 {
+		h.trustedIDs[id] = refs + 1
 		h.trustedMu.Unlock()
-		return
+		return true
 	}
 	if len(h.trustedIDs) >= maxTrustedPeers {
 		h.trustedMu.Unlock()
-		return
+		return false
 	}
-	h.trustedIDs[id] = struct{}{}
+	h.trustedIDs[id] = 1
 	n := len(h.trustedIDs)
 	h.trustedMu.Unlock()
-	h.markTrusted(node)
+	mark(node)
 	log.Info("devp2p: pinned confirmed mainnet peer as trusted (immune to too-many-peers eviction)",
 		"peer", node.ID().String()[:16], "trustedCount", n)
+	return true
+}
+
+func (h *EthHandler) unmarkPeerTrusted(node *enode.Node) {
+	if node == nil {
+		return
+	}
+	h.trustedMu.Lock()
+	id := node.ID()
+	refs := h.trustedIDs[id]
+	if refs == 0 {
+		h.trustedMu.Unlock()
+		return
+	}
+	if refs > 1 {
+		h.trustedIDs[id] = refs - 1
+		h.trustedMu.Unlock()
+		return
+	}
+	delete(h.trustedIDs, id)
+	unmark := h.unmarkTrusted
+	n := len(h.trustedIDs)
+	h.trustedMu.Unlock()
+	if unmark != nil {
+		unmark(node)
+	}
+	log.Info("devp2p: unpinned disconnected mainnet peer", "peer", id.String()[:16], "trustedCount", n)
 }
 
 // NewEthHandler creates a new eth protocol message handler.
@@ -303,7 +343,9 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter, versi
 	// p2p server never evicts it for "too many peers" — PulseChain (network=369)
 	// shares our bootnodes+forkid and floods the inbound pool, and would otherwise
 	// push the scarce good peers out right after handshake.
-	h.markPeerTrusted(peer.Node())
+	if h.markPeerTrusted(peer.Node()) {
+		defer h.unmarkPeerTrusted(peer.Node())
+	}
 
 	log.Info("devp2p handshake complete",
 		"peer", peer.ID().String()[:16], "eth", version,
@@ -321,7 +363,7 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter, versi
 
 	peerID := peer.ID().String()
 	if h.rh != nil {
-		h.rh.OnPeerHandshake(peerID, rw, peerHead, peerHash)
+		h.rh.OnPeerHandshake(peerID, rw, peerHead, peerHash, version)
 		defer h.rh.OnPeerDisconnect(peerID)
 	}
 
@@ -420,11 +462,11 @@ func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter,
 	case 17:
 		return nil // eth/69 range update, log only
 
-	case 18:
+	case eth69.GetBlockAccessListsMsg:
 		// 0x12 GetBlockAccessLists — serve the out-of-band EIP-7928 BALs.
 		return h.handleGetBlockAccessLists(rw, msg)
 
-	case 19:
+	case eth69.BlockAccessListsMsg:
 		// 0x13 BlockAccessLists — full-BAL response; route to the downloader.
 		var resp blockAccessListsPacket
 		if err := msg.Decode(&resp); err != nil {

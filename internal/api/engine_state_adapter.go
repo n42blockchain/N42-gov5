@@ -296,7 +296,7 @@ func (a *EngineStateAdapter) WithHashedCanonical(v bool) *EngineStateAdapter {
 // ExecutePayload executes a block from the CL, persists state, verifies root.
 // Returns (valid bool, stateRoot, error).
 func (a *EngineStateAdapter) ExecutePayload(blk *block.Block) (bool, types.Hash, error) {
-	result, err := a.executePayloadDetailed(blk, nil, nil, nil)
+	result, err := a.executePayloadDetailed(blk, nil, nil, nil, false)
 	if err != nil {
 		return false, types.Hash{}, err
 	}
@@ -317,6 +317,18 @@ func (a *EngineStateAdapter) ExecutePayload(blk *block.Block) (bool, types.Hash,
 // during execution (catchup-grade ~3000 blk/s); the full-MPT rebuild
 // VerifyStateRoot is skipped because it OOMs at 25M-state scale.
 func (a *EngineStateAdapter) ExecutePayloadFromWire(blk *block.Block, withdrawals []*Withdrawal) (bool, types.Hash, error) {
+	return a.executePayloadFromWire(blk, withdrawals, false)
+}
+
+// ExecutePayloadFromTrustedColumnar executes a block read from the local
+// columnar freezer. That codec deliberately strips logsBloom while retaining the
+// canonical header hash, so this trusted local-only path may reconstruct a
+// missing all-zero bloom from the already-validated receipts.
+func (a *EngineStateAdapter) ExecutePayloadFromTrustedColumnar(blk *block.Block, withdrawals []*Withdrawal) (bool, types.Hash, error) {
+	return a.executePayloadFromWire(blk, withdrawals, true)
+}
+
+func (a *EngineStateAdapter) executePayloadFromWire(blk *block.Block, withdrawals []*Withdrawal, allowMissingExpectedBloom bool) (bool, types.Hash, error) {
 	var parentBeaconRoot *types.Hash
 	if hdr, _ := blk.Header().(*block.Header); hdr != nil && hdr.ParentBeaconRoot != nil {
 		v := *hdr.ParentBeaconRoot
@@ -325,7 +337,7 @@ func (a *EngineStateAdapter) ExecutePayloadFromWire(blk *block.Block, withdrawal
 	prevFast := a.fastVerify
 	a.fastVerify = true
 	defer func() { a.fastVerify = prevFast }()
-	result, err := a.executePayloadDetailed(blk, parentBeaconRoot, nil, withdrawals)
+	result, err := a.executePayloadDetailed(blk, parentBeaconRoot, nil, withdrawals, allowMissingExpectedBloom)
 	if err != nil {
 		return false, types.Hash{}, err
 	}
@@ -395,8 +407,7 @@ func (a *EngineStateAdapter) recoverSenders(txns []*transaction.Transaction, sig
 	wg.Wait()
 }
 
-// isAllZeroBytes reports whether b is empty or all zero — used to detect an
-// absent (columnar-stripped) logsBloom so its redundant check can be skipped.
+// isAllZeroBytes reports whether b is empty or all zero.
 func isAllZeroBytes(b []byte) bool {
 	for _, x := range b {
 		if x != 0 {
@@ -406,7 +417,17 @@ func isAllZeroBytes(b []byte) bool {
 	return true
 }
 
-func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal) (_ *enginePayloadExecutionResult, retErr error) {
+func validateLogsBloom(actual, expected []byte, allowMissingExpected bool) error {
+	if allowMissingExpected && isAllZeroBytes(expected) {
+		return nil
+	}
+	if !bytes.Equal(actual, expected) {
+		return fmt.Errorf("logs bloom mismatch")
+	}
+	return nil
+}
+
+func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal, allowMissingExpectedBloom bool) (_ *enginePayloadExecutionResult, retErr error) {
 	// A failed block leaves the read cache holding values memoized from this
 	// (about to be rolled back) tx — drop them. The batch path additionally
 	// purges on every SetBatchTx.
@@ -819,15 +840,9 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 			validationError: fmt.Errorf("receipts root mismatch"),
 		}, nil
 	}
-	// A header sourced from the columnar headerc store carries the correct
-	// canonical Hash() but a ZERO logsBloom — that codec strips ParentHash + Bloom
-	// and stores the hash directly (header_compact.go). The bloom is fully
-	// determined by the receipts, whose root was just validated above, so an
-	// all-zero expected bloom makes this check redundant rather than a real
-	// constraint: skip it and let the computed bloom be filled below. Any header
-	// that actually carries a bloom (all peer/CL blocks) is checked unchanged —
-	// and a genuine no-log block has actualBloom==0 too, so it would pass anyway.
-	if expected != nil && !isAllZeroBytes(expected.logsBloom) && !bytes.Equal(actualBloom.Bytes(), expected.logsBloom) {
+	// Only the explicit trusted-columnar path may reconstruct a bloom omitted by
+	// headerc. Peer and Engine API payloads must match even when they claim zero.
+	if expected != nil && validateLogsBloom(actualBloom.Bytes(), expected.logsBloom, allowMissingExpectedBloom) != nil {
 		if gasDiag {
 			log.Warn("GAS161 logs bloom mismatch", "block", blockNum)
 		}

@@ -340,28 +340,20 @@ None of them weaken safety; some change the *liveness* trade-offs.
 
 ## §4 Crash recovery
 
-`RoundStateFromSnapshot` (`round_state.go:40-48`) restores `currentView`,
-`lockedQC`, `lastCommittedQC`, and `consecutiveTimeouts` from a persisted
-snapshot. After restart the validator starts in `PhaseWaitingForProposal`,
-its lock and last-committed unchanged. Critically, `votedInView` and
-`commitVotedInView` are **not** persisted in the current snapshot format
-— the paper does not require persisting per-view vote intent because the
-lock alone is sufficient for safety, but a strictly correct implementation
-would persist them as well to guarantee no double-vote across crash. This
-is a known soft spot; see *§5 Open items*.
+`RoundStateFromSnapshot` restores `currentView`, `lockedQC`,
+`lastCommittedQC`, and `consecutiveTimeouts`. The v2 persistence record also
+stores both rounds' `(view, block_hash)` vote commitments. Each vote is
+journalled before release to the network, and recovery reinstates those
+commitments before processing messages. `mergeMonotonic` rejects conflicting
+non-zero hashes at the same view and independently preserves the highest
+locked/committed QCs, so delayed snapshots cannot reopen an SR9 vote or lock
+regression window.
 
 ---
 
 ## §5 Open items
 
-1. **Persist `votedInView` / `commitVotedInView` across crashes.** Without
-   this, a validator that crashes between sending a vote and reaching the
-   next batch boundary might re-vote for a different proposal in the same
-   view on restart. This is a subtle violation of SR9 in adversarial
-   timing scenarios; in practice the round-robin leader rotation and
-   lock-based safety make it benign on the happy path.
-
-2. **Formal Byzantine-test coverage.** Existing `chaos_test.go` covers
+1. **Formal Byzantine-test coverage.** Existing `chaos_test.go` covers
    happy-path multi-node consensus. `byzantine_test.go` extends it with
    per-SR scenario tests: `TestByzantine_LockMonotonic`,
    `TestByzantine_DoubleVoteSuppressed`,
@@ -374,6 +366,6 @@ is a known soft spot; see *§5 Open items*.
    the pre-existing `TestRejectSafetyViolation` and
    `TestEquivocationDetection`.
 
-3. **External audit** of the BLS aggregation path (`crypto/bls/blst`) and
+2. **External audit** of the BLS aggregation path (`crypto/bls/blst`) and
    the domain-separation tags. These are correctness-critical and not
    covered by paper-level proofs.
