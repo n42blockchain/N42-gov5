@@ -41,6 +41,7 @@ import (
 	"path/filepath"
 
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/mmap"
 	"github.com/n42blockchain/N42/lib/recsplit"
 )
 
@@ -59,6 +60,10 @@ type codesHashIndex struct {
 	reader *recsplit.IndexReader
 	offs   []byte // slot-ordered, codesHoffEntrySize per slot
 	slots  uint64
+
+	// mmap keep-alives for offs; nil when it fell back to a heap read.
+	offsF  *os.File
+	offsM2 *[mmap.MaxMapSize]byte
 }
 
 // openCodesHashIndex loads the optional hash index from dir. Returns
@@ -70,7 +75,12 @@ func openCodesHashIndex(dir string) (*codesHashIndex, error) {
 	if _, err := os.Stat(idxPath); err != nil {
 		return nil, nil
 	}
-	offs, err := os.ReadFile(offPath)
+	// Map rather than read: at 10 B per code this is ~25 MB for mainnet, and a
+	// heap copy is private, pagefile-backed memory the OS cannot reclaim. The
+	// snapshot reader maps its .ef/.val for exactly this reason (a heap read
+	// there is what drove a 37 GB minimal client). Same escape hatch:
+	// N42_SNAP_MMAP=0 forces the heap path.
+	offs, offsF, offsM2, err := mapOrReadFile(offPath)
 	if err != nil {
 		// The MPHF alone cannot answer anything: without offsets a slot is
 		// just a number. Treat a half-written pair as absent rather than
@@ -78,11 +88,13 @@ func openCodesHashIndex(dir string) (*codesHashIndex, error) {
 		return nil, nil
 	}
 	if len(offs)%codesHoffEntrySize != 0 {
+		closeFileMapping(offs, offsF, offsM2)
 		return nil, fmt.Errorf("codes-freezer: %s size %d is not a multiple of %d",
 			CodesHashOffsetsFile, len(offs), codesHoffEntrySize)
 	}
 	idx, err := recsplit.OpenIndex(idxPath)
 	if err != nil {
+		closeFileMapping(offs, offsF, offsM2)
 		return nil, fmt.Errorf("codes-freezer: open %s: %w", CodesHashIndexFile, err)
 	}
 	return &codesHashIndex{
@@ -90,7 +102,37 @@ func openCodesHashIndex(dir string) (*codesHashIndex, error) {
 		reader: recsplit.NewIndexReader(idx),
 		offs:   offs,
 		slots:  uint64(len(offs) / codesHoffEntrySize),
+		offsF:  offsF,
+		offsM2: offsM2,
 	}, nil
+}
+
+// mapOrReadFile returns path's bytes as a read-only mmap with its keep-alive
+// handles, falling back to a heap read when mapping is disabled or fails.
+// Mirrors snapshotreader.mapOrRead, which is unexported there.
+func mapOrReadFile(path string) (data []byte, f *os.File, m2 *[mmap.MaxMapSize]byte, err error) {
+	if os.Getenv("N42_SNAP_MMAP") != "0" {
+		if f, err = os.Open(path); err == nil {
+			if st, serr := f.Stat(); serr == nil && st.Size() > 0 {
+				if h1, h2, merr := mmap.Mmap(f, int(st.Size())); merr == nil {
+					return h1[:st.Size()], f, h2, nil
+				}
+			}
+			f.Close()
+		}
+	}
+	data, err = os.ReadFile(path)
+	return data, nil, nil, err
+}
+
+// closeFileMapping releases one mapOrReadFile result (no-op for heap buffers).
+func closeFileMapping(data []byte, f *os.File, m2 *[mmap.MaxMapSize]byte) {
+	if m2 != nil {
+		_ = mmap.Munmap(data, m2)
+	}
+	if f != nil {
+		f.Close()
+	}
 }
 
 // lookup returns the cdat location and blob length for codeHash. ok is false when the hash is
@@ -112,7 +154,12 @@ func (h *codesHashIndex) lookup(codeHash types.Hash) (fileNum uint16, offset, le
 }
 
 func (h *codesHashIndex) close() {
-	if h != nil && h.idx != nil {
+	if h == nil {
+		return
+	}
+	if h.idx != nil {
 		h.idx.Close()
 	}
+	closeFileMapping(h.offs, h.offsF, h.offsM2)
+	h.offs, h.offsF, h.offsM2 = nil, nil, nil
 }
