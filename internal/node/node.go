@@ -3348,12 +3348,13 @@ func OpenDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logger, nam
 
 	roTxsLimiter := semaphore.NewWeighted(int64(cmp.Max(32, runtime.GOMAXPROCS(-1)*8)))
 
-	chainKv, err := mdbx.NewMDBX(logger).
+	chainOpts := mdbx.NewMDBX(logger).
 		WriteMergeThreshold(4 * 8192).
 		Path(dbPath).Label(kv.ChainDB).
 		DBVerbosity(kv.DBVerbosityLvl(2)).RoTxsLimiter(roTxsLimiter).
-		MapSize(mdbxMapSizeOr(8 * datasize.TB)).
-		Open(ctx)
+		MapSize(mdbxMapSizeOr(8 * datasize.TB))
+	chainOpts = mdbxSyncModeOr(chainOpts, logger)
+	chainKv, err := chainOpts.Open(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -3364,6 +3365,37 @@ func OpenDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logger, nam
 		return nil, err
 	}
 	return chainKv, nil
+}
+
+// mdbxSyncModeOr applies a non-default MDBX durability mode when
+// N42_MDBX_SYNC is set. Unset — the default, and what every deployment gets
+// unless someone opts out on purpose — leaves mdbx.Durable: every block's
+// commit is fsynced, so a power cut costs nothing.
+//
+// The commit is the single largest cost on a loaded node (mdbx_txn_commit_ex
+// was 26% of cgo time at 5.2k tx/s), and part of that is the fsync. This exists
+// so that share can be measured on real data rather than argued from a
+// microbenchmark, and so an operator who has decided the tradeoff is worth it
+// can take it. It is deliberately an environment variable and not a config
+// field: it weakens a durability guarantee and should have to be typed out.
+//
+//	safe-nosync — skip the per-commit fsync; the kernel owns writeback. Crash
+//	              or power loss rolls the DB back to the last checkpoint,
+//	              losing recent commits but not integrity. A validator that
+//	              loses blocks this way re-syncs them from its peers.
+func mdbxSyncModeOr(opts mdbx.MdbxOpts, logger log2.Logger) mdbx.MdbxOpts {
+	switch v := strings.ToLower(strings.TrimSpace(os.Getenv("N42_MDBX_SYNC"))); v {
+	case "", "durable":
+		return opts
+	case "safe-nosync":
+		logger.Warn("MDBX durability reduced by N42_MDBX_SYNC=safe-nosync — " +
+			"per-commit fsync disabled; a crash or power loss can roll the chaindata " +
+			"back several blocks, which the node must then re-sync from peers")
+		return opts.SafeNoSync()
+	default:
+		logger.Warn("ignoring unknown N42_MDBX_SYNC value, staying durable", "value", v)
+		return opts
+	}
 }
 
 // mdbxMapSizeOr returns sz, or an override from N42_MDBX_MAPSIZE_GB when set.
