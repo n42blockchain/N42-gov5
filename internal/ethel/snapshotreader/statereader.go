@@ -144,7 +144,11 @@ func (r *StateReader) ReadAccountCode(addr types.Address, codeHash types.Hash) (
 	if account.IsEmptyCodeHash(codeHash) || r.code == nil {
 		return nil, nil
 	}
-	return r.code.GetCode(addr)
+	// Content-addressed first. Calling GetCode directly misses everything when
+	// the codes freezer was exported without an address index, which surfaces as
+	// the first EIP-7702 sender failing "sender not an eoa" — its delegation
+	// designator is unreadable — rather than as a code-lookup error.
+	return state.CodeFromSource(r.code, addr, codeHash)
 }
 
 func (r *StateReader) ReadAccountCodeSize(addr types.Address, codeHash types.Hash) (int, error) {

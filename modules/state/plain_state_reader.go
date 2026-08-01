@@ -47,6 +47,42 @@ type CodeSource interface {
 	GetCode(address types.Address) ([]byte, error)
 }
 
+// CodeByHashSource is the content-addressed lookup a bytecode store should
+// offer. Code is identified by keccak(code), which the account already
+// carries and which every caller here verifies anyway, so an address index
+// is redundant: it forces the exporter to join the code table against the
+// whole account table purely to answer a question the caller could ask
+// directly.
+//
+// It also makes the index nearly free. Because the caller verifies
+// keccak(code) == codeHash, a lookup structure may return a wrong answer for
+// a key outside its build set — the verification catches it. That admits a
+// minimal perfect hash (~1.8 bits/key) with no stored keys, instead of a
+// sorted array of 32-byte keys.
+//
+// Sources that can answer by hash should implement this; ReadAccountCode
+// prefers it and falls back to CodeSource.GetCode when unavailable.
+type CodeByHashSource interface {
+	GetCodeByHash(codeHash types.Hash) ([]byte, error)
+}
+
+// CodeFromSource resolves bytecode from src, preferring the content-addressed
+// path and falling back to the address index. Returns (nil, nil) when the
+// source has no entry.
+//
+// Every reader that holds a CodeSource must go through this rather than call
+// GetCode directly: a codes freezer exported with --addr-index=false has an
+// empty address index, so GetCode misses on everything and the first EIP-7702
+// sender fails with "sender not an eoa".
+func CodeFromSource(src CodeSource, address types.Address, codeHash types.Hash) ([]byte, error) {
+	if h, ok := src.(CodeByHashSource); ok && codeHash != (types.Hash{}) {
+		if code, err := h.GetCodeByHash(codeHash); err != nil || len(code) > 0 {
+			return code, err
+		}
+	}
+	return src.GetCode(address)
+}
+
 // PlainStateReader reads data from so called "plain state".
 // Data in the plain state is stored using un-hashed account/storage items
 // as opposed to the "normal" state that uses hashes of merkle paths to store items.
@@ -107,7 +143,7 @@ func (r *PlainStateReader) ReadAccountCode(address types.Address, codeHash types
 	// through to MDBX if not. keccak on ~1 KB bytecode is ~200ns on
 	// Ryzen (~5 GB/s) — negligible vs MDBX GetOne lookup cost.
 	if r.codeSrc != nil {
-		code, err := r.codeSrc.GetCode(address)
+		code, err := CodeFromSource(r.codeSrc, address, codeHash)
 		if err != nil {
 			return nil, err
 		}

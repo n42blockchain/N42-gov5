@@ -194,11 +194,23 @@ func Sender(signer Signer, tx *Transaction) (types.Address, error) {
 		}
 	}
 
+	// The per-object memo above only helps a caller holding this exact
+	// Transaction. A block arriving from the wire is decoded into fresh values,
+	// so importing re-recovers senders the pool already recovered when the
+	// transactions arrived. Consult the process-wide cache before paying for
+	// another ecdsa recovery; see sender_cache.go.
+	hash := tx.Hash()
+	if addr, ok := senderCacheGet(hash, signer); ok {
+		tx.from.Store(sigCache{signer: signer, from: addr})
+		return addr, nil
+	}
+
 	addr, err := signer.Sender(tx)
 	if err != nil {
 		return types.Address{}, err
 	}
 	tx.from.Store(sigCache{signer: signer, from: addr})
+	senderCachePut(hash, signer, addr)
 	return addr, nil
 }
 

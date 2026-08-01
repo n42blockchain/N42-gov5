@@ -14,6 +14,25 @@
 
 这些改动的目标不是“为测试写特判”，而是把 Prague/Cancun 相关的 block hook、system contract 地址、部署字节码和 devnet 初始化收成共享入口，减少今后复测时出现“代码过了，但 Hive 用的还是旧路径/旧副本”的漂移。
 
+## 复验缺口（2026-07-28 记）
+
+下面这份通过记录停在 **2026-04-16**，此后 Hive 覆盖的代码持续改动，**未再复跑**：
+
+- `75e99eb4`（07-18）engine：eth-el 重启后经 state adapter 解析 safe/finalized
+- `542d319e`（06-03）ethel 同步与状态执行加固
+- `057adf39`（05-01）ethel engine payload 兼容性对齐
+- 07-27：`engine_api_v1.go`、`engine_state_adapter.go` 再次改动；同日升级 mdbx-go
+  0.40.3→0.41.0（cursor 取值路径重构）、erigontech/secp256k1 1.2.0→1.3.0（换上游
+  libsecp256k1）、supranational/blst 0.3.16→0.3.17（改 C 核心）
+
+同时，仓内那 16 个由 hive genesis fixture 驱动的回归测试（`internal/api` 15 个、`conf`
+1 个）因 `tests/eth-hive` 不在干净检出中而**一直没有运行**。它们原本是硬失败，让两个包长期
+红灯；`8797f080` 起改为显式 skip，空洞变得可见，但覆盖仍未恢复——恢复只需 vendor 其中
+一个 `genesis.json`，不必克隆整个 hive。
+
+也就是说：**「已通过 Hive/EEST」目前是三个多月前的结论，不是现状。** 下次复跑后请更新本节
+与下方日期。
+
 ## 当前记录状态（2026-04-16）
 
 当前仓库内可审计的结果产物显示：
