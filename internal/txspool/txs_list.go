@@ -258,10 +258,36 @@ func (l *txPricedList) underpricedFor(h *priceHeap, tx *transaction.Transaction)
 	return h.cmp(h.list[0], tx) >= 0
 }
 
+// discardPrealloc caps the initial capacity of Discard's result. Sizing it by
+// the caller's `slots` instead reserved the pool's entire projected overflow on
+// every single call: the caller passes
+// `all.Slots() - capacity + numSlots(tx)`, which is hundreds of thousands of
+// entries whenever the pool is over capacity, while the loop below usually
+// breaks out after a handful of pops — or immediately, when the priced lists
+// are empty. Big allocation, no work.
+//
+// Measured on the live fleet over 56 minutes at ~417 tx/s: this one make() was
+// 2.84 TB of the node's 2.98 TB of total allocation (95.2%), about 2.1 MB per
+// transaction admitted, and it is why the node spent ~40% of its CPU in the
+// garbage collector — against 11-14% in all of MDBX and cryptography combined.
+//
+// The allocation should scale with the transactions actually dropped, which is
+// what append does.
+const discardPrealloc = 64
+
 // Discard finds a number of most underpriced transactions, removes them from the
 // priced list and returns them for further removal from the entire pool.
 func (l *txPricedList) Discard(slots int, force bool) ([]*transaction.Transaction, bool) {
-	drop := make([]*transaction.Transaction, 0, slots)
+	prealloc := slots
+	if prealloc > discardPrealloc {
+		prealloc = discardPrealloc
+	}
+	if prealloc < 0 {
+		// A caller that computes a negative overflow would otherwise panic in
+		// make(); the loop is a no-op for it either way.
+		prealloc = 0
+	}
+	drop := make([]*transaction.Transaction, 0, prealloc)
 	for slots > 0 {
 		if len(l.urgent.list)*floatingRatio > len(l.floating.list)*urgentRatio || floatingRatio == 0 {
 			if len(l.urgent.list) == 0 {
