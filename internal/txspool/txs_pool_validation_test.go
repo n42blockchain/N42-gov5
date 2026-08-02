@@ -188,10 +188,15 @@ func TestValidateSenderWithValidSignature(t *testing.T) {
 	t.Log("✓ validateSender test completed")
 }
 
-func TestValidateSenderWithNilFrom(t *testing.T) {
+// TestValidateSenderRejectsUnsignedTransaction covers a transaction carrying no
+// signature at all. It was named for its nil From field, but that is not what
+// rejects it and no longer would be: a missing sender is normal for the wire
+// encoding and is filled in from the signature. What is missing here is the
+// signature itself, so there is nothing to recover a sender from.
+func TestValidateSenderRejectsUnsignedTransaction(t *testing.T) {
 	pool := newMockTxsPool()
 
-	// Create tx with nil From
+	// Unsigned: V, R and S are all nil.
 	inner := &transaction.LegacyTx{
 		Nonce:    0,
 		GasPrice: uint256.NewInt(100),
@@ -202,12 +207,9 @@ func TestValidateSenderWithNilFrom(t *testing.T) {
 	}
 	tx := transaction.NewTx(inner)
 
-	// Validation should fail
 	if pool.validateSender(tx) {
-		t.Error("validateSender should return false for nil From address")
+		t.Error("validateSender should reject a transaction with no signature")
 	}
-
-	t.Log("✓ validateSender rejects nil From address (S1 fix)")
 }
 
 func TestValidateSenderWithZeroSignature(t *testing.T) {
