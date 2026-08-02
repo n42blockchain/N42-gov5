@@ -350,14 +350,16 @@ func validateExecutionPayloadTransaction(tx *transaction.Transaction, rules *par
 	if reason != txpoolcfg.Success {
 		return fmt.Errorf("intrinsic gas calculation failed: %s", reason)
 	}
+	// Intrinsic gas validation takes precedence when both the standard
+	// intrinsic-gas requirement and the Prague floor-gas requirement fail.
+	// This preserves the consensus error ordering used by the execution tests.
+	if tx.Gas() < intrinsicGas {
+		return internalcore.ErrIntrinsicGas
+	}
 	if rules.IsPrague && floorGas > intrinsicGas {
-		intrinsicGas = floorGas
 		if tx.Gas() < floorGas {
 			return errFloorDataGasTooLow
 		}
-	}
-	if tx.Gas() < intrinsicGas {
-		return internalcore.ErrIntrinsicGas
 	}
 	return nil
 }
