@@ -24,7 +24,6 @@ package guest
 import (
 	"fmt"
 
-	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hash"
@@ -32,7 +31,6 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/modules/state/witness"
-	"google.golang.org/protobuf/proto"
 )
 
 // Execute runs the guest program logic: decode inputs, replay transactions
@@ -71,29 +69,20 @@ func Execute(input *GuestInput) *GuestOutput {
 		return output
 	}
 
-	// 4. Decode block header.
-	var pbHeader types_pb.Header
-	if err := proto.Unmarshal(input.BlockHeader, &pbHeader); err != nil {
+	// 4. Decode block header. Unmarshal dispatches between the compact storage
+	// codec the builder now emits and the protobuf form older inputs carry.
+	header := &block.Header{}
+	if err := header.Unmarshal(input.BlockHeader); err != nil {
 		output.Error = fmt.Sprintf("failed to decode block header: %v", err)
 		return output
 	}
-	header := &block.Header{}
-	if err := header.FromProtoMessage(&pbHeader); err != nil {
-		output.Error = fmt.Sprintf("failed to convert block header: %v", err)
-		return output
-	}
 
-	// 5. Decode transactions.
+	// 5. Decode transactions, likewise in either encoding.
 	txs := make([]*transaction.Transaction, len(input.Transactions))
 	for i, raw := range input.Transactions {
-		var pbTx types_pb.Transaction
-		if err := proto.Unmarshal(raw, &pbTx); err != nil {
+		tx := new(transaction.Transaction)
+		if err := tx.Unmarshal(raw); err != nil {
 			output.Error = fmt.Sprintf("failed to decode transaction %d: %v", i, err)
-			return output
-		}
-		tx, err := transaction.FromProtoMessage(&pbTx)
-		if err != nil {
-			output.Error = fmt.Sprintf("failed to convert transaction %d: %v", i, err)
 			return output
 		}
 		txs[i] = tx
@@ -105,14 +94,9 @@ func Execute(input *GuestInput) *GuestOutput {
 	// 7. Decode parent header for block hash lookups.
 	var parentHeader *block.Header
 	if len(input.ParentHeader) > 0 {
-		var pbParent types_pb.Header
-		if err := proto.Unmarshal(input.ParentHeader, &pbParent); err != nil {
-			output.Error = fmt.Sprintf("failed to decode parent header: %v", err)
-			return output
-		}
 		parentHeader = &block.Header{}
-		if err := parentHeader.FromProtoMessage(&pbParent); err != nil {
-			output.Error = fmt.Sprintf("failed to convert parent header: %v", err)
+		if err := parentHeader.Unmarshal(input.ParentHeader); err != nil {
+			output.Error = fmt.Sprintf("failed to decode parent header: %v", err)
 			return output
 		}
 	}

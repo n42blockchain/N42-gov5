@@ -25,9 +25,8 @@ package zkprover
 import (
 	"fmt"
 
-	"google.golang.org/protobuf/proto"
-
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/modules/state/witness"
 	"github.com/n42blockchain/N42/params"
 )
@@ -43,23 +42,19 @@ func BuildGuestInput(
 	if err != nil {
 		return nil, err
 	}
-	headerProto := blk.Header().ToProtoMessage()
-	headerBytes, err := proto.Marshal(headerProto)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal block header: %w", err)
-	}
-
-	parentProto := parentHeader.ToProtoMessage()
-	parentBytes, err := proto.Marshal(parentProto)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal parent header: %w", err)
-	}
+	// Headers and transactions travel to the guest in the compact storage
+	// codecs, the same ones the database is written in. Both sides are ours, and
+	// the guest decodes through Header.Unmarshal / Transaction.Unmarshal, which
+	// dispatch on the 0xFF marker -- so an input serialized before this change
+	// still decodes. Dropping protobuf also takes its runtime out of the guest,
+	// which is compiled to RISC-V and pays for every byte of it.
+	headerBytes := marshalHeaderForGuest(blk.Header())
+	parentBytes := marshalHeaderForGuest(parentHeader)
 
 	txs := blk.Transactions()
 	txBytes := make([][]byte, len(txs))
 	for i, tx := range txs {
-		txProto := tx.ToProtoMessage()
-		txBytes[i], err = proto.Marshal(txProto)
+		txBytes[i], err = marshalTxForGuest(tx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal transaction %d: %w", i, err)
 		}
@@ -126,4 +121,28 @@ func guestChainID(chainConfig *params.ChainConfig) (uint64, error) {
 		return 0, fmt.Errorf("chain ID unavailable")
 	}
 	return chainConfig.ChainID.Uint64(), nil
+}
+
+// marshalHeaderForGuest serializes a header for the guest program in the
+// compact storage codec.
+func marshalHeaderForGuest(h block.IHeader) []byte {
+	if hdr, ok := h.(*block.Header); ok {
+		return hdr.MarshalCompact()
+	}
+	// IHeader is satisfied only by *block.Header in this tree; the interface
+	// exists for test doubles. Fall back rather than panicking on one.
+	if m, ok := h.(interface{ MarshalCompact() []byte }); ok {
+		return m.MarshalCompact()
+	}
+	return nil
+}
+
+// marshalTxForGuest serializes a transaction for the guest program, preferring
+// the compact storage codec and falling back to protobuf for the transaction
+// types it does not cover. Transaction.Unmarshal dispatches between them.
+func marshalTxForGuest(tx *transaction.Transaction) ([]byte, error) {
+	if enc := tx.MarshalCompactStorage(); enc != nil {
+		return enc, nil
+	}
+	return tx.Marshal()
 }
