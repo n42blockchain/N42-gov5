@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+# consume-* collection is an Ethereum execution-layer check through Hive;
+# project-wide Go checks are intentionally kept in the Make targets.
+
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 eest_dir="${EEST_DIR:-$repo_root/tests/eth-tests/execution-spec-tests}"
 mode="${EEST_MODE:-fill}"
@@ -24,7 +27,8 @@ declare -a shard_rows=(
   $'cancun\tfork_Cancun\t.*fork_Cancun.*\t.*/.*fork_Cancun\t~17,250\tstable@latest'
   $'prague\tfork_Prague\t.*fork_Prague.*\t.*/.*fork_Prague\t~20,500\tstable@latest'
   $'osaka\tfork_Osaka\t.*fork_Osaka.*\t.*/.*fork_Osaka\t~21,000\tdevelop@latest'
-  $'rlp\teip2930_access_list\t.*eip2930_access_list.*\t.*eip2930_access_list.*\tunchanged\tstable@latest'
+  $'engine-access-list\teip2930_access_list\t.*eip2930_access_list.*\t.*eip2930_access_list.*\tunchanged\tstable@latest\tengine'
+  $'rlp\tblockchain\t.*\t.*\tall BlockchainFixture cases\tstable@latest\trlp'
 )
 
 want_shard() {
@@ -64,6 +68,7 @@ run_collect() {
   local fill_expr="$2"
   local sim_limit_expr="$3"
   local shard_default_input="$4"
+  local runner="${5:-engine}"
   local shard_input_path=''
   case "$mode" in
     fill)
@@ -79,8 +84,20 @@ run_collect() {
         echo "HIVE_SIMULATOR is required when EEST_MODE=consume-engine" >&2
         return 2
       fi
-      HIVE_SIMULATOR="$hive_simulator" \
-        uv run --python "$python_bin" consume engine --input "$shard_input_path" --sim.limit "collectonly:$sim_limit_expr"
+      case "$runner" in
+        engine)
+          HIVE_SIMULATOR="$hive_simulator" \
+            uv run --python "$python_bin" consume engine --input "$shard_input_path" --sim.limit "collectonly:$sim_limit_expr"
+          ;;
+        rlp)
+          HIVE_SIMULATOR="$hive_simulator" \
+            uv run --python "$python_bin" consume rlp --input "$shard_input_path" --sim.limit "collectonly:$sim_limit_expr"
+          ;;
+        *)
+          echo "Unsupported EEST runner for shard $shard: $runner" >&2
+          return 2
+          ;;
+      esac
       ;;
     *)
       echo "Unsupported EEST_MODE: $mode" >&2
@@ -134,11 +151,11 @@ trap cleanup_hive_stub EXIT
 
 start_hive_stub_if_needed
 
-printf '%s\n' '| Shard | Selector | Target ~Tests | Mode | Count | Status |'
-printf '%s\n' '|-------|----------|---------------|------|-------|--------|'
+printf '%s\n' '| Shard | Selector | Target ~Tests | Runner | Count | Status |'
+printf '%s\n' '|-------|----------|---------------|--------|-------|--------|'
 
 for row in "${shard_rows[@]}"; do
-  IFS=$'\t' read -r shard fill_expr sim_limit_expr selector target shard_default_input <<<"$row"
+  IFS=$'\t' read -r shard fill_expr sim_limit_expr selector target shard_default_input runner <<<"$row"
   if ! want_shard "$shard"; then
     continue
   fi
@@ -149,7 +166,7 @@ for row in "${shard_rows[@]}"; do
   (
     cd "$eest_dir"
     set +e
-    run_collect "$shard" "$fill_expr" "$sim_limit_expr" "$shard_default_input" >"$tmp_file" 2>"$err_file"
+    run_collect "$shard" "$fill_expr" "$sim_limit_expr" "$shard_default_input" "$runner" >"$tmp_file" 2>"$err_file"
     rc=$?
     if [ "$rc" -ne 0 ]; then
       echo "$rc" >"$tmp_file.rc"
@@ -183,5 +200,6 @@ for row in "${shard_rows[@]}"; do
   rm -f "$tmp_file"
   rm -f "$err_file"
 
-  printf '| %s | `%s` | %s | `%s` | `%s` | `%s` |\n' "$shard" "$selector" "$target" "$mode" "$count" "$status"
+  runner="${runner:-engine}"
+  printf '| %s | `%s` | %s | `%s` | `%s` | `%s` |\n' "$shard" "$selector" "$target" "$runner" "$count" "$status"
 done
