@@ -23,10 +23,35 @@
 package internal
 
 import (
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/n42blockchain/N42/common/block"
 )
+
+// slowBlockThreshold is the wall-clock cost above which the per-block phase
+// breakdowns ("blockimport phases", "blockwrite phases") are logged at Info
+// instead of Debug.
+//
+// These lines exist to explain an anomaly, but the threshold they used — 5 ms —
+// sat below the median block, so every block logged one and the pair became
+// 26% of all log bytes on this fleet, drowning the anomalies they were meant to
+// surface. At the 30M/2000ms baseline a block write is p50 7.1 ms / p99 14.2 ms
+// / max 46 ms, so 50 ms reports nothing in steady state and fires exactly when
+// something is actually slow. Debug still carries every block for profiling.
+//
+// N42_SLOW_BLOCK_MS overrides it; 0 restores logging every block at Info.
+var slowBlockThreshold = slowBlockThresholdFromEnv()
+
+func slowBlockThresholdFromEnv() time.Duration {
+	if v := os.Getenv("N42_SLOW_BLOCK_MS"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+			return time.Duration(n) * time.Millisecond
+		}
+	}
+	return 50 * time.Millisecond
+}
 
 // insertIterator assists during chain import by providing validated blocks
 // one at a time from a contiguous chain.

@@ -26,6 +26,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mattn/go-isatty"
+
 	"github.com/n42blockchain/N42/conf"
 	prefixed "github.com/n42blockchain/N42/log/logrus-prefixed-formatter"
 	"github.com/sirupsen/logrus"
@@ -201,7 +203,7 @@ func Init(nodeConfig conf.NodeConfig, config conf.LoggerConfig) {
 	if config.LogFile == "" {
 		// 使用新的 Pretty 格式化器
 		prettyFormatter := NewPrettyFormatter()
-		prettyFormatter.ForceColors = true
+		prettyFormatter.ForceColors = colorSupported(os.Stdout)
 		terminal.SetFormatter(prettyFormatter)
 		terminal.SetLevel(lvl)
 		terminal.SetOutput(os.Stdout)
@@ -234,7 +236,7 @@ func Init(nodeConfig conf.NodeConfig, config conf.LoggerConfig) {
 	// 根据是否同时输出到控制台选择格式化器和输出目标
 	if config.Console {
 		prettyFormatter := NewPrettyFormatter()
-		prettyFormatter.ForceColors = true
+		prettyFormatter.ForceColors = colorSupported(os.Stdout)
 		terminal.SetFormatter(prettyFormatter)
 		terminal.SetLevel(lvl)
 		terminal.SetOutput(io.MultiWriter(os.Stdout, lj))
@@ -250,6 +252,26 @@ func Init(nodeConfig conf.NodeConfig, config conf.LoggerConfig) {
 		logManager = NewLogManager(logDir, config.TotalSizeCap)
 		logManager.Start()
 	}
+}
+
+// colorSupported reports whether ANSI colour codes are worth emitting on w.
+//
+// The node writes its console log to stdout and operators redirect that to a
+// file, so colours are emitted unconditionally into something no terminal ever
+// renders. On this fleet the escape sequences were 32% of every log byte —
+// pure waste on a path that is otherwise write-only. Colour when a human is
+// watching, plain text when a file or pipe is.
+//
+// NO_COLOR (https://no-color.org) suppresses colour regardless; N42_LOG_COLOR=1
+// forces it back on for terminals we fail to detect.
+func colorSupported(w *os.File) bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	if os.Getenv("N42_LOG_COLOR") == "1" {
+		return true
+	}
+	return isatty.IsTerminal(w.Fd()) || isatty.IsCygwinTerminal(w.Fd())
 }
 
 // newFileFormatter creates a logrus.Formatter suitable for file output.
@@ -302,7 +324,9 @@ func InitMobileLogger(path string, isDebug bool) {
 	formatter := new(prefixed.TextFormatter)
 	formatter.TimestampFormat = "2006-01-02 15:04:05"
 	formatter.FullTimestamp = true
-	formatter.DisableColors = false
+	// The only sink here is a rotating file, never a terminal, so colour codes
+	// are dead weight in every byte written.
+	formatter.DisableColors = true
 
 	terminal.SetFormatter(formatter)
 	terminal.SetLevel(logrus.DebugLevel)
