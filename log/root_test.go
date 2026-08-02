@@ -120,8 +120,15 @@ func TestLogManagerNoSizeCap(t *testing.T) {
 }
 
 // TestInitConsoleOnly 测试仅控制台输出
+//
+// An empty LogFile no longer means "console, unconditionally". It means
+// "console when a human is watching" — and when stdout is a file or pipe the
+// node takes over a rotating file instead, because nothing can bound a
+// descriptor the shell owns. N42_LOG_STDOUT=1 asks for the old behaviour and is
+// what this test pins; TestRedirectedStdoutIsRotated covers the other branch.
 func TestInitConsoleOnly(t *testing.T) {
 	resetLoggerGlobals(t)
+	t.Setenv("N42_LOG_STDOUT", "1")
 
 	nodeConfig := conf.NodeConfig{
 		DataDir: t.TempDir(),
@@ -339,4 +346,75 @@ func BenchmarkLogInfo(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		Info("benchmark message", "iteration", i)
 	}
+}
+
+// TestConfigCoercesUnboundedBackups pins the coercion that keeps an error storm
+// from filling a server's disk. lumberjack reads MaxBackups==0 as "keep every
+// backup forever", which the config used to advertise as a valid choice.
+func TestConfigCoercesUnboundedBackups(t *testing.T) {
+	for _, in := range []int{0, -1} {
+		cfg := conf.LoggerConfig{MaxBackups: in}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate(%d): %v", in, err)
+		}
+		if cfg.MaxBackups <= 0 {
+			t.Fatalf("MaxBackups %d stayed unbounded after Validate (got %d)", in, cfg.MaxBackups)
+		}
+	}
+	if def := conf.DefaultLoggerConfig(); def.TotalSizeCap <= 0 {
+		t.Fatalf("default TotalSizeCap is unbounded (%d)", def.TotalSizeCap)
+	}
+}
+
+// TestRedirectedStdoutIsRotated is the regression for the hole this fixes: with
+// no LogFile configured the node wrote to stdout, operators redirected that to
+// a file, and nothing could rotate a descriptor the shell owns — so the log was
+// unbounded on exactly the deployment path IDC servers use. Under `go test`
+// stdout is not a terminal, which is the case being covered.
+func TestRedirectedStdoutIsRotated(t *testing.T) {
+	if isTerminal(os.Stdout) {
+		t.Skip("stdout is a terminal; the redirected path is what this covers")
+	}
+	resetLoggerGlobals(t)
+
+	dir := t.TempDir()
+	cfg := conf.DefaultLoggerConfig()
+	cfg.MaxSize = 1 // MB
+	cfg.MaxBackups = 2
+	cfg.Compress = false
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	Init(conf.NodeConfig{DataDir: dir}, cfg)
+
+	// Write far more than MaxSize*(MaxBackups+1) would hold.
+	line := string(make([]byte, 512))
+	for i := 0; i < 40000; i++ {
+		Info(line)
+	}
+	Close()
+
+	logDir := filepath.Join(dir, "log")
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		t.Fatalf("node did not take ownership of a log directory: %v", err)
+	}
+	var total int64
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		total += info.Size()
+	}
+	if total == 0 {
+		t.Fatal("no log bytes were written")
+	}
+	// The synchronous bound is MaxSize*(1 current + MaxBackups); allow slack for
+	// the file that is mid-rotation.
+	limit := int64(cfg.MaxSize) * int64(cfg.MaxBackups+2) * 1024 * 1024
+	if total > limit {
+		t.Fatalf("log directory grew to %d bytes, above the %d byte bound", total, limit)
+	}
+	t.Logf("wrote ~20 MB, log directory bounded at %d bytes across %d files", total, len(entries))
 }
