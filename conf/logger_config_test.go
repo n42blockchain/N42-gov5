@@ -33,8 +33,10 @@ func TestLoggerConfigDefaults(t *testing.T) {
 	if !cfg.Compress {
 		t.Error("Expected Compress true")
 	}
-	if cfg.TotalSizeCap != 0 {
-		t.Errorf("Expected TotalSizeCap 0, got %d", cfg.TotalSizeCap)
+	// A directory-level cap must be set by default: it is the backstop that
+	// keeps a log directory from growing without limit on a server.
+	if cfg.TotalSizeCap != 4096 {
+		t.Errorf("Expected TotalSizeCap 4096, got %d", cfg.TotalSizeCap)
 	}
 	if !cfg.LocalTime {
 		t.Error("Expected LocalTime true")

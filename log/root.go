@@ -78,7 +78,13 @@ func NewLogManager(logDir string, totalSizeCapMB int) *LogManager {
 	return &LogManager{
 		logDir:        logDir,
 		totalSizeCap:  int64(totalSizeCapMB) * 1024 * 1024,
-		checkInterval: 1 * time.Hour, // 每小时检查一次
+		// A directory-level backstop is blind between sweeps, and the wider that
+		// window the more it can miss: write rates during an error storm run
+		// orders of magnitude above steady state, and an hour of that fills a
+		// disk. lumberjack's MaxSize/MaxBackups apply synchronously at rotation
+		// and are the first line of defence; this keeps the second one reacting
+		// in minutes rather than hours.
+		checkInterval: 5 * time.Minute,
 	}
 }
 
@@ -199,15 +205,34 @@ func Init(nodeConfig conf.NodeConfig, config conf.LoggerConfig) {
 	// 设置日志级别
 	lvl, _ := logrus.ParseLevel(config.Level)
 
-	// 如果没有指定日志文件，只输出到控制台，使用漂亮格式
+	// With no LogFile configured, what to do depends on whether stdout is a
+	// terminal.
+	//
+	// When someone is watching, the console IS the log and the process should
+	// not also hold a file. On a server, though, stdout is normally redirected
+	// into a file by the shell — and the shell owns that descriptor, so no
+	// amount of in-process rotation can bound it. The log then grows without
+	// limit, and one error storm fills the disk and takes the machine down with
+	// it. The IDC deployment sits squarely on this path: its documentation
+	// configures no logging at all, so it runs exactly these defaults.
+	//
+	// So when stdout is not a terminal the node takes ownership of a rotating
+	// file and leaves one line on stdout pointing at it, so a redirected file
+	// still tells an operator where the log went. An explicit LogFile is
+	// unaffected; N42_LOG_STDOUT=1 asks for the old unbounded behaviour back.
 	if config.LogFile == "" {
-		// 使用新的 Pretty 格式化器
-		prettyFormatter := NewPrettyFormatter()
-		prettyFormatter.ForceColors = colorSupported(os.Stdout)
-		terminal.SetFormatter(prettyFormatter)
-		terminal.SetLevel(lvl)
-		terminal.SetOutput(os.Stdout)
-		return
+		if isTerminal(os.Stdout) || os.Getenv("N42_LOG_STDOUT") == "1" {
+			prettyFormatter := NewPrettyFormatter()
+			prettyFormatter.ForceColors = colorSupported(os.Stdout)
+			terminal.SetFormatter(prettyFormatter)
+			terminal.SetLevel(lvl)
+			terminal.SetOutput(os.Stdout)
+			return
+		}
+		config.LogFile = defaultNodeLogFile
+		config.Console = false
+		fmt.Fprintf(os.Stdout, "n42: stdout is not a terminal; logging to %s (rotating, max %d MB x %d)\n",
+			filepath.Join(nodeConfig.DataDir, "log", defaultNodeLogFile), config.MaxSize, config.MaxBackups)
 	}
 
 	// 创建日志目录
@@ -254,6 +279,16 @@ func Init(nodeConfig conf.NodeConfig, config conf.LoggerConfig) {
 	}
 }
 
+// defaultNodeLogFile is the file the node takes ownership of when no LogFile is
+// configured and stdout is not a terminal.
+const defaultNodeLogFile = "n42.log"
+
+// isTerminal reports whether w is attached to a terminal, i.e. whether a human
+// is watching rather than a file or pipe collecting the output.
+func isTerminal(w *os.File) bool {
+	return isatty.IsTerminal(w.Fd()) || isatty.IsCygwinTerminal(w.Fd())
+}
+
 // colorSupported reports whether ANSI colour codes are worth emitting on w.
 //
 // The node writes its console log to stdout and operators redirect that to a
@@ -271,7 +306,7 @@ func colorSupported(w *os.File) bool {
 	if os.Getenv("N42_LOG_COLOR") == "1" {
 		return true
 	}
-	return isatty.IsTerminal(w.Fd()) || isatty.IsCygwinTerminal(w.Fd())
+	return isTerminal(w)
 }
 
 // newFileFormatter creates a logrus.Formatter suitable for file output.
