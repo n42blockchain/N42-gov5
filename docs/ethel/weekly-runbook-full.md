@@ -196,7 +196,7 @@ only for the embedded Caplin CL; that is wrong, `--eldevp2p.enabled` needs it to
 ## 5. Three-mode test (on **E:**, catch-up + live ~1 min)
 
 All three run on E: copies. Ports: pick non-fleet ports (fleet uses http
-20012-20018, p2p 62000-63000) — e.g. publicrpc `20115`, eldevp2p `:30403`.
+20012-20018, p2p 32000-33006) — e.g. publicrpc `20115`, eldevp2p `:30403`.
 eth-el requires MDBX at `<datadir>/chaindata/mdbx.dat`, freezer at
 `<datadir>/chain/freezer`, snapshot segs at `<datadir>/snapshot`.
 
@@ -309,7 +309,7 @@ C:\N42\N42-gov5\build\bin\eth-el.exe --datadir E:/ethel-full-<tip> --snapshot.mo
 | snapshot-export from N42-hashed | wrong — it needs reth PLAIN tables; export from `d:/reth2k/db` |
 | minimal/full "not wired" (old runbook) | stale — snapshot-direct IS wired in `cmd/eth-el/main.go`; the blocker is only the snapshot segments existing for the week |
 | `witness-block-trace` spot-check fails | tool regression (fails on known-good frozen blocks); rely on the replay's inline gasUsed gate |
-| port clash with the fleet | fleet = http 20012-18 / p2p 62000-63000; test nodes pick others (20115 / :30403) |
+| port clash with the fleet | fleet = http 20012-18 / p2p 32000-33006; test nodes pick others (20115 / :30403) |
 | catch-up diverges at head+N with a gasUsed/root mismatch (e.g. −49582 @ 25587088) | `chain/freezer` is missing `headerc.*` → `BLOCKHASH` returns zero. Seed the window (headerc covering `[head-256, head]`) — mandatory for ALL modes, archive included |
 
 ---
