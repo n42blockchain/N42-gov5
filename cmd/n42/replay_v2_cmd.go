@@ -55,6 +55,7 @@ var replayV2Command = &cli.Command{
 		&cli.BoolFlag{Name: "compact-txs", Usage: "Write target transactions in the compact storage codec (unsupported types fall back to proto; read path accepts both)", Value: true},
 		&cli.BoolFlag{Name: "compact-receipts", Usage: "Write target receipts in the compact storage codec (consensus fields + logs; Bloom recomputed on read; read path accepts both)", Value: true},
 		&cli.BoolFlag{Name: "compact-logs", Usage: "Write the target transaction-log table in the compact storage codec (address, topics, data; context fields come from the key; read path accepts both)", Value: true},
+		&cli.BoolFlag{Name: "compact-bodies", Usage: "Serialize freezer bodies in the compact storage codec instead of proto (read path accepts both)", Value: true},
 		&cli.BoolFlag{Name: "virtual-td", Usage: "Skip all-zero TD rows (PoS TD=0); ReadTd synthesizes 0 for known headers via a DatabaseInfo marker", Value: true},
 		&cli.BoolFlag{Name: "snapshot-at-end", Usage: "Create snapshot after replay", Value: true},
 		&cli.BoolFlag{Name: "export-era", Usage: "Export EraE segments after replay", Value: false},
@@ -111,6 +112,7 @@ func runReplayV2(cliCtx *cli.Context) error {
 	rawdb.CompactTxWrites = cliCtx.Bool("compact-txs")
 	rawdb.CompactReceiptWrites = cliCtx.Bool("compact-receipts")
 	rawdb.CompactLogWrites = cliCtx.Bool("compact-logs")
+	rawdb.CompactBodyWrites = cliCtx.Bool("compact-bodies")
 	cfg.VirtualTd = cliCtx.Bool("virtual-td")
 	cfg.SnapshotAtEnd = cliCtx.Bool("snapshot-at-end")
 	cfg.ExportEraE = cliCtx.Bool("export-era")
