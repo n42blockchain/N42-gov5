@@ -19,8 +19,6 @@ package p2p
 import (
 	"sync"
 	"testing"
-
-	"github.com/n42blockchain/N42/proto/types_pb"
 )
 
 func TestInitGossipTopics(t *testing.T) {
@@ -43,32 +41,57 @@ func TestInitGossipTopics(t *testing.T) {
 	}
 }
 
-func TestGossipTopicMappings(t *testing.T) {
+// TestIsGossipTopic checks membership, which is what the registry is for:
+// subscribe() refuses a topic that is not registered, because nothing
+// downstream would know how to decode it.
+func TestIsGossipTopic(t *testing.T) {
 	InitGossipTopics()
 
-	// Blocks and transactions travel as RLP, so their entries exist only so the
-	// topic is registered — subscribe() treats an unmapped topic as a
-	// configuration error and refuses to subscribe. decodePubsubMessage routes
-	// both to a raw byte carrier before the mapping is ever consulted, which is
-	// why the placeholder type does not matter.
-	if GossipTopicMappings(BlockTopicFormat) == nil {
-		t.Error("block topic must stay registered or subscribe() will refuse it")
-	}
-	if GossipTopicMappings(TransactionTopicFormat) == nil {
-		t.Error("transaction topic must stay registered or subscribe() will refuse it")
-	}
-
-	sidecarMsg := GossipTopicMappings(BlobSidecarTopicFormat)
-	if sidecarMsg == nil {
-		t.Fatal("blob sidecar topic mapping should not be nil")
-	}
-	if _, ok := sidecarMsg.(*types_pb.BlobSidecar); !ok {
-		t.Error("blob sidecar topic should map to types_pb.BlobSidecar")
+	for _, topic := range []string{
+		BlockTopicFormat,
+		TransactionTopicFormat,
+		BlobSidecarTopicFormat,
+		HotStuffConsensusTopicFormat,
+	} {
+		if !IsGossipTopic(topic) {
+			t.Errorf("%s must stay registered or subscribe() will refuse it", topic)
+		}
 	}
 
-	nilMsg := GossipTopicMappings("non-existent")
-	if nilMsg != nil {
-		t.Error("non-existent topic should return nil")
+	if IsGossipTopic("non-existent") {
+		t.Error("an unregistered topic should not report as registered")
+	}
+}
+
+// TestEveryRegisteredTopicHasADecoder guards the gap that used to be papered
+// over by a protobuf fallback: a topic could be registered, and therefore
+// subscribable, while decodePubsubMessage had no case for it. The fallback
+// decoded such a topic into a placeholder H256 and passed it on. Any topic
+// this node subscribes to must be decodable, so the two lists must agree.
+func TestEveryRegisteredTopicHasADecoder(t *testing.T) {
+	InitGossipTopics()
+
+	// Topics decodePubsubMessage handles. Topics served by their own
+	// subscription paths (HotStuff, ZK, mobile) never reach it.
+	decodable := map[string]bool{
+		BlockTopicFormat:       true,
+		TransactionTopicFormat: true,
+		BlobSidecarTopicFormat: true,
+	}
+	selfDecoding := map[string]bool{
+		HotStuffConsensusTopicFormat:  true,
+		ZKProofTopicFormat:            true,
+		MobilePacketTopicFormat:       true,
+		MobileRegistrationTopicFormat: true,
+		MobileCohortIndexTopicFormat:  true,
+		MobileCohortRevealTopicFormat: true,
+		MobileCohortCertTopicFormat:   true,
+	}
+
+	for _, topic := range AllTopics() {
+		if !decodable[topic] && !selfDecoding[topic] {
+			t.Errorf("topic %s is registered but nothing decodes it", topic)
+		}
 	}
 }
 
@@ -99,35 +122,14 @@ func TestAllTopics(t *testing.T) {
 	}
 }
 
-func TestGossipTypeToTopic(t *testing.T) {
-	InitGossipTopics()
-
-	sidecarTopic := GossipTypeToTopic(&types_pb.BlobSidecar{})
-	if sidecarTopic != BlobSidecarTopicFormat {
-		t.Errorf("blob sidecar type should map to %s, got %s", BlobSidecarTopicFormat, sidecarTopic)
-	}
-
-	// Blocks and transactions are published by BroadcastBlock /
-	// BroadcastTransaction, which name their topic directly. Resolving a topic
-	// from a proto type is exactly the path that would send one of them in the
-	// old SSZ-over-protobuf form, so it must not resolve.
-	if got := GossipTypeToTopic(&types_pb.Block{}); got != "" {
-		t.Errorf("block type should no longer resolve to a topic, got %s", got)
-	}
-	if got := GossipTypeToTopic(&types_pb.Transaction{}); got != "" {
-		t.Errorf("transaction type should no longer resolve to a topic, got %s", got)
-	}
-}
-
 func TestRegisterGossipTopic(t *testing.T) {
 	ResetGossipTopics()
 	InitGossipTopics()
 
 	customTopic := "/n42/custom/1"
-	RegisterGossipTopic(customTopic, &types_pb.Block{})
+	RegisterGossipTopic(customTopic)
 
-	retrieved := GossipTopicMappings(customTopic)
-	if retrieved == nil {
+	if !IsGossipTopic(customTopic) {
 		t.Error("custom topic should be registered")
 	}
 
@@ -157,8 +159,7 @@ func TestGossipTopicsConcurrency(t *testing.T) {
 			if i%5 == 0 {
 				_ = AllTopics()
 			}
-			_ = GossipTopicMappings(BlockTopicFormat)
-			_ = GossipTypeToTopic(&types_pb.Block{})
+			_ = IsGossipTopic(BlockTopicFormat)
 			_ = IsGossipTopicsInitialized()
 		}(i)
 	}
@@ -167,36 +168,13 @@ func TestGossipTopicsConcurrency(t *testing.T) {
 
 func TestAutoInitialization(t *testing.T) {
 	ResetGossipTopics()
-	msg := GossipTopicMappings(BlockTopicFormat)
-	if msg == nil {
-		t.Error("auto-initialization should work for GossipTopicMappings")
+	if !IsGossipTopic(BlockTopicFormat) {
+		t.Error("auto-initialization should work for IsGossipTopic")
 	}
 
 	ResetGossipTopics()
 	topics := AllTopics()
 	if len(topics) == 0 {
 		t.Error("auto-initialization should work for AllTopics")
-	}
-
-	ResetGossipTopics()
-	topic := GossipTypeToTopic(&types_pb.BlobSidecar{})
-	if topic == "" {
-		t.Error("auto-initialization should work for GossipTypeToTopic")
-	}
-}
-
-func TestLegacyCompatibility(t *testing.T) {
-	if len(gossipTopicMappings) < 2 {
-		t.Error("legacy gossipTopicMappings should be populated")
-	}
-	if len(GossipTypeMapping) < 2 {
-		t.Error("legacy GossipTypeMapping should be populated")
-	}
-
-	if _, ok := gossipTopicMappings[BlockTopicFormat]; !ok {
-		t.Error("legacy block topic mapping missing")
-	}
-	if _, ok := gossipTopicMappings[TransactionTopicFormat]; !ok {
-		t.Error("legacy transaction topic mapping missing")
 	}
 }
