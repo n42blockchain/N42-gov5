@@ -84,7 +84,17 @@ func (s *Service) PublishToTopic(ctx context.Context, topic string, data []byte,
 
 	timeout := time.After(defaultPeerWaitTimeout)
 	for {
-		if len(topicHandle.ListPeers()) > 0 || s.cfg.MinSyncPeers == 0 {
+		if peers := len(topicHandle.ListPeers()); peers > 0 || s.cfg.MinSyncPeers == 0 {
+			// Publishing into a topic nobody is subscribed to succeeds. With
+			// MinSyncPeers at 0 -- which every local fleet sets -- this loop
+			// does not even wait, so a caller sees nothing but success while
+			// its messages go nowhere. That is how a dead transaction-gossip
+			// pipeline reported "1000 published, 0 failed" for ten minutes.
+			// Say it out loud instead, rate-limited so a topic that is
+			// legitimately quiet cannot flood the log.
+			if peers == 0 {
+				s.warnEmptyTopic(topic)
+			}
 			return topicHandle.Publish(ctx, data, opts...)
 		}
 		select {
@@ -96,6 +106,22 @@ func (s *Service) PublishToTopic(ctx context.Context, topic string, data []byte,
 			time.Sleep(100 * time.Millisecond)
 		}
 	}
+}
+
+// emptyTopicWarnInterval bounds how often a given topic may report that it has
+// no subscribers.
+const emptyTopicWarnInterval = time.Minute
+
+// warnEmptyTopic reports, at most once a minute per topic, that a message was
+// published with no peer subscribed to receive it.
+func (s *Service) warnEmptyTopic(topic string) {
+	now := time.Now()
+	last, ok := s.emptyTopicWarned.Load(topic)
+	if ok && now.Sub(last.(time.Time)) < emptyTopicWarnInterval {
+		return
+	}
+	s.emptyTopicWarned.Store(topic, now)
+	log.Warn("Publishing to a topic with no subscribed peers; the message reaches nobody", "topic", topic)
 }
 
 // SubscribeToTopic joins (if necessary) and subscribes to a PubSub topic,
