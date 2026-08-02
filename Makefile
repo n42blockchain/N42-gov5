@@ -26,6 +26,9 @@ CGO_CFLAGS += -DMDBX_FORCE_ASSERTIONS=0 # Enable MDBX's asserts by default in 'd
 CGO_CFLAGS += -O
 CGO_CFLAGS += -D__BLST_PORTABLE__
 CGO_CFLAGS += -Wno-unknown-warning-option -Wno-enum-int-mismatch -Wno-strict-prototypes
+# libmdbx otherwise embeds __DATE__/__TIME__, which makes two clean builds of
+# the same revision differ. Keep its informational timestamp deterministic.
+CGO_CFLAGS += -DMDBX_BUILD_TIMESTAMP=\"reproducible\"
 #CGO_CFLAGS += -Wno-error=strict-prototypes
 
 GIT_COMMIT ?= $(shell git rev-list -1 HEAD)
@@ -35,7 +38,7 @@ PACKAGE = github.com/n42blockchain/N42
 
 BUILD_TAGS = nosqlite,noboltdb
 GO_FLAGS += -trimpath -tags $(BUILD_TAGS) -buildvcs=false
-GO_FLAGS += -ldflags  "-X ${PACKAGE}/params.GitCommit=${GIT_COMMIT} -X ${PACKAGE}/params.GitBranch=${GIT_BRANCH} -X ${PACKAGE}/params.GitTag=${GIT_TAG}"
+GO_FLAGS += -ldflags  "-buildid=${GIT_COMMIT} -X ${PACKAGE}/params.GitCommit=${GIT_COMMIT} -X ${PACKAGE}/params.GitBranch=${GIT_BRANCH} -X ${PACKAGE}/params.GitTag=${GIT_TAG}"
 GOBUILD = CGO_CFLAGS="$(CGO_CFLAGS)" go build -v $(GO_FLAGS)
 
 
