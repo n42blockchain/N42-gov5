@@ -85,12 +85,12 @@ func (s *Service) registerSubscribers(digest [4]byte) {
 }
 
 // subscribe to a given topic with a given validator and subscription handler.
-// The base protobuf message is used to initialize new messages for decoding.
+// The topic must be registered; decodePubsubMessage picks the decoder from it.
 func (s *Service) subscribe(topic string, validator wrappedVal, handle subHandler, digest [4]byte) *pubsub.Subscription {
-	base := p2p.GossipTopicMappings(topic)
-	if base == nil {
-		// This indicates a configuration error - topic does not exist in GossipTopicMappings.
-		log.Crit("Topic is not mapped to any message in GossipTopicMappings", "topic", topic)
+	if !p2p.IsGossipTopic(topic) {
+		// A configuration error: the topic is not in the registry, so nothing
+		// downstream knows how to decode it.
+		log.Crit("Topic is not registered in the gossip topic registry", "topic", topic)
 		return nil
 	}
 	return s.subscribeWithBase(s.addDigestToTopic(topic, digest), validator, handle)

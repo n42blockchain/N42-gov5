@@ -210,7 +210,17 @@ func ConvertH256ToUint256Int(h256 *types_pb.H256) *uint256.Int {
 	return &i
 }
 
+// ConvertUint256IntToH256 converts a uint256 to its protobuf form. A nil input
+// converts to nil rather than panicking: the value is optional in every message
+// that carries one, and dereferencing it turned an unset field into a crash.
+// Log.ToProtoMessage reached this with a nil BlockNumber, so marshalling a log
+// whose block context had not been filled in panicked instead of producing a
+// message with the field unset. ConvertH256ToUint256Int already treats nil this
+// way in the other direction.
 func ConvertUint256IntToH256(i *uint256.Int) *types_pb.H256 {
+	if i == nil {
+		return nil
+	}
 	return &types_pb.H256{
 		Lo: &types_pb.H128{Lo: i[0], Hi: i[1]},
 		Hi: &types_pb.H128{Lo: i[2], Hi: i[3]},

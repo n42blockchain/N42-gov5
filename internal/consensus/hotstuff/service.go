@@ -732,7 +732,11 @@ func (s *Service) handleBroadcast(output EngineOutput) {
 	gossipBytes := buf.Bytes()
 	topic := s.gossipTopic + enc.ProtocolSuffix()
 
-	log.Info("hotstuff: broadcasting consensus message", "type", output.Message.Type, "topic", topic, "bytes", len(gossipBytes))
+	// Every consensus message emits one of these, several per view, which made
+	// it 15% of all log bytes on this fleet. Broadcasting is the normal case and
+	// says nothing on its own; the interesting events (a view that stalls, a
+	// message that fails to encode or publish) are logged separately.
+	log.Debug("hotstuff: broadcasting consensus message", "type", output.Message.Type, "topic", topic, "bytes", len(gossipBytes))
 
 	// Timeout/NewView traffic must survive reconnects and GossipSub's duplicate
 	// cache. A deterministic timeout published before the mesh is complete can

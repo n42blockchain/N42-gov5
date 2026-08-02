@@ -422,7 +422,11 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 		log.Info("import-gated vote: casting deferred vote after import", "view", view, "blockHash", blockHash)
 		return e.sendVote(view, blockHash)
 	}
-	log.Info("import-gated vote: block imported but no matching pending proposal", "view", view, "blockHash", blockHash, "hasPending", e.pendingProposals[view])
+	// The no-op branch: an import that is not the current view's pending
+	// proposal, which is the common case (the leader importing its own block,
+	// catch-up imports, a re-import after a view change). It carried Info and
+	// fired on nearly every import, making it 8% of all log bytes.
+	log.Debug("import-gated vote: block imported but no matching pending proposal", "view", view, "blockHash", blockHash, "hasPending", e.pendingProposals[view])
 
 	return nil
 }
