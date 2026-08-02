@@ -46,20 +46,24 @@ func TestInitGossipTopics(t *testing.T) {
 func TestGossipTopicMappings(t *testing.T) {
 	InitGossipTopics()
 
-	blockMsg := GossipTopicMappings(BlockTopicFormat)
-	if blockMsg == nil {
-		t.Fatal("block topic mapping should not be nil")
+	// Blocks and transactions travel as RLP, so their entries exist only so the
+	// topic is registered — subscribe() treats an unmapped topic as a
+	// configuration error and refuses to subscribe. decodePubsubMessage routes
+	// both to a raw byte carrier before the mapping is ever consulted, which is
+	// why the placeholder type does not matter.
+	if GossipTopicMappings(BlockTopicFormat) == nil {
+		t.Error("block topic must stay registered or subscribe() will refuse it")
 	}
-	if _, ok := blockMsg.(*types_pb.Block); !ok {
-		t.Error("block topic should map to types_pb.Block")
+	if GossipTopicMappings(TransactionTopicFormat) == nil {
+		t.Error("transaction topic must stay registered or subscribe() will refuse it")
 	}
 
-	txMsg := GossipTopicMappings(TransactionTopicFormat)
-	if txMsg == nil {
-		t.Fatal("transaction topic mapping should not be nil")
+	sidecarMsg := GossipTopicMappings(BlobSidecarTopicFormat)
+	if sidecarMsg == nil {
+		t.Fatal("blob sidecar topic mapping should not be nil")
 	}
-	if _, ok := txMsg.(*types_pb.Transaction); !ok {
-		t.Error("transaction topic should map to types_pb.Transaction")
+	if _, ok := sidecarMsg.(*types_pb.BlobSidecar); !ok {
+		t.Error("blob sidecar topic should map to types_pb.BlobSidecar")
 	}
 
 	nilMsg := GossipTopicMappings("non-existent")
@@ -98,14 +102,20 @@ func TestAllTopics(t *testing.T) {
 func TestGossipTypeToTopic(t *testing.T) {
 	InitGossipTopics()
 
-	blockTopic := GossipTypeToTopic(&types_pb.Block{})
-	if blockTopic != BlockTopicFormat {
-		t.Errorf("block type should map to %s, got %s", BlockTopicFormat, blockTopic)
+	sidecarTopic := GossipTypeToTopic(&types_pb.BlobSidecar{})
+	if sidecarTopic != BlobSidecarTopicFormat {
+		t.Errorf("blob sidecar type should map to %s, got %s", BlobSidecarTopicFormat, sidecarTopic)
 	}
 
-	txTopic := GossipTypeToTopic(&types_pb.Transaction{})
-	if txTopic != TransactionTopicFormat {
-		t.Errorf("transaction type should map to %s, got %s", TransactionTopicFormat, txTopic)
+	// Blocks and transactions are published by BroadcastBlock /
+	// BroadcastTransaction, which name their topic directly. Resolving a topic
+	// from a proto type is exactly the path that would send one of them in the
+	// old SSZ-over-protobuf form, so it must not resolve.
+	if got := GossipTypeToTopic(&types_pb.Block{}); got != "" {
+		t.Errorf("block type should no longer resolve to a topic, got %s", got)
+	}
+	if got := GossipTypeToTopic(&types_pb.Transaction{}); got != "" {
+		t.Errorf("transaction type should no longer resolve to a topic, got %s", got)
 	}
 }
 
@@ -169,7 +179,7 @@ func TestAutoInitialization(t *testing.T) {
 	}
 
 	ResetGossipTopics()
-	topic := GossipTypeToTopic(&types_pb.Block{})
+	topic := GossipTypeToTopic(&types_pb.BlobSidecar{})
 	if topic == "" {
 		t.Error("auto-initialization should work for GossipTypeToTopic")
 	}

@@ -51,8 +51,8 @@ var (
 // gossipTopicMappings defines the canonical topic-to-message-type mappings.
 // Referenced by pubsub_filter.go, service.go, and the registry.
 var gossipTopicMappings = map[string]proto.Message{
-	BlockTopicFormat:              &types_pb.Block{},
-	TransactionTopicFormat:        &types_pb.Transaction{},
+	BlockTopicFormat:              &types_pb.H256{}, // blocks travel as RLP; H256 placeholder for topic registration
+	TransactionTopicFormat:        &types_pb.H256{}, // transactions travel as RLP; H256 placeholder for topic registration
 	BlobSidecarTopicFormat:        &types_pb.BlobSidecar{},
 	HotStuffConsensusTopicFormat:  &types_pb.H256{}, // HotStuff uses custom SSZ, not protobuf; H256 is a placeholder for topic registration
 	ZKProofTopicFormat:            &types_pb.H256{}, // ZK proofs use custom serialization; H256 placeholder for topic registration
