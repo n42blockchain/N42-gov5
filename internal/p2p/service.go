@@ -88,7 +88,7 @@ func NewService(ctx context.Context, genesisHash types.Hash, cfg *conf.P2PConfig
 		ctx:            ctx,
 		cancel:         cancel,
 		cfg:            cfg,
-		joinedTopics:   make(map[string]*pubsub.Topic, len(gossipTopicMappings)),
+		joinedTopics:   make(map[string]*pubsub.Topic, len(gossipTopics)),
 		genesisHash:    genesisHash,
 		protectedPeers: make(map[peer.ID]struct{}),
 	}

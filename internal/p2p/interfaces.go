@@ -14,7 +14,6 @@ import (
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
 	"github.com/n42blockchain/N42/internal/p2p/enr"
 	"github.com/n42blockchain/N42/internal/p2p/peers"
-	"google.golang.org/protobuf/proto"
 )
 
 // P2P represents the full p2p interface composed of all of the sub-interfaces.
@@ -59,9 +58,8 @@ type P2P interface {
 
 // Broadcaster broadcasts messages to peers over the p2p pubsub protocol.
 type Broadcaster interface {
-	Broadcast(context.Context, proto.Message) error
 	// BroadcastTransaction gossips an already-RLP-encoded transaction to the
-	// transaction topic, in place of Broadcast(proto.Message).
+	// transaction topic.
 	BroadcastTransaction(context.Context, []byte) error
 	// BroadcastBlock gossips an already-RLP-encoded block to the block topic
 	// (consensus blocks travel as RLP, not the schema-limited SSZ).

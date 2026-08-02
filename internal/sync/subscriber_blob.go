@@ -15,19 +15,17 @@
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 //
 // GossipSub subscriber for EIP-4844 blob sidecars. blobSidecarSubscriber
-// decodes the types_pb.BlobSidecar proto, validates it via sc.Validate
-// and persists it through rawdb so block verification can pair each
-// block with its committed blobs.
+// decodes the sidecar from the same compact encoding rawdb stores it in,
+// validates it via sc.Validate and persists it so block verification can pair
+// each block with its committed blobs.
 
 package sync
 
 import (
 	"context"
+	"fmt"
 
-
-	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -36,15 +34,15 @@ import (
 // blobSidecarSubscriber handles incoming blob sidecar messages from gossip.
 // It validates the sidecar and stores it in the database.
 func (s *Service) blobSidecarSubscriber(ctx context.Context, data any) error {
-	pbSidecar, ok := data.(*types_pb.BlobSidecar)
+	raw, ok := data.(*rawSSZBytes)
 	if !ok {
 		log.Error("Blob sidecar subscriber received wrong message type")
 		return errWrongMessage
 	}
 
-	sc, err := gossipMsgToBlobSidecar(pbSidecar)
+	sc, err := decodeGossipBlobSidecar(raw.data)
 	if err != nil {
-		log.Warn("Failed to convert gossip blob sidecar", "err", err)
+		log.Warn("Failed to decode gossip blob sidecar", "err", err)
 		return err
 	}
 
@@ -89,28 +87,21 @@ func (s *Service) blobSidecarSubscriber(ctx context.Context, data any) error {
 	return nil
 }
 
-// gossipMsgToBlobSidecar converts a types_pb.BlobSidecar to block.BlobSidecar.
-func gossipMsgToBlobSidecar(pb *types_pb.BlobSidecar) (*block.BlobSidecar, error) {
-	sc := &block.BlobSidecar{
-		Index:       pb.Index,
-		BlockNumber: pb.BlockNumber,
+// decodeGossipBlobSidecar reads one sidecar from the wire.
+//
+// The wire form is rawdb's storage encoding, so a sidecar has a single
+// serialized representation across gossip and the database. It used to be SSZ
+// over a generated protobuf struct, whose conversion silently dropped any
+// field whose length did not match -- a sidecar with a truncated blob or KZG
+// commitment arrived as one with a zeroed blob or commitment, and only
+// Validate stood between that and storage.
+func decodeGossipBlobSidecar(data []byte) (*block.BlobSidecar, error) {
+	sidecars, err := rawdb.DecodeBlobSidecars(data)
+	if err != nil {
+		return nil, err
 	}
-
-	if len(pb.Blob) == block.BlobSize {
-		copy(sc.Blob[:], pb.Blob)
+	if len(sidecars) != 1 {
+		return nil, fmt.Errorf("blob sidecar gossip carries exactly one sidecar, got %d", len(sidecars))
 	}
-	if len(pb.KzgCommitment) == block.KZGCommitmentSize {
-		copy(sc.KZGCommitment[:], pb.KzgCommitment)
-	}
-	if len(pb.KzgProof) == block.KZGProofSize {
-		copy(sc.KZGProof[:], pb.KzgProof)
-	}
-	if len(pb.BlockHash) == 32 {
-		sc.BlockHash = types.BytesToHash(pb.BlockHash)
-	}
-	if len(pb.TxHash) == 32 {
-		sc.TxHash = types.BytesToHash(pb.TxHash)
-	}
-
-	return sc, nil
+	return sidecars[0], nil
 }
