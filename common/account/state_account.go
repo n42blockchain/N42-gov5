@@ -129,10 +129,12 @@ func (a *StateAccount) Equals(acc *StateAccount) bool {
 		a.Balance.Cmp(&acc.Balance) == 0
 }
 
-func (a *StateAccount) Marshal() ([]byte, error) {
-	return proto.Marshal(a.ToProtoMessage())
-}
-
+// Unmarshal decodes the protobuf account encoding. It is a LEGACY DECODER: no
+// write path produces this form any more -- DecodeForStorage dispatches to it
+// only for records written before MarshalV2 became the storage encoding, which
+// it detects by the first byte (protobuf field tags for field 2 and up are
+// >= 0x10, while V2's field bits fit in the low nibble). The matching Marshal
+// was removed; nothing called it.
 func (a *StateAccount) Unmarshal(v []byte) error {
 	var pAccount state.Account
 	if err := proto.Unmarshal(v, &pAccount); err != nil {
