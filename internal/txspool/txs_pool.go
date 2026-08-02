@@ -575,14 +575,18 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
 	return nil
 }
 
-// validateSender verifies that the transaction signature is valid and
-// the recovered sender address matches the declared From address.
+// validateSender verifies that the transaction signature is valid and, when the
+// transaction declares a sender, that it is the one the signature recovers to.
+//
+// The signature is the authority on who sent a transaction; a declared From is
+// a claim. It used to be REQUIRED here, which quietly coupled the pool to a
+// wire format that carried one: transactions gossiped in the standard Ethereum
+// encoding have no From field at all, so every one of them was rejected as
+// having a "nil From address" -- at Debug level, on a fleet running at Info, so
+// the whole mempool gossip pipeline was silently dead again. A missing From is
+// now filled in from the recovery, and a present one still has to match.
 func (pool *TxsPool) validateSender(tx *transaction.Transaction) bool {
 	declaredFrom := tx.From()
-	if declaredFrom == nil {
-		log.Debug("Transaction has nil From address")
-		return false
-	}
 
 	v, r, s := tx.RawSignatureValues()
 	if v == nil || r == nil || s == nil {
@@ -618,7 +622,11 @@ func (pool *TxsPool) validateSender(tx *transaction.Transaction) bool {
 		log.Debug("Failed to recover sender from signature", "err", err)
 		return false
 	}
-	if recoveredAddr != *declaredFrom {
+	if declaredFrom == nil {
+		// No claim to check: adopt what the signature recovered, so the rest of
+		// the pool and the miner can read tx.From().
+		tx.SetFrom(recoveredAddr)
+	} else if recoveredAddr != *declaredFrom {
 		log.Debug("Recovered sender does not match declared From",
 			"recovered", recoveredAddr, "declared", *declaredFrom)
 		return false
