@@ -1058,7 +1058,10 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 				cache.Clear()
 			}
 		}
-		log.Info("commit-to-canonical applied", "number", blk.Number64().Uint64(), "hash", hash.Hex())
+		// Once per committed block, duplicating what "hotstuff: block committed"
+		// already reports; a rewrite of the canonical chain is the part worth
+		// surfacing and it is logged where it happens.
+		log.Debug("commit-to-canonical applied", "number", blk.Number64().Uint64(), "hash", hash.Hex())
 		committedNumber = blk.Number64().Uint64()
 		notify = true
 		return nil
@@ -1851,7 +1854,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				"exec", procPhases.Exec, "root", procPhases.Finalize,
 				"proc", dProcess, "valid", dValidate, "write", dWrite, "total", dTotal,
 			}
-			if dTotal >= 5*time.Millisecond {
+			if dTotal >= slowBlockThreshold {
 				log.Info("blockimport phases", fields...)
 			} else {
 				log.Debug("blockimport phases", fields...)

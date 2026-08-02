@@ -1,10 +1,11 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
-// GossipSub subscriber for mempool transactions. txSubscriber decodes
-// types_pb.Transaction, converts to the internal transaction.Transaction
-// type and adds it to the txPool via AddRemotes, swallowing decode
-// errors so misbehaving peers are not immediately penalised.
+// GossipSub subscriber for mempool transactions. txSubscriber RLP-decodes
+// the standard Ethereum transaction encoding into the internal
+// transaction.Transaction type and adds it to the txPool via AddRemotes,
+// swallowing decode errors so misbehaving peers are not immediately
+// penalised.
 
 package sync
 
@@ -12,8 +13,6 @@ import (
 	"context"
 	"sync/atomic"
 
-
-	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/log"
 )
@@ -23,14 +22,18 @@ import (
 var txGossipReceived atomic.Uint64
 
 // txSubscriber handles incoming transaction messages from GossipSub.
-// Each message contains a single SSZ-encoded Transaction.
+//
+// Each message is one transaction in the standard Ethereum encoding (legacy
+// RLP or an EIP-2718 typed envelope). That encoding carries no sender field,
+// so the sender is whatever the signature recovers to and a peer cannot assert
+// one; the pool recovers it during validation.
 func (s *Service) txSubscriber(ctx context.Context, data any) error {
-	pbTx, ok := data.(*types_pb.Transaction)
+	raw, ok := data.(*rawSSZBytes)
 	if !ok {
 		return nil
 	}
 
-	tx, err := transaction.FromProtoMessage(pbTx)
+	tx, err := transaction.DecodeEthereumTransaction(raw.data)
 	if err != nil {
 		log.Warn("Failed to decode gossiped transaction", "err", err)
 		return nil // don't return error to avoid penalizing peer

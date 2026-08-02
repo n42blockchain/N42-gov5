@@ -216,7 +216,7 @@ func WriteReceipts(tx kv.Putter, number uint64, receipts block.Receipts) error {
 			continue
 		}
 		logs := block.Logs(receipt.Logs)
-		data, err := logs.Marshal()
+		data, err := marshalLogsForStorage(logs)
 		if err != nil {
 			return fmt.Errorf("encode block logs for block %d: %w", number, err)
 		}
@@ -244,7 +244,7 @@ func WriteReceiptsPooled(tx kv.Putter, number uint64, receipts block.Receipts) e
 			continue
 		}
 		logs := block.Logs(receipt.Logs)
-		data, err := logs.Marshal()
+		data, err := marshalLogsForStorage(logs)
 		if err != nil {
 			return fmt.Errorf("encode block logs for block %d: %w", number, err)
 		}
@@ -274,11 +274,25 @@ func WriteReceiptsPooled(tx kv.Putter, number uint64, receipts block.Receipts) e
 // 0xFF marker). Set by replay-v2's --compact-receipts.
 var CompactReceiptWrites = true
 
+// CompactLogWrites switches the per-transaction log table to the compact
+// storage codec. The proto form spent most of its bytes on context fields the
+// key already carries (block number, transaction id) or that are derivable from
+// position. Read paths accept both formats — Logs.Unmarshal dispatches on the
+// 0xFF marker — so mixed tables are fine.
+var CompactLogWrites = true
+
 func marshalReceiptsForStorage(receipts block.Receipts) ([]byte, error) {
 	if CompactReceiptWrites {
 		return receipts.MarshalCompact(), nil
 	}
 	return receipts.Marshal()
+}
+
+func marshalLogsForStorage(logs block.Logs) ([]byte, error) {
+	if CompactLogWrites {
+		return logs.MarshalCompact(), nil
+	}
+	return logs.Marshal()
 }
 
 func AppendReceipts(tx kv.StatelessWriteTx, blockNumber uint64, receipts block.Receipts) error {
@@ -287,7 +301,7 @@ func AppendReceipts(tx kv.StatelessWriteTx, blockNumber uint64, receipts block.R
 			continue
 		}
 		logs := block.Logs(receipt.Logs)
-		data, err := logs.Marshal()
+		data, err := marshalLogsForStorage(logs)
 		if err != nil {
 			return err
 		}
