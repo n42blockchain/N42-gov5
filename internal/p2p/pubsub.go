@@ -13,7 +13,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
-	"github.com/n42blockchain/N42/proto/msg_proto"
+	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 )
 
 const (
@@ -157,14 +157,14 @@ func setPubSubParameters() {
 	pubsub.TimeCacheDuration = 550 * gossipSubHeartbeatInterval
 }
 
-// convertTopicScores converts libp2p topic score snapshots to the protobuf format.
-func convertTopicScores(topicMap map[string]*pubsub.TopicScoreSnapshot) map[string]*msg_proto.TopicScoreSnapshot {
-	newMap := make(map[string]*msg_proto.TopicScoreSnapshot, len(topicMap))
+// convertTopicScores converts libp2p topic score snapshots to the local form.
+func convertTopicScores(topicMap map[string]*pubsub.TopicScoreSnapshot) map[string]*peerdata.TopicScoreSnapshot {
+	newMap := make(map[string]*peerdata.TopicScoreSnapshot, len(topicMap))
 	for t, s := range topicMap {
 		if s == nil {
 			continue
 		}
-		newMap[t] = &msg_proto.TopicScoreSnapshot{
+		newMap[t] = &peerdata.TopicScoreSnapshot{
 			TimeInMesh:               uint64(s.TimeInMesh.Milliseconds()),
 			FirstMessageDeliveries:   float32(s.FirstMessageDeliveries),
 			MeshMessageDeliveries:    float32(s.MeshMessageDeliveries),
