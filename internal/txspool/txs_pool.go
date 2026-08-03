@@ -279,6 +279,14 @@ func (pool *TxsPool) addTxs(txs []*transaction.Transaction, local, sync bool) []
 		errs = make([]error, len(txs))
 		news = make([]*transaction.Transaction, 0, len(txs))
 	)
+	// Recover senders for the whole batch up front, in parallel. The loop
+	// below then hits the per-transaction memo instead of paying for an ECDSA
+	// recovery each. Recovery is the batch's only expensive step (~50 µs a
+	// transaction, and at saturation it was the single largest identifiable
+	// piece of application CPU), it needs no pool state, and it happens outside
+	// the pool lock -- so serialising it only left cores idle: the fleet ran at
+	// 4 busy cores out of 32 while the profile sat in scheduler park/spin.
+	pool.prewarmSenders(txs)
 	for i, tx := range txs {
 		hash := tx.Hash()
 		if pool.all.Get(hash) != nil {
