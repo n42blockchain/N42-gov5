@@ -18,6 +18,18 @@ const (
 	// old and new nodes until the roll finishes.
 	GossipTransactionMessage = "transaction_v2"
 
+	// GossipTxHashesMessage carries announcements: a batch of 32-byte
+	// transaction hashes with no bodies. A peer that lacks a hash asks its
+	// announcer for the body over RPCPooledTxsByHashTopicV1.
+	//
+	// Broadcasting bodies put every transaction's full bytes on every mesh
+	// edge, so on a 7-node mesh each transaction crossed the wire about six
+	// times more than it had to. At saturation that made moving transactions
+	// between nodes cost roughly 39% of a node's CPU (network egress, pubsub,
+	// and pool ingest) against under 0.5% for executing them. An announcement
+	// is 32 bytes and a body is fetched once, from one peer.
+	GossipTxHashesMessage = "transaction_hashes_v1"
+
 	GossipBlobSidecarMessage        = "blob_sidecar"
 	GossipDataColumnMessage         = "data_column_sidecar"
 	GossipHotStuffConsensusMessage  = "hotstuff_consensus"
@@ -33,6 +45,7 @@ const (
 	BlockTopicFormat              = GossipProtocolAndDigest + GossipBlockMessage
 	ExitBlockTopicFormat          = GossipProtocolAndDigest + GossipExitMessage
 	TransactionTopicFormat        = GossipProtocolAndDigest + GossipTransactionMessage
+	TxHashesTopicFormat           = GossipProtocolAndDigest + GossipTxHashesMessage
 	BlobSidecarTopicFormat        = GossipProtocolAndDigest + GossipBlobSidecarMessage
 	DataColumnTopicFormat         = GossipProtocolAndDigest + GossipDataColumnMessage
 	HotStuffConsensusTopicFormat  = GossipProtocolAndDigest + GossipHotStuffConsensusMessage
