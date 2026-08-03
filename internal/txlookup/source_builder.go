@@ -200,3 +200,16 @@ func datBlockCount(dat []byte) uint64 {
 	}
 	return uint64(binary.LittleEndian.Uint32(dat[4:8]))
 }
+
+// SealedEnd returns the first block NOT covered by a segment, or 0 when the
+// store has no recorded ranges. A live tier uses it to know where its tail has
+// to start after a restart.
+func SealedEnd(dir string) uint64 {
+	var end uint64
+	for _, r := range readSegmentRanges(dir) {
+		if e := r.StartBlock + r.BlockCount; e > end {
+			end = e
+		}
+	}
+	return end
+}

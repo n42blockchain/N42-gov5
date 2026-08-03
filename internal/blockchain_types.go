@@ -141,6 +141,13 @@ type BlockChain struct {
 	ChainDB      kv.RwDB
 	engine       consensus.Engine
 
+	// Transaction-lookup indexing, when a tier outside this package owns it.
+	// Declared as an interface rather than imported: internal/txlookup reaches
+	// internal/ethel, which imports this package, so depending on the
+	// implementation directly would close an import cycle -- and committing a
+	// block has no business knowing what an index is.
+	txIndexer TxIndexer
+
 	insertLock    chan struct{}
 	latestBlockCh chan block.IBlock
 	lock          sync.Mutex
