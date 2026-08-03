@@ -26,10 +26,27 @@ var MaxGossipSize = sizeFromEnvMB("N42_MAX_GOSSIP_MB", 1<<20)
 // profile does not widen memory exposure for unrelated RPC methods.
 var MaxChunkSize = uint64(1 << 20)
 
-// MaxBlockChunkSize is the block-only stream cap. The 64 MiB default preserves
-// the HotStuff cross-client stress profile; explicitly setting
-// N42_MAX_GOSSIP_MB keeps direct block transfer aligned with the gossip cap.
-var MaxBlockChunkSize = sizeFromEnvMB("N42_MAX_GOSSIP_MB", 64<<20)
+// MaxBlockChunkSize is the block-only stream cap, never below the 64 MiB
+// default that preserves the HotStuff cross-client stress profile.
+//
+// N42_MAX_GOSSIP_MB can raise it but deliberately cannot lower it. The gossip
+// cap bounds what a producer may seal from now on; this one bounds what a peer
+// may fetch from a chain that already exists. Blocks sealed under a larger cap
+// stay in that chain forever, so lowering this only makes them unservable --
+// and a node that falls behind across such a block then has no way back. That
+// stranded a validator for hundreds of blocks while the chain ran on without
+// it. Lowering it protects nothing either: the blocks are already on disk.
+//
+// Producers are unaffected, because MaxWireMessageSize takes the smaller of the
+// two bounds and so still follows the gossip cap down.
+var MaxBlockChunkSize = maxUint64(sizeFromEnvMB("N42_MAX_GOSSIP_MB", 64<<20), 64<<20)
+
+func maxUint64(a, b uint64) uint64 {
+	if a > b {
+		return a
+	}
+	return b
+}
 
 // MaxWireMessageSize returns the largest payload the p2p layer can carry on
 // EITHER delivery path: gossip (EncodeGossip, bounded by MaxGossipSize) or a
