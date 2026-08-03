@@ -115,8 +115,13 @@ func TestWriteBlockChunkWritesNothingWhenPayloadTooLarge(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for a payload over the cap")
 	}
-	if buf.Len() > 1+forkDigestLength {
-		t.Fatalf("wrote %d bytes of payload after failing; a failed chunk must not "+
-			"carry a partial payload", buf.Len()-1-forkDigestLength)
+	// Nothing at all, not "no payload": a result code and fork digest with no
+	// payload behind them is exactly what stranded the laggard. The requester
+	// consumed those five bytes, then read the following error response's code
+	// byte (0x02) as the payload's length prefix and reported the two bytes
+	// after it as "snappy: corrupt input" -- against every peer, forever.
+	if buf.Len() != 0 {
+		t.Fatalf("wrote %d bytes after failing; a chunk that cannot be completed "+
+			"must not put its header on the stream", buf.Len())
 	}
 }
