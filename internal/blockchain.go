@@ -928,8 +928,19 @@ func (bc *BlockChain) canonicalByCommitOnly() bool {
 func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 	var committedNumber uint64
 	var notify bool
+	// Phase timings: this runs inline on HotStuff's serial output loop, and its
+	// two transaction-count-proportional steps (reading the block's bodies and
+	// writing one TxLookup row per transaction) are what set the block cycle at
+	// a high gas ceiling -- measured at 2.7 s mean of a 3.53 s cycle.
+	var dRead, dWalk, dLookup, dLock, dBody time.Duration
+	tCommit := time.Now()
 	err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+		tEnter := time.Now()
+		dLock = tEnter.Sub(tCommit)
+		defer func() { dBody = time.Since(tEnter) }()
+		tRead := time.Now()
 		blk, err := rawdb.ReadBlockByHash(tx, hash)
+		dRead = time.Since(tRead)
 		if err != nil {
 			return err
 		}
@@ -979,6 +990,7 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 		// The stop condition requires BOTH the current mapping to match AND the
 		// link below to be consistent — "existing == hash" alone re-froze holes
 		// left by the old walk (prefix-consistency assumption).
+		tWalk := time.Now()
 		curNum := blk.Number64().Uint64()
 		curHash := hash
 		curParent := blk.ParentHash()
@@ -1015,6 +1027,7 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 			curHash = curParent
 			curParent = hdr.ParentHash
 		}
+		dWalk = time.Since(tWalk)
 		// Canonical rows ABOVE the committed height are dead-branch leftovers
 		// (written by the retired import-time reorg path, or by an interrupted
 		// higher rewrite). The canonical table must be exactly the committed-
@@ -1046,7 +1059,9 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 		// the ordinary TxLookup writer. Persist the canonical block's lookup
 		// entries here so eth_getTransactionByHash/Receipt can resolve live
 		// HotStuff transactions as soon as the commit becomes durable.
+		tLookup := time.Now()
 		rawdb.WriteTxLookupEntries(tx, blk)
+		dLookup = time.Since(tLookup)
 		bc.currentBlock.Store(blk)
 		// Canonical rows changed under any read-through layer: invalidate it, or
 		// by-number readers (RPC, the catch-up range SERVER) keep returning the
@@ -1069,6 +1084,14 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 	if err != nil {
 		return err
 	}
+	// lock: waiting for MDBX's single writer. body: the closure. The remainder
+	// (total-lock-body) is mdbx_txn_commit -- writing and fsyncing the pages the
+	// closure dirtied, which for one TxLookup row per transaction is thousands
+	// of random-key B-tree inserts.
+	total := time.Since(tCommit)
+	log.Info("commit-to-canonical phases",
+		"number", committedNumber, "lock", dLock, "read", dRead, "walk", dWalk,
+		"txlookup", dLookup, "body", dBody, "commit", total-dLock-dBody, "total", total)
 	// HotStuff imports candidates as side blocks and advances the canonical
 	// head only here. Notify after the database transaction commits: the
 	// import-time canonical callback is intentionally bypassed on this path.
