@@ -1064,10 +1064,22 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		return nil, err
 	}
 
-	pool, err := txspool.NewTxsPool(ctx, bc, depositContract)
+	// The pool used to read a package-level default that nothing could reach,
+	// so its capacity was fixed at roughly 6,000 transactions regardless of
+	// configuration -- smaller than one block above a ~126M gas ceiling, and
+	// therefore an invisible ceiling on throughput.
+	poolCfg := cfg.TxPoolCfg
+	if fixed := poolCfg.Sanitize(); len(fixed) > 0 {
+		log.Warn("Transaction pool config had unusable values, defaults applied", "fields", fixed)
+	}
+	pool, err := txspool.NewTxsPoolWithConfig(ctx, bc, depositContract, txspool.FromConf(poolCfg))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transaction pool: %w", err)
 	}
+	log.Info("Transaction pool configured",
+		"globalSlots", poolCfg.GlobalSlots, "globalQueue", poolCfg.GlobalQueue,
+		"accountSlots", poolCfg.AccountSlots, "accountQueue", poolCfg.AccountQueue,
+		"lifetime", poolCfg.Lifetime)
 
 	is := initialsync.NewService(ctx, &initialsync.Config{
 		Chain: bc,
