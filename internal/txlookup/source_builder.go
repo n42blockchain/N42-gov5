@@ -31,8 +31,8 @@ import (
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/cscompact"
-	"github.com/n42blockchain/N42/lib/recsplit"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/lib/recsplit"
 	"github.com/n42blockchain/N42/log"
 )
 

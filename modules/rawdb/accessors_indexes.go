@@ -140,4 +140,3 @@ func ReadTransactionByHash(db kv.Tx, hash types.Hash) (*transaction.Transaction,
 	log.Error("Transaction not found", "number", blockNumber, "hash", blockHash, "txhash", hash)
 	return nil, types.Hash{}, 0, 0, nil
 }
-

@@ -139,7 +139,7 @@ func TestV1vsV2CrossVerify(t *testing.T) {
 
 	// Sample blocks across the full range.
 	sampleBlocks := []uint64{
-		46147,  // first mainnet tx
+		46147, // first mainnet tx
 		46400, 46402, 49018, 50111,
 		100000, 200000, 300000, 400000, 500000,
 		600000, 700000, 800000, 900000,

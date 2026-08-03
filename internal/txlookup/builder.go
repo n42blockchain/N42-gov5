@@ -18,9 +18,9 @@ import (
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/cscompact"
+	log2 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/lib/recsplit"
 	"github.com/n42blockchain/N42/lib/recsplit/eliasfano32"
-	log2 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
@@ -54,6 +54,7 @@ func NewSegmentBuilder(input *freezer.Freezer, outputDir string, decodeBody Body
 //   - enums=true replaces the fixed-width per-key offset (bytesPerRec, ~28 bit
 //     at 250M keys) with an Elias-Fano enumeration of the dense ordinals
 //     (~2.5 bit/key). This is the main lever: ~33.7 → ~12 bit/key with LFP on.
+//
 //   - lessFalsePositives=true keeps the 8-bit existence fingerprint. With it
 //     off, every out-of-set hash gets a phantom ordinal (the MPHF always maps
 //     to [0,N)), so a newer segment falsely answers for a tx that lives in an
