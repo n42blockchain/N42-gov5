@@ -49,6 +49,7 @@ var (
 var gossipTopics = []string{
 	BlockTopicFormat,              // RLP block
 	TransactionTopicFormat,        // RLP transaction
+	TxHashesTopicFormat,           // 32-byte transaction hash announcements
 	BlobSidecarTopicFormat,        // rawdb blob sidecar encoding
 	HotStuffConsensusTopicFormat,  // HotStuff compact SSZ
 	ZKProofTopicFormat,            // ZK proof serialization

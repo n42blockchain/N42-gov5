@@ -37,7 +37,7 @@ type wrappedVal func(context.Context, peer.ID, *pubsub.Message) (pubsub.Validati
 // is the already-RLP-decoded *block.Block, so no proto round-trip is imposed on
 // the consensus block (which also preserves RLP-only header fields such as the
 // EIP-7928 BlockAccessListHash). Each handler type-asserts what it expects.
-type subHandler func(context.Context, any) error
+type subHandler func(context.Context, peer.ID, any) error
 
 // noopValidator is a no-op that only decodes the message, but does not check its contents.
 func (s *Service) noopValidator(_ context.Context, _ peer.ID, msg *pubsub.Message) (pubsub.ValidationResult, error) {
@@ -72,14 +72,25 @@ func (s *Service) registerSubscribers(digest [4]byte) {
 		// returns nil on failure (validator registration, scoring params,
 		// filter) — the old unconditional log masked a dead tx pipeline.
 		if sub := s.subscribe(
+			p2p.TxHashesTopicFormat,
+			s.noopValidator,
+			s.txHashesSubscriber,
+			digest,
+		); sub != nil {
+			log.Info("Subscribed to transaction announcement topic")
+		} else {
+			log.Error("Transaction announcement subscription FAILED — transactions will not propagate")
+		}
+		// The body topic stays subscribed so a peer that pushes a full
+		// transaction (an external submitter, or a node mid-upgrade) is still
+		// heard. Nothing in this node publishes to it any more.
+		if sub := s.subscribe(
 			p2p.TransactionTopicFormat,
 			s.noopValidator,
 			s.txSubscriber,
 			digest,
-		); sub != nil {
-			log.Info("Subscribed to transaction gossip topic")
-		} else {
-			log.Error("Transaction gossip subscription FAILED — transactions will not propagate")
+		); sub == nil {
+			log.Warn("Transaction body topic subscription failed — directly gossiped bodies will be ignored")
 		}
 	}
 }
@@ -142,7 +153,7 @@ func (s *Service) subscribeWithBase(topic string, validator wrappedVal, handle s
 			return
 		}
 
-		if err := handle(ctx, msg.ValidatorData); err != nil {
+		if err := handle(ctx, msg.ReceivedFrom, msg.ValidatorData); err != nil {
 			log.Error("Could not handle p2p pubsub", "err", err, "topic", topic)
 			messageFailedProcessingCounter.WithLabelValues(topic).Inc()
 			return

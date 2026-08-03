@@ -62,6 +62,16 @@ func (s *Service) registerRPCHandlers() {
 		p2p.RPCBlockByHashTopicV1+s.cfg.p2p.Encoding().ProtocolSuffix(),
 		s.blockByHashStreamHandler,
 	)
+
+	// Pooled-transaction fetch: the body half of hash announcements. Raw
+	// request bytes in, one chunked response out, so it does not go through
+	// registerRPC either.
+	if s.cfg.txPool != nil {
+		s.cfg.p2p.SetStreamHandler(
+			p2p.RPCPooledTxsByHashTopicV1+s.cfg.p2p.Encoding().ProtocolSuffix(),
+			s.pooledTxsByHashStreamHandler,
+		)
+	}
 }
 
 // unregisterHandlers removes all registered RPC stream handlers.
@@ -84,6 +94,7 @@ func (s *Service) unregisterHandlers() {
 		p2p.RPCGetChangeSetRangeTopicV1,
 		p2p.RPCBlockPushTopicV1,
 		p2p.RPCBlockByHashTopicV1,
+		p2p.RPCPooledTxsByHashTopicV1,
 	}
 	for _, t := range topics {
 		s.cfg.p2p.Host().RemoveStreamHandler(protocol.ID(t + suffix))
