@@ -23,8 +23,6 @@ package sync
 
 import (
 	"context"
-
-	"github.com/libp2p/go-libp2p/core/peer"
 	"fmt"
 
 	"github.com/n42blockchain/N42/common/block"
@@ -35,7 +33,7 @@ import (
 
 // blobSidecarSubscriber handles incoming blob sidecar messages from gossip.
 // It validates the sidecar and stores it in the database.
-func (s *Service) blobSidecarSubscriber(ctx context.Context, _ peer.ID, data any) error {
+func (s *Service) blobSidecarSubscriber(ctx context.Context, data any) error {
 	raw, ok := data.(*rawSSZBytes)
 	if !ok {
 		log.Error("Blob sidecar subscriber received wrong message type")

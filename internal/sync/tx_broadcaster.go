@@ -9,43 +9,20 @@
 // them — 1/N throughput — while every other validator sealed empty blocks and
 // the submitter's pool backlog grew until its builds overran the view window
 // (observed live: one tx-bearing block per ~7, hundreds of pending stuck).
-//
-// What travels is the hash, not the body. See p2p.GossipTxHashesMessage.
 
 package sync
 
 import (
-	"time"
-
 	"github.com/n42blockchain/N42/common"
-	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 )
 
-const (
-	// maxAnnounceBatch bounds one announcement. 1024 hashes is 32 KiB, which
-	// stays well inside the gossip cap at its 1 MiB default.
-	maxAnnounceBatch = 1024
-
-	// announceInterval is how long a partial batch waits for company.
-	//
-	// Announcing per transaction is what the body broadcast did, and at
-	// saturation the resulting wakeup rate — one publish, one goroutine, one
-	// write syscall per transaction — showed up as ~40% of the node's CPU
-	// sitting in the scheduler (findRunnable/stealWork spinning, lock2 parking)
-	// while only 4 of 32 cores were busy. Batching trades a few tens of
-	// milliseconds of propagation delay for an order of magnitude fewer
-	// wakeups; at 11k transactions/s a 50 ms window fills a full batch anyway,
-	// so under load the delay is bounded by batch size, not by this timer.
-	announceInterval = 50 * time.Millisecond
-)
-
-// broadcastTxs announces accepted transactions to the gossip mesh by hash.
-// Remote-received transactions also fire NewTxsEvent after AddRemotes, which
-// is what carries an announcement onward through the mesh; gossip dedup (the
-// message-id cache) absorbs re-announcements and the pool rejects duplicates,
-// so no loop forms.
+// broadcastTxs forwards locally accepted transactions to the gossip mesh.
+// Remote-received transactions also fire NewTxsEvent after AddRemotes; gossip
+// dedup (message-id cache) absorbs the re-publish, and the pool rejects
+// duplicates, so no loop forms.
 func (s *Service) broadcastTxs() {
 	if !s.cfg.txGossipEnabled {
 		return // no pool wired (or gossip disabled) — nothing to publish
@@ -61,39 +38,7 @@ func (s *Service) broadcastTxs() {
 	go func() {
 		defer s.wg.Done()
 		defer sub.Unsubscribe()
-
-		var (
-			batch     = make([]types.Hash, 0, maxAnnounceBatch)
-			announced uint64
-			failed    uint64
-			timer     = time.NewTimer(announceInterval)
-		)
-		defer timer.Stop()
-		if !timer.Stop() {
-			<-timer.C
-		}
-		timerArmed := false
-
-		flush := func() {
-			if len(batch) == 0 {
-				return
-			}
-			if err := s.cfg.p2p.BroadcastTxHashes(s.ctx, batch); err != nil {
-				failed += uint64(len(batch))
-				// Loud: a silent Debug here cost a diagnosis round — every
-				// prior tx-path failure in this codebase hid the same way.
-				if failed <= 3 || failed%1000 == 0 {
-					log.Warn("tx broadcaster: announce failed", "batch", len(batch), "failed", failed, "err", err)
-				}
-			} else {
-				announced += uint64(len(batch))
-				if announced <= uint64(len(batch)) || announced%50000 < uint64(len(batch)) {
-					log.Info("tx broadcaster: announcing", "announced", announced, "failed", failed, "batch", len(batch))
-				}
-			}
-			batch = batch[:0]
-		}
-
+		var published, failed uint64
 		for {
 			select {
 			case <-s.ctx.Done():
@@ -103,22 +48,32 @@ func (s *Service) broadcastTxs() {
 					if tx == nil {
 						continue
 					}
-					batch = append(batch, tx.Hash())
-					if len(batch) >= maxAnnounceBatch {
-						flush()
-						if timerArmed && !timer.Stop() {
-							<-timer.C
+					// Standard Ethereum encoding: 41% fewer bytes on the wire
+					// than the SSZ-over-protobuf form this used to publish,
+					// and no throwaway proto struct per transaction per hop.
+					rlpBytes, err := transaction.EncodeEthereumTransaction(tx)
+					if err != nil {
+						failed++
+						if failed <= 3 || failed%100 == 0 {
+							log.Warn("tx broadcaster: encode failed", "hash", tx.Hash(), "failed", failed, "err", err)
 						}
-						timerArmed = false
+						continue
+					}
+					if err := s.cfg.p2p.BroadcastTransaction(s.ctx, rlpBytes); err != nil {
+						failed++
+						// Loud: a silent Debug here cost a diagnosis round —
+						// every prior tx-path failure in this codebase hid the
+						// same way.
+						if failed <= 3 || failed%100 == 0 {
+							log.Warn("tx broadcaster: publish failed", "hash", tx.Hash(), "failed", failed, "err", err)
+						}
+						continue
+					}
+					published++
+					if published == 1 || published%500 == 0 {
+						log.Info("tx broadcaster: publishing", "published", published, "failed", failed)
 					}
 				}
-				if len(batch) > 0 && !timerArmed {
-					timer.Reset(announceInterval)
-					timerArmed = true
-				}
-			case <-timer.C:
-				timerArmed = false
-				flush()
 			}
 		}
 	}()

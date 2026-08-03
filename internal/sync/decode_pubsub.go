@@ -41,7 +41,7 @@ func (s *Service) decodePubsubMessage(msg *pubsub.Message) (ssz.Unmarshaler, err
 	// into an H256 and passed it on as if it were valid. Rejecting the topic is
 	// the only honest answer.
 	switch topic {
-	case p2p.BlockTopicFormat, p2p.TransactionTopicFormat, p2p.TxHashesTopicFormat, p2p.BlobSidecarTopicFormat:
+	case p2p.BlockTopicFormat, p2p.TransactionTopicFormat, p2p.BlobSidecarTopicFormat:
 		raw := &rawSSZBytes{}
 		if err := s.cfg.p2p.Encoding().DecodeGossip(msg.Data, raw); err != nil {
 			return nil, err
