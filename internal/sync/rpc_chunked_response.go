@@ -49,6 +49,13 @@ func writeBlockChunk(w io.Writer, genesisHash comtypes.Hash, blk types.IBlock) e
 	if err != nil {
 		return err
 	}
+	// The cap has to be checked here rather than left to the encoder, which
+	// checks it only after the caller has already committed the chunk header
+	// to the stream. Blocks are the one payload that routinely runs into it.
+	if uint64(len(data)) > encoder.MaxBlockChunkSize {
+		return fmt.Errorf("block #%d encodes to %d bytes, over the %d byte chunk cap",
+			blk.Number64().Uint64(), len(data), encoder.MaxBlockChunkSize)
+	}
 
 	digest, err := utils.CreateForkDigest(blk.Number64(), genesisHash)
 	if err != nil {
