@@ -141,10 +141,12 @@ func (s *Service) txHashesSubscriber(ctx context.Context, from peer.ID, data any
 			"dropped", len(wanted), "peer", from.String()[:12])
 	}
 
+	// Deliberately not tracked by s.wg: this runs from a pubsub pipeline
+	// goroutine, so an Add here can land after Stop has begun Wait, which is a
+	// WaitGroup misuse panic rather than a clean shutdown. requestPooledTxs is
+	// bounded by s.ctx, so cancellation already ends these promptly.
 	for _, chunk := range chunks {
-		s.wg.Add(1)
 		go func(hashes []types.Hash) {
-			defer s.wg.Done()
 			if got := s.requestPooledTxs(from, hashes); got > 0 {
 				txAnnounceFetched.Add(uint64(got))
 			}
