@@ -25,6 +25,8 @@ package txspool
 import (
 	"context"
 	"errors"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -117,7 +119,17 @@ type TxsPoolConfig struct {
 }
 
 // DefaultTxPoolConfig contains the default configuration for the transaction pool.
-var DefaultTxPoolConfig = TxsPoolConfig{
+//
+// The capacity fields can be raised from the environment. Nothing plumbs this
+// config from the node configuration -- NewTxsPool uses the defaults verbatim
+// -- so without these there is no way to size the pool at all. The stock
+// capacity is about 6,000 transactions in total, which is smaller than a single
+// block once the gas ceiling is raised: at 480M gas a block holds 22,857, so a
+// throughput test spends its time being rejected rather than measuring
+// anything. Same idiom as N42_STRESS_GASLIMIT and N42_MAX_GOSSIP_MB, and the
+// same caveat: sizing the pool up costs memory, roughly proportional to the
+// number of transactions held.
+var DefaultTxPoolConfig = applyTxPoolEnvOverrides(TxsPoolConfig{
 	PriceLimit: 1,
 	PriceBump:  10,
 
@@ -131,6 +143,31 @@ var DefaultTxPoolConfig = TxsPoolConfig{
 	DynamicSizing:  false,
 	MinGlobalSlots: 1024,
 	MemoryLimitMB:  4096, // 4GB default memory limit
+})
+
+// applyTxPoolEnvOverrides raises pool capacity from the environment. Values
+// below the built-in default are ignored: these knobs exist to make room for a
+// deep backlog, not to shrink the pool by accident.
+func applyTxPoolEnvOverrides(c TxsPoolConfig) TxsPoolConfig {
+	set := func(dst *uint64, name string) {
+		v := os.Getenv(name)
+		if v == "" {
+			return
+		}
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil || n <= *dst {
+			return
+		}
+		*dst = n
+	}
+	set(&c.GlobalSlots, "N42_TXPOOL_GLOBAL_SLOTS")
+	set(&c.GlobalQueue, "N42_TXPOOL_GLOBAL_QUEUE")
+	set(&c.AccountSlots, "N42_TXPOOL_ACCOUNT_SLOTS")
+	set(&c.AccountQueue, "N42_TXPOOL_ACCOUNT_QUEUE")
+	if c.MinGlobalSlots > c.GlobalSlots {
+		c.MinGlobalSlots = c.GlobalSlots
+	}
+	return c
 }
 
 // TxsPool contains all currently known transactions.
