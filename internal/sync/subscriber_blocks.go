@@ -2,8 +2,6 @@ package sync
 
 import (
 	"context"
-
-	"github.com/libp2p/go-libp2p/core/peer"
 	"errors"
 	"strings"
 
@@ -16,7 +14,7 @@ import (
 // Future blocks (ahead of the current chain tip) are queued; all others
 // are inserted immediately. After successful import, the HotStuff consensus
 // engine is notified so it can proceed with voting on the proposed block.
-func (s *Service) blockSubscriber(ctx context.Context, _ peer.ID, data any) error {
+func (s *Service) blockSubscriber(ctx context.Context, data any) error {
 	blk, ok := data.(*block.Block)
 	if !ok {
 		return errWrongMessage

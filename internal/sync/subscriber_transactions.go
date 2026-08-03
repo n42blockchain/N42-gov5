@@ -11,8 +11,6 @@ package sync
 
 import (
 	"context"
-
-	"github.com/libp2p/go-libp2p/core/peer"
 	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/transaction"
@@ -29,7 +27,7 @@ var txGossipReceived atomic.Uint64
 // RLP or an EIP-2718 typed envelope). That encoding carries no sender field,
 // so the sender is whatever the signature recovers to and a peer cannot assert
 // one; the pool recovers it during validation.
-func (s *Service) txSubscriber(ctx context.Context, _ peer.ID, data any) error {
+func (s *Service) txSubscriber(ctx context.Context, data any) error {
 	raw, ok := data.(*rawSSZBytes)
 	if !ok {
 		return nil

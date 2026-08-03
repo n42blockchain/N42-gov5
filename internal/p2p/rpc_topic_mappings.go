@@ -54,12 +54,6 @@ const (
 	// referenced block (direct push missed it) fetches the block by hash so it
 	// can import and cast its import-gated vote (fetch-on-miss).
 	BlockByHashMessageName = "/block_by_hash"
-
-	// Pooled-transaction fetch: the body half of hash announcements. A node
-	// that sees an announced hash it does not hold asks the announcer for the
-	// bodies here, so each body crosses a given edge once and only towards a
-	// peer that actually lacks it.
-	PooledTxsByHashMessageName = "/pooled_txs_by_hash"
 )
 
 // V1 RPC topic constants.
@@ -69,9 +63,6 @@ const (
 	RPCPingTopicV1        = protocolPrefix + PingMessageName + SchemaVersionV1
 	RPCBodiesDataTopicV1  = protocolPrefix + BodiesByRangeMessageName + SchemaVersionV1
 	RPCHeadersDataTopicV1 = protocolPrefix + HeadersByRangeMessageName + SchemaVersionV1
-
-	// RPCPooledTxsByHashTopicV1 serves transaction bodies for announced hashes.
-	RPCPooledTxsByHashTopicV1 = protocolPrefix + PooledTxsByHashMessageName + SchemaVersionV1
 
 	// Blob sidecar protocol topics.
 	RPCBlobSidecarsByRangeTopicV1 = protocolPrefix + BlobSidecarsByRangeMessageName + SchemaVersionV1
