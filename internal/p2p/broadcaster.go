@@ -9,8 +9,6 @@ import (
 	"github.com/pkg/errors"
 	ssz "github.com/prysmaticlabs/fastssz"
 	"go.opencensus.io/trace"
-
-	"github.com/n42blockchain/N42/common/types"
 )
 
 // maxBroadcastTime is the maximum time allowed for a broadcast operation.
@@ -75,31 +73,4 @@ func (s *Service) BroadcastTransaction(ctx context.Context, rlpBytes []byte) err
 	}
 	topic := fmt.Sprintf(TransactionTopicFormat, forkDigest)
 	return s.broadcastObject(ctx, &rawGossipBytes{data: rlpBytes}, topic)
-}
-
-// BroadcastTxHashes announces transaction hashes to the mesh. The payload is
-// the hashes concatenated, nothing else: every hash is exactly 32 bytes, so
-// the count is the length divided by 32 and no framing is needed.
-//
-// This replaces broadcasting bodies. A body used to be published once per
-// transaction and then forwarded along every mesh edge, so a 7-node mesh moved
-// each transaction's full bytes about six times more than necessary; here the
-// mesh carries 32 bytes and a peer that lacks the transaction fetches the body
-// once, from one peer, over RPCPooledTxsByHashTopicV1.
-func (s *Service) BroadcastTxHashes(ctx context.Context, hashes []types.Hash) error {
-	if len(hashes) == 0 {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(ctx, maxBroadcastTime)
-	defer cancel()
-	forkDigest, err := s.currentForkDigest()
-	if err != nil {
-		return errors.Wrap(err, "could not retrieve fork digest")
-	}
-	buf := make([]byte, 0, len(hashes)*types.HashLength)
-	for i := range hashes {
-		buf = append(buf, hashes[i][:]...)
-	}
-	topic := fmt.Sprintf(TxHashesTopicFormat, forkDigest)
-	return s.broadcastObject(ctx, &rawGossipBytes{data: buf}, topic)
 }

@@ -9,7 +9,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
-	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/proto/sync_pb"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
@@ -62,9 +61,6 @@ type Broadcaster interface {
 	// BroadcastTransaction gossips an already-RLP-encoded transaction to the
 	// transaction topic.
 	BroadcastTransaction(context.Context, []byte) error
-	// BroadcastTxHashes announces a batch of transaction hashes; peers fetch
-	// the bodies they lack over RPCPooledTxsByHashTopicV1.
-	BroadcastTxHashes(context.Context, []types.Hash) error
 	// BroadcastBlock gossips an already-RLP-encoded block to the block topic
 	// (consensus blocks travel as RLP, not the schema-limited SSZ).
 	BroadcastBlock(context.Context, []byte) error
