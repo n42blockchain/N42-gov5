@@ -114,14 +114,21 @@ $pid7=@('16Uiu2HAmSMtn...','16Uiu2HAmHzBk...', <#...7 peer ids...#> )
 # to disable the built-in native/ERC-20 transaction generator.
 $txgenKey=$env:N42_DEV_TXGEN_KEY
 
+# Listen ports are TCP 32000+ / UDP 33000+, deliberately BELOW Windows'
+# ephemeral port range (49152-65535; check with `netsh int ipv4 show
+# dynamicport`). They used to be 62000/63000, inside that range, where any
+# outbound connection from any process on the host can claim one -- the node
+# then fails to bind with "an attempt was made to access a socket in a way
+# forbidden by its access permissions". It took out one node on each of two
+# consecutive fleet starts before the cause was found. Do not move them back.
 function BuildArgs($i){
-  $maddr=@{}; foreach($k in 0..6){$maddr[$k]="/ip4/127.0.0.1/tcp/$(62000+$k)/p2p/$($pid7[$k])"}
+  $maddr=@{}; foreach($k in 0..6){$maddr[$k]="/ip4/127.0.0.1/tcp/$(32000+$k)/p2p/$($pid7[$k])"}
   $peers=@(); foreach($j in 0..6){ if($j -ne $i){ $peers+='--p2p.peer'; $peers+=$maddr[$j] } }
   $nodeArgs=@('--chain','mainnet_qmdb','--profile','n42',
            '--data.dir',"D:/n42-qmdb-node$i",
            '--engine.miner','--engine.etherbase',"0x$($priv[$i][0])",
            '--p2p.no-discovery',
-           '--p2p.tcp-port',"$(62000+$i)",'--p2p.udp-port',"$(63000+$i)",
+           '--p2p.tcp-port',"$(32000+$i)",'--p2p.udp-port',"$(33000+$i)",
            '--p2p.min-sync-peers','0',
            '--http','--http.addr','127.0.0.1','--http.port',"$(20012+$i)",
            '--http.api','eth,web3,net,txpool,n42') + $peers
