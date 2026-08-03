@@ -3,6 +3,7 @@
 //   - multi-sender (-senders N): funds N derived accounts from the faucet, then floods
 //     transfers from ALL of them in parallel — removes the single-nonce serialization
 //     so every rotating proposer can fill a block from many independent senders.
+//
 // Pre-signs the whole batch first (bounded workers) so the flood loop does NO CGO.
 // NOT for production.
 package main
@@ -13,6 +14,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"runtime/debug"
@@ -30,7 +32,7 @@ import (
 )
 
 var httpClient = &http.Client{
-	Timeout: 10 * time.Second,
+	Timeout:   10 * time.Second,
 	Transport: &http.Transport{MaxIdleConns: 512, MaxIdleConnsPerHost: 128, MaxConnsPerHost: 128, IdleConnTimeout: 30 * time.Second},
 }
 
@@ -40,7 +42,20 @@ func rpcCall(url, method string, params []interface{}) (json.RawMessage, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	// Drain to EOF before closing, or the connection is not reused. Decode
+	// stops at the end of the first JSON value and leaves whatever follows --
+	// even a single newline -- unread, and net/http will not put a body that
+	// still has bytes pending back in the idle pool. With keep-alive silently
+	// defeated this way every transaction cost a fresh TCP connection: a
+	// sustained flood pushed the host to 45,000 sockets in TIME_WAIT, ran the
+	// ephemeral port range (49152-65535) dry, and then failed with WinError
+	// 10048 -- not only for the load tool, but for the nodes' own outbound P2P
+	// connections, which stalled consensus. It capped measured throughput at a
+	// number that said more about the client than the chain.
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 	var out struct {
 		Result json.RawMessage `json:"result"`
 		Error  *struct {
