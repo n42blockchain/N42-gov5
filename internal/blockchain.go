@@ -178,6 +178,25 @@ func (bc *BlockChain) SetPrefetchPredictor(p *PrefetchPredictor) {
 	}
 }
 
+// TxIndexer receives committed blocks' transaction hashes for a lookup index
+// kept outside the consensus write path.
+//
+// Writing one MDBX row per transaction inside the commit transaction cost
+// 2,700 ms of a 3.53 s block cycle at a 480M gas ceiling -- 94.6% of it in
+// mdbx_txn_commit, because 22,857 hash-keyed rows touch nearly that many
+// separate B-tree leaves. When an indexer is attached, nothing is written here
+// and it owns the newest blocks instead.
+type TxIndexer interface {
+	Add(number uint64, hashes []types.Hash)
+}
+
+// SetTxIndexer attaches an index for the newest blocks. Must be set before the
+// first commit, or the blocks in between are written to neither tier.
+func (bc *BlockChain) SetTxIndexer(ix TxIndexer) {
+	bc.txIndexer = ix
+	log.Info("Transaction lookup index attached; commit path will not write the table")
+}
+
 // SetFreezer attaches the ancient data freezer to the blockchain.
 // It accepts any implementation of freezer.FreezerAPI. If the concrete type
 // is *freezer.Freezer, an AncientReader is also created for high-level access.
@@ -933,6 +952,7 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 	// writing one TxLookup row per transaction) are what set the block cycle at
 	// a high gas ceiling -- measured at 2.7 s mean of a 3.53 s cycle.
 	var dRead, dWalk, dLookup, dLock, dBody time.Duration
+	var indexed *block.Block
 	tCommit := time.Now()
 	err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
 		tEnter := time.Now()
@@ -1059,8 +1079,16 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 		// the ordinary TxLookup writer. Persist the canonical block's lookup
 		// entries here so eth_getTransactionByHash/Receipt can resolve live
 		// HotStuff transactions as soon as the commit becomes durable.
+		// With the tail tier on, the newest blocks are indexed in memory and
+		// sealed into RecSplit segments, and nothing is written here: one row
+		// per transaction keyed by transaction hash dirtied thousands of
+		// scattered pages and made mdbx_txn_commit 94.6% of this phase.
 		tLookup := time.Now()
-		rawdb.WriteTxLookupEntries(tx, blk)
+		if bc.txIndexer == nil {
+			rawdb.WriteTxLookupEntries(tx, blk)
+		} else {
+			indexed = blk
+		}
 		dLookup = time.Since(tLookup)
 		bc.currentBlock.Store(blk)
 		// Canonical rows changed under any read-through layer: invalidate it, or
@@ -1089,6 +1117,14 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 	// closure dirtied, which for one TxLookup row per transaction is thousands
 	// of random-key B-tree inserts.
 	total := time.Since(tCommit)
+	if indexed != nil {
+		txs := indexed.Transactions()
+		hashes := make([]types.Hash, len(txs))
+		for i, tx := range txs {
+			hashes[i] = tx.Hash()
+		}
+		bc.txIndexer.Add(indexed.Number64().Uint64(), hashes)
+	}
 	log.Info("commit-to-canonical phases",
 		"number", committedNumber, "lock", dLock, "read", dRead, "walk", dWalk,
 		"txlookup", dLookup, "body", dBody, "commit", total-dLock-dBody, "total", total)

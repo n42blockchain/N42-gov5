@@ -16,8 +16,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/cscompact"
-	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/lib/recsplit"
 	"github.com/n42blockchain/N42/lib/recsplit/eliasfano32"
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
@@ -26,9 +26,18 @@ import (
 )
 
 // SegmentBuilder builds a single RecSplit segment from freezer body data.
+// BodyTxHashes decodes a stored body into its transaction hashes, in block
+// order. Supplied by the caller rather than imported, because the only decoder
+// this builder ever needed lives in internal/ethel, which imports the root
+// internal package -- and the root package now needs txlookup for its own live
+// index, which would close an import cycle. Injecting the one call keeps this
+// package free of that edge.
+type BodyTxHashes func(bodyData []byte) ([]types.Hash, error)
+
 type SegmentBuilder struct {
 	inputFreezer *freezer.Freezer
 	outputDir    string
+	decodeBody   BodyTxHashes
 	// RecSplit tuning. Legacy default (NewSegmentBuilder): enums=false,
 	// lessFalsePositives=true — matches every txindex built before this field
 	// existed.
@@ -36,8 +45,8 @@ type SegmentBuilder struct {
 	lessFalsePositives bool
 }
 
-func NewSegmentBuilder(input *freezer.Freezer, outputDir string) *SegmentBuilder {
-	return &SegmentBuilder{inputFreezer: input, outputDir: outputDir, lessFalsePositives: true}
+func NewSegmentBuilder(input *freezer.Freezer, outputDir string, decodeBody BodyTxHashes) *SegmentBuilder {
+	return &SegmentBuilder{inputFreezer: input, outputDir: outputDir, decodeBody: decodeBody, lessFalsePositives: true}
 }
 
 // SetRecSplitTuning overrides the RecSplit space/correctness config.
@@ -152,12 +161,12 @@ func (b *SegmentBuilder) buildOne(ctx context.Context, startBlock, endBlock uint
 		if err != nil {
 			return nil, fmt.Errorf("read body %d: %w", blockNum, err)
 		}
-		body, err := ethel.DecodeGethBody(bodyData)
+		hashes, err := b.decodeBody(bodyData)
 		if err != nil {
 			return nil, fmt.Errorf("decode body %d: %w", blockNum, err)
 		}
-		txPerBlock[blockNum-startBlock] = uint32(len(body.Transactions))
-		totalTx += len(body.Transactions)
+		txPerBlock[blockNum-startBlock] = uint32(len(hashes))
+		totalTx += len(hashes)
 
 		if (blockNum-startBlock)%50000 == 0 && blockNum > startBlock {
 			elapsed := time.Since(t0)
@@ -214,12 +223,11 @@ func (b *SegmentBuilder) buildOne(ctx context.Context, startBlock, endBlock uint
 		if err != nil {
 			return nil, err
 		}
-		body, err := ethel.DecodeGethBody(bodyData)
+		hashes, err := b.decodeBody(bodyData)
 		if err != nil {
 			return nil, err
 		}
-		for _, tx := range body.Transactions {
-			txHash := tx.Hash()
+		for _, txHash := range hashes {
 			if err := rs.AddKey(txHash[:], ordinal); err != nil {
 				return nil, fmt.Errorf("addKey block %d: %w", blockNum, err)
 			}

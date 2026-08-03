@@ -115,6 +115,7 @@ import (
 	"github.com/n42blockchain/N42/internal/tracing"
 	"github.com/n42blockchain/N42/internal/txgen"
 	"github.com/n42blockchain/N42/internal/txlookup"
+	"github.com/n42blockchain/N42/internal/txindexer"
 	"github.com/n42blockchain/N42/internal/txspool"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/zkprover"
@@ -205,6 +206,7 @@ type Node struct {
 	grpcServer         *grpc.Server                // gRPC KV server for RPCDaemon (nil if disabled)
 	coprocessorService *dcoprocessor.Service       // ZK coprocessor (nil if disabled)
 	messagingService   *dmessaging.Service         // Decentralized messaging (nil if disabled)
+	txIndexer          *txindexer.Indexer          // Live tx-hash lookup tiers (nil when the MDBX table owns them)
 	storageBridge      *dstorage.Bridge            // IPFS/Filecoin storage bridge (nil if disabled)
 	storageResolver    *dstorage.UniversalResolver // Multi-protocol content resolver (nil if disabled)
 	notifyService      *dnotify.Service            // Push notifications (nil if disabled)
@@ -525,6 +527,8 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 
 	// Track resources that need cleanup on failure.
 	var chainKv kv.RwDB
+	// Attached to the Node once it exists, so shutdown can stop its sealer.
+	var nodeTxIndexer *txindexer.Indexer
 	var dirLockNode Node // tracks dirLock for cleanup
 
 	defer func() {
@@ -767,6 +771,15 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			realBC.SetPrefetch(true)
 			// Enable predictive slot prefetching alongside standard prefetching.
 			realBC.SetPrefetchPredictor(internal.NewPrefetchPredictor(64))
+		}
+		// Transaction-lookup index for the newest blocks. Attached only if it
+		// actually comes up: a chain with no indexer keeps writing the MDBX
+		// table, whereas a chain that stopped writing it and has no working
+		// indexer would leave its transactions findable nowhere.
+		ix := txindexer.New(ctx, realBC, chainKv, filepath.Join(cfg.NodeCfg.DataDir, "txindex"))
+		if ix.Start() {
+			realBC.SetTxIndexer(ix)
+			nodeTxIndexer = ix
 		}
 		if cfg.NodeCfg.AncientDB {
 			ancientBase := cfg.NodeCfg.DataDir
@@ -1180,6 +1193,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		miner:           miner,
 		genesisBlock:    genesisBlock,
 		blockChain:      bc,
+		txIndexer:       nodeTxIndexer,
 		db:              chainKv,
 		shutDown:        make(chan struct{}),
 		txspool:         pool,
@@ -3012,6 +3026,10 @@ func (n *Node) stopServices() []error {
 		}},
 		// 2e. Distributed infrastructure
 		{"Distributed services", func() error {
+			// Before the database closes: the sealer may be mid-write.
+			if n.txIndexer != nil {
+				n.txIndexer.Stop()
+			}
 			if n.notifyService != nil {
 				n.notifyService.Stop()
 			}
