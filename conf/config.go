@@ -42,6 +42,7 @@ type Config struct {
 	AccountCfg       AccountConfig       `json:"account" yaml:"account"`
 	MetricsCfg       MetricsConfig       `json:"metrics" yaml:"metrics"`
 	P2PCfg           *P2PConfig          `json:"p2p" yaml:"p2p"`
+	TxPoolCfg        TxPoolConfig        `json:"txpool" yaml:"txpool"`
 	GPO              GpoConfig           `json:"gpo" yaml:"gpo"`
 	Miner            MinerConfig         `json:"miner" yaml:"miner"`
 	DevCfg           DevConfig           `json:"dev" yaml:"dev"`
