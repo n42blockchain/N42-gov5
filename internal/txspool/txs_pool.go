@@ -48,12 +48,20 @@ import (
 
 // NewTxsPool creates a new transaction pool to gather, sort and filter inbound
 // transactions from the network.
+// NewTxsPool builds a pool with the built-in default configuration. Prefer
+// NewTxsPoolWithConfig: the defaults hold about 6,000 transactions, which is
+// smaller than one block above a ~126M gas ceiling.
 func NewTxsPool(ctx context.Context, bc common.IBlockChain, depositContract *deposit.Deposit) (common.ITxsPool, error) {
+	return NewTxsPoolWithConfig(ctx, bc, depositContract, DefaultTxPoolConfig)
+}
+
+// NewTxsPoolWithConfig builds a pool with an explicit configuration.
+func NewTxsPoolWithConfig(ctx context.Context, bc common.IBlockChain, depositContract *deposit.Deposit, config TxsPoolConfig) (common.ITxsPool, error) {
 	c, cancel := context.WithCancel(ctx)
 
 	pool := &TxsPool{
 		chainconfig: bc.Config(),
-		config:      DefaultTxPoolConfig,
+		config:      config,
 		ctx:         c,
 		cancel:      cancel,
 		bc:          bc,
@@ -68,7 +76,7 @@ func NewTxsPool(ctx context.Context, bc common.IBlockChain, depositContract *dep
 		reqPromoteCh:   make(chan *accountSet),
 		queueTxEventCh: make(chan *transaction.Transaction),
 		reorgDoneCh:    make(chan chan struct{}),
-		gasPrice:       uint256.NewInt(DefaultTxPoolConfig.PriceLimit),
+		gasPrice:       uint256.NewInt(config.PriceLimit),
 	}
 
 	pool.currentState = StateClient(ctx, bc.DB())
@@ -847,6 +855,7 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 		dNonces = time.Since(tN)
 	}
 	tT := time.Now()
+	pool.evictStaleQueued()
 	pool.truncatePending()
 	pool.truncateQueue()
 	dTruncate = time.Since(tT)

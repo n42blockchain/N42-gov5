@@ -219,6 +219,50 @@ func (pool *TxsPool) truncatePending() {
 	}
 }
 
+// evictStaleQueued drops queued transactions belonging to accounts that have
+// been silent for longer than config.Lifetime.
+//
+// Lifetime was declared and never read: nothing in the pool aged anything out,
+// so a queued transaction could only ever leave by becoming executable or by
+// the queue overflowing its global limit. A transaction stranded above a nonce
+// gap does neither. It is also persisted -- flushToDB writes local queued
+// transactions and loadFromDB feeds them straight back -- so the set survives
+// restarts and grows with every one. Measured on this fleet: 118,530 such
+// transactions, all local, none executable, reloaded on every start with no
+// path out.
+//
+// truncateQueue cannot serve as that path because it exempts locals entirely
+// and only runs above the global limit. This applies to queued transactions
+// only, local or not: a queued transaction is by definition not executable
+// now, and an account that has sent nothing for a whole Lifetime has abandoned
+// it. Pending transactions, including local ones, are untouched.
+func (pool *TxsPool) evictStaleQueued() {
+	lifetime := pool.config.Lifetime
+	if lifetime <= 0 {
+		return
+	}
+	var dropped int
+	for addr, list := range pool.queue {
+		beat, ok := pool.beats[addr]
+		if !ok {
+			// No heartbeat recorded: adopt now so the account ages from here
+			// rather than being evicted on the strength of a zero timestamp.
+			pool.beats[addr] = time.Now()
+			continue
+		}
+		if time.Since(beat) <= lifetime {
+			continue
+		}
+		for _, tx := range list.Flatten() {
+			pool.removeTx(tx.Hash(), true)
+			dropped++
+		}
+	}
+	if dropped > 0 {
+		log.Info("Evicted stale queued transactions", "count", dropped, "lifetime", lifetime)
+	}
+}
+
 // truncateQueue drops the oldest transactions in the queue if the pool is above the
 // global queue limit.
 func (pool *TxsPool) truncateQueue() {

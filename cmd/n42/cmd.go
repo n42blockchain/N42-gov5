@@ -220,6 +220,46 @@ var configFlag = []cli.Flag{
 	},
 }
 
+// Transaction pool sizing and retention. Before these existed the pool read
+// a package-level default that no configuration path could reach.
+var txpoolFlags = []cli.Flag{
+	&cli.Uint64Flag{
+		Name:        "txpool.globalslots",
+		Usage:       "交易池可执行交易总容量 (默认 5120 装不下一个高 gas 上限的块)",
+		Category:    "TXPOOL",
+		Value:       conf.DefaultTxPoolConfig().GlobalSlots,
+		Destination: &DefaultConfig.TxPoolCfg.GlobalSlots,
+	},
+	&cli.Uint64Flag{
+		Name:        "txpool.globalqueue",
+		Usage:       "交易池未来 nonce 交易总容量",
+		Category:    "TXPOOL",
+		Value:       conf.DefaultTxPoolConfig().GlobalQueue,
+		Destination: &DefaultConfig.TxPoolCfg.GlobalQueue,
+	},
+	&cli.Uint64Flag{
+		Name:        "txpool.accountslots",
+		Usage:       "单账户可执行交易容量",
+		Category:    "TXPOOL",
+		Value:       conf.DefaultTxPoolConfig().AccountSlots,
+		Destination: &DefaultConfig.TxPoolCfg.AccountSlots,
+	},
+	&cli.Uint64Flag{
+		Name:        "txpool.accountqueue",
+		Usage:       "单账户未来 nonce 交易容量",
+		Category:    "TXPOOL",
+		Value:       conf.DefaultTxPoolConfig().AccountQueue,
+		Destination: &DefaultConfig.TxPoolCfg.AccountQueue,
+	},
+	&cli.DurationFlag{
+		Name:        "txpool.lifetime",
+		Usage:       "账户静默多久后丢弃其排队交易 (0=不老化; 这是排队交易唯一的回收路径)",
+		Category:    "TXPOOL",
+		Value:       conf.DefaultTxPoolConfig().Lifetime,
+		Destination: &DefaultConfig.TxPoolCfg.Lifetime,
+	},
+}
+
 var pprofCfg = []cli.Flag{
 	&cli.BoolFlag{
 		Name:        "pprof",
