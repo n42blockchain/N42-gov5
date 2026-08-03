@@ -35,11 +35,11 @@
 package main
 
 import (
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/ethel"
 	"context"
 	"flag"
 	"fmt"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/ethel"
 	"os"
 	"os/signal"
 	"path/filepath"

@@ -63,7 +63,7 @@ func runRebuildMPT(cliCtx *cli.Context) error {
 	kv.ChaindataTablesCfg = modules.N42TableCfg
 
 	db, err := mdbx.NewMDBX(logger).
-		Path(dataDir+"/chaindata").
+		Path(dataDir + "/chaindata").
 		WithTableCfg(func(_ kv.TableCfg) kv.TableCfg { return kv.ChaindataTablesCfg }).
 		MapSize(4 * datasize.TB).
 		Open(ctx)
@@ -245,4 +245,3 @@ func runRebuildMPT(cliCtx *cli.Context) error {
 
 	return nil
 }
-

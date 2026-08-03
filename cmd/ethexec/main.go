@@ -31,6 +31,7 @@ import (
 	"github.com/c2h5oh/datasize"
 	"golang.org/x/crypto/sha3"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/cscompact"
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/internal/txlookup"
@@ -40,7 +41,6 @@ import (
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/lib/mmap"
 	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state"
@@ -240,7 +240,7 @@ func main() {
 					&cli.BoolFlag{Name: "persist-trie", Usage: "After reaching end block, populate HashedAccounts/HashedStorage/TrieOfAccounts/TrieOfStorage so subsequent per-block verify (verify-incremental) runs in O(dirty)"},
 					&cli.Uint64Flag{Name: "dirty-space-gb", Usage: "MDBX dirty-page pool size in GB. Default 2. Raise to 32+ for --persist-trie at 10M+ blocks; BootstrapHPH writes 100B+ rows in a single tx and the 2GB default overflows with MDBX_MAP_FULL", Value: 2},
 					&cli.StringFlag{Name: "wipes-sidecar", Usage: "Optional freezer dir containing a wipes.cdat sidecar produced by storcs-extract-wipes. Required when rebuilding from witness-replay output, which lacks SELFDESTRUCT pre-wipe entries. Auto-detects <leaves>/wipes.cidx if not specified."},
-				&cli.BoolFlag{Name: "skip-final-verify", Usage: "Skip the post-rebuild HPH state-root verify (~5h on 25M state). Trust shifts to upstream bundle hash (see minimal-client design — server runs verify once when producing bundle; multiple servers reproducing the same blake2b are the trustless anchor)."},
+					&cli.BoolFlag{Name: "skip-final-verify", Usage: "Skip the post-rebuild HPH state-root verify (~5h on 25M state). Trust shifts to upstream bundle hash (see minimal-client design — server runs verify once when producing bundle; multiple servers reproducing the same blake2b are the trustless anchor)."},
 					// --track-addr is defined at the app level (execFlags); see run()
 					// for the SetTrackedAddr wiring. urfave/cli treats app-level flags
 					// as global so subcommands can read them via c.String("track-addr")
@@ -449,7 +449,9 @@ func main() {
 					tx, _ := db.BeginRo(context.Background())
 					for _, tbl := range []string{"Account", "Storage", "HashedAccounts", "HashedStorage"} {
 						cursor, err := tx.Cursor(tbl)
-						if err != nil { continue }
+						if err != nil {
+							continue
+						}
 						k, _, _ := cursor.First()
 						if k == nil {
 							log.Info("Table empty", "table", tbl)
@@ -811,13 +813,13 @@ func run(c *cli.Context) error {
 	engine := ethel.NewEthReplayEngine(chainCfg)
 
 	cfg := ethel.ExecutorConfig{
-		StartBlock:      startBlock,
-		EndBlock:        endBlock,
-		CommitInterval:  commitInterval,
-		VerifyInterval:  verifyInterval,
-		SkipErrors:      skipErrors,
-		NoOutputs:       noOutputs,
-		NoWitness:       c.Bool("no-witness"),
+		StartBlock:          startBlock,
+		EndBlock:            endBlock,
+		CommitInterval:      commitInterval,
+		VerifyInterval:      verifyInterval,
+		SkipErrors:          skipErrors,
+		NoOutputs:           noOutputs,
+		NoWitness:           c.Bool("no-witness"),
 		ParallelEVM:         c.Bool("parallel-evm"),
 		ParallelWorkers:     c.Int("parallel-workers"),
 		TimingInterval:      c.Int("timing-interval"),
@@ -2036,8 +2038,8 @@ func runScanCS(c *cli.Context) error {
 	}
 
 	type tableInfo struct {
-		name string
-		tbl  *freezer.FreezerTable
+		name   string
+		tbl    *freezer.FreezerTable
 		decode func([]byte) error
 	}
 
@@ -2059,12 +2061,16 @@ func runScanCS(c *cli.Context) error {
 
 	tables := []tableInfo{
 		{"acctcs", acctTbl, func(data []byte) error {
-			if len(data) == 0 { return nil }
+			if len(data) == 0 {
+				return nil
+			}
 			_, err := ethel.DecodeAccountChanges(data)
 			return err
 		}},
 		{"storcs", stoTbl, func(data []byte) error {
-			if len(data) == 0 { return nil }
+			if len(data) == 0 {
+				return nil
+			}
 			_, err := ethel.DecodeStorageChanges(data)
 			return err
 		}},
@@ -2551,8 +2557,8 @@ func runCodeImport(c *cli.Context) error {
 // then compares Account/Storage tables. Run AFTER normal ethexec.
 //
 // Usage:
-//   1. ethexec --ancient ... --datadir D:/N42-ethcs1 --verify 1000000  (normal EVM run)
-//   2. ethexec exec-compare --primary D:/N42-ethcs1 --shadow D:/N42-ethcs01 --from 6000000 --to 7000000
+//  1. ethexec --ancient ... --datadir D:/N42-ethcs1 --verify 1000000  (normal EVM run)
+//  2. ethexec exec-compare --primary D:/N42-ethcs1 --shadow D:/N42-ethcs01 --from 6000000 --to 7000000
 func runExecCompare(c *cli.Context) error {
 	primaryDir := c.String("primary")
 	shadowDir := c.String("shadow")
