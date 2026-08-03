@@ -187,6 +187,7 @@ func AllFlags() []cli.Flag {
 	flags = append(flags, authRPCFlag...)
 	flags = append(flags, consensusFlag...)
 	flags = append(flags, loggerFlag...)
+	flags = append(flags, txpoolFlags...)
 	flags = append(flags, pprofCfg...)
 	flags = append(flags, nodeFlg...)
 	flags = append(flags, configFlag...)

@@ -33,6 +33,9 @@ import (
 // DefaultConfig 包含节点的默认配置
 // 这些默认值经过优化，适合大多数用户直接启动节点
 var DefaultConfig = conf.Config{
+	// 交易池配置
+	TxPoolCfg: conf.DefaultTxPoolConfig(),
+
 	// 节点配置
 	NodeCfg: conf.NodeConfig{
 		NodePrivate: "",

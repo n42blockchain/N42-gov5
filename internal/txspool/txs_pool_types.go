@@ -37,6 +37,7 @@ import (
 	"github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/contracts/deposit"
 	"github.com/n42blockchain/N42/params"
 )
@@ -144,6 +145,25 @@ var DefaultTxPoolConfig = applyTxPoolEnvOverrides(TxsPoolConfig{
 	MinGlobalSlots: 1024,
 	MemoryLimitMB:  4096, // 4GB default memory limit
 })
+
+// FromConf converts the node's pool configuration, applying the environment
+// overrides on top. The environment path predates the config path and stays as
+// an escape hatch for raising capacity without editing a config file; an
+// explicit configuration still wins over the built-in defaults.
+func FromConf(c conf.TxPoolConfig) TxsPoolConfig {
+	return applyTxPoolEnvOverrides(TxsPoolConfig{
+		PriceLimit:     c.PriceLimit,
+		PriceBump:      c.PriceBump,
+		AccountSlots:   c.AccountSlots,
+		GlobalSlots:    c.GlobalSlots,
+		AccountQueue:   c.AccountQueue,
+		GlobalQueue:    c.GlobalQueue,
+		Lifetime:       c.Lifetime,
+		DynamicSizing:  c.DynamicSizing,
+		MinGlobalSlots: c.MinGlobalSlots,
+		MemoryLimitMB:  c.MemoryLimitMB,
+	})
+}
 
 // applyTxPoolEnvOverrides raises pool capacity from the environment. Values
 // below the built-in default are ignored: these knobs exist to make room for a
