@@ -91,10 +91,14 @@ func appRun(ctx *cli.Context) error {
 			runtime.GOMAXPROCS(DefaultConfig.PprofCfg.MaxCpu)
 		}
 		if DefaultConfig.PprofCfg.TraceMutex {
-			runtime.SetMutexProfileFraction(1)
+			f := DefaultConfig.PprofCfg.MutexProfileFraction()
+			runtime.SetMutexProfileFraction(f)
+			log.Info("mutex profiling enabled", "fraction", f)
 		}
 		if DefaultConfig.PprofCfg.TraceBlock {
-			runtime.SetBlockProfileRate(1)
+			r := DefaultConfig.PprofCfg.BlockProfileRate()
+			runtime.SetBlockProfileRate(r)
+			log.Info("block profiling enabled", "rate_ns", r)
 		}
 
 		pprofServer := &http.Server{

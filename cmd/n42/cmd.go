@@ -24,6 +24,7 @@
 package main
 
 import (
+	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/params/networkname"
 	"github.com/urfave/cli/v2"
 )
@@ -247,6 +248,20 @@ var pprofCfg = []cli.Flag{
 		Category:    "DEBUG",
 		Value:       false,
 		Destination: &DefaultConfig.PprofCfg.TraceMutex,
+	},
+	&cli.IntFlag{
+		Name:        "pprof.mutex.fraction",
+		Usage:       "互斥锁分析采样率 (1/N; 1=全量,开销大)",
+		Category:    "DEBUG",
+		Value:       conf.DefaultMutexFraction,
+		Destination: &DefaultConfig.PprofCfg.MutexFraction,
+	},
+	&cli.IntFlag{
+		Name:        "pprof.block.rate",
+		Usage:       "阻塞分析采样间隔 (纳秒; 1=全量,开销大)",
+		Category:    "DEBUG",
+		Value:       conf.DefaultBlockRateNanos,
+		Destination: &DefaultConfig.PprofCfg.BlockRateNanos,
 	},
 	&cli.IntFlag{
 		Name:        "pprof.maxcpu",
