@@ -45,14 +45,19 @@ func NewSegmentBuilder(input *freezer.Freezer, outputDir string) *SegmentBuilder
 //   - enums=true replaces the fixed-width per-key offset (bytesPerRec, ~28 bit
 //     at 250M keys) with an Elias-Fano enumeration of the dense ordinals
 //     (~2.5 bit/key). This is the main lever: ~33.7 → ~12 bit/key with LFP on.
-//   - lessFalsePositives=true keeps the 8-bit existence fingerprint. It is
-//     REQUIRED for correct multi-segment lookup: with it off, every out-of-set
-//     hash gets a phantom ordinal (the MPHF always maps to [0,N)), so a newer
-//     segment will falsely answer for a tx that lives in an older one and the
-//     newest-first probe returns the wrong block. Only disable it together with
-//     a verify-and-continue lookup (read the candidate block, confirm the tx
-//     hash, else keep probing). With LFP off + that lookup change the index
-//     drops to ~4.4 bit/key.
+//   - lessFalsePositives=true keeps the 8-bit existence fingerprint. With it
+//     off, every out-of-set hash gets a phantom ordinal (the MPHF always maps
+//     to [0,N)), so a newer segment falsely answers for a tx that lives in an
+//     older one and the newest-first probe returns the wrong block. With LFP
+//     off the index drops to ~4.4 bit/key.
+//
+//     It is NOT sufficient on its own. The fingerprint is 8 bits, so about one
+//     out-of-set hash in 256 still resolves in a segment that does not hold it
+//     — measured at 28 wrong blocks in 7,680 transactions across three
+//     segments. Any multi-segment store therefore needs Service.SetVerifier
+//     (read the candidate block, confirm the tx hash, else keep probing),
+//     whatever this flag is set to. LFP only changes how often the verifier
+//     has to reject, not whether it is needed.
 func (b *SegmentBuilder) SetRecSplitTuning(enums, lessFalsePositives bool) {
 	b.enums = enums
 	b.lessFalsePositives = lessFalsePositives
