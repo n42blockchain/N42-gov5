@@ -80,11 +80,6 @@ type validationFn func(ctx context.Context) (pubsub.ValidationResult, error)
 // TxPool is the interface for adding remote transactions received via gossip.
 type TxPool interface {
 	AddRemotes(txs []*transaction.Transaction) []error
-	// Has reports whether the pool already holds the transaction, so an
-	// announcement for it can be dropped without a fetch.
-	Has(hash types.Hash) bool
-	// GetTx returns a held transaction, for serving a peer's fetch.
-	GetTx(hash types.Hash) *transaction.Transaction
 }
 
 type config struct {
@@ -123,12 +118,6 @@ type Service struct {
 	// fetch-on-miss per-hash rate limit (see fetchMissInterval).
 	fetchMissLock  sync.Mutex
 	fetchMissCache *lru.Cache[types.Hash, time.Time]
-
-	// inFlight suppresses duplicate body fetches for the same announced
-	// transaction hash. Every mesh peer announces a given hash at about the
-	// same time, so without it each transaction would be fetched once per
-	// peer.
-	inFlight *inFlightTracker
 
 	validateBlockLock sync.RWMutex
 
@@ -270,7 +259,6 @@ func (s *Service) initCaches() error {
 	if err != nil {
 		return fmt.Errorf("create fetch-miss cache: %w", err)
 	}
-	s.inFlight = newInFlightTracker()
 	return nil
 }
 

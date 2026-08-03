@@ -87,13 +87,6 @@ func (s *Service) topicScoreParams(topic string) (*pubsub.TopicScoreParams, erro
 	case strings.Contains(topic, GossipMobileCohortCertMessage):
 		// Cross-node cohort cert announcements: same lightweight scoring.
 		return messagingTopicParams(), nil
-	case strings.Contains(topic, GossipTxHashesMessage):
-		// Transaction hash announcements: highest-frequency, smallest, and
-		// entirely best-effort -- a missed announcement costs one extra hop,
-		// not correctness. Must precede the GossipTransactionMessage case:
-		// both names contain "transaction", so the broader one would swallow
-		// this topic and, since neither is critical, hide the mistake.
-		return messagingTopicParams(), nil
 	case strings.Contains(topic, GossipTransactionMessage):
 		// Same lightweight, non-critical scoring shape as the messaging topics:
 		// mempool transactions are high-frequency best-effort traffic. Without
