@@ -432,7 +432,6 @@ func (bc *BlockChain) AncientReader() *freezer.AncientReader {
 // =============================================================================
 
 func (bc *BlockChain) Start() error {
-	bc.startTxIndexer()
 	bc.healPlainStateAheadOfMarkerOnStartup()
 	bc.verifyAppliedStateOnStartup()
 	bc.alignCanonicalToAppliedOnStartup()
@@ -737,9 +736,6 @@ func (bc *BlockChain) revertSpeculativeOnStartup() {
 func (bc *BlockChain) Close() error {
 	bc.cancel()
 	bc.wg.Wait()
-	// Before the freezer: a queued block still needs the database open, and
-	// exiting with blocks unindexed leaves gaps nothing later fills.
-	bc.stopTxIndexer()
 	if bc.freezer != nil {
 		if err := bc.freezer.Close(); err != nil {
 			log.Warn("Failed to close freezer", "err", err)
@@ -936,8 +932,7 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 	// two transaction-count-proportional steps (reading the block's bodies and
 	// writing one TxLookup row per transaction) are what set the block cycle at
 	// a high gas ceiling -- measured at 2.7 s mean of a 3.53 s cycle.
-	var dRead, dWalk, dLock, dBody time.Duration
-	var indexed, reindex *block.Block
+	var dRead, dWalk, dLookup, dLock, dBody time.Duration
 	tCommit := time.Now()
 	err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
 		tEnter := time.Now()
@@ -981,8 +976,7 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 				// writeHeadBlock path never creates TxLookup entries. Repair them
 				// even for an idempotent/duplicate commit; this also self-heals
 				// databases produced before commit-time indexing was added.
-				// Indexed after this transaction, off the consensus path.
-				reindex = blk
+				rawdb.WriteTxLookupEntries(tx, blk)
 				return nil
 			}
 		}
@@ -1065,11 +1059,9 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 		// the ordinary TxLookup writer. Persist the canonical block's lookup
 		// entries here so eth_getTransactionByHash/Receipt can resolve live
 		// HotStuff transactions as soon as the commit becomes durable.
-		// Indexed after this transaction commits. Writing one row per
-		// transaction here, keyed by transaction hash, dirtied thousands of
-		// scattered pages and made mdbx_txn_commit 94.6% of a commit phase that
-		// was itself most of the block cycle. Nothing in consensus reads it.
-		indexed = blk
+		tLookup := time.Now()
+		rawdb.WriteTxLookupEntries(tx, blk)
+		dLookup = time.Since(tLookup)
 		bc.currentBlock.Store(blk)
 		// Canonical rows changed under any read-through layer: invalidate it, or
 		// by-number readers (RPC, the catch-up range SERVER) keep returning the
@@ -1099,12 +1091,7 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 	total := time.Since(tCommit)
 	log.Info("commit-to-canonical phases",
 		"number", committedNumber, "lock", dLock, "read", dRead, "walk", dWalk,
-		"body", dBody, "commit", total-dLock-dBody, "total", total)
-	if indexed != nil {
-		bc.enqueueTxIndex(indexed)
-	} else if reindex != nil {
-		bc.enqueueTxIndex(reindex)
-	}
+		"txlookup", dLookup, "body", dBody, "commit", total-dLock-dBody, "total", total)
 	// HotStuff imports candidates as side blocks and advances the canonical
 	// head only here. Notify after the database transaction commits: the
 	// import-time canonical callback is intentionally bypassed on this path.

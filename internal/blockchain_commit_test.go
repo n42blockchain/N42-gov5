@@ -2,7 +2,6 @@ package internal
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -181,75 +180,3 @@ func TestCommitToCanonicalNilHookIsNoop(t *testing.T) {
 		t.Fatalf("commit must succeed with no hook wired: %v", err)
 	}
 }
-
-// TestCommitToCanonicalIndexesTransactionsAsynchronously pins the property the
-// move off the consensus path must preserve: a committed transaction is
-// findable by hash.
-//
-// The index used to be written inside the commit transaction, where one row
-// per transaction -- keyed by transaction hash, so scattered across the
-// B-tree -- made mdbx_txn_commit 94.6% of the commit phase and roughly 77% of
-// the whole block cycle at a 480M gas ceiling. It is not consensus state:
-// nothing in validation, fork choice, or execution reads it.
-func TestCommitToCanonicalIndexesTransactionsAsynchronously(t *testing.T) {
-	db := newRealignTestDB(t)
-	parent := block.NewBlock(&block.Header{
-		Number:     uint256.NewInt(4),
-		Difficulty: uint256.NewInt(1),
-		Root:       types.Hash{0x04},
-	}, nil).(*block.Block)
-	from := types.HexToAddress("0x111")
-	to := types.HexToAddress("0x222")
-	txn := transaction.NewTransaction(7, from, &to, uint256.NewInt(3), 21000, uint256.NewInt(1), nil)
-	child := block.NewBlock(&block.Header{
-		Number:     uint256.NewInt(5),
-		ParentHash: parent.Hash(),
-		Difficulty: uint256.NewInt(1),
-		Root:       types.Hash{0x05},
-	}, []*transaction.Transaction{txn}).(*block.Block)
-
-	if err := db.Update(context.Background(), func(tx kv.RwTx) error {
-		if err := rawdb.WriteBlock(tx, parent); err != nil {
-			return err
-		}
-		if err := rawdb.WriteBlock(tx, child); err != nil {
-			return err
-		}
-		if err := rawdb.WriteCanonicalHash(tx, parent.Hash(), 4); err != nil {
-			return err
-		}
-		rawdb.WriteHeadBlockHash(tx, parent.Hash())
-		return rawdb.WriteHeadHeaderHash(tx, parent.Hash())
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	bc := &BlockChain{ChainDB: db, ctx: context.Background()}
-	bc.currentBlock.Store(parent)
-	bc.startTxIndexer()
-	if err := bc.CommitToCanonical(child.Hash()); err != nil {
-		t.Fatal(err)
-	}
-	// Stopping drains the queue; a node that exited with blocks still queued
-	// would leave gaps nothing later fills, so this is the property being
-	// tested as much as the indexing itself.
-	bc.stopTxIndexer()
-
-	if err := db.View(context.Background(), func(tx kv.Tx) error {
-		n, err := rawdb.ReadTxLookupEntry(tx, txn.Hash())
-		if err != nil {
-			return err
-		}
-		if n == nil {
-			return errNoLookupEntry
-		}
-		if *n != 5 {
-			t.Fatalf("lookup entry = %d, want 5", *n)
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("transaction not findable by hash after commit: %v", err)
-	}
-}
-
-var errNoLookupEntry = errors.New("no lookup entry for the committed transaction")

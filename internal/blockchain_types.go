@@ -141,11 +141,6 @@ type BlockChain struct {
 	ChainDB      kv.RwDB
 	engine       consensus.Engine
 
-	// Transaction-lookup indexing runs off the consensus path; see
-	// blockchain_txindex.go for why.
-	txIndexCh   chan *block.Block
-	txIndexDone chan struct{}
-
 	insertLock    chan struct{}
 	latestBlockCh chan block.IBlock
 	lock          sync.Mutex
