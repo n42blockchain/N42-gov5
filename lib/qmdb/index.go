@@ -79,6 +79,9 @@ func NewMapIndex() Index { return newMapIndex() }
 // the caller: the hint is a slot count, which is an exact upper bound on live
 // keys, so the table is never smaller than needed and at most as large as a
 // tree with nothing deleted.
+// It reports whether it replaced the index rather than leaving the caller to
+// compare: the dynamic type here is a map, and comparing two interface values
+// holding maps is a runtime panic, not a compile error.
 func reserve(idx Index, n int) (Index, bool) {
 	m, ok := idx.(mapIndex)
 	if !ok || len(m) != 0 || n <= 0 {

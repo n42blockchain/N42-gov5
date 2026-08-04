@@ -54,3 +54,21 @@ func TestReserveLeavesForeignIndexAlone(t *testing.T) {
 		t.Fatal("reserve replaced a non-map index")
 	}
 }
+
+// TestReserveDoesNotCompareMaps pins the reason reserve reports replacement
+// instead of letting the caller compare. Index's dynamic type here is a map,
+// and comparing two interface values holding maps panics at run time — it is
+// not a compile error, so nothing catches it until a load runs.
+func TestReserveDoesNotCompareMaps(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("reserve's contract still forces a map comparison: %v", r)
+		}
+	}()
+	a := newMapIndex()
+	b, replaced := reserve(a, 128)
+	if !replaced {
+		t.Fatal("expected replacement")
+	}
+	_ = b.Len()
+}
