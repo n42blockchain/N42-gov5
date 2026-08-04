@@ -1221,6 +1221,12 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	txSet := builder.NewTxByPriceAndNonce(pending, header.BaseFee)
 	log.Tracef("fillTransactions pending accounts:%d", len(pending))
 
+	// Accounts skipped because their head transaction cannot pay the base fee.
+	// Reported once per build: a block that comes out empty with a full pool is
+	// otherwise indistinguishable from a block that had nothing to include, and
+	// the difference is the whole diagnosis.
+	priceOut := 0
+
 	for {
 		if interrupt != nil {
 			if signal := interrupt.Load(); signal != commitInterruptNone {
@@ -1271,10 +1277,29 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			txSet.Pop() // Nonce gap, skip account
 		case errors.Is(err, internal.ErrNonceTooLow):
 			txSet.Shift() // Try next nonce from same account
+		case errors.Is(err, internal.ErrFeeCapTooLow):
+			// The account cannot pay this block's base fee. Skip the whole
+			// account: its later transactions are gated behind this nonce, so
+			// none of them can be included however much they bid.
+			//
+			// This is the common case, not an anomaly. A saturated chain drives
+			// the base fee above a fixed-price load's cap by design (EIP-1559
+			// settles at the gas target), and every transaction in the pool then
+			// fails here. Shifting instead of popping walked the entire pool per
+			// build, and logging each failure at Error put thousands of lines in
+			// the log per block -- the empty block that produced them was three
+			// times more expensive to build than a full one.
+			priceOut++
+			txSet.Pop()
 		default:
 			log.Error("miningCommitTx failed", "error", err)
 			txSet.Shift()
 		}
+	}
+
+	if priceOut > 0 {
+		log.Info("miner: accounts priced out by the base fee",
+			"accounts", priceOut, "of", len(pending), "packed", len(env.txs), "baseFee", header.BaseFee)
 	}
 
 	// Prune old bundles.
