@@ -419,7 +419,23 @@ func (t *Tree) loadFrom(g Getter, trustedThrough uint64) error {
 	// no smaller than needed, and larger only in proportion to what has been
 	// deleted. Growing from empty instead costs a rehash-and-copy per doubling
 	// while the node is already reading its whole tree off disk.
-	t.idx = reserve(t.idx, int(nextSlot))
+	presized := reserve(t.idx, int(nextSlot))
+	wasPresized := presized != t.idx
+	t.idx = presized
+	defer func() {
+		// Whether the index earns the largest allocation in a loaded node:
+		// live keys against the slots ever appended (how much of the log is
+		// still reachable), and the hint's accuracy if it was applied.
+		live := t.idx.Len()
+		util := 0.0
+		if nextSlot > 0 {
+			util = 100 * float64(live) / float64(nextSlot)
+		}
+		h, m, pu, d := IndexStats()
+		log.Info("qmdb index loaded",
+			"liveKeys", live, "nextSlot", nextSlot, "livePctOfSlots", fmt.Sprintf("%.1f%%", util),
+			"presized", wasPresized, "puts", pu, "deletes", d, "getHit", h, "getMiss", m)
+	}()
 
 	t.twigs = make([]*twig, numTwigs)
 

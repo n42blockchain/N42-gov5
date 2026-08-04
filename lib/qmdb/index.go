@@ -16,6 +16,12 @@
 
 package qmdb
 
+import (
+	"os"
+	"strconv"
+	"sync/atomic"
+)
+
 // Index maps a live key's hash to the global slot of its current entry. It is the
 // reverse of the entry log (slot -> keyHash) and holds exactly the live key set.
 // Put overwrites, Delete removes, Len returns the live-key count. Implementations
@@ -78,12 +84,41 @@ func reserve(idx Index, n int) Index {
 	if !ok || len(m) != 0 || n <= 0 {
 		return idx
 	}
+	// N42_QMDB_INDEX_PRESIZE=0 keeps the grow-from-empty behaviour, so the two
+	// can be compared on one binary.
+	if v, err := strconv.ParseBool(os.Getenv("N42_QMDB_INDEX_PRESIZE")); err == nil && !v {
+		return idx
+	}
 	return newMapIndexSized(n)
 }
 
-func (m mapIndex) Get(k Hash) (uint64, bool) { s, ok := m[k]; return s, ok }
-func (m mapIndex) Put(k Hash, s uint64)      { m[k] = s }
-func (m mapIndex) Delete(k Hash)             { delete(m, k) }
+// Index counters. Package-level and atomic because mapIndex is a bare map type
+// with nowhere to hang state; they exist to answer whether the index earns the
+// largest allocation in a loaded node -- 780 MB of live heap -- rather than to
+// be read on the hot path.
+var (
+	idxGetHit  atomic.Uint64
+	idxGetMiss atomic.Uint64
+	idxPuts    atomic.Uint64
+	idxDeletes atomic.Uint64
+)
+
+// IndexStats reports index usage since start.
+func IndexStats() (hits, misses, puts, deletes uint64) {
+	return idxGetHit.Load(), idxGetMiss.Load(), idxPuts.Load(), idxDeletes.Load()
+}
+
+func (m mapIndex) Get(k Hash) (uint64, bool) {
+	s, ok := m[k]
+	if ok {
+		idxGetHit.Add(1)
+	} else {
+		idxGetMiss.Add(1)
+	}
+	return s, ok
+}
+func (m mapIndex) Put(k Hash, s uint64) { idxPuts.Add(1); m[k] = s }
+func (m mapIndex) Delete(k Hash)             { idxDeletes.Add(1); delete(m, k) }
 func (m mapIndex) Len() int                  { return len(m) }
 
 func (m mapIndex) Range(fn func(Hash, uint64) bool) {
