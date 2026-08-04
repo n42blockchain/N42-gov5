@@ -155,9 +155,21 @@ func (t *Tree) SlotKeyResolver() SlotResolver {
 }
 
 // truncIndexEnabled reports whether new indexes should store key prefixes.
-// Off by default: it trades an entry read per lookup for the RAM, and the
-// lookup is on the write path (every Set consults it to find the slot to
-// deactivate).
+//
+// DO NOT ENABLE. Verifying through Tree.entryAt recurses: a cold slot goes to
+// ColdEntry, which derives liveness by consulting the index, which verifies
+// through entryAt again. Turning it on killed three of seven fleet nodes with
+// "fatal error: stack overflow" within a minute of start.
+//
+// The design is not wrong, the resolver is: verification needs a reader that
+// returns the entry's key hash WITHOUT a liveness check, since liveness is
+// exactly what the index answers. Until such a reader exists this flag only
+// reproduces the crash.
+//
+// Beyond that it trades an entry read per lookup for the RAM, on the write
+// path -- every Set consults the index to find the slot to deactivate -- so
+// even once the recursion is broken the cost needs measuring before it becomes
+// a default.
 func truncIndexEnabled() bool {
 	v, _ := strconv.ParseBool(os.Getenv("N42_QMDB_TRUNC_INDEX"))
 	return v
