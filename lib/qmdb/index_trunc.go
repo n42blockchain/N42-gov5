@@ -29,6 +29,11 @@
 
 package qmdb
 
+import (
+	"os"
+	"strconv"
+)
+
 // keyPrefix is the leading bytes of a key hash retained by truncIndex.
 type keyPrefix [16]byte
 
@@ -136,3 +141,57 @@ func (t *truncIndex) Len() int { return len(t.m) + len(t.ovf) }
 // be zero; a non-zero value that grows means the prefix is too short for the
 // live set and the memory saving is being paid for in full-key entries.
 func (t *truncIndex) OverflowLen() int { return len(t.ovf) }
+
+// SlotKeyResolver resolves a slot to its entry's key hash, over this tree's
+// entry log (resident entries first, then the cold reader).
+func (t *Tree) SlotKeyResolver() SlotResolver {
+	return func(slot uint64) (Hash, bool) {
+		e, ok := t.entryAt(slot)
+		if !ok {
+			return Hash{}, false
+		}
+		return e.keyHash, true
+	}
+}
+
+// truncIndexEnabled reports whether new indexes should store key prefixes.
+//
+// DO NOT ENABLE. Verifying through Tree.entryAt recurses: a cold slot goes to
+// ColdEntry, which derives liveness by consulting the index, which verifies
+// through entryAt again. Turning it on killed three of seven fleet nodes with
+// "fatal error: stack overflow" within a minute of start.
+//
+// The design is not wrong, the resolver is: verification needs a reader that
+// returns the entry's key hash WITHOUT a liveness check, since liveness is
+// exactly what the index answers. Until such a reader exists this flag only
+// reproduces the crash.
+//
+// Beyond that it trades an entry read per lookup for the RAM, on the write
+// path -- every Set consults the index to find the slot to deactivate -- so
+// even once the recursion is broken the cost needs measuring before it becomes
+// a default.
+func truncIndexEnabled() bool {
+	v, _ := strconv.ParseBool(os.Getenv("N42_QMDB_TRUNC_INDEX"))
+	return v
+}
+
+// NewIndexFor returns a fresh in-RAM index of the configured shape for t.
+func NewIndexFor(t *Tree, sizeHint int) Index {
+	if truncIndexEnabled() {
+		return NewTruncIndex(t.SlotKeyResolver(), sizeHint)
+	}
+	if sizeHint > 0 {
+		return newMapIndexSized(sizeHint)
+	}
+	return newMapIndex()
+}
+
+// IndexOverflow reports an index's full-key overflow size, or -1 when the
+// shape has none. Expected to stay 0; anything else means the prefix is too
+// short for the live set.
+func IndexOverflow(idx Index) int {
+	if t, ok := idx.(*truncIndex); ok {
+		return t.OverflowLen()
+	}
+	return -1
+}
