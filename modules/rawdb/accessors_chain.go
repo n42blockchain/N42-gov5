@@ -322,10 +322,18 @@ func WriteTransactions(db kv.RwTx, txs []*transaction.Transaction, baseTxId uint
 			data = tx.MarshalCompactStorage() // nil for unsupported types
 		}
 		if data == nil {
+			// Ethereum typed transactions that do not yet have a compact storage
+			// codec (for example EIP-7702 SetCode) must retain their complete wire
+			// payload. The native protobuf fallback cannot represent an
+			// authorization list, so it silently loses fields and cannot be read
+			// back as the original transaction.
 			var err error
-			data, err = tx.Marshal()
+			data, err = transaction.EncodeEthereumTransaction(tx)
 			if err != nil {
-				return err
+				data, err = tx.Marshal()
+				if err != nil {
+					return err
+				}
 			}
 		}
 		// If next Append returns KeyExists error - it means you need to open transaction
