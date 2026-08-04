@@ -46,6 +46,7 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/internal/consensus"
@@ -195,6 +196,30 @@ type TxIndexer interface {
 func (bc *BlockChain) SetTxIndexer(ix TxIndexer) {
 	bc.txIndexer = ix
 	log.Info("Transaction lookup index attached; commit path will not write the table")
+}
+
+// SenderHintSource resolves a transaction hash to the pool's copy of that
+// transaction, or nil. Declared as an interface for the same reason TxIndexer
+// is: the pool package imports this one.
+//
+// Import-path sender recovery uses it as a cache: a transaction that reached
+// the pool already paid its secp256k1 recovery at admission, and the wire copy
+// in an imported block is the same signature bytes (same hash), so the pool
+// copy's cached sender — re-derived through the block's own signer, which
+// verifies the cache actually belongs to that signer — is byte-identical to
+// what recovering the wire copy would produce. Measured on a saturated fleet,
+// recovery was 260 ms of a 516 ms import (22,857 transactions, 8 workers), all
+// of it re-deriving senders the pool had already derived.
+type SenderHintSource interface {
+	GetTx(hash types.Hash) *transaction.Transaction
+}
+
+// SetSenderHintSource attaches the transaction pool as a sender cache for
+// block import. Purely an accelerator: a nil source, a miss, or a signer
+// mismatch all fall back to plain recovery.
+func (bc *BlockChain) SetSenderHintSource(s SenderHintSource) {
+	bc.senderHints = s
+	log.Info("Sender hint source attached; block import will reuse pool-recovered senders")
 }
 
 // SetFreezer attaches the ancient data freezer to the blockchain.
