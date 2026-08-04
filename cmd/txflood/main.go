@@ -268,8 +268,15 @@ func main() {
 				fmt.Printf("fund %d err: %v\n", i, err)
 			}
 		}
-		// wait until the last sender is funded (balance > 0)
+		// Wait until the last sender is funded (balance > 0), and ABORT if it
+		// never happens. The old loop timed out silently and fell through to
+		// the flood, which then offered millions of transactions from unfunded
+		// senders -- 8.88M rejections at 36k/s, wearing the shape of a node
+		// problem. A funding round can genuinely fail wholesale (e.g. right
+		// after a fleet-wide restart, before the gossip mesh has re-formed,
+		// the funding batch published from one node reaches no one).
 		fmt.Println("waiting for funding to mine...")
+		funded := false
 		for w := 0; w < 40; w++ {
 			time.Sleep(2 * time.Second)
 			r, _ := rpcCall(urls[0], "eth_getBalance", []interface{}{addrs[*senders-1].Hex(), "latest"})
@@ -277,8 +284,15 @@ func main() {
 			json.Unmarshal(r, &h)
 			if hexToU64(h) > 0 {
 				fmt.Printf("funded after %ds (last sender balance=0x%s)\n", (w+1)*2, strings.TrimPrefix(h, "0x"))
+				funded = true
 				break
 			}
+		}
+		if !funded {
+			faucetNonce, _ := getNonce(urls[0], from)
+			fmt.Fprintf(os.Stderr, "FATAL: funding did not mine within 80s (faucet nonce %d, expected >= %d); aborting instead of flooding from unfunded senders\n",
+				faucetNonce, fn+uint64(*senders))
+			os.Exit(1)
 		}
 		// pre-sign perTx transfers from each sender
 		total := *senders * *perTx
@@ -408,7 +422,11 @@ func main() {
 					url = urls[int(i)%len(urls)]
 				}
 				if _, err := rpcCall(url, "eth_sendRawTransaction", []interface{}{raws[i]}); err != nil {
-					atomic.AddInt64(&failed, 1)
+					// The first few distinct failures are the diagnosis; a
+					// counter alone hid an 8.88M-transaction rejection.
+					if n := atomic.AddInt64(&failed, 1); n <= 5 || n%1000000 == 0 {
+						fmt.Printf("  submit err #%d (i=%d %s): %v\n", n, i, url, err)
+					}
 				} else {
 					atomic.AddInt64(&submitted, 1)
 				}
