@@ -451,7 +451,8 @@ func (t *Tree) loadFrom(g Getter, trustedThrough uint64) error {
 		h, m, pu, d := IndexStats()
 		log.Info("qmdb index loaded",
 			"liveKeys", live, "nextSlot", nextSlot, "livePctOfSlots", fmt.Sprintf("%.1f%%", util),
-			"presized", wasPresized, "puts", pu, "deletes", d, "getHit", h, "getMiss", m)
+			"presized", wasPresized, "puts", pu, "deletes", d, "getHit", h, "getMiss", m,
+			"overflow", IndexOverflow(t.idx))
 	}()
 
 	t.twigs = make([]*twig, numTwigs)
