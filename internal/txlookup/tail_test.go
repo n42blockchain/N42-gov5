@@ -65,15 +65,15 @@ func TestTailSealRange(t *testing.T) {
 		tl.Add(n, tailBlock(n, 10)) // 10 txs each
 	}
 	// Needs 35 txs and must leave 4 blocks: blocks 0..3 give 40 >= 35.
-	start, end, ok := tl.SealRange(35, 4)
+	start, end, ok := tl.SealRange(35, 1000, 4)
 	if !ok || start != 0 || end != 4 {
 		t.Fatalf("sealRange = %d,%d,%v want 0,4,true", start, end, ok)
 	}
 	// Not enough sealable transactions once the keep-behind is honoured.
-	if _, _, ok := tl.SealRange(1000, 4); ok {
+	if _, _, ok := tl.SealRange(1000, 1000, 4); ok {
 		t.Fatal("sealRange offered a range that cannot reach minTx")
 	}
-	if _, _, ok := tl.SealRange(1, 10); ok {
+	if _, _, ok := tl.SealRange(1, 1000, 10); ok {
 		t.Fatal("sealRange offered a range that does not leave keepBlocks behind")
 	}
 }
@@ -90,7 +90,7 @@ func TestTailSealsIntoSegmentAndStaysAnswerable(t *testing.T) {
 		tl.Add(n, hs)
 	}
 
-	start, end, ok := tl.SealRange(64, 4)
+	start, end, ok := tl.SealRange(64, 1000, 4)
 	if !ok {
 		t.Fatal("nothing sealable")
 	}
@@ -132,5 +132,27 @@ func TestTailSealsIntoSegmentAndStaysAnswerable(t *testing.T) {
 				t.Fatalf("segment: block %d tx %d = %d", n, i, *got)
 			}
 		}
+	}
+}
+
+// TestTailSealRangeBoundsByBlocks: a transaction threshold alone leaves the
+// tail unbounded in blocks when blocks are small, and what a restart costs is
+// set by blocks — it re-reads each unsealed one in full to recover its hashes.
+func TestTailSealRangeBoundsByBlocks(t *testing.T) {
+	tl := NewTail()
+	for n := uint64(0); n < 300; n++ {
+		tl.Add(n, tailBlock(n, 2)) // 600 txs in 300 blocks
+	}
+	// Nowhere near 1,000,000 transactions, but well past the block bound.
+	start, end, ok := tl.SealRange(1_000_000, 100, 64)
+	if !ok {
+		t.Fatal("a tail 300 blocks deep offered nothing to seal")
+	}
+	if start != 0 || end != 100 {
+		t.Fatalf("sealRange = %d,%d want 0,100", start, end)
+	}
+	// The block bound must still honour keepBlocks.
+	if _, _, ok := tl.SealRange(1_000_000, 100, 300); ok {
+		t.Fatal("the block bound overrode keepBlocks")
 	}
 }

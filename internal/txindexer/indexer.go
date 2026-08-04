@@ -79,9 +79,17 @@ func (x *Indexer) Enabled() bool { return x != nil && x.txTail != nil }
 const (
 	// txIndexSealMinTx is how many transactions a segment is worth building
 	// for. Small enough that a seal is seconds of background work, large
-	// enough that segments do not proliferate: at 22,857 transactions a block
-	// this is roughly 175 blocks, about ten minutes of chain.
-	txIndexSealMinTx = 4_000_000
+	// enough that segments do not proliferate.
+	txIndexSealMinTx = 1_000_000
+
+	// txIndexSealMaxBlocks seals on block count too, whichever comes first.
+	//
+	// What a restart costs is set by blocks, not transactions: rebuilding the
+	// tail re-reads every unsealed block in full to recover its hashes, and
+	// that measured 1.25 GB of allocation -- the largest single source in the
+	// node. A transaction threshold alone leaves that unbounded when blocks
+	// are small, which is exactly the ordinary case.
+	txIndexSealMaxBlocks = 256
 
 	// txIndexKeepBlocks stay in the tail behind the seal point. Sealing reads
 	// their hashes and building takes time; a block has to stay answerable
@@ -312,7 +320,7 @@ func (x *Indexer) txIndexSealLoop() {
 // order and never the reverse: a block dropped from the tail before it is in a
 // segment is findable nowhere.
 func (x *Indexer) sealTxIndexOnce() {
-	start, end, ok := x.txTail.SealRange(txIndexSealMinTx, txIndexKeepBlocks)
+	start, end, ok := x.txTail.SealRange(txIndexSealMinTx, txIndexSealMaxBlocks, txIndexKeepBlocks)
 	if !ok {
 		return
 	}
