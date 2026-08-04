@@ -143,11 +143,18 @@ func (v *BlockValidator) ValidateState(iBlock block.IBlock, statedb *state.Intra
 		return fmt.Errorf("invalid bloom (remote: %x  local: %x)", header.Bloom, rbloom)
 	}
 
+	ethereumReceiptEncoding := v.config != nil && (v.config.StateScheme == string(params.StateCommitmentPresetQMDB) || v.config.StateScheme == string(params.StateCommitmentPresetEthereumMPT))
+	postByzantium := v.config != nil && v.config.IsByzantium(iBlock.Number64().Uint64())
+	// Pre-Byzantium Ethereum receipts encode the intermediate state root after
+	// each transaction. N42 receipts retain the post-Byzantium status field, so
+	// that historical value is not available for an RLP import. Gas and bloom
+	// remain validated above; the canonical block header is retained verbatim.
+	skipReceiptRoot := ethereumReceiptEncoding && !postByzantium
 	receiptSha := DeriveSha(receipts)
-	if v.config != nil && (v.config.StateScheme == string(params.StateCommitmentPresetQMDB) || v.config.StateScheme == string(params.StateCommitmentPresetEthereumMPT)) {
-		receiptSha = block.EthereumReceiptRoot(receipts, v.config.IsByzantium(iBlock.Number64().Uint64()))
+	if ethereumReceiptEncoding && !skipReceiptRoot {
+		receiptSha = block.EthereumReceiptRoot(receipts, true)
 	}
-	if receiptSha != header.ReceiptHash {
+	if !skipReceiptRoot && receiptSha != header.ReceiptHash {
 		for i, tx := range iBlock.Body().Transactions() {
 			if i < len(receipts) {
 				log.Warn("tx", "index", i, "from", tx.From(), "GasUsed", receipts[i].GasUsed)
