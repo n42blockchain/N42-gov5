@@ -50,10 +50,16 @@ var (
 	senderCacheMisses atomic.Uint64
 )
 
-// defaultSenderCacheSlots is a power of two: 262144 entries is ~19 MB fully
-// populated, and comfortably covers the in-flight window of a node importing
-// blocks whose transactions its pool saw moments earlier.
-const defaultSenderCacheSlots = 1 << 18
+// defaultSenderCacheSlots is a power of two. 2^20 entries is ~8 MB of slot
+// pointers plus ~80 MB fully populated — sized for the pool, not the block.
+// The previous 2^18 was "comfortably above one block", but the cache is
+// direct-mapped and the WHOLE POOL churns through it: at a ~360k-transaction
+// pool plus ~11k new per second, 262k slots evicted each other fast enough
+// that ~30% of an imported block's senders had been overwritten by the time
+// the block arrived, and import re-derived them (6.2s of secp256k1 in a 30s
+// saturated profile). Sizing above the pool's transaction population makes a
+// pre-import eviction the exception rather than the rule.
+const defaultSenderCacheSlots = 1 << 20
 
 func init() {
 	slots := defaultSenderCacheSlots
