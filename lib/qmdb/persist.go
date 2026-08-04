@@ -258,6 +258,16 @@ func (t *Tree) FlushTo(p Putter, flushedThrough uint64) (uint64, int, error) {
 		return flushedThrough, bytesW, err
 	}
 	bytesW += 8
+	// Live key count, for sizing the in-RAM index on the next load. MetaTable's
+	// comment has listed this key since the table was defined, but nothing ever
+	// wrote it -- so the only figure a loader had was nextSlot, which counts
+	// every slot ever appended and is larger than the live set by however much
+	// the state has churned. Sizing a map from that asked for a table far
+	// beyond memory and hung the node on startup.
+	if err := p.Put(MetaTable, []byte("liveCount"), be8(uint64(t.idx.Len()))); err != nil {
+		return flushedThrough, bytesW, err
+	}
+	bytesW += 8
 	return t.nextSlot, bytesW, nil
 }
 
@@ -414,18 +424,21 @@ func (t *Tree) loadFrom(g Getter, trustedThrough uint64) error {
 	numTwigs := int((nextSlot + TwigSize - 1) / TwigSize)
 	activeTwig := int((nextSlot - 1) / TwigSize) // twig holding the last live slot
 
-	// The index is NOT pre-sized from nextSlot.
+	// Size the index from the persisted live count -- the number of keys the
+	// load will actually put in it.
 	//
-	// nextSlot counts every slot ever appended, not the live keys the index
-	// holds, and the two diverge by however much the state has churned. On a
-	// 13.3M-block chain that hint asked for a map orders of magnitude larger
-	// than the ~16.6M live keys, and the node hung on startup trying to
-	// allocate it -- flat at 0.37 GB across the fleet for minutes, never
-	// reaching a block. A hint has to come from the live count, which nothing
-	// persists today: MetaTable's comment lists "liveCount" but no code ever
-	// writes or reads it. Until it does, growing from empty is the only
-	// correct behaviour, and its cost is load-time churn rather than a hang.
+	// NOT from nextSlot: that counts every slot ever appended, and on a
+	// 13.3M-block chain it exceeds the live set by orders of magnitude. Sizing
+	// a map from it asked for a table far beyond memory and hung the fleet on
+	// startup, flat at 0.37 GB for minutes without producing a block. A store
+	// written before liveCount was persisted has no value here, and grows from
+	// empty exactly as before.
 	wasPresized := false
+	if lcRaw, lcErr := g.GetOne(MetaTable, []byte("liveCount")); lcErr == nil && len(lcRaw) == 8 {
+		if lc := binary.BigEndian.Uint64(lcRaw); lc > 0 && lc <= nextSlot {
+			t.idx, wasPresized = reserve(t.idx, int(lc))
+		}
+	}
 	defer func() {
 		// Whether the index earns the largest allocation in a loaded node:
 		// live keys against the slots ever appended (how much of the log is
