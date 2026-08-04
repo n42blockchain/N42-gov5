@@ -80,6 +80,8 @@ func TestWriteEnginePayloadBlockRoundTripsSetCodeTx(t *testing.T) {
 		require.NotNil(t, readBlock)
 		require.Len(t, readBlock.Transactions(), 1)
 		require.EqualValues(t, transaction.SetCodeTxType, readBlock.Transactions()[0].Type())
+		require.Len(t, readBlock.Transactions()[0].AuthList(), 1)
+		require.Equal(t, auth.Address, readBlock.Transactions()[0].AuthList()[0].Address)
 		require.Equal(t, blk.Hash(), readBlock.Hash())
 		return nil
 	})
