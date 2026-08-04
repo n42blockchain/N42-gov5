@@ -131,14 +131,20 @@ func (s *Service) SubscribeToTopic(topic string, opts ...pubsub.SubOpt) (*pubsub
 	if err != nil {
 		return nil, err
 	}
-	scoringParams, err := s.topicScoreParams(topic)
-	if err != nil {
-		return nil, err
+	// Per-topic score params are only meaningful when the router is scoring;
+	// SetScoreParams rejects them otherwise, and this returns the error, so
+	// with scoring off EVERY subscription failed -- including the transaction
+	// topic, whose failure is logged but not fatal, so the node came up mute.
+	if s.peerScoringEnabled() {
+		scoringParams, err := s.topicScoreParams(topic)
+		if err != nil {
+			return nil, err
+		}
+		if err := topicHandle.SetScoreParams(scoringParams); err != nil {
+			return nil, err
+		}
+		logGossipParameters(topic, scoringParams)
 	}
-	if err := topicHandle.SetScoreParams(scoringParams); err != nil {
-		return nil, err
-	}
-	logGossipParameters(topic, scoringParams)
 	return topicHandle.Subscribe(opts...)
 }
 
@@ -150,9 +156,28 @@ func (s *Service) peerInspector(peerMap map[peer.ID]*pubsub.PeerScoreSnapshot) {
 	}
 }
 
+// peerScoringEnabled reports whether the router scores peers. Scoring defends
+// against peers this node did not choose; with discovery off the peer set is
+// exactly the configured list, so there are none.
+func (s *Service) peerScoringEnabled() bool { return !s.cfg.NoDiscovery }
+
+// seenMessagesTTL is how long a message ID stays in the duplicate-suppression
+// cache.
+//
+// libp2p's default is two minutes, which is sized for a public mesh where a
+// message can reach a peer long after it was published. The cache holds one
+// entry per message for that whole window, so its size is the message rate
+// times the TTL: at 6,700 transactions a second that is 800,000 entries, and
+// it measured 391 MB of live heap. Propagation across this mesh completes in
+// milliseconds, so a much shorter window suppresses exactly the same
+// duplicates. It is still two orders of magnitude longer than a round trip,
+// which is the margin that matters -- too short and a message that loops back
+// slowly is re-processed rather than dropped.
+const seenMessagesTTL = 30 * time.Second
+
 // pubsubOptions returns the PubSub configuration options for the GossipSub router.
 func (s *Service) pubsubOptions() []pubsub.Option {
-	return []pubsub.Option{
+	opts := []pubsub.Option{
 		pubsub.WithMessageSignaturePolicy(pubsub.StrictNoSign),
 		pubsub.WithNoAuthor(),
 		pubsub.WithMessageIdFn(func(pmsg *pubsubpb.Message) string {
@@ -162,11 +187,26 @@ func (s *Service) pubsubOptions() []pubsub.Option {
 		pubsub.WithPeerOutboundQueueSize(pubsubQueueSize),
 		pubsub.WithMaxMessageSize(int(GossipMaxSize())),
 		pubsub.WithValidateQueueSize(pubsubQueueSize),
-		pubsub.WithPeerScore(peerScoringParams()),
-		pubsub.WithPeerScoreInspect(s.peerInspector, time.Minute),
+		pubsub.WithSeenMessagesTTL(seenMessagesTTL),
 		pubsub.WithGossipSubParams(pubsubGossipParam()),
 		pubsub.WithRawTracer(gossipTracer{host: s.host}),
 	}
+	// Peer scoring defends against peers this node did not choose. With
+	// discovery off the peer set is exactly the explicit --p2p.peer list, so
+	// there are none: every peer is statically configured, and a low score
+	// cannot lead to replacing one because there is nothing to replace it
+	// with. What scoring does cost is measurable -- 414 MB of live heap in
+	// peerScore.DuplicateMessage plus a share of the contention that put
+	// pubsub at 37% of this node's mutex wait -- and it is charged per
+	// message, so it grows with throughput.
+	if s.peerScoringEnabled() {
+		opts = append(opts,
+			pubsub.WithPeerScore(peerScoringParams()),
+			pubsub.WithPeerScoreInspect(s.peerInspector, time.Minute))
+	} else {
+		log.Info("Peer scoring disabled: discovery is off, so the peer set is the configured list")
+	}
+	return opts
 }
 
 func pubsubGossipParam() pubsub.GossipSubParams {
