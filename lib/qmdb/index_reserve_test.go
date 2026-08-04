@@ -8,7 +8,10 @@ import "testing"
 // the same failure NewMapIndex's doc warns about for stale indexes.
 func TestReserveOnlyReplacesEmptyMap(t *testing.T) {
 	empty := newMapIndex()
-	got := reserve(empty, 1000)
+	got, replaced := reserve(empty, 1000)
+	if !replaced {
+		t.Fatal("reserve did not report replacing an empty map")
+	}
 	if _, ok := got.(mapIndex); !ok {
 		t.Fatal("reserve returned a non-map index for an empty map")
 	}
@@ -18,24 +21,36 @@ func TestReserveOnlyReplacesEmptyMap(t *testing.T) {
 
 	populated := newMapIndex()
 	populated.Put(Hash{0x01}, 7)
-	if kept := reserve(populated, 1000); kept.Len() != 1 {
+	kept, replaced := reserve(populated, 1000)
+	if replaced {
+		t.Fatal("reserve reported replacing a populated index")
+	}
+	if kept.Len() != 1 {
 		t.Fatalf("reserve replaced a populated index (len=%d)", kept.Len())
 	}
-	if s, ok := reserve(populated, 1000).Get(Hash{0x01}); !ok || s != 7 {
+	if s, ok := kept.Get(Hash{0x01}); !ok || s != 7 {
 		t.Fatalf("reserve lost a mapping: %d,%v", s, ok)
 	}
 
 	// A non-positive hint is not a reason to allocate anything.
-	if reserve(empty, 0) == nil {
+	got, replaced = reserve(empty, 0)
+	if replaced || got == nil {
 		t.Fatal("reserve returned nil for a zero hint")
+	}
+
+	// The opt-out keeps the original map and must not claim a replacement.
+	t.Setenv("N42_QMDB_INDEX_PRESIZE", "0")
+	got, replaced = reserve(empty, 1000)
+	if replaced || got == nil {
+		t.Fatal("reserve replaced an index while pre-sizing was disabled")
 	}
 }
 
 // TestReserveLeavesForeignIndexAlone: an MDBX-backed index is not ours to swap.
 func TestReserveLeavesForeignIndexAlone(t *testing.T) {
 	foreign := &countingIndex{m: persistMap{}}
-	if got := reserve(foreign, 1000); got != Index(foreign) {
+	got, replaced := reserve(foreign, 1000)
+	if replaced || got != Index(foreign) {
 		t.Fatal("reserve replaced a non-map index")
 	}
 }
-

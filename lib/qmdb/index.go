@@ -79,17 +79,17 @@ func NewMapIndex() Index { return newMapIndex() }
 // the caller: the hint is a slot count, which is an exact upper bound on live
 // keys, so the table is never smaller than needed and at most as large as a
 // tree with nothing deleted.
-func reserve(idx Index, n int) Index {
+func reserve(idx Index, n int) (Index, bool) {
 	m, ok := idx.(mapIndex)
 	if !ok || len(m) != 0 || n <= 0 {
-		return idx
+		return idx, false
 	}
 	// N42_QMDB_INDEX_PRESIZE=0 keeps the grow-from-empty behaviour, so the two
 	// can be compared on one binary.
 	if v, err := strconv.ParseBool(os.Getenv("N42_QMDB_INDEX_PRESIZE")); err == nil && !v {
-		return idx
+		return idx, false
 	}
-	return newMapIndexSized(n)
+	return newMapIndexSized(n), true
 }
 
 // Index counters. Package-level and atomic because mapIndex is a bare map type
@@ -118,8 +118,8 @@ func (m mapIndex) Get(k Hash) (uint64, bool) {
 	return s, ok
 }
 func (m mapIndex) Put(k Hash, s uint64) { idxPuts.Add(1); m[k] = s }
-func (m mapIndex) Delete(k Hash)             { idxDeletes.Add(1); delete(m, k) }
-func (m mapIndex) Len() int                  { return len(m) }
+func (m mapIndex) Delete(k Hash)        { idxDeletes.Add(1); delete(m, k) }
+func (m mapIndex) Len() int             { return len(m) }
 
 func (m mapIndex) Range(fn func(Hash, uint64) bool) {
 	for k, s := range m {
