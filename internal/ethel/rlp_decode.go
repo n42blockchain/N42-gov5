@@ -191,6 +191,53 @@ type GethBodyResult struct {
 	Withdrawals []*Withdrawal // nil pre-Shanghai
 }
 
+// DecodeRawBlock decodes the canonical Ethereum block RLP used by Hive's
+// consume-rlp simulator: [header, transactions, ommers, withdrawals?].
+//
+// The freezer reader above receives headers and bodies separately (and Snappy
+// compressed), while Hive supplies one uncompressed block per file. Keeping
+// this decoder here makes both paths use the same transaction and withdrawal
+// handling. Ommers are decoded for structural validation but are not attached
+// to block.Block: eth-el's payload execution path is post-merge and does not
+// process ommer rewards.
+func DecodeRawBlock(data []byte) (*block.Block, []*Withdrawal, error) {
+	var elems []rlp.RawValue
+	if err := rlp.DecodeBytes(data, &elems); err != nil {
+		return nil, nil, fmt.Errorf("ethel: decode block list: %w", err)
+	}
+	if len(elems) < 3 || len(elems) > 4 {
+		return nil, nil, fmt.Errorf("ethel: block has %d fields, want 3 or 4", len(elems))
+	}
+
+	header, err := DecodeUncleHeader(elems[0])
+	if err != nil {
+		return nil, nil, fmt.Errorf("ethel: decode block header: %w", err)
+	}
+	txs, err := decodeEthereumTransactions(elems[1])
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Decode the ommer list so malformed input is not silently accepted. The
+	// header already commits to its hash and modern eth-el fixtures have none.
+	var ommers []rlp.RawValue
+	if err := rlp.DecodeBytes(elems[2], &ommers); err != nil {
+		return nil, nil, fmt.Errorf("ethel: decode block ommers: %w", err)
+	}
+	if len(ommers) != 0 {
+		return nil, nil, fmt.Errorf("ethel: ommer blocks are unsupported by eth-el RLP import")
+	}
+
+	var withdrawals []*Withdrawal
+	if len(elems) == 4 {
+		withdrawals, err = decodeWithdrawals(elems[3])
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return block.NewBlock(header, txs).(*block.Block), withdrawals, nil
+}
+
 // DecodeGethBody decodes a Geth-format RLP-encoded body.
 // Returns transactions and uncle headers.
 func DecodeGethBody(data []byte) (*GethBodyResult, error) {
@@ -208,30 +255,9 @@ func DecodeGethBody(data []byte) (*GethBodyResult, error) {
 	}
 
 	// Decode transactions list.
-	var txRaws []rlp.RawValue
-	if err := rlp.DecodeBytes(elems[0], &txRaws); err != nil {
-		return nil, fmt.Errorf("ethel: decode txs list: %w", err)
-	}
-
-	txs := make([]*transaction.Transaction, 0, len(txRaws))
-	for i, txRaw := range txRaws {
-		// In Geth's body RLP, typed transactions (EIP-2718) are stored as
-		// RLP strings: rlp_string(type || rlp(tx_payload)). Legacy txs are
-		// stored as RLP lists. We need to unwrap the string for typed txs.
-		data := []byte(txRaw)
-		if len(data) > 0 && data[0] >= 0x80 && data[0] < 0xc0 {
-			// RLP string wrapper — unwrap to get type || rlp(payload)
-			var inner []byte
-			if err := rlp.DecodeBytes(data, &inner); err != nil {
-				return nil, fmt.Errorf("ethel: unwrap tx %d: %w", i, err)
-			}
-			data = inner
-		}
-		tx, err := transaction.DecodeEthereumTransaction(data)
-		if err != nil {
-			return nil, fmt.Errorf("ethel: decode tx %d: %w", i, err)
-		}
-		txs = append(txs, tx)
+	txs, err := decodeEthereumTransactions(elems[0])
+	if err != nil {
+		return nil, err
 	}
 
 	// Decode uncle headers.
@@ -256,21 +282,57 @@ func DecodeGethBody(data []byte) (*GethBodyResult, error) {
 	// Decode withdrawals (optional, Shanghai+).
 	var withdrawals []*Withdrawal
 	if len(elems) >= 3 {
-		var wdRaws []rlp.RawValue
-		if err := rlp.DecodeBytes(elems[2], &wdRaws); err != nil {
-			return nil, fmt.Errorf("ethel: decode withdrawals list: %w", err)
-		}
-		withdrawals = make([]*Withdrawal, len(wdRaws))
-		for i, wRaw := range wdRaws {
-			w, err := decodeGethWithdrawal(wRaw)
-			if err != nil {
-				return nil, fmt.Errorf("ethel: withdrawal %d: %w", i, err)
-			}
-			withdrawals[i] = w
+		withdrawals, err = decodeWithdrawals(elems[2])
+		if err != nil {
+			return nil, err
 		}
 	}
 
 	return &GethBodyResult{Transactions: txs, Uncles: uncles, UncleRaw: uncleRawCopy, Withdrawals: withdrawals}, nil
+}
+
+func decodeEthereumTransactions(raw rlp.RawValue) ([]*transaction.Transaction, error) {
+	var txRaws []rlp.RawValue
+	if err := rlp.DecodeBytes(raw, &txRaws); err != nil {
+		return nil, fmt.Errorf("ethel: decode txs list: %w", err)
+	}
+	txs := make([]*transaction.Transaction, 0, len(txRaws))
+	for i, txRaw := range txRaws {
+		// In Geth's body RLP, typed transactions (EIP-2718) are stored as
+		// RLP strings: rlp_string(type || rlp(tx_payload)). Legacy txs are
+		// stored as RLP lists. We need to unwrap the string for typed txs.
+		data := []byte(txRaw)
+		if len(data) > 0 && data[0] >= 0x80 && data[0] < 0xc0 {
+			// RLP string wrapper — unwrap to get type || rlp(payload)
+			var inner []byte
+			if err := rlp.DecodeBytes(data, &inner); err != nil {
+				return nil, fmt.Errorf("ethel: unwrap tx %d: %w", i, err)
+			}
+			data = inner
+		}
+		tx, err := transaction.DecodeEthereumTransaction(data)
+		if err != nil {
+			return nil, fmt.Errorf("ethel: decode tx %d: %w", i, err)
+		}
+		txs = append(txs, tx)
+	}
+	return txs, nil
+}
+
+func decodeWithdrawals(raw rlp.RawValue) ([]*Withdrawal, error) {
+	var wdRaws []rlp.RawValue
+	if err := rlp.DecodeBytes(raw, &wdRaws); err != nil {
+		return nil, fmt.Errorf("ethel: decode withdrawals list: %w", err)
+	}
+	withdrawals := make([]*Withdrawal, len(wdRaws))
+	for i, wRaw := range wdRaws {
+		w, err := decodeGethWithdrawal(wRaw)
+		if err != nil {
+			return nil, fmt.Errorf("ethel: withdrawal %d: %w", i, err)
+		}
+		withdrawals[i] = w
+	}
+	return withdrawals, nil
 }
 
 func decodeGethWithdrawal(data []byte) (*Withdrawal, error) {
@@ -424,4 +486,3 @@ func decodeGethLog(data []byte) (*block.Log, error) {
 	}
 	return l, nil
 }
-

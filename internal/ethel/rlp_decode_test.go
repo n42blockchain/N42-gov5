@@ -4,6 +4,9 @@ import (
 	"os"
 	"testing"
 
+	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/lib/rlp"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
 
@@ -242,4 +245,27 @@ func TestDecodeGethBody46147(t *testing.T) {
 	}
 	t.Logf("Block 46147: 1 tx, nonce=%d, gasLimit=%d, uncles=%d",
 		body.Transactions[0].Nonce(), body.Transactions[0].Gas(), len(body.Uncles))
+}
+
+func TestDecodeRawBlock(t *testing.T) {
+	header := &block.Header{
+		Difficulty: uint256.NewInt(1),
+		Number:     uint256.NewInt(1),
+		GasLimit:   30_000_000,
+		Time:       1,
+	}
+	raw, err := rlp.EncodeToBytes([]interface{}{header, []rlp.RawValue{}, []rlp.RawValue{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, withdrawals, err := DecodeRawBlock(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(withdrawals) != 0 {
+		t.Fatalf("withdrawals = %d, want 0", len(withdrawals))
+	}
+	if got, want := decoded.Hash(), header.Hash(); got != want {
+		t.Fatalf("block hash = %s, want %s", got, want)
+	}
 }

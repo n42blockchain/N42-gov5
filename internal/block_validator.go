@@ -144,6 +144,9 @@ func (v *BlockValidator) ValidateState(iBlock block.IBlock, statedb *state.Intra
 	}
 
 	receiptSha := DeriveSha(receipts)
+	if v.config != nil && (v.config.StateScheme == string(params.StateCommitmentPresetQMDB) || v.config.StateScheme == string(params.StateCommitmentPresetEthereumMPT)) {
+		receiptSha = block.EthereumReceiptRoot(receipts, v.config.IsByzantium(iBlock.Number64().Uint64()))
+	}
 	if receiptSha != header.ReceiptHash {
 		for i, tx := range iBlock.Body().Transactions() {
 			if i < len(receipts) {

@@ -175,7 +175,7 @@ rm -rf "$datadir/chaindata" "$datadir/nodes" "$datadir/jwtsecret" "$datadir/keys
 set +e
 if [ -f /chain.rlp ]; then
   echo "Importing /chain.rlp"
-  "$n42" import --data.dir "$datadir" /chain.rlp
+  "$n42" import --data.dir "$datadir" --chain private --profile eth /chain.rlp
   echo "chain.rlp import rc=$?"
 else
   echo "Warning: /chain.rlp not found."
@@ -186,7 +186,7 @@ if [ -d /blocks ]; then
   while IFS= read -r block_file; do
     [ -n "$block_file" ] || continue
     echo "Importing $(basename "$block_file")"
-    "$n42" import --data.dir "$datadir" "$block_file"
+    "$n42" import --data.dir "$datadir" --chain private --profile eth "$block_file"
     echo "block import rc=$?"
   done < <(find /blocks -maxdepth 1 -type f | sort)
 else
