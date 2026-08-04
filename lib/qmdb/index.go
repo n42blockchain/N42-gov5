@@ -48,12 +48,38 @@ var _ IterableIndex = mapIndex(nil)
 
 func newMapIndex() mapIndex { return make(mapIndex) }
 
+// newMapIndexSized returns an index pre-sized for n keys.
+//
+// The in-RAM index is the largest single allocation in a loaded node: 780 MB
+// of live heap, all of it Go map tables filled by the twig load. Grown from
+// empty it doubles about two dozen times on the way to sixteen million keys,
+// and every doubling allocates a new table and copies the old one -- roughly
+// as much garbage again as the final table, and a transient peak well above
+// it, at the one moment a node is already reading its whole tree off disk.
+func newMapIndexSized(n int) mapIndex { return make(mapIndex, n) }
+
 // NewMapIndex returns a fresh in-RAM index. Callers reloading a live tree from
 // disk mid-run (recovery paths) must install one BEFORE LoadFrom: LoadFrom's
 // "non-empty index → trust it, skip the rebuild scan" fast path exists for the
 // persistent MDBX index only — a leftover in-RAM index reflects the pre-reload
 // tree, and stale mappings make later overwrites deactivate the wrong slots.
 func NewMapIndex() Index { return newMapIndex() }
+
+// reserve returns an index pre-sized for n keys when the current one is an
+// empty in-RAM map, and the current one otherwise.
+//
+// Only an EMPTY map can be replaced -- a populated one holds the tree's live
+// set, and an MDBX-backed index is not ours to swap. Over-sizing is bounded by
+// the caller: the hint is a slot count, which is an exact upper bound on live
+// keys, so the table is never smaller than needed and at most as large as a
+// tree with nothing deleted.
+func reserve(idx Index, n int) Index {
+	m, ok := idx.(mapIndex)
+	if !ok || len(m) != 0 || n <= 0 {
+		return idx
+	}
+	return newMapIndexSized(n)
+}
 
 func (m mapIndex) Get(k Hash) (uint64, bool) { s, ok := m[k]; return s, ok }
 func (m mapIndex) Put(k Hash, s uint64)      { m[k] = s }

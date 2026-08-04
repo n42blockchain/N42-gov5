@@ -414,6 +414,13 @@ func (t *Tree) loadFrom(g Getter, trustedThrough uint64) error {
 	numTwigs := int((nextSlot + TwigSize - 1) / TwigSize)
 	activeTwig := int((nextSlot - 1) / TwigSize) // twig holding the last live slot
 
+	// Size the index before the load fills it. nextSlot is every slot ever
+	// appended, so it is an exact upper bound on live keys -- the table ends up
+	// no smaller than needed, and larger only in proportion to what has been
+	// deleted. Growing from empty instead costs a rehash-and-copy per doubling
+	// while the node is already reading its whole tree off disk.
+	t.idx = reserve(t.idx, int(nextSlot))
+
 	t.twigs = make([]*twig, numTwigs)
 
 	// Build twig-by-twig and evict each sealed twig's leaves as soon as its root is
