@@ -18,10 +18,11 @@ import (
 	"github.com/holiman/uint256"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/n42blockchain/N42/proto/types_pb"
+	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/utils"
+	"github.com/n42blockchain/N42/proto/types_pb"
 )
 
 const (
@@ -30,6 +31,56 @@ const (
 )
 
 type Receipts []*Receipt
+
+// EthereumReceiptRoot computes the canonical Ethereum receipt trie root.
+// Ethereum receipts include the logs bloom and, since Byzantium, use a status
+// field in place of the pre-Byzantium post-state root. Typed receipts carry
+// their EIP-2718 type byte outside the RLP payload. Native N42 receipts use
+// Receipts.EncodeIndex instead and deliberately have a different root.
+func EthereumReceiptRoot(receipts Receipts, postByzantium bool) types.Hash {
+	return hash.DeriveShaErigon(ethereumReceipts{receipts: receipts, postByzantium: postByzantium})
+}
+
+type ethereumReceipts struct {
+	receipts      Receipts
+	postByzantium bool
+}
+
+func (rs ethereumReceipts) Len() int { return len(rs.receipts) }
+
+type ethereumReceiptLog struct {
+	Address types.Address
+	Topics  []types.Hash
+	Data    []byte
+}
+
+func (rs ethereumReceipts) EncodeIndex(i int, w *bytes.Buffer) {
+	r := rs.receipts[i]
+	if r.Type > 0 {
+		w.WriteByte(r.Type)
+	}
+	logs := make([]*ethereumReceiptLog, len(r.Logs))
+	for j, l := range r.Logs {
+		logs[j] = &ethereumReceiptLog{Address: l.Address, Topics: l.Topics, Data: l.Data}
+	}
+	var bloom Bloom
+	copy(bloom[:], LogsBloom(r.Logs))
+	if rs.postByzantium {
+		rlp.Encode(w, &struct {
+			Status            uint64
+			CumulativeGasUsed uint64
+			Bloom             Bloom
+			Logs              []*ethereumReceiptLog
+		}{r.Status, r.CumulativeGasUsed, bloom, logs})
+		return
+	}
+	rlp.Encode(w, &struct {
+		PostState         []byte
+		CumulativeGasUsed uint64
+		Bloom             Bloom
+		Logs              []*ethereumReceiptLog
+	}{r.PostState, r.CumulativeGasUsed, bloom, logs})
+}
 
 func (rs *Receipts) Marshal() ([]byte, error) {
 	return proto.Marshal(rs.ToProtoMessage())
