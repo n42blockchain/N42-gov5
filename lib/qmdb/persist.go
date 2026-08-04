@@ -419,8 +419,7 @@ func (t *Tree) loadFrom(g Getter, trustedThrough uint64) error {
 	// no smaller than needed, and larger only in proportion to what has been
 	// deleted. Growing from empty instead costs a rehash-and-copy per doubling
 	// while the node is already reading its whole tree off disk.
-	presized := reserve(t.idx, int(nextSlot))
-	wasPresized := presized != t.idx
+	presized, wasPresized := reserve(t.idx, int(nextSlot))
 	t.idx = presized
 	defer func() {
 		// Whether the index earns the largest allocation in a loaded node:
