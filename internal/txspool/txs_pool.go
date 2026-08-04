@@ -297,6 +297,12 @@ func (pool *TxsPool) addTxs(txs []*transaction.Transaction, local, sync bool) []
 			errs[i] = ErrInvalidSender
 			continue
 		}
+		// Memoize the wire-encoding length for the block builder's size
+		// budget. Batches were warmed in parallel above (memo hit here);
+		// this covers the single-transaction path (local RPC submits),
+		// whose candidates otherwise pay a fresh encoding inside the
+		// leader's fillTx critical path. ~8µs on the ingest flow.
+		_, _ = tx.EncodedSize()
 		news = append(news, tx)
 	}
 	if len(news) == 0 {
