@@ -53,6 +53,9 @@ type truncIndex struct {
 	m       map[keyPrefix]uint64
 	ovf     map[Hash]uint64 // keys whose prefix was already taken by another key
 	resolve SlotResolver
+
+	collisions int // holder resolved to a different key
+	unverified int // holder could not be read
 }
 
 // NewTruncIndex returns an index that stores 16-byte key prefixes and confirms
@@ -77,9 +80,30 @@ func NewTruncIndex(resolve SlotResolver, sizeHint int) Index {
 // A slot that cannot be read returns false: the caller must then treat the
 // prefix as taken by someone else and use the overflow map. Guessing "it is
 // probably ours" would put the wrong slot in the index.
-func (t *truncIndex) holderMatches(slot uint64, k Hash) bool {
+// holderVerdict distinguishes the two reasons a prefix holder is not this key,
+// because they mean different things and only one of them is a collision.
+type holderVerdict int
+
+const (
+	holderIsKey    holderVerdict = iota // resolved, and it is this key
+	holderIsOther                       // resolved to a DIFFERENT key: a real prefix collision
+	holderUnknown                       // could not be read: unverifiable, treat as not-ours
+)
+
+func (t *truncIndex) holderStatus(slot uint64, k Hash) holderVerdict {
 	kh, ok := t.resolve(slot)
-	return ok && kh == k
+	switch {
+	case !ok:
+		return holderUnknown
+	case kh == k:
+		return holderIsKey
+	default:
+		return holderIsOther
+	}
+}
+
+func (t *truncIndex) holderMatches(slot uint64, k Hash) bool {
+	return t.holderStatus(slot, k) == holderIsKey
 }
 
 func (t *truncIndex) Get(k Hash) (uint64, bool) {
@@ -106,7 +130,24 @@ func (t *truncIndex) Get(k Hash) (uint64, bool) {
 func (t *truncIndex) Put(k Hash, s uint64) {
 	idxPuts.Add(1)
 	p := prefixOf(k)
-	if held, ok := t.m[p]; ok && held != s && !t.holderMatches(held, k) {
+	if held, ok := t.m[p]; ok && held != s && func() bool {
+		switch t.holderStatus(held, k) {
+		case holderIsOther:
+			t.collisions++
+			return true
+		case holderUnknown:
+			// Conservative: an unreadable holder is not proof the prefix is
+			// ours, and assuming it were would overwrite another key's
+			// mapping. Counted apart from collisions -- during a load the
+			// holder's slot is routinely not yet readable, and reporting that
+			// as a prefix collision made a Blake3 key space look as if it
+			// collided 53 times in 6M keys, which is 26 orders of magnitude
+			// off what a uniform hash does.
+			t.unverified++
+			return true
+		}
+		return false
+	}() {
 		// Another key owns this prefix. Overwriting would drop its mapping and
 		// the tree would later deactivate its entry instead of this one.
 		t.ovf[k] = s
@@ -141,6 +182,13 @@ func (t *truncIndex) Len() int { return len(t.m) + len(t.ovf) }
 // be zero; a non-zero value that grows means the prefix is too short for the
 // live set and the memory saving is being paid for in full-key entries.
 func (t *truncIndex) OverflowLen() int { return len(t.ovf) }
+
+// OverflowReasons splits the overflow map by why each key landed there. Only
+// collisions say anything about the prefix length; unverified says the holder's
+// slot was unreadable at the time, which a load produces routinely.
+func (t *truncIndex) OverflowReasons() (collisions, unverified int) {
+	return t.collisions, t.unverified
+}
 
 // SlotKeyResolver resolves a slot to its entry's key hash.
 //
@@ -206,4 +254,13 @@ func IndexOverflow(idx Index) int {
 		return t.OverflowLen()
 	}
 	return -1
+}
+
+// IndexOverflowReasons splits an index's overflow by cause; -1,-1 when the
+// shape has no overflow.
+func IndexOverflowReasons(idx Index) (collisions, unverified int) {
+	if t, ok := idx.(*truncIndex); ok {
+		return t.OverflowReasons()
+	}
+	return -1, -1
 }
