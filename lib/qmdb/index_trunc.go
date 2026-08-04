@@ -53,6 +53,9 @@ type truncIndex struct {
 	m       map[keyPrefix]uint64
 	ovf     map[Hash]uint64 // keys whose prefix was already taken by another key
 	resolve SlotResolver
+
+	collisions int // holder resolved to a different key
+	unverified int // holder could not be read
 }
 
 // NewTruncIndex returns an index that stores 16-byte key prefixes and confirms
@@ -77,9 +80,30 @@ func NewTruncIndex(resolve SlotResolver, sizeHint int) Index {
 // A slot that cannot be read returns false: the caller must then treat the
 // prefix as taken by someone else and use the overflow map. Guessing "it is
 // probably ours" would put the wrong slot in the index.
-func (t *truncIndex) holderMatches(slot uint64, k Hash) bool {
+// holderVerdict distinguishes the two reasons a prefix holder is not this key,
+// because they mean different things and only one of them is a collision.
+type holderVerdict int
+
+const (
+	holderIsKey    holderVerdict = iota // resolved, and it is this key
+	holderIsOther                       // resolved to a DIFFERENT key: a real prefix collision
+	holderUnknown                       // could not be read: unverifiable, treat as not-ours
+)
+
+func (t *truncIndex) holderStatus(slot uint64, k Hash) holderVerdict {
 	kh, ok := t.resolve(slot)
-	return ok && kh == k
+	switch {
+	case !ok:
+		return holderUnknown
+	case kh == k:
+		return holderIsKey
+	default:
+		return holderIsOther
+	}
+}
+
+func (t *truncIndex) holderMatches(slot uint64, k Hash) bool {
+	return t.holderStatus(slot, k) == holderIsKey
 }
 
 func (t *truncIndex) Get(k Hash) (uint64, bool) {
@@ -106,7 +130,24 @@ func (t *truncIndex) Get(k Hash) (uint64, bool) {
 func (t *truncIndex) Put(k Hash, s uint64) {
 	idxPuts.Add(1)
 	p := prefixOf(k)
-	if held, ok := t.m[p]; ok && held != s && !t.holderMatches(held, k) {
+	if held, ok := t.m[p]; ok && held != s && func() bool {
+		switch t.holderStatus(held, k) {
+		case holderIsOther:
+			t.collisions++
+			return true
+		case holderUnknown:
+			// Conservative: an unreadable holder is not proof the prefix is
+			// ours, and assuming it were would overwrite another key's
+			// mapping. Counted apart from collisions -- during a load the
+			// holder's slot is routinely not yet readable, and reporting that
+			// as a prefix collision made a Blake3 key space look as if it
+			// collided 53 times in 6M keys, which is 26 orders of magnitude
+			// off what a uniform hash does.
+			t.unverified++
+			return true
+		}
+		return false
+	}() {
 		// Another key owns this prefix. Overwriting would drop its mapping and
 		// the tree would later deactivate its entry instead of this one.
 		t.ovf[k] = s
@@ -142,34 +183,53 @@ func (t *truncIndex) Len() int { return len(t.m) + len(t.ovf) }
 // live set and the memory saving is being paid for in full-key entries.
 func (t *truncIndex) OverflowLen() int { return len(t.ovf) }
 
-// SlotKeyResolver resolves a slot to its entry's key hash, over this tree's
-// entry log (resident entries first, then the cold reader).
+// OverflowReasons splits the overflow map by why each key landed there. Only
+// collisions say anything about the prefix length; unverified says the holder's
+// slot was unreadable at the time, which a load produces routinely.
+func (t *truncIndex) OverflowReasons() (collisions, unverified int) {
+	return t.collisions, t.unverified
+}
+
+// SlotKeyResolver resolves a slot to its entry's key hash.
+//
+// It reads the key hash directly and deliberately does NOT go through
+// Tree.entryAt. entryAt derives the entry's LIVENESS, and it derives it by
+// consulting the index -- so verifying an index hit through it recurses:
+// Get -> verify -> entryAt -> index.Get -> verify -> ... Enabling the prefix
+// index with an entryAt-based resolver killed three of seven fleet nodes with
+// a stack overflow inside a minute.
+//
+// Liveness is what the index answers; verification only needs identity. So
+// this reads the resident entry or the cold log and returns the key hash
+// alone, touching no index.
 func (t *Tree) SlotKeyResolver() SlotResolver {
 	return func(slot uint64) (Hash, bool) {
-		e, ok := t.entryAt(slot)
-		if !ok {
+		if slot >= t.entriesBase {
+			i := slot - t.entriesBase
+			if i < uint64(len(t.entries)) {
+				return t.entries[i].keyHash, true
+			}
 			return Hash{}, false
 		}
-		return e.keyHash, true
+		if t.cold == nil {
+			return Hash{}, false
+		}
+		kh, _, ok := t.cold.ColdEntry(slot)
+		return kh, ok
 	}
 }
 
 // truncIndexEnabled reports whether new indexes should store key prefixes.
 //
-// DO NOT ENABLE. Verifying through Tree.entryAt recurses: a cold slot goes to
-// ColdEntry, which derives liveness by consulting the index, which verifies
-// through entryAt again. Turning it on killed three of seven fleet nodes with
-// "fatal error: stack overflow" within a minute of start.
+// Off by default: it trades an entry read per lookup for the RAM, and the
+// lookup is on the write path -- every Set consults the index to find the slot
+// to deactivate -- so the cost needs measuring on a live node before this
+// becomes a default.
 //
-// The design is not wrong, the resolver is: verification needs a reader that
-// returns the entry's key hash WITHOUT a liveness check, since liveness is
-// exactly what the index answers. Until such a reader exists this flag only
-// reproduces the crash.
-//
-// Beyond that it trades an entry read per lookup for the RAM, on the write
-// path -- every Set consults the index to find the slot to deactivate -- so
-// even once the recursion is broken the cost needs measuring before it becomes
-// a default.
+// The first attempt at this verified through Tree.entryAt and killed three of
+// seven fleet nodes with a stack overflow inside a minute: entryAt derives
+// liveness by consulting the index, so verification recursed. SlotKeyResolver
+// now reads the key hash without any liveness check; see its comment.
 func truncIndexEnabled() bool {
 	v, _ := strconv.ParseBool(os.Getenv("N42_QMDB_TRUNC_INDEX"))
 	return v
@@ -194,4 +254,13 @@ func IndexOverflow(idx Index) int {
 		return t.OverflowLen()
 	}
 	return -1
+}
+
+// IndexOverflowReasons splits an index's overflow by cause; -1,-1 when the
+// shape has no overflow.
+func IndexOverflowReasons(idx Index) (collisions, unverified int) {
+	if t, ok := idx.(*truncIndex); ok {
+		return t.OverflowReasons()
+	}
+	return -1, -1
 }
