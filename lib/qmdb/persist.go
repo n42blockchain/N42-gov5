@@ -414,13 +414,18 @@ func (t *Tree) loadFrom(g Getter, trustedThrough uint64) error {
 	numTwigs := int((nextSlot + TwigSize - 1) / TwigSize)
 	activeTwig := int((nextSlot - 1) / TwigSize) // twig holding the last live slot
 
-	// Size the index before the load fills it. nextSlot is every slot ever
-	// appended, so it is an exact upper bound on live keys -- the table ends up
-	// no smaller than needed, and larger only in proportion to what has been
-	// deleted. Growing from empty instead costs a rehash-and-copy per doubling
-	// while the node is already reading its whole tree off disk.
-	presized, wasPresized := reserve(t.idx, int(nextSlot))
-	t.idx = presized
+	// The index is NOT pre-sized from nextSlot.
+	//
+	// nextSlot counts every slot ever appended, not the live keys the index
+	// holds, and the two diverge by however much the state has churned. On a
+	// 13.3M-block chain that hint asked for a map orders of magnitude larger
+	// than the ~16.6M live keys, and the node hung on startup trying to
+	// allocate it -- flat at 0.37 GB across the fleet for minutes, never
+	// reaching a block. A hint has to come from the live count, which nothing
+	// persists today: MetaTable's comment lists "liveCount" but no code ever
+	// writes or reads it. Until it does, growing from empty is the only
+	// correct behaviour, and its cost is load-time churn rather than a hang.
+	wasPresized := false
 	defer func() {
 		// Whether the index earns the largest allocation in a loaded node:
 		// live keys against the slots ever appended (how much of the log is
