@@ -118,13 +118,21 @@ func (t *Tail) TxCount() int {
 	return t.txCount
 }
 
-// SealRange returns the oldest [start, end) worth sealing: the fewest leading
-// blocks whose transactions reach minTx, leaving at least keepBlocks behind.
+// SealRange returns the oldest [start, end) worth sealing: the leading blocks
+// whose transactions reach minTx, or maxBlocks of them, whichever comes first,
+// leaving at least keepBlocks behind.
 //
 // Blocks are kept behind the seal point because sealing reads their hashes and
 // building a segment takes time; a block must stay answerable throughout, and
 // the newest blocks are also the ones a caller is most likely to ask about.
-func (t *Tail) SealRange(minTx, keepBlocks int) (start, end uint64, ok bool) {
+//
+// The block bound matters as much as the transaction one, and for a different
+// reason. A transaction count alone lets the tail grow to any number of blocks
+// when blocks are small -- and what a restart costs is set by BLOCKS, not
+// transactions: rebuilding re-reads each unsealed block in full to recover its
+// hashes, which measured 1.25 GB of allocation, the largest single source in
+// the node. Bounding blocks bounds the rebuild whatever the density.
+func (t *Tail) SealRange(minTx, maxBlocks, keepBlocks int) (start, end uint64, ok bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
@@ -135,7 +143,7 @@ func (t *Tail) SealRange(minTx, keepBlocks int) (start, end uint64, ok bool) {
 	acc := 0
 	for i := 0; i < sealable; i++ {
 		acc += len(t.blocks[i])
-		if acc >= minTx {
+		if acc >= minTx || i+1 >= maxBlocks {
 			return t.firstBlock, t.firstBlock + uint64(i+1), true
 		}
 	}
