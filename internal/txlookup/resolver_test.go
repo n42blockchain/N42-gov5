@@ -78,7 +78,7 @@ func TestTieredLookupCoversEveryBlockAcrossSeals(t *testing.T) {
 	}
 
 	seal := func(stage string) {
-		start, end, ok := tl.SealRange(60, 8)
+		start, end, ok := tl.SealRange(60, 1000, 8)
 		if !ok {
 			t.Fatalf("%s: nothing sealable", stage)
 		}

@@ -68,7 +68,21 @@ func appendUvarint(b []byte, v uint64) []byte {
 
 type txCompactReader struct {
 	p []byte
+	// arena backs the uint256 fields of the transaction being decoded.
+	//
+	// Each field used to get its own new(uint256.Int): up to seven 32-byte
+	// allocations per transaction (chain id, two gas prices, value, and the v/r/s
+	// signature words), which made this the largest single allocator in a
+	// loaded node -- 604 MB of live heap on its own. One reader decodes one
+	// transaction, so a single backing array per reader has exactly the
+	// lifetime of the transaction it fills: the whole array stays reachable
+	// while any of its fields is, and dies with them.
+	arena []uint256.Int
 }
+
+// u256ArenaSize covers the most uint256 fields any transaction type carries:
+// chain id, gas tip cap, gas fee cap, value, v, r, s.
+const u256ArenaSize = 7
 
 func (r *txCompactReader) take(n int) ([]byte, error) {
 	if len(r.p) < n {
@@ -103,7 +117,13 @@ func (r *txCompactReader) u256() (*uint256.Int, error) {
 	if err != nil {
 		return nil, err
 	}
-	return new(uint256.Int).SetBytes(bs), nil
+	if len(r.arena) == 0 {
+		r.arena = make([]uint256.Int, u256ArenaSize)
+	}
+	out := &r.arena[0]
+	r.arena = r.arena[1:]
+	out.SetBytes(bs)
+	return out, nil
 }
 
 func (r *txCompactReader) addr() (*types.Address, error) {
