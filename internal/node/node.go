@@ -1094,6 +1094,12 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		"accountSlots", poolCfg.AccountSlots, "accountQueue", poolCfg.AccountQueue,
 		"lifetime", poolCfg.Lifetime)
 
+	// Block import reuses the pool's already-recovered senders instead of
+	// re-deriving every signature (see SenderHintSource).
+	if realBC, ok := bc.(*internal.BlockChain); ok {
+		realBC.SetSenderHintSource(pool)
+	}
+
 	is := initialsync.NewService(ctx, &initialsync.Config{
 		Chain: bc,
 		P2P:   p2p,
