@@ -131,14 +131,20 @@ func (s *Service) SubscribeToTopic(topic string, opts ...pubsub.SubOpt) (*pubsub
 	if err != nil {
 		return nil, err
 	}
-	scoringParams, err := s.topicScoreParams(topic)
-	if err != nil {
-		return nil, err
+	// Per-topic score params are only meaningful when the router is scoring;
+	// SetScoreParams rejects them otherwise, and this returns the error, so
+	// with scoring off EVERY subscription failed -- including the transaction
+	// topic, whose failure is logged but not fatal, so the node came up mute.
+	if s.peerScoringEnabled() {
+		scoringParams, err := s.topicScoreParams(topic)
+		if err != nil {
+			return nil, err
+		}
+		if err := topicHandle.SetScoreParams(scoringParams); err != nil {
+			return nil, err
+		}
+		logGossipParameters(topic, scoringParams)
 	}
-	if err := topicHandle.SetScoreParams(scoringParams); err != nil {
-		return nil, err
-	}
-	logGossipParameters(topic, scoringParams)
 	return topicHandle.Subscribe(opts...)
 }
 
@@ -149,6 +155,11 @@ func (s *Service) peerInspector(peerMap map[peer.ID]*pubsub.PeerScoreSnapshot) {
 			snap.BehaviourPenalty, convertTopicScores(snap.Topics))
 	}
 }
+
+// peerScoringEnabled reports whether the router scores peers. Scoring defends
+// against peers this node did not choose; with discovery off the peer set is
+// exactly the configured list, so there are none.
+func (s *Service) peerScoringEnabled() bool { return !s.cfg.NoDiscovery }
 
 // seenMessagesTTL is how long a message ID stays in the duplicate-suppression
 // cache.
@@ -188,7 +199,7 @@ func (s *Service) pubsubOptions() []pubsub.Option {
 	// peerScore.DuplicateMessage plus a share of the contention that put
 	// pubsub at 37% of this node's mutex wait -- and it is charged per
 	// message, so it grows with throughput.
-	if !s.cfg.NoDiscovery {
+	if s.peerScoringEnabled() {
 		opts = append(opts,
 			pubsub.WithPeerScore(peerScoringParams()),
 			pubsub.WithPeerScoreInspect(s.peerInspector, time.Minute))
