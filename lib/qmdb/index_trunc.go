@@ -142,34 +142,46 @@ func (t *truncIndex) Len() int { return len(t.m) + len(t.ovf) }
 // live set and the memory saving is being paid for in full-key entries.
 func (t *truncIndex) OverflowLen() int { return len(t.ovf) }
 
-// SlotKeyResolver resolves a slot to its entry's key hash, over this tree's
-// entry log (resident entries first, then the cold reader).
+// SlotKeyResolver resolves a slot to its entry's key hash.
+//
+// It reads the key hash directly and deliberately does NOT go through
+// Tree.entryAt. entryAt derives the entry's LIVENESS, and it derives it by
+// consulting the index -- so verifying an index hit through it recurses:
+// Get -> verify -> entryAt -> index.Get -> verify -> ... Enabling the prefix
+// index with an entryAt-based resolver killed three of seven fleet nodes with
+// a stack overflow inside a minute.
+//
+// Liveness is what the index answers; verification only needs identity. So
+// this reads the resident entry or the cold log and returns the key hash
+// alone, touching no index.
 func (t *Tree) SlotKeyResolver() SlotResolver {
 	return func(slot uint64) (Hash, bool) {
-		e, ok := t.entryAt(slot)
-		if !ok {
+		if slot >= t.entriesBase {
+			i := slot - t.entriesBase
+			if i < uint64(len(t.entries)) {
+				return t.entries[i].keyHash, true
+			}
 			return Hash{}, false
 		}
-		return e.keyHash, true
+		if t.cold == nil {
+			return Hash{}, false
+		}
+		kh, _, ok := t.cold.ColdEntry(slot)
+		return kh, ok
 	}
 }
 
 // truncIndexEnabled reports whether new indexes should store key prefixes.
 //
-// DO NOT ENABLE. Verifying through Tree.entryAt recurses: a cold slot goes to
-// ColdEntry, which derives liveness by consulting the index, which verifies
-// through entryAt again. Turning it on killed three of seven fleet nodes with
-// "fatal error: stack overflow" within a minute of start.
+// Off by default: it trades an entry read per lookup for the RAM, and the
+// lookup is on the write path -- every Set consults the index to find the slot
+// to deactivate -- so the cost needs measuring on a live node before this
+// becomes a default.
 //
-// The design is not wrong, the resolver is: verification needs a reader that
-// returns the entry's key hash WITHOUT a liveness check, since liveness is
-// exactly what the index answers. Until such a reader exists this flag only
-// reproduces the crash.
-//
-// Beyond that it trades an entry read per lookup for the RAM, on the write
-// path -- every Set consults the index to find the slot to deactivate -- so
-// even once the recursion is broken the cost needs measuring before it becomes
-// a default.
+// The first attempt at this verified through Tree.entryAt and killed three of
+// seven fleet nodes with a stack overflow inside a minute: entryAt derives
+// liveness by consulting the index, so verification recursed. SlotKeyResolver
+// now reads the key hash without any liveness check; see its comment.
 func truncIndexEnabled() bool {
 	v, _ := strconv.ParseBool(os.Getenv("N42_QMDB_TRUNC_INDEX"))
 	return v
