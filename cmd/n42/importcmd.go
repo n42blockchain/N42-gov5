@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/holiman/uint256"
 	"github.com/urfave/cli/v2"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/internal/node"
 	"github.com/n42blockchain/N42/params"
@@ -57,6 +59,10 @@ func importRLPBlock(cliCtx *cli.Context) error {
 	}
 	defer stack.Close()
 
+	if err := validateEthereumRLPHeader(blk.Header().(*block.Header), rlpImportParent(stack, blk), stack.BlockChain().Config()); err != nil {
+		return fmt.Errorf("import RLP block %q: %w", path, err)
+	}
+
 	// RLP consume covers pre-merge Ethereum blocks too. Unlike the Engine API
 	// adapter, BlockChain.InsertChain retains the full legacy validation and
 	// canonical-head handling required by those fixtures.
@@ -64,4 +70,55 @@ func importRLPBlock(cliCtx *cli.Context) error {
 		return fmt.Errorf("import RLP block %q: %w", path, err)
 	}
 	return nil
+}
+
+// rlpImportParent returns the concrete parent header when it is available.
+// InsertChain still owns unknown-ancestor handling; this helper only supplies
+// the parent needed by Ethereum's header-transition rules.
+func rlpImportParent(stack *node.Node, blk *block.Block) *block.Header {
+	number := blk.Number64().Uint64()
+	if number == 0 {
+		return nil
+	}
+	parent := stack.BlockChain().GetHeader(blk.ParentHash(), uint256.NewInt(number-1))
+	concrete, _ := parent.(*block.Header)
+	return concrete
+}
+
+// validateEthereumRLPHeader applies the execution-layer header checks which
+// a Hive RLP fixture expects. The eth profile deliberately uses a fake N42
+// consensus engine, so these rules must run before InsertChain rather than
+// relying on the engine's generic header verifier.
+func validateEthereumRLPHeader(header, parent *block.Header, cfg *params.ChainConfig) error {
+	if header == nil {
+		return fmt.Errorf("missing block header")
+	}
+	if len(header.Extra) > 32 {
+		return fmt.Errorf("invalid extraData: length %d exceeds 32 bytes", len(header.Extra))
+	}
+	if header.GasUsed > header.GasLimit {
+		return fmt.Errorf("invalid gasUsed: have %d, gasLimit %d", header.GasUsed, header.GasLimit)
+	}
+	if header.GasLimit < params.MinGasLimit {
+		return fmt.Errorf("invalid gas limit below %d", params.MinGasLimit)
+	}
+	if header.GasLimit > params.MaxGasLimit {
+		return fmt.Errorf("invalid gas limit: have %d, max %d", header.GasLimit, params.MaxGasLimit)
+	}
+	if parent == nil {
+		return nil
+	}
+	if header.Number == nil || parent.Number == nil {
+		return fmt.Errorf("block number unavailable")
+	}
+	if header.Number.Uint64() != parent.Number.Uint64()+1 {
+		return fmt.Errorf("invalid block number: have %d, want %d", header.Number.Uint64(), parent.Number.Uint64()+1)
+	}
+	if header.Time <= parent.Time {
+		return fmt.Errorf("invalid timestamp: have %d, parent %d", header.Time, parent.Time)
+	}
+	if cfg != nil && cfg.IsLondon(header.Number.Uint64()) {
+		return misc.VerifyEip1559Header(cfg, parent, header)
+	}
+	return misc.VerifyGaslimit(parent.GasLimit, header.GasLimit)
 }
