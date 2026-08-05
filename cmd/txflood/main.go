@@ -204,6 +204,7 @@ func main() {
 	broadcast := flag.Bool("broadcast", false, "submit each tx to ALL rpcs")
 	offset := flag.Uint64("sender-offset", 0, "shift the derived sender set; use a fresh offset to get accounts with no nonce history")
 	shardSenders := flag.Bool("shard-senders", false, "route each sender's txs to one node (sender%rpcs) so every proposer owns full nonce sequences")
+	skipFunding := flag.Bool("skip-funding", false, "assume the derived senders are already funded (re-run after a funding round that mined but aborted)")
 	rpcBatch := flag.Int("rpcbatch", 0, "submit N txs per eth_batchRawTransaction call (0 = one eth_sendRawTransaction per tx; max 200)")
 	flag.Parse()
 	senderOffset = *offset
@@ -263,7 +264,7 @@ func main() {
 		fundVal := uint256.NewInt(1)
 		fundVal.Mul(uint256.NewInt(uint64(*perTx)+10), uint256.NewInt(21000*(*gasPrice))) // enough for perTx transfers + gas
 		fmt.Printf("funding %d senders (nonce %d..), value=%s wei each...\n", *senders, fn, fundVal.Dec())
-		for i := 0; i < *senders; i++ {
+		for i := 0; !*skipFunding && i < *senders; i++ {
 			raw := signOne(priv, from, addrs[i], fn+uint64(i), fundVal, 21000)
 			if _, err := rpcCall(urls[0], "eth_sendRawTransaction", []interface{}{raw}); err != nil {
 				fmt.Printf("fund %d err: %v\n", i, err)
@@ -276,9 +277,13 @@ func main() {
 		// problem. A funding round can genuinely fail wholesale (e.g. right
 		// after a fleet-wide restart, before the gossip mesh has re-formed,
 		// the funding batch published from one node reaches no one).
-		fmt.Println("waiting for funding to mine...")
-		funded := false
-		for w := 0; w < 40; w++ {
+		funded := *skipFunding
+		if funded {
+			fmt.Println("skipping funding (senders assumed already funded)")
+		} else {
+			fmt.Println("waiting for funding to mine...")
+		}
+		for w := 0; !funded && w < 40; w++ {
 			time.Sleep(2 * time.Second)
 			r, _ := rpcCall(urls[0], "eth_getBalance", []interface{}{addrs[*senders-1].Hex(), "latest"})
 			var h string
