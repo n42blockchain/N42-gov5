@@ -308,14 +308,28 @@ func (e *ConsensusEngine) sendVote(view ViewNumber, blockHash types.Hash) error 
 	now := time.Now()
 	e.viewTiming.VoteSent = &now
 
-	return e.emit(EngineOutput{
+	if err := e.emit(EngineOutput{
 		Type:   OutputSendToValidator,
 		Target: leader,
 		Message: &ConsensusMsg{
 			Type:    MsgVote,
 			Payload: vote,
 		},
-	})
+	}); err != nil {
+		return err
+	}
+
+	// Cross-view speculative build hint: if round-robin makes this node the
+	// NEXT view's leader, its proposal will extend the block just voted for
+	// (happy path). The block is already imported here — import-gated voting
+	// guarantees the post-state this build needs — so the ~500ms build can run
+	// during this view's vote rounds instead of after the view change. Gated
+	// on importedBlocks because the two-phase mode votes before import.
+	// Advisory only; see OutputSpeculativeBuild.
+	if e.importedBlocks[blockHash] && LeaderForView(view+1, e.validatorSet()) == e.myIndex {
+		_ = e.emit(EngineOutput{Type: OutputSpeculativeBuild, View: view + 1, Hash: blockHash})
+	}
+	return nil
 }
 
 // rememberImported records that this block is locally imported, retained across

@@ -64,6 +64,15 @@ type BlockProducer interface {
 	CommitToCanonical(hash types.Hash) error
 }
 
+// SpeculativeBlockProducer is the optional extension of BlockProducer for
+// cross-view speculative building: build (but do not seal or propose) a block
+// extending parentHash, to be collected by the next TriggerBlockProduction if
+// the parent matches. Implemented by the miner; probed by type assertion so
+// simpler producers keep working.
+type SpeculativeBlockProducer interface {
+	PrepareSpeculativeBlock(parentHash types.Hash)
+}
+
 // BlockFetcher fetches a proposed block by hash when it isn't already local
 // (fetch-on-miss), and catches a lagging/forked node up to the converged chain
 // by range (CatchUp). Implemented by the sync layer.
@@ -460,6 +469,13 @@ func (s *Service) handleOutput(output EngineOutput) {
 		// chain head never advances. FetchBlockByHash is a no-op if we have it.
 		if s.blockFetcher != nil {
 			s.blockFetcher.FetchBlockByHash(output.Hash)
+		}
+	case OutputSpeculativeBuild:
+		// Advisory: this node leads the next view; start building on the block
+		// it just voted for so the proposal is ready at the view change. The
+		// producer may drop or abort the guess at any time.
+		if sp, ok := s.blockProducer.(SpeculativeBlockProducer); ok && sp != nil {
+			sp.PrepareSpeculativeBlock(output.Hash)
 		}
 	case OutputBlockCommitted:
 		log.Info("hotstuff: block committed", "view", output.View, "hash", output.Hash)
