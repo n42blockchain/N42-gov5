@@ -137,8 +137,16 @@ func (pool *TxsPool) Stop() error {
 
 // AddLocals enqueues a batch of transactions into the pool if they are valid,
 // marking the senders as local ones.
+//
+// Validation is synchronous — the returned errors are real verdicts — but the
+// promotion pass is NOT awaited (matching geth's AddLocal). Waiting for it
+// bought the caller nothing (the transaction is already admitted and indexed;
+// promotion only moves it queue→pending) and cost the submission path its
+// throughput: every RPC submit blocked on a promote round shared with block
+// import, capping intake at ~17k tx/s with 64 concurrent submitters while the
+// chain could consume more.
 func (pool *TxsPool) AddLocals(txs []*transaction.Transaction) []error {
-	return pool.addTxs(txs, !pool.config.NoLocals, true)
+	return pool.addTxs(txs, !pool.config.NoLocals, false)
 }
 
 // AddLocal enqueues a single local transaction into the pool.
@@ -297,6 +305,12 @@ func (pool *TxsPool) addTxs(txs []*transaction.Transaction, local, sync bool) []
 			errs[i] = ErrInvalidSender
 			continue
 		}
+		// Memoize the wire-encoding length for the block builder's size
+		// budget. Batches were warmed in parallel above (memo hit here);
+		// this covers the single-transaction path (local RPC submits),
+		// whose candidates otherwise pay a fresh encoding inside the
+		// leader's fillTx critical path. ~8µs on the ingest flow.
+		_, _ = tx.EncodedSize()
 		news = append(news, tx)
 	}
 	if len(news) == 0 {

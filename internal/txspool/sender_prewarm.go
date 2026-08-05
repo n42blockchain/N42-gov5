@@ -31,16 +31,24 @@ const prewarmSenderMinBatch = 8
 // prewarmSenderMaxWorkers bounds the worker count. Ingest is not the only
 // thing running: leaving headroom keeps a large batch from starving block
 // execution and consensus on the same host.
-var prewarmSenderMaxWorkers = func() int {
-	n := runtime.NumCPU() - 2
-	if n < 1 {
-		n = 1
+//
+// GOMAXPROCS, not NumCPU: a fleet node pinned to 5 Ps on a 32-core host got
+// 16 workers under the old NumCPU rule — three runnable goroutines per P,
+// which adds scheduler pressure on the consensus path without adding one bit
+// of parallelism to this CPU-bound loop.
+//
+// Evaluated per call, not at package init: the operator's GOMAXPROCS cap
+// (--pprof.maxcpu) is applied during startup, after this package initializes.
+func prewarmSenderMaxWorkers() int {
+	n := runtime.GOMAXPROCS(0) - 1
+	if n < 2 {
+		n = 2
 	}
 	if n > 16 {
 		n = 16
 	}
 	return n
-}()
+}
 
 // prewarmSenders recovers the senders of txs concurrently, populating each
 // transaction's memo (and the process-wide sender cache) so the caller's
@@ -55,7 +63,7 @@ func (pool *TxsPool) prewarmSenders(txs []*transaction.Transaction) {
 	}
 	signer := transaction.LatestSignerForChainID(pool.chainconfig.ChainID)
 
-	workers := prewarmSenderMaxWorkers
+	workers := prewarmSenderMaxWorkers()
 	if workers > len(txs) {
 		workers = len(txs)
 	}
@@ -76,6 +84,12 @@ func (pool *TxsPool) prewarmSenders(txs []*transaction.Transaction) {
 				// and validateSender re-runs the same call and reports the
 				// failure with all its surrounding checks.
 				_, _ = transaction.Sender(signer, tx)
+				// Same batch, same workers: memoize the wire-encoding length
+				// the block builder budgets against. Unwarmed, the builder
+				// paid a full RLP encoding per candidate per build — ~300ms
+				// of a 22,857-transaction fillTx — inside the leader's
+				// critical path; here it is ~8µs on an ingest worker.
+				_, _ = tx.EncodedSize()
 			}
 		}()
 	}

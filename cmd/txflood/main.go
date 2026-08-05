@@ -204,6 +204,8 @@ func main() {
 	broadcast := flag.Bool("broadcast", false, "submit each tx to ALL rpcs")
 	offset := flag.Uint64("sender-offset", 0, "shift the derived sender set; use a fresh offset to get accounts with no nonce history")
 	shardSenders := flag.Bool("shard-senders", false, "route each sender's txs to one node (sender%rpcs) so every proposer owns full nonce sequences")
+	skipFunding := flag.Bool("skip-funding", false, "assume the derived senders are already funded (re-run after a funding round that mined but aborted)")
+	rpcBatch := flag.Int("rpcbatch", 0, "submit N txs per eth_batchRawTransaction call (0 = one eth_sendRawTransaction per tx; max 200)")
 	flag.Parse()
 	senderOffset = *offset
 
@@ -262,22 +264,50 @@ func main() {
 		fundVal := uint256.NewInt(1)
 		fundVal.Mul(uint256.NewInt(uint64(*perTx)+10), uint256.NewInt(21000*(*gasPrice))) // enough for perTx transfers + gas
 		fmt.Printf("funding %d senders (nonce %d..), value=%s wei each...\n", *senders, fn, fundVal.Dec())
-		for i := 0; i < *senders; i++ {
+		for i := 0; !*skipFunding && i < *senders; i++ {
 			raw := signOne(priv, from, addrs[i], fn+uint64(i), fundVal, 21000)
 			if _, err := rpcCall(urls[0], "eth_sendRawTransaction", []interface{}{raw}); err != nil {
 				fmt.Printf("fund %d err: %v\n", i, err)
 			}
 		}
-		// wait until the last sender is funded (balance > 0)
-		fmt.Println("waiting for funding to mine...")
-		for w := 0; w < 40; w++ {
+		// Wait until the last sender is funded (balance > 0), and ABORT if it
+		// never happens. The old loop timed out silently and fell through to
+		// the flood, which then offered millions of transactions from unfunded
+		// senders -- 8.88M rejections at 36k/s, wearing the shape of a node
+		// problem. A funding round can genuinely fail wholesale (e.g. right
+		// after a fleet-wide restart, before the gossip mesh has re-formed,
+		// the funding batch published from one node reaches no one).
+		funded := *skipFunding
+		if funded {
+			fmt.Println("skipping funding (senders assumed already funded)")
+		} else {
+			fmt.Println("waiting for funding to mine...")
+		}
+		for w := 0; !funded && w < 40; w++ {
 			time.Sleep(2 * time.Second)
 			r, _ := rpcCall(urls[0], "eth_getBalance", []interface{}{addrs[*senders-1].Hex(), "latest"})
 			var h string
 			json.Unmarshal(r, &h)
 			if hexToU64(h) > 0 {
 				fmt.Printf("funded after %ds (last sender balance=0x%s)\n", (w+1)*2, strings.TrimPrefix(h, "0x"))
+				funded = true
 				break
+			}
+		}
+		if !funded {
+			// The balance probe swallows RPC errors (a busy node reads as
+			// balance 0 forty times in a row), so double-check with the faucet
+			// nonce before declaring failure: every funding transaction mined
+			// means every sender was credited, probe or no probe. This misfired
+			// once live — nonce said 900/900 mined, and the abort cost the
+			// round its funding.
+			faucetNonce, _ := getNonce(urls[0], from)
+			if faucetNonce >= fn+uint64(*senders) {
+				fmt.Printf("funded (faucet nonce advanced to %d; balance probe was unavailable)\n", faucetNonce)
+			} else {
+				fmt.Fprintf(os.Stderr, "FATAL: funding did not mine within 80s (faucet nonce %d, expected >= %d); aborting instead of flooding from unfunded senders\n",
+					faucetNonce, fn+uint64(*senders))
+				os.Exit(1)
 			}
 		}
 		// pre-sign perTx transfers from each sender
@@ -347,6 +377,11 @@ func main() {
 				if *rate > 0 && short > *rate {
 					short = *rate // never exceed the requested ceiling
 				}
+				if *rpcBatch > 1 {
+					// One permit lets a batch worker submit rpcBatch txs, so
+					// scale the credit or the loop overshoots by that factor.
+					short = (short + *rpcBatch - 1) / *rpcBatch
+				}
 				for i := 0; i < short; i++ {
 					select {
 					case permits <- struct{}{}:
@@ -375,6 +410,69 @@ func main() {
 			}
 		}()
 	}
+	// Batched submission: claim a contiguous run of pre-signed transactions and
+	// hand them to eth_batchRawTransaction in one HTTP round trip. One permit
+	// covers the whole run (the top-up loop's shortfall is a transaction count,
+	// so a batch worker consumes depth credit at the same rate as a single-tx
+	// worker submitting the same number). Runs are split at URL boundaries so
+	// shard routing still holds a sender's nonces together on one node.
+	if *rpcBatch > 1 {
+		bn := int64(*rpcBatch)
+		if bn > 200 {
+			bn = 200 // API-side MaxBatchSize
+		}
+		urlFor := func(i int64) string {
+			if *shardSenders && *senders > 0 {
+				return urls[int(i/int64(*perTx))%len(urls)]
+			}
+			return urls[int(i)%len(urls)]
+		}
+		for w := 0; w < *conc; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					if permits != nil {
+						<-permits
+					}
+					// idx starts at -1 and holds the LAST claimed index (the
+					// single-tx path does AddInt64(+1) then uses the result), so
+					// a bn-sized claim owns [last-bn+1, last].
+					last := atomic.AddInt64(&idx, bn)
+					start := last - bn + 1
+					if start >= int64(len(raws)) {
+						return
+					}
+					end := last + 1
+					if end > int64(len(raws)) {
+						end = int64(len(raws))
+					}
+					for lo := start; lo < end; {
+						u := urlFor(lo)
+						hi := lo + 1
+						for hi < end && urlFor(hi) == u {
+							hi++
+						}
+						batch := make([]string, hi-lo)
+						copy(batch, raws[lo:hi])
+						if _, err := rpcCall(u, "eth_batchRawTransaction", []interface{}{batch}); err != nil {
+							if n := atomic.AddInt64(&failed, hi-lo); n <= int64(5*bn) || n%1000000 < bn {
+								fmt.Printf("  batch submit err (i=%d n=%d %s): %v\n", lo, hi-lo, u, err)
+							}
+						} else {
+							atomic.AddInt64(&submitted, hi-lo)
+						}
+						lo = hi
+					}
+				}
+			}()
+		}
+		wg.Wait()
+		el := time.Since(tf)
+		fmt.Printf("DONE submitted=%d failed=%d in %s (%.0f tx/s offered)\n", submitted, failed, el.Round(time.Millisecond), float64(len(raws))/el.Seconds())
+		return
+	}
+
 	for w := 0; w < *conc; w++ {
 		wg.Add(1)
 		go func(wid int) {
@@ -408,7 +506,11 @@ func main() {
 					url = urls[int(i)%len(urls)]
 				}
 				if _, err := rpcCall(url, "eth_sendRawTransaction", []interface{}{raws[i]}); err != nil {
-					atomic.AddInt64(&failed, 1)
+					// The first few distinct failures are the diagnosis; a
+					// counter alone hid an 8.88M-transaction rejection.
+					if n := atomic.AddInt64(&failed, 1); n <= 5 || n%1000000 == 0 {
+						fmt.Printf("  submit err #%d (i=%d %s): %v\n", n, i, url, err)
+					}
 				} else {
 					atomic.AddInt64(&submitted, 1)
 				}
