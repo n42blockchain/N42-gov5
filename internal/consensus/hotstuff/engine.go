@@ -73,6 +73,13 @@ const (
 	OutputEquivocationDetected EngineOutputType = 7
 	OutputEpochTransition      EngineOutputType = 8
 	OutputEpochStaged          EngineOutputType = 9 // staged validator set needs persistence
+	// OutputSpeculativeBuild advises the block producer that this node just
+	// voted for block Hash and — by round-robin — leads view View next, so a
+	// proposal extending Hash can be built NOW, during the current view's
+	// vote rounds. Purely advisory: acting on it, dropping it, or guessing
+	// wrong never affects safety (the parked block is proposed only if the
+	// real trigger confirms the same parent).
+	OutputSpeculativeBuild EngineOutputType = 10
 )
 
 // ConsensusEngine is the HotStuff-2 consensus state machine.
