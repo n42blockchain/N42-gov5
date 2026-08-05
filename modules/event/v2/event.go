@@ -89,6 +89,23 @@ func (e *Event) Send(value interface{}) int {
 	return nsent
 }
 
+// HasSubscribers reports whether any channel is currently subscribed for
+// values of the sample's dynamic type. Send already drops a value nobody
+// listens for, but only AFTER the caller built it — this lets a producer skip
+// building an expensive payload at all (the mined-block Entire event marshals
+// every transaction of a full block; ~23k encodings a block for, usually, no
+// subscriber).
+func (e *Event) HasSubscribers(sample interface{}) bool {
+	e.once.Do(e.init)
+
+	key := reflect.TypeOf(sample).String()
+
+	e.feedsLock.RLock()
+	defer e.feedsLock.RUnlock()
+	scope, ok := e.feedsScope[key]
+	return ok && scope.Count() > 0
+}
+
 func (e *Event) Close() {
 	e.feedsLock.Lock()
 	defer e.feedsLock.Unlock()

@@ -1479,7 +1479,13 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	if err != nil {
 		return err
 	}
-	if w.chainConfig.IsBeijing(envHeaderNumber.Uint64()) {
+	// The Entire event re-marshals every transaction of the block — ~23k
+	// encodings and a full snapshot copy on a saturated 480M block, ~100ms of
+	// the leader's critical path. Its only consumers are on-demand RPC
+	// subscriptions (minedBlock / aggregate-sign streams), which almost never
+	// exist on a validator, so ask before building rather than after.
+	if w.chainConfig.IsBeijing(envHeaderNumber.Uint64()) &&
+		event.GlobalEvent.HasSubscribers(common.MinedEntireEvent{}) {
 		txs := make([][]byte, len(envCopy.txs))
 		for i, tx := range envCopy.txs {
 			txs[i], err = tx.Marshal()
