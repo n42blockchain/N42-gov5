@@ -1704,6 +1704,14 @@ func (n *Node) Start() error {
 		// (fetch-on-miss).
 		n.sync.SetBlockImportNotifier(svc)
 		svc.SetBlockFetcher(n.sync)
+
+		// Early-vote path: the blockchain notifies consensus the moment a
+		// block's execution and validation succeed, so the vote round overlaps
+		// the block's persistence (deduplicated against the post-import notify
+		// above).
+		if realBC, ok := n.blockChain.(*internal.BlockChain); ok {
+			realBC.SetExecutedHook(svc.NotifyBlockExecuted)
+		}
 	}
 
 	log.PrintStartupProgress(2, 6, "JSON-RPC services")

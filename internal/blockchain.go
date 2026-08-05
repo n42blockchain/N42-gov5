@@ -222,6 +222,41 @@ func (bc *BlockChain) SetSenderHintSource(s SenderHintSource) {
 	log.Info("Sender hint source attached; block import will reuse pool-recovered senders")
 }
 
+// SetExecutedHook attaches the early-vote notification: fired the moment a
+// block's execution and state validation succeed during import, before the
+// block is persisted, so consensus voting can overlap the MDBX commit.
+func (bc *BlockChain) SetExecutedHook(h func(hash, txHash, parentHash types.Hash, number uint64, extra []byte)) {
+	bc.executedHook = h
+	log.Info("Executed hook attached; consensus votes will not wait for block persistence")
+}
+
+// WaitBlockPersisted blocks until the given block's header is readable (its
+// write transaction committed — headers land atomically with state) or the
+// timeout passes. The early-vote path lets a view advance while the previous
+// block's persistence is still in flight, so a leader triggered at the view
+// change may need to wait a few milliseconds before building on it.
+func (bc *BlockChain) WaitBlockPersisted(hash types.Hash, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		found := false
+		_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+			found = rawdb.ReadHeaderNumber(tx, hash) != nil
+			return nil
+		})
+		if found {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-bc.ctx.Done():
+			return false
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
 // SetFreezer attaches the ancient data freezer to the blockchain.
 // It accepts any implementation of freezer.FreezerAPI. If the concrete type
 // is *freezer.Freezer, an AncientReader is also created for high-level access.
@@ -1884,6 +1919,19 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				continue
 			}
 			return it.index, err
+		}
+
+		// Early vote: execution and state validation just succeeded, which is
+		// exactly what the import-gated vote certifies. Fire the consensus
+		// notification NOW, on its own goroutine, so the vote round overlaps
+		// the ~150-250ms persistence below instead of waiting behind it. A
+		// writeBlockWithState failure after this is a local durability
+		// problem (the node re-imports on recovery), not a vote-safety one.
+		if bc.executedHook != nil {
+			if hdr, ok := blk.Header().(*block.Header); ok && hdr != nil {
+				h, th, ph, num, extra := blk.Hash(), blk.TxHash(), hdr.ParentHash, hdr.Number.Uint64(), hdr.Extra
+				go bc.executedHook(h, th, ph, num, extra)
+			}
 		}
 
 		wstart := time.Now()
