@@ -118,7 +118,14 @@ func validateEthereumRLPHeader(header, parent *block.Header, cfg *params.ChainCo
 		return fmt.Errorf("invalid timestamp: have %d, parent %d", header.Time, parent.Time)
 	}
 	if cfg != nil && cfg.IsLondon(header.Number.Uint64()) {
-		return misc.VerifyEip1559Header(cfg, parent, header)
+		if err := misc.VerifyEip1559Header(cfg, parent, header); err != nil {
+			return err
+		}
+	} else if err := misc.VerifyGaslimit(parent.GasLimit, header.GasLimit); err != nil {
+		return err
 	}
-	return misc.VerifyGaslimit(parent.GasLimit, header.GasLimit)
+	if cfg != nil && cfg.IsCancunAt(header.Number.Uint64(), header.Time) {
+		return misc.VerifyEIP4844Header(parent, header, cfg)
+	}
+	return nil
 }
