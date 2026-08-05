@@ -1431,6 +1431,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	var dWitness time.Duration
 
 	envCopy := env.copy()
+	dCopy := time.Since(tCommitStart)
 	iblock, rewards, unpay, err := w.engine.FinalizeAndAssemble(w.chain, envCopy.header, ibs, envCopy.txs, nil, envCopy.receipts)
 	if err != nil {
 		return err
@@ -1442,6 +1443,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	// state root, gas used are set by FinalizeAndAssemble) and hand off to
 	// the sink. Best-effort by design — packet production must never fail
 	// a block.
+	tPacket := time.Now()
 	if w.mobilePacketSink != nil && readLogRecorder != nil {
 		if finalHeader, ok := iblock.Header().(*block.Header); ok {
 			if pkt, perr := streamverify.BuildStreamPacket(finalHeader, envCopy.txs, readLogRecorder); perr != nil {
@@ -1451,6 +1453,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 			}
 		}
 	}
+	dPacket := time.Since(tPacket)
 
 	// Generate witness after FinalizeAndAssemble when JMT + TracingReader are active.
 	if tracingReader != nil {
@@ -1543,7 +1546,15 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 		})
 	}
 
+	tSnap := time.Now()
 	w.updateSnapshot(envCopy, rewards)
+	dSnap := time.Since(tSnap)
+	if len(envCopy.txs) > 1000 {
+		log.Info("miner: assemble breakdown",
+			"txs", len(envCopy.txs), "copy", dCopy, "finalize", dFinalize-dCopy,
+			"packet", dPacket, "snapshot", dSnap,
+			"other", time.Since(tCommitStart)-dFinalize-dPacket-dSnap)
+	}
 
 	commitRewardCount := 0
 	if b := iblock.Body(); b != nil {
