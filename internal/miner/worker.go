@@ -1070,10 +1070,13 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	}
 
 	// Pre-allocate with estimated max tx count to avoid append-growth
-	// in the hot commit loop. 21000 is the minimum gas per tx.
+	// in the hot commit loop. 21000 is the minimum gas per tx. The estimate is
+	// exact for a transfer-saturated block (480M/21000 = 22,857 slots, ~360KB
+	// across both slices); the old 1024 cap forced five doubling copies per
+	// full block to save memory nobody was short of.
 	estCap := int(env.gasPool.Gas() / 21000)
-	if estCap > 1024 {
-		estCap = 1024 // cap to avoid over-allocation on high gas limits
+	if estCap > 1<<20 {
+		estCap = 1 << 20 // sanity bound for absurd gas limits
 	}
 	env.txs = make([]*transaction.Transaction, 0, estCap)
 	env.receipts = make(block.Receipts, 0, estCap)
@@ -1221,6 +1224,14 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	txSet := builder.NewTxByPriceAndNonce(pending, header.BaseFee)
 	log.Tracef("fillTransactions pending accounts:%d", len(pending))
 
+	// Accounts skipped because their head transaction cannot pay the base fee.
+	// Reported once per build: a block that comes out empty with a full pool is
+	// otherwise indistinguishable from a block that had nothing to include, and
+	// the difference is the whole diagnosis.
+	priceOut := 0
+	// fillTx phase accumulators — see the breakdown log below the loop.
+	var dPick, dCommit, dHeap time.Duration
+
 	for {
 		if interrupt != nil {
 			if signal := interrupt.Load(); signal != commitInterruptNone {
@@ -1235,6 +1246,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			break
 		}
 
+		tSpan := time.Now()
 		tx := txSet.Peek()
 		if tx == nil {
 			break
@@ -1258,8 +1270,12 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			txSet.Pop()
 			continue
 		}
+		tExec := time.Now()
+		dPick += tExec.Sub(tSpan)
 
 		err := commitTx(tx)
+		dCommit += time.Since(tExec)
+		tShift := time.Now()
 		switch {
 		case err == nil:
 			sizeLimiter.add(txSize)
@@ -1271,10 +1287,40 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			txSet.Pop() // Nonce gap, skip account
 		case errors.Is(err, internal.ErrNonceTooLow):
 			txSet.Shift() // Try next nonce from same account
+		case errors.Is(err, internal.ErrFeeCapTooLow):
+			// The account cannot pay this block's base fee. Skip the whole
+			// account: its later transactions are gated behind this nonce, so
+			// none of them can be included however much they bid.
+			//
+			// This is the common case, not an anomaly. A saturated chain drives
+			// the base fee above a fixed-price load's cap by design (EIP-1559
+			// settles at the gas target), and every transaction in the pool then
+			// fails here. Shifting instead of popping walked the entire pool per
+			// build, and logging each failure at Error put thousands of lines in
+			// the log per block -- the empty block that produced them was three
+			// times more expensive to build than a full one.
+			priceOut++
+			txSet.Pop()
 		default:
 			log.Error("miningCommitTx failed", "error", err)
 			txSet.Shift()
 		}
+		dHeap += time.Since(tShift)
+	}
+
+	// One line per non-trivial build: where fillTx's time actually goes.
+	// pick = Peek + size admit, commit = ApplyTransaction (the EVM work an
+	// importer would also pay), heap = Shift/Pop re-sorting. The importer
+	// executes the same transactions in ~5-6µs each; whatever pick+heap add on
+	// top of commit is the builder's own overhead.
+	if env.tcount > 1000 {
+		log.Info("miner: fillTx breakdown",
+			"txs", env.tcount, "pick", dPick, "commit", dCommit, "heap", dHeap)
+	}
+
+	if priceOut > 0 {
+		log.Info("miner: accounts priced out by the base fee",
+			"accounts", priceOut, "of", len(pending), "packed", len(env.txs), "baseFee", header.BaseFee)
 	}
 
 	// Prune old bundles.
@@ -1385,6 +1431,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	var dWitness time.Duration
 
 	envCopy := env.copy()
+	dCopy := time.Since(tCommitStart)
 	iblock, rewards, unpay, err := w.engine.FinalizeAndAssemble(w.chain, envCopy.header, ibs, envCopy.txs, nil, envCopy.receipts)
 	if err != nil {
 		return err
@@ -1396,6 +1443,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	// state root, gas used are set by FinalizeAndAssemble) and hand off to
 	// the sink. Best-effort by design — packet production must never fail
 	// a block.
+	tPacket := time.Now()
 	if w.mobilePacketSink != nil && readLogRecorder != nil {
 		if finalHeader, ok := iblock.Header().(*block.Header); ok {
 			if pkt, perr := streamverify.BuildStreamPacket(finalHeader, envCopy.txs, readLogRecorder); perr != nil {
@@ -1405,6 +1453,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 			}
 		}
 	}
+	dPacket := time.Since(tPacket)
 
 	// Generate witness after FinalizeAndAssemble when JMT + TracingReader are active.
 	if tracingReader != nil {
@@ -1454,7 +1503,13 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	if err != nil {
 		return err
 	}
-	if w.chainConfig.IsBeijing(envHeaderNumber.Uint64()) {
+	// The Entire event re-marshals every transaction of the block — ~23k
+	// encodings and a full snapshot copy on a saturated 480M block, ~100ms of
+	// the leader's critical path. Its only consumers are on-demand RPC
+	// subscriptions (minedBlock / aggregate-sign streams), which almost never
+	// exist on a validator, so ask before building rather than after.
+	if w.chainConfig.IsBeijing(envHeaderNumber.Uint64()) &&
+		event.GlobalEvent.HasSubscribers(common.MinedEntireEvent{}) {
 		txs := make([][]byte, len(envCopy.txs))
 		for i, tx := range envCopy.txs {
 			txs[i], err = tx.Marshal()
@@ -1491,7 +1546,15 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 		})
 	}
 
+	tSnap := time.Now()
 	w.updateSnapshot(envCopy, rewards)
+	dSnap := time.Since(tSnap)
+	if len(envCopy.txs) > 1000 {
+		log.Info("miner: assemble breakdown",
+			"txs", len(envCopy.txs), "copy", dCopy, "finalize", dFinalize-dCopy,
+			"packet", dPacket, "snapshot", dSnap,
+			"other", time.Since(tCommitStart)-dFinalize-dPacket-dSnap)
+	}
 
 	commitRewardCount := 0
 	if b := iblock.Body(); b != nil {
@@ -1537,6 +1600,14 @@ func (w *worker) pendingBlockAndReceipts() (block.IBlock, block.Receipts) {
 	return w.snapshotBlock, w.snapshotReceipts
 }
 
+// updateSnapshot publishes the pending block/receipts for RPC readers.
+//
+// The caller passes the COPY commit() already made (envCopy), whose lifetime
+// ends when commit returns and which nothing mutates afterwards, so the
+// snapshot can hold its slices directly. The copyReceipts call this used to
+// make was the third full receipt deep-copy per built block (env.copy made
+// one, this made another) — ~30ms of the leader's critical path on a
+// 22,857-transaction block, for readers that only serialize.
 func (w *worker) updateSnapshot(env *environment, rewards []*block.Reward) {
 	w.snapshotMu.Lock()
 	defer w.snapshotMu.Unlock()
@@ -1548,7 +1619,7 @@ func (w *worker) updateSnapshot(env *environment, rewards []*block.Reward) {
 		env.receipts,
 		rewards,
 	)
-	w.snapshotReceipts = copyReceipts(env.receipts)
+	w.snapshotReceipts = env.receipts
 }
 
 func signalToErr(signal int32) error {

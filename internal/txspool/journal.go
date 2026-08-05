@@ -55,26 +55,17 @@ func (pool *TxsPool) flushToDB() error {
 	}
 
 	pool.mu.RLock()
-	// Collect all transactions worth persisting:
-	// 1. All local transactions (pending + queued)
-	// 2. All pending transactions (they're executable and likely to be mined soon)
+	// Persist PENDING transactions only — executable, nonce-contiguous work.
+	//
+	// Queued transactions are deliberately left behind. A queued transaction
+	// waits for a nonce that is not there, and across a restart the missing
+	// nonce is usually gone for good (mined meanwhile, or lost with the peer
+	// that had it). Persisting them built an immortal backlog: each restart
+	// reloaded the gap-stranded tail, re-marked it local (eviction-exempt, see
+	// loadFromDB), re-queued it, and the next shutdown flushed it again.
+	// Observed live as ~290k dead queued transactions per node surviving three
+	// rolling restarts and crowding the queue caps out for new arrivals.
 	txs := make(map[types.Hash]*transaction.Transaction)
-
-	// Local transactions (both pending and queued).
-	for addr := range pool.locals.accounts {
-		if list, ok := pool.pending[addr]; ok {
-			for _, tx := range list.Flatten() {
-				txs[tx.Hash()] = tx
-			}
-		}
-		if list, ok := pool.queue[addr]; ok {
-			for _, tx := range list.Flatten() {
-				txs[tx.Hash()] = tx
-			}
-		}
-	}
-
-	// All pending transactions (remote included — they're ready to execute).
 	for _, list := range pool.pending {
 		for _, tx := range list.Flatten() {
 			txs[tx.Hash()] = tx
@@ -156,9 +147,14 @@ func (pool *TxsPool) loadFromDB() int {
 		return 0
 	}
 
-	// Re-add transactions. Use AddLocals to mark them as local
-	// (they were worth persisting, so treat as local for priority).
-	errs := pool.addTxs(txs, true, false)
+	// Re-add as REMOTE. Restored transactions used to be re-marked local "for
+	// priority", but local status also exempts them from queue eviction — so a
+	// restored transaction whose nonce predecessor died with the restart sat
+	// in the queue forever, survived the next flush, and accumulated across
+	// restarts. Remote status costs a restored transaction nothing while it is
+	// executable (it is about to be mined anyway) and lets the ordinary
+	// eviction rules reap it if it turns out to be stranded.
+	errs := pool.addTxs(txs, false, false)
 	loaded := 0
 	for _, err := range errs {
 		if err == nil {

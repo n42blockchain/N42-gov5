@@ -148,6 +148,9 @@ type BlockChain struct {
 	// block has no business knowing what an index is.
 	txIndexer TxIndexer
 
+	// Pool-backed sender cache for block import; see SenderHintSource.
+	senderHints SenderHintSource
+
 	insertLock    chan struct{}
 	latestBlockCh chan block.IBlock
 	lock          sync.Mutex

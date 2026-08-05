@@ -150,6 +150,7 @@ type ITxsPool interface {
 	GetTx(hash types.Hash) *transaction.Transaction
 	AddRemotes(txs []*transaction.Transaction) []error
 	AddLocal(tx *transaction.Transaction) error
+	AddLocals(txs []*transaction.Transaction) []error
 	Stats() (int, int, int, int)
 	Nonce(addr types.Address) uint64
 	Content() (map[types.Address][]*transaction.Transaction, map[types.Address][]*transaction.Transaction)

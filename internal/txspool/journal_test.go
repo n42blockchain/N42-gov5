@@ -196,13 +196,16 @@ func TestFlushToDBPersistsLocalAndPendingTransactions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadPersistedTransactions() error = %v", err)
 	}
-	if len(txs) != 3 {
-		t.Fatalf("loadPersistedTransactions() returned %d txs, want 3", len(txs))
+	// Pending only, local or remote. Queued transactions — including LOCAL
+	// queued — are not persisted: a queued transaction waits for a nonce that
+	// across a restart is usually gone for good, and persisting them built an
+	// immortal gap-stranded backlog (see flushToDB).
+	if len(txs) != 2 {
+		t.Fatalf("loadPersistedTransactions() returned %d txs, want 2", len(txs))
 	}
 
 	want := map[types.Hash]struct{}{
 		localPending.Hash():  {},
-		localQueued.Hash():   {},
 		remotePending.Hash(): {},
 	}
 	for _, tx := range txs {
