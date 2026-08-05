@@ -290,10 +290,20 @@ func main() {
 			}
 		}
 		if !funded {
+			// The balance probe swallows RPC errors (a busy node reads as
+			// balance 0 forty times in a row), so double-check with the faucet
+			// nonce before declaring failure: every funding transaction mined
+			// means every sender was credited, probe or no probe. This misfired
+			// once live — nonce said 900/900 mined, and the abort cost the
+			// round its funding.
 			faucetNonce, _ := getNonce(urls[0], from)
-			fmt.Fprintf(os.Stderr, "FATAL: funding did not mine within 80s (faucet nonce %d, expected >= %d); aborting instead of flooding from unfunded senders\n",
-				faucetNonce, fn+uint64(*senders))
-			os.Exit(1)
+			if faucetNonce >= fn+uint64(*senders) {
+				fmt.Printf("funded (faucet nonce advanced to %d; balance probe was unavailable)\n", faucetNonce)
+			} else {
+				fmt.Fprintf(os.Stderr, "FATAL: funding did not mine within 80s (faucet nonce %d, expected >= %d); aborting instead of flooding from unfunded senders\n",
+					faucetNonce, fn+uint64(*senders))
+				os.Exit(1)
+			}
 		}
 		// pre-sign perTx transfers from each sender
 		total := *senders * *perTx
