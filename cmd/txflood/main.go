@@ -420,11 +420,15 @@ func main() {
 					if permits != nil {
 						<-permits
 					}
-					start := atomic.AddInt64(&idx, bn) - bn
+					// idx starts at -1 and holds the LAST claimed index (the
+					// single-tx path does AddInt64(+1) then uses the result), so
+					// a bn-sized claim owns [last-bn+1, last].
+					last := atomic.AddInt64(&idx, bn)
+					start := last - bn + 1
 					if start >= int64(len(raws)) {
 						return
 					}
-					end := start + bn
+					end := last + 1
 					if end > int64(len(raws)) {
 						end = int64(len(raws))
 					}
