@@ -876,11 +876,26 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// back one block.
 	if parentHash != (types.Hash{}) {
 		if bc, ok := w.chain.(*internal.BlockChain); ok {
+			// Early-vote overlap: the view can advance while the parent's
+			// persistence is still in flight on this node. The build reads
+			// PlainState, which lands atomically with the header — wait for it
+			// rather than aligning against (and mis-reading) the pre-parent
+			// state. Normally sub-millisecond; 2s covers a stalled write.
+			if !bc.WaitBlockPersisted(parentHash, 2*time.Second) {
+				return fmt.Errorf("consensus parent %x not persisted in time", parentHash[:8])
+			}
 			pblk, _ := w.chain.GetBlockByHash(parentHash)
 			if pblk == nil {
 				return fmt.Errorf("consensus parent %x not in local db", parentHash[:8])
 			}
 			if err := bc.AlignAppliedBranch(pblk.Number64().Uint64()+1, parentHash); err != nil {
+				if speculative {
+					// A guess is not worth a forced import: the align fallback
+					// below re-imports the consensus parent with switch
+					// authority, which is only justified when consensus has
+					// actually mandated this parent. Give up quietly.
+					return fmt.Errorf("speculative align failed: %w", err)
+				}
 				// The QC block is in the DB but on a branch this node never
 				// applied (it didn't vote in that view). Import it WITH switch
 				// authority — the QC is the consensus mandate — then re-align.

@@ -1457,6 +1457,54 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 	}
 }
 
+// NotifyBlockExecuted is the EARLY vote path: the blockchain calls it the
+// moment a block's execution and state-root validation succeed — BEFORE the
+// block is persisted. The import-gated vote certifies "this node executed and
+// validated the block", and at this call site that is true by construction
+// (same call stack, err==nil), which is STRONGER evidence than the
+// BlockApplied database probe NotifyBlockImported must rely on for
+// notifications of unknown provenance. Persistence (~150-250ms of MDBX commit
+// on a saturated block) then overlaps the vote round instead of preceding it.
+//
+// The header fields are passed in rather than read from the DB because the
+// header is not written yet. Deduplication is shared with
+// NotifyBlockImported, so whichever notification arrives second is a no-op;
+// a crash between the vote and the persist costs this node a re-import on
+// restart and nothing else — HotStuff quorum safety never depended on a
+// voter's local durability (it tolerates f arbitrary faults).
+func (s *Service) NotifyBlockExecuted(hash, txHash, parentHash types.Hash, number uint64, extra []byte) {
+	s.pendingMu.Lock()
+	if _, ok := s.notifiedImports[hash]; ok {
+		s.pendingMu.Unlock()
+		return
+	}
+	s.notifiedImports[hash] = struct{}{}
+	s.notifiedFIFO = append(s.notifiedFIFO, hash)
+	if len(s.notifiedFIFO) > maxNotifiedImports {
+		oldest := s.notifiedFIFO[0]
+		s.notifiedFIFO = s.notifiedFIFO[1:]
+		delete(s.notifiedImports, oldest)
+	}
+	s.pendingMu.Unlock()
+
+	s.maybeCommitFromHeaderQC(extra)
+	if ce := s.engine.Engine(); ce != nil {
+		if ce.IsRemoved() {
+			if rm := ce.ReconfigManager(); rm != nil && rm.HasPendingChanges() {
+				rm.MarkCommitted()
+			}
+		}
+		if err := ce.ProcessEvent(ConsensusEvent{
+			Type:       EventBlockImported,
+			Hash:       hash,
+			TxRootHash: txHash,
+			ParentHash: parentHash,
+		}); err != nil {
+			log.Debug("hotstuff: EventBlockImported (early) processing failed", "hash", hash, "err", err)
+		}
+	}
+}
+
 // maybeCommitFromHeaderQC advances the canonical chain from the CommitQC a
 // just-imported block carries in its header extra (buildHeaderExtra embeds the
 // leader's LastCommittedQC into every block). Import-time fork choice is
