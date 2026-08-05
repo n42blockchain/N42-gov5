@@ -288,8 +288,15 @@ type worker struct {
 	pacingAnchorNum  uint64
 	pacingAnchorSet  bool
 
-	snapshotMu       sync.RWMutex
-	snapshotBlock    block.IBlock
+	// Pending-block snapshot for RPC readers, built LAZILY: updateSnapshot
+	// stores the raw material and pendingBlockAndReceipts assembles on first
+	// read. Building eagerly cost every block ~30-45ms of the leader's
+	// critical path (CreateBloom + TxRoot + DeriveSha over 22,857 entries)
+	// for an endpoint that is almost never queried.
+	snapshotMu       sync.Mutex
+	snapshotEnv      *environment // material; nil until the first build
+	snapshotRewards  []*block.Reward
+	snapshotBlock    block.IBlock // lazily assembled from snapshotEnv
 	snapshotReceipts block.Receipts
 }
 
@@ -1446,10 +1453,23 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	tPacket := time.Now()
 	if w.mobilePacketSink != nil && readLogRecorder != nil {
 		if finalHeader, ok := iblock.Header().(*block.Header); ok {
-			if pkt, perr := streamverify.BuildStreamPacket(finalHeader, envCopy.txs, readLogRecorder); perr != nil {
-				log.Warn("mobileverify: packet build failed", "number", finalHeader.Number.Uint64(), "err", perr)
-			} else if num, nerr := requireBlockNumber(iblock, "sealed block number unavailable"); nerr == nil {
-				w.mobilePacketSink(pkt, num.Uint64())
+			// Built off the critical path: packet construction walked the whole
+			// read log (~35-75ms on a full block) inside assemble. The header is
+			// COPIED first — the sealer appends the BLS signature to this
+			// block's Extra concurrently — while the tx slice and the recorder
+			// are immutable once the build is done. Delivery was already
+			// best-effort; asynchrony only moves where the effort is spent.
+			hdrCopy := block.CopyHeader(finalHeader)
+			num, nerr := requireBlockNumber(iblock, "sealed block number unavailable")
+			if nerr == nil {
+				txs, rec, sink := envCopy.txs, readLogRecorder, w.mobilePacketSink
+				go func() {
+					if pkt, perr := streamverify.BuildStreamPacket(hdrCopy, txs, rec); perr != nil {
+						log.Warn("mobileverify: packet build failed", "number", hdrCopy.Number.Uint64(), "err", perr)
+					} else {
+						sink(pkt, num.Uint64())
+					}
+				}()
 			}
 		}
 	}
@@ -1595,30 +1615,36 @@ func copyReceipts(receipts []*block.Receipt) []*block.Receipt {
 }
 
 func (w *worker) pendingBlockAndReceipts() (block.IBlock, block.Receipts) {
-	w.snapshotMu.RLock()
-	defer w.snapshotMu.RUnlock()
+	w.snapshotMu.Lock()
+	defer w.snapshotMu.Unlock()
+	if w.snapshotBlock == nil && w.snapshotEnv != nil {
+		w.snapshotBlock = block.NewBlockFromReceipt(
+			w.snapshotEnv.header,
+			w.snapshotEnv.txs,
+			nil,
+			w.snapshotEnv.receipts,
+			w.snapshotRewards,
+		)
+	}
 	return w.snapshotBlock, w.snapshotReceipts
 }
 
-// updateSnapshot publishes the pending block/receipts for RPC readers.
+// updateSnapshot stores the material for the pending block/receipts RPC
+// snapshot. The block itself is assembled lazily on first read (see
+// pendingBlockAndReceipts): NewBlockFromReceipt computes the bloom, the tx
+// root and the receipt root over the whole block — pure waste on the leader's
+// critical path when no one queries pending state.
 //
 // The caller passes the COPY commit() already made (envCopy), whose lifetime
 // ends when commit returns and which nothing mutates afterwards, so the
-// snapshot can hold its slices directly. The copyReceipts call this used to
-// make was the third full receipt deep-copy per built block (env.copy made
-// one, this made another) — ~30ms of the leader's critical path on a
-// 22,857-transaction block, for readers that only serialize.
+// snapshot can hold its slices directly.
 func (w *worker) updateSnapshot(env *environment, rewards []*block.Reward) {
 	w.snapshotMu.Lock()
 	defer w.snapshotMu.Unlock()
 
-	w.snapshotBlock = block.NewBlockFromReceipt(
-		env.header,
-		env.txs,
-		nil,
-		env.receipts,
-		rewards,
-	)
+	w.snapshotEnv = env
+	w.snapshotRewards = rewards
+	w.snapshotBlock = nil // invalidate; rebuilt on demand
 	w.snapshotReceipts = env.receipts
 }
 
