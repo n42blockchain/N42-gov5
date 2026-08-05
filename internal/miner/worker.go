@@ -1070,10 +1070,13 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	}
 
 	// Pre-allocate with estimated max tx count to avoid append-growth
-	// in the hot commit loop. 21000 is the minimum gas per tx.
+	// in the hot commit loop. 21000 is the minimum gas per tx. The estimate is
+	// exact for a transfer-saturated block (480M/21000 = 22,857 slots, ~360KB
+	// across both slices); the old 1024 cap forced five doubling copies per
+	// full block to save memory nobody was short of.
 	estCap := int(env.gasPool.Gas() / 21000)
-	if estCap > 1024 {
-		estCap = 1024 // cap to avoid over-allocation on high gas limits
+	if estCap > 1<<20 {
+		estCap = 1 << 20 // sanity bound for absurd gas limits
 	}
 	env.txs = make([]*transaction.Transaction, 0, estCap)
 	env.receipts = make(block.Receipts, 0, estCap)
@@ -1226,6 +1229,8 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	// otherwise indistinguishable from a block that had nothing to include, and
 	// the difference is the whole diagnosis.
 	priceOut := 0
+	// fillTx phase accumulators — see the breakdown log below the loop.
+	var dPick, dCommit, dHeap time.Duration
 
 	for {
 		if interrupt != nil {
@@ -1241,6 +1246,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			break
 		}
 
+		tSpan := time.Now()
 		tx := txSet.Peek()
 		if tx == nil {
 			break
@@ -1264,8 +1270,12 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			txSet.Pop()
 			continue
 		}
+		tExec := time.Now()
+		dPick += tExec.Sub(tSpan)
 
 		err := commitTx(tx)
+		dCommit += time.Since(tExec)
+		tShift := time.Now()
 		switch {
 		case err == nil:
 			sizeLimiter.add(txSize)
@@ -1295,6 +1305,17 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			log.Error("miningCommitTx failed", "error", err)
 			txSet.Shift()
 		}
+		dHeap += time.Since(tShift)
+	}
+
+	// One line per non-trivial build: where fillTx's time actually goes.
+	// pick = Peek + size admit, commit = ApplyTransaction (the EVM work an
+	// importer would also pay), heap = Shift/Pop re-sorting. The importer
+	// executes the same transactions in ~5-6µs each; whatever pick+heap add on
+	// top of commit is the builder's own overhead.
+	if env.tcount > 1000 {
+		log.Info("miner: fillTx breakdown",
+			"txs", env.tcount, "pick", dPick, "commit", dCommit, "heap", dHeap)
 	}
 
 	if priceOut > 0 {
