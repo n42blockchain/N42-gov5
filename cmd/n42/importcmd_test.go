@@ -35,3 +35,27 @@ func TestValidateEthereumRLPHeaderChecksTransitions(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateEthereumRLPHeaderChecksCancunBlobGas(t *testing.T) {
+	zero := uint64(0)
+	incorrectExcess := uint64(1)
+	parent := &block.Header{
+		Number:        uint256.NewInt(0),
+		GasLimit:      10_000,
+		Time:          1,
+		BlobGasUsed:   &zero,
+		ExcessBlobGas: &zero,
+	}
+	header := &block.Header{
+		Number:        uint256.NewInt(1),
+		GasLimit:      10_000,
+		Time:          2,
+		BlobGasUsed:   &zero,
+		ExcessBlobGas: &incorrectExcess,
+	}
+	cfg := &params.ChainConfig{CancunTime: big.NewInt(0)}
+
+	if err := validateEthereumRLPHeader(header, parent, cfg); err == nil {
+		t.Fatal("expected EIP-4844 excess blob gas validation error")
+	}
+}
