@@ -204,6 +204,7 @@ func main() {
 	broadcast := flag.Bool("broadcast", false, "submit each tx to ALL rpcs")
 	offset := flag.Uint64("sender-offset", 0, "shift the derived sender set; use a fresh offset to get accounts with no nonce history")
 	shardSenders := flag.Bool("shard-senders", false, "route each sender's txs to one node (sender%rpcs) so every proposer owns full nonce sequences")
+	rpcBatch := flag.Int("rpcbatch", 0, "submit N txs per eth_batchRawTransaction call (0 = one eth_sendRawTransaction per tx; max 200)")
 	flag.Parse()
 	senderOffset = *offset
 
@@ -361,6 +362,11 @@ func main() {
 				if *rate > 0 && short > *rate {
 					short = *rate // never exceed the requested ceiling
 				}
+				if *rpcBatch > 1 {
+					// One permit lets a batch worker submit rpcBatch txs, so
+					// scale the credit or the loop overshoots by that factor.
+					short = (short + *rpcBatch - 1) / *rpcBatch
+				}
 				for i := 0; i < short; i++ {
 					select {
 					case permits <- struct{}{}:
@@ -389,6 +395,65 @@ func main() {
 			}
 		}()
 	}
+	// Batched submission: claim a contiguous run of pre-signed transactions and
+	// hand them to eth_batchRawTransaction in one HTTP round trip. One permit
+	// covers the whole run (the top-up loop's shortfall is a transaction count,
+	// so a batch worker consumes depth credit at the same rate as a single-tx
+	// worker submitting the same number). Runs are split at URL boundaries so
+	// shard routing still holds a sender's nonces together on one node.
+	if *rpcBatch > 1 {
+		bn := int64(*rpcBatch)
+		if bn > 200 {
+			bn = 200 // API-side MaxBatchSize
+		}
+		urlFor := func(i int64) string {
+			if *shardSenders && *senders > 0 {
+				return urls[int(i/int64(*perTx))%len(urls)]
+			}
+			return urls[int(i)%len(urls)]
+		}
+		for w := 0; w < *conc; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					if permits != nil {
+						<-permits
+					}
+					start := atomic.AddInt64(&idx, bn) - bn
+					if start >= int64(len(raws)) {
+						return
+					}
+					end := start + bn
+					if end > int64(len(raws)) {
+						end = int64(len(raws))
+					}
+					for lo := start; lo < end; {
+						u := urlFor(lo)
+						hi := lo + 1
+						for hi < end && urlFor(hi) == u {
+							hi++
+						}
+						batch := make([]string, hi-lo)
+						copy(batch, raws[lo:hi])
+						if _, err := rpcCall(u, "eth_batchRawTransaction", []interface{}{batch}); err != nil {
+							if n := atomic.AddInt64(&failed, hi-lo); n <= int64(5*bn) || n%1000000 < bn {
+								fmt.Printf("  batch submit err (i=%d n=%d %s): %v\n", lo, hi-lo, u, err)
+							}
+						} else {
+							atomic.AddInt64(&submitted, hi-lo)
+						}
+						lo = hi
+					}
+				}
+			}()
+		}
+		wg.Wait()
+		el := time.Since(tf)
+		fmt.Printf("DONE submitted=%d failed=%d in %s (%.0f tx/s offered)\n", submitted, failed, el.Round(time.Millisecond), float64(len(raws))/el.Seconds())
+		return
+	}
+
 	for w := 0; w < *conc; w++ {
 		wg.Add(1)
 		go func(wid int) {

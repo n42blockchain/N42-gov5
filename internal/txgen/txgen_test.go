@@ -35,6 +35,13 @@ func (p *fundingTestPool) AddLocal(tx *transaction.Transaction) error {
 	}
 	return errors.New("insufficient funds for gas * price + value")
 }
+func (p *fundingTestPool) AddLocals(txs []*transaction.Transaction) []error {
+	errs := make([]error, len(txs))
+	for i, tx := range txs {
+		errs[i] = p.AddLocal(tx)
+	}
+	return errs
+}
 func (p *fundingTestPool) Stats() (int, int, int, int) { return 0, 0, 0, 0 }
 func (p *fundingTestPool) Nonce(types.Address) uint64  { return 0 }
 func (p *fundingTestPool) Content() (map[types.Address][]*transaction.Transaction, map[types.Address][]*transaction.Transaction) {
