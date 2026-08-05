@@ -574,30 +574,6 @@ func (w *worker) resultLoop() error {
 				logs = append(logs, receipt.Logs...)
 			}
 
-			// Push and propose FIRST, persist second: followers can only start
-			// importing once the block reaches them, and the proposal is what
-			// starts the vote round — neither depends on this node's own
-			// persistence (SealedBlock encodes the in-memory object; the
-			// leader self-votes inside proposeBlock without reading the DB).
-			// Writing first serialized ~60-130ms of MDBX commit ahead of every
-			// proposal; now the leader's write overlaps the followers' import.
-			// The block stays byte-for-byte the one pushed — only the order of
-			// local persistence changed. recordSealedOnParent moves ahead of
-			// the push so the one-candidate-per-parent guard is in place
-			// before the block is ever visible to the network.
-			w.recordSealedOnParent(parentHash, blk)
-			tPush := time.Now()
-			if err = w.chain.SealedBlock(blk); err != nil {
-				log.Error("Failed Broadcast block to p2p network", "err", err)
-				continue
-			}
-			dPush := time.Since(tPush)
-			tNotify := time.Now()
-			if bsn, ok := w.engine.(blockSealNotifier); ok {
-				bsn.NotifyBlockSealed(blk.Hash(), blk.TxHash())
-			}
-			dNotify := time.Since(tNotify)
-
 			tWrite := time.Now()
 			err = w.chain.WriteBlockWithState(blk, receipts, task.state, task.nopay)
 			dWrite := time.Since(tWrite)
@@ -605,14 +581,12 @@ func (w *worker) resultLoop() error {
 				if errors.Is(err, internal.ErrStaleSeal) {
 					// The applied head moved past this seal's parent while it
 					// was in flight (a competing same-height candidate won).
-					// An expected race under view churn, not a node fault. The
-					// block was already proposed; followers resolve the race
-					// by refusing to extend the losing candidate.
+					// An expected race under view churn, not a node fault.
 					log.Info("Sealed block lost to a competing candidate; dropping",
 						"number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12])
 					continue
 				}
-				log.Error("Failed writing block to chain (block already proposed; followers will re-fetch or the view will retry)", "err", err)
+				log.Error("Failed writing block to chain", "err", err)
 				miningErrorsCounter.Inc()
 				continue
 			}
@@ -646,6 +620,23 @@ func (w *worker) resultLoop() error {
 				"elapsed", common.PrettyDuration(time.Since(task.createdAt)),
 				"txs", len(blk.Transactions()))
 
+			tPush := time.Now()
+			if err = w.chain.SealedBlock(blk); err != nil {
+				log.Error("Failed Broadcast block to p2p network", "err", err)
+				continue
+			}
+			dPush := time.Since(tPush)
+			// For leader-driven consensus (HotStuff), start the Proposal for THIS
+			// exact sealed block — the one we just persisted and direct-pushed — so
+			// the proposed (and committed) block is byte-for-byte what followers
+			// receive and import. Doing this here (not in Seal) binds propose↔push to
+			// the same block, which import-gated voting requires.
+			tNotify := time.Now()
+			if bsn, ok := w.engine.(blockSealNotifier); ok {
+				bsn.NotifyBlockSealed(blk.Hash(), blk.TxHash())
+			}
+			dNotify := time.Since(tNotify)
+
 			// Leader seal→propose breakdown: ONE line per produced block covering
 			// the window "miner: build phases" stops measuring at (it is emitted
 			// before commit()) up to the Proposal being handed to the engine.
@@ -658,6 +649,9 @@ func (w *worker) resultLoop() error {
 				"write", dWrite, "push", dPush, "notify", dNotify,
 				"total", time.Since(task.createdAt))
 
+			// Record this as the one candidate for its parent (after a successful
+			// import), so a later view's divergent sibling is suppressed above.
+			w.recordSealedOnParent(parentHash, blk)
 			if concrete, ok := blk.(*block.Block); ok {
 				event.GlobalEvent.Send(common.ChainHighestBlock{Block: *concrete, Inserted: true})
 			}
