@@ -125,7 +125,43 @@ func validateEthereumRLPHeader(header, parent *block.Header, cfg *params.ChainCo
 		return err
 	}
 	if cfg != nil && cfg.IsCancunAt(header.Number.Uint64(), header.Time) {
-		return misc.VerifyEIP4844Header(parent, header, cfg)
+		return validateEthereumRLPBlobHeader(parent, header, cfg)
+	}
+	return nil
+}
+
+// validateEthereumRLPBlobHeader follows the active EIP-4844 blob schedule.
+// Prague raises the blob target and maximum, so the static Cancun constants in
+// misc.VerifyEIP4844Header are intentionally not sufficient for Hive fixtures.
+func validateEthereumRLPBlobHeader(parent, header *block.Header, cfg *params.ChainConfig) error {
+	if parent == nil || header == nil || cfg == nil {
+		return nil
+	}
+	gasPerBlob := cfg.BlobGasPerBlob(header.Time)
+	maxBlobGas := cfg.BlobMaxGasPerBlock(header.Time)
+	var blobGasUsed, excessBlobGas uint64
+	if header.BlobGasUsed != nil {
+		blobGasUsed = *header.BlobGasUsed
+	}
+	if header.ExcessBlobGas != nil {
+		excessBlobGas = *header.ExcessBlobGas
+	}
+	if blobGasUsed > maxBlobGas {
+		return fmt.Errorf("blob gas used %d exceeds maximum %d", blobGasUsed, maxBlobGas)
+	}
+	if blobGasUsed%gasPerBlob != 0 {
+		return fmt.Errorf("blob gas used %d is not a multiple of %d", blobGasUsed, gasPerBlob)
+	}
+	var parentExcess, parentUsed uint64
+	if parent.ExcessBlobGas != nil {
+		parentExcess = *parent.ExcessBlobGas
+	}
+	if parent.BlobGasUsed != nil {
+		parentUsed = *parent.BlobGasUsed
+	}
+	expectedExcess := cfg.CalcExcessBlobGasWithBaseFee(parentExcess, parentUsed, parent.BaseFee, header.Time)
+	if excessBlobGas != expectedExcess {
+		return fmt.Errorf("incorrect excess blob gas: have %d, want %d", excessBlobGas, expectedExcess)
 	}
 	return nil
 }
