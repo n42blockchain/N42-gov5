@@ -11,6 +11,9 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/internal/node"
@@ -48,7 +51,7 @@ func importRLPBlock(cliCtx *cli.Context) error {
 	if err != nil {
 		return fmt.Errorf("read RLP block %q: %w", path, err)
 	}
-	blk, _, err := ethel.DecodeRawBlock(raw)
+	blk, withdrawals, err := ethel.DecodeRawBlock(raw)
 	if err != nil {
 		return fmt.Errorf("decode RLP block %q: %w", path, err)
 	}
@@ -63,13 +66,49 @@ func importRLPBlock(cliCtx *cli.Context) error {
 		return fmt.Errorf("import RLP block %q: %w", path, err)
 	}
 
-	// RLP consume covers pre-merge Ethereum blocks too. Unlike the Engine API
-	// adapter, BlockChain.InsertChain retains the full legacy validation and
-	// canonical-head handling required by those fixtures.
+	// Shanghai+ block bodies carry withdrawals outside block.Block's legacy
+	// native body. Execute them through the wire adapter, which owns Ethereum
+	// withdrawal application and payload-state persistence. Earlier RLP blocks
+	// keep using BlockChain.InsertChain for its pre-merge handling.
+	if withdrawals != nil {
+		adapter := api.NewEngineStateAdapter(stack.Database(), nil, stack.BlockChain().Config(), stack.Engine())
+		valid, _, err := adapter.ExecutePayloadFromWire(blk, engineWithdrawals(withdrawals))
+		if err != nil {
+			return fmt.Errorf("import RLP block %q: execute payload: %w", path, err)
+		}
+		if !valid {
+			return fmt.Errorf("import RLP block %q: payload validation failed", path)
+		}
+		if err := adapter.ForkchoiceUpdated(blk.Hash(), types.Hash{}, types.Hash{}); err != nil {
+			return fmt.Errorf("import RLP block %q: update canonical head: %w", path, err)
+		}
+		return nil
+	}
+
+	// RLP consume covers pre-merge Ethereum blocks too. BlockChain.InsertChain
+	// retains the full legacy validation and canonical-head handling required by
+	// those fixtures.
 	if _, err := stack.BlockChain().InsertChain([]block.IBlock{blk}); err != nil {
 		return fmt.Errorf("import RLP block %q: %w", path, err)
 	}
 	return nil
+}
+
+func engineWithdrawals(withdrawals []*ethel.Withdrawal) []*api.Withdrawal {
+	converted := make([]*api.Withdrawal, 0, len(withdrawals))
+	for _, withdrawal := range withdrawals {
+		if withdrawal == nil {
+			converted = append(converted, nil)
+			continue
+		}
+		converted = append(converted, &api.Withdrawal{
+			Index:          hexutil.Uint64(withdrawal.Index),
+			ValidatorIndex: hexutil.Uint64(withdrawal.Validator),
+			Address:        withdrawal.Address,
+			Amount:         hexutil.Uint64(withdrawal.Amount),
+		})
+	}
+	return converted
 }
 
 // rlpImportParent returns the concrete parent header when it is available.
