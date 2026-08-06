@@ -59,3 +59,27 @@ func TestValidateEthereumRLPHeaderChecksCancunBlobGas(t *testing.T) {
 		t.Fatal("expected EIP-4844 excess blob gas validation error")
 	}
 }
+
+func TestValidateEthereumRLPHeaderUsesPragueBlobLimits(t *testing.T) {
+	zero := uint64(0)
+	cfg := &params.ChainConfig{CancunTime: big.NewInt(0), PragueTime: big.NewInt(0)}
+	maxBlobGas := cfg.BlobMaxGasPerBlock(2)
+	parent := &block.Header{
+		Number:        uint256.NewInt(0),
+		GasLimit:      10_000,
+		Time:          1,
+		BlobGasUsed:   &zero,
+		ExcessBlobGas: &zero,
+	}
+	header := &block.Header{
+		Number:        uint256.NewInt(1),
+		GasLimit:      10_000,
+		Time:          2,
+		BlobGasUsed:   &maxBlobGas,
+		ExcessBlobGas: &zero,
+	}
+
+	if err := validateEthereumRLPHeader(header, parent, cfg); err != nil {
+		t.Fatalf("expected Prague blob gas limit to be valid: %v", err)
+	}
+}
