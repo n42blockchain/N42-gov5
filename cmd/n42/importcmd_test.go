@@ -7,6 +7,8 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -81,5 +83,22 @@ func TestValidateEthereumRLPHeaderUsesPragueBlobLimits(t *testing.T) {
 
 	if err := validateEthereumRLPHeader(header, parent, cfg); err != nil {
 		t.Fatalf("expected Prague blob gas limit to be valid: %v", err)
+	}
+}
+
+func TestEngineWithdrawalsPreservesWireFields(t *testing.T) {
+	address := types.HexToAddress("0x000000000000000000000000000000000000c0de")
+	converted := engineWithdrawals([]*ethel.Withdrawal{{
+		Index:     3,
+		Validator: 5,
+		Address:   address,
+		Amount:    7,
+	}})
+	if len(converted) != 1 {
+		t.Fatalf("withdrawal count = %d, want 1", len(converted))
+	}
+	got := converted[0]
+	if uint64(got.Index) != 3 || uint64(got.ValidatorIndex) != 5 || got.Address != address || uint64(got.Amount) != 7 {
+		t.Fatalf("converted withdrawal = %#v", got)
 	}
 }
