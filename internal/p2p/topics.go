@@ -21,6 +21,7 @@ const (
 	GossipBlobSidecarMessage        = "blob_sidecar"
 	GossipDataColumnMessage         = "data_column_sidecar"
 	GossipHotStuffConsensusMessage  = "hotstuff_consensus"
+	GossipH2V4Message               = "h2/4"
 	GossipZKProofMessage            = "zk_proof"
 	GossipMobilePacketMessage       = "mobileverify_packet"
 	GossipMobileRegistrationMessage = "mobileverify_registration"
@@ -35,6 +36,7 @@ const (
 	BlobSidecarTopicFormat        = GossipProtocolAndDigest + GossipBlobSidecarMessage
 	DataColumnTopicFormat         = GossipProtocolAndDigest + GossipDataColumnMessage
 	HotStuffConsensusTopicFormat  = GossipProtocolAndDigest + GossipHotStuffConsensusMessage
+	H2V4Topic                     = "/n42/" + GossipH2V4Message
 	ZKProofTopicFormat            = GossipProtocolAndDigest + GossipZKProofMessage
 	MobilePacketTopicFormat       = GossipProtocolAndDigest + GossipMobilePacketMessage
 	MobileRegistrationTopicFormat = GossipProtocolAndDigest + GossipMobileRegistrationMessage

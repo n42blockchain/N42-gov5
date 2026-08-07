@@ -63,6 +63,8 @@ func (s *Service) topicScoreParams(topic string) (*pubsub.TopicScoreParams, erro
 		return blockTopicParams(), nil
 	case strings.Contains(topic, GossipHotStuffConsensusMessage):
 		return hotstuffConsensusTopicParams(), nil
+	case strings.Contains(topic, H2V4Topic):
+		return hotstuffConsensusTopicParams(), nil
 	case strings.Contains(topic, GossipMessagePrefix):
 		return messagingTopicParams(), nil
 	case strings.Contains(topic, GossipMobilePacketMessage):

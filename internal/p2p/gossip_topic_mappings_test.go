@@ -80,6 +80,7 @@ func TestEveryRegisteredTopicHasADecoder(t *testing.T) {
 	}
 	selfDecoding := map[string]bool{
 		HotStuffConsensusTopicFormat:  true,
+		H2V4Topic:                     true, // chain-bound H2-v4 Decide proofs: custom compact wire, own subscription path
 		ZKProofTopicFormat:            true,
 		MobilePacketTopicFormat:       true,
 		MobileRegistrationTopicFormat: true,

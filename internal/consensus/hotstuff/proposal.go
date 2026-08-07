@@ -47,7 +47,7 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 	}
 
 	justifyQC := e.roundState.LockedQC().Clone()
-	message := SigningMessage(view, blockHash)
+	message := e.proposalSigningMessage(view, blockHash)
 	signature := e.secretKey.Sign(message)
 	piggybacked := e.previousPrepareQC
 	e.previousPrepareQC = nil
@@ -68,7 +68,7 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 	e.roundState.EnterVoting()
 
 	// Leader self-votes (GossipSub doesn't deliver back to sender).
-	leaderSig := e.secretKey.Sign(message)
+	leaderSig := e.secretKey.Sign(e.voteSigningMessage(view, blockHash))
 	if e.voteCollector != nil {
 		_ = e.voteCollector.AddVote(e.myIndex, leaderSig)
 	}
@@ -108,14 +108,14 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
 	if err != nil {
 		return err
 	}
-	msg := SigningMessage(view, proposal.BlockHash)
+	msg := e.proposalSigningMessage(view, proposal.BlockHash)
 	if !VerifyBLSSignature(proposal.Signature, pk, msg) {
 		return &InvalidSignatureError{View: view, ValidatorIndex: proposal.Proposer}
 	}
 
 	// Verify justify_qc aggregate BLS signature (genesis QC is exempt).
 	if proposal.JustifyQC.View > 0 {
-		if vErr := VerifyQCAnyDomain(&proposal.JustifyQC, e.resolveQCValidatorSet(proposal.JustifyQC.View, len(proposal.JustifyQC.Signers))); vErr != nil {
+		if vErr := e.verifyQCAnyDomainWithSet(&proposal.JustifyQC, e.resolveQCValidatorSet(proposal.JustifyQC.View, len(proposal.JustifyQC.Signers))); vErr != nil {
 			log.Warn("rejecting proposal with invalid justify_qc",
 				"view", view, "proposer", proposal.Proposer, "err", vErr)
 			return vErr
@@ -146,7 +146,7 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
 
 	// Process piggybacked PrepareQC (chained mode).
 	if proposal.PrepareQC != nil {
-		if vErr := VerifyQC(proposal.PrepareQC, e.resolveQCValidatorSet(proposal.PrepareQC.View, len(proposal.PrepareQC.Signers))); vErr == nil {
+		if vErr := e.verifyQCWithSet(proposal.PrepareQC, e.resolveQCValidatorSet(proposal.PrepareQC.View, len(proposal.PrepareQC.Signers))); vErr == nil {
 			e.roundState.UpdateLockedQC(proposal.PrepareQC)
 		} else {
 			log.Warn("rejected invalid piggybacked PrepareQC", "view", view, "err", vErr)
@@ -223,7 +223,7 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg) error {
 		return &ViewMismatchError{Current: view, Received: pqc.View}
 	}
 
-	if err := VerifyQC(&pqc.QC, e.resolveQCValidatorSet(pqc.QC.View, len(pqc.QC.Signers))); err != nil {
+	if err := e.verifyQCWithSet(&pqc.QC, e.resolveQCValidatorSet(pqc.QC.View, len(pqc.QC.Signers))); err != nil {
 		return err
 	}
 
@@ -261,7 +261,7 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg) error {
 	}
 
 	// Send CommitVote (Round 2).
-	commitMsg := CommitSigningMessage(view, pqc.BlockHash)
+	commitMsg := e.commitSigningMessage(view, pqc.BlockHash)
 	commitSig := e.secretKey.Sign(commitMsg)
 	leader := LeaderForView(view, e.validatorSet())
 
@@ -294,7 +294,7 @@ func (e *ConsensusEngine) sendVote(view ViewNumber, blockHash types.Hash) error 
 		return nil // observer/removed nodes do not cast votes
 	}
 	leader := LeaderForView(view, e.validatorSet())
-	voteMsg := SigningMessage(view, blockHash)
+	voteMsg := e.voteSigningMessage(view, blockHash)
 	voteSig := e.secretKey.Sign(voteMsg)
 
 	vote := &Vote{
@@ -444,4 +444,3 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 
 	return nil
 }
-
