@@ -139,6 +139,9 @@ var (
 	MainnetQMDBGenesisHash          = types.HexToHash("0x5fcf94b7a5e7e337005c4b6333904983d9e5aa97e950bf1b63d42fb0be81ee69")
 	MainnetQMDBStaggeredGenesisHash = types.HexToHash("0xa2d2ff5d814552bb9a113b68ad7ed2b824fbb52caed42dbe573068845b57be99")
 	QSEpochTestGenesisHash          = types.HexToHash("0xb0ff0c044f867741ab595d2756cc5cfb873cff42c6f2ebb913ac4a73a6ad5271")
+	// H2InteropTestGenesisHash is backfilled from the first boot of the isolated
+	// H2-v4 cross-client chain (chainId 96); see h2_interop_test.json.
+	H2InteropTestGenesisHash = types.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000000")
 )
 
 // ---------------------------------------------------------------------------
@@ -154,6 +157,7 @@ var (
 	MainnetQMDBChainConfig          = readChainSpec("chainspecs/mainnet_qmdb.json")           // replay-v2 qmdb state roots + hotstuff live production
 	MainnetQMDBStaggeredChainConfig = readChainSpec("chainspecs/mainnet_qmdb_staggered.json") // qmdb + hotstuff live production with the staggered (calendar-parity) fork schedule — 7-node live network base
 	QSEpochTestChainConfig          = readChainSpec("chainspecs/qs_epoch_test.json")          // isolated reconfig test chain (chainId 95, epochLength 20)
+	H2InteropTestChainConfig        = readChainSpec("chainspecs/h2_interop_test.json")        // isolated H2-v4 cross-client interop chain (chainId 96, interopV4 on)
 	TestnetChainConfig              = readChainSpec("chainspecs/testnet.json")
 
 	TestChainConfig = &ChainConfig{
@@ -659,6 +663,8 @@ func ChainConfigByChainName(chain string) *ChainConfig {
 		return MainnetQMDBStaggeredChainConfig
 	case "qs_epoch_test":
 		return QSEpochTestChainConfig
+	case "h2_interop_test":
+		return H2InteropTestChainConfig
 	case networkname.TestnetChainName:
 		return TestnetChainConfig
 	case networkname.EthereumMainnetChainName:
@@ -690,6 +696,8 @@ func GenesisHashByChainName(chain string) *types.Hash {
 		return &MainnetQMDBStaggeredGenesisHash
 	case "qs_epoch_test":
 		return &QSEpochTestGenesisHash
+	case "h2_interop_test":
+		return &H2InteropTestGenesisHash
 	case networkname.EthereumMainnetChainName:
 		return &EthereumMainnetGenesisHash
 	case networkname.EthereumSepoliaChainName, networkname.EthereumTestnetAlias:

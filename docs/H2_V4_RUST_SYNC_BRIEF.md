@@ -80,6 +80,34 @@ the same `changes_hash`.
 6. **Do not** configure epoch validator changes on any v4 chain until the
    dynamic-changes revision is specified on both sides.
 
+## Joint-testnet status (2026-08-07, live observations)
+
+A 4-validator gov5 v4 testnet is already up on this host (not started by
+this note's author — coordinate before touching it):
+
+- chainId **941**, `interopV4: true`, genesis at `C:/n42/v4-interop-testnet/genesis.json`
+- binary `n42-v5.7.947` (gov5 main incl. the v4 merge), `--chain private`
+- ports: p2p TCP 32100-32103 / UDP 33100-33103, HTTP 20112-20115
+- the production 7-node performance network stays on 32000-32006 / 20012-20018
+  and was rolled to the same 947 binary; v4 is dormant there (no identity configured)
+
+Observed blocker at the time of writing: head stuck at 0 with partial peer
+counts — the validators are not fully meshed. Root cause visible in the
+process command lines: the nodes were launched from Git Bash, and MSYS path
+conversion rewrote the `--p2p.peer` multiaddrs from `/ip4/127.0.0.1/...` to
+`C:/Program Files/Git/ip4/127.0.0.1/...`, which cannot parse. Fixes, any one
+of which works:
+
+- `export MSYS_NO_PATHCONV=1` (or `MSYS2_ARG_CONV_EXCL="*"`) before launching;
+- pass multiaddrs as `//ip4/...` (double slash defeats the rewrite);
+- launch from PowerShell, which performs no path conversion.
+
+A registered chainspec `h2_interop_test` (chainId **96**, 4 validators,
+`interopV4: true`, reconfiguration pushed out of reach) now exists in gov5
+for a reproducible interop chain that needs no ad-hoc genesis file:
+`--chain h2_interop_test`. Its genesis-hash constant is backfilled on first
+boot; the ad-hoc 941 network and this preset can coexist.
+
 ## Contact points in the gov5 tree
 
 | Item | Location |
