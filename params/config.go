@@ -539,6 +539,11 @@ type HotStuffConfig struct {
 	// executed the block before it commits. Consensus-behavior switch — all
 	// validators must agree. Off (default) = classic import-gated Round 1.
 	TwoPhaseVoteGate bool `json:"twoPhaseVoteGate,omitempty"`
+
+	// InteropV4 enables chain-bound H2-v4 signing and publishes verified Decide
+	// proofs for cross-client observers. All validators on the chain must agree.
+	// Off by default, preserving existing networks byte-for-byte.
+	InteropV4 bool `json:"interopV4,omitempty"`
 }
 
 // HotStuffCommitteePoolConfig configures the live BLS committee-evidence pool.

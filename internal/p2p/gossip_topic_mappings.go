@@ -51,6 +51,7 @@ var gossipTopics = []string{
 	TransactionTopicFormat,        // RLP transaction
 	BlobSidecarTopicFormat,        // rawdb blob sidecar encoding
 	HotStuffConsensusTopicFormat,  // HotStuff compact SSZ
+	H2V4Topic,                     // chain-bound H2-v4 Decide proofs (compact wire format)
 	ZKProofTopicFormat,            // ZK proof serialization
 	MobilePacketTopicFormat,       // evmsdk V2 stream packets
 	MobileRegistrationTopicFormat, // raw pubkey||pop

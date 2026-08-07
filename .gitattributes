@@ -1,0 +1,6 @@
+# Cross-client wire fixtures are byte-exact contracts shared with the Rust
+# implementation (n42-network). A CRLF checkout on Windows (core.autocrlf)
+# silently corrupts them: the pinned-fixture tests compare raw bytes against
+# generated LF output and report "drift" that is nothing but line endings.
+# -text disables all conversion so every checkout gets the committed bytes.
+internal/consensus/hotstuff/testdata/*.json -text
