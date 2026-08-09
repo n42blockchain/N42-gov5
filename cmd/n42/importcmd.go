@@ -71,6 +71,9 @@ func importRLPBlock(cliCtx *cli.Context) error {
 	// withdrawal application and payload-state persistence. Earlier RLP blocks
 	// keep using BlockChain.InsertChain for its pre-merge handling.
 	if withdrawals != nil {
+		if err := validateEthereumRLPWithdrawals(blk.Header().(*block.Header), withdrawals); err != nil {
+			return fmt.Errorf("import RLP block %q: %w", path, err)
+		}
 		adapter := api.NewEngineStateAdapter(stack.Database(), nil, stack.BlockChain().Config(), stack.Engine())
 		valid, _, err := adapter.ExecutePayloadFromWireWithFullVerification(blk, engineWithdrawals(withdrawals))
 		if err != nil {
@@ -90,6 +93,24 @@ func importRLPBlock(cliCtx *cli.Context) error {
 	// those fixtures.
 	if _, err := stack.BlockChain().InsertChain([]block.IBlock{blk}); err != nil {
 		return fmt.Errorf("import RLP block %q: %w", path, err)
+	}
+	return nil
+}
+
+// validateEthereumRLPWithdrawals checks the body against the header commitment
+// before executing the payload. The execution adapter validates the resulting
+// state transition, but it must not be allowed to execute a body whose
+// withdrawalsRoot is already invalid.
+func validateEthereumRLPWithdrawals(header *block.Header, withdrawals []*ethel.Withdrawal) error {
+	if header == nil {
+		return fmt.Errorf("missing block header")
+	}
+	if header.WithdrawalsHash == nil {
+		return fmt.Errorf("missing withdrawalsRoot")
+	}
+	want := ethel.EthWithdrawalsRoot(withdrawals)
+	if *header.WithdrawalsHash != want {
+		return fmt.Errorf("invalid withdrawalsRoot: have %s, want %s", header.WithdrawalsHash.Hex(), want.Hex())
 	}
 	return nil
 }

@@ -102,3 +102,34 @@ func TestEngineWithdrawalsPreservesWireFields(t *testing.T) {
 		t.Fatalf("converted withdrawal = %#v", got)
 	}
 }
+
+func TestValidateEthereumRLPWithdrawals(t *testing.T) {
+	withdrawals := []*ethel.Withdrawal{{
+		Index:     3,
+		Validator: 5,
+		Address:   types.HexToAddress("0x000000000000000000000000000000000000c0de"),
+		Amount:    7,
+	}}
+	want := ethel.EthWithdrawalsRoot(withdrawals)
+
+	t.Run("accepts matching root", func(t *testing.T) {
+		header := &block.Header{WithdrawalsHash: &want}
+		if err := validateEthereumRLPWithdrawals(header, withdrawals); err != nil {
+			t.Fatalf("unexpected validation error: %v", err)
+		}
+	})
+
+	t.Run("rejects mismatching root", func(t *testing.T) {
+		wrong := types.HexToHash("0x01")
+		header := &block.Header{WithdrawalsHash: &wrong}
+		if err := validateEthereumRLPWithdrawals(header, withdrawals); err == nil {
+			t.Fatal("expected withdrawals-root validation error")
+		}
+	})
+
+	t.Run("rejects missing root", func(t *testing.T) {
+		if err := validateEthereumRLPWithdrawals(&block.Header{}, withdrawals); err == nil {
+			t.Fatal("expected missing withdrawals-root error")
+		}
+	})
+}
