@@ -93,6 +93,8 @@ func resolveHiveEngineGenesisFixturePath(t *testing.T) string {
 	}
 	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(currentFile), "..", ".."))
 
+	// Vendored copy of:
+	// tests/eth-hive/simulators/ethereum/engine/init/genesis.json @ dde4f59d
 	vendored := filepath.Join(repoRoot, "internal", "api", "testdata", "hive_engine_genesis.json")
 	if _, err := os.Stat(vendored); err == nil {
 		return vendored
