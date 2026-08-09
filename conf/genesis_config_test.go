@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -135,12 +136,20 @@ func TestGenesisUnmarshalHiveEngineFixture(t *testing.T) {
 func resolveHiveEngineGenesisFixturePath(t *testing.T) string {
 	t.Helper()
 
-	vendored := filepath.Join("..", "internal", "api", "testdata", "hive_engine_genesis.json")
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(currentFile), ".."))
+
+	// Vendored copy of:
+	// tests/eth-hive/simulators/ethereum/engine/init/genesis.json @ dde4f59d
+	vendored := filepath.Join(repoRoot, "internal", "api", "testdata", "hive_engine_genesis.json")
 	if _, err := os.Stat(vendored); err == nil {
 		return vendored
 	}
 
-	external := filepath.Join("..", "tests", "eth-hive", "simulators", "ethereum", "engine", "init", "genesis.json")
+	external := filepath.Join(repoRoot, "tests", "eth-hive", "simulators", "ethereum", "engine", "init", "genesis.json")
 	if _, err := os.Stat(external); err == nil {
 		return external
 	}
