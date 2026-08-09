@@ -72,7 +72,7 @@ func importRLPBlock(cliCtx *cli.Context) error {
 	// keep using BlockChain.InsertChain for its pre-merge handling.
 	if withdrawals != nil {
 		adapter := api.NewEngineStateAdapter(stack.Database(), nil, stack.BlockChain().Config(), stack.Engine())
-		valid, _, err := adapter.ExecutePayloadFromWire(blk, engineWithdrawals(withdrawals))
+		valid, _, err := adapter.ExecutePayloadFromWireWithFullVerification(blk, engineWithdrawals(withdrawals))
 		if err != nil {
 			return fmt.Errorf("import RLP block %q: execute payload: %w", path, err)
 		}

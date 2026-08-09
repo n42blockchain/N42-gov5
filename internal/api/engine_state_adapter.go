@@ -320,6 +320,14 @@ func (a *EngineStateAdapter) ExecutePayloadFromWire(blk *block.Block, withdrawal
 	return a.executePayloadFromWire(blk, withdrawals, false)
 }
 
+// ExecutePayloadFromWireWithFullVerification executes a wire block with the
+// complete state-root path. This is intended for isolated RLP fixture imports,
+// where the database starts at a small synthetic genesis and correctness is
+// more important than the catch-up shortcut used by the live wire sync path.
+func (a *EngineStateAdapter) ExecutePayloadFromWireWithFullVerification(blk *block.Block, withdrawals []*Withdrawal) (bool, types.Hash, error) {
+	return a.executePayloadFromWireMode(blk, withdrawals, false, false)
+}
+
 // ExecutePayloadFromTrustedColumnar executes a block read from the local
 // columnar freezer. That codec deliberately strips logsBloom while retaining the
 // canonical header hash, so this trusted local-only path may reconstruct a
@@ -329,13 +337,17 @@ func (a *EngineStateAdapter) ExecutePayloadFromTrustedColumnar(blk *block.Block,
 }
 
 func (a *EngineStateAdapter) executePayloadFromWire(blk *block.Block, withdrawals []*Withdrawal, allowMissingExpectedBloom bool) (bool, types.Hash, error) {
+	return a.executePayloadFromWireMode(blk, withdrawals, allowMissingExpectedBloom, true)
+}
+
+func (a *EngineStateAdapter) executePayloadFromWireMode(blk *block.Block, withdrawals []*Withdrawal, allowMissingExpectedBloom, fastVerify bool) (bool, types.Hash, error) {
 	var parentBeaconRoot *types.Hash
 	if hdr, _ := blk.Header().(*block.Header); hdr != nil && hdr.ParentBeaconRoot != nil {
 		v := *hdr.ParentBeaconRoot
 		parentBeaconRoot = &v
 	}
 	prevFast := a.fastVerify
-	a.fastVerify = true
+	a.fastVerify = fastVerify
 	defer func() { a.fastVerify = prevFast }()
 	result, err := a.executePayloadDetailed(blk, parentBeaconRoot, nil, withdrawals, allowMissingExpectedBloom)
 	if err != nil {
