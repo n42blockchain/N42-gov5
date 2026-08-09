@@ -14,24 +14,38 @@
 
 这些改动的目标不是“为测试写特判”，而是把 Prague/Cancun 相关的 block hook、system contract 地址、部署字节码和 devnet 初始化收成共享入口，减少今后复测时出现“代码过了，但 Hive 用的还是旧路径/旧副本”的漂移。
 
-## 当前记录状态（2026-07-28）
+## 当前记录状态（2026-08-09）
 
 已同步到最新：
 
-- `tests/eth-hive`: `a74a5a70`
-- `tests/eth-tests/execution-spec-tests`: `main`（`10eaa63d`）
+- `tests/eth-hive`: `f28302b5`（2026-08-02）
+- `tests/eth-tests/execution-spec-tests`: `main`（`0eb24a2b`，2026-08-02）
 
 本地复核结果：
 
-- `go test -tags nosqlite,noboltdb -count=1 ./internal/api/ ./conf/` 通过，16 个 hive fixture 相关测试已恢复可跑。
-- `execution-spec-tests` 单条 `consume-engine` 用例重跑（`stable@latest`）在 6 分多失败，失败点为执行期连接超时：
-  - `HTTPConnectionPool(host='172.17.0.4', port=8551): ConnectTimeout`
+- 项目级 `make test`、`make build`、`make lint` 分开通过；这组结果代表整个 Go 项目，不等同于 EEST 的 eth-el 兼容性结果。
+- Hive/EEST 的 Engine API 回归使用宿主机映射端口；Hive 端在容器存活检查后重新读取端口映射，避免 Docker Desktop 端口尚未出现时回退到不可达的 `172.17.x.x`。
+- 修复了 Prague payload 校验中 intrinsic gas 与 floor data gas 同时失败时的错误优先级，并用 EEST 异常映射覆盖对应客户端错误文本。
 
-与 `connect` 相关的关键判断：`tests/eth-hive` 当前 API 的 `StartNodeResponse` 仅返回 `id` 与 `ip`（未包含 `rpcUrl`/`engineUrl`），在 macOS 上容器 `172.17.x.x` 直连仍不稳定；当前最小复现路径不在测试期望哈希层面。
+与 `connect` 相关的关键判断：`tests/eth-hive` 已在本地适配中为非 `python-requests` 客户端返回 `RPCAddress`/`EngineAddress`，EEST/dev 模式通过宿主映射端口访问；容器内的原生 Hive simulator 则继续使用容器 IP。这样避免 macOS 上从宿主机直连 `172.17.x.x`，也避免 simulator Docker module 编译时依赖未发布的本地 Hive API。
+
+当前依赖版本：Hive `f28302b5`（2026-08-02），EEST `0eb24a2b`（2026-08-02）；EEST fixtures 使用 `stable@latest`（当前缓存 v5.4.0），Osaka 使用 `develop@latest`。
 
 对应接口定义：
 
-- `tests/eth-hive/internal/simapi/simapi.go`：`StartNodeResponse{ID, IP}`
+- `tests/eth-hive/internal/simapi/simapi.go`：`StartNodeResponse{ID, IP, RPCAddress, EngineAddress, HostPorts}`
+
+## 测试范围边界
+
+需要把“全部测试”和“eth-el 测试”分开记录：
+
+| 范围 | 入口 | 说明 |
+|---|---|---|
+| 项目全部 Go 包 | `make test`、`make build`、`make lint` | 覆盖仓库级编译、单元测试和静态检查，不依赖 Hive。 |
+| eth-el Engine API | `run_eest_shards.sh paris+shanghai cancun prague osaka engine-access-list` | 通过 Hive 启动 N42 execution client，验证 Engine API 和执行语义。 |
+| eth-el RLP 启动导入 | `run_eest_shards.sh rlp` | 使用真正的 `consume rlp`，结果单独统计，不与 Engine API access-list 子集混淆。 |
+
+EEST/Hive 这些 `consume` 命令都只代表 `n42_local` 这个 execution-layer client 的兼容性，不应写成整个 Go 项目的“全量测试”。反过来，项目级 Go gate 也不能替代 EEST 的 Engine/RLP 测试。
 
 ## 复测时必须满足的前提
 
@@ -70,6 +84,7 @@
 
 - shard selector
 - `consume engine` / `fill` 的口径差异
+- `EEST_RPC_TIMEOUT`（默认 90 秒，避免电脑休眠或网络异常让单个 HTTP 请求无限阻塞）
 - 日志输出目录
 - watcher / cycle 状态文件
 
@@ -131,13 +146,19 @@ EEST 相关命令统一走 `uv run --python 3.13`。
 ### 跑 broad shards
 
 ```bash
-./scripts/run_eest_shards.sh paris+shanghai cancun prague osaka
+./scripts/run_eest_shards.sh paris+shanghai cancun prague osaka engine-access-list
 ```
 
 或按需单跑某个 shard：
 
 ```bash
 ./scripts/run_eest_shards.sh prague
+```
+
+真正的 RLP 启动导入测试单独运行：
+
+```bash
+./scripts/run_eest_shards.sh rlp
 ```
 
 ### 挂巡检
