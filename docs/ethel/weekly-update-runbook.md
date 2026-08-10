@@ -137,7 +137,53 @@ build once for ≤4M only; larger sets are auto-gated and pay no rent),
 
 ## 8. Run log
 
-### 2026-07-22 (this run — geth-sourced part; reth-sourced deferred)
+### 2026-08-09/10 (this run — full cycle: geth + reth sourced + three-mode test)
+
+Source: geth ancient frozen **25,715,849** → target **25,715,848** (prior week
+25,626,781; Δ **89,067**). geth STOPPED (last freeze 08-09 03:26). reth2k synced
+by the operator to exactly 25,715,848 (`--debug.tip 0x9499348c…`, zero gap this
+time), then stopped.
+
+- senders (both dirs): → 25,715,848, 51 s each @ ~1725 blk/s. ✅
+- headerc 1 s; bodyc 5m39s (4.27 GB, 61.5% below geth snappy); receipts 3m58s
+  @ 373 blk/s. Two partial tail segs auto-rewound. ✅
+- replay acctcs/storcs/witness: 25,626,782 → 25,715,848, 1h15m @ ~20-44 blk/s
+  (async witness flush the bottleneck as usual). `ethel-last-block = 25715848`. ✅
+- witness spot-check WORKS again (tool regression of 07-22 not reproduced):
+  blocks 25,650,123 / 25,690,456 / 25,715,848 all gas diff **+0**. ✅ GATE PASS
+- codes freezer (reth2k Bytecodes → `d:/n42-codes-25715848`): 2,647,863 codes
+  (+48,608), 6.1 GB @ 43.7%, 11m49s, `codes.coverage=25715848`, hidx 1.71 b/key.
+  **Trap hit**: the stale `wk-code-import2fz.exe` (Jul 10) predates
+  `--addr-index=false` and silently ignored it (positional arg parsing), walking
+  the 405M-account join; killed, rebuilt from source, re-ran clean. ✅
+- snapshot export (reth2k PLAIN → `d:/n42-snapshot-25715848`, 16 shards):
+  accounts 409,031,271 rows; storage 1,628,233,614 rows, idx 332 MB @ 1.71
+  bits/key, val 25.1 GB (zst 18.9 GB). **Trap hit**: first storage pass died
+  mid-scan when its bash wrapper was reclaimed by the session — the exe was a
+  child of the shell. Long jobs must be `Start-Process`-detached (the replay
+  survived the same reclaim precisely because it was). Accounts phase was
+  already complete; storage re-ran detached, 1h21m. ✅
+- N42-hashed migration (`--dst D:/N42-hashed-25715848/chaindata`, versioned dir,
+  old kept): acc 409M / sto 1.63B / code 2,647,863 (decodeFail 0) /
+  **vtrie OK: root == expect 0x5d765729…1cb810** / `ethel-last-block=25715848`.
+  Fleet was already down — no OOM window needed. ✅ GATE PASS
+- **Three-mode test (E:, catch-up + live)** — all three PASS, serialized on
+  :30403 / 20115, each CTRL_BREAK-stopped clean:
+  - **archive** (chaindata 156 GB + headerc): caught up +5,903 blocks in 31 min,
+    then ~45 min live, per-block tExec 61-535 ms, `eth_blockNumber` advancing.
+  - **minimal** (snapshot 97 files + headerc + codes + set-progress marker):
+    caught up +6,175 in ~10 min (snapshot-direct overlay), ~39 min live clean.
+  - **full** (minimal + bodyc 627 GB): caught up +6,435 in ~12 min, live clean.
+  - Zero `state root mismatch` / `diverge` / `error` / `panic` in all three logs
+    (after excluding routine network-ID/genesis peer-filter drops).
+- NOT run: DATC sr merge (§5, no DATC head advance), anchors/bpp, manifests.
+  geth + reth2k left STOPPED; fleet left STOPPED (was already down).
+- Assembly notes for next time: `.val.zst` excluded from E: snapshot copies
+  (mandatory); `set-progress`/`headcheck` use `ethel-last-block` while
+  `read-progress` prints the legacy `DbInfo/ethel_progress` key — verify markers
+  with headcheck, not read-progress.
+
+### 2026-07-22 (geth-sourced part; reth-sourced deferred)
 
 Source: geth 1.17.4 ancient frozen **Items=25,587,116** → target last block
 **25,587,115** (prior week 25,503,167; Δ **83,948**). geth was STOPPED (last
