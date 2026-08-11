@@ -98,6 +98,11 @@ func TestLegacyTxChainID(t *testing.T) {
 			expected: nil,
 		},
 		{
+			name:     "missing v",
+			v:        nil,
+			expected: nil,
+		},
+		{
 			name:     "EIP155 mainnet v=37",
 			v:        uint256.NewInt(37),
 			expected: uint256.NewInt(1),
