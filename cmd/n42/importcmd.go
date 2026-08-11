@@ -65,6 +65,9 @@ func importRLPBlock(cliCtx *cli.Context) error {
 	if err := validateEthereumRLPHeader(blk.Header().(*block.Header), rlpImportParent(stack, blk), stack.BlockChain().Config()); err != nil {
 		return fmt.Errorf("import RLP block %q: %w", path, err)
 	}
+	if err := validateEthereumRLPBlobGasUsed(blk, stack.BlockChain().Config()); err != nil {
+		return fmt.Errorf("import RLP block %q: %w", path, err)
+	}
 
 	// Shanghai+ block bodies carry withdrawals outside block.Block's legacy
 	// native body. Execute them through the wire adapter, which owns Ethereum
@@ -186,6 +189,31 @@ func validateEthereumRLPHeader(header, parent *block.Header, cfg *params.ChainCo
 	}
 	if cfg != nil && cfg.IsCancunAt(header.Number.Uint64(), header.Time) {
 		return validateEthereumRLPBlobHeader(parent, header, cfg)
+	}
+	if header.BlobGasUsed != nil || header.ExcessBlobGas != nil || header.ParentBeaconRoot != nil {
+		return fmt.Errorf("blob header fields present before Cancun")
+	}
+	return nil
+}
+
+// validateEthereumRLPBlobGasUsed checks the block-level blob gas commitment
+// against the blob transactions in the decoded body. Header-only checks cannot
+// catch a block that claims blob gas without carrying any blob transactions.
+func validateEthereumRLPBlobGasUsed(blk *block.Block, cfg *params.ChainConfig) error {
+	if blk == nil || cfg == nil {
+		return nil
+	}
+	header, ok := blk.Header().(*block.Header)
+	if !ok || header == nil || header.Number == nil || !cfg.IsCancunAt(header.Number.Uint64(), header.Time) {
+		return nil
+	}
+	var headerBlobGasUsed uint64
+	if header.BlobGasUsed != nil {
+		headerBlobGasUsed = *header.BlobGasUsed
+	}
+	expectedBlobGasUsed := misc.CalcBlobGasUsed(blk.Transactions())
+	if headerBlobGasUsed != expectedBlobGasUsed {
+		return fmt.Errorf("blob gas used %d does not match transaction blob gas %d", headerBlobGasUsed, expectedBlobGasUsed)
 	}
 	return nil
 }
