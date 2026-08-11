@@ -86,6 +86,37 @@ func TestValidateEthereumRLPHeaderUsesPragueBlobLimits(t *testing.T) {
 	}
 }
 
+func TestValidateEthereumRLPHeaderRejectsPreCancunBlobFields(t *testing.T) {
+	zero := uint64(0)
+	parent := &block.Header{Number: uint256.NewInt(0), GasLimit: 10_000, Time: 1}
+	header := &block.Header{
+		Number:      uint256.NewInt(1),
+		GasLimit:    10_000,
+		Time:        2,
+		BlobGasUsed: &zero,
+	}
+	cfg := &params.ChainConfig{CancunTime: big.NewInt(10)}
+
+	if err := validateEthereumRLPHeader(header, parent, cfg); err == nil {
+		t.Fatal("expected pre-Cancun blob field validation error")
+	}
+}
+
+func TestValidateEthereumRLPBlobGasUsedMatchesTransactions(t *testing.T) {
+	blobGasUsed := uint64(1)
+	header := &block.Header{
+		Number:      uint256.NewInt(1),
+		Time:        2,
+		BlobGasUsed: &blobGasUsed,
+	}
+	blk := block.NewBlock(header, nil).(*block.Block)
+	cfg := &params.ChainConfig{CancunTime: big.NewInt(0)}
+
+	if err := validateEthereumRLPBlobGasUsed(blk, cfg); err == nil {
+		t.Fatal("expected blob gas to match the empty transaction body")
+	}
+}
+
 func TestEngineWithdrawalsPreservesWireFields(t *testing.T) {
 	address := types.HexToAddress("0x000000000000000000000000000000000000c0de")
 	converted := engineWithdrawals([]*ethel.Withdrawal{{
