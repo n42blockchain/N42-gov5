@@ -250,6 +250,14 @@ type ChainConfig struct {
 	// are NOT part of any standard Ethereum fork surface.
 	PQPrecompilesTime *big.Int `json:"pqPrecompilesTime,omitempty"`
 
+	// EOFTime activates the EVM Object Format (EIP-3540 family). EOF was
+	// removed from the Fusaka (Osaka EL) scope upstream and is NOT part of any
+	// scheduled Ethereum fork — mainnet-following chains must leave this nil,
+	// or a deliberately crafted EOF-container deployment would be accepted
+	// here while geth reverts it (state-root divergence). N42-native chains
+	// that had EOF live under their Osaka preset pin this to their osakaTime.
+	EOFTime *big.Int `json:"eofTime,omitempty"`
+
 	// N42 extension: content-addressed storage precompile (0x0300).
 	// When set, the CAS precompile becomes available for storing/loading
 	// arbitrary data by content hash at the specified timestamp.
@@ -889,6 +897,9 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head uint64) *ConfigC
 	}
 	if isForkIncompatible(c.GlamsterdamTime, newcfg.GlamsterdamTime, head) {
 		return newCompatError("Glamsterdam fork time", c.GlamsterdamTime, newcfg.GlamsterdamTime)
+	}
+	if isForkIncompatible(c.EOFTime, newcfg.EOFTime, head) {
+		return newCompatError("EOF activation time", c.EOFTime, newcfg.EOFTime)
 	}
 	return nil
 }

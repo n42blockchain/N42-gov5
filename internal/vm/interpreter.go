@@ -136,11 +136,23 @@ func NewEVMInterpreter(evm VMInterpreter, cfg Config) *EVMInterpreter {
 	var jt *JumpTable
 	switch {
 	case evm.ChainRules().IsGlamsterdam:
-		jt = &glamsterdamInstructionSet
+		if evm.ChainRules().IsEOF {
+			jt = &glamsterdamEOFInstructionSet
+		} else {
+			jt = &glamsterdamInstructionSet
+		}
 	case evm.ChainRules().IsFusaka:
-		jt = &fusakaInstructionSet
+		if evm.ChainRules().IsEOF {
+			jt = &fusakaEOFInstructionSet
+		} else {
+			jt = &fusakaInstructionSet
+		}
 	case evm.ChainRules().IsOsaka:
-		jt = &osakaInstructionSet
+		if evm.ChainRules().IsEOF {
+			jt = &osakaEOFInstructionSet
+		} else {
+			jt = &osakaInstructionSet
+		}
 	case evm.ChainRules().IsPectra:
 		jt = &pectraInstructionSet
 	case evm.ChainRules().IsPrague:
@@ -230,7 +242,13 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		}
 	)
 
-	// EOF: Initialize return stack and set code to section 0 for EOF contracts
+	// EOF: Initialize return stack and set code to section 0 for EOF contracts.
+	// Gated on the EOFTime rule: without it a legacy-chain contract whose code
+	// happens to parse as a container must still execute as legacy bytes
+	// (first byte 0xEF -> invalid opcode, matching geth).
+	if contract.EOFContainer != nil && !in.evm.ChainRules().IsEOF {
+		contract.EOFContainer = nil
+	}
 	if contract.EOFContainer != nil {
 		callContext.ReturnStack = stack.NewReturnStack()
 		defer stack.ReturnRStack(callContext.ReturnStack)
