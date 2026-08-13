@@ -28,6 +28,9 @@ modules/rawdb/mdbx.db/
 mobile/
 
 .DS_Store
+
+# local-only Chinese doc translations
+docs/*.zh.md
 ast
 
 genesis*.json
