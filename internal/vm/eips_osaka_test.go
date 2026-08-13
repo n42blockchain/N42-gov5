@@ -399,10 +399,12 @@ func TestOpRJUMPV(t *testing.T) {
 // RETURNDATALOAD Tests
 
 func TestOpRETURNDATALOAD(t *testing.T) {
-	jt := newOsakaInstructionSet()
+	// RETURNDATALOAD is an EOF-family opcode: present only in the EOF variant
+	// of the Osaka table (EOF left the Osaka scope upstream).
+	jt := withEOF(newOsakaInstructionSet())
 
 	if jt[RETURNDATALOAD] == nil {
-		t.Fatal("RETURNDATALOAD not in Osaka instruction set")
+		t.Fatal("RETURNDATALOAD not in Osaka+EOF instruction set")
 	}
 	if jt[RETURNDATALOAD].execute == nil {
 		t.Error("RETURNDATALOAD execute function is nil")

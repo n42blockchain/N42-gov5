@@ -74,6 +74,12 @@ var (
 	osakaInstructionSet            = newOsakaInstructionSet()
 	fusakaInstructionSet           = newFusakaInstructionSet()
 	glamsterdamInstructionSet      = newGlamsterdamInstructionSet()
+
+	// EOF variants for chains with the EOFTime experimental gate set
+	// (EOF is not on any scheduled Ethereum fork).
+	osakaEOFInstructionSet       = withEOF(newOsakaInstructionSet())
+	fusakaEOFInstructionSet      = withEOF(newFusakaInstructionSet())
+	glamsterdamEOFInstructionSet = withEOF(newGlamsterdamInstructionSet())
 )
 
 // JumpTable contains the EVM opcodes supported at a given fork.
