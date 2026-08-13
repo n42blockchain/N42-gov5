@@ -12,7 +12,7 @@ import (
 // TestGuestIntrinsicGas_Transfer verifies intrinsic gas for a simple transfer.
 func TestGuestIntrinsicGas_Transfer(t *testing.T) {
 	rules := &params.Rules{IsIstanbul: true}
-	gas := guestIntrinsicGas(nil, nil, false, rules)
+	gas := guestIntrinsicGas(nil, nil, false, rules, false, false)
 	if gas != params.TxGas {
 		t.Fatalf("expected %d for simple transfer, got %d", params.TxGas, gas)
 	}
@@ -21,7 +21,7 @@ func TestGuestIntrinsicGas_Transfer(t *testing.T) {
 // TestGuestIntrinsicGas_Create verifies intrinsic gas for contract creation.
 func TestGuestIntrinsicGas_Create(t *testing.T) {
 	rules := &params.Rules{IsIstanbul: true}
-	gas := guestIntrinsicGas(nil, nil, true, rules)
+	gas := guestIntrinsicGas(nil, nil, true, rules, false, false)
 	if gas != params.TxGasContractCreation {
 		t.Fatalf("expected %d for create, got %d", params.TxGasContractCreation, gas)
 	}
@@ -34,7 +34,7 @@ func TestGuestIntrinsicGas_DataCost(t *testing.T) {
 
 	// Pre-Istanbul: non-zero = 68 gas.
 	preIstanbul := &params.Rules{IsIstanbul: false}
-	gas := guestIntrinsicGas(data, nil, false, preIstanbul)
+	gas := guestIntrinsicGas(data, nil, false, preIstanbul, false, false)
 	expected := params.TxGas + 2*uint64(params.TxDataNonZeroGasFrontier) + 3*params.TxDataZeroGas
 	if gas != expected {
 		t.Fatalf("pre-Istanbul data cost: got %d, want %d", gas, expected)
@@ -42,7 +42,7 @@ func TestGuestIntrinsicGas_DataCost(t *testing.T) {
 
 	// Post-Istanbul: non-zero = 16 gas (EIP-2028).
 	postIstanbul := &params.Rules{IsIstanbul: true}
-	gas = guestIntrinsicGas(data, nil, false, postIstanbul)
+	gas = guestIntrinsicGas(data, nil, false, postIstanbul, false, false)
 	expected = params.TxGas + 2*params.TxDataNonZeroGasEIP2028 + 3*params.TxDataZeroGas
 	if gas != expected {
 		t.Fatalf("post-Istanbul data cost: got %d, want %d", gas, expected)
@@ -67,7 +67,7 @@ func TestGuestIntrinsicGas_AccessList(t *testing.T) {
 		},
 	}
 
-	gas := guestIntrinsicGas(nil, accessList, false, rules)
+	gas := guestIntrinsicGas(nil, accessList, false, rules, false, false)
 	expected := params.TxGas +
 		2*params.TxAccessListAddressGas +
 		2*params.TxAccessListStorageKeyGas
@@ -83,7 +83,7 @@ func TestGuestIntrinsicGas_CreateShanghai(t *testing.T) {
 	// 64 bytes of initcode = 2 words.
 	initcode := make([]byte, 64)
 
-	gas := guestIntrinsicGas(initcode, nil, true, rules)
+	gas := guestIntrinsicGas(initcode, nil, true, rules, false, false)
 	// Base create + 64 zero bytes + 2 initcode words.
 	expected := params.TxGasContractCreation +
 		64*params.TxDataZeroGas +
@@ -100,7 +100,7 @@ func TestGuestIntrinsicGas_CreateShanghaiOddSize(t *testing.T) {
 	// 33 bytes = ceil(33/32) = 2 words.
 	initcode := make([]byte, 33)
 
-	gas := guestIntrinsicGas(initcode, nil, true, rules)
+	gas := guestIntrinsicGas(initcode, nil, true, rules, false, false)
 	expected := params.TxGasContractCreation +
 		33*params.TxDataZeroGas +
 		2*params.InitCodeWordGas // ceil(33/32) = 2
@@ -112,7 +112,7 @@ func TestGuestIntrinsicGas_CreateShanghaiOddSize(t *testing.T) {
 // TestGuestIntrinsicGas_EmptyData verifies no data cost for empty data.
 func TestGuestIntrinsicGas_EmptyData(t *testing.T) {
 	rules := &params.Rules{IsIstanbul: true}
-	gas := guestIntrinsicGas([]byte{}, nil, false, rules)
+	gas := guestIntrinsicGas([]byte{}, nil, false, rules, false, false)
 	if gas != params.TxGas {
 		t.Fatalf("expected %d for empty data, got %d", params.TxGas, gas)
 	}
@@ -122,7 +122,7 @@ func TestGuestIntrinsicGas_EmptyData(t *testing.T) {
 func TestGuestIntrinsicGas_AllNonZero(t *testing.T) {
 	rules := &params.Rules{IsIstanbul: true}
 	data := []byte{0xFF, 0xFE, 0xFD}
-	gas := guestIntrinsicGas(data, nil, false, rules)
+	gas := guestIntrinsicGas(data, nil, false, rules, false, false)
 	expected := params.TxGas + 3*params.TxDataNonZeroGasEIP2028
 	if gas != expected {
 		t.Fatalf("all non-zero data cost: got %d, want %d", gas, expected)
@@ -143,7 +143,7 @@ func TestGuestIntrinsicGas_Combined(t *testing.T) {
 		{Address: types.Address{0x01}, StorageKeys: []types.Hash{{0x01}}},
 	}
 
-	gas := guestIntrinsicGas(data, accessList, true, rules)
+	gas := guestIntrinsicGas(data, accessList, true, rules, false, false)
 	expected := params.TxGasContractCreation +
 		1*params.TxDataZeroGas +
 		1*params.TxDataNonZeroGasEIP2028 +

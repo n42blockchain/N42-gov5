@@ -36,6 +36,7 @@ import (
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/transaction"
+	"github.com/n42blockchain/N42/params"
 )
 
 // =============================================================================
@@ -173,8 +174,12 @@ const (
 // and baseTxGas is 4500 after Glamsterdam (EIP-7904), 21000 otherwise.
 func FloorDataGas(data []byte, isGlamsterdam ...bool) uint64 {
 	baseTxGas := uint64(21000)
+	floorPerToken := uint64(TotalCostFloorPerToken)
 	if len(isGlamsterdam) > 0 && isGlamsterdam[0] {
-		baseTxGas = 4500 // params.TxGasGlamsterdam
+		// Amsterdam: EIP-7976 raises the EIP-7623 floor from 10 to 16 gas per
+		// token (base stays 21000 — EIP-2780 decomposes it without changing
+		// the plain-transfer total).
+		floorPerToken = params.TotalCostFloorPerTokenEIP7976
 	}
 	if len(data) == 0 {
 		return baseTxGas
@@ -193,7 +198,7 @@ func FloorDataGas(data []byte, isGlamsterdam ...bool) uint64 {
 	tokens := zeroBytes + nonZeroBytes*StandardTokenCost
 
 	// Floor gas = base gas + tokens * floor cost per token
-	return baseTxGas + tokens*TotalCostFloorPerToken
+	return baseTxGas + tokens*floorPerToken
 }
 
 // CalcCalldataCostEIP7623 calculates the calldata cost with EIP-7623 rules

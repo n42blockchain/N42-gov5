@@ -97,14 +97,23 @@ func validateAndFillMaxStack(jt *JumpTable) {
 	}
 }
 
-// newGlamsterdamInstructionSet returns the Glamsterdam instruction set.
-// Glamsterdam = Fusaka + EIP-7904 gas repricing (CREATE, CREATE2, SSTORE).
+// newGlamsterdamInstructionSet returns the Glamsterdam (Amsterdam EL)
+// instruction set: Fusaka + the scheduled Amsterdam EIPs.
+//
+//   - EIP-8024: DUPN/SWAPN/EXCHANGE for legacy code (backward-compatible
+//     immediates; the EOF variants under the same bytes remain EOF-only)
+//   - EIP-8037/8038: state-creation and state-access gas — SSTORE moves to
+//     the Amsterdam schedule (STORAGE_WRITE 10000, fresh slot +97920, clear
+//     refund 11616); account-creation charges live in gasCall/evm.create
+//   - EIP-7843 SLOTNUM activates here for chains without a Fusaka preset
+//
+// The former EIP-7904 repricing (demoted to Informational upstream) is gone;
+// its constants remain in params for chains that shipped the old preset.
 func newGlamsterdamInstructionSet() JumpTable {
 	instructionSet := newFusakaInstructionSet()
-	// EIP-7904: Glamsterdam gas repricing
-	instructionSet[CREATE].constantGas = params.CreateGasGlamsterdam
-	instructionSet[CREATE2].constantGas = params.Create2GasGlamsterdam
-	instructionSet[SSTORE].dynamicGas = gasSStoreGlamsterdam
+	// 7843 (SLOTNUM) is already active via the inherited Fusaka set.
+	enable8024(&instructionSet)
+	instructionSet[SSTORE].dynamicGas = gasSStoreAmsterdam
 	validateAndFillMaxStack(&instructionSet)
 	return instructionSet
 }

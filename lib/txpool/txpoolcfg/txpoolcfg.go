@@ -194,33 +194,27 @@ func (r DiscardReason) String() string {
 func CalcIntrinsicGas(dataLen, dataNonZeroLen, authorizationsLen, accessListLen, storageKeysLen uint64, isContractCreation, isHomestead, isEIP2028, isShanghai, isPrague bool, isGlamsterdam ...bool) (gas uint64, floorGas7623 uint64, d DiscardReason) {
 	glamsterdam := len(isGlamsterdam) > 0 && isGlamsterdam[0]
 	// Set the starting gas for the raw transaction
-	if isContractCreation && isHomestead {
-		if glamsterdam {
-			gas = fixedgas.TxGasContractCreationGlamsterdam
-		} else {
-			gas = fixedgas.TxGasContractCreation
-		}
-	} else {
-		if glamsterdam {
-			gas = fixedgas.TxGasGlamsterdam
-		} else {
-			gas = fixedgas.TxGas
-		}
-	}
 	if glamsterdam {
-		floorGas7623 = fixedgas.TxGasGlamsterdam
+		// Amsterdam / EIP-2780. This validator has no value/self-transfer
+		// context, so it charges only the guaranteed components — a LOWER
+		// BOUND (the execution-layer IntrinsicGas adds recipient/value parts).
+		gas = fixedgas.TxBaseCostEIP2780
+		if isContractCreation {
+			gas += fixedgas.CreateAccessEIP8038
+		}
+	} else if isContractCreation && isHomestead {
+		gas = fixedgas.TxGasContractCreation
 	} else {
-		floorGas7623 = fixedgas.TxGas
+		gas = fixedgas.TxGas
 	}
+	floorGas7623 = fixedgas.TxGas
 	// Bump the required gas by the amount of transactional data
 	if dataLen > 0 {
 		// Zero and non-zero bytes are priced differently
 		nz := dataNonZeroLen
 		// Make sure we don't exceed uint64 for all data combinations
 		nonZeroGas := fixedgas.TxDataNonZeroGasFrontier
-		if glamsterdam {
-			nonZeroGas = fixedgas.TxDataNonZeroGasGlamsterdam
-		} else if isEIP2028 {
+		if glamsterdam || isEIP2028 {
 			nonZeroGas = fixedgas.TxDataNonZeroGasEIP2028
 		}
 
@@ -236,9 +230,6 @@ func CalcIntrinsicGas(dataLen, dataNonZeroLen, authorizationsLen, accessListLen,
 		z := dataLen - nz
 
 		zeroGas := fixedgas.TxDataZeroGas
-		if glamsterdam {
-			zeroGas = fixedgas.TxDataZeroGasGlamsterdam
-		}
 		product, overflow = emath.SafeMul(z, zeroGas)
 		if overflow {
 			return 0, 0, GasUintOverflow
@@ -263,7 +254,11 @@ func CalcIntrinsicGas(dataLen, dataNonZeroLen, authorizationsLen, accessListLen,
 		// EIP-7623
 		if isPrague {
 			tokenLen := dataLen + 3*nz
-			dataGas, overflow := emath.SafeMul(tokenLen, fixedgas.TxTotalCostFloorPerToken)
+			floorPerToken := fixedgas.TxTotalCostFloorPerToken
+			if glamsterdam {
+				floorPerToken = fixedgas.TxTotalCostFloorPerTokenEIP7976 // EIP-7976
+			}
+			dataGas, overflow := emath.SafeMul(tokenLen, floorPerToken)
 			if overflow {
 				return 0, 0, GasUintOverflow
 			}
@@ -277,8 +272,11 @@ func CalcIntrinsicGas(dataLen, dataNonZeroLen, authorizationsLen, accessListLen,
 		accessListAddrGas := fixedgas.TxAccessListAddressGas
 		accessListKeyGas := fixedgas.TxAccessListStorageKeyGas
 		if glamsterdam {
-			accessListAddrGas = fixedgas.TxAccessListAddressGasGlamsterdam
-			accessListKeyGas = fixedgas.TxAccessListStorageKeyGasGlamsterdam
+			// EIP-8038 base prices + EIP-7981 per-byte surcharge.
+			accessListAddrGas = fixedgas.TxAccessListAddressGasEIP8038 +
+				fixedgas.AccessListAddressBytes*fixedgas.AccessListBytesSurchargeEIP7981
+			accessListKeyGas = fixedgas.TxAccessListStorageKeyGasEIP8038 +
+				fixedgas.AccessListStorageKeyBytes*fixedgas.AccessListBytesSurchargeEIP7981
 		}
 		product, overflow := emath.SafeMul(accessListLen, accessListAddrGas)
 		if overflow {

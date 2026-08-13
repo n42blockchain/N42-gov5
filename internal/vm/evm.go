@@ -297,6 +297,10 @@ func (evm *EVM) call(typ OpCode, caller ContractRef, addr types.Address, input [
 			evm.intraBlockState.CreateAccount(addr, false)
 		}
 		evm.context.Transfer(evm.intraBlockState, caller.Address(), addr, value, bailout)
+		// EIP-7708 (Amsterdam): nonzero CALL-family value transfer emits a log.
+		if evm.chainRules.IsGlamsterdam && value != nil && !value.IsZero() && caller.Address() != addr {
+			EmitTransferLog(evm.intraBlockState, caller.Address(), addr, value)
+		}
 	} else if typ == STATICCALL {
 		// We do an AddBalance of zero here, just in order to trigger a touch.
 		// This doesn't matter on Mainnet, where all empties are gone at the time of Byzantium,
@@ -506,11 +510,24 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 		evm.intraBlockState.SetNonce(address, 1)
 	}
 	evm.context.Transfer(evm.intraBlockState, caller.Address(), address, value, false /* bailout */)
+	// EIP-7708 (Amsterdam): nonzero CREATE/CREATE2 endowment emits a log.
+	if evm.chainRules.IsGlamsterdam && value != nil && !value.IsZero() {
+		EmitTransferLog(evm.intraBlockState, caller.Address(), address, value)
+	}
 
 	// Initialise a new contract and set the code that is to be used by the EVM.
 	// The contract is a scoped environment for this execution context only.
 	contract := NewContract(caller, AccountRef(address), value, gas, evm.config.SkipAnalysis)
 	contract.SetCodeOptionalHash(&address, codeAndHash)
+
+	// EIP-8037 (Amsterdam): charge state gas for the freshly created account
+	// (120 bytes x CPSB = 183600), after the pre-access failure checks above.
+	if evm.chainRules.IsGlamsterdam {
+		if !contract.UseGas(params.StateBytesPerNewAccount * params.CostPerStateByteEIP8037) {
+			evm.intraBlockState.RevertToSnapshot(snapshot)
+			return nil, address, 0, ErrOutOfGas
+		}
+	}
 
 	if evm.config.NoRecursion && depth > 0 {
 		return nil, address, gas, nil
@@ -518,8 +535,13 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 
 	ret, err = run(evm, contract, nil, false)
 
-	// EIP-170: Contract code size limit
-	if err == nil && evm.chainRules.IsSpuriousDragon && len(ret) > params.MaxCodeSize {
+	// EIP-170: Contract code size limit.
+	// EIP-7954 (Amsterdam) raises the cap from 24 KiB to 64 KiB.
+	maxCodeSize := params.MaxCodeSize
+	if evm.chainRules.IsGlamsterdam {
+		maxCodeSize = params.MaxCodeSizeEIP7954
+	}
+	if err == nil && evm.chainRules.IsSpuriousDragon && len(ret) > maxCodeSize {
 		// Gnosis Chain prior to Shanghai didn't have EIP-170 enabled,
 		// but EIP-3860 (part of Shanghai) requires EIP-170.
 		if !evm.chainRules.IsAura || evm.config.HasEip3860(evm.chainRules) {
@@ -544,7 +566,13 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	// be stored due to not enough gas set an error and let it be handled
 	// by the error checking condition below.
 	if err == nil {
-		createDataGas := uint64(len(ret)) * params.CreateDataGas
+		// EIP-8037 (Amsterdam): deployed code is new state — CPSB (1530) per
+		// byte replaces the legacy 200/byte deposit charge.
+		perByte := uint64(params.CreateDataGas)
+		if evm.chainRules.IsGlamsterdam {
+			perByte = params.CostPerStateByteEIP8037
+		}
+		createDataGas := uint64(len(ret)) * perByte
 		if contract.UseGas(createDataGas) {
 			evm.intraBlockState.SetCode(address, ret)
 		} else if evm.chainRules.IsHomestead {
