@@ -280,7 +280,9 @@ func applyTransaction(config *params.ChainConfig, engine consensus.Engine, gp *c
 	if err = ibs.FinalizeTx(rules, stateWriter); err != nil {
 		return nil, nil, err
 	}
-	*usedGas += result.UsedGas
+	// EIP-7778 (Amsterdam): the block consumes the pre-refund gas; the
+	// receipt's per-tx GasUsed below stays the sender-billed amount.
+	*usedGas += result.BlockGasUsed
 
 	var receipt *block.Receipt
 	if !cfg.NoReceipts {

@@ -49,6 +49,15 @@ func IsStandardPrecompile(addr types.Address) bool {
 	return addr[19] >= 1 && addr[19] <= 9
 }
 
+// coldAccountAccessCost returns COLD_ACCOUNT_ACCESS for the active rules:
+// EIP-8038 (Amsterdam) raises it from 2600 to 3000.
+func coldAccountAccessCost(evm VMInterpreter) uint64 {
+	if evm.ChainRules().IsGlamsterdam {
+		return params.ColdAccountAccessEIP8038
+	}
+	return params.ColdAccountAccessCostEIP2929
+}
+
 func makeGasSStoreFunc(clearingRefund uint64) gasFunc {
 	return func(evm VMInterpreter, contract *Contract, stack *stack.Stack, mem *Memory, memorySize uint64) (uint64, error) {
 		// If we fail the minimum gas availability invariant, fail (0)
@@ -162,7 +171,7 @@ func gasExtCodeCopyEIP2929(evm VMInterpreter, contract *Contract, stack *stack.S
 		evm.IntraBlockState().AddAddressToAccessList(addr)
 		var overflow bool
 		// We charge (cold-warm), since 'warm' is already charged as constantGas
-		if gas, overflow = math.SafeAdd(gas, params.ColdAccountAccessCostEIP2929-params.WarmStorageReadCostEIP2929); overflow {
+		if gas, overflow = math.SafeAdd(gas, coldAccountAccessCost(evm)-params.WarmStorageReadCostEIP2929); overflow {
 			return 0, ErrGasUintOverflow
 		}
 		return gas, nil
@@ -190,7 +199,7 @@ func gasEip2929AccountCheck(evm VMInterpreter, contract *Contract, stack *stack.
 		// If the caller cannot afford the cost, this change will be rolled back
 		evm.IntraBlockState().AddAddressToAccessList(addr)
 		// The warm storage read cost is already charged as constantGas
-		return params.ColdAccountAccessCostEIP2929 - params.WarmStorageReadCostEIP2929, nil
+		return coldAccountAccessCost(evm) - params.WarmStorageReadCostEIP2929, nil
 	}
 	return 0, nil
 }
@@ -211,7 +220,7 @@ func delegationCallAccessCost(evm VMInterpreter, addr types.Address) uint64 {
 	}
 
 	evm.IntraBlockState().AddAddressToAccessList(delegatedAddr)
-	return params.ColdAccountAccessCostEIP2929
+	return coldAccountAccessCost(evm)
 }
 
 func makeCallVariantGasCallEIP2929(oldCalculator gasFunc) gasFunc {
@@ -224,7 +233,7 @@ func makeCallVariantGasCallEIP2929(oldCalculator gasFunc) gasFunc {
 		warmAccess := evm.IntraBlockState().AddressInAccessList(addr)
 		// The WarmStorageReadCostEIP2929 (100) is already deducted in the form of a constant cost, so
 		// the cost to charge for cold access, if any, is Cold - Warm
-		coldCost := params.ColdAccountAccessCostEIP2929 - params.WarmStorageReadCostEIP2929
+		coldCost := coldAccountAccessCost(evm) - params.WarmStorageReadCostEIP2929
 		if !warmAccess {
 			evm.IntraBlockState().AddAddressToAccessList(addr)
 			// Charge the remaining difference here already, to correctly calculate available
@@ -306,10 +315,16 @@ func makeSelfdestructGasFn(refundsEnabled bool) gasFunc {
 		)
 		if !evm.IntraBlockState().AddressInAccessList(address) {
 			evm.IntraBlockState().AddAddressToAccessList(address)
-			gas = params.ColdAccountAccessCostEIP2929
+			gas = coldAccountAccessCost(evm)
 		}
 		if evm.IntraBlockState().Empty(address) && !evm.IntraBlockState().GetBalance(contract.Address()).IsZero() {
-			gas += params.CreateBySelfdestructGas
+			newAccountGas := uint64(params.CreateBySelfdestructGas)
+			if evm.ChainRules().IsGlamsterdam {
+				// EIP-8037/8038: sweeping into a fresh account creates state.
+				newAccountGas = params.CreateAccessEIP8038 +
+					params.StateBytesPerNewAccount*params.CostPerStateByteEIP8037
+			}
+			gas += newAccountGas
 		}
 		if refundsEnabled && !evm.IntraBlockState().HasSelfdestructed(contract.Address()) {
 			evm.IntraBlockState().AddRefund(params.SelfdestructRefundGas)

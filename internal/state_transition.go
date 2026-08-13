@@ -139,9 +139,13 @@ type Message interface {
 // ExecutionResult includes all output after executing given evm message
 // no matter the execution itself is successful or not.
 type ExecutionResult struct {
-	UsedGas    uint64 // Total used gas including refunded gas
-	Err        error  // Any error encountered during execution
-	ReturnData []byte // Returned data from evm
+	UsedGas uint64 // Gas billed to the sender (refunds applied)
+	// BlockGasUsed is what the block consumes for this tx. Equal to UsedGas
+	// before Amsterdam; under EIP-7778 it is max(pre-refund gas, calldata
+	// floor) — refunds no longer stretch the block gas limit.
+	BlockGasUsed uint64
+	Err          error  // Any error encountered during execution
+	ReturnData   []byte // Returned data from evm
 }
 
 // Unwrap returns the internal evm error for further analysis.
@@ -169,20 +173,30 @@ func (result *ExecutionResult) Revert() []byte {
 }
 
 // IntrinsicGas computes the 'intrinsic gas' for a message with the given data.
-func IntrinsicGas(data []byte, accessList transaction.AccessList, authList transaction.AuthorizationList, isContractCreation bool, isHomestead, isEIP2028 bool, isEIP3860 bool, isPrague bool, isGlamsterdam bool) (uint64, error) {
+//
+// Under Glamsterdam (Amsterdam EL) the flat 21000 decomposes per EIP-2780:
+// TX_BASE (12000) + recipient touch (3000) + value write (6000), so a plain
+// transfer still costs 21000 while self-transfers drop the recipient parts and
+// creations charge CREATE_ACCESS instead. Access lists move to the EIP-8038
+// prices plus the EIP-7981 64-gas-per-byte data surcharge. hasValue and
+// isSelfTransfer feed the 2780 decomposition; they are ignored pre-Amsterdam.
+func IntrinsicGas(data []byte, accessList transaction.AccessList, authList transaction.AuthorizationList, isContractCreation bool, isHomestead, isEIP2028 bool, isEIP3860 bool, isPrague bool, isGlamsterdam bool, hasValue bool, isSelfTransfer bool) (uint64, error) {
 	var gas uint64
-	if isContractCreation && isHomestead {
-		if isGlamsterdam {
-			gas = params.TxGasContractCreationGlamsterdam
-		} else {
-			gas = params.TxGasContractCreation
+	if isGlamsterdam {
+		// EIP-2780 component-based intrinsic gas.
+		gas = params.TxBaseCostEIP2780
+		if isContractCreation {
+			gas += params.CreateAccessEIP8038
+		} else if !isSelfTransfer {
+			gas += params.TxColdAccountEIP2780
+			if hasValue {
+				gas += params.TxValueCostEIP2780
+			}
 		}
+	} else if isContractCreation && isHomestead {
+		gas = params.TxGasContractCreation
 	} else {
-		if isGlamsterdam {
-			gas = params.TxGasGlamsterdam
-		} else {
-			gas = params.TxGas
-		}
+		gas = params.TxGas
 	}
 
 	dataLen := uint64(len(data))
@@ -194,10 +208,10 @@ func IntrinsicGas(data []byte, accessList transaction.AccessList, authList trans
 			}
 		}
 
+		// Amsterdam keeps the standard 4/16 calldata prices (EIP-7976 raises
+		// only the EIP-7623 floor, applied in FloorDataGas).
 		nonZeroGas := params.TxDataNonZeroGasFrontier
-		if isGlamsterdam {
-			nonZeroGas = params.TxDataNonZeroGasGlamsterdam
-		} else if isEIP2028 {
+		if isEIP2028 || isGlamsterdam {
 			nonZeroGas = params.TxDataNonZeroGasEIP2028
 		}
 		if (math.MaxUint64-gas)/nonZeroGas < nz {
@@ -206,9 +220,6 @@ func IntrinsicGas(data []byte, accessList transaction.AccessList, authList trans
 		gas += nz * nonZeroGas
 
 		zeroGas := params.TxDataZeroGas
-		if isGlamsterdam {
-			zeroGas = params.TxDataZeroGasGlamsterdam
-		}
 		z := dataLen - nz
 		if (math.MaxUint64-gas)/zeroGas < z {
 			return 0, ErrGasUintOverflow
@@ -228,17 +239,26 @@ func IntrinsicGas(data []byte, accessList transaction.AccessList, authList trans
 		accessListAddressGas := params.TxAccessListAddressGas
 		accessListStorageKeyGas := params.TxAccessListStorageKeyGas
 		if isGlamsterdam {
-			accessListAddressGas = params.TxAccessListAddressGasGlamsterdam
-			accessListStorageKeyGas = params.TxAccessListStorageKeyGasGlamsterdam
+			// EIP-8038 base prices + EIP-7981 per-byte data surcharge.
+			accessListAddressGas = params.TxAccessListAddressGasEIP8038 +
+				params.AccessListAddressBytes*params.AccessListBytesSurchargeEIP7981
+			accessListStorageKeyGas = params.TxAccessListStorageKeyGasEIP8038 +
+				params.AccessListStorageKeyBytes*params.AccessListBytesSurchargeEIP7981
 		}
 		gas += uint64(len(accessList)) * accessListAddressGas
 		gas += uint64(accessList.StorageKeys()) * accessListStorageKeyGas
 	}
 	if isPrague && len(authList) > 0 {
-		if (math.MaxUint64-gas)/params.PerEmptyAccountCost < uint64(len(authList)) {
+		perAuth := params.PerEmptyAccountCost
+		if isGlamsterdam {
+			// EIP-2780: intrinsic part of a 7702 authorization; the state
+			// bytes are charged at runtime under EIP-8037.
+			perAuth = params.TxAuthBaseCostEIP2780
+		}
+		if (math.MaxUint64-gas)/perAuth < uint64(len(authList)) {
 			return 0, ErrGasUintOverflow
 		}
-		gas += uint64(len(authList)) * params.PerEmptyAccountCost
+		gas += uint64(len(authList)) * perAuth
 	}
 	return gas, nil
 }
@@ -461,7 +481,9 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 	rules := st.evm.ChainRules()
 
 	// Check intrinsic gas
-	gas, err := IntrinsicGas(st.data, st.msg.AccessList(), st.msg.AuthList(), contractCreation, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai, rules.IsPrague, rules.IsGlamsterdam)
+	hasValue := st.value != nil && !st.value.IsZero()
+	isSelfTransfer := !contractCreation && msg.To() != nil && *msg.To() == msg.From()
+	gas, err := IntrinsicGas(st.data, st.msg.AccessList(), st.msg.AuthList(), contractCreation, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai, rules.IsPrague, rules.IsGlamsterdam, hasValue, isSelfTransfer)
 	if err != nil {
 		return nil, err
 	}
@@ -521,6 +543,17 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 		ret, st.gas, vmerr = st.evm.Call(sender, st.to(), st.data, st.gas, st.value, bailout)
 	}
 
+	// EIP-7778 (Amsterdam): block-level gas accounting excludes refunds — the
+	// block consumes max(pre-refund gas used, calldata floor) even though the
+	// sender's bill below still benefits from the refund.
+	blockGasUsed := uint64(0)
+	if rules.IsGlamsterdam {
+		blockGasUsed = st.gasUsed()
+		if floorDataGas > blockGasUsed {
+			blockGasUsed = floorDataGas
+		}
+	}
+
 	if refunds {
 		// Dump refund state when DBG_SSTORE targets this block.
 		if dbgRefundBlock > 0 && st.evm.Context().BlockNumber == dbgRefundBlock {
@@ -561,10 +594,14 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 		st.state.AddBalance(burntContractAddress, burnAmount)
 	}
 
+	if blockGasUsed == 0 {
+		blockGasUsed = st.gasUsed()
+	}
 	return &ExecutionResult{
-		UsedGas:    st.gasUsed(),
-		Err:        vmerr,
-		ReturnData: ret,
+		UsedGas:      st.gasUsed(),
+		BlockGasUsed: blockGasUsed,
+		Err:          vmerr,
+		ReturnData:   ret,
 	}, nil
 }
 

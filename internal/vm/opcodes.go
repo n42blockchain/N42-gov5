@@ -212,6 +212,10 @@ const (
 	LOG4
 )
 
+// 0xe6-0xe8 (DUPN, SWAPN, EXCHANGE) are declared in eof.go (EIP-663, EOF
+// containers). EIP-8024 (Amsterdam) reuses the same opcode bytes for legacy
+// code with a backward-compatible immediate encoding — see eips_amsterdam.go.
+
 // 0xf0 range - closures.
 const (
 	CREATE OpCode = 0xf0 + iota
@@ -387,6 +391,11 @@ var opCodeToString = map[OpCode]string{
 	LOG3:   "LOG3",
 	LOG4:   "LOG4",
 
+	// 0xe0 range - EIP-8024.
+	DUPN:     "DUPN",
+	SWAPN:    "SWAPN",
+	EXCHANGE: "EXCHANGE",
+
 	// 0xf0 range.
 	CREATE:       "CREATE",
 	CALL:         "CALL",
@@ -546,6 +555,9 @@ var stringToOp = map[string]OpCode{
 	"LOG2":           LOG2,
 	"LOG3":           LOG3,
 	"LOG4":           LOG4,
+	"DUPN":           DUPN,
+	"SWAPN":          SWAPN,
+	"EXCHANGE":       EXCHANGE,
 	"CREATE":         CREATE,
 	"CREATE2":        CREATE2,
 	"CALL":           CALL,
