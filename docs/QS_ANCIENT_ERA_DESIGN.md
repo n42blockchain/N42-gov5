@@ -144,12 +144,13 @@ chain id, genesis hash, generation id (first seal time + base head hash).
   (CanonicalHeader/HeaderNumber stay hot for navigation — 2 GB today,
   cheap; replacing old-range HeaderNumber with per-era RecSplit is a
   possible later optimization, explicitly deferred.)
-- **After seal**: batched MDBX deletes (small txs, yielding) of the sealed
-  range: Header, BlockBody, BlockTransaction (via MaxTxNum → sequence
-  range), Receipt, TransactionLog, Senders, ConsensusEvidence,
-  BlockWitness, AccountChangeSet, StorageChangeSet. This supersedes the
-  "BlockTx is small, keep hot" assumption in `CleanupFrozenData`
-  (`freezer_integration.go:119`) — at 182 tx/block it is the largest table.
+- **Sealed ranges leave MDBX**: the weekly-rebuilt hot DB simply omits
+  sealed ranges of Header, BlockBody, BlockTransaction, Receipt,
+  TransactionLog, Senders, ConsensusEvidence, BlockWitness,
+  AccountChangeSet, StorageChangeSet (no runtime deletes needed — §6).
+  This supersedes the "BlockTx is small, keep hot" assumption in
+  `CleanupFrozenData` (`freezer_integration.go:119`) — at 182 tx/block it
+  is the largest table.
 - **Prune** (operator command or policy, e.g. "aux beyond 4 eras, exec
   beyond 1 year"): delete the file, flip manifest status to `pruned`.
   One file = one prune unit. Class A is not pruneable by any command.
@@ -158,24 +159,55 @@ chain id, genesis hash, generation id (first seal time + base head hash).
   rebuildable from aux eras and truncated opportunistically during weekly
   regeneration.
 
-## 6. Write path
+## 6. Write path — replay is the only writer
 
-Live seal (background goroutine, extends the existing freezer loop):
+**Decision: nodes never seal eras.** The weekly `replay-v2 --emit-era` run
+is the single producer of both outputs; nodes open the era directory
+strictly read-only and only ever append fresh blocks to hot MDBX.
 
-1. Read the era range from MDBX (read-only txs, throttled batches).
-2. Build the era into `<name>.era.tmp` **in the ancient dir** (same volume
-   ⇒ atomic rename), streaming: data frames → index → meta → footer.
-3. fsync file → rename to final name → update manifest (temp+rename+fsync)
-   → write manifest blake3 to MDBX → **then** batched MDBX deletes.
-   (Same ordering discipline as the freezer/MDBX atomicity rule: the
-   sink is durable before the source forgets.)
-4. Crash mid-seal: `.tmp` discarded at boot. Crash between rename and
-   deletes: boot sees era sealed + range still in MDBX → resumes deletes
-   (idempotent).
+Per weekly cycle (incremental, O(one week's growth)):
 
-Weekly replay: `replay-v2 --emit-era` writes sealed eras directly and a
-hot-only MDBX, skipping the double write. Determinism gate: an era emitted
-by replay must be byte-identical to one sealed live (§8).
+1. Fold the fleet head into the base as today; old blocks are untouched,
+   so **previously sealed eras are byte-stable across generations** —
+   the emit step only creates the 0–1 newly completed era(s).
+2. New era built as `<name>.era.tmp` in the era dir (same volume ⇒ atomic
+   rename), streaming: data frames → index → meta → footer; fsync →
+   rename → manifest rewrite (temp+rename+fsync) → manifest blake3 into
+   the hot MDBX being built.
+3. Emit the hot-only MDBX: state + QMDB + navigation + the unsealed
+   recent window. Born compact — no delete churn, no free-page
+   fragmentation, fresh B+trees every week.
+4. Reseed the fleet: hot MDBX per node + era dir (copy or hardlink, §8).
+
+Why replay-direct beats node-side live sealing here:
+
+- **One writer ⇒ determinism by construction.** No need to prove
+  live-seal ≡ emit byte-equality — the hardest correctness gate of the
+  two-writer design disappears.
+- **Zero new runtime load on the fleet.** Sealing an era reads gigabytes
+  from MDBX and writes ~1 GB while consensus runs; the fleet is
+  latency-sensitive and this box has a history of dying under stacked
+  load. Replay runs while the fleet is stopped anyway.
+- **No live MDBX delete churn.** Deleting a sealed era's rows from a
+  running node's MDBX causes free-page churn and long commits; the weekly
+  rebuilt hot DB gets the same result for free.
+- **Era store is immutable at runtime.** Files can be ACL'd read-only;
+  a node crash can never corrupt history; integrity checking has no
+  moving target.
+- **Matches the industry endgame** (EIP-4444/era1): history is produced
+  once and distributed as verified artifacts; nodes consume, not curate.
+
+Costs, accepted: hot MDBX grows between reseeds (up to ~+21 GB/week under
+peak txgen; typical much less), truncated back to ~7 GB at each weekly
+reseed — strictly better than today's unbounded 47 GB+. A skipped weekly
+cycle degrades gracefully to the status quo (MDBX keeps growing, nothing
+breaks).
+
+**Deferred: node-side live seal.** Only needed if/when third-party nodes
+must run autonomously without our weekly pipeline (public deployment).
+The container format is writer-agnostic, so this adds later without
+format changes; at that point the byte-equality determinism gate (§8)
+becomes mandatory.
 
 ## 7. Integrity: detect, degrade, never lie
 
@@ -230,8 +262,10 @@ Therefore:
 - The weekly replay base (D:) regenerates any era from scratch; the
   regenerated file must match the fleet manifest hash — this doubles as a
   standing correctness audit of the whole pipeline.
-- A unit test seals a synthetic range twice (live path + emit path) and
-  asserts byte equality; the weekly gate spot-checks one real era.
+- A unit test emits a synthetic range twice (fresh run + incremental
+  resume) and asserts byte equality; the weekly gate re-hashes prior-
+  generation eras and asserts they are unchanged. (If node-side live
+  sealing lands later, live-seal ≡ emit byte equality becomes a gate.)
 
 On a single-box fleet, per-node copies of identical eras may be NTFS
 hardlinks to one physical copy (7× space saving); note the tradeoff — one
@@ -249,10 +283,12 @@ lesson).
 
 ## 10. Rollout (rides the weekly cycle, no online migration)
 
-- **Phase 0 (code, no fleet impact)**: era codec + store + `n42 era
-  seal|verify|ls|fetch|prune` + read-path tier + tests (roundtrip,
-  determinism, corruption injection per layer, missing-file degradation,
-  boot-check matrix, catch-up unavailable-frame).
+- **Phase 0 (code, no fleet impact)**: era codec + read-only store +
+  `replay-v2 --emit-era` + `n42 era verify|ls|fetch|prune` + read-path
+  tier + tests (roundtrip, incremental determinism, corruption injection
+  per layer, missing-file degradation, boot-check matrix, catch-up
+  unavailable-frame). No node-side seal goroutine — nodes gain only the
+  read tier and boot verification.
 - **Phase 1 (next weekly reseed)**: replay-v2 emits era layout + hot MDBX;
   fleet reseeded with `AncientDB=true`. Hot MDBX drops from ~47 GB to
   ~7 GB/node. Rollback = previous generation, as every week.
