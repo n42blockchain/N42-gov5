@@ -14,7 +14,13 @@ Featuring Block-STM parallel execution, HotStuff-2 BFT consensus, and mobile ver
 
 **Disclaimer:** This software is currently a tech preview. We will do our best to keep it stable and avoid breaking changes, but we make no guarantees.
 
-Latest validation (2026-04-15): recorded Hive/EEST broad consume-engine shard reruns on latest `main` are green for Paris+Shanghai (`3573`, rerun dated `2026-04-13`), Cancun (`17783`, rerun dated `2026-04-13`), Prague (`20878`, rerun dated `2026-04-14`), and Osaka (`21583`, rerun dated `2026-04-15`), with no remaining blocker in the current shard matrix.
+Latest Hive/EEST validation (confirmed 2026-08-15):
+
+- EEST `consume rlp` against the complete `stable@latest` v5.4.0 fixture set passed `47,589 / 47,589`, with zero failures and zero errors (`16:16:34`, completed 2026-08-12).
+- EEST `consume engine` broad shards passed: Paris+Shanghai `3,573`, Cancun `17,783`, Prague `20,878`, Osaka `21,583`, and the access-list cross-fork shard `2,132` (completed 2026-08-02). The access-list shard overlaps the fork shards and must not be added to them as a unique-test total.
+- Native Hive `ethereum/engine` `engine-auth` passed one suite and all `8 / 8` recorded cases (completed 2026-07-31).
+
+This validates the listed N42 `n42_local` execution-layer matrix through Hive; it does **not** claim that every simulator in the upstream Hive repository was run. Revisions, commands, artifact hashes, and scope boundaries are recorded in [Hive/EEST reproducibility](docs/engineering/HIVE_EEST_REPRODUCIBILITY.md).
 
 ## Key Features
 
