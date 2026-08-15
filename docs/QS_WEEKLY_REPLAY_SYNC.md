@@ -81,12 +81,43 @@ Start-Process C:\N42\N42-gov5\build\bin\n42-v5.7.<latest>.exe -ArgumentList `
 GATE: exit clean + `checkpoint.json` number == H (+ per-batch `qmdbRoot` lines,
 no errors).
 
+## Step 2b — seal eras + emit the hot layout (since 2026-08-15)
+
+The fleet now boots from the **era layout** (docs/QS_ANCIENT_ERA_DESIGN.md):
+hot MDBX (state + QMDB + navigation + recent window) + read-only
+`ancient-era` files. `E:\qs-replay-v4` stays the full canonical base; the
+seed artifact is derived from it each week:
+
+```powershell
+# Seal (resume-safe: previously sealed eras are skipped — most weeks this
+# seals 0 or 1 new era). Can run concurrently with Step 2's replay: sealed
+# ranges are immutable.
+C:\N42\n42-ancient-seal.exe --source E:/qs-replay-v4 --out E:/qs-era-out --seal
+# Hot MDBX (AFTER Step 2 completes — cuts at the folded head):
+C:\N42\n42-ancient-seal.exe --source E:/qs-replay-v4 --out E:/qs-era-out --emit-hot
+# Verify: full payload scrub + per-era sampled byte-compare vs the base
+C:\N42\n42-ancient.exe verify --dir E:/qs-era-out/ancient-era --deep --source E:/qs-replay-v4/chaindata --sample 64
+Copy-Item E:\qs-replay-v4\checkpoint.json E:\qs-era-out\checkpoint.json
+```
+
+GATE: verify prints `deep verify OK`; `SEAL_DONE.json` head == Step 2's
+target head. 2026-08-15 first run: 13 eras / 39 files / 17 GB sealed in
+~13 min, hot MDBX 8.0 GB (was 49 GB), deep verify 832 blocks clean.
+
+- `--emit-hot` restarts from scratch if interrupted (safe); `--seal`
+  resumes per era file.
+- The node auto-attaches `<datadir>/ancient-era` at boot — look for the
+  `era store attached` log line with `degraded=0`.
+- `n42-ancient prune --class aux --before-era <N>` is the (future) knob
+  for dropping old witnesses/changesets; the chain class is not prunable.
+
 ## Step 3 — re-seed the fleet on the extended base
 
 ```powershell
 # keep ONE previous fleet generation as rollback; delete the generation before it
 foreach ($i in 0..6) { Move-Item E:\qs-node$i E:\qs-node$i-pre<date> }
-pwsh -File E:\deploy-7node.ps1 -Data E:\qs-replay-v4 -Bin C:\N42\N42-gov5\build\bin\n42-v5.7.<latest>.exe
+# -Data is the ERA LAYOUT dir (Step 2b output), not the raw replay base
+pwsh -File E:\deploy-7node.ps1 -Data E:\qs-era-out -Bin C:\N42\N42-gov5\build\bin\n42-v5.7.<latest>.exe
 ```
 
 - deploy-7node.ps1 seeds a node dir **only if it does not exist** — moving the

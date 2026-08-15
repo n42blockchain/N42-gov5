@@ -1,8 +1,18 @@
 # QS Native Chain — Ancient Era Offload Design
 
-Status: **design** (no code yet). Scope: the n42 native chain (hotstuff + QMDB,
-`--chain private` / qs fleet). The eth-el freezer (`modules/rawdb/freezer`,
-geth-compatible cidx/cdat) is **not** changed by this design.
+Status: **implemented and deployed** (2026-08-15). Code:
+`modules/rawdb/ancientera` (container + store + manifest),
+`modules/rawdb/ancient_fallback.go` (read tier), `cmd/n42-ancient-seal`
+(offline seal + hot emit), `cmd/n42-ancient` (ls/verify/fetch/prune).
+Scope: the n42 native chain (hotstuff + QMDB, `--chain private` / qs
+fleet). The eth-el freezer (`modules/rawdb/freezer`, geth-compatible
+cidx/cdat) is **not** changed by this design.
+
+First production run (2026-08-15, qs fleet at head 14,210,892):
+13 eras sealed in ~13 min (39 files + manifest, 17 GB — the sealed
+ranges held ~38 GB in MDBX); hot MDBX emitted at 8.0 GB (from 49 GB,
+6×); scrub + deep verify (832 blocks byte-compared against the source)
+clean; fleet reseeded and producing with era reads live on all 7 nodes.
 
 ## 1. Motivation — measured data shape
 
