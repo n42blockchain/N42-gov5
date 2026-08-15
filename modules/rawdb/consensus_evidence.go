@@ -174,13 +174,17 @@ func WriteConsensusEvidence(tx kv.Putter, blockNum uint64, ce *ConsensusEvidence
 	return tx.Put(modules.ConsensusEvidence, key[:], ce.Marshal())
 }
 
-// ReadConsensusEvidence reads evidence for a block number.
+// ReadConsensusEvidence reads evidence for a block number. Sealed
+// ranges fall back to the era store's chain class.
 func ReadConsensusEvidence(tx kv.Getter, blockNum uint64) (*ConsensusEvidence, error) {
 	var key [8]byte
 	binary.BigEndian.PutUint64(key[:], blockNum)
 	v, err := tx.GetOne(modules.ConsensusEvidence, key[:])
 	if err != nil {
 		return nil, err
+	}
+	if v == nil {
+		v = ancientEvidenceRAW(blockNum)
 	}
 	if v == nil {
 		return nil, nil

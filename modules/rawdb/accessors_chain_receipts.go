@@ -51,7 +51,7 @@ func ReadRawReceipts(db kv.Tx, blockNum uint64) block.Receipts {
 		log.Error("ReadRawReceipts failed", "err", err)
 	}
 	if len(data) == 0 {
-		return nil
+		return ancientRawReceipts(blockNum)
 	}
 	var receipts block.Receipts
 	if err := receipts.Unmarshal(data); err != nil {

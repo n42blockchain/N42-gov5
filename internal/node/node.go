@@ -24,6 +24,7 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -140,6 +141,7 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
+	"github.com/n42blockchain/N42/modules/rawdb/ancientera"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
@@ -207,6 +209,7 @@ type Node struct {
 	coprocessorService *dcoprocessor.Service       // ZK coprocessor (nil if disabled)
 	messagingService   *dmessaging.Service         // Decentralized messaging (nil if disabled)
 	txIndexer          *txindexer.Indexer          // Live tx-hash lookup tiers (nil when the MDBX table owns them)
+	eraStore           *ancientera.Store           // Read-only sealed history (nil when no era dir present)
 	storageBridge      *dstorage.Bridge            // IPFS/Filecoin storage bridge (nil if disabled)
 	storageResolver    *dstorage.UniversalResolver // Multi-protocol content resolver (nil if disabled)
 	notifyService      *dnotify.Service            // Push notifications (nil if disabled)
@@ -529,6 +532,8 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	var chainKv kv.RwDB
 	// Attached to the Node once it exists, so shutdown can stop its sealer.
 	var nodeTxIndexer *txindexer.Indexer
+	// Read-only sealed-history store, attached for shutdown cleanup.
+	var nodeEraStore *ancientera.Store
 	var dirLockNode Node // tracks dirLock for cleanup
 
 	defer func() {
@@ -780,6 +785,41 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		if ix.Start() {
 			realBC.SetTxIndexer(ix)
 			nodeTxIndexer = ix
+		}
+		// Era store (sealed ancient history, read-only). Auto-detected at
+		// <datadir>/ancient-era; produced offline by the seal pipeline —
+		// the node never writes it. Sealed ranges are served through the
+		// rawdb fallback; damaged optional files degrade to pruned.
+		if eraDir := ancientera.DefaultDir(cfg.NodeCfg.DataDir); ancientera.Exists(eraDir) {
+			eraStore, health, err := ancientera.OpenStore(eraDir)
+			if err != nil {
+				return nil, fmt.Errorf("open era store %s: %w", eraDir, err)
+			}
+			for _, d := range health.Degraded {
+				log.Warn("era store: optional range degraded to pruned", "range", d)
+			}
+			for _, g := range health.ChainGaps {
+				log.Error("era store: CRITICAL chain-class damage — restore this era from a peer", "range", g)
+			}
+			// Cross-check the manifest anchor written by the seal pipeline.
+			if err := chainKv.View(ctx, func(tx kv.Tx) error {
+				anchor, aerr := tx.GetOne(modules.DatabaseInfo, []byte("eraManifestBlake3"))
+				if aerr != nil || len(anchor) != 32 {
+					return nil // no anchor recorded — informational only
+				}
+				mh, merr := ancientera.ManifestHash(eraDir)
+				if merr == nil && !bytes.Equal(anchor, mh[:]) {
+					log.Warn("era store: manifest differs from the anchored hash (rebuilt or edited manifest)")
+				}
+				return nil
+			}); err != nil {
+				return nil, err
+			}
+			rawdb.SetAncientStore(eraStore)
+			nodeEraStore = eraStore
+			log.Info("era store attached", "dir", eraDir,
+				"sealedEnd", health.SealedEnd, "sealed", health.Sealed,
+				"pruned", health.Pruned, "degraded", len(health.Degraded))
 		}
 		if cfg.NodeCfg.AncientDB {
 			ancientBase := cfg.NodeCfg.DataDir
@@ -1200,6 +1240,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		genesisBlock:    genesisBlock,
 		blockChain:      bc,
 		txIndexer:       nodeTxIndexer,
+		eraStore:        nodeEraStore,
 		db:              chainKv,
 		shutDown:        make(chan struct{}),
 		txspool:         pool,
@@ -1961,7 +2002,19 @@ func (n *Node) Start() error {
 		n.historyExpirer.Start()
 		// Wire earliest-block gate into the sync service so that P2P range
 		// requests for expired blocks are rejected.
-		n.sync.SetEarliestBlock(n.historyExpirer.EarliestBlock)
+		expirerEarliest := n.historyExpirer.EarliestBlock
+		n.sync.SetEarliestBlock(func() uint64 {
+			e := expirerEarliest()
+			if a := rawdb.AncientEarliestExecBlock(); a > e {
+				e = a
+			}
+			return e
+		})
+	} else if n.eraStore != nil {
+		// Era-only gate: pruned/degraded exec eras answer range requests
+		// with a typed "before earliest available" error instead of a
+		// garbage short read.
+		n.sync.SetEarliestBlock(rawdb.AncientEarliestExecBlock)
 	}
 
 	// Start PeerDAS service if enabled
@@ -3035,6 +3088,12 @@ func (n *Node) stopServices() []error {
 			// Before the database closes: the sealer may be mid-write.
 			if n.txIndexer != nil {
 				n.txIndexer.Stop()
+			}
+			if n.eraStore != nil {
+				// Detach the rawdb fallback before closing file handles.
+				rawdb.SetAncientStore(nil)
+				n.eraStore.Close()
+				n.eraStore = nil
 			}
 			if n.notifyService != nil {
 				n.notifyService.Stop()

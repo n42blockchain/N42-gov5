@@ -118,10 +118,14 @@ func DeleteHeaderNumber(db kv.Deleter, hash types.Hash) {
 }
 
 // ReadHeaderRAW retrieves a block header in its raw database encoding.
+// Sealed ranges fall back to the era store (canonical hashes only).
 func ReadHeaderRAW(db kv.Getter, hash types.Hash, number uint64) []byte {
 	data, err := db.GetOne(modules.Headers, modules.HeaderKey(number, hash))
 	if err != nil {
 		log.Error("ReadHeaderRAW failed", "err", err)
+	}
+	if len(data) == 0 {
+		return ancientHeaderRAW(hash, number)
 	}
 	return data
 }
@@ -424,7 +428,9 @@ func ReadBodyWithTransactions(db kv.Getter, hash types.Hash, number uint64) (*bl
 func ReadCanonicalBodyWithTransactions(db kv.Getter, hash types.Hash, number uint64) *block.Body {
 	body, baseTxId, txAmount := ReadBody(db, hash, number)
 	if body == nil {
-		return nil
+		// Sealed range: the era record carries the real transactions
+		// inline, so the whole assembly happens in one step.
+		return ancientCanonicalBody(db, hash, number)
 	}
 	var err error
 	body.Txs, err = CanonicalTransactions(db, baseTxId, txAmount)
