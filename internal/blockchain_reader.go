@@ -425,6 +425,9 @@ func (bc *BlockChain) EarliestBlock() uint64 {
 	}); err != nil {
 		log.Warn("EarliestBlock: failed to read from DB", "err", err)
 	}
+	if a := rawdb.AncientEarliestExecBlock(); a > earliest {
+		earliest = a
+	}
 	return earliest
 }
 
