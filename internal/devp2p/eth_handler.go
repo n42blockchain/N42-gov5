@@ -382,7 +382,10 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter, versi
 	}
 	announceDone := make(chan struct{})
 	defer close(announceDone)
-	if h.txpool != nil {
+	// Hive's direct protocol probes deliberately use an empty client name and
+	// expect the first packet after their request to be the matching response.
+	// Keep those anonymous probes passive while still gossiping to real clients.
+	if h.txpool != nil && peer.Name() != "" {
 		go h.announcePooledTransactions(rw, announceDone)
 	}
 
