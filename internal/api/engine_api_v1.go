@@ -132,6 +132,10 @@ func (e *EngineAPIV1) ImportSyncedBlock(ctx context.Context, blk *block.Block, w
 	}
 	blockHash := ethCompatibleBlockHash(blk, e.chainConfig())
 	body := payloadBodyFromBlock(blk, withdrawals)
+	parent := e.parentHeader(header.ParentHash)
+	if err := validateExecutionPayloadHeader(header, parent, e.chainConfig()); err != nil {
+		return e.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(header.ParentHash, parent), body), nil
+	}
 	return e.executeOrValidateWithBody(
 		blk,
 		blockHash,

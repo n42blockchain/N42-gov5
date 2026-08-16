@@ -28,7 +28,7 @@ func TestSyncedForkBlockNotifiesMissingAncestorObserver(t *testing.T) {
 	parent := types.HexToHash("0x44")
 	var notified types.Hash
 	engine.SetMissingAncestorObserver(func(hash types.Hash) { notified = hash })
-	header := &block.Header{Number: uint256.NewInt(2), ParentHash: parent}
+	header := &block.Header{Number: uint256.NewInt(2), ParentHash: parent, GasLimit: 30_000_000}
 	blk := block.NewBlock(header, nil).(*block.Block)
 	status, err := engine.ImportSyncedBlock(context.Background(), blk, nil)
 	if err != nil {

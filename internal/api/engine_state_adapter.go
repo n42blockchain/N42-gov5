@@ -139,6 +139,12 @@ type EngineStateAdapter struct {
 	// history-index writes (archive data layout). The importer owns
 	// flush+fsync at its commit boundary.
 	csFreezerSink *ethel.CSFreezerSink
+
+	// batchHeaders exposes headers written in the caller-owned transaction to
+	// subsequent blocks in the same download batch. MDBX read transactions cannot
+	// see those uncommitted writes, but parent-relative validation (gas limit,
+	// base fee, timestamp) must still run for every block.
+	batchHeaders map[types.Hash]*block.Header
 }
 
 // SetCSFreezerSink switches hashed-canonical changeset persistence to the
@@ -185,11 +191,13 @@ func (a *EngineStateAdapter) PurgeHashedReadCache() { a.hashedReadCache.PurgeAll
 func (a *EngineStateAdapter) SetBatchTx(tx kv.RwTx) {
 	a.batchTx = tx
 	if tx != nil {
+		a.batchHeaders = make(map[types.Hash]*block.Header)
 		// Mid-range rotation (commit → new tx): everything previously cached
 		// is either committed or visible in the new tx — keep the cache warm.
 		// Purging here (every commitInterval=256) capped hit rates at ~30%.
 		return
 	}
+	a.batchHeaders = nil
 	// Batch teardown (deferred SetBatchTx(nil) runs on BOTH success and error
 	// exits of executeRange): an errored range rolled its tx back, so entries
 	// memoized from that tx's uncommitted writes are stale — drop everything.
@@ -1137,6 +1145,9 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 	if err := rawdb.WriteCanonicalHash(tx, storedHash, blockNum); err != nil {
 		return nil, err
 	}
+	if a.batchTx != nil {
+		a.batchHeaders[ethCompatibleBlockHash(blk, a.chainCfg)] = header
+	}
 	// Journal this block's reverse-diff (pending until the batch commits) so a
 	// later shallow reorg can unwind it. storedHash is what canonical(blockNum)
 	// now resolves to; header.ParentHash links to blockNum-1.
@@ -1395,6 +1406,9 @@ func (a *EngineStateAdapter) CurrentHeadHash() types.Hash {
 // NewPayload cannot resolve the parent when the CL asks whether a
 // received payload extends the current head.
 func (a *EngineStateAdapter) HeaderByHash(hash types.Hash) *block.Header {
+	if header := a.batchHeaders[hash]; header != nil {
+		return header
+	}
 	tx, err := a.db.BeginRo(context.Background())
 	if err != nil {
 		return nil
