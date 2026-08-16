@@ -4,6 +4,7 @@ package eldevp2p
 
 import (
 	"testing"
+	"time"
 
 	"github.com/holiman/uint256"
 
@@ -11,6 +12,24 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/network/eth69"
 )
+
+func TestLiveProbeWaitHonorsPeerHandshakeGrace(t *testing.T) {
+	now := time.Now()
+	d := &Downloader{peers: map[string]*peerState{
+		"new": {connectedAt: now},
+	}}
+	if got := d.liveProbeWait(now); got != peerProbeGrace {
+		t.Fatalf("liveProbeWait(new peer) = %s, want %s", got, peerProbeGrace)
+	}
+	if got := d.liveProbeWait(now.Add(peerProbeGrace)); got != 0 {
+		t.Fatalf("liveProbeWait(established peer) = %s, want 0", got)
+	}
+
+	d.peers["existing"] = &peerState{}
+	if got := d.liveProbeWait(now); got != 0 {
+		t.Fatalf("liveProbeWait(zero timestamp peer) = %s, want 0", got)
+	}
+}
 
 func TestBALPeerSelectionRequiresETH71(t *testing.T) {
 	d := &Downloader{peers: map[string]*peerState{
