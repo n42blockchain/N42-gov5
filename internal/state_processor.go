@@ -150,6 +150,14 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 	// block is about to fail anyway, so recovery is simply skipped.
 	if hdrNum, hdrErr := requireHeaderNumber(concreteHeader, "header number unavailable"); hdrErr == nil {
 		signer := transaction.MakeSignerWithTimestamp(chainConfig, hdrNum.ToBig(), concreteHeader.Time)
+		// CONSENSUS-SAFETY gate: the native tx codec carries `From` on the
+		// wire and TxRoot commits to it, but the tx hash does not bind it to
+		// the signature — so an imported block's declared senders must be
+		// verified against V/R/S or a byzantine leader could forge them.
+		// Reject before any execution touches state.
+		if err := verifyBlockSenders(signer, b.Transactions()); err != nil {
+			return nil, nil, nil, 0, fmt.Errorf("block %s: %w", concreteHeader.Number.String(), err)
+		}
 		// First pass: senders the pool already recovered at admission — on a
 		// saturated fleet that is nearly every transaction of an imported
 		// block, turning a 260 ms parallel recovery into map lookups. Second

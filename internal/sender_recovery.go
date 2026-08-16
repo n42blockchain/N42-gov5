@@ -23,9 +23,11 @@
 package internal
 
 import (
+	"fmt"
 	"os"
 	"runtime"
 	"strconv"
+	"sync"
 
 	"github.com/n42blockchain/N42/common/transaction"
 )
@@ -175,4 +177,98 @@ func recoverBlockSenders(signer transaction.Signer, txs []*transaction.Transacti
 	for w := 0; w < workers; w++ {
 		<-done
 	}
+}
+
+// verifyBlockSenders enforces that every wire-declared sender matches the
+// transaction's signature. It is a CONSENSUS-SAFETY gate, not an
+// optimization: the native tx codec carries `From` on the wire and the
+// TxRoot commits to it (Transactions.EncodeIndex marshals the full
+// record), but the tx hash covers only the signed fields — so `From` is
+// not bound to the signature by the hash. On import, AsMessage trusts a
+// non-nil `From` and skips recovery; without this check a byzantine
+// leader could stamp `From = victim` on an unsigned/foreign-signed tx,
+// have every follower execute it identically (roots agree, QC forms) and
+// drain any account with a single faulty leader — collapsing the ≤f
+// fault model to "all leaders honest" for fund safety.
+//
+// For each tx carrying `From`, recover the signer from V/R/S (bypassing
+// the cached From via signer.Sender, but reusing the process-wide
+// senderCache for pool-seen txs so honest blocks stay fast) and compare.
+// Any mismatch or unrecoverable signature rejects the whole block.
+func verifyBlockSenders(signer transaction.Signer, txs []*transaction.Transaction) error {
+	if signer == nil {
+		return nil
+	}
+	type mismatch struct {
+		idx int
+		err error
+	}
+	var (
+		found []mismatch
+		mu    sync.Mutex
+	)
+	report := func(i int, err error) {
+		mu.Lock()
+		found = append(found, mismatch{idx: i, err: err})
+		mu.Unlock()
+	}
+	check := func(i int) {
+		tx := txs[i]
+		if tx == nil {
+			return
+		}
+		declared := tx.From()
+		if declared == nil {
+			// No wire From: the execution loop recovers and trusts the
+			// signature directly — nothing to forge.
+			return
+		}
+		recovered, err := transaction.RecoverSenderFromSig(signer, tx)
+		if err != nil {
+			report(i, fmt.Errorf("tx %d declares sender %s but signature does not recover: %w", i, declared.Hex(), err))
+			return
+		}
+		if recovered != *declared {
+			report(i, fmt.Errorf("tx %d declares sender %s but signature recovers %s", i, declared.Hex(), recovered.Hex()))
+		}
+	}
+
+	workers := senderRecoveryWorkers
+	if len(txs) < senderRecoveryMinTxs || workers > len(txs) {
+		workers = 1
+	}
+	if workers < 2 {
+		for i := range txs {
+			check(i)
+		}
+	} else {
+		done := make(chan struct{}, workers)
+		for w := 0; w < workers; w++ {
+			go func(start int) {
+				defer func() {
+					if r := recover(); r != nil {
+						report(start, fmt.Errorf("sender verify panic: %v", r))
+					}
+					done <- struct{}{}
+				}()
+				for i := start; i < len(txs); i += workers {
+					check(i)
+				}
+			}(w)
+		}
+		for w := 0; w < workers; w++ {
+			<-done
+		}
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	// Deterministic error: report the lowest-index offender.
+	best := found[0]
+	for _, m := range found[1:] {
+		if m.idx < best.idx {
+			best = m
+		}
+	}
+	return best.err
 }
