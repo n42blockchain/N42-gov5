@@ -409,9 +409,11 @@ func run(c *cli.Context) error {
 	} else {
 		log.Info("eth-el: catch-up executor skipped (eldevp2p/snapshot-direct owns execution)")
 	}
+	txPool := ethel.NewMemoryTxPool()
 	var engineService *engineapi.Service
 	node.RegisterFactory(func(n *ethel.Node) ethel.Service {
 		engineService = engineapi.New(cfg.EngineAPI, n.ChainConfig(), n.Engine(), n.RwDB(), n.OutFreezer())
+		engineService.SetTxPool(txPool)
 		return engineService
 	})
 
@@ -425,7 +427,7 @@ func run(c *cli.Context) error {
 			Port:            c.Int("publicrpc.port"),
 			Mode:            publicrpc.ParseMode(c.String("publicrpc.mode")),
 			HashedCanonical: c.Bool("hashed-canonical"),
-		}, n.ChainConfig(), n.Engine(), n.RwDB())
+		}, n.ChainConfig(), n.Engine(), n.RwDB(), txPool)
 		if err != nil {
 			log.Error("eth-el: public RPC init failed", "err", err)
 			return publicrpc.Disabled()

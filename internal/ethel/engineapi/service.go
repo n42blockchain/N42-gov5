@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
@@ -67,6 +68,7 @@ type Service struct {
 	apiCore *api.API
 	adapter *api.EngineStateAdapter
 	v1      *api.EngineAPIV1
+	txspool common.ITxsPool
 
 	missingAncestorObserver func(types.Hash)
 }
@@ -102,7 +104,7 @@ func (s *Service) Start(_ context.Context) error {
 	// helpers (currentHead returns nil → SYNCING) and never touches
 	// txspool or accountManager. State writes go through the
 	// EngineStateAdapter wired below.
-	s.apiCore = api.NewAPI(nil, s.db, s.engine, nil, nil, s.chainCfg)
+	s.apiCore = api.NewAPI(nil, s.db, s.engine, s.txspool, nil, s.chainCfg)
 	s.adapter = api.NewEngineStateAdapter(s.db, s.freezer, s.chainCfg, s.engine).WithHeadMarker(true)
 
 	apis := api.EngineAPIs(s.apiCore)
@@ -169,6 +171,12 @@ func (s *Service) Start(_ context.Context) error {
 		"namespaces", "engine,eth,net,web3",
 	)
 	return nil
+}
+
+// SetTxPool shares eth-el's in-process transaction pool with Engine payload
+// construction. Call before Start.
+func (s *Service) SetTxPool(pool common.ITxsPool) {
+	s.txspool = pool
 }
 
 // SetMissingAncestorObserver connects unknown-parent Engine payloads to the
