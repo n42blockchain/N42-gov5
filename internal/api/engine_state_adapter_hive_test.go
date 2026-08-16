@@ -386,6 +386,81 @@ func TestHiveEngineBuildsFirstEmptyPayloadWithGenesisStateRoot(t *testing.T) {
 	require.Equal(t, genesisBlock.StateRoot(), payload.StateRoot)
 }
 
+func TestEthELBuildsAndValidatesFirstCancunPayloadWithoutBlockchain(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() {
+		kv.ChaindataTablesCfg = prevTables
+	})
+
+	cfg := &params.ChainConfig{
+		ChainID:               big.NewInt(1),
+		Consensus:             params.Faker,
+		HomesteadBlock:        big.NewInt(0),
+		TangerineWhistleBlock: big.NewInt(0),
+		SpuriousDragonBlock:   big.NewInt(0),
+		ByzantiumBlock:        big.NewInt(0),
+		ConstantinopleBlock:   big.NewInt(0),
+		PetersburgBlock:       big.NewInt(0),
+		IstanbulBlock:         big.NewInt(0),
+		BerlinBlock:           big.NewInt(0),
+		LondonBlock:           big.NewInt(0),
+		ShanghaiBlock:         big.NewInt(0),
+		CancunBlock:           big.NewInt(0),
+	}
+	db := memdb.NewTestDB(t)
+	genesis := &internalcore.GenesisBlock{GenesisConfig: &conf.Genesis{
+		Config:     cfg,
+		GasLimit:   30_000_000,
+		Difficulty: uint256.NewInt(0),
+		Timestamp:  1,
+		BaseFee:    uint256.NewInt(7),
+	}}
+	var genesisBlock *block.Block
+	require.NoError(t, db.Update(context.Background(), func(tx kv.RwTx) error {
+		blk, _, err := genesis.Write(tx)
+		genesisBlock = blk
+		return err
+	}))
+	require.NotNil(t, genesisBlock)
+
+	backend := &API{
+		db:            db,
+		engine:        &apiTestEngine{},
+		txspool:       &mockEngineTxPool{pending: map[types.Address][]*transaction.Transaction{}},
+		chainConfig:   cfg,
+		engineOverlay: newEngineOverlay(),
+	}
+	engine := NewEngineAPIBlob(NewBlockChainAPI(backend))
+	engine.SetStateAdapter(NewEngineStateAdapter(db, nil, cfg, &apiTestEngine{}))
+	beaconRoot := types.Hash{0x44}
+	withdrawals := []*Withdrawal{{
+		Index:          1,
+		ValidatorIndex: 1,
+		Address:        types.HexToAddress("0x2222222222222222222222222222222222222222"),
+		Amount:         100,
+	}}
+	resp, err := engine.ForkchoiceUpdatedV3(context.Background(), &ForkchoiceStateV1{
+		HeadBlockHash: ethCompatibleBlockHash(genesisBlock, cfg),
+	}, &PayloadAttributesV3{
+		Timestamp:             2,
+		PrevRandao:            types.Hash{0x33},
+		SuggestedFeeRecipient: types.Address{},
+		Withdrawals:           withdrawals,
+		ParentBeaconBlockRoot: &beaconRoot,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp.PayloadID)
+
+	built, err := engine.GetPayloadV3(context.Background(), *resp.PayloadID)
+	require.NoError(t, err)
+	require.NotEqual(t, genesisBlock.StateRoot(), built.ExecutionPayload.StateRoot)
+	status, err := engine.NewPayloadV3(context.Background(), built.ExecutionPayload, []types.Hash{}, &beaconRoot)
+	require.NoError(t, err)
+	require.Equal(t, PayloadStatusValid, status.Status)
+}
+
 func TestHiveEngineStateAdapterAcceptsFirstEmptyCanonicalPayload(t *testing.T) {
 	db, genesis, _ := newHiveEngineGenesisDB(t)
 

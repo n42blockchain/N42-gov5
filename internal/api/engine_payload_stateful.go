@@ -303,7 +303,7 @@ func (e *EngineAPIV1) buildExecutionPayloadV1Stateful(parent block.IBlock, paren
 }
 
 func (e *EngineAPIV1) buildExecutionPayloadStateful(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV1, withdrawals []*Withdrawal, parentBeaconRoot *types.Hash) *statefulPayloadBuildResult {
-	if e == nil || e.api == nil || e.api.api == nil || e.api.api.BlockChain() == nil || e.api.api.engine == nil || e.api.api.txspool == nil {
+	if e == nil || e.api == nil || e.api.api == nil || e.api.api.engine == nil || e.api.api.txspool == nil {
 		return nil
 	}
 	if parent == nil || attrs == nil {
@@ -313,7 +313,7 @@ func (e *EngineAPIV1) buildExecutionPayloadStateful(parent block.IBlock, parentH
 	if parentHeader == nil || parentHeader.Number == nil {
 		return nil
 	}
-	db := e.api.api.BlockChain().DB()
+	db := e.api.api.db
 	if db == nil {
 		return nil
 	}
