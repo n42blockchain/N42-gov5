@@ -74,11 +74,21 @@ Engine shard 之间并非全部互斥，尤其 `engine-access-list` 会与 fork 
 | 范围 | 入口 | 说明 |
 |---|---|---|
 | 项目全部 Go 包 | `make test`、`make build`、`make lint` | 覆盖仓库级编译、单元测试和静态检查，不依赖 Hive。 |
+| `eth-el` 原生 Hive Engine 全套 | `hive --sim ethereum/engine --client n42_ethel --sim.limit 'engine-(auth\|exchange-capabilities\|api\|withdrawals\|cancun)/'` | `403` 项；包含 Fork ID、devp2p 同步/重组、multi-client、payload-body 和 pooled-transaction P2P 场景。 |
+| 主 `n42` 原生 Hive 适用集 | 同一 simulator 的精确适用用例选择器 | `311` 项；是 `eth-el` 集的严格子集，无 native-only 项。 |
 | eth-el Engine API | `run_eest_shards.sh paris+shanghai cancun prague osaka engine-access-list` | 通过 Hive 启动 N42 execution client，验证 Engine API 和执行语义。 |
 | eth-el RLP 启动导入 | `run_eest_shards.sh rlp` | 使用真正的 `consume rlp`，结果单独统计，不与 Engine API access-list 子集混淆。 |
 | 原生 Hive simulator | `hive --sim ...` | 每个 simulator 独立统计；EEST-over-Hive 的通过结果不能替代 upstream Hive 全 simulator catalog。 |
 
 EEST/Hive 这些 `consume` 命令都只代表 `n42_local` 这个 execution-layer client 的兼容性，不应写成整个 Go 项目的“全量测试”。反过来，项目级 Go gate 也不能替代 EEST 的 Engine/RLP 测试。
+
+主 `n42` 二进制不提供 `eth-el` 专用的完整 Ethereum devp2p 测试表面，因此不能把不适用项当成原生失败，也不能宣称原生执行了 `403` 项。两个结果集按规范化用例名核对后，原生侧排除项恰好为：
+
+- API `30` 项：Fork ID `6`，missing-ancestor/devp2p syncing `24`
+- Withdrawals `11` 项：同步、重组和 payload-body P2P
+- Cancun `51` 项：Fork ID `24`，missing-ancestor/devp2p syncing `24`，multi-client `1`，pooled-transaction P2P `2`
+
+合计排除 `92` 项，且 `native-only = 0`。最终结果必须分别写成 `eth-el 403 / 403` 和“原生适用集 `311 / 311`”，不能合并成一个模糊的“全量 Hive”结论。
 
 ## 复测时必须满足的前提
 
