@@ -49,12 +49,12 @@ eest_dirty="$(git_dirty "$eest_dir")"
 requested_shards=("$@")
 
 declare -a shard_rows=(
-  $'paris+shanghai\tfork_Paris or fork_Shanghai\t.*fork_(Paris|Shanghai).*\t.*/.*fork_(Paris\\|Shanghai)\t~2,600\tstable@latest'
-  $'cancun\tfork_Cancun\t.*fork_Cancun.*\t.*/.*fork_Cancun\t~17,250\tstable@latest'
-  $'prague\tfork_Prague\t.*fork_Prague.*\t.*/.*fork_Prague\t~20,500\tstable@latest'
-  $'osaka\tfork_Osaka\t.*fork_Osaka.*\t.*/.*fork_Osaka\t~21,000\tdevelop@latest'
-  $'engine-access-list\teip2930_access_list\t.*eip2930_access_list.*\t.*eip2930_access_list.*\tunchanged\tstable@latest\tengine'
-  $'rlp\tblockchain\t.*\t.*\tall BlockchainFixture cases\tstable@latest\trlp'
+  $'paris+shanghai\tfork_Paris or fork_Shanghai\t.*fork_(Paris|Shanghai).*\t.*/.*fork_(Paris\\|Shanghai)\t~3,573\tstable@latest'
+  $'cancun\tfork_Cancun\t.*fork_Cancun.*\t.*/.*fork_Cancun\t~17,783\tstable@latest'
+  $'prague\tfork_Prague\t.*fork_Prague.*\t.*/.*fork_Prague\t~20,878\tstable@latest'
+  $'osaka\tfork_Osaka\t.*fork_Osaka.*\t.*/.*fork_Osaka\t~21,583\tdevelop@latest'
+  $'engine-access-list\teip2930_access_list\t.*eip2930_access_list.*\t.*eip2930_access_list.*\t~2,132\tstable@latest\tengine'
+  $'rlp\tblockchain\t.*\t.*\t~47,589\tstable@latest\trlp'
 )
 
 declare -a extra_args=()
