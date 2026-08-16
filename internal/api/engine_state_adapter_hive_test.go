@@ -196,6 +196,113 @@ func TestRewindEngineValidationStateUsesExecutionProgressWhenHeadLags(t *testing
 	tx.Rollback()
 }
 
+func TestWithParentStateRewindsToOverlayBase(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() { kv.ChaindataTablesCfg = prevTables })
+
+	db := memdb.NewTestDB(t)
+	var sideAddr, canonicalOnlyAddr types.Address
+	sideAddr[19] = 0x44
+	canonicalOnlyAddr[19] = 0x45
+	emptyCodeHash := crypto.Keccak256Hash(nil)
+	accountAt := func(nonce uint64) *account.StateAccount {
+		return &account.StateAccount{
+			Initialised: true,
+			Nonce:       nonce,
+			CodeHash:    emptyCodeHash,
+		}
+	}
+
+	require.NoError(t, db.Update(context.Background(), func(tx kv.RwTx) error {
+		genesisAccount := accountAt(0)
+		if err := tx.Put(modules.Account, sideAddr[:], genesisAccount.MarshalV2()); err != nil {
+			return err
+		}
+
+		blockOneAccount := accountAt(1)
+		canonicalOnlyAccount := accountAt(1)
+		writer := state.NewPlainStateWriter(tx, tx, 1)
+		if err := writer.UpdateAccountData(sideAddr, genesisAccount, blockOneAccount); err != nil {
+			return err
+		}
+		if err := writer.UpdateAccountData(canonicalOnlyAddr, &account.StateAccount{}, canonicalOnlyAccount); err != nil {
+			return err
+		}
+		if err := writer.WriteChangeSets(); err != nil {
+			return err
+		}
+
+		blockTwoAccount := accountAt(2)
+		writer = state.NewPlainStateWriter(tx, tx, 2)
+		if err := writer.UpdateAccountData(sideAddr, blockOneAccount, blockTwoAccount); err != nil {
+			return err
+		}
+		if err := writer.WriteChangeSets(); err != nil {
+			return err
+		}
+
+		var headHash types.Hash
+		for number := uint64(1); number <= 2; number++ {
+			header := &block.Header{Number: uint256.NewInt(number)}
+			rawdb.WriteHeader(tx, header)
+			headHash = header.Hash()
+			if err := rawdb.WriteCanonicalHash(tx, headHash, number); err != nil {
+				return err
+			}
+		}
+		rawdb.WriteHeadBlockHash(tx, headHash)
+		return ethel.RebuildHashedState(tx)
+	}))
+
+	sideAccount := accountAt(7)
+	overlay := &engineStateOverlay{
+		accounts:           map[types.Address][]byte{sideAddr: sideAccount.MarshalV2()},
+		baseBlockNumber:    0,
+		hasBaseBlockNumber: true,
+	}
+	require.NoError(t, withParentState(db, 2, overlay, func(_ kv.Tx, reader state.StateReader, _ *state.IntraBlockState) error {
+		gotSideAccount, err := reader.ReadAccountData(sideAddr)
+		require.NoError(t, err)
+		require.NotNil(t, gotSideAccount)
+		require.Equal(t, uint64(7), gotSideAccount.Nonce)
+
+		gotCanonicalOnlyAccount, err := reader.ReadAccountData(canonicalOnlyAddr)
+		require.NoError(t, err)
+		require.Nil(t, gotCanonicalOnlyAccount)
+		return nil
+	}))
+}
+
+func TestResolveCanonicalStoredHashRejectsNonCanonicalHeader(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() { kv.ChaindataTablesCfg = prevTables })
+
+	db := memdb.NewTestDB(t)
+	canonicalHeader := &block.Header{Number: uint256.NewInt(1), Extra: []byte("canonical")}
+	sideHeader := &block.Header{Number: uint256.NewInt(1), Extra: []byte("side")}
+	require.NoError(t, db.Update(context.Background(), func(tx kv.RwTx) error {
+		rawdb.WriteHeader(tx, canonicalHeader)
+		rawdb.WriteHeader(tx, sideHeader)
+		return rawdb.WriteCanonicalHash(tx, canonicalHeader.Hash(), 1)
+	}))
+
+	adapter := NewEngineStateAdapter(db, nil, nil, nil)
+	require.NoError(t, db.View(context.Background(), func(tx kv.Tx) error {
+		resolvedCanonical, err := adapter.resolveCanonicalStoredHash(tx, canonicalHeader.Hash())
+		require.NoError(t, err)
+		require.Equal(t, canonicalHeader.Hash(), resolvedCanonical)
+
+		resolvedSide, err := adapter.resolveCanonicalStoredHash(tx, sideHeader.Hash())
+		require.NoError(t, err)
+		require.Equal(t, types.Hash{}, resolvedSide)
+		return nil
+	}))
+}
+
 func TestHiveEngineGenesisFixtureMatchesCurrentGethRoot(t *testing.T) {
 	modules.N42Init()
 	prevTables := kv.ChaindataTablesCfg

@@ -281,7 +281,7 @@ func (e *EngineAPIV1) executePayloadOnParentStateWithWithdrawals(blk block.IBloc
 		header.Bloom = block.CreateBloom(receipts)
 		concreteBlock.WithSeal(header)
 		accounts, storage := ibs.DirtyAccountData()
-		nextState = mergeEngineStateOverlay(parentState, accounts, storage, ibs.CodeHashes())
+		nextState = mergeEngineStateOverlay(parentState, parentHeader.Number.Uint64(), accounts, storage, ibs.CodeHashes())
 		executedReceipts = cloneReceipts(receipts)
 		return nil
 	})
@@ -630,13 +630,36 @@ func withParentState(db kv.RwDB, parentNumber uint64, overlayState *engineStateO
 	}
 	defer tx.Rollback()
 
-	if err := applyEngineStateOverlayToTx(tx, overlayState); err != nil {
-		return err
+	baseNumber := parentNumber
+	if overlayState != nil && overlayState.hasBaseBlockNumber {
+		baseNumber = overlayState.baseBlockNumber
 	}
-	stateReader, ibs, err := newOverlayStateView(db, tx, parentNumber, nil)
+	rewound, err := rewindEngineValidationState(tx, baseNumber+1)
 	if err != nil {
 		return err
 	}
+	if err := applyEngineStateOverlayToTx(tx, overlayState); err != nil {
+		return err
+	}
+	var stateReader state.StateReader
+	if rewound || overlayState != nil {
+		if err := tx.ClearBucket(kv.TrieOfAccounts); err != nil {
+			return fmt.Errorf("clear parent account trie: %w", err)
+		}
+		if err := tx.ClearBucket(kv.TrieOfStorage); err != nil {
+			return fmt.Errorf("clear parent storage trie: %w", err)
+		}
+		if err := ethel.RebuildHashedState(tx); err != nil {
+			return fmt.Errorf("rebuild parent hashed state: %w", err)
+		}
+		stateReader = state.NewPlainStateReader(tx)
+	} else {
+		stateReader = state.NewPlainState(tx, parentNumber+1)
+		if cache := layered.ExtractCache(db); cache != nil {
+			stateReader = state.NewCachedStateReader(stateReader, cache)
+		}
+	}
+	ibs := state.New(stateReader)
 	ibs.BeginWriteCodes()
 	ethel.SetupStateRootComputer(tx, ibs)
 	if err := ethel.InitHashState(tx); err != nil {
@@ -649,16 +672,15 @@ func withCanonicalParentState(db kv.RwDB, parentNumber uint64, fn func(tx kv.Tx,
 	return withParentState(db, parentNumber, nil, fn)
 }
 
-func mergeEngineStateOverlay(parent *engineStateOverlay, accounts map[types.Address][]byte, storage map[types.Address]map[types.Hash][]byte, codes map[types.Hash][]byte) *engineStateOverlay {
-	if parent == nil && len(accounts) == 0 && len(storage) == 0 && len(codes) == 0 {
-		return nil
-	}
+func mergeEngineStateOverlay(parent *engineStateOverlay, baseBlockNumber uint64, accounts map[types.Address][]byte, storage map[types.Address]map[types.Hash][]byte, codes map[types.Hash][]byte) *engineStateOverlay {
 	merged := cloneEngineStateOverlay(parent)
 	if merged == nil {
 		merged = &engineStateOverlay{
-			accounts: make(map[types.Address][]byte),
-			storage:  make(map[types.Address]map[types.Hash][]byte),
-			codes:    make(map[types.Hash][]byte),
+			accounts:           make(map[types.Address][]byte),
+			storage:            make(map[types.Address]map[types.Hash][]byte),
+			codes:              make(map[types.Hash][]byte),
+			baseBlockNumber:    baseBlockNumber,
+			hasBaseBlockNumber: true,
 		}
 	}
 	if merged.accounts == nil {
