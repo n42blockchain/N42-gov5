@@ -68,6 +68,10 @@ func (s *TransactionAPI) SendRawTransaction(ctx context.Context, input hexutil.B
 	if header == nil {
 		return avmcommon.Hash{}, errors.New("no header available")
 	}
+	rules := s.api.GetChainConfig().RulesWithTimestamp(header.Number64().Uint64(), currentBlock.Time())
+	if err := validateTransactionInitCodeSize(tx, rules); err != nil {
+		return avmcommon.Hash{}, err
+	}
 	signer := transaction.MakeSignerWithTimestamp(s.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()), currentBlock.Time())
 	from, err := transaction.Sender(signer, tx)
 	if err != nil {
@@ -107,6 +111,7 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 	txs := make([]*transaction.Transaction, 0, len(inputs))
 	slot := make([]int, 0, len(inputs))
 	var firstErr error
+	rules := s.api.GetChainConfig().RulesWithTimestamp(header.Number64().Uint64(), currentBlock.Time())
 	for i, t := range inputs {
 		if len(t) == 0 {
 			if firstErr == nil {
@@ -116,6 +121,12 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 		}
 		metaTx, err := transaction.DecodeEthereumTransaction(t)
 		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if err := validateTransactionInitCodeSize(metaTx, rules); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
