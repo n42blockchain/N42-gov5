@@ -83,7 +83,7 @@ func TestStartHiveDevScriptAlwaysRebuildsHive(t *testing.T) {
 	t.Parallel()
 
 	content := readRepoFile(t, "scripts", "start_hive_dev_n42.sh")
-	if !strings.Contains(content, `go build -o build/bin/hive ./hive.go`) {
+	if !strings.Contains(content, `go build -o build/bin/hive .`) {
 		t.Fatal("start_hive_dev_n42.sh does not build the Hive binary")
 	}
 	if strings.Contains(content, `[ ! -x "$hive_dir/build/bin/hive" ]`) {
