@@ -23,6 +23,7 @@ import (
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
+	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 )
@@ -171,6 +172,34 @@ func (c *ethelChain) GetBlockByNumber(number *uint256.Int) (block.IBlock, error)
 		}
 	})
 	return out, nil
+}
+
+// ForkchoiceTaggedBlock resolves safe/finalized tags persisted by the
+// independently hosted JWT Engine API service.
+func (c *ethelChain) ForkchoiceTaggedBlock(number jsonrpc.BlockNumber) block.IBlock {
+	if number == jsonrpc.LatestBlockNumber || number == jsonrpc.PendingBlockNumber {
+		return c.CurrentBlock()
+	}
+	var out block.IBlock
+	c.withTx(func(tx kv.Tx) {
+		var hash types.Hash
+		switch number {
+		case jsonrpc.SafeBlockNumber:
+			hash = rawdb.ReadForkchoiceSafeHash(tx)
+		case jsonrpc.FinalizedBlockNumber:
+			hash = rawdb.ReadForkchoiceFinalizedHash(tx)
+		default:
+			return
+		}
+		if hash == (types.Hash{}) {
+			return
+		}
+		num := rawdb.ReadHeaderNumber(tx, hash)
+		if num != nil {
+			out = rawdb.ReadBlock(tx, hash, *num)
+		}
+	})
+	return out
 }
 
 // --- IHeaderChain ----------------------------------------------------------

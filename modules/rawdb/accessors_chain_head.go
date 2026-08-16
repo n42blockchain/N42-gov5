@@ -99,6 +99,11 @@ func WriteHeadBlockHash(db kv.Putter, hash types.Hash) {
 // finality. Kept in the HeadBlockKey single-row table under its own key.
 const hotStuffCommittedHeadKey = "HotStuffCommittedHead"
 
+const (
+	forkchoiceSafeHeadKey      = "ForkchoiceSafeHead"
+	forkchoiceFinalizedHeadKey = "ForkchoiceFinalizedHead"
+)
+
 // WriteHotStuffCommittedHead records the QC-committed head hash.
 func WriteHotStuffCommittedHead(db kv.Putter, hash types.Hash) error {
 	return db.Put(modules.HeadBlockKey, []byte(hotStuffCommittedHeadKey), hash.Bytes())
@@ -108,6 +113,36 @@ func WriteHotStuffCommittedHead(db kv.Putter, hash types.Hash) error {
 // hash when no commit has ever been recorded (pre-marker databases).
 func ReadHotStuffCommittedHead(db kv.Getter) types.Hash {
 	data, err := db.GetOne(modules.HeadBlockKey, []byte(hotStuffCommittedHeadKey))
+	if err != nil || len(data) == 0 {
+		return types.Hash{}
+	}
+	return types.BytesToHash(data)
+}
+
+// WriteForkchoiceSafeHash records the execution-layer safe block selected by
+// the latest valid Engine API forkchoice update.
+func WriteForkchoiceSafeHash(db kv.Putter, hash types.Hash) error {
+	return db.Put(modules.HeadBlockKey, []byte(forkchoiceSafeHeadKey), hash.Bytes())
+}
+
+// ReadForkchoiceSafeHash returns the latest persisted Engine API safe block.
+func ReadForkchoiceSafeHash(db kv.Getter) types.Hash {
+	return readNamedHeadHash(db, forkchoiceSafeHeadKey)
+}
+
+// WriteForkchoiceFinalizedHash records the execution-layer finalized block
+// selected by the latest valid Engine API forkchoice update.
+func WriteForkchoiceFinalizedHash(db kv.Putter, hash types.Hash) error {
+	return db.Put(modules.HeadBlockKey, []byte(forkchoiceFinalizedHeadKey), hash.Bytes())
+}
+
+// ReadForkchoiceFinalizedHash returns the latest persisted Engine API finalized block.
+func ReadForkchoiceFinalizedHash(db kv.Getter) types.Hash {
+	return readNamedHeadHash(db, forkchoiceFinalizedHeadKey)
+}
+
+func readNamedHeadHash(db kv.Getter, key string) types.Hash {
+	data, err := db.GetOne(modules.HeadBlockKey, []byte(key))
 	if err != nil || len(data) == 0 {
 		return types.Hash{}
 	}
