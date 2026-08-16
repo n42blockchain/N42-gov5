@@ -447,3 +447,46 @@ func TestApplySenderHintsNilSource(t *testing.T) {
 		}
 	}
 }
+
+// TestVerifyBlockSendersRejectsForgedSender pins the consensus-safety gate:
+// a transaction whose wire-declared From does not match its signature (a
+// byzantine leader stamping From=victim) must be rejected, while honest
+// blocks whose declared senders match — or carry no From — pass.
+func TestVerifyBlockSendersRejectsForgedSender(t *testing.T) {
+	const n = 16
+	signer := transaction.NewLondonSigner(senderRecoveryChainID)
+
+	// Honest block: wire From matches the signature on every tx.
+	txs, want := buildSignedTxs(t, n)
+	for i, tx := range txs {
+		tx.SetFrom(want[i])
+	}
+	if err := verifyBlockSenders(signer, txs); err != nil {
+		t.Fatalf("honest block rejected: %v", err)
+	}
+
+	// Forged: stamp a victim address on one tx that never signed it.
+	victim := types.Address{0xde, 0xad, 0xbe, 0xef, 0x01}
+	txs[9].SetFrom(victim)
+	err := verifyBlockSenders(signer, txs)
+	if err == nil {
+		t.Fatal("forged sender accepted — consensus-safety gate failed")
+	}
+
+	// A block with no wire From (RLP path) has nothing to forge → passes.
+	plain, _ := buildSignedTxs(t, n)
+	if err := verifyBlockSenders(signer, plain); err != nil {
+		t.Fatalf("plain (no From) block rejected: %v", err)
+	}
+
+	// Unrecoverable signature under a declared From is also rejected.
+	bad, w2 := buildSignedTxs(t, n)
+	for i, tx := range bad {
+		tx.SetFrom(w2[i])
+	}
+	bad[3] = unrecoverableTx(t, 3)
+	bad[3].SetFrom(victim)
+	if err := verifyBlockSenders(signer, bad); err == nil {
+		t.Fatal("declared From on an unrecoverable signature accepted")
+	}
+}
