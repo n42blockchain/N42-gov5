@@ -1,15 +1,28 @@
 # Ethereum Execution Layer Test History
 
-## Current Status (2026-03-26)
+## Current Status (2026-08-16)
 
 ```
-Hive/EEST broad consume-engine shard reruns: ALL GREEN
+Hive ethereum/engine with eth-el: 403 / 403 passed
+Hive ethereum/engine native applicable set: 311 / 311 passed
+
+Latest completed EEST broad consume-engine shard reruns: ALL GREEN
 Paris+Shanghai:  3,573 passed
 Cancun:         17,783 passed
-Prague:         20,964 passed
+Prague:         20,878 passed
 Osaka:          21,583 passed
-Total:          63,903 passed
+Access-list:     2,132 passed
+
+Latest completed EEST consume-rlp stable fixture set:
+RLP:            47,589 / 47,589 passed
 ```
+
+The EEST rows are the most recent completed evidence (Engine on 2026-08-02,
+RLP on 2026-08-12) while the 2026-08-16 latest-revision rerun is in progress.
+Engine shards overlap, especially the cross-fork access-list shard, so their
+counts must not be added and reported as a unique-test total. The native Hive
+set is the subset applicable to the main `n42` binary; devp2p, multi-client,
+and P2P syncing scenarios that require `eth-el` are reported separately.
 
 See: README.md, docs/DEVLOG.md, docs/GAP.md
 
@@ -66,7 +79,9 @@ Blockers fixed:
 - SELFDESTRUCT / CREATE2 transaction boundaries
 - Hive timestamp handling (`HIVE_CANCUN_TIMESTAMP` without Berlin → gas explosion)
 
-Final: **63,903 tests, all green** across Paris+Shanghai / Cancun / Prague / Osaka.
+Final: all collected tests were green across Paris+Shanghai, Cancun, Prague,
+and Osaka. These shard counts overlap and therefore have no valid summed
+unique-test total.
 
 ---
 
