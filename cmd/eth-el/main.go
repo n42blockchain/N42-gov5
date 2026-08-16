@@ -13,6 +13,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	_ "net/http/pprof"
@@ -29,6 +30,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
+	internalcore "github.com/n42blockchain/N42/internal"
 	storagetorrent "github.com/n42blockchain/N42/internal/distributed/storage/torrent"
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/internal/ethel/bodyf2"
@@ -38,14 +40,15 @@ import (
 	"github.com/n42blockchain/N42/internal/ethel/coldseed"
 	"github.com/n42blockchain/N42/internal/ethel/eldevp2p"
 	"github.com/n42blockchain/N42/internal/ethel/engineapi"
-	"github.com/n42blockchain/N42/internal/ethel/publicrpc"
 	"github.com/n42blockchain/N42/internal/ethel/fetch"
+	"github.com/n42blockchain/N42/internal/ethel/publicrpc"
 	"github.com/n42blockchain/N42/internal/ethel/snapshotprestart"
 	"github.com/n42blockchain/N42/internal/ethel/snapshotreader"
 	"github.com/n42blockchain/N42/internal/history"
 	"github.com/n42blockchain/N42/internal/sync/torrentsync"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/params"
 )
 
 func main() {
@@ -69,6 +72,7 @@ func flags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "datadir", Usage: "Working directory (chaindata, freezer, torrent, caplin)", Required: true},
 		&cli.StringFlag{Name: "network", Usage: "Network preset (mainnet|sepolia|holesky|hoodi)", Value: "mainnet"},
+		&cli.StringFlag{Name: "genesis", Usage: "Custom genesis JSON (overrides --network; intended for ephemeral/Hive networks)"},
 
 		// Storage tuning.
 		&cli.Uint64Flag{Name: "storage.mapsize.gb", Usage: "MDBX mmap reservation, GiB", Value: 64},
@@ -148,6 +152,7 @@ func flags() []cli.Flag {
 		&cli.IntFlag{Name: "eldevp2p.max-peers", Usage: "Maximum simultaneous EL devp2p peers", Value: 50},
 		&cli.StringSliceFlag{Name: "eldevp2p.bootnodes", Usage: "Extra enode:// URLs appended to the default mainnet bootnodes (repeatable, or comma-separated)"},
 		&cli.BoolFlag{Name: "eldevp2p.bootnodes-replace", Usage: "When set, use ONLY --eldevp2p.bootnodes entries (don't merge with the built-in mainnet defaults)"},
+		&cli.StringFlag{Name: "eldevp2p.enode-file", Usage: "Write the listener enode URL to this file after startup"},
 		&cli.BoolFlag{Name: "hashed-canonical", Usage: "reth-2.2-style hashed-canonical state: EVM reads from HashedAccounts/HashedStorage (no PlainState), incremental root over migrated TrieOf*. Use for datadirs built by n42-migrate-reth-hashed."},
 
 		// Stage 2 G4 — auto mode selection.
@@ -158,6 +163,13 @@ func flags() []cli.Flag {
 
 func run(c *cli.Context) error {
 	cfg := assembleConfig(c)
+	if genesisPath := c.String("genesis"); genesisPath != "" {
+		genesis, err := loadCustomGenesis(genesisPath)
+		if err != nil {
+			return err
+		}
+		cfg.Genesis = genesis
+	}
 
 	// Stage 2 G3: optional pre-start sync against a publisher mirror.
 	// If --snapshot.source is set, we run snapshot status + auto-catchup
@@ -397,8 +409,10 @@ func run(c *cli.Context) error {
 	} else {
 		log.Info("eth-el: catch-up executor skipped (eldevp2p/snapshot-direct owns execution)")
 	}
+	var engineService *engineapi.Service
 	node.RegisterFactory(func(n *ethel.Node) ethel.Service {
-		return engineapi.New(cfg.EngineAPI, n.ChainConfig(), n.Engine(), n.RwDB(), n.OutFreezer())
+		engineService = engineapi.New(cfg.EngineAPI, n.ChainConfig(), n.Engine(), n.RwDB(), n.OutFreezer())
+		return engineService
 	})
 
 	// Public (non-JWT) JSON-RPC — the Blockscout-facing endpoint. Reuses the
@@ -432,11 +446,16 @@ func run(c *cli.Context) error {
 		if mp := c.Int("eldevp2p.max-peers"); mp > 0 {
 			eldcfg.MaxPeers = mp
 		}
-		if extra := c.StringSlice("eldevp2p.bootnodes"); len(extra) > 0 {
-			if c.Bool("eldevp2p.bootnodes-replace") {
-				eldcfg.BootNodes = append([]string{}, extra...)
-			} else {
-				eldcfg.BootNodes = append(eldcfg.BootNodes, extra...)
+		extra := c.StringSlice("eldevp2p.bootnodes")
+		if c.Bool("eldevp2p.bootnodes-replace") {
+			eldcfg.BootNodes = append([]string{}, extra...)
+		} else if len(extra) > 0 {
+			eldcfg.BootNodes = append(eldcfg.BootNodes, extra...)
+		}
+		eldcfg.EnodeFile = c.String("eldevp2p.enode-file")
+		eldcfg.InvalidAncestorObserver = func(rejectedHead, latestValidHash types.Hash) {
+			if engineService != nil {
+				engineService.MarkRejectedPayloadHash(rejectedHead, latestValidHash)
 			}
 		}
 		eldcfg.HashedCanonical = c.Bool("hashed-canonical")
@@ -455,12 +474,17 @@ func run(c *cli.Context) error {
 				log.Info("eth-el: snapshot-direct enabled (warm overlay on H0 snapshot)")
 			}
 		}
-		// Mainnet genesis hash + time. These are well-known constants;
-		// pin them here rather than read from rawdb so the devp2p handshake
-		// produces deterministic ForkID computation even before any block
-		// has been written.
 		genesisHash := types.HexToHash("0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3")
 		genesisTime := uint64(1438269988) // 2015-07-30 15:26:28 UTC
+		if cfg.Genesis != nil {
+			if h, err := internalcore.EthereumCompatibleGenesisHash(cfg.Genesis); err != nil {
+				log.Error("eth-el: custom genesis hash unavailable", "err", err)
+				return eldevp2p.New(eldcfg, n, types.Hash{}, cfg.Genesis.Timestamp)
+			} else {
+				genesisHash = h
+				genesisTime = cfg.Genesis.Timestamp
+			}
+		}
 		return eldevp2p.New(eldcfg, n, genesisHash, genesisTime)
 	})
 
@@ -484,6 +508,24 @@ func run(c *cli.Context) error {
 	<-ctx.Done()
 	log.Info("eth-el: shutdown signal received")
 	return nil
+}
+
+func loadCustomGenesis(path string) (*conf.Genesis, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open custom genesis %q: %w", path, err)
+	}
+	defer f.Close()
+	genesis := new(conf.Genesis)
+	if err := json.NewDecoder(f).Decode(genesis); err != nil {
+		return nil, fmt.Errorf("decode custom genesis %q: %w", path, err)
+	}
+	conf.ApplyHiveGenesisEnv(genesis, os.LookupEnv)
+	if genesis.Config == nil {
+		return nil, fmt.Errorf("custom genesis %q has no chain config", path)
+	}
+	genesis.Config = params.NormalizeConsensus(genesis.Config)
+	return genesis, nil
 }
 
 func assembleConfig(c *cli.Context) conf.EthELCfg {

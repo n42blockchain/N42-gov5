@@ -23,6 +23,11 @@ type EthELCfg struct {
 	// Network selects the chain spec. "mainnet", "sepolia", "holesky", "hoodi".
 	Network string `json:"network" yaml:"network"`
 
+	// Genesis overrides the preset chain configuration. It is used by
+	// ephemeral/custom networks (notably Hive), whose fork schedule and chain ID
+	// are supplied by a genesis file at process start.
+	Genesis *Genesis `json:"-" yaml:"-"`
+
 	// Storage tuning for the chaindata MDBX environment.
 	Storage EthELStorageCfg `json:"storage" yaml:"storage"`
 
