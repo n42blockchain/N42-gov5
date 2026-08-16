@@ -91,6 +91,21 @@ func TestStartHiveDevScriptAlwaysRebuildsHive(t *testing.T) {
 	}
 }
 
+func TestPrepareHiveClientCachesGoModulesBeforeSourceCopy(t *testing.T) {
+	t.Parallel()
+
+	content := readRepoFile(t, "scripts", "prepare_hive_n42_client.sh")
+	moduleCopy := `COPY ${local_path}/go.mod ${local_path}/go.sum ./`
+	for _, needle := range []string{moduleCopy, "RUN go mod download", `COPY ${local_path} /src/n42`} {
+		if strings.Count(content, needle) != 2 {
+			t.Fatalf("prepare_hive_n42_client.sh should emit %q for both client images", needle)
+		}
+	}
+	if strings.Index(content, moduleCopy) > strings.Index(content, `COPY ${local_path} /src/n42`) {
+		t.Fatal("prepare_hive_n42_client.sh copies source before caching Go modules")
+	}
+}
+
 func TestInteropSmokeScriptProducesSummaryInStubMode(t *testing.T) {
 	t.Parallel()
 
