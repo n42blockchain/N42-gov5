@@ -185,6 +185,15 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	if payload == nil {
 		return invalidPayloadResponse("missing execution payload"), nil
 	}
+	if payload.BlobGasUsed == nil || payload.ExcessBlobGas == nil {
+		return nil, &engineInvalidParamsError{msg: "missing blob gas fields"}
+	}
+	if expectedBlobVersionedHashes == nil {
+		return nil, &engineInvalidParamsError{msg: "missing versioned hashes"}
+	}
+	if parentBeaconBlockRoot == nil {
+		return nil, &engineInvalidParamsError{msg: "missing parent beacon block root"}
+	}
 	blockNumber := uint64(payload.BlockNumber)
 	timestamp := uint64(payload.Timestamp)
 	// Engine API spec: newPayloadV3 must not be used for Pectra+ payloads.
@@ -193,18 +202,11 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	}
 	if cfg := e.v1().chainConfig(); cfg != nil {
 		if !cfg.IsCancunAt(blockNumber, timestamp) {
-			if payload.BlobGasUsed != nil || payload.ExcessBlobGas != nil || len(expectedBlobVersionedHashes) > 0 {
-				return nil, &engineInvalidParamsError{msg: "blob fields not allowed before Cancun"}
-			}
-		} else if payload.BlobGasUsed == nil || payload.ExcessBlobGas == nil {
-			return nil, &engineInvalidParamsError{msg: "missing blob gas fields"}
+			return nil, &engineUnsupportedForkError{msg: "newPayloadV3 called for pre-Cancun timestamp, use newPayloadV2"}
 		}
 	}
-	if parentBeaconBlockRoot == nil {
-		return invalidPayloadResponse("missing parent beacon block root"), nil
-	}
 	if payload.Withdrawals == nil {
-		return invalidPayloadResponse("missing withdrawals in Cancun+ payload"), nil
+		return nil, &engineInvalidParamsError{msg: "missing withdrawals in Cancun+ payload"}
 	}
 
 	// Validate blob gas and versioned hashes for Cancun
@@ -301,7 +303,10 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 // GetPayloadV3 retrieves a payload with blob bundle
 // engine_getPayloadV3
 func (e *EngineAPIBlob) GetPayloadV3(ctx context.Context, payloadID PayloadID) (*GetPayloadResponseV3, error) {
-	if built := e.v1().builtPayload(payloadID); built != nil && built.v3 != nil {
+	if built := e.v1().builtPayload(payloadID); built != nil {
+		if built.v3 == nil {
+			return nil, &engineUnsupportedForkError{msg: "getPayloadV3 called for pre-Cancun payload, use getPayloadV2"}
+		}
 		return &GetPayloadResponseV3{
 			ExecutionPayload:      built.v3,
 			BlockValue:            enginePayloadBlockValue(built.blockValue),
@@ -330,6 +335,13 @@ func (e *EngineAPIBlob) ForkchoiceUpdatedV3(ctx context.Context, state *Forkchoi
 	}
 	if attrs.ParentBeaconBlockRoot == nil {
 		return nil, &engineInvalidPayloadAttributesError{msg: "missing parent beacon block root"}
+	}
+	nextNumber := uint64(0)
+	if head != nil && head.Number64() != nil {
+		nextNumber = head.Number64().Uint64() + 1
+	}
+	if cfg := e.v1().chainConfig(); cfg != nil && !cfg.IsCancunAt(nextNumber, uint64(attrs.Timestamp)) {
+		return nil, &engineUnsupportedForkError{msg: "forkchoiceUpdatedV3 called for pre-Cancun timestamp, use forkchoiceUpdatedV2"}
 	}
 	if uint64(attrs.Timestamp) <= head.Time() {
 		return nil, &engineInvalidPayloadAttributesError{msg: "payload timestamp must be greater than parent"}

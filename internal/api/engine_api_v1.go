@@ -62,7 +62,8 @@ type PayloadAttributesV1 struct {
 // PayloadAttributesV2 represents Shanghai payload attributes.
 type PayloadAttributesV2 struct {
 	PayloadAttributesV1
-	Withdrawals []*Withdrawal `json:"withdrawals"`
+	Withdrawals           []*Withdrawal `json:"withdrawals"`
+	ParentBeaconBlockRoot *types.Hash   `json:"parentBeaconBlockRoot,omitempty"`
 }
 
 // GetPayloadResponseV2 is the response for engine_getPayloadV2.
@@ -267,6 +268,9 @@ func (e *EngineAPIV1) GetPayloadV1(ctx context.Context, payloadID PayloadID) (*E
 // GetPayloadV2 retrieves a Shanghai payload.
 func (e *EngineAPIV1) GetPayloadV2(ctx context.Context, payloadID PayloadID) (*GetPayloadResponseV2, error) {
 	if built := e.builtPayload(payloadID); built != nil && built.v2 != nil {
+		if built.v3 != nil {
+			return nil, &engineUnsupportedForkError{msg: "getPayloadV2 called for Cancun+ payload, use getPayloadV3"}
+		}
 		return &GetPayloadResponseV2{
 			ExecutionPayload: built.v2,
 			BlockValue:       enginePayloadBlockValue(built.blockValue),
@@ -314,11 +318,17 @@ func (e *EngineAPIV1) ForkchoiceUpdatedV2(ctx context.Context, state *Forkchoice
 	if attrs == nil {
 		return validForkchoiceResponse(headHash, nil), nil
 	}
+	if attrs.ParentBeaconBlockRoot != nil {
+		return nil, &engineInvalidPayloadAttributesError{msg: "parent beacon block root is not valid for forkchoiceUpdatedV2"}
+	}
 	nextNumber := uint64(0)
 	if head != nil && head.Number64() != nil {
 		nextNumber = head.Number64().Uint64() + 1
 	}
 	shanghai := isShanghaiActive(e.chainConfig(), nextNumber, uint64(attrs.Timestamp))
+	if cfg := e.chainConfig(); cfg != nil && cfg.IsCancunAt(nextNumber, uint64(attrs.Timestamp)) {
+		return nil, &engineUnsupportedForkError{msg: "forkchoiceUpdatedV2 called for Cancun+ timestamp, use forkchoiceUpdatedV3"}
+	}
 	if shanghai && attrs.Withdrawals == nil {
 		return nil, &engineInvalidPayloadAttributesError{msg: "missing withdrawals"}
 	}
