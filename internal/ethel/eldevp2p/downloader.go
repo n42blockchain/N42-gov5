@@ -156,6 +156,13 @@ func envInt(name string, def int) int {
 // give up and try another iteration.
 const requestTimeout = 20 * time.Second
 
+// peerProbeGrace leaves the base-protocol handshake quiet long enough for
+// ping/pong and capability checks before active live-tip probing starts. A
+// newly connected peer may legitimately advertise the same head and have no
+// next header yet; requesting localHead+1 immediately breaks ForkID-only peers
+// and needlessly races their post-handshake checks.
+const peerProbeGrace = 3 * time.Second
+
 // Downloader satisfies devp2p.ResponseHandler. One instance per
 // eldevp2p.Service; it tracks every peer that completes handshake and
 // drives the catch-up fetch loop.
@@ -307,11 +314,12 @@ type executionProvider interface {
 
 // peerState tracks a connected peer.
 type peerState struct {
-	rw        gethp2p.MsgReadWriter
-	head      uint64
-	headHash  types.Hash
-	version   uint
-	inflightN int // concurrent requests currently dispatched to this peer
+	rw          gethp2p.MsgReadWriter
+	head        uint64
+	headHash    types.Hash
+	version     uint
+	connectedAt time.Time
+	inflightN   int // concurrent requests currently dispatched to this peer
 }
 
 // pickedPeer is a transient handle returned by pickPeer; release it with
@@ -448,7 +456,7 @@ func (d *Downloader) writeLocalHead(ctx context.Context, head uint64) error {
 // single coordinator goroutine is running.
 func (d *Downloader) OnPeerHandshake(peerID string, rw gethp2p.MsgReadWriter, peerHead uint64, peerHash types.Hash, version uint) {
 	d.mu.Lock()
-	d.peers[peerID] = &peerState{rw: rw, head: peerHead, headHash: peerHash, version: version}
+	d.peers[peerID] = &peerState{rw: rw, head: peerHead, headHash: peerHash, version: version, connectedAt: time.Now()}
 	d.mu.Unlock()
 	d.ensureCoordinator()
 }
@@ -702,6 +710,16 @@ func (d *Downloader) coordinator(ctx context.Context) {
 			// at local makes us probe local+1, so a mainnet peer reveals the block
 			// ABOVE our head, its head is bumped to a real value, and the normal fetch
 			// path resumes. With a real eth/69 peer present, floor==tip → unchanged.
+			if wait := d.liveProbeWait(time.Now()); wait > 0 {
+				timer := time.NewTimer(wait)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+				continue
+			}
 			probeFloor := tip
 			if local > probeFloor {
 				probeFloor = local
@@ -1084,6 +1102,28 @@ func (d *Downloader) peerSnapshot() map[string]*peerState {
 		out[id] = p
 	}
 	return out
+}
+
+// liveProbeWait returns the shortest remaining post-handshake grace among
+// connected peers. Zero timestamps are treated as already-established peers
+// so synthetic downloader tests and restored peer state retain old behavior.
+func (d *Downloader) liveProbeWait(now time.Time) time.Duration {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var shortest time.Duration
+	for _, peer := range d.peers {
+		if peer.connectedAt.IsZero() {
+			return 0
+		}
+		remaining := peer.connectedAt.Add(peerProbeGrace).Sub(now)
+		if remaining <= 0 {
+			return 0
+		}
+		if shortest == 0 || remaining < shortest {
+			shortest = remaining
+		}
+	}
+	return shortest
 }
 
 // pickPeer returns the least-busy peer whose head covers needHead and whose
