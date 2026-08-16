@@ -535,9 +535,15 @@ func (sdb *IntraBlockState) ExistPure(addr types.Address) bool {
 	}
 	// Check nilAccounts cache (known non-existent).
 	if _, ok := sdb.nilAccounts[addr]; ok {
-		// Unlike getStateObject, do NOT materialize balanceInc here.
-		// A pending balance increment does not constitute existence
-		// for gas calculation purposes (geth parity).
+		// Unlike getStateObject, do NOT materialize balanceInc here (no
+		// journal side effects) — but a pending balance increment DOES
+		// constitute existence: geth's AddBalance materializes an object,
+		// so its Exist answers true for such accounts. Answering false
+		// diverged on pre-SpuriousDragon new-account gas (e.g. CALL to an
+		// address just credited by SELFDESTRUCT in the same tx).
+		if inc, has := sdb.balanceInc[addr]; has && inc.count > 0 {
+			return true
+		}
 		return false
 	}
 	// Read from DB.
@@ -1318,9 +1324,15 @@ func (s *IntraBlockState) IntermediateRoot() types.Hash {
 // (LtHashRootComputer interface), original state is also collected for
 // incremental digest computation.
 func (s *IntraBlockState) computeRootViaComputer() types.Hash {
-	// Materialize pending balanceInc entries so they appear in stateObjectsDirty.
-	for addr, bi := range s.balanceInc {
-		if !bi.transferred {
+	// Materialize pending balanceInc entries so they appear in
+	// stateObjectsDirty. Iterate in sorted order: getStateObject faults
+	// reads through the state reader, and the block-witness recorder
+	// observes read order — an unsorted walk here (this runs BEFORE the
+	// sorted CommitBlock loop, in IntermediateRoot) made the witness byte
+	// stream nondeterministic run-to-run, breaking ethel replay / mobile
+	// verification reproducibility.
+	for _, addr := range sortedAddresses(s.balanceInc) {
+		if bi := s.balanceInc[addr]; bi != nil && !bi.transferred {
 			s.getStateObject(addr)
 			s.stateObjectsDirty[addr] = struct{}{}
 		}
@@ -1343,7 +1355,7 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 		originalStorage = make(map[types.Address]map[types.Hash]*uint256.Int)
 	}
 
-	for addr := range s.stateObjectsDirty {
+	for _, addr := range sortedAddresses(s.stateObjectsDirty) {
 		obj := s.getStateObject(addr)
 		// Selfdestructed accounts must be treated as deleted for hashed state,
 		// even though obj.deleted is only set later in CommitBlock/MakeWriteSet.
@@ -1360,6 +1372,20 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 				slots := make(map[types.Hash]*uint256.Int, len(wiped))
 				for key := range wiped {
 					slots[key] = new(uint256.Int) // zero = deleted
+				}
+				// captureWipedSlots scanned the reader's storage at
+				// selfdestruct time. On a real-writer-per-tx path
+				// (replay-v2), a slot an earlier tx in THIS block already
+				// zeroed was deleted from the reader before the capture ran,
+				// so it is missing here — union dirtyStorage's zeroed keys so
+				// the RootComputer still emits their delete op (over-deleting
+				// an absent key is a no-op).
+				if obj != nil {
+					for key := range obj.dirtyStorage {
+						if _, ok := slots[key]; !ok {
+							slots[key] = new(uint256.Int)
+						}
+					}
 				}
 				storage[addr] = slots
 				if ltEnabled {

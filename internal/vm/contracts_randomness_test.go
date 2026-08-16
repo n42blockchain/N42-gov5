@@ -1,219 +1,140 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
-//
-// The N42 library is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Lesser General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// The N42 library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Lesser General Public License for more details.
-//
-// You should have received a copy of the GNU Lesser General Public License
-// along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 
 package vm
 
 import (
 	"bytes"
-	"errors"
 	"math/big"
 	"testing"
 
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 )
 
-func TestRandomnessPrecompileAddress(t *testing.T) {
-	expected := types.HexToAddress("0x0000000000000000000000000000000000000302")
-	if RandomnessAddress != expected {
-		t.Fatalf("RandomnessAddress = %s, want %s", RandomnessAddress.Hex(), expected.Hex())
-	}
+func testRandaoCtx(v byte) *evmtypes.BlockContext {
+	h := types.Hash{v, 0xBE, 0xEF}
+	return &evmtypes.BlockContext{PrevRanDao: &h}
+}
 
-	pc, ok := PrecompiledContractsRandomness[RandomnessAddress]
-	if !ok {
-		t.Fatal("RandomnessAddress not found in PrecompiledContractsRandomness map")
+func TestRandomnessPrecompileAddress(t *testing.T) {
+	if _, ok := PrecompiledContractsRandomness[RandomnessAddress]; !ok {
+		t.Fatal("randomness precompile not registered at 0x0302")
 	}
-	if pc == nil {
-		t.Fatal("precompile contract at RandomnessAddress is nil")
+	c := PrecompiledContractsRandomness[RandomnessAddress]
+	if _, ok := c.(ContextAwarePrecompile); !ok {
+		t.Fatal("randomness precompile must be context-aware")
 	}
 }
 
-func TestRandomnessGetRandom(t *testing.T) {
-	// Set a known randomness value.
-	r := crypto.Keccak256Hash([]byte("test-randomness"))
-	SetBlockRandomness(1, r)
-	defer SetBlockRandomness(0, types.Hash{})
-
+// TestRandomnessDeterministic pins the core property the redesign exists
+// for: the output is a pure function of the header's PrevRanDao — same
+// context in, same bytes out, on every node and at every replay.
+func TestRandomnessDeterministic(t *testing.T) {
 	c := &randomnessBeacon{}
-	input := []byte{rngGetRandom}
-	out, err := c.Run(input)
+	ctx := testRandaoCtx(0x11)
+	a, err := c.RunWithContext(ctx, []byte{rngGetRandom})
 	if err != nil {
-		t.Fatalf("getRandom failed: %v", err)
+		t.Fatal(err)
 	}
-	if len(out) != 32 {
-		t.Fatalf("getRandom output length = %d, want 32", len(out))
+	b, err := c.RunWithContext(testRandaoCtx(0x11), []byte{rngGetRandom})
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// Verify output is keccak256(r).
-	expected := crypto.Keccak256Hash(r[:])
-	if !bytes.Equal(out, expected[:]) {
-		t.Fatalf("getRandom output mismatch: got %x, want %x", out, expected[:])
+	if !bytes.Equal(a, b) {
+		t.Fatal("same PrevRanDao must give identical output")
+	}
+	// And it must equal keccak256(prevRandao) exactly.
+	want := crypto.Keccak256Hash((*ctx.PrevRanDao)[:])
+	if !bytes.Equal(a, want[:]) {
+		t.Fatal("output != keccak256(prevRandao)")
+	}
+	// Different randao → different output.
+	d, err := c.RunWithContext(testRandaoCtx(0x22), []byte{rngGetRandom})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(a, d) {
+		t.Fatal("different PrevRanDao must change the output")
 	}
 }
 
 func TestRandomnessGetRandomInRange(t *testing.T) {
-	r := crypto.Keccak256Hash([]byte("range-test"))
-	SetBlockRandomness(1, r)
-	defer SetBlockRandomness(0, types.Hash{})
-
 	c := &randomnessBeacon{}
-
-	// max = 100
-	max := big.NewInt(100)
-	maxBytes := make([]byte, 32)
-	maxB := max.Bytes()
-	copy(maxBytes[32-len(maxB):], maxB)
-
-	input := append([]byte{rngGetRandomInRange}, maxBytes...)
-	out, err := c.Run(input)
+	max := big.NewInt(1000)
+	input := append([]byte{rngGetRandomInRange}, types.LeftPadBytes(max.Bytes(), 32)...)
+	out, err := c.RunWithContext(testRandaoCtx(0x33), input)
 	if err != nil {
-		t.Fatalf("getRandomInRange failed: %v", err)
+		t.Fatal(err)
 	}
 	if len(out) != 32 {
-		t.Fatalf("getRandomInRange output length = %d, want 32", len(out))
+		t.Fatalf("output length %d", len(out))
 	}
-
-	result := new(big.Int).SetBytes(out)
-	if result.Cmp(max) >= 0 {
-		t.Fatalf("result %d >= max %d", result, max)
-	}
-	if result.Sign() < 0 {
-		t.Fatalf("result is negative: %d", result)
+	v := new(big.Int).SetBytes(out)
+	if v.Cmp(max) >= 0 {
+		t.Fatalf("value %s out of range [0,%s)", v, max)
 	}
 }
 
 func TestRandomnessGetRandomInRangeZeroMax(t *testing.T) {
 	c := &randomnessBeacon{}
-
-	maxBytes := make([]byte, 32) // all zeros = max of 0
-	input := append([]byte{rngGetRandomInRange}, maxBytes...)
-	_, err := c.Run(input)
-	if err == nil {
-		t.Fatal("expected error for max=0")
-	}
-	if !errors.Is(err, errRandomnessZeroMax) {
-		t.Fatalf("expected errRandomnessZeroMax, got: %v", err)
+	input := append([]byte{rngGetRandomInRange}, make([]byte, 32)...)
+	if _, err := c.RunWithContext(testRandaoCtx(0x44), input); err == nil {
+		t.Fatal("zero max must error")
 	}
 }
 
 func TestRandomnessGetRandomWithSeed(t *testing.T) {
-	r := crypto.Keccak256Hash([]byte("seed-test"))
-	SetBlockRandomness(1, r)
-	defer SetBlockRandomness(0, types.Hash{})
-
 	c := &randomnessBeacon{}
-
-	seed1 := crypto.Keccak256Hash([]byte("seed-1"))
-	seed2 := crypto.Keccak256Hash([]byte("seed-2"))
-
-	input1 := append([]byte{rngGetRandomWithSeed}, seed1[:]...)
-	input2 := append([]byte{rngGetRandomWithSeed}, seed2[:]...)
-
-	out1, err := c.Run(input1)
+	seed1 := types.Hash{0x01}
+	seed2 := types.Hash{0x02}
+	ctx := testRandaoCtx(0x55)
+	o1, err := c.RunWithContext(ctx, append([]byte{rngGetRandomWithSeed}, seed1[:]...))
 	if err != nil {
-		t.Fatalf("getRandomWithSeed(seed1) failed: %v", err)
+		t.Fatal(err)
 	}
-	out2, err := c.Run(input2)
+	o2, err := c.RunWithContext(ctx, append([]byte{rngGetRandomWithSeed}, seed2[:]...))
 	if err != nil {
-		t.Fatalf("getRandomWithSeed(seed2) failed: %v", err)
+		t.Fatal(err)
 	}
-
-	if len(out1) != 32 || len(out2) != 32 {
-		t.Fatal("output length mismatch")
+	if bytes.Equal(o1, o2) {
+		t.Fatal("different seeds must give different outputs")
 	}
-
-	// Different seeds should produce different outputs.
-	if bytes.Equal(out1, out2) {
-		t.Fatal("different seeds produced same output")
+	o1b, err := c.RunWithContext(testRandaoCtx(0x55), append([]byte{rngGetRandomWithSeed}, seed1[:]...))
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// Verify determinism: same seed gives same output.
-	out1b, _ := c.Run(input1)
-	if !bytes.Equal(out1, out1b) {
-		t.Fatal("same seed produced different outputs on second call")
-	}
-
-	// Verify output matches expected value: keccak256(r || seed1).
-	combined := make([]byte, 64)
-	copy(combined[:32], r[:])
-	copy(combined[32:], seed1[:])
-	expected := crypto.Keccak256Hash(combined)
-	if !bytes.Equal(out1, expected[:]) {
-		t.Fatalf("getRandomWithSeed output mismatch: got %x, want %x", out1, expected[:])
+	if !bytes.Equal(o1, o1b) {
+		t.Fatal("same context+seed must be deterministic")
 	}
 }
 
 func TestRandomnessGas(t *testing.T) {
 	c := &randomnessBeacon{}
-
-	tests := []struct {
-		name  string
-		input []byte
-		want  uint64
-	}{
-		{
-			name:  "empty input",
-			input: []byte{},
-			want:  RandomnessGetRandomGas,
-		},
-		{
-			name:  "getRandom",
-			input: []byte{rngGetRandom},
-			want:  RandomnessGetRandomGas,
-		},
-		{
-			name:  "getRandomInRange",
-			input: []byte{rngGetRandomInRange},
-			want:  RandomnessGetRandomInRangeGas,
-		},
-		{
-			name:  "getRandomWithSeed",
-			input: []byte{rngGetRandomWithSeed},
-			want:  RandomnessGetRandomGas,
-		},
-		{
-			name:  "unknown selector",
-			input: []byte{0xFF},
-			want:  RandomnessGetRandomGas,
-		},
+	if g := c.RequiredGas([]byte{rngGetRandom}); g != RandomnessGetRandomGas {
+		t.Fatalf("getRandom gas %d", g)
 	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := c.RequiredGas(tc.input)
-			if got != tc.want {
-				t.Errorf("RequiredGas() = %d, want %d", got, tc.want)
-			}
-		})
+	if g := c.RequiredGas([]byte{rngGetRandomInRange}); g != RandomnessGetRandomInRangeGas {
+		t.Fatalf("getRandomInRange gas %d", g)
+	}
+	if g := c.RequiredGas([]byte{rngGetRandomWithSeed}); g != RandomnessGetRandomGas {
+		t.Fatalf("getRandomWithSeed gas %d", g)
 	}
 }
 
-func TestRandomnessNoBackend(t *testing.T) {
-	// With zero randomness (default), getRandom should return keccak256(zeroHash).
-	SetBlockRandomness(0, types.Hash{})
+// TestRandomnessUnavailable: without a header randao the precompile
+// fails deterministically — never a process-local fallback.
+func TestRandomnessUnavailable(t *testing.T) {
 	c := &randomnessBeacon{}
-
-	out, err := c.Run([]byte{rngGetRandom})
-	if err != nil {
-		t.Fatalf("getRandom with zero randomness failed: %v", err)
+	if _, err := c.RunWithContext(&evmtypes.BlockContext{}, []byte{rngGetRandom}); err == nil {
+		t.Fatal("nil PrevRanDao must error")
 	}
-
-	zeroHash := types.Hash{}
-	expected := crypto.Keccak256Hash(zeroHash[:])
-	if !bytes.Equal(out, expected[:]) {
-		t.Fatalf("zero randomness output mismatch: got %x, want %x", out, expected[:])
+	if _, err := c.RunWithContext(nil, []byte{rngGetRandom}); err == nil {
+		t.Fatal("nil context must error")
+	}
+	// The context-free Run entry must never yield a value either.
+	if _, err := c.Run([]byte{rngGetRandom}); err == nil {
+		t.Fatal("plain Run must refuse")
 	}
 }

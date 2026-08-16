@@ -445,12 +445,16 @@ func (bc *BlockChain) PrewarmMinerRootComputer(tx kv.Tx) bool {
 	}
 	bc.minerRCMu.Lock()
 	defer bc.minerRCMu.Unlock()
-	rc := bc.minerRC
-	if rc == nil {
-		rc = commitment.NewQMDBRootComputer()
-		rc.EnableUndoRecording()
-		bc.minerRC = rc
+	if bc.minerRC != nil {
+		// A real build already created (and is possibly actively using)
+		// the shared computer OUTSIDE this lock — reloading or detaching
+		// it here would peel the in-flight build's appends and null the
+		// reader it is faulting through. The warm-up goal is met anyway.
+		return false
 	}
+	rc := commitment.NewQMDBRootComputer()
+	rc.EnableUndoRecording()
+	bc.minerRC = rc
 	rc.SetCold(tx)
 	if undo := rc.TakeUndo(); undo != nil {
 		if err := rc.Tree().ApplyUndo(undo); err != nil {

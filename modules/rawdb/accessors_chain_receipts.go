@@ -37,6 +37,10 @@ import (
 
 // HasReceipts verifies the existence of all the transaction receipts belonging
 // to a block.
+//
+// ERA-UNAWARE (currently dead code): probes only the hot Receipt table —
+// answers false for sealed ranges the era store can actually serve. Wire
+// through the ancient fallback before giving this a production caller.
 func HasReceipts(db kv.Has, number uint64) bool {
 	has, err := db.Has(modules.Receipts, modules.EncodeBlockNumber(number))
 	return has && err == nil
@@ -172,6 +176,9 @@ func ReadReceiptsByHash(db kv.Tx, hash types.Hash) (block.Receipts, error) {
 // ReadReceiptByTxHash retrieves a single receipt by transaction hash using the
 // TxLookup index. This avoids loading the full block for single-receipt queries,
 // providing O(1) receipt access equivalent to Erigon's --persist.receipts.
+// ERA-UNAWARE (currently dead code): reads BlockBody/BlockTx rows directly
+// and fails for sealed ranges. Route through the era-aware assembly before
+// giving this a production caller.
 func ReadReceiptByTxHash(db kv.Tx, txHash types.Hash) (*block.Receipt, uint64, uint64, error) {
 	// Step 1: TxLookup → blockNumber
 	blockNumPtr, err := ReadTxLookupEntry(db, txHash)
@@ -343,6 +350,9 @@ func TruncateReceipts(db kv.RwTx, number uint64) error {
 	return nil
 }
 
+// ERA-UNAWARE (currently dead code): on the era layout this reports the
+// sealed horizon, not the true earliest available receipt (eras serve
+// below it). Consult the era store before giving this a production caller.
 func ReceiptsAvailableFrom(tx kv.Tx) (uint64, error) {
 	c, err := tx.Cursor(modules.Receipts)
 	if err != nil {

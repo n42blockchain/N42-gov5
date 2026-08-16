@@ -183,6 +183,26 @@ func SignTx(tx *Transaction, s Signer, prv *ecdsa.PrivateKey) (*Transaction, err
 // Sender may cache the address, allowing it to be used regardless of
 // signing method. The cache is invalidated if the cached signer does
 // not match the signer used in the current call.
+// RecoverSenderFromSig recovers the sender from the transaction's
+// SIGNATURE, deliberately ignoring any cached/wire-declared From on the
+// transaction object. It still consults the process-wide senderCache
+// (keyed by tx hash + signer), whose entries are themselves only ever
+// signature-recovered results — so honest, pool-seen transactions hit the
+// cache while a forged From can never be validated by it. Used by the
+// import-time sender-verification gate.
+func RecoverSenderFromSig(signer Signer, tx *Transaction) (types.Address, error) {
+	hash := tx.Hash()
+	if addr, ok := senderCacheGet(hash, signer); ok {
+		return addr, nil
+	}
+	addr, err := signer.Sender(tx)
+	if err != nil {
+		return types.Address{}, err
+	}
+	senderCachePut(hash, signer, addr)
+	return addr, nil
+}
+
 func Sender(signer Signer, tx *Transaction) (types.Address, error) {
 	if sc := tx.from.Load(); sc != nil {
 		sigCache := sc.(sigCache)

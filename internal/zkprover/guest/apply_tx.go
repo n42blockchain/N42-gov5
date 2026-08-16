@@ -135,8 +135,10 @@ func ApplyTx(fork ForkConfig, chainID uint64, header *block.Header, ibs *state.I
 	}
 
 	return &TxResult{
-		GasUsed:         result.UsedGas,
-		CumulativeGas:   cumulativeGas + result.UsedGas,
+		GasUsed: result.UsedGas,
+		// EIP-7778 (Glamsterdam): the receipt trie accumulates the
+		// block-level figure, not the sender's post-refund bill.
+		CumulativeGas:   cumulativeGas + result.BlockGasUsed,
 		Failed:          result.Err != nil,
 		ContractAddress: contractAddr,
 		Logs:            logs,

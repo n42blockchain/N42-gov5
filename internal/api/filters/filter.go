@@ -3,6 +3,7 @@ package filters
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/big"
 
 	"github.com/RoaringBitmap/roaring"
@@ -237,6 +238,14 @@ func (f *Filter) unindexedLogs(ctx context.Context, end uint64) ([]*block.Log, e
 	for ; f.begin <= int64(end); f.begin++ {
 		header := f.api.BlockChain().GetHeaderByNumber(uint256.NewInt(uint64(f.begin)))
 		if header == nil {
+			// Past the chain tip: normal end of scan. BELOW the tip a
+			// missing header means a pruned/damaged range — silently
+			// returning the partial result would let the caller mistake
+			// "data unavailable" for "no logs"; surface it instead.
+			if cur := f.api.BlockChain().CurrentBlock(); cur != nil &&
+				uint64(f.begin) <= cur.Number64().Uint64() {
+				return logs, fmt.Errorf("block %d unavailable (pruned or damaged range)", f.begin)
+			}
 			return logs, nil
 		}
 		found, err := f.blockLogs(ctx, header)
