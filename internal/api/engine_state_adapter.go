@@ -1130,7 +1130,7 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 
 	// Persist the executed payload so subsequent head/header lookups can
 	// resolve Engine eth-compatible hashes back to the underlying block.
-	storedHash, err := writeEnginePayloadBlock(tx, blk)
+	storedHash, err := writeEnginePayloadBlock(tx, blk, receipts)
 	if err != nil {
 		return nil, err
 	}
@@ -1461,7 +1461,7 @@ func (a *EngineStateAdapter) resolveCanonicalStoredHash(tx kv.Tx, engineHash typ
 	}
 }
 
-func writeEnginePayloadBlock(tx kv.RwTx, blk *block.Block) (types.Hash, error) {
+func writeEnginePayloadBlock(tx kv.RwTx, blk *block.Block, receipts block.Receipts) (types.Hash, error) {
 	header, ok := blk.Header().(*block.Header)
 	if !ok || header == nil {
 		return types.Hash{}, fmt.Errorf("unexpected header type")
@@ -1479,5 +1479,9 @@ func writeEnginePayloadBlock(tx kv.RwTx, blk *block.Block) (types.Hash, error) {
 		return types.Hash{}, err
 	}
 	rawdb.WriteHeader(tx, header)
+	if err := rawdb.WriteReceipts(tx, header.Number.Uint64(), receipts); err != nil {
+		return types.Hash{}, err
+	}
+	rawdb.WriteTxLookupEntries(tx, blk)
 	return hash, nil
 }

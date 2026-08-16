@@ -918,6 +918,23 @@ func TestStablePragueModexpCallcodeFixtureTouchesExpectedExecutionState(t *testi
 	require.NoError(t, err)
 	require.True(t, valid)
 	require.Equal(t, verifiedRoot, stateRoot)
+	require.NoError(t, execDB.View(context.Background(), func(dbtx kv.Tx) error {
+		storedTx, storedBlockHash, blockNumber, txIndex, err := rawdb.ReadTransactionByHash(dbtx, payloadTx.Hash())
+		require.NoError(t, err)
+		require.NotNil(t, storedTx)
+		require.Equal(t, payloadTx.Hash(), storedTx.Hash())
+		require.Equal(t, uint64(1), blockNumber)
+		require.Equal(t, uint64(0), txIndex)
+
+		storedBlock, err := rawdb.ReadBlockByHash(dbtx, storedBlockHash)
+		require.NoError(t, err)
+		require.NotNil(t, storedBlock)
+		storedReceipts := rawdb.ReadReceipts(dbtx, storedBlock, nil)
+		require.Len(t, storedReceipts, 1)
+		require.Equal(t, payloadTx.Hash(), storedReceipts[0].TxHash)
+		require.Equal(t, storedBlockHash, storedReceipts[0].BlockHash)
+		return nil
+	}))
 	t.Logf("in-memory root=%s verified root=%s full root=%s receiptsRoot=%s bloom=%x", expectedRoot, verifiedRoot, fullVerifiedRoot, expectedReceiptsRoot, expectedBloom.Bytes())
 }
 
