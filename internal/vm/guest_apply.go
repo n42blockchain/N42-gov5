@@ -44,9 +44,13 @@ var (
 
 // GuestExecutionResult is the result of applying a message in the guest context.
 type GuestExecutionResult struct {
-	UsedGas    uint64
-	Err        error
-	ReturnData []byte
+	UsedGas uint64
+	// BlockGasUsed is the EIP-7778 block-level figure: pre-refund gas
+	// clamped to the calldata floor under Glamsterdam, equal to UsedGas
+	// otherwise. Cumulative (receipt-trie) gas must use this value.
+	BlockGasUsed uint64
+	Err          error
+	ReturnData   []byte
 }
 
 // ApplyMessageForGuest executes a message against the EVM for the zkVM guest.
@@ -126,6 +130,17 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 	// Step 3: Refund gas — return unused gas * gasPrice to sender.
 	// EIP-3529: max refund = gasUsed / 5 after London (was gasUsed / 2 before).
 	gasUsed := gas - gasRemaining
+	// EIP-7623/7976 calldata floor and EIP-7778 block accounting (mirrors
+	// internal.StateTransition): the floor caps the post-refund remainder,
+	// the block figure is the pre-refund max(gasUsed, floor).
+	var floorDataGas uint64
+	if rules.IsPrague {
+		floorDataGas = FloorDataGas(msg.Data(), rules.IsGlamsterdam)
+	}
+	blockGasUsed := gasUsed
+	if rules.IsGlamsterdam && floorDataGas > blockGasUsed {
+		blockGasUsed = floorDataGas
+	}
 	refund := ibs.GetRefund()
 	maxRefund := gasUsed / 2
 	if rules.IsLondon {
@@ -135,6 +150,9 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 		refund = maxRefund
 	}
 	gasRemaining += refund
+	if floorDataGas > 0 && gasRemaining > gas-floorDataGas {
+		gasRemaining = gas - floorDataGas
+	}
 	gasUsed = gas - gasRemaining
 
 	// Refund remaining gas value to sender.
@@ -142,7 +160,12 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 	remaining.Mul(remaining, gasPrice)
 	ibs.AddBalance(sender, remaining)
 
-	gp.AddGas(gasRemaining)
+	// EIP-7778: the block pool never gets refunds back under Glamsterdam.
+	if rules.IsGlamsterdam {
+		gp.AddGas(gas - blockGasUsed)
+	} else {
+		gp.AddGas(gasRemaining)
+	}
 
 	// Step 4: Pay coinbase — effectiveTip * gasUsed to block producer.
 	effectiveTip := gasPrice
@@ -160,10 +183,17 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 	coinbasePayment.Mul(coinbasePayment, effectiveTip)
 	ibs.AddBalance(realEVM.Context().Coinbase, coinbasePayment)
 
+	if !rules.IsGlamsterdam {
+		if rules.IsPrague && gasUsed < floorDataGas {
+			gasUsed = floorDataGas
+		}
+		blockGasUsed = gasUsed
+	}
 	return &GuestExecutionResult{
-		UsedGas:    gasUsed,
-		Err:        vmerr,
-		ReturnData: ret,
+		UsedGas:      gasUsed,
+		BlockGasUsed: blockGasUsed,
+		Err:          vmerr,
+		ReturnData:   ret,
 	}, nil
 }
 

@@ -12,7 +12,6 @@ package hotstuff
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"fmt"
 	"sync"
 	"time"
@@ -21,9 +20,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
-	vm "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -537,21 +534,11 @@ func (s *Service) handleOutput(output EngineOutput) {
 			}
 		}
 
-		// Derive block randomness from CommitQC aggregate signature.
-		// The CommitQC requires 2f+1 signers, making the aggregate signature
-		// unpredictable by any single validator (threshold VUF).
-		if output.QC != nil && len(output.QC.AggregateSignature) > 0 {
-			// randomness = keccak256(aggregateSignature || blockNumber_LE_8bytes)
-			// Use explicit allocation to avoid corrupting the QC's signature slice.
-			var buf [8]byte
-			binary.LittleEndian.PutUint64(buf[:], uint64(output.View))
-			sigLen := len(output.QC.AggregateSignature)
-			randomInput := make([]byte, sigLen+8)
-			copy(randomInput, output.QC.AggregateSignature)
-			copy(randomInput[sigLen:], buf[:])
-			randomness := crypto.Keccak256Hash(randomInput)
-			vm.SetBlockRandomness(uint64(output.View), randomness)
-		}
+		// Block randomness is NOT fed to the EVM from here anymore: the
+		// 0x0302 beacon reads the header's PrevRanDao (consensus-committed,
+		// identical for leader/followers/replay). A process-local feed keyed
+		// by whatever QC this node last observed diverged between roles and
+		// was unreproducible at replay.
 	case OutputViewChanged:
 		log.Debug("hotstuff: view changed", "view", output.View)
 		updateMetricsViewChanged(output.View)
