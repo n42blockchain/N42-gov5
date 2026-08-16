@@ -272,7 +272,7 @@ func (s *TransactionAPI) GetTransactionReceipt(ctx context.Context, hash avmcomm
 	} else {
 		fields["status"] = hexutil.Uint(receipt.Status)
 	}
-	if receipt.Logs == nil {
+	if len(receipt.Logs) == 0 {
 		fields["logs"] = []*avmtypes.Log{}
 	} else {
 		fields["logs"] = avmtypes.FromastLogs(receipt.Logs)
