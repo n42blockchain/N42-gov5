@@ -220,8 +220,9 @@ func (e *EngineAPIv4) NewPayloadV4(
 		return invalidPayloadResponse("blockhash mismatch"), nil
 	}
 	body := &ExecutionPayloadBodyV1{
-		Transactions: cloneHexutilBytesList(payload.Transactions),
-		Withdrawals:  clonePayloadBodyWithdrawals(payload.Withdrawals),
+		Transactions:      cloneHexutilBytesList(payload.Transactions),
+		Withdrawals:       clonePayloadBodyWithdrawals(payload.Withdrawals),
+		executionRequests: cloneHexutilBytesList(executionRequests),
 	}
 	parent := e.v1.parentHeader(payload.ParentHash)
 	if latestValidHash, ok := e.v1.rejectedAncestorLatestValidHash(payload.ParentHash); ok {
@@ -497,8 +498,9 @@ func (e *EngineAPIv4) GetPayloadBodiesByRangeV1(ctx context.Context, start hexut
 
 // ExecutionPayloadBodyV1 is the response type for getPayloadBodies methods.
 type ExecutionPayloadBodyV1 struct {
-	Transactions []hexutil.Bytes `json:"transactions"`
-	Withdrawals  []*Withdrawal   `json:"withdrawals"`
+	Transactions      []hexutil.Bytes `json:"transactions"`
+	Withdrawals       []*Withdrawal   `json:"withdrawals"`
+	executionRequests []hexutil.Bytes
 }
 
 func cloneExecutionPayloadBody(body *ExecutionPayloadBodyV1) *ExecutionPayloadBodyV1 {
@@ -506,8 +508,9 @@ func cloneExecutionPayloadBody(body *ExecutionPayloadBodyV1) *ExecutionPayloadBo
 		return nil
 	}
 	return &ExecutionPayloadBodyV1{
-		Transactions: cloneHexutilBytesList(body.Transactions),
-		Withdrawals:  clonePayloadBodyWithdrawals(body.Withdrawals),
+		Transactions:      cloneHexutilBytesList(body.Transactions),
+		Withdrawals:       clonePayloadBodyWithdrawals(body.Withdrawals),
+		executionRequests: cloneHexutilBytesList(body.executionRequests),
 	}
 }
 

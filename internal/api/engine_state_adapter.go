@@ -270,6 +270,7 @@ func (a *EngineStateAdapter) SetSnapshotCold(r state.StateReader) { a.snapshotCo
 type enginePayloadExecutionResult struct {
 	stateRoot       types.Hash
 	receipts        block.Receipts
+	stateOverlay    *engineStateOverlay
 	validationError error
 }
 
@@ -441,6 +442,14 @@ func validateLogsBloom(actual, expected []byte, allowMissingExpected bool) error
 }
 
 func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal, allowMissingExpectedBloom bool) (_ *enginePayloadExecutionResult, retErr error) {
+	return a.executePayloadDetailedMode(blk, parentBeaconRoot, expectedRequests, withdrawals, allowMissingExpectedBloom, true, nil)
+}
+
+func (a *EngineStateAdapter) validatePayloadDetailed(blk *block.Block, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal, parentState *engineStateOverlay) (*enginePayloadExecutionResult, error) {
+	return a.executePayloadDetailedMode(blk, parentBeaconRoot, expectedRequests, withdrawals, false, false, parentState)
+}
+
+func (a *EngineStateAdapter) executePayloadDetailedMode(blk *block.Block, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal, allowMissingExpectedBloom, persist bool, parentState *engineStateOverlay) (_ *enginePayloadExecutionResult, retErr error) {
 	// A failed block leaves the read cache holding values memoized from this
 	// (about to be rolled back) tx — drop them. The batch path additionally
 	// purges on every SetBatchTx.
@@ -469,6 +478,11 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 			return nil, err
 		}
 		defer tx.Rollback()
+	}
+	if !persist && parentState != nil {
+		if err := applyEngineStateOverlayToTx(tx, parentState); err != nil {
+			return nil, err
+		}
 	}
 
 	// Execute against the parent snapshot, i.e. the state at the start of this block.
@@ -531,7 +545,11 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 		}
 	} else {
 		reader = state.NewPlainState(tx, blockNum)
-		writer = state.NewPlainStateWriter(tx, tx, blockNum)
+		if persist {
+			writer = state.NewPlainStateWriter(tx, tx, blockNum)
+		} else {
+			writer = state.NewPlainStateWriterNoHistory(tx)
+		}
 	}
 	ibs := state.New(reader)
 	ibs.BeginWriteCodes()
@@ -1009,11 +1027,20 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	}
 	header.Root = computedRoot
 	blk.WithSeal(header)
+	accounts, storage := ibs.DirtyAccountData()
+	stateOverlay := mergeEngineStateOverlay(parentState, accounts, storage, ibs.CodeHashes())
 
-	if os.Getenv("N42_NOCOMMIT") == "1" {
+	if persist && os.Getenv("N42_NOCOMMIT") == "1" {
 		log.Warn("NOCOMMIT: root MATCHED, rolling back (no persist)", "block", blockNum, "root", computedRoot.Hex())
 		return &enginePayloadExecutionResult{stateRoot: computedRoot,
 			validationError: fmt.Errorf("nocommit test")}, nil
+	}
+	if !persist {
+		return &enginePayloadExecutionResult{
+			stateRoot:    computedRoot,
+			receipts:     receipts,
+			stateOverlay: stateOverlay,
+		}, nil
 	}
 
 	// Persist the executed payload so subsequent head/header lookups can
@@ -1040,7 +1067,7 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 		}
 	}
 
-	return &enginePayloadExecutionResult{stateRoot: computedRoot, receipts: receipts}, nil
+	return &enginePayloadExecutionResult{stateRoot: computedRoot, receipts: receipts, stateOverlay: stateOverlay}, nil
 }
 
 // ForkchoiceUpdated updates the canonical chain head.

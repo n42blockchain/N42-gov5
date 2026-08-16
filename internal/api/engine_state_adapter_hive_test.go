@@ -218,13 +218,15 @@ func TestHiveEngineStateAdapterForkchoiceUpdatedExposesLatestBlock(t *testing.T)
 		engineOverlay: newEngineOverlay(),
 	}
 	engine := NewEngineAPIV1(NewBlockChainAPI(backend))
-	engine.SetStateAdapter(NewEngineStateAdapter(db, nil, genesis.Config, &apiTestEngine{}))
+	adapter := NewEngineStateAdapter(db, nil, genesis.Config, &apiTestEngine{})
+	engine.SetStateAdapter(adapter)
 
 	payload := hiveFirstEmptyPayload()
 	newPayloadResp, err := engine.NewPayloadV1(context.Background(), payload)
 	require.NoError(t, err)
 	require.Equal(t, PayloadStatusValid, newPayloadResp.Status)
 	require.NotNil(t, backend.engineOverlay.receiptsByBlockHash(payload.BlockHash))
+	require.Equal(t, payload.ParentHash, adapter.CurrentHeadHash())
 
 	forkchoiceResp, err := engine.ForkchoiceUpdatedV1(context.Background(), &ForkchoiceStateV1{
 		HeadBlockHash:      payload.BlockHash,
@@ -233,6 +235,7 @@ func TestHiveEngineStateAdapterForkchoiceUpdatedExposesLatestBlock(t *testing.T)
 	}, nil)
 	require.NoError(t, err)
 	require.Equal(t, PayloadStatusValid, forkchoiceResp.PayloadStatus.Status)
+	require.Equal(t, payload.BlockHash, adapter.CurrentHeadHash())
 
 	latest, err := NewBlockChainAPI(backend).GetBlockByNumber(context.Background(), jsonrpc.LatestBlockNumber, false)
 	require.NoError(t, err)
@@ -705,12 +708,23 @@ func TestEngineStateAdapterAcceptsStableShanghaiWithdrawalsFixture(t *testing.T)
 					stateAdapterBlock, ok := stateAdapterBlockIface.(*block.Block)
 					require.True(t, ok)
 
-					engine.SetStateAdapter(NewEngineStateAdapter(db, nil, cfg, &apiTestEngine{}))
+					adapter := NewEngineStateAdapter(db, nil, cfg, &apiTestEngine{})
+					engine.SetStateAdapter(adapter)
 					resp, err := engine.NewPayloadV2(context.Background(), payload)
 					require.NoError(t, err)
 					require.Equal(t, PayloadStatusValid, resp.Status)
 					require.NotNil(t, resp.LatestValidHash)
 					require.Equal(t, payload.BlockHash, *resp.LatestValidHash)
+					require.Equal(t, payload.ParentHash, adapter.CurrentHeadHash())
+
+					forkchoiceResp, err := engine.ForkchoiceUpdatedV2(context.Background(), &ForkchoiceStateV1{
+						HeadBlockHash:      payload.BlockHash,
+						SafeBlockHash:      payload.BlockHash,
+						FinalizedBlockHash: payload.ParentHash,
+					}, nil)
+					require.NoError(t, err)
+					require.Equal(t, PayloadStatusValid, forkchoiceResp.PayloadStatus.Status)
+					require.Equal(t, payload.BlockHash, adapter.CurrentHeadHash())
 
 					err = db.View(context.Background(), func(tx kv.Tx) error {
 						persisted := state.New(state.NewPlainStateReader(tx))
