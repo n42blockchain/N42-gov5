@@ -24,6 +24,7 @@ package internal
 
 import (
 	"fmt"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -39,6 +40,7 @@ import (
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/layered"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/ethdb"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
@@ -102,6 +104,16 @@ func NewStateProcessor(config *params.ChainConfig, bc *BlockChain, engine consen
 // Process processes the state changes according to the Ethereum rules by running
 // the transaction messages and applying rewards. Returns receipts, unpaid rewards,
 // logs, and total gas used.
+// senderSourceTrace (N42_SENDER_TRACE=1) logs, per block, how many senders
+// came from pool hints vs the process-wide cache vs a full recovery. Kept
+// behind an env gate: it is the only way to tell a cold cache from a cold
+// pool when the import recov phase blows up.
+var (
+	senderSourceTrace = os.Getenv("N42_SENDER_TRACE") == "1"
+	lastCacheHits     uint64
+	lastCacheMisses   uint64
+)
+
 func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, stateReader state.StateReader, stateWriter state.WriterWithChangeSets, blockHashFunc func(n uint64) types.Hash) (_ block.Receipts, _ map[types.Address]*uint256.Int, _ []*block.Log, _ uint64, retErr error) {
 	processStart := time.Now()
 	defer func() {
@@ -162,8 +174,14 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 		// saturated fleet that is nearly every transaction of an imported
 		// block, turning a 260 ms parallel recovery into map lookups. Second
 		// pass: whatever the pool did not have recovers on the worker pool.
-		applySenderHints(p.bc.senderHints, signer, b.Transactions())
+		hintFills := applySenderHints(p.bc.senderHints, signer, b.Transactions())
 		recoverBlockSenders(signer, b.Transactions())
+		if senderSourceTrace && len(b.Transactions()) > 0 {
+			h, m := transaction.SenderCacheStats()
+			log.Info("sender source", "txs", len(b.Transactions()), "hintFills", hintFills,
+				"cacheHits", h-lastCacheHits, "cacheMisses", m-lastCacheMisses)
+			lastCacheHits, lastCacheMisses = h, m
+		}
 	}
 	phases.Recover = time.Since(tPhase)
 	tPhase = time.Now()
