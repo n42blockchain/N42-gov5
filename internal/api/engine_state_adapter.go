@@ -482,6 +482,12 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 		parentBeaconRoot = header.ParentBeaconRoot
 	}
 	blockNum := header.Number.Uint64()
+	if err := validateExecutionPayloadHeader(header, a.HeaderByHash(header.ParentHash), a.chainCfg); err != nil {
+		return &enginePayloadExecutionResult{
+			stateRoot:       header.Root,
+			validationError: err,
+		}, nil
+	}
 	// Keep the staged parent's cumulative lineage for the next overlay even
 	// when execution can read this parent directly from canonical storage.
 	// Dropping it here would reduce every newly staged overlay to a one-block
