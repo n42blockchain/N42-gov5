@@ -166,6 +166,10 @@ type Downloader struct {
 	peers    map[string]*peerState        // peerID → state
 	inflight map[string]chan inflightResp // reqKey → reply channel
 	adapter  *api.EngineStateAdapter
+	// invalidAncestorObserver reports the advertised peer head when execution
+	// proves an ancestor invalid. The Engine API uses this to reject a payload
+	// whose missing parent chain was learned through devp2p.
+	invalidAncestorObserver func(rejectedHead, latestValidHash types.Hash)
 
 	// reqSeq generates unique request IDs across all concurrent requests.
 	reqSeq atomic.Uint64
@@ -258,6 +262,33 @@ type Downloader struct {
 	// reorder buffer). Populated by ensureHeaders/ensureBodies, drained by
 	// executeRange via assembleContiguous, pruned after commit.
 	buffer *blockBuffer
+}
+
+// SetInvalidAncestorObserver installs the bridge to the Engine API rejected
+// payload cache. It should be configured before the first peer handshake.
+func (d *Downloader) SetInvalidAncestorObserver(observer func(rejectedHead, latestValidHash types.Hash)) {
+	d.invalidAncestorObserver = observer
+}
+
+func (d *Downloader) reportInvalidAncestor(rejectedHead, latestValidHash types.Hash) {
+	if d.invalidAncestorObserver == nil || rejectedHead == (types.Hash{}) {
+		return
+	}
+	d.invalidAncestorObserver(rejectedHead, latestValidHash)
+}
+
+func rejectedBranchTip(headers []*block.Header, invalidIndex int) types.Hash {
+	if invalidIndex < 0 || invalidIndex >= len(headers) || headers[invalidIndex] == nil {
+		return types.Hash{}
+	}
+	tip := headers[invalidIndex]
+	for _, next := range headers[invalidIndex+1:] {
+		if next == nil || next.Number64().Uint64() != tip.Number64().Uint64()+1 || next.ParentHash != tip.Hash() {
+			break
+		}
+		tip = next
+	}
+	return tip.Hash()
 }
 
 // executionProvider is the surface the downloader needs from the
@@ -1257,7 +1288,7 @@ func (d *Downloader) executeRange(ctx context.Context, local uint64, headers []*
 		}
 	}
 
-	for _, hdr := range headers {
+	for headerIndex, hdr := range headers {
 		n := hdr.Number64().Uint64()
 		if n < want {
 			continue
@@ -1331,6 +1362,7 @@ func (d *Downloader) executeRange(ctx context.Context, local uint64, headers []*
 			if os.Getenv("N42_RCPTDIFF") != "" {
 				d.dumpMainnetReceipts(ctx, n, hdr.Hash())
 			}
+			d.reportInvalidAncestor(rejectedBranchTip(headers, headerIndex), hdr.ParentHash)
 			tx.Rollback()
 			d.adapter.DiscardReorgJournal()
 			return committed - local, committed

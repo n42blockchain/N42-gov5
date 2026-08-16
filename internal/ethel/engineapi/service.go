@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/consensus"
@@ -179,6 +180,15 @@ func (s *Service) Stop() error {
 	s.server = nil
 	s.listener = nil
 	return nil
+}
+
+// MarkRejectedPayloadHash bridges invalid-chain detection from the devp2p
+// downloader into the Engine API's rejected-ancestor cache.
+func (s *Service) MarkRejectedPayloadHash(hash, latestValidHash types.Hash) {
+	if s == nil || s.apiCore == nil {
+		return
+	}
+	s.apiCore.MarkRejectedPayloadHash(hash, &latestValidHash)
 }
 
 // loadOrCreateJWTSecret reads a 32-byte hex-encoded secret from path. If

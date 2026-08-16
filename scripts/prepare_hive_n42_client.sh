@@ -63,6 +63,36 @@ EOF
 
 cp "$client_dir/Dockerfile" "$client_dir/Dockerfile.local"
 
+cat >"$client_dir/Dockerfile.ethel" <<'EOF'
+FROM nginx:alpine AS builder
+
+RUN apk add --no-cache build-base ca-certificates git go linux-headers
+
+ARG local_path=n42-local
+COPY ${local_path} /src/n42
+WORKDIR /src/n42
+
+RUN go build -ldflags='-extldflags=-Wl,--allow-multiple-definition' -o /usr/local/bin/n42 ./cmd/n42
+RUN go build -tags n42el -ldflags='-extldflags=-Wl,--allow-multiple-definition' -o /usr/local/bin/eth-el ./cmd/eth-el
+
+FROM nginx:alpine
+
+RUN apk add --no-cache bash curl jq ca-certificates
+
+COPY --from=builder /usr/local/bin/n42 /usr/local/bin/n42
+COPY --from=builder /usr/local/bin/eth-el /usr/local/bin/eth-el
+COPY genesis.json /genesis.json
+COPY n42-ethel.sh /n42-ethel.sh
+COPY enode-ethel.sh /hive-bin/enode.sh
+
+RUN chmod +x /n42-ethel.sh /hive-bin/enode.sh
+RUN /usr/local/bin/eth-el --help >/version.txt
+
+EXPOSE 8545 8551 30303 30303/udp
+
+ENTRYPOINT ["/n42-ethel.sh"]
+EOF
+
 cat >"$client_dir/.dockerignore" <<'EOF'
 n42-local/.DS_Store
 n42-local/**/.DS_Store
@@ -270,12 +300,131 @@ fi
 wait "$node_pid"
 EOF
 
-chmod +x "$client_dir/n42.sh" "$client_dir/enode.sh"
+cat >"$client_dir/enode-ethel.sh" <<'EOF'
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+for _ in $(seq 1 100); do
+  if [ -s /n42-ethel.enode ]; then
+    cat /n42-ethel.enode
+    exit 0
+  fi
+  sleep 0.1
+done
+echo "eth-el enode file was not created" >&2
+exit 1
+EOF
+
+cat >"$client_dir/n42-ethel.sh" <<'EOF'
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+export N42_LOG_STDOUT=1
+
+n42=/usr/local/bin/n42
+eth_el=/usr/local/bin/eth-el
+datadir=/n42data
+jwtsecret=/jwtsecret
+rpc_url=http://127.0.0.1:8545
+
+rpc_call() {
+  local method="$1"
+  local params_json="$2"
+  curl -fsS -X POST \
+    -H 'Content-Type: application/json' \
+    --data "{\"jsonrpc\":\"2.0\",\"method\":\"${method}\",\"params\":${params_json},\"id\":1}" \
+    "$rpc_url"
+}
+
+wait_for_rpc() {
+  local attempt
+  for attempt in $(seq 1 120); do
+    if rpc_call eth_blockNumber '[]' >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+mkdir -p "$datadir"
+printf '0x7365637265747365637265747365637265747365637265747365637265747365' >"$jwtsecret"
+
+echo "Initializing eth-el Hive database from /genesis.json"
+rm -rf "$datadir/chaindata" "$datadir/chain" "$datadir/nodes" "$datadir/network.json" /n42-ethel.enode
+"$n42" init --data.dir "$datadir" --chain private --profile eth /genesis.json
+
+set +e
+if [ -f /chain.rlp ]; then
+  echo "Importing /chain.rlp"
+  "$n42" import --data.dir "$datadir" --chain private --profile eth /chain.rlp
+  echo "chain.rlp import rc=$?"
+fi
+if [ -d /blocks ]; then
+  while IFS= read -r block_file; do
+    [ -n "$block_file" ] || continue
+    "$n42" import --data.dir "$datadir" --chain private --profile eth "$block_file"
+    echo "block import rc=$? file=$(basename "$block_file")"
+  done < <(find /blocks -maxdepth 1 -type f | sort)
+fi
+set -e
+
+flags=(
+  --datadir "$datadir"
+  --genesis /genesis.json
+  --bootstrap.enabled=false
+  --bootstrap.mode none
+  --engine.enabled
+  --engine.host 0.0.0.0
+  --engine.port 8551
+  --engine.jwt "$jwtsecret"
+  --publicrpc.enabled
+  --publicrpc.host 0.0.0.0
+  --publicrpc.port 8545
+  --publicrpc.mode archive
+  --eldevp2p.enabled
+  --eldevp2p.listen :30303
+  --eldevp2p.bootnodes-replace
+  --eldevp2p.enode-file /n42-ethel.enode
+)
+
+if [ -n "${HIVE_BOOTNODE:-}" ]; then
+  flags+=(--eldevp2p.bootnodes "$HIVE_BOOTNODE")
+fi
+
+echo "Running eth-el with flags: ${flags[*]}"
+"$eth_el" "${flags[@]}" &
+node_pid=$!
+
+cleanup() {
+  if kill -0 "$node_pid" 2>/dev/null; then
+    kill "$node_pid" 2>/dev/null || true
+    wait "$node_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+if ! wait_for_rpc; then
+  echo "eth-el did not open RPC in time" >&2
+  exit 1
+fi
+
+wait "$node_pid"
+EOF
+
+chmod +x "$client_dir/n42.sh" "$client_dir/enode.sh" "$client_dir/n42-ethel.sh" "$client_dir/enode-ethel.sh"
 
 cat >"$client_file" <<'EOF'
 - client: n42
   nametag: local
   dockerfile: local
+  build_args:
+    local_path: n42-local
+- client: n42
+  nametag: ethel
+  dockerfile: ethel
   build_args:
     local_path: n42-local
 EOF

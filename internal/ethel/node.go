@@ -27,6 +27,8 @@ import (
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	libLog "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/params"
 )
@@ -73,9 +75,18 @@ func NewNode(cfg conf.EthELCfg) (*Node, error) {
 	if cfg.DataDir == "" {
 		return nil, errors.New("ethel.NewNode: DataDir is required")
 	}
-	chainCfg, err := chainConfigForNetwork(cfg.Network)
-	if err != nil {
-		return nil, err
+	var chainCfg *params.ChainConfig
+	if cfg.Genesis != nil {
+		if cfg.Genesis.Config == nil {
+			return nil, errors.New("ethel.NewNode: custom genesis has no chain config")
+		}
+		chainCfg = params.NormalizeConsensus(cfg.Genesis.Config)
+	} else {
+		var err error
+		chainCfg, err = chainConfigForNetwork(cfg.Network)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &Node{
 		cfg:      cfg,
@@ -203,9 +214,11 @@ func (n *Node) openStorage(ctx context.Context) error {
 		return err
 	}
 	logger := libLog.New("module", "ethel-chaindb")
+	modules.N42Init()
 	db, err := mdbx.NewMDBX(logger).
 		Path(mdbxPath).
 		Label(kv.ChainDB).
+		WithTableCfg(func(_ kv.TableCfg) kv.TableCfg { return modules.N42TableCfg }).
 		PageSize(n.cfg.Storage.PageSize).
 		MapSize(n.cfg.Storage.MapSize).
 		Open(ctx)
@@ -213,6 +226,13 @@ func (n *Node) openStorage(ctx context.Context) error {
 		return fmt.Errorf("open mdbx: %w", err)
 	}
 	n.db = db
+	if n.cfg.Genesis != nil {
+		if err := n.initializeCustomGenesisCommitment(ctx); err != nil {
+			db.Close()
+			n.db = nil
+			return fmt.Errorf("initialize custom genesis commitment: %w", err)
+		}
+	}
 
 	freezerPath := filepath.Join(n.cfg.DataDir, "chain", "freezer")
 	if err := os.MkdirAll(freezerPath, 0o755); err != nil {
@@ -238,6 +258,45 @@ func (n *Node) openStorage(ctx context.Context) error {
 		"freezer", freezerPath,
 		"frozen", in.Frozen(),
 	)
+	return nil
+}
+
+// initializeCustomGenesisCommitment seeds the hashed leaves and TrieOf* cache
+// from the PlainState written by `n42 init`. The wire downloader's first block
+// may be empty; without this bootstrap it has no dirty accounts from which to
+// discover the pre-existing genesis state and incorrectly computes the empty
+// trie root.
+func (n *Node) initializeCustomGenesisCommitment(ctx context.Context) error {
+	tx, err := n.db.BeginRw(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if head := rawdb.ReadCurrentFullBlockNumber(tx); head != nil && *head > 0 {
+		return nil
+	}
+	if err := RebuildHashedState(tx); err != nil {
+		return err
+	}
+	root, err := CalcStateRoot(tx)
+	if err != nil {
+		return err
+	}
+	genesisHash, err := rawdb.ReadCanonicalHash(tx, 0)
+	if err != nil {
+		return err
+	}
+	genesisHeader := rawdb.ReadHeader(tx, genesisHash, 0)
+	if genesisHeader == nil {
+		return errors.New("custom genesis header missing")
+	}
+	if root != genesisHeader.Root {
+		return fmt.Errorf("custom genesis root mismatch: computed %s stored %s", root.Hex(), genesisHeader.Root.Hex())
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	log.Info("eth-el: custom genesis commitment initialized", "root", root.Hex())
 	return nil
 }
 

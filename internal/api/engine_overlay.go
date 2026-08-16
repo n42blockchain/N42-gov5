@@ -1084,6 +1084,16 @@ func (o *engineOverlay) rejectedLatestValidHash(hash types.Hash) (*types.Hash, b
 	return cloneHashPtr(latestValidHash), ok
 }
 
+func (o *engineOverlay) markRejectedHash(hash types.Hash, latestValidHash *types.Hash) {
+	if o == nil || hash == (types.Hash{}) {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	delete(o.validatedByHash, hash)
+	o.rejectedByHash[hash] = cloneHashPtr(latestValidHash)
+}
+
 func (o *engineOverlay) payloadBodyByHash(hash types.Hash) *ExecutionPayloadBodyV1 {
 	if o == nil || hash == (types.Hash{}) {
 		return nil

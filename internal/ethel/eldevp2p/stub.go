@@ -30,7 +30,9 @@ type Config struct {
 	// MUST exist here too: the default build compiles this file instead of
 	// service.go, so a field added on one side only breaks `go build ./...`
 	// for everyone not passing -tags n42el.
-	FreezerDir string
+	FreezerDir              string
+	EnodeFile               string
+	InvalidAncestorObserver func(rejectedHead, latestValidHash types.Hash)
 }
 
 func DefaultConfig() Config {

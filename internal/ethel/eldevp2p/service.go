@@ -36,6 +36,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	gethcrypto "github.com/ethereum/go-ethereum/crypto"
@@ -48,10 +49,10 @@ import (
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/devp2p"
 	"github.com/n42blockchain/N42/lib/kv"
-	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
+	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -96,6 +97,11 @@ type Config struct {
 	// the local headerc head (e.g. a hashed-canonical datadir catching up to the
 	// tip). Empty disables the local fill (peers only), preserving prior behavior.
 	FreezerDir string
+	// EnodeFile receives the listener's enode URL after startup. This gives
+	// container harnesses such as Hive a race-free discovery mechanism.
+	EnodeFile string
+	// InvalidAncestorObserver bridges devp2p validation failures to Engine API.
+	InvalidAncestorObserver func(rejectedHead, latestValidHash types.Hash)
 }
 
 // DefaultConfig is a follower-friendly default — listens on the standard
@@ -175,6 +181,7 @@ func (s *Service) Start(_ context.Context) error {
 	// handshake. Registered as the EthHandler ResponseHandler so the
 	// peer goroutine routes msg code 4 / 6 here.
 	dl := NewDownloader(s.node, s.cfg.HashedCanonical, s.cfg.SnapshotCold, s.cfg.FreezerDir)
+	dl.SetInvalidAncestorObserver(s.cfg.InvalidAncestorObserver)
 	handler.SetResponseHandler(dl)
 
 	boot := make([]*enode.Node, 0, len(s.cfg.BootNodes))
@@ -197,6 +204,13 @@ func (s *Service) Start(_ context.Context) error {
 
 	if err := s.server.Start(); err != nil {
 		return fmt.Errorf("eldevp2p start: %w", err)
+	}
+	if s.cfg.EnodeFile != "" {
+		if err := os.WriteFile(s.cfg.EnodeFile, []byte(s.server.Self().URLv4()+"\n"), 0o644); err != nil {
+			s.server.Stop()
+			s.server = nil
+			return fmt.Errorf("write enode file: %w", err)
+		}
 	}
 	// Add bootnodes as static peers — discv4 (UDP 30303) may be filtered by
 	// the same ISP that filters beacon-p2p UDP 9000; static peers TCP-dial

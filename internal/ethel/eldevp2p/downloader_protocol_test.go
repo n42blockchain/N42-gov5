@@ -5,6 +5,10 @@ package eldevp2p
 import (
 	"testing"
 
+	"github.com/holiman/uint256"
+
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/network/eth69"
 )
 
@@ -30,5 +34,29 @@ func TestBALPeerSelectionRejectsLegacyOnlyPool(t *testing.T) {
 	}}
 	if pp := d.pickPeerWithMinVersion(50, eth69.ETH71); pp != nil {
 		t.Fatalf("selected legacy peer %q for BAL request", pp.id)
+	}
+}
+
+func TestInvalidAncestorObserverReportsRejectedBranchTip(t *testing.T) {
+	rejectedHead := types.HexToHash("0x11")
+	latestValid := types.HexToHash("0x33")
+	d := &Downloader{}
+	var gotRejected, gotLatest types.Hash
+	d.SetInvalidAncestorObserver(func(rejected, latest types.Hash) {
+		gotRejected, gotLatest = rejected, latest
+	})
+	d.reportInvalidAncestor(rejectedHead, latestValid)
+	if gotRejected != rejectedHead || gotLatest != latestValid {
+		t.Fatalf("observer got rejected=%s latest=%s, want rejected=%s latest=%s",
+			gotRejected, gotLatest, rejectedHead, latestValid)
+	}
+}
+
+func TestRejectedBranchTipStopsAtFirstDisconnectedHeader(t *testing.T) {
+	h9 := &block.Header{Number: uint256.NewInt(9)}
+	h10 := &block.Header{Number: uint256.NewInt(10), ParentHash: h9.Hash()}
+	disconnected := &block.Header{Number: uint256.NewInt(11), ParentHash: types.HexToHash("0xff")}
+	if got := rejectedBranchTip([]*block.Header{h9, h10, disconnected}, 0); got != h10.Hash() {
+		t.Fatalf("rejectedBranchTip = %s, want %s", got, h10.Hash())
 	}
 }
