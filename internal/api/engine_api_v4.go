@@ -330,11 +330,12 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 	if uint64(attrs.Timestamp) <= head.Time() {
 		return nil, &engineInvalidPayloadAttributesError{msg: "payload timestamp must be greater than parent"}
 	}
-	payload, executionRequests, blockValue := e.buildExecutionPayloadV4Stateful(head, headHash, attrs)
+	payload, executionRequests, blockValue, blobsBundle := e.buildExecutionPayloadV4Stateful(head, headHash, attrs)
 	if payload == nil {
 		payload = buildExecutionPayloadV4(head, headHash, attrs, e.v1.chainConfig())
 		executionRequests = []hexutil.Bytes{}
 		blockValue = new(big.Int)
+		blobsBundle = emptyBlobsBundle()
 	}
 	if payload == nil {
 		return invalidForkchoiceResponse("failed to build payload"), nil
@@ -360,7 +361,7 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 			v3:                &ExecutionPayloadV3{ParentHash: payload.ParentHash, FeeRecipient: payload.FeeRecipient, StateRoot: payload.StateRoot, ReceiptsRoot: payload.ReceiptsRoot, LogsBloom: append(hexutil.Bytes(nil), payload.LogsBloom...), PrevRandao: payload.PrevRandao, BlockNumber: payload.BlockNumber, GasLimit: payload.GasLimit, GasUsed: payload.GasUsed, Timestamp: payload.Timestamp, ExtraData: append(hexutil.Bytes(nil), payload.ExtraData...), BaseFeePerGas: payload.BaseFeePerGas, BlockHash: payload.BlockHash, Transactions: cloneHexutilBytesList(payload.Transactions), Withdrawals: cloneWithdrawals(payload.Withdrawals), BlobGasUsed: payload.BlobGasUsed, ExcessBlobGas: payload.ExcessBlobGas},
 			v2:                &ExecutionPayloadV2{ExecutionPayloadV1: ExecutionPayloadV1{ParentHash: payload.ParentHash, FeeRecipient: payload.FeeRecipient, StateRoot: payload.StateRoot, ReceiptsRoot: payload.ReceiptsRoot, LogsBloom: append(hexutil.Bytes(nil), payload.LogsBloom...), PrevRandao: payload.PrevRandao, BlockNumber: payload.BlockNumber, GasLimit: payload.GasLimit, GasUsed: payload.GasUsed, Timestamp: payload.Timestamp, ExtraData: append(hexutil.Bytes(nil), payload.ExtraData...), BaseFeePerGas: payload.BaseFeePerGas, BlockHash: payload.BlockHash, Transactions: cloneHexutilBytesList(payload.Transactions)}, Withdrawals: cloneWithdrawals(payload.Withdrawals)},
 			v1:                &ExecutionPayloadV1{ParentHash: payload.ParentHash, FeeRecipient: payload.FeeRecipient, StateRoot: payload.StateRoot, ReceiptsRoot: payload.ReceiptsRoot, LogsBloom: append(hexutil.Bytes(nil), payload.LogsBloom...), PrevRandao: payload.PrevRandao, BlockNumber: payload.BlockNumber, GasLimit: payload.GasLimit, GasUsed: payload.GasUsed, Timestamp: payload.Timestamp, ExtraData: append(hexutil.Bytes(nil), payload.ExtraData...), BaseFeePerGas: payload.BaseFeePerGas, BlockHash: payload.BlockHash, Transactions: cloneHexutilBytesList(payload.Transactions)},
-			blobsBundle:       &BlobsBundleV1{Commitments: []hexutil.Bytes{}, Proofs: []hexutil.Bytes{}, Blobs: []hexutil.Bytes{}},
+			blobsBundle:       blobsBundle,
 			executionRequests: cloneHexutilBytesList(executionRequests),
 		})
 	}
@@ -535,9 +536,9 @@ func payloadBodyFromBlock(blk block.IBlock, withdrawals []*Withdrawal) *Executio
 	}
 }
 
-func (e *EngineAPIv4) buildExecutionPayloadV4Stateful(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV4) (*ExecutionPayloadV4, []hexutil.Bytes, *big.Int) {
+func (e *EngineAPIv4) buildExecutionPayloadV4Stateful(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV4) (*ExecutionPayloadV4, []hexutil.Bytes, *big.Int, *BlobsBundleV1) {
 	if attrs == nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	result := e.v1.buildExecutionPayloadStateful(parent, parentHash, &PayloadAttributesV1{
 		Timestamp:             attrs.Timestamp,
@@ -545,12 +546,12 @@ func (e *EngineAPIv4) buildExecutionPayloadV4Stateful(parent block.IBlock, paren
 		SuggestedFeeRecipient: attrs.SuggestedFeeRecipient,
 	}, attrs.Withdrawals, attrs.ParentBeaconBlockRoot)
 	if result == nil || result.block == nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	v1 := blockToExecutionPayloadV1(result.block, e.v1.chainConfig())
 	header := blockHeader(result.block)
 	if v1 == nil || header == nil || header.BlobGasUsed == nil || header.ExcessBlobGas == nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	payload := &ExecutionPayloadV4{
 		ParentHash:            v1.ParentHash,
@@ -582,7 +583,7 @@ func (e *EngineAPIv4) buildExecutionPayloadV4Stateful(parent block.IBlock, paren
 		parentBeaconRoot:   attrs.ParentBeaconBlockRoot,
 		requestsHash:       &requestsHash,
 	})
-	return payload, cloneHexutilBytesList(result.executionRequests), result.blockValue
+	return payload, cloneHexutilBytesList(result.executionRequests), result.blockValue, result.blobsBundle
 }
 
 // =============================================================================

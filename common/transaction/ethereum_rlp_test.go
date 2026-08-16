@@ -7,8 +7,47 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/types"
 )
+
+func TestDecodeEthereumBlobTransactionNetworkWrapper(t *testing.T) {
+	to := types.HexToAddress("0x1111111111111111111111111111111111111111")
+	hash := types.HexToHash("0x0100000000000000000000000000000000000000000000000000000000000001")
+	wrapper := blobTxNetworkWrapperRLP{
+		Tx: blobTxRLP{
+			ChainID:    uint256.NewInt(1),
+			GasTipCap:  uint256.NewInt(2),
+			GasFeeCap:  uint256.NewInt(3),
+			Gas:        21_000,
+			To:         to,
+			Value:      new(uint256.Int),
+			BlobFeeCap: uint256.NewInt(4),
+			BlobHashes: []types.Hash{hash},
+			V:          new(uint256.Int),
+			R:          uint256.NewInt(5),
+			S:          uint256.NewInt(6),
+		},
+		Blobs:       []Blob{{1}},
+		Commitments: []Commitment{{2}},
+		Proofs:      []Proof{{3}},
+	}
+	payload, err := rlp.EncodeToBytes(&wrapper)
+	if err != nil {
+		t.Fatalf("encode wrapper: %v", err)
+	}
+	tx, err := DecodeEthereumTransaction(append([]byte{BlobTxType}, payload...))
+	if err != nil {
+		t.Fatalf("DecodeEthereumTransaction() error = %v", err)
+	}
+	if tx.Type() != BlobTxType || len(tx.BlobHashes()) != 1 {
+		t.Fatalf("decoded transaction = type %d, hashes %d", tx.Type(), len(tx.BlobHashes()))
+	}
+	sidecar := tx.BlobTxSidecar()
+	if sidecar == nil || len(sidecar.Blobs) != 1 || sidecar.Blobs[0][0] != 1 {
+		t.Fatalf("decoded sidecar = %#v", sidecar)
+	}
+}
 
 func TestEthereumTransactionRoundTrip(t *testing.T) {
 	to := types.HexToAddress("0x1111111111111111111111111111111111111111")
@@ -25,13 +64,13 @@ func TestEthereumTransactionRoundTrip(t *testing.T) {
 		{
 			name: "access-list",
 			tx: NewTx(&AccessListTx{
-				ChainID:   uint256.NewInt(1),
-				Nonce:     1,
-				GasPrice:  uint256.NewInt(10),
-				Gas:       21500,
-				To:        &to,
-				Value:     uint256.NewInt(19),
-				Data:      []byte{0x09, 0x0a},
+				ChainID:  uint256.NewInt(1),
+				Nonce:    1,
+				GasPrice: uint256.NewInt(10),
+				Gas:      21500,
+				To:       &to,
+				Value:    uint256.NewInt(19),
+				Data:     []byte{0x09, 0x0a},
 				AccessList: AccessList{{
 					Address:     to,
 					StorageKeys: []types.Hash{storageKey},

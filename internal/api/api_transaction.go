@@ -56,8 +56,7 @@ func (s *TransactionAPI) SendRawTransaction(ctx context.Context, input hexutil.B
 	if len(input) == 0 {
 		return avmcommon.Hash{}, errors.New("empty transaction data")
 	}
-	tx := new(avmtypes.Transaction)
-	err := tx.UnmarshalBinary(input)
+	tx, err := transaction.DecodeEthereumTransaction(input)
 	if err != nil {
 		return avmcommon.Hash{}, err
 	}
@@ -69,11 +68,13 @@ func (s *TransactionAPI) SendRawTransaction(ctx context.Context, input hexutil.B
 	if header == nil {
 		return avmcommon.Hash{}, errors.New("no header available")
 	}
-	metaTx, err := tx.ToastTransaction(s.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()))
+	signer := transaction.MakeSignerWithTimestamp(s.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()), currentBlock.Time())
+	from, err := transaction.Sender(signer, tx)
 	if err != nil {
 		return avmcommon.Hash{}, err
 	}
-	return SubmitTransaction(context.Background(), s.api, metaTx)
+	tx.SetFrom(from)
+	return SubmitTransaction(context.Background(), s.api, tx)
 }
 
 // MaxBatchSize is the maximum number of transactions allowed in a single batch request.
@@ -113,20 +114,22 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 			}
 			continue
 		}
-		tx := new(avmtypes.Transaction)
-		if err := tx.UnmarshalBinary(t); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		metaTx, err := tx.ToastTransaction(s.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()))
+		metaTx, err := transaction.DecodeEthereumTransaction(t)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
 			continue
 		}
+		signer := transaction.MakeSignerWithTimestamp(s.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()), currentBlock.Time())
+		from, err := transaction.Sender(signer, metaTx)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		metaTx.SetFrom(from)
 		if err := checkTxFee(*metaTx.GasPrice(), metaTx.Gas(), baseFee); err != nil {
 			if firstErr == nil {
 				firstErr = err

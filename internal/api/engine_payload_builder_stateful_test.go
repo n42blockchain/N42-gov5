@@ -91,6 +91,27 @@ func TestExecutionPayloadBlockValueUsesEffectiveTips(t *testing.T) {
 	require.Equal(t, int64(63), value.Int64())
 }
 
+func TestExecutionPayloadBlobsBundlePreservesTransactionOrder(t *testing.T) {
+	t.Parallel()
+
+	first := transaction.NewTx(&transaction.BlobTx{Sidecar: &transaction.BlobTxSidecar{
+		Blobs:       []transaction.Blob{{1}},
+		Commitments: []transaction.Commitment{{2}},
+		Proofs:      []transaction.Proof{{3}},
+	}})
+	second := transaction.NewTx(&transaction.BlobTx{Sidecar: &transaction.BlobTxSidecar{
+		Blobs:       []transaction.Blob{{4}},
+		Commitments: []transaction.Commitment{{5}},
+		Proofs:      []transaction.Proof{{6}},
+	}})
+	bundle := executionPayloadBlobsBundle([]*transaction.Transaction{first, second})
+	require.Len(t, bundle.Blobs, 2)
+	require.Equal(t, byte(1), bundle.Blobs[0][0])
+	require.Equal(t, byte(4), bundle.Blobs[1][0])
+	require.Equal(t, byte(2), bundle.Commitments[0][0])
+	require.Equal(t, byte(6), bundle.Proofs[1][0])
+}
+
 func TestForkchoiceUpdatedV1BuildsPayloadFromTxPool(t *testing.T) {
 	modules.N42Init()
 	prevTables := kv.ChaindataTablesCfg

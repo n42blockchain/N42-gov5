@@ -99,6 +99,7 @@ type statefulPayloadBuildResult struct {
 	block             *block.Block
 	receipts          block.Receipts
 	blockValue        *big.Int
+	blobsBundle       *BlobsBundleV1
 	executionRequests []hexutil.Bytes
 }
 
@@ -355,6 +356,7 @@ func (e *EngineAPIV1) buildExecutionPayloadStateful(parent block.IBlock, parentH
 			block:             builtBlock,
 			receipts:          cloneReceipts(receipts),
 			blockValue:        executionPayloadBlockValue(header, txs, receipts),
+			blobsBundle:       executionPayloadBlobsBundle(txs),
 			executionRequests: cloneHexutilBytesList(actualRequests),
 		}
 		return nil
@@ -364,6 +366,33 @@ func (e *EngineAPIV1) buildExecutionPayloadStateful(parent block.IBlock, parentH
 		return nil
 	}
 	return result
+}
+
+func executionPayloadBlobsBundle(txs []*transaction.Transaction) *BlobsBundleV1 {
+	bundle := &BlobsBundleV1{
+		Commitments: []hexutil.Bytes{},
+		Proofs:      []hexutil.Bytes{},
+		Blobs:       []hexutil.Bytes{},
+	}
+	for _, tx := range txs {
+		if tx == nil {
+			continue
+		}
+		sidecar := tx.BlobTxSidecar()
+		if sidecar == nil {
+			continue
+		}
+		for i := range sidecar.Blobs {
+			bundle.Blobs = append(bundle.Blobs, append(hexutil.Bytes(nil), sidecar.Blobs[i][:]...))
+		}
+		for i := range sidecar.Commitments {
+			bundle.Commitments = append(bundle.Commitments, append(hexutil.Bytes(nil), sidecar.Commitments[i][:]...))
+		}
+		for i := range sidecar.Proofs {
+			bundle.Proofs = append(bundle.Proofs, append(hexutil.Bytes(nil), sidecar.Proofs[i][:]...))
+		}
+	}
+	return bundle
 }
 
 func executionPayloadBlockValue(header *block.Header, txs []*transaction.Transaction, receipts block.Receipts) *big.Int {
@@ -448,6 +477,11 @@ func (e *EngineAPIV1) executePayloadTransactions(tx kv.Tx, parentHeader, header 
 	txs := make([]*transaction.Transaction, 0)
 	receipts := make(block.Receipts, 0)
 	txSet := builder.NewTxByPriceAndNonce(pending, header.BaseFee)
+	var maxBlobGas uint64
+	if cfg := e.chainConfig(); cfg != nil && header.Number != nil && cfg.IsCancunAt(header.Number.Uint64(), header.Time) {
+		maxBlobGas = cfg.BlobMaxGasPerBlock(header.Time)
+	}
+	var blobGasUsed uint64
 
 	commitTx := func(txn *transaction.Transaction) error {
 		ibs.Prepare(txn.Hash(), types.Hash{}, len(txs))
@@ -472,9 +506,15 @@ func (e *EngineAPIV1) executePayloadTransactions(tx kv.Tx, parentHeader, header 
 		if txn == nil {
 			break
 		}
+		txnBlobGas := txn.BlobGas()
+		if maxBlobGas > 0 && txnBlobGas > maxBlobGas-blobGasUsed {
+			txSet.Pop()
+			continue
+		}
 		err := commitTx(txn)
 		switch {
 		case err == nil:
+			blobGasUsed += txnBlobGas
 			txSet.Shift()
 		case errors.Is(err, internalcore.ErrGasLimitReached):
 			txSet.Pop()
