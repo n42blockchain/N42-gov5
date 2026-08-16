@@ -165,6 +165,18 @@ func ancientRawReceipts(number uint64) block.Receipts {
 	return receipts
 }
 
+// AncientSealedEnd returns the first block NOT covered by sealed eras
+// (0 = no era store attached). State-history queries below this height
+// cannot be answered from the hot DB: the changeset rows were sealed
+// into aux eras and the history index would resolve into the gap.
+func AncientSealedEnd() uint64 {
+	s := AncientStore()
+	if s == nil {
+		return 0
+	}
+	return s.SealedEnd()
+}
+
 // AncientEarliestExecBlock exposes the era store's earliest available
 // execution block for the P2P range-request gate (0 = all available or
 // no store attached).

@@ -44,9 +44,13 @@ var (
 
 // GuestExecutionResult is the result of applying a message in the guest context.
 type GuestExecutionResult struct {
-	UsedGas    uint64
-	Err        error
-	ReturnData []byte
+	UsedGas uint64
+	// BlockGasUsed is the EIP-7778 block-level figure: pre-refund gas
+	// clamped to the calldata floor under Glamsterdam, equal to UsedGas
+	// otherwise. Cumulative (receipt-trie) gas must use this value.
+	BlockGasUsed uint64
+	Err          error
+	ReturnData   []byte
 }
 
 // ApplyMessageForGuest executes a message against the EVM for the zkVM guest.
@@ -100,6 +104,18 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 	if gasRemaining < intrinsicGas {
 		return nil, errGuestIntrinsicGas
 	}
+	// EIP-7623/7976 calldata floor: mirror the host's UP-FRONT rejection
+	// (state_transition.go). The floor may legitimately exceed intrinsic
+	// gas; without this reject, gas < floor later underflows the clamp and
+	// the EIP-7778 pool credit (gas−blockGasUsed wraps to ~2^64), either
+	// panicking the pool or neutering the block gas limit.
+	var floorDataGas uint64
+	if rules.IsPrague {
+		floorDataGas = FloorDataGas(msg.Data(), rules.IsGlamsterdam)
+		if gas < floorDataGas {
+			return nil, errGuestIntrinsicGas
+		}
+	}
 	gasRemaining -= intrinsicGas
 
 	// Set up access list (EIP-2929).
@@ -126,6 +142,13 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 	// Step 3: Refund gas — return unused gas * gasPrice to sender.
 	// EIP-3529: max refund = gasUsed / 5 after London (was gasUsed / 2 before).
 	gasUsed := gas - gasRemaining
+	// EIP-7778 block accounting (mirrors internal.StateTransition): the
+	// floor (validated up-front: gas >= floorDataGas) caps the post-refund
+	// remainder; the block figure is the pre-refund max(gasUsed, floor).
+	blockGasUsed := gasUsed
+	if rules.IsGlamsterdam && floorDataGas > blockGasUsed {
+		blockGasUsed = floorDataGas
+	}
 	refund := ibs.GetRefund()
 	maxRefund := gasUsed / 2
 	if rules.IsLondon {
@@ -135,6 +158,9 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 		refund = maxRefund
 	}
 	gasRemaining += refund
+	if floorDataGas > 0 && gasRemaining > gas-floorDataGas {
+		gasRemaining = gas - floorDataGas
+	}
 	gasUsed = gas - gasRemaining
 
 	// Refund remaining gas value to sender.
@@ -142,7 +168,12 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 	remaining.Mul(remaining, gasPrice)
 	ibs.AddBalance(sender, remaining)
 
-	gp.AddGas(gasRemaining)
+	// EIP-7778: the block pool never gets refunds back under Glamsterdam.
+	if rules.IsGlamsterdam {
+		gp.AddGas(gas - blockGasUsed)
+	} else {
+		gp.AddGas(gasRemaining)
+	}
 
 	// Step 4: Pay coinbase — effectiveTip * gasUsed to block producer.
 	effectiveTip := gasPrice
@@ -160,22 +191,27 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 	coinbasePayment.Mul(coinbasePayment, effectiveTip)
 	ibs.AddBalance(realEVM.Context().Coinbase, coinbasePayment)
 
+	if !rules.IsGlamsterdam {
+		if rules.IsPrague && gasUsed < floorDataGas {
+			gasUsed = floorDataGas
+		}
+		blockGasUsed = gasUsed
+	}
 	return &GuestExecutionResult{
-		UsedGas:    gasUsed,
-		Err:        vmerr,
-		ReturnData: ret,
+		UsedGas:      gasUsed,
+		BlockGasUsed: blockGasUsed,
+		Err:          vmerr,
+		ReturnData:   ret,
 	}, nil
 }
 
 // guestIntrinsicGas computes the intrinsic gas cost for a transaction.
 // Returns math.MaxUint64 on overflow to ensure the transaction is rejected.
 //
-// KNOWN GAP (Glamsterdam): the guest replay path does not yet mirror
-// EIP-7778 block-gas accounting (cumulative gas uses post-refund UsedGas)
-// or the EIP-7623/7976 calldata floor, so guest replay of a Glamsterdam
-// block diverges from the canonical processor. No proven chain activates
-// Glamsterdam yet; close this before proving one (tracked with the
-// EIP-8037 reservoir follow-up).
+// The EIP-7623/7976 floor and EIP-7778 block accounting are mirrored in
+// ApplyMessageForGuest (up-front floor reject, BlockGasUsed result). The
+// remaining known deviation is the EIP-8037 reservoir approximation
+// shared with the host (direct charge; awaiting devnet parameters).
 func guestIntrinsicGas(data []byte, accessList transaction.AccessList, isCreate bool, rules *params.Rules, hasValue, isSelfTransfer bool) uint64 {
 	var gas uint64
 	if rules.IsGlamsterdam {

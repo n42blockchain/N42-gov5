@@ -731,6 +731,12 @@ func (st *StateTransition) applyAuthorizations(authList transaction.Authorizatio
 			// first write to the account (ACCOUNT_WRITE), state gas for a
 			// brand-new account, and state gas for net-new delegation
 			// designator bytes (23 x 1530).
+			//
+			// OPEN SPEC QUESTION (recheck when EIP-2780/8037 text freezes):
+			// exhaustion here hard-invalidates the tx (deterministic across
+			// nodes, clean revert verified) rather than OOG-with-inclusion;
+			// pool admission also cannot pre-price per-authority state, so
+			// a sender gets free miner work up to the failing authority.
 			charge := uint64(params.AccountWriteEIP8038)
 			if wasEmpty {
 				charge += params.StateBytesPerNewAccount * params.CostPerStateByteEIP8037
