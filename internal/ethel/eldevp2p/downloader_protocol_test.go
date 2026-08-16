@@ -60,3 +60,17 @@ func TestRejectedBranchTipStopsAtFirstDisconnectedHeader(t *testing.T) {
 		t.Fatalf("rejectedBranchTip = %s, want %s", got, h10.Hash())
 	}
 }
+
+func TestNewBlockHashesRefreshesPeerTip(t *testing.T) {
+	announced := types.HexToHash("0x44")
+	d := &Downloader{peers: map[string]*peerState{
+		"peer": {head: 10, headHash: types.HexToHash("0x10")},
+	}}
+	d.OnNewBlockHashes("peer", eth69.NewBlockHashesPacket{
+		{Hash: types.HexToHash("0x33"), Number: 11},
+		{Hash: announced, Number: 12},
+	})
+	if got := d.peers["peer"]; got.head != 12 || got.headHash != announced {
+		t.Fatalf("peer tip = (%d, %s), want (12, %s)", got.head, got.headHash, announced)
+	}
+}

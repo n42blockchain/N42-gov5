@@ -27,7 +27,6 @@ import (
 	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	libLog "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/params"
@@ -214,11 +213,10 @@ func (n *Node) openStorage(ctx context.Context) error {
 		return err
 	}
 	logger := libLog.New("module", "ethel-chaindb")
-	modules.N42Init()
 	db, err := mdbx.NewMDBX(logger).
 		Path(mdbxPath).
 		Label(kv.ChainDB).
-		WithTableCfg(func(_ kv.TableCfg) kv.TableCfg { return modules.N42TableCfg }).
+		WithTableCfg(ChainTableCfg).
 		PageSize(n.cfg.Storage.PageSize).
 		MapSize(n.cfg.Storage.MapSize).
 		Open(ctx)

@@ -74,6 +74,10 @@ type balResponseHandler interface {
 	OnBlockAccessLists(peerID string, reqID uint64, bals [][]byte)
 }
 
+type newBlockHashesHandler interface {
+	OnNewBlockHashes(peerID string, entries eth69.NewBlockHashesPacket)
+}
+
 // EthHandler processes eth/68-71 protocol messages.
 type EthHandler struct {
 	chainConfig *params.ChainConfig
@@ -393,8 +397,14 @@ func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter,
 
 	switch msg.Code {
 	case 1:
-		// Peer announces new block hashes — log and ignore for now.
-		log.Debug("devp2p: new block hashes", "peer", peerID[:16])
+		var packet eth69.NewBlockHashesPacket
+		if err := msg.Decode(&packet); err != nil {
+			return fmt.Errorf("decode NewBlockHashes: %w", err)
+		}
+		if nh, ok := h.rh.(newBlockHashesHandler); ok {
+			nh.OnNewBlockHashes(peerID, packet)
+		}
+		log.Debug("devp2p: new block hashes", "peer", peerID[:16], "count", len(packet))
 		return nil
 
 	case 2:

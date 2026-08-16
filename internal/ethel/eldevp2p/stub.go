@@ -62,3 +62,7 @@ func (s *Service) Start(context.Context) error {
 }
 
 func (s *Service) Stop() error { return nil }
+
+func (s *Service) SetEngineSyncBridge(EngineBlockKnownFunc, EngineBlockImporter) {}
+
+func (s *Service) RequestMissingAncestor(types.Hash) {}

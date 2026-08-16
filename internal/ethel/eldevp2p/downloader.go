@@ -170,6 +170,10 @@ type Downloader struct {
 	// proves an ancestor invalid. The Engine API uses this to reject a payload
 	// whose missing parent chain was learned through devp2p.
 	invalidAncestorObserver func(rejectedHead, latestValidHash types.Hash)
+	knownEngineBlock        EngineBlockKnownFunc
+	importEngineBlock       EngineBlockImporter
+	missingAncestors        chan types.Hash
+	pendingAncestors        map[types.Hash]struct{}
 
 	// reqSeq generates unique request IDs across all concurrent requests.
 	reqSeq atomic.Uint64
@@ -342,13 +346,46 @@ const maxBlockAccessListsRequest = 256
 // NewDownloader builds the orchestrator without starting it.
 func NewDownloader(exec executionProvider, hashedCanonical bool, snapshotCold state.StateReader, freezerDir string) *Downloader {
 	return &Downloader{
-		exec:            exec,
-		peers:           make(map[string]*peerState),
-		inflight:        make(map[string]chan inflightResp),
-		hashedCanonical: hashedCanonical,
-		snapshotCold:    snapshotCold,
-		freezerDir:      freezerDir,
-		buffer:          newBlockBuffer(),
+		exec:             exec,
+		peers:            make(map[string]*peerState),
+		inflight:         make(map[string]chan inflightResp),
+		hashedCanonical:  hashedCanonical,
+		snapshotCold:     snapshotCold,
+		freezerDir:       freezerDir,
+		buffer:           newBlockBuffer(),
+		missingAncestors: make(chan types.Hash, 16),
+		pendingAncestors: make(map[types.Hash]struct{}),
+	}
+}
+
+// SetEngineSyncBridge installs the Engine-side known/import callbacks used by
+// hash-directed missing-ancestor retrieval.
+func (d *Downloader) SetEngineSyncBridge(known EngineBlockKnownFunc, importer EngineBlockImporter) {
+	d.mu.Lock()
+	d.knownEngineBlock = known
+	d.importEngineBlock = importer
+	d.mu.Unlock()
+}
+
+// RequestMissingAncestor queues one parent hash without blocking Engine RPC.
+func (d *Downloader) RequestMissingAncestor(hash types.Hash) {
+	if hash == (types.Hash{}) {
+		return
+	}
+	d.mu.Lock()
+	if _, exists := d.pendingAncestors[hash]; exists {
+		d.mu.Unlock()
+		return
+	}
+	d.pendingAncestors[hash] = struct{}{}
+	d.mu.Unlock()
+	select {
+	case d.missingAncestors <- hash:
+	default:
+		d.mu.Lock()
+		delete(d.pendingAncestors, hash)
+		d.mu.Unlock()
+		log.Warn("eldevp2p: missing-ancestor queue full", "hash", hash.Hex())
 	}
 }
 
@@ -452,6 +489,27 @@ func (d *Downloader) OnReceipts(peerID string, reqID uint64, receipts [][]rlp.Ra
 // matching in-flight request. Satisfies the devp2p balResponseHandler interface.
 func (d *Downloader) OnBlockAccessLists(peerID string, reqID uint64, bals [][]byte) {
 	d.dispatch(peerID, reqID, "a", inflightResp{bals: bals})
+}
+
+// OnNewBlockHashes refreshes the handshake-frozen peer tip. This is also kept
+// for same-height announcements, where the hash identifies a competing branch.
+func (d *Downloader) OnNewBlockHashes(peerID string, entries eth69.NewBlockHashesPacket) {
+	if len(entries) == 0 {
+		return
+	}
+	latest := entries[0]
+	for _, entry := range entries[1:] {
+		if entry.Number >= latest.Number {
+			latest = entry
+		}
+	}
+	d.mu.Lock()
+	if peer := d.peers[peerID]; peer != nil && latest.Number >= peer.head {
+		peer.head = latest.Number
+		peer.headHash = latest.Hash
+	}
+	d.mu.Unlock()
+	log.Info("eldevp2p: peer announced head", "peer", peerID, "head", latest.Number, "hash", latest.Hash.Hex())
 }
 
 // OnNewBlock is the live tip push from a peer. v1 ignores — we only
@@ -575,6 +633,7 @@ func (d *Downloader) coordinator(ctx context.Context) {
 		log.Info("eldevp2p: download pipeline enabled (async prefetch overlaps execution)",
 			"inflightPerPeer", maxInflightPerPeer)
 	}
+	go d.missingAncestorLoop(ctx)
 
 	// Freezer-direct BLOCKHASH source, installed for the coordinator's whole life
 	// (local execution AND the peer transition — the first ~256 peer blocks reach
@@ -768,6 +827,100 @@ func (d *Downloader) coordinator(ctx context.Context) {
 			time.Sleep(3 * time.Second)
 		}
 	}
+}
+
+func (d *Downloader) missingAncestorLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case target := <-d.missingAncestors:
+			err := d.syncMissingAncestor(ctx, target)
+			d.mu.Lock()
+			delete(d.pendingAncestors, target)
+			d.mu.Unlock()
+			if err != nil {
+				log.Warn("eldevp2p: missing-ancestor sync failed", "hash", target.Hex(), "err", err)
+			}
+		}
+	}
+}
+
+func (d *Downloader) syncMissingAncestor(ctx context.Context, target types.Hash) error {
+	d.mu.Lock()
+	known := d.knownEngineBlock
+	importer := d.importEngineBlock
+	d.mu.Unlock()
+	if known == nil || importer == nil {
+		return errors.New("Engine sync bridge is not configured")
+	}
+	if known(target) {
+		return nil
+	}
+	peer := d.pickPeer(0)
+	if peer == nil {
+		return errors.New("no peer available for missing ancestor")
+	}
+	defer d.releasePeer(peer)
+
+	rawHeaders, err := d.requestHeadersByHash(ctx, peer.id, peer.rw, target, headersPerBatch, true)
+	if err != nil {
+		return err
+	}
+	if len(rawHeaders) == 0 {
+		return fmt.Errorf("peer returned no headers for %s", target.Hex())
+	}
+	branchDescending := make([]*block.Header, 0, len(rawHeaders))
+	foundAncestor := false
+	for _, raw := range rawHeaders {
+		hdr, err := ethel.DecodeUncleHeader(raw)
+		if err != nil {
+			return fmt.Errorf("decode missing-ancestor header: %w", err)
+		}
+		if known(hdr.Hash()) {
+			foundAncestor = true
+			break
+		}
+		branchDescending = append(branchDescending, hdr)
+	}
+	if !foundAncestor {
+		return fmt.Errorf("no known ancestor within %d headers", len(rawHeaders))
+	}
+	if len(branchDescending) == 0 {
+		return nil
+	}
+	branch := make([]*block.Header, len(branchDescending))
+	for i := range branchDescending {
+		branch[len(branchDescending)-1-i] = branchDescending[i]
+	}
+	hashes := make([]types.Hash, len(branch))
+	for i, hdr := range branch {
+		hashes[i] = hdr.Hash()
+	}
+	bodies, err := d.requestBodies(ctx, peer.id, peer.rw, hashes)
+	if err != nil {
+		return err
+	}
+	if len(bodies) != len(branch) {
+		return fmt.Errorf("missing-ancestor bodies: got %d, want %d", len(bodies), len(branch))
+	}
+	for i, hdr := range branch {
+		blk, _, err := assembleBlock(hdr, bodies[i])
+		if err != nil {
+			return fmt.Errorf("assemble missing ancestor %d: %w", hdr.Number64().Uint64(), err)
+		}
+		status, latestValid, err := importer(blk)
+		if err != nil {
+			return fmt.Errorf("import missing ancestor %d: %w", hdr.Number64().Uint64(), err)
+		}
+		log.Info("eldevp2p: Engine validated missing ancestor",
+			"block", hdr.Number64().Uint64(), "hash", hdr.Hash().Hex(),
+			"status", status, "latestValid", latestValid)
+		if status == api.PayloadStatusAccepted || status == api.PayloadStatusSyncing {
+			return fmt.Errorf("Engine still missing parent for block %d", hdr.Number64().Uint64())
+		}
+	}
+	return nil
 }
 
 // prefetchAhead is how far past the executed frontier the pipeline prefetcher
@@ -1959,6 +2112,14 @@ func (d *Downloader) commitBatch(tx kv.RwTx, head uint64) error {
 }
 
 func (d *Downloader) requestHeaders(ctx context.Context, peerID string, rw gethp2p.MsgReadWriter, from, amount uint64) ([][]byte, error) {
+	return d.requestHeadersQuery(ctx, peerID, rw, eth69.HashOrNumber{Number: from}, amount, false)
+}
+
+func (d *Downloader) requestHeadersByHash(ctx context.Context, peerID string, rw gethp2p.MsgReadWriter, hash types.Hash, amount uint64, reverse bool) ([][]byte, error) {
+	return d.requestHeadersQuery(ctx, peerID, rw, eth69.HashOrNumber{Hash: hash}, amount, reverse)
+}
+
+func (d *Downloader) requestHeadersQuery(ctx context.Context, peerID string, rw gethp2p.MsgReadWriter, origin eth69.HashOrNumber, amount uint64, reverse bool) ([][]byte, error) {
 	reqID := d.reqSeq.Add(1)
 	key := fmt.Sprintf("%s:h:%d", peerID, reqID)
 	ch := make(chan inflightResp, 1)
@@ -1974,10 +2135,10 @@ func (d *Downloader) requestHeaders(ctx context.Context, peerID string, rw gethp
 	req := eth69.GetBlockHeadersPacket{
 		RequestID: reqID,
 		GetBlockHeadersQuery: &eth69.GetBlockHeadersQuery{
-			Origin:  eth69.HashOrNumber{Number: from},
+			Origin:  origin,
 			Amount:  amount,
 			Skip:    0,
-			Reverse: false,
+			Reverse: reverse,
 		},
 	}
 	if err := gethp2p.Send(rw, eth69.GetBlockHeadersMsg, &req); err != nil {

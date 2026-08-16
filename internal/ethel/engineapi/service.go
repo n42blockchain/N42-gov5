@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/api"
@@ -65,6 +66,9 @@ type Service struct {
 
 	apiCore *api.API
 	adapter *api.EngineStateAdapter
+	v1      *api.EngineAPIV1
+
+	missingAncestorObserver func(types.Hash)
 }
 
 // New builds the service. The DB and freezer must be the same handles
@@ -99,13 +103,15 @@ func (s *Service) Start(_ context.Context) error {
 	// txspool or accountManager. State writes go through the
 	// EngineStateAdapter wired below.
 	s.apiCore = api.NewAPI(nil, s.db, s.engine, nil, nil, s.chainCfg)
-	s.adapter = api.NewEngineStateAdapter(s.db, s.freezer, s.chainCfg, s.engine)
+	s.adapter = api.NewEngineStateAdapter(s.db, s.freezer, s.chainCfg, s.engine).WithHeadMarker(true)
 
 	apis := api.EngineAPIs(s.apiCore)
 	for _, a := range apis {
 		switch svc := a.Service.(type) {
 		case *api.EngineAPIV1:
+			s.v1 = svc
 			svc.SetStateAdapter(s.adapter)
+			svc.SetMissingAncestorObserver(s.missingAncestorObserver)
 		case *api.EngineAPIBlob:
 			svc.SetStateAdapter(s.adapter)
 		case *api.EngineAPIv4:
@@ -163,6 +169,33 @@ func (s *Service) Start(_ context.Context) error {
 		"namespaces", "engine,eth,net,web3",
 	)
 	return nil
+}
+
+// SetMissingAncestorObserver connects unknown-parent Engine payloads to the
+// active devp2p downloader.
+func (s *Service) SetMissingAncestorObserver(observer func(types.Hash)) {
+	s.missingAncestorObserver = observer
+	if s.v1 != nil {
+		s.v1.SetMissingAncestorObserver(observer)
+	}
+}
+
+// HasBlockHash reports whether the Engine adapter/overlay already knows hash.
+func (s *Service) HasBlockHash(hash types.Hash) bool {
+	return s != nil && s.v1 != nil && s.v1.HasBlockHash(hash)
+}
+
+// ImportSyncedParisBlock validates a block fetched over devp2p using the
+// Engine newPayload path and returns its wire status.
+func (s *Service) ImportSyncedParisBlock(blk *block.Block) (string, *types.Hash, error) {
+	if s == nil || s.v1 == nil {
+		return "", nil, errors.New("engine API v1 is not started")
+	}
+	status, err := s.v1.ImportSyncedParisBlock(context.Background(), blk)
+	if err != nil || status == nil {
+		return "", nil, err
+	}
+	return status.Status, status.LatestValidHash, nil
 }
 
 func (s *Service) Stop() error {
