@@ -13,7 +13,32 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/params"
+	"github.com/stretchr/testify/require"
 )
+
+func TestDecodeTransactionsRejectsBlobSidecar(t *testing.T) {
+	t.Parallel()
+
+	tx := transaction.NewTx(&transaction.BlobTx{
+		ChainID:    uint256.NewInt(1),
+		GasTipCap:  uint256.NewInt(1),
+		GasFeeCap:  uint256.NewInt(2),
+		Gas:        21_000,
+		To:         types.HexToAddress("0x1111111111111111111111111111111111111111"),
+		Value:      new(uint256.Int),
+		BlobFeeCap: uint256.NewInt(1),
+		BlobHashes: []types.Hash{types.HexToHash("0x0100000000000000000000000000000000000000000000000000000000000001")},
+		V:          new(uint256.Int),
+		R:          uint256.NewInt(1),
+		S:          uint256.NewInt(1),
+		Sidecar:    &transaction.BlobTxSidecar{},
+	})
+	raw, err := transaction.EncodeEthereumPooledTransaction(tx)
+	require.NoError(t, err)
+
+	_, err = decodeTransactions([]hexutil.Bytes{raw})
+	require.EqualError(t, err, "unexpected blob sidecar in transaction at index 0")
+}
 
 func TestExecutionPayloadV1ToBlockUsesEthereumRawTransactionsRoot(t *testing.T) {
 	to := types.HexToAddress("0x1111111111111111111111111111111111111111")
