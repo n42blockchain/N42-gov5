@@ -133,6 +133,69 @@ func TestRewindEngineValidationStateUsesHistoricalParent(t *testing.T) {
 	}))
 }
 
+func TestRewindEngineValidationStateUsesExecutionProgressWhenHeadLags(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = ethel.ChainTableCfg(modules.N42TableCfg)
+	t.Cleanup(func() { kv.ChaindataTablesCfg = prevTables })
+
+	db := memdb.NewTestDB(t)
+	var addr types.Address
+	addr[19] = 0x43
+	emptyCodeHash := crypto.Keccak256Hash(nil)
+	accountAt := func(nonce uint64) *account.StateAccount {
+		return &account.StateAccount{
+			Initialised: true,
+			Nonce:       nonce,
+			CodeHash:    emptyCodeHash,
+		}
+	}
+
+	require.NoError(t, db.Update(context.Background(), func(tx kv.RwTx) error {
+		previous := accountAt(0)
+		if err := tx.Put(modules.Account, addr[:], previous.MarshalV2()); err != nil {
+			return err
+		}
+		var staleHead types.Hash
+		for number := uint64(1); number <= 2; number++ {
+			next := accountAt(number)
+			writer := state.NewPlainStateWriter(tx, tx, number)
+			if err := writer.UpdateAccountData(addr, previous, next); err != nil {
+				return err
+			}
+			if err := writer.WriteChangeSets(); err != nil {
+				return err
+			}
+			if err := writer.WriteHistory(); err != nil {
+				return err
+			}
+			header := &block.Header{Number: uint256.NewInt(number)}
+			rawdb.WriteHeader(tx, header)
+			if err := rawdb.WriteCanonicalHash(tx, header.Hash(), number); err != nil {
+				return err
+			}
+			if number == 1 {
+				staleHead = header.Hash()
+			}
+			previous = next
+		}
+		rawdb.WriteHeadBlockHash(tx, staleHead)
+		return ethel.WriteProgress(tx, 2)
+	}))
+
+	tx, err := db.BeginRw(context.Background())
+	require.NoError(t, err)
+	rewound, err := rewindEngineValidationState(tx, 2)
+	require.NoError(t, err)
+	require.True(t, rewound)
+	var accountAtParent account.StateAccount
+	data, err := tx.GetOne(modules.Account, addr[:])
+	require.NoError(t, err)
+	require.NoError(t, accountAtParent.DecodeForStorageV2(data))
+	require.Equal(t, uint64(1), accountAtParent.Nonce)
+	tx.Rollback()
+}
+
 func TestHiveEngineGenesisFixtureMatchesCurrentGethRoot(t *testing.T) {
 	modules.N42Init()
 	prevTables := kv.ChaindataTablesCfg

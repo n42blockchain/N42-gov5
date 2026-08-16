@@ -1130,19 +1130,25 @@ func rewindEngineValidationState(tx kv.RwTx, blockNum uint64) (bool, error) {
 	if tx == nil || blockNum == 0 {
 		return false, nil
 	}
+	var headNum uint64
 	headHash := rawdb.ReadHeadBlockHash(tx)
-	if headHash == (types.Hash{}) {
-		return false, nil
+	if headHash != (types.Hash{}) {
+		if number := rawdb.ReadHeaderNumber(tx, headHash); number != nil {
+			headNum = *number
+		}
 	}
-	headNum := rawdb.ReadHeaderNumber(tx, headHash)
-	if headNum == nil {
-		return false, nil
+	// Peer catch-up commits state and ethel-last-block atomically, but its
+	// rawdb head pointer can lag until Engine forkchoice adopts that chain.
+	// Validation must unwind from the state that is actually in PlainState,
+	// otherwise a sibling branch is executed on top of the peer branch's state.
+	if progress := ethel.ReadProgress(tx); progress > headNum {
+		headNum = progress
 	}
 	parentNum := blockNum - 1
-	if *headNum <= parentNum {
+	if headNum <= parentNum {
 		return false, nil
 	}
-	for number := *headNum; number > parentNum; number-- {
+	for number := headNum; number > parentNum; number-- {
 		if err := commitment.UnwindPlainStateBlock(tx, number); err != nil {
 			return false, fmt.Errorf("rewind validation state at block %d: %w", number, err)
 		}
