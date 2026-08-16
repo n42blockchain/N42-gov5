@@ -7,14 +7,30 @@ package main
 
 import (
 	"context"
+	"math/big"
 	"testing"
 
+	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	depcommon "github.com/n42blockchain/N42/internal/cl/depshim/common"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/modules/rawdb"
 )
+
+func TestAPIBlockValueToBigIntPreserves256Bits(t *testing.T) {
+	want := new(big.Int).Lsh(big.NewInt(1), 200)
+	want.Add(want, big.NewInt(42))
+	encoded := hexutil.Big(*want)
+
+	got := apiBlockValueToBigInt(&encoded)
+	if got.Cmp(want) != 0 {
+		t.Fatalf("block value = %s, want %s", got, want)
+	}
+	if zero := apiBlockValueToBigInt(nil); zero.Sign() != 0 {
+		t.Fatalf("nil block value = %s, want 0", zero)
+	}
+}
 
 // staticChaindb is a chaindbProvider that always returns the same kv.RoDB.
 // It lets the Backend be tested without standing up a full ethel.Node.
