@@ -412,6 +412,10 @@ func TestGetTransactionReceiptReturnsOverlayImportedReceipt(t *testing.T) {
 	if got := resp["from"]; got != rpcTransactionFrom(signedTx) {
 		t.Fatalf("receipt from = %v, want %v", got, rpcTransactionFrom(signedTx))
 	}
+	logs, ok := resp["logs"].([]*avmtypes.Log)
+	if !ok || logs == nil || len(logs) != 0 {
+		t.Fatalf("receipt logs = %#v, want non-nil empty list", resp["logs"])
+	}
 }
 
 func TestGetTransactionReceiptDoesNotExposeStagedBlock(t *testing.T) {
