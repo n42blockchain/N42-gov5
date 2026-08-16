@@ -218,8 +218,8 @@ func TestEESTShardsScriptProducesSummaryInDryRun(t *testing.T) {
 		"# EEST Shard Run Summary",
 		"- Dry run: `1`",
 		"- Status: `complete`",
-		"| paris+shanghai | `.*/.*fork_(Paris\\|Shanghai)` | ~2,600 | `0` |",
-		"| prague | `.*/.*fork_Prague` | ~20,500 | `0` |",
+		"| paris+shanghai | `.*/.*fork_(Paris\\|Shanghai)` | ~2,600 | `engine` | `0` |",
+		"| prague | `.*/.*fork_Prague` | ~20,500 | `engine` | `0` |",
 		"`paris+shanghai.log`",
 		"`prague.log`",
 	} {
@@ -261,8 +261,8 @@ func TestEESTShardsScriptWritesPartialSummaryOnTermination(t *testing.T) {
 	for _, needle := range []string{
 		"# EEST Shard Run Summary",
 		"- Status: `partial`",
-		"| paris+shanghai | `.*/.*fork_(Paris\\|Shanghai)` | ~2,600 | `incomplete` | `-` | `paris+shanghai.log` |",
-		"| cancun | `.*/.*fork_Cancun` | ~17,250 | `incomplete` | `-` | `cancun.log` |",
+		"| paris+shanghai | `.*/.*fork_(Paris\\|Shanghai)` | ~2,600 | `engine` | `incomplete` | `-` | `paris+shanghai.log` |",
+		"| cancun | `.*/.*fork_Cancun` | ~17,250 | `engine` | `incomplete` | `-` | `cancun.log` |",
 	} {
 		if !strings.Contains(summary, needle) {
 			t.Fatalf("summary missing %q:\n%s", needle, summary)
