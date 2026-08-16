@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"math/big"
 	"sort"
 	"sync"
@@ -355,13 +356,16 @@ func encodeEthereumTransactions(txs []*transaction.Transaction) ([]hexutil.Bytes
 
 func decodeTransactions(encoded []hexutil.Bytes) ([]*transaction.Transaction, error) {
 	txs := make([]*transaction.Transaction, 0, len(encoded))
-	for _, raw := range encoded {
+	for i, raw := range encoded {
 		if len(raw) == 0 {
 			continue
 		}
 		tx, err := transaction.DecodeEthereumTransaction(raw)
 		if err != nil {
 			return nil, err
+		}
+		if tx.BlobTxSidecar() != nil {
+			return nil, fmt.Errorf("unexpected blob sidecar in transaction at index %d", i)
 		}
 		txs = append(txs, tx)
 	}
