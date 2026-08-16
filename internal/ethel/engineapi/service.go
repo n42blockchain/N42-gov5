@@ -116,8 +116,10 @@ func (s *Service) Start(_ context.Context) error {
 			svc.SetMissingAncestorObserver(s.missingAncestorObserver)
 		case *api.EngineAPIBlob:
 			svc.SetStateAdapter(s.adapter)
+			svc.SetMissingAncestorObserver(s.missingAncestorObserver)
 		case *api.EngineAPIv4:
 			svc.SetStateAdapter(s.adapter)
+			svc.SetMissingAncestorObserver(s.missingAncestorObserver)
 		}
 	}
 
@@ -195,11 +197,11 @@ func (s *Service) HasBlockHash(hash types.Hash) bool {
 
 // ImportSyncedParisBlock validates a block fetched over devp2p using the
 // Engine newPayload path and returns its wire status.
-func (s *Service) ImportSyncedParisBlock(blk *block.Block) (string, *types.Hash, error) {
+func (s *Service) ImportSyncedBlock(blk *block.Block, withdrawals []*api.Withdrawal) (string, *types.Hash, error) {
 	if s == nil || s.v1 == nil {
 		return "", nil, errors.New("engine API v1 is not started")
 	}
-	status, err := s.v1.ImportSyncedParisBlock(context.Background(), blk)
+	status, err := s.v1.ImportSyncedBlock(context.Background(), blk, withdrawals)
 	if err != nil || status == nil {
 		return "", nil, err
 	}

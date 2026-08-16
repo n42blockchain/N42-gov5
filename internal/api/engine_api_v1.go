@@ -118,6 +118,30 @@ func (e *EngineAPIV1) ImportSyncedParisBlock(ctx context.Context, blk *block.Blo
 	return e.NewPayloadV1(ctx, payload)
 }
 
+// ImportSyncedBlock validates a devp2p block without converting it through a
+// fork-specific Engine payload version. Keeping the original wire header and
+// withdrawals preserves Shanghai/Cancun/Prague fields during hash-directed
+// missing-ancestor sync.
+func (e *EngineAPIV1) ImportSyncedBlock(ctx context.Context, blk *block.Block, withdrawals []*Withdrawal) (*PayloadStatusV1, error) {
+	if blk == nil {
+		return invalidPayloadResponse("missing synced block"), nil
+	}
+	header := blockHeader(blk)
+	if header == nil {
+		return invalidPayloadResponse("missing synced block header"), nil
+	}
+	blockHash := ethCompatibleBlockHash(blk, e.chainConfig())
+	body := payloadBodyFromBlock(blk, withdrawals)
+	return e.executeOrValidateWithBody(
+		blk,
+		blockHash,
+		header.ParentHash,
+		header.ParentBeaconRoot,
+		nil,
+		body,
+	)
+}
+
 // EngineAPIs returns the authenticated Engine API namespaces exposed by the node.
 func EngineAPIs(api *API) []jsonrpc.API {
 	blockChainAPI := NewBlockChainAPI(api)

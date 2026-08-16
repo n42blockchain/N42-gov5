@@ -144,6 +144,18 @@ func (e *EngineAPIv4) SetStateAdapter(adapter *EngineStateAdapter) {
 	}
 }
 
+func (e *EngineAPIv4) SetMissingAncestorObserver(observer func(types.Hash)) {
+	if e == nil {
+		return
+	}
+	if e.blob != nil {
+		e.blob.SetMissingAncestorObserver(observer)
+	}
+	if e.v1 != nil {
+		e.v1.SetMissingAncestorObserver(observer)
+	}
+}
+
 func (e *EngineAPIv4) blobAPI() *EngineAPIBlob {
 	return e.blob
 }
@@ -194,6 +206,7 @@ func (e *EngineAPIv4) NewPayloadV4(
 		maxBlobs,
 		gasPerBlob,
 	); resp != nil {
+		setBlobGasValidationLatestValidHash(resp, payload.ParentHash, e.v1.parentHeader(payload.ParentHash))
 		return resp, nil
 	}
 	if err := ValidateBlobTransactions(payload.Transactions, expectedBlobVersionedHashes); err != nil {
@@ -259,6 +272,9 @@ func (e *EngineAPIv4) NewPayloadV4(
 	if parent == nil {
 		if overlay := e.v1.overlay(); overlay != nil {
 			overlay.stageBlockWithBody(blk, blockHash, nil, nil, false, body)
+		}
+		if e.v1.missingAncestorObserver != nil {
+			e.v1.missingAncestorObserver(payload.ParentHash)
 		}
 		return acceptedPayloadResponse(), nil
 	}

@@ -695,6 +695,27 @@ func TestEngineAPIBlobRejectsOsakaPayloadAboveBlobGasAllowance(t *testing.T) {
 	require.Equal(t, "blob gas used 1310720 exceeds maximum allowance 1179648", *resp.ValidationError)
 }
 
+func TestEngineAPIBlobReturnsParentForBlobGasMismatch(t *testing.T) {
+	t.Parallel()
+
+	api, headHash := newEnginePayloadTestAPI()
+	engine := NewEngineAPIBlob(NewBlockChainAPI(api))
+	beaconRoot := types.Hash{0x99}
+	resp, err := engine.NewPayloadV3(context.Background(), &ExecutionPayloadV3{
+		ParentHash:    headHash,
+		BlockNumber:   hexutil.Uint64(1),
+		Timestamp:     hexutil.Uint64(2),
+		Transactions:  []hexutil.Bytes{},
+		Withdrawals:   []*Withdrawal{},
+		BlobGasUsed:   hexUint64Ptr(1),
+		ExcessBlobGas: hexUint64Ptr(0),
+	}, []types.Hash{}, &beaconRoot)
+	require.NoError(t, err)
+	require.Equal(t, PayloadStatusInvalid, resp.Status)
+	require.Equal(t, "blob gas mismatch", *resp.ValidationError)
+	require.Equal(t, &headHash, resp.LatestValidHash)
+}
+
 func TestEngineAPIBlobRejectsStaticExcessBlobGasFromZeroOnBlobsAboveTarget(t *testing.T) {
 	t.Parallel()
 
