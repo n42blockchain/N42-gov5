@@ -94,6 +94,16 @@ func (w *CachedStateWriter) WriteAccountStorage(address types.Address, key types
 }
 
 func (w *CachedStateWriter) CreateContract(address types.Address) error {
+	// The inner writer wipes the address's storage rows from MDBX, but the
+	// flat read-through cache has no prefix invalidation — leaving its
+	// addr|slot entries would serve pre-wipe values after a
+	// selfdestruct/metamorphic recreate (nondeterministic per node). Drop
+	// the whole cache: CreateContract is rare (post-6780: same-tx-created
+	// or metamorphic only), so the cold refill is cheap next to the
+	// correctness hole. Mirrors the buffered writer's per-slot LRU purge.
+	if w.cache != nil {
+		w.cache.Clear()
+	}
 	return w.inner.CreateContract(address)
 }
 
