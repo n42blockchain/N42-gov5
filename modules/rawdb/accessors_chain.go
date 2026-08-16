@@ -131,9 +131,13 @@ func ReadHeaderRAW(db kv.Getter, hash types.Hash, number uint64) []byte {
 }
 
 // HasHeader verifies the existence of a block header corresponding to the hash.
+// Sealed canonical blocks answer true via the era store.
 func HasHeader(db kv.Has, hash types.Hash, number uint64) bool {
 	has, err := db.Has(modules.Headers, modules.HeaderKey(number, hash))
-	return has && err == nil
+	if has && err == nil {
+		return true
+	}
+	return ancientHasHeader(hash, number)
 }
 
 // ReadHeader retrieves the block header corresponding to the hash.
