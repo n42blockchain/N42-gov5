@@ -12,7 +12,7 @@ client_name="${HIVE_CLIENT_NAME:-n42_local}"
 
 (
   cd "$hive_dir"
-  go build -o build/bin/hive ./hive.go
+  go build -o build/bin/hive .
 )
 
 cd "$hive_dir"
