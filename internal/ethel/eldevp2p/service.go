@@ -37,6 +37,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	gethcrypto "github.com/ethereum/go-ethereum/crypto"
@@ -126,6 +127,11 @@ type Service struct {
 	server  *devp2p.Server
 	handler *devp2p.EthHandler
 	privKey *ecdsa.PrivateKey
+
+	bridgeMu    sync.Mutex
+	downloader  *Downloader
+	knownBlock  EngineBlockKnownFunc
+	importBlock EngineBlockImporter
 }
 
 // New builds a Service. The Node must be non-nil even when Enabled is false
@@ -182,6 +188,10 @@ func (s *Service) Start(_ context.Context) error {
 	// peer goroutine routes msg code 4 / 6 here.
 	dl := NewDownloader(s.node, s.cfg.HashedCanonical, s.cfg.SnapshotCold, s.cfg.FreezerDir)
 	dl.SetInvalidAncestorObserver(s.cfg.InvalidAncestorObserver)
+	s.bridgeMu.Lock()
+	dl.SetEngineSyncBridge(s.knownBlock, s.importBlock)
+	s.downloader = dl
+	s.bridgeMu.Unlock()
 	handler.SetResponseHandler(dl)
 
 	boot := make([]*enode.Node, 0, len(s.cfg.BootNodes))
@@ -239,6 +249,29 @@ func (s *Service) Start(_ context.Context) error {
 		"staticPeers", len(boot),
 		"enode", s.server.Self().URLv4())
 	return nil
+}
+
+// SetEngineSyncBridge connects hash-directed devp2p ancestor retrieval to the
+// Engine API validation path.
+func (s *Service) SetEngineSyncBridge(known EngineBlockKnownFunc, importer EngineBlockImporter) {
+	s.bridgeMu.Lock()
+	defer s.bridgeMu.Unlock()
+	s.knownBlock = known
+	s.importBlock = importer
+	if s.downloader != nil {
+		s.downloader.SetEngineSyncBridge(known, importer)
+	}
+}
+
+// RequestMissingAncestor queues an unknown Engine parent for hash-directed
+// retrieval. The queue operation never blocks the Engine RPC response.
+func (s *Service) RequestMissingAncestor(hash types.Hash) {
+	s.bridgeMu.Lock()
+	dl := s.downloader
+	s.bridgeMu.Unlock()
+	if dl != nil {
+		dl.RequestMissingAncestor(hash)
+	}
 }
 
 // Stop shuts the devp2p listener down.

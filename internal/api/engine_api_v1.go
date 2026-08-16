@@ -11,6 +11,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 
@@ -79,8 +80,9 @@ type TransitionConfigurationV1 struct {
 
 // EngineAPIV1 provides Paris/Shanghai compatible Engine API methods.
 type EngineAPIV1 struct {
-	api          *BlockChainAPI
-	stateAdapter *EngineStateAdapter // optional: when set, NewPayload persists state (ETH EL mode)
+	api                     *BlockChainAPI
+	stateAdapter            *EngineStateAdapter // optional: when set, NewPayload persists state (ETH EL mode)
+	missingAncestorObserver func(types.Hash)
 }
 
 // NewEngineAPIV1 creates a new Engine API v1/v2 handler.
@@ -91,6 +93,28 @@ func NewEngineAPIV1(api *BlockChainAPI) *EngineAPIV1 {
 // SetStateAdapter enables persistent state execution for ETH EL mode.
 func (e *EngineAPIV1) SetStateAdapter(adapter *EngineStateAdapter) {
 	e.stateAdapter = adapter
+}
+
+// SetMissingAncestorObserver installs a non-blocking sync trigger for payloads
+// whose parent is not yet available locally.
+func (e *EngineAPIV1) SetMissingAncestorObserver(observer func(types.Hash)) {
+	e.missingAncestorObserver = observer
+}
+
+// HasBlockHash reports whether the Engine path can resolve a validated or
+// persisted block header by hash.
+func (e *EngineAPIV1) HasBlockHash(hash types.Hash) bool {
+	return e.parentHeader(hash) != nil
+}
+
+// ImportSyncedParisBlock feeds a devp2p-retrieved Paris block through the same
+// validation and overlay path as engine_newPayloadV1.
+func (e *EngineAPIV1) ImportSyncedParisBlock(ctx context.Context, blk *block.Block) (*PayloadStatusV1, error) {
+	payload := blockToExecutionPayloadV1(blk, e.chainConfig())
+	if payload == nil {
+		return nil, errors.New("cannot convert synced block to execution payload")
+	}
+	return e.NewPayloadV1(ctx, payload)
 }
 
 // EngineAPIs returns the authenticated Engine API namespaces exposed by the node.
@@ -813,6 +837,9 @@ func (e *EngineAPIV1) executeOrValidateWithBody(blk block.IBlock, blockHash, par
 	if e.parentHeader(parentHash) == nil {
 		if overlay := e.overlay(); overlay != nil {
 			overlay.stageBlockWithBody(blk, blockHash, nil, nil, false, body)
+		}
+		if e.missingAncestorObserver != nil {
+			e.missingAncestorObserver(parentHash)
 		}
 		return acceptedPayloadResponse(), nil
 	}

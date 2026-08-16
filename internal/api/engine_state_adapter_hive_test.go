@@ -284,7 +284,7 @@ func TestHiveEngineStateAdapterForkchoiceUpdatedTracksMDBXHead(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, payload.BlockHash, ethCompatibleBlockHash(blk, genesis.Config))
 
-	adapter := NewEngineStateAdapter(db, nil, genesis.Config, &apiTestEngine{})
+	adapter := NewEngineStateAdapter(db, nil, genesis.Config, &apiTestEngine{}).WithHeadMarker(true)
 	valid, stateRoot, err := adapter.ExecutePayload(blk.(*block.Block))
 	require.NoError(t, err)
 	require.True(t, valid)
@@ -297,6 +297,12 @@ func TestHiveEngineStateAdapterForkchoiceUpdatedTracksMDBXHead(t *testing.T) {
 	require.NotNil(t, head)
 	require.Equal(t, payload.BlockHash, ethCompatibleBlockHash(head, genesis.Config))
 	require.Equal(t, payload.BlockHash, adapter.CurrentHeadHash())
+	require.NoError(t, db.View(context.Background(), func(tx kv.Tx) error {
+		marker, ok := ethel.ReadHeadMarker(tx)
+		require.True(t, ok)
+		require.Equal(t, uint64(payload.BlockNumber), marker)
+		return nil
+	}))
 }
 
 func TestHiveEngineStateAdapterForkchoiceUpdatedExposesLatestBlock(t *testing.T) {
@@ -1975,6 +1981,7 @@ func newHiveEngineGenesisMDBXDB(t *testing.T) (kv.RwDB, *conf.Genesis, *block.Bl
 		db, err := mdbx.NewMDBX(logv3.New()).
 			Path(path).
 			Label(kv.ChainDB).
+			WithTableCfg(ethel.ChainTableCfg).
 			Open(context.Background())
 		require.NoError(t, err)
 		return db

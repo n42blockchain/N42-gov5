@@ -485,7 +485,12 @@ func run(c *cli.Context) error {
 				genesisTime = cfg.Genesis.Timestamp
 			}
 		}
-		return eldevp2p.New(eldcfg, n, genesisHash, genesisTime)
+		service := eldevp2p.New(eldcfg, n, genesisHash, genesisTime)
+		if engineService != nil {
+			service.SetEngineSyncBridge(engineService.HasBlockHash, engineService.ImportSyncedParisBlock)
+			engineService.SetMissingAncestorObserver(service.RequestMissingAncestor)
+		}
+		return service
 	})
 
 	ctx, cancel := withShutdown()

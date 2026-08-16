@@ -97,6 +97,11 @@ type EngineStateAdapter struct {
 	// SetHeaderHashReader). Preferred over internalcore.GetHashFn's ParentHash walk.
 	headerHashReader headerHashReader
 
+	// trackHeadMarker keeps the eth-el SyncStageProgress marker aligned with
+	// Engine forkchoice. Generic Engine adapters leave this disabled because
+	// their database schema does not necessarily include that table.
+	trackHeadMarker bool
+
 	// staged: staged catch-up execution. The trc runs writeOnly (writes
 	// HashedAccounts/HashedStorage + changesets, SKIPS per-block CalcTrieRoot),
 	// the trusted wire header.Root is kept as-is, and the per-block root compare
@@ -293,6 +298,12 @@ func (a *EngineStateAdapter) WithCSSource(src cs.Source) *EngineStateAdapter {
 // n42-migrate-reth-hashed.
 func (a *EngineStateAdapter) WithHashedCanonical(v bool) *EngineStateAdapter {
 	a.hashedCanonical = v
+	return a
+}
+
+// WithHeadMarker enables the eth-el execution-head marker.
+func (a *EngineStateAdapter) WithHeadMarker(v bool) *EngineStateAdapter {
+	a.trackHeadMarker = v
 	return a
 }
 
@@ -1223,6 +1234,11 @@ func (a *EngineStateAdapter) reorgCanonicalTo(engineHash types.Hash) error {
 	if err := rawdb.WriteHeadHeaderHash(tx, storedHash); err != nil {
 		return err
 	}
+	if a.trackHeadMarker {
+		if err := ethel.WriteHeadMarker(tx, *targetNum); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -1261,6 +1277,11 @@ func (a *EngineStateAdapter) ForkchoiceUpdated(headHash, safeHash, finalizedHash
 		return err
 	}
 	headerNum := rawdb.ReadHeaderNumber(tx, storedHeadHash)
+	if a.trackHeadMarker && headerNum != nil {
+		if err := ethel.WriteHeadMarker(tx, *headerNum); err != nil {
+			return err
+		}
+	}
 
 	if err := tx.Commit(); err != nil {
 		return err
