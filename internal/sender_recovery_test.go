@@ -331,3 +331,119 @@ func TestRecoverBlockSendersWarmsCache(t *testing.T) {
 		t.Fatalf("execution loop still performed %d sender derivations; cache was not warmed", got)
 	}
 }
+
+// mapHintSource is a SenderHintSource over a fixed map, standing in for the
+// transaction pool.
+type mapHintSource map[types.Hash]*transaction.Transaction
+
+func (m mapHintSource) GetTx(h types.Hash) *transaction.Transaction { return m[h] }
+
+// TestApplySenderHintsMatchesRecovery is the hint-path equivalence check: a
+// sender copied from the pool copy must be exactly what recovering the wire
+// copy produces, hits must skip derivation entirely on the wire copy, and
+// misses must be left for the worker-pool pass.
+func TestApplySenderHintsMatchesRecovery(t *testing.T) {
+	const n = 32
+	const missIdx = 5
+	signer := transaction.NewLondonSigner(senderRecoveryChainID)
+
+	wireTxs, want := buildSignedTxs(t, n)
+
+	// The pool holds ITS OWN decoded copies (the pool and the block never share
+	// objects), each with the sender already recovered, except one miss.
+	pool := mapHintSource{}
+	for i, tx := range wireTxs {
+		if i == missIdx {
+			continue
+		}
+		enc, err := transaction.EncodeEthereumTransaction(tx)
+		if err != nil {
+			t.Fatalf("encode %d: %v", i, err)
+		}
+		poolCopy, err := transaction.DecodeEthereumTransaction(enc)
+		if err != nil {
+			t.Fatalf("decode %d: %v", i, err)
+		}
+		if _, err := transaction.Sender(signer, poolCopy); err != nil {
+			t.Fatalf("pool admission recovery %d: %v", i, err)
+		}
+		pool[tx.Hash()] = poolCopy
+	}
+
+	filled := applySenderHints(pool, signer, wireTxs)
+	if filled != n-1 {
+		t.Fatalf("filled %d senders, want %d", filled, n-1)
+	}
+	if wireTxs[missIdx].From() != nil {
+		t.Fatalf("miss %d unexpectedly got a sender", missIdx)
+	}
+	for i, tx := range wireTxs {
+		if i == missIdx {
+			continue
+		}
+		if tx.From() == nil {
+			t.Fatalf("tx %d: hint did not set the sender", i)
+		}
+		if *tx.From() != want[i] {
+			t.Fatalf("tx %d: hinted sender mismatch: got %s want %s", i, tx.From().Hex(), want[i].Hex())
+		}
+	}
+
+	// The pool memo, not the wire copy, must have carried the sender: a
+	// counting signer applied to the WIRE copies must never fire for hinted
+	// transactions once the second pass runs.
+	counting := &countingSigner{Signer: signer}
+	recoverBlockSenders(counting, wireTxs)
+	if got := counting.calls.Load(); got != 1 {
+		t.Fatalf("worker pass derived %d senders, want exactly the 1 miss", got)
+	}
+	if got, err := transaction.Sender(counting, wireTxs[missIdx]); err != nil || got != want[missIdx] {
+		t.Fatalf("miss %d: got %s err %v, want %s", missIdx, got.Hex(), err, want[missIdx].Hex())
+	}
+}
+
+// TestApplySenderHintsStaleSignerReDerives pins the fork-boundary guard: a pool
+// memo cached under a DIFFERENT signer must not be trusted as-is — Sender must
+// re-derive under the block's signer, still yielding the right address.
+func TestApplySenderHintsStaleSignerReDerives(t *testing.T) {
+	const n = 4
+	blockSigner := transaction.NewLondonSigner(senderRecoveryChainID)
+
+	wireTxs, want := buildSignedTxs(t, n)
+	pool := mapHintSource{}
+	for i, tx := range wireTxs {
+		enc, _ := transaction.EncodeEthereumTransaction(tx)
+		poolCopy, _ := transaction.DecodeEthereumTransaction(enc)
+		// Admission under a signer the block will NOT use. countingSigner's
+		// Equal is pointer identity, so the block-signer pass below can never
+		// accept this memo.
+		admission := &countingSigner{Signer: transaction.NewLondonSigner(senderRecoveryChainID)}
+		if _, err := transaction.Sender(admission, poolCopy); err != nil {
+			t.Fatalf("admission %d: %v", i, err)
+		}
+		pool[tx.Hash()] = poolCopy
+		_ = i
+	}
+
+	if filled := applySenderHints(pool, blockSigner, wireTxs); filled != n {
+		t.Fatalf("filled %d, want %d", filled, n)
+	}
+	for i, tx := range wireTxs {
+		if tx.From() == nil || *tx.From() != want[i] {
+			t.Fatalf("tx %d: sender wrong after stale-signer hint", i)
+		}
+	}
+}
+
+// TestApplySenderHintsNilSource documents that a nil source is a clean no-op.
+func TestApplySenderHintsNilSource(t *testing.T) {
+	txs, _ := buildSignedTxs(t, 3)
+	if filled := applySenderHints(nil, transaction.NewLondonSigner(senderRecoveryChainID), txs); filled != 0 {
+		t.Fatalf("nil source filled %d", filled)
+	}
+	for i, tx := range txs {
+		if tx.From() != nil {
+			t.Fatalf("tx %d: sender set by nil source", i)
+		}
+	}
+}

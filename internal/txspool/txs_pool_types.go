@@ -25,6 +25,8 @@ package txspool
 import (
 	"context"
 	"errors"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,6 +37,7 @@ import (
 	"github.com/n42blockchain/N42/common/metrics"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/contracts/deposit"
 	"github.com/n42blockchain/N42/params"
 )
@@ -117,7 +120,17 @@ type TxsPoolConfig struct {
 }
 
 // DefaultTxPoolConfig contains the default configuration for the transaction pool.
-var DefaultTxPoolConfig = TxsPoolConfig{
+//
+// The capacity fields can be raised from the environment. Nothing plumbs this
+// config from the node configuration -- NewTxsPool uses the defaults verbatim
+// -- so without these there is no way to size the pool at all. The stock
+// capacity is about 6,000 transactions in total, which is smaller than a single
+// block once the gas ceiling is raised: at 480M gas a block holds 22,857, so a
+// throughput test spends its time being rejected rather than measuring
+// anything. Same idiom as N42_STRESS_GASLIMIT and N42_MAX_GOSSIP_MB, and the
+// same caveat: sizing the pool up costs memory, roughly proportional to the
+// number of transactions held.
+var DefaultTxPoolConfig = applyTxPoolEnvOverrides(TxsPoolConfig{
 	PriceLimit: 1,
 	PriceBump:  10,
 
@@ -131,6 +144,50 @@ var DefaultTxPoolConfig = TxsPoolConfig{
 	DynamicSizing:  false,
 	MinGlobalSlots: 1024,
 	MemoryLimitMB:  4096, // 4GB default memory limit
+})
+
+// FromConf converts the node's pool configuration, applying the environment
+// overrides on top. The environment path predates the config path and stays as
+// an escape hatch for raising capacity without editing a config file; an
+// explicit configuration still wins over the built-in defaults.
+func FromConf(c conf.TxPoolConfig) TxsPoolConfig {
+	return applyTxPoolEnvOverrides(TxsPoolConfig{
+		PriceLimit:     c.PriceLimit,
+		PriceBump:      c.PriceBump,
+		AccountSlots:   c.AccountSlots,
+		GlobalSlots:    c.GlobalSlots,
+		AccountQueue:   c.AccountQueue,
+		GlobalQueue:    c.GlobalQueue,
+		Lifetime:       c.Lifetime,
+		DynamicSizing:  c.DynamicSizing,
+		MinGlobalSlots: c.MinGlobalSlots,
+		MemoryLimitMB:  c.MemoryLimitMB,
+	})
+}
+
+// applyTxPoolEnvOverrides raises pool capacity from the environment. Values
+// below the built-in default are ignored: these knobs exist to make room for a
+// deep backlog, not to shrink the pool by accident.
+func applyTxPoolEnvOverrides(c TxsPoolConfig) TxsPoolConfig {
+	set := func(dst *uint64, name string) {
+		v := os.Getenv(name)
+		if v == "" {
+			return
+		}
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil || n <= *dst {
+			return
+		}
+		*dst = n
+	}
+	set(&c.GlobalSlots, "N42_TXPOOL_GLOBAL_SLOTS")
+	set(&c.GlobalQueue, "N42_TXPOOL_GLOBAL_QUEUE")
+	set(&c.AccountSlots, "N42_TXPOOL_ACCOUNT_SLOTS")
+	set(&c.AccountQueue, "N42_TXPOOL_ACCOUNT_QUEUE")
+	if c.MinGlobalSlots > c.GlobalSlots {
+		c.MinGlobalSlots = c.GlobalSlots
+	}
+	return c
 }
 
 // TxsPool contains all currently known transactions.

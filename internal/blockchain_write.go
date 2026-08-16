@@ -536,7 +536,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			"qflush", dQMDBFlush, "qmeta", dQMDBMeta, "snap", dSnapshot,
 			"commit", dCommit, "post", dPost, "total", dTotal,
 		}
-		if dTotal >= 5*time.Millisecond {
+		if dTotal >= slowBlockThreshold {
 			log.Info("blockwrite phases", fields...)
 		} else {
 			log.Debug("blockwrite phases", fields...)

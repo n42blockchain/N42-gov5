@@ -64,6 +64,15 @@ type BlockProducer interface {
 	CommitToCanonical(hash types.Hash) error
 }
 
+// SpeculativeBlockProducer is the optional extension of BlockProducer for
+// cross-view speculative building: build (but do not seal or propose) a block
+// extending parentHash, to be collected by the next TriggerBlockProduction if
+// the parent matches. Implemented by the miner; probed by type assertion so
+// simpler producers keep working.
+type SpeculativeBlockProducer interface {
+	PrepareSpeculativeBlock(parentHash types.Hash)
+}
+
 // BlockFetcher fetches a proposed block by hash when it isn't already local
 // (fetch-on-miss), and catches a lagging/forked node up to the converged chain
 // by range (CatchUp). Implemented by the sync layer.
@@ -261,8 +270,9 @@ type Service struct {
 	p2p    P2PPublisher
 	db     kv.RwDB
 
-	gossipTopic string // fully qualified gossip topic string
-	rpcTopic    string // fully qualified RPC topic string
+	gossipTopic  string // fully qualified gossip topic string
+	rpcTopic     string // fully qualified RPC topic string
+	h2V4Identity *H2V4ChainIdentity
 
 	blockProducer    BlockProducer
 	blockFetcher     BlockFetcher
@@ -354,6 +364,12 @@ func (s *Service) SetEpochSchedule(schedule *EpochSchedule) {
 // P2P validator peer bindings (Rust: replace_expected_validator_peers_reliable).
 func (s *Service) SetPeerRefreshFn(fn func()) {
 	s.peerRefreshFn = fn
+}
+
+// SetH2V4Identity enables publication of chain-bound Decide proofs for
+// cross-client observers. Consensus messages continue on the existing topic.
+func (s *Service) SetH2V4Identity(identity H2V4ChainIdentity) {
+	s.h2V4Identity = &identity
 }
 
 // Start begins the service goroutines.
@@ -460,6 +476,13 @@ func (s *Service) handleOutput(output EngineOutput) {
 		// chain head never advances. FetchBlockByHash is a no-op if we have it.
 		if s.blockFetcher != nil {
 			s.blockFetcher.FetchBlockByHash(output.Hash)
+		}
+	case OutputSpeculativeBuild:
+		// Advisory: this node leads the next view; start building on the block
+		// it just voted for so the proposal is ready at the view change. The
+		// producer may drop or abort the guess at any time.
+		if sp, ok := s.blockProducer.(SpeculativeBlockProducer); ok && sp != nil {
+			sp.PrepareSpeculativeBlock(output.Hash)
 		}
 	case OutputBlockCommitted:
 		log.Info("hotstuff: block committed", "view", output.View, "hash", output.Hash)
@@ -642,6 +665,9 @@ func (s *Service) handleBroadcast(output EngineOutput) {
 	if output.Message == nil || s.p2p == nil {
 		return
 	}
+	if output.Message.Type == MsgDecide && s.h2V4Identity != nil {
+		go s.publishH2V4Decide(output.Message)
+	}
 
 	data, err := EncodeConsensusMsg(output.Message)
 	if err != nil {
@@ -660,7 +686,11 @@ func (s *Service) handleBroadcast(output EngineOutput) {
 	gossipBytes := buf.Bytes()
 	topic := s.gossipTopic + enc.ProtocolSuffix()
 
-	log.Info("hotstuff: broadcasting consensus message", "type", output.Message.Type, "topic", topic, "bytes", len(gossipBytes))
+	// Every consensus message emits one of these, several per view, which made
+	// it 15% of all log bytes on this fleet. Broadcasting is the normal case and
+	// says nothing on its own; the interesting events (a view that stalls, a
+	// message that fails to encode or publish) are logged separately.
+	log.Debug("hotstuff: broadcasting consensus message", "type", output.Message.Type, "topic", topic, "bytes", len(gossipBytes))
 
 	// Use Rotor single-hop relay for proposal broadcasts.
 	if output.Message.Type == MsgProposal && s.rotor != nil && s.rotor.Enabled() {
@@ -714,6 +744,27 @@ func (s *Service) handleBroadcast(output EngineOutput) {
 
 	if err := s.p2p.PublishToTopic(publishCtx, topic, gossipBytes, publishOpts...); err != nil {
 		log.Warn("hotstuff: broadcast failed", "err", err)
+	}
+}
+
+const h2V4GossipTopic = "/n42/h2/4/ssz_snappy"
+
+func (s *Service) publishH2V4Decide(message *ConsensusMsg) {
+	data, err := EncodeH2V4Gossip(H2V4Envelope{
+		Identity: *s.h2V4Identity,
+		// The first interoperable profile is intentionally static-validator.
+		// Dynamic validator-change encoding is a later protocol revision.
+		ChangesHash: types.Hash{},
+		Message:     message,
+	})
+	if err != nil {
+		log.Error("hotstuff: failed to encode H2-v4 Decide", "err", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
+	defer cancel()
+	if err := s.p2p.PublishToTopic(ctx, h2V4GossipTopic, data); err != nil {
+		log.Debug("hotstuff: H2-v4 Decide publish skipped", "err", err)
 	}
 }
 
@@ -1437,6 +1488,54 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 	}
 }
 
+// NotifyBlockExecuted is the EARLY vote path: the blockchain calls it the
+// moment a block's execution and state-root validation succeed — BEFORE the
+// block is persisted. The import-gated vote certifies "this node executed and
+// validated the block", and at this call site that is true by construction
+// (same call stack, err==nil), which is STRONGER evidence than the
+// BlockApplied database probe NotifyBlockImported must rely on for
+// notifications of unknown provenance. Persistence (~150-250ms of MDBX commit
+// on a saturated block) then overlaps the vote round instead of preceding it.
+//
+// The header fields are passed in rather than read from the DB because the
+// header is not written yet. Deduplication is shared with
+// NotifyBlockImported, so whichever notification arrives second is a no-op;
+// a crash between the vote and the persist costs this node a re-import on
+// restart and nothing else — HotStuff quorum safety never depended on a
+// voter's local durability (it tolerates f arbitrary faults).
+func (s *Service) NotifyBlockExecuted(hash, txHash, parentHash types.Hash, number uint64, extra []byte) {
+	s.pendingMu.Lock()
+	if _, ok := s.notifiedImports[hash]; ok {
+		s.pendingMu.Unlock()
+		return
+	}
+	s.notifiedImports[hash] = struct{}{}
+	s.notifiedFIFO = append(s.notifiedFIFO, hash)
+	if len(s.notifiedFIFO) > maxNotifiedImports {
+		oldest := s.notifiedFIFO[0]
+		s.notifiedFIFO = s.notifiedFIFO[1:]
+		delete(s.notifiedImports, oldest)
+	}
+	s.pendingMu.Unlock()
+
+	s.maybeCommitFromHeaderQC(extra)
+	if ce := s.engine.Engine(); ce != nil {
+		if ce.IsRemoved() {
+			if rm := ce.ReconfigManager(); rm != nil && rm.HasPendingChanges() {
+				rm.MarkCommitted()
+			}
+		}
+		if err := ce.ProcessEvent(ConsensusEvent{
+			Type:       EventBlockImported,
+			Hash:       hash,
+			TxRootHash: txHash,
+			ParentHash: parentHash,
+		}); err != nil {
+			log.Debug("hotstuff: EventBlockImported (early) processing failed", "hash", hash, "err", err)
+		}
+	}
+}
+
 // maybeCommitFromHeaderQC advances the canonical chain from the CommitQC a
 // just-imported block carries in its header extra (buildHeaderExtra embeds the
 // leader's LastCommittedQC into every block). Import-time fork choice is
@@ -1479,7 +1578,7 @@ func (s *Service) maybeCommitFromHeaderQC(extra []byte) {
 	// a conflicting block committing at that height). Accepting one would let a
 	// crafted header embedding a stale PrepareQC drive a catching-up node to
 	// canonicalize a never-committed block, diverging its canonical head.
-	if verr := VerifyCommitQC(qc, ce.ResolveQCValidatorSet(qc.View, len(qc.Signers))); verr != nil {
+	if verr := ce.VerifyCommitQCWithResolvedSet(qc); verr != nil {
 		log.Debug("hotstuff: header-QC canonicalize skipped (verify failed)",
 			"qcBlock", qc.BlockHash, "qcView", qc.View, "err", verr)
 		return

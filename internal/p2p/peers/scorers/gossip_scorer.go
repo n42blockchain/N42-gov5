@@ -3,7 +3,6 @@ package scorers
 import (
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/n42blockchain/N42/proto/msg_proto"
 	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 )
 
@@ -83,7 +82,7 @@ func (s *GossipScorer) BadPeers() []peer.ID {
 
 // SetGossipData sets the gossip related data of a peer.
 func (s *GossipScorer) SetGossipData(pid peer.ID, gScore float64,
-	bPenalty float64, topicScores map[string]*msg_proto.TopicScoreSnapshot) {
+	bPenalty float64, topicScores map[string]*peerdata.TopicScoreSnapshot) {
 	s.store.Lock()
 	defer s.store.Unlock()
 
@@ -96,14 +95,14 @@ func (s *GossipScorer) SetGossipData(pid peer.ID, gScore float64,
 // GossipData gets the gossip related information of the given remote peer.
 // This can return nil if there is no known gossip record the peer.
 // This will error if the peer does not exist.
-func (s *GossipScorer) GossipData(pid peer.ID) (float64, float64, map[string]*msg_proto.TopicScoreSnapshot, error) {
+func (s *GossipScorer) GossipData(pid peer.ID) (float64, float64, map[string]*peerdata.TopicScoreSnapshot, error) {
 	s.store.RLock()
 	defer s.store.RUnlock()
 	return s.gossipData(pid)
 }
 
 // gossipData lock-free version of GossipData.
-func (s *GossipScorer) gossipData(pid peer.ID) (float64, float64, map[string]*msg_proto.TopicScoreSnapshot, error) {
+func (s *GossipScorer) gossipData(pid peer.ID) (float64, float64, map[string]*peerdata.TopicScoreSnapshot, error) {
 	if peerData, ok := s.store.PeerData(pid); ok {
 		return peerData.GossipScore, peerData.BehaviourPenalty, peerData.TopicScores, nil
 	}

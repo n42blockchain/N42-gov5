@@ -23,8 +23,8 @@ import (
 	"go.opencensus.io/trace"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/n42blockchain/N42/proto/sync_pb"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
@@ -33,7 +33,7 @@ import (
 	"github.com/n42blockchain/N42/internal/p2p/peers"
 	"github.com/n42blockchain/N42/internal/p2p/peers/scorers"
 	astLog "github.com/n42blockchain/N42/log"
-	"github.com/n42blockchain/N42/common/utils"
+	"github.com/n42blockchain/N42/proto/sync_pb"
 )
 
 var (
@@ -52,11 +52,14 @@ const (
 
 // Service for managing peer to peer (p2p) networking.
 type Service struct {
-	started          atomic.Bool
-	isPreGenesis     atomic.Bool
-	handshakeReady   chan struct{}
-	handshakeOnce    sync.Once
-	protectedPeers   map[peer.ID]struct{}
+	started        atomic.Bool
+	isPreGenesis   atomic.Bool
+	handshakeReady chan struct{}
+	handshakeOnce  sync.Once
+	protectedPeers map[peer.ID]struct{}
+	// emptyTopicWarned rate-limits the "published to a topic with no
+	// subscribers" warning, keyed by topic.
+	emptyTopicWarned sync.Map
 	pingMethod       func(ctx context.Context, id peer.ID) error
 	cancel           context.CancelFunc
 	cfg              *conf.P2PConfig
@@ -88,7 +91,7 @@ func NewService(ctx context.Context, genesisHash types.Hash, cfg *conf.P2PConfig
 		ctx:            ctx,
 		cancel:         cancel,
 		cfg:            cfg,
-		joinedTopics:   make(map[string]*pubsub.Topic, len(gossipTopicMappings)),
+		joinedTopics:   make(map[string]*pubsub.Topic, len(gossipTopics)),
 		genesisHash:    genesisHash,
 		protectedPeers: make(map[peer.ID]struct{}),
 	}

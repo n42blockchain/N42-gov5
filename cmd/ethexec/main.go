@@ -1509,7 +1509,7 @@ func runTxLookupBuild(c *cli.Context) error {
 		endBlock = f.Frozen()
 	}
 
-	builder := txlookup.NewSegmentBuilder(f, outputDir)
+	builder := txlookup.NewSegmentBuilder(f, outputDir, ethelBodyTxHashes)
 	return builder.BuildRange(ctx, startBlock, endBlock)
 }
 
@@ -2725,4 +2725,20 @@ func cloneTables(src kv.RwDB, dst kv.RwDB, progressBlock uint64) error {
 	}
 	ethel.WriteProgress(wt, progressBlock)
 	return wt.Commit()
+}
+
+// ethelBodyTxHashes decodes a geth-format stored body into its transaction
+// hashes. Supplied to the txindex builder by the caller so internal/txlookup
+// does not have to import internal/ethel (which would close an import cycle
+// with the root internal package's live index).
+func ethelBodyTxHashes(bodyData []byte) ([]types.Hash, error) {
+	body, err := ethel.DecodeGethBody(bodyData)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]types.Hash, len(body.Transactions))
+	for i, tx := range body.Transactions {
+		out[i] = tx.Hash()
+	}
+	return out, nil
 }

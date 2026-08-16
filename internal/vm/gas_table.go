@@ -383,13 +383,21 @@ func gasCreate2(_ VMInterpreter, contract *Contract, stack *stack.Stack, mem *Me
 	return gas, nil
 }
 
-func gasCreateEip3860(_ VMInterpreter, contract *Contract, stack *stack.Stack, mem *Memory, memorySize uint64) (uint64, error) {
+func maxInitCodeSize(evm VMInterpreter) uint64 {
+	// EIP-7954 (Amsterdam): initcode cap rises from 48 KiB to 128 KiB.
+	if evm != nil && evm.ChainRules().IsGlamsterdam {
+		return uint64(params.MaxInitCodeSizeEIP7954)
+	}
+	return uint64(params.MaxInitCodeSize)
+}
+
+func gasCreateEip3860(evm VMInterpreter, contract *Contract, stack *stack.Stack, mem *Memory, memorySize uint64) (uint64, error) {
 	gas, err := memoryGasCost(mem, memorySize)
 	if err != nil {
 		return 0, err
 	}
 	len, overflow := stack.Back(2).Uint64WithOverflow()
-	if overflow || len > params.MaxInitCodeSize {
+	if overflow || len > maxInitCodeSize(evm) {
 		return 0, ErrGasUintOverflow
 	}
 	numWords := ToWordSize(len)
@@ -402,13 +410,13 @@ func gasCreateEip3860(_ VMInterpreter, contract *Contract, stack *stack.Stack, m
 	return gas, nil
 }
 
-func gasCreate2Eip3860(_ VMInterpreter, contract *Contract, stack *stack.Stack, mem *Memory, memorySize uint64) (uint64, error) {
+func gasCreate2Eip3860(evm VMInterpreter, contract *Contract, stack *stack.Stack, mem *Memory, memorySize uint64) (uint64, error) {
 	gas, err := memoryGasCost(mem, memorySize)
 	if err != nil {
 		return 0, err
 	}
 	len, overflow := stack.Back(2).Uint64WithOverflow()
-	if overflow || len > params.MaxInitCodeSize {
+	if overflow || len > maxInitCodeSize(evm) {
 		return 0, ErrGasUintOverflow
 	}
 	numWords := ToWordSize(len)
@@ -455,7 +463,11 @@ func gasCall(evm VMInterpreter, contract *Contract, stack *stack.Stack, mem *Mem
 	)
 	callNewAccountGas := uint64(params.CallNewAccountGas)
 	if evm.ChainRules().IsGlamsterdam {
-		callNewAccountGas = params.CallNewAccountGasGlamsterdam
+		// Amsterdam: EIP-8038 CREATE_ACCESS (12000) replaces the legacy 25000
+		// new-account charge, plus EIP-8037 state gas for the fresh account
+		// (120 bytes x 1530 = 183600).
+		callNewAccountGas = params.CreateAccessEIP8038 +
+			params.StateBytesPerNewAccount*params.CostPerStateByteEIP8037
 	}
 	if evm.ChainRules().IsSpuriousDragon {
 		if transfersValue && evm.IntraBlockState().Empty(address) {

@@ -59,7 +59,8 @@ type Rules struct {
 	IsHomestead, IsTangerineWhistle, IsSpuriousDragon           bool
 	IsByzantium, IsConstantinople, IsPetersburg, IsIstanbul     bool
 	IsBerlin, IsLondon, IsParis, IsShanghai, IsCancun, IsPrague bool
-	IsPectra, IsOsaka, IsFusaka, IsGlamsterdam                  bool // Pectra: EIP-7702, Osaka: EOF, Fusaka: Native AA, Glamsterdam: EIP-7904
+	IsPectra, IsOsaka, IsFusaka, IsGlamsterdam                  bool // Pectra: EIP-7702; Osaka: Fusaka-EL set; Fusaka: N42 Native-AA extension; Glamsterdam: Amsterdam set
+	IsEOF                                                       bool // EVM Object Format — N42 experimental gate, not on any scheduled ETH fork
 	IsNano, IsMoran                                             bool
 	IsEip1559FeeCollector                                       bool
 	IsParlia, IsStarknet, IsAura, IsBeijing                     bool
@@ -119,6 +120,7 @@ func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 		IsOsaka:               c.IsOsaka(timestamp),
 		IsFusaka:              c.IsFusaka(timestamp),
 		IsGlamsterdam:         c.IsGlamsterdam(timestamp),
+		IsEOF:                 c.IsEOF(timestamp),
 		IsNano:                c.IsNano(num),
 		IsMoran:               c.IsMoran(num),
 		IsEip1559FeeCollector: c.IsEip1559FeeCollector(num),
@@ -348,6 +350,12 @@ func (c *ChainConfig) IsGlamsterdam(time uint64) bool {
 // This is an N42-specific extension independent of standard Ethereum forks.
 func (c *ChainConfig) IsPQPrecompiles(time uint64) bool {
 	return isForked(c.PQPrecompilesTime, time)
+}
+
+// IsEOF returns whether time is at or past the EOF activation timestamp.
+// EOF is not part of any scheduled Ethereum fork; see ChainConfig.EOFTime.
+func (c *ChainConfig) IsEOF(time uint64) bool {
+	return isForked(c.EOFTime, time)
 }
 
 // IsContentStore returns whether time is at or past the content-addressed storage precompile activation.

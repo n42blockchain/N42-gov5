@@ -96,29 +96,59 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 		return nil, errors.New("no header available")
 	}
 
+	// Decode and fee-check everything first, then admit the survivors to the
+	// pool as ONE batch. The old loop called SubmitTransaction per entry —
+	// each paying its own pool round — and aborted the whole batch on the
+	// first bad entry, so a batch endpoint submitted no faster than the
+	// single endpoint. A batch also engages the pool's parallel sender
+	// pre-warm, which a size-1 add cannot.
 	hs := make([]avmcommon.Hash, len(inputs))
+	txs := make([]*transaction.Transaction, 0, len(inputs))
+	slot := make([]int, 0, len(inputs))
+	var firstErr error
 	for i, t := range inputs {
 		if len(t) == 0 {
-			hs[i] = avmcommon.Hash{}
-			return hs, errors.New("empty transaction data")
+			if firstErr == nil {
+				firstErr = errors.New("empty transaction data")
+			}
+			continue
 		}
 		tx := new(avmtypes.Transaction)
-		err := tx.UnmarshalBinary(t)
-		if err != nil {
-			hs[i] = avmcommon.Hash{}
-			return hs, err
+		if err := tx.UnmarshalBinary(t); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
 		metaTx, err := tx.ToastTransaction(s.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()))
 		if err != nil {
-			hs[i] = avmcommon.Hash{}
-			return hs, err
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
-
-		if hs[i], err = SubmitTransaction(context.Background(), s.api, metaTx); err != nil {
-			return hs, err
+		if err := checkTxFee(*metaTx.GasPrice(), metaTx.Gas(), baseFee); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		txs = append(txs, metaTx)
+		slot = append(slot, i)
+	}
+	if len(txs) > 0 {
+		errs := s.api.TxsPool().AddLocals(txs)
+		for j, err := range errs {
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			hs[slot[j]] = avmtypes.FromastHash(txs[j].Hash())
 		}
 	}
-	return hs, nil
+	return hs, firstErr
 }
 
 // GetTransactionReceipt returns the transaction receipt for the given transaction hash.

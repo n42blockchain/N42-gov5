@@ -105,6 +105,17 @@ var (
 
 const maxBlobSidecars = 64 // safety limit
 
+// EncodeBlobSidecars is the storage encoding, also used on the gossip wire so
+// a sidecar has exactly one serialized form in this codebase.
+func EncodeBlobSidecars(sidecars []*block.BlobSidecar) ([]byte, error) {
+	return encodeBlobSidecars(sidecars)
+}
+
+// DecodeBlobSidecars is the inverse of EncodeBlobSidecars.
+func DecodeBlobSidecars(data []byte) ([]*block.BlobSidecar, error) {
+	return decodeBlobSidecars(data)
+}
+
 func encodeBlobSidecars(sidecars []*block.BlobSidecar) ([]byte, error) {
 	// Estimate size: 4 + count * (8 + 131072 + 48 + 48 + 8 + 32 + 32 + 4)
 	// plus proof entries

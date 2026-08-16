@@ -106,7 +106,7 @@ func decodeRethAccountCodeHash(v []byte) (ch [32]byte, ok bool) {
 
 func main() {
 	if len(os.Args) < 5 || os.Args[1] != "--db" || os.Args[3] != "--outdir" {
-		fmt.Fprintln(os.Stderr, "usage: code-import2fz --db RETH_MDBX_PATH --outdir OUTPUT_DIR")
+		fmt.Fprintln(os.Stderr, "usage: code-import2fz --db RETH_MDBX_PATH --outdir OUTPUT_DIR [--coverage-block N] [--addr-index=false]")
 		os.Exit(1)
 	}
 	dbPath := os.Args[2]
@@ -117,9 +117,19 @@ func main() {
 	// covers a block before trusting it (content-addressed code has no per-entry
 	// height; this single value is the store's coverage boundary).
 	var coverageBlock uint64
-	for i := 5; i+1 < len(os.Args); i++ {
-		if os.Args[i] == "--coverage-block" {
+	// --addr-index=false skips the legacy address-keyed codes.cidx. Building
+	// that index means joining Bytecodes against the whole PlainAccountState
+	// (~405M accounts, ~85M with code) to learn which addresses reference which
+	// code hash — an in-memory codeHash->[]address map costing tens of GB. The
+	// hash index (codes.hidx) answers code lookups directly, so this is only
+	// needed while readers that predate it are still in use.
+	addrIndex := true
+	for i := 5; i < len(os.Args); i++ {
+		if os.Args[i] == "--coverage-block" && i+1 < len(os.Args) {
 			coverageBlock, _ = strconv.ParseUint(os.Args[i+1], 10, 64)
+		}
+		if os.Args[i] == "--addr-index=false" || (os.Args[i] == "--addr-index" && i+1 < len(os.Args) && os.Args[i+1] == "false") {
+			addrIndex = false
 		}
 	}
 
@@ -158,6 +168,7 @@ func main() {
 	// Phase 1: read all (address, code) pairs.
 	type codeEntry struct {
 		addr [20]byte
+		hash [32]byte // keccak(code) — the content address, always the source key
 		code []byte
 	}
 
@@ -169,6 +180,10 @@ func main() {
 	// when empty — selecting purely by open-success would wrongly use an empty
 	// "Bytecodes" on an N42 schema and export 0 codes. Probe First() and prefer the
 	// non-empty one; "Bytecodes" wins ties (its values need reth-decode).
+	// Non-emptiness alone is not enough either: opening a table this DB does not
+	// have can bind the handle to unrelated data and export garbage. Both schemas
+	// key by codeHash, so require a 32-byte first key, and for Bytecodes require
+	// that the value actually decodes as reth Compact bytecode.
 	tableName := ""
 	var cursor kv.Cursor
 	for _, name := range []string{"Bytecodes", "Code"} {
@@ -176,8 +191,8 @@ func main() {
 		if cerr != nil {
 			continue
 		}
-		k, _, _ := c.First()
-		if k != nil {
+		k, v, _ := c.First()
+		if len(k) == 32 && (name != "Bytecodes" || rethRawCode(v) != nil) {
 			tableName = name
 			cursor = c
 			break
@@ -197,7 +212,7 @@ func main() {
 	// not an eoa" — the delegation designator code was unreadable). The join
 	// below maps codeHash → the addresses referencing it via PlainAccountState.
 	var hashToAddrs map[[32]byte][][20]byte
-	if tableName == "Bytecodes" {
+	if tableName == "Bytecodes" && addrIndex {
 		fmt.Fprintf(os.Stderr, "Scanning PlainAccountState for address→codeHash join...\n")
 		hashToAddrs = make(map[[32]byte][][20]byte, 1<<21)
 		ac, aerr := tx.Cursor("PlainAccountState")
@@ -255,7 +270,7 @@ func main() {
 			code := make([]byte, len(raw))
 			copy(code, raw)
 			for _, a := range addrs {
-				entries = append(entries, codeEntry{addr: a, code: code})
+				entries = append(entries, codeEntry{addr: a, hash: h, code: code})
 			}
 			if len(entries)%1000000 < len(addrs) {
 				fmt.Fprintf(os.Stderr, "  entries %dM\n", len(entries)/1000000)
@@ -284,7 +299,9 @@ func main() {
 		}
 		code := make([]byte, len(raw))
 		copy(code, raw)
-		entries = append(entries, codeEntry{addr: a, code: code})
+		var h [32]byte
+		copy(h[:], k) // both Bytecodes and the N42 Code table are keyed by codeHash
+		entries = append(entries, codeEntry{addr: a, hash: h, code: code})
 		if len(entries)%100000 == 0 {
 			fmt.Fprintf(os.Stderr, "  read %d  key_len=%d\n", len(entries), len(k))
 		}
@@ -314,8 +331,10 @@ func main() {
 
 	type indexEntry struct {
 		addr    [20]byte
+		hash    [32]byte
 		fileNum uint16
 		offset  uint32
+		length  uint32
 	}
 	index := make([]indexEntry, len(entries))
 
@@ -359,8 +378,10 @@ func main() {
 
 		index[i] = indexEntry{
 			addr:    e.addr,
+			hash:    e.hash,
 			fileNum: curFileNum,
 			offset:  uint32(curOffset),
+			length:  uint32(len(compressed)),
 		}
 
 		if _, err := curFile.Write(compressed); err != nil {
@@ -381,6 +402,13 @@ func main() {
 	}
 
 	// Phase 3: write cidx (address-indexed).
+	//
+	// With --addr-index=false there are no addresses to index — the source key
+	// is the code hash, and index[i].addr holds its first 20 bytes, which is not
+	// an address and must never be searched as one. The file is still written,
+	// with a zero-entry body and the addrIndexed flag cleared: readers open
+	// codes.cidx unconditionally, so omitting it would break them, and an empty
+	// index makes every address lookup miss cleanly and fall through.
 	cidxPath := filepath.Join(outdir, "codes.cidx")
 	cidxFile, err := os.Create(cidxPath)
 	if err != nil {
@@ -392,21 +420,50 @@ func main() {
 	var hdr [cidxHeaderSize]byte
 	copy(hdr[0:4], cidxMagic)
 	hdr[4] = cidxVersion
-	hdr[5] = cidxFlagCompressed | cidxFlagAddrIndex
+	hdr[5] = cidxFlagCompressed
+	if addrIndex {
+		hdr[5] |= cidxFlagAddrIndex
+	}
 	hdr[6] = 0 // batchSize=0 (not batch mode)
 	hdr[7] = addrEntrySize
 	// bytes [8:16] reserved
 	cidxFile.Write(hdr[:])
 
 	// Entries: sorted by address.
-	for _, ie := range index {
-		var entry [addrEntrySize]byte
-		copy(entry[0:20], ie.addr[:])
-		binary.BigEndian.PutUint16(entry[20:22], ie.fileNum)
-		binary.BigEndian.PutUint32(entry[22:26], ie.offset)
-		cidxFile.Write(entry[:])
+	cidxEntries := 0
+	if addrIndex {
+		for _, ie := range index {
+			var entry [addrEntrySize]byte
+			copy(entry[0:20], ie.addr[:])
+			binary.BigEndian.PutUint16(entry[20:22], ie.fileNum)
+			binary.BigEndian.PutUint32(entry[22:26], ie.offset)
+			cidxFile.Write(entry[:])
+		}
+		cidxEntries = len(index)
 	}
 	cidxFile.Close()
+
+	// Phase 4: content-addressed index. Deduplicate by hash first — with the
+	// address join on, one code appears once per referencing address, and the
+	// MPHF must be built over the distinct hashes only.
+	seenHash := make(map[[32]byte]struct{}, len(index))
+	hashItems := make([]hashIndexInput, 0, len(index))
+	for _, ie := range index {
+		if ie.hash == ([32]byte{}) {
+			continue
+		}
+		if _, dup := seenHash[ie.hash]; dup {
+			continue
+		}
+		seenHash[ie.hash] = struct{}{}
+		hashItems = append(hashItems, hashIndexInput{
+			hash: ie.hash, fileNum: ie.fileNum, offset: ie.offset, length: ie.length,
+		})
+	}
+	if err := writeHashIndex(outdir, hashItems, logger); err != nil {
+		fmt.Fprintln(os.Stderr, "hash index:", err)
+		os.Exit(1)
+	}
 
 	elapsed := time.Since(t1).Truncate(time.Millisecond)
 	if totalRaw > 0 {
@@ -418,7 +475,7 @@ func main() {
 		fmt.Printf("Done: %d codes (no data)\n", len(entries))
 	}
 	fmt.Printf("  cidx:       %d bytes (%d entries × %d)\n",
-		cidxHeaderSize+len(index)*addrEntrySize, len(index), addrEntrySize)
+		cidxHeaderSize+cidxEntries*addrEntrySize, cidxEntries, addrEntrySize)
 	fmt.Printf("  elapsed:    %v\n", elapsed)
 	fmt.Printf("  output:     %s/codes.cidx + codes.*.cdat\n", outdir)
 	if coverageBlock > 0 {

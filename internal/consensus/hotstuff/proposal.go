@@ -47,7 +47,7 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 	}
 
 	justifyQC := e.roundState.LockedQC().Clone()
-	message := SigningMessage(view, blockHash)
+	message := e.proposalSigningMessage(view, blockHash)
 	signature := e.secretKey.Sign(message)
 	piggybacked := e.previousPrepareQC
 	e.previousPrepareQC = nil
@@ -68,7 +68,7 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 	e.roundState.EnterVoting()
 
 	// Leader self-votes (GossipSub doesn't deliver back to sender).
-	leaderSig := e.secretKey.Sign(message)
+	leaderSig := e.secretKey.Sign(e.voteSigningMessage(view, blockHash))
 	if e.voteCollector != nil {
 		_ = e.voteCollector.AddVote(e.myIndex, leaderSig)
 	}
@@ -108,14 +108,14 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
 	if err != nil {
 		return err
 	}
-	msg := SigningMessage(view, proposal.BlockHash)
+	msg := e.proposalSigningMessage(view, proposal.BlockHash)
 	if !VerifyBLSSignature(proposal.Signature, pk, msg) {
 		return &InvalidSignatureError{View: view, ValidatorIndex: proposal.Proposer}
 	}
 
 	// Verify justify_qc aggregate BLS signature (genesis QC is exempt).
 	if proposal.JustifyQC.View > 0 {
-		if vErr := VerifyQCAnyDomain(&proposal.JustifyQC, e.resolveQCValidatorSet(proposal.JustifyQC.View, len(proposal.JustifyQC.Signers))); vErr != nil {
+		if vErr := e.verifyQCAnyDomainWithSet(&proposal.JustifyQC, e.resolveQCValidatorSet(proposal.JustifyQC.View, len(proposal.JustifyQC.Signers))); vErr != nil {
 			log.Warn("rejecting proposal with invalid justify_qc",
 				"view", view, "proposer", proposal.Proposer, "err", vErr)
 			return vErr
@@ -146,7 +146,7 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
 
 	// Process piggybacked PrepareQC (chained mode).
 	if proposal.PrepareQC != nil {
-		if vErr := VerifyQC(proposal.PrepareQC, e.resolveQCValidatorSet(proposal.PrepareQC.View, len(proposal.PrepareQC.Signers))); vErr == nil {
+		if vErr := e.verifyQCWithSet(proposal.PrepareQC, e.resolveQCValidatorSet(proposal.PrepareQC.View, len(proposal.PrepareQC.Signers))); vErr == nil {
 			e.roundState.UpdateLockedQC(proposal.PrepareQC)
 		} else {
 			log.Warn("rejected invalid piggybacked PrepareQC", "view", view, "err", vErr)
@@ -223,7 +223,7 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg) error {
 		return &ViewMismatchError{Current: view, Received: pqc.View}
 	}
 
-	if err := VerifyQC(&pqc.QC, e.resolveQCValidatorSet(pqc.QC.View, len(pqc.QC.Signers))); err != nil {
+	if err := e.verifyQCWithSet(&pqc.QC, e.resolveQCValidatorSet(pqc.QC.View, len(pqc.QC.Signers))); err != nil {
 		return err
 	}
 
@@ -261,7 +261,7 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg) error {
 	}
 
 	// Send CommitVote (Round 2).
-	commitMsg := CommitSigningMessage(view, pqc.BlockHash)
+	commitMsg := e.commitSigningMessage(view, pqc.BlockHash)
 	commitSig := e.secretKey.Sign(commitMsg)
 	leader := LeaderForView(view, e.validatorSet())
 
@@ -294,7 +294,7 @@ func (e *ConsensusEngine) sendVote(view ViewNumber, blockHash types.Hash) error 
 		return nil // observer/removed nodes do not cast votes
 	}
 	leader := LeaderForView(view, e.validatorSet())
-	voteMsg := SigningMessage(view, blockHash)
+	voteMsg := e.voteSigningMessage(view, blockHash)
 	voteSig := e.secretKey.Sign(voteMsg)
 
 	vote := &Vote{
@@ -308,14 +308,28 @@ func (e *ConsensusEngine) sendVote(view ViewNumber, blockHash types.Hash) error 
 	now := time.Now()
 	e.viewTiming.VoteSent = &now
 
-	return e.emit(EngineOutput{
+	if err := e.emit(EngineOutput{
 		Type:   OutputSendToValidator,
 		Target: leader,
 		Message: &ConsensusMsg{
 			Type:    MsgVote,
 			Payload: vote,
 		},
-	})
+	}); err != nil {
+		return err
+	}
+
+	// Cross-view speculative build hint: if round-robin makes this node the
+	// NEXT view's leader, its proposal will extend the block just voted for
+	// (happy path). The block is already imported here — import-gated voting
+	// guarantees the post-state this build needs — so the ~500ms build can run
+	// during this view's vote rounds instead of after the view change. Gated
+	// on importedBlocks because the two-phase mode votes before import.
+	// Advisory only; see OutputSpeculativeBuild.
+	if e.importedBlocks[blockHash] && LeaderForView(view+1, e.validatorSet()) == e.myIndex {
+		_ = e.emit(EngineOutput{Type: OutputSpeculativeBuild, View: view + 1, Hash: blockHash})
+	}
+	return nil
 }
 
 // rememberImported records that this block is locally imported, retained across
@@ -422,8 +436,11 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 		log.Info("import-gated vote: casting deferred vote after import", "view", view, "blockHash", blockHash)
 		return e.sendVote(view, blockHash)
 	}
-	log.Info("import-gated vote: block imported but no matching pending proposal", "view", view, "blockHash", blockHash, "hasPending", e.pendingProposals[view])
+	// The no-op branch: an import that is not the current view's pending
+	// proposal, which is the common case (the leader importing its own block,
+	// catch-up imports, a re-import after a view change). It carried Info and
+	// fired on nearly every import, making it 8% of all log bytes.
+	log.Debug("import-gated vote: block imported but no matching pending proposal", "view", view, "blockHash", blockHash, "hasPending", e.pendingProposals[view])
 
 	return nil
 }
-

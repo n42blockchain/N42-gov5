@@ -317,23 +317,18 @@ func (p *Pool) scratchCommitteeLocked(blockNum uint64, blockHash types.Hash) []i
 // VerifyCE re-derives the committee and checks the aggregate signature against
 // the CURRENT public keys of the bitmap's members (simulated or real). Returns
 // the number of covered signers so callers can apply threshold rules.
+// The lock covers p.scratch (not concurrency-safe) and p.pks (rotated by
+// SetPubkey). Everything after it — signature deserialisation, pubkey
+// aggregation and the pairing — touches only the local slice and is where
+// essentially all the time goes, so it runs unlocked. Holding the pool mutex
+// across a pairing serialises every other pool user behind millisecond-scale
+// crypto for no benefit, and makes concurrent verification impossible.
 func (p *Pool) VerifyCE(ce *rawdb.ConsensusEvidence) (covered int, ok bool, err error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	pubs, err := p.signerPubkeys(ce)
+	if err != nil {
+		return 0, false, err
+	}
 
-	members := p.scratchCommitteeLocked(ce.View, ce.BlockHash)
-	if int(ce.SignerCount) != len(members) {
-		return 0, false, fmt.Errorf("signer count %d != committee %d", ce.SignerCount, len(members))
-	}
-	pubs := make([]common.PublicKey, 0, len(members))
-	for i := range members {
-		if i < len(ce.SignersPacked)*8 && ce.SignersPacked[i/8]&(1<<uint(i%8)) != 0 {
-			pubs = append(pubs, p.pks[members[i]])
-		}
-	}
-	if len(pubs) == 0 {
-		return 0, false, fmt.Errorf("empty signer bitmap")
-	}
 	aggSig, err := bls.SignatureFromBytes(ce.AggregateSignature[:])
 	if err != nil {
 		return 0, false, err
@@ -343,4 +338,27 @@ func (p *Pool) VerifyCE(ce *rawdb.ConsensusEvidence) (covered int, ok bool, err 
 		return len(pubs), false, nil
 	}
 	return len(pubs), true, nil
+}
+
+// signerPubkeys resolves the bitmap's members to their current public keys.
+// This is the only part of VerifyCE that needs the pool lock; the returned
+// slice is owned by the caller.
+func (p *Pool) signerPubkeys(ce *rawdb.ConsensusEvidence) ([]common.PublicKey, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	members := p.scratchCommitteeLocked(ce.View, ce.BlockHash)
+	if int(ce.SignerCount) != len(members) {
+		return nil, fmt.Errorf("signer count %d != committee %d", ce.SignerCount, len(members))
+	}
+	pubs := make([]common.PublicKey, 0, len(members))
+	for i := range members {
+		if i < len(ce.SignersPacked)*8 && ce.SignersPacked[i/8]&(1<<uint(i%8)) != 0 {
+			pubs = append(pubs, p.pks[members[i]])
+		}
+	}
+	if len(pubs) == 0 {
+		return nil, fmt.Errorf("empty signer bitmap")
+	}
+	return pubs, nil
 }

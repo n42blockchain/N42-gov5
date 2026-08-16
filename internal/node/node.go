@@ -24,6 +24,7 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -115,6 +116,7 @@ import (
 	"github.com/n42blockchain/N42/internal/tracing"
 	"github.com/n42blockchain/N42/internal/txgen"
 	"github.com/n42blockchain/N42/internal/txlookup"
+	"github.com/n42blockchain/N42/internal/txindexer"
 	"github.com/n42blockchain/N42/internal/txspool"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/zkprover"
@@ -139,6 +141,7 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
+	"github.com/n42blockchain/N42/modules/rawdb/ancientera"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
@@ -205,6 +208,8 @@ type Node struct {
 	grpcServer         *grpc.Server                // gRPC KV server for RPCDaemon (nil if disabled)
 	coprocessorService *dcoprocessor.Service       // ZK coprocessor (nil if disabled)
 	messagingService   *dmessaging.Service         // Decentralized messaging (nil if disabled)
+	txIndexer          *txindexer.Indexer          // Live tx-hash lookup tiers (nil when the MDBX table owns them)
+	eraStore           *ancientera.Store           // Read-only sealed history (nil when no era dir present)
 	storageBridge      *dstorage.Bridge            // IPFS/Filecoin storage bridge (nil if disabled)
 	storageResolver    *dstorage.UniversalResolver // Multi-protocol content resolver (nil if disabled)
 	notifyService      *dnotify.Service            // Push notifications (nil if disabled)
@@ -525,6 +530,10 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 
 	// Track resources that need cleanup on failure.
 	var chainKv kv.RwDB
+	// Attached to the Node once it exists, so shutdown can stop its sealer.
+	var nodeTxIndexer *txindexer.Indexer
+	// Read-only sealed-history store, attached for shutdown cleanup.
+	var nodeEraStore *ancientera.Store
 	var dirLockNode Node // tracks dirLock for cleanup
 
 	defer func() {
@@ -767,6 +776,50 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			realBC.SetPrefetch(true)
 			// Enable predictive slot prefetching alongside standard prefetching.
 			realBC.SetPrefetchPredictor(internal.NewPrefetchPredictor(64))
+		}
+		// Transaction-lookup index for the newest blocks. Attached only if it
+		// actually comes up: a chain with no indexer keeps writing the MDBX
+		// table, whereas a chain that stopped writing it and has no working
+		// indexer would leave its transactions findable nowhere.
+		ix := txindexer.New(ctx, realBC, chainKv, filepath.Join(cfg.NodeCfg.DataDir, "txindex"))
+		if ix.Start() {
+			realBC.SetTxIndexer(ix)
+			nodeTxIndexer = ix
+		}
+		// Era store (sealed ancient history, read-only). Auto-detected at
+		// <datadir>/ancient-era; produced offline by the seal pipeline —
+		// the node never writes it. Sealed ranges are served through the
+		// rawdb fallback; damaged optional files degrade to pruned.
+		if eraDir := ancientera.DefaultDir(cfg.NodeCfg.DataDir); ancientera.Exists(eraDir) {
+			eraStore, health, err := ancientera.OpenStore(eraDir)
+			if err != nil {
+				return nil, fmt.Errorf("open era store %s: %w", eraDir, err)
+			}
+			for _, d := range health.Degraded {
+				log.Warn("era store: optional range degraded to pruned", "range", d)
+			}
+			for _, g := range health.ChainGaps {
+				log.Error("era store: CRITICAL chain-class damage — restore this era from a peer", "range", g)
+			}
+			// Cross-check the manifest anchor written by the seal pipeline.
+			if err := chainKv.View(ctx, func(tx kv.Tx) error {
+				anchor, aerr := tx.GetOne(modules.DatabaseInfo, []byte("eraManifestBlake3"))
+				if aerr != nil || len(anchor) != 32 {
+					return nil // no anchor recorded — informational only
+				}
+				mh, merr := ancientera.ManifestHash(eraDir)
+				if merr == nil && !bytes.Equal(anchor, mh[:]) {
+					log.Warn("era store: manifest differs from the anchored hash (rebuilt or edited manifest)")
+				}
+				return nil
+			}); err != nil {
+				return nil, err
+			}
+			rawdb.SetAncientStore(eraStore)
+			nodeEraStore = eraStore
+			log.Info("era store attached", "dir", eraDir,
+				"sealedEnd", health.SealedEnd, "sealed", health.Sealed,
+				"pruned", health.Pruned, "degraded", len(health.Degraded))
 		}
 		if cfg.NodeCfg.AncientDB {
 			ancientBase := cfg.NodeCfg.DataDir
@@ -1064,9 +1117,27 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		return nil, err
 	}
 
-	pool, err := txspool.NewTxsPool(ctx, bc, depositContract)
+	// The pool used to read a package-level default that nothing could reach,
+	// so its capacity was fixed at roughly 6,000 transactions regardless of
+	// configuration -- smaller than one block above a ~126M gas ceiling, and
+	// therefore an invisible ceiling on throughput.
+	poolCfg := cfg.TxPoolCfg
+	if fixed := poolCfg.Sanitize(); len(fixed) > 0 {
+		log.Warn("Transaction pool config had unusable values, defaults applied", "fields", fixed)
+	}
+	pool, err := txspool.NewTxsPoolWithConfig(ctx, bc, depositContract, txspool.FromConf(poolCfg))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transaction pool: %w", err)
+	}
+	log.Info("Transaction pool configured",
+		"globalSlots", poolCfg.GlobalSlots, "globalQueue", poolCfg.GlobalQueue,
+		"accountSlots", poolCfg.AccountSlots, "accountQueue", poolCfg.AccountQueue,
+		"lifetime", poolCfg.Lifetime)
+
+	// Block import reuses the pool's already-recovered senders instead of
+	// re-deriving every signature (see SenderHintSource).
+	if realBC, ok := bc.(*internal.BlockChain); ok {
+		realBC.SetSenderHintSource(pool)
 	}
 
 	is := initialsync.NewService(ctx, &initialsync.Config{
@@ -1168,6 +1239,8 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		miner:           miner,
 		genesisBlock:    genesisBlock,
 		blockChain:      bc,
+		txIndexer:       nodeTxIndexer,
+		eraStore:        nodeEraStore,
 		db:              chainKv,
 		shutDown:        make(chan struct{}),
 		txspool:         pool,
@@ -1656,6 +1729,18 @@ func (n *Node) Start() error {
 		gossipTopic := fmt.Sprintf(p2p.HotStuffConsensusTopicFormat, forkDigest)
 		rpcTopic := p2p.RPCHotStuffDirectTopicV1
 		svc := hotstuff.NewService(hs, newHotstuffP2PAdapter(n.p2p), n.db, gossipTopic, rpcTopic)
+		if hs.Config().InteropV4 {
+			if n.config.ChainCfg == nil || n.config.ChainCfg.ChainID == nil || !n.config.ChainCfg.ChainID.IsUint64() {
+				return errors.New("hotstuff H2-v4 requires a uint64 chain ID")
+			}
+			identity := hotstuff.H2V4ChainIdentity{
+				ChainID: n.config.ChainCfg.ChainID.Uint64(), GenesisHash: n.p2pGenesisHash,
+			}
+			if err := hs.EnableH2V4(identity); err != nil {
+				return fmt.Errorf("enable hotstuff H2-v4: %w", err)
+			}
+			svc.SetH2V4Identity(identity)
+		}
 		svc.SetBlockProducer(n.miner)
 		if err := svc.Start(); err != nil {
 			// A consensus service that failed to start (topic-join / gossip
@@ -1672,6 +1757,14 @@ func (n *Node) Start() error {
 		// (fetch-on-miss).
 		n.sync.SetBlockImportNotifier(svc)
 		svc.SetBlockFetcher(n.sync)
+
+		// Early-vote path: the blockchain notifies consensus the moment a
+		// block's execution and validation succeed, so the vote round overlaps
+		// the block's persistence (deduplicated against the post-import notify
+		// above).
+		if realBC, ok := n.blockChain.(*internal.BlockChain); ok {
+			realBC.SetExecutedHook(svc.NotifyBlockExecuted)
+		}
 	}
 
 	log.PrintStartupProgress(2, 6, "JSON-RPC services")
@@ -1909,7 +2002,19 @@ func (n *Node) Start() error {
 		n.historyExpirer.Start()
 		// Wire earliest-block gate into the sync service so that P2P range
 		// requests for expired blocks are rejected.
-		n.sync.SetEarliestBlock(n.historyExpirer.EarliestBlock)
+		expirerEarliest := n.historyExpirer.EarliestBlock
+		n.sync.SetEarliestBlock(func() uint64 {
+			e := expirerEarliest()
+			if a := rawdb.AncientEarliestExecBlock(); a > e {
+				e = a
+			}
+			return e
+		})
+	} else if n.eraStore != nil {
+		// Era-only gate: pruned/degraded exec eras answer range requests
+		// with a typed "before earliest available" error instead of a
+		// garbage short read.
+		n.sync.SetEarliestBlock(rawdb.AncientEarliestExecBlock)
 	}
 
 	// Start PeerDAS service if enabled
@@ -2980,6 +3085,16 @@ func (n *Node) stopServices() []error {
 		}},
 		// 2e. Distributed infrastructure
 		{"Distributed services", func() error {
+			// Before the database closes: the sealer may be mid-write.
+			if n.txIndexer != nil {
+				n.txIndexer.Stop()
+			}
+			if n.eraStore != nil {
+				// Detach the rawdb fallback before closing file handles.
+				rawdb.SetAncientStore(nil)
+				n.eraStore.Close()
+				n.eraStore = nil
+			}
 			if n.notifyService != nil {
 				n.notifyService.Stop()
 			}
@@ -3348,12 +3463,13 @@ func OpenDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logger, nam
 
 	roTxsLimiter := semaphore.NewWeighted(int64(cmp.Max(32, runtime.GOMAXPROCS(-1)*8)))
 
-	chainKv, err := mdbx.NewMDBX(logger).
+	chainOpts := mdbx.NewMDBX(logger).
 		WriteMergeThreshold(4 * 8192).
 		Path(dbPath).Label(kv.ChainDB).
 		DBVerbosity(kv.DBVerbosityLvl(2)).RoTxsLimiter(roTxsLimiter).
-		MapSize(mdbxMapSizeOr(8 * datasize.TB)).
-		Open(ctx)
+		MapSize(mdbxMapSizeOr(8 * datasize.TB))
+	chainOpts = mdbxSyncModeOr(chainOpts, logger)
+	chainKv, err := chainOpts.Open(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -3364,6 +3480,37 @@ func OpenDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logger, nam
 		return nil, err
 	}
 	return chainKv, nil
+}
+
+// mdbxSyncModeOr applies a non-default MDBX durability mode when
+// N42_MDBX_SYNC is set. Unset — the default, and what every deployment gets
+// unless someone opts out on purpose — leaves mdbx.Durable: every block's
+// commit is fsynced, so a power cut costs nothing.
+//
+// The commit is the single largest cost on a loaded node (mdbx_txn_commit_ex
+// was 26% of cgo time at 5.2k tx/s), and part of that is the fsync. This exists
+// so that share can be measured on real data rather than argued from a
+// microbenchmark, and so an operator who has decided the tradeoff is worth it
+// can take it. It is deliberately an environment variable and not a config
+// field: it weakens a durability guarantee and should have to be typed out.
+//
+//	safe-nosync — skip the per-commit fsync; the kernel owns writeback. Crash
+//	              or power loss rolls the DB back to the last checkpoint,
+//	              losing recent commits but not integrity. A validator that
+//	              loses blocks this way re-syncs them from its peers.
+func mdbxSyncModeOr(opts mdbx.MdbxOpts, logger log2.Logger) mdbx.MdbxOpts {
+	switch v := strings.ToLower(strings.TrimSpace(os.Getenv("N42_MDBX_SYNC"))); v {
+	case "", "durable":
+		return opts
+	case "safe-nosync":
+		logger.Warn("MDBX durability reduced by N42_MDBX_SYNC=safe-nosync — " +
+			"per-commit fsync disabled; a crash or power loss can roll the chaindata " +
+			"back several blocks, which the node must then re-sync from peers")
+		return opts.SafeNoSync()
+	default:
+		logger.Warn("ignoring unknown N42_MDBX_SYNC value, staying durable", "value", v)
+		return opts
+	}
 }
 
 // mdbxMapSizeOr returns sz, or an override from N42_MDBX_MAPSIZE_GB when set.

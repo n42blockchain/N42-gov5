@@ -39,6 +39,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/proto/types_pb"
 )
 
 // ReadCanonicalHash retrieves the hash assigned to a canonical block number.
@@ -117,10 +118,14 @@ func DeleteHeaderNumber(db kv.Deleter, hash types.Hash) {
 }
 
 // ReadHeaderRAW retrieves a block header in its raw database encoding.
+// Sealed ranges fall back to the era store (canonical hashes only).
 func ReadHeaderRAW(db kv.Getter, hash types.Hash, number uint64) []byte {
 	data, err := db.GetOne(modules.Headers, modules.HeaderKey(number, hash))
 	if err != nil {
 		log.Error("ReadHeaderRAW failed", "err", err)
+	}
+	if len(data) == 0 {
+		return ancientHeaderRAW(hash, number)
 	}
 	return data
 }
@@ -225,6 +230,15 @@ func deleteHeader(db kv.Deleter, hash types.Hash, number uint64) {
 	}
 }
 
+// CompactBodyWrites switches the serialized bodies the freezer stores to the
+// compact storage codec, the companion of the header, transaction, receipt and
+// log codecs. The proto form rebuilt every transaction as a generated message
+// on the way out; the compact one reuses the transaction encoding the
+// BlockTransaction table is already written in. Read paths accept both formats
+// — DecodeBodyRAW dispatches on the 0xFF marker — so existing freezer segments
+// stay readable and mixed segments are fine.
+var CompactBodyWrites = true
+
 // ReadBodyRAW retrieves the block body (transactions and uncles) in encoding.
 // Returns nil only when the body does not exist; panics on encoding errors
 // to prevent silent data corruption (e.g. during freezer operations).
@@ -233,13 +247,43 @@ func ReadBodyRAW(db kv.Tx, hash types.Hash, number uint64) []byte {
 	if body == nil {
 		return nil
 	}
-	pbBody := body.ToProtoMessage()
 
+	if CompactBodyWrites {
+		bodyRaw, err := body.MarshalCompact()
+		if err != nil {
+			log.Crit("ReadBodyRAW: failed to marshal block body", "number", number, "hash", hash, "err", err)
+		}
+		return bodyRaw
+	}
+
+	pbBody := body.ToProtoMessage()
 	bodyRaw, err := proto.Marshal(pbBody)
 	if err != nil {
 		log.Crit("ReadBodyRAW: failed to marshal block body", "number", number, "hash", hash, "err", err)
 	}
 	return bodyRaw
+}
+
+// DecodeBodyRAW decodes bytes produced by ReadBodyRAW, in either format.
+// Consumers of freezer body segments must go through it rather than assuming
+// one encoding, since a freezer can hold segments written before and after the
+// switch.
+func DecodeBodyRAW(data []byte) (*block.Body, error) {
+	body := new(block.Body)
+	if block.IsCompactBody(data) {
+		if err := body.UnmarshalCompact(data); err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+	pbBody := new(types_pb.Body)
+	if err := proto.Unmarshal(data, pbBody); err != nil {
+		return nil, err
+	}
+	if err := body.FromProtoMessage(pbBody); err != nil {
+		return nil, err
+	}
+	return body, nil
 }
 
 func ReadStorageBodyRAW(db kv.Getter, hash types.Hash, number uint64) []byte {
@@ -392,7 +436,9 @@ func ReadBodyWithTransactions(db kv.Getter, hash types.Hash, number uint64) (*bl
 func ReadCanonicalBodyWithTransactions(db kv.Getter, hash types.Hash, number uint64) *block.Body {
 	body, baseTxId, txAmount := ReadBody(db, hash, number)
 	if body == nil {
-		return nil
+		// Sealed range: the era record carries the real transactions
+		// inline, so the whole assembly happens in one step.
+		return ancientCanonicalBody(db, hash, number)
 	}
 	var err error
 	body.Txs, err = CanonicalTransactions(db, baseTxId, txAmount)

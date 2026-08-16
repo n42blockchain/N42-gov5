@@ -14,96 +14,86 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 //
-// GossipSub topic-to-message type registry. GossipTopicRegistry holds
-// a thread-safe map of topic name to proto.Message plus an inverse
-// reflect.Type index. gossipTopicMappings declares the canonical
-// bindings for BlockTopicFormat, TransactionTopicFormat,
-// BlobSidecarTopicFormat plus placeholders for HotStuff consensus and
-// ZK proof topics (which use custom SSZ serialization). GossipType
-// Mapping provides the reverse lookup used by the broadcaster.
+// GossipSub topic registry: the set of topics this node recognises.
+//
+// This used to map each topic to a generated protobuf message, and the
+// subscriber decoded by cloning that message and unmarshalling into it. Topic
+// by topic the payloads moved to their own encodings -- blocks and transactions
+// to RLP, blob sidecars to rawdb's storage encoding, HotStuff, ZK proofs and
+// the mobile topics to compact formats of their own -- and each migration left
+// behind a placeholder entry pointing at types_pb.H256 so the topic would still
+// register. By the end every entry pointed at the same placeholder, which made
+// the reverse "message type -> topic" index degenerate: ten topics, one type,
+// last write wins. A registry that types nothing is worse than no registry,
+// because it still looks authoritative. What callers actually need is
+// membership, so that is all this holds now.
 
 package p2p
 
-import (
-	"reflect"
-	"sync"
+import "sync"
 
-	"google.golang.org/protobuf/proto"
-
-	"github.com/n42blockchain/N42/proto/types_pb"
-)
-
-// GossipTopicRegistry manages gossip topic mappings with thread-safe access.
+// GossipTopicRegistry holds the recognised gossip topics with thread-safe access.
 type GossipTopicRegistry struct {
-	mu          sync.RWMutex
-	topics      map[string]proto.Message
-	typeMapping map[reflect.Type]string
+	mu     sync.RWMutex
+	topics map[string]struct{}
 }
 
 var (
-	globalGossipRegistry = &GossipTopicRegistry{
-		topics:      make(map[string]proto.Message),
-		typeMapping: make(map[reflect.Type]string),
-	}
-	initOnce sync.Once
+	globalGossipRegistry = &GossipTopicRegistry{topics: make(map[string]struct{})}
+	initOnce             sync.Once
 )
 
-// gossipTopicMappings defines the canonical topic-to-message-type mappings.
-// Referenced by pubsub_filter.go, service.go, and the registry.
-var gossipTopicMappings = map[string]proto.Message{
-	BlockTopicFormat:              &types_pb.Block{},
-	TransactionTopicFormat:        &types_pb.Transaction{},
-	BlobSidecarTopicFormat:        &types_pb.BlobSidecar{},
-	HotStuffConsensusTopicFormat:  &types_pb.H256{}, // HotStuff uses custom SSZ, not protobuf; H256 is a placeholder for topic registration
-	ZKProofTopicFormat:            &types_pb.H256{}, // ZK proofs use custom serialization; H256 placeholder for topic registration
-	MobilePacketTopicFormat:       &types_pb.H256{}, // StreamPackets use the evmsdk V2 wire format; H256 placeholder for topic registration
-	MobileRegistrationTopicFormat: &types_pb.H256{}, // registration announcements are raw pubkey||pop; H256 placeholder for topic registration
-	MobileCohortIndexTopicFormat:  &types_pb.H256{}, // cross-node cohort index announcements use a custom compact wire format; H256 placeholder for topic registration
-	MobileCohortRevealTopicFormat: &types_pb.H256{}, // cross-node cohort reveal announcements use a custom compact wire format; H256 placeholder for topic registration
-	MobileCohortCertTopicFormat:   &types_pb.H256{}, // cross-node cohort cert announcements use a custom compact wire format; H256 placeholder for topic registration
+// gossipTopics is the canonical set of topics this node recognises. A topic
+// missing from it cannot be subscribed to: subscribe() treats that as a
+// configuration error rather than guessing.
+var gossipTopics = []string{
+	BlockTopicFormat,              // RLP block
+	TransactionTopicFormat,        // RLP transaction
+	BlobSidecarTopicFormat,        // rawdb blob sidecar encoding
+	HotStuffConsensusTopicFormat,  // HotStuff compact SSZ
+	H2V4Topic,                     // chain-bound H2-v4 Decide proofs (compact wire format)
+	ZKProofTopicFormat,            // ZK proof serialization
+	MobilePacketTopicFormat,       // evmsdk V2 stream packets
+	MobileRegistrationTopicFormat, // raw pubkey||pop
+	MobileCohortIndexTopicFormat,  // compact cohort index announcements
+	MobileCohortRevealTopicFormat, // compact cohort reveal announcements
+	MobileCohortCertTopicFormat,   // compact cohort cert announcements
 }
 
-// GossipTypeMapping is the inverse mapping (message type -> topic) used by broadcaster.go.
-var GossipTypeMapping = make(map[reflect.Type]string, len(gossipTopicMappings))
-
 func init() {
-	for k, v := range gossipTopicMappings {
-		GossipTypeMapping[reflect.TypeOf(v)] = k
-	}
 	InitGossipTopics()
 }
 
-// InitGossipTopics initializes the gossip topic registry with default topics.
-// Safe to call multiple times; subsequent calls are no-ops.
+// InitGossipTopics initializes the gossip topic registry with the default
+// topics. Safe to call multiple times; subsequent calls are no-ops.
 func InitGossipTopics() {
 	initOnce.Do(func() {
 		globalGossipRegistry.mu.Lock()
 		defer globalGossipRegistry.mu.Unlock()
 
-		for topic, msg := range gossipTopicMappings {
-			globalGossipRegistry.topics[topic] = msg
-			globalGossipRegistry.typeMapping[reflect.TypeOf(msg)] = topic
+		for _, topic := range gossipTopics {
+			globalGossipRegistry.topics[topic] = struct{}{}
 		}
 	})
 }
 
-// RegisterGossipTopic registers a custom gossip topic mapping.
-func RegisterGossipTopic(topic string, msg proto.Message) {
+// RegisterGossipTopic registers an additional gossip topic.
+func RegisterGossipTopic(topic string) {
 	globalGossipRegistry.mu.Lock()
 	defer globalGossipRegistry.mu.Unlock()
 
-	globalGossipRegistry.topics[topic] = msg
-	globalGossipRegistry.typeMapping[reflect.TypeOf(msg)] = topic
+	globalGossipRegistry.topics[topic] = struct{}{}
 }
 
-// GossipTopicMappings returns the protobuf message type for a gossip topic.
-func GossipTopicMappings(topic string) proto.Message {
+// IsGossipTopic reports whether topic is one this node recognises.
+func IsGossipTopic(topic string) bool {
 	InitGossipTopics()
 
 	globalGossipRegistry.mu.RLock()
 	defer globalGossipRegistry.mu.RUnlock()
 
-	return globalGossipRegistry.topics[topic]
+	_, ok := globalGossipRegistry.topics[topic]
+	return ok
 }
 
 // AllTopics returns all registered gossip topic names.
@@ -120,16 +110,6 @@ func AllTopics() []string {
 	return topics
 }
 
-// GossipTypeToTopic returns the gossip topic for a given protobuf message type.
-func GossipTypeToTopic(msg proto.Message) string {
-	InitGossipTopics()
-
-	globalGossipRegistry.mu.RLock()
-	defer globalGossipRegistry.mu.RUnlock()
-
-	return globalGossipRegistry.typeMapping[reflect.TypeOf(msg)]
-}
-
 // IsGossipTopicsInitialized reports whether the registry has been initialized.
 func IsGossipTopicsInitialized() bool {
 	globalGossipRegistry.mu.RLock()
@@ -144,6 +124,5 @@ func ResetGossipTopics() {
 	globalGossipRegistry.mu.Lock()
 	defer globalGossipRegistry.mu.Unlock()
 
-	globalGossipRegistry.topics = make(map[string]proto.Message)
-	globalGossipRegistry.typeMapping = make(map[reflect.Type]string)
+	globalGossipRegistry.topics = make(map[string]struct{})
 }

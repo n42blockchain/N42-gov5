@@ -62,7 +62,7 @@ func (e *ConsensusEngine) processVote(vote *Vote) error {
 		if err != nil {
 			return err
 		}
-		if !VerifyBLSSignature(vote.Signature, pk, SigningMessage(view, vote.BlockHash)) {
+		if !VerifyBLSSignature(vote.Signature, pk, e.voteSigningMessage(view, vote.BlockHash)) {
 			return &InvalidSignatureError{View: view, ValidatorIndex: vote.Voter}
 		}
 		log.Warn("equivocation detected: validator voted for two different blocks",
@@ -94,7 +94,7 @@ func (e *ConsensusEngine) processVote(vote *Vote) error {
 			if err != nil {
 				return err
 			}
-			if !VerifyBLSSignature(vote.Signature, pk, SigningMessage(view, vote.BlockHash)) {
+			if !VerifyBLSSignature(vote.Signature, pk, e.voteSigningMessage(view, vote.BlockHash)) {
 				return &InvalidSignatureError{View: view, ValidatorIndex: vote.Voter}
 			}
 			e.equivocationTracker[vote.Voter] = vote.BlockHash
@@ -106,7 +106,7 @@ func (e *ConsensusEngine) processVote(vote *Vote) error {
 	if err != nil {
 		return err
 	}
-	msg := SigningMessage(view, vote.BlockHash)
+	msg := e.voteSigningMessage(view, vote.BlockHash)
 
 	// Buffer vote for batch verification.
 	e.prepareVoteBuf = append(e.prepareVoteBuf, pendingVote{
@@ -178,7 +178,7 @@ func (e *ConsensusEngine) tryFormPrepareQC() error {
 		return nil
 	}
 
-	qc, err := e.voteCollector.BuildQC(vs)
+	qc, err := e.voteCollector.BuildQCWithMessage(vs, e.voteSigningMessage(view, e.voteCollector.BlockHash()))
 	if err != nil {
 		return err
 	}
@@ -217,7 +217,7 @@ func (e *ConsensusEngine) tryFormPrepareQC() error {
 	}
 
 	// Leader self-vote for CommitVote (Round 2).
-	commitMsg := CommitSigningMessage(view, blockHash)
+	commitMsg := e.commitSigningMessage(view, blockHash)
 	commitSig := e.secretKey.Sign(commitMsg)
 	if e.commitCollector != nil {
 		_ = e.commitCollector.AddVote(e.myIndex, commitSig)
@@ -254,7 +254,7 @@ func (e *ConsensusEngine) processCommitVote(cv *CommitVote) error {
 		if err != nil {
 			return err
 		}
-		if !VerifyBLSSignature(cv.Signature, pk, CommitSigningMessage(view, cv.BlockHash)) {
+		if !VerifyBLSSignature(cv.Signature, pk, e.commitSigningMessage(view, cv.BlockHash)) {
 			return &InvalidSignatureError{View: view, ValidatorIndex: cv.Voter}
 		}
 		log.Warn("commit-vote equivocation detected",
@@ -281,7 +281,7 @@ func (e *ConsensusEngine) processCommitVote(cv *CommitVote) error {
 			if err != nil {
 				return err
 			}
-			if !VerifyBLSSignature(cv.Signature, pk, CommitSigningMessage(view, cv.BlockHash)) {
+			if !VerifyBLSSignature(cv.Signature, pk, e.commitSigningMessage(view, cv.BlockHash)) {
 				return &InvalidSignatureError{View: view, ValidatorIndex: cv.Voter}
 			}
 			e.commitEquivocationTracker[cv.Voter] = cv.BlockHash
@@ -293,7 +293,7 @@ func (e *ConsensusEngine) processCommitVote(cv *CommitVote) error {
 	if err != nil {
 		return err
 	}
-	msg := CommitSigningMessage(view, cv.BlockHash)
+	msg := e.commitSigningMessage(view, cv.BlockHash)
 
 	// Buffer vote for batch verification.
 	e.commitVoteBuf = append(e.commitVoteBuf, pendingVote{
@@ -360,7 +360,7 @@ func (e *ConsensusEngine) tryFormCommitQC() error {
 	}
 
 	blockHash := e.commitCollector.BlockHash()
-	commitMsg := CommitSigningMessage(view, blockHash)
+	commitMsg := e.commitSigningMessage(view, blockHash)
 	commitQC, err := e.commitCollector.BuildQCWithMessage(vs, commitMsg)
 	if err != nil {
 		return err

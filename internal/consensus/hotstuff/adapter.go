@@ -310,6 +310,18 @@ func (h *HotStuff) Config() *params.HotStuffConfig {
 	return h.config
 }
 
+// EnableH2V4 selects the chain-bound cross-client signing profile. The core
+// engine must already be initialized and the service must not yet be started.
+func (h *HotStuff) EnableH2V4(identity H2V4ChainIdentity) error {
+	h.lock.Lock()
+	defer h.lock.Unlock()
+	if h.engine == nil {
+		return errors.New("hotstuff: consensus engine not initialized")
+	}
+	h.engine.EnableH2V4(identity)
+	return nil
+}
+
 // IsCurrentLeader reports whether this node is the leader for the current view.
 // The miner gates block production on this: only the current view's leader
 // builds and broadcasts a block; followers import it via gossip. Without the
@@ -448,7 +460,7 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 		if ce := h.Engine(); ce != nil {
 			vs := ce.ResolveQCValidatorSet(qc.View, len(qc.Signers))
 			if vs != nil && !vs.IsEmpty() {
-				if vErr := VerifyQCAnyDomain(qc, vs); vErr != nil {
+				if vErr := ce.verifyQCAnyDomainWithSet(qc, vs); vErr != nil {
 					return fmt.Errorf("QC verification failed: %w", vErr)
 				}
 			}

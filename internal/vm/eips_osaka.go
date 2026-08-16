@@ -762,6 +762,17 @@ func memoryDataCopy(stack *stack.Stack) (uint64, bool) {
 func newOsakaInstructionSet() JumpTable {
 	instructionSet := newPectraInstructionSet()
 	enable7939(&instructionSet) // EIP-7939: CLZ instruction
+	// EOF is NOT enabled here: it was removed from the Fusaka (Osaka EL)
+	// scope upstream. EOF opcodes activate only through the EOFTime gate —
+	// see withEOF and the interpreter's table selection.
+	validateAndFillMaxStack(&instructionSet)
+	return instructionSet
+}
+
+// withEOF returns a copy of base with the EOF opcode family enabled. Used to
+// build the EOF variants of the Osaka+ tables for chains with EOFTime set.
+func withEOF(base JumpTable) JumpTable {
+	instructionSet := base
 	enableEOF(&instructionSet)
 	validateAndFillMaxStack(&instructionSet)
 	return instructionSet

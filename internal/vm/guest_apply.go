@@ -94,7 +94,9 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 	gasRemaining := gas
 
 	// Compute intrinsic gas.
-	intrinsicGas := guestIntrinsicGas(msg.Data(), msg.AccessList(), msg.To() == nil, rules)
+	guestHasValue := msg.Value() != nil && !msg.Value().IsZero()
+	guestSelfTransfer := msg.To() != nil && *msg.To() == msg.From()
+	intrinsicGas := guestIntrinsicGas(msg.Data(), msg.AccessList(), msg.To() == nil, rules, guestHasValue, guestSelfTransfer)
 	if gasRemaining < intrinsicGas {
 		return nil, errGuestIntrinsicGas
 	}
@@ -167,20 +169,23 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 
 // guestIntrinsicGas computes the intrinsic gas cost for a transaction.
 // Returns math.MaxUint64 on overflow to ensure the transaction is rejected.
-func guestIntrinsicGas(data []byte, accessList transaction.AccessList, isCreate bool, rules *params.Rules) uint64 {
+func guestIntrinsicGas(data []byte, accessList transaction.AccessList, isCreate bool, rules *params.Rules, hasValue, isSelfTransfer bool) uint64 {
 	var gas uint64
-	if isCreate {
-		if rules.IsGlamsterdam {
-			gas = params.TxGasContractCreationGlamsterdam
-		} else {
-			gas = params.TxGasContractCreation
+	if rules.IsGlamsterdam {
+		// EIP-2780 component-based intrinsic gas (mirrors internal.IntrinsicGas).
+		gas = params.TxBaseCostEIP2780
+		if isCreate {
+			gas += params.CreateAccessEIP8038
+		} else if !isSelfTransfer {
+			gas += params.TxColdAccountEIP2780
+			if hasValue {
+				gas += params.TxValueCostEIP2780
+			}
 		}
+	} else if isCreate {
+		gas = params.TxGasContractCreation
 	} else {
-		if rules.IsGlamsterdam {
-			gas = params.TxGasGlamsterdam
-		} else {
-			gas = params.TxGas
-		}
+		gas = params.TxGas
 	}
 
 	// Data cost.
@@ -192,9 +197,9 @@ func guestIntrinsicGas(data []byte, accessList transaction.AccessList, isCreate 
 			}
 		}
 		nonZeroGas := uint64(params.TxDataNonZeroGasFrontier)
-		if rules.IsGlamsterdam {
-			nonZeroGas = params.TxDataNonZeroGasGlamsterdam
-		} else if rules.IsIstanbul {
+		if rules.IsGlamsterdam || rules.IsIstanbul {
+			// Amsterdam keeps the 4/16 calldata prices (EIP-7976 only raises
+			// the EIP-7623 floor).
 			nonZeroGas = params.TxDataNonZeroGasEIP2028
 		}
 		// Overflow check: nz * nonZeroGas.
@@ -208,9 +213,6 @@ func guestIntrinsicGas(data []byte, accessList transaction.AccessList, isCreate 
 		gas += nzCost
 
 		zeroGas := uint64(params.TxDataZeroGas)
-		if rules.IsGlamsterdam {
-			zeroGas = params.TxDataZeroGasGlamsterdam
-		}
 		z := uint64(len(data)) - nz
 		if z > 0 && zeroGas > 0 && z > (^uint64(0))/zeroGas {
 			return ^uint64(0)
@@ -227,8 +229,11 @@ func guestIntrinsicGas(data []byte, accessList transaction.AccessList, isCreate 
 		accessListAddressGas := uint64(params.TxAccessListAddressGas)
 		accessListStorageKeyGas := uint64(params.TxAccessListStorageKeyGas)
 		if rules.IsGlamsterdam {
-			accessListAddressGas = params.TxAccessListAddressGasGlamsterdam
-			accessListStorageKeyGas = params.TxAccessListStorageKeyGasGlamsterdam
+			// EIP-8038 base prices + EIP-7981 per-byte surcharge.
+			accessListAddressGas = params.TxAccessListAddressGasEIP8038 +
+				params.AccessListAddressBytes*params.AccessListBytesSurchargeEIP7981
+			accessListStorageKeyGas = params.TxAccessListStorageKeyGasEIP8038 +
+				params.AccessListStorageKeyBytes*params.AccessListBytesSurchargeEIP7981
 		}
 		addrCount := uint64(len(accessList))
 		if addrCount > (^uint64(0))/accessListAddressGas {

@@ -187,7 +187,15 @@ func (m *Miner) TriggerBlockProduction(parentHash types.Hash) {
 		log.Warn("miner: build trigger while worker not running")
 		return
 	}
+	// A speculative build in flight yields to real work: signal its interrupt
+	// so the worker goroutine frees up. (If the guess already finished and
+	// matches parentHash, commitWork collects it via takeSpecTask instead of
+	// rebuilding.)
+	if p := m.worker.activeSpecInterrupt.Load(); p != nil {
+		p.Store(commitInterruptNewHead)
+	}
 	interrupt := new(atomic.Int32)
+	req := &newWorkReq{interrupt: interrupt, noempty: false, timestamp: time.Now().Unix(), parentHash: parentHash}
 	select {
 	// noempty=false: a leader-driven engine (HotStuff) must produce one block per
 	// view to advance the chain, even with an empty mempool. noempty=true would
@@ -195,11 +203,50 @@ func (m *Miner) TriggerBlockProduction(parentHash types.Hash) {
 	// transactions — exactly the live mainnet_qmdb case.
 	// parentHash (when non-zero) pins the proposal to the consensus-mandated
 	// parent (the HighQC block) instead of the local head.
-	case m.worker.newWorkCh <- &newWorkReq{interrupt: interrupt, noempty: false, timestamp: time.Now().Unix(), parentHash: parentHash}:
+	case m.worker.newWorkCh <- req:
 		log.Info("miner: build triggered (leader view)", "parent", parentHash.Hex()[:12])
 	default:
-		// One build request already queued — it will produce for this head.
-		log.Info("miner: build request already pending, trigger skipped")
+		// The queue slot is taken. If a SPECULATIVE request is what occupies
+		// it, evict it — a real trigger must never be dropped in favour of a
+		// guess. If a real request occupies it, keep the old semantics: it
+		// will produce for this head.
+		select {
+		case old := <-m.worker.newWorkCh:
+			if !old.speculative {
+				// Put the real request back; drop ours as before.
+				select {
+				case m.worker.newWorkCh <- old:
+				default:
+				}
+				log.Info("miner: build request already pending, trigger skipped")
+				return
+			}
+		default:
+		}
+		select {
+		case m.worker.newWorkCh <- req:
+			log.Info("miner: build triggered (leader view, evicted speculative)", "parent", parentHash.Hex()[:12])
+		default:
+			log.Info("miner: build request already pending, trigger skipped")
+		}
+	}
+}
+
+// PrepareSpeculativeBlock asks the worker to build, but not seal, a block
+// extending parentHash — called by consensus when this node has just voted for
+// that block and expects to lead the next view. Best-effort by design: the
+// request is dropped when the worker is busy or the slot is taken, and the
+// parked result is used only if the next view confirms the parent.
+func (m *Miner) PrepareSpeculativeBlock(parentHash types.Hash) {
+	if !m.worker.isRunning() || parentHash == (types.Hash{}) {
+		return
+	}
+	req := &newWorkReq{interrupt: new(atomic.Int32), noempty: false, timestamp: time.Now().Unix(), parentHash: parentHash, speculative: true}
+	select {
+	case m.worker.newWorkCh <- req:
+		log.Debug("miner: speculative build queued", "parent", parentHash.Hex()[:12])
+	default:
+		// Slot taken by real (or earlier speculative) work — skip the guess.
 	}
 }
 

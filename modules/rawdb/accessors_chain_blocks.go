@@ -53,7 +53,10 @@ func ReadBlock(tx kv.Getter, hash types.Hash, number uint64) *block.Block {
 // HasBlock is more efficient than ReadBlock because it doesn't read transactions.
 // It is not equivalent to HasHeader because headers and bodies are written by different stages.
 func HasBlock(db kv.Getter, hash types.Hash, number uint64) bool {
-	return len(ReadStorageBodyRAW(db, hash, number)) > 0
+	if len(ReadStorageBodyRAW(db, hash, number)) > 0 {
+		return true
+	}
+	return ancientHasBody(number)
 }
 
 func ReadBlockWithSenders(db kv.Getter, hash types.Hash, number uint64) (*block.Block, []types.Address, error) {

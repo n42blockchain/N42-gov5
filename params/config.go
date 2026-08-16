@@ -139,6 +139,9 @@ var (
 	MainnetQMDBGenesisHash          = types.HexToHash("0x5fcf94b7a5e7e337005c4b6333904983d9e5aa97e950bf1b63d42fb0be81ee69")
 	MainnetQMDBStaggeredGenesisHash = types.HexToHash("0xa2d2ff5d814552bb9a113b68ad7ed2b824fbb52caed42dbe573068845b57be99")
 	QSEpochTestGenesisHash          = types.HexToHash("0xb0ff0c044f867741ab595d2756cc5cfb873cff42c6f2ebb913ac4a73a6ad5271")
+	// H2InteropTestGenesisHash is backfilled from the first boot of the isolated
+	// H2-v4 cross-client chain (chainId 96); see h2_interop_test.json.
+	H2InteropTestGenesisHash = types.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000000")
 )
 
 // ---------------------------------------------------------------------------
@@ -154,6 +157,7 @@ var (
 	MainnetQMDBChainConfig          = readChainSpec("chainspecs/mainnet_qmdb.json")           // replay-v2 qmdb state roots + hotstuff live production
 	MainnetQMDBStaggeredChainConfig = readChainSpec("chainspecs/mainnet_qmdb_staggered.json") // qmdb + hotstuff live production with the staggered (calendar-parity) fork schedule — 7-node live network base
 	QSEpochTestChainConfig          = readChainSpec("chainspecs/qs_epoch_test.json")          // isolated reconfig test chain (chainId 95, epochLength 20)
+	H2InteropTestChainConfig        = readChainSpec("chainspecs/h2_interop_test.json")        // isolated H2-v4 cross-client interop chain (chainId 96, interopV4 on)
 	TestnetChainConfig              = readChainSpec("chainspecs/testnet.json")
 
 	TestChainConfig = &ChainConfig{
@@ -245,6 +249,14 @@ type ChainConfig struct {
 	// become available at the specified timestamp. These are N42-specific extensions and
 	// are NOT part of any standard Ethereum fork surface.
 	PQPrecompilesTime *big.Int `json:"pqPrecompilesTime,omitempty"`
+
+	// EOFTime activates the EVM Object Format (EIP-3540 family). EOF was
+	// removed from the Fusaka (Osaka EL) scope upstream and is NOT part of any
+	// scheduled Ethereum fork — mainnet-following chains must leave this nil,
+	// or a deliberately crafted EOF-container deployment would be accepted
+	// here while geth reverts it (state-root divergence). N42-native chains
+	// that had EOF live under their Osaka preset pin this to their osakaTime.
+	EOFTime *big.Int `json:"eofTime,omitempty"`
 
 	// N42 extension: content-addressed storage precompile (0x0300).
 	// When set, the CAS precompile becomes available for storing/loading
@@ -539,6 +551,11 @@ type HotStuffConfig struct {
 	// executed the block before it commits. Consensus-behavior switch — all
 	// validators must agree. Off (default) = classic import-gated Round 1.
 	TwoPhaseVoteGate bool `json:"twoPhaseVoteGate,omitempty"`
+
+	// InteropV4 enables chain-bound H2-v4 signing and publishes verified Decide
+	// proofs for cross-client observers. All validators on the chain must agree.
+	// Off by default, preserving existing networks byte-for-byte.
+	InteropV4 bool `json:"interopV4,omitempty"`
 }
 
 // HotStuffCommitteePoolConfig configures the live BLS committee-evidence pool.
@@ -654,6 +671,8 @@ func ChainConfigByChainName(chain string) *ChainConfig {
 		return MainnetQMDBStaggeredChainConfig
 	case "qs_epoch_test":
 		return QSEpochTestChainConfig
+	case "h2_interop_test":
+		return H2InteropTestChainConfig
 	case networkname.TestnetChainName:
 		return TestnetChainConfig
 	case networkname.EthereumMainnetChainName:
@@ -685,6 +704,8 @@ func GenesisHashByChainName(chain string) *types.Hash {
 		return &MainnetQMDBStaggeredGenesisHash
 	case "qs_epoch_test":
 		return &QSEpochTestGenesisHash
+	case "h2_interop_test":
+		return &H2InteropTestGenesisHash
 	case networkname.EthereumMainnetChainName:
 		return &EthereumMainnetGenesisHash
 	case networkname.EthereumSepoliaChainName, networkname.EthereumTestnetAlias:
@@ -876,6 +897,9 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head uint64) *ConfigC
 	}
 	if isForkIncompatible(c.GlamsterdamTime, newcfg.GlamsterdamTime, head) {
 		return newCompatError("Glamsterdam fork time", c.GlamsterdamTime, newcfg.GlamsterdamTime)
+	}
+	if isForkIncompatible(c.EOFTime, newcfg.EOFTime, head) {
+		return newCompatError("EOF activation time", c.EOFTime, newcfg.EOFTime)
 	}
 	return nil
 }
