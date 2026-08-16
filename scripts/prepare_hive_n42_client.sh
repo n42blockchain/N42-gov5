@@ -39,8 +39,10 @@ FROM nginx:alpine AS builder
 RUN apk add --no-cache build-base ca-certificates git go linux-headers
 
 ARG local_path=n42-local
-COPY ${local_path} /src/n42
 WORKDIR /src/n42
+COPY ${local_path}/go.mod ${local_path}/go.sum ./
+RUN go mod download
+COPY ${local_path} /src/n42
 
 RUN go build -ldflags='-extldflags=-Wl,--allow-multiple-definition' -o /usr/local/bin/n42 ./cmd/n42
 
@@ -69,8 +71,10 @@ FROM nginx:alpine AS builder
 RUN apk add --no-cache build-base ca-certificates git go linux-headers
 
 ARG local_path=n42-local
-COPY ${local_path} /src/n42
 WORKDIR /src/n42
+COPY ${local_path}/go.mod ${local_path}/go.sum ./
+RUN go mod download
+COPY ${local_path} /src/n42
 
 RUN go build -ldflags='-extldflags=-Wl,--allow-multiple-definition' -o /usr/local/bin/n42 ./cmd/n42
 RUN go build -tags n42el -ldflags='-extldflags=-Wl,--allow-multiple-definition' -o /usr/local/bin/eth-el ./cmd/eth-el
