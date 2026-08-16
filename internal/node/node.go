@@ -3089,12 +3089,9 @@ func (n *Node) stopServices() []error {
 			if n.txIndexer != nil {
 				n.txIndexer.Stop()
 			}
-			if n.eraStore != nil {
-				// Detach the rawdb fallback before closing file handles.
-				rawdb.SetAncientStore(nil)
-				n.eraStore.Close()
-				n.eraStore = nil
-			}
+			// NOTE: the era store is closed in its own late phase (after
+			// Sync/P2P) — RPC and range-serving goroutines read it until
+			// those services stop.
 			if n.notifyService != nil {
 				n.notifyService.Stop()
 			}
@@ -3281,6 +3278,17 @@ func (n *Node) stopServices() []error {
 			return nil
 		}},
 		{"P2P network", func() error { return n.p2p.Stop() }},
+		// Era store LAST among readers' dependencies: sync/P2P/RPC serve
+		// ancient reads until stopped; closing earlier would turn their
+		// in-flight reads into spurious errors.
+		{"Era store", func() error {
+			if n.eraStore != nil {
+				rawdb.SetAncientStore(nil)
+				n.eraStore.Close()
+				n.eraStore = nil
+			}
+			return nil
+		}},
 	}
 
 	for i, svc := range services {

@@ -148,6 +148,13 @@ func ReadReceiptsByHash(db kv.Tx, hash types.Hash) (block.Receipts, error) {
 	if err != nil {
 		return nil, fmt.Errorf("requested non-canonical hash %x. canonical=%x", hash, canonicalHash)
 	}
+	// Receipts are keyed by NUMBER: serving them for a losing same-height
+	// sibling would fabricate the winner's receipts under the loser's
+	// hash. An empty canonical row is allowed — a just-applied HotStuff
+	// block has receipts before CommitToCanonical writes its row.
+	if canonicalHash != (types.Hash{}) && canonicalHash != hash {
+		return nil, nil
+	}
 	b, s, err := ReadBlockWithSenders(db, hash, *number)
 	if err != nil {
 		return nil, err

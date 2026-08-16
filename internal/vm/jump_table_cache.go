@@ -92,6 +92,7 @@ func jumpTableCacheKey(rules *params.Rules) string {
 		{rules.IsOsaka, "O"},
 		{rules.IsFusaka, "Fu"},
 		{rules.IsGlamsterdam, "Gl"},
+		{rules.IsEOF, "EOF"},
 	}
 
 	var b strings.Builder
@@ -107,12 +108,20 @@ func jumpTableCacheKey(rules *params.Rules) string {
 }
 
 // newJumpTableForRules creates a new jump table for the given rules.
+// Must mirror the authoritative selection in NewEVMInterpreter — the
+// EOF gate picks the withEOF table variants.
 func newJumpTableForRules(rules *params.Rules) JumpTable {
 	switch {
+	case rules.IsGlamsterdam && rules.IsEOF:
+		return withEOF(newGlamsterdamInstructionSet())
 	case rules.IsGlamsterdam:
 		return newGlamsterdamInstructionSet()
+	case rules.IsFusaka && rules.IsEOF:
+		return withEOF(newFusakaInstructionSet())
 	case rules.IsFusaka:
 		return newFusakaInstructionSet()
+	case rules.IsOsaka && rules.IsEOF:
+		return withEOF(newOsakaInstructionSet())
 	case rules.IsOsaka:
 		return newOsakaInstructionSet()
 	case rules.IsPectra:

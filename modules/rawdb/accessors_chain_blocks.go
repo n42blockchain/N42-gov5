@@ -56,7 +56,7 @@ func HasBlock(db kv.Getter, hash types.Hash, number uint64) bool {
 	if len(ReadStorageBodyRAW(db, hash, number)) > 0 {
 		return true
 	}
-	return ancientHasBody(number)
+	return ancientHasBody(hash, number)
 }
 
 func ReadBlockWithSenders(db kv.Getter, hash types.Hash, number uint64) (*block.Block, []types.Address, error) {

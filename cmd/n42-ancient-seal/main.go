@@ -190,29 +190,51 @@ func sealEras(ctx context.Context, db kv.RoDB, eraDir string, info *chainInfo, s
 			existing[de.Name()] = true
 		}
 	}
-	eraComplete := func(era uint64) bool {
-		// File names embed the first canonical hash, so match by prefix.
-		found := 0
-		for _, cl := range ancientera.Classes {
-			prefix := fmt.Sprintf("%s-%08d-", cl, era)
-			for name := range existing {
-				if strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ancientera.FileExt) {
-					found++
-					break
-				}
-			}
-		}
-		return found == len(ancientera.Classes)
-	}
-
 	tx, err := db.BeginRo(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
+	// eraComplete requires all three class files AND that their embedded
+	// first-hash suffix matches the CURRENT source's canonical hash of the
+	// era's first block. A reused --out dir from a regenerated chain would
+	// otherwise skip resealing while emit-hot still drops the range from
+	// the hot copy — losing the new chain's blocks entirely. Stale files
+	// are deleted so the reseal writes fresh ones.
+	eraComplete := func(era uint64) (bool, error) {
+		fh, err := tx.GetOne(modules.HeaderCanonical, modules.EncodeBlockNumber(era*span))
+		if err != nil || len(fh) != 32 {
+			return false, fmt.Errorf("canonical hash of era %d start: %v", era, err)
+		}
+		wantSuffix := hex.EncodeToString(fh[:4])
+		found := 0
+		for _, cl := range ancientera.Classes {
+			prefix := fmt.Sprintf("%s-%08d-", cl, era)
+			for name := range existing {
+				if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ancientera.FileExt) {
+					continue
+				}
+				if name == ancientera.FileName(cl, era, wantSuffix) {
+					found++
+				} else {
+					fmt.Printf("era %d: STALE file from another generation, deleting: %s\n", era, name)
+					if err := os.Remove(filepath.Join(eraDir, name)); err != nil {
+						return false, err
+					}
+					delete(existing, name)
+				}
+			}
+		}
+		return found == len(ancientera.Classes), nil
+	}
+
 	for era := uint64(0); era < info.numEras; era++ {
-		if eraComplete(era) {
+		done, err := eraComplete(era)
+		if err != nil {
+			return err
+		}
+		if done {
 			fmt.Printf("era %d: already sealed, skipping\n", era)
 			continue
 		}
@@ -488,11 +510,9 @@ func emitHot(ctx context.Context, srcDB kv.RoDB, dstPath, eraDir string, info *c
 			return ctx.Err()
 		default:
 		}
-		cfg, known := modules.N42TableCfg[b]
-		if !known {
+		if _, known := modules.N42TableCfg[b]; !known {
 			return fmt.Errorf("bucket %q not in N42TableCfg — refusing blind copy", b)
 		}
-		dup := cfg.Flags&kv.DupSort != 0
 		var from []byte
 		mode := "full"
 		switch {
@@ -503,7 +523,7 @@ func emitHot(ctx context.Context, srcDB kv.RoDB, dstPath, eraDir string, info *c
 			from = modules.EncodeBlockNumber(info.sealedEnd)
 			mode = fmt.Sprintf("genesis+num>=%d", info.sealedEnd)
 		}
-		n, err := copyBucket(ctx, srcDB, dstDB, b, dup, from, sealedSet[b] && info.numEras > 0, commitEvery)
+		n, err := copyBucket(ctx, srcDB, dstDB, b, from, sealedSet[b] && info.numEras > 0, commitEvery)
 		if err != nil {
 			return fmt.Errorf("copy %s: %w", b, err)
 		}
@@ -530,7 +550,7 @@ func emitHot(ctx context.Context, srcDB kv.RoDB, dstPath, eraDir string, info *c
 // genesis-prefixed rows (block 0) first if withGenesis, then everything
 // at or after from. Uses Append/AppendDup (source cursor order is
 // ascending), committing every commitEvery rows.
-func copyBucket(ctx context.Context, srcDB kv.RoDB, dstDB kv.RwDB, bucket string, dup bool, from []byte, withGenesis bool, commitEvery int) (uint64, error) {
+func copyBucket(ctx context.Context, srcDB kv.RoDB, dstDB kv.RwDB, bucket string, from []byte, withGenesis bool, commitEvery int) (uint64, error) {
 	srcTx, err := srcDB.BeginRo(ctx)
 	if err != nil {
 		return 0, err
@@ -556,15 +576,17 @@ func copyBucket(ctx context.Context, srcDB kv.RoDB, dstDB kv.RwDB, bucket string
 	rows := 0
 
 	// Cursor-per-batch pattern: keep one RwCursor open between commits.
+	// ALWAYS the plain RwCursor: MdbxCursor.Append handles both DupSort
+	// (uses the AppendDup put flag internally) and — critically —
+	// AutoDupSortKeysConversion (Storage/HashedStorage/SnapshotStorage
+	// yield merged keys from a plain source cursor; Append re-splits them
+	// into key+dup layout). MdbxDupSortCursor.AppendDup performs NO key
+	// conversion and would write those tables under a dead merged-key
+	// layout that every read path misses.
 	var dc kv.RwCursor
-	var ddc kv.RwCursorDupSort
 	openCursors := func() error {
 		var e error
-		if dup {
-			ddc, e = dstTx.RwCursorDupSort(bucket)
-		} else {
-			dc, e = dstTx.RwCursor(bucket)
-		}
+		dc, e = dstTx.RwCursor(bucket)
 		return e
 	}
 	closeCursors := func() {
@@ -572,15 +594,8 @@ func copyBucket(ctx context.Context, srcDB kv.RoDB, dstDB kv.RwDB, bucket string
 			dc.Close()
 			dc = nil
 		}
-		if ddc != nil {
-			ddc.Close()
-			ddc = nil
-		}
 	}
 	put := func(k, v []byte) error {
-		if dup {
-			return ddc.AppendDup(k, v)
-		}
 		return dc.Append(k, v)
 	}
 	maybeCommit := func() error {

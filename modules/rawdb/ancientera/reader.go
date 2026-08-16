@@ -139,25 +139,31 @@ func (r *Reader) frameForBlock(num uint64) int {
 	return int((num - r.start) / FrameBlocks)
 }
 
+// ErrIntegrity marks a failed content check (checksum, decompress,
+// geometry). Only these failures quarantine a file; plain I/O errors are
+// treated as transient and surface as ordinary read errors.
+var ErrIntegrity = errors.New("era: integrity failure")
+
 // ReadFrame reads, checksum-verifies and decompresses frame i.
 func (r *Reader) ReadFrame(i int) ([]byte, error) {
 	if i < 0 || i >= len(r.frames) {
-		return nil, errors.New("era: frame out of range")
+		return nil, fmt.Errorf("%w: frame out of range", ErrIntegrity)
 	}
 	fe := r.frames[i]
 	comp := make([]byte, fe.compLen)
 	if _, err := r.file.ReadAt(comp, int64(fe.offset)); err != nil {
+		// I/O error (file closed, transient OS failure) — NOT integrity.
 		return nil, err
 	}
 	if xxhash.Sum64(comp) != fe.xxh {
-		return nil, fmt.Errorf("era: frame %d checksum mismatch (%s)", i, r.path)
+		return nil, fmt.Errorf("%w: frame %d checksum mismatch (%s)", ErrIntegrity, i, r.path)
 	}
 	raw, err := r.dec.DecodeAll(comp, make([]byte, 0, fe.rawLen))
 	if err != nil {
-		return nil, fmt.Errorf("era: frame %d decompress: %w", i, err)
+		return nil, fmt.Errorf("%w: frame %d decompress: %v", ErrIntegrity, i, err)
 	}
 	if uint32(len(raw)) != fe.rawLen {
-		return nil, fmt.Errorf("era: frame %d raw length mismatch", i)
+		return nil, fmt.Errorf("%w: frame %d raw length mismatch", ErrIntegrity, i)
 	}
 	return raw, nil
 }
@@ -211,10 +217,12 @@ func (r *Reader) VerifyPayload() error {
 	return nil
 }
 
-// Close releases the file handle.
+// Close releases the file handle. The zstd decoder is deliberately NOT
+// closed: Decoder.Close racing an in-flight DecodeAll panics (send on
+// closed channel) or wedges the caller, and a DecodeAll-only decoder
+// created with zstd.NewReader(nil) owns no goroutines — dropping the
+// reference is GC-clean. In-flight ReadAt on the closed file returns
+// os.ErrClosed, which callers treat as a transient read error.
 func (r *Reader) Close() error {
-	if r.dec != nil {
-		r.dec.Close()
-	}
 	return r.file.Close()
 }

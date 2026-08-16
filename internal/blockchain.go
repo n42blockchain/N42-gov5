@@ -433,6 +433,40 @@ func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx) state.RootComputer {
 	return rc
 }
 
+// PrewarmMinerRootComputer performs the startup pre-warm reload AND the
+// cold-reader detach inside ONE minerRCMu critical section. The old
+// pattern (NewMinerRootComputer, then SetCold(nil) outside the lock)
+// could interleave with a real build acquiring the lock in between: the
+// stale detach then nulled the cold reader the build was actively
+// faulting through, panicking the miner group.
+func (bc *BlockChain) PrewarmMinerRootComputer(tx kv.Tx) bool {
+	if !bc.qmdbEnabled {
+		return false
+	}
+	bc.minerRCMu.Lock()
+	defer bc.minerRCMu.Unlock()
+	rc := bc.minerRC
+	if rc == nil {
+		rc = commitment.NewQMDBRootComputer()
+		rc.EnableUndoRecording()
+		bc.minerRC = rc
+	}
+	rc.SetCold(tx)
+	if undo := rc.TakeUndo(); undo != nil {
+		if err := rc.Tree().ApplyUndo(undo); err != nil {
+			log.Debug("miner speculative tree candidate peel failed; full reload", "err", err)
+			rc.VoidIndexTrust()
+		}
+	}
+	ok := true
+	if err := rc.ReloadForBuild(tx); err != nil {
+		log.Warn("miner QMDB speculative pre-warm reload failed", "err", err)
+		ok = false
+	}
+	rc.SetCold(nil) // detach before the pre-warm tx dies — under the lock
+	return ok
+}
+
 // JMTCommitment returns the JMT commitment layer, or nil if not enabled.
 func (bc *BlockChain) JMTCommitment() *commitment.JMTCommitment {
 	return bc.jmtCommitment
@@ -527,10 +561,7 @@ func (bc *BlockChain) Start() error {
 	if bc.qmdbEnabled {
 		go func() {
 			err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
-				if rc := bc.NewMinerRootComputer(tx); rc != nil {
-					if q, ok := rc.(*commitment.QMDBRootComputer); ok {
-						q.SetCold(nil) // detach before this tx dies
-					}
+				if bc.PrewarmMinerRootComputer(tx) {
 					log.Info("miner speculative computer pre-warmed")
 				}
 				return nil
@@ -1008,6 +1039,7 @@ func (bc *BlockChain) canonicalByCommitOnly() bool {
 func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 	var committedNumber uint64
 	var notify bool
+	var committedBlk *block.Block
 	// Phase timings: this runs inline on HotStuff's serial output loop, and its
 	// two transaction-count-proportional steps (reading the block's bodies and
 	// writing one TxLookup row per transaction) are what set the block cycle at
@@ -1151,7 +1183,10 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 			indexed = blk
 		}
 		dLookup = time.Since(tLookup)
-		bc.currentBlock.Store(blk)
+		// currentBlock is published AFTER the MDBX commit below succeeds —
+		// publishing inside the closure advertised a head whose canonical
+		// rows never became durable when commit failed (RPC then served a
+		// phantom head and the miner's height gate keyed off it).
 		// Canonical rows changed under any read-through layer: invalidate it, or
 		// by-number readers (RPC, the catch-up range SERVER) keep returning the
 		// pre-rewrite chain indefinitely — observed live: a peer catching up was
@@ -1167,11 +1202,15 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 		// surfacing and it is logged where it happens.
 		log.Debug("commit-to-canonical applied", "number", blk.Number64().Uint64(), "hash", hash.Hex())
 		committedNumber = blk.Number64().Uint64()
+		committedBlk = blk
 		notify = true
 		return nil
 	})
 	if err != nil {
 		return err
+	}
+	if committedBlk != nil {
+		bc.currentBlock.Store(committedBlk)
 	}
 	// lock: waiting for MDBX's single writer. body: the closure. The remainder
 	// (total-lock-body) is mdbx_txn_commit -- writing and fsyncing the pages the

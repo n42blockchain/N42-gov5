@@ -923,11 +923,12 @@ func opSelfdestruct(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext
 		interpreter.cfg.Tracer.CaptureEnter(SELFDESTRUCT, callerAddr, beneficiaryAddr, []byte{}, 0, balance /* code */)
 		interpreter.cfg.Tracer.CaptureExit([]byte{}, 0, nil)
 	}
-	// EIP-8246 (Amsterdam): a same-transaction SELFDESTRUCT to self no longer
-	// burns the balance — the account keeps its funds while code/storage are
-	// cleared by the 6780 path. Skip the self-add and the destruct that would
-	// delete the balance along with the account.
+	// EIP-8246 (Amsterdam): SELFDESTRUCT to self no longer burns the
+	// balance. A same-tx-created account still loses code/storage/nonce
+	// (6780 destruct) but is recreated balance-only; a pre-existing
+	// account is untouched. No beneficiary transfer, no 7708 log.
 	if interpreter.evm.ChainRules().IsGlamsterdam && beneficiaryAddr == callerAddr {
+		interpreter.evm.IntraBlockState().Selfdestruct8246(callerAddr)
 		return nil, errStopToken
 	}
 

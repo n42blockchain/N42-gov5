@@ -444,7 +444,10 @@ func (c *codeAndHash) Hash() types.Hash {
 }
 
 // create creates a new contract using code as deployment code.
-func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64, value *uint256.Int, address types.Address, typ OpCode, incrementNonce bool) ([]byte, types.Address, uint64, error) {
+// allowEOFDeploy is true only for creations initiated through the EOF
+// path (EOFCREATE): legacy CREATE/CREATE2 must keep rejecting 0xEF
+// runtime code (EIP-3541) even on chains where EOF is active.
+func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64, value *uint256.Int, address types.Address, typ OpCode, incrementNonce bool, allowEOFDeploy bool) ([]byte, types.Address, uint64, error) {
 	if metrics.EVMHotMetricsEnabled {
 		metrics.EVMCreateCount.Inc()
 	}
@@ -555,8 +558,11 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	// every 0xEF deployment — accepting a valid container here would fork any
 	// mainnet-following chain.
 	if err == nil && len(ret) >= 1 && ret[0] == 0xEF {
-		if evm.chainRules.IsEOF {
-			// EOF chains: validate the container before deployment.
+		if evm.chainRules.IsEOF && allowEOFDeploy {
+			// EOF chains, EOFCREATE path only: validate the container
+			// before deployment. Legacy CREATE/CREATE2 falls through to
+			// the EIP-3541 rejection below — EOF code may only be created
+			// via the EOF creation path.
 			if validateErr := ValidateEOF(ret); validateErr != nil {
 				err = fmt.Errorf("%w: %v", ErrInvalidCode, validateErr)
 			}
@@ -604,7 +610,7 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 // DESCRIBED: docs/programmers_guide/guide.md#nonce
 func (evm *EVM) Create(caller ContractRef, code []byte, gas uint64, endowment *uint256.Int) (ret []byte, contractAddr types.Address, leftOverGas uint64, err error) {
 	contractAddr = crypto.CreateAddress(caller.Address(), evm.intraBlockState.GetNonce(caller.Address()))
-	return evm.create(caller, &codeAndHash{code: code}, gas, endowment, contractAddr, CREATE, true /* incrementNonce */)
+	return evm.create(caller, &codeAndHash{code: code}, gas, endowment, contractAddr, CREATE, true /* incrementNonce */, false /* allowEOFDeploy */)
 }
 
 // Create2 creates a new contract using code as deployment code.
@@ -615,13 +621,21 @@ func (evm *EVM) Create(caller ContractRef, code []byte, gas uint64, endowment *u
 func (evm *EVM) Create2(caller ContractRef, code []byte, gas uint64, endowment *uint256.Int, salt *uint256.Int) (ret []byte, contractAddr types.Address, leftOverGas uint64, err error) {
 	codeAndHash := &codeAndHash{code: code}
 	contractAddr = crypto.CreateAddress2(caller.Address(), salt.Bytes32(), codeAndHash.Hash().Bytes())
-	return evm.create(caller, codeAndHash, gas, endowment, contractAddr, CREATE2, true /* incrementNonce */)
+	return evm.create(caller, codeAndHash, gas, endowment, contractAddr, CREATE2, true /* incrementNonce */, false /* allowEOFDeploy */)
 }
 
 // SysCreate is a special (system) contract creation methods for genesis constructors.
 // Unlike the normal Create & Create2, it doesn't increment caller's nonce.
+// EOFCreate2 is Create2 for the EOFCREATE opcode: identical addressing,
+// but the returned runtime code is allowed to be an EOF container.
+func (evm *EVM) EOFCreate2(caller ContractRef, code []byte, gas uint64, endowment *uint256.Int, salt *uint256.Int) (ret []byte, contractAddr types.Address, leftOverGas uint64, err error) {
+	codeAndHash := &codeAndHash{code: code}
+	contractAddr = crypto.CreateAddress2(caller.Address(), salt.Bytes32(), codeAndHash.Hash().Bytes())
+	return evm.create(caller, codeAndHash, gas, endowment, contractAddr, CREATE2, true /* incrementNonce */, true /* allowEOFDeploy */)
+}
+
 func (evm *EVM) SysCreate(caller ContractRef, code []byte, gas uint64, endowment *uint256.Int, contractAddr types.Address) (ret []byte, leftOverGas uint64, err error) {
-	ret, _, leftOverGas, err = evm.create(caller, &codeAndHash{code: code}, gas, endowment, contractAddr, CREATE, false /* incrementNonce */)
+	ret, _, leftOverGas, err = evm.create(caller, &codeAndHash{code: code}, gas, endowment, contractAddr, CREATE, false /* incrementNonce */, false /* allowEOFDeploy */)
 	return
 }
 

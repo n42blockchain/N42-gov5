@@ -97,6 +97,7 @@ func (m *mockStateDB) Exist(types.Address) bool                                 
 func (m *mockStateDB) Empty(types.Address) bool                                 { return true }
 func (m *mockStateDB) Selfdestruct(types.Address) bool                          { return false }
 func (m *mockStateDB) Selfdestruct6780(types.Address, types.Address)            {}
+func (m *mockStateDB) Selfdestruct8246(types.Address)                           {}
 func (m *mockStateDB) HasSelfdestructed(types.Address) bool                     { return false }
 func (m *mockStateDB) WasCreatedInCurrentTx(types.Address) bool                 { return false }
 func (m *mockStateDB) PrepareAccessList(types.Address, *types.Address, []types.Address, transaction.AccessList) {

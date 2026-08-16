@@ -120,6 +120,11 @@ func newGlamsterdamInstructionSet() JumpTable {
 	// 7843 (SLOTNUM) is already active via the inherited Fusaka set.
 	enable8024(&instructionSet)
 	instructionSet[SSTORE].dynamicGas = gasSStoreAmsterdam
+	// EIP-8038: the flat 32000 CREATE charge is replaced by CREATE_ACCESS
+	// (12000) regular gas; the GAS_NEW_ACCOUNT state gas is charged in
+	// evm.create. Same split for CREATE2.
+	instructionSet[CREATE].constantGas = params.CreateAccessEIP8038
+	instructionSet[CREATE2].constantGas = params.CreateAccessEIP8038
 	validateAndFillMaxStack(&instructionSet)
 	return instructionSet
 }

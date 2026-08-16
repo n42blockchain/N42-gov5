@@ -5,6 +5,7 @@ package ancientera
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -69,6 +70,12 @@ func (m *Manifest) sortEntries() {
 	})
 }
 
+// errManifestParse wraps JSON/shape failures so OpenStore can fall back
+// to a footer rebuild (footers are the root of trust).
+var errManifestParse = fmt.Errorf("era manifest parse")
+
+func isManifestParseErr(err error) bool { return errors.Is(err, errManifestParse) }
+
 // LoadManifest reads dir/MANIFEST.json.
 func LoadManifest(dir string) (*Manifest, error) {
 	b, err := os.ReadFile(filepath.Join(dir, ManifestName))
@@ -77,7 +84,7 @@ func LoadManifest(dir string) (*Manifest, error) {
 	}
 	m := new(Manifest)
 	if err := json.Unmarshal(b, m); err != nil {
-		return nil, fmt.Errorf("era manifest parse: %w", err)
+		return nil, fmt.Errorf("%w: %v", errManifestParse, err)
 	}
 	return m, nil
 }
@@ -126,6 +133,7 @@ func RebuildManifest(dir string) (*Manifest, error) {
 		return nil, err
 	}
 	m := &Manifest{Version: 1, Generation: "rebuilt-" + time.Now().UTC().Format(time.RFC3339)}
+	seen := make(map[string]string) // "class-era" → file
 	for _, de := range des {
 		name := de.Name()
 		if de.IsDir() || !strings.HasSuffix(name, FileExt) {
@@ -146,6 +154,12 @@ func RebuildManifest(dir string) (*Manifest, error) {
 			r.Close()
 			return nil, fmt.Errorf("rebuild: %s belongs to a different store (span/chain/genesis)", name)
 		}
+		key := r.Meta.Class + "-" + fmt.Sprint(r.Meta.Era)
+		if prev, dup := seen[key]; dup {
+			r.Close()
+			return nil, fmt.Errorf("rebuild: duplicate era files for %s: %s and %s — a stale generation must be removed first", key, prev, name)
+		}
+		seen[key] = name
 		m.Entries = append(m.Entries, ManifestEntry{
 			Class: r.Meta.Class, Era: r.Meta.Era, File: name, Size: size,
 			PayloadBlake3: r.Meta.PayloadBlake3,

@@ -297,8 +297,14 @@ func CalcIntrinsicGas(dataLen, dataNonZeroLen, authorizationsLen, accessListLen,
 		}
 	}
 
-	// Add the cost of authorizations
-	product, overflow := emath.SafeMul(authorizationsLen, fixedgas.PerEmptyAccountCost)
+	// Add the cost of authorizations. Amsterdam (EIP-2780) reprices the
+	// per-auth intrinsic to 7816 — keeping the legacy 25000 here would be
+	// OVER-strict and reject blocks/txs the execution layer accepts.
+	perAuth := uint64(fixedgas.PerEmptyAccountCost)
+	if glamsterdam {
+		perAuth = fixedgas.TxAuthBaseCostEIP2780
+	}
+	product, overflow := emath.SafeMul(authorizationsLen, perAuth)
 	if overflow {
 		return 0, 0, GasUintOverflow
 	}
