@@ -37,9 +37,11 @@ type engineOverlayTxLookup struct {
 }
 
 type engineStateOverlay struct {
-	accounts map[types.Address][]byte
-	storage  map[types.Address]map[types.Hash][]byte
-	codes    map[types.Hash][]byte
+	accounts           map[types.Address][]byte
+	storage            map[types.Address]map[types.Hash][]byte
+	codes              map[types.Hash][]byte
+	baseBlockNumber    uint64
+	hasBaseBlockNumber bool
 }
 
 const (
@@ -1201,9 +1203,11 @@ func cloneEngineStateOverlay(src *engineStateOverlay) *engineStateOverlay {
 		return nil
 	}
 	dst := &engineStateOverlay{
-		accounts: make(map[types.Address][]byte, len(src.accounts)),
-		storage:  make(map[types.Address]map[types.Hash][]byte, len(src.storage)),
-		codes:    cloneOverlayCodeMap(src.codes),
+		accounts:           make(map[types.Address][]byte, len(src.accounts)),
+		storage:            make(map[types.Address]map[types.Hash][]byte, len(src.storage)),
+		codes:              cloneOverlayCodeMap(src.codes),
+		baseBlockNumber:    src.baseBlockNumber,
+		hasBaseBlockNumber: src.hasBaseBlockNumber,
 	}
 	for addr, accountData := range src.accounts {
 		if accountData == nil {

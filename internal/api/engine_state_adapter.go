@@ -482,6 +482,11 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 		parentBeaconRoot = header.ParentBeaconRoot
 	}
 	blockNum := header.Number.Uint64()
+	// Keep the staged parent's cumulative lineage for the next overlay even
+	// when execution can read this parent directly from canonical storage.
+	// Dropping it here would reduce every newly staged overlay to a one-block
+	// delta, which is insufficient after a later deep reorg unwinds that parent.
+	overlayParentState := parentState
 
 	// When a batch tx is supplied, run against it and let the caller commit
 	// (atomic state+head per batch). Otherwise open + commit our own tx.
@@ -496,14 +501,13 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 		defer tx.Rollback()
 	}
 	validationStateRebased := false
+	validationRewindBlockNum := blockNum
 	if !persist {
-		validationStateRebased, err = rewindEngineValidationState(tx, blockNum)
-		if err != nil {
-			return nil, err
-		}
-		// A persisted canonical parent is now represented exactly by the
-		// rewound database state. Overlay state is only needed when the parent
-		// itself is a staged, not-yet-persisted side-chain payload.
+		// A persisted canonical parent is represented directly by database
+		// state. Overlay state is only needed when the parent itself is a
+		// staged side-chain payload. Resolve this before choosing the rewind
+		// point: a cumulative side-chain overlay is based at its fork ancestor,
+		// not necessarily at parent block number minus one.
 		if parentHash != (types.Hash{}) {
 			storedParentHash, err := a.resolveCanonicalStoredHash(tx, parentHash)
 			if err != nil {
@@ -512,6 +516,13 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 			if storedParentHash != (types.Hash{}) {
 				parentState = nil
 			}
+		}
+		if parentState != nil && parentState.hasBaseBlockNumber {
+			validationRewindBlockNum = parentState.baseBlockNumber + 1
+		}
+		validationStateRebased, err = rewindEngineValidationState(tx, validationRewindBlockNum)
+		if err != nil {
+			return nil, err
 		}
 	}
 	if !persist && parentState != nil {
@@ -1051,10 +1062,27 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 		}
 	}
 	if expected != nil && computedRoot != expected.stateRoot {
+		var overlayBase uint64
+		var overlayHasBase bool
+		var overlayAccounts, overlayStorage int
+		if overlayParentState != nil {
+			overlayBase = overlayParentState.baseBlockNumber
+			overlayHasBase = overlayParentState.hasBaseBlockNumber
+			overlayAccounts = len(overlayParentState.accounts)
+			overlayStorage = len(overlayParentState.storage)
+		}
 		log.Error("State root mismatch", "block", blockNum,
 			"computed", computedRoot.Hex(), "expected", expected.stateRoot.Hex(),
 			"fastVerify", a.fastVerify, "hashedCanonical", a.hashedCanonical,
-			"envFULLROOT", os.Getenv("N42_FULLROOT"))
+			"envFULLROOT", os.Getenv("N42_FULLROOT"),
+			"parentOverlay", overlayParentState != nil,
+			"executionOverlay", parentState != nil,
+			"overlayBase", overlayBase,
+			"overlayHasBase", overlayHasBase,
+			"overlayAccounts", overlayAccounts,
+			"overlayStorage", overlayStorage,
+			"rewindBlock", validationRewindBlockNum,
+			"rewound", validationStateRebased)
 		if a.hashedCanonical && os.Getenv("N42_FULLROOT") == "1" {
 			// Diagnostic: recompute the root by FULL descent from the
 			// post-block HashedAccounts/HashedStorage leaves (retain
@@ -1079,7 +1107,7 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 	header.Root = computedRoot
 	blk.WithSeal(header)
 	accounts, storage := ibs.DirtyAccountData()
-	stateOverlay := mergeEngineStateOverlay(parentState, accounts, storage, ibs.CodeHashes())
+	stateOverlay := mergeEngineStateOverlay(overlayParentState, blockNum-1, accounts, storage, ibs.CodeHashes())
 
 	if persist && os.Getenv("N42_NOCOMMIT") == "1" {
 		log.Warn("NOCOMMIT: root MATCHED, rolling back (no persist)", "block", blockNum, "root", computedRoot.Hex())
@@ -1393,7 +1421,14 @@ func (a *EngineStateAdapter) resolveCanonicalStoredHash(tx kv.Tx, engineHash typ
 		return types.Hash{}, nil
 	}
 	if hdr, err := rawdb.ReadHeaderByHash(tx, engineHash); err == nil && hdr != nil {
-		return engineHash, nil
+		number := uint64FromUint256OrZero(hdr.Number)
+		canonicalHash, err := rawdb.ReadCanonicalHash(tx, number)
+		if err != nil {
+			return types.Hash{}, err
+		}
+		if canonicalHash == engineHash {
+			return engineHash, nil
+		}
 	}
 	for number := uint64(0); ; number++ {
 		storedHash, err := rawdb.ReadCanonicalHash(tx, number)
