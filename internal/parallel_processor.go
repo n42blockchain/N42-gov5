@@ -214,7 +214,12 @@ func parallelApplyTx(
 		return nil, 0, nil, err
 	}
 
+	// Receipt bills the sender (post-refund); the block accumulates
+	// EIP-7778 BlockGasUsed (pre-refund, floor-clamped) under Glamsterdam
+	// so the parallel path validates against the same header.GasUsed the
+	// serial miner/importer produce.
 	gasUsed := result.UsedGas
+	blockGasUsed := result.BlockGasUsed
 	logs := ibs.GetLogs(tx.Hash())
 
 	var receipt *block.Receipt
@@ -236,7 +241,7 @@ func parallelApplyTx(
 		receipt.TransactionIndex = uint(ibs.TxIndex())
 	}
 
-	return receipt, gasUsed, logs, nil
+	return receipt, blockGasUsed, logs, nil
 }
 
 // applyMVSToIBS replays the final validated MVS state to the real IntraBlockState.

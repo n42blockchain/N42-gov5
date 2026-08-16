@@ -169,6 +169,13 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 
 // guestIntrinsicGas computes the intrinsic gas cost for a transaction.
 // Returns math.MaxUint64 on overflow to ensure the transaction is rejected.
+//
+// KNOWN GAP (Glamsterdam): the guest replay path does not yet mirror
+// EIP-7778 block-gas accounting (cumulative gas uses post-refund UsedGas)
+// or the EIP-7623/7976 calldata floor, so guest replay of a Glamsterdam
+// block diverges from the canonical processor. No proven chain activates
+// Glamsterdam yet; close this before proving one (tracked with the
+// EIP-8037 reservoir follow-up).
 func guestIntrinsicGas(data []byte, accessList transaction.AccessList, isCreate bool, rules *params.Rules, hasValue, isSelfTransfer bool) uint64 {
 	var gas uint64
 	if rules.IsGlamsterdam {

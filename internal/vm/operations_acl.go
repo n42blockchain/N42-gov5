@@ -320,8 +320,9 @@ func makeSelfdestructGasFn(refundsEnabled bool) gasFunc {
 		if evm.IntraBlockState().Empty(address) && !evm.IntraBlockState().GetBalance(contract.Address()).IsZero() {
 			newAccountGas := uint64(params.CreateBySelfdestructGas)
 			if evm.ChainRules().IsGlamsterdam {
-				// EIP-8037/8038: sweeping into a fresh account creates state.
-				newAccountGas = params.CreateAccessEIP8038 +
+				// EIP-8038: ACCOUNT_WRITE (9000) + EIP-8037 state gas for
+				// the fresh account created by the sweep.
+				newAccountGas = params.AccountWriteEIP8038 +
 					params.StateBytesPerNewAccount*params.CostPerStateByteEIP8037
 			}
 			gas += newAccountGas

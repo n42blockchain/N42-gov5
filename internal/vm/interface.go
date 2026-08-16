@@ -139,6 +139,11 @@ type VMCaller interface {
 	// Create2 deploys a new contract using CREATE2 opcode.
 	// The address is deterministic based on sender, salt, and init code hash.
 	Create2(caller ContractRef, code []byte, gas uint64, endowment *uint256.Int, salt *uint256.Int) (ret []byte, contractAddr types.Address, leftOverGas uint64, err error)
+
+	// EOFCreate2 is Create2 for the EOFCREATE opcode: identical
+	// addressing, but the deployed runtime code may be an EOF container
+	// (legacy Create/Create2 keep the EIP-3541 0xEF rejection).
+	EOFCreate2(caller ContractRef, code []byte, gas uint64, endowment *uint256.Int, salt *uint256.Int) (ret []byte, contractAddr types.Address, leftOverGas uint64, err error)
 }
 
 // VMContext provides read-only access to EVM execution context.

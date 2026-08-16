@@ -563,9 +563,9 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 			}
 		}
 		if rules.IsLondon {
-			st.refundGas(params.RefundQuotientEIP3529, floorDataGas)
+			st.refundGas(params.RefundQuotientEIP3529, floorDataGas, blockGasUsed)
 		} else {
-			st.refundGas(params.RefundQuotient, floorDataGas)
+			st.refundGas(params.RefundQuotient, floorDataGas, blockGasUsed)
 		}
 	} else if rules.IsPrague && floorDataGas > 0 {
 		if gasUsed := st.gasUsed(); gasUsed < floorDataGas {
@@ -605,7 +605,11 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 	}, nil
 }
 
-func (st *StateTransition) refundGas(refundQuotient uint64, floorDataGas uint64) {
+// refundGas returns unused gas to the sender and the block gas pool.
+// blockGasUsed is non-zero only under EIP-7778 (Amsterdam): the block
+// pool is then credited with initialGas−blockGasUsed — refunds lower the
+// sender's bill but never make room for more block gas.
+func (st *StateTransition) refundGas(refundQuotient uint64, floorDataGas uint64, blockGasUsed uint64) {
 	refund := st.gasUsed() / refundQuotient
 	if refund > st.state.GetRefund() {
 		refund = st.state.GetRefund()
@@ -620,7 +624,11 @@ func (st *StateTransition) refundGas(refundQuotient uint64, floorDataGas uint64)
 
 	remaining := new(uint256.Int).Mul(new(uint256.Int).SetUint64(st.gas), st.gasPrice)
 	st.state.AddBalance(st.msg.From(), remaining)
-	st.gp.AddGas(st.gas)
+	poolCredit := st.gas
+	if blockGasUsed > 0 {
+		poolCredit = st.initialGas - blockGasUsed
+	}
+	st.gp.AddGas(poolCredit)
 }
 
 func (st *StateTransition) gasUsed() uint64 {
@@ -711,8 +719,29 @@ func (st *StateTransition) applyAuthorizations(authList transaction.Authorizatio
 			continue
 		}
 
-		if !wasEmpty && params.PerEmptyAccountCost > params.PerAuthBaseCost {
+		rules := st.evm.ChainRules()
+		if !wasEmpty && params.PerEmptyAccountCost > params.PerAuthBaseCost && !rules.IsGlamsterdam {
+			// Pre-Amsterdam 7702 refund for pre-existing authorities.
+			// EIP-2780 removes it: the (lower) intrinsic auth charge
+			// applies unconditionally, with no refund.
 			st.state.AddRefund(params.PerEmptyAccountCost - params.PerAuthBaseCost)
+		}
+		if rules.IsGlamsterdam {
+			// EIP-2780/8037/8038 runtime charges per applied authority:
+			// first write to the account (ACCOUNT_WRITE), state gas for a
+			// brand-new account, and state gas for net-new delegation
+			// designator bytes (23 x 1530).
+			charge := uint64(params.AccountWriteEIP8038)
+			if wasEmpty {
+				charge += params.StateBytesPerNewAccount * params.CostPerStateByteEIP8037
+			}
+			if auth.Address != (types.Address{}) && len(existingCode) == 0 {
+				charge += params.StateBytesPerAuthBase * params.CostPerStateByteEIP8037
+			}
+			if st.gas < charge {
+				return fmt.Errorf("%w: authorization runtime gas %d, have %d", ErrIntrinsicGas, charge, st.gas)
+			}
+			st.gas -= charge
 		}
 		if dbgNonceBlock > 0 && dbgNonceTraceN < 200 {
 			dbgNonceTraceN++
