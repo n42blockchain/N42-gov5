@@ -257,8 +257,12 @@ func (e *EngineAPIV1) executePayloadOnParentStateWithWithdrawals(blk block.IBloc
 		if usedGas != header.GasUsed {
 			return fmt.Errorf("gas used by execution: %d, in header: %d", usedGas, header.GasUsed)
 		}
-		applyExecutionWithdrawals(ibs, withdrawals)
 		if err := finalizeExecutionStateChanges(cfg, header, ibs); err != nil {
+			return err
+		}
+		applyExecutionWithdrawals(ibs, withdrawals)
+		actualRequests, err := internalcore.ProcessExecutionBlockEnd(receipts, cfg, ibs, header, e.api.api.engine)
+		if err != nil {
 			return err
 		}
 		var rules *params.Rules
@@ -266,10 +270,6 @@ func (e *EngineAPIV1) executePayloadOnParentStateWithWithdrawals(blk block.IBloc
 			rules = cfg.RulesWithTimestamp(uint64FromUint256OrZero(header.Number), header.Time)
 		}
 		if rules != nil && rules.IsPrague {
-			actualRequests, err := internalcore.ProcessExecutionBlockEnd(receipts, cfg, ibs, header, e.api.api.engine)
-			if err != nil {
-				return err
-			}
 			if executionRequestsHash(actualRequests) != executionRequestsHash(expectedRequests) {
 				return fmt.Errorf("invalid requests hash")
 			}
@@ -637,6 +637,7 @@ func withParentState(db kv.RwDB, parentNumber uint64, overlayState *engineStateO
 	if err != nil {
 		return err
 	}
+	ibs.BeginWriteCodes()
 	ethel.SetupStateRootComputer(tx, ibs)
 	if err := ethel.InitHashState(tx); err != nil {
 		return err

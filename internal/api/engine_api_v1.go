@@ -596,6 +596,10 @@ func (e *EngineAPIV1) resolveForkchoiceState(state *ForkchoiceStateV1) (block.IB
 		overlay.setForkchoiceHashes(state.SafeBlockHash, state.FinalizedBlockHash)
 	}
 	if e.stateAdapter != nil {
+		if err := e.persistForkchoiceHead(state.HeadBlockHash); err != nil {
+			log.Warn("Persist forkchoice head error", "err", err)
+			return nil, types.Hash{}, syncingForkchoiceResponse(), nil
+		}
 		if err := e.stateAdapter.ForkchoiceUpdated(state.HeadBlockHash, state.SafeBlockHash, state.FinalizedBlockHash); err != nil {
 			log.Warn("ForkchoiceUpdated error", "err", err)
 		} else {
@@ -604,6 +608,72 @@ func (e *EngineAPIV1) resolveForkchoiceState(state *ForkchoiceStateV1) (block.IB
 		}
 	}
 	return head, headHash, nil, nil
+}
+
+func (e *EngineAPIV1) persistForkchoiceHead(headHash types.Hash) error {
+	if e == nil || e.stateAdapter == nil || headHash == (types.Hash{}) {
+		return nil
+	}
+	currentHash := e.stateAdapter.CurrentHeadHash()
+	if currentHash == headHash {
+		return nil
+	}
+	overlay := e.overlay()
+	if overlay == nil {
+		return nil
+	}
+
+	type stagedPayload struct {
+		hash types.Hash
+		blk  *block.Block
+		body *ExecutionPayloadBodyV1
+	}
+	var reversePath []stagedPayload
+	for hash := headHash; hash != currentHash; {
+		staged := overlay.blockByHash(hash)
+		concrete, ok := staged.(*block.Block)
+		if !ok || concrete == nil {
+			return nil
+		}
+		header := blockHeader(concrete)
+		if header == nil {
+			return nil
+		}
+		reversePath = append(reversePath, stagedPayload{
+			hash: hash,
+			blk:  concrete,
+			body: overlay.payloadBodyByHash(hash),
+		})
+		hash = header.ParentHash
+	}
+
+	for i := len(reversePath) - 1; i >= 0; i-- {
+		payload := reversePath[i]
+		header := blockHeader(payload.blk)
+		var parentBeaconRoot *types.Hash
+		if header != nil && header.ParentBeaconRoot != nil {
+			root := *header.ParentBeaconRoot
+			parentBeaconRoot = &root
+		}
+		var executionRequests []hexutil.Bytes
+		if payload.body != nil {
+			executionRequests = cloneHexutilBytesList(payload.body.executionRequests)
+		}
+		result, err := e.stateAdapter.executePayloadDetailed(
+			payload.blk,
+			parentBeaconRoot,
+			executionRequests,
+			bodyWithdrawals(payload.body),
+			false,
+		)
+		if err != nil {
+			return err
+		}
+		if result.validationError != nil {
+			return result.validationError
+		}
+	}
+	return nil
 }
 
 func (e *EngineAPIV1) adoptForkchoiceHead(hash types.Hash) bool {
@@ -734,22 +804,28 @@ func (e *EngineAPIV1) executeOrValidateWithBody(blk block.IBlock, blockHash, par
 
 	// ETH EL mode: execute and persist.
 	if e.stateAdapter != nil {
+		if overlay := e.overlay(); overlay != nil && overlay.blockValidated(blockHash) {
+			return validPayloadResponse(blockHash), nil
+		}
 		concreteBlock, ok := blk.(*block.Block)
 		if !ok {
 			return invalidPayloadResponse("unexpected block type"), nil
 		}
-		result, err := e.stateAdapter.executePayloadDetailed(concreteBlock, parentBeaconRoot, expectedRequests, bodyWithdrawals(body), false)
+		result, err := e.stateAdapter.validatePayloadDetailed(
+			concreteBlock,
+			parentBeaconRoot,
+			expectedRequests,
+			bodyWithdrawals(body),
+			e.parentStateOverlay(parentHash),
+		)
 		if err != nil {
 			return e.invalidPayloadStatus(err.Error(), blk, blockHash, &parentHash, body), nil
 		}
 		if result.validationError != nil {
-			if overlay := e.overlay(); overlay != nil && blk != nil && blockHash != (types.Hash{}) {
-				overlay.stageRejectedBlockWithBody(blk, blockHash, &result.stateRoot, body)
-			}
 			return e.invalidPayloadStatus(result.validationError.Error(), blk, blockHash, &parentHash, body), nil
 		}
 		if overlay := e.overlay(); overlay != nil {
-			overlay.stageBlockWithBody(blk, blockHash, nil, result.receipts, true, body)
+			overlay.stageBlockWithBody(blk, blockHash, result.stateOverlay, result.receipts, true, body)
 		}
 		return validPayloadResponse(blockHash), nil
 	}
