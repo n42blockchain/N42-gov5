@@ -273,19 +273,10 @@ func validateExecutionPayloadTransaction(tx *transaction.Transaction, rules *par
 	if tx == nil {
 		return nil
 	}
-	isContractCreation := tx.To() == nil
-	if rules.IsShanghai && isContractCreation {
-		// EIP-7954 (Amsterdam) raises the initcode cap to 128 KiB; the
-		// execution layer already enforces the raised limit, so keeping
-		// the Shanghai cap here would reject valid Glamsterdam blocks.
-		maxInitCode := uint64(fixedgas.MaxInitCodeSize)
-		if rules.IsGlamsterdam {
-			maxInitCode = params.MaxInitCodeSizeEIP7954
-		}
-		if uint64(len(tx.Data())) > maxInitCode {
-			return errInitCodeSizeExceeded
-		}
+	if err := validateTransactionInitCodeSize(tx, rules); err != nil {
+		return err
 	}
+	isContractCreation := tx.To() == nil
 	if rules.IsOsaka && tx.Gas() > fixedgas.MaxTxnGasLimit {
 		return errTxGasLimitTooHigh
 	}
@@ -369,6 +360,23 @@ func validateExecutionPayloadTransaction(tx *transaction.Transaction, rules *par
 		if tx.Gas() < floorGas {
 			return errFloorDataGasTooLow
 		}
+	}
+	return nil
+}
+
+func validateTransactionInitCodeSize(tx *transaction.Transaction, rules *params.Rules) error {
+	if tx == nil || rules == nil || !rules.IsShanghai || tx.To() != nil {
+		return nil
+	}
+	// EIP-7954 (Amsterdam) raises the initcode cap to 128 KiB; the
+	// execution layer already enforces the raised limit, so keeping
+	// the Shanghai cap here would reject valid Glamsterdam transactions.
+	maxInitCode := uint64(fixedgas.MaxInitCodeSize)
+	if rules.IsGlamsterdam {
+		maxInitCode = params.MaxInitCodeSizeEIP7954
+	}
+	if uint64(len(tx.Data())) > maxInitCode {
+		return errInitCodeSizeExceeded
 	}
 	return nil
 }
