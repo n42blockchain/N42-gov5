@@ -14,13 +14,26 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 //
-// N42 on-chain randomness beacon precompile at 0x0302. The
-// randomnessBeacon type serves three selectors - rngGetRandom,
-// rngGetRandomInRange and rngGetRandomWithSeed - producing bytes32 or
-// bounded uint256 outputs from the beacon source. PrecompiledContracts
-// Randomness and PrecompiledAddressesRandomness form the dispatch set,
-// populated in init() and kept independent of standard fork precompile
-// maps.
+// N42 on-chain randomness beacon precompile at 0x0302.
+//
+// The randomness source is the block environment's PrevRanDao — a value
+// committed in the block header and derived by consensus (on the native
+// chain: from the parent CommitQC's 2f+1 BLS aggregate signature, a
+// threshold-VUF no single validator can predict). Because it comes from
+// the header, every node — leader at build time, followers at import
+// time, and any later replay — reads the IDENTICAL value, and historical
+// blocks re-execute bit-exactly.
+//
+// The previous design read a process-local ring fed by whatever CommitQC
+// this node most recently observed: leader and followers observed
+// different values, restarted nodes held zero, and replay could never
+// reproduce it — any transaction touching 0x0302 forked the state root.
+// Never reintroduce execution-visible values that do not come from the
+// block itself.
+//
+// Activation checklist (before setting RandomnessTime on any chain):
+// headers MUST carry a consensus-derived PrevRandao — the precompile
+// fails deterministically (identically on every node) when it is absent.
 
 package vm
 
@@ -28,11 +41,19 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"sync"
 
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 )
+
+// ContextAwarePrecompile is a precompiled contract that reads
+// consensus-committed block-environment values. Gas accounting uses the
+// standard RequiredGas; only execution receives the context.
+type ContextAwarePrecompile interface {
+	PrecompiledContract
+	RunWithContext(ctx *evmtypes.BlockContext, input []byte) ([]byte, error)
+}
 
 // RandomnessAddress is the on-chain randomness beacon precompile address (0x0302).
 var RandomnessAddress = types.HexToAddress("0x0000000000000000000000000000000000000302")
@@ -71,62 +92,16 @@ var (
 	errRandomnessInvalidInput = errors.New("randomness: invalid input")
 	errRandomnessUnknownOp    = errors.New("randomness: unknown selector")
 	errRandomnessZeroMax      = errors.New("randomness: max must be > 0")
+	errRandomnessUnavailable  = errors.New("randomness: block carries no consensus randomness")
 )
 
-// Block randomness ring buffer (256 entries) with thread-safe access.
-const randomnessHistorySize = 256
-
-var globalRandomness struct {
-	mu      sync.RWMutex
-	entries [randomnessHistorySize]struct {
-		blockNum uint64
-		value    types.Hash
-	}
-	latest types.Hash
-}
-
-// SetBlockRandomness stores randomness for a block number.
-// Called at block start (from parent CommitQC), before transaction execution.
-func SetBlockRandomness(blockNum uint64, r types.Hash) {
-	globalRandomness.mu.Lock()
-	defer globalRandomness.mu.Unlock()
-	idx := blockNum % randomnessHistorySize
-	globalRandomness.entries[idx] = struct {
-		blockNum uint64
-		value    types.Hash
-	}{blockNum, r}
-	globalRandomness.latest = r
-}
-
-// getBlockRandomness returns the latest block randomness.
-func getBlockRandomness() types.Hash {
-	globalRandomness.mu.RLock()
-	defer globalRandomness.mu.RUnlock()
-	return globalRandomness.latest
-}
-
-// GetBlockRandomnessAt returns randomness for a specific block (up to 256 blocks back).
-func GetBlockRandomnessAt(blockNum uint64) (types.Hash, bool) {
-	globalRandomness.mu.RLock()
-	defer globalRandomness.mu.RUnlock()
-	idx := blockNum % randomnessHistorySize
-	entry := globalRandomness.entries[idx]
-	if entry.blockNum == blockNum {
-		return entry.value, true
-	}
-	return types.Hash{}, false
-}
-
-// randomnessBeacon implements the on-chain randomness precompile at address 0x0302.
-//
-// Inspired by Aptos on-chain randomness (AIP-41). Provides deterministic,
-// per-block randomness derived from consensus-committed randomness values.
+// randomnessBeacon implements the on-chain randomness precompile at 0x0302.
 //
 // Function selectors:
 //
-//	0x00: getRandom() -> bytes32                        — keccak256(blockRandomness)
+//	0x00: getRandom() -> bytes32                        — keccak256(prevRandao)
 //	0x01: getRandomInRange(max uint256) -> uint256      — hash % max
-//	0x02: getRandomWithSeed(seed bytes32) -> bytes32    — keccak256(randomness || seed)
+//	0x02: getRandomWithSeed(seed bytes32) -> bytes32    — keccak256(prevRandao || seed)
 type randomnessBeacon struct{}
 
 // RequiredGas returns the gas required to execute the randomness precompile.
@@ -135,80 +110,64 @@ func (c *randomnessBeacon) RequiredGas(input []byte) uint64 {
 		return RandomnessGetRandomGas
 	}
 	switch input[0] {
-	case rngGetRandom:
-		return RandomnessGetRandomGas
 	case rngGetRandomInRange:
 		return RandomnessGetRandomInRangeGas
-	case rngGetRandomWithSeed:
-		return RandomnessGetRandomGas
 	default:
 		return RandomnessGetRandomGas
 	}
 }
 
-// Run executes the randomness precompile.
+// Run satisfies PrecompiledContract but must never be dispatched — the
+// beacon requires the block context (see RunWithContext).
 func (c *randomnessBeacon) Run(input []byte) ([]byte, error) {
+	return nil, errRandomnessUnavailable
+}
+
+// RunWithContext executes the randomness precompile against the block's
+// consensus-committed randomness.
+func (c *randomnessBeacon) RunWithContext(ctx *evmtypes.BlockContext, input []byte) ([]byte, error) {
 	if len(input) < 1 {
 		return nil, errRandomnessInvalidInput
 	}
+	if ctx == nil || ctx.PrevRanDao == nil {
+		return nil, errRandomnessUnavailable
+	}
+	r := *ctx.PrevRanDao
 
 	switch input[0] {
 	case rngGetRandom:
-		return c.runGetRandom()
+		hash := crypto.Keccak256Hash(r[:])
+		return hash[:], nil
+
 	case rngGetRandomInRange:
-		return c.runGetRandomInRange(input[1:])
+		data := input[1:]
+		if len(data) < 32 {
+			return nil, fmt.Errorf("%w: getRandomInRange requires 32 bytes, got %d", errRandomnessInvalidInput, len(data))
+		}
+		max := new(big.Int).SetBytes(data[:32])
+		if max.Sign() == 0 {
+			return nil, errRandomnessZeroMax
+		}
+		hash := crypto.Keccak256Hash(r[:])
+		val := new(big.Int).SetBytes(hash[:])
+		val.Mod(val, max)
+		result := make([]byte, 32)
+		valBytes := val.Bytes()
+		copy(result[32-len(valBytes):], valBytes)
+		return result, nil
+
 	case rngGetRandomWithSeed:
-		return c.runGetRandomWithSeed(input[1:])
+		data := input[1:]
+		if len(data) < 32 {
+			return nil, fmt.Errorf("%w: getRandomWithSeed requires 32 bytes, got %d", errRandomnessInvalidInput, len(data))
+		}
+		combined := make([]byte, 64)
+		copy(combined[:32], r[:])
+		copy(combined[32:], data[:32])
+		hash := crypto.Keccak256Hash(combined)
+		return hash[:], nil
+
 	default:
 		return nil, fmt.Errorf("%w: 0x%02x", errRandomnessUnknownOp, input[0])
 	}
-}
-
-// runGetRandom handles selector 0x00.
-// Output: keccak256(blockRandomness) [32]byte.
-func (c *randomnessBeacon) runGetRandom() ([]byte, error) {
-	r := getBlockRandomness()
-	hash := crypto.Keccak256Hash(r[:])
-	return hash[:], nil
-}
-
-// runGetRandomInRange handles selector 0x01.
-// Input: max [32]byte (big-endian uint256).
-// Output: hash % max [32]byte (big-endian uint256).
-func (c *randomnessBeacon) runGetRandomInRange(data []byte) ([]byte, error) {
-	if len(data) < 32 {
-		return nil, fmt.Errorf("%w: getRandomInRange requires 32 bytes, got %d", errRandomnessInvalidInput, len(data))
-	}
-
-	max := new(big.Int).SetBytes(data[:32])
-	if max.Sign() == 0 {
-		return nil, errRandomnessZeroMax
-	}
-
-	r := getBlockRandomness()
-	hash := crypto.Keccak256Hash(r[:])
-	val := new(big.Int).SetBytes(hash[:])
-	val.Mod(val, max)
-
-	// Left-pad to 32 bytes.
-	result := make([]byte, 32)
-	valBytes := val.Bytes()
-	copy(result[32-len(valBytes):], valBytes)
-	return result, nil
-}
-
-// runGetRandomWithSeed handles selector 0x02.
-// Input: seed [32]byte.
-// Output: keccak256(randomness || seed) [32]byte.
-func (c *randomnessBeacon) runGetRandomWithSeed(data []byte) ([]byte, error) {
-	if len(data) < 32 {
-		return nil, fmt.Errorf("%w: getRandomWithSeed requires 32 bytes, got %d", errRandomnessInvalidInput, len(data))
-	}
-
-	r := getBlockRandomness()
-	combined := make([]byte, 64)
-	copy(combined[:32], r[:])
-	copy(combined[32:], data[:32])
-	hash := crypto.Keccak256Hash(combined)
-	return hash[:], nil
 }

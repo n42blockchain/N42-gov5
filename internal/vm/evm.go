@@ -346,6 +346,17 @@ func (evm *EVM) call(typ OpCode, caller ContractRef, addr types.Address, input [
 					}
 				}
 			}
+		} else if ctxAware, ok := p.(ContextAwarePrecompile); ok {
+			// Context-aware precompiles (e.g. the 0x0302 randomness beacon)
+			// read consensus-committed block-environment values — same gas
+			// accounting as the plain path.
+			gasCost := p.RequiredGas(input)
+			if gas < gasCost {
+				ret, err = nil, ErrOutOfGas
+			} else {
+				gas -= gasCost
+				ret, err = ctxAware.RunWithContext(&evm.context, input)
+			}
 		} else {
 			ret, gas, err = RunPrecompiledContract(p, input, gas)
 		}
