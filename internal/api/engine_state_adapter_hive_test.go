@@ -505,6 +505,27 @@ func TestHiveEngineStateAdapterRejectsInvalidWireGasLimit(t *testing.T) {
 	require.False(t, valid)
 }
 
+func TestHiveEngineStateAdapterBatchHeaderLookupSeesUncommittedPayload(t *testing.T) {
+	db, genesis, _ := newHiveEngineGenesisDB(t)
+	payload := hiveFirstEmptyPayload()
+	blk, err := executionPayloadV1ToBlock(payload)
+	require.NoError(t, err)
+
+	tx, err := db.BeginRw(context.Background())
+	require.NoError(t, err)
+	defer tx.Rollback()
+	adapter := NewEngineStateAdapter(db, nil, genesis.Config, &apiTestEngine{})
+	adapter.SetBatchTx(tx)
+	defer adapter.SetBatchTx(nil)
+
+	valid, _, err := adapter.ExecutePayload(blk.(*block.Block))
+	require.NoError(t, err)
+	require.True(t, valid)
+	parent := adapter.HeaderByHash(payload.BlockHash)
+	require.NotNil(t, parent)
+	require.Equal(t, uint64(payload.GasLimit), parent.GasLimit)
+}
+
 func TestHiveEngineStateAdapterAcceptsFirstEmptyCanonicalPayloadAfterMDBXReopen(t *testing.T) {
 	db, genesis, _ := newHiveEngineGenesisMDBXDB(t)
 	defer db.Close()
