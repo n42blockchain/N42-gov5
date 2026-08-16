@@ -21,6 +21,7 @@ package api
 
 import (
 	"context"
+	"math/big"
 	"strconv"
 
 	"github.com/n42blockchain/N42/common/block"
@@ -76,7 +77,7 @@ type PayloadAttributesV3 struct {
 // GetPayloadResponseV3 is the response for engine_getPayloadV3
 type GetPayloadResponseV3 struct {
 	ExecutionPayload      *ExecutionPayloadV3 `json:"executionPayload"`
-	BlockValue            hexutil.Uint64      `json:"blockValue"`
+	BlockValue            *hexutil.Big        `json:"blockValue"`
 	BlobsBundle           *BlobsBundleV1      `json:"blobsBundle"`
 	ShouldOverrideBuilder bool                `json:"shouldOverrideBuilder"`
 }
@@ -303,7 +304,7 @@ func (e *EngineAPIBlob) GetPayloadV3(ctx context.Context, payloadID PayloadID) (
 	if built := e.v1().builtPayload(payloadID); built != nil && built.v3 != nil {
 		return &GetPayloadResponseV3{
 			ExecutionPayload:      built.v3,
-			BlockValue:            hexutil.Uint64(0),
+			BlockValue:            enginePayloadBlockValue(built.blockValue),
 			BlobsBundle:           built.blobsBundle,
 			ShouldOverrideBuilder: false,
 		}, nil
@@ -333,9 +334,10 @@ func (e *EngineAPIBlob) ForkchoiceUpdatedV3(ctx context.Context, state *Forkchoi
 	if uint64(attrs.Timestamp) <= head.Time() {
 		return nil, &engineInvalidPayloadAttributesError{msg: "payload timestamp must be greater than parent"}
 	}
-	payload := e.buildExecutionPayloadV3Stateful(head, headHash, attrs)
+	payload, blockValue := e.buildExecutionPayloadV3StatefulWithValue(head, headHash, attrs)
 	if payload == nil {
 		payload = buildExecutionPayloadV3(head, headHash, attrs, e.v1().chainConfig())
+		blockValue = new(big.Int)
 	}
 	if payload == nil {
 		return invalidForkchoiceResponse("failed to build payload"), nil
@@ -351,6 +353,7 @@ func (e *EngineAPIBlob) ForkchoiceUpdatedV3(ctx context.Context, state *Forkchoi
 	)
 	if overlay := e.v1().overlay(); overlay != nil {
 		overlay.storeBuiltPayload(payloadID, &engineBuiltPayload{
+			blockValue: blockValue,
 			v1: &ExecutionPayloadV1{
 				ParentHash:    payload.ParentHash,
 				FeeRecipient:  payload.FeeRecipient,
@@ -394,8 +397,13 @@ func (e *EngineAPIBlob) ForkchoiceUpdatedV3(ctx context.Context, state *Forkchoi
 }
 
 func (e *EngineAPIBlob) buildExecutionPayloadV3Stateful(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV3) *ExecutionPayloadV3 {
+	payload, _ := e.buildExecutionPayloadV3StatefulWithValue(parent, parentHash, attrs)
+	return payload
+}
+
+func (e *EngineAPIBlob) buildExecutionPayloadV3StatefulWithValue(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV3) (*ExecutionPayloadV3, *big.Int) {
 	if attrs == nil {
-		return nil
+		return nil, nil
 	}
 	result := e.v1().buildExecutionPayloadStateful(parent, parentHash, &PayloadAttributesV1{
 		Timestamp:             attrs.Timestamp,
@@ -403,12 +411,12 @@ func (e *EngineAPIBlob) buildExecutionPayloadV3Stateful(parent block.IBlock, par
 		SuggestedFeeRecipient: attrs.SuggestedFeeRecipient,
 	}, attrs.Withdrawals, attrs.ParentBeaconBlockRoot)
 	if result == nil || result.block == nil {
-		return nil
+		return nil, nil
 	}
 	v1 := blockToExecutionPayloadV1(result.block, e.v1().chainConfig())
 	header := blockHeader(result.block)
 	if v1 == nil || header == nil || header.BlobGasUsed == nil || header.ExcessBlobGas == nil {
-		return nil
+		return nil, nil
 	}
 	payload := &ExecutionPayloadV3{
 		ParentHash:    v1.ParentHash,
@@ -435,7 +443,7 @@ func (e *EngineAPIBlob) buildExecutionPayloadV3Stateful(parent block.IBlock, par
 		includeBlobFields:  true,
 		parentBeaconRoot:   attrs.ParentBeaconBlockRoot,
 	})
-	return payload
+	return payload, result.blockValue
 }
 
 // GetBlobsBundleV1 retrieves the blobs bundle for a payload

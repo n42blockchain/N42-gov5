@@ -59,7 +59,7 @@ func (m *mockEngineTxPool) GetTx(hash types.Hash) *transaction.Transaction {
 }
 
 func (m *mockEngineTxPool) AddRemotes([]*transaction.Transaction) []error { return nil }
-func (m *mockEngineTxPool) AddLocal(*transaction.Transaction) error { return nil }
+func (m *mockEngineTxPool) AddLocal(*transaction.Transaction) error       { return nil }
 func (m *mockEngineTxPool) AddLocals(txs []*transaction.Transaction) []error {
 	return make([]error, len(txs))
 }
@@ -77,6 +77,18 @@ func (m *mockEngineTxPool) Nonce(types.Address) uint64 { return 0 }
 
 func (m *mockEngineTxPool) Content() (map[types.Address][]*transaction.Transaction, map[types.Address][]*transaction.Transaction) {
 	return m.pending, map[types.Address][]*transaction.Transaction{}
+}
+
+func TestExecutionPayloadBlockValueUsesEffectiveTips(t *testing.T) {
+	t.Parallel()
+
+	tx := transaction.NewTx(&transaction.LegacyTx{GasPrice: uint256.NewInt(10)})
+	value := executionPayloadBlockValue(
+		&block.Header{BaseFee: uint256.NewInt(7)},
+		[]*transaction.Transaction{tx},
+		block.Receipts{&block.Receipt{GasUsed: 21}},
+	)
+	require.Equal(t, int64(63), value.Int64())
 }
 
 func TestForkchoiceUpdatedV1BuildsPayloadFromTxPool(t *testing.T) {

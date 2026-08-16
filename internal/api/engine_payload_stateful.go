@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/account"
@@ -97,6 +98,7 @@ func (e *EngineAPIV1) executePayloadOnParentStateAndValidateWithWithdrawals(blk 
 type statefulPayloadBuildResult struct {
 	block             *block.Block
 	receipts          block.Receipts
+	blockValue        *big.Int
 	executionRequests []hexutil.Bytes
 }
 
@@ -352,6 +354,7 @@ func (e *EngineAPIV1) buildExecutionPayloadStateful(parent block.IBlock, parentH
 		result = &statefulPayloadBuildResult{
 			block:             builtBlock,
 			receipts:          cloneReceipts(receipts),
+			blockValue:        executionPayloadBlockValue(header, txs, receipts),
 			executionRequests: cloneHexutilBytesList(actualRequests),
 		}
 		return nil
@@ -361,6 +364,25 @@ func (e *EngineAPIV1) buildExecutionPayloadStateful(parent block.IBlock, parentH
 		return nil
 	}
 	return result
+}
+
+func executionPayloadBlockValue(header *block.Header, txs []*transaction.Transaction, receipts block.Receipts) *big.Int {
+	value := new(big.Int)
+	if header == nil {
+		return value
+	}
+	for i, tx := range txs {
+		if tx == nil || i >= len(receipts) || receipts[i] == nil {
+			continue
+		}
+		tip, err := tx.EffectiveGasTip(header.BaseFee)
+		if err != nil {
+			continue
+		}
+		reward := new(big.Int).Mul(tip.ToBig(), new(big.Int).SetUint64(receipts[i].GasUsed))
+		value.Add(value, reward)
+	}
+	return value
 }
 
 func populateEthereumExecutionPayloadHeader(header *block.Header, txs []*transaction.Transaction, receipts block.Receipts) error {
