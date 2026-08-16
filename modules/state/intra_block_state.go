@@ -579,8 +579,14 @@ func (sdb *IntraBlockState) Empty(addr types.Address) bool {
 // HasNonEmptyStorage returns true if the account has any non-zero storage entries.
 // This is used by EIP-7610 style collision detection to prevent deploying code
 // at addresses that have pre-existing storage.
-// NOTE: This checks in-memory caches and also probes common storage slots (0x00, 0x01)
-// to detect pre-existing storage that hasn't been loaded yet.
+//
+// Persisted storage is detected by ENUMERATION when the reader supports it
+// (StorageEnumerator, the same capability captureWipedSlots relies on),
+// which is the geth-equivalent answer ("is the storage root empty"). The
+// slot-0/0x01 probe below is only a last-resort fallback for readers that
+// cannot enumerate (e.g. a witness-backed minimal client): it can miss
+// storage living at other slots, so such a reader may under-detect a
+// collision. Callers on consensus paths run with an enumerating reader.
 func (sdb *IntraBlockState) HasNonEmptyStorage(addr types.Address) bool {
 	stateObject := sdb.getStateObject(addr)
 	if stateObject == nil || stateObject.deleted {
@@ -604,9 +610,31 @@ func (sdb *IntraBlockState) HasNonEmptyStorage(addr types.Address) bool {
 			return true
 		}
 	}
-	// Probe common storage slots to detect pre-existing storage from database
-	// This handles the case where storage exists but hasn't been loaded yet.
-	// Slots 0x00 and 0x01 are commonly used for mappings and state variables.
+	// Persisted storage: enumerate when possible — this is the complete
+	// answer, equivalent to geth's empty-storage-root test. Stop at the
+	// first non-zero slot.
+	if enum, ok := sdb.stateReader.(StorageEnumerator); ok {
+		// A pending wipe means the persisted rows are logically gone
+		// already (SELFDESTRUCT/CREATE earlier in this block); only the
+		// in-memory values checked above count then.
+		if _, wiped := sdb.storageWipes[addr]; wiped {
+			return false
+		}
+		found := false
+		_ = enum.ForEachStorage(addr, func(slot types.Hash, value []byte) bool {
+			for _, b := range value {
+				if b != 0 {
+					found = true
+					return false // stop enumerating
+				}
+			}
+			return true
+		})
+		return found
+	}
+
+	// Fallback for non-enumerating readers: probe the two slots most
+	// likely to be occupied. Incomplete by construction (see doc above).
 	slot0 := types.Hash{}
 	slot1 := types.Hash{}
 	slot1[31] = 1 // 0x01
@@ -870,7 +898,8 @@ func (sdb *IntraBlockState) setStateObject(addr types.Address, object *stateObje
 	if bi, ok := sdb.balanceInc[addr]; ok && !bi.transferred {
 		object.data.Balance.Add(&object.data.Balance, &bi.increase)
 		bi.transferred = true
-		sdb.journal.append(balanceIncreaseTransfer{bi: bi})
+		a := addr
+		sdb.journal.append(balanceIncreaseTransfer{account: &a, bi: bi})
 	}
 	sdb.stateObjects[addr] = object
 	delete(sdb.nilAccounts, addr)
