@@ -23,6 +23,7 @@ import (
 	"context"
 	"math/big"
 	"strconv"
+	"strings"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
@@ -179,6 +180,12 @@ func (e *EngineAPIBlob) SetStateAdapter(adapter *EngineStateAdapter) {
 	}
 }
 
+func (e *EngineAPIBlob) SetMissingAncestorObserver(observer func(types.Hash)) {
+	if v1 := e.v1(); v1 != nil {
+		v1.SetMissingAncestorObserver(observer)
+	}
+}
+
 // NewPayloadV3 processes a new execution payload with blob support
 // engine_newPayloadV3
 func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayloadV3, expectedBlobVersionedHashes []types.Hash, parentBeaconBlockRoot *types.Hash) (*PayloadStatusV1, error) {
@@ -226,6 +233,7 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 		maxBlobs,
 		gasPerBlob,
 	); resp != nil {
+		setBlobGasValidationLatestValidHash(resp, payload.ParentHash, e.v1().parentHeader(payload.ParentHash))
 		return resp, nil
 	}
 	if err := ValidateBlobTransactions(payload.Transactions, expectedBlobVersionedHashes); err != nil {
@@ -281,6 +289,9 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 		if overlay := e.v1().overlay(); overlay != nil {
 			overlay.stageBlockWithBody(blk, blockHash, nil, nil, false, body)
 		}
+		if e.v1().missingAncestorObserver != nil {
+			e.v1().missingAncestorObserver(payload.ParentHash)
+		}
 		return acceptedPayloadResponse(), nil
 	}
 	if e.v1().stateAdapter != nil {
@@ -298,6 +309,16 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 		overlay.importBlockWithBody(blk, blockHash, receipts, body)
 	}
 	return validPayloadResponse(blockHash), nil
+}
+
+func setBlobGasValidationLatestValidHash(resp *PayloadStatusV1, parentHash types.Hash, parent *block.Header) {
+	if resp == nil || resp.ValidationError == nil {
+		return
+	}
+	reason := *resp.ValidationError
+	if reason == "blob gas mismatch" || reason == "too many blobs" || strings.HasPrefix(reason, "blob gas used ") {
+		resp.LatestValidHash = latestValidHashForParent(parentHash, parent)
+	}
 }
 
 // GetPayloadV3 retrieves a payload with blob bundle

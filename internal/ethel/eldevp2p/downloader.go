@@ -923,11 +923,11 @@ func (d *Downloader) syncMissingAncestor(ctx context.Context, target types.Hash)
 		return fmt.Errorf("missing-ancestor bodies: got %d, want %d", len(bodies), len(branch))
 	}
 	for i, hdr := range branch {
-		blk, _, err := assembleBlock(hdr, bodies[i])
+		blk, withdrawals, err := assembleBlock(hdr, bodies[i])
 		if err != nil {
 			return fmt.Errorf("assemble missing ancestor %d: %w", hdr.Number64().Uint64(), err)
 		}
-		status, latestValid, err := importer(blk)
+		status, latestValid, err := importer(blk, withdrawals)
 		if err != nil {
 			return fmt.Errorf("import missing ancestor %d: %w", hdr.Number64().Uint64(), err)
 		}
@@ -1543,6 +1543,7 @@ func (d *Downloader) executeRange(ctx context.Context, local uint64, headers []*
 		ok, root, xerr := d.adapter.ExecutePayloadFromWire(blk, withdrawals)
 		if xerr != nil {
 			log.Warn("eldevp2p: ExecutePayloadFromWire error", "block", n, "err", xerr)
+			d.reportInvalidAncestor(rejectedBranchTip(headers, headerIndex), hdr.ParentHash)
 			tx.Rollback()
 			d.adapter.DiscardReorgJournal()
 			return committed - local, committed
