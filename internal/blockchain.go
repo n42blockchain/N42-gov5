@@ -471,6 +471,33 @@ func (bc *BlockChain) PrewarmMinerRootComputer(tx kv.Tx) bool {
 	return ok
 }
 
+// AppliedHeadIs reports whether the QMDB applied marker names exactly the
+// given block. The miner uses it to check that a parked speculative build
+// is still valid: the marker moves when another view's proposal is applied
+// locally, and a seal built on the stale parent is rejected later by
+// checkQMDBLeaderSealParent. Returns true when there is no marker (fresh
+// or non-speculative data — nothing to contradict).
+func (bc *BlockChain) AppliedHeadIs(hash types.Hash) bool {
+	if !bc.qmdbEnabled {
+		return true
+	}
+	var (
+		appliedHash types.Hash
+		haveMarker  bool
+	)
+	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		_, h, ok, err := rawdb.ReadQMDBApplied(tx)
+		if err == nil && ok {
+			appliedHash, haveMarker = types.Hash(h), true
+		}
+		return nil
+	})
+	if !haveMarker {
+		return true
+	}
+	return appliedHash == hash
+}
+
 // JMTCommitment returns the JMT commitment layer, or nil if not enabled.
 func (bc *BlockChain) JMTCommitment() *commitment.JMTCommitment {
 	return bc.jmtCommitment

@@ -969,7 +969,15 @@ func (pool *TxsPool) scheduleLoop() {
 				reset.newBlock = req.newBlock
 			}
 			launchNextRun = true
-			pool.reorgDoneCh <- nextDone
+			// The requester abandons this handshake on pool.ctx.Done (see
+			// requestReset), so an unconditional send here blocks forever at
+			// shutdown — wg.Wait() in Stop() then hangs and the node dies on
+			// the shutdown watchdog. Give the send the same escape.
+			select {
+			case pool.reorgDoneCh <- nextDone:
+			case <-pool.ctx.Done():
+				return
+			}
 
 		case req := <-pool.reqPromoteCh:
 			if dirtyAccounts == nil {
@@ -978,7 +986,11 @@ func (pool *TxsPool) scheduleLoop() {
 				dirtyAccounts.merge(req)
 			}
 			launchNextRun = true
-			pool.reorgDoneCh <- nextDone
+			select {
+			case pool.reorgDoneCh <- nextDone:
+			case <-pool.ctx.Done():
+				return
+			}
 
 		case tx := <-pool.queueTxEventCh:
 			sender := tx.From()
