@@ -582,6 +582,9 @@ func TestHiveEngineStateAdapterForkchoiceUpdatedTracksMDBXHead(t *testing.T) {
 		marker, ok := ethel.ReadHeadMarker(tx)
 		require.True(t, ok)
 		require.Equal(t, uint64(payload.BlockNumber), marker)
+		storedHash := rawdb.ReadHeadBlockHash(tx)
+		require.Equal(t, storedHash, rawdb.ReadForkchoiceSafeHash(tx))
+		require.Equal(t, storedHash, rawdb.ReadForkchoiceFinalizedHash(tx))
 		return nil
 	}))
 }

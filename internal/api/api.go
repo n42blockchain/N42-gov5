@@ -400,13 +400,23 @@ func (n *API) resolveForkchoiceTaggedBlock(number jsonrpc.BlockNumber) block.IBl
 		return n.engineOverlay.headBlock(current)
 	case jsonrpc.SafeBlockNumber:
 		safeHash, _ := n.engineOverlay.forkchoiceHashes()
-		return n.blockByEngineHash(safeHash)
+		if blk := n.blockByEngineHash(safeHash); blk != nil {
+			return blk
+		}
 	case jsonrpc.FinalizedBlockNumber:
 		_, finalizedHash := n.engineOverlay.forkchoiceHashes()
-		return n.blockByEngineHash(finalizedHash)
+		if blk := n.blockByEngineHash(finalizedHash); blk != nil {
+			return blk
+		}
 	default:
 		return nil
 	}
+	if reader, ok := n.bc.(interface {
+		ForkchoiceTaggedBlock(jsonrpc.BlockNumber) block.IBlock
+	}); ok {
+		return reader.ForkchoiceTaggedBlock(number)
+	}
+	return nil
 }
 
 func (n *API) resolveForkchoiceTaggedHeader(number jsonrpc.BlockNumber) *block.Header {

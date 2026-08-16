@@ -1312,19 +1312,35 @@ func (a *EngineStateAdapter) ForkchoiceUpdated(headHash, safeHash, finalizedHash
 	if storedHeadHash == (types.Hash{}) {
 		return fmt.Errorf("head block not found: %s", headHash.Hex())
 	}
+	storedSafeHash := types.Hash{}
 	if safeHash != (types.Hash{}) {
-		if _, err := a.resolveCanonicalStoredHash(tx, safeHash); err != nil {
+		storedSafeHash, err = a.resolveCanonicalStoredHash(tx, safeHash)
+		if err != nil {
 			return err
 		}
+		if storedSafeHash == (types.Hash{}) {
+			return fmt.Errorf("safe block not found: %s", safeHash.Hex())
+		}
 	}
+	storedFinalizedHash := types.Hash{}
 	if finalizedHash != (types.Hash{}) {
-		if _, err := a.resolveCanonicalStoredHash(tx, finalizedHash); err != nil {
+		storedFinalizedHash, err = a.resolveCanonicalStoredHash(tx, finalizedHash)
+		if err != nil {
 			return err
+		}
+		if storedFinalizedHash == (types.Hash{}) {
+			return fmt.Errorf("finalized block not found: %s", finalizedHash.Hex())
 		}
 	}
 
 	rawdb.WriteHeadBlockHash(tx, storedHeadHash)
 	if err := rawdb.WriteHeadHeaderHash(tx, storedHeadHash); err != nil {
+		return err
+	}
+	if err := rawdb.WriteForkchoiceSafeHash(tx, storedSafeHash); err != nil {
+		return err
+	}
+	if err := rawdb.WriteForkchoiceFinalizedHash(tx, storedFinalizedHash); err != nil {
 		return err
 	}
 	headerNum := rawdb.ReadHeaderNumber(tx, storedHeadHash)
