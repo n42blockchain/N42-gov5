@@ -18,7 +18,7 @@ func TestEESTAuditScriptPassesForCompleteRuns(t *testing.T) {
 		t.Fatalf("mkdir run dir: %v", err)
 	}
 
-	writeTestFile(t, filepath.Join(runDir, "summary.md"), "# EEST Shard Run Summary\n")
+	writeTestFile(t, filepath.Join(runDir, "summary.md"), "# EEST Shard Run Summary\n\n- Status: `complete`\n")
 	writeTestFile(t, filepath.Join(runDir, "prague.meta"), strings.Join([]string{
 		"shard=prague",
 		"rc=0",
@@ -38,6 +38,41 @@ func TestEESTAuditScriptPassesForCompleteRuns(t *testing.T) {
 		"- Passing runs: `1`",
 		"- Failing runs: `0`",
 		"- Status: `PASS`",
+	} {
+		if !strings.Contains(output, needle) {
+			t.Fatalf("output missing %q:\n%s", needle, output)
+		}
+	}
+}
+
+func TestEESTAuditScriptRejectsFailedAndPartialResults(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	runDir := filepath.Join(root, "20260416-failed")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatalf("mkdir run dir: %v", err)
+	}
+
+	writeTestFile(t, filepath.Join(runDir, "summary.md"), "# EEST Shard Run Summary\n\n- Status: `partial`\n")
+	writeTestFile(t, filepath.Join(runDir, "cancun.meta"), strings.Join([]string{
+		"shard=cancun",
+		"rc=1",
+		"duration_seconds=not-a-number",
+	}, "\n")+"\n")
+	writeTestFile(t, filepath.Join(runDir, "cancun.log"), "1 failed, 17782 passed\n")
+
+	output, err := runEESTAuditScript(t, root)
+	if err == nil {
+		t.Fatalf("expected audit_eest_results.sh to fail, output:\n%s", output)
+	}
+
+	for _, needle := range []string{
+		"| `20260416-failed` | `FAIL` | `1` |",
+		"summary.md is not complete",
+		"cancun.meta has rc=1",
+		"cancun.meta has invalid duration_seconds=not-a-number",
+		"- Status: `FAIL`",
 	} {
 		if !strings.Contains(output, needle) {
 			t.Fatalf("output missing %q:\n%s", needle, output)
