@@ -624,7 +624,11 @@ func (h *EthHandler) acceptPooledTransactions(rawTxs []rlp.RawValue) error {
 }
 
 func (h *EthHandler) announcePooledTransactions(rw gethp2p.MsgReadWriter, done <-chan struct{}) {
-	ticker := time.NewTicker(100 * time.Millisecond)
+	// Pace announcements so bidirectional peers do not burst several writes at
+	// the same instant as their GetPooledTransactions request/response traffic.
+	// Five Hive blob transactions still propagate in about 100ms, comfortably
+	// inside the payload builder's collection window.
+	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	known := make(map[types.Hash]struct{})
 	for {
@@ -660,6 +664,7 @@ func (h *EthHandler) announcePooledTransactions(rw gethp2p.MsgReadWriter, done <
 				if err := gethp2p.Send(rw, 8, &packet); err != nil {
 					return
 				}
+				break
 			}
 		}
 	}
