@@ -161,7 +161,7 @@ const requestTimeout = 20 * time.Second
 // newly connected peer may legitimately advertise the same head and have no
 // next header yet; requesting localHead+1 immediately breaks ForkID-only peers
 // and needlessly races their post-handshake checks.
-const peerProbeGrace = 3 * time.Second
+const peerProbeGrace = 10 * time.Second
 
 // Downloader satisfies devp2p.ResponseHandler. One instance per
 // eldevp2p.Service; it tracks every peer that completes handshake and

@@ -44,6 +44,7 @@ import (
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/holiman/uint256"
 
+	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
@@ -132,6 +133,7 @@ type Service struct {
 	downloader  *Downloader
 	knownBlock  EngineBlockKnownFunc
 	importBlock EngineBlockImporter
+	txspool     common.ITxsPool
 }
 
 // New builds a Service. The Node must be non-nil even when Enabled is false
@@ -193,6 +195,7 @@ func (s *Service) Start(_ context.Context) error {
 	s.downloader = dl
 	s.bridgeMu.Unlock()
 	handler.SetResponseHandler(dl)
+	handler.SetTxPool(s.txspool)
 
 	boot := make([]*enode.Node, 0, len(s.cfg.BootNodes))
 	for _, raw := range s.cfg.BootNodes {
@@ -261,6 +264,12 @@ func (s *Service) SetEngineSyncBridge(known EngineBlockKnownFunc, importer Engin
 	if s.downloader != nil {
 		s.downloader.SetEngineSyncBridge(known, importer)
 	}
+}
+
+// SetTxPool shares the Engine/public RPC pool with eth/68+ transaction gossip.
+// Call before Start.
+func (s *Service) SetTxPool(pool common.ITxsPool) {
+	s.txspool = pool
 }
 
 // RequestMissingAncestor queues an unknown Engine parent for hash-directed

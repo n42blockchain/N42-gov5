@@ -281,6 +281,45 @@ func EncodeEthereumTransaction(tx *Transaction) ([]byte, error) {
 	}
 }
 
+// EncodeEthereumPooledTransaction encodes a transaction for eth/68+ pool
+// propagation. Blob transactions retain their sidecar in the EIP-4844 network
+// wrapper; block payload encoding intentionally omits it.
+func EncodeEthereumPooledTransaction(tx *Transaction) ([]byte, error) {
+	if tx == nil {
+		return nil, fmt.Errorf("nil transaction")
+	}
+	blobTx, ok := tx.inner.(*BlobTx)
+	if !ok || blobTx.Sidecar == nil {
+		return EncodeEthereumTransaction(tx)
+	}
+	wrapper := blobTxNetworkWrapperRLP{
+		Tx: blobTxRLP{
+			ChainID:    nonNilUint256(blobTx.ChainID),
+			Nonce:      blobTx.Nonce,
+			GasTipCap:  nonNilUint256(blobTx.GasTipCap),
+			GasFeeCap:  nonNilUint256(blobTx.GasFeeCap),
+			Gas:        blobTx.Gas,
+			To:         blobTx.To,
+			Value:      nonNilUint256(blobTx.Value),
+			Data:       blobTx.Data,
+			AccessList: blobTx.AccessList,
+			BlobFeeCap: nonNilUint256(blobTx.BlobFeeCap),
+			BlobHashes: blobTx.BlobHashes,
+			V:          nonNilUint256(blobTx.V),
+			R:          nonNilUint256(blobTx.R),
+			S:          nonNilUint256(blobTx.S),
+		},
+		Blobs:       blobTx.Sidecar.Blobs,
+		Commitments: blobTx.Sidecar.Commitments,
+		Proofs:      blobTx.Sidecar.Proofs,
+	}
+	payload, err := rlp.EncodeToBytes(&wrapper)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte{BlobTxType}, payload...), nil
+}
+
 func encodeBlobEthereumTransaction(tx *BlobTx) ([]byte, error) {
 	if tx == nil {
 		return nil, fmt.Errorf("nil blob transaction")
