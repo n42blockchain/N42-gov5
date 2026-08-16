@@ -463,11 +463,11 @@ func gasCall(evm VMInterpreter, contract *Contract, stack *stack.Stack, mem *Mem
 	)
 	callNewAccountGas := uint64(params.CallNewAccountGas)
 	if evm.ChainRules().IsGlamsterdam {
-		// Amsterdam: EIP-8038 CREATE_ACCESS (12000) replaces the legacy 25000
-		// new-account charge, plus EIP-8037 state gas for the fresh account
-		// (120 bytes x 1530 = 183600).
-		callNewAccountGas = params.CreateAccessEIP8038 +
-			params.StateBytesPerNewAccount*params.CostPerStateByteEIP8037
+		// Amsterdam: the new-account surcharge on a value CALL is ONLY the
+		// EIP-8037 state gas for the fresh account (120 bytes x 1530 =
+		// 183600). CREATE_ACCESS is a CREATE-path charge, not part of the
+		// CALL surcharge; cold access and CALL_VALUE are billed separately.
+		callNewAccountGas = params.StateBytesPerNewAccount * params.CostPerStateByteEIP8037
 	}
 	if evm.ChainRules().IsSpuriousDragon {
 		if transfersValue && evm.IntraBlockState().Empty(address) {

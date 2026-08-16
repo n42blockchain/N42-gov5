@@ -125,6 +125,9 @@ func (m *mockVMInterpreter) Create(caller ContractRef, code []byte, gas uint64, 
 func (m *mockVMInterpreter) Create2(caller ContractRef, code []byte, gas uint64, endowment *uint256.Int, salt *uint256.Int) ([]byte, types.Address, uint64, error) {
 	return nil, types.Address{}, gas, nil
 }
+func (m *mockVMInterpreter) EOFCreate2(caller ContractRef, code []byte, gas uint64, endowment *uint256.Int, salt *uint256.Int) ([]byte, types.Address, uint64, error) {
+	return nil, types.Address{}, gas, nil
+}
 func (m *mockVMInterpreter) ChainRules() *params.Rules {
 	// IsEOF: these tests exercise EOF-container execution, which now only
 	// activates through the explicit EOFTime gate (EOF left the Osaka scope).

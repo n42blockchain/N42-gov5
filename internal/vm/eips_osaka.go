@@ -377,6 +377,13 @@ func opDATACOPY(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 // opDUPN implements DUPN (0xE6) - DUP with immediate operand
 func opDUPN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	if err := requireEOFExecution(scope, DUPN); err != nil {
+		// Table selection is chain-wide, so on an EOF+Glamsterdam chain a
+		// LEGACY contract also lands here. EIP-8024 gives these opcodes
+		// legacy semantics (different immediate encoding) — dispatch on
+		// container presence instead of failing the legacy caller.
+		if interpreter != nil && interpreter.evm != nil && interpreter.evm.ChainRules() != nil && interpreter.evm.ChainRules().IsGlamsterdam {
+			return opDupN(pc, interpreter, scope)
+		}
 		return nil, err
 	}
 	code := scope.Contract.Code
@@ -400,6 +407,10 @@ func opDUPN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byt
 // opSWAPN implements SWAPN (0xE7) - SWAP with immediate operand
 func opSWAPN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	if err := requireEOFExecution(scope, SWAPN); err != nil {
+		// Legacy contract on an EOF chain: EIP-8024 semantics (see opDUPN).
+		if interpreter != nil && interpreter.evm != nil && interpreter.evm.ChainRules() != nil && interpreter.evm.ChainRules().IsGlamsterdam {
+			return opSwapN(pc, interpreter, scope)
+		}
 		return nil, err
 	}
 	code := scope.Contract.Code
@@ -422,6 +433,10 @@ func opSWAPN(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]by
 // opEXCHANGE implements EXCHANGE (0xE8) - exchange two stack items
 func opEXCHANGE(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	if err := requireEOFExecution(scope, EXCHANGE); err != nil {
+		// Legacy contract on an EOF chain: EIP-8024 semantics (see opDUPN).
+		if interpreter != nil && interpreter.evm != nil && interpreter.evm.ChainRules() != nil && interpreter.evm.ChainRules().IsGlamsterdam {
+			return opExchange(pc, interpreter, scope)
+		}
 		return nil, err
 	}
 	code := scope.Contract.Code
@@ -517,8 +532,9 @@ func opEOFCREATE(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) (
 	gas -= gas / 64
 	scope.Contract.UseGas(gas)
 
-	// Call Create2 with salt for deterministic address
-	res, addr, returnGas, suberr := interpreter.evm.Create2(scope.Contract, initCode, gas, &value, &salt)
+	// Create2 addressing, but through the EOF creation entry so the
+	// deployed runtime code may be an EOF container.
+	res, addr, returnGas, suberr := interpreter.evm.EOFCreate2(scope.Contract, initCode, gas, &value, &salt)
 
 	if suberr != nil {
 		scope.Stack.Push(new(uint256.Int))
