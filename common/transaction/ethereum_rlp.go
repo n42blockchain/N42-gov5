@@ -67,6 +67,13 @@ type blobTxRLP struct {
 	S          *uint256.Int
 }
 
+type blobTxNetworkWrapperRLP struct {
+	Tx          blobTxRLP
+	Blobs       []Blob
+	Commitments []Commitment
+	Proofs      []Proof
+}
+
 type setCodeTxRLP struct {
 	ChainID    *uint256.Int
 	Nonce      uint64
@@ -148,8 +155,18 @@ func DecodeEthereumTransaction(data []byte) (*Transaction, error) {
 		}), nil
 	case BlobTxType:
 		var dec blobTxRLP
+		var sidecar *BlobTxSidecar
 		if err := rlp.DecodeBytes(payload, &dec); err != nil {
-			return nil, err
+			var wrapper blobTxNetworkWrapperRLP
+			if wrapperErr := rlp.DecodeBytes(payload, &wrapper); wrapperErr != nil {
+				return nil, err
+			}
+			dec = wrapper.Tx
+			sidecar = &BlobTxSidecar{
+				Blobs:       wrapper.Blobs,
+				Commitments: wrapper.Commitments,
+				Proofs:      wrapper.Proofs,
+			}
 		}
 		return NewTxOwned(&BlobTx{
 			ChainID:    dec.ChainID,
@@ -166,6 +183,7 @@ func DecodeEthereumTransaction(data []byte) (*Transaction, error) {
 			V:          dec.V,
 			R:          dec.R,
 			S:          dec.S,
+			Sidecar:    sidecar,
 		}), nil
 	case SetCodeTxType:
 		var dec setCodeTxRLP
