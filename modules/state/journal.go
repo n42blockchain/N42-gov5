@@ -131,7 +131,8 @@ type (
 		increase uint256.Int
 	}
 	balanceIncreaseTransfer struct {
-		bi *BalanceIncrease
+		account *types.Address
+		bi      *BalanceIncrease
 	}
 	nonceChange struct {
 		account *types.Address
@@ -285,6 +286,26 @@ func (ch balanceIncreaseTransfer) dirtied() *types.Address {
 
 func (ch balanceIncreaseTransfer) revert(s *IntraBlockState) {
 	ch.bi.transferred = false
+	// Undo the fold itself, not just the flag. setStateObject adds the
+	// pending increase into the object's balance; for the createObject
+	// path the object is removed by its own journal entry, but an object
+	// materialized from the DB (getStateObject) is NOT journaled, so
+	// without this it survives the revert carrying DB+increase and a
+	// later same-block read (or write) sees/commits a phantom balance.
+	//
+	// Deliberately a direct map lookup, never getStateObject: if the
+	// object-removal entry already reverted (LIFO order depends on the
+	// caller), getStateObject would re-materialize the account from the
+	// DB and subtract from a balance that never had the increase folded
+	// in. A missing object means there is nothing to undo.
+	if ch.account == nil {
+		return
+	}
+	if obj, live := s.stateObjects[*ch.account]; live && obj != nil {
+		if obj.data.Balance.Cmp(&ch.bi.increase) >= 0 {
+			obj.data.Balance.Sub(&obj.data.Balance, &ch.bi.increase)
+		}
+	}
 }
 func (ch nonceChange) revert(s *IntraBlockState) {
 	if obj := s.getStateObject(*ch.account); obj != nil {
