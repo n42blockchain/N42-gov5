@@ -29,7 +29,6 @@ import (
 	"github.com/n42blockchain/N42/crypto/bls"
 	blscommon "github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/internal/consensus"
-	"github.com/n42blockchain/N42/internal/consensus/misc"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
@@ -445,18 +444,18 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 	if header.GasUsed > header.GasLimit {
 		return fmt.Errorf("gasUsed %d exceeds gasLimit %d", header.GasUsed, header.GasLimit)
 	}
-	// EIP-1559 economics (BaseFee derivation + gas-limit bounds) are
-	// enforced ONLY for a proposal extending the current head: replay-v2
-	// bases copy source BaseFee across a gap-filled timeline, so strict
-	// re-derivation over imported history would wedge deep catch-up.
-	// Every live proposal must satisfy it (the miner uses CalcBaseFee).
-	if cfg := chain.Config(); cfg != nil && cfg.IsLondon(header.Number.Uint64()) {
-		if cur := chain.CurrentBlock(); cur != nil && cur.Hash() == header.ParentHash {
-			if err := misc.VerifyEip1559Header(cfg, parentHeader, header); err != nil {
-				return fmt.Errorf("eip-1559 header check: %w", err)
-			}
-		}
-	}
+	// EIP-1559 BaseFee re-derivation is deliberately NOT enforced here.
+	// A head-adjacency gate was tried and is unsound: the FIRST header of
+	// every catch-up batch extends the local head by definition, so a
+	// laggard importing replay-v2 history (whose BaseFee is copied across
+	// a gap-filled timeline and does not re-derive) would wedge at the
+	// first batch boundary — and which headers got checked was
+	// timing-dependent (CurrentBlock advances concurrently with batch
+	// verification). A public multi-validator deployment needs a
+	// provenance watermark (e.g. replay head recorded in DbInfo at reseed)
+	// below which the check is skipped and above which it is enforced
+	// unconditionally; on the permissioned fleet every producer derives
+	// BaseFee via misc.CalcBaseFee, so the economic risk is nil.
 
 	// MobileAnchor is a scheduled header fork, not an optional producer hint.
 	// Enforce the RLP shape on both sides of the boundary so a validator started

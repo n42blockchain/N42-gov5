@@ -254,8 +254,12 @@ func (s *Service) writeBlocks(blocks []*block.Block) (int, error) {
 		blockNum := num.Uint64()
 		hash := blk.Hash()
 
-		// Skip if we already have this block
-		if rawdb.HasHeader(tx, hash, blockNum) {
+		// Skip only when BOTH header and body are present (either hot or
+		// served by the era store). Header-only skipping would foreclose
+		// the sole self-heal path for a sealed range whose exec era is
+		// damaged/pruned: the chain era answers HasHeader while the body
+		// is genuinely gone.
+		if rawdb.HasHeader(tx, hash, blockNum) && rawdb.HasBlock(tx, hash, blockNum) {
 			continue
 		}
 
