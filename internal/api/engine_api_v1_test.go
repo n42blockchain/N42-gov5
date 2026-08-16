@@ -134,6 +134,48 @@ func TestEngineAPIV2RejectsPreCancunBlobFieldsAsInvalidParams(t *testing.T) {
 	}
 }
 
+func TestEngineAPIV2ValidatesWithdrawalsAgainstShanghaiFork(t *testing.T) {
+	t.Parallel()
+
+	engine := &EngineAPIV1{api: &BlockChainAPI{api: &API{chainConfig: &params.ChainConfig{
+		ShanghaiTime: big.NewInt(10),
+	}}}}
+	tests := []struct {
+		name        string
+		timestamp   uint64
+		withdrawals []*Withdrawal
+		wantError   bool
+	}{
+		{name: "missing at Shanghai", timestamp: 10, withdrawals: nil, wantError: true},
+		{name: "present before Shanghai", timestamp: 9, withdrawals: []*Withdrawal{}, wantError: true},
+		{name: "missing before Shanghai", timestamp: 9, withdrawals: nil, wantError: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resp, err := engine.NewPayloadV2(context.Background(), &ExecutionPayloadV2{
+				ExecutionPayloadV1: ExecutionPayloadV1{Timestamp: hexutil.Uint64(test.timestamp)},
+				Withdrawals:        test.withdrawals,
+			})
+			if test.wantError {
+				if resp != nil {
+					t.Fatalf("response = %#v, want nil", resp)
+				}
+				coded, ok := err.(interface{ ErrorCode() int })
+				if !ok || coded.ErrorCode() != -32602 {
+					t.Fatalf("error = %v (%T), want -32602", err, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("error = %v, want nil", err)
+			}
+			if resp == nil || resp.Status != PayloadStatusInvalid {
+				t.Fatalf("response = %#v, want ordinary payload validation result", resp)
+			}
+		})
+	}
+}
+
 func TestLocalTransitionConfigurationUsesChainConfigTTD(t *testing.T) {
 	t.Parallel()
 
@@ -203,6 +245,16 @@ func TestEngineAPIV1BuildsAndImportsMinimalPayload(t *testing.T) {
 	}
 	if payload.BlockHash == (types.Hash{}) {
 		t.Fatal("GetPayloadV1().BlockHash is empty")
+	}
+	payloadV2, err := engine.GetPayloadV2(context.Background(), *forkchoiceResp.PayloadID)
+	if err != nil {
+		t.Fatalf("GetPayloadV2() for V1-built payload error = %v", err)
+	}
+	if payloadV2.ExecutionPayload.BlockHash != payload.BlockHash {
+		t.Fatalf("GetPayloadV2().BlockHash = %s, want %s", payloadV2.ExecutionPayload.BlockHash, payload.BlockHash)
+	}
+	if payloadV2.ExecutionPayload.Withdrawals != nil {
+		t.Fatalf("GetPayloadV2().Withdrawals = %#v, want nil before Shanghai", payloadV2.ExecutionPayload.Withdrawals)
 	}
 
 	newPayloadResp, err := engine.NewPayloadV1(context.Background(), payload)
@@ -297,8 +349,8 @@ func TestForkchoiceUpdatedV2UsesOverlayHeadHashWhenAttrsNil(t *testing.T) {
 		blk:    genesisBlock,
 	}
 	cfg := &params.ChainConfig{
-		LondonBlock:   big.NewInt(0),
-		ShanghaiBlock: big.NewInt(10),
+		LondonBlock:  big.NewInt(0),
+		ShanghaiTime: big.NewInt(15000),
 	}
 	api := &API{
 		bc:            chain,

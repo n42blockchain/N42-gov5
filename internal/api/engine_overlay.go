@@ -25,6 +25,7 @@ type engineBuiltPayload struct {
 	v2                *ExecutionPayloadV2
 	v3                *ExecutionPayloadV3
 	v4                *ExecutionPayloadV4
+	blockValue        *big.Int
 	blobsBundle       *BlobsBundleV1
 	executionRequests []hexutil.Bytes
 }
@@ -580,7 +581,7 @@ func buildExecutionPayloadV2(parent block.IBlock, parentHash types.Hash, attrs *
 		Withdrawals:        cloneWithdrawals(attrs.Withdrawals),
 	}
 	payload.BlockHash = ethCompatibleEngineBlockHash(blockFromExecutionPayloadV1(v1), cfg, enginePayloadHashOptions{
-		includeWithdrawals: true,
+		includeWithdrawals: payload.Withdrawals != nil,
 		withdrawals:        payload.Withdrawals,
 	})
 	return payload
