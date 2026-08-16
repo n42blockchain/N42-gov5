@@ -618,6 +618,13 @@ func (e *EngineAPIV1) adoptForkchoiceHead(hash types.Hash) bool {
 		return false
 	}
 	if e.canonicalHeader(hash) != nil {
+		// The persistent ETH EL adapter writes a validated payload before
+		// forkchoiceUpdated. Even though the header is already canonical in
+		// chaindata, the shared overlay still has to adopt it so public eth_*
+		// RPC methods observe the same latest head as the Engine API.
+		if blk := overlay.blockByHash(hash); blk != nil {
+			overlay.importBlock(blk, hash, overlay.receiptsByBlockHash(hash))
+		}
 		return true
 	}
 	blk := overlay.blockByHash(hash)

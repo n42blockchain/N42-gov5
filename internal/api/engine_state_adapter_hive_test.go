@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/n42blockchain/N42/common"
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
@@ -28,6 +29,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	logv3 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 )
@@ -196,6 +198,46 @@ func TestHiveEngineStateAdapterForkchoiceUpdatedTracksMDBXHead(t *testing.T) {
 	require.NotNil(t, head)
 	require.Equal(t, payload.BlockHash, ethCompatibleBlockHash(head, genesis.Config))
 	require.Equal(t, payload.BlockHash, adapter.CurrentHeadHash())
+}
+
+func TestHiveEngineStateAdapterForkchoiceUpdatedExposesLatestBlock(t *testing.T) {
+	db, genesis, genesisBlock := newHiveEngineGenesisMDBXDB(t)
+	defer db.Close()
+
+	chain := &canonicalCheckChainStub{
+		header: genesisBlock.Header().(*block.Header),
+		blk:    genesisBlock,
+		config: genesis.Config,
+		db:     db,
+	}
+	backend := &API{
+		bc:            chain,
+		db:            db,
+		engine:        &apiTestEngine{},
+		chainConfig:   genesis.Config,
+		engineOverlay: newEngineOverlay(),
+	}
+	engine := NewEngineAPIV1(NewBlockChainAPI(backend))
+	engine.SetStateAdapter(NewEngineStateAdapter(db, nil, genesis.Config, &apiTestEngine{}))
+
+	payload := hiveFirstEmptyPayload()
+	newPayloadResp, err := engine.NewPayloadV1(context.Background(), payload)
+	require.NoError(t, err)
+	require.Equal(t, PayloadStatusValid, newPayloadResp.Status)
+
+	forkchoiceResp, err := engine.ForkchoiceUpdatedV1(context.Background(), &ForkchoiceStateV1{
+		HeadBlockHash:      payload.BlockHash,
+		SafeBlockHash:      payload.BlockHash,
+		FinalizedBlockHash: payload.ParentHash,
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, PayloadStatusValid, forkchoiceResp.PayloadStatus.Status)
+
+	latest, err := NewBlockChainAPI(backend).GetBlockByNumber(context.Background(), jsonrpc.LatestBlockNumber, false)
+	require.NoError(t, err)
+	require.NotNil(t, latest)
+	require.Equal(t, avmtypes.FromastHash(payload.BlockHash), latest["hash"])
+	require.Equal(t, uint64(payload.BlockNumber), latest["number"].(*hexutil.Big).ToInt().Uint64())
 }
 
 func TestHiveEngineNewPayloadRejectsMismatchedFirstStateRoot(t *testing.T) {
