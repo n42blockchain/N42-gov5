@@ -79,7 +79,15 @@ var (
 	// (EOF is not on any scheduled Ethereum fork).
 	osakaEOFInstructionSet       = withEOF(newOsakaInstructionSet())
 	fusakaEOFInstructionSet      = withEOF(newFusakaInstructionSet())
-	glamsterdamEOFInstructionSet = withEOF(newGlamsterdamInstructionSet())
+	glamsterdamEOFInstructionSet = func() JumpTable {
+		jt := withEOF(newGlamsterdamInstructionSet())
+		// EIP-8038 parity: enableEOF installs EOFCREATE at the legacy
+		// 32000; under Glamsterdam every creation path charges
+		// CREATE_ACCESS (state gas billed inside create).
+		jt[EOFCREATE].constantGas = params.CreateAccessEIP8038
+		validateAndFillMaxStack(&jt)
+		return jt
+	}()
 )
 
 // JumpTable contains the EVM opcodes supported at a given fork.
@@ -125,6 +133,11 @@ func newGlamsterdamInstructionSet() JumpTable {
 	// evm.create. Same split for CREATE2.
 	instructionSet[CREATE].constantGas = params.CreateAccessEIP8038
 	instructionSet[CREATE2].constantGas = params.CreateAccessEIP8038
+	// SELFDESTRUCT: enable6780 (inherited via Fusaka) wired the Cancun gas
+	// fn with HARDCODED 2929 constants; re-wire the ACL-based fn whose
+	// cold-access and empty-beneficiary-sweep branches carry the 8038/8037
+	// repricing (cold 3000; sweep 9000+183600). Refunds stay off (3529).
+	instructionSet[SELFDESTRUCT].dynamicGas = gasSelfdestructEIP3529
 	validateAndFillMaxStack(&instructionSet)
 	return instructionSet
 }

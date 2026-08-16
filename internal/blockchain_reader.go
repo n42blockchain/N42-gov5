@@ -346,6 +346,13 @@ func (bc *BlockChain) GetLogs(blockHash types.Hash) ([][]*block.Log, error) {
 // StateAt returns a new state at the given block number.
 // Returns interface{} to avoid circular dependency.
 func (bc *BlockChain) StateAt(tx kv.Tx, blockNr uint64) interface{} {
+	// Below the sealed horizon the changesets are in aux era files; the
+	// PlainState history walk would resolve into the gap and produce
+	// silently wrong state (zero/latest values). Refuse instead.
+	if se := rawdb.AncientSealedEnd(); se > 0 && blockNr < se {
+		log.Warn("StateAt below sealed horizon refused", "block", blockNr, "sealedEnd", se)
+		return nil
+	}
 	reader := state.NewPlainState(tx, blockNr+1)
 	return state.New(reader)
 }

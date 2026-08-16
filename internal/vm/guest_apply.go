@@ -104,6 +104,18 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 	if gasRemaining < intrinsicGas {
 		return nil, errGuestIntrinsicGas
 	}
+	// EIP-7623/7976 calldata floor: mirror the host's UP-FRONT rejection
+	// (state_transition.go). The floor may legitimately exceed intrinsic
+	// gas; without this reject, gas < floor later underflows the clamp and
+	// the EIP-7778 pool credit (gas−blockGasUsed wraps to ~2^64), either
+	// panicking the pool or neutering the block gas limit.
+	var floorDataGas uint64
+	if rules.IsPrague {
+		floorDataGas = FloorDataGas(msg.Data(), rules.IsGlamsterdam)
+		if gas < floorDataGas {
+			return nil, errGuestIntrinsicGas
+		}
+	}
 	gasRemaining -= intrinsicGas
 
 	// Set up access list (EIP-2929).
@@ -130,13 +142,9 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 	// Step 3: Refund gas — return unused gas * gasPrice to sender.
 	// EIP-3529: max refund = gasUsed / 5 after London (was gasUsed / 2 before).
 	gasUsed := gas - gasRemaining
-	// EIP-7623/7976 calldata floor and EIP-7778 block accounting (mirrors
-	// internal.StateTransition): the floor caps the post-refund remainder,
-	// the block figure is the pre-refund max(gasUsed, floor).
-	var floorDataGas uint64
-	if rules.IsPrague {
-		floorDataGas = FloorDataGas(msg.Data(), rules.IsGlamsterdam)
-	}
+	// EIP-7778 block accounting (mirrors internal.StateTransition): the
+	// floor (validated up-front: gas >= floorDataGas) caps the post-refund
+	// remainder; the block figure is the pre-refund max(gasUsed, floor).
 	blockGasUsed := gasUsed
 	if rules.IsGlamsterdam && floorDataGas > blockGasUsed {
 		blockGasUsed = floorDataGas
@@ -200,12 +208,10 @@ func ApplyMessageForGuest(evm VMInterface, msg transaction.Message, gp *common.G
 // guestIntrinsicGas computes the intrinsic gas cost for a transaction.
 // Returns math.MaxUint64 on overflow to ensure the transaction is rejected.
 //
-// KNOWN GAP (Glamsterdam): the guest replay path does not yet mirror
-// EIP-7778 block-gas accounting (cumulative gas uses post-refund UsedGas)
-// or the EIP-7623/7976 calldata floor, so guest replay of a Glamsterdam
-// block diverges from the canonical processor. No proven chain activates
-// Glamsterdam yet; close this before proving one (tracked with the
-// EIP-8037 reservoir follow-up).
+// The EIP-7623/7976 floor and EIP-7778 block accounting are mirrored in
+// ApplyMessageForGuest (up-front floor reject, BlockGasUsed result). The
+// remaining known deviation is the EIP-8037 reservoir approximation
+// shared with the host (direct charge; awaiting devnet parameters).
 func guestIntrinsicGas(data []byte, accessList transaction.AccessList, isCreate bool, rules *params.Rules, hasValue, isSelfTransfer bool) uint64 {
 	var gas uint64
 	if rules.IsGlamsterdam {
