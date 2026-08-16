@@ -269,6 +269,7 @@ func (a *EngineStateAdapter) SetSnapshotCold(r state.StateReader) { a.snapshotCo
 
 type enginePayloadExecutionResult struct {
 	stateRoot       types.Hash
+	receipts        block.Receipts
 	validationError error
 }
 
@@ -1039,7 +1040,7 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 		}
 	}
 
-	return &enginePayloadExecutionResult{stateRoot: computedRoot}, nil
+	return &enginePayloadExecutionResult{stateRoot: computedRoot, receipts: receipts}, nil
 }
 
 // ForkchoiceUpdated updates the canonical chain head.

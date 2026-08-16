@@ -224,6 +224,7 @@ func TestHiveEngineStateAdapterForkchoiceUpdatedExposesLatestBlock(t *testing.T)
 	newPayloadResp, err := engine.NewPayloadV1(context.Background(), payload)
 	require.NoError(t, err)
 	require.Equal(t, PayloadStatusValid, newPayloadResp.Status)
+	require.NotNil(t, backend.engineOverlay.receiptsByBlockHash(payload.BlockHash))
 
 	forkchoiceResp, err := engine.ForkchoiceUpdatedV1(context.Background(), &ForkchoiceStateV1{
 		HeadBlockHash:      payload.BlockHash,

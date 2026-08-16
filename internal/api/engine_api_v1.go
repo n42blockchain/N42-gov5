@@ -749,7 +749,7 @@ func (e *EngineAPIV1) executeOrValidateWithBody(blk block.IBlock, blockHash, par
 			return e.invalidPayloadStatus(result.validationError.Error(), blk, blockHash, &parentHash, body), nil
 		}
 		if overlay := e.overlay(); overlay != nil {
-			overlay.stageBlockWithBody(blk, blockHash, nil, nil, true, body)
+			overlay.stageBlockWithBody(blk, blockHash, nil, result.receipts, true, body)
 		}
 		return validPayloadResponse(blockHash), nil
 	}
