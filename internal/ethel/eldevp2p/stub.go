@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
@@ -64,5 +65,7 @@ func (s *Service) Start(context.Context) error {
 func (s *Service) Stop() error { return nil }
 
 func (s *Service) SetEngineSyncBridge(EngineBlockKnownFunc, EngineBlockImporter) {}
+
+func (s *Service) SetTxPool(common.ITxsPool) {}
 
 func (s *Service) RequestMissingAncestor(types.Hash) {}

@@ -488,6 +488,7 @@ func run(c *cli.Context) error {
 			}
 		}
 		service := eldevp2p.New(eldcfg, n, genesisHash, genesisTime)
+		service.SetTxPool(txPool)
 		if engineService != nil {
 			service.SetEngineSyncBridge(engineService.HasBlockHash, engineService.ImportSyncedParisBlock)
 			engineService.SetMissingAncestorObserver(service.RequestMissingAncestor)

@@ -14,12 +14,16 @@ import (
 	"io"
 	"math/big"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	gethp2p "github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/rlp"
 
+	"github.com/n42blockchain/N42/common"
 	n42block "github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/network/eth69"
 	"github.com/n42blockchain/N42/log"
@@ -85,6 +89,8 @@ type EthHandler struct {
 	networkID   uint64
 	genesis     types.Hash
 	genesisTime uint64
+	txpool      common.ITxsPool
+	requestID   atomic.Uint64
 
 	// rh is the optional active-download callback. Nil = passive mode.
 	rh ResponseHandler
@@ -106,6 +112,10 @@ const maxTrustedPeers = 64
 // SetResponseHandler swaps in (or out) the active-download callback.
 // Must be called BEFORE Start so the peer loop reads it consistently.
 func (h *EthHandler) SetResponseHandler(rh ResponseHandler) { h.rh = rh }
+
+// SetTxPool enables eth/68+ transaction announcements and pooled transaction
+// request handling. It must be called before Start.
+func (h *EthHandler) SetTxPool(pool common.ITxsPool) { h.txpool = pool }
 
 // setTrustedCallbacks wires the callbacks before the server accepts peers.
 func (h *EthHandler) setTrustedCallbacks(mark, unmark func(*enode.Node)) {
@@ -370,6 +380,11 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter, versi
 		h.rh.OnPeerHandshake(peerID, rw, peerHead, peerHash, version)
 		defer h.rh.OnPeerDisconnect(peerID)
 	}
+	announceDone := make(chan struct{})
+	defer close(announceDone)
+	if h.txpool != nil {
+		go h.announcePooledTransactions(rw, announceDone)
+	}
 
 	// Message loop. A ReadMsg error means the connection itself is gone → exit
 	// (cleanly for a peer-initiated shutdown). But a per-message HANDLING error
@@ -408,8 +423,11 @@ func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter,
 		return nil
 
 	case 2:
-		// Peer broadcasts transactions — forward to mempool (TODO).
-		return nil
+		var packet []rlp.RawValue
+		if err := msg.Decode(&packet); err != nil {
+			return fmt.Errorf("decode Transactions: %w", err)
+		}
+		return h.acceptPooledTransactions(packet)
 
 	case 3:
 		return h.handleGetBlockHeaders(rw, msg)
@@ -447,17 +465,40 @@ func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter,
 		return nil
 
 	case 8:
-		return nil // ignore
+		var packet eth69.NewPooledTransactionHashesPacket
+		if err := msg.Decode(&packet); err != nil {
+			return fmt.Errorf("decode NewPooledTransactionHashes: %w", err)
+		}
+		if len(packet.Hashes) != len(packet.Types) || len(packet.Hashes) != len(packet.Sizes) {
+			return fmt.Errorf("invalid pooled transaction announcement lengths")
+		}
+		if h.txpool == nil {
+			return nil
+		}
+		hashes := make([]types.Hash, 0, len(packet.Hashes))
+		for _, hash := range packet.Hashes {
+			if !h.txpool.Has(hash) {
+				hashes = append(hashes, hash)
+			}
+		}
+		if len(hashes) == 0 {
+			return nil
+		}
+		requestID := h.requestID.Add(1)
+		return gethp2p.Send(rw, 9, &eth69.GetPooledTransactionsPacket{RequestID: requestID, Hashes: hashes})
 
 	case 9:
-		return nil // TODO: serve from txpool
+		return h.handleGetPooledTransactions(rw, msg)
 
 	case 15:
 		return nil // TODO: serve from freezer
 
 	case 10:
-		// 0x0a PooledTransactions response — we never asked, ignore.
-		return nil
+		var packet pooledTransactionsPacket
+		if err := msg.Decode(&packet); err != nil {
+			return fmt.Errorf("decode PooledTransactions: %w", err)
+		}
+		return h.acceptPooledTransactions(packet.Transactions)
 
 	case 16:
 		var resp blockReceiptsPacket
@@ -493,6 +534,132 @@ func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter,
 		// can extend handling later, but keep the peer.
 		log.Debug("devp2p: unhandled msg", "peer", peerID[:16], "code", msg.Code)
 		return nil
+	}
+}
+
+type pooledTransactionsPacket struct {
+	RequestID    uint64
+	Transactions []rlp.RawValue
+}
+
+func (h *EthHandler) handleGetPooledTransactions(rw gethp2p.MsgReadWriter, msg gethp2p.Msg) error {
+	var req eth69.GetPooledTransactionsPacket
+	if err := msg.Decode(&req); err != nil {
+		return fmt.Errorf("decode GetPooledTransactions: %w", err)
+	}
+	resp := pooledTransactionsPacket{RequestID: req.RequestID, Transactions: []rlp.RawValue{}}
+	if h.txpool == nil {
+		return gethp2p.Send(rw, 10, &resp)
+	}
+	for _, hash := range req.Hashes {
+		tx := h.txpool.GetTx(hash)
+		if tx == nil {
+			continue
+		}
+		encoded, err := transaction.EncodeEthereumPooledTransaction(tx)
+		if err != nil {
+			continue
+		}
+		raw, err := pooledTransactionRawValue(encoded)
+		if err != nil {
+			continue
+		}
+		resp.Transactions = append(resp.Transactions, raw)
+	}
+	return gethp2p.Send(rw, 10, &resp)
+}
+
+func pooledTransactionRawValue(encoded []byte) (rlp.RawValue, error) {
+	if len(encoded) == 0 {
+		return nil, errors.New("empty pooled transaction")
+	}
+	if encoded[0] >= 0xc0 {
+		return append(rlp.RawValue(nil), encoded...), nil
+	}
+	wrapped, err := rlp.EncodeToBytes(encoded)
+	return rlp.RawValue(wrapped), err
+}
+
+func decodePooledTransactionRaw(raw rlp.RawValue) (*transaction.Transaction, error) {
+	encoded := []byte(raw)
+	if len(encoded) == 0 {
+		return nil, errors.New("empty pooled transaction")
+	}
+	if encoded[0] < 0xc0 {
+		var typed []byte
+		if err := rlp.DecodeBytes(encoded, &typed); err != nil {
+			return nil, err
+		}
+		encoded = typed
+	}
+	return transaction.DecodeEthereumTransaction(encoded)
+}
+
+func (h *EthHandler) acceptPooledTransactions(rawTxs []rlp.RawValue) error {
+	if h.txpool == nil || len(rawTxs) == 0 {
+		return nil
+	}
+	head, _, err := h.provider.CurrentHead()
+	if err != nil || head == nil {
+		return err
+	}
+	signer := transaction.MakeSignerWithTimestamp(h.chainConfig, head.Number64().ToBig(), head.Time)
+	txs := make([]*transaction.Transaction, 0, len(rawTxs))
+	for _, raw := range rawTxs {
+		tx, err := decodePooledTransactionRaw(raw)
+		if err != nil {
+			continue
+		}
+		from, err := transaction.Sender(signer, tx)
+		if err != nil {
+			continue
+		}
+		tx.SetFrom(from)
+		txs = append(txs, tx)
+	}
+	if len(txs) > 0 {
+		h.txpool.AddRemotes(txs)
+	}
+	return nil
+}
+
+func (h *EthHandler) announcePooledTransactions(rw gethp2p.MsgReadWriter, done <-chan struct{}) {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	known := make(map[types.Hash]struct{})
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			txs, err := h.txpool.GetTransaction()
+			if err != nil {
+				continue
+			}
+			packet := eth69.NewPooledTransactionHashesPacket{}
+			for _, tx := range txs {
+				if tx == nil {
+					continue
+				}
+				hash := tx.Hash()
+				if _, ok := known[hash]; ok {
+					continue
+				}
+				encoded, err := transaction.EncodeEthereumPooledTransaction(tx)
+				if err != nil {
+					continue
+				}
+				known[hash] = struct{}{}
+				packet.Types = append(packet.Types, tx.Type())
+				packet.Sizes = append(packet.Sizes, uint32(len(encoded)))
+				packet.Hashes = append(packet.Hashes, hash)
+			}
+			if len(packet.Hashes) > 0 {
+				if err := gethp2p.Send(rw, 8, &packet); err != nil {
+					return
+				}
+			}
+		}
 	}
 }
 

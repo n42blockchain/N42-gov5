@@ -47,6 +47,17 @@ func TestDecodeEthereumBlobTransactionNetworkWrapper(t *testing.T) {
 	if sidecar == nil || len(sidecar.Blobs) != 1 || sidecar.Blobs[0][0] != 1 {
 		t.Fatalf("decoded sidecar = %#v", sidecar)
 	}
+	pooled, err := EncodeEthereumPooledTransaction(tx)
+	if err != nil {
+		t.Fatalf("EncodeEthereumPooledTransaction() error = %v", err)
+	}
+	roundTrip, err := DecodeEthereumTransaction(pooled)
+	if err != nil {
+		t.Fatalf("DecodeEthereumTransaction(pooled) error = %v", err)
+	}
+	if got := roundTrip.BlobTxSidecar(); got == nil || len(got.Blobs) != 1 || got.Blobs[0][0] != 1 {
+		t.Fatalf("pooled sidecar = %#v", got)
+	}
 }
 
 func TestEthereumTransactionRoundTrip(t *testing.T) {
