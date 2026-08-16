@@ -114,11 +114,13 @@ const maxPlausibleHeaderSize = 8 << 10
 // rlp(block): its EIP-2718 raw encoding plus the RLP string header that wraps it
 // as an element of the block's transaction list.
 func txPayloadSize(tx *transaction.Transaction) (int, error) {
-	enc, err := transaction.EncodeEthereumTransaction(tx)
+	// Memoized: admit() consults this once per candidate per build, and a full
+	// re-encode per call was ~300ms of a 450ms fillTx on a 22,857-tx block.
+	n, err := tx.EncodedSize()
 	if err != nil {
 		return 0, err
 	}
-	return len(enc) + rlpStringOverhead(len(enc)), nil
+	return n + rlpStringOverhead(n), nil
 }
 
 // bundlePayloadSize returns the combined block-payload size of an atomic bundle.

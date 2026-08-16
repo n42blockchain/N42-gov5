@@ -25,8 +25,10 @@ package rawdb
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"math"
+	"sort"
 
 	"github.com/RoaringBitmap/roaring"
 
@@ -56,55 +58,147 @@ func WriteLogIndex(tx kv.RwTx, blockNum uint64, receipts block.Receipts) error {
 	}
 	blockNum32 := uint32(blockNum)
 
-	// Collect unique addresses and topics from all logs.
+	logs := make([]*block.Log, 0, len(receipts))
+	for _, r := range receipts {
+		logs = append(logs, r.Logs...)
+	}
+	return writeLogIndexKeys(tx, blockNum, blockNum32, logs)
+}
+
+// writeLogIndexKeys is the shared body of WriteLogIndex and
+// WriteLogIndexFromLogs.
+//
+// The keys are sorted before writing. Ranging over the dedup maps directly
+// meant every block put into the two index trees in Go's randomized map order,
+// so consecutive writes landed on unrelated B-tree pages; sorted keys walk the
+// tree in order and keep the touched page set small.
+func writeLogIndexKeys(tx kv.RwTx, blockNum uint64, blockNum32 uint32, logs []*block.Log) error {
 	addrSet := make(map[types.Address]struct{})
 	topicSet := make(map[types.Hash]struct{})
-	for _, r := range receipts {
-		for _, l := range r.Logs {
-			addrSet[l.Address] = struct{}{}
-			for _, t := range l.Topics {
-				topicSet[t] = struct{}{}
-			}
+	for _, l := range logs {
+		addrSet[l.Address] = struct{}{}
+		for _, t := range l.Topics {
+			topicSet[t] = struct{}{}
 		}
 	}
 
-	buf := bytes.NewBuffer(nil)
-
-	// Update address index.
+	addrs := make([][]byte, 0, len(addrSet))
 	for addr := range addrSet {
-		if err := addToLogIndex(tx, modules.LogAddressIndex, addr[:], blockNum32, buf); err != nil {
+		a := addr
+		addrs = append(addrs, a[:])
+	}
+	topics := make([][]byte, 0, len(topicSet))
+	for topic := range topicSet {
+		t := topic
+		topics = append(topics, t[:])
+	}
+	sort.Slice(addrs, func(i, j int) bool { return bytes.Compare(addrs[i], addrs[j]) < 0 })
+	sort.Slice(topics, func(i, j int) bool { return bytes.Compare(topics[i], topics[j]) < 0 })
+
+	buf := bytes.NewBuffer(nil)
+	for _, addr := range addrs {
+		if err := addToLogIndex(tx, modules.LogAddressIndex, addr, blockNum32, buf); err != nil {
 			return fmt.Errorf("write log address index for block %d: %w", blockNum, err)
 		}
 	}
-
-	// Update topic index.
-	for topic := range topicSet {
-		if err := addToLogIndex(tx, modules.LogTopicIndex, topic[:], blockNum32, buf); err != nil {
+	for _, topic := range topics {
+		if err := addToLogIndex(tx, modules.LogTopicIndex, topic, blockNum32, buf); err != nil {
 			return fmt.Errorf("write log topic index for block %d: %w", blockNum, err)
 		}
 	}
-
 	return nil
 }
 
-// addToLogIndex reads the existing bitmap for `key` from `bucket`, adds
-// `blockNum`, then re-writes the (potentially chunked) bitmap back to the DB.
+// openChunkKey builds the key of the one mutable ("open") chunk of a log-index
+// entry. bitmapdb.WalkChunkWithKeys keys sealed chunks by their maximum block
+// number and the trailing chunk by ^uint32(0), so the open chunk always sorts
+// last and can be fetched with a single point read.
+func openChunkKey(key []byte) []byte {
+	k := make([]byte, len(key)+4)
+	copy(k, key)
+	binary.BigEndian.PutUint32(k[len(key):], ^uint32(0))
+	return k
+}
+
+// addToLogIndex adds blockNum to the bitmap of `key`.
+//
+// Block numbers arrive in increasing order, and a chunk is sealed once it
+// reaches ChunkLimit, so every sealed chunk is immutable: appending can only
+// ever touch the open chunk. This reads that one chunk, adds the number, and
+// writes it back — O(ChunkLimit) per key per block.
+//
+// It used to read every chunk of the whole history back to block 0, OR them
+// together, add one number, re-chunk the entire bitmap and re-write every
+// chunk, on every block. That was O(total history per key) on the block-commit
+// critical path, and it dominated the node: 87% of all heap allocation and ~40%
+// of import CPU went to the roaring intersect/union churn it caused (~20 MB of
+// garbage per block on a chain doing one small block every 2 s).
 func addToLogIndex(tx kv.RwTx, bucket string, key []byte, blockNum uint32, buf *bytes.Buffer) error {
-	// Read existing bitmap covering [0, MaxUint32].
+	openKey := openChunkKey(key)
+	v, err := tx.GetOne(bucket, openKey)
+	if err != nil {
+		return err
+	}
+	bm := roaring.New()
+	if len(v) > 0 {
+		if _, err := bm.ReadFrom(bytes.NewReader(v)); err != nil {
+			return err
+		}
+	}
+
+	// Deep reorg: a block number below the open chunk's floor would extend it
+	// backwards past a sealed chunk's maximum, and bitmapdb.Get stops scanning
+	// at the first chunk whose key reaches its `to` bound — so a stray low
+	// number parked in the open chunk could be missed by a bounded range query.
+	// Rare enough to just fall back to the old full rewrite, which re-derives
+	// every boundary.
+	if bm.GetCardinality() > 0 && blockNum < bm.Minimum() {
+		return rewriteLogIndex(tx, bucket, key, blockNum, buf)
+	}
+
+	bm.Add(blockNum)
+	bm.RunOptimize()
+
+	if bm.GetSerializedSizeInBytes() <= bitmapdb.ChunkLimit {
+		return putBitmap(tx, bucket, openKey, bm, buf)
+	}
+
+	// Over the limit: seal the left part under its own maximum and keep the
+	// remainder as the open chunk. CutLeft leaves at least the maximum behind,
+	// so the open chunk is never emptied here.
+	left := bitmapdb.CutLeft(bm, bitmapdb.ChunkLimit)
+	if left == nil || left.GetCardinality() == 0 {
+		return putBitmap(tx, bucket, openKey, bm, buf)
+	}
+	sealedKey := make([]byte, len(key)+4)
+	copy(sealedKey, key)
+	binary.BigEndian.PutUint32(sealedKey[len(key):], left.Maximum())
+	if err := putBitmap(tx, bucket, sealedKey, left, buf); err != nil {
+		return err
+	}
+	return putBitmap(tx, bucket, openKey, bm, buf)
+}
+
+// rewriteLogIndex is the original whole-history read-modify-write. It is now
+// only the deep-reorg fallback of addToLogIndex, where chunk boundaries have to
+// be recomputed from scratch.
+func rewriteLogIndex(tx kv.RwTx, bucket string, key []byte, blockNum uint32, buf *bytes.Buffer) error {
 	bm, err := bitmapdb.Get(tx, bucket, key, 0, math.MaxUint32)
 	if err != nil {
 		return err
 	}
 	bm.Add(blockNum)
-
-	// Re-write chunked bitmap.
 	return bitmapdb.WalkChunkWithKeys(key, bm, bitmapdb.ChunkLimit, func(chunkKey []byte, chunk *roaring.Bitmap) error {
-		buf.Reset()
-		if _, err := chunk.WriteTo(buf); err != nil {
-			return err
-		}
-		return tx.Put(bucket, chunkKey, types.CopyBytes(buf.Bytes()))
+		return putBitmap(tx, bucket, chunkKey, chunk, buf)
 	})
+}
+
+func putBitmap(tx kv.RwTx, bucket string, chunkKey []byte, bm *roaring.Bitmap, buf *bytes.Buffer) error {
+	buf.Reset()
+	if _, err := bm.WriteTo(buf); err != nil {
+		return err
+	}
+	return tx.Put(bucket, chunkKey, types.CopyBytes(buf.Bytes()))
 }
 
 // PruneLogIndex removes all log index entries whose shard key (maximum block
@@ -229,28 +323,5 @@ func WriteLogIndexFromLogs(tx kv.RwTx, blockNum uint64, logs []*block.Log) error
 	if blockNum > math.MaxUint32 {
 		return fmt.Errorf("block number %d exceeds uint32 range for roaring bitmap", blockNum)
 	}
-	blockNum32 := uint32(blockNum)
-
-	addrSet := make(map[types.Address]struct{})
-	topicSet := make(map[types.Hash]struct{})
-	for _, l := range logs {
-		addrSet[l.Address] = struct{}{}
-		for _, t := range l.Topics {
-			topicSet[t] = struct{}{}
-		}
-	}
-
-	buf := bytes.NewBuffer(nil)
-
-	for addr := range addrSet {
-		if err := addToLogIndex(tx, modules.LogAddressIndex, addr[:], blockNum32, buf); err != nil {
-			return fmt.Errorf("write log address index for block %d: %w", blockNum, err)
-		}
-	}
-	for topic := range topicSet {
-		if err := addToLogIndex(tx, modules.LogTopicIndex, topic[:], blockNum32, buf); err != nil {
-			return fmt.Errorf("write log topic index for block %d: %w", blockNum, err)
-		}
-	}
-	return nil
+	return writeLogIndexKeys(tx, blockNum, uint32(blockNum), logs)
 }

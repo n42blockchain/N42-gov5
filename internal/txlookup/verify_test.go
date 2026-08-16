@@ -32,7 +32,7 @@ func TestV2FullVerify(t *testing.T) {
 	// BuildRange aligns to SegmentSize, so we pass the raw range.
 	const endBlock = 56000
 	tmpDir := t.TempDir()
-	builder := NewSegmentBuilder(f, tmpDir)
+	builder := NewSegmentBuilder(f, tmpDir, testBodyTxHashes)
 	if err := builder.BuildRange(context.Background(), 0, endBlock); err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestV2BoundaryBlocks(t *testing.T) {
 	// Build segment covering 0-48000 (includes first mainnet txs and empty blocks).
 	const endBlock = 48000
 	tmpDir := t.TempDir()
-	builder := NewSegmentBuilder(f, tmpDir)
+	builder := NewSegmentBuilder(f, tmpDir, testBodyTxHashes)
 	if err := builder.BuildRange(context.Background(), 0, endBlock); err != nil {
 		t.Fatal(err)
 	}
@@ -690,4 +690,18 @@ func fmtBytes(b int64) string {
 	default:
 		return fmt.Sprintf("%d B", b)
 	}
+}
+
+// testBodyTxHashes is the eth-el body decoder the builder now takes from its
+// caller, so package txlookup does not import internal/ethel.
+func testBodyTxHashes(bodyData []byte) ([]types.Hash, error) {
+	body, err := ethel.DecodeGethBody(bodyData)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]types.Hash, len(body.Transactions))
+	for i, tx := range body.Transactions {
+		out[i] = tx.Hash()
+	}
+	return out, nil
 }

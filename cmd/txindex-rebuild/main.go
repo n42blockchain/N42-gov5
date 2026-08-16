@@ -35,6 +35,8 @@
 package main
 
 import (
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/ethel"
 	"context"
 	"flag"
 	"fmt"
@@ -139,7 +141,7 @@ func main() {
 		cancel()
 	}()
 
-	builder := txlookup.NewSegmentBuilder(fz, *out)
+	builder := txlookup.NewSegmentBuilder(fz, *out, ethelBodyTxHashes)
 	builder.SetRecSplitTuning(*enums, *lfp)
 
 	t0 := time.Now()
@@ -199,4 +201,20 @@ func reportStats(out string, base uint64) {
 		"totalTx", totalTx,
 		"size", fmt.Sprintf("%.2f GB", float64(totalBytes)/1e9),
 		"bits/key", fmt.Sprintf("%.2f", bitsPerKey))
+}
+
+// ethelBodyTxHashes decodes a geth-format stored body into its transaction
+// hashes. Supplied to the txindex builder by the caller so internal/txlookup
+// does not have to import internal/ethel (which would close an import cycle
+// with the root internal package's live index).
+func ethelBodyTxHashes(bodyData []byte) ([]types.Hash, error) {
+	body, err := ethel.DecodeGethBody(bodyData)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]types.Hash, len(body.Transactions))
+	for i, tx := range body.Transactions {
+		out[i] = tx.Hash()
+	}
+	return out, nil
 }

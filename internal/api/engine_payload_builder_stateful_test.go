@@ -59,7 +59,10 @@ func (m *mockEngineTxPool) GetTx(hash types.Hash) *transaction.Transaction {
 }
 
 func (m *mockEngineTxPool) AddRemotes([]*transaction.Transaction) []error { return nil }
-func (m *mockEngineTxPool) AddLocal(*transaction.Transaction) error       { return nil }
+func (m *mockEngineTxPool) AddLocal(*transaction.Transaction) error { return nil }
+func (m *mockEngineTxPool) AddLocals(txs []*transaction.Transaction) []error {
+	return make([]error, len(txs))
+}
 
 func (m *mockEngineTxPool) Stats() (int, int, int, int) {
 	addresses := len(m.pending)

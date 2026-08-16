@@ -20,6 +20,7 @@ import (
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
@@ -67,6 +68,19 @@ func (c *ethelChain) CurrentBlock() block.IBlock {
 		if hash == (types.Hash{}) {
 			if n := rawdb.ReadCurrentBlockNumber(tx); n != nil {
 				if h, err := rawdb.ReadCanonicalHash(tx, *n); err == nil {
+					hash = h
+				}
+			}
+		}
+		if hash == (types.Hash{}) {
+			// Neither head record exists on an eldevp2p node: WriteHeadBlockHash
+			// lives in the forkchoiceUpdated path, which --engine.enabled=false
+			// never runs. The per-block execution path does write the header,
+			// body and canonical hash, so the progress marker is enough to reach
+			// them. Without this every caller of CurrentBlock — eth_blockNumber,
+			// the "latest" tag — reports 0 on a fully caught-up node.
+			if n, ok := ethel.ReadHeadMarker(tx); ok {
+				if h, err := rawdb.ReadCanonicalHash(tx, n); err == nil {
 					hash = h
 				}
 			}

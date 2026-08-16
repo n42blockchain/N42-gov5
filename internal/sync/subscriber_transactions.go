@@ -1,19 +1,19 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
-// GossipSub subscriber for mempool transactions. txSubscriber decodes
-// types_pb.Transaction, converts to the internal transaction.Transaction
-// type and adds it to the txPool via AddRemotes, swallowing decode
-// errors so misbehaving peers are not immediately penalised.
+// GossipSub subscriber for mempool transactions. txSubscriber RLP-decodes
+// the standard Ethereum transaction encoding into the internal
+// transaction.Transaction type and adds it to the txPool via AddRemotes,
+// swallowing decode errors so misbehaving peers are not immediately
+// penalised.
 
 package sync
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 
-
-	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/log"
 )
@@ -23,26 +23,48 @@ import (
 var txGossipReceived atomic.Uint64
 
 // txSubscriber handles incoming transaction messages from GossipSub.
-// Each message contains a single SSZ-encoded Transaction.
+//
+// A message is either a batch (txBatchMarker framing, see tx_batch_wire.go) or
+// one transaction in the standard Ethereum encoding (legacy RLP or an EIP-2718
+// typed envelope) — the single form remains accepted for peers publishing
+// mid-rolling-upgrade. Neither encoding carries a sender field, so the sender
+// is whatever the signature recovers to and a peer cannot assert one; the pool
+// recovers it during validation, and a batch lets that recovery fan out across
+// the pool's pre-warm workers instead of running once per message.
 func (s *Service) txSubscriber(ctx context.Context, data any) error {
-	pbTx, ok := data.(*types_pb.Transaction)
+	raw, ok := data.(*rawSSZBytes)
 	if !ok {
 		return nil
 	}
 
-	tx, err := transaction.FromProtoMessage(pbTx)
+	txs, err := decodeTxBatch(raw.data)
 	if err != nil {
-		log.Warn("Failed to decode gossiped transaction", "err", err)
-		return nil // don't return error to avoid penalizing peer
+		if !errors.Is(err, errNotABatch) {
+			log.Warn("Failed to decode gossiped transaction batch", "err", err)
+			return nil // don't return error to avoid penalizing peer
+		}
+		tx, err := transaction.DecodeEthereumTransaction(raw.data)
+		if err != nil {
+			log.Warn("Failed to decode gossiped transaction", "err", err)
+			return nil
+		}
+		txs = []*transaction.Transaction{tx}
 	}
 
-	errs := s.cfg.txPool.AddRemotes([]*transaction.Transaction{tx})
-	if errs != nil && errs[0] != nil {
-		log.Debug("Gossiped transaction rejected by pool", "hash", tx.Hash(), "err", errs[0])
-		return nil
+	errs := s.cfg.txPool.AddRemotes(txs)
+	accepted := uint64(0)
+	for i, err := range errs {
+		if err == nil {
+			accepted++
+		} else if i < len(txs) {
+			log.Debug("Gossiped transaction rejected by pool", "hash", txs[i].Hash(), "err", err)
+		}
 	}
-	if n := txGossipReceived.Add(1); n == 1 || n%500 == 0 {
-		log.Info("tx gossip: receiving", "received", n)
+	if accepted > 0 {
+		before := txGossipReceived.Add(accepted) - accepted
+		if before == 0 || before/500 != (before+accepted)/500 {
+			log.Info("tx gossip: receiving", "received", before+accepted)
+		}
 	}
 	return nil
 }

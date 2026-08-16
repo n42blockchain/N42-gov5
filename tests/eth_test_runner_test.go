@@ -605,8 +605,10 @@ func (e *StateTestExecutor) ExecuteTest(test *EthStateTest, post *EthTestPostSta
 
 	// Calculate intrinsic gas
 	isContractCreation := to == nil
+	hasValue := txValue != nil && !txValue.IsZero()
+	isSelfTransfer := to != nil && *to == sender
 	intrinsicGas, err := internal.IntrinsicGas(txData, accessList, nil, isContractCreation,
-		rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai, rules.IsPrague, rules.IsGlamsterdam)
+		rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai, rules.IsPrague, rules.IsGlamsterdam, hasValue, isSelfTransfer)
 	if err != nil {
 		return nil, fmt.Errorf("failed to calculate intrinsic gas: %w", err)
 	}

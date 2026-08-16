@@ -93,7 +93,7 @@ func buildEOFContainer(codeSections [][]byte, types_ []EOFTypeInfo, dataSection 
 // ---------------------------------------------------------------------------
 
 func newOsakaInterpreter() *EVMInterpreter {
-	jt := newOsakaInstructionSet()
+	jt := withEOF(newOsakaInstructionSet())
 	return &EVMInterpreter{
 		VM: &VM{
 			evm: &mockVMInterpreter{},
@@ -126,7 +126,9 @@ func (m *mockVMInterpreter) Create2(caller ContractRef, code []byte, gas uint64,
 	return nil, types.Address{}, gas, nil
 }
 func (m *mockVMInterpreter) ChainRules() *params.Rules {
-	return &params.Rules{IsOsaka: true, IsPectra: true, IsCancun: true, IsShanghai: true, IsLondon: true}
+	// IsEOF: these tests exercise EOF-container execution, which now only
+	// activates through the explicit EOFTime gate (EOF left the Osaka scope).
+	return &params.Rules{IsOsaka: true, IsEOF: true, IsPectra: true, IsCancun: true, IsShanghai: true, IsLondon: true}
 }
 func (m *mockVMInterpreter) ChainConfig() *params.ChainConfig {
 	return &params.ChainConfig{ChainID: big.NewInt(1)}

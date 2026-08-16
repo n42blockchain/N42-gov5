@@ -77,6 +77,38 @@ func defaultSenderRecoveryWorkers() int {
 	return n
 }
 
+// applySenderHints copies pool-recovered senders onto wire-decoded transactions
+// ahead of recoverBlockSenders, returning how many it filled.
+//
+// Equivalence: hints.GetTx is keyed by transaction hash, and two transactions
+// with the same hash are the same signature bytes, so Sender(signer, poolCopy)
+// derives exactly what Sender(signer, wireCopy) would — while hitting the pool
+// copy's memo instead of redoing the curve math. The signer passed here is the
+// block's own signer; Sender re-checks a memo's signer before trusting it, so
+// a pool memo made under a different fork's rules re-derives rather than
+// leaks. A nil source, a miss, or a recovery error just leaves the transaction
+// for the worker-pool pass.
+func applySenderHints(hints SenderHintSource, signer transaction.Signer, txs []*transaction.Transaction) int {
+	if hints == nil || signer == nil {
+		return 0
+	}
+	filled := 0
+	for _, tx := range txs {
+		if tx == nil || tx.From() != nil {
+			continue
+		}
+		ptx := hints.GetTx(tx.Hash())
+		if ptx == nil {
+			continue
+		}
+		if addr, err := transaction.Sender(signer, ptx); err == nil {
+			tx.SetFrom(addr)
+			filled++
+		}
+	}
+	return filled
+}
+
 // recoverBlockSenders pre-populates the signature cache of every transaction in
 // txs, using the exact signer the execution loop will use.
 //

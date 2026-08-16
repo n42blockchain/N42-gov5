@@ -9,6 +9,7 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	types "github.com/n42blockchain/N42/common/block"
+	comtypes "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/internal/p2p"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
@@ -21,35 +22,60 @@ import (
 // response_chunk  ::= <result> | <context-bytes> | <encoding-dependent-header> | <encoded-payload>
 func (s *Service) chunkBlockWriter(stream libp2pcore.Stream, blk types.IBlock) error {
 	SetStreamWriteDeadline(stream, defaultWriteDuration)
-	return WriteBlockChunk(stream, s.cfg.chain, s.cfg.p2p.Encoding(), blk)
+	return WriteBlockChunk(stream, s.cfg.chain, blk)
 }
 
 // WriteBlockChunk writes a block chunk object to the stream.
 // response_chunk  ::= <result> | <context-bytes> | <encoding-dependent-header> | <encoded-payload>
-func WriteBlockChunk(stream libp2pcore.Stream, chain common.IBlockChain, encoding encoder.NetworkEncoding, blk types.IBlock) error {
-	if _, err := stream.Write([]byte{responseCodeSuccess}); err != nil {
-		return err
-	}
+func WriteBlockChunk(stream libp2pcore.Stream, chain common.IBlockChain, blk types.IBlock) error {
+	return writeBlockChunk(stream, chain.GenesisBlock().Hash(), blk)
+}
 
-	digest, err := utils.CreateForkDigest(blk.Number64(), chain.GenesisBlock().Hash())
-	if err != nil {
-		return err
-	}
-
-	if _, err = stream.Write(digest[:]); err != nil {
-		return err
-	}
-
+// writeBlockChunk is WriteBlockChunk over a plain io.Writer, so the wire format
+// can be exercised without a libp2p stream.
+func writeBlockChunk(w io.Writer, genesisHash comtypes.Hash, blk types.IBlock) error {
 	// Encode the block as ETH-standard RLP (stage 1 of the proto->RLP migration).
 	// The block hash is keccak(rlp(header)) and the header round-trips
 	// byte-identically (see Block.EncodeRLP / Header rlp:"optional" tags), so the
 	// receiver recomputes the identical hash. The bytes travel through the
 	// existing length/snappy framing via rawSSZBytes.
+	//
+	// Everything that can fail is done before the first byte reaches the stream.
+	// The chunk header (result code + context bytes) is only meaningful when a
+	// payload follows it: a responder that writes the header and then fails to
+	// encode leaves the requester holding five valid-looking bytes followed by
+	// nothing, which it can only report as corrupt input.
 	data, err := rlp.EncodeToBytes(blk)
 	if err != nil {
 		return err
 	}
-	_, err = encoding.EncodeWithMaxLength(stream, &rawSSZBytes{data: data})
+	// The cap has to be checked here rather than left to the encoder, which
+	// checks it only after the caller has already committed the chunk header
+	// to the stream. Blocks are the one payload that routinely runs into it.
+	if uint64(len(data)) > encoder.MaxBlockChunkSize {
+		return fmt.Errorf("block #%d encodes to %d bytes, over the %d byte chunk cap",
+			blk.Number64().Uint64(), len(data), encoder.MaxBlockChunkSize)
+	}
+
+	digest, err := utils.CreateForkDigest(blk.Number64(), genesisHash)
+	if err != nil {
+		return err
+	}
+
+	if _, err = w.Write([]byte{responseCodeSuccess}); err != nil {
+		return err
+	}
+	if _, err = w.Write(digest[:]); err != nil {
+		return err
+	}
+
+	// MaxBlockChunkSize, not the default MaxChunkSize: this is the block-only
+	// cap the requester decodes with (see readFirstChunkedBlock), and blocks
+	// routinely exceed the 1 MiB default. Encoding with the smaller cap made
+	// every catch-up request for a large block fail, so a node that fell behind
+	// across such blocks could never rejoin -- while direct push, which already
+	// used the block cap, kept the chain itself running.
+	_, err = encoder.EncodeWithMaxLengthLimit(w, &rawSSZBytes{data: data}, encoder.MaxBlockChunkSize)
 	return err
 }
 

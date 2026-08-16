@@ -128,6 +128,16 @@ func ResolveNetworkPreset(chain, rawProfile string) (NetworkPreset, error) {
 			Profile:    profile,
 			Commitment: StateCommitmentPresetQMDB,
 		}, nil
+	case "h2_interop_test":
+		profile, err := resolveExpectedProfile(ExecutionProfileN42)
+		if err != nil {
+			return NetworkPreset{}, err
+		}
+		return NetworkPreset{
+			Chain:      "h2_interop_test",
+			Profile:    profile,
+			Commitment: StateCommitmentPresetQMDB,
+		}, nil
 	case networkname.EthereumMainnetChainName:
 		profile, err := resolveExpectedProfile(ExecutionProfileEthereumEL)
 		if err != nil {

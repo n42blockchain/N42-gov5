@@ -5,13 +5,23 @@ const (
 	GossipProtocolAndDigest = "/n42/%x/"
 
 	// Message types used as suffixes in gossip topic strings.
-	GossipBlockMessage       = "block"
-	GossipExitMessage        = "voluntary_exit"
-	GossipTransactionMessage = "transaction"
+	GossipBlockMessage = "block"
+	GossipExitMessage  = "voluntary_exit"
+
+	// GossipTransactionMessage carries RLP-encoded transactions. The name is
+	// versioned because the payload format changed: it was SSZ over the
+	// generated protobuf type, and a node still speaking that would try to
+	// UnmarshalSSZ an RLP payload — either an error storm that costs the sender
+	// gossip score, or worse a silent mis-parse. A distinct topic makes a
+	// version mismatch fail cleanly as "nobody is subscribed" instead, which
+	// during a rolling upgrade means transactions simply do not cross between
+	// old and new nodes until the roll finishes.
+	GossipTransactionMessage = "transaction_v2"
 
 	GossipBlobSidecarMessage        = "blob_sidecar"
 	GossipDataColumnMessage         = "data_column_sidecar"
 	GossipHotStuffConsensusMessage  = "hotstuff_consensus"
+	GossipH2V4Message               = "h2/4"
 	GossipZKProofMessage            = "zk_proof"
 	GossipMobilePacketMessage       = "mobileverify_packet"
 	GossipMobileRegistrationMessage = "mobileverify_registration"
@@ -26,6 +36,7 @@ const (
 	BlobSidecarTopicFormat        = GossipProtocolAndDigest + GossipBlobSidecarMessage
 	DataColumnTopicFormat         = GossipProtocolAndDigest + GossipDataColumnMessage
 	HotStuffConsensusTopicFormat  = GossipProtocolAndDigest + GossipHotStuffConsensusMessage
+	H2V4Topic                     = "/n42/" + GossipH2V4Message
 	ZKProofTopicFormat            = GossipProtocolAndDigest + GossipZKProofMessage
 	MobilePacketTopicFormat       = GossipProtocolAndDigest + GossipMobilePacketMessage
 	MobileRegistrationTopicFormat = GossipProtocolAndDigest + GossipMobileRegistrationMessage

@@ -64,11 +64,21 @@ func NewService(segmentDir string) (*Service, error) {
 	}
 
 	s := &Service{store: store}
+	// Recorded ranges when the store has them: segments built from a live
+	// source are sized by transaction count, so they are not all SegmentSize
+	// wide and their start block cannot be derived from the segment number.
+	// Their absence means the store predates variable sizing, where the
+	// derivation is correct.
+	ranges := readSegmentRanges(segmentDir)
 	base := readSegmentBase(segmentDir)
 	for i := uint64(0); i < store.SegmentCount(); i++ {
+		start := base + i*SegmentSize
+		if int(i) < len(ranges) {
+			start = ranges[i].StartBlock
+		}
 		s.segments = append(s.segments, &txSegmentCached{
 			segNum:     i,
-			startBlock: base + i*SegmentSize,
+			startBlock: start,
 		})
 	}
 

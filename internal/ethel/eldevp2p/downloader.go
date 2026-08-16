@@ -1095,6 +1095,11 @@ func (d *Downloader) localCatchUp(ctx context.Context, hr *ethel.HeaderCompactRe
 	if hr == nil {
 		return // no headerc → no freezer-direct source, nothing to execute locally
 	}
+	// Do this before the bodyc check: a datadir with no local bodies still needs
+	// its canonical head indexed, and that is the only thing standing between a
+	// freshly migrated datadir and the peer loop.
+	d.seedCanonicalHead(ctx, hr)
+
 	br, err := ethel.OpenBodyCompact(d.freezerDir)
 	if err != nil {
 		log.Info("eldevp2p: local catch-up skipped — no local bodyc", "dir", d.freezerDir, "err", err)
@@ -1527,6 +1532,69 @@ func (d *Downloader) handleReorgHashed(ctx context.Context) {
 	d.buffer.prune(head - 1)
 	log.Info("eldevp2p: reorg unwound one block via changesets", "orphan", head,
 		"newHead", head-1, "root", root.Hex())
+}
+
+// seedCanonicalHead indexes canonical[localHead] from the headerc-stored hash
+// when the canonical table has no entry for it.
+//
+// A datadir produced by n42-migrate-reth-hashed (or by snapshot-direct) carries
+// state at its head but no canonical index — the migration writes state tables
+// and the progress marker, nothing else. localCatchUp then only ever indexes the
+// blocks it executes (localHead+1 onward), so canonical[localHead] stays empty,
+// and the peer loop's first parent-link check fails forever with "missing
+// canonical parent hash at <head>" while the reorder buffer fills and every
+// round imports 0. With no local bodyc — an archive datadir seeded with headerc
+// alone, per the runbook — localCatchUp returns before executing anything, so
+// nothing writes it at all.
+//
+// The hash comes from headerc's stored h.Hash() (SetHash), which is
+// authoritative: the columnar header's stripped fields make a recompute wrong.
+// It is not taken on trust — the very next thing that reads it is the
+// parent-link check against what peers serve, which reports a mismatch rather
+// than accepting a bad value.
+func (d *Downloader) seedCanonicalHead(ctx context.Context, hr *ethel.HeaderCompactReader) {
+	local, err := d.localHead(ctx)
+	if err != nil || local == 0 {
+		return
+	}
+	tx, err := d.exec.RwDB().BeginRw(ctx)
+	if err != nil {
+		log.Warn("eldevp2p: canonical head seed — begin tx", "err", err)
+		return
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			tx.Rollback()
+		}
+	}()
+
+	existing, err := rawdb.ReadCanonicalHash(tx, local)
+	if err != nil {
+		log.Warn("eldevp2p: canonical head seed — read", "block", local, "err", err)
+		return
+	}
+	if existing != (types.Hash{}) {
+		return // already indexed
+	}
+	hdr, herr := hr.ReadHeader(local)
+	if herr != nil || hdr == nil {
+		log.Warn("eldevp2p: canonical head seed — headerc has no header at local head",
+			"block", local, "err", herr)
+		return
+	}
+	hash := hdr.Hash()
+	if werr := rawdb.WriteCanonicalHash(tx, hash, local); werr != nil {
+		log.Warn("eldevp2p: canonical head seed — write", "block", local, "err", werr)
+		return
+	}
+	if cerr := tx.Commit(); cerr != nil {
+		log.Warn("eldevp2p: canonical head seed — commit", "block", local, "err", cerr)
+		return
+	}
+	committed = true
+	log.Info("eldevp2p: seeded canonical index at local head (migrated datadir had none)",
+		"block", local, "hash", hash.Hex())
 }
 
 func (d *Downloader) validateHeaderLink(tx kv.Tx, hdr *block.Header, n uint64) error {

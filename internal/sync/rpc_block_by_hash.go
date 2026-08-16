@@ -48,7 +48,7 @@ func (s *Service) blockByHashStreamHandler(stream network.Stream) {
 	// loop turned every healthy peer's run.log into a sustained multi-MB/s
 	// write stream (observed live: 7/7 nodes' logs ballooning in lockstep).
 	log.Debug("block by hash: serving", "reqHash", hash.Hex()[:12], "blkHash", blk.Hash().Hex()[:12], "number", blk.Number64().Uint64())
-	if err := WriteBlockChunk(stream, s.cfg.chain, s.cfg.p2p.Encoding(), blk); err != nil {
+	if err := WriteBlockChunk(stream, s.cfg.chain, blk); err != nil {
 		log.Debug("block by hash: write failed", "hash", hash.Hex()[:12], "err", err)
 	}
 }

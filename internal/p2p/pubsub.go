@@ -13,7 +13,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/internal/p2p/encoder"
-	"github.com/n42blockchain/N42/proto/msg_proto"
+	"github.com/n42blockchain/N42/internal/p2p/peers/peerdata"
 )
 
 const (
@@ -84,7 +84,17 @@ func (s *Service) PublishToTopic(ctx context.Context, topic string, data []byte,
 
 	timeout := time.After(defaultPeerWaitTimeout)
 	for {
-		if len(topicHandle.ListPeers()) > 0 || s.cfg.MinSyncPeers == 0 {
+		if peers := len(topicHandle.ListPeers()); peers > 0 || s.cfg.MinSyncPeers == 0 {
+			// Publishing into a topic nobody is subscribed to succeeds. With
+			// MinSyncPeers at 0 -- which every local fleet sets -- this loop
+			// does not even wait, so a caller sees nothing but success while
+			// its messages go nowhere. That is how a dead transaction-gossip
+			// pipeline reported "1000 published, 0 failed" for ten minutes.
+			// Say it out loud instead, rate-limited so a topic that is
+			// legitimately quiet cannot flood the log.
+			if peers == 0 {
+				s.warnEmptyTopic(topic)
+			}
 			return topicHandle.Publish(ctx, data, opts...)
 		}
 		select {
@@ -98,6 +108,22 @@ func (s *Service) PublishToTopic(ctx context.Context, topic string, data []byte,
 	}
 }
 
+// emptyTopicWarnInterval bounds how often a given topic may report that it has
+// no subscribers.
+const emptyTopicWarnInterval = time.Minute
+
+// warnEmptyTopic reports, at most once a minute per topic, that a message was
+// published with no peer subscribed to receive it.
+func (s *Service) warnEmptyTopic(topic string) {
+	now := time.Now()
+	last, ok := s.emptyTopicWarned.Load(topic)
+	if ok && now.Sub(last.(time.Time)) < emptyTopicWarnInterval {
+		return
+	}
+	s.emptyTopicWarned.Store(topic, now)
+	log.Warn("Publishing to a topic with no subscribed peers; the message reaches nobody", "topic", topic)
+}
+
 // SubscribeToTopic joins (if necessary) and subscribes to a PubSub topic,
 // applying scoring parameters.
 func (s *Service) SubscribeToTopic(topic string, opts ...pubsub.SubOpt) (*pubsub.Subscription, error) {
@@ -105,14 +131,20 @@ func (s *Service) SubscribeToTopic(topic string, opts ...pubsub.SubOpt) (*pubsub
 	if err != nil {
 		return nil, err
 	}
-	scoringParams, err := s.topicScoreParams(topic)
-	if err != nil {
-		return nil, err
+	// Per-topic score params are only meaningful when the router is scoring;
+	// SetScoreParams rejects them otherwise, and this returns the error, so
+	// with scoring off EVERY subscription failed -- including the transaction
+	// topic, whose failure is logged but not fatal, so the node came up mute.
+	if s.peerScoringEnabled() {
+		scoringParams, err := s.topicScoreParams(topic)
+		if err != nil {
+			return nil, err
+		}
+		if err := topicHandle.SetScoreParams(scoringParams); err != nil {
+			return nil, err
+		}
+		logGossipParameters(topic, scoringParams)
 	}
-	if err := topicHandle.SetScoreParams(scoringParams); err != nil {
-		return nil, err
-	}
-	logGossipParameters(topic, scoringParams)
 	return topicHandle.Subscribe(opts...)
 }
 
@@ -124,9 +156,28 @@ func (s *Service) peerInspector(peerMap map[peer.ID]*pubsub.PeerScoreSnapshot) {
 	}
 }
 
+// peerScoringEnabled reports whether the router scores peers. Scoring defends
+// against peers this node did not choose; with discovery off the peer set is
+// exactly the configured list, so there are none.
+func (s *Service) peerScoringEnabled() bool { return !s.cfg.NoDiscovery }
+
+// seenMessagesTTL is how long a message ID stays in the duplicate-suppression
+// cache.
+//
+// libp2p's default is two minutes, which is sized for a public mesh where a
+// message can reach a peer long after it was published. The cache holds one
+// entry per message for that whole window, so its size is the message rate
+// times the TTL: at 6,700 transactions a second that is 800,000 entries, and
+// it measured 391 MB of live heap. Propagation across this mesh completes in
+// milliseconds, so a much shorter window suppresses exactly the same
+// duplicates. It is still two orders of magnitude longer than a round trip,
+// which is the margin that matters -- too short and a message that loops back
+// slowly is re-processed rather than dropped.
+const seenMessagesTTL = 30 * time.Second
+
 // pubsubOptions returns the PubSub configuration options for the GossipSub router.
 func (s *Service) pubsubOptions() []pubsub.Option {
-	return []pubsub.Option{
+	opts := []pubsub.Option{
 		pubsub.WithMessageSignaturePolicy(pubsub.StrictNoSign),
 		pubsub.WithNoAuthor(),
 		pubsub.WithMessageIdFn(func(pmsg *pubsubpb.Message) string {
@@ -136,11 +187,26 @@ func (s *Service) pubsubOptions() []pubsub.Option {
 		pubsub.WithPeerOutboundQueueSize(pubsubQueueSize),
 		pubsub.WithMaxMessageSize(int(GossipMaxSize())),
 		pubsub.WithValidateQueueSize(pubsubQueueSize),
-		pubsub.WithPeerScore(peerScoringParams()),
-		pubsub.WithPeerScoreInspect(s.peerInspector, time.Minute),
+		pubsub.WithSeenMessagesTTL(seenMessagesTTL),
 		pubsub.WithGossipSubParams(pubsubGossipParam()),
 		pubsub.WithRawTracer(gossipTracer{host: s.host}),
 	}
+	// Peer scoring defends against peers this node did not choose. With
+	// discovery off the peer set is exactly the explicit --p2p.peer list, so
+	// there are none: every peer is statically configured, and a low score
+	// cannot lead to replacing one because there is nothing to replace it
+	// with. What scoring does cost is measurable -- 414 MB of live heap in
+	// peerScore.DuplicateMessage plus a share of the contention that put
+	// pubsub at 37% of this node's mutex wait -- and it is charged per
+	// message, so it grows with throughput.
+	if s.peerScoringEnabled() {
+		opts = append(opts,
+			pubsub.WithPeerScore(peerScoringParams()),
+			pubsub.WithPeerScoreInspect(s.peerInspector, time.Minute))
+	} else {
+		log.Info("Peer scoring disabled: discovery is off, so the peer set is the configured list")
+	}
+	return opts
 }
 
 func pubsubGossipParam() pubsub.GossipSubParams {
@@ -157,14 +223,14 @@ func setPubSubParameters() {
 	pubsub.TimeCacheDuration = 550 * gossipSubHeartbeatInterval
 }
 
-// convertTopicScores converts libp2p topic score snapshots to the protobuf format.
-func convertTopicScores(topicMap map[string]*pubsub.TopicScoreSnapshot) map[string]*msg_proto.TopicScoreSnapshot {
-	newMap := make(map[string]*msg_proto.TopicScoreSnapshot, len(topicMap))
+// convertTopicScores converts libp2p topic score snapshots to the local form.
+func convertTopicScores(topicMap map[string]*pubsub.TopicScoreSnapshot) map[string]*peerdata.TopicScoreSnapshot {
+	newMap := make(map[string]*peerdata.TopicScoreSnapshot, len(topicMap))
 	for t, s := range topicMap {
 		if s == nil {
 			continue
 		}
-		newMap[t] = &msg_proto.TopicScoreSnapshot{
+		newMap[t] = &peerdata.TopicScoreSnapshot{
 			TimeInMesh:               uint64(s.TimeInMesh.Milliseconds()),
 			FirstMessageDeliveries:   float32(s.FirstMessageDeliveries),
 			MeshMessageDeliveries:    float32(s.MeshMessageDeliveries),

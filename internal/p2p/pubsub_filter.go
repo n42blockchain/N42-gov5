@@ -30,7 +30,7 @@ func (s *Service) CanSubscribe(topic string) bool {
 	}
 
 	topicWithoutEncoding := strings.Join(parts[:4], "/")
-	for gt := range gossipTopicMappings {
+	for _, gt := range gossipTopics {
 		if _, err := scanfcheck(topicWithoutEncoding, gt); err == nil {
 			return true
 		}

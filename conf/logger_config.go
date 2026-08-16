@@ -48,7 +48,13 @@ type LoggerConfig struct {
 	MaxSize int `json:"max_size" yaml:"max_size"`
 
 	// MaxBackups 保留的旧日志文件数量
-	// 0 表示不限制数量 (但仍受 MaxAge 限制)
+	//
+	// Validate coerces 0 to the default 10. Truly unlimited retention is not
+	// offered: it is the one setting under which an error storm can fill a
+	// server's disk and take the node down with it. This bound is the only one
+	// applied synchronously at rotation time — MaxAge prunes by day and
+	// TotalSizeCap sweeps on an interval, and neither stops a burst.
+	//
 	// 默认: 10
 	MaxBackups int `json:"max_count" yaml:"max_count"`
 
@@ -64,9 +70,14 @@ type LoggerConfig struct {
 	Compress bool `json:"compress" yaml:"compress"`
 
 	// TotalSizeCap 日志文件总大小上限 (MB)
-	// 当所有日志文件总大小超过此限制时，最旧的文件会被删除
-	// 0 表示不限制 (使用 MaxBackups 和 MaxAge 控制)
-	// 默认: 0 (不限制)
+	//
+	// The oldest files are removed once the log directory exceeds this. It is a
+	// directory-level backstop: MaxSize/MaxBackups bound one rotating series,
+	// while the directory can also hold files left by earlier runs or written
+	// by other components.
+	//
+	// 0 表示不限制
+	// 默认: 4096 (4 GB)
 	TotalSizeCap int `json:"total_size_cap" yaml:"total_size_cap"`
 
 	// LocalTime 是否使用本地时间命名日志文件
@@ -94,7 +105,7 @@ func DefaultLoggerConfig() LoggerConfig {
 		MaxBackups:   10,
 		MaxAge:       30,    // 30 天
 		Compress:     true,
-		TotalSizeCap: 0,     // 不限制总大小
+		TotalSizeCap: 4096,  // 4 GB 目录级兜底
 		LocalTime:    true,
 		Console:      true,
 		JSONFormat:   true,
@@ -106,11 +117,18 @@ func (c *LoggerConfig) Validate() error {
 	if c.MaxSize <= 0 {
 		c.MaxSize = 100
 	}
-	if c.MaxBackups < 0 {
+	// lumberjack reads 0 as "keep every backup", i.e. no bound at all. Log
+	// volume can rise by orders of magnitude during an error storm, so an
+	// unbounded setting is a path to a full disk and a dead server; do not
+	// offer it.
+	if c.MaxBackups <= 0 {
 		c.MaxBackups = 10
 	}
 	if c.MaxAge < 0 {
 		c.MaxAge = 30
+	}
+	if c.TotalSizeCap < 0 {
+		c.TotalSizeCap = 0
 	}
 	return nil
 }

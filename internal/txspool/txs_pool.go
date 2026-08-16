@@ -48,12 +48,20 @@ import (
 
 // NewTxsPool creates a new transaction pool to gather, sort and filter inbound
 // transactions from the network.
+// NewTxsPool builds a pool with the built-in default configuration. Prefer
+// NewTxsPoolWithConfig: the defaults hold about 6,000 transactions, which is
+// smaller than one block above a ~126M gas ceiling.
 func NewTxsPool(ctx context.Context, bc common.IBlockChain, depositContract *deposit.Deposit) (common.ITxsPool, error) {
+	return NewTxsPoolWithConfig(ctx, bc, depositContract, DefaultTxPoolConfig)
+}
+
+// NewTxsPoolWithConfig builds a pool with an explicit configuration.
+func NewTxsPoolWithConfig(ctx context.Context, bc common.IBlockChain, depositContract *deposit.Deposit, config TxsPoolConfig) (common.ITxsPool, error) {
 	c, cancel := context.WithCancel(ctx)
 
 	pool := &TxsPool{
 		chainconfig: bc.Config(),
-		config:      DefaultTxPoolConfig,
+		config:      config,
 		ctx:         c,
 		cancel:      cancel,
 		bc:          bc,
@@ -68,7 +76,7 @@ func NewTxsPool(ctx context.Context, bc common.IBlockChain, depositContract *dep
 		reqPromoteCh:   make(chan *accountSet),
 		queueTxEventCh: make(chan *transaction.Transaction),
 		reorgDoneCh:    make(chan chan struct{}),
-		gasPrice:       uint256.NewInt(DefaultTxPoolConfig.PriceLimit),
+		gasPrice:       uint256.NewInt(config.PriceLimit),
 	}
 
 	pool.currentState = StateClient(ctx, bc.DB())
@@ -129,8 +137,16 @@ func (pool *TxsPool) Stop() error {
 
 // AddLocals enqueues a batch of transactions into the pool if they are valid,
 // marking the senders as local ones.
+//
+// Validation is synchronous — the returned errors are real verdicts — but the
+// promotion pass is NOT awaited (matching geth's AddLocal). Waiting for it
+// bought the caller nothing (the transaction is already admitted and indexed;
+// promotion only moves it queue→pending) and cost the submission path its
+// throughput: every RPC submit blocked on a promote round shared with block
+// import, capping intake at ~17k tx/s with 64 concurrent submitters while the
+// chain could consume more.
 func (pool *TxsPool) AddLocals(txs []*transaction.Transaction) []error {
-	return pool.addTxs(txs, !pool.config.NoLocals, true)
+	return pool.addTxs(txs, !pool.config.NoLocals, false)
 }
 
 // AddLocal enqueues a single local transaction into the pool.
@@ -271,6 +287,14 @@ func (pool *TxsPool) addTxs(txs []*transaction.Transaction, local, sync bool) []
 		errs = make([]error, len(txs))
 		news = make([]*transaction.Transaction, 0, len(txs))
 	)
+	// Recover senders for the whole batch up front, in parallel. The loop
+	// below then hits the per-transaction memo instead of paying for an ECDSA
+	// recovery each. Recovery is the batch's only expensive step (~50 µs a
+	// transaction, and at saturation it was the single largest identifiable
+	// piece of application CPU), it needs no pool state, and it happens outside
+	// the pool lock -- so serialising it only left cores idle: the fleet ran at
+	// 4 busy cores out of 32 while the profile sat in scheduler park/spin.
+	pool.prewarmSenders(txs)
 	for i, tx := range txs {
 		hash := tx.Hash()
 		if pool.all.Get(hash) != nil {
@@ -281,6 +305,12 @@ func (pool *TxsPool) addTxs(txs []*transaction.Transaction, local, sync bool) []
 			errs[i] = ErrInvalidSender
 			continue
 		}
+		// Memoize the wire-encoding length for the block builder's size
+		// budget. Batches were warmed in parallel above (memo hit here);
+		// this covers the single-transaction path (local RPC submits),
+		// whose candidates otherwise pay a fresh encoding inside the
+		// leader's fillTx critical path. ~8µs on the ingest flow.
+		_, _ = tx.EncodedSize()
 		news = append(news, tx)
 	}
 	if len(news) == 0 {
@@ -532,7 +562,9 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
 	isPrague := pool.chainconfig != nil && current != nil && pool.chainconfig.IsPrague(current.Time())
 	isShanghai := pool.chainconfig != nil && current != nil && current.Number64() != nil && pool.chainconfig.IsShanghai(current.Number64().Uint64()+1)
 	isGlamsterdam := pool.chainconfig != nil && current != nil && pool.chainconfig.IsGlamsterdam(current.Time())
-	intrGas, err := internal.IntrinsicGas(tx.Data(), tx.AccessList(), tx.AuthList(), tx.To() == nil, true, pool.istanbul, isShanghai, isPrague, isGlamsterdam)
+	hasValue := tx.Value() != nil && !tx.Value().IsZero()
+	isSelfTransfer := tx.To() != nil && fromPtr != nil && *tx.To() == *fromPtr
+	intrGas, err := internal.IntrinsicGas(tx.Data(), tx.AccessList(), tx.AuthList(), tx.To() == nil, true, pool.istanbul, isShanghai, isPrague, isGlamsterdam, hasValue, isSelfTransfer)
 	if err != nil {
 		return err
 	}
@@ -575,14 +607,18 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
 	return nil
 }
 
-// validateSender verifies that the transaction signature is valid and
-// the recovered sender address matches the declared From address.
+// validateSender verifies that the transaction signature is valid and, when the
+// transaction declares a sender, that it is the one the signature recovers to.
+//
+// The signature is the authority on who sent a transaction; a declared From is
+// a claim. It used to be REQUIRED here, which quietly coupled the pool to a
+// wire format that carried one: transactions gossiped in the standard Ethereum
+// encoding have no From field at all, so every one of them was rejected as
+// having a "nil From address" -- at Debug level, on a fleet running at Info, so
+// the whole mempool gossip pipeline was silently dead again. A missing From is
+// now filled in from the recovery, and a present one still has to match.
 func (pool *TxsPool) validateSender(tx *transaction.Transaction) bool {
 	declaredFrom := tx.From()
-	if declaredFrom == nil {
-		log.Debug("Transaction has nil From address")
-		return false
-	}
 
 	v, r, s := tx.RawSignatureValues()
 	if v == nil || r == nil || s == nil {
@@ -618,7 +654,11 @@ func (pool *TxsPool) validateSender(tx *transaction.Transaction) bool {
 		log.Debug("Failed to recover sender from signature", "err", err)
 		return false
 	}
-	if recoveredAddr != *declaredFrom {
+	if declaredFrom == nil {
+		// No claim to check: adopt what the signature recovered, so the rest of
+		// the pool and the miner can read tx.From().
+		tx.SetFrom(recoveredAddr)
+	} else if recoveredAddr != *declaredFrom {
 		log.Debug("Recovered sender does not match declared From",
 			"recovered", recoveredAddr, "declared", *declaredFrom)
 		return false
@@ -767,6 +807,11 @@ func (pool *TxsPool) reset(oldBlock, newBlock block.IBlock) {
 	pool.eip1559 = pool.chainconfig.IsLondon(next.Uint64())
 }
 
+// slowReorgThreshold is the pool-reorg cost above which the phase breakdown is
+// logged at Info. A reorg runs on every new head, so anything lower would put a
+// line in the log per block for a path that is normally a few milliseconds.
+const slowReorgThreshold = 200 * time.Millisecond
+
 // runReorg runs reset and promoteExecutables on behalf of scheduleLoop.
 func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, dirtyAccounts *accountSet, events map[types.Address]*txsSortedMap) {
 	defer close(done)
@@ -776,9 +821,22 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 		promoteAddrs = dirtyAccounts.flatten()
 	}
 
+	// Phase timings for the reorg the pool runs on every new head. Under load
+	// this is the path that decides how many transactions become eligible
+	// before the next block is built: at a 2s interval every other block came
+	// out empty, and at 4s none did, with identical throughput either way --
+	// meaning the pool, not the block schedule, sets the ceiling. Without a
+	// breakdown there is no way to tell which phase owns it.
+	tStart := time.Now()
+	var dReset, dPromote, dDemote, dNonces, dTruncate time.Duration
+	nQueue, nPending := 0, 0
+
 	pool.mu.Lock()
+	tLocked := time.Now()
 	if reset != nil {
+		tR := time.Now()
 		pool.reset(reset.oldBlock, reset.newBlock)
+		dReset = time.Since(tR)
 
 		// Nonces were reset, discard any events that became stale
 		for addr := range events {
@@ -793,10 +851,14 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 		}
 	}
 
+	tP := time.Now()
 	promoted := pool.promoteExecutables(promoteAddrs)
+	dPromote = time.Since(tP)
 
 	if reset != nil {
+		tD := time.Now()
 		pool.demoteUnexecutables()
+		dDemote = time.Since(tD)
 
 		if reset.newBlock != nil {
 			if blockNumber := reset.newBlock.Number64(); blockNumber != nil && pool.chainconfig.IsLondon(blockNumber.Uint64()+1) {
@@ -806,6 +868,7 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 				}
 			}
 		}
+		tN := time.Now()
 		nonces := make(map[types.Address]uint64, len(pool.pending))
 		for addr, list := range pool.pending {
 			if highestPending := list.LastElement(); highestPending != nil {
@@ -813,11 +876,32 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 			}
 		}
 		pool.pendingNonces.setAll(nonces)
+		dNonces = time.Since(tN)
 	}
+	tT := time.Now()
+	pool.evictStaleQueued()
 	pool.truncatePending()
 	pool.truncateQueue()
+	dTruncate = time.Since(tT)
+	nQueue, nPending = len(pool.queue), len(pool.pending)
 	pool.changesSinceReorg = 0
 	pool.mu.Unlock()
+
+	// Info only when the reorg is slow enough to explain a missed block, Debug
+	// otherwise: it runs on every new head and the interesting case is the
+	// outlier. Measured on a saturated fleet this is 4-38 ms, comfortably
+	// inside a 2s interval -- the pool is not what limits block occupancy.
+	if total := time.Since(tStart); reset != nil {
+		emit := log.Debug
+		if total >= slowReorgThreshold {
+			emit = log.Info
+		}
+		emit("txpool reorg phases",
+			"total", total, "lockWait", tLocked.Sub(tStart),
+			"reset", dReset, "promote", dPromote, "demote", dDemote,
+			"nonces", dNonces, "truncate", dTruncate,
+			"promoted", len(promoted), "queueAccts", nQueue, "pendingAccts", nPending)
+	}
 
 	// Notify subsystems for newly added transactions
 	for _, tx := range promoted {

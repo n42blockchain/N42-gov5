@@ -141,6 +141,21 @@ type BlockChain struct {
 	ChainDB      kv.RwDB
 	engine       consensus.Engine
 
+	// Transaction-lookup indexing, when a tier outside this package owns it.
+	// Declared as an interface rather than imported: internal/txlookup reaches
+	// internal/ethel, which imports this package, so depending on the
+	// implementation directly would close an import cycle -- and committing a
+	// block has no business knowing what an index is.
+	txIndexer TxIndexer
+
+	// Pool-backed sender cache for block import; see SenderHintSource.
+	senderHints SenderHintSource
+
+	// executedHook, when set, fires the moment a block's execution and state
+	// validation succeed during import — BEFORE writeBlockWithState. Wired to
+	// the consensus early-vote path so the vote round overlaps persistence.
+	executedHook func(hash, txHash, parentHash types.Hash, number uint64, extra []byte)
+
 	insertLock    chan struct{}
 	latestBlockCh chan block.IBlock
 	lock          sync.Mutex

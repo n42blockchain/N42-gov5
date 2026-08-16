@@ -197,6 +197,19 @@ type SlotEntry struct {
 	Active  bool
 }
 
+// SlotActive reports the committed liveness bit for an occupied append slot.
+// It does not hydrate evicted leaf nodes and is safe for sequential exporters.
+func (t *Tree) SlotActive(slot uint64) (bool, bool) {
+	if slot >= t.nextSlot {
+		return false, false
+	}
+	twigID := slot / TwigSize
+	if twigID >= uint64(len(t.twigs)) || t.twigs[twigID] == nil {
+		return false, false
+	}
+	return t.twigs[twigID].bit(slot % TwigSize), true
+}
+
 // SnapshotLog exports every occupied slot in slot order. This is what a QMDB
 // snapshot ships (positions preserved), as opposed to just the live key set.
 func (t *Tree) SnapshotLog() []SlotEntry {

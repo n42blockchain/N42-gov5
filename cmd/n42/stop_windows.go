@@ -31,6 +31,24 @@ func processAlive(pid int) bool {
 	return err == nil && status == uint32(windows.WAIT_TIMEOUT)
 }
 
+// processStartTime returns the creation time of pid as a Unix nanosecond
+// value. Windows reuses process IDs aggressively — on a host churning through
+// short-lived helper processes a dead node's ID is often live again within
+// seconds — so the ID alone cannot identify a process. Pairing it with the
+// creation time does: the pair is unique for as long as anyone can observe it.
+func processStartTime(pid int) (int64, bool) {
+	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return 0, false
+	}
+	defer windows.CloseHandle(handle)
+	var creation, exit, kernel, user windows.Filetime
+	if err := windows.GetProcessTimes(handle, &creation, &exit, &kernel, &user); err != nil {
+		return 0, false
+	}
+	return creation.Nanoseconds(), true
+}
+
 func sendGracefulStop(pid int) error {
 	// A process may only attach to one console. Detach the short-lived stop
 	// command first, attach to the node console, and ignore the CTRL_BREAK in

@@ -42,7 +42,13 @@ func (p *Prque) Push(data interface{}, priority int64) {
 }
 
 // Peek returns the value with the greates priority but does not pop it off.
+// An empty queue reports (nil, 0); it used to dereference a nil element and
+// panic, and with the first block now allocated lazily it would have indexed
+// past the end instead. Neither is a useful answer to "what is on top".
 func (p *Prque) Peek() (interface{}, int64) {
+	if p.cont.size == 0 {
+		return nil, 0
+	}
 	item := p.cont.blocks[0][0]
 	return item.value, item.priority
 }

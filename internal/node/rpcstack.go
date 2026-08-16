@@ -439,18 +439,106 @@ var gzPool = sync.Pool{
 	},
 }
 
+// gzipMinSize is the response size below which compressing costs more than it
+// saves. Even from a pool, handing a response to gzip runs
+// flate.(*compressor).reset, which memclears the deflate window and hash
+// tables -- hundreds of kilobytes of zeroing for a response that is often
+// smaller than its own HTTP headers. A JSON-RPC reply to
+// eth_sendRawTransaction is a 66-byte hash, and Go's http.Client sends
+// "Accept-Encoding: gzip" by default, so every such call took that cost: under
+// a submission-heavy load it was 19.5% of a node's CPU, more than the
+// transaction pool and the EVM combined.
+//
+// One MTU: below it the compressed reply still occupies one packet, so there
+// is nothing left to win.
+const gzipMinSize = 1400
+
+// gzipResponseWriter compresses only once the response has proven large enough
+// to be worth it. Until then the body is held in a buffer, and if the handler
+// finishes below the threshold it is written through untouched -- with no
+// Content-Encoding header, which is why the decision cannot be made up front.
 type gzipResponseWriter struct {
-	io.Writer
 	http.ResponseWriter
+
+	buf    []byte
+	gz     *gzip.Writer // non-nil once the threshold was crossed
+	status int
+	wrote  bool // response header already sent
 }
 
 func (w *gzipResponseWriter) WriteHeader(status int) {
-	w.Header().Del("Content-Length")
-	w.ResponseWriter.WriteHeader(status)
+	if w.status == 0 {
+		w.status = status
+	}
+}
+
+// start sends the response header, declaring gzip only when compressing.
+func (w *gzipResponseWriter) start(compressed bool) {
+	if w.wrote {
+		return
+	}
+	w.wrote = true
+	if compressed {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Del("Content-Length")
+	}
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	w.ResponseWriter.WriteHeader(w.status)
 }
 
 func (w *gzipResponseWriter) Write(b []byte) (int, error) {
-	return w.Writer.Write(b)
+	if w.gz != nil {
+		return w.gz.Write(b)
+	}
+	if len(w.buf)+len(b) < gzipMinSize {
+		w.buf = append(w.buf, b...)
+		return len(b), nil
+	}
+	// Threshold crossed: switch to compressing, replaying what was buffered.
+	w.gz = gzPool.Get().(*gzip.Writer)
+	w.start(true)
+	w.gz.Reset(w.ResponseWriter)
+	if len(w.buf) > 0 {
+		if _, err := w.gz.Write(w.buf); err != nil {
+			return 0, err
+		}
+		w.buf = w.buf[:0]
+	}
+	return w.gz.Write(b)
+}
+
+// Flush forces the pending decision, so a handler that flushes mid-response
+// (streaming, chunked replies) is not held in the buffer.
+func (w *gzipResponseWriter) Flush() {
+	if w.gz != nil {
+		_ = w.gz.Flush()
+	} else {
+		w.start(false)
+		if len(w.buf) > 0 {
+			_, _ = w.ResponseWriter.Write(w.buf)
+			w.buf = w.buf[:0]
+		}
+	}
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// finish completes the response and releases the compressor.
+func (w *gzipResponseWriter) finish() {
+	if w.gz != nil {
+		_ = w.gz.Close()
+		gzPool.Put(w.gz)
+		w.gz = nil
+		return
+	}
+	w.start(false)
+	if len(w.buf) > 0 {
+		_, _ = w.ResponseWriter.Write(w.buf)
+		w.buf = nil
+	}
 }
 
 func newGzipHandler(next http.Handler) http.Handler {
@@ -459,14 +547,9 @@ func newGzipHandler(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		w.Header().Set("Content-Encoding", "gzip")
-		gz := gzPool.Get().(*gzip.Writer)
-		defer gzPool.Put(gz)
-
-		gz.Reset(w)
-		defer gz.Close()
-
-		next.ServeHTTP(&gzipResponseWriter{ResponseWriter: w, Writer: gz}, r)
+		gw := &gzipResponseWriter{ResponseWriter: w, buf: make([]byte, 0, gzipMinSize)}
+		defer gw.finish()
+		next.ServeHTTP(gw, r)
 	})
 }
 

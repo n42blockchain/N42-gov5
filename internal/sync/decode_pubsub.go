@@ -6,7 +6,6 @@ import (
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/pkg/errors"
 	ssz "github.com/prysmaticlabs/fastssz"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/n42blockchain/N42/internal/p2p"
 )
@@ -14,6 +13,7 @@ import (
 var (
 	errNilPubsubMessage = errors.New("nil pubsub message")
 	errInvalidTopic     = errors.New("invalid topic format")
+	errUnhandledTopic   = errors.New("gossip topic has no decoder")
 )
 
 func (s *Service) decodePubsubMessage(msg *pubsub.Message) (ssz.Unmarshaler, error) {
@@ -31,29 +31,24 @@ func (s *Service) decodePubsubMessage(msg *pubsub.Message) (ssz.Unmarshaler, err
 		return nil, err
 	}
 
-	// Block gossip is RLP-encoded (not the proto/SSZ of types_pb.Block), so decode
-	// it into a raw byte carrier; validateBlockPubSub then RLP-decodes it into a
-	// *block.Block.
-	if topic == p2p.BlockTopicFormat {
+	// Every topic this node subscribes to carries its own encoding, so the
+	// message is handed to the subscriber as raw bytes and decoded there.
+	//
+	// There used to be a fallback that cloned the topic's registered protobuf
+	// message and unmarshalled into it. Once each payload had moved to its own
+	// encoding, every registration pointed at the same types_pb.H256
+	// placeholder, so that fallback would have decoded an unrecognised topic
+	// into an H256 and passed it on as if it were valid. Rejecting the topic is
+	// the only honest answer.
+	switch topic {
+	case p2p.BlockTopicFormat, p2p.TransactionTopicFormat, p2p.BlobSidecarTopicFormat:
 		raw := &rawSSZBytes{}
 		if err := s.cfg.p2p.Encoding().DecodeGossip(msg.Data, raw); err != nil {
 			return nil, err
 		}
 		return raw, nil
 	}
-
-	base := p2p.GossipTopicMappings(topic)
-	if base == nil {
-		return nil, p2p.ErrMessageNotMapped
-	}
-	m, ok := proto.Clone(base).(ssz.Unmarshaler)
-	if !ok {
-		return nil, errors.Errorf("message of %T does not support marshaller interface", base)
-	}
-	if err := s.cfg.p2p.Encoding().DecodeGossip(msg.Data, m); err != nil {
-		return nil, err
-	}
-	return m, nil
+	return nil, errors.Wrapf(errUnhandledTopic, "topic %s", topic)
 }
 
 // replaceForkDigest replaces the fork digest in a topic path with a format placeholder.

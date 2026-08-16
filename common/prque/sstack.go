@@ -42,12 +42,21 @@ type sstack struct {
 }
 
 // Creates a new, empty stack.
+//
+// The first block is not allocated here. A block is 4096 pointers — 32 KB —
+// and a queue that is created and never pushed to pays that in full. The
+// transaction pool creates one per reorg to rank spamming accounts, and
+// usually finds none: on this fleet that single call site was 180 GB of the
+// node's 389 GB of allocation over 24 minutes, 46% of everything, for queues
+// that stayed empty.
+//
+// Push already allocates a block whenever size has caught up with capacity, so
+// starting at zero capacity simply defers the first allocation to the first
+// element. Everything that reads blocks directly either guards on Len or is
+// Peek, which now reports empty rather than indexing into nothing.
 func newSstack(setIndex SetIndexCallback, wrapAround bool) *sstack {
 	result := new(sstack)
 	result.setIndex = setIndex
-	result.active = make([]*item, blockSize)
-	result.blocks = [][]*item{result.active}
-	result.capacity = blockSize
 	result.wrapAround = wrapAround
 	return result
 }

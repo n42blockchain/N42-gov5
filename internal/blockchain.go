@@ -46,6 +46,7 @@ import (
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/internal/consensus"
@@ -175,6 +176,84 @@ func (bc *BlockChain) SetPrefetchPredictor(p *PrefetchPredictor) {
 		log.Info("Predictive slot prefetching enabled")
 		if sp, ok := bc.process.(*StateProcessor); ok {
 			sp.SetSlotRecorder(p)
+		}
+	}
+}
+
+// TxIndexer receives committed blocks' transaction hashes for a lookup index
+// kept outside the consensus write path.
+//
+// Writing one MDBX row per transaction inside the commit transaction cost
+// 2,700 ms of a 3.53 s block cycle at a 480M gas ceiling -- 94.6% of it in
+// mdbx_txn_commit, because 22,857 hash-keyed rows touch nearly that many
+// separate B-tree leaves. When an indexer is attached, nothing is written here
+// and it owns the newest blocks instead.
+type TxIndexer interface {
+	Add(number uint64, hashes []types.Hash)
+}
+
+// SetTxIndexer attaches an index for the newest blocks. Must be set before the
+// first commit, or the blocks in between are written to neither tier.
+func (bc *BlockChain) SetTxIndexer(ix TxIndexer) {
+	bc.txIndexer = ix
+	log.Info("Transaction lookup index attached; commit path will not write the table")
+}
+
+// SenderHintSource resolves a transaction hash to the pool's copy of that
+// transaction, or nil. Declared as an interface for the same reason TxIndexer
+// is: the pool package imports this one.
+//
+// Import-path sender recovery uses it as a cache: a transaction that reached
+// the pool already paid its secp256k1 recovery at admission, and the wire copy
+// in an imported block is the same signature bytes (same hash), so the pool
+// copy's cached sender — re-derived through the block's own signer, which
+// verifies the cache actually belongs to that signer — is byte-identical to
+// what recovering the wire copy would produce. Measured on a saturated fleet,
+// recovery was 260 ms of a 516 ms import (22,857 transactions, 8 workers), all
+// of it re-deriving senders the pool had already derived.
+type SenderHintSource interface {
+	GetTx(hash types.Hash) *transaction.Transaction
+}
+
+// SetSenderHintSource attaches the transaction pool as a sender cache for
+// block import. Purely an accelerator: a nil source, a miss, or a signer
+// mismatch all fall back to plain recovery.
+func (bc *BlockChain) SetSenderHintSource(s SenderHintSource) {
+	bc.senderHints = s
+	log.Info("Sender hint source attached; block import will reuse pool-recovered senders")
+}
+
+// SetExecutedHook attaches the early-vote notification: fired the moment a
+// block's execution and state validation succeed during import, before the
+// block is persisted, so consensus voting can overlap the MDBX commit.
+func (bc *BlockChain) SetExecutedHook(h func(hash, txHash, parentHash types.Hash, number uint64, extra []byte)) {
+	bc.executedHook = h
+	log.Info("Executed hook attached; consensus votes will not wait for block persistence")
+}
+
+// WaitBlockPersisted blocks until the given block's header is readable (its
+// write transaction committed — headers land atomically with state) or the
+// timeout passes. The early-vote path lets a view advance while the previous
+// block's persistence is still in flight, so a leader triggered at the view
+// change may need to wait a few milliseconds before building on it.
+func (bc *BlockChain) WaitBlockPersisted(hash types.Hash, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		found := false
+		_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+			found = rawdb.ReadHeaderNumber(tx, hash) != nil
+			return nil
+		})
+		if found {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-bc.ctx.Done():
+			return false
+		case <-time.After(5 * time.Millisecond):
 		}
 	}
 }
@@ -929,8 +1008,20 @@ func (bc *BlockChain) canonicalByCommitOnly() bool {
 func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 	var committedNumber uint64
 	var notify bool
+	// Phase timings: this runs inline on HotStuff's serial output loop, and its
+	// two transaction-count-proportional steps (reading the block's bodies and
+	// writing one TxLookup row per transaction) are what set the block cycle at
+	// a high gas ceiling -- measured at 2.7 s mean of a 3.53 s cycle.
+	var dRead, dWalk, dLookup, dLock, dBody time.Duration
+	var indexed *block.Block
+	tCommit := time.Now()
 	err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+		tEnter := time.Now()
+		dLock = tEnter.Sub(tCommit)
+		defer func() { dBody = time.Since(tEnter) }()
+		tRead := time.Now()
 		blk, err := rawdb.ReadBlockByHash(tx, hash)
+		dRead = time.Since(tRead)
 		if err != nil {
 			return err
 		}
@@ -980,6 +1071,7 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 		// The stop condition requires BOTH the current mapping to match AND the
 		// link below to be consistent — "existing == hash" alone re-froze holes
 		// left by the old walk (prefix-consistency assumption).
+		tWalk := time.Now()
 		curNum := blk.Number64().Uint64()
 		curHash := hash
 		curParent := blk.ParentHash()
@@ -1016,6 +1108,7 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 			curHash = curParent
 			curParent = hdr.ParentHash
 		}
+		dWalk = time.Since(tWalk)
 		// Canonical rows ABOVE the committed height are dead-branch leftovers
 		// (written by the retired import-time reorg path, or by an interrupted
 		// higher rewrite). The canonical table must be exactly the committed-
@@ -1047,7 +1140,17 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 		// the ordinary TxLookup writer. Persist the canonical block's lookup
 		// entries here so eth_getTransactionByHash/Receipt can resolve live
 		// HotStuff transactions as soon as the commit becomes durable.
-		rawdb.WriteTxLookupEntries(tx, blk)
+		// With the tail tier on, the newest blocks are indexed in memory and
+		// sealed into RecSplit segments, and nothing is written here: one row
+		// per transaction keyed by transaction hash dirtied thousands of
+		// scattered pages and made mdbx_txn_commit 94.6% of this phase.
+		tLookup := time.Now()
+		if bc.txIndexer == nil {
+			rawdb.WriteTxLookupEntries(tx, blk)
+		} else {
+			indexed = blk
+		}
+		dLookup = time.Since(tLookup)
 		bc.currentBlock.Store(blk)
 		// Canonical rows changed under any read-through layer: invalidate it, or
 		// by-number readers (RPC, the catch-up range SERVER) keep returning the
@@ -1059,7 +1162,10 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 				cache.Clear()
 			}
 		}
-		log.Info("commit-to-canonical applied", "number", blk.Number64().Uint64(), "hash", hash.Hex())
+		// Once per committed block, duplicating what "hotstuff: block committed"
+		// already reports; a rewrite of the canonical chain is the part worth
+		// surfacing and it is logged where it happens.
+		log.Debug("commit-to-canonical applied", "number", blk.Number64().Uint64(), "hash", hash.Hex())
 		committedNumber = blk.Number64().Uint64()
 		notify = true
 		return nil
@@ -1067,6 +1173,22 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 	if err != nil {
 		return err
 	}
+	// lock: waiting for MDBX's single writer. body: the closure. The remainder
+	// (total-lock-body) is mdbx_txn_commit -- writing and fsyncing the pages the
+	// closure dirtied, which for one TxLookup row per transaction is thousands
+	// of random-key B-tree inserts.
+	total := time.Since(tCommit)
+	if indexed != nil {
+		txs := indexed.Transactions()
+		hashes := make([]types.Hash, len(txs))
+		for i, tx := range txs {
+			hashes[i] = tx.Hash()
+		}
+		bc.txIndexer.Add(indexed.Number64().Uint64(), hashes)
+	}
+	log.Info("commit-to-canonical phases",
+		"number", committedNumber, "lock", dLock, "read", dRead, "walk", dWalk,
+		"txlookup", dLookup, "body", dBody, "commit", total-dLock-dBody, "total", total)
 	// HotStuff imports candidates as side blocks and advances the canonical
 	// head only here. Notify after the database transaction commits: the
 	// import-time canonical callback is intentionally bypassed on this path.
@@ -1800,6 +1922,19 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			return it.index, err
 		}
 
+		// Early vote: execution and state validation just succeeded, which is
+		// exactly what the import-gated vote certifies. Fire the consensus
+		// notification NOW, on its own goroutine, so the vote round overlaps
+		// the ~150-250ms persistence below instead of waiting behind it. A
+		// writeBlockWithState failure after this is a local durability
+		// problem (the node re-imports on recovery), not a vote-safety one.
+		if bc.executedHook != nil {
+			if hdr, ok := blk.Header().(*block.Header); ok && hdr != nil {
+				h, th, ph, num, extra := blk.Hash(), blk.TxHash(), hdr.ParentHash, hdr.Number.Uint64(), hdr.Extra
+				go bc.executedHook(h, th, ph, num, extra)
+			}
+		}
+
 		wstart := time.Now()
 		status, err := bc.writeBlockWithState(blk, receipts, ibs, nopay)
 		if err != nil {
@@ -1852,7 +1987,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				"exec", procPhases.Exec, "root", procPhases.Finalize,
 				"proc", dProcess, "valid", dValidate, "write", dWrite, "total", dTotal,
 			}
-			if dTotal >= 5*time.Millisecond {
+			if dTotal >= slowBlockThreshold {
 				log.Info("blockimport phases", fields...)
 			} else {
 				log.Debug("blockimport phases", fields...)

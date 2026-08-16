@@ -82,6 +82,8 @@ func (l *Log) FromProtoMessage(message proto.Message) error {
 
 type Logs []*Log
 
+// Marshal encodes the log list as protobuf. Retained to read back data written
+// before the compact codec; MarshalCompact is what write paths use.
 func (l *Logs) Marshal() ([]byte, error) {
 	pbLogs := make([]*types_pb.Log, len(*l))
 	for i, log := range *l {
@@ -91,6 +93,11 @@ func (l *Logs) Marshal() ([]byte, error) {
 }
 
 func (l *Logs) Unmarshal(data []byte) error {
+	// Compact storage format (0xFF marker — never a valid proto first byte,
+	// since 0xFF decodes as field 31 / wire type 7 which is illegal).
+	if IsCompactLogs(data) {
+		return l.unmarshalCompact(data)
+	}
 	pb := new(types_pb.Logs)
 	if err := proto.Unmarshal(data, pb); err != nil {
 		return err

@@ -73,6 +73,13 @@ const (
 	OutputEquivocationDetected EngineOutputType = 7
 	OutputEpochTransition      EngineOutputType = 8
 	OutputEpochStaged          EngineOutputType = 9 // staged validator set needs persistence
+	// OutputSpeculativeBuild advises the block producer that this node just
+	// voted for block Hash and — by round-robin — leads view View next, so a
+	// proposal extending Hash can be built NOW, during the current view's
+	// vote rounds. Purely advisory: acting on it, dropping it, or guessing
+	// wrong never affects safety (the parked block is proposed only if the
+	// real trigger confirms the same parent).
+	OutputSpeculativeBuild EngineOutputType = 10
 )
 
 // ConsensusEngine is the HotStuff-2 consensus state machine.
@@ -92,6 +99,10 @@ type ConsensusEngine struct {
 	myIndex   ValidatorIndex
 	myAddr    types.Address // own validator address; lets an observer/removed node (myIndex==NonMemberIndex) locate itself in a new set at an epoch boundary
 	secretKey common.SecretKey
+
+	// h2V4Identity is set only for an explicitly configured cross-client
+	// network. Nil preserves the deployed legacy signing domains exactly.
+	h2V4Identity *H2V4ChainIdentity
 
 	epochManager *EpochManager
 	reconfigMgr  *ReconfigurationManager
@@ -1081,7 +1092,7 @@ func (e *ConsensusEngine) processEmbeddedTC(msg *ConsensusMsg) error {
 	}
 
 	// Verify the TC and its embedded high_qc before acting on it.
-	if err := VerifyTC(tc, e.resolveQCValidatorSet(tc.View, len(tc.Signers))); err != nil {
+	if err := e.verifyTCWithSet(tc, e.resolveQCValidatorSet(tc.View, len(tc.Signers))); err != nil {
 		log.Debug("ignoring piggybacked TC with invalid signature", "tcView", tc.View, "err", err)
 		return nil
 	}
@@ -1114,9 +1125,9 @@ func (e *ConsensusEngine) tryQCViewJump(msg *ConsensusMsg, msgView ViewNumber) (
 	// Verify QC. Decide uses commit signing domain.
 	var verifyErr error
 	if msg.Type == MsgDecide {
-		verifyErr = VerifyCommitQC(qc, e.resolveQCValidatorSet(qc.View, len(qc.Signers)))
+		verifyErr = e.verifyCommitQCWithSet(qc, e.resolveQCValidatorSet(qc.View, len(qc.Signers)))
 	} else {
-		verifyErr = VerifyQC(qc, e.resolveQCValidatorSet(qc.View, len(qc.Signers)))
+		verifyErr = e.verifyQCWithSet(qc, e.resolveQCValidatorSet(qc.View, len(qc.Signers)))
 	}
 	if verifyErr != nil {
 		return false, nil
@@ -1169,5 +1180,5 @@ func (e *ConsensusEngine) verifyEmbeddedQC(qc *QuorumCertificate) error {
 	if qc.View == 0 {
 		return nil
 	}
-	return VerifyQCAnyDomain(qc, e.resolveQCValidatorSet(qc.View, len(qc.Signers)))
+	return e.verifyQCAnyDomainWithSet(qc, e.resolveQCValidatorSet(qc.View, len(qc.Signers)))
 }

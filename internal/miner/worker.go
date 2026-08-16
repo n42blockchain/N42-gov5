@@ -143,6 +143,14 @@ type newWorkReq struct {
 	// consensus-mandated HighQC block for a leader-driven proposal — instead
 	// of the local chain head.
 	parentHash types.Hash
+	// speculative marks a cross-view speculative build: this node just voted
+	// for the block at parentHash and expects to lead the NEXT view, whose
+	// proposal will extend that very block on the happy path. The build runs
+	// now — during the current view's vote rounds — and the result is parked
+	// (not sealed, not proposed) until TriggerBlockProduction confirms the
+	// parent. A wrong guess is discarded; a speculative request may be
+	// dropped or interrupted at any time in favour of real work.
+	speculative bool
 }
 
 type generateParams struct {
@@ -229,6 +237,16 @@ type worker struct {
 	isLocalBlock func(header *block.Header) bool
 	pendingTasks map[types.Hash]*task
 
+	// Cross-view speculative build state. specTask holds the parked result of
+	// a speculative commitWork (guarded by specMu); specParent is the parent
+	// the parked block extends. activeSpecInterrupt points at the interrupt of
+	// a speculative build in flight, so a real production trigger can abort it
+	// instead of queueing behind it.
+	specMu              sync.Mutex
+	specTask            *task
+	specParent          types.Hash
+	activeSpecInterrupt atomic.Pointer[atomic.Int32]
+
 	// sealedOnParent records the FIRST block this node sealed on a given parent
 	// (keyed by parentHash). A leader re-elected across several views at the same
 	// height — before that height commits — would otherwise seal a second,
@@ -288,8 +306,15 @@ type worker struct {
 	pacingAnchorNum  uint64
 	pacingAnchorSet  bool
 
-	snapshotMu       sync.RWMutex
-	snapshotBlock    block.IBlock
+	// Pending-block snapshot for RPC readers, built LAZILY: updateSnapshot
+	// stores the raw material and pendingBlockAndReceipts assembles on first
+	// read. Building eagerly cost every block ~30-45ms of the leader's
+	// critical path (CreateBloom + TxRoot + DeriveSha over 22,857 entries)
+	// for an endpoint that is almost never queried.
+	snapshotMu       sync.Mutex
+	snapshotEnv      *environment // material; nil until the first build
+	snapshotRewards  []*block.Reward
+	snapshotBlock    block.IBlock // lazily assembled from snapshotEnv
 	snapshotReceipts block.Receipts
 }
 
@@ -403,7 +428,12 @@ func (w *worker) runLoop() error {
 		case <-w.ctx.Done():
 			return w.ctx.Err()
 		case req := <-w.newWorkCh:
-			err := w.commitWork(req.interrupt, req.noempty, req.timestamp, req.parentHash)
+			err := w.commitWork(req.interrupt, req.noempty, req.timestamp, req.parentHash, req.speculative)
+			if err != nil && req.speculative {
+				// An aborted or failed guess costs nothing; do not alarm.
+				log.Debug("speculative build abandoned", "err", err)
+				err = nil
+			}
 			if err != nil {
 				log.Error("runLoop error", "err", err)
 			}
@@ -736,14 +766,104 @@ func (w *worker) taskLoop() error {
 	}
 }
 
-func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int64, parentHash types.Hash) error {
-	log.Info("miner: commitWork begin") // diagnostic: pairs with "build triggered"
+// paceBlock throttles the wall-clock seal rate to a fixed interval on an
+// absolute grid (drift-free over long runs). Set the anchor on the first paced
+// block, then hold each subsequent block until its grid slot
+// (anchor + (num-anchorNum)*interval). A block that runs late has a slot
+// already in the past, so it seals immediately and the schedule self-corrects
+// with no accumulated drift. Interval 0 disables the throttle entirely
+// (produce flat out — e.g. benchmarking). Consensus is unaffected:
+// header.Time stays the deterministic parent.Time+period value.
+func (w *worker) paceBlock(num uint64) error {
+	iv := w.minerConf.BlockIntervalMs
+	if iv <= 0 || !w.isRunning() {
+		return nil
+	}
+	interval := time.Duration(iv) * time.Millisecond
+	if !w.pacingAnchorSet || num < w.pacingAnchorNum {
+		w.pacingAnchorWall, w.pacingAnchorNum, w.pacingAnchorSet = time.Now(), num, true
+		return nil
+	}
+	target := w.pacingAnchorWall.Add(time.Duration(num-w.pacingAnchorNum) * interval)
+	wait := time.Until(target)
+	// Cap a single wait at one interval. With rotating leaders each node
+	// seals only every Nth block, so its own grid can demand up to
+	// N*interval in one go — long enough to trip the view timeout and
+	// start a TC storm. One-interval waits still pace the NETWORK to
+	// ~interval per block (every leader holds its slot), and the solo
+	// case (num advances by 1 per seal) is unaffected.
+	if wait > interval {
+		wait = interval
+		w.pacingAnchorWall, w.pacingAnchorNum = time.Now().Add(interval), num
+	}
+	// Re-anchor if we have fallen more than one full interval behind the
+	// grid (clock jump, long stall) so catch-up bursts stay bounded.
+	if wait < -interval {
+		w.pacingAnchorWall, w.pacingAnchorNum = time.Now(), num
+	} else if wait > 0 {
+		timer := time.NewTimer(wait)
+		select {
+		case <-timer.C:
+		case <-w.ctx.Done():
+			timer.Stop()
+			return w.ctx.Err()
+		}
+	}
+	return nil
+}
+
+// takeSpecTask returns the parked speculative task when it extends parent, and
+// clears the parking spot either way — a mismatch means the guess is stale.
+func (w *worker) takeSpecTask(parent types.Hash) *task {
+	w.specMu.Lock()
+	defer w.specMu.Unlock()
+	t := w.specTask
+	match := t != nil && w.specParent == parent
+	w.specTask, w.specParent = nil, types.Hash{}
+	if match {
+		return t
+	}
+	return nil
+}
+
+func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int64, parentHash types.Hash, speculative bool) error {
+	log.Info("miner: commitWork begin", "speculative", speculative) // diagnostic: pairs with "build triggered"
 	start := time.Now()
 	w.mu.RLock()
 	coinbase := w.coinbase
 	w.mu.RUnlock()
 	if w.isRunning() && coinbase == (types.Address{}) {
 		return errors.New("coinbase is empty")
+	}
+
+	// Speculative HIT: the previous view voted for parentHash, the build ran
+	// during that view's vote rounds, and consensus now confirms the guess.
+	// Pay the pacing wait the parked build skipped, then hand the block
+	// straight to the sealer — the whole build phase is off the critical path.
+	if !speculative && parentHash != (types.Hash{}) {
+		if st := w.takeSpecTask(parentHash); st != nil {
+			num := uint64(0)
+			if n := st.block.Number64(); n != nil {
+				num = n.Uint64()
+			}
+			if err := w.paceBlock(num); err != nil {
+				return err
+			}
+			log.Info("miner: speculative build hit", "number", num, "parent", parentHash.Hex()[:12])
+			select {
+			case w.taskCh <- st:
+			case <-w.ctx.Done():
+				return w.ctx.Err()
+			}
+			return nil
+		}
+	}
+
+	if speculative {
+		// Publish our interrupt so a real production trigger can abort us, and
+		// make sure only one speculative build runs at a time.
+		w.activeSpecInterrupt.Store(interrupt)
+		defer w.activeSpecInterrupt.Store(nil)
 	}
 
 	// Consensus-pinned parent (HotStuff HighQC block): the world state must BE
@@ -756,11 +876,26 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// back one block.
 	if parentHash != (types.Hash{}) {
 		if bc, ok := w.chain.(*internal.BlockChain); ok {
+			// Early-vote overlap: the view can advance while the parent's
+			// persistence is still in flight on this node. The build reads
+			// PlainState, which lands atomically with the header — wait for it
+			// rather than aligning against (and mis-reading) the pre-parent
+			// state. Normally sub-millisecond; 2s covers a stalled write.
+			if !bc.WaitBlockPersisted(parentHash, 2*time.Second) {
+				return fmt.Errorf("consensus parent %x not persisted in time", parentHash[:8])
+			}
 			pblk, _ := w.chain.GetBlockByHash(parentHash)
 			if pblk == nil {
 				return fmt.Errorf("consensus parent %x not in local db", parentHash[:8])
 			}
 			if err := bc.AlignAppliedBranch(pblk.Number64().Uint64()+1, parentHash); err != nil {
+				if speculative {
+					// A guess is not worth a forced import: the align fallback
+					// below re-imports the consensus parent with switch
+					// authority, which is only justified when consensus has
+					// actually mandated this parent. Give up quietly.
+					return fmt.Errorf("speculative align failed: %w", err)
+				}
 				// The QC block is in the DB but on a branch this node never
 				// applied (it didn't vote in that view). Import it WITH switch
 				// authority — the QC is the consensus mandate — then re-align.
@@ -780,45 +915,12 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		return err
 	}
 
-	// Block-production pacing: throttle the wall-clock seal rate to a fixed
-	// interval on an absolute grid (drift-free over long runs). Set the anchor
-	// on the first paced block, then hold each subsequent block until its grid
-	// slot (anchor + (num-anchorNum)*interval). A block that runs late has a
-	// slot already in the past, so it seals immediately and the schedule
-	// self-corrects with no accumulated drift. Interval 0 disables the throttle
-	// entirely (produce flat out — e.g. benchmarking). Consensus is unaffected:
-	// header.Time stays the deterministic parent.Time+period value.
-	if iv := w.minerConf.BlockIntervalMs; iv > 0 && w.isRunning() {
-		num := current.header.Number.Uint64()
-		interval := time.Duration(iv) * time.Millisecond
-		if !w.pacingAnchorSet || num < w.pacingAnchorNum {
-			w.pacingAnchorWall, w.pacingAnchorNum, w.pacingAnchorSet = time.Now(), num, true
-		} else {
-			target := w.pacingAnchorWall.Add(time.Duration(num-w.pacingAnchorNum) * interval)
-			wait := time.Until(target)
-			// Cap a single wait at one interval. With rotating leaders each node
-			// seals only every Nth block, so its own grid can demand up to
-			// N*interval in one go — long enough to trip the view timeout and
-			// start a TC storm. One-interval waits still pace the NETWORK to
-			// ~interval per block (every leader holds its slot), and the solo
-			// case (num advances by 1 per seal) is unaffected.
-			if wait > interval {
-				wait = interval
-				w.pacingAnchorWall, w.pacingAnchorNum = time.Now().Add(interval), num
-			}
-			// Re-anchor if we have fallen more than one full interval behind the
-			// grid (clock jump, long stall) so catch-up bursts stay bounded.
-			if wait < -interval {
-				w.pacingAnchorWall, w.pacingAnchorNum = time.Now(), num
-			} else if wait > 0 {
-				timer := time.NewTimer(wait)
-				select {
-				case <-timer.C:
-				case <-w.ctx.Done():
-					timer.Stop()
-					return w.ctx.Err()
-				}
-			}
+	// Block-production pacing (skipped for speculative builds, which run early
+	// on purpose; the grid wait is paid when the parked block is HANDED OVER,
+	// see the speculative-hit path in this function's caller flow).
+	if !speculative {
+		if err := w.paceBlock(current.header.Number.Uint64()); err != nil {
+			return err
 		}
 	}
 
@@ -930,7 +1032,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	log.Info("miner: build phases",
 		"align", tAlign, "reload", tReload-tAlign, "syscalls", tPrep-tReload,
 		"fillTx", time.Since(start)-tPrep, "total", time.Since(start))
-	if err = w.commit(current, stateWriter, ibs, start, headers, tracingReader, readLogRecorder); err != nil {
+	if err = w.commit(current, stateWriter, ibs, start, headers, tracingReader, readLogRecorder, speculative, parentHash); err != nil {
 		log.Errorf("w.commit failed, error %v\n", err)
 		return err
 	}
@@ -1070,10 +1172,13 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	}
 
 	// Pre-allocate with estimated max tx count to avoid append-growth
-	// in the hot commit loop. 21000 is the minimum gas per tx.
+	// in the hot commit loop. 21000 is the minimum gas per tx. The estimate is
+	// exact for a transfer-saturated block (480M/21000 = 22,857 slots, ~360KB
+	// across both slices); the old 1024 cap forced five doubling copies per
+	// full block to save memory nobody was short of.
 	estCap := int(env.gasPool.Gas() / 21000)
-	if estCap > 1024 {
-		estCap = 1024 // cap to avoid over-allocation on high gas limits
+	if estCap > 1<<20 {
+		estCap = 1 << 20 // sanity bound for absurd gas limits
 	}
 	env.txs = make([]*transaction.Transaction, 0, estCap)
 	env.receipts = make(block.Receipts, 0, estCap)
@@ -1221,6 +1326,14 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	txSet := builder.NewTxByPriceAndNonce(pending, header.BaseFee)
 	log.Tracef("fillTransactions pending accounts:%d", len(pending))
 
+	// Accounts skipped because their head transaction cannot pay the base fee.
+	// Reported once per build: a block that comes out empty with a full pool is
+	// otherwise indistinguishable from a block that had nothing to include, and
+	// the difference is the whole diagnosis.
+	priceOut := 0
+	// fillTx phase accumulators — see the breakdown log below the loop.
+	var dPick, dCommit, dHeap time.Duration
+
 	for {
 		if interrupt != nil {
 			if signal := interrupt.Load(); signal != commitInterruptNone {
@@ -1235,6 +1348,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			break
 		}
 
+		tSpan := time.Now()
 		tx := txSet.Peek()
 		if tx == nil {
 			break
@@ -1258,8 +1372,12 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			txSet.Pop()
 			continue
 		}
+		tExec := time.Now()
+		dPick += tExec.Sub(tSpan)
 
 		err := commitTx(tx)
+		dCommit += time.Since(tExec)
+		tShift := time.Now()
 		switch {
 		case err == nil:
 			sizeLimiter.add(txSize)
@@ -1271,10 +1389,40 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			txSet.Pop() // Nonce gap, skip account
 		case errors.Is(err, internal.ErrNonceTooLow):
 			txSet.Shift() // Try next nonce from same account
+		case errors.Is(err, internal.ErrFeeCapTooLow):
+			// The account cannot pay this block's base fee. Skip the whole
+			// account: its later transactions are gated behind this nonce, so
+			// none of them can be included however much they bid.
+			//
+			// This is the common case, not an anomaly. A saturated chain drives
+			// the base fee above a fixed-price load's cap by design (EIP-1559
+			// settles at the gas target), and every transaction in the pool then
+			// fails here. Shifting instead of popping walked the entire pool per
+			// build, and logging each failure at Error put thousands of lines in
+			// the log per block -- the empty block that produced them was three
+			// times more expensive to build than a full one.
+			priceOut++
+			txSet.Pop()
 		default:
 			log.Error("miningCommitTx failed", "error", err)
 			txSet.Shift()
 		}
+		dHeap += time.Since(tShift)
+	}
+
+	// One line per non-trivial build: where fillTx's time actually goes.
+	// pick = Peek + size admit, commit = ApplyTransaction (the EVM work an
+	// importer would also pay), heap = Shift/Pop re-sorting. The importer
+	// executes the same transactions in ~5-6µs each; whatever pick+heap add on
+	// top of commit is the builder's own overhead.
+	if env.tcount > 1000 {
+		log.Info("miner: fillTx breakdown",
+			"txs", env.tcount, "pick", dPick, "commit", dCommit, "heap", dHeap)
+	}
+
+	if priceOut > 0 {
+		log.Info("miner: accounts priced out by the base fee",
+			"accounts", priceOut, "of", len(pending), "packed", len(env.txs), "baseFee", header.BaseFee)
 	}
 
 	// Prune old bundles.
@@ -1372,7 +1520,7 @@ func (w *worker) makeEnv(parent *block.Header, header *block.Header, coinbase ty
 	return env
 }
 
-func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs *state.IntraBlockState, start time.Time, needHeaders []*block.Header, tracingReader *witness.TracingReader, readLogRecorder *streamverify.ReadLogRecorder) error {
+func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs *state.IntraBlockState, start time.Time, needHeaders []*block.Header, tracingReader *witness.TracingReader, readLogRecorder *streamverify.ReadLogRecorder, speculative bool, specParent types.Hash) error {
 	if !w.isRunning() {
 		return nil
 	}
@@ -1385,6 +1533,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	var dWitness time.Duration
 
 	envCopy := env.copy()
+	dCopy := time.Since(tCommitStart)
 	iblock, rewards, unpay, err := w.engine.FinalizeAndAssemble(w.chain, envCopy.header, ibs, envCopy.txs, nil, envCopy.receipts)
 	if err != nil {
 		return err
@@ -1396,15 +1545,30 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	// state root, gas used are set by FinalizeAndAssemble) and hand off to
 	// the sink. Best-effort by design — packet production must never fail
 	// a block.
+	tPacket := time.Now()
 	if w.mobilePacketSink != nil && readLogRecorder != nil {
 		if finalHeader, ok := iblock.Header().(*block.Header); ok {
-			if pkt, perr := streamverify.BuildStreamPacket(finalHeader, envCopy.txs, readLogRecorder); perr != nil {
-				log.Warn("mobileverify: packet build failed", "number", finalHeader.Number.Uint64(), "err", perr)
-			} else if num, nerr := requireBlockNumber(iblock, "sealed block number unavailable"); nerr == nil {
-				w.mobilePacketSink(pkt, num.Uint64())
+			// Built off the critical path: packet construction walked the whole
+			// read log (~35-75ms on a full block) inside assemble. The header is
+			// COPIED first — the sealer appends the BLS signature to this
+			// block's Extra concurrently — while the tx slice and the recorder
+			// are immutable once the build is done. Delivery was already
+			// best-effort; asynchrony only moves where the effort is spent.
+			hdrCopy := block.CopyHeader(finalHeader)
+			num, nerr := requireBlockNumber(iblock, "sealed block number unavailable")
+			if nerr == nil {
+				txs, rec, sink := envCopy.txs, readLogRecorder, w.mobilePacketSink
+				go func() {
+					if pkt, perr := streamverify.BuildStreamPacket(hdrCopy, txs, rec); perr != nil {
+						log.Warn("mobileverify: packet build failed", "number", hdrCopy.Number.Uint64(), "err", perr)
+					} else {
+						sink(pkt, num.Uint64())
+					}
+				}()
 			}
 		}
 	}
+	dPacket := time.Since(tPacket)
 
 	// Generate witness after FinalizeAndAssemble when JMT + TracingReader are active.
 	if tracingReader != nil {
@@ -1454,7 +1618,13 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	if err != nil {
 		return err
 	}
-	if w.chainConfig.IsBeijing(envHeaderNumber.Uint64()) {
+	// The Entire event re-marshals every transaction of the block — ~23k
+	// encodings and a full snapshot copy on a saturated 480M block, ~100ms of
+	// the leader's critical path. Its only consumers are on-demand RPC
+	// subscriptions (minedBlock / aggregate-sign streams), which almost never
+	// exist on a validator, so ask before building rather than after.
+	if w.chainConfig.IsBeijing(envHeaderNumber.Uint64()) &&
+		event.GlobalEvent.HasSubscribers(common.MinedEntireEvent{}) {
 		txs := make([][]byte, len(envCopy.txs))
 		for i, tx := range envCopy.txs {
 			txs[i], err = tx.Marshal()
@@ -1491,11 +1661,39 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 		})
 	}
 
+	tSnap := time.Now()
 	w.updateSnapshot(envCopy, rewards)
+	dSnap := time.Since(tSnap)
+	if len(envCopy.txs) > 1000 {
+		log.Info("miner: assemble breakdown",
+			"txs", len(envCopy.txs), "copy", dCopy, "finalize", dFinalize-dCopy,
+			"packet", dPacket, "snapshot", dSnap,
+			"other", time.Since(tCommitStart)-dFinalize-dPacket-dSnap)
+	}
 
 	commitRewardCount := 0
 	if b := iblock.Body(); b != nil {
 		commitRewardCount = len(b.Reward())
+	}
+
+	// Speculative build: park the finished task for the next view's trigger
+	// instead of sealing it. Sealing signs and PROPOSES; that right arrives
+	// only with TriggerBlockProduction, which will collect this via
+	// takeSpecTask when the guessed parent is confirmed.
+	if speculative {
+		w.specMu.Lock()
+		w.specTask = &task{
+			receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay,
+			finalize: dFinalize, witness: dWitness, assemble: time.Since(tCommitStart),
+		}
+		w.specParent = specParent
+		w.specMu.Unlock()
+		num := uint64(0)
+		if n := iblock.Number64(); n != nil {
+			num = n.Uint64()
+		}
+		log.Info("miner: speculative build parked", "number", num, "txs", envCopy.tcount, "parent", specParent.Hex()[:12])
+		return nil
 	}
 
 	select {
@@ -1532,23 +1730,37 @@ func copyReceipts(receipts []*block.Receipt) []*block.Receipt {
 }
 
 func (w *worker) pendingBlockAndReceipts() (block.IBlock, block.Receipts) {
-	w.snapshotMu.RLock()
-	defer w.snapshotMu.RUnlock()
+	w.snapshotMu.Lock()
+	defer w.snapshotMu.Unlock()
+	if w.snapshotBlock == nil && w.snapshotEnv != nil {
+		w.snapshotBlock = block.NewBlockFromReceipt(
+			w.snapshotEnv.header,
+			w.snapshotEnv.txs,
+			nil,
+			w.snapshotEnv.receipts,
+			w.snapshotRewards,
+		)
+	}
 	return w.snapshotBlock, w.snapshotReceipts
 }
 
+// updateSnapshot stores the material for the pending block/receipts RPC
+// snapshot. The block itself is assembled lazily on first read (see
+// pendingBlockAndReceipts): NewBlockFromReceipt computes the bloom, the tx
+// root and the receipt root over the whole block — pure waste on the leader's
+// critical path when no one queries pending state.
+//
+// The caller passes the COPY commit() already made (envCopy), whose lifetime
+// ends when commit returns and which nothing mutates afterwards, so the
+// snapshot can hold its slices directly.
 func (w *worker) updateSnapshot(env *environment, rewards []*block.Reward) {
 	w.snapshotMu.Lock()
 	defer w.snapshotMu.Unlock()
 
-	w.snapshotBlock = block.NewBlockFromReceipt(
-		env.header,
-		env.txs,
-		nil,
-		env.receipts,
-		rewards,
-	)
-	w.snapshotReceipts = copyReceipts(env.receipts)
+	w.snapshotEnv = env
+	w.snapshotRewards = rewards
+	w.snapshotBlock = nil // invalidate; rebuilt on demand
+	w.snapshotReceipts = env.receipts
 }
 
 func signalToErr(signal int32) error {

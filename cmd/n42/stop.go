@@ -46,16 +46,70 @@ func pidFilePath(dataDir string) string {
 	return filepath.Join(dataDir, pidFileName)
 }
 
+// readPIDFile returns the recorded process ID. See readPIDRecord for why the
+// file also carries a start time.
 func readPIDFile(path string) (int, error) {
-	data, err := os.ReadFile(path)
+	rec, err := readPIDRecord(path)
 	if err != nil {
 		return 0, err
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || pid <= 0 {
-		return 0, fmt.Errorf("invalid PID file %s", path)
+	return rec.pid, nil
+}
+
+// pidRecord is what the PID file holds: the node's process ID and, when the
+// platform can report it, that process's start time.
+//
+// The ID alone is not an identity. Operating systems reuse process IDs — on
+// Windows within seconds on a busy host — so a stale PID file can name a live
+// process that has nothing to do with this node, and the node then refuses to
+// start with "already running". That happened during a fleet roll here and
+// took three validators down, one after another, until the chain dropped below
+// quorum. The start time makes the pair unique.
+type pidRecord struct {
+	pid       int
+	startTime int64
+	hasStart  bool
+}
+
+func readPIDRecord(path string) (pidRecord, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return pidRecord{}, err
 	}
-	return pid, nil
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return pidRecord{}, fmt.Errorf("invalid PID file %s", path)
+	}
+	pid, err := strconv.Atoi(fields[0])
+	if err != nil || pid <= 0 {
+		return pidRecord{}, fmt.Errorf("invalid PID file %s", path)
+	}
+	rec := pidRecord{pid: pid}
+	// Files written before the start time was recorded carry only the ID; they
+	// stay readable and simply fall back to the ID-only check.
+	if len(fields) > 1 {
+		if st, perr := strconv.ParseInt(fields[1], 10, 64); perr == nil {
+			rec.startTime, rec.hasStart = st, true
+		}
+	}
+	return rec, nil
+}
+
+// isRecordedProcessLive reports whether the process the record names is still
+// running. When both the record and the platform supply a start time, a
+// mismatch means the ID was reused and the record is stale.
+func isRecordedProcessLive(rec pidRecord) bool {
+	if !processAlive(rec.pid) {
+		return false
+	}
+	if !rec.hasStart {
+		return true
+	}
+	st, ok := processStartTime(rec.pid)
+	if !ok {
+		return true
+	}
+	return st == rec.startTime
 }
 
 // acquirePIDFile creates the node PID file exclusively. A live residual PID is
@@ -72,10 +126,16 @@ func acquirePIDFile(dataDir string, pid int) (func() error, error) {
 		return nil, fmt.Errorf("create data directory for PID file: %w", err)
 	}
 	path := pidFilePath(dataDir)
+	startTime, hasStart := processStartTime(pid)
 	for attempts := 0; attempts < 3; attempts++ {
 		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if err == nil {
-			if _, err = fmt.Fprintf(file, "%d\n", pid); err == nil {
+			if hasStart {
+				_, err = fmt.Fprintf(file, "%d %d\n", pid, startTime)
+			} else {
+				_, err = fmt.Fprintf(file, "%d\n", pid)
+			}
+			if err == nil {
 				err = file.Sync()
 			}
 			if closeErr := file.Close(); err == nil {
@@ -91,9 +151,9 @@ func acquirePIDFile(dataDir string, pid int) (func() error, error) {
 			return nil, fmt.Errorf("create PID file: %w", err)
 		}
 
-		existingPID, readErr := readPIDFile(path)
-		if readErr == nil && processAlive(existingPID) {
-			return nil, fmt.Errorf("%w: pid %d (data directory %s)", errPIDFileInUse, existingPID, dataDir)
+		existing, readErr := readPIDRecord(path)
+		if readErr == nil && isRecordedProcessLive(existing) {
+			return nil, fmt.Errorf("%w: pid %d (data directory %s)", errPIDFileInUse, existing.pid, dataDir)
 		}
 		if readErr != nil {
 			// Do not delete a just-created empty file from a concurrent starter.

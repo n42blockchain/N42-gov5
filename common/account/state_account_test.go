@@ -270,7 +270,7 @@ func TestMarshalUnmarshal(t *testing.T) {
 	original.Root = types.HexToHash("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
 	original.CodeHash = types.HexToHash("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
 
-	data, err := original.Marshal()
+	data, err := marshalProtoLegacy(&original)
 	if err != nil {
 		t.Fatalf("Marshal error: %v", err)
 	}
@@ -481,7 +481,7 @@ func BenchmarkMarshal(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		acc.Marshal()
+		_, _ = marshalProtoLegacy(&acc)
 	}
 }
 

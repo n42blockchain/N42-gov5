@@ -405,6 +405,26 @@ func (tx *Transaction) setDecoded(inner TxData, size int) {
 	tx.time = time.Now()
 }
 
+// EncodedSize returns the length of the transaction's canonical Ethereum wire
+// encoding (EncodeEthereumTransaction), memoized on first use.
+//
+// The block builder budgets every candidate transaction against the wire size
+// cap, and it used to pay for a full RLP encoding per candidate per build --
+// ~23k throwaway encodings per full block, and the same transaction re-encoded
+// again on every later build it was still pending for. The length is immutable
+// once the transaction exists, so it is computed once and cached.
+func (tx *Transaction) EncodedSize() (int, error) {
+	if s := tx.size.Load(); s != nil {
+		return s.(int), nil
+	}
+	enc, err := EncodeEthereumTransaction(tx)
+	if err != nil {
+		return 0, err
+	}
+	tx.size.Store(len(enc))
+	return len(enc), nil
+}
+
 func (tx *Transaction) RawSignatureValues() (v, r, s *uint256.Int) {
 	return tx.inner.rawSignatureValues()
 }

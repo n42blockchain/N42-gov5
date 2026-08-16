@@ -149,10 +149,13 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 	// applyTransaction derives it; if the header number is unavailable the whole
 	// block is about to fail anyway, so recovery is simply skipped.
 	if hdrNum, hdrErr := requireHeaderNumber(concreteHeader, "header number unavailable"); hdrErr == nil {
-		recoverBlockSenders(
-			transaction.MakeSignerWithTimestamp(chainConfig, hdrNum.ToBig(), concreteHeader.Time),
-			b.Transactions(),
-		)
+		signer := transaction.MakeSignerWithTimestamp(chainConfig, hdrNum.ToBig(), concreteHeader.Time)
+		// First pass: senders the pool already recovered at admission — on a
+		// saturated fleet that is nearly every transaction of an imported
+		// block, turning a 260 ms parallel recovery into map lookups. Second
+		// pass: whatever the pool did not have recovers on the worker pool.
+		applySenderHints(p.bc.senderHints, signer, b.Transactions())
+		recoverBlockSenders(signer, b.Transactions())
 	}
 	phases.Recover = time.Since(tPhase)
 	tPhase = time.Now()
@@ -277,7 +280,9 @@ func applyTransaction(config *params.ChainConfig, engine consensus.Engine, gp *c
 	if err = ibs.FinalizeTx(rules, stateWriter); err != nil {
 		return nil, nil, err
 	}
-	*usedGas += result.UsedGas
+	// EIP-7778 (Amsterdam): the block consumes the pre-refund gas; the
+	// receipt's per-tx GasUsed below stays the sender-billed amount.
+	*usedGas += result.BlockGasUsed
 
 	var receipt *block.Receipt
 	if !cfg.NoReceipts {

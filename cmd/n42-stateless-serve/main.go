@@ -433,6 +433,11 @@ func (b *freezerBackend) CodeCompressed(hash types.Hash) ([]byte, error) {
 	if b.codes == nil {
 		return nil, nil
 	}
+	// Ask by hash; fall back to the codeHash[:20] address-index key for dirs
+	// built before codes.hidx existed.
+	if blob, err := b.codes.LookupCompressedByHash(hash); err != nil || blob != nil {
+		return blob, err
+	}
 	var key types.Address
 	copy(key[:], hash[:20])
 	return b.codes.LookupCompressedByAddress(key)
@@ -472,11 +477,15 @@ func (b *freezerBackend) AccountMultiproof(addrs []types.Address) ([]byte, error
 }
 
 // Code serves bytecode by keccak codeHash (content-addressed) for layer-② replay.
-// Source order: codes-freezer (keyed by codeHash[:20] — code-import2fz truncates
-// the codeHash-keyed Code/Bytecodes table key to 20 B), then MDBX kv.Code. The
-// client verifies keccak256(code)==codeHash, so the 20-byte index is collision-safe.
+// Source order: codes-freezer (codes.hidx, or the legacy address index whose keys
+// are the codeHash[:20] prefix — code-import2fz truncated the codeHash-keyed
+// Code/Bytecodes table key to 20 B), then MDBX kv.Code. The client verifies
+// keccak256(code)==codeHash, so neither index can serve wrong bytecode undetected.
 func (b *freezerBackend) Code(hash types.Hash) ([]byte, error) {
 	if b.codes != nil {
+		if c, err := b.codes.GetCodeByHash(hash); err == nil && len(c) > 0 {
+			return c, nil
+		}
 		var key types.Address
 		copy(key[:], hash[:20])
 		if c, err := b.codes.LookupByAddress(key); err == nil && len(c) > 0 {

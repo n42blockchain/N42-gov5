@@ -157,7 +157,7 @@ func (r *QMDBRootComputer) LoadFrom(g qmdb.Getter) error {
 		// deactivate the wrong slots — observed live as cross-node activeBits
 		// divergence. The persistent MDBX index is transactional with the
 		// store, so it stays consistent and must NOT be rescanned.
-		r.t.SetIndex(qmdb.NewMapIndex())
+		r.t.SetIndex(qmdb.NewIndexFor(r.t, 0))
 	}
 	if err := r.t.LoadFrom(g); err != nil {
 		return err
@@ -233,7 +233,7 @@ func (r *QMDBRootComputer) ReloadForBuild(g qmdb.Getter) error {
 		log.Warn("qmdb speculative reload fell back to a full index rebuild",
 			"reason", err, "fastAttempt", time.Since(t1))
 		t2 := time.Now()
-		r.t.SetIndex(qmdb.NewMapIndex())
+		r.t.SetIndex(qmdb.NewIndexFor(r.t, 0))
 		if err2 := r.t.LoadFrom(g); err2 != nil {
 			return err2
 		}

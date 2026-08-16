@@ -26,13 +26,25 @@ const (
 	TxAccessListStorageKeyGas uint64 = 1900  // Per storage key specified in EIP 2930 access list
 	TxTotalCostFloorPerToken  uint64 = 10    // Per token of calldata in a transaction, as a minimum the txn must pay (EIP-7623)
 
-	// EIP-7904: Glamsterdam gas repricing constants.
+	// EIP-7904: legacy Glamsterdam repricing constants (7904 was demoted to
+	// Informational; the fork ships the Amsterdam set below instead).
 	TxGasGlamsterdam                     uint64 = 4500
 	TxGasContractCreationGlamsterdam     uint64 = 12500
 	TxDataZeroGasGlamsterdam             uint64 = 1
 	TxDataNonZeroGasGlamsterdam          uint64 = 4
 	TxAccessListAddressGasGlamsterdam    uint64 = 600
 	TxAccessListStorageKeyGasGlamsterdam uint64 = 475
+
+	// Amsterdam (Glamsterdam EL) constants — mirror params/protocol_params.go.
+	TxBaseCostEIP2780                uint64 = 12000 // EIP-2780 base component
+	CreateAccessEIP8038              uint64 = 12000 // EIP-8038 account-creation access+write
+	TxAuthBaseCostEIP2780            uint64 = 7816  // EIP-2780 per-7702-authorization intrinsic part
+	TxTotalCostFloorPerTokenEIP7976  uint64 = 16    // EIP-7976 calldata floor (was 10)
+	TxAccessListAddressGasEIP8038    uint64 = 2900  // EIP-8038 (was 2400)
+	TxAccessListStorageKeyGasEIP8038 uint64 = 2000  // EIP-8038 (was 1900)
+	AccessListBytesSurchargeEIP7981  uint64 = 64    // EIP-7981 per byte of AL data
+	AccessListAddressBytes           uint64 = 20
+	AccessListStorageKeyBytes        uint64 = 32
 
 	// EIP-7825: Transaction Gas Limit Cap
 	// Maximum gas limit per transaction = 2^24 = 16,777,216
