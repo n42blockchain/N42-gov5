@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common"
@@ -1138,8 +1139,12 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 
 	// Persist the executed payload so subsequent head/header lookups can
 	// resolve Engine eth-compatible hashes back to the underlying block.
-	storedHash, err := writeEnginePayloadBlock(tx, blk, receipts)
+	storedHash, err := writeEnginePayloadBlock(tx, blk, receipts, withdrawals)
 	if err != nil {
+		return nil, err
+	}
+	engineHash := ethCompatibleBlockHash(blk, a.chainCfg)
+	if err := rawdb.WriteHeaderNumber(tx, engineHash, blockNum); err != nil {
 		return nil, err
 	}
 	if err := rawdb.WriteCanonicalHash(tx, storedHash, blockNum); err != nil {
@@ -1262,7 +1267,27 @@ func (a *EngineStateAdapter) reorgCanonicalTo(engineHash types.Hash) error {
 		return fmt.Errorf("current canonical head number not found: %s", currentHash.Hex())
 	}
 	if *targetNum > *currentNum {
-		return fmt.Errorf("cannot reorg forward from block %d to %d", *currentNum, *targetNum)
+		// Peer sync commits canonical headers, state and ethel-last-block in one
+		// transaction, but intentionally leaves the Engine forkchoice head pointer
+		// for the CL to adopt. If that atomic progress already covers the target,
+		// advancing the pointer is not a reorg and requires no replay.
+		if progress := ethel.ReadProgress(tx); progress < *targetNum {
+			return fmt.Errorf("cannot reorg forward from block %d to %d (sync progress %d)", *currentNum, *targetNum, progress)
+		}
+		rawdb.WriteHeadBlockHash(tx, storedHash)
+		if err := rawdb.WriteHeadHeaderHash(tx, storedHash); err != nil {
+			return err
+		}
+		if a.trackHeadMarker {
+			if err := ethel.WriteHeadMarker(tx, *targetNum); err != nil {
+				return err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		a.hashedReadCache.PurgeAll()
+		return nil
 	}
 	for number := *currentNum; number > *targetNum; number-- {
 		if err := commitment.UnwindPlainStateBlock(tx, number); err != nil {
@@ -1491,7 +1516,7 @@ func (a *EngineStateAdapter) resolveCanonicalStoredHash(tx kv.Tx, engineHash typ
 	}
 }
 
-func writeEnginePayloadBlock(tx kv.RwTx, blk *block.Block, receipts block.Receipts) (types.Hash, error) {
+func writeEnginePayloadBlock(tx kv.RwTx, blk *block.Block, receipts block.Receipts, withdrawals []*Withdrawal) (types.Hash, error) {
 	header, ok := blk.Header().(*block.Header)
 	if !ok || header == nil {
 		return types.Hash{}, fmt.Errorf("unexpected header type")
@@ -1507,6 +1532,15 @@ func writeEnginePayloadBlock(tx kv.RwTx, blk *block.Block, receipts block.Receip
 	}
 	if _, _, err := rawdb.WriteRawBody(tx, hash, header.Number.Uint64(), rawBody); err != nil {
 		return types.Hash{}, err
+	}
+	if withdrawals != nil {
+		encoded, err := rlp.EncodeToBytes(withdrawals)
+		if err != nil {
+			return types.Hash{}, fmt.Errorf("encode withdrawals: %w", err)
+		}
+		if err := rawdb.WriteEngineWithdrawalsRLP(tx, hash, header.Number.Uint64(), encoded); err != nil {
+			return types.Hash{}, fmt.Errorf("write withdrawals: %w", err)
+		}
 	}
 	rawdb.WriteHeader(tx, header)
 	if err := rawdb.WriteReceipts(tx, header.Number.Uint64(), receipts); err != nil {

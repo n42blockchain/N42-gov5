@@ -37,6 +37,13 @@ type BlockProvider interface {
 	GetHeaderByHash(hash types.Hash) (*n42block.Header, error)
 }
 
+// blockBodyServer is the optional body-serving capability implemented by
+// providers that retain Ethereum wire bodies. Keeping it optional preserves
+// header-only providers while allowing eth-el peers to perform full sync.
+type blockBodyServer interface {
+	GetBlockBodyByHash(hash types.Hash) (*BlockBody, error)
+}
+
 // ResponseHandler receives wire-message responses from peers. A nil
 // ResponseHandler means the EthHandler operates passively (only serves
 // incoming queries, never expects responses). The eldevp2p downloader
@@ -671,24 +678,58 @@ func (h *EthHandler) announcePooledTransactions(rw gethp2p.MsgReadWriter, done <
 }
 
 // handleGetBlockHeaders serves block headers to a requesting peer.
-//
-// Today the eth-el chaindata is state-only — there are no Ethereum
-// headers stored, so the only honest answer is the empty response.
-// (Returning empty is a valid eth/69 reply meaning "no data in
-// range"; it does not cause a disconnect.) Once the body/header
-// columnar store is wired into BlockProvider, this handler will
-// encode each fetched *block.Header via the same per-fork RLP layout
-// that ethel.DecodeUncleHeader expects. See header_compact.go for the
-// canonical encoder we'd reuse.
 func (h *EthHandler) handleGetBlockHeaders(rw gethp2p.MsgReadWriter, msg gethp2p.Msg) error {
-	// We serve an empty stub response, so only the request-id (echoed back) is
-	// needed — decode leniently over the query tail so a peer whose GetBlockHeaders
-	// query encoding differs by a field isn't dropped ("rlp: too many elements").
-	var req requestIDTail
+	var req eth69.GetBlockHeadersPacket
 	if err := msg.Decode(&req); err != nil {
 		return err
 	}
-	return gethp2p.Send(rw, 4, &blockHeadersPacket{RequestID: req.RequestID})
+	resp := blockHeadersPacket{RequestID: req.RequestID}
+	if req.GetBlockHeadersQuery == nil || h.provider == nil {
+		return gethp2p.Send(rw, 4, &resp)
+	}
+	amount := req.Amount
+	if amount > 1024 {
+		amount = 1024
+	}
+	var current *n42block.Header
+	var err error
+	if req.Origin.Hash != (types.Hash{}) {
+		current, err = h.provider.GetHeaderByHash(req.Origin.Hash)
+	} else {
+		current, err = h.provider.GetHeaderByNumber(req.Origin.Number)
+	}
+	if err != nil {
+		return err
+	}
+	if current == nil {
+		log.Debug("devp2p: block header request missed", "hash", req.Origin.Hash, "number", req.Origin.Number, "amount", amount, "reverse", req.Reverse)
+	}
+	for uint64(len(resp.Headers)) < amount && current != nil {
+		encoded, err := rlp.EncodeToBytes(current)
+		if err != nil {
+			return err
+		}
+		resp.Headers = append(resp.Headers, rlp.RawValue(encoded))
+		number := current.Number64().Uint64()
+		step := req.Skip + 1
+		if req.Reverse {
+			if number < step {
+				break
+			}
+			number -= step
+		} else {
+			if number > ^uint64(0)-step {
+				break
+			}
+			number += step
+		}
+		current, err = h.provider.GetHeaderByNumber(number)
+		if err != nil {
+			return err
+		}
+	}
+	log.Debug("devp2p: served block headers", "hash", req.Origin.Hash, "number", req.Origin.Number, "count", len(resp.Headers), "reverse", req.Reverse)
+	return gethp2p.Send(rw, 4, &resp)
 }
 
 // handleGetBlockBodies serves block bodies to a requesting peer.
@@ -701,6 +742,24 @@ func (h *EthHandler) handleGetBlockBodies(rw gethp2p.MsgReadWriter, msg gethp2p.
 	resp := blockBodiesPacket{
 		RequestID: req.RequestID,
 		Bodies:    nil,
+	}
+	provider, ok := h.provider.(blockBodyServer)
+	if !ok {
+		return gethp2p.Send(rw, 6, &resp)
+	}
+	limit := len(req.Hashes)
+	if limit > 1024 {
+		limit = 1024
+	}
+	for _, hash := range req.Hashes[:limit] {
+		body, err := provider.GetBlockBodyByHash(hash)
+		if err != nil {
+			return err
+		}
+		if body == nil {
+			break
+		}
+		resp.Bodies = append(resp.Bodies, *body)
 	}
 	return gethp2p.Send(rw, 6, &resp)
 }
