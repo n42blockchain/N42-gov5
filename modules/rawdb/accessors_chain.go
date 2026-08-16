@@ -588,6 +588,40 @@ func WriteRawBody(db kv.RwTx, hash types.Hash, number uint64, body *block.RawBod
 	return true, lastTxnNum, nil
 }
 
+// engineWithdrawalsKey stores the Ethereum withdrawals list alongside a body
+// without changing the legacy 12-byte BodyForStorage encoding. The extra byte
+// makes the key disjoint from ordinary number+hash body keys.
+func engineWithdrawalsKey(number uint64, hash types.Hash) []byte {
+	key := make([]byte, modules.NumberLength+types.HashLength+1)
+	copy(key, modules.BlockBodyKey(number, hash))
+	key[len(key)-1] = 0x77
+	return key
+}
+
+// WriteEngineWithdrawalsRLP persists the canonical RLP withdrawals list used
+// by eth devp2p body serving. A nil value removes the optional sidecar.
+func WriteEngineWithdrawalsRLP(db kv.RwTx, hash types.Hash, number uint64, encoded []byte) error {
+	key := engineWithdrawalsKey(number, hash)
+	if encoded == nil {
+		return db.Delete(modules.BlockBody, key)
+	}
+	return db.Put(modules.BlockBody, key, encoded)
+}
+
+// ReadEngineWithdrawalsRLP returns a copy of the persisted canonical RLP list.
+func ReadEngineWithdrawalsRLP(db kv.Getter, hash types.Hash, number uint64) ([]byte, error) {
+	encoded, err := db.GetOne(modules.BlockBody, engineWithdrawalsKey(number, hash))
+	if err != nil || encoded == nil {
+		return nil, err
+	}
+	return append([]byte(nil), encoded...), nil
+}
+
+// DeleteEngineWithdrawalsRLP removes the optional devp2p body sidecar.
+func DeleteEngineWithdrawalsRLP(db kv.Deleter, hash types.Hash, number uint64) error {
+	return db.Delete(modules.BlockBody, engineWithdrawalsKey(number, hash))
+}
+
 func WriteBody(db kv.RwTx, hash types.Hash, number uint64, body *block.Body) error {
 	// Pre-processing
 	body.SendersFromTxs()
@@ -696,6 +730,9 @@ func WriteRewards(db kv.Putter, hash types.Hash, number uint64, rewards []*block
 func deleteBody(db kv.Deleter, hash types.Hash, number uint64) {
 	if err := db.Delete(modules.BlockBody, modules.BlockBodyKey(number, hash)); err != nil {
 		log.Crit("Failed to delete block body", "err", err)
+	}
+	if err := DeleteEngineWithdrawalsRLP(db, hash, number); err != nil {
+		log.Crit("Failed to delete engine withdrawals", "err", err)
 	}
 }
 
@@ -877,6 +914,9 @@ func TruncateBlocks(ctx context.Context, tx kv.RwTx, blockFrom uint64) error {
 			return err
 		}
 		if err := tx.Delete(modules.BlockBody, kCopy); err != nil {
+			return err
+		}
+		if err := DeleteEngineWithdrawalsRLP(tx, types.BytesToHash(kCopy[modules.NumberLength:]), n); err != nil {
 			return err
 		}
 

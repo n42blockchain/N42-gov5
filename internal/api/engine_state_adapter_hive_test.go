@@ -133,6 +133,42 @@ func TestRewindEngineValidationStateUsesHistoricalParent(t *testing.T) {
 	}))
 }
 
+func TestReorgCanonicalToAdoptsExecutedPeerSyncHead(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = ethel.ChainTableCfg(modules.N42TableCfg)
+	t.Cleanup(func() { kv.ChaindataTablesCfg = prevTables })
+
+	db := memdb.NewTestDB(t)
+	var hashes [3]types.Hash
+	require.NoError(t, db.Update(context.Background(), func(tx kv.RwTx) error {
+		for number := uint64(0); number <= 2; number++ {
+			header := &block.Header{Number: uint256.NewInt(number), Difficulty: uint256.NewInt(0)}
+			rawdb.WriteHeader(tx, header)
+			hashes[number] = header.Hash()
+			if err := rawdb.WriteCanonicalHash(tx, hashes[number], number); err != nil {
+				return err
+			}
+		}
+		rawdb.WriteHeadBlockHash(tx, hashes[0])
+		if err := rawdb.WriteHeadHeaderHash(tx, hashes[0]); err != nil {
+			return err
+		}
+		return ethel.WriteProgress(tx, 2)
+	}))
+
+	adapter := NewEngineStateAdapter(db, nil, nil, nil)
+	require.NoError(t, adapter.reorgCanonicalTo(hashes[2]))
+	require.NoError(t, db.View(context.Background(), func(tx kv.Tx) error {
+		require.Equal(t, hashes[2], rawdb.ReadHeadBlockHash(tx))
+		require.Equal(t, hashes[2], rawdb.ReadHeadHeaderHash(tx))
+		canonical, err := rawdb.ReadCanonicalHash(tx, 2)
+		require.NoError(t, err)
+		require.Equal(t, hashes[2], canonical)
+		return nil
+	}))
+}
+
 func TestRewindEngineValidationStateUsesExecutionProgressWhenHeadLags(t *testing.T) {
 	modules.N42Init()
 	prevTables := kv.ChaindataTablesCfg

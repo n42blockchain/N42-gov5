@@ -42,10 +42,12 @@ import (
 
 	gethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/p2p/enode"
+	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/consensus"
@@ -394,5 +396,60 @@ func (p *chaindataProvider) GetHeaderByHash(hash types.Hash) (*block.Header, err
 	if num == nil {
 		return nil, nil
 	}
-	return rawdb.ReadHeader(tx, hash, *num), nil
+	if header := rawdb.ReadHeader(tx, hash, *num); header != nil {
+		return header, nil
+	}
+	storedHash, err := rawdb.ReadCanonicalHash(tx, *num)
+	if err != nil || storedHash == (types.Hash{}) {
+		return nil, err
+	}
+	return rawdb.ReadHeader(tx, storedHash, *num), nil
+}
+
+func (p *chaindataProvider) GetBlockBodyByHash(hash types.Hash) (*devp2p.BlockBody, error) {
+	tx, err := p.db.BeginRo(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	number := rawdb.ReadHeaderNumber(tx, hash)
+	if number == nil {
+		return nil, nil
+	}
+	storedHash, err := rawdb.ReadCanonicalHash(tx, *number)
+	if err != nil || storedHash == (types.Hash{}) {
+		return nil, err
+	}
+	body := rawdb.ReadCanonicalBodyWithTransactions(tx, storedHash, *number)
+	if body == nil {
+		return nil, nil
+	}
+	wire := &devp2p.BlockBody{
+		Transactions: make([]rlp.RawValue, 0, len(body.Transactions())),
+		Uncles:       []rlp.RawValue{},
+	}
+	for _, txn := range body.Transactions() {
+		encoded, err := transaction.EncodeEthereumTransaction(txn)
+		if err != nil {
+			return nil, err
+		}
+		if txn.Type() != 0 {
+			encoded, err = rlp.EncodeToBytes(encoded)
+			if err != nil {
+				return nil, err
+			}
+		}
+		wire.Transactions = append(wire.Transactions, rlp.RawValue(encoded))
+	}
+	encodedWithdrawals, err := rawdb.ReadEngineWithdrawalsRLP(tx, storedHash, *number)
+	if err != nil {
+		return nil, err
+	}
+	if encodedWithdrawals != nil {
+		wire.Withdrawals = make([]rlp.RawValue, 0)
+		if err := rlp.DecodeBytes(encodedWithdrawals, &wire.Withdrawals); err != nil {
+			return nil, fmt.Errorf("decode withdrawals sidecar: %w", err)
+		}
+	}
+	return wire, nil
 }
