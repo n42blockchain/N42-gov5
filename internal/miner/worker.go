@@ -842,20 +842,34 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// straight to the sealer — the whole build phase is off the critical path.
 	if !speculative && parentHash != (types.Hash{}) {
 		if st := w.takeSpecTask(parentHash); st != nil {
-			num := uint64(0)
-			if n := st.block.Number64(); n != nil {
-				num = n.Uint64()
+			// The parked task was built on parentHash, but the applied head
+			// may have moved since (another view's proposal at the same
+			// height was applied locally and later abandoned). The rebuild
+			// path below re-aligns the applied branch; this fast path does
+			// not, so a stale seal would be rejected by
+			// checkQMDBLeaderSealParent with nothing left to rebuild — the
+			// view is lost. One marker read keeps the fast path honest.
+			stale := false
+			if bc, ok := w.chain.(*internal.BlockChain); ok && !bc.AppliedHeadIs(parentHash) {
+				stale = true
 			}
-			if err := w.paceBlock(num); err != nil {
-				return err
+			if !stale {
+				num := uint64(0)
+				if n := st.block.Number64(); n != nil {
+					num = n.Uint64()
+				}
+				if err := w.paceBlock(num); err != nil {
+					return err
+				}
+				log.Info("miner: speculative build hit", "number", num, "parent", parentHash.Hex()[:12])
+				select {
+				case w.taskCh <- st:
+				case <-w.ctx.Done():
+					return w.ctx.Err()
+				}
+				return nil
 			}
-			log.Info("miner: speculative build hit", "number", num, "parent", parentHash.Hex()[:12])
-			select {
-			case w.taskCh <- st:
-			case <-w.ctx.Done():
-				return w.ctx.Err()
-			}
-			return nil
+			log.Info("miner: speculative build discarded, applied head moved", "parent", parentHash.Hex()[:12])
 		}
 	}
 

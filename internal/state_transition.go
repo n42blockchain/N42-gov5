@@ -732,11 +732,19 @@ func (st *StateTransition) applyAuthorizations(authList transaction.Authorizatio
 			// brand-new account, and state gas for net-new delegation
 			// designator bytes (23 x 1530).
 			//
-			// OPEN SPEC QUESTION (recheck when EIP-2780/8037 text freezes):
-			// exhaustion here hard-invalidates the tx (deterministic across
-			// nodes, clean revert verified) rather than OOG-with-inclusion;
-			// pool admission also cannot pre-price per-authority state, so
-			// a sender gets free miner work up to the failing authority.
+			// Exhaustion STOPS applying further authorizations; it does not
+			// invalidate the transaction. This keeps EIP-7702's established
+			// shape — an authorization that cannot be applied is skipped and
+			// the transaction proceeds — and, critically, keeps transaction
+			// validity a function of the intrinsic cost alone, which is what
+			// the pool and the block builder can price at admission. Making
+			// it fatal instead would make validity depend on per-authority
+			// state the pool cannot see, handing an attacker free miner work
+			// (execute N-1 authorizations, then force a revert).
+			// The charge is evaluated BEFORE any mutation for this authority,
+			// so a skipped one leaves no partial state.
+			// (Recheck the charged AMOUNTS when the EIP text freezes; the
+			// failure MODE above is the conservative choice either way.)
 			charge := uint64(params.AccountWriteEIP8038)
 			if wasEmpty {
 				charge += params.StateBytesPerNewAccount * params.CostPerStateByteEIP8037
@@ -745,7 +753,7 @@ func (st *StateTransition) applyAuthorizations(authList transaction.Authorizatio
 				charge += params.StateBytesPerAuthBase * params.CostPerStateByteEIP8037
 			}
 			if st.gas < charge {
-				return fmt.Errorf("%w: authorization runtime gas %d, have %d", ErrIntrinsicGas, charge, st.gas)
+				break
 			}
 			st.gas -= charge
 		}
