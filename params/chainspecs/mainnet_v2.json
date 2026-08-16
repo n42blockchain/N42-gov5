@@ -22,7 +22,7 @@
   "osakaTime": 0,
   "eofTime": 0,
   "fusakaTime": 0,
-  "glamsterdamTime": 0,
+  "glamsterdamTime": null,
   "ltHashTime": 0,
   "stateScheme": "bmt-blake3",
   "consensus": "apos",

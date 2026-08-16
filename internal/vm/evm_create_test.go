@@ -78,7 +78,7 @@ func TestCreateRejectsNonEmptyStorageCollisionFromParis(t *testing.T) {
 	ibs.CreateAccount(created, true)
 	ibs.SetState(created, &key, *uint256.NewInt(1))
 
-	_, _, leftOverGas, err := evm.create(AccountRef(caller), &codeAndHash{code: []byte{byte(STOP)}}, 100_000, uint256.NewInt(0), created, CREATE, false)
+	_, _, leftOverGas, err := evm.create(AccountRef(caller), &codeAndHash{code: []byte{byte(STOP)}}, 100_000, uint256.NewInt(0), created, CREATE, false, false)
 	if err != ErrContractAddressCollision {
 		t.Fatalf("create error = %v, want %v", err, ErrContractAddressCollision)
 	}
@@ -98,7 +98,7 @@ func TestCreateAllowsStorageOnlyCollisionPreParis(t *testing.T) {
 	ibs.CreateAccount(created, true)
 	ibs.SetState(created, &key, *uint256.NewInt(1))
 
-	_, _, _, err := evm.create(AccountRef(caller), &codeAndHash{code: []byte{byte(STOP)}}, 100_000, uint256.NewInt(0), created, CREATE, false)
+	_, _, _, err := evm.create(AccountRef(caller), &codeAndHash{code: []byte{byte(STOP)}}, 100_000, uint256.NewInt(0), created, CREATE, false, false)
 	if err == ErrContractAddressCollision {
 		t.Fatalf("create unexpectedly returned %v before Paris", err)
 	}
@@ -168,7 +168,7 @@ func TestHasNonEmptyStorageClearedAfterSelfdestructAndBalanceOnlyRecreation(t *t
 			BaseFee:     uint256.NewInt(0),
 		}
 		evm := NewEVM(blockCtx, evmtypes.TxContext{}, sdb3, cfg, Config{})
-		if _, _, leftOverGas, err := evm.create(AccountRef(caller), &codeAndHash{code: []byte{byte(STOP)}}, 100_000, uint256.NewInt(0), created, CREATE, false); err != nil {
+		if _, _, leftOverGas, err := evm.create(AccountRef(caller), &codeAndHash{code: []byte{byte(STOP)}}, 100_000, uint256.NewInt(0), created, CREATE, false, false); err != nil {
 			t.Fatalf("create on balance-only account returned %v", err)
 		} else if leftOverGas == 0 {
 			t.Fatal("create on balance-only account consumed all gas unexpectedly")

@@ -181,6 +181,18 @@ func (v *InstrumentedVM) Create2(caller ContractRef, code []byte, gas uint64, en
 	return ret, contractAddr, leftOverGas, err
 }
 
+func (v *InstrumentedVM) EOFCreate2(caller ContractRef, code []byte, gas uint64, endowment *uint256.Int, salt *uint256.Int) (ret []byte, contractAddr types.Address, leftOverGas uint64, err error) {
+	if !v.enabled {
+		return v.inner.EOFCreate2(caller, code, gas, endowment, salt)
+	}
+	start := time.Now()
+	ret, contractAddr, leftOverGas, err = v.inner.EOFCreate2(caller, code, gas, endowment, salt)
+	elapsed := uint64(time.Since(start).Nanoseconds())
+	atomic.AddUint64(&v.createCount, 1)
+	atomic.AddUint64(&v.createTimeNs, elapsed)
+	return ret, contractAddr, leftOverGas, err
+}
+
 // =============================================================================
 // VMInterpreter Passthrough Methods
 // =============================================================================

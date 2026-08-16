@@ -1605,6 +1605,34 @@ func (sdb *IntraBlockState) Selfdestruct6780(addr types.Address, beneficiary typ
 	stateObject.data.Balance.Clear()
 }
 
+// Selfdestruct8246 implements EIP-8246 (Amsterdam) SELFDESTRUCT with the
+// account itself as beneficiary. For a same-transaction-created account
+// the creation is destroyed (code/storage/nonce gone, as under EIP-6780)
+// but — unlike 6780 — the balance survives: the account is immediately
+// recreated as a fresh, balance-only account via the standard
+// recreate-after-selfdestruct path (journal-safe, revert-safe). For a
+// pre-existing account this is a full no-op: 6780 already preserves
+// code/storage, and with no beneficiary transfer the balance stays put.
+func (sdb *IntraBlockState) Selfdestruct8246(addr types.Address) {
+	stateObject := sdb.getStateObject(addr)
+	if stateObject == nil || stateObject.deleted || !stateObject.created {
+		return
+	}
+	balance := *stateObject.Balance()
+	sdb.journal.append(selfdestructChange{
+		account:     &addr,
+		prev:        stateObject.selfdestructed,
+		prevbalance: balance,
+	})
+	stateObject.markSelfdestructed()
+	stateObject.data.Balance.Clear()
+	if balance.IsZero() {
+		return
+	}
+	sdb.CreateAccount(addr, false)
+	sdb.AddBalance(addr, &balance)
+}
+
 // WasCreatedInCurrentTx returns whether the account was created in the current transaction.
 func (sdb *IntraBlockState) WasCreatedInCurrentTx(addr types.Address) bool {
 	stateObject := sdb.getStateObject(addr)

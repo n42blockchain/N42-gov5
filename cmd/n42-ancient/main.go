@@ -243,6 +243,32 @@ func compareBlock(tx kv.Tx, store *ancientera.Store, n uint64) error {
 		return fmt.Errorf("receipts bytes mismatch")
 	}
 
+	// Logs: every source row under the block prefix must match, in order.
+	logCur, err := tx.Cursor(modules.Log)
+	if err != nil {
+		return err
+	}
+	defer logCur.Close()
+	li := 0
+	for k, v, cerr := logCur.Seek(numKey); k != nil; k, v, cerr = logCur.Next() {
+		if cerr != nil {
+			return cerr
+		}
+		if binary.BigEndian.Uint64(k[:8]) != n {
+			break
+		}
+		if li >= len(rec.Logs) {
+			return fmt.Errorf("era logs short: source has more than %d", li)
+		}
+		if rec.Logs[li].TxID != binary.BigEndian.Uint32(k[8:12]) || !bytes.Equal(rec.Logs[li].Data, v) {
+			return fmt.Errorf("log %d mismatch", li)
+		}
+		li++
+	}
+	if li != len(rec.Logs) {
+		return fmt.Errorf("era logs long: %d vs source %d", len(rec.Logs), li)
+	}
+
 	// Aux class.
 	aux, err := store.Aux(n)
 	if err != nil {
@@ -251,6 +277,50 @@ func compareBlock(tx kv.Tx, store *ancientera.Store, n uint64) error {
 	srcWit, _ := tx.GetOne(modules.BlockWitness, numKey)
 	if !bytes.Equal(aux.Witness, srcWit) {
 		return fmt.Errorf("witness bytes mismatch")
+	}
+	// Account changeset dup values, in order.
+	accCur, err := tx.CursorDupSort(modules.AccountChangeSet)
+	if err != nil {
+		return err
+	}
+	defer accCur.Close()
+	ai := 0
+	for k, v, cerr := accCur.Seek(numKey); k != nil; k, v, cerr = accCur.NextDup() {
+		if cerr != nil {
+			return cerr
+		}
+		if binary.BigEndian.Uint64(k[:8]) != n {
+			break
+		}
+		if ai >= len(aux.AcctCS) || !bytes.Equal(aux.AcctCS[ai], v) {
+			return fmt.Errorf("acctcs %d mismatch", ai)
+		}
+		ai++
+	}
+	if ai != len(aux.AcctCS) {
+		return fmt.Errorf("era acctcs count %d vs source %d", len(aux.AcctCS), ai)
+	}
+	// Storage changeset (key suffix + value), in order.
+	stoCur, err := tx.Cursor(modules.StorageChangeSet)
+	if err != nil {
+		return err
+	}
+	defer stoCur.Close()
+	si := 0
+	for k, v, cerr := stoCur.Seek(numKey); k != nil; k, v, cerr = stoCur.Next() {
+		if cerr != nil {
+			return cerr
+		}
+		if binary.BigEndian.Uint64(k[:8]) != n {
+			break
+		}
+		if si >= len(aux.StorCS) || !bytes.Equal(aux.StorCS[si].Suffix, k[8:]) || !bytes.Equal(aux.StorCS[si].Value, v) {
+			return fmt.Errorf("storcs %d mismatch", si)
+		}
+		si++
+	}
+	if si != len(aux.StorCS) {
+		return fmt.Errorf("era storcs count %d vs source %d", len(aux.StorCS), si)
 	}
 	return nil
 }

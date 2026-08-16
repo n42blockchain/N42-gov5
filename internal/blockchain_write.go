@@ -495,6 +495,14 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			// off the in-memory tree.
 			bc.qmdbRootComputer.AbortFlushed()
 		}
+		// CommitBlock ran through a CachedStateWriter that eagerly populated
+		// the shared read-through cache with this block's post-state. The tx
+		// rolled back but the cache did not: the next execution/build would
+		// read the failed block's phantom nonces/balances through it. Drop
+		// the whole cache — a cold refill is cheap next to phantom state.
+		if cache := layered.ExtractCache(bc.ChainDB); cache != nil {
+			cache.Clear()
+		}
 		return NonStatTy, err
 	}
 	// Captured the instant Update returns, so `dUpdate - begin - inClosure`
