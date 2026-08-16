@@ -382,10 +382,7 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter, versi
 	}
 	announceDone := make(chan struct{})
 	defer close(announceDone)
-	// Hive's direct protocol probes deliberately use an empty client name and
-	// expect the first packet after their request to be the matching response.
-	// Keep those anonymous probes passive while still gossiping to real clients.
-	if h.txpool != nil && peer.Name() != "" {
+	if h.txpool != nil {
 		go h.announcePooledTransactions(rw, announceDone)
 	}
 
@@ -639,7 +636,6 @@ func (h *EthHandler) announcePooledTransactions(rw gethp2p.MsgReadWriter, done <
 			if err != nil {
 				continue
 			}
-			packet := eth69.NewPooledTransactionHashesPacket{}
 			for _, tx := range txs {
 				if tx == nil {
 					continue
@@ -653,11 +649,14 @@ func (h *EthHandler) announcePooledTransactions(rw gethp2p.MsgReadWriter, done <
 					continue
 				}
 				known[hash] = struct{}{}
-				packet.Types = append(packet.Types, tx.Type())
-				packet.Sizes = append(packet.Sizes, uint32(len(encoded)))
-				packet.Hashes = append(packet.Hashes, hash)
-			}
-			if len(packet.Hashes) > 0 {
+				// Announce transactions individually. Besides keeping messages small,
+				// this preserves the arrival granularity expected by peers that react
+				// to each txpool insertion before issuing a pooled-tx request.
+				packet := eth69.NewPooledTransactionHashesPacket{
+					Types:  []byte{tx.Type()},
+					Sizes:  []uint32{uint32(len(encoded))},
+					Hashes: []types.Hash{hash},
+				}
 				if err := gethp2p.Send(rw, 8, &packet); err != nil {
 					return
 				}
