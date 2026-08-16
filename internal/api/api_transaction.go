@@ -389,6 +389,9 @@ func (s *TransactionAPI) GetTransactionByBlockHashAndIndex(ctx context.Context, 
 
 // SubmitTransaction submits a transaction to the transaction pool.
 func SubmitTransaction(ctx context.Context, api *API, tx *transaction.Transaction) (avmcommon.Hash, error) {
+	if api == nil || api.TxsPool() == nil {
+		return avmcommon.Hash{}, errors.New("transaction pool unavailable")
+	}
 	if err := checkTxFee(*tx.GasPrice(), tx.Gas(), baseFee); err != nil {
 		return avmcommon.Hash{}, err
 	}
