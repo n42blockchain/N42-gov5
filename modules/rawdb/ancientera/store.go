@@ -62,19 +62,20 @@ type StoreHealth struct {
 func OpenStore(dir string) (*Store, *StoreHealth, error) {
 	m, err := LoadManifest(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			// Footers are the root of trust; a lost manifest is rebuilt.
-			m, err = RebuildManifest(dir)
-			if err != nil {
+		if !os.IsNotExist(err) && !isManifestParseErr(err) {
+			return nil, nil, err
+		}
+		// Footers are the root of trust; a lost or corrupt manifest is
+		// rebuilt from them (pruned markers are lost — those ranges will
+		// surface as "unexpectedly missing" warnings).
+		m, err = RebuildManifest(dir)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(m.Entries) > 0 {
+			if _, err := m.Save(dir); err != nil {
 				return nil, nil, err
 			}
-			if len(m.Entries) > 0 {
-				if _, err := m.Save(dir); err != nil {
-					return nil, nil, err
-				}
-			}
-		} else {
-			return nil, nil, err
 		}
 	}
 	s := &Store{
@@ -111,10 +112,22 @@ func OpenStore(dir string) (*Store, *StoreHealth, error) {
 				r = nil
 			}
 		}
+		if e.Class == ClassChain.String() {
+			// Seal geometry comes from the manifest (anchored at seal
+			// time), independent of file health: a damaged era must not
+			// shrink the horizon and misroute later reads to hot MDBX.
+			if end := (e.Era + 1) * m.Span; end > s.sealedEnd {
+				s.sealedEnd = end
+			}
+		}
 		if reason != "" {
 			s.bad[key] = reason
 			if e.Class == ClassChain.String() {
 				h.ChainGaps = append(h.ChainGaps, key+": "+reason)
+				// Bridge the linkage over the damaged era using the
+				// manifest's seal-time hashes so healthy successors are
+				// not falsely quarantined.
+				lastChainHash = e.LastHash
 			} else {
 				h.Degraded = append(h.Degraded, key+": "+reason)
 			}
@@ -125,12 +138,10 @@ func OpenStore(dir string) (*Store, *StoreHealth, error) {
 				s.bad[key] = "era chain linkage broken"
 				h.ChainGaps = append(h.ChainGaps, key+": parent hash does not link to previous era")
 				r.Close()
+				lastChainHash = e.LastHash
 				continue
 			}
 			lastChainHash = r.Meta.LastHash
-			if end := r.Meta.EndBlock; end > s.sealedEnd {
-				s.sealedEnd = end
-			}
 		}
 		s.readers[key] = r
 		h.Sealed++
@@ -217,9 +228,13 @@ func (s *Store) Block(class Class, num uint64) (BlockEntry, error) {
 		var err error
 		raw, err = r.ReadFrame(frame)
 		if err != nil {
-			// Read-time integrity failure: quarantine, degrade to pruned.
-			s.quarantine(class, era, err.Error())
-			return nil, fmt.Errorf("%w (quarantined: %v)", ErrPruned, err)
+			if errors.Is(err, ErrIntegrity) {
+				// Content damage: quarantine, degrade to pruned.
+				s.quarantine(class, era, err.Error())
+				return nil, fmt.Errorf("%w (quarantined: %v)", ErrPruned, err)
+			}
+			// Transient I/O failure: plain error, retry on next read.
+			return nil, err
 		}
 		s.cache.put(ck, raw)
 	}

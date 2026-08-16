@@ -105,16 +105,46 @@ func ancientCanonicalBody(db kv.Getter, hash types.Hash, number uint64) *block.B
 			body.Txs = append(body.Txs, tx)
 		}
 	}
+	// Verifiers/Rewards live in tables the seal pipeline retains in hot
+	// MDBX; the body must carry them — rewards are committed in the
+	// header (WithdrawalsHash), so dropping them here would serve bodies
+	// that no longer match their header commitment.
+	if verifies, err := ReadVerifies(db, hash, number); err == nil {
+		body.Verifiers = verifies
+	} else {
+		log.Trace("ancient body: skipping verifiers", "block", number, "err", err)
+	}
+	if rewards, err := ReadRewards(db, hash, number); err == nil {
+		body.Rewards = rewards
+	} else {
+		log.Trace("ancient body: skipping rewards", "block", number, "err", err)
+	}
 	return body
 }
 
-// ancientHasBody reports body existence for HasBlock.
-func ancientHasBody(number uint64) bool {
+// ancientHasBody reports body existence for HasBlock. Only the canonical
+// hash of a sealed block has a body — a has-true for any other hash
+// would invert the HasBlock/ReadBlock contract.
+func ancientHasBody(hash types.Hash, number uint64) bool {
 	s := ancientSealed(number)
 	if s == nil {
 		return false
 	}
-	return s.State(ancientera.ClassExec, number) == ancientera.RangeAvailable
+	if s.State(ancientera.ClassExec, number) != ancientera.RangeAvailable {
+		return false
+	}
+	ch, _, _, err := s.Chain(number)
+	return err == nil && types.Hash(ch) == hash
+}
+
+// ancientHasHeader serves HasHeader for sealed canonical blocks.
+func ancientHasHeader(hash types.Hash, number uint64) bool {
+	s := ancientSealed(number)
+	if s == nil {
+		return false
+	}
+	ch, _, _, err := s.Chain(number)
+	return err == nil && types.Hash(ch) == hash
 }
 
 // ancientRawReceipts serves ReadRawReceipts misses.
