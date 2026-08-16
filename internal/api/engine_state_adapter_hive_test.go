@@ -15,12 +15,14 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/account"
 	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/crypto"
 	internalcore "github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/ethel"
 	vmcore "github.com/n42blockchain/N42/internal/vm"
@@ -29,10 +31,107 @@ import (
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	logv3 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 )
+
+func TestRewindEngineValidationStateUsesHistoricalParent(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() { kv.ChaindataTablesCfg = prevTables })
+
+	db := memdb.NewTestDB(t)
+	var addr types.Address
+	addr[19] = 0x42
+	emptyCodeHash := crypto.Keccak256Hash(nil)
+	accountAt := func(nonce uint64) *account.StateAccount {
+		return &account.StateAccount{
+			Initialised: true,
+			Nonce:       nonce,
+			CodeHash:    emptyCodeHash,
+		}
+	}
+
+	var canonicalHashes [3]types.Hash
+	require.NoError(t, db.Update(context.Background(), func(tx kv.RwTx) error {
+		original := accountAt(0)
+		if err := tx.Put(modules.Account, addr[:], original.MarshalV2()); err != nil {
+			return err
+		}
+		previous := original
+		var headHash types.Hash
+		for number := uint64(1); number <= 2; number++ {
+			next := accountAt(number)
+			writer := state.NewPlainStateWriter(tx, tx, number)
+			if err := writer.UpdateAccountData(addr, previous, next); err != nil {
+				return err
+			}
+			if err := writer.WriteChangeSets(); err != nil {
+				return err
+			}
+			if err := writer.WriteHistory(); err != nil {
+				return err
+			}
+			header := &block.Header{Number: uint256.NewInt(number)}
+			rawdb.WriteHeader(tx, header)
+			headHash = header.Hash()
+			canonicalHashes[number] = headHash
+			if err := rawdb.WriteCanonicalHash(tx, headHash, number); err != nil {
+				return err
+			}
+			previous = next
+		}
+		rawdb.WriteHeadBlockHash(tx, headHash)
+		return ethel.RebuildHashedState(tx)
+	}))
+
+	tx, err := db.BeginRw(context.Background())
+	require.NoError(t, err)
+	rewoundState, err := rewindEngineValidationState(tx, 2)
+	require.NoError(t, err)
+	require.True(t, rewoundState)
+	var rewound account.StateAccount
+	rewoundData, err := tx.GetOne(modules.Account, addr[:])
+	require.NoError(t, err)
+	require.NoError(t, rewound.DecodeForStorageV2(rewoundData))
+	require.Equal(t, uint64(1), rewound.Nonce)
+	tx.Rollback()
+
+	require.NoError(t, db.View(context.Background(), func(tx kv.Tx) error {
+		var persisted account.StateAccount
+		data, err := tx.GetOne(modules.Account, addr[:])
+		if err != nil {
+			return err
+		}
+		if err := persisted.DecodeForStorageV2(data); err != nil {
+			return err
+		}
+		require.Equal(t, uint64(2), persisted.Nonce)
+		return nil
+	}))
+
+	adapter := NewEngineStateAdapter(db, nil, nil, nil)
+	require.NoError(t, adapter.reorgCanonicalTo(canonicalHashes[1]))
+	require.NoError(t, db.View(context.Background(), func(tx kv.Tx) error {
+		var persisted account.StateAccount
+		data, err := tx.GetOne(modules.Account, addr[:])
+		if err != nil {
+			return err
+		}
+		if err := persisted.DecodeForStorageV2(data); err != nil {
+			return err
+		}
+		require.Equal(t, uint64(1), persisted.Nonce)
+		require.Equal(t, canonicalHashes[1], rawdb.ReadHeadBlockHash(tx))
+		blockTwoHash, err := rawdb.ReadCanonicalHash(tx, 2)
+		require.NoError(t, err)
+		require.Equal(t, types.Hash{}, blockTwoHash)
+		return nil
+	}))
+}
 
 func TestHiveEngineGenesisFixtureMatchesCurrentGethRoot(t *testing.T) {
 	modules.N42Init()

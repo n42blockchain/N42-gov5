@@ -11,6 +11,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"math/big"
 
 	"github.com/n42blockchain/N42/common/block"
@@ -629,15 +630,24 @@ func (e *EngineAPIV1) persistForkchoiceHead(headHash types.Hash) error {
 		body *ExecutionPayloadBodyV1
 	}
 	var reversePath []stagedPayload
+	ancestorHash := currentHash
 	for hash := headHash; hash != currentHash; {
+		_, canonical, err := e.stateAdapter.canonicalBlockNumber(hash)
+		if err != nil {
+			return err
+		}
+		if canonical {
+			ancestorHash = hash
+			break
+		}
 		staged := overlay.blockByHash(hash)
 		concrete, ok := staged.(*block.Block)
 		if !ok || concrete == nil {
-			return nil
+			return fmt.Errorf("staged forkchoice block not found: %s", hash.Hex())
 		}
 		header := blockHeader(concrete)
 		if header == nil {
-			return nil
+			return fmt.Errorf("staged forkchoice header not found: %s", hash.Hex())
 		}
 		reversePath = append(reversePath, stagedPayload{
 			hash: hash,
@@ -645,6 +655,11 @@ func (e *EngineAPIV1) persistForkchoiceHead(headHash types.Hash) error {
 			body: overlay.payloadBodyByHash(hash),
 		})
 		hash = header.ParentHash
+	}
+	if ancestorHash != currentHash {
+		if err := e.stateAdapter.reorgCanonicalTo(ancestorHash); err != nil {
+			return err
+		}
 	}
 
 	for i := len(reversePath) - 1; i >= 0; i-- {
@@ -813,6 +828,7 @@ func (e *EngineAPIV1) executeOrValidateWithBody(blk block.IBlock, blockHash, par
 		}
 		result, err := e.stateAdapter.validatePayloadDetailed(
 			concreteBlock,
+			parentHash,
 			parentBeaconRoot,
 			expectedRequests,
 			bodyWithdrawals(body),

@@ -41,6 +41,7 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -445,11 +446,15 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	return a.executePayloadDetailedMode(blk, parentBeaconRoot, expectedRequests, withdrawals, allowMissingExpectedBloom, true, nil)
 }
 
-func (a *EngineStateAdapter) validatePayloadDetailed(blk *block.Block, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal, parentState *engineStateOverlay) (*enginePayloadExecutionResult, error) {
-	return a.executePayloadDetailedMode(blk, parentBeaconRoot, expectedRequests, withdrawals, false, false, parentState)
+func (a *EngineStateAdapter) validatePayloadDetailed(blk *block.Block, parentHash types.Hash, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal, parentState *engineStateOverlay) (*enginePayloadExecutionResult, error) {
+	return a.executePayloadDetailedModeWithParent(blk, parentHash, parentBeaconRoot, expectedRequests, withdrawals, false, false, parentState)
 }
 
 func (a *EngineStateAdapter) executePayloadDetailedMode(blk *block.Block, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal, allowMissingExpectedBloom, persist bool, parentState *engineStateOverlay) (_ *enginePayloadExecutionResult, retErr error) {
+	return a.executePayloadDetailedModeWithParent(blk, types.Hash{}, parentBeaconRoot, expectedRequests, withdrawals, allowMissingExpectedBloom, persist, parentState)
+}
+
+func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Block, parentHash types.Hash, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal, allowMissingExpectedBloom, persist bool, parentState *engineStateOverlay) (_ *enginePayloadExecutionResult, retErr error) {
 	// A failed block leaves the read cache holding values memoized from this
 	// (about to be rolled back) tx — drop them. The batch path additionally
 	// purges on every SetBatchTx.
@@ -479,9 +484,39 @@ func (a *EngineStateAdapter) executePayloadDetailedMode(blk *block.Block, parent
 		}
 		defer tx.Rollback()
 	}
+	validationStateRebased := false
+	if !persist {
+		validationStateRebased, err = rewindEngineValidationState(tx, blockNum)
+		if err != nil {
+			return nil, err
+		}
+		// A persisted canonical parent is now represented exactly by the
+		// rewound database state. Overlay state is only needed when the parent
+		// itself is a staged, not-yet-persisted side-chain payload.
+		if parentHash != (types.Hash{}) {
+			storedParentHash, err := a.resolveCanonicalStoredHash(tx, parentHash)
+			if err != nil {
+				return nil, err
+			}
+			if storedParentHash != (types.Hash{}) {
+				parentState = nil
+			}
+		}
+	}
 	if !persist && parentState != nil {
 		if err := applyEngineStateOverlayToTx(tx, parentState); err != nil {
 			return nil, err
+		}
+	}
+	if !persist && (validationStateRebased || parentState != nil) {
+		if err := tx.ClearBucket(kv.TrieOfAccounts); err != nil {
+			return nil, fmt.Errorf("clear validation account trie: %w", err)
+		}
+		if err := tx.ClearBucket(kv.TrieOfStorage); err != nil {
+			return nil, fmt.Errorf("clear validation storage trie: %w", err)
+		}
+		if err := ethel.RebuildHashedState(tx); err != nil {
+			return nil, fmt.Errorf("rebuild validation hashed state: %w", err)
 		}
 	}
 
@@ -544,7 +579,12 @@ func (a *EngineStateAdapter) executePayloadDetailedMode(blk *block.Block, parent
 			writer = state.NewOverlayStateWriter(tx)
 		}
 	} else {
-		reader = state.NewPlainState(tx, blockNum)
+		// Payload execution always starts from the transaction's current plain
+		// state. Normal canonical execution has the parent at the DB tip; a
+		// forkchoice reorg explicitly unwinds the DB to the common ancestor
+		// first. A historical PlainState reader is incorrect after that unwind
+		// because consumed orphan changesets no longer back its history index.
+		reader = state.NewPlainStateReader(tx)
 		if persist {
 			writer = state.NewPlainStateWriter(tx, tx, blockNum)
 		} else {
@@ -1068,6 +1108,126 @@ func (a *EngineStateAdapter) executePayloadDetailedMode(blk *block.Block, parent
 	}
 
 	return &enginePayloadExecutionResult{stateRoot: computedRoot, receipts: receipts, stateOverlay: stateOverlay}, nil
+}
+
+// rewindEngineValidationState restores the persisted canonical state to the
+// payload parent's height inside the caller's rollback-only transaction. A CL
+// may submit a side chain whose parent is several blocks behind the current
+// head; applying the staged side-chain overlay directly on top of tip state
+// would retain changes made after the fork point and invalidate execution.
+func rewindEngineValidationState(tx kv.RwTx, blockNum uint64) (bool, error) {
+	if tx == nil || blockNum == 0 {
+		return false, nil
+	}
+	headHash := rawdb.ReadHeadBlockHash(tx)
+	if headHash == (types.Hash{}) {
+		return false, nil
+	}
+	headNum := rawdb.ReadHeaderNumber(tx, headHash)
+	if headNum == nil {
+		return false, nil
+	}
+	parentNum := blockNum - 1
+	if *headNum <= parentNum {
+		return false, nil
+	}
+	for number := *headNum; number > parentNum; number-- {
+		if err := commitment.UnwindPlainStateBlock(tx, number); err != nil {
+			return false, fmt.Errorf("rewind validation state at block %d: %w", number, err)
+		}
+	}
+	return true, nil
+}
+
+// canonicalBlockNumber reports whether engineHash is currently indexed on the
+// persisted canonical chain. Payload hashes can differ from their stored N42
+// header hashes, so the lookup resolves both representations before checking
+// the number-to-hash canonical mapping.
+func (a *EngineStateAdapter) canonicalBlockNumber(engineHash types.Hash) (uint64, bool, error) {
+	tx, err := a.db.BeginRo(context.Background())
+	if err != nil {
+		return 0, false, err
+	}
+	defer tx.Rollback()
+
+	storedHash, err := a.resolveCanonicalStoredHash(tx, engineHash)
+	if err != nil || storedHash == (types.Hash{}) {
+		return 0, false, err
+	}
+	number := rawdb.ReadHeaderNumber(tx, storedHash)
+	if number == nil {
+		return 0, false, nil
+	}
+	canonicalHash, err := rawdb.ReadCanonicalHash(tx, *number)
+	if err != nil {
+		return 0, false, err
+	}
+	return *number, canonicalHash == storedHash, nil
+}
+
+// reorgCanonicalTo unwinds the persisted world state and canonical index to a
+// known ancestor. The caller can then execute a previously validated staged
+// branch forward from exactly that ancestor.
+func (a *EngineStateAdapter) reorgCanonicalTo(engineHash types.Hash) error {
+	tx, err := a.db.BeginRw(context.Background())
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	storedHash, err := a.resolveCanonicalStoredHash(tx, engineHash)
+	if err != nil {
+		return err
+	}
+	if storedHash == (types.Hash{}) {
+		return fmt.Errorf("reorg ancestor not found: %s", engineHash.Hex())
+	}
+	targetNum := rawdb.ReadHeaderNumber(tx, storedHash)
+	if targetNum == nil {
+		return fmt.Errorf("reorg ancestor number not found: %s", engineHash.Hex())
+	}
+	canonicalHash, err := rawdb.ReadCanonicalHash(tx, *targetNum)
+	if err != nil {
+		return err
+	}
+	if canonicalHash != storedHash {
+		return fmt.Errorf("reorg target is not canonical: %s", engineHash.Hex())
+	}
+
+	currentHash := rawdb.ReadHeadBlockHash(tx)
+	currentNum := rawdb.ReadHeaderNumber(tx, currentHash)
+	if currentNum == nil {
+		return fmt.Errorf("current canonical head number not found: %s", currentHash.Hex())
+	}
+	if *targetNum > *currentNum {
+		return fmt.Errorf("cannot reorg forward from block %d to %d", *currentNum, *targetNum)
+	}
+	for number := *currentNum; number > *targetNum; number-- {
+		if err := commitment.UnwindPlainStateBlock(tx, number); err != nil {
+			return fmt.Errorf("unwind canonical state at block %d: %w", number, err)
+		}
+	}
+	if err := rawdb.TruncateCanonicalHash(tx, *targetNum+1, false); err != nil {
+		return err
+	}
+	if err := tx.ClearBucket(kv.TrieOfAccounts); err != nil {
+		return fmt.Errorf("clear account trie after reorg: %w", err)
+	}
+	if err := tx.ClearBucket(kv.TrieOfStorage); err != nil {
+		return fmt.Errorf("clear storage trie after reorg: %w", err)
+	}
+	if err := ethel.RebuildHashedState(tx); err != nil {
+		return fmt.Errorf("rebuild hashed state after reorg: %w", err)
+	}
+	rawdb.WriteHeadBlockHash(tx, storedHash)
+	if err := rawdb.WriteHeadHeaderHash(tx, storedHash); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	a.hashedReadCache.PurgeAll()
+	return nil
 }
 
 // ForkchoiceUpdated updates the canonical chain head.

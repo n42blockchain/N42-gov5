@@ -121,6 +121,11 @@ cat >"$client_dir/n42.sh" <<'EOF'
 
 set -euo pipefail
 
+# Hive captures container stdout as the per-client diagnostic log. N42 normally
+# redirects non-TTY output to its rotating datadir log, which disappears with
+# the short-lived test container and hides Engine API failures.
+export N42_LOG_STDOUT=1
+
 n42=/usr/local/bin/n42
 datadir=/n42data
 jwtsecret=/jwtsecret
