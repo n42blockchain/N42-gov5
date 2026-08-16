@@ -229,6 +229,48 @@ func TestEESTShardsScriptProducesSummaryInDryRun(t *testing.T) {
 	}
 }
 
+func TestEESTShardsScriptRetriesOnlyInfrastructureFailures(t *testing.T) {
+	t.Parallel()
+
+	resultDir := filepath.Join(t.TempDir(), "eest-infra-reruns")
+	output, err := runEESTShardsScript(t, resultDir, nil, "paris+shanghai")
+	if err != nil {
+		t.Fatalf("run_eest_shards.sh failed: %v\n%s", err, output)
+	}
+
+	meta := readFile(t, filepath.Join(resultDir, "paris+shanghai.meta"))
+	for _, needle := range []string{
+		"infra_reruns=2",
+		"infra_rerun_delay_seconds=1",
+		"infra_rerun_match=ConnectionError|ConnectionRefusedError|RemoteDisconnected|ReadTimeout",
+		"--reruns 2",
+		"--reruns-delay 1",
+		"--only-rerun ConnectionError\\|ConnectionRefusedError\\|RemoteDisconnected\\|ReadTimeout",
+	} {
+		if !strings.Contains(meta, needle) {
+			t.Fatalf("meta missing %q:\n%s", needle, meta)
+		}
+	}
+}
+
+func TestEESTShardsScriptCanDisableInfrastructureReruns(t *testing.T) {
+	t.Parallel()
+
+	resultDir := filepath.Join(t.TempDir(), "eest-no-infra-reruns")
+	output, err := runEESTShardsScript(t, resultDir, []string{"EEST_INFRA_RERUNS=0"}, "paris+shanghai")
+	if err != nil {
+		t.Fatalf("run_eest_shards.sh failed: %v\n%s", err, output)
+	}
+
+	meta := readFile(t, filepath.Join(resultDir, "paris+shanghai.meta"))
+	if !strings.Contains(meta, "infra_reruns=0") {
+		t.Fatalf("meta missing disabled retry count:\n%s", meta)
+	}
+	if strings.Contains(meta, "--reruns ") || strings.Contains(meta, "--only-rerun ") {
+		t.Fatalf("disabled retry arguments unexpectedly present:\n%s", meta)
+	}
+}
+
 func TestEESTShardsScriptWritesPartialSummaryOnTermination(t *testing.T) {
 	t.Parallel()
 

@@ -16,6 +16,9 @@ test_root="${EEST_TEST_ROOT:-tests}"
 input_path="${EEST_INPUT:-}"
 hive_simulator="${HIVE_SIMULATOR:-}"
 rpc_timeout="${EEST_RPC_TIMEOUT:-90}"
+infra_reruns="${EEST_INFRA_RERUNS:-2}"
+infra_rerun_delay="${EEST_INFRA_RERUN_DELAY:-1}"
+infra_rerun_match="${EEST_INFRA_RERUN_MATCH:-ConnectionError|ConnectionRefusedError|RemoteDisconnected|ReadTimeout}"
 extra_args_raw="${EEST_EXTRA_ARGS:-}"
 dry_run="${EEST_DRY_RUN:-0}"
 test_run_shard_delay="${EEST_TEST_RUN_SHARD_DELAY:-0}"
@@ -124,6 +127,12 @@ run_shard() {
   if [ -n "$pytest_workers" ]; then
     cmd+=(-n "$pytest_workers")
   fi
+  if [ "$mode" = "consume-engine" ] && [ "$infra_reruns" != "0" ]; then
+    # Docker Desktop can briefly drop a published client port while Hive is
+    # rapidly replacing short-lived containers. Retry only connection-level
+    # failures; protocol assertions and execution mismatches remain failures.
+    cmd+=(--reruns "$infra_reruns" --reruns-delay "$infra_rerun_delay" --only-rerun "$infra_rerun_match")
+  fi
   if [ "${#extra_args[@]}" -gt 0 ]; then
     cmd+=("${extra_args[@]}")
   fi
@@ -138,6 +147,9 @@ run_shard() {
     printf 'python=%s\n' "$python_bin"
     printf 'pytest_workers=%s\n' "$pytest_workers"
     printf 'rpc_timeout_seconds=%s\n' "$rpc_timeout"
+    printf 'infra_reruns=%s\n' "$infra_reruns"
+    printf 'infra_rerun_delay_seconds=%s\n' "$infra_rerun_delay"
+    printf 'infra_rerun_match=%s\n' "$infra_rerun_match"
     if [ "$mode" = "consume-engine" ]; then
       printf 'input=%s\n' "$shard_input_path"
     fi
