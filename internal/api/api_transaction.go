@@ -17,6 +17,7 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
+	"github.com/n42blockchain/N42/params"
 )
 
 // TransactionAPI exposes methods for reading and creating transaction data.
@@ -60,15 +61,11 @@ func (s *TransactionAPI) SendRawTransaction(ctx context.Context, input hexutil.B
 	if err != nil {
 		return avmcommon.Hash{}, err
 	}
-	currentBlock := s.api.BlockChain().CurrentBlock()
-	if currentBlock == nil {
-		return avmcommon.Hash{}, errors.New("no current block available")
+	currentBlock, rules, err := s.transactionHeadAndRules()
+	if err != nil {
+		return avmcommon.Hash{}, err
 	}
 	header := currentBlock.Header()
-	if header == nil {
-		return avmcommon.Hash{}, errors.New("no header available")
-	}
-	rules := s.api.GetChainConfig().RulesWithTimestamp(header.Number64().Uint64(), currentBlock.Time())
 	if err := validateTransactionInitCodeSize(tx, rules); err != nil {
 		return avmcommon.Hash{}, err
 	}
@@ -92,14 +89,11 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 		return nil, fmt.Errorf("batch size %d exceeds maximum allowed %d", len(inputs), MaxBatchSize)
 	}
 
-	currentBlock := s.api.BlockChain().CurrentBlock()
-	if currentBlock == nil {
-		return nil, errors.New("no current block available")
+	currentBlock, rules, err := s.transactionHeadAndRules()
+	if err != nil {
+		return nil, err
 	}
 	header := currentBlock.Header()
-	if header == nil {
-		return nil, errors.New("no header available")
-	}
 
 	// Decode and fee-check everything first, then admit the survivors to the
 	// pool as ONE batch. The old loop called SubmitTransaction per entry —
@@ -111,7 +105,6 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 	txs := make([]*transaction.Transaction, 0, len(inputs))
 	slot := make([]int, 0, len(inputs))
 	var firstErr error
-	rules := s.api.GetChainConfig().RulesWithTimestamp(header.Number64().Uint64(), currentBlock.Time())
 	for i, t := range inputs {
 		if len(t) == 0 {
 			if firstErr == nil {
@@ -163,6 +156,25 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 		}
 	}
 	return hs, firstErr
+}
+
+func (s *TransactionAPI) transactionHeadAndRules() (block.IBlock, *params.Rules, error) {
+	if s == nil || s.api == nil {
+		return nil, nil, errors.New("transaction API unavailable")
+	}
+	currentBlock := s.api.resolveForkchoiceTaggedBlock(jsonrpc.LatestBlockNumber)
+	if currentBlock == nil {
+		return nil, nil, errors.New("no current block available")
+	}
+	header := currentBlock.Header()
+	if header == nil || header.Number64() == nil {
+		return nil, nil, errors.New("no header available")
+	}
+	chainConfig := s.api.GetChainConfig()
+	if chainConfig == nil {
+		return nil, nil, errors.New("no chain configuration available")
+	}
+	return currentBlock, chainConfig.RulesWithTimestamp(header.Number64().Uint64(), currentBlock.Time()), nil
 }
 
 // GetTransactionReceipt returns the transaction receipt for the given transaction hash.
