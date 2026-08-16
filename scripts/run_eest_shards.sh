@@ -25,6 +25,27 @@ test_run_shard_delay="${EEST_TEST_RUN_SHARD_DELAY:-0}"
 timestamp="$(date -u +%Y%m%d-%H%M%SZ)"
 results_dir="${EEST_RESULTS_DIR:-$repo_root/tests/results/eest-shards/$timestamp}"
 
+git_revision() {
+  git -C "$1" rev-parse HEAD 2>/dev/null || printf '%s\n' unavailable
+}
+
+git_dirty() {
+  if ! git -C "$1" rev-parse --git-dir >/dev/null 2>&1; then
+    printf '%s\n' unavailable
+  elif [ -n "$(git -C "$1" status --porcelain --untracked-files=no)" ]; then
+    printf '%s\n' true
+  else
+    printf '%s\n' false
+  fi
+}
+
+n42_revision="$(git_revision "$repo_root")"
+n42_dirty="$(git_dirty "$repo_root")"
+hive_revision="$(git_revision "$repo_root/tests/eth-hive")"
+hive_dirty="$(git_dirty "$repo_root/tests/eth-hive")"
+eest_revision="$(git_revision "$eest_dir")"
+eest_dirty="$(git_dirty "$eest_dir")"
+
 requested_shards=("$@")
 
 declare -a shard_rows=(
@@ -150,6 +171,12 @@ run_shard() {
     printf 'infra_reruns=%s\n' "$infra_reruns"
     printf 'infra_rerun_delay_seconds=%s\n' "$infra_rerun_delay"
     printf 'infra_rerun_match=%s\n' "$infra_rerun_match"
+    printf 'n42_revision=%s\n' "$n42_revision"
+    printf 'n42_dirty=%s\n' "$n42_dirty"
+    printf 'hive_revision=%s\n' "$hive_revision"
+    printf 'hive_dirty=%s\n' "$hive_dirty"
+    printf 'eest_revision=%s\n' "$eest_revision"
+    printf 'eest_dirty=%s\n' "$eest_dirty"
     if [ "$mode" = "consume-engine" ]; then
       printf 'input=%s\n' "$shard_input_path"
     fi
@@ -198,6 +225,9 @@ write_summary() {
     printf '%s\n' "- Pytest workers: \`$pytest_workers\`"
     printf '%s\n' "- Shard jobs: \`$shard_jobs\`"
     printf '%s\n' "- Dry run: \`$dry_run\`"
+    printf '%s\n' "- N42 revision: \`$n42_revision\` (dirty: \`$n42_dirty\`)"
+    printf '%s\n' "- Hive revision: \`$hive_revision\` (dirty: \`$hive_dirty\`)"
+    printf '%s\n' "- EEST revision: \`$eest_revision\` (dirty: \`$eest_dirty\`)"
     printf '%s\n' '| Shard | Selector | Target ~Tests | Runner | RC | Duration (s) | Log |'
     printf '%s\n' '|-------|----------|---------------|--------|----|--------------|-----|'
 
@@ -227,9 +257,9 @@ write_summary() {
   } >"$summary_path.tmp"
 
   {
-    sed -n '1,8p' "$summary_path.tmp"
+    sed -n '1,11p' "$summary_path.tmp"
     printf '%s\n\n' "- Status: \`$summary_state\`"
-    sed -n '9,$p' "$summary_path.tmp"
+    sed -n '12,$p' "$summary_path.tmp"
   } >"$summary_path"
   rm -f "$summary_path.tmp"
 }
