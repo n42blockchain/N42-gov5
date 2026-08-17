@@ -71,8 +71,15 @@ The replay already wrote new Code rows into N42-eth1177 MDBX. Re-export the
 content-addressed full-history codes freezer and bump the coverage marker:
 
 ```powershell
-wk-ethexec.exe code-import2fz --db d:/N42-eth1177 --outdir d:/n42-codes-<tip> --coverage-block <tip>
+wk-code-import2fz.exe --db d:/reth2k/db --outdir d:/n42-codes-<tip> `
+  --coverage-block <tip> --addr-index=false
 ```
+
+**Source is the reth `Bytecodes` table, not an N42 account join.** Codes are
+content-addressed, so the join adds nothing and walks 405M accounts; the flag
+that avoids it (`--addr-index=false`) is also silently ignored by a stale
+binary, which is how one run burned an hour on the wrong path. reth2k must
+have finished syncing first.
 
 codes are FULL history — never window by recency (the hottest codes are the
 oldest). Old codes dir stays until publish swap.
@@ -191,6 +198,62 @@ catch-up. Add them when the retrim artefact is regenerated.
 - DATC sr merge: built-in spot gate (§5.3).
 
 ## 8. Run log
+
+### 2026-08-16/17 (full cycle: geth + reth sourced + three-mode test)
+
+Source: geth ancient frozen **25,765,566** -> target **25,765,565** (prior week
+25,715,848; d **49,717**). reth2k synced to exactly the same height, so no
+unwind was needed (verified by reading BlockBodyIndices, not `r.bat`). Both
+left STOPPED. All `wk-*.exe` rebuilt from source first — `wk-ethexec`,
+`wk-block-stats` and `wk-code-import2fz` were all July 10 binaries against
+August sources.
+
+- Step 1: senders 42 s / 37 s, headerc 0.8 s, bodyc 2m48s, receipts 1m34s
+  (528 blk/s). All exit 0.
+- Step 2 replay: ~26 min @ ~31 blk/s. `ethel-last-block = 25765565`. The
+  progress log trails the real head — it stopped printing at 25,760,000 while
+  the run had finished; check the marker, never the log tail.
+- Step 3 codes (reth2k Bytecodes -> `d:/n42-codes-25765565`): **2,673,190**
+  codes (+25,327), 6.2 GB @ 43.8%, 10m50s, `codes.coverage=25765565`,
+  hidx 1.71 bits/key.
+- snapshot export (reth2k PLAIN -> `d:/n42-snapshot-25765565`, 16 shards):
+  accounts 410,774,174; storage 1,632,922,836; `.idx+.ef` 1.50 GB
+  (7.87 bits/key); `.val` 25.17 GB -> `.val.zst` 18.99 GB (**75.4% retained,
+  byte-identical ratio to previous runs**); 1h57m, heap < 460 MB.
+- N42-hashed migration (`--dst D:/N42-hashed-25765565/chaindata`): acc
+  410,774,174 (decodeFail 0) / sto 1,632,922,836 (shortVal 0) / tacc
+  30,671,868 / tsto 143,485,906 (badSub 0) / code 2,673,190 (decodeFail 0) /
+  **vtrie OK: root == expect 0xa36c3bf8...de67d93c** / `ethel-last-block=25765565`.
+  2h04m. The code count matches the Step 3 export exactly — two independent
+  paths agreeing.
+- witness spot-check: blocks 25,720,000 / 25,745,000 / 25,765,565 all
+  **gas diff +0**. GATE PASS.
+- **Three-mode test (E:, catch-up + live)** — all three PASS, serialized on
+  :30403 / 20115:
+  - **min** (47 GB): H0 -> 25,767,377 (network tip) via snapshot-direct
+    overlay, RebuildState skipped. 0 critical errors.
+  - **full** (161 GB): -> 25,767,507 (tip). 0 critical errors.
+  - **archive** (791 GB): -> 25,767,633 (tip). 0 critical errors on the
+    second attempt — see the mapsize trap below.
+
+Two mistakes worth not repeating:
+
+1. **full was assembled with the full-history bodyc (672 GB).** full is a
+   ONE-YEAR window (§6b): the last ~56 `bodyc.NNNN.cdat` segments, here
+   `0303..0358` = 117.7 GB, giving a 161 GB datadir that still caught up to
+   the tip. The full-history bodyc belongs to archive. The correction cost
+   almost nothing because same-volume moves are renames (0.2 s for 360
+   files) — copying would have cost ~20 min.
+2. **archive died mid-catch-up on `MDBX_MAP_FULL`** because
+   `--storage.mapsize.gb` was left at its 64 GB default against a 156 GB
+   chaindata. The warning exists in `weekly-runbook-full.md` but sits ~35
+   lines below the archive example command, which is exactly how it gets
+   missed. Pass it in every mode; it is now in the example itself.
+
+- NOT run: DATC sr merge (no DATC head advance), anchors/bpp, manifests,
+  retrimmed receipts + txindex for full (RPC completeness, not catch-up).
+- qs fleet (the n42 self-developed chain — a different product) left RUNNING
+  throughout; it shares no data with this pipeline.
 
 ### 2026-08-09/10 (this run — full cycle: geth + reth sourced + three-mode test)
 
