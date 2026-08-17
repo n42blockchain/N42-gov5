@@ -27,6 +27,13 @@ type Section struct {
 	// required to identify a usable tier. Caplin seeds are optional because the
 	// HotStuff chain never produces them and eth-el can start before they exist.
 	Optional bool
+	// WindowSegments > 0 publishes only the newest N data (.cdat) segments of
+	// this section, keeping every index file. This is what makes `full` a
+	// history-windowed product (EIP-4444 shape) rather than a full archive:
+	// the bodies section ships roughly the last year. It is enforced here, in
+	// the selector, precisely because an assembly-time-only rule gets missed —
+	// a run that published full-history bodies as "full" is what prompted it.
+	WindowSegments int
 }
 
 // Manifest is the on-disk JSON shape. Mirrors the spec in
@@ -147,23 +154,50 @@ func minimalSelector() *Selector {
 	return s
 }
 
-// full: snapshot + headers + codes + 1-yr hot bodies + txindex (~130 GB). Receipts
+// DefaultFullBodiesWindow is how many bodyc data segments the `full` product
+// ships: roughly one year of bodies (EIP-4444 shape). Measured at the 2026-08
+// tip, where a year spans the last 56 two-GB segments (~118 GB). Segment sizes
+// are fixed but blocks grow, so re-measure when the year boundary moves and
+// pass --bodies-window rather than editing this.
+const DefaultFullBodiesWindow = 56
+
+// full: snapshot + headers + codes + 1-yr hot bodies + txindex (~160 GB). Receipts
 // and history (accthist/storhist) are NOT shipped — receipts/logs serve the latest
-// window; bodies older than ~1 yr stay on cold seeders (1-of-N). The 1-yr hot
-// bodies subset is produced by assembling the datadir with only the hot
-// bodyc.NNNN.cdat (EIP-4444 boundary) — the glob then matches just those.
-func fullSelector() *Selector {
+// window; bodies older than ~1 yr stay on cold seeders (1-of-N).
+//
+// The one-year bodies window is enforced HERE rather than left to whoever
+// assembles the datadir: freezer segment numbering is monotonic in block
+// height, so the selector keeps the newest N .cdat plus the whole cidx. A run
+// that published full-history bodies as "full" (672 GB instead of 160 GB) is
+// what moved this out of the assembly instructions and into the code.
+func fullSelector() *Selector { return fullSelectorWindowed(DefaultFullBodiesWindow) }
+
+func fullSelectorWindowed(window int) *Selector {
 	s := &Selector{Mode: "full", Sections: []Section{
 		{Name: "headers", Patterns: []string{"chain/freezer/headerc.cidx", "chain/freezer/headerc.*.cdat"}},
 		{Name: "code", Patterns: []string{"chain/freezer/codes.cidx", "chain/freezer/codes.*.cdat"}},
 	}}
 	s.Sections = append(s.Sections, snapshotSections...)
 	s.Sections = append(s.Sections,
-		Section{Name: "bodies", Patterns: []string{"chain/freezer/bodyc.cidx", "chain/freezer/bodyc.*.cdat"}},
+		Section{
+			Name:           "bodies",
+			Patterns:       []string{"chain/freezer/bodyc.cidx", "chain/freezer/bodyc.*.cdat"},
+			WindowSegments: window,
+		},
 		Section{Name: "tx-index", Patterns: []string{"chain/freezer/txindex.cidx", "chain/freezer/txindex.*.cdat"}},
 		beaconCheckpointSection, // caplin checkpoint-sync seed for embedded consensus
 	)
 	return s
+}
+
+// SelectorForWithWindow is SelectorFor with an explicit bodies window for the
+// `full` mode (0 = the default). Other modes ignore it: archive ships every
+// body by definition, minimal ships none.
+func SelectorForWithWindow(mode string, window int) (*Selector, error) {
+	if mode == "full" && window > 0 {
+		return fullSelectorWindowed(window), nil
+	}
+	return SelectorFor(mode)
 }
 
 // archive: raw materials ONLY — headers + bodies + codes + witness + txindex +

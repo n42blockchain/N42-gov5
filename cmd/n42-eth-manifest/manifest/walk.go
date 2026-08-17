@@ -34,6 +34,27 @@ func WalkFiles(root string, sel *Selector) ([]*FileEntry, error) {
 			matched = append(matched, ms...)
 		}
 		sort.Strings(matched)
+		// A windowed section publishes only the newest N data segments.
+		// Freezer segment numbering is monotonic in block height, so the
+		// window is simply the tail of the sorted list; index files
+		// (everything that is not a .cdat) are always kept because the
+		// reader needs the whole index and tolerates the resulting gap
+		// (ErrBodyTrimmed + ColdResolver).
+		if sec.WindowSegments > 0 {
+			var idx, dat []string
+			for _, m := range matched {
+				if strings.HasSuffix(m, ".cdat") {
+					dat = append(dat, m)
+				} else {
+					idx = append(idx, m)
+				}
+			}
+			if len(dat) > sec.WindowSegments {
+				dat = dat[len(dat)-sec.WindowSegments:]
+			}
+			matched = append(idx, dat...)
+			sort.Strings(matched)
+		}
 		for _, m := range matched {
 			rel, err := filepath.Rel(root, m)
 			if err != nil {
