@@ -125,6 +125,61 @@ build once for ≤4M only; larger sets are auto-gated and pay no rent),
 | manifests | at publish | `cmd/n42-eth-manifest` | blake3 per file |
 | DATC library head extension | separate project (bprime2 frozen @15.22M) | cs→spill→recast pipeline + records build | sr merge (§5) rides on it |
 
+## 6b. Time budget — take the short path, it is also the correct one
+
+A full cycle is ~5 h wall clock and almost all of it is two jobs. Do not
+spend the operator's time on anything else.
+
+| Step | Cost | Notes |
+|---|---|---|
+| Step 0 inventory | 1 min | |
+| Step 1 four generators | ~5 min | senders 40 s each, bodyc ~3 min, receipts ~1.5 min |
+| Step 2 replay | ~26 min | ~31 blk/s |
+| Step 3 codes | ~11 min | **always `--db d:/reth2k/db` + `--addr-index=false`** |
+| snapshot export | ~2 h | phase A scan is disk-bound; B ~9 min; C zstd ~30 min |
+| N42-hashed migration | ~2 h | |
+| three-mode assembly | ~2 min | same-volume moves are instant; see below |
+
+Rules that keep it at 5 h instead of 8:
+
+1. **codes come from the reth Bytecodes table, never from an account join.**
+   `wk-code-import2fz --db d:/reth2k/db --outdir d:/n42-codes-<tip>
+   --coverage-block <tip> --addr-index=false`. The account-join path walks
+   405M accounts for an artefact that is content-addressed anyway.
+2. **Rebuild every `wk-*.exe` from source BEFORE starting.** They are not
+   auto-built. A stale binary silently ignores newer flags (that is exactly
+   how the 405M-account join happened once), and you only find out an hour in.
+3. **Do not benchmark, diff or cross-compare inside the weekly run.** Verify
+   with the cheap gates in §7 (markers, freezer items, one witness spot-check)
+   and move on. Anything else belongs in a separate session.
+4. **Assemble the E: test dirs with same-volume moves, not copies.** Moving
+   360 bodyc files between two E: directories is a metadata rename: 0.2 s
+   versus ~20 min of copying.
+5. **Serialize only what shares a device.** snapshot phase A/B and the
+   migration both read the 2.1 TB reth MDBX, so those two must not overlap;
+   phase C (local zstd) does not, and a second job may start there if the
+   machine is otherwise idle.
+
+### Mode scoping — full is a ONE-YEAR window, not everything
+
+Getting this wrong wastes ~600 GB of copying and produces a mode that is not
+the product. Authoritative spec (operator decision, 2026-07-02):
+
+| Mode | Contents | Size |
+|---|---|---|
+| **min** | snapshot (16 shards, `.val` only) + headerc (all) + codes (all) | ~47 GB |
+| **full** | min + **last ~1 year of bodyc** (the last ~56 segments) + retrimmed latest-only receipts + txindex | **~160 GB** |
+| **archive** | migrated N42-hashed chaindata + headerc + **full-history bodyc** | ~790 GB |
+
+`bodyc` file numbering is monotonic in block height, so the one-year window is
+simply the last ~56 `bodyc.NNNN.cdat` segments (~118 GB at the 2026-08 tip);
+the full `bodyc.cidx` is copied with them and the resulting gap is tolerated by
+design (`ErrBodyTrimmed` + ColdResolver, no `start` field needed).
+
+Known gap in the 2026-08-16 assembly: full carried the one-year bodies but not
+yet the retrimmed receipts / txindex, which affect RPC completeness rather than
+catch-up. Add them when the retrim artefact is regenerated.
+
 ## 7. Verification gates (every week)
 
 - Four light items: log lines report resumed-from == prior marker and
