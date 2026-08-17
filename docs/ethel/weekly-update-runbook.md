@@ -129,7 +129,7 @@ build once for ≤4M only; larger sets are auto-gated and pay no rent),
 | snapshot regen (minimal/full) | needs >60 GB free RAM window | `reth-snapshot-export` | per MEMORY, deferred |
 | anchors / bpp | when publishing stateless mode | `blockproof-produce` | ~1.5-2 h per 60k blocks |
 | N42-hashed state | when eth-el follower redeploys | `n42-migrate-reth-hashed` (reth copy) or MerkleStageIncremental (changesets) | reth2k must be idle |
-| manifests | at publish | `cmd/n42-eth-manifest` | blake3 per file |
+| manifests | at publish | `cmd/n42-eth-manifest` | blake3 per file; source = a hard-link publish root, NOT the E: test dirs (they drop `*.val.zst`) |
 | DATC library head extension | separate project (bprime2 frozen @15.22M) | cs→spill→recast pipeline + records build | sr merge (§5) rides on it |
 
 ## 6b. Time budget — take the short path, it is also the correct one
@@ -250,8 +250,24 @@ Two mistakes worth not repeating:
    lines below the archive example command, which is exactly how it gets
    missed. Pass it in every mode; it is now in the example itself.
 
-- NOT run: DATC sr merge (no DATC head advance), anchors/bpp, manifests,
-  retrimmed receipts + txindex for full (RPC completeness, not catch-up).
+- **manifests published** (`d:/n42-publish-25765565`, a hard-link assembly of
+  the four source dirs — same volume, instant, zero extra space, byte-identical
+  to the artefacts):
+
+  | mode | files | total | manifestID |
+  |---|---|---|---|
+  | minimal | 97 | 24.59 GB | `5586730f15ad7423…` |
+  | full | 173 | 165.51 GB | `b56e785c2ab2b0c5…` |
+  | archive | 476 | 830.24 GB | `b0964df3afe94446…` |
+
+  Two traps here. The E: three-mode test dirs are NOT a valid manifest source:
+  they deliberately drop `snapshot/*.val.zst` (the node mmaps the raw `.val`),
+  which is precisely the payload the manifest publishes — a dry run showed 0
+  `.val` matches. And the first `full` manifest came out at 476 files /
+  677 GB because the one-year bodies rule lived only in assembly prose; the
+  selector now enforces it (`Section.WindowSegments`, 74c9f773).
+- NOT run: DATC sr merge (no DATC head advance), anchors/bpp, retrimmed
+  receipts + txindex for full (RPC completeness, not catch-up).
 - qs fleet (the n42 self-developed chain — a different product) left RUNNING
   throughout; it shares no data with this pipeline.
 
