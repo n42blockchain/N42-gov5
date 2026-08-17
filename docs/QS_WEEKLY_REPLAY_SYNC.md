@@ -111,6 +111,42 @@ target head. 2026-08-15 first run: 13 eras / 39 files / 17 GB sealed in
 - `n42-ancient prune --class aux --before-era <N>` is the (future) knob
   for dropping old witnesses/changesets; the chain class is not prunable.
 
+## Step 2c — build the tx-lookup index into the seed (since 2026-08-16)
+
+The fleet runs with `N42_TXINDEX_TAIL=1` (set in `deploy-7node.ps1`): without
+it every transaction writes a random-key `TxLookup` row into MDBX and
+`mdbx_txn_commit` dominates the block cycle — 1.9 s/block at 22.8k txs
+against 0.5 ms with the tier on (`docs/QS_TPS_BENCHMARK.md`).
+
+The tier keeps its index in `<datadir>/txindex`, so the seed has to carry
+one or every reseed would start lookups over from the new head.
+
+```powershell
+& E:\build-seed-txindex.ps1 -Seed E:\qs-era-out
+```
+
+What it does, and why it is shaped this way:
+
+- **It builds on a throwaway copy, not on the seed.** A running node also
+  writes HotStuff state into its chaindata, and the seed is copied verbatim
+  to all 7 nodes — seeding them with one node's consensus state is not
+  acceptable. Only `txindex/` (pure derived data) moves into the seed.
+- **It seeds the start watermark** (`txindex-watermark --set`). The indexer
+  defaults the watermark to `head+1` on first run — correct for a live node
+  (no back-scan), wrong for a seed. Nodes booting from the seed then take
+  `max(watermark, SealedEnd(txindex))`, so they only rebuild the short tail.
+- **Never copy a previous generation's `txindex` forward by hand.** replay-v2
+  is append-only, so heights already in the base keep their numbers and
+  their index entries stay valid — but the week being folded in is
+  renumbered by gap fill (e.g. source head 14,227,107 landed at 14,266,472).
+  An index built against the old numbering points at the wrong blocks, which
+  is worse than having none. Rebuilding from the seed is what makes the
+  carry-over correct.
+
+GATE: `E:\qs-era-out\txindex` contains `txindex.NNNN.cdat` + `.cidx` +
+`.ranges`, and `txindex-watermark --db E:\qs-era-out\chaindata` reports the
+range start. 2026-08-16 first run: 22 MB covering 13,631,488 → 14,323,711.
+
 ## Step 3 — re-seed the fleet on the extended base
 
 ```powershell

@@ -34,7 +34,7 @@ var senderRecoveryChainID = big.NewInt(94)
 // buildSignedTxs produces n transfer transactions, each from a distinct key,
 // encoded and decoded through the wire format so that the resulting objects are
 // byte-for-byte what an imported block carries: signature only, no sender.
-func buildSignedTxs(t *testing.T, n int) ([]*transaction.Transaction, []types.Address) {
+func buildSignedTxs(t testing.TB, n int) ([]*transaction.Transaction, []types.Address) {
 	t.Helper()
 
 	signer := transaction.NewLondonSigner(senderRecoveryChainID)
@@ -88,7 +88,7 @@ func buildSignedTxs(t *testing.T, n int) ([]*transaction.Transaction, []types.Ad
 // so the failure is deterministic and does not depend on curve arithmetic. It
 // goes through the same wire round-trip as the valid transactions, so it is
 // indistinguishable from one that arrived over the network.
-func unrecoverableTx(t *testing.T, nonce uint64) *transaction.Transaction {
+func unrecoverableTx(t testing.TB, nonce uint64) *transaction.Transaction {
 	t.Helper()
 
 	chainID, _ := uint256.FromBig(senderRecoveryChainID)
