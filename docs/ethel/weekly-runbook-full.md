@@ -231,8 +231,13 @@ the mandatory callout above), or `BLOCKHASH` returns zero and catch-up diverges:
 robocopy D:\N42-hashed-<tip>\chaindata E:\ethel-archive-<tip>\chaindata /E /MT:16   # ~156 GB
 robocopy D:\n42-eth1\chain\freezer E:\ethel-archive-<tip>\chain\freezer headerc.* /MT:8   # REQUIRED
 C:\N42\N42-gov5\build\bin\eth-el.exe --datadir E:/ethel-archive-<tip> --hashed-canonical `
-  --bootstrap.enabled=false --eldevp2p.enabled --eldevp2p.listen :30403 --engine.enabled=false `
+  --bootstrap.enabled=false --storage.mapsize.gb 512 `
+  --eldevp2p.enabled --eldevp2p.listen :30403 --engine.enabled=false `
   --catch-up.mode auto --publicrpc.enabled --publicrpc.port 20115
+# --storage.mapsize.gb is MANDATORY here: the 64 GB default is below the
+# 156 GB archive chaindata and the run dies mid-catch-up with MDBX_MAP_FULL
+# wrapped in a panic. (Learned again 2026-08-17 — the warning used to live
+# ~35 lines further down, which is exactly how it gets missed.)
 ```
 
 ### MINIMAL (needs §3b codes + §3c snapshot)
