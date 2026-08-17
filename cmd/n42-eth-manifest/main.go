@@ -47,13 +47,14 @@ func main() {
 	includeSenders := flag.Bool("include-senders", false, "include the optional senders pack (full + archive only)")
 	parallel := flag.Int("parallel", 0, "concurrent hashers (0 = NumCPU/2)")
 	dryRun := flag.Bool("dry-run", false, "list the files that would be hashed without computing hashes")
+	bodiesWindow := flag.Int("bodies-window", 0, "full mode: how many newest bodyc segments to publish (0 = the built-in one-year default)")
 	flag.Parse()
 
 	if _, err := os.Stat(*datadir); err != nil {
 		die("datadir %s not present: %v", *datadir, err)
 	}
 
-	cfg, err := manifest.SelectorFor(*mode)
+	cfg, err := manifest.SelectorForWithWindow(*mode, *bodiesWindow)
 	if err != nil {
 		die("%v", err)
 	}
