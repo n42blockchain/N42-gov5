@@ -11,6 +11,7 @@ package replay
 import (
 	"bytes"
 	"encoding/binary"
+	"sort"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
@@ -134,9 +135,18 @@ func (w *WitnessStateReader) Serialize() []byte {
 
 	var buf bytes.Buffer
 
-	// Accounts
+	// Accounts. Sorted, like every section below: the three maps are
+	// serialized verbatim into modules.BlockWitness, so a Go map walk made
+	// the stored witness bytes differ between two runs of the SAME block —
+	// the artifact is supposed to be reproducible.
 	binary.Write(&buf, binary.BigEndian, uint32(len(w.accounts)))
-	for addr, data := range w.accounts {
+	addrs := make([]types.Address, 0, len(w.accounts))
+	for addr := range w.accounts {
+		addrs = append(addrs, addr)
+	}
+	sort.Slice(addrs, func(i, j int) bool { return bytes.Compare(addrs[i][:], addrs[j][:]) < 0 })
+	for _, addr := range addrs {
+		data := w.accounts[addr]
 		buf.Write(addr[:])
 		if data == nil {
 			binary.Write(&buf, binary.BigEndian, uint16(0))
@@ -148,7 +158,21 @@ func (w *WitnessStateReader) Serialize() []byte {
 
 	// Storage
 	binary.Write(&buf, binary.BigEndian, uint32(len(w.storage)))
-	for sk, val := range w.storage {
+	sks := make([]storageWKey, 0, len(w.storage))
+	for sk := range w.storage {
+		sks = append(sks, sk)
+	}
+	sort.Slice(sks, func(i, j int) bool {
+		if c := bytes.Compare(sks[i].addr[:], sks[j].addr[:]); c != 0 {
+			return c < 0
+		}
+		if sks[i].inc != sks[j].inc {
+			return sks[i].inc < sks[j].inc
+		}
+		return bytes.Compare(sks[i].slot[:], sks[j].slot[:]) < 0
+	})
+	for _, sk := range sks {
+		val := w.storage[sk]
 		buf.Write(sk.addr[:])
 		binary.Write(&buf, binary.BigEndian, sk.inc)
 		buf.Write(sk.slot[:])
@@ -162,7 +186,13 @@ func (w *WitnessStateReader) Serialize() []byte {
 
 	// Code
 	binary.Write(&buf, binary.BigEndian, uint32(len(w.code)))
-	for hash, code := range w.code {
+	hashes := make([]types.Hash, 0, len(w.code))
+	for h := range w.code {
+		hashes = append(hashes, h)
+	}
+	sort.Slice(hashes, func(i, j int) bool { return bytes.Compare(hashes[i][:], hashes[j][:]) < 0 })
+	for _, hash := range hashes {
+		code := w.code[hash]
 		buf.Write(hash[:])
 		if code == nil {
 			binary.Write(&buf, binary.BigEndian, uint32(0))
