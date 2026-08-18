@@ -136,7 +136,11 @@ func Execute(input *GuestInput) *GuestOutput {
 			output.Error = fmt.Sprintf("tx %d execution failed: %v", i, err)
 			return output
 		}
-		totalGasUsed += txResult.GasUsed
+		// EIP-7778: the receipt records CumulativeGas built from BlockGasUsed,
+		// so the running base must advance by the same quantity. Mixing the
+		// post-refund GasUsed here skewed every receipt after the first and
+		// broke DeriveSha against header.ReceiptHash.
+		totalGasUsed = txResult.CumulativeGas
 		if totalGasUsed > header.GasLimit {
 			output.Error = fmt.Sprintf("cumulative gas %d exceeds block gas limit %d after tx %d", totalGasUsed, header.GasLimit, i)
 			return output
