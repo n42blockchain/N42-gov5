@@ -533,17 +533,23 @@ func (sdb *IntraBlockState) ExistPure(addr types.Address) bool {
 	if obj := sdb.stateObjects[addr]; obj != nil {
 		return !obj.deleted
 	}
+	// A pending balance increment DOES constitute existence: geth's
+	// AddBalance materializes an object, so its Exist answers true for such
+	// accounts. Answering false diverged on pre-SpuriousDragon new-account
+	// gas (e.g. CALL to an address just credited by SELFDESTRUCT in the same
+	// tx). Unlike getStateObject this must NOT materialize the object — the
+	// journal entry would escape the EVM snapshot/revert boundary.
+	//
+	// Checked BEFORE the nilAccounts/DB branches, not inside nilAccounts: the
+	// first call for a never-read address falls straight through to the DB
+	// read, and answering false there while the second call (now served by
+	// nilAccounts) answers true made the gas charge depend on how many times
+	// the address had been probed.
+	if inc, has := sdb.balanceInc[addr]; has && inc.count > 0 {
+		return true
+	}
 	// Check nilAccounts cache (known non-existent).
 	if _, ok := sdb.nilAccounts[addr]; ok {
-		// Unlike getStateObject, do NOT materialize balanceInc here (no
-		// journal side effects) — but a pending balance increment DOES
-		// constitute existence: geth's AddBalance materializes an object,
-		// so its Exist answers true for such accounts. Answering false
-		// diverged on pre-SpuriousDragon new-account gas (e.g. CALL to an
-		// address just credited by SELFDESTRUCT in the same tx).
-		if inc, has := sdb.balanceInc[addr]; has && inc.count > 0 {
-			return true
-		}
 		return false
 	}
 	// Read from DB.
@@ -860,6 +866,14 @@ func (sdb *IntraBlockState) Suicide(addr types.Address) bool {
 func (sdb *IntraBlockState) getStateObject(addr types.Address) (stateObject *stateObject) {
 	// Prefer 'live' objects.
 	if obj := sdb.stateObjects[addr]; obj != nil {
+		// A live object can still owe a pending increase: reverting a
+		// balanceIncreaseTransfer un-folds the amount and clears the flag
+		// while leaving the object live. Without re-folding here the
+		// increase is lost for good — FinalizeTx/CommitBlock materialize
+		// pending increases THROUGH this function, so an early return
+		// would silently drop e.g. SELFDESTRUCT proceeds parked for an
+		// untouched beneficiary that a later reverted call happened to read.
+		sdb.foldBalanceIncrease(addr, obj)
 		return obj
 	}
 
@@ -894,13 +908,23 @@ func (sdb *IntraBlockState) getStateObject(addr types.Address) (stateObject *sta
 	return obj
 }
 
-func (sdb *IntraBlockState) setStateObject(addr types.Address, object *stateObject) {
-	if bi, ok := sdb.balanceInc[addr]; ok && !bi.transferred {
-		object.data.Balance.Add(&object.data.Balance, &bi.increase)
-		bi.transferred = true
-		a := addr
-		sdb.journal.append(balanceIncreaseTransfer{account: &a, bi: bi})
+// foldBalanceIncrease applies a still-pending balance increase onto object
+// and journals the fold so it can be undone. Idempotent: the transferred
+// flag makes a second call a no-op, and the flag is only ever cleared by
+// balanceIncreaseTransfer.revert, which also un-folds the amount.
+func (sdb *IntraBlockState) foldBalanceIncrease(addr types.Address, object *stateObject) {
+	bi, ok := sdb.balanceInc[addr]
+	if !ok || bi.transferred {
+		return
 	}
+	object.data.Balance.Add(&object.data.Balance, &bi.increase)
+	bi.transferred = true
+	a := addr
+	sdb.journal.append(balanceIncreaseTransfer{account: &a, bi: bi})
+}
+
+func (sdb *IntraBlockState) setStateObject(addr types.Address, object *stateObject) {
+	sdb.foldBalanceIncrease(addr, object)
 	sdb.stateObjects[addr] = object
 	delete(sdb.nilAccounts, addr)
 }
