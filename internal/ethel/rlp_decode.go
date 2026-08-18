@@ -314,6 +314,12 @@ func decodeEthereumTransactions(raw rlp.RawValue) ([]*transaction.Transaction, e
 		if err != nil {
 			return nil, fmt.Errorf("ethel: decode tx %d: %w", i, err)
 		}
+		// EIP-4844 network wrappers carry blobs, commitments, and proofs for
+		// transaction propagation. A block body must contain only the canonical
+		// blob transaction envelope, never the propagation sidecar.
+		if tx.BlobTxSidecar() != nil {
+			return nil, fmt.Errorf("ethel: tx %d contains a blob sidecar in block body", i)
+		}
 		txs = append(txs, tx)
 	}
 	return txs, nil
