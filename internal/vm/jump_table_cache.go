@@ -113,7 +113,7 @@ func jumpTableCacheKey(rules *params.Rules) string {
 func newJumpTableForRules(rules *params.Rules) JumpTable {
 	switch {
 	case rules.IsGlamsterdam && rules.IsEOF:
-		return withEOF(newGlamsterdamInstructionSet())
+		return newGlamsterdamEOFInstructionSet()
 	case rules.IsGlamsterdam:
 		return newGlamsterdamInstructionSet()
 	case rules.IsFusaka && rules.IsEOF:
@@ -175,4 +175,3 @@ func PrewarmJumpTables() {
 		GetCachedJumpTable(0, &forks[i])
 	}
 }
-

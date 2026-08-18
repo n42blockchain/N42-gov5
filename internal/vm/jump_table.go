@@ -79,15 +79,7 @@ var (
 	// (EOF is not on any scheduled Ethereum fork).
 	osakaEOFInstructionSet       = withEOF(newOsakaInstructionSet())
 	fusakaEOFInstructionSet      = withEOF(newFusakaInstructionSet())
-	glamsterdamEOFInstructionSet = func() JumpTable {
-		jt := withEOF(newGlamsterdamInstructionSet())
-		// EIP-8038 parity: enableEOF installs EOFCREATE at the legacy
-		// 32000; under Glamsterdam every creation path charges
-		// CREATE_ACCESS (state gas billed inside create).
-		jt[EOFCREATE].constantGas = params.CreateAccessEIP8038
-		validateAndFillMaxStack(&jt)
-		return jt
-	}()
+	glamsterdamEOFInstructionSet = newGlamsterdamEOFInstructionSet()
 )
 
 // JumpTable contains the EVM opcodes supported at a given fork.
@@ -140,6 +132,19 @@ func newGlamsterdamInstructionSet() JumpTable {
 	instructionSet[SELFDESTRUCT].dynamicGas = gasSelfdestructEIP3529
 	validateAndFillMaxStack(&instructionSet)
 	return instructionSet
+}
+
+// newGlamsterdamEOFInstructionSet is the Glamsterdam table with EOF enabled.
+// It exists so the package-level variable and the (currently dead) jump-table
+// cache cannot drift: an earlier version applied the EIP-8038 EOFCREATE price
+// only in the variable, leaving the cache path on the legacy 32000.
+func newGlamsterdamEOFInstructionSet() JumpTable {
+	jt := withEOF(newGlamsterdamInstructionSet())
+	// enableEOF installs EOFCREATE at the legacy 32000; under Glamsterdam
+	// every creation path charges CREATE_ACCESS (state gas billed in create).
+	jt[EOFCREATE].constantGas = params.CreateAccessEIP8038
+	validateAndFillMaxStack(&jt)
+	return jt
 }
 
 // newPragueInstructionSet returns the frontier, homestead, byzantium,
