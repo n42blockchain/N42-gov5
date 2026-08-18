@@ -2,10 +2,13 @@ package ethel
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/transaction"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/rlp"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
@@ -267,5 +270,52 @@ func TestDecodeRawBlock(t *testing.T) {
 	}
 	if got, want := decoded.Hash(), header.Hash(); got != want {
 		t.Fatalf("block hash = %s, want %s", got, want)
+	}
+}
+
+func TestDecodeRawBlockRejectsBlobNetworkWrapper(t *testing.T) {
+	header := &block.Header{
+		Difficulty: uint256.NewInt(0),
+		Number:     uint256.NewInt(1),
+		GasLimit:   30_000_000,
+		Time:       1,
+	}
+	to := types.HexToAddress("0x1111111111111111111111111111111111111111")
+	tx := transaction.NewTx(&transaction.BlobTx{
+		ChainID:    uint256.NewInt(1),
+		GasTipCap:  uint256.NewInt(1),
+		GasFeeCap:  uint256.NewInt(2),
+		Gas:        21_000,
+		To:         to,
+		Value:      new(uint256.Int),
+		BlobFeeCap: uint256.NewInt(1),
+		BlobHashes: []types.Hash{types.HexToHash("0x0100000000000000000000000000000000000000000000000000000000000001")},
+		V:          new(uint256.Int),
+		R:          uint256.NewInt(1),
+		S:          uint256.NewInt(1),
+		Sidecar: &transaction.BlobTxSidecar{
+			Blobs:       []transaction.Blob{{1}},
+			Commitments: []transaction.Commitment{{2}},
+			Proofs:      []transaction.Proof{{3}},
+		},
+	})
+	pooled, err := transaction.EncodeEthereumPooledTransaction(tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper, err := rlp.EncodeToBytes(pooled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := rlp.EncodeToBytes([]interface{}{
+		header,
+		[]rlp.RawValue{wrapper},
+		[]rlp.RawValue{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := DecodeRawBlock(raw); err == nil || !strings.Contains(err.Error(), "blob sidecar in block body") {
+		t.Fatalf("DecodeRawBlock() error = %v, want blob sidecar rejection", err)
 	}
 }
