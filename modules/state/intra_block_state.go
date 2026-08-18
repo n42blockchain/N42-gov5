@@ -1488,19 +1488,33 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 				// so it is missing here — union dirtyStorage's zeroed keys so
 				// the RootComputer still emits their delete op (over-deleting
 				// an absent key is a no-op).
+				var unioned []types.Hash
 				if obj != nil {
 					for key := range obj.dirtyStorage {
 						if _, ok := slots[key]; !ok {
 							slots[key] = new(uint256.Int)
+							unioned = append(unioned, key)
 						}
 					}
 				}
 				storage[addr] = slots
 				if ltEnabled {
-					origSlots := make(map[types.Hash]*uint256.Int, len(wiped))
+					origSlots := make(map[types.Hash]*uint256.Int, len(slots))
 					for key, origVal := range wiped {
 						ov := origVal
 						origSlots[key] = new(uint256.Int).Set(&ov)
+					}
+					// The union above added slots the capture missed; without a
+					// matching original the LtHash computer sees old=nil,new=0
+					// (both-zero -> no digest change) and keeps the pre-block
+					// element for exactly the slots the tree just deleted. The
+					// tree root would be fixed and the digest would not, which
+					// defeats the cross-check the LtHash engine exists for.
+					for _, key := range unioned {
+						if ov, ok := obj.blockOriginStorage[key]; ok {
+							v := ov
+							origSlots[key] = new(uint256.Int).Set(&v)
+						}
 					}
 					originalStorage[addr] = origSlots
 				}
@@ -1623,7 +1637,10 @@ func (sdb *IntraBlockState) DirtyAccountData() (
 	accounts = make(map[types.Address][]byte, len(sdb.stateObjectsDirty))
 	storage = make(map[types.Address]map[types.Hash][]byte)
 
-	for addr := range sdb.stateObjectsDirty {
+	// Sorted, like FinalizeTx/CommitBlock/computeRootViaComputer: getStateObject
+	// faults reads through the state reader, and the block-witness recorder
+	// observes read order.
+	for _, addr := range sortedAddresses(sdb.stateObjectsDirty) {
 		obj := sdb.getStateObject(addr)
 		if obj == nil || obj.deleted {
 			accounts[addr] = nil
