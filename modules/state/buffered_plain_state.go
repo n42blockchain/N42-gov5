@@ -1390,6 +1390,101 @@ func (r *BufferedPlainStateReader) ReadAccountData(address types.Address) (*acco
 	return &a, nil
 }
 
+// ForEachStorage enumerates every storage slot of address that is visible to
+// this reader, in the same precedence ReadAccountStorage uses: active write
+// buffer, then the in-flight snapshot, then MDBX — with a wipe at either
+// buffer layer cutting off everything below it. Implements StorageEnumerator.
+//
+// It exists so that EIP-7610 collision detection (IntraBlockState.
+// HasNonEmptyStorage) reaches the SAME verdict on every production reader.
+// Without it the eth-el executor — the only production path on this reader —
+// fell back to the two-slot probe while replay-v2 enumerated, so the two
+// producers could disagree about whether a CREATE collides, and therefore
+// about receipts and the state root, on the very same block.
+//
+// Order is unspecified (map iteration): every caller is a set/any-of query.
+// Enumeration is unsupported — ErrNoStorageEnumeration, never a silent empty
+// result — when the underlying handle cannot open a cursor.
+func (r *BufferedPlainStateReader) ForEachStorage(address types.Address, f func(slot types.Hash, value []byte) bool) error {
+	cp, ok := r.db.(cursorProvider)
+	if !ok {
+		return ErrNoStorageEnumeration
+	}
+
+	active := r.buf.active.Load()
+	var activeSlots map[types.Hash]storageEntry
+	if active != nil {
+		activeSlots = active.storage[address]
+	}
+	for slot, entry := range activeSlots {
+		if entry.valLen == 0 {
+			continue
+		}
+		v := make([]byte, entry.valLen)
+		copy(v, entry.value[32-int(entry.valLen):])
+		if !f(slot, v) {
+			return nil
+		}
+	}
+	if active != nil {
+		if _, wiped := active.wipedStorage[address]; wiped {
+			// Everything below the active buffer is logically gone.
+			return nil
+		}
+	}
+
+	var snapSlots map[types.Hash]storageEntry
+	snap := r.buf.inFlight.Load()
+	if snap != nil {
+		snapSlots = snap.storage[address]
+		for slot, entry := range snapSlots {
+			if _, shadowed := activeSlots[slot]; shadowed {
+				continue
+			}
+			if entry.valLen == 0 {
+				continue
+			}
+			v := make([]byte, entry.valLen)
+			copy(v, entry.value[32-int(entry.valLen):])
+			if !f(slot, v) {
+				return nil
+			}
+		}
+		if _, wiped := snap.wipedStorage[address]; wiped {
+			return nil
+		}
+	}
+
+	cursor, err := cp.Cursor(modules.Storage)
+	if err != nil {
+		return err
+	}
+	defer cursor.Close()
+	prefix := address[:]
+	for k, v, err := cursor.Seek(prefix); k != nil; k, v, err = cursor.Next() {
+		if err != nil {
+			return err
+		}
+		if len(k) < 20 || !bytes.Equal(k[:20], prefix) {
+			break
+		}
+		if len(k) != storageCompositeKeyLen || len(v) == 0 {
+			continue
+		}
+		var slot types.Hash
+		copy(slot[:], k[20:storageCompositeKeyLen])
+		if _, shadowed := activeSlots[slot]; shadowed {
+			continue
+		}
+		if _, shadowed := snapSlots[slot]; shadowed {
+			continue
+		}
+		if !f(slot, v) {
+			break
+		}
+	}
+	return nil
+}
 func (r *BufferedPlainStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	tracked := isTracked(address)
 	// 1. Active write buffer.
@@ -2211,3 +2306,7 @@ var (
 	_ StateReader          = (*BufferedPlainStateReader)(nil)
 	_ WriterWithChangeSets = (*BufferedPlainStateWriter)(nil)
 )
+
+// Compile-time check: the eth-el executor path must be enumerable, see
+// ForEachStorage above.
+var _ StorageEnumerator = (*BufferedPlainStateReader)(nil)

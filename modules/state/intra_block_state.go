@@ -19,6 +19,7 @@ package state
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"sort"
 	"unsafe"
@@ -627,7 +628,7 @@ func (sdb *IntraBlockState) HasNonEmptyStorage(addr types.Address) bool {
 			return false
 		}
 		found := false
-		_ = enum.ForEachStorage(addr, func(slot types.Hash, value []byte) bool {
+		err := enum.ForEachStorage(addr, func(slot types.Hash, value []byte) bool {
 			for _, b := range value {
 				if b != 0 {
 					found = true
@@ -636,7 +637,21 @@ func (sdb *IntraBlockState) HasNonEmptyStorage(addr types.Address) bool {
 			}
 			return true
 		})
-		return found
+		switch {
+		case err == nil:
+			return found
+		case errors.Is(err, ErrNoStorageEnumeration):
+			// The reader declares the capability but cannot scan right now.
+			// Fall through to the probe rather than accept a silent empty
+			// enumeration as "no storage".
+		default:
+			// A real scan failure must NOT be resolved by guessing: either
+			// answer would be a consensus decision made on missing data
+			// (false lets a colliding CREATE through, true reverts a valid
+			// deploy). Fail the block instead.
+			sdb.setErrorUnsafe(err)
+			return found
+		}
 	}
 
 	// Fallback for non-enumerating readers: probe the two slots most

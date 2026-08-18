@@ -147,7 +147,10 @@ func (r *CachedStateReader) ForEachStorage(addr types.Address, f func(slot types
 	if enum, ok := r.inner.(StorageEnumerator); ok {
 		return enum.ForEachStorage(addr, f)
 	}
-	return nil
+	// This type declares StorageEnumerator unconditionally, so an inner
+	// reader that cannot enumerate must be reported, not answered with a
+	// silent empty scan — see ErrNoStorageEnumeration.
+	return ErrNoStorageEnumeration
 }
 
 // Compile-time check.
