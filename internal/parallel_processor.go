@@ -77,6 +77,18 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 		return nil, nil, nil, 0, fmt.Errorf("ProcessParallel: invalid header type assertion for block %v", b.Number64())
 	}
 
+	// Same consensus-safety gate as the serial Process: this executor also
+	// reaches AsMessage, which trusts a wire-declared `From`. Without it a
+	// parallel-EVM node would accept a block a sequential node rejects —
+	// worse than the original hole, because the fleet splits instead of
+	// agreeing. (Blocks of <=4 txs took the gated Process path above.)
+	if hdrNum, hdrErr := requireHeaderNumber(concreteHeader, "header number unavailable"); hdrErr == nil {
+		signer := transaction.MakeSignerWithTimestamp(p.config, hdrNum.ToBig(), concreteHeader.Time)
+		if err := verifyBlockSenders(signer, txs); err != nil {
+			return nil, nil, nil, 0, fmt.Errorf("block %s: %w", concreteHeader.Number.String(), err)
+		}
+	}
+
 	chainConfig := p.config
 	cfg := vm2.Config{}
 	if err := ProcessExecutionBlockStart(concreteHeader.ParentBeaconRoot, chainConfig, ibs, concreteHeader, p.engine); err != nil {
