@@ -36,6 +36,8 @@
 package state
 
 import (
+	"errors"
+
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/account"
@@ -90,6 +92,17 @@ type StateReader interface {
 type StorageEnumerator interface {
 	ForEachStorage(addr types.Address, f func(slot types.Hash, value []byte) bool) error
 }
+
+// ErrNoStorageEnumeration is returned by a ForEachStorage implementation that
+// declares the interface but cannot actually scan right now — typically a
+// reader wrapping a bare kv.Getter (no cursors) or delegating to an inner
+// reader that is not an enumerator.
+//
+// It MUST be returned instead of a nil error with zero callbacks: a silent
+// empty enumeration is indistinguishable from "this account has no storage",
+// which turned the EIP-7610 collision check into a silent no-collision answer
+// and skipped the probe fallback that used to cover exactly this case.
+var ErrNoStorageEnumeration = errors.New("state: reader cannot enumerate storage")
 
 // StateWriter provides write access to blockchain state.
 // This interface is used during block execution to modify state.
