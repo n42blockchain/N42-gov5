@@ -236,6 +236,32 @@ func (sdb *IntraBlockState) activeWipedSlots(addr types.Address) map[types.Hash]
 	return sdb.wipedStorageSlots[addr]
 }
 
+// mayHaveCachedStorage reports whether wiping addr's storage can leave a
+// stale entry behind in an EXTERNAL read cache keyed by addr|slot.
+//
+// This is a hint for cache-backed writers only, never a consensus input, and
+// it is conservative by construction — anything it cannot prove is reported
+// true:
+//
+//   - no wipe capture for addr (no RootComputer, or a reader that cannot
+//     enumerate storage) -> unknown -> true
+//   - a non-empty capture -> the address really holds persisted storage -> true
+//   - an empty capture -> the address holds no persisted storage, so nothing
+//     read-through could have cached for it; slots written earlier in THIS
+//     block remain possible, which the writer tracks on its own side.
+//
+// It exists because CreateContract fires on every plain CREATE/CREATE2 (see
+// the stateObject.created branch below), not only on the rare metamorphic
+// recreate — so a cache-backed writer that invalidates unconditionally throws
+// its whole cross-block cache away several times per block.
+func (sdb *IntraBlockState) mayHaveCachedStorage(addr types.Address) bool {
+	slots, captured := sdb.wipedStorageSlots[addr]
+	if !captured {
+		return true
+	}
+	return len(slots) > 0
+}
+
 // SetRootComputer sets a custom state root implementation (e.g., JMT).
 // When set, IntermediateRoot() delegates to this instead of the default Keccak hash.
 // If the RootComputer implements LtHashRootComputer, the LtHash digest is
@@ -1069,6 +1095,20 @@ func updateAccount(policy accountWritePolicy, stateWriter StateWriter, addr type
 	return updateAccountWithWipe(policy, stateWriter, addr, stateObject, isDirty, false)
 }
 
+// createContract funnels every storage-wipe path through one place so the
+// optional cache hint always travels with the CreateContract it belongs to.
+// Writers that do not implement HintedContractCreator are unaffected.
+func createContract(stateWriter StateWriter, addr types.Address, stateObject *stateObject) error {
+	h, ok := stateWriter.(HintedContractCreator)
+	if !ok {
+		return stateWriter.CreateContract(addr)
+	}
+	mayCache := true
+	if stateObject != nil && stateObject.db != nil {
+		mayCache = stateObject.db.mayHaveCachedStorage(addr)
+	}
+	return h.CreateContractHinted(addr, mayCache)
+}
 func updateAccountWithWipe(policy accountWritePolicy, stateWriter StateWriter, addr types.Address, stateObject *stateObject, isDirty bool, needsWipe bool) error {
 	emptyRemoval := policy.shouldRemoveEmptyAccount(addr, stateObject)
 	shouldDelete := stateObject.selfdestructed || (isDirty && emptyRemoval)
@@ -1076,13 +1116,13 @@ func updateAccountWithWipe(policy accountWritePolicy, stateWriter StateWriter, a
 		if err := stateWriter.DeleteAccount(addr, &stateObject.original); err != nil {
 			return err
 		}
-		if err := stateWriter.CreateContract(addr); err != nil {
+		if err := createContract(stateWriter, addr, stateObject); err != nil {
 			return err
 		}
 		stateObject.deleted = true
 	} else if needsWipe {
 		// Wipe old storage but don't delete — account was recreated after SELFDESTRUCT.
-		if err := stateWriter.CreateContract(addr); err != nil {
+		if err := createContract(stateWriter, addr, stateObject); err != nil {
 			return err
 		}
 	}
@@ -1096,7 +1136,7 @@ func updateAccountWithWipe(policy accountWritePolicy, stateWriter StateWriter, a
 			}
 		}
 		if stateObject.created {
-			if err := stateWriter.CreateContract(addr); err != nil {
+			if err := createContract(stateWriter, addr, stateObject); err != nil {
 				return err
 			}
 		}

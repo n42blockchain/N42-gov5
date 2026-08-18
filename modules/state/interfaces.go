@@ -137,6 +137,21 @@ type StateWriter interface {
 	CreateContract(address types.Address) error
 }
 
+// HintedContractCreator is an OPTIONAL StateWriter extension for writers that
+// sit in front of a shared read cache keyed by addr|slot. The state layer
+// knows whether the address being (re)created actually holds persisted
+// storage; without that hint a cache-backed writer has to invalidate
+// unconditionally, and since CreateContract fires on every plain
+// CREATE/CREATE2 that means throwing the whole cross-block cache away several
+// times per block.
+//
+// mayHaveCachedStorage is conservative: false is only ever passed when the
+// state layer positively established the address holds no persisted storage.
+// A writer that does not implement this keeps receiving plain CreateContract.
+type HintedContractCreator interface {
+	CreateContractHinted(address types.Address, mayHaveCachedStorage bool) error
+}
+
 // WriterWithChangeSets extends StateWriter with change tracking.
 // This is used during block execution when we need to record
 // all state changes for history/pruning purposes.

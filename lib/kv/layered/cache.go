@@ -121,7 +121,14 @@ func (s *cacheShard) clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.items = make(map[cacheKey]*cacheEntry, s.capacity/4)
-	s.evictLRU.Init()
+	// A FRESH list, not Init() on the old one. get() reads under RLock, drops
+	// it, then re-takes the write lock to promote — so a clear can land in
+	// between. Init() leaves the stale element's e.list pointing at this very
+	// list, so MoveToFront re-splices it into the emptied list via list.move,
+	// which does NOT bump len: Len() then under-reports forever, put() stops
+	// evicting (unbounded shard growth) and a later Remove drives len below
+	// zero. Against a new list e.list != l and MoveToFront is a no-op.
+	s.evictLRU = list.New()
 }
 
 func (s *cacheShard) len() int {
