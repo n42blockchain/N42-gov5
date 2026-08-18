@@ -43,6 +43,7 @@ import (
 	"github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
@@ -833,6 +834,9 @@ func (s *BlockChainAPI) simulateBlock(ctx context.Context, simBlock SimulateV1Bl
 	// Get state
 	var ibs *state.IntraBlockState
 	err := s.api.Database().View(ctx, func(t kv.Tx) error {
+		if err := rawdb.CheckHistoricalState(uint256ToUint64OrZero(baseHeader.Number64())); err != nil {
+			return err
+		}
 		stateReader := state.NewPlainState(t, uint256ToUint64OrZero(baseHeader.Number64()))
 		ibs = state.New(stateReader)
 		return nil
