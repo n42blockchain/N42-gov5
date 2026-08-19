@@ -1,6 +1,6 @@
 # Ethereum Execution Layer Test History
 
-## Current Status (2026-08-16)
+## Current Status (2026-08-19)
 
 ```
 Hive ethereum/engine with eth-el: 403 / 403 passed
@@ -17,14 +17,23 @@ Latest completed EEST consume-rlp stable fixture set:
 RLP:            47,589 / 47,589 passed
 ```
 
-The EEST rows are the most recent completed evidence (Engine on 2026-08-02,
-RLP on 2026-08-12) while the 2026-08-16 latest-revision rerun is in progress.
+The EEST rows are the latest-revision completed evidence (Engine on 2026-08-17,
+RLP on 2026-08-19); all commands exited with RC 0 and no reruns remain.
 Engine shards overlap, especially the cross-fork access-list shard, so their
 counts must not be added and reported as a unique-test total. The native Hive
 set is the subset applicable to the main `n42` binary; devp2p, multi-client,
 and P2P syncing scenarios that require `eth-el` are reported separately.
 
 See: README.md, docs/DEVLOG.md, docs/GAP.md
+
+Final fixed revisions were N42 `9c0ff3076` for Engine and `87db38feb` for RLP,
+Hive `b54317a8`, and EEST `e78efc220`. The Engine run took 52:51, 3:56:13,
+4:41:44, 5:04:19, and 28:05 by shard; the complete RLP run took 10:36:15.
+The initial RLP run exposed six cases where a blob network wrapper was accepted
+inside block-body RLP. N42 `87db38feb` rejects sidecars at that boundary; the
+six targeted cases and the complete rerun passed. EEST `e78efc220` also makes
+release metadata cache refresh atomic and preserves a valid stale cache when
+the remote refresh fails.
 
 ---
 

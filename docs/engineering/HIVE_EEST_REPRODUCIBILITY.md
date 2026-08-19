@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-为通过 Hive/EEST 而做的**必要代码修改**已经进入 `main`，不是只留在本地工作树。
+为通过 Hive/EEST 而做的必要代码修改都已提交到当前验证分支或对应的嵌套测试仓库，不只存在于本地工作树。最终复测时三个仓库均为 clean。
 
 最近这条和 Hive/EEST 直接相关的基础收口主要包括：
 
@@ -14,54 +14,60 @@
 
 这些改动的目标不是“为测试写特判”，而是把 Prague/Cancun 相关的 block hook、system contract 地址、部署字节码和 devnet 初始化收成共享入口，减少今后复测时出现“代码过了，但 Hive 用的还是旧路径/旧副本”的漂移。
 
-## 已确认结果（2026-08-15）
+## 已确认结果（2026-08-19）
 
 本节只记录有完整结束摘要、退出状态或 Hive JSON 结果可核对的运行。最近一轮结果如下：
 
 | 完成日期 | 范围 | Fixture | 结果 | 耗时 |
 |---|---|---|---|---|
-| 2026-08-12 | EEST `consume rlp` 全量 | `stable@latest` v5.4.0 | `47,589 / 47,589` 通过，`0` failed，`0` errors | `16:16:34` |
-| 2026-08-02 | EEST `consume engine` Paris+Shanghai | `stable@latest` v5.4.0 | `3,573` 通过，RC `0` | `0:39:20` |
-| 2026-08-02 | EEST `consume engine` Cancun | `stable@latest` v5.4.0 | `17,783` 通过，RC `0` | `3:01:04` |
-| 2026-08-02 | EEST `consume engine` Prague | `stable@latest` v5.4.0 | `20,878` 通过，RC `0` | `3:45:17` |
-| 2026-08-02 | EEST `consume engine` Osaka | `develop@latest` v5.4.0 | `21,583` 通过，RC `0` | `3:52:31` |
-| 2026-08-02 | EEST `consume engine` EIP-2930 access-list 跨 fork | `stable@latest` v5.4.0 | `2,132` 通过，RC `0` | `0:24:02` |
-| 2026-07-31 | 原生 Hive `ethereum/engine` `engine-auth/` | Hive suite | `1` suite、`8 / 8` cases 通过 | 约 `19s` |
+| 2026-08-19 | EEST `consume rlp` 全量 | `stable@latest` v5.4.0 | `47,589 / 47,589` 通过，RC `0`，无 failed/error/rerun | `10:36:15` |
+| 2026-08-17 | EEST `consume engine` Paris+Shanghai | `stable@latest` v5.4.0 | `3,573 / 3,573` 通过，RC `0` | `0:52:51` |
+| 2026-08-17 | EEST `consume engine` Cancun | `stable@latest` v5.4.0 | `17,783 / 17,783` 通过，RC `0` | `3:56:13` |
+| 2026-08-17 | EEST `consume engine` Prague | `stable@latest` v5.4.0 | `20,878 / 20,878` 通过，RC `0` | `4:41:44` |
+| 2026-08-17 | EEST `consume engine` Osaka | `develop@latest` v5.4.0 | `21,583 / 21,583` 通过，RC `0` | `5:04:19` |
+| 2026-08-17 | EEST `consume engine` EIP-2930 access-list 跨 fork | `stable@latest` v5.4.0 | `2,132 / 2,132` 通过，RC `0` | `0:28:05` |
+| 2026-08-17 | Hive `ethereum/engine` `eth-el` 全套 | Hive suite | `403 / 403` 通过 | 见 JSON 产物 |
+| 2026-08-17 | Hive `ethereum/engine` 主 `n42` 适用集 | Hive suite | `311 / 311` 通过 | 见 JSON 产物 |
 
 Engine shard 之间并非全部互斥，尤其 `engine-access-list` 会与 fork shard 重叠，因此不能把表内数字相加后称为唯一用例总数。`47,589` 只表示完整 stable RLP fixture 集的实际收集和执行数量。
 
-结论边界：上述结果确认 N42 `n42_local` execution-layer client 通过 Hive 执行了完整 stable RLP 集和列出的 Engine broad matrix；原生 Hive 自身有完整结果证据的是 `engine-auth`，不能据此宣称 upstream Hive 仓库中的 `sync`、`rpc-compat`、`graphql`、`devp2p` 等所有 simulator 均已全量运行。
+结论边界：上述结果确认 N42 `n42_local` execution-layer client 通过 Hive 执行了完整 stable RLP 集、列出的 Engine broad matrix，以及 `ethereum/engine` simulator 的 `eth-el` 全套和主 `n42` 适用集；不能据此宣称 upstream Hive 仓库中的 `sync`、`rpc-compat`、`graphql` 等所有 simulator 均已全量运行。
 
 ## 版本与证据
 
-已同步到最新：
+最终运行固定版本：
 
-- `tests/eth-hive`: `f28302b5`（2026-08-02）
-- `tests/eth-tests/execution-spec-tests`: `main`（`bb5ca80f`；基于 `0eb24a2b`，补充 v5.4.0 legacy typed-transaction exception 解析兼容）
-- 2026-08-12 RLP 全量运行的 N42 验证代码：`be09df4e2`
+- Engine：N42 `9c0ff307624698916f078e1fc057bc3125b93d9d`，Hive `b54317a81e9a226f5899eba2fb27f4a01ff21ffc`，EEST `e78efc220fd6cebdaa131435167f43c3b83236ea`
+- RLP：N42 `87db38feb03c94332b0a99d969dfa169f970d8e0`，Hive/EEST 同上
+- Hive `403 / 403` 和原生适用集 `311 / 311`：N42 `ed995d69ff4e5013ebacfac411373250df33be56`，Hive `b54317a81e9a226f5899eba2fb27f4a01ff21ffc`
+- 之后合入的 N42 `9c0ff3076` 只修改 manifest 工具和文档，不影响 Hive execution path，因此没有把早一版 Hive 证据错误标记为在该 SHA 上运行。
 
 关键本地产物：
 
-- RLP 全量日志：`tests/eth-tests/execution-spec-tests/logs/consume-rlp-20260812-071509-main.log`
-  - SHA-256: `ddab5e929579cd3c4e689c892977e8c53e1d690f381aa4c4ed56448e2217ed87`
-  - 日志内 `START TEST`、`END TEST`、`PASSED` 均为 `47,589`
-- Engine broad 摘要：`tests/results/eest-engine-full-rerun-20260802-host-retry/summary.md`
-  - SHA-256: `d4043ab64c02c98375d004d2f00511c21fa9389b3399666c1d2574e3b1070402`
-  - 该历史 runner 未把 N42 源码 SHA 写进产物，因此 Engine 结果按完成日期、EEST ref、fixture 版本和日志哈希固定，不能反推一个未记录的 N42 commit
-- Hive `engine-auth` JSON：`tests/results/hive-engine-smoke-20260731-rerun/1785481958-17cff0979259e19ee35375d7122a4203.json`
-  - SHA-256: `a430fa56e560f7ba0863121794a8345454ce17a5d7c1d22a91b0c039c783b017`
+- Engine 全量目录：`tests/results/eest-shards/20260817-latest-main-sync-full-engine-cachefix/`
+  - `summary.md` SHA-256: `575d9e5448094bdd44c327cde2d383f935b0bdaa0dcb05066c2ac26d46f73936`
+- RLP 全量目录：`tests/results/eest-shards/20260818-latest-main-sync-full-rlp-sidecarfix/`
+  - `rlp.log` SHA-256: `410287f218e2ff64e04cbee5a14320ec61878fe069230a4a9177548392eead35`
+  - `rlp.meta` SHA-256: `eabd798d3bfb759125ad976234f31577a90c992163e4debb5b7778d78c1536ba`
+  - `summary.md` SHA-256: `0867d6dd94efd531762a44d515c918a697c57dd1692cdb5902d0834d8398e722`
+- Hive eth-el 目录：`tests/results/hive-engine-ethel-all-latest-head-20260817/`
+  - 五个 suite JSON SHA-256：`769269bd43d3804326403303722edcddb73845dfa78ac590ffe6aa59d6199888`、`360d008950588d3b5cbb82d8fd5ee63a15131981a005e4f325b9d6263ceabc40`、`e333f420ad56c09fb36c0653d359a3f7aa391b27f1875ff14c64467ff3b829f6`、`f87ae9504ec6842fd975ecb16eccce1ed9f076b4470a7f016705c7918b7dc112`、`7cfce2d87767a8ac2044f4958ff7358e53d9f4994fadb3192fd9d46cc68d0df2`
+- Hive 原生适用集目录：`tests/results/hive-engine-native-applicable-latest-head-20260817/`
+  - 五个 suite JSON SHA-256：`fde706e0834b27c210b86a397a89069d11517f44c9dc07cc11bf7e534cedf3f6`、`72670a3f44737c7241a497ff5e5b89bd11e6240ee5dfd387ffee2837fcebcdef`、`6803fb7f4ee76c2780dbc148c06b7025511bb420f50d0a565dfa9f850035eed9`、`e9a9f9126051470acd5b588acc431ca4c7ab783b2223280bc8c0e9b5e7d45f43`、`f2afd081aec35bf0a2175a6cc5391bd16ee06dee9a6e78546a8ffa135917efa6`
 
 这些目录按仓库约定属于被忽略的本地测试产物，不提交大体积原始日志；本文保留结果、版本、路径和哈希，供同一测试机复核。
 
 本地复核结果：
 
-- 项目级 `make test`、`make build`、`make lint` 分开通过；这组结果代表整个 Go 项目，不等同于 EEST 的 eth-el 兼容性结果。
+- 当前 HEAD 项目门禁 `make build`、`make test-short`、`make test`、`make lint`、`go vet ./...`、`make race-core`、`go test -race -short ./...` 和 `go test ./scripts` 全部通过。日志 `tests/results/final-gates-20260819/run.log`，SHA-256 `619cda463bc322b42a85e51f931885df30aa9f9e9c6e1a3409133c753dbbb8c1`。这组结果代表整个 Go 项目，不等同于 EEST 的 eth-el 兼容性结果。
 - Hive/EEST 的 Engine API 回归使用宿主机映射端口；Hive 端在容器存活检查后重新读取端口映射，避免 Docker Desktop 端口尚未出现时回退到不可达的 `172.17.x.x`。
 - 修复了 Prague payload 校验中 intrinsic gas 与 floor data gas 同时失败时的错误优先级，并用 EEST 异常映射覆盖对应客户端错误文本。
+- EEST `e78efc220` 修复 release metadata 缓存：刷新失败时保留有效旧缓存、拒绝空 release 列表并原子替换缓存，避免并发或短暂 GitHub API 异常把缓存写成 `[]`。
+- N42 `87db38feb` 在 block-body RLP 边界拒绝带 blob sidecar 的网络传播包装，关闭了完整 RLP 初跑发现的 6 个失败；定向 6 项和随后全量 `47,589` 项均通过。
 
 与 `connect` 相关的关键判断：`tests/eth-hive` 已在本地适配中为非 `python-requests` 客户端返回 `RPCAddress`/`EngineAddress`，EEST/dev 模式通过宿主映射端口访问；容器内的原生 Hive simulator 则继续使用容器 IP。这样避免 macOS 上从宿主机直连 `172.17.x.x`，也避免 simulator Docker module 编译时依赖未发布的本地 Hive API。
 
-当前依赖版本：Hive `f28302b5`（2026-08-02），EEST `bb5ca80f`；EEST fixtures 使用 v5.4.0，stable shard 使用 `stable@latest`，Osaka Engine shard 使用 `develop@latest`。
+当前验证版本：Hive `b54317a8`，EEST `e78efc220`；EEST fixtures 使用 v5.4.0，stable shard 使用 `stable@latest`，Osaka Engine shard 使用 `develop@latest`。
 
 对应接口定义：
 
@@ -204,7 +210,7 @@ EEST 相关命令统一走 `uv run --python 3.13`。
 ./scripts/run_eest_shards.sh rlp
 ```
 
-2026-08-12 最终全量 RLP 运行使用的等价命令为：
+2026-08-18 至 19 日最终全量 RLP 运行使用的等价命令为：
 
 ```bash
 HIVE_SIMULATOR=http://127.0.0.1:3003 \
