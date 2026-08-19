@@ -14,12 +14,12 @@ Featuring Block-STM parallel execution, HotStuff-2 BFT consensus, and mobile ver
 
 **Disclaimer:** This software is currently a tech preview. We will do our best to keep it stable and avoid breaking changes, but we make no guarantees.
 
-Latest Hive/EEST validation (confirmed 2026-08-16):
+Latest Hive/EEST validation (completed 2026-08-19):
 
 - Hive `ethereum/engine` with the dedicated `eth-el` client passed all `403 / 403` cases: API `129`, auth `8`, exchange-capabilities `5`, withdrawals `35`, and Cancun `226`.
 - The main `n42` binary passed its complete applicable native Hive set, `311 / 311`: API `99`, auth `8`, exchange-capabilities `5`, withdrawals `24`, and Cancun `175`. This is a strict subset of the `eth-el` matrix: `92` Fork ID, devp2p syncing/reorg, multi-client, payload-body, and pooled-transaction P2P cases require the dedicated `eth-el` surface; there are no native-only cases.
-- EEST `consume rlp` against the complete `stable@latest` v5.4.0 fixture set passed `47,589 / 47,589`, with zero failures and zero errors (`16:16:34`, completed 2026-08-12).
-- EEST `consume engine` broad shards passed: Paris+Shanghai `3,573`, Cancun `17,783`, Prague `20,878`, Osaka `21,583`, and the access-list cross-fork shard `2,132` (completed 2026-08-02). The access-list shard overlaps the fork shards and must not be added to them as a unique-test total. A latest-revision rerun is in progress.
+- EEST `consume engine` broad shards passed on N42 `9c0ff3076`: Paris+Shanghai `3,573 / 3,573`, Cancun `17,783 / 17,783`, Prague `20,878 / 20,878`, Osaka `21,583 / 21,583`, and access-list cross-fork `2,132 / 2,132`, all with RC `0` (completed 2026-08-17). The access-list shard overlaps the fork shards and must not be added to them as a unique-test total.
+- EEST `consume rlp` passed the complete `stable@latest` v5.4.0 fixture set, `47,589 / 47,589`, with RC `0` and no failures, errors, or reruns (`10:36:15`, completed 2026-08-19 on N42 `87db38feb`).
 
 This validates the listed N42 execution-layer matrices through Hive; it does **not** claim that every simulator in the upstream Hive repository was run. Revisions, commands, artifact hashes, and exact scope boundaries are recorded in [Hive/EEST reproducibility](docs/engineering/HIVE_EEST_REPRODUCIBILITY.md).
 
