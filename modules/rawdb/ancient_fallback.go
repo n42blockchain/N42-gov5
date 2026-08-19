@@ -15,6 +15,8 @@ package rawdb
 
 import (
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/block"
@@ -175,6 +177,27 @@ func AncientSealedEnd() uint64 {
 		return 0
 	}
 	return s.SealedEnd()
+}
+
+// ErrHistoricalStatePruned is returned for a state query below the sealed
+// horizon. The changesets that answer it were sealed into aux era files and
+// dropped from hot MDBX, while AccountsHistory/StoragesHistory were kept —
+// so the history walk finds an index entry saying "changed at block X", fails
+// to find the changeset row, and falls through to the CURRENT value. Refusing
+// is the only honest answer; silently serving present-day state as historical
+// state is worse than an error.
+var ErrHistoricalStatePruned = errors.New("state history pruned below the sealed horizon")
+
+// CheckHistoricalState reports whether state as of blockNr can be answered
+// from hot MDBX. Every construction of a historical PlainState reader must
+// go through this — a gate implemented per-call-site is a gate that gets
+// missed (it was: eth_call was guarded while debug_trace* and simulate were
+// not).
+func CheckHistoricalState(blockNr uint64) error {
+	if se := AncientSealedEnd(); se > 0 && blockNr < se {
+		return fmt.Errorf("%w: block %d < %d", ErrHistoricalStatePruned, blockNr, se)
+	}
+	return nil
 }
 
 // AncientEarliestExecBlock exposes the era store's earliest available
