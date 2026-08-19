@@ -46,6 +46,7 @@ func (tx *MdbxTx) Commit() error {
 	defer tx.cleanup()
 	tx.closeCursors()
 	tx.CollectMetrics()
+	tx.logWriteProbe()
 
 	latency, err := tx.tx.Commit()
 	if err != nil {

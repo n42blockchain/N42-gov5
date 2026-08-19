@@ -92,6 +92,10 @@ type MdbxTx struct {
 	writeCount atomic.Uint64
 	readBytes  atomic.Uint64
 	writeBytes atomic.Uint64
+
+	// tableWrites is per-table write attribution, populated only while
+	// N42_WRITE_PROBE is on. See write_probe.go.
+	tableWrites *tableWrites
 }
 
 func (db *MdbxKV) Path() string     { return db.opts.path }
