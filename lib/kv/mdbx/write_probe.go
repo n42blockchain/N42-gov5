@@ -20,6 +20,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/n42blockchain/N42/log"
 )
 
 var writeProbeEnabled = func() bool {
@@ -118,7 +120,10 @@ func (tx *MdbxTx) logWriteProbe() {
 	}
 	// dirty is what MDBX will actually write; payload is what the caller
 	// handed over. Their ratio IS the write amplification, per commit.
-	tx.db.log.Info("write probe",
+	// The node logger, not tx.db.log: the mdbx wrapper carries its own
+	// lib/log/v3 logger whose output never reaches the node log file, so a
+	// probe logged through it looks like a probe that never fired.
+	log.Info("write probe",
 		"label", tx.db.opts.label,
 		"dirtyBytes", dirty,
 		"dirtyLimit", limit,
