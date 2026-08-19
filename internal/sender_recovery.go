@@ -223,6 +223,18 @@ func verifyBlockSenders(signer transaction.Signer, txs []*transaction.Transactio
 			// signature directly — nothing to forge.
 			return
 		}
+		// A declared sender with no recoverable signature material cannot be
+		// checked, and that is precisely what this gate exists to refuse —
+		// trusting it would reopen the hole. Guard explicitly: the signer
+		// dereferences V/R/S without a nil check and would PANIC here, which
+		// on the non-worker path below escapes Process and kills the node.
+		// (Legacy records whose signature lives in the unverifiable `Sign`
+		// blob land here too; they are rejected with a named cause rather
+		// than silently trusted.)
+		if v, r, sv := tx.RawSignatureValues(); v == nil || r == nil || sv == nil {
+			report(i, fmt.Errorf("tx %d declares sender %s but carries no signature values (V/R/S)", i, declared.Hex()))
+			return
+		}
 		recovered, err := transaction.RecoverSenderFromSig(signer, tx)
 		if err != nil {
 			report(i, fmt.Errorf("tx %d declares sender %s but signature does not recover: %w", i, declared.Hex(), err))
@@ -238,20 +250,33 @@ func verifyBlockSenders(signer transaction.Signer, txs []*transaction.Transactio
 		workers = 1
 	}
 	if workers < 2 {
-		for i := range txs {
-			check(i)
-		}
+		// Same panic containment as the worker branch below: a gate must be
+		// able to reject a block, never to take the process down with it.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					report(0, fmt.Errorf("sender verify panic: %v", r))
+				}
+			}()
+			for i := range txs {
+				check(i)
+			}
+		}()
 	} else {
 		done := make(chan struct{}, workers)
 		for w := 0; w < workers; w++ {
 			go func(start int) {
+				cur := start
 				defer func() {
 					if r := recover(); r != nil {
-						report(start, fmt.Errorf("sender verify panic: %v", r))
+						// cur, not start: reporting the stripe origin made
+						// every panic look like tx 0 and hid the offender.
+						report(cur, fmt.Errorf("sender verify panic: %v", r))
 					}
 					done <- struct{}{}
 				}()
 				for i := start; i < len(txs); i += workers {
+					cur = i
 					check(i)
 				}
 			}(w)

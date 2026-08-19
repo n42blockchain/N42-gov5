@@ -19,6 +19,7 @@ package state
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"sort"
 	"unsafe"
@@ -233,6 +234,32 @@ func (sdb *IntraBlockState) activeWipedSlots(addr types.Address) map[types.Hash]
 		return nil
 	}
 	return sdb.wipedStorageSlots[addr]
+}
+
+// mayHaveCachedStorage reports whether wiping addr's storage can leave a
+// stale entry behind in an EXTERNAL read cache keyed by addr|slot.
+//
+// This is a hint for cache-backed writers only, never a consensus input, and
+// it is conservative by construction — anything it cannot prove is reported
+// true:
+//
+//   - no wipe capture for addr (no RootComputer, or a reader that cannot
+//     enumerate storage) -> unknown -> true
+//   - a non-empty capture -> the address really holds persisted storage -> true
+//   - an empty capture -> the address holds no persisted storage, so nothing
+//     read-through could have cached for it; slots written earlier in THIS
+//     block remain possible, which the writer tracks on its own side.
+//
+// It exists because CreateContract fires on every plain CREATE/CREATE2 (see
+// the stateObject.created branch below), not only on the rare metamorphic
+// recreate — so a cache-backed writer that invalidates unconditionally throws
+// its whole cross-block cache away several times per block.
+func (sdb *IntraBlockState) mayHaveCachedStorage(addr types.Address) bool {
+	slots, captured := sdb.wipedStorageSlots[addr]
+	if !captured {
+		return true
+	}
+	return len(slots) > 0
 }
 
 // SetRootComputer sets a custom state root implementation (e.g., JMT).
@@ -533,17 +560,23 @@ func (sdb *IntraBlockState) ExistPure(addr types.Address) bool {
 	if obj := sdb.stateObjects[addr]; obj != nil {
 		return !obj.deleted
 	}
+	// A pending balance increment DOES constitute existence: geth's
+	// AddBalance materializes an object, so its Exist answers true for such
+	// accounts. Answering false diverged on pre-SpuriousDragon new-account
+	// gas (e.g. CALL to an address just credited by SELFDESTRUCT in the same
+	// tx). Unlike getStateObject this must NOT materialize the object — the
+	// journal entry would escape the EVM snapshot/revert boundary.
+	//
+	// Checked BEFORE the nilAccounts/DB branches, not inside nilAccounts: the
+	// first call for a never-read address falls straight through to the DB
+	// read, and answering false there while the second call (now served by
+	// nilAccounts) answers true made the gas charge depend on how many times
+	// the address had been probed.
+	if inc, has := sdb.balanceInc[addr]; has && inc.count > 0 {
+		return true
+	}
 	// Check nilAccounts cache (known non-existent).
 	if _, ok := sdb.nilAccounts[addr]; ok {
-		// Unlike getStateObject, do NOT materialize balanceInc here (no
-		// journal side effects) — but a pending balance increment DOES
-		// constitute existence: geth's AddBalance materializes an object,
-		// so its Exist answers true for such accounts. Answering false
-		// diverged on pre-SpuriousDragon new-account gas (e.g. CALL to an
-		// address just credited by SELFDESTRUCT in the same tx).
-		if inc, has := sdb.balanceInc[addr]; has && inc.count > 0 {
-			return true
-		}
 		return false
 	}
 	// Read from DB.
@@ -621,7 +654,7 @@ func (sdb *IntraBlockState) HasNonEmptyStorage(addr types.Address) bool {
 			return false
 		}
 		found := false
-		_ = enum.ForEachStorage(addr, func(slot types.Hash, value []byte) bool {
+		err := enum.ForEachStorage(addr, func(slot types.Hash, value []byte) bool {
 			for _, b := range value {
 				if b != 0 {
 					found = true
@@ -630,7 +663,21 @@ func (sdb *IntraBlockState) HasNonEmptyStorage(addr types.Address) bool {
 			}
 			return true
 		})
-		return found
+		switch {
+		case err == nil:
+			return found
+		case errors.Is(err, ErrNoStorageEnumeration):
+			// The reader declares the capability but cannot scan right now.
+			// Fall through to the probe rather than accept a silent empty
+			// enumeration as "no storage".
+		default:
+			// A real scan failure must NOT be resolved by guessing: either
+			// answer would be a consensus decision made on missing data
+			// (false lets a colliding CREATE through, true reverts a valid
+			// deploy). Fail the block instead.
+			sdb.setErrorUnsafe(err)
+			return found
+		}
 	}
 
 	// Fallback for non-enumerating readers: probe the two slots most
@@ -860,6 +907,14 @@ func (sdb *IntraBlockState) Suicide(addr types.Address) bool {
 func (sdb *IntraBlockState) getStateObject(addr types.Address) (stateObject *stateObject) {
 	// Prefer 'live' objects.
 	if obj := sdb.stateObjects[addr]; obj != nil {
+		// A live object can still owe a pending increase: reverting a
+		// balanceIncreaseTransfer un-folds the amount and clears the flag
+		// while leaving the object live. Without re-folding here the
+		// increase is lost for good — FinalizeTx/CommitBlock materialize
+		// pending increases THROUGH this function, so an early return
+		// would silently drop e.g. SELFDESTRUCT proceeds parked for an
+		// untouched beneficiary that a later reverted call happened to read.
+		sdb.foldBalanceIncrease(addr, obj)
 		return obj
 	}
 
@@ -894,13 +949,23 @@ func (sdb *IntraBlockState) getStateObject(addr types.Address) (stateObject *sta
 	return obj
 }
 
-func (sdb *IntraBlockState) setStateObject(addr types.Address, object *stateObject) {
-	if bi, ok := sdb.balanceInc[addr]; ok && !bi.transferred {
-		object.data.Balance.Add(&object.data.Balance, &bi.increase)
-		bi.transferred = true
-		a := addr
-		sdb.journal.append(balanceIncreaseTransfer{account: &a, bi: bi})
+// foldBalanceIncrease applies a still-pending balance increase onto object
+// and journals the fold so it can be undone. Idempotent: the transferred
+// flag makes a second call a no-op, and the flag is only ever cleared by
+// balanceIncreaseTransfer.revert, which also un-folds the amount.
+func (sdb *IntraBlockState) foldBalanceIncrease(addr types.Address, object *stateObject) {
+	bi, ok := sdb.balanceInc[addr]
+	if !ok || bi.transferred {
+		return
 	}
+	object.data.Balance.Add(&object.data.Balance, &bi.increase)
+	bi.transferred = true
+	a := addr
+	sdb.journal.append(balanceIncreaseTransfer{account: &a, bi: bi})
+}
+
+func (sdb *IntraBlockState) setStateObject(addr types.Address, object *stateObject) {
+	sdb.foldBalanceIncrease(addr, object)
 	sdb.stateObjects[addr] = object
 	delete(sdb.nilAccounts, addr)
 }
@@ -1030,6 +1095,20 @@ func updateAccount(policy accountWritePolicy, stateWriter StateWriter, addr type
 	return updateAccountWithWipe(policy, stateWriter, addr, stateObject, isDirty, false)
 }
 
+// createContract funnels every storage-wipe path through one place so the
+// optional cache hint always travels with the CreateContract it belongs to.
+// Writers that do not implement HintedContractCreator are unaffected.
+func createContract(stateWriter StateWriter, addr types.Address, stateObject *stateObject) error {
+	h, ok := stateWriter.(HintedContractCreator)
+	if !ok {
+		return stateWriter.CreateContract(addr)
+	}
+	mayCache := true
+	if stateObject != nil && stateObject.db != nil {
+		mayCache = stateObject.db.mayHaveCachedStorage(addr)
+	}
+	return h.CreateContractHinted(addr, mayCache)
+}
 func updateAccountWithWipe(policy accountWritePolicy, stateWriter StateWriter, addr types.Address, stateObject *stateObject, isDirty bool, needsWipe bool) error {
 	emptyRemoval := policy.shouldRemoveEmptyAccount(addr, stateObject)
 	shouldDelete := stateObject.selfdestructed || (isDirty && emptyRemoval)
@@ -1037,13 +1116,13 @@ func updateAccountWithWipe(policy accountWritePolicy, stateWriter StateWriter, a
 		if err := stateWriter.DeleteAccount(addr, &stateObject.original); err != nil {
 			return err
 		}
-		if err := stateWriter.CreateContract(addr); err != nil {
+		if err := createContract(stateWriter, addr, stateObject); err != nil {
 			return err
 		}
 		stateObject.deleted = true
 	} else if needsWipe {
 		// Wipe old storage but don't delete — account was recreated after SELFDESTRUCT.
-		if err := stateWriter.CreateContract(addr); err != nil {
+		if err := createContract(stateWriter, addr, stateObject); err != nil {
 			return err
 		}
 	}
@@ -1057,7 +1136,7 @@ func updateAccountWithWipe(policy accountWritePolicy, stateWriter StateWriter, a
 			}
 		}
 		if stateObject.created {
-			if err := stateWriter.CreateContract(addr); err != nil {
+			if err := createContract(stateWriter, addr, stateObject); err != nil {
 				return err
 			}
 		}

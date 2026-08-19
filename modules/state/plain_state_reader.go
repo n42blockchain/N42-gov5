@@ -171,12 +171,13 @@ func (r *PlainStateReader) ReadAccountCodeSize(address types.Address, codeHash t
 // 52 bytes). It mirrors PlainStateWriter.collectPreWipeSlots so the hashed-state
 // wipe and the plain-state wipe see the identical slot set. Implements
 // StorageEnumerator. The underlying db must support cursors (kv.Tx); if not
-// (e.g. a bare Getter), the scan is a no-op and the caller falls back to the
-// touched-slot set.
+// (e.g. a bare Getter), it reports ErrNoStorageEnumeration so the caller can
+// fall back — returning a nil error with zero callbacks would be read as
+// "this account has no storage at all".
 func (r *PlainStateReader) ForEachStorage(addr types.Address, f func(slot types.Hash, value []byte) bool) error {
 	cp, ok := r.db.(cursorProvider)
 	if !ok {
-		return nil
+		return ErrNoStorageEnumeration
 	}
 	cursor, err := cp.Cursor(modules.Storage)
 	if err != nil {

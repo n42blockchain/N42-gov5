@@ -170,6 +170,9 @@ func (debug *DebugAPI) traceTx(ctx context.Context, tx *transaction.Transaction,
 		if blockNum > 0 {
 			blockNum--
 		}
+		if err := rawdb.CheckHistoricalState(blockNum); err != nil {
+			return err
+		}
 		stateReader := state.NewPlainState(t, blockNum)
 		ibs = state.New(stateReader)
 		return nil
@@ -409,6 +412,9 @@ func (debug *DebugAPI) TraceCall(ctx context.Context, args TransactionArgs, bloc
 	// Get state
 	var ibs *state.IntraBlockState
 	err = debug.api.Database().View(ctx, func(t kv.Tx) error {
+		if err := rawdb.CheckHistoricalState(headerNumber.Uint64()); err != nil {
+			return err
+		}
 		stateReader := state.NewPlainState(t, headerNumber.Uint64())
 		ibs = state.New(stateReader)
 		return nil
@@ -560,6 +566,9 @@ func (s *BlockChainAPI) CreateAccessList(ctx context.Context, args TransactionAr
 		// Get fresh state for each iteration
 		var ibs *state.IntraBlockState
 		err = s.api.Database().View(ctx, func(t kv.Tx) error {
+			if err := rawdb.CheckHistoricalState(headerNumber.Uint64()); err != nil {
+				return err
+			}
 			stateReader := state.NewPlainState(t, headerNumber.Uint64())
 			ibs = state.New(stateReader)
 			return nil

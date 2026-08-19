@@ -37,6 +37,12 @@ import (
 type CachedStateWriter struct {
 	inner WriterWithChangeSets
 	cache *layered.ShardedCache
+	// wroteStorage records the addresses this writer has itself pushed
+	// storage entries into the cache for. It is the other half of the
+	// state layer's mayHaveCachedStorage hint: that hint only knows about
+	// PERSISTED storage, so a slot first written earlier in this same block
+	// would be invisible to it. Nil until the first storage write.
+	wroteStorage map[types.Address]struct{}
 }
 
 // NewCachedStateWriter creates a CachedStateWriter that wraps inner with cache.
@@ -80,6 +86,10 @@ func (w *CachedStateWriter) WriteAccountStorage(address types.Address, key types
 		return err
 	}
 	if w.cache != nil {
+		if w.wroteStorage == nil {
+			w.wroteStorage = make(map[types.Address]struct{})
+		}
+		w.wroteStorage[address] = struct{}{}
 		compositeKey := modules.PlainGenerateCompositeStorageKey(address.Bytes(), key.Bytes())
 		bl := value.ByteLen()
 		if bl == 0 {
@@ -94,15 +104,29 @@ func (w *CachedStateWriter) WriteAccountStorage(address types.Address, key types
 }
 
 func (w *CachedStateWriter) CreateContract(address types.Address) error {
-	// The inner writer wipes the address's storage rows from MDBX, but the
-	// flat read-through cache has no prefix invalidation — leaving its
-	// addr|slot entries would serve pre-wipe values after a
-	// selfdestruct/metamorphic recreate (nondeterministic per node). Drop
-	// the whole cache: CreateContract is rare (post-6780: same-tx-created
-	// or metamorphic only), so the cold refill is cheap next to the
-	// correctness hole. Mirrors the buffered writer's per-slot LRU purge.
+	return w.CreateContractHinted(address, true)
+}
+
+// CreateContractHinted implements HintedContractCreator.
+//
+// The inner writer wipes the address's storage rows from MDBX, but the flat
+// read-through cache has no prefix invalidation — leaving its addr|slot
+// entries would serve pre-wipe values after a selfdestruct/metamorphic
+// recreate (nondeterministic per node), so the whole cache is dropped.
+//
+// That drop is only skipped when it provably cannot matter. CreateContract is
+// NOT rare: updateAccountWithWipe calls it for every stateObject.created, i.e.
+// on each plain CREATE/CREATE2, several times per block — and each
+// unconditional Clear wipes the process-wide LayeredDB cache (live node) or
+// the 256x512K cross-batch replay cache, driving the hit rate to ~0. An
+// address with no persisted storage (the hint) that this writer has not
+// written storage for cannot own a single cache entry, so there is nothing to
+// invalidate.
+func (w *CachedStateWriter) CreateContractHinted(address types.Address, mayHaveCachedStorage bool) error {
 	if w.cache != nil {
-		w.cache.Clear()
+		if _, wrote := w.wroteStorage[address]; mayHaveCachedStorage || wrote {
+			w.cache.Clear()
+		}
 	}
 	return w.inner.CreateContract(address)
 }
@@ -117,3 +141,4 @@ func (w *CachedStateWriter) WriteHistory() error {
 
 // Compile-time check.
 var _ WriterWithChangeSets = (*CachedStateWriter)(nil)
+var _ HintedContractCreator = (*CachedStateWriter)(nil)
