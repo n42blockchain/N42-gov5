@@ -92,8 +92,44 @@ func encodeSparseLeaves(nodes *[2 * TwigSize]Hash) []byte {
 	return out
 }
 
+// decodeSparseLeavesInto expands a sparse blob straight into the leaf half of
+// a node heap. It exists to keep the boot path from allocating: the caller
+// used to take a TwigSize*32 byte slice from decodeSparseLeaves and then copy
+// 2048 hashes out of it, so every twig loaded cost a 64 KiB temporary that was
+// garbage the moment the copy finished. Across a 36k-twig forest that alone
+// was 4.5 GB of boot-time allocation.
+//
+// Reports whether the blob was well-formed; leaves dst untouched otherwise.
+func decodeSparseLeavesInto(v []byte, dst *[2 * TwigSize]Hash) bool {
+	if len(v) < 2+leavesBitmapLen || v[0] != sparseLeavesMarker || v[1] != sparseLeavesVersion {
+		return false
+	}
+	bitmap := v[2 : 2+leavesBitmapLen]
+	p := v[2+leavesBitmapLen:]
+	// Validate before writing: a truncated blob must not leave half a twig
+	// hydrated, because the caller treats a false return as "fall back to the
+	// entry log" and would otherwise mix the two.
+	need := 0
+	for _, b := range bitmap {
+		need += popcount8(b)
+	}
+	if len(p) != need*32 {
+		return false
+	}
+	for i := 0; i < TwigSize; i++ {
+		if bitmap[i/8]&(1<<uint(i%8)) == 0 {
+			continue
+		}
+		copy(dst[TwigSize+i][:], p[:32])
+		p = p[32:]
+	}
+	return true
+}
+
 // decodeSparseLeaves expands a sparse blob to the raw TwigSize*32 layout.
-// Returns nil if the blob is malformed.
+// Returns nil if the blob is malformed. Kept for the LeafStore interface,
+// whose other implementations hand back raw blobs; the boot path uses
+// decodeSparseLeavesInto instead.
 func decodeSparseLeaves(v []byte) []byte {
 	if len(v) < 2+leavesBitmapLen || v[0] != sparseLeavesMarker || v[1] != sparseLeavesVersion {
 		return nil
@@ -135,6 +171,27 @@ func (l leafStoreGetter) Leaves(id int) ([]byte, bool) {
 	return nil, false
 }
 
+// LeafStoreInto is an optional LeafStore extension: hydrate a twig's node
+// heap in place. A LeafStore that cannot avoid materializing a blob simply
+// does not implement it and the caller copies as before.
+type LeafStoreInto interface {
+	LeavesInto(id int, dst *[2 * TwigSize]Hash) bool
+}
+
+// LeavesInto implements LeafStoreInto.
+func (l leafStoreGetter) LeavesInto(id int, dst *[2 * TwigSize]Hash) bool {
+	v, err := l.g.GetOne(LeavesTable, be8(uint64(id)))
+	if err != nil || len(v) == 0 {
+		return false
+	}
+	if len(v) == TwigSize*32 { // raw legacy blob
+		for i := 0; i < TwigSize; i++ {
+			copy(dst[TwigSize+i][:], v[i*32:(i+1)*32])
+		}
+		return true
+	}
+	return decodeSparseLeavesInto(v, dst)
+}
 // LeafStoreFromGetter wraps a Getter (kv.Tx / map store) as a LeafStore.
 func LeafStoreFromGetter(g Getter) LeafStore { return leafStoreGetter{g} }
 
@@ -463,8 +520,11 @@ func (t *Tree) loadFrom(g Getter, trustedThrough uint64) error {
 	// Build twig-by-twig and evict each sealed twig's leaves as soon as its root is
 	// computed, so at most one twig's leaves (+ the active twig) are resident at a
 	// time — the reload itself is memory-bounded, not O(history).
+	// One node heap for every sealed twig in the forest: each frees its own
+	// again right after recompute, so per-twig allocation was pure garbage.
+	scratch := new([2 * TwigSize]Hash)
 	for id := 0; id < numTwigs; id++ {
-		if err := t.loadTwigFrom(g, id, nextSlot, trustedThrough, activeTwig, nil); err != nil {
+		if err := t.loadTwigFrom(g, id, nextSlot, trustedThrough, activeTwig, nil, scratch); err != nil {
 			return err
 		}
 	}
@@ -502,8 +562,14 @@ func (t *Tree) loadFrom(g Getter, trustedThrough uint64) error {
 // caller can observe which key each new slot overwrites. The incremental reload
 // uses it to discover the pre-boundary slots the new appends killed; every other
 // caller passes nil and pays nothing.
+// scratch is a node heap the caller owns and reuses across twigs. Every twig
+// below activeTwig frees its array again a few lines after recompute (sealed
+// twigs keep only their roots), so allocating one per twig meant handing the
+// collector 128 KiB per twig -- 4.7 GB over a 36k-twig forest, all of it dead
+// on arrival. Only the active twig, which keeps its array, gets a fresh one.
+// Pass nil to allocate per twig (tests, single-twig callers).
 func (t *Tree) loadTwigFrom(g Getter, id int, nextSlot, trustedThrough uint64, activeTwig int,
-	onScanned func(slot uint64, kh Hash, ok bool)) error {
+	onScanned func(slot uint64, kh Hash, ok bool), scratch *[2 * TwigSize]Hash) error {
 	// Start BARE: the fast path below never needs a node heap, and the slow path
 	// recomputes every internal node from the leaves anyway.
 	tw := newBareTwig()
@@ -546,12 +612,24 @@ func (t *Tree) loadTwigFrom(g Getter, id int, nextSlot, trustedThrough uint64, a
 	// Slow path: materialize the leaf tree. Prefer the persisted blob (it
 	// carries dead slots' frozen leaves, whose entry rows may be deleted);
 	// fall back to the entry log.
-	tw.nodes = new([2 * TwigSize]Hash) // zero-fill = null leaves; recompute rebuilds the rest
+	// zero-fill = null leaves; recompute rebuilds the rest
+	if scratch != nil && id < activeTwig {
+		clear(scratch[:]) // reused buffer: the zero-fill is load-bearing
+		tw.nodes = scratch
+	} else {
+		tw.nodes = new([2 * TwigSize]Hash)
+	}
 	hydrated := false
 	if t.leafStore == nil {
 		t.leafStore = LeafStoreFromGetter(g)
 	}
-	if blob, ok := t.leafStore.Leaves(id); ok && len(blob) == TwigSize*32 {
+	// The leaf store stays the authority on where leaves come from -- a caller
+	// may have pointed it somewhere other than g. LeafStoreInto only changes
+	// HOW the same bytes land: straight into the node heap instead of through
+	// a TwigSize*32 temporary that is garbage as soon as it is copied out.
+	if li, ok := t.leafStore.(LeafStoreInto); ok {
+		hydrated = li.LeavesInto(id, tw.nodes)
+	} else if blob, ok := t.leafStore.Leaves(id); ok && len(blob) == TwigSize*32 {
 		for i := 0; i < TwigSize; i++ {
 			copy(tw.nodes[TwigSize+i][:], blob[i*32:(i+1)*32])
 		}
@@ -595,6 +673,9 @@ func (t *Tree) loadTwigFrom(g Getter, id int, nextSlot, trustedThrough uint64, a
 	}
 	tw.recompute() // one full rebuild from the bulk-written leaves
 	if haveMeta && tw.root != storedRoot {
+		// Detach before returning: on the shared-scratch path this twig would
+		// otherwise alias a buffer the next twig is about to overwrite.
+		tw.nodes = nil
 		return errTwigMetaInconsistent
 	}
 	if id < activeTwig {

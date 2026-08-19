@@ -176,8 +176,12 @@ func (t *Tree) loadIncremental(g Getter, prev uint64) error {
 		copy(grown, t.twigs)
 		t.twigs = grown
 	}
+	var scratch *[2 * TwigSize]Hash
+	if numTwigs-reloadFrom > 1 {
+		scratch = new([2 * TwigSize]Hash)
+	}
 	for id := reloadFrom; id < numTwigs; id++ {
-		if err := t.loadTwigFrom(g, id, next, prev, activeTwig, onScanned); err != nil {
+		if err := t.loadTwigFrom(g, id, next, prev, activeTwig, onScanned, scratch); err != nil {
 			return err
 		}
 		t.markUpperDirty(id)
