@@ -190,6 +190,36 @@ func TestScheduler_EmptyBlock(t *testing.T) {
 	}
 }
 
+func TestScheduler_RecoversQuiescentExecutionFrontier(t *testing.T) {
+	s := NewScheduler(3)
+	s.executionIdx.Store(3)
+	s.validationIdx.Store(3)
+	s.status[0] = TxStatusCommitted
+	s.status[1] = TxStatusCommitted
+	s.status[2] = TxStatusAborting
+	s.numCommitted.Store(2)
+
+	task := s.NextTask()
+	if task.Kind != TaskExecute || task.TxIdx != 2 {
+		t.Fatalf("expected recovered Execute(2), got %+v", task)
+	}
+}
+
+func TestScheduler_RecoversQuiescentValidationFrontier(t *testing.T) {
+	s := NewScheduler(3)
+	s.executionIdx.Store(3)
+	s.validationIdx.Store(3)
+	s.status[0] = TxStatusCommitted
+	s.status[1] = TxStatusCommitted
+	s.status[2] = TxStatusExecuted
+	s.numCommitted.Store(2)
+
+	task := s.NextTask()
+	if task.Kind != TaskValidate || task.TxIdx != 2 {
+		t.Fatalf("expected recovered Validate(2), got %+v", task)
+	}
+}
+
 func TestScheduler_ValidationPriority(t *testing.T) {
 	// When both execution and validation are available, scheduler
 	// should prefer validation (progress unlocks downstream work).
