@@ -1067,6 +1067,35 @@ func (bc *BlockChain) canonicalByCommitOnly() bool {
 // rewriting the canonical number→hash mapping until it reaches an ancestor that
 // is already canonical, then updates the head pointers.
 func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
+	return bc.CommitToCanonicalWith(hash, nil)
+}
+
+// CommitToCanonicalWith is CommitToCanonical with an optional hook run INSIDE
+// the canonicalization transaction, after the canonical rows and head pointers
+// are written.
+//
+// It exists because the consensus layer used to persist its state in a write
+// transaction of its own, immediately after this one. Two transactions per
+// committed block, and a profile at the 480M tier showed mdbx_txn_begin for
+// WRITE transactions costing 20.4% of all node CPU -- more than the page
+// writes themselves -- because MDBX has a single writer and charges txn_begin
+// in proportion to freelist pressure. The consensus write carried 415 bytes
+// and dirtied 16 KB; the head-pointer write carried 176 bytes and dirtied
+// 36 KB. Folding one into the other removes a whole transaction per block.
+//
+// It also closes a crash window: canonical head and consensus state now move
+// together. A crash between the two transactions left a node whose persisted
+// view/lock did not match its applied chain -- exactly the restart failure the
+// persistence code documents.
+//
+// The hook MUST NOT call back into anything that takes a lock the caller could
+// already hold: it runs while this goroutine owns the MDBX writer, so blocking
+// on a mutex whose holder is waiting for the writer deadlocks the node. Resolve
+// every value the hook needs BEFORE calling. A hook error is logged and
+// swallowed, never propagated: canonicalization must not fail because a
+// bookkeeping write did, which is exactly what the separate transaction
+// guaranteed before.
+func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) error) error {
 	var committedNumber uint64
 	var notify bool
 	var committedBlk *block.Block
@@ -1234,6 +1263,12 @@ func (bc *BlockChain) CommitToCanonical(hash types.Hash) error {
 		committedNumber = blk.Number64().Uint64()
 		committedBlk = blk
 		notify = true
+		if inTx != nil {
+			if herr := inTx(tx); herr != nil {
+				log.Warn("commit-to-canonical: in-transaction hook failed",
+					"number", committedNumber, "err", herr)
+			}
+		}
 		return nil
 	})
 	if err != nil {
