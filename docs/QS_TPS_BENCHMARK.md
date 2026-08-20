@@ -154,21 +154,20 @@ position gave 12,186 / 11,805 / 11,807 at 52.5-53.4% — identical to
    oscillation; a spread of partial blocks is a genuine supply shortfall.
    They produce similar occupancy and mean completely different things.
 
-8. **The faucet does not survive a round the way rule 4 implies.** Rule 4 says
-   funding costs `senders x (pertx + 10) x 21000 x gasPrice` — about 1,896 ETH
-   at the standard settings — and to check the faucet first. Both are true and
-   both were satisfied on 2026-08-20, with 943,178 ETH in the faucet. One round
-   still took it to **zero**: `txflood` sizes funding against the available
-   balance rather than against that formula, so a fat faucet is drained, not
-   sipped. The next round then dies in its funding phase with
-   `insufficient funds for gas * price + value` on nearly every transaction —
-   150,000 submitted, 8,850,000 failed — and every window it reports afterwards
-   is measuring an idle chain.
+8. **A round started while the baseFee sits above the flood's gasprice dies
+   in its FUNDING phase**, not just in its measured windows. The senders never
+   get funded, and then every transaction fails with
+   `insufficient funds for gas * price + value` — 150,000 submitted, 8,850,000
+   failed on 2026-08-20 — while the windows dutifully report an idle chain. It
+   is rules 6/7 again, one phase earlier. Check the baseFee before starting,
+   not just the faucet.
 
-   Check the faucet **after** a round as well as before, and remember it only
-   refills at `devBlockReward` per block (about 1,800 ETH/hour at 2 s blocks),
-   which needs roughly an hour of block production to fund one more round.
-   A profile pulled during such a round shows 0.3% CPU, which is the tell.
+   Do NOT diagnose this as a drained faucet without checking twice. The first
+   reading that afternoon said the faucet held 0 ETH; it actually held 939,800.
+   `eth_getBalance` at `latest` against a node whose consensus is wedged can
+   return 0 rather than an error, and that false zero sent a whole diagnosis
+   down the wrong path.
+
 
 ## What the chain actually spends its CPU on (2026-08-19, under load)
 
@@ -282,6 +281,50 @@ separate `persistState` transaction is gone. Per-block byte counts are NOT
 comparable across sessions: they move with freelist state, which differs
 between runs.
 
-**Not yet verified:** whether `BeginRw`'s 20.4% CPU share actually dropped.
-The profiling round for it was invalidated by the drained faucet (rule 8) and
-has to be repeated once the faucet refills.
+**Still not verified:** whether `BeginRw`'s 20.4% CPU share actually dropped.
+Two attempts failed for different reasons — the first round died in its
+funding phase (rule 8), and in the second the 30 s profile landed on the
+pool-admission phase rather than block execution: `secp256k1` was 73% of
+cgocall while `cursor_put` was 0.08%, i.e. the node was verifying incoming
+transactions, not writing blocks. A valid comparison has to be taken inside a
+steady 100%-occupancy window on both binaries; profile placement matters as
+much as round placement.
+
+## Wedge recovery (2026-08-20)
+
+A round that dies mid-flight can leave the fleet locked on a block nobody
+has. Signature: every node at the same height and the same view, views
+advancing only by 30 s timeouts, and the leader logging
+`Sealed block lost to a competing candidate; dropping` at head+2.
+
+`hotstuff-inspect --datadir <node>/chaindata` (note: **chaindata**, not the
+datadir root) shows it plainly:
+
+```
+view=162846 timeouts=188 journal=193
+lockedQC=162653/ec0a6b117f63   committedQC=162652/947870d1bd6f
+lastVoted=162653/ec0a6b117f63  lastCommitVoted=162653/ec0a6b117f63
+```
+
+All seven nodes voted, commit-voted and locked block `ec0a6b117f63`, whose
+body exists in no node's database — `eth_getBlockByNumber` returns null for
+that height everywhere. The leader correctly extends the LockedQC block per
+HotStuff-2's safety rule, so it builds head+2 forever and no follower can
+validate a parent it does not have. The node's own startup check
+("persisted consensus state agrees with the applied chain") passes, because
+the persisted state IS consistent — it is the locked block that is missing.
+
+This is the documented tradeoff of `consensus votes will not wait for block
+persistence`, logged at startup: a stop between locking and persisting loses
+the body.
+
+Recovery, with the fleet stopped and every node showing the same committedQC:
+
+```
+hotstuff-reset --datadir E:\qs-node<i>\chaindata --apply --force                --backup <fresh-file>
+```
+
+It clears the round/vote journal (410 bytes), which removes the crash-time
+no-equivocation guard, so it is only valid after a coordinated stop where the
+applied chain has been verified identical across nodes. The tool enforces an
+exclusive fsynced backup. Blocks resumed at 2 s immediately on restart.
