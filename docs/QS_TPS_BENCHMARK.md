@@ -260,11 +260,14 @@ the full tier.
 | `v955` | first after idle | **22,093** | 17,520 | 18,660 | 100% (all full) | **1.035 s** |
 | `v954` | first after idle | 20,565 | 19,424 | 19,805 | 100% (all full) | 1.111 s |
 
-Like-for-like — same position, same load, both at 100% occupancy carrying the
-full 22,857 transactions per block — the block cycle drops from 1.111 s to
-1.035 s, **6.8%**. Window 1 also matches the 2026-08-16 record of 22,089, but
-at 100% occupancy where the record was at 95.1%, i.e. more work per block for
-the same throughput.
+That single-window comparison looked like a 6.8% gain. **It was noise.**
+Repeating the same v955 round twice more, in the same first-after-idle
+position and also at 100% occupancy, gave 20,142 @ 1.132 s and 19,743 @
+1.154 s. The v954 number sits inside that spread, and a v954 round run later
+the same night produced 20,569 @ 1.111 s — within 0.02% of its earlier
+20,565. **Run-to-run spread on this rig exceeds the difference between the
+two binaries**, so a single window cannot separate them. Report at least
+three runs per binary before claiming a throughput difference.
 
 The structural change is confirmed independently by the write probe on the
 light production load, 283 write transactions over 71 blocks:
@@ -281,14 +284,32 @@ separate `persistState` transaction is gone. Per-block byte counts are NOT
 comparable across sessions: they move with freelist state, which differs
 between runs.
 
-**Still not verified:** whether `BeginRw`'s 20.4% CPU share actually dropped.
-Two attempts failed for different reasons — the first round died in its
-funding phase (rule 8), and in the second the 30 s profile landed on the
-pool-admission phase rather than block execution: `secp256k1` was 73% of
-cgocall while `cursor_put` was 0.08%, i.e. the node was verifying incoming
-transactions, not writing blocks. A valid comparison has to be taken inside a
-steady 100%-occupancy window on both binaries; profile placement matters as
-much as round placement.
+**Verified, and the answer is no.** Two rounds run back to back with an
+identical procedure — same pool, same offset spacing, both started from a
+decayed baseFee, and the profile triggered by the CHAIN (four consecutive
+blocks at >=95% occupancy) rather than by a log line:
+
+| | v954, 28 blocks sampled | v955, 27 blocks sampled |
+|---|---|---|
+| total CPU | 281.0% | 273.5% |
+| `secp256k1_ext_ecdsa_recover` | 34.18% | 33.44% |
+| **`mdbx_txn_begin`** | **4.95%** | **4.95%** |
+| `mdbxgo_txn_commit_ex` | 0.84% | 1.50% |
+
+Per block, `mdbx_txn_begin` costs 149 ms on v954 and 150 ms on v955. Removing
+one write transaction per block changed nothing measurable.
+
+And note what else this says: **the 20.4% figure from 2026-08-19 does not
+reproduce.** Both binaries sit near 5% today. That number was a property of
+that particular run's database state — freelist pressure at the time — not a
+standing cost of the node. A profile taken once is a description of one
+moment on one database, and cost attribution drawn from it should be checked
+against a second run before anything is built on it.
+
+The change stays in regardless: folding the consensus write into the
+canonicalization transaction makes canonical head and consensus state move
+atomically, which closes a real crash window. It is a correctness change that
+happens to be performance-neutral, and it should be described that way.
 
 ## Wedge recovery (2026-08-20)
 
