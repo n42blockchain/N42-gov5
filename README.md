@@ -21,6 +21,8 @@ Latest Hive/EEST validation (completed 2026-08-20):
 - EEST `consume engine` broad shards passed on N42 `36822b5c5`: Paris+Shanghai `3,573 / 3,573`, Cancun `17,783 / 17,783`, Prague `20,878 / 20,878`, Osaka `21,583 / 21,583`, and access-list cross-fork `2,132 / 2,132`, all with RC `0` (completed 2026-08-19). The access-list shard overlaps the fork shards and must not be added to them as a unique-test total.
 - EEST `consume rlp` passed the complete `stable@latest` v5.4.0 fixture set on the same N42 revision, `47,589 / 47,589`, with RC `0` and no failures, errors, or reruns (`11:30:32`, completed 2026-08-20).
 
+The complete Hive/EEST matrix above was executed at N42 `36822b5c5`. The later code revision `520fede6f` includes the next ten upstream `main` commits plus MDBX logging and Block-STM scheduler fixes, and passes the complete project build, unit, lint, vet, and race gates. That reviewed delta does not change the dedicated eth-el Engine API, EVM, or RLP decoder packages; however, the roughly 26-hour Hive/EEST matrix was not repeated at `520fede6f`, so the two revisions are recorded separately rather than overstating the evidence.
+
 This validates the listed N42 execution-layer matrices through Hive; it does **not** claim that every simulator in the upstream Hive repository was run. Revisions, commands, artifact hashes, and exact scope boundaries are recorded in [Hive/EEST reproducibility](docs/engineering/HIVE_EEST_REPRODUCIBILITY.md).
 
 ## Key Features

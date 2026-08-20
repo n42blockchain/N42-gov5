@@ -26,7 +26,7 @@ and P2P syncing scenarios that require `eth-el` are reported separately.
 
 See: README.md, docs/DEVLOG.md, docs/GAP.md
 
-The final revision was N42 `36822b5c5` for both Engine and RLP, with Hive
+The complete-matrix revision was N42 `36822b5c5` for both Engine and RLP, with Hive
 `b54317a8` and EEST `e78efc220`. The Engine run took 44:00, 3:45:27,
 4:27:11, 4:34:31, and 26:57 by shard; the complete RLP run took 11:30:32.
 The initial RLP run exposed six cases where a blob network wrapper was accepted
@@ -34,6 +34,13 @@ inside block-body RLP. N42 `87db38feb` rejects sidecars at that boundary; the
 six targeted cases and the complete rerun passed. EEST `e78efc220` also makes
 release metadata cache refresh atomic and preserves a valid stale cache when
 the remote refresh fails.
+
+After that matrix completed, N42 incorporated ten newer `main` commits and two
+local fixes. Code revision `520fede6f` passes `make build`, short and full unit
+tests, lint, vet, core race tests, full `go test -race -short ./...`, and script
+tests. No dedicated eth-el Engine API, EVM, or RLP decoder package changed in
+the reviewed delta. The complete Hive/EEST matrix was not rerun at that newer
+revision, so `36822b5c5` remains the exact compatibility-evidence revision.
 
 ---
 
