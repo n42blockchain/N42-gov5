@@ -20,8 +20,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-
-	"github.com/n42blockchain/N42/log"
 )
 
 var writeProbeEnabled = func() bool {
@@ -29,8 +27,25 @@ var writeProbeEnabled = func() bool {
 	return v
 }()
 
+var writeProbeLogger = struct {
+	sync.RWMutex
+	log func(string, ...interface{})
+}{log: func(string, ...interface{}) {}}
+
 // WriteProbeEnabled reports whether per-commit write attribution is on.
 func WriteProbeEnabled() bool { return writeProbeEnabled }
+
+// SetWriteProbeLogger supplies the application logger used by the optional
+// write probe. Keeping the callback at the application boundary prevents the
+// storage package from depending on the node's top-level logging package.
+func SetWriteProbeLogger(logger func(string, ...interface{})) {
+	if logger == nil {
+		logger = func(string, ...interface{}) {}
+	}
+	writeProbeLogger.Lock()
+	writeProbeLogger.log = logger
+	writeProbeLogger.Unlock()
+}
 
 type tableWrites struct {
 	mu   sync.Mutex
@@ -120,10 +135,12 @@ func (tx *MdbxTx) logWriteProbe() {
 	}
 	// dirty is what MDBX will actually write; payload is what the caller
 	// handed over. Their ratio IS the write amplification, per commit.
-	// The node logger, not tx.db.log: the mdbx wrapper carries its own
-	// lib/log/v3 logger whose output never reaches the node log file, so a
-	// probe logged through it looks like a probe that never fired.
-	log.Info("write probe",
+	// The application injects the node logger because the mdbx wrapper's own
+	// lib/log/v3 logger does not reach the node log file.
+	writeProbeLogger.RLock()
+	logger := writeProbeLogger.log
+	writeProbeLogger.RUnlock()
+	logger("write probe",
 		"label", tx.db.opts.label,
 		"dirtyBytes", dirty,
 		"dirtyLimit", limit,
