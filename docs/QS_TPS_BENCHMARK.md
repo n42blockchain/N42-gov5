@@ -154,6 +154,22 @@ position gave 12,186 / 11,805 / 11,807 at 52.5-53.4% — identical to
    oscillation; a spread of partial blocks is a genuine supply shortfall.
    They produce similar occupancy and mean completely different things.
 
+8. **The faucet does not survive a round the way rule 4 implies.** Rule 4 says
+   funding costs `senders x (pertx + 10) x 21000 x gasPrice` — about 1,896 ETH
+   at the standard settings — and to check the faucet first. Both are true and
+   both were satisfied on 2026-08-20, with 943,178 ETH in the faucet. One round
+   still took it to **zero**: `txflood` sizes funding against the available
+   balance rather than against that formula, so a fat faucet is drained, not
+   sipped. The next round then dies in its funding phase with
+   `insufficient funds for gas * price + value` on nearly every transaction —
+   150,000 submitted, 8,850,000 failed — and every window it reports afterwards
+   is measuring an idle chain.
+
+   Check the faucet **after** a round as well as before, and remember it only
+   refills at `devBlockReward` per block (about 1,800 ETH/hour at 2 s blocks),
+   which needs roughly an hour of block production to fund one more round.
+   A profile pulled during such a round shows 0.3% CPU, which is the tell.
+
 ## What the chain actually spends its CPU on (2026-08-19, under load)
 
 30 s CPU profile on a node at the 480M tier, 22,857 tx blocks, shard-senders
@@ -237,3 +253,35 @@ TPS and is slightly ahead on block time.
 
 At 100% occupancy a block carries **22,857 transactions / 480M gas**, which is
 the full tier.
+
+### 2026-08-20: v5.7.955 (consensus state folded into the canonicalization tx)
+
+| Round | Position | win1 | win2 | win3 | occupancy | cycle |
+|---|---|---|---|---|---|---|
+| `v955` | first after idle | **22,093** | 17,520 | 18,660 | 100% (all full) | **1.035 s** |
+| `v954` | first after idle | 20,565 | 19,424 | 19,805 | 100% (all full) | 1.111 s |
+
+Like-for-like — same position, same load, both at 100% occupancy carrying the
+full 22,857 transactions per block — the block cycle drops from 1.111 s to
+1.035 s, **6.8%**. Window 1 also matches the 2026-08-16 record of 22,089, but
+at 100% occupancy where the record was at 95.1%, i.e. more work per block for
+the same throughput.
+
+The structural change is confirmed independently by the write probe on the
+light production load, 283 write transactions over 71 blocks:
+
+| Transaction class | v955 tx/block | v954 tx/block |
+|---|---|---|
+| main block commit | 1.00 | 1.00 |
+| canonicalization **carrying consensus state** | 0.99 | 0.95 (state not included) |
+| `HotStuffState` alone (the two vote barriers) | **1.99** | 2.32 |
+
+1.99 is exactly the two `JournalVote` durability barriers HotStuff-2 needs
+(prepare vote and commit vote), and 0.99 is the one canonicalization — the
+separate `persistState` transaction is gone. Per-block byte counts are NOT
+comparable across sessions: they move with freelist state, which differs
+between runs.
+
+**Not yet verified:** whether `BeginRw`'s 20.4% CPU share actually dropped.
+The profiling round for it was invalidated by the drained faucet (rule 8) and
+has to be repeated once the faucet refills.
