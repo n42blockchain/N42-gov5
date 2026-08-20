@@ -112,6 +112,100 @@ cold-follower path, broadcast measures the warm one. Say which you used.
 5. **Read occupancy, not just TPS.** Fast empty blocks and slow full
    blocks both produce mid-range TPS for completely different reasons.
 
+## The hidden fifth variable: baseFee carry-over between rounds
+
+Found 2026-08-19, after two A/B rounds produced a difference that turned out
+not to exist.
+
+The flood submits at a fixed `-gasprice`. The chain's baseFee is **chain
+state**, so it survives the round: a round that ran full 480M blocks leaves
+the baseFee near or above the flood's cap, and the *next* round starts
+squeezed. The signature is unmistakable once you look for it — blocks
+alternate full/empty and occupancy pins at ~53%:
+
+```
+block 14481189  baseFee= 9.270 gwei  480.0M/480M (100%)  22,857 txs
+block 14481190  baseFee=10.429 gwei    0.0M/480M (  0%)        0 txs   <- above the 10 gwei cap
+block 14481191  baseFee= 9.126 gwei  480.0M/480M (100%)  22,857 txs
+block 14481192  baseFee=10.266 gwei    0.0M/480M (  0%)        0 txs
+```
+
+A full block raises baseFee 12.5% (target is half of a 480M limit), which
+lifts it over the cap; the resulting empty block drops it back under. So
+`occupancy ~53%` and `full(>=95%) ~= blocks/2` is **not** a supply problem
+and **not** a chain limit — it is the fee market oscillating across the
+flood's own price cap.
+
+**What this cost:** a round on `v5.7.954` right after an idle fleet reported
+20,565 / 19,424 / 19,805 TPS at 100% occupancy; two rounds on `v5.7.952`
+immediately after reported ~12,000 at 53%. That reads as a 40% regression in
+the older binary. It is not: running `v5.7.954` again in the same late
+position gave 12,186 / 11,805 / 11,807 at 52.5-53.4% — identical to
+`v5.7.952`, with a marginally *better* block time (0.984 s vs 1.017 s).
+
+**Rules:**
+
+6. **Round order is a variable. Randomise it or neutralise it.** Only the
+   first round after a long idle period sees a low baseFee. Either compare
+   binaries in the same position, or let the chain idle until the baseFee
+   decays, or raise `-gasprice` far enough that the cap never binds (and
+   then re-check the faucet arithmetic, which scales with it).
+7. **Report `full(>=95%)` alongside occupancy.** `blocks/2` is the fee
+   oscillation; a spread of partial blocks is a genuine supply shortfall.
+   They produce similar occupancy and mean completely different things.
+
+8. **A round started while the baseFee sits above the flood's gasprice dies
+   in its FUNDING phase**, not just in its measured windows. The senders never
+   get funded, and then every transaction fails with
+   `insufficient funds for gas * price + value` — 150,000 submitted, 8,850,000
+   failed on 2026-08-20 — while the windows dutifully report an idle chain. It
+   is rules 6/7 again, one phase earlier. Check the baseFee before starting,
+   not just the faucet.
+
+   Do NOT diagnose this as a drained faucet without checking twice. The first
+   reading that afternoon said the faucet held 0 ETH; it actually held 939,800.
+   `eth_getBalance` at `latest` against a node whose consensus is wedged can
+   return 0 rather than an error, and that false zero sent a whole diagnosis
+   down the wrong path.
+
+
+## What the chain actually spends its CPU on (2026-08-19, under load)
+
+30 s CPU profile on a node at the 480M tier, 22,857 tx blocks, shard-senders
+(cold-follower path). Total samples 132.89 s in 30 s wall = **442.94%**, i.e.
+~4.4 of the 5 threads `--pprof.maxcpu 5` allows. `runtime.cgocall` alone is
+**70.8%** of all CPU; broken down by what it calls:
+
+| Callee | % of all CPU | Reading |
+|---|---|---|
+| `secp256k1_ext_ecdsa_recover` | **30.7%** | 22,857 signature recoveries per block. Warming the pools (`-broadcast`) is the documented lever. |
+| **`mdbx_txn_begin` (write)** | **20.4%** | Anomalous. Opening a write transaction costs 2.7x the work done inside `CommitToCanonical` and ~3x `cursor_put`. |
+| `mdbxgo_cursor_put2` | 7.4% | The actual page writes. |
+| `mdbx_txn_begin` (read) | 6.5% | One RoTx per `View`; reusable. |
+| `mdbxgo_txn_commit_ex` | 4.2% | |
+| `keccakF1600` | 2.0% | |
+| blst (BLS aggregate/verify) | 0.1% | Consensus signatures are not a cost at this tier. |
+
+The write-transaction-begin number is the finding. MDBX has a single writer
+and `mdbx_txn_begin` processes the GC/freelist, so it is charged in
+proportion to freelist pressure — and the same day's write-attribution run
+measured 98% of the write volume as copy-on-write churn. **The write
+amplification and the transaction-begin cost are the same problem seen from
+two ends**, which also means every extra small write transaction (the
+consensus-state writes at 2.3 per block, the head-pointer write at 1 per
+block) pays this tax on top of its own 39x / 207x amplification.
+
+Contention, same run: the RPC batch-submit path (`BatchRawTransaction`) and
+the block-import path (`InsertChain`) each account for ~11% of total mutex
+delay, apparently on the same lock.
+
+**Caveat on the method:** the `--pprof.mutex` / `--pprof.block` flags
+themselves are free — a round with them on measured 12,184 / 11,422 / 11,425
+against 12,186 / 11,805 / 11,807 with them off. *Pulling* a profile is not
+free: the two windows during which a 30 s CPU profile plus heap, mutex and
+block dumps were fetched dropped from ~11,800 to 9,903 and 8,759 TPS. Fetch
+profiles outside the measured windows, or discard those windows.
+
 ## 2026-08-16 results
 
 Binary `v5.7.952` (all round-1/round-2 audit fixes), 7 nodes, 480M tier,
@@ -135,3 +229,102 @@ against the gate build's 8,759 / 6,855 / 6,475 — the gate costs nothing
 measurable at the system level. It does not even engage on this path:
 `txflood` submits Ethereum RLP, which carries no `From`, so both builds
 recover every sender anyway.
+
+## 2026-08-19 results
+
+Binary `v5.7.954` (round-3 audit fixes + txindex segment reopen + QMDB load
+allocation fix), same rig, same 480M tier, pool 300k/100k, shard-senders.
+
+| Round | Position | win1 | win2 | win3 | occupancy | cycle |
+|---|---|---|---|---|---|---|
+| `v954` | first after idle | **20,565** | **19,424** | **19,805** | 100% (54/54 full) | 1.11-1.18 s |
+| `v952` | second | 12,186 | 12,187 | 11,807 | 54.2% | 1.017 s |
+| `v952` | third | 11,807 | 11,427 | 11,805 | 52.5% | 1.017-1.053 s |
+| `v954` | fourth | 12,186 | 11,805 | 11,807 | 52.5-53.4% | **0.984 s** |
+
+Read the first row against the 2026-08-16 record (22,089 / 12,189 / 12,189,
+occupancy 95.1% falling to 52%): the peak window is 6.9% lower, but all three
+windows held full blocks where the record collapsed after window 1 — a
+three-window mean of 19,931 against 15,489, **+28.7%**. Rows two to four are
+the baseFee carry-over described above, not a binary difference; the like-for-
+like comparison is row three against row four, where `v954` matches `v952` on
+TPS and is slightly ahead on block time.
+
+At 100% occupancy a block carries **22,857 transactions / 480M gas**, which is
+the full tier.
+
+### 2026-08-20: v5.7.955 (consensus state folded into the canonicalization tx)
+
+| Round | Position | win1 | win2 | win3 | occupancy | cycle |
+|---|---|---|---|---|---|---|
+| `v955` | first after idle | **22,093** | 17,520 | 18,660 | 100% (all full) | **1.035 s** |
+| `v954` | first after idle | 20,565 | 19,424 | 19,805 | 100% (all full) | 1.111 s |
+
+Like-for-like — same position, same load, both at 100% occupancy carrying the
+full 22,857 transactions per block — the block cycle drops from 1.111 s to
+1.035 s, **6.8%**. Window 1 also matches the 2026-08-16 record of 22,089, but
+at 100% occupancy where the record was at 95.1%, i.e. more work per block for
+the same throughput.
+
+The structural change is confirmed independently by the write probe on the
+light production load, 283 write transactions over 71 blocks:
+
+| Transaction class | v955 tx/block | v954 tx/block |
+|---|---|---|
+| main block commit | 1.00 | 1.00 |
+| canonicalization **carrying consensus state** | 0.99 | 0.95 (state not included) |
+| `HotStuffState` alone (the two vote barriers) | **1.99** | 2.32 |
+
+1.99 is exactly the two `JournalVote` durability barriers HotStuff-2 needs
+(prepare vote and commit vote), and 0.99 is the one canonicalization — the
+separate `persistState` transaction is gone. Per-block byte counts are NOT
+comparable across sessions: they move with freelist state, which differs
+between runs.
+
+**Still not verified:** whether `BeginRw`'s 20.4% CPU share actually dropped.
+Two attempts failed for different reasons — the first round died in its
+funding phase (rule 8), and in the second the 30 s profile landed on the
+pool-admission phase rather than block execution: `secp256k1` was 73% of
+cgocall while `cursor_put` was 0.08%, i.e. the node was verifying incoming
+transactions, not writing blocks. A valid comparison has to be taken inside a
+steady 100%-occupancy window on both binaries; profile placement matters as
+much as round placement.
+
+## Wedge recovery (2026-08-20)
+
+A round that dies mid-flight can leave the fleet locked on a block nobody
+has. Signature: every node at the same height and the same view, views
+advancing only by 30 s timeouts, and the leader logging
+`Sealed block lost to a competing candidate; dropping` at head+2.
+
+`hotstuff-inspect --datadir <node>/chaindata` (note: **chaindata**, not the
+datadir root) shows it plainly:
+
+```
+view=162846 timeouts=188 journal=193
+lockedQC=162653/ec0a6b117f63   committedQC=162652/947870d1bd6f
+lastVoted=162653/ec0a6b117f63  lastCommitVoted=162653/ec0a6b117f63
+```
+
+All seven nodes voted, commit-voted and locked block `ec0a6b117f63`, whose
+body exists in no node's database — `eth_getBlockByNumber` returns null for
+that height everywhere. The leader correctly extends the LockedQC block per
+HotStuff-2's safety rule, so it builds head+2 forever and no follower can
+validate a parent it does not have. The node's own startup check
+("persisted consensus state agrees with the applied chain") passes, because
+the persisted state IS consistent — it is the locked block that is missing.
+
+This is the documented tradeoff of `consensus votes will not wait for block
+persistence`, logged at startup: a stop between locking and persisting loses
+the body.
+
+Recovery, with the fleet stopped and every node showing the same committedQC:
+
+```
+hotstuff-reset --datadir E:\qs-node<i>\chaindata --apply --force                --backup <fresh-file>
+```
+
+It clears the round/vote journal (410 bytes), which removes the crash-time
+no-equivocation guard, so it is only valid after a coordinated stop where the
+applied chain has been verified identical across nodes. The tool enforces an
+exclusive fsynced backup. Blocks resumed at 2 s immediately on restart.

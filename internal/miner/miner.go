@@ -39,6 +39,7 @@ import (
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/miner/builder"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"golang.org/x/sync/errgroup"
@@ -253,8 +254,23 @@ func (m *Miner) PrepareSpeculativeBlock(parentHash types.Hash) {
 // CommitToCanonical forces the HotStuff-committed block to be the canonical
 // head, reconciling the locally-inserted candidate with the committed chain.
 func (m *Miner) CommitToCanonical(hash types.Hash) error {
+	return m.CommitToCanonicalWith(hash, nil)
+}
+
+// CommitToCanonicalWith forwards an in-transaction hook to the chain, letting
+// consensus persist its state inside the canonicalization transaction instead
+// of opening a second one per committed block. Falls back to the plain call
+// when the chain does not support it (and drops the hook, whose caller then
+// persists separately).
+func (m *Miner) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) error) error {
+	type canonicalCommitterWithTx interface {
+		CommitToCanonicalWith(types.Hash, func(kv.RwTx) error) error
+	}
 	type canonicalCommitter interface {
 		CommitToCanonical(types.Hash) error
+	}
+	if cw, ok := m.worker.chain.(canonicalCommitterWithTx); ok {
+		return cw.CommitToCanonicalWith(hash, inTx)
 	}
 	if cc, ok := m.worker.chain.(canonicalCommitter); ok {
 		return cc.CommitToCanonical(hash)
