@@ -61,6 +61,21 @@ type BlockProducer interface {
 	CommitToCanonical(hash types.Hash) error
 }
 
+// CanonicalCommitterWithTx is the optional extension of BlockProducer that
+// exposes the canonicalization transaction, so the consensus state can be
+// persisted in the SAME transaction instead of one of its own. Probed by type
+// assertion like SpeculativeBlockProducer, so a producer without it simply
+// keeps the two-transaction path.
+//
+// Why it exists: a profile at the 480M tier put mdbx_txn_begin for WRITE
+// transactions at 20.4% of all node CPU -- more than the page writes
+// themselves. MDBX has one writer and charges txn_begin in proportion to
+// freelist pressure, so a second write transaction per committed block costs
+// far more than the 415 bytes it carries.
+type CanonicalCommitterWithTx interface {
+	CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) error) error
+}
+
 // SpeculativeBlockProducer is the optional extension of BlockProducer for
 // cross-view speculative building: build (but do not seal or propose) a block
 // extending parentHash, to be collected by the next TriggerBlockProduction if
@@ -498,10 +513,34 @@ func (s *Service) handleOutput(output EngineOutput) {
 		// different same-height candidate via resultLoop). Skipped silently if the
 		// block isn't in the DB yet — it reconciles on a later commit / future-block
 		// import once the block arrives via direct push.
+		// Mark pending reconfigurations as committed now that the block has a
+		// CommitQC. Hoisted ABOVE canonicalization so the state snapshot taken
+		// below observes it: that snapshot must be resolved before any write
+		// transaction opens, and the canonicalization transaction is now where
+		// the state gets written. Safe to move — the CommitQC is what makes the
+		// reconfiguration committed, and it exists here whether or not the local
+		// canonical table has caught up; this ran unconditionally before too.
+		if rm := s.engine.Engine().ReconfigManager(); rm != nil && rm.HasPendingChanges() {
+			rm.MarkCommitted()
+		}
+		// Persist the consensus state INSIDE the canonicalization transaction
+		// when the producer supports it: one write transaction per committed
+		// block instead of two. It also closes a crash window — canonical head
+		// and consensus state now move together, where a crash between the two
+		// transactions used to leave a node whose persisted view/lock did not
+		// match its applied chain.
+		hook := s.newStateHook()
+		cw, canMerge := s.blockProducer.(CanonicalCommitterWithTx)
 		if s.blockProducer != nil {
 			tCanon := time.Now()
-			if err := s.blockProducer.CommitToCanonical(output.Hash); err != nil {
-				log.Debug("hotstuff: commit-to-canonical deferred", "hash", output.Hash, "err", err)
+			var cErr error
+			if canMerge && hook != nil {
+				cErr = cw.CommitToCanonicalWith(output.Hash, hook.run)
+			} else {
+				cErr = s.blockProducer.CommitToCanonical(output.Hash)
+			}
+			if cErr != nil {
+				log.Debug("hotstuff: commit-to-canonical deferred", "hash", output.Hash, "err", cErr)
 				// Remember it — NotifyBlockImported retries when the block lands.
 				s.pendingMu.Lock()
 				s.pendingCommit = output.Hash
@@ -514,12 +553,17 @@ func (s *Service) handleOutput(output EngineOutput) {
 			dCanon = time.Since(tCanon)
 		}
 		updateMetricsBlockCommitted(output.View)
-		// Mark pending reconfigurations as committed now that the block has a CommitQC.
-		if rm := s.engine.Engine().ReconfigManager(); rm != nil && rm.HasPendingChanges() {
-			rm.MarkCommitted()
-		}
 		tPersist := time.Now()
-		s.persistState()
+		// hook.done, not "the commit succeeded": a deferred canonicalization
+		// rolls the transaction back before the hook runs, and the hook itself
+		// can fail while canonicalization commits (its error is deliberately
+		// swallowed there so bookkeeping cannot block the chain). Either way the
+		// state still has to reach disk, so fall back to its own transaction.
+		if hook != nil && hook.done {
+			s.lastPersistedView = hook.view
+		} else {
+			s.persistState()
+		}
 		dPersist = time.Since(tPersist)
 		log.Info("hotstuff: commit phases",
 			"view", output.View, "observe", dObserve, "canon", dCanon, "persist", dPersist,
@@ -1030,46 +1074,64 @@ func (s *Service) persistState() { s.persistStateCtx(s.ctx) }
 // never actually write anything. Every graceful stop therefore left the node
 // with whatever the last commit-time persist had stored, which is precisely how
 // a restart comes back on a view/lock that no longer matches the applied chain.
-func (s *Service) persistStateCtx(ctx context.Context) {
-	if s.db == nil {
-		return
-	}
+// stateHook carries a resolved consensus-state snapshot and the closure that
+// writes it. Both engine accessors are resolved when the hook is BUILT, never
+// inside the transaction: calling a locked engine accessor while holding the
+// MDBX writer lets this goroutine wait on the engine mutex whose holder is
+// waiting for that same writer inside JournalVote -- a deadlock that stops the
+// node dead.
+type stateHook struct {
+	run  func(tx kv.RwTx) error
+	view uint64
+	done bool // set by run on success; read only after the transaction returns
+}
 
+// newStateHook resolves the state to persist. Returns nil when there is
+// nothing to persist (no store, no engine).
+func (s *Service) newStateHook() *stateHook {
+	if s.db == nil {
+		return nil
+	}
 	ce := s.engine.Engine()
 	if ce == nil {
-		return
+		return nil
 	}
-
 	// One locked snapshot: view, lock, last-committed QC AND the vote
 	// commitments. Reading them field by field could store a lock from one view
-	// with a vote from the next — and omitting the vote fields entirely (as this
-	// did before) would CLOBBER the journalled vote history with zeros on the
-	// next periodic persist, silently re-opening the equivocation window the
-	// journal exists to close.
+	// with a vote from the next -- and omitting the vote fields entirely would
+	// CLOBBER the journalled vote history with zeros on the next periodic
+	// persist, silently re-opening the equivocation window the journal exists
+	// to close.
 	state := ce.SnapshotState()
-
-	// Both engine accessors are resolved BEFORE opening the write transaction.
-	// Calling a locked engine accessor from inside the transaction would let this
-	// goroutine hold the MDBX writer while waiting on the engine mutex, while the
-	// engine goroutine holds that mutex waiting for the writer inside
-	// JournalVote — a deadlock that stops the node dead.
 	stagedEpoch, stagedVals, stagedF, hasStaged := ce.StagedEpochInfoSafe()
-
-	if err := s.db.Update(ctx, func(tx kv.RwTx) error {
+	h := &stateHook{view: state.View}
+	h.run = func(tx kv.RwTx) error {
 		if err := SaveConsensusState(tx, state); err != nil {
 			return err
 		}
-		// Atomically persist staged epoch data in the same transaction.
 		if hasStaged {
-			return SaveStagedEpoch(tx, stagedEpoch, stagedVals, stagedF)
+			// Staged epoch data rides the same transaction so a crash cannot
+			// separate it from the state that refers to it.
+			if err := SaveStagedEpoch(tx, stagedEpoch, stagedVals, stagedF); err != nil {
+				return err
+			}
 		}
+		h.done = true
 		return nil
-	}); err != nil {
+	}
+	return h
+}
+
+func (s *Service) persistStateCtx(ctx context.Context) {
+	h := s.newStateHook()
+	if h == nil {
+		return
+	}
+	if err := s.db.Update(ctx, h.run); err != nil {
 		log.Warn("hotstuff: failed to persist state", "err", err)
 		return
 	}
-
-	s.lastPersistedView = state.View
+	s.lastPersistedView = h.view
 }
 
 // recoverEpochState restores the persisted validator-set state after a restart.
