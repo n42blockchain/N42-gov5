@@ -35,11 +35,13 @@ Engine shard 之间并非全部互斥，尤其 `engine-access-list` 会与 fork 
 
 ## 版本与证据
 
-最终运行固定版本：
+完整 Hive/EEST 运行固定版本：
 
 - Engine 与 RLP：N42 `36822b5c5cb73640bad3e87941077c9c9fac726c`，Hive `b54317a81e9a226f5899eba2fb27f4a01ff21ffc`，EEST `e78efc220fd6cebdaa131435167f43c3b83236ea`
 - Hive `403 / 403` 和原生适用集 `311 / 311`：同一 N42 `36822b5c5cb73640bad3e87941077c9c9fac726c` 与 Hive revision。
 - 该 N42 revision 已合入 2026-08-19 fetch 到的 7 个最新 `main` 提交（sender verification、VM、state、rawdb、zk guest），并以 `36822b5c5` 修复同步后暴露的 lint/错误处理问题。
+
+完整矩阵完成后又合入了 10 个较新的 `main` 提交，并提交了 MDBX 日志解耦和 Block-STM scheduler frontier 自恢复修复。代码验证 revision 为 N42 `520fede6f3e735696a8a80c40bb8d774131da561`。`36822b5c5..520fede6f` 的审计没有发现 dedicated eth-el Engine API、EVM 或 RLP decoder 包变更；变化集中在 replay/witness、LtHash bookkeeping、txindex、QMDB/MDBX、HotStuff canonicalization、Block-STM liveness 和 benchmark 文档。该 delta 已通过下述完整项目门禁，但约 26 小时的 Hive/EEST 矩阵没有在 `520fede6f` 上重复，因此不能把 `520fede6f` 写成完整矩阵的实际运行 revision。
 
 关键本地产物：
 
@@ -58,7 +60,8 @@ Engine shard 之间并非全部互斥，尤其 `engine-access-list` 会与 fork 
 
 本地复核结果：
 
-- 当前 HEAD 项目门禁 `make build`、`make test-short`、`make test`、`make lint`、`go vet ./...`、`make race-core`、`go test -race -short ./...` 和 `go test ./scripts` 全部通过。日志 `tests/results/final-gates-20260819-post-sync-fix/run.log`，SHA-256 `aa03944366534281f42a172ceb5411d17af5a8ebfb728981efd65178d569ff6e`。这组结果代表整个 Go 项目，不等同于 EEST 的 eth-el 兼容性结果。
+- N42 `520fede6f3e735696a8a80c40bb8d774131da561` 的项目门禁 `make build`、`make test-short`、`make test`、`make lint`、`go vet ./...`、`make race-core`、`go test -race -short ./...` 和 `go test ./scripts` 全部通过。日志 `tests/results/final-gates-20260820-latest-fixed/run.log`，SHA-256 `42b71f9bb3d2f7460f5bd646971ee452ef4a9e65faaca86ce0a568d8280acaa1`。这组结果代表整个 Go 项目，不等同于在该 revision 重跑了 EEST/Hive。
+- 2026-08-20 的 `make eest-audit` 明确把最新 `20260819-post-sync-full-engine` 和 `20260819-post-sync-full-rlp` 标为 `PASS`。聚合审计仍返回非零，因为结果树保留了 72 个早期失败/中断 run 和 3 个明确跳过的历史 run；这些历史证据不删除、也不改写成通过。
 - Hive/EEST 的 Engine API 回归使用宿主机映射端口；Hive 端在容器存活检查后重新读取端口映射，避免 Docker Desktop 端口尚未出现时回退到不可达的 `172.17.x.x`。
 - 修复了 Prague payload 校验中 intrinsic gas 与 floor data gas 同时失败时的错误优先级，并用 EEST 异常映射覆盖对应客户端错误文本。
 - EEST `e78efc220` 修复 release metadata 缓存：刷新失败时保留有效旧缓存、拒绝空 release 列表并原子替换缓存，避免并发或短暂 GitHub API 异常把缓存写成 `[]`。
@@ -66,7 +69,7 @@ Engine shard 之间并非全部互斥，尤其 `engine-access-list` 会与 fork 
 
 与 `connect` 相关的关键判断：`tests/eth-hive` 已在本地适配中为非 `python-requests` 客户端返回 `RPCAddress`/`EngineAddress`，EEST/dev 模式通过宿主映射端口访问；容器内的原生 Hive simulator 则继续使用容器 IP。这样避免 macOS 上从宿主机直连 `172.17.x.x`，也避免 simulator Docker module 编译时依赖未发布的本地 Hive API。
 
-当前验证版本：Hive `b54317a8`，EEST `e78efc220`；EEST fixtures 使用 v5.4.0，stable shard 使用 `stable@latest`，Osaka Engine shard 使用 `develop@latest`。
+完整矩阵 harness 版本：Hive `b54317a8`，EEST `e78efc220`；EEST fixtures 使用 v5.4.0，stable shard 使用 `stable@latest`，Osaka Engine shard 使用 `develop@latest`。
 
 对应接口定义：
 
