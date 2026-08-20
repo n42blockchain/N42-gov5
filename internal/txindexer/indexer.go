@@ -157,8 +157,46 @@ func (x *Indexer) txSegmentVerifier(blockNum uint64, txHash types.Hash) (uint64,
 
 // initTxIndex prepares the tail tier. A failure here leaves the chain on the
 // table-only path rather than starting with a lookup that answers nothing.
+// warnDisabledWithWatermark shouts when the node boots WITHOUT the tail tier
+// although a watermark says the tier was on before.
+//
+// That combination silently loses transaction lookups. Blocks produced while
+// the tier was on went to the volatile tail, which is deliberately not
+// persisted because the next start re-derives it -- but only if the tier is
+// on. Booting with it off skips the rebuild, and the window between the last
+// sealed segment and the previous shutdown is then indexed NOWHERE: not in a
+// segment, and not in the MDBX table either, because the table path was
+// bypassed while the tier was live. Re-enabling later does not fix it on its
+// own -- the rebuild resumes from SealedEnd, which has since moved past the
+// window.
+//
+// Cheap to detect, invisible otherwise: it cost a ~330-block hole in
+// eth_getTransactionByHash across six nodes before anyone noticed.
+func (x *Indexer) warnDisabledWithWatermark() {
+	if x.db == nil {
+		return
+	}
+	var mark uint64
+	if err := x.db.View(x.ctx, func(tx kv.Tx) error {
+		v, err := tx.GetOne(modules.ChainConfig, txIndexStartKey)
+		if err == nil && len(v) == 8 {
+			mark = binary.BigEndian.Uint64(v)
+		}
+		return err
+	}); err != nil || mark == 0 {
+		return
+	}
+	log.Warn("txindex tail tier OFF although this node ran with it ON before "+
+		"(N42_TXINDEX_TAIL unset?): transaction lookups above the watermark may "+
+		"be answerable nowhere. Re-enable it, or re-index the affected range.",
+		"watermark", mark)
+}
 func (x *Indexer) Start() bool {
-	if x == nil || !txIndexEnabled() {
+	if x == nil {
+		return false
+	}
+	if !txIndexEnabled() {
+		x.warnDisabledWithWatermark()
 		return false
 	}
 	if x.txIndexDir == "" {
@@ -201,7 +239,8 @@ func (x *Indexer) Start() bool {
 	x.txIndexStop = make(chan struct{})
 	x.txIndexDone = make(chan struct{})
 
-	if err := x.rebuildTxTail(start, headNum); err != nil {
+	sealedBacklog, err := x.rebuildTxTail(start, headNum)
+	if err != nil {
 		log.Error("txindex tail disabled: rebuild failed", "from", start, "to", headNum, "err", err)
 		x.txTail = nil
 		x.txSegments = nil
@@ -209,6 +248,21 @@ func (x *Indexer) Start() bool {
 		close(x.txIndexDone)
 		svc.Close()
 		return false
+	}
+	// The backlog segments were written after svc enumerated the directory, so
+	// svc cannot see them. Swap in a reader that can -- before the resolver is
+	// published, so no lookup is ever served against the stale list.
+	if sealedBacklog {
+		if rerr := x.reopenTxSegments(); rerr != nil {
+			log.Error("txindex tail disabled: cannot reopen segments after backlog seal",
+				"err", rerr)
+			x.txTail = nil
+			x.txSegments = nil
+			close(x.txIndexStop)
+			close(x.txIndexDone)
+			svc.Close()
+			return false
+		}
 	}
 
 	rawdb.SetTxLookupResolver(x)
@@ -250,27 +304,34 @@ func (x *Indexer) txIndexStart(headNum uint64) (uint64, error) {
 // This is why the tail does not need to be persisted: it is derivable. When
 // the gap is larger than the tail should hold, the older part is sealed into
 // segments first rather than held in memory.
-func (x *Indexer) rebuildTxTail(start, head uint64) error {
+// It returns whether it sealed any backlog segment. Those segments are
+// written AFTER x.txSegments was opened, so the caller must reopen the
+// segment reader before serving lookups -- without that the freshly sealed
+// range is findable nowhere until the NEXT restart happens to enumerate it.
+// Observed live: a ~330-block window of eth_getTransactionByHash returning
+// null on six nodes, healed only by a third restart.
+func (x *Indexer) rebuildTxTail(start, head uint64) (sealed bool, err error) {
 	if start > head {
-		return nil
+		return false, nil
 	}
 	for head-start+1 > txIndexMaxRebuildBlocks {
 		end := start + txIndexMaxRebuildBlocks
 		log.Info("txindex: sealing a backlog range before rebuilding the tail",
 			"from", start, "to", end-1)
 		if err := txlookup.BuildSegmentFromSource(x.ctx, x.txIndexDir, start, end, x.blockTxSource); err != nil {
-			return fmt.Errorf("seal backlog %d-%d: %w", start, end, err)
+			return sealed, fmt.Errorf("seal backlog %d-%d: %w", start, end, err)
 		}
+		sealed = true
 		start = end
 	}
 	for n := start; n <= head; n++ {
 		hashes, err := x.blockTxSource(n)
 		if err != nil {
-			return err
+			return sealed, err
 		}
 		x.txTail.Add(n, hashes)
 	}
-	return nil
+	return sealed, nil
 }
 
 // blockTxSource reads one block's transaction hashes in block order.
@@ -375,4 +436,14 @@ func (x *Indexer) Stop() {
 	}
 	<-x.txIndexDone
 	rawdb.SetTxLookupResolver(nil)
+	// Release the segment mmaps. The resolver is already detached, so no
+	// lookup can be in flight; leaving them open kept the segment files
+	// locked for the rest of the process lifetime.
+	x.txIndexMu.Lock()
+	svc := x.txSegments
+	x.txSegments = nil
+	x.txIndexMu.Unlock()
+	if svc != nil {
+		svc.Close()
+	}
 }

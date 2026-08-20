@@ -78,6 +78,7 @@ func (tx *MdbxTx) Put(table string, k, v []byte) error {
 	}
 	tx.writeCount.Add(1)
 	tx.writeBytes.Add(uint64(len(k) + len(v)))
+	tx.noteWrite(table, len(k)+len(v), false)
 	return nil
 }
 
@@ -90,6 +91,7 @@ func (tx *MdbxTx) Delete(table string, k []byte) error {
 		return err
 	}
 	tx.writeCount.Add(1)
+	tx.noteWrite(table, 0, true)
 	return nil
 }
 
@@ -103,6 +105,7 @@ func (tx *MdbxTx) Append(bucket string, k, v []byte) error {
 	}
 	tx.writeCount.Add(1)
 	tx.writeBytes.Add(uint64(len(k) + len(v)))
+	tx.noteWrite(bucket, len(k)+len(v), false)
 	return nil
 }
 func (tx *MdbxTx) AppendDup(bucket string, k, v []byte) error {
@@ -115,6 +118,7 @@ func (tx *MdbxTx) AppendDup(bucket string, k, v []byte) error {
 	}
 	tx.writeCount.Add(1)
 	tx.writeBytes.Add(uint64(len(k) + len(v)))
+	tx.noteWrite(bucket, len(k)+len(v), false)
 	return nil
 }
 
