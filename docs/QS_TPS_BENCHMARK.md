@@ -393,9 +393,18 @@ with 22,857-transaction blocks:
 | | v5.7.955 run 1 | v5.7.955 run 2 | v5.7.956 |
 |---|---|---|---|
 | total CPU | 282.20% | 274.64% | (see note) |
-| `numSlots` | 4.71% | 4.22% | **absent** |
-| `Transaction.Marshal` | 6.54% | 6.20% | **absent** |
-| `EncodedSize` (replacement) | — | — | 0.66% |
+| `numSlots` | 4.71% (3.99 s) | 4.22% | **0.012%** (0.01 s) |
+| `Transaction.Marshal` | 6.54% (5.54 s) | 6.20% | **0.28%** (0.23 s) |
+| `EncodedSize` (replacement) | 0.78% | 0.72% | 0.66% |
+
+Near-zero, not literally gone — they drop out of the default `-top` listing,
+which is what makes "absent" an easy thing to write and a wrong thing to
+write. Checked with `-peek`, the residue is accounted for: `numSlots` keeps
+0.01 s on the new `txWireSize -> EncodedSize` path, and the remaining proto
+`Marshal` is entirely `miner.commit -> streamverify.BuildStreamPacket`, a
+path this change never touched and a legitimate proto use (it is a
+cross-boundary wire format). The pool's two call sites — `numSlots` at
+3.51 s and `validateTx` at 1.67 s of the v955 total — are gone.
 
 Allocation told the same story from the other side: over 27 sampled blocks,
 `ConvertUint256IntToH256` was 13.98% of all bytes allocated and
