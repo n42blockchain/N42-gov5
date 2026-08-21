@@ -234,6 +234,20 @@ func Sender(signer Signer, tx *Transaction) (types.Address, error) {
 	return addr, nil
 }
 
+// CacheSender records an already-recovered sender for tx under signer, in
+// both the per-object memo and the process-wide cache, so the next Sender call
+// on this transaction (or on a fresh decode of the same bytes) is a lookup
+// rather than another ECDSA recovery. The caller vouches that from was
+// recovered from this transaction's signature under an equivalent signer; it
+// is NOT a way to assert an unverified sender.
+func (tx *Transaction) CacheSender(signer Signer, from types.Address) {
+	if signer == nil {
+		return
+	}
+	tx.from.Store(sigCache{signer: signer, from: from})
+	senderCachePut(tx.Hash(), signer, from)
+}
+
 // Signer encapsulates transaction signature handling. The name of this type is slightly
 // misleading because Signers don't actually sign, they're just for validating and
 // processing of signatures.
