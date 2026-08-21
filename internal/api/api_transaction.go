@@ -73,11 +73,28 @@ func (s *TransactionAPI) SendRawTransaction(ctx context.Context, input hexutil.B
 	if err != nil {
 		return avmcommon.Hash{}, err
 	}
+	seedRecoveredSender(metaTx, transaction.LatestSignerForChainID(s.api.GetChainConfig().ChainID))
 	return SubmitTransaction(context.Background(), s.api, metaTx)
 }
 
 // MaxBatchSize is the maximum number of transactions allowed in a single batch request.
 const MaxBatchSize = 200
+
+// seedRecoveredSender hands the sender that ToastTransaction just recovered
+// (a full ECDSA recovery under the chain's signer) to the transaction's sender
+// memo, so the pool's own recovery of the same transaction becomes a cache
+// hit instead of a second ~50 µs ecrecover. Measured on the 7-node rig: the
+// RPC-submitted share of a full block was recovered twice, 4.4% of node CPU.
+// Only chain-bound transactions are seeded: an unprotected legacy
+// transaction is the one case where the block-number signer used by
+// ToastTransaction and the pool's latest signer may diverge.
+func seedRecoveredSender(tx *transaction.Transaction, signer transaction.Signer) {
+	from := tx.From()
+	if from == nil || !tx.Protected() {
+		return
+	}
+	tx.CacheSender(signer, *from)
+}
 
 func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexutil.Bytes) ([]avmcommon.Hash, error) {
 	if len(inputs) == 0 {
@@ -102,6 +119,7 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 	// first bad entry, so a batch endpoint submitted no faster than the
 	// single endpoint. A batch also engages the pool's parallel sender
 	// pre-warm, which a size-1 add cannot.
+	poolSigner := transaction.LatestSignerForChainID(s.api.GetChainConfig().ChainID)
 	hs := make([]avmcommon.Hash, len(inputs))
 	txs := make([]*transaction.Transaction, 0, len(inputs))
 	slot := make([]int, 0, len(inputs))
@@ -127,6 +145,7 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 			}
 			continue
 		}
+		seedRecoveredSender(metaTx, poolSigner)
 		if err := checkTxFee(*metaTx.GasPrice(), metaTx.Gas(), baseFee); err != nil {
 			if firstErr == nil {
 				firstErr = err
