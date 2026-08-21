@@ -851,13 +851,13 @@ func TestNumSlots(t *testing.T) {
 	}
 
 	// Verify it's based on actual size, not pointer size
-	txData, err := tx.Marshal()
+	size, err := tx.EncodedSize()
 	if err != nil {
-		t.Fatalf("Failed to marshal tx: %v", err)
+		t.Fatalf("Failed to size tx: %v", err)
 	}
-	expectedSlots := (len(txData) + txSlotSize - 1) / txSlotSize
+	expectedSlots := (size + txSlotSize - 1) / txSlotSize
 	if slots != expectedSlots {
-		t.Errorf("numSlots = %d, want %d (based on tx size %d)", slots, expectedSlots, len(txData))
+		t.Errorf("numSlots = %d, want %d (based on tx size %d)", slots, expectedSlots, size)
 	}
 
 	t.Log("✓ numSlots calculates actual transaction size (C1 fix)")
