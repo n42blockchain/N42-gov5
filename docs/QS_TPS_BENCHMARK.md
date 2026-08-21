@@ -430,13 +430,75 @@ per-symbol facts that survive are the ones that do not depend on occupancy —
 a symbol present in every profile of one binary and absent from the other.
 That is why `-DecaySec` (rule 9) exists now.
 
-### Also landed
+### Also landed: the sender-seeding change, measured, and it is a null result
 
-A second change, seeding the pool's sender memo with the recovery the RPC
-decode already performed, is committed but **unmeasured** for the same
-reason. It is strictly less work for an identical result; it has not been
-credited with a number, and should not be until a decayed-start round
-measures it.
+Seeding the pool's sender memo with the recovery the RPC decode already
+performed was re-run properly on 2026-08-21 — `v5.7.956` with `-DecaySec 90`,
+all three windows at 100% occupancy, profile armed on 31/31 full blocks — and
+compared against the `v5.7.955` decayed-start round.
+
+**The change works and does nothing measurable here.** Both halves matter.
+
+*It works*: `internal/api.TestSeedRecoveredSenderAvoidsSecondRecovery` seeds a
+deliberately wrong address and requires `Sender` to return it, which only a
+cache lookup can do. It fails when the function is neutered to a no-op.
+
+*It is not measurable on this rig*: the fraction of `Sender` calls that reach
+an actual recovery, which is what the change is supposed to lower, sits inside
+the same-binary spread.
+
+| round | `recoverPlain`/`Sender` | RPC share |
+|---|---|---|
+| v955 (A) | 0.3008 | 0.115 |
+| v955 (A') | 0.3166 | 0.130 |
+| v955 (r2) | 0.3074 | 0.126 |
+| **v956 (B'')** | **0.3105** | 0.131 |
+
+Three rounds of the unchanged binary span 0.3008–0.3166; the changed binary
+lands in the middle of that. Direction is right (−1.9% against A'), magnitude
+is not separable from noise. Only ~13% of transactions reach this node over
+RPC under `-shard-senders`, and the recovery it removes runs on a prewarm
+goroutine — whose stack pprof does not attach to the RPC call that spawned it,
+which is why `-focus` on the submit path shows nothing either.
+
+The change stays: it is strictly less work for an identical result, and the
+test pins the mechanism. It is credited with nothing.
+
+**Two traps this comparison walked into first**, both worth recognising:
+
+- *Per-executed-transaction normalisation is wrong for pool-side work.* The
+  first pass divided ecrecover by executed transactions and reported +44% for
+  the changed binary. Block time differed between the rounds (1.000 s vs
+  1.111 s), so the same flood rate fed a slower chain: pool work per *executed*
+  transaction rises for reasons that have nothing to do with the code. Use a
+  denominator driven by the same thing as the numerator.
+- *Removing one cost inflates every other percentage.* `ecrecover` read 35.57%
+  → 39.74%, which looks like a regression until you notice `numSlots` vacated
+  4.22 points of the same pie. Shares are not costs. Compare absolute
+  CPU-seconds per unit of work, or ratios between symbols.
+
+A control helps catch both: `ApplyTransaction`, which neither change touches,
+came out 1.3140 vs 1.3705 µs per unit (+4.3%) — close enough to call the
+rounds comparable, where the contaminated 53%-occupancy round had put the same
+control 19% apart.
+
+### Window results, and why win1 is not the whole story
+
+| | A' (v955) | B'' (v956) |
+|---|---|---|
+| win1 | 22,487 @ 98.4% | 20,566 @ 100% |
+| win2 | 18,665 @ 89.1% | 18,663 @ 100% |
+| win3 | 12,568 @ 53.2% | 18,666 @ 100% |
+| 3-window total txs | 3,223,953 | 3,474,264 |
+
+Read win1 alone and v956 lost 8.5%. Read the totals and it won 7.8%. Neither
+is a throughput result: v955's faster blocks (1.000 s vs 1.111 s) climbed the
+baseFee faster and tipped it over the flood's cap by win3, while v956's slower
+blocks stayed under it for all three windows. **The rig's own fee dynamics
+couple block time to how long a round stays valid**, so a binary that produces
+blocks slightly slower gets a longer valid window and a better total. Rule 10
+says compare same-numbered windows; this round says even that is only sound
+while both rounds are still inside their valid region.
 
 ### Fleet state
 
