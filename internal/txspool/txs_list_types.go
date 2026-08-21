@@ -288,11 +288,27 @@ func (t *txLookup) RemotesBelowTip(threshold uint256.Int) []*transaction.Transac
 
 // numSlots calculates the number of slots needed for a single transaction.
 func numSlots(tx *transaction.Transaction) int {
+	return (txWireSize(tx) + txSlotSize - 1) / txSlotSize
+}
+
+// txWireSize is the byte size the pool budgets a transaction at: its standard
+// Ethereum RLP encoding, memoized on the transaction by EncodedSize. This used
+// to call tx.Marshal() -- a full protobuf encode, uncached, on EVERY slot
+// query -- and the pool asks for slots several times per transaction
+// (admission, pricing, promotion, removal). Under a 22,857-tx block that
+// protobuf churn was 6% of node CPU and close to a third of all allocation
+// (toProtoFields + the H256 conversions). The RLP size is what the block
+// builder and the wire already budget against, so the pool now agrees with
+// them. Transactions with no Ethereum encoding fall back to the proto size.
+func txWireSize(tx *transaction.Transaction) int {
+	if n, err := tx.EncodedSize(); err == nil && n > 0 {
+		return n
+	}
 	txData, err := tx.Marshal()
 	if err != nil {
 		return 1
 	}
-	return (len(txData) + txSlotSize - 1) / txSlotSize
+	return len(txData)
 }
 
 // TxByNonce implements the sort interface to allow sorting transactions by nonce.
