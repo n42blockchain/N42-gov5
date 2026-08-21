@@ -339,13 +339,13 @@ func TestNumSlotsCalculation(t *testing.T) {
 	}
 
 	// Verify calculation
-	txData, _ := tx.Marshal()
-	expectedSlots := (len(txData) + txSlotSize - 1) / txSlotSize
+	size, _ := tx.EncodedSize()
+	expectedSlots := (size + txSlotSize - 1) / txSlotSize
 	if slots != expectedSlots {
 		t.Errorf("numSlots = %d, want %d", slots, expectedSlots)
 	}
 
-	t.Logf("✓ numSlots correctly calculates %d slots for tx of %d bytes", slots, len(txData))
+	t.Logf("✓ numSlots correctly calculates %d slots for tx of %d bytes", slots, size)
 }
 
 // =============================================================================
