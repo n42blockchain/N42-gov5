@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"math/big"
 	"testing"
 
@@ -374,5 +375,18 @@ func TestGetBlobsV1RejectsTooManyHashes(t *testing.T) {
 	}
 	if len(got) != 128 {
 		t.Fatalf("len(GetBlobsV1(128)) = %d, want 128", len(got))
+	}
+}
+
+func TestBlobAndProofV1JSONMatchesEngineSchema(t *testing.T) {
+	got, err := json.Marshal(&BlobAndProofV1{
+		Blob:  hexutil.Bytes{0x01},
+		Proof: hexutil.Bytes{0x02},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"blob":"0x01","proof":"0x02"}`; string(got) != want {
+		t.Fatalf("BlobAndProofV1 JSON = %s, want %s", got, want)
 	}
 }
