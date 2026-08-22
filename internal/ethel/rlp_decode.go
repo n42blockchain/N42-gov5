@@ -29,7 +29,7 @@ func decompressGeth(data []byte) ([]byte, error) {
 }
 
 // DecodeGethHeader decodes a Geth-format RLP-encoded Ethereum header.
-// Handles all forks from genesis through Pectra (variable field count).
+// Handles all forks from genesis through Amsterdam (variable field count).
 func DecodeGethHeader(data []byte) (*block.Header, error) {
 	raw, err := decompressGeth(data)
 	if err != nil {
@@ -58,6 +58,9 @@ func decodeHeaderFields(elems []rlp.RawValue) (*block.Header, error) {
 	n := len(elems)
 	if n < 15 {
 		return nil, fmt.Errorf("ethel: header has %d fields, need >= 15", n)
+	}
+	if n > 22 {
+		return nil, fmt.Errorf("ethel: header has %d fields, maximum supported is 22", n)
 	}
 
 	h := &block.Header{}
@@ -89,13 +92,21 @@ func decodeHeaderFields(elems []rlp.RawValue) (*block.Header, error) {
 	if err := rlp.DecodeBytes(elems[7], &difficulty); err != nil {
 		return nil, fmt.Errorf("ethel: decode difficulty: %w", err)
 	}
-	h.Difficulty = uint256.MustFromBig(&difficulty)
+	difficulty256, err := uint256FromBig(&difficulty, "difficulty")
+	if err != nil {
+		return nil, err
+	}
+	h.Difficulty = difficulty256
 
 	var number big.Int
 	if err := rlp.DecodeBytes(elems[8], &number); err != nil {
 		return nil, fmt.Errorf("ethel: decode number: %w", err)
 	}
-	h.Number = uint256.MustFromBig(&number)
+	number256, err := uint256FromBig(&number, "number")
+	if err != nil {
+		return nil, err
+	}
+	h.Number = number256
 
 	if err := rlp.DecodeBytes(elems[9], &h.GasLimit); err != nil {
 		return nil, fmt.Errorf("ethel: decode gasLimit: %w", err)
@@ -122,7 +133,11 @@ func decodeHeaderFields(elems []rlp.RawValue) (*block.Header, error) {
 		if err := rlp.DecodeBytes(elems[15], &baseFee); err != nil {
 			return nil, fmt.Errorf("ethel: decode baseFee: %w", err)
 		}
-		h.BaseFee = uint256.MustFromBig(&baseFee)
+		baseFee256, err := uint256FromBig(&baseFee, "baseFee")
+		if err != nil {
+			return nil, err
+		}
+		h.BaseFee = baseFee256
 	}
 	if n > 16 { // EIP-4895 (Shanghai): withdrawalsHash
 		var wh types.Hash
@@ -159,8 +174,23 @@ func decodeHeaderFields(elems []rlp.RawValue) (*block.Header, error) {
 		}
 		h.RequestsHash = &rh
 	}
+	if n > 21 { // EIP-7928 (Amsterdam): blockAccessListHash
+		var balHash types.Hash
+		if err := rlp.DecodeBytes(elems[21], &balHash); err != nil {
+			return nil, fmt.Errorf("ethel: decode blockAccessListHash: %w", err)
+		}
+		h.BlockAccessListHash = &balHash
+	}
 
 	return h, nil
+}
+
+func uint256FromBig(value *big.Int, field string) (*uint256.Int, error) {
+	converted, overflow := uint256.FromBig(value)
+	if overflow {
+		return nil, fmt.Errorf("ethel: %s exceeds 256 bits", field)
+	}
+	return converted, nil
 }
 
 // gethBody is the Geth RLP body structure: [transactions, uncles, withdrawals?]
@@ -250,8 +280,8 @@ func DecodeGethBody(data []byte) (*GethBodyResult, error) {
 	if err := rlp.DecodeBytes(raw, &elems); err != nil {
 		return nil, fmt.Errorf("ethel: decode body list: %w", err)
 	}
-	if len(elems) < 2 {
-		return nil, fmt.Errorf("ethel: body has %d elements, need >= 2", len(elems))
+	if len(elems) < 2 || len(elems) > 3 {
+		return nil, fmt.Errorf("ethel: body has %d elements, want 2 or 3", len(elems))
 	}
 
 	// Decode transactions list.
@@ -346,8 +376,8 @@ func decodeGethWithdrawal(data []byte) (*Withdrawal, error) {
 	if err := rlp.DecodeBytes(data, &elems); err != nil {
 		return nil, fmt.Errorf("decode withdrawal: %w", err)
 	}
-	if len(elems) < 4 {
-		return nil, fmt.Errorf("withdrawal has %d fields, need 4", len(elems))
+	if len(elems) != 4 {
+		return nil, fmt.Errorf("withdrawal has %d fields, want 4", len(elems))
 	}
 	w := &Withdrawal{}
 	if err := rlp.DecodeBytes(elems[0], &w.Index); err != nil {
