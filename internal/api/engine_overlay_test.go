@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"math/big"
 	"testing"
 
@@ -62,13 +63,39 @@ func TestExecutionPayloadV1ToBlockUsesEthereumRawTransactionsRoot(t *testing.T) 
 	wantRoot := deriveEthereumListHash(ethereumRawTransactions{raw})
 
 	blk, err := executionPayloadV1ToBlock(&ExecutionPayloadV1{
-		Transactions: []hexutil.Bytes{raw},
+		BaseFeePerGas: hexBigFromUint64(0),
+		Transactions:  []hexutil.Bytes{raw},
 	})
 	if err != nil {
 		t.Fatalf("executionPayloadV1ToBlock() error = %v", err)
 	}
 	if blk.TxHash() != wantRoot {
 		t.Fatalf("TxHash() = %s, want %s", blk.TxHash(), wantRoot)
+	}
+}
+
+func TestExecutionPayloadBaseFeeSupports256Bits(t *testing.T) {
+	var payload ExecutionPayloadV1
+	if err := json.Unmarshal([]byte(`{"baseFeePerGas":"0x100000000000000000000","transactions":[]}`), &payload); err != nil {
+		t.Fatalf("unmarshal large base fee: %v", err)
+	}
+
+	blk, err := executionPayloadV1ToBlock(&payload)
+	if err != nil {
+		t.Fatalf("executionPayloadV1ToBlock() error = %v", err)
+	}
+	want, ok := new(big.Int).SetString("100000000000000000000", 16)
+	if !ok {
+		t.Fatal("invalid test base fee")
+	}
+	header := blockHeader(blk)
+	if header == nil || header.BaseFee == nil || header.BaseFee.ToBig().Cmp(want) != 0 {
+		t.Fatalf("block base fee = %v, want %v", header.BaseFee, want)
+	}
+
+	roundTrip := blockToExecutionPayloadV1(blk, nil)
+	if roundTrip == nil || roundTrip.BaseFeePerGas == nil || roundTrip.BaseFeePerGas.ToInt().Cmp(want) != 0 {
+		t.Fatalf("round-trip base fee = %v, want %v", roundTrip, want)
 	}
 }
 
@@ -101,7 +128,7 @@ func TestBuildExecutionPayloadV1CalculatesNextBaseFee(t *testing.T) {
 	}, cfg)
 
 	want := misc.CalcBaseFee(cfg, parentHeader).Uint64()
-	if uint64(payload.BaseFeePerGas) != want {
-		t.Fatalf("BaseFeePerGas = %d, want %d", uint64(payload.BaseFeePerGas), want)
+	if payload.BaseFeePerGas.ToInt().Uint64() != want {
+		t.Fatalf("BaseFeePerGas = %d, want %d", payload.BaseFeePerGas.ToInt().Uint64(), want)
 	}
 }

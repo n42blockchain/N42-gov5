@@ -781,7 +781,7 @@ func TestEngineAPIv4RejectsOversizedOsakaPayload(t *testing.T) {
 		GasUsed:       0,
 		Timestamp:     2,
 		ExtraData:     make([]byte, vmcore.MaxRLPBlockSizeFusaka+1),
-		BaseFeePerGas: 1,
+		BaseFeePerGas: hexBigFromUint64(1),
 		Transactions:  []hexutil.Bytes{},
 		Withdrawals:   []*Withdrawal{},
 		BlobGasUsed:   hexUint64Ptr(0),

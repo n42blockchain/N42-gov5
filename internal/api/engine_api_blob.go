@@ -49,7 +49,7 @@ type ExecutionPayloadV3 struct {
 	GasUsed       hexutil.Uint64  `json:"gasUsed"`
 	Timestamp     hexutil.Uint64  `json:"timestamp"`
 	ExtraData     hexutil.Bytes   `json:"extraData"`
-	BaseFeePerGas hexutil.Uint64  `json:"baseFeePerGas"`
+	BaseFeePerGas *hexutil.Big    `json:"baseFeePerGas"`
 	BlockHash     types.Hash      `json:"blockHash"`
 	Transactions  []hexutil.Bytes `json:"transactions"`
 	Withdrawals   []*Withdrawal   `json:"withdrawals"`
@@ -264,7 +264,7 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	if err := validateExecutionPayloadHeader(blockHeader(blk), parent, e.v1().chainConfig()); err != nil {
 		return e.v1().invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
 	}
-	if err := validateExecutionPayloadTransactions(payload.Transactions, e.v1().chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(*payload.ExcessBlobGas), uint64(payload.GasLimit)); err != nil {
+	if err := validateExecutionPayloadTransactionsWithBaseFee(payload.Transactions, e.v1().chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), blockHeader(blk).BaseFee, uint64(*payload.ExcessBlobGas), uint64(payload.GasLimit)); err != nil {
 		return e.v1().invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
 	}
 	if err := validateExecutionPayloadBlockRLPSize(blk, payload.Transactions, e.v1().chainConfig(), enginePayloadHashOptions{

@@ -480,7 +480,7 @@ func TestExecutionPayloadV2ToBlockPreservesExplicitEmptyWithdrawalsHash(t *testi
 			GasUsed:       0,
 			Timestamp:     2,
 			ExtraData:     []byte{},
-			BaseFeePerGas: 7,
+			BaseFeePerGas: hexBigFromUint64(7),
 			Transactions:  []hexutil.Bytes{},
 		},
 		Withdrawals: []*Withdrawal{},

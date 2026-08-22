@@ -39,7 +39,7 @@ type ExecutionPayloadV1 struct {
 	GasUsed       hexutil.Uint64  `json:"gasUsed"`
 	Timestamp     hexutil.Uint64  `json:"timestamp"`
 	ExtraData     hexutil.Bytes   `json:"extraData"`
-	BaseFeePerGas hexutil.Uint64  `json:"baseFeePerGas"`
+	BaseFeePerGas *hexutil.Big    `json:"baseFeePerGas"`
 	BlockHash     types.Hash      `json:"blockHash"`
 	Transactions  []hexutil.Bytes `json:"transactions"`
 }
@@ -240,7 +240,7 @@ func (e *EngineAPIV1) NewPayloadV1(ctx context.Context, payload *ExecutionPayloa
 	if err := validateExecutionPayloadHeader(blockHeader(blk), parent, e.chainConfig()); err != nil {
 		return e.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
 	}
-	if err := validateExecutionPayloadTransactions(payload.Transactions, e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), 0, uint64(payload.GasLimit)); err != nil {
+	if err := validateExecutionPayloadTransactionsWithBaseFee(payload.Transactions, e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), blockHeader(blk).BaseFee, 0, uint64(payload.GasLimit)); err != nil {
 		return e.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
 	}
 	if err := validateExecutionPayloadBlockRLPSize(blk, payload.Transactions, e.chainConfig(), enginePayloadHashOptions{}); err != nil {
@@ -286,7 +286,7 @@ func (e *EngineAPIV1) NewPayloadV2(ctx context.Context, payload *ExecutionPayloa
 	if err := validateExecutionPayloadHeader(blockHeader(blk), parent, e.chainConfig()); err != nil {
 		return e.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
 	}
-	if err := validateExecutionPayloadTransactions(payload.Transactions, e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), 0, uint64(payload.GasLimit)); err != nil {
+	if err := validateExecutionPayloadTransactionsWithBaseFee(payload.Transactions, e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), blockHeader(blk).BaseFee, 0, uint64(payload.GasLimit)); err != nil {
 		return e.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
 	}
 	if err := validateExecutionPayloadBlockRLPSize(blk, payload.Transactions, e.chainConfig(), enginePayloadHashOptions{

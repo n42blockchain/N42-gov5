@@ -321,6 +321,28 @@ func uint256FromHexUint64(v hexutil.Uint64) *uint256.Int {
 	return uint256.NewInt(uint64(v))
 }
 
+func uint256FromHexBig(v *hexutil.Big) (*uint256.Int, error) {
+	if v == nil {
+		return nil, fmt.Errorf("missing baseFeePerGas")
+	}
+	value, overflow := uint256.FromBig(v.ToInt())
+	if overflow {
+		return nil, fmt.Errorf("baseFeePerGas exceeds 256 bits")
+	}
+	return value, nil
+}
+
+func hexBigFromUint256(v *uint256.Int) *hexutil.Big {
+	if v == nil {
+		return nil
+	}
+	return (*hexutil.Big)(v.ToBig())
+}
+
+func hexBigFromUint64(v uint64) *hexutil.Big {
+	return (*hexutil.Big)(new(big.Int).SetUint64(v))
+}
+
 func uint64FromUint256OrZero(v *uint256.Int) uint64 {
 	if v == nil {
 		return 0
@@ -405,6 +427,10 @@ func applyExecutionPayloadForkFields(blk block.IBlock, withdrawals []*Withdrawal
 }
 
 func executionPayloadV1ToBlock(payload *ExecutionPayloadV1) (block.IBlock, error) {
+	baseFee, err := uint256FromHexBig(payload.BaseFeePerGas)
+	if err != nil {
+		return nil, err
+	}
 	txs, err := decodeTransactions(payload.Transactions)
 	if err != nil {
 		return nil, err
@@ -429,7 +455,7 @@ func executionPayloadV1ToBlock(payload *ExecutionPayloadV1) (block.IBlock, error
 		MixDigest:   payload.PrevRandao,
 		Nonce:       block.EncodeNonce(0),
 		Extra:       append([]byte(nil), payload.ExtraData...),
-		BaseFee:     uint256FromHexUint64(payload.BaseFeePerGas),
+		BaseFee:     baseFee,
 	}
 	return block.NewBlock(header, txs), nil
 }
@@ -525,7 +551,7 @@ func blockToExecutionPayloadV1(blk block.IBlock, cfg *params.ChainConfig) *Execu
 		GasUsed:       hexutil.Uint64(header.GasUsed),
 		Timestamp:     hexutil.Uint64(header.Time),
 		ExtraData:     append([]byte(nil), header.Extra...),
-		BaseFeePerGas: hexutil.Uint64(uint64FromUint256OrZero(header.BaseFee)),
+		BaseFeePerGas: hexBigFromUint256(header.BaseFee),
 		BlockHash:     ethCompatibleBlockHash(blk, cfg),
 		Transactions:  encodedTxs,
 	}
