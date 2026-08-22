@@ -328,3 +328,27 @@ func TestGetPayloadBodiesByRangeRejectsInvalidParams(t *testing.T) {
 		})
 	}
 }
+
+func TestGetPayloadBodiesByHashRejectsTooManyHashes(t *testing.T) {
+	engine := NewEngineAPIv4(NewBlockChainAPI(&API{engineOverlay: newEngineOverlay()}))
+
+	got, err := engine.GetPayloadBodiesByHashV1(context.Background(), make([]types.Hash, 33))
+	if err == nil {
+		t.Fatalf("GetPayloadBodiesByHashV1() error = nil, got %#v", got)
+	}
+	coded, ok := err.(interface{ ErrorCode() int })
+	if !ok {
+		t.Fatalf("GetPayloadBodiesByHashV1() error lacks ErrorCode(): %T", err)
+	}
+	if coded.ErrorCode() != -38004 {
+		t.Fatalf("GetPayloadBodiesByHashV1() ErrorCode() = %d, want -38004", coded.ErrorCode())
+	}
+
+	got, err = engine.GetPayloadBodiesByHashV1(context.Background(), make([]types.Hash, 32))
+	if err != nil {
+		t.Fatalf("GetPayloadBodiesByHashV1(32): %v", err)
+	}
+	if len(got) != 32 {
+		t.Fatalf("len(GetPayloadBodiesByHashV1(32)) = %d, want 32", len(got))
+	}
+}

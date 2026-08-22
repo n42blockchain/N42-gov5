@@ -459,6 +459,9 @@ func computeVersionedHash(commitment []byte) types.Hash {
 // GetPayloadBodiesByHashV1 returns execution payload bodies for the given block hashes.
 // engine_getPayloadBodiesByHashV1
 func (e *EngineAPIv4) GetPayloadBodiesByHashV1(ctx context.Context, hashes []types.Hash) ([]*ExecutionPayloadBodyV1, error) {
+	if len(hashes) > 32 {
+		return nil, &engineTooLargeRequestError{msg: fmt.Sprintf("requested hash count too large: %d", len(hashes))}
+	}
 	results := make([]*ExecutionPayloadBodyV1, len(hashes))
 
 	overlay := e.v1.overlay()
