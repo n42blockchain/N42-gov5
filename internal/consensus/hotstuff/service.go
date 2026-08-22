@@ -254,6 +254,75 @@ func (s *Service) committedParentBlocked(parentHash types.Hash) bool {
 	return true
 }
 
+// ensureParentApplied guarantees the block a leader is about to extend is the
+// live applied head, and re-applies it when the applied head trails it.
+//
+// Two recovery paths run at startup and they can disagree. The execution layer
+// reverts speculative (uncommitted) blocks back to the last COMMITTED head
+// (BlockChain.revertSpeculativeOnStartup); consensus restores its LockedQC from
+// disk, and that lock may name exactly the uncommitted block the revert just
+// rolled back. Every leader then extends the locked block,
+// checkQMDBLeaderSealParent finds a parent that is no longer the applied head,
+// and the sealed block is dropped as ErrStaleSeal. Nothing is broadcast, the
+// view times out, the next leader repeats it — the fleet wedges while the
+// loudest symptom is an Info line saying a seal lost to a competing candidate.
+//
+// Observed live 2026-08-21: seven validators stopped together at applied
+// 14527898 / committed 14527897 and then spun through 13 views producing
+// nothing. A single restarting node self-heals (its peers keep committing and
+// catch-up re-imports the block); it is the fleet-wide restart, where nobody
+// can make progress, that needs this.
+//
+// Re-applying goes through the sync layer's fetch-on-miss, which already knows
+// how to walk back to an applied ancestor and replay forward, and fetches the
+// body from a peer when this node lacks it. That is asynchronous, so this view
+// is skipped and the next leader finds the head aligned.
+//
+// Returns true when production may proceed.
+func (s *Service) ensureParentApplied(parentHash types.Hash) bool {
+	if parentHash == (types.Hash{}) || s.db == nil || s.blockFetcher == nil {
+		return true
+	}
+	var (
+		appliedNum  uint64
+		appliedHash types.Hash
+		haveApplied bool
+		parentNum   uint64
+		haveParent  bool
+	)
+	if err := s.db.View(s.ctx, func(tx kv.Tx) error {
+		// Read the SAME marker checkQMDBLeaderSealParent rejects against, so
+		// this gate and the failure it prevents cannot drift apart.
+		if n, h, ok, rerr := rawdb.ReadQMDBApplied(tx); rerr == nil && ok {
+			appliedNum, appliedHash, haveApplied = n, types.Hash(h), true
+		}
+		if hdr, rerr := rawdb.ReadHeaderByHash(tx, parentHash); rerr == nil && hdr != nil && hdr.Number != nil {
+			parentNum, haveParent = hdr.Number.Uint64(), true
+		}
+		return nil
+	}); err != nil {
+		return true // never block production on a failed diagnostic read
+	}
+	// No marker means no speculative-apply tracking (non-QMDB commitment), and
+	// then there is no stale-seal rejection to pre-empt either.
+	if !haveApplied || appliedHash == parentHash {
+		return true
+	}
+	// Only "applied trails the lock" is ours. A higher applied head on a
+	// sibling branch is an ordinary branch switch, which the miner's own align
+	// phase owns — it can unwind, which is what that case needs. Replaying
+	// forward is the thing it cannot do, and the thing this path supplies.
+	if haveParent && appliedNum >= parentNum {
+		return true
+	}
+	log.Warn("hotstuff: consensus parent is not the applied head; re-applying before producing",
+		"parent", parentHash, "parentNumber", parentNum, "haveParentHeader", haveParent,
+		"appliedNumber", appliedNum, "appliedHash", appliedHash)
+	metricParentReapplied.Inc()
+	s.blockFetcher.FetchBlockByHash(parentHash)
+	return false
+}
+
 func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash) {
 	if behind := s.heightBehind(); behind > blockProductionSyncGate {
 		log.Warn("hotstuff: behind peers, skipping block production and catching up",
@@ -264,6 +333,9 @@ func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash)
 		return
 	}
 	if s.committedParentBlocked(parentHash) {
+		return
+	}
+	if !s.ensureParentApplied(parentHash) {
 		return
 	}
 	s.blockProducer.TriggerBlockProduction(parentHash)
