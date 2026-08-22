@@ -271,7 +271,6 @@ func (s *Scheduler) NextTask() Task {
 func (s *Scheduler) recoverQuiescentWork() bool {
 	minExecution := s.numTxs
 	minValidation := s.numTxs
-	inFlight := false
 	for txIdx := 0; txIdx < s.numTxs; txIdx++ {
 		s.txMu[txIdx].Lock()
 		status := s.status[txIdx]
@@ -285,8 +284,6 @@ func (s *Scheduler) recoverQuiescentWork() bool {
 			if txIdx < minValidation {
 				minValidation = txIdx
 			}
-		case TxStatusExecuting:
-			inFlight = true
 		}
 	}
 	if s.numActive.Load() != 0 {
@@ -300,7 +297,10 @@ func (s *Scheduler) recoverQuiescentWork() bool {
 		rewindCounter(&s.validationIdx, int64(minValidation))
 		return true
 	}
-	return inFlight
+	// Executing can be observed during the narrow window before the claiming
+	// worker increments numActive. Yield TaskNone so callers back off instead
+	// of busy-spinning inside NextTask until that publication completes.
+	return false
 }
 
 func rewindCounter(counter *atomic.Int64, target int64) {
