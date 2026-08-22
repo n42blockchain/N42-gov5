@@ -391,6 +391,9 @@ func (e *EngineAPIv4) ForkchoiceUpdatedV4(
 // matching the requested versioned hashes. Entries are null if the
 // blob is not available locally.
 func (e *EngineAPIv4) GetBlobsV1(ctx context.Context, versionedHashes []types.Hash) ([]*BlobAndProofV1, error) {
+	if len(versionedHashes) > 128 {
+		return nil, &engineTooLargeRequestError{msg: fmt.Sprintf("requested blob count too large: %d", len(versionedHashes))}
+	}
 	if len(versionedHashes) == 0 {
 		return []*BlobAndProofV1{}, nil
 	}

@@ -352,3 +352,27 @@ func TestGetPayloadBodiesByHashRejectsTooManyHashes(t *testing.T) {
 		t.Fatalf("len(GetPayloadBodiesByHashV1(32)) = %d, want 32", len(got))
 	}
 }
+
+func TestGetBlobsV1RejectsTooManyHashes(t *testing.T) {
+	engine := NewEngineAPIv4(nil)
+
+	got, err := engine.GetBlobsV1(context.Background(), make([]types.Hash, 129))
+	if err == nil {
+		t.Fatalf("GetBlobsV1() error = nil, got %#v", got)
+	}
+	coded, ok := err.(interface{ ErrorCode() int })
+	if !ok {
+		t.Fatalf("GetBlobsV1() error lacks ErrorCode(): %T", err)
+	}
+	if coded.ErrorCode() != -38004 {
+		t.Fatalf("GetBlobsV1() ErrorCode() = %d, want -38004", coded.ErrorCode())
+	}
+
+	got, err = engine.GetBlobsV1(context.Background(), make([]types.Hash, 128))
+	if err != nil {
+		t.Fatalf("GetBlobsV1(128): %v", err)
+	}
+	if len(got) != 128 {
+		t.Fatalf("len(GetBlobsV1(128)) = %d, want 128", len(got))
+	}
+}
