@@ -495,7 +495,7 @@ func TestNewPayloadV1ReturnsParentLatestValidHashForInvalidGasLimit(t *testing.T
 		GasLimit:      hexutil.Uint64(params.MinGasLimit - 1),
 		GasUsed:       0,
 		Timestamp:     hexutil.Uint64(2),
-		BaseFeePerGas: hexutil.Uint64(1),
+		BaseFeePerGas: hexBigFromUint64(1),
 	}
 	blk, err := executionPayloadV1ToBlock(payload)
 	if err != nil {
@@ -539,7 +539,7 @@ func TestNewPayloadV1AcceptsPayloadWithMissingParent(t *testing.T) {
 		GasUsed:       0,
 		Timestamp:     hexutil.Uint64(10),
 		ExtraData:     hexutil.Bytes{0x01},
-		BaseFeePerGas: hexutil.Uint64(1),
+		BaseFeePerGas: hexBigFromUint64(1),
 	}
 	blk, err := executionPayloadV1ToBlock(payload)
 	if err != nil {
@@ -583,7 +583,7 @@ func TestForkchoiceUpdatedV1ReturnsSyncingForAcceptedPayload(t *testing.T) {
 		GasUsed:       0,
 		Timestamp:     hexutil.Uint64(10),
 		ExtraData:     hexutil.Bytes{0x01},
-		BaseFeePerGas: hexutil.Uint64(1),
+		BaseFeePerGas: hexBigFromUint64(1),
 	}
 	blk, err := executionPayloadV1ToBlock(payload)
 	if err != nil {
@@ -636,7 +636,7 @@ func TestNewPayloadV1AcceptedPayloadDoesNotBecomeKnownParent(t *testing.T) {
 		GasLimit:      hexutil.Uint64(30_000_000),
 		GasUsed:       0,
 		Timestamp:     hexutil.Uint64(10),
-		BaseFeePerGas: hexutil.Uint64(1),
+		BaseFeePerGas: hexBigFromUint64(1),
 	}
 	parentBlk, err := executionPayloadV1ToBlock(parent)
 	if err != nil {
@@ -663,7 +663,7 @@ func TestNewPayloadV1AcceptedPayloadDoesNotBecomeKnownParent(t *testing.T) {
 		GasLimit:      hexutil.Uint64(30_000_000),
 		GasUsed:       0,
 		Timestamp:     hexutil.Uint64(11),
-		BaseFeePerGas: hexutil.Uint64(1),
+		BaseFeePerGas: hexBigFromUint64(1),
 	}
 	childBlk, err := executionPayloadV1ToBlock(child)
 	if err != nil {
@@ -736,7 +736,7 @@ func TestNewPayloadV1ReturnsInvalidForDescendantOfRejectedPayload(t *testing.T) 
 		GasUsed:       0,
 		Timestamp:     hexutil.Uint64(4),
 		ExtraData:     hexutil.Bytes{0x01},
-		BaseFeePerGas: hexutil.Uint64(1),
+		BaseFeePerGas: hexBigFromUint64(1),
 	}
 	descendantBlock, err := executionPayloadV1ToBlock(descendantPayload)
 	if err != nil {
@@ -802,7 +802,7 @@ func TestForkchoiceUpdatedV1ReturnsInvalidForDescendantOfRejectedPayload(t *test
 		GasUsed:       0,
 		Timestamp:     hexutil.Uint64(4),
 		ExtraData:     hexutil.Bytes{0x01},
-		BaseFeePerGas: hexutil.Uint64(1),
+		BaseFeePerGas: hexBigFromUint64(1),
 	}
 	descendantBlock, err := executionPayloadV1ToBlock(descendantPayload)
 	if err != nil {

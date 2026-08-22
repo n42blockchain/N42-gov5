@@ -35,6 +35,10 @@ var (
 )
 
 func validateExecutionPayloadTransactions(txs []hexutil.Bytes, cfg *params.ChainConfig, blockNumber, timestamp, baseFee, excessBlobGas, blockGasLimit uint64) error {
+	return validateExecutionPayloadTransactionsWithBaseFee(txs, cfg, blockNumber, timestamp, uint256.NewInt(baseFee), excessBlobGas, blockGasLimit)
+}
+
+func validateExecutionPayloadTransactionsWithBaseFee(txs []hexutil.Bytes, cfg *params.ChainConfig, blockNumber, timestamp uint64, baseFee *uint256.Int, excessBlobGas, blockGasLimit uint64) error {
 	rules := &params.Rules{ChainID: new(big.Int)}
 	var blobBaseFee *uint256.Int
 	if cfg != nil {
@@ -43,7 +47,10 @@ func validateExecutionPayloadTransactions(txs []hexutil.Bytes, cfg *params.Chain
 			blobBaseFee = cfg.CalcBlobFee(excessBlobGas, timestamp)
 		}
 	}
-	baseFeeValue := uint256.NewInt(baseFee)
+	baseFeeValue := new(uint256.Int)
+	if baseFee != nil {
+		baseFeeValue.Set(baseFee)
+	}
 
 	for _, txBytes := range txs {
 		if len(txBytes) == 0 {
