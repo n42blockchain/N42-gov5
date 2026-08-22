@@ -70,13 +70,6 @@ type EngineStateAdapter struct {
 	// the sync path, or leave nil and fall back to the locally stored BAL.
 	balPrefetch func(hash types.Hash) []byte
 
-	// fastVerify skips the full-MPT VerifyStateRoot pass at end of
-	// executePayloadDetailed and trusts the HPH IntermediateRoot
-	// computed during execution. Set true for the wire-driven sync
-	// path (ExecutePayloadFromWire); leave false for CL/test paths
-	// where state-root reconstruction is the canonical verifier.
-	fastVerify bool
-
 	// hashedCanonical selects the reth-2.2-style hashed-canonical state
 	// model: EVM reads come from HashedAccounts/HashedStorage (keccak the
 	// key on access) instead of PlainState, and the state-root computer
@@ -145,6 +138,7 @@ type EngineStateAdapter struct {
 	// subsequent blocks in the same download batch. MDBX read transactions cannot
 	// see those uncommitted writes, but parent-relative validation (gas limit,
 	// base fee, timestamp) must still run for every block.
+	batchMu      sync.RWMutex
 	batchHeaders map[types.Hash]*block.Header
 }
 
@@ -190,6 +184,8 @@ func (a *EngineStateAdapter) PurgeHashedReadCache() { a.hashedReadCache.PurgeAll
 // boundary (success or failure — we can't tell which) costs one extra MDBX
 // read per hot key per batch, which is noise against the within-batch reuse.
 func (a *EngineStateAdapter) SetBatchTx(tx kv.RwTx) {
+	a.batchMu.Lock()
+	defer a.batchMu.Unlock()
 	a.batchTx = tx
 	if tx != nil {
 		a.batchHeaders = make(map[types.Hash]*block.Header)
@@ -369,10 +365,10 @@ func (a *EngineStateAdapter) executePayloadFromWireMode(blk *block.Block, withdr
 		v := *hdr.ParentBeaconRoot
 		parentBeaconRoot = &v
 	}
-	prevFast := a.fastVerify
-	a.fastVerify = fastVerify
-	defer func() { a.fastVerify = prevFast }()
-	result, err := a.executePayloadDetailed(blk, parentBeaconRoot, nil, withdrawals, allowMissingExpectedBloom)
+	result, err := a.executePayloadDetailedModeWithParent(
+		blk, types.Hash{}, parentBeaconRoot, nil, withdrawals,
+		allowMissingExpectedBloom, true, nil, fastVerify,
+	)
 	if err != nil {
 		return false, types.Hash{}, err
 	}
@@ -467,14 +463,14 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 }
 
 func (a *EngineStateAdapter) validatePayloadDetailed(blk *block.Block, parentHash types.Hash, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal, parentState *engineStateOverlay) (*enginePayloadExecutionResult, error) {
-	return a.executePayloadDetailedModeWithParent(blk, parentHash, parentBeaconRoot, expectedRequests, withdrawals, false, false, parentState)
+	return a.executePayloadDetailedModeWithParent(blk, parentHash, parentBeaconRoot, expectedRequests, withdrawals, false, false, parentState, false)
 }
 
 func (a *EngineStateAdapter) executePayloadDetailedMode(blk *block.Block, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal, allowMissingExpectedBloom, persist bool, parentState *engineStateOverlay) (_ *enginePayloadExecutionResult, retErr error) {
-	return a.executePayloadDetailedModeWithParent(blk, types.Hash{}, parentBeaconRoot, expectedRequests, withdrawals, allowMissingExpectedBloom, persist, parentState)
+	return a.executePayloadDetailedModeWithParent(blk, types.Hash{}, parentBeaconRoot, expectedRequests, withdrawals, allowMissingExpectedBloom, persist, parentState, false)
 }
 
-func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Block, parentHash types.Hash, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal, allowMissingExpectedBloom, persist bool, parentState *engineStateOverlay) (_ *enginePayloadExecutionResult, retErr error) {
+func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Block, parentHash types.Hash, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal, allowMissingExpectedBloom, persist bool, parentState *engineStateOverlay, fastVerify bool) (_ *enginePayloadExecutionResult, retErr error) {
 	// A failed block leaves the read cache holding values memoized from this
 	// (about to be rolled back) tx — drop them. The batch path additionally
 	// purges on every SetBatchTx.
@@ -505,7 +501,10 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 
 	// When a batch tx is supplied, run against it and let the caller commit
 	// (atomic state+head per batch). Otherwise open + commit our own tx.
-	tx := a.batchTx
+	a.batchMu.RLock()
+	batchTx := a.batchTx
+	a.batchMu.RUnlock()
+	tx := batchTx
 	ownTx := tx == nil
 	var err error
 	if ownTx {
@@ -665,7 +664,7 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 	// snapshot-direct (minimal) keeps no local trie — HashedAccounts/Storage are
 	// never scanned for a root, so skip the (30-60min / ~14GB) PlainState→Hashed
 	// init entirely. State is served from the warm overlay + snapshot cold tier.
-	if !a.fastVerify && a.snapshotCold == nil {
+	if !fastVerify && a.snapshotCold == nil {
 		if err := ethel.InitHashState(tx); err != nil {
 			return nil, err
 		}
@@ -1059,7 +1058,7 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 		// receipts-root / gas / logs-bloom checks above and the E2E-verified
 		// snapshot cold values feeding the warm overlay reader.
 		computedRoot = header.Root
-	} else if a.fastVerify {
+	} else if fastVerify {
 		// Wire-driven sync path (ExecutePayloadFromWire). Trust the HPH
 		// IntermediateRoot we already computed above — that's the same
 		// incremental algorithm the catchup executor uses at ~3000 blk/s
@@ -1088,7 +1087,7 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 		}
 		log.Error("State root mismatch", "block", blockNum,
 			"computed", computedRoot.Hex(), "expected", expected.stateRoot.Hex(),
-			"fastVerify", a.fastVerify, "hashedCanonical", a.hashedCanonical,
+			"fastVerify", fastVerify, "hashedCanonical", a.hashedCanonical,
 			"envFULLROOT", os.Getenv("N42_FULLROOT"),
 			"parentOverlay", overlayParentState != nil,
 			"executionOverlay", parentState != nil,
@@ -1150,8 +1149,12 @@ func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Blo
 	if err := rawdb.WriteCanonicalHash(tx, storedHash, blockNum); err != nil {
 		return nil, err
 	}
-	if a.batchTx != nil {
-		a.batchHeaders[ethCompatibleBlockHash(blk, a.chainCfg)] = header
+	if batchTx != nil {
+		a.batchMu.Lock()
+		if a.batchHeaders != nil {
+			a.batchHeaders[ethCompatibleBlockHash(blk, a.chainCfg)] = header
+		}
+		a.batchMu.Unlock()
 	}
 	// Journal this block's reverse-diff (pending until the batch commits) so a
 	// later shallow reorg can unwind it. storedHash is what canonical(blockNum)
@@ -1447,7 +1450,10 @@ func (a *EngineStateAdapter) CurrentHeadHash() types.Hash {
 // NewPayload cannot resolve the parent when the CL asks whether a
 // received payload extends the current head.
 func (a *EngineStateAdapter) HeaderByHash(hash types.Hash) *block.Header {
-	if header := a.batchHeaders[hash]; header != nil {
+	a.batchMu.RLock()
+	header := a.batchHeaders[hash]
+	a.batchMu.RUnlock()
+	if header != nil {
 		return header
 	}
 	tx, err := a.db.BeginRo(context.Background())
