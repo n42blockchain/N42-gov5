@@ -2,6 +2,7 @@ package ethel
 
 import (
 	"errors"
+	"math"
 	"sort"
 	"sync"
 
@@ -12,11 +13,15 @@ import (
 )
 
 const (
-	memoryPoolPriceBump     = uint64(10)
-	memoryPoolBlobPriceBump = uint64(100)
+	memoryPoolPriceBump       = uint64(10)
+	memoryPoolBlobPriceBump   = uint64(100)
+	memoryPoolMaxTransactions = 4096
 )
 
-var errMemoryPoolReplaceUnderpriced = errors.New("replacement transaction underpriced")
+var (
+	errMemoryPoolFull               = errors.New("transaction pool is full")
+	errMemoryPoolReplaceUnderpriced = errors.New("replacement transaction underpriced")
+)
 
 // MemoryTxPool is the small in-process pool used by eth-el's Engine and public
 // RPC services. It intentionally implements only the common.ITxsPool contract;
@@ -94,12 +99,81 @@ func (p *MemoryTxPool) AddLocal(tx *transaction.Transaction) error {
 		p.pending[*from][i] = tx
 		return nil
 	}
+	if len(p.byHash) >= memoryPoolMaxTransactions {
+		return errMemoryPoolFull
+	}
 	p.byHash[hash] = tx
 	p.pending[*from] = append(p.pending[*from], tx)
 	sort.SliceStable(p.pending[*from], func(i, j int) bool {
 		return p.pending[*from][i].Nonce() < p.pending[*from][j].Nonce()
 	})
 	return nil
+}
+
+// RemoveCanonical removes transactions made stale by transactions accepted
+// into the canonical chain. Removing all lower nonces also clears local
+// replacements when a different transaction with the same nonce was mined.
+// The method is intentionally outside common.ITxsPool so other node txpool
+// implementations do not need eth-el-specific lifecycle hooks.
+func (p *MemoryTxPool) RemoveCanonical(txs []*transaction.Transaction) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for _, canonical := range txs {
+		if canonical == nil {
+			continue
+		}
+		from := canonical.From()
+		if from == nil {
+			if pooled := p.byHash[canonical.Hash()]; pooled != nil {
+				from = pooled.From()
+			}
+		}
+		if from == nil {
+			p.removeHashLocked(canonical.Hash())
+			continue
+		}
+		pending := p.pending[*from]
+		kept := pending[:0]
+		for _, tx := range pending {
+			if tx == nil || tx.Nonce() <= canonical.Nonce() {
+				if tx != nil {
+					delete(p.byHash, tx.Hash())
+				}
+				continue
+			}
+			kept = append(kept, tx)
+		}
+		clear(pending[len(kept):])
+		if len(kept) == 0 {
+			delete(p.pending, *from)
+		} else {
+			p.pending[*from] = kept
+		}
+	}
+}
+
+func (p *MemoryTxPool) removeHashLocked(hash types.Hash) {
+	if p.byHash[hash] == nil {
+		return
+	}
+	delete(p.byHash, hash)
+	for from, pending := range p.pending {
+		for i, tx := range pending {
+			if tx == nil || tx.Hash() != hash {
+				continue
+			}
+			copy(pending[i:], pending[i+1:])
+			pending[len(pending)-1] = nil
+			pending = pending[:len(pending)-1]
+			if len(pending) == 0 {
+				delete(p.pending, from)
+			} else {
+				p.pending[from] = pending
+			}
+			return
+		}
+	}
 }
 
 func memoryPoolReplacementAllowed(old, replacement *transaction.Transaction) bool {
@@ -149,6 +223,9 @@ func (p *MemoryTxPool) Nonce(addr types.Address) uint64 {
 	var nonce uint64
 	for _, tx := range p.pending[addr] {
 		if tx != nil && tx.Nonce() >= nonce {
+			if tx.Nonce() == math.MaxUint64 {
+				return math.MaxUint64
+			}
 			nonce = tx.Nonce() + 1
 		}
 	}

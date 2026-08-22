@@ -86,6 +86,10 @@ type EngineAPIV1 struct {
 	missingAncestorObserver func(types.Hash)
 }
 
+type canonicalTransactionRemover interface {
+	RemoveCanonical([]*transaction.Transaction)
+}
+
 // NewEngineAPIV1 creates a new Engine API v1/v2 handler.
 func NewEngineAPIV1(api *BlockChainAPI) *EngineAPIV1 {
 	return &EngineAPIV1{api: api}
@@ -100,6 +104,15 @@ func (e *EngineAPIV1) SetStateAdapter(adapter *EngineStateAdapter) {
 // whose parent is not yet available locally.
 func (e *EngineAPIV1) SetMissingAncestorObserver(observer func(types.Hash)) {
 	e.missingAncestorObserver = observer
+}
+
+func (e *EngineAPIV1) removeCanonicalTransactions(blk block.IBlock) {
+	if e == nil || blk == nil || e.api == nil || e.api.api == nil {
+		return
+	}
+	if pool, ok := e.api.api.txspool.(canonicalTransactionRemover); ok {
+		pool.RemoveCanonical(blk.Transactions())
+	}
 }
 
 // HasBlockHash reports whether the Engine path can resolve a validated or
@@ -686,6 +699,7 @@ func (e *EngineAPIV1) resolveForkchoiceState(state *ForkchoiceStateV1) (block.IB
 		} else {
 			head = e.currentHead()
 			headHash = e.currentHeadHash()
+			e.removeCanonicalTransactions(head)
 		}
 	}
 	return head, headHash, nil, nil
@@ -767,6 +781,7 @@ func (e *EngineAPIV1) persistForkchoiceHead(headHash types.Hash) error {
 		if result.validationError != nil {
 			return result.validationError
 		}
+		e.removeCanonicalTransactions(payload.blk)
 	}
 	return nil
 }
