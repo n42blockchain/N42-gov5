@@ -410,9 +410,8 @@ func (e *EngineAPIv4) GetBlobsV1(ctx context.Context, versionedHashes []types.Ha
 	// built payloads. This is a scan over recently built payloads, which is
 	// bounded by maxOverlayPayloads.
 	type blobEntry struct {
-		blob       hexutil.Bytes
-		commitment hexutil.Bytes
-		proof      hexutil.Bytes
+		blob  hexutil.Bytes
+		proof hexutil.Bytes
 	}
 	blobIndex := make(map[types.Hash]*blobEntry)
 
@@ -427,9 +426,8 @@ func (e *EngineAPIv4) GetBlobsV1(ctx context.Context, versionedHashes []types.Ha
 			if len(bundle.Commitments[i]) >= 48 {
 				vHash := computeVersionedHash(bundle.Commitments[i])
 				blobIndex[vHash] = &blobEntry{
-					blob:       bundle.Blobs[i],
-					commitment: bundle.Commitments[i],
-					proof:      bundle.Proofs[i],
+					blob:  bundle.Blobs[i],
+					proof: bundle.Proofs[i],
 				}
 			}
 		}
@@ -440,9 +438,8 @@ func (e *EngineAPIv4) GetBlobsV1(ctx context.Context, versionedHashes []types.Ha
 	for i, h := range versionedHashes {
 		if entry, ok := blobIndex[h]; ok {
 			results[i] = &BlobAndProofV1{
-				Blob:       entry.blob,
-				Commitment: entry.commitment,
-				Proof:      entry.proof,
+				Blob:  entry.blob,
+				Proof: entry.proof,
 			}
 		}
 		// else: results[i] remains nil (blob not available)
@@ -614,9 +611,8 @@ func (e *EngineAPIv4) buildExecutionPayloadV4Stateful(parent block.IBlock, paren
 
 // BlobAndProofV1 contains blob data with its proof
 type BlobAndProofV1 struct {
-	Blob       hexutil.Bytes `json:"blob"`       // Blob data
-	Commitment hexutil.Bytes `json:"commitment"` // KZG commitment
-	Proof      hexutil.Bytes `json:"proof"`      // KZG proof
+	Blob  hexutil.Bytes `json:"blob"`  // Blob data
+	Proof hexutil.Bytes `json:"proof"` // KZG proof
 }
 
 // =============================================================================
