@@ -64,6 +64,7 @@ func TestExecutionPayloadV1ToBlockUsesEthereumRawTransactionsRoot(t *testing.T) 
 
 	blk, err := executionPayloadV1ToBlock(&ExecutionPayloadV1{
 		BaseFeePerGas: hexBigFromUint64(0),
+		LogsBloom:     make([]byte, block.BloomByteLength),
 		Transactions:  []hexutil.Bytes{raw},
 	})
 	if err != nil {
@@ -75,18 +76,24 @@ func TestExecutionPayloadV1ToBlockUsesEthereumRawTransactionsRoot(t *testing.T) 
 }
 
 func TestExecutionPayloadBaseFeeSupports256Bits(t *testing.T) {
-	var payload ExecutionPayloadV1
-	if err := json.Unmarshal([]byte(`{"baseFeePerGas":"0x100000000000000000000","transactions":[]}`), &payload); err != nil {
+	want := mustBigIntFromHex(t, "100000000000000000000")
+	payload := ExecutionPayloadV1{
+		BaseFeePerGas: (*hexutil.Big)(new(big.Int).Set(want)),
+		LogsBloom:     make([]byte, block.BloomByteLength),
+		Transactions:  []hexutil.Bytes{},
+	}
+	encoded, err := json.Marshal(&payload)
+	if err != nil {
+		t.Fatalf("marshal large base fee: %v", err)
+	}
+	var decoded ExecutionPayloadV1
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		t.Fatalf("unmarshal large base fee: %v", err)
 	}
 
-	blk, err := executionPayloadV1ToBlock(&payload)
+	blk, err := executionPayloadV1ToBlock(&decoded)
 	if err != nil {
 		t.Fatalf("executionPayloadV1ToBlock() error = %v", err)
-	}
-	want, ok := new(big.Int).SetString("100000000000000000000", 16)
-	if !ok {
-		t.Fatal("invalid test base fee")
 	}
 	header := blockHeader(blk)
 	if header == nil || header.BaseFee == nil || header.BaseFee.ToBig().Cmp(want) != 0 {
@@ -96,6 +103,27 @@ func TestExecutionPayloadBaseFeeSupports256Bits(t *testing.T) {
 	roundTrip := blockToExecutionPayloadV1(blk, nil)
 	if roundTrip == nil || roundTrip.BaseFeePerGas == nil || roundTrip.BaseFeePerGas.ToInt().Cmp(want) != 0 {
 		t.Fatalf("round-trip base fee = %v, want %v", roundTrip, want)
+	}
+}
+
+func mustBigIntFromHex(t *testing.T, value string) *big.Int {
+	t.Helper()
+	decoded, ok := new(big.Int).SetString(value, 16)
+	if !ok {
+		t.Fatalf("invalid test integer %q", value)
+	}
+	return decoded
+}
+
+func TestExecutionPayloadRejectsInvalidLogsBloomLength(t *testing.T) {
+	for _, size := range []int{0, block.BloomByteLength - 1, block.BloomByteLength + 1} {
+		_, err := executionPayloadV1ToBlock(&ExecutionPayloadV1{
+			BaseFeePerGas: hexBigFromUint64(0),
+			LogsBloom:     make([]byte, size),
+		})
+		if err == nil {
+			t.Fatalf("accepted logs bloom length %d", size)
+		}
 	}
 }
 

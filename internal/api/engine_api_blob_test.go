@@ -974,6 +974,7 @@ func TestEngineAPIv4RejectsMalformedExecutionRequestsAsInvalidParams(t *testing.
 
 	payload := &ExecutionPayloadV4{
 		BaseFeePerGas: hexBigFromUint64(0),
+		LogsBloom:     make([]byte, block.BloomByteLength),
 		BlobGasUsed:   hexUint64Ptr(0),
 		ExcessBlobGas: hexUint64Ptr(0),
 		Withdrawals:   []*Withdrawal{},

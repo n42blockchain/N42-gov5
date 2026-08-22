@@ -427,6 +427,9 @@ func applyExecutionPayloadForkFields(blk block.IBlock, withdrawals []*Withdrawal
 }
 
 func executionPayloadV1ToBlock(payload *ExecutionPayloadV1) (block.IBlock, error) {
+	if len(payload.LogsBloom) != block.BloomByteLength {
+		return nil, fmt.Errorf("invalid logsBloom length: have %d, want %d", len(payload.LogsBloom), block.BloomByteLength)
+	}
 	baseFee, err := uint256FromHexBig(payload.BaseFeePerGas)
 	if err != nil {
 		return nil, err
