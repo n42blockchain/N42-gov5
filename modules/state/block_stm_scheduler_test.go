@@ -220,6 +220,17 @@ func TestScheduler_RecoversQuiescentValidationFrontier(t *testing.T) {
 	}
 }
 
+func TestScheduler_QuiescentExecutingTaskYields(t *testing.T) {
+	s := NewScheduler(1)
+	s.executionIdx.Store(1)
+	s.validationIdx.Store(1)
+	s.status[0] = TxStatusExecuting
+
+	if task := s.NextTask(); task.Kind != TaskNone {
+		t.Fatalf("expected TaskNone while execution publication is pending, got %+v", task)
+	}
+}
+
 func TestScheduler_ValidationPriority(t *testing.T) {
 	// When both execution and validation are available, scheduler
 	// should prefer validation (progress unlocks downstream work).
