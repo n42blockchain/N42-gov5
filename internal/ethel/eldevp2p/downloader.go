@@ -934,11 +934,34 @@ func (d *Downloader) syncMissingAncestor(ctx context.Context, target types.Hash)
 		log.Info("eldevp2p: Engine validated missing ancestor",
 			"block", hdr.Number64().Uint64(), "hash", hdr.Hash().Hex(),
 			"status", status, "latestValid", latestValid)
-		if status == api.PayloadStatusAccepted || status == api.PayloadStatusSyncing {
-			return fmt.Errorf("Engine still missing parent for block %d", hdr.Number64().Uint64())
+		if err := d.validateMissingAncestorStatus(branch, i, status, latestValid); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func (d *Downloader) validateMissingAncestorStatus(branch []*block.Header, index int, status string, latestValidHash *types.Hash) error {
+	if index < 0 || index >= len(branch) || branch[index] == nil {
+		return errors.New("missing-ancestor import returned a status for an invalid branch index")
+	}
+	header := branch[index]
+	switch status {
+	case api.PayloadStatusValid:
+		return nil
+	case api.PayloadStatusAccepted, api.PayloadStatusSyncing:
+		return fmt.Errorf("Engine still missing parent for block %d", header.Number64().Uint64())
+	case api.PayloadStatusInvalid, api.PayloadStatusInvalidBlockHash:
+		latestValid := header.ParentHash
+		if latestValidHash != nil {
+			latestValid = *latestValidHash
+		}
+		rejectedTip := rejectedBranchTip(branch, index)
+		d.reportInvalidAncestor(rejectedTip, latestValid)
+		return fmt.Errorf("Engine rejected missing ancestor block %d with status %s", header.Number64().Uint64(), status)
+	default:
+		return fmt.Errorf("Engine returned unknown payload status %q for block %d", status, header.Number64().Uint64())
+	}
 }
 
 // prefetchAhead is how far past the executed frontier the pipeline prefetcher
