@@ -2,6 +2,7 @@ package ethel
 
 import (
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -25,6 +26,94 @@ func TestMemoryTxPoolOrdersTransactionsAndTracksNonce(t *testing.T) {
 	}
 	if nonce := pool.Nonce(from); nonce != 3 {
 		t.Fatalf("Nonce = %d, want 3", nonce)
+	}
+}
+
+func TestMemoryTxPoolRemovesCanonicalTransactionsAndStaleNonces(t *testing.T) {
+	pool := NewMemoryTxPool()
+	from := types.HexToAddress("0x1234")
+	other := types.HexToAddress("0x5678")
+	for _, nonce := range []uint64{0, 1, 2, 3} {
+		tx := transaction.NewTransaction(nonce, from, nil, uint256.NewInt(0), 21_000, uint256.NewInt(1), nil)
+		if err := pool.AddLocal(tx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	otherTx := transaction.NewTransaction(9, other, nil, uint256.NewInt(0), 21_000, uint256.NewInt(1), nil)
+	if err := pool.AddLocal(otherTx); err != nil {
+		t.Fatal(err)
+	}
+
+	canonical := transaction.NewTransaction(2, from, nil, uint256.NewInt(0), 21_000, uint256.NewInt(2), nil)
+	pool.RemoveCanonical([]*transaction.Transaction{canonical})
+
+	pending := pool.Pending(false)
+	if got := pending[from]; len(got) != 1 || got[0].Nonce() != 3 {
+		t.Fatalf("sender pending = %v, want only nonce 3", got)
+	}
+	if got := pending[other]; len(got) != 1 || got[0].Hash() != otherTx.Hash() {
+		t.Fatalf("other sender pending = %v, want unchanged transaction", got)
+	}
+	if _, count, _, _ := pool.Stats(); count != 2 {
+		t.Fatalf("transaction count = %d, want 2", count)
+	}
+}
+
+func TestMemoryTxPoolCanonicalRemovalUsesPooledSender(t *testing.T) {
+	pool := NewMemoryTxPool()
+	from := types.HexToAddress("0x1234")
+	tx := transaction.NewTransaction(7, from, nil, uint256.NewInt(0), 21_000, uint256.NewInt(1), nil)
+	if err := pool.AddLocal(tx); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := transaction.EncodeEthereumTransaction(tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := transaction.DecodeEthereumTransaction(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canonical.From() != nil || canonical.Hash() != tx.Hash() {
+		t.Fatal("decoded canonical transaction did not preserve hash while dropping sender")
+	}
+	pool.RemoveCanonical([]*transaction.Transaction{canonical})
+	if pool.Has(tx.Hash()) {
+		t.Fatal("canonical transaction remained in the hash index")
+	}
+}
+
+func TestMemoryTxPoolCapacityAndReplacement(t *testing.T) {
+	pool := NewMemoryTxPool()
+	from := types.HexToAddress("0x1234")
+	for nonce := uint64(0); nonce < memoryPoolMaxTransactions; nonce++ {
+		tx := transaction.NewTransaction(nonce, from, nil, uint256.NewInt(0), 21_000, uint256.NewInt(100), nil)
+		if err := pool.AddLocal(tx); err != nil {
+			t.Fatalf("AddLocal nonce %d: %v", nonce, err)
+		}
+	}
+	overflow := transaction.NewTransaction(memoryPoolMaxTransactions, from, nil, uint256.NewInt(0), 21_000, uint256.NewInt(100), nil)
+	if err := pool.AddLocal(overflow); !errors.Is(err, errMemoryPoolFull) {
+		t.Fatalf("overflow error = %v, want %v", err, errMemoryPoolFull)
+	}
+	replacement := transaction.NewTransaction(0, from, nil, uint256.NewInt(0), 21_000, uint256.NewInt(110), nil)
+	if err := pool.AddLocal(replacement); err != nil {
+		t.Fatalf("replacement at capacity: %v", err)
+	}
+	if !pool.Has(replacement.Hash()) {
+		t.Fatal("replacement was not added at capacity")
+	}
+}
+
+func TestMemoryTxPoolNonceSaturates(t *testing.T) {
+	pool := NewMemoryTxPool()
+	from := types.HexToAddress("0x1234")
+	tx := transaction.NewTransaction(math.MaxUint64, from, nil, uint256.NewInt(0), 21_000, uint256.NewInt(1), nil)
+	if err := pool.AddLocal(tx); err != nil {
+		t.Fatal(err)
+	}
+	if nonce := pool.Nonce(from); nonce != math.MaxUint64 {
+		t.Fatalf("Nonce = %d, want %d", nonce, uint64(math.MaxUint64))
 	}
 }
 

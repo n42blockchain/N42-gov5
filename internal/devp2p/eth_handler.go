@@ -647,6 +647,17 @@ func (h *EthHandler) announcePooledTransactions(rw gethp2p.MsgReadWriter, done <
 			if err != nil {
 				continue
 			}
+			current := make(map[types.Hash]struct{}, len(txs))
+			for _, tx := range txs {
+				if tx != nil {
+					current[tx.Hash()] = struct{}{}
+				}
+			}
+			for hash := range known {
+				if _, ok := current[hash]; !ok {
+					delete(known, hash)
+				}
+			}
 			for _, tx := range txs {
 				if tx == nil {
 					continue
