@@ -333,7 +333,7 @@ func TestGetPayloadBodiesByRangeRejectsInvalidParams(t *testing.T) {
 func TestGetPayloadBodiesByHashRejectsTooManyHashes(t *testing.T) {
 	engine := NewEngineAPIv4(NewBlockChainAPI(&API{engineOverlay: newEngineOverlay()}))
 
-	got, err := engine.GetPayloadBodiesByHashV1(context.Background(), make([]types.Hash, 33))
+	got, err := engine.GetPayloadBodiesByHashV1(context.Background(), make([]types.Hash, 1025))
 	if err == nil {
 		t.Fatalf("GetPayloadBodiesByHashV1() error = nil, got %#v", got)
 	}
@@ -345,12 +345,12 @@ func TestGetPayloadBodiesByHashRejectsTooManyHashes(t *testing.T) {
 		t.Fatalf("GetPayloadBodiesByHashV1() ErrorCode() = %d, want -38004", coded.ErrorCode())
 	}
 
-	got, err = engine.GetPayloadBodiesByHashV1(context.Background(), make([]types.Hash, 32))
+	got, err = engine.GetPayloadBodiesByHashV1(context.Background(), make([]types.Hash, 1024))
 	if err != nil {
-		t.Fatalf("GetPayloadBodiesByHashV1(32): %v", err)
+		t.Fatalf("GetPayloadBodiesByHashV1(1024): %v", err)
 	}
-	if len(got) != 32 {
-		t.Fatalf("len(GetPayloadBodiesByHashV1(32)) = %d, want 32", len(got))
+	if len(got) != 1024 {
+		t.Fatalf("len(GetPayloadBodiesByHashV1(1024)) = %d, want 1024", len(got))
 	}
 }
 
