@@ -32,6 +32,12 @@ var (
 	// until an operator clears the persisted state (see cmd/hotstuff-reset).
 	metricPersistedStateDiverged = prometheus.GetOrCreateCounter("hotstuff_persisted_state_diverged_total", false)
 
+	// Incremented when a leader's consensus parent is not the applied head and
+	// production is deferred until it is re-applied. Sustained non-zero on a
+	// whole fleet is the restart wedge: consensus locked on a block the startup
+	// speculative revert rolled back (see Service.ensureParentApplied).
+	metricParentReapplied = prometheus.GetOrCreateCounter("hotstuff_parent_reapplied_total", false)
+
 	// Vote counts of the last committed view (gauges).
 	metricPrepareVotes = prometheus.GetOrCreateCounter("hotstuff_prepare_votes", true)
 	metricCommitVotes  = prometheus.GetOrCreateCounter("hotstuff_commit_votes", true)
