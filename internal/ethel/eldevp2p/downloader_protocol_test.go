@@ -10,6 +10,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/network/eth69"
 )
 
@@ -77,6 +78,46 @@ func TestRejectedBranchTipStopsAtFirstDisconnectedHeader(t *testing.T) {
 	disconnected := &block.Header{Number: uint256.NewInt(11), ParentHash: types.HexToHash("0xff")}
 	if got := rejectedBranchTip([]*block.Header{h9, h10, disconnected}, 0); got != h10.Hash() {
 		t.Fatalf("rejectedBranchTip = %s, want %s", got, h10.Hash())
+	}
+}
+
+func TestMissingAncestorStatusRejectsInvalidBranch(t *testing.T) {
+	h9 := &block.Header{Number: uint256.NewInt(9)}
+	h10 := &block.Header{Number: uint256.NewInt(10), ParentHash: h9.Hash()}
+	h11 := &block.Header{Number: uint256.NewInt(11), ParentHash: h10.Hash()}
+	branch := []*block.Header{h9, h10, h11}
+	latestValid := h9.Hash()
+	var gotRejected, gotLatest types.Hash
+	d := &Downloader{invalidAncestorObserver: func(rejected, latest types.Hash) {
+		gotRejected, gotLatest = rejected, latest
+	}}
+
+	if err := d.validateMissingAncestorStatus(branch, 1, api.PayloadStatusInvalid, &latestValid); err == nil {
+		t.Fatal("INVALID status was accepted")
+	}
+	if gotRejected != h11.Hash() || gotLatest != latestValid {
+		t.Fatalf("observer got rejected=%s latest=%s, want rejected=%s latest=%s",
+			gotRejected, gotLatest, h11.Hash(), latestValid)
+	}
+}
+
+func TestMissingAncestorStatusHandlesAllEngineStatuses(t *testing.T) {
+	header := &block.Header{Number: uint256.NewInt(9), ParentHash: types.HexToHash("0x08")}
+	branch := []*block.Header{header}
+	d := &Downloader{}
+	if err := d.validateMissingAncestorStatus(branch, 0, api.PayloadStatusValid, nil); err != nil {
+		t.Fatalf("VALID status: %v", err)
+	}
+	for _, status := range []string{
+		api.PayloadStatusAccepted,
+		api.PayloadStatusSyncing,
+		api.PayloadStatusInvalid,
+		api.PayloadStatusInvalidBlockHash,
+		"UNKNOWN",
+	} {
+		if err := d.validateMissingAncestorStatus(branch, 0, status, nil); err == nil {
+			t.Fatalf("status %q was accepted", status)
+		}
 	}
 }
 
