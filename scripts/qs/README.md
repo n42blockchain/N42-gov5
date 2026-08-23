@@ -82,3 +82,36 @@ building (`Service.ensureParentApplied`). If a fleet still will not produce:
 ```bash
 hotstuff-reset -datadir <node>/chaindata -apply -force -backup <file>
 ```
+
+## Benchmark
+
+```bash
+./bench-run.sh --offset 1600000 --tag r1 --decay-sec 90
+```
+
+One round launches the fleet at the 480M gas tier, floods it, samples three
+60 s windows, then stops everything. Rules the rig enforces, each one paid for:
+
+- **`--offset` must be fresh every round.** Reusing a drained sender set makes
+  the pool demote in a spiral that looks exactly like a node failure.
+- **`--decay-sec 90` unless the chain is already idle.** A round following a
+  full-block round inherits its elevated baseFee, the fixed 10 gwei flood can no
+  longer fill every block, and occupancy collapses to ~53% — a number that
+  cannot be compared with a decayed-start round.
+- **Compare like-numbered windows.** baseFee climbs *within* a round too
+  (12.5% per full block), so win3 of a full-block round measures the flood's
+  price cap rather than the chain. win1 is the comparable one.
+- **Occupancy below ~95% means the supply pipe was the limiter**, not the
+  chain, and the TPS figure is not a chain result.
+- **`--profiling` only for rounds whose purpose IS the profile.** Mutex/block
+  sampling sits inside the critical path being measured.
+
+`--maxcpu` defaults to `(nproc + 6) / 7` — about 37 per node on 256 threads,
+matching how the Windows rig deliberately ran 7x5=35 on 32 threads. Override
+with `QS_MAXCPU` if that turns out wrong for this hardware.
+
+Two things the Windows rig had that are worth knowing about: `N42_MAX_GOSSIP_MB=8`
+(the 1 MiB default caps a block at ~8.5k transfers = 37% of the 480M tier no
+matter how deep the pool is, so without it the rig measures the wire cap) and
+`N42_STRESS_GASLIMIT=1` (lets gasceil reach the target in one block). Both are
+set by `bench-7node.sh`.
