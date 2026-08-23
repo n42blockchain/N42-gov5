@@ -1,0 +1,84 @@
+# qs fleet ops scripts (Linux)
+
+Port of the Windows PowerShell fleet scripts. Same chain, same ports, same
+levers; the Windows-only pieces (`sendbreak.exe` CTRL_BREAK, `Start-Process`,
+`robocopy`) are replaced by `kill -INT`, `setsid`, and `cp -a`.
+
+**No key material lives in this directory.** Both secrets are supplied from
+outside:
+
+| Secret | How | Note |
+|---|---|---|
+| 7 validator BLS keys | `QS_VALIDATORS` → a `qs-validators.md` you copy out of band | never commit, never place inside a node datadir |
+| dev faucet key | `N42_DEV_FAUCET_KEY` env var | without it the fleet runs but produces empty blocks |
+
+## Layout
+
+`qs-env.sh` is the single source of truth for paths, ports, environment levers
+and the launch argument set. Everything else sources it. That is deliberate: the
+Windows deploy script declared the environment only inside itself, and a rolling
+restart driven by a different script silently dropped `N42_TXINDEX_TAIL` — which
+put every tx-lookup row back inside the consensus commit and made
+`eth_getTransactionByHash` return null across the indexed range. A lever declared
+outside the thing that launches the process is a lever that gets dropped.
+
+For the same reason the launch arguments live in `qs_build_args` rather than
+being copied into each script; the Windows roll script carried a second copy
+annotated "mirrors deploy BuildArgs exactly".
+
+## Before the first run
+
+```bash
+# 1. Reserve the UDP ports. LINUX-ONLY HAZARD: 33000-33006 falls inside the
+#    default ephemeral range (net.ipv4.ip_local_port_range = 32768 60999), so
+#    any outbound connection from any process can steal a node's listen port.
+#    The Windows fleet lost a node on two consecutive starts to the same class
+#    of bug. TCP 32000-32006 is below the range and needs nothing.
+sudo sysctl -w net.ipv4.ip_local_reserved_ports=33000-33006
+
+# 2. File descriptors: 7 MDBX instances plus libp2p.
+ulimit -n 65536
+
+# 3. Point the scripts at your layout (defaults are under /data/blockchain).
+export QS_ROOT=/data/blockchain
+export QS_VALIDATORS=$HOME/qs-validators.md
+export N42_DEV_FAUCET_KEY=<dev faucet key>
+```
+
+## Weekly cycle
+
+| Step | Command |
+|---|---|
+| 1. stop + record | `./stop-fleet.sh` |
+| 2. fold the week in | `n42 replay-v2 --source $QS_SOURCE --target $QS_BASE --chain mainnet_qmdb_staggered --tree qmdb` |
+| 2b. seal + hot | `n42-ancient-seal --source $QS_BASE --out $QS_SEED --seal` then `--emit-hot` |
+| 2c. tx index | `./build-seed-txindex.sh` |
+| 3. re-seed | `mv $QS_NODE_ROOT{0..6}` aside, then `./deploy-7node.sh` |
+| 4. accept | heights advancing and identical across `20012..20018` |
+
+`--source` / `--target` take the datadir **root**; the tool appends
+`/chaindata` itself. Passing the chaindata path fails with an Accede-mode error.
+
+`--data` for `deploy-7node.sh` is the **era layout** dir, not the raw replay
+base.
+
+## Isolation
+
+The mesh binds and advertises `127.0.0.1` with discovery off. Do not change that
+to a LAN address while another machine runs this same chain with the same BLS
+keys: the two fleets would be seen as one validator set equivocating, and this
+chain ships its own equivocation detector and slashing.
+
+## Stopping
+
+`SIGINT` and `SIGTERM` both reach the graceful path (`cmd/n42/app.go`).
+**Never `SIGKILL`** — it truncates the MDBX spill and poisons the QMDB undo
+layer.
+
+A fleet-wide stop can leave `lockedQC` ahead of `committedQC`. That is expected
+and now self-healing: the next leader re-applies the locked parent before
+building (`Service.ensureParentApplied`). If a fleet still will not produce:
+
+```bash
+hotstuff-reset -datadir <node>/chaindata -apply -force -backup <file>
+```
