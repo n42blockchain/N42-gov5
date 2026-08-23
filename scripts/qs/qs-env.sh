@@ -162,6 +162,10 @@ qs_build_args() {
         # phone-facing HTTP surface needs an explicit address.
         --mobileverify.http "127.0.0.1:$((QS_MOBILE_BASE + i))"
         --pprof --pprof.port "$((QS_PPROF_BASE + i))")
+  # Mutex/block profiling is ON for a production fleet and OFF for a benchmark:
+  # the sampling sits inside the very critical path a throughput round measures,
+  # so leaving it on makes the number incomparable with every earlier round.
+  [[ ${QS_PROFILE_CONTENTION:-1} == 1 ]] && QS_ARGS+=(--pprof.mutex --pprof.block)
   [[ -n ${QS_EXTRA_ARGS:-} ]] && { local extra; read -ra extra <<<"$QS_EXTRA_ARGS"; QS_ARGS+=("${extra[@]}"); }
   for j in {0..6}; do
     (( j == i )) && continue
