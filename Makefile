@@ -78,7 +78,7 @@ deps: go-version
 	go mod tidy
 	@echo "deps done!"
 
-n42: go-version
+n42: go-version version-check
 	@echo "start build $(APP_NAME)..."
 	#go build -v ${LDFLAGS} -o $(BUILD_PATH)$(APP_NAME)  ${APP_PATH}
 	$(GOBUILD) -o $(BUILD_PATH)$(APP_NAME)  ${APP_PATH}
@@ -184,7 +184,7 @@ open-output:
 
 .PHONY: build test test-short race-core fmt vet lint bench-smoke ci clef reth-tools reth-cs-head reth-cs-timeseries reth-cs-cumulative reth-history-stats
 .PHONY: race bench cover check install tidy help test-cover test-verbose perf-baseline
-.PHONY: version version-bump version-minor version-major maturity-smoke maturity-baseline
+.PHONY: version version-check version-bump version-minor version-major maturity-smoke maturity-baseline
 .PHONY: ops-smoke interop-smoke soak-smoke release-check eest-log eest-watch eest-cycle eest-audit eest-repair
 
 # =============================================================================
@@ -192,7 +192,7 @@ open-output:
 # =============================================================================
 
 # 全仓编译（不触发 go mod tidy，也不修改版本文件）
-build: go-version
+build: go-version version-check
 	@echo "==> go build ./..."
 	$(GO) build $(GO_FLAGS) ./...
 
@@ -428,6 +428,7 @@ help:
 	@echo ""
 	@echo "  版本管理 (Version):"
 	@echo "    version       - 显示当前版本"
+	@echo "    version-check - 检查 VERSION 与源码版本一致"
 	@echo "    version-bump  - 递增构建号 (5.1.486 -> 5.1.487)"
 	@echo "    version-minor - 递增小版本 (5.1.486 -> 5.2.0)"
 	@echo "    version-major - 递增大版本 (5.1.486 -> 6.0.0)"
@@ -442,7 +443,16 @@ version:
 	@cat VERSION 2>/dev/null || echo "VERSION file not found"
 	@echo "Git: $(GIT_COMMIT) ($(GIT_BRANCH))"
 
-# 递增构建号 (每次 build)
+# 检查发布文件与编译进二进制的源码常量一致。普通构建不修改版本，保证可复现。
+version-check:
+	@src=$$(awk '/^[[:space:]]*VersionMajor[[:space:]]*=/{major=$$3} /^[[:space:]]*VersionMinor[[:space:]]*=/{minor=$$3} /^[[:space:]]*VersionBuild[[:space:]]*=/{build=$$3} END{print major "." minor "." build}' params/version.go); \
+	file=$$(tr -d '[:space:]' < VERSION); \
+	if [ "$$src" != "$$file" ]; then \
+		echo "version mismatch: params/version.go=$$src VERSION=$$file"; \
+		exit 1; \
+	fi
+
+# 显式递增构建号；普通 make n42 / make build 不改版本文件。
 version-bump:
 	@chmod +x scripts/bump_version.sh
 	@./scripts/bump_version.sh build
