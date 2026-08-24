@@ -97,8 +97,8 @@ func TestGenesisHashesAreDistinct(t *testing.T) {
 // reproduces it. Changing these is a flag day, not a bug fix.
 func TestLegacyChainsKeepDeployedGenesis(t *testing.T) {
 	for chain, want := range map[string]string{
-		"mainnet": params.MainnetGenesisHash.Hex(),
-		"testnet": params.TestnetGenesisHash.Hex(),
+		"mainnet": "0x594aad383881f3af7a4e7ecfa0f07589f0211a9794bb4ff105ae13d1360e497f",
+		"testnet": "0x5c0555d9ec963f58c63112862294e7e4836b12802304c23f2ec480a8f55cc5bb",
 	} {
 		got := params.GenesisHashByChainName(chain)
 		if got == nil || got.Hex() != want {
