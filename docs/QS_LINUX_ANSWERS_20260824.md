@@ -707,3 +707,17 @@ Ubuntu 脚本保留 `d7f40cc6` 引入的显式 source 分离，但修正默认�
 A/B 只能告诉你变量在哪一侧，不能告诉你是哪个字段 —— 中间必须有逐字段比对。
 你问的那句"bodyC 是漏了提款吗"正是把方向拉回来的一问：
 它逼出了 `bodydiff`/`hdrdiff`，17 个字段里一眼就看到唯一那个零值。
+
+---
+
+## 后续更正：bodyc EIP-7702 Authorization V 的历史值丢失
+
+继续扩大 gate 后，block `24,231,367` 暴露出第二个、与 ParentHash 无关的 columnar
+兼容问题：原 bodyc encoder 把 authorization V 除 1 以外全部写成 0，导致 canonical
+历史里的无效 legacy V=27 被变成可能有效的 V=0，进而改变状态。该问题已用 headerc
+保留的 canonical transaction root 做有条件无损恢复；没有修改 EIP-7702 验证规则。
+
+单块、10 万/20 万密集窗口均已在默认 GasUsed + ReceiptHash 校验下 `failed=0`。
+256-thread 硬件的稳定最优配置与完整 pprof 记录见
+[`WITNESS_LINUX_PERF_20260824.md`](WITNESS_LINUX_PERF_20260824.md)。此前“bodyc 已完全无损”的
+结论应以该文档的两项修复（ParentHash + authorization V）为准。

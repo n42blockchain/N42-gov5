@@ -781,7 +781,9 @@ func StreamingFullStateRoot(ctx context.Context, db kv.RoDB, workers int, tmpdir
 	accCh := make(chan kvCopy, 1024)
 	stoCh := make(chan kvCopy, 1024)
 	var accErr, stoErr error
+	var pumpWG sync.WaitGroup
 	pump := func(ch chan kvCopy, errp *error, colls []*etl.Collector) {
+		defer pumpWG.Done()
 		*errp = etl.StreamMerged(func(k, v []byte) error {
 			sel := kvCopy{append([]byte(nil), k...), append([]byte(nil), v...)}
 			select {
@@ -793,6 +795,7 @@ func StreamingFullStateRoot(ctx context.Context, db kv.RoDB, workers int, tmpdir
 		}, colls...)
 		close(ch)
 	}
+	pumpWG.Add(2)
 	go pump(accCh, &accErr, accColls)
 	go pump(stoCh, &stoErr, stoColls)
 
@@ -814,6 +817,11 @@ func StreamingFullStateRoot(ctx context.Context, db kv.RoDB, workers int, tmpdir
 	loader := trie.NewFlatDBTrieLoader("stream-verify", trie.NewRetainList(0), nil, nil, false)
 	root, err := loader.CalcTrieRootStreaming(accNext, stoNext)
 	cancel()
+	// CalcTrieRootStreaming can finish while one producer still has buffered
+	// output. Cancellation asks both pumps to stop; join them before reading
+	// accErr/stoErr so the early-finish path has the same synchronization as
+	// consuming a channel through close.
+	pumpWG.Wait()
 	if err != nil {
 		return types.Hash{}, fmt.Errorf("CalcTrieRootStreaming: %w", err)
 	}
