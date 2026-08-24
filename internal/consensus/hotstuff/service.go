@@ -603,9 +603,9 @@ func (s *Service) handleOutput(output EngineOutput) {
 		// match its applied chain.
 		hook := s.newStateHook()
 		cw, canMerge := s.blockProducer.(CanonicalCommitterWithTx)
+		var cErr error
 		if s.blockProducer != nil {
 			tCanon := time.Now()
-			var cErr error
 			if canMerge && hook != nil {
 				cErr = cw.CommitToCanonicalWith(output.Hash, hook.run)
 			} else {
@@ -626,12 +626,12 @@ func (s *Service) handleOutput(output EngineOutput) {
 		}
 		updateMetricsBlockCommitted(output.View)
 		tPersist := time.Now()
-		// hook.done, not "the commit succeeded": a deferred canonicalization
-		// rolls the transaction back before the hook runs, and the hook itself
-		// can fail while canonicalization commits (its error is deliberately
-		// swallowed there so bookkeeping cannot block the chain). Either way the
-		// state still has to reach disk, so fall back to its own transaction.
-		if hook != nil && hook.done {
+		// The hook must have completed AND the enclosing transaction must have
+		// committed. Update invokes the hook before tx.Commit, so hook.done alone
+		// can be true when the final MDBX commit fails and rolls every write back.
+		// In every other case the state still has to reach disk, so fall back to
+		// its own transaction.
+		if stateHookCommitted(hook, cErr) {
 			s.lastPersistedView = hook.view
 		} else {
 			s.persistState()
@@ -1156,6 +1156,13 @@ type stateHook struct {
 	run  func(tx kv.RwTx) error
 	view uint64
 	done bool // set by run on success; read only after the transaction returns
+}
+
+// stateHookCommitted reports whether the snapshot reached durable storage in
+// the enclosing canonicalization transaction. done only proves the callback
+// completed; the outer error proves the subsequent transaction commit did too.
+func stateHookCommitted(h *stateHook, commitErr error) bool {
+	return h != nil && h.done && commitErr == nil
 }
 
 // newStateHook resolves the state to persist. Returns nil when there is
