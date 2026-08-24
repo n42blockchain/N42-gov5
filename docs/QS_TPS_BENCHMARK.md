@@ -106,9 +106,14 @@ cold-follower path, broadcast measures the warm one. Say which you used.
    MDBX open; the flood died on "connection refused" and the round
    reported 0 tx.
 4. **Check the faucet first.** Funding cost is
-   `senders x (pertx + 10) x 21000 x gasPrice`. The faucet refills from
+   approximately `senders x (pertx + 10) x 21000 x gasPrice` (plus the
+   funding transfers' own gas). The faucet refills from
    `devBlockReward` (~86k ETH/day) — overnight is enough — but a broke
    faucet presents as mass transaction rejection, not as an error.
+   Read the balance and mined nonce at `latest`; `pending` nonce only says how
+   far the pool's contiguous nonce chain extends. A fresh replay from an
+   external/mainnet source has no months of native-fleet rewards, unlike a
+   weekly replay whose source is the stopped fleet's node 0.
 5. **Read occupancy, not just TPS.** Fast empty blocks and slow full
    blocks both produce mid-range TPS for completely different reasons.
 
