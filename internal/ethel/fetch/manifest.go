@@ -236,10 +236,44 @@ func readManifest(ctx context.Context, source string) ([]byte, error) {
 		return readManifestHTTP(ctx, source)
 	}
 	if err == nil && parsed.Scheme == "file" {
-		return os.ReadFile(parsed.Path)
+		return os.ReadFile(fileURLPath(parsed))
 	}
 	// Bare path → local file.
 	return os.ReadFile(source)
+}
+
+// fileURLPath turns a parsed file:// URL back into an OS path.
+//
+// Not just parsed.Path, because of how Windows drive letters survive url.Parse.
+// Both spellings occur in the wild:
+//
+//	file:///C:/dir/x  → Host ""    Path "/C:/dir/x"   (the correct form)
+//	file://C:/dir/x   → Host "C:"  Path "/dir/x"      (two slashes: drive becomes the HOST)
+//
+// The second form loses the drive if you read Path alone, and the damage is
+// silent on Windows: a leading-slash path is resolved against the CURRENT
+// DRIVE, so "/dir/x" opens D:\dir\x when the process runs from D:. That is why
+// this went unnoticed — the test ran from C:, where the stripped path happened
+// to resolve to the same file.
+func fileURLPath(u *url.URL) string {
+	p := u.Path
+	if u.Host != "" && isWindowsDrive(u.Host) {
+		p = "/" + u.Host + p
+	}
+	// "/C:/dir/x" is not a valid OS path; drop the leading slash the URL form adds.
+	if len(p) >= 3 && p[0] == '/' && isWindowsDrive(p[1:3]) {
+		p = p[1:]
+	}
+	return p
+}
+
+// isWindowsDrive reports whether s is a bare drive designator such as "C:".
+func isWindowsDrive(s string) bool {
+	if len(s) != 2 || s[1] != ':' {
+		return false
+	}
+	c := s[0]
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
 // readManifestHTTP downloads the manifest body. Manifests are tiny (a few
