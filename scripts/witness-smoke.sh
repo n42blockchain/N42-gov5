@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Read-only correctness smoke for the Ethereum historical witness dataset.
-# Canonical headers/bodies come from geth ancient; witness/senders remain in
-# the N42 freezer. This is not an N42 fleet transaction benchmark.
+# Headers/bodies, witness, and senders come from the N42 columnar freezer.
+# This is not an N42 fleet transaction benchmark.
 set -euo pipefail
 
 D=${D:-/data/blockchain/witness}
-HB=${HB:-/data/blockchain/witness-geth}
+HB=${HB:-/data/blockchain/witness}
 CODE_DB=${CODE_DB:-/data/blockchain/code-mdbx}
 BIN=${BIN:-/data/blockchain/bin/witness-replay}
 START=${START:-24000022}
@@ -20,7 +20,7 @@ END=$((START + COUNT))
 
 mkdir -p "$OUT" "$(dirname "$LOG")"
 
-for path in "$BIN" "$HB/headers.cidx" "$HB/bodies.cidx" \
+for path in "$BIN" "$HB/headerc.cidx" "$HB/bodyc.cidx" \
   "$D/witness.cidx" "$D/senders.cidx" "$CODE_DB/mdbx.dat"; do
   if [[ ! -e "$path" ]]; then
     echo "ERROR: required input missing: $path" >&2
