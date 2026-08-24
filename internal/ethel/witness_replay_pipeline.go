@@ -143,8 +143,13 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		return fmt.Errorf("open headers/bodies source: %w", err)
 	}
 	defer hbSource.close()
-	switch hbSource.(type) {
+	switch src := hbSource.(type) {
 	case *n42CompactSource:
+		// This pipeline walks block numbers in order on one reader goroutine,
+		// which is exactly the shape read-ahead is for: decoding an 8192-block
+		// body segment costs ~1s+, and without overlap the whole worker fleet
+		// waits it out. See BodyCompactReader.EnableLookahead.
+		src.br.EnableLookahead()
 		log.Info("Headers/bodies source", "format", "n42-columnar", "path", cfg.HeadersBodiesPath, "max_block", hbSource.maxBlock())
 	default:
 		log.Info("Headers/bodies source", "format", "geth-ancient", "path", cfg.HeadersBodiesPath, "frozen", hbSource.maxBlock())
