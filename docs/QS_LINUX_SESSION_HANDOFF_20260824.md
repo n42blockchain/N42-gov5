@@ -60,9 +60,17 @@ or secp256k1 private keys.
   design, as confirmed by the operator.
 - Target checkpoint was repaired to target canonical head/hash:
   `13,536,950 / 0x9923b24baf104277f88f4dfdfa842c9c94197099d1ad1f02dcac4f60b1bb3414`.
-  New replay exports also record source progress separately as
-  `sourceHead=13,497,579`; the existing `number`/`hash` pair remains the target
-  canonical identity.
+  It now also records source progress separately as `sourceHead=13,497,579`;
+  the existing `number`/`hash` pair remains the target canonical identity. The
+  updated checkpoint is copied to `qs-era-linux`; both files have SHA-256
+  `0775c8e1cb32af05e8c074814ffb3d63be845e9c6cddf4fe366d46c38ac8d158`.
+- The replay base had a stale `network.json` claiming mainnet/JMT/APoS even
+  though its actual genesis/state are QS/QMDB/HotStuff. It was backed up as
+  `network.json.pre-qmdb-fix-20260824` and replaced with the verified node0
+  binding. `n42 db stats` now opens it under `mainnet_qmdb_staggered` and sees
+  target head `13,536,950`. Replay-v2 now validates an existing target binding,
+  persists one for a new target, and fails rather than warning on post-export
+  or binding errors.
 - Derived fleet seed: `/data/blockchain/qs-era-linux`; 12 ancient eras,
   sealed end `12,582,912`; deep verification passed 768 sampled blocks.
 - Seed txindex covers `12,582,912..13,536,950`.

@@ -533,3 +533,51 @@ Code table rows: 2673190  bytes: 18325340160
 Code MDBX 单块重放 `24,000,022` 的原始命令与日志，或对应的 canonical receipts
 freezer。这样才能继续区分 witness 生成/消费规则漂移、EVM fork 配置差异和输入表语义
 错配。
+
+---
+
+## Linux 执行回报：R3 已修正并落到现有数据（2026-08-24 06:18–06:22 UTC）
+
+`e5314923 fix(replay): preserve source head in checkpoint` 已实现建议 schema：
+
+```json
+{
+  "sourceHead": 13497579,
+  "number": 13536950,
+  "hash": "0x9923b24baf104277f88f4dfdfa842c9c94197099d1ad1f02dcac4f60b1bb3414"
+}
+```
+
+`sourceHead` 从 target DB 的 `replay_src_height` 读取；内存 stats 只作为旧调用者的
+非零 fallback。`number`/`hash` 继续成对表示 target canonical head。旧消费者忽略新增
+JSON 字段的兼容测试、`internal/replay` 普通测试和 race 测试均通过。
+
+现有数据通过 current-source `replay-v2` 更新时明确打印：
+
+```text
+lastSourceBlock=13497579 startBlock=13497580
+already complete
+Blocks: 0 processed
+Checkpoint written: source block 13497579, target block 13536950
+```
+
+所以没有重新执行任何块。新 checkpoint 已同步到
+`/data/blockchain/qs-replay-linux` 与 `/data/blockchain/qs-era-linux`，两者 SHA-256
+均为 `0775c8e1cb32af05e8c074814ffb3d63be845e9c6cddf4fe366d46c38ac8d158`；旧文件
+保留为 `checkpoint.json.pre-sourcehead-e5314923`。
+
+### 同时发现并修正 canonical base 的陈旧 network binding
+
+`/data/blockchain/qs-replay-linux/network.json` 原来错误标记为
+`mainnet / jmt-blake3 / apos`，但 DB 内实际 genesis 是 QS 的 `a2d2ff…`，数据表是
+QMDB，且该 seed 已成功运行 HotStuff 舰队。错误 manifest 会让受保护的 QS DB 命令
+直接报 `datadir network binding mismatch`。
+
+数据侧已用 node0 的同链 manifest 修正，原文件保留为
+`network.json.pre-qmdb-fix-20260824`；随后 `n42 db stats` 已以
+`mainnet_qmdb_staggered / qmdb / hotstuff` 成功只读打开，并确认 target head
+`13,536,950`。
+
+代码侧新增 replay-v2 防线：已有 target manifest 在开始前必须匹配所选 chain；无
+manifest 的新 target 在 post-export 成功后写入正确 binding；post-export 或 binding
+失败现在返回非零，而不是打印 warning 后假成功。定向普通/race 测试通过。
