@@ -923,6 +923,22 @@ func (r *BodyCompactReader) ReadBody(blockNum uint64) (*DecodedBlock, error) {
 	return r.cachedBlocks[idx], nil
 }
 
+// TakeBody is the destructive sequential-read variant used by bulk pipelines.
+// Once the returned block has been handed to its worker, the segment cache no
+// longer needs to retain a second reference to it. Clearing the slot keeps an
+// 8192-block bodyc segment from pinning every already-dispatched transaction,
+// calldata and access list until the next segment is decoded. Random-access
+// callers must continue to use ReadBody.
+func (r *BodyCompactReader) TakeBody(blockNum uint64) (*DecodedBlock, error) {
+	body, err := r.ReadBody(blockNum)
+	if err != nil {
+		return nil, err
+	}
+	idx := int(blockNum % HeaderSegmentSize)
+	r.cachedBlocks[idx] = nil
+	return body, nil
+}
+
 func (r *BodyCompactReader) loadSegment(segNum int64) error {
 	if uint64(segNum) >= r.segments {
 		return fmt.Errorf("segment %d out of range (%d)", segNum, r.segments)
