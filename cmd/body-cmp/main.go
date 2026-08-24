@@ -10,6 +10,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
+
+	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
@@ -137,6 +140,16 @@ func main() {
 func diffTx(idx int, g, n *transaction.Transaction) {
 	gh, nh := g.Hash(), n.Hash()
 	if gh == nh {
+		// A hash comparison does catch a damaged authorization — the auth list
+		// is part of the type-4 preimage — but it only tells you THAT the tx
+		// differs. Diffing the authorization fields here names the offending
+		// one directly, which is the difference between "tx[53] differs" and
+		// "auth[0].V is 27 upstream and 0 locally".
+		if d := diffAuthList(g, n); d != "" {
+			fmt.Printf("  tx[%d] hash match but AUTH LIST DIFFERS: %x type=%d\n", idx, gh[:8], g.Type())
+			fmt.Print(d)
+			return
+		}
 		fmt.Printf("  tx[%d] hash match: %x type=%d\n", idx, gh[:8], g.Type())
 		return
 	}
@@ -166,4 +179,48 @@ func diffTx(idx int, g, n *transaction.Transaction) {
 func die(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 	os.Exit(1)
+}
+
+// diffAuthList names the differing field inside an EIP-7702 authorization.
+// Returns "" when they match.
+func diffAuthList(g, n *transaction.Transaction) string {
+	ga, na := g.AuthList(), n.AuthList()
+	if len(ga) == 0 && len(na) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	if len(ga) != len(na) {
+		fmt.Fprintf(&b, "    auth count geth=%d n42=%d\n", len(ga), len(na))
+		return b.String()
+	}
+	for i := range ga {
+		a, c := ga[i], na[i]
+		if a.ChainID.Cmp(&c.ChainID) != 0 {
+			fmt.Fprintf(&b, "    auth[%d].ChainID geth=%s n42=%s\n", i, a.ChainID.String(), c.ChainID.String())
+		}
+		if a.Address != c.Address {
+			fmt.Fprintf(&b, "    auth[%d].Address geth=%x n42=%x\n", i, a.Address, c.Address)
+		}
+		if a.Nonce != c.Nonce {
+			fmt.Fprintf(&b, "    auth[%d].Nonce geth=%d n42=%d\n", i, a.Nonce, c.Nonce)
+		}
+		if u256(a.V) != u256(c.V) {
+			fmt.Fprintf(&b, "    auth[%d].V geth=%s n42=%s  <-- non-parity V is flattened by a pre-bfAuthVFull segment\n",
+				i, u256(a.V), u256(c.V))
+		}
+		if u256(a.R) != u256(c.R) {
+			fmt.Fprintf(&b, "    auth[%d].R geth=%s n42=%s\n", i, u256(a.R), u256(c.R))
+		}
+		if u256(a.S) != u256(c.S) {
+			fmt.Fprintf(&b, "    auth[%d].S geth=%s n42=%s\n", i, u256(a.S), u256(c.S))
+		}
+	}
+	return b.String()
+}
+
+func u256(v *uint256.Int) string {
+	if v == nil {
+		return "<nil>"
+	}
+	return v.String()
 }
