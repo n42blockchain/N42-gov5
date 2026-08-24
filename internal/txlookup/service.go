@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/cscompact"
@@ -52,6 +53,7 @@ func (s *Service) SetVerifier(v TxVerifier) { s.verifier = v }
 type txSegmentCached struct {
 	segNum     uint64
 	startBlock uint64
+	mu         sync.Mutex // protects the lazy load and its negative cache
 	seg        *TxSegment // lazy loaded
 	loadFailed bool       // negative cache: don't retry after failure
 }
@@ -108,19 +110,24 @@ func (s *Service) Lookup(tx kv.Tx, txHash types.Hash) (*uint64, error) {
 
 	// L1: RecSplit segments (newest first).
 	for _, sc := range s.segments {
+		sc.mu.Lock()
 		if sc.seg == nil {
 			if sc.loadFailed {
+				sc.mu.Unlock()
 				continue
 			}
 			seg, err := s.loadSegment(sc)
 			if err != nil {
 				log.Warn("Failed to load txlookup segment", "seg", sc.segNum, "err", err)
 				sc.loadFailed = true
+				sc.mu.Unlock()
 				continue
 			}
 			sc.seg = seg
 		}
-		if result := sc.seg.Lookup(txHash); result != nil {
+		seg := sc.seg
+		sc.mu.Unlock()
+		if result := seg.Lookup(txHash); result != nil {
 			if s.verifier == nil {
 				return result, nil
 			}

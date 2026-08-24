@@ -2,6 +2,7 @@ package txlookup
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -16,6 +17,61 @@ func memSource(startBlock uint64, perBlock [][]types.Hash) BlockTxSource {
 			return nil, nil
 		}
 		return perBlock[i], nil
+	}
+}
+
+// TestServiceConcurrentFirstLookup exercises the lazy-open boundary. RPC
+// lookups share one Service, so the first requests for a cold segment may all
+// arrive before sc.seg has been populated. Only one goroutine may initialize
+// the segment reader; the others must observe the published immutable reader.
+func TestServiceConcurrentFirstLookup(t *testing.T) {
+	dir := t.TempDir()
+	const startBlock, blocks = 7_000, 32
+
+	perBlock := make([][]types.Hash, blocks)
+	for b := range perBlock {
+		for i := 0; i < 16; i++ {
+			perBlock[b] = append(perBlock[b], hashFor(uint64(startBlock+b), i))
+		}
+	}
+	if err := BuildSegmentFromSource(context.Background(), dir,
+		startBlock, startBlock+blocks, memSource(startBlock, perBlock)); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	svc, err := NewService(dir)
+	if err != nil {
+		t.Fatalf("open service: %v", err)
+	}
+	defer svc.Close()
+
+	const goroutines = 32
+	start := make(chan struct{})
+	errs := make(chan string, goroutines)
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			blockOffset := i % blocks
+			h := perBlock[blockOffset][i%len(perBlock[blockOffset])]
+			got, err := svc.Lookup(nil, h)
+			want := uint64(startBlock + blockOffset)
+			if err != nil {
+				errs <- err.Error()
+			} else if got == nil {
+				errs <- "lookup returned nil"
+			} else if *got != want {
+				errs <- "lookup returned wrong block"
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
 	}
 }
 
