@@ -17,8 +17,8 @@ or secp256k1 private keys.
 ## Repository and binaries
 
 - Repository: `/home/n42/src/n42/N42-gov5`
-- Branch: `main`; at 2026-08-24 05:00 UTC local and `origin/main` were
-  `c3d8059e fix(txflood): abort partial sender loads`.
+- Branch: `main`; current release commit is
+  `e75524f1 build: 5.7.960` (pending the final push at the time of this edit).
 - Relevant pushed commits from this session:
   - `283071f6 build: enforce 5.7.956 version consistency`
   - `468cbe22 build: auto-increment version before compilation`
@@ -34,10 +34,24 @@ or secp256k1 private keys.
   - `58d49032 fix(witness): gate block-worker sweeps`
   - `b8dd1f06 fix(qs): clear persisted pool before benchmarks`
   - `c3d8059e fix(txflood): abort partial sender loads`
-- `/data/blockchain/bin/n42` reports `5.7.959-6537ed32`, SHA-256
-  `1c0c0dac07b7773f602ddecbe61c43f23b005f0821bd6aee902217d4eaf6ab62`.
+  - `b8391c24 fix(witness): prefer explicit code database`
+  - `1ffd1c70 docs(qs): record Linux review answers`
+  - `91fcca3b fix(witness): gate replay with complete code database`
+  - `e5314923 fix(replay): preserve source head in checkpoint`
+  - `64bdd927 fix(replay): bind target network identity`
+  - `e75524f1 build: 5.7.960`
+- `/data/blockchain/bin/n42` reports `5.7.960-e75524f1`, SHA-256
+  `8f0705b73c2dcaa1da9128e01eeda7548427ac4fbdaa7304b5ede00c0fa8dbd7`.
+  The prior 5.7.959 binary is retained as
+  `/data/blockchain/bin/n42.pre-v5.7.960-e75524f1`.
 - `/data/blockchain/bin/txflood` SHA-256
   `e6deb6849073b362d313afc37b7ee351f4b94be0d6543a07d3c80602eb4cd731`.
+- `/data/blockchain/bin/witness-replay` is now a clean VCS build at
+  `1ffd1c7064ebb06005a4e813ff511f96c0b93ab6`, SHA-256
+  `e979b0dd6ea5e8feb2e576860262e19658fdd0416e7c120e16961806aef6b84d`.
+  `b8391c24` makes a populated explicit MDBX Code datadir suppress implicit
+  detection of the older codes freezer; an explicit `--codes-freezer` still
+  wins.
 - `make n42` and `make build` now increment the build version once before
   compilation. Never probe with `n42 version`; that starts a node. Use
   `n42 --version`.
@@ -54,6 +68,17 @@ or secp256k1 private keys.
   design, as confirmed by the operator.
 - Target checkpoint was repaired to target canonical head/hash:
   `13,536,950 / 0x9923b24baf104277f88f4dfdfa842c9c94197099d1ad1f02dcac4f60b1bb3414`.
+  It now also records source progress separately as `sourceHead=13,497,579`;
+  the existing `number`/`hash` pair remains the target canonical identity. The
+  updated checkpoint is copied to `qs-era-linux`; both files have SHA-256
+  `0775c8e1cb32af05e8c074814ffb3d63be845e9c6cddf4fe366d46c38ac8d158`.
+- The replay base had a stale `network.json` claiming mainnet/JMT/APoS even
+  though its actual genesis/state are QS/QMDB/HotStuff. It was backed up as
+  `network.json.pre-qmdb-fix-20260824` and replaced with the verified node0
+  binding. `n42 db stats` now opens it under `mainnet_qmdb_staggered` and sees
+  target head `13,536,950`. Replay-v2 now validates an existing target binding,
+  persists one for a new target, and fails rather than warning on post-export
+  or binding errors.
 - Derived fleet seed: `/data/blockchain/qs-era-linux`; 12 ancient eras,
   sealed end `12,582,912`; deep verification passed 768 sampled blocks.
 - Seed txindex covers `12,582,912..13,536,950`.
@@ -188,10 +213,16 @@ decides how to incorporate the answers.
 4. Stop the fleet gracefully before any exclusive witness hardware sweep.
 5. Witness format smoke already passed 0–200,000 with 121,793 tx and
    `failed=0`; this is not a performance result. `witness/senders` indexes both
-   cover 25,765,566, but no source manifest exists, so full 858 GiB transfer
-   integrity is not cryptographically verified.
-6. Only after the developer confirms the data/binary/range, run the corrected
-   `/data/blockchain/bin/witness-sweep.sh`: it first gates
-   dense `24,980,000–24,990,000` at workers=1, then sweeps block workers
-   8/16/32/64/128 only if `failed=0`. It never uses continue-on-error and never
-   deletes prior result directories.
+   cover 25,765,566. `/data/blockchain/witness/MANIFEST.txt` now records 488/488
+   transferred files matching by size and head/tail 4 MiB MD5.
+6. `/data/blockchain/code-mdbx` now contains 2,673,190 Code rows, but the
+   single-block W4 gate at 24,000,022 still fails with the exact old gas
+   mismatch even when the incomplete codes freezer is not opened. The old
+   `5ccc9bb9` binary and an on-the-fly ecrecover run reproduce the same result.
+   See the appended Linux result in `docs/QS_LINUX_ANSWERS_20260824.md` and the
+   three `w4-block-24000022-*.log` files under `/data/blockchain/wr-logs`.
+7. Do not run the dense gate or any witness performance sweep until the second
+   W4 cause is identified. The earlier `24,980,000–24,990,000` range has no
+   canonical basis; the eventual correctness gate must start in the known
+   failing 24,000,000 range and must finish with `failed=0` before performance
+   is counted.

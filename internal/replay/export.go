@@ -10,6 +10,7 @@ package replay
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -19,14 +20,18 @@ import (
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/snapshot"
 	"github.com/n42blockchain/N42/internal/sync/torrentsync"
+	bmtstore "github.com/n42blockchain/N42/lib/bmt/store"
+	jmtstore "github.com/n42blockchain/N42/lib/jmt/store"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
 )
 
 // CheckpointEntry records a trusted block for fast sync.
 type CheckpointEntry struct {
-	Number uint64 `json:"number"`
-	Hash   string `json:"hash"`
+	SourceHead uint64 `json:"sourceHead"`
+	Number     uint64 `json:"number"`
+	Hash       string `json:"hash"`
 }
 
 // RunPostExport creates snapshot, EraE segments, and checkpoint after replay.
@@ -37,6 +42,10 @@ func (e *EngineV2) RunPostExport(ctx context.Context) error {
 	targetHead, targetHash, err := e.postReplayHead(ctx)
 	if err != nil {
 		return fmt.Errorf("resolve target head: %w", err)
+	}
+	sourceHead, err := e.postReplaySourceHead(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve replay source head: %w", err)
 	}
 
 	if e.cfg.SnapshotAtEnd {
@@ -54,7 +63,44 @@ func (e *EngineV2) RunPostExport(ctx context.Context) error {
 	}
 
 	// Always write checkpoint
-	return e.writeCheckpoint(targetHead, targetHash)
+	return e.writeCheckpoint(sourceHead, targetHead, targetHash)
+}
+
+func (e *EngineV2) postReplaySourceHead(ctx context.Context) (uint64, error) {
+	resumeTable := jmtstore.JMTRootTable
+	switch e.cfg.TreeType {
+	case "bmt":
+		resumeTable = bmtstore.BMTRootTable
+	case "qmdb":
+		resumeTable = modules.QMDBMeta
+	case "mpt":
+		resumeTable = modules.MPTRoot
+	}
+
+	var sourceHead uint64
+	err := e.dstDB.View(ctx, func(tx kv.Tx) error {
+		data, err := tx.GetOne(resumeTable, []byte("replay_src_height"))
+		if err != nil {
+			return err
+		}
+		if len(data) >= 8 {
+			sourceHead = binary.BigEndian.Uint64(data)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	if sourceHead == 0 {
+		// Older tests and callers may not have persisted replay_src_height.
+		// CurrentBlock is source progress (never the gap-filled target height),
+		// so it is a safe compatibility fallback when non-zero.
+		if e.stats != nil && e.stats.CurrentBlock > 0 {
+			return e.stats.CurrentBlock, nil
+		}
+		return 0, fmt.Errorf("replay_src_height is missing from %s", resumeTable)
+	}
+	return sourceHead, nil
 }
 
 func (e *EngineV2) postReplayHead(ctx context.Context) (uint64, types.Hash, error) {
@@ -115,11 +161,11 @@ func (e *EngineV2) exportEraE(ctx context.Context, targetHead uint64) error {
 	return svc.GenerateManifest()
 }
 
-func (e *EngineV2) writeCheckpoint(targetHead uint64, targetHash types.Hash) error {
-	cp := CheckpointEntry{Number: targetHead, Hash: targetHash.Hex()}
+func (e *EngineV2) writeCheckpoint(sourceHead, targetHead uint64, targetHash types.Hash) error {
+	cp := CheckpointEntry{SourceHead: sourceHead, Number: targetHead, Hash: targetHash.Hex()}
 	data, _ := json.MarshalIndent(cp, "", "  ")
 	path := filepath.Join(e.cfg.TargetPath, "checkpoint.json")
-	fmt.Printf("Checkpoint written: target block %d → %s\n", targetHead, path)
+	fmt.Printf("Checkpoint written: source block %d, target block %d → %s\n", sourceHead, targetHead, path)
 	return os.WriteFile(path, data, 0644)
 }
 

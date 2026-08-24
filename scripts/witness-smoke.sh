@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Read-only format smoke for the Ethereum historical witness dataset.
-# This proves that the input tables open and the selected range replays with
-# failed=0. Early blocks are intentionally not used as a performance result.
+# Read-only correctness smoke for the Ethereum historical witness dataset.
+# Canonical headers/bodies come from geth ancient; witness/senders remain in
+# the N42 freezer. This is not an N42 fleet transaction benchmark.
 set -euo pipefail
 
 D=${D:-/data/blockchain/witness}
+HB=${HB:-/data/blockchain/witness-geth}
+CODE_DB=${CODE_DB:-/data/blockchain/code-mdbx}
 BIN=${BIN:-/data/blockchain/bin/witness-replay}
-START=${START:-0}
-COUNT=${COUNT:-200000}
-WORKERS=${WORKERS:-32}
+START=${START:-24000022}
+COUNT=${COUNT:-1}
+WORKERS=${WORKERS:-1}
 MEM=${MEM:-32}
 GOGC=${GOGC:-300}
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}
@@ -18,11 +20,19 @@ END=$((START + COUNT))
 
 mkdir -p "$OUT" "$(dirname "$LOG")"
 
-echo "Ethereum witness format smoke"
-echo "input=$D range=[$START,$END) workers=$WORKERS output=$OUT"
+for path in "$BIN" "$HB/headers.cidx" "$HB/bodies.cidx" \
+  "$D/witness.cidx" "$D/senders.cidx" "$CODE_DB/mdbx.dat"; do
+  if [[ ! -e "$path" ]]; then
+    echo "ERROR: required input missing: $path" >&2
+    exit 1
+  fi
+done
 
-"$BIN" --input-headers-bodies "$D" --input-witness "$D" \
-  --codes-freezer "$D" --senders "$D" --output "$OUT" \
+echo "Ethereum witness format smoke"
+echo "headers-bodies=$HB witness=$D code-db=$CODE_DB range=[$START,$END) workers=$WORKERS output=$OUT"
+
+"$BIN" --input-headers-bodies "$HB" --input-witness "$D" \
+  --datadir "$CODE_DB" --senders "$D" --output "$OUT" \
   --no-output \
   --start "$START" --end "$END" --workers "$WORKERS" \
   --gogc "$GOGC" --mem-limit-gb "$MEM" 2>&1 | tee "$LOG"
@@ -35,4 +45,4 @@ fi
 
 echo "PASS: format smoke completed with failed=0"
 echo "log=$LOG"
-echo "NOTE: this early-block result is not a worker-scaling benchmark."
+echo "NOTE: this single-block result is a correctness gate, not a worker-scaling benchmark."
