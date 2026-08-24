@@ -13,13 +13,29 @@
 #   gc            — GC trace summary
 #   all [secs]    — run cpu + heap + alloc + mutex and save profiles/
 #
-# Requires: go (pprof is part of standard toolchain).
+# Raw profile capture requires curl. Top/flame-graph rendering additionally
+# requires a Go distribution that ships `go tool pprof`; some Ubuntu/custom Go
+# packages omit it, in which case this helper still preserves every raw profile.
 
 set -euo pipefail
 
 HOST="${PPROF_HOST:-localhost:6060}"
 OUT="${PPROF_OUT:-profiles}"
 mkdir -p "$OUT"
+
+have_pprof=1
+if ! go tool pprof -h >/dev/null 2>&1; then
+    have_pprof=0
+    echo "(note) go tool pprof is unavailable; capture is enabled, local top rendering is disabled" >&2
+fi
+
+pprof_top() {
+    if [[ "$have_pprof" == 0 ]]; then
+        echo "(note) go tool pprof is unavailable; raw profile was preserved for offline analysis" >&2
+        return 0
+    fi
+    go tool pprof "$@"
+}
 
 mode="${1:-help}"
 secs="${2:-60}"
@@ -37,10 +53,10 @@ case "$mode" in
         curl -sS "http://${HOST}/debug/pprof/profile?seconds=${secs}" > "$f"
         echo
         echo "=== top 30 by flat ==="
-        go tool pprof -top -nodecount=30 "$f" 2>/dev/null | head -45
+        pprof_top -top -nodecount=30 "$f" 2>/dev/null | head -45
         echo
         echo "=== top 30 by cum ==="
-        go tool pprof -top -cum -nodecount=30 "$f" 2>/dev/null | head -45
+        pprof_top -top -cum -nodecount=30 "$f" 2>/dev/null | head -45
         echo
         echo "Open flame graph: go tool pprof -http=:0 $f"
         ;;
@@ -50,7 +66,7 @@ case "$mode" in
         curl -sS "http://${HOST}/debug/pprof/heap" > "$f"
         echo
         echo "=== top 20 inuse_space ==="
-        go tool pprof -top -nodecount=20 -inuse_space "$f" 2>/dev/null | head -32
+        pprof_top -top -nodecount=20 -inuse_space "$f" 2>/dev/null | head -32
         ;;
     alloc)
         f="$OUT/alloc-$(ts).prof"
@@ -58,10 +74,10 @@ case "$mode" in
         curl -sS "http://${HOST}/debug/pprof/allocs" > "$f"
         echo
         echo "=== top 20 alloc_space ==="
-        go tool pprof -top -nodecount=20 -alloc_space "$f" 2>/dev/null | head -32
+        pprof_top -top -nodecount=20 -alloc_space "$f" 2>/dev/null | head -32
         echo
         echo "=== top 20 alloc_objects ==="
-        go tool pprof -top -nodecount=20 -alloc_objects "$f" 2>/dev/null | head -32
+        pprof_top -top -nodecount=20 -alloc_objects "$f" 2>/dev/null | head -32
         ;;
     mutex)
         need_pprof_flag
@@ -69,7 +85,7 @@ case "$mode" in
         echo "Mutex profile → $f"
         curl -sS "http://${HOST}/debug/pprof/mutex" > "$f"
         echo
-        go tool pprof -top -nodecount=20 "$f" 2>/dev/null | head -32
+        pprof_top -top -nodecount=20 "$f" 2>/dev/null | head -32
         ;;
     block)
         need_pprof_flag
@@ -77,7 +93,7 @@ case "$mode" in
         echo "Block profile → $f"
         curl -sS "http://${HOST}/debug/pprof/block" > "$f"
         echo
-        go tool pprof -top -nodecount=20 "$f" 2>/dev/null | head -32
+        pprof_top -top -nodecount=20 "$f" 2>/dev/null | head -32
         ;;
     goroutine)
         f="$OUT/goroutine-$(ts).txt"
@@ -93,11 +109,17 @@ case "$mode" in
         f="$OUT/cpu-$(ts).prof"
         echo "CPU profile ${secs}s → $f, opening flame graph..."
         curl -sS "http://${HOST}/debug/pprof/profile?seconds=${secs}" > "$f"
-        go tool pprof -http=:0 "$f"
+        pprof_top -http=:0 "$f"
         ;;
     inuse)
-        curl -sS "http://${HOST}/debug/pprof/heap" | \
-            go tool pprof -top -nodecount=15 -inuse_space - 2>/dev/null | head -25
+        if [[ "$have_pprof" == 0 ]]; then
+            f="$OUT/heap-$(ts).prof"
+            curl -sS "http://${HOST}/debug/pprof/heap" > "$f"
+            echo "Heap snapshot → $f (render offline)"
+        else
+            curl -sS "http://${HOST}/debug/pprof/heap" | \
+                pprof_top -top -nodecount=15 -inuse_space - 2>/dev/null | head -25
+        fi
         ;;
     gc)
         # Read runtime GC stats via expvar or trace. Quick alternative:
@@ -120,10 +142,10 @@ case "$mode" in
         echo "Done. Files in $OUT/"
         echo
         echo "=== CPU top 20 flat ==="
-        go tool pprof -top -nodecount=20 "$OUT/cpu-${stamp}.prof" 2>/dev/null | head -32
+        pprof_top -top -nodecount=20 "$OUT/cpu-${stamp}.prof" 2>/dev/null | head -32
         echo
         echo "=== Heap top 15 inuse ==="
-        go tool pprof -top -nodecount=15 -inuse_space "$OUT/heap-${stamp}.prof" 2>/dev/null | head -25
+        pprof_top -top -nodecount=15 -inuse_space "$OUT/heap-${stamp}.prof" 2>/dev/null | head -25
         ;;
     help|*)
         cat <<EOF

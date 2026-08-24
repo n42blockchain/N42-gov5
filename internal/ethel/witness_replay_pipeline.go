@@ -577,7 +577,12 @@ func feedBlocks(
 		if err != nil {
 			return fmt.Errorf("read header %d: %w", blockNum, err)
 		}
-		body, err := hbSource.body(blockNum)
+		var body *GethBodyResult
+		if consuming, ok := hbSource.(consumingHeadersBodiesSource); ok {
+			body, err = consuming.takeBody(blockNum)
+		} else {
+			body, err = hbSource.body(blockNum)
+		}
 		if err != nil {
 			return fmt.Errorf("read body %d: %w", blockNum, err)
 		}
