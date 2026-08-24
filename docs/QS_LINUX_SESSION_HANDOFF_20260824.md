@@ -60,6 +60,9 @@ or secp256k1 private keys.
   design, as confirmed by the operator.
 - Target checkpoint was repaired to target canonical head/hash:
   `13,536,950 / 0x9923b24baf104277f88f4dfdfa842c9c94197099d1ad1f02dcac4f60b1bb3414`.
+  New replay exports also record source progress separately as
+  `sourceHead=13,497,579`; the existing `number`/`hash` pair remains the target
+  canonical identity.
 - Derived fleet seed: `/data/blockchain/qs-era-linux`; 12 ancient eras,
   sealed end `12,582,912`; deep verification passed 768 sampled blocks.
 - Seed txindex covers `12,582,912..13,536,950`.
