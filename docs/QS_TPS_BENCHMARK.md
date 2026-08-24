@@ -99,9 +99,13 @@ cold-follower path, broadcast measures the warm one. Say which you used.
 1. **`-sender-offset` must be fresh every round.** Reusing a drained or
    nonce-used sender set produces a demote spiral (pool collapses, TPS
    goes to zero) that looks exactly like a node failure.
-2. **Purge the pool journal between rounds.** A restored journal replays
-   the previous round's unmined transactions: one round whose flood never
-   even launched still reported ~10k TPS, purely from leftovers.
+2. **Purge the pool journal between rounds, after stopping.** Current builds
+   persist pending transactions in MDBX `TxPoolJournal` during graceful stop;
+   removing only the historical `txpool.journal` file (especially before
+   stop) does nothing. `bench-run.sh` now stops all nodes first and runs the
+   purpose-built `txpool-journal-reset -apply` against every stopped
+   chaindata. A restored journal once made a round whose flood never launched
+   report ~10k TPS purely from leftovers.
 3. **Poll RPC readiness, never sleep.** A fixed sleep raced the 12 GB
    MDBX open; the flood died on "connection refused" and the round
    reported 0 tx.
