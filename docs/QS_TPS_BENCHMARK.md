@@ -109,6 +109,8 @@ cold-follower path, broadcast measures the warm one. Say which you used.
 3. **Poll RPC readiness, never sleep.** A fixed sleep raced the 12 GB
    MDBX open; the flood died on "connection refused" and the round
    reported 0 tx.
+   Sender nonce probes also fail the flood after their bounded retries; a
+   partial sender set is a supply-harness failure, not a lower chain result.
 4. **Check the faucet first.** Funding cost is
    approximately `senders x (pertx + 10) x 21000 x gasPrice` (plus the
    funding transfers' own gas). The faucet refills from

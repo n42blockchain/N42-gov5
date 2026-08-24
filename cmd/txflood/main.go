@@ -409,7 +409,8 @@ func main() {
 
 	// ---------- flood ----------
 	if nf := atomic.LoadInt64(&nonceFailures); nf > 0 {
-		fmt.Printf("WARNING: %d senders had no usable nonce and were skipped; their slots are empty\n", nf)
+		fmt.Fprintf(os.Stderr, "FATAL: %d senders had no usable nonce after retries; refusing to submit a partial benchmark load\n", nf)
+		os.Exit(1)
 	}
 	fmt.Printf("flooding %d txs to %d node(s) (broadcast=%v conc=%d)...\n", len(raws), len(urls), *broadcast, *conc)
 	var idx int64 = -1
