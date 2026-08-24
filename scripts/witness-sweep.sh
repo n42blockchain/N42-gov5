@@ -6,16 +6,18 @@
 # nonce, faucet, txpool, or reward mechanism is involved here.
 #
 #   ./witness-sweep.sh
-#   START=24980000 COUNT=10000 ./witness-sweep.sh
+#   START=24000000 COUNT=10000 ./witness-sweep.sh
 #   WORKERS="8 16 32 64" ./witness-sweep.sh
 set -euo pipefail
 
 D=${D:-/data/blockchain/witness}
+HB=${HB:-/data/blockchain/witness-geth}
+CODE_DB=${CODE_DB:-/data/blockchain/code-mdbx}
 BIN=${BIN:-/data/blockchain/bin/witness-replay}
 HEADS_BIN=${HEADS_BIN:-/data/blockchain/bin/freezer-heads}
 OUTROOT=${OUTROOT:-/data/blockchain/wr-out}
 LOGROOT=${LOGROOT:-/data/blockchain/wr-logs}
-START=${START:-24980000}
+START=${START:-24000000}
 COUNT=${COUNT:-10000}
 WORKERS=${WORKERS:-"8 16 32 64 128"}
 MEM=${MEM:-96}
@@ -27,8 +29,8 @@ LOGDIR="$LOGROOT/$RUN_ID"
 
 mkdir -p "$RUNDIR" "$LOGDIR"
 
-for path in "$BIN" "$D/headerc.cidx" "$D/bodyc.cidx" \
-  "$D/witness.cidx" "$D/codes.cidx" "$D/senders.cidx"; do
+for path in "$BIN" "$HB/headers.cidx" "$HB/bodies.cidx" \
+  "$D/witness.cidx" "$D/senders.cidx" "$CODE_DB/mdbx.dat"; do
   if [[ ! -e "$path" ]]; then
     echo "ERROR: required input missing: $path" >&2
     exit 1
@@ -37,13 +39,23 @@ done
 
 echo "Ethereum witness block-worker sweep"
 echo "host: $(nproc) threads, $(free -g | awk '/^Mem:/{print $2}') GiB RAM"
-echo "input=$D range=[$START,$END) mem-limit=${MEM}g gogc=$GOGC"
+echo "headers-bodies=$HB witness=$D code-db=$CODE_DB range=[$START,$END) mem-limit=${MEM}g gogc=$GOGC"
 echo "run=$RUN_ID"
 
 if [[ -x "$HEADS_BIN" ]]; then
-  "$HEADS_BIN" "$D" 2>&1 | tee "$LOGDIR/input-heads.log"
+  "$HEADS_BIN" "$HB" "$D" 2>&1 | tee "$LOGDIR/input-heads.log"
+  bodies_items=$(awk '$1 == "bodies" {for (i=1; i<=NF; i++) if ($i ~ /^items=/) {sub(/^items=/, "", $i); print $i}}' "$LOGDIR/input-heads.log")
+  headers_items=$(awk '$1 == "headers" {for (i=1; i<=NF; i++) if ($i ~ /^items=/) {sub(/^items=/, "", $i); print $i}}' "$LOGDIR/input-heads.log")
   witness_items=$(awk '$1 == "witness" {for (i=1; i<=NF; i++) if ($i ~ /^items=/) {sub(/^items=/, "", $i); print $i}}' "$LOGDIR/input-heads.log")
   senders_items=$(awk '$1 == "senders" {for (i=1; i<=NF; i++) if ($i ~ /^items=/) {sub(/^items=/, "", $i); print $i}}' "$LOGDIR/input-heads.log")
+  if [[ -z "$bodies_items" || "$bodies_items" -lt "$END" ]]; then
+    echo "ERROR: geth bodies coverage ${bodies_items:-unknown} does not reach $END" >&2
+    exit 1
+  fi
+  if [[ -z "$headers_items" || "$headers_items" -lt "$END" ]]; then
+    echo "ERROR: geth headers coverage ${headers_items:-unknown} does not reach $END" >&2
+    exit 1
+  fi
   if [[ -z "$witness_items" || "$witness_items" -lt "$END" ]]; then
     echo "ERROR: witness coverage ${witness_items:-unknown} does not reach $END" >&2
     exit 1
@@ -75,8 +87,8 @@ run_one() {
 
   mkdir -p "$out"
   t0=$(date +%s)
-  if ! "$BIN" --input-headers-bodies "$D" --input-witness "$D" \
-      --codes-freezer "$D" --senders "$D" --output "$out" \
+  if ! "$BIN" --input-headers-bodies "$HB" --input-witness "$D" \
+      --datadir "$CODE_DB" --senders "$D" --output "$out" \
       --no-output \
       --start "$START" --end "$END" --workers "$workers" \
       --gogc "$GOGC" --mem-limit-gb "$MEM" 2>&1 | tee "$log"; then
