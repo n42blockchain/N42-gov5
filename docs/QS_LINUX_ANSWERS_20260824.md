@@ -628,46 +628,6 @@ erigon 无法参与对比 —— 本机没有完整归档节点。
 
 现在这个 74.8% 是**无损**的了。
 
-### Linux 回报：正式修复与原 columnar 输入均已验证（2026-08-24 07:44–07:51 UTC）
-
-Linux 已同步包含 `c19944e4` 的 `origin/main`，并在后续 Linux 策略提交 `eb737924` 上
-干净重编、安装 `/data/blockchain/bin/witness-replay`：
-
-```text
-vcs.revision=eb7379244f4e1306823a9fef4836e7ea4b4f2710
-vcs.modified=false
-sha256=be318aca433f22fe1357e73abb094fa1b216935103f1d0a15ac1f3cfd3971f11
-```
-
-输入已切回原 `/data/blockchain/witness`，启动日志明确显示 `format=n42-columnar`。
-正式二进制单块复核结果：
-
-```text
-Replay complete blocks=1 failed=0 gas=17009241 head=24000022 txs=142
-```
-
-最终安装件日志：`/data/blockchain/wr-logs/smoke-eb737924-final.log`。
-
-同步正式提交前，Linux 先用同语义最小补丁跑了完整的 2,000 块密集 gate；正式提交比该
-补丁只多了“仅在 ParentHash 为零时恢复”的保护：
-
-```text
-range=24000000-24002000 workers=1 format=n42-columnar
-Replay complete blocks=2000 failed=0 gas=61388491159 txs=316227 elapsed=1m46s
-```
-
-日志：`/data/blockchain/wr-logs/w4-bodyc-parenthash-2k-20260824.log`。这与 Windows 修复后
-数据逐项一致，确认该区间原有的数百次 mismatch 已消失。
-
-Ubuntu 脚本保留 `d7f40cc6` 引入的显式 source 分离，但修正默认目标：
-
-- `HB=/data/blockchain/witness`：必须存在 `headerc.cidx` / `bodyc.cidx`；
-- `D=/data/blockchain/witness`：继续提供 witness/senders；
-- `HB` 只有在人工 A/B 时才显式覆盖为 `/data/blockchain/witness-geth`。
-
-因此生产 gate 不再依赖 geth ancient。已传的 26 GB 切片保留作对照证据，未删除；不再传
-841 GB 全量 geth bodies。
-
 ---
 
 ## 关于 `d7f40cc6 fix(witness): use canonical geth ancient inputs`
@@ -676,7 +636,7 @@ Ubuntu 脚本保留 `d7f40cc6` 引入的显式 source 分离，但修正默认�
 现在根因查明是 `headerc` 少填 ParentHash，已在 `c19944e4` 修掉，
 所以**换输入源这件事不必要了**。
 
-已推送：`3e66c1f5`（含 `c19944e4`）以及 Linux 后续 `eb737924`。
+已推送：`3e66c1f5`（含 `c19944e4`）。
 
 建议：
 
@@ -710,14 +670,81 @@ A/B 只能告诉你变量在哪一侧，不能告诉你是哪个字段 —— �
 
 ---
 
-## 后续更正：bodyc EIP-7702 Authorization V 的历史值丢失
+## 第二根因确认并已修：EIP-7702 authorization V 被压成 parity 位
 
-继续扩大 gate 后，block `24,231,367` 暴露出第二个、与 ParentHash 无关的 columnar
-兼容问题：原 bodyc encoder 把 authorization V 除 1 以外全部写成 0，导致 canonical
-历史里的无效 legacy V=27 被变成可能有效的 V=0，进而改变状态。该问题已用 headerc
-保留的 canonical transaction root 做有条件无损恢复；没有修改 EIP-7702 验证规则。
+你们定位到 `tx[53]` 的 `auth V geth=0x1b(27) / bodyc=0x00` 是准确的。代码就是这么写的：
 
-单块、10 万/20 万密集窗口均已在默认 GasUsed + ReceiptHash 校验下 `failed=0`。
-256-thread 硬件的稳定最优配置与完整 pprof 记录见
-[`WITNESS_LINUX_PERF_20260824.md`](WITNESS_LINUX_PERF_20260824.md)。此前“bodyc 已完全无损”的
-结论应以该文档的两项修复（ParentHash + authorization V）为准。
+```go
+// R, S as raw 32B; V as 1 byte (0 or 1).     <- 注释里的错误假设
+vByte := byte(0)
+if auth.V != nil && auth.V.Uint64() == 1 {    <- 只有 ==1 才写 1
+    vByte = 1
+}
+```
+
+27 / 28 全被折成 0，而且**不可从 bodyc 恢复**（那个字节就是全部存储）。
+
+### 已修（`27007667`，已推送）
+
+V 改为 trimmed uint256（和 ChainID 同一写法），段落声明新标志位 `bfAuthVFull`
+（`bodyFlags` 是 uint16，之前只用了 5 位）。**解码按标志分派**：新段读变长，
+旧段仍按 1 字节读 —— 所以旧 bodyc 不会读崩，只是它本身有损。
+**带 type-4 交易却没有该标志的段 = 需要重新生成的段。**
+
+新回归测试跑 V ∈ {0,1,27,28}；只撤销 encoder 修改，它就在 27/28 上失败。
+原有的 `TestSetCodeTxRoundtrip` 只覆盖 V=0 和 V=1 —— **恰好是坏编码碰巧正确的两个值**。
+
+### 影响面：比"Prague 之后全部"小得多
+
+全量扫描 geth ancient（22,400,000 – 25,765,565，24m29s）：
+
+```
+含 type-4 交易的块:      2,232,441   (首个 22,431,086 = Prague 激活)
+含非规范 auth V 的块:           21   (首个 22,845,161)
+非规范 authorization:           21
+受影响段: 7 个,散布在 [2788, 3093]
+```
+
+**223 万个 type-4 块里只有 21 个带非规范 V（约 0.001%）** —— 这就是它藏这么久的原因：
+Prague 之后头 41 万块的 type-4 交易全用 y_parity，坏编码一路都是对的。
+
+注意首个受害块是 **22,845,161**，比你们发现的 24,231,367 早 139 万块。
+只按 24.2M 划范围会漏掉前面 6 个段。
+
+### Windows 侧正在重新生成
+
+`body-compact` 是 resume-based（断点 = `len(bodyc.cidx)/8`），只能从某段往后重写，
+所以起点取最早受影响段 **2788**（块 22,839,296），重编到末尾：
+
+- 索引 3146 段 → 2788 段（截到 22,304 字节）
+- 删除 `bodyc.0289`–`0358`（153.0 GB），`bodyc.0288` 截到 offset 1,099,045,967（0.87 GB）
+- 重编 2,926,270 块 / 357 段 / 约 153.9 GB
+
+**注意一个坑**：`BodyCompactStage` 用 `os.Stat(dat).Size()` 决定写入位置，
+不是从索引读 —— 所以**只截断索引会留下 153 GB 无人引用的孤儿数据**（功能仍正确，
+因为索引是权威，但空间白占）。索引和数据必须一起截。
+
+### 你们那边怎么做
+
+你们的 `/data/blockchain/witness` 里的 bodyc 是我从这台机器传过去的同一份，
+所以**有完全相同的 21 个坏块**。两个选择：
+
+1. **等我重生成完，只传受影响的段**（约 154 GB，或者更省：只传含那 7 个段的 cdat 文件）。
+2. 你们自己重生成 —— 但你们没有 geth ancient 源，所以做不到。
+
+建议选 1。我重生成 + 验证完就传。
+
+在那之前，**24.2M 以及 22.8M 之后任何含 type-4 的 dense gate 都可能命中这 21 个块**，
+`failed` 数应该按这个预期解读，不要再当成新 bug 追。
+
+### 顺带修正我自己的一个错误论断
+
+我一度说"auth V 不进 tx 哈希，所以哈希比对有盲区"—— **那是错的**。
+实测 `tx[53]` 的哈希确实不同（`a14f6bfa…` vs `1961bc14…`），auth list 是 type-4 preimage 的一部分。
+
+我之所以先前误判 "body 完全相同"，是因为我在 **24,000,022** 上跑的比对 ——
+而那个块**根本没有非规范 V**（该窗口 1,109 个 type-4 块里一个都没有）。
+**工具没瞎，是我拿一个没病的样本证明了全体健康。**
+
+`cmd/body-cmp` 我仍加了授权字段级比对（`88149134`），但价值降级为"省一轮猜测"：
+输出从 "tx[53] differs" 变成 "auth[0].V geth=27 n42=0"。
