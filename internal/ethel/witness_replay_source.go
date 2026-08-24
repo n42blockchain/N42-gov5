@@ -200,11 +200,22 @@ func (s *n42CompactSource) header(n uint64) (*block.Header, error) {
 		return nil, err
 	}
 	if n > 0 && hdr.ParentHash == (types.Hash{}) {
-		parent, perr := s.hr.ReadHeader(n - 1)
-		if perr != nil {
-			return nil, fmt.Errorf("parent header %d (needed for ParentHash of %d): %w", n-1, n, perr)
+		// feedBlocks walks block numbers in order on ONE goroutine, so the
+		// parent is almost always the header returned by the previous call.
+		// That matters more than it looks: this runs on the pipeline's single
+		// serial reader, and every extra read there is multiplied by the whole
+		// worker fleet waiting behind it.
+		var parentHash types.Hash
+		if s.lastHeader != nil && s.lastHeaderNum == n-1 {
+			parentHash = s.lastHeader.Hash()
+		} else {
+			parent, perr := s.hr.ReadHeader(n - 1)
+			if perr != nil {
+				return nil, fmt.Errorf("parent header %d (needed for ParentHash of %d): %w", n-1, n, perr)
+			}
+			parentHash = parent.Hash()
 		}
-		hdr.ParentHash = parent.Hash()
+		hdr.ParentHash = parentHash
 	}
 	s.lastHeaderNum, s.lastHeader = n, hdr
 	return hdr, nil
