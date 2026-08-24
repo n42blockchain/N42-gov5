@@ -449,3 +449,87 @@ hotstuff 包全量 ok（4.96s）；race 检测 ok（2.82s）。
 你们加的 `TestStateHookRequiresOuterCommit` 断言方向也对。
 
 至此第 5 节的 13 个 commit 全部有结论：**12 个保留，只有 `65cda179` 要按 R3 修改。**
+
+---
+
+## Linux 执行回报：W4 单块 gate 未通过（2026-08-24 06:08–06:10 UTC）
+
+按上面的 W4 顺序，在舰队与其他 witness 任务均停止时执行了已知失败块
+`24,000,022`，范围为 `[24,000,022, 24,000,023)`，workers=1、verification
+开启、`--no-output`，并使用 `/data/blockchain/code-mdbx`。
+
+### 先修正了一个会污染验证的源选择问题
+
+原 `cmd/witness-replay/main.go` 即使发现有效的 `--datadir/mdbx.dat`，仍会无条件
+auto-detect `<input-headers-bodies>/codes.cidx`；而 reader 明确让 codes freezer
+优先于 MDBX。这样照抄命令仍会使用不完整 freezer。
+
+`b8391c24 fix(witness): prefer explicit code database` 已把行为改为：
+
+- 显式 `--codes-freezer` 仍优先；
+- 有效 MDBX datadir 存在且未显式指定 freezer 时，只用 MDBX；
+- 没有 MDBX 时继续兼容原 freezer auto-detect。
+
+定向普通测试和 `cmd/witness-replay` race 测试通过。全量
+`go test -race ./internal/ethel` 另行发现既存的 `hashstate.go:826` 数据竞争，
+与本次 source selection 改动无关；普通 `go test ./internal/ethel` 通过。
+
+安装的 clean binary：
+
+- VCS revision：`1ffd1c7064ebb06005a4e813ff511f96c0b93ab6`
+- `vcs.modified=false`
+- SHA-256：`e979b0dd6ea5e8feb2e576860262e19658fdd0416e7c120e16961806aef6b84d`
+- 原 `5ccc9bb9` binary 备份：
+  `/data/blockchain/bin/witness-replay.pre-mdbx-preference-5ccc9bb9`
+
+### 主 gate 结果
+
+启动日志没有 `Codes freezer auto-detected`，命令明确显示：
+
+```text
+datadir=/data/blockchain/code-mdbx
+range=24000022-24000023 workers=1
+```
+
+但结果仍为原来的精确差值：
+
+```text
+witnessreplay: block 24000022: gas mismatch: got 16980501 want 17009241
+```
+
+进程 exit code 1。日志：
+`/data/blockchain/wr-logs/w4-block-24000022-mdbx-20260824.log`。
+
+### 两个交叉验证
+
+1. 使用备份的原始 `5ccc9bb9` binary、同一 MDBX，并通过无 `codes.cidx` 的临时
+   header/body 只读视图禁止旧 binary auto-detect：仍得到完全相同 gas mismatch。
+   日志：`w4-block-24000022-mdbx-oldbin-20260824.log`。
+2. 不使用预计算 senders，改用原交易签名现场 ecrecover；同样得到完全相同 gas
+   mismatch。日志：`w4-block-24000022-mdbx-ecrecover-20260824.log`。
+
+现有 `check-code` 对 MDBX 做了逐行扫描：
+
+```text
+Code table rows: 2673190  bytes: 18325340160
+```
+
+`mdbx.dat` SHA-256：
+`8ddd3673f17eef9bd63232c58559762cb600994be32f3a27c8ee185b9508a54a`。
+
+### 当前结论与下一步需要的依据
+
+- 完整 Code 表没有让该块由失败转为 `failed=0`，所以 W4 的“唯一原因是 codes
+  不全”已被证伪；至少存在第二个原因。
+- 已排除本次 auto-detect 修复、当前/原始 replay binary 差异以及预计算 senders
+  作为单一原因。
+- 488/488 文件传输校验只能证明 Linux 文件与所传源文件一致，不能证明
+  header/body/witness 在生成时的语义版本一致。
+- 仓库 runbook 已记录 `witness-block-trace` 当前有回归，且 Linux 数据没有 receipts
+  freezer，因此不能用它可靠定位首个偏离交易。
+- 在找到第二原因前，不启动 24M dense gate，也不进行 worker 性能 sweep。
+
+建议提供：生成该 witness 的精确 commit/build flags、Windows 上以同一组文件和完整
+Code MDBX 单块重放 `24,000,022` 的原始命令与日志，或对应的 canonical receipts
+freezer。这样才能继续区分 witness 生成/消费规则漂移、EVM fork 配置差异和输入表语义
+错配。
