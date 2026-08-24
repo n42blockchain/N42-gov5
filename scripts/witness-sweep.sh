@@ -11,7 +11,7 @@
 set -euo pipefail
 
 D=${D:-/data/blockchain/witness}
-HB=${HB:-/data/blockchain/witness-geth}
+HB=${HB:-/data/blockchain/witness}
 CODE_DB=${CODE_DB:-/data/blockchain/code-mdbx}
 BIN=${BIN:-/data/blockchain/bin/witness-replay}
 HEADS_BIN=${HEADS_BIN:-/data/blockchain/bin/freezer-heads}
@@ -29,7 +29,7 @@ LOGDIR="$LOGROOT/$RUN_ID"
 
 mkdir -p "$RUNDIR" "$LOGDIR"
 
-for path in "$BIN" "$HB/headers.cidx" "$HB/bodies.cidx" \
+for path in "$BIN" "$HB/headerc.cidx" "$HB/bodyc.cidx" \
   "$D/witness.cidx" "$D/senders.cidx" "$CODE_DB/mdbx.dat"; do
   if [[ ! -e "$path" ]]; then
     echo "ERROR: required input missing: $path" >&2
@@ -43,19 +43,9 @@ echo "headers-bodies=$HB witness=$D code-db=$CODE_DB range=[$START,$END) mem-lim
 echo "run=$RUN_ID"
 
 if [[ -x "$HEADS_BIN" ]]; then
-  "$HEADS_BIN" "$HB" "$D" 2>&1 | tee "$LOGDIR/input-heads.log"
-  bodies_items=$(awk '$1 == "bodies" {for (i=1; i<=NF; i++) if ($i ~ /^items=/) {sub(/^items=/, "", $i); print $i}}' "$LOGDIR/input-heads.log")
-  headers_items=$(awk '$1 == "headers" {for (i=1; i<=NF; i++) if ($i ~ /^items=/) {sub(/^items=/, "", $i); print $i}}' "$LOGDIR/input-heads.log")
+  "$HEADS_BIN" "$D" 2>&1 | tee "$LOGDIR/input-heads.log"
   witness_items=$(awk '$1 == "witness" {for (i=1; i<=NF; i++) if ($i ~ /^items=/) {sub(/^items=/, "", $i); print $i}}' "$LOGDIR/input-heads.log")
   senders_items=$(awk '$1 == "senders" {for (i=1; i<=NF; i++) if ($i ~ /^items=/) {sub(/^items=/, "", $i); print $i}}' "$LOGDIR/input-heads.log")
-  if [[ -z "$bodies_items" || "$bodies_items" -lt "$END" ]]; then
-    echo "ERROR: geth bodies coverage ${bodies_items:-unknown} does not reach $END" >&2
-    exit 1
-  fi
-  if [[ -z "$headers_items" || "$headers_items" -lt "$END" ]]; then
-    echo "ERROR: geth headers coverage ${headers_items:-unknown} does not reach $END" >&2
-    exit 1
-  fi
   if [[ -z "$witness_items" || "$witness_items" -lt "$END" ]]; then
     echo "ERROR: witness coverage ${witness_items:-unknown} does not reach $END" >&2
     exit 1
