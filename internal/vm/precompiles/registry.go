@@ -153,6 +153,14 @@ func (r *Registry) registerForRules(rules *params.Rules) {
 		r.registerAt(p256Addr, NewP256Verify())
 	}
 
+	// N42 extension: post-quantum verify precompiles (gated by PQPrecompilesTime).
+	// 0x17 (SQIsign) is reserved but not registered — its crypto verify is unimplemented.
+	if rules.IsPQPrecompiles {
+		r.register(0x14, NewPQFalconVerify())
+		r.register(0x15, NewPQDilithium2Verify())
+		r.register(0x16, NewPQDilithium3Verify())
+	}
+
 	// Build sorted address list
 	r.addresses = make([]types.Address, 0, len(r.contracts))
 	for addr := range r.contracts {

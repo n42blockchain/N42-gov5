@@ -129,7 +129,8 @@ func TestIT3_DeltaApply_WrongBaseline(t *testing.T) {
 		t.Fatalf("buildDeltaTree: %v", err)
 	}
 
-	// Client has a DIFFERENT baseline (archC with its own manifest_id).
+	// Client has a DIFFERENT baseline (archC with its own manifest_id) — mutate a
+	// different minimal-tier file so C differs from both A and B.
 	archC := touchFakeArchive(t)
 	if err := os.WriteFile(filepath.Join(archC, "snapshot", "storage.0-25099999.val.zst"),
 		[]byte("totally-different-C"), 0o644); err != nil {

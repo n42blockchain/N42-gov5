@@ -26,6 +26,10 @@ type chgEvent struct {
 	nibble byte
 }
 
+// chgEventSize is the in-slice size of a chgEvent (uint32 + byte, padded to the
+// uint32 alignment) — used to estimate chgStoAgg heap for the mid-batch drain.
+const chgEventSize = 8
+
 // chgSlot is one account-side aggregation slot (flat-indexed by path).
 type chgSlot struct {
 	epoch  uint32
@@ -40,8 +44,14 @@ const (
 	nodeRecDiff = 0x00 // flags | newMasks(6) | changedMask(2) | 32B × (changed ∧ newHasHash)
 
 	// fullEvery bounds the reader's diff walk-back: at least every F-th epoch
-	// (per path) the record is FULL.
+	// (per path) the record is FULL. Storage side only — the account side
+	// counts records instead (accFullEvery below).
 	fullEvery = 8
+
+	// accFullEvery: account-side FULL cadence in RECORDS per path. The reader
+	// walks the per-path record chain (adjacent rows) back to the FULL anchor,
+	// so 64 densely-keyed rows cost 1-2 pages; the FULL amortizes to ~8 B/row.
+	accFullEvery = 64
 )
 
 // nibblesOf expands bytes to one-nibble-per-byte (erigon keyHex form, no terminator).

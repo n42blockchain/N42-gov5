@@ -47,7 +47,15 @@ type Message struct {
 	authList   AuthorizationList
 	checkNonce bool
 	isFree     bool
+	// intrinsicGasExtra: type-specific intrinsic-gas surcharge folded in at
+	// AsMessage (e.g. post-quantum signature verify + bytes). Added to the
+	// standard IntrinsicGas in both the txpool pre-check and consensus execution.
+	intrinsicGasExtra uint64
 }
+
+// IntrinsicGasExtra returns the type-specific intrinsic-gas surcharge (0 for
+// standard txs). Added on top of IntrinsicGas wherever intrinsic gas is charged.
+func (m Message) IntrinsicGasExtra() uint64 { return m.intrinsicGasExtra }
 
 func NewMessage(from types.Address, to *types.Address, nonce uint64, amount *uint256.Int, gasLimit uint64, gasPrice *uint256.Int, feeCap, tip, blobFeeCap *uint256.Int, blobHashes []types.Hash, data []byte, accessList AccessList, checkNonce bool, isFree bool) Message {
 	m := Message{
@@ -93,6 +101,7 @@ func (tx *Transaction) AsMessage(s Signer, baseFee *uint256.Int) (Message, error
 		authList:   tx.AuthList(),
 		checkNonce: false,
 	}
+	msg.intrinsicGasExtra = tx.IntrinsicGasExtra()
 	if blobFeeCap := tx.BlobFeeCap(); blobFeeCap != nil {
 		msg.blobFeeCap = new(uint256.Int).Set(blobFeeCap)
 	}

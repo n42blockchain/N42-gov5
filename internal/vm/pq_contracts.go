@@ -52,22 +52,23 @@ var (
 )
 
 // Gas costs for PQ signature verification
-// These are calibrated based on relative computational costs
+// Verify-cost gas, CALIBRATED from measured benchmarks (perf_bench_test.go,
+// Ryzen 9 9950X) against the secp256k1 ecrecover reference (3000 gas @ 21608 ns
+// → 0.139 gas/ns). PQ verify is CHEAPER than ecrecover (no key recovery), so the
+// earlier estimates (3500/4000/5000) were ~3-5x too high. Kept consistent with
+// the tx-side schedule in common/transaction/pq_gas.go.
+//
+//	algo         verify ns/op   ×0.139   set
+//	Falcon-512        5104        709    1000
+//	Dilithium2        8666       1203    1500
+//	Dilithium3       10981       1524    2000
 const (
-	// Falcon-512 verification gas cost
-	// Comparable to BN256 pairing (~3500 gas)
-	FalconVerifyGas = 3500
+	FalconVerifyGas     = 1000 // measured ~5104 ns
+	Dilithium2VerifyGas = 1500 // measured ~8666 ns
+	Dilithium3VerifyGas = 2000 // measured ~10981 ns
 
-	// Dilithium2 verification gas cost
-	// Slightly higher due to larger signature size
-	Dilithium2VerifyGas = 4000
-
-	// Dilithium3 verification gas cost
-	// Higher security level = more computation
-	Dilithium3VerifyGas = 5000
-
-	// SQIsign-I verification gas cost
-	// Higher due to isogeny-based computation
+	// SQIsign verify is UNIMPLEMENTED (precompile 0x17 not registered); kept
+	// conservative for when isogeny verify lands.
 	SQIsignVerifyGas = 8000
 )
 
@@ -267,6 +268,13 @@ func fail() []byte {
 func GetPQPrecompiles() map[types.Address]PrecompiledContract {
 	return PrecompiledContractsPQ
 }
+
+// Individual getters (mirror GetEcrecover etc.) used by the precompile registry
+// facade so it can register the implemented PQ verifiers selectively (0x17
+// SQIsign is omitted — its verify is unimplemented).
+func GetFalconVerify() PrecompiledContract     { return &falconVerify{} }
+func GetDilithium2Verify() PrecompiledContract { return &dilithium2Verify{} }
+func GetDilithium3Verify() PrecompiledContract { return &dilithium3Verify{} }
 
 // AddPQPrecompiles adds PQ precompiles to an existing precompile map
 func AddPQPrecompiles(contracts map[types.Address]PrecompiledContract) map[types.Address]PrecompiledContract {

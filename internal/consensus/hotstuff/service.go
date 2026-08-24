@@ -685,7 +685,10 @@ func (s *Service) handleOutput(output EngineOutput) {
 			// an UNCOMMITTED same-height candidate, and the network oscillates
 			// between sibling branches without ever forming a quorum.
 			lq := s.engine.Engine().LockedQC()
-			s.triggerBlockProduction(output.View, lq.BlockHash)
+			// ...and only once enough validator peers are connected for a
+			// quorum to be reachable, so a leader that starts ahead of its
+			// peers does not propose an orphan into a sub-quorum network.
+			s.proposeWhenQuorum(output.View, lq.BlockHash)
 		}
 		// Rate-limited persistence.
 		if output.View-s.lastPersistedView >= s.persistInterval {
@@ -952,6 +955,75 @@ func (s *Service) logVoteRouting() {
 	if total <= 5 || total%200 == 0 {
 		log.Info("hotstuff: vote routing stats", "direct", direct, "fallback", fallback)
 	}
+}
+
+// quorumPeersNeeded returns how many connected validator peers (besides self) a
+// leader needs before a proposal can possibly gather a quorum (2f+1) of votes.
+// For n=7 (f=2, quorum=5) this is 4.
+func (s *Service) quorumPeersNeeded() int {
+	ce := s.engine.Engine()
+	if ce == nil {
+		return 0
+	}
+	n := int(ce.ValidatorCount())
+	if n <= 1 {
+		return 0
+	}
+	f := (n - 1) / 3
+	return (2*f + 1) - 1 // quorum minus self
+}
+
+// connectedPeerCount returns the number of currently-connected peers, or -1 when
+// the P2P layer cannot report it (the quorum gate then fails open).
+func (s *Service) connectedPeerCount() int {
+	if ds, ok := s.p2p.(P2PDirectSender); ok && ds != nil {
+		return len(ds.ConnectedPeers())
+	}
+	return -1
+}
+
+// hasQuorumPeers reports whether enough validator peers are connected for a
+// proposal to be able to reach quorum. An unknown peer count fails open (true).
+func (s *Service) hasQuorumPeers() bool {
+	c := s.connectedPeerCount()
+	return c < 0 || c >= s.quorumPeersNeeded()
+}
+
+// proposeWhenQuorum triggers block production for the given view, but only once
+// a quorum of validator peers is connected. This prevents a leader that starts
+// before its IDC peers (non-simultaneous multi-IDC bootstrap, or a transient
+// partition) from proposing an orphan block to a sub-quorum network that cannot
+// vote it into a QC. The node keeps listening / voting / syncing while it waits;
+// if a quorum never connects the view simply makes no progress (correct BFT
+// liveness behaviour). The wait aborts if the view advances meanwhile (e.g. a
+// TC carried the network forward) so the stale proposal is dropped.
+func (s *Service) proposeWhenQuorum(view ViewNumber, parentHash types.Hash) {
+	if s.hasQuorumPeers() {
+		s.triggerBlockProduction(view, parentHash)
+		return
+	}
+	log.Info("hotstuff: leader waiting for a quorum of validator peers before proposing",
+		"connected", s.connectedPeerCount(), "needed", s.quorumPeersNeeded(), "view", uint64(view))
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if s.engine.Engine().CurrentView() != view {
+					return // view advanced (e.g. via TC); this proposal is moot
+				}
+				if s.hasQuorumPeers() {
+					log.Info("hotstuff: quorum of validator peers reached — proposing",
+						"connected", s.connectedPeerCount(), "view", uint64(view))
+					s.triggerBlockProduction(view, parentHash)
+					return
+				}
+			case <-s.ctx.Done():
+				return
+			}
+		}
+	}()
 }
 
 // subscribeMessages subscribes to the HotStuff gossip topic and processes incoming messages.
