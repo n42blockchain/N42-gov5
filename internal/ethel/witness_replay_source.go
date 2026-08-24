@@ -35,6 +35,15 @@ type headersBodiesSource interface {
 	close()
 }
 
+// consumingHeadersBodiesSource is implemented by sources that can release a
+// body from their read cache after handing ownership to the sequential replay
+// pipeline. The ordinary body method remains non-destructive for random-access
+// and exported callers.
+type consumingHeadersBodiesSource interface {
+	headersBodiesSource
+	takeBody(blockNum uint64) (*GethBodyResult, error)
+}
+
 // HeadersBodiesSource is the exported handle for cross-package callers
 // (cmd/ethexec sender-recovery, future tools). Same interface as the
 // internal one but exported method names. Constructed via
@@ -139,13 +148,12 @@ func (s *gethFreezerSource) close() { s.f.Close() }
 // direct Ancient access (e.g. witness/senders tables that share the dir).
 func (s *gethFreezerSource) freezer() *freezer.Freezer { return s.f }
 
-// n42CompactSource adapts the N42 columnar readers. Each per-block
-// access decodes a segment if not cached; sequential reads stay hot.
-// The segment trailer carries the canonical Hash() per block, so
-// reading is O(1) — no parent-chain walk, no bloom recompute, no
-// external receipts dependency. ParentHash and Bloom on the returned
-// Header remain zero (the columnar format drops them); callers that
-// only need Hash() get the right value via the cached atomic.Value.
+// n42CompactSource adapts the N42 columnar readers. Each per-block access
+// decodes a segment if not cached; sequential reads stay hot. The segment
+// trailer carries the canonical Hash() per block, so reading is O(1) — no
+// parent-chain walk, no bloom recompute, no external receipts dependency.
+// ParentHash is restored from the previous trailer because EIP-2935 consumes
+// it during execution; Bloom remains omitted.
 type n42CompactSource struct {
 	hr            *HeaderCompactReader
 	br            *BodyCompactReader
@@ -203,7 +211,23 @@ func (s *n42CompactSource) header(n uint64) (*block.Header, error) {
 }
 
 func (s *n42CompactSource) body(n uint64) (*GethBodyResult, error) {
-	db, err := s.br.ReadBody(n)
+	return s.readBody(n, false)
+}
+
+func (s *n42CompactSource) takeBody(n uint64) (*GethBodyResult, error) {
+	return s.readBody(n, true)
+}
+
+func (s *n42CompactSource) readBody(n uint64, consume bool) (*GethBodyResult, error) {
+	var (
+		db  *DecodedBlock
+		err error
+	)
+	if consume {
+		db, err = s.br.TakeBody(n)
+	} else {
+		db, err = s.br.ReadBody(n)
+	}
 	if err != nil {
 		return nil, err
 	}

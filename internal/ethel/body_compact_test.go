@@ -494,6 +494,28 @@ func TestBodySegmentEmptyBlocks(t *testing.T) {
 	}
 }
 
+func TestBodyCompactTakeBodyReleasesCacheSlot(t *testing.T) {
+	want := &DecodedBlock{}
+	r := &BodyCompactReader{
+		cachedSeg:    0,
+		cachedBlocks: []*DecodedBlock{want, {}},
+	}
+
+	got, err := r.TakeBody(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatal("TakeBody returned a different block")
+	}
+	if r.cachedBlocks[0] != nil {
+		t.Fatal("TakeBody retained the consumed block in the segment cache")
+	}
+	if r.cachedBlocks[1] == nil {
+		t.Fatal("TakeBody released a different cache slot")
+	}
+}
+
 // TestBodySegmentUnclesRoundtrip locks in the fix for body_compact
 // silently dropping every uncle: detectBodyFlags() keys postMerge off
 // len(UncleRLP) > 0, so if the encoder feeds in nil UncleRLP for what
