@@ -121,6 +121,14 @@ func isCodeFromAnalysis(analysis []uint64, udest uint64) bool {
 // isCode returns true if the provided PC location is an actual opcode, as
 // opposed to a data-segment following a PUSHN operation.
 func (c *Contract) isCode(udest uint64) bool {
+	// The first jump in this execution frame resolves (or builds) the bitmap
+	// below and stores it in c.analysis. Every later jump can use that immutable
+	// slice directly. Falling through to jumpdests[c.CodeHash] on every opcode
+	// used to put a map lookup on the JUMP/JUMPI hot path even though the answer
+	// was already attached to the contract frame.
+	if c.analysis != nil {
+		return isCodeFromAnalysis(c.analysis, udest)
+	}
 	// Do we have a contract hash already?
 	// If we do have a hash, that means it's a 'regular' contract. For regular
 	// contracts ( not temporary initcode), we store the analysis in a map
