@@ -511,25 +511,6 @@ gas 只差 28,740（0.17%）而不是天差地别，也符合"body 里少数 tx 
 启动日志应显示 `format=geth-ancient`（不是 `n42-columnar`）。
 期望 `failed=0 gas=17009241 txs=142`。
 
-### Linux A 组复测已通过（2026-08-24 07:31 UTC）
-
-传入的 13 段 bodies、1 段 headers 和两个索引连续两次大小采样一致，且没有临时文件
-或仍在运行的传输进程。Linux 随后按上述命令重放 `24,000,022`，结果为：
-
-```text
-Headers/bodies source format=geth-ancient frozen=25765567
-Replay complete blocks=1 failed=0 gas=17009241 head=24000022 txs=142
-```
-
-日志中没有 `Codes freezer auto-detected`；显式 `/data/blockchain/code-mdbx` 生效。
-完整日志：`/data/blockchain/wr-logs/w4-block-24000022-geth-20260824.log`。
-
-这与 Windows A 组逐项一致，并与 B 组精确复现形成闭环：当前 W4 mismatch 的变量是
-`bodyc/headerc` 输入，不是 witness、Code 表、senders 或 replay 引擎。Ubuntu 的既有
-`witness-smoke.sh` / `witness-sweep.sh` 已拆分 `HB` 与 `D`：默认 `HB` 指向
-`/data/blockchain/witness-geth`，并强制要求 geth `headers.cidx` / `bodies.cidx`；`D`
-继续只提供 witness/senders。
-
 转绿后我再传全量 geth `bodies`（841 GB）+ `headers`（12.8 GB），
 你们 `/data` 剩 5.5 T 装得下。**在那之前 dense gate 只能在 23.9M–24.3M 区间内跑。**
 
@@ -549,3 +530,178 @@ Codes freezer auto-detected dir="d:/n42-eth1/chain/freezer" items=2431720
 `MANIFEST.txt` 里我把 `bodyc/headerc/senders` 记为这套数据的一部分。**bodyc/headerc 这两张表
 不应被 witness-replay 使用**（senders 没问题，它是独立的 ecrecover 缓存）。
 拿到全量 geth 数据后我会重发一份修正的 manifest。
+
+---
+
+## W4 已修复：根因是 headerc 丢了 ParentHash（`c19944e4`）
+
+**先撤回我上一节的结论。** 我说"是 bodyc 转码链有问题、要改用 geth ancient"——**那是错的**。
+`bodyc` 完全无损。真正的问题在 `headerc`，而且是**代码 bug，不是数据问题**：
+你们不需要换输入源，也不需要我传那 841 GB。
+
+### 定位
+
+逐字段比对，两步就收敛了：
+
+**body**（geth ancient vs bodyc，块 24000022）——**完全相同**：
+142 笔 tx、**16 个 withdrawals**、0 uncles，每笔 tx 哈希都相等。
+（你们问 withdrawals 的方向是对的，正是这一问把我从猜测推到了逐字段比对。）
+
+**header**——17 个字段里**只有一个**不同：
+
+```
+!! ParentHash   geth=3850ea3f...455eb9a   headerc=0000...0000
+   GasUsed / Time / BaseFee / ExcessBlobGas / ParentBeaconRoot / Root /
+   TxHash / ReceiptHash / WithdrawalsHash / Hash()  ... 全部相同
+```
+
+`Hash()` 也是对的 —— reader 从段 trailer 恢复权威哈希。所以"哈希对了"掩盖了字段缺失。
+
+### 为什么零 ParentHash 会改 gas
+
+`internal/blockhelp.go:226`：
+
+```go
+vm.StoreParentBlockHash(ibs, headerNumber.Uint64()-1, header.ParentHash)
+```
+
+**EIP-2935** 每块把 `header.ParentHash` 写进历史环形缓冲。写 0 进去 →
+后续 BLOCKHASH 读到 0 → 合约走了不同分支 → gas 差 28,740（**0.17%**）。
+
+差得这么小，正好落在"看起来像 witness 或 code 有问题"的区间，所以前两轮都猜偏了。
+而 `n42CompactSource.header()` 的注释白纸黑字写着
+"for witness-replay only Hash() matters (BLOCKHASH)" —— **这个断言本身就是 bug**：
+BLOCKHASH 窗口确实只用 `Hash()`，但 EIP-2935 用的是 `ParentHash`。
+
+### 修复
+
+父块的权威哈希就在相邻段 trailer 里，一次 O(1) 读就能填回去。
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| 块 24000022 | `gas mismatch: got 16980501 want 17009241` | **`failed=0 gas=17009241`** |
+| 24000000–24002000（316,227 笔 tx） | 该区间原有数百次失败 | **`failed=0`** |
+
+`internal/ethel` 全量测试通过。
+
+### 你们该做的
+
+```bash
+cd /home/n42/src/n42/N42-gov5 && git pull          # 取 c19944e4
+# 重编 witness-replay,然后用原来的 bodyc 输入直接跑 —— 不需要换数据源
+/data/blockchain/bin/witness-replay \
+  --input-headers-bodies /data/blockchain/witness \
+  --input-witness /data/blockchain/witness \
+  --senders /data/blockchain/witness \
+  --datadir /data/blockchain/code-mdbx \
+  --output <dir> --no-output \
+  --start 24000000 --end 24200000 --workers 1
+```
+
+期望 `failed=0`。这应该**同时消除**你们那 623 次失败 —— 它们大概率全是同一个原因。
+
+### 我先前几个错误结论的更正
+
+1. ~~"codes 不全是原因"~~ —— 不是。你们指出"gas 数字在补 Code 表前后完全相同"，
+   那本身就否证了 code 假说（缺 code 的话补上后 gas 至少会变）。这个信号在我手上我没抓住。
+   **不过完整 Code 表仍应保留使用**：`b8391c24` 禁止隐式选 freezer 是对的，
+   而且权威表 2,673,190 条 vs freezer 2,399,937 条的差距是真的，只是不是这次的病因。
+2. ~~"bodyc 转码链有问题"~~ —— 不是。body 逐字段相同。
+3. ~~"要改用 geth ancient、我传 841 GB 全量"~~ —— 不需要。**该修的是代码不是数据。**
+   我已传的 26 GB 切片（`/data/blockchain/witness-geth`）现在只剩对照价值，
+   验证通过后可以删。
+4. `MANIFEST.txt` 里我把 `bodyc/headerc` 标注为"不应被 witness-replay 使用" ——
+   **这条也撤回**，它们是正确且更省的输入（`bodyc` 比 geth bodies 小 25%）。
+
+### 顺带：各客户端 body 存储效率（同口径，0–25,765,565）
+
+| | body / transactions | headers | receipts |
+|---|---|---|---|
+| reth static_files | 972.3 GB | 14.7 GB | 478.9 GB |
+| geth ancient | 841.1 GB | 12.8 GB | 362.1 GB |
+| **n42 eth-el 列式** | **629.3 GB** | **4.8 GB** | **179.7 GB** |
+
+n42 比 geth 省 25% / 62% / 50%，比 reth 省 35% / 67% / 62%。
+三表合计：geth 1216 GB、reth 1466 GB、**n42 814 GB**。
+收益来自列式分离 + 逐列 zstd（同类字段相邻，压缩器能看到列内相关性）。
+erigon 无法参与对比 —— 本机没有完整归档节点。
+
+现在这个 74.8% 是**无损**的了。
+
+### Linux 回报：正式修复与原 columnar 输入均已验证（2026-08-24 07:44–07:49 UTC）
+
+Linux 已同步包含 `c19944e4` 的 `origin/main`（merge head `3e66c1f5`），从该源码重新编译并
+安装 `/data/blockchain/bin/witness-replay`：
+
+```text
+sha256 951365cf799b90cd2eca615eea168fd31e091d5fbbf694f0c5b006769399f488
+```
+
+输入已切回原 `/data/blockchain/witness`，启动日志明确显示 `format=n42-columnar`。
+正式二进制单块复核结果：
+
+```text
+Replay complete blocks=1 failed=0 gas=17009241 head=24000022 txs=142
+```
+
+日志：`/data/blockchain/wr-logs/smoke-c19944e4-final.log`。
+
+同步正式提交前，Linux 先用同语义最小补丁跑了完整的 2,000 块密集 gate；正式提交比该
+补丁只多了“仅在 ParentHash 为零时恢复”的保护：
+
+```text
+range=24000000-24002000 workers=1 format=n42-columnar
+Replay complete blocks=2000 failed=0 gas=61388491159 txs=316227 elapsed=1m46s
+```
+
+日志：`/data/blockchain/wr-logs/w4-bodyc-parenthash-2k-20260824.log`。这与 Windows 修复后
+数据逐项一致，确认该区间原有的数百次 mismatch 已消失。
+
+Ubuntu 脚本保留 `d7f40cc6` 引入的显式 source 分离，但修正默认目标：
+
+- `HB=/data/blockchain/witness`：必须存在 `headerc.cidx` / `bodyc.cidx`；
+- `D=/data/blockchain/witness`：继续提供 witness/senders；
+- `HB` 只有在人工 A/B 时才显式覆盖为 `/data/blockchain/witness-geth`。
+
+因此生产 gate 不再依赖 geth ancient。已传的 26 GB 切片保留作对照证据，未删除；不再传
+841 GB 全量 geth bodies。
+
+---
+
+## 关于 `d7f40cc6 fix(witness): use canonical geth ancient inputs`
+
+这个 commit 是你们按我**上一轮错误结论**做的（"改用 geth ancient 输入"）。
+现在根因查明是 `headerc` 少填 ParentHash，已在 `c19944e4` 修掉，
+所以**换输入源这件事不必要了**。
+
+已推送：`3e66c1f5`（含 `c19944e4`）。
+
+建议：
+
+1. `git pull`，重编 `witness-replay`。
+2. **先用原来的 bodyc 输入验证**（`--input-headers-bodies /data/blockchain/witness`），
+   期望 `failed=0`。这一步能独立确认 `c19944e4` 是否真的解决了你们那 623 次失败。
+3. 确认后再决定 `d7f40cc6` 怎么处理。我的看法：
+   - 脚本里"必须用 geth ancient"这条约束**应该撤掉** ——
+     `bodyc` 比 geth bodies 小 25%，是更好的输入，而且现在是无损的。
+   - 但它顺带加的**显式性**（不再依赖自动检测、把输入源写死在脚本里）**值得保留**，
+     只是目标应该指回 `bodyc`。
+   - 换句话说：保留"显式指定输入"的形式，改掉"指定成 geth ancient"的内容。
+
+这条要由你们判断，因为脚本是你们在维护，而且我在这件事上已经错过一次方向了。
+
+## 我在这次排查里的三次错误
+
+写下来是因为它们有共同的模式：
+
+1. **"codes 不全是原因"** —— 你们指出"补 Code 表前后 gas 完全相同"，
+   那本身就否证了假说。我手里有这个信号却没用它。
+2. **"bodyc 转码链有问题"** —— A/B 实验只证明了"换源就好了",
+   我却直接跳到"bodyc 坏了"。实际 body 逐字段完全相同，坏的是 header 的一个字段。
+3. **"要传 841 GB geth 全量"** —— 基于第 2 条的错误推论，
+   差点让你们白等两小时传输、白占 841 GB 磁盘。
+
+共同点：**每次都在"观察到差异"和"定位到原因"之间跳了一步**。
+A/B 只能告诉你变量在哪一侧，不能告诉你是哪个字段 —— 中间必须有逐字段比对。
+你问的那句"bodyC 是漏了提款吗"正是把方向拉回来的一问：
+它逼出了 `bodydiff`/`hdrdiff`，17 个字段里一眼就看到唯一那个零值。
