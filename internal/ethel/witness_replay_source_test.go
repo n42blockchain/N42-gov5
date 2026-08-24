@@ -5,6 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/types"
 )
 
 // TestOpenHeadersBodiesSource_AutoDetect verifies the picker chooses
@@ -39,5 +42,34 @@ func TestOpenHeadersBodiesSource_AutoDetect(t *testing.T) {
 			t.Errorf("with headerc.cidx: got %T, want *n42CompactSource", src)
 		}
 		src.close()
+	}
+}
+
+func TestN42CompactSourceHeaderRestoresParentHash(t *testing.T) {
+	parent := makeTestHeader(1)
+	child := makeTestHeader(2)
+	parentHash := parent.Hash()
+	childHash := child.Hash()
+
+	// Model decoded compact headers: lossy fields are zero, while Hash()
+	// remains authoritative because it came from the segment trailer.
+	parent.ParentHash = types.Hash{}
+	parent.SetHash(parentHash)
+	child.ParentHash = types.Hash{}
+	child.SetHash(childHash)
+
+	src := &n42CompactSource{hr: &HeaderCompactReader{
+		cachedSeg:     0,
+		cachedHeaders: []*block.Header{parent, child},
+	}}
+	got, err := src.header(1)
+	if err != nil {
+		t.Fatalf("header: %v", err)
+	}
+	if got.ParentHash != parentHash {
+		t.Fatalf("ParentHash: got %x, want %x", got.ParentHash, parentHash)
+	}
+	if got.Hash() != childHash {
+		t.Fatalf("Hash changed: got %x, want %x", got.Hash(), childHash)
 	}
 }
