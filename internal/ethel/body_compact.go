@@ -52,10 +52,11 @@ const (
 	// an unrecoverable loss that changes the recovered authority and, through
 	// it, the executed nonce state and the block's gas.
 	//
-	// Segments written before this flag existed cannot be repaired (the byte is
-	// gone), so the flag exists to keep READING them correct-for-their-format
-	// while new segments carry the true value. A segment with type-4
-	// transactions and without this flag is suspect and should be regenerated.
+	// Segments written before this flag existed cannot recover V from the body
+	// bytes alone. The decoder keeps reading their original layout; callers that
+	// also have the canonical header transaction root can disambiguate the rare
+	// legacy 27/28 values (witness replay does this), otherwise the segment must
+	// be regenerated from a canonical body source.
 	bfAuthVFull bodyFlags = 1 << 5
 )
 
@@ -466,7 +467,7 @@ func encodeBodySegment(blocks []*DecodedBlock, chainID uint64, enc *zstd.Encoder
 						buf = encodeTrimmedU256(buf, &chainVal)
 						buf = append(buf, auth.Address[:]...)
 						buf = appendVarint(buf, auth.Nonce)
-						// R, S as raw 32B; V as 1 byte (0 or 1).
+						// R and S as raw 32B.
 						var rBuf, sBuf [32]byte
 						if auth.R != nil {
 							rBuf = auth.R.Bytes32()
@@ -1300,8 +1301,9 @@ func decodeBodySegment(data []byte) ([]*DecodedBlock, error) {
 						auth.V, pos = vVal, np
 					} else {
 						// Legacy segment: V was folded to a single 0/1 byte, so
-						// 27/28 is unrecoverable here. Read it in the format the
-						// segment was written in; such segments need regenerating.
+						// this low-level decoder cannot recover 27/28 by itself.
+						// Higher-level readers may disambiguate with the canonical
+						// header transaction root; otherwise regenerate the segment.
 						auth.V = uint256.NewInt(uint64(data[pos]))
 						pos++
 					}
