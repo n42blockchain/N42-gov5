@@ -628,13 +628,15 @@ erigon 无法参与对比 —— 本机没有完整归档节点。
 
 现在这个 74.8% 是**无损**的了。
 
-### Linux 回报：正式修复与原 columnar 输入均已验证（2026-08-24 07:44–07:49 UTC）
+### Linux 回报：正式修复与原 columnar 输入均已验证（2026-08-24 07:44–07:51 UTC）
 
-Linux 已同步包含 `c19944e4` 的 `origin/main`（merge head `3e66c1f5`），从该源码重新编译并
-安装 `/data/blockchain/bin/witness-replay`：
+Linux 已同步包含 `c19944e4` 的 `origin/main`，并在后续 Linux 策略提交 `eb737924` 上
+干净重编、安装 `/data/blockchain/bin/witness-replay`：
 
 ```text
-sha256 951365cf799b90cd2eca615eea168fd31e091d5fbbf694f0c5b006769399f488
+vcs.revision=eb7379244f4e1306823a9fef4836e7ea4b4f2710
+vcs.modified=false
+sha256=be318aca433f22fe1357e73abb094fa1b216935103f1d0a15ac1f3cfd3971f11
 ```
 
 输入已切回原 `/data/blockchain/witness`，启动日志明确显示 `format=n42-columnar`。
@@ -644,7 +646,7 @@ sha256 951365cf799b90cd2eca615eea168fd31e091d5fbbf694f0c5b006769399f488
 Replay complete blocks=1 failed=0 gas=17009241 head=24000022 txs=142
 ```
 
-日志：`/data/blockchain/wr-logs/smoke-c19944e4-final.log`。
+最终安装件日志：`/data/blockchain/wr-logs/smoke-eb737924-final.log`。
 
 同步正式提交前，Linux 先用同语义最小补丁跑了完整的 2,000 块密集 gate；正式提交比该
 补丁只多了“仅在 ParentHash 为零时恢复”的保护：
@@ -674,7 +676,7 @@ Ubuntu 脚本保留 `d7f40cc6` 引入的显式 source 分离，但修正默认�
 现在根因查明是 `headerc` 少填 ParentHash，已在 `c19944e4` 修掉，
 所以**换输入源这件事不必要了**。
 
-已推送：`3e66c1f5`（含 `c19944e4`）。
+已推送：`3e66c1f5`（含 `c19944e4`）以及 Linux 后续 `eb737924`。
 
 建议：
 
