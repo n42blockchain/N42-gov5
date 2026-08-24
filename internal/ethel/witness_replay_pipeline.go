@@ -225,18 +225,33 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 
 	// 4. Wire up channels and worker pool.
 	//
-	// Channel cap deliberately small (256). The previous 8192 was chosen
-	// to amortise runtime.lock2/stdcall2 mutex traffic seen under heavy
-	// 32-worker fanout, but it lets the aggregator's `pending` map grow
-	// unbounded when a single slow block holds back the head. On a 10M+
-	// DeFi block one worker can take seconds while the others fly; with
-	// cap=8192 the reader stuffs 8k jobs in, workers stuff up to 8k
-	// results in `pending`, heap balloons to 15+ GB, and Go GC STW
-	// stretches into the seconds — feeding back into per-worker slowdown
-	// and eventually a stall that *looks* like a deadlock. Cap=256 lets
-	// the reader run only a small batch ahead, capping pending and
-	// keeping heap below ~3 GB so GC stays in its concurrent path.
-	const chanCap = 256
+	// Channel cap scales with the worker count, between two failure modes.
+	//
+	// Too large: the aggregator emits in block order, so one slow 10M-gas DeFi
+	// block at the head lets every other worker pile results into `pending`.
+	// The original 8192 let the heap balloon past 15 GB and pushed Go GC into
+	// multi-second STW, feeding back into per-worker slowdown and eventually a
+	// stall that looked like a deadlock. A flat 256 fixed that.
+	//
+	// Too small: 256 is only a few rounds of work for a large fleet, and the
+	// reader is a SINGLE goroutine that must decompress a header, a bodyc
+	// segment and a witness entry per block. On a 128-core host with ~104
+	// workers that queue drains faster than one reader can refill it, and the
+	// machine idles: measured 99.4% idle CPU while the run was nominally at
+	// 32.7 Ggas/s, with vmstat's runnable count oscillating 54 -> 2 -> 1 as the
+	// fleet alternated between a fed burst and collective starvation.
+	//
+	// Four rounds per worker keeps the reader far enough ahead to absorb its own
+	// segment-decode spikes, while the ceiling preserves the heap bound that
+	// motivated 256 in the first place: pending is bounded by this cap, not by
+	// the worker count.
+	chanCap := cfg.Workers * 4
+	if chanCap < 256 {
+		chanCap = 256
+	}
+	if chanCap > 2048 {
+		chanCap = 2048
+	}
 	blockCh := make(chan WitnessJob, chanCap)
 	resultCh := make(chan WitnessResult, chanCap)
 	ctx, cancel := context.WithCancel(ctx)
