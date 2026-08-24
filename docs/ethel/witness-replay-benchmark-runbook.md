@@ -140,6 +140,18 @@ memory limit 和空闲主机。报告每档的 `block/s`、`tx/s`、`Mgas/s`、w
 不要与 QS 舰队 TPS、ethexec 生成、bpp、全盘校验或其他 CPU/NVMe 重任务并发。
 否则结果是整机资源竞争，不是 witness worker scaling。
 
+Linux 已提供可复用入口：
+
+```bash
+scripts/witness-smoke.sh   # 0–200,000 格式 smoke，严格 failed=0
+scripts/witness-sweep.sh   # dense 单 worker gate，再跑 8/16/32/64/128
+```
+
+部署机可用 `install -m 0755` 把它们放进工具目录。两个脚本均默认开启验证、
+不使用 `--continue-on-error`，并以唯一 run ID 保存日志和输出目录，不会先
+`rm -rf` 旧结果。`START`、`COUNT`、`WORKERS`、`MEM`、`GOGC` 可通过环境变量
+覆盖；即使自定义 `WORKERS`，dense gate 仍固定先用 `workers=1` 执行。
+
 ## 5. 两个危险参数
 
 ### `--continue-on-error`
