@@ -7,16 +7,16 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"os"
 
-	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/internal/ethel"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
-	"github.com/n42blockchain/N42/lib/kv"
 )
 
 func main() {
@@ -57,39 +57,24 @@ func main() {
 		die("decode geth body: %v", err)
 	}
 
-	// N42 side: walk from 0 chaining parentHash forward AND
-	// recomputing Bloom from receipts (mirrors n42CompactSource so
-	// returned Hash() equals canonical mainnet hash).
+	// N42 side. Current headerc stores each canonical hash in the segment
+	// trailer, so a single target read is sufficient. Recover ParentHash
+	// from the preceding stored hash, matching n42CompactSource.
 	hr, err := ethel.OpenHeaderCompact(*n42Dir)
 	if err != nil {
 		die("open n42 header compact: %v", err)
 	}
 	defer hr.Close()
-	// Receipts come from geth ancient (the n42 columnar dir's
-	// receipts.cdat is sometimes truncated; geth ancient is full).
-	var prevHash [32]byte
-	var n42Hdr *block.Header
-	for n := uint64(0); n <= *blockNum; n++ {
-		h, err := hr.ReadHeader(n)
-		if err != nil {
-			die("read n42 header %d: %v", n, err)
+	n42Hdr, err := hr.ReadHeader(*blockNum)
+	if err != nil {
+		die("read n42 header %d: %v", *blockNum, err)
+	}
+	if *blockNum > 0 {
+		parent, perr := hr.ReadHeader(*blockNum - 1)
+		if perr != nil {
+			die("read n42 parent header %d: %v", *blockNum-1, perr)
 		}
-		if n > 0 {
-			h.ParentHash = prevHash
-		}
-		// Recompute bloom from geth ancient receipts.
-		if rd, rerr := gf.Ancient(freezer.TableReceipts, n); rerr == nil && len(rd) > 0 {
-			rec, derr := ethel.DecodeGethReceipts(rd)
-			if derr == nil {
-				h.Bloom = block.CreateBloom(rec)
-			}
-		}
-		h.ResetHashCache()
-		hh := h.Hash()
-		prevHash = hh
-		if n == *blockNum {
-			n42Hdr = h
-		}
+		n42Hdr.ParentHash = parent.Hash()
 	}
 	br, err := ethel.OpenBodyCompact(*n42Dir)
 	if err != nil {
@@ -145,6 +130,11 @@ func diffTx(idx int, g, n *transaction.Transaction) {
 	fmt.Printf("    n42  %x type=%d nonce=%d gas=%d\n", nh, n.Type(), n.Nonce(), n.Gas())
 	fmt.Printf("    geth value=%s data_len=%d\n", g.Value().String(), len(g.Data()))
 	fmt.Printf("    n42  value=%s data_len=%d\n", n.Value().String(), len(n.Data()))
+	fmt.Printf("    chainID geth=%s n42=%s\n", g.ChainId().String(), n.ChainId().String())
+	fmt.Printf("    feeCap geth=%s n42=%s tipCap geth=%s n42=%s\n",
+		g.GasFeeCap().String(), n.GasFeeCap().String(), g.GasTipCap().String(), n.GasTipCap().String())
+	fmt.Printf("    data_equal=%t accessList geth=%d n42=%d authList geth=%d n42=%d\n",
+		bytes.Equal(g.Data(), n.Data()), len(g.AccessList()), len(n.AccessList()), len(g.AuthList()), len(n.AuthList()))
 	gv, gr, gs := g.RawSignatureValues()
 	nv, nr, ns := n.RawSignatureValues()
 	fmt.Printf("    geth V=%s R=%s S=%s\n", gv.String(), gr.String(), gs.String())
@@ -161,6 +151,19 @@ func diffTx(idx int, g, n *transaction.Transaction) {
 	}
 	fmt.Printf("    geth to=%s\n", gtoStr)
 	fmt.Printf("    n42  to=%s\n", ntoStr)
+	gal, nal := g.AuthList(), n.AuthList()
+	for i := 0; i < len(gal) || i < len(nal); i++ {
+		if i < len(gal) {
+			a := gal[i]
+			fmt.Printf("    geth auth[%d] chainID=%s addr=%s nonce=%d V=%s R=%s S=%s\n",
+				i, a.ChainID.String(), a.Address.Hex(), a.Nonce, a.V.String(), a.R.String(), a.S.String())
+		}
+		if i < len(nal) {
+			a := nal[i]
+			fmt.Printf("    n42  auth[%d] chainID=%s addr=%s nonce=%d V=%s R=%s S=%s\n",
+				i, a.ChainID.String(), a.Address.Hex(), a.Nonce, a.V.String(), a.R.String(), a.S.String())
+		}
+	}
 }
 
 func die(format string, args ...any) {
