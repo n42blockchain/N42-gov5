@@ -12,6 +12,12 @@ outside:
 | 7 validator BLS keys | `QS_VALIDATORS` → a `qs-validators.md` you copy out of band | never commit, never place inside a node datadir |
 | dev faucet key | `N42_DEV_FAUCET_KEY` env var | without it the fleet runs but produces empty blocks |
 
+Build `cmd/txpool-journal-reset` into `$QS_TOOLS` together with `n42`,
+`txflood`, and the ancient/txindex tools. `bench-run.sh` deliberately refuses
+to run without it: current nodes persist pending transactions in the MDBX
+`TxPoolJournal` table, so deleting the historical `txpool.journal` file alone
+does not produce a clean benchmark launch.
+
 ## Layout
 
 `qs-env.sh` is the single source of truth for paths, ports, environment levers
@@ -117,6 +123,10 @@ gossip traffic and fills the logs with `already known`.
 
 - **`--offset` must be fresh every round.** Reusing a drained sender set makes
   the pool demote in a spiral that looks exactly like a node failure.
+- **The persisted pool is cleared after graceful stop.** Stop flushes pending
+  transactions into MDBX; only then does `bench-run.sh` invoke
+  `txpool-journal-reset` on every stopped node. This prevents normal txgen or a
+  previous aborted flood from being restored into the measurement profile.
 - **`--decay-sec 90` unless the chain is already idle.** A round following a
   full-block round inherits its elevated baseFee, the fixed 10 gwei flood can no
   longer fill every block, and occupancy collapses to ~53% — a number that

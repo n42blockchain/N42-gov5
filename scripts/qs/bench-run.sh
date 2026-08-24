@@ -50,11 +50,16 @@ done
 
 TXFLOOD=$QS_TOOLS/txflood
 [[ -x $TXFLOOD ]] || { echo "txflood not found at $TXFLOOD" >&2; exit 1; }
+JOURNAL_RESET=$QS_TOOLS/txpool-journal-reset
+[[ -x $JOURNAL_RESET ]] || {
+  echo "txpool-journal-reset not found at $JOURNAL_RESET" >&2
+  echo "build it from ./cmd/txpool-journal-reset before benchmarking" >&2
+  exit 1
+}
 OUT=$QS_ROOT/bench-flood-$TAG.out
 ERR=$QS_ROOT/bench-flood-$TAG.err
 
 echo "=== $TAG : bin=$(basename "$BIN") pool=$POOL_SLOTS/$POOL_QUEUE interval=${INTERVAL_MS}ms offset=$OFFSET broadcast=$BROADCAST ==="
-for i in {0..6}; do rm -f "$QS_NODE_ROOT$i/txpool.journal"; done
 
 # A benchmark is a different launch profile, not an in-place mutation. If a
 # normal fleet is already listening, readiness probes can accidentally measure
@@ -63,8 +68,26 @@ running=0
 for i in {0..6}; do qs_node_pid "$i" >/dev/null && running=1; done
 if (( running )); then
   echo "stopping existing fleet before applying benchmark parameters..."
-  ./stop-fleet.sh --no-inspect
+  if ! ./stop-fleet.sh --no-inspect; then
+    echo "fleet did not stop cleanly; refusing to open live MDBX journals" >&2
+    exit 1
+  fi
 fi
+
+# The current txpool journal lives in MDBX TxPoolJournal and is flushed during
+# the graceful stop above. Removing the old file path is therefore insufficient
+# (and doing it before stop is backwards): the benchmark would restore normal
+# txgen traffic, spend the faucet and contaminate its first blocks. Reset only
+# while every node is stopped, using the purpose-built tool. Keep the legacy
+# file cleanup for node generations created before the MDBX journal migration.
+for i in {0..6}; do
+  d="$QS_NODE_ROOT$i"
+  if ! "$JOURNAL_RESET" -datadir "$d/chaindata" -apply; then
+    echo "failed to clear persisted txpool journal for node $i" >&2
+    exit 1
+  fi
+  rm -f "$d/txpool.journal"
+done
 
 bench_args=(--bin "$BIN" --pool-slots "$POOL_SLOTS" --pool-queue "$POOL_QUEUE" --interval-ms "$INTERVAL_MS")
 if (( PROFILING )); then bench_args+=(--profiling); fi
