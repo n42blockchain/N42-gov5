@@ -7,6 +7,7 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/klauspost/compress/zstd"
 
+	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 )
@@ -332,9 +333,13 @@ func TestSetCodeTxRoundtrip(t *testing.T) {
 				ChainID: *uint256.NewInt(42161), // Arbitrum chainID
 				Address: authAddr2,
 				Nonce:   0,
-				V:       uint256.NewInt(0),
-				R:       uint256.NewInt(0).SetBytes(types.HexToHash("0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc").Bytes()),
-				S:       uint256.NewInt(0).SetBytes(types.HexToHash("0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd").Bytes()),
+				// Invalid legacy V values exist in canonical Ethereum
+				// history. They must survive bodyc roundtrip unchanged:
+				// execution rejects them, while normalizing to 0 can turn
+				// the tuple into a valid authorization and alter state.
+				V: uint256.NewInt(27),
+				R: uint256.NewInt(0).SetBytes(types.HexToHash("0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc").Bytes()),
+				S: uint256.NewInt(0).SetBytes(types.HexToHash("0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd").Bytes()),
 			},
 		},
 		V: uint256.NewInt(0),
@@ -420,6 +425,32 @@ func TestSetCodeTxRoundtrip(t *testing.T) {
 
 	t.Logf("SetCode tx roundtrip: all %d fields + %d auth entries verified, compressed=%d bytes",
 		10, len(origAL), len(compressed))
+}
+
+func TestRepairCompactLegacyAuthorizationV(t *testing.T) {
+	blocks := makeTestBlocks()
+	canonical := blocks[1].Txs[0]
+	// makeTestBlocks carries one V=1 tuple and one canonical invalid V=0
+	// tuple. Use a V=27 copy as the canonical transaction, then emulate the
+	// original lossy bodyc decoder by changing that tuple back to zero.
+	canonical = cloneSetCodeTxWithAuthV(canonical, map[int]uint64{1: 27})
+	want := hash.DeriveShaErigon(transaction.EthTransactions([]*transaction.Transaction{canonical}))
+	lossy := cloneSetCodeTxWithAuthV(canonical, map[int]uint64{1: 0})
+	txs := []*transaction.Transaction{lossy}
+
+	repaired, err := repairCompactLegacyAuthorizationV(want, txs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !repaired {
+		t.Fatal("expected legacy authorization repair")
+	}
+	if got := txs[0].AuthList()[1].V.Uint64(); got != 27 {
+		t.Fatalf("repaired V = %d, want 27", got)
+	}
+	if got := hash.DeriveShaErigon(transaction.EthTransactions(txs)); got != want {
+		t.Fatalf("repaired root = %s, want %s", got.Hex(), want.Hex())
+	}
 }
 
 func TestBodySegmentEmptyBlocks(t *testing.T) {
