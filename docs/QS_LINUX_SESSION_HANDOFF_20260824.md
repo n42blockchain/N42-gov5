@@ -17,8 +17,9 @@ or secp256k1 private keys.
 ## Repository and binaries
 
 - Repository: `/home/n42/src/n42/N42-gov5`
-- Branch: `main`; current release commit is
-  `e75524f1 build: 5.7.960` (pending the final push at the time of this edit).
+- Branch: `main`; repository HEAD before the current uncommitted audit fixes is
+  `1ac0aa27 docs(witness): record Linux correctness and perf gate`. The deployed
+  node release remains `e75524f1 build: 5.7.960`.
 - Relevant pushed commits from this session:
   - `283071f6 build: enforce 5.7.956 version consistency`
   - `468cbe22 build: auto-increment version before compilation`
@@ -40,15 +41,21 @@ or secp256k1 private keys.
   - `e5314923 fix(replay): preserve source head in checkpoint`
   - `64bdd927 fix(replay): bind target network identity`
   - `e75524f1 build: 5.7.960`
+  - `c19944e4 fix(witness): fill ParentHash when replaying from the columnar source`
+  - `27007667 fix(bodyc): stop flattening EIP-7702 authorization V to a parity bit`
+  - `3b7f8392 fix(witness): preserve legacy authorization parity values`
+  - `c8a47b4b perf(vm): reuse frame jumpdest analysis`
+  - `1adb4fbf fix(ethel): join streaming root producers`
+  - `1ac0aa27 docs(witness): record Linux correctness and perf gate`
 - `/data/blockchain/bin/n42` reports `5.7.960-e75524f1`, SHA-256
   `8f0705b73c2dcaa1da9128e01eeda7548427ac4fbdaa7304b5ede00c0fa8dbd7`.
   The prior 5.7.959 binary is retained as
   `/data/blockchain/bin/n42.pre-v5.7.960-e75524f1`.
 - `/data/blockchain/bin/txflood` SHA-256
   `e6deb6849073b362d313afc37b7ee351f4b94be0d6543a07d3c80602eb4cd731`.
-- `/data/blockchain/bin/witness-replay` is now a clean VCS build at
-  `1ffd1c7064ebb06005a4e813ff511f96c0b93ab6`, SHA-256
-  `e979b0dd6ea5e8feb2e576860262e19658fdd0416e7c120e16961806aef6b84d`.
+- `/data/blockchain/bin/witness-replay` is a clean VCS build at
+  `1ac0aa271f1b`, SHA-256
+  `7237a6084384d62c94c6550eb8613e6a2d51403fa44f7304aa43f14d3e1a0b3e`.
   `b8391c24` makes a populated explicit MDBX Code datadir suppress implicit
   detection of the older codes freezer; an explicit `--codes-freezer` still
   wins.
@@ -87,23 +94,29 @@ or secp256k1 private keys.
 
 ## Current fleet state
 
-- The seven nodes are now paused. All were stopped gracefully by the existing
-  `stop-fleet.sh --no-inspect`; no `kill -9` was used. Node 0 last committed
-  block `13,539,286`, then logged normal HTTP, txpool, HotStuff and P2P shutdown
-  at 2026-08-24 05:04:21 UTC.
-- Before the pause, seven nodes ran 5.7.959 from
+- The normal seven-node fleet is running 5.7.960 from
   `/data/blockchain/qs-node0..6`, RPC ports `20012..20018`, TCP
-  `32000..32006`, UDP `31000..31006`. They were launched by the existing
-  `bench-7node.sh` with 1,000 ms pacing, `GOMAXPROCS=37` per node and
-  `--txgen-max 0`; that phase accumulated the chain-defined 1 ETH/block dev
-  faucet reward.
-- At 04:56 UTC all seven reported height `13,538,842`, identical hash
-  `0xfc904675…217f052`, zero transactions in the latest block, six peers per
-  node, and no recent ValidateState/root-mismatch/panic/equivocation logs.
-- Faucet balance was 102.023116562 ETH at that height and is now verified to
-  rise by exactly 1 ETH/block. The standard 3,000 x 3,000 round needs about
-  1,896.93 ETH, so the estimated ready height is `13,540,637` (about 30 minutes
-  after the 04:56 sample).
+  `32000..32006`, UDP `31000..31006`. It was launched with the existing
+  `deploy-7node.sh`, not a new harness. At the 11:20 UTC check all seven RPCs
+  reported height `13,539,709`; an earlier fixed-height sample at `13,539,432`
+  returned one common hash
+  `0xd26c7c9e6e1a60499714712b5abc53140671366d57f463988781ac4f4486a394`
+  from every node, then all seven advanced together.
+- Node 4's first launch rejected inconsistent QMDB twig metadata and then
+  panicked because startup logged a failed `LoadFrom` as an empty-forest
+  fallback and called `Root()` on the partially populated tree. The damaged
+  generation is retained at
+  `/data/blockchain/qs-node4.qmdb-corrupt-20260824-1101`. Node 4 was reseeded
+  from `/data/blockchain/qs-era-linux` and started with the existing
+  `roll-one-node.sh`; all seven nodes are now healthy. No `kill -9` was used.
+- The startup caller is changed to fail closed on `BeginRo` or QMDB `LoadFrom`
+  failure. A history-dependent QMDB root cannot be replaced by an empty tree,
+  and a failed load may leave partial twigs. Targeted node, commitment and QMDB
+  tests pass; this source fix is not installed under the running fleet.
+- A 30-block node-0 sample covered heights `13,539,426..13,539,455`: 418 total
+  transactions, 13.93 tx/block average, all 30 blocks non-empty, maximum 28.
+  This is normal for the existing node0-only `--dev.txgen.max 31` random
+  generator and confirms automatic submission is working.
 - Root cause of the earlier falling balance was not nonce or P2P: the current
   txpool persists pending transactions inside MDBX `TxPoolJournal`. The old
   benchmark script deleted only a historical file path, before graceful stop,
@@ -187,7 +200,8 @@ were committed separately and pushed. The risky temporary mainnet genesis
 change was rejected: deployed old-mainnet identity remains `0x594aad…`, while
 the QS fleet keeps its separate `0xa2d2ff…` genesis.
 
-Validation completed successfully:
+Validation completed successfully before the latest QMDB fail-closed and
+bodyc-cache-release changes:
 
 ```bash
 GOCACHE=/tmp/n42-go-cache go test -race \
@@ -197,32 +211,25 @@ GOCACHE=/tmp/n42-go-cache go test -race \
 git diff --check
 ```
 
-The intentionally untracked documents are this temporal handoff and
-`docs/QS_LINUX_OPEN_QUESTIONS_20260824.md`. The latter is the complete review
-question list for the other developer; do not commit either until the operator
-decides how to incorporate the answers.
+The other developer's resolved answers are in
+`docs/QS_LINUX_ANSWERS_20260824.md`; preserve those edits as an independent
+documentation change when committing the current work.
 
 ## Remaining order
 
-1. Obtain answers to `docs/QS_LINUX_OPEN_QUESTIONS_20260824.md`; do not resume
-   the fleet or witness sweep before the operator reviews them.
-2. Apply the agreed fixes using the existing Windows/QS toolchain as the source
-   of truth, then revalidate the scripts without deleting retained generations.
-3. If confirmed, resume the empty benchmark-profile fleet until the faucet has
-   enough funding, then run one valid baseline with a fresh sender offset.
-4. Stop the fleet gracefully before any exclusive witness hardware sweep.
-5. Witness format smoke already passed 0–200,000 with 121,793 tx and
-   `failed=0`; this is not a performance result. `witness/senders` indexes both
-   cover 25,765,566. `/data/blockchain/witness/MANIFEST.txt` now records 488/488
-   transferred files matching by size and head/tail 4 MiB MD5.
-6. `/data/blockchain/code-mdbx` now contains 2,673,190 Code rows, but the
-   single-block W4 gate at 24,000,022 still fails with the exact old gas
-   mismatch even when the incomplete codes freezer is not opened. The old
-   `5ccc9bb9` binary and an on-the-fly ecrecover run reproduce the same result.
-   See the appended Linux result in `docs/QS_LINUX_ANSWERS_20260824.md` and the
-   three `w4-block-24000022-*.log` files under `/data/blockchain/wr-logs`.
-7. Do not run the dense gate or any witness performance sweep until the second
-   W4 cause is identified. The earlier `24,980,000–24,990,000` range has no
-   canonical basis; the eventual correctness gate must start in the known
-   failing 24,000,000 range and must finish with `failed=0` before performance
-   is counted.
+1. Keep the fleet running normally until the operator chooses to start the next
+   exclusive witness measurement. Stop it gracefully before that measurement.
+2. Wait for the seven regenerated `bfAuthVFull` bodyc segments from Windows.
+   The old encoder destroyed arbitrary authorization V values; Linux recovered
+   20 legacy 27/28 cases but correctly stopped at block `24,993,792`, the 21st
+   affected block. Do not use `--continue-on-error` to hide it.
+3. Rebuild `witness-replay` with the sequential body-cache release, run a short
+   dense correctness/performance A/B first, and keep default GasUsed plus
+   ReceiptHash verification. Do not install an unmeasured binary over the
+   current clean artifact.
+4. If the short gate passes, run `0..25,765,565` with `--no-output`, initially
+   112 workers, GOGC 100 and a 48 GiB soft memory limit. Record CPU/heap pprof,
+   `/usr/bin/time -v`, and the final `failed=0` line. Full details and the exact
+   command are in `docs/WITNESS_LINUX_PERF_20260824.md`.
+5. Revalidate the QMDB fail-closed change, commit it separately, and only roll a
+   new node binary after the currently healthy fleet is intentionally stopped.
