@@ -167,12 +167,32 @@ func openN42CompactSource(dir string) (*n42CompactSource, error) {
 }
 
 func (s *n42CompactSource) header(n uint64) (*block.Header, error) {
-	// Reader populates Header.hash atomic.Value from the segment
-	// trailer (hfStoredHash flag), so hdr.Hash() returns canonical
-	// directly. ParentHash and Bloom remain zero on the struct —
-	// callers that need them must reconstruct externally; for
-	// witness-replay only Hash() matters (BLOCKHASH).
-	return s.hr.ReadHeader(n)
+	// Reader populates Header.hash atomic.Value from the segment trailer
+	// (hfStoredHash flag), so hdr.Hash() returns canonical directly. The
+	// columnar format does not store ParentHash, so it comes back zero — but
+	// execution needs it, not just Hash(): EIP-2935 writes header.ParentHash
+	// into the history ring buffer every block (internal/blockhelp.go, via
+	// vm.StoreParentBlockHash). Replaying with a zero there poisons the buffer,
+	// so a later BLOCKHASH read returns 0, the contract takes a different path
+	// and the block's gas no longer matches its header. That is exactly how
+	// block 24000022 replayed at 16,980,501 gas against a header saying
+	// 17,009,241 — while the geth-ancient source, which carries ParentHash,
+	// replayed the same block clean.
+	//
+	// The parent's canonical hash is one O(1) trailer read away, so fill it in
+	// rather than leaving a field that execution silently misreads.
+	hdr, err := s.hr.ReadHeader(n)
+	if err != nil {
+		return nil, err
+	}
+	if n > 0 && hdr.ParentHash == (types.Hash{}) {
+		parent, perr := s.hr.ReadHeader(n - 1)
+		if perr != nil {
+			return nil, fmt.Errorf("parent header %d (needed for ParentHash of %d): %w", n-1, n, perr)
+		}
+		hdr.ParentHash = parent.Hash()
+	}
+	return hdr, nil
 }
 
 func (s *n42CompactSource) body(n uint64) (*GethBodyResult, error) {
