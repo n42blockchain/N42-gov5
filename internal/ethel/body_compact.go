@@ -42,6 +42,21 @@ const (
 	bfHasBlob       bodyFlags = 1 << 2
 	bfHasSetCode    bodyFlags = 1 << 3
 	bfHasAccessList bodyFlags = 1 << 4
+
+	// bfAuthVFull marks a segment whose EIP-7702 authorization V values are
+	// written as a trimmed uint256 instead of a single 0/1 byte.
+	//
+	// The original encoder assumed V could only be y_parity (0 or 1) and wrote
+	// `1` only when V == 1, folding everything else to 0. Mainnet carries
+	// authorizations with V = 27 / 28, so those were silently flattened to 0 —
+	// an unrecoverable loss that changes the recovered authority and, through
+	// it, the executed nonce state and the block's gas.
+	//
+	// Segments written before this flag existed cannot be repaired (the byte is
+	// gone), so the flag exists to keep READING them correct-for-their-format
+	// while new segments carry the true value. A segment with type-4
+	// transactions and without this flag is suspect and should be regenerated.
+	bfAuthVFull bodyFlags = 1 << 5
 )
 
 // DecodedBlock holds a decoded body for columnar encoding.
@@ -221,7 +236,9 @@ func detectBodyFlags(blocks []*DecodedBlock) bodyFlags {
 			case transaction.BlobTxType:
 				f |= bfHasBlob | bfHasAccessList
 			case transaction.SetCodeTxType:
-				f |= bfHasSetCode | bfHasAccessList
+				// bfAuthVFull: everything this build writes carries the true
+				// authorization V, not a folded 0/1 byte.
+				f |= bfHasSetCode | bfHasAccessList | bfAuthVFull
 			}
 		}
 	}
@@ -459,11 +476,15 @@ func encodeBodySegment(blocks []*DecodedBlock, chainID uint64, enc *zstd.Encoder
 						}
 						buf = append(buf, rBuf[:]...)
 						buf = append(buf, sBuf[:]...)
-						vByte := byte(0)
-						if auth.V != nil && auth.V.Uint64() == 1 {
-							vByte = 1
+						// V as a trimmed uint256, not a 0/1 byte: mainnet
+						// authorizations carry V = 27 / 28 as well as y_parity,
+						// and flattening those to 0 silently changes the
+						// recovered authority (see bfAuthVFull).
+						var vVal uint256.Int
+						if auth.V != nil {
+							vVal = *auth.V
 						}
-						buf = append(buf, vByte)
+						buf = encodeTrimmedU256(buf, &vVal)
 					}
 				}
 			}
@@ -1271,8 +1292,19 @@ func decodeBodySegment(data []byte) ([]*DecodedBlock, error) {
 					pos += 32
 					auth.R = new(uint256.Int).SetBytes32(rBuf[:])
 					auth.S = new(uint256.Int).SetBytes32(sBuf[:])
-					auth.V = uint256.NewInt(uint64(data[pos]))
-					pos++
+					if f&bfAuthVFull != 0 {
+						vVal, np, verr := decodeTrimmedU256(data, pos)
+						if verr != nil {
+							return nil, fmt.Errorf("auth V: %w", verr)
+						}
+						auth.V, pos = vVal, np
+					} else {
+						// Legacy segment: V was folded to a single 0/1 byte, so
+						// 27/28 is unrecoverable here. Read it in the format the
+						// segment was written in; such segments need regenerating.
+						auth.V = uint256.NewInt(uint64(data[pos]))
+						pos++
+					}
 					al[j] = auth
 				}
 				authLists[i] = al
