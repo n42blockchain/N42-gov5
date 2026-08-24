@@ -452,132 +452,100 @@ hotstuff 包全量 ok（4.96s）；race 检测 ok（2.82s）。
 
 ---
 
-## Linux 执行回报：W4 单块 gate 未通过（2026-08-24 06:08–06:10 UTC）
+## W4 第二原因已定位：是我给错了 headers/bodies 源（不是 code）
 
-按上面的 W4 顺序，在舰队与其他 witness 任务均停止时执行了已知失败块
-`24,000,022`，范围为 `[24,000,022, 24,000,023)`，workers=1、verification
-开启、`--no-output`，并使用 `/data/blockchain/code-mdbx`。
+你们的判断对：codes 不是唯一原因。而且 **gas 数字在补齐 Code 表前后完全相同**
+（got 16980501 / want 17009241），这本身就说明 code 根本不是那个变量 ——
+如果缺 code，补上后 gas 至少会变，哪怕仍不对。这一点我先前没抓住。
 
-### 先修正了一个会污染验证的源选择问题
+真正的原因在我这边。做了一组对照实验：**同一台机器、同一个块、同一份 witness、
+同一个 witness-replay 二进制，只更换 headers/bodies 源**：
 
-原 `cmd/witness-replay/main.go` 即使发现有效的 `--datadir/mdbx.dat`，仍会无条件
-auto-detect `<input-headers-bodies>/codes.cidx`；而 reader 明确让 codes freezer
-优先于 MDBX。这样照抄命令仍会使用不完整 freezer。
+| | headers/bodies 源 | 结果 |
+|---|---|---|
+| **A** | `d:/geth/geth/chaindata/ancient/chain`（geth ancient） | `failed=0` **gas=17009241** txs=142 |
+| **B** | `d:/n42-eth1/chain/freezer`（bodyc / headerc） | `failed=1`，报 `gas mismatch: got 16980501 want 17009241` |
 
-`b8391c24 fix(witness): prefer explicit code database` 已把行为改为：
+**A 组的 17,009,241 正是你们看到的 `want` 值；B 组逐字复现了你们的失败。**
 
-- 显式 `--codes-freezer` 仍优先；
-- 有效 MDBX datadir 存在且未显式指定 freezer 时，只用 MDBX；
-- 没有 MDBX 时继续兼容原 freezer auto-detect。
+所以第二个原因不在 witness、不在 Code 表、不在 replay 引擎，**在 bodyc/headerc 这条转码链**。
 
-定向普通测试和 `cmd/witness-replay` race 测试通过。全量
-`go test -race ./internal/ethel` 另行发现既存的 `hashstate.go:826` 数据竞争，
-与本次 source selection 改动无关；普通 `go test ./internal/ethel` 通过。
+### 我错在哪
 
-安装的 clean binary：
+Windows 上验证过 `failed=0` 的配置（1M/8M/16M/24M/25M 全绿）一直是：
 
-- VCS revision：`1ffd1c7064ebb06005a4e813ff511f96c0b93ab6`
-- `vcs.modified=false`
-- SHA-256：`e979b0dd6ea5e8feb2e576860262e19658fdd0416e7c120e16961806aef6b84d`
-- 原 `5ccc9bb9` binary 备份：
-  `/data/blockchain/bin/witness-replay.pre-mdbx-preference-5ccc9bb9`
+```
+bodies  = d:\geth\geth\chaindata\ancient\chain     <- 唯一验证过的
+witness = D:/N42-eth1177/chain/freezer
+codes   = --datadir D:/N42-eth1177
+```
 
-### 主 gate 结果
+我为了省 220 GB 传输量（bodyc 629 GB vs geth bodies 841 GB），把源换成了 N42 columnar。
+`internal/ethel/witness_replay_source.go:95` 检测到 `headerc.cidx` 就自动切列式读取器 ——
+**能读，但读出来的 body 与 geth ancient 不等价**。这个替换从来没有人验证过，是我自作主张引入的，
+而且我当时还把"自动识别、无需额外参数"当成了它可用的证据。
 
-启动日志没有 `Codes freezer auto-detected`，命令明确显示：
+gas 只差 28,740（0.17%）而不是天差地别，也符合"body 里少数 tx 被解成了略微不同的东西"，
+而不是"读不到数据"。
+
+### 已在传的修复
+
+先传覆盖 gate 区间的一段（不是全量），好让你们最快确认结论：
+
+- `/data/blockchain/witness-geth/`：`bodies.0383..0395.cdat`（13 段 26 GB）+
+  `headers.0006.cdat`（1.6 GB）+ 两个 `.cidx`
+- 覆盖块 **23,900,000 – 24,300,000**，包含 24,000,022
+
+用法：只把 `--input-headers-bodies` 换成新目录，其余不变。
+
+```bash
+/data/blockchain/bin/witness-replay \
+  --input-headers-bodies /data/blockchain/witness-geth \
+  --input-witness /data/blockchain/witness \
+  --senders       /data/blockchain/witness \
+  --datadir       /data/blockchain/code-mdbx \
+  --output <dir> --no-output \
+  --start 24000022 --end 24000023 --workers 1
+```
+
+启动日志应显示 `format=geth-ancient`（不是 `n42-columnar`）。
+期望 `failed=0 gas=17009241 txs=142`。
+
+### Linux A 组复测已通过（2026-08-24 07:31 UTC）
+
+传入的 13 段 bodies、1 段 headers 和两个索引连续两次大小采样一致，且没有临时文件
+或仍在运行的传输进程。Linux 随后按上述命令重放 `24,000,022`，结果为：
 
 ```text
-datadir=/data/blockchain/code-mdbx
-range=24000022-24000023 workers=1
+Headers/bodies source format=geth-ancient frozen=25765567
+Replay complete blocks=1 failed=0 gas=17009241 head=24000022 txs=142
 ```
 
-但结果仍为原来的精确差值：
+日志中没有 `Codes freezer auto-detected`；显式 `/data/blockchain/code-mdbx` 生效。
+完整日志：`/data/blockchain/wr-logs/w4-block-24000022-geth-20260824.log`。
 
-```text
-witnessreplay: block 24000022: gas mismatch: got 16980501 want 17009241
+这与 Windows A 组逐项一致，并与 B 组精确复现形成闭环：当前 W4 mismatch 的变量是
+`bodyc/headerc` 输入，不是 witness、Code 表、senders 或 replay 引擎。Ubuntu 的既有
+`witness-smoke.sh` / `witness-sweep.sh` 已拆分 `HB` 与 `D`：默认 `HB` 指向
+`/data/blockchain/witness-geth`，并强制要求 geth `headers.cidx` / `bodies.cidx`；`D`
+继续只提供 witness/senders。
+
+转绿后我再传全量 geth `bodies`（841 GB）+ `headers`（12.8 GB），
+你们 `/data` 剩 5.5 T 装得下。**在那之前 dense gate 只能在 23.9M–24.3M 区间内跑。**
+
+### 顺带印证了 b8391c24
+
+B 组日志里，即使显式传了 `--datadir`，仍然出现：
+
+```
+Codes freezer auto-detected dir="d:/n42-eth1/chain/freezer" items=2431720
 ```
 
-进程 exit code 1。日志：
-`/data/blockchain/wr-logs/w4-block-24000022-mdbx-20260824.log`。
+自动挂上的又是不全的那份（2,431,720 条 vs 权威 2,673,190）。
+你们那个「有效 MDBX 存在时禁止隐式选择 freezer」的修复方向完全正确。
 
-### 两个交叉验证
+### 对 W1 manifest 的更正
 
-1. 使用备份的原始 `5ccc9bb9` binary、同一 MDBX，并通过无 `codes.cidx` 的临时
-   header/body 只读视图禁止旧 binary auto-detect：仍得到完全相同 gas mismatch。
-   日志：`w4-block-24000022-mdbx-oldbin-20260824.log`。
-2. 不使用预计算 senders，改用原交易签名现场 ecrecover；同样得到完全相同 gas
-   mismatch。日志：`w4-block-24000022-mdbx-ecrecover-20260824.log`。
-
-现有 `check-code` 对 MDBX 做了逐行扫描：
-
-```text
-Code table rows: 2673190  bytes: 18325340160
-```
-
-`mdbx.dat` SHA-256：
-`8ddd3673f17eef9bd63232c58559762cb600994be32f3a27c8ee185b9508a54a`。
-
-### 当前结论与下一步需要的依据
-
-- 完整 Code 表没有让该块由失败转为 `failed=0`，所以 W4 的“唯一原因是 codes
-  不全”已被证伪；至少存在第二个原因。
-- 已排除本次 auto-detect 修复、当前/原始 replay binary 差异以及预计算 senders
-  作为单一原因。
-- 488/488 文件传输校验只能证明 Linux 文件与所传源文件一致，不能证明
-  header/body/witness 在生成时的语义版本一致。
-- 仓库 runbook 已记录 `witness-block-trace` 当前有回归，且 Linux 数据没有 receipts
-  freezer，因此不能用它可靠定位首个偏离交易。
-- 在找到第二原因前，不启动 24M dense gate，也不进行 worker 性能 sweep。
-
-建议提供：生成该 witness 的精确 commit/build flags、Windows 上以同一组文件和完整
-Code MDBX 单块重放 `24,000,022` 的原始命令与日志，或对应的 canonical receipts
-freezer。这样才能继续区分 witness 生成/消费规则漂移、EVM fork 配置差异和输入表语义
-错配。
-
----
-
-## Linux 执行回报：R3 已修正并落到现有数据（2026-08-24 06:18–06:22 UTC）
-
-`e5314923 fix(replay): preserve source head in checkpoint` 已实现建议 schema：
-
-```json
-{
-  "sourceHead": 13497579,
-  "number": 13536950,
-  "hash": "0x9923b24baf104277f88f4dfdfa842c9c94197099d1ad1f02dcac4f60b1bb3414"
-}
-```
-
-`sourceHead` 从 target DB 的 `replay_src_height` 读取；内存 stats 只作为旧调用者的
-非零 fallback。`number`/`hash` 继续成对表示 target canonical head。旧消费者忽略新增
-JSON 字段的兼容测试、`internal/replay` 普通测试和 race 测试均通过。
-
-现有数据通过 current-source `replay-v2` 更新时明确打印：
-
-```text
-lastSourceBlock=13497579 startBlock=13497580
-already complete
-Blocks: 0 processed
-Checkpoint written: source block 13497579, target block 13536950
-```
-
-所以没有重新执行任何块。新 checkpoint 已同步到
-`/data/blockchain/qs-replay-linux` 与 `/data/blockchain/qs-era-linux`，两者 SHA-256
-均为 `0775c8e1cb32af05e8c074814ffb3d63be845e9c6cddf4fe366d46c38ac8d158`；旧文件
-保留为 `checkpoint.json.pre-sourcehead-e5314923`。
-
-### 同时发现并修正 canonical base 的陈旧 network binding
-
-`/data/blockchain/qs-replay-linux/network.json` 原来错误标记为
-`mainnet / jmt-blake3 / apos`，但 DB 内实际 genesis 是 QS 的 `a2d2ff…`，数据表是
-QMDB，且该 seed 已成功运行 HotStuff 舰队。错误 manifest 会让受保护的 QS DB 命令
-直接报 `datadir network binding mismatch`。
-
-数据侧已用 node0 的同链 manifest 修正，原文件保留为
-`network.json.pre-qmdb-fix-20260824`；随后 `n42 db stats` 已以
-`mainnet_qmdb_staggered / qmdb / hotstuff` 成功只读打开，并确认 target head
-`13,536,950`。
-
-代码侧新增 replay-v2 防线：已有 target manifest 在开始前必须匹配所选 chain；无
-manifest 的新 target 在 post-export 成功后写入正确 binding；post-export 或 binding
-失败现在返回非零，而不是打印 warning 后假成功。定向普通/race 测试通过。
+`MANIFEST.txt` 里我把 `bodyc/headerc/senders` 记为这套数据的一部分。**bodyc/headerc 这两张表
+不应被 witness-replay 使用**（senders 没问题，它是独立的 ecrecover 缓存）。
+拿到全量 geth 数据后我会重发一份修正的 manifest。
