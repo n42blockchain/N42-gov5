@@ -2,6 +2,11 @@
 
 > 目的:为 witness-replay 32-worker 吞吐实测(任务 #2)准备**一致的**(bodies + witness + codes + senders)输入集。
 > 关键纪律:**witness 必须由它将被回放的同一份 bodies 生成**。三类源(geth / reth MDBX / reth static_files)同源(同一 ETH mainnet),只是高度可能不同。
+>
+> 性能区间选择、版本指纹、fail-fast gate、worker sweep 和结果口径见
+> [`witness-replay-benchmark-runbook.md`](./witness-replay-benchmark-runbook.md)。
+> 本文只解决输入制作；不要用 genesis 空块 smoke 选择 worker，也不要把
+> `--continue-on-error` / `--skip-verify` 的跑数当作验证通过。
 
 ## 1. 原始 ETH 源(只读,权威)
 

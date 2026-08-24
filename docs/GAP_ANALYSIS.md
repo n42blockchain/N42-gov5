@@ -422,7 +422,7 @@
 
 > **现实校准说明（N42 三个执行口径，务必区分，勿混用）**：
 > 1. **374 Ggas/s** — Block-STM 调度微基准（`internal/parallel/executor_bench_test.go`，32 核独立 TX）。**注意：该 bench 以 `simulateWork()` 忙等循环模拟 EVM 工作、非真实字节码执行**，仅衡量调度/MVS 开销，不能当作真实 gas 吞吐。
-> 2. **10.8 Ggas/s** — **真实并行 EVM 重放实测**（2026-06-13 复现，Ryzen 9 9950X 16C/32T，`--workers 32`）：witness-replay 主网区块 24,980,000–24,990,000，10,000 个 tx-密集块 / 4,711,911 笔 tx / 301.78 Ggas，27s 完成，359 blk/s，窗口稳定 9.2–13.5 Ggas/s。这是**纯并行 EVM 再执行**（按 witness 重放、code 取自 freezer、senders 预算、不算 state root、不落盘），表明 EVM 执行本身不是瓶颈。命令见 `cmd/witness-replay`（`--no-output --skip-verify --continue-on-error`）。
+> 2. **10.8 Ggas/s** — **真实并行 EVM 重放实测**（2026-06-13 复现，Ryzen 9 9950X 16C/32T，`--workers 32`）：witness-replay 主网区块 24,980,000–24,990,000，10,000 个 tx-密集块 / 4,711,911 笔 tx / 301.78 Ggas，27s 完成，359 blk/s，窗口稳定 9.2–13.5 Ggas/s。这是**纯并行 EVM 再执行**（按 witness 重放、code 取自 freezer、senders 预算、不算 state root、不落盘），表明 EVM 执行本身不是瓶颈。该历史数字使用了 `--no-output --skip-verify --continue-on-error`，所以只能视为 verification-disabled 的纯执行 profiling，不能作为当前数据的正确性 gate。新的复现必须遵循 [`ethel/witness-replay-benchmark-runbook.md`](./ethel/witness-replay-benchmark-runbook.md)：固定 tx-dense 区间、先 fail-fast 得到 `failed=0`，再做 worker sweep。
 > 3. **880 Mgas/s** — **单流（`--workers 1`）真实 EVM 重放实测**（2026-06-13 复现，同上数据源，区块 24,980,000–24,982,000，2,000 块 / 1,026,847 tx / 60.05 Ggas，68s，failed=0，窗口 940–1046 mgas/s）。即 ② 关并行后的单线程基线，32 线程并行扩展 ~12.3×（880→10,829）。同为纯 EVM（不含 state root/落盘）。
 >
 > **关于"端到端"（含 state root + 持久化 + 每块开销）**：上一版曾给出 "~270 Mgas/s 端到端 staged 追平"，但经核查该值是 `7.8 blk/s × 35M gas` 的**手算估计**（`docs/ethel/exec-perf-plan.md` 标注 "our run"），**并非直接实测、本会话未单独复现，故已移除**。N42 的端到端 staged 执行（叠加 Merkle + changeset 落盘）目前**没有单一可复现的 mgas/s 基准**；据组件分解，root+落盘+每块开销会把单流吞吐从 880 Mgas/s 显著拉低，但具体数字待专门基准。
