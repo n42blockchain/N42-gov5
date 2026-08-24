@@ -115,8 +115,8 @@ import (
 	"github.com/n42blockchain/N42/internal/tracers"
 	"github.com/n42blockchain/N42/internal/tracing"
 	"github.com/n42blockchain/N42/internal/txgen"
-	"github.com/n42blockchain/N42/internal/txlookup"
 	"github.com/n42blockchain/N42/internal/txindexer"
+	"github.com/n42blockchain/N42/internal/txlookup"
 	"github.com/n42blockchain/N42/internal/txspool"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/zkprover"
@@ -992,21 +992,24 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			// per-block evmRecord tx is read-only (cannot back the index with
 			// MDBX on the live path). Also serve QMDB-native eth_getProof.
 			qmdbRC := commitment.NewQMDBRootComputer()
-			if rtx, err := chainKv.BeginRo(ctx); err == nil {
-				// Wire the cold/leaf getters BEFORE LoadFrom: the rebuild
-				// faults frozen leaves and cold entries through them, and
-				// without the wiring it silently took degraded reconstruction
-				// paths — every node's startup self-check flagged a reloaded
-				// root matching no nearby header, each node drifting
-				// differently from a logically identical chain.
-				qmdbRC.SetCold(rtx)
-				if err := qmdbRC.LoadFrom(rtx); err != nil {
-					log.Warn("QMDB forest reload failed (starting from empty forest)", "err", err)
-				}
-				rtx.Rollback()
-				// rtx is dead from here; detach so nothing faults through it
-				// (the first block's execution re-points at a live tx).
-				qmdbRC.SetCold(nil)
+			rtx, err := chainKv.BeginRo(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("open QMDB forest reload view: %w", err)
+			}
+			// Wire the cold/leaf getters BEFORE LoadFrom: the rebuild faults
+			// frozen leaves and cold entries through them. A failed reload can
+			// leave a partially populated twig slice, so it is not an empty-tree
+			// fallback: using it can panic in Root(), and an actually empty tree
+			// would not reproduce this history-dependent root. Fail closed and
+			// require repair/reseed instead.
+			qmdbRC.SetCold(rtx)
+			loadErr := qmdbRC.LoadFrom(rtx)
+			rtx.Rollback()
+			// rtx is dead from here; detach so nothing faults through it (the
+			// first block's execution re-points at a live tx).
+			qmdbRC.SetCold(nil)
+			if loadErr != nil {
+				return nil, fmt.Errorf("reload QMDB forest: %w", loadErr)
 			}
 			qmdbRC.EnableUndoRecording()
 			realBC.SetQMDBRootComputer(qmdbRC)
