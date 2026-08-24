@@ -6,6 +6,7 @@ import (
 
 	libp2pcore "github.com/libp2p/go-libp2p/core"
 	"github.com/pkg/errors"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/n42blockchain/N42/common"
 	types "github.com/n42blockchain/N42/common/block"
@@ -16,6 +17,7 @@ import (
 	"github.com/n42blockchain/N42/internal/p2p/p2ptypes"
 	"github.com/n42blockchain/N42/lib/rlp"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/proto/types_pb"
 )
 
 // chunkBlockWriter writes the given block as a chunked response to the stream.
@@ -93,6 +95,27 @@ func (r *rawSSZBytes) UnmarshalSSZ(buf []byte) error {
 	return nil
 }
 
+// decodeChunkedBlock accepts both generations of the block-range wire payload.
+// New peers send ETH-standard RLP; deployed legacy-mainnet peers still send a
+// protobuf Block inside the same length/snappy envelope. Keep the fallback on
+// reads only so upgraded peers converge on RLP without stranding old nodes.
+func decodeChunkedBlock(data []byte) (*types.Block, error) {
+	blk := new(types.Block)
+	if err := rlp.DecodeBytes(data, blk); err == nil {
+		return blk, nil
+	} else {
+		rlpErr := err
+		legacy := new(types_pb.Block)
+		if err := proto.Unmarshal(data, legacy); err != nil {
+			return nil, fmt.Errorf("RLP decode failed: %v; legacy protobuf decode failed: %w", rlpErr, err)
+		}
+		if err := blk.FromProtoMessage(legacy); err != nil {
+			return nil, fmt.Errorf("RLP decode failed: %v; legacy protobuf conversion failed: %w", rlpErr, err)
+		}
+		return blk, nil
+	}
+}
+
 // ReadChunkedBlock handles each response chunk that is sent by the peer and
 // converts it into a block. The first chunk has different deadline handling.
 func ReadChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider, isFirstChunk bool) (*types.Block, error) {
@@ -122,9 +145,9 @@ func readFirstChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (
 	if err = encoder.DecodeWithMaxLengthLimit(stream, raw, encoder.MaxBlockChunkSize); err != nil {
 		return nil, errors.Wrapf(err, "failed to decode block from first chunk (forkDigest=%x)", ctx)
 	}
-	blk := &types.Block{}
-	if err = rlp.DecodeBytes(raw.data, blk); err != nil {
-		return nil, errors.Wrapf(err, "failed to RLP-decode block from first chunk (forkDigest=%x)", ctx)
+	blk, err := decodeChunkedBlock(raw.data)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to decode block payload from first chunk (forkDigest=%x)", ctx)
 	}
 	log.Debug("First chunk decoded successfully", "blockNumber", blk.Number64().Uint64(), "peer", stream.Conn().RemotePeer().String())
 	return blk, nil
@@ -170,9 +193,9 @@ func readResponseChunk(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (*typ
 	if err = encoder.DecodeWithMaxLengthLimit(stream, raw, encoder.MaxBlockChunkSize); err != nil {
 		return nil, errors.Wrapf(err, "failed to decode block from chunk (forkDigest=%x)", forkDigest)
 	}
-	blk := &types.Block{}
-	if err = rlp.DecodeBytes(raw.data, blk); err != nil {
-		return nil, errors.Wrapf(err, "failed to RLP-decode block from chunk (forkDigest=%x)", forkDigest)
+	blk, err := decodeChunkedBlock(raw.data)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to decode block payload from chunk (forkDigest=%x)", forkDigest)
 	}
 	return blk, nil
 }

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/holiman/uint256"
+	"google.golang.org/protobuf/proto"
 
 	types "github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
@@ -57,6 +58,34 @@ func bigBlock(t *testing.T) types.IBlock {
 			len(raw), encoder.MaxChunkSize)
 	}
 	return blk
+}
+
+func TestDecodeChunkedBlockAcceptsRLPAndLegacyProto(t *testing.T) {
+	blk := bigBlock(t)
+
+	rawRLP, err := rlp.EncodeToBytes(blk)
+	if err != nil {
+		t.Fatalf("encode RLP: %v", err)
+	}
+	got, err := decodeChunkedBlock(rawRLP)
+	if err != nil {
+		t.Fatalf("decode RLP: %v", err)
+	}
+	if got.Hash() != blk.Hash() {
+		t.Fatalf("RLP hash = %s, want %s", got.Hash(), blk.Hash())
+	}
+
+	rawProto, err := proto.Marshal(blk.ToProtoMessage())
+	if err != nil {
+		t.Fatalf("encode legacy protobuf: %v", err)
+	}
+	got, err = decodeChunkedBlock(rawProto)
+	if err != nil {
+		t.Fatalf("decode legacy protobuf: %v", err)
+	}
+	if got.Hash() != blk.Hash() {
+		t.Fatalf("legacy protobuf hash = %s, want %s", got.Hash(), blk.Hash())
+	}
 }
 
 // TestWriteBlockChunkCarriesOversizeBlock pins the responder and the requester
