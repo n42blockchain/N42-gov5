@@ -38,6 +38,12 @@ or secp256k1 private keys.
   `1c0c0dac07b7773f602ddecbe61c43f23b005f0821bd6aee902217d4eaf6ab62`.
 - `/data/blockchain/bin/txflood` SHA-256
   `e6deb6849073b362d313afc37b7ee351f4b94be0d6543a07d3c80602eb4cd731`.
+- `/data/blockchain/bin/witness-replay` is now a clean VCS build at
+  `1ffd1c7064ebb06005a4e813ff511f96c0b93ab6`, SHA-256
+  `e979b0dd6ea5e8feb2e576860262e19658fdd0416e7c120e16961806aef6b84d`.
+  `b8391c24` makes a populated explicit MDBX Code datadir suppress implicit
+  detection of the older codes freezer; an explicit `--codes-freezer` still
+  wins.
 - `make n42` and `make build` now increment the build version once before
   compilation. Never probe with `n42 version`; that starts a node. Use
   `n42 --version`.
@@ -188,10 +194,16 @@ decides how to incorporate the answers.
 4. Stop the fleet gracefully before any exclusive witness hardware sweep.
 5. Witness format smoke already passed 0–200,000 with 121,793 tx and
    `failed=0`; this is not a performance result. `witness/senders` indexes both
-   cover 25,765,566, but no source manifest exists, so full 858 GiB transfer
-   integrity is not cryptographically verified.
-6. Only after the developer confirms the data/binary/range, run the corrected
-   `/data/blockchain/bin/witness-sweep.sh`: it first gates
-   dense `24,980,000–24,990,000` at workers=1, then sweeps block workers
-   8/16/32/64/128 only if `failed=0`. It never uses continue-on-error and never
-   deletes prior result directories.
+   cover 25,765,566. `/data/blockchain/witness/MANIFEST.txt` now records 488/488
+   transferred files matching by size and head/tail 4 MiB MD5.
+6. `/data/blockchain/code-mdbx` now contains 2,673,190 Code rows, but the
+   single-block W4 gate at 24,000,022 still fails with the exact old gas
+   mismatch even when the incomplete codes freezer is not opened. The old
+   `5ccc9bb9` binary and an on-the-fly ecrecover run reproduce the same result.
+   See the appended Linux result in `docs/QS_LINUX_ANSWERS_20260824.md` and the
+   three `w4-block-24000022-*.log` files under `/data/blockchain/wr-logs`.
+7. Do not run the dense gate or any witness performance sweep until the second
+   W4 cause is identified. The earlier `24,980,000–24,990,000` range has no
+   canonical basis; the eventual correctness gate must start in the known
+   failing 24,000,000 range and must finish with `failed=0` before performance
+   is counted.
