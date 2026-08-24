@@ -17,8 +17,8 @@ or secp256k1 private keys.
 ## Repository and binaries
 
 - Repository: `/home/n42/src/n42/N42-gov5`
-- Branch: `main`; at 2026-08-24 05:00 UTC local and `origin/main` were
-  `c3d8059e fix(txflood): abort partial sender loads`.
+- Branch: `main`; current release commit is
+  `e75524f1 build: 5.7.960` (pending the final push at the time of this edit).
 - Relevant pushed commits from this session:
   - `283071f6 build: enforce 5.7.956 version consistency`
   - `468cbe22 build: auto-increment version before compilation`
@@ -34,8 +34,16 @@ or secp256k1 private keys.
   - `58d49032 fix(witness): gate block-worker sweeps`
   - `b8dd1f06 fix(qs): clear persisted pool before benchmarks`
   - `c3d8059e fix(txflood): abort partial sender loads`
-- `/data/blockchain/bin/n42` reports `5.7.959-6537ed32`, SHA-256
-  `1c0c0dac07b7773f602ddecbe61c43f23b005f0821bd6aee902217d4eaf6ab62`.
+  - `b8391c24 fix(witness): prefer explicit code database`
+  - `1ffd1c70 docs(qs): record Linux review answers`
+  - `91fcca3b fix(witness): gate replay with complete code database`
+  - `e5314923 fix(replay): preserve source head in checkpoint`
+  - `64bdd927 fix(replay): bind target network identity`
+  - `e75524f1 build: 5.7.960`
+- `/data/blockchain/bin/n42` reports `5.7.960-e75524f1`, SHA-256
+  `8f0705b73c2dcaa1da9128e01eeda7548427ac4fbdaa7304b5ede00c0fa8dbd7`.
+  The prior 5.7.959 binary is retained as
+  `/data/blockchain/bin/n42.pre-v5.7.960-e75524f1`.
 - `/data/blockchain/bin/txflood` SHA-256
   `e6deb6849073b362d313afc37b7ee351f4b94be0d6543a07d3c80602eb4cd731`.
 - `/data/blockchain/bin/witness-replay` is now a clean VCS build at
