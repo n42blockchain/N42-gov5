@@ -17,7 +17,11 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/hash"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
@@ -143,8 +147,10 @@ func (s *gethFreezerSource) freezer() *freezer.Freezer { return s.f }
 // Header remain zero (the columnar format drops them); callers that
 // only need Hash() get the right value via the cached atomic.Value.
 type n42CompactSource struct {
-	hr *HeaderCompactReader
-	br *BodyCompactReader
+	hr            *HeaderCompactReader
+	br            *BodyCompactReader
+	lastHeaderNum uint64
+	lastHeader    *block.Header
 }
 
 func openN42CompactSource(dir string) (*n42CompactSource, error) {
@@ -192,6 +198,7 @@ func (s *n42CompactSource) header(n uint64) (*block.Header, error) {
 		}
 		hdr.ParentHash = parent.Hash()
 	}
+	s.lastHeaderNum, s.lastHeader = n, hdr
 	return hdr, nil
 }
 
@@ -199,6 +206,25 @@ func (s *n42CompactSource) body(n uint64) (*GethBodyResult, error) {
 	db, err := s.br.ReadBody(n)
 	if err != nil {
 		return nil, err
+	}
+	// bodyc historically collapsed every authorization V other than 1 to 0.
+	// This is lossy for invalid legacy 27/28 tuples found in canonical Ethereum
+	// history: N42 correctly rejects V > 1, while the collapsed V=0 tuple can
+	// become valid and mutate state. New bodyc files preserve the raw byte. For
+	// old files, use the canonical transaction root retained by headerc to
+	// restore the rare legacy value before execution. Blocks without a zero-V
+	// authorization pay no transaction-root hashing cost.
+	hdr := s.lastHeader
+	if hdr == nil || s.lastHeaderNum != n {
+		hdr, err = s.hr.ReadHeader(n)
+		if err != nil {
+			return nil, fmt.Errorf("header %d needed to verify bodyc authorization values: %w", n, err)
+		}
+	}
+	if repaired, rerr := repairCompactLegacyAuthorizationV(hdr.TxHash, db.Txs); rerr != nil {
+		return nil, fmt.Errorf("block %d: %w", n, rerr)
+	} else if repaired {
+		fmt.Fprintf(os.Stderr, "bodyc: restored legacy EIP-7702 authorization V using canonical tx root at block %d\n", n)
 	}
 	var uncles []*block.Header
 	if len(db.UncleRLP) > 0 {
@@ -216,6 +242,102 @@ func (s *n42CompactSource) body(n uint64) (*GethBodyResult, error) {
 		Uncles:       uncles,
 		Withdrawals:  db.Withdrawals,
 	}, nil
+}
+
+type compactAuthLocation struct {
+	tx, auth int
+}
+
+// repairCompactLegacyAuthorizationV repairs the one-byte V values lost by the
+// original bodyc encoder. It first tries one changed authorization, then two;
+// canonical blocks observed so far need one. The bounded search prevents a
+// malformed block with a huge authorization list from causing exponential work.
+func repairCompactLegacyAuthorizationV(want types.Hash, txs []*transaction.Transaction) (bool, error) {
+	var locs []compactAuthLocation
+	for ti, tx := range txs {
+		if tx.Type() != transaction.SetCodeTxType {
+			continue
+		}
+		for ai, auth := range tx.AuthList() {
+			if auth.V == nil || auth.V.IsZero() {
+				locs = append(locs, compactAuthLocation{tx: ti, auth: ai})
+			}
+		}
+	}
+	if len(locs) == 0 {
+		return false, nil
+	}
+	got := hash.DeriveShaErigon(transaction.EthTransactions(txs))
+	if got == want {
+		return false, nil
+	}
+
+	// Try the overwhelmingly common case first: one legacy V was collapsed.
+	for _, loc := range locs {
+		for _, v := range []uint64{27, 28} {
+			candidate := cloneSetCodeTxWithAuthV(txs[loc.tx], map[int]uint64{loc.auth: v})
+			orig := txs[loc.tx]
+			txs[loc.tx] = candidate
+			match := hash.DeriveShaErigon(transaction.EthTransactions(txs)) == want
+			txs[loc.tx] = orig
+			if match {
+				txs[loc.tx] = candidate
+				return true, nil
+			}
+		}
+	}
+
+	// Also cover two lossy tuples, including two authorizations in one tx.
+	// This remains O(n^2) and runs only after the current root mismatches.
+	for i := 0; i < len(locs); i++ {
+		for j := i + 1; j < len(locs); j++ {
+			for _, vi := range []uint64{27, 28} {
+				for _, vj := range []uint64{27, 28} {
+					li, lj := locs[i], locs[j]
+					origI := txs[li.tx]
+					if li.tx == lj.tx {
+						txs[li.tx] = cloneSetCodeTxWithAuthV(origI, map[int]uint64{li.auth: vi, lj.auth: vj})
+						if hash.DeriveShaErigon(transaction.EthTransactions(txs)) == want {
+							return true, nil
+						}
+						txs[li.tx] = origI
+						continue
+					}
+					origJ := txs[lj.tx]
+					txs[li.tx] = cloneSetCodeTxWithAuthV(origI, map[int]uint64{li.auth: vi})
+					txs[lj.tx] = cloneSetCodeTxWithAuthV(origJ, map[int]uint64{lj.auth: vj})
+					if hash.DeriveShaErigon(transaction.EthTransactions(txs)) == want {
+						return true, nil
+					}
+					txs[li.tx], txs[lj.tx] = origI, origJ
+				}
+			}
+		}
+	}
+	return false, fmt.Errorf("bodyc transaction root mismatch after legacy authorization recovery: got %s want %s (zero-V candidates=%d)", got.Hex(), want.Hex(), len(locs))
+}
+
+func cloneSetCodeTxWithAuthV(tx *transaction.Transaction, overrides map[int]uint64) *transaction.Transaction {
+	auths := tx.AuthList().Copy()
+	for i, v := range overrides {
+		auths[i].V = uint256.NewInt(v)
+	}
+	v, r, s := tx.RawSignatureValues()
+	return transaction.NewTx(&transaction.SetCodeTx{
+		ChainID:    tx.ChainId(),
+		Nonce:      tx.Nonce(),
+		GasTipCap:  tx.GasTipCap(),
+		GasFeeCap:  tx.GasFeeCap(),
+		Gas:        tx.Gas(),
+		To:         tx.To(),
+		Value:      tx.Value(),
+		Data:       tx.Data(),
+		AccessList: tx.AccessList(),
+		AuthList:   auths,
+		V:          v,
+		R:          r,
+		S:          s,
+	})
 }
 
 func (s *n42CompactSource) maxBlock() uint64 {
