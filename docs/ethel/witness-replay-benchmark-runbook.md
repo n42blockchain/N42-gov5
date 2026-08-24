@@ -102,7 +102,7 @@ genesis 前 20 万块可以快速发现缺表、坏索引或错误格式，但�
 witness-replay \
   --input-headers-bodies /data/blockchain/witness \
   --input-witness /data/blockchain/witness \
-  --codes-freezer /data/blockchain/witness \
+  --datadir /data/blockchain/code-mdbx \
   --senders /data/blockchain/witness \
   --output /tmp/wr-smoke --no-output \
   --start 0 --end 200000 --workers 32 \
@@ -113,18 +113,20 @@ witness-replay \
 
 ### 4.2 正确性 gate：tx-dense 区间，fail-fast
 
-使用已知交易密集且所有输入都覆盖的固定窗口。仓库已有可复现实例
-`24,980,000–24,990,000`；更换数据集时可选新的 dense 窗口，但所有 worker 档位
-必须使用完全相同的 `[start,end)`：
+使用已知交易密集且所有输入都覆盖的固定窗口。当前 canonical 调查窗口从
+`24,000,000` 开始：旧的地址索引 codes freezer 在 block `24,000,022` 首次失败，
+因此只有完整 MDBX Code 表使同一窗口由失败转为 `failed=0`，才构成有效修复证据。
+先前使用的 `24,980,000–24,990,000` 没有已知正确性依据，已撤回。更换数据集时
+可以选择新的 dense 窗口，但所有 worker 档位必须使用完全相同的 `[start,end)`：
 
 ```bash
 witness-replay \
   --input-headers-bodies /data/blockchain/witness \
   --input-witness /data/blockchain/witness \
-  --codes-freezer /data/blockchain/witness \
+  --datadir /data/blockchain/code-mdbx \
   --senders /data/blockchain/witness \
   --output /tmp/wr-gate --no-output \
-  --start 24980000 --end 24990000 --workers 1 \
+  --start 24000000 --end 24010000 --workers 1 \
   --gogc 300 --mem-limit-gb 32
 ```
 
@@ -193,7 +195,7 @@ set -o pipefail
 witness-replay \
   --input-headers-bodies /data/blockchain/witness \
   --input-witness /data/blockchain/witness \
-  --codes-freezer /data/blockchain/witness \
+  --datadir /data/blockchain/code-mdbx \
   --senders /data/blockchain/witness \
   --output /data/blockchain/wr-out \
   --start 0 --end 0 --workers 32 \

@@ -56,7 +56,7 @@ func main() {
 			&cli.StringFlag{Name: "input-witness", Usage: "Freezer dir with block_witness table (may equal input-headers-bodies)"},
 			&cli.StringFlag{Name: "output", Usage: "Freezer dir for acctcs + storcs (+ optional witness with --write-witness, + receipts with --receipts)", Required: true},
 			&cli.StringFlag{Name: "datadir", Usage: "MDBX datadir holding the Code table (and target for rebuild-state). Optional when --codes-freezer is provided."},
-			&cli.StringFlag{Name: "codes-freezer", Usage: "Optional dir with codes.cidx + codes.NNNN.cdat (produced by code-import2fz). Address-indexed bytecode source — works from genesis without an MDBX. Auto-detects <input-headers-bodies>/codes.cidx if not specified."},
+			&cli.StringFlag{Name: "codes-freezer", Usage: "Optional dir with codes.cidx + codes.NNNN.cdat (produced by code-import2fz). Address-indexed bytecode source — works from genesis without an MDBX. Auto-detects <input-headers-bodies>/codes.cidx only when no populated --datadir is supplied."},
 			&cli.StringFlag{Name: "senders", Usage: "Optional pre-computed senders freezer dir (avoids ecrecover)"},
 			&cli.Uint64Flag{Name: "start", Value: 0, Usage: "Start block (inclusive)"},
 			&cli.Uint64Flag{Name: "end", Value: 0, Usage: "End block (exclusive); 0 = all available witness items"},
@@ -141,14 +141,19 @@ func run(c *cli.Context) error {
 	// worker spawns; the node leaves these on.
 	metrics.EVMHotMetricsEnabled = false
 
-	// Resolve codes-freezer: explicit flag wins; otherwise auto-detect
-	// <hbPath>/codes.cidx.
-	codesDir := c.String("codes-freezer")
-	if codesDir == "" {
-		if _, err := os.Stat(filepath.Join(hbPath, "codes.cidx")); err == nil {
-			codesDir = hbPath
-			log.Info("Codes freezer auto-detected", "dir", codesDir)
-		}
+	// Resolve bytecode inputs. An explicit codes-freezer still wins, but a
+	// populated MDBX Code table must suppress implicit freezer detection. The
+	// freezer is address-indexed and may not represent historical redeploys;
+	// silently preferring it over an explicitly supplied content-addressed Code
+	// table can make old blocks replay with the wrong bytecode.
+	codesDir, hasCodeMDBX, codesAutoDetected, err := resolveCodeInputs(
+		hbPath, datadir, c.String("codes-freezer"),
+	)
+	if err != nil {
+		return err
+	}
+	if codesAutoDetected {
+		log.Info("Codes freezer auto-detected", "dir", codesDir)
 	}
 
 	// MDBX is now optional: skip when --datadir is empty, or when the
@@ -158,8 +163,7 @@ func run(c *cli.Context) error {
 	logger := log2.New()
 	var codeDB kv.RoDB
 	if datadir != "" {
-		_, statErr := os.Stat(filepath.Join(datadir, "mdbx.dat"))
-		if statErr == nil {
+		if hasCodeMDBX {
 			db, err := mdbx.NewMDBX(logger).
 				Path(datadir).
 				Label(kv.ChainDB).
@@ -229,4 +233,33 @@ func run(c *cli.Context) error {
 				hbPath, datadir, outputPath))
 	}
 	return nil
+}
+
+func resolveCodeInputs(hbPath, datadir, explicitCodesDir string) (codesDir string, hasMDBX, autoDetected bool, err error) {
+	if datadir != "" {
+		mdbxPath := filepath.Join(datadir, "mdbx.dat")
+		info, statErr := os.Stat(mdbxPath)
+		switch {
+		case statErr == nil:
+			if info.IsDir() {
+				return "", false, false, fmt.Errorf("--datadir %q has a directory at mdbx.dat", datadir)
+			}
+			hasMDBX = true
+		case !os.IsNotExist(statErr):
+			return "", false, false, fmt.Errorf("stat Code MDBX %q: %w", mdbxPath, statErr)
+		}
+	}
+
+	if explicitCodesDir != "" {
+		return explicitCodesDir, hasMDBX, false, nil
+	}
+	if hasMDBX {
+		return "", true, false, nil
+	}
+	if _, statErr := os.Stat(filepath.Join(hbPath, "codes.cidx")); statErr == nil {
+		return hbPath, false, true, nil
+	} else if !os.IsNotExist(statErr) {
+		return "", false, false, fmt.Errorf("stat codes freezer index: %w", statErr)
+	}
+	return "", false, false, nil
 }

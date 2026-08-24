@@ -25,6 +25,9 @@ import (
 
 	"github.com/urfave/cli/v2"
 
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/internal/node"
 	"github.com/n42blockchain/N42/internal/replay"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/params"
@@ -96,6 +99,12 @@ func runReplayV2(cliCtx *cli.Context) error {
 	cfg.ChainName = chainName
 	if cc := params.ChainConfigByChainName(chainName); cc != nil {
 		cfg.ChainConfig = cc
+	}
+	if cfg.ChainConfig == nil {
+		return fmt.Errorf("unknown replay target chain %q", chainName)
+	}
+	if err := validateReplayTargetNetworkBinding(cfg.TargetPath, chainName, cfg.ChainConfig); err != nil {
+		return fmt.Errorf("validate replay target network binding: %w", err)
 	}
 
 	cfg.TreeType = cliCtx.String("tree")
@@ -181,7 +190,10 @@ func runReplayV2(cliCtx *cli.Context) error {
 
 	// Post-replay export
 	if exportErr := engine.RunPostExport(ctx); exportErr != nil {
-		fmt.Printf("Warning: post-export failed: %v\n", exportErr)
+		return fmt.Errorf("post-export: %w", exportErr)
+	}
+	if bindErr := persistReplayTargetNetworkBinding(cfg.TargetPath, chainName, cfg.ChainConfig); bindErr != nil {
+		return fmt.Errorf("persist replay target network binding: %w", bindErr)
 	}
 
 	// Write stats
@@ -193,4 +205,42 @@ func runReplayV2(cliCtx *cli.Context) error {
 	}
 
 	return nil
+}
+
+func replayTargetNetworkConfig(targetPath, chainName string) (*params.ChainConfig, *conf.Config, *types.Hash, error) {
+	chainCfg := params.ChainConfigByChainName(chainName)
+	if chainCfg == nil {
+		return nil, nil, nil, fmt.Errorf("unknown chain %q", chainName)
+	}
+	preset, err := params.ResolveNetworkPreset(chainName, "")
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	genesisHash := params.GenesisHashByChainName(chainName)
+	if genesisHash == nil {
+		return nil, nil, nil, fmt.Errorf("missing genesis hash for chain %q", chainName)
+	}
+	cfg := DefaultConfig
+	cfg.NodeCfg.DataDir = targetPath
+	cfg.NodeCfg.Chain = preset.Chain
+	cfg.NodeCfg.Profile = preset.Profile.String()
+	cfg.NodeCfg.JMTCommitment = preset.Commitment == params.StateCommitmentPresetJMT
+	cfg.ChainCfg = chainCfg
+	return chainCfg, &cfg, genesisHash, nil
+}
+
+func validateReplayTargetNetworkBinding(targetPath, chainName string, chainCfg *params.ChainConfig) error {
+	_, cfg, genesisHash, err := replayTargetNetworkConfig(targetPath, chainName)
+	if err != nil {
+		return err
+	}
+	return node.ValidateDataDirNetworkBinding(cfg, chainCfg, genesisHash)
+}
+
+func persistReplayTargetNetworkBinding(targetPath, chainName string, chainCfg *params.ChainConfig) error {
+	_, cfg, genesisHash, err := replayTargetNetworkConfig(targetPath, chainName)
+	if err != nil {
+		return err
+	}
+	return node.PersistDataDirNetworkBinding(cfg, chainCfg, *genesisHash)
 }
