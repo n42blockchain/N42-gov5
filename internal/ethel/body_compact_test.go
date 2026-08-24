@@ -553,3 +553,80 @@ func TestBodySegmentUnclesRoundtrip(t *testing.T) {
 		}
 	}
 }
+
+// TestSetCodeAuthVNonParity pins the authorization V values the original
+// encoder could not represent. It wrote a single byte, set to 1 only when
+// V == 1, so everything else — including the 27 / 28 that mainnet
+// authorizations actually carry — was folded to 0.
+//
+// Nothing caught it because the loss is invisible at the layer most checks look
+// at: the transaction hash is unchanged, so a body diff comparing tx hashes
+// reports the bodies as identical. It only surfaces during execution, where a
+// wrong V recovers a different authority, leaves the delegated account's nonce
+// unchanged, and shifts the block's gas — block 24231367 replayed as failed
+// from a columnar source while the same block from geth ancient replayed clean.
+//
+// TestSetCodeTxRoundtrip covers V = 0 and V = 1 only, i.e. exactly the two
+// values for which the broken encoding happened to be correct.
+func TestSetCodeAuthVNonParity(t *testing.T) {
+	to := types.HexToAddress("0xdAC17F958D2ee523a2206206994597C13D831ec7")
+	authAddr := types.HexToAddress("0x1234567890abcdef1234567890abcdef12345678")
+
+	// 27 and 28 are what mainnet carries; 0 and 1 are the y_parity form the
+	// encoder assumed was the only one.
+	for _, v := range []uint64{0, 1, 27, 28} {
+		t.Run(fmt.Sprintf("V=%d", v), func(t *testing.T) {
+			origTx := transaction.NewTx(&transaction.SetCodeTx{
+				ChainID:   uint256.NewInt(1),
+				Nonce:     42,
+				GasTipCap: uint256.NewInt(2_000_000_000),
+				GasFeeCap: uint256.NewInt(50_000_000_000),
+				Gas:       150000,
+				To:        &to,
+				Value:     uint256.NewInt(1),
+				AuthList: transaction.AuthorizationList{
+					{
+						ChainID: *uint256.NewInt(1),
+						Address: authAddr,
+						Nonce:   7,
+						V:       uint256.NewInt(v),
+						R:       uint256.NewInt(0).SetBytes(types.HexToHash("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").Bytes()),
+						S:       uint256.NewInt(0).SetBytes(types.HexToHash("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").Bytes()),
+					},
+				},
+				V: uint256.NewInt(0),
+				R: uint256.NewInt(0).SetBytes(types.HexToHash("0x3333333333333333333333333333333333333333333333333333333333333333").Bytes()),
+				S: uint256.NewInt(0).SetBytes(types.HexToHash("0x4444444444444444444444444444444444444444444444444444444444444444").Bytes()),
+			})
+
+			enc, _ := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedBestCompression))
+			defer enc.Close()
+			compressed := encodeBodySegment([]*DecodedBlock{{Txs: []*transaction.Transaction{origTx}}}, 1, enc)
+
+			dec, _ := zstd.NewReader(nil)
+			defer dec.Close()
+			raw, err := dec.DecodeAll(compressed, nil)
+			if err != nil {
+				t.Fatalf("decompress: %v", err)
+			}
+			decoded, err := decodeBodySegment(raw)
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if len(decoded) != 1 || len(decoded[0].Txs) != 1 {
+				t.Fatalf("decoded %d blocks", len(decoded))
+			}
+			al := decoded[0].Txs[0].AuthList()
+			if len(al) != 1 {
+				t.Fatalf("auth list length %d", len(al))
+			}
+			if al[0].V == nil {
+				t.Fatal("auth V decoded as nil")
+			}
+			if got := al[0].V.Uint64(); got != v {
+				t.Fatalf("auth V round-tripped as %d, want %d — a non-parity V was "+
+					"flattened, which changes the recovered authority at execution", got, v)
+			}
+		})
+	}
+}
