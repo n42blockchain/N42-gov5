@@ -47,6 +47,17 @@ export N42_DEV_FAUCET_KEY=<dev faucet key>
 
 ## Weekly cycle
 
+The weekly source is the stopped fleet's `qs-node0`, exactly like the Windows
+runbook's `E:\qs-node0`; it is not the external/mainnet catch-up database.
+That distinction preserves the native fleet's dev rewards, faucet nonce and
+synthetic-load history across the replay fold. An external-mainnet replay is a
+one-time bootstrap of a new independent fleet and starts without that live
+economic state.
+
+```bash
+export QS_SOURCE=/data/blockchain/qs-node0
+```
+
 | Step | Command |
 |---|---|
 | 1. stop + record | `./stop-fleet.sh` |
@@ -55,6 +66,12 @@ export N42_DEV_FAUCET_KEY=<dev faucet key>
 | 2c. tx index | `./build-seed-txindex.sh` |
 | 3. re-seed | `mv $QS_NODE_ROOT{0..6}` aside, then `./deploy-7node.sh` |
 | 4. accept | heights advancing and identical across `20012..20018` |
+
+For the first bootstrap only, run the normal fleet through Step 4 before the
+first throughput round. The standard 3000 x 3000 benchmark needs about 1,897
+ETH in the dev faucet; an established fleet has accumulated that from the
+1 ETH/block `devBlockReward`, while a newly replayed external-mainnet seed has
+not. Subsequent weekly folds from `qs-node0` retain it.
 
 `--source` / `--target` take the datadir **root**; the tool appends
 `/chaindata` itself. Passing the chaindata path fails with an Accede-mode error.
@@ -91,6 +108,12 @@ hotstuff-reset -datadir <node>/chaindata -apply -force -backup <file>
 
 One round launches the fleet at the 480M gas tier, floods it, samples three
 60 s windows, then stops everything. Rules the rig enforces, each one paid for:
+
+This is the Ubuntu spelling of the Windows sequence
+`bench-run.ps1 -> bench-7node.ps1 -> txflood -> measure-tps.ps1 -> stop`.
+Funding's complete nonce chain is submitted to node 0 and propagated by the
+existing P2P mesh; submitting the same chain to all seven RPCs duplicates the
+gossip traffic and fills the logs with `already known`.
 
 - **`--offset` must be fresh every round.** Reusing a drained sender set makes
   the pool demote in a spiral that looks exactly like a node failure.

@@ -82,11 +82,20 @@ while (( SECONDS < deadline )); do
   echo "  segments=$segs"
   if grep -q 'txindex tail enabled' "$SCRATCH/log/n42.log" 2>/dev/null; then done_flag=1; break; fi
 done
-(( done_flag )) || echo "note: completion line not seen; installing whatever was built"
+if (( ! done_flag )); then
+  echo "txindex completion line not seen -- not touching the seed" >&2
+  kill -INT "$PID" 2>/dev/null || true
+  exit 1
+fi
 
 kill -INT "$PID" 2>/dev/null || true
 waited=0
 while kill -0 "$PID" 2>/dev/null && (( waited < 180 )); do sleep 3; waited=$((waited + 3)); done
+if kill -0 "$PID" 2>/dev/null; then
+  echo "indexer node did not stop within 180s -- not touching the seed (pid $PID)" >&2
+  exit 1
+fi
+wait "$PID" 2>/dev/null || true
 
 segs=$(find "$SCRATCH/txindex" -name '*.cdat' 2>/dev/null | wc -l)
 (( segs > 0 )) || { echo "NO SEGMENTS BUILT -- not touching the seed" >&2; exit 1; }

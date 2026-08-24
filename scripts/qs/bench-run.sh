@@ -56,9 +56,36 @@ ERR=$QS_ROOT/bench-flood-$TAG.err
 echo "=== $TAG : bin=$(basename "$BIN") pool=$POOL_SLOTS/$POOL_QUEUE interval=${INTERVAL_MS}ms offset=$OFFSET broadcast=$BROADCAST ==="
 for i in {0..6}; do rm -f "$QS_NODE_ROOT$i/txpool.journal"; done
 
+# A benchmark is a different launch profile, not an in-place mutation. If a
+# normal fleet is already listening, readiness probes can accidentally measure
+# those old processes after the benchmark launch loses its port race.
+running=0
+for i in {0..6}; do qs_node_pid "$i" >/dev/null && running=1; done
+if (( running )); then
+  echo "stopping existing fleet before applying benchmark parameters..."
+  ./stop-fleet.sh --no-inspect
+fi
+
 bench_args=(--bin "$BIN" --pool-slots "$POOL_SLOTS" --pool-queue "$POOL_QUEUE" --interval-ms "$INTERVAL_MS")
 if (( PROFILING )); then bench_args+=(--profiling); fi
 ./bench-7node.sh "${bench_args[@]}" >/dev/null
+
+sleep 2
+launch_ok=1
+for i in {0..6}; do
+  pid=$(qs_node_pid "$i") || { echo "benchmark node $i failed to start" >&2; launch_ok=0; continue; }
+  args=$(tr '\0' ' ' <"/proc/$pid/cmdline")
+  [[ $args == *"--block-interval-ms $INTERVAL_MS"* &&
+     $args == *"--miner.gasceil 480000000"* &&
+     $args == *"--txpool.globalslots $POOL_SLOTS"* ]] || {
+    echo "node $i is not running the requested benchmark profile" >&2
+    launch_ok=0
+  }
+done
+if (( ! launch_ok )); then
+  ./stop-fleet.sh --no-inspect || true
+  exit 1
+fi
 
 rpc() {
   curl -s -m 6 -X POST -H 'Content-Type: application/json' \
@@ -106,6 +133,9 @@ if (( flooding )); then
 else
   echo "flood never reached the flooding stage - check $ERR" >&2
   tail -3 "$ERR" 2>/dev/null
+  kill -TERM "$FLOOD_PID" 2>/dev/null || true
+  ./stop-fleet.sh --no-inspect
+  exit 1
 fi
 
 ./measure-tps.sh --windows "$WINDOWS" --window-sec 60
