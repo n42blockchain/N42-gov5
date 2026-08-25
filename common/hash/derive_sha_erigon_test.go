@@ -5,9 +5,13 @@ package hash
 
 import (
 	"bytes"
+	"sort"
 	"testing"
 
+	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/lib/rlphacks"
+	"github.com/n42blockchain/N42/lib/trie"
 )
 
 // rawList is a DerivableList of pre-RLP-encoded values, used for testing
@@ -85,4 +89,83 @@ func TestDeriveShaErigon38Entries(t *testing.T) {
 		t.Errorf("non-deterministic")
 	}
 	t.Logf("38-entry trie root: %s", got.Hex())
+}
+
+func TestDeriveShaErigonStreamingOrderMatchesSortedReference(t *testing.T) {
+	for _, n := range []int{1, 2, 127, 128, 129, 255, 256, 257, 512, 1024} {
+		entries := make(rawList, n)
+		for i := range entries {
+			entries[i] = rlp.AppendUint64(nil, uint64(i)*0x9e3779b1+17)
+		}
+		want := deriveShaErigonSortedReference(entries)
+		if got := DeriveShaErigon(entries); got != want {
+			t.Fatalf("n=%d: streaming root %s, sorted reference %s", n, got.Hex(), want.Hex())
+		}
+	}
+}
+
+// deriveShaErigonSortedReference retains the original allocate-and-sort
+// implementation as a test oracle for the streaming key order.
+func deriveShaErigonSortedReference(list DerivableList) types.Hash {
+	if list.Len() == 0 {
+		return EmptyRootHash
+	}
+	type kv struct {
+		keyHex []byte
+		val    []byte
+	}
+	entries := make([]kv, list.Len())
+	var valBuf bytes.Buffer
+	var keyBuf [9]byte
+	for i := range entries {
+		key := rlp.AppendUint64(keyBuf[:0], uint64(i))
+		keyHex := make([]byte, 0, len(key)*2+1)
+		for _, b := range key {
+			keyHex = append(keyHex, b>>4, b&0x0f)
+		}
+		entries[i].keyHex = append(keyHex, 0x10)
+		valBuf.Reset()
+		list.EncodeIndex(i, &valBuf)
+		entries[i].val = append([]byte(nil), valBuf.Bytes()...)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return bytes.Compare(entries[i].keyHex, entries[j].keyHex) < 0
+	})
+
+	hb := trie.NewHashBuilder(false)
+	var groups, hasTree, hasHash []uint16
+	var leafData trie.GenStructStepLeafData
+	retain := func([]byte) bool { return false }
+	for i, entry := range entries {
+		var succ []byte
+		if i+1 < len(entries) {
+			succ = entries[i+1].keyHex
+		}
+		leafData.Value = rlphacks.RlpEncodedBytes(entry.val)
+		var err error
+		groups, hasTree, hasHash, err = trie.GenStructStep(
+			retain, entry.keyHex, succ, hb, nil, &leafData,
+			groups, hasTree, hasHash, false,
+		)
+		if err != nil {
+			panic(err)
+		}
+	}
+	root, err := hb.RootHash()
+	if err != nil {
+		panic(err)
+	}
+	return root
+}
+
+func BenchmarkDeriveShaErigon512(b *testing.B) {
+	entries := make(rawList, 512)
+	for i := range entries {
+		entries[i] = bytes.Repeat([]byte{byte(i)}, 256)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		DeriveShaErigon(entries)
+	}
 }

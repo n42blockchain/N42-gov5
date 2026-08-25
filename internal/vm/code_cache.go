@@ -14,18 +14,18 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 //
-// Process-wide LRU cache for contract bytecode JUMPDEST analysis results,
-// keyed by codeHash. CodeAnalysisCache wraps a container/list LRU with a
-// sync.RWMutex so parallel EVM instances (Block-STM) can share the same
-// bitvec across blocks and avoid re-running O(n) codeBitmap() on hot
-// contracts. GlobalCodeAnalysisCache is the process singleton; nil means
-// the cache is disabled. Inspired by Aptos AIP-107.
+// Process-wide cache for contract bytecode JUMPDEST analysis results, keyed by
+// codeHash. Reads use immutable per-shard map snapshots and never take a lock;
+// writes copy and publish only one of up to 256 shards. This matters because
+// every JUMP/JUMPI can query the cache and a single RWMutex becomes a global
+// serialization point on many-core witness replay.
 
 package vm
 
 import (
 	"container/list"
 	"sync"
+	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/types"
 )
@@ -35,16 +35,23 @@ import (
 // for contracts already seen in previous blocks. Inspired by Aptos AIP-107.
 //
 // Thread-safe for concurrent use by parallel EVM instances (Block-STM).
-type CodeAnalysisCache struct {
-	mu       sync.RWMutex
-	cache    map[types.Hash]*list.Element
+const maxCodeAnalysisShards = 256
+
+type codeAnalysisShard struct {
+	mu       sync.Mutex
+	snapshot atomic.Pointer[map[types.Hash]*codeEntry]
 	lru      *list.List
 	capacity int
+}
+
+type CodeAnalysisCache struct {
+	shards []codeAnalysisShard
 }
 
 type codeEntry struct {
 	hash     types.Hash
 	analysis []uint64
+	elem     *list.Element
 }
 
 // GlobalCodeAnalysisCache is the process-wide code analysis cache.
@@ -56,11 +63,28 @@ func NewCodeAnalysisCache(capacity int) *CodeAnalysisCache {
 	if capacity <= 0 {
 		capacity = 1
 	}
-	return &CodeAnalysisCache{
-		cache:    make(map[types.Hash]*list.Element, capacity),
-		lru:      list.New(),
-		capacity: capacity,
+	shardCount := capacity
+	if shardCount > maxCodeAnalysisShards {
+		shardCount = maxCodeAnalysisShards
 	}
+	c := &CodeAnalysisCache{shards: make([]codeAnalysisShard, shardCount)}
+	base, remainder := capacity/shardCount, capacity%shardCount
+	for i := range c.shards {
+		shardCapacity := base
+		if i < remainder {
+			shardCapacity++
+		}
+		s := &c.shards[i]
+		s.capacity = shardCapacity
+		s.lru = list.New()
+		initial := make(map[types.Hash]*codeEntry)
+		s.snapshot.Store(&initial)
+	}
+	return c
+}
+
+func (c *CodeAnalysisCache) shard(codeHash types.Hash) *codeAnalysisShard {
+	return &c.shards[int(codeHash[0])%len(c.shards)]
 }
 
 // Get retrieves a cached code analysis by codeHash.
@@ -69,61 +93,52 @@ func NewCodeAnalysisCache(capacity int) *CodeAnalysisCache {
 // The returned slice MUST NOT be mutated by callers. The bitvec is immutable
 // after creation by codeBitmap() and is shared across concurrent readers.
 func (c *CodeAnalysisCache) Get(codeHash types.Hash) ([]uint64, bool) {
-	// Read-only fast path: no LRU promotion. Promoting on every Get
-	// requires a write lock and creates severe contention under
-	// many-core parallel replay (profile: 11.6% flat CPU on
-	// codeBitmap callers, plus matching mutex traffic). We accept a
-	// dumber-LRU eviction policy in exchange for lock-free reads —
-	// hot bytecode stays in the cache anyway because Put refreshes
-	// the entry whenever a worker re-analyses an evicted hash.
-	c.mu.RLock()
-	elem, ok := c.cache[codeHash]
+	snapshot := c.shard(codeHash).snapshot.Load()
+	entry, ok := (*snapshot)[codeHash]
 	if !ok {
-		c.mu.RUnlock()
 		return nil, false
 	}
-	result := elem.Value.(*codeEntry).analysis
-	c.mu.RUnlock()
-	return result, true
+	return entry.analysis, true
 }
 
 // Put stores a code analysis result in the cache. If the cache is at capacity,
 // the least recently used entry is evicted.
 func (c *CodeAnalysisCache) Put(codeHash types.Hash, analysis []uint64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// If already present, promote and update.
-	if elem, ok := c.cache[codeHash]; ok {
-		c.lru.MoveToFront(elem)
-		entry := elem.Value.(*codeEntry)
-		entry.analysis = make([]uint64, len(analysis))
-		copy(entry.analysis, analysis)
-		return
-	}
-
-	// Evict LRU if at capacity.
-	for c.lru.Len() >= c.capacity {
-		back := c.lru.Back()
-		if back == nil {
-			break
-		}
-		evicted := c.lru.Remove(back).(*codeEntry)
-		delete(c.cache, evicted.hash)
-	}
-
-	// Store a copy to avoid the caller mutating the cached data.
 	stored := make([]uint64, len(analysis))
 	copy(stored, analysis)
 
+	s := c.shard(codeHash)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	current := *s.snapshot.Load()
+	next := make(map[types.Hash]*codeEntry, len(current)+1)
+	for hash, entry := range current {
+		next[hash] = entry
+	}
+	if old, ok := next[codeHash]; ok {
+		s.lru.Remove(old.elem)
+		delete(next, codeHash)
+	}
+	for len(next) >= s.capacity {
+		back := s.lru.Back()
+		if back == nil {
+			break
+		}
+		evicted := s.lru.Remove(back).(*codeEntry)
+		delete(next, evicted.hash)
+	}
 	entry := &codeEntry{hash: codeHash, analysis: stored}
-	elem := c.lru.PushFront(entry)
-	c.cache[codeHash] = elem
+	entry.elem = s.lru.PushFront(entry)
+	next[codeHash] = entry
+	s.snapshot.Store(&next)
 }
 
 // Size returns the number of entries in the cache.
 func (c *CodeAnalysisCache) Size() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.lru.Len()
+	size := 0
+	for i := range c.shards {
+		size += len(*c.shards[i].snapshot.Load())
+	}
+	return size
 }

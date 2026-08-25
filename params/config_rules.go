@@ -25,6 +25,7 @@ package params
 import (
 	"math/big"
 	"sync"
+	"sync/atomic"
 )
 
 // rulesCacheKey memoises *Rules per (config, num, timestamp). Rules is
@@ -37,17 +38,70 @@ type rulesCacheKey struct {
 	ts  uint64
 }
 
-// rulesCacheCap bounds the cache. Replay is monotone — old (num, ts)
-// keys are never queried again — so the simplest correct eviction is a
-// full clear when the map crosses the cap. Sized to comfortably hold
-// every active worker's current block plus margin: 32 workers × ~30
-// blocks of look-ahead × 4 keys per block << 4096.
-const rulesCacheCap = 4096
-
-var (
-	rulesCacheMu sync.RWMutex
-	rulesCache   = make(map[rulesCacheKey]*Rules, rulesCacheCap)
+// Rules are queried several times per transaction. A single global RWMutex
+// turns that read-mostly cache into a cross-block serialization point at high
+// worker counts, so reads use immutable per-shard snapshots. A miss copies and
+// publishes only one small shard under its own mutex.
+const (
+	rulesCacheCap        = 4096
+	rulesCacheShardCount = 256
+	rulesCacheShardCap   = rulesCacheCap / rulesCacheShardCount
 )
+
+type rulesCacheShard struct {
+	mu       sync.Mutex
+	snapshot atomic.Pointer[map[rulesCacheKey]*Rules]
+	order    []rulesCacheKey
+}
+
+type rulesMemoCache struct {
+	shards [rulesCacheShardCount]rulesCacheShard
+}
+
+func newRulesMemoCache() *rulesMemoCache {
+	c := new(rulesMemoCache)
+	for i := range c.shards {
+		initial := make(map[rulesCacheKey]*Rules)
+		c.shards[i].snapshot.Store(&initial)
+		c.shards[i].order = make([]rulesCacheKey, 0, rulesCacheShardCap)
+	}
+	return c
+}
+
+var rulesCache = newRulesMemoCache()
+
+func (c *rulesMemoCache) shard(key rulesCacheKey) *rulesCacheShard {
+	return &c.shards[(key.num^key.ts)&(rulesCacheShardCount-1)]
+}
+
+func (c *rulesMemoCache) get(key rulesCacheKey) (*Rules, bool) {
+	rules, ok := (*c.shard(key).snapshot.Load())[key]
+	return rules, ok
+}
+
+func (c *rulesMemoCache) put(key rulesCacheKey, rules *Rules) *Rules {
+	s := c.shard(key)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	current := *s.snapshot.Load()
+	if existing, ok := current[key]; ok {
+		return existing
+	}
+	next := make(map[rulesCacheKey]*Rules, len(current)+1)
+	for cachedKey, cachedRules := range current {
+		next[cachedKey] = cachedRules
+	}
+	if len(s.order) >= rulesCacheShardCap {
+		delete(next, s.order[0])
+		copy(s.order, s.order[1:])
+		s.order = s.order[:len(s.order)-1]
+	}
+	next[key] = rules
+	s.order = append(s.order, key)
+	s.snapshot.Store(&next)
+	return rules
+}
 
 // Rules wraps ChainConfig and is merely syntactic sugar or can be used for functions
 // that do not have or require information about the block.
@@ -86,10 +140,7 @@ func (c *ChainConfig) Rules(num uint64) *Rules {
 // returned struct.
 func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 	key := rulesCacheKey{cfg: c, num: num, ts: timestamp}
-	rulesCacheMu.RLock()
-	r, ok := rulesCache[key]
-	rulesCacheMu.RUnlock()
-	if ok {
+	if r, ok := rulesCache.get(key); ok {
 		return r
 	}
 	chainID := c.ChainID
@@ -135,14 +186,7 @@ func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 		IsMobileAnchor:        c.IsMobileAnchor(timestamp),
 	}
 	rules.applyForkInheritance()
-	rulesCacheMu.Lock()
-	if len(rulesCache) >= rulesCacheCap {
-		// Replay is monotone; old keys won't be queried again.
-		rulesCache = make(map[rulesCacheKey]*Rules, rulesCacheCap)
-	}
-	rulesCache[key] = rules
-	rulesCacheMu.Unlock()
-	return rules
+	return rulesCache.put(key, rules)
 }
 
 func (r *Rules) applyForkInheritance() {
