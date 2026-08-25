@@ -32,6 +32,13 @@ const (
 	// writeBufferSize is the buffer size for buffered data/index file writes.
 	writeBufferSize = 256 * 1024 // 256 KiB
 
+	// sequentialBatchThreshold keeps the fast DecodeAll cache for ordinary
+	// batches and streams only outliers. Most 64-block freezer batches are a
+	// few hundred KiB; constructing a streaming decoder for all 402k batches
+	// would trade away that fast path. Multi-MiB witness batches are where
+	// whole-batch compressed+decoded residency and GC become material.
+	sequentialBatchThreshold = 8 * 1024 * 1024
+
 	// cidxHeaderSize is the byte size of the optional N42 cidx header that
 	// precedes index entries. Files without the header (legacy / Geth-format)
 	// store entries starting at byte 0.
@@ -205,6 +212,17 @@ type FreezerTable struct {
 	batchCacheStart uint64
 	batchCacheEnd   uint64
 	batchCacheData  [][]byte
+
+	// Sequential batch reader. RetrieveSequential streams one compressed
+	// batch directly from its cdat section and returns entries one at a time,
+	// avoiding retrieveBatch's compressed+decoded whole-batch allocations.
+	// Keep a dedicated decoder so random Retrieve calls remain independent.
+	seqDec      *zstd.Decoder
+	seqReader   io.Reader
+	seqBatchEnd uint64
+	seqNext     uint64
+	seqRemain   uint64
+	seqBounded  bool
 
 	// coldResolver, if set, fetches trimmed (cold-offloaded) data files on
 	// demand in openDataFileRO. nil = absent file is a hard error (default).
@@ -439,6 +457,11 @@ func newFreezerTableCompressed(path, name, ext string, readonly bool) (*FreezerT
 		t.Close()
 		return nil, fmt.Errorf("freezer: zstd decoder: %w", err)
 	}
+	t.seqDec, err = zstd.NewReader(nil, decOpts...)
+	if err != nil {
+		t.Close()
+		return nil, fmt.Errorf("freezer: sequential zstd decoder: %w", err)
+	}
 
 	return t, nil
 }
@@ -572,6 +595,9 @@ func (t *FreezerTable) SetCompressed(v bool) {
 	t.compressed = v
 	if v && t.zstdDec == nil {
 		t.zstdDec, _ = zstd.NewReader(nil)
+	}
+	if v && t.seqDec == nil {
+		t.seqDec, _ = zstd.NewReader(nil)
 	}
 	t.maybePatchHeader(func(h *cidxHeader) {
 		if v {
@@ -805,22 +831,298 @@ func (t *FreezerTable) Retrieve(item uint64) ([]byte, error) {
 	return data, nil
 }
 
-// retrieveBatch handles reading an item from a batch-compressed region.
-// Batch format: consecutive cidx entries share the same (fileNum, offset).
-// The first entry's offset points to zstd_compressed([len0:4][data0][len1:4][data1]...).
-// Caller must hold t.mu.
-func (t *FreezerTable) retrieveBatch(item uint64) ([]byte, error) {
-	total := t.items.Load()
-	if item >= total {
-		return nil, fmt.Errorf("freezer: item %d beyond total %d", item, total)
+// RetrieveSequential reads an item from a batch-compressed table while
+// optimizing for monotonically increasing item numbers. Ordinary small
+// batches keep Retrieve's fast whole-batch cache; large outliers stream the
+// covering cdat section and allocate only the entry being returned.
+//
+// A first call may start in the middle of a batch (resume/gate runs); entries
+// before item are decoded and discarded. Non-batch tables fall back to
+// Retrieve. Retrieve remains the random-access API and may be interleaved with
+// this method because the streaming decoder is separate from zstdDec.
+func (t *FreezerTable) RetrieveSequential(item uint64) ([]byte, error) {
+	if t.closed.Load() {
+		return nil, ErrClosed
 	}
 
-	// Batch cache hit.
-	if item >= t.batchCacheStart && item < t.batchCacheEnd && t.batchCacheData != nil {
-		localIdx := int(item - t.batchCacheStart)
-		if localIdx < len(t.batchCacheData) {
-			return t.batchCacheData[localIdx], nil
+	t.mu.Lock()
+	if !t.compressed || t.batchSize <= 0 || t.seqDec == nil {
+		t.mu.Unlock()
+		return t.Retrieve(item)
+	}
+	defer t.mu.Unlock()
+
+	if t.indexBuf != nil {
+		if err := t.indexBuf.Flush(); err != nil {
+			return nil, err
 		}
+	}
+	if t.dataBuf != nil {
+		if err := t.dataBuf.Flush(); err != nil {
+			return nil, err
+		}
+	}
+	if item >= t.items.Load() {
+		return nil, ErrOutOfBounds
+	}
+	if item < t.startItem() {
+		return nil, ErrPruned
+	}
+
+	// Preserve the O(1) hot path for ordinary batches after their first
+	// DecodeAll. Without this check, every item would rescan up to 64 cidx
+	// entries merely to rediscover that the cached batch is small.
+	if item >= t.batchCacheStart && item < t.batchCacheEnd && t.batchCacheData != nil {
+		return t.retrieveBatch(item)
+	}
+
+	if t.seqReader == nil || item != t.seqNext || item >= t.seqBatchEnd {
+		loc, err := t.locateBatch(item)
+		if err != nil {
+			return nil, err
+		}
+		if loc.compressedSize() > sequentialBatchThreshold {
+			loc, err = t.trimZstdFrame(loc)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if loc.compressedSize() <= sequentialBatchThreshold {
+			return t.retrieveLocatedBatch(item, loc)
+		}
+		if err := t.startSequentialBatch(item, loc); err != nil {
+			return nil, err
+		}
+	}
+
+	for t.seqNext <= item {
+		current := t.seqNext
+		if t.seqBounded && t.seqRemain < 4 {
+			return nil, fmt.Errorf("freezer: sequential batch truncated before item %d", current)
+		}
+		var length [4]byte
+		if _, err := io.ReadFull(t.seqReader, length[:]); err != nil {
+			return nil, fmt.Errorf("freezer: sequential batch length at %d: %w", current, err)
+		}
+		if t.seqBounded {
+			t.seqRemain -= 4
+		}
+		entryLen := uint64(binary.LittleEndian.Uint32(length[:]))
+		if t.seqBounded && entryLen > t.seqRemain {
+			return nil, fmt.Errorf("freezer: sequential batch item %d length %d exceeds remaining %d", current, entryLen, t.seqRemain)
+		}
+		entry := make([]byte, int(entryLen))
+		if _, err := io.ReadFull(t.seqReader, entry); err != nil {
+			return nil, fmt.Errorf("freezer: sequential batch item %d: %w", current, err)
+		}
+		if t.seqBounded {
+			t.seqRemain -= entryLen
+		}
+		t.seqNext++
+		if current == item {
+			// Force the decoder through the frame checksum at the end of a
+			// batch and reject unindexed trailing payload. Without this read,
+			// returning the last entry could hide a corrupt zstd trailer.
+			if t.seqNext == t.seqBatchEnd {
+				if t.seqBounded && t.seqRemain != 0 {
+					return nil, fmt.Errorf("freezer: sequential batch at %d has %d unindexed decoded bytes", current, t.seqRemain)
+				}
+				var extra [1]byte
+				n, err := io.ReadFull(t.seqReader, extra[:])
+				if err == nil || n != 0 {
+					return nil, fmt.Errorf("freezer: sequential batch at %d has trailing decoded data", current)
+				}
+				if !errors.Is(err, io.EOF) {
+					return nil, fmt.Errorf("freezer: finish sequential batch at %d: %w", current, err)
+				}
+			}
+			return entry, nil
+		}
+	}
+	return nil, fmt.Errorf("freezer: sequential reader advanced beyond item %d", item)
+}
+
+// startSequentialBatch positions seqReader at a previously located large
+// batch. Caller must hold t.mu.
+func (t *FreezerTable) startSequentialBatch(item uint64, loc batchLocation) error {
+	df, err := t.openDataFileRO(loc.itemIdx.fileNum)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ErrPruned
+		}
+		return err
+	}
+	sectionLen := int64(loc.compressedSize())
+	section := io.NewSectionReader(df, int64(loc.itemIdx.offset), sectionLen)
+	var probe [18]byte // maximum zstd frame header size
+	probeLen := int64(len(probe))
+	if sectionLen < probeLen {
+		probeLen = sectionLen
+	}
+	if probeLen > 0 {
+		if _, err := df.ReadAt(probe[:probeLen], int64(loc.itemIdx.offset)); err != nil {
+			return fmt.Errorf("freezer: probe sequential batch at %d: %w", item, err)
+		}
+	}
+
+	if err := t.seqDec.Reset(nil); err != nil {
+		return fmt.Errorf("freezer: reset sequential decoder at %d: %w", item, err)
+	}
+	// Drop an ordinary previous batch before starting a large stream. Returned
+	// entries remain valid if callers still hold them; this only removes the
+	// table's cache reference.
+	t.batchCacheData = nil
+	t.seqBounded = false
+	t.seqRemain = 0
+	if isZstdFrame(probe[:probeLen]) {
+		var header zstd.Header
+		if err := header.Decode(probe[:probeLen]); err != nil {
+			return fmt.Errorf("freezer: decode sequential batch header at %d: %w", item, err)
+		}
+		if header.HasFCS {
+			t.seqRemain = header.FrameContentSize
+			t.seqBounded = true
+		}
+		if err := t.seqDec.Reset(section); err != nil {
+			return fmt.Errorf("freezer: open sequential decoder at %d: %w", item, err)
+		}
+		t.seqReader = t.seqDec
+	} else {
+		t.seqReader = section
+		t.seqRemain = uint64(sectionLen)
+		t.seqBounded = true
+	}
+	t.seqBatchEnd = loc.end
+	t.seqNext = loc.start
+	log.Info("Freezer: streaming oversized batch",
+		"table", t.name,
+		"start", loc.start,
+		"items", loc.end-loc.start,
+		"compressed", sectionLen,
+		"decoded", t.seqRemain,
+		"decodedKnown", t.seqBounded)
+	return nil
+}
+
+type batchLocation struct {
+	start   uint64
+	end     uint64
+	itemIdx indexEntry
+	compEnd uint32
+}
+
+func (l batchLocation) compressedSize() uint32 {
+	return l.compEnd - l.itemIdx.offset
+}
+
+// trimZstdFrame narrows a batch location to the first zstd frame. A batch is
+// encoded as exactly one frame, but an interrupted/restarted compaction can
+// leave unindexed frames at the end of the old cdat segment. At a file
+// rotation the next cidx entry points at the next file, so the index alone
+// cannot distinguish the live frame from that orphaned tail. DecodeAll accepts
+// concatenated frames, which made a sub-MiB live batch read and decode 1.27 GiB
+// of unreachable data in one observed mainnet segment.
+//
+// Caller must hold t.mu.
+func (t *FreezerTable) trimZstdFrame(loc batchLocation) (batchLocation, error) {
+	if loc.compressedSize() < 4 {
+		return loc, nil
+	}
+	df, err := t.openDataFileRO(loc.itemIdx.fileNum)
+	if err != nil {
+		return batchLocation{}, err
+	}
+	var magic [4]byte
+	if _, err := df.ReadAt(magic[:], int64(loc.itemIdx.offset)); err != nil {
+		return batchLocation{}, fmt.Errorf("freezer: read batch magic at %d: %w", loc.start, err)
+	}
+	if !isZstdFrame(magic[:]) {
+		return loc, nil
+	}
+
+	frameSize, err := zstdFrameSizeAt(df, int64(loc.itemIdx.offset), uint64(loc.compressedSize()))
+	if err != nil {
+		return batchLocation{}, fmt.Errorf("freezer: locate zstd frame at %d: %w", loc.start, err)
+	}
+	if frameSize == 0 || frameSize > uint64(loc.compressedSize()) {
+		return batchLocation{}, fmt.Errorf("freezer: invalid zstd frame size %d at %d (indexed %d)", frameSize, loc.start, loc.compressedSize())
+	}
+	if frameSize < uint64(loc.compressedSize()) {
+		indexedSize := loc.compressedSize()
+		loc.compEnd = loc.itemIdx.offset + uint32(frameSize)
+		log.Warn("Freezer: ignoring unindexed cdat tail",
+			"table", t.name,
+			"start", loc.start,
+			"frame", frameSize,
+			"indexed", indexedSize,
+			"orphan", uint64(indexedSize)-frameSize)
+	}
+	return loc, nil
+}
+
+// zstdFrameSizeAt returns the compressed size of the first regular zstd frame
+// at base without decoding its payload. limit is the maximum indexed region.
+// Zstd block headers carry each compressed/raw block length, so locating the
+// last block costs a few small ReadAt calls and no multi-GiB allocation.
+func zstdFrameSizeAt(r io.ReaderAt, base int64, limit uint64) (uint64, error) {
+	probeLen := uint64(zstd.HeaderMaxSize)
+	if limit < probeLen {
+		probeLen = limit
+	}
+	probe := make([]byte, probeLen)
+	if _, err := r.ReadAt(probe, base); err != nil {
+		return 0, err
+	}
+	var header zstd.Header
+	if err := header.Decode(probe); err != nil {
+		return 0, err
+	}
+	if header.Skippable {
+		return 0, errors.New("skippable zstd frame where batch frame expected")
+	}
+	pos := uint64(header.HeaderSize)
+	for {
+		if pos+3 > limit {
+			return 0, io.ErrUnexpectedEOF
+		}
+		var rawHeader [3]byte
+		if _, err := r.ReadAt(rawHeader[:], base+int64(pos)); err != nil {
+			return 0, err
+		}
+		blockHeader := uint32(rawHeader[0]) | uint32(rawHeader[1])<<8 | uint32(rawHeader[2])<<16
+		last := blockHeader&1 != 0
+		blockType := (blockHeader >> 1) & 3
+		blockSize := uint64(blockHeader >> 3)
+		switch blockType {
+		case 0, 2: // raw or compressed
+		case 1: // RLE stores one byte regardless of decoded size
+			blockSize = 1
+		default:
+			return 0, errors.New("reserved zstd block type")
+		}
+		pos += 3 + blockSize
+		if pos > limit {
+			return 0, io.ErrUnexpectedEOF
+		}
+		if last {
+			break
+		}
+	}
+	if header.HasCheckSum {
+		pos += 4
+		if pos > limit {
+			return 0, io.ErrUnexpectedEOF
+		}
+	}
+	return pos, nil
+}
+
+// locateBatch finds the cidx and cdat bounds shared by the batch containing
+// item. Caller must hold t.mu.
+func (t *FreezerTable) locateBatch(item uint64) (batchLocation, error) {
+	total := t.items.Load()
+	if item >= total {
+		return batchLocation{}, fmt.Errorf("freezer: item %d beyond total %d", item, total)
 	}
 
 	// Find the actual batch boundary by cidx offset, not arithmetic.
@@ -828,7 +1130,7 @@ func (t *FreezerTable) retrieveBatch(item uint64) ([]byte, error) {
 	// This handles mid-stream partial batches from flushAll correctly.
 	itemIdx, err := t.readIndex(item)
 	if err != nil {
-		return nil, err
+		return batchLocation{}, err
 	}
 
 	// Scan backward (max batchSize steps) to find batch start. Never scan
@@ -859,36 +1161,64 @@ func (t *FreezerTable) retrieveBatch(item uint64) ([]byte, error) {
 	if batchEnd < total {
 		endIdx, err := t.readIndex(batchEnd)
 		if err != nil {
-			return nil, err
+			return batchLocation{}, err
 		}
 		if endIdx.fileNum == itemIdx.fileNum {
 			compEnd = endIdx.offset
 		} else {
 			sz, err := t.getDataFileSize(itemIdx.fileNum)
 			if err != nil {
-				return nil, err
+				return batchLocation{}, err
 			}
 			compEnd = sz
 		}
 	} else {
 		sz, err := t.getDataFileSize(itemIdx.fileNum)
 		if err != nil {
-			return nil, err
+			return batchLocation{}, err
 		}
 		compEnd = sz
 	}
+	if compEnd < itemIdx.offset {
+		return batchLocation{}, fmt.Errorf("freezer: invalid batch range at %d: end %d before offset %d", item, compEnd, itemIdx.offset)
+	}
+	return batchLocation{start: batchStart, end: batchEnd, itemIdx: itemIdx, compEnd: compEnd}, nil
+}
 
-	compSize := compEnd - itemIdx.offset
+// retrieveBatch handles reading an item from a batch-compressed region.
+// Batch format: consecutive cidx entries share the same (fileNum, offset).
+// The first entry's offset points to zstd_compressed([len0:4][data0][len1:4][data1]...).
+// Caller must hold t.mu.
+func (t *FreezerTable) retrieveBatch(item uint64) ([]byte, error) {
+	// Batch cache hit.
+	if item >= t.batchCacheStart && item < t.batchCacheEnd && t.batchCacheData != nil {
+		localIdx := int(item - t.batchCacheStart)
+		if localIdx < len(t.batchCacheData) {
+			return t.batchCacheData[localIdx], nil
+		}
+	}
+
+	loc, err := t.locateBatch(item)
+	if err != nil {
+		return nil, err
+	}
+	return t.retrieveLocatedBatch(item, loc)
+}
+
+// retrieveLocatedBatch decodes and caches a batch whose bounds have already
+// been found. Caller must hold t.mu.
+func (t *FreezerTable) retrieveLocatedBatch(item uint64, loc batchLocation) ([]byte, error) {
+	compSize := loc.compressedSize()
 	if compSize == 0 {
 		return []byte{}, nil
 	}
 
-	df, err := t.openDataFileRO(itemIdx.fileNum)
+	df, err := t.openDataFileRO(loc.itemIdx.fileNum)
 	if err != nil {
 		return nil, err
 	}
 	comp := make([]byte, compSize)
-	if _, err := df.ReadAt(comp, int64(itemIdx.offset)); err != nil {
+	if _, err := df.ReadAt(comp, int64(loc.itemIdx.offset)); err != nil {
 		return nil, fmt.Errorf("freezer: read batch at %d: %w", item, err)
 	}
 
@@ -904,7 +1234,7 @@ func (t *FreezerTable) retrieveBatch(item uint64) ([]byte, error) {
 	}
 
 	// Parse length-prefixed entries: [len:4LE][data]...
-	batchCount := int(batchEnd - batchStart)
+	batchCount := int(loc.end - loc.start)
 	entries := make([][]byte, 0, batchCount)
 	pos := 0
 	for pos+4 <= len(raw) && len(entries) < batchCount {
@@ -918,11 +1248,11 @@ func (t *FreezerTable) retrieveBatch(item uint64) ([]byte, error) {
 	}
 
 	// Cache the batch.
-	t.batchCacheStart = batchStart
-	t.batchCacheEnd = batchStart + uint64(len(entries))
+	t.batchCacheStart = loc.start
+	t.batchCacheEnd = loc.start + uint64(len(entries))
 	t.batchCacheData = entries
 
-	localIdx := int(item - batchStart)
+	localIdx := int(item - loc.start)
 	if localIdx >= len(entries) {
 		return []byte{}, nil
 	}
@@ -1020,6 +1350,9 @@ func (t *FreezerTable) Close() error {
 	}
 	if t.zstdDec != nil {
 		t.zstdDec.Close()
+	}
+	if t.seqDec != nil {
+		t.seqDec.Close()
 	}
 	return errors.Join(errs...)
 }
