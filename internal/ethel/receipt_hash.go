@@ -6,9 +6,11 @@
 // ethReceiptList adapts a slice of block.Receipt to the DeriveSha list
 // interface. EncodeIndex writes the canonical post-Byzantium RLP layout
 // (type byte for EIP-2718 plus Status, CumulativeGasUsed, Bloom, Logs)
-// and recomputes the bloom from logs because the on-disk compact receipt
-// codec strips it. EthReceiptHash feeds the list through DeriveShaErigon
-// so the resulting root matches live mainnet headers bit-for-bit.
+// and uses the bloom produced by transaction execution. A compatibility
+// fallback recomputes it only for callers that supply compactly decoded
+// receipts, whose storage codec strips Bloom. EthReceiptHash feeds the list
+// through DeriveShaErigon so the resulting root matches live mainnet headers
+// bit-for-bit.
 
 package ethel
 
@@ -46,19 +48,21 @@ func (rs ethReceiptList) EncodeIndex(i int, w *bytes.Buffer) {
 		w.WriteByte(r.Type)
 	}
 
-	logs := make([]*ethRLPLog, len(r.Logs))
+	logs := make([]ethRLPLog, len(r.Logs))
 	for k, l := range r.Logs {
-		logs[k] = &ethRLPLog{Address: l.Address, Topics: l.Topics, Data: l.Data}
+		logs[k] = ethRLPLog{Address: l.Address, Topics: l.Topics, Data: l.Data}
 	}
 
-	var bloom block.Bloom
-	copy(bloom[:], block.LogsBloom(r.Logs))
+	bloom := r.Bloom
+	if bloom == (block.Bloom{}) && len(r.Logs) > 0 {
+		bloom = block.CreateBloom(block.Receipts{r})
+	}
 
 	rlp.Encode(w, &struct {
 		Status            uint64
 		CumulativeGasUsed uint64
 		Bloom             block.Bloom
-		Logs              []*ethRLPLog
+		Logs              []ethRLPLog
 	}{r.Status, r.CumulativeGasUsed, bloom, logs})
 }
 

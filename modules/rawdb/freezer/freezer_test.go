@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 func makeFreezeData(count int) *FreezeData {
@@ -101,6 +103,189 @@ func TestFreezerTableBatch(t *testing.T) {
 	}
 	if !bytes.Equal(data, []byte("batch-25")) {
 		t.Fatalf("got %q, want %q", data, "batch-25")
+	}
+}
+
+func TestFreezerTableRetrieveSequentialBatch(t *testing.T) {
+	dir := t.TempDir()
+	tbl, err := NewFreezerTableCompressed(dir, "sequential", "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entries := make([][]byte, BatchSize)
+	seed := uint64(0x9e3779b97f4a7c15)
+	for i := range entries {
+		entries[i] = make([]byte, 384*1024)
+		for j := 0; j < len(entries[i])/2; j++ {
+			seed ^= seed << 13
+			seed ^= seed >> 7
+			seed ^= seed << 17
+			entries[i][j] = byte(seed)
+		}
+		copy(entries[i][len(entries[i])/2:], entries[i][:len(entries[i])/2])
+	}
+	enc, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := EncodeBatch(entries, enc)
+	enc.Close()
+	if !isZstdFrame(blob) {
+		t.Fatal("test batch was not zstd-compressed")
+	}
+	if len(blob) <= sequentialBatchThreshold {
+		t.Fatalf("test batch is too small for streaming path: %d", len(blob))
+	}
+	if err := WriteBatch(tbl, entries, blob); err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tbl, err = NewFreezerTableCompressedReadOnly(dir, "sequential", "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tbl.Close()
+	tbl.ForceBatchSize(BatchSize)
+
+	// Starting mid-batch exercises resume: preceding entries are streamed
+	// and discarded, then the decoder remains positioned for the next item.
+	for i := 17; i < len(entries); i++ {
+		got, err := tbl.RetrieveSequential(uint64(i))
+		if err != nil {
+			t.Fatalf("sequential item %d: %v", i, err)
+		}
+		if !bytes.Equal(got, entries[i]) {
+			t.Fatalf("sequential item %d mismatch", i)
+		}
+	}
+	if tbl.batchCacheData != nil {
+		t.Fatal("sequential reads unexpectedly populated whole-batch cache")
+	}
+
+	// Random access uses its independent DecodeAll decoder and must remain
+	// valid after a sequential stream has been consumed.
+	got, err := tbl.Retrieve(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, entries[3]) {
+		t.Fatal("random read after sequential stream mismatch")
+	}
+}
+
+func TestFreezerTableRetrieveSequentialSmallBatchUsesCache(t *testing.T) {
+	dir := t.TempDir()
+	tbl, err := NewFreezerTableCompressed(dir, "smallseq", "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tbl.Close()
+
+	entries := make([][]byte, BatchSize)
+	for i := range entries {
+		entries[i] = bytes.Repeat([]byte(fmt.Sprintf("small-%02d/", i)), 64)
+	}
+	enc, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob := EncodeBatch(entries, enc)
+	enc.Close()
+	if len(blob) > sequentialBatchThreshold {
+		t.Fatalf("test batch unexpectedly exceeds small-batch threshold: %d", len(blob))
+	}
+	if err := WriteBatch(tbl, entries, blob); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := tbl.RetrieveSequential(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, entries[0]) {
+		t.Fatal("small sequential item mismatch")
+	}
+	if tbl.batchCacheData == nil {
+		t.Fatal("small sequential batch did not retain DecodeAll cache")
+	}
+}
+
+func TestFreezerTableRetrieveSequentialIgnoresOrphanTail(t *testing.T) {
+	dir := t.TempDir()
+	tbl, err := NewFreezerTableCompressed(dir, "orphanseq", "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := make([][]byte, BatchSize)
+	for i := range entries {
+		entries[i] = bytes.Repeat([]byte(fmt.Sprintf("live-%02d/", i)), 128)
+	}
+	enc, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := EncodeBatch(entries, enc)
+	if err := WriteBatch(tbl, entries, live); err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tbl.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Model a restarted compaction that rewrote the index but left old valid
+	// zstd frames after the last indexed batch in this cdat segment.
+	orphanRaw := make([]byte, sequentialBatchThreshold+1024*1024)
+	seed := uint64(0xd1b54a32d192ed03)
+	for i := range orphanRaw {
+		seed ^= seed << 13
+		seed ^= seed >> 7
+		seed ^= seed << 17
+		orphanRaw[i] = byte(seed)
+	}
+	orphan := enc.EncodeAll(orphanRaw, nil)
+	enc.Close()
+	if len(live)+len(orphan) <= sequentialBatchThreshold {
+		t.Fatalf("test tail is too small to exercise trimming: %d", len(live)+len(orphan))
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "orphanseq.0000.cdat"), os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(orphan); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tbl, err = NewFreezerTableCompressedReadOnly(dir, "orphanseq", "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tbl.Close()
+	tbl.ForceBatchSize(BatchSize)
+	for i, want := range entries {
+		got, err := tbl.RetrieveSequential(uint64(i))
+		if err != nil {
+			t.Fatalf("item %d: %v", i, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("item %d mismatch", i)
+		}
+	}
+	if tbl.batchCacheData == nil {
+		t.Fatal("trimmed live frame did not use small-batch cache")
 	}
 }
 

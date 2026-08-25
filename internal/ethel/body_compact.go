@@ -865,21 +865,25 @@ type BodyCompactReader struct {
 
 	cachedSeg    int64
 	cachedBlocks []*DecodedBlock
+	cachedFlags  bodyFlags
 
-	// Read-ahead state, off unless EnableLookahead is called. fileMu guards
-	// dataFiles/coldResolver, the only reader state a prefetch goroutine
-	// touches; ReadAt on the index and data files is a pread, and zstd's
-	// DecodeAll is documented as safe for concurrent use.
-	fileMu    sync.Mutex
-	lookahead bool
-	pending   *segAhead
+	// Read-ahead. TakeBody starts the next segment's decode on its own
+	// goroutine; a second decoder keeps it fully independent of foreground
+	// decodes. dataMu guards the lazily populated handle map and the cold
+	// resolver, the only reader state the two share - ReadAt itself is a pread
+	// and needs no serialisation.
+	prefetchDec *zstd.Decoder
+	dataMu      sync.Mutex
+	pending     *segAhead
 }
 
-// segAhead is one segment being decoded off the caller's critical path.
+// segAhead is one segment being decoded off the caller's critical path. Only
+// the goroutine writes to it, and only before closing done.
 type segAhead struct {
 	seg    int64
 	done   chan struct{}
 	blocks []*DecodedBlock
+	flags  bodyFlags
 	err    error
 }
 
@@ -903,13 +907,20 @@ func OpenBodyCompact(dir string) (*BodyCompactReader, error) {
 		idf.Close()
 		return nil, err
 	}
+	prefetchDec, err := zstd.NewReader(nil)
+	if err != nil {
+		dec.Close()
+		idf.Close()
+		return nil, err
+	}
 	return &BodyCompactReader{
-		dir:       dir,
-		idxFile:   idf,
-		dataFiles: make(map[uint16]*os.File),
-		dec:       dec,
-		segments:  uint64(fi.Size()) / 8,
-		cachedSeg: -1,
+		dir:         dir,
+		idxFile:     idf,
+		dataFiles:   make(map[uint16]*os.File),
+		dec:         dec,
+		prefetchDec: prefetchDec,
+		segments:    uint64(fi.Size()) / 8,
+		cachedSeg:   -1,
 	}, nil
 }
 
@@ -920,8 +931,11 @@ func (r *BodyCompactReader) Close() {
 		<-sa.done
 		r.pending = nil
 	}
+	r.prefetchDec.Close()
 	r.dec.Close()
 	r.idxFile.Close()
+	r.dataMu.Lock()
+	defer r.dataMu.Unlock()
 	for _, f := range r.dataFiles {
 		f.Close()
 	}
@@ -929,6 +943,15 @@ func (r *BodyCompactReader) Close() {
 
 func (r *BodyCompactReader) Segments() uint64 { return r.segments }
 func (r *BodyCompactReader) MaxBlock() uint64 { return r.segments * HeaderSegmentSize }
+
+// SegmentNeedsAuthVRepair reports whether the currently loaded segment can hold
+// EIP-7702 authorizations whose V the original encoder flattened to zero: it
+// carries SetCode transactions but was written before the lossless encoding.
+// Segments written by this build declare bfAuthVFull alongside bfHasSetCode, so
+// this is an O(1) check that costs a regenerated archive nothing.
+func (r *BodyCompactReader) SegmentNeedsAuthVRepair() bool {
+	return r.cachedFlags&bfHasSetCode != 0 && r.cachedFlags&bfAuthVFull == 0
+}
 
 func (r *BodyCompactReader) ReadBody(blockNum uint64) (*DecodedBlock, error) {
 	seg := int64(blockNum / HeaderSegmentSize)
@@ -952,6 +975,20 @@ func (r *BodyCompactReader) ReadBody(blockNum uint64) (*DecodedBlock, error) {
 // 8192-block bodyc segment from pinning every already-dispatched transaction,
 // calldata and access list until the next segment is decoded. Random-access
 // callers must continue to use ReadBody.
+//
+// TakeBody is also what arms read-ahead, and deliberately the only thing that
+// does. Decoding a segment is expensive - 8192 blocks carry 1.3M-2.8M
+// transactions and take roughly 1.0-1.6s to decompress and decode - and in a
+// sequential pipeline that cost lands on the single reader goroutine feeding
+// the entire worker fleet. It is a serial section in Amdahl's sense: constant
+// while the parallel part shrinks with worker count. Measured on a 128-core
+// host, 104 workers spent about 40% of wall time parked on an empty job
+// channel waiting for one goroutine to finish one segment. Starting the
+// successor here overlaps that decode with execution.
+//
+// Only the sequential API arms it, because only a sequential caller is certain
+// to want the next segment; a random-access ReadBody caller would miss on
+// nearly every lookup and pay for a discarded decode each time.
 func (r *BodyCompactReader) TakeBody(blockNum uint64) (*DecodedBlock, error) {
 	body, err := r.ReadBody(blockNum)
 	if err != nil {
@@ -959,156 +996,143 @@ func (r *BodyCompactReader) TakeBody(blockNum uint64) (*DecodedBlock, error) {
 	}
 	idx := int(blockNum % HeaderSegmentSize)
 	r.cachedBlocks[idx] = nil
+	r.startAhead(r.cachedSeg + 1)
 	return body, nil
 }
 
-// EnableLookahead turns on single-segment read-ahead: while the caller consumes
-// segment N, segment N+1 decodes on its own goroutine.
-//
-// Decoding a segment is not cheap - an 8192-block body segment carries 1.3M-2.8M
-// transactions and takes roughly 1.0-1.6s to decompress and decode. In a
-// sequential replay pipeline that cost lands on the single reader goroutine that
-// feeds the whole worker fleet, so it is a serial section in Amdahl's sense: it
-// stays constant as workers are added while the parallel part shrinks. Measured
-// on a 128-core host, 104 workers spent about 40% of wall time parked on an
-// empty job channel, all of them waiting for one goroutine to finish one
-// segment. Read-ahead overlaps that decode with execution instead.
-//
-// This is for sequential consumers only, and pairs with TakeBody: TakeBody
-// clears each slot as it is handed out, so the current segment drains while its
-// successor is being built. Retention is bounded by two segments (a fleet slow
-// enough to leave segment N untouched while N+1 finishes) and in practice sits
-// well below that. A random-access caller would miss the prefetch on nearly
-// every lookup and pay for a wasted decode each time, which is why this is
-// opt-in rather than the default.
-func (r *BodyCompactReader) EnableLookahead() { r.lookahead = true }
-
-// startAhead kicks off the decode of segNum, if there is one. The caller keeps
-// ownership of the slot; only the goroutine writes to it before closing done.
+// startAhead begins decoding segNum unless it is already in flight or past the
+// end of the store.
 func (r *BodyCompactReader) startAhead(segNum int64) {
 	if uint64(segNum) >= r.segments {
 		return
 	}
+	if sa := r.pending; sa != nil {
+		if sa.seg == segNum {
+			return
+		}
+		// Stale slot from a caller that seeked. Join before replacing it: the
+		// goroutine is still reading the data files, and Close must not be able
+		// to pull them out from under it.
+		<-sa.done
+		r.pending = nil
+	}
 	sa := &segAhead{seg: segNum, done: make(chan struct{})}
 	r.pending = sa
 	go func() {
-		sa.blocks, sa.err = r.decodeSegment(segNum)
+		sa.blocks, sa.flags, sa.err = r.decodeSegment(segNum, r.prefetchDec)
 		close(sa.done)
 	}()
 }
 
 // awaitAhead returns segNum from the read-ahead slot, or decodes it inline when
 // the slot holds something else - a first call, or a caller that seeked.
-func (r *BodyCompactReader) awaitAhead(segNum int64) ([]*DecodedBlock, error) {
+func (r *BodyCompactReader) awaitAhead(segNum int64) ([]*DecodedBlock, bodyFlags, error) {
 	sa := r.pending
 	if sa == nil || sa.seg != segNum {
-		if sa != nil {
-			// Join before dropping it: the goroutine is still reading the data
-			// files, and Close must not be able to pull them out from under it.
-			// Only a seek reaches here, and a sequential pipeline never seeks.
-			<-sa.done
-			r.pending = nil
-		}
-		return r.decodeSegment(segNum)
+		return r.decodeSegment(segNum, r.dec)
 	}
 	<-sa.done
 	r.pending = nil
-	return sa.blocks, sa.err
+	return sa.blocks, sa.flags, sa.err
 }
 
 func (r *BodyCompactReader) loadSegment(segNum int64) error {
 	if uint64(segNum) >= r.segments {
 		return fmt.Errorf("segment %d out of range (%d)", segNum, r.segments)
 	}
-	var (
-		blocks []*DecodedBlock
-		err    error
-	)
-	if r.lookahead {
-		blocks, err = r.awaitAhead(segNum)
-	} else {
-		blocks, err = r.decodeSegment(segNum)
-	}
+	blocks, flags, err := r.awaitAhead(segNum)
 	if err != nil {
 		return err
 	}
 	r.cachedSeg = segNum
 	r.cachedBlocks = blocks
-	if r.lookahead {
-		r.startAhead(segNum + 1)
-	}
+	r.cachedFlags = flags
 	return nil
 }
 
-// decodeSegment reads and decodes one segment without touching the cache. It is
-// safe to call from a read-ahead goroutine concurrently with the owner's own
-// call; see the fileMu comment on the reader.
-func (r *BodyCompactReader) decodeSegment(segNum int64) ([]*DecodedBlock, error) {
+// decodeSegment reads and decodes one segment without touching the cache, using
+// the supplied decoder. Foreground and read-ahead paths own distinct decoders,
+// so the two can run concurrently.
+func (r *BodyCompactReader) decodeSegment(segNum int64, dec *zstd.Decoder) ([]*DecodedBlock, bodyFlags, error) {
 	// Read idx entry.
 	var entryBuf [8]byte
 	if _, err := r.idxFile.ReadAt(entryBuf[:], segNum*8); err != nil {
-		return nil, fmt.Errorf("read index: %w", err)
+		return nil, 0, fmt.Errorf("read index: %w", err)
 	}
 	e := decodeBodyIdx(entryBuf[:])
 
-	// Open/cache dat file. The cdat files need NOT start at bodyc.0000: a trimmed
-	// post-merge store carries only the high-numbered segments (e.g. 0097..) plus
-	// the full bodyc.cidx, so the reader opens by the cidx's fileNum on demand.
-	// A missing cdat means that block's body was trimmed (pre-merge / below the
-	// retained range) — surface that as ErrBodyTrimmed, not a raw open error.
-	// dataFiles and coldResolver are the only pieces of reader state a
-	// read-ahead goroutine shares with its owner. Hold the lock across the
-	// lookup and the open so two goroutines racing on the same fileNum cannot
-	// both open it and leak one handle. ReadAt below needs no lock: it is a
-	// pread, carrying its own offset.
-	r.fileMu.Lock()
-	df, ok := r.dataFiles[e.fileNum]
-	if !ok {
-		path := filepath.Join(r.dir, fmt.Sprintf("bodyc.%04d.cdat", e.fileNum))
-		f, err := os.Open(path)
-		if err != nil && os.IsNotExist(err) && r.coldResolver != nil {
-			// Segment is trimmed locally — ask the cold resolver to fetch the
-			// covering cold archive and open it from wherever it landed.
-			if cp, rerr := r.coldResolver.Resolve(uint64(segNum) * HeaderSegmentSize); rerr == nil {
-				f, err = os.Open(cp)
-			}
-		}
-		if err != nil {
-			r.fileMu.Unlock()
-			if os.IsNotExist(err) {
-				return nil, fmt.Errorf("%w: segment %d (block ~%d), cdat %04d absent",
-					ErrBodyTrimmed, segNum, uint64(segNum)*HeaderSegmentSize, e.fileNum)
-			}
-			return nil, fmt.Errorf("open dat %d: %w", e.fileNum, err)
-		}
-		r.dataFiles[e.fileNum] = f
-		df = f
+	df, err := r.dataFile(e.fileNum, segNum)
+	if err != nil {
+		return nil, 0, err
 	}
-	r.fileMu.Unlock()
 
 	// Read framed data.
 	var sizeBuf [4]byte
 	if _, err := df.ReadAt(sizeBuf[:], int64(e.offset)); err != nil {
-		return nil, fmt.Errorf("read size: %w", err)
+		return nil, 0, fmt.Errorf("read size: %w", err)
 	}
 	compSize := binary.LittleEndian.Uint32(sizeBuf[:])
 
 	compressed := make([]byte, compSize)
 	if _, err := df.ReadAt(compressed, int64(e.offset)+4); err != nil {
-		return nil, fmt.Errorf("read data: %w", err)
+		return nil, 0, fmt.Errorf("read data: %w", err)
 	}
 
-	raw, err := r.dec.DecodeAll(compressed, nil)
+	raw, err := dec.DecodeAll(compressed, nil)
 	if err != nil {
-		return nil, fmt.Errorf("decompress: %w", err)
+		return nil, 0, fmt.Errorf("decompress: %w", err)
 	}
 
 	blocks, err := decodeBodySegment(raw)
 	if err != nil {
-		return nil, fmt.Errorf("decode segment %d: %w", segNum, err)
+		return nil, 0, fmt.Errorf("decode segment %d: %w", segNum, err)
 	}
+	return blocks, bodySegmentFlags(raw), nil
+}
 
-	return blocks, nil
+// bodySegmentFlags reads the flag word a segment declares itself with. It is
+// the segment's own statement about which optional columns and which encodings
+// it used, so it is what callers must key format-compatibility decisions on.
+func bodySegmentFlags(data []byte) bodyFlags {
+	if len(data) < 2 {
+		return 0
+	}
+	return bodyFlags(binary.LittleEndian.Uint16(data[0:2]))
+}
+
+// dataFile returns a shared read-only cdat handle. ReadAt is safe concurrently;
+// the mutex only covers lazy map population and cold resolution, so two
+// goroutines racing on one fileNum cannot both open it and leak a handle.
+//
+// The cdat files need NOT start at bodyc.0000: a trimmed post-merge store
+// carries only the high-numbered segments (e.g. 0097..) plus the full
+// bodyc.cidx, so the reader opens by the cidx's fileNum on demand. A missing
+// cdat means that block's body was trimmed (pre-merge / below the retained
+// range) - surface that as ErrBodyTrimmed, not a raw open error.
+func (r *BodyCompactReader) dataFile(fileNum uint16, segNum int64) (*os.File, error) {
+	r.dataMu.Lock()
+	defer r.dataMu.Unlock()
+	if df, ok := r.dataFiles[fileNum]; ok {
+		return df, nil
+	}
+	path := filepath.Join(r.dir, fmt.Sprintf("bodyc.%04d.cdat", fileNum))
+	f, err := os.Open(path)
+	if err != nil && os.IsNotExist(err) && r.coldResolver != nil {
+		// Segment is trimmed locally - ask the cold resolver to fetch the
+		// covering cold archive and open it from wherever it landed.
+		if cp, rerr := r.coldResolver.Resolve(uint64(segNum) * HeaderSegmentSize); rerr == nil {
+			f, err = os.Open(cp)
+		}
+	}
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: segment %d (block ~%d), cdat %04d absent",
+				ErrBodyTrimmed, segNum, uint64(segNum)*HeaderSegmentSize, fileNum)
+		}
+		return nil, fmt.Errorf("open dat %d: %w", fileNum, err)
+	}
+	r.dataFiles[fileNum] = f
+	return f, nil
 }
 
 // ---------- Segment Decoder (stub — full decode in next iteration) ----------

@@ -424,4 +424,3 @@ func decodeGethLog(data []byte) (*block.Log, error) {
 	}
 	return l, nil
 }
-
