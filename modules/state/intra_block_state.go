@@ -653,11 +653,14 @@ func (sdb *IntraBlockState) HasNonEmptyStorage(addr types.Address) bool {
 			return true
 		}
 	}
-	// Check blockOriginStorage (values from start of block)
-	for _, value := range stateObject.blockOriginStorage {
-		if !value.IsZero() {
-			return true
-		}
+	// Any committed read in this block that returned a non-zero value counts,
+	// even if a later write in the same block zeroed it: updateTrie overwrites
+	// originStorage with the new value, so the block-start fact survives only
+	// here. blockOriginStorage carries the same information but is not
+	// populated under discardBlockChanges, and this must not depend on whether
+	// the caller wanted a block write set.
+	if stateObject.sawNonZeroCommitted {
+		return true
 	}
 	// Persisted storage: enumerate when possible — this is the complete
 	// answer, equivalent to geth's empty-storage-root test. Stop at the
