@@ -435,6 +435,49 @@ func TestCodeAndHash(t *testing.T) {
 	}
 }
 
+func TestPushImmediateEncoding(t *testing.T) {
+	tests := []struct {
+		name      string
+		size      int
+		immediate []byte
+	}{
+		{name: "push1 full", size: 1, immediate: []byte{0xab}},
+		{name: "push1 missing", size: 1},
+		{name: "push2 full", size: 2, immediate: []byte{0xab, 0xcd}},
+		{name: "push2 truncated", size: 2, immediate: []byte{0xab}},
+		{name: "push32 full", size: 32, immediate: make([]byte, 32)},
+		{name: "push32 truncated", size: 32, immediate: []byte{1, 2, 3}},
+	}
+	for i := range tests[4].immediate {
+		tests[4].immediate[i] = byte(i + 1)
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code := append([]byte{byte(PUSH1) + byte(tt.size-1)}, tt.immediate...)
+			s := stack.New()
+			defer stack.ReturnNormalStack(s)
+			scope := &ScopeContext{Stack: s, Contract: &Contract{Code: code}}
+			pc := uint64(0)
+			var op executionFn
+			if tt.size == 1 {
+				op = opPush1
+			} else {
+				op = executionFn(makePush(uint64(tt.size), tt.size))
+			}
+			if _, err := op(&pc, nil, scope); err != nil {
+				t.Fatal(err)
+			}
+
+			wantBytes := types.RightPadBytes(tt.immediate, tt.size)
+			want := new(uint256.Int).SetBytes(wantBytes)
+			if got := s.Pop(); got.Cmp(want) != 0 {
+				t.Fatalf("got %x, want %x", got.Bytes32(), want.Bytes32())
+			}
+		})
+	}
+}
+
 // =============================================================================
 // Benchmarks
 // =============================================================================
@@ -475,6 +518,34 @@ func BenchmarkOpExp(b *testing.B) {
 
 func BenchmarkOpSHL(b *testing.B) {
 	benchmarkBinaryOp(b, opSHL, uint256.NewInt(4), uint256.NewInt(1))
+}
+
+func benchmarkPush(b *testing.B, opFn executionFn, code []byte) {
+	b.Helper()
+	s := stack.New()
+	defer stack.ReturnNormalStack(s)
+	scope := &ScopeContext{Stack: s, Contract: &Contract{Code: code}}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		pc := uint64(0)
+		_, _ = opFn(&pc, nil, scope)
+		s.Reset()
+	}
+}
+
+func BenchmarkOpPush1(b *testing.B) {
+	benchmarkPush(b, opPush1, []byte{byte(PUSH1), 0x2a})
+}
+
+func BenchmarkOpPush32(b *testing.B) {
+	code := make([]byte, 33)
+	code[0] = byte(PUSH32)
+	for i := 1; i < len(code); i++ {
+		code[i] = byte(i)
+	}
+	benchmarkPush(b, executionFn(makePush(32, 32)), code)
 }
 
 func BenchmarkCodeBitmap(b *testing.B) {

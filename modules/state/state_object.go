@@ -234,8 +234,7 @@ func (so *stateObject) GetCommittedState(key *types.Hash, out *uint256.Int) {
 	if len(so.db.priorTxWipes) > 0 {
 		if _, wiped := so.db.priorTxWipes[so.address]; wiped {
 			out.Clear()
-			so.originStorage[*key] = *out
-			so.blockOriginStorage[*key] = *out
+			so.cacheCommittedState(key, out)
 			return
 		}
 	}
@@ -253,8 +252,7 @@ func (so *stateObject) GetCommittedState(key *types.Hash, out *uint256.Int) {
 		} else {
 			out.Clear()
 		}
-		so.originStorage[*key] = *out
-		so.blockOriginStorage[*key] = *out
+		so.cacheCommittedState(key, out)
 		return
 	}
 	// Load from DB in case it is missing.
@@ -272,8 +270,17 @@ func (so *stateObject) GetCommittedState(key *types.Hash, out *uint256.Int) {
 	} else {
 		out.Clear()
 	}
-	so.originStorage[*key] = *out
-	so.blockOriginStorage[*key] = *out
+	so.cacheCommittedState(key, out)
+}
+
+// cacheCommittedState always retains the value needed by later transactions
+// in this block. blockOriginStorage is a second copy used only when producing
+// the final block write set/root, so validation-only callers can omit it.
+func (so *stateObject) cacheCommittedState(key *types.Hash, value *uint256.Int) {
+	so.originStorage[*key] = *value
+	if so.db == nil || !so.db.discardBlockChanges {
+		so.blockOriginStorage[*key] = *value
+	}
 }
 
 // SetState updates a value in account storage.
@@ -334,8 +341,8 @@ func (so *stateObject) setState(key *types.Hash, value uint256.Int) {
 // scan that would otherwise happen on every dirty slot.
 func (so *stateObject) updateTrie(stateWriter StateWriter) error {
 	for key, value := range so.dirtyStorage {
-		original := so.blockOriginStorage[key]
 		so.originStorage[key] = value
+		original := so.blockOriginStorage[key]
 		if err := stateWriter.WriteAccountStorage(so.address, key, original, value); err != nil {
 			return err
 		}

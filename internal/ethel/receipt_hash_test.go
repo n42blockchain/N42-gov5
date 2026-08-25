@@ -69,3 +69,61 @@ func TestEthReceiptHashReusesExecutionBloom(t *testing.T) {
 		t.Fatalf("missing bloom fallback root mismatch: got %s want %s", got, want)
 	}
 }
+
+func TestEthReceiptEncodingMatchesReference(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		typ        uint8
+		status     uint64
+		cumulative uint64
+		data       []byte
+		topics     []types.Hash
+	}{
+		{name: "empty legacy"},
+		{name: "typed single byte", typ: 2, status: 1, cumulative: 127, data: []byte{0x7f}},
+		{name: "single byte with prefix", typ: 3, status: 1, cumulative: 128, data: []byte{0x80}},
+		{name: "short boundary", typ: 4, status: 1, cumulative: 30_000_000, data: bytes.Repeat([]byte{0xaa}, 55)},
+		{name: "long boundary", typ: 4, status: 1, cumulative: 30_000_000, data: bytes.Repeat([]byte{0xbb}, 56)},
+		{name: "topics", typ: 2, status: 1, cumulative: 21_000, data: bytes.Repeat([]byte{0xcc}, 257), topics: []types.Hash{{1}, {2}, {3}, {4}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			receipt := &block.Receipt{Type: tc.typ, Status: tc.status, CumulativeGasUsed: tc.cumulative}
+			if tc.data != nil || tc.topics != nil {
+				receipt.Logs = []*block.Log{{Address: types.Address{0x80}, Topics: tc.topics, Data: tc.data}}
+				receipt.Bloom = block.CreateBloom(block.Receipts{receipt})
+			}
+			var got, want bytes.Buffer
+			ethReceiptList{receipt}.EncodeIndex(0, &got)
+			referenceEthReceiptList{receipt}.EncodeIndex(0, &want)
+			if !bytes.Equal(got.Bytes(), want.Bytes()) {
+				t.Fatalf("encoding mismatch:\n got %x\nwant %x", got.Bytes(), want.Bytes())
+			}
+		})
+	}
+}
+
+func BenchmarkEthReceiptEncodeIndex(b *testing.B) {
+	receipt := &block.Receipt{
+		Type:              2,
+		Status:            block.ReceiptStatusSuccessful,
+		CumulativeGasUsed: 30_000_000,
+	}
+	for i := 0; i < 3; i++ {
+		receipt.Logs = append(receipt.Logs, &block.Log{
+			Address: types.Address{byte(i + 1)},
+			Topics: []types.Hash{
+				{byte(i + 1)}, {byte(i + 2)}, {byte(i + 3)}, {byte(i + 4)},
+			},
+			Data: bytes.Repeat([]byte{byte(0x80 + i)}, 128),
+		})
+	}
+	receipt.Bloom = block.CreateBloom(block.Receipts{receipt})
+	receipts := ethReceiptList{receipt}
+	var buf bytes.Buffer
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf.Reset()
+		receipts.EncodeIndex(0, &buf)
+	}
+}
