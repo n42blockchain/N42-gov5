@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/holiman/uint256"
 	"github.com/klauspost/compress/zstd"
@@ -12,6 +13,63 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 )
+
+func TestBodyDecodeGateBlocksWholeSegmentDecode(t *testing.T) {
+	dir := t.TempDir()
+	writeSyntheticBodySegments(t, dir, 1)
+
+	r, err := OpenBodyCompact(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer r.Close()
+
+	gate := make(chan struct{}, 1)
+	gate <- struct{}{} // model another reader decoding a BODYC segment
+	r.SetDecodeGate(gate)
+
+	done := make(chan error, 1)
+	go func() {
+		_, readErr := r.ReadBody(0)
+		done <- readErr
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("ReadBody bypassed an occupied decode gate: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	<-gate
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ReadBody after releasing decode gate: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ReadBody remained blocked after decode gate was released")
+	}
+}
+
+func TestBodyTakeNoAheadReleasesWithoutPrefetch(t *testing.T) {
+	dir := t.TempDir()
+	writeSyntheticBodySegments(t, dir, HeaderSegmentSize+1)
+	r, err := OpenBodyCompact(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer r.Close()
+
+	body, err := r.TakeBodyNoAhead(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body == nil || r.cachedBlocks[0] != nil {
+		t.Fatal("TakeBodyNoAhead did not hand off and release block 0")
+	}
+	if r.pending != nil {
+		t.Fatalf("TakeBodyNoAhead unexpectedly started segment %d", r.pending.seg)
+	}
+}
 
 // Read-ahead must be invisible: the same blocks come back, in the same order,
 // with the same contents, whether or not the next segment is decoded early.

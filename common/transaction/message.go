@@ -143,6 +143,16 @@ func (m Message) AuthList() AuthorizationList { return m.authList }
 func (m Message) CheckNonce() bool            { return m.checkNonce }
 func (m Message) IsFree() bool                { return m.isFree }
 
+// ExecutionValues exposes stable pointers to the four uint256 values consumed
+// throughout one EVM transaction. The ordinary Message interface uses value-
+// receiver getters for compatibility; taking a field address from those
+// getters makes a temporary Message copy escape on every call. Hot execution
+// paths pass *Message and use this optional view to avoid those copies.
+// Callers must treat the returned values as read-only.
+func (m *Message) ExecutionValues() (gasPrice, feeCap, tip, value *uint256.Int) {
+	return &m.gasPrice, &m.feeCap, &m.tip, &m.amount
+}
+
 func (m *Message) SetCheckNonce(checkNonce bool) {
 	m.checkNonce = checkNonce
 }

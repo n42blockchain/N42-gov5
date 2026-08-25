@@ -292,14 +292,14 @@ func applyTransaction(config *params.ChainConfig, engine consensus.Engine, gp *c
 	}
 	NormalizeExecutionMessage(&msg, cfg.StatelessExec, engine != nil)
 
-	txContext := NewEVMTxContext(msg)
+	txContext := NewEVMTxContext(&msg)
 	if cfg.TraceJumpDest {
 		txContext.TxHash = tx.Hash()
 	}
 
 	evm.Reset(txContext, ibs)
 
-	result, err := ApplyMessage(evm, msg, gp, true, false)
+	result, err := ApplyMessage(evm, &msg, gp, true, false)
 	if err != nil {
 		return nil, nil, err
 	}
