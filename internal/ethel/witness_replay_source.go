@@ -202,9 +202,11 @@ func (s *n42CompactSource) header(n uint64) (*block.Header, error) {
 	if n > 0 && hdr.ParentHash == (types.Hash{}) {
 		// feedBlocks walks block numbers in order on ONE goroutine, so the
 		// parent is almost always the header returned by the previous call.
-		// That matters more than it looks: this runs on the pipeline's single
-		// serial reader, and every extra read there is multiplied by the whole
-		// worker fleet waiting behind it.
+		// Reuse it rather than asking the reader again: within a segment that
+		// second lookup is cheap, but at a segment boundary block n-1 lives in
+		// the PREVIOUS segment, so asking for it evicts the segment just loaded
+		// and the next block reloads it. That trades one cached hit for two
+		// full headerc segment decodes at every one of the store's boundaries.
 		var parentHash types.Hash
 		if s.lastHeader != nil && s.lastHeaderNum == n-1 {
 			parentHash = s.lastHeader.Hash()
@@ -245,21 +247,30 @@ func (s *n42CompactSource) readBody(n uint64, consume bool) (*GethBodyResult, er
 	// bodyc historically collapsed every authorization V other than 1 to 0.
 	// This is lossy for invalid legacy 27/28 tuples found in canonical Ethereum
 	// history: N42 correctly rejects V > 1, while the collapsed V=0 tuple can
-	// become valid and mutate state. New bodyc files preserve the raw byte. For
-	// old files, use the canonical transaction root retained by headerc to
-	// restore the rare legacy value before execution. Blocks without a zero-V
-	// authorization pay no transaction-root hashing cost.
-	hdr := s.lastHeader
-	if hdr == nil || s.lastHeaderNum != n {
-		hdr, err = s.hr.ReadHeader(n)
-		if err != nil {
-			return nil, fmt.Errorf("header %d needed to verify bodyc authorization values: %w", n, err)
+	// become valid and mutate state. Current segments declare bfAuthVFull and
+	// carry the true value; only older ones need the canonical transaction root
+	// from headerc to restore it.
+	//
+	// The gate is the segment's own format flag, not a property of the decoded
+	// transactions. Keying it on "does any authorization have V == 0" looks
+	// cheaper and is not: y_parity 0 is a perfectly ordinary value, so on a
+	// lossless archive that test fires for a large share of the 2.2M post-Prague
+	// SetCode blocks and pays a full transaction-root derivation for each, on
+	// the single goroutine feeding every worker. The flag is O(1) and exact, so
+	// a regenerated archive pays nothing and an old one keeps its safety net.
+	if s.br.SegmentNeedsAuthVRepair() {
+		hdr := s.lastHeader
+		if hdr == nil || s.lastHeaderNum != n {
+			hdr, err = s.hr.ReadHeader(n)
+			if err != nil {
+				return nil, fmt.Errorf("header %d needed to verify bodyc authorization values: %w", n, err)
+			}
 		}
-	}
-	if repaired, rerr := repairCompactLegacyAuthorizationV(hdr.TxHash, db.Txs); rerr != nil {
-		return nil, fmt.Errorf("block %d: %w", n, rerr)
-	} else if repaired {
-		fmt.Fprintf(os.Stderr, "bodyc: restored legacy EIP-7702 authorization V using canonical tx root at block %d\n", n)
+		if repaired, rerr := repairCompactLegacyAuthorizationV(hdr.TxHash, db.Txs); rerr != nil {
+			return nil, fmt.Errorf("block %d: %w", n, rerr)
+		} else if repaired {
+			fmt.Fprintf(os.Stderr, "bodyc: restored legacy EIP-7702 authorization V using canonical tx root at block %d\n", n)
+		}
 	}
 	var uncles []*block.Header
 	if len(db.UncleRLP) > 0 {

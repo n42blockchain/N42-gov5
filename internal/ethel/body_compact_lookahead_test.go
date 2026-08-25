@@ -30,7 +30,6 @@ func TestBodyLookaheadMatchesInline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open ahead: %v", err)
 	}
-	ahead.EnableLookahead()
 	defer ahead.Close()
 
 	for n := uint64(0); n < blocks; n++ {
@@ -65,30 +64,57 @@ func TestBodyLookaheadMatchesInline(t *testing.T) {
 	}
 }
 
-// A caller that seeks backwards invalidates the slot; the reader must fall back
-// to an inline decode rather than serve the wrong segment.
-func TestBodyLookaheadSeekFallsBack(t *testing.T) {
+// A seek leaves a read-ahead slot holding the wrong segment. The reader must
+// fall back to an inline decode AND recover: an implementation that simply
+// refuses to start another prefetch while one is outstanding stays disabled for
+// the rest of the run and pins the orphaned segment in memory forever.
+func TestBodyLookaheadRecoversFromSeek(t *testing.T) {
 	dir := t.TempDir()
-	const blocks = HeaderSegmentSize*3 + 5
+	const blocks = HeaderSegmentSize*4 + 5
 	writeSyntheticBodySegments(t, dir, blocks)
 
 	r, err := OpenBodyCompact(dir)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	r.EnableLookahead()
 	defer r.Close()
 
-	for _, n := range []uint64{0, HeaderSegmentSize * 2, 3, HeaderSegmentSize, HeaderSegmentSize * 2} {
-		b, err := r.ReadBody(n)
-		if err != nil {
-			t.Fatalf("block %d: %v", n, err)
-		}
-		if got := r.cachedSeg; got != int64(n/HeaderSegmentSize) {
-			t.Fatalf("block %d: cached segment %d, want %d", n, got, n/HeaderSegmentSize)
-		}
-		if len(b.Txs) == 0 {
-			t.Fatalf("block %d: no txs decoded", n)
+	// Sequential use arms read-ahead for segment 1.
+	if _, err := r.TakeBody(0); err != nil {
+		t.Fatalf("take block 0: %v", err)
+	}
+	if r.pending == nil || r.pending.seg != 1 {
+		t.Fatalf("expected read-ahead on segment 1, got %v", r.pending)
+	}
+
+	// Seek past it. The slot now holds a segment nobody asked for.
+	const seekBlock = HeaderSegmentSize * 3
+	b, err := r.ReadBody(seekBlock)
+	if err != nil {
+		t.Fatalf("seek read: %v", err)
+	}
+	if len(b.Txs) == 0 {
+		t.Fatal("seek read returned no txs")
+	}
+	if r.cachedSeg != 3 {
+		t.Fatalf("cached segment %d after seek, want 3", r.cachedSeg)
+	}
+
+	// Sequential use resumes: the stale slot must be reclaimed, not honoured.
+	if _, err := r.TakeBody(seekBlock); err != nil {
+		t.Fatalf("take after seek: %v", err)
+	}
+	if r.pending == nil {
+		t.Fatal("read-ahead did not restart after a seek")
+	}
+	if r.pending.seg != 4 {
+		t.Fatalf("read-ahead holds segment %d after seek, want 4", r.pending.seg)
+	}
+
+	// And the data is still right on both sides of the seek.
+	for _, n := range []uint64{HeaderSegmentSize, HeaderSegmentSize*4 + 1} {
+		if _, err := r.ReadBody(n); err != nil {
+			t.Fatalf("block %d after seek: %v", n, err)
 		}
 	}
 }
@@ -146,5 +172,42 @@ func writeSyntheticBodySegments(t *testing.T, dir string, blocks uint64) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "bodyc.cidx"), idx, 0o644); err != nil {
 		t.Fatalf("write cidx: %v", err)
+	}
+}
+
+// The authorization-V repair must be gated on the segment's declared format,
+// not on whether some authorization happens to carry V == 0. y_parity 0 is an
+// ordinary value, so a value-based gate fires constantly on a lossless archive
+// and pays a transaction-root derivation per block for nothing.
+func TestSegmentNeedsAuthVRepairKeysOnFormat(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		flags bodyFlags
+		want  bool
+	}{
+		{"current segment with SetCode txs", bfHasSetCode | bfAuthVFull | bfPostMerge, false},
+		{"legacy segment with SetCode txs", bfHasSetCode | bfPostMerge, true},
+		{"segment with no SetCode txs", bfPostMerge | bfHasAccessList, false},
+		{"empty flags", 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &BodyCompactReader{cachedFlags: tc.flags}
+			if got := r.SegmentNeedsAuthVRepair(); got != tc.want {
+				t.Fatalf("SegmentNeedsAuthVRepair() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A segment written by the current encoder must declare the lossless
+// authorization encoding, so the gate above can rely on it.
+func TestCurrentEncoderDeclaresAuthVFull(t *testing.T) {
+	blocks := makeTestBlocks()
+	flags := detectBodyFlags(blocks)
+	if flags&bfHasSetCode == 0 {
+		t.Fatal("fixture no longer contains a SetCode transaction")
+	}
+	if flags&bfAuthVFull == 0 {
+		t.Fatal("current encoder must declare bfAuthVFull alongside bfHasSetCode")
 	}
 }
