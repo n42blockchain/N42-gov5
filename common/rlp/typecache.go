@@ -28,12 +28,39 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 var (
-	typeCacheMutex sync.RWMutex
-	typeCache      = make(map[typekey]*typeinfo)
+	// typeCacheMutex serialises generation only. Lookups do not take it.
+	typeCacheMutex sync.Mutex
+
+	// typeCache holds an immutable map, replaced wholesale under
+	// typeCacheMutex whenever a new type is generated.
+	//
+	// It used to be a plain map behind an RWMutex, which is what geth's rlp
+	// did originally. RLock never blocks a reader, but it increments the
+	// mutex's reader counter, so every encode wrote to one shared cache line.
+	// Encoding is on the hot path of receipt-root derivation - once per
+	// receipt per block - so with dozens of cores replaying blocks in parallel
+	// that line ping-pongs continuously between cores. On a 104-worker witness
+	// replay, sync/atomic.(*Int32).Add alone was 2.3% of all CPU and 71% of
+	// every RLock in the process came from here.
+	//
+	// Reads are now a single atomic load of a pointer that stops changing once
+	// the process has seen each type once, so the line stays shared in every
+	// core's cache and costs nothing to read.
+	typeCache atomic.Pointer[map[typekey]*typeinfo]
+
+	// typeCacheNext is the map being built during generation. It is valid only
+	// while typeCacheMutex is held.
+	typeCacheNext map[typekey]*typeinfo
 )
+
+func init() {
+	empty := make(map[typekey]*typeinfo)
+	typeCache.Store(&empty)
+}
 
 type typeinfo struct {
 	decoder    decoder
@@ -83,30 +110,48 @@ func cachedWriter(typ reflect.Type) (writer, error) {
 }
 
 func cachedTypeInfo(typ reflect.Type, tags tags) *typeinfo {
-	typeCacheMutex.RLock()
-	info := typeCache[typekey{typ, tags}]
-	typeCacheMutex.RUnlock()
-	if info != nil {
+	if info := (*typeCache.Load())[typekey{typ, tags}]; info != nil {
 		return info
 	}
-	// not in the cache, need to generate info for this type.
+	// Not in the cache, need to generate info for this type.
 	typeCacheMutex.Lock()
 	defer typeCacheMutex.Unlock()
-	return cachedTypeInfo1(typ, tags)
-}
 
-func cachedTypeInfo1(typ reflect.Type, tags tags) *typeinfo {
-	key := typekey{typ, tags}
-	info := typeCache[key]
-	if info != nil {
-		// another goroutine got the write lock first
+	cur := *typeCache.Load()
+	if info := cur[typekey{typ, tags}]; info != nil {
+		// Another goroutine generated it while we waited for the lock.
 		return info
 	}
-	// put a dummy value into the cache before generating.
-	// if the generator tries to lookup itself, it will get
-	// the dummy value and won't call itself recursively.
+	// Build the replacement map, generate into it, then publish. Readers keep
+	// using the old map until the store, so they never observe a half-built
+	// entry - which matters because generation deliberately publishes a dummy
+	// first, see cachedTypeInfo1.
+	typeCacheNext = make(map[typekey]*typeinfo, len(cur)+1)
+	for k, v := range cur {
+		typeCacheNext[k] = v
+	}
+	info := cachedTypeInfo1(typ, tags)
+	next := typeCacheNext
+	typeCacheNext = nil
+	typeCache.Store(&next)
+	return info
+}
+
+// cachedTypeInfo1 resolves a type while generation is in progress. The caller
+// must hold typeCacheMutex and have populated typeCacheNext; recursive lookups
+// from generate() land here so a type that refers to itself resolves to the
+// dummy rather than recursing forever.
+func cachedTypeInfo1(typ reflect.Type, tags tags) *typeinfo {
+	key := typekey{typ, tags}
+	info := typeCacheNext[key]
+	if info != nil {
+		return info
+	}
+	// Put a dummy value into the pending map before generating. If the
+	// generator tries to look itself up, it gets the dummy and won't call
+	// itself recursively.
 	info = new(typeinfo)
-	typeCache[key] = info
+	typeCacheNext[key] = info
 	info.generate(typ, tags)
 	return info
 }
