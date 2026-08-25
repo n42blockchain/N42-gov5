@@ -87,6 +87,13 @@ type stateObject struct {
 	// Used to make decision on whether to make a write to the
 	// database (value != origin) or not (value == origin)
 	blockOriginStorage Storage
+
+	// sawNonZeroCommitted records whether any committed read in this block
+	// returned a non-zero value. HasNonEmptyStorage needs that fact and
+	// normally reads it out of blockOriginStorage, but discardBlockChanges
+	// stops populating that map, so the fact is kept separately. One bool is
+	// the whole point: it is what the map was consulted for on that path.
+	sawNonZeroCommitted bool
 	dirtyStorage       Storage // Storage entries that need to be flushed to disk
 	fakeStorage        Storage // Fake storage which constructed by caller for debugging purpose.
 
@@ -135,6 +142,7 @@ func putStateObject(so *stateObject) {
 	clear(so.originStorage)
 	clear(so.blockOriginStorage)
 	clear(so.dirtyStorage)
+	so.sawNonZeroCommitted = false
 	stateObjectPool.Put(so)
 }
 
@@ -278,6 +286,9 @@ func (so *stateObject) GetCommittedState(key *types.Hash, out *uint256.Int) {
 // the final block write set/root, so validation-only callers can omit it.
 func (so *stateObject) cacheCommittedState(key *types.Hash, value *uint256.Int) {
 	so.originStorage[*key] = *value
+	if !value.IsZero() {
+		so.sawNonZeroCommitted = true
+	}
 	if so.db == nil || !so.db.discardBlockChanges {
 		so.blockOriginStorage[*key] = *value
 	}
