@@ -16,6 +16,8 @@ package ethel
 
 import (
 	"bytes"
+	"encoding/binary"
+	"math/bits"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hash"
@@ -28,6 +30,8 @@ type ethReceiptList []*block.Receipt
 
 func (rs ethReceiptList) Len() int { return len(rs) }
 
+// ethRLPLog is retained as the reflection-based reference shape used by the
+// canonical-encoding regression tests.
 type ethRLPLog struct {
 	Address types.Address
 	Topics  []types.Hash
@@ -48,22 +52,69 @@ func (rs ethReceiptList) EncodeIndex(i int, w *bytes.Buffer) {
 		w.WriteByte(r.Type)
 	}
 
-	logs := make([]ethRLPLog, len(r.Logs))
-	for k, l := range r.Logs {
-		logs[k] = ethRLPLog{Address: l.Address, Topics: l.Topics, Data: l.Data}
-	}
-
 	bloom := r.Bloom
 	if bloom == (block.Bloom{}) && len(r.Logs) > 0 {
 		bloom = block.CreateBloom(block.Receipts{r})
 	}
 
-	rlp.Encode(w, &struct {
-		Status            uint64
-		CumulativeGasUsed uint64
-		Bloom             block.Bloom
-		Logs              []ethRLPLog
-	}{r.Status, r.CumulativeGasUsed, bloom, logs})
+	var logsContent uint64
+	for _, log := range r.Logs {
+		logsContent += ethLogRLPSize(log)
+	}
+	receiptContent := uint64(rlp.IntSize(r.Status)+rlp.IntSize(r.CumulativeGasUsed)) +
+		rlp.BytesSize(bloom[:]) + rlp.ListSize(logsContent)
+
+	// The exact size is known, so append directly into bytes.Buffer's spare
+	// capacity and commit it with one Write. This avoids the reflection walk,
+	// temporary []ethRLPLog and encbuf copy previously paid for every receipt.
+	w.Grow(int(rlp.ListSize(receiptContent)))
+	out := w.AvailableBuffer()
+	out = appendRLPListPrefix(out, receiptContent)
+	out = rlp.AppendUint64(out, r.Status)
+	out = rlp.AppendUint64(out, r.CumulativeGasUsed)
+	out = appendRLPString(out, bloom[:])
+	out = appendRLPListPrefix(out, logsContent)
+	for _, log := range r.Logs {
+		var topicsContent = uint64(len(log.Topics)) * 33 // 0xa0 + 32 bytes
+		logContent := uint64(21) + rlp.ListSize(topicsContent) + rlp.BytesSize(log.Data)
+		out = appendRLPListPrefix(out, logContent)
+		out = appendRLPString(out, log.Address[:])
+		out = appendRLPListPrefix(out, topicsContent)
+		for _, topic := range log.Topics {
+			out = appendRLPString(out, topic[:])
+		}
+		out = appendRLPString(out, log.Data)
+	}
+	_, _ = w.Write(out)
+}
+
+func ethLogRLPSize(log *block.Log) uint64 {
+	topicsContent := uint64(len(log.Topics)) * 33 // 0xa0 + 32 bytes
+	content := uint64(21) + rlp.ListSize(topicsContent) + rlp.BytesSize(log.Data)
+	return rlp.ListSize(content)
+}
+
+func appendRLPString(dst, value []byte) []byte {
+	if len(value) == 1 && value[0] <= 0x7f {
+		return append(dst, value[0])
+	}
+	dst = appendRLPSize(dst, 0x80, 0xb7, uint64(len(value)))
+	return append(dst, value...)
+}
+
+func appendRLPListPrefix(dst []byte, contentSize uint64) []byte {
+	return appendRLPSize(dst, 0xc0, 0xf7, contentSize)
+}
+
+func appendRLPSize(dst []byte, shortBase, longBase byte, size uint64) []byte {
+	if size < 56 {
+		return append(dst, shortBase+byte(size))
+	}
+	var encoded [8]byte
+	binary.BigEndian.PutUint64(encoded[:], size)
+	n := (bits.Len64(size) + 7) / 8
+	dst = append(dst, longBase+byte(n))
+	return append(dst, encoded[8-n:]...)
 }
 
 // EthReceiptHash computes the Ethereum-standard receipt root hash

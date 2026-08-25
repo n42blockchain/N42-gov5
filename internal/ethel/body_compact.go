@@ -863,6 +863,13 @@ type BodyCompactReader struct {
 	segments     uint64
 	coldResolver ColdResolver
 
+	// decodeGate is shared by the independent readers of one replay process.
+	// BODYC expands a whole 8192-block segment at once; letting every reader do
+	// that concurrently creates a large allocation/GC and memory-bandwidth
+	// burst. The gate limits only read+decompress+decode. Readers that already
+	// own a decoded segment remain free to assemble witness jobs concurrently.
+	decodeGate chan struct{}
+
 	cachedSeg    int64
 	cachedBlocks []*DecodedBlock
 	cachedFlags  bodyFlags
@@ -890,6 +897,11 @@ type segAhead struct {
 // SetColdResolver installs a resolver consulted when a segment's cdat is absent
 // (cold/trimmed). With no resolver, an absent segment yields ErrBodyTrimmed.
 func (r *BodyCompactReader) SetColdResolver(cr ColdResolver) { r.coldResolver = cr }
+
+// SetDecodeGate limits concurrent whole-segment decodes across readers that
+// share gate. A nil gate leaves standalone/random-access readers unchanged.
+// Configure it before the reader is used.
+func (r *BodyCompactReader) SetDecodeGate(gate chan struct{}) { r.decodeGate = gate }
 
 func OpenBodyCompact(dir string) (*BodyCompactReader, error) {
 	idxPath := filepath.Join(dir, "bodyc.cidx")
@@ -1000,6 +1012,20 @@ func (r *BodyCompactReader) TakeBody(blockNum uint64) (*DecodedBlock, error) {
 	return body, nil
 }
 
+// TakeBodyNoAhead releases the handed-off block from the segment cache without
+// predicting the next segment. Parallel reservoir readers receive dynamic,
+// often interleaved ranges, so TakeBody's sequential seg+1 read-ahead would
+// decode another reader's work and retain it unnecessarily.
+func (r *BodyCompactReader) TakeBodyNoAhead(blockNum uint64) (*DecodedBlock, error) {
+	body, err := r.ReadBody(blockNum)
+	if err != nil {
+		return nil, err
+	}
+	idx := int(blockNum % HeaderSegmentSize)
+	r.cachedBlocks[idx] = nil
+	return body, nil
+}
+
 // startAhead begins decoding segNum unless it is already in flight or past the
 // end of the store.
 func (r *BodyCompactReader) startAhead(segNum int64) {
@@ -1054,6 +1080,11 @@ func (r *BodyCompactReader) loadSegment(segNum int64) error {
 // the supplied decoder. Foreground and read-ahead paths own distinct decoders,
 // so the two can run concurrently.
 func (r *BodyCompactReader) decodeSegment(segNum int64, dec *zstd.Decoder) ([]*DecodedBlock, bodyFlags, error) {
+	if r.decodeGate != nil {
+		r.decodeGate <- struct{}{}
+		defer func() { <-r.decodeGate }()
+	}
+
 	// Read idx entry.
 	var entryBuf [8]byte
 	if _, err := r.idxFile.ReadAt(entryBuf[:], segNum*8); err != nil {
