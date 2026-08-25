@@ -88,6 +88,15 @@ type BalanceIncrease struct {
 type IntraBlockState struct {
 	stateReader StateReader
 
+	// discardBlockChanges disables bookkeeping that is needed only to emit a
+	// block-level write set. Witness validation still executes every state
+	// transition and keeps originStorage/dirtyStorage for correct intra-block
+	// reads, but it never calls CommitBlock, so retaining a second copy of every
+	// touched storage slot in blockOriginStorage is pure allocation overhead.
+	// The flag is configuration, not block state, and is therefore preserved by
+	// Reset in the same way as rootComputer.
+	discardBlockChanges bool
+
 	// This map holds 'live' objects, which will get modified while processing a state transition.
 	stateObjects      map[types.Address]*stateObject
 	stateObjectsDirty map[types.Address]struct{}
@@ -183,13 +192,13 @@ func New(stateReader StateReader) *IntraBlockState {
 		stateObjectsDirty: map[types.Address]struct{}{},
 		nilAccounts:       map[types.Address]struct{}{},
 		logs:              map[types.Hash][]*block.Log{},
-		journal:              newJournal(),
-		accessList:           newAccessList(),
-		balanceInc:           map[types.Address]*BalanceIncrease{},
-		transientStorage:     newTransientStorage(),
-		storageWipes:         map[types.Address]struct{}{},
-		priorTxWipes:         map[types.Address]struct{}{},
-		wipedStorageSlots:    map[types.Address]map[types.Hash]uint256.Int{},
+		journal:           newJournal(),
+		accessList:        newAccessList(),
+		balanceInc:        map[types.Address]*BalanceIncrease{},
+		transientStorage:  newTransientStorage(),
+		storageWipes:      map[types.Address]struct{}{},
+		priorTxWipes:      map[types.Address]struct{}{},
+		wipedStorageSlots: map[types.Address]map[types.Hash]uint256.Int{},
 	}
 }
 
@@ -433,6 +442,13 @@ func (sdb *IntraBlockState) SetStateReader(reader StateReader) {
 
 func (sdb *IntraBlockState) GetStateReader() StateReader {
 	return sdb.stateReader
+}
+
+// SetDiscardBlockChanges selects validation-only state handling. Callers that
+// may invoke CommitBlock, IntermediateRoot, or otherwise consume a block write
+// set must leave this disabled.
+func (sdb *IntraBlockState) SetDiscardBlockChanges(discard bool) {
+	sdb.discardBlockChanges = discard
 }
 
 // Reset clears every per-block field so the IBS can be reused across

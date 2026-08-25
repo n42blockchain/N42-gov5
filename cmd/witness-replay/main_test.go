@@ -50,3 +50,29 @@ func TestResolveCodeInputs(t *testing.T) {
 		require.True(t, autoDetected)
 	})
 }
+
+func TestSplitReplayRangesAlignedAndComplete(t *testing.T) {
+	const start, end = uint64(24_100_000), uint64(24_150_000)
+	ranges := splitReplayRanges(start, end, 3)
+	require.Len(t, ranges, 3)
+	require.Equal(t, start, ranges[0].start)
+	require.Equal(t, end, ranges[len(ranges)-1].end)
+	for i, r := range ranges {
+		require.Less(t, r.start, r.end)
+		if i > 0 {
+			require.Equal(t, ranges[i-1].end, r.start)
+			require.Zero(t, r.start%8192)
+		}
+	}
+}
+
+func TestStripShardOverrides(t *testing.T) {
+	args := []string{
+		"--no-output", "--start", "1", "--end=9", "--workers", "80",
+		"--readers=3", "--mem-limit-gb", "24", "--process-shards=2",
+		"--input-high-gb", "10", "--input-low-gb=5",
+		"--segment-shard-count=2", "--segment-shard-index", "1",
+		"--output", "/tmp/out",
+	}
+	require.Equal(t, []string{"--no-output", "--output", "/tmp/out"}, stripShardOverrides(args))
+}

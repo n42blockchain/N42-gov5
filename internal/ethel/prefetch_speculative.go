@@ -289,11 +289,11 @@ func (p *prefetcher) applySpeculativeTx(
 	iinternal.NormalizeExecutionMessage(&msg, false, p.engine != nil)
 	msg.SetCheckNonce(false)
 
-	txContext := iinternal.NewEVMTxContext(msg)
+	txContext := iinternal.NewEVMTxContext(&msg)
 	blockContext := iinternal.NewEVMBlockContext(header, blockHashFunc, p.engine, p.chainCfg, nil)
 	evm := vm2.NewEVM(blockContext, txContext, ibs, p.chainCfg, vm2.Config{NoReceipts: true})
 
-	result, err := iinternal.ApplyMessage(evm, msg, gp, true, true)
+	result, err := iinternal.ApplyMessage(evm, &msg, gp, true, true)
 	if err != nil {
 		return err
 	}

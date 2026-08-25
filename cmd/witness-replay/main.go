@@ -19,11 +19,16 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"runtime/pprof"
+	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/c2h5oh/datasize"
 	"github.com/urfave/cli/v2"
@@ -61,13 +66,23 @@ func main() {
 			&cli.Uint64Flag{Name: "start", Value: 0, Usage: "Start block (inclusive)"},
 			&cli.Uint64Flag{Name: "end", Value: 0, Usage: "End block (exclusive); 0 = all available witness items"},
 			&cli.IntFlag{Name: "workers", Value: 8, Usage: "Number of parallel replay workers. The reorder buffer (in-order emit) is heap-bounded by the small channel cap (256); for high worker counts (e.g. 32) ALSO pass --gogc 300 --mem-limit-gb 16 so GC stays infrequent + concurrent and doesn't steal CPU from workers on heavy DeFi blocks (the old >=16 stall was a GC-frequency feedback loop, not a hard limit)."},
+			&cli.IntFlag{Name: "readers", Value: 0, Usage: "Parallel input readers for --no-output verification. 0 = auto (up to 6, segment-sharded); output-producing runs remain sequential for ordered cdat writes."},
+			&cli.IntFlag{Name: "process-shards", Value: 1, Usage: "Split an explicit --start/--end verification range across this many child processes. --workers, --readers and --mem-limit-gb are total budgets divided among children. Requires --no-output."},
+			&cli.IntFlag{Name: "segment-shard-count", Value: 1, Hidden: true},
+			&cli.IntFlag{Name: "segment-shard-index", Value: 0, Hidden: true},
 			&cli.IntFlag{Name: "gogc", Value: 0, Usage: "runtime GOGC (debug.SetGCPercent). 0 = Go default (100). For 32-worker runs set ~300 to cut GC frequency."},
 			&cli.IntFlag{Name: "mem-limit-gb", Value: 0, Usage: "soft heap ceiling in GiB (debug.SetMemoryLimit). 0 = off. Set ~16 with high --gogc so the heap stays capped and GC stays concurrent (no multi-second STW)."},
+			&cli.Float64Flag{Name: "input-high-gb", Value: 0, Usage: "Total decoded-input reservoir high watermark in GiB for --no-output; 0 disables. With --process-shards the budget is divided among children."},
+			&cli.Float64Flag{Name: "input-low-gb", Value: 0, Usage: "Total decoded-input reservoir refill watermark in GiB; 0 = half of --input-high-gb. Producers refill only after completed work drains below this level."},
 			&cli.BoolFlag{Name: "no-output", Usage: "Skip cdat writes (smoke / throughput tests). Workers still verify gas per block."},
 			&cli.BoolFlag{Name: "skip-verify", Usage: "Skip per-block gas verification. Useful when the witness was recorded by a different ProcessBlock version (state-read order drift produces gas mismatches that aren't a framework bug)."},
 			&cli.BoolFlag{Name: "continue-on-error", Usage: "Keep replaying past per-block failures (logged + counted). Throughput measurement against a possibly-stale witness needs this; production runs should leave it false so any divergence halts immediately."},
 			&cli.BoolFlag{Name: "write-witness", Usage: "Write witness.cdat to the output freezer alongside acctcs/storcs. Off by default — replay typically reads existing witness, so re-emitting it is duplicate work."},
 			&cli.BoolFlag{Name: "receipts", Usage: "Opt in to writing receipts.cdat. Off by default — witness-replay's primary outputs are witness + acctcs + storcs; the receipt-copy subcommand owns receipts in chain/freezer/. Per-block receipt-root check still runs regardless of this flag."},
+			&cli.StringFlag{Name: "cpu-profile", Usage: "Write a CPU pprof profile directly to this file for the full replay run (does not require the HTTP pprof endpoint)"},
+			&cli.StringFlag{Name: "heap-profile", Usage: "Write an end-of-run in-use heap pprof profile directly to this file after a forced GC"},
+			&cli.StringFlag{Name: "block-profile", Usage: "Write an end-of-run goroutine blocking profile to this file (enables full block profiling and adds overhead)"},
+			&cli.StringFlag{Name: "mutex-profile", Usage: "Write an end-of-run mutex contention profile to this file (enables full mutex profiling and adds overhead)"},
 		},
 		Action: run,
 	}
@@ -78,6 +93,18 @@ func main() {
 }
 
 func run(c *cli.Context) error {
+	if c.Int("process-shards") > 1 {
+		return runProcessShards(c)
+	}
+	stopProfiles, err := startFileProfiles(
+		c.String("cpu-profile"), c.String("heap-profile"),
+		c.String("block-profile"), c.String("mutex-profile"),
+	)
+	if err != nil {
+		return err
+	}
+	defer stopProfiles()
+
 	hbPath := c.String("input-headers-bodies")
 	witnessPath := c.String("input-witness")
 	if witnessPath == "" {
@@ -88,6 +115,17 @@ func run(c *cli.Context) error {
 	sendersPath := c.String("senders")
 	start := c.Uint64("start")
 	end := c.Uint64("end")
+	inputHighGB := c.Float64("input-high-gb")
+	inputLowGB := c.Float64("input-low-gb")
+	if inputHighGB < 0 || inputLowGB < 0 {
+		return fmt.Errorf("--input-high-gb and --input-low-gb must be non-negative")
+	}
+	if inputHighGB == 0 && inputLowGB > 0 {
+		return fmt.Errorf("--input-low-gb requires --input-high-gb")
+	}
+	if inputHighGB > 0 && inputLowGB >= inputHighGB {
+		return fmt.Errorf("--input-low-gb must be lower than --input-high-gb")
+	}
 
 	// --senders defaults to auto-detect. A pre-computed senders freezer skips
 	// ecrecover, which profiling showed was ~49% of replay CPU (secp256k1
@@ -187,22 +225,27 @@ func run(c *cli.Context) error {
 	engine := ethel.NewEthReplayEngine(chainCfg)
 
 	cfg := ethel.WitnessReplayConfig{
-		HeadersBodiesPath: hbPath,
-		WitnessPath:       witnessPath,
-		OutputPath:        outputPath,
-		Datadir:           datadir,
-		SendersPath:       sendersPath,
-		StartBlock:        start,
-		EndBlock:          end,
-		Workers:           workers,
-		NoOutput:          c.Bool("no-output"),
-		SkipVerify:        c.Bool("skip-verify"),
-		ContinueOnError:   c.Bool("continue-on-error"),
-		WriteWitness:      c.Bool("write-witness"),
-		WriteReceipts:     c.Bool("receipts"),
-		ChainCfg:          chainCfg,
-		Engine:            engine,
-		CodesFreezerDir:   codesDir,
+		HeadersBodiesPath:   hbPath,
+		WitnessPath:         witnessPath,
+		OutputPath:          outputPath,
+		Datadir:             datadir,
+		SendersPath:         sendersPath,
+		StartBlock:          start,
+		EndBlock:            end,
+		Workers:             workers,
+		Readers:             c.Int("readers"),
+		SegmentShardCount:   c.Int("segment-shard-count"),
+		SegmentShardIndex:   c.Int("segment-shard-index"),
+		InputHighWaterBytes: int64(inputHighGB * (1 << 30)),
+		InputLowWaterBytes:  int64(inputLowGB * (1 << 30)),
+		NoOutput:            c.Bool("no-output"),
+		SkipVerify:          c.Bool("skip-verify"),
+		ContinueOnError:     c.Bool("continue-on-error"),
+		WriteWitness:        c.Bool("write-witness"),
+		WriteReceipts:       c.Bool("receipts"),
+		ChainCfg:            chainCfg,
+		Engine:              engine,
+		CodesFreezerDir:     codesDir,
 	}
 
 	log.Info("Witness replay configured",
@@ -233,6 +276,268 @@ func run(c *cli.Context) error {
 				hbPath, datadir, outputPath))
 	}
 	return nil
+}
+
+type replayRange struct {
+	start uint64
+	end   uint64
+}
+
+func splitReplayRanges(start, end uint64, shards int) []replayRange {
+	ranges := make([]replayRange, shards)
+	previous := start
+	for i := 1; i <= shards; i++ {
+		next := end
+		if i < shards {
+			ideal := start + (end-start)*uint64(i)/uint64(shards)
+			// BODYC is independently compressed at this granularity. Put process
+			// boundaries on the nearest segment edge so two processes never decode
+			// the same large segment, but only when a shard spans at least two
+			// segments. For shorter ranges alignment can create a pathological
+			// 90/10 split and costs more in load imbalance than one duplicate decode.
+			next = ideal
+			if (end-start)/uint64(shards) >= 2*ethel.HeaderSegmentSize {
+				next = ((ideal + ethel.HeaderSegmentSize/2) / ethel.HeaderSegmentSize) * ethel.HeaderSegmentSize
+			}
+			minimum := previous + 1
+			maximum := end - uint64(shards-i)
+			if next < minimum {
+				next = minimum
+			}
+			if next > maximum {
+				next = maximum
+			}
+		}
+		ranges[i-1] = replayRange{start: previous, end: next}
+		previous = next
+	}
+	return ranges
+}
+
+func runProcessShards(c *cli.Context) error {
+	shards := c.Int("process-shards")
+	start, end := c.Uint64("start"), c.Uint64("end")
+	if !c.Bool("no-output") {
+		return fmt.Errorf("--process-shards requires --no-output (child outputs cannot append to one ordered freezer)")
+	}
+	if end <= start {
+		return fmt.Errorf("--process-shards requires an explicit --end greater than --start")
+	}
+	for _, name := range []string{"cpu-profile", "heap-profile", "block-profile", "mutex-profile"} {
+		if c.String(name) != "" {
+			return fmt.Errorf("--process-shards cannot share --%s; profile one child range directly", name)
+		}
+	}
+	if shards > int(end-start) {
+		shards = int(end - start)
+	}
+	totalWorkers := c.Int("workers")
+	if totalWorkers <= 0 {
+		totalWorkers = runtime.NumCPU()
+	}
+	if shards > totalWorkers {
+		shards = totalWorkers
+	}
+	totalReaders := c.Int("readers")
+	totalMemory := c.Int("mem-limit-gb")
+	totalInputHigh := c.Float64("input-high-gb")
+	totalInputLow := c.Float64("input-low-gb")
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve witness-replay executable: %w", err)
+	}
+	baseArgs := stripShardOverrides(os.Args[1:])
+	ctx, cancel := context.WithCancel(c.Context)
+	defer cancel()
+
+	t0 := time.Now()
+	log.Info("Process-sharded verification started",
+		"shards", shards, "range", fmt.Sprintf("%d-%d", start, end),
+		"workers", totalWorkers, "readers", totalReaders, "mem_limit_gb", totalMemory)
+	var wg sync.WaitGroup
+	errs := make(chan error, shards)
+	for i := 0; i < shards; i++ {
+		workers := totalWorkers / shards
+		if i < totalWorkers%shards {
+			workers++
+		}
+		readers := 0
+		if totalReaders > 0 {
+			readers = totalReaders / shards
+			if i < totalReaders%shards {
+				readers++
+			}
+			if readers < 1 {
+				readers = 1
+			}
+		}
+		memory := 0
+		if totalMemory > 0 {
+			memory = totalMemory / shards
+			if i < totalMemory%shards {
+				memory++
+			}
+			if memory < 1 {
+				memory = 1
+			}
+		}
+		args := append([]string{}, baseArgs...)
+		args = append(args,
+			"--process-shards", "1",
+			"--segment-shard-count", fmt.Sprint(shards),
+			"--segment-shard-index", fmt.Sprint(i),
+			"--start", fmt.Sprint(start), "--end", fmt.Sprint(end),
+			"--workers", fmt.Sprint(workers), "--readers", fmt.Sprint(readers),
+			"--mem-limit-gb", fmt.Sprint(memory),
+			"--input-high-gb", fmt.Sprint(totalInputHigh/float64(shards)),
+			"--input-low-gb", fmt.Sprint(totalInputLow/float64(shards)),
+		)
+		wg.Add(1)
+		go func(id int, childArgs []string) {
+			defer wg.Done()
+			cmd := exec.CommandContext(ctx, executable, childArgs...)
+			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+			if runErr := cmd.Run(); runErr != nil {
+				cancel()
+				errs <- fmt.Errorf("segment shard %d/%d range %d-%d: %w", id, shards, start, end, runErr)
+				return
+			}
+			errs <- nil
+		}(i, args)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	log.Info("Process-sharded verification complete",
+		"shards", shards, "blocks", end-start, "elapsed", time.Since(t0).Truncate(time.Millisecond))
+	return nil
+}
+
+func stripShardOverrides(args []string) []string {
+	overrides := map[string]bool{
+		"--process-shards":      true,
+		"--segment-shard-count": true,
+		"--segment-shard-index": true,
+		"--start":               true,
+		"--end":                 true,
+		"--workers":             true,
+		"--readers":             true,
+		"--mem-limit-gb":        true,
+		"--input-high-gb":       true,
+		"--input-low-gb":        true,
+	}
+	result := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		name := arg
+		if eq := strings.IndexByte(arg, '='); eq >= 0 {
+			name = arg[:eq]
+		}
+		if !overrides[name] {
+			result = append(result, arg)
+			continue
+		}
+		if name == arg && i+1 < len(args) {
+			i++
+		}
+	}
+	return result
+}
+
+func startFileProfiles(cpuPath, heapPath, blockPath, mutexPath string) (func(), error) {
+	var cpuFile, heapFile, blockFile, mutexFile *os.File
+	closeProfiles := func() {
+		for _, f := range []*os.File{cpuFile, heapFile, blockFile, mutexFile} {
+			if f != nil {
+				_ = f.Close()
+			}
+		}
+	}
+	openProfile := func(path, kind string) (*os.File, error) {
+		if path == "" {
+			return nil, nil
+		}
+		f, err := os.Create(path)
+		if err != nil {
+			return nil, fmt.Errorf("create %s profile: %w", kind, err)
+		}
+		return f, nil
+	}
+	var err error
+	if cpuPath != "" {
+		cpuFile, err = os.Create(cpuPath)
+		if err != nil {
+			return nil, fmt.Errorf("create CPU profile: %w", err)
+		}
+		if err := pprof.StartCPUProfile(cpuFile); err != nil {
+			cpuFile.Close()
+			return nil, fmt.Errorf("start CPU profile: %w", err)
+		}
+	}
+	if heapFile, err = openProfile(heapPath, "heap"); err != nil {
+		if cpuFile != nil {
+			pprof.StopCPUProfile()
+		}
+		closeProfiles()
+		return nil, err
+	}
+	if blockFile, err = openProfile(blockPath, "block"); err != nil {
+		if cpuFile != nil {
+			pprof.StopCPUProfile()
+		}
+		closeProfiles()
+		return nil, err
+	}
+	if mutexFile, err = openProfile(mutexPath, "mutex"); err != nil {
+		if cpuFile != nil {
+			pprof.StopCPUProfile()
+		}
+		closeProfiles()
+		return nil, err
+	}
+	if blockFile != nil {
+		runtime.SetBlockProfileRate(1)
+	}
+	if mutexFile != nil {
+		runtime.SetMutexProfileFraction(1)
+	}
+	return func() {
+		if cpuFile != nil {
+			pprof.StopCPUProfile()
+			if err := cpuFile.Close(); err != nil {
+				log.Warn("Close CPU profile", "err", err)
+			}
+		}
+		if heapFile != nil {
+			runtime.GC()
+			if err := pprof.WriteHeapProfile(heapFile); err != nil {
+				log.Warn("Write heap profile", "err", err)
+			}
+			if err := heapFile.Close(); err != nil {
+				log.Warn("Close heap profile", "err", err)
+			}
+		}
+		if blockFile != nil {
+			if err := pprof.Lookup("block").WriteTo(blockFile, 0); err != nil {
+				log.Warn("Write block profile", "err", err)
+			}
+			if err := blockFile.Close(); err != nil {
+				log.Warn("Close block profile", "err", err)
+			}
+		}
+		if mutexFile != nil {
+			if err := pprof.Lookup("mutex").WriteTo(mutexFile, 0); err != nil {
+				log.Warn("Write mutex profile", "err", err)
+			}
+			if err := mutexFile.Close(); err != nil {
+				log.Warn("Close mutex profile", "err", err)
+			}
+		}
+	}, nil
 }
 
 func resolveCodeInputs(hbPath, datadir, explicitCodesDir string) (codesDir string, hasMDBX, autoDetected bool, err error) {

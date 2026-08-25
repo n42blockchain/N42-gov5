@@ -214,10 +214,10 @@ func parallelApplyTx(
 	}
 	NormalizeExecutionMessage(&msg, cfg.StatelessExec, engine != nil)
 
-	txContext := NewEVMTxContext(msg)
+	txContext := NewEVMTxContext(&msg)
 	evm.Reset(txContext, ibs)
 
-	result, err := ApplyMessage(evm, msg, gp, true, false)
+	result, err := ApplyMessage(evm, &msg, gp, true, false)
 	if err != nil {
 		return nil, 0, nil, err
 	}

@@ -33,6 +33,20 @@ type WitnessJob struct {
 	Witness     []byte
 	Senders     []types.Address
 	BlockHashFn func(uint64) types.Hash
+
+	// inputBytes is the decoded-memory reservation held while this job waits
+	// in the reservoir or executes. Workers release it only after execution,
+	// so the producer's high/low watermarks include in-flight work.
+	inputReservoir *replayInputReservoir
+	inputBytes     int64
+}
+
+func (j *WitnessJob) releaseInputReservation() {
+	if j.inputReservoir != nil {
+		j.inputReservoir.release(j.inputBytes)
+		j.inputReservoir = nil
+		j.inputBytes = 0
+	}
 }
 
 // WitnessResult is what a worker produces per block. Output bytes are
@@ -111,6 +125,12 @@ func runWitnessWorker(
 		reader.SetCodesFreezer(codes)
 	}
 	ibs := state.New(reader)
+	if mode.NoOutput && !mode.Capture {
+		// Validation consumes receipts/gas only and deliberately skips
+		// CommitBlock below. Avoid retaining the duplicate block-level storage
+		// originals that exist solely to build a later write set.
+		ibs.SetDiscardBlockChanges(true)
+	}
 
 	// Select on ctx during receive so workers exit promptly when the
 	// pipeline cancels (early error before the reader goroutine can
@@ -125,6 +145,10 @@ func runWitnessWorker(
 				return
 			}
 			res := replayWitnessBlock(job, codeTx, chainCfg, engine, mode, ibs, reader)
+			job.releaseInputReservation()
+			// Drop decoded input references before a potentially blocking result
+			// send. The reservoir has made the bytes available for refill.
+			job = WitnessJob{}
 			select {
 			case resultCh <- res:
 			case <-ctx.Done():
@@ -148,10 +172,12 @@ func replayWitnessBlock(
 	reader *WitnessReplayReader,
 ) WitnessResult {
 	res := WitnessResult{
-		BlockNum:     job.BlockNum,
-		GasUsed:      job.Header.GasUsed,
-		TxCount:      uint32(len(job.Body.Transactions)),
-		WitnessBytes: job.Witness,
+		BlockNum: job.BlockNum,
+		GasUsed:  job.Header.GasUsed,
+		TxCount:  uint32(len(job.Body.Transactions)),
+	}
+	if !mode.NoOutput {
+		res.WitnessBytes = job.Witness
 	}
 
 	if len(job.Body.Transactions) == 0 && job.Header.GasUsed != 0 {

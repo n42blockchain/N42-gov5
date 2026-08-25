@@ -247,10 +247,10 @@ func ProcessBlock(
 			}
 			iinternal.NormalizeExecutionMessage(&msg, false, engine != nil)
 			msg.SetCheckNonce(false)
-			txContext := iinternal.NewEVMTxContext(msg)
+			txContext := iinternal.NewEVMTxContext(&msg)
 			blockContext := iinternal.NewEVMBlockContext(header, blockHashFunc, engine, chainCfg, nil)
 			evm := vm2.NewEVM(blockContext, txContext, ibs, chainCfg, txCfg)
-			result, applyErr := iinternal.ApplyMessage(evm, msg, gp, true, true)
+			result, applyErr := iinternal.ApplyMessage(evm, &msg, gp, true, true)
 			if applyErr == nil && result != nil {
 				_ = ibs.FinalizeTx(chainCfg.Rules(header.Number.Uint64()), writer)
 				*usedGas += result.UsedGas
@@ -372,4 +372,3 @@ func ProcessBlock(
 
 	return &BlockResult{GasUsed: *usedGas, Receipts: receipts, Senders: senders, BALRaw: balRaw}, nil
 }
-

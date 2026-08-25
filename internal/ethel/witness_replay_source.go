@@ -44,6 +44,15 @@ type consumingHeadersBodiesSource interface {
 	takeBody(blockNum uint64) (*GethBodyResult, error)
 }
 
+// parallelConsumingHeadersBodiesSource releases already-handed-off BODYC cache
+// slots without arming sequential +1-segment read-ahead. Parallel readers take
+// dynamically assigned (and process-interleaved) segments, so +1 is generally
+// owned by a different reader/process and would be wasted duplicate work.
+type parallelConsumingHeadersBodiesSource interface {
+	headersBodiesSource
+	takeBodyNoAhead(blockNum uint64) (*GethBodyResult, error)
+}
+
 // HeadersBodiesSource is the exported handle for cross-package callers
 // (cmd/ethexec sender-recovery, future tools). Same interface as the
 // internal one but exported method names. Constructed via
@@ -231,6 +240,14 @@ func (s *n42CompactSource) takeBody(n uint64) (*GethBodyResult, error) {
 	return s.readBody(n, true)
 }
 
+func (s *n42CompactSource) takeBodyNoAhead(n uint64) (*GethBodyResult, error) {
+	db, err := s.br.TakeBodyNoAhead(n)
+	if err != nil {
+		return nil, err
+	}
+	return s.bodyResult(n, db)
+}
+
 func (s *n42CompactSource) readBody(n uint64, consume bool) (*GethBodyResult, error) {
 	var (
 		db  *DecodedBlock
@@ -244,6 +261,10 @@ func (s *n42CompactSource) readBody(n uint64, consume bool) (*GethBodyResult, er
 	if err != nil {
 		return nil, err
 	}
+	return s.bodyResult(n, db)
+}
+
+func (s *n42CompactSource) bodyResult(n uint64, db *DecodedBlock) (*GethBodyResult, error) {
 	// bodyc historically collapsed every authorization V other than 1 to 0.
 	// This is lossy for invalid legacy 27/28 tuples found in canonical Ethereum
 	// history: N42 correctly rejects V > 1, while the collapsed V=0 tuple can
@@ -261,10 +282,11 @@ func (s *n42CompactSource) readBody(n uint64, consume bool) (*GethBodyResult, er
 	if s.br.SegmentNeedsAuthVRepair() {
 		hdr := s.lastHeader
 		if hdr == nil || s.lastHeaderNum != n {
-			hdr, err = s.hr.ReadHeader(n)
+			loaded, err := s.hr.ReadHeader(n)
 			if err != nil {
 				return nil, fmt.Errorf("header %d needed to verify bodyc authorization values: %w", n, err)
 			}
+			hdr = loaded
 		}
 		if repaired, rerr := repairCompactLegacyAuthorizationV(hdr.TxHash, db.Txs); rerr != nil {
 			return nil, fmt.Errorf("block %d: %w", n, rerr)

@@ -984,15 +984,12 @@ func makeLog(size int) executionFunc {
 
 // opPush1 is a specialized version of pushN
 func opPush1(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	var (
-		codeLen = uint64(len(scope.Contract.Code))
-		integer = new(uint256.Int)
-	)
+	codeLen := uint64(len(scope.Contract.Code))
 	*pc++
 	if *pc < codeLen {
-		scope.Stack.Push(integer.SetUint64(uint64(scope.Contract.Code[*pc])))
+		scope.Stack.PushSlot().SetUint64(uint64(scope.Contract.Code[*pc]))
 	} else {
-		scope.Stack.Push(integer.Clear())
+		scope.Stack.PushSlot()
 	}
 	return nil, nil
 }
@@ -1011,10 +1008,9 @@ func makePush(size uint64, pushByteSize int) executionFunc {
 			endMin = codeLen
 		}
 
-		integer := new(uint256.Int)
-		scope.Stack.Push(integer.SetBytes(types.RightPadBytes(
+		scope.Stack.PushSlot().SetBytes(types.RightPadBytes(
 			// So it doesn't matter what we push onto the stack.
-			scope.Contract.Code[startMin:endMin], pushByteSize)))
+			scope.Contract.Code[startMin:endMin], pushByteSize))
 
 		*pc += size
 		return nil, nil
@@ -1024,7 +1020,7 @@ func makePush(size uint64, pushByteSize int) executionFunc {
 // make dup instruction function
 func makeDup(size int64) executionFunc {
 	return func(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-		scope.Stack.Dup(int(size))
+		scope.Stack.DupUnchecked(int(size))
 		return nil, nil
 	}
 }
@@ -1034,7 +1030,7 @@ func makeSwap(size int64) executionFunc {
 	// switch n + 1 otherwise n would be swapped with n
 	size++
 	return func(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-		scope.Stack.Swap(int(size))
+		scope.Stack.SwapUnchecked(int(size))
 		return nil, nil
 	}
 }

@@ -59,6 +59,14 @@ func (st *Stack) Push(d *uint256.Int) {
 	st.Data = append(st.Data, *d)
 }
 
+// PushSlot appends a zero value and returns the new top slot. It lets opcode
+// implementations initialize the destination in place instead of initializing
+// a temporary uint256.Int and then copying it into the stack.
+func (st *Stack) PushSlot() *uint256.Int {
+	st.Data = append(st.Data, uint256.Int{})
+	return &st.Data[len(st.Data)-1]
+}
+
 func (st *Stack) PushN(ds ...uint256.Int) {
 	// Note: variadic parameters are passed by value in Go.
 	// Changing to pointer-based approach would require API changes.
@@ -113,6 +121,20 @@ func (st *Stack) Dup(n int) {
 		return
 	}
 	st.Push(&st.Data[st.Len()-n])
+}
+
+// DupUnchecked is the interpreter fast path. The jump table validates stack
+// depth before executing an opcode, so repeating logging-oriented bounds
+// checks in every DUP only adds work to the hottest loop.
+func (st *Stack) DupUnchecked(n int) {
+	l := len(st.Data)
+	st.Data = append(st.Data, st.Data[l-n])
+}
+
+// SwapUnchecked is the interpreter fast path; see DupUnchecked.
+func (st *Stack) SwapUnchecked(n int) {
+	l := len(st.Data)
+	st.Data[l-n], st.Data[l-1] = st.Data[l-1], st.Data[l-n]
 }
 
 func (st *Stack) Peek() *uint256.Int {

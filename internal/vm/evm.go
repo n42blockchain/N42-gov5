@@ -135,6 +135,16 @@ type EVM struct {
 	// global (to this context) ethereum virtual machine
 	// used throughout the execution of the tx.
 	interpreter Interpreter
+
+	// contractFrames are scratch execution frames indexed by interpreter call
+	// depth. Calls at the same depth cannot overlap, so a frame can be reset and
+	// reused after its child returns. This keeps the very frequent CALL family
+	// off the allocator without introducing a process-wide pool or lock.
+	contractFrames []*Contract
+	// jumpdests is shared by every frame in one top-level transaction, matching
+	// NewContract's parent-to-child sharing. It is cleared when depth returns to
+	// zero so an EVM reused across transactions does not retain an unbounded set.
+	jumpdests map[types.Hash][]uint64
 	// abort is used to abort the EVM calling operations
 	// NOTE: must be set atomically
 	abort int32
@@ -376,11 +386,11 @@ func (evm *EVM) call(typ OpCode, caller ContractRef, addr types.Address, input [
 			codeHash := evm.resolveCodeHash(addrCopy)
 			var contract *Contract
 			if typ == CALLCODE {
-				contract = NewContract(caller, AccountRef(caller.Address()), value, gas, evm.config.SkipAnalysis)
+				contract = evm.newContract(caller, AccountRef(caller.Address()), value, gas, evm.config.SkipAnalysis)
 			} else if typ == DELEGATECALL {
-				contract = NewContract(caller, AccountRef(caller.Address()), value, gas, evm.config.SkipAnalysis).AsDelegate()
+				contract = evm.newContract(caller, AccountRef(caller.Address()), value, gas, evm.config.SkipAnalysis).AsDelegate()
 			} else {
-				contract = NewContract(caller, AccountRef(addrCopy), value, gas, evm.config.SkipAnalysis)
+				contract = evm.newContract(caller, AccountRef(addrCopy), value, gas, evm.config.SkipAnalysis)
 			}
 			contract.SetCallCode(&addrCopy, codeHash, code)
 			ret, err = run(evm, contract, input, typ == STATICCALL)
@@ -531,7 +541,7 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 
 	// Initialise a new contract and set the code that is to be used by the EVM.
 	// The contract is a scoped environment for this execution context only.
-	contract := NewContract(caller, AccountRef(address), value, gas, evm.config.SkipAnalysis)
+	contract := evm.newContract(caller, AccountRef(address), value, gas, evm.config.SkipAnalysis)
 	contract.SetCodeOptionalHash(&address, codeAndHash)
 
 	// EIP-8037 (Amsterdam): charge state gas for the freshly created account
