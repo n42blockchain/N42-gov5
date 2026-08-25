@@ -105,7 +105,10 @@ type keccakState interface {
 // EVMInterpreter represents an EVM interpreter
 type EVMInterpreter struct {
 	*VM
-	jt    *JumpTable // EVM instruction table
+	jt *JumpTable // EVM instruction table
+	// meta is jt flattened into one cache-line record per opcode. The run loop
+	// reads it instead of chasing jt's pointers; see jump_meta.go.
+	meta  *opMetaTable
 	depth int
 }
 
@@ -198,7 +201,8 @@ func NewEVMInterpreter(evm VMInterpreter, cfg Config) *EVMInterpreter {
 			evm: evm,
 			cfg: cfg,
 		},
-		jt: jt,
+		jt:   jt,
+		meta: opMetaFor(jt),
 	}
 }
 
@@ -295,6 +299,19 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 	// explicit STOP, RETURN or SELFDESTRUCT is executed, an error occurred during
 	// the execution of one of the operations or until the done flag is set by the
 	// parent context.
+	// Hoist the two loop invariants the dispatch reads on every single opcode.
+	// in.cfg.Debug lives behind the embedded *VM, so re-reading it three times
+	// per iteration is three dependent loads that a local turns into a
+	// register; meta is the flat dispatch table (jump_meta.go).
+	debug := in.cfg.Debug
+	meta := in.meta
+	if meta == nil {
+		// An interpreter assembled literally rather than through
+		// NewEVMInterpreter (tests, embedders) still has a jump table; derive
+		// the flat view once rather than making meta a constructor obligation.
+		meta = opMetaFor(in.jt)
+		in.meta = meta
+	}
 	cancelCheck := 1000
 	for {
 		cancelCheck--
@@ -304,14 +321,14 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 				break
 			}
 		}
-		if in.cfg.Debug {
+		if debug {
 			// Capture pre-execution values for tracing.
 			logged, pcCopy, gasCopy = false, _pc, contract.Gas
 		}
 		// Get the operation from the jump table and validate the stack to ensure there are
 		// enough stack items available to perform the operation.
 		op = contract.GetOp(_pc)
-		operation := in.jt[op]
+		operation := &meta[op]
 		cost = operation.constantGas // For tracing
 		// Validate stack
 		if sLen := locStack.Len(); sLen < operation.numPop {
@@ -352,7 +369,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 				mem.Resize(memorySize)
 			}
 		}
-		if in.cfg.Debug {
+		if debug {
 			in.cfg.Tracer.CaptureState(_pc, op, gasCopy, cost, callContext, in.returnData, in.depth, err) //nolint:errcheck
 			logged = true
 		}
