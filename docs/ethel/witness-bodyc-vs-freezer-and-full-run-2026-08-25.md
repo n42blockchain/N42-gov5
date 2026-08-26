@@ -753,9 +753,37 @@ worker 用全新 IBS 立即重放同一份输入并记录 retry 结果——retr
 
 在找到原因之前，**tier-1 不作为默认 binary**；54m10s 记为"待确认"。
 
-### 5.18 下一步
+### 5.18 失败配置重跑（带诊断）：通过，51m13s —— 新的墙钟纪录
 
-1. 复现并二分（noR1 / noR2 / noS2 / base）；
-2. 若不可复现：base binary 在 256w/gc300 下也跑一次全量，判断是否为先前代码的稀有 bug；
-3. 密集段 80+ 空转 worker 的原因；
+同一配置（256w / 6r / GOGC 300 / 80 GiB）、tier-1 + 诊断 binary `253fa67b`，机器独占：
+
+```text
+run_id       full-geth-w256-tier1-gc300-diag-20260826
+wall         51m13s            （墙钟纪录；对 256w base gc100 −18.3%，对 128w tier-1 gc300 −5.4%）
+user+sys     487,214 s         （对 128w tier-1 gc300 +23%）
+aggregate    15854% = 159 threads
+MaxRSS       23.4 GiB
+failed       0   exit 0   诊断未触发
+```
+
+所以 256w/gc300 的 nonce 失败是**间歇性**的：同配置 2 次 1 败 1 过。诊断 binary 保留在
+后续所有 tier-1 运行中，直到它触发一次。
+
+当前全量纪录（全部干净、failed=0）：
+
+| 配置 | binary | wall | CPU-sec | 备注 |
+|---|---|---:|---:|---|
+| 104w / 6r / gc100 | base | 1h09m20s | 416,751 | base 的 CPU-sec 最省 |
+| **128w / 6r / gc300** | **tier-1** | **54m10s** | **394,705** | **CPU-sec 纪录** |
+| **256w / 6r / gc300** | tier-1 | **51m13s** | 487,214 | **墙钟纪录**；同配置另一次失败 |
+
+tier-1 在两个轴上都领先，但它的 256w 失败未解释前，推荐配置是 **128w / 6r / gc300**
+（那次全量通过，且是 CPU-sec 纪录）——前提是 256w 的 base 对照（跑中）不把问题归到
+tier-1 之前的代码上。
+
+### 5.19 下一步
+
+1. base @ 256w/gc300 全量（跑中）——失败是否早于 tier-1；
+2. tier-1-diag @ 256w/12r/gc300（更高并发、也是 tier-1 的 readers 12 数据点）——提高复现概率；
+3. 密集段空转 worker 的原因；
 4. `perf stat` 量 IPC。
