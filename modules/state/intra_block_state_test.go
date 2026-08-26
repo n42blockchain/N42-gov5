@@ -444,7 +444,7 @@ func TestMultipleSelfDestructCycles(t *testing.T) {
 			// Verify value is set.
 			var v uint256.Int
 			sdb.GetState(addr, &slot, &v)
-			if v != *uint256.NewInt(cycle*100) {
+			if v != *uint256.NewInt(cycle * 100) {
 				t.Fatalf("cycle %d: expected %d, got %v", cycle, cycle*100, v)
 			}
 
@@ -724,7 +724,8 @@ func (test *snapshotTest) checkEqual(state, checkstate *IntraBlockState) error {
 		checkeq("GetCodeSize", state.GetCodeSize(addr), checkstate.GetCodeSize(addr))
 		// Check storage.
 		if obj := state.getStateObject(addr); obj != nil {
-			for key, value := range obj.dirtyStorage {
+			for _, key := range obj.dirtyKeys {
+				value := obj.dirtyValue(key)
 				var out uint256.Int
 				checkstate.GetState(addr, &key, &out)
 				if !checkeq("GetState("+key.Hex()+")", out, value) {
@@ -733,7 +734,8 @@ func (test *snapshotTest) checkEqual(state, checkstate *IntraBlockState) error {
 			}
 		}
 		if obj := checkstate.getStateObject(addr); obj != nil {
-			for key, value := range obj.dirtyStorage {
+			for _, key := range obj.dirtyKeys {
+				value := obj.dirtyValue(key)
 				var out uint256.Int
 				state.GetState(addr, &key, &out)
 				if !checkeq("GetState("+key.Hex()+")", out, value) {
