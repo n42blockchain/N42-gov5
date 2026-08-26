@@ -637,6 +637,14 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 			}
 		}
 	}
+	// Cancun headers carry a parent beacon root. Without committee evidence
+	// there is none to link, and a nil field both skips EIP-4788 and leaves
+	// the header unrepresentable over the Engine API (newPayloadV3+ requires
+	// the root); a zero root is what genesis and every Engine API client
+	// write in that case, and VerifyHeader already accepts it.
+	if header.ParentBeaconRoot == nil && h.chainConfig != nil && h.chainConfig.IsCancunAt(header.Number.Uint64(), header.Time) {
+		header.ParentBeaconRoot = new(types.Hash)
+	}
 
 	return nil
 }
