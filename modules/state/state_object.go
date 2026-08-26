@@ -82,20 +82,21 @@ type stateObject struct {
 	// Write caches.
 	code Code // contract bytecode, set when code is loaded
 
-	originStorage Storage // Storage cache of original entries to dedup rewrites
-	// blockOriginStorage keeps the values of storage items at the beginning of the block
-	// Used to make decision on whether to make a write to the
-	// database (value != origin) or not (value == origin)
-	blockOriginStorage Storage
+	// storage is the one map that used to be three (originStorage,
+	// blockOriginStorage, dirtyStorage). Each slot carries all three views and
+	// an epoch; see slotEntry. dirtyKeys lists, in first-write order, every
+	// slot written this block — the old dirtyStorage key set — so writers can
+	// iterate it without a map walk.
+	storage     map[types.Hash]slotEntry
+	dirtyKeys   []types.Hash
+	fakeStorage Storage // Fake storage which constructed by caller for debugging purpose.
 
 	// sawNonZeroCommitted records whether any committed read in this block
-	// returned a non-zero value. HasNonEmptyStorage needs that fact and
-	// normally reads it out of blockOriginStorage, but discardBlockChanges
-	// stops populating that map, so the fact is kept separately. One bool is
-	// the whole point: it is what the map was consulted for on that path.
+	// returned a non-zero value. HasNonEmptyStorage needs that fact: a later
+	// write in the same block can zero the slot and, once its epoch passes,
+	// the committed view follows the write, so the block-start fact survives
+	// only here (and in origin, which is not kept under discardBlockChanges).
 	sawNonZeroCommitted bool
-	dirtyStorage       Storage // Storage entries that need to be flushed to disk
-	fakeStorage        Storage // Fake storage which constructed by caller for debugging purpose.
 
 	// Cache flags.
 	// When an object is marked suicided it will be delete from the trie
@@ -104,6 +105,91 @@ type stateObject struct {
 	selfdestructed bool
 	deleted        bool // true if account was deleted during the lifetime of this object
 	created        bool // true if this object represents a newly created contract
+}
+
+// slotEntry is one storage slot's state for the current block.
+//
+// The three maps this replaces answered three questions: dirtyStorage — was
+// the slot written this block and what is its latest value; originStorage —
+// what was the value at the start of the current transaction; and
+// blockOriginStorage — what was the value at the start of the block. Every
+// SSTORE gas computation asked the first two, and FinalizeTx copied the
+// whole dirty map into the origin map after every transaction (1.6% of all
+// replay CPU, 68 GiB of map growth per 200k blocks, and a top contributor
+// to allocator-lock contention at 256 workers).
+//
+// One entry answers all three with one lookup. epoch records the storage
+// epoch (IntraBlockState.storageEpoch, bumped once per FinalizeTx) of the
+// last write: while epoch == current, committed holds the value at the start
+// of this transaction and cur the latest write; once the epoch moves on, cur
+// IS the committed value and nothing needs copying. known marks a committed
+// value as available (read from the DB or established by a write);
+// hasOrigin marks the block-start value as captured.
+type slotEntry struct {
+	cur       uint256.Int
+	committed uint256.Int
+	origin    uint256.Int
+	epoch     uint32
+	known     bool
+	hasOrigin bool
+}
+
+// storageRecycleMax bounds the map a pooled stateObject keeps. clear() costs
+// O(bucket capacity), not O(len), and Go maps never shrink: an object that once
+// held a DEX pool's ten thousand slots would pay a ten-thousand-bucket sweep on
+// every block it is recycled into, forever. Small maps are cleared in place so
+// their backing arrays keep serving; big ones are dropped to the GC and rebuilt
+// lazily by newObject.
+const storageRecycleMax = 64
+
+// currentEpoch is the storage epoch the owning state is executing in.
+func (so *stateObject) currentEpoch() uint32 {
+	if so.db == nil {
+		return 1
+	}
+	return so.db.storageEpoch
+}
+
+// dirtyValue returns the latest written value of a block-dirty slot. Only
+// meaningful for keys in dirtyKeys.
+func (so *stateObject) dirtyValue(key types.Hash) uint256.Int {
+	return so.storage[key].cur
+}
+
+// blockOrigin returns the value the slot had at the start of the block, if it
+// was captured (the old blockOriginStorage lookup).
+func (so *stateObject) blockOrigin(key types.Hash) (uint256.Int, bool) {
+	e, ok := so.storage[key]
+	if !ok || !e.hasOrigin {
+		return uint256.Int{}, false
+	}
+	return e.origin, true
+}
+
+// blockOriginLen counts captured block-start values (len(blockOriginStorage)).
+func (so *stateObject) blockOriginLen() int {
+	n := 0
+	for _, e := range so.storage {
+		if e.hasOrigin {
+			n++
+		}
+	}
+	return n
+}
+
+// eachBlockOrigin visits every captured block-start value.
+func (so *stateObject) eachBlockOrigin(fn func(key types.Hash, origin uint256.Int)) {
+	for k, e := range so.storage {
+		if e.hasOrigin {
+			fn(k, e.origin)
+		}
+	}
+}
+
+// committedKnown reports whether the slot's committed value is cached (the
+// old originStorage presence test).
+func (so *stateObject) committedKnown(key types.Hash) bool {
+	return so.storage[key].known
 }
 
 // empty returns whether the account is considered empty.
@@ -122,9 +208,7 @@ var stateObjectPool = sync.Pool{
 		// alloc avoids ~600B/object of empty-map overhead retained
 		// in the pool.
 		return &stateObject{
-			originStorage:      make(Storage),
-			blockOriginStorage: make(Storage),
-			dirtyStorage:       make(Storage),
+			storage: make(map[types.Hash]slotEntry),
 		}
 	},
 }
@@ -139,43 +223,24 @@ func putStateObject(so *stateObject) {
 	so.db = nil
 	so.code = nil
 	so.fakeStorage = nil
-	so.originStorage = recycleStorage(so.originStorage)
-	so.blockOriginStorage = recycleStorage(so.blockOriginStorage)
-	so.dirtyStorage = recycleStorage(so.dirtyStorage)
+	if len(so.storage) > storageRecycleMax {
+		so.storage = nil
+	} else {
+		clear(so.storage)
+	}
+	so.dirtyKeys = so.dirtyKeys[:0]
 	so.sawNonZeroCommitted = false
 	stateObjectPool.Put(so)
-}
-
-// storageRecycleMax bounds the map a pooled stateObject keeps. clear() costs
-// O(bucket capacity), not O(len), and Go maps never shrink: an object that once
-// held a DEX pool's ten thousand slots would pay a ten-thousand-bucket sweep on
-// every block it is recycled into, forever. On the dense-replay profile that
-// sweep was 0.9% of all CPU, almost all of it in originStorage. Small maps are
-// cleared in place so their backing arrays keep serving; big ones are dropped
-// to the GC and rebuilt lazily by newObject.
-const storageRecycleMax = 64
-
-func recycleStorage(m Storage) Storage {
-	if len(m) > storageRecycleMax {
-		return nil
-	}
-	clear(m)
-	return m
 }
 
 // newObject creates a state object, reusing a pooled struct when one
 // is available.
 func newObject(db *IntraBlockState, address types.Address, data, original *account.StateAccount) *stateObject {
 	so := stateObjectPool.Get().(*stateObject)
-	if so.originStorage == nil {
-		so.originStorage = make(Storage)
+	if so.storage == nil {
+		so.storage = make(map[types.Hash]slotEntry)
 	}
-	if so.blockOriginStorage == nil {
-		so.blockOriginStorage = make(Storage)
-	}
-	if so.dirtyStorage == nil {
-		so.dirtyStorage = make(Storage)
-	}
+	so.dirtyKeys = so.dirtyKeys[:0]
 	so.db = db
 	so.address = address
 	so.code = nil
@@ -233,9 +298,8 @@ func (so *stateObject) GetState(key *types.Hash, out *uint256.Int) {
 		*out = so.fakeStorage[*key]
 		return
 	}
-	value, dirty := so.dirtyStorage[*key]
-	if dirty {
-		*out = value
+	if e, ok := so.storage[*key]; ok && e.epoch != 0 {
+		*out = e.cur // written this block: latest value
 		return
 	}
 	// Otherwise return the entry's original value
@@ -249,10 +313,21 @@ func (so *stateObject) GetCommittedState(key *types.Hash, out *uint256.Int) {
 		*out = so.fakeStorage[*key]
 		return
 	}
-	// If we have the original value cached, return that
-	if value, cached := so.originStorage[*key]; cached {
-		*out = value
-		return
+	// If we have the original value cached, return that. A slot written in
+	// an earlier transaction is committed at its last write whether or not
+	// its pre-write value was ever read — the old per-tx dirty->origin copy
+	// established that unconditionally, so a write in a past epoch counts as
+	// known here.
+	if e, ok := so.storage[*key]; ok {
+		if e.epoch == so.currentEpoch() {
+			if e.known {
+				*out = e.committed // written this tx: value at tx start
+				return
+			}
+		} else if e.known || e.epoch != 0 {
+			*out = e.cur // last write was an earlier tx, or a DB read
+			return
+		}
 	}
 	if so.created {
 		out.Clear()
@@ -311,13 +386,23 @@ func (so *stateObject) GetCommittedState(key *types.Hash, out *uint256.Int) {
 // in this block. blockOriginStorage is a second copy used only when producing
 // the final block write set/root, so validation-only callers can omit it.
 func (so *stateObject) cacheCommittedState(key *types.Hash, value *uint256.Int) {
-	so.originStorage[*key] = *value
+	e := so.storage[*key]
+	if e.epoch == so.currentEpoch() && e.epoch != 0 {
+		// Written this tx before its committed value was read (only the
+		// revert path can do that): the write stays in cur.
+		e.committed = *value
+	} else {
+		e.cur = *value
+	}
+	e.known = true
 	if !value.IsZero() {
 		so.sawNonZeroCommitted = true
 	}
-	if so.db == nil || !so.db.discardBlockChanges {
-		so.blockOriginStorage[*key] = *value
+	if !e.hasOrigin && (so.db == nil || !so.db.discardBlockChanges) {
+		e.origin = *value
+		e.hasOrigin = true
 	}
+	so.storage[*key] = e
 }
 
 // SetState updates a value in account storage.
@@ -366,7 +451,24 @@ func (so *stateObject) SetStorage(storage Storage) {
 }
 
 func (so *stateObject) setState(key *types.Hash, value uint256.Int) {
-	so.dirtyStorage[*key] = value
+	e := so.storage[*key]
+	epoch := so.currentEpoch()
+	if e.epoch == 0 {
+		so.dirtyKeys = append(so.dirtyKeys, *key)
+	}
+	if e.epoch != epoch {
+		// First write in this tx: what cur holds now is the value at tx start
+		// — a cached read, or the last write of an earlier tx (which the old
+		// per-tx copy would have promoted). A write with neither leaves the
+		// committed value unknown, exactly as originStorage stayed empty.
+		if e.known || e.epoch != 0 {
+			e.committed = e.cur
+			e.known = true
+		}
+		e.epoch = epoch
+	}
+	e.cur = value
+	so.storage[*key] = e
 }
 
 // updateTrie writes cached storage modifications into the object's storage trie.
@@ -377,10 +479,18 @@ func (so *stateObject) setState(key *types.Hash, value uint256.Int) {
 // 32 B × 3 args per call — far cheaper than three heap allocs + GC
 // scan that would otherwise happen on every dirty slot.
 func (so *stateObject) updateTrie(stateWriter StateWriter) error {
-	for key, value := range so.dirtyStorage {
-		so.originStorage[key] = value
-		original := so.blockOriginStorage[key]
-		if err := stateWriter.WriteAccountStorage(so.address, key, original, value); err != nil {
+	// Promotion of this tx's writes into the committed view is no longer a
+	// copy: IntraBlockState.FinalizeTx advances storageEpoch after this, and
+	// GetCommittedState reads cur for any entry whose epoch is in the past.
+	// What remains is reporting every block-dirty slot to the writer, exactly
+	// as before.
+	for _, key := range so.dirtyKeys {
+		e := so.storage[key]
+		var original uint256.Int
+		if e.hasOrigin {
+			original = e.origin
+		}
+		if err := stateWriter.WriteAccountStorage(so.address, key, original, e.cur); err != nil {
 			return err
 		}
 	}
@@ -388,7 +498,8 @@ func (so *stateObject) updateTrie(stateWriter StateWriter) error {
 }
 
 func (so *stateObject) printTrie() {
-	for key, value := range so.dirtyStorage {
+	for _, key := range so.dirtyKeys {
+		value := so.storage[key].cur
 		log.Trace("WriteAccountStorage", "address", so.address, "key", key, "value", value.Hex())
 	}
 }
