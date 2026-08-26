@@ -25,7 +25,6 @@ package transaction
 
 import (
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -47,11 +46,11 @@ type DynamicFeeTx struct {
 // copy creates a deep copy of the transaction data and initializes all fields.
 func (tx *DynamicFeeTx) copy() TxData {
 	cpy := &DynamicFeeTx{
-		Nonce: tx.Nonce,
-		To:    copyAddressPtr(tx.To),
-		From:  copyAddressPtr(tx.From),
-		Data:  types.CopyBytes(tx.Data),
-		Gas:   tx.Gas,
+		Nonce:      tx.Nonce,
+		To:         copyAddressPtr(tx.To),
+		From:       copyAddressPtr(tx.From),
+		Data:       types.CopyBytes(tx.Data),
+		Gas:        tx.Gas,
 		AccessList: copyAccessList(tx.AccessList),
 		Value:      new(uint256.Int),
 		ChainID:    new(uint256.Int),
@@ -89,35 +88,20 @@ func (tx *DynamicFeeTx) copy() TxData {
 	return cpy
 }
 
-func (tx *DynamicFeeTx) txType() byte            { return DynamicFeeTxType }
-func (tx *DynamicFeeTx) chainID() *uint256.Int   { return tx.ChainID }
+func (tx *DynamicFeeTx) txType() byte                { return DynamicFeeTxType }
+func (tx *DynamicFeeTx) chainID() *uint256.Int       { return tx.ChainID }
 func (tx *DynamicFeeTx) accessList() AccessList      { return tx.AccessList }
 func (tx *DynamicFeeTx) authList() AuthorizationList { return nil } // EIP-7702: Not supported for dynamic fee tx
-func (tx *DynamicFeeTx) data() []byte            { return tx.Data }
-func (tx *DynamicFeeTx) gas() uint64             { return tx.Gas }
-func (tx *DynamicFeeTx) gasFeeCap() *uint256.Int { return tx.GasFeeCap }
-func (tx *DynamicFeeTx) gasTipCap() *uint256.Int { return tx.GasTipCap }
-func (tx *DynamicFeeTx) gasPrice() *uint256.Int  { return tx.GasFeeCap }
-func (tx *DynamicFeeTx) value() *uint256.Int     { return tx.Value }
-func (tx *DynamicFeeTx) nonce() uint64           { return tx.Nonce }
-func (tx *DynamicFeeTx) to() *types.Address      { return tx.To }
-func (tx *DynamicFeeTx) from() *types.Address    { return tx.From }
-func (tx *DynamicFeeTx) sign() []byte            { return tx.Sign }
-
-func (tx *DynamicFeeTx) hash() types.Hash {
-	return hash.PrefixedRlpHash(DynamicFeeTxType, []interface{}{
-		tx.ChainID,
-		tx.Nonce,
-		tx.GasTipCap,
-		tx.GasFeeCap,
-		tx.Gas,
-		tx.To,
-		tx.Value,
-		tx.Data,
-		tx.AccessList,
-		tx.V, tx.R, tx.S,
-	})
-}
+func (tx *DynamicFeeTx) data() []byte                { return tx.Data }
+func (tx *DynamicFeeTx) gas() uint64                 { return tx.Gas }
+func (tx *DynamicFeeTx) gasFeeCap() *uint256.Int     { return tx.GasFeeCap }
+func (tx *DynamicFeeTx) gasTipCap() *uint256.Int     { return tx.GasTipCap }
+func (tx *DynamicFeeTx) gasPrice() *uint256.Int      { return tx.GasFeeCap }
+func (tx *DynamicFeeTx) value() *uint256.Int         { return tx.Value }
+func (tx *DynamicFeeTx) nonce() uint64               { return tx.Nonce }
+func (tx *DynamicFeeTx) to() *types.Address          { return tx.To }
+func (tx *DynamicFeeTx) from() *types.Address        { return tx.From }
+func (tx *DynamicFeeTx) sign() []byte                { return tx.Sign }
 
 func (tx *DynamicFeeTx) rawSignatureValues() (v, r, s *uint256.Int) {
 	return tx.V, tx.R, tx.S
