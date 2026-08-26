@@ -24,7 +24,6 @@ package transaction
 
 import (
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -61,11 +60,11 @@ type AccessListTx struct {
 
 func (tx *AccessListTx) copy() TxData {
 	cpy := &AccessListTx{
-		Nonce: tx.Nonce,
-		To:    copyAddressPtr(tx.To),
-		From:  copyAddressPtr(tx.From),
-		Data:  types.CopyBytes(tx.Data),
-		Gas:   tx.Gas,
+		Nonce:      tx.Nonce,
+		To:         copyAddressPtr(tx.To),
+		From:       copyAddressPtr(tx.From),
+		Data:       types.CopyBytes(tx.Data),
+		Gas:        tx.Gas,
 		AccessList: copyAccessList(tx.AccessList),
 		Value:      new(uint256.Int),
 		ChainID:    new(uint256.Int),
@@ -100,34 +99,20 @@ func (tx *AccessListTx) copy() TxData {
 	return cpy
 }
 
-func (tx *AccessListTx) txType() byte            { return AccessListTxType }
-func (tx *AccessListTx) chainID() *uint256.Int   { return tx.ChainID }
+func (tx *AccessListTx) txType() byte                { return AccessListTxType }
+func (tx *AccessListTx) chainID() *uint256.Int       { return tx.ChainID }
 func (tx *AccessListTx) accessList() AccessList      { return tx.AccessList }
 func (tx *AccessListTx) authList() AuthorizationList { return nil } // EIP-7702: Not supported for access list tx
-func (tx *AccessListTx) data() []byte            { return tx.Data }
-func (tx *AccessListTx) gas() uint64             { return tx.Gas }
-func (tx *AccessListTx) gasPrice() *uint256.Int  { return tx.GasPrice }
-func (tx *AccessListTx) gasTipCap() *uint256.Int { return tx.GasPrice }
-func (tx *AccessListTx) gasFeeCap() *uint256.Int { return tx.GasPrice }
-func (tx *AccessListTx) value() *uint256.Int     { return tx.Value }
-func (tx *AccessListTx) nonce() uint64           { return tx.Nonce }
-func (tx *AccessListTx) to() *types.Address      { return tx.To }
-func (tx *AccessListTx) from() *types.Address    { return tx.From }
-func (tx *AccessListTx) sign() []byte            { return tx.Sign }
-
-func (tx *AccessListTx) hash() types.Hash {
-	return hash.PrefixedRlpHash(AccessListTxType, []interface{}{
-		tx.ChainID,
-		tx.Nonce,
-		tx.GasPrice,
-		tx.Gas,
-		tx.To,
-		tx.Value,
-		tx.Data,
-		tx.AccessList,
-		tx.V, tx.R, tx.S,
-	})
-}
+func (tx *AccessListTx) data() []byte                { return tx.Data }
+func (tx *AccessListTx) gas() uint64                 { return tx.Gas }
+func (tx *AccessListTx) gasPrice() *uint256.Int      { return tx.GasPrice }
+func (tx *AccessListTx) gasTipCap() *uint256.Int     { return tx.GasPrice }
+func (tx *AccessListTx) gasFeeCap() *uint256.Int     { return tx.GasPrice }
+func (tx *AccessListTx) value() *uint256.Int         { return tx.Value }
+func (tx *AccessListTx) nonce() uint64               { return tx.Nonce }
+func (tx *AccessListTx) to() *types.Address          { return tx.To }
+func (tx *AccessListTx) from() *types.Address        { return tx.From }
+func (tx *AccessListTx) sign() []byte                { return tx.Sign }
 
 func (tx *AccessListTx) rawSignatureValues() (v, r, s *uint256.Int) {
 	return tx.V, tx.R, tx.S
