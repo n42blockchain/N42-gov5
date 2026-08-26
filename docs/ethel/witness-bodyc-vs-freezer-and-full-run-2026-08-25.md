@@ -781,9 +781,25 @@ tier-1 在两个轴上都领先，但它的 256w 失败未解释前，推荐配�
 （那次全量通过，且是 CPU-sec 纪录）——前提是 256w 的 base 对照（跑中）不把问题归到
 tier-1 之前的代码上。
 
-### 5.19 下一步
+### 5.19 base @ 256w/gc300：通过，51m57s，但 RSS 79 GiB
 
-1. base @ 256w/gc300 全量（跑中）——失败是否早于 tier-1；
-2. tier-1-diag @ 256w/12r/gc300（更高并发、也是 tier-1 的 readers 12 数据点）——提高复现概率；
+```text
+run_id       full-geth-w256-base-gc300-20260826
+wall         51m57s            （tier-1 同配置 51m13s）
+user+sys     532,289 s         （tier-1 同配置 487,214，多 9.3%）
+aggregate    17077% = 171 threads
+MaxRSS       79.4 GiB          （tier-1 同配置 23.4 GiB；已贴到 80 GiB 软上限）
+failed       0   exit 0
+```
+
+base 在 256w/gc300 一次通过。至此 256w/gc300 的记录是 base 1/1、tier-1 1/2（失败那次
+无诊断）。样本太少，不能归因；但 base 在这个配置下 RSS 已贴到上限，本身不可用作生产配置。
+同配置下 tier-1 少 9.3% CPU、少 70% 内存、墙钟略快。
+
+### 5.20 下一步
+
+1. tier-1-diag @ 256w/12r/gc300（跑中）；
+2. 定向复现：`--end 13000000`（失败点 12.85M 之后）× 4 轮，diag binary，256w/gc300——
+   每轮约 13 分钟，与一次全量同价但四次机会；
 3. 密集段空转 worker 的原因；
 4. `perf stat` 量 IPC。
