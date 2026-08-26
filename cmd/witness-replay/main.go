@@ -67,6 +67,7 @@ func main() {
 			&cli.Uint64Flag{Name: "end", Value: 0, Usage: "End block (exclusive); 0 = all available witness items"},
 			&cli.IntFlag{Name: "workers", Value: 8, Usage: "Number of parallel replay workers. The reorder buffer (in-order emit) is heap-bounded by the small channel cap (256); for high worker counts (e.g. 32) ALSO pass --gogc 300 --mem-limit-gb 16 so GC stays infrequent + concurrent and doesn't steal CPU from workers on heavy DeFi blocks (the old >=16 stall was a GC-frequency feedback loop, not a hard limit)."},
 			&cli.IntFlag{Name: "readers", Value: 0, Usage: "Parallel input readers for --no-output verification. 0 = auto (up to 6, segment-sharded); output-producing runs remain sequential for ordered cdat writes."},
+			&cli.IntFlag{Name: "body-decoders", Value: 0, Usage: "How many readers may expand a whole 8192-block bodyc segment concurrently. 0 = derived ceil(workers/128), which caps input throughput at one single-threaded segment expansion for any run up to 128 workers. Raising it raises input rate and peak RSS together. With --process-shards this is a total budget divided among children."},
 			&cli.IntFlag{Name: "process-shards", Value: 1, Usage: "Split an explicit --start/--end verification range across this many child processes. --workers, --readers and --mem-limit-gb are total budgets divided among children. Requires --no-output."},
 			&cli.IntFlag{Name: "segment-shard-count", Value: 1, Hidden: true},
 			&cli.IntFlag{Name: "segment-shard-index", Value: 0, Hidden: true},
@@ -234,6 +235,7 @@ func run(c *cli.Context) error {
 		EndBlock:            end,
 		Workers:             workers,
 		Readers:             c.Int("readers"),
+		BodyDecoders:        c.Int("body-decoders"),
 		SegmentShardCount:   c.Int("segment-shard-count"),
 		SegmentShardIndex:   c.Int("segment-shard-index"),
 		InputHighWaterBytes: int64(inputHighGB * (1 << 30)),
@@ -339,6 +341,7 @@ func runProcessShards(c *cli.Context) error {
 		shards = totalWorkers
 	}
 	totalReaders := c.Int("readers")
+	totalBodyDecoders := c.Int("body-decoders")
 	totalMemory := c.Int("mem-limit-gb")
 	totalInputHigh := c.Float64("input-high-gb")
 	totalInputLow := c.Float64("input-low-gb")
@@ -371,6 +374,16 @@ func runProcessShards(c *cli.Context) error {
 				readers = 1
 			}
 		}
+		bodyDecoders := 0
+		if totalBodyDecoders > 0 {
+			bodyDecoders = totalBodyDecoders / shards
+			if i < totalBodyDecoders%shards {
+				bodyDecoders++
+			}
+			if bodyDecoders < 1 {
+				bodyDecoders = 1
+			}
+		}
 		memory := 0
 		if totalMemory > 0 {
 			memory = totalMemory / shards
@@ -388,6 +401,7 @@ func runProcessShards(c *cli.Context) error {
 			"--segment-shard-index", fmt.Sprint(i),
 			"--start", fmt.Sprint(start), "--end", fmt.Sprint(end),
 			"--workers", fmt.Sprint(workers), "--readers", fmt.Sprint(readers),
+			"--body-decoders", fmt.Sprint(bodyDecoders),
 			"--mem-limit-gb", fmt.Sprint(memory),
 			"--input-high-gb", fmt.Sprint(totalInputHigh/float64(shards)),
 			"--input-low-gb", fmt.Sprint(totalInputLow/float64(shards)),
@@ -426,6 +440,7 @@ func stripShardOverrides(args []string) []string {
 		"--end":                 true,
 		"--workers":             true,
 		"--readers":             true,
+		"--body-decoders":       true,
 		"--mem-limit-gb":        true,
 		"--input-high-gb":       true,
 		"--input-low-gb":        true,

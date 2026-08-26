@@ -66,6 +66,15 @@ type WitnessReplayConfig struct {
 	// 0 selects an automatic count capped at 6. Output mode stays sequential.
 	Readers int
 
+	// BodyDecoders bounds how many readers may expand a whole BODYC segment at
+	// the same time. It is the input pipeline's real throughput knob: a segment
+	// expansion is single-threaded, so this caps aggregate input rate, while the
+	// rest of a reader's work (witness/senders retrieval, job assembly) stays
+	// concurrent. 0 keeps the derived default, which is ceil(Workers/128) — that
+	// formula was never measured and has a cliff at 128 workers (1 decoder) vs
+	// 129 (2), so pin it explicitly when the input rate is what is under test.
+	BodyDecoders int
+
 	// SegmentShardCount/Index select an interleaved subset of compact BODYC
 	// segments for an internal process child. Interleaving instead of assigning
 	// contiguous block ranges keeps children balanced when historical eras have
@@ -853,7 +862,13 @@ func feedBlocksParallel(
 		readers = cfg.Workers
 	}
 
-	bodyDecoders := bodyDecoderCount(cfg.Workers, readers)
+	bodyDecoders := cfg.BodyDecoders
+	if bodyDecoders <= 0 {
+		bodyDecoders = bodyDecoderCount(cfg.Workers, readers)
+	} else if bodyDecoders > readers {
+		// More decoders than readers cannot be used: only a reader decodes.
+		bodyDecoders = readers
+	}
 	log.Info("Parallel verification input",
 		"readers", readers, "body_decoders", bodyDecoders,
 		"segments", segmentCount, "unordered", true,
