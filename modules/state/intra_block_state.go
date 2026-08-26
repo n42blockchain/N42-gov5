@@ -502,7 +502,7 @@ func (sdb *IntraBlockState) Reset() {
 }
 
 func (sdb *IntraBlockState) AddLog(log2 *block.Log) {
-	sdb.journal.append(addLogChange{txhash: sdb.thash})
+	sdb.journal.push(addLogChange{txhash: sdb.thash}.record())
 	log2.TxHash = sdb.thash
 	log2.BlockHash = sdb.bhash
 	log2.TxIndex = uint(sdb.txIndex)
@@ -534,17 +534,17 @@ func (sdb *IntraBlockState) SetTransientState(addr types.Address, key types.Hash
 	if prev == value {
 		return
 	}
-	sdb.journal.append(transientStorageChange{
+	sdb.journal.push(transientStorageChange{
 		account:  &addr,
 		key:      key,
 		prevalue: prev,
-	})
+	}.record())
 	sdb.transientStorage.Set(addr, key, value)
 }
 
 // AddRefund adds gas to the refund counter
 func (sdb *IntraBlockState) AddRefund(gas uint64) {
-	sdb.journal.append(refundChange{prev: sdb.refund})
+	sdb.journal.push(refundChange{prev: sdb.refund}.record())
 	sdb.refund += gas
 }
 
@@ -555,7 +555,7 @@ func (sdb *IntraBlockState) SubRefund(gas uint64) {
 		sdb.setErrorUnsafe(fmt.Errorf("refund counter below zero: gas=%d, refund=%d", gas, sdb.refund))
 		return
 	}
-	sdb.journal.append(refundChange{prev: sdb.refund})
+	sdb.journal.push(refundChange{prev: sdb.refund}.record())
 	sdb.refund -= gas
 }
 
@@ -840,10 +840,10 @@ func (sdb *IntraBlockState) AddBalance(addr types.Address, amount *uint256.Int) 
 		needAccount = true
 	}
 	if !needAccount {
-		sdb.journal.append(balanceIncrease{
+		sdb.journal.push(balanceIncrease{
 			account:  &addr,
 			increase: *amount,
-		})
+		}.record())
 		bi, ok := sdb.balanceInc[addr]
 		if !ok {
 			bi = &BalanceIncrease{}
@@ -984,7 +984,7 @@ func (sdb *IntraBlockState) foldBalanceIncrease(addr types.Address, object *stat
 	object.data.Balance.Add(&object.data.Balance, &bi.increase)
 	bi.transferred = true
 	a := addr
-	sdb.journal.append(balanceIncreaseTransfer{account: &a, bi: bi})
+	sdb.journal.push(balanceIncreaseTransfer{account: &a, bi: bi}.record())
 }
 
 func (sdb *IntraBlockState) setStateObject(addr types.Address, object *stateObject) {
@@ -1015,9 +1015,9 @@ func (sdb *IntraBlockState) createObject(addr types.Address, previous *stateObje
 	newobj = newObject(sdb, addr, ac, original)
 	newobj.setNonce(0) // sets the object to dirty
 	if previous == nil {
-		sdb.journal.append(createObjectChange{account: &addr})
+		sdb.journal.push(createObjectChange{account: &addr}.record())
 	} else {
-		sdb.journal.append(resetObjectChange{account: &addr, prev: previous})
+		sdb.journal.push(resetObjectChange{account: &addr, prev: previous}.record())
 	}
 	sdb.setStateObject(addr, newobj)
 	return newobj
@@ -1048,7 +1048,7 @@ func (sdb *IntraBlockState) CreateAccount(addr types.Address, contractCreation b
 	if contractCreation {
 		newObj.created = true
 		if _, already := sdb.storageWipes[addr]; !already {
-			sdb.journal.append(storageWipeAddChange{account: &addr})
+			sdb.journal.push(storageWipeAddChange{account: &addr}.record())
 			sdb.storageWipes[addr] = struct{}{}
 		}
 		// Capture the full pre-block storage before it is wiped, so the hashed
@@ -1379,7 +1379,7 @@ func (sdb *IntraBlockState) PrepareAccessList(sender types.Address, dst *types.A
 // AddAddressToAccessList adds the given address to the access list.
 func (sdb *IntraBlockState) AddAddressToAccessList(addr types.Address) {
 	if sdb.accessList.AddAddress(addr) {
-		sdb.journal.append(accessListAddAccountChange{address: addr})
+		sdb.journal.push(accessListAddAccountChange{address: addr}.record())
 	}
 }
 
@@ -1387,10 +1387,10 @@ func (sdb *IntraBlockState) AddAddressToAccessList(addr types.Address) {
 func (sdb *IntraBlockState) AddSlotToAccessList(addr types.Address, slot types.Hash) {
 	addrMod, slotMod := sdb.accessList.AddSlot(addr, slot)
 	if addrMod {
-		sdb.journal.append(accessListAddAccountChange{address: addr})
+		sdb.journal.push(accessListAddAccountChange{address: addr}.record())
 	}
 	if slotMod {
-		sdb.journal.append(accessListAddSlotChange{address: addr, slot: slot})
+		sdb.journal.push(accessListAddSlotChange{address: addr, slot: slot}.record())
 	}
 }
 
@@ -1713,15 +1713,15 @@ func (sdb *IntraBlockState) Selfdestruct(addr types.Address) bool {
 	if stateObject == nil || stateObject.deleted {
 		return false
 	}
-	sdb.journal.append(selfdestructChange{
+	sdb.journal.push(selfdestructChange{
 		account:     &addr,
 		prev:        stateObject.selfdestructed,
 		prevbalance: *stateObject.Balance(),
-	})
+	}.record())
 	stateObject.markSelfdestructed()
 	stateObject.data.Balance.Clear()
 	if _, already := sdb.storageWipes[addr]; !already {
-		sdb.journal.append(storageWipeAddChange{account: &addr})
+		sdb.journal.push(storageWipeAddChange{account: &addr}.record())
 		sdb.storageWipes[addr] = struct{}{}
 	}
 	// Capture the full pre-block storage before the wipe so the hashed state
@@ -1743,11 +1743,11 @@ func (sdb *IntraBlockState) Selfdestruct6780(addr types.Address, beneficiary typ
 	}
 
 	if stateObject.created {
-		sdb.journal.append(selfdestructChange{
+		sdb.journal.push(selfdestructChange{
 			account:     &addr,
 			prev:        stateObject.selfdestructed,
 			prevbalance: *stateObject.Balance(),
-		})
+		}.record())
 		stateObject.markSelfdestructed()
 		stateObject.data.Balance.Clear()
 		return
@@ -1764,10 +1764,10 @@ func (sdb *IntraBlockState) Selfdestruct6780(addr types.Address, beneficiary typ
 			return
 		}
 		halfBalance := new(uint256.Int).Div(currentBalance, uint256.NewInt(2))
-		sdb.journal.append(balanceChange{
+		sdb.journal.push(balanceChange{
 			account: &addr,
 			prev:    *currentBalance,
-		})
+		}.record())
 		stateObject.data.Balance.Sub(currentBalance, halfBalance)
 		return
 	}
@@ -1776,10 +1776,10 @@ func (sdb *IntraBlockState) Selfdestruct6780(addr types.Address, beneficiary typ
 	if prevBalance.IsZero() {
 		return
 	}
-	sdb.journal.append(balanceChange{
+	sdb.journal.push(balanceChange{
 		account: &addr,
 		prev:    prevBalance,
-	})
+	}.record())
 	stateObject.data.Balance.Clear()
 }
 
@@ -1797,11 +1797,11 @@ func (sdb *IntraBlockState) Selfdestruct8246(addr types.Address) {
 		return
 	}
 	balance := *stateObject.Balance()
-	sdb.journal.append(selfdestructChange{
+	sdb.journal.push(selfdestructChange{
 		account:     &addr,
 		prev:        stateObject.selfdestructed,
 		prevbalance: balance,
-	})
+	}.record())
 	stateObject.markSelfdestructed()
 	stateObject.data.Balance.Clear()
 	if balance.IsZero() {
