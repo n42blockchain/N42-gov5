@@ -216,9 +216,9 @@ func (so *stateObject) markSelfdestructed() {
 }
 
 func (so *stateObject) touch() {
-	so.db.journal.append(touchChange{
+	so.db.journal.push(touchChange{
 		account: &so.address,
-	})
+	}.record())
 	if so.address == ripemd {
 		// Explicitly put it in the dirty-cache, which is otherwise generated from
 		// flattened journals.
@@ -324,11 +324,11 @@ func (so *stateObject) cacheCommittedState(key *types.Hash, value *uint256.Int) 
 func (so *stateObject) SetState(key *types.Hash, value uint256.Int) {
 	// If the fake storage is set, put the temporary state update here.
 	if so.fakeStorage != nil {
-		so.db.journal.append(fakeStorageChange{
+		so.db.journal.push(fakeStorageChange{
 			account:  &so.address,
 			key:      *key,
 			prevalue: so.fakeStorage[*key],
-		})
+		}.record())
 		so.fakeStorage[*key] = value
 		return
 	}
@@ -339,11 +339,11 @@ func (so *stateObject) SetState(key *types.Hash, value uint256.Int) {
 		return
 	}
 	// New value is different, update and journal the change
-	so.db.journal.append(storageChange{
+	so.db.journal.push(storageChange{
 		account:  &so.address,
 		key:      *key,
 		prevalue: prev,
-	})
+	}.record())
 	so.setState(key, value)
 }
 
@@ -417,10 +417,10 @@ func (so *stateObject) SubBalance(amount *uint256.Int) {
 }
 
 func (so *stateObject) SetBalance(amount *uint256.Int) {
-	so.db.journal.append(balanceChange{
+	so.db.journal.push(balanceChange{
 		account: &so.address,
 		prev:    so.data.Balance,
-	})
+	}.record())
 	so.setBalance(amount)
 }
 
@@ -455,11 +455,11 @@ func (so *stateObject) Code() []byte {
 
 func (so *stateObject) SetCode(codeHash types.Hash, code []byte) {
 	prevcode := so.Code()
-	so.db.journal.append(codeChange{
+	so.db.journal.push(codeChange{
 		account:  &so.address,
 		prevhash: so.data.CodeHash,
 		prevcode: prevcode,
-	})
+	}.record())
 	so.setCode(codeHash, code)
 }
 
@@ -470,10 +470,10 @@ func (so *stateObject) setCode(codeHash types.Hash, code []byte) {
 }
 
 func (so *stateObject) SetNonce(nonce uint64) {
-	so.db.journal.append(nonceChange{
+	so.db.journal.push(nonceChange{
 		account: &so.address,
 		prev:    so.data.Nonce,
-	})
+	}.record())
 	so.setNonce(nonce)
 }
 
