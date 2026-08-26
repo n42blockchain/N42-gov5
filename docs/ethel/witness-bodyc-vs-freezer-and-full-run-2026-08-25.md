@@ -738,7 +738,18 @@ witnessreplay: block 12854611: ProcessBlock: tx 28: nonce too high:
 - `-race` 构建的 tier-1 与 base 各跑 60k 块（12.80–12.86M，128w）：两者唯一的 DATA RACE
   报告都是 `freezer.openFreezer` 里的 `metrics.Counter.Set`（6 个 reader 并发打开时写一个
   gauge，良性、tier-1 之前就有）；tier-1 新增代码无竞态报告；
-- 860k 块窗口（12.0–12.86M，256w，gc300）tier-1 ×3 / base ×3 复现中。
+- 860k 块窗口（12.0–12.86M，256w，gc300）tier-1 ×3 / base ×3：6/6 通过，每次 1m50s。
+
+失败块本身：`block-senders-list` 显示该块前 29 笔以上全是同一热钱包
+`0x99c8…89e3` 的连续 nonce（1153178 起，type 0 转账），tx 28 = 1153206；
+"state 1153205" = 前 28 笔只生效了 27 次自增，或 tx 28 读到的是另一份对象。
+需要从创世跑到 12.85M 才触发，说明触发条件是**进程生命周期内累积的状态**
+（sync.Pool 内容、两个全局缓存的驱逐、GC 节奏），不是这些块本身。
+
+已加入失败时诊断（`diagnoseReplayFailure`，commit 见下）：任一块失败时，同一
+worker 用全新 IBS 立即重放同一份输入并记录 retry 结果——retry 通过 ⇒ 进程内共享
+状态污染；retry 同样失败 ⇒ 到达 worker 的 body/witness/senders 本身错了。
+下一次复现即可定向。
 
 在找到原因之前，**tier-1 不作为默认 binary**；54m10s 记为"待确认"。
 
