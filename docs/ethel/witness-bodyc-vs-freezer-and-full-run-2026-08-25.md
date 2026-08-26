@@ -796,10 +796,24 @@ base 在 256w/gc300 一次通过。至此 256w/gc300 的记录是 base 1/1、tie
 无诊断）。样本太少，不能归因；但 base 在这个配置下 RSS 已贴到上限，本身不可用作生产配置。
 同配置下 tier-1 少 9.3% CPU、少 70% 内存、墙钟略快。
 
-### 5.20 下一步
+### 5.20 tier-1 @ 256w/12r/gc300（带诊断）：51m13s，与 6r 完全相同
 
-1. tier-1-diag @ 256w/12r/gc300（跑中）；
-2. 定向复现：`--end 13000000`（失败点 12.85M 之后）× 4 轮，diag binary，256w/gc300——
-   每轮约 13 分钟，与一次全量同价但四次机会；
-3. 密集段空转 worker 的原因；
-4. `perf stat` 量 IPC。
+```text
+run_id       full-geth-w256-r12-tier1-gc300-diag-20260826
+wall         51m13s            （6r 同 binary：51m13s —— 秒级一致）
+user+sys     559,550 s         （6r：487,214，+14.8%）
+aggregate    18206%
+MaxRSS       24.7 GiB
+failed       0   诊断未触发
+```
+
+tier-1 + gc300 下，reader 数已经完全不是瓶颈：12 个 reader 只多烧 15% CPU，墙钟一秒不差。
+256w 只有 160–180 线程忙的原因在别处（见 5.21）。256w/gc300 tier-1 通过率至此 2/3。
+
+### 5.21 下一步
+
+1. 定向复现 `0 → 13M` × 4（跑中）；
+2. 找密集段 80+ 空转 worker 的原因——reader 已排除；下一个嫌疑是 aggregator 的
+   顺序重排：多个 reader 各持不同 segment，`next` 块落在最慢的 reader 上时结果通道
+   填满、worker 全部阻塞；
+3. `perf stat` 量 IPC。
