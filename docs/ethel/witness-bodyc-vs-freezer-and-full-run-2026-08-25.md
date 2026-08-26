@@ -472,12 +472,43 @@ failed       0            exit 0
 同时撤回本文 §2.4 的判断"bodyc 的瓶颈是内存不是 CPU"——它只对了一半：
 瓶颈是**活对象数随时间累积**，短窗口 A/B 测不出来，这是 100k 窗口第三次误导长跑结论。
 
-### 5.8 下一步
+### 5.8 单变量推进：worker 104 → 128
 
-以 `full-geth-r6-20260826` 为新基线，单变量推进：
+freezer 源上其余参数不变（readers 6、GOGC 100），worker 抬到一物理核一个，
+mem-limit 48 → 56 GiB 只为给多出的 24 个 worker 留堆余量：
 
-1. worker 104 → 128（一物理核一个，§4 预测的拐点）；
-2. readers 6 → 2（bodyc sweep 里 2 已足够，freezer 上 reader 几乎无内存成本，预期无差别）；
-3. 落地 `evm-block-execution-optimization-map-2026-08-26.md` 的第一梯队（≈7–8% CPU）。
+```text
+run_id       full-geth-w128-20260826
+wall         1h06m29s          （−9.4%）
+user+sys     458,311.83 s      （+2.7%）
+aggregate    11488% = 114.9 logical cores
+MaxRSS       23.2 GiB          （采样峰值 23.7 GiB）
+major faults 8,783,280
+failed       0   exit 0   blocks/txs/gas 与前次逐位一致
+```
 
-地板估算不变：≈450k core-seconds ÷ 128 物理核 ≈ 58 分钟。
+逐 band 增益 1–20%，密集段（10–20M）13–20%，稀疏段和尾段 2–8%。
+**+23% 线程换来 −9.4% 墙钟、+2.7% CPU** —— 与 §4 的判断一致：物理核以内接近线性，
+SMT 第二线程才是 +82% CPU 的那一段。128 是拐点，不再往上。
+
+五次全量并列（全部 `failed=0`）：
+
+| 运行 | body 源 | 配置 | wall | CPU-sec |
+|---|---|---|---:|---:|
+| 08-24 基线 | bodyc | 单进程 104w，1 reader | 2h27m10s | 456,881 |
+| 08-25 deep path | bodyc | 4×254w，reservoir | 2h14m10s | 1,620,625 |
+| 08-25 sane | bodyc | 单进程 104w，6 readers | 3h59m16s | 1,148,198 |
+| 08-26 freezer | freezer | 单进程 104w，6 readers | 1h13m23s | **446,152** |
+| **08-26 freezer 128w** | freezer | 单进程 128w，6 readers | **1h06m29s** | 458,312 |
+
+CPU-sec 最省仍是 104w（446k）；墙钟最快是 128w。两者差 2.7% CPU / 9.4% 墙钟，
+按"CPU-sec 优先"的判据两者都可接受，**默认取 128w**（地板估算 ≈ 450k ÷ 128 ≈ 58 分钟，
+已到 66 分钟，剩余差距主要是尾段密集块的负载不均和 GC）。
+
+### 5.9 下一步
+
+1. readers 6 → 2（bodyc sweep 里 2 已足够；freezer 上 reader 几乎无内存成本，预期无差别，
+   验证后把 auto 上限从 6 降下来）；
+2. 落地 `evm-block-execution-optimization-map-2026-08-26.md` 第一梯队（≈7–8% CPU），
+   每项单独 A/B；
+3. 尾段负载不均：最后 1.77M 块占 12% 时间，可试反向喂块（先重后轻）让尾部收敛。
