@@ -15,13 +15,10 @@
 | | wall | CPU-sec | 说明 |
 |---|---:|---:|---|
 | 起点（08-24，bodyc，104w，1 reader） | 2h27m10s | 456,881 | |
-| **生产配置（tier-1，freezer，128w/6r/gc300）** | **54m10s–54m35s** | **394,705–398,336** | 3/3 通过，方差 <1% |
-| 墙钟纪录（tier-1，256w/6r/gc300） | 51m13s | 487,214 | 3 次 1 败（间歇，未解释） |
+| **生产配置（T1，freezer，128w/6r/gc300）** | **50m02s** | **378,758** | tier-1 3/3、tier-2 1/1、T1 1/1 全部通过 |
+| 墙钟最快（T1，256w/6r/gc300） | **45m56s** | 482,741 | 256w 累计 9 次 1 败（间歇，未解释） |
 
-相对起点：**墙钟 −63%，CPU-sec −13%**，同时达成。
-
-tier-2（journal 去装箱）在 1M 密集切片上再给 256w −7.8% / 128w −4.2% 墙钟；
-全量确认见 §6 的运行队列。
+相对起点：**墙钟 −66%，CPU-sec −17%**，同时达成。
 
 ## 2. 生产配置与入口
 
@@ -60,6 +57,7 @@ BIN=build/bin/witness-replay RUN_ID=my-run scripts/witness-full.sh
 | `d703cb60` | PUSH2..8 折进 uint64 | |
 | `84402bae` | 失败时重放诊断 `diagnoseReplayFailure` | 定向 256w 间歇失败 |
 | `d41b0a59` | journal 按值存储（去装箱） | 256w 忙碌线程 173→192，wall −7.8% |
+| `2003b43b` | 单表 storage + epoch（T1） | 输出逐字节一致；全量 −1.0% wall / −1.5% CPU |
 
 以上 tier-1（`414cfdb7`..`d703cb60`）**要求 GOGC 300**：它把活堆压到 1/3，GOGC 100
 下 GC 频率翻倍、mark assist 打在 reader 上，墙钟反而 +15%（§4.3）。
@@ -71,7 +69,8 @@ BIN=build/bin/witness-replay RUN_ID=my-run scripts/witness-full.sh
 | `witness-replay.decoderflag` | `3449c2f4` | 前序 + 派发表 + bloom + flag（"base"） |
 | `witness-replay.tier1` | `44d60635` | + tier-1 七项 |
 | `witness-replay.tier1-diag` | `253fa67b` | + 诊断 |
-| `witness-replay.tier2` | `2df12dce` | + journal 去装箱（= 分支 HEAD `d41b0a59`） |
+| `witness-replay.tier2` | `2df12dce` | + journal 去装箱（`d41b0a59`） |
+| `witness-replay.t1` | `e92f3b33` | + 单表 storage（`2003b43b`，**生产**） |
 
 ## 4. 学到的、被证伪的
 
@@ -108,8 +107,7 @@ GOMAXPROCS 超订；max-head 包络"塌陷"；reader 数导致塌陷；内存上
    在此之前生产配置用 128w（3/3 通过）。
 2. **`perf stat` 未做**：`kernel.perf_event_paranoid=4`，需要
    `sudo sysctl -w kernel.perf_event_paranoid=1`。
-3. **T1（单表 storage + epoch）**：影响 `MakeWriteSet`/`CommitBlock`/LtHash 共 21 处，
-   碰到带输出的共识写集；做之前先用 tier-1 binary 生成输出模式参考，逐字节比对。
+3. T1 已完成并通过输出逐字节护栏与全量 gate；RSS +3–4 GiB 可通过按需存 `origin` 收回。
 4. `origin/main` 分叉（§3）。
 
 ## 6. 运行队列与脚本
