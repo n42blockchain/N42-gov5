@@ -505,10 +505,49 @@ CPU-sec 最省仍是 104w（446k）；墙钟最快是 128w。两者差 2.7% CPU 
 按"CPU-sec 优先"的判据两者都可接受，**默认取 128w**（地板估算 ≈ 450k ÷ 128 ≈ 58 分钟，
 已到 66 分钟，剩余差距主要是尾段密集块的负载不均和 GC）。
 
-### 5.9 下一步
+### 5.9 单变量：readers 6 → 2 —— 预期落空，freezer 上 reader 是真成本
 
-1. readers 6 → 2（bodyc sweep 里 2 已足够；freezer 上 reader 几乎无内存成本，预期无差别，
-   验证后把 auto 上限从 6 降下来）；
-2. 落地 `evm-block-execution-optimization-map-2026-08-26.md` 第一梯队（≈7–8% CPU），
-   每项单独 A/B；
-3. 尾段负载不均：最后 1.77M 块占 12% 时间，可试反向喂块（先重后轻）让尾部收敛。
+```text
+run_id       full-geth-w128-r2-20260826   （128w，readers 2，其余同 5.8）
+wall         1h21m36s          （+22.7%）
+user+sys     382,331.69 s      （−16.6%）
+aggregate    7808% = 78.1 logical cores
+MaxRSS       17.6 GiB
+failed       0
+```
+
+预期"无差别"是错的：2 个 reader 只能喂饱 78 个线程，128 个 worker 有 40% 时间在等
+输入。bodyc sweep 里 2 就够，是因为 bodyc 一次解出 8192 块，reader 的每块开销极低；
+freezer 是 64 块一个 zstd batch 加逐块 RLP 解码，每块开销高一个数量级，
+**reader 数必须跟着 worker 数走**。readers 6 保留为默认；256 worker 时可能需要更多。
+
+CPU-sec 下降 16.6% 同时墙钟上升 22.7%，是 SMT 记账效应的直接展示：忙碌线程从 115 降到
+78，几乎全部落在独立物理核上，每个 CPU-秒的有效算力更高。这再次说明单看 CPU-sec
+会系统性偏向低并发（见 5.10）。
+
+### 5.10 关于 SMT 与度量：一处更正
+
+本文与前序会话里"128 线程 → 234 线程吞吐 +21%、CPU +82%"的说法，+82% 是 **CPU 占用率**
+（23368% vs 12846%），不是 CPU-seconds；CPU-seconds 是 +50%。更重要的是
+**CPU-seconds 在 SMT 下有偏**：两个兄弟线程各记满 1 秒，合起来只是一个物理核。
+按物理核时（core-seconds = wall × 128）重算 1M 密集切片：
+
+| 忙碌线程 | blk/s | wall | CPU-sec | core-sec |
+|---:|---:|---:|---:|---:|
+| 102 | 2280 | 438.6 s | 44,946 | 56,145 |
+| 128 | 2666 | 375.1 s | 48,191 | 48,015 |
+| 234 | 3228 | 309.8 s | 72,402 | **39,658** |
+
+所以 SMT 在这个负载上是**正收益**（+21% 吞吐，core-sec −17%），EVM 解释器的
+指针追逐/分支失败/cache miss 正是 SMT 填空的典型场景。"128 是拐点"撤回；
+它只在"按 vCPU 计费"的成本函数下成立。
+
+独占机器上的正确指标：墙钟（= 整机吞吐）或 core-seconds。CPU-seconds 只用于
+云 vCPU 计费场景。
+
+### 5.11 下一步
+
+1. **256 worker**（单进程、freezer、readers 6、mem 80）——直接回答 SMT 问题，已排队；
+2. 若 256w 胜出，再扫 readers 8/12（5.9 表明 reader 要跟 worker 走）；
+3. 落地 `evm-block-execution-optimization-map-2026-08-26.md` 第一梯队；
+4. `perf stat` 量 IPC（需要 `kernel.perf_event_paranoid=1`）。
