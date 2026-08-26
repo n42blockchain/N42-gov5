@@ -1162,6 +1162,12 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		DB:         chainKv,
 	})
 
+	// Peers older than the RLP block wire format send protobuf. Reconstructing
+	// from protobuf drops any header field types_pb has no slot for, which
+	// changes the block hash, so it is only allowed on chains that never carry
+	// one. See sync.AllowLegacyProtoBlocks.
+	n42sync.AllowLegacyProtoBlocks(chainConfig)
+
 	syncOpts := []n42sync.Option{
 		n42sync.WithP2P(p2p),
 		n42sync.WithChainService(bc),
