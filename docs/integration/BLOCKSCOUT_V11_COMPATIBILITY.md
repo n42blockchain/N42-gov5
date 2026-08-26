@@ -1,8 +1,14 @@
 # Blockscout v11 Compatibility (n42 self-chain + eth-el)
 
-**Blockscout target**: v11.x (backend v11.0.0 / v11.1.0, frontend v2.8.0) — supersedes the
-earlier v9.3.2 baseline (`BLOCKSCOUT_V9.3.2_COMPATIBILITY.md`).
+**Blockscout target**: backend **v11.2.8** (latest as of 2026-08-26) — supersedes the
+v11.0.0/v11.1.0 baseline this document was first written against, and the older
+v9.3.2 one (`BLOCKSCOUT_V9.3.2_COMPATIBILITY.md`).
 **Node RPC spec followed**: <https://docs.blockscout.com/setup/requirements/node-tracing-json-rpc-requirements>
+
+**Re-verified 2026-08-26 against v11.2.8.** No node-side change was needed: every
+method and response field the explorer depends on was already served. What the
+re-check did add is a regression guard, because the surface is easy to lose
+silently — see §5.
 
 N42 runs in two modes that share the same RPC handler code but wire it to different
 storage backends, so Blockscout must be pointed at the right endpoint per mode:
@@ -175,7 +181,52 @@ Block/tx/receipt/log methods work at any height regardless of state mode (rawdb)
 
 ---
 
-## 4. References
+## 4. What changed between v11.0.0 and v11.2.8
+
+Only two of the deltas touch the node at all; both are about batching, and both
+are already satisfied.
+
+| Blockscout change | Version | What it means for the node | Status |
+|---|---|---|---|
+| HTTP batch capped at 500 requests | v11.2.0 | The explorer will send JSON-RPC batches of up to 500 | **OK** — `jsonrpc.maxBatchSize` is 1000, above the cap, so a full batch is never rejected |
+| Internal-transaction traces sent in batches | v11.2.8 | `debug_traceTransaction` / `trace_*` arrive batched rather than one per request, with operator-tunable batch sizes for block and transaction traces | **OK, with a caveat below** |
+| `eth_call` metrics by method id, `json_rpc_calls_count` | v11.2.5 | Blockscout-side instrumentation only | n/a |
+| EIP-7708 (Arc chain) | v11.2.0 | Chain-specific transaction field handling | n/a for n42/eth-el |
+
+**The caveat on batched traces.** A batch executes serially: `handler.handleBatch`
+runs every call in one goroutine, one after another, which is upstream go-ethereum
+behaviour and not something this fork changed. Individual `eth_*` calls are cheap
+enough that this never mattered, but a trace is not cheap, so a large trace batch
+takes the sum of its parts. If the indexer starts timing out on internal
+transactions, lower Blockscout's trace batch size rather than raising its HTTP
+timeout: the node will otherwise keep executing a batch whose response nobody is
+waiting for any more.
+
+Request size is not a constraint in either direction — `maxRequestContentLength`
+is 32 MiB and 500 batched trace *requests* are on the order of 100 KB. The
+responses are what get large, and those are streamed out unbounded.
+
+---
+
+## 5. Regression guard
+
+`internal/tracers/blockscout_surface_test.go` asserts that every method in the
+table in §1 is still exported, reading the real registration tables — the same
+`api.Apis()` and `tracers.APIs()` calls `node.go` assembles its RPC surface from
+— rather than a hand-listed set of service types.
+
+That distinction is the point of the test. This repository already had a guard
+against dropping a header field on the protobuf block path, and it did not stop
+that path from being reintroduced, because it asserted a property of the codec
+instead of a property of the code that calls it. A surface guard that inspects
+anything other than what production registers can pass while the explorer breaks.
+
+The test currently sees 117 methods across 7 namespaces and fails with the
+offending `namespace_method` names listed when one goes missing.
+
+---
+
+## 6. References
 
 - Blockscout node requirements: <https://docs.blockscout.com/setup/requirements/node-tracing-json-rpc-requirements>
 - Blockscout v11 release: <https://www.blog.blockscout.com/new-release-blockscout-v11-0-0/>
