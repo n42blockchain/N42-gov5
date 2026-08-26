@@ -2,6 +2,7 @@ package sync
 
 import (
 	"bytes"
+	"github.com/n42blockchain/N42/params"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -74,6 +75,11 @@ func TestDecodeChunkedBlockAcceptsRLPAndLegacyProto(t *testing.T) {
 	if got.Hash() != blk.Hash() {
 		t.Fatalf("RLP hash = %s, want %s", got.Hash(), blk.Hash())
 	}
+
+	// The protobuf fallback is off unless the chain proves it lossless; this
+	// fixture is such a chain.
+	AllowLegacyProtoBlocks(&params.ChainConfig{})
+	defer AllowLegacyProtoBlocks(nil)
 
 	rawProto, err := proto.Marshal(blk.ToProtoMessage())
 	if err != nil {
