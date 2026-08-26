@@ -23,12 +23,28 @@
 package state
 
 import (
+	"encoding/binary"
+
 	"github.com/n42blockchain/N42/common/types"
 )
 
 type accessList struct {
 	addresses map[types.Address]int
 	slots     []map[types.Hash]struct{}
+	// staticWarm marks the precompile addresses EIP-2929 declares warm from
+	// the start of every transaction. They used to be inserted into
+	// addresses one by one in PrepareAccessList — a map write plus a journal
+	// entry for each of 10-17 addresses, every transaction, 0.62% of all
+	// replay CPU and the single largest allocation site by object count. A
+	// precompile is never removed within a transaction and no snapshot
+	// predates its insertion, so a static membership test is equivalent.
+	//
+	// Precompiles live at 0x00..0000XXXX, so the set is a 65536-bit bitmap
+	// indexed by the last two bytes, guarded by an all-zero check on the
+	// first eighteen. Any precompile address outside that shape falls back to
+	// the map (SetPrecompiles returns it).
+	staticWarm     [1024]uint64
+	staticWarmBits []uint16 // which bits are set, so Reset clears exactly those
 	// slotPool holds previously-used slotmaps that have been cleared
 	// by Reset and are ready to be re-bound to a new (addr, slot) pair
 	// in AddSlot. EVM hot path empirically allocates ~1.3K slotmap per
@@ -38,8 +54,55 @@ type accessList struct {
 	slotPool []map[types.Hash]struct{}
 }
 
+// isStaticWarm reports whether address is a precompile registered through
+// SetPrecompiles. Two 8-byte loads and one 2-byte load replace a 20-byte
+// key hash for every warm/cold decision on a precompile.
+func (al *accessList) isStaticWarm(address *types.Address) bool {
+	if len(al.staticWarmBits) == 0 {
+		return false
+	}
+	if binary.LittleEndian.Uint64(address[0:8]) != 0 ||
+		binary.LittleEndian.Uint64(address[8:16]) != 0 ||
+		address[16] != 0 || address[17] != 0 {
+		return false
+	}
+	bit := uint(binary.BigEndian.Uint16(address[18:20]))
+	return al.staticWarm[bit>>6]&(1<<(bit&63)) != 0
+}
+
+// SetPrecompiles declares the addresses warm for the transaction being
+// prepared. It returns the addresses it could not represent statically; the
+// caller must add those through the ordinary journaled path.
+func (al *accessList) SetPrecompiles(addrs []types.Address) (fallback []types.Address) {
+	for i := range addrs {
+		a := &addrs[i]
+		if binary.LittleEndian.Uint64(a[0:8]) != 0 ||
+			binary.LittleEndian.Uint64(a[8:16]) != 0 ||
+			a[16] != 0 || a[17] != 0 {
+			fallback = append(fallback, *a)
+			continue
+		}
+		bit := uint16(binary.BigEndian.Uint16(a[18:20]))
+		if al.staticWarm[bit>>6]&(1<<(bit&63)) == 0 {
+			al.staticWarm[bit>>6] |= 1 << (bit & 63)
+			al.staticWarmBits = append(al.staticWarmBits, bit)
+		}
+	}
+	return fallback
+}
+
+func (al *accessList) clearStatic() {
+	for _, bit := range al.staticWarmBits {
+		al.staticWarm[bit>>6] &^= 1 << (bit & 63)
+	}
+	al.staticWarmBits = al.staticWarmBits[:0]
+}
+
 // ContainsAddress returns true if the address is in the access list.
 func (al *accessList) ContainsAddress(address types.Address) bool {
+	if al.isStaticWarm(&address) {
+		return true
+	}
 	_, ok := al.addresses[address]
 	return ok
 }
@@ -49,8 +112,9 @@ func (al *accessList) ContainsAddress(address types.Address) bool {
 func (al *accessList) Contains(address types.Address, slot types.Hash) (addressPresent bool, slotPresent bool) {
 	idx, ok := al.addresses[address]
 	if !ok {
-		// no such address (and hence zero slots)
-		return false, false
+		// no such address in the map; a precompile is still warm, and a
+		// precompile that has never had a slot added has no slots.
+		return al.isStaticWarm(&address), false
 	}
 	if idx == -1 {
 		// address yes, but no slots
@@ -70,6 +134,8 @@ func newAccessList() *accessList {
 // Copy creates an independent copy of an accessList.
 func (al *accessList) Copy() *accessList {
 	cp := newAccessList()
+	cp.staticWarm = al.staticWarm
+	cp.staticWarmBits = append([]uint16(nil), al.staticWarmBits...)
 	for k, v := range al.addresses {
 		cp.addresses[k] = v
 	}
@@ -87,6 +153,9 @@ func (al *accessList) Copy() *accessList {
 // AddAddress adds an address to the access list, and returns 'true' if the operation
 // caused a change (addr was not previously in the list).
 func (al *accessList) AddAddress(address types.Address) bool {
+	if al.isStaticWarm(&address) {
+		return false
+	}
 	if _, present := al.addresses[address]; present {
 		return false
 	}
@@ -140,6 +209,7 @@ func (al *accessList) AddSlot(address types.Address, slot types.Hash) (addrChang
 // of pooled — Go map buckets never shrink on clear(), so retaining a
 // 10K-entry bucket array forever would defeat the pool's memory goal.
 func (al *accessList) Reset() {
+	al.clearStatic()
 	clear(al.addresses)
 	for _, slotmap := range al.slots {
 		if len(slotmap) > slotmapPoolMax {

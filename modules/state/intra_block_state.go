@@ -1361,7 +1361,11 @@ func (sdb *IntraBlockState) PrepareAccessList(sender types.Address, dst *types.A
 	if dst != nil {
 		sdb.AddAddressToAccessList(*dst)
 	}
-	for _, addr := range precompiles {
+	// Precompiles are warm by fiat for the whole transaction and cannot be
+	// reverted out, so they are recorded as a static set rather than as
+	// journaled map entries. Only an address the static set cannot hold
+	// takes the ordinary path.
+	for _, addr := range sdb.accessList.SetPrecompiles(precompiles) {
 		sdb.AddAddressToAccessList(addr)
 	}
 	for _, el := range list {
