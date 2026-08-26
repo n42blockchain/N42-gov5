@@ -11,8 +11,8 @@
 # --continue-on-error are deliberately absent; a run that used either is not a
 # gate result. Rank runs by CPU-seconds first, wall clock second.
 #
-# Baseline to beat: RUN_ID=full-geth-r6-20260826 -> WORKERS=104 READERS=6
-# GOGC=100 MEM_GB=48 HIGH_GB=0.
+# Baseline to beat: RUN_ID=full-geth-w128-20260826 -> WORKERS=128 READERS=6
+# GOGC=100 MEM_GB=56 HIGH_GB=0 (1h06m29s, 458,312 CPU-s; 104w gives 446k CPU-s / 1h13m).
 set -u
 set -o pipefail
 BIN=${BIN:-/home/n42/src/n42/N42-gov5/build/bin/witness-replay}
@@ -22,9 +22,9 @@ READERS=${READERS:-6}
 # on the truncated name. Matching the full basename silently never matches.
 PROC=$(basename "$BIN"); PROC=${PROC:0:15}
 RUN_ID=${RUN_ID:?RUN_ID required}
-WORKERS=${WORKERS:-104}
+WORKERS=${WORKERS:-128}
 GOGC=${GOGC:-100}
-MEM_GB=${MEM_GB:-48}
+MEM_GB=${MEM_GB:-56}
 HIGH_GB=${HIGH_GB:-0}
 LOW_GB=${LOW_GB:-0}
 LOGDIR=/data/blockchain/wr-logs
