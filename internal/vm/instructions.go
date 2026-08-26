@@ -996,6 +996,35 @@ func opPush1(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]by
 
 // make push instruction function
 func makePush(size uint64, pushByteSize int) executionFunc {
+	if pushByteSize <= 8 {
+		// PUSH2..PUSH8 carry the bulk of push traffic (offsets, selectors,
+		// small constants) and their immediates fit one machine word. Fold
+		// the bytes into a uint64 and SetUint64 it instead of going through
+		// the general 32-byte SetBytes path, which on the dense-replay
+		// profile made PUSHn 3.2% of all CPU. An immediate cut short by the
+		// end of code is right-padded with zeros, exactly as RightPadBytes
+		// did: each missing byte still shifts the accumulator.
+		return func(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+			code := scope.Contract.Code
+			start := int(*pc + 1)
+			var v uint64
+			if start+pushByteSize <= len(code) {
+				for _, b := range code[start : start+pushByteSize] {
+					v = v<<8 | uint64(b)
+				}
+			} else {
+				for i := 0; i < pushByteSize; i++ {
+					v <<= 8
+					if j := start + i; j < len(code) {
+						v |= uint64(code[j])
+					}
+				}
+			}
+			scope.Stack.PushSlot().SetUint64(v)
+			*pc += size
+			return nil, nil
+		}
+	}
 	return func(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 		codeLen := len(scope.Contract.Code)
 
