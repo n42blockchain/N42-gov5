@@ -710,9 +710,41 @@ failed       0
 | 256w / 6r | 1h02m43s | 535,022 | |
 | 256w / 12r | **1h00m56s** | 629,568 | 墙钟最快 |
 
-### 5.17 下一步
+### 5.17 tier-1 + GOGC 300 全量：128w 双纪录，256w 出现一次不可复现的 nonce 失败
 
-1. **tier-1 + GOGC 300 @ 256w/6r**（跑中）——最终 gate；
-2. tier-1 + GOGC 300 @ 128w/6r（已排队）——CPU-sec 优先的候选；
+**128w / 6r / GOGC 300 / 56 GiB，tier-1 binary `44d60635`**（sar 101–131 ≈ 本进程 121，干净）：
+
+```text
+run_id       full-geth-w128-tier1-gc300-20260826
+wall         54m10s            （对 128w base gc100 −18.5%；对墙钟纪录 256w/12r −11%）
+user+sys     394,705 s         （对 104w 干净纪录 416,751 −5.3%；对 128w base −13.9%）
+aggregate    12143%
+MaxRSS       16.1 GiB          （128w base：23.2）
+failed       0   exit 0   blocks/txs/gas 逐位一致
+```
+
+逐 band 对 128w base gc100：稀疏段 +20–71%，密集段 +15–33%。**墙钟和 CPU-sec 同时创纪录。**
+
+**256w / 6r / GOGC 300 / 80 GiB，同一 binary**：12 分 18 秒后在 block `12,854,611` 退出 1：
+
+```text
+witnessreplay: block 12854611: ProcessBlock: tx 28: nonce too high:
+  address 0x99C85bb64564D9eF9A99621301f22C9993Cb89E3, tx: 1153206 state: 1153205
+```
+
+同一 binary 的 128w 全量刚刚**通过了同一个块**，所以这是非确定性失败——竞态。
+截至目前的排查：
+- 10k 块窗口（12.85–12.86M）tier-1 / base × 256w / 128w × 3 轮：12/12 通过；
+- `-race` 构建的 tier-1 与 base 各跑 60k 块（12.80–12.86M，128w）：两者唯一的 DATA RACE
+  报告都是 `freezer.openFreezer` 里的 `metrics.Counter.Set`（6 个 reader 并发打开时写一个
+  gauge，良性、tier-1 之前就有）；tier-1 新增代码无竞态报告；
+- 860k 块窗口（12.0–12.86M，256w，gc300）tier-1 ×3 / base ×3 复现中。
+
+在找到原因之前，**tier-1 不作为默认 binary**；54m10s 记为"待确认"。
+
+### 5.18 下一步
+
+1. 复现并二分（noR1 / noR2 / noS2 / base）；
+2. 若不可复现：base binary 在 256w/gc300 下也跑一次全量，判断是否为先前代码的稀有 bug；
 3. 密集段 80+ 空转 worker 的原因；
 4. `perf stat` 量 IPC。
