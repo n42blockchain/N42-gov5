@@ -19,13 +19,14 @@
 // plus ExtraEips and a SlotAccessRecorder hook called on every SLOAD to
 // train the predictive state prefetcher. SlotAccessRecorder is a
 // lightweight interface so callers opt in without pulling the prefetch
-// package. A sync.Pool recycles Memory instances to keep interpreter
-// allocation off the hot path.
+// package. Memory, stack and scope are owned per call depth by the
+// interpreter (runFrame) so the hot path does not allocate.
 package vm
 
 import (
 	"hash"
-	"sync"
+
+	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/types"
@@ -55,12 +56,6 @@ type Config struct {
 
 	ExtraEips    []int              // Additional EIPS that are to be enabled
 	SlotRecorder SlotAccessRecorder // If non-nil, called on every SLOAD for predictive prefetching
-}
-
-var pool = sync.Pool{
-	New: func() any {
-		return NewMemory()
-	},
 }
 
 func (vmConfig *Config) HasEip3860(rules *params.Rules) bool {
@@ -110,6 +105,49 @@ type EVMInterpreter struct {
 	// reads it instead of chasing jt's pointers; see jump_meta.go.
 	meta  *opMetaTable
 	depth int
+	// frames holds one memory/stack/scope triple per call depth. Execution is
+	// strictly depth-first, so the frame at depth d is free again the moment
+	// the call at depth d returns, and the next call at that depth can reuse
+	// it. Before this, every Run took a Memory and a Stack out of sync.Pools
+	// and allocated a ScopeContext — about 1% of all replay CPU across the
+	// CALL-heavy dense blocks, plus Pool.getSlow traffic under 100+ workers.
+	frames []*runFrame
+}
+
+// runFrame is the per-depth scratch for one interpreter invocation.
+type runFrame struct {
+	mem   Memory
+	stack stack.Stack
+	scope ScopeContext
+	// pc lives here rather than as a Run local: its address is handed to every
+	// opcode through a function value, which makes a local escape to the heap
+	// — one allocation per interpreter invocation.
+	pc uint64
+}
+
+// runFrameMemoryKeep bounds the memory buffer a frame keeps between calls. A
+// single call that expanded memory to tens of megabytes must not pin that
+// buffer on the interpreter for every later call at the same depth.
+const runFrameMemoryKeep = 1 << 20
+
+// frame returns the scratch frame for the current depth, reset for use.
+func (in *EVMInterpreter) frame(contract *Contract) (*Memory, *stack.Stack, *ScopeContext, *uint64) {
+	d := in.depth
+	for len(in.frames) <= d {
+		in.frames = append(in.frames, &runFrame{
+			mem:   Memory{store: make([]byte, 0, 4*1024)},
+			stack: stack.Stack{Data: make([]uint256.Int, 0, 16)},
+		})
+	}
+	f := in.frames[d]
+	if cap(f.mem.store) > runFrameMemoryKeep {
+		f.mem.store = make([]byte, 0, 4*1024)
+	}
+	f.mem.Reset()
+	f.stack.Reset()
+	f.scope = ScopeContext{Memory: &f.mem, Stack: &f.stack, Contract: contract}
+	f.pc = 0
+	return &f.mem, &f.stack, &f.scope, &f.pc
 }
 
 type VM struct {
@@ -235,16 +273,8 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 	// as every returning call will return new data anyway.
 	in.returnData = nil
 
-	var (
-		op          OpCode // current opcode
-		mem         = pool.Get().(*Memory)
-		locStack    = stack.New()
-		callContext = &ScopeContext{
-			Memory:   mem,
-			Stack:    locStack,
-			Contract: contract,
-		}
-	)
+	var op OpCode // current opcode
+	mem, locStack, callContext, pc := in.frame(contract)
 
 	// EOF: Initialize return stack and set code to section 0 for EOF contracts.
 	// Gated on the EOFTime rule: without it a legacy-chain contract whose code
@@ -267,8 +297,6 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		// For optimisation reason we're using uint64 as the program counter.
 		// It's theoretically possible to go above 2^64. The YP defines the PC
 		// to be uint256. Practically much less so feasible.
-		_pc  = uint64(0) // program counter
-		pc   = &_pc      // program counter
 		cost uint64
 		// copies used by tracer
 		pcCopy  uint64 // needed for the deferred Tracer
@@ -279,9 +307,6 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 	// Don't move this deferrred function, it's placed before the capturestate-deferred method,
 	// so that it get's executed _after_: the capturestate needs the stacks before
 	// they are returned to the pools
-	mem.Reset()
-	defer pool.Put(mem)
-	defer stack.ReturnNormalStack(locStack)
 	contract.Input = input
 
 	if in.cfg.Debug {
@@ -323,11 +348,11 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		}
 		if debug {
 			// Capture pre-execution values for tracing.
-			logged, pcCopy, gasCopy = false, _pc, contract.Gas
+			logged, pcCopy, gasCopy = false, *pc, contract.Gas
 		}
 		// Get the operation from the jump table and validate the stack to ensure there are
 		// enough stack items available to perform the operation.
-		op = contract.GetOp(_pc)
+		op = contract.GetOp(*pc)
 		operation := &meta[op]
 		cost = operation.constantGas // For tracing
 		// Validate stack
@@ -370,7 +395,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 			}
 		}
 		if debug {
-			in.cfg.Tracer.CaptureState(_pc, op, gasCopy, cost, callContext, in.returnData, in.depth, err) //nolint:errcheck
+			in.cfg.Tracer.CaptureState(*pc, op, gasCopy, cost, callContext, in.returnData, in.depth, err) //nolint:errcheck
 			logged = true
 		}
 		// execute the operation
@@ -379,7 +404,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		if err != nil {
 			break
 		}
-		_pc++
+		*pc++
 	}
 
 	if err == errStopToken {
