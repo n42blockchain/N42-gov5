@@ -825,8 +825,36 @@ tier-1-diag、256w / 6r / gc300、`--end 13000000`（失败块 12,854,611 之后
 失败率约 1/7，且只在一次没有诊断的运行里出现过。继续无差别重跑的性价比已经很低；
 诊断保留在 binary 里，任何后续运行一旦复现即可定向。
 
-### 5.22 下一步
+### 5.22 wait profile：256w 的空转不是 reader、不是 aggregator，是 Go 分配器的中心锁
 
-1. wait profile（block/mutex/CPU，1M 密集切片，生产配置）——密集段 80+ 空转 worker 的原因；
-2. 推荐配置 **128w/6r/gc300 tier-1** 再跑 2 次全量（带诊断）建立可靠性与方差；
+1M 密集切片、tier-1、256w/6r/gc300，同时采 block / mutex / CPU profile（5m57s，failed=0，
+CPU 占用 168 线程）。`/data/blockchain/wr-pprof/wait-256w-tier1-gc300-20260826/`。
+
+**block profile**：阻塞时间 94.3% 在 `runWitnessWorker` 的 `select`（等 job / 送 result），
+合计 23,777 秒 = 256 个 worker 可用时间的 26%——与"约 66 个 worker 空转"吻合。
+NoOutput 模式下 aggregator 不重排只计数，所以不是 aggregator；12 readers 与 6 readers
+墙钟秒级一致，所以也不是 reader 吞吐。
+
+**mutex profile**（runtime 锁竞争，共 30.6 小时等待）：
+`runtime._LostContendedRuntimeLock` 10.1 h + `mcentral.cacheSpan` 9.5 h——**堆分配器的
+中心 span 列表锁**。归属：33% 在 `replayWitnessBlock → … → EVM.call`，其中 Go map 的
+分配与扩容（`maps.newGroups` 6.5%、`newTable` 5.4%、`rehash` 4.7%、`grow` 3.9%）是主体；
+reader 侧 `feedBlocksParallel` 3.7%。
+
+结论：256 个线程同时高频分配（尤其是 map 扩容）时，Go 运行时的 `mcentral` 锁成为
+串行点；等锁的线程 park 掉，表现为 CPU 占用只有 160–180。**这也是为什么 128w 的
+tier-1 只比 256w 慢 5.4% 却少 19% CPU**：一半线程时，锁竞争基本消失。
+
+因此下一梯队的优化目标不再是"每块 CPU"，而是**每块分配次数**——这与优化图第二梯队
+（M1 journal 去装箱、T1 单表 storage、M5 log arena、M6 CALL 输入视图、T2 自定义哈希表）
+完全重合，且现在有了第二个理由（锁竞争）而不只是 GC。
+
+tier-1 binary 的 CPU top：interpreter 13.1% flat、keccak 7.0%、ecrecover cgo 5.5%、
+bn256 3.1%、栈操作约 8%、PUSH 5%、map 哈希 3.3%。
+
+### 5.23 下一步
+
+1. 推荐配置 128w/6r/gc300 tier-1 再跑 2 次全量（跑中）；
+2. 第二梯队：先做 **M1 journal 去装箱**（最大分配源之一，25 亿对象/200k 块，代码局部）；
+   再 T1 单表 storage + epoch；
 3. `perf stat` 量 IPC。
