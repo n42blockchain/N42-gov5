@@ -258,13 +258,13 @@ tx 总数与交接文档记录的 697,373,070 逐位一致。
 
 ## 5. 全量运行
 
-入口：`scripts/witness-full-bodyc.sh`。它固定了上面这组参数、
+入口：`scripts/witness-full.sh（原 witness-full-bodyc.sh，已改为默认 freezer 源）`。它固定了上面这组参数、
 强制保留验证、记录 binary SHA256 与 commit、按 5 秒采样四个子进程 RSS 之和，
 结束后自动打印验收项。
 
 ```bash
 cd /home/n42/src/n42/N42-gov5
-RUN_ID=full-bodyc-20260825 scripts/witness-full-bodyc.sh
+RUN_ID=full-bodyc-20260825 scripts/witness-full.sh（原 witness-full-bodyc.sh，已改为默认 freezer 源）
 ```
 
 等价的直接命令：
@@ -406,40 +406,78 @@ segment，密集 band 里那是约 160 万个含指针的对象，六个 reader 
 - **GOGC 300 在密集 band 会被 OOM killer 杀掉**（RSS 78.6 GiB 仍在涨）。
   密集区不要用 GOGC 300。
 
-### 5.6 尚未解释的问题
+### 5.6 判决实验：同一配置只换 body 源 —— 塌陷消失，全面创纪录
 
-塌陷**只在长跑中出现**：同样的块，10 万块窗口跑 2185 blk/s，100 万块窗口
-（`24.5–25.5M`，另一次实验）跑 2279 blk/s，而在从 0 开始的全量里跑 165 blk/s。
-所以触发条件是「已经跑了很久 / 已经流过几百 GiB」，不是这些块本身。
+2026-08-26 02:07 起，geth ancient freezer 已完整落盘（`bodies.0000..0451`、
+`headers.0000..0006`，cidx 尾条目与文件 EOF 逐字节对齐，头/中/尾三段解码 `failed=0`）。
+于是用**与 run A 完全相同的配置**（单进程、104 worker、readers 6、GOGC 100、
+mem-limit 48 GiB）只把 `--input-headers-bodies` 换成 `/data/blockchain/witness-geth`：
 
-已排除：reader 数、内存上限、GC（健康态 0%）、GOMAXPROCS。
-仍待查：page cache 被 830 GiB 流式输入挤空后 19 GB code-mdbx 的随机读、
-进程内累积状态（bytecode / code-analysis 两个定容缓存在跑满全史后颠簸）、
-以及 aggregator 重排窗口在 reader 漂移下的行为。
+```text
+run_id       full-geth-r6-20260826
+wall         1h13m23s
+user CPU     443,692.13 s
+system CPU     2,459.74 s
+aggregate    10131% = 101.3 logical cores
+MaxRSS       20,549,652 KiB = 19.6 GiB   （采样峰值 62.9 GiB，含 mmap 的 code-mdbx 页）
+major faults 10,310,433
+fs input     2,327,489,474 blocks ≈ 1.08 TiB
+blocks       25,765,566   txs 3,678,100,106   gas 312,450,256,843,510
+failed       0            exit 0
+```
 
-下一步实验是拿 `GODEBUG=gctrace=1` 跑一段**足够长、能复现塌陷**的区间
-（例如 `20,000,000..25,765,566`），因为只有能复现的运行才能测出原因。
-在此之前**不要**据 5.4 的数字调参。
+四次全量并列：
 
+| 运行 | body 源 | 配置 | wall | CPU-sec |
+|---|---|---|---:|---:|
+| 08-24 基线 | bodyc | 单进程 104w，1 reader | 2h27m10s | 456,881 |
+| 08-25 deep path | bodyc | 4×254w，reservoir | 2h14m10s | 1,620,625 |
+| 08-25 sane | bodyc | 单进程 104w，6 readers | 3h59m16s | 1,148,198 |
+| **08-26 freezer** | **geth freezer** | 单进程 104w，6 readers | **1h13m23s** | **446,152** |
 
----
+**墙钟比之前最好成绩快 45%，CPU-sec 比之前最省的还少 2.3%**——两个判据同时创纪录。
 
-## 6. 下一步的候选优化（按 profile 排序，尚未做）
+逐 band 对照（同一 binary、同一参数，只差 body 源）：
 
-1. `accessList.Contains` / `AddSlot` / `ContainsAddress`：`mapaccess2` 里最大的
-   一块（合计约 184 CPU 秒 / 1.2%）。EIP-2929 的 warm/cold 判定用嵌套 map，
-   改成扁平结构可省，但触碰 gas 计费，必须先有等价性测试。
-2. `IntraBlockState.foldBalanceIncrease` 104.87 s（0.68%）。
-3. 每次调用都新建的 `ScopeContext` / `pool.Get().(*Memory)` / `stack.New()`
-   合计约 123 CPU 秒（0.8%）：可以按调用深度复用，模式与已有的
-   `evm.contractFrames` 相同。
-4. bodyc 分块解码：把 8192 块整段物化改成按列游标惰性物化，
-   直接压掉 §2.4 那 17 GiB 的驻留差。这是唯一能显著抬高 worker 上限的改动，
-   但要重写 `decodeBodySegment`，风险最高，应单独立项并配 segment 级
-   round-trip 测试。
-5. `ecrecover` 预编译（cgo，2.95%）和 `bn256`（2.76%）是共识必需，
-   除非换实现，否则没有空间。
+| band | freezer blk/s | bodyc(run A) blk/s | band | freezer | bodyc(run A) |
+|---|---:|---:|---|---:|---:|
+| 10–11M | 8,324 | 9,599 | 18–19M | **3,978** | **292** |
+| 14–15M | 4,343 | 5,257 | 19–20M | **4,262** | **531** |
+| 17–18M | 4,487 | 3,440 | 24–25M | **2,270** | **630** |
+| 20–21M | 4,339 | 5,177 | 25–25.77M | **2,204** | **165** |
 
-不建议再盲目调 worker/reader/reservoir：254 worker 已经平均占用 218/256 个
-逻辑核，且内存峰值 82.3 GiB。任何参数改动都要新开一行结果，
-不得覆盖本文记录的基线。
+稀疏段 bodyc 反而快 10–20%（列式解码在小块上更省），密集段 freezer 快 4–14 倍；
+**塌陷完全消失**。
+
+### 5.7 根因结论
+
+5.2 列出的三个嫌疑现在只剩一个成立：
+
+- **A. bodyc 整段物化 —— 成立。** 换成每 reader 只持一个 64 块 batch 的 freezer，
+  其他一切不变，长跑塌陷不再出现。
+- **B. 流式输入挤空 page cache 拖累 code-mdbx —— 不成立。** freezer 的流式读取量
+  更大（1.08 TiB vs 858 GiB），major faults 相同量级（10.3M vs 10.4M），却没有塌陷。
+- **C. 定容缓存颠簸 —— 不成立。** 两次运行缓存配置相同。
+
+机制：一个 bodyc reader 钉住整个已解码的 8192 块 segment（密集段约 160 万个含指针
+对象），6 个 reader 加预读 ≈ 数千万活对象；GC 的 mark 成本随活对象数走，
+但只有当**历史累积**到某个规模后才压垮（短窗口重跑同一批块看不到，`gctrace` 在
+健康态也报 0%）。具体是堆碎片化、mark assist 还是 sweep 尚未拆开，但工程结论
+已经足够：
+
+> **全量执行的生产输入是 geth ancient freezer，不是 bodyc。**
+> bodyc 退回到它擅长的位置：归档格式（省 38.8% 磁盘）和顺序单读者场景。
+> 让 bodyc 重新适合这条流水线的唯一路径是 §6 的惰性解码（P2），单独立项。
+
+同时撤回本文 §2.4 的判断"bodyc 的瓶颈是内存不是 CPU"——它只对了一半：
+瓶颈是**活对象数随时间累积**，短窗口 A/B 测不出来，这是 100k 窗口第三次误导长跑结论。
+
+### 5.8 下一步
+
+以 `full-geth-r6-20260826` 为新基线，单变量推进：
+
+1. worker 104 → 128（一物理核一个，§4 预测的拐点）；
+2. readers 6 → 2（bodyc sweep 里 2 已足够，freezer 上 reader 几乎无内存成本，预期无差别）；
+3. 落地 `evm-block-execution-optimization-map-2026-08-26.md` 的第一梯队（≈7–8% CPU）。
+
+地板估算不变：≈450k core-seconds ÷ 128 物理核 ≈ 58 分钟。
