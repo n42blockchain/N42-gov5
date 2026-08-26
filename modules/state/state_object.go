@@ -132,16 +132,42 @@ func putStateObject(so *stateObject) {
 	so.db = nil
 	so.code = nil
 	so.fakeStorage = nil
-	clear(so.originStorage)
-	clear(so.blockOriginStorage)
-	clear(so.dirtyStorage)
+	so.originStorage = recycleStorage(so.originStorage)
+	so.blockOriginStorage = recycleStorage(so.blockOriginStorage)
+	so.dirtyStorage = recycleStorage(so.dirtyStorage)
 	stateObjectPool.Put(so)
+}
+
+// storageRecycleMax bounds the map a pooled stateObject keeps. clear() costs
+// O(bucket capacity), not O(len), and Go maps never shrink: an object that once
+// held a DEX pool's ten thousand slots would pay a ten-thousand-bucket sweep on
+// every block it is recycled into, forever. On the dense-replay profile that
+// sweep was 0.9% of all CPU, almost all of it in originStorage. Small maps are
+// cleared in place so their backing arrays keep serving; big ones are dropped
+// to the GC and rebuilt lazily by newObject.
+const storageRecycleMax = 64
+
+func recycleStorage(m Storage) Storage {
+	if len(m) > storageRecycleMax {
+		return nil
+	}
+	clear(m)
+	return m
 }
 
 // newObject creates a state object, reusing a pooled struct when one
 // is available.
 func newObject(db *IntraBlockState, address types.Address, data, original *account.StateAccount) *stateObject {
 	so := stateObjectPool.Get().(*stateObject)
+	if so.originStorage == nil {
+		so.originStorage = make(Storage)
+	}
+	if so.blockOriginStorage == nil {
+		so.blockOriginStorage = make(Storage)
+	}
+	if so.dirtyStorage == nil {
+		so.dirtyStorage = make(Storage)
+	}
 	so.db = db
 	so.address = address
 	so.code = nil
