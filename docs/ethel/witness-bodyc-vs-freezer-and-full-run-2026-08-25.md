@@ -922,10 +922,30 @@ binary `witness-replay.tier2`（`2df12dce`，含诊断），独占（sar 核对�
 幅度比优化图预估的 1.6% CPU 略小；代价是 RSS +2–4 GiB（每个触碰过的槽现在无论
 输出模式都带三个 32 字节视图）。全量 gate（128w、256w）跑中。
 
-### 5.27 下一步
+### 5.27 T1 全量 gate：通过，生产 binary 更新为 T1
 
-1. T1 全量 gate（跑中）→ 通过则生产 binary 更新为 T1；
-2. 256w 间歇失败：继续等诊断触发；
-3. `perf stat` 量 IPC；
-4. 剩余分配大户：LOG（36 GiB）、CALL 输入 `GetCopy`（12 GiB）、`AddBalance` 的 uint256 分配——
-   优化图 M5/M6/M3。
+binary `witness-replay.t1`（`e92f3b33` = 分支 `2003b43b`，含诊断），独占（sar 核对）：
+
+| 配置 | tier-2 | **T1** | Δ wall | Δ CPU-sec | MaxRSS |
+|---|---:|---:|---:|---:|---:|
+| 128w / 6r / gc300 | 50m32s / 384,638 | **50m02s / 378,758** | −1.0% | −1.5% | 16.2 → 19.1 GiB |
+| 256w / 6r / gc300 | 45m59s / 494,771 | **45m56s / 482,741** | −0.1% | −2.4% | 25.2 → 29.0 GiB |
+
+两次 failed=0，诊断未触发。T1 采纳；`build/bin/witness-replay` 已重建为分支 HEAD。
+
+**最终记录（2026-08-26 22:45）**，起点为 08-24 的 2h27m10s / 456,881 CPU-s：
+
+| 配置 | wall | CPU-sec | 相对起点 |
+|---|---:|---:|---|
+| **生产：128w / 6r / gc300，T1** | **50m02s** | **378,758** | 墙钟 −66%，CPU-sec −17% |
+| 墙钟最快：256w / 6r / gc300，T1 | **45m56s** | 482,741 | 墙钟 −69% |
+
+### 5.28 未完成 / 可继续
+
+1. 256w 间歇 nonce 失败（1/9 次，未复现）：诊断挂在 binary 上，等触发；
+2. `perf stat` 量 IPC：需要 `sudo sysctl -w kernel.perf_event_paranoid=1`；
+3. 剩余分配大户（优化图 M5/M6/M3）：LOG 36 GiB、CALL 输入 `GetCopy` 12 GiB、
+   `AddBalance` uint256 分配——沿"减分配 → 减 mcentral 锁竞争"继续，预期各 1–3%；
+4. T1 的 RSS +3–4 GiB：`slotEntry.origin` 在 `discardBlockChanges` 模式下可以不存，
+   改成可选即可收回；
+5. `origin/main` 分叉（`1209327d`、`2aa0d4f0`）需要合并前对照。
