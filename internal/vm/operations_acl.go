@@ -67,16 +67,17 @@ func makeGasSStoreFunc(clearingRefund uint64) gasFunc {
 		// Gas sentry honoured, do the actual gas calculation based on the stored value
 		var (
 			y, x    = stack.Back(1), stack.Peek()
-			slot    = types.Hash(x.Bytes32())
-			current uint256.Int
+			slot    = &contract.gasSlot
+			current = &contract.gasCur
 			cost    = uint64(0)
 		)
-		evm.IntraBlockState().GetState(contract.Address(), &slot, &current)
+		*slot = types.Hash(x.Bytes32())
+		evm.IntraBlockState().GetState(contract.Address(), slot, current)
 		// Check slot presence in the access list
-		if addrPresent, slotPresent := evm.IntraBlockState().SlotInAccessList(contract.Address(), slot); !slotPresent {
+		if addrPresent, slotPresent := evm.IntraBlockState().SlotInAccessList(contract.Address(), *slot); !slotPresent {
 			cost = params.ColdSloadCostEIP2929
 			// If the caller cannot afford the cost, this change will be rolled back
-			evm.IntraBlockState().AddSlotToAccessList(contract.Address(), slot)
+			evm.IntraBlockState().AddSlotToAccessList(contract.Address(), *slot)
 			if !addrPresent {
 				// This should never happen if the EVM is working correctly
 				return 0, errors.New("impossible case: address was not present in access list during sstore op")
@@ -90,9 +91,9 @@ func makeGasSStoreFunc(clearingRefund uint64) gasFunc {
 			//		return params.SloadGasEIP2200, nil
 			return cost + params.WarmStorageReadCostEIP2929, nil // SLOAD_GAS
 		}
-		var original uint256.Int
-		evm.IntraBlockState().GetCommittedState(contract.Address(), &slot, &original)
-		if original.Eq(&current) {
+		original := &contract.gasOrig
+		evm.IntraBlockState().GetCommittedState(contract.Address(), slot, original)
+		if original.Eq(current) {
 			if original.IsZero() { // create slot (2.1.1)
 				return cost + params.SstoreSetGasEIP2200, nil
 			}
