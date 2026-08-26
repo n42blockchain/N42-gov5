@@ -686,9 +686,33 @@ tier-1 不作为默认 binary。
 此前"密集段 GOGC 300 会被 OOM 杀"的记录（5.5）是 bodyc 源 + 6 reader 各持整段的场景，
 RSS 78 GiB 仍在涨；freezer + tier-1 在 gc300 下只有 14 GiB，且 `--mem-limit-gb` 仍是硬顶。
 
-### 5.16 下一步
+### 5.16 r6 干净重跑：104w 是 CPU-sec 纪录
 
-1. r6 干净重跑（104w，跑中）；
-2. **tier-1 + GOGC 300 全量 @ 256w/6r**（已排队）——最终 gate，预期墙钟 < 1h、CPU-sec < 500k；
+同参数（base binary、104w / 6r / GOGC 100 / 48 GiB），机器独占（sar 97–108 忙碌线程 ≈ 本进程 100）：
+
+```text
+run_id       full-geth-r6-clean-20260826
+wall         1h09m20s          （被污染的原 r6：1h13m23s）
+user+sys     416,751 s         （原 r6：446,152）
+aggregate    10016%
+MaxRSS       20.0 GiB
+failed       0
+```
+
+污染让原 r6 慢了 4 分钟、多算了 29,401 CPU-秒（SMT 兄弟核共享的记账放大）。
+
+当前干净的全量记录（base binary、freezer、GOGC 100）：
+
+| 配置 | wall | CPU-sec | 说明 |
+|---|---:|---:|---|
+| **104w / 6r** | 1h09m20s | **416,751** | CPU-sec 最省 |
+| 128w / 6r | 1h06m29s | 458,312 | +10% CPU 换 −4% 墙钟 |
+| 256w / 6r | 1h02m43s | 535,022 | |
+| 256w / 12r | **1h00m56s** | 629,568 | 墙钟最快 |
+
+### 5.17 下一步
+
+1. **tier-1 + GOGC 300 @ 256w/6r**（跑中）——最终 gate；
+2. tier-1 + GOGC 300 @ 128w/6r（已排队）——CPU-sec 优先的候选；
 3. 密集段 80+ 空转 worker 的原因；
 4. `perf stat` 量 IPC。
