@@ -14,6 +14,7 @@ package main
 
 import (
 	"bytes"
+	"math/big"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -35,9 +36,9 @@ func TestExtractBaseFeePerGasUint64_Roundtrip(t *testing.T) {
 	cases := []uint64{
 		0,
 		1,
-		1_000_000_000,        // 1 gwei
-		100_000_000_000_000,  // 100 mwei-of-gas-style scale
-		^uint64(0),           // max uint64
+		1_000_000_000,       // 1 gwei
+		100_000_000_000_000, // 100 mwei-of-gas-style scale
+		^uint64(0),          // max uint64
 	}
 	for _, want := range cases {
 		var b32 [32]byte
@@ -74,6 +75,20 @@ func TestExtractBaseFeePerGasUint64_OverflowRejected(t *testing.T) {
 func TestEth1BlockToExecutionPayloadV4_NilRejected(t *testing.T) {
 	if _, err := eth1BlockToExecutionPayloadV4(nil); err == nil {
 		t.Fatalf("expected error on nil input")
+	}
+}
+
+func TestEth1BlockToExecutionPayloadV4_PreservesLargeBaseFee(t *testing.T) {
+	blk := cltypes.NewEth1Block(clparams.ElectraVersion, &clparams.MainnetBeaconConfig)
+	blk.BaseFeePerGas[10] = 0x01 // 2^80 in little-endian form
+
+	payload, err := eth1BlockToExecutionPayloadV4(blk)
+	if err != nil {
+		t.Fatalf("conversion: %v", err)
+	}
+	want := new(big.Int).Lsh(big.NewInt(1), 80)
+	if payload.BaseFeePerGas == nil || payload.BaseFeePerGas.ToInt().Cmp(want) != 0 {
+		t.Fatalf("BaseFeePerGas = %v, want %v", payload.BaseFeePerGas, want)
 	}
 }
 
@@ -141,8 +156,8 @@ func TestEth1BlockToExecutionPayloadV4_FieldMapping(t *testing.T) {
 	if string(payload.ExtraData) != "n42-eth-el" {
 		t.Errorf("ExtraData: got %q", string(payload.ExtraData))
 	}
-	if uint64(payload.BaseFeePerGas) != 1_000_000_000 {
-		t.Errorf("BaseFeePerGas: got %d (want 1 gwei)", uint64(payload.BaseFeePerGas))
+	if payload.BaseFeePerGas == nil || payload.BaseFeePerGas.ToInt().Uint64() != 1_000_000_000 {
+		t.Errorf("BaseFeePerGas: got %v (want 1 gwei)", payload.BaseFeePerGas)
 	}
 	if payload.BlockHash != (types.Hash{0x66}) {
 		t.Errorf("BlockHash mismatch: got %x", payload.BlockHash)
@@ -204,9 +219,9 @@ func TestN42HeaderToDepshim_NilInput(t *testing.T) {
 
 func TestMapPayloadStatus_AllBranches(t *testing.T) {
 	cases := []struct {
-		name   string
-		input  *api.PayloadStatusV1
-		want   execution_client.PayloadStatus
+		name  string
+		input *api.PayloadStatusV1
+		want  execution_client.PayloadStatus
 	}{
 		{"nil", nil, execution_client.PayloadStatusNotValidated},
 		{"VALID", &api.PayloadStatusV1{Status: api.PayloadStatusValid}, execution_client.PayloadStatusValidated},
@@ -370,7 +385,7 @@ func TestExecutionPayloadV3ToEth1Block_FieldMapping(t *testing.T) {
 		GasUsed:       12_345,
 		Timestamp:     1_747_000_000,
 		ExtraData:     hexutil.Bytes("p74-test"),
-		BaseFeePerGas: 7_500_000_000,
+		BaseFeePerGas: (*hexutil.Big)(new(big.Int).SetUint64(7_500_000_000)),
 		BlockHash:     types.Hash{0x66},
 		Transactions: []hexutil.Bytes{
 			hexutil.Bytes{0xaa, 0xbb},
@@ -411,6 +426,21 @@ func TestExecutionPayloadV3ToEth1Block_FieldMapping(t *testing.T) {
 	}
 	if out.Withdrawals == nil || out.Withdrawals.Len() != 1 {
 		t.Errorf("Withdrawals count mismatch")
+	}
+}
+
+func TestExecutionPayloadV3ToEth1Block_PreservesLargeBaseFee(t *testing.T) {
+	want := new(big.Int).Lsh(big.NewInt(1), 80)
+	in := &api.ExecutionPayloadV3{
+		LogsBloom:     make([]byte, 256),
+		BaseFeePerGas: (*hexutil.Big)(new(big.Int).Set(want)),
+	}
+	out, err := executionPayloadV3ToEth1Block(in)
+	if err != nil {
+		t.Fatalf("conversion: %v", err)
+	}
+	if got := baseFeePerGasBigInt(out.BaseFeePerGas); got.Cmp(want) != 0 {
+		t.Fatalf("BaseFeePerGas = %v, want %v", got, want)
 	}
 }
 

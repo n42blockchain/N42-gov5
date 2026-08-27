@@ -21,7 +21,9 @@ package api
 
 import (
 	"context"
+	"math/big"
 	"strconv"
+	"strings"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
@@ -47,7 +49,7 @@ type ExecutionPayloadV3 struct {
 	GasUsed       hexutil.Uint64  `json:"gasUsed"`
 	Timestamp     hexutil.Uint64  `json:"timestamp"`
 	ExtraData     hexutil.Bytes   `json:"extraData"`
-	BaseFeePerGas hexutil.Uint64  `json:"baseFeePerGas"`
+	BaseFeePerGas *hexutil.Big    `json:"baseFeePerGas"`
 	BlockHash     types.Hash      `json:"blockHash"`
 	Transactions  []hexutil.Bytes `json:"transactions"`
 	Withdrawals   []*Withdrawal   `json:"withdrawals"`
@@ -76,7 +78,7 @@ type PayloadAttributesV3 struct {
 // GetPayloadResponseV3 is the response for engine_getPayloadV3
 type GetPayloadResponseV3 struct {
 	ExecutionPayload      *ExecutionPayloadV3 `json:"executionPayload"`
-	BlockValue            hexutil.Uint64      `json:"blockValue"`
+	BlockValue            *hexutil.Big        `json:"blockValue"`
 	BlobsBundle           *BlobsBundleV1      `json:"blobsBundle"`
 	ShouldOverrideBuilder bool                `json:"shouldOverrideBuilder"`
 }
@@ -178,11 +180,26 @@ func (e *EngineAPIBlob) SetStateAdapter(adapter *EngineStateAdapter) {
 	}
 }
 
+func (e *EngineAPIBlob) SetMissingAncestorObserver(observer func(types.Hash)) {
+	if v1 := e.v1(); v1 != nil {
+		v1.SetMissingAncestorObserver(observer)
+	}
+}
+
 // NewPayloadV3 processes a new execution payload with blob support
 // engine_newPayloadV3
 func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayloadV3, expectedBlobVersionedHashes []types.Hash, parentBeaconBlockRoot *types.Hash) (*PayloadStatusV1, error) {
 	if payload == nil {
 		return invalidPayloadResponse("missing execution payload"), nil
+	}
+	if payload.BlobGasUsed == nil || payload.ExcessBlobGas == nil {
+		return nil, &engineInvalidParamsError{msg: "missing blob gas fields"}
+	}
+	if expectedBlobVersionedHashes == nil {
+		return nil, &engineInvalidParamsError{msg: "missing versioned hashes"}
+	}
+	if parentBeaconBlockRoot == nil {
+		return nil, &engineInvalidParamsError{msg: "missing parent beacon block root"}
 	}
 	blockNumber := uint64(payload.BlockNumber)
 	timestamp := uint64(payload.Timestamp)
@@ -192,18 +209,11 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	}
 	if cfg := e.v1().chainConfig(); cfg != nil {
 		if !cfg.IsCancunAt(blockNumber, timestamp) {
-			if payload.BlobGasUsed != nil || payload.ExcessBlobGas != nil || len(expectedBlobVersionedHashes) > 0 {
-				return nil, &engineInvalidParamsError{msg: "blob fields not allowed before Cancun"}
-			}
-		} else if payload.BlobGasUsed == nil || payload.ExcessBlobGas == nil {
-			return nil, &engineInvalidParamsError{msg: "missing blob gas fields"}
+			return nil, &engineUnsupportedForkError{msg: "newPayloadV3 called for pre-Cancun timestamp, use newPayloadV2"}
 		}
 	}
-	if parentBeaconBlockRoot == nil {
-		return invalidPayloadResponse("missing parent beacon block root"), nil
-	}
 	if payload.Withdrawals == nil {
-		return invalidPayloadResponse("missing withdrawals in Cancun+ payload"), nil
+		return nil, &engineInvalidParamsError{msg: "missing withdrawals in Cancun+ payload"}
 	}
 
 	// Validate blob gas and versioned hashes for Cancun
@@ -223,6 +233,7 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 		maxBlobs,
 		gasPerBlob,
 	); resp != nil {
+		setBlobGasValidationLatestValidHash(resp, payload.ParentHash, e.v1().parentHeader(payload.ParentHash))
 		return resp, nil
 	}
 	if err := ValidateBlobTransactions(payload.Transactions, expectedBlobVersionedHashes); err != nil {
@@ -253,7 +264,7 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	if err := validateExecutionPayloadHeader(blockHeader(blk), parent, e.v1().chainConfig()); err != nil {
 		return e.v1().invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
 	}
-	if err := validateExecutionPayloadTransactions(payload.Transactions, e.v1().chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), uint64(*payload.ExcessBlobGas), uint64(payload.GasLimit)); err != nil {
+	if err := validateExecutionPayloadTransactionsWithBaseFee(payload.Transactions, e.v1().chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), blockHeader(blk).BaseFee, uint64(*payload.ExcessBlobGas), uint64(payload.GasLimit)); err != nil {
 		return e.v1().invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
 	}
 	if err := validateExecutionPayloadBlockRLPSize(blk, payload.Transactions, e.v1().chainConfig(), enginePayloadHashOptions{
@@ -278,6 +289,9 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 		if overlay := e.v1().overlay(); overlay != nil {
 			overlay.stageBlockWithBody(blk, blockHash, nil, nil, false, body)
 		}
+		if e.v1().missingAncestorObserver != nil {
+			e.v1().missingAncestorObserver(payload.ParentHash)
+		}
 		return acceptedPayloadResponse(), nil
 	}
 	if e.v1().stateAdapter != nil {
@@ -297,13 +311,26 @@ func (e *EngineAPIBlob) NewPayloadV3(ctx context.Context, payload *ExecutionPayl
 	return validPayloadResponse(blockHash), nil
 }
 
+func setBlobGasValidationLatestValidHash(resp *PayloadStatusV1, parentHash types.Hash, parent *block.Header) {
+	if resp == nil || resp.ValidationError == nil {
+		return
+	}
+	reason := *resp.ValidationError
+	if reason == "blob gas mismatch" || reason == "too many blobs" || strings.HasPrefix(reason, "blob gas used ") {
+		resp.LatestValidHash = latestValidHashForParent(parentHash, parent)
+	}
+}
+
 // GetPayloadV3 retrieves a payload with blob bundle
 // engine_getPayloadV3
 func (e *EngineAPIBlob) GetPayloadV3(ctx context.Context, payloadID PayloadID) (*GetPayloadResponseV3, error) {
-	if built := e.v1().builtPayload(payloadID); built != nil && built.v3 != nil {
+	if built := e.v1().builtPayload(payloadID); built != nil {
+		if built.v3 == nil {
+			return nil, &engineUnsupportedForkError{msg: "getPayloadV3 called for pre-Cancun payload, use getPayloadV2"}
+		}
 		return &GetPayloadResponseV3{
 			ExecutionPayload:      built.v3,
-			BlockValue:            hexutil.Uint64(0),
+			BlockValue:            enginePayloadBlockValue(built.blockValue),
 			BlobsBundle:           built.blobsBundle,
 			ShouldOverrideBuilder: false,
 		}, nil
@@ -330,12 +357,21 @@ func (e *EngineAPIBlob) ForkchoiceUpdatedV3(ctx context.Context, state *Forkchoi
 	if attrs.ParentBeaconBlockRoot == nil {
 		return nil, &engineInvalidPayloadAttributesError{msg: "missing parent beacon block root"}
 	}
+	nextNumber := uint64(0)
+	if head != nil && head.Number64() != nil {
+		nextNumber = head.Number64().Uint64() + 1
+	}
+	if cfg := e.v1().chainConfig(); cfg != nil && !cfg.IsCancunAt(nextNumber, uint64(attrs.Timestamp)) {
+		return nil, &engineUnsupportedForkError{msg: "forkchoiceUpdatedV3 called for pre-Cancun timestamp, use forkchoiceUpdatedV2"}
+	}
 	if uint64(attrs.Timestamp) <= head.Time() {
 		return nil, &engineInvalidPayloadAttributesError{msg: "payload timestamp must be greater than parent"}
 	}
-	payload := e.buildExecutionPayloadV3Stateful(head, headHash, attrs)
+	payload, blockValue, blobsBundle := e.buildExecutionPayloadV3StatefulWithValue(head, headHash, attrs)
 	if payload == nil {
 		payload = buildExecutionPayloadV3(head, headHash, attrs, e.v1().chainConfig())
+		blockValue = new(big.Int)
+		blobsBundle = emptyBlobsBundle()
 	}
 	if payload == nil {
 		return invalidForkchoiceResponse("failed to build payload"), nil
@@ -351,6 +387,7 @@ func (e *EngineAPIBlob) ForkchoiceUpdatedV3(ctx context.Context, state *Forkchoi
 	)
 	if overlay := e.v1().overlay(); overlay != nil {
 		overlay.storeBuiltPayload(payloadID, &engineBuiltPayload{
+			blockValue: blockValue,
 			v1: &ExecutionPayloadV1{
 				ParentHash:    payload.ParentHash,
 				FeeRecipient:  payload.FeeRecipient,
@@ -387,15 +424,20 @@ func (e *EngineAPIBlob) ForkchoiceUpdatedV3(ctx context.Context, state *Forkchoi
 				Withdrawals: cloneWithdrawals(payload.Withdrawals),
 			},
 			v3:          payload,
-			blobsBundle: &BlobsBundleV1{Commitments: []hexutil.Bytes{}, Proofs: []hexutil.Bytes{}, Blobs: []hexutil.Bytes{}},
+			blobsBundle: blobsBundle,
 		})
 	}
 	return validForkchoiceResponse(headHash, &payloadID), nil
 }
 
 func (e *EngineAPIBlob) buildExecutionPayloadV3Stateful(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV3) *ExecutionPayloadV3 {
+	payload, _, _ := e.buildExecutionPayloadV3StatefulWithValue(parent, parentHash, attrs)
+	return payload
+}
+
+func (e *EngineAPIBlob) buildExecutionPayloadV3StatefulWithValue(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV3) (*ExecutionPayloadV3, *big.Int, *BlobsBundleV1) {
 	if attrs == nil {
-		return nil
+		return nil, nil, nil
 	}
 	result := e.v1().buildExecutionPayloadStateful(parent, parentHash, &PayloadAttributesV1{
 		Timestamp:             attrs.Timestamp,
@@ -403,12 +445,12 @@ func (e *EngineAPIBlob) buildExecutionPayloadV3Stateful(parent block.IBlock, par
 		SuggestedFeeRecipient: attrs.SuggestedFeeRecipient,
 	}, attrs.Withdrawals, attrs.ParentBeaconBlockRoot)
 	if result == nil || result.block == nil {
-		return nil
+		return nil, nil, nil
 	}
 	v1 := blockToExecutionPayloadV1(result.block, e.v1().chainConfig())
 	header := blockHeader(result.block)
 	if v1 == nil || header == nil || header.BlobGasUsed == nil || header.ExcessBlobGas == nil {
-		return nil
+		return nil, nil, nil
 	}
 	payload := &ExecutionPayloadV3{
 		ParentHash:    v1.ParentHash,
@@ -435,7 +477,11 @@ func (e *EngineAPIBlob) buildExecutionPayloadV3Stateful(parent block.IBlock, par
 		includeBlobFields:  true,
 		parentBeaconRoot:   attrs.ParentBeaconBlockRoot,
 	})
-	return payload
+	return payload, result.blockValue, result.blobsBundle
+}
+
+func emptyBlobsBundle() *BlobsBundleV1 {
+	return &BlobsBundleV1{Commitments: []hexutil.Bytes{}, Proofs: []hexutil.Bytes{}, Blobs: []hexutil.Bytes{}}
 }
 
 // GetBlobsBundleV1 retrieves the blobs bundle for a payload

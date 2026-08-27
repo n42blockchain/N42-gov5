@@ -26,6 +26,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/consensus"
@@ -64,6 +67,10 @@ type Service struct {
 
 	apiCore *api.API
 	adapter *api.EngineStateAdapter
+	v1      *api.EngineAPIV1
+	txspool common.ITxsPool
+
+	missingAncestorObserver func(types.Hash)
 }
 
 // New builds the service. The DB and freezer must be the same handles
@@ -97,18 +104,22 @@ func (s *Service) Start(_ context.Context) error {
 	// helpers (currentHead returns nil → SYNCING) and never touches
 	// txspool or accountManager. State writes go through the
 	// EngineStateAdapter wired below.
-	s.apiCore = api.NewAPI(nil, s.db, s.engine, nil, nil, s.chainCfg)
-	s.adapter = api.NewEngineStateAdapter(s.db, s.freezer, s.chainCfg, s.engine)
+	s.apiCore = api.NewAPI(nil, s.db, s.engine, s.txspool, nil, s.chainCfg)
+	s.adapter = api.NewEngineStateAdapter(s.db, s.freezer, s.chainCfg, s.engine).WithHeadMarker(true)
 
 	apis := api.EngineAPIs(s.apiCore)
 	for _, a := range apis {
 		switch svc := a.Service.(type) {
 		case *api.EngineAPIV1:
+			s.v1 = svc
 			svc.SetStateAdapter(s.adapter)
+			svc.SetMissingAncestorObserver(s.missingAncestorObserver)
 		case *api.EngineAPIBlob:
 			svc.SetStateAdapter(s.adapter)
+			svc.SetMissingAncestorObserver(s.missingAncestorObserver)
 		case *api.EngineAPIv4:
 			svc.SetStateAdapter(s.adapter)
+			svc.SetMissingAncestorObserver(s.missingAncestorObserver)
 		}
 	}
 
@@ -164,6 +175,39 @@ func (s *Service) Start(_ context.Context) error {
 	return nil
 }
 
+// SetTxPool shares eth-el's in-process transaction pool with Engine payload
+// construction. Call before Start.
+func (s *Service) SetTxPool(pool common.ITxsPool) {
+	s.txspool = pool
+}
+
+// SetMissingAncestorObserver connects unknown-parent Engine payloads to the
+// active devp2p downloader.
+func (s *Service) SetMissingAncestorObserver(observer func(types.Hash)) {
+	s.missingAncestorObserver = observer
+	if s.v1 != nil {
+		s.v1.SetMissingAncestorObserver(observer)
+	}
+}
+
+// HasBlockHash reports whether the Engine adapter/overlay already knows hash.
+func (s *Service) HasBlockHash(hash types.Hash) bool {
+	return s != nil && s.v1 != nil && s.v1.HasBlockHash(hash)
+}
+
+// ImportSyncedParisBlock validates a block fetched over devp2p using the
+// Engine newPayload path and returns its wire status.
+func (s *Service) ImportSyncedBlock(blk *block.Block, withdrawals []*api.Withdrawal) (string, *types.Hash, error) {
+	if s == nil || s.v1 == nil {
+		return "", nil, errors.New("engine API v1 is not started")
+	}
+	status, err := s.v1.ImportSyncedBlock(context.Background(), blk, withdrawals)
+	if err != nil || status == nil {
+		return "", nil, err
+	}
+	return status.Status, status.LatestValidHash, nil
+}
+
 func (s *Service) Stop() error {
 	if s.server == nil {
 		return nil
@@ -179,6 +223,15 @@ func (s *Service) Stop() error {
 	s.server = nil
 	s.listener = nil
 	return nil
+}
+
+// MarkRejectedPayloadHash bridges invalid-chain detection from the devp2p
+// downloader into the Engine API's rejected-ancestor cache.
+func (s *Service) MarkRejectedPayloadHash(hash, latestValidHash types.Hash) {
+	if s == nil || s.apiCore == nil {
+		return
+	}
+	s.apiCore.MarkRejectedPayloadHash(hash, &latestValidHash)
 }
 
 // loadOrCreateJWTSecret reads a 32-byte hex-encoded secret from path. If

@@ -41,6 +41,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/internal/node"
+	"github.com/n42blockchain/N42/lib/kv/mdbx"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/params"
 )
@@ -75,6 +76,7 @@ func appRun(ctx *cli.Context) error {
 	}
 
 	log.Init(DefaultConfig.NodeCfg, DefaultConfig.LoggerCfg)
+	mdbx.SetWriteProbeLogger(log.Info)
 
 	releasePID, err := acquirePIDFile(DefaultConfig.NodeCfg.DataDir, os.Getpid())
 	if err != nil {

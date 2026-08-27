@@ -17,6 +17,7 @@ import (
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
+	"github.com/n42blockchain/N42/params"
 )
 
 // TransactionAPI exposes methods for reading and creating transaction data.
@@ -56,32 +57,33 @@ func (s *TransactionAPI) SendRawTransaction(ctx context.Context, input hexutil.B
 	if len(input) == 0 {
 		return avmcommon.Hash{}, errors.New("empty transaction data")
 	}
-	tx := new(avmtypes.Transaction)
-	err := tx.UnmarshalBinary(input)
+	tx, err := transaction.DecodeEthereumTransaction(input)
 	if err != nil {
 		return avmcommon.Hash{}, err
 	}
-	currentBlock := s.api.BlockChain().CurrentBlock()
-	if currentBlock == nil {
-		return avmcommon.Hash{}, errors.New("no current block available")
+	currentBlock, rules, err := s.transactionHeadAndRules()
+	if err != nil {
+		return avmcommon.Hash{}, err
 	}
 	header := currentBlock.Header()
-	if header == nil {
-		return avmcommon.Hash{}, errors.New("no header available")
+	if err := validateTransactionInitCodeSize(tx, rules); err != nil {
+		return avmcommon.Hash{}, err
 	}
-	metaTx, err := tx.ToastTransaction(s.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()))
+	signer := transaction.MakeSignerWithTimestamp(s.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()), currentBlock.Time())
+	from, err := transaction.Sender(signer, tx)
 	if err != nil {
 		return avmcommon.Hash{}, err
 	}
-	seedRecoveredSender(metaTx, transaction.LatestSignerForChainID(s.api.GetChainConfig().ChainID))
-	return SubmitTransaction(context.Background(), s.api, metaTx)
+	tx.SetFrom(from)
+	seedRecoveredSender(tx, transaction.LatestSignerForChainID(s.api.GetChainConfig().ChainID))
+	return SubmitTransaction(context.Background(), s.api, tx)
 }
 
 // MaxBatchSize is the maximum number of transactions allowed in a single batch request.
 const MaxBatchSize = 200
 
-// seedRecoveredSender hands the sender that ToastTransaction just recovered
-// (a full ECDSA recovery under the chain's signer) to the transaction's sender
+// seedRecoveredSender hands an already recovered sender (from a full ECDSA
+// recovery under the chain's signer) to the transaction's sender
 // memo, so the pool's own recovery of the same transaction becomes a cache
 // hit instead of a second ~50 µs ecrecover. Measured on the 7-node rig: the
 // RPC-submitted share of a full block was recovered twice, 4.4% of node CPU.
@@ -104,14 +106,11 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 		return nil, fmt.Errorf("batch size %d exceeds maximum allowed %d", len(inputs), MaxBatchSize)
 	}
 
-	currentBlock := s.api.BlockChain().CurrentBlock()
-	if currentBlock == nil {
-		return nil, errors.New("no current block available")
+	currentBlock, rules, err := s.transactionHeadAndRules()
+	if err != nil {
+		return nil, err
 	}
 	header := currentBlock.Header()
-	if header == nil {
-		return nil, errors.New("no header available")
-	}
 
 	// Decode and fee-check everything first, then admit the survivors to the
 	// pool as ONE batch. The old loop called SubmitTransaction per entry —
@@ -131,20 +130,28 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 			}
 			continue
 		}
-		tx := new(avmtypes.Transaction)
-		if err := tx.UnmarshalBinary(t); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		metaTx, err := tx.ToastTransaction(s.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()))
+		metaTx, err := transaction.DecodeEthereumTransaction(t)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
 			continue
 		}
+		if err := validateTransactionInitCodeSize(metaTx, rules); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		signer := transaction.MakeSignerWithTimestamp(s.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()), currentBlock.Time())
+		from, err := transaction.Sender(signer, metaTx)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		metaTx.SetFrom(from)
 		seedRecoveredSender(metaTx, poolSigner)
 		if err := checkTxFee(*metaTx.GasPrice(), metaTx.Gas(), baseFee); err != nil {
 			if firstErr == nil {
@@ -168,6 +175,25 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 		}
 	}
 	return hs, firstErr
+}
+
+func (s *TransactionAPI) transactionHeadAndRules() (block.IBlock, *params.Rules, error) {
+	if s == nil || s.api == nil {
+		return nil, nil, errors.New("transaction API unavailable")
+	}
+	currentBlock := s.api.resolveForkchoiceTaggedBlock(jsonrpc.LatestBlockNumber)
+	if currentBlock == nil {
+		return nil, nil, errors.New("no current block available")
+	}
+	header := currentBlock.Header()
+	if header == nil || header.Number64() == nil {
+		return nil, nil, errors.New("no header available")
+	}
+	chainConfig := s.api.GetChainConfig()
+	if chainConfig == nil {
+		return nil, nil, errors.New("no chain configuration available")
+	}
+	return currentBlock, chainConfig.RulesWithTimestamp(header.Number64().Uint64(), currentBlock.Time()), nil
 }
 
 // GetTransactionReceipt returns the transaction receipt for the given transaction hash.
@@ -288,7 +314,7 @@ func (s *TransactionAPI) GetTransactionReceipt(ctx context.Context, hash avmcomm
 	} else {
 		fields["status"] = hexutil.Uint(receipt.Status)
 	}
-	if receipt.Logs == nil {
+	if len(receipt.Logs) == 0 {
 		fields["logs"] = []*avmtypes.Log{}
 	} else {
 		fields["logs"] = avmtypes.FromastLogs(receipt.Logs)
@@ -408,6 +434,9 @@ func (s *TransactionAPI) GetTransactionByBlockHashAndIndex(ctx context.Context, 
 
 // SubmitTransaction submits a transaction to the transaction pool.
 func SubmitTransaction(ctx context.Context, api *API, tx *transaction.Transaction) (avmcommon.Hash, error) {
+	if api == nil || api.TxsPool() == nil {
+		return avmcommon.Hash{}, errors.New("transaction pool unavailable")
+	}
 	if err := checkTxFee(*tx.GasPrice(), tx.Gas(), baseFee); err != nil {
 		return avmcommon.Hash{}, err
 	}

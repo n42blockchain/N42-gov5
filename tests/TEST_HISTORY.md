@@ -1,17 +1,46 @@
 # Ethereum Execution Layer Test History
 
-## Current Status (2026-03-26)
+## Current Status (2026-08-20)
 
 ```
-Hive/EEST broad consume-engine shard reruns: ALL GREEN
+Hive ethereum/engine with eth-el: 403 / 403 passed
+Hive ethereum/engine native applicable set: 311 / 311 passed
+
+Latest completed EEST broad consume-engine shard reruns: ALL GREEN
 Paris+Shanghai:  3,573 passed
 Cancun:         17,783 passed
-Prague:         20,964 passed
+Prague:         20,878 passed
 Osaka:          21,583 passed
-Total:          63,903 passed
+Access-list:     2,132 passed
+
+Latest completed EEST consume-rlp stable fixture set:
+RLP:            47,589 / 47,589 passed
 ```
 
+The EEST rows are the latest-revision completed evidence (Engine on 2026-08-19,
+RLP on 2026-08-20); all commands exited with RC 0 and no reruns remain.
+Engine shards overlap, especially the cross-fork access-list shard, so their
+counts must not be added and reported as a unique-test total. The native Hive
+set is the subset applicable to the main `n42` binary; devp2p, multi-client,
+and P2P syncing scenarios that require `eth-el` are reported separately.
+
 See: README.md, docs/DEVLOG.md, docs/GAP.md
+
+The complete-matrix revision was N42 `36822b5c5` for both Engine and RLP, with Hive
+`b54317a8` and EEST `e78efc220`. The Engine run took 44:00, 3:45:27,
+4:27:11, 4:34:31, and 26:57 by shard; the complete RLP run took 11:30:32.
+The initial RLP run exposed six cases where a blob network wrapper was accepted
+inside block-body RLP. N42 `87db38feb` rejects sidecars at that boundary; the
+six targeted cases and the complete rerun passed. EEST `e78efc220` also makes
+release metadata cache refresh atomic and preserves a valid stale cache when
+the remote refresh fails.
+
+After that matrix completed, N42 incorporated ten newer `main` commits and two
+local fixes. Code revision `520fede6f` passes `make build`, short and full unit
+tests, lint, vet, core race tests, full `go test -race -short ./...`, and script
+tests. No dedicated eth-el Engine API, EVM, or RLP decoder package changed in
+the reviewed delta. The complete Hive/EEST matrix was not rerun at that newer
+revision, so `36822b5c5` remains the exact compatibility-evidence revision.
 
 ---
 
@@ -66,7 +95,9 @@ Blockers fixed:
 - SELFDESTRUCT / CREATE2 transaction boundaries
 - Hive timestamp handling (`HIVE_CANCUN_TIMESTAMP` without Berlin → gas explosion)
 
-Final: **63,903 tests, all green** across Paris+Shanghai / Cancun / Prague / Osaka.
+Final: all collected tests were green across Paris+Shanghai, Cancun, Prague,
+and Osaka. These shard counts overlap and therefore have no valid summed
+unique-test total.
 
 ---
 

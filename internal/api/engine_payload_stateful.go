@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
 
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/account"
@@ -97,6 +98,8 @@ func (e *EngineAPIV1) executePayloadOnParentStateAndValidateWithWithdrawals(blk 
 type statefulPayloadBuildResult struct {
 	block             *block.Block
 	receipts          block.Receipts
+	blockValue        *big.Int
+	blobsBundle       *BlobsBundleV1
 	executionRequests []hexutil.Bytes
 }
 
@@ -257,8 +260,12 @@ func (e *EngineAPIV1) executePayloadOnParentStateWithWithdrawals(blk block.IBloc
 		if usedGas != header.GasUsed {
 			return fmt.Errorf("gas used by execution: %d, in header: %d", usedGas, header.GasUsed)
 		}
-		applyExecutionWithdrawals(ibs, withdrawals)
 		if err := finalizeExecutionStateChanges(cfg, header, ibs); err != nil {
+			return err
+		}
+		applyExecutionWithdrawals(ibs, withdrawals)
+		actualRequests, err := internalcore.ProcessExecutionBlockEnd(receipts, cfg, ibs, header, e.api.api.engine)
+		if err != nil {
 			return err
 		}
 		var rules *params.Rules
@@ -266,10 +273,6 @@ func (e *EngineAPIV1) executePayloadOnParentStateWithWithdrawals(blk block.IBloc
 			rules = cfg.RulesWithTimestamp(uint64FromUint256OrZero(header.Number), header.Time)
 		}
 		if rules != nil && rules.IsPrague {
-			actualRequests, err := internalcore.ProcessExecutionBlockEnd(receipts, cfg, ibs, header, e.api.api.engine)
-			if err != nil {
-				return err
-			}
 			if executionRequestsHash(actualRequests) != executionRequestsHash(expectedRequests) {
 				return fmt.Errorf("invalid requests hash")
 			}
@@ -281,7 +284,7 @@ func (e *EngineAPIV1) executePayloadOnParentStateWithWithdrawals(blk block.IBloc
 		header.Bloom = block.CreateBloom(receipts)
 		concreteBlock.WithSeal(header)
 		accounts, storage := ibs.DirtyAccountData()
-		nextState = mergeEngineStateOverlay(parentState, accounts, storage, ibs.CodeHashes())
+		nextState = mergeEngineStateOverlay(parentState, parentHeader.Number.Uint64(), accounts, storage, ibs.CodeHashes())
 		executedReceipts = cloneReceipts(receipts)
 		return nil
 	})
@@ -300,7 +303,7 @@ func (e *EngineAPIV1) buildExecutionPayloadV1Stateful(parent block.IBlock, paren
 }
 
 func (e *EngineAPIV1) buildExecutionPayloadStateful(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV1, withdrawals []*Withdrawal, parentBeaconRoot *types.Hash) *statefulPayloadBuildResult {
-	if e == nil || e.api == nil || e.api.api == nil || e.api.api.BlockChain() == nil || e.api.api.engine == nil || e.api.api.txspool == nil {
+	if e == nil || e.api == nil || e.api.api == nil || e.api.api.engine == nil || e.api.api.txspool == nil {
 		return nil
 	}
 	if parent == nil || attrs == nil {
@@ -310,7 +313,7 @@ func (e *EngineAPIV1) buildExecutionPayloadStateful(parent block.IBlock, parentH
 	if parentHeader == nil || parentHeader.Number == nil {
 		return nil
 	}
-	db := e.api.api.BlockChain().DB()
+	db := e.api.api.db
 	if db == nil {
 		return nil
 	}
@@ -352,6 +355,8 @@ func (e *EngineAPIV1) buildExecutionPayloadStateful(parent block.IBlock, parentH
 		result = &statefulPayloadBuildResult{
 			block:             builtBlock,
 			receipts:          cloneReceipts(receipts),
+			blockValue:        executionPayloadBlockValue(header, txs, receipts),
+			blobsBundle:       executionPayloadBlobsBundle(txs),
 			executionRequests: cloneHexutilBytesList(actualRequests),
 		}
 		return nil
@@ -361,6 +366,52 @@ func (e *EngineAPIV1) buildExecutionPayloadStateful(parent block.IBlock, parentH
 		return nil
 	}
 	return result
+}
+
+func executionPayloadBlobsBundle(txs []*transaction.Transaction) *BlobsBundleV1 {
+	bundle := &BlobsBundleV1{
+		Commitments: []hexutil.Bytes{},
+		Proofs:      []hexutil.Bytes{},
+		Blobs:       []hexutil.Bytes{},
+	}
+	for _, tx := range txs {
+		if tx == nil {
+			continue
+		}
+		sidecar := tx.BlobTxSidecar()
+		if sidecar == nil {
+			continue
+		}
+		for i := range sidecar.Blobs {
+			bundle.Blobs = append(bundle.Blobs, append(hexutil.Bytes(nil), sidecar.Blobs[i][:]...))
+		}
+		for i := range sidecar.Commitments {
+			bundle.Commitments = append(bundle.Commitments, append(hexutil.Bytes(nil), sidecar.Commitments[i][:]...))
+		}
+		for i := range sidecar.Proofs {
+			bundle.Proofs = append(bundle.Proofs, append(hexutil.Bytes(nil), sidecar.Proofs[i][:]...))
+		}
+	}
+	return bundle
+}
+
+func executionPayloadBlockValue(header *block.Header, txs []*transaction.Transaction, receipts block.Receipts) *big.Int {
+	value := new(big.Int)
+	if header == nil {
+		return value
+	}
+	for i, tx := range txs {
+		if tx == nil || i >= len(receipts) || receipts[i] == nil {
+			continue
+		}
+		tip, err := tx.EffectiveGasTip(header.BaseFee)
+		if err != nil {
+			continue
+		}
+		reward := new(big.Int).Mul(tip.ToBig(), new(big.Int).SetUint64(receipts[i].GasUsed))
+		value.Add(value, reward)
+	}
+	return value
 }
 
 func populateEthereumExecutionPayloadHeader(header *block.Header, txs []*transaction.Transaction, receipts block.Receipts) error {
@@ -426,6 +477,11 @@ func (e *EngineAPIV1) executePayloadTransactions(tx kv.Tx, parentHeader, header 
 	txs := make([]*transaction.Transaction, 0)
 	receipts := make(block.Receipts, 0)
 	txSet := builder.NewTxByPriceAndNonce(pending, header.BaseFee)
+	var maxBlobGas uint64
+	if cfg := e.chainConfig(); cfg != nil && header.Number != nil && cfg.IsCancunAt(header.Number.Uint64(), header.Time) {
+		maxBlobGas = cfg.BlobMaxGasPerBlock(header.Time)
+	}
+	var blobGasUsed uint64
 
 	commitTx := func(txn *transaction.Transaction) error {
 		ibs.Prepare(txn.Hash(), types.Hash{}, len(txs))
@@ -450,9 +506,15 @@ func (e *EngineAPIV1) executePayloadTransactions(tx kv.Tx, parentHeader, header 
 		if txn == nil {
 			break
 		}
+		txnBlobGas := txn.BlobGas()
+		if maxBlobGas > 0 && txnBlobGas > maxBlobGas-blobGasUsed {
+			txSet.Pop()
+			continue
+		}
 		err := commitTx(txn)
 		switch {
 		case err == nil:
+			blobGasUsed += txnBlobGas
 			txSet.Shift()
 		case errors.Is(err, internalcore.ErrGasLimitReached):
 			txSet.Pop()
@@ -630,13 +692,37 @@ func withParentState(db kv.RwDB, parentNumber uint64, overlayState *engineStateO
 	}
 	defer tx.Rollback()
 
-	if err := applyEngineStateOverlayToTx(tx, overlayState); err != nil {
-		return err
+	baseNumber := parentNumber
+	if overlayState != nil && overlayState.hasBaseBlockNumber {
+		baseNumber = overlayState.baseBlockNumber
 	}
-	stateReader, ibs, err := newOverlayStateView(db, tx, parentNumber, nil)
+	rewound, err := rewindEngineValidationState(tx, baseNumber+1)
 	if err != nil {
 		return err
 	}
+	if err := applyEngineStateOverlayToTx(tx, overlayState); err != nil {
+		return err
+	}
+	var stateReader state.StateReader
+	if rewound || overlayState != nil {
+		if err := tx.ClearBucket(kv.TrieOfAccounts); err != nil {
+			return fmt.Errorf("clear parent account trie: %w", err)
+		}
+		if err := tx.ClearBucket(kv.TrieOfStorage); err != nil {
+			return fmt.Errorf("clear parent storage trie: %w", err)
+		}
+		if err := ethel.RebuildHashedState(tx); err != nil {
+			return fmt.Errorf("rebuild parent hashed state: %w", err)
+		}
+		stateReader = state.NewPlainStateReader(tx)
+	} else {
+		stateReader = state.NewPlainState(tx, parentNumber+1)
+		if cache := layered.ExtractCache(db); cache != nil {
+			stateReader = state.NewCachedStateReader(stateReader, cache)
+		}
+	}
+	ibs := state.New(stateReader)
+	ibs.BeginWriteCodes()
 	ethel.SetupStateRootComputer(tx, ibs)
 	if err := ethel.InitHashState(tx); err != nil {
 		return err
@@ -648,16 +734,15 @@ func withCanonicalParentState(db kv.RwDB, parentNumber uint64, fn func(tx kv.Tx,
 	return withParentState(db, parentNumber, nil, fn)
 }
 
-func mergeEngineStateOverlay(parent *engineStateOverlay, accounts map[types.Address][]byte, storage map[types.Address]map[types.Hash][]byte, codes map[types.Hash][]byte) *engineStateOverlay {
-	if parent == nil && len(accounts) == 0 && len(storage) == 0 && len(codes) == 0 {
-		return nil
-	}
+func mergeEngineStateOverlay(parent *engineStateOverlay, baseBlockNumber uint64, accounts map[types.Address][]byte, storage map[types.Address]map[types.Hash][]byte, codes map[types.Hash][]byte) *engineStateOverlay {
 	merged := cloneEngineStateOverlay(parent)
 	if merged == nil {
 		merged = &engineStateOverlay{
-			accounts: make(map[types.Address][]byte),
-			storage:  make(map[types.Address]map[types.Hash][]byte),
-			codes:    make(map[types.Hash][]byte),
+			accounts:           make(map[types.Address][]byte),
+			storage:            make(map[types.Address]map[types.Hash][]byte),
+			codes:              make(map[types.Hash][]byte),
+			baseBlockNumber:    baseBlockNumber,
+			hasBaseBlockNumber: true,
 		}
 	}
 	if merged.accounts == nil {

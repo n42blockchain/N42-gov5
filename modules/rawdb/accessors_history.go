@@ -87,6 +87,9 @@ func DeleteBlockData(tx kv.RwTx, blockNum uint64, hash types.Hash) error {
 	if err := tx.Delete(modules.BlockBody, blockKey); err != nil {
 		return fmt.Errorf("delete block body %d: %w", blockNum, err)
 	}
+	if err := DeleteEngineWithdrawalsRLP(tx, hash, blockNum); err != nil {
+		return fmt.Errorf("delete engine withdrawals %d: %w", blockNum, err)
+	}
 
 	// 4. Delete receipts
 	if err := tx.Delete(modules.Receipts, numKey); err != nil {

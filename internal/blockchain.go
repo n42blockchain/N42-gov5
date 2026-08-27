@@ -77,11 +77,12 @@ import (
 
 func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consensus.Engine, db kv.RwDB, p2p p2p.P2P, config *params.ChainConfig) (common.IBlockChain, error) {
 	c, cancel := context.WithCancel(ctx)
-	// Select the transaction-root encoding for this chain: mainnet_qmdb uses the
-	// Ethereum-standard MPT root over RLP txs (block.TxRoot -> DeriveShaErigon);
-	// legacy native chains keep the proto keccak-concat root for historical hash
-	// continuity. Must be set before any block is produced or validated.
-	block.UseEthereumTxRoot = config != nil && config.StateScheme == string(params.StateCommitmentPresetQMDB)
+	// Select the transaction-root encoding for this chain. Both Ethereum EL
+	// commitment schemes use the standard MPT root over RLP transactions
+	// (block.TxRoot -> DeriveShaErigon); native N42 schemes retain the legacy
+	// proto keccak-concat root for historical hash continuity. Must be set
+	// before any block is produced or validated.
+	block.UseEthereumTxRoot = config != nil && (config.StateScheme == string(params.StateCommitmentPresetQMDB) || config.StateScheme == string(params.StateCommitmentPresetEthereumMPT))
 	concreteGenesis, err := requireConcreteBlock(genesisBlock, "unexpected genesis block type")
 	if err != nil {
 		cancel()

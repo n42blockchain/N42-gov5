@@ -27,6 +27,7 @@ import (
 
 type mockEngineTxPool struct {
 	pending map[types.Address][]*transaction.Transaction
+	removed [][]*transaction.Transaction
 }
 
 func (m *mockEngineTxPool) Stop() error { return nil }
@@ -59,7 +60,7 @@ func (m *mockEngineTxPool) GetTx(hash types.Hash) *transaction.Transaction {
 }
 
 func (m *mockEngineTxPool) AddRemotes([]*transaction.Transaction) []error { return nil }
-func (m *mockEngineTxPool) AddLocal(*transaction.Transaction) error { return nil }
+func (m *mockEngineTxPool) AddLocal(*transaction.Transaction) error       { return nil }
 func (m *mockEngineTxPool) AddLocals(txs []*transaction.Transaction) []error {
 	return make([]error, len(txs))
 }
@@ -77,6 +78,56 @@ func (m *mockEngineTxPool) Nonce(types.Address) uint64 { return 0 }
 
 func (m *mockEngineTxPool) Content() (map[types.Address][]*transaction.Transaction, map[types.Address][]*transaction.Transaction) {
 	return m.pending, map[types.Address][]*transaction.Transaction{}
+}
+
+func (m *mockEngineTxPool) RemoveCanonical(txs []*transaction.Transaction) {
+	m.removed = append(m.removed, append([]*transaction.Transaction(nil), txs...))
+}
+
+func TestEngineRemovesCanonicalTransactionsFromSupportingPool(t *testing.T) {
+	t.Parallel()
+
+	tx := transaction.NewTx(&transaction.LegacyTx{GasPrice: uint256.NewInt(1)})
+	pool := &mockEngineTxPool{}
+	engine := NewEngineAPIV1(NewBlockChainAPI(&API{txspool: pool}))
+	blk := block.NewBlock(&block.Header{}, []*transaction.Transaction{tx})
+	engine.removeCanonicalTransactions(blk)
+
+	require.Len(t, pool.removed, 1)
+	require.Equal(t, []*transaction.Transaction{tx}, pool.removed[0])
+}
+
+func TestExecutionPayloadBlockValueUsesEffectiveTips(t *testing.T) {
+	t.Parallel()
+
+	tx := transaction.NewTx(&transaction.LegacyTx{GasPrice: uint256.NewInt(10)})
+	value := executionPayloadBlockValue(
+		&block.Header{BaseFee: uint256.NewInt(7)},
+		[]*transaction.Transaction{tx},
+		block.Receipts{&block.Receipt{GasUsed: 21}},
+	)
+	require.Equal(t, int64(63), value.Int64())
+}
+
+func TestExecutionPayloadBlobsBundlePreservesTransactionOrder(t *testing.T) {
+	t.Parallel()
+
+	first := transaction.NewTx(&transaction.BlobTx{Sidecar: &transaction.BlobTxSidecar{
+		Blobs:       []transaction.Blob{{1}},
+		Commitments: []transaction.Commitment{{2}},
+		Proofs:      []transaction.Proof{{3}},
+	}})
+	second := transaction.NewTx(&transaction.BlobTx{Sidecar: &transaction.BlobTxSidecar{
+		Blobs:       []transaction.Blob{{4}},
+		Commitments: []transaction.Commitment{{5}},
+		Proofs:      []transaction.Proof{{6}},
+	}})
+	bundle := executionPayloadBlobsBundle([]*transaction.Transaction{first, second})
+	require.Len(t, bundle.Blobs, 2)
+	require.Equal(t, byte(1), bundle.Blobs[0][0])
+	require.Equal(t, byte(4), bundle.Blobs[1][0])
+	require.Equal(t, byte(2), bundle.Commitments[0][0])
+	require.Equal(t, byte(6), bundle.Proofs[1][0])
 }
 
 func TestForkchoiceUpdatedV1BuildsPayloadFromTxPool(t *testing.T) {

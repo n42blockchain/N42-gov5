@@ -79,6 +79,33 @@ func TestMainWorkflowIncludesEESTResultsAudit(t *testing.T) {
 	}
 }
 
+func TestStartHiveDevScriptAlwaysRebuildsHive(t *testing.T) {
+	t.Parallel()
+
+	content := readRepoFile(t, "scripts", "start_hive_dev_n42.sh")
+	if !strings.Contains(content, `go build -o build/bin/hive .`) {
+		t.Fatal("start_hive_dev_n42.sh does not build the Hive binary")
+	}
+	if strings.Contains(content, `[ ! -x "$hive_dir/build/bin/hive" ]`) {
+		t.Fatal("start_hive_dev_n42.sh can reuse a stale Hive binary")
+	}
+}
+
+func TestPrepareHiveClientCachesGoModulesBeforeSourceCopy(t *testing.T) {
+	t.Parallel()
+
+	content := readRepoFile(t, "scripts", "prepare_hive_n42_client.sh")
+	moduleCopy := `COPY ${local_path}/go.mod ${local_path}/go.sum ./`
+	for _, needle := range []string{moduleCopy, "RUN go mod download", `COPY ${local_path} /src/n42`} {
+		if strings.Count(content, needle) != 2 {
+			t.Fatalf("prepare_hive_n42_client.sh should emit %q for both client images", needle)
+		}
+	}
+	if strings.Index(content, moduleCopy) > strings.Index(content, `COPY ${local_path} /src/n42`) {
+		t.Fatal("prepare_hive_n42_client.sh copies source before caching Go modules")
+	}
+}
+
 func TestInteropSmokeScriptProducesSummaryInStubMode(t *testing.T) {
 	t.Parallel()
 
@@ -217,15 +244,66 @@ func TestEESTShardsScriptProducesSummaryInDryRun(t *testing.T) {
 	for _, needle := range []string{
 		"# EEST Shard Run Summary",
 		"- Dry run: `1`",
+		"- N42 revision: `",
+		"- Hive revision: `",
+		"- EEST revision: `",
 		"- Status: `complete`",
-		"| paris+shanghai | `.*/.*fork_(Paris\\|Shanghai)` | ~2,600 | `0` |",
-		"| prague | `.*/.*fork_Prague` | ~20,500 | `0` |",
+		"| paris+shanghai | `.*/.*fork_(Paris\\|Shanghai)` | ~3,573 | `engine` | `0` |",
+		"| prague | `.*/.*fork_Prague` | ~20,878 | `engine` | `0` |",
 		"`paris+shanghai.log`",
 		"`prague.log`",
 	} {
 		if !strings.Contains(summary, needle) {
 			t.Fatalf("summary missing %q:\n%s", needle, summary)
 		}
+	}
+}
+
+func TestEESTShardsScriptRetriesOnlyInfrastructureFailures(t *testing.T) {
+	t.Parallel()
+
+	resultDir := filepath.Join(t.TempDir(), "eest-infra-reruns")
+	output, err := runEESTShardsScript(t, resultDir, nil, "paris+shanghai")
+	if err != nil {
+		t.Fatalf("run_eest_shards.sh failed: %v\n%s", err, output)
+	}
+
+	meta := readFile(t, filepath.Join(resultDir, "paris+shanghai.meta"))
+	for _, needle := range []string{
+		"infra_reruns=2",
+		"infra_rerun_delay_seconds=1",
+		"infra_rerun_match=ConnectionError|ConnectionRefusedError|RemoteDisconnected|ReadTimeout",
+		"n42_revision=",
+		"n42_dirty=",
+		"hive_revision=",
+		"hive_dirty=",
+		"eest_revision=",
+		"eest_dirty=",
+		"--reruns 2",
+		"--reruns-delay 1",
+		"--only-rerun ConnectionError\\|ConnectionRefusedError\\|RemoteDisconnected\\|ReadTimeout",
+	} {
+		if !strings.Contains(meta, needle) {
+			t.Fatalf("meta missing %q:\n%s", needle, meta)
+		}
+	}
+}
+
+func TestEESTShardsScriptCanDisableInfrastructureReruns(t *testing.T) {
+	t.Parallel()
+
+	resultDir := filepath.Join(t.TempDir(), "eest-no-infra-reruns")
+	output, err := runEESTShardsScript(t, resultDir, []string{"EEST_INFRA_RERUNS=0"}, "paris+shanghai")
+	if err != nil {
+		t.Fatalf("run_eest_shards.sh failed: %v\n%s", err, output)
+	}
+
+	meta := readFile(t, filepath.Join(resultDir, "paris+shanghai.meta"))
+	if !strings.Contains(meta, "infra_reruns=0") {
+		t.Fatalf("meta missing disabled retry count:\n%s", meta)
+	}
+	if strings.Contains(meta, "--reruns ") || strings.Contains(meta, "--only-rerun ") {
+		t.Fatalf("disabled retry arguments unexpectedly present:\n%s", meta)
 	}
 }
 
@@ -261,8 +339,8 @@ func TestEESTShardsScriptWritesPartialSummaryOnTermination(t *testing.T) {
 	for _, needle := range []string{
 		"# EEST Shard Run Summary",
 		"- Status: `partial`",
-		"| paris+shanghai | `.*/.*fork_(Paris\\|Shanghai)` | ~2,600 | `incomplete` | `-` | `paris+shanghai.log` |",
-		"| cancun | `.*/.*fork_Cancun` | ~17,250 | `incomplete` | `-` | `cancun.log` |",
+		"| paris+shanghai | `.*/.*fork_(Paris\\|Shanghai)` | ~3,573 | `engine` | `incomplete` | `-` | `paris+shanghai.log` |",
+		"| cancun | `.*/.*fork_Cancun` | ~17,783 | `engine` | `incomplete` | `-` | `cancun.log` |",
 	} {
 		if !strings.Contains(summary, needle) {
 			t.Fatalf("summary missing %q:\n%s", needle, summary)

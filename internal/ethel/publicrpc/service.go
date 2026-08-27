@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/ethel"
@@ -88,7 +89,7 @@ func ParseMode(s string) rpccaps.Mode {
 }
 
 // New builds the service. db+engine+chainCfg are the eth-el node's handles.
-func New(cfg Config, chainCfg *params.ChainConfig, engine consensus.Engine, db kv.RwDB) (*Service, error) {
+func New(cfg Config, chainCfg *params.ChainConfig, engine consensus.Engine, db kv.RwDB, txspool common.ITxsPool) (*Service, error) {
 	if chainCfg == nil {
 		return nil, fmt.Errorf("publicrpc: nil chain config")
 	}
@@ -100,14 +101,14 @@ func New(cfg Config, chainCfg *params.ChainConfig, engine consensus.Engine, db k
 	}
 
 	chain := newEthelChain(db, engine, chainCfg, stateReader)
-	core := api.NewAPI(chain, db, engine, nil, nil, chainCfg)
+	core := api.NewAPI(chain, db, engine, txspool, nil, chainCfg)
 	core.SetStateReaderProvider(stateReader)
 
 	srv := rpc.NewServer()
 
-	// eth / web3 / net from the shared handlers. The txpool + n42 namespaces are
-	// intentionally skipped: an eth-el read node has no mempool (rpccaps gates
-	// mempool methods) and no n42 consensus evidence.
+	// eth / web3 / net from the shared handlers. The n42 namespace remains
+	// intentionally skipped; the shared in-process txpool supports Engine payload
+	// construction and standard eth_sendRawTransaction.
 	for _, a := range core.Apis() {
 		switch a.Namespace {
 		case "eth", "web3", "net":

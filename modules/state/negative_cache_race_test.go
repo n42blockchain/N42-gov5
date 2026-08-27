@@ -317,7 +317,6 @@ func TestNegativeCacheRace_BuggyPrefetcherFails(t *testing.T) {
 		numAddrs       = 200
 		numPrefetchers = 4
 		numReaders     = 4
-		duration       = 1000 * time.Millisecond
 	)
 
 	dbReal := memdb.New(t.TempDir())
@@ -354,71 +353,84 @@ func TestNegativeCacheRace_BuggyPrefetcherFails(t *testing.T) {
 		}
 	}
 
-	var failures atomic.Int64
-	var stop atomic.Bool
-	var wg sync.WaitGroup
-
 	// BUGGY prefetcher: reads stale DB (empty), caches nil regardless.
-	// This is what prefetch.go used to do before the fix.
+	// This is what prefetch.go used to do before the fix. Complete this
+	// phase before starting readers: without the barrier, a reader can win
+	// the first Put for every address with the real MDBX value, after which
+	// PutIfAbsent correctly rejects every attempted nil injection. That race
+	// made this contrapositive test probabilistic and occasionally produced
+	// zero failures even though the emulated buggy path was present.
+	var poisoned atomic.Int64
+	var prefetchWG sync.WaitGroup
 	for g := 0; g < numPrefetchers; g++ {
-		wg.Add(1)
-		go func(seed int) {
-			defer wg.Done()
-			for !stop.Load() {
-				for i := 0; i < numAddrs; i++ {
-					addr := addrs[(i+seed)%numAddrs]
-					roTx, err := dbStale.BeginRo(context.Background())
-					if err != nil {
-						continue
-					}
-					enc, _ := roTx.GetOne(modules.Account, addr[:])
-					roTx.Rollback()
-					// BUG: cache regardless of nil — this is the path
-					// the fix removes.
-					buf.CacheAccountIfAbsent(addr, enc)
+		prefetchWG.Add(1)
+		go func(offset int) {
+			defer prefetchWG.Done()
+			roTx, err := dbStale.BeginRo(context.Background())
+			if err != nil {
+				return
+			}
+			defer roTx.Rollback()
+			for i := offset; i < numAddrs; i += numPrefetchers {
+				addr := addrs[i]
+				enc, err := roTx.GetOne(modules.Account, addr[:])
+				if err != nil {
+					continue
+				}
+				// BUG: cache regardless of nil — this is the path
+				// the fix removes.
+				if buf.CacheAccountIfAbsent(addr, enc) {
+					poisoned.Add(1)
 				}
 			}
-		}(g * 17)
+		}(g)
+	}
+	prefetchWG.Wait()
+	if got := poisoned.Load(); got != numAddrs {
+		t.Fatalf("buggy prefetcher poisoned %d/%d cache entries", got, numAddrs)
 	}
 
 	// Readers via bufReader against the REAL db. Should always find
 	// the account (it's in MDBX). With the buggy prefetcher poisoning
 	// LRU first, bufReader hits the LRU's nil and returns nil → fail.
+	var failures atomic.Int64
+	var readErrors atomic.Int64
+	var readerWG sync.WaitGroup
 	for g := 0; g < numReaders; g++ {
-		wg.Add(1)
+		readerWG.Add(1)
 		go func(seed int) {
-			defer wg.Done()
-			for !stop.Load() {
-				for i := 0; i < numAddrs; i++ {
-					addr := addrs[(i+seed)%numAddrs]
-					roTx, err := dbReal.BeginRo(context.Background())
-					if err != nil {
-						continue
-					}
-					r := NewBufferedPlainStateReader(buf, roTx)
-					got, err := r.ReadAccountData(addr)
-					roTx.Rollback()
-					if err != nil {
-						continue
-					}
-					if got == nil {
-						failures.Add(1)
-					}
+			defer readerWG.Done()
+			roTx, err := dbReal.BeginRo(context.Background())
+			if err != nil {
+				readErrors.Add(1)
+				return
+			}
+			defer roTx.Rollback()
+			r := NewBufferedPlainStateReader(buf, roTx)
+			for i := 0; i < numAddrs; i++ {
+				addr := addrs[(i+seed)%numAddrs]
+				got, err := r.ReadAccountData(addr)
+				if err != nil {
+					readErrors.Add(1)
+					continue
+				}
+				if got == nil {
+					failures.Add(1)
 				}
 			}
 		}(g * 23)
 	}
+	readerWG.Wait()
+	if n := readErrors.Load(); n != 0 {
+		t.Fatalf("buggy emulation had %d database read errors", n)
+	}
 
-	time.Sleep(duration)
-	stop.Store(true)
-	wg.Wait()
-
-	// We REQUIRE at least one failure here — if the buggy emulation
-	// produces 0 failures over 1s × 8 goroutines, the test harness
-	// can't catch the bug, and the FixPreventsRace assertion above
-	// is meaningless.
-	if failures.Load() == 0 {
-		t.Fatalf("buggy prefetcher emulation produced 0 failed reads — test harness cannot catch the bug it's guarding")
+	// Every read must observe the pre-seeded negative-cache poison. Requiring
+	// the exact count makes the test deterministic and proves the harness can
+	// still detect the original bug.
+	wantFailures := int64(numAddrs * numReaders)
+	if got := failures.Load(); got != wantFailures {
+		t.Fatalf("buggy prefetcher emulation produced %d failed reads, want %d", got, wantFailures)
 	}
 	t.Logf("buggy emulation produced %d failed reads (proves test resolution)", failures.Load())
 }

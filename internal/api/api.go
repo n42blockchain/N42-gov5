@@ -373,6 +373,17 @@ func (n *API) ForkchoiceBlockHash(blk block.IBlock) types.Hash {
 	return ethCompatibleBlockHash(blk, n.chainConfig)
 }
 
+// MarkRejectedPayloadHash records a payload hash discovered by an external
+// sync path as descending from an invalid block. Engine newPayload and
+// forkchoiceUpdated calls consult the same overlay and can therefore return
+// INVALID even when the invalid ancestor itself arrived over devp2p.
+func (n *API) MarkRejectedPayloadHash(hash types.Hash, latestValidHash *types.Hash) {
+	if n == nil || n.engineOverlay == nil || hash == (types.Hash{}) {
+		return
+	}
+	n.engineOverlay.markRejectedHash(hash, latestValidHash)
+}
+
 func (n *API) resolveForkchoiceTaggedBlock(number jsonrpc.BlockNumber) block.IBlock {
 	if n == nil || n.bc == nil {
 		return nil
@@ -389,13 +400,23 @@ func (n *API) resolveForkchoiceTaggedBlock(number jsonrpc.BlockNumber) block.IBl
 		return n.engineOverlay.headBlock(current)
 	case jsonrpc.SafeBlockNumber:
 		safeHash, _ := n.engineOverlay.forkchoiceHashes()
-		return n.blockByEngineHash(safeHash)
+		if blk := n.blockByEngineHash(safeHash); blk != nil {
+			return blk
+		}
 	case jsonrpc.FinalizedBlockNumber:
 		_, finalizedHash := n.engineOverlay.forkchoiceHashes()
-		return n.blockByEngineHash(finalizedHash)
+		if blk := n.blockByEngineHash(finalizedHash); blk != nil {
+			return blk
+		}
 	default:
 		return nil
 	}
+	if reader, ok := n.bc.(interface {
+		ForkchoiceTaggedBlock(jsonrpc.BlockNumber) block.IBlock
+	}); ok {
+		return reader.ForkchoiceTaggedBlock(number)
+	}
+	return nil
 }
 
 func (n *API) resolveForkchoiceTaggedHeader(number jsonrpc.BlockNumber) *block.Header {

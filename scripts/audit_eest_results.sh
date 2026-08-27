@@ -97,6 +97,8 @@ while IFS= read -r run_dir; do
 
   if [ ! -f "$run_dir/summary.md" ]; then
     append_issue "missing summary.md"
+  elif ! grep -Fqx -- '- Status: `complete`' "$run_dir/summary.md"; then
+    append_issue "summary.md is not complete"
   fi
 
   while IFS= read -r meta_path; do
@@ -112,9 +114,13 @@ while IFS= read -r run_dir; do
     fi
     if [ -z "$rc_value" ]; then
       append_issue "${shard_name}.meta missing rc"
+    elif [ "$rc_value" != "0" ]; then
+      append_issue "${shard_name}.meta has rc=${rc_value}"
     fi
     if [ -z "$duration_value" ]; then
       append_issue "${shard_name}.meta missing duration_seconds"
+    elif [[ ! "$duration_value" =~ ^[0-9]+$ ]]; then
+      append_issue "${shard_name}.meta has invalid duration_seconds=${duration_value}"
     fi
   done < <(find "$run_dir" -maxdepth 1 -mindepth 1 -type f -name '*.meta' | sort)
 

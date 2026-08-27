@@ -32,13 +32,14 @@ import (
 
 // extractBaseFeePerGasUint64 converts the cltypes BaseFeePerGas (32 B
 // little-endian Hash — i.e. high-order bytes at the END) to the
-// uint64 form api.ExecutionPayloadV1.BaseFeePerGas expects.
+// uint64 form used by older diagnostics and tests.
 //
 // We refuse to silently truncate: a baseFee that doesn't fit in 64 bits
 // is treated as a hard error so production fails loud instead of
 // quietly applying the wrong fee. EIP-1559 base fees observed on
 // mainnet have stayed well under uint64.max (≈18 ETH/gas), so this
-// guard never trips in practice.
+// guard never trips for ordinary mainnet values. Production payload conversion
+// uses baseFeePerGasBigInt so the Engine API keeps the full 256-bit quantity.
 func extractBaseFeePerGasUint64(b32 [32]byte) (hexutil.Uint64, error) {
 	// b32 is little-endian: low byte at index 0, high byte at index 31.
 	// Bytes [8..31] (high 24 bytes) must be zero for the value to
@@ -57,8 +58,7 @@ func extractBaseFeePerGasUint64(b32 [32]byte) (hexutil.Uint64, error) {
 
 // baseFeePerGasBigInt is the precision-preserving variant of
 // extractBaseFeePerGasUint64 — useful when callers want the full 256-bit
-// fee for tests or for log formatting. Production NewPayload path
-// uses the uint64 form to match api.ExecutionPayloadV1.
+// fee used by the production NewPayload path.
 func baseFeePerGasBigInt(b32 [32]byte) *big.Int {
 	// reverse to big-endian
 	be := make([]byte, 32)
@@ -111,10 +111,7 @@ func eth1BlockToExecutionPayloadV4(blk *cltypes.Eth1Block) (*api.ExecutionPayloa
 		})
 	}
 
-	baseFee, err := extractBaseFeePerGasUint64(blk.BaseFeePerGas)
-	if err != nil {
-		return nil, fmt.Errorf("baseFeePerGas: %w", err)
-	}
+	baseFee := (*hexutil.Big)(baseFeePerGasBigInt(blk.BaseFeePerGas))
 
 	var extra []byte
 	if blk.Extra != nil {
@@ -191,14 +188,10 @@ func depBlockToExecutionPayloadV4(blk *deptypes.Block) (*api.ExecutionPayloadV4,
 		}
 	}
 
-	// BaseFee — depshim uses *uint256.Int (pointer); fits uint64 in
-	// practice (verified in extractBaseFeePerGasUint64 path).
-	var baseFee hexutil.Uint64
+	// BaseFee — preserve the complete Engine API 256-bit quantity.
+	baseFee := (*hexutil.Big)(new(big.Int))
 	if h.BaseFee != nil {
-		if !h.BaseFee.IsUint64() {
-			return nil, fmt.Errorf("baseFeePerGas > uint64.max: %s", h.BaseFee.String())
-		}
-		baseFee = hexutil.Uint64(h.BaseFee.Uint64())
+		baseFee = (*hexutil.Big)(h.BaseFee.ToBig())
 	}
 
 	// BlobGasUsed / ExcessBlobGas — Cancun+ only.
@@ -274,16 +267,23 @@ func depAttrsToAPIv3(in *engine_types.PayloadAttributes) *api.PayloadAttributesV
 // converts a single base-fee uint64 back into the 32-byte
 // little-endian wire form that cltypes.Eth1Block.BaseFeePerGas uses.
 func uint64ToBaseFeeBytes32(v uint64) [32]byte {
-	var out [32]byte
-	out[0] = byte(v)
-	out[1] = byte(v >> 8)
-	out[2] = byte(v >> 16)
-	out[3] = byte(v >> 24)
-	out[4] = byte(v >> 32)
-	out[5] = byte(v >> 40)
-	out[6] = byte(v >> 48)
-	out[7] = byte(v >> 56)
+	out, _ := bigIntToBaseFeeBytes32(new(big.Int).SetUint64(v))
 	return out
+}
+
+func bigIntToBaseFeeBytes32(v *big.Int) ([32]byte, error) {
+	var out [32]byte
+	if v == nil {
+		return out, errors.New("missing baseFeePerGas")
+	}
+	if v.Sign() < 0 || v.BitLen() > 256 {
+		return out, fmt.Errorf("baseFeePerGas out of uint256 range: %s", v)
+	}
+	bytes := v.Bytes()
+	for i := range bytes {
+		out[i] = bytes[len(bytes)-1-i]
+	}
+	return out, nil
 }
 
 // executionPayloadV3ToEth1Block converts the api.ExecutionPayloadV3
@@ -321,7 +321,11 @@ func executionPayloadV3ToEth1Block(p *api.ExecutionPayloadV3) (*cltypes.Eth1Bloc
 	if len(p.ExtraData) > 0 {
 		blk.Extra.SetBytes(append([]byte(nil), p.ExtraData...))
 	}
-	blk.BaseFeePerGas = uint64ToBaseFeeBytes32(uint64(p.BaseFeePerGas))
+	baseFee, err := bigIntToBaseFeeBytes32(p.BaseFeePerGas.ToInt())
+	if err != nil {
+		return nil, err
+	}
+	blk.BaseFeePerGas = baseFee
 	blk.BlockHash = depcommon.Hash(p.BlockHash)
 
 	// Transactions: deep-copy each entry so the SSZ wrapper owns

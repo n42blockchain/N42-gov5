@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"math/big"
 	"sort"
 	"sync"
@@ -25,6 +26,7 @@ type engineBuiltPayload struct {
 	v2                *ExecutionPayloadV2
 	v3                *ExecutionPayloadV3
 	v4                *ExecutionPayloadV4
+	blockValue        *big.Int
 	blobsBundle       *BlobsBundleV1
 	executionRequests []hexutil.Bytes
 }
@@ -37,9 +39,11 @@ type engineOverlayTxLookup struct {
 }
 
 type engineStateOverlay struct {
-	accounts map[types.Address][]byte
-	storage  map[types.Address]map[types.Hash][]byte
-	codes    map[types.Hash][]byte
+	accounts           map[types.Address][]byte
+	storage            map[types.Address]map[types.Hash][]byte
+	codes              map[types.Hash][]byte
+	baseBlockNumber    uint64
+	hasBaseBlockNumber bool
 }
 
 const (
@@ -317,6 +321,28 @@ func uint256FromHexUint64(v hexutil.Uint64) *uint256.Int {
 	return uint256.NewInt(uint64(v))
 }
 
+func uint256FromHexBig(v *hexutil.Big) (*uint256.Int, error) {
+	if v == nil {
+		return nil, fmt.Errorf("missing baseFeePerGas")
+	}
+	value, overflow := uint256.FromBig(v.ToInt())
+	if overflow {
+		return nil, fmt.Errorf("baseFeePerGas exceeds 256 bits")
+	}
+	return value, nil
+}
+
+func hexBigFromUint256(v *uint256.Int) *hexutil.Big {
+	if v == nil {
+		return nil
+	}
+	return (*hexutil.Big)(v.ToBig())
+}
+
+func hexBigFromUint64(v uint64) *hexutil.Big {
+	return (*hexutil.Big)(new(big.Int).SetUint64(v))
+}
+
 func uint64FromUint256OrZero(v *uint256.Int) uint64 {
 	if v == nil {
 		return 0
@@ -352,13 +378,16 @@ func encodeEthereumTransactions(txs []*transaction.Transaction) ([]hexutil.Bytes
 
 func decodeTransactions(encoded []hexutil.Bytes) ([]*transaction.Transaction, error) {
 	txs := make([]*transaction.Transaction, 0, len(encoded))
-	for _, raw := range encoded {
+	for i, raw := range encoded {
 		if len(raw) == 0 {
 			continue
 		}
 		tx, err := transaction.DecodeEthereumTransaction(raw)
 		if err != nil {
 			return nil, err
+		}
+		if tx.BlobTxSidecar() != nil {
+			return nil, fmt.Errorf("unexpected blob sidecar in transaction at index %d", i)
 		}
 		txs = append(txs, tx)
 	}
@@ -398,6 +427,13 @@ func applyExecutionPayloadForkFields(blk block.IBlock, withdrawals []*Withdrawal
 }
 
 func executionPayloadV1ToBlock(payload *ExecutionPayloadV1) (block.IBlock, error) {
+	if len(payload.LogsBloom) != block.BloomByteLength {
+		return nil, fmt.Errorf("invalid logsBloom length: have %d, want %d", len(payload.LogsBloom), block.BloomByteLength)
+	}
+	baseFee, err := uint256FromHexBig(payload.BaseFeePerGas)
+	if err != nil {
+		return nil, err
+	}
 	txs, err := decodeTransactions(payload.Transactions)
 	if err != nil {
 		return nil, err
@@ -422,7 +458,7 @@ func executionPayloadV1ToBlock(payload *ExecutionPayloadV1) (block.IBlock, error
 		MixDigest:   payload.PrevRandao,
 		Nonce:       block.EncodeNonce(0),
 		Extra:       append([]byte(nil), payload.ExtraData...),
-		BaseFee:     uint256FromHexUint64(payload.BaseFeePerGas),
+		BaseFee:     baseFee,
 	}
 	return block.NewBlock(header, txs), nil
 }
@@ -518,7 +554,7 @@ func blockToExecutionPayloadV1(blk block.IBlock, cfg *params.ChainConfig) *Execu
 		GasUsed:       hexutil.Uint64(header.GasUsed),
 		Timestamp:     hexutil.Uint64(header.Time),
 		ExtraData:     append([]byte(nil), header.Extra...),
-		BaseFeePerGas: hexutil.Uint64(uint64FromUint256OrZero(header.BaseFee)),
+		BaseFeePerGas: hexBigFromUint256(header.BaseFee),
 		BlockHash:     ethCompatibleBlockHash(blk, cfg),
 		Transactions:  encodedTxs,
 	}
@@ -578,7 +614,7 @@ func buildExecutionPayloadV2(parent block.IBlock, parentHash types.Hash, attrs *
 		Withdrawals:        cloneWithdrawals(attrs.Withdrawals),
 	}
 	payload.BlockHash = ethCompatibleEngineBlockHash(blockFromExecutionPayloadV1(v1), cfg, enginePayloadHashOptions{
-		includeWithdrawals: true,
+		includeWithdrawals: payload.Withdrawals != nil,
 		withdrawals:        payload.Withdrawals,
 	})
 	return payload
@@ -1084,6 +1120,16 @@ func (o *engineOverlay) rejectedLatestValidHash(hash types.Hash) (*types.Hash, b
 	return cloneHashPtr(latestValidHash), ok
 }
 
+func (o *engineOverlay) markRejectedHash(hash types.Hash, latestValidHash *types.Hash) {
+	if o == nil || hash == (types.Hash{}) {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	delete(o.validatedByHash, hash)
+	o.rejectedByHash[hash] = cloneHashPtr(latestValidHash)
+}
+
 func (o *engineOverlay) payloadBodyByHash(hash types.Hash) *ExecutionPayloadBodyV1 {
 	if o == nil || hash == (types.Hash{}) {
 		return nil
@@ -1191,9 +1237,11 @@ func cloneEngineStateOverlay(src *engineStateOverlay) *engineStateOverlay {
 		return nil
 	}
 	dst := &engineStateOverlay{
-		accounts: make(map[types.Address][]byte, len(src.accounts)),
-		storage:  make(map[types.Address]map[types.Hash][]byte, len(src.storage)),
-		codes:    cloneOverlayCodeMap(src.codes),
+		accounts:           make(map[types.Address][]byte, len(src.accounts)),
+		storage:            make(map[types.Address]map[types.Hash][]byte, len(src.storage)),
+		codes:              cloneOverlayCodeMap(src.codes),
+		baseBlockNumber:    src.baseBlockNumber,
+		hasBaseBlockNumber: src.hasBaseBlockNumber,
 	}
 	for addr, accountData := range src.accounts {
 		if accountData == nil {

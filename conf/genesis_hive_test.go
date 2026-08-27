@@ -203,10 +203,13 @@ func TestCloneChainConfigPreservesExtendedFields(t *testing.T) {
 	src := &params.ChainConfig{
 		GlamsterdamTime:               big.NewInt(1),
 		PQPrecompilesTime:             big.NewInt(2),
+		EOFTime:                       big.NewInt(8),
 		ContentStoreTime:              big.NewInt(3),
 		AIInferenceTime:               big.NewInt(4),
 		RandomnessTime:                big.NewInt(5),
 		LtHashTime:                    big.NewInt(6),
+		BALTime:                       big.NewInt(9),
+		MobileAnchorTime:              big.NewInt(10),
 		Eip1559FeeCollector:           &feeCollector,
 		Eip1559FeeCollectorTransition: big.NewInt(7),
 		Aura:                          &params.AuRaConfig{},
@@ -224,6 +227,9 @@ func TestCloneChainConfigPreservesExtendedFields(t *testing.T) {
 	if cloned.PQPrecompilesTime == nil || cloned.PQPrecompilesTime.Uint64() != 2 {
 		t.Fatalf("unexpected pq precompile time: %v", cloned.PQPrecompilesTime)
 	}
+	if cloned.EOFTime == nil || cloned.EOFTime.Uint64() != 8 {
+		t.Fatalf("unexpected EOF time: %v", cloned.EOFTime)
+	}
 	if cloned.ContentStoreTime == nil || cloned.ContentStoreTime.Uint64() != 3 {
 		t.Fatalf("unexpected content store time: %v", cloned.ContentStoreTime)
 	}
@@ -236,13 +242,20 @@ func TestCloneChainConfigPreservesExtendedFields(t *testing.T) {
 	if cloned.LtHashTime == nil || cloned.LtHashTime.Uint64() != 6 {
 		t.Fatalf("unexpected lthash time: %v", cloned.LtHashTime)
 	}
+	if cloned.BALTime == nil || cloned.BALTime.Uint64() != 9 {
+		t.Fatalf("unexpected BAL time: %v", cloned.BALTime)
+	}
+	if cloned.MobileAnchorTime == nil || cloned.MobileAnchorTime.Uint64() != 10 {
+		t.Fatalf("unexpected mobile anchor time: %v", cloned.MobileAnchorTime)
+	}
 	if cloned.Eip1559FeeCollector == nil || *cloned.Eip1559FeeCollector != feeCollector {
 		t.Fatalf("unexpected fee collector: %v", cloned.Eip1559FeeCollector)
 	}
 	if cloned.Aura == nil || cloned.Parlia == nil || cloned.Bor == nil {
 		t.Fatal("expected consensus sub-config pointers to be preserved")
 	}
-	if cloned.GlamsterdamTime == src.GlamsterdamTime || cloned.Eip1559FeeCollector == src.Eip1559FeeCollector || cloned.Bor == src.Bor {
+	if cloned.GlamsterdamTime == src.GlamsterdamTime || cloned.EOFTime == src.EOFTime || cloned.BALTime == src.BALTime ||
+		cloned.MobileAnchorTime == src.MobileAnchorTime || cloned.Eip1559FeeCollector == src.Eip1559FeeCollector || cloned.Bor == src.Bor {
 		t.Fatal("expected cloneChainConfig() to deep-copy pointer fields")
 	}
 }

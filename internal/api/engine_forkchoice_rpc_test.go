@@ -29,6 +29,15 @@ type preciseChainStub struct {
 	receiptsByHash map[types.Hash]block.Receipts
 }
 
+type persistedForkchoiceChainStub struct {
+	*preciseChainStub
+	tags map[jsonrpc.BlockNumber]block.IBlock
+}
+
+func (m *persistedForkchoiceChainStub) ForkchoiceTaggedBlock(number jsonrpc.BlockNumber) block.IBlock {
+	return m.tags[number]
+}
+
 func newPreciseChainStub(cfg *params.ChainConfig, db kv.RwDB, blocks ...*block.Block) *preciseChainStub {
 	stub := &preciseChainStub{
 		config:         cfg,
@@ -315,6 +324,41 @@ func TestBlockChainAPIGetBlockByNumberSupportsSafeAndFinalizedTags(t *testing.T)
 	}
 }
 
+func TestBlockChainAPIGetBlockByNumberFallsBackToPersistedForkchoiceTags(t *testing.T) {
+	cfg := &params.ChainConfig{ChainID: big.NewInt(1)}
+	genesis := makeTestBlock(types.Hash{}, 0, 1)
+	genesisHash := ethCompatibleBlockHash(genesis, cfg)
+	block1 := makeTestBlock(genesisHash, 1, 2)
+	chain := &persistedForkchoiceChainStub{
+		preciseChainStub: newPreciseChainStub(cfg, nil, genesis, block1),
+		tags: map[jsonrpc.BlockNumber]block.IBlock{
+			jsonrpc.SafeBlockNumber:      block1,
+			jsonrpc.FinalizedBlockNumber: genesis,
+		},
+	}
+	api := &API{
+		bc:            chain,
+		chainConfig:   cfg,
+		engineOverlay: newEngineOverlay(),
+	}
+
+	rpcAPI := NewBlockChainAPI(api)
+	safeBlock, err := rpcAPI.GetBlockByNumber(context.Background(), jsonrpc.SafeBlockNumber, false)
+	if err != nil {
+		t.Fatalf("GetBlockByNumber(safe) error = %v", err)
+	}
+	if got := safeBlock["hash"]; got != avmtypes.FromastHash(ethCompatibleBlockHash(block1, cfg)) {
+		t.Fatalf("safe block hash = %v", got)
+	}
+	finalizedBlock, err := rpcAPI.GetBlockByNumber(context.Background(), jsonrpc.FinalizedBlockNumber, false)
+	if err != nil {
+		t.Fatalf("GetBlockByNumber(finalized) error = %v", err)
+	}
+	if got := finalizedBlock["hash"]; got != avmtypes.FromastHash(genesisHash) {
+		t.Fatalf("finalized block hash = %v", got)
+	}
+}
+
 func TestBlockChainAPIGetBlockByNumberReturnsNilWhenSafeAndFinalizedUnset(t *testing.T) {
 	cfg := &params.ChainConfig{ChainID: big.NewInt(1)}
 	genesis := makeTestBlock(types.Hash{}, 0, 1)
@@ -411,6 +455,10 @@ func TestGetTransactionReceiptReturnsOverlayImportedReceipt(t *testing.T) {
 	}
 	if got := resp["from"]; got != rpcTransactionFrom(signedTx) {
 		t.Fatalf("receipt from = %v, want %v", got, rpcTransactionFrom(signedTx))
+	}
+	logs, ok := resp["logs"].([]*avmtypes.Log)
+	if !ok || logs == nil || len(logs) != 0 {
+		t.Fatalf("receipt logs = %#v, want non-nil empty list", resp["logs"])
 	}
 }
 
