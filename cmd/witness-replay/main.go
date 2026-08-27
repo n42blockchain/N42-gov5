@@ -41,6 +41,7 @@ import (
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -254,6 +255,12 @@ func run(c *cli.Context) error {
 		"headers/bodies", hbPath,
 		"witness", witnessPath,
 		"datadir", datadir)
+	// Record which allocation mode this run used: a diagnostic run that cannot
+	// be told apart from an ordinary one afterwards proves very little.
+	if !state.StateObjectPoolingEnabled() {
+		log.Info("State object pooling DISABLED (N42_STATE_OBJECT_POOL=off) — " +
+			"every newObject is a fresh allocation; this run is a pooling-hypothesis probe")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
