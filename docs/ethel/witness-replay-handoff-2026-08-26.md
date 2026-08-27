@@ -15,10 +15,11 @@
 | | wall | CPU-sec | 说明 |
 |---|---:|---:|---|
 | 起点（08-24，bodyc，104w，1 reader） | 2h27m10s | 456,881 | |
-| **生产配置（t3，freezer，128w/6r/gc300）** | **49m48s** | **376,118** | tier-1 3/3、tier-2、T1、t3 各 1/1 全部通过 |
+| **生产配置（main 合并后，128w/6r/gc300）** | **48m39s** | **371,444** | tier-1 3/3、tier-2、T1、t3、rebased2 各 1/1 全部通过 |
 | 墙钟最快（T1，256w/6r/gc300） | **45m56s** | 482,741 | 256w 累计 9 次 1 败（间歇，未解释） |
 
-相对起点：**墙钟 −66%，CPU-sec −18%**，同时达成。
+相对起点：**墙钟 −67%，CPU-sec −19%**，同时达成。硬件计数器（§5.30）显示解释器 IPC 2.7、
+访存停顿可忽略——剩余空间在指令数，不在并发。
 
 ## 2. 生产配置与入口
 
@@ -39,9 +40,9 @@ BIN=build/bin/witness-replay RUN_ID=my-run scripts/witness-full.sh
 
 ## 3. 代码：分支与 binary
 
-分支 `perf/witness-replay-bodyc-full-2026-08-25`（基于 `179691e5`，已推送）。
-**`origin/main` 已推进到 `2aa0d4f0`（含 `1209327d perf(witness): keep replay workers fed`），
-与本分支分叉，另一个会话也在改 witness 流水线；合并前需要对照两边。**
+**2026-08-27 已合并进 main**（`72150b2e`，经 `perf/witness-replay-rebased-2026-08-27` rebase；
+原分支 `perf/witness-replay-bodyc-full-2026-08-25` 保留作历史）。同日先合入了
+`codex/gov5-sync-audit-fixes-20260727`（`50923a19`）。
 
 | commit | 内容 | 效果 |
 |---|---|---|

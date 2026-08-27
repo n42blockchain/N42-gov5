@@ -971,10 +971,55 @@ failed       0   诊断未触发
 t3 采纳（正确、生产配置双轴正向），但收益已进入 1% 量级，RSS 每一步都在涨（16 → 19 → 22 GiB）；
 "减分配"这条线的边际收益基本吃完，除非做 T2（自定义哈希表，3.3%），那是另一量级的改动。
 
-### 5.29 未完成 / 可继续
+### 5.29 rebase 到 main、对象缓存 + RSS 分离、合并
 
-1. 256w 间歇 nonce 失败（累计 10 次 1 败）：诊断挂着，等触发；
-2. `perf stat` 量 IPC：需要 `sudo sysctl -w kernel.perf_event_paranoid=1`；
-3. RSS 回收：`slotEntry.origin` 在 `discardBlockChanges` 下按需存；arena 参数可缩；
-4. T2 自定义哈希表（aeshash 3.3%）——最后一个 >3% 的非 EVM 项；
-5. `origin/main` 分叉需合并前对照。
+`origin/main` 被重写过（同一批提交换了 hash），且另一个会话把 08-25 的工作树快照提交进了 main
+（`2e3578f7`）。本分支 rebase 到 main（丢掉重复的快照提交，重放 39 个 commit，两处冲突都是
+main 新加的 `sawNonZeroCommitted` 标志，两边保留），并恢复被快照替换掉的 legacy 交易直接编码器
+（main 的快照早于它）。新分支 `perf/witness-replay-rebased-2026-08-27`。
+
+在其上加了 **对象缓存**（`getStateObject` 先查上一次解析的 (addr, obj)，三处失效点）和
+**RSS 分离**（block-origin 值从 `slotEntry` 移回按需分配的 per-object map，验证模式不再为每槽
+多存 33 B）——`99663e40`。1M 密集切片 A/B（gc300，交替，独占）：
+
+| | rebased | rebased2 | Δ |
+|---|---:|---:|---|
+| 256w wall（两轮均值） | 5:01.6 | 4:58.6 | −1.0% |
+| 128w wall | 5:37.7 | 5:38.7 | +0.3%（噪声） |
+| MaxRSS 256w / 128w | 24.7 / 16.3 GiB | 23.2 / 15.5 | −6% / −5% |
+
+对象缓存对 CPU 基本零收益（map 查找不是瓶颈），RSS 分离拿回 5–6%。
+
+全量 gate（rebased2，128w/6r/gc300，独占，sar 119–133）：**48m39s / 371,444 CPU-s / failed=0**，
+MaxRSS 22.1 GiB（旧分支 t3：49m48s / 376,118）。
+
+2026-08-27 已合并到 main：`50923a19`（codex/gov5-sync-audit-fixes-20260727，94 commits）→
+`72150b2e`（本分支，41 commits）。合并树 `go build ./...`、`go vet`、39 个相关包测试通过。
+
+### 5.30 硬件计数器（P0-b）：SMT 收益小是因为解释器已经 issue-bound
+
+`perf stat`（`kernel.perf_event_paranoid=1`），rebased2，1M 密集切片，独占：
+
+| 指标 | 128w | 256w |
+|---|---:|---:|
+| instructions | 416.4 T | 416.3 T（相同工作量） |
+| cycles | 153.3 T | 194.1 T（+26.6%） |
+| **IPC** | **2.72** | **2.15**（−21%） |
+| cache-miss / 1k instr | 0.61 | 0.72 |
+| cache miss rate | 5.6% | 5.3% |
+| dTLB-miss / 1k instr | 0.065 | 0.075 |
+| branch-miss | 1.27% | 1.39% |
+| context-switches | 14.1 M | 19.1 M |
+| wall | 345.9 s | 323.1 s（−6.6%） |
+
+读法：每千条指令只有 0.6 次 cache miss、0.07 次 dTLB miss、1.3% 分支失效——**没有可观的
+访存停顿**，解释器在 Zen 5 上跑到 IPC 2.7 已接近实际发射上限。SMT 第二线程和它抢的是同一套
+执行单元，所以每线程 IPC 掉 21%，整机只多 7% 吞吐。这与 5.10 的"SMT 是正收益"不矛盾，
+但把幅度定死了：**256w 的价值上限就是个位数百分比**；再往下只能减指令数（EVM 本体），
+不能靠并发。
+
+### 5.31 未完成 / 可继续
+
+1. 256w 间歇 nonce 失败（累计 12 次 1 败）：诊断挂着，猎捕循环在跑；
+2. 减指令数：解释器循环本体、栈操作（~8%）、PUSH/JUMP 分派、Keccak（7%）——这些才是剩下的钱；
+3. T2 自定义哈希表（aeshash 3.3%）。
