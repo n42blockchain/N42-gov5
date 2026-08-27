@@ -15,10 +15,10 @@
 | | wall | CPU-sec | 说明 |
 |---|---:|---:|---|
 | 起点（08-24，bodyc，104w，1 reader） | 2h27m10s | 456,881 | |
-| **生产配置（T1，freezer，128w/6r/gc300）** | **50m02s** | **378,758** | tier-1 3/3、tier-2 1/1、T1 1/1 全部通过 |
+| **生产配置（t3，freezer，128w/6r/gc300）** | **49m48s** | **376,118** | tier-1 3/3、tier-2、T1、t3 各 1/1 全部通过 |
 | 墙钟最快（T1，256w/6r/gc300） | **45m56s** | 482,741 | 256w 累计 9 次 1 败（间歇，未解释） |
 
-相对起点：**墙钟 −66%，CPU-sec −17%**，同时达成。
+相对起点：**墙钟 −66%，CPU-sec −18%**，同时达成。
 
 ## 2. 生产配置与入口
 
@@ -58,6 +58,7 @@ BIN=build/bin/witness-replay RUN_ID=my-run scripts/witness-full.sh
 | `84402bae` | 失败时重放诊断 `diagnoseReplayFailure` | 定向 256w 间歇失败 |
 | `d41b0a59` | journal 按值存储（去装箱） | 256w 忙碌线程 173→192，wall −7.8% |
 | `2003b43b` | 单表 storage + epoch（T1） | 输出逐字节一致；全量 −1.0% wall / −1.5% CPU |
+| `00966c5d` | LOG arena（opt-in）+ 余额栈临时值（t3） | 全量 −0.5% wall / −0.7% CPU |
 
 以上 tier-1（`414cfdb7`..`d703cb60`）**要求 GOGC 300**：它把活堆压到 1/3，GOGC 100
 下 GC 频率翻倍、mark assist 打在 reader 上，墙钟反而 +15%（§4.3）。
@@ -70,7 +71,8 @@ BIN=build/bin/witness-replay RUN_ID=my-run scripts/witness-full.sh
 | `witness-replay.tier1` | `44d60635` | + tier-1 七项 |
 | `witness-replay.tier1-diag` | `253fa67b` | + 诊断 |
 | `witness-replay.tier2` | `2df12dce` | + journal 去装箱（`d41b0a59`） |
-| `witness-replay.t1` | `e92f3b33` | + 单表 storage（`2003b43b`，**生产**） |
+| `witness-replay.t1` | `e92f3b33` | + 单表 storage（`2003b43b`） |
+| `witness-replay.t3` | `f1df386b` | + LOG arena + 余额临时值（`00966c5d`，**生产**） |
 
 ## 4. 学到的、被证伪的
 
