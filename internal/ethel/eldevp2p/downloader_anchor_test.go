@@ -45,11 +45,12 @@ func TestVerifyAnchorRoundTripEmptyProof(t *testing.T) {
 // signs an attestation and POSTs it to a real AttestHandler-backed aggregator,
 // which counts and finalises it. A dead aggregator yields a (non-fatal) error.
 func TestSignAndPostAttestation(t *testing.T) {
-	agg := stateless.NewAggregator(nil, 1, 0)
+	key, _ := crypto.GenerateKey()
+	allow := map[types.Address]bool{crypto.PubkeyToAddress(key.PublicKey): true}
+	agg := stateless.NewAggregator(allow, 1, 0)
 	srv := httptest.NewServer(serve.AttestHandler(agg, nil))
 	defer srv.Close()
 
-	key, _ := crypto.GenerateKey()
 	sr := types.HexToHash("0x00000000000000000000000000000000000000000000000000000000000000aa")
 	rr := types.HexToHash("0x00000000000000000000000000000000000000000000000000000000000000bb")
 

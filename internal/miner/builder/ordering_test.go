@@ -34,8 +34,8 @@ func TestTxByPriceAndNonceOrdering(t *testing.T) {
 
 	pending := map[types.Address][]*transaction.Transaction{
 		addr1: {makeTx(0, 5), makeTx(1, 5)},   // 5 Gwei tip
-		addr2: {makeTx(0, 20), makeTx(1, 20)},  // 20 Gwei tip
-		addr3: {makeTx(0, 10), makeTx(1, 10)},  // 10 Gwei tip
+		addr2: {makeTx(0, 20), makeTx(1, 20)}, // 20 Gwei tip
+		addr3: {makeTx(0, 10), makeTx(1, 10)}, // 10 Gwei tip
 	}
 
 	txSet := NewTxByPriceAndNonce(pending, baseFee)
@@ -71,5 +71,29 @@ func TestTxByPriceAndNonceEmpty(t *testing.T) {
 	txSet := NewTxByPriceAndNonce(nil, nil)
 	if txSet.Peek() != nil {
 		t.Fatal("empty set should return nil")
+	}
+}
+
+func TestTxByPriceAndNonceUsesBlobFeeCapAsTieBreaker(t *testing.T) {
+	baseFee := uint256.NewInt(1e9)
+	makeBlobTx := func(blobFeeCap uint64) *transaction.Transaction {
+		return transaction.NewTx(&transaction.BlobTx{
+			GasTipCap:  uint256.NewInt(2e9),
+			GasFeeCap:  uint256.NewInt(3e9),
+			BlobFeeCap: uint256.NewInt(blobFeeCap),
+			Gas:        100_000,
+			BlobHashes: []types.Hash{{0x01}},
+		})
+	}
+
+	lower := makeBlobTx(100)
+	higher := makeBlobTx(120)
+	txSet := NewTxByPriceAndNonce(map[types.Address][]*transaction.Transaction{
+		types.HexToAddress("0x01"): {lower},
+		types.HexToAddress("0x02"): {higher},
+	}, baseFee)
+
+	if got := txSet.Peek(); got != higher {
+		t.Fatalf("first transaction blob fee cap = %s, want %s", got.BlobFeeCap(), higher.BlobFeeCap())
 	}
 }

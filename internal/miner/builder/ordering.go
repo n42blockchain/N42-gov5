@@ -35,10 +35,10 @@ import (
 // by effective gas tip (highest first). This is the standard Ethereum
 // transaction ordering used for block building.
 type TxByPriceAndNonce struct {
-	txs    map[types.Address][]*transaction.Transaction // Per-account nonce-sorted txs
-	heads  txsByPrice                                    // Heap of next tx per account (by price)
-	signer transaction.Signer                           // Used if From() is nil
-	baseFee *uint256.Int                                // Current block base fee
+	txs     map[types.Address][]*transaction.Transaction // Per-account nonce-sorted txs
+	heads   txsByPrice                                   // Heap of next tx per account (by price)
+	signer  transaction.Signer                           // Used if From() is nil
+	baseFee *uint256.Int                                 // Current block base fee
 }
 
 // NewTxByPriceAndNonce creates a transaction set sorted by effective tip.
@@ -108,11 +108,15 @@ type txWithPrice struct {
 	from         types.Address
 	baseFee      *uint256.Int
 	effectiveTip uint256.Int
+	blobFeeCap   uint256.Int
 }
 
 func (t *txWithPrice) computeEffectiveTip() {
 	tipCap := t.tx.GasTipCap()
 	feeCap := t.tx.GasFeeCap()
+	if blobFeeCap := t.tx.BlobFeeCap(); blobFeeCap != nil {
+		t.blobFeeCap.Set(blobFeeCap)
+	}
 	if tipCap == nil {
 		tipCap = t.tx.GasPrice()
 	}
@@ -139,7 +143,14 @@ type txsByPrice []*txWithPrice
 
 func (s txsByPrice) Len() int { return len(s) }
 func (s txsByPrice) Less(i, j int) bool {
-	return s[i].effectiveTip.Cmp(&s[j].effectiveTip) > 0 // Higher tip first
+	if cmp := s[i].effectiveTip.Cmp(&s[j].effectiveTip); cmp != 0 {
+		return cmp > 0 // Higher execution-gas tip first.
+	}
+	// Blob transactions with the same execution-gas tip are ordered by their
+	// blob fee cap. Apart from making the order deterministic for blob-heavy
+	// blocks, this avoids filling the block with lower-fee single-blob
+	// transactions before a higher-fee multi-blob transaction can fit.
+	return s[i].blobFeeCap.Cmp(&s[j].blobFeeCap) > 0
 }
 func (s txsByPrice) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 

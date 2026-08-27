@@ -190,6 +190,7 @@ func TestEthEL_FlagsCoverConfig(t *testing.T) {
 	required := []string{
 		"datadir",
 		"network",
+		"genesis",
 		"bootstrap.enabled",
 		"bootstrap.manifest",
 		"catchup.manifest",
@@ -199,11 +200,47 @@ func TestEthEL_FlagsCoverConfig(t *testing.T) {
 		"engine.jwt",
 		"torrent.enabled",
 		"torrent.listen",
+		"eldevp2p.enode-file",
 	}
 	for _, name := range required {
 		if !hasFlag(flagList, name) {
 			t.Errorf("flag %q missing from flags()", name)
 		}
+	}
+}
+
+func TestLoadCustomGenesis(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "genesis.json")
+	input := `{
+	  "config": {"chainId": 4242, "terminalTotalDifficultyPassed": true},
+	  "timestamp": "0x2a",
+	  "gasLimit": "0x1c9c380",
+	  "difficulty": "0x0",
+	  "alloc": {}
+	}`
+	if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	genesis, err := loadCustomGenesis(path)
+	if err != nil {
+		t.Fatalf("loadCustomGenesis: %v", err)
+	}
+	if genesis.Config == nil || genesis.Config.ChainID == nil || genesis.Config.ChainID.Uint64() != 4242 {
+		t.Fatalf("chain config = %#v, want chain ID 4242", genesis.Config)
+	}
+	if genesis.Timestamp != 42 {
+		t.Fatalf("timestamp = %d, want 42", genesis.Timestamp)
+	}
+
+	cfg := conf.DefaultEthELCfg()
+	cfg.DataDir = t.TempDir()
+	cfg.Genesis = genesis
+	node, err := ethel.NewNode(cfg)
+	if err != nil {
+		t.Fatalf("NewNode(custom genesis): %v", err)
+	}
+	if got := node.ChainConfig().ChainID.Uint64(); got != 4242 {
+		t.Fatalf("node chain ID = %d, want 4242", got)
 	}
 }
 

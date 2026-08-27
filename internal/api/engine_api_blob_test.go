@@ -74,10 +74,15 @@ func TestEngineAPIBlobInputValidation(t *testing.T) {
 		BlobGasUsed:   hexUint64Ptr(0),
 		ExcessBlobGas: hexUint64Ptr(0),
 	}
-	resp, err = engine.NewPayloadV3(context.Background(), emptyPayload, nil, nil)
-	require.NoError(t, err)
-	require.Equal(t, PayloadStatusInvalid, resp.Status)
-	require.Equal(t, "missing parent beacon block root", *resp.ValidationError)
+	resp, err = engine.NewPayloadV3(context.Background(), emptyPayload, []types.Hash{}, nil)
+	require.Nil(t, resp)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "missing parent beacon block root")
+
+	resp, err = engine.NewPayloadV3(context.Background(), emptyPayload, nil, &root)
+	require.Nil(t, resp)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "missing versioned hashes")
 
 	expected := testVersionedHash(1)
 	mismatch := testVersionedHash(2)
@@ -93,7 +98,7 @@ func TestEngineAPIBlobInputValidation(t *testing.T) {
 	require.Equal(t, errBlobHashMismatch.Error(), *resp.ValidationError)
 }
 
-func TestEngineAPIBlobRejectsPreCancunBlobFieldsAsInvalidParams(t *testing.T) {
+func TestEngineAPIBlobRejectsPreCancunV3AsUnsupportedFork(t *testing.T) {
 	t.Parallel()
 
 	genesisHeader := &block.Header{
@@ -127,16 +132,16 @@ func TestEngineAPIBlobRejectsPreCancunBlobFieldsAsInvalidParams(t *testing.T) {
 		BlockNumber:   hexutil.Uint64(1),
 		Timestamp:     hexutil.Uint64(14_999),
 		GasLimit:      hexutil.Uint64(30_000_000),
-		BaseFeePerGas: hexutil.Uint64(1),
+		BaseFeePerGas: hexBigFromUint64(1),
 		BlobGasUsed:   hexUint64Ptr(0),
 		ExcessBlobGas: hexUint64Ptr(0),
-	}, nil, &root)
+	}, []types.Hash{}, &root)
 	require.Nil(t, resp)
 	require.Error(t, err)
 	var codedErr interface{ ErrorCode() int }
 	require.ErrorAs(t, err, &codedErr)
-	require.Equal(t, -32602, codedErr.ErrorCode())
-	require.Contains(t, err.Error(), "blob fields not allowed before Cancun")
+	require.Equal(t, -38005, codedErr.ErrorCode())
+	require.Contains(t, err.Error(), "pre-Cancun")
 }
 
 func TestEngineAPIBlobRejectsMissingPostCancunBlobFieldsAsInvalidParams(t *testing.T) {
@@ -173,7 +178,7 @@ func TestEngineAPIBlobRejectsMissingPostCancunBlobFieldsAsInvalidParams(t *testi
 		BlockNumber:   hexutil.Uint64(1),
 		Timestamp:     hexutil.Uint64(15_000),
 		GasLimit:      hexutil.Uint64(30_000_000),
-		BaseFeePerGas: hexutil.Uint64(1),
+		BaseFeePerGas: hexBigFromUint64(1),
 		ExcessBlobGas: hexUint64Ptr(0),
 		Withdrawals:   []*Withdrawal{},
 	}, nil, &root)
@@ -219,7 +224,7 @@ func TestEngineAPIBlobRejectsIntrinsicGasTooLowTransaction(t *testing.T) {
 		GasLimit:      hexutil.Uint64(30_000_000),
 		GasUsed:       hexutil.Uint64(0),
 		Timestamp:     hexutil.Uint64(2),
-		BaseFeePerGas: hexutil.Uint64(1),
+		BaseFeePerGas: hexBigFromUint64(1),
 		Transactions:  []hexutil.Bytes{raw},
 		Withdrawals:   []*Withdrawal{},
 		BlobGasUsed:   hexUint64Ptr(0),
@@ -234,7 +239,7 @@ func TestEngineAPIBlobRejectsIntrinsicGasTooLowTransaction(t *testing.T) {
 		parentBeaconRoot:   &beaconRoot,
 	})
 
-	resp, err := engine.NewPayloadV3(context.Background(), payload, nil, &beaconRoot)
+	resp, err := engine.NewPayloadV3(context.Background(), payload, []types.Hash{}, &beaconRoot)
 	require.NoError(t, err)
 	require.Equal(t, PayloadStatusInvalid, resp.Status)
 	require.NotNil(t, resp.ValidationError)
@@ -276,7 +281,7 @@ func TestEngineAPIBlobRejectsBlobTxBelowBlockBlobFee(t *testing.T) {
 		GasLimit:      hexutil.Uint64(30_000_000),
 		GasUsed:       hexutil.Uint64(0),
 		Timestamp:     hexutil.Uint64(2),
-		BaseFeePerGas: hexutil.Uint64(1),
+		BaseFeePerGas: hexBigFromUint64(1),
 		Transactions:  []hexutil.Bytes{raw},
 		Withdrawals:   []*Withdrawal{},
 		BlobGasUsed:   hexUint64Ptr(transaction.BlobTxBlobGasPerBlob),
@@ -333,7 +338,7 @@ func TestEngineAPIBlobRejectsInvalidExcessBlobGasBeforeBlobFeeValidation(t *test
 		GasLimit:      hexutil.Uint64(30_000_000),
 		GasUsed:       hexutil.Uint64(0),
 		Timestamp:     hexutil.Uint64(2),
-		BaseFeePerGas: hexutil.Uint64(1),
+		BaseFeePerGas: hexBigFromUint64(1),
 		Transactions:  []hexutil.Bytes{raw},
 		Withdrawals:   []*Withdrawal{},
 		BlobGasUsed:   hexUint64Ptr(transaction.BlobTxBlobGasPerBlob),
@@ -416,7 +421,7 @@ func TestEngineAPIBlobRejectsWrappedNegativeExcessBlobGasUnderCancunWithoutHangi
 		GasLimit:      hexutil.Uint64(30_000_000),
 		GasUsed:       hexutil.Uint64(0),
 		Timestamp:     hexutil.Uint64(1),
-		BaseFeePerGas: hexutil.Uint64(7),
+		BaseFeePerGas: hexBigFromUint64(7),
 		Transactions:  []hexutil.Bytes{raw},
 		Withdrawals:   []*Withdrawal{},
 		BlobGasUsed:   hexUint64Ptr(transaction.BlobTxBlobGasPerBlob),
@@ -518,7 +523,7 @@ func TestEngineAPIv4RejectsWrappedNegativeExcessBlobGasWithoutHanging(t *testing
 		GasLimit:      hexutil.Uint64(30_000_000),
 		GasUsed:       hexutil.Uint64(0),
 		Timestamp:     hexutil.Uint64(1),
-		BaseFeePerGas: hexutil.Uint64(7),
+		BaseFeePerGas: hexBigFromUint64(7),
 		Transactions:  []hexutil.Bytes{raw},
 		Withdrawals:   []*Withdrawal{},
 		BlobGasUsed:   hexUint64Ptr(transaction.BlobTxBlobGasPerBlob),
@@ -575,7 +580,7 @@ func TestEngineAPIBlobRejectsGasLimitBelowMinimum(t *testing.T) {
 		GasLimit:      hexutil.Uint64(params.MinGasLimit - 1),
 		GasUsed:       hexutil.Uint64(0),
 		Timestamp:     hexutil.Uint64(2),
-		BaseFeePerGas: hexutil.Uint64(1),
+		BaseFeePerGas: hexBigFromUint64(1),
 		Transactions:  nil,
 		Withdrawals:   []*Withdrawal{},
 		BlobGasUsed:   hexUint64Ptr(0),
@@ -590,7 +595,7 @@ func TestEngineAPIBlobRejectsGasLimitBelowMinimum(t *testing.T) {
 		parentBeaconRoot:   &beaconRoot,
 	})
 
-	resp, err := engine.NewPayloadV3(context.Background(), payload, nil, &beaconRoot)
+	resp, err := engine.NewPayloadV3(context.Background(), payload, []types.Hash{}, &beaconRoot)
 	require.NoError(t, err)
 	require.Equal(t, PayloadStatusInvalid, resp.Status)
 	require.NotNil(t, resp.ValidationError)
@@ -643,7 +648,7 @@ func TestEngineAPIBlobRejectsGasLimitBelowMinimumWhenParentResolvedViaCurrentHea
 		GasLimit:      hexutil.Uint64(0),
 		GasUsed:       hexutil.Uint64(0),
 		Timestamp:     hexutil.Uint64(12),
-		BaseFeePerGas: hexutil.Uint64(7),
+		BaseFeePerGas: hexBigFromUint64(7),
 		Transactions:  nil,
 		Withdrawals:   []*Withdrawal{},
 		BlobGasUsed:   hexUint64Ptr(0),
@@ -658,7 +663,7 @@ func TestEngineAPIBlobRejectsGasLimitBelowMinimumWhenParentResolvedViaCurrentHea
 		parentBeaconRoot:   &beaconRoot,
 	})
 
-	resp, err := engine.NewPayloadV3(context.Background(), payload, nil, &beaconRoot)
+	resp, err := engine.NewPayloadV3(context.Background(), payload, []types.Hash{}, &beaconRoot)
 	require.NoError(t, err)
 	require.Equal(t, PayloadStatusInvalid, resp.Status)
 	require.NotNil(t, resp.ValidationError)
@@ -688,6 +693,27 @@ func TestEngineAPIBlobRejectsOsakaPayloadAboveBlobGasAllowance(t *testing.T) {
 	require.Equal(t, PayloadStatusInvalid, resp.Status)
 	require.NotNil(t, resp.ValidationError)
 	require.Equal(t, "blob gas used 1310720 exceeds maximum allowance 1179648", *resp.ValidationError)
+}
+
+func TestEngineAPIBlobReturnsParentForBlobGasMismatch(t *testing.T) {
+	t.Parallel()
+
+	api, headHash := newEnginePayloadTestAPI()
+	engine := NewEngineAPIBlob(NewBlockChainAPI(api))
+	beaconRoot := types.Hash{0x99}
+	resp, err := engine.NewPayloadV3(context.Background(), &ExecutionPayloadV3{
+		ParentHash:    headHash,
+		BlockNumber:   hexutil.Uint64(1),
+		Timestamp:     hexutil.Uint64(2),
+		Transactions:  []hexutil.Bytes{},
+		Withdrawals:   []*Withdrawal{},
+		BlobGasUsed:   hexUint64Ptr(1),
+		ExcessBlobGas: hexUint64Ptr(0),
+	}, []types.Hash{}, &beaconRoot)
+	require.NoError(t, err)
+	require.Equal(t, PayloadStatusInvalid, resp.Status)
+	require.Equal(t, "blob gas mismatch", *resp.ValidationError)
+	require.Equal(t, &headHash, resp.LatestValidHash)
 }
 
 func TestEngineAPIBlobRejectsStaticExcessBlobGasFromZeroOnBlobsAboveTarget(t *testing.T) {
@@ -738,7 +764,7 @@ func TestEngineAPIBlobRejectsStaticExcessBlobGasFromZeroOnBlobsAboveTarget(t *te
 		GasLimit:      hexutil.Uint64(30_000_000),
 		GasUsed:       hexutil.Uint64(0),
 		Timestamp:     hexutil.Uint64(2),
-		BaseFeePerGas: hexutil.Uint64(1),
+		BaseFeePerGas: hexBigFromUint64(1),
 		Transactions:  []hexutil.Bytes{testBlobTxBytes(t, []types.Hash{expected})},
 		Withdrawals:   []*Withdrawal{},
 		BlobGasUsed:   hexUint64Ptr(params.BlobTxBlobGasPerBlob),
@@ -825,7 +851,7 @@ func TestEngineAPIBlobAcceptsOsakaReservePriceBoundaryPayload(t *testing.T) {
 		GasLimit:      hexutil.Uint64(30_000_000),
 		GasUsed:       hexutil.Uint64(0),
 		Timestamp:     hexutil.Uint64(2),
-		BaseFeePerGas: hexutil.Uint64(95),
+		BaseFeePerGas: hexBigFromUint64(95),
 		Transactions:  []hexutil.Bytes{rawTx},
 		Withdrawals:   []*Withdrawal{},
 		BlobGasUsed:   hexUint64Ptr(params.BlobTxBlobGasPerBlob),
@@ -852,6 +878,66 @@ func TestEngineAPIBlobForkchoiceRequiresState(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, PayloadStatusInvalid, resp.PayloadStatus.Status)
 	require.Equal(t, "missing forkchoice state", *resp.PayloadStatus.ValidationError)
+}
+
+func TestEngineAPIPayloadRetrievalRejectsWrongForkVersion(t *testing.T) {
+	t.Parallel()
+
+	api, _ := newEnginePayloadTestAPI()
+	v1 := NewEngineAPIV1(NewBlockChainAPI(api))
+	v3 := NewEngineAPIBlob(NewBlockChainAPI(api))
+	preCancunID := PayloadID{0x01}
+	cancunID := PayloadID{0x02}
+	api.engineOverlay.storeBuiltPayload(preCancunID, &engineBuiltPayload{
+		v2: &ExecutionPayloadV2{},
+	})
+	api.engineOverlay.storeBuiltPayload(cancunID, &engineBuiltPayload{
+		v2: &ExecutionPayloadV2{},
+		v3: &ExecutionPayloadV3{},
+	})
+
+	respV3, err := v3.GetPayloadV3(context.Background(), preCancunID)
+	require.Nil(t, respV3)
+	requireEngineErrorCode(t, err, -38005)
+	respV2, err := v1.GetPayloadV2(context.Background(), cancunID)
+	require.Nil(t, respV2)
+	requireEngineErrorCode(t, err, -38005)
+}
+
+func TestEngineAPIForkchoiceRejectsWrongForkAttributes(t *testing.T) {
+	t.Parallel()
+
+	api, headHash := newEnginePayloadTestAPI()
+	v1 := NewEngineAPIV1(NewBlockChainAPI(api))
+	root := types.Hash{0x01}
+	state := &ForkchoiceStateV1{HeadBlockHash: headHash}
+	attrsV2 := &PayloadAttributesV2{
+		PayloadAttributesV1:   PayloadAttributesV1{Timestamp: 2},
+		Withdrawals:           []*Withdrawal{},
+		ParentBeaconBlockRoot: &root,
+	}
+	resp, err := v1.ForkchoiceUpdatedV2(context.Background(), state, attrsV2)
+	require.Nil(t, resp)
+	requireEngineErrorCode(t, err, -38003)
+
+	attrsV2.ParentBeaconBlockRoot = nil
+	resp, err = v1.ForkchoiceUpdatedV2(context.Background(), state, attrsV2)
+	require.Nil(t, resp)
+	requireEngineErrorCode(t, err, -38005)
+
+	api.chainConfig.CancunBlock = nil
+	api.chainConfig.CancunTime = big.NewInt(100)
+	api.chainConfig.PragueTime = nil
+	api.chainConfig.OsakaTime = nil
+	v3 := NewEngineAPIBlob(NewBlockChainAPI(api))
+	state.HeadBlockHash = v3.v1().currentHeadHash()
+	resp, err = v3.ForkchoiceUpdatedV3(context.Background(), state, &PayloadAttributesV3{
+		Timestamp:             2,
+		Withdrawals:           []*Withdrawal{},
+		ParentBeaconBlockRoot: &root,
+	})
+	require.Nil(t, resp)
+	requireEngineErrorCode(t, err, -38005)
 }
 
 func TestEngineAPIv4InputValidation(t *testing.T) {
@@ -887,6 +973,8 @@ func TestEngineAPIv4RejectsMalformedExecutionRequestsAsInvalidParams(t *testing.
 	root := types.Hash{0x01}
 
 	payload := &ExecutionPayloadV4{
+		BaseFeePerGas: hexBigFromUint64(0),
+		LogsBloom:     make([]byte, block.BloomByteLength),
 		BlobGasUsed:   hexUint64Ptr(0),
 		ExcessBlobGas: hexUint64Ptr(0),
 		Withdrawals:   []*Withdrawal{},
@@ -923,7 +1011,7 @@ func TestEngineAPIv4RejectsMissingBlobFieldsAsInvalidParams(t *testing.T) {
 		GasLimit:      hexutil.Uint64(30_000_000),
 		GasUsed:       hexutil.Uint64(0),
 		Timestamp:     hexutil.Uint64(2),
-		BaseFeePerGas: hexutil.Uint64(1),
+		BaseFeePerGas: hexBigFromUint64(1),
 		BlockHash:     types.Hash{0x66},
 		Transactions:  []hexutil.Bytes{},
 		Withdrawals:   []*Withdrawal{},
@@ -963,7 +1051,7 @@ func TestEngineAPIBlobBuildsAndImportsMinimalPayloadV3(t *testing.T) {
 	require.Equal(t, hexutil.Uint64(0), *payloadResp.ExecutionPayload.BlobGasUsed)
 	require.NotNil(t, payloadResp.BlobsBundle)
 
-	newPayloadResp, err := engine.NewPayloadV3(context.Background(), payloadResp.ExecutionPayload, nil, &beaconRoot)
+	newPayloadResp, err := engine.NewPayloadV3(context.Background(), payloadResp.ExecutionPayload, []types.Hash{}, &beaconRoot)
 	require.NoError(t, err)
 	require.Equal(t, PayloadStatusValid, newPayloadResp.Status)
 	require.NotNil(t, newPayloadResp.LatestValidHash)

@@ -248,6 +248,34 @@ func TestValidateExecutionPayloadTransactionsRejectsPragueFloorGas(t *testing.T)
 	require.ErrorIs(t, err, errFloorDataGasTooLow)
 }
 
+func TestValidateExecutionPayloadTransactionsPrioritizesIntrinsicGas(t *testing.T) {
+	t.Parallel()
+
+	to := types.HexToAddress("0x1234567890123456789012345678901234567890")
+	cfg := &params.ChainConfig{
+		ChainID:       big.NewInt(1),
+		BerlinBlock:   big.NewInt(0),
+		IstanbulBlock: big.NewInt(0),
+		ShanghaiBlock: big.NewInt(0),
+		PragueTime:    big.NewInt(0),
+	}
+	tx := transaction.NewTx(&transaction.AccessListTx{
+		ChainID:  uint256.NewInt(1),
+		Nonce:    1,
+		GasPrice: uint256.NewInt(1),
+		Gas:      0,
+		To:       &to,
+		Value:    uint256.NewInt(0),
+		Data:     []byte{1},
+		V:        uint256.NewInt(0),
+		R:        uint256.NewInt(1),
+		S:        uint256.NewInt(1),
+	})
+
+	err := validateExecutionPayloadTransactions([]hexutil.Bytes{mustEncodeEthereumTx(t, tx)}, cfg, 1, 1, 0, 0, 30_000_000)
+	require.ErrorIs(t, err, internalcore.ErrIntrinsicGas)
+}
+
 func TestValidateExecutionPayloadTransactionsRejectsOsakaGasLimitCap(t *testing.T) {
 	t.Parallel()
 
@@ -753,7 +781,7 @@ func TestEngineAPIv4RejectsOversizedOsakaPayload(t *testing.T) {
 		GasUsed:       0,
 		Timestamp:     2,
 		ExtraData:     make([]byte, vmcore.MaxRLPBlockSizeFusaka+1),
-		BaseFeePerGas: 1,
+		BaseFeePerGas: hexBigFromUint64(1),
 		Transactions:  []hexutil.Bytes{},
 		Withdrawals:   []*Withdrawal{},
 		BlobGasUsed:   hexUint64Ptr(0),

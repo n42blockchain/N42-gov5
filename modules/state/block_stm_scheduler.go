@@ -245,12 +245,70 @@ func (s *Scheduler) NextTask() Task {
 
 		// Both counters past end. Terminal condition: numActive=0 AND
 		// numCommitted==numTxs. Otherwise a tx is still in flight or
-		// awaiting validation post-rewind; tell caller to back off.
-		if s.numActive.Load() == 0 && s.numCommitted.Load() == numTxs {
-			s.done.Store(true)
-			return Task{Kind: TaskDone}
+		// awaiting validation post-rewind. A rewind racing with another
+		// worker's counter claim can occasionally leave both frontiers at
+		// the end even though a Ready/Aborting or Executed tx remains. When
+		// the scheduler is quiescent, reconstruct the missing frontier from
+		// the guarded per-tx statuses instead of spinning forever.
+		if s.numActive.Load() == 0 {
+			if s.numCommitted.Load() == numTxs {
+				s.done.Store(true)
+				return Task{Kind: TaskDone}
+			}
+			if s.recoverQuiescentWork() {
+				continue
+			}
 		}
 		return Task{Kind: TaskNone}
+	}
+}
+
+// recoverQuiescentWork repairs a lost scheduler frontier after all published
+// tasks have finished. Per-tx status is the source of truth: Ready/Aborting
+// needs execution, while Executed needs validation. Committed txs need no new
+// work. The final numActive check avoids acting on a snapshot taken while a
+// concurrent worker was publishing a newly claimed task.
+func (s *Scheduler) recoverQuiescentWork() bool {
+	minExecution := s.numTxs
+	minValidation := s.numTxs
+	for txIdx := 0; txIdx < s.numTxs; txIdx++ {
+		s.txMu[txIdx].Lock()
+		status := s.status[txIdx]
+		s.txMu[txIdx].Unlock()
+		switch status {
+		case TxStatusReady, TxStatusAborting:
+			if txIdx < minExecution {
+				minExecution = txIdx
+			}
+		case TxStatusExecuted:
+			if txIdx < minValidation {
+				minValidation = txIdx
+			}
+		}
+	}
+	if s.numActive.Load() != 0 {
+		return true
+	}
+	if minExecution < s.numTxs {
+		rewindCounter(&s.executionIdx, int64(minExecution))
+		return true
+	}
+	if minValidation < s.numTxs {
+		rewindCounter(&s.validationIdx, int64(minValidation))
+		return true
+	}
+	// Executing can be observed during the narrow window before the claiming
+	// worker increments numActive. Yield TaskNone so callers back off instead
+	// of busy-spinning inside NextTask until that publication completes.
+	return false
+}
+
+func rewindCounter(counter *atomic.Int64, target int64) {
+	for {
+		current := counter.Load()
+		if current <= target || counter.CompareAndSwap(current, target) {
+			return
+		}
 	}
 }
 

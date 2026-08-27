@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common"
@@ -41,6 +42,7 @@ import (
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -68,13 +70,6 @@ type EngineStateAdapter struct {
 	// the sync path, or leave nil and fall back to the locally stored BAL.
 	balPrefetch func(hash types.Hash) []byte
 
-	// fastVerify skips the full-MPT VerifyStateRoot pass at end of
-	// executePayloadDetailed and trusts the HPH IntermediateRoot
-	// computed during execution. Set true for the wire-driven sync
-	// path (ExecutePayloadFromWire); leave false for CL/test paths
-	// where state-root reconstruction is the canonical verifier.
-	fastVerify bool
-
 	// hashedCanonical selects the reth-2.2-style hashed-canonical state
 	// model: EVM reads come from HashedAccounts/HashedStorage (keccak the
 	// key on access) instead of PlainState, and the state-root computer
@@ -95,6 +90,11 @@ type EngineStateAdapter struct {
 	// headerHashReader, when set, is the freezer-direct BLOCKHASH source (see
 	// SetHeaderHashReader). Preferred over internalcore.GetHashFn's ParentHash walk.
 	headerHashReader headerHashReader
+
+	// trackHeadMarker keeps the eth-el SyncStageProgress marker aligned with
+	// Engine forkchoice. Generic Engine adapters leave this disabled because
+	// their database schema does not necessarily include that table.
+	trackHeadMarker bool
 
 	// staged: staged catch-up execution. The trc runs writeOnly (writes
 	// HashedAccounts/HashedStorage + changesets, SKIPS per-block CalcTrieRoot),
@@ -133,6 +133,13 @@ type EngineStateAdapter struct {
 	// history-index writes (archive data layout). The importer owns
 	// flush+fsync at its commit boundary.
 	csFreezerSink *ethel.CSFreezerSink
+
+	// batchHeaders exposes headers written in the caller-owned transaction to
+	// subsequent blocks in the same download batch. MDBX read transactions cannot
+	// see those uncommitted writes, but parent-relative validation (gas limit,
+	// base fee, timestamp) must still run for every block.
+	batchMu      sync.RWMutex
+	batchHeaders map[types.Hash]*block.Header
 }
 
 // SetCSFreezerSink switches hashed-canonical changeset persistence to the
@@ -177,13 +184,17 @@ func (a *EngineStateAdapter) PurgeHashedReadCache() { a.hashedReadCache.PurgeAll
 // boundary (success or failure — we can't tell which) costs one extra MDBX
 // read per hot key per batch, which is noise against the within-batch reuse.
 func (a *EngineStateAdapter) SetBatchTx(tx kv.RwTx) {
+	a.batchMu.Lock()
+	defer a.batchMu.Unlock()
 	a.batchTx = tx
 	if tx != nil {
+		a.batchHeaders = make(map[types.Hash]*block.Header)
 		// Mid-range rotation (commit → new tx): everything previously cached
 		// is either committed or visible in the new tx — keep the cache warm.
 		// Purging here (every commitInterval=256) capped hit rates at ~30%.
 		return
 	}
+	a.batchHeaders = nil
 	// Batch teardown (deferred SetBatchTx(nil) runs on BOTH success and error
 	// exits of executeRange): an errored range rolled its tx back, so entries
 	// memoized from that tx's uncommitted writes are stale — drop everything.
@@ -269,6 +280,8 @@ func (a *EngineStateAdapter) SetSnapshotCold(r state.StateReader) { a.snapshotCo
 
 type enginePayloadExecutionResult struct {
 	stateRoot       types.Hash
+	receipts        block.Receipts
+	stateOverlay    *engineStateOverlay
 	validationError error
 }
 
@@ -290,6 +303,12 @@ func (a *EngineStateAdapter) WithCSSource(src cs.Source) *EngineStateAdapter {
 // n42-migrate-reth-hashed.
 func (a *EngineStateAdapter) WithHashedCanonical(v bool) *EngineStateAdapter {
 	a.hashedCanonical = v
+	return a
+}
+
+// WithHeadMarker enables the eth-el execution-head marker.
+func (a *EngineStateAdapter) WithHeadMarker(v bool) *EngineStateAdapter {
+	a.trackHeadMarker = v
 	return a
 }
 
@@ -320,6 +339,14 @@ func (a *EngineStateAdapter) ExecutePayloadFromWire(blk *block.Block, withdrawal
 	return a.executePayloadFromWire(blk, withdrawals, false)
 }
 
+// ExecutePayloadFromWireWithFullVerification executes a wire block with the
+// complete state-root path. This is intended for isolated RLP fixture imports,
+// where the database starts at a small synthetic genesis and correctness is
+// more important than the catch-up shortcut used by the live wire sync path.
+func (a *EngineStateAdapter) ExecutePayloadFromWireWithFullVerification(blk *block.Block, withdrawals []*Withdrawal) (bool, types.Hash, error) {
+	return a.executePayloadFromWireMode(blk, withdrawals, false, false)
+}
+
 // ExecutePayloadFromTrustedColumnar executes a block read from the local
 // columnar freezer. That codec deliberately strips logsBloom while retaining the
 // canonical header hash, so this trusted local-only path may reconstruct a
@@ -329,15 +356,19 @@ func (a *EngineStateAdapter) ExecutePayloadFromTrustedColumnar(blk *block.Block,
 }
 
 func (a *EngineStateAdapter) executePayloadFromWire(blk *block.Block, withdrawals []*Withdrawal, allowMissingExpectedBloom bool) (bool, types.Hash, error) {
+	return a.executePayloadFromWireMode(blk, withdrawals, allowMissingExpectedBloom, true)
+}
+
+func (a *EngineStateAdapter) executePayloadFromWireMode(blk *block.Block, withdrawals []*Withdrawal, allowMissingExpectedBloom, fastVerify bool) (bool, types.Hash, error) {
 	var parentBeaconRoot *types.Hash
 	if hdr, _ := blk.Header().(*block.Header); hdr != nil && hdr.ParentBeaconRoot != nil {
 		v := *hdr.ParentBeaconRoot
 		parentBeaconRoot = &v
 	}
-	prevFast := a.fastVerify
-	a.fastVerify = true
-	defer func() { a.fastVerify = prevFast }()
-	result, err := a.executePayloadDetailed(blk, parentBeaconRoot, nil, withdrawals, allowMissingExpectedBloom)
+	result, err := a.executePayloadDetailedModeWithParent(
+		blk, types.Hash{}, parentBeaconRoot, nil, withdrawals,
+		allowMissingExpectedBloom, true, nil, fastVerify,
+	)
 	if err != nil {
 		return false, types.Hash{}, err
 	}
@@ -428,6 +459,18 @@ func validateLogsBloom(actual, expected []byte, allowMissingExpected bool) error
 }
 
 func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal, allowMissingExpectedBloom bool) (_ *enginePayloadExecutionResult, retErr error) {
+	return a.executePayloadDetailedMode(blk, parentBeaconRoot, expectedRequests, withdrawals, allowMissingExpectedBloom, true, nil)
+}
+
+func (a *EngineStateAdapter) validatePayloadDetailed(blk *block.Block, parentHash types.Hash, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal, parentState *engineStateOverlay) (*enginePayloadExecutionResult, error) {
+	return a.executePayloadDetailedModeWithParent(blk, parentHash, parentBeaconRoot, expectedRequests, withdrawals, false, false, parentState, false)
+}
+
+func (a *EngineStateAdapter) executePayloadDetailedMode(blk *block.Block, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal, allowMissingExpectedBloom, persist bool, parentState *engineStateOverlay) (_ *enginePayloadExecutionResult, retErr error) {
+	return a.executePayloadDetailedModeWithParent(blk, types.Hash{}, parentBeaconRoot, expectedRequests, withdrawals, allowMissingExpectedBloom, persist, parentState, false)
+}
+
+func (a *EngineStateAdapter) executePayloadDetailedModeWithParent(blk *block.Block, parentHash types.Hash, parentBeaconRoot *types.Hash, expectedRequests []hexutil.Bytes, withdrawals []*Withdrawal, allowMissingExpectedBloom, persist bool, parentState *engineStateOverlay, fastVerify bool) (_ *enginePayloadExecutionResult, retErr error) {
 	// A failed block leaves the read cache holding values memoized from this
 	// (about to be rolled back) tx — drop them. The batch path additionally
 	// purges on every SetBatchTx.
@@ -444,10 +487,24 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 		parentBeaconRoot = header.ParentBeaconRoot
 	}
 	blockNum := header.Number.Uint64()
+	if err := validateExecutionPayloadHeader(header, a.HeaderByHash(header.ParentHash), a.chainCfg); err != nil {
+		return &enginePayloadExecutionResult{
+			stateRoot:       header.Root,
+			validationError: err,
+		}, nil
+	}
+	// Keep the staged parent's cumulative lineage for the next overlay even
+	// when execution can read this parent directly from canonical storage.
+	// Dropping it here would reduce every newly staged overlay to a one-block
+	// delta, which is insufficient after a later deep reorg unwinds that parent.
+	overlayParentState := parentState
 
 	// When a batch tx is supplied, run against it and let the caller commit
 	// (atomic state+head per batch). Otherwise open + commit our own tx.
-	tx := a.batchTx
+	a.batchMu.RLock()
+	batchTx := a.batchTx
+	a.batchMu.RUnlock()
+	tx := batchTx
 	ownTx := tx == nil
 	var err error
 	if ownTx {
@@ -456,6 +513,47 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 			return nil, err
 		}
 		defer tx.Rollback()
+	}
+	validationStateRebased := false
+	validationRewindBlockNum := blockNum
+	if !persist {
+		// A persisted canonical parent is represented directly by database
+		// state. Overlay state is only needed when the parent itself is a
+		// staged side-chain payload. Resolve this before choosing the rewind
+		// point: a cumulative side-chain overlay is based at its fork ancestor,
+		// not necessarily at parent block number minus one.
+		if parentHash != (types.Hash{}) {
+			storedParentHash, err := a.resolveCanonicalStoredHash(tx, parentHash)
+			if err != nil {
+				return nil, err
+			}
+			if storedParentHash != (types.Hash{}) {
+				parentState = nil
+			}
+		}
+		if parentState != nil && parentState.hasBaseBlockNumber {
+			validationRewindBlockNum = parentState.baseBlockNumber + 1
+		}
+		validationStateRebased, err = rewindEngineValidationState(tx, validationRewindBlockNum)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if !persist && parentState != nil {
+		if err := applyEngineStateOverlayToTx(tx, parentState); err != nil {
+			return nil, err
+		}
+	}
+	if !persist && (validationStateRebased || parentState != nil) {
+		if err := tx.ClearBucket(kv.TrieOfAccounts); err != nil {
+			return nil, fmt.Errorf("clear validation account trie: %w", err)
+		}
+		if err := tx.ClearBucket(kv.TrieOfStorage); err != nil {
+			return nil, fmt.Errorf("clear validation storage trie: %w", err)
+		}
+		if err := ethel.RebuildHashedState(tx); err != nil {
+			return nil, fmt.Errorf("rebuild validation hashed state: %w", err)
+		}
 	}
 
 	// Execute against the parent snapshot, i.e. the state at the start of this block.
@@ -517,8 +615,17 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 			writer = state.NewOverlayStateWriter(tx)
 		}
 	} else {
-		reader = state.NewPlainState(tx, blockNum)
-		writer = state.NewPlainStateWriter(tx, tx, blockNum)
+		// Payload execution always starts from the transaction's current plain
+		// state. Normal canonical execution has the parent at the DB tip; a
+		// forkchoice reorg explicitly unwinds the DB to the common ancestor
+		// first. A historical PlainState reader is incorrect after that unwind
+		// because consumed orphan changesets no longer back its history index.
+		reader = state.NewPlainStateReader(tx)
+		if persist {
+			writer = state.NewPlainStateWriter(tx, tx, blockNum)
+		} else {
+			writer = state.NewPlainStateWriterNoHistory(tx)
+		}
 	}
 	ibs := state.New(reader)
 	ibs.BeginWriteCodes()
@@ -557,7 +664,7 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	// snapshot-direct (minimal) keeps no local trie — HashedAccounts/Storage are
 	// never scanned for a root, so skip the (30-60min / ~14GB) PlainState→Hashed
 	// init entirely. State is served from the warm overlay + snapshot cold tier.
-	if !a.fastVerify && a.snapshotCold == nil {
+	if !fastVerify && a.snapshotCold == nil {
 		if err := ethel.InitHashState(tx); err != nil {
 			return nil, err
 		}
@@ -951,7 +1058,7 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 		// receipts-root / gas / logs-bloom checks above and the E2E-verified
 		// snapshot cold values feeding the warm overlay reader.
 		computedRoot = header.Root
-	} else if a.fastVerify {
+	} else if fastVerify {
 		// Wire-driven sync path (ExecutePayloadFromWire). Trust the HPH
 		// IntermediateRoot we already computed above — that's the same
 		// incremental algorithm the catchup executor uses at ~3000 blk/s
@@ -969,10 +1076,27 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 		}
 	}
 	if expected != nil && computedRoot != expected.stateRoot {
+		var overlayBase uint64
+		var overlayHasBase bool
+		var overlayAccounts, overlayStorage int
+		if overlayParentState != nil {
+			overlayBase = overlayParentState.baseBlockNumber
+			overlayHasBase = overlayParentState.hasBaseBlockNumber
+			overlayAccounts = len(overlayParentState.accounts)
+			overlayStorage = len(overlayParentState.storage)
+		}
 		log.Error("State root mismatch", "block", blockNum,
 			"computed", computedRoot.Hex(), "expected", expected.stateRoot.Hex(),
-			"fastVerify", a.fastVerify, "hashedCanonical", a.hashedCanonical,
-			"envFULLROOT", os.Getenv("N42_FULLROOT"))
+			"fastVerify", fastVerify, "hashedCanonical", a.hashedCanonical,
+			"envFULLROOT", os.Getenv("N42_FULLROOT"),
+			"parentOverlay", overlayParentState != nil,
+			"executionOverlay", parentState != nil,
+			"overlayBase", overlayBase,
+			"overlayHasBase", overlayHasBase,
+			"overlayAccounts", overlayAccounts,
+			"overlayStorage", overlayStorage,
+			"rewindBlock", validationRewindBlockNum,
+			"rewound", validationStateRebased)
 		if a.hashedCanonical && os.Getenv("N42_FULLROOT") == "1" {
 			// Diagnostic: recompute the root by FULL descent from the
 			// post-block HashedAccounts/HashedStorage leaves (retain
@@ -996,21 +1120,41 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 	}
 	header.Root = computedRoot
 	blk.WithSeal(header)
+	accounts, storage := ibs.DirtyAccountData()
+	stateOverlay := mergeEngineStateOverlay(overlayParentState, blockNum-1, accounts, storage, ibs.CodeHashes())
 
-	if os.Getenv("N42_NOCOMMIT") == "1" {
+	if persist && os.Getenv("N42_NOCOMMIT") == "1" {
 		log.Warn("NOCOMMIT: root MATCHED, rolling back (no persist)", "block", blockNum, "root", computedRoot.Hex())
 		return &enginePayloadExecutionResult{stateRoot: computedRoot,
 			validationError: fmt.Errorf("nocommit test")}, nil
 	}
+	if !persist {
+		return &enginePayloadExecutionResult{
+			stateRoot:    computedRoot,
+			receipts:     receipts,
+			stateOverlay: stateOverlay,
+		}, nil
+	}
 
 	// Persist the executed payload so subsequent head/header lookups can
 	// resolve Engine eth-compatible hashes back to the underlying block.
-	storedHash, err := writeEnginePayloadBlock(tx, blk)
+	storedHash, err := writeEnginePayloadBlock(tx, blk, receipts, withdrawals)
 	if err != nil {
+		return nil, err
+	}
+	engineHash := ethCompatibleBlockHash(blk, a.chainCfg)
+	if err := rawdb.WriteHeaderNumber(tx, engineHash, blockNum); err != nil {
 		return nil, err
 	}
 	if err := rawdb.WriteCanonicalHash(tx, storedHash, blockNum); err != nil {
 		return nil, err
+	}
+	if batchTx != nil {
+		a.batchMu.Lock()
+		if a.batchHeaders != nil {
+			a.batchHeaders[ethCompatibleBlockHash(blk, a.chainCfg)] = header
+		}
+		a.batchMu.Unlock()
 	}
 	// Journal this block's reverse-diff (pending until the batch commits) so a
 	// later shallow reorg can unwind it. storedHash is what canonical(blockNum)
@@ -1027,7 +1171,158 @@ func (a *EngineStateAdapter) executePayloadDetailed(blk *block.Block, parentBeac
 		}
 	}
 
-	return &enginePayloadExecutionResult{stateRoot: computedRoot}, nil
+	return &enginePayloadExecutionResult{stateRoot: computedRoot, receipts: receipts, stateOverlay: stateOverlay}, nil
+}
+
+// rewindEngineValidationState restores the persisted canonical state to the
+// payload parent's height inside the caller's rollback-only transaction. A CL
+// may submit a side chain whose parent is several blocks behind the current
+// head; applying the staged side-chain overlay directly on top of tip state
+// would retain changes made after the fork point and invalidate execution.
+func rewindEngineValidationState(tx kv.RwTx, blockNum uint64) (bool, error) {
+	if tx == nil || blockNum == 0 {
+		return false, nil
+	}
+	var headNum uint64
+	headHash := rawdb.ReadHeadBlockHash(tx)
+	if headHash != (types.Hash{}) {
+		if number := rawdb.ReadHeaderNumber(tx, headHash); number != nil {
+			headNum = *number
+		}
+	}
+	// Peer catch-up commits state and ethel-last-block atomically, but its
+	// rawdb head pointer can lag until Engine forkchoice adopts that chain.
+	// Validation must unwind from the state that is actually in PlainState,
+	// otherwise a sibling branch is executed on top of the peer branch's state.
+	if progress := ethel.ReadProgress(tx); progress > headNum {
+		headNum = progress
+	}
+	parentNum := blockNum - 1
+	if headNum <= parentNum {
+		return false, nil
+	}
+	for number := headNum; number > parentNum; number-- {
+		if err := commitment.UnwindPlainStateBlock(tx, number); err != nil {
+			return false, fmt.Errorf("rewind validation state at block %d: %w", number, err)
+		}
+	}
+	return true, nil
+}
+
+// canonicalBlockNumber reports whether engineHash is currently indexed on the
+// persisted canonical chain. Payload hashes can differ from their stored N42
+// header hashes, so the lookup resolves both representations before checking
+// the number-to-hash canonical mapping.
+func (a *EngineStateAdapter) canonicalBlockNumber(engineHash types.Hash) (uint64, bool, error) {
+	tx, err := a.db.BeginRo(context.Background())
+	if err != nil {
+		return 0, false, err
+	}
+	defer tx.Rollback()
+
+	storedHash, err := a.resolveCanonicalStoredHash(tx, engineHash)
+	if err != nil || storedHash == (types.Hash{}) {
+		return 0, false, err
+	}
+	number := rawdb.ReadHeaderNumber(tx, storedHash)
+	if number == nil {
+		return 0, false, nil
+	}
+	canonicalHash, err := rawdb.ReadCanonicalHash(tx, *number)
+	if err != nil {
+		return 0, false, err
+	}
+	return *number, canonicalHash == storedHash, nil
+}
+
+// reorgCanonicalTo unwinds the persisted world state and canonical index to a
+// known ancestor. The caller can then execute a previously validated staged
+// branch forward from exactly that ancestor.
+func (a *EngineStateAdapter) reorgCanonicalTo(engineHash types.Hash) error {
+	tx, err := a.db.BeginRw(context.Background())
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	storedHash, err := a.resolveCanonicalStoredHash(tx, engineHash)
+	if err != nil {
+		return err
+	}
+	if storedHash == (types.Hash{}) {
+		return fmt.Errorf("reorg ancestor not found: %s", engineHash.Hex())
+	}
+	targetNum := rawdb.ReadHeaderNumber(tx, storedHash)
+	if targetNum == nil {
+		return fmt.Errorf("reorg ancestor number not found: %s", engineHash.Hex())
+	}
+	canonicalHash, err := rawdb.ReadCanonicalHash(tx, *targetNum)
+	if err != nil {
+		return err
+	}
+	if canonicalHash != storedHash {
+		return fmt.Errorf("reorg target is not canonical: %s", engineHash.Hex())
+	}
+
+	currentHash := rawdb.ReadHeadBlockHash(tx)
+	currentNum := rawdb.ReadHeaderNumber(tx, currentHash)
+	if currentNum == nil {
+		return fmt.Errorf("current canonical head number not found: %s", currentHash.Hex())
+	}
+	if *targetNum > *currentNum {
+		// Peer sync commits canonical headers, state and ethel-last-block in one
+		// transaction, but intentionally leaves the Engine forkchoice head pointer
+		// for the CL to adopt. If that atomic progress already covers the target,
+		// advancing the pointer is not a reorg and requires no replay.
+		if progress := ethel.ReadProgress(tx); progress < *targetNum {
+			return fmt.Errorf("cannot reorg forward from block %d to %d (sync progress %d)", *currentNum, *targetNum, progress)
+		}
+		rawdb.WriteHeadBlockHash(tx, storedHash)
+		if err := rawdb.WriteHeadHeaderHash(tx, storedHash); err != nil {
+			return err
+		}
+		if a.trackHeadMarker {
+			if err := ethel.WriteHeadMarker(tx, *targetNum); err != nil {
+				return err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		a.hashedReadCache.PurgeAll()
+		return nil
+	}
+	for number := *currentNum; number > *targetNum; number-- {
+		if err := commitment.UnwindPlainStateBlock(tx, number); err != nil {
+			return fmt.Errorf("unwind canonical state at block %d: %w", number, err)
+		}
+	}
+	if err := rawdb.TruncateCanonicalHash(tx, *targetNum+1, false); err != nil {
+		return err
+	}
+	if err := tx.ClearBucket(kv.TrieOfAccounts); err != nil {
+		return fmt.Errorf("clear account trie after reorg: %w", err)
+	}
+	if err := tx.ClearBucket(kv.TrieOfStorage); err != nil {
+		return fmt.Errorf("clear storage trie after reorg: %w", err)
+	}
+	if err := ethel.RebuildHashedState(tx); err != nil {
+		return fmt.Errorf("rebuild hashed state after reorg: %w", err)
+	}
+	rawdb.WriteHeadBlockHash(tx, storedHash)
+	if err := rawdb.WriteHeadHeaderHash(tx, storedHash); err != nil {
+		return err
+	}
+	if a.trackHeadMarker {
+		if err := ethel.WriteHeadMarker(tx, *targetNum); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	a.hashedReadCache.PurgeAll()
+	return nil
 }
 
 // ForkchoiceUpdated updates the canonical chain head.
@@ -1045,14 +1340,24 @@ func (a *EngineStateAdapter) ForkchoiceUpdated(headHash, safeHash, finalizedHash
 	if storedHeadHash == (types.Hash{}) {
 		return fmt.Errorf("head block not found: %s", headHash.Hex())
 	}
+	storedSafeHash := types.Hash{}
 	if safeHash != (types.Hash{}) {
-		if _, err := a.resolveCanonicalStoredHash(tx, safeHash); err != nil {
+		storedSafeHash, err = a.resolveCanonicalStoredHash(tx, safeHash)
+		if err != nil {
 			return err
 		}
+		if storedSafeHash == (types.Hash{}) {
+			return fmt.Errorf("safe block not found: %s", safeHash.Hex())
+		}
 	}
+	storedFinalizedHash := types.Hash{}
 	if finalizedHash != (types.Hash{}) {
-		if _, err := a.resolveCanonicalStoredHash(tx, finalizedHash); err != nil {
+		storedFinalizedHash, err = a.resolveCanonicalStoredHash(tx, finalizedHash)
+		if err != nil {
 			return err
+		}
+		if storedFinalizedHash == (types.Hash{}) {
+			return fmt.Errorf("finalized block not found: %s", finalizedHash.Hex())
 		}
 	}
 
@@ -1060,7 +1365,18 @@ func (a *EngineStateAdapter) ForkchoiceUpdated(headHash, safeHash, finalizedHash
 	if err := rawdb.WriteHeadHeaderHash(tx, storedHeadHash); err != nil {
 		return err
 	}
+	if err := rawdb.WriteForkchoiceSafeHash(tx, storedSafeHash); err != nil {
+		return err
+	}
+	if err := rawdb.WriteForkchoiceFinalizedHash(tx, storedFinalizedHash); err != nil {
+		return err
+	}
 	headerNum := rawdb.ReadHeaderNumber(tx, storedHeadHash)
+	if a.trackHeadMarker && headerNum != nil {
+		if err := ethel.WriteHeadMarker(tx, *headerNum); err != nil {
+			return err
+		}
+	}
 
 	if err := tx.Commit(); err != nil {
 		return err
@@ -1134,6 +1450,12 @@ func (a *EngineStateAdapter) CurrentHeadHash() types.Hash {
 // NewPayload cannot resolve the parent when the CL asks whether a
 // received payload extends the current head.
 func (a *EngineStateAdapter) HeaderByHash(hash types.Hash) *block.Header {
+	a.batchMu.RLock()
+	header := a.batchHeaders[hash]
+	a.batchMu.RUnlock()
+	if header != nil {
+		return header
+	}
 	tx, err := a.db.BeginRo(context.Background())
 	if err != nil {
 		return nil
@@ -1166,7 +1488,14 @@ func (a *EngineStateAdapter) resolveCanonicalStoredHash(tx kv.Tx, engineHash typ
 		return types.Hash{}, nil
 	}
 	if hdr, err := rawdb.ReadHeaderByHash(tx, engineHash); err == nil && hdr != nil {
-		return engineHash, nil
+		number := uint64FromUint256OrZero(hdr.Number)
+		canonicalHash, err := rawdb.ReadCanonicalHash(tx, number)
+		if err != nil {
+			return types.Hash{}, err
+		}
+		if canonicalHash == engineHash {
+			return engineHash, nil
+		}
 	}
 	for number := uint64(0); ; number++ {
 		storedHash, err := rawdb.ReadCanonicalHash(tx, number)
@@ -1193,7 +1522,7 @@ func (a *EngineStateAdapter) resolveCanonicalStoredHash(tx kv.Tx, engineHash typ
 	}
 }
 
-func writeEnginePayloadBlock(tx kv.RwTx, blk *block.Block) (types.Hash, error) {
+func writeEnginePayloadBlock(tx kv.RwTx, blk *block.Block, receipts block.Receipts, withdrawals []*Withdrawal) (types.Hash, error) {
 	header, ok := blk.Header().(*block.Header)
 	if !ok || header == nil {
 		return types.Hash{}, fmt.Errorf("unexpected header type")
@@ -1210,6 +1539,19 @@ func writeEnginePayloadBlock(tx kv.RwTx, blk *block.Block) (types.Hash, error) {
 	if _, _, err := rawdb.WriteRawBody(tx, hash, header.Number.Uint64(), rawBody); err != nil {
 		return types.Hash{}, err
 	}
+	if withdrawals != nil {
+		encoded, err := rlp.EncodeToBytes(withdrawals)
+		if err != nil {
+			return types.Hash{}, fmt.Errorf("encode withdrawals: %w", err)
+		}
+		if err := rawdb.WriteEngineWithdrawalsRLP(tx, hash, header.Number.Uint64(), encoded); err != nil {
+			return types.Hash{}, fmt.Errorf("write withdrawals: %w", err)
+		}
+	}
 	rawdb.WriteHeader(tx, header)
+	if err := rawdb.WriteReceipts(tx, header.Number.Uint64(), receipts); err != nil {
+		return types.Hash{}, err
+	}
+	rawdb.WriteTxLookupEntries(tx, blk)
 	return hash, nil
 }

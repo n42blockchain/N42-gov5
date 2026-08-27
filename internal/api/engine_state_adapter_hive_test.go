@@ -3,8 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"io/fs"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -17,11 +15,14 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/account"
+	avmtypes "github.com/n42blockchain/N42/common/avmtypes"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/crypto"
 	internalcore "github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/ethel"
 	vmcore "github.com/n42blockchain/N42/internal/vm"
@@ -30,9 +31,313 @@ import (
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	logv3 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/modules/rawdb"
+	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 )
+
+func TestRewindEngineValidationStateUsesHistoricalParent(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() { kv.ChaindataTablesCfg = prevTables })
+
+	db := memdb.NewTestDB(t)
+	var addr types.Address
+	addr[19] = 0x42
+	emptyCodeHash := crypto.Keccak256Hash(nil)
+	accountAt := func(nonce uint64) *account.StateAccount {
+		return &account.StateAccount{
+			Initialised: true,
+			Nonce:       nonce,
+			CodeHash:    emptyCodeHash,
+		}
+	}
+
+	var canonicalHashes [3]types.Hash
+	require.NoError(t, db.Update(context.Background(), func(tx kv.RwTx) error {
+		original := accountAt(0)
+		if err := tx.Put(modules.Account, addr[:], original.MarshalV2()); err != nil {
+			return err
+		}
+		previous := original
+		var headHash types.Hash
+		for number := uint64(1); number <= 2; number++ {
+			next := accountAt(number)
+			writer := state.NewPlainStateWriter(tx, tx, number)
+			if err := writer.UpdateAccountData(addr, previous, next); err != nil {
+				return err
+			}
+			if err := writer.WriteChangeSets(); err != nil {
+				return err
+			}
+			if err := writer.WriteHistory(); err != nil {
+				return err
+			}
+			header := &block.Header{Number: uint256.NewInt(number)}
+			rawdb.WriteHeader(tx, header)
+			headHash = header.Hash()
+			canonicalHashes[number] = headHash
+			if err := rawdb.WriteCanonicalHash(tx, headHash, number); err != nil {
+				return err
+			}
+			previous = next
+		}
+		rawdb.WriteHeadBlockHash(tx, headHash)
+		return ethel.RebuildHashedState(tx)
+	}))
+
+	tx, err := db.BeginRw(context.Background())
+	require.NoError(t, err)
+	rewoundState, err := rewindEngineValidationState(tx, 2)
+	require.NoError(t, err)
+	require.True(t, rewoundState)
+	var rewound account.StateAccount
+	rewoundData, err := tx.GetOne(modules.Account, addr[:])
+	require.NoError(t, err)
+	require.NoError(t, rewound.DecodeForStorageV2(rewoundData))
+	require.Equal(t, uint64(1), rewound.Nonce)
+	tx.Rollback()
+
+	require.NoError(t, db.View(context.Background(), func(tx kv.Tx) error {
+		var persisted account.StateAccount
+		data, err := tx.GetOne(modules.Account, addr[:])
+		if err != nil {
+			return err
+		}
+		if err := persisted.DecodeForStorageV2(data); err != nil {
+			return err
+		}
+		require.Equal(t, uint64(2), persisted.Nonce)
+		return nil
+	}))
+
+	adapter := NewEngineStateAdapter(db, nil, nil, nil)
+	require.NoError(t, adapter.reorgCanonicalTo(canonicalHashes[1]))
+	require.NoError(t, db.View(context.Background(), func(tx kv.Tx) error {
+		var persisted account.StateAccount
+		data, err := tx.GetOne(modules.Account, addr[:])
+		if err != nil {
+			return err
+		}
+		if err := persisted.DecodeForStorageV2(data); err != nil {
+			return err
+		}
+		require.Equal(t, uint64(1), persisted.Nonce)
+		require.Equal(t, canonicalHashes[1], rawdb.ReadHeadBlockHash(tx))
+		blockTwoHash, err := rawdb.ReadCanonicalHash(tx, 2)
+		require.NoError(t, err)
+		require.Equal(t, types.Hash{}, blockTwoHash)
+		return nil
+	}))
+}
+
+func TestReorgCanonicalToAdoptsExecutedPeerSyncHead(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = ethel.ChainTableCfg(modules.N42TableCfg)
+	t.Cleanup(func() { kv.ChaindataTablesCfg = prevTables })
+
+	db := memdb.NewTestDB(t)
+	var hashes [3]types.Hash
+	require.NoError(t, db.Update(context.Background(), func(tx kv.RwTx) error {
+		for number := uint64(0); number <= 2; number++ {
+			header := &block.Header{Number: uint256.NewInt(number), Difficulty: uint256.NewInt(0)}
+			rawdb.WriteHeader(tx, header)
+			hashes[number] = header.Hash()
+			if err := rawdb.WriteCanonicalHash(tx, hashes[number], number); err != nil {
+				return err
+			}
+		}
+		rawdb.WriteHeadBlockHash(tx, hashes[0])
+		if err := rawdb.WriteHeadHeaderHash(tx, hashes[0]); err != nil {
+			return err
+		}
+		return ethel.WriteProgress(tx, 2)
+	}))
+
+	adapter := NewEngineStateAdapter(db, nil, nil, nil)
+	require.NoError(t, adapter.reorgCanonicalTo(hashes[2]))
+	require.NoError(t, db.View(context.Background(), func(tx kv.Tx) error {
+		require.Equal(t, hashes[2], rawdb.ReadHeadBlockHash(tx))
+		require.Equal(t, hashes[2], rawdb.ReadHeadHeaderHash(tx))
+		canonical, err := rawdb.ReadCanonicalHash(tx, 2)
+		require.NoError(t, err)
+		require.Equal(t, hashes[2], canonical)
+		return nil
+	}))
+}
+
+func TestRewindEngineValidationStateUsesExecutionProgressWhenHeadLags(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = ethel.ChainTableCfg(modules.N42TableCfg)
+	t.Cleanup(func() { kv.ChaindataTablesCfg = prevTables })
+
+	db := memdb.NewTestDB(t)
+	var addr types.Address
+	addr[19] = 0x43
+	emptyCodeHash := crypto.Keccak256Hash(nil)
+	accountAt := func(nonce uint64) *account.StateAccount {
+		return &account.StateAccount{
+			Initialised: true,
+			Nonce:       nonce,
+			CodeHash:    emptyCodeHash,
+		}
+	}
+
+	require.NoError(t, db.Update(context.Background(), func(tx kv.RwTx) error {
+		previous := accountAt(0)
+		if err := tx.Put(modules.Account, addr[:], previous.MarshalV2()); err != nil {
+			return err
+		}
+		var staleHead types.Hash
+		for number := uint64(1); number <= 2; number++ {
+			next := accountAt(number)
+			writer := state.NewPlainStateWriter(tx, tx, number)
+			if err := writer.UpdateAccountData(addr, previous, next); err != nil {
+				return err
+			}
+			if err := writer.WriteChangeSets(); err != nil {
+				return err
+			}
+			if err := writer.WriteHistory(); err != nil {
+				return err
+			}
+			header := &block.Header{Number: uint256.NewInt(number)}
+			rawdb.WriteHeader(tx, header)
+			if err := rawdb.WriteCanonicalHash(tx, header.Hash(), number); err != nil {
+				return err
+			}
+			if number == 1 {
+				staleHead = header.Hash()
+			}
+			previous = next
+		}
+		rawdb.WriteHeadBlockHash(tx, staleHead)
+		return ethel.WriteProgress(tx, 2)
+	}))
+
+	tx, err := db.BeginRw(context.Background())
+	require.NoError(t, err)
+	rewound, err := rewindEngineValidationState(tx, 2)
+	require.NoError(t, err)
+	require.True(t, rewound)
+	var accountAtParent account.StateAccount
+	data, err := tx.GetOne(modules.Account, addr[:])
+	require.NoError(t, err)
+	require.NoError(t, accountAtParent.DecodeForStorageV2(data))
+	require.Equal(t, uint64(1), accountAtParent.Nonce)
+	tx.Rollback()
+}
+
+func TestWithParentStateRewindsToOverlayBase(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() { kv.ChaindataTablesCfg = prevTables })
+
+	db := memdb.NewTestDB(t)
+	var sideAddr, canonicalOnlyAddr types.Address
+	sideAddr[19] = 0x44
+	canonicalOnlyAddr[19] = 0x45
+	emptyCodeHash := crypto.Keccak256Hash(nil)
+	accountAt := func(nonce uint64) *account.StateAccount {
+		return &account.StateAccount{
+			Initialised: true,
+			Nonce:       nonce,
+			CodeHash:    emptyCodeHash,
+		}
+	}
+
+	require.NoError(t, db.Update(context.Background(), func(tx kv.RwTx) error {
+		genesisAccount := accountAt(0)
+		if err := tx.Put(modules.Account, sideAddr[:], genesisAccount.MarshalV2()); err != nil {
+			return err
+		}
+
+		blockOneAccount := accountAt(1)
+		canonicalOnlyAccount := accountAt(1)
+		writer := state.NewPlainStateWriter(tx, tx, 1)
+		if err := writer.UpdateAccountData(sideAddr, genesisAccount, blockOneAccount); err != nil {
+			return err
+		}
+		if err := writer.UpdateAccountData(canonicalOnlyAddr, &account.StateAccount{}, canonicalOnlyAccount); err != nil {
+			return err
+		}
+		if err := writer.WriteChangeSets(); err != nil {
+			return err
+		}
+
+		blockTwoAccount := accountAt(2)
+		writer = state.NewPlainStateWriter(tx, tx, 2)
+		if err := writer.UpdateAccountData(sideAddr, blockOneAccount, blockTwoAccount); err != nil {
+			return err
+		}
+		if err := writer.WriteChangeSets(); err != nil {
+			return err
+		}
+
+		var headHash types.Hash
+		for number := uint64(1); number <= 2; number++ {
+			header := &block.Header{Number: uint256.NewInt(number)}
+			rawdb.WriteHeader(tx, header)
+			headHash = header.Hash()
+			if err := rawdb.WriteCanonicalHash(tx, headHash, number); err != nil {
+				return err
+			}
+		}
+		rawdb.WriteHeadBlockHash(tx, headHash)
+		return ethel.RebuildHashedState(tx)
+	}))
+
+	sideAccount := accountAt(7)
+	overlay := &engineStateOverlay{
+		accounts:           map[types.Address][]byte{sideAddr: sideAccount.MarshalV2()},
+		baseBlockNumber:    0,
+		hasBaseBlockNumber: true,
+	}
+	require.NoError(t, withParentState(db, 2, overlay, func(_ kv.Tx, reader state.StateReader, _ *state.IntraBlockState) error {
+		gotSideAccount, err := reader.ReadAccountData(sideAddr)
+		require.NoError(t, err)
+		require.NotNil(t, gotSideAccount)
+		require.Equal(t, uint64(7), gotSideAccount.Nonce)
+
+		gotCanonicalOnlyAccount, err := reader.ReadAccountData(canonicalOnlyAddr)
+		require.NoError(t, err)
+		require.Nil(t, gotCanonicalOnlyAccount)
+		return nil
+	}))
+}
+
+func TestResolveCanonicalStoredHashRejectsNonCanonicalHeader(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() { kv.ChaindataTablesCfg = prevTables })
+
+	db := memdb.NewTestDB(t)
+	canonicalHeader := &block.Header{Number: uint256.NewInt(1), Extra: []byte("canonical")}
+	sideHeader := &block.Header{Number: uint256.NewInt(1), Extra: []byte("side")}
+	require.NoError(t, db.Update(context.Background(), func(tx kv.RwTx) error {
+		rawdb.WriteHeader(tx, canonicalHeader)
+		rawdb.WriteHeader(tx, sideHeader)
+		return rawdb.WriteCanonicalHash(tx, canonicalHeader.Hash(), 1)
+	}))
+
+	adapter := NewEngineStateAdapter(db, nil, nil, nil)
+	require.NoError(t, db.View(context.Background(), func(tx kv.Tx) error {
+		resolvedCanonical, err := adapter.resolveCanonicalStoredHash(tx, canonicalHeader.Hash())
+		require.NoError(t, err)
+		require.Equal(t, canonicalHeader.Hash(), resolvedCanonical)
+
+		resolvedSide, err := adapter.resolveCanonicalStoredHash(tx, sideHeader.Hash())
+		require.NoError(t, err)
+		require.Equal(t, types.Hash{}, resolvedSide)
+		return nil
+	}))
+}
 
 func TestHiveEngineGenesisFixtureMatchesCurrentGethRoot(t *testing.T) {
 	modules.N42Init()
@@ -42,20 +347,7 @@ func TestHiveEngineGenesisFixtureMatchesCurrentGethRoot(t *testing.T) {
 		kv.ChaindataTablesCfg = prevTables
 	})
 
-	_, currentFile, _, ok := runtime.Caller(0)
-	require.True(t, ok)
-
-	genesisPath := filepath.Join(filepath.Dir(currentFile), "..", "..", "tests", "eth-hive", "simulators", "ethereum", "engine", "init", "genesis.json")
-	genesisJSON, err := os.ReadFile(genesisPath)
-	if errors.Is(err, fs.ErrNotExist) {
-		// See loadHiveEngineGenesisFixture: tests/eth-hive is an external hive
-		// checkout, absent from a clean clone.
-		t.Skipf("hive fixture %s not present — clone ethereum/hive into tests/eth-hive to run this test", genesisPath)
-	}
-	require.NoError(t, err)
-
-	var genesis conf.Genesis
-	require.NoError(t, json.Unmarshal(genesisJSON, &genesis))
+	genesis := loadHiveEngineGenesisFixture(t)
 
 	const (
 		expectedStateRoot = "0x84308e7d0abf860412f4a0c6fc25709a6e9eaba20a0d085a0344d271f40109ec"
@@ -63,8 +355,8 @@ func TestHiveEngineGenesisFixtureMatchesCurrentGethRoot(t *testing.T) {
 	)
 
 	db := memdb.NewTestDB(t)
-	err = db.Update(context.Background(), func(tx kv.RwTx) error {
-		blk, _, err := (&internalcore.GenesisBlock{GenesisConfig: &genesis}).WriteGenesisState(tx)
+	err := db.Update(context.Background(), func(tx kv.RwTx) error {
+		blk, _, err := (&internalcore.GenesisBlock{GenesisConfig: genesis}).WriteGenesisState(tx)
 		require.NoError(t, err)
 
 		root, err := ethel.VerifyStateRoot(tx)
@@ -130,6 +422,81 @@ func TestHiveEngineBuildsFirstEmptyPayloadWithGenesisStateRoot(t *testing.T) {
 	require.Equal(t, genesisBlock.StateRoot(), payload.StateRoot)
 }
 
+func TestEthELBuildsAndValidatesFirstCancunPayloadWithoutBlockchain(t *testing.T) {
+	modules.N42Init()
+	prevTables := kv.ChaindataTablesCfg
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	t.Cleanup(func() {
+		kv.ChaindataTablesCfg = prevTables
+	})
+
+	cfg := &params.ChainConfig{
+		ChainID:               big.NewInt(1),
+		Consensus:             params.Faker,
+		HomesteadBlock:        big.NewInt(0),
+		TangerineWhistleBlock: big.NewInt(0),
+		SpuriousDragonBlock:   big.NewInt(0),
+		ByzantiumBlock:        big.NewInt(0),
+		ConstantinopleBlock:   big.NewInt(0),
+		PetersburgBlock:       big.NewInt(0),
+		IstanbulBlock:         big.NewInt(0),
+		BerlinBlock:           big.NewInt(0),
+		LondonBlock:           big.NewInt(0),
+		ShanghaiBlock:         big.NewInt(0),
+		CancunBlock:           big.NewInt(0),
+	}
+	db := memdb.NewTestDB(t)
+	genesis := &internalcore.GenesisBlock{GenesisConfig: &conf.Genesis{
+		Config:     cfg,
+		GasLimit:   30_000_000,
+		Difficulty: uint256.NewInt(0),
+		Timestamp:  1,
+		BaseFee:    uint256.NewInt(7),
+	}}
+	var genesisBlock *block.Block
+	require.NoError(t, db.Update(context.Background(), func(tx kv.RwTx) error {
+		blk, _, err := genesis.Write(tx)
+		genesisBlock = blk
+		return err
+	}))
+	require.NotNil(t, genesisBlock)
+
+	backend := &API{
+		db:            db,
+		engine:        &apiTestEngine{},
+		txspool:       &mockEngineTxPool{pending: map[types.Address][]*transaction.Transaction{}},
+		chainConfig:   cfg,
+		engineOverlay: newEngineOverlay(),
+	}
+	engine := NewEngineAPIBlob(NewBlockChainAPI(backend))
+	engine.SetStateAdapter(NewEngineStateAdapter(db, nil, cfg, &apiTestEngine{}))
+	beaconRoot := types.Hash{0x44}
+	withdrawals := []*Withdrawal{{
+		Index:          1,
+		ValidatorIndex: 1,
+		Address:        types.HexToAddress("0x2222222222222222222222222222222222222222"),
+		Amount:         100,
+	}}
+	resp, err := engine.ForkchoiceUpdatedV3(context.Background(), &ForkchoiceStateV1{
+		HeadBlockHash: ethCompatibleBlockHash(genesisBlock, cfg),
+	}, &PayloadAttributesV3{
+		Timestamp:             2,
+		PrevRandao:            types.Hash{0x33},
+		SuggestedFeeRecipient: types.Address{},
+		Withdrawals:           withdrawals,
+		ParentBeaconBlockRoot: &beaconRoot,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp.PayloadID)
+
+	built, err := engine.GetPayloadV3(context.Background(), *resp.PayloadID)
+	require.NoError(t, err)
+	require.NotEqual(t, genesisBlock.StateRoot(), built.ExecutionPayload.StateRoot)
+	status, err := engine.NewPayloadV3(context.Background(), built.ExecutionPayload, []types.Hash{}, &beaconRoot)
+	require.NoError(t, err)
+	require.Equal(t, PayloadStatusValid, status.Status)
+}
+
 func TestHiveEngineStateAdapterAcceptsFirstEmptyCanonicalPayload(t *testing.T) {
 	db, genesis, _ := newHiveEngineGenesisDB(t)
 
@@ -145,7 +512,7 @@ func TestHiveEngineStateAdapterAcceptsFirstEmptyCanonicalPayload(t *testing.T) {
 		GasUsed:       0,
 		Timestamp:     hexutil.Uint64(0x1235),
 		ExtraData:     types.Hex2Bytes("d883011007846765746888676f312e32352e38856c696e7578"),
-		BaseFeePerGas: hexutil.Uint64(0x342770c0),
+		BaseFeePerGas: hexBigFromUint64(0x342770c0),
 		BlockHash:     types.HexToHash("0xcac5f6605258df666b76d2d38e9549be9aae0a44dc08493888d21b23f3687ef3"),
 		Transactions:  []hexutil.Bytes{},
 	}
@@ -157,6 +524,42 @@ func TestHiveEngineStateAdapterAcceptsFirstEmptyCanonicalPayload(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, valid)
 	require.Equal(t, payload.StateRoot, stateRoot)
+}
+
+func TestHiveEngineStateAdapterRejectsInvalidWireGasLimit(t *testing.T) {
+	db, genesis, _ := newHiveEngineGenesisDB(t)
+	payload := hiveFirstEmptyPayload()
+	blk, err := executionPayloadV1ToBlock(payload)
+	require.NoError(t, err)
+	header := blk.Header().(*block.Header)
+	header.GasLimit *= 2
+	blk.WithSeal(header)
+
+	valid, _, err := NewEngineStateAdapter(db, nil, genesis.Config, &apiTestEngine{}).
+		ExecutePayloadFromWire(blk.(*block.Block), nil)
+	require.NoError(t, err)
+	require.False(t, valid)
+}
+
+func TestHiveEngineStateAdapterBatchHeaderLookupSeesUncommittedPayload(t *testing.T) {
+	db, genesis, _ := newHiveEngineGenesisDB(t)
+	payload := hiveFirstEmptyPayload()
+	blk, err := executionPayloadV1ToBlock(payload)
+	require.NoError(t, err)
+
+	tx, err := db.BeginRw(context.Background())
+	require.NoError(t, err)
+	defer tx.Rollback()
+	adapter := NewEngineStateAdapter(db, nil, genesis.Config, &apiTestEngine{})
+	adapter.SetBatchTx(tx)
+	defer adapter.SetBatchTx(nil)
+
+	valid, _, err := adapter.ExecutePayload(blk.(*block.Block))
+	require.NoError(t, err)
+	require.True(t, valid)
+	parent := adapter.HeaderByHash(payload.BlockHash)
+	require.NotNil(t, parent)
+	require.Equal(t, uint64(payload.GasLimit), parent.GasLimit)
 }
 
 func TestHiveEngineStateAdapterAcceptsFirstEmptyCanonicalPayloadAfterMDBXReopen(t *testing.T) {
@@ -175,7 +578,7 @@ func TestHiveEngineStateAdapterAcceptsFirstEmptyCanonicalPayloadAfterMDBXReopen(
 		GasUsed:       0,
 		Timestamp:     hexutil.Uint64(0x1235),
 		ExtraData:     types.Hex2Bytes("d883011007846765746888676f312e32352e38856c696e7578"),
-		BaseFeePerGas: hexutil.Uint64(0x342770c0),
+		BaseFeePerGas: hexBigFromUint64(0x342770c0),
 		BlockHash:     types.HexToHash("0xcac5f6605258df666b76d2d38e9549be9aae0a44dc08493888d21b23f3687ef3"),
 		Transactions:  []hexutil.Bytes{},
 	}
@@ -198,7 +601,7 @@ func TestHiveEngineStateAdapterForkchoiceUpdatedTracksMDBXHead(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, payload.BlockHash, ethCompatibleBlockHash(blk, genesis.Config))
 
-	adapter := NewEngineStateAdapter(db, nil, genesis.Config, &apiTestEngine{})
+	adapter := NewEngineStateAdapter(db, nil, genesis.Config, &apiTestEngine{}).WithHeadMarker(true)
 	valid, stateRoot, err := adapter.ExecutePayload(blk.(*block.Block))
 	require.NoError(t, err)
 	require.True(t, valid)
@@ -211,6 +614,59 @@ func TestHiveEngineStateAdapterForkchoiceUpdatedTracksMDBXHead(t *testing.T) {
 	require.NotNil(t, head)
 	require.Equal(t, payload.BlockHash, ethCompatibleBlockHash(head, genesis.Config))
 	require.Equal(t, payload.BlockHash, adapter.CurrentHeadHash())
+	require.NoError(t, db.View(context.Background(), func(tx kv.Tx) error {
+		marker, ok := ethel.ReadHeadMarker(tx)
+		require.True(t, ok)
+		require.Equal(t, uint64(payload.BlockNumber), marker)
+		storedHash := rawdb.ReadHeadBlockHash(tx)
+		require.Equal(t, storedHash, rawdb.ReadForkchoiceSafeHash(tx))
+		require.Equal(t, storedHash, rawdb.ReadForkchoiceFinalizedHash(tx))
+		return nil
+	}))
+}
+
+func TestHiveEngineStateAdapterForkchoiceUpdatedExposesLatestBlock(t *testing.T) {
+	db, genesis, genesisBlock := newHiveEngineGenesisMDBXDB(t)
+	defer db.Close()
+
+	chain := &canonicalCheckChainStub{
+		header: genesisBlock.Header().(*block.Header),
+		blk:    genesisBlock,
+		config: genesis.Config,
+		db:     db,
+	}
+	backend := &API{
+		bc:            chain,
+		db:            db,
+		engine:        &apiTestEngine{},
+		chainConfig:   genesis.Config,
+		engineOverlay: newEngineOverlay(),
+	}
+	engine := NewEngineAPIV1(NewBlockChainAPI(backend))
+	adapter := NewEngineStateAdapter(db, nil, genesis.Config, &apiTestEngine{})
+	engine.SetStateAdapter(adapter)
+
+	payload := hiveFirstEmptyPayload()
+	newPayloadResp, err := engine.NewPayloadV1(context.Background(), payload)
+	require.NoError(t, err)
+	require.Equal(t, PayloadStatusValid, newPayloadResp.Status)
+	require.NotNil(t, backend.engineOverlay.receiptsByBlockHash(payload.BlockHash))
+	require.Equal(t, payload.ParentHash, adapter.CurrentHeadHash())
+
+	forkchoiceResp, err := engine.ForkchoiceUpdatedV1(context.Background(), &ForkchoiceStateV1{
+		HeadBlockHash:      payload.BlockHash,
+		SafeBlockHash:      payload.BlockHash,
+		FinalizedBlockHash: payload.ParentHash,
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, PayloadStatusValid, forkchoiceResp.PayloadStatus.Status)
+	require.Equal(t, payload.BlockHash, adapter.CurrentHeadHash())
+
+	latest, err := NewBlockChainAPI(backend).GetBlockByNumber(context.Background(), jsonrpc.LatestBlockNumber, false)
+	require.NoError(t, err)
+	require.NotNil(t, latest)
+	require.Equal(t, avmtypes.FromastHash(payload.BlockHash), latest["hash"])
+	require.Equal(t, uint64(payload.BlockNumber), latest["number"].(*hexutil.Big).ToInt().Uint64())
 }
 
 func TestHiveEngineNewPayloadRejectsMismatchedFirstStateRoot(t *testing.T) {
@@ -522,6 +978,23 @@ func TestStablePragueModexpCallcodeFixtureTouchesExpectedExecutionState(t *testi
 	require.NoError(t, err)
 	require.True(t, valid)
 	require.Equal(t, verifiedRoot, stateRoot)
+	require.NoError(t, execDB.View(context.Background(), func(dbtx kv.Tx) error {
+		storedTx, storedBlockHash, blockNumber, txIndex, err := rawdb.ReadTransactionByHash(dbtx, payloadTx.Hash())
+		require.NoError(t, err)
+		require.NotNil(t, storedTx)
+		require.Equal(t, payloadTx.Hash(), storedTx.Hash())
+		require.Equal(t, uint64(1), blockNumber)
+		require.Equal(t, uint64(0), txIndex)
+
+		storedBlock, err := rawdb.ReadBlockByHash(dbtx, storedBlockHash)
+		require.NoError(t, err)
+		require.NotNil(t, storedBlock)
+		storedReceipts := rawdb.ReadReceipts(dbtx, storedBlock, nil)
+		require.Len(t, storedReceipts, 1)
+		require.Equal(t, payloadTx.Hash(), storedReceipts[0].TxHash)
+		require.Equal(t, storedBlockHash, storedReceipts[0].BlockHash)
+		return nil
+	}))
 	t.Logf("in-memory root=%s verified root=%s full root=%s receiptsRoot=%s bloom=%x", expectedRoot, verifiedRoot, fullVerifiedRoot, expectedReceiptsRoot, expectedBloom.Bytes())
 }
 
@@ -562,7 +1035,7 @@ func TestEngineStateAdapterAcceptsStableShanghaiWithdrawalsFixture(t *testing.T)
 				GasLimit:   uint64(payload.GasLimit),
 				Difficulty: uint256.NewInt(0),
 				Timestamp:  0,
-				BaseFee:    uint256.NewInt(uint64(payload.BaseFeePerGas)),
+				BaseFee:    uint256.NewInt(payload.BaseFeePerGas.ToInt().Uint64()),
 				Coinbase:   types.Address{},
 				ExtraData:  stateFixture.GenesisExtraData,
 			},
@@ -576,7 +1049,7 @@ func TestEngineStateAdapterAcceptsStableShanghaiWithdrawalsFixture(t *testing.T)
 					GasLimit:   uint64(payload.GasLimit),
 					Difficulty: uint256.NewInt(0),
 					Timestamp:  0,
-					BaseFee:    uint256.NewInt(uint64(payload.BaseFeePerGas)),
+					BaseFee:    uint256.NewInt(payload.BaseFeePerGas.ToInt().Uint64()),
 					Coinbase:   types.Address{},
 					ExtraData:  stateFixture.GenesisExtraData,
 				}
@@ -677,12 +1150,23 @@ func TestEngineStateAdapterAcceptsStableShanghaiWithdrawalsFixture(t *testing.T)
 					stateAdapterBlock, ok := stateAdapterBlockIface.(*block.Block)
 					require.True(t, ok)
 
-					engine.SetStateAdapter(NewEngineStateAdapter(db, nil, cfg, &apiTestEngine{}))
+					adapter := NewEngineStateAdapter(db, nil, cfg, &apiTestEngine{})
+					engine.SetStateAdapter(adapter)
 					resp, err := engine.NewPayloadV2(context.Background(), payload)
 					require.NoError(t, err)
 					require.Equal(t, PayloadStatusValid, resp.Status)
 					require.NotNil(t, resp.LatestValidHash)
 					require.Equal(t, payload.BlockHash, *resp.LatestValidHash)
+					require.Equal(t, payload.ParentHash, adapter.CurrentHeadHash())
+
+					forkchoiceResp, err := engine.ForkchoiceUpdatedV2(context.Background(), &ForkchoiceStateV1{
+						HeadBlockHash:      payload.BlockHash,
+						SafeBlockHash:      payload.BlockHash,
+						FinalizedBlockHash: payload.ParentHash,
+					}, nil)
+					require.NoError(t, err)
+					require.Equal(t, PayloadStatusValid, forkchoiceResp.PayloadStatus.Status)
+					require.Equal(t, payload.BlockHash, adapter.CurrentHeadHash())
 
 					err = db.View(context.Background(), func(tx kv.Tx) error {
 						persisted := state.New(state.NewPlainStateReader(tx))
@@ -1125,7 +1609,7 @@ func TestEngineAPIv4RejectsInvalidPragueWithdrawalRequestsWithStateAdapter(t *te
 		GasLimit:      hexutil.Uint64(30_000_000),
 		GasUsed:       hexutil.Uint64(0),
 		Timestamp:     hexutil.Uint64(2),
-		BaseFeePerGas: hexutil.Uint64(7),
+		BaseFeePerGas: hexBigFromUint64(7),
 		Transactions:  nil,
 		Withdrawals:   []*Withdrawal{},
 		BlobGasUsed:   hexUint64Ptr(0),
@@ -1241,7 +1725,7 @@ func TestEngineAPIv4RejectsEmptyPragueBlockWhenWithdrawalSystemContractMissingWi
 		GasLimit:      hexutil.Uint64(30_000_000),
 		GasUsed:       hexutil.Uint64(0),
 		Timestamp:     hexutil.Uint64(2),
-		BaseFeePerGas: hexutil.Uint64(7),
+		BaseFeePerGas: hexBigFromUint64(7),
 		Transactions:  nil,
 		Withdrawals:   []*Withdrawal{},
 		BlobGasUsed:   hexUint64Ptr(0),
@@ -1304,7 +1788,7 @@ func TestStablePragueModexpEntryPointExactGasFixtureMatchesExecutionState(t *tes
 			GasLimit:   uint64(payloadFixture.Payload.GasLimit),
 			Difficulty: uint256.NewInt(0),
 			Timestamp:  0,
-			BaseFee:    uint256.NewInt(uint64(payloadFixture.Payload.BaseFeePerGas)),
+			BaseFee:    uint256.NewInt(payloadFixture.Payload.BaseFeePerGas.ToInt().Uint64()),
 			Coinbase:   types.Address{},
 			ExtraData:  stateFixture.GenesisExtraData,
 		},
@@ -1338,7 +1822,7 @@ func TestStablePragueModexpEntryPointExactGasFixtureMatchesExecutionState(t *tes
 		Number:           uint256.NewInt(uint64(payloadFixture.Payload.BlockNumber)),
 		GasLimit:         uint64(payloadFixture.Payload.GasLimit),
 		Time:             uint64(payloadFixture.Payload.Timestamp),
-		BaseFee:          uint256.NewInt(uint64(payloadFixture.Payload.BaseFeePerGas)),
+		BaseFee:          uint256.NewInt(payloadFixture.Payload.BaseFeePerGas.ToInt().Uint64()),
 		Difficulty:       uint256.NewInt(0),
 		Coinbase:         payloadFixture.Payload.FeeRecipient,
 		BlobGasUsed:      uint64Ptr(uint64(*payloadFixture.Payload.BlobGasUsed)),
@@ -1782,7 +2266,7 @@ func hiveFirstEmptyPayload() *ExecutionPayloadV1 {
 		GasUsed:       0,
 		Timestamp:     hexutil.Uint64(0x1235),
 		ExtraData:     types.Hex2Bytes("d883011007846765746888676f312e32352e38856c696e7578"),
-		BaseFeePerGas: hexutil.Uint64(0x342770c0),
+		BaseFeePerGas: hexBigFromUint64(0x342770c0),
 		BlockHash:     types.HexToHash("0xcac5f6605258df666b76d2d38e9549be9aae0a44dc08493888d21b23f3687ef3"),
 		Transactions:  []hexutil.Bytes{},
 	}
@@ -1834,6 +2318,7 @@ func newHiveEngineGenesisMDBXDB(t *testing.T) (kv.RwDB, *conf.Genesis, *block.Bl
 		db, err := mdbx.NewMDBX(logv3.New()).
 			Path(path).
 			Label(kv.ChainDB).
+			WithTableCfg(ethel.ChainTableCfg).
 			Open(context.Background())
 		require.NoError(t, err)
 		return db

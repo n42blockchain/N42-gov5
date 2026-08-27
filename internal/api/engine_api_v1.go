@@ -11,6 +11,8 @@ package api
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"math/big"
 
 	"github.com/n42blockchain/N42/common/block"
@@ -37,7 +39,7 @@ type ExecutionPayloadV1 struct {
 	GasUsed       hexutil.Uint64  `json:"gasUsed"`
 	Timestamp     hexutil.Uint64  `json:"timestamp"`
 	ExtraData     hexutil.Bytes   `json:"extraData"`
-	BaseFeePerGas hexutil.Uint64  `json:"baseFeePerGas"`
+	BaseFeePerGas *hexutil.Big    `json:"baseFeePerGas"`
 	BlockHash     types.Hash      `json:"blockHash"`
 	Transactions  []hexutil.Bytes `json:"transactions"`
 }
@@ -60,13 +62,14 @@ type PayloadAttributesV1 struct {
 // PayloadAttributesV2 represents Shanghai payload attributes.
 type PayloadAttributesV2 struct {
 	PayloadAttributesV1
-	Withdrawals []*Withdrawal `json:"withdrawals"`
+	Withdrawals           []*Withdrawal `json:"withdrawals"`
+	ParentBeaconBlockRoot *types.Hash   `json:"parentBeaconBlockRoot,omitempty"`
 }
 
 // GetPayloadResponseV2 is the response for engine_getPayloadV2.
 type GetPayloadResponseV2 struct {
 	ExecutionPayload *ExecutionPayloadV2 `json:"executionPayload"`
-	BlockValue       hexutil.Uint64      `json:"blockValue"`
+	BlockValue       *hexutil.Big        `json:"blockValue"`
 }
 
 // TransitionConfigurationV1 exchanges merge transition parameters.
@@ -78,8 +81,13 @@ type TransitionConfigurationV1 struct {
 
 // EngineAPIV1 provides Paris/Shanghai compatible Engine API methods.
 type EngineAPIV1 struct {
-	api          *BlockChainAPI
-	stateAdapter *EngineStateAdapter // optional: when set, NewPayload persists state (ETH EL mode)
+	api                     *BlockChainAPI
+	stateAdapter            *EngineStateAdapter // optional: when set, NewPayload persists state (ETH EL mode)
+	missingAncestorObserver func(types.Hash)
+}
+
+type canonicalTransactionRemover interface {
+	RemoveCanonical([]*transaction.Transaction)
 }
 
 // NewEngineAPIV1 creates a new Engine API v1/v2 handler.
@@ -90,6 +98,65 @@ func NewEngineAPIV1(api *BlockChainAPI) *EngineAPIV1 {
 // SetStateAdapter enables persistent state execution for ETH EL mode.
 func (e *EngineAPIV1) SetStateAdapter(adapter *EngineStateAdapter) {
 	e.stateAdapter = adapter
+}
+
+// SetMissingAncestorObserver installs a non-blocking sync trigger for payloads
+// whose parent is not yet available locally.
+func (e *EngineAPIV1) SetMissingAncestorObserver(observer func(types.Hash)) {
+	e.missingAncestorObserver = observer
+}
+
+func (e *EngineAPIV1) removeCanonicalTransactions(blk block.IBlock) {
+	if e == nil || blk == nil || e.api == nil || e.api.api == nil {
+		return
+	}
+	if pool, ok := e.api.api.txspool.(canonicalTransactionRemover); ok {
+		pool.RemoveCanonical(blk.Transactions())
+	}
+}
+
+// HasBlockHash reports whether the Engine path can resolve a validated or
+// persisted block header by hash.
+func (e *EngineAPIV1) HasBlockHash(hash types.Hash) bool {
+	return e.parentHeader(hash) != nil
+}
+
+// ImportSyncedParisBlock feeds a devp2p-retrieved Paris block through the same
+// validation and overlay path as engine_newPayloadV1.
+func (e *EngineAPIV1) ImportSyncedParisBlock(ctx context.Context, blk *block.Block) (*PayloadStatusV1, error) {
+	payload := blockToExecutionPayloadV1(blk, e.chainConfig())
+	if payload == nil {
+		return nil, errors.New("cannot convert synced block to execution payload")
+	}
+	return e.NewPayloadV1(ctx, payload)
+}
+
+// ImportSyncedBlock validates a devp2p block without converting it through a
+// fork-specific Engine payload version. Keeping the original wire header and
+// withdrawals preserves Shanghai/Cancun/Prague fields during hash-directed
+// missing-ancestor sync.
+func (e *EngineAPIV1) ImportSyncedBlock(ctx context.Context, blk *block.Block, withdrawals []*Withdrawal) (*PayloadStatusV1, error) {
+	if blk == nil {
+		return invalidPayloadResponse("missing synced block"), nil
+	}
+	header := blockHeader(blk)
+	if header == nil {
+		return invalidPayloadResponse("missing synced block header"), nil
+	}
+	blockHash := ethCompatibleBlockHash(blk, e.chainConfig())
+	body := payloadBodyFromBlock(blk, withdrawals)
+	parent := e.parentHeader(header.ParentHash)
+	if err := validateExecutionPayloadHeader(header, parent, e.chainConfig()); err != nil {
+		return e.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(header.ParentHash, parent), body), nil
+	}
+	return e.executeOrValidateWithBody(
+		blk,
+		blockHash,
+		header.ParentHash,
+		header.ParentBeaconRoot,
+		nil,
+		body,
+	)
 }
 
 // EngineAPIs returns the authenticated Engine API namespaces exposed by the node.
@@ -173,7 +240,7 @@ func (e *EngineAPIV1) NewPayloadV1(ctx context.Context, payload *ExecutionPayloa
 	if err := validateExecutionPayloadHeader(blockHeader(blk), parent, e.chainConfig()); err != nil {
 		return e.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
 	}
-	if err := validateExecutionPayloadTransactions(payload.Transactions, e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), 0, uint64(payload.GasLimit)); err != nil {
+	if err := validateExecutionPayloadTransactionsWithBaseFee(payload.Transactions, e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), blockHeader(blk).BaseFee, 0, uint64(payload.GasLimit)); err != nil {
 		return e.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
 	}
 	if err := validateExecutionPayloadBlockRLPSize(blk, payload.Transactions, e.chainConfig(), enginePayloadHashOptions{}); err != nil {
@@ -187,8 +254,12 @@ func (e *EngineAPIV1) NewPayloadV2(ctx context.Context, payload *ExecutionPayloa
 	if payload == nil {
 		return invalidPayloadResponse("missing execution payload"), nil
 	}
-	if payload.Withdrawals == nil {
-		return invalidPayloadResponse("missing withdrawals"), nil
+	shanghai := isShanghaiActive(e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp))
+	if shanghai && payload.Withdrawals == nil {
+		return nil, &engineInvalidParamsError{msg: "missing withdrawals"}
+	}
+	if !shanghai && payload.Withdrawals != nil {
+		return nil, &engineInvalidParamsError{msg: "withdrawals before Shanghai"}
 	}
 	if payload.BlobGasUsed != nil || payload.ExcessBlobGas != nil {
 		return nil, &engineInvalidParamsError{msg: "blob fields not allowed before Cancun"}
@@ -198,7 +269,7 @@ func (e *EngineAPIV1) NewPayloadV2(ctx context.Context, payload *ExecutionPayloa
 		return invalidPayloadResponse(err.Error()), nil
 	}
 	blockHash := ethCompatibleEngineBlockHash(blk, e.chainConfig(), enginePayloadHashOptions{
-		includeWithdrawals: true,
+		includeWithdrawals: payload.Withdrawals != nil,
 		withdrawals:        payload.Withdrawals,
 	})
 	if payload.BlockHash != blockHash {
@@ -215,11 +286,11 @@ func (e *EngineAPIV1) NewPayloadV2(ctx context.Context, payload *ExecutionPayloa
 	if err := validateExecutionPayloadHeader(blockHeader(blk), parent, e.chainConfig()); err != nil {
 		return e.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
 	}
-	if err := validateExecutionPayloadTransactions(payload.Transactions, e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), uint64(payload.BaseFeePerGas), 0, uint64(payload.GasLimit)); err != nil {
+	if err := validateExecutionPayloadTransactionsWithBaseFee(payload.Transactions, e.chainConfig(), uint64(payload.BlockNumber), uint64(payload.Timestamp), blockHeader(blk).BaseFee, 0, uint64(payload.GasLimit)); err != nil {
 		return e.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
 	}
 	if err := validateExecutionPayloadBlockRLPSize(blk, payload.Transactions, e.chainConfig(), enginePayloadHashOptions{
-		includeWithdrawals: true,
+		includeWithdrawals: payload.Withdrawals != nil,
 		withdrawals:        payload.Withdrawals,
 	}); err != nil {
 		return e.invalidPayloadStatus(err.Error(), blk, blockHash, latestValidHashForParent(payload.ParentHash, parent), body), nil
@@ -238,9 +309,12 @@ func (e *EngineAPIV1) GetPayloadV1(ctx context.Context, payloadID PayloadID) (*E
 // GetPayloadV2 retrieves a Shanghai payload.
 func (e *EngineAPIV1) GetPayloadV2(ctx context.Context, payloadID PayloadID) (*GetPayloadResponseV2, error) {
 	if built := e.builtPayload(payloadID); built != nil && built.v2 != nil {
+		if built.v3 != nil {
+			return nil, &engineUnsupportedForkError{msg: "getPayloadV2 called for Cancun+ payload, use getPayloadV3"}
+		}
 		return &GetPayloadResponseV2{
 			ExecutionPayload: built.v2,
-			BlockValue:       hexutil.Uint64(0),
+			BlockValue:       enginePayloadBlockValue(built.blockValue),
 		}, nil
 	}
 	return nil, errPayloadNotFound
@@ -261,10 +335,14 @@ func (e *EngineAPIV1) ForkchoiceUpdatedV1(ctx context.Context, state *Forkchoice
 	if uint64(attrs.Timestamp) <= head.Time() {
 		return nil, &engineInvalidPayloadAttributesError{msg: "payload timestamp must be greater than parent"}
 	}
-	payload := e.buildExecutionPayloadV1(head, headHash, attrs)
+	payload, blockValue := e.buildExecutionPayloadV1WithValue(head, headHash, attrs)
 	payloadID := makePayloadID(headHash, uint64(attrs.Timestamp), attrs.SuggestedFeeRecipient, attrs.PrevRandao)
 	if overlay := e.overlay(); overlay != nil {
-		overlay.storeBuiltPayload(payloadID, &engineBuiltPayload{v1: payload})
+		overlay.storeBuiltPayload(payloadID, &engineBuiltPayload{
+			v1:         payload,
+			v2:         &ExecutionPayloadV2{ExecutionPayloadV1: *payload},
+			blockValue: blockValue,
+		})
 	}
 	return validForkchoiceResponse(headHash, &payloadID), nil
 }
@@ -274,9 +352,6 @@ func (e *EngineAPIV1) ForkchoiceUpdatedV2(ctx context.Context, state *Forkchoice
 	if state == nil {
 		return invalidForkchoiceResponse("missing forkchoice state"), nil
 	}
-	if attrs != nil && attrs.Withdrawals == nil {
-		return nil, &engineInvalidPayloadAttributesError{msg: "missing withdrawals"}
-	}
 	head, headHash, syncResp, err := e.resolveForkchoiceState(state)
 	if syncResp != nil || err != nil {
 		return syncResp, err
@@ -284,12 +359,30 @@ func (e *EngineAPIV1) ForkchoiceUpdatedV2(ctx context.Context, state *Forkchoice
 	if attrs == nil {
 		return validForkchoiceResponse(headHash, nil), nil
 	}
+	if attrs.ParentBeaconBlockRoot != nil {
+		return nil, &engineInvalidPayloadAttributesError{msg: "parent beacon block root is not valid for forkchoiceUpdatedV2"}
+	}
+	nextNumber := uint64(0)
+	if head != nil && head.Number64() != nil {
+		nextNumber = head.Number64().Uint64() + 1
+	}
+	shanghai := isShanghaiActive(e.chainConfig(), nextNumber, uint64(attrs.Timestamp))
+	if cfg := e.chainConfig(); cfg != nil && cfg.IsCancunAt(nextNumber, uint64(attrs.Timestamp)) {
+		return nil, &engineUnsupportedForkError{msg: "forkchoiceUpdatedV2 called for Cancun+ timestamp, use forkchoiceUpdatedV3"}
+	}
+	if shanghai && attrs.Withdrawals == nil {
+		return nil, &engineInvalidPayloadAttributesError{msg: "missing withdrawals"}
+	}
+	if !shanghai && attrs.Withdrawals != nil {
+		return nil, &engineInvalidPayloadAttributesError{msg: "withdrawals before Shanghai"}
+	}
 	if uint64(attrs.Timestamp) <= head.Time() {
 		return nil, &engineInvalidPayloadAttributesError{msg: "payload timestamp must be greater than parent"}
 	}
-	payloadV2 := e.buildExecutionPayloadV2Stateful(head, headHash, attrs)
+	payloadV2, blockValue := e.buildExecutionPayloadV2StatefulWithValue(head, headHash, attrs)
 	if payloadV2 == nil {
 		payloadV2 = buildExecutionPayloadV2(head, headHash, attrs, e.chainConfig())
+		blockValue = new(big.Int)
 	}
 	if payloadV2 == nil {
 		return invalidForkchoiceResponse("failed to build payload"), nil
@@ -298,8 +391,9 @@ func (e *EngineAPIV1) ForkchoiceUpdatedV2(ctx context.Context, state *Forkchoice
 	payloadID := makePayloadIDWithExtras(headHash, uint64(attrs.Timestamp), attrs.SuggestedFeeRecipient, attrs.PrevRandao, withdrawalsRoot[:])
 	if overlay := e.overlay(); overlay != nil {
 		overlay.storeBuiltPayload(payloadID, &engineBuiltPayload{
-			v1: &payloadV2.ExecutionPayloadV1,
-			v2: payloadV2,
+			v1:         &payloadV2.ExecutionPayloadV1,
+			v2:         payloadV2,
+			blockValue: blockValue,
 		})
 	}
 	return validForkchoiceResponse(headHash, &payloadID), nil
@@ -596,14 +690,100 @@ func (e *EngineAPIV1) resolveForkchoiceState(state *ForkchoiceStateV1) (block.IB
 		overlay.setForkchoiceHashes(state.SafeBlockHash, state.FinalizedBlockHash)
 	}
 	if e.stateAdapter != nil {
+		if err := e.persistForkchoiceHead(state.HeadBlockHash); err != nil {
+			log.Warn("Persist forkchoice head error", "err", err)
+			return nil, types.Hash{}, syncingForkchoiceResponse(), nil
+		}
 		if err := e.stateAdapter.ForkchoiceUpdated(state.HeadBlockHash, state.SafeBlockHash, state.FinalizedBlockHash); err != nil {
 			log.Warn("ForkchoiceUpdated error", "err", err)
 		} else {
 			head = e.currentHead()
 			headHash = e.currentHeadHash()
+			e.removeCanonicalTransactions(head)
 		}
 	}
 	return head, headHash, nil, nil
+}
+
+func (e *EngineAPIV1) persistForkchoiceHead(headHash types.Hash) error {
+	if e == nil || e.stateAdapter == nil || headHash == (types.Hash{}) {
+		return nil
+	}
+	currentHash := e.stateAdapter.CurrentHeadHash()
+	if currentHash == headHash {
+		return nil
+	}
+	overlay := e.overlay()
+	if overlay == nil {
+		return nil
+	}
+
+	type stagedPayload struct {
+		hash types.Hash
+		blk  *block.Block
+		body *ExecutionPayloadBodyV1
+	}
+	var reversePath []stagedPayload
+	ancestorHash := currentHash
+	for hash := headHash; hash != currentHash; {
+		_, canonical, err := e.stateAdapter.canonicalBlockNumber(hash)
+		if err != nil {
+			return err
+		}
+		if canonical {
+			ancestorHash = hash
+			break
+		}
+		staged := overlay.blockByHash(hash)
+		concrete, ok := staged.(*block.Block)
+		if !ok || concrete == nil {
+			return fmt.Errorf("staged forkchoice block not found: %s", hash.Hex())
+		}
+		header := blockHeader(concrete)
+		if header == nil {
+			return fmt.Errorf("staged forkchoice header not found: %s", hash.Hex())
+		}
+		reversePath = append(reversePath, stagedPayload{
+			hash: hash,
+			blk:  concrete,
+			body: overlay.payloadBodyByHash(hash),
+		})
+		hash = header.ParentHash
+	}
+	if ancestorHash != currentHash {
+		if err := e.stateAdapter.reorgCanonicalTo(ancestorHash); err != nil {
+			return err
+		}
+	}
+
+	for i := len(reversePath) - 1; i >= 0; i-- {
+		payload := reversePath[i]
+		header := blockHeader(payload.blk)
+		var parentBeaconRoot *types.Hash
+		if header != nil && header.ParentBeaconRoot != nil {
+			root := *header.ParentBeaconRoot
+			parentBeaconRoot = &root
+		}
+		var executionRequests []hexutil.Bytes
+		if payload.body != nil {
+			executionRequests = cloneHexutilBytesList(payload.body.executionRequests)
+		}
+		result, err := e.stateAdapter.executePayloadDetailed(
+			payload.blk,
+			parentBeaconRoot,
+			executionRequests,
+			bodyWithdrawals(payload.body),
+			false,
+		)
+		if err != nil {
+			return err
+		}
+		if result.validationError != nil {
+			return result.validationError
+		}
+		e.removeCanonicalTransactions(payload.blk)
+	}
+	return nil
 }
 
 func (e *EngineAPIV1) adoptForkchoiceHead(hash types.Hash) bool {
@@ -618,6 +798,13 @@ func (e *EngineAPIV1) adoptForkchoiceHead(hash types.Hash) bool {
 		return false
 	}
 	if e.canonicalHeader(hash) != nil {
+		// The persistent ETH EL adapter writes a validated payload before
+		// forkchoiceUpdated. Even though the header is already canonical in
+		// chaindata, the shared overlay still has to adopt it so public eth_*
+		// RPC methods observe the same latest head as the Engine API.
+		if blk := overlay.blockByHash(hash); blk != nil {
+			overlay.importBlock(blk, hash, overlay.receiptsByBlockHash(hash))
+		}
 		return true
 	}
 	blk := overlay.blockByHash(hash)
@@ -636,10 +823,18 @@ func (e *EngineAPIV1) chainConfig() *params.ChainConfig {
 }
 
 func (e *EngineAPIV1) buildExecutionPayloadV1(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV1) *ExecutionPayloadV1 {
-	if payload := e.buildExecutionPayloadV1Stateful(parent, parentHash, attrs); payload != nil {
-		return payload
+	payload, _ := e.buildExecutionPayloadV1WithValue(parent, parentHash, attrs)
+	return payload
+}
+
+func (e *EngineAPIV1) buildExecutionPayloadV1WithValue(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV1) (*ExecutionPayloadV1, *big.Int) {
+	result := e.buildExecutionPayloadStateful(parent, parentHash, attrs, nil, nil)
+	if result != nil && result.block != nil {
+		if payload := blockToExecutionPayloadV1(result.block, e.chainConfig()); payload != nil {
+			return payload, result.blockValue
+		}
 	}
-	return buildExecutionPayloadV1(parent, parentHash, attrs, e.chainConfig())
+	return buildExecutionPayloadV1(parent, parentHash, attrs, e.chainConfig()), new(big.Int)
 }
 
 func blockHeader(blk block.IBlock) *block.Header {
@@ -666,26 +861,42 @@ func cloneWithdrawals(withdrawals []*Withdrawal) []*Withdrawal {
 }
 
 func (e *EngineAPIV1) buildExecutionPayloadV2Stateful(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV2) *ExecutionPayloadV2 {
+	payload, _ := e.buildExecutionPayloadV2StatefulWithValue(parent, parentHash, attrs)
+	return payload
+}
+
+func (e *EngineAPIV1) buildExecutionPayloadV2StatefulWithValue(parent block.IBlock, parentHash types.Hash, attrs *PayloadAttributesV2) (*ExecutionPayloadV2, *big.Int) {
 	if attrs == nil {
-		return nil
+		return nil, nil
 	}
 	result := e.buildExecutionPayloadStateful(parent, parentHash, &attrs.PayloadAttributesV1, attrs.Withdrawals, nil)
 	if result == nil || result.block == nil {
-		return nil
+		return nil, nil
 	}
 	v1 := blockToExecutionPayloadV1(result.block, e.chainConfig())
 	if v1 == nil {
-		return nil
+		return nil, nil
 	}
 	payload := &ExecutionPayloadV2{
 		ExecutionPayloadV1: *v1,
 		Withdrawals:        cloneWithdrawals(attrs.Withdrawals),
 	}
 	payload.BlockHash = ethCompatibleEngineBlockHash(result.block, e.chainConfig(), enginePayloadHashOptions{
-		includeWithdrawals: true,
+		includeWithdrawals: payload.Withdrawals != nil,
 		withdrawals:        payload.Withdrawals,
 	})
-	return payload
+	return payload, result.blockValue
+}
+
+func enginePayloadBlockValue(value *big.Int) *hexutil.Big {
+	if value == nil {
+		value = new(big.Int)
+	}
+	return (*hexutil.Big)(new(big.Int).Set(value))
+}
+
+func isShanghaiActive(cfg *params.ChainConfig, blockNumber, timestamp uint64) bool {
+	return cfg != nil && cfg.IsShanghaiAt(blockNumber, timestamp)
 }
 
 func validPayloadResponse(hash types.Hash) *PayloadStatusV1 {
@@ -722,27 +933,37 @@ func (e *EngineAPIV1) executeOrValidateWithBody(blk block.IBlock, blockHash, par
 		if overlay := e.overlay(); overlay != nil {
 			overlay.stageBlockWithBody(blk, blockHash, nil, nil, false, body)
 		}
+		if e.missingAncestorObserver != nil {
+			e.missingAncestorObserver(parentHash)
+		}
 		return acceptedPayloadResponse(), nil
 	}
 
 	// ETH EL mode: execute and persist.
 	if e.stateAdapter != nil {
+		if overlay := e.overlay(); overlay != nil && overlay.blockValidated(blockHash) {
+			return validPayloadResponse(blockHash), nil
+		}
 		concreteBlock, ok := blk.(*block.Block)
 		if !ok {
 			return invalidPayloadResponse("unexpected block type"), nil
 		}
-		result, err := e.stateAdapter.executePayloadDetailed(concreteBlock, parentBeaconRoot, expectedRequests, bodyWithdrawals(body), false)
+		result, err := e.stateAdapter.validatePayloadDetailed(
+			concreteBlock,
+			parentHash,
+			parentBeaconRoot,
+			expectedRequests,
+			bodyWithdrawals(body),
+			e.parentStateOverlay(parentHash),
+		)
 		if err != nil {
 			return e.invalidPayloadStatus(err.Error(), blk, blockHash, &parentHash, body), nil
 		}
 		if result.validationError != nil {
-			if overlay := e.overlay(); overlay != nil && blk != nil && blockHash != (types.Hash{}) {
-				overlay.stageRejectedBlockWithBody(blk, blockHash, &result.stateRoot, body)
-			}
 			return e.invalidPayloadStatus(result.validationError.Error(), blk, blockHash, &parentHash, body), nil
 		}
 		if overlay := e.overlay(); overlay != nil {
-			overlay.stageBlockWithBody(blk, blockHash, nil, nil, true, body)
+			overlay.stageBlockWithBody(blk, blockHash, result.stateOverlay, result.receipts, true, body)
 		}
 		return validPayloadResponse(blockHash), nil
 	}

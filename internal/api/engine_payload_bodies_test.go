@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"math/big"
 	"testing"
 
@@ -326,5 +327,66 @@ func TestGetPayloadBodiesByRangeRejectsInvalidParams(t *testing.T) {
 				t.Fatalf("GetPayloadBodiesByRangeV1(%d,%d) ErrorCode() = %d, want %d", tc.start, tc.count, coded.ErrorCode(), tc.errorCode)
 			}
 		})
+	}
+}
+
+func TestGetPayloadBodiesByHashRejectsTooManyHashes(t *testing.T) {
+	engine := NewEngineAPIv4(NewBlockChainAPI(&API{engineOverlay: newEngineOverlay()}))
+
+	got, err := engine.GetPayloadBodiesByHashV1(context.Background(), make([]types.Hash, 1025))
+	if err == nil {
+		t.Fatalf("GetPayloadBodiesByHashV1() error = nil, got %#v", got)
+	}
+	coded, ok := err.(interface{ ErrorCode() int })
+	if !ok {
+		t.Fatalf("GetPayloadBodiesByHashV1() error lacks ErrorCode(): %T", err)
+	}
+	if coded.ErrorCode() != -38004 {
+		t.Fatalf("GetPayloadBodiesByHashV1() ErrorCode() = %d, want -38004", coded.ErrorCode())
+	}
+
+	got, err = engine.GetPayloadBodiesByHashV1(context.Background(), make([]types.Hash, 1024))
+	if err != nil {
+		t.Fatalf("GetPayloadBodiesByHashV1(1024): %v", err)
+	}
+	if len(got) != 1024 {
+		t.Fatalf("len(GetPayloadBodiesByHashV1(1024)) = %d, want 1024", len(got))
+	}
+}
+
+func TestGetBlobsV1RejectsTooManyHashes(t *testing.T) {
+	engine := NewEngineAPIv4(nil)
+
+	got, err := engine.GetBlobsV1(context.Background(), make([]types.Hash, 129))
+	if err == nil {
+		t.Fatalf("GetBlobsV1() error = nil, got %#v", got)
+	}
+	coded, ok := err.(interface{ ErrorCode() int })
+	if !ok {
+		t.Fatalf("GetBlobsV1() error lacks ErrorCode(): %T", err)
+	}
+	if coded.ErrorCode() != -38004 {
+		t.Fatalf("GetBlobsV1() ErrorCode() = %d, want -38004", coded.ErrorCode())
+	}
+
+	got, err = engine.GetBlobsV1(context.Background(), make([]types.Hash, 128))
+	if err != nil {
+		t.Fatalf("GetBlobsV1(128): %v", err)
+	}
+	if len(got) != 128 {
+		t.Fatalf("len(GetBlobsV1(128)) = %d, want 128", len(got))
+	}
+}
+
+func TestBlobAndProofV1JSONMatchesEngineSchema(t *testing.T) {
+	got, err := json.Marshal(&BlobAndProofV1{
+		Blob:  hexutil.Bytes{0x01},
+		Proof: hexutil.Bytes{0x02},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"blob":"0x01","proof":"0x02"}`; string(got) != want {
+		t.Fatalf("BlobAndProofV1 JSON = %s, want %s", got, want)
 	}
 }

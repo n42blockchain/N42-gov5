@@ -369,6 +369,25 @@ func TestHeadBlockHashStorage(t *testing.T) {
 	}
 }
 
+func TestForkchoiceHeadHashStorage(t *testing.T) {
+	_, tx := memdb.NewTestTx(t)
+	safeHash := types.HexToHash("0x11")
+	finalizedHash := types.HexToHash("0x22")
+
+	if err := WriteForkchoiceSafeHash(tx, safeHash); err != nil {
+		t.Fatalf("WriteForkchoiceSafeHash failed: %v", err)
+	}
+	if err := WriteForkchoiceFinalizedHash(tx, finalizedHash); err != nil {
+		t.Fatalf("WriteForkchoiceFinalizedHash failed: %v", err)
+	}
+	if got := ReadForkchoiceSafeHash(tx); got != safeHash {
+		t.Fatalf("safe hash = %v, want %v", got, safeHash)
+	}
+	if got := ReadForkchoiceFinalizedHash(tx); got != finalizedHash {
+		t.Fatalf("finalized hash = %v, want %v", got, finalizedHash)
+	}
+}
+
 func TestVerifiesStorage(t *testing.T) {
 	_, tx := memdb.NewTestTx(t)
 

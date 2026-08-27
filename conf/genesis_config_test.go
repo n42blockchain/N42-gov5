@@ -2,10 +2,9 @@ package conf
 
 import (
 	"encoding/json"
-	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -106,14 +105,8 @@ func TestGenesisUnmarshalAllowsLeadingZeroHexQuantities(t *testing.T) {
 func TestGenesisUnmarshalHiveEngineFixture(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join("..", "tests", "eth-hive", "simulators", "ethereum", "engine", "init", "genesis.json")
+	path := resolveHiveEngineGenesisFixturePath(t)
 	data, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		// tests/eth-hive is an external ethereum/hive checkout, absent from a
-		// clean clone. Skip rather than fail so the package is not permanently
-		// red for a missing optional fixture.
-		t.Skipf("hive fixture %s not present — clone ethereum/hive into tests/eth-hive to run this test", path)
-	}
 	if err != nil {
 		t.Fatalf("os.ReadFile failed: %v", err)
 	}
@@ -138,6 +131,31 @@ func TestGenesisUnmarshalHiveEngineFixture(t *testing.T) {
 	if len(genesis.Alloc) < 4 {
 		t.Fatalf("alloc should contain fixture accounts, got %d", len(genesis.Alloc))
 	}
+}
+
+func resolveHiveEngineGenesisFixturePath(t *testing.T) string {
+	t.Helper()
+
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(currentFile), ".."))
+
+	// Vendored copy of:
+	// tests/eth-hive/simulators/ethereum/engine/init/genesis.json @ dde4f59d
+	vendored := filepath.Join(repoRoot, "internal", "api", "testdata", "hive_engine_genesis.json")
+	if _, err := os.Stat(vendored); err == nil {
+		return vendored
+	}
+
+	external := filepath.Join(repoRoot, "tests", "eth-hive", "simulators", "ethereum", "engine", "init", "genesis.json")
+	if _, err := os.Stat(external); err == nil {
+		return external
+	}
+
+	t.Fatalf("hive engine genesis fixture not found at vendored path %q or external path %q", vendored, external)
+	return ""
 }
 
 func TestGenesisUnmarshalPreservesExplicitHeaderFields(t *testing.T) {

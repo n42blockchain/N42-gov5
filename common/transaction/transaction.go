@@ -557,6 +557,14 @@ func (tx *Transaction) BlobHashes() []types.Hash {
 	return nil
 }
 
+// BlobTxSidecar returns the propagation sidecar attached to a blob transaction.
+func (tx *Transaction) BlobTxSidecar() *BlobTxSidecar {
+	if blobTx, ok := tx.inner.(*BlobTx); ok {
+		return blobTx.Sidecar
+	}
+	return nil
+}
+
 // BlobFeeCap returns the blob fee cap for EIP-4844 blob transactions.
 func (tx *Transaction) BlobFeeCap() *uint256.Int {
 	if blobTx, ok := tx.inner.(*BlobTx); ok {

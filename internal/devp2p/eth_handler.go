@@ -14,12 +14,16 @@ import (
 	"io"
 	"math/big"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	gethp2p "github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/rlp"
 
+	"github.com/n42blockchain/N42/common"
 	n42block "github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/network/eth69"
 	"github.com/n42blockchain/N42/log"
@@ -31,6 +35,13 @@ type BlockProvider interface {
 	CurrentHead() (*n42block.Header, types.Hash, error)
 	GetHeaderByNumber(number uint64) (*n42block.Header, error)
 	GetHeaderByHash(hash types.Hash) (*n42block.Header, error)
+}
+
+// blockBodyServer is the optional body-serving capability implemented by
+// providers that retain Ethereum wire bodies. Keeping it optional preserves
+// header-only providers while allowing eth-el peers to perform full sync.
+type blockBodyServer interface {
+	GetBlockBodyByHash(hash types.Hash) (*BlockBody, error)
 }
 
 // ResponseHandler receives wire-message responses from peers. A nil
@@ -74,6 +85,10 @@ type balResponseHandler interface {
 	OnBlockAccessLists(peerID string, reqID uint64, bals [][]byte)
 }
 
+type newBlockHashesHandler interface {
+	OnNewBlockHashes(peerID string, entries eth69.NewBlockHashesPacket)
+}
+
 // EthHandler processes eth/68-71 protocol messages.
 type EthHandler struct {
 	chainConfig *params.ChainConfig
@@ -81,6 +96,8 @@ type EthHandler struct {
 	networkID   uint64
 	genesis     types.Hash
 	genesisTime uint64
+	txpool      common.ITxsPool
+	requestID   atomic.Uint64
 
 	// rh is the optional active-download callback. Nil = passive mode.
 	rh ResponseHandler
@@ -102,6 +119,10 @@ const maxTrustedPeers = 64
 // SetResponseHandler swaps in (or out) the active-download callback.
 // Must be called BEFORE Start so the peer loop reads it consistently.
 func (h *EthHandler) SetResponseHandler(rh ResponseHandler) { h.rh = rh }
+
+// SetTxPool enables eth/68+ transaction announcements and pooled transaction
+// request handling. It must be called before Start.
+func (h *EthHandler) SetTxPool(pool common.ITxsPool) { h.txpool = pool }
 
 // setTrustedCallbacks wires the callbacks before the server accepts peers.
 func (h *EthHandler) setTrustedCallbacks(mark, unmark func(*enode.Node)) {
@@ -366,6 +387,11 @@ func (h *EthHandler) runPeer(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter, versi
 		h.rh.OnPeerHandshake(peerID, rw, peerHead, peerHash, version)
 		defer h.rh.OnPeerDisconnect(peerID)
 	}
+	announceDone := make(chan struct{})
+	defer close(announceDone)
+	if h.txpool != nil {
+		go h.announcePooledTransactions(rw, announceDone)
+	}
 
 	// Message loop. A ReadMsg error means the connection itself is gone → exit
 	// (cleanly for a peer-initiated shutdown). But a per-message HANDLING error
@@ -393,13 +419,22 @@ func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter,
 
 	switch msg.Code {
 	case 1:
-		// Peer announces new block hashes — log and ignore for now.
-		log.Debug("devp2p: new block hashes", "peer", peerID[:16])
+		var packet eth69.NewBlockHashesPacket
+		if err := msg.Decode(&packet); err != nil {
+			return fmt.Errorf("decode NewBlockHashes: %w", err)
+		}
+		if nh, ok := h.rh.(newBlockHashesHandler); ok {
+			nh.OnNewBlockHashes(peerID, packet)
+		}
+		log.Debug("devp2p: new block hashes", "peer", peerID[:16], "count", len(packet))
 		return nil
 
 	case 2:
-		// Peer broadcasts transactions — forward to mempool (TODO).
-		return nil
+		var packet []rlp.RawValue
+		if err := msg.Decode(&packet); err != nil {
+			return fmt.Errorf("decode Transactions: %w", err)
+		}
+		return h.acceptPooledTransactions(packet)
 
 	case 3:
 		return h.handleGetBlockHeaders(rw, msg)
@@ -437,17 +472,40 @@ func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter,
 		return nil
 
 	case 8:
-		return nil // ignore
+		var packet eth69.NewPooledTransactionHashesPacket
+		if err := msg.Decode(&packet); err != nil {
+			return fmt.Errorf("decode NewPooledTransactionHashes: %w", err)
+		}
+		if len(packet.Hashes) != len(packet.Types) || len(packet.Hashes) != len(packet.Sizes) {
+			return fmt.Errorf("invalid pooled transaction announcement lengths")
+		}
+		if h.txpool == nil {
+			return nil
+		}
+		hashes := make([]types.Hash, 0, len(packet.Hashes))
+		for _, hash := range packet.Hashes {
+			if !h.txpool.Has(hash) {
+				hashes = append(hashes, hash)
+			}
+		}
+		if len(hashes) == 0 {
+			return nil
+		}
+		requestID := h.requestID.Add(1)
+		return gethp2p.Send(rw, 9, &eth69.GetPooledTransactionsPacket{RequestID: requestID, Hashes: hashes})
 
 	case 9:
-		return nil // TODO: serve from txpool
+		return h.handleGetPooledTransactions(rw, msg)
 
 	case 15:
 		return nil // TODO: serve from freezer
 
 	case 10:
-		// 0x0a PooledTransactions response — we never asked, ignore.
-		return nil
+		var packet pooledTransactionsPacket
+		if err := msg.Decode(&packet); err != nil {
+			return fmt.Errorf("decode PooledTransactions: %w", err)
+		}
+		return h.acceptPooledTransactions(packet.Transactions)
 
 	case 16:
 		var resp blockReceiptsPacket
@@ -486,25 +544,203 @@ func (h *EthHandler) handleMessage(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter,
 	}
 }
 
+type pooledTransactionsPacket struct {
+	RequestID    uint64
+	Transactions []rlp.RawValue
+}
+
+func (h *EthHandler) handleGetPooledTransactions(rw gethp2p.MsgReadWriter, msg gethp2p.Msg) error {
+	var req eth69.GetPooledTransactionsPacket
+	if err := msg.Decode(&req); err != nil {
+		return fmt.Errorf("decode GetPooledTransactions: %w", err)
+	}
+	resp := pooledTransactionsPacket{RequestID: req.RequestID, Transactions: []rlp.RawValue{}}
+	if h.txpool == nil {
+		return gethp2p.Send(rw, 10, &resp)
+	}
+	for _, hash := range req.Hashes {
+		tx := h.txpool.GetTx(hash)
+		if tx == nil {
+			continue
+		}
+		encoded, err := transaction.EncodeEthereumPooledTransaction(tx)
+		if err != nil {
+			continue
+		}
+		raw, err := pooledTransactionRawValue(encoded)
+		if err != nil {
+			continue
+		}
+		resp.Transactions = append(resp.Transactions, raw)
+	}
+	return gethp2p.Send(rw, 10, &resp)
+}
+
+func pooledTransactionRawValue(encoded []byte) (rlp.RawValue, error) {
+	if len(encoded) == 0 {
+		return nil, errors.New("empty pooled transaction")
+	}
+	if encoded[0] >= 0xc0 {
+		return append(rlp.RawValue(nil), encoded...), nil
+	}
+	wrapped, err := rlp.EncodeToBytes(encoded)
+	return rlp.RawValue(wrapped), err
+}
+
+func decodePooledTransactionRaw(raw rlp.RawValue) (*transaction.Transaction, error) {
+	encoded := []byte(raw)
+	if len(encoded) == 0 {
+		return nil, errors.New("empty pooled transaction")
+	}
+	if encoded[0] < 0xc0 {
+		var typed []byte
+		if err := rlp.DecodeBytes(encoded, &typed); err != nil {
+			return nil, err
+		}
+		encoded = typed
+	}
+	return transaction.DecodeEthereumTransaction(encoded)
+}
+
+func (h *EthHandler) acceptPooledTransactions(rawTxs []rlp.RawValue) error {
+	if h.txpool == nil || len(rawTxs) == 0 {
+		return nil
+	}
+	head, _, err := h.provider.CurrentHead()
+	if err != nil || head == nil {
+		return err
+	}
+	signer := transaction.MakeSignerWithTimestamp(h.chainConfig, head.Number64().ToBig(), head.Time)
+	txs := make([]*transaction.Transaction, 0, len(rawTxs))
+	for _, raw := range rawTxs {
+		tx, err := decodePooledTransactionRaw(raw)
+		if err != nil {
+			continue
+		}
+		from, err := transaction.Sender(signer, tx)
+		if err != nil {
+			continue
+		}
+		tx.SetFrom(from)
+		txs = append(txs, tx)
+	}
+	if len(txs) > 0 {
+		h.txpool.AddRemotes(txs)
+	}
+	return nil
+}
+
+func (h *EthHandler) announcePooledTransactions(rw gethp2p.MsgReadWriter, done <-chan struct{}) {
+	// Pace announcements so bidirectional peers do not burst several writes at
+	// the same instant as their GetPooledTransactions request/response traffic.
+	// Five Hive blob transactions still propagate in about 100ms, comfortably
+	// inside the payload builder's collection window.
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	known := make(map[types.Hash]struct{})
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			txs, err := h.txpool.GetTransaction()
+			if err != nil {
+				continue
+			}
+			current := make(map[types.Hash]struct{}, len(txs))
+			for _, tx := range txs {
+				if tx != nil {
+					current[tx.Hash()] = struct{}{}
+				}
+			}
+			for hash := range known {
+				if _, ok := current[hash]; !ok {
+					delete(known, hash)
+				}
+			}
+			for _, tx := range txs {
+				if tx == nil {
+					continue
+				}
+				hash := tx.Hash()
+				if _, ok := known[hash]; ok {
+					continue
+				}
+				encoded, err := transaction.EncodeEthereumPooledTransaction(tx)
+				if err != nil {
+					continue
+				}
+				known[hash] = struct{}{}
+				// Announce transactions individually. Besides keeping messages small,
+				// this preserves the arrival granularity expected by peers that react
+				// to each txpool insertion before issuing a pooled-tx request.
+				packet := eth69.NewPooledTransactionHashesPacket{
+					Types:  []byte{tx.Type()},
+					Sizes:  []uint32{uint32(len(encoded))},
+					Hashes: []types.Hash{hash},
+				}
+				if err := gethp2p.Send(rw, 8, &packet); err != nil {
+					return
+				}
+				break
+			}
+		}
+	}
+}
+
 // handleGetBlockHeaders serves block headers to a requesting peer.
-//
-// Today the eth-el chaindata is state-only — there are no Ethereum
-// headers stored, so the only honest answer is the empty response.
-// (Returning empty is a valid eth/69 reply meaning "no data in
-// range"; it does not cause a disconnect.) Once the body/header
-// columnar store is wired into BlockProvider, this handler will
-// encode each fetched *block.Header via the same per-fork RLP layout
-// that ethel.DecodeUncleHeader expects. See header_compact.go for the
-// canonical encoder we'd reuse.
 func (h *EthHandler) handleGetBlockHeaders(rw gethp2p.MsgReadWriter, msg gethp2p.Msg) error {
-	// We serve an empty stub response, so only the request-id (echoed back) is
-	// needed — decode leniently over the query tail so a peer whose GetBlockHeaders
-	// query encoding differs by a field isn't dropped ("rlp: too many elements").
-	var req requestIDTail
+	var req eth69.GetBlockHeadersPacket
 	if err := msg.Decode(&req); err != nil {
 		return err
 	}
-	return gethp2p.Send(rw, 4, &blockHeadersPacket{RequestID: req.RequestID})
+	resp := blockHeadersPacket{RequestID: req.RequestID}
+	if req.GetBlockHeadersQuery == nil || h.provider == nil {
+		return gethp2p.Send(rw, 4, &resp)
+	}
+	amount := req.Amount
+	if amount > 1024 {
+		amount = 1024
+	}
+	var current *n42block.Header
+	var err error
+	if req.Origin.Hash != (types.Hash{}) {
+		current, err = h.provider.GetHeaderByHash(req.Origin.Hash)
+	} else {
+		current, err = h.provider.GetHeaderByNumber(req.Origin.Number)
+	}
+	if err != nil {
+		return err
+	}
+	if current == nil {
+		log.Debug("devp2p: block header request missed", "hash", req.Origin.Hash, "number", req.Origin.Number, "amount", amount, "reverse", req.Reverse)
+	}
+	for uint64(len(resp.Headers)) < amount && current != nil {
+		encoded, err := rlp.EncodeToBytes(current)
+		if err != nil {
+			return err
+		}
+		resp.Headers = append(resp.Headers, rlp.RawValue(encoded))
+		number := current.Number64().Uint64()
+		step := req.Skip + 1
+		if req.Reverse {
+			if number < step {
+				break
+			}
+			number -= step
+		} else {
+			if number > ^uint64(0)-step {
+				break
+			}
+			number += step
+		}
+		current, err = h.provider.GetHeaderByNumber(number)
+		if err != nil {
+			return err
+		}
+	}
+	log.Debug("devp2p: served block headers", "hash", req.Origin.Hash, "number", req.Origin.Number, "count", len(resp.Headers), "reverse", req.Reverse)
+	return gethp2p.Send(rw, 4, &resp)
 }
 
 // handleGetBlockBodies serves block bodies to a requesting peer.
@@ -517,6 +753,24 @@ func (h *EthHandler) handleGetBlockBodies(rw gethp2p.MsgReadWriter, msg gethp2p.
 	resp := blockBodiesPacket{
 		RequestID: req.RequestID,
 		Bodies:    nil,
+	}
+	provider, ok := h.provider.(blockBodyServer)
+	if !ok {
+		return gethp2p.Send(rw, 6, &resp)
+	}
+	limit := len(req.Hashes)
+	if limit > 1024 {
+		limit = 1024
+	}
+	for _, hash := range req.Hashes[:limit] {
+		body, err := provider.GetBlockBodyByHash(hash)
+		if err != nil {
+			return err
+		}
+		if body == nil {
+			break
+		}
+		resp.Bodies = append(resp.Bodies, *body)
 	}
 	return gethp2p.Send(rw, 6, &resp)
 }

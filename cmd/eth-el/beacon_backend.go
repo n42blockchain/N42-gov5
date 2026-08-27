@@ -20,8 +20,8 @@ import (
 	"sync"
 
 	"github.com/n42blockchain/N42/common/block"
-	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/cl/clparams"
@@ -556,7 +556,7 @@ var errBlockProductionNotWired = errors.New(
 //
 // The api → caplin reverse conversion happens in payload_convert.go
 // (executionPayloadV3ToEth1Block + apiBlobsBundleToDepshim). Block
-// value comes from GetPayloadResponseV3.BlockValue as a hexutil.Uint64
+// value comes from GetPayloadResponseV3.BlockValue as a 256-bit hexutil.Big
 // → *big.Int; RequestsBundle stays nil (V3 has no Pectra requests).
 func (b *ethELBackend) GetAssembledBlock(
 	ctx context.Context,
@@ -588,10 +588,17 @@ func (b *ethELBackend) GetAssembledBlock(
 		return nil, nil, nil, nil, fmt.Errorf("convert payload to Eth1Block: %w", err)
 	}
 	blobsBundle := apiBlobsBundleToDepshim(resp.BlobsBundle)
-	blockValue := new(big.Int).SetUint64(uint64(resp.BlockValue))
+	blockValue := apiBlockValueToBigInt(resp.BlockValue)
 	// RequestsBundle stays nil — V3 is Cancun; Pectra requests need V4
 	// GetPayload, which is a follow-up.
 	return eth1Block, blobsBundle, nil, blockValue, nil
+}
+
+func apiBlockValueToBigInt(value *hexutil.Big) *big.Int {
+	if value == nil {
+		return new(big.Int)
+	}
+	return new(big.Int).Set((*big.Int)(value))
 }
 
 // GetBlobs — Phase 7.1.5. Follower-mode N42 doesn't maintain a blob

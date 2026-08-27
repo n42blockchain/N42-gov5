@@ -22,8 +22,8 @@ import (
 	"testing"
 
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -132,6 +132,18 @@ func TestDecodeSignatureNoPanic(t *testing.T) {
 		if err == nil {
 			t.Errorf("test case %d: expected error for invalid signature length", i)
 		}
+	}
+}
+
+func TestRecoverPlainRejectsMissingSignatureValues(t *testing.T) {
+	if _, err := recoverPlain(types.Hash{}, nil, new(big.Int), new(big.Int), false); !errors.Is(err, ErrInvalidSig) {
+		t.Fatalf("recoverPlain(nil R) error = %v, want %v", err, ErrInvalidSig)
+	}
+	if _, err := recoverPlain(types.Hash{}, new(big.Int), nil, new(big.Int), false); !errors.Is(err, ErrInvalidSig) {
+		t.Fatalf("recoverPlain(nil S) error = %v, want %v", err, ErrInvalidSig)
+	}
+	if _, err := recoverPlain(types.Hash{}, new(big.Int), new(big.Int), nil, false); !errors.Is(err, ErrInvalidSig) {
+		t.Fatalf("recoverPlain(nil V) error = %v, want %v", err, ErrInvalidSig)
 	}
 }
 

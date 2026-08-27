@@ -14,7 +14,16 @@ Featuring Block-STM parallel execution, HotStuff-2 BFT consensus, and mobile ver
 
 **Disclaimer:** This software is currently a tech preview. We will do our best to keep it stable and avoid breaking changes, but we make no guarantees.
 
-Latest validation (2026-04-15): recorded Hive/EEST broad consume-engine shard reruns on latest `main` are green for Paris+Shanghai (`3573`, rerun dated `2026-04-13`), Cancun (`17783`, rerun dated `2026-04-13`), Prague (`20878`, rerun dated `2026-04-14`), and Osaka (`21583`, rerun dated `2026-04-15`), with no remaining blocker in the current shard matrix.
+Latest Hive/EEST validation (completed 2026-08-20):
+
+- Hive `ethereum/engine` with the dedicated `eth-el` client passed all `403 / 403` cases: API `129`, auth `8`, exchange-capabilities `5`, withdrawals `35`, and Cancun `226`.
+- The main `n42` binary passed its complete applicable native Hive set, `311 / 311`: API `99`, auth `8`, exchange-capabilities `5`, withdrawals `24`, and Cancun `175`. This is a strict subset of the `eth-el` matrix: `92` Fork ID, devp2p syncing/reorg, multi-client, payload-body, and pooled-transaction P2P cases require the dedicated `eth-el` surface; there are no native-only cases.
+- EEST `consume engine` broad shards passed on N42 `36822b5c5`: Paris+Shanghai `3,573 / 3,573`, Cancun `17,783 / 17,783`, Prague `20,878 / 20,878`, Osaka `21,583 / 21,583`, and access-list cross-fork `2,132 / 2,132`, all with RC `0` (completed 2026-08-19). The access-list shard overlaps the fork shards and must not be added to them as a unique-test total.
+- EEST `consume rlp` passed the complete `stable@latest` v5.4.0 fixture set on the same N42 revision, `47,589 / 47,589`, with RC `0` and no failures, errors, or reruns (`11:30:32`, completed 2026-08-20).
+
+The complete Hive/EEST matrix above was executed at N42 `36822b5c5`. The later code revision `520fede6f` includes the next ten upstream `main` commits plus MDBX logging and Block-STM scheduler fixes, and passes the complete project build, unit, lint, vet, and race gates. That reviewed delta does not change the dedicated eth-el Engine API, EVM, or RLP decoder packages; however, the roughly 26-hour Hive/EEST matrix was not repeated at `520fede6f`, so the two revisions are recorded separately rather than overstating the evidence.
+
+This validates the listed N42 execution-layer matrices through Hive; it does **not** claim that every simulator in the upstream Hive repository was run. Revisions, commands, artifact hashes, and exact scope boundaries are recorded in [Hive/EEST reproducibility](docs/engineering/HIVE_EEST_REPRODUCIBILITY.md).
 
 ## Key Features
 

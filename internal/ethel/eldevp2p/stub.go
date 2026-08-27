@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
@@ -30,7 +31,9 @@ type Config struct {
 	// MUST exist here too: the default build compiles this file instead of
 	// service.go, so a field added on one side only breaks `go build ./...`
 	// for everyone not passing -tags n42el.
-	FreezerDir string
+	FreezerDir              string
+	EnodeFile               string
+	InvalidAncestorObserver func(rejectedHead, latestValidHash types.Hash)
 }
 
 func DefaultConfig() Config {
@@ -60,3 +63,9 @@ func (s *Service) Start(context.Context) error {
 }
 
 func (s *Service) Stop() error { return nil }
+
+func (s *Service) SetEngineSyncBridge(EngineBlockKnownFunc, EngineBlockImporter) {}
+
+func (s *Service) SetTxPool(common.ITxsPool) {}
+
+func (s *Service) RequestMissingAncestor(types.Hash) {}

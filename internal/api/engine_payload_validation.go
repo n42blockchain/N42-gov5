@@ -35,6 +35,10 @@ var (
 )
 
 func validateExecutionPayloadTransactions(txs []hexutil.Bytes, cfg *params.ChainConfig, blockNumber, timestamp, baseFee, excessBlobGas, blockGasLimit uint64) error {
+	return validateExecutionPayloadTransactionsWithBaseFee(txs, cfg, blockNumber, timestamp, uint256.NewInt(baseFee), excessBlobGas, blockGasLimit)
+}
+
+func validateExecutionPayloadTransactionsWithBaseFee(txs []hexutil.Bytes, cfg *params.ChainConfig, blockNumber, timestamp uint64, baseFee *uint256.Int, excessBlobGas, blockGasLimit uint64) error {
 	rules := &params.Rules{ChainID: new(big.Int)}
 	var blobBaseFee *uint256.Int
 	if cfg != nil {
@@ -43,7 +47,10 @@ func validateExecutionPayloadTransactions(txs []hexutil.Bytes, cfg *params.Chain
 			blobBaseFee = cfg.CalcBlobFee(excessBlobGas, timestamp)
 		}
 	}
-	baseFeeValue := uint256.NewInt(baseFee)
+	baseFeeValue := new(uint256.Int)
+	if baseFee != nil {
+		baseFeeValue.Set(baseFee)
+	}
 
 	for _, txBytes := range txs {
 		if len(txBytes) == 0 {
@@ -273,19 +280,10 @@ func validateExecutionPayloadTransaction(tx *transaction.Transaction, rules *par
 	if tx == nil {
 		return nil
 	}
-	isContractCreation := tx.To() == nil
-	if rules.IsShanghai && isContractCreation {
-		// EIP-7954 (Amsterdam) raises the initcode cap to 128 KiB; the
-		// execution layer already enforces the raised limit, so keeping
-		// the Shanghai cap here would reject valid Glamsterdam blocks.
-		maxInitCode := uint64(fixedgas.MaxInitCodeSize)
-		if rules.IsGlamsterdam {
-			maxInitCode = params.MaxInitCodeSizeEIP7954
-		}
-		if uint64(len(tx.Data())) > maxInitCode {
-			return errInitCodeSizeExceeded
-		}
+	if err := validateTransactionInitCodeSize(tx, rules); err != nil {
+		return err
 	}
+	isContractCreation := tx.To() == nil
 	if rules.IsOsaka && tx.Gas() > fixedgas.MaxTxnGasLimit {
 		return errTxGasLimitTooHigh
 	}
@@ -359,14 +357,33 @@ func validateExecutionPayloadTransaction(tx *transaction.Transaction, rules *par
 	if reason != txpoolcfg.Success {
 		return fmt.Errorf("intrinsic gas calculation failed: %s", reason)
 	}
+	// Intrinsic gas validation takes precedence when both the standard
+	// intrinsic-gas requirement and the Prague floor-gas requirement fail.
+	// This preserves the consensus error ordering used by the execution tests.
+	if tx.Gas() < intrinsicGas {
+		return internalcore.ErrIntrinsicGas
+	}
 	if rules.IsPrague && floorGas > intrinsicGas {
-		intrinsicGas = floorGas
 		if tx.Gas() < floorGas {
 			return errFloorDataGasTooLow
 		}
 	}
-	if tx.Gas() < intrinsicGas {
-		return internalcore.ErrIntrinsicGas
+	return nil
+}
+
+func validateTransactionInitCodeSize(tx *transaction.Transaction, rules *params.Rules) error {
+	if tx == nil || rules == nil || !rules.IsShanghai || tx.To() != nil {
+		return nil
+	}
+	// EIP-7954 (Amsterdam) raises the initcode cap to 128 KiB; the
+	// execution layer already enforces the raised limit, so keeping
+	// the Shanghai cap here would reject valid Glamsterdam transactions.
+	maxInitCode := uint64(fixedgas.MaxInitCodeSize)
+	if rules.IsGlamsterdam {
+		maxInitCode = params.MaxInitCodeSizeEIP7954
+	}
+	if uint64(len(tx.Data())) > maxInitCode {
+		return errInitCodeSizeExceeded
 	}
 	return nil
 }

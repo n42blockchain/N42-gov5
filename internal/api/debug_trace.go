@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
@@ -170,9 +171,9 @@ func (debug *DebugAPI) traceTx(ctx context.Context, tx *transaction.Transaction,
 		if blockNum > 0 {
 			blockNum--
 		}
-		if err := rawdb.CheckHistoricalState(blockNum); err != nil {
-			return err
-		}
+		if err := rawdb.CheckHistoricalState(blockNum); err != nil {
+			return err
+		}
 		stateReader := state.NewPlainState(t, blockNum)
 		ibs = state.New(stateReader)
 		return nil
@@ -210,7 +211,9 @@ func (debug *DebugAPI) traceTx(ctx context.Context, tx *transaction.Transaction,
 		if _, err := internal.ApplyMessage(evm, msg, gp, true, false); err != nil {
 			return nil, err
 		}
-		ibs.FinalizeTx(debug.api.GetChainConfig().RulesWithTimestamp(headerNumber.Uint64(), header.Time), state.NewNoopWriter())
+		if err := ibs.FinalizeTx(debug.api.GetChainConfig().RulesWithTimestamp(headerNumber.Uint64(), header.Time), state.NewNoopWriter()); err != nil {
+			return nil, err
+		}
 	}
 
 	// Execute the target transaction with tracing

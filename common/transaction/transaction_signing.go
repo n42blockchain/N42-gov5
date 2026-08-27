@@ -31,10 +31,10 @@ import (
 	"sync"
 
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/u256"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/params"
 )
 
@@ -663,6 +663,9 @@ func decodeSignature(sig []byte) (r, s, v *big.Int, err error) {
 }
 
 func recoverPlain(sighash types.Hash, R, S, Vb *big.Int, homestead bool) (types.Address, error) {
+	if R == nil || S == nil || Vb == nil {
+		return types.Address{}, ErrInvalidSig
+	}
 	if Vb.BitLen() > 8 {
 		return types.Address{}, ErrInvalidSig
 	}
@@ -693,6 +696,9 @@ func recoverPlain(sighash types.Hash, R, S, Vb *big.Int, homestead bool) (types.
 
 // deriveChainID derives the chain id from the given v parameter
 func DeriveChainId(v *uint256.Int) *uint256.Int {
+	if v == nil {
+		return new(uint256.Int)
+	}
 	if v.IsUint64() {
 		v := v.Uint64()
 		if v == 27 || v == 28 {

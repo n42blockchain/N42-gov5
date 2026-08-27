@@ -62,7 +62,7 @@ func main() {
 	// 使用新的参数结构（已整合所有旧参数）
 	flags := AllFlags()
 
-	rootCmd = append(rootCmd, walletCommand, accountCommand, exportCommand, dbCommand, initCommand, stopCommand)
+	rootCmd = append(rootCmd, walletCommand, accountCommand, exportCommand, dbCommand, initCommand, importCommand, stopCommand)
 	commands := rootCmd
 
 	app := &cli.App{

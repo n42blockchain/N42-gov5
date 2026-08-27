@@ -29,3 +29,11 @@ func ReadHeadMarker(tx kv.Tx) (uint64, bool) {
 	}
 	return binary.BigEndian.Uint64(v), true
 }
+
+// WriteHeadMarker records the canonical execution head shared by Engine API,
+// devp2p sync, and public RPC readers.
+func WriteHeadMarker(tx kv.Putter, head uint64) error {
+	var encoded [8]byte
+	binary.BigEndian.PutUint64(encoded[:], head)
+	return tx.Put(kv.SyncStageProgress, HeadMarkerKey, encoded[:])
+}
