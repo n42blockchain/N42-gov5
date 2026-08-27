@@ -4,6 +4,10 @@
 witness 驱动重放。它不属于 QS/HotStuff 舰队，也不经过 txpool、faucet、
 `devBlockReward`、sender funding、baseFee 衰减或 BLS 共识。
 
+最新的 256-thread Linux 主机、`bodyc` 0–1000 万块、process shards、input
+reservoir 和四分片 pprof 优化交接见
+[`witness-replay-optimization-handoff-2026-08-25.md`](./witness-replay-optimization-handoff-2026-08-25.md)。
+
 > 核心纪律：并发单位是 block；验收单位是 `failed=0`；性能主单位是
 > `block/s`。不要用 genesis 空块窗口选 worker，不要把
 > `--continue-on-error` 或 `--skip-verify` 的结果写成“验证通过”。

@@ -69,6 +69,16 @@ type Contract struct {
 	// EOF fields
 	EOFContainer *EOFContainer // Parsed EOF container (nil for legacy code)
 	CodeSection  int           // Current code section index (for EOF)
+
+	// Scratch for the SSTORE gas function. It passes a slot key and two values
+	// by pointer into IntraBlockState methods, and Go's escape analysis moves
+	// any local whose address crosses an interface call to the heap — three
+	// allocations per SSTORE, the largest allocation site by object count on
+	// the dense-replay profile (1.2 billion objects per 200k blocks). A frame
+	// runs one opcode at a time, so frame-owned scratch is race-free.
+	gasSlot types.Hash
+	gasCur  uint256.Int
+	gasOrig uint256.Int
 }
 
 // NewContract returns a new contract environment for the execution of EVM.

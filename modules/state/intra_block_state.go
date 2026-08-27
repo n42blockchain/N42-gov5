@@ -96,6 +96,20 @@ type IntraBlockState struct {
 	// The flag is configuration, not block state, and is therefore preserved by
 	// Reset in the same way as rootComputer.
 	discardBlockChanges bool
+	// storageEpoch stamps storage writes; FinalizeTx advances it so the
+	// committed view of every slot moves forward without copying maps. Starts
+	// at 1 so a zero epoch on a slotEntry means "never written this block".
+	storageEpoch uint32
+	// lastAddr/lastObj remember the most recently resolved live object. A
+	// contract's SLOAD/SSTORE/BALANCE opcodes hit its own address over and
+	// over, and every one of them went through a 20-byte-keyed map lookup —
+	// getStateObject was 2.7% of replay CPU with map hashing the largest part.
+	// The cache is dropped whenever the live set changes (Reset, setStateObject,
+	// the createObject revert), so it can never hand back a stale object.
+	lastAddr types.Address
+	lastObj  *stateObject
+	// logArena, when non-nil, bump-allocates logs per block (see log_arena.go).
+	logArena *logArena
 
 	// This map holds 'live' objects, which will get modified while processing a state transition.
 	stateObjects      map[types.Address]*stateObject
@@ -187,6 +201,7 @@ type IntraBlockState struct {
 // New creates a new IntraBlockState with the given state reader.
 func New(stateReader StateReader) *IntraBlockState {
 	return &IntraBlockState{
+		storageEpoch:      1,
 		stateReader:       stateReader,
 		stateObjects:      map[types.Address]*stateObject{},
 		stateObjectsDirty: map[types.Address]struct{}{},
@@ -336,10 +351,8 @@ func (sdb *IntraBlockState) DirtyStorageSlots(addr types.Address) []types.Hash {
 	if !ok || obj == nil {
 		return nil
 	}
-	out := make([]types.Hash, 0, len(obj.dirtyStorage))
-	for k := range obj.dirtyStorage {
-		out = append(out, k)
-	}
+	out := make([]types.Hash, len(obj.dirtyKeys))
+	copy(out, obj.dirtyKeys)
 	return out
 }
 
@@ -474,6 +487,7 @@ func (sdb *IntraBlockState) Reset() {
 		putStateObject(so)
 	}
 	sdb.stateObjects = make(map[types.Address]*stateObject)
+	sdb.lastObj = nil
 	sdb.stateObjectsDirty = make(map[types.Address]struct{})
 	sdb.nilAccounts = make(map[types.Address]struct{})
 	clear(sdb.storageWipes)
@@ -489,6 +503,10 @@ func (sdb *IntraBlockState) Reset() {
 	sdb.thash = types.Hash{}
 	sdb.bhash = types.Hash{}
 	sdb.txIndex = 0
+	sdb.storageEpoch = 1
+	if sdb.logArena != nil {
+		sdb.logArena.reset()
+	}
 	sdb.nextRevisionID = 0
 	sdb.logs = make(map[types.Hash][]*block.Log)
 	sdb.logSize = 0
@@ -502,7 +520,7 @@ func (sdb *IntraBlockState) Reset() {
 }
 
 func (sdb *IntraBlockState) AddLog(log2 *block.Log) {
-	sdb.journal.append(addLogChange{txhash: sdb.thash})
+	sdb.journal.push(addLogChange{txhash: sdb.thash}.record())
 	log2.TxHash = sdb.thash
 	log2.BlockHash = sdb.bhash
 	log2.TxIndex = uint(sdb.txIndex)
@@ -534,17 +552,17 @@ func (sdb *IntraBlockState) SetTransientState(addr types.Address, key types.Hash
 	if prev == value {
 		return
 	}
-	sdb.journal.append(transientStorageChange{
+	sdb.journal.push(transientStorageChange{
 		account:  &addr,
 		key:      key,
 		prevalue: prev,
-	})
+	}.record())
 	sdb.transientStorage.Set(addr, key, value)
 }
 
 // AddRefund adds gas to the refund counter
 func (sdb *IntraBlockState) AddRefund(gas uint64) {
-	sdb.journal.append(refundChange{prev: sdb.refund})
+	sdb.journal.push(refundChange{prev: sdb.refund}.record())
 	sdb.refund += gas
 }
 
@@ -555,7 +573,7 @@ func (sdb *IntraBlockState) SubRefund(gas uint64) {
 		sdb.setErrorUnsafe(fmt.Errorf("refund counter below zero: gas=%d, refund=%d", gas, sdb.refund))
 		return
 	}
-	sdb.journal.append(refundChange{prev: sdb.refund})
+	sdb.journal.push(refundChange{prev: sdb.refund}.record())
 	sdb.refund -= gas
 }
 
@@ -641,26 +659,22 @@ func (sdb *IntraBlockState) HasNonEmptyStorage(addr types.Address) bool {
 	if stateObject == nil || stateObject.deleted {
 		return false
 	}
-	// Check dirtyStorage (current transaction writes)
-	for _, value := range stateObject.dirtyStorage {
-		if !value.IsZero() {
-			return true
-		}
-	}
-	// Check originStorage (values loaded from DB during this block)
-	for _, value := range stateObject.originStorage {
-		if !value.IsZero() {
-			return true
-		}
-	}
 	// Any committed read in this block that returned a non-zero value counts,
-	// even if a later write in the same block zeroed it: updateTrie overwrites
-	// originStorage with the new value, so the block-start fact survives only
-	// here. blockOriginStorage carries the same information but is not
-	// populated under discardBlockChanges, and this must not depend on whether
-	// the caller wanted a block write set.
+	// even if a later write zeroed it and its epoch has since passed.
 	if stateObject.sawNonZeroCommitted {
 		return true
+	}
+	// Any view of a touched slot being non-zero (latest write, committed
+	// value, or block-start value) — the union the three maps used to give.
+	for _, e := range stateObject.storage {
+		if !e.cur.IsZero() || (e.known && !e.committed.IsZero()) {
+			return true
+		}
+	}
+	for _, v := range stateObject.blockOriginStorage {
+		if !v.IsZero() {
+			return true
+		}
 	}
 	// Persisted storage: enumerate when possible — this is the complete
 	// answer, equivalent to geth's empty-storage-root test. Stop at the
@@ -843,10 +857,10 @@ func (sdb *IntraBlockState) AddBalance(addr types.Address, amount *uint256.Int) 
 		needAccount = true
 	}
 	if !needAccount {
-		sdb.journal.append(balanceIncrease{
+		sdb.journal.push(balanceIncrease{
 			account:  &addr,
 			increase: *amount,
-		})
+		}.record())
 		bi, ok := sdb.balanceInc[addr]
 		if !ok {
 			bi = &BalanceIncrease{}
@@ -924,8 +938,13 @@ func (sdb *IntraBlockState) Suicide(addr types.Address) bool {
 }
 
 func (sdb *IntraBlockState) getStateObject(addr types.Address) (stateObject *stateObject) {
-	// Prefer 'live' objects.
+	// Prefer 'live' objects; the last one resolved is checked before the map.
+	if obj := sdb.lastObj; obj != nil && sdb.lastAddr == addr {
+		sdb.foldBalanceIncrease(addr, obj)
+		return obj
+	}
 	if obj := sdb.stateObjects[addr]; obj != nil {
+		sdb.lastAddr, sdb.lastObj = addr, obj
 		// A live object can still owe a pending increase: reverting a
 		// balanceIncreaseTransfer un-folds the amount and clears the flag
 		// while leaving the object live. Without re-folding here the
@@ -973,6 +992,13 @@ func (sdb *IntraBlockState) getStateObject(addr types.Address) (stateObject *sta
 // flag makes a second call a no-op, and the flag is only ever cleared by
 // balanceIncreaseTransfer.revert, which also un-folds the amount.
 func (sdb *IntraBlockState) foldBalanceIncrease(addr types.Address, object *stateObject) {
+	// Every getStateObject lands here, and balanceInc is empty for the vast
+	// majority of transactions — but a Go map lookup hashes the 20-byte key
+	// before it discovers the map is empty. On the dense-replay profile that
+	// wasted lookup was 0.7% of all CPU.
+	if len(sdb.balanceInc) == 0 {
+		return
+	}
 	bi, ok := sdb.balanceInc[addr]
 	if !ok || bi.transferred {
 		return
@@ -980,12 +1006,13 @@ func (sdb *IntraBlockState) foldBalanceIncrease(addr types.Address, object *stat
 	object.data.Balance.Add(&object.data.Balance, &bi.increase)
 	bi.transferred = true
 	a := addr
-	sdb.journal.append(balanceIncreaseTransfer{account: &a, bi: bi})
+	sdb.journal.push(balanceIncreaseTransfer{account: &a, bi: bi}.record())
 }
 
 func (sdb *IntraBlockState) setStateObject(addr types.Address, object *stateObject) {
 	sdb.foldBalanceIncrease(addr, object)
 	sdb.stateObjects[addr] = object
+	sdb.lastAddr, sdb.lastObj = addr, object
 	delete(sdb.nilAccounts, addr)
 }
 
@@ -1011,9 +1038,9 @@ func (sdb *IntraBlockState) createObject(addr types.Address, previous *stateObje
 	newobj = newObject(sdb, addr, ac, original)
 	newobj.setNonce(0) // sets the object to dirty
 	if previous == nil {
-		sdb.journal.append(createObjectChange{account: &addr})
+		sdb.journal.push(createObjectChange{account: &addr}.record())
 	} else {
-		sdb.journal.append(resetObjectChange{account: &addr, prev: previous})
+		sdb.journal.push(resetObjectChange{account: &addr, prev: previous}.record())
 	}
 	sdb.setStateObject(addr, newobj)
 	return newobj
@@ -1044,7 +1071,7 @@ func (sdb *IntraBlockState) CreateAccount(addr types.Address, contractCreation b
 	if contractCreation {
 		newObj.created = true
 		if _, already := sdb.storageWipes[addr]; !already {
-			sdb.journal.append(storageWipeAddChange{account: &addr})
+			sdb.journal.push(storageWipeAddChange{account: &addr}.record())
 			sdb.storageWipes[addr] = struct{}{}
 		}
 		// Capture the full pre-block storage before it is wiped, so the hashed
@@ -1225,6 +1252,9 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 	sdb.promoteWipes()
 	sdb.clearCurrentTxFlags()
 	sdb.clearJournalAndRefund()
+	// Every slot written in this transaction now reads as committed: the
+	// replacement for copying dirtyStorage into originStorage per object.
+	sdb.storageEpoch++
 	return nil
 }
 
@@ -1357,7 +1387,11 @@ func (sdb *IntraBlockState) PrepareAccessList(sender types.Address, dst *types.A
 	if dst != nil {
 		sdb.AddAddressToAccessList(*dst)
 	}
-	for _, addr := range precompiles {
+	// Precompiles are warm by fiat for the whole transaction and cannot be
+	// reverted out, so they are recorded as a static set rather than as
+	// journaled map entries. Only an address the static set cannot hold
+	// takes the ordinary path.
+	for _, addr := range sdb.accessList.SetPrecompiles(precompiles) {
 		sdb.AddAddressToAccessList(addr)
 	}
 	for _, el := range list {
@@ -1371,7 +1405,7 @@ func (sdb *IntraBlockState) PrepareAccessList(sender types.Address, dst *types.A
 // AddAddressToAccessList adds the given address to the access list.
 func (sdb *IntraBlockState) AddAddressToAccessList(addr types.Address) {
 	if sdb.accessList.AddAddress(addr) {
-		sdb.journal.append(accessListAddAccountChange{address: addr})
+		sdb.journal.push(accessListAddAccountChange{address: addr}.record())
 	}
 }
 
@@ -1379,10 +1413,10 @@ func (sdb *IntraBlockState) AddAddressToAccessList(addr types.Address) {
 func (sdb *IntraBlockState) AddSlotToAccessList(addr types.Address, slot types.Hash) {
 	addrMod, slotMod := sdb.accessList.AddSlot(addr, slot)
 	if addrMod {
-		sdb.journal.append(accessListAddAccountChange{address: addr})
+		sdb.journal.push(accessListAddAccountChange{address: addr}.record())
 	}
 	if slotMod {
-		sdb.journal.append(accessListAddSlotChange{address: addr, slot: slot})
+		sdb.journal.push(accessListAddSlotChange{address: addr, slot: slot}.record())
 	}
 }
 
@@ -1509,7 +1543,7 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 				// an absent key is a no-op).
 				var unioned []types.Hash
 				if obj != nil {
-					for key := range obj.dirtyStorage {
+					for _, key := range obj.dirtyKeys {
 						if _, ok := slots[key]; !ok {
 							slots[key] = new(uint256.Int)
 							unioned = append(unioned, key)
@@ -1530,24 +1564,24 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 					// tree root would be fixed and the digest would not, which
 					// defeats the cross-check the LtHash engine exists for.
 					for _, key := range unioned {
-						if ov, ok := obj.blockOriginStorage[key]; ok {
+						if ov, ok := obj.blockOrigin(key); ok {
 							v := ov
 							origSlots[key] = new(uint256.Int).Set(&v)
 						}
 					}
 					originalStorage[addr] = origSlots
 				}
-			} else if obj != nil && len(obj.blockOriginStorage) > 0 {
-				slots := make(map[types.Hash]*uint256.Int, len(obj.blockOriginStorage))
-				for key := range obj.blockOriginStorage {
+			} else if obj != nil && obj.blockOriginLen() > 0 {
+				slots := make(map[types.Hash]*uint256.Int, obj.blockOriginLen())
+				obj.eachBlockOrigin(func(key types.Hash, _ uint256.Int) {
 					slots[key] = new(uint256.Int) // zero = deleted
-				}
+				})
 				storage[addr] = slots
 				if ltEnabled {
-					origSlots := make(map[types.Hash]*uint256.Int, len(obj.blockOriginStorage))
-					for key, origVal := range obj.blockOriginStorage {
+					origSlots := make(map[types.Hash]*uint256.Int, len(slots))
+					obj.eachBlockOrigin(func(key types.Hash, origVal uint256.Int) {
 						origSlots[key] = new(uint256.Int).Set(&origVal)
-					}
+					})
 					originalStorage[addr] = origSlots
 				}
 			}
@@ -1576,15 +1610,15 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 		// after recreation: seed every captured pre-block slot to zero, then overlay
 		// the new dirtyStorage values.
 		wiped := s.activeWipedSlots(addr)
-		if len(wiped) == 0 && len(obj.dirtyStorage) == 0 {
+		if len(wiped) == 0 && len(obj.dirtyKeys) == 0 {
 			continue
 		}
-		slots := make(map[types.Hash]*uint256.Int, len(wiped)+len(obj.dirtyStorage))
+		slots := make(map[types.Hash]*uint256.Int, len(wiped)+len(obj.dirtyKeys))
 		for key := range wiped {
 			slots[key] = new(uint256.Int) // zero = delete old slot
 		}
-		for key, value := range obj.dirtyStorage {
-			v := value
+		for _, key := range obj.dirtyKeys {
+			v := obj.dirtyValue(key)
 			slots[key] = new(uint256.Int).Set(&v)
 		}
 		if len(slots) == 0 {
@@ -1598,8 +1632,8 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 				ov := origVal
 				origSlots[key] = new(uint256.Int).Set(&ov)
 			}
-			for key := range obj.dirtyStorage {
-				if origVal, ok := obj.blockOriginStorage[key]; ok {
+			for _, key := range obj.dirtyKeys {
+				if origVal, ok := obj.blockOrigin(key); ok {
 					origSlots[key] = new(uint256.Int).Set(&origVal)
 				} else if _, seeded := origSlots[key]; !seeded {
 					origSlots[key] = new(uint256.Int) // zero = didn't exist
@@ -1667,9 +1701,10 @@ func (sdb *IntraBlockState) DirtyAccountData() (
 		}
 		accounts[addr] = obj.data.MarshalV2()
 
-		if len(obj.dirtyStorage) > 0 {
-			slots := make(map[types.Hash][]byte, len(obj.dirtyStorage))
-			for slot, value := range obj.dirtyStorage {
+		if len(obj.dirtyKeys) > 0 {
+			slots := make(map[types.Hash][]byte, len(obj.dirtyKeys))
+			for _, slot := range obj.dirtyKeys {
+				value := obj.dirtyValue(slot)
 				if value.IsZero() {
 					slots[slot] = nil
 				} else {
@@ -1705,15 +1740,15 @@ func (sdb *IntraBlockState) Selfdestruct(addr types.Address) bool {
 	if stateObject == nil || stateObject.deleted {
 		return false
 	}
-	sdb.journal.append(selfdestructChange{
+	sdb.journal.push(selfdestructChange{
 		account:     &addr,
 		prev:        stateObject.selfdestructed,
 		prevbalance: *stateObject.Balance(),
-	})
+	}.record())
 	stateObject.markSelfdestructed()
 	stateObject.data.Balance.Clear()
 	if _, already := sdb.storageWipes[addr]; !already {
-		sdb.journal.append(storageWipeAddChange{account: &addr})
+		sdb.journal.push(storageWipeAddChange{account: &addr}.record())
 		sdb.storageWipes[addr] = struct{}{}
 	}
 	// Capture the full pre-block storage before the wipe so the hashed state
@@ -1735,11 +1770,11 @@ func (sdb *IntraBlockState) Selfdestruct6780(addr types.Address, beneficiary typ
 	}
 
 	if stateObject.created {
-		sdb.journal.append(selfdestructChange{
+		sdb.journal.push(selfdestructChange{
 			account:     &addr,
 			prev:        stateObject.selfdestructed,
 			prevbalance: *stateObject.Balance(),
-		})
+		}.record())
 		stateObject.markSelfdestructed()
 		stateObject.data.Balance.Clear()
 		return
@@ -1756,10 +1791,10 @@ func (sdb *IntraBlockState) Selfdestruct6780(addr types.Address, beneficiary typ
 			return
 		}
 		halfBalance := new(uint256.Int).Div(currentBalance, uint256.NewInt(2))
-		sdb.journal.append(balanceChange{
+		sdb.journal.push(balanceChange{
 			account: &addr,
 			prev:    *currentBalance,
-		})
+		}.record())
 		stateObject.data.Balance.Sub(currentBalance, halfBalance)
 		return
 	}
@@ -1768,10 +1803,10 @@ func (sdb *IntraBlockState) Selfdestruct6780(addr types.Address, beneficiary typ
 	if prevBalance.IsZero() {
 		return
 	}
-	sdb.journal.append(balanceChange{
+	sdb.journal.push(balanceChange{
 		account: &addr,
 		prev:    prevBalance,
-	})
+	}.record())
 	stateObject.data.Balance.Clear()
 }
 
@@ -1789,11 +1824,11 @@ func (sdb *IntraBlockState) Selfdestruct8246(addr types.Address) {
 		return
 	}
 	balance := *stateObject.Balance()
-	sdb.journal.append(selfdestructChange{
+	sdb.journal.push(selfdestructChange{
 		account:     &addr,
 		prev:        stateObject.selfdestructed,
 		prevbalance: balance,
-	})
+	}.record())
 	stateObject.markSelfdestructed()
 	stateObject.data.Balance.Clear()
 	if balance.IsZero() {

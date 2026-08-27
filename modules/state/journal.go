@@ -43,7 +43,7 @@ type journalEntry interface {
 // commit. These are tracked to be able to be reverted in case of an execution
 // exception or revertal request.
 type journal struct {
-	entries []journalEntry        // Current changes tracked by the journal
+	entries []journalRecord       // Current changes tracked by the journal, by value
 	dirties map[types.Address]int // Dirty accounts and the number of changes
 }
 
@@ -54,11 +54,24 @@ func newJournal() *journal {
 	}
 }
 
-// append inserts a new modification entry to the end of the change journal.
+// push inserts a change record at the end of the journal. Call sites build
+// the entry struct and hand over its record(); the record is copied by value,
+// so the hot path does not allocate. See journal_record.go.
+func (j *journal) push(rec journalRecord) {
+	j.entries = append(j.entries, rec)
+	if rec.dirties {
+		j.dirties[rec.addr]++
+	}
+}
+
+// append is the interface-taking form, retained for callers outside the hot
+// path. It boxes; do not use it where push will do.
 func (j *journal) append(entry journalEntry) {
-	j.entries = append(j.entries, entry)
-	if addr := entry.dirtied(); addr != nil {
-		j.dirties[*addr]++
+	switch e := entry.(type) {
+	case interface{ record() journalRecord }:
+		j.push(e.record())
+	default:
+		panic("journal: entry type has no record form")
 	}
 }
 
@@ -66,15 +79,21 @@ func (j *journal) append(entry journalEntry) {
 // dirty handling too.
 func (j *journal) revert(statedb *IntraBlockState, snapshot int) {
 	for i := len(j.entries) - 1; i >= snapshot; i-- {
+		rec := &j.entries[i]
 		// Undo the changes made by the operation
-		j.entries[i].revert(statedb)
+		rec.revert(statedb)
 
 		// Drop any dirty tracking induced by the change
-		if addr := j.entries[i].dirtied(); addr != nil {
-			if j.dirties[*addr]--; j.dirties[*addr] == 0 {
-				delete(j.dirties, *addr)
+		if rec.dirties {
+			if j.dirties[rec.addr]--; j.dirties[rec.addr] == 0 {
+				delete(j.dirties, rec.addr)
 			}
 		}
+	}
+	// Release references held by reverted records so a reverted *stateObject
+	// or code slice is not pinned by the journal's spare capacity.
+	for i := snapshot; i < len(j.entries); i++ {
+		j.entries[i].ref = nil
 	}
 	j.entries = j.entries[:snapshot]
 }
@@ -95,6 +114,9 @@ func (j *journal) length() int {
 // The backing array of entries is kept (cap preserved) and the
 // dirties map is cleared in-place via Go 1.21+ clear().
 func (j *journal) reset() {
+	for i := range j.entries {
+		j.entries[i].ref = nil
+	}
 	j.entries = j.entries[:0]
 	// Reallocate dirties: it's iterated by IBS.FinalizeTx via
 	// sortedAddresses every tx, and Go's clear() leaves the bucket
@@ -206,6 +228,7 @@ type (
 func (ch createObjectChange) revert(s *IntraBlockState) {
 	delete(s.stateObjects, *ch.account)
 	delete(s.stateObjectsDirty, *ch.account)
+	s.lastObj = nil
 	// storageWipes is no longer implicitly managed here — see
 	// storageWipeAddChange. If this createObjectChange also added a fresh
 	// storageWipes entry, a paired storageWipeAddChange was journaled.

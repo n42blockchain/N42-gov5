@@ -954,29 +954,47 @@ func opSelfdestruct(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext
 
 // following functions are used by the instruction jump  table
 
+// logAllocator is implemented by a state that can hand out Log memory it owns
+// (state.IntraBlockState with its per-block arena on). It is optional so the
+// evmtypes.IntraBlockState interface and its mocks stay untouched.
+type logAllocator interface {
+	NewLog(addr types.Address, ntopics, dataLen int, blockNum uint64) *block.Log
+}
+
 // make log instruction function
 func makeLog(size int) executionFunc {
 	return func(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 		if interpreter.readOnly {
 			return nil, ErrWriteProtection
 		}
-		topics := make([]types.Hash, size)
 		stack := scope.Stack
 		mStart, mSize := stack.Pop(), stack.Pop()
+		ibs := interpreter.evm.IntraBlockState()
+		blockNum := interpreter.evm.Context().BlockNumber
+		var l *block.Log
+		if alloc, ok := ibs.(logAllocator); ok {
+			// A state that owns its logs' memory (replay's per-block arena)
+			// hands out a pre-sized Log; otherwise this is four ordinary
+			// allocations, as before.
+			l = alloc.NewLog(scope.Contract.Address(), size, int(mSize.Uint64()), blockNum)
+		} else {
+			l = &block.Log{
+				Address: scope.Contract.Address(),
+				Topics:  make([]types.Hash, size),
+				Data:    make([]byte, mSize.Uint64()),
+				// This is a non-consensus field, but assigned here because
+				// core/state doesn't know the current block number.
+				BlockNumber: uint256.NewInt(blockNum),
+			}
+		}
 		for i := 0; i < size; i++ {
 			addr := stack.Pop()
-			topics[i] = addr.Bytes32()
+			l.Topics[i] = addr.Bytes32()
 		}
-
-		d := scope.Memory.GetCopy(MustSafeUint64ToInt64(mStart.Uint64()), MustSafeUint64ToInt64(mSize.Uint64()))
-		interpreter.evm.IntraBlockState().AddLog(&block.Log{
-			Address: scope.Contract.Address(),
-			Topics:  topics,
-			Data:    d,
-			// This is a non-consensus field, but assigned here because
-			// core/state doesn't know the current block number.
-			BlockNumber: uint256.NewInt(interpreter.evm.Context().BlockNumber),
-		})
+		if mSize.Uint64() > 0 {
+			copy(l.Data, scope.Memory.GetPtr(MustSafeUint64ToInt64(mStart.Uint64()), MustSafeUint64ToInt64(mSize.Uint64())))
+		}
+		ibs.AddLog(l)
 
 		return nil, nil
 	}
@@ -996,6 +1014,35 @@ func opPush1(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]by
 
 // make push instruction function
 func makePush(size uint64, pushByteSize int) executionFunc {
+	if pushByteSize <= 8 {
+		// PUSH2..PUSH8 carry the bulk of push traffic (offsets, selectors,
+		// small constants) and their immediates fit one machine word. Fold
+		// the bytes into a uint64 and SetUint64 it instead of going through
+		// the general 32-byte SetBytes path, which on the dense-replay
+		// profile made PUSHn 3.2% of all CPU. An immediate cut short by the
+		// end of code is right-padded with zeros, exactly as RightPadBytes
+		// did: each missing byte still shifts the accumulator.
+		return func(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+			code := scope.Contract.Code
+			start := int(*pc + 1)
+			var v uint64
+			if start+pushByteSize <= len(code) {
+				for _, b := range code[start : start+pushByteSize] {
+					v = v<<8 | uint64(b)
+				}
+			} else {
+				for i := 0; i < pushByteSize; i++ {
+					v <<= 8
+					if j := start + i; j < len(code) {
+						v |= uint64(code[j])
+					}
+				}
+			}
+			scope.Stack.PushSlot().SetUint64(v)
+			*pc += size
+			return nil, nil
+		}
+	}
 	return func(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 		codeLen := len(scope.Contract.Code)
 
