@@ -75,5 +75,6 @@ func newOpMetaTable(jt *JumpTable) *opMetaTable {
 			maxStack:    op.maxStack,
 		}
 	}
+	addFusedOps(tbl, jt)
 	return tbl
 }

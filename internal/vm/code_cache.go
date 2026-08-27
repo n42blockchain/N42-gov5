@@ -51,6 +51,7 @@ type CodeAnalysisCache struct {
 type codeEntry struct {
 	hash     types.Hash
 	analysis []uint64
+	fused    []byte // execution view (see fuse.go); nil until first Run
 	elem     *list.Element
 }
 
@@ -103,7 +104,18 @@ func (c *CodeAnalysisCache) Get(codeHash types.Hash) ([]uint64, bool) {
 
 // Put stores a code analysis result in the cache. If the cache is at capacity,
 // the least recently used entry is evicted.
+// entry returns the cached record for codeHash, or nil.
+func (c *CodeAnalysisCache) entry(codeHash types.Hash) *codeEntry {
+	snapshot := c.shard(codeHash).snapshot.Load()
+	return (*snapshot)[codeHash]
+}
+
 func (c *CodeAnalysisCache) Put(codeHash types.Hash, analysis []uint64) {
+	c.putFused(codeHash, analysis, nil)
+}
+
+// putFused stores the bitmap together with the execution view.
+func (c *CodeAnalysisCache) putFused(codeHash types.Hash, analysis []uint64, fused []byte) {
 	stored := make([]uint64, len(analysis))
 	copy(stored, analysis)
 
@@ -128,7 +140,7 @@ func (c *CodeAnalysisCache) Put(codeHash types.Hash, analysis []uint64) {
 		evicted := s.lru.Remove(back).(*codeEntry)
 		delete(next, evicted.hash)
 	}
-	entry := &codeEntry{hash: codeHash, analysis: stored}
+	entry := &codeEntry{hash: codeHash, analysis: stored, fused: fused}
 	entry.elem = s.lru.PushFront(entry)
 	next[codeHash] = entry
 	s.snapshot.Store(&next)

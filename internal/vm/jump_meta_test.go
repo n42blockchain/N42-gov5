@@ -50,6 +50,23 @@ func TestOpMetaMatchesJumpTable(t *testing.T) {
 					t.Fatalf("op 0x%02x: jump table entry is nil", op)
 				}
 				got := &meta[op]
+				if OpCode(op) >= fusedPush1Jump && OpCode(op) <= fusedPush2Jumpi {
+					// Synthetic static-jump opcodes (fuse.go): PUSH + JUMP/JUMPI
+					// folded into one record. The jump table entry is undefined.
+					jumpGas := jt[JUMP].constantGas
+					if op == int(fusedPush1Jumpi) || op == int(fusedPush2Jumpi) {
+						jumpGas = jt[JUMPI].constantGas
+						if got.numPop != 1 {
+							t.Errorf("op 0x%02x numPop: got %d want 1", op, got.numPop)
+						}
+					} else if got.numPop != 0 {
+						t.Errorf("op 0x%02x numPop: got %d want 0", op, got.numPop)
+					}
+					if got.constantGas != jt[PUSH1].constantGas+jumpGas || got.maxStack != jt[PUSH1].maxStack || got.dynamicGas != nil || got.memorySize != nil {
+						t.Errorf("op 0x%02x: fused record %+v does not match PUSH+JUMP", op, *got)
+					}
+					continue
+				}
 				if got.constantGas != want.constantGas {
 					t.Errorf("op 0x%02x constantGas: got %d want %d", op, got.constantGas, want.constantGas)
 				}
