@@ -994,7 +994,9 @@ main 新加的 `sawNonZeroCommitted` 标志，两边保留），并恢复被快�
 MaxRSS 22.1 GiB（旧分支 t3：49m48s / 376,118）。
 
 2026-08-27 已合并到 main：`50923a19`（codex/gov5-sync-audit-fixes-20260727，94 commits）→
-`72150b2e`（本分支，41 commits）。合并树 `go build ./...`、`go vet`、39 个相关包测试通过。
+`72150b2e`（本分支，41 commits）。合并树 `go build ./...`、`go vet`、39 个相关包测试通过。合并后 main 的 binary 全量 gate
+（128w/6r/gc300，独占，sar 120–132）：**49m27s / 373,462 CPU-s / failed=0**，MaxRSS 22.8 GiB——
+与 rebased2 的 48m39s / 371,444 在噪声内，codex 审计分支的合入没有代价。
 
 ### 5.30 硬件计数器（P0-b）：SMT 收益小是因为解释器已经 issue-bound
 
