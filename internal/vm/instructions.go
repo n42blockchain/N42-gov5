@@ -954,29 +954,47 @@ func opSelfdestruct(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext
 
 // following functions are used by the instruction jump  table
 
+// logAllocator is implemented by a state that can hand out Log memory it owns
+// (state.IntraBlockState with its per-block arena on). It is optional so the
+// evmtypes.IntraBlockState interface and its mocks stay untouched.
+type logAllocator interface {
+	NewLog(addr types.Address, ntopics, dataLen int, blockNum uint64) *block.Log
+}
+
 // make log instruction function
 func makeLog(size int) executionFunc {
 	return func(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 		if interpreter.readOnly {
 			return nil, ErrWriteProtection
 		}
-		topics := make([]types.Hash, size)
 		stack := scope.Stack
 		mStart, mSize := stack.Pop(), stack.Pop()
+		ibs := interpreter.evm.IntraBlockState()
+		blockNum := interpreter.evm.Context().BlockNumber
+		var l *block.Log
+		if alloc, ok := ibs.(logAllocator); ok {
+			// A state that owns its logs' memory (replay's per-block arena)
+			// hands out a pre-sized Log; otherwise this is four ordinary
+			// allocations, as before.
+			l = alloc.NewLog(scope.Contract.Address(), size, int(mSize.Uint64()), blockNum)
+		} else {
+			l = &block.Log{
+				Address: scope.Contract.Address(),
+				Topics:  make([]types.Hash, size),
+				Data:    make([]byte, mSize.Uint64()),
+				// This is a non-consensus field, but assigned here because
+				// core/state doesn't know the current block number.
+				BlockNumber: uint256.NewInt(blockNum),
+			}
+		}
 		for i := 0; i < size; i++ {
 			addr := stack.Pop()
-			topics[i] = addr.Bytes32()
+			l.Topics[i] = addr.Bytes32()
 		}
-
-		d := scope.Memory.GetCopy(MustSafeUint64ToInt64(mStart.Uint64()), MustSafeUint64ToInt64(mSize.Uint64()))
-		interpreter.evm.IntraBlockState().AddLog(&block.Log{
-			Address: scope.Contract.Address(),
-			Topics:  topics,
-			Data:    d,
-			// This is a non-consensus field, but assigned here because
-			// core/state doesn't know the current block number.
-			BlockNumber: uint256.NewInt(interpreter.evm.Context().BlockNumber),
-		})
+		if mSize.Uint64() > 0 {
+			copy(l.Data, scope.Memory.GetPtr(MustSafeUint64ToInt64(mStart.Uint64()), MustSafeUint64ToInt64(mSize.Uint64())))
+		}
+		ibs.AddLog(l)
 
 		return nil, nil
 	}
