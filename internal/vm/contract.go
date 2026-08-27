@@ -89,6 +89,34 @@ func NewContract(caller ContractRef, object ContractRef, value *uint256.Int, gas
 	return c
 }
 
+// newContract returns an EVM-owned scratch frame for the current call depth.
+// The interpreter is strictly depth-first: once a child run returns, no live
+// reference to that depth's frame remains. Public NewContract intentionally
+// keeps allocation semantics for tests and external users that may retain it.
+func (evm *EVM) newContract(caller ContractRef, object ContractRef, value *uint256.Int, gas uint64, skipAnalysis bool) *Contract {
+	depth := evm.interpreter.Depth()
+	for len(evm.contractFrames) <= depth {
+		evm.contractFrames = append(evm.contractFrames, new(Contract))
+	}
+	if evm.jumpdests == nil {
+		evm.jumpdests = make(map[types.Hash][]uint64)
+	} else if depth == 0 {
+		clear(evm.jumpdests)
+	}
+
+	c := evm.contractFrames[depth]
+	*c = Contract{
+		CallerAddress: caller.Address(),
+		caller:        caller,
+		self:          object,
+		jumpdests:     evm.jumpdests,
+		skipAnalysis:  skipAnalysis,
+		Gas:           gas,
+		value:         value,
+	}
+	return c
+}
+
 // validJumpdest checks whether dest is a valid JUMPDEST position.
 // Returns (valid, usedBitmap) where usedBitmap indicates whether
 // code bitmap analysis was performed.
@@ -121,6 +149,14 @@ func isCodeFromAnalysis(analysis []uint64, udest uint64) bool {
 // isCode returns true if the provided PC location is an actual opcode, as
 // opposed to a data-segment following a PUSHN operation.
 func (c *Contract) isCode(udest uint64) bool {
+	// The first jump in this execution frame resolves (or builds) the bitmap
+	// below and stores it in c.analysis. Every later jump can use that immutable
+	// slice directly. Falling through to jumpdests[c.CodeHash] on every opcode
+	// used to put a map lookup on the JUMP/JUMPI hot path even though the answer
+	// was already attached to the contract frame.
+	if c.analysis != nil {
+		return isCodeFromAnalysis(c.analysis, udest)
+	}
 	// Do we have a contract hash already?
 	// If we do have a hash, that means it's a 'regular' contract. For regular
 	// contracts ( not temporary initcode), we store the analysis in a map

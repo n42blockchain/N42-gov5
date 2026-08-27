@@ -126,3 +126,16 @@ func TestStateHookNotDoneOnWriteFailure(t *testing.T) {
 		t.Fatal("hook reports done although its write failed")
 	}
 }
+
+// TestStateHookRequiresOuterCommit covers the failure window between a
+// successful callback and MDBX's subsequent tx.Commit. The callback has run,
+// but none of its writes are durable when the outer commit fails.
+func TestStateHookRequiresOuterCommit(t *testing.T) {
+	h := &stateHook{done: true}
+	if stateHookCommitted(h, errors.New("commit failed")) {
+		t.Fatal("hook reported durable after the enclosing transaction failed")
+	}
+	if !stateHookCommitted(h, nil) {
+		t.Fatal("successful hook and enclosing commit not reported durable")
+	}
+}

@@ -78,8 +78,12 @@ Start-Process C:\N42\N42-gov5\build\bin\n42-v5.7.<latest>.exe -ArgumentList `
   blk/s, stress-test-era full blocks at ~150 blk/s. 2026-08-10: 708,139 blocks
   in ~1.2 h (~165 blk/s, ~200-tx blocks).
 
-GATE: exit clean + `checkpoint.json` number == H (+ per-batch `qmdbRoot` lines,
-no errors).
+GATE: exit clean + `replay_stats.json.currentBlock == H` +
+`checkpoint.json.sourceHead == H`; when gap-fill inserted blocks,
+`checkpoint.json.number` is the **target** head (`H + synthetic blocks`), and
+its hash must equal the target canonical hash at that height. Also require
+per-batch `qmdbRoot` lines and no errors. The separate source and target fields
+prevent a source number from being paired with a target hash.
 
 ## Step 2b — seal eras + emit the hot layout (since 2026-08-15)
 

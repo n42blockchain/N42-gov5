@@ -125,6 +125,11 @@ func (x *Indexer) LookupTx(txHash types.Hash) (uint64, bool) {
 	if n, ok := x.txTail.Lookup(txHash); ok {
 		return n, true
 	}
+	// Keep the reader alive for the whole lookup. Reopen and Stop take the
+	// write lock before closing a service, so its mmap cannot disappear under
+	// an RPC already using it.
+	x.txIndexMu.RLock()
+	defer x.txIndexMu.RUnlock()
 	if x.txSegments == nil {
 		return 0, false
 	}
@@ -411,15 +416,12 @@ func (x *Indexer) reopenTxSegments() error {
 	x.txIndexMu.Lock()
 	old := x.txSegments
 	x.txSegments = svc
-	x.txIndexMu.Unlock()
 	if old != nil {
-		// Readers hold no reference past a Lookup call, and a lookup that
-		// raced the swap already returned.
-		go func() {
-			time.Sleep(time.Minute)
-			old.Close()
-		}()
+		// Acquiring the write lock waited for every lookup using old. New
+		// lookups will observe svc, so old can now be closed synchronously.
+		old.Close()
 	}
+	x.txIndexMu.Unlock()
 	return nil
 }
 
@@ -436,14 +438,14 @@ func (x *Indexer) Stop() {
 	}
 	<-x.txIndexDone
 	rawdb.SetTxLookupResolver(nil)
-	// Release the segment mmaps. The resolver is already detached, so no
-	// lookup can be in flight; leaving them open kept the segment files
-	// locked for the rest of the process lifetime.
+	// Release the segment mmaps. Detaching the resolver prevents new calls;
+	// the write lock waits for calls that loaded the resolver just before it
+	// was detached.
 	x.txIndexMu.Lock()
 	svc := x.txSegments
 	x.txSegments = nil
-	x.txIndexMu.Unlock()
 	if svc != nil {
 		svc.Close()
 	}
+	x.txIndexMu.Unlock()
 }

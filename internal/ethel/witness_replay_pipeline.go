@@ -25,6 +25,7 @@ package ethel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -59,6 +60,26 @@ type WitnessReplayConfig struct {
 	StartBlock uint64
 	EndBlock   uint64 // exclusive; 0 means "all available witness items"
 	Workers    int    // 0 → 32
+	// Readers controls independent header/body/witness input feeders in
+	// NoOutput mode. Each feeder owns its readers and processes whole compact
+	// segments, so there are no shared decoder locks or duplicate body decodes.
+	// 0 selects an automatic count capped at 6. Output mode stays sequential.
+	Readers int
+
+	// SegmentShardCount/Index select an interleaved subset of compact BODYC
+	// segments for an internal process child. Interleaving instead of assigning
+	// contiguous block ranges keeps children balanced when historical eras have
+	// radically different gas/transaction density. User-facing callers leave
+	// count at zero/one and process every segment.
+	SegmentShardCount int
+	SegmentShardIndex int
+
+	// InputHighWaterBytes/InputLowWaterBytes enable a byte-accounted input
+	// reservoir in NoOutput mode. Producers fill until High, then wait for
+	// completed workers to drain below Low before refilling. Zero disables the
+	// reservoir and keeps the ordinary bounded channel.
+	InputHighWaterBytes int64
+	InputLowWaterBytes  int64
 
 	// NoOutput disables cdat writes. Workers still replay + verify
 	// gas, but no acctcs/storcs/receipts/witness cdat is written.
@@ -125,6 +146,15 @@ type witnessAggregateState struct {
 // verified, and persisted to cdat. Caller is expected to run
 // rebuild-state on the same datadir afterward to populate PlainState.
 func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.RoDB) error {
+	if cfg.SegmentShardCount <= 0 {
+		cfg.SegmentShardCount = 1
+	}
+	if cfg.SegmentShardIndex < 0 || cfg.SegmentShardIndex >= cfg.SegmentShardCount {
+		return fmt.Errorf("invalid segment shard %d/%d", cfg.SegmentShardIndex, cfg.SegmentShardCount)
+	}
+	if cfg.SegmentShardCount > 1 && !cfg.NoOutput {
+		return fmt.Errorf("segment-sharded replay requires NoOutput")
+	}
 	if cfg.ChainCfg == nil {
 		return fmt.Errorf("witnessreplay: ChainCfg is nil")
 	}
@@ -225,22 +255,62 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 
 	// 4. Wire up channels and worker pool.
 	//
-	// Channel cap deliberately small (256). The previous 8192 was chosen
-	// to amortise runtime.lock2/stdcall2 mutex traffic seen under heavy
-	// 32-worker fanout, but it lets the aggregator's `pending` map grow
-	// unbounded when a single slow block holds back the head. On a 10M+
-	// DeFi block one worker can take seconds while the others fly; with
-	// cap=8192 the reader stuffs 8k jobs in, workers stuff up to 8k
-	// results in `pending`, heap balloons to 15+ GB, and Go GC STW
-	// stretches into the seconds — feeding back into per-worker slowdown
-	// and eventually a stall that *looks* like a deadlock. Cap=256 lets
-	// the reader run only a small batch ahead, capping pending and
-	// keeping heap below ~3 GB so GC stays in its concurrent path.
-	const chanCap = 256
+	// Channel cap scales with the worker count, between two failure modes.
+	//
+	// Too large: the aggregator emits in block order, so one slow 10M-gas DeFi
+	// block at the head lets every other worker pile results into `pending`.
+	// The original 8192 let the heap balloon past 15 GB and pushed Go GC into
+	// multi-second STW, feeding back into per-worker slowdown and eventually a
+	// stall that looked like a deadlock. A flat 256 fixed that.
+	//
+	// Too small: 256 is only a few rounds of work for a large fleet, and the
+	// reader is a SINGLE goroutine that must decompress a header, a bodyc
+	// segment and a witness entry per block. On a 128-core host with ~104
+	// workers that queue drains faster than one reader can refill it, and the
+	// machine idles: measured 99.4% idle CPU while the run was nominally at
+	// 32.7 Ggas/s, with vmstat's runnable count oscillating 54 -> 2 -> 1 as the
+	// fleet alternated between a fed burst and collective starvation.
+	//
+	// Four rounds per worker keeps the reader far enough ahead to absorb its own
+	// segment-decode spikes, while the ceiling preserves the heap bound that
+	// motivated 256 in the first place: pending is bounded by this cap, not by
+	// the worker count.
+	chanCap := cfg.Workers * 4
+	if chanCap < 256 {
+		chanCap = 256
+	}
+	if chanCap > 2048 {
+		chanCap = 2048
+	}
 	blockCh := make(chan WitnessJob, chanCap)
 	resultCh := make(chan WitnessResult, chanCap)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// Optional verification reservoir. The relay owns an elastic FIFO whose
+	// retained payload is bounded by byte reservations, not by a guessed block
+	// count. This lets a BODYC producer finish handing off an 8192-block decode
+	// and immediately start the next segment while workers freely pull blocks.
+	feedCh := blockCh
+	var reservoir *replayInputReservoir
+	var relayDone chan struct{}
+	if cfg.NoOutput && cfg.InputHighWaterBytes > 0 {
+		low := cfg.InputLowWaterBytes
+		if low <= 0 || low >= cfg.InputHighWaterBytes {
+			low = cfg.InputHighWaterBytes / 2
+		}
+		reservoir = newReplayInputReservoir(low, cfg.InputHighWaterBytes)
+		feedCh = make(chan WitnessJob, 256)
+		blockCh = make(chan WitnessJob)
+		relayDone = make(chan struct{})
+		go func() {
+			defer close(relayDone)
+			relayWitnessJobs(ctx, feedCh, blockCh)
+		}()
+		log.Info("Input reservoir enabled",
+			"low_gb", float64(low)/(1<<30),
+			"high_gb", float64(cfg.InputHighWaterBytes)/(1<<30))
+	}
 
 	// Optional address-indexed codes source. When present, workers
 	// look up bytecode by address (binary-search the cidx) without
@@ -275,7 +345,8 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 	// The user's chaindata MDBX is post-replay so we can't iterate it
 	// for genesis state; use the embedded mainnet alloc JSON via memdb.
 	feedStart := cfg.StartBlock
-	if cfg.StartBlock == 0 {
+	ownsGenesis := cfg.StartBlock == 0 && segmentShardOwns(0, cfg.SegmentShardCount, cfg.SegmentShardIndex)
+	if ownsGenesis {
 		acctcsBytes, storcsBytes, err := encodeEthMainnetGenesis()
 		if err != nil {
 			return fmt.Errorf("genesis encode: %w", err)
@@ -310,9 +381,13 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 	// 5b. Reader goroutine (blocks 1..end, or feedStart..end).
 	readerErr := make(chan error, 1)
 	go func() {
-		defer close(blockCh)
+		defer close(feedCh)
+		if cfg.NoOutput && cfg.Workers > 1 {
+			readerErr <- feedBlocksParallel(ctx, cfg, feedStart, end, feedCh, reservoir)
+			return
+		}
 		readerErr <- feedBlocks(ctx, hbSource, witnessTbl, sendersTbl,
-			cfg.ChainCfg, feedStart, end, blockCh)
+			cfg.ChainCfg, feedStart, end, feedCh)
 	}()
 
 	// 6. Aggregator (this goroutine).
@@ -320,12 +395,14 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 	// Workers in flight); generous margin so the overflow map stays empty.
 	agg := &witnessAggregateState{
 		batcher:       batcher,
-		reorder:       newReorderBuffer(chanCap + cfg.Workers + 256),
 		next:          feedStart,
 		end:           end,
 		writeWitness:  cfg.WriteWitness,
 		writeReceipts: cfg.WriteReceipts,
 		ctx:           ctx,
+	}
+	if !cfg.NoOutput {
+		agg.reorder = newReorderBuffer(chanCap + cfg.Workers + 256)
 	}
 	// Async CS writer: the freezer write is sequential + I/O-bound; running it in
 	// its own goroutine (fed in strict block order by absorb) keeps the EVM
@@ -352,7 +429,7 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 	} else {
 		writerDone <- nil
 	}
-	target := end - cfg.StartBlock
+	target := segmentShardBlockCount(cfg.StartBlock, end, cfg.SegmentShardCount, cfg.SegmentShardIndex)
 	log.Info("Replay started",
 		"range", fmt.Sprintf("%d-%d", cfg.StartBlock, end),
 		"blocks", target,
@@ -368,7 +445,15 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		windowGas    uint64
 		windowTxs    uint64
 		windowBlocks uint64
+		completed    uint64
+		highest      uint64
 	)
+	if ownsGenesis {
+		completed = 1
+	}
+	if feedStart > 0 {
+		highest = feedStart - 1
+	}
 
 	go func() {
 		// Wait for workers, then close result channel so aggregator can exit.
@@ -393,20 +478,29 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		windowGas += r.GasUsed
 		windowTxs += uint64(r.TxCount)
 		windowBlocks++
-		if err := agg.absorb(r); err != nil {
-			loopErr = err
-			cancel()
-			break
+		if cfg.NoOutput {
+			completed++
+			if r.BlockNum > highest {
+				highest = r.BlockNum
+			}
+		} else {
+			if err := agg.absorb(r); err != nil {
+				loopErr = err
+				cancel()
+				break
+			}
+			completed = agg.next - cfg.StartBlock
+			highest = agg.next - 1
 		}
 		if d := time.Since(lastLog); d > 10*time.Second {
 			elapsed := time.Since(t0)
-			done := agg.next - cfg.StartBlock
+			done := completed
 			eta := time.Duration(0)
 			if done > 0 && done < target {
 				eta = time.Duration(float64(elapsed) * float64(target-done) / float64(done)).Truncate(time.Second)
 			}
 			log.Info("Replay progress",
-				"head", agg.next-1,
+				"head", highest,
 				"progress", fmt.Sprintf("%5.2f%%", 100*float64(done)/float64(target)),
 				"blk/s", fmt.Sprintf("%6.0f", float64(windowBlocks)/d.Seconds()),
 				"mgas/s", fmt.Sprintf("%6.1f", float64(windowGas)/d.Seconds()/1e6),
@@ -433,6 +527,17 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 	if err := <-readerErr; err != nil {
 		return fmt.Errorf("reader: %w", err)
 	}
+	if relayDone != nil {
+		<-relayDone
+		current, peak, waits, waited := reservoir.stats()
+		log.Info("Input reservoir complete",
+			"current_gb", float64(current)/(1<<30),
+			"peak_gb", float64(peak)/(1<<30),
+			"refill_waits", waits, "waited", waited.Truncate(time.Millisecond))
+	}
+	if cfg.NoOutput && completed != target {
+		return fmt.Errorf("witnessreplay: completed %d blocks, want %d", completed, target)
+	}
 
 	// 7. Final flush.
 	if agg.batcher != nil {
@@ -444,9 +549,9 @@ func RunWitnessReplay(ctx context.Context, cfg WitnessReplayConfig, codeDB kv.Ro
 		}
 	}
 	elapsed := time.Since(t0)
-	done := agg.next - cfg.StartBlock
+	done := completed
 	log.Info("Replay complete",
-		"head", agg.next-1,
+		"head", highest,
 		"blocks", done,
 		"txs", totalTxs,
 		"gas", totalGas,
@@ -577,12 +682,17 @@ func feedBlocks(
 		if err != nil {
 			return fmt.Errorf("read header %d: %w", blockNum, err)
 		}
-		body, err := hbSource.body(blockNum)
+		var body *GethBodyResult
+		if consuming, ok := hbSource.(consumingHeadersBodiesSource); ok {
+			body, err = consuming.takeBody(blockNum)
+		} else {
+			body, err = hbSource.body(blockNum)
+		}
 		if err != nil {
 			return fmt.Errorf("read body %d: %w", blockNum, err)
 		}
 
-		witnessData, err := witnessTbl.Retrieve(blockNum)
+		witnessData, err := witnessTbl.RetrieveSequential(blockNum)
 		if err != nil {
 			return fmt.Errorf("read witness %d: %w", blockNum, err)
 		}
@@ -640,6 +750,316 @@ func feedBlocks(
 		}
 	}
 	return nil
+}
+
+type replayInputRange struct {
+	start uint64
+	end   uint64
+}
+
+type parallelReplayInput struct {
+	hb      headersBodiesSource
+	witness *freezer.FreezerTable
+	senders *freezer.FreezerTable
+}
+
+func openParallelReplayInput(cfg WitnessReplayConfig, bodyDecodeGate chan struct{}) (*parallelReplayInput, error) {
+	hb, err := openHeadersBodiesSource(cfg.HeadersBodiesPath)
+	if err != nil {
+		return nil, err
+	}
+	if compact, ok := hb.(*n42CompactSource); ok {
+		compact.br.SetDecodeGate(bodyDecodeGate)
+	}
+	witness, err := freezer.NewFreezerTableCompressedReadOnly(
+		cfg.WitnessPath, freezer.TableBlockWitness, "c")
+	if err != nil {
+		hb.close()
+		return nil, err
+	}
+	witness.ForceBatchSize(freezer.BatchSize)
+
+	var senders *freezer.FreezerTable
+	if cfg.SendersPath != "" {
+		senders, err = freezer.NewFreezerTableCompressedReadOnly(
+			cfg.SendersPath, freezer.TableSenders, "c")
+		if err != nil {
+			_ = witness.Close()
+			hb.close()
+			return nil, err
+		}
+		senders.ForceBatchSize(freezer.BatchSize)
+	}
+	return &parallelReplayInput{hb: hb, witness: witness, senders: senders}, nil
+}
+
+func (in *parallelReplayInput) close() {
+	if in.senders != nil {
+		_ = in.senders.Close()
+	}
+	_ = in.witness.Close()
+	in.hb.close()
+}
+
+// feedBlocksParallel is the verification-only input path. Compact body files
+// are independently compressed in HeaderSegmentSize-block segments, so ranges
+// are assigned at exactly those boundaries: each segment is decoded once by
+// one reader. Every reader owns its header/body readers, zstd decoders and
+// freezer tables. Whole BODYC decodes share a small adaptive gate: an
+// 8192-block expansion is cheap in aggregate CPU but extremely allocation-heavy,
+// so bounding only that stage avoids synchronized GC/memory-bandwidth bursts
+// while the other readers keep assembling and dispatching decoded segments.
+func feedBlocksParallel(
+	ctx context.Context,
+	cfg WitnessReplayConfig,
+	start, end uint64,
+	out chan<- WitnessJob,
+	reservoir *replayInputReservoir,
+) error {
+	firstSegment := start / HeaderSegmentSize
+	lastSegment := (end - 1) / HeaderSegmentSize
+	segmentCount := 0
+	for segment := firstSegment; segment <= lastSegment; segment++ {
+		if segmentShardOwns(segment, cfg.SegmentShardCount, cfg.SegmentShardIndex) {
+			segmentCount++
+		}
+	}
+	if segmentCount == 0 {
+		return nil
+	}
+	readers := cfg.Readers
+	automatic := readers <= 0
+	if automatic {
+		readers = cfg.Workers / 16
+		if readers < 2 {
+			readers = 2
+		}
+		if readers > 6 {
+			readers = 6
+		}
+	}
+	if readers > segmentCount {
+		readers = segmentCount
+	}
+	// Keep one range queued when auto-tuning. Starting a reader for every
+	// segment maximizes simultaneous zstd allocation and memory-bandwidth
+	// pressure, while leaving no follow-up work for a reader that finishes a
+	// short boundary segment. On the 128-core replay host, 2-of-3 and 6-of-7
+	// consistently beat all-segments-at-once.
+	if automatic && segmentCount > 1 && readers >= segmentCount {
+		readers = segmentCount - 1
+	}
+	if readers > cfg.Workers {
+		readers = cfg.Workers
+	}
+
+	bodyDecoders := bodyDecoderCount(cfg.Workers, readers)
+	log.Info("Parallel verification input",
+		"readers", readers, "body_decoders", bodyDecoders,
+		"segments", segmentCount, "unordered", true,
+		"segment_shard", fmt.Sprintf("%d/%d", cfg.SegmentShardIndex, cfg.SegmentShardCount))
+	ranges := make(chan replayInputRange, segmentCount)
+	for segment := firstSegment; segment <= lastSegment; segment++ {
+		if !segmentShardOwns(segment, cfg.SegmentShardCount, cfg.SegmentShardIndex) {
+			continue
+		}
+		lo := segment * HeaderSegmentSize
+		hi := lo + HeaderSegmentSize
+		if lo < start {
+			lo = start
+		}
+		if hi > end {
+			hi = end
+		}
+		ranges <- replayInputRange{start: lo, end: hi}
+	}
+	close(ranges)
+
+	feedCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	// This is intentionally per process, not global. Process sharding is also
+	// the NUMA/GC isolation boundary. One decoder feeds roughly one 128-worker
+	// execution group; a full 254-worker process needs two, while two 127-worker
+	// children each keep one. This avoids both single-decoder starvation and the
+	// allocation storm caused by tying decode concurrency to reader count.
+	bodyDecodeGate := make(chan struct{}, bodyDecoders)
+	errs := make(chan error, readers)
+	for i := 0; i < readers; i++ {
+		go func(id int) {
+			input, err := openParallelReplayInput(cfg, bodyDecodeGate)
+			if err == nil {
+				defer input.close()
+				for r := range ranges {
+					if err = feedBlockRange(feedCtx, input, cfg.ChainCfg, r, out, reservoir); err != nil {
+						break
+					}
+				}
+			}
+			if err != nil {
+				err = fmt.Errorf("parallel reader %d: %w", id, err)
+				cancel()
+			}
+			errs <- err
+		}(i)
+	}
+
+	var firstErr error
+	for i := 0; i < readers; i++ {
+		if err := <-errs; err != nil && !errors.Is(err, context.Canceled) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr == nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return firstErr
+}
+
+func bodyDecoderCount(workers, readers int) int {
+	decoders := (workers + 127) / 128
+	if decoders < 1 {
+		decoders = 1
+	}
+	if decoders > readers {
+		decoders = readers
+	}
+	return decoders
+}
+
+func segmentShardOwns(segment uint64, count, index int) bool {
+	if count <= 1 {
+		return true
+	}
+	return int(segment%uint64(count)) == index
+}
+
+func segmentShardBlockCount(start, end uint64, count, index int) uint64 {
+	if end <= start {
+		return 0
+	}
+	if count <= 1 {
+		return end - start
+	}
+	firstSegment := start / HeaderSegmentSize
+	lastSegment := (end - 1) / HeaderSegmentSize
+	var blocks uint64
+	for segment := firstSegment; segment <= lastSegment; segment++ {
+		if !segmentShardOwns(segment, count, index) {
+			continue
+		}
+		lo := segment * HeaderSegmentSize
+		hi := lo + HeaderSegmentSize
+		if lo < start {
+			lo = start
+		}
+		if hi > end {
+			hi = end
+		}
+		blocks += hi - lo
+	}
+	return blocks
+}
+
+func feedBlockRange(
+	ctx context.Context,
+	input *parallelReplayInput,
+	chainCfg *params.ChainConfig,
+	r replayInputRange,
+	out chan<- WitnessJob,
+	reservoir *replayInputReservoir,
+) error {
+	hashStart := r.start
+	if hashStart > blockHashWindowSize {
+		hashStart -= blockHashWindowSize
+	} else {
+		hashStart = 0
+	}
+	hashes := make([]types.Hash, r.end-hashStart)
+	headers := make([]*block.Header, r.end-r.start)
+	for n := hashStart; n < r.end; n++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		hdr, err := input.hb.header(n)
+		if err != nil {
+			return fmt.Errorf("read header %d: %w", n, err)
+		}
+		hashes[n-hashStart] = hdr.Hash()
+		if n >= r.start {
+			headers[n-r.start] = hdr
+		}
+	}
+
+	for blockNum := r.start; blockNum < r.end; blockNum++ {
+		hdr := headers[blockNum-r.start]
+		var body *GethBodyResult
+		var err error
+		if consuming, ok := input.hb.(parallelConsumingHeadersBodiesSource); ok {
+			body, err = consuming.takeBodyNoAhead(blockNum)
+		} else {
+			body, err = input.hb.body(blockNum)
+		}
+		if err != nil {
+			return fmt.Errorf("read body %d: %w", blockNum, err)
+		}
+		witnessData, err := input.witness.RetrieveSequential(blockNum)
+		if err != nil {
+			return fmt.Errorf("read witness %d: %w", blockNum, err)
+		}
+
+		var senders []types.Address
+		if input.senders != nil && blockNum < input.senders.Items() {
+			if data, readErr := input.senders.RetrieveSequential(blockNum); readErr == nil {
+				if n := len(data) / 20; n == len(body.Transactions) {
+					senders = make([]types.Address, n)
+					for i := range senders {
+						copy(senders[i][:], data[i*20:(i+1)*20])
+					}
+				}
+			}
+		}
+		if senders == nil && len(body.Transactions) > 0 {
+			signer := transaction.MakeSigner(chainCfg, hdr.Number.ToBig())
+			senders = make([]types.Address, len(body.Transactions))
+			for i, txn := range body.Transactions {
+				if sender, senderErr := transaction.Sender(signer, txn); senderErr == nil {
+					senders[i] = sender
+				}
+			}
+		}
+
+		job := WitnessJob{
+			BlockNum:    blockNum,
+			Header:      hdr,
+			Body:        body,
+			Witness:     witnessData,
+			Senders:     senders,
+			BlockHashFn: makeRangeBlockHashFn(blockNum, hashStart, hashes),
+		}
+		if reservoir != nil {
+			job.inputBytes = estimateWitnessJobBytes(&job)
+			if err := reservoir.reserve(ctx, job.inputBytes); err != nil {
+				return err
+			}
+			job.inputReservoir = reservoir
+		}
+		select {
+		case out <- job:
+		case <-ctx.Done():
+			job.releaseInputReservation()
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func makeRangeBlockHashFn(current, hashStart uint64, hashes []types.Hash) func(uint64) types.Hash {
+	return func(n uint64) types.Hash {
+		if n < hashStart || n >= current || current-n > blockHashWindowSize {
+			return types.Hash{}
+		}
+		return hashes[n-hashStart]
+	}
 }
 
 // _ block.Header silence-import if needed

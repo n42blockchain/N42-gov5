@@ -141,6 +141,14 @@ func hexToU64(s string) uint64 {
 	return n.Uint64()
 }
 
+func hexToBig(s string) (*big.Int, error) {
+	n, ok := new(big.Int).SetString(strings.TrimPrefix(s, "0x"), 16)
+	if !ok {
+		return nil, fmt.Errorf("invalid hex quantity %q", s)
+	}
+	return n, nil
+}
+
 // getNonce reads the sender's next nonce, retrying rather than guessing.
 //
 // It used to return 0 on any error. A sender that has already been used --
@@ -150,10 +158,10 @@ func hexToU64(s string) uint64 {
 // A run could therefore load a million transactions into the pool and have
 // blocks come out nearly empty, with nothing in the output saying why. With
 // 2000 senders probing at once, a handful of failures is enough to do it.
-func getNonce(url string, a types.Address) (uint64, error) {
+func getNonceAt(url string, a types.Address, tag string) (uint64, error) {
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
-		r, err := rpcCall(url, "eth_getTransactionCount", []interface{}{a.Hex(), "pending"})
+		r, err := rpcCall(url, "eth_getTransactionCount", []interface{}{a.Hex(), tag})
 		if err != nil {
 			lastErr = err
 			time.Sleep(time.Duration(50*(attempt+1)) * time.Millisecond)
@@ -166,7 +174,37 @@ func getNonce(url string, a types.Address) (uint64, error) {
 		}
 		return hexToU64(h), nil
 	}
-	return 0, fmt.Errorf("nonce for %s: %w", a.Hex(), lastErr)
+	return 0, fmt.Errorf("%s nonce for %s: %w", tag, a.Hex(), lastErr)
+}
+
+func getNonce(url string, a types.Address) (uint64, error) {
+	return getNonceAt(url, a, "pending")
+}
+
+func getBalanceAt(url string, a types.Address, tag string) (*big.Int, error) {
+	r, err := rpcCall(url, "eth_getBalance", []interface{}{a.Hex(), tag})
+	if err != nil {
+		return nil, err
+	}
+	var h string
+	if err := json.Unmarshal(r, &h); err != nil {
+		return nil, err
+	}
+	n, err := hexToBig(h)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s balance for %s: %w", tag, a.Hex(), err)
+	}
+	return n, nil
+}
+
+func fundingAmounts(senders, perTx int, gasPrice uint64) (*uint256.Int, *big.Int) {
+	perTransferGas := new(big.Int).Mul(big.NewInt(21000), new(big.Int).SetUint64(gasPrice))
+	fundValBig := new(big.Int).Mul(big.NewInt(int64(perTx+10)), perTransferGas)
+	// Besides the value credited to every derived sender, the faucet pays gas
+	// for the funding transfer itself.
+	perSenderCost := new(big.Int).Add(new(big.Int).Set(fundValBig), perTransferGas)
+	totalCost := new(big.Int).Mul(perSenderCost, big.NewInt(int64(senders)))
+	return new(uint256.Int).SetBytes(fundValBig.Bytes()), totalCost
 }
 
 // senderOffset shifts the derived sender set. Derived accounts accumulate
@@ -207,6 +245,10 @@ func main() {
 	skipFunding := flag.Bool("skip-funding", false, "assume the derived senders are already funded (re-run after a funding round that mined but aborted)")
 	rpcBatch := flag.Int("rpcbatch", 0, "submit N txs per eth_batchRawTransaction call (0 = one eth_sendRawTransaction per tx; max 200)")
 	flag.Parse()
+	if *senders < 0 || *perTx < 0 {
+		fmt.Fprintln(os.Stderr, "senders and pertx must be non-negative")
+		os.Exit(2)
+	}
 	senderOffset = *offset
 
 	priv, err := crypto.HexToECDSA(strings.TrimPrefix(*key, "0x"))
@@ -261,13 +303,31 @@ func main() {
 			fmt.Fprintf(os.Stderr, "faucet nonce: %v\n", err)
 			os.Exit(1)
 		}
-		fundVal := uint256.NewInt(1)
-		fundVal.Mul(uint256.NewInt(uint64(*perTx)+10), uint256.NewInt(21000*(*gasPrice))) // enough for perTx transfers + gas
+		fundVal, fundingCost := fundingAmounts(*senders, *perTx, *gasPrice)
 		fmt.Printf("funding %d senders (nonce %d..), value=%s wei each...\n", *senders, fn, fundVal.Dec())
+		if !*skipFunding {
+			faucetBalance, err := getBalanceAt(urls[0], from, "latest")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "FATAL: faucet balance preflight failed: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("funding preflight: faucet=%s wei required=%s wei\n", faucetBalance, fundingCost)
+			if faucetBalance.Cmp(fundingCost) < 0 {
+				fmt.Fprintf(os.Stderr, "FATAL: faucet balance is insufficient before funding (have %s wei, need %s wei, deficit %s wei)\n",
+					faucetBalance, fundingCost, new(big.Int).Sub(fundingCost, faucetBalance))
+				os.Exit(1)
+			}
+		}
+		var lastFundHash string
 		for i := 0; !*skipFunding && i < *senders; i++ {
 			raw := signOne(priv, from, addrs[i], fn+uint64(i), fundVal, 21000)
-			if _, err := rpcCall(urls[0], "eth_sendRawTransaction", []interface{}{raw}); err != nil {
+			r, err := rpcCall(urls[0], "eth_sendRawTransaction", []interface{}{raw})
+			if err != nil {
 				fmt.Printf("fund %d err: %v\n", i, err)
+				continue
+			}
+			if i == *senders-1 {
+				_ = json.Unmarshal(r, &lastFundHash)
 			}
 		}
 		// Wait until the last sender is funded (balance > 0), and ABORT if it
@@ -293,22 +353,32 @@ func main() {
 				funded = true
 				break
 			}
+			// A mined transaction advances the faucet nonce even when execution
+			// fails (for example after an earlier round exhausted the faucet).
+			// Check the receipt instead of treating nonce advancement as proof
+			// that the sender was credited.
+			if lastFundHash != "" {
+				r, _ = rpcCall(urls[0], "eth_getTransactionReceipt", []interface{}{lastFundHash})
+				var receipt struct {
+					Status string `json:"status"`
+				}
+				if json.Unmarshal(r, &receipt) == nil && receipt.Status != "" {
+					if hexToU64(receipt.Status) == 1 {
+						fmt.Printf("funded after %ds (last funding receipt succeeded)\n", (w+1)*2)
+						funded = true
+						break
+					}
+					fmt.Fprintln(os.Stderr, "FATAL: last funding transaction reverted; faucet balance is insufficient")
+					os.Exit(1)
+				}
+			}
 		}
 		if !funded {
-			// The balance probe swallows RPC errors (a busy node reads as
-			// balance 0 forty times in a row), so double-check with the faucet
-			// nonce before declaring failure: every funding transaction mined
-			// means every sender was credited, probe or no probe. This misfired
-			// once live — nonce said 900/900 mined, and the abort cost the
-			// round its funding.
-			faucetNonce, _ := getNonce(urls[0], from)
-			if faucetNonce >= fn+uint64(*senders) {
-				fmt.Printf("funded (faucet nonce advanced to %d; balance probe was unavailable)\n", faucetNonce)
-			} else {
-				fmt.Fprintf(os.Stderr, "FATAL: funding did not mine within 80s (faucet nonce %d, expected >= %d); aborting instead of flooding from unfunded senders\n",
-					faucetNonce, fn+uint64(*senders))
-				os.Exit(1)
-			}
+			latestNonce, latestErr := getNonceAt(urls[0], from, "latest")
+			pendingNonce, pendingErr := getNonceAt(urls[0], from, "pending")
+			fmt.Fprintf(os.Stderr, "FATAL: funding was not confirmed within 80s (latest nonce %d err=%v; pending nonce %d err=%v; expected latest >= %d)\n",
+				latestNonce, latestErr, pendingNonce, pendingErr, fn+uint64(*senders))
+			os.Exit(1)
 		}
 		// pre-sign perTx transfers from each sender
 		total := *senders * *perTx
@@ -339,7 +409,8 @@ func main() {
 
 	// ---------- flood ----------
 	if nf := atomic.LoadInt64(&nonceFailures); nf > 0 {
-		fmt.Printf("WARNING: %d senders had no usable nonce and were skipped; their slots are empty\n", nf)
+		fmt.Fprintf(os.Stderr, "FATAL: %d senders had no usable nonce after retries; refusing to submit a partial benchmark load\n", nf)
+		os.Exit(1)
 	}
 	fmt.Printf("flooding %d txs to %d node(s) (broadcast=%v conc=%d)...\n", len(raws), len(urls), *broadcast, *conc)
 	var idx int64 = -1

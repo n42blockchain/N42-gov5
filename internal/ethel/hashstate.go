@@ -817,6 +817,10 @@ func StreamingFullStateRoot(ctx context.Context, db kv.RoDB, workers int, tmpdir
 	loader := trie.NewFlatDBTrieLoader("stream-verify", trie.NewRetainList(0), nil, nil, false)
 	root, err := loader.CalcTrieRootStreaming(accNext, stoNext)
 	cancel()
+	// CalcTrieRootStreaming can finish while one producer still has buffered
+	// output. Cancellation asks both pumps to stop; join them before reading
+	// accErr/stoErr so the early-finish path has the same synchronization as
+	// consuming a channel through close.
 	pumpWG.Wait()
 	if err != nil {
 		return types.Hash{}, fmt.Errorf("CalcTrieRootStreaming: %w", err)

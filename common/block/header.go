@@ -225,7 +225,17 @@ func (h *Header) FromProtoMessage(message proto.Message) error {
 	h.GasUsed = pbHeader.GasUsed
 	h.Time = pbHeader.Time
 	h.Nonce = EncodeNonce(pbHeader.Nonce)
-	h.BaseFee = utils.ConvertH256ToUint256Int(pbHeader.BaseFee)
+	// Only materialise BaseFee when the peer actually sent one. A pre-London
+	// header has no base fee, and its RLP omits the field entirely; turning an
+	// absent field into a present zero adds an element to the hash preimage and
+	// changes the block hash. ConvertUint256IntToH256 already preserves nil on
+	// the way out, so the distinction survives the wire -- it was only lost here.
+	// The other optional pointers below are guarded the same way.
+	if pbHeader.BaseFee != nil {
+		h.BaseFee = utils.ConvertH256ToUint256Int(pbHeader.BaseFee)
+	} else {
+		h.BaseFee = nil
+	}
 	h.Extra = pbHeader.Extra
 	// Signature removed from Header — consensus data now in ConsensusEvidence table.
 	h.Bloom = utils.ConvertH2048ToBloom(pbHeader.Bloom)

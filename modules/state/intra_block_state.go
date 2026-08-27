@@ -88,6 +88,15 @@ type BalanceIncrease struct {
 type IntraBlockState struct {
 	stateReader StateReader
 
+	// discardBlockChanges disables bookkeeping that is needed only to emit a
+	// block-level write set. Witness validation still executes every state
+	// transition and keeps originStorage/dirtyStorage for correct intra-block
+	// reads, but it never calls CommitBlock, so retaining a second copy of every
+	// touched storage slot in blockOriginStorage is pure allocation overhead.
+	// The flag is configuration, not block state, and is therefore preserved by
+	// Reset in the same way as rootComputer.
+	discardBlockChanges bool
+
 	// This map holds 'live' objects, which will get modified while processing a state transition.
 	stateObjects      map[types.Address]*stateObject
 	stateObjectsDirty map[types.Address]struct{}
@@ -183,13 +192,13 @@ func New(stateReader StateReader) *IntraBlockState {
 		stateObjectsDirty: map[types.Address]struct{}{},
 		nilAccounts:       map[types.Address]struct{}{},
 		logs:              map[types.Hash][]*block.Log{},
-		journal:              newJournal(),
-		accessList:           newAccessList(),
-		balanceInc:           map[types.Address]*BalanceIncrease{},
-		transientStorage:     newTransientStorage(),
-		storageWipes:         map[types.Address]struct{}{},
-		priorTxWipes:         map[types.Address]struct{}{},
-		wipedStorageSlots:    map[types.Address]map[types.Hash]uint256.Int{},
+		journal:           newJournal(),
+		accessList:        newAccessList(),
+		balanceInc:        map[types.Address]*BalanceIncrease{},
+		transientStorage:  newTransientStorage(),
+		storageWipes:      map[types.Address]struct{}{},
+		priorTxWipes:      map[types.Address]struct{}{},
+		wipedStorageSlots: map[types.Address]map[types.Hash]uint256.Int{},
 	}
 }
 
@@ -435,6 +444,13 @@ func (sdb *IntraBlockState) GetStateReader() StateReader {
 	return sdb.stateReader
 }
 
+// SetDiscardBlockChanges selects validation-only state handling. Callers that
+// may invoke CommitBlock, IntermediateRoot, or otherwise consume a block write
+// set must leave this disabled.
+func (sdb *IntraBlockState) SetDiscardBlockChanges(discard bool) {
+	sdb.discardBlockChanges = discard
+}
+
 // Reset clears every per-block field so the IBS can be reused across
 // blocks (witness-replay holds one IBS per worker). The trie itself is
 // not reloaded — only ephemeral state. SELFDESTRUCT trackers, the
@@ -637,11 +653,14 @@ func (sdb *IntraBlockState) HasNonEmptyStorage(addr types.Address) bool {
 			return true
 		}
 	}
-	// Check blockOriginStorage (values from start of block)
-	for _, value := range stateObject.blockOriginStorage {
-		if !value.IsZero() {
-			return true
-		}
+	// Any committed read in this block that returned a non-zero value counts,
+	// even if a later write in the same block zeroed it: updateTrie overwrites
+	// originStorage with the new value, so the block-start fact survives only
+	// here. blockOriginStorage carries the same information but is not
+	// populated under discardBlockChanges, and this must not depend on whether
+	// the caller wanted a block write set.
+	if stateObject.sawNonZeroCommitted {
+		return true
 	}
 	// Persisted storage: enumerate when possible — this is the complete
 	// answer, equivalent to geth's empty-storage-root test. Stop at the

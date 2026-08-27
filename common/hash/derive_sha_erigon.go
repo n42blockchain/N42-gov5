@@ -13,7 +13,6 @@ package hash
 
 import (
 	"bytes"
-	"sort"
 
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/types"
@@ -30,58 +29,39 @@ func DeriveShaErigon(list DerivableList) types.Hash {
 		return EmptyRootHash
 	}
 
-	type kv struct {
-		keyHex []byte
-		val    []byte
-	}
-	entries := make([]kv, n)
-	var valBuf bytes.Buffer
-	var keyBuf [10]byte
-	for i := 0; i < n; i++ {
-		k := rlp.AppendUint64(keyBuf[:0], uint64(i))
-		hex := make([]byte, 0, len(k)*2+1)
-		for _, b := range k {
-			hex = append(hex, b>>4, b&0x0f)
-		}
-		hex = append(hex, 0x10) // leaf terminator
-		entries[i].keyHex = hex
-		valBuf.Reset()
-		list.EncodeIndex(i, &valBuf)
-		entries[i].val = append([]byte(nil), valBuf.Bytes()...)
-	}
-	// HashBuilder requires keys in nibble-sorted order.
-	sort.Slice(entries, func(i, j int) bool {
-		return bytes.Compare(entries[i].keyHex, entries[j].keyHex) < 0
-	})
-
 	hb := trie.NewHashBuilder(false)
-	var curr, succ, currVal []byte
+	var valBuf bytes.Buffer
+	// An RLP-encoded uint64 is at most 9 bytes. Expanding each byte into two
+	// nibbles and appending the leaf terminator therefore needs at most 19.
+	var keyRLP [9]byte
+	var currBuf, succBuf [19]byte
 	var groups, hasTree, hasHash []uint16
 	var leafData trie.GenStructStepLeafData
 	retain := func(_ []byte) bool { return false }
 
-	for _, e := range entries {
-		succ = e.keyHex
-		if len(curr) > 0 {
-			leafData.Value = rlphacks.RlpEncodedBytes(currVal)
-			var err error
-			groups, hasTree, hasHash, err = trie.GenStructStep(
-				retain, curr, succ, hb, nil, &leafData,
-				groups, hasTree, hasHash, false,
-			)
-			if err != nil {
-				panic(err)
-			}
+	// HashBuilder needs keys in nibble-lexicographic order. For RLP(index),
+	// that order is deterministic: 1..127, 0, then 128 upward. Stream in that
+	// order instead of allocating every key/value and sorting an entries slice.
+	for pos := 0; pos < n; pos++ {
+		i := deriveTrieIndex(pos, n)
+		curr := deriveTrieKey(currBuf[:0], keyRLP[:0], uint64(i))
+		var succ []byte
+		if pos+1 < n {
+			next := deriveTrieIndex(pos+1, n)
+			succ = deriveTrieKey(succBuf[:0], keyRLP[:0], uint64(next))
 		}
-		curr = succ
-		currVal = e.val
-	}
-	leafData.Value = rlphacks.RlpEncodedBytes(currVal)
-	if _, _, _, err := trie.GenStructStep(
-		retain, curr, []byte{}, hb, nil, &leafData,
-		groups, hasTree, hasHash, false,
-	); err != nil {
-		panic(err)
+
+		valBuf.Reset()
+		list.EncodeIndex(i, &valBuf)
+		leafData.Value = rlphacks.RlpEncodedBytes(valBuf.Bytes())
+		var err error
+		groups, hasTree, hasHash, err = trie.GenStructStep(
+			retain, curr, succ, hb, nil, &leafData,
+			groups, hasTree, hasHash, false,
+		)
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	root, err := hb.RootHash()
@@ -89,4 +69,29 @@ func DeriveShaErigon(list DerivableList) types.Hash {
 		panic(err)
 	}
 	return root
+}
+
+// deriveTrieIndex returns the pos-th integer when RLP-encoded integers in
+// [0,n) are ordered lexicographically. Single-byte values 1..127 precede the
+// empty-string encoding of zero (0x80); longer encodings follow numerically.
+func deriveTrieIndex(pos, n int) int {
+	single := n
+	if single > 128 {
+		single = 128
+	}
+	if pos < single-1 {
+		return pos + 1
+	}
+	if pos == single-1 {
+		return 0
+	}
+	return pos
+}
+
+func deriveTrieKey(dst, rlpBuf []byte, index uint64) []byte {
+	encoded := rlp.AppendUint64(rlpBuf, index)
+	for _, b := range encoded {
+		dst = append(dst, b>>4, b&0x0f)
+	}
+	return append(dst, 0x10)
 }
