@@ -28,6 +28,8 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"os"
+	"strings"
 	"sync"
 
 	"github.com/holiman/uint256"
@@ -193,21 +195,65 @@ func (so *stateObject) empty() bool {
 // each one a fresh stateObject + 3 fresh maps without pooling — top
 // allocator at 3.6B/12h. Reset on each Get clears the maps in place
 // so the backing arrays survive.
+// stateObjectPooling reports whether newObject may recycle a struct through
+// stateObjectPool. It is a diagnostic lever, not a tuning knob: set
+// N42_STATE_OBJECT_POOL=off (or 0/false/disable) to make every newObject a
+// fresh allocation.
+//
+// It exists to decide one question a race detector structurally cannot answer.
+// A recycled object that some field is not reset on carries the previous
+// account's value into the next one -- no concurrent access, so nothing to
+// report -- and the symptom only appears once the pool has churned enough for
+// the wrong struct to come back. That is the shape of the intermittent
+// "nonce too high" failure seen on a full archive replay at 256 workers: it
+// needs a run from genesis to reach, it does not reproduce on the same block
+// range in isolation, and -race over 60k blocks found only an unrelated
+// metrics gauge.
+//
+// Running the failing configuration with pooling off splits the hypothesis in
+// one pass: if the failure stops, the fault is in newObject/putStateObject's
+// reset coverage; if it persists, the whole class is excluded.
+var stateObjectPooling = func() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("N42_STATE_OBJECT_POOL"))) {
+	case "off", "0", "false", "no", "disable", "disabled":
+		return false
+	default:
+		return true
+	}
+}()
+
+// StateObjectPoolingEnabled reports the pooling mode so a process can record
+// which one it ran under. A diagnostic run that cannot be told apart from an
+// ordinary one afterwards is worth very little.
+func StateObjectPoolingEnabled() bool { return stateObjectPooling }
+
 var stateObjectPool = sync.Pool{
-	New: func() interface{} {
-		// No size hint: most accounts touch 0 slots, so lazy bucket
-		// alloc avoids ~600B/object of empty-map overhead retained
-		// in the pool.
-		return &stateObject{
-			storage: make(map[types.Hash]slotEntry),
-		}
-	},
+	New: func() interface{} { return freshStateObject() },
+}
+
+// freshStateObject builds a never-used state object. Both the pool's New and
+// the pooling-disabled path go through it so the two modes cannot drift: a
+// struct that differed between them would make the pooling experiment measure
+// the switch instead of the hypothesis.
+//
+// No size hint: most accounts touch 0 slots, so lazy bucket alloc avoids
+// ~600B/object of empty-map overhead retained in the pool.
+func freshStateObject() *stateObject {
+	return &stateObject{
+		storage: make(map[types.Hash]slotEntry),
+	}
 }
 
 // putStateObject returns so to the pool. Must be called only when
 // the IntraBlockState that owned so is being reset / discarded.
 func putStateObject(so *stateObject) {
 	if so == nil {
+		return
+	}
+	if !stateObjectPooling {
+		// Dropped on the floor for the collector. Deliberately skipping the
+		// clearing below too: with no reuse it buys nothing, and leaving it out
+		// keeps the disabled mode from masking a missing reset.
 		return
 	}
 	// Drop references that could pin large memory.
@@ -232,7 +278,12 @@ func putStateObject(so *stateObject) {
 // newObject creates a state object, reusing a pooled struct when one
 // is available.
 func newObject(db *IntraBlockState, address types.Address, data, original *account.StateAccount) *stateObject {
-	so := stateObjectPool.Get().(*stateObject)
+	var so *stateObject
+	if stateObjectPooling {
+		so = stateObjectPool.Get().(*stateObject)
+	} else {
+		so = freshStateObject()
+	}
 	if so.storage == nil {
 		so.storage = make(map[types.Hash]slotEntry)
 	}
