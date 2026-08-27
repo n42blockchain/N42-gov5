@@ -55,6 +55,8 @@ type operation struct {
 	opNum   int // only for push, swap, dup
 	// memorySize returns the memory size required for the operation
 	memorySize memorySizeFunc
+	// undefined marks the filler entry for an opcode the fork does not define.
+	undefined bool
 }
 
 var (
@@ -1265,7 +1267,7 @@ func newFrontierInstructionSet() JumpTable {
 
 	for i, entry := range tbl {
 		if entry == nil {
-			tbl[i] = &operation{execute: opUndefined}
+			tbl[i] = &operation{execute: opUndefined, undefined: true}
 		}
 	}
 

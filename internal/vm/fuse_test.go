@@ -79,6 +79,15 @@ func sameOutcome(retF []byte, gasF uint64, errF error, retP []byte, gasP uint64,
 	if errors.As(errF, &uf) && errors.As(errP, &up) {
 		return true
 	}
+	var of, op *ErrStackOverflow
+	if errors.As(errF, &of) && errors.As(errP, &op) {
+		return true
+	}
+	// The block precheck may report out-of-gas where the per-opcode path
+	// reports a stack fault; both fail the frame and consume its gas.
+	if errors.Is(errF, ErrOutOfGas) && (up != nil || op != nil) || errors.Is(errP, ErrOutOfGas) && (uf != nil || of != nil) {
+		return true
+	}
 	return errF.Error() == errP.Error()
 }
 
@@ -143,8 +152,12 @@ func TestFusedViewIsCachedPerCodeHash(t *testing.T) {
 	defer func() { GlobalCodeAnalysisCache = saved }()
 	code := []byte{byte(PUSH1), 4, byte(JUMP), byte(STOP), byte(JUMPDEST), byte(STOP)}
 	c := &Contract{Code: code, CodeHash: crypto.Keccak256Hash(code), jumpdests: map[types.Hash][]uint64{}}
-	v1 := execView(c)
-	v2 := execView(c)
+	jt := &cancunInstructionSet
+	v1, b1 := execView(c, jt, opMetaFor(jt))
+	v2, b2 := execView(c, jt, opMetaFor(jt))
+	if b1 == nil || b1 != b2 {
+		t.Fatal("block table not cached")
+	}
 	if &v1[0] != &v2[0] || v1[0] != byte(fusedPush1Jump) {
 		t.Fatal("execution view not cached or not fused")
 	}

@@ -82,15 +82,17 @@ func fuseCode(code []byte, analysis []uint64) []byte {
 	return fused
 }
 
-// execView returns the execution view for a contract with a known code hash,
-// building and caching it on first use. It also resolves the JUMPDEST bitmap,
-// which the first JUMP would otherwise compute.
-func execView(c *Contract) []byte {
-	if entry := GlobalCodeAnalysisCache.entry(c.CodeHash); entry != nil && entry.fused != nil {
+// execView returns the execution view and block table for a contract with a
+// known code hash, building and caching them on first use. It also resolves
+// the JUMPDEST bitmap, which the first JUMP would otherwise compute. Block
+// tables depend on the fork's gas schedule, so an entry built under another
+// jump table is rebuilt.
+func execView(c *Contract, jt *JumpTable, meta *opMetaTable) ([]byte, *blockTable) {
+	if entry := GlobalCodeAnalysisCache.entry(c.CodeHash); entry != nil && entry.fused != nil && entry.blocksJT == jt {
 		if c.analysis == nil {
 			c.analysis = entry.analysis
 		}
-		return entry.fused
+		return entry.fused, entry.blocks
 	}
 	analysis := c.analysis
 	if analysis == nil {
@@ -103,8 +105,9 @@ func execView(c *Contract) []byte {
 		c.analysis = analysis
 	}
 	fused := fuseCode(c.Code, analysis)
-	GlobalCodeAnalysisCache.putFused(c.CodeHash, analysis, fused)
-	return fused
+	blocks := analyzeBlocks(fused, jt, meta)
+	GlobalCodeAnalysisCache.putFused(c.CodeHash, analysis, fused, blocks, jt)
+	return fused, blocks
 }
 
 // addFusedOps adds the synthetic opcodes to a flat table built from a jump
@@ -116,10 +119,10 @@ func addFusedOps(tbl *opMetaTable, jt *JumpTable) {
 		return
 	}
 	pushGas, pushMax := jt[PUSH1].constantGas, jt[PUSH1].maxStack
-	tbl[fusedPush1Jump] = opMeta{execute: opFusedPush1Jump, constantGas: pushGas + jt[JUMP].constantGas, numPop: 0, maxStack: pushMax}
-	tbl[fusedPush2Jump] = opMeta{execute: opFusedPush2Jump, constantGas: pushGas + jt[JUMP].constantGas, numPop: 0, maxStack: pushMax}
-	tbl[fusedPush1Jumpi] = opMeta{execute: opFusedPush1Jumpi, constantGas: pushGas + jt[JUMPI].constantGas, numPop: 1, maxStack: pushMax}
-	tbl[fusedPush2Jumpi] = opMeta{execute: opFusedPush2Jumpi, constantGas: pushGas + jt[JUMPI].constantGas, numPop: 1, maxStack: pushMax}
+	tbl[fusedPush1Jump] = opMeta{execute: opFusedPush1Jump, constantGas: pushGas + jt[JUMP].constantGas, numPop: 0, maxStack: pushMax, terminates: true}
+	tbl[fusedPush2Jump] = opMeta{execute: opFusedPush2Jump, constantGas: pushGas + jt[JUMP].constantGas, numPop: 0, maxStack: pushMax, terminates: true}
+	tbl[fusedPush1Jumpi] = opMeta{execute: opFusedPush1Jumpi, constantGas: pushGas + jt[JUMPI].constantGas, numPop: 1, maxStack: pushMax, terminates: true}
+	tbl[fusedPush2Jumpi] = opMeta{execute: opFusedPush2Jumpi, constantGas: pushGas + jt[JUMPI].constantGas, numPop: 1, maxStack: pushMax, terminates: true}
 }
 
 func fusedDest(code []byte, pc uint64, n uint64) uint64 {

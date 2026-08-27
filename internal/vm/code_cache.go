@@ -52,6 +52,8 @@ type codeEntry struct {
 	hash     types.Hash
 	analysis []uint64
 	fused    []byte // execution view (see fuse.go); nil until first Run
+	blocks   *blockTable
+	blocksJT *JumpTable // fork the block table was built for
 	elem     *list.Element
 }
 
@@ -111,11 +113,11 @@ func (c *CodeAnalysisCache) entry(codeHash types.Hash) *codeEntry {
 }
 
 func (c *CodeAnalysisCache) Put(codeHash types.Hash, analysis []uint64) {
-	c.putFused(codeHash, analysis, nil)
+	c.putFused(codeHash, analysis, nil, nil, nil)
 }
 
 // putFused stores the bitmap together with the execution view.
-func (c *CodeAnalysisCache) putFused(codeHash types.Hash, analysis []uint64, fused []byte) {
+func (c *CodeAnalysisCache) putFused(codeHash types.Hash, analysis []uint64, fused []byte, blocks *blockTable, jt *JumpTable) {
 	stored := make([]uint64, len(analysis))
 	copy(stored, analysis)
 
@@ -140,7 +142,7 @@ func (c *CodeAnalysisCache) putFused(codeHash types.Hash, analysis []uint64, fus
 		evicted := s.lru.Remove(back).(*codeEntry)
 		delete(next, evicted.hash)
 	}
-	entry := &codeEntry{hash: codeHash, analysis: stored, fused: fused}
+	entry := &codeEntry{hash: codeHash, analysis: stored, fused: fused, blocks: blocks, blocksJT: jt}
 	entry.elem = s.lru.PushFront(entry)
 	next[codeHash] = entry
 	s.snapshot.Store(&next)
