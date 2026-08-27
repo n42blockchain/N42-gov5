@@ -101,6 +101,26 @@ func (st *Stack) PopPtr() *uint256.Int {
 	return ptr
 }
 
+// PopDiscard drops the top element. The caller guarantees the stack is not
+// empty (the interpreter loop has already validated numPop).
+func (st *Stack) PopDiscard() {
+	st.Data = st.Data[:len(st.Data)-1]
+}
+
+// PopPtrUnchecked pops the top element and returns a pointer to it. The
+// pointer stays valid until the next push. Caller guarantees non-empty.
+func (st *Stack) PopPtrUnchecked() *uint256.Int {
+	l := len(st.Data) - 1
+	st.Data = st.Data[:l]
+	return &st.Data[l : l+1][0]
+}
+
+// PeekUnchecked returns a pointer to the top element. Caller guarantees
+// non-empty.
+func (st *Stack) PeekUnchecked() *uint256.Int {
+	return &st.Data[len(st.Data)-1]
+}
+
 func (st *Stack) Cap() int {
 	return cap(st.Data)
 }

@@ -295,6 +295,14 @@ func opKeccak256(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) (
 	// Safe conversion: memory operations are already gas-limited, but we clamp to prevent overflow
 	data := scope.Memory.GetPtr(MustSafeUint64ToInt64(offset.Uint64()), MustSafeUint64ToInt64(size.Uint64()))
 
+	var memoKey *[64]byte
+	if len(data) == 64 {
+		memoKey = (*[64]byte)(data)
+		if h, ok := interpreter.sha3Memo[*memoKey]; ok {
+			size.SetBytes32(h[:])
+			return nil, nil
+		}
+	}
 	if interpreter.hasher == nil {
 		interpreter.hasher = sha3.NewLegacyKeccak256().(keccakState)
 	} else {
@@ -306,6 +314,14 @@ func opKeccak256(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) (
 	}
 
 	size.SetBytes(interpreter.hasherBuf[:])
+	if memoKey != nil {
+		if interpreter.sha3Memo == nil {
+			interpreter.sha3Memo = make(map[[64]byte]types.Hash, 256)
+		}
+		if len(interpreter.sha3Memo) < sha3MemoMax {
+			interpreter.sha3Memo[*memoKey] = interpreter.hasherBuf
+		}
+	}
 	return nil, nil
 }
 

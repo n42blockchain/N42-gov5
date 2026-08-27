@@ -54,9 +54,13 @@ type Contract struct {
 	CallerAddress types.Address
 	caller        ContractRef
 	self          ContractRef
-	jumpdests     map[types.Hash][]uint64 // Aggregated result of JUMPDEST analysis.
-	analysis      []uint64                // Locally cached result of JUMPDEST analysis
-	skipAnalysis  bool
+	// addr caches self.Address(): SLOAD/SSTORE/BALANCE-style opcodes ask for
+	// the contract address on every execution, and going through the
+	// ContractRef interface for a 20-byte copy each time was ~1% of replay CPU.
+	addr         types.Address
+	jumpdests    map[types.Hash][]uint64 // Aggregated result of JUMPDEST analysis.
+	analysis     []uint64                // Locally cached result of JUMPDEST analysis
+	skipAnalysis bool
 
 	Code     []byte
 	CodeHash types.Hash
@@ -83,7 +87,7 @@ type Contract struct {
 
 // NewContract returns a new contract environment for the execution of EVM.
 func NewContract(caller ContractRef, object ContractRef, value *uint256.Int, gas uint64, skipAnalysis bool) *Contract {
-	c := &Contract{CallerAddress: caller.Address(), caller: caller, self: object}
+	c := &Contract{CallerAddress: caller.Address(), caller: caller, self: object, addr: object.Address()}
 
 	if parent, ok := caller.(*Contract); ok {
 		// Reuse JUMPDEST analysis from parent context if available.
@@ -118,6 +122,7 @@ func (evm *EVM) newContract(caller ContractRef, object ContractRef, value *uint2
 	*c = Contract{
 		CallerAddress: caller.Address(),
 		caller:        caller,
+		addr:          object.Address(),
 		self:          object,
 		jumpdests:     evm.jumpdests,
 		skipAnalysis:  skipAnalysis,
@@ -244,7 +249,7 @@ func (c *Contract) UseGas(gas uint64) (ok bool) {
 
 // Address returns the contracts address
 func (c *Contract) Address() types.Address {
-	return c.self.Address()
+	return c.addr
 }
 
 // Value returns the contract's value (sent to it from its caller)

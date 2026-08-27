@@ -112,7 +112,14 @@ type EVMInterpreter struct {
 	// and allocated a ScopeContext — about 1% of all replay CPU across the
 	// CALL-heavy dense blocks, plus Pool.getSlow traffic under 100+ workers.
 	frames []*runFrame
+	// sha3Memo remembers KECCAK256 results for 64-byte inputs (mapping-slot
+	// derivations: 88% of all SHA3 opcodes). Within one block 62% of them
+	// repeat an input already hashed, and a map probe is an order of
+	// magnitude cheaper than the permutation. Bounded by sha3MemoMax.
+	sha3Memo map[[64]byte]types.Hash
 }
+
+const sha3MemoMax = 1 << 16
 
 // runFrame is the per-depth scratch for one interpreter invocation.
 type runFrame struct {
@@ -337,6 +344,20 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		meta = opMetaFor(in.jt)
 		in.meta = meta
 	}
+	// code is the byte stream the loop fetches opcodes from: the fused
+	// execution view when allowed, otherwise the plain code with the synthetic
+	// opcode values neutralised (see fuse.go). EOF code switches sections
+	// mid-run (CALLF/JUMPF), so it is re-read from the contract every step;
+	// EOF validation already rejects undefined opcodes, so no view is needed.
+	code := contract.Code
+	eof := contract.EOFContainer != nil
+	if !eof {
+		if canFuse(contract, debug) {
+			code = execView(contract)
+		} else {
+			code = plainView(code)
+		}
+	}
 	cancelCheck := 1000
 	for {
 		cancelCheck--
@@ -352,7 +373,24 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		}
 		// Get the operation from the jump table and validate the stack to ensure there are
 		// enough stack items available to perform the operation.
-		op = contract.GetOp(*pc)
+		if eof {
+			code = contract.Code
+		}
+		if *pc < uint64(len(code)) {
+			op = OpCode(code[*pc])
+		} else {
+			op = STOP
+		}
+		if op == JUMPDEST && !debug {
+			// 7% of all executed opcodes are JUMPDEST (every taken jump lands
+			// on one). It pops and pushes nothing and only charges its gas, so
+			// it never needs the metadata record or the dispatch call.
+			if !contract.UseGas(params.JumpdestGas) {
+				return nil, ErrOutOfGas
+			}
+			*pc++
+			continue
+		}
 		operation := &meta[op]
 		cost = operation.constantGas // For tracing
 		// Validate stack
@@ -398,8 +436,156 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 			in.cfg.Tracer.CaptureState(*pc, op, gasCopy, cost, callContext, in.returnData, in.depth, err) //nolint:errcheck
 			logged = true
 		}
-		// execute the operation
-		res, err = operation.execute(pc, in, callContext)
+		// execute the operation. The hottest opcodes — together about 85% of
+		// everything executed — are handled inline: the compiler turns this
+		// dense switch into a jump table, so they skip the indirect call, the
+		// closure context load and the callee prologue. Their bodies mirror
+		// the table functions exactly; stack depth was validated above.
+		// res must not survive from an earlier table op: an inline op that
+		// fails ends the frame, and the loop returns res as its return data.
+		res = nil
+		switch op {
+		case PUSH1:
+			v := uint64(0)
+			if idx := *pc + 1; idx < uint64(len(code)) {
+				v = uint64(code[idx])
+			}
+			locStack.PushSlot().SetUint64(v)
+			*pc++
+		case PUSH2, PUSH3, PUSH4, PUSH5, PUSH6, PUSH7, PUSH8:
+			n := int(op - PUSH0)
+			start := int(*pc + 1)
+			var v uint64
+			if start+n <= len(code) {
+				for _, b := range code[start : start+n] {
+					v = v<<8 | uint64(b)
+				}
+			} else {
+				for i := 0; i < n; i++ {
+					v <<= 8
+					if j := start + i; j < len(code) {
+						v |= uint64(code[j])
+					}
+				}
+			}
+			locStack.PushSlot().SetUint64(v)
+			*pc += uint64(n)
+		case DUP1, DUP2, DUP3, DUP4, DUP5, DUP6, DUP7, DUP8, DUP9, DUP10, DUP11, DUP12, DUP13, DUP14, DUP15, DUP16:
+			locStack.DupUnchecked(int(op-DUP1) + 1)
+		case SWAP1, SWAP2, SWAP3, SWAP4, SWAP5, SWAP6, SWAP7, SWAP8, SWAP9, SWAP10, SWAP11, SWAP12, SWAP13, SWAP14, SWAP15, SWAP16:
+			locStack.SwapUnchecked(int(op-SWAP1) + 2)
+		case POP:
+			locStack.PopDiscard()
+		case ADD:
+			x, y := locStack.PopPtrUnchecked(), locStack.PeekUnchecked()
+			y.Add(x, y)
+		case SUB:
+			x, y := locStack.PopPtrUnchecked(), locStack.PeekUnchecked()
+			y.Sub(x, y)
+		case MUL:
+			x, y := locStack.PopPtrUnchecked(), locStack.PeekUnchecked()
+			y.Mul(x, y)
+		case AND:
+			x, y := locStack.PopPtrUnchecked(), locStack.PeekUnchecked()
+			y.And(x, y)
+		case OR:
+			x, y := locStack.PopPtrUnchecked(), locStack.PeekUnchecked()
+			y.Or(x, y)
+		case XOR:
+			x, y := locStack.PopPtrUnchecked(), locStack.PeekUnchecked()
+			y.Xor(x, y)
+		case NOT:
+			x := locStack.PeekUnchecked()
+			x.Not(x)
+		case ISZERO:
+			x := locStack.PeekUnchecked()
+			if x.IsZero() {
+				x.SetOne()
+			} else {
+				x.Clear()
+			}
+		case EQ:
+			x, y := locStack.PopPtrUnchecked(), locStack.PeekUnchecked()
+			if x.Eq(y) {
+				y.SetOne()
+			} else {
+				y.Clear()
+			}
+		case LT:
+			x, y := locStack.PopPtrUnchecked(), locStack.PeekUnchecked()
+			if x.Lt(y) {
+				y.SetOne()
+			} else {
+				y.Clear()
+			}
+		case GT:
+			x, y := locStack.PopPtrUnchecked(), locStack.PeekUnchecked()
+			if x.Gt(y) {
+				y.SetOne()
+			} else {
+				y.Clear()
+			}
+		case SLT:
+			x, y := locStack.PopPtrUnchecked(), locStack.PeekUnchecked()
+			if x.Slt(y) {
+				y.SetOne()
+			} else {
+				y.Clear()
+			}
+		case SGT:
+			x, y := locStack.PopPtrUnchecked(), locStack.PeekUnchecked()
+			if x.Sgt(y) {
+				y.SetOne()
+			} else {
+				y.Clear()
+			}
+		case MLOAD:
+			v := locStack.PeekUnchecked()
+			v.SetBytes(mem.GetPtr(int64(v.Uint64()), 32))
+		case MSTORE:
+			mStart, val := locStack.PopPtrUnchecked(), locStack.PopPtrUnchecked()
+			err = mem.Set32(mStart.Uint64(), val)
+		case JUMP:
+			pos := locStack.PopPtrUnchecked()
+			if valid, usedBitmap := contract.validJumpdest(pos); !valid {
+				if usedBitmap {
+					logInvalidJumpBitmap(in)
+				}
+				err = ErrInvalidJump
+				break
+			}
+			*pc = pos.Uint64() - 1 // pc is incremented below
+		case JUMPI:
+			pos, cond := locStack.PopPtrUnchecked(), locStack.PopPtrUnchecked()
+			if !cond.IsZero() {
+				if valid, usedBitmap := contract.validJumpdest(pos); !valid {
+					if usedBitmap {
+						logInvalidJumpBitmap(in)
+					}
+					err = ErrInvalidJump
+					break
+				}
+				*pc = pos.Uint64() - 1
+			}
+		case fusedPush1Jump:
+			err = fusedJump(pc, contract, uint64(code[*pc+1]))
+		case fusedPush2Jump:
+			err = fusedJump(pc, contract, uint64(code[*pc+1])<<8|uint64(code[*pc+2]))
+		case fusedPush1Jumpi:
+			if cond := locStack.PopPtrUnchecked(); !cond.IsZero() {
+				err = fusedJump(pc, contract, uint64(code[*pc+1]))
+			} else {
+				*pc += 2
+			}
+		case fusedPush2Jumpi:
+			if cond := locStack.PopPtrUnchecked(); !cond.IsZero() {
+				err = fusedJump(pc, contract, uint64(code[*pc+1])<<8|uint64(code[*pc+2]))
+			} else {
+				*pc += 3
+			}
+		default:
+			res, err = operation.execute(pc, in, callContext)
+		}
 
 		if err != nil {
 			break
