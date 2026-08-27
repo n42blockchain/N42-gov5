@@ -153,3 +153,19 @@ NewEVM/signer/BlockHashFn 约 0.05%。所以多块批处理若有收益只会来
 1–7 全部无共识风险、每项几十行、可独立 A/B，合计约 **7–8%** CPU 与 ~15 亿对象。
 8–12 是第二梯队，合计再约 **6–7%**。两梯队做完，interpreter 之外的开销从 ~17% 降到
 ~5%，剩下的就是 EVM 本体和预编译。
+
+## 9. 后记（2026-08-27）：减指令数这一轮做了什么
+
+按 §8 的排序继续往下走到"解释器本体"。数据与结果见
+`witness-bodyc-vs-freezer-and-full-run-2026-08-25.md` §5.32：opcode 普查 + 行级 profile →
+内联 dense switch、JUMPDEST 快速路径、静态跳转融合（执行视图）、SHA3 块内 memo、
+modexp BN254 域快路径、bn256 换 gnark。1M 密集切片 CPU-s −20%。
+
+还没做、值得做的：
+- 基本块级 gas/栈预检（evmone advanced 风格）：每 op 省 3 次比较 + UseGas，估 3–4%，
+  但 GAS/CALL 处需要修正剩余 gas，工作量与风险都高一级。
+- Keccak 小输入直接海绵（绕过 `sha3.state` 的通用 Write/Read）：memo 后 SHA3 只剩 ≈1.5%，
+  收益 <1%。
+- ecrecover 4.2% 是 cgo secp256k1，已是最快实现；只能靠减少调用（不可能）。
+- 收据 trie 2.1%、tx hash 1%：验证所需，tx hash 可在 NoOutput 下懒算（用于
+  `ibs.Prepare`/balCap，不进任何根）。
