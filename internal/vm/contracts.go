@@ -572,6 +572,11 @@ func (c *bigModExp) Run(input []byte) ([]byte, error) {
 	if baseLen == 0 && modLen == 0 {
 		return []byte{}, nil
 	}
+	if baseLen == 32 && expLen == 32 && modLen == 32 {
+		if out, ok := modexp256(input); ok {
+			return out, nil
+		}
+	}
 	// Retrieve the operands and execute the exponentiation
 	var (
 		base = new(big.Int).SetBytes(getData(input, 0, baseLen))
