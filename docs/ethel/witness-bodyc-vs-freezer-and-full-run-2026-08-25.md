@@ -1020,6 +1020,53 @@ MaxRSS 22.1 GiB（旧分支 t3：49m48s / 376,118）。
 但把幅度定死了：**256w 的价值上限就是个位数百分比**；再往下只能减指令数（EVM 本体），
 不能靠并发。
 
+### 5.32 减指令数：解释器循环、栈操作、Keccak（perf/instr-count）
+
+**普查**（诊断 binary `N42_OPDIAG=1`，24.98M–25.0M，24.1G 条 opcode，3267 万次 Run，
+每 Run 738 条）：PUSH1 10.5%、PUSH2 9.9%、JUMPDEST 7.3%、POP 5.4%、SWAP1 5.2%、
+JUMPI 4.7%、JUMP 4.6%、DUP2 4.5%、ADD 4.3%……前 30 个 opcode 占 90%。二元组：
+PUSH2→JUMPI 4.7%、JUMP→JUMPDEST 4.6%、PUSH2→JUMP 2.5%、JUMPI→JUMPDEST 2.3%。
+SHA3：7420 万次，64 字节输入 88%，**块内重复 62.3%**。modexp：58 万次，99.98% 是
+32/32/32，其中 97.3% 是 mod = BN254 r、exp = r−2（Groth16 验证器的 Fr 求逆）。
+
+**profile 归因**（merged binary，24.8M–25.0M，8990 CPU-s）：`Run` 自身 flat 13.3%，
+按行看 `cost = operation.constantGas`（meta 表的依赖加载）256 s、间接调用 340 s、
+`meta[op]` 107 s、`dynamicGas != nil` 80 s；栈操作 DupUnchecked 255 s、SwapUnchecked
+174 s、Pop 167 s、PushSlot 122 s、makePush 闭包 186 s、opPush1 137 s；解释器核心合计
+≈ 3600 s = 40%。Keccak 619 s：SHA3 opcode 340、收据 trie 186、tx hash 94、bloom 46。
+预编译 13.9%：ecrecover 4.2%（cgo）、modexp 3.2%（math/big，每次 ≈ 50 µs）、bn256 5.4%。
+
+**改动**（分支 `perf/instr-count`，3 个提交）：
+
+| # | 改动 | 依据 |
+|---|---|---|
+| A | 热门 opcode（≈85% 的执行）内联进 `Run` 的 dense switch（编译成跳转表）；JUMPDEST 两条指令的快速路径；`Contract.Address()` 读缓存字段 | 去掉间接调用 + 闭包上下文 + 被调者序言；Address() 经接口拷贝 20 字节 79 s |
+| B | modexp 32/32/32 且 mod ∈ {BN254 r, p} → gnark 域运算（r−2 走 Inverse） | 97% 是 Fr 求逆；≈50 µs → ≈1 µs |
+| C | SHA3 64 字节输入按解释器（= 每块）memo，上限 64K 条 | 块内重复 62% |
+| D | 静态跳转融合：每份 code 一个"执行视图"（与 JUMPDEST 位图同缓存），PUSH1/2+JUMP(I) 且目标是合法 JUMPDEST → 合成 opcode 0x0c–0x0f，落地 JUMPDEST 的 gas 一并收；只改 PUSH 那个字节，pc/PC/CODECOPY/跳转校验语义不变；追踪器与 EOF 不走视图；真实 0x0c–0x0f 字节重映射到 0x21（仍未定义，`opUndefined` 读原 code 报原字节） | 少 14% 的循环迭代 |
+| F | bn256 预编译换 gnark-crypto | 微基准 pairing(4 对) 2.32 ms→0.67 ms、add 6.8→1.3 µs、mul 52→32 µs |
+
+**A 第一版的 bug**：内联路径没有清 `res`，帧因内联 op 出错（非法跳转、MSTORE 越界）结束时把
+上一个表 op 的返回数据当作 returndata 返回，块 25,183,108 多用 44 gas（RETURNDATASIZE 分支
+不同）。单块复现 3/3 确定性；诊断 binary 加每特性 env 开关二分到"内联 switch"，修复
+`res = nil`。同时去掉 PUSH0 内联（上海前 0x5f 未定义，内联会把它当 PUSH0 执行）。
+
+**A/B**（1M 密集切片 24.5M–25.5M，128w/6r/gc300，`/usr/bin/time`）：
+
+| 行 | 墙钟 | user CPU-s | MaxRSS |
+|---|---|---|---|
+| merged（main）r5 | 5m36s | 43,575 | 16.2 GiB |
+| A+B+C+D（开关版）r5 | 4m39s | 35,522（−18.5%） | 19.1 GiB |
+| merged r6 | 5m35s | 43,347 | 15.4 GiB |
+| A+B+C+D+F（ic5）r6 | **4m32s** | **34,681（−20.0%）** | 18.9 GiB |
+
+r5 里"关融合"的两行（59,771 / 59,357）不是 A/B/C 的数据：调试开关关掉融合后每次调用都对
+整段 code 跑 `plainView` 扫描（最终版只在没有 code hash 的 initcode 上走），作废。
+
+**全量 gate（ic6 = 三个提交、无开关，sha256 911e083b）**：**41m34s / 304,114 user + 1,312 sys = 305,426 CPU-s / failed=0**，MaxRSS 26.4 GiB，
+12,236% CPU。对 main 的 49m27s / 373,462：**墙钟 −16%，CPU-s −18.2%**；RSS +3.6 GiB（执行视图副本 +
+SHA3 memo）。`full-geth-w128-ic6-gc300-20260827`。
+
 ### 5.31 未完成 / 可继续
 
 1. 256w 间歇 nonce 失败（累计 12 次 1 败）：诊断挂着，猎捕循环在跑；
