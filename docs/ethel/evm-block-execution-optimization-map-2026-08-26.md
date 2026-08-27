@@ -161,9 +161,12 @@ NewEVM/signer/BlockHashFn 约 0.05%。所以多块批处理若有收益只会来
 内联 dense switch、JUMPDEST 快速路径、静态跳转融合（执行视图）、SHA3 块内 memo、
 modexp BN254 域快路径、bn256 换 gnark。1M 密集切片 CPU-s −20%。
 
+做了、不赚的：
+- 基本块级 gas/栈预检（evmone advanced 风格）：做完了，全量 +4.1% CPU（§5.33）。每 op 省下
+  的检查 ≈ 363 s，块入口 + rest 修正 ≈ 470 s；基本块太短。另一个硬约束：witness 是顺序读流，
+  失败点和失败帧内的读取顺序都不能变。分支 `perf/block-precheck` 留档未合并。
+
 还没做、值得做的：
-- 基本块级 gas/栈预检（evmone advanced 风格）：每 op 省 3 次比较 + UseGas，估 3–4%，
-  但 GAS/CALL 处需要修正剩余 gas，工作量与风险都高一级。
 - Keccak 小输入直接海绵（绕过 `sha3.state` 的通用 Write/Read）：memo 后 SHA3 只剩 ≈1.5%，
   收益 <1%。
 - ecrecover 4.2% 是 cgo secp256k1，已是最快实现；只能靠减少调用（不可能）。
