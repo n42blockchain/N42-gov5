@@ -34,7 +34,12 @@ type opMeta struct {
 	constantGas uint64
 	numPop      int
 	maxStack    int
-	_           [16]byte
+	// terminates: control does not continue to the next instruction
+	// (STOP/RETURN/REVERT/SELFDESTRUCT/INVALID/undefined/jumps).
+	terminates bool
+	// observesGas: the semantics read contract.Gas (see blocks.go).
+	observesGas bool
+	_           [14]byte
 }
 
 // opMetaTable is the flat form of one JumpTable.
@@ -73,7 +78,14 @@ func newOpMetaTable(jt *JumpTable) *opMetaTable {
 			constantGas: op.constantGas,
 			numPop:      op.numPop,
 			maxStack:    op.maxStack,
+			terminates:  op.undefined,
 		}
+	}
+	for _, op := range []OpCode{STOP, RETURN, REVERT, SELFDESTRUCT, INVALID, JUMP, JUMPI} {
+		tbl[op].terminates = true
+	}
+	for _, op := range []OpCode{GAS, SSTORE, CALL, CALLCODE, DELEGATECALL, STATICCALL, CREATE, CREATE2} {
+		tbl[op].observesGas = true
 	}
 	addFusedOps(tbl, jt)
 	return tbl

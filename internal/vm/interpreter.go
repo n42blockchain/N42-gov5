@@ -117,6 +117,8 @@ type EVMInterpreter struct {
 	// repeat an input already hashed, and a map probe is an order of
 	// magnitude cheaper than the permutation. Bounded by sha3MemoMax.
 	sha3Memo map[[64]byte]types.Hash
+	// tracedStep: CaptureState ran for the step in flight (tracer path only).
+	tracedStep bool
 }
 
 const sha3MemoMax = 1 << 16
@@ -351,12 +353,24 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 	// EOF validation already rejects undefined opcodes, so no view is needed.
 	code := contract.Code
 	eof := contract.EOFContainer != nil
+	var blocks *blockTable
 	if !eof {
 		if canFuse(contract, debug) {
-			code = execView(contract)
+			code, blocks = execView(contract, in.jt, meta)
 		} else {
 			code = plainView(code)
 		}
+	}
+	// precheck: gas and stack are validated per basic block (blocks.go)
+	// instead of per opcode. Tracing and hashless code (initcode) keep the
+	// per-opcode path.
+	precheck := blocks != nil
+	// seq: the current block is charged and checked per opcode — always
+	// without a block table, and under precheck whenever the table predicts
+	// a failure (see blockTable.tryEnter).
+	seq := !precheck
+	if precheck && OpCode(code[0]) != JUMPDEST { // a leading JUMPDEST enters its block in the loop
+		seq = !blocks.tryEnter(0, contract, locStack)
 	}
 	cancelCheck := 1000
 	for {
@@ -381,66 +395,59 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		} else {
 			op = STOP
 		}
+		stepHook(in, *pc, op)
 		if op == JUMPDEST && !debug {
 			// 7% of all executed opcodes are JUMPDEST (every taken jump lands
 			// on one). It pops and pushes nothing and only charges its gas, so
-			// it never needs the metadata record or the dispatch call.
-			if !contract.UseGas(params.JumpdestGas) {
+			// it never needs the metadata record or the dispatch call. Under
+			// precheck it is a block entry.
+			if precheck {
+				seq = !blocks.tryEnter(*pc, contract, locStack)
+			}
+			if seq && !contract.UseGas(params.JumpdestGas) {
 				return nil, ErrOutOfGas
 			}
 			*pc++
 			continue
 		}
-		operation := &meta[op]
-		cost = operation.constantGas // For tracing
-		// Validate stack
-		if sLen := locStack.Len(); sLen < operation.numPop {
-			return nil, &ErrStackUnderflow{stackLen: sLen, required: operation.numPop}
-		} else if sLen > operation.maxStack {
-			return nil, &ErrStackOverflow{stackLen: sLen, limit: operation.maxStack}
-		}
-		if !contract.UseGas(cost) {
-			return nil, ErrOutOfGas
-		}
-		if operation.dynamicGas != nil {
-			// All ops with a dynamic memory usage also has a dynamic gas cost.
-			var memorySize uint64
-			// calculate the new memory size and expand the memory to fit
-			// the operation
-			// Memory check needs to be done prior to evaluating the dynamic gas portion,
-			// to detect calculation overflows
-			if operation.memorySize != nil {
-				memSize, overflow := operation.memorySize(locStack)
-				if overflow {
-					return nil, ErrGasUintOverflow
-				}
-				// memory is expanded in words of 32 bytes. Gas
-				// is also calculated in words.
-				if memorySize, overflow = math.SafeMul(ToWordSize(memSize), 32); overflow {
-					return nil, ErrGasUintOverflow
-				}
+		if debug {
+			// Tracer path: the per-opcode reference semantics, no inlining.
+			operation := &meta[op]
+			cost = operation.constantGas
+			if sLen := locStack.Len(); sLen < operation.numPop {
+				return nil, &ErrStackUnderflow{stackLen: sLen, required: operation.numPop}
+			} else if sLen > operation.maxStack {
+				return nil, &ErrStackOverflow{stackLen: sLen, limit: operation.maxStack}
 			}
-			// Consume the gas and return an error if not enough gas is available.
-			// cost is explicitly set so that the capture state defer method can get the proper cost
-			var dynamicCost uint64
-			dynamicCost, err = operation.dynamicGas(in.evm, contract, locStack, mem, memorySize)
-			cost += dynamicCost // for tracing
-			if err != nil || !contract.UseGas(dynamicCost) {
+			if !contract.UseGas(cost) {
 				return nil, ErrOutOfGas
 			}
-			if memorySize > 0 {
-				mem.Resize(memorySize)
+			res, err, logged = in.execTableTraced(operation, op, pc, contract, locStack, mem, callContext, gasCopy)
+			if err != nil {
+				break
 			}
+			*pc++
+			continue
 		}
-		if debug {
-			in.cfg.Tracer.CaptureState(*pc, op, gasCopy, cost, callContext, in.returnData, in.depth, err) //nolint:errcheck
-			logged = true
+		var operation *opMeta
+		if seq {
+			operation = &meta[op]
+			// Validate stack and charge the constant gas per opcode.
+			if sLen := locStack.Len(); sLen < operation.numPop {
+				return nil, &ErrStackUnderflow{stackLen: sLen, required: operation.numPop}
+			} else if sLen > operation.maxStack {
+				return nil, &ErrStackOverflow{stackLen: sLen, limit: operation.maxStack}
+			}
+			if !contract.UseGas(operation.constantGas) {
+				return nil, ErrOutOfGas
+			}
 		}
 		// execute the operation. The hottest opcodes — together about 85% of
 		// everything executed — are handled inline: the compiler turns this
 		// dense switch into a jump table, so they skip the indirect call, the
 		// closure context load and the callee prologue. Their bodies mirror
-		// the table functions exactly; stack depth was validated above.
+		// the table functions exactly; stack depth was validated above (per
+		// opcode, or for the whole block on entry).
 		// res must not survive from an earlier table op: an inline op that
 		// fails ends the frame, and the loop returns res as its return data.
 		res = nil
@@ -541,10 +548,22 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 			}
 		case MLOAD:
 			v := locStack.PeekUnchecked()
+			if seq, err = expandMemoryInline(contract, mem, v, seq, blocks, code, *pc, meta); err != nil {
+				break
+			}
 			v.SetBytes(mem.GetPtr(int64(v.Uint64()), 32))
 		case MSTORE:
+			if seq, err = expandMemoryInline(contract, mem, locStack.PeekUnchecked(), seq, blocks, code, *pc, meta); err != nil {
+				break
+			}
 			mStart, val := locStack.PopPtrUnchecked(), locStack.PopPtrUnchecked()
 			err = mem.Set32(mStart.Uint64(), val)
+		case GAS:
+			g := contract.Gas
+			if !seq {
+				g += blocks.rest(code, *pc, meta)
+			}
+			locStack.PushSlot().SetUint64(g)
 		case JUMP:
 			pos := locStack.PopPtrUnchecked()
 			if valid, usedBitmap := contract.validJumpdest(pos); !valid {
@@ -566,25 +585,53 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 					break
 				}
 				*pc = pos.Uint64() - 1
+			} else if precheck {
+				seq = !enterFallBlock(blocks, code, *pc+1, contract, locStack)
 			}
 		case fusedPush1Jump:
-			err = fusedJump(pc, contract, uint64(code[*pc+1]))
+			seq, err = fusedJumpTo(pc, contract, locStack, blocks, uint64(code[*pc+1]), seq)
 		case fusedPush2Jump:
-			err = fusedJump(pc, contract, uint64(code[*pc+1])<<8|uint64(code[*pc+2]))
+			seq, err = fusedJumpTo(pc, contract, locStack, blocks, uint64(code[*pc+1])<<8|uint64(code[*pc+2]), seq)
 		case fusedPush1Jumpi:
 			if cond := locStack.PopPtrUnchecked(); !cond.IsZero() {
-				err = fusedJump(pc, contract, uint64(code[*pc+1]))
+				seq, err = fusedJumpTo(pc, contract, locStack, blocks, uint64(code[*pc+1]), seq)
 			} else {
+				if precheck {
+					seq = !enterFallBlock(blocks, code, *pc+3, contract, locStack)
+				}
 				*pc += 2
 			}
 		case fusedPush2Jumpi:
 			if cond := locStack.PopPtrUnchecked(); !cond.IsZero() {
-				err = fusedJump(pc, contract, uint64(code[*pc+1])<<8|uint64(code[*pc+2]))
+				seq, err = fusedJumpTo(pc, contract, locStack, blocks, uint64(code[*pc+1])<<8|uint64(code[*pc+2]), seq)
 			} else {
+				if precheck {
+					seq = !enterFallBlock(blocks, code, *pc+4, contract, locStack)
+				}
 				*pc += 3
 			}
 		default:
-			res, err = operation.execute(pc, in, callContext)
+			if !seq {
+				operation = &meta[op]
+				if operation.dynamicGas != nil || operation.observesGas {
+					// Give the opcode the gas it would have seen with per-opcode
+					// charging: the rest of the block is not spent yet. That keeps
+					// both what it observes and where it runs out exact. If it
+					// leaves less than the rest, the block finishes per opcode.
+					rest := blocks.rest(code, *pc, meta)
+					contract.Gas += rest
+					res, err = in.execTable(operation, op, pc, contract, locStack, mem, callContext, false, 0)
+					if err == nil || err == errStopToken {
+						if contract.Gas < rest {
+							seq = true
+						} else {
+							contract.Gas -= rest
+						}
+					}
+					break
+				}
+			}
+			res, err = in.execTable(operation, op, pc, contract, locStack, mem, callContext, false, 0)
 		}
 
 		if err != nil {
@@ -621,4 +668,153 @@ func (vm *VM) setReadonly(outerReadonly bool) func() {
 
 func (vm *VM) getReadonly() bool {
 	return vm.readOnly
+}
+
+// execTable runs one opcode through its table record: dynamic gas, memory
+// expansion, the tracer hook when tracing, then the execute function.
+// execTableTraced is execTable for the tracer path; traced reports whether
+// CaptureState ran (it does not when the dynamic gas phase fails).
+func (in *EVMInterpreter) execTableTraced(operation *opMeta, op OpCode, pc *uint64, contract *Contract, locStack *stack.Stack, mem *Memory, callContext *ScopeContext, gasCopy uint64) (res []byte, err error, traced bool) {
+	res, err = in.execTable(operation, op, pc, contract, locStack, mem, callContext, true, gasCopy)
+	return res, err, in.tracedStep
+}
+
+func (in *EVMInterpreter) execTable(operation *opMeta, op OpCode, pc *uint64, contract *Contract, locStack *stack.Stack, mem *Memory, callContext *ScopeContext, debug bool, gasCopy uint64) ([]byte, error) {
+	cost := operation.constantGas
+	in.tracedStep = false
+	if operation.dynamicGas != nil {
+		// All ops with a dynamic memory usage also has a dynamic gas cost.
+		var memorySize uint64
+		// Memory check needs to be done prior to evaluating the dynamic gas
+		// portion, to detect calculation overflows.
+		if operation.memorySize != nil {
+			memSize, overflow := operation.memorySize(locStack)
+			if overflow {
+				return nil, ErrGasUintOverflow
+			}
+			// memory is expanded in words of 32 bytes; gas is calculated in words.
+			if memorySize, overflow = math.SafeMul(ToWordSize(memSize), 32); overflow {
+				return nil, ErrGasUintOverflow
+			}
+		}
+		dynamicCost, err := operation.dynamicGas(in.evm, contract, locStack, mem, memorySize)
+		cost += dynamicCost
+		if err != nil || !contract.UseGas(dynamicCost) {
+			return nil, ErrOutOfGas
+		}
+		if memorySize > 0 {
+			mem.Resize(memorySize)
+		}
+	}
+	if debug {
+		in.cfg.Tracer.CaptureState(*pc, op, gasCopy, cost, callContext, in.returnData, in.depth, nil) //nolint:errcheck
+		in.tracedStep = true
+	}
+	return operation.execute(pc, in, callContext)
+}
+
+// memoryExpansion computes, without side effects, the expansion a 32-byte
+// access at offset needs: the new size in bytes (0 when none), its fee, and
+// the new total memory fee (mirrors memoryMLoad + memoryGasCost).
+func memoryExpansion(mem *Memory, offset *uint256.Int, size uint64) (memorySize, fee, total uint64, err error) {
+	memSize, overflow := calcMemSize64WithUint(offset, size)
+	if overflow {
+		return 0, 0, 0, ErrGasUintOverflow
+	}
+	if memorySize, overflow = math.SafeMul(ToWordSize(memSize), 32); overflow {
+		return 0, 0, 0, ErrGasUintOverflow
+	}
+	if memorySize == 0 {
+		return 0, 0, 0, nil
+	}
+	if memorySize > 0x1FFFFFFFE0 {
+		return 0, 0, 0, ErrGasUintOverflow
+	}
+	words := ToWordSize(memorySize)
+	if memorySize <= uint64(mem.Len()) {
+		return 0, 0, 0, nil
+	}
+	total = words*params.MemoryGas + words*words/params.QuadCoeffDiv
+	return memorySize, total - mem.lastGasCost, total, nil
+}
+
+// expandMemory charges and applies the memory expansion for a 32-byte access
+// at offset (the inline MLOAD/MSTORE path). slack is gas the frame still
+// has beyond contract.Gas — the precharged rest of the block — that must
+// count towards the out-of-gas decision; needed reports whether the charge
+// exceeded contract.Gas alone, so the caller can refund the slack and go on
+// per opcode.
+func expandMemory(contract *Contract, mem *Memory, offset *uint256.Int, size uint64, slack uint64) (needed bool, err error) {
+	memorySize, fee, total, err := memoryExpansion(mem, offset, size)
+	if err != nil || memorySize == 0 {
+		return false, err
+	}
+	if contract.Gas < fee {
+		if contract.Gas+slack < fee {
+			return false, ErrOutOfGas
+		}
+		needed = true
+		contract.Gas += slack
+	}
+	contract.Gas -= fee
+	mem.lastGasCost = total
+	mem.Resize(memorySize)
+	return needed, nil
+}
+
+// enterFallBlock enters the block that starts at pc after a JUMPI was not
+// taken and reports whether it was precharged. Past the end of the code
+// there is only the implicit STOP, and a JUMPDEST at pc enters its block
+// when the loop reaches it; nothing runs before either, so true is right.
+func enterFallBlock(blocks *blockTable, code []byte, pc uint64, contract *Contract, st *stack.Stack) bool {
+	if pc >= uint64(len(code)) || OpCode(code[pc]) == JUMPDEST {
+		return true
+	}
+	return blocks.tryEnter(pc, contract, st)
+}
+
+// fusedJumpTo lands a fused static jump on the pre-validated JUMPDEST at
+// dest and returns the per-opcode mode for the landing block. Under
+// precheck the landing block (JUMPDEST gas included) is precharged when it
+// can be; otherwise, and without a block table, the JUMPDEST's own gas is
+// charged here. pc is left on the JUMPDEST so the loop's increment steps
+// over it.
+func fusedJumpTo(pc *uint64, contract *Contract, st *stack.Stack, blocks *blockTable, dest uint64, seq bool) (bool, error) {
+	if blocks != nil {
+		if blocks.tryEnter(dest, contract, st) {
+			*pc = dest
+			return false, nil
+		}
+		seq = true
+	}
+	return seq, fusedJump(pc, contract, dest)
+}
+
+// expandMemoryInline is the MLOAD/MSTORE memory step for both charging
+// modes. In a precharged block the exact remaining gas includes the rest of
+// the block; when that slack is needed to pay, the block continues per
+// opcode. Returns the (possibly changed) per-opcode mode.
+func expandMemoryInline(contract *Contract, mem *Memory, offset *uint256.Int, seq bool, blocks *blockTable, code []byte, pc uint64, meta *opMetaTable) (bool, error) {
+	if seq {
+		_, err := expandMemory(contract, mem, offset, 32, 0)
+		return true, err
+	}
+	memorySize, fee, total, err := memoryExpansion(mem, offset, 32)
+	if err != nil || memorySize == 0 {
+		return false, err
+	}
+	if contract.Gas < fee {
+		// Only now is the exact remaining gas needed: the unspent rest of
+		// the block counts, and if it is used the block continues per opcode.
+		slack := blocks.rest(code, pc, meta)
+		if contract.Gas+slack < fee {
+			return false, ErrOutOfGas
+		}
+		contract.Gas += slack
+		seq = true
+	}
+	contract.Gas -= fee
+	mem.lastGasCost = total
+	mem.Resize(memorySize)
+	return seq, nil
 }
