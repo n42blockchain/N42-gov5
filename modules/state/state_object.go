@@ -87,9 +87,15 @@ type stateObject struct {
 	// an epoch; see slotEntry. dirtyKeys lists, in first-write order, every
 	// slot written this block — the old dirtyStorage key set — so writers can
 	// iterate it without a map walk.
-	storage     map[types.Hash]slotEntry
-	dirtyKeys   []types.Hash
-	fakeStorage Storage // Fake storage which constructed by caller for debugging purpose.
+	storage   map[types.Hash]slotEntry
+	dirtyKeys []types.Hash
+	// blockOriginStorage keeps each slot's value at the start of the block for
+	// the writer's (original, value) pair and the wipe/LtHash fallbacks. It is
+	// populated only when a block write set is wanted; validation-only replay
+	// (discardBlockChanges) never allocates it, which keeps slotEntry to the
+	// two views it actually reads.
+	blockOriginStorage Storage
+	fakeStorage        Storage // Fake storage which constructed by caller for debugging purpose.
 
 	// sawNonZeroCommitted records whether any committed read in this block
 	// returned a non-zero value. HasNonEmptyStorage needs that fact: a later
@@ -124,14 +130,12 @@ type stateObject struct {
 // of this transaction and cur the latest write; once the epoch moves on, cur
 // IS the committed value and nothing needs copying. known marks a committed
 // value as available (read from the DB or established by a write);
-// hasOrigin marks the block-start value as captured.
+// The block-start value lives in blockOriginStorage, kept only when a write set is wanted.
 type slotEntry struct {
 	cur       uint256.Int
 	committed uint256.Int
-	origin    uint256.Int
 	epoch     uint32
 	known     bool
-	hasOrigin bool
 }
 
 // storageRecycleMax bounds the map a pooled stateObject keeps. clear() costs
@@ -159,30 +163,17 @@ func (so *stateObject) dirtyValue(key types.Hash) uint256.Int {
 // blockOrigin returns the value the slot had at the start of the block, if it
 // was captured (the old blockOriginStorage lookup).
 func (so *stateObject) blockOrigin(key types.Hash) (uint256.Int, bool) {
-	e, ok := so.storage[key]
-	if !ok || !e.hasOrigin {
-		return uint256.Int{}, false
-	}
-	return e.origin, true
+	v, ok := so.blockOriginStorage[key]
+	return v, ok
 }
 
-// blockOriginLen counts captured block-start values (len(blockOriginStorage)).
-func (so *stateObject) blockOriginLen() int {
-	n := 0
-	for _, e := range so.storage {
-		if e.hasOrigin {
-			n++
-		}
-	}
-	return n
-}
+// blockOriginLen counts captured block-start values.
+func (so *stateObject) blockOriginLen() int { return len(so.blockOriginStorage) }
 
 // eachBlockOrigin visits every captured block-start value.
 func (so *stateObject) eachBlockOrigin(fn func(key types.Hash, origin uint256.Int)) {
-	for k, e := range so.storage {
-		if e.hasOrigin {
-			fn(k, e.origin)
-		}
+	for k, v := range so.blockOriginStorage {
+		fn(k, v)
 	}
 }
 
@@ -227,6 +218,11 @@ func putStateObject(so *stateObject) {
 		so.storage = nil
 	} else {
 		clear(so.storage)
+	}
+	if len(so.blockOriginStorage) > storageRecycleMax {
+		so.blockOriginStorage = nil
+	} else {
+		clear(so.blockOriginStorage)
 	}
 	so.dirtyKeys = so.dirtyKeys[:0]
 	so.sawNonZeroCommitted = false
@@ -398,11 +394,15 @@ func (so *stateObject) cacheCommittedState(key *types.Hash, value *uint256.Int) 
 	if !value.IsZero() {
 		so.sawNonZeroCommitted = true
 	}
-	if !e.hasOrigin && (so.db == nil || !so.db.discardBlockChanges) {
-		e.origin = *value
-		e.hasOrigin = true
-	}
 	so.storage[*key] = e
+	if so.db == nil || !so.db.discardBlockChanges {
+		if so.blockOriginStorage == nil {
+			so.blockOriginStorage = make(Storage)
+		}
+		if _, have := so.blockOriginStorage[*key]; !have {
+			so.blockOriginStorage[*key] = *value
+		}
+	}
 }
 
 // SetState updates a value in account storage.
@@ -486,10 +486,7 @@ func (so *stateObject) updateTrie(stateWriter StateWriter) error {
 	// as before.
 	for _, key := range so.dirtyKeys {
 		e := so.storage[key]
-		var original uint256.Int
-		if e.hasOrigin {
-			original = e.origin
-		}
+		original := so.blockOriginStorage[key] // zero when never captured, as before
 		if err := stateWriter.WriteAccountStorage(so.address, key, original, e.cur); err != nil {
 			return err
 		}
