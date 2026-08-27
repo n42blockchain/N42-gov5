@@ -228,6 +228,7 @@ type (
 func (ch createObjectChange) revert(s *IntraBlockState) {
 	delete(s.stateObjects, *ch.account)
 	delete(s.stateObjectsDirty, *ch.account)
+	s.lastObj = nil
 	// storageWipes is no longer implicitly managed here — see
 	// storageWipeAddChange. If this createObjectChange also added a fresh
 	// storageWipes entry, a paired storageWipeAddChange was journaled.

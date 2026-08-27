@@ -100,6 +100,14 @@ type IntraBlockState struct {
 	// committed view of every slot moves forward without copying maps. Starts
 	// at 1 so a zero epoch on a slotEntry means "never written this block".
 	storageEpoch uint32
+	// lastAddr/lastObj remember the most recently resolved live object. A
+	// contract's SLOAD/SSTORE/BALANCE opcodes hit its own address over and
+	// over, and every one of them went through a 20-byte-keyed map lookup —
+	// getStateObject was 2.7% of replay CPU with map hashing the largest part.
+	// The cache is dropped whenever the live set changes (Reset, setStateObject,
+	// the createObject revert), so it can never hand back a stale object.
+	lastAddr types.Address
+	lastObj  *stateObject
 	// logArena, when non-nil, bump-allocates logs per block (see log_arena.go).
 	logArena *logArena
 
@@ -479,6 +487,7 @@ func (sdb *IntraBlockState) Reset() {
 		putStateObject(so)
 	}
 	sdb.stateObjects = make(map[types.Address]*stateObject)
+	sdb.lastObj = nil
 	sdb.stateObjectsDirty = make(map[types.Address]struct{})
 	sdb.nilAccounts = make(map[types.Address]struct{})
 	clear(sdb.storageWipes)
@@ -658,7 +667,12 @@ func (sdb *IntraBlockState) HasNonEmptyStorage(addr types.Address) bool {
 	// Any view of a touched slot being non-zero (latest write, committed
 	// value, or block-start value) — the union the three maps used to give.
 	for _, e := range stateObject.storage {
-		if !e.cur.IsZero() || (e.known && !e.committed.IsZero()) || (e.hasOrigin && !e.origin.IsZero()) {
+		if !e.cur.IsZero() || (e.known && !e.committed.IsZero()) {
+			return true
+		}
+	}
+	for _, v := range stateObject.blockOriginStorage {
+		if !v.IsZero() {
 			return true
 		}
 	}
@@ -924,8 +938,13 @@ func (sdb *IntraBlockState) Suicide(addr types.Address) bool {
 }
 
 func (sdb *IntraBlockState) getStateObject(addr types.Address) (stateObject *stateObject) {
-	// Prefer 'live' objects.
+	// Prefer 'live' objects; the last one resolved is checked before the map.
+	if obj := sdb.lastObj; obj != nil && sdb.lastAddr == addr {
+		sdb.foldBalanceIncrease(addr, obj)
+		return obj
+	}
 	if obj := sdb.stateObjects[addr]; obj != nil {
+		sdb.lastAddr, sdb.lastObj = addr, obj
 		// A live object can still owe a pending increase: reverting a
 		// balanceIncreaseTransfer un-folds the amount and clears the flag
 		// while leaving the object live. Without re-folding here the
@@ -993,6 +1012,7 @@ func (sdb *IntraBlockState) foldBalanceIncrease(addr types.Address, object *stat
 func (sdb *IntraBlockState) setStateObject(addr types.Address, object *stateObject) {
 	sdb.foldBalanceIncrease(addr, object)
 	sdb.stateObjects[addr] = object
+	sdb.lastAddr, sdb.lastObj = addr, object
 	delete(sdb.nilAccounts, addr)
 }
 
