@@ -128,6 +128,9 @@ func runWitnessWorker(
 		reader.SetCodesFreezer(codes)
 	}
 	ibs := state.New(reader)
+	// Replay consumes a block's logs once, at receipt-root verification, and
+	// discards the block. That lets logs be bump-allocated per block.
+	ibs.SetLogArena(true)
 	if mode.NoOutput && !mode.Capture {
 		// Validation consumes receipts/gas only and deliberately skips
 		// CommitBlock below. Avoid retaining the duplicate block-level storage
@@ -334,6 +337,7 @@ func diagnoseReplayFailure(
 ) {
 	witnessDigest := sha256.Sum256(job.Witness)
 	fresh := state.New(reader)
+	fresh.SetLogArena(true)
 	if mode.NoOutput && !mode.Capture {
 		fresh.SetDiscardBlockChanges(true)
 	}

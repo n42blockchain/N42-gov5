@@ -100,6 +100,8 @@ type IntraBlockState struct {
 	// committed view of every slot moves forward without copying maps. Starts
 	// at 1 so a zero epoch on a slotEntry means "never written this block".
 	storageEpoch uint32
+	// logArena, when non-nil, bump-allocates logs per block (see log_arena.go).
+	logArena *logArena
 
 	// This map holds 'live' objects, which will get modified while processing a state transition.
 	stateObjects      map[types.Address]*stateObject
@@ -493,6 +495,9 @@ func (sdb *IntraBlockState) Reset() {
 	sdb.bhash = types.Hash{}
 	sdb.txIndex = 0
 	sdb.storageEpoch = 1
+	if sdb.logArena != nil {
+		sdb.logArena.reset()
+	}
 	sdb.nextRevisionID = 0
 	sdb.logs = make(map[types.Hash][]*block.Log)
 	sdb.logSize = 0
