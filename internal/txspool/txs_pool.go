@@ -25,7 +25,6 @@ package txspool
 import (
 	"context"
 	"errors"
-	"fmt"
 	"math"
 	"math/big"
 	"time"
@@ -521,11 +520,7 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
 	}
 	addr := *fromPtr
 
-	txData, err := tx.Marshal()
-	if err != nil {
-		return fmt.Errorf("failed to marshal transaction: %w", err)
-	}
-	if uint64(len(txData)) > txMaxSize {
+	if uint64(txWireSize(tx)) > txMaxSize {
 		return ErrOversizedData
 	}
 	if tx.Value().Sign() < 0 {

@@ -84,6 +84,10 @@ Start-Process C:\N42\N42-gov5\build\bin\n42-v5.7.<latest>.exe -ArgumentList `
   the run logs `resuming from checkpoint lastSourceBlock=N startBlock=N+1`.
   `--to 0` (default) targets the current source head. Confirm the logged
   range matches Phase A's H.
+- `replay_stats.currentBlock` and `checkpoint.json.sourceHead` record source
+  progress and must equal H. The checkpoint's existing `number`/`hash` pair
+  records the target canonical head; with gap-fill enabled its number is larger
+  than H by the synthetic-block count.
 - The same binary drives replay and the fleet — never a stale side-build
   (positional/unknown-flag parsers ignore flags they predate, silently).
 - Detach via `Start-Process`; a background shell that gets reclaimed kills

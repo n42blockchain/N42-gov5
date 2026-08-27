@@ -136,6 +136,14 @@ type Message interface {
 	IsFree() bool
 }
 
+// directExecutionValues is implemented by *transaction.Message. Keeping this
+// optional preserves compatibility with tracers, tests and chain-specific
+// Message implementations while avoiding four escaping value-receiver copies
+// on the normal transaction path.
+type directExecutionValues interface {
+	ExecutionValues() (gasPrice, feeCap, tip, value *uint256.Int)
+}
+
 // ExecutionResult includes all output after executing given evm message
 // no matter the execution itself is successful or not.
 type ExecutionResult struct {
@@ -279,11 +287,15 @@ func NewStateTransition(evm vm2.VMInterface, msg Message, gp *common.GasPool) *S
 	st.evm = evm
 	st.msg = msg
 	st.gas = 0
-	st.gasPrice = msg.GasPrice()
-	st.gasFeeCap = msg.FeeCap()
-	st.tip = msg.Tip()
+	if direct, ok := msg.(directExecutionValues); ok {
+		st.gasPrice, st.gasFeeCap, st.tip, st.value = direct.ExecutionValues()
+	} else {
+		st.gasPrice = msg.GasPrice()
+		st.gasFeeCap = msg.FeeCap()
+		st.tip = msg.Tip()
+		st.value = msg.Value()
+	}
 	st.initialGas = 0
-	st.value = msg.Value()
 	st.data = msg.Data()
 	st.state = evm.IntraBlockState()
 	st.sharedBuyGas.Clear()

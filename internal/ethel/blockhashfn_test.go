@@ -63,3 +63,29 @@ func TestMakeBlockHashFnEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestMakeRangeBlockHashFnMatchesSnapshot(t *testing.T) {
+	const (
+		hashStart = uint64(700)
+		rangeEnd  = uint64(1100)
+	)
+	hashes := make([]types.Hash, rangeEnd-hashStart)
+	for i := range hashes {
+		hashes[i][0] = byte(i)
+		hashes[i][30] = byte(i >> 8)
+		hashes[i][31] = 0xcd
+	}
+
+	for _, current := range []uint64{744, 800, 1000, 1099} {
+		fn := makeRangeBlockHashFn(current, hashStart, hashes)
+		for n := uint64(0); n < rangeEnd+2; n++ {
+			want := types.Hash{}
+			if n >= hashStart && n < current && current-n <= BlockHashWindowSize {
+				want = hashes[n-hashStart]
+			}
+			if got := fn(n); got != want {
+				t.Fatalf("current=%d n=%d: got %x, want %x", current, n, got, want)
+			}
+		}
+	}
+}

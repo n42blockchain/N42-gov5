@@ -3,9 +3,11 @@ package sync
 import (
 	"fmt"
 	"io"
+	"sync/atomic"
 
 	libp2pcore "github.com/libp2p/go-libp2p/core"
 	"github.com/pkg/errors"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/n42blockchain/N42/common"
 	types "github.com/n42blockchain/N42/common/block"
@@ -16,6 +18,8 @@ import (
 	"github.com/n42blockchain/N42/internal/p2p/p2ptypes"
 	"github.com/n42blockchain/N42/lib/rlp"
 	"github.com/n42blockchain/N42/log"
+	"github.com/n42blockchain/N42/params"
+	"github.com/n42blockchain/N42/proto/types_pb"
 )
 
 // chunkBlockWriter writes the given block as a chunked response to the stream.
@@ -93,6 +97,60 @@ func (r *rawSSZBytes) UnmarshalSSZ(buf []byte) error {
 	return nil
 }
 
+// legacyProtoBlocks gates the protobuf block fallback below. It is off unless a
+// chain has been shown incapable of losing data through it; see
+// AllowLegacyProtoBlocks.
+var legacyProtoBlocks atomic.Bool
+
+// AllowLegacyProtoBlocks enables the pre-RLP protobuf fallback in
+// decodeChunkedBlock, but only for chains where reconstructing a block through
+// types_pb cannot change its hash.
+//
+// types_pb.Header has no field for BlockAccessListHash (EIP-7928) or
+// MobileRegistryRoot, and both are part of the header's RLP hash preimage. A
+// block rebuilt from protobuf therefore hashes differently from the one the
+// network agreed on the moment either field is in use -- and a legacy peer
+// cannot supply them, because its build predates them. Header.Marshal carries
+// them in a trailer alongside the protobuf body for exactly this reason;
+// ToProtoMessage/FromProtoMessage alone do not.
+//
+// So the fallback is sound only where neither fork is configured at all, not
+// merely where it has yet to activate: a chain that will switch them on later
+// would silently start losing the field at the fork. Being wrong in the other
+// direction only costs compatibility with peers that predate RLP, which is why
+// the default is off.
+func AllowLegacyProtoBlocks(cfg *params.ChainConfig) {
+	legacyProtoBlocks.Store(cfg != nil && cfg.BALTime == nil && cfg.MobileAnchorTime == nil)
+}
+
+// decodeChunkedBlock accepts both generations of the block-range wire payload.
+// New peers send ETH-standard RLP; deployed legacy-mainnet peers still send a
+// protobuf Block inside the same length/snappy envelope. Keep the fallback on
+// reads only so upgraded peers converge on RLP without stranding old nodes, and
+// only where AllowLegacyProtoBlocks has established it cannot drop a field the
+// block hash commits to.
+func decodeChunkedBlock(data []byte) (*types.Block, error) {
+	blk := new(types.Block)
+	if err := rlp.DecodeBytes(data, blk); err == nil {
+		return blk, nil
+	} else {
+		rlpErr := err
+		if !legacyProtoBlocks.Load() {
+			return nil, fmt.Errorf("RLP decode failed and the legacy protobuf fallback is "+
+				"disabled on this chain (it cannot carry every header field the block hash "+
+				"commits to): %w", rlpErr)
+		}
+		legacy := new(types_pb.Block)
+		if err := proto.Unmarshal(data, legacy); err != nil {
+			return nil, fmt.Errorf("RLP decode failed: %v; legacy protobuf decode failed: %w", rlpErr, err)
+		}
+		if err := blk.FromProtoMessage(legacy); err != nil {
+			return nil, fmt.Errorf("RLP decode failed: %v; legacy protobuf conversion failed: %w", rlpErr, err)
+		}
+		return blk, nil
+	}
+}
+
 // ReadChunkedBlock handles each response chunk that is sent by the peer and
 // converts it into a block. The first chunk has different deadline handling.
 func ReadChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider, isFirstChunk bool) (*types.Block, error) {
@@ -122,9 +180,9 @@ func readFirstChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (
 	if err = encoder.DecodeWithMaxLengthLimit(stream, raw, encoder.MaxBlockChunkSize); err != nil {
 		return nil, errors.Wrapf(err, "failed to decode block from first chunk (forkDigest=%x)", ctx)
 	}
-	blk := &types.Block{}
-	if err = rlp.DecodeBytes(raw.data, blk); err != nil {
-		return nil, errors.Wrapf(err, "failed to RLP-decode block from first chunk (forkDigest=%x)", ctx)
+	blk, err := decodeChunkedBlock(raw.data)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to decode block payload from first chunk (forkDigest=%x)", ctx)
 	}
 	log.Debug("First chunk decoded successfully", "blockNumber", blk.Number64().Uint64(), "peer", stream.Conn().RemotePeer().String())
 	return blk, nil
@@ -170,9 +228,9 @@ func readResponseChunk(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (*typ
 	if err = encoder.DecodeWithMaxLengthLimit(stream, raw, encoder.MaxBlockChunkSize); err != nil {
 		return nil, errors.Wrapf(err, "failed to decode block from chunk (forkDigest=%x)", forkDigest)
 	}
-	blk := &types.Block{}
-	if err = rlp.DecodeBytes(raw.data, blk); err != nil {
-		return nil, errors.Wrapf(err, "failed to RLP-decode block from chunk (forkDigest=%x)", forkDigest)
+	blk, err := decodeChunkedBlock(raw.data)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to decode block payload from chunk (forkDigest=%x)", forkDigest)
 	}
 	return blk, nil
 }

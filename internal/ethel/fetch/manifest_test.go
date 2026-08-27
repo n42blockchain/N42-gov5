@@ -175,6 +175,16 @@ func TestLoadManifest_LocalFile(t *testing.T) {
 	}
 }
 
+// TestLoadManifest_FileScheme covers both spellings of a file URL. The
+// two-slash form is the one that used to break on Windows: url.Parse puts the
+// drive in Host ("C:") and leaves Path as "/dir/x", so reading Path alone drops
+// the drive. That failure was invisible for a long time because a
+// leading-slash path resolves against the CURRENT DRIVE — running the test from
+// C: made the stripped path land on the same file anyway. It only surfaced when
+// the tree was checked out on D:.
+//
+// The subtest therefore asserts on CONTENT, not just on a nil error, and the
+// fixture lives in t.TempDir() whose drive is not something the test controls.
 func TestLoadManifest_FileScheme(t *testing.T) {
 	m := validManifest()
 	body, _ := json.Marshal(m)
@@ -183,14 +193,26 @@ func TestLoadManifest_FileScheme(t *testing.T) {
 	if err := os.WriteFile(path, body, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Convert to file:// URL.
-	uri := "file://" + filepath.ToSlash(path)
-	got, err := LoadManifest(context.Background(), uri)
-	if err != nil {
-		t.Fatalf("LoadManifest %s: %v", uri, err)
-	}
-	if got.ChainID != 1 {
-		t.Fatalf("decoded chain id: %d", got.ChainID)
+	slashed := filepath.ToSlash(path)
+
+	for _, tc := range []struct {
+		name string
+		uri  string
+	}{
+		// file:///C:/dir/x — the correct form; drive stays in Path.
+		{"three slashes", "file:///" + strings.TrimPrefix(slashed, "/")},
+		// file://C:/dir/x — drive lands in Host; the regression case.
+		{"two slashes", "file://" + slashed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := LoadManifest(context.Background(), tc.uri)
+			if err != nil {
+				t.Fatalf("LoadManifest %s: %v", tc.uri, err)
+			}
+			if got.ChainID != 1 {
+				t.Fatalf("decoded chain id: %d, want 1 — a different file was read", got.ChainID)
+			}
+		})
 	}
 }
 

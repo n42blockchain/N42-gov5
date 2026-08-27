@@ -99,16 +99,27 @@ cold-follower path, broadcast measures the warm one. Say which you used.
 1. **`-sender-offset` must be fresh every round.** Reusing a drained or
    nonce-used sender set produces a demote spiral (pool collapses, TPS
    goes to zero) that looks exactly like a node failure.
-2. **Purge the pool journal between rounds.** A restored journal replays
-   the previous round's unmined transactions: one round whose flood never
-   even launched still reported ~10k TPS, purely from leftovers.
+2. **Purge the pool journal between rounds, after stopping.** Current builds
+   persist pending transactions in MDBX `TxPoolJournal` during graceful stop;
+   removing only the historical `txpool.journal` file (especially before
+   stop) does nothing. `bench-run.sh` now stops all nodes first and runs the
+   purpose-built `txpool-journal-reset -apply` against every stopped
+   chaindata. A restored journal once made a round whose flood never launched
+   report ~10k TPS purely from leftovers.
 3. **Poll RPC readiness, never sleep.** A fixed sleep raced the 12 GB
    MDBX open; the flood died on "connection refused" and the round
    reported 0 tx.
+   Sender nonce probes also fail the flood after their bounded retries; a
+   partial sender set is a supply-harness failure, not a lower chain result.
 4. **Check the faucet first.** Funding cost is
-   `senders x (pertx + 10) x 21000 x gasPrice`. The faucet refills from
+   approximately `senders x (pertx + 10) x 21000 x gasPrice` (plus the
+   funding transfers' own gas). The faucet refills from
    `devBlockReward` (~86k ETH/day) — overnight is enough — but a broke
    faucet presents as mass transaction rejection, not as an error.
+   Read the balance and mined nonce at `latest`; `pending` nonce only says how
+   far the pool's contiguous nonce chain extends. A fresh replay from an
+   external/mainnet source has no months of native-fleet rewards, unlike a
+   weekly replay whose source is the stopped fleet's node 0.
 5. **Read occupancy, not just TPS.** Fast empty blocks and slow full
    blocks both produce mid-range TPS for completely different reasons.
 
@@ -167,6 +178,32 @@ position gave 12,186 / 11,805 / 11,807 at 52.5-53.4% — identical to
    `eth_getBalance` at `latest` against a node whose consensus is wedged can
    return 0 rather than an error, and that false zero sent a whole diagnosis
    down the wrong path.
+
+9. **`bench-run.ps1 -DecaySec 90` neutralises the carry-over at the start of
+   a round** — 90 empty blocks at 1 s pacing take the baseFee from wherever
+   the last round left it back to the 1.0 gwei floor (0.875^90), and the
+   script prints the resulting `gasPrice` so the round records its own
+   starting condition. Added 2026-08-21, after rules 6/7 had been *known* for
+   two days and were still costing rounds: a constraint written only in prose
+   gets skipped, and the fix is to put it in the thing that runs.
+
+10. **The baseFee also climbs DURING a round, and a long round outlives its
+    own validity.** Decaying at the start is necessary but not sufficient: 60
+    consecutive full blocks raise the baseFee 12.5% each, so it crosses the
+    flood's cap partway through and the round falls into the same 53%
+    oscillation. Measured 2026-08-21 with `-DecaySec 90`:
+
+    | window | TPS | occupancy | full(>=95%) |
+    |---|---|---|---|
+    | win1 | **22,487** | 98.4% | 55/60 |
+    | win2 | 18,665 | 89.1% | 49/55 |
+    | win3 | 12,568 | 53.2% | 33/62 |
+
+    Nothing changed between those windows except the fee market. **Compare
+    same-numbered windows across binaries, and treat win1 as the measurement**
+    — by win3 the rig is measuring the cap again. Chain-triggered profiles are
+    unaffected: they arm on consecutive >=95% blocks, so they land in the
+    valid region by construction.
 
 
 ## What the chain actually spends its CPU on (2026-08-19, under load)
@@ -260,11 +297,14 @@ the full tier.
 | `v955` | first after idle | **22,093** | 17,520 | 18,660 | 100% (all full) | **1.035 s** |
 | `v954` | first after idle | 20,565 | 19,424 | 19,805 | 100% (all full) | 1.111 s |
 
-Like-for-like — same position, same load, both at 100% occupancy carrying the
-full 22,857 transactions per block — the block cycle drops from 1.111 s to
-1.035 s, **6.8%**. Window 1 also matches the 2026-08-16 record of 22,089, but
-at 100% occupancy where the record was at 95.1%, i.e. more work per block for
-the same throughput.
+That single-window comparison looked like a 6.8% gain. **It was noise.**
+Repeating the same v955 round twice more, in the same first-after-idle
+position and also at 100% occupancy, gave 20,142 @ 1.132 s and 19,743 @
+1.154 s. The v954 number sits inside that spread, and a v954 round run later
+the same night produced 20,569 @ 1.111 s — within 0.02% of its earlier
+20,565. **Run-to-run spread on this rig exceeds the difference between the
+two binaries**, so a single window cannot separate them. Report at least
+three runs per binary before claiming a throughput difference.
 
 The structural change is confirmed independently by the write probe on the
 light production load, 283 write transactions over 71 blocks:
@@ -281,14 +321,32 @@ separate `persistState` transaction is gone. Per-block byte counts are NOT
 comparable across sessions: they move with freelist state, which differs
 between runs.
 
-**Still not verified:** whether `BeginRw`'s 20.4% CPU share actually dropped.
-Two attempts failed for different reasons — the first round died in its
-funding phase (rule 8), and in the second the 30 s profile landed on the
-pool-admission phase rather than block execution: `secp256k1` was 73% of
-cgocall while `cursor_put` was 0.08%, i.e. the node was verifying incoming
-transactions, not writing blocks. A valid comparison has to be taken inside a
-steady 100%-occupancy window on both binaries; profile placement matters as
-much as round placement.
+**Verified, and the answer is no.** Two rounds run back to back with an
+identical procedure — same pool, same offset spacing, both started from a
+decayed baseFee, and the profile triggered by the CHAIN (four consecutive
+blocks at >=95% occupancy) rather than by a log line:
+
+| | v954, 28 blocks sampled | v955, 27 blocks sampled |
+|---|---|---|
+| total CPU | 281.0% | 273.5% |
+| `secp256k1_ext_ecdsa_recover` | 34.18% | 33.44% |
+| **`mdbx_txn_begin`** | **4.95%** | **4.95%** |
+| `mdbxgo_txn_commit_ex` | 0.84% | 1.50% |
+
+Per block, `mdbx_txn_begin` costs 149 ms on v954 and 150 ms on v955. Removing
+one write transaction per block changed nothing measurable.
+
+And note what else this says: **the 20.4% figure from 2026-08-19 does not
+reproduce.** Both binaries sit near 5% today. That number was a property of
+that particular run's database state — freelist pressure at the time — not a
+standing cost of the node. A profile taken once is a description of one
+moment on one database, and cost attribution drawn from it should be checked
+against a second run before anything is built on it.
+
+The change stays in regardless: folding the consensus write into the
+canonicalization transaction makes canonical head and consensus state move
+atomically, which closes a real crash window. It is a correctness change that
+happens to be performance-neutral, and it should be described that way.
 
 ## Wedge recovery (2026-08-20)
 
@@ -328,3 +386,138 @@ It clears the round/vote journal (410 bytes), which removes the crash-time
 no-equivocation guard, so it is only valid after a coordinated stop where the
 applied chain has been verified identical across nodes. The tool enforces an
 exclusive fsynced backup. Blocks resumed at 2 s immediately on restart.
+
+
+## 2026-08-21: the pool was re-encoding every transaction to protobuf
+
+A profile sweep armed on the CHAIN (four consecutive >=95% blocks, then 30 s
+CPU + heap delta + mutex + block + a 5 s execution trace) found a cost that
+none of the earlier sweeps had separated out, because it hides inside a
+function whose name suggests arithmetic.
+
+`numSlots()` — the pool's "how big is this transaction" helper — called
+`tx.Marshal()`, a full protobuf encode, uncached, on every call. The pool
+asks for slots several times per transaction, and `validateTx` paid for a
+second encode purely to length-check the result. On a node at the 480M tier
+with 22,857-transaction blocks:
+
+| | v5.7.955 run 1 | v5.7.955 run 2 | v5.7.956 |
+|---|---|---|---|
+| total CPU | 282.20% | 274.64% | (see note) |
+| `numSlots` | 4.71% (3.99 s) | 4.22% | **0.012%** (0.01 s) |
+| `Transaction.Marshal` | 6.54% (5.54 s) | 6.20% | **0.28%** (0.23 s) |
+| `EncodedSize` (replacement) | 0.78% | 0.72% | 0.66% |
+
+Near-zero, not literally gone — they drop out of the default `-top` listing,
+which is what makes "absent" an easy thing to write and a wrong thing to
+write. Checked with `-peek`, the residue is accounted for: `numSlots` keeps
+0.01 s on the new `txWireSize -> EncodedSize` path, and the remaining proto
+`Marshal` is entirely `miner.commit -> streamverify.BuildStreamPacket`, a
+path this change never touched and a legitimate proto use (it is a
+cross-boundary wire format). The pool's two call sites — `numSlots` at
+3.51 s and `validateTx` at 1.67 s of the v955 total — are gone.
+
+Allocation told the same story from the other side: over 27 sampled blocks,
+`ConvertUint256IntToH256` was 13.98% of all bytes allocated and
+`toProtoFields` another 14.54% — the protobuf path was roughly 30% of
+everything the node allocated under load.
+
+The fix is to size transactions by their RLP encoding (`EncodedSize`, which
+memoises and which the batch ingest path already warms in parallel). That is
+also the encoding the block builder budgets against and the broadcaster
+publishes, and it matches geth, whose txpool sizes by `tx.Size()`.
+
+**Two runs of the unchanged binary are in that table on purpose.** The
+same-binary spread is the yardstick for whether a difference means anything:
+0.49 points on `numSlots`, 1.27 points on `Ecrecover` (34.30% vs 35.57%), and
+`mdbx_txn_begin` again moving several points between runs — the third
+independent confirmation that its share tracks freelist state and cannot be
+read from a single profile. A 4.2-4.7 point item going to zero is far outside
+that spread; anything under ~1.5 points is not a result yet.
+
+Note on the v956 column: its round inherited an elevated baseFee and ran at
+53% occupancy, so its totals are not comparable with the v955 rounds. The
+per-symbol facts that survive are the ones that do not depend on occupancy —
+a symbol present in every profile of one binary and absent from the other.
+That is why `-DecaySec` (rule 9) exists now.
+
+### Also landed: the sender-seeding change, measured, and it is a null result
+
+Seeding the pool's sender memo with the recovery the RPC decode already
+performed was re-run properly on 2026-08-21 — `v5.7.956` with `-DecaySec 90`,
+all three windows at 100% occupancy, profile armed on 31/31 full blocks — and
+compared against the `v5.7.955` decayed-start round.
+
+**The change works and does nothing measurable here.** Both halves matter.
+
+*It works*: `internal/api.TestSeedRecoveredSenderAvoidsSecondRecovery` seeds a
+deliberately wrong address and requires `Sender` to return it, which only a
+cache lookup can do. It fails when the function is neutered to a no-op.
+
+*It is not measurable on this rig*: the fraction of `Sender` calls that reach
+an actual recovery, which is what the change is supposed to lower, sits inside
+the same-binary spread.
+
+| round | `recoverPlain`/`Sender` | RPC share |
+|---|---|---|
+| v955 (A) | 0.3008 | 0.115 |
+| v955 (A') | 0.3166 | 0.130 |
+| v955 (r2) | 0.3074 | 0.126 |
+| **v956 (B'')** | **0.3105** | 0.131 |
+
+Three rounds of the unchanged binary span 0.3008–0.3166; the changed binary
+lands in the middle of that. Direction is right (−1.9% against A'), magnitude
+is not separable from noise. Only ~13% of transactions reach this node over
+RPC under `-shard-senders`, and the recovery it removes runs on a prewarm
+goroutine — whose stack pprof does not attach to the RPC call that spawned it,
+which is why `-focus` on the submit path shows nothing either.
+
+The change stays: it is strictly less work for an identical result, and the
+test pins the mechanism. It is credited with nothing.
+
+**Two traps this comparison walked into first**, both worth recognising:
+
+- *Per-executed-transaction normalisation is wrong for pool-side work.* The
+  first pass divided ecrecover by executed transactions and reported +44% for
+  the changed binary. Block time differed between the rounds (1.000 s vs
+  1.111 s), so the same flood rate fed a slower chain: pool work per *executed*
+  transaction rises for reasons that have nothing to do with the code. Use a
+  denominator driven by the same thing as the numerator.
+- *Removing one cost inflates every other percentage.* `ecrecover` read 35.57%
+  → 39.74%, which looks like a regression until you notice `numSlots` vacated
+  4.22 points of the same pie. Shares are not costs. Compare absolute
+  CPU-seconds per unit of work, or ratios between symbols.
+
+A control helps catch both: `ApplyTransaction`, which neither change touches,
+came out 1.3140 vs 1.3705 µs per unit (+4.3%) — close enough to call the
+rounds comparable, where the contaminated 53%-occupancy round had put the same
+control 19% apart.
+
+### Window results, and why win1 is not the whole story
+
+| | A' (v955) | B'' (v956) |
+|---|---|---|
+| win1 | 22,487 @ 98.4% | 20,566 @ 100% |
+| win2 | 18,665 @ 89.1% | 18,663 @ 100% |
+| win3 | 12,568 @ 53.2% | 18,666 @ 100% |
+| 3-window total txs | 3,223,953 | 3,474,264 |
+
+Read win1 alone and v956 lost 8.5%. Read the totals and it won 7.8%. Neither
+is a throughput result: v955's faster blocks (1.000 s vs 1.111 s) climbed the
+baseFee faster and tipped it over the flood's cap by win3, while v956's slower
+blocks stayed under it for all three windows. **The rig's own fee dynamics
+couple block time to how long a round stays valid**, so a binary that produces
+blocks slightly slower gets a longer valid window and a better total. Rule 10
+says compare same-numbered windows; this round says even that is only sound
+while both rounds are still inside their valid region.
+
+### Fleet state
+
+The A/B sequence ended in the documented wedge: all 7 nodes at
+`lockedQC=36448/fa76e3fa521e`, views advancing (36461 -> 36466), timeouts
+climbing, zero blocks. Before resetting anything, the production binary
+(`v5.7.955`, i.e. without either change) was started on the same data and
+wedged identically at the same lockedQC — which is what rules out the new
+code as the cause, and what justifies `hotstuff-reset` rather than a
+bisect. Journals backed up to `E:\hs-journal-backup-node*-20260821-*.bin`;
+the fleet resumed at 14,526,691 and was producing within 3 s.

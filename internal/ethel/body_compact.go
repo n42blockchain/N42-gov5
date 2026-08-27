@@ -20,6 +20,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/golang/snappy"
@@ -42,6 +43,22 @@ const (
 	bfHasBlob       bodyFlags = 1 << 2
 	bfHasSetCode    bodyFlags = 1 << 3
 	bfHasAccessList bodyFlags = 1 << 4
+
+	// bfAuthVFull marks a segment whose EIP-7702 authorization V values are
+	// written as a trimmed uint256 instead of a single 0/1 byte.
+	//
+	// The original encoder assumed V could only be y_parity (0 or 1) and wrote
+	// `1` only when V == 1, folding everything else to 0. Mainnet carries
+	// authorizations with V = 27 / 28, so those were silently flattened to 0 —
+	// an unrecoverable loss that changes the recovered authority and, through
+	// it, the executed nonce state and the block's gas.
+	//
+	// Segments written before this flag existed cannot recover V from the body
+	// bytes alone. The decoder keeps reading their original layout; callers that
+	// also have the canonical header transaction root can disambiguate the rare
+	// legacy 27/28 values (witness replay does this), otherwise the segment must
+	// be regenerated from a canonical body source.
+	bfAuthVFull bodyFlags = 1 << 5
 )
 
 // DecodedBlock holds a decoded body for columnar encoding.
@@ -221,7 +238,9 @@ func detectBodyFlags(blocks []*DecodedBlock) bodyFlags {
 			case transaction.BlobTxType:
 				f |= bfHasBlob | bfHasAccessList
 			case transaction.SetCodeTxType:
-				f |= bfHasSetCode | bfHasAccessList
+				// bfAuthVFull: everything this build writes carries the true
+				// authorization V, not a folded 0/1 byte.
+				f |= bfHasSetCode | bfHasAccessList | bfAuthVFull
 			}
 		}
 	}
@@ -449,7 +468,7 @@ func encodeBodySegment(blocks []*DecodedBlock, chainID uint64, enc *zstd.Encoder
 						buf = encodeTrimmedU256(buf, &chainVal)
 						buf = append(buf, auth.Address[:]...)
 						buf = appendVarint(buf, auth.Nonce)
-						// R, S as raw 32B; V as 1 byte (0 or 1).
+						// R and S as raw 32B.
 						var rBuf, sBuf [32]byte
 						if auth.R != nil {
 							rBuf = auth.R.Bytes32()
@@ -459,11 +478,15 @@ func encodeBodySegment(blocks []*DecodedBlock, chainID uint64, enc *zstd.Encoder
 						}
 						buf = append(buf, rBuf[:]...)
 						buf = append(buf, sBuf[:]...)
-						vByte := byte(0)
-						if auth.V != nil && auth.V.Uint64() == 1 {
-							vByte = 1
+						// V as a trimmed uint256, not a 0/1 byte: mainnet
+						// authorizations carry V = 27 / 28 as well as y_parity,
+						// and flattening those to 0 silently changes the
+						// recovered authority (see bfAuthVFull).
+						var vVal uint256.Int
+						if auth.V != nil {
+							vVal = *auth.V
 						}
-						buf = append(buf, vByte)
+						buf = encodeTrimmedU256(buf, &vVal)
 					}
 				}
 			}
@@ -840,13 +863,45 @@ type BodyCompactReader struct {
 	segments     uint64
 	coldResolver ColdResolver
 
+	// decodeGate is shared by the independent readers of one replay process.
+	// BODYC expands a whole 8192-block segment at once; letting every reader do
+	// that concurrently creates a large allocation/GC and memory-bandwidth
+	// burst. The gate limits only read+decompress+decode. Readers that already
+	// own a decoded segment remain free to assemble witness jobs concurrently.
+	decodeGate chan struct{}
+
 	cachedSeg    int64
 	cachedBlocks []*DecodedBlock
+	cachedFlags  bodyFlags
+
+	// Read-ahead. TakeBody starts the next segment's decode on its own
+	// goroutine; a second decoder keeps it fully independent of foreground
+	// decodes. dataMu guards the lazily populated handle map and the cold
+	// resolver, the only reader state the two share - ReadAt itself is a pread
+	// and needs no serialisation.
+	prefetchDec *zstd.Decoder
+	dataMu      sync.Mutex
+	pending     *segAhead
+}
+
+// segAhead is one segment being decoded off the caller's critical path. Only
+// the goroutine writes to it, and only before closing done.
+type segAhead struct {
+	seg    int64
+	done   chan struct{}
+	blocks []*DecodedBlock
+	flags  bodyFlags
+	err    error
 }
 
 // SetColdResolver installs a resolver consulted when a segment's cdat is absent
 // (cold/trimmed). With no resolver, an absent segment yields ErrBodyTrimmed.
 func (r *BodyCompactReader) SetColdResolver(cr ColdResolver) { r.coldResolver = cr }
+
+// SetDecodeGate limits concurrent whole-segment decodes across readers that
+// share gate. A nil gate leaves standalone/random-access readers unchanged.
+// Configure it before the reader is used.
+func (r *BodyCompactReader) SetDecodeGate(gate chan struct{}) { r.decodeGate = gate }
 
 func OpenBodyCompact(dir string) (*BodyCompactReader, error) {
 	idxPath := filepath.Join(dir, "bodyc.cidx")
@@ -864,19 +919,35 @@ func OpenBodyCompact(dir string) (*BodyCompactReader, error) {
 		idf.Close()
 		return nil, err
 	}
+	prefetchDec, err := zstd.NewReader(nil)
+	if err != nil {
+		dec.Close()
+		idf.Close()
+		return nil, err
+	}
 	return &BodyCompactReader{
-		dir:       dir,
-		idxFile:   idf,
-		dataFiles: make(map[uint16]*os.File),
-		dec:       dec,
-		segments:  uint64(fi.Size()) / 8,
-		cachedSeg: -1,
+		dir:         dir,
+		idxFile:     idf,
+		dataFiles:   make(map[uint16]*os.File),
+		dec:         dec,
+		prefetchDec: prefetchDec,
+		segments:    uint64(fi.Size()) / 8,
+		cachedSeg:   -1,
 	}, nil
 }
 
 func (r *BodyCompactReader) Close() {
+	// A read-ahead goroutine may still be reading the files below; join it
+	// first so it cannot ReadAt a closed handle.
+	if sa := r.pending; sa != nil {
+		<-sa.done
+		r.pending = nil
+	}
+	r.prefetchDec.Close()
 	r.dec.Close()
 	r.idxFile.Close()
+	r.dataMu.Lock()
+	defer r.dataMu.Unlock()
 	for _, f := range r.dataFiles {
 		f.Close()
 	}
@@ -884,6 +955,15 @@ func (r *BodyCompactReader) Close() {
 
 func (r *BodyCompactReader) Segments() uint64 { return r.segments }
 func (r *BodyCompactReader) MaxBlock() uint64 { return r.segments * HeaderSegmentSize }
+
+// SegmentNeedsAuthVRepair reports whether the currently loaded segment can hold
+// EIP-7702 authorizations whose V the original encoder flattened to zero: it
+// carries SetCode transactions but was written before the lossless encoding.
+// Segments written by this build declare bfAuthVFull alongside bfHasSetCode, so
+// this is an O(1) check that costs a regenerated archive nothing.
+func (r *BodyCompactReader) SegmentNeedsAuthVRepair() bool {
+	return r.cachedFlags&bfHasSetCode != 0 && r.cachedFlags&bfAuthVFull == 0
+}
 
 func (r *BodyCompactReader) ReadBody(blockNum uint64) (*DecodedBlock, error) {
 	seg := int64(blockNum / HeaderSegmentSize)
@@ -901,70 +981,189 @@ func (r *BodyCompactReader) ReadBody(blockNum uint64) (*DecodedBlock, error) {
 	return r.cachedBlocks[idx], nil
 }
 
+// TakeBody is the destructive sequential-read variant used by bulk pipelines.
+// Once the returned block has been handed to its worker, the segment cache no
+// longer needs to retain a second reference to it. Clearing the slot keeps an
+// 8192-block bodyc segment from pinning every already-dispatched transaction,
+// calldata and access list until the next segment is decoded. Random-access
+// callers must continue to use ReadBody.
+//
+// TakeBody is also what arms read-ahead, and deliberately the only thing that
+// does. Decoding a segment is expensive - 8192 blocks carry 1.3M-2.8M
+// transactions and take roughly 1.0-1.6s to decompress and decode - and in a
+// sequential pipeline that cost lands on the single reader goroutine feeding
+// the entire worker fleet. It is a serial section in Amdahl's sense: constant
+// while the parallel part shrinks with worker count. Measured on a 128-core
+// host, 104 workers spent about 40% of wall time parked on an empty job
+// channel waiting for one goroutine to finish one segment. Starting the
+// successor here overlaps that decode with execution.
+//
+// Only the sequential API arms it, because only a sequential caller is certain
+// to want the next segment; a random-access ReadBody caller would miss on
+// nearly every lookup and pay for a discarded decode each time.
+func (r *BodyCompactReader) TakeBody(blockNum uint64) (*DecodedBlock, error) {
+	body, err := r.ReadBody(blockNum)
+	if err != nil {
+		return nil, err
+	}
+	idx := int(blockNum % HeaderSegmentSize)
+	r.cachedBlocks[idx] = nil
+	r.startAhead(r.cachedSeg + 1)
+	return body, nil
+}
+
+// TakeBodyNoAhead releases the handed-off block from the segment cache without
+// predicting the next segment. Parallel reservoir readers receive dynamic,
+// often interleaved ranges, so TakeBody's sequential seg+1 read-ahead would
+// decode another reader's work and retain it unnecessarily.
+func (r *BodyCompactReader) TakeBodyNoAhead(blockNum uint64) (*DecodedBlock, error) {
+	body, err := r.ReadBody(blockNum)
+	if err != nil {
+		return nil, err
+	}
+	idx := int(blockNum % HeaderSegmentSize)
+	r.cachedBlocks[idx] = nil
+	return body, nil
+}
+
+// startAhead begins decoding segNum unless it is already in flight or past the
+// end of the store.
+func (r *BodyCompactReader) startAhead(segNum int64) {
+	if uint64(segNum) >= r.segments {
+		return
+	}
+	if sa := r.pending; sa != nil {
+		if sa.seg == segNum {
+			return
+		}
+		// Stale slot from a caller that seeked. Join before replacing it: the
+		// goroutine is still reading the data files, and Close must not be able
+		// to pull them out from under it.
+		<-sa.done
+		r.pending = nil
+	}
+	sa := &segAhead{seg: segNum, done: make(chan struct{})}
+	r.pending = sa
+	go func() {
+		sa.blocks, sa.flags, sa.err = r.decodeSegment(segNum, r.prefetchDec)
+		close(sa.done)
+	}()
+}
+
+// awaitAhead returns segNum from the read-ahead slot, or decodes it inline when
+// the slot holds something else - a first call, or a caller that seeked.
+func (r *BodyCompactReader) awaitAhead(segNum int64) ([]*DecodedBlock, bodyFlags, error) {
+	sa := r.pending
+	if sa == nil || sa.seg != segNum {
+		return r.decodeSegment(segNum, r.dec)
+	}
+	<-sa.done
+	r.pending = nil
+	return sa.blocks, sa.flags, sa.err
+}
+
 func (r *BodyCompactReader) loadSegment(segNum int64) error {
 	if uint64(segNum) >= r.segments {
 		return fmt.Errorf("segment %d out of range (%d)", segNum, r.segments)
+	}
+	blocks, flags, err := r.awaitAhead(segNum)
+	if err != nil {
+		return err
+	}
+	r.cachedSeg = segNum
+	r.cachedBlocks = blocks
+	r.cachedFlags = flags
+	return nil
+}
+
+// decodeSegment reads and decodes one segment without touching the cache, using
+// the supplied decoder. Foreground and read-ahead paths own distinct decoders,
+// so the two can run concurrently.
+func (r *BodyCompactReader) decodeSegment(segNum int64, dec *zstd.Decoder) ([]*DecodedBlock, bodyFlags, error) {
+	if r.decodeGate != nil {
+		r.decodeGate <- struct{}{}
+		defer func() { <-r.decodeGate }()
 	}
 
 	// Read idx entry.
 	var entryBuf [8]byte
 	if _, err := r.idxFile.ReadAt(entryBuf[:], segNum*8); err != nil {
-		return fmt.Errorf("read index: %w", err)
+		return nil, 0, fmt.Errorf("read index: %w", err)
 	}
 	e := decodeBodyIdx(entryBuf[:])
 
-	// Open/cache dat file. The cdat files need NOT start at bodyc.0000: a trimmed
-	// post-merge store carries only the high-numbered segments (e.g. 0097..) plus
-	// the full bodyc.cidx, so the reader opens by the cidx's fileNum on demand.
-	// A missing cdat means that block's body was trimmed (pre-merge / below the
-	// retained range) — surface that as ErrBodyTrimmed, not a raw open error.
-	df, ok := r.dataFiles[e.fileNum]
-	if !ok {
-		path := filepath.Join(r.dir, fmt.Sprintf("bodyc.%04d.cdat", e.fileNum))
-		f, err := os.Open(path)
-		if err != nil && os.IsNotExist(err) && r.coldResolver != nil {
-			// Segment is trimmed locally — ask the cold resolver to fetch the
-			// covering cold archive and open it from wherever it landed.
-			if cp, rerr := r.coldResolver.Resolve(uint64(segNum) * HeaderSegmentSize); rerr == nil {
-				f, err = os.Open(cp)
-			}
-		}
-		if err != nil {
-			if os.IsNotExist(err) {
-				return fmt.Errorf("%w: segment %d (block ~%d), cdat %04d absent",
-					ErrBodyTrimmed, segNum, uint64(segNum)*HeaderSegmentSize, e.fileNum)
-			}
-			return fmt.Errorf("open dat %d: %w", e.fileNum, err)
-		}
-		r.dataFiles[e.fileNum] = f
-		df = f
+	df, err := r.dataFile(e.fileNum, segNum)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	// Read framed data.
 	var sizeBuf [4]byte
 	if _, err := df.ReadAt(sizeBuf[:], int64(e.offset)); err != nil {
-		return fmt.Errorf("read size: %w", err)
+		return nil, 0, fmt.Errorf("read size: %w", err)
 	}
 	compSize := binary.LittleEndian.Uint32(sizeBuf[:])
 
 	compressed := make([]byte, compSize)
 	if _, err := df.ReadAt(compressed, int64(e.offset)+4); err != nil {
-		return fmt.Errorf("read data: %w", err)
+		return nil, 0, fmt.Errorf("read data: %w", err)
 	}
 
-	raw, err := r.dec.DecodeAll(compressed, nil)
+	raw, err := dec.DecodeAll(compressed, nil)
 	if err != nil {
-		return fmt.Errorf("decompress: %w", err)
+		return nil, 0, fmt.Errorf("decompress: %w", err)
 	}
 
 	blocks, err := decodeBodySegment(raw)
 	if err != nil {
-		return fmt.Errorf("decode segment %d: %w", segNum, err)
+		return nil, 0, fmt.Errorf("decode segment %d: %w", segNum, err)
 	}
+	return blocks, bodySegmentFlags(raw), nil
+}
 
-	r.cachedSeg = segNum
-	r.cachedBlocks = blocks
-	return nil
+// bodySegmentFlags reads the flag word a segment declares itself with. It is
+// the segment's own statement about which optional columns and which encodings
+// it used, so it is what callers must key format-compatibility decisions on.
+func bodySegmentFlags(data []byte) bodyFlags {
+	if len(data) < 2 {
+		return 0
+	}
+	return bodyFlags(binary.LittleEndian.Uint16(data[0:2]))
+}
+
+// dataFile returns a shared read-only cdat handle. ReadAt is safe concurrently;
+// the mutex only covers lazy map population and cold resolution, so two
+// goroutines racing on one fileNum cannot both open it and leak a handle.
+//
+// The cdat files need NOT start at bodyc.0000: a trimmed post-merge store
+// carries only the high-numbered segments (e.g. 0097..) plus the full
+// bodyc.cidx, so the reader opens by the cidx's fileNum on demand. A missing
+// cdat means that block's body was trimmed (pre-merge / below the retained
+// range) - surface that as ErrBodyTrimmed, not a raw open error.
+func (r *BodyCompactReader) dataFile(fileNum uint16, segNum int64) (*os.File, error) {
+	r.dataMu.Lock()
+	defer r.dataMu.Unlock()
+	if df, ok := r.dataFiles[fileNum]; ok {
+		return df, nil
+	}
+	path := filepath.Join(r.dir, fmt.Sprintf("bodyc.%04d.cdat", fileNum))
+	f, err := os.Open(path)
+	if err != nil && os.IsNotExist(err) && r.coldResolver != nil {
+		// Segment is trimmed locally - ask the cold resolver to fetch the
+		// covering cold archive and open it from wherever it landed.
+		if cp, rerr := r.coldResolver.Resolve(uint64(segNum) * HeaderSegmentSize); rerr == nil {
+			f, err = os.Open(cp)
+		}
+	}
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: segment %d (block ~%d), cdat %04d absent",
+				ErrBodyTrimmed, segNum, uint64(segNum)*HeaderSegmentSize, fileNum)
+		}
+		return nil, fmt.Errorf("open dat %d: %w", fileNum, err)
+	}
+	r.dataFiles[fileNum] = f
+	return f, nil
 }
 
 // ---------- Segment Decoder (stub — full decode in next iteration) ----------
@@ -1271,8 +1470,20 @@ func decodeBodySegment(data []byte) ([]*DecodedBlock, error) {
 					pos += 32
 					auth.R = new(uint256.Int).SetBytes32(rBuf[:])
 					auth.S = new(uint256.Int).SetBytes32(sBuf[:])
-					auth.V = uint256.NewInt(uint64(data[pos]))
-					pos++
+					if f&bfAuthVFull != 0 {
+						vVal, np, verr := decodeTrimmedU256(data, pos)
+						if verr != nil {
+							return nil, fmt.Errorf("auth V: %w", verr)
+						}
+						auth.V, pos = vVal, np
+					} else {
+						// Legacy segment: V was folded to a single 0/1 byte, so
+						// this low-level decoder cannot recover 27/28 by itself.
+						// Higher-level readers may disambiguate with the canonical
+						// header transaction root; otherwise regenerate the segment.
+						auth.V = uint256.NewInt(uint64(data[pos]))
+						pos++
+					}
 					al[j] = auth
 				}
 				authLists[i] = al

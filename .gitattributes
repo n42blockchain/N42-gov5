@@ -4,3 +4,9 @@
 # generated LF output and report "drift" that is nothing but line endings.
 # -text disables all conversion so every checkout gets the committed bytes.
 internal/consensus/hotstuff/testdata/*.json -text
+
+# Shell scripts must keep LF. With core.autocrlf=true a Windows checkout would
+# rewrite them to CRLF, and the CR then travels into the shebang: Linux answers
+# "bad interpreter: /usr/bin/env bash^M" and every script in scripts/qs/ is
+# dead on arrival on the machine it was written for.
+*.sh text eol=lf
