@@ -23,9 +23,14 @@
 package transaction
 
 import (
+	"encoding/binary"
+	"math/bits"
+	"sync"
+
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/common/hash"
+	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 )
 
 // LegacyTx is the transaction data of regular Ethereum transactions.
@@ -111,16 +116,16 @@ func (tx *LegacyTx) chainID() *uint256.Int {
 }
 func (tx *LegacyTx) accessList() AccessList      { return nil }
 func (tx *LegacyTx) authList() AuthorizationList { return nil } // EIP-7702: Not supported for legacy tx
-func (tx *LegacyTx) data() []byte            { return tx.Data }
-func (tx *LegacyTx) gas() uint64             { return tx.Gas }
-func (tx *LegacyTx) gasPrice() *uint256.Int  { return tx.GasPrice }
-func (tx *LegacyTx) gasTipCap() *uint256.Int { return tx.GasPrice }
-func (tx *LegacyTx) gasFeeCap() *uint256.Int { return tx.GasPrice }
-func (tx *LegacyTx) value() *uint256.Int     { return tx.Value }
-func (tx *LegacyTx) nonce() uint64           { return tx.Nonce }
-func (tx *LegacyTx) to() *types.Address      { return tx.To }
-func (tx *LegacyTx) from() *types.Address    { return tx.From }
-func (tx *LegacyTx) sign() []byte            { return tx.Sign }
+func (tx *LegacyTx) data() []byte                { return tx.Data }
+func (tx *LegacyTx) gas() uint64                 { return tx.Gas }
+func (tx *LegacyTx) gasPrice() *uint256.Int      { return tx.GasPrice }
+func (tx *LegacyTx) gasTipCap() *uint256.Int     { return tx.GasPrice }
+func (tx *LegacyTx) gasFeeCap() *uint256.Int     { return tx.GasPrice }
+func (tx *LegacyTx) value() *uint256.Int         { return tx.Value }
+func (tx *LegacyTx) nonce() uint64               { return tx.Nonce }
+func (tx *LegacyTx) to() *types.Address          { return tx.To }
+func (tx *LegacyTx) from() *types.Address        { return tx.From }
+func (tx *LegacyTx) sign() []byte                { return tx.Sign }
 
 func (tx *LegacyTx) rawSignatureValues() (v, r, s *uint256.Int) {
 	return tx.V, tx.R, tx.S
@@ -131,13 +136,96 @@ func (tx *LegacyTx) setSignatureValues(chainID, v, r, s *uint256.Int) {
 }
 
 func (tx *LegacyTx) hash() types.Hash {
-	return hash.RlpHash([]interface{}{
-		tx.Nonce,
-		tx.GasPrice,
-		tx.Gas,
-		tx.To,
-		tx.Value,
-		tx.Data,
-		tx.V, tx.R, tx.S,
-	})
+	bufp := legacyHashBufferPool.Get().(*[]byte)
+	encoded := appendLegacyTxRLP((*bufp)[:0], tx)
+	h := crypto.Keccak256Hash(encoded)
+	// Do not let one pathological calldata value pin a very large buffer in
+	// the process-wide pool. Ordinary transfers and contract calls stay hot.
+	if cap(encoded) <= 1<<20 {
+		*bufp = encoded[:0]
+		legacyHashBufferPool.Put(bufp)
+	}
+	return h
+}
+
+var legacyHashBufferPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 256)
+		return &b
+	},
+}
+
+// appendLegacyTxRLP appends the canonical Ethereum legacy transaction
+// envelope. This is the same nine-field RLP list previously produced through
+// RlpHash([]interface{}), without its reflection walk and per-hash interface
+// allocations. From and Sign are storage-only fields and are intentionally not
+// part of transaction identity.
+func appendLegacyTxRLP(dst []byte, tx *LegacyTx) []byte {
+	contentSize := uint64(rlp.IntSize(tx.Nonce)+rlp.IntSize(tx.Gas)) +
+		rlpUint256Size(tx.GasPrice) + rlpAddressSize(tx.To) +
+		rlpUint256Size(tx.Value) + rlp.BytesSize(tx.Data) +
+		rlpUint256Size(tx.V) + rlpUint256Size(tx.R) + rlpUint256Size(tx.S)
+	dst = appendRLPCollectionPrefix(dst, 0xc0, 0xf7, contentSize)
+	dst = rlp.AppendUint64(dst, tx.Nonce)
+	dst = appendRLPUint256(dst, tx.GasPrice)
+	dst = rlp.AppendUint64(dst, tx.Gas)
+	if tx.To == nil {
+		dst = append(dst, 0x80)
+	} else {
+		dst = append(dst, 0x94)
+		dst = append(dst, tx.To[:]...)
+	}
+	dst = appendRLPUint256(dst, tx.Value)
+	dst = appendRLPBytes(dst, tx.Data)
+	dst = appendRLPUint256(dst, tx.V)
+	dst = appendRLPUint256(dst, tx.R)
+	return appendRLPUint256(dst, tx.S)
+}
+
+func rlpUint256Size(v *uint256.Int) uint64 {
+	if v == nil || v.IsZero() || v.LtUint64(0x80) {
+		return 1
+	}
+	return uint64(1 + v.ByteLen())
+}
+
+func rlpAddressSize(addr *types.Address) uint64 {
+	if addr == nil {
+		return 1
+	}
+	return 21 // 0x94 followed by the 20-byte address
+}
+
+func appendRLPUint256(dst []byte, v *uint256.Int) []byte {
+	if v == nil || v.IsZero() {
+		return append(dst, 0x80)
+	}
+	if v.LtUint64(0x80) {
+		return append(dst, byte(v.Uint64()))
+	}
+	n := v.ByteLen()
+	dst = append(dst, 0x80+byte(n))
+	pos := len(dst)
+	dst = append(dst, make([]byte, n)...)
+	v.WriteToSlice(dst[pos:])
+	return dst
+}
+
+func appendRLPBytes(dst, value []byte) []byte {
+	if len(value) == 1 && value[0] <= 0x7f {
+		return append(dst, value[0])
+	}
+	dst = appendRLPCollectionPrefix(dst, 0x80, 0xb7, uint64(len(value)))
+	return append(dst, value...)
+}
+
+func appendRLPCollectionPrefix(dst []byte, shortBase, longBase byte, size uint64) []byte {
+	if size < 56 {
+		return append(dst, shortBase+byte(size))
+	}
+	var encoded [8]byte
+	binary.BigEndian.PutUint64(encoded[:], size)
+	n := (bits.Len64(size) + 7) / 8
+	dst = append(dst, longBase+byte(n))
+	return append(dst, encoded[8-n:]...)
 }
