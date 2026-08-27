@@ -256,30 +256,55 @@ func TestVMNoop(t *testing.T) {
 }
 
 // =============================================================================
-// Memory Pool Tests
+// Run Frame Tests
 // =============================================================================
 
-func TestMemoryPool(t *testing.T) {
-	mem := pool.Get().(*Memory)
-	if mem == nil {
-		t.Fatal("pool returned nil")
-	}
+// TestRunFrameReusePerDepth: the interpreter owns one memory/stack/scope per
+// call depth. The same depth must hand back the same frame, reset, and a
+// different depth must hand back a different one.
+func TestRunFrameReusePerDepth(t *testing.T) {
+	in := &EVMInterpreter{VM: &VM{}}
+	c := &Contract{}
 
+	in.depth = 1
+	mem, st, scope, pc := in.frame(c)
 	mem.Resize(64)
 	_ = mem.Set(0, 32, make([]byte, 32))
+	st.PushSlot().SetUint64(7)
+	*pc = 99
 
-	mem.Reset()
-	pool.Put(mem)
-
-	mem2 := pool.Get().(*Memory)
-	if mem2 == nil {
-		t.Fatal("pool returned nil on second get")
+	mem2, st2, scope2, pc2 := in.frame(c)
+	if mem2 != mem || st2 != st || scope2 != scope || pc2 != pc {
+		t.Fatal("same depth must reuse the same frame")
 	}
-	if mem2.Len() != 0 {
-		t.Error("memory from pool should be reset")
+	if mem2.Len() != 0 || st2.Len() != 0 || *pc2 != 0 {
+		t.Fatalf("frame not reset: mem=%d stack=%d pc=%d", mem2.Len(), st2.Len(), *pc2)
+	}
+	if scope2.Memory != mem2 || scope2.Stack != st2 || scope2.Contract != c {
+		t.Fatal("scope not rebound to the frame")
 	}
 
-	pool.Put(mem2)
+	in.depth = 2
+	mem3, _, _, _ := in.frame(c)
+	if mem3 == mem {
+		t.Fatal("different depth must not share a frame")
+	}
+}
+
+// TestRunFrameDropsOversizedMemory: a call that grew memory past the keep
+// bound must not pin that buffer on the interpreter for later calls.
+func TestRunFrameDropsOversizedMemory(t *testing.T) {
+	in := &EVMInterpreter{VM: &VM{}}
+	in.depth = 1
+	mem, _, _, _ := in.frame(&Contract{})
+	mem.Resize(runFrameMemoryKeep + 4096)
+	if cap(mem.store) <= runFrameMemoryKeep {
+		t.Skip("Resize did not grow the buffer past the keep bound")
+	}
+	mem2, _, _, _ := in.frame(&Contract{})
+	if cap(mem2.store) > runFrameMemoryKeep {
+		t.Fatalf("oversized buffer retained: cap=%d", cap(mem2.store))
+	}
 }
 
 // =============================================================================
@@ -303,12 +328,15 @@ func BenchmarkCopyJumpTable(b *testing.B) {
 	}
 }
 
-func BenchmarkMemoryPoolGetPut(b *testing.B) {
+func BenchmarkRunFrameAcquire(b *testing.B) {
+	in := &EVMInterpreter{VM: &VM{}}
+	c := &Contract{}
+	in.depth = 1
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		mem := pool.Get().(*Memory)
-		mem.Reset()
-		pool.Put(mem)
+		mem, _, _, _ := in.frame(c)
+		mem.Resize(64)
 	}
 }
 

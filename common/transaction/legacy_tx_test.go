@@ -17,9 +17,11 @@
 package transaction
 
 import (
+	"math/rand"
 	"testing"
 
 	"github.com/holiman/uint256"
+	commonhash "github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -220,6 +222,53 @@ func TestLegacyTxHash(t *testing.T) {
 	hash3 := tx.hash()
 	if hash1 == hash3 {
 		t.Error("hash should change when fields change")
+	}
+}
+
+func TestLegacyTxHashMatchesReflectionEncoder(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	for i := 0; i < 1000; i++ {
+		var to *types.Address
+		if i%4 != 0 {
+			a := types.Address{}
+			_, _ = rng.Read(a[:])
+			to = &a
+		}
+		data := make([]byte, i%257)
+		_, _ = rng.Read(data)
+		tx := &LegacyTx{
+			Nonce:    rng.Uint64(),
+			GasPrice: randomTestU256(rng, i),
+			Gas:      rng.Uint64(),
+			To:       to,
+			Value:    randomTestU256(rng, i+1),
+			Data:     data,
+			V:        randomTestU256(rng, i+2),
+			R:        randomTestU256(rng, i+3),
+			S:        randomTestU256(rng, i+4),
+		}
+		want := commonhash.RlpHash([]interface{}{
+			tx.Nonce, tx.GasPrice, tx.Gas, tx.To, tx.Value, tx.Data,
+			tx.V, tx.R, tx.S,
+		})
+		if got := tx.hash(); got != want {
+			t.Fatalf("case %d: hash mismatch\n got  %x\n want %x", i, got, want)
+		}
+	}
+}
+
+func randomTestU256(rng *rand.Rand, variant int) *uint256.Int {
+	switch variant % 5 {
+	case 0:
+		return nil
+	case 1:
+		return new(uint256.Int)
+	case 2:
+		return uint256.NewInt(uint64(variant % 128))
+	default:
+		var raw [32]byte
+		_, _ = rng.Read(raw[:])
+		return new(uint256.Int).SetBytes(raw[:])
 	}
 }
 

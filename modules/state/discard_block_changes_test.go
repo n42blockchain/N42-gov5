@@ -64,10 +64,10 @@ func TestDiscardBlockChangesKeepsExecutionStateWithoutBlockOriginals(t *testing.
 		t.Fatalf("initial value = %d, want 7", got.Uint64())
 	}
 	obj := sdb.stateObjects[addr]
-	if _, ok := obj.originStorage[slot]; !ok {
+	if !obj.committedKnown(slot) {
 		t.Fatal("committed value was not cached for later execution")
 	}
-	if _, ok := obj.blockOriginStorage[slot]; ok {
+	if _, ok := obj.blockOrigin(slot); ok {
 		t.Fatal("validation-only mode retained a block-level original")
 	}
 
@@ -80,7 +80,7 @@ func TestDiscardBlockChangesKeepsExecutionStateWithoutBlockOriginals(t *testing.
 	if got.Uint64() != 9 {
 		t.Fatalf("post-finalize value = %d, want 9", got.Uint64())
 	}
-	if _, ok := obj.blockOriginStorage[slot]; ok {
+	if _, ok := obj.blockOrigin(slot); ok {
 		t.Fatal("FinalizeTx populated a block-level original")
 	}
 	if writer.storageWrites != 1 || !writer.original.IsZero() || writer.value.Uint64() != 9 {

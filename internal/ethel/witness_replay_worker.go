@@ -14,12 +14,15 @@ package ethel
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 )
@@ -125,6 +128,9 @@ func runWitnessWorker(
 		reader.SetCodesFreezer(codes)
 	}
 	ibs := state.New(reader)
+	// Replay consumes a block's logs once, at receipt-root verification, and
+	// discards the block. That lets logs be bump-allocated per block.
+	ibs.SetLogArena(true)
 	if mode.NoOutput && !mode.Capture {
 		// Validation consumes receipts/gas only and deliberately skips
 		// CommitBlock below. Avoid retaining the duplicate block-level storage
@@ -145,6 +151,9 @@ func runWitnessWorker(
 				return
 			}
 			res := replayWitnessBlock(job, codeTx, chainCfg, engine, mode, ibs, reader)
+			if res.Err != nil {
+				diagnoseReplayFailure(job, res.Err, codeTx, chainCfg, engine, mode, reader)
+			}
 			job.releaseInputReservation()
 			// Drop decoded input references before a potentially blocking result
 			// send. The reservoir has made the bytes available for refill.
@@ -306,4 +315,48 @@ func replayWitnessBlock(
 	res.WipesBytes = writer.WipedAddrsBytes()
 	res.ReceiptBytes = EncodeReceiptsCompact(result.Receipts)
 	return res
+}
+
+// diagnoseReplayFailure re-executes a failed block once, on a fresh
+// IntraBlockState, before the failure is reported. A full-archive run at 256
+// workers failed block 12,854,611 with a nonce one lower than expected while
+// the same binary at 128 workers passed the same block, and no shorter window
+// reproduces it. The one fact that decides where to look next is whether the
+// failure is deterministic given the exact inputs this worker received: if the
+// retry passes, per-process shared state corrupted the first attempt; if it
+// fails identically, the inputs (body, witness, senders) were wrong on arrival.
+// The original error is still returned by the caller; this only adds evidence.
+func diagnoseReplayFailure(
+	job WitnessJob,
+	firstErr error,
+	codeTx kv.Tx,
+	chainCfg *params.ChainConfig,
+	engine consensus.Engine,
+	mode ReplayMode,
+	reader *WitnessReplayReader,
+) {
+	witnessDigest := sha256.Sum256(job.Witness)
+	fresh := state.New(reader)
+	fresh.SetLogArena(true)
+	if mode.NoOutput && !mode.Capture {
+		fresh.SetDiscardBlockChanges(true)
+	}
+	retry := replayWitnessBlock(job, codeTx, chainCfg, engine, mode, fresh, reader)
+	verdict := "retry PASSED — failure is not a function of this worker's inputs (per-process shared state)"
+	if retry.Err != nil {
+		verdict = "retry FAILED — deterministic for the inputs this worker received"
+		if retry.Err.Error() != firstErr.Error() {
+			verdict += " (with a DIFFERENT error)"
+		}
+	}
+	log.Error("Replay failure diagnostic",
+		"block", job.BlockNum,
+		"header", job.Header.Hash().Hex(),
+		"txs", len(job.Body.Transactions),
+		"senders", len(job.Senders),
+		"witness_bytes", len(job.Witness),
+		"witness_sha256", hex.EncodeToString(witnessDigest[:8]),
+		"first_err", firstErr,
+		"retry_err", retry.Err,
+		"verdict", verdict)
 }
