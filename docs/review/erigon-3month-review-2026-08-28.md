@@ -78,27 +78,33 @@ typed tx hash 直接编码（#21858 ⇔ `typed_tx_hash.go`）、modexp/bn254 快
 
 ## 5. 执行记录（2026-08-28）：做了什么、不做什么、为什么
 
-### 5.1 做了（分支 `perf/erigon-borrow` + `perf/hph-addr-cache`）
+### 5.1 做了并合入（`perf/erigon-borrow`，合入 main）
 
 | 项 | 改动 | 验证 | 结果 |
 |---|---|---|---|
-| Keccak 具体类型（#22489） | `crypto/keccak`：x/crypto legacy 海绵做成值类型；`Keccak256Hash`/`Keccak256`、SHA3 opcode、trie/receipt hasher 池全部切换 | 与 x/crypto 逐长度（0..3×rate+5）、分块写、长 squeeze、Reset 复用等价测试；`AllocsPerRun`=0 | 微基准 32 B：298 ns/1 alloc → 293 ns/0 alloc；1M 切片 A/B r10：34,947 → 35,189 CPU-s（+0.7%，噪声内）、墙 4m39s→4m36s。分配省了、CPU 没省：池本来就便宜 |
-| fastkeccak 一次性摘要 | 仓库已依赖 `erigontech/fastkeccak`（amd64 汇编置换），`Sum256`/SHA3 opcode 改走它 | 同上等价测试 | 微基准 32 B 222 ns（−23%）；全量见 r11 |
-| `IBS.Reset` 用 `clear()`（#22578） | 三张 map 不再每块重建 | 单测 | 每块一次，可忽略；顺手 |
-| pprof phase 标签（#21516） | worker `phase=exec`、reader `phase=read` 的 goroutine 标签 | — | `go tool pprof -tagfocus=phase=read` 即可分相 |
 | HPH last-address 缓存（#22185） | `Updates` 键哈希与 HPH 账户 cell 共用单条目 keccak(addr) nibble 缓存；生产 `mpt_root_computer` 改走 `KeyToHexNibbleHash` | 缓存/非缓存等价测试（命中/未命中/近似地址/全深度）、3 个 ProcessUpdates fuzzer 各 20 s、`lib/commitment` 全测 | 1000 slot 键哈希 −30%，200 账户×100 slot 端到端 −8.2%；1×1000 端到端噪声内（Erigon 的 −46% 是另一条流水线） |
 | 新分支跳过前值查找（#21789） | `CollectUpdate/CollectDeferredUpdate` 收到 `isNew`，`branchBefore[row]==false` 时不查 warmup cache / `ctx.Branch` | 计数 context：新 trie 200×100 的 `ctx.Branch` 读 6503 → 1 | mock 上是 map 命中，时间不变；mptContext 上省一次 mutex+MDBX get |
+| pprof phase 标签（#21516） | worker `phase=exec`、reader `phase=read` 的 goroutine 标签 | 0–4M 窗口 2×2 对照持平 | `go tool pprof -tagfocus=phase=read` 分相；零成本 |
 
-witness-replay 的全量 gate 不覆盖 `lib/commitment`（NoOutput 不算根），HPH 两项的安全网是等价测试 + fuzz；
-`isNew` 依赖"`branchBefore[row]==false` ⇒ 该前缀在库里没有分支记录"的不变量，与 Erigon 相同。
+全量 gate（eb6 = main + 上三项，128w/6r/gc300）：41m49s / 307,369 CPU-s / failed=0 / RSS 25.6 GiB，
+对当日重跑的 main 基线 41m28s / 305,146（+0.7%，噪声内）。witness-replay 不算状态根，HPH 两项的安全网
+是等价测试 + fuzz；`isNew` 依赖"`branchBefore[row]==false` ⇒ 该前缀在库里没有分支记录"的不变量，与 Erigon 相同。
 
-### 5.2 不做（评估后放弃，写明原因）
+### 5.2 做了、测了、撤回（数据留档）
+
+| 项 | 做法 | 数据 | 结论 |
+|---|---|---|---|
+| Keccak 具体类型（#22489） | `crypto/keccak`：x/crypto legacy 海绵做成值类型，`Keccak256Hash`/SHA3 opcode/trie/receipt hasher 全切；等价测试通过、0 alloc | 微基准 32 B：298 ns/1 alloc → 293 ns/0 alloc；1M 切片 r10 +0.7%、r11 −1.3%（噪声）；**0–4M reader-bound 窗口墙钟 +5%、CPU 持平**（二分确认是它，不是标签）；eb4 全量 43m07s / 308,987 vs 305,146 | x/crypto 的 state 直接把输入 XOR 进 lane、只拷 32 B 输出；自写海绵两头都过 rate buffer，reader 侧（tx hash 100–300 B）更慢。每 hash 省 32 B 分配在 CPU-s 上看不见。**撤回** |
+| fastkeccak 汇编置换 | 仓库已依赖 `erigontech/fastkeccak`，一次性摘要走它 | 机器有负载时微基准"快 23%"；**空载重测所有长度都更慢**（32 B 309 vs 298 ns，1 KiB 2519 vs 2049）；eb4 全量含它 +1.3% CPU | 与更早的"Keccak asm 更慢"记录一致。**撤回**；教训：微基准必须在空载机器上做 |
+| `IBS.Reset` 用 `clear()`（#22578） | 三张 map 不再每块重建 | eb3 全量 43m23s / 317,793、RSS +3.2 GiB（vs 305,146 / 26.7 GiB）；改回 make 后 eb4 RSS 回到 26.6 GiB | 每个 worker 保留见过的最大块的桶，GC 每轮扫带指针的空桶；Erigon 的收益来自按 tx 的 Reset。**按块 Reset 的带指针 map 不要 clear()** |
+
+### 5.2b 评估后不做（原因）
 
 | 项 | 原因 |
 |---|---|
 | CALL 系去掉返回数据拷贝（#23479） | 本仓库 `opReturn/opRevert` 用 `GetPtr` 不拷贝，`opCall` 的 `CopyBytes` 是唯一一次拷贝（callee 的 runFrame 内存会被同深度下一次调用复用，必须拷）。Erigon 省的是"RETURN 已拷一次 + CALL 再拷一次"的第二次；我们没有第二次。只剩预编译输出的一次冗余拷贝（且 identity 预编译返回输入别名，去掉会出错），收益 <0.1% |
-| 删 `Hash.Bytes()/Address.Bytes()` 值接收者（#21503） | 逃逸的根因是把切片传进接口方法（Write）；Keccak 改具体类型后主要逃逸点已消失，剩余站点没有 profile 证据，批量改 80+ 处只为理论收益，不做 |
-| `Memory.Resize` 4 KiB 对齐再翻倍（#23526） | Erigon 自报端到端持平（上下文已池化）；我们的 runFrame 已按深度保留 1 MiB 缓冲，冷帧更少 |
+| 删 `Hash.Bytes()/Address.Bytes()` 值接收者（#21503） | 逃逸的根因是把切片传进接口方法；没有 profile 证据，批量改 80+ 处只为理论收益，不做 |
+| `Memory.Resize` 4 KiB 对齐再翻倍（#23526） | Erigon 自报端到端持平；runFrame 已按深度保留 1 MiB 缓冲 |
 | 解释器循环清理（#22743） | 本轮已做等价物（meta 表、内联、`debug` 提前、tracer 路径分离） |
 | SELFDESTRUCT 不枚举全部 slot（#22758） | 本仓库 `persistent_context.go` 的 DeleteUpdate 路径不做 `RangeAsOf` 全量枚举，问题不存在 |
 | 基本块预检（evmone advanced） | 已做、已测、更慢（§5.33），且 witness 顺序读流约束使其只能"预测成功才用" |
