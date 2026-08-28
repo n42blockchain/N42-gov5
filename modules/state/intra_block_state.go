@@ -486,11 +486,6 @@ func (sdb *IntraBlockState) Reset() {
 	for _, so := range sdb.stateObjects {
 		putStateObject(so)
 	}
-	// Rebuilt rather than clear()ed on purpose: clear() keeps the buckets of
-	// the largest block a worker ever saw, and the GC keeps scanning those
-	// pointer-bearing buckets every cycle. Measured on the full archive at
-	// 128 workers: +3 GiB RSS and +4% CPU-seconds (Erigon's #22578 gain is
-	// for its per-transaction Reset).
 	sdb.stateObjects = make(map[types.Address]*stateObject)
 	sdb.lastObj = nil
 	sdb.stateObjectsDirty = make(map[types.Address]struct{})

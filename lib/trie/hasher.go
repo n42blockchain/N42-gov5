@@ -18,7 +18,6 @@ package trie
 
 import (
 	"errors"
-	"github.com/n42blockchain/N42/crypto/keccak"
 	"hash"
 	"sync"
 
@@ -26,6 +25,7 @@ import (
 	"github.com/n42blockchain/N42/lib/common/length"
 	"github.com/n42blockchain/N42/lib/rlp"
 
+	"golang.org/x/crypto/sha3"
 
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/rlphacks"
@@ -53,7 +53,7 @@ type keccakState interface {
 var hashersPool = sync.Pool{
 	New: func() any {
 		return &hasher{
-			sha: keccak.New(),
+			sha: sha3.NewLegacyKeccak256().(crypto.KeccakState),
 			bw:  &ByteArrayWriter{},
 		}
 	},

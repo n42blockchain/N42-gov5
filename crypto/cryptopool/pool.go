@@ -26,13 +26,13 @@ import (
 	"hash"
 	"sync"
 
-	"github.com/n42blockchain/N42/crypto/keccak"
+	"golang.org/x/crypto/sha3"
 )
 
 // hasherPool holds LegacyKeccak hashers.
 var hasherPool = sync.Pool{
 	New: func() interface{} {
-		return keccak.New()
+		return sha3.NewLegacyKeccak256()
 	},
 }
 
