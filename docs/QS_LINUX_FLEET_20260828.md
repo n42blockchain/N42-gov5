@@ -70,7 +70,17 @@ witness replay.
   `epochLength 0`, rewards + committee pool in production shape): n42-rs `scripts/devnet-fleet.sh mixed
   120 --gov5` with `N42_GOV5=<gov5 checkout whose build/bin/n42 is the fixed build>` and
   `N42_FLEET_DIR=/data/blockchain/mixed-fleet/n42-rs`; N42-26 via `scripts/gov5-interop-qualification.sh`
-  (Rust node replacing one Go validator, same BLS key + PeerId) — evidence in its devlog-141.
+  (Rust node replacing one Go validator, same BLS key + PeerId). Result on this box (N42-26
+  `docs/devlog-141-linux-mixed-fleet-20260829.md`, commit `56f43d0` on `perf/erigon-borrow-20260828`):
+  the macOS runtime's key material is not reproducible, so an equivalent 6-validator static chain
+  (chainId 1143) was generated with the same script (constants made overridable); five Go nodes on the
+  fixed build plus the Rust node as validator 5 (gov6's slot, its BLS key and PeerId). Six RPC heads
+  identical over 182 s (98→301, max lag 0, hash/stateRoot/receiptsRoot equal per sample), Rust
+  `last_voted_view` advancing (111→624), Rust leading every 6th view (17 blocks byte-identical on all
+  endpoints, commit latency 24–32 ms), and during a gov5 restart the chain kept committing views
+  403–411 with 4 Go + Rust = exactly quorum, so every QC carried the Rust vote; gov5 then pulled the
+  missed blocks from the Rust node over `bodies_by_range`. Runtime under
+  `/data/blockchain/mixed-fleet/n42-26/runtime` (`source runtime/env.sh && scripts/gov5-interop-qualification.sh stop`).
 
 ## Also observed
 
