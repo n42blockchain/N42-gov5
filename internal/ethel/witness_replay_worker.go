@@ -17,6 +17,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"runtime/pprof"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
@@ -102,6 +103,9 @@ func runWitnessWorker(
 	engine consensus.Engine,
 	mode ReplayMode,
 ) {
+	// Label the goroutine so CPU/block/mutex profiles split by pipeline
+	// phase (Erigon #21516): pprof -tagfocus=phase=exec.
+	pprof.SetGoroutineLabels(pprof.WithLabels(ctx, pprof.Labels("phase", "exec")))
 	var codeTx kv.Tx
 	if codeDB != nil {
 		var err error

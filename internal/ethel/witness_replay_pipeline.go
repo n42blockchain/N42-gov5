@@ -27,6 +27,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/pprof"
 	"sync"
 	"time"
 
@@ -901,6 +902,7 @@ func feedBlocksParallel(
 	errs := make(chan error, readers)
 	for i := 0; i < readers; i++ {
 		go func(id int) {
+			pprof.SetGoroutineLabels(pprof.WithLabels(ctx, pprof.Labels("phase", "read")))
 			input, err := openParallelReplayInput(cfg, bodyDecodeGate)
 			if err == nil {
 				defer input.close()

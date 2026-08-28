@@ -3,6 +3,7 @@ package trie
 import (
 	"bytes"
 	"fmt"
+	"github.com/n42blockchain/N42/crypto/keccak"
 	"io"
 	"math/bits"
 	"os"
@@ -12,10 +13,9 @@ import (
 	"github.com/n42blockchain/N42/lib/rlp"
 
 	"github.com/holiman/uint256"
-	"golang.org/x/crypto/sha3"
 
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/account"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/rlphacks"
 )
 
@@ -31,7 +31,7 @@ type HashBuilder struct {
 
 	hashStack []byte                // Stack of sub-slices, each 33 bytes each, containing RLP encodings of node hashes (or of nodes themselves, if shorter than 32 bytes)
 	nodeStack []node                // Stack of nodes
-	acc       account.StateAccount      // Working account instance (to avoid extra allocations)
+	acc       account.StateAccount  // Working account instance (to avoid extra allocations)
 	sha       keccakState           // Keccak primitive that can absorb data (Write), and get squeezed to the hash out (Read)
 	hashBuf   [hashStackStride]byte // RLP representation of hash (or un-hashes value)
 	keyPrefix [1]byte
@@ -89,16 +89,16 @@ type HashBuilder struct {
 // originStack values. Semantics per Path 2 fix (G2 Option A):
 //   - originLeaf      : entry is a direct leaf hash, no extension below
 //   - originExtension : entry contains at least one extension somewhere
-//                       in its subtree. Includes extension-wrapped nodes
-//                       (directly produced by extensionHash) AND any
-//                       branch built from children one or more of which
-//                       had this flag set (propagated via branchHash
-//                       OR'ing children's flags into the new entry).
+//     in its subtree. Includes extension-wrapped nodes
+//     (directly produced by extensionHash) AND any
+//     branch built from children one or more of which
+//     had this flag set (propagated via branchHash
+//     OR'ing children's flags into the new entry).
 //   - originBranch    : entry is a branch with NO extension anywhere
-//                       in its subtree — safe for V2 encoders looking
-//                       at HasTree=0 slots, since the slot's hash is
-//                       guaranteed to be a direct leaf or branch hash
-//                       (parent's treeMask distinguishes which).
+//     in its subtree — safe for V2 encoders looking
+//     at HasTree=0 slots, since the slot's hash is
+//     guaranteed to be a direct leaf or branch hash
+//     (parent's treeMask distinguishes which).
 //
 // V2 LeafMarker compression is safe iff: HasTree=0 AND origin==leaf.
 // Origin==extension means the slot's hash incorporates a compressed
@@ -145,7 +145,7 @@ func (hb *HashBuilder) SetBranchEmitter(fn func(slotData []byte, set uint16) err
 // NewHashBuilder creates a new HashBuilder
 func NewHashBuilder(trace bool) *HashBuilder {
 	return &HashBuilder{
-		sha:             sha3.NewLegacyKeccak256().(keccakState),
+		sha:             keccak.New(),
 		byteArrayWriter: &ByteArrayWriter{},
 		trace:           trace,
 	}

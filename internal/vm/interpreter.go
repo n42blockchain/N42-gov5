@@ -30,6 +30,7 @@ import (
 
 	"github.com/n42blockchain/N42/common/math"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto/keccak"
 	"github.com/n42blockchain/N42/internal/vm/stack"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/params"
@@ -161,8 +162,8 @@ type VM struct {
 	evm VMInterpreter
 	cfg Config
 
-	hasher    keccakState // Keccak256 hasher instance shared across opcodes
-	hasherBuf types.Hash  // Keccak256 hasher result array shared across opcodes
+	hasher    keccak.State // Keccak256 sponge shared across opcodes (concrete: no interface calls, nothing escapes)
+	hasherBuf types.Hash   // Keccak256 hasher result array shared across opcodes
 
 	readOnly   bool   // Whether to throw on stateful modifications
 	returnData []byte // Last CALL's return data for subsequent reuse

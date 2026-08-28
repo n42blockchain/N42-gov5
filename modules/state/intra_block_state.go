@@ -486,10 +486,12 @@ func (sdb *IntraBlockState) Reset() {
 	for _, so := range sdb.stateObjects {
 		putStateObject(so)
 	}
-	sdb.stateObjects = make(map[types.Address]*stateObject)
+	// clear() keeps the buckets: the next block re-fills maps of about the
+	// same size without re-growing them (Erigon #22578).
+	clear(sdb.stateObjects)
 	sdb.lastObj = nil
-	sdb.stateObjectsDirty = make(map[types.Address]struct{})
-	sdb.nilAccounts = make(map[types.Address]struct{})
+	clear(sdb.stateObjectsDirty)
+	clear(sdb.nilAccounts)
 	clear(sdb.storageWipes)
 	clear(sdb.priorTxWipes)
 	clear(sdb.wipedStorageSlots)
