@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"golang.org/x/crypto/sha3"
 	"math/bits"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -553,25 +554,32 @@ func (be *BranchEncoder) SetCache(cache *WarmupCache) {
 	be.cache = cache
 }
 
+// CollectUpdate encodes the branch at prefix and hands it to ctx.PutBranch.
+// isNew reports that no branch node existed at prefix before this commitment
+// (hph.branchBefore[row] == false): the previous-value lookup in the warmup
+// cache / PatriciaContext is skipped since there is nothing to merge with.
 func (be *BranchEncoder) CollectUpdate(
 	ctx PatriciaContext,
 	prefix []byte,
+	isNew bool,
 	bitmap, touchMap, afterMap uint16,
 	readCell func(nibble int, skip bool) (*cell, error),
 ) (lastNibble int, err error) {
 	var prev []byte
 	var foundInCache bool
 
-	if be.cache != nil {
-		prev, foundInCache = be.cache.GetAndEvictBranch(prefix)
-		if foundInCache && be.metrics != nil {
-			be.metrics.cacheBranch.Add(1)
+	if !isNew {
+		if be.cache != nil {
+			prev, foundInCache = be.cache.GetAndEvictBranch(prefix)
+			if foundInCache && be.metrics != nil {
+				be.metrics.cacheBranch.Add(1)
+			}
 		}
-	}
-	if !foundInCache {
-		prev, _, err = ctx.Branch(prefix)
-		if err != nil {
-			return 0, err
+		if !foundInCache {
+			prev, _, err = ctx.Branch(prefix)
+			if err != nil {
+				return 0, err
+			}
 		}
 	}
 
@@ -616,9 +624,13 @@ const maxDeferredUpdates = 50_000
 // and defers encoding for parallel execution later.
 // Cell hashes are already computed during fold() before this is called.
 // Flushes pending updates if a duplicate prefix is detected or if deferred count exceeds maxDeferredUpdates.
+//
+// isNew has the same meaning as in CollectUpdate: a branch that did not exist
+// before skips the previous-value lookup.
 func (be *BranchEncoder) CollectDeferredUpdate(
 	ctx PatriciaContext,
 	prefix []byte,
+	isNew bool,
 	bitmap, touchMap, afterMap uint16,
 	cells *[16]cell,
 	depth int16,
@@ -643,17 +655,19 @@ func (be *BranchEncoder) CollectDeferredUpdate(
 		err          error
 	)
 
-	if be.cache != nil {
-		prev, foundInCache = be.cache.GetAndEvictBranch(prefix)
-		if foundInCache && be.metrics != nil {
-			be.metrics.cacheBranch.Add(1)
+	if !isNew {
+		if be.cache != nil {
+			prev, foundInCache = be.cache.GetAndEvictBranch(prefix)
+			if foundInCache && be.metrics != nil {
+				be.metrics.cacheBranch.Add(1)
+			}
 		}
-	}
-	if !foundInCache {
-		prev, _, err = ctx.Branch(prefix)
-	}
-	if err != nil {
-		return err
+		if !foundInCache {
+			prev, _, err = ctx.Branch(prefix)
+		}
+		if err != nil {
+			return err
+		}
 	}
 
 	// Track this prefix as pending
@@ -1188,7 +1202,7 @@ func validatePlainKeys(branchKey []byte, row [16]*cell, keccak keccakState) erro
 		if c.accountAddrLen == 0 && c.storageAddrLen == 0 {
 			continue
 		}
-		err := c.deriveHashedKeys(depth, keccak, length.Addr, hashBuf[:])
+		err := c.deriveHashedKeys(depth, keccak, length.Addr, hashBuf[:], nil)
 		if err != nil {
 			return err
 		}
@@ -1516,6 +1530,12 @@ func (m Mode) String() string {
 
 type Updates struct {
 	hasher keyHasher
+	// addrCache reuses the nibblized keccak(address) prefix across consecutive
+	// keys of the same account; only consulted when addrCacheReuse is set, i.e.
+	// when hasher is the canonical KeyToHexNibbleHash whose output the cached
+	// variant reproduces byte-for-byte.
+	addrCache      addrHashCache
+	addrCacheReuse bool
 	keys   map[string]struct{}       // plain keys to keep only unique keys in etl
 	etl    *etl.Collector            // all-in-one collector
 	tree   *btree.BTreeG[*KeyUpdate] // TODO since it's thread safe to read, maybe instead of all collectors we can use one tree
@@ -1574,11 +1594,32 @@ type keyHasher func(key []byte) []byte
 
 func keyHasherNoop(key []byte) []byte { return key }
 
+// hasherReusesAddrPrefix reports whether hasher is the canonical
+// KeyToHexNibbleHash, for which the address-prefix cached variant is a
+// byte-identical drop-in. A nil hasher also selects the canonical hashing.
+func hasherReusesAddrPrefix(hasher keyHasher) bool {
+	if hasher == nil {
+		return true
+	}
+	return reflect.ValueOf(hasher).Pointer() == reflect.ValueOf(KeyToHexNibbleHash).Pointer()
+}
+
+// hashKey hashes a plain key into its nibblized hashed key, reusing the
+// keccak(address) prefix of the previous key when both belong to the same
+// account.
+func (t *Updates) hashKey(key []byte) []byte {
+	if t.addrCacheReuse {
+		return keyToHexNibbleHashCached(key, &t.addrCache)
+	}
+	return t.hasher(key)
+}
+
 func NewUpdates(m Mode, tmpdir string, hasher keyHasher) *Updates {
 	t := &Updates{
-		hasher: hasher,
-		tmpdir: tmpdir,
-		mode:   m,
+		hasher:         hasher,
+		tmpdir:         tmpdir,
+		mode:           m,
+		addrCacheReuse: hasherReusesAddrPrefix(hasher),
 	}
 	if t.mode == ModeDirect {
 		t.keys = make(map[string]struct{})
@@ -1667,14 +1708,14 @@ func (t *Updates) TouchPlainKey(key string, val []byte, fn func(c *KeyUpdate, va
 			return false
 		})
 		if !updated {
-			pivot.hashedKey = t.hasher([]byte(pivot.plainKey))
+			pivot.hashedKey = t.hashKey([]byte(pivot.plainKey))
 			fn(pivot, val)
 			t.tree.ReplaceOrInsert(pivot)
 		}
 	case ModeDirect:
 		if _, ok := t.keys[key]; !ok {
 			keyBytes := []byte(key)
-			hashedKey := t.hasher(keyBytes)
+			hashedKey := t.hashKey(keyBytes)
 
 			var err error
 			if !t.sortPerNibble {
@@ -1711,7 +1752,7 @@ func (t *Updates) TouchPlainKeyNoDedup(key string, _ []byte, _ func(c *KeyUpdate
 		return
 	}
 	keyBytes := []byte(key)
-	hashedKey := t.hasher(keyBytes)
+	hashedKey := t.hashKey(keyBytes)
 	var err error
 	if !t.sortPerNibble {
 		err = t.etl.Collect(hashedKey, keyBytes)
@@ -1980,6 +2021,7 @@ func (t *Updates) Reset() {
 	}
 	t.batchSlab = t.batchSlab[:0]
 	t.byteArena = t.byteArena[:0]
+	t.addrCache.reset()
 }
 
 type KeyUpdate struct {

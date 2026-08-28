@@ -200,3 +200,73 @@ func PrefixStringToNibbles(hexStr string) ([]byte, error) {
 
 	return nibbles, nil
 }
+
+// addrHashCache is a single-entry cache of the nibblized keccak256 of the most
+// recently hashed 20-byte account address.
+//
+// Consecutive updates frequently touch several storage slots of the same
+// account (a "whale" contract). Every such slot shares the 64-nibble
+// keccak(address) prefix of its hashed key, so remembering the last address
+// saves one keccak per slot. The cache only ever answers for the exact same
+// 20-byte address (all bytes compared), so it is strictly semantics-preserving.
+type addrHashCache struct {
+	addr  [length.Addr]byte
+	nibs  [2 * length.Hash]byte // nibblized keccak256(addr)
+	valid bool
+}
+
+func (c *addrHashCache) reset() { c.valid = false }
+
+// nibbles returns the nibblized keccak256 of addr, recomputing and replacing
+// the cached entry on a miss. addr must be exactly length.Addr bytes long.
+// The returned array is owned by the cache and is valid until the next call.
+func (c *addrHashCache) nibbles(addr []byte) *[2 * length.Hash]byte {
+	a := [length.Addr]byte(addr)
+	if c.valid && a == c.addr {
+		return &c.nibs
+	}
+	h := keccak.Sum256(addr)
+	for i, b := range h {
+		c.nibs[i*2] = (b >> 4) & 0xf
+		c.nibs[i*2+1] = b & 0xf
+	}
+	c.addr = a
+	c.valid = true
+	return &c.nibs
+}
+
+// keyToHexNibbleHashCached is KeyToHexNibbleHash with the keccak(address)
+// prefix served from a single-entry cache. Output is byte-identical to
+// KeyToHexNibbleHash for every input.
+func keyToHexNibbleHashCached(key []byte, c *addrHashCache) []byte {
+	if len(key) > length.Addr { // storage
+		nibblized := make([]byte, 128)
+		copy(nibblized[:64], c.nibbles(key[:length.Addr])[:])
+		h := keccak.Sum256(key[length.Addr:])
+		for i, b := range h {
+			nibblized[64+i*2] = (b >> 4) & 0xf
+			nibblized[64+i*2+1] = b & 0xf
+		}
+		return nibblized
+	}
+	if len(key) == length.Addr { // account: prime the cache for its storage slots
+		nibblized := make([]byte, 64)
+		copy(nibblized, c.nibbles(key)[:])
+		return nibblized
+	}
+	return KeyToHexNibbleHash(key)
+}
+
+// hashAddrNibbles writes the nibblized keccak256 of an account address into
+// dest, starting at nibble offset depth (dest[0] receives nibble #depth).
+// Full-length addresses are served from the single-entry cache when one is
+// given; everything else falls back to hashKey. dest must hold at least
+// 64 bytes, exactly as hashKey requires.
+func hashAddrNibbles(hasher keccakState, cache *addrHashCache, addr, dest []byte, depth int16, hashBuf []byte) error {
+	if cache != nil && len(addr) == length.Addr {
+		_ = dest[length.Hash*2-1] // bounds check, same contract as hashKey
+		copy(dest, cache.nibbles(addr)[depth:])
+		return nil
+	}
+	return hashKey(hasher, addr, dest, depth, hashBuf)
+}
