@@ -90,6 +90,7 @@ type HexPatriciaHashed struct {
 	ctx           PatriciaContext
 	hashAuxBuffer [128]byte     // buffer to compute cell hash or write hash-related things
 	cellHashBuf   types.Hash   // shared scratch buffer for hashKey calls (avoids per-cell allocation)
+	addrCache     addrHashCache // single-entry cache of nibblized keccak(address) for the last hashed account
 	auxBuffer     *bytes.Buffer // auxiliary buffer used during branch updates encoding
 	branchEncoder *BranchEncoder
 
@@ -205,6 +206,9 @@ func (hph *HexPatriciaHashed) resetForReuse() {
 	hph.cache = nil
 	hph.enableWarmupCache = false
 
+	// last-address hash cache
+	hph.addrCache.reset()
+
 	// tracing / capture
 	hph.capture = nil
 	hph.trace = false
@@ -295,8 +299,10 @@ var (
 	emptyRootHashBytes = empty.RootHash.Bytes()
 )
 
-func (cell *cell) hashAccKey(keccak keccakState, depth int16, hashBuf []byte) error {
-	return hashKey(keccak, cell.accountAddr[:cell.accountAddrLen], cell.hashedExtension[:], depth, hashBuf)
+// hashAccKey derives the hashed-key nibbles of the cell's account address
+// starting at nibble offset depth. cache may be nil.
+func (cell *cell) hashAccKey(keccak keccakState, depth int16, hashBuf []byte, cache *addrHashCache) error {
+	return hashAddrNibbles(keccak, cache, cell.accountAddr[:cell.accountAddrLen], cell.hashedExtension[:], depth, hashBuf)
 }
 
 func (cell *cell) hashStorageKey(keccak keccakState, accountKeyLen, downOffset int16, hashedKeyOffset int16, hashBuf []byte) error {
@@ -464,7 +470,7 @@ func (cell *cell) fillFromLowerCell(lowCell *cell, lowDepth int16, preExtension 
 	cell.loaded = lowCell.loaded
 }
 
-func (cell *cell) deriveHashedKeys(depth int16, keccak keccakState, accountKeyLen int16, hashBuf []byte) error {
+func (cell *cell) deriveHashedKeys(depth int16, keccak keccakState, accountKeyLen int16, hashBuf []byte, cache *addrHashCache) error {
 	extraLen := int16(0)
 	if cell.accountAddrLen > 0 {
 		if depth > 64 {
@@ -486,7 +492,7 @@ func (cell *cell) deriveHashedKeys(depth int16, keccak keccakState, accountKeyLe
 		cell.hashedExtLen = min(extraLen+cell.hashedExtLen, int16(len(cell.hashedExtension)))
 		var hashedKeyOffset, downOffset int16
 		if cell.accountAddrLen > 0 {
-			if err := cell.hashAccKey(keccak, depth, hashBuf); err != nil {
+			if err := cell.hashAccKey(keccak, depth, hashBuf, cache); err != nil {
 				return err
 			}
 			downOffset = 64 - depth
@@ -1051,7 +1057,7 @@ func (hph *HexPatriciaHashed) witnessComputeCellHashWithStorage(cell *cell, dept
 		}
 	}
 	if cell.accountAddrLen > 0 {
-		if err := hashKey(hph.keccak, cell.accountAddr[:cell.accountAddrLen], hashedKeyBuf[:], depth, hph.cellHashBuf[:]); err != nil {
+		if err := hashAddrNibbles(hph.keccak, &hph.addrCache, cell.accountAddr[:cell.accountAddrLen], hashedKeyBuf[:], depth, hph.cellHashBuf[:]); err != nil {
 			return nil, storageRootHashIsSet, nil, err
 		}
 		hashedKeyBuf[64-depth] = terminatorHexByte // Add terminator
@@ -1208,7 +1214,7 @@ func (hph *HexPatriciaHashed) computeCellHash(cell *cell, depth int16, buf []byt
 		}
 	}
 	if cell.accountAddrLen > 0 {
-		if err := cell.hashAccKey(hph.keccak, depth, hph.cellHashBuf[:]); err != nil {
+		if err := cell.hashAccKey(hph.keccak, depth, hph.cellHashBuf[:], &hph.addrCache); err != nil {
 			return nil, err
 		}
 		cell.hashedExtension[64-depth] = terminatorHexByte // Add terminator
@@ -1301,7 +1307,7 @@ func (hph *HexPatriciaHashed) needUnfolding(hashedKey []byte) int16 {
 		}
 		if hph.root.hashedExtLen == 64 && hph.root.accountAddrLen > 0 && hph.root.storageAddrLen > 0 {
 			// in case if root is a leaf node with storage and account, we need to derive storage part of a key
-			if err := hph.root.deriveHashedKeys(depth, hph.keccak, hph.accountKeyLen, hph.cellHashBuf[:]); err != nil {
+			if err := hph.root.deriveHashedKeys(depth, hph.keccak, hph.accountKeyLen, hph.cellHashBuf[:], &hph.addrCache); err != nil {
 				log.Warn("deriveHashedKeys for root with storage", "err", err, "cell", hph.root.FullString())
 				return 0
 			}
@@ -1727,7 +1733,7 @@ func (hph *HexPatriciaHashed) unfoldBranchNode(row int, depth int16, deleted boo
 		}
 
 		// relies on plain account/storage key so need to be dereferenced before hashing
-		if err = cell.deriveHashedKeys(depth, hph.keccak, hph.accountKeyLen, hph.cellHashBuf[:]); err != nil {
+		if err = cell.deriveHashedKeys(depth, hph.keccak, hph.accountKeyLen, hph.cellHashBuf[:], &hph.addrCache); err != nil {
 			return err
 		}
 		bitset ^= bit
@@ -1973,13 +1979,13 @@ func (hph *HexPatriciaHashed) foldBranch(row int, nibble, upDepth, depth int16, 
 			return err
 		}
 		// Defer the branch encoding
-		if err := hph.branchEncoder.CollectDeferredUpdate(hph.ctx, updateKey, bitmap, hph.touchMap[row], hph.afterMap[row], &hph.grid[row], depth); err != nil {
+		if err := hph.branchEncoder.CollectDeferredUpdate(hph.ctx, updateKey, !hph.branchBefore[row], bitmap, hph.touchMap[row], hph.afterMap[row], &hph.grid[row], depth); err != nil {
 			return fmt.Errorf("failed to collect deferred branch update: %w", err)
 		}
 	} else {
 		// Normal path: EncodeBranch with cellGetter that feeds keccak2
 		cellGetter := hph.createCellGetter(b[:], updateKey, row, depth)
-		lastNibble, err := hph.branchEncoder.CollectUpdate(hph.ctx, updateKey, bitmap, hph.touchMap[row], hph.afterMap[row], cellGetter)
+		lastNibble, err := hph.branchEncoder.CollectUpdate(hph.ctx, updateKey, !hph.branchBefore[row], bitmap, hph.touchMap[row], hph.afterMap[row], cellGetter)
 		if err != nil {
 			return fmt.Errorf("failed to encode branch update: %w", err)
 		}
@@ -2160,7 +2166,7 @@ func (hph *HexPatriciaHashed) foldDelete(row int, nibble, upDepth int16, upCell 
 // If evictCache is true, it also evicts the branch from the cache.
 func (hph *HexPatriciaHashed) collectDeleteUpdate(updateKey []byte, row int, evictCache bool) error {
 	if hph.branchBefore[row] {
-		_, err := hph.branchEncoder.CollectUpdate(hph.ctx, updateKey, 0, hph.touchMap[row], 0, RetrieveCellNoop)
+		_, err := hph.branchEncoder.CollectUpdate(hph.ctx, updateKey, false, 0, hph.touchMap[row], 0, RetrieveCellNoop)
 		if err != nil {
 			return fmt.Errorf("failed to encode leaf node update: %w", err)
 		}
@@ -2828,6 +2834,7 @@ func (hph *HexPatriciaHashed) Reset() {
 	hph.rootTouched = false
 	hph.rootChecked = false
 	hph.rootPresent = true
+	hph.addrCache.reset()
 }
 
 func (hph *HexPatriciaHashed) ResetContext(ctx PatriciaContext) {

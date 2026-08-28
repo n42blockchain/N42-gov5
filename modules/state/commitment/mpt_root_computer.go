@@ -15,12 +15,10 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"hash"
 	"sort"
 	"sync"
 
 	"github.com/holiman/uint256"
-	"golang.org/x/crypto/sha3"
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/lib/common/empty"
@@ -438,14 +436,14 @@ func newMPTRootComputer(persist *mdbxBranchStore) *MPTRootComputer {
 // makeSharedHasher returns a hasher closure suitable for libcommit.Updates.
 // The closure captures a single keccak state and rehashes; callers that
 // need goroutine-local hashers must construct their own via this helper.
+//
+// It returns the canonical libcommit.KeyToHexNibbleHash: the output is
+// byte-identical to the previous closure for account (20-byte) and storage
+// (20+32-byte) keys, it is stateless (safe for goroutine-local reuse), and
+// libcommit.Updates recognises it and serves the keccak(address) prefix of
+// consecutive storage keys of the same account from a single-entry cache.
 func makeSharedHasher() func([]byte) []byte {
-	keccak := sha3.NewLegacyKeccak256()
-	return func(key []byte) []byte {
-		if len(key) == length.Addr {
-			return keccakToNibbles(keccak, key)
-		}
-		return storageKeccakToNibbles(keccak, key[:length.Addr], key[length.Addr:])
-	}
+	return libcommit.KeyToHexNibbleHash
 }
 
 func (m *MPTRootComputer) SetStateReader(r *PlainStateMPTReader) {
@@ -592,38 +590,5 @@ func (m *MPTRootComputer) ComputeRoot(
 	var h types.Hash
 	copy(h[:], root)
 	return h, nil
-}
-
-// --- Keccak helpers ---
-
-func keccakToNibbles(hasher hash.Hash, data []byte) []byte {
-	hasher.Reset()
-	hasher.Write(data)
-	hash := hasher.Sum(nil)
-	nibbles := make([]byte, len(hash)*2)
-	for i, b := range hash {
-		nibbles[i*2] = b >> 4
-		nibbles[i*2+1] = b & 0x0f
-	}
-	return nibbles
-}
-
-func storageKeccakToNibbles(hasher hash.Hash, addr, slot []byte) []byte {
-	hasher.Reset()
-	hasher.Write(addr)
-	addrHash := hasher.Sum(nil)
-	hasher.Reset()
-	hasher.Write(slot)
-	slotHash := hasher.Sum(nil)
-	nibbles := make([]byte, 128)
-	for i, b := range addrHash {
-		nibbles[i*2] = b >> 4
-		nibbles[i*2+1] = b & 0x0f
-	}
-	for i, b := range slotHash {
-		nibbles[64+i*2] = b >> 4
-		nibbles[64+i*2+1] = b & 0x0f
-	}
-	return nibbles
 }
 
