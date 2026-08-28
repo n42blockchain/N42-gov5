@@ -14,8 +14,6 @@ package keccak
 
 import (
 	"encoding/binary"
-
-	fastkeccak "github.com/erigontech/fastkeccak"
 )
 
 const (
@@ -134,24 +132,25 @@ func (s *State) Sum(in []byte) []byte {
 	return append(in, h[:]...)
 }
 
-// Sum256 returns the Keccak-256 digest of data. One-shot digests go through
-// erigontech/fastkeccak, whose assembly permutation is ~23% faster than the
-// portable one on this code base's targets; State keeps the portable sponge
-// for streaming callers that squeeze more than one block.
-func Sum256(data []byte) [Size]byte {
-	return fastkeccak.Sum256(data)
+// Sum256 returns the Keccak-256 digest of data, using a stack state.
+//
+// Deliberately the portable sponge and not erigontech/fastkeccak's assembly:
+// measured on the replay box (EPYC, 256 threads) the assembly permutation is
+// slower at every length (32 B 309 vs 298 ns, 1 KiB 2519 vs 2049 ns), and a
+// full-archive replay with it on the tx-hash path lost 1.3% CPU-seconds.
+func Sum256(data []byte) (h [Size]byte) {
+	var s State
+	s.Write(data)
+	s.Read(h[:])
+	return
 }
 
 // Sum256Into writes the Keccak-256 digest of the concatenation of the given
 // slices into h.
 func Sum256Into(h *[Size]byte, data ...[]byte) {
-	if len(data) == 1 {
-		*h = fastkeccak.Sum256(data[0])
-		return
+	var s State
+	for _, d := range data {
+		s.Write(d)
 	}
-	var d fastkeccak.Hasher
-	for _, chunk := range data {
-		d.Write(chunk)
-	}
-	*h = d.Sum256()
+	s.Read(h[:])
 }
