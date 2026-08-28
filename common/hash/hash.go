@@ -25,17 +25,17 @@ package hash
 
 import (
 	"bytes"
-	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"sync"
 
-	"golang.org/x/crypto/sha3"
+	"github.com/n42blockchain/N42/crypto/keccak"
 )
 
 // hasherPool holds LegacyKeccak256 hashers for rlpHash.
 var HasherPool = sync.Pool{
-	New: func() interface{} { return sha3.NewLegacyKeccak256() },
+	New: func() interface{} { return keccak.New() },
 }
 
 // encodeBufferPool holds temporary encoder buffers for DeriveSha and TX encoding.

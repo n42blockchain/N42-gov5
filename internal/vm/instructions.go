@@ -29,7 +29,6 @@ import (
 	"math/bits"
 
 	"github.com/holiman/uint256"
-	"golang.org/x/crypto/sha3"
 
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
@@ -303,11 +302,7 @@ func opKeccak256(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) (
 			return nil, nil
 		}
 	}
-	if interpreter.hasher == nil {
-		interpreter.hasher = sha3.NewLegacyKeccak256().(keccakState)
-	} else {
-		interpreter.hasher.Reset()
-	}
+	interpreter.hasher.Reset()
 	interpreter.hasher.Write(data)
 	if _, err := interpreter.hasher.Read(interpreter.hasherBuf[:]); err != nil {
 		return nil, fmt.Errorf("keccak256 read failed: %w", err)

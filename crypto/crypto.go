@@ -44,6 +44,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/u256"
 	"github.com/n42blockchain/N42/crypto/cryptopool"
+	"github.com/n42blockchain/N42/crypto/keccak"
 )
 
 // SignatureLength indicates the byte length required to carry a signature with recovery id.
@@ -104,10 +105,9 @@ func HashData(kh KeccakState, data []byte) (h types.Hash) {
 // Keccak256 calculates and returns the Keccak256 hash of the input data.
 func Keccak256(data ...[]byte) []byte {
 	b := make([]byte, 32)
-	d := NewKeccakState()
-	defer ReturnKeccakState(d)
-	for _, b := range data {
-		d.Write(b)
+	var d keccak.State
+	for _, chunk := range data {
+		d.Write(chunk)
 	}
 	d.Read(b) //nolint:errcheck
 	return b
@@ -116,12 +116,9 @@ func Keccak256(data ...[]byte) []byte {
 // Keccak256Hash calculates and returns the Keccak256 hash of the input data,
 // converting it to an internal Hash data structure.
 func Keccak256Hash(data ...[]byte) (h types.Hash) {
-	d := NewKeccakState()
-	defer ReturnKeccakState(d)
-	for _, b := range data {
-		d.Write(b)
-	}
-	d.Read(h[:]) //nolint:errcheck
+	// A concrete sponge on the stack: no pool round trip, and nothing here
+	// escapes (the interface path made h and every input heap-allocated).
+	keccak.Sum256Into((*[32]byte)(&h), data...)
 	return h
 }
 
