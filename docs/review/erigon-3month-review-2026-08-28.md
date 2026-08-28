@@ -114,7 +114,16 @@ typed tx hash 直接编码（#21858 ⇔ `typed_tx_hash.go`）、modexp/bn254 快
 | 块级并行执行改造（Block-STM 值感知校验等） | `internal/parallel_processor.go` 是按 sender/access-list 分批的保守并行，不是 OCC；先加冲突/重执行计数再谈 |
 | SMT 256 线程 | 已量：IPC 2.72→2.15，全量只快个位数 |
 
-### 5.3 对 N42-26（Rust，另一位研发的仓库，本轮不改）
+### 5.3 N42-26 与 n42-rs：已实施 + 合并前审计（2026-08-28，分支未合并）
 
-按 §3 的清单执行；最先做的两件：把 QMDB WAL 写出锁外（持久 fd、`sync_data`），给 Block-STM 加
-`exec_repeats/execs` 与非收敛回退计数——没有这两个数，"并行执行已成熟"无法成立。
+两个仓库各自的分支 `perf/erigon-borrow-20260828` 已推送，均经独立审计并修完发现的问题；细节见各仓库文档：
+N42-26 `docs/devlog-140-erigon-borrow-20260828.md`（12 个提交，末 `08567f8`），n42-rs `docs/erigon-borrow-20260828.md`（9 个提交，末 `84742a3ed`）。
+
+| 仓库 | 做了 | 审计发现（已修） | 合并 |
+|---|---|---|---|
+| N42-26 | QMDB WAL 写出 `state` 锁外（持久 fd、`sync_data`、独立 `commit` 锁、`pending_durable`），`lock_hold{commit}` 1.49→0.42 ms；Block-STM 五个计数（强制冲突每 tx 执行 12.6 次）；zstd/snappy 复用（小消息 2–3×，≥1 MiB 噪声内）；range 256 MiB 总预算 + trim 全保护修复；range 按 32 块批次单一 `consistent_provider()` + `spawn_blocking`；mobile witness tip 快路径 | **高**：tip 快路径的 head 前后比对关不住 engine tree 的 `update_chain`→`set_canonical_head` 窗口 → 改为向 state provider 本身核对 `block_hash(parent)`/`block_hash(parent+1)==None`；**中**：WAL 撕裂帧回滚失败后 `wal.len` 与文件脱节 → 句柄毒化 fail-closed + 目录 fsync；低：预算不足时损坏块被误报为超预算；补批边界重组测试与 600 轮 Snappy 随机差分（与 `snap` 逐字节相同、符合 golang/snappy 校验规则） | 直接在 `origin/main` 之上，试合并无冲突；可独立 revert 的提交组已列出 |
+| n42-rs | snappy codec 池化（72 B 帧 16×）；range 单视图 + hash 链锚定；range 回复字节预算与读前拒绝；QMDB `initialize` 读快照出锁外、proof 锚定同一视图 | **高**：预算越界整段报错 → catch-up 判定"对端没有"而停止，块均 >256 KiB 的链无法按范围同步 → 改为在越界块处截断返回短回复，服务端同预算截断；**中**：`eth_blockNumber` 失败/head 取不到时空回复 → 回退前向遍历；低：TLS 析构期 panic | 默认分支 `main`；本分支基于 `chore/reth-2.4.1-upgrade`（领先 main 51 个提交、未合入）。**先合 chore → main，再 fast-forward 本分支**，不要跳过 chore |
+
+两边都没跑 devnet fleet 与 `--workspace` 全量测试（机器上同时有性能测量）；合并后第一次 devnet 应取样
+`n42_qmdb_lock_hold_ms`、`n42_qmdb_wal_fsync_ms`、`n42_parallel_evm_reexecutions_total`、
+`n42_mobile_witness_state_source_total`。
