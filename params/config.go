@@ -990,3 +990,20 @@ type CheckpointOracleConfig struct {
 	Signers   []types.Address `json:"signers"`
 	Threshold uint64          `json:"threshold"`
 }
+
+// EthereumReceiptEncoding reports whether this chain's blocks carry
+// Ethereum-encoded receipts (typed receipt RLP under an MPT root): the
+// Ethereum execution-layer chains, and HotStuff chains running in Ethereum
+// compatibility mode. Every other N42 chain — whatever its state scheme —
+// seals receipts with the native keccak-concat root (NewBlockFromReceipt), so
+// its validators must derive the same root. Keying this on the QMDB state
+// scheme rejected every block sealed on mainnet_qmdb_staggered.
+func (c *ChainConfig) EthereumReceiptEncoding() bool {
+	if c == nil {
+		return false
+	}
+	if c.StateScheme == string(StateCommitmentPresetEthereumMPT) {
+		return true
+	}
+	return c.HotStuff != nil && c.HotStuff.EthELCompat
+}
