@@ -316,7 +316,10 @@ func opKeccak256(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) (
 	size.SetBytes(interpreter.hasherBuf[:])
 	if memoKey != nil {
 		if interpreter.sha3Memo == nil {
-			interpreter.sha3Memo = make(map[[64]byte]types.Hash, 256)
+			// No size hint: a hinted map of this key size costs ~57 KiB up
+			// front, and the live node builds one interpreter per
+			// transaction. Growth is amortised against the keccaks saved.
+			interpreter.sha3Memo = make(map[[64]byte]types.Hash)
 		}
 		if len(interpreter.sha3Memo) < sha3MemoMax {
 			interpreter.sha3Memo[*memoKey] = interpreter.hasherBuf
