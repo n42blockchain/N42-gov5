@@ -319,10 +319,11 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 	if in.cfg.Debug {
 		defer func() {
 			if err != nil {
+				traceOp := tracedOp(op, contract, pcCopy)
 				if !logged {
-					in.cfg.Tracer.CaptureState(pcCopy, op, gasCopy, cost, callContext, in.returnData, in.depth, err) //nolint:errcheck
+					in.cfg.Tracer.CaptureState(pcCopy, traceOp, gasCopy, cost, callContext, in.returnData, in.depth, err) //nolint:errcheck
 				} else {
-					in.cfg.Tracer.CaptureFault(pcCopy, op, gasCopy, cost, callContext, in.depth, err)
+					in.cfg.Tracer.CaptureFault(pcCopy, traceOp, gasCopy, cost, callContext, in.depth, err)
 				}
 			}
 		}()
@@ -395,6 +396,11 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		cost = operation.constantGas // For tracing
 		// Validate stack
 		if sLen := locStack.Len(); sLen < operation.numPop {
+			if op == fusedPush1Jumpi || op == fusedPush2Jumpi {
+				// Unfused, the PUSH half succeeds and the JUMPI underflows
+				// with one item on the stack; report exactly that.
+				return nil, &ErrStackUnderflow{stackLen: sLen + 1, required: 2}
+			}
 			return nil, &ErrStackUnderflow{stackLen: sLen, required: operation.numPop}
 		} else if sLen > operation.maxStack {
 			return nil, &ErrStackOverflow{stackLen: sLen, limit: operation.maxStack}
@@ -433,7 +439,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 			}
 		}
 		if debug {
-			in.cfg.Tracer.CaptureState(*pc, op, gasCopy, cost, callContext, in.returnData, in.depth, err) //nolint:errcheck
+			in.cfg.Tracer.CaptureState(*pc, tracedOp(op, contract, *pc), gasCopy, cost, callContext, in.returnData, in.depth, err) //nolint:errcheck
 			logged = true
 		}
 		// execute the operation. The hottest opcodes — together about 85% of
@@ -599,6 +605,17 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 
 	ret = append(ret, res...)
 	return
+}
+
+// tracedOp returns the opcode the tracer must be shown for the byte at pc.
+// A run on the plain view dispatches a real 0x0c-0x0f byte through
+// fusedCollision (fuse.go); the tracer sees the byte the contract holds, as
+// it always did. Only called on the tracing path.
+func tracedOp(op OpCode, contract *Contract, pc uint64) OpCode {
+	if op == fusedCollision {
+		return contract.GetOp(pc)
+	}
+	return op
 }
 
 // Depth returns the current call stack depth.
