@@ -26,6 +26,7 @@ package vm
 
 import (
 	"fmt"
+	"github.com/n42blockchain/N42/crypto/keccak"
 	"math/bits"
 
 	"github.com/holiman/uint256"
@@ -302,11 +303,7 @@ func opKeccak256(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) (
 			return nil, nil
 		}
 	}
-	interpreter.hasher.Reset()
-	interpreter.hasher.Write(data)
-	if _, err := interpreter.hasher.Read(interpreter.hasherBuf[:]); err != nil {
-		return nil, fmt.Errorf("keccak256 read failed: %w", err)
-	}
+	interpreter.hasherBuf = keccak.Sum256(data)
 
 	size.SetBytes(interpreter.hasherBuf[:])
 	if memoKey != nil {
