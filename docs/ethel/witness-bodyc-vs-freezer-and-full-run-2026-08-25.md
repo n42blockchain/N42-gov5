@@ -1094,6 +1094,21 @@ tx 77 的发送者账户解码成 "proto: cannot parse invalid wire-format"。8 
 （PUSH2→JUMPI 4.7%、JUMPDEST 7.3%），块入口的开销和它替掉的 ~3 条 op 的检查相当；`rest`
 对每个动态 gas op 走一遍块尾；解释器的真正成本在栈内存流量和取指/分支，不在这几条比较上。
 可能的救法（块入口 O(1) 索引、按 op 预存 rest）上限也只有 ~2–3%，风险不成比例，放弃。
+### 5.34 合并前审计（gov5 性能提交，2026-08-28）
+
+对 `1de2e38f..main` 的全部性能提交做独立对抗式审查（分支 `audit/gov5-perf-20260828`，4 个提交），
+重点是全量 gate 覆盖不到的路径。发现并修：追踪器路径下真实 0x0c–0x0f 字节被 `plainView` 重映射成 0x21
+交给 `CaptureState`（中，仅追踪可见；修在追踪路径，非追踪循环字节级不变）；融合 PUSH+JUMPI 栈下溢错误
+文本与原版不同（低，`eth_call` 可见）；`Config.SkipAnalysis` 下融合不安全（原理上中，生产不可达；`canFuse`
+排除）；`sha3Memo` 的 256 size hint 每次 ~57 KiB（live 节点每 tx 一次）。验证为正确：融合逐 case 等价
+（300 随机程序 × 7 分叉 × 融合/原版/追踪）、`Contract.addr` 各调用类型一致、modexp/bn256 fuzz 各 2M+ 次
+0 crash、`isNew` 的安全性证明（`branchBefore==false` 不等于库里无记录，但 `Merge` 只差 touchMap 头位且所有
+读者忽略）。`go vet`、相关包测试、`race-core` 通过。
+
+全量 gate（audit1，128w/6r/gc300）：**42m08s / 310,373 CPU-s / failed=0**，RSS 27.1 GiB。对同日的
+main 基线 41m28s / 305,146 为 +1.7%；解释器改动只在冷路径/追踪路径（循环微基准 201.4 vs 201.5 µs），
+判为运行间漂移（同日 eb6 307,369），下一轮重跑基线校准。
+
 ### 5.31 未完成 / 可继续
 
 1. 256w 间歇 nonce 失败（累计 12 次 1 败）：诊断挂着，猎捕循环在跑；
