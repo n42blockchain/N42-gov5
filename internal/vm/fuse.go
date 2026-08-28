@@ -22,7 +22,8 @@ import (
 // keep their meaning. The four synthetic values live in the undefined range
 // 0x0c–0x0f; a real byte with one of those values at a code position is
 // remapped to another undefined opcode so it still fails as before (the
-// error reports the original byte, which opUndefined reads from Code).
+// error reports the original byte, which opUndefined reads from Code, and
+// the tracer is shown the original byte too).
 const (
 	fusedPush1Jump  OpCode = 0x0c
 	fusedPush1Jumpi OpCode = 0x0d
@@ -191,7 +192,11 @@ func plainView(code []byte) []byte {
 }
 
 // canFuse reports whether the interpreter may run contract through its
-// execution view: legacy code with a known hash, no tracer attached.
+// execution view: legacy code with a known hash, no tracer attached, and
+// JUMPDEST analysis in force. With SkipAnalysis a JUMP may land inside push
+// data and execution then reads the bytes out of phase; a PUSH whose
+// immediate sits on a fused position would read the synthetic byte instead
+// of the real one, so such a run must see the contract's own bytes.
 func canFuse(c *Contract, debug bool) bool {
-	return !debug && c.EOFContainer == nil && GlobalCodeAnalysisCache != nil && c.CodeHash != (types.Hash{})
+	return !debug && !c.skipAnalysis && c.EOFContainer == nil && GlobalCodeAnalysisCache != nil && c.CodeHash != (types.Hash{})
 }
