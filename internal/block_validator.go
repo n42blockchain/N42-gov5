@@ -143,7 +143,9 @@ func (v *BlockValidator) ValidateState(iBlock block.IBlock, statedb *state.Intra
 		return fmt.Errorf("invalid bloom (remote: %x  local: %x)", header.Bloom, rbloom)
 	}
 
-	ethereumReceiptEncoding := v.config != nil && (v.config.StateScheme == string(params.StateCommitmentPresetQMDB) || v.config.StateScheme == string(params.StateCommitmentPresetEthereumMPT))
+	// The receipt root must be derived the way the block's producer derived
+	// it: Ethereum encoding only on Ethereum-EL chains (see ChainConfig.EthereumReceiptEncoding).
+	ethereumReceiptEncoding := v.config.EthereumReceiptEncoding()
 	postByzantium := v.config != nil && v.config.IsByzantium(iBlock.Number64().Uint64())
 	// Pre-Byzantium Ethereum receipts encode the intermediate state root after
 	// each transaction. N42 receipts retain the post-Byzantium status field, so
