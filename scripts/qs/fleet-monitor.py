@@ -241,7 +241,7 @@ def main():
     for pw in glob.glob("/sys/class/hwmon/hwmon*/power1_input"):
         try: print(f"cpu package power (amd_hsmp) {int(read(pw))/1e6:.1f} W")
         except Exception: pass
-    print("--- temperatures (hwmon; no board/VRM sensor is exposed on this H14SSL-NT without IPMI or a Super-I/O driver) ---")
+    print("--- temperatures (hwmon: CPU Tctl, NVMe controllers, NICs) ---")
     for name, label, t in temps():
         print(f"{name:14s} {label:12s} {t:6.1f} C")
     print("--- board / VRM / DIMM / fans / rails (IPMI via BMC) ---")
