@@ -29,6 +29,7 @@ func main() {
 	dbPath := flag.String("db", "", "replay-v2 chaindata directory with QMDB history")
 	outputPath := flag.String("out", "", "portable snapshot output file")
 	mapGB := flag.Int("map.gb", 512, "MDBX map size in GiB")
+	leafForm := flag.Bool("leaf-form", false, "write the v2 leaf-form snapshot (per-twig leaf hashes and live entries); the only form a node that reclaims dead entry rows can write")
 	flag.Parse()
 	if *dbPath == "" || *outputPath == "" {
 		fatalf("usage: n42-qmdb-export --db <chaindata> --out <snapshot>")
@@ -124,13 +125,20 @@ func main() {
 		}
 		return entry, nil
 	}
+	if *leafForm {
+		stats := computer.Tree().StatsForV2(tx)
+		fmt.Fprintf(os.Stderr, "leaf-form export: %d twigs (%d without leaf hashes), %d live entries\n", stats.Twigs, stats.HollowTwigs, stats.LiveEntries)
+	}
 	written, err := writeAtomic(*outputPath, func(w io.Writer) (int64, error) {
+		if *leafForm {
+			return qmdb.WritePortableSnapshotV2(w, metadata, computer.Tree(), tx)
+		}
 		return qmdb.WritePortableSnapshot(w, metadata, source)
 	})
 	if err != nil {
 		fatalf("encode portable snapshot: %v", err)
 	}
-	if key != nil {
+	if key != nil && !*leafForm {
 		fatalf("QMDB entry table contains rows beyond next slot %d", metadata.NextSlot)
 	}
 	if cursorErr != nil {
