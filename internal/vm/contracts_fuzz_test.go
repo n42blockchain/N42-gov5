@@ -20,6 +20,41 @@ import (
 	"testing"
 )
 
+// fuzzGasBudget is the gas a single precompile call can be given on this
+// chain: one block's worth. Precompiles are fuzzed through
+// RunPrecompiledContract rather than by calling Run directly, because Run is
+// not reachable without first paying RequiredGas, and the length fields of
+// modexp and the round count of blake2f are bounded by nothing except that
+// charge. Calling Run directly asks the code to survive inputs consensus can
+// never deliver -- it reports allocation panics for a 26-byte modexp input
+// whose header declares a multi-exabyte base, which no transaction can pay
+// for -- and a fuzz target that keeps producing findings nobody can act on
+// gets ignored, which costs more than it finds.
+const fuzzGasBudget = 30_000_000
+
+// TestFuzzGasBudgetAdmitsOrdinaryCalls keeps the budget above from making the
+// precompile fuzz targets vacuous. Routing them through RunPrecompiledContract
+// means an inadequate budget would reject every input as out of gas, and the
+// targets would pass while testing nothing at all.
+func TestFuzzGasBudgetAdmitsOrdinaryCalls(t *testing.T) {
+	// base=2, exp=3, mod=5 -> 3, the shape a contract actually sends.
+	in := make([]byte, 96+3)
+	in[31], in[63], in[95] = 1, 1, 1
+	in[96], in[97], in[98] = 2, 3, 5
+
+	c := &bigModExp{eip2565: true}
+	out, remaining, err := RunPrecompiledContract(c, in, fuzzGasBudget)
+	if err != nil {
+		t.Fatalf("an ordinary modexp call was rejected under the fuzz budget: %v", err)
+	}
+	if remaining >= fuzzGasBudget {
+		t.Fatal("no gas was charged, so the call did not reach the precompile")
+	}
+	if len(out) != 1 || out[0] != 3 {
+		t.Fatalf("2^3 mod 5 = %x, want 03", out)
+	}
+}
+
 // FuzzPrecompileEcrecover feeds random input to the ecrecover precompile,
 // ensuring it never panics. The ecrecover precompile should gracefully
 // handle any input by returning nil output or an error.
@@ -45,7 +80,7 @@ func FuzzPrecompileEcrecover(f *testing.F) {
 	c := &ecrecover{}
 	f.Fuzz(func(t *testing.T, input []byte) {
 		// Run should never panic
-		output, err := c.Run(input)
+		output, _, err := RunPrecompiledContract(c, input, fuzzGasBudget)
 		// If no error and output is non-nil, it should be 32 bytes
 		if err == nil && output != nil && len(output) != 32 {
 			t.Fatalf("ecrecover returned non-nil output with unexpected length: %d", len(output))
@@ -63,7 +98,7 @@ func FuzzPrecompileSha256(f *testing.F) {
 
 	c := &sha256hash{}
 	f.Fuzz(func(t *testing.T, input []byte) {
-		output, err := c.Run(input)
+		output, _, err := RunPrecompiledContract(c, input, fuzzGasBudget)
 		if err != nil {
 			t.Fatalf("sha256 returned error: %v", err)
 		}
@@ -83,7 +118,7 @@ func FuzzPrecompileRipemd160(f *testing.F) {
 
 	c := &ripemd160hash{}
 	f.Fuzz(func(t *testing.T, input []byte) {
-		output, err := c.Run(input)
+		output, _, err := RunPrecompiledContract(c, input, fuzzGasBudget)
 		if err != nil {
 			t.Fatalf("ripemd160 returned error: %v", err)
 		}
@@ -100,20 +135,20 @@ func FuzzPrecompileModExp(f *testing.F) {
 	f.Add(make([]byte, 96)) // all zeros (base=0, exp=0, mod=0)
 	// Simple: base=2, exp=3, mod=5 => 2^3 mod 5 = 3
 	simple := make([]byte, 96+1+1+1)
-	simple[31] = 1   // baseLen = 1
-	simple[63] = 1   // expLen = 1
-	simple[95] = 1   // modLen = 1
-	simple[96] = 2   // base = 2
-	simple[97] = 3   // exp = 3
-	simple[98] = 5   // mod = 5
+	simple[31] = 1 // baseLen = 1
+	simple[63] = 1 // expLen = 1
+	simple[95] = 1 // modLen = 1
+	simple[96] = 2 // base = 2
+	simple[97] = 3 // exp = 3
+	simple[98] = 5 // mod = 5
 	f.Add(simple)
 	// Short input
 	f.Add([]byte{0x01})
 	// Large lengths in header but missing data
 	largeHeader := make([]byte, 96)
-	largeHeader[31] = 32  // baseLen = 32
-	largeHeader[63] = 32  // expLen = 32
-	largeHeader[95] = 32  // modLen = 32
+	largeHeader[31] = 32 // baseLen = 32
+	largeHeader[63] = 32 // expLen = 32
+	largeHeader[95] = 32 // modLen = 32
 	f.Add(largeHeader)
 
 	// Test both EIP-198 and EIP-2565 variants
@@ -129,10 +164,10 @@ func FuzzPrecompileModExp(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, input []byte) {
 		for _, v := range variants {
-			// RequiredGas should never panic
-			_ = v.c.RequiredGas(input)
-			// Run should never panic
-			_, _ = v.c.Run(input)
+			// Through the real entry point, with the gas a block could
+			// actually supply: RunPrecompiledContract charges RequiredGas
+			// first and refuses the call when it cannot be paid for.
+			_, _, _ = RunPrecompiledContract(v.c, input, fuzzGasBudget)
 		}
 	})
 }
@@ -147,7 +182,7 @@ func FuzzPrecompileBn256Add(f *testing.F) {
 
 	c := &bn256AddIstanbul{}
 	f.Fuzz(func(t *testing.T, input []byte) {
-		_, _ = c.Run(input)
+		_, _, _ = RunPrecompiledContract(c, input, fuzzGasBudget)
 	})
 }
 
@@ -161,7 +196,7 @@ func FuzzPrecompileBn256ScalarMul(f *testing.F) {
 
 	c := &bn256ScalarMulIstanbul{}
 	f.Fuzz(func(t *testing.T, input []byte) {
-		_, _ = c.Run(input)
+		_, _, _ = RunPrecompiledContract(c, input, fuzzGasBudget)
 	})
 }
 
@@ -175,7 +210,7 @@ func FuzzPrecompileBn256Pairing(f *testing.F) {
 
 	c := &bn256PairingIstanbul{}
 	f.Fuzz(func(t *testing.T, input []byte) {
-		_, _ = c.Run(input)
+		_, _, _ = RunPrecompiledContract(c, input, fuzzGasBudget)
 	})
 }
 
@@ -189,13 +224,13 @@ func FuzzPrecompileBlake2F(f *testing.F) {
 
 	// Valid blake2f input: 4 bytes rounds + 64 bytes h + 128 bytes m + 16 bytes t + 1 byte f
 	valid := make([]byte, 213)
-	valid[3] = 12    // 12 rounds
-	valid[212] = 1   // final block flag
+	valid[3] = 12  // 12 rounds
+	valid[212] = 1 // final block flag
 	f.Add(valid)
 
 	c := &blake2F{}
 	f.Fuzz(func(t *testing.T, input []byte) {
-		_, _ = c.Run(input)
+		_, _, _ = RunPrecompiledContract(c, input, fuzzGasBudget)
 	})
 }
 
@@ -209,15 +244,15 @@ func FuzzPrecompileP256Verify(f *testing.F) {
 
 	// Input with non-zero signature components
 	nonzero := make([]byte, 160)
-	nonzero[63] = 1   // r = 1
-	nonzero[95] = 1   // s = 1
-	nonzero[127] = 1  // x = 1
-	nonzero[159] = 1  // y = 1
+	nonzero[63] = 1  // r = 1
+	nonzero[95] = 1  // s = 1
+	nonzero[127] = 1 // x = 1
+	nonzero[159] = 1 // y = 1
 	f.Add(nonzero)
 
 	c := &p256Verify{}
 	f.Fuzz(func(t *testing.T, input []byte) {
-		output, err := c.Run(input)
+		output, _, err := RunPrecompiledContract(c, input, fuzzGasBudget)
 		// Should never return an error (invalid sigs return nil, nil)
 		if err != nil {
 			t.Fatalf("p256Verify returned error: %v", err)
@@ -238,7 +273,7 @@ func FuzzPrecompileDataCopy(f *testing.F) {
 
 	c := &dataCopy{}
 	f.Fuzz(func(t *testing.T, input []byte) {
-		output, err := c.Run(input)
+		output, _, err := RunPrecompiledContract(c, input, fuzzGasBudget)
 		if err != nil {
 			t.Fatalf("dataCopy returned error: %v", err)
 		}
