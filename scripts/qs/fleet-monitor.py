@@ -6,8 +6,11 @@ process: CPU (cores), RSS, threads, fds, disk read/write (from /proc/<pid>/io,
 actual block I/O), TCP bytes in/out (from `ss -tinp`, loopback included; QUIC
 (UDP) traffic is only visible in the system loopback counters), plus system
 load, memory, NIC counters, NVMe device I/O (iostat) and temperatures from
-/sys/class/hwmon (CPU Tctl via k10temp, NVMe controllers, NICs) and smartctl
-when readable. No root needed for anything but smartctl.
+/sys/class/hwmon (CPU Tctl via k10temp, NVMe controllers, NICs), the BMC via
+`sudo -n ipmitool sensor` (board, VRMs, DIMMs, fans, rails; needs the
+/etc/sudoers.d/n42-monitor rule) and NVMe SMART via `sudo -n nvme smart-log`.
+Ends with an alert line (temperature >= 80% of the BMC critical threshold,
+fan below its lower critical, rail outside limits, NVMe >= 60 C / wear / errors).
 
 usage: fleet-monitor.py [--seconds 60] [--interval 5] [--json out.json]
 """
@@ -122,6 +125,57 @@ def iostat_unused(seconds):
             res[f[0]] = dict(zip(cols[1:], f[1:]))
     return res
 
+def ipmi_sensors():
+    """Rows from `sudo -n ipmitool sensor` (allowed by /etc/sudoers.d/n42-monitor):
+    name, value, unit, status, lnr, lcr, lnc, unc, ucr, unr."""
+    try:
+        txt = subprocess.run(["sudo", "-n", "ipmitool", "sensor"], capture_output=True, text=True, timeout=30).stdout
+    except Exception:
+        return []
+    rows = []
+    for line in txt.splitlines():
+        f = [x.strip() for x in line.split("|")]
+        if len(f) < 10 or f[1] in ("na", ""): continue
+        try: val = float(f[1])
+        except ValueError: continue
+        def th(x):
+            try: return float(x)
+            except ValueError: return None
+        rows.append(dict(name=f[0], value=val, unit=f[2], status=f[3], lnr=th(f[4]), lcr=th(f[5]), lnc=th(f[6]), unc=th(f[7]), ucr=th(f[8]), unr=th(f[9])))
+    return rows
+
+def nvme_smart(dev):
+    try:
+        txt = subprocess.run(["sudo", "-n", "nvme", "smart-log", dev, "-o", "json"], capture_output=True, text=True, timeout=20).stdout
+        return json.loads(txt)
+    except Exception:
+        return {}
+
+def alerts_for(ipmi, nvme):
+    out = []
+    for r in ipmi:
+        v = r["value"]; ucr = r["ucr"]; lcr = r["lcr"]
+        if r["unit"].startswith("degrees"):
+            limit = ucr if ucr else 85.0   # sensors without a threshold (NIC Temp) get a conservative one
+            if v >= limit: out.append(f"CRIT {r['name']} {v:.0f} C >= {limit:.0f}")
+            elif v >= 0.8 * limit: out.append(f"WARN {r['name']} {v:.0f} C >= 80% of {limit:.0f}")
+        elif r["unit"] == "RPM" and lcr and v <= lcr:
+            out.append(f"CRIT {r['name']} {v:.0f} RPM <= {lcr:.0f}")
+        elif r["unit"] == "Volts" and ((lcr and v <= lcr) or (ucr and v >= ucr)):
+            out.append(f"CRIT {r['name']} {v:.3f} V outside [{lcr},{ucr}]")
+        if r["status"] not in ("ok", "ns", "na"):
+            out.append(f"WARN {r['name']} status {r['status']}")
+    for dev, s in nvme.items():
+        if not s: continue
+        t = s.get("temperature", 0) - 273
+        if t >= 70: out.append(f"CRIT {dev} {t} C")
+        elif t >= 60: out.append(f"WARN {dev} {t} C")
+        if s.get("critical_warning", 0): out.append(f"CRIT {dev} critical_warning={s['critical_warning']}")
+        if s.get("percent_used", 0) >= 80: out.append(f"WARN {dev} percent_used={s['percent_used']}")
+        if s.get("avail_spare", 100) <= s.get("spare_thresh", 10): out.append(f"CRIT {dev} spare {s.get('avail_spare')}% <= {s.get('spare_thresh')}%")
+        if s.get("media_errors", 0): out.append(f"CRIT {dev} media_errors={s['media_errors']}")
+    return out
+
 def fmt_bytes(b):
     for u in ("B", "KB", "MB", "GB", "TB"):
         if abs(b) < 1024: return f"{b:.1f}{u}"
@@ -190,11 +244,24 @@ def main():
     print("--- temperatures (hwmon; no board/VRM sensor is exposed on this H14SSL-NT without IPMI or a Super-I/O driver) ---")
     for name, label, t in temps():
         print(f"{name:14s} {label:12s} {t:6.1f} C")
+    print("--- board / VRM / DIMM / fans / rails (IPMI via BMC) ---")
+    ipmi = ipmi_sensors()
+    for r in ipmi:
+        lim = f" (crit {r['ucr']:.0f})" if r['ucr'] and r['unit'].startswith('degrees') else (f" (min {r['lcr']:.0f})" if r['lcr'] and r['unit']=='RPM' else "")
+        print(f"{r['name']:16s} {r['value']:9.3f} {r['unit']:10s} {r['status']}{lim}")
+    if not ipmi: print("(ipmitool not readable: install ipmitool, load ipmi_si/ipmi_devintf, allow `ipmitool sensor` in /etc/sudoers.d/n42-monitor)")
+    print("--- NVMe SMART ---")
+    nv = {}
     for dev in ("/dev/nvme0n1", "/dev/nvme1n1"):
-        s = smart(dev)
-        if s: print(f"smartctl {dev}: " + ", ".join(f"{k}={v}" for k, v in s.items()))
+        sm = nvme_smart(dev); nv[dev] = sm
+        if sm:
+            print(f"{dev}: {sm.get('temperature',273)-273} C, percent_used {sm.get('percent_used')}%, spare {sm.get('avail_spare')}% (thresh {sm.get('spare_thresh')}%), "
+                  f"written {sm.get('data_units_written',0)*512e3/1e12:.1f} TB, read {sm.get('data_units_read',0)*512e3/1e12:.1f} TB, power-on {sm.get('power_on_hours')} h, "
+                  f"unsafe shutdowns {sm.get('unsafe_shutdowns')}, media errors {sm.get('media_errors')}, critical_warning {sm.get('critical_warning')}")
+    al = alerts_for(ipmi, nv)
+    print("--- alerts --- " + ("; ".join(al) if al else "none"))
     if a.json:
-        json.dump(dict(window_s=el, rows=rows, load=load, temps=temps(), mem=mem), open(a.json, "w"), indent=1)
+        json.dump(dict(window_s=el, rows=rows, load=load, temps=temps(), ipmi=ipmi, nvme=nv, alerts=al, mem=mem), open(a.json, "w"), indent=1)
 
 if __name__ == "__main__":
     main()
