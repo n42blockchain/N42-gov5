@@ -108,3 +108,22 @@ Committee now: Go 0–4 + N42-26 (5) + n42-rs (6). Returning a slot to Go: stop 
 (never two holders of one key), then `roll-one-node.sh --node N --bin /data/blockchain/bin/n42 --txgen-max 0`
 with the qs env exported. Not covered on either side: EOF (no revm implementation), Prague/7702 details,
 and for N42-26 the state root.
+
+## 2026-08-29, second pass (offline, fleet paused for a stress test)
+
+n42-rs `e7d5c0cf`: Prague alignment with gov5 on chain 94 (gov5 has `pectraTime` but no `pragueTime`, so its
+`IsPrague()` is false while its execution rules are Prague — the Rust pool now also refuses type-4, a nil
+`requestsHash` commits to nothing, the EIP-7825 gas cap is lifted on gov5 chains); EOF guard (opcode 0xEF hook
+in every EVM → block refused with `EOF_REQUIRED`, metric `n42_evm_eof_required_total`); intra-tx slot
+write-back per gov5; forest persisted at shutdown. Chain scan 12,582,912→13,560,375: 0 type-4 txs, no EOF
+code, max tx gas 1.75M. Inherent: EOF semantics, SLOTNUM 0x4b, Glamsterdam (2027) — the node must leave the
+committee before that timestamp unless revm is aligned.
+
+N42-26 `9629353`: committee evidence (gov5 `blspool` port; 4,973 consecutive real links verified);
+**state root recomputed** with a new hollow leaf tree (`QmdbLeafTree`: sealed twigs keep leaf root + bits,
+open twigs full; leaf-form v2 import 9.4 s / 681 MB; `n42-qmdb-replay` 4,968/4,968 blocks with matching roots,
+final root and slot cursor identical to gov5, 5.0 s, 783 MB); the three gov5 rules it needed (intra-tx
+restore, Prague active via `N42_GOV5_PRAGUE_TIME`, empty system-caller leaf `0xffff…fffe` per Prague block);
+EOF guard (`n42_gov5_eof_blocks_rejected_total`); execution-behind now pulls gov5 ranges instead of N42
+state-sync. Live participant test with recomputed roots not yet run (paused); procedure in devlog-143,
+`run-node.sh participant-qmdb`.
