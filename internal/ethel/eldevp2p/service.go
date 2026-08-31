@@ -215,6 +215,7 @@ func (s *Service) Start(_ context.Context) error {
 		MaxPeers:    s.cfg.MaxPeers,
 		ChainConfig: s.chainCfg,
 		BootNodes:   boot,
+		Genesis:     s.genesis,
 	}, handler)
 
 	if err := s.server.Start(); err != nil {
