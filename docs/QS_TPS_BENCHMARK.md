@@ -662,3 +662,36 @@ shares rather than from these numbers.
 Next round should drop `--interval-ms` to 250 and raise the flood past 32k tx/s
 before reading anything as a chain result. Fleet left healthy: all seven nodes
 at the same committedQC after every round.
+
+### Finding 3: the pool held its lock across two MDBX transaction opens per tx
+
+The mutex profile at conc 96 put `BatchRawTransaction` at 19.3% of all
+contention against `InsertChain`'s 1.3% — the RPC ingest path against the block
+builder, on the same lock. The reason is not in any CPU profile, because the
+work is cgo and allocation rather than Go CPU: `validateTx` called
+`ReadState.GetNonce` and `GetBalance` per transaction, and each of those opens
+its own read transaction. A 200-transaction batch opened 400 of them, all
+inside `pool.mu`.
+
+`StateCli.GetAccountsInfo` — one read transaction for a list of addresses —
+already existed in the file and had never been called. Reading the batch's
+distinct senders through it before taking the lock:
+
+| | before | after |
+|---|---|---|
+| MDBX transaction + cursor allocation | 28.6 GB (17.2% of total) | 0, out of the profile |
+| total allocated | 166.46 GB | 126.73 GB |
+| **total mutex delay** | **4.61 hrs** | **3,322 s** |
+| `BatchRawTransaction` contention | 3,348 s | 1,998 s |
+
+Its *share* rises to 60% exactly because the total fell 80% — the same
+shares-are-not-costs trap as the 2026-08-21 round, seen from the contention
+side this time.
+
+Throughput, same load: 12,190 / 25,143 / 28,571 against 11,428 / 19,809 /
+31,238. Two windows better, one worse, inside the spread. Three rounds in a row
+now where a large, mechanically-confirmed cost came out and TPS did not move
+outside the noise — which is itself the finding: **at this pacing and supply
+the fleet is not limited by any of these costs.** The remaining levers are the
+block-interval cap, the load generator, and the import barrier inside the vote
+path.
