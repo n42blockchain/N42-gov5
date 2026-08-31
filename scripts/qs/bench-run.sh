@@ -28,6 +28,8 @@ source ./qs-env.sh
 POOL_SLOTS=300000; POOL_QUEUE=100000; INTERVAL_MS=1000
 OFFSET=900000; WINDOWS=3; SENDERS=3000; PERTX=3000
 BROADCAST=0; TAG=run; PROFILING=0; DECAY_SEC=0
+# 5% over the 1.0 gwei floor: the floor itself reads back a few wei high.
+DECAY_FLOOR_WEI=1050000000
 BIN=$QS_BIN
 while (( $# )); do
   case $1 in
@@ -127,12 +129,31 @@ if (( ! ready )); then echo "RPC not ready on all 7 nodes - aborting round" >&2;
 echo "all 7 RPC ready"
 
 if (( DECAY_SEC > 0 )); then
+  # The decay is only real if the chain is PRODUCING. After a heavy round the
+  # fleet can spend minutes re-converging (large journal clears, follower
+  # alignment), and a fixed sleep then reports "0 empty blocks produced" while
+  # the baseFee sits exactly where the previous round left it -- which is rule
+  # 6 all over again, and the round that follows dies in FUNDING (rule 8).
+  # So: sleep the requested decay, then keep waiting until the chain has both
+  # produced blocks and reached the 1.0 gwei floor. Refuse the round rather
+  # than measure an inherited fee market.
   echo "decaying baseFee for ${DECAY_SEC}s of empty blocks before the flood..."
   n0=$(rpc "$QS_HTTP_BASE" eth_blockNumber | grep -o '0x[0-9a-f]*')
   sleep "$DECAY_SEC"
-  n1=$(rpc "$QS_HTTP_BASE" eth_blockNumber | grep -o '0x[0-9a-f]*')
-  gp=$(rpc "$QS_HTTP_BASE" eth_gasPrice | grep -o '0x[0-9a-f]*')
+  decayed=0; deadline=$(( SECONDS + 600 ))
+  while (( SECONDS < deadline )); do
+    n1=$(rpc "$QS_HTTP_BASE" eth_blockNumber | grep -o '0x[0-9a-f]*')
+    gp=$(rpc "$QS_HTTP_BASE" eth_gasPrice | grep -o '0x[0-9a-f]*')
+    if (( n1 > n0 && gp <= DECAY_FLOOR_WEI )); then decayed=1; break; fi
+    sleep 10
+  done
   echo "decay done: $(( n1 - n0 )) empty blocks produced, gasPrice=$(( gp )) wei"
+  if (( ! decayed )); then
+    echo "baseFee did not reach the floor (${DECAY_FLOOR_WEI} wei) and/or the chain is not producing" >&2
+    echo "refusing to measure a round that inherits the previous round's fee market" >&2
+    ./stop-fleet.sh --no-inspect
+    exit 1
+  fi
 fi
 
 rpcs=""
