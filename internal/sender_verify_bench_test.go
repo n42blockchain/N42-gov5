@@ -11,7 +11,7 @@
 //     (gossiped ahead of the block — the normal case on a saturated
 //     fleet) verifies as a map lookup, no curve math;
 //   - the worker fan-out: cold verifications parallelize across
-//     senderRecoveryWorkers.
+//     the sender-recovery fan-out.
 //
 // Run: go test -tags nosqlite,noboltdb -run XXX -bench BenchmarkVerifyBlockSenders ./internal/
 
@@ -81,9 +81,9 @@ func BenchmarkVerifyBlockSendersWarm(b *testing.B) {
 // BenchmarkVerifyBlockSendersSerial is the same cold work with the
 // fan-out disabled, to show what the concurrency buys.
 func BenchmarkVerifyBlockSendersSerial(b *testing.B) {
-	saved := senderRecoveryWorkers
-	senderRecoveryWorkers = 1
-	defer func() { senderRecoveryWorkers = saved }()
+	saved := senderRecoveryWorkerOverride
+	senderRecoveryWorkerOverride = 1
+	defer func() { senderRecoveryWorkerOverride = saved }()
 
 	for _, n := range []int{182, 1000} {
 		b.Run(fmt.Sprintf("txs=%d", n), func(b *testing.B) {

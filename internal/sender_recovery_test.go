@@ -277,11 +277,11 @@ func TestRecoverBlockSendersSpeedup(t *testing.T) {
 	parallel := time.Since(start)
 
 	t.Logf("workers=%d txs=%d serial=%v (%v/tx) parallel=%v speedup=%.2fx",
-		senderRecoveryWorkers, n, serial, serial/n, parallel, float64(serial)/float64(parallel))
+		senderRecoveryFanout(), n, serial, serial/n, parallel, float64(serial)/float64(parallel))
 
-	if senderRecoveryWorkers >= 2 && parallel >= serial {
+	if senderRecoveryFanout() >= 2 && parallel >= serial {
 		t.Fatalf("parallel recovery (%v) was not faster than serial (%v) with %d workers",
-			parallel, serial, senderRecoveryWorkers)
+			parallel, serial, senderRecoveryFanout())
 	}
 }
 
