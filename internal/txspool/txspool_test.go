@@ -54,6 +54,14 @@ func (m *mockReadState) GetBalance(addr types.Address) *uint256.Int {
 	return uint256.NewInt(0)
 }
 
+func (m *mockReadState) GetAccountsInfo(addrs []types.Address) map[types.Address]*AccountInfo {
+	out := make(map[types.Address]*AccountInfo, len(addrs))
+	for _, a := range addrs {
+		out[a] = &AccountInfo{Nonce: m.GetNonce(a), Balance: m.GetBalance(a)}
+	}
+	return out
+}
+
 func (m *mockReadState) State(addr types.Address) (*account.StateAccount, error) {
 	return &account.StateAccount{
 		Nonce:   m.GetNonce(addr),

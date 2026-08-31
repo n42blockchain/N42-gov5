@@ -316,8 +316,25 @@ func (pool *TxsPool) addTxs(txs []*transaction.Transaction, local, sync bool) []
 		return errs
 	}
 
+	// Nonce and balance for the whole batch in ONE read transaction, taken
+	// BEFORE the lock. validateTx used to call GetNonce and GetBalance per
+	// transaction, and each of those opens its own MDBX read transaction — so
+	// admitting a 200-transaction batch opened 400 of them, every one inside
+	// pool.mu, with the block builder waiting on the same lock. Under load the
+	// RPC ingest path was 19.3% of all mutex delay against InsertChain's 1.3%,
+	// and MdbxTx cursor/transaction objects were ~22% of everything the node
+	// allocated.
+	//
+	// The snapshot is read a lock-acquisition earlier than the values it
+	// replaces, which widens an existing staleness window: the two getters were
+	// already separate transactions, so nonce and balance never came from one
+	// consistent view to begin with. A transaction admitted against a nonce
+	// that has since moved is dropped by the builder when it executes, which is
+	// what already happens to every transaction the pool outlives.
+	accounts := pool.accountsFor(news)
+
 	pool.mu.Lock()
-	newErrs, dirtyAddrs := pool.addTxsLocked(news, local)
+	newErrs, dirtyAddrs := pool.addTxsLocked(news, local, accounts)
 	pool.mu.Unlock()
 
 	nilSlot := 0
@@ -347,11 +364,11 @@ func (pool *TxsPool) addTxs(txs []*transaction.Transaction, local, sync bool) []
 
 // addTxsLocked attempts to queue a batch of transactions if they are valid.
 // The transaction pool lock must be held.
-func (pool *TxsPool) addTxsLocked(txs []*transaction.Transaction, local bool) ([]error, *accountSet) {
+func (pool *TxsPool) addTxsLocked(txs []*transaction.Transaction, local bool, accounts map[types.Address]*AccountInfo) ([]error, *accountSet) {
 	dirty := newAccountSet()
 	errs := make([]error, len(txs))
 	for i, tx := range txs {
-		replaced, err := pool.add(tx, local)
+		replaced, err := pool.add(tx, local, accounts)
 		errs[i] = err
 		if err == nil && !replaced {
 			dirty.addTx(tx)
@@ -371,7 +388,7 @@ func (pool *TxsPool) addTxsLocked(txs []*transaction.Transaction, local bool) ([
 
 // add validates a transaction and inserts it into the non-executable queue for later
 // pending promotion and execution.
-func (pool *TxsPool) add(tx *transaction.Transaction, local bool) (replaced bool, err error) {
+func (pool *TxsPool) add(tx *transaction.Transaction, local bool, accounts map[types.Address]*AccountInfo) (replaced bool, err error) {
 	hash := tx.Hash()
 	gasPrice := tx.GasPrice()
 
@@ -382,7 +399,7 @@ func (pool *TxsPool) add(tx *transaction.Transaction, local bool) (replaced bool
 
 	isLocal := local || pool.locals.containsTx(tx)
 
-	if err := pool.validateTx(tx, isLocal); err != nil {
+	if err := pool.validateTx(tx, isLocal, accounts); err != nil {
 		return false, err
 	}
 
@@ -503,7 +520,42 @@ func (pool *TxsPool) removeTx(hash types.Hash, outofbound bool) {
 
 // validateTx checks whether a transaction is valid according to the consensus
 // rules and adheres to some heuristic limits of the local node (price and size).
-func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
+// accountsFor reads nonce and balance for every distinct sender in txs, in one
+// read transaction. Call it OUTSIDE pool.mu.
+func (pool *TxsPool) accountsFor(txs []*transaction.Transaction) map[types.Address]*AccountInfo {
+	if pool.currentState == nil || len(txs) == 0 {
+		return nil
+	}
+	addrs := make([]types.Address, 0, len(txs))
+	seen := make(map[types.Address]struct{}, len(txs))
+	for _, tx := range txs {
+		from := tx.From()
+		if from == nil {
+			continue
+		}
+		if _, ok := seen[*from]; ok {
+			continue
+		}
+		seen[*from] = struct{}{}
+		addrs = append(addrs, *from)
+	}
+	if len(addrs) == 0 {
+		return nil
+	}
+	return pool.currentState.GetAccountsInfo(addrs)
+}
+
+// accountState answers from the batch snapshot when it has the address, and
+// falls back to the single-address getters for the paths that have no snapshot
+// (single submits, reorg re-injection) or whose account failed to decode.
+func (pool *TxsPool) accountState(addr types.Address, accounts map[types.Address]*AccountInfo) (uint64, *uint256.Int) {
+	if info, ok := accounts[addr]; ok && info != nil && info.Balance != nil {
+		return info.Nonce, info.Balance
+	}
+	return pool.currentState.GetNonce(addr), pool.currentState.GetBalance(addr)
+}
+
+func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool, accounts map[types.Address]*AccountInfo) error {
 	// Accept only legacy transactions until EIP-2718/2930 activates.
 	if !pool.eip2718 && tx.Type() != transaction.LegacyTxType {
 		return internal.ErrTxTypeNotSupported
@@ -542,14 +594,15 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
 	if !local && gasPrice.Cmp(pool.gasPrice) < 0 {
 		return ErrUnderpriced
 	}
-	if pool.currentState.GetNonce(addr) > tx.Nonce() {
+	nonce, balance := pool.accountState(addr, accounts)
+	if nonce > tx.Nonce() {
 		return ErrNonceTooLow
 	}
 	const MaxNonce uint64 = 1<<63 - 1
 	if tx.Nonce() > MaxNonce {
 		return ErrNonceTooHigh
 	}
-	if pool.currentState.GetBalance(addr).Cmp(tx.Cost()) < 0 {
+	if balance.Cmp(tx.Cost()) < 0 {
 		return ErrInsufficientFunds
 	}
 
@@ -790,7 +843,10 @@ func (pool *TxsPool) reset(oldBlock, newBlock block.IBlock) {
 	if len(reinject) > 0 {
 		log.Debugf("Reinjecting stale transactions count %d", len(reinject))
 	}
-	pool.addTxsLocked(reinject, false)
+	// nil snapshot: reset already holds the lock, and re-injected transactions
+	// are revalidated against the state of the block that just arrived, so they
+	// read it directly rather than through a batch taken before it.
+	pool.addTxsLocked(reinject, false, nil)
 
 	// Update all fork indicators by next pending block number.
 	next := big.NewInt(1)
