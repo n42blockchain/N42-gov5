@@ -12,10 +12,16 @@ import (
 )
 
 // ReadState provides read access to account nonces and balances.
+//
+// GetAccountsInfo is the batch form and the one the ingest path uses: the
+// single-address getters each open their own read transaction, so validating a
+// batch of transactions through them costs two MDBX transaction opens per
+// transaction — and the pool holds its lock across every one of them.
 type ReadState interface {
 	GetNonce(types.Address) uint64
 	GetBalance(types.Address) *uint256.Int
 	State(types.Address) (*account.StateAccount, error)
+	GetAccountsInfo([]types.Address) map[types.Address]*AccountInfo
 }
 
 // StateCli implements ReadState using a read-only database.
