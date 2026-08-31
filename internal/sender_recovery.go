@@ -162,6 +162,64 @@ func applySenderHints(hints SenderHintSource, signer transaction.Signer, txs []*
 // sync.Pool). The underlying erigontech/secp256k1 binding is built for this —
 // it pre-creates one libsecp256k1 context per CPU and its verify-only default
 // context is safe to share across threads.
+// recoverBlockSendersAsync starts the recovery and returns a join function
+// instead of waiting for it, so the caller can execute the block WHILE the
+// senders are being recovered. Join before returning, so the workers never
+// outlive the block that owns them.
+//
+// Overlapping is safe because recovery's only effect is the memo, and the memo
+// is an atomic.Value plus the process-wide cache — both already written by 28
+// workers concurrently today. A transaction the executor reaches before its
+// worker does simply recovers inline, on the executor's goroutine: the same
+// work, the same result, just not overlapped for that one. Static striding
+// means the workers advance as a contiguous frontier (worker w takes
+// w, w+n, w+2n, so every index below n*k is covered after k steps), and the
+// executor walks in the same direction, so it runs just behind that frontier.
+//
+// Nothing here touches inner.from — Sender writes only tx.from and the shared
+// cache — so this does not race with AsMessage reading a wire-declared sender
+// or with applySenderHints, which runs to completion before the launch.
+func recoverBlockSendersAsync(signer transaction.Signer, txs []*transaction.Transaction) func() {
+	if signer == nil || len(txs) < senderRecoveryMinTxs {
+		return func() {}
+	}
+	workers := senderRecoveryFanout()
+	if workers > len(txs) {
+		workers = len(txs)
+	}
+	if workers < 2 {
+		return func() {}
+	}
+	done := make(chan struct{}, workers)
+	for w := 0; w < workers; w++ {
+		go recoverSenderStride(signer, txs, w, workers, done)
+	}
+	return func() {
+		for w := 0; w < workers; w++ {
+			<-done
+		}
+	}
+}
+
+// recoverSenderStride is one recovery worker. A panic below would otherwise
+// take down the process from a goroutine the importer cannot see. Swallowing
+// it here only means this worker stops pre-warming; the execution loop still
+// reaches those transactions and reproduces whatever happened, on its own
+// stack, exactly as it would have without this optimisation.
+func recoverSenderStride(signer transaction.Signer, txs []*transaction.Transaction, start, stride int, done chan<- struct{}) {
+	defer func() {
+		_ = recover()
+		done <- struct{}{}
+	}()
+	for i := start; i < len(txs); i += stride {
+		tx := txs[i]
+		if tx == nil || tx.From() != nil {
+			continue
+		}
+		_, _ = transaction.Sender(signer, tx)
+	}
+}
+
 func recoverBlockSenders(signer transaction.Signer, txs []*transaction.Transaction) {
 	if signer == nil || len(txs) < senderRecoveryMinTxs {
 		return
