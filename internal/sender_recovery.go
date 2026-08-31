@@ -55,26 +55,50 @@ import (
 // worth it; those blocks recover inline in the execution loop as before.
 const senderRecoveryMinTxs = 8
 
-// senderRecoveryWorkers is the size of the recovery fan-out.
-//
-// Deliberately a fraction of NumCPU rather than all of it: a validator host
-// commonly runs several nodes side by side, and block import is latency- not
-// throughput-bound — saturating every core would just move the contention.
-// Override with N42_SENDER_RECOVER_WORKERS (1 disables the fan-out).
-var senderRecoveryWorkers = defaultSenderRecoveryWorkers()
+// senderRecoveryWorkerOverride is N42_SENDER_RECOVER_WORKERS, 0 when unset
+// (1 disables the fan-out).
+var senderRecoveryWorkerOverride = envSenderRecoveryWorkers()
 
-func defaultSenderRecoveryWorkers() int {
+func envSenderRecoveryWorkers() int {
 	if v := os.Getenv("N42_SENDER_RECOVER_WORKERS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
 			return n
 		}
 	}
-	n := runtime.NumCPU() / 4
-	if n < 2 {
-		n = 2
+	return 0
+}
+
+// senderRecoveryFanout sizes the recovery pool for THIS node.
+//
+// Two things it must not do, both of which the previous fixed
+// `min(NumCPU/4, 8)` did:
+//
+//   - Read NumCPU. A validator host commonly runs several nodes side by side,
+//     and `--pprof.maxcpu` is how the operator states this node's share of it.
+//     NumCPU ignores that and reports the whole machine.
+//   - Be captured in a package var. GOMAXPROCS is applied from that flag
+//     during startup, well after package init, so a value computed at init is
+//     always the machine's, never the node's.
+//
+// And the ceiling of 8 made the fan-out a constant on any host bigger than 32
+// threads. Measured on the 7-node 480M rig (22,857 transactions per block,
+// ~50 us per secp256k1 recovery = 1.14 core-seconds of work): the importer's
+// `recov` phase sat at 137-149 ms, which is that 1.14 s over exactly 8
+// workers, while the node had a 37-thread budget and was using 0.7 of a core.
+//
+// Recovery is a barrier ahead of execution — none of this node's other
+// critical-path work runs during it — so it takes most of the budget, keeping
+// a quarter back for gossip, consensus and RPC.
+func senderRecoveryFanout() int {
+	if senderRecoveryWorkerOverride > 0 {
+		return senderRecoveryWorkerOverride
 	}
-	if n > 8 {
-		n = 8
+	n := runtime.GOMAXPROCS(0)
+	if n > 2 {
+		n -= n / 4
+	}
+	if n < 2 {
+		return 2
 	}
 	return n
 }
@@ -142,7 +166,7 @@ func recoverBlockSenders(signer transaction.Signer, txs []*transaction.Transacti
 	if signer == nil || len(txs) < senderRecoveryMinTxs {
 		return
 	}
-	workers := senderRecoveryWorkers
+	workers := senderRecoveryFanout()
 	if workers > len(txs) {
 		workers = len(txs)
 	}
@@ -245,7 +269,7 @@ func verifyBlockSenders(signer transaction.Signer, txs []*transaction.Transactio
 		}
 	}
 
-	workers := senderRecoveryWorkers
+	workers := senderRecoveryFanout()
 	if len(txs) < senderRecoveryMinTxs || workers > len(txs) {
 		workers = 1
 	}
