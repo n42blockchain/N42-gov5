@@ -149,7 +149,7 @@ func flags() []cli.Flag {
 		&cli.StringFlag{Name: "publicrpc.mode", Value: "archive", Usage: "Data-availability mode for RPC capability gating: archive|full|m1|m0"},
 		&cli.BoolFlag{Name: "eldevp2p.enabled", Usage: "Run an embedded Ethereum devp2p (eth/68-69) listener so eth-el catches up via EL p2p directly, bypassing a CL"},
 		&cli.StringFlag{Name: "eldevp2p.listen", Usage: "EL devp2p TCP listen address (default :30303)", Value: ":30303"},
-		&cli.IntFlag{Name: "eldevp2p.max-peers", Usage: "Maximum simultaneous EL devp2p peers", Value: 50},
+		&cli.IntFlag{Name: "eldevp2p.max-peers", Usage: "Maximum simultaneous EL devp2p peers (0 = built-in default, 200)", Value: 0},
 		&cli.StringSliceFlag{Name: "eldevp2p.bootnodes", Usage: "Extra enode:// URLs appended to the default mainnet bootnodes (repeatable, or comma-separated)"},
 		&cli.BoolFlag{Name: "eldevp2p.bootnodes-replace", Usage: "When set, use ONLY --eldevp2p.bootnodes entries (don't merge with the built-in mainnet defaults)"},
 		&cli.StringFlag{Name: "eldevp2p.enode-file", Usage: "Write the listener enode URL to this file after startup"},
@@ -445,6 +445,12 @@ func run(c *cli.Context) error {
 		if addr := c.String("eldevp2p.listen"); addr != "" {
 			eldcfg.ListenAddr = addr
 		}
+		// 0 keeps DefaultConfig's 200. The pool is deliberately large:
+		// PulseChain and the other mainnet forks share our bootnodes and
+		// forkid, so most dial candidates are junk and a small cap fills
+		// with them before a real mainnet peer lands. A 50-peer cap
+		// starves the downloader outright (measured: zero imported blocks
+		// in 5 minutes at 50, first batch within 30 s at 300).
 		if mp := c.Int("eldevp2p.max-peers"); mp > 0 {
 			eldcfg.MaxPeers = mp
 		}
