@@ -695,3 +695,34 @@ outside the noise — which is itself the finding: **at this pacing and supply
 the fleet is not limited by any of these costs.** The remaining levers are the
 block-interval cap, the load generator, and the import barrier inside the vote
 path.
+
+### Round 4, left open: recovery overlapped with execution
+
+At 250 ms pacing the cap finally stops binding — window 3 reached 30,476 TPS at
+**0.750 s** blocks, 100% occupancy — so this is the operating point where a
+change to the import barrier can be read. The barrier is the follower's import
+inside its vote path, and its two largest pieces, recovery (63 ms) and
+execution (69 ms), were serial for no reason: they share only the memo.
+
+The change (`recoverBlockSendersAsync`, commit "overlap sender recovery with
+block execution") is in with unit evidence and a clean -race, and **no fleet
+measurement**. Two things stopped the B round and both are worth recording:
+
+- **The dev faucet is consumable at this supply.** Each 4000x5000 round funds
+  4,209 ETH and the senders keep it. Four rounds took the faucet from 26,588 to
+  1,049 ETH and the next round died in FUNDING. Refilling means idling the
+  fleet for `devBlockReward` (~3.8 ETH/s of empty blocks) — budget it, or drop
+  the supply, before planning a night of rounds.
+- **The bench profile costs ~4.8 GB RSS per node, 33 GB for the fleet.** On a
+  shared box that is the thing to check before starting, not after: the fleet
+  plus another tenant's work filled swap.
+
+**Rule 12: read the faucet balance against the round's funding cost, and the
+box's free memory against 33 GB, before starting a round.** Both failures
+present late — one in funding, one as a machine-wide stall.
+
+To close it: rerun the exact A-side configuration on the new binary and compare
+`blockimport phases` on node 0. Note that both phase meanings changed —
+`Recover` is now only the part of recovery that did not fit under execution,
+and `Exec` has that wait subtracted — so compare `total`, not the parts, against
+rounds before this commit.
