@@ -151,6 +151,10 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 
 	// Phase timings (observability only) — see ProcessPhases.
 	var phases ProcessPhases
+	// Set by the recovery launch below; joined after execution. Always
+	// non-nil so the defer is unconditional.
+	joinRecover := func() {}
+	defer func() { joinRecover() }()
 	tPhase := time.Now()
 
 	// Warm every transaction's sender cache on a worker pool before the serial
@@ -173,9 +177,14 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 		// First pass: senders the pool already recovered at admission — on a
 		// saturated fleet that is nearly every transaction of an imported
 		// block, turning a 260 ms parallel recovery into map lookups. Second
-		// pass: whatever the pool did not have recovers on the worker pool.
+		// pass: whatever the pool did not have recovers on the worker pool,
+		// WHILE this goroutine goes on to execute the block. Recovery and
+		// execution were serial — 63 ms then 69 ms of the 182 ms import, and
+		// the import sits inside the follower's vote path — so overlapping
+		// them takes the pair from a sum to a max. joinRecover below is the
+		// only thing that waits.
 		hintFills := applySenderHints(p.bc.senderHints, signer, b.Transactions())
-		recoverBlockSenders(signer, b.Transactions())
+		joinRecover = recoverBlockSendersAsync(signer, b.Transactions())
 		if senderSourceTrace && len(b.Transactions()) > 0 {
 			h, m := transaction.SenderCacheStats()
 			log.Info("sender source", "txs", len(b.Transactions()), "hintFills", hintFills,
@@ -256,7 +265,15 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 	if _, err := ProcessExecutionBlockEnd(nil, chainConfig, ibs, concreteHeader, p.engine); err != nil {
 		return nil, nil, nil, 0, err
 	}
-	phases.Exec = time.Since(tPhase)
+	// Everything the recovery workers had left when execution finished. It was
+	// the whole 63 ms before the overlap; what it reads now is the part that
+	// did NOT fit under execution.
+	tJoin := time.Now()
+	joinRecover()
+	joinRecover = func() {}
+	joinWait := time.Since(tJoin)
+	phases.Recover += joinWait
+	phases.Exec = time.Since(tPhase) - joinWait
 	tPhase = time.Now()
 
 	var nopay map[types.Address]*uint256.Int
