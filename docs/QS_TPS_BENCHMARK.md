@@ -521,3 +521,121 @@ wedged identically at the same lockedQC — which is what rules out the new
 code as the cause, and what justifies `hotstuff-reset` rather than a
 bisect. Journals backed up to `E:\hs-journal-backup-node*-20260821-*.bin`;
 the fleet resumed at 14,526,691 and was producing within 3 s.
+
+
+## 2026-08-31: the Linux rig, and two costs the 32-thread rig could not show
+
+First full benchmark session on the Linux box (256 threads, 7 nodes at
+`--pprof.maxcpu 37` each, `QS_UDP_BASE=31000`, seed `qs-era-linux`). Every
+number below is `bench-run.sh` with `--decay-sec` and shard-senders, node 0's
+instrumentation, chain 94 at the 480M tier.
+
+### The rig was measuring its own pacing
+
+`--block-interval-ms` is a cap, and on 32 threads it never bound. Here it did:
+
+| pacing | win1 | win2 | win3 | occupancy | blockTime win3 |
+|---|---|---|---|---|---|
+| 1000 ms | 12,571 | 17,524 | 20,190 | 100% | 1.132 s |
+| 1000 ms (repeat) | 11,428 | 20,190 | 22,095 | 100% | 1.034 s |
+| 500 ms | 12,571 | 16,762 | 28,952 | 100% | 0.789 s |
+
+All three windows at 100% occupancy and 22,857 transactions per block, so the
+53% fee oscillation of the Windows rounds never appeared — and TPS *rises*
+across windows here rather than falling, because the chain is still warming.
+The 22,095 that reproduces the historical record is a **pacing** number on this
+host. Report the pacing with the TPS, and sweep it before reading a result as a
+chain limit.
+
+**Rule 11: on a host that can outrun the cap, the cap is the measurement.**
+The signature is blockTime pinned just above `--block-interval-ms` with
+occupancy at 100%.
+
+### The load generator became the limit at ~28k TPS
+
+At 500 ms pacing and the standard 3000x3000 flood, the patched chain reached
+0.594 s blocks and occupancy fell to 62.4% — blocks getting *faster* while
+getting *emptier* is the harness running out of supply, not the chain. Raising
+the flood (4000 senders x 5000, `--conc 96 --rpcbatch 200`, both now flags on
+`bench-run.sh`) reached 32,000 TPS at 0.714 s, but destabilised the fleet:
+4.000 s / 0.714 s / 2.069 s across three windows at 100% occupancy. The mutex
+profile says why — `BatchRawTransaction` was 19.3% of all contention against
+`InsertChain`'s 1.3%, i.e. the RPC ingest path holding the pool lock against
+the block builder. That is the next thing to fix, and until it is, conc 96 is
+not a setting to benchmark on.
+
+### Finding 1: the sender-recovery fan-out was a constant 8
+
+`recoverBlockSenders` sized its pool `min(NumCPU/4, 8)` at package init. On any
+host over 32 threads that is just 8, it reads the machine rather than
+`--pprof.maxcpu`, and it runs before GOMAXPROCS is applied. The importer's
+`recov` phase sat at 137-149 ms — 22,857 recoveries x ~50 us over exactly 8
+workers — while the node used 0.7 of its 37-thread budget.
+
+Sizing it from GOMAXPROCS (minus a quarter), medians over full blocks:
+
+| | base, 483 blocks | patched, 279 blocks |
+|---|---|---|
+| recov | 141.7 ms | **63.2 ms** |
+| exec | 68.3 ms | 68.9 ms |
+| write / body | 19.1 / 20.0 ms | 18.3 / 19.9 ms |
+| import total | 260.2 ms | **182.1 ms** |
+
+Every other phase unchanged, which is what makes it attributable. Same-window
+TPS at 500 ms pacing went 12,571 / 16,762 to 19,809 / 28,103.
+
+### Finding 2: a third of all allocation was in two round trips
+
+Profiling by object count rather than bytes put two things on top that the
+byte view had buried:
+
+- `EffectiveGasTipCmp` allocated two uint256 per comparison, and it is the
+  priced heap's comparator: **162 million allocations, 8.47% of every object
+  the node allocated**, all from one call chain.
+- `recoverPlain` took r and s as big.Int while every caller holds uint256 —
+  two ToBig, two FromBig, two `big.Int.Bytes` per recovery, on the path where
+  `secp256k1_ext_ecdsa_recover` is 94% of all cgo time.
+
+| symbol (share of objects) | before | after |
+|---|---|---|
+| `EffectiveGasTip` | 8.47% | **0.00%** |
+| `math/big.(*Int).Bytes` | 2.33% | **0.00%** |
+| `uint256.(*Int).ToBig` | 5.84% | 4.45% |
+| `DecodeEthereumTransaction` (control) | 2.85% | 3.46% |
+| `eip2930Signer.Hash` (control) | 4.63% | 4.68% |
+
+Total objects allocated fell 33.9%; GC was 20-25% of node CPU before it.
+**Throughput did not separate** — 15,238 / 32,000 / 20,190 against
+19,809 / 28,103 / 24,000, one window better and two worse, inside this rig's
+same-binary spread. It is an allocation result and is claimed as one.
+
+Two method notes, both of which cost a wrong reading first:
+
+- **Rank allocation by objects, not bytes.** By bytes the top of the profile
+  was MDBX cursors; by count it was the two above. GC cost tracks objects.
+- **Normalise by share.** The rounds did different amounts of work, so absolute
+  counts fell everywhere. The controls *rising* in share is the shape of
+  something vacating the pie.
+
+### Where the cycle time actually goes
+
+At 0.714 s blocks the measured phases account for roughly half: import 182 ms
+(recov 63 + exec 69 + body 20 + write 18), build 74 ms, propose 46 ms, commit
+20 ms. The follower's import is inside the vote path — `two-phase vote: holding
+commit vote until block imports` — so it is on the critical path once per
+block, and the rest is two BLS vote rounds and the 2.44 MB block push. The next
+lever on block time is the import path; the next lever on stability is the pool
+lock.
+
+### Rig changes made this session
+
+- `bench-run.sh` gained `--conc` / `--rpcbatch`, defaulted to the historical
+  values so recorded rounds stay comparable.
+- The decay phase now **waits for the chain to produce and for the baseFee to
+  reach the floor, and refuses the round otherwise**. A round started right
+  after a heavy one saw 0 blocks in its 90 s decay, kept the previous round's
+  3.29 gwei, and died in funding — rules 6 and 8, which rule 9 says to put in
+  the script rather than the prose.
+- Start rounds with `setsid`. A round launched with plain `nohup` from an agent
+  shell died mid-flight when the shell's process group was cleaned up, leaving
+  the fleet running and no measurement.
