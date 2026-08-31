@@ -639,3 +639,26 @@ lock.
 - Start rounds with `setsid`. A round launched with plain `nohup` from an agent
   shell died mid-flight when the shell's process group was cleaned up, leaving
   the fleet running and no measurement.
+
+### Where the session left the rig
+
+Three rounds of the final binary against the base, all at 500 ms pacing,
+3000x4000 supply, conc 32, decayed start:
+
+| round | win1 | win2 | win3 | win3 blockTime | win3 occupancy |
+|---|---|---|---|---|---|
+| base | 12,571 | 16,762 | 28,952 | 0.789 s | 100% |
+| + recovery fan-out | 19,809 | 28,103 | 24,000 | 0.594 s | 62.4% |
+| + allocation | 15,238 | 32,000 | 20,190 | 1.111 s | 98.1% |
+| + allocation (confirm) | 14,476 | 29,714 | **32,381** | **0.496 s** | 70.2% |
+
+The last row is the state of the rig: block time is back down ON the 500 ms cap
+with occupancy at 70%, i.e. both limits that are left are the harness's — the
+pacing flag and txflood's submission rate. Window-to-window spread within one
+binary (14,476 to 32,381) is larger than any difference between the binaries,
+which is why the two changes above are argued from phase timings and allocation
+shares rather than from these numbers.
+
+Next round should drop `--interval-ms` to 250 and raise the flood past 32k tx/s
+before reading anything as a chain result. Fleet left healthy: all seven nodes
+at the same committedQC after every round.
