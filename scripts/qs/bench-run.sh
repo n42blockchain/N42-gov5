@@ -27,6 +27,11 @@ source ./qs-env.sh
 
 POOL_SLOTS=300000; POOL_QUEUE=100000; INTERVAL_MS=1000
 OFFSET=900000; WINDOWS=3; SENDERS=3000; PERTX=3000
+# Supply knobs. Defaults are the historical rig settings, so a round that does
+# not pass them stays comparable with every recorded round. Raise them when the
+# CHAIN outruns the load generator -- the signature is occupancy falling while
+# block time keeps dropping, which is the harness's ceiling, not the chain's.
+CONC=32; RPCBATCH=100
 BROADCAST=0; TAG=run; PROFILING=0; DECAY_SEC=0
 # 5% over the 1.0 gwei floor: the floor itself reads back a few wei high.
 DECAY_FLOOR_WEI=1050000000
@@ -40,6 +45,8 @@ while (( $# )); do
     --windows)     WINDOWS=$2; shift 2 ;;
     --senders)     SENDERS=$2; shift 2 ;;
     --pertx)       PERTX=$2; shift 2 ;;
+    --conc)        CONC=$2; shift 2 ;;
+    --rpcbatch)    RPCBATCH=$2; shift 2 ;;
     --decay-sec)   DECAY_SEC=$2; shift 2 ;;
     --tag)         TAG=$2; shift 2 ;;
     --bin)         BIN=$2; shift 2 ;;
@@ -61,7 +68,7 @@ JOURNAL_RESET=$QS_TOOLS/txpool-journal-reset
 OUT=$QS_ROOT/bench-flood-$TAG.out
 ERR=$QS_ROOT/bench-flood-$TAG.err
 
-echo "=== $TAG : bin=$(basename "$BIN") pool=$POOL_SLOTS/$POOL_QUEUE interval=${INTERVAL_MS}ms offset=$OFFSET broadcast=$BROADCAST ==="
+echo "=== $TAG : bin=$(basename "$BIN") pool=$POOL_SLOTS/$POOL_QUEUE interval=${INTERVAL_MS}ms offset=$OFFSET broadcast=$BROADCAST supply=${SENDERS}x${PERTX}@conc${CONC}/batch${RPCBATCH} ==="
 
 # A benchmark is a different launch profile, not an in-place mutation. If a
 # normal fleet is already listening, readiness probes can accidentally measure
@@ -159,7 +166,7 @@ fi
 rpcs=""
 for (( p = QS_HTTP_BASE; p <= QS_HTTP_BASE + 6; p++ )); do rpcs="$rpcs""http://127.0.0.1:$p,"; done
 flood=(-rpc "${rpcs%,}" -senders "$SENDERS" -pertx "$PERTX" -gasprice 10000000000
-       -rpcbatch 100 -conc 32 -sender-offset "$OFFSET")
+       -rpcbatch "$RPCBATCH" -conc "$CONC" -sender-offset "$OFFSET")
 if (( BROADCAST )); then flood+=(-broadcast); else flood+=(-shard-senders); fi
 setsid "$TXFLOOD" "${flood[@]}" >"$OUT" 2>"$ERR" </dev/null &
 FLOOD_PID=$!
