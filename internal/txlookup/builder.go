@@ -90,11 +90,30 @@ func etlTmpDir() string {
 
 // BuildRange builds all segments for the given block range using freezer-style storage.
 func (b *SegmentBuilder) BuildRange(ctx context.Context, startBlock, endBlock uint64) error {
+	// A PARTIAL final segment — one a previous run ended mid-segment because
+	// its source stopped there — must be REWRITTEN, not counted. The resume
+	// arithmetic below is in whole segments, so counting a partial as full
+	// resumes at the next boundary and leaves a permanent hole. This is the
+	// same rewind headerc/bodyc do; it matters here from the moment txindex
+	// becomes a weekly job, because every week ends mid-segment.
+	partials, err := partialTailSegments(b.outputDir)
+	if err != nil {
+		return err
+	}
+
 	store, err := cscompact.NewSegmentStoreWriter(b.outputDir, "txindex")
 	if err != nil {
 		return err
 	}
 	defer store.Close()
+
+	for i := 0; i < partials; i++ {
+		log.Warn("txindex: final segment PARTIAL — rewinding to rewrite it",
+			"segment", store.SegmentCount()-1)
+		if err := store.TruncateLastSegment(); err != nil {
+			return err
+		}
+	}
 
 	// A store that does not begin at block 0 must record its base block so
 	// the reader (readSegmentBase) maps segment N to base+N*SegmentSize —
@@ -112,7 +131,18 @@ func (b *SegmentBuilder) BuildRange(ctx context.Context, startBlock, endBlock ui
 
 	// Resume from existing segments, honoring a previously recorded base
 	// (0 for legacy full builds without a base file).
-	resumeBlock := readSegmentBase(b.outputDir) + existingSegs*SegmentSize
+	//
+	// A window store keeps the base it was created with, so once the requested
+	// window slides past a segment boundary the store simply covers MORE than
+	// was asked for — correct, but it never shrinks. Say so rather than let a
+	// "one year" index quietly grow into a full-history one.
+	storedBase := readSegmentBase(b.outputDir)
+	if existingSegs > 0 && alignedStart > storedBase {
+		log.Warn("txindex: store base is older than the requested window — it will keep growing; rebuild from scratch to re-cut it",
+			"stored_base", storedBase, "requested_base", alignedStart,
+			"extra_blocks", alignedStart-storedBase)
+	}
+	resumeBlock := storedBase + existingSegs*SegmentSize
 	if existingSegs > 0 && resumeBlock > startBlock {
 		startBlock = resumeBlock
 		log.Info("Resuming txlookup build", "from", startBlock, "segments", existingSegs)
@@ -289,4 +319,31 @@ func writeDatV2(path string, blockCount, totalTx uint64, txPerBlock []uint32) er
 
 func writeEmptyDatV2(path string, blockCount uint64) error {
 	return os.WriteFile(path, buildEmptyDatV2(blockCount), 0644)
+}
+
+// partialTailSegments counts the trailing segments whose V2 dat header reports
+// fewer than SegmentSize blocks. Anything it cannot read as V2 stops the scan:
+// an unknown-format tail is left for a human, never silently discarded.
+func partialTailSegments(dir string) (int, error) {
+	st, err := cscompact.OpenSegmentStore(dir, "txindex")
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	defer st.Close()
+
+	count := 0
+	for n := st.SegmentCount(); n > 0; n-- {
+		data, err := st.ReadSegmentData(n - 1)
+		if err != nil || len(data) < 8 || string(data[:4]) != string(datMagicV2[:]) {
+			break
+		}
+		if uint64(binary.LittleEndian.Uint32(data[4:8])) >= SegmentSize {
+			break
+		}
+		count++
+	}
+	return count, nil
 }
