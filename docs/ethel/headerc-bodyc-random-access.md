@@ -174,6 +174,45 @@ Caveat: measured while the DATC C2 build was running, so absolute times carry
 some CPU contention. The relative comparison is unaffected (same machine, same
 load, back-to-back).
 
+## 6b. Every constant F touches
+
+Two different things in this tree are called a "frame" and they are measured
+in different units. Mixing them up is how the "32 KiB frames are 4.5x slower"
+result gets misread as "F=32 blocks is slow".
+
+**bodyc / headerc framing — F counts BLOCKS**
+
+| constant | value | where | meaning |
+|---|---|---|---|
+| `bodyFrameSize` | **256** | `internal/ethel/body_frames.go` | blocks per bodyc frame |
+| `headerFrameSize` | **256** (`= bodyFrameSize`) | `internal/ethel/header_frames.go` | blocks per headerc frame |
+| `bodyFrameCacheSize` | **32** | `internal/ethel/body_frames.go` | frames retained; 32 x 256 = 8192 = one whole segment, so the worst case matches the old single-segment cache rather than exceeding it |
+| `headerFrameCacheSize` | **32** (`= bodyFrameCacheSize`) | `internal/ethel/header_frames.go` | same, for headers |
+| `frameIndexEntrySize` | **12** bytes | `internal/ethel/body_frames.go` | compOffset u32 + compLen u32 + blockStart u16 + blockCount u16 |
+| `HeaderSegmentSize` | **8192** | `internal/ethel/header_compact.go` | blocks per SEGMENT — unchanged by framing, and shared by headerc and bodyc |
+| `zstdSkippableMagic` | `0x184D2A50` | `internal/ethel/body_frames.go` | discriminates a framed payload from a plain zstd frame (`0xFD2FB528`) |
+| frameCount `== 0` | — | payload header | legacy whole-segment layout; existing files keep decoding unchanged |
+
+Candidate values measured before settling on 256: **8192** (whole segment,
+the baseline), **2048**, **1024**, **512**, **256**, **128**, **64** — §6 has
+the size and latency for each. **F = 1** is the theoretical end of the curve
+(geth's per-entry snappy) and is not offered: it surrenders the ratio.
+
+**DATC leaf/stroot segments — "frame" counts KiB of uncompressed payload**
+
+| flag / constant | default | where |
+|---|---|---|
+| `leafFrameRaw` | **256 KiB** | `cmd/n42-datc/leafseg.go`, the `finalize-leaves --frame-kb` default |
+| `--frame-kb` (finalize-leaves) | **256** KiB | `cmd/n42-datc/main.go` |
+| `--frame-kb` (stroot-export) | **32** KiB | `cmd/n42-datc/stroot_seg.go` |
+| `segFrameRawTarget` | set from `--frame-kb` | `cmd/n42-datc/main.go`, `stroot_seg.go` |
+
+The DATC finding that 32 KiB frames were 4.5x slower at p50 than 256 KiB is
+about THIS table, not the block-count one. It still shaped the bodyc
+measurement — it is why §6 reuses a single decoder through `DecodeAll` rather
+than allocating one per frame, and with that removed the per-frame churn does
+not reappear.
+
 ## 7. Remaining work
 
 ### Original verification plan (superseded by §6)
