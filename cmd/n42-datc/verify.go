@@ -5,7 +5,12 @@
 // window bound, or leaf floor breaks the root.
 //
 //	n42-datc verify --out D:/n42-datc-proto --headers D:/n42-eth1/chain/freezer \
-//	  --samples 50 --fold-depth 4
+//	  --samples 50
+//
+// Fold depths (where the account / storage trie stops using node records and
+// folds from the leaf history) come from the build's DatcMeta (--acc-depth /
+// --sto-depth at build time); --fold-depth only lowers the account one for
+// diagnostics.
 package main
 
 import (
@@ -45,7 +50,7 @@ func runVerify(args []string) {
 	hdrDir := fs.String("headers", `D:/n42-eth1/chain/freezer`, "headerc freezer dir")
 	internalRoots := fs.Bool("internal-roots", false, "n42-mode oracle: expected roots from the build's DatcRoots table (no headerc)")
 	samples := fs.Int("samples", 50, "sampled historical heights")
-	foldDepth := fs.Int("fold-depth", 4, "account-trie depth at/below which subtrees fold from leaf history")
+	foldDepth := fs.Int("fold-depth", 0, "diagnostic: fold the ACCOUNT trie from the leaf history at this depth instead of the build's record depth (0 = use DatcMeta; must not exceed it)")
 	at := fs.Uint64("at", 0, "verify exactly this height (overrides sampling)")
 	seed := fs.Int64("seed", 42, "sampling seed")
 	mapGB := fs.Int("map.gb", 512, "MDBX map size GB")
@@ -80,35 +85,11 @@ func runVerify(args []string) {
 	}
 	defer tx.Rollback()
 
-	// Load meta: head + schedule.
-	metaV, err := tx.GetOne(tDatcMeta, []byte("head"))
-	if err != nil || len(metaV) < 8 {
-		die("DATC meta missing (run build first): %v", err)
+	q, head, err := loadQuerier(tx, *out, *foldDepth)
+	if err != nil {
+		die("%v", err)
 	}
-	head := binary.BigEndian.Uint64(metaV)
-	schedV, _ := tx.GetOne(tDatcMeta, []byte("sched"))
-	var sched epochSchedule
-	for d := 0; d <= maxChgDepth && (d+1)*8 <= len(schedV); d++ {
-		sched.e[d] = binary.BigEndian.Uint64(schedV[d*8:])
-	}
-
-	q := &querier{tx: tx, sched: sched, foldDepth: *foldDepth}
-	// Leaf history source: zstd segment files when the build used --leaf-seg,
-	// MDBX tables otherwise.
 	{
-		cache := newFrameLRU()
-		open := func(tab int) *leafSegSet {
-			s, ok, err := openLeafSegSet(*out, tab, cache)
-			if err != nil {
-				die("leafseg: %v", err)
-			}
-			if !ok {
-				return nil
-			}
-			return s
-		}
-		q.segA, q.segS = open(segTabLeafA), open(segTabLeafS)
-		q.segCA, q.segCS = open(segTabChgA), open(segTabChgS)
 		if os.Getenv("DATC_CHG_MDBX") != "" {
 			// Diagnostic: force the change index through MDBX (ignore chg
 			// segments) — used to locate change rows written by a different
@@ -121,7 +102,7 @@ func runVerify(args []string) {
 	}
 	rng := rand.New(rand.NewSource(*seed))
 
-	fmt.Printf("DATC verify: head=%d samples=%d foldDepth=%d\n", head, *samples, *foldDepth)
+	fmt.Printf("DATC verify: head=%d samples=%d accFold=%d stoFold=%d\n", head, *samples, q.accFold, q.stoFold)
 	var lat []time.Duration
 	okCnt := 0
 	for i := 0; i < *samples; i++ {
@@ -182,6 +163,87 @@ func runVerify(args []string) {
 		lat[len(lat)*99/100].Round(time.Millisecond))
 }
 
+// loadQuerier builds a querier from a build's DatcMeta (head, schedule,
+// format, record depths, storage-root cadence) and opens the static segment
+// sets when the build used --leaf-seg. foldOverride > 0 folds the account
+// trie earlier than the record depth (diagnostics); it can never exceed it.
+func loadQuerier(tx kv.Tx, out string, foldOverride int) (*querier, uint64, error) {
+	metaV, err := tx.GetOne(tDatcMeta, []byte("head"))
+	if err != nil || len(metaV) < 8 {
+		return nil, 0, fmt.Errorf("DATC meta missing (run build first): %v", err)
+	}
+	head := binary.BigEndian.Uint64(metaV)
+	if err := checkFormat(tx); err != nil {
+		return nil, 0, err
+	}
+	schedV, _ := tx.GetOne(tDatcMeta, []byte("sched"))
+	var sched epochSchedule
+	for d := 0; d <= maxChgDepth && (d+1)*8 <= len(schedV); d++ {
+		sched.e[d] = binary.BigEndian.Uint64(schedV[d*8:])
+	}
+	u64 := func(key string) (uint64, error) {
+		v, err := tx.GetOne(tDatcMeta, []byte(key))
+		if err != nil {
+			return 0, err
+		}
+		if len(v) != 8 {
+			return 0, fmt.Errorf("DatcMeta/%s missing", key)
+		}
+		return binary.BigEndian.Uint64(v), nil
+	}
+	accDepth, err := u64("accdepth")
+	if err != nil {
+		return nil, 0, err
+	}
+	stoDepth, err := u64("stodepth")
+	if err != nil {
+		return nil, 0, err
+	}
+	cad, err := u64("srcad")
+	if err != nil {
+		return nil, 0, err
+	}
+	q := &querier{tx: tx, sched: sched, accFold: int(accDepth), stoFold: int(stoDepth), stoRootPerBlock: cad == 1}
+	if foldOverride > 0 {
+		if foldOverride > q.accFold {
+			return nil, 0, fmt.Errorf("--fold-depth %d exceeds the build's account record depth %d", foldOverride, q.accFold)
+		}
+		q.accFold = foldOverride
+	}
+	cache := newFrameLRU()
+	open := func(tab int) (*leafSegSet, error) {
+		s, ok, err := openLeafSegSet(out, tab, cache)
+		if err != nil {
+			return nil, fmt.Errorf("leafseg: %w", err)
+		}
+		if !ok {
+			return nil, nil
+		}
+		return s, nil
+	}
+	for _, e := range []struct {
+		tab int
+		dst **leafSegSet
+	}{{segTabLeafA, &q.segA}, {segTabLeafS, &q.segS}, {segTabChgA, &q.segCA}, {segTabChgS, &q.segCS}, {segTabStoRoot, &q.segSR}} {
+		if *e.dst, err = open(e.tab); err != nil {
+			return nil, 0, err
+		}
+	}
+	return q, head, nil
+}
+
+// checkFormat refuses data written by a binary with another on-disk format.
+func checkFormat(tx kv.Tx) error {
+	fv, err := tx.GetOne(tDatcMeta, []byte("format"))
+	if err != nil {
+		return err
+	}
+	if len(fv) != 1 || fv[0] != datcFormat {
+		return fmt.Errorf("DATC data format %v does not match this binary's format %d (rebuild required)", fv, datcFormat)
+	}
+	return nil
+}
+
 // floorRoot returns the last recorded MPT root ≤ n from DatcRoots (blocks
 // that changed no state record no root; their root equals the previous one).
 func floorRoot(tx kv.Tx, n uint64) (types.Hash, bool, error) {
@@ -211,13 +273,20 @@ func floorRoot(tx kv.Tx, n uint64) (types.Hash, bool, error) {
 
 // querier reconstructs node hashes at historical heights from DATC data.
 type querier struct {
-	tx        kv.Tx
-	sched     epochSchedule
-	foldDepth int
+	tx    kv.Tx
+	sched epochSchedule
+	// accFold / stoFold: depth at/below which the account / storage trie is
+	// folded from the leaf history (= the build's record depth, or lower for
+	// diagnostics). Records at depth >= fold do not exist.
+	accFold, stoFold int
+	// stoRootPerBlock: DatcStoRoot has a row for every block a contract's
+	// storage changed (per-block build), so the floor row is exact without a
+	// change-window check.
+	stoRootPerBlock bool
 
-	// seg*, when non-nil, serve the leaf history / change index from static
-	// zstd segments (leafseg.go) instead of the MDBX tables.
-	segA, segS, segCA, segCS *leafSegSet
+	// seg*, when non-nil, serve the leaf history / change index / storage-root
+	// history from static zstd segments (leafseg.go) instead of the MDBX tables.
+	segA, segS, segCA, segCS, segSR *leafSegSet
 
 	folds, recs, leafReads int
 }
@@ -260,6 +329,64 @@ func (q *querier) chgCursor(storage bool) (leafCur, error) {
 	return q.tx.Cursor(tDatcAccChg)
 }
 
+// stoRootCursor opens the storage-root history cursor.
+func (q *querier) stoRootCursor() (leafCur, error) {
+	if q.segSR != nil {
+		return q.segSR.Cursor(), nil
+	}
+	return q.tx.Cursor(tDatcStoRoot)
+}
+
+// storageRootAt answers "storage root of addrHash as of N" from the
+// DatcStoRoot history: the floor row ≤ N is exact when rows are per block
+// (E_0 == 1), or when no storage change of this contract falls inside N's
+// own depth-0 epoch (window mode: rows are per window; a change in an
+// earlier window would have produced a later row). decided=false means the
+// caller must resolve via records/fold. exists=false with decided=true means
+// the contract has no storage at N.
+func (q *querier) storageRootAt(domain []byte, n uint64) (root types.Hash, exists, decided bool, err error) {
+	c, err := q.stoRootCursor()
+	if err != nil {
+		return root, false, false, err
+	}
+	defer c.Close()
+	seek := make([]byte, 0, 32+blkLen)
+	seek = append(seek, domain...)
+	seek = binary.BigEndian.AppendUint32(seek, uint32(n+1))
+	k, v, err := c.Seek(seek)
+	if err != nil {
+		return root, false, false, err
+	}
+	if k == nil {
+		k, v, err = c.Last()
+	} else {
+		k, v, err = c.Prev()
+	}
+	if err != nil {
+		return root, false, false, err
+	}
+	haveFloor := k != nil && len(k) == 32+blkLen && bytes.Equal(k[:32], domain)
+	if !q.stoRootPerBlock && q.sched.e[0] > 1 {
+		// Rows are per epoch (window): a change inside N's own epoch is not
+		// reflected by the floor row yet.
+		changed, cerr := q.changedChildren(domain, nil, q.sched.epochOf(0, n), n)
+		if cerr != nil {
+			return root, false, false, cerr
+		}
+		if len(changed) > 0 {
+			return root, false, false, nil
+		}
+	}
+	if !haveFloor {
+		return root, false, true, nil // never had storage before N
+	}
+	if len(v) == 0 {
+		return root, false, true, nil
+	}
+	copy(root[:], v)
+	return root, true, true, nil
+}
+
 // nodeHashAt returns the hash of the trie node at `path` (nibbles, relative to
 // the domain) as of block N. domain nil = account trie; 40B addrHash+inc =
 // that account's storage trie. exists=false → no subtree at this position.
@@ -270,6 +397,15 @@ func (q *querier) chgCursor(storage bool) (leafCur, error) {
 // children, branch collapses natively) at/below foldDepth, when no record
 // exists, or when the record shape is not a clean fully-hashed branch.
 func (q *querier) nodeHashAt(domain, path []byte, n uint64) (types.Hash, bool, error) {
+	if domain != nil && len(path) == 0 {
+		// Storage root: O(1) from the storage-root history when it is exact
+		// at N; otherwise fall through to the record/fold path.
+		if h, exists, decided, err := q.storageRootAt(domain, n); err != nil {
+			return types.Hash{}, false, err
+		} else if decided {
+			return h, exists, nil
+		}
+	}
 	slots, nKids, usable, err := q.branchSlotsAt(domain, path, n)
 	if err != nil {
 		return types.Hash{}, false, err
@@ -299,12 +435,9 @@ func (q *querier) nodeHashAt(domain, path []byte, n uint64) (types.Hash, bool, e
 // the proof builder (proof.go), so both follow the exact same logic.
 func (q *querier) branchSlotsAt(domain, path []byte, n uint64) (slots [16]*types.Hash, nKids int, usable bool, err error) {
 	d := len(path)
-	fold := q.foldDepth
+	fold := q.accFold
 	if domain != nil {
-		fold = 2 // storage tries are small; fold early
-		if q.foldDepth < 2 {
-			fold = q.foldDepth // diagnostic mode: --fold-depth 0/1 = truly pure fold
-		}
+		fold = q.stoFold
 	}
 	if d >= fold {
 		return slots, 0, false, nil
@@ -561,14 +694,17 @@ func (q *querier) floorRecordBefore(domain, path []byte, beforeEpoch uint64) (no
 	if len(v) == 0 {
 		return zero, epoch, false, nil // tombstone
 	}
+	if v[0] == nodeRecMixed {
+		return zero, epoch, false, nil // mixed children: only the fold knows the shape
+	}
 
 	// Collect the DIFF chain back to its FULL anchor.
 	var diffs [][]byte
 	for v[0] == nodeRecDiff {
 		diffs = append(diffs, append([]byte{}, v...))
 		k, v, err = c.Prev()
-		if err != nil || k == nil || len(k) != len(prefix)+4 || !bytes.HasPrefix(k, prefix) || len(v) == 0 {
-			return zero, 0, false, err // diff without an anchor (or tombstone mid-chain)
+		if err != nil || k == nil || len(k) != len(prefix)+4 || !bytes.HasPrefix(k, prefix) || len(v) == 0 || v[0] == nodeRecMixed {
+			return zero, 0, false, err // diff without an anchor (or tombstone/MIXED mid-chain)
 		}
 	}
 	if v[0] != nodeRecFull {
@@ -757,15 +893,11 @@ type foldLeaf struct {
 func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) {
 	keyLen := 32
 	if domain != nil {
-		keyLen = 72
+		keyLen = stoDomainLen + 32 // storage leaf keys: addrHash(32) + slotHash(32)
 	}
-	// Byte-prefix from the nibble path (odd nibble → filter below).
+	// Byte-prefix from the nibble path (odd nibble → filter below); for
+	// storage the path nibbles address the slotHash part after the domain.
 	fullNibbles := path
-	if domain != nil {
-		// storage leaf keys are domain(40B raw) + slotHash(32B); path nibbles
-		// address the slotHash part.
-		fullNibbles = path
-	}
 	bytePrefix := make([]byte, 0, len(domain)+len(fullNibbles)/2)
 	bytePrefix = append(bytePrefix, domain...)
 	for i := 0; i+1 < len(fullNibbles); i += 2 {
@@ -798,8 +930,7 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 				return fmt.Errorf("leaf account decode: %w", err)
 			}
 			// storage root at N for this account (emptyRoot for EOAs).
-			sd := make([]byte, 40)
-			copy(sd, hk[:32])
+			sd := hk[:32]
 			sroot, hasStorage, err := q.nodeHashAt(sd, nil, n)
 			if err != nil {
 				return err
@@ -838,7 +969,7 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 		if !bytes.HasPrefix(k, bytePrefix) {
 			break
 		}
-		if len(k) != keyLen+8 {
+		if len(k) != keyLen+blkLen {
 			k, v, err = c.Next()
 			continue
 		}
@@ -855,7 +986,7 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 			curKey = append(curKey[:0], hk...)
 			curVal, haveFloor, linearSteps = nil, false, 0
 		}
-		blk := binary.BigEndian.Uint64(k[keyLen:])
+		blk := uint64(binary.BigEndian.Uint32(k[keyLen:]))
 		q.leafReads++
 		switch {
 		case blk > n:
@@ -868,9 +999,9 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 			linearSteps++
 		default:
 			// Long version run: jump straight to the floor entry ≤ n.
-			seek := make([]byte, 0, keyLen+8)
+			seek := make([]byte, 0, keyLen+blkLen)
 			seek = append(seek, hk...)
-			seek = binary.BigEndian.AppendUint64(seek, n+1)
+			seek = binary.BigEndian.AppendUint32(seek, uint32(n+1))
 			fk, fv, ferr := c.Seek(seek)
 			if ferr != nil {
 				return nil, ferr
@@ -883,7 +1014,7 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 			if ferr != nil {
 				return nil, ferr
 			}
-			if fk != nil && len(fk) == keyLen+8 && bytes.Equal(fk[:keyLen], hk) {
+			if fk != nil && len(fk) == keyLen+blkLen && bytes.Equal(fk[:keyLen], hk) {
 				curVal = append(curVal[:0], fv...)
 				haveFloor = true
 				q.leafReads++

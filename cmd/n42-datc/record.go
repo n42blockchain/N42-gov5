@@ -36,8 +36,25 @@ const (
 	bufFlushThreshold = 4_000_000 // entries per buffer before an early sorted flush
 
 	// Node record value flags (empty value = tombstone, as before).
-	nodeRecFull = 0x01 // flags | MarshalTrieNode bytes
-	nodeRecDiff = 0x00 // flags | newMasks(6) | changedMask(2) | 32B × (changed ∧ newHasHash)
+	nodeRecFull  = 0x01 // flags | MarshalTrieNode bytes
+	nodeRecDiff  = 0x00 // flags | newMasks(6) | changedMask(2) | 32B × (changed ∧ newHasHash)
+	nodeRecMixed = 0x02 // flags only: the node has leaf/extension children (not
+	// every child hash is stored), so the reader can never assemble it from a
+	// record and always folds it from the leaf history. One byte instead of
+	// masks+hashes; consecutive MIXED epochs are elided (see lastfull.go).
+
+	// datcFormat is the on-disk format version stored in DatcMeta/format.
+	// 2: 32-byte storage domain (addrHash, no incarnation), 4-byte block
+	//    suffix on leaf/root-history rows, MIXED node markers, DatcStoRoot.
+	datcFormat = 2
+
+	// stoDomainLen is the storage-trie domain prefix: keccak(address). The
+	// legacy 8-byte incarnation suffix is gone (storage keys are
+	// addrHash(32)+slotHash(32) everywhere in this codebase).
+	stoDomainLen = 32
+	// blkLen is the big-endian block-number suffix on leaf-history and
+	// storage-root-history keys.
+	blkLen = 4
 
 	// fullEvery bounds the reader's diff walk-back: at least every F-th epoch
 	// (per path) the record is FULL.

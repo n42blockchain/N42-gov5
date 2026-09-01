@@ -72,10 +72,10 @@ func runFoldDiff(args []string) {
 		}
 	}
 	for k, v, e := lc.First(); k != nil && e == nil; k, v, e = lc.Next() {
-		if len(k) != 40 {
+		if len(k) != 32+blkLen {
 			continue
 		}
-		hk, blk := k[:32], binary.BigEndian.Uint64(k[32:])
+		hk, blk := k[:32], uint64(binary.BigEndian.Uint32(k[32:]))
 		if string(hk) != string(curKey) {
 			flush()
 			curKey, curVal, have = append([]byte{}, hk...), nil, false
@@ -95,7 +95,7 @@ func runFoldDiff(args []string) {
 	// the fold bug. Account storage roots come from the ref DB values verbatim
 	// (decode → re-encode with the row's own storage root via the big DB's
 	// history), so this isolates STRUCTURE from value derivation.
-	q := &querier{tx: btx, foldDepth: 0}
+	q := &querier{tx: btx} // accFold/stoFold 0: pure leaf fold
 	// load schedule from big DB meta
 	if sv, _ := btx.GetOne(tDatcMeta, []byte("sched")); len(sv) >= 8 {
 		for d := 0; d <= maxChgDepth && (d+1)*8 <= len(sv); d++ {
@@ -155,8 +155,7 @@ func runFoldDiff(args []string) {
 							if len(nibs) >= len(childPrefix) && string(nibs[:len(childPrefix)]) == childPrefix {
 								var a account.StateAccount
 								_ = a.DecodeForStorage(foldRows[fk])
-								sd := make([]byte, 40)
-								copy(sd, fk[:32])
+								sd := []byte(fk[:32])
 								sroot, hasS, serr := q.nodeHashAt(sd, nil, *n)
 								if hasS {
 									a.Root = sroot
@@ -170,11 +169,11 @@ func runFoldDiff(args []string) {
 								if hasS {
 									sc, _ := btx.Cursor(tDatcLeafS)
 									for sk, sv, se := sc.Seek(sd); sk != nil && se == nil; sk, sv, se = sc.Next() {
-										if len(sk) < 40 || string(sk[:40]) != string(sd) {
+										if len(sk) < stoDomainLen || string(sk[:stoDomainLen]) != string(sd) {
 											break
 										}
 										fmt.Printf("        STOR-HIST slot=%x block=%d val=%x\n",
-											sk[40:46], binary.BigEndian.Uint64(sk[72:]), sv)
+											sk[stoDomainLen:stoDomainLen+6], binary.BigEndian.Uint32(sk[stoDomainLen+32:]), sv)
 									}
 									sc.Close()
 								}
