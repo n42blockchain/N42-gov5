@@ -1157,3 +1157,72 @@ costs a larger block would hide and a 22,857-transaction block exposes.
 `body` at 0.85 µs/tx is the first thing to price under rule 20, and it is
 exactly the phase the `HasBlockAndState` fix should move — still untested,
 still needing a saturated round at matched block size.
+
+## R1: the `HasBlockAndState` prediction is refuted, for a reason that was in the code
+
+The prediction recorded before this round was that `body` would fall materially
+once `HasBlockAndState` stopped decoding block bodies. Run at matched block
+size — saturated, shard-senders, 480M gas, 22,857-transaction blocks, the fixed
+binary, 104 full blocks on node 0:
+
+| phase | R1 (fixed) | A (old bin) |
+|---|---|---|
+| `hdr` µs/tx | 0.083 | 0.101 |
+| **`body` µs/tx** | **0.891** | **0.852** |
+| `recov` µs/tx | 1.406 | 1.059 |
+| `exec` µs/tx | 3.368 | 3.403 |
+| `valid` µs/tx | 0.172 | — |
+| `write` µs/tx | 0.995 | — |
+
+**`body` did not fall.** It is 0.891 against 0.852 — slightly worse, and within
+the spread between rounds. The prediction is refuted.
+
+The reason was in code already read and quoted in this file before the
+prediction was made:
+
+```go
+func ReadBlock(tx kv.Getter, hash types.Hash, number uint64) *block.Block {
+	header := ReadHeader(tx, hash, number)
+	if header == nil { return nil }          // <-- returns here, body untouched
+	body := ReadCanonicalBodyWithTransactions(tx, hash, number)
+```
+
+`ValidateBody`'s two calls are the incoming block and its parent. The incoming
+block's header is not written until after validation, so `ReadHeader` returns
+nil and `ReadBlock` returns before it reads a body at all. The parent was
+cached by the import that just finished, so `GetBlock` returned from
+`bc.blockCache` without touching the database. **On the steady-state forward
+path neither call ever reached a decode.** The 2.07 GB is the cache *holding*
+blocks decoded on the paths that do miss — restart, reorg, gap fill — which is
+a real memory cost and was measured as one, but never a per-block CPU cost.
+
+The caveat written down before the round said exactly this and it was correct:
+"the 2.07 GB is RETAINED HEAP, not CPU time. Retention and CPU are different
+claims." The error was not the caveat, it was predicting a CPU effect anyway
+when two functions already quoted in this file ruled it out.
+
+- **Rule 21: before predicting that removing work speeds something up, check
+  that the work was on the hot path — not merely reachable from it.** A profile
+  showing retained memory proves an allocation happened, not that it happens
+  every block.
+
+### What R1 does not license
+
+The rest of the table is **not comparable to A** and no claim rests on it. This
+round's nodes ran at **9.3 GB RSS each** against 4.8 GB recorded for the same
+nominal configuration earlier, drove available memory from 74 GB to 6 GB, and
+were stopped mid-round at win1 rather than risk a repeat of the morning's OOM
+on a box shared with another tenant. `recov` at 1.406 against 1.059 and `total`
+at 165.1 ms against 148.2 are measured under memory pressure that A did not
+have. The 9.3 GB itself is unexplained and worth its own investigation.
+
+R2 (the block-size arithmetic test for rule 20's 5.5x) did not run: the faucet
+refused R1's first attempt at 2,246 ETH against 2,527 needed, and the reduced
+round consumed what was left.
+
+**Still unmeasured, and now the only open item from this session:** whether the
+5.5x non-execution gap against the peer client is a defect or is block-size
+arithmetic. That needs R1 and R2 at two gas ceilings on the same binary.
+`bench-run.sh` gained `--gasceil` for it (block size here is set by the gas
+ceiling, not `--interval-ms`: at 21,000 gas a transfer, 480M fills at 22,857
+and the block closes before the interval expires).

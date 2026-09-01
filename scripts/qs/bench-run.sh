@@ -44,6 +44,11 @@ FLOODS=1
 # lasts the whole round.
 RATE=0
 BROADCAST=0; TAG=run; PROFILING=0; DECAY_SEC=0
+# Block size is set by the gas ceiling, not by --interval-ms: at 21000 gas a
+# transfer, 480M gas is 22,857 transactions and the block fills before the
+# interval expires. Vary this to separate a real per-block cost from one that
+# only looks large because it is divided by a small block (rule 20).
+GASCEIL=0
 # 5% over the 1.0 gwei floor: the floor itself reads back a few wei high.
 DECAY_FLOOR_WEI=1050000000
 BIN=$QS_BIN
@@ -52,6 +57,7 @@ while (( $# )); do
     --pool-slots)  POOL_SLOTS=$2; shift 2 ;;
     --pool-queue)  POOL_QUEUE=$2; shift 2 ;;
     --interval-ms) INTERVAL_MS=$2; shift 2 ;;
+    --gasceil)     GASCEIL=$2; shift 2 ;;
     --offset)      OFFSET=$2; shift 2 ;;
     --windows)     WINDOWS=$2; shift 2 ;;
     --senders)     SENDERS=$2; shift 2 ;;
@@ -81,7 +87,7 @@ JOURNAL_RESET=$QS_TOOLS/txpool-journal-reset
 OUT=$QS_ROOT/bench-flood-$TAG.out
 ERR=$QS_ROOT/bench-flood-$TAG.err
 
-echo "=== $TAG : bin=$(basename "$BIN") pool=$POOL_SLOTS/$POOL_QUEUE interval=${INTERVAL_MS}ms offset=$OFFSET broadcast=$BROADCAST supply=${FLOODS}x${SENDERS}x${PERTX}@conc${CONC}/batch${RPCBATCH}/rate${RATE} ==="
+echo "=== $TAG : bin=$(basename "$BIN") pool=$POOL_SLOTS/$POOL_QUEUE interval=${INTERVAL_MS}ms gasceil=${GASCEIL:-default} offset=$OFFSET broadcast=$BROADCAST supply=${FLOODS}x${SENDERS}x${PERTX}@conc${CONC}/batch${RPCBATCH}/rate${RATE} ==="
 
 # A benchmark is a different launch profile, not an in-place mutation. If a
 # normal fleet is already listening, readiness probes can accidentally measure
@@ -112,6 +118,7 @@ for i in {0..6}; do
 done
 
 bench_args=(--bin "$BIN" --pool-slots "$POOL_SLOTS" --pool-queue "$POOL_QUEUE" --interval-ms "$INTERVAL_MS")
+if (( GASCEIL )); then bench_args+=(--gasceil "$GASCEIL"); fi
 if (( PROFILING )); then bench_args+=(--profiling); fi
 ./bench-7node.sh "${bench_args[@]}" >/dev/null
 
