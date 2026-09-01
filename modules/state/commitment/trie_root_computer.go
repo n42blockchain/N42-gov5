@@ -114,6 +114,8 @@ type TrieRootComputer struct {
 
 	// storageRootHook: see SetStorageRootHook.
 	storageRootHook func(addrHash, root []byte)
+	// denseNodeHook: see SetDenseNodeHook.
+	denseNodeHook func(accWithInc, keyHex []byte, hasState, hasTree uint16, slots []byte)
 }
 
 // ReadCacheInvalidator is the write-side surface of the cross-block hashed
@@ -158,6 +160,15 @@ func (t *TrieRootComputer) SetSortedWrites(v bool) { t.sortedWrites = v }
 // receives a (nil, nil) reset signal before a serial recompute of the same
 // window, after which previously delivered roots must be discarded.
 func (t *TrieRootComputer) SetStorageRootHook(f func(addrHash, root []byte)) { t.storageRootHook = f }
+
+// SetDenseNodeHook installs a passive observer receiving every collected
+// branch with its full per-child slot frame (trie.FlatDBTrieLoader.
+// SetDenseNodeHook). Same concurrency / reset contract as the storage-root
+// hook: shards may call it concurrently, and (nil, nil, 0, 0, nil) is sent
+// before a serial recompute.
+func (t *TrieRootComputer) SetDenseNodeHook(f func(accWithInc, keyHex []byte, hasState, hasTree uint16, slots []byte)) {
+	t.denseNodeHook = f
+}
 
 // EnableProofCapture toggles per-call multiproof capture during flushTrieRoot
 // (incremental mode only). After a ComputeRoot/flushTrieRoot call, CapturedProof
@@ -504,6 +515,9 @@ func (t *TrieRootComputer) flushTrieRootSerial(rl *trie.RetainList) (types.Hash,
 	loader := trie.NewFlatDBTrieLoader("trie-root", retainer, accCollector, storCollector, false)
 	if t.storageRootHook != nil {
 		loader.SetStorageRootHook(t.storageRootHook)
+	}
+	if t.denseNodeHook != nil {
+		loader.SetDenseNodeHook(t.denseNodeHook)
 	}
 	var wr *trie.WitnessRetainer
 	if t.captureProof && t.incremental {

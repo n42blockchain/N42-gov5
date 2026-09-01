@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"testing"
 )
@@ -130,4 +131,71 @@ func TestLeafSegCursor(t *testing.T) {
 	set.Close() // release file handles so TempDir cleanup works on Windows
 	_ = os.RemoveAll(dir)
 	_ = fmt.Sprintf
+}
+
+// TestFinalizeFalseMagic: rows whose values contain the zstd frame magic end
+// up verbatim in the compressed stream (incompressible literals), so the
+// finalize frame scanner sees false frame boundaries inside real frames. Every
+// row must survive and no frame may be reported corrupt.
+func TestFinalizeFalseMagic(t *testing.T) {
+	dir := t.TempDir()
+	w, err := newLeafSpillWriter(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	magic := []byte{0x28, 0xb5, 0x2f, 0xfd}
+	rng := uint64(99)
+	next := func() uint64 { rng = rng*6364136223846793005 + 1442695040888963407; return rng >> 11 }
+	const rows = 20000
+	for i := 0; i < rows; i++ {
+		k := make([]byte, 36)
+		binary.BigEndian.PutUint64(k[0:], next())
+		binary.BigEndian.PutUint32(k[32:], uint32(i))
+		v := make([]byte, 64)
+		for j := range v {
+			v[j] = byte(next())
+		}
+		copy(v[int(next()%56):], magic) // a false frame magic at a random offset (stays a literal)
+		if err := w.add(leafTableA, k, v); err != nil {
+			t.Fatal(err)
+		}
+		if i%3000 == 0 {
+			if err := w.flushBatch(); err != nil { // several real frames per bucket
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := w.close(); err != nil {
+		t.Fatal(err)
+	}
+	// The scenario is only meaningful if the compressed spill really carries
+	// more magic occurrences than real frames.
+	spills, _ := filepath.Glob(filepath.Join(dir, leafSpillDir, "*.zspill"))
+	falseMagics := 0
+	for _, f := range spills {
+		b, _ := os.ReadFile(f)
+		falseMagics += bytes.Count(b, magic)
+	}
+	if falseMagics < 50 {
+		t.Fatalf("test setup: only %d magic occurrences in the spill (need false ones inside frames)", falseMagics)
+	}
+	if err := finalizeLeafSegments(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, leafSpillDir)); !os.IsNotExist(err) {
+		t.Fatalf("spill dir retained: finalize reported corrupt frames on clean data")
+	}
+	set, ok, err := openLeafSegSet(dir, leafTableA, newFrameLRU())
+	if err != nil || !ok {
+		t.Fatalf("open: %v", err)
+	}
+	defer set.Close()
+	c := set.Cursor()
+	n := 0
+	for k, _, e := c.Seek([]byte{0}); k != nil && e == nil; k, _, e = c.Next() {
+		n++
+	}
+	if n != rows {
+		t.Fatalf("rows lost: got %d want %d", n, rows)
+	}
 }

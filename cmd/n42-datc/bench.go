@@ -160,10 +160,12 @@ func runBench(args []string) {
 	parallel := fs.Int("parallel", 1, "independent queriers running concurrently")
 	jsonOut := fs.String("json", "", "write per-query results to this JSON file")
 	mapGB := fs.Int("map.gb", 512, "MDBX map size GB")
+	frameCache := fs.Int("frame-cache", defaultFrameCache, "decompressed segment frames kept in RAM per querier (256 KiB each)")
 	_ = fs.Parse(args)
 	if *out == "" {
 		die("--out required")
 	}
+	defaultFrameCache = *frameCache
 
 	logger := log.New()
 	modulesInit()
@@ -193,8 +195,8 @@ func runBench(args []string) {
 	if err != nil {
 		die("%v", err)
 	}
-	fmt.Printf("DATC bench: head=%d accFold=%d stoFold=%d stoRootPerBlock=%v e0=%d samples=%d mode=%s parallel=%d\n",
-		head, q0.accFold, q0.stoFold, q0.stoRootPerBlock, q0.sched.e[0], *samples, *mode, *parallel)
+	fmt.Printf("DATC bench: head=%d accFold=%d stoFold=%d stoRootPerBlock=%v e0=%d accRoot=%d frameCache=%d samples=%d mode=%s parallel=%d\n",
+		head, q0.accFold, q0.stoFold, q0.stoRootPerBlock, q0.sched.e[0], q0.sched.accRoot, *frameCache, *samples, *mode, *parallel)
 	tx0.Rollback()
 
 	// Sample generation from the changesets.

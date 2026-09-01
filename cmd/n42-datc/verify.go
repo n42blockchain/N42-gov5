@@ -54,10 +54,12 @@ func runVerify(args []string) {
 	at := fs.Uint64("at", 0, "verify exactly this height (overrides sampling)")
 	seed := fs.Int64("seed", 42, "sampling seed")
 	mapGB := fs.Int("map.gb", 512, "MDBX map size GB")
+	frameCache := fs.Int("frame-cache", defaultFrameCache, "decompressed segment frames kept in RAM (256 KiB each)")
 	_ = fs.Parse(args)
 	if *out == "" {
 		die("--out required")
 	}
+	defaultFrameCache = *frameCache
 
 	logger := log.New()
 	modules.N42Init()
@@ -102,7 +104,7 @@ func runVerify(args []string) {
 	}
 	rng := rand.New(rand.NewSource(*seed))
 
-	fmt.Printf("DATC verify: head=%d samples=%d accFold=%d stoFold=%d\n", head, *samples, q.accFold, q.stoFold)
+	fmt.Printf("DATC verify: head=%d samples=%d accFold=%d stoFold=%d accRoot=%d frameCache=%d\n", head, *samples, q.accFold, q.stoFold, q.sched.accRoot, *frameCache)
 	var lat []time.Duration
 	okCnt := 0
 	for i := 0; i < *samples; i++ {
@@ -129,6 +131,7 @@ func runVerify(args []string) {
 			want = hdr.Root
 		}
 		q.folds, q.recs, q.leafReads = 0, 0, 0
+		q.foldDepthHist, q.foldReason = [8]int{}, nil
 		t0 := time.Now()
 		root, exists, err := q.nodeHashAt(nil, nil, n)
 		el := time.Since(t0)
@@ -145,8 +148,8 @@ func runVerify(args []string) {
 		} else {
 			okCnt++
 		}
-		fmt.Printf("  [%s] N=%-8d root=%x.. want=%x..  %6s  (recs=%d folds=%d leafReads=%d)\n",
-			status, n, root[:6], want[:6], el.Round(time.Millisecond), q.recs, q.folds, q.leafReads)
+		fmt.Printf("  [%s] N=%-8d root=%x.. want=%x..  %6s  (recs=%d folds=%d leafReads=%d %s)\n",
+			status, n, root[:6], want[:6], el.Round(time.Millisecond), q.recs, q.folds, q.leafReads, q.foldStats())
 		if status == "FAIL" {
 			die("root mismatch at block %d: datc=%x want=%x", n, root, want)
 		}
@@ -168,6 +171,14 @@ func runVerify(args []string) {
 // sets when the build used --leaf-seg. foldOverride > 0 folds the account
 // trie earlier than the record depth (diagnostics); it can never exceed it.
 func loadQuerier(tx kv.Tx, out string, foldOverride int) (*querier, uint64, error) {
+	return loadQuerierCache(tx, out, foldOverride, defaultFrameCache)
+}
+
+// defaultFrameCache is the decompressed-frame LRU size for the CLI readers
+// (256 KiB raw per frame; 2048 ≈ 512 MB). Tests use a small cache.
+var defaultFrameCache = 2048
+
+func loadQuerierCache(tx kv.Tx, out string, foldOverride int, frameCache int) (*querier, uint64, error) {
 	metaV, err := tx.GetOne(tDatcMeta, []byte("head"))
 	if err != nil || len(metaV) < 8 {
 		return nil, 0, fmt.Errorf("DATC meta missing (run build first): %v", err)
@@ -203,6 +214,9 @@ func loadQuerier(tx kv.Tx, out string, foldOverride int) (*querier, uint64, erro
 	if err != nil {
 		return nil, 0, err
 	}
+	if v, err := tx.GetOne(tDatcMeta, []byte("accroot")); err == nil && len(v) == 8 {
+		sched.accRoot = binary.BigEndian.Uint64(v)
+	}
 	q := &querier{tx: tx, sched: sched, accFold: int(accDepth), stoFold: int(stoDepth), stoRootPerBlock: cad == 1}
 	if foldOverride > 0 {
 		if foldOverride > q.accFold {
@@ -210,7 +224,7 @@ func loadQuerier(tx kv.Tx, out string, foldOverride int) (*querier, uint64, erro
 		}
 		q.accFold = foldOverride
 	}
-	cache := newFrameLRU()
+	cache := newFrameLRUSize(frameCache)
 	open := func(tab int) (*leafSegSet, error) {
 		s, ok, err := openLeafSegSet(out, tab, cache)
 		if err != nil {
@@ -289,6 +303,40 @@ type querier struct {
 	segA, segS, segCA, segCS, segSR, segNA *leafSegSet
 
 	folds, recs, leafReads int
+	// Diagnostics: folds per depth and why the record path was unusable.
+	foldDepthHist [8]int
+	foldReason    map[string]int
+	// lastFloorReason: why the last floorRecordBefore returned ok=false
+	// (absent | tombstone | mixed | chainBroken | undecodable).
+	lastFloorReason string
+	// absentPaths (tests): account paths whose floor came back absent.
+	absentPaths map[string]int
+}
+
+func (q *querier) noteFold(depth int, reason string) {
+	if depth < len(q.foldDepthHist) {
+		q.foldDepthHist[depth]++
+	}
+	if q.foldReason == nil {
+		q.foldReason = map[string]int{}
+	}
+	q.foldReason[fmt.Sprintf("d%d:%s", depth, reason)]++
+}
+
+func (q *querier) foldStats() string {
+	s := "foldD="
+	for d, c := range q.foldDepthHist {
+		if c > 0 {
+			s += fmt.Sprintf("%d:%d ", d, c)
+		}
+	}
+	if len(q.foldReason) > 0 {
+		s += "why="
+		for k, v := range q.foldReason {
+			s += fmt.Sprintf("%s:%d ", k, v)
+		}
+	}
+	return s
 }
 
 // leafCur is the cursor contract asOfLeaves needs; satisfied by both
@@ -452,18 +500,27 @@ func (q *querier) branchSlotsAt(domain, path []byte, n uint64) (slots [16]*types
 		fold = q.stoFold
 	}
 	if d >= fold {
+		q.noteFold(d, "belowFold")
 		return slots, 0, false, nil
+	}
+	if q.sched.lenFor(domain != nil, d) == 0 {
+		return slots, 0, false, nil // level not recorded (account root without --acc-root-epoch)
 	}
 	st, recEpoch, ok, err := q.floorRecord(domain, path, n)
 	if err != nil {
 		return slots, 0, false, err
 	}
 	if !ok {
+		q.noteFold(d, "floor:"+q.lastFloorReason)
+		if q.absentPaths != nil && domain == nil && q.lastFloorReason == "absent" {
+			q.absentPaths[string(path)]++
+		}
 		return slots, 0, false, nil
 	}
 	q.recs++
 	if st.hasState != st.hasHash || st.hasState == 0 {
 		// Mixed/inline children — the plain 17-RLP assembly would be wrong.
+		q.noteFold(d, "mixedRecord")
 		return slots, 0, false, nil
 	}
 
@@ -471,18 +528,20 @@ func (q *querier) branchSlotsAt(domain, path []byte, n uint64) (slots [16]*types
 	// (no record in a later epoch ⇒ untouched in it). If the record IS at N's
 	// epoch, it is the end-of-epoch state: usable directly only when N is the
 	// epoch's last block; otherwise step back and replay the window.
-	curEpoch := q.sched.epochOf(d, n)
-	eLen := q.sched.e[d]
+	curEpoch := q.sched.epochOfFor(domain != nil, d, n)
+	eLen := q.sched.lenFor(domain != nil, d)
 	if recEpoch == curEpoch && (n+1)%eLen != 0 {
 		st2, recEpoch2, ok2, err2 := q.floorRecordBefore(domain, path, curEpoch)
 		if err2 != nil {
 			return slots, 0, false, err2
 		}
 		if !ok2 {
+			q.noteFold(d, "prevFloor:"+q.lastFloorReason)
 			return slots, 0, false, nil
 		}
 		st, recEpoch = st2, recEpoch2
 		if st.hasState != st.hasHash || st.hasState == 0 {
+			q.noteFold(d, "mixedPrevRecord")
 			return slots, 0, false, nil
 		}
 	}
@@ -528,6 +587,7 @@ func (q *querier) branchSlotsAt(domain, path []byte, n uint64) (slots [16]*types
 	if nKids == 1 {
 		// Branch collapsed at N — the node is a leaf/extension now; only the
 		// fold knows its true shape.
+		q.noteFold(d, "collapsed")
 		return slots, nKids, false, nil
 	}
 	return slots, nKids, true, nil
@@ -662,7 +722,7 @@ func applyDiff(prev nodeState, rec []byte) (st nodeState, ok bool) {
 // chains alike — the caller falls back to the fold, which is always correct.
 func (q *querier) floorRecord(domain, path []byte, n uint64) (nodeState, uint64, bool, error) {
 	d := len(path)
-	return q.floorRecordBefore(domain, path, q.sched.epochOf(d, n)+1)
+	return q.floorRecordBefore(domain, path, q.sched.epochOfFor(domain != nil, d, n)+1)
 }
 
 // floorRecordBefore reconstructs the newest record with epoch < beforeEpoch by
@@ -695,16 +755,20 @@ func (q *querier) floorRecordBefore(domain, path []byte, beforeEpoch uint64) (no
 		k, v, err = c.Prev()
 	}
 	if err != nil || k == nil {
+		q.lastFloorReason = "absent"
 		return zero, 0, false, err
 	}
 	if len(k) != len(prefix)+4 || !bytes.HasPrefix(k, prefix) {
+		q.lastFloorReason = "absent"
 		return zero, 0, false, nil
 	}
 	epoch := uint64(binary.BigEndian.Uint32(k[len(prefix):]))
 	if len(v) == 0 {
-		return zero, epoch, false, nil // tombstone
+		q.lastFloorReason = "tombstone"
+		return zero, epoch, false, nil
 	}
 	if v[0] == nodeRecMixed {
+		q.lastFloorReason = "mixed"
 		return zero, epoch, false, nil // mixed children: only the fold knows the shape
 	}
 
@@ -714,19 +778,23 @@ func (q *querier) floorRecordBefore(domain, path []byte, beforeEpoch uint64) (no
 		diffs = append(diffs, append([]byte{}, v...))
 		k, v, err = c.Prev()
 		if err != nil || k == nil || len(k) != len(prefix)+4 || !bytes.HasPrefix(k, prefix) || len(v) == 0 || v[0] == nodeRecMixed {
+			q.lastFloorReason = "chainBroken"
 			return zero, 0, false, err // diff without an anchor (or tombstone/MIXED mid-chain)
 		}
 	}
 	if v[0] != nodeRecFull {
+		q.lastFloorReason = "undecodable"
 		return zero, 0, false, nil
 	}
 	st, ok := decodeFullRecord(v[1:])
 	if !ok {
+		q.lastFloorReason = "undecodable"
 		return zero, 0, false, nil
 	}
 	for i := len(diffs) - 1; i >= 0; i-- {
 		st, ok = applyDiff(st, diffs[i])
 		if !ok {
+			q.lastFloorReason = "undecodable"
 			return zero, 0, false, nil
 		}
 	}
