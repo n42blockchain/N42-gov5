@@ -757,3 +757,68 @@ production launch profile idles at 2 s per block (0.5 ETH/s), which needed 68
 minutes for the 2 GB deficit; relaunching with `bench-7node.sh --interval-ms
 250` idles at 4.0 blocks/s and did it in nine. **Refill with the bench profile,
 not the production one.**
+
+## 2026-09-01: the load generator was the ceiling, and behind it the chain tops out near 40k
+
+Three rounds after the import-barrier work, all on the overlapped-recovery
+binary at 250 ms pacing, 3000x4000 supply, conc 96 / rpcbatch 200.
+
+### The generator was never pacing itself
+
+`txflood -rate` divided nothing by `-rpcbatch`, and on the batched submit path
+one permit releases a WHOLE batch — so `-rate 45000` with `-rpcbatch 200`
+offered 9,000,000 transactions a second, i.e. no limit. Unpaced, the generator
+hands over its entire pre-signed set and **exits**: 12M transactions in 80 s,
+after which the pool (300k slots, about 13 blocks) drains for the rest of the
+round. Every "occupancy collapsed while block time kept improving" reading in
+the rounds above is that drain, not the chain.
+
+**Rule 13: a generator that has EXITED is not a supply shortfall, it is a
+finished job.** Read the tail of the flood's own log — `DONE submitted=... in
+80s` next to a 4-minute round says the last three windows measured a draining
+pool.
+
+Fixed, the same round reads:
+
+| window | TPS | occupancy | block time |
+|---|---|---|---|
+| win1 | 36,710 | 45.9% | 0.286 s |
+| **win2** | **41,495** | **90.0%** | **0.496 s** |
+| win3 | 34,771 | 70.8% | 0.465 s |
+| win4 | 30,095 | 53.4% | 0.405 s |
+
+### And then the chain saturates
+
+Raising the offered rate from 40k to 70k (measured 79.9k) did NOT raise
+throughput — the peak window fell from 41,495 to 36,190:
+
+| offered | peak TPS | occupancy at peak |
+|---|---|---|
+| 40,000/s | **41,495** | 90.0% |
+| ~79,900/s | 36,190 | 94.1% |
+
+More offered load past ~40k just fills the pool and spends RPC and pool-lock
+work on transactions that will not be built into a block any sooner. **On this
+rig, at the 480M tier with 7 co-located nodes, the chain tops out near 40,000
+TPS.**
+
+### The session in one table
+
+| configuration | peak TPS | block time |
+|---|---|---|
+| 1000 ms pacing (reproduces the historical record) | 22,095 | 1.034 s |
+| 500 ms pacing, same binary | 28,952 | 0.789 s |
+| + recovery fan-out, allocation, pool lock, recovery/execution overlap | 32,381 | 0.496 s |
+| + 250 ms pacing and a generator that actually paces | **41,495** | 0.496 s |
+| + offered rate raised to 80k | 36,190 (saturated) | 0.594 s |
+
+Every one of those steps except the last was a limit of the RIG, not the chain:
+the pacing cap, then the fan-out constant, then the generator's dump-and-exit.
+The chain's own number only became visible once all three were out of the way.
+
+### Also fixed in the harness
+
+`--floods N` starts each generator only after the previous is past funding.
+They all fund from the same dev faucet, so two funding at once race on that one
+account's nonce: the second gets "replacement transaction underpriced", its
+funding never confirms, and the round quietly runs on half its supply.
