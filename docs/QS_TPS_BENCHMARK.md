@@ -1226,3 +1226,61 @@ arithmetic. That needs R1 and R2 at two gas ceilings on the same binary.
 `bench-run.sh` gained `--gasceil` for it (block size here is set by the gas
 ceiling, not `--interval-ms`: at 21,000 gas a transfer, 480M fills at 22,857
 and the block closes before the interval expires).
+
+## Why four separate optimisations all measured ~1%: the work was on idle cores
+
+Four changes this session removed real, measured CPU from sender recovery and
+none of them moved throughput by more than 1%:
+
+| change | measured effect |
+|---|---|
+| fan-out sized from GOMAXPROCS, not a fixed 8 | within noise |
+| batch dedup before `prewarmSenders` | prewarm 43.07 → 42.31 s (noise) |
+| sender-hint coverage 7.3% → 100% | total 148.2 → 146.7 ms (**1.0%**) |
+| `HasBlockAndState` stops decoding bodies | `body` 0.852 → 0.891 (none) |
+
+A peer benchmarking a different client hit the same wall from the other side
+and named it: **work taken off an idle core is not time saved.** Their fleet
+uses 6% of its machine; eliminating a genuinely duplicated second recovery —
+confirmed real, then genuinely removed with a cache sized 51x a block — moved
+their import 676 → 661 ms and their TPS not at all.
+
+This rig is in the same state and the numbers were already in this file. At the
+40k operating point node 0 ran at **509% CPU — 5 of the 37 threads it is
+allowed**, on a 256-core box shared by 7 nodes. `senderRecoveryFanout` returns
+`GOMAXPROCS - GOMAXPROCS/4`, so it spreads recovery across ~28 workers on a
+node that is busy on 5 cores. There was never a shortage of cores to take the
+work off.
+
+The distinction that actually predicts which change wins:
+
+- **Removing work from the SERIAL path is a win.** Overlapping recovery with
+  execution took the pair from a sum to a max and measured 14.4% — the only
+  change this session that moved the number.
+- **Removing CPU that is already off the serial path is not.** Once recovery
+  runs concurrently with execution, cutting its cost can only help if recovery
+  is the *longer* of the two overlapped legs. It is not: `exec` is 3.368 µs/tx
+  and `joinWait` is a fraction of it. Every subsequent recovery optimisation
+  was therefore capped at approximately zero before it was written.
+
+Read against R1's phase table (7.22 µs/tx total), what remains on the serial
+path is where the room is:
+
+| serial stage | µs/tx | share |
+|---|---|---|
+| `exec` | 3.368 | **47%** |
+| `write` | 0.995 | 14% |
+| `body` | 0.891 | 12% |
+| `recov` (hint pass + verify + join) | 1.406 | 19% |
+| `valid` + `hdr` | 0.255 | 4% |
+
+- **Rule 22: on an under-utilised node, only the serial path has a price.**
+  Before optimising, ask whether the work is on the critical path or merely
+  expensive. CPU-share profiles rank by cost and cannot answer that; they are
+  what sent four changes at a 62.6% CPU line that was already parallel.
+
+This does not retract the CPU profile — `transaction.Sender` really is 62.6% of
+node CPU. It retracts the inference that a large CPU share implies a large
+available speed-up, which is the same class of error as arguing time from a
+memory profile (rule 21). Both are "measured the right thing, argued the wrong
+one".
