@@ -236,15 +236,26 @@ leaf tail.
 
 | remaining layer | basis | need |
 |---|---|---|
-| `mdbx` node records | 32.0 KiB/block × 10.64M blocks | ~325 GiB |
+| `mdbx` node records | **137 KiB/block measured** × 10.64M blocks | **~1,460 GiB** |
 | `sr` storage roots | 1.54 KiB/block × 10.64M blocks | ~16 GiB |
 | leaf tail 25.44M → 25.86M | ~525 leaves/block × 425k × 33 B | ~7 GiB |
-| **total** | | **~350 GiB** |
+| **total** | | **~1,524 GiB** |
 
-D: has 1,024 GiB free, so it fits with room to spare; the earlier "peak may
-exceed the disk" conclusion does not survive the measurement. Spill scratch
-shrinks to a rounding error for the same reason — it now covers ~7 GiB of leaf
-tail, not 610 GiB of segments.
+**The 32.0 KiB/block figure in the row above was an estimate and it was 4.3x
+low.** Measured 2026-09-01 on the real run: 368 GiB of records for the
+15,220,000 → 17,900,000 stretch, i.e. 25.2% of the range, giving 137 KiB per
+block. Linear extrapolation is if anything optimistic — the DeFi-dense back
+half carries more leaf changes per block.
+
+D: has 1,004 GiB free, so **this does not fit on this box**; it would wedge at
+roughly 85% of the range. The build moves to n42dev, which has 3.9 TiB free
+and 256 cores — see `datc-pipeline.md` §5c for what transfers and what does
+not. Windows was the wrong host on a second count as well: MDBX under WriteMap
+thrashes on this pattern, and the run degraded from 96 to 17 blk/s as private
+bytes reached 102 GB against 125.6 GB of RAM.
+
+Spill scratch is still a rounding error — it covers ~7 GiB of leaf tail, not
+610 GiB of segments.
 
 Corrected unit costs, for whoever sizes the NEXT extension: divide the leaf
 layers by their real workload (~13.2B leaf changes to 25.44M, not 5.41B) and
@@ -367,7 +378,7 @@ blocks ≈ 52M leaves ≈ **35 min**, ~8.7 GiB/week, then §5's `stroot-merge` +
 | anchors / bpp | when publishing stateless mode | `blockproof-produce` | ~1.5-2 h per 60k blocks |
 | N42-hashed state | when eth-el follower redeploys | `n42-migrate-reth-hashed` (reth copy) or MerkleStageIncremental (changesets) | reth2k must be idle |
 | manifests | at publish | `cmd/n42-eth-manifest` | blake3 per file; source = a hard-link publish root, NOT the E: test dirs (they drop `*.val.zst`) |
-| DATC library head extension | separate project (node records @15.22M; leaf layers already @25.44M) — sizing in **§5b** | `n42-datc build` (resumable, cherry-datc binary) | ~31-37 h + ~350 GiB; sr merge (§5) rides on it |
+| DATC library head extension | separate project (node records @15.22M; leaf layers already @25.44M) — sizing in **§5b** | `n42-datc build` (resumable, cherry-datc binary) | ~1,524 GiB — moved to n42dev, see datc-pipeline.md §5c; sr merge (§5) rides on it |
 
 ## 6b. Time budget — take the short path, it is also the correct one
 
