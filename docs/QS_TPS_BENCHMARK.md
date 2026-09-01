@@ -721,8 +721,39 @@ measurement**. Two things stopped the B round and both are worth recording:
 box's free memory against 33 GB, before starting a round.** Both failures
 present late — one in funding, one as a machine-wide stall.
 
-To close it: rerun the exact A-side configuration on the new binary and compare
-`blockimport phases` on node 0. Note that both phase meanings changed —
-`Recover` is now only the part of recovery that did not fit under execution,
-and `Exec` has that wait subtracted — so compare `total`, not the parts, against
-rounds before this commit.
+**Closed 2026-09-01.** The B round ran on the exact A configuration once the
+faucet was refilled (see below). Medians over full blocks on node 0, 200 and
+198 blocks sampled:
+
+| | A, before | B, overlapped | |
+|---|---|---|---|
+| `recov` | 68.3 ms | **24.4 ms** | −64%, and it now means only the part that did not fit under execution |
+| `exec` | 71.7 ms | 87.2 ms | +22% — execution shares cores with the workers, and a transaction the executor reaches first recovers on its goroutine |
+| **`proc` (the pair)** | **142.1 ms** | **112.8 ms** | **−20.7%** |
+| `body` / `write` (controls) | 20.2 / 21.3 ms | 21.1 / 21.3 ms | flat |
+| **import `total`** | **193.3 ms** | **165.5 ms** | **−14.4%** |
+
+The predicted `max(63,69)` is not reached — 112.8 ms rather than ~70 — because
+execution itself slows by 22% while sharing the machine with 28 recovery
+workers. The pair still falls by a fifth and the barrier by a seventh, with the
+controls flat, which is what makes it attributable.
+
+**And this time throughput moved with it**, which none of the three previous
+rounds managed:
+
+| window | A (poolbatch) | B (overlapped) |
+|---|---|---|
+| win1 | 12,571 @ 1.818 s | **17,524 @ 1.304 s** |
+| win2 | 11,428 @ 2.000 s | **30,095 @ 0.759 s** |
+| win3 | 30,476 @ 0.750 s, 100% | 27,428 @ **0.571 s**, 68.6% |
+
+Block time is lower in every window; 0.571 s is the fastest block this rig has
+produced, and win3's TPS is lower only because occupancy fell to 68.6% — the
+load generator again, at a block rate it cannot fill. Seven nodes agreed on
+every committedQC through the round and no root mismatched.
+
+Refilling the faucet for this round is worth recording as a procedure: the
+production launch profile idles at 2 s per block (0.5 ETH/s), which needed 68
+minutes for the 2 GB deficit; relaunching with `bench-7node.sh --interval-ms
+250` idles at 4.0 blocks/s and did it in nine. **Refill with the bench profile,
+not the production one.**
