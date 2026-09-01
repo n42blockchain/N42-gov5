@@ -163,6 +163,7 @@ func main() {
 	startBlock := fs.Uint64("start", 0, "start block (resume; state must match)")
 	alpha := fs.Float64("alpha", 16, "target changes per node per epoch")
 	cbar := fs.Float64("cbar", 20, "assumed average changed keys per block")
+	schedStr := fs.String("sched", "", "explicit per-depth epoch lengths e0,e1,...,e5 (overrides --alpha/--cbar); e0 = storage-root level, e1..e3 = account levels 1..3 (e.g. 1024,16384,1024,1,4194304,4194304 = sparse tops + per-block depth-3)")
 	batch := fs.Uint64("batch", 20_000, "blocks per MDBX commit (large batches spill MDBX dirty pages and stall)")
 	mapGB := fs.Int("map.gb", 1024, "MDBX map size GB")
 	dirtyGB := fs.Int("dirty.gb", 16, "MDBX DirtySpace GB — raise so a dense batch's dirty pages stay in RAM and commit doesn't spill (cures the multi-minute commit stalls in DeFi-dense regions)")
@@ -288,6 +289,13 @@ func main() {
 	debug.SetMemoryLimit(100 << 30) // hard ceiling well under the 128 GB box
 
 	sched := newSchedule(*alpha, *cbar)
+	if *schedStr != "" {
+		s, err := parseSchedule(*schedStr)
+		if err != nil {
+			die("--sched: %v", err)
+		}
+		sched = s
+	}
 	fmt.Printf("DATC build: blocks [%d, %d) α=%.0f C̄=%.0f GOGC=%d\n  epochs/depth: ", *startBlock, *endBlock, *alpha, *cbar, *gogc)
 	for d := 0; d <= maxChgDepth; d++ {
 		fmt.Printf("d%d=%d ", d, sched.e[d])

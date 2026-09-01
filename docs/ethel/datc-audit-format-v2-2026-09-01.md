@@ -42,6 +42,8 @@ DATC_DBG_WINDOW=1 go test -tags "nosqlite,noboltdb" ./cmd/n42-datc/ -run TestDia
 | 记录深度 | 固定 d≤5 | `--acc-depth`（默认 4：账户 d1..3）/ `--sto-depth`（默认 2：存储 d0..1），写入 meta |
 | 存储 d0 change rows | 无 | `e[0]>1` 时写 |
 | window 模式 | `e[0]` 照旧 | `e[0]=W` 写入 meta |
+| 账户节点记录 | MDBX `DatcAccNode` | `--leaf-seg` 下写入 `na.*` 静态段（桶 = pathLen+前两个 nibble，256 桶）；账户侧 FULL/DIFF 簿记全在内存，不需要回读，因此不必留在 MDBX（B′ 里这是最大的 MDBX 表，3.85× 行开销全是浪费）。存储节点记录仍在 MDBX（lastFull 回读需要） |
+| 调度 | 只有 `--alpha/--cbar` 单调公式 | 新增 `--sched e0,…,e5` 显式每层 epoch。25M 推荐形态：`1024,16384,1024,1,4194304,4194304`（存储根层 1024、账户 d1/d2 稀疏、**d3 逐块 dense**）+ `--window=false`，即 B′ 实测验证过的形状：根重建只需 16+256+4096 次记录 seek，不折叠；账户 proof 只折叠目标 depth-4 子树 |
 | **新增** `DatcStoRoot` | — | `addrHash(32)‖block(4) → root(32)`（空值 = 无存储）；逐块模式每个存储有变更的合约每块一行，window 模式每窗口一行；节奏写入 meta `srcad`；`--leaf-seg` 下走 `sr.*` 段 |
 
 `DatcStoRoot` 的根来自 `lib/trie` 新增的被动回调 `FlatDBTrieLoader.SetStorageRootHook`（`RootHashAggregator` 在每个账户的存储子树定型时上报 `(addrHash, root)`），经 `TrieRootComputer.SetStorageRootHook` 透传，concurrent-root 的 16 个分片也接入（回调加锁；分片分歧回退串行前发 `(nil,nil)` 重置信号）。回调没上报的变更合约会用 `HashedStorage` 复核必须为空，否则 build 直接报错，不会写错根。
@@ -69,6 +71,10 @@ mainnet 推算 [推算]（基数取 `docs/datc历史proof秒级性能.txt`：13.
 3. 账户节点记录：`--acc-depth 4` 不再写 d4/d5（v1 默认 sched 下这两层 epoch 很长、行数不多，收益有限；B′ 那种 `e[3]=1` 逐块 dense 的形态不受影响）。
 4. `DatcStoRoot`：B′ 实测 435M 行@27% → 全链 ~1.6B 行；段形态每行 68B 原始 ≈ **110 GB**（B′ 放 MDBX 是 69GB@27% ≈ 255GB 全链）。行数由热合约主导（USDT 每块一行），**window 模式（W=1024）下热合约每窗口只有一行**，预计缩到 10–20%；代价是热合约中间高度的槽 proof 仍要折叠变更子树（与之前相同）。
 5. 仍在 MDBX 的节点表受 3.85× 行开销影响不变，packed-segment 转换仍是后续项。
+
+### 为什么必须 d3 逐块 dense（数据量与延迟的根本权衡）
+
+每一次叶变更都改动路径上每一层的一个子哈希。任一层若要"任意高度精确"，就要存下每次变更后的新子哈希：32 B × 变更数，与层深无关（账户侧 4.7B 次变更 ≈ 150 GB 原始）。稀疏 epoch 只在浅层有去重收益（同一 (节点, 子) 在 epoch 内反复变化）；深层每 epoch 的变更数远小于 (节点×16) 对数，没有去重。而查询侧，若某层不精确，重建它就要递归到下一层"自记录以来变过的孩子"，扇出逐层相乘，最后落到叶折叠——d2 以上任一层不精确都会让一个 proof 折叠几十到上万个 depth-4 子树（这就是 v5 的分钟级）。所以最优形状只有一种：恰好一层逐块 dense（选 d3：上面三层用 seek 重建只要 16+256+4096 次，下面折叠 1/65536 的状态 ≈ 6000 账户 ≈ 20–50 ms），其余层要么稀疏要么不存。这层 ~150–190 GB（段形态）是"任意高度、亚百毫秒账户 proof"的信息下界，除非折叠本身能降到毫秒级。
 
 ## 4. 性能含义
 
