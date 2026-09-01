@@ -174,15 +174,36 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 		if err := verifyBlockSenders(signer, b.Transactions()); err != nil {
 			return nil, nil, nil, 0, fmt.Errorf("block %s: %w", concreteHeader.Number.String(), err)
 		}
-		// First pass: senders the pool already recovered at admission — on a
-		// saturated fleet that is nearly every transaction of an imported
-		// block, turning a 260 ms parallel recovery into map lookups. Second
+		// First pass: senders the pool already recovered at admission. Second
 		// pass: whatever the pool did not have recovers on the worker pool,
 		// WHILE this goroutine goes on to execute the block. Recovery and
 		// execution were serial — 63 ms then 69 ms of the 182 ms import, and
 		// the import sits inside the follower's vote path — so overlapping
 		// them takes the pair from a sum to a max. joinRecover below is the
 		// only thing that waits.
+		//
+		// How much the FIRST pass is worth was measured on 2026-09-01 and it
+		// is far less than this comment used to claim ("nearly every
+		// transaction ... turning a 260 ms parallel recovery into map
+		// lookups"). Paired per-block, same binary, 22,857-transaction blocks:
+		//
+		//   hint coverage   7.3%  ->  100%
+		//   recov          1.059  ->  1.102 us/tx   (unchanged)
+		//   exec           3.403  ->  3.033 us/tx
+		//   total          148.2  ->  146.7 ms      (-1.0%)
+		//
+		// Two things to take from that. Coverage is a property of how
+		// transactions REACH the pool, not of load: under the sharded bench
+		// profile each node's pool sees ~1/7 of a block and coverage decays to
+		// nothing over a round; broadcasting to every node makes it exactly
+		// 100%. And "nearly every transaction" was never measured on the
+		// sharded profile, which is the one the fleet actually runs.
+		//
+		// Do NOT read the saving off phases.Recover. Because recovery overlaps
+		// execution and phases.Exec subtracts only joinWait, the CPU the
+		// recovery workers burn alongside the executor is billed to exec by
+		// construction -- so recov cannot show this saving even in principle,
+		// and it does not. End-to-end total is the only honest reading of it.
 		hintFills := applySenderHints(p.bc.senderHints, signer, b.Transactions())
 		joinRecover = recoverBlockSendersAsync(signer, b.Transactions())
 		if senderSourceTrace && len(b.Transactions()) > 0 {

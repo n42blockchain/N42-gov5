@@ -1028,3 +1028,92 @@ make `--broadcast` fit — which is the round rule 16 says to retry small.
   mmap-backed node's RSS includes page cache; dividing it by a pool cap
   produced a per-transaction cost off by two orders of magnitude and pointed at
   the wrong subsystem entirely.
+
+## The warm-pool hypothesis is confirmed, the cache is not the mechanism, and the mechanism is worth 1%
+
+The small broadcast round of rule 16 ran on 2026-09-01 at 11:04 with the
+`HasBlockAndState` fix, a 60k/20k pool cap and `--rate 8000`, and it answered
+the open question. So, it turns out, did the round that OOMed — the trace it
+needed had already succeeded and was sitting in the log at 10:21 while this
+file recorded the round as producing nothing.
+
+**Read the trace before declaring a round a failure.** The round failed against
+the goal I set it (a TPS window). The measurement I actually wanted did not
+need one.
+
+Node 0, `"sender source"` grouped by minute, three configurations in one log:
+
+| window | configuration | hintFill% | cache hit% |
+|---|---|---|---|
+| 08:03–08:08 | `-shard-senders`, 40k saturated | 22.8 → **0.0** | 36.8 → **6.6** |
+| 10:18–10:21 | `-broadcast`, 40k (the OOM round) | **100.0** | **0.00** |
+| 11:07–11:11 | `-broadcast`, small | **100.0** | **0.00** |
+
+Three results, all measured.
+
+**1. The warm-pool hypothesis is confirmed.** Under `-broadcast` every pool
+sees every transaction and `applySenderHints` fills **100%** of an imported
+block's senders, in two independent rounds across 400+ blocks.
+
+**2. The sender cache is not how.** Its hit rate under broadcast is not low, it
+is **exactly zero**, every block. `applySenderHints` calls `Sender()` on the
+POOL's transaction object, which returns from that object's own memo and never
+reaches the cache; `recoverBlockSendersAsync` then finds `From() != nil` and
+also never probes it. On the import path under broadcast the cache is never
+consulted at all. Its misses are dominated by first-time pool admissions, which
+cannot hit by construction.
+
+So the earlier retraction did not go far enough. It is not that the sizing
+advice was worth less than implied — **the cache is the wrong mechanism on both
+paths.** Under shard-senders it does 6.6–36.8% decaying; under the mode a real
+gossip network actually behaves like, it does nothing. Sizing it to 2^20 buys
+nothing at import and still costs a keccak probe and a store per admission.
+
+**3. And the mechanism that does work is worth 1%.** Paired per block within
+the same second, same binary, 22,857-transaction blocks:
+
+| | A shard 40k | B broadcast 40k |
+|---|---|---|
+| paired blocks | 275 | 169 |
+| hint coverage | **7.3%** | **100.0%** |
+| `recov` µs/tx | 1.059 | **1.102** |
+| `body` µs/tx | 0.852 | 0.897 |
+| `exec` µs/tx | 3.403 | 3.033 |
+| **`total` ms** | **148.2** | **146.7** |
+
+Going from 7.3% to 100% sender-hint coverage leaves `recov` unchanged — very
+slightly worse — and moves the whole import by **1.0%**.
+
+`recov` cannot show the saving, and that is a property of the instrumentation
+rather than a surprise about behaviour: recovery overlaps execution, and
+`phases.Exec = time.Since(tPhase) - joinWait`, so the CPU the recovery workers
+burn alongside the executor is billed to `exec` by construction. End-to-end
+`total` is the only honest reading.
+
+A and B are different rounds — different supply, pool state and offered rate —
+so the `exec` gap is not attributable to hints alone and no claim here rests on
+it. The 1.0% total is the conservative reading and it is the one to keep.
+
+This is the third time this file has recorded a large expected effect and
+measured a small one. `state_processor.go` claimed the hint pass turned "a
+260 ms parallel recovery into map lookups"; the comment now carries the table
+instead.
+
+- **Rule 18: a phase timer that overlaps another phase cannot price the work it
+  overlaps.** Read overlapped optimisations off end-to-end total, never off the
+  phase that was supposed to shrink.
+- **Rule 19: hint coverage is a property of how transactions reach the pool,
+  not of load.** Sharded routing decays it to zero over a round; broadcasting
+  pins it at 100%. Any figure quoted from it must name the routing mode and
+  where in the round it was taken.
+
+### Still open
+
+- `body` is 0.85–0.90 µs/tx in both segments and both are the OLD binary. The
+  `HasBlockAndState` fix removes two full body decodes from inside
+  `ValidateBody`, but **the prediction that `body` falls is untested**: the
+  small round's blocks import below `slowBlockThreshold`, so their phase lines
+  went to Debug and were never written. Testing it needs a saturated round at
+  matched block size with the fixed binary.
+- The 2.07 GB heap finding stands on its own profile and is unaffected by any
+  of the above; it was never a CPU claim.
