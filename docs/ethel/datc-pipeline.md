@@ -117,13 +117,13 @@ Inputs already on disk: `acctcs`/`storcs` to 25,864,982 and `headerc` to
 | # | Step | Cost |
 |---|---|---|
 | 1 | `fork-state` → `D:\n42-datc-cont-<tip>` | sequential copy of head state + trie, a few hundred GiB |
-| 2 | `build --records-only --start 15220000 --end <tip+1>` | **~31-37 h**, ~325 GiB of node records + ~16 GiB sr |
+| 2 | `build --records-only --start 15220000 --end <tip+1>` | **see §5c — the first-draft estimate was 4.5x low** |
 | 3 | `cs-to-spill` + `finalize-leaves` for the 25.44M → tip tail | ~7 GiB |
 | 4 | acceptance §4 (verify, proof-bench with `--out2`, stroot spot) | hours |
 | 5 | fold the weekly `stroot-merge` back into the runbook §5 cadence | minutes/week |
 
-D: has ~1,024 GiB free; the fresh continuation DB does not rewrite the old one,
-so the old library keeps serving 0-15.22M throughout.
+The fresh continuation DB does not rewrite the old one, so the old library
+keeps serving 0-15.22M throughout. It does NOT fit on D: — see §5c.
 
 Memory: same class as the N42-hashed migration, which required stopping the
 fleet — `--dirty.gb 16`, `--stocache.m 64` (≈10 GiB), `--gogc 400`, plus the
@@ -166,6 +166,63 @@ The two schedules are READ FROM the library, not chosen: they are
 `DatcMeta.sched` and `DatcMeta.stoSched` of `D:/n42-datc-bprime2-25m`. Verify
 them again before any future continuation — a mismatch silently produces
 records incompatible with the existing ones.
+
+## 5c. Measured output size — the estimate was 4.5x low (2026-09-01)
+
+§5's first draft guessed "~325 GiB of node records + ~16 GiB sr". The first
+real run measured it instead:
+
+| | |
+|---|---|
+| range | 15,220,000 → 25,864,982 (10,644,982 blocks) |
+| reached | 17,900,000 = **25.2%** |
+| `mdbx.dat` | **432 GiB**, of which 64 GiB is the fork-state baseline |
+| records written | **368 GiB for 25.2% of the range** |
+| linear extrapolation | **~1,460 GiB of records, ~1,524 GiB total** |
+
+The file was checked before trusting that number: `fsutil sparse queryflag`
+reports it is NOT sparse, and 1 MiB probes every 32 GiB come back 56-92%
+non-zero, so the 432 GiB is real data rather than a preallocated hole.
+
+Linear is if anything OPTIMISTIC — the DeFi-dense back half carries more leaf
+changes per block than the front, which is exactly why the builder reports
+progress against the leaf count rather than the block number.
+
+**D: has ~1,004 GiB free, so this build cannot finish on this box.** It would
+wedge at roughly 85% of the range with no way forward except deleting another
+dataset. Windows was also the wrong host for a second reason: MDBX under
+WriteMap thrashes on this access pattern (the `fork_state.go` header says so),
+and the run degraded from 96 to 17 blk/s while private bytes climbed to 102 GB
+against 125.6 GB of RAM.
+
+### Therefore: the build moves to n42dev (2026-09-01)
+
+| | this box | n42dev |
+|---|---|---|
+| cores | 32 | 256 |
+| RAM | 125.6 GB (binding) | 136 GB |
+| free space | 1,004 GiB (insufficient) | **3.9 TiB** |
+
+MDBX files are portable across the two — verified by opening a
+Windows-written `chaindata` on n42dev and reading `ethel-last-block` back —
+so the in-progress 432 GiB DB moves as-is and resumes at 17,900,000 rather
+than restarting from the fork point.
+
+What has to be copied, and what does not:
+
+| | size | why |
+|---|---|---|
+| `mdbx.dat` (continuation) | 432 GiB | resume state |
+| `acctcs` | 146.8 GiB | replay input |
+| `storcs` | 278.5 GiB | replay input |
+| `headerc` | — | already on n42dev (weekly publish) |
+| `leafseg2` | — | **not read**: `--leaf-seg` only builds a spill writer in `--out`, and `putLeaf` returns early under `--records-only`; `--backfill-segs` is unused because `--backfill-dirty=false` |
+
+857 GiB at a measured 92 MB/s ≈ 2.6 h. Two transfer settings mattered enough
+to measure: the default ssh cipher moved 20-50 MB/s where
+`chacha20-poly1305@openssh.com` moved 71, and 8 parallel streams saturate the
+link where one does not. The transfer is chunked at 16 GiB with a per-chunk
+marker so it resumes rather than restarting.
 
 ## 6. Weekly, once the catch-up lands
 
