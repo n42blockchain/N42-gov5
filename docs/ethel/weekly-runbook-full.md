@@ -279,9 +279,19 @@ C:\N42\N42-gov5\build\bin\eth-el.exe --datadir E:/ethel-min-<tip> --snapshot.mod
 ### FULL (minimal + the ledger freezers)
 
 Same as minimal — including the `set-progress` marker and the `.val.zst` drop —
-plus copy `bodyc.* receipts.* accthist.* storhist.* txindex.*` into
+plus copy the **one-year `bodyc` window** (newest ~56 `.cdat` plus the whole
+`bodyc.cidx`) and the **window-tier** `txindex.*` (from
+`d:/n42-txindex-window-<tip>`, NOT the archive tier) into
 `E:\ethel-full-<tip>\chain\freezer\`. With `bodyc` present this is the one mode
 where `localCatchUp` executes locally before handing off to peers.
+
+> **Do NOT copy `receipts.* accthist.* storhist.*`.** The line here used to say
+> so, and it contradicts the product: `fullSelectorWindowed` ships headers +
+> code + snapshot + one-year bodies + tx-index + beacon — receipts and history
+> are deliberately not in the full tier. Following the old line made the
+> 2026-08-30 test dir **368.1 GB instead of 145.9 GB**: 222 GB the published
+> product does not contain, caught only because the operator questioned the
+> number after it had already started going over the wire.
 
 ```powershell
 C:\N42\N42-gov5\build\bin\eth-el.exe --datadir E:/ethel-full-<tip> --snapshot.mode full `
