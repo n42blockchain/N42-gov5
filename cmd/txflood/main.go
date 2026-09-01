@@ -465,6 +465,17 @@ func main() {
 	} else if *rate > 0 {
 		permits = make(chan struct{}, *rate)
 		per10ms := *rate / 100
+		// A permit releases a WHOLE batch on the batched path below, so issuing
+		// rate/100 of them per 10 ms offers rate*rpcBatch transactions a second
+		// -- at the rig's -rpcbatch 200 that is a 200x ceiling, i.e. none at
+		// all. The closed-loop branch above already divides its shortfall by
+		// rpcBatch for exactly this reason; -rate has to as well, or the flag
+		// silently does nothing and the round reports a supply collapse
+		// (12M transactions offered in 80 s, then three windows draining a
+		// 300k-slot pool) as though it were the chain slowing down.
+		if *rpcBatch > 1 {
+			per10ms = (per10ms + *rpcBatch - 1) / *rpcBatch
+		}
 		if per10ms < 1 {
 			per10ms = 1
 		}
