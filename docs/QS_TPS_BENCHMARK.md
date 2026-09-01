@@ -822,3 +822,49 @@ The chain's own number only became visible once all three were out of the way.
 They all fund from the same dev faucet, so two funding at once race on that one
 account's nonce: the second gets "replacement transaction underpriced", its
 funding never confirms, and the round quietly runs on half its supply.
+
+### Where the CPU goes at the 40k operating point
+
+Profile taken at 0.448 s blocks / 39,619 TPS, node 0, 25 s, 509% CPU (5 of the
+37 threads the node is allowed):
+
+| | share of all CPU |
+|---|---|
+| `transaction.Sender` | **62.6%** |
+| — via `txspool.prewarmSenders` | 33.8% |
+| — via `internal.recoverSenderStride` (import) | 26.0% |
+
+Secp256k1 recovery is now essentially the whole CPU cost of the node, split
+between the pool recovering what arrives over RPC and the importer recovering
+what arrives in a block. Nothing else reaches 8%.
+
+A hypothesis that the pool was recovering senders for transactions it was about
+to reject as ErrAlreadyKnown — prewarmSenders runs before the dedup — did not
+survive measurement: prewarm was 43.07 s of CPU before the reordering and
+42.31 s after. Under `-shard-senders` each sender's transactions go to exactly
+one node and the generator submits each once, so there are few duplicates to
+skip. The reordering is strictly less work and is kept, credited with nothing.
+
+**And that A/B was not a valid comparison anyway**, which is worth recording as
+its own lesson: the B round's third window collapsed to 7,238 TPS at 1.667 s
+blocks while A's ran at 39,619, so the two profiles describe two different
+machines. Window-to-window swing at a constant offered rate in a single
+five-window round: 36,880 / 29,803 / 7,238 / 26,666 / 36,190. **Rule 14: check
+that the two profiles were taken at comparable throughput before comparing
+their symbol shares at all.**
+
+### Not our bug: the consensus loop does not block on the pool
+
+The n42-rs fleet sharing this host found a large one — its consensus event loop
+inline-awaited an unbounded `eth_sendRawTransaction` batch for gossiped
+transactions, so the loop could not poll its transport; one member went deaf
+for 11.1 s and every view it subsequently led cost the fleet a timeout. Taking
+the forwarding off the loop moved them 13,714 → 38,786 TPS.
+
+Checked here, and this node's shape is different: `internal/sync/subscriber.go`
+gives **every gossip topic its own message loop**, and each message is handled
+in its own goroutine behind a 256-slot semaphore. Transaction gossip therefore
+cannot make the block topic deaf — the two run different loops. The residual
+risk is bounded and local: if all 256 transaction handlers block on the pool
+lock at once, that topic's loop stalls at the semaphore, but consensus keeps
+polling. Worth remembering the next time the pool lock gets slower.
