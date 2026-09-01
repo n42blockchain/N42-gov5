@@ -910,3 +910,48 @@ What this does and does not license:
   amount of cache sizing fixes it because the entry is never written.
 - **Rule 15: a cache's hit rate is a measurement, never an inference from cost
   ratios.** Both times this file inferred one it was wrong.
+
+## The `-broadcast` measurement did not happen: the configuration OOMs the box
+
+The section above ends by naming `-broadcast` as "the configuration to measure
+next". It was attempted on 2026-09-01 at 10:16 and it did not produce a number.
+
+```
+QS_BIN=.../n42-dedupfirst N42_SENDER_TRACE=1 \
+./bench-run.sh --tag broadcast-trace --offset 9000000 --decay-sec 120 --windows 4 \
+  --senders 3000 --pertx 4000 --conc 96 --rpcbatch 200 --rate 40000 \
+  --interval-ms 250 --broadcast
+```
+
+Funding and decay passed. Five minutes into the flood, three of the seven nodes
+(0, 1 and 4) disappeared: no panic, no stack, no line on stderr, the log simply
+stops mid-sentence at 10:21:38. `txflood` then reported `connection refused` on
+every port it still had open and exited with `submitted=10224650
+failed=1775350`. No measurement window ever ran, so there is no TPS and no
+sender trace for this configuration.
+
+The cause is not subtle. The four survivors were sitting at **10.4 GB RSS
+each**, against 4.8 GB for the same binary under `-shard-senders`. Seven of
+those is ~73 GB on a 136 GB box that was also carrying another tenant's
+seven-node fleet and 24 GB of shared memory; swap was full at 7/7 GB. The
+silence in the logs is the OOM killer's signature.
+
+The 2.2x memory is the point of `-broadcast` working as designed. Sharding
+gives each pool ~1/7 of the transactions; broadcasting gives every pool all of
+them, and the pool is sized in transactions (`--txpool.globalslots 300000`),
+not in bytes. The mode that would make the sender cache hit is the same mode
+that multiplies pool residency by seven.
+
+Consequences, stated exactly:
+
+- The warm-pool hypothesis is **still unmeasured**. This round did not refute
+  it and did not confirm it. Nothing in the section above changes.
+- The shard-senders finding stands on its own measurement and is unaffected.
+- Measuring the hit rate does **not** require saturation. The trace prints
+  `hintFills`/`cacheHits`/`cacheMisses` on every imported block at any rate, so
+  the right retry is a small broadcast round — fewer senders, a lower `--rate`,
+  and a pool cap that fits — not another attempt at the 40k operating point.
+- **Rule 16: `-broadcast` is not a drop-in swap for `-shard-senders` at bench
+  supply.** Budget ~7x pool residency, or shrink the supply and the pool cap to
+  match. Rule 12's 33 GB free-memory check was calibrated on sharded runs and
+  is not sufficient here.
