@@ -287,7 +287,7 @@ func (s *Store) Exec(num uint64) (*ExecRecord, error) {
 type AuxRecord struct {
 	Witness []byte
 	AcctCS  [][]byte // AccountChangeSet dup values (key = blockNum)
-	StorCS  []KVPair // StorageChangeSet: key suffix (addr+incarnation) + value
+	StorCS  []KVPair // StorageChangeSet dup values: addr+slot key part + value
 }
 
 // KVPair carries a table row whose key extends beyond the block number:

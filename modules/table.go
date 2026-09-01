@@ -16,7 +16,7 @@
 //
 // Canonical MDBX bucket name registry for the N42 data model.
 // Groups table constants into PlainState (Account, Storage, Code,
-// Reward, Deposit, ContractCode, IncarnationMap), HistoryState
+// Reward, Deposit, ContractCode), HistoryState
 // (AccountChangeSet, AccountsHistory, StorageChangeSet), and
 // DatabaseInfo/ChainConfig metadata tables. These names are the
 // authoritative identifiers used by all rawdb/state accessors.
@@ -49,7 +49,7 @@ const (
 	Reward  = "Reward"  // ...
 	Deposit = "Deposit" // Deposit info
 
-	//key - addressHash+incarnation
+	//key - addressHash
 	//value - code hash
 	ContractCode = "HashedCodeHash"
 )
@@ -59,7 +59,7 @@ const (
 	AccountChangeSet = "AccountChangeSet" // blockNum_u64 ->  address + account(encoded)
 	AccountsHistory  = "AccountHistory"   // address + shard_id_u64 -> roaring bitmap  - list of block where it changed
 
-	StorageChangeSet = "StorageChangeSet" // blockNum_u64 + address + incarnation_u64 ->  plain_storage_key + value
+	StorageChangeSet = "StorageChangeSet" // blockNum_u64 -> address + plain_storage_key + value
 	StorageHistory   = "StorageHistory"   // address + storage_key + shard_id_u64 -> roaring bitmap - list of block where it changed
 )
 
@@ -178,7 +178,7 @@ const (
 	SnapshotAccount = "SnapshotAccount"
 
 	// SnapshotStorage stores the flat snapshot of contract storage.
-	// key: address(20) + incarnation(2) + storageKey(32) = 54 bytes
+	// key: address(20) + storageKey(32) = 52 bytes
 	// value: storage value (DupSort, same format as Storage table)
 	SnapshotStorage = "SnapshotStorage"
 
@@ -255,8 +255,8 @@ const (
 	// value: account encoded (V2 format)
 	HashedAccounts = "HashedAccount"
 
-	// HashedStorage stores storage keyed by keccak256(address) + incarnation.
-	// DupSort: key = keccak256(address)[32B] + incarnation[8B], value = keccak256(slot)[32B] + value
+	// HashedStorage stores storage keyed by keccak256(address).
+	// DupSort: key = keccak256(address)[32B], value = keccak256(slot)[32B] + value
 	HashedStorage = "HashedStorage"
 
 	// TrieOfAccounts stores intermediate trie node hashes for the account trie.
@@ -265,7 +265,7 @@ const (
 	TrieOfAccounts = "TrieAccount"
 
 	// TrieOfStorage stores intermediate trie node hashes for storage tries.
-	// DupSort: key = accountHash[32B] + incarnation[8B] + nibble prefix
+	// DupSort: key = accountHash[32B] + nibble prefix
 	TrieOfStorage = "TrieStorage"
 
 	// MPTBranch stores Ethereum MPT (HexPatriciaHashed) branch nodes.

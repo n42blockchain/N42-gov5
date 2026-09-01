@@ -33,9 +33,8 @@ func TestHistoryGetAsOfBenchmark(t *testing.T) {
 	// Step 1: Collect real storage keys from StorageHistory for test queries.
 	t.Log("Collecting sample keys from StorageHistory...")
 	type queryKey struct {
-		key       []byte // addr(20)+incarnation(8)+slot(32) = 60B for changeset lookup
-		histKey   []byte // addr(20)+slot(32) = 52B for history lookup
-		blockNum  uint64
+		histKey  []byte // addr(20)+slot(32) = 52B for history lookup
+		blockNum uint64
 	}
 
 	var samples []queryKey
@@ -72,15 +71,7 @@ func TestHistoryGetAsOfBenchmark(t *testing.T) {
 		arr := bm.ToArray()
 		blockNum := arr[rng.Intn(len(arr))]
 
-		// Build changeset key: addr(20)+incarnation(8=0)+slot(32).
-		var csKey [60]byte
-		copy(csKey[:20], k[:20])           // addr
-		// incarnation = 1 (common default)
-		binary.BigEndian.PutUint64(csKey[20:28], 1)
-		copy(csKey[28:60], k[20:52])       // slot
-
 		samples = append(samples, queryKey{
-			key:      csKey[:],
 			histKey:  k[:52], // addr+slot
 			blockNum: blockNum,
 		})
@@ -102,7 +93,7 @@ func TestHistoryGetAsOfBenchmark(t *testing.T) {
 	t0 := time.Now()
 	for _, q := range samples {
 		// Direct history seek: key = addr(20)+slot(32)+shardId(8).
-		// IndexChunkKey builds: addr(20)+slot(32 from key[28:])+blockNum(8).
+		// IndexChunkKey builds the same shape: addr(20)+slot(32)+blockNum(8).
 		histCursor2, _ := tx.Cursor("StorageHistory")
 		seekKey := make([]byte, 60)
 		copy(seekKey[:20], q.histKey[:20])    // addr
