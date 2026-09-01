@@ -60,15 +60,15 @@ func (a *HistoryAggregator) add(m map[string]*roaring64.Bitmap, key []byte, bloc
 	bm.Add(block)
 }
 
-// AddChanges records one block's changeset into the aggregator. The key
-// transform matches writeIndex (incarnation stripped).
+// AddChanges records one block's changeset into the aggregator, keyed the
+// same way as writeIndex.
 func (a *HistoryAggregator) AddChanges(blockNum uint64, changes *changeset.ChangeSet, bucket string) {
 	m := a.accounts
 	if bucket == modules.StorageHistory {
 		m = a.storage
 	}
 	for _, change := range changes.Changes {
-		a.add(m, modules.CompositeKeyWithoutIncarnation(change.Key), blockNum)
+		a.add(m, change.Key, blockNum)
 	}
 }
 

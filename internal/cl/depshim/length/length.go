@@ -17,14 +17,13 @@ package length
 import liblength "github.com/n42blockchain/N42/lib/common/length"
 
 const (
-	Hash        = liblength.Hash
-	Addr        = liblength.Addr
-	BlockNum    = liblength.BlockNum
-	Ts          = liblength.Ts
-	Incarnation = liblength.Incarnation
-	PeerID      = liblength.PeerID
-	Bytes4      = liblength.Bytes4
-	Bytes48     = liblength.Bytes48
-	Bytes64     = liblength.Bytes64
-	Bytes96     = liblength.Bytes96
+	Hash     = liblength.Hash
+	Addr     = liblength.Addr
+	BlockNum = liblength.BlockNum
+	Ts       = liblength.Ts
+	PeerID   = liblength.PeerID
+	Bytes4   = liblength.Bytes4
+	Bytes48  = liblength.Bytes48
+	Bytes64  = liblength.Bytes64
+	Bytes96  = liblength.Bytes96
 )
