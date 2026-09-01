@@ -359,10 +359,8 @@ func (g *GenesisBlock) WriteGenesisState(tx kv.RwTx) (*block.Block, *state.Intra
 		return nil, nil, err
 	}
 	statedb := state.New(state.NewPlainStateReader(tx))
-	// Phase D: IncarnationMap is no longer maintained. Genesis used to seed
-	// FirstContractIncarnation for contract-bearing accounts; that bookkeeping
-	// is dead because the Storage table is keyed by (addr||slot) without an
-	// incarnation column.
+	// The Storage table is keyed by (addr||slot); there is no per-contract
+	// incarnation to seed at genesis.
 	blockNumber, err := requireBlockNumber(block, "genesis block number unavailable")
 	if err != nil {
 		return nil, statedb, err
