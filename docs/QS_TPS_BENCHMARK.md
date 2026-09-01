@@ -868,3 +868,45 @@ cannot make the block topic deaf — the two run different loops. The residual
 risk is bounded and local: if all 256 transaction handlers block on the pool
 lock at once, that topic's loop stalls at the semaphore, but consensus keeps
 polling. Worth remembering the next time the pool lock gets slower.
+
+### Measured: the sender cache hits under 10% at import, and hintFills is zero
+
+`N42_SENDER_TRACE=1`, node 0, eight consecutive full blocks (22,857 transactions
+each) at the 40k operating point:
+
+| | per block |
+|---|---|
+| `hintFills` | **0** |
+| `cacheHits` | 2,923 – 6,031 |
+| `cacheMisses` | 35,488 – 298,008 |
+| **hit rate** | **1.3% – 10.5%** |
+
+**This refutes an inference recorded earlier in this file.** From the CPU split
+alone — pool prewarm 33.8%, importer 26.0% — it was argued that an uncached
+import at 39,619 TPS would cost roughly 7x the pool's share rather than 0.77x,
+"consistent with the cache working". It is not working, and the arithmetic that
+said it was rested on an assumption never checked: that node 0's pool holds
+most of the chain's transactions. It does not.
+
+The measured numbers explain themselves once that assumption is dropped.
+`-shard-senders` routes each sender's transactions to exactly ONE node, so
+node 0's pool only ever admits about 1/7 of what a block carries — and
+2,923-6,031 hits against 22,857 transactions IS that 1/7. The cache is hitting
+precisely the transactions this node's own pool recovered, and missing the
+other six sevenths because they were never here to cache. Import therefore
+re-derives essentially the whole block.
+
+`hintFills = 0` says the same thing from the other side: `applySenderHints`
+finds nothing, so the pool-hint path contributes nothing at all under this
+load profile.
+
+What this does and does not license:
+
+- It does NOT say the cache is misdesigned. Under `-broadcast` — the documented
+  warm-pool mode — every pool sees every transaction and the same cache should
+  carry nearly the whole import. That is the configuration to measure next.
+- It DOES say that under shard-senders the fleet pays secp256k1 twice for six
+  sevenths of every block, on a path that is 62.6% of node CPU, and that no
+  amount of cache sizing fixes it because the entry is never written.
+- **Rule 15: a cache's hit rate is a measurement, never an inference from cost
+  ratios.** Both times this file inferred one it was wrong.
