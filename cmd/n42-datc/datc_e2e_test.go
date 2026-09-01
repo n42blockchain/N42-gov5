@@ -675,12 +675,12 @@ func openTestQuerier(t *testing.T, db kv.RwDB, out string, o e2eOpts) (*querier,
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.leafSeg && (q.segA == nil || q.segS == nil || q.segSR == nil) {
+	if o.leafSeg && (q.segA == nil || q.segS == nil || q.segSR == nil || q.segNA == nil) {
 		t.Fatal("leaf-seg build produced no segments")
 	}
 	return q, func() {
 		tx.Rollback()
-		for _, s := range []*leafSegSet{q.segA, q.segS, q.segCA, q.segCS, q.segSR} {
+		for _, s := range []*leafSegSet{q.segA, q.segS, q.segCA, q.segCS, q.segSR, q.segNA} {
 			if s != nil {
 				s.Close()
 			}
@@ -932,6 +932,13 @@ func TestE2E_Depths_Acc3_Sto1(t *testing.T) {
 
 func TestE2E_FoldOverride(t *testing.T) {
 	runE2E(t, e2eOpts{sched: schedE0is1, batch: 50, stoCache: 64, accDepth: 3, stoDepth: 2, foldDepth: 1})
+}
+
+// Dense depth-3 with sparse tops (the mainnet shape); accDepth 4 so the
+// account trie folds at depth 4 — with 3000 test accounts that is a small
+// fold, and depth-1/2 records are sparse and mostly stale.
+func TestE2E_DenseD3(t *testing.T) {
+	runE2E(t, e2eOpts{sched: epochSchedule{e: [maxChgDepth + 1]uint64{8, 64, 16, 1, 4096, 4096}}, batch: 50, stoCache: 64, accDepth: 4, stoDepth: 2, leafSeg: true})
 }
 
 func TestE2E_ConcurrentRoot(t *testing.T) {

@@ -11,6 +11,12 @@
 
 package main
 
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
 // epochSchedule holds per-depth epoch lengths.
 type epochSchedule struct{ e [maxChgDepth + 1]uint64 }
 
@@ -38,3 +44,20 @@ func pow16(d int) float64 {
 }
 
 func (s epochSchedule) epochOf(d int, block uint64) uint64 { return block / s.e[d] }
+
+// parseSchedule parses "e0,e1,...,e5" (exactly maxChgDepth+1 values ≥ 1).
+func parseSchedule(str string) (epochSchedule, error) {
+	var s epochSchedule
+	parts := strings.Split(str, ",")
+	if len(parts) != maxChgDepth+1 {
+		return s, fmt.Errorf("need %d comma-separated epoch lengths, got %d", maxChgDepth+1, len(parts))
+	}
+	for i, p := range parts {
+		v, err := strconv.ParseUint(strings.TrimSpace(p), 10, 64)
+		if err != nil || v == 0 {
+			return s, fmt.Errorf("epoch %d: %q is not a positive integer", i, p)
+		}
+		s.e[i] = v
+	}
+	return s, nil
+}
