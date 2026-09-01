@@ -30,9 +30,9 @@ import (
 )
 
 // splitCursor implements a cursor with split keys.
-// It is used to ignore incarnations in the middle of composite storage keys
-// without reconstructing the key. The key is split into parts, and Seek/Next
-// deliver all parts along with the corresponding value.
+// It matches a prefix of a composite storage key and hands back the remaining
+// parts without reconstructing the key. The key is split into parts, and
+// Seek/Next deliver all parts along with the corresponding value.
 type splitCursor struct {
 	c          kv.Cursor // Underlying cursor
 	startkey   []byte    // Starting key (also contains bits that need to be preserved)

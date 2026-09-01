@@ -26,16 +26,14 @@
 // ## 1. State Buckets (modules/state/ access only)
 //
 //	Account          : address(20) -> account_proto
-//	Storage          : address(20) + incarnation(2) + key(32) -> value(32)
+//	Storage          : address(20) + key(32) -> value(32)
 //	Code             : code_hash(32) -> code_bytes
-//	PlainContractCode: address(20) + incarnation(2) -> code_hash(32)
-//	IncarnationMap   : address(20) -> incarnation(2)
 //
 // ## 2. History Buckets (modules/state/ access only)
 //
 //	AccountChangeSet : block_num(8) -> address(20) + account_proto
 //	AccountsHistory  : address(20) + shard_id(8) -> roaring_bitmap
-//	StorageChangeSet : block_num(8) + address(20) + incarnation(2) -> key(32) + value(32)
+//	StorageChangeSet : block_num(8) -> address(20) + key(32) + value(32)
 //	StorageHistory   : address(20) + key(32) + shard_id(8) -> roaring_bitmap
 //
 // ## 3. Chain Buckets (modules/rawdb/ access)
@@ -93,7 +91,6 @@
 // - Block numbers: 8 bytes, big-endian
 // - Hashes: 32 bytes, raw bytes
 // - Addresses: 20 bytes, raw bytes
-// - Incarnation: 2 bytes, big-endian
 // - Storage keys: 32 bytes, raw bytes
 //
 // # Access Patterns
