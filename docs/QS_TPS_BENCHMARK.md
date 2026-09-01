@@ -1117,3 +1117,43 @@ instead.
   matched block size with the fixed binary.
 - The 2.07 GB heap finding stands on its own profile and is unaffected by any
   of the above; it was never a CPU claim.
+
+## The gap is not execution: per-block overhead is 5.5x a comparable client's
+
+A parallel benchmarking effort on the same box (a Rust client, different
+consensus and storage) reported a per-block decomposition on 2026-09-01, and it
+lines up against this file's own numbers in a way neither headline does.
+
+**Their figures are their report and are not verified here.** The workloads
+differ, and 22,857 against 163,000 transactions per block is itself a confound
+for anything amortised. What follows is recorded for the structural conclusion,
+not the digits.
+
+| | peer (163,000 tx) | this client (22,857 tx) |
+|---|---|---|
+| execution | 584.6 ms → **3.586 µs/tx** | **3.403 µs/tx** (3.033 broadcast) |
+| everything else | 91.4 ms → **0.56 µs/tx** | 70.4 ms → **3.08 µs/tx** |
+| total import | 676 ms → 4.15 µs/tx | 148.2 ms → 6.48 µs/tx |
+
+Per-transaction execution is the same within ~15%, and this client is slightly
+ahead of it. Both are serial EVM at ~3-3.6 µs a transfer. **The throughput gap
+between the two clients is not execution speed — it is per-block overhead, and
+theirs is 5.5x cheaper per transaction.** Their advantage comes from
+amortising fixed per-block costs over a block seven times larger.
+
+Measured on this side, `body` (0.85 µs/tx) and `recov` (1.06 µs/tx) together
+are 1.9 µs/tx — more than the peer's entire non-execution cost per transaction.
+
+This redirects the work. Most of this session went to execution and sender
+recovery; recovery is now measured at 1.0% end to end (see the section above),
+and the decomposition says the remaining room is in per-block overhead — the
+costs a larger block would hide and a 22,857-transaction block exposes.
+
+- **Rule 20: normalise per transaction before comparing clients, and split
+  execution from everything else.** A TPS headline conflates execution speed
+  with block size; the two clients here differ by 15% on the first and 5.5x on
+  the second, and the headline shows neither.
+
+`body` at 0.85 µs/tx is the first thing to price under rule 20, and it is
+exactly the phase the `HasBlockAndState` fix should move — still untested,
+still needing a saturated round at matched block size.
