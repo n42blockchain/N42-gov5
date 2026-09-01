@@ -208,3 +208,7 @@ func (r *HeaderCompactReader) readHeaderFramed(seg int64, idx int) (*block.Heade
 	r.storeHeaderFrame(cachedHeaderFrame{seg: seg, start: start, headers: headers})
 	return headers[idx-start], true, nil
 }
+
+// FrameSize reports the blocks-per-frame this stage will emit; see
+// BodyCompactStage.FrameSize.
+func (s *HeaderCompactStage) FrameSize() int { return s.frameSize }

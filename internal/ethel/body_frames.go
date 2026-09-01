@@ -276,3 +276,10 @@ func readOneFrame(readAt func(p []byte, off int64) error, base int64, fi *bodyFr
 	}
 	return blocks, bodySegmentFlags(raw), nil
 }
+
+// FrameSize reports the blocks-per-frame this stage will emit (0 = legacy
+// whole-segment). Exposed so a generation run can LOG the layout it produced:
+// a framed set and a legacy set have identical filenames, so without this the
+// only way to tell them apart afterwards is to open one and look for the
+// skippable-frame magic.
+func (s *BodyCompactStage) FrameSize() int { return s.frameSize }
