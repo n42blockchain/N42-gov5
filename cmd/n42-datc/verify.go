@@ -224,7 +224,7 @@ func loadQuerier(tx kv.Tx, out string, foldOverride int) (*querier, uint64, erro
 	for _, e := range []struct {
 		tab int
 		dst **leafSegSet
-	}{{segTabLeafA, &q.segA}, {segTabLeafS, &q.segS}, {segTabChgA, &q.segCA}, {segTabChgS, &q.segCS}, {segTabStoRoot, &q.segSR}} {
+	}{{segTabLeafA, &q.segA}, {segTabLeafS, &q.segS}, {segTabChgA, &q.segCA}, {segTabChgS, &q.segCS}, {segTabStoRoot, &q.segSR}, {segTabNodeA, &q.segNA}} {
 		if *e.dst, err = open(e.tab); err != nil {
 			return nil, 0, err
 		}
@@ -286,7 +286,7 @@ type querier struct {
 
 	// seg*, when non-nil, serve the leaf history / change index / storage-root
 	// history from static zstd segments (leafseg.go) instead of the MDBX tables.
-	segA, segS, segCA, segCS, segSR *leafSegSet
+	segA, segS, segCA, segCS, segSR, segNA *leafSegSet
 
 	folds, recs, leafReads int
 }
@@ -327,6 +327,18 @@ func (q *querier) chgCursor(storage bool) (leafCur, error) {
 		return q.segCA.Cursor(), nil
 	}
 	return q.tx.Cursor(tDatcAccChg)
+}
+
+// nodeCursor opens the node-record cursor for one domain (account records
+// may live in static segments; storage records always in MDBX).
+func (q *querier) nodeCursor(storage bool) (leafCur, error) {
+	if storage {
+		return q.tx.Cursor(tDatcStoNode)
+	}
+	if q.segNA != nil {
+		return q.segNA.Cursor(), nil
+	}
+	return q.tx.Cursor(tDatcAccNode)
 }
 
 // stoRootCursor opens the storage-root history cursor.
@@ -658,17 +670,15 @@ func (q *querier) floorRecord(domain, path []byte, n uint64) (nodeState, uint64,
 // fullEvery superblock rule) and folding forward.
 func (q *querier) floorRecordBefore(domain, path []byte, beforeEpoch uint64) (nodeState, uint64, bool, error) {
 	var zero nodeState
-	table := tDatcAccNode
 	full := path
 	if domain != nil {
-		table = tDatcStoNode
 		full = append(append([]byte{}, domain...), path...)
 	}
 	prefix := make([]byte, 0, 1+len(full))
 	prefix = append(prefix, byte(len(full)))
 	prefix = append(prefix, full...)
 
-	c, err := q.tx.Cursor(table)
+	c, err := q.nodeCursor(domain != nil)
 	if err != nil {
 		return zero, 0, false, err
 	}

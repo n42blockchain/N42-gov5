@@ -40,7 +40,8 @@ const (
 	segTabChgA    = 2
 	segTabChgS    = 3
 	segTabStoRoot = 4 // storage-root history: addrHash(32)|block(4) → root(32) (empty = no storage)
-	segTabCount   = 5
+	segTabNodeA   = 5 // account-trie node records (pathLen|path|epoch4 → FULL/DIFF/MIXED/tombstone)
+	segTabCount   = 6
 
 	leafSegMagic   = "DATCLS1\n"
 	leafFrameRaw   = 256 << 10 // target uncompressed bytes per frame
@@ -53,33 +54,29 @@ const (
 	leafTableS = segTabLeafS
 )
 
-var segTabNames = [segTabCount]string{"a", "s", "ca", "cs", "sr"}
+var segTabNames = [segTabCount]string{"a", "s", "ca", "cs", "sr", "na"}
 
-// segPrefixLen is the number of leading key bytes that form the bucket id.
-// Leaves bucket on the hashed key's first byte (uniform). Chg rows bucket on
-// (level byte, second byte) — the second byte is domain[0] for storage rows
-// and the first path nibble for account rows.
-var segPrefixLen = [segTabCount]int{1, 1, 2, 2, 1}
+// segPrefixLen is the number of leading key bytes that form the bucket id
+// (bucket order == key order for any prefix length). Leaves bucket on the
+// hashed key's first byte (uniform). Chg rows bucket on (level byte, second
+// byte) — domain[0] for storage rows, the first path nibble for account rows.
+// Account node records bucket on (pathLen, nib0, nib1): the dense depth-3
+// layer spreads over 256 buckets so finalize sorts ~1 GB at a time.
+var segPrefixLen = [segTabCount]int{1, 1, 2, 2, 1, 3}
 
 func segBucketOf(table int, k []byte) int {
-	if len(k) == 0 {
-		return 0
-	}
-	if segPrefixLen[table] == 1 {
-		return int(k[0])
-	}
-	b := int(k[0]) << 8
-	if len(k) > 1 {
-		b |= int(k[1])
+	b := 0
+	for i := 0; i < segPrefixLen[table]; i++ {
+		b <<= 8
+		if i < len(k) {
+			b |= int(k[i])
+		}
 	}
 	return b
 }
 
 func segFileName(table, bucket int) string {
-	if segPrefixLen[table] == 1 {
-		return fmt.Sprintf("%s.%02x", segTabNames[table], bucket)
-	}
-	return fmt.Sprintf("%s.%04x", segTabNames[table], bucket)
+	return fmt.Sprintf("%s.%0*x", segTabNames[table], 2*segPrefixLen[table], bucket)
 }
 
 // ---------------------------------------------------------------------------
