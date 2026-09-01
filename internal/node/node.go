@@ -761,15 +761,26 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	// Enable parallel EVM execution, state prefetching, and ancient DB if configured.
 	if realBC, ok := bc.(*internal.BlockChain); ok {
 		if cfg.NodeCfg.ParallelEVM {
-			// EXPERIMENTAL + known-incorrect: the internal/parallel Block-STM path
-			// (ParallelStateReader.ReadAccountStorage) does NOT consult the
-			// SELFDESTRUCT/CREATE2 storage-wipe set, so an intra-block read of a
-			// slot on an account destroyed earlier in the same block returns the
-			// stale pre-destruct value (and is then faithfully persisted). Off by
-			// default; only reachable via the config key. Warn loudly so it can't
-			// be silently enabled in production until the wipe shadow-read is
-			// ported from modules/state (see docs/ethel/erigon-borrow-audit.md).
-			log.Warn("ParallelEVM ENABLED — EXPERIMENTAL: internal/parallel path lacks SELFDESTRUCT/CREATE2 storage-wipe isolation; do NOT use on consensus-critical chains")
+			// EXPERIMENTAL. Off by default; only reachable via the config key,
+			// cmd/n42 exposes no CLI flag for it.
+			//
+			// This warning used to assert that internal/parallel does NOT
+			// consult the SELFDESTRUCT/CREATE2 storage-wipe set, so an
+			// intra-block read of a slot on an account destroyed earlier in the
+			// same block returned a stale pre-destruct value. That defect was
+			// fixed and the warning was not updated. The wipe shadow-read is
+			// present on all three sides: ParallelStateWriter.CreateContract
+			// records a FieldStorageWipe marker (IntraBlockState calls it on
+			// every SELFDESTRUCT, recreate-after-destruct and fresh CREATE),
+			// ParallelStateReader.ReadAccountStorage shadows stale pre-wipe
+			// slots with the version comparison, parallel_processor.go applies
+			// the wipes on merge, and internal/parallel/wipe_shadow_test.go
+			// pins the ordering cases. docs/ethel/erigon-borrow-audit.md
+			// records the same conclusion.
+			//
+			// It stays EXPERIMENTAL because that one defect being closed is not
+			// an assessment of the rest of the path, which has not had one.
+			log.Warn("ParallelEVM ENABLED — EXPERIMENTAL: Block-STM path is not consensus-audited end to end; do not enable on a production chain without one")
 			realBC.SetParallelEVM(true)
 		}
 		if cfg.NodeCfg.Prefetch {
