@@ -7,9 +7,29 @@
 // caller holding the same object. A node recovers the sender of every incoming
 // transaction when its pool admits it, and then recovers it AGAIN when the
 // block carrying it arrives: the block is decoded from the wire into fresh
-// Transaction values, so the per-object memo is gone. Under load that second
-// recovery is expensive — secp256k1_ext_ecdsa_recover was 28% of all cgo time
-// and ~20% of total CPU on a fleet node at 7.3k tx/s.
+// Transaction values, so the per-object memo is gone. That second recovery is
+// real and it is a large share of node CPU — secp256k1_ext_ecdsa_recover was
+// 28% of all cgo time and ~20% of total CPU on a fleet node at 7.3k tx/s.
+//
+// WHAT THIS CACHE IS WORTH, MEASURED (2026-09-01, 7-node fleet, 22,857-tx
+// blocks): approximately nothing, in any configuration tested.
+//
+//	hit rate, sharded submission   8.3% - 27.9%, decaying within a round
+//	hit rate, broadcast submission 0.00% -- nothing on the import path
+//	                               even ASKS: applySenderHints answers from
+//	                               the pool object's own memo first
+//	end-to-end effect              none separable from round-to-round noise
+//
+// The CPU share is not the error; the inference from it was. The node runs at
+// 509% CPU of the 37 threads it is allowed, and recoverBlockSendersAsync fans
+// out over ~28 workers overlapped with execution — so this recovery is already
+// on idle cores and off the serial path. Eliminating it saves CPU that nothing
+// was waiting for. A peer team reached the same result on a different client by
+// the opposite method: they sized their cache at 51x a block to guarantee hits,
+// measured 676 -> 661 ms with TPS unchanged, and reverted the size.
+//
+// It is kept because it is cheap and correct, not because it is load-bearing.
+// Do not enlarge it on a CPU-share argument again without an end-to-end number.
 //
 // The cache is keyed by transaction hash. Two transactions can only share a
 // hash by being byte-identical, which makes their signatures — and therefore
@@ -51,14 +71,18 @@ var (
 )
 
 // defaultSenderCacheSlots is a power of two. 2^20 entries is ~8 MB of slot
-// pointers plus ~80 MB fully populated — sized for the pool, not the block.
-// The previous 2^18 was "comfortably above one block", but the cache is
-// direct-mapped and the WHOLE POOL churns through it: at a ~360k-transaction
-// pool plus ~11k new per second, 262k slots evicted each other fast enough
-// that ~30% of an imported block's senders had been overwritten by the time
-// the block arrived, and import re-derived them (6.2s of secp256k1 in a 30s
-// saturated profile). Sizing above the pool's transaction population makes a
-// pre-import eviction the exception rather than the rule.
+// pointers plus ~80 MB fully populated — sized for the pool, not the block,
+// on the reasoning that the cache is direct-mapped and the WHOLE POOL churns
+// through it, so a 2^18 cache had ~30% of an imported block's senders already
+// overwritten when the block arrived.
+//
+// That eviction reasoning is sound and the resulting hit-rate improvement is
+// real; what was never established is that it BUYS anything, and the header
+// comment records that it does not. 80 MB against a node that measures 11.2 GB
+// saturated is 0.7%, so this is left where it is: shrinking it would be a
+// second unmeasured change in the opposite direction, which is how the size
+// got here. Whoever next has a reason to touch it should bring an end-to-end
+// number, in either direction.
 const defaultSenderCacheSlots = 1 << 20
 
 func init() {
