@@ -74,6 +74,7 @@ func runSegExport(args []string) {
 		{tDatcStoChg, false},
 		{tDatcLeafA, false},
 		{tDatcLeafS, false},
+		{tDatcStoRoot, false},
 	}
 
 	fmt.Printf("%-14s %10s %12s %12s %12s %12s %14s\n",

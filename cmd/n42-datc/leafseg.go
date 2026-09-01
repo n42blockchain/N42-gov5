@@ -35,10 +35,12 @@ import (
 )
 
 const (
-	segTabLeafA = 0
-	segTabLeafS = 1
-	segTabChgA  = 2
-	segTabChgS  = 3
+	segTabLeafA   = 0
+	segTabLeafS   = 1
+	segTabChgA    = 2
+	segTabChgS    = 3
+	segTabStoRoot = 4 // storage-root history: addrHash(32)|block(4) → root(32) (empty = no storage)
+	segTabCount   = 5
 
 	leafSegMagic   = "DATCLS1\n"
 	leafFrameRaw   = 256 << 10 // target uncompressed bytes per frame
@@ -51,13 +53,13 @@ const (
 	leafTableS = segTabLeafS
 )
 
-var segTabNames = [4]string{"a", "s", "ca", "cs"}
+var segTabNames = [segTabCount]string{"a", "s", "ca", "cs", "sr"}
 
 // segPrefixLen is the number of leading key bytes that form the bucket id.
 // Leaves bucket on the hashed key's first byte (uniform). Chg rows bucket on
 // (level byte, second byte) — the second byte is domain[0] for storage rows
 // and the first path nibble for account rows.
-var segPrefixLen = [4]int{1, 1, 2, 2}
+var segPrefixLen = [segTabCount]int{1, 1, 2, 2, 1}
 
 func segBucketOf(table int, k []byte) int {
 	if len(k) == 0 {
@@ -93,7 +95,7 @@ type spillStream struct {
 type leafSpillWriter struct {
 	dir     string
 	streams map[int]*spillStream // key: table<<16 | bucket
-	rows    [4]uint64
+	rows    [segTabCount]uint64
 	scratch []byte
 }
 
