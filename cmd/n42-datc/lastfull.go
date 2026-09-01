@@ -22,7 +22,8 @@ import (
 // nodeRecState tracks the last node record written for a path.
 type nodeRecState struct {
 	lastFullEpoch uint32
-	exists        bool // false = no record yet or last was a tombstone
+	exists        bool // false = no record yet, or last was a tombstone / MIXED marker
+	mixed         bool // last record is a MIXED marker (further MIXED epochs are elided)
 }
 
 // lastFullCache is a capped nodeRecState map whose misses are answered from
@@ -143,6 +144,9 @@ func readBackLastFull(tx kv.Tx, table string, path []byte, epoch uint64) (nodeRe
 		if len(v) == 0 {
 			return nodeRecState{}, nil // floor is a tombstone
 		}
+		if v[0] == nodeRecMixed {
+			return nodeRecState{mixed: true}, nil
+		}
 		if v[0] == nodeRecFull {
 			return nodeRecState{lastFullEpoch: binary.BigEndian.Uint32(k[len(prefix):]), exists: true}, nil
 		}
@@ -153,7 +157,7 @@ func readBackLastFull(tx kv.Tx, table string, path []byte, epoch uint64) (nodeRe
 		if perr != nil {
 			return nodeRecState{}, perr
 		}
-		if pk == nil || !bytesEqualPrefix(pk, prefix) || len(pk) != len(prefix)+4 || len(pv) == 0 {
+		if pk == nil || !bytesEqualPrefix(pk, prefix) || len(pk) != len(prefix)+4 || len(pv) == 0 || pv[0] == nodeRecMixed {
 			// Chain truncated (shouldn't happen for a valid DB): degrade to
 			// "due for a FULL now" — safe, just a larger next record.
 			return nodeRecState{lastFullEpoch: 0, exists: true}, nil

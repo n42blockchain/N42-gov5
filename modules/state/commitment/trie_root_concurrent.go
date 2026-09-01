@@ -80,6 +80,9 @@ func (t *TrieRootComputer) flushTrieRootConcurrent(rl *trie.RetainList) (types.H
 			// (next marked key, possibly in a higher nibble) must match what the
 			// serial loader sees for byte-identical insert handling at nibble edges.
 			loader := trie.NewFlatDBTrieLoader("croot", rl.Clone(), accColl, storColl, false)
+			if t.storageRootHook != nil {
+				loader.SetStorageRootHook(t.storageRootHook)
+			}
 			h, err := loader.CalcTrieRootShard(rtx, byte(nib), nil)
 			if err != nil {
 				outs[nib].err = err
@@ -113,6 +116,7 @@ func (t *TrieRootComputer) flushTrieRootConcurrent(rl *trie.RetainList) (types.H
 	// back to the serial loader (correct for any shape). The per-window gold-check
 	// against the header remains the outer safety net regardless.
 	if nonEmpty < 2 {
+		t.resetStorageRootHook()
 		return t.flushTrieRootSerial(rl)
 	}
 
@@ -158,6 +162,7 @@ func (t *TrieRootComputer) flushTrieRootConcurrent(rl *trie.RetainList) (types.H
 		fmt.Fprintf(os.Stderr,
 			"[croot] concurrent root %x != expected %x — recomputing this window with the serial loader\n",
 			root[:8], t.expectRoot[:8])
+		t.resetStorageRootHook()
 		sroot, serr := t.flushTrieRootSerial(rl)
 		if serr != nil {
 			return types.Hash{}, serr
@@ -199,4 +204,12 @@ func (t *TrieRootComputer) flushTrieRootConcurrent(rl *trie.RetainList) (types.H
 		}
 	}
 	return root, nil
+}
+
+// resetStorageRootHook tells the hook consumer to discard roots delivered by
+// the (about to be superseded) shard pass.
+func (t *TrieRootComputer) resetStorageRootHook() {
+	if t.storageRootHook != nil {
+		t.storageRootHook(nil, nil)
+	}
 }

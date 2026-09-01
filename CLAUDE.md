@@ -206,6 +206,9 @@ params/           → Chain parameters (config, blob_schedule, chainspecs/)
 conf/             → Node configuration (all subsystem configs, ai_config)
 accounts/         → Account management (keystore/, abi/, external/)
 contracts/        → Smart contracts (deposit contract with tiered staking)
+cmd/n42-datc/     → DATC any-height EIP-1186 proof archive (build/verify/proof/bench; format v2, see
+                     docs/ethel/datc-audit-format-v2-2026-09-01.md). Correctness harness:
+                     go test -tags "nosqlite,noboltdb" ./cmd/n42-datc/ -run TestE2E
 cmd/rpcdaemon/    → Standalone RPC daemon (gRPC remote KV)
 cmd/clef/         → External signer (IPC + rules + audit log)
 cmd/zkguest/      → ZK guest program (RISC-V64 target)
@@ -435,4 +438,5 @@ zkprover.ZKMLProver → used by attestation.ZKProofProvider
 - **Messaging crypto**: Uses pure Go `golang.org/x/crypto` (curve25519, chacha20poly1305, hkdf, sha3). No CGO dependency. Signing uses `common/crypto` (secp256k1 via libsecp256k1 CGO).
 - **RLN Poseidon hash**: Real Poseidon over BN254 via the gnark-crypto Poseidon2 permutation (width-2 compression, length-prefixed 31-byte chunk absorption, domain `n42-rln-poseidon2-v1`). **RLN is NOT production-wired** and must not be until a vetted BN254 ZK circuit lands: without ZK there is no secure nullifier choice — secret-derived is unverifiable (spammer bypass), commitment-derived (used here, verifier-recomputable) is forgeable (any third party can craft a passing proof with arbitrary in-range ShareY and censor a victim by pre-registering their nullifier). Share y-coordinates stay unverifiable without ZK — recovered secrets are only slashable when they reproduce the member's commitment. No non-test code calls the verifier today.
 - **protobuf is deprecated for internal encoding**: use compact bitmask codecs (`common/block/header_compact.go` `MarshalCompact`, `receipt_compact.go`) or the Erigon V2 account/storage codec instead. proto is retained ONLY where a cross-process / cross-language boundary makes it unavoidable (P2P wire, gRPC KV for RPCDaemon, cross-language SDK contracts). Do not add proto to new internal persistence.
+- **Storage keys carry NO incarnation**: `HashedStorage`/`TrieOfStorage` keys are `addrHash(32)+slotHash(32)` / `addrHash(32)+path`. The incarnation was removed in an earlier cleanup; any 40-byte `addrHash+inc` prefix left in a tool is a leftover bug (DATC had one until format v2) — delete it, never re-add.
 - **New consensus header field → update ALL codecs**: any field added to `common/block/header.go` that participates in the block hash MUST be handled in every codec — RLP (`rlpHash`), the proto/trailer `Marshal`/`parseTrailer`, AND the compact storage codec `MarshalCompact`/`unmarshalCompact` (the default for `WriteHeader`). Missing the compact codec silently drops the field on the storage round-trip, so the stored header's hash diverges from the consensus head hash and block import fails with `unknown ancestor`. Regression: `TestCompactHeaderRoundTrip`'s `full` header must include every optional field and assert the round-trip hash is unchanged.

@@ -303,9 +303,9 @@ func (q *querier) leafFloor(storage bool, key []byte, n uint64) ([]byte, bool, e
 		return nil, false, err
 	}
 	defer c.Close()
-	seek := make([]byte, 0, len(key)+8)
+	seek := make([]byte, 0, len(key)+blkLen)
 	seek = append(seek, key...)
-	seek = binary.BigEndian.AppendUint64(seek, n+1)
+	seek = binary.BigEndian.AppendUint32(seek, uint32(n+1))
 	k, v, err := c.Seek(seek)
 	if err != nil {
 		return nil, false, err
@@ -318,7 +318,7 @@ func (q *querier) leafFloor(storage bool, key []byte, n uint64) ([]byte, bool, e
 	if err != nil {
 		return nil, false, err
 	}
-	if k == nil || len(k) != len(key)+8 || !bytes.Equal(k[:len(key)], key) {
+	if k == nil || len(k) != len(key)+blkLen || !bytes.Equal(k[:len(key)], key) {
 		return nil, false, nil
 	}
 	if len(v) == 0 {
@@ -521,7 +521,7 @@ func runProof(args []string) {
 	addrHex := fs.String("addr", "", "account address (0x…)")
 	slotsHex := fs.String("slots", "", "comma-separated storage slot keys (0x…)")
 	at := fs.Uint64("at", 0, "historical block height")
-	foldDepth := fs.Int("fold-depth", 4, "account-trie fold depth (must match data density)")
+	foldDepth := fs.Int("fold-depth", 0, "diagnostic: account-trie fold depth override (0 = the build's record depth from DatcMeta)")
 	mapGB := fs.Int("map.gb", 512, "MDBX map size GB")
 	_ = fs.Parse(args)
 	if *out == "" || *addrHex == "" {
@@ -551,32 +551,12 @@ func runProof(args []string) {
 	}
 	defer tx.Rollback()
 
-	metaV, err := tx.GetOne(tDatcMeta, []byte("head"))
-	if err != nil || len(metaV) < 8 {
-		die("DATC meta missing: %v", err)
+	q, head, err := loadQuerier(tx, *out, *foldDepth)
+	if err != nil {
+		die("%v", err)
 	}
-	head := binary.BigEndian.Uint64(metaV)
 	if *at >= head {
 		die("--at %d out of range (head %d)", *at, head)
-	}
-	schedV, _ := tx.GetOne(tDatcMeta, []byte("sched"))
-	var sched epochSchedule
-	for d := 0; d <= maxChgDepth && (d+1)*8 <= len(schedV); d++ {
-		sched.e[d] = binary.BigEndian.Uint64(schedV[d*8:])
-	}
-
-	q := &querier{tx: tx, sched: sched, foldDepth: *foldDepth}
-	{
-		cache := newFrameLRU()
-		open := func(tab int) *leafSegSet {
-			s, ok, err := openLeafSegSet(*out, tab, cache)
-			if err != nil || !ok {
-				return nil
-			}
-			return s
-		}
-		q.segA, q.segS = open(segTabLeafA), open(segTabLeafS)
-		q.segCA, q.segCS = open(segTabChgA), open(segTabChgS)
 	}
 
 	// Expected root (the trust anchor).
@@ -615,8 +595,7 @@ func runProof(args []string) {
 	res.CodeHash = keccak(nil)
 	res.StorageHash = emptyTrieRoot
 
-	domain := make([]byte, 40)
-	copy(domain, ah[:])
+	domain := ah[:]
 	accRaw, accLive, err := q.leafFloor(false, ah[:], *at)
 	if err != nil {
 		die("account value: %v", err)
@@ -667,9 +646,9 @@ func runProof(args []string) {
 				die("storage proof %x: %v", slot[:8], err)
 			}
 			sp.Proof = sNodes
-			composite := make([]byte, 72)
+			composite := make([]byte, stoDomainLen+32)
 			copy(composite, domain)
-			copy(composite[40:], sh[:])
+			copy(composite[stoDomainLen:], sh[:])
 			sval, slive, err := q.leafFloor(true, composite, *at)
 			if err != nil {
 				die("slot value: %v", err)

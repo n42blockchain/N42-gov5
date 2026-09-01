@@ -111,6 +111,9 @@ type TrieRootComputer struct {
 	// values; an account deletion purges the whole storage tier (its cached
 	// slots cannot be enumerated). nil = no cache wired.
 	readCache ReadCacheInvalidator
+
+	// storageRootHook: see SetStorageRootHook.
+	storageRootHook func(addrHash, root []byte)
 }
 
 // ReadCacheInvalidator is the write-side surface of the cross-block hashed
@@ -148,6 +151,13 @@ func (t *TrieRootComputer) SetConcurrentRoot(db kv.RoDB, ov *StateOverlay, worke
 // SetSortedWrites toggles ascending-key-order leaf writes in Phase 1/2 (a large-
 // batch optimization; see the field doc). Correctness-neutral.
 func (t *TrieRootComputer) SetSortedWrites(v bool) { t.sortedWrites = v }
+
+// SetStorageRootHook installs a passive observer receiving (addrHash, root)
+// for every account whose storage trie the loader walks during ComputeRoot.
+// The hook may be called from several goroutines in concurrent-root mode and
+// receives a (nil, nil) reset signal before a serial recompute of the same
+// window, after which previously delivered roots must be discarded.
+func (t *TrieRootComputer) SetStorageRootHook(f func(addrHash, root []byte)) { t.storageRootHook = f }
 
 // EnableProofCapture toggles per-call multiproof capture during flushTrieRoot
 // (incremental mode only). After a ComputeRoot/flushTrieRoot call, CapturedProof
@@ -492,6 +502,9 @@ func (t *TrieRootComputer) flushTrieRootSerial(rl *trie.RetainList) (types.Hash,
 		retainer = rl
 	}
 	loader := trie.NewFlatDBTrieLoader("trie-root", retainer, accCollector, storCollector, false)
+	if t.storageRootHook != nil {
+		loader.SetStorageRootHook(t.storageRootHook)
+	}
 	var wr *trie.WitnessRetainer
 	if t.captureProof && t.incremental {
 		// Capture the touched-path multiproof over the SAME dirty RetainList the

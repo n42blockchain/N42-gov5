@@ -5,17 +5,17 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"github.com/n42blockchain/N42/crypto"
 	"math/bits"
 	"os"
 	"time"
 
 	"github.com/n42blockchain/N42/lib/log/v3"
 
-	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/hexutil"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/common/length"
 	"github.com/n42blockchain/N42/lib/kv"
-
 
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/lib/rlphacks"
@@ -107,9 +107,9 @@ type RootHashAggregator struct {
 	succStorage    bytes.Buffer
 	valueStorage   []byte // Current value to be used as the value tape for the hash builder
 	hadTreeStorage bool
-	hashAccount    types.Hash // Current value to be used as the value tape for the hash builder
-	hashStorage    types.Hash // Current value to be used as the value tape for the hash builder
-	curr           bytes.Buffer   // Current key for the structure generation algorithm, as well as the input tape for the hash builder
+	hashAccount    types.Hash   // Current value to be used as the value tape for the hash builder
+	hashStorage    types.Hash   // Current value to be used as the value tape for the hash builder
+	curr           bytes.Buffer // Current key for the structure generation algorithm, as well as the input tape for the hash builder
 	succ           bytes.Buffer
 	currAccK       []byte
 	value          []byte // Current value to be used as the value tape for the hash builder
@@ -131,6 +131,13 @@ type RootHashAggregator struct {
 	// (multi-key flat witness); both satisfy proofCollector.
 	proofRetainer proofCollector
 	cutoff        bool
+
+	// storageRootHook, when set, is invoked with (addrHash, 32-byte storage
+	// root) every time an account's storage trie is finalised by the
+	// aggregator (only accounts whose storage stream was actually walked —
+	// a cached, ready-to-use root delivered via an empty-key SHashStreamItem
+	// does not fire it). Passive: it never influences the computed root.
+	storageRootHook func(addrHash, root []byte)
 }
 
 func NewRootHashAggregator() *RootHashAggregator {
@@ -165,6 +172,31 @@ func NewFlatDBTrieLoader(logPrefix string, rd RetainDeciderWithMarker, hc HashCo
 
 func (l *FlatDBTrieLoader) SetProofRetainer(pr *ProofRetainer) {
 	l.receiver.proofRetainer = pr
+}
+
+// SetStorageRootHook installs a passive observer that receives the finalised
+// storage root of every account whose storage trie the loader walked. Used by
+// history builders (DATC) to record per-block storage roots without a second
+// trie pass.
+func (l *FlatDBTrieLoader) SetStorageRootHook(f func(addrHash, root []byte)) {
+	l.receiver.storageRootHook = f
+}
+
+// emitStorageRoot fires storageRootHook for the storage trie just finalised
+// on top of the hash stack (called right after the storage GenStructStep run
+// of an account, before the account leaf consumes the root).
+func (r *RootHashAggregator) emitStorageRoot() {
+	if r.storageRootHook == nil || len(r.currAccK) == 0 {
+		return
+	}
+	th := r.hb.topHash()
+	if len(th) == 33 && th[0] == 0x80+32 {
+		r.storageRootHook(r.currAccK, th[1:])
+		return
+	}
+	// Short (inline) root node: the account leaf commits to keccak(node).
+	h := crypto.Keccak256(th)
+	r.storageRootHook(r.currAccK, h)
 }
 
 // SetWitnessRetainer installs a multi-key WitnessRetainer as the proof collector
@@ -510,6 +542,7 @@ func (r *RootHashAggregator) Receive(itemType StreamItem,
 				r.wasIHStorage = false
 				// There are some storage items
 				r.accData.FieldSet |= AccountFieldStorageOnly
+				r.emitStorageRoot()
 			}
 		}
 		r.currAccK = r.currAccK[:0]
@@ -539,6 +572,7 @@ func (r *RootHashAggregator) Receive(itemType StreamItem,
 				r.wasIHStorage = false
 				// There are some storage items
 				r.accData.FieldSet |= AccountFieldStorageOnly
+				r.emitStorageRoot()
 			}
 		}
 		r.currAccK = r.currAccK[:0]
@@ -571,6 +605,7 @@ func (r *RootHashAggregator) Receive(itemType StreamItem,
 				r.wasIHStorage = false
 				// There are some storage items
 				r.accData.FieldSet |= AccountFieldStorageOnly
+				r.emitStorageRoot()
 			}
 		}
 

@@ -12,6 +12,13 @@
 //	                              → nil — which child changed when (window index)
 //	DatcLeafA   / DatcLeafS    : (hashedKey, block) → value (empty = deleted)
 //	                              — the leaf history (key-major changesets)
+//	DatcStoRoot                : (addrHash, block) → storage root at the end of
+//	                              that block (empty = no storage) — written for
+//	                              every contract whose storage changed, at the
+//	                              cadence the trie materializes (per block, or
+//	                              per window in window mode). Gives account
+//	                              proofs their storageRoot in O(1) without
+//	                              touching the storage leaf history.
 //
 // Per-level epoch length E_d = clamp(α·16^d / C̄, 1, 2^22): every node sees ~α
 // changes per its own epoch, equalizing the change rate across depths.
@@ -20,7 +27,11 @@
 //
 //	n42-datc build --changesets D:/N42-eth1177/chain/freezer \
 //	  --headers D:/n42-eth1/chain/freezer --out D:/n42-datc \
-//	  --end 2000000 --alpha 16 --cbar 20
+//	  --end 2000000 --alpha 16 --cbar 20 [--acc-depth 4 --sto-depth 2]
+//
+// Correctness harness: go test ./cmd/n42-datc/ -run TestE2E (synthetic
+// changesets, independent reference MPT, every height reconstructed + proofs
+// walked; see datc_e2e_test.go).
 package main
 
 import (
@@ -34,11 +45,11 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
-	"github.com/c2h5oh/datasize"
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common/account"
@@ -46,7 +57,6 @@ import (
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/lib/kv"
-	mdbxkv "github.com/n42blockchain/N42/lib/kv/mdbx"
 	log "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -68,6 +78,7 @@ const (
 	tDatcStoChg  = "DatcStorChg"
 	tDatcLeafA   = "DatcLeafA"
 	tDatcLeafS   = "DatcLeafS"
+	tDatcStoRoot = "DatcStoRoot" // addrHash(32)|block(4) → storage root (empty = no storage)
 	tDatcMeta    = "DatcMeta"
 )
 
@@ -94,7 +105,7 @@ func openCS(dir, name string) *freezer.FreezerTable {
 
 func main() {
 	if len(os.Args) < 2 {
-		die("usage: n42-datc build|verify [flags]")
+		die("usage: n42-datc build|verify|proof|bench|segexport|diag|finalize-leaves [flags]")
 	}
 	if os.Args[1] == "verify" {
 		runVerify(os.Args[2:])
@@ -120,6 +131,10 @@ func main() {
 		runProof(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "bench" {
+		runBench(os.Args[2:])
+		return
+	}
 	if os.Args[1] == "finalize-leaves" {
 		// Crash recovery: turn an interrupted build's leaf/chg spill files into
 		// queryable segments without re-running the build.
@@ -136,7 +151,7 @@ func main() {
 		return
 	}
 	if os.Args[1] != "build" {
-		die("usage: n42-datc build|verify [flags]")
+		die("usage: n42-datc build|verify|proof|bench|segexport|diag|finalize-leaves [flags]")
 	}
 	fs := flag.NewFlagSet("build", flag.ExitOnError)
 	srcMode := fs.String("src", "mainnet", "source: mainnet (acctcs/storcs freezer + headerc gold check) | n42 (erigon-style MDBX changesets, internal root oracle + final-state check)")
@@ -158,6 +173,8 @@ func main() {
 	leafSeg := fs.Bool("leaf-seg", false, "stream leaf history to zstd segment files instead of MDBX (mainnet-scale builds; ~10x smaller)")
 	gogc := fs.Int("gogc", 400, "GOGC percent (GC was ~25% CPU at the default 100; the live heap is stable so a high target is safe)")
 	window := fs.Bool("window", true, "mainnet: batch the root per E_1 window (bpp Path C) instead of per block — identical records, gold check per window")
+	accDepth := fs.Int("acc-depth", 4, "account-trie levels 1..N-1 get node records + change rows; the reader folds subtrees from the leaf history at depth N (persisted in DatcMeta)")
+	stoDepth := fs.Int("sto-depth", 2, "storage-trie levels 0..N-1 get node records + change rows; the reader folds at depth N (persisted in DatcMeta)")
 	pprofPort := fs.Int("pprof.port", 0, "serve net/http/pprof on this port (0=off)")
 	_ = fs.Parse(os.Args[2:])
 	if *out == "" {
@@ -227,19 +244,7 @@ func main() {
 	// Hashed*/node pages, so every window was SPILLING dirty pages to disk
 	// ~20x over (the ~33µs/put mystery across all earlier runs). 16 GB keeps
 	// a full batch's dirty set in RAM; commit then writes it once.
-	db, err := mdbxkv.NewMDBX(logger).Path(*out).Label(kv.ChainDB).
-		MapSize(datasize.ByteSize(*mapGB) * datasize.GB).
-		DirtySpace(uint64(*dirtyGB) * uint64(datasize.GB)).
-		WithTableCfg(func(_ kv.TableCfg) kv.TableCfg {
-			d := kv.TableCfg{}
-			for name, item := range kv.ChaindataTablesCfg {
-				d[name] = item
-			}
-			for _, t := range []string{tDatcAccNode, tDatcStoNode, tDatcAccChg, tDatcStoChg, tDatcLeafA, tDatcLeafS, tDatcMeta, tFwdAcctCS, tFwdStorCS, tDatcRoots} {
-				d[t] = kv.TableCfgItem{}
-			}
-			return d
-		}).Open(context.Background())
+	db, err := openDatcDB(logger, *out, *mapGB, *dirtyGB)
 	if err != nil {
 		die("open out mdbx: %v", err)
 	}
@@ -290,7 +295,7 @@ func main() {
 	fmt.Println()
 
 	b := &builder{
-		sched: sched, db: db, hdrs: hdrs,
+		sched: sched, db: db,
 		acctTbl: acctTbl, storTbl: storTbl,
 		addrHashCache: make(map[types.Address][32]byte, 1<<16),
 		slotHashCache: make(map[types.Hash][32]byte, 1<<16),
@@ -302,6 +307,11 @@ func main() {
 
 		leavesBase:  *leavesBase,
 		leavesTotal: *leavesTotal,
+		accDepth:    *accDepth,
+		stoDepth:    *stoDepth,
+	}
+	if *accDepth < 1 || *accDepth > maxChgDepth+1 || *stoDepth < 1 || *stoDepth > maxChgDepth+1 {
+		die("--acc-depth/--sto-depth must be in [1, %d]", maxChgDepth+1)
 	}
 	// Prefer the persisted leaf-progress baseline (exact across resumes); fall
 	// back to --leaves-base only when it's absent (resume from an older binary).
@@ -322,6 +332,15 @@ func main() {
 		b.chgAccAgg[d] = make([]chgSlot, size)
 		b.stoDirty[d] = make(map[string]*uint16, 1<<10)
 	}
+	if hdrs != nil {
+		b.rootOracle = func(n uint64) (types.Hash, error) {
+			hdr, err := hdrs.ReadHeader(n)
+			if err != nil {
+				return types.Hash{}, err
+			}
+			return hdr.Root, nil
+		}
+	}
 	b.concurrentRoot = *concurrentRoot
 	b.resumed = *startBlock > 0
 	b.stoLastFull.resumed = b.resumed
@@ -329,6 +348,7 @@ func main() {
 	b.windowing = !fwdMode && *window
 	b.winA = make(map[types.Address]*account.StateAccount, 64)
 	b.winS = make(map[types.Address]map[types.Hash]*uint256.Int, 16)
+	b.winWiped = make(map[types.Address]bool)
 	if *leafSeg {
 		sw, err := newLeafSpillWriter(*out)
 		if err != nil {
@@ -399,7 +419,6 @@ func main() {
 type builder struct {
 	sched   epochSchedule
 	db      kv.RwDB
-	hdrs    *ethel.HeaderCompactReader
 	acctTbl *freezer.FreezerTable
 	storTbl *freezer.FreezerTable
 
@@ -488,6 +507,7 @@ type builder struct {
 	lastRoot  types.Hash // root at the last boundary (for empty-window checks)
 
 	leafAPuts, leafSPuts, chgPuts, nodePuts uint64
+	chgStoPuts, nodeStoPuts                 uint64 // storage-side subsets (stats)
 
 	// Leaf-workload progress: block% is misleading (the DeFi-dense back half
 	// carries most leaf changes), so report against the total leaf-change count.
@@ -498,6 +518,143 @@ type builder struct {
 
 	// concurrentRoot: parallel per-window ComputeRoot (--concurrent-root).
 	concurrentRoot bool
+
+	// rootOracle returns the expected state root at block n (the real header
+	// root on mainnet). nil = no external oracle (fwdMode records its own
+	// computed roots into DatcRoots instead). Window mode requires it.
+	rootOracle func(n uint64) (types.Hash, error)
+
+	// stoRoots collects the storage roots the trie loader finalises during
+	// ComputeRoot (TrieRootComputer.SetStorageRootHook); emitStoRoots turns
+	// them into DatcStoRoot rows. Guarded: concurrent-root shards call the
+	// hook from 16 goroutines.
+	stoRootsMu sync.Mutex
+	stoRoots   map[[32]byte][32]byte
+	stoRootBuf []kvPair
+	// winWiped: window mode — contracts whose pre-state slots were
+	// tombstoned by a SELFDESTRUCT inside the current window.
+	winWiped map[types.Address]bool
+
+	// Build statistics (format-change accounting; heartbeat/tests only).
+	statMixedBytesSaved uint64 // node bytes replaced by 1-byte MIXED markers
+	statMixedElided     uint64 // MIXED epochs elided (floor already MIXED)
+
+	// Record depth per trie: account levels 1..accDepth-1 and storage levels
+	// 0..stoDepth-1 get node records + change rows; the reader folds from
+	// the leaf history at accDepth / stoDepth. Deeper records would never be
+	// read (the reader always folds there), so they are not written.
+	accDepth, stoDepth int
+}
+
+// statLegacyExtraBytes estimates how many more bytes the pre-v2 layout would
+// have used for the rows this build wrote: +8 B incarnation on every storage
+// leaf/chg/node key and +4 B block suffix on every leaf row.
+func (b *builder) statLegacyExtraBytes() uint64 {
+	return b.leafSPuts*(8+4) + b.leafAPuts*4 + b.chgStoPuts*8 + b.nodeStoPuts*8
+}
+
+// onStorageRoot is the TrieRootComputer storage-root hook. (nil, nil) is the
+// reset signal sent before a serial recompute of a diverged concurrent window.
+func (b *builder) onStorageRoot(addrHash, root []byte) {
+	b.stoRootsMu.Lock()
+	defer b.stoRootsMu.Unlock()
+	if addrHash == nil {
+		b.stoRoots = make(map[[32]byte][32]byte, len(b.stoRoots))
+		return
+	}
+	if b.stoRoots == nil {
+		b.stoRoots = make(map[[32]byte][32]byte, 1<<10)
+	}
+	var k, v [32]byte
+	copy(k[:], addrHash)
+	copy(v[:], root)
+	b.stoRoots[k] = v
+}
+
+// emitStoRoots writes the DatcStoRoot rows for block n after a ComputeRoot:
+// one row per contract whose storage changed (root from the loader hook, or
+// empty when the trie is now empty — verified against HashedStorage so a
+// silent hook miss can never plant a wrong root) and one empty row per
+// deleted account that had storage. The hook map is reset afterwards.
+func (b *builder) emitStoRoots(tx kv.Tx, n uint64,
+	accs map[types.Address]*account.StateAccount, stor map[types.Address]map[types.Hash]*uint256.Int,
+	wiped map[types.Address]bool) error {
+	var blk4 [blkLen]byte
+	binary.BigEndian.PutUint32(blk4[:], uint32(n))
+	emit := func(ah [32]byte, root []byte) {
+		k := make([]byte, 0, 32+blkLen)
+		k = append(k, ah[:]...)
+		k = append(k, blk4[:]...)
+		b.stoRootBuf = append(b.stoRootBuf, kvPair{k: k, v: root})
+	}
+	b.stoRootsMu.Lock()
+	roots := b.stoRoots
+	b.stoRoots = nil
+	b.stoRootsMu.Unlock()
+	for addr := range stor {
+		if a, ok := accs[addr]; ok && a == nil {
+			continue // deleted this block/window: handled below
+		}
+		ah := b.addrHash(addr)
+		if root, ok := roots[ah]; ok {
+			emit(ah, root[:])
+			continue
+		}
+		// The loader did not walk this contract's storage: it must be empty
+		// now (every live slot was deleted). Anything else is a hook gap.
+		has, err := hasAnyStorage(tx, ah)
+		if err != nil {
+			return err
+		}
+		if has {
+			return fmt.Errorf("block %d: storage root hook missed contract %x (storage non-empty)", n, addr)
+		}
+		emit(ah, nil)
+	}
+	for addr, a := range accs {
+		if a == nil && wiped[addr] {
+			emit(b.addrHash(addr), nil)
+		}
+	}
+	return nil
+}
+
+// hasAnyStorage reports whether HashedStorage holds any slot under addrHash.
+func hasAnyStorage(tx kv.Tx, ah [32]byte) (bool, error) {
+	c, err := tx.Cursor(modules.HashedStorage)
+	if err != nil {
+		return false, err
+	}
+	defer c.Close()
+	k, _, err := c.Seek(ah[:])
+	if err != nil {
+		return false, err
+	}
+	return k != nil && len(k) >= 32 && string(k[:32]) == string(ah[:]), nil
+}
+
+// forEachStorageSlot streams the slot hashes currently stored under addrHash
+// (HashedStorage keys are addrHash(32)|slotHash(32)).
+func forEachStorageSlot(tx kv.Tx, ah [32]byte, fn func(sh [32]byte) error) error {
+	c, err := tx.Cursor(modules.HashedStorage)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	for k, _, e := c.Seek(ah[:]); k != nil; k, _, e = c.Next() {
+		if e != nil {
+			return e
+		}
+		if len(k) != 64 || string(k[:32]) != string(ah[:]) {
+			break
+		}
+		var sh [32]byte
+		copy(sh[:], k[32:])
+		if err := fn(sh); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // putLeaf routes one leaf-history row to the segment spill or the MDBX buffer.
@@ -578,11 +735,22 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 	// materializes exactly at epoch-flush boundaries.
 	var W uint64
 	if b.windowing {
+		if b.rootOracle == nil {
+			return fmt.Errorf("window mode needs a root oracle")
+		}
 		W = b.sched.e[1]
 		for d := 1; d <= maxChgDepth; d++ {
 			if b.sched.e[d]%W != 0 {
 				return fmt.Errorf("window mode needs e[%d]=%d divisible by W=%d", d, b.sched.e[d], W)
 			}
+		}
+		// The trie only materializes at window boundaries, so the depth-0
+		// (storage root) level can only be recorded there: its epoch IS the
+		// window. Recording that in the schedule (persisted in DatcMeta) keeps
+		// the reader's floor/window arithmetic exact for storage roots.
+		if b.sched.e[0] != W {
+			fmt.Printf("window mode: e[0] %d → W=%d\n", b.sched.e[0], W)
+			b.sched.e[0] = W
 		}
 		if batchBlocks < W*4 {
 			return fmt.Errorf("--batch %d too small for window mode (W=%d)", batchBlocks, W)
@@ -598,11 +766,11 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 			if start%W != 0 {
 				return fmt.Errorf("window mode: --start %d must be a multiple of W=%d (resume on a window boundary; last committed block is logged as '  block N')", start, W)
 			}
-			hdr, err := b.hdrs.ReadHeader(start - 1)
+			r, err := b.rootOracle(start - 1)
 			if err != nil {
 				return fmt.Errorf("window mode resume: read header %d: %w", start-1, err)
 			}
-			b.lastRoot = hdr.Root
+			b.lastRoot = r
 		}
 		fmt.Printf("window mode: W=%d (root + gold check per window)\n", W)
 	}
@@ -647,6 +815,7 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		}
 		trc = commitment.NewTrieRootComputer()
 		trc.SetRwTx(wtx)
+		trc.SetStorageRootHook(b.onStorageRoot)
 		if b.concurrentRoot {
 			// Per-window root fans into 16 nibble shards, each opening its own
 			// RoTx from b.db and reading committed ⊕ stateOv. Byte-identical to
@@ -666,6 +835,15 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 					tx.Rollback()
 					return fmt.Errorf("block %d: %w", n, err)
 				}
+			} else if b.windowing {
+				// fwdMode window path: decode the forward blobs here (the
+				// mainnet pipeline is absent).
+				dirtyA, dirtyS, derr := b.decodeFwdBlock(wtx, n)
+				if derr != nil {
+					tx.Rollback()
+					return fmt.Errorf("block %d: %w", n, derr)
+				}
+				dec = &decodedBlock{n: n, dirtyA: dirtyA, dirtyS: dirtyS}
 			}
 			if b.windowing {
 				// Same cap as addrHash()/slotHash(): the direct merge was
@@ -773,6 +951,23 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 			if err := tx.Put(tDatcMeta, []byte("sched"), sb); err != nil {
 				tx.Rollback()
 				return err
+			}
+			if err := tx.Put(tDatcMeta, []byte("format"), []byte{datcFormat}); err != nil {
+				tx.Rollback()
+				return err
+			}
+			// Storage-root history cadence: 1 = a row per changed block
+			// (exact floor); W = a row per window (the reader must check
+			// the depth-0 change window before trusting the floor).
+			cad := uint64(1)
+			if b.windowing {
+				cad = W
+			}
+			for k, v := range map[string]uint64{"srcad": cad, "accdepth": uint64(b.accDepth), "stodepth": uint64(b.stoDepth)} {
+				if err := tx.Put(tDatcMeta, []byte(k), binary.BigEndian.AppendUint64(nil, v)); err != nil {
+					tx.Rollback()
+					return err
+				}
 			}
 		}
 		// Drain the aggregated change events, then the sorted-batch buffers,
@@ -912,35 +1107,14 @@ func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64, 
 	}
 
 	if b.fwdMode {
-		// Forward changesets derived from the n42 chain's MDBX changesets.
-		var k8 [8]byte
-		binary.BigEndian.PutUint64(k8[:], n)
-		accBlob, err := tx.GetOne(tFwdAcctCS, k8[:])
+		var err error
+		dirtyA, dirtyS, err = b.decodeFwdBlock(tx, n)
 		if err != nil {
 			return err
 		}
-		if err := decodeFwdBlob(accBlob, 20, func(key, val []byte) error {
-			var addr types.Address
-			copy(addr[:], key)
-			return addAcct(addr, val)
-		}); err != nil {
-			return fmt.Errorf("fwd acct blob block %d: %w", n, err)
-		}
-		stoBlob, err := tx.GetOne(tFwdStorCS, k8[:])
-		if err != nil {
-			return err
-		}
-		if err := decodeFwdBlob(stoBlob, 52, func(key, val []byte) error {
-			var addr types.Address
-			var slot types.Hash
-			copy(addr[:], key[:20])
-			copy(slot[:], key[20:])
-			addSlot(addr, slot, val)
-			return nil
-		}); err != nil {
-			return fmt.Errorf("fwd stor blob block %d: %w", n, err)
-		}
-	} else {
+		return b.blockApply(tx, trc, n, dirtyA, dirtyS)
+	}
+	{
 		accBlob, err := b.acctTbl.Retrieve(n)
 		if err != nil {
 			return fmt.Errorf("acctcs: %w", err)
@@ -975,6 +1149,64 @@ func (b *builder) block(tx kv.RwTx, trc *commitment.TrieRootComputer, n uint64, 
 		}
 	}
 	return b.blockApply(tx, trc, n, dirtyA, dirtyS)
+}
+
+// decodeFwdBlock decodes block n's forward changeset blobs (fwdMode) into the
+// dirty maps blockApply/accumulateBlock consume. Same wipe rule as the mainnet
+// decoder: a deleted account keeps its slot wipes (tombstones) but drops its
+// non-empty writes.
+func (b *builder) decodeFwdBlock(tx kv.Tx, n uint64) (map[types.Address]*account.StateAccount, map[types.Address]map[types.Hash]*uint256.Int, error) {
+	dirtyA := make(map[types.Address]*account.StateAccount)
+	dirtyS := make(map[types.Address]map[types.Hash]*uint256.Int)
+	var k8 [8]byte
+	binary.BigEndian.PutUint64(k8[:], n)
+	accBlob, err := tx.GetOne(tFwdAcctCS, k8[:])
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := decodeFwdBlob(accBlob, 20, func(key, val []byte) error {
+		var addr types.Address
+		copy(addr[:], key)
+		if len(val) == 0 {
+			dirtyA[addr] = nil
+			return nil
+		}
+		var acct account.StateAccount
+		if err := acct.DecodeForStorage(val); err != nil {
+			return fmt.Errorf("decode account %x: %w", addr, err)
+		}
+		dirtyA[addr] = &acct
+		return nil
+	}); err != nil {
+		return nil, nil, fmt.Errorf("fwd acct blob block %d: %w", n, err)
+	}
+	stoBlob, err := tx.GetOne(tFwdStorCS, k8[:])
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := decodeFwdBlob(stoBlob, 52, func(key, val []byte) error {
+		var addr types.Address
+		var slot types.Hash
+		copy(addr[:], key[:20])
+		copy(slot[:], key[20:])
+		if a, ok := dirtyA[addr]; ok && a == nil && len(val) != 0 {
+			return nil
+		}
+		inner, ok := dirtyS[addr]
+		if !ok {
+			inner = make(map[types.Hash]*uint256.Int, 8)
+			dirtyS[addr] = inner
+		}
+		if len(val) == 0 {
+			inner[slot] = nil
+		} else {
+			inner[slot] = new(uint256.Int).SetBytes(val)
+		}
+		return nil
+	}); err != nil {
+		return nil, nil, fmt.Errorf("fwd stor blob block %d: %w", n, err)
+	}
+	return dirtyA, dirtyS, nil
 }
 
 // accumulateBlock is the WINDOW-MODE per-block path: emit the block's DATC
@@ -1021,15 +1253,13 @@ func (b *builder) accumulateBlock(tx kv.RwTx, n uint64,
 	// the HashedStorage cursor and keep ONLY the window-net delta (bounded by
 	// the W-block window's writes) in memory. The emitted tombstone set is
 	// byte-identical: (MDBX slots ∪ window-written) \ window-deleted, each once.
-	var blk8 [8]byte
-	binary.BigEndian.PutUint64(blk8[:], n)
+	var blk4 [blkLen]byte
+	binary.BigEndian.PutUint32(blk4[:], uint32(n))
 	for addr, acct := range dirtyA {
 		if acct != nil {
 			continue
 		}
 		ah := b.addrHash(addr)
-		prefix := make([]byte, 40)
-		copy(prefix, ah[:])
 
 		// Window-net delta for this addr (size ≤ this window's writes — small):
 		// deleted slots are no longer live; written slots are live and may or
@@ -1049,14 +1279,15 @@ func (b *builder) accumulateBlock(tx kv.RwTx, n uint64,
 		}
 
 		emit := func(sh [32]byte) error {
-			var comp [72]byte
-			copy(comp[:40], prefix)
-			copy(comp[40:], sh[:])
-			if err := b.putLeaf(true, append(comp[:], blk8[:]...), nil); err != nil {
+			var comp [stoDomainLen + 32]byte
+			copy(comp[:stoDomainLen], ah[:])
+			copy(comp[stoDomainLen:], sh[:])
+			if err := b.putLeaf(true, append(comp[:], blk4[:]...), nil); err != nil {
 				return err
 			}
 			b.leafSPuts++
-			b.recordChange(true, comp[:40], nibblesOf(comp[40:]), n)
+			b.winWiped[addr] = true
+			b.recordChange(true, comp[:stoDomainLen], nibblesOf(comp[stoDomainLen:]), n)
 			return nil
 		}
 
@@ -1065,26 +1296,15 @@ func (b *builder) accumulateBlock(tx kv.RwTx, n uint64,
 		// is still live: emit here ONCE and drop it from winPend so the tail
 		// loop below doesn't double-emit it (a duplicate would append a
 		// redundant chgEvent in recordChangeStorage).
-		c, cerr := tx.CursorDupSort(modules.HashedStorage)
-		if cerr != nil {
-			return cerr
-		}
-		for v, e := c.SeekBothRange(prefix, nil); v != nil && e == nil; _, v, e = c.NextDup() {
-			if len(v) < 32 {
-				continue
-			}
-			var sh [32]byte
-			copy(sh[:], v[:32])
+		if err := forEachStorageSlot(tx, ah, func(sh [32]byte) error {
 			if winDel[sh] {
-				continue
+				return nil
 			}
 			delete(winPend, sh)
-			if err := emit(sh); err != nil {
-				c.Close()
-				return err
-			}
+			return emit(sh)
+		}); err != nil {
+			return err
 		}
-		c.Close()
 		// Slots created this window that aren't in MDBX yet are still live
 		// pre-block — emit their tombstones too.
 		for sh := range winPend {
@@ -1105,7 +1325,7 @@ func (b *builder) accumulateBlock(tx kv.RwTx, n uint64,
 	// holds nil values exclusively -> emitBlock emits nil. When dirtyA[addr]
 	// is non-nil the wipe loop skips it entirely (no collision). Hence a
 	// key collision is always nil-vs-nil and the sort order is immaterial.
-	if err := b.emitBlock(n, dirtyA, dirtyS, blk8); err != nil {
+	if err := b.emitBlock(n, dirtyA, dirtyS, blk4); err != nil {
 		return err
 	}
 
@@ -1144,14 +1364,14 @@ func (b *builder) applyWindow(tx kv.RwTx, trc *commitment.TrieRootComputer, n ui
 	// computer dumps a per-nibble diagnostic and transparently recomputes the
 	// window with the serial loader (the trusted oracle) instead of crashing. A
 	// genuine data/header mismatch (serial also wrong) still surfaces below.
-	hdr, err := b.hdrs.ReadHeader(n)
+	want, err := b.rootOracle(n)
 	if err != nil {
 		return fmt.Errorf("read header: %w", err)
 	}
 	root := b.lastRoot
 	if len(b.winA) > 0 || len(b.winS) > 0 {
 		if b.concurrentRoot {
-			trc.SetExpectRoot(hdr.Root)
+			trc.SetExpectRoot(want)
 		}
 		r, err := trc.ComputeRoot(b.winA, b.winS)
 		trc.ClearExpectRoot()
@@ -1159,11 +1379,15 @@ func (b *builder) applyWindow(tx kv.RwTx, trc *commitment.TrieRootComputer, n ui
 			return fmt.Errorf("window ComputeRoot →%d: %w", n, err)
 		}
 		root = r
+		if err := b.emitStoRoots(tx, n, b.winA, b.winS, b.winWiped); err != nil {
+			return err
+		}
 		b.winA = make(map[types.Address]*account.StateAccount, 64)
 		b.winS = make(map[types.Address]map[types.Hash]*uint256.Int, 16)
+		b.winWiped = make(map[types.Address]bool)
 	}
-	if root != hdr.Root {
-		return fmt.Errorf("WINDOW ROOT MISMATCH at block %d (window end): computed %x != header %x", n, root, hdr.Root)
+	if root != want {
+		return fmt.Errorf("WINDOW ROOT MISMATCH at block %d (window end): computed %x != header %x", n, root, want)
 	}
 	b.lastRoot = root
 	return nil
@@ -1204,33 +1428,25 @@ func (b *builder) blockApply(tx kv.RwTx, trc *commitment.TrieRootComputer, n uin
 	// or the verifier's fold resurrects pre-destruct slots at later heights.
 	// Enumerate the pre-state slots BEFORE ComputeRoot deletes them.
 	type wipedSlot struct {
-		composite [72]byte
+		composite [stoDomainLen + 32]byte
 	}
 	var wiped []wipedSlot
+	wipedAddrs := make(map[types.Address]bool)
 	for addr, acct := range dirtyA {
 		if acct != nil {
 			continue
 		}
 		ah := b.addrHash(addr)
-		// HashedStorage is DupSort: the cursor yields key=addrHash+inc (40B)
-		// with the slotHash in the VALUE (slotHash32 || slotValue). A plain
-		// 72-byte-key scan never matches.
-		c, cerr := tx.CursorDupSort(modules.HashedStorage)
-		if cerr != nil {
-			return cerr
-		}
-		prefix := make([]byte, 40)
-		copy(prefix, ah[:])
-		for v, e := c.SeekBothRange(prefix, nil); v != nil && e == nil; _, v, e = c.NextDup() {
-			if len(v) < 32 {
-				continue
-			}
+		if err := forEachStorageSlot(tx, ah, func(sh [32]byte) error {
 			var ws wipedSlot
-			copy(ws.composite[:40], prefix)
-			copy(ws.composite[40:], v[:32])
+			copy(ws.composite[:stoDomainLen], ah[:])
+			copy(ws.composite[stoDomainLen:], sh[:])
 			wiped = append(wiped, ws)
+			wipedAddrs[addr] = true
+			return nil
+		}); err != nil {
+			return err
 		}
-		c.Close()
 	}
 
 	// Arm the concurrent-root gold check (same safety net as applyWindow): when
@@ -1238,12 +1454,12 @@ func (b *builder) blockApply(tx kv.RwTx, trc *commitment.TrieRootComputer, n uin
 	// instead of crashing. fwdMode has no header oracle, so it stays unarmed.
 	var hdrRoot types.Hash
 	var hdrKnown bool
-	if !b.fwdMode {
-		hdr, herr := b.hdrs.ReadHeader(n)
+	if b.rootOracle != nil {
+		r, herr := b.rootOracle(n)
 		if herr != nil {
 			return fmt.Errorf("read header: %w", herr)
 		}
-		hdrRoot, hdrKnown = hdr.Root, true
+		hdrRoot, hdrKnown = r, true
 		if b.concurrentRoot {
 			trc.SetExpectRoot(hdrRoot)
 		}
@@ -1266,18 +1482,23 @@ func (b *builder) blockApply(tx kv.RwTx, trc *commitment.TrieRootComputer, n uin
 		return fmt.Errorf("ROOT MISMATCH: computed %x != header %x", root, hdrRoot)
 	}
 
+	// Storage-root history for this block (needs the post-ComputeRoot state).
+	if err := b.emitStoRoots(tx, n, dirtyA, dirtyS, wipedAddrs); err != nil {
+		return err
+	}
+
 	// Record leaf history + change-index entries + pending changed paths.
-	var blk8 [8]byte
-	binary.BigEndian.PutUint64(blk8[:], n)
+	var blk4 [blkLen]byte
+	binary.BigEndian.PutUint32(blk4[:], uint32(n))
 	for i := range wiped {
 		comp := wiped[i].composite
-		if err := b.putLeaf(true, append(comp[:], blk8[:]...), nil); err != nil {
+		if err := b.putLeaf(true, append(comp[:], blk4[:]...), nil); err != nil {
 			return err
 		}
 		b.leafSPuts++
-		b.recordChange(true, comp[:40], nibblesOf(comp[40:]), n)
+		b.recordChange(true, comp[:stoDomainLen], nibblesOf(comp[stoDomainLen:]), n)
 	}
-	if err := b.emitBlock(n, dirtyA, dirtyS, blk8); err != nil {
+	if err := b.emitBlock(n, dirtyA, dirtyS, blk4); err != nil {
 		return err
 	}
 	return b.maybeEarlyFlush(tx)
