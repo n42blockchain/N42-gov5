@@ -544,11 +544,23 @@ func firstChainID(blocks []*DecodedBlock) uint64 {
 type BodyCompactStage struct {
 	inputFreezer *freezer.Freezer
 	outputDir    string
+
+	// frameSize is the blocks-per-frame of the sub-segment framing, defaulting
+	// to bodyFrameSize. Framed is the DEFAULT rather than an opt-in flag on
+	// purpose: a knob that has to be remembered at every call site is a knob
+	// that gets forgotten, and the whole point of regenerating is to stop
+	// producing whole-segment files. 0 restores the legacy layout for A/B runs
+	// and for producing artefacts an older reader can still open.
+	frameSize int
 }
 
 func NewBodyCompactStage(input *freezer.Freezer, outputDir string) *BodyCompactStage {
-	return &BodyCompactStage{inputFreezer: input, outputDir: outputDir}
+	return &BodyCompactStage{inputFreezer: input, outputDir: outputDir, frameSize: bodyFrameSize}
 }
+
+// SetFrameSize overrides the blocks-per-frame; 0 emits the legacy
+// whole-segment layout, which BodyCompactReader still decodes unchanged.
+func (s *BodyCompactStage) SetFrameSize(n int) { s.frameSize = n }
 
 type bodyIdxEntry struct {
 	fileNum uint16
@@ -741,7 +753,7 @@ func (s *BodyCompactStage) Run(ctx context.Context) error {
 
 		chainID := firstChainID(blocks)
 
-		compressed := encodeBodySegment(blocks, chainID, enc)
+		compressed := encodeBodySegmentFramed(blocks, chainID, enc, s.frameSize)
 
 		// File rotation.
 		segSize := int64(4 + len(compressed))

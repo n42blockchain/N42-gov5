@@ -200,6 +200,7 @@ func main() {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory", Required: true},
 					&cli.StringFlag{Name: "datadir", Usage: "Path to output directory", Required: true},
+					&cli.IntFlag{Name: "frame-blocks", Value: -1, Usage: "Blocks per sub-segment frame; -1 keeps the built-in default (256), 0 emits the legacy whole-segment layout"},
 				},
 				Action: runHeaderCompact,
 			},
@@ -209,6 +210,7 @@ func main() {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "ancient", Usage: "Path to Geth ancient chain directory", Required: true},
 					&cli.StringFlag{Name: "datadir", Usage: "Path to output directory", Required: true},
+					&cli.IntFlag{Name: "frame-blocks", Value: -1, Usage: "Blocks per sub-segment frame; -1 keeps the built-in default (256), 0 emits the legacy whole-segment layout"},
 				},
 				Action: runBodyCompact,
 			},
@@ -1526,6 +1528,12 @@ func runBodyCompact(c *cli.Context) error {
 
 	outputDir := filepath.Join(datadir, "chain", "freezer")
 	stage := ethel.NewBodyCompactStage(f, outputDir)
+	// Log what layout this run actually produced: a regenerated set and a
+	// legacy set are indistinguishable by filename.
+	if fb := c.Int("frame-blocks"); fb >= 0 {
+		stage.SetFrameSize(fb)
+	}
+	log.Info("Segment framing", "frameBlocks", stage.FrameSize())
 
 	ctx, cancel := withShutdown()
 	defer cancel()
@@ -1546,6 +1554,12 @@ func runHeaderCompact(c *cli.Context) error {
 	outputDir := filepath.Join(datadir, "chain", "freezer")
 
 	stage := ethel.NewHeaderCompactStage(f, outputDir)
+	// Log what layout this run actually produced: a regenerated set and a
+	// legacy set are indistinguishable by filename.
+	if fb := c.Int("frame-blocks"); fb >= 0 {
+		stage.SetFrameSize(fb)
+	}
+	log.Info("Segment framing", "frameBlocks", stage.FrameSize())
 
 	ctx, cancel := withShutdown()
 	defer cancel()
