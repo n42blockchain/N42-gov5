@@ -35,14 +35,15 @@
 package main
 
 import (
-	"github.com/n42blockchain/N42/common/types"
-	"github.com/n42blockchain/N42/internal/ethel"
 	"context"
 	"flag"
 	"fmt"
+	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/internal/ethel"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -163,7 +164,14 @@ func reportStats(out string, base uint64) {
 		if e.IsDir() {
 			continue
 		}
+		// Only this store's files. --out is normally a SHARED freezer dir
+		// (bodyc, receipts, senders live there too), so summing every .cdat
+		// reports the whole freezer: the 2026-08-30 weekly run printed
+		// "941.43 GB / 2031.78 bits/key" for a 15.24 GB index.
 		name := e.Name()
+		if !strings.HasPrefix(name, "txindex.") {
+			continue
+		}
 		if filepath.Ext(name) == ".cdat" || filepath.Ext(name) == ".cidx" {
 			if info, err := e.Info(); err == nil {
 				totalBytes += info.Size()
