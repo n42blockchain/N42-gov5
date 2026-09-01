@@ -187,8 +187,8 @@ func (s *Service) storageRangeRPCHandler(ctx context.Context, msg interface{}, s
 		}
 		defer c.Close()
 
-		// Storage keys are: address(20) + incarnation(2) + storageKey(32)
-		// We use the account address as a prefix to scope the scan.
+		// Storage keys are address(20) + storageKey(32); the account address
+		// is the prefix that scopes the scan.
 		var k, v []byte
 		if len(req.Start) > 0 {
 			k, v, err = c.Seek(req.Start)

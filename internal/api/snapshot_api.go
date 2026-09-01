@@ -146,7 +146,7 @@ func (s *SnapshotAPI) GetAccountRange(ctx context.Context, blockNumber hexutil.U
 
 // SnapStorageEntry is one storage slot in the GetStorageRange response.
 type SnapStorageEntry struct {
-	Key   hexutil.Bytes `json:"key"`   // composite key: address(20) + incarnation(2) + storageKey(32)
+	Key   hexutil.Bytes `json:"key"`   // composite key: address(20) + storageKey(32)
 	Value hexutil.Bytes `json:"value"`
 }
 
@@ -157,8 +157,7 @@ type SnapStorageRangeResult struct {
 }
 
 // GetStorageRange returns storage slots for an account at the given snapshot
-// height, starting from `start` (inclusive). An incarnation of 1 is used
-// (the common case for externally-owned and single-deploy contracts).
+// height, starting from `start` (inclusive).
 func (s *SnapshotAPI) GetStorageRange(ctx context.Context, blockNumber hexutil.Uint64, account types.Address, start types.Hash, limit int) (*SnapStorageRangeResult, error) {
 	if limit <= 0 {
 		return nil, errors.New("limit must be positive")
@@ -170,8 +169,7 @@ func (s *SnapshotAPI) GetStorageRange(ctx context.Context, blockNumber hexutil.U
 	}
 	defer tx.Rollback()
 
-	const defaultIncarnation uint16 = 1
-	entries, next, err := snapshot.ReadStorageRange(tx, uint64(blockNumber), account, defaultIncarnation, start, limit)
+	entries, next, err := snapshot.ReadStorageRange(tx, uint64(blockNumber), account, start, limit)
 	if err != nil {
 		return nil, err
 	}

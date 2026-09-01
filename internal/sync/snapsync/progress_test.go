@@ -147,18 +147,18 @@ func TestParseAccountForTasks(t *testing.T) {
 	emptyCodeHash := crypto.Keccak256Hash(nil)
 
 	// Empty/nil data.
-	valid, inc, code := parseAccountForTasks(nil)
-	if !valid || inc != 0 || code != nil {
-		t.Errorf("nil: valid=%v inc=%d code=%v", valid, inc, code)
+	valid, hasStorage, code := parseAccountForTasks(nil)
+	if !valid || hasStorage || code != nil {
+		t.Errorf("nil: valid=%v hasStorage=%v code=%v", valid, hasStorage, code)
 	}
 
 	// Invalid protobuf data.
-	valid, inc, code = parseAccountForTasks([]byte{0xFF, 0xFF, 0xFF})
+	valid, hasStorage, code = parseAccountForTasks([]byte{0xFF, 0xFF, 0xFF})
 	if valid {
 		t.Errorf("invalid: expected valid=false, got true")
 	}
 
-	// EOA: nonce=5, balance=1000, no code, no incarnation.
+	// EOA: nonce=5, balance=1000, no code, so no storage to fetch.
 	eoa := account.StateAccount{
 		Initialised: true,
 		Nonce:       5,
@@ -169,13 +169,12 @@ func TestParseAccountForTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	valid, inc, code = parseAccountForTasks(eoaData)
-	if !valid || inc != 0 || code != nil {
-		t.Errorf("eoa: valid=%v inc=%d code=%v", valid, inc, code)
+	valid, hasStorage, code = parseAccountForTasks(eoaData)
+	if !valid || hasStorage || code != nil {
+		t.Errorf("eoa: valid=%v hasStorage=%v code=%v", valid, hasStorage, code)
 	}
 
-	// Contract: non-empty codeHash should schedule a storage fetch via
-	// legacy incarnation 1 for compatibility with storage range RPCs.
+	// Contract: a non-empty codeHash schedules a storage fetch.
 	contractCodeHash := types.BytesHash(crypto.Keccak256([]byte("contract code")))
 	contract := account.StateAccount{
 		Initialised: true,
@@ -187,9 +186,9 @@ func TestParseAccountForTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	valid, inc, code = parseAccountForTasks(contractData)
-	if !valid || inc != 1 {
-		t.Errorf("contract: valid=%v expected inc=1, got %d", valid, inc)
+	valid, hasStorage, code = parseAccountForTasks(contractData)
+	if !valid || !hasStorage {
+		t.Errorf("contract: valid=%v expected hasStorage, got %v", valid, hasStorage)
 	}
 	if code == nil || !bytes.Equal(code, contractCodeHash[:]) {
 		t.Errorf("contract: expected codeHash=%x, got %x", contractCodeHash[:], code)
@@ -204,9 +203,9 @@ func TestParseAccountForTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	valid, inc, code = parseAccountForTasks(destroyedData)
-	if !valid || inc != 0 {
-		t.Errorf("destroyed: valid=%v expected inc=0, got %d", valid, inc)
+	valid, hasStorage, code = parseAccountForTasks(destroyedData)
+	if !valid || hasStorage {
+		t.Errorf("destroyed: valid=%v expected no storage fetch, got %v", valid, hasStorage)
 	}
 	if code != nil {
 		t.Errorf("destroyed: expected nil codeHash, got %x", code)

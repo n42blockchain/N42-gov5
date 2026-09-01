@@ -68,7 +68,7 @@ func DeleteSnapshotStorageByAddress(tx kv.RwTx, address types.Address) error {
 		if err != nil {
 			return err
 		}
-		// Keys are address(20)+incarnation(2)+key(32)=54 bytes.
+		// Keys are address(20)+key(32)=52 bytes.
 		// Stop when address prefix no longer matches.
 		if len(k) < types.AddressLength || !bytesEqual(k[:types.AddressLength], prefix) {
 			break

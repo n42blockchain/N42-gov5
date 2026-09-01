@@ -234,7 +234,7 @@ func (g *Generator) copyAccountStorage(tx kv.RwTx, address []byte) error {
 		if err != nil {
 			return err
 		}
-		// Storage key: address(20) + incarnation(2) + storageKey(32) = 54 bytes.
+		// Storage key: address(20) + storageKey(32) = 52 bytes.
 		// Stop when we leave this address's prefix.
 		if len(k) < types.AddressLength || !keyHasPrefix(k, address) {
 			break

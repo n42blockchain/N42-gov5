@@ -212,7 +212,7 @@ func (s *Service) snapshotStorageRangeRPCHandler(ctx context.Context, msg interf
 		var totalBytes int
 		var nextLoc *types.Hash
 
-		err = state.WalkAsOfStorage(tx, addr, req.Incarnation, startLoc, req.SnapshotBlock, func(a, loc, v []byte) (bool, error) {
+		err = state.WalkAsOfStorage(tx, addr, startLoc, req.SnapshotBlock, func(a, loc, v []byte) (bool, error) {
 			if len(batch) >= maxSnapStorageEntries || totalBytes >= maxSnapResponseBytes {
 				hash := types.BytesToHash(loc)
 				nextLoc = &hash
