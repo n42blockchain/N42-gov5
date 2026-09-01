@@ -232,7 +232,7 @@ func (s *Snapshot) AddAccount(address types.Address, account *account.StateAccou
 	s.accounts[*(*string)(unsafe.Pointer(&addrBytes))] = len(s.Items) - 1
 }
 
-func (s *Snapshot) AddStorage(address types.Address, key *types.Hash, incarnation uint16, value []byte) {
+func (s *Snapshot) AddStorage(address types.Address, key *types.Hash, value []byte) {
 	if !s.written || len(value) == 0 {
 		return
 	}

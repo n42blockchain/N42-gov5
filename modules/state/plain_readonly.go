@@ -126,7 +126,7 @@ func (s *PlainState) ForEachStorage(addr types.Address, startLocation types.Hash
 		})
 	}
 	numDeletes := st.Len() - overrideCounter
-	if err := WalkAsOfStorage(s.tx, addr, 0, startLocation, s.blockNr, func(kAddr, kLoc, vs []byte) (bool, error) {
+	if err := WalkAsOfStorage(s.tx, addr, startLocation, s.blockNr, func(kAddr, kLoc, vs []byte) (bool, error) {
 		if !bytes.Equal(kAddr, addr[:]) {
 			return false, nil
 		}

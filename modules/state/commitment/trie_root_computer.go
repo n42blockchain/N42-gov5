@@ -285,7 +285,7 @@ func (t *TrieRootComputer) ComputeRoot(
 		for slot, val := range slots {
 			slotHash := t.keccakHash(slot)
 
-			// compositeKey: addrHash(32) + slotHash(32) = 64B (incarnation removed)
+			// compositeKey: addrHash(32) + slotHash(32) = 64B
 			var compositeKey [64]byte
 			copy(compositeKey[:32], addrHash[:])
 			copy(compositeKey[32:], slotHash[:])
@@ -857,7 +857,7 @@ func (t *TrieRootComputer) deleteAccountStorage(addrHash types.Hash) error {
 		t.readCache.PurgeAccountStorage(addrHash)
 	}
 	// Delete all storage entries for this account from HashedStorage.
-	// HashedStorage is DupSort with key prefix = addrHash[32] + incarnation[8].
+	// HashedStorage is DupSort with key prefix = addrHash[32].
 	// We scan for any key starting with addrHash and delete.
 	c, err := t.tx.Cursor(modules.HashedStorage)
 	if err != nil {

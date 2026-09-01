@@ -70,7 +70,7 @@ func FindByHistory(tx kv.Tx, indexC kv.Cursor, changesC kv.CursorDupSort, storag
 		return nil, ethdb.ErrKeyNotFound
 	}
 	if storage {
-		// Storage key = addr(20) + slot(32) = 52B, no incarnation.
+		// Storage key = addr(20) + slot(32) = 52B.
 		if !bytes.Equal(k[:types.AddressLength], key[:types.AddressLength]) ||
 			!bytes.Equal(k[types.AddressLength:types.AddressLength+types.HashLength], key[types.AddressLength:]) {
 			return nil, ethdb.ErrKeyNotFound
@@ -106,10 +106,9 @@ func FindByHistory(tx kv.Tx, indexC kv.Cursor, changesC kv.CursorDupSort, storag
 	return data, nil
 }
 
-// WalkAsOfStorage walks storage at a historical point in time.
-// Storage key = address(20) + slot(32) = 52B (incarnation removed).
-func WalkAsOfStorage(tx kv.Tx, address types.Address, incarnation uint16, startLocation types.Hash, timestamp uint64, walker func(k1, k2, v []byte) (bool, error)) error {
-	// Storage key: addr(20) + slot(32) = 52B, no incarnation.
+// WalkAsOfStorage walks the storage of one account as of a historical block.
+// Storage keys are address(20) + slot(32) = 52B.
+func WalkAsOfStorage(tx kv.Tx, address types.Address, startLocation types.Hash, timestamp uint64, walker func(k1, k2, v []byte) (bool, error)) error {
 	var startkey = make([]byte, types.AddressLength+types.HashLength)
 	copy(startkey, address.Bytes())
 	copy(startkey[types.AddressLength:], startLocation.Bytes())
