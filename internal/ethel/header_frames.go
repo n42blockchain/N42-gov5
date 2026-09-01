@@ -112,3 +112,99 @@ func readOneHeaderFrame(readAt func(p []byte, off int64) error, base int64, fi *
 	}
 	return headers, nil
 }
+
+// ---------- Reader side ----------
+
+// cachedHeaderFrame is one decoded header frame retained for random access.
+type cachedHeaderFrame struct {
+	seg     int64
+	start   int // segment-relative index of headers[0]
+	headers []*block.Header
+}
+
+// headerFrameCacheSize mirrors bodyFrameCacheSize. A single-frame cache was
+// measured on the body side to be 5x SLOWER than the legacy whole-segment
+// reader for in-segment random access — the frame was evicted and re-decoded
+// on nearly every read. Headers are ~500 B each, so 32 frames of 256 costs a
+// few MB.
+const headerFrameCacheSize = bodyFrameCacheSize
+
+// lookupHeaderFrame returns a cached header and promotes its frame.
+func (r *HeaderCompactReader) lookupHeaderFrame(seg int64, idx int) (*block.Header, bool) {
+	for i := range r.frameCache {
+		c := &r.frameCache[i]
+		if c.seg == seg && idx >= c.start && idx-c.start < len(c.headers) {
+			h := c.headers[idx-c.start]
+			if i > 0 {
+				f := *c
+				copy(r.frameCache[1:i+1], r.frameCache[0:i])
+				r.frameCache[0] = f
+			}
+			return h, true
+		}
+	}
+	return nil, false
+}
+
+// storeHeaderFrame inserts a frame at the front, evicting the least-recent.
+func (r *HeaderCompactReader) storeHeaderFrame(f cachedHeaderFrame) {
+	if len(r.frameCache) < headerFrameCacheSize {
+		r.frameCache = append(r.frameCache, cachedHeaderFrame{})
+	}
+	copy(r.frameCache[1:], r.frameCache[:len(r.frameCache)-1])
+	r.frameCache[0] = f
+}
+
+// readHeaderFramed serves one header from a framed segment, decoding only the
+// frame that holds it. ok=false means the segment uses the legacy
+// whole-segment layout and the caller should fall through unchanged.
+func (r *HeaderCompactReader) readHeaderFramed(seg int64, idx int) (*block.Header, bool, error) {
+	if uint64(seg) >= r.segments {
+		return nil, false, fmt.Errorf("segment %d out of range (%d)", seg, r.segments)
+	}
+	if h, ok := r.lookupHeaderFrame(seg, idx); ok {
+		return h, true, nil
+	}
+
+	var entryBuf [8]byte
+	if _, err := r.idxFile.ReadAt(entryBuf[:], seg*8); err != nil {
+		return nil, false, fmt.Errorf("read index: %w", err)
+	}
+	e := decodeHeaderIdx(entryBuf[:])
+	df, err := r.dataFile(e.fileNum)
+	if err != nil {
+		return nil, false, err
+	}
+	var sizeBuf [4]byte
+	if _, err := df.ReadAt(sizeBuf[:], int64(e.offset)); err != nil {
+		return nil, false, fmt.Errorf("read size: %w", err)
+	}
+	compSize := binary.LittleEndian.Uint32(sizeBuf[:])
+	base := int64(e.offset) + 4
+	readAt := func(p []byte, off int64) error {
+		_, err := df.ReadAt(p, off)
+		return err
+	}
+	fi, err := readFrameHeader(readAt, base, compSize)
+	if err != nil {
+		return nil, false, err
+	}
+	if fi == nil {
+		return nil, false, nil // legacy layout
+	}
+	fr, ok := fi.frameFor(idx)
+	if !ok {
+		return nil, false, fmt.Errorf("no frame covers index %d", idx)
+	}
+	headers, err := readOneHeaderFrame(readAt, base, fi, fr, r.dec, uint64(seg)*HeaderSegmentSize)
+	if err != nil {
+		return nil, false, err
+	}
+	start := int(fi.entries[fr].blockStart)
+	if idx-start >= len(headers) {
+		return nil, false, fmt.Errorf("index %d outside decoded frame (%d headers at %d)",
+			idx, len(headers), start)
+	}
+	r.storeHeaderFrame(cachedHeaderFrame{seg: seg, start: start, headers: headers})
+	return headers[idx-start], true, nil
+}
