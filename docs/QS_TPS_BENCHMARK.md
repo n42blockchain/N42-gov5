@@ -1297,3 +1297,90 @@ node CPU. It retracts the inference that a large CPU share implies a large
 available speed-up, which is the same class of error as arguing time from a
 memory profile (rule 21). Both are "measured the right thing, argued the wrong
 one".
+
+## The clean round: four open items closed, and a new peak
+
+One round on 2026-09-01 at 20:28 settled everything left open, because it was
+finally comparable to the baseline: **total 148.1 ms against A's 148.2**,
+blockTime 0.462 s against 0.448. Command as recorded, plus a 10 s RSS sampler
+running from before the fleet started.
+
+| | win1 | win2 |
+|---|---|---|
+| TPS | 37,985 | **42,079** |
+| occupancy | 80.4% | 85.0% |
+
+42,079 is a new peak for this rig, above the 41,495 recorded earlier.
+
+### 1. "4.8 GB per node" was the IDLE plateau
+
+The figure quoted all day as "the bench profile cost" has, it turns out, no
+recorded sampling time anywhere in this file. The curve settles it:
+
+| phase | max RSS/node | available |
+|---|---|---|
+| startup spike | 6.70 GB | 75 GB |
+| **idle decay plateau** | **4.73 – 4.78 GB** | 87 GB |
+| flood begins | 7.24 GB | 66 GB |
+| **saturated** | **11.15 GB** | 22 GB |
+
+4.8 GB is where an idle node sits. The loaded number is **11.15 GB**, and the
+"unexplained 9.3 GB, nearly double the same configuration" flagged in the R1
+section **was never an anomaly** — it was a loaded sample compared against an
+idle one. Rule 12's fleet budget is 78 GB, not 33.
+
+This is the same error corrected in a peer's numbers earlier the same day (0.8
+GB taken before a round, restated as 3.37 GB after it) and then repeated here
+twice: once quoting 4.8 as a budget, once treating the gap as a finding.
+
+- **Rule 23: a memory figure without a sampling phase is not a measurement.**
+  Idle, startup and saturated differ by 2.4x on this node. Sample a curve.
+
+### 2. The `body` prediction is refuted by a clean measurement
+
+`body` is **0.848 µs/tx against A's 0.852** — unchanged, now at matched totals
+rather than under the memory pressure that made the first attempt unusable.
+Rule 21a's caution was right that the pressured round could not carry this; the
+clean one can, and it agrees with the code argument.
+
+### 3. Non-execution cost is per-transaction, not per-block
+
+Binned by block size **within this one clean round**:
+
+| med txs | non-exec µs/tx | `body` | `write` | `exec` |
+|---|---|---|---|---|
+| 10,400 | 3.356 | 0.813 | 0.917 | 2.939 |
+| 12,424 | 3.478 | 0.803 | 0.857 | 2.950 |
+| 22,857 | 3.346 | 0.848 | 0.749 | 3.135 |
+
+**Flat** across 2.2x. The 14% rise seen in the pressured round was pressure; the
+clean answer is that it does not move. A per-block fixed cost amortised over
+2.2x more transactions would have fallen by up to 2.2x.
+
+So the 5.5x non-execution gap against the peer client is a real per-transaction
+cost and not block-size arithmetic. The limit stands: 2.2x of measured range
+against a 7x separation is still an extrapolation.
+
+### 4. Sender hints relocate work rather than remove it
+
+| | A | clean |
+|---|---|---|
+| hint coverage | 4.5% | **27.0%** |
+| cache hit | 8.3% | 27.9% |
+| `recov` µs/tx | 1.059 | **1.408** |
+| `exec` µs/tx | 3.403 | **3.135** |
+| total ms | 148.2 | 148.1 |
+
+Six times the hint coverage makes `recov` **worse** by 0.349 µs/tx and `exec`
+better by 0.268, for a total that does not move. The mechanism fits: the hint
+pass is a per-transaction map lookup into the pool on the SERIAL path, and what
+it saves is recovery that was already overlapped with execution and billed to
+`exec`. It moves work from a parallel context into a serial one and nets to
+zero because the parallel copy was running on idle cores anyway (rule 22).
+
+Stated as an observation, not a proven claim: A and the clean round differ in
+binary as well, though neither change touches this path.
+
+That is now the third independent measurement saying the hint/cache apparatus
+does not buy what its comments claim — 1.0% end-to-end at 100% coverage, 0.00%
+cache hits under broadcast, and now a composition shift that nets to zero.
