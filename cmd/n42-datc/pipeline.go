@@ -10,6 +10,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/ethel"
+	"github.com/n42blockchain/N42/modules"
 )
 
 // decodedBlock is one block's changesets in apply-ready form.
@@ -62,7 +64,11 @@ func startDecodePipeline(b *builder, start, end uint64, workers int) *decodePipe
 			ac := make(map[types.Address][32]byte, 1<<14)
 			sc := make(map[types.Hash][32]byte, 1<<14)
 			for n := range p.jobs {
-				p.results <- decodeOne(b, n, ac, sc)
+				d := decodeOne(b, n, ac, sc)
+				if b.prefetch && d.err == nil {
+					prefetchState(b, d)
+				}
+				p.results <- d
 				if len(ac) > 1_000_000 {
 					ac = make(map[types.Address][32]byte, 1<<14)
 				}
@@ -107,6 +113,39 @@ func (p *decodePipeline) Stop() {
 	}()
 	p.wg.Wait()
 	close(p.results)
+}
+
+// prefetchState touches the HashedAccounts / HashedStorage pages the main
+// loop is about to write for this block (a short read-only tx per block, on
+// the pipeline worker). On a cold multi-hundred-GB state the main thread's
+// puts are otherwise serial page faults; warming the B-tree paths from
+// `workers` goroutines turns them into parallel I/O. Read-only, best effort.
+func prefetchState(b *builder, d *decodedBlock) {
+	tx, err := b.db.BeginRo(context.Background())
+	if err != nil {
+		return
+	}
+	defer tx.Rollback()
+	for addr := range d.dirtyA {
+		if h, ok := d.ahash[addr]; ok {
+			_, _ = tx.GetOne(modules.HashedAccounts, h[:])
+		}
+	}
+	var key [64]byte
+	for addr, slots := range d.dirtyS {
+		ah, ok := d.ahash[addr]
+		if !ok {
+			continue
+		}
+		copy(key[:32], ah[:])
+		_, _ = tx.GetOne(modules.HashedAccounts, ah[:])
+		for slot := range slots {
+			if sh, ok := d.shash[slot]; ok {
+				copy(key[32:], sh[:])
+				_, _ = tx.GetOne(modules.HashedStorage, key[:])
+			}
+		}
+	}
 }
 
 func decodeOne(b *builder, n uint64, ac map[types.Address][32]byte, sc map[types.Hash][32]byte) *decodedBlock {
