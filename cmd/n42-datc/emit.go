@@ -65,6 +65,7 @@ func (b *builder) flushAllBufs(tx kv.RwTx) error {
 		{tDatcAccChg, &b.chgAccBuf}, {tDatcStoChg, &b.chgStoBuf},
 		{tDatcLeafA, &b.leafABuf}, {tDatcLeafS, &b.leafSBuf},
 		{tDatcAccNode, &b.nodeAccBuf}, {tDatcStoNode, &b.nodeStoBuf},
+		{tDatcStoRoot, &b.stoRootBuf},
 	} {
 		if err := flushBuf(tx, e.table, e.buf); err != nil {
 			return err
@@ -74,11 +75,34 @@ func (b *builder) flushAllBufs(tx kv.RwTx) error {
 }
 
 func (b *builder) maybeEarlyFlush(tx kv.RwTx) error {
-	if len(b.chgAccBuf) > bufFlushThreshold || len(b.chgStoBuf) > bufFlushThreshold ||
-		len(b.leafABuf) > bufFlushThreshold || len(b.leafSBuf) > bufFlushThreshold {
+	// Cap the unbounded storage change-aggregation map: drain it to the (compact,
+	// length-capped) sorted buffers, which the buffer check below then flushes.
+	if b.chgAggCapBytes > 0 && b.chgStoAggBytes > b.chgAggCapBytes {
+		b.flushChgAgg()
+	}
+	// EVERY growing buffer must be checked, not just the leaf/chg ones.
+	//
+	// --records-only writes ONLY node records + StoRoot: putLeaf returns early
+	// and the chg aggregation is skipped, so chgAccBuf/chgStoBuf/leafABuf/
+	// leafSBuf stay permanently EMPTY. Checking only those four made the gate
+	// unreachable in Pipeline B, and nodeAccBuf/nodeStoBuf/stoRootBuf grew
+	// unbounded to the batch boundary (20k blocks) — measured 2026-08-31 at
+	// 75 GB private / 0.4 GB system free before the run had to be killed.
+	// Pipeline B had never been executed, which is why this never showed up.
+	if earlyFlushNeeded(b) {
 		return b.flushAllBufs(tx)
 	}
 	return nil
+}
+
+// earlyFlushNeeded reports whether any write buffer has grown past the flush
+// threshold. Extracted so a unit test can pin that EVERY buffer is covered —
+// see TestEarlyFlushGateCoversEveryBuffer.
+func earlyFlushNeeded(b *builder) bool {
+	return len(b.chgAccBuf) > bufFlushThreshold || len(b.chgStoBuf) > bufFlushThreshold ||
+		len(b.leafABuf) > bufFlushThreshold || len(b.leafSBuf) > bufFlushThreshold ||
+		len(b.nodeAccBuf) > bufFlushThreshold || len(b.nodeStoBuf) > bufFlushThreshold ||
+		len(b.stoRootBuf) > bufFlushThreshold
 }
 
 // emitBlock writes one block's leaf-history rows + change events for the
@@ -111,7 +135,12 @@ func (b *builder) emitBlock(n uint64,
 		}
 		domain := make([]byte, 40)
 		copy(domain, ah[:])
-		// incarnation 0 (matches TrieRootComputer composite keys)
+		// domain = addrHash(32) ‖ 8 zero bytes. The 8 trailing bytes are a
+		// DATC-internal leaf-composite convention only (the 72-byte DatcLeafS
+		// key = domain‖slotHash); they are NOT an incarnation — the system
+		// dropped incarnation, and the physical HashedStorage/TrieOfStorage
+		// keys are addrHash(32)-prefixed. Any read of those external tables
+		// must use ah[:] (32 bytes), never this 40-byte domain.
 		for slot, v := range slots {
 			sh := b.slotHash(slot)
 			composite := make([]byte, 0, 72+8)
@@ -162,7 +191,7 @@ func (b *builder) recordChange(storage bool, domain []byte, keyNibbles []byte, n
 		} else if cur&bit == 0 {
 			b.accDirty[d][idx] = cur | bit
 		}
-		if d != 0 && b.sched.e[d] != 1 {
+		if d != 0 && b.sched.e[d] != 1 && !b.recordsOnly {
 			epoch := uint32(b.sched.epochOf(d, n))
 			slot := &b.chgAccAgg[d][idx]
 			if len(slot.events) > 0 && slot.epoch != epoch {
@@ -195,13 +224,23 @@ func (b *builder) recordChangeStorage(domain []byte, keyNibbles []byte, n uint64
 	}
 	// One shared key buffer: d(1) | domain | path nibbles | epoch(4); the
 	// dirty key is the [1:1+len(domain)+d] slice, the agg key the whole thing.
+	//
+	// The loop MUST run d = maxD..0 (descending): the agg key for depth d
+	// writes epoch(4) at kb[1+len(domain)+d:], which CLOBBERS the nibble
+	// slots for depths d+1..d+4. Ascending order corrupted every stoDirty pk
+	// and chg agg key at d>=2 into domain|nib0|epoch-bytes (0x00...) — the
+	// deep storage node/chg rows landed under keys the querier (which builds
+	// clean path keys) can never hit, i.e. dead rows + permanent record MISS
+	// at storage depths >= 2 (the reader's fold fallback masked it). With the
+	// descending order each depth consumes its nibbles BEFORE any shallower
+	// depth's epoch write can touch them.
 	kb := b.chgKeyScratch[:0]
 	kb = append(kb, 0)
 	kb = append(kb, domain...)
 	kb = append(kb, keyNibbles[:maxD]...)
 	kb = append(kb, 0, 0, 0, 0)
 	b.chgKeyScratch = kb
-	for d := 0; d <= maxD; d++ {
+	for d := maxD; d >= 0; d-- {
 		bit := uint16(1) << keyNibbles[d]
 		pk := kb[1 : 1+len(domain)+d]
 		if p, ok := b.stoDirty[d][string(pk)]; ok {
@@ -210,19 +249,22 @@ func (b *builder) recordChangeStorage(domain []byte, keyNibbles []byte, n uint64
 			v := bit
 			b.stoDirty[d][string(pk)] = &v
 		}
-		if d == 0 || b.sched.e[d] == 1 {
-			continue // empty-window levels: change rows are never consulted
+		if d == 0 || b.stoSched.e[d] == 1 || b.recordsOnly {
+			continue // empty-window levels / records-only: change rows not aggregated
 		}
-		epoch := b.sched.epochOf(d, n)
+		epoch := b.stoSched.epochOf(d, n)
 		kb[0] = byte(d)
 		ak := kb[:1+len(domain)+d+4]
 		binary.BigEndian.PutUint32(ak[len(ak)-4:], uint32(epoch))
 		if p, ok := b.chgStoAgg[string(ak)]; ok {
 			*p = append(*p, chgEvent{block: uint32(n), nibble: keyNibbles[d]})
+			b.chgStoAggBytes += chgEventSize // amortized event growth
 		} else {
 			evs := make([]chgEvent, 0, 8)
 			evs = append(evs, chgEvent{block: uint32(n), nibble: keyNibbles[d]})
 			b.chgStoAgg[string(ak)] = &evs
+			// new entry: map bucket + key string + slice header/backing overhead.
+			b.chgStoAggBytes += len(ak) + 8*chgEventSize + 80
 		}
 		b.chgPuts++
 	}
@@ -273,6 +315,7 @@ func (b *builder) flushChgAgg() {
 		}
 		delete(b.chgStoAgg, ak)
 	}
+	b.chgStoAggBytes = 0
 }
 
 // flushEpoch persists the epoch-end node bytes for every path changed during
@@ -303,7 +346,10 @@ func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
 		}
 		b.accTouched[d] = touched[:0]
 	}
-	return b.flushStoLevel(tx, d, epoch)
+	// Storage-side records flush separately on b.stoSched boundaries (the
+	// account schedule may be dense at d3 for B-prime; mirroring that on the
+	// storage trie wrote a full node row per dirty depth-3 path PER BLOCK).
+	return nil
 }
 
 // flushAccPath emits one account-trie node record (FULL/DIFF/tombstone).
@@ -324,11 +370,19 @@ func (b *builder) flushAccPath(tx kv.RwTx, path []byte, changed uint16, epoch ui
 			return nil // never had a live record: elide
 		}
 		b.accLastFull[string(path)] = nodeRecState{exists: false}
-	case !st.exists || uint32(epoch) >= st.lastFullEpoch+fullEvery:
+	case !st.exists || st.lastFullEpoch >= accFullEvery-1:
+		// Account-side FULL cadence counts RECORDS, not epochs (the reader's
+		// floorRecordBefore walks the record chain, never epoch distance).
+		// The old epoch-distance rule made EVERY record FULL for any node
+		// changing less often than fullEvery blocks under a dense (e=1)
+		// schedule — 529 B/record instead of ~45 (the 2M B′ measurement).
+		// lastFullEpoch is repurposed on this side as the DIFFs-since-FULL
+		// counter; a restart loses the map and safely degrades to FULL.
 		v = append([]byte{nodeRecFull}, node...)
-		b.accLastFull[string(path)] = nodeRecState{lastFullEpoch: uint32(epoch), exists: true}
+		b.accLastFull[string(path)] = nodeRecState{lastFullEpoch: 0, exists: true}
 	default:
 		v = encodeNodeDiff(node, changed)
+		st.lastFullEpoch++
 		st.exists = true
 		b.accLastFull[string(path)] = st
 	}
@@ -365,9 +419,23 @@ func (b *builder) flushStoLevel(tx kv.RwTx, d int, epoch uint64) error {
 			changed := *pending[pk]
 			path := []byte(pk)
 			delete(pending, pk)
-			// Full-key read works for the DupSort table: the kv layer auto-
-			// converts keys exactly as trie_root_computer's own Put/Delete do.
-			node, err := tx.GetOne(srcTable, path)
+			// Read the live storage-trie node from TrieOfStorage. The system
+			// dropped incarnation: the trie computer keys TrieOfStorage by
+			// addrHash(32)‖nibblePath with NO incarnation (storCollector in
+			// modules/state/commitment/trie_root_computer.go). DATC's internal
+			// `path` carries an 8-byte zero incarnation after the addrHash
+			// (addrHash32‖inc8‖nibblePath) — a leaf-composite-only convention
+			// that never appears in the physical key. TrieOfStorage is a PLAIN
+			// DupSort (not AutoDupSort), so there is no key-length folding to
+			// absorb the extra 8 bytes: a 40-byte-prefixed read misses every
+			// node and the record is silently elided as a tombstone (this is
+			// why DatcStorNode came out empty). Strip the incarnation for the
+			// external read — same lesson as the HashedStorage SeekBothRange
+			// reads in main.go.
+			stoKey := make([]byte, 0, len(path)-8)
+			stoKey = append(stoKey, path[:32]...)
+			stoKey = append(stoKey, path[40:]...)
+			node, err := tx.GetOne(srcTable, stoKey)
 			if err != nil {
 				return err
 			}

@@ -111,6 +111,11 @@ type TrieRootComputer struct {
 	// values; an account deletion purges the whole storage tier (its cached
 	// slots cannot be enumerated). nil = no cache wired.
 	readCache ReadCacheInvalidator
+
+	// accRootEmitter, when set, is wired into the serial loader so every folded
+	// account's storage root is surfaced per root computation (DATC dense
+	// storage-root history). Serial path only.
+	accRootEmitter func(accKeyNibbles []byte, root types.Hash)
 }
 
 // ReadCacheInvalidator is the write-side surface of the cross-block hashed
@@ -125,6 +130,12 @@ type ReadCacheInvalidator interface {
 
 // SetReadCache wires the cross-block read cache for write invalidation.
 func (t *TrieRootComputer) SetReadCache(c ReadCacheInvalidator) { t.readCache = c }
+
+// SetAccRootEmitter arms the per-account storage-root hook (see
+// trie.FlatDBTrieLoader.SetAccRootEmitter). Serial root path only.
+func (t *TrieRootComputer) SetAccRootEmitter(fn func(accKeyNibbles []byte, root types.Hash)) {
+	t.accRootEmitter = fn
+}
 
 // SetExpectRoot arms the concurrent-root gold check for the NEXT ComputeRoot:
 // if the parallel combined root differs from want, flushTrieRootConcurrent logs
@@ -492,6 +503,9 @@ func (t *TrieRootComputer) flushTrieRootSerial(rl *trie.RetainList) (types.Hash,
 		retainer = rl
 	}
 	loader := trie.NewFlatDBTrieLoader("trie-root", retainer, accCollector, storCollector, false)
+	if t.accRootEmitter != nil {
+		loader.SetAccRootEmitter(t.accRootEmitter)
+	}
 	var wr *trie.WitnessRetainer
 	if t.captureProof && t.incremental {
 		// Capture the touched-path multiproof over the SAME dirty RetainList the
