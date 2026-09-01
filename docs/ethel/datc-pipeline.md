@@ -224,6 +224,48 @@ to measure: the default ssh cipher moved 20-50 MB/s where
 link where one does not. The transfer is chunked at 16 GiB with a per-chunk
 marker so it resumes rather than restarting.
 
+## 5d. There are TWO DATC lines and they disagree about the on-disk format
+
+Found 2026-09-01 while another session asked whether the archive-plus
+toolchain should be merged onto `origin/main`. Both lines branch from
+`b78aaa54` and neither supersedes the other:
+
+| | `origin/main` ("format v2", 2a0cae17 + 33e0c66c) | this line (archive-plus, fd4d03f0) |
+|---|---|---|
+| new files | 4 — `bench.go`, `db.go`, two e2e tests | 23 — the operational pipeline |
+| `fork-state`, `cs-to-spill`, `stroot-export`, `checkpoint-build` | **absent** | present |
+| storage domain | **32 B** (addrHash; "the legacy 8-byte incarnation suffix is gone") | **40 B** (addrHash + 8 trailing bytes) |
+| `DatcMeta/format` | stamped `= 2` | **no stamp at all** |
+| node record kinds | adds `nodeRecMixed = 0x02` | FULL / DIFF only |
+| leaf & root-history keys | 4-byte block suffix (`blkLen`) | — |
+
+**A 32-byte domain and a 40-byte domain are incompatible key layouts.** Both
+`n42-datc-bprime2-25m` (1.1 TB) and the continuation were built in the 40-byte
+format, and the old library carries **no format stamp**, so a v2 binary finds
+no version to check: it does not fail, it writes mismatched keys. That is the
+same failure class this document already flags for schedules — *a mismatch
+silently produces records incompatible with the existing ones*.
+
+The other direction is just as blocking: v2 has no `fork-state` and no
+`cs-to-spill`, so it cannot build a library or continue one at all.
+
+**Therefore carrying one line onto the other is a FORMAT MIGRATION decision,
+not a merge conflict to resolve.** Either v2 grows a read path for 40-byte
+records, or the 1.1 TB library is rebuilt. Whoever resolves the six
+conflicting files (`emit.go`, `leafseg.go`, `main.go`, `proof.go`,
+`verify.go`, `trie_root_computer.go`) must not decide it by accident.
+
+Before pointing ANY `n42-datc` binary at a production `--out`, check which
+line it is from — `n42-datc fork-state` exists only in this one:
+
+```
+wk-datc fork-state          # v2 prints the top-level usage; this line asks for --src/--dst
+```
+
+Related: the toolchain sat UNCOMMITTED in the working tree until 2026-09-01,
+so a checkout of `b78aaa54` has 13 of the 36 files and no `fork-state`. Check
+what a box actually has before trusting a DATC run on it.
+
 ## 6. Weekly, once the catch-up lands
 
 ~525 leaves/block × ~100k blocks ≈ 52M leaves ⇒ **~35 min + ~8.7 GiB/week**,
