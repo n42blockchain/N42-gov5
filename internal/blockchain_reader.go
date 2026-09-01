@@ -40,10 +40,10 @@ package internal
 
 import (
 	"github.com/holiman/uint256"
-	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/contracts/deposit"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
@@ -372,12 +372,51 @@ func (bc *BlockChain) HasState(hash types.Hash) bool {
 }
 
 // HasBlockAndState checks if a block and its state exist.
+//
+// It answers a boolean, so it must not decode a block to do it. It used to
+// call GetBlock, which reads the header, then reads the body, then decodes
+// every transaction in it -- and then caches the whole thing in bc.blockCache.
+// ValidateBody calls this twice on the import path (once for the incoming
+// block, once for its parent), so at bench load each imported block dragged up
+// to two foreign 22,857-transaction bodies through a full decode and left them
+// live in the cache. In a 40k-tx/s heap profile of a fleet node that path --
+// HasBlockAndState -> GetBlock -> ReadBlock -> CanonicalTransactions -- held
+// 2.07 GB, 37% of the node's entire live heap, for two bits of information.
+//
+// The predicate is unchanged. GetBlock returns non-nil exactly when the header
+// and the body are both stored, which is what hasStoredBlock tests directly,
+// and NewBlockFromStorage builds the block with the hash it was looked up by,
+// so HasState(blk.Hash()) was always HasState(hash).
+//
+// Dropping the incidental blockCache fill is deliberate, not collateral: the
+// entries it added are duplicate blocks and parents, and execution needs the
+// parent's STATE, never its transactions.
 func (bc *BlockChain) HasBlockAndState(hash types.Hash, number uint64) bool {
-	blk := bc.GetBlock(hash, number)
-	if blk == nil {
+	if !bc.hasStoredBlock(hash, number) {
 		return false
 	}
-	return bc.HasState(blk.Hash())
+	return bc.HasState(hash)
+}
+
+// hasStoredBlock reports whether both the header and the body of a block are
+// present, without decoding the body's transactions. rawdb.HasBlock is the
+// body half (it reads the 12-byte storage record and falls back to the sealed
+// ancient range); HasHeader is the other half. Together they are the condition
+// rawdb.ReadBlock checks before it decodes anything.
+func (bc *BlockChain) hasStoredBlock(hash types.Hash, number uint64) bool {
+	if hash == (types.Hash{}) {
+		return false
+	}
+	if bc.blockCache.Contains(hash) {
+		return true
+	}
+	var ok bool
+	//nolint:errcheck // View's error only leaves ok false, which is the safe answer.
+	bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		ok = rawdb.HasHeader(tx, hash, number) && rawdb.HasBlock(tx, hash, number)
+		return nil
+	})
+	return ok
 }
 
 // =============================================================================
@@ -437,4 +476,3 @@ func (bc *BlockChain) EarliestBlock() uint64 {
 	}
 	return earliest
 }
-
