@@ -15,8 +15,7 @@
 // along with the N42 library. If not, see <http://www.gnu.org/licenses/>.
 //
 // Shared key-encoding helpers used across rawdb and state.
-// NumberLength (8) and Incarnation (2) define the width of block
-// numbers and incarnation counters in composite keys.
+// NumberLength (8) is the width of a block number in composite keys.
 // EncodeBlockNumber/DecodeBlockNumber pack and unpack big-endian
 // uint64 block numbers. HeaderKey and BlockBodyKey build the
 // number||hash composite keys used in header/body buckets.
@@ -31,7 +30,6 @@ import (
 )
 
 const NumberLength = 8
-const Incarnation = 2
 
 var configPrefix = []byte("chainConfig-")
 
@@ -80,31 +78,6 @@ func LogKey(blockNumber uint64, txId uint32) []byte {
 	return newK
 }
 
-func PlainParseCompositeStorageKey(compositeKey []byte) (types.Address, uint16, types.Hash) {
-	prefixLen := types.AddressLength + types.IncarnationLength
-	addr, inc := PlainParseStoragePrefix(compositeKey[:prefixLen])
-	var key types.Hash
-	copy(key[:], compositeKey[prefixLen:prefixLen+types.HashLength])
-	return addr, inc, key
-}
-
-// AddrHash + incarnation + StorageHashPrefix
-func GenerateCompositeStoragePrefix(addressHash []byte, incarnation uint16, storageHashPrefix []byte) []byte {
-	key := make([]byte, types.HashLength+types.IncarnationLength+len(storageHashPrefix))
-	copy(key, addressHash)
-	binary.BigEndian.PutUint16(key[types.HashLength:], incarnation)
-	copy(key[types.HashLength+types.IncarnationLength:], storageHashPrefix)
-	return key
-}
-
-// address hash + incarnation prefix
-func GenerateStoragePrefix(addressHash []byte, incarnation uint16) []byte {
-	prefix := make([]byte, types.HashLength+NumberLength)
-	copy(prefix, addressHash)
-	binary.BigEndian.PutUint16(prefix[types.HashLength:], incarnation)
-	return prefix
-}
-
 // PlainGenerateStoragePrefix returns the address prefix for storage key scans.
 func PlainGenerateStoragePrefix(address []byte) []byte {
 	prefix := make([]byte, types.AddressLength)
@@ -137,29 +110,6 @@ func AccountIndexChunkKey(key []byte, blockNumber uint64) []byte {
 	binary.BigEndian.PutUint64(blockNumBytes[types.AddressLength:], blockNumber)
 
 	return blockNumBytes
-}
-
-func PlainParseStoragePrefix(prefix []byte) (types.Address, uint16) {
-	var addr types.Address
-	copy(addr[:], prefix[:types.AddressLength])
-	inc := binary.BigEndian.Uint16(prefix[types.AddressLength : types.AddressLength+types.IncarnationLength])
-	return addr, inc
-}
-
-func CompositeKeyWithoutIncarnation(key []byte) []byte {
-	if len(key) == types.HashLength*2+types.IncarnationLength {
-		kk := make([]byte, types.HashLength*2)
-		copy(kk, key[:types.HashLength])
-		copy(kk[types.HashLength:], key[types.HashLength+types.IncarnationLength:])
-		return kk
-	}
-	if len(key) == types.AddressLength+types.HashLength+types.IncarnationLength {
-		kk := make([]byte, types.AddressLength+types.HashLength)
-		copy(kk, key[:types.AddressLength])
-		copy(kk[types.AddressLength:], key[types.AddressLength+types.IncarnationLength:])
-		return kk
-	}
-	return key
 }
 
 // ConfigKey = configPrefix + hash

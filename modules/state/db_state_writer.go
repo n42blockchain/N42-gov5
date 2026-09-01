@@ -29,7 +29,6 @@ import (
 
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
-	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/changeset"
 	"github.com/n42blockchain/N42/modules/ethdb/bitmapdb"
 )
@@ -37,7 +36,7 @@ import (
 func writeIndex(blocknum uint64, changes *changeset.ChangeSet, bucket string, changeDb kv.RwTx) error {
 	buf := bytes.NewBuffer(nil)
 	for _, change := range changes.Changes {
-		k := modules.CompositeKeyWithoutIncarnation(change.Key)
+		k := change.Key
 
 		index, err := bitmapdb.Get64(changeDb, bucket, k, math.MaxUint32, math.MaxUint32)
 		if err != nil {

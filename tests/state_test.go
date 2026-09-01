@@ -76,9 +76,6 @@ func ReadGenesis(filename string) *conf.Genesis {
 //			val := uint256.NewInt(0).SetBytes(value.Bytes())
 //			statedb.SetState(addr, &k, *val)
 //		}
-//		if len(a.Code) > 0 || len(a.Storage) > 0 {
-//			statedb.SetIncarnation(addr, state.FirstContractIncarnation)
-//		}
 //	}
 //
 //	if err := statedb.FinalizeTx(Genesis.Config.Rules(0), roop); err != nil {
