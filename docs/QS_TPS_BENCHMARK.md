@@ -1174,11 +1174,20 @@ binary, 104 full blocks on node 0:
 | `valid` µs/tx | 0.172 | — |
 | `write` µs/tx | 0.995 | — |
 
-**`body` did not fall.** It is 0.891 against 0.852 — slightly worse, and within
-the spread between rounds. The prediction is refuted.
+**`body` did not fall.** It is 0.891 against 0.852. The prediction is refuted —
+but the measurement alone does not carry that, and it is worth being exact
+about which leg does.
 
-The reason was in code already read and quoted in this file before the
-prediction was made:
+R1 ran under memory pressure A did not have: its win2 held 100% occupancy at
+**0.870 s a block against A's 0.448 s**, and its whole import was 165.1 ms
+against 148.2. Memory pressure inflates `body`, so a fix that helped could have
+been masked by a round that was 1.9x slower overall — indeed `body` rose only
+4.6% while everything around it rose far more, which if anything reads as
+slightly better. **The measurement is confounded and cannot refute the
+prediction on its own.**
+
+What refutes it is the code, independently of any round — and it was already
+read and quoted in this file before the prediction was made:
 
 ```go
 func ReadBlock(tx kv.Getter, hash types.Hash, number uint64) *block.Block {
@@ -1205,6 +1214,10 @@ when two functions already quoted in this file ruled it out.
   that the work was on the hot path — not merely reachable from it.** A profile
   showing retained memory proves an allocation happened, not that it happens
   every block.
+- **Rule 21a: when a round is confounded, say which leg of the argument the
+  conclusion rests on.** "Refuted, measured" would have been an overclaim here;
+  the round is unusable and the code is decisive. A confounded measurement that
+  agrees with a sound argument is corroboration, never proof.
 
 ### What R1 does not license
 
