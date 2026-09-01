@@ -154,22 +154,18 @@ func exportState(ctx *cli.Context) error {
 			da.Storage = make(map[string]string)
 			storageCursor, err := roTX.Cursor(modules.Storage)
 			if err == nil {
-				// Storage key: address(20) + incarnation(2) + storageKey(32)
-				prefix := make([]byte, 22)
+				// Storage key: address(20) + storageKey(32)
+				prefix := make([]byte, 20)
 				copy(prefix, k)
-				// incarnation removed — always 0
-				prefix[20] = 0
-				prefix[21] = 0
 
 				for sk, sv, err := storageCursor.Seek(prefix); sk != nil; sk, sv, err = storageCursor.Next() {
 					if err != nil {
 						break
 					}
-					// Check prefix match (address + incarnation)
 					if !bytes.HasPrefix(sk, prefix) {
 						break
 					}
-					storageKey := sk[22:]
+					storageKey := sk[20:]
 					da.Storage[fmt.Sprintf("0x%x", storageKey)] = fmt.Sprintf("0x%x", sv)
 				}
 				storageCursor.Close()
