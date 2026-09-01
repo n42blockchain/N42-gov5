@@ -167,25 +167,14 @@ func runRebuildTrie(cliCtx *cli.Context) error {
 			if err != nil {
 				return err
 			}
-			if len(k) < 52 {
+			// Plain key: addr[20] + slot[32].
+			if len(k) != 52 {
 				continue
 			}
-			// Parse plain key: addr[20] + incarnation[2or8] + slot[32]
 			var addr [20]byte
 			copy(addr[:], k[:20])
 			var slot [32]byte
-			var incarnation uint64
-			if len(k) == 54 {
-				// 20 + 2 + 32 (N42 uint16 incarnation)
-				incarnation = uint64(binary.BigEndian.Uint16(k[20:22]))
-				copy(slot[:], k[22:54])
-			} else if len(k) >= 60 {
-				// 20 + 8 + 32 (erigon uint64 incarnation)
-				incarnation = binary.BigEndian.Uint64(k[20:28])
-				copy(slot[:], k[28:60])
-			} else {
-				continue
-			}
+			copy(slot[:], k[20:52])
 
 			if len(v) == 0 {
 				continue
@@ -202,11 +191,10 @@ func runRebuildTrie(cliCtx *cli.Context) error {
 			var slotHash types.Hash
 			hasher.Sum(slotHash[:0])
 
-			// Composite key: addrHash[32] + incarnation[8] + slotHash[32]
-			var compositeKey [72]byte
+			// Composite key: addrHash[32] + slotHash[32]
+			var compositeKey [64]byte
 			copy(compositeKey[:32], addrHash[:])
-			binary.BigEndian.PutUint64(compositeKey[32:40], incarnation)
-			copy(compositeKey[40:], slotHash[:])
+			copy(compositeKey[32:], slotHash[:])
 
 			if err := tx.Put(modules.HashedStorage, compositeKey[:], v); err != nil {
 				return err

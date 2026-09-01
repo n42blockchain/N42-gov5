@@ -495,22 +495,13 @@ func readAllState(tx kv.Tx) (
 		if err != nil {
 			return nil, nil, 0, 0, err
 		}
-		if len(k) < 52 {
+		if len(k) != 52 { // addr(20)+slot(32), AutoDupSort composite key (DupFromLen=52)
 			continue
 		}
 		var addr types.Address
 		copy(addr[:], k[:20])
 		var slot types.Hash
-		switch {
-		case len(k) == 52: // addr(20)+slot(32), AutoDupSort composite key (DupFromLen=52)
-			copy(slot[:], k[20:52])
-		case len(k) == 54: // addr(20)+incarnation(2)+slot(32)
-			copy(slot[:], k[22:54])
-		case len(k) >= 60: // addr(20)+incarnation(8)+slot(32)
-			copy(slot[:], k[28:60])
-		default:
-			continue
-		}
+		copy(slot[:], k[20:52])
 		val := new(uint256.Int)
 		if len(v) > 0 {
 			val.SetBytes(v)
