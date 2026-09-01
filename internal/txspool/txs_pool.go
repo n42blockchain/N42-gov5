@@ -293,11 +293,40 @@ func (pool *TxsPool) addTxs(txs []*transaction.Transaction, local, sync bool) []
 	// piece of application CPU), it needs no pool state, and it happens outside
 	// the pool lock -- so serialising it only left cores idle: the fleet ran at
 	// 4 busy cores out of 32 while the profile sat in scheduler park/spin.
-	pool.prewarmSenders(txs)
+	// Drop the transactions the pool already holds BEFORE recovering anything.
+	// prewarmSenders used to run over the whole batch, so every duplicate paid
+	// a full secp256k1 recovery for a transaction the very next line was about
+	// to reject as ErrAlreadyKnown.
+	//
+	// How much that is worth depends entirely on how many duplicates reach the
+	// pool, and the measurement says: under the sharded bench profile, almost
+	// none. Splitting the flood across the seven nodes gives each one mostly
+	// transactions it has never seen, and moving the dedup ahead of the warm
+	// took prewarmSenders from 43.07s to 42.31s of a saturated 30s profile --
+	// inside the noise. This is not the 33.8% of node CPU that prewarmSenders
+	// costs there; that cost is first-time recoveries, and it stays.
+	//
+	// It is kept because it is free and because the case it protects is the
+	// one the sharded profile cannot show: with gossip or a broadcasting
+	// submitter every node sees every transaction up to seven times over, and
+	// then the duplicates are the batch. That configuration OOMs this box at
+	// bench supply (~10.4 GB RSS a node against 4.8 GB sharded), so the payoff
+	// is UNMEASURED -- claimed by mechanism, not by a number.
+	//
+	// Nothing else moves. The dedup test is the same pool.all.Get on the same
+	// hash, and everything after it -- validateSender, EncodedSize, the pool
+	// lock -- sees exactly the transactions it saw before.
+	warm := make([]*transaction.Transaction, 0, len(txs))
 	for i, tx := range txs {
-		hash := tx.Hash()
-		if pool.all.Get(hash) != nil {
+		if pool.all.Get(tx.Hash()) != nil {
 			errs[i] = ErrAlreadyKnown
+			continue
+		}
+		warm = append(warm, tx)
+	}
+	pool.prewarmSenders(warm)
+	for i, tx := range txs {
+		if errs[i] != nil {
 			continue
 		}
 		if !pool.validateSender(tx) {
