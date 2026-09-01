@@ -178,8 +178,8 @@ func (b *builder) recordChange(storage bool, domain []byte, keyNibbles []byte, n
 		} else if cur&bit == 0 {
 			b.accDirty[d][idx] = cur | bit
 		}
-		if d != 0 && b.sched.e[d] != 1 {
-			epoch := uint32(b.sched.epochOf(d, n))
+		if l := b.sched.lenFor(false, d); l > 1 {
+			epoch := uint32(n / l)
 			slot := &b.chgAccAgg[d][idx]
 			if len(slot.events) > 0 && slot.epoch != epoch {
 				// Epoch rolled over inside the batch: drain the closed epoch's
@@ -273,8 +273,11 @@ func (b *builder) drainAccSlot(d int, idx uint32, slot *chgSlot) {
 // write buffers: one row per (prefix, batch segment), keyed by the segment's
 // first block so an epoch spanning batches concatenates in block order.
 func (b *builder) flushChgAgg() {
-	// Account side: drain the flat slots via the touched lists and reset them.
-	for d := 1; d <= maxChgDepth; d++ {
+	// Account side: drain the flat slots via the touched lists and reset them
+	// (level 0 included: the root's change rows exist when --acc-root-epoch
+	// > 1; an open epoch's partial row is keyed by its first block like any
+	// other level's).
+	for d := 0; d <= maxChgDepth; d++ {
 		for _, idx := range b.chgAccAggTouched[d] {
 			slot := &b.chgAccAgg[d][idx]
 			if len(slot.events) > 0 {
@@ -300,17 +303,16 @@ func (b *builder) flushChgAgg() {
 // the closing epoch of level d, reading the CURRENT TrieOf* rows.
 func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
 	// Account side: sorted dense indices (numeric order == path order for a
-	// fixed level), path reconstructed from the index.
-	if len(b.accTouched[d]) > 0 {
+	// fixed level), path reconstructed from the index. Level 0 (the root) is
+	// owned by flushAccRoot (its own cadence, dense-hook sourced).
+	if d > 0 && len(b.accTouched[d]) > 0 {
 		touched := b.accTouched[d]
 		sort.Slice(touched, func(i, j int) bool { return touched[i] < touched[j] })
 		path := make([]byte, d)
 		for _, idx := range touched {
 			changed := b.accDirty[d][idx]
 			b.accDirty[d][idx] = 0
-			if changed == 0 || d == 0 {
-				// d0 = the account-trie root: no TrieAccount row by convention;
-				// the verifier synthesizes it from the depth-1 children.
+			if changed == 0 {
 				continue
 			}
 			v := idx
@@ -325,6 +327,19 @@ func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
 		b.accTouched[d] = touched[:0]
 	}
 	return b.flushStoLevel(tx, d, epoch)
+}
+
+// flushAccRoot records the account-trie root node (no TrieOfAccounts row
+// exists for it; the bytes come from the loader's dense hook) when any
+// account changed since the last root record.
+func (b *builder) flushAccRoot(tx kv.RwTx, epoch uint64) error {
+	changed := b.accDirty[0][0]
+	b.accDirty[0][0] = 0
+	b.accTouched[0] = b.accTouched[0][:0]
+	if changed == 0 {
+		return nil
+	}
+	return b.flushAccPath(tx, []byte{}, changed, epoch)
 }
 
 // nodeUsable reports whether a TrieOf* node can ever be assembled by the
@@ -344,6 +359,12 @@ func (b *builder) flushAccPath(tx kv.RwTx, path []byte, changed uint16, epoch ui
 	node, err := tx.GetOne(modules.TrieOfAccounts, path)
 	if err != nil {
 		return err
+	}
+	// Prefer the loader's dense form: complete child hashes even when the
+	// TrieOf row is mixed (leaf/extension children) or absent (the root).
+	if dn := b.takeDense(false, string(path)); dn != nil && (len(node) == 0 || !nodeUsable(node)) {
+		node = dn
+		b.statDenseUpgraded++
 	}
 	k := make([]byte, 0, 1+len(path)+4)
 	k = append(k, byte(len(path)))
@@ -365,12 +386,12 @@ func (b *builder) flushAccPath(tx kv.RwTx, path []byte, changed uint16, epoch ui
 		v = []byte{nodeRecMixed}
 		b.statMixedBytesSaved += uint64(len(node))
 		b.accLastFull[string(path)] = nodeRecState{mixed: true}
-	case !st.exists || uint32(epoch) >= st.lastFullEpoch+fullEvery:
+	case !st.exists || st.diffs >= fullEvery-1:
 		v = append([]byte{nodeRecFull}, node...)
-		b.accLastFull[string(path)] = nodeRecState{lastFullEpoch: uint32(epoch), exists: true}
+		b.accLastFull[string(path)] = nodeRecState{exists: true}
 	default:
 		v = encodeNodeDiff(node, changed)
-		st.exists = true
+		st.diffs++
 		b.accLastFull[string(path)] = st
 	}
 	b.nodeAccBuf = append(b.nodeAccBuf, kvPair{k: k, v: v})
@@ -412,6 +433,14 @@ func (b *builder) flushStoLevel(tx kv.RwTx, d int, epoch uint64) error {
 			if err != nil {
 				return err
 			}
+			if len(node) > 0 && !nodeUsable(node) {
+				if dn := b.takeDense(true, pk); dn != nil {
+					node = dn
+					b.statDenseUpgraded++
+				}
+			} else {
+				b.takeDense(true, pk)
+			}
 			// DATC node record: pathLen(1) | domain|path | epoch(4) → record.
 			// Empty value = tombstone; else flags byte (FULL | DIFF). A FULL is
 			// forced when no prior record exists (or it was a tombstone) and at
@@ -444,12 +473,12 @@ func (b *builder) flushStoLevel(tx kv.RwTx, d int, epoch uint64) error {
 				v = []byte{nodeRecMixed}
 				b.statMixedBytesSaved += uint64(len(node))
 				putLF(pk, nodeRecState{mixed: true})
-			case !st.exists || degraded || uint32(epoch) >= st.lastFullEpoch+fullEvery:
+			case !st.exists || degraded || st.diffs >= fullEvery-1:
 				v = append([]byte{nodeRecFull}, node...)
-				putLF(pk, nodeRecState{lastFullEpoch: uint32(epoch), exists: true})
+				putLF(pk, nodeRecState{exists: true})
 			default:
 				v = encodeNodeDiff(node, changed)
-				st.exists = true
+				st.diffs++
 				putLF(pk, st)
 			}
 			*buf = append(*buf, kvPair{k: k, v: v})

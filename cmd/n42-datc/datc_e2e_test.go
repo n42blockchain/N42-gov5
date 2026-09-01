@@ -24,6 +24,7 @@ import (
 	"math/rand"
 	"os"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -589,12 +590,18 @@ type e2eOpts struct {
 	splitAt     uint64 // >0: stop the first run here and resume with a fresh builder
 	finalizeMid bool   // leafSeg + splitAt: finalize segments before the resume (exercises the merge)
 	concurrent  bool   // --concurrent-root
+	// noMixedBelow: with the dense-node hook every recorded branch is
+	// complete, so MIXED folds must not occur at depths below this.
+	noMixedBelow int
+	accRoot      uint64 // --acc-root-epoch
 }
 
 func newTestBuilder(t *testing.T, db kv.RwDB, out string, sc *scenario, o e2eOpts, start uint64) *builder {
 	t.Helper()
+	sched := o.sched
+	sched.accRoot = o.accRoot
 	b := &builder{
-		sched: o.sched, db: db,
+		sched: sched, db: db,
 		addrHashCache: make(map[types.Address][32]byte, 1<<10),
 		slotHashCache: make(map[types.Hash][32]byte, 1<<10),
 		accLastFull:   make(map[string]nodeRecState, 1<<10),
@@ -671,7 +678,7 @@ func openTestQuerier(t *testing.T, db kv.RwDB, out string, o e2eOpts) (*querier,
 	if err != nil {
 		t.Fatal(err)
 	}
-	q, _, err := loadQuerier(tx, out, o.foldDepth)
+	q, _, err := loadQuerierCache(tx, out, o.foldDepth, leafFrameCache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -742,9 +749,28 @@ func runE2E(t *testing.T, o e2eOpts) {
 	// Every height: root reconstructed from the records == reference root.
 	fails := 0
 	totalRecs, totalFolds := 0, 0
+	badFolds := map[string]int{}
+	q.absentPaths = map[string]int{}
 	for n := uint64(0); n < end; n++ {
 		q.recs, q.folds, q.leafReads = 0, 0, 0
+		q.foldDepthHist, q.foldReason = [8]int{}, nil
 		root, exists, err := q.nodeHashAt(nil, nil, n)
+		// A record that exists but cannot be located/decoded is a bug even
+		// though the fold hides it (performance, not correctness). Absent
+		// and mixed floors are legitimate in general; a dense depth-3 build
+		// additionally must never see an absent floor below the root.
+		for reason, c := range q.foldReason {
+			if strings.Contains(reason, "chainBroken") || strings.Contains(reason, "undecodable") {
+				badFolds[reason] += c
+			}
+			if o.noMixedBelow > 0 && strings.Contains(reason, ":floor:mixed") && n >= 32 {
+				var d int
+				fmt.Sscanf(reason, "d%d:", &d)
+				if d < o.noMixedBelow {
+					badFolds[reason] += c
+				}
+			}
+		}
 		if err != nil {
 			t.Fatalf("nodeHashAt(%d): %v", n, err)
 		}
@@ -766,6 +792,53 @@ func runE2E(t *testing.T, o e2eOpts) {
 	t.Logf("heights=%d recs=%d folds=%d", end, totalRecs, totalFolds)
 	if totalRecs == 0 && o.foldDepth != 1 {
 		t.Errorf("record path never exercised (recs=0) — the test data is not dense enough")
+	}
+	if len(badFolds) > 0 {
+		t.Errorf("folds caused by broken/undecodable record chains: %v", badFolds)
+	}
+	// An absent floor for a path that HAS records in the node layer means the
+	// reader cannot locate them (e.g. a segment bucket mix-up) — a silent
+	// performance bug the fold would otherwise hide.
+	// The existence check deliberately bypasses the bucket-addressed cursor
+	// (a bucket mix-up would fool it too): every segment frame / MDBX row is
+	// scanned linearly.
+	havePath := map[string]bool{}
+	if q.segNA != nil {
+		for _, bucket := range q.segNA.ids {
+			sf := q.segNA.buckets[bucket]
+			for fi := range sf.frames {
+				d, err := q.segNA.decodeFrame(bucket, fi)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for i := range d.offs {
+					k, _ := d.kv(i)
+					havePath[string(k[1:1+int(k[0])])] = true
+				}
+			}
+		}
+	} else {
+		c, err := q.tx.Cursor(tDatcAccNode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for k, _, e := c.First(); k != nil && e == nil; k, _, e = c.Next() {
+			havePath[string(k[1:1+int(k[0])])] = true
+		}
+		c.Close()
+	}
+	unreadable, shown := 0, 0
+	for p, c := range q.absentPaths {
+		if havePath[p] {
+			unreadable += c
+			if shown < 3 {
+				t.Errorf("path %x has records but the floor lookup found none (%d times)", p, c)
+				shown++
+			}
+		}
+	}
+	if unreadable > 0 {
+		t.Errorf("%d folds on paths whose records exist but are unreadable", unreadable)
 	}
 	reportSizes(t, db, out, b)
 
@@ -938,7 +1011,17 @@ func TestE2E_FoldOverride(t *testing.T) {
 // account trie folds at depth 4 — with 3000 test accounts that is a small
 // fold, and depth-1/2 records are sparse and mostly stale.
 func TestE2E_DenseD3(t *testing.T) {
-	runE2E(t, e2eOpts{sched: epochSchedule{e: [maxChgDepth + 1]uint64{8, 64, 16, 1, 4096, 4096}}, batch: 50, stoCache: 64, accDepth: 4, stoDepth: 2, leafSeg: true})
+	runE2E(t, e2eOpts{sched: epochSchedule{e: [maxChgDepth + 1]uint64{8, 64, 16, 1, 4096, 4096}}, batch: 50, stoCache: 64, accDepth: 4, stoDepth: 2, leafSeg: true, noMixedBelow: 4, accRoot: 1})
+}
+
+// Same dense shape without the per-block root (root synthesized from the
+// depth-1 records), and a windowed root cadence in window mode.
+func TestE2E_DenseD3_NoRoot(t *testing.T) {
+	runE2E(t, e2eOpts{sched: epochSchedule{e: [maxChgDepth + 1]uint64{8, 64, 16, 1, 4096, 4096}}, batch: 50, stoCache: 64, accDepth: 4, stoDepth: 2, leafSeg: true, noMixedBelow: 4})
+}
+
+func TestE2E_Window_RootEvery4(t *testing.T) {
+	runE2E(t, e2eOpts{sched: schedE0is1, window: true, batch: 48, stoCache: 64, accRoot: 4})
 }
 
 func TestE2E_ConcurrentRoot(t *testing.T) {

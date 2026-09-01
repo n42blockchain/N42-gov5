@@ -56,8 +56,11 @@ const (
 	// storage-root-history keys.
 	blkLen = 4
 
-	// fullEvery bounds the reader's diff walk-back: at least every F-th epoch
-	// (per path) the record is FULL.
+	// fullEvery bounds the reader's diff walk-back: after fullEvery-1 DIFF
+	// records (per path) the next record is FULL, so a chain is at most
+	// fullEvery records long. (Counted in records, not epochs: with a
+	// per-block level a node's records are sparse in epoch space and an
+	// epoch-distance rule made nearly every record FULL.)
 	fullEvery = 8
 )
 
