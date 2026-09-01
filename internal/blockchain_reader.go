@@ -376,12 +376,22 @@ func (bc *BlockChain) HasState(hash types.Hash) bool {
 // It answers a boolean, so it must not decode a block to do it. It used to
 // call GetBlock, which reads the header, then reads the body, then decodes
 // every transaction in it -- and then caches the whole thing in bc.blockCache.
-// ValidateBody calls this twice on the import path (once for the incoming
-// block, once for its parent), so at bench load each imported block dragged up
-// to two foreign 22,857-transaction bodies through a full decode and left them
-// live in the cache. In a 40k-tx/s heap profile of a fleet node that path --
-// HasBlockAndState -> GetBlock -> ReadBlock -> CanonicalTransactions -- held
-// 2.07 GB, 37% of the node's entire live heap, for two bits of information.
+// In a 40k-tx/s heap profile of a fleet node that path -- HasBlockAndState ->
+// GetBlock -> ReadBlock -> CanonicalTransactions -- held 2.07 GB, 37% of the
+// node's entire live heap, for two bits of information.
+//
+// That is a MEMORY saving and only a memory saving. An earlier version of this
+// comment said each imported block "dragged up to two foreign 22,857-tx bodies
+// through a full decode"; measured over 104 full blocks it does not, and
+// ValidateBody's cost per transaction did not move (0.852 -> 0.891 us/tx).
+// The reason is in ReadBlock and GetBlock, both of which could have been read
+// before predicting otherwise: ReadBlock reads the HEADER first and returns
+// nil before touching the body, and an incoming block's header is not stored
+// until after validation -- so that call never reached a decode. The parent
+// call hit bc.blockCache, which had just cached the parent on import -- so
+// neither did that one. On the steady-state forward path both calls were
+// already cheap; the 2.07 GB is the cache HOLDING blocks decoded on the paths
+// that do miss (restart, reorg, gap fill), not a per-block decode.
 //
 // The predicate is unchanged. GetBlock returns non-nil exactly when the header
 // and the body are both stored, which is what hasStoredBlock tests directly,
