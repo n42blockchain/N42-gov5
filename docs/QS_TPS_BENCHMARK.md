@@ -955,3 +955,76 @@ Consequences, stated exactly:
   supply.** Budget ~7x pool residency, or shrink the supply and the pool cap to
   match. Rule 12's 33 GB free-memory check was calibrated on sharded runs and
   is not sufficient here.
+
+## Where the memory actually went: a boolean that decoded 22,857 transactions
+
+The OOM above raised the obvious question — what is 10.4 GB of resident node?
+A peer benchmarking a different client offered the arithmetic that 10.4 GB over
+a 300,000-slot pool is ~35 KB a transaction against a few hundred bytes for a
+signed transfer, and asked whether that is a property of pooled transactions
+here.
+
+It is not, and the first correction is that **RSS is not a pool measurement**
+for this node. MDBX is memory-mapped, so touched database pages are counted in
+RSS while living in the page cache; `free` showed 24 GB shared on the box. The
+number that answers the question is the Go live heap, and there is a profile of
+it from the 40k round on node 0 (`wr-pprof/qs-40k-20260901/heap-node0.pprof`),
+5,545 MB total:
+
+| live heap | MB | share |
+|---|---|---|
+| `rawdb.CanonicalTransactions` (cum) | 2,474 | 44.6% |
+| `mobileverify.(*PacketCache).put` | 796 | 14.4% |
+| `qmdb.newMapIndexSized` | 783 | 14.1% |
+| `txspool.(*txLookup).Add` | **54** | **1.0%** |
+
+The transaction pool is 1% of the live heap. The pool was never the problem.
+
+Following the 2.47 GB up its call graph:
+
+```
+rawdb.CanonicalTransactions   2474 MB
+  <- rawdb.ReadCanonicalBodyWithTransactions
+    <- rawdb.ReadBlock
+      <- internal.(*BlockChain).GetBlock
+        <- (*BlockChain).HasBlockAndState   2073 MB  (84%)
+        <- (*BlockChain).GetBlockByHash      387 MB
+```
+
+`HasBlockAndState` returns a bool. It was implemented as:
+
+```go
+blk := bc.GetBlock(hash, number)   // reads header, reads body, decodes EVERY tx,
+if blk == nil { return false }     // and caches the whole block in bc.blockCache
+return bc.HasState(blk.Hash())
+```
+
+`ValidateBody` calls it twice on the import path — once for the incoming block,
+once for its parent — so **every imported block dragged up to two foreign
+22,857-transaction bodies through a full decode and left them live in the block
+cache**, to learn two bits. That is 2.07 GB, 37% of the node's live heap, and
+it is also where the 1,190 MB of `txCompactReader.u256` and 684 MB of
+`unmarshalCompactStorage` in the flat profile come from.
+
+`rawdb.HasBlock` already existed for exactly this, with a comment saying so:
+it reads the 12-byte body storage record and falls back to the sealed ancient
+range, decoding nothing. `HasHeader && rawdb.HasBlock` is precisely the
+condition `rawdb.ReadBlock` checks before it decodes anything, and
+`NewBlockFromStorage` builds the block with the hash it was looked up by, so
+`HasState(blk.Hash())` was always `HasState(hash)`. The predicate is unchanged;
+only the decode and the incidental cache fill are gone.
+
+`TestHasBlockAndStateMatchesReadBlockPredicate` pins both halves — the
+equivalence across {header+body canonical, header+body non-canonical, header
+only, absent}, and that the call leaves `blockCache` empty. Against the old
+implementation it fails with "populated blockCache with 2 entries".
+
+**The heap saving is measured; the throughput effect is not.** The 2.07 GB is
+read off an existing profile, but no round has been run with the fix, so
+nothing here claims a TPS number. What it should do is reduce GC pressure and
+make `--broadcast` fit — which is the round rule 16 says to retry small.
+
+- **Rule 17: attribute memory from a heap profile, not from RSS.** An
+  mmap-backed node's RSS includes page cache; dividing it by a pool cap
+  produced a per-transaction cost off by two orders of magnitude and pointed at
+  the wrong subsystem entirely.
