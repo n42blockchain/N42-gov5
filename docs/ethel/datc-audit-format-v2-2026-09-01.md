@@ -88,3 +88,11 @@ mainnet 推算 [推算]（基数取 `docs/datc历史proof秒级性能.txt`：13.
 2. mainnet 跑 window 模式时 `DatcStoRoot` 是每窗口一行；若账户 proof 的 p99 仍被热合约中间高度拖累，可考虑仅对热合约（change rows 密度高的 domain）逐块补根。
 3. 段格式的键前缀增量编码：zstd 已把重复键压到约 3–4 B，显式增量的额外收益估计 10–15%，暂不动格式。
 4. 节点表 packed-segment 化（M3）仍是 MDBX 3.85× 行开销的唯一解，独立于本次改动。
+
+## 6. 两进程并行构建（2026-09-01 晚补）
+
+把机器用起来的唯一结构性办法：链的中间某处有一份 Hashed*/TrieOf* 状态，就能让第二个进程从那里正向建到链尾，和从创世开始的进程并行；两段产物用 `merge` 合并成一份。
+
+- `n42-datc prep-state --out <copy>`：把一份含状态表 + `DatcMeta/progress` 的 MDBX 拷贝清成干净的 v2 输出（清空全部 Datc* 表、删多余 meta），`build --out <copy>` 即从 `progress` 自动续建（首块 gold-check 立刻验证状态是否对上）。
+- `n42-datc merge --into <lower> --from <upper> [--from-start N]`：上段的段文件重新 spill 到下段目录后 finalize（稳定合并，下段行在前、上段行在后），MDBX 存储节点表按键覆盖拷贝，meta head/progress 更新。边界 epoch 的重复 (path, epoch) 记录由读侧 floor 语义自然选到上段那条；上段每条路径的首条记录是 FULL，DIFF 链不跨边界。`TestE2E_SplitMerge` 覆盖整个流程。
+- 主网现状：`n42-datc-cont-25864981`（Windows Pipeline-B 续建库）里的状态表是 32B 格式、`progress=17,900,000`，直接作为上段基底；按叶变更算 0→17.9M 占 7.13B、17.9M→25.86M 占 6.2B，两段接近均分。

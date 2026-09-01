@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -1026,4 +1027,97 @@ func TestE2E_Window_RootEvery4(t *testing.T) {
 
 func TestE2E_ConcurrentRoot(t *testing.T) {
 	runE2E(t, e2eOpts{sched: schedE0is1, window: true, batch: 48, stoCache: 64, concurrent: true})
+}
+
+// TestE2E_SplitMerge builds [0, X) in one output, seeds a second output with
+// a copy of the first's MDBX (prep-state), builds [X, end) there, merges the
+// upper build into the lower one and checks every height + proofs on the
+// merged output — the two-process build used for the mainnet archive.
+func TestE2E_SplitMerge(t *testing.T) {
+	sc := getScenario(t)
+	modules.N42Init()
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	logger := log.New()
+	lo := t.TempDir()
+	hi := t.TempDir()
+	o := e2eOpts{sched: epochSchedule{e: [maxChgDepth + 1]uint64{8, 64, 16, 1, 4096, 4096}}, batch: 50, stoCache: 64, accDepth: 4, stoDepth: 2, leafSeg: true, accRoot: 1}
+	end := uint64(len(sc.blocks))
+	split := uint64(150) // not a batch or epoch boundary on purpose
+
+	dbLo, err := openDatcDB(logger, lo, 4, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFwd(t, dbLo, sc)
+	b := newTestBuilder(t, dbLo, lo, sc, o, 0)
+	if err := b.run(0, split, o.batch); err != nil {
+		t.Fatalf("lower build: %v", err)
+	}
+	dbLo.Close()
+
+	// Seed the upper output from the lower one's state (mdbx copy + prep-state).
+	src, err := os.ReadFile(filepath.Join(lo, "mdbx.dat"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hi, "mdbx.dat"), src, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runPrepState([]string{"--out", hi, "--map.gb", "4"})
+	dbHi, err := openDatcDB(logger, hi, 4, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFwd(t, dbHi, sc) // the upper build reads its changesets from its own DB
+	b2 := newTestBuilder(t, dbHi, hi, sc, o, split)
+	if err := b2.run(split, end, o.batch); err != nil {
+		t.Fatalf("upper build: %v", err)
+	}
+	dbHi.Close()
+
+	if err := mergeBuilds(lo, hi, 4, 0); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+
+	// Full-height check on the merged output.
+	dbM, err := openDatcDB(logger, lo, 4, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbM.Close()
+	q, closeQ := openTestQuerier(t, dbM, lo, o)
+	defer closeQ()
+	fails := 0
+	for n := uint64(0); n < end; n++ {
+		root, exists, err := q.nodeHashAt(nil, nil, n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !exists {
+			root = emptyTrieRoot
+		}
+		if root != sc.roots[n] {
+			fails++
+			if fails <= 8 {
+				t.Errorf("height %d: root %x != reference %x", n, root[:6], sc.roots[n][:6])
+			}
+		}
+	}
+	if fails > 0 {
+		t.Fatalf("%d/%d heights mismatched after merge", fails, end)
+	}
+	rng := rand.New(rand.NewSource(5))
+	for trial := 0; trial < 60; trial++ {
+		n := uint64(rng.Intn(int(end)))
+		addr := []types.Address{sc.eoas[3], sc.big[1], sc.small[4], sc.absent}[trial%4]
+		ah := keccak(addr[:])
+		nib := nibblesOfBytes(ah[:])
+		nodes, err := q.proofPath(nil, nib, n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := walkProof(sc.roots[n], nodes, nib); err != nil {
+			t.Fatalf("proof %x at %d: %v", addr[:4], n, err)
+		}
+	}
 }
