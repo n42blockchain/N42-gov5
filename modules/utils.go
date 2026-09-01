@@ -120,12 +120,13 @@ func PlainGenerateCompositeStorageKey(address []byte, key []byte) []byte {
 	return compositeKey
 }
 
+// StorageIndexChunkKey is the StorageHistory seek key for a plain storage
+// key: addr(20) + slot(32) + blockNum(8). It must match the chunk keys that
+// writeIndex derives from the same 52-byte changeset key.
 func StorageIndexChunkKey(key []byte, blockNumber uint64) []byte {
-	//remove incarnation and add block number
-	blockNumBytes := make([]byte, types.AddressLength+types.HashLength+8)
-	copy(blockNumBytes, key[:types.AddressLength])
-	copy(blockNumBytes[types.AddressLength:], key[types.AddressLength+types.IncarnationLength:])
-	binary.BigEndian.PutUint64(blockNumBytes[types.AddressLength+types.HashLength:], blockNumber)
+	blockNumBytes := make([]byte, len(key)+8)
+	copy(blockNumBytes, key)
+	binary.BigEndian.PutUint64(blockNumBytes[len(key):], blockNumber)
 
 	return blockNumBytes
 }
