@@ -87,7 +87,7 @@ func ReadAccountRange(tx kv.Tx, snapshotHeight uint64, start types.Address, limi
 
 // ReadStorageRange reads storage slots for a specific account as-of the snapshot height.
 // Returns entries, next start key for pagination (nil if done), and error.
-func ReadStorageRange(tx kv.Tx, snapshotHeight uint64, address types.Address, incarnation uint16, startLocation types.Hash, limit int) ([]StorageEntry, *types.Hash, error) {
+func ReadStorageRange(tx kv.Tx, snapshotHeight uint64, address types.Address, startLocation types.Hash, limit int) ([]StorageEntry, *types.Hash, error) {
 	if err := validateSnapshotExists(tx, snapshotHeight); err != nil {
 		return nil, nil, err
 	}
@@ -100,7 +100,7 @@ func ReadStorageRange(tx kv.Tx, snapshotHeight uint64, address types.Address, in
 	var totalBytes int
 	var nextLoc *types.Hash
 
-	err := state.WalkAsOfStorage(tx, address, incarnation, startLocation, snapshotHeight, func(addr, loc, v []byte) (bool, error) {
+	err := state.WalkAsOfStorage(tx, address, startLocation, snapshotHeight, func(addr, loc, v []byte) (bool, error) {
 		if len(entries) >= limit || totalBytes >= maxRangeBytes {
 			hash := types.BytesToHash(loc)
 			nextLoc = &hash

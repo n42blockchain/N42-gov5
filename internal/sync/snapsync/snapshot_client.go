@@ -399,7 +399,7 @@ func (sm *SnapshotManager) executeSnapshotAccountTask(ctx context.Context, task 
 				skipped++
 				continue
 			}
-			valid, incarnation, codeHash := parseAccountForTasks(e.Value)
+			valid, hasStorage, codeHash := parseAccountForTasks(e.Value)
 			if !valid {
 				snapInvalidAccounts.Inc()
 				skipped++
@@ -411,7 +411,7 @@ func (sm *SnapshotManager) executeSnapshotAccountTask(ctx context.Context, task 
 			}
 			lastAddress = e.Key
 
-			if incarnation > 0 {
+			if hasStorage {
 				addr := make([]byte, 20)
 				copy(addr, e.Key)
 				newStorageTasks = append(newStorageTasks, &RangeTask{
@@ -467,24 +467,9 @@ func (sm *SnapshotManager) executeSnapshotAccountTask(ctx context.Context, task 
 func (sm *SnapshotManager) executeSnapshotStorageTask(ctx context.Context, task *RangeTask) {
 	start := time.Now()
 
-	// Parse incarnation from account data in local DB.
-	var incarnation uint16
-	_ = sm.db.View(ctx, func(tx kv.Tx) error {
-		data, err := tx.GetOne(modules.Account, task.Account)
-		if err != nil || data == nil {
-			return err
-		}
-		valid, parsedIncarnation, _ := parseAccountForTasks(data)
-		if valid {
-			incarnation = parsedIncarnation
-		}
-		return nil
-	})
-
 	req := &sync_pb.GetSnapshotStorageRangeRequest{
 		SnapshotBlock: sm.snapshotBlock,
 		Account:       task.Account,
-		Incarnation:   incarnation,
 		Start:         task.StartKey,
 		End:           task.EndKey,
 		MaxBytes:      sm.cfg.MaxBytesPerReq,

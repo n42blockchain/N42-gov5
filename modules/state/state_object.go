@@ -420,7 +420,7 @@ func (so *stateObject) GetCommittedState(key *types.Hash, out *uint256.Int) {
 	}
 	if enc != nil {
 		if so.db.snap != nil && so.db.snap.CanWrite() {
-			so.db.snap.AddStorage(so.address, key, 0, enc)
+			so.db.snap.AddStorage(so.address, key, enc)
 		}
 		out.SetBytes(enc)
 	} else {

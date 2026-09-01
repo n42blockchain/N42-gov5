@@ -245,9 +245,6 @@ func (p *TxPool) addTxsOnNewBlock(blockNum uint64, cacheView kvcache.CacheView, 
 		for _, change := range changesList.Changes {
 			switch change.Action {
 			case remote.Action_UPSERT, remote.Action_UPSERT_CODE:
-				if change.Incarnation > 0 {
-					continue
-				}
 				addr := gointerfaces.ConvertH160toAddress(change.Address)
 				id, ok := senders.getID(addr)
 				if !ok {

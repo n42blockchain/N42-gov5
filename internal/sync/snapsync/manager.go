@@ -455,7 +455,7 @@ func (m *Manager) executeAccountTask(ctx context.Context, task *RangeTask) {
 			}
 
 			// Validate and parse account data.
-			valid, incarnation, codeHash := parseAccountForTasks(entry.Account)
+			valid, hasStorage, codeHash := parseAccountForTasks(entry.Account)
 			if !valid {
 				log.Warn("Skipping account with invalid protobuf data",
 					"peer", task.Assigned, "addr", entry.Address)
@@ -469,7 +469,7 @@ func (m *Manager) executeAccountTask(ctx context.Context, task *RangeTask) {
 			}
 			lastAddress = entry.Address
 
-			if incarnation > 0 {
+			if hasStorage {
 				newStorageTasks = append(newStorageTasks, &RangeTask{
 					Kind:    TaskStorage,
 					Account: entry.Address,
@@ -709,33 +709,31 @@ func (m *Manager) removeTask(list *[]*RangeTask, task *RangeTask) {
 	}
 }
 
-// parseAccountForTasks validates and extracts incarnation and codeHash from
-// protobuf-encoded account data.
+// parseAccountForTasks validates encoded account data and reports whether the
+// account needs a storage fetch (it carries code) and which code to fetch.
 //
-// Returns valid=false if the data cannot be decoded as a protobuf StateAccount.
-// Since incarnation is no longer encoded in StateAccount, snap sync treats
-// contract accounts as storage-bearing and returns the legacy incarnation value
-// 1 for storage range requests. codeHash is returned when it is non-empty.
+// Returns valid=false if the data cannot be decoded as a StateAccount.
+// codeHash is returned when it is non-empty.
 //
 // Account data in the Account table uses V2 variable-length encoding
 // (Erigon-style fieldBits+varint). DecodeForStorage auto-detects legacy protobuf.
-func parseAccountForTasks(encoded []byte) (valid bool, incarnation uint16, codeHash []byte) {
+func parseAccountForTasks(encoded []byte) (valid bool, hasStorage bool, codeHash []byte) {
 	if len(encoded) == 0 {
-		return true, 0, nil
+		return true, false, nil
 	}
 
 	var acc account.StateAccount
 	if err := acc.DecodeForStorage(encoded); err != nil {
-		return false, 0, nil
+		return false, false, nil
 	}
 
 	if !acc.IsEmptyCodeHash() {
 		codeHash = make([]byte, 32)
 		copy(codeHash, acc.CodeHash[:])
-		incarnation = 1
+		hasStorage = true
 	}
 
-	return true, incarnation, codeHash
+	return true, hasStorage, codeHash
 }
 
 // sendGetAccountRange wraps the sync package's SendGetAccountRange.

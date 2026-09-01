@@ -14,7 +14,6 @@ package ethel
 
 import (
 	"bytes"
-	"encoding/binary"
 
 	"github.com/holiman/uint256"
 	"github.com/n42blockchain/N42/common/account"
@@ -67,15 +66,11 @@ func (h *HashOnlyComputer) ComputeRoot(
 	// Phase 2: Update HashedStorage.
 	for addr, slots := range storage {
 		addrHash := crypto.Keccak256(addr[:])
-		// incarnation removed from StateAccount — always use 0
-		var incarnation uint64
-
 		for slot, val := range slots {
 			slotHash := crypto.Keccak256(slot[:])
-			var compositeKey [72]byte
+			var compositeKey [64]byte
 			copy(compositeKey[:32], addrHash)
-			binary.BigEndian.PutUint64(compositeKey[32:40], incarnation)
-			copy(compositeKey[40:], slotHash)
+			copy(compositeKey[32:], slotHash)
 
 			if val == nil || val.IsZero() {
 				h.tx.Delete(modules.HashedStorage, compositeKey[:])
