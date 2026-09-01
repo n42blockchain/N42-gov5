@@ -105,7 +105,7 @@ func newLeafSpillWriter(outDir string) (*leafSpillWriter, error) {
 }
 
 func (w *leafSpillWriter) stream(table, bucket int) (*spillStream, error) {
-	id := table<<16 | bucket
+	id := table<<24 | bucket // buckets are up to 3 bytes wide (segPrefixLen)
 	if s := w.streams[id]; s != nil {
 		return s, nil
 	}
@@ -305,21 +305,39 @@ func finalizeBucket(zr *zstd.Decoder, enc *zstd.Encoder, src, dst string, corrup
 	}
 	var group []byte
 	corruptFrames := 0
-	for fi := 0; fi < len(frameStarts); fi++ {
-		end := len(comp)
-		if fi+1 < len(frameStarts) {
-			end = frameStarts[fi+1]
+	// The 4-byte magic can legitimately occur INSIDE a compressed frame
+	// (hash-heavy tables make that likely), so a candidate boundary is only
+	// trusted when the span up to it decodes. A frame with false magics
+	// inside fails at the short candidates and succeeds once the span is
+	// extended to its real end; a truly truncated (kill-tail) frame fails at
+	// every extension up to the merge cap and is dropped.
+	const maxMergeSpan = 512 << 20
+	for fi := 0; fi < len(frameStarts); {
+		decoded := false
+		for j := fi + 1; j <= len(frameStarts); j++ {
+			end := len(comp)
+			if j < len(frameStarts) {
+				end = frameStarts[j]
+			}
+			if end-frameStarts[fi] > maxMergeSpan {
+				break
+			}
+			dec, derr := zr.DecodeAll(comp[frameStarts[fi]:end], nil)
+			if derr == nil {
+				group = append(group, dec...)
+				fi = j
+				decoded = true
+				break
+			}
 		}
-		dec, derr := zr.DecodeAll(comp[frameStarts[fi]:end], nil)
-		if derr != nil {
+		if !decoded {
 			// Truncated/corrupt frame: flush the current contiguous group's
-			// complete rows and resync at the next frame boundary.
+			// complete rows and resync at the next candidate boundary.
 			appendGroup(group)
 			group = group[:0]
 			corruptFrames++
-			continue
+			fi++
 		}
-		group = append(group, dec...)
 	}
 	appendGroup(group)
 	if corruptFrames > 0 {
@@ -595,18 +613,26 @@ type decodedFrame struct {
 }
 
 type frameLRU struct {
-	m   map[uint64]*decodedFrame // key: table<<48 | bucket<<24 | frameIdx
-	ord []uint64
+	m         map[uint64]*decodedFrame // key: table<<48 | bucket<<24 | frameIdx
+	ord       []uint64
+	capFrames int
 }
 
-func newFrameLRU() *frameLRU { return &frameLRU{m: make(map[uint64]*decodedFrame)} }
+func newFrameLRU() *frameLRU { return newFrameLRUSize(leafFrameCache) }
+
+func newFrameLRUSize(n int) *frameLRU {
+	if n < 8 {
+		n = 8
+	}
+	return &frameLRU{m: make(map[uint64]*decodedFrame, n), capFrames: n}
+}
 
 func (l *frameLRU) get(k uint64) *decodedFrame { return l.m[k] }
 func (l *frameLRU) put(k uint64, d *decodedFrame) {
 	if _, ok := l.m[k]; ok {
 		return
 	}
-	if len(l.ord) >= leafFrameCache {
+	if len(l.ord) >= l.capFrames {
 		old := l.ord[0]
 		l.ord = l.ord[1:]
 		delete(l.m, old)

@@ -83,6 +83,9 @@ func (t *TrieRootComputer) flushTrieRootConcurrent(rl *trie.RetainList) (types.H
 			if t.storageRootHook != nil {
 				loader.SetStorageRootHook(t.storageRootHook)
 			}
+			if t.denseNodeHook != nil {
+				loader.SetDenseNodeHook(t.denseNodeHook)
+			}
 			h, err := loader.CalcTrieRootShard(rtx, byte(nib), nil)
 			if err != nil {
 				outs[nib].err = err
@@ -123,6 +126,21 @@ func (t *TrieRootComputer) flushTrieRootConcurrent(rl *trie.RetainList) (types.H
 	root, err := trie.CombineNibbleSubtries(subs)
 	if err != nil {
 		return types.Hash{}, err
+	}
+	// The shards never see the top branch; report it to the dense-node hook
+	// from the combined subtree hashes (a serial recompute below re-reports).
+	if t.denseNodeHook != nil {
+		var mask uint16
+		slots := make([]byte, 0, 16*33)
+		for nib := 0; nib < 16; nib++ {
+			if subs[nib] == nil {
+				continue
+			}
+			mask |= 1 << nib
+			slots = append(slots, 0xa0)
+			slots = append(slots, subs[nib]...)
+		}
+		t.denseNodeHook(nil, []byte{}, mask, mask, slots)
 	}
 
 	// Gold-check the concurrent root against the caller-supplied expected (header)
@@ -211,5 +229,8 @@ func (t *TrieRootComputer) flushTrieRootConcurrent(rl *trie.RetainList) (types.H
 func (t *TrieRootComputer) resetStorageRootHook() {
 	if t.storageRootHook != nil {
 		t.storageRootHook(nil, nil)
+	}
+	if t.denseNodeHook != nil {
+		t.denseNodeHook(nil, nil, 0, 0, nil)
 	}
 }

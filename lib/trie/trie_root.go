@@ -138,6 +138,14 @@ type RootHashAggregator struct {
 	// a cached, ready-to-use root delivered via an empty-key SHashStreamItem
 	// does not fire it). Passive: it never influences the computed root.
 	storageRootHook func(addrHash, root []byte)
+
+	// denseHook, when set, receives every branch the hash collectors report
+	// together with the FULL per-child slot frame (hashStackStride bytes per
+	// present child, nibble order: 0xa0+hash for hashed children, inline RLP
+	// otherwise) — including leaf/extension children whose hashes the
+	// TrieOf* rows deliberately omit. accWithInc is nil for the account trie.
+	// Passive; the slots slice aliases builder memory and must be copied.
+	denseHook func(accWithInc, keyHex []byte, hasState, hasTree uint16, slots []byte)
 }
 
 func NewRootHashAggregator() *RootHashAggregator {
@@ -172,6 +180,12 @@ func NewFlatDBTrieLoader(logPrefix string, rd RetainDeciderWithMarker, hc HashCo
 
 func (l *FlatDBTrieLoader) SetProofRetainer(pr *ProofRetainer) {
 	l.receiver.proofRetainer = pr
+}
+
+// SetDenseNodeHook installs a passive observer receiving every collected
+// branch with all 16 child slots (see RootHashAggregator.denseHook).
+func (l *FlatDBTrieLoader) SetDenseNodeHook(f func(accWithInc, keyHex []byte, hasState, hasTree uint16, slots []byte)) {
+	l.receiver.denseHook = f
 }
 
 // SetStorageRootHook installs a passive observer that receives the finalised
@@ -707,6 +721,9 @@ func (r *RootHashAggregator) genStructStorage() error {
 		}
 	}
 	r.groupsStorage, r.hasTreeStorage, r.hasHashStorage, err = GenStructStepEx(r.RetainNothing, r.currStorage.Bytes(), r.succStorage.Bytes(), r.hb, func(keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
+		if r.denseHook != nil && hasState != 0 && len(r.currAccK) > 0 {
+			r.denseHook(r.currAccK, keyHex, hasState, hasTree, r.hb.LastDenseSlots())
+		}
 		if r.shc == nil {
 			return nil
 		}
@@ -797,6 +814,9 @@ func (r *RootHashAggregator) genStructAccount() error {
 		wantProof = r.proofRetainer.ProofElement
 	}
 	if r.groups, r.hasTree, r.hasHash, err = GenStructStepEx(r.RetainNothing, r.curr.Bytes(), r.succ.Bytes(), r.hb, func(keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
+		if r.denseHook != nil && hasState != 0 {
+			r.denseHook(nil, keyHex, hasState, hasTree, r.hb.LastDenseSlots())
+		}
 		if r.hc == nil {
 			return nil
 		}

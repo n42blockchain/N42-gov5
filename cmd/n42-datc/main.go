@@ -58,6 +58,7 @@ import (
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/lib/kv"
 	log "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/lib/trie"
 	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
@@ -163,6 +164,7 @@ func main() {
 	startBlock := fs.Uint64("start", 0, "start block (resume; state must match)")
 	alpha := fs.Float64("alpha", 16, "target changes per node per epoch")
 	cbar := fs.Float64("cbar", 20, "assumed average changed keys per block")
+	accRootEpoch := fs.Uint64("acc-root-epoch", 0, "record the account-trie root node every N blocks from the loader (1 = per block, ~16 hashes/block; removes the depth-1..3 fan-out from proofs); 0 = synthesize the root from depth-1 records")
 	schedStr := fs.String("sched", "", "explicit per-depth epoch lengths e0,e1,...,e5 (overrides --alpha/--cbar); e0 = storage-root level, e1..e3 = account levels 1..3 (e.g. 1024,16384,1024,1,4194304,4194304 = sparse tops + per-block depth-3)")
 	batch := fs.Uint64("batch", 20_000, "blocks per MDBX commit (large batches spill MDBX dirty pages and stall)")
 	mapGB := fs.Int("map.gb", 1024, "MDBX map size GB")
@@ -296,6 +298,7 @@ func main() {
 		}
 		sched = s
 	}
+	sched.accRoot = *accRootEpoch
 	fmt.Printf("DATC build: blocks [%d, %d) α=%.0f C̄=%.0f GOGC=%d\n  epochs/depth: ", *startBlock, *endBlock, *alpha, *cbar, *gogc)
 	for d := 0; d <= maxChgDepth; d++ {
 		fmt.Printf("d%d=%d ", d, sched.e[d])
@@ -538,7 +541,14 @@ type builder struct {
 	// hook from 16 goroutines.
 	stoRootsMu sync.Mutex
 	stoRoots   map[[32]byte][32]byte
-	stoRootBuf []kvPair
+	// dense: full per-child slot frames of every branch the loader
+	// collected since the path's last flush (TrieRootComputer.
+	// SetDenseNodeHook). Lets mixed nodes (leaf/extension children, whose
+	// hashes the TrieOf* rows omit) be recorded as complete FULL/DIFF
+	// records instead of MIXED markers. Keyed path (accounts) /
+	// domain+path (storage).
+	denseAcc, denseSto map[string]denseEntry
+	stoRootBuf         []kvPair
 	// winWiped: window mode — contracts whose pre-state slots were
 	// tombstoned by a SELFDESTRUCT inside the current window.
 	winWiped map[types.Address]bool
@@ -546,6 +556,7 @@ type builder struct {
 	// Build statistics (format-change accounting; heartbeat/tests only).
 	statMixedBytesSaved uint64 // node bytes replaced by 1-byte MIXED markers
 	statMixedElided     uint64 // MIXED epochs elided (floor already MIXED)
+	statDenseUpgraded   uint64 // mixed TrieOf rows recorded in full from the dense hook
 
 	// Record depth per trie: account levels 1..accDepth-1 and storage levels
 	// 0..stoDepth-1 get node records + change rows; the reader folds from
@@ -559,6 +570,75 @@ type builder struct {
 // leaf/chg/node key and +4 B block suffix on every leaf row.
 func (b *builder) statLegacyExtraBytes() uint64 {
 	return b.leafSPuts*(8+4) + b.leafAPuts*4 + b.chgStoPuts*8 + b.nodeStoPuts*8
+}
+
+// denseEntry is one collected branch: masks + 33-byte slot per present child.
+type denseEntry struct {
+	hasState, hasTree uint16
+	slots             []byte
+}
+
+// onDenseNode is the TrieRootComputer dense-node hook (may run on shard
+// goroutines; (nil, nil, 0, 0, nil) resets).
+func (b *builder) onDenseNode(accWithInc, keyHex []byte, hasState, hasTree uint16, slots []byte) {
+	b.stoRootsMu.Lock()
+	defer b.stoRootsMu.Unlock()
+	if keyHex == nil && hasState == 0 {
+		b.denseAcc = make(map[string]denseEntry, len(b.denseAcc))
+		b.denseSto = make(map[string]denseEntry, len(b.denseSto))
+		return
+	}
+	if b.denseAcc == nil {
+		b.denseAcc = make(map[string]denseEntry, 1<<12)
+		b.denseSto = make(map[string]denseEntry, 1<<12)
+	}
+	e := denseEntry{hasState: hasState, hasTree: hasTree, slots: append([]byte{}, slots...)}
+	if accWithInc == nil {
+		b.denseAcc[string(keyHex)] = e
+		return
+	}
+	k := make([]byte, 0, len(accWithInc)+len(keyHex))
+	k = append(k, accWithInc...)
+	k = append(k, keyHex...)
+	b.denseSto[string(k)] = e
+}
+
+// takeDense returns (and forgets) the collected dense form of a path as a
+// synthetic MarshalTrieNode with every present child hashed (hasHash ==
+// hasState), or nil when none was collected or a child is inline.
+func (b *builder) takeDense(storage bool, key string) []byte {
+	b.stoRootsMu.Lock()
+	m := b.denseAcc
+	if storage {
+		m = b.denseSto
+	}
+	e, ok := m[key]
+	if ok {
+		delete(m, key)
+	}
+	b.stoRootsMu.Unlock()
+	if !ok {
+		return nil
+	}
+	const stride = 33
+	digits := 0
+	for i := 0; i < 16; i++ {
+		if e.hasState&(1<<i) != 0 {
+			digits++
+		}
+	}
+	if len(e.slots) != digits*stride {
+		return nil
+	}
+	hashes := make([]byte, 0, digits*32)
+	for i := 0; i < digits; i++ {
+		if e.slots[i*stride] != 0xa0 {
+			return nil // inline child: not representable as a hash list
+		}
+		hashes = append(hashes, e.slots[i*stride+1:i*stride+stride]...)
+	}
+	buf := make([]byte, 6+len(hashes))
+	return trie.MarshalTrieNode(e.hasState, e.hasTree, e.hasState, hashes, nil, buf)
 }
 
 // onStorageRoot is the TrieRootComputer storage-root hook. (nil, nil) is the
@@ -752,6 +832,9 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 				return fmt.Errorf("window mode needs e[%d]=%d divisible by W=%d", d, b.sched.e[d], W)
 			}
 		}
+		if b.sched.accRoot > 0 && b.sched.accRoot%W != 0 {
+			return fmt.Errorf("window mode needs --acc-root-epoch %d divisible by W=%d", b.sched.accRoot, W)
+		}
 		// The trie only materializes at window boundaries, so the depth-0
 		// (storage root) level can only be recorded there: its epoch IS the
 		// window. Recording that in the schedule (persisted in DatcMeta) keeps
@@ -824,6 +907,7 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		trc = commitment.NewTrieRootComputer()
 		trc.SetRwTx(wtx)
 		trc.SetStorageRootHook(b.onStorageRoot)
+		trc.SetDenseNodeHook(b.onDenseNode)
 		if b.concurrentRoot {
 			// Per-window root fans into 16 nibble shards, each opening its own
 			// RoTx from b.db and reading committed ⊕ stateOv. Byte-identical to
@@ -906,6 +990,12 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 					}
 				}
 			}
+			if r := b.sched.accRoot; r > 0 && (n+1)%r == 0 {
+				if err := b.flushAccRoot(wtx, n/r); err != nil {
+					tx.Rollback()
+					return fmt.Errorf("root flush block %d: %w", n, err)
+				}
+			}
 			blocksDone++
 			// Live heartbeat to STDERR (unbuffered through pipes): block height,
 			// instantaneous rate, ETA. Every 10s or 20K blocks, whichever first.
@@ -944,6 +1034,12 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 					return err
 				}
 			}
+			if r := b.sched.accRoot; r > 0 {
+				if err := b.flushAccRoot(wtx, (hi-1)/r); err != nil {
+					tx.Rollback()
+					return err
+				}
+			}
 			meta := make([]byte, 8+8+8)
 			binary.BigEndian.PutUint64(meta[0:], hi)
 			binary.BigEndian.PutUint64(meta[8:], uint64(b.sched.e[0]))
@@ -971,7 +1067,7 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 			if b.windowing {
 				cad = W
 			}
-			for k, v := range map[string]uint64{"srcad": cad, "accdepth": uint64(b.accDepth), "stodepth": uint64(b.stoDepth)} {
+			for k, v := range map[string]uint64{"srcad": cad, "accdepth": uint64(b.accDepth), "stodepth": uint64(b.stoDepth), "accroot": b.sched.accRoot} {
 				if err := tx.Put(tDatcMeta, []byte(k), binary.BigEndian.AppendUint64(nil, v)); err != nil {
 					tx.Rollback()
 					return err
