@@ -340,11 +340,19 @@ func encodeDeltaU64(buf []byte, values []uint64) []byte {
 type HeaderCompactStage struct {
 	inputFreezer *freezer.Freezer
 	outputDir    string
+
+	// frameSize mirrors BodyCompactStage.frameSize — see the note there on why
+	// framed is the default rather than an opt-in flag.
+	frameSize int
 }
 
 func NewHeaderCompactStage(input *freezer.Freezer, outputDir string) *HeaderCompactStage {
-	return &HeaderCompactStage{inputFreezer: input, outputDir: outputDir}
+	return &HeaderCompactStage{inputFreezer: input, outputDir: outputDir, frameSize: headerFrameSize}
 }
+
+// SetFrameSize overrides the blocks-per-frame; 0 emits the legacy
+// whole-segment layout, which HeaderCompactReader still decodes unchanged.
+func (s *HeaderCompactStage) SetFrameSize(n int) { s.frameSize = n }
 
 // headerIdxEntry stores fileNum (2B) + reserved (2B) + offset (4B) = 8B, matching body idx layout.
 type headerIdxEntry struct {
@@ -530,7 +538,7 @@ func (s *HeaderCompactStage) Run(ctx context.Context) error {
 		}
 
 		// Encode columnar segment.
-		compressed := encodeHeaderSegment(headers, enc)
+		compressed := encodeHeaderSegmentFramed(headers, enc, s.frameSize)
 
 		// File rotation.
 		segSize := int64(4 + len(compressed))
