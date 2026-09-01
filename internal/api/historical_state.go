@@ -108,6 +108,12 @@ func NewHistoricalStateReader(plainDB kv.RoDB, chainDir string) (*HistoricalStat
 //	(3) storhist has no entry ≤ blockN — slot was untouched up to
 //	    blockN, value is 0.
 //
+// NOT SAFE TO WIRE TO RPC YET. Case (3) cannot currently be told apart
+// from "the last write was in an earlier segment", because
+// HistoryReader.Lookup only searches the segment holding blockN — see the
+// defect note on that method. Both land in the PlainState fallback, so a
+// key that changed again after blockN answers with its CURRENT value.
+//
 // The 0-or-PlainState distinction matters: if storhist is incomplete
 // (segment build hasn't covered blockN yet), case (1) is the correct
 // fallback. The caller (RPC) should know if blockN is past the last
