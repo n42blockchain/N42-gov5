@@ -211,6 +211,33 @@ func NewHistoryReader(dir, prefix string) (*HistoryReader, error) {
 // HistSegmentSize blocks) — coverage = SegmentCount() * HistSegmentSize.
 func (r *HistoryReader) SegmentCount() uint64 { return r.store.SegmentCount() }
 
+// Lookup returns the largest block <= blockNum at which key was written.
+//
+// KNOWN DEFECT — do NOT wire this to an RPC path before fixing it
+// (investigated 2026-09-01; HistoricalStateReader is the only caller and is
+// itself referenced by nothing but its own tests, so nothing serves wrong
+// answers today):
+//
+//   It consults ONLY the segment holding blockNum. A key whose last write
+//   before blockNum landed in an EARLIER segment reports not-found, and
+//   HistoricalStateReader treats not-found as "untouched" and falls back to
+//   PlainState — i.e. it answers with the CURRENT value. That is wrong
+//   whenever the key changed again after blockNum: an account written at 5M
+//   and again at 24M, queried at 20M, returns the 24M value.
+//
+//   Walking backwards through earlier segments does NOT fix it on its own.
+//   The index is a bare MPHF with no existence filter (see the note in
+//   lib/recsplit/index.go), so an absent key maps to an arbitrary ordinal and
+//   EVERY earlier segment reports a false hit. Today those false hits are
+//   absorbed downstream — the caller decodes the changeset and checks the key
+//   is really there — but that makes a backwards walk cost one changeset
+//   retrieve+decode per segment for exactly the common case (a key that was
+//   never written), which is ~25 retrievals per miss at the current height.
+//
+//   The fix therefore belongs in the segment format: store a key fingerprint
+//   beside each ordinal, or add the existence filter the recsplit index
+//   already has a TODO for, then walk backwards verifying locally. Both mean
+//   regenerating accthist/storhist.
 func (r *HistoryReader) Lookup(key []byte, blockNum uint64) (uint64, bool) {
 	segNum := int64(blockNum / r.segmentSize)
 	if uint64(segNum) >= r.store.SegmentCount() {
