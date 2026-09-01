@@ -136,6 +136,14 @@ func main() {
 		runBench(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "prep-state" {
+		runPrepState(os.Args[2:])
+		return
+	}
+	if os.Args[1] == "merge" {
+		runMerge(os.Args[2:])
+		return
+	}
 	if os.Args[1] == "finalize-leaves" {
 		// Crash recovery: turn an interrupted build's leaf/chg spill files into
 		// queryable segments without re-running the build.
@@ -179,6 +187,8 @@ func main() {
 	accDepth := fs.Int("acc-depth", 4, "account-trie levels 1..N-1 get node records + change rows; the reader folds subtrees from the leaf history at depth N (persisted in DatcMeta)")
 	stoDepth := fs.Int("sto-depth", 2, "storage-trie levels 0..N-1 get node records + change rows; the reader folds at depth N (persisted in DatcMeta)")
 	pprofPort := fs.Int("pprof.port", 0, "serve net/http/pprof on this port (0=off)")
+	decodeWorkers := fs.Int("decode-workers", 3, "changeset decode pipeline workers (mainnet mode)")
+	prefetch := fs.Bool("prefetch", false, "pipeline workers pre-touch the Hashed* pages of upcoming blocks (parallel warm-up of a cold state DB; read-only)")
 	_ = fs.Parse(os.Args[2:])
 	if *out == "" {
 		die("--out required")
@@ -353,6 +363,8 @@ func main() {
 		}
 	}
 	b.concurrentRoot = *concurrentRoot
+	b.decodeWorkers = *decodeWorkers
+	b.prefetch = *prefetch
 	b.resumed = *startBlock > 0
 	b.stoLastFull.resumed = b.resumed
 	b.fwdMode = fwdMode
@@ -557,6 +569,13 @@ type builder struct {
 	statMixedBytesSaved uint64 // node bytes replaced by 1-byte MIXED markers
 	statMixedElided     uint64 // MIXED epochs elided (floor already MIXED)
 	statDenseUpgraded   uint64 // mixed TrieOf rows recorded in full from the dense hook
+
+	// buildStart: first block of this output (DatcMeta/start).
+	buildStart uint64
+
+	// decode pipeline width and state prefetch (see pipeline.go).
+	decodeWorkers int
+	prefetch      bool
 
 	// Record depth per trie: account levels 1..accDepth-1 and storage levels
 	// 0..stoDepth-1 get node records + change rows; the reader folds from
@@ -804,6 +823,15 @@ func human(n uint64) string {
 
 func (b *builder) run(start, end, batchBlocks uint64) error {
 	t0 := time.Now()
+	// The first block this OUTPUT ever built (persisted as DatcMeta/start so
+	// merge can check range contiguity); a resume keeps the original.
+	b.buildStart = start
+	if otx, e := b.db.BeginRo(context.Background()); e == nil {
+		if sv, _ := otx.GetOne(tDatcMeta, []byte("start")); len(sv) == 8 {
+			b.buildStart = binary.BigEndian.Uint64(sv)
+		}
+		otx.Rollback()
+	}
 	var trc *commitment.TrieRootComputer
 	var blocksDone uint64
 	lastBeat := time.Now()
@@ -814,7 +842,11 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 	// key keccaks were ~12% of the single-threaded loop).
 	var pipe *decodePipeline
 	if !b.fwdMode {
-		pipe = startDecodePipeline(b, start, end, 3)
+		w := b.decodeWorkers
+		if w < 1 {
+			w = 3
+		}
+		pipe = startDecodePipeline(b, start, end, w)
 		defer pipe.Stop()
 	}
 
@@ -1067,7 +1099,7 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 			if b.windowing {
 				cad = W
 			}
-			for k, v := range map[string]uint64{"srcad": cad, "accdepth": uint64(b.accDepth), "stodepth": uint64(b.stoDepth), "accroot": b.sched.accRoot} {
+			for k, v := range map[string]uint64{"srcad": cad, "accdepth": uint64(b.accDepth), "stodepth": uint64(b.stoDepth), "accroot": b.sched.accRoot, "start": b.buildStart} {
 				if err := tx.Put(tDatcMeta, []byte(k), binary.BigEndian.AppendUint64(nil, v)); err != nil {
 					tx.Rollback()
 					return err
