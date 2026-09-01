@@ -65,24 +65,24 @@ It's possible to create Account with very big storage (increase storage size dur
 Then delete this account (SELFDESTRUCT).
  Naive storage deletion may take several minutes - depends on Disk speed - means every Eth client
  will not process any incoming block that time. To protect against this attack:
- PlainState, HashedState and IntermediateTrieHash buckets have "incarnations". Account entity has field "Incarnation" -
- just a digit which increasing each SELFDESTRUCT or CREATE2 opcodes. Storage key formed by:
- `{account_key}{incarnation}{storage_hash}`. And [turbo/trie/trie_root.go](../../turbo/trie/trie_root.go) has logic - every time
- when Account visited - we save it to `accAddrHashWithInc` variable and skip any Storage or IntermediateTrieHashes with another incarnation.
+ Erigon keeps a per-account "incarnation" in every storage key. N42 dropped it: a
+ storage key is `{addrHash}{slotHash}` and SELFDESTRUCT deletes the slots explicitly (see
+ deleteAccountStorage in modules/state/commitment). Every time an account is visited the loader
+ saves its hash in `accAddrHash` and reads only the storage rows and intermediate hashes under it.
 */
 
 // FlatDBTrieLoader reads state and intermediate trie hashes in order equal to "Preorder trie traversal"
 // (Preorder - visit Root, visit Left, visit Right)
 //
 // It produces stream of values and send this stream to `receiver`
-// It skips storage with incorrect incarnations
+// Storage rows and intermediate hashes are read only under the account being built
 //
 // Each intermediate hash key firstly pass to RetainDecider, only if it returns "false" - such AccTrie can be used.
 type FlatDBTrieLoader struct {
-	logPrefix          string
-	trace              bool
-	rd                 RetainDeciderWithMarker
-	accAddrHashWithInc [32]byte // addrHash of the currently-built account (incarnation removed — storage keys are 32B addrHash, matching reth)
+	logPrefix   string
+	trace       bool
+	rd          RetainDeciderWithMarker
+	accAddrHash [32]byte // addrHash of the currently-built account; storage keys are prefixed by this 32B hash
 
 	ihSeek, accSeek, storageSeek []byte
 	kHex, kHexS                  []byte
@@ -227,7 +227,7 @@ func (l *FlatDBTrieLoader) SetWitnessRetainer(w *WitnessRetainer) {
 //
 //			for iterateAccounts from prevIH to currentIH {
 //				use(account)
-//				for iterateIHOfStorage within accountWithIncarnation{
+//				for iterateIHOfStorage within account{
 //					if canSkipState
 //						goto SkipStorage
 //
@@ -302,10 +302,10 @@ func (l *FlatDBTrieLoader) CalcTrieRoot(tx kv.Tx, quit <-chan struct{}) (types.H
 			if err = l.receiver.Receive(AccountStreamItem, kHex, nil, &l.accountValue, nil, nil, false, 0); err != nil {
 				return EmptyRoot, err
 			}
-			copy(l.accAddrHashWithInc[:], k)
-			// incarnation removed: storage trie key prefix is the 32B addrHash only
-			accWithInc := l.accAddrHashWithInc[:]
-			for ihKS, ihVS, hasTreeS, err2 := storageTrie.SeekToAccount(accWithInc); ; ihKS, ihVS, hasTreeS, err2 = storageTrie.Next() {
+			copy(l.accAddrHash[:], k)
+			// storage trie key prefix is the 32B addrHash
+			accHash := l.accAddrHash[:]
+			for ihKS, ihVS, hasTreeS, err2 := storageTrie.SeekToAccount(accHash); ; ihKS, ihVS, hasTreeS, err2 = storageTrie.Next() {
 				if err2 != nil {
 					return EmptyRoot, err2
 				}
@@ -319,7 +319,7 @@ func (l *FlatDBTrieLoader) CalcTrieRoot(tx kv.Tx, quit <-chan struct{}) (types.H
 					goto SkipStorage
 				}
 
-				for vS, err3 := ss.SeekBothRange(accWithInc, firstPrefix); vS != nil; _, vS, err3 = ss.NextDup() {
+				for vS, err3 := ss.SeekBothRange(accHash, firstPrefix); vS != nil; _, vS, err3 = ss.NextDup() {
 					if err3 != nil {
 						return EmptyRoot, err3
 					}
@@ -327,7 +327,7 @@ func (l *FlatDBTrieLoader) CalcTrieRoot(tx kv.Tx, quit <-chan struct{}) (types.H
 					if keyIsBefore(ihKS, l.kHexS) { // read until next AccTrie
 						break
 					}
-					if err = l.receiver.Receive(StorageStreamItem, accWithInc, l.kHexS, nil, vS[32:], nil, false, 0); err != nil {
+					if err = l.receiver.Receive(StorageStreamItem, accHash, l.kHexS, nil, vS[32:], nil, false, 0); err != nil {
 						return EmptyRoot, err
 					}
 				}
@@ -337,7 +337,7 @@ func (l *FlatDBTrieLoader) CalcTrieRoot(tx kv.Tx, quit <-chan struct{}) (types.H
 					break
 				}
 
-				if err = l.receiver.Receive(SHashStreamItem, accWithInc, ihKS, nil, nil, ihVS, hasTreeS, 0); err != nil {
+				if err = l.receiver.Receive(SHashStreamItem, accHash, ihKS, nil, nil, ihVS, hasTreeS, 0); err != nil {
 					return EmptyRoot, err
 				}
 				if len(ihKS) == 0 { // means we just sent acc.storageRoot
@@ -449,8 +449,8 @@ func (l *FlatDBTrieLoader) CalcTrieRootStreamingCutoff(accNext, stoNext LeafIter
 		if err := l.receiver.Receive(AccountStreamItem, l.kHex, nil, &l.accountValue, nil, nil, false, 0); err != nil {
 			return EmptyRoot, err
 		}
-		copy(l.accAddrHashWithInc[:], accK)
-		accWithInc := l.accAddrHashWithInc[:]
+		copy(l.accAddrHash[:], accK)
+		accHash := l.accAddrHash[:]
 
 		// Drain storage leaves belonging to this account (prefix == hashed addr).
 		for stoOK {
@@ -458,7 +458,7 @@ func (l *FlatDBTrieLoader) CalcTrieRootStreamingCutoff(accNext, stoNext LeafIter
 				break
 			}
 			hexutil.DecompressNibbles(stoK[32:64], &l.kHexS)
-			if err := l.receiver.Receive(StorageStreamItem, accWithInc, l.kHexS, nil, stoV, nil, false, 0); err != nil {
+			if err := l.receiver.Receive(StorageStreamItem, accHash, l.kHexS, nil, stoV, nil, false, 0); err != nil {
 				return EmptyRoot, err
 			}
 			if err := advanceSto(); err != nil {
@@ -677,7 +677,7 @@ func (r *RootHashAggregator) advanceKeysStorage(k []byte, terminator bool) {
 	r.currStorage.Reset()
 	r.currStorage.Write(r.succStorage.Bytes())
 	r.succStorage.Reset()
-	// Transform k to nibbles, but skip the incarnation part in the middle
+	// k is already in nibbles
 	r.succStorage.Write(k)
 
 	if terminator {
@@ -689,10 +689,6 @@ func (r *RootHashAggregator) cutoffKeysStorage(cutoff int) {
 	r.currStorage.Reset()
 	r.currStorage.Write(r.succStorage.Bytes())
 	r.succStorage.Reset()
-	//if r.currStorage.Len() > 0 {
-	//r.succStorage.Write(r.currStorage.Bytes()[:cutoff-1])
-	//r.succStorage.WriteByte(r.currStorage.Bytes()[cutoff-1] + 1) // Modify last nibble in the incarnation part of the `currStorage`
-	//}
 }
 
 func (r *RootHashAggregator) genStructStorage() error {
@@ -708,7 +704,7 @@ func (r *RootHashAggregator) genStructStorage() error {
 	}
 	var wantProof func(_ []byte) *proofElement
 	if r.proofRetainer != nil {
-		// incarnation removed: storage key = addrHash(32B) nibbles + storage prefix
+		// storage key = addrHash(32B) nibbles + storage prefix
 		var fullKey [2 * (length.Hash + length.Hash)]byte
 		for i, b := range r.currAccK {
 			fullKey[i*2] = b / 16
@@ -801,7 +797,6 @@ func (r *RootHashAggregator) genStructAccount() error {
 		if r.a.Nonce != 0 {
 			r.accData.FieldSet |= AccountFieldNonceOnly
 		}
-		r.accData.Incarnation = 0
 		data = &r.accData
 	}
 	r.wasIHStorage = false
@@ -1195,9 +1190,9 @@ type StorageTrieCursor struct {
 	nextCreated           []byte
 	skipState             bool
 
-	accWithInc []byte
-	kBuf       []byte
-	quit       <-chan struct{}
+	accHash []byte
+	kBuf    []byte
+	quit    <-chan struct{}
 }
 
 func StorageTrie(canUse func(prefix []byte) (bool, []byte), shc StorageHashCollector2, c kv.Cursor, quit <-chan struct{}) *StorageTrieCursor {
@@ -1222,7 +1217,7 @@ func (c *StorageTrieCursor) FirstNotCoveredPrefix() ([]byte, bool) {
 	return c.firstNotCoveredPrefix, ok
 }
 
-func (c *StorageTrieCursor) SeekToAccount(accWithInc []byte) (k, v []byte, hasTree bool, err error) {
+func (c *StorageTrieCursor) SeekToAccount(accHash []byte) (k, v []byte, hasTree bool, err error) {
 	c.skipState = true
 	// Reset per-account level state. erigon always writes an empty-path
 	// account.root record whose _unmarshal (path is empty) nils every stale
@@ -1244,13 +1239,13 @@ func (c *StorageTrieCursor) SeekToAccount(accWithInc []byte) (k, v []byte, hasTr
 	c.lvl = 0
 	c.cur = nil
 	c.next = c.next[:0]
-	c.accWithInc = accWithInc
-	hexutil.DecompressNibbles(c.accWithInc, &c.kBuf)
+	c.accHash = accHash
+	hexutil.DecompressNibbles(c.accHash, &c.kBuf)
 	_, c.nextCreated = c.canUse(c.kBuf)
-	c.seek = append(c.seek[:0], c.accWithInc...)
+	c.seek = append(c.seek[:0], c.accHash...)
 	c.prev = c.cur
 	var ok bool
-	ok, err = c._seek(accWithInc, []byte{})
+	ok, err = c._seek(accHash, []byte{})
 	if err != nil {
 		return []byte{}, nil, false, err
 	}
@@ -1295,7 +1290,7 @@ func (c *StorageTrieCursor) SeekToAccount(accWithInc []byte) (k, v []byte, hasTr
 		// See modules/state/commitment/trie_root_trace_test.go (TestRethShape*).
 		var treeMask uint16
 		var probe [33]byte
-		copy(probe[:32], c.accWithInc)
+		copy(probe[:32], c.accHash)
 		for nib := byte(0); nib < 16; nib++ {
 			probe[32] = nib
 			sk, _, e := c.c.Seek(probe[:])
@@ -1384,7 +1379,7 @@ func (c *StorageTrieCursor) _seek(seek, withinPrefix []byte) (bool, error) {
 		if k == nil {
 			return false, nil
 		}
-		if !bytes.HasPrefix(k, c.accWithInc) || !bytes.HasPrefix(k[32:], withinPrefix) {
+		if !bytes.HasPrefix(k, c.accHash) || !bytes.HasPrefix(k[32:], withinPrefix) {
 			return false, nil
 		}
 	} else {
@@ -1392,7 +1387,7 @@ func (c *StorageTrieCursor) _seek(seek, withinPrefix []byte) (bool, error) {
 			c.k[c.lvl] = nil
 			return false, nil
 		}
-		if !bytes.HasPrefix(k, c.accWithInc) {
+		if !bytes.HasPrefix(k, c.accHash) {
 			c.k[c.lvl] = nil
 			return false, nil
 		}
@@ -1567,7 +1562,7 @@ func (c *StorageTrieCursor) _deleteCurrent() error {
 	if c.shc == nil || c.deleted[c.lvl] {
 		return nil
 	}
-	if err := c.shc(c.accWithInc, c.k[c.lvl], 0, 0, 0, nil, nil); err != nil {
+	if err := c.shc(c.accHash, c.k[c.lvl], 0, 0, 0, nil, nil); err != nil {
 		return err
 	}
 	c.deleted[c.lvl] = true
@@ -1710,10 +1705,6 @@ func MarshalTrieNodeTyped(hasState, hasTree, hasHash uint16, h []types.Hash, buf
 		copy(hashes[i*length.Hash:(i+1)*length.Hash], h[i].Bytes())
 	}
 	return buf
-}
-
-func StorageKey(addressHash []byte, incarnation uint64, prefix []byte) []byte {
-	return dbutils2.GenerateCompositeStoragePrefix(addressHash, incarnation, prefix)
 }
 
 func MarshalTrieNode(hasState, hasTree, hasHash uint16, hashes, rootHash []byte, buf []byte) []byte {

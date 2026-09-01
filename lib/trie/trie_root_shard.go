@@ -108,9 +108,9 @@ func (l *FlatDBTrieLoader) CalcTrieRootShard(tx kv.Tx, nibble byte, quit <-chan 
 			if err = l.receiver.Receive(AccountStreamItem, kHex, nil, &l.accountValue, nil, nil, false, 0); err != nil {
 				return EmptyRoot, err
 			}
-			copy(l.accAddrHashWithInc[:], k)
-			accWithInc := l.accAddrHashWithInc[:]
-			for ihKS, ihVS, hasTreeS, err2 := storageTrie.SeekToAccount(accWithInc); ; ihKS, ihVS, hasTreeS, err2 = storageTrie.Next() {
+			copy(l.accAddrHash[:], k)
+			accHash := l.accAddrHash[:]
+			for ihKS, ihVS, hasTreeS, err2 := storageTrie.SeekToAccount(accHash); ; ihKS, ihVS, hasTreeS, err2 = storageTrie.Next() {
 				var vS []byte
 				var err3 error
 				if err2 != nil {
@@ -126,7 +126,7 @@ func (l *FlatDBTrieLoader) CalcTrieRootShard(tx kv.Tx, nibble byte, quit <-chan 
 					goto SkipStorage
 				}
 
-				vS, err3 = ss.SeekBothRange(accWithInc, firstPrefix)
+				vS, err3 = ss.SeekBothRange(accHash, firstPrefix)
 				if err3 != nil {
 					return EmptyRoot, fmt.Errorf("storage state seek: %w", err3)
 				}
@@ -135,7 +135,7 @@ func (l *FlatDBTrieLoader) CalcTrieRootShard(tx kv.Tx, nibble byte, quit <-chan 
 					if keyIsBefore(ihKS, l.kHexS) {
 						break
 					}
-					if err = l.receiver.Receive(StorageStreamItem, accWithInc, l.kHexS, nil, vS[32:], nil, false, 0); err != nil {
+					if err = l.receiver.Receive(StorageStreamItem, accHash, l.kHexS, nil, vS[32:], nil, false, 0); err != nil {
 						return EmptyRoot, err
 					}
 					_, vS, err3 = ss.NextDup()
@@ -148,7 +148,7 @@ func (l *FlatDBTrieLoader) CalcTrieRootShard(tx kv.Tx, nibble byte, quit <-chan 
 				if ihKS == nil {
 					break
 				}
-				if err = l.receiver.Receive(SHashStreamItem, accWithInc, ihKS, nil, nil, ihVS, hasTreeS, 0); err != nil {
+				if err = l.receiver.Receive(SHashStreamItem, accHash, ihKS, nil, nil, ihVS, hasTreeS, 0); err != nil {
 					return EmptyRoot, err
 				}
 				if len(ihKS) == 0 {
