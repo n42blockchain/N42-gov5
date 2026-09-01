@@ -627,6 +627,10 @@ type HeaderCompactReader struct {
 
 	cachedSeg     int64
 	cachedHeaders []*block.Header
+
+	// frameCache holds decoded sub-segment frames for framed segments; see
+	// header_frames.go. Empty for legacy whole-segment files.
+	frameCache []cachedHeaderFrame
 }
 
 // OpenHeaderCompact opens a headerc.cidx + headerc.NNNN.cdat set for reading.
@@ -677,7 +681,17 @@ func (r *HeaderCompactReader) ReadHeader(blockNum uint64) (*block.Header, error)
 	seg := int64(blockNum / HeaderSegmentSize)
 	idx := int(blockNum % HeaderSegmentSize)
 
+	// An already-decoded whole segment answers for free, so the sequential
+	// path and every legacy segment behave exactly as before.
 	if seg != r.cachedSeg {
+		// Framed segment: decode only the frame holding this block.
+		h, ok, err := r.readHeaderFramed(seg, idx)
+		if err != nil {
+			return nil, fmt.Errorf("block %d: %w", blockNum, err)
+		}
+		if ok {
+			return h, nil
+		}
 		if err := r.loadSegment(seg); err != nil {
 			return nil, fmt.Errorf("block %d: %w", blockNum, err)
 		}
@@ -687,6 +701,21 @@ func (r *HeaderCompactReader) ReadHeader(blockNum uint64) (*block.Header, error)
 			blockNum, idx, len(r.cachedHeaders))
 	}
 	return r.cachedHeaders[idx], nil
+}
+
+// dataFile opens (and caches) the cdat file holding a segment. Shared by the
+// whole-segment and framed read paths.
+func (r *HeaderCompactReader) dataFile(fileNum uint16) (*os.File, error) {
+	if f, ok := r.dataFiles[fileNum]; ok {
+		return f, nil
+	}
+	path := filepath.Join(r.dir, fmt.Sprintf("headerc.%04d.cdat", fileNum))
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open dat %d: %w", fileNum, err)
+	}
+	r.dataFiles[fileNum] = f
+	return f, nil
 }
 
 // loadSegment reads and decodes segment segNum, populating the cache.
@@ -702,16 +731,9 @@ func (r *HeaderCompactReader) loadSegment(segNum int64) error {
 	}
 	e := decodeHeaderIdx(entryBuf[:])
 
-	// Open/cache dat file.
-	df, ok := r.dataFiles[e.fileNum]
-	if !ok {
-		path := filepath.Join(r.dir, fmt.Sprintf("headerc.%04d.cdat", e.fileNum))
-		f, err := os.Open(path)
-		if err != nil {
-			return fmt.Errorf("open dat %d: %w", e.fileNum, err)
-		}
-		r.dataFiles[e.fileNum] = f
-		df = f
+	df, err := r.dataFile(e.fileNum)
+	if err != nil {
+		return err
 	}
 
 	// Read framed data: [4B size][compressed].
