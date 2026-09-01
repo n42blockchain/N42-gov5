@@ -32,6 +32,17 @@ OFFSET=900000; WINDOWS=3; SENDERS=3000; PERTX=3000
 # CHAIN outruns the load generator -- the signature is occupancy falling while
 # block time keeps dropping, which is the harness's ceiling, not the chain's.
 CONC=32; RPCBATCH=100
+# Number of txflood processes. One generator tops out well below what the chain
+# can absorb once block time drops: at 0.571 s blocks a single flood at conc 96
+# filled only 68% of them. Each process gets its own sender range, and each
+# funds its own senders -- so the faucet cost multiplies by FLOODS too.
+FLOODS=1
+# Submissions per second, 0 = as fast as possible. Unpaced, a generator dumps
+# its whole pre-signed set and EXITS: 12M transactions in 81 s, after which the
+# pool (300k slots, ~13 blocks) drains and occupancy falls while the chain is
+# still healthy. Pace it slightly above what the chain consumes and the supply
+# lasts the whole round.
+RATE=0
 BROADCAST=0; TAG=run; PROFILING=0; DECAY_SEC=0
 # 5% over the 1.0 gwei floor: the floor itself reads back a few wei high.
 DECAY_FLOOR_WEI=1050000000
@@ -47,6 +58,8 @@ while (( $# )); do
     --pertx)       PERTX=$2; shift 2 ;;
     --conc)        CONC=$2; shift 2 ;;
     --rpcbatch)    RPCBATCH=$2; shift 2 ;;
+    --floods)      FLOODS=$2; shift 2 ;;
+    --rate)        RATE=$2; shift 2 ;;
     --decay-sec)   DECAY_SEC=$2; shift 2 ;;
     --tag)         TAG=$2; shift 2 ;;
     --bin)         BIN=$2; shift 2 ;;
@@ -68,7 +81,7 @@ JOURNAL_RESET=$QS_TOOLS/txpool-journal-reset
 OUT=$QS_ROOT/bench-flood-$TAG.out
 ERR=$QS_ROOT/bench-flood-$TAG.err
 
-echo "=== $TAG : bin=$(basename "$BIN") pool=$POOL_SLOTS/$POOL_QUEUE interval=${INTERVAL_MS}ms offset=$OFFSET broadcast=$BROADCAST supply=${SENDERS}x${PERTX}@conc${CONC}/batch${RPCBATCH} ==="
+echo "=== $TAG : bin=$(basename "$BIN") pool=$POOL_SLOTS/$POOL_QUEUE interval=${INTERVAL_MS}ms offset=$OFFSET broadcast=$BROADCAST supply=${FLOODS}x${SENDERS}x${PERTX}@conc${CONC}/batch${RPCBATCH}/rate${RATE} ==="
 
 # A benchmark is a different launch profile, not an in-place mutation. If a
 # normal fleet is already listening, readiness probes can accidentally measure
@@ -165,32 +178,70 @@ fi
 
 rpcs=""
 for (( p = QS_HTTP_BASE; p <= QS_HTTP_BASE + 6; p++ )); do rpcs="$rpcs""http://127.0.0.1:$p,"; done
-flood=(-rpc "${rpcs%,}" -senders "$SENDERS" -pertx "$PERTX" -gasprice 10000000000
-       -rpcbatch "$RPCBATCH" -conc "$CONC" -sender-offset "$OFFSET")
-if (( BROADCAST )); then flood+=(-broadcast); else flood+=(-shard-senders); fi
-setsid "$TXFLOOD" "${flood[@]}" >"$OUT" 2>"$ERR" </dev/null &
-FLOOD_PID=$!
 
-# Funding and pre-signing must finish before the measured windows open.
-flooding=0; deadline=$(( SECONDS + 300 ))
+# One generator per FLOODS, each on its own sender range. The ranges are spaced
+# a million apart rather than by SENDERS: an overlap silently reuses accounts
+# that the other generator has already advanced the nonce on, which is rule 1's
+# demote spiral with a harder-to-see cause.
+FLOOD_PIDS=(); FLOOD_OUTS=()
+for (( f = 0; f < FLOODS; f++ )); do
+  fout=$OUT; ferr=$ERR
+  if (( FLOODS > 1 )); then fout=$OUT.$f; ferr=$ERR.$f; fi
+  flood=(-rpc "${rpcs%,}" -senders "$SENDERS" -pertx "$PERTX" -gasprice 10000000000
+         -rpcbatch "$RPCBATCH" -conc "$CONC" -sender-offset "$(( OFFSET + f * 1000000 ))")
+  if (( RATE > 0 )); then flood+=(-rate "$RATE"); fi
+  if (( BROADCAST )); then flood+=(-broadcast); else flood+=(-shard-senders); fi
+  setsid "$TXFLOOD" "${flood[@]}" >"$fout" 2>"$ferr" </dev/null &
+  FLOOD_PIDS+=($!)
+  FLOOD_OUTS+=("$fout")
+
+  # Every generator funds its senders FROM THE SAME dev faucet, so two of them
+  # funding at once race on that one account's nonce: the second gets
+  # "replacement transaction underpriced" and its funding never confirms, while
+  # the first floods happily and the round looks like it has half its supply.
+  # Start the next one only once this one is past funding and submitting.
+  if (( f + 1 < FLOODS )); then
+    echo "waiting for flood $f to finish funding before starting the next..."
+    deadline=$(( SECONDS + 600 ))
+    while (( SECONDS < deadline )); do
+      grep -q '^flooding ' "$fout" 2>/dev/null && break
+      kill -0 "${FLOOD_PIDS[f]}" 2>/dev/null || break
+      sleep 5
+    done
+  fi
+done
+
+kill_floods() { for pid in "${FLOOD_PIDS[@]}"; do kill -TERM "$pid" 2>/dev/null || true; done; }
+
+# Funding and pre-signing must finish before the measured windows open — for
+# EVERY generator. Opening the windows while one is still funding measures a
+# supply ramp, not the chain.
+flooding=0; deadline=$(( SECONDS + 600 ))
 while (( SECONDS < deadline )); do
   sleep 5
-  if grep -q '^flooding ' "$OUT" 2>/dev/null; then flooding=1; break; fi
-  if ! kill -0 "$FLOOD_PID" 2>/dev/null; then break; fi
+  ready=0; alive=0
+  for (( f = 0; f < FLOODS; f++ )); do
+    if grep -q '^flooding ' "${FLOOD_OUTS[f]}" 2>/dev/null; then ready=$(( ready + 1 )); fi
+    if kill -0 "${FLOOD_PIDS[f]}" 2>/dev/null; then alive=$(( alive + 1 )); fi
+  done
+  if (( ready == FLOODS )); then flooding=1; break; fi
+  if (( alive == 0 )); then break; fi
 done
 if (( flooding )); then
-  echo "flood is submitting; opening measurement windows"
+  echo "all $FLOODS flood(s) submitting; opening measurement windows"
   sleep 15   # let the pool reach depth
 else
-  echo "flood never reached the flooding stage - check $ERR" >&2
-  tail -3 "$ERR" 2>/dev/null
-  kill -TERM "$FLOOD_PID" 2>/dev/null || true
+  echo "a flood never reached the flooding stage - check $ERR*" >&2
+  for (( f = 0; f < FLOODS; f++ )); do
+    tail -2 "${FLOOD_OUTS[f]/$OUT/$ERR}" 2>/dev/null
+  done
+  kill_floods
   ./stop-fleet.sh --no-inspect
   exit 1
 fi
 
 ./measure-tps.sh --windows "$WINDOWS" --window-sec 60
 
-kill -TERM "$FLOOD_PID" 2>/dev/null || true
+kill_floods
 ./stop-fleet.sh --no-inspect
 echo "=== $TAG done ==="
