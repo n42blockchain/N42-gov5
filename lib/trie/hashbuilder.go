@@ -330,7 +330,7 @@ func (hb *HashBuilder) leafHash(keyLength int, keyHex []byte, val rlphacks.RlpSe
 	return hb.leafHashWithKeyVal(key, val)
 }
 
-func (hb *HashBuilder) accountLeaf(keyLength int, keyHex []byte, balance *uint256.Int, nonce uint64, incarnation uint64, fieldSet uint32, accountCodeSize int) (err error) {
+func (hb *HashBuilder) accountLeaf(keyLength int, keyHex []byte, balance *uint256.Int, nonce uint64, fieldSet uint32, accountCodeSize int) (err error) {
 	if hb.trace {
 		fmt.Printf("ACCOUNTLEAF %d (%b)\n", keyLength, fieldSet)
 	}
@@ -341,7 +341,6 @@ func (hb *HashBuilder) accountLeaf(keyLength int, keyHex []byte, balance *uint25
 	hb.acc.Nonce = nonce
 	hb.acc.Balance.Set(balance)
 	hb.acc.Initialised = true
-	// hb.acc.Incarnation removed — incarnation no longer stored in StateAccount
 
 	popped := 0
 	var root node
@@ -405,7 +404,7 @@ func (hb *HashBuilder) accountLeaf(keyLength int, keyHex []byte, balance *uint25
 	return nil
 }
 
-func (hb *HashBuilder) accountLeafHash(keyLength int, keyHex []byte, balance *uint256.Int, nonce uint64, incarnation uint64, fieldSet uint32) (err error) {
+func (hb *HashBuilder) accountLeafHash(keyLength int, keyHex []byte, balance *uint256.Int, nonce uint64, fieldSet uint32) (err error) {
 	if hb.trace {
 		fmt.Printf("ACCOUNTLEAFHASH %d (%b)\n", keyLength, fieldSet)
 	}
@@ -413,7 +412,6 @@ func (hb *HashBuilder) accountLeafHash(keyLength int, keyHex []byte, balance *ui
 	hb.acc.Nonce = nonce
 	hb.acc.Balance.Set(balance)
 	hb.acc.Initialised = true
-	// hb.acc.Incarnation removed — incarnation no longer stored in StateAccount
 
 	popped := 0
 	if fieldSet&AccountFieldStorageOnly != 0 {
