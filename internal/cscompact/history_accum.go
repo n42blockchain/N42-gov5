@@ -48,6 +48,11 @@ func newHistoryAccumulator(outputDir, prefix string) (*HistoryAccumulator, error
 		return nil, err
 	}
 
+	// NOTE: whole-segment resume, same shape as HistoryBuilder's — if this
+	// accumulator ever gains a caller, it needs peelPartialTail() first, or a
+	// run that stopped mid-segment will make the next one start past the tip.
+	// It has no non-test callers today, which is the only reason it is not
+	// wired here (the constructor does not know the target endBlock).
 	segStart := store.SegmentCount() * HistSegmentSize
 
 	return &HistoryAccumulator{
