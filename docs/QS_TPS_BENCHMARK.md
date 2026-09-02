@@ -2096,3 +2096,37 @@ The honest next step is to repeat the spread round when the box is quiet and the
 fleet's files fit in the page cache, and compare. Until then the single-sink
 table is a measurement of a workload nobody runs and the spread table is a
 measurement of a machine under pressure.
+
+### The retention genus: a cache sized in blocks, not in bytes
+
+A peer's heap profile found 4.24 GB of their execution layer — 59.5% of its live
+heap at the end of a flood — in decoded transactions of every block imported
+since the flood started, retained by a subscriber rather than by the tree.
+Grepping for the same shape here (rule 32) finds two:
+
+| | sized by | at 22,857-transaction blocks |
+|---|---|---|
+| `blockCacheLimit = 512` | **block count** | 1.2 GB/node at 110 B a transaction, **3.3 GB** at 300 |
+| `latestBlockCh` buffer 50 | **block count** | 0.12 – 0.3 GB/node |
+
+`blockCache` is an LRU of 512 **fully decoded** blocks. A decoded transaction is
+several times its wire encoding — `uint256` fields, not bytes — so the cache's
+footprint is a fixed count multiplied by a quantity that grows with block size.
+On a chain of small blocks 512 is nothing; at bench block sizes it is gigabytes,
+and nothing in the code says so.
+
+This is consistent with the `CanonicalTransactions` figure already in this file:
+**2,474 MB live** in a morning heap profile, 84% of it reached through
+`HasBlockAndState → GetBlock`. That path was fixed and no longer decodes, but
+**the fix removed a filler, not the cache** — legitimate `GetBlock` callers
+still populate all 512 slots.
+
+**Not measured**: how full the cache runs now that its largest filler is gone.
+The next round's heap profile answers it directly, and until then this is a
+structural finding with a magnitude estimate, not a measurement.
+
+- **Rule 36: a cache sized in items retains bytes.** Where the items are blocks,
+  transactions or accounts, the ceiling moves with the workload and the constant
+  in the code stops describing it. Both of today's retention findings — mine and
+  the peer's — are this, and the peer's `PacketCache` analogue on my side (256
+  blocks, 796 MB measured) is a third.
