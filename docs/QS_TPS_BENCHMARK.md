@@ -1757,3 +1757,66 @@ must not be generalised to the whole table.
   round and convert "the number moved" into "the number moved more than the
   baseline drifted" — which on this box, today, was the difference between a
   12% claim and a 1.3% one.
+
+## The parallel-EVM A-B-A did not measure a speed. It found a consensus bug
+
+`exec` is 56% of a follower's import — the largest remaining item — and
+`internal/parallel` has implemented Block-STM for a long time behind a config
+key the bench harness could not reach. A `--parallel-evm` flag made it
+reachable, and the first round ever run with it halted the chain.
+
+One binary; the flag was the only variable. Bookend quantity declared before
+the round: `exec` µs/tx, the two sequential legs to agree within 10%.
+
+| leg | execution | bad blocks | full blocks | `exec` µs/tx | TPS |
+|---|---|---|---|---|---|
+| A | sequential | **0** | 78 | 3.380 | 36,288 |
+| **B** | **Block-STM** | **12** | **0** | — chain halted | **0** |
+| A2 | sequential | **0** | 99 | 3.397 | 36,721 |
+
+The bookends agree to **0.5%**, so the middle leg's failure is attributable to
+the flag and not to the box, the neighbour or the harness.
+
+Under Block-STM, six of seven nodes rejected the same two blocks and the
+measurement window produced zero blocks. **The failure is not a state-root
+mismatch and not a storage-wipe case:**
+
+```
+could not apply tx 0 from block 13618674:
+insufficient funds for gas * price + value:
+address 0x8AD44d589C5f3fF71E8112a71cd5cA1cFEbca6Db have 0 want 210000000000001
+```
+
+The leader built that block sequentially, and every transaction in it was
+payable in order. The importing nodes' parallel executor computed a state in
+which the sender had **zero** balance — it did not see an earlier transaction
+of the *same block* crediting that address. Cross-transaction write visibility.
+
+### This overturns an earlier entry in this file
+
+An earlier section records verifying that the SELFDESTRUCT/CREATE2 storage-wipe
+defect the runtime warning named was fixed — `ParallelStateWriter.CreateContract`
+records the marker, `ReadAccountStorage` shadows stale slots, the merge applies
+the wipes, and `wipe_shadow_test.go` passes five ordering cases — and softening
+the warning to "not consensus-audited end to end".
+
+**That verification was correct and the conclusion drawn beside it was too
+generous.** The distance between "the named defect is closed" and "the path is
+usable" was larger than the section allowed for. The warning now states the
+measured failure instead of the absence of an audit, and the flag's help text
+says the same.
+
+- **Rule 29: a stop condition declared before the round is what turns a failed
+  round into a finding.** The prediction file said "any state-root mismatch,
+  bad-block report or import error ends the experiment regardless of the
+  timing". Without that line, `win1: blocks=0 TPS=0` reads as a harness fault
+  and gets rerun. With it, the monitor raised it as the primary signal within
+  a minute.
+- **Rule 30: A-B-A certifies a failure as well as a difference.** The design was
+  adopted to separate signal from drift; two clean sequential legs bracketing a
+  halt also prove the halt was not the environment.
+
+And the flag was worth adding for this alone: **a path that cannot be exercised
+cannot be found to be broken.** This one had been unreachable from the rig for
+as long as it has existed, and it survived ten minutes of 22,857-transaction
+blocks.

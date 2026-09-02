@@ -778,9 +778,30 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			// pins the ordering cases. docs/ethel/erigon-borrow-audit.md
 			// records the same conclusion.
 			//
-			// It stays EXPERIMENTAL because that one defect being closed is not
-			// an assessment of the rest of the path, which has not had one.
-			log.Warn("ParallelEVM ENABLED — EXPERIMENTAL: Block-STM path is not consensus-audited end to end; do not enable on a production chain without one")
+			// That defect being closed was never an assessment of the rest of
+			// the path, and on 2026-09-02 the rest of the path was measured:
+			// an A-B-A on the 7-node bench fleet (sequential / Block-STM /
+			// sequential, one binary, the flag the only variable) HALTED THE
+			// CHAIN on the middle leg. Six of seven nodes rejected the same two
+			// blocks and the measurement window produced zero blocks, while
+			// both sequential legs ran clean at ~36,500 TPS with zero bad
+			// blocks and agreed with each other to 0.5% on execution cost.
+			//
+			// The failure is not a state root mismatch and not a storage-wipe
+			// case. It is cross-transaction write visibility:
+			//
+			//   could not apply tx 0 from block 13618674: insufficient funds
+			//   for gas * price + value: address 0x8AD4..a6Db have 0 want
+			//   210000000000001
+			//
+			// The leader built that block sequentially and every transaction in
+			// it was payable in order. The importing nodes' parallel executor
+			// computed a state in which the sender had ZERO balance, i.e. it
+			// did not see an earlier transaction of the SAME BLOCK crediting
+			// that address. See docs/QS_TPS_BENCHMARK.md.
+			//
+			// So this is not "unaudited", it is "known to diverge under load".
+			log.Warn("ParallelEVM ENABLED — BROKEN under load: a 2026-09-02 bench A-B-A halted the chain (6/7 nodes rejected blocks; the parallel executor missed an intra-block credit). Do NOT enable on any chain whose blocks matter")
 			realBC.SetParallelEVM(true)
 		}
 		if cfg.NodeCfg.Prefetch {
