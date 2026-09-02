@@ -52,7 +52,10 @@ export N42_MAX_GOSSIP_MB=8
 # Contention profiling samples inside the critical path being measured, so it is
 # off unless the round's purpose IS the profile.
 export QS_PROFILE_CONTENTION=$PROFILING
-export QS_EXTRA_ARGS="--pprof.maxcpu $MAXCPU --block-interval-ms $INTERVAL_MS --miner.gasceil $GASCEIL --txpool.globalslots $POOL_SLOTS --txpool.globalqueue $POOL_QUEUE"
+# QS_NODE_EXTRA appends flags the harness has no option of its own for, so a
+# round can turn on something like --parallel-evm without this line growing a
+# parameter per experiment. Set it in the environment of the round, not here.
+export QS_EXTRA_ARGS="--pprof.maxcpu $MAXCPU --block-interval-ms $INTERVAL_MS --miner.gasceil $GASCEIL --txpool.globalslots $POOL_SLOTS --txpool.globalqueue $POOL_QUEUE ${QS_NODE_EXTRA:-}"
 
 echo "bench fleet: maxcpu=$MAXCPU/node ($(nproc) threads) gasceil=$GASCEIL interval=${INTERVAL_MS}ms pool=$POOL_SLOTS/$POOL_QUEUE profiling=$PROFILING"
 
