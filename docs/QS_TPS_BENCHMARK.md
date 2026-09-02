@@ -1482,3 +1482,52 @@ matters because the mechanism is what gets applied to the next decision:
   bursts; check whether the cores are free during the phase you are optimising,
   not over the profile window. And when an overlapped optimisation measures
   zero, the reason is the length of the other leg, not the supply of cores.
+
+## The co-residency premise, measured: the scheduler is imperfect and it barely matters
+
+Rule 22a's arithmetic assumed the scheduler fills physical cores before doubling
+up on SMT siblings. `scripts/qs/coresidency.py` measured it during a saturated
+round (22,857-tx blocks, 100% occupancy, 35,809 TPS, unpinned, 5,549 samples at
+10 ms):
+
+| runnable fleet threads | samples | avg cores shared by 2 DIFFERENT nodes | cores in use |
+|---|---|---|---|
+| <16 (idle) | 3,931 (71%) | 0.04 | 15 |
+| 16–47 | 1,165 (21%) | 1.32 | 44 |
+| 48–95 | 333 (6.0%) | 7.01 | 79 |
+| 96–159 | 106 (1.9%) | 23.75 | 108 |
+| **≥160 (burst)** | **14 (0.25%)** | **49.79** | **120** |
+
+Peak 201 runnable threads, against the 196 the fan-out arithmetic predicted.
+
+**The premise is refuted, and the refutation does not matter.** At the burst
+~50 of 128 physical cores carry threads from two different nodes while **only
+120 cores are in use** — the scheduler leaves 8 idle and doubles up anyway, so
+it is not filling physical cores first. But the contended state is rare: ≥96
+runnable threads in 2.2% of samples, ≥160 in 0.25%, and 71% of the time fewer
+than 16 fleet threads are runnable at all.
+
+That rarity is not luck, it is the duty cycle, and the phase numbers predict it:
+
+	recovery / import   21.7 / 146.1 ms  = 14.9%
+	import / wall       146.1 / 638 ms   = 22.9%
+	=> burst share of wall              = 3.4%   (measured 2.2%)
+
+So the upper bound on what pinning could buy here is about **0.5% of wall
+clock** — 3% contended × ~50% of threads in cross-node pairs × ~35% lost to
+sibling sharing. Against a peer fleet that measured **+26%** from the same fix,
+because theirs shared physical cores 100% of the time by construction rather
+than 3% of the time by scheduling.
+
+The argument made before this measurement reached the same conclusion, but it
+reached it through a claim that turned out to be false — that the scheduler
+packs physical cores first. Right answer, wrong premise, which is the third
+time this session; recording it because the premise would have been load-bearing
+for a different fleet shape. A fleet with a longer recovery duty cycle, or one
+sized so its burst is permanent rather than 3% of the time, gets a very
+different number from the same scheduler.
+
+Caveat on method: field 39 is the last CPU a thread *ran* on. A thread in state
+R may be queued rather than running, so co-residency here is where threads last
+ran, not a snapshot of simultaneous execution. It is the right instrument for
+"does this scheduler double up", not for exact instantaneous placement.

@@ -78,6 +78,7 @@ def main():
           'PINNED, and this tool then measures the pinning, not the scheduler.')
     shared_samples = tot_samples = 0
     hist = collections.Counter()
+    bucket = collections.defaultdict(lambda: [0, 0, 0])   # runnable-bucket -> [samples, sum(multi), max cores used]
     peak = 0
     end = time.time() + secs
     while time.time() < end:
@@ -85,18 +86,30 @@ def main():
         if live == 0:
             time.sleep(0.02); continue
         multi = sum(1 for c, tags in core.items() if len(tags) > 1)
-        used  = len(core)
         hist[multi] += 1
+        # Bucket by how many fleet threads were runnable: the whole question is
+        # what the scheduler does during the synchronised burst, and a mean over
+        # a mostly-idle fleet answers a different one (rule 22a).
+        b = 0 if live < 16 else 16 if live < 48 else 48 if live < 96 else 96 if live < 160 else 160
+        bucket[b][0] += 1
+        bucket[b][1] += multi
+        bucket[b][2] = max(bucket[b][2], len(core))
         peak = max(peak, live)
         tot_samples += 1
         if multi: shared_samples += 1
-        time.sleep(0.05)
+        time.sleep(0.01)
     print('\nsamples with >=1 runnable thread: %d' % tot_samples)
     print('samples where two DIFFERENT nodes shared a physical core: %d (%.1f%%)'
           % (shared_samples, 100 * shared_samples / max(tot_samples, 1)))
     print('peak simultaneously-runnable fleet threads: %d (of %d physical cores)' % (peak, PHYS))
-    print('distribution of cross-node shared cores per sample:')
-    for k in sorted(hist)[:12]:
-        print('  %2d shared cores: %5d samples (%.1f%%)' % (k, hist[k], 100 * hist[k] / tot_samples))
+    print('\nby how busy the fleet was at that instant:')
+    print('  %-18s %8s %14s %12s' % ('runnable threads', 'samples', 'avg shared', 'cores used'))
+    names = {0: '<16 (idle)', 16: '16-47', 48: '48-95', 96: '96-159', 160: '>=160 (burst)'}
+    for k in sorted(bucket):
+        n, msum, mx = bucket[k]
+        print('  %-18s %8d %14.2f %12d' % (names[k], n, msum / n, mx))
+    print('\ndistribution of cross-node shared cores per sample:')
+    for k in sorted(hist)[:10]:
+        print('  %2d shared cores: %6d samples (%.1f%%)' % (k, hist[k], 100 * hist[k] / tot_samples))
 
 main()
