@@ -55,9 +55,16 @@ func appendU256(b []byte, v *uint256.Int) []byte {
 	if v == nil {
 		return append(b, 0xFF)
 	}
-	bs := v.Bytes()
-	b = append(b, byte(len(bs)))
-	return append(b, bs...)
+	// uint256's Bytes() is Bytes32() re-sliced and returned, so the array
+	// escapes and every call allocates. Taking Bytes32 into a local keeps it on
+	// the stack: the bytes appended are identical -- ByteLen is what Bytes()
+	// slices by -- and this is called five or six times per transaction, which
+	// made uint256.Bytes 78% of all objects allocated while writing a block's
+	// transactions.
+	buf := v.Bytes32()
+	n := v.ByteLen()
+	b = append(b, byte(n))
+	return append(b, buf[32-n:]...)
 }
 
 func appendUvarint(b []byte, v uint64) []byte {
