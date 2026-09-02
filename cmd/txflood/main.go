@@ -225,6 +225,21 @@ func deriveKey(i int) *ecdsa.PrivateKey {
 	return k
 }
 
+// deriveRecipient returns the i-th flood recipient. A separate domain from
+// deriveKey's, so a recipient can never collide with a sender: the two sets
+// touching would silently turn a spread workload back into a partly-shared one.
+//
+// Only the address is derived, never a key -- these accounts receive and never
+// send, so there is nothing to sign for them and no funding to do.
+func deriveRecipient(i int) types.Address {
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], uint64(i))
+	h := crypto.Keccak256([]byte("n42-txflood-recipient-v1"), b[:])
+	var a types.Address
+	copy(a[:], h[12:])
+	return a
+}
+
 var nonceFailures int64
 
 func main() {
@@ -242,6 +257,14 @@ func main() {
 	broadcast := flag.Bool("broadcast", false, "submit each tx to ALL rpcs")
 	offset := flag.Uint64("sender-offset", 0, "shift the derived sender set; use a fresh offset to get accounts with no nonce history")
 	shardSenders := flag.Bool("shard-senders", false, "route each sender's txs to one node (sender%rpcs) so every proposer owns full nonce sequences")
+	// The flood used to pay ONE hard-coded address, so a full 22,857-tx block
+	// wrote ~1,201 distinct accounts (the senders, plus the sink) where a block
+	// spread over N recipients writes up to N more. That is the difference
+	// between measuring a chain's transfer path and measuring its state growth,
+	// and it made every cross-client per-transaction comparison in
+	// docs/QS_TPS_BENCHMARK.md incomparable. Default 0 keeps the old behaviour
+	// so recorded rounds stay reproducible; set it to make the state work real.
+	recipients := flag.Int("recipients", 0, "spread transfers over N derived recipients (0 = the single 0x..dEaD sink, the historical behaviour)")
 	skipFunding := flag.Bool("skip-funding", false, "assume the derived senders are already funded (re-run after a funding round that mined but aborted)")
 	rpcBatch := flag.Int("rpcbatch", 0, "submit N txs per eth_batchRawTransaction call (0 = one eth_sendRawTransaction per tx; max 200)")
 	flag.Parse()
@@ -259,7 +282,11 @@ func main() {
 	urls := strings.Split(*rpcs, ",")
 	signer := transaction.NewLondonSigner(big.NewInt(*chainID))
 	dead := types.HexToAddress("0x000000000000000000000000000000000000dEaD")
-	fmt.Printf("faucet=%s chainId=%d rpcs=%d senders=%d\n", from.Hex(), *chainID, len(urls), *senders)
+	sink := "single 0x..dEaD sink"
+	if *recipients > 0 {
+		sink = fmt.Sprintf("%d derived recipients", *recipients)
+	}
+	fmt.Printf("faucet=%s chainId=%d rpcs=%d senders=%d recipients=%s\n", from.Hex(), *chainID, len(urls), *senders, sink)
 
 	signOne := func(priv *ecdsa.PrivateKey, from, to types.Address, nonce uint64, value *uint256.Int, gas uint64) string {
 		inner := &transaction.LegacyTx{Nonce: nonce, GasPrice: uint256.NewInt(*gasPrice), Gas: gas, To: &to, Value: value, From: &from}
@@ -400,7 +427,14 @@ func main() {
 					return // leave this sender's slots empty rather than sign from a guessed nonce
 				}
 				for j := 0; j < *perTx; j++ {
-					raws[s*(*perTx)+j] = signOne(keys[s], addrs[s], dead, base+uint64(j), uint256.NewInt(1), 21000)
+					to := dead
+					if *recipients > 0 {
+						// Stride by sender so two senders rarely share a
+						// recipient inside one block; the block's write set is
+						// then min(recipients, txs in the block).
+						to = deriveRecipient((s**perTx + j) % *recipients)
+					}
+					raws[s*(*perTx)+j] = signOne(keys[s], addrs[s], to, base+uint64(j), uint256.NewInt(1), 21000)
 				}
 			}(s)
 		}

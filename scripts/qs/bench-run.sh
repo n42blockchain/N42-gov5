@@ -44,6 +44,12 @@ FLOODS=1
 # lasts the whole round.
 RATE=0
 BROADCAST=0; TAG=run; PROFILING=0; DECAY_SEC=0
+# Spread the flood over N recipients instead of the single 0x..dEaD sink. This
+# decides WHAT the round measures: at 0 a full block writes ~1,201 accounts (the
+# senders plus the sink) and the state work is nearly nothing; at 22857 it writes
+# one per transaction. Every cross-client number in docs/QS_TPS_BENCHMARK.md
+# before 2026-09-02 was taken at 0 and is not comparable with a spread workload.
+RECIPIENTS=0
 # Block size is set by the gas ceiling, not by --interval-ms: at 21000 gas a
 # transfer, 480M gas is 22,857 transactions and the block fills before the
 # interval expires. Vary this to separate a real per-block cost from one that
@@ -66,6 +72,7 @@ while (( $# )); do
     --rpcbatch)    RPCBATCH=$2; shift 2 ;;
     --floods)      FLOODS=$2; shift 2 ;;
     --rate)        RATE=$2; shift 2 ;;
+    --recipients)  RECIPIENTS=$2; shift 2 ;;
     --decay-sec)   DECAY_SEC=$2; shift 2 ;;
     --tag)         TAG=$2; shift 2 ;;
     --bin)         BIN=$2; shift 2 ;;
@@ -87,7 +94,7 @@ JOURNAL_RESET=$QS_TOOLS/txpool-journal-reset
 OUT=$QS_ROOT/bench-flood-$TAG.out
 ERR=$QS_ROOT/bench-flood-$TAG.err
 
-echo "=== $TAG : bin=$(basename "$BIN") pool=$POOL_SLOTS/$POOL_QUEUE interval=${INTERVAL_MS}ms gasceil=${GASCEIL:-default} offset=$OFFSET broadcast=$BROADCAST supply=${FLOODS}x${SENDERS}x${PERTX}@conc${CONC}/batch${RPCBATCH}/rate${RATE} ==="
+echo "=== $TAG : bin=$(basename "$BIN") pool=$POOL_SLOTS/$POOL_QUEUE interval=${INTERVAL_MS}ms gasceil=${GASCEIL:-default} offset=$OFFSET broadcast=$BROADCAST recipients=${RECIPIENTS} supply=${FLOODS}x${SENDERS}x${PERTX}@conc${CONC}/batch${RPCBATCH}/rate${RATE} ==="
 
 # A benchmark is a different launch profile, not an in-place mutation. If a
 # normal fleet is already listening, readiness probes can accidentally measure
@@ -197,6 +204,7 @@ for (( f = 0; f < FLOODS; f++ )); do
   flood=(-rpc "${rpcs%,}" -senders "$SENDERS" -pertx "$PERTX" -gasprice 10000000000
          -rpcbatch "$RPCBATCH" -conc "$CONC" -sender-offset "$(( OFFSET + f * 1000000 ))")
   if (( RATE > 0 )); then flood+=(-rate "$RATE"); fi
+  if (( RECIPIENTS > 0 )); then flood+=(-recipients "$RECIPIENTS"); fi
   if (( BROADCAST )); then flood+=(-broadcast); else flood+=(-shard-senders); fi
   setsid "$TXFLOOD" "${flood[@]}" >"$fout" 2>"$ferr" </dev/null &
   FLOOD_PIDS+=($!)
