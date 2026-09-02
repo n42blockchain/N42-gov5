@@ -1899,3 +1899,28 @@ it chosen for transactions instead.
   a comment (`must be safe for concurrent reads`) and the prefetcher did not
   advertise it at all, which made the unmarked one the more dangerous of the
   two.
+
+### What the fix has to look like, and why it is not a one-liner
+
+`lib/kv/mdbx` opens no `NOTLS`, and `BeginRo` calls `runtime.LockOSThread()`.
+A read transaction is therefore **bound to an OS thread**, which settles the
+shape of any fix: a concurrent reader cannot share one transaction and cannot
+hand one between goroutines. Each worker must open its own `BeginRo` on its own
+goroutine — exactly what `ConcurrentMPTRootComputer`, `engine_state_adapter` and
+`witness_replay_worker` already do.
+
+Two things make it more than a mechanical change:
+
+- **Worker count.** `StatePrefetcher` picks `runtime.NumCPU()/2` — 128 on this
+  box. One read transaction per worker is a very different resource than one
+  goroutine per worker, so the count has to be chosen for transactions.
+- **Snapshot consistency.** An MDBX read transaction sees the last committed
+  state at `BeginRo`. Workers opening at slightly different moments could
+  straddle a commit and disagree. `evmRecord` already runs under a read
+  transaction, so the executor's own view is a fixed snapshot; the workers' views
+  must be pinned to the same one rather than opened opportunistically.
+
+Neither is hard, but both are consensus-critical, and this file has spent a day
+demonstrating what happens to a claim made without measuring. The defect is
+recorded, proven and warned about; the fix is a separate piece of work with its
+own round.
