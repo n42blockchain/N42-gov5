@@ -13,8 +13,6 @@ package hash
 
 import (
 	"bytes"
-	"runtime"
-	"sync"
 
 	"github.com/n42blockchain/N42/common/rlp"
 	"github.com/n42blockchain/N42/common/types"
@@ -30,20 +28,6 @@ func DeriveShaErigon(list DerivableList) types.Hash {
 	if n == 0 {
 		return EmptyRootHash
 	}
-
-	// The leaf values are independent of each other and of the trie:
-	// EncodeIndex(i) is a pure function of list[i], and the HashBuilder walk
-	// that follows needs them one at a time in trie order. Encoding is 28% of
-	// this function at a full block (0.203 of 0.734 us/tx over 22,857 leaves,
-	// see BenchmarkTxRoot), and the whole function sits on the SERIAL import
-	// path -- ValidateBody runs before Process, and the leader pays it again
-	// when it assembles. So the encode is worth taking off the critical path,
-	// and unlike splitting the trie itself it cannot change the result: the
-	// bytes handed to GenStructStep are the same bytes, produced earlier.
-	//
-	// Sequential below the threshold, where the goroutines cost more than the
-	// encode; the fleet's blocks are 22,857 leaves and always take the pool.
-	values := encodeValuesParallel(list, n)
 
 	hb := trie.NewHashBuilder(false)
 	var valBuf bytes.Buffer
@@ -67,13 +51,9 @@ func DeriveShaErigon(list DerivableList) types.Hash {
 			succ = deriveTrieKey(succBuf[:0], keyRLP[:0], uint64(next))
 		}
 
-		if values != nil {
-			leafData.Value = rlphacks.RlpEncodedBytes(values[i])
-		} else {
-			valBuf.Reset()
-			list.EncodeIndex(i, &valBuf)
-			leafData.Value = rlphacks.RlpEncodedBytes(valBuf.Bytes())
-		}
+		valBuf.Reset()
+		list.EncodeIndex(i, &valBuf)
+		leafData.Value = rlphacks.RlpEncodedBytes(valBuf.Bytes())
 		var err error
 		groups, hasTree, hasHash, err = trie.GenStructStep(
 			retain, curr, succ, hb, nil, &leafData,
@@ -114,75 +94,4 @@ func deriveTrieKey(dst, rlpBuf []byte, index uint64) []byte {
 		dst = append(dst, b>>4, b&0x0f)
 	}
 	return append(dst, 0x10)
-}
-
-// parallelEncodeMinLeaves is the point below which the worker pool costs more
-// than it saves. A 480M-gas block of transfers is 22,857 leaves. A var, not a
-// const, so the equivalence test can force either path for the same input.
-var parallelEncodeMinLeaves = 2048
-
-// encodeValuesParallel returns the RLP-encoded leaf value for every index, or
-// nil when the list is small enough that the sequential path should encode
-// inline. Each worker owns a disjoint stride and its own buffer, so nothing is
-// shared but the output slice, whose entries are written once each.
-func encodeValuesParallel(list DerivableList, n int) [][]byte {
-	if n < parallelEncodeMinLeaves {
-		return nil
-	}
-	workers := runtime.GOMAXPROCS(0)
-	if workers > 16 {
-		workers = 16 // past this the encode is memory-bound, not CPU-bound
-	}
-	if workers < 2 {
-		return nil
-	}
-	values := make([][]byte, n)
-	var wg sync.WaitGroup
-	wg.Add(workers)
-	for w := 0; w < workers; w++ {
-		go func(start int) {
-			defer wg.Done()
-			// One arena per worker rather than one allocation per value. The
-			// values must outlive the loop, so they cannot alias a buffer the
-			// next iteration overwrites; but appending into a single arena and
-			// slicing it AFTER the loop is safe, because the arena stops
-			// growing -- and stops moving -- once the loop ends. Copying each
-			// value instead cost one allocation per transaction, which doubled
-			// this function's allocation count on the import path.
-			count := (n - start + workers - 1) / workers
-			if count <= 0 {
-				return
-			}
-			var buf bytes.Buffer
-			// Size the arena from the first value. Leaves in one list are the
-			// same kind of object, so for a block of transfers this is exact to
-			// within the eighth added for slack; append still grows it correctly
-			// when they are not, it just copies once more. Without the hint the
-			// arena doubles its way up and allocates ~4x the bytes it keeps.
-			list.EncodeIndex(start, &buf)
-			first := append([]byte(nil), buf.Bytes()...)
-			arena := make([]byte, 0, count*len(first)*9/8+64)
-			spans := make([][2]int, 0, count)
-			idxs := make([]int, 0, count)
-
-			arena = append(arena, first...)
-			spans = append(spans, [2]int{0, len(arena)})
-			idxs = append(idxs, start)
-			for i := start + workers; i < n; i += workers {
-				buf.Reset()
-				list.EncodeIndex(i, &buf)
-				off := len(arena)
-				arena = append(arena, buf.Bytes()...)
-				spans = append(spans, [2]int{off, len(arena)})
-				idxs = append(idxs, i)
-			}
-			// Slice only after the loop: the arena stops growing, and therefore
-			// stops moving, once no more appends can happen.
-			for k, i := range idxs {
-				values[i] = arena[spans[k][0]:spans[k][1]:spans[k][1]]
-			}
-		}(w)
-	}
-	wg.Wait()
-	return values
 }
