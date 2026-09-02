@@ -1861,3 +1861,41 @@ And the flag was worth adding for this alone: **a path that cannot be exercised
 cannot be found to be broken.** This one had been unreachable from the rig for
 as long as it has existed, and it survived ten minutes of 22,857-transaction
 blocks.
+
+### The same defect is in a feature that is not marked experimental
+
+Chasing the parallel-EVM halt to `MdbxTx.GetOne`'s shared cursor raised an
+obvious follow-up: is any other path concurrent over one transaction? The
+codebase mostly gets this right — `ConcurrentMPTRootComputer`,
+`engine_state_adapter` and `witness_replay_worker` all open a **per-worker
+RoTx**. One does not.
+
+`StatePrefetcher.Prefetch` starts `runtime.NumCPU()/2` I/O workers — **128 on
+the bench box** — and hands every one of them the *same* `state.StateReader`.
+The caller then executes the block with that same reader on the main goroutine:
+
+```go
+prefetcher.Prefetch(concreteBlock, reader)   // N goroutines read through `reader`
+...
+bc.process.Process(concreteBlock, ibs, reader, writer, blockHashFunc)
+```
+
+So the prefetch workers race each other *and* the executor on one MDBX cursor —
+the identical mechanism that halted the chain under `--parallel-evm`, in a
+feature gated by an ordinary config key (`prefetch`) rather than by an
+experimental flag.
+
+It has never been observed in a round for one reason: **`Prefetch` defaults to
+false and no bench round has set it.** That is luck, not safety.
+
+Both `internal/prefetcher.go` and the switch site in `internal/node/node.go` now
+say so, and enabling it logs a warning. The fix is not a comment — each worker
+needs its own transaction — and it is not a one-line change either: at
+`NumCPU/2` the worker count is chosen for cores, and "one RoTx per worker" needs
+it chosen for transactions instead.
+
+- **Rule 32: when a defect is found on one path, grep for the same shape on the
+  others before moving on.** The parallel executor advertised its requirement in
+  a comment (`must be safe for concurrent reads`) and the prefetcher did not
+  advertise it at all, which made the unmarked one the more dangerous of the
+  two.
