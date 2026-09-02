@@ -183,6 +183,7 @@ func main() {
 	concurrentRoot := fs.Bool("concurrent-root", false, "parallel per-window root: 16 top-nibble shards on per-worker RoTx ⊕ a 4-table StateOverlay; byte-identical to serial (and gold-checked each window). Window/incremental mode only; ~7-8x on the per-window ComputeRoot (the build's dominant cost in the DeFi-dense region)")
 	leafSeg := fs.Bool("leaf-seg", false, "stream leaf history to zstd segment files instead of MDBX (mainnet-scale builds; ~10x smaller)")
 	gogc := fs.Int("gogc", 400, "GOGC percent (GC was ~25% CPU at the default 100; the live heap is stable so a high target is safe)")
+	memGB := fs.Int("mem.gb", 100, "Go soft memory limit in GB (debug.SetMemoryLimit): the GC works harder as the heap nears it instead of letting GOGC balloon the process into an OOM kill on a shared box")
 	window := fs.Bool("window", true, "mainnet: batch the root per E_1 window (bpp Path C) instead of per block — identical records, gold check per window")
 	accDepth := fs.Int("acc-depth", 4, "account-trie levels 1..N-1 get node records + change rows; the reader folds subtrees from the leaf history at depth N (persisted in DatcMeta)")
 	stoDepth := fs.Int("sto-depth", 2, "storage-trie levels 0..N-1 get node records + change rows; the reader folds at depth N (persisted in DatcMeta)")
@@ -298,7 +299,7 @@ func main() {
 	}
 
 	debug.SetGCPercent(*gogc)
-	debug.SetMemoryLimit(100 << 30) // hard ceiling well under the 128 GB box
+	debug.SetMemoryLimit(int64(*memGB) << 30)
 
 	sched := newSchedule(*alpha, *cbar)
 	if *schedStr != "" {
