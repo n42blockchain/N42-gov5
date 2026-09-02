@@ -1435,3 +1435,50 @@ a much smaller reason to spend a slot.
 - **Rule 24: a per-transaction cost that three independent clients hit within
   50% of each other is a property of the workload, not of the code.** Look for
   the remaining room somewhere other than the thing everyone already agrees on.
+
+## Qualifying rule 22: the cores are idle on average, not during the burst
+
+Rule 22 said recovery optimisations measured ~1% because the work was on idle
+cores — node 0 runs at 509% CPU of the 37 threads it is allowed on a 256-thread
+box. The utilisation number is right; the *reason* attached to it was too
+simple, and a second client team's CPU-pinning finding prompted the check.
+
+This box (EPYC 9B45, Supermicro H14SSL-NT) is 128 physical cores / 256 threads,
+SMT siblings paired as `(c, c+128)` — verified from
+`topology/thread_siblings_list`, cpu0↔128 through cpu127↔255 — and a single
+NUMA node, so there is no locality question. **This fleet does not pin at all**:
+no `taskset`, `numactl` or cpuset anywhere in the deploy or bench scripts, only
+`--pprof.maxcpu` setting GOMAXPROCS. So the sibling-collision failure that team
+hit (contiguous logical ranges putting node i and node i+4 on the same physical
+cores) cannot occur here.
+
+What the check did find is that **the fleet is synchronised**, so an average is
+the wrong statistic for a burst:
+
+| | |
+|---|---|
+| GOMAXPROCS per node | 37 (`(nproc+6)/7`) |
+| recovery fan-out per node | 28 (`GOMAXPROCS - GOMAXPROCS/4`) |
+| blocks imported by all nodes in the same second | **215 / 225 (96%)** |
+| peak recovery threads, all 7 importing at once | 196 on 128 physical cores |
+| | **1.5x oversubscribed during the recovery phase** |
+
+So the cores are not idle when the fan-out runs. They are idle on a 25-second
+average and contended during the milliseconds the optimisation targets.
+
+This does not change rule 22's conclusion, but it corrects its mechanism, which
+matters because the mechanism is what gets applied to the next decision:
+
+- **Recovery is not free because cores are available.** They are not, at the
+  moment it runs.
+- **It is free because it is overlapped with a LONGER leg.** `exec` is 3.135
+  µs/tx against a `joinWait` that is a fraction of it, so recovery finishes
+  inside execution's shadow whether it is contended or not. At 100% hint
+  coverage the workers find memos and exit immediately — the oversubscription
+  evaporates — and the total still did not move, which is the measurement that
+  distinguishes the two explanations.
+
+- **Rule 22a: "the machine is idle" is an average.** A synchronised fleet
+  bursts; check whether the cores are free during the phase you are optimising,
+  not over the profile window. And when an overlapped optimisation measures
+  zero, the reason is the length of the other leg, not the supply of cores.
