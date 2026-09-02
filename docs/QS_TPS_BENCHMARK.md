@@ -1531,3 +1531,67 @@ Caveat on method: field 39 is the last CPU a thread *ran* on. A thread in state
 R may be queued rather than running, so co-residency here is where threads last
 ran, not a snapshot of simultaneous execution. It is the right instrument for
 "does this scheduler double up", not for exact instantaneous placement.
+
+## The transactions root: measured on the fleet, and the benchmark that understated it
+
+The encoding cache (`Transaction.EthEncoded`) ran on the fleet on 2026-09-02,
+same configuration as the `coresid` baseline with only the binary changed —
+saturated, shard-senders, 60k pool, 22,857-transaction blocks. 73 full blocks:
+
+| phase µs/tx | encmemo | coresid | Δ |
+|---|---|---|---|
+| `hdr` | 0.084 | 0.101 | −0.017 |
+| **`body`** | **0.458** | **0.855** | **−0.397** |
+| `recov` | 0.859 | 1.303 | −0.444 |
+| `exec` | 3.380 | 3.309 | +0.071 |
+| `write` | 0.777 | 0.823 | −0.046 |
+| **total** | **136.6 ms** | **154.3 ms** | **−17.7 ms** |
+
+**`body` fell 0.397 µs/tx — 9.1 ms a block — and the prediction recorded before
+the round said 0.28.** For once the measurement beat the estimate, and the
+reason is a defect in the benchmark that produced the estimate.
+
+### The benchmark's transactions were unsigned
+
+`benchTxs` built transfers with V, R and S unset. A transfer encodes to **36
+bytes that way against ~110 signed**, because R and S are 32 bytes each. The
+transactions root's cost is dominated by encoding its leaves, so the benchmark
+was measuring about a third of the real work and understating every
+encoding-side saving in proportion. It is fixed, and the comment says why.
+
+- **Rule 25: a synthetic transaction without a signature is not a transaction.**
+  It is two thirds of one, and the third it is missing is the expensive third.
+  The bias runs toward concluding an encoding optimisation is not worth doing.
+
+### What this round does NOT license
+
+`recov` fell 0.444 µs/tx and **that is unattributed**. `N42_SENDER_TRACE=1` was
+not set for this round, so there is no hint-coverage figure for it, and this
+file already records that coverage alone moves `recov` by ±0.35 (4.5% → 27%
+coverage cost +0.349). Reading the code, the encoding cache cannot touch that
+path: `verifyBlockSenders` returns early when `From()` is nil, `applySenderHints`
+does map lookups, and the recovery workers run secp256k1 — none of them encode.
+So it is most likely round-to-round variation.
+
+Which means the **−17.7 ms total is not the change's effect**. The defensible
+figure is the −9.1 ms in `body`, about 6% of the import. Quoting the total would
+be folding an unexplained phase into a result, which is the error this file has
+already recorded three times in other forms.
+
+The round's win2 also collapsed to 1.5% occupancy on exhausted supply; only
+win1 and the full blocks in it were used.
+
+### Where the whole line ended up
+
+| approach | wall | CPU | verdict |
+|---|---|---|---|
+| sequential encode (before) | 2.01 s | 2.33 s | baseline |
+| parallel encode, 4 workers | 1.44 s | 3.58 s | **rejected** — buys wall with CPU |
+| parallel encode, chunked | 1.61 s | 2.93 s | rejected, same reason |
+| **cache the wire encoding** | **1.27 s** | **1.37 s** | shipped |
+
+The parallel versions were measured, committed, and reverted. The one that
+survived removes the work instead of redistributing it: a transaction that
+arrived over the wire was decoded from its canonical encoding and the decoder
+was dropping those exact bytes, so the root re-derived them for every leaf of
+every imported block.
