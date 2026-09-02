@@ -93,6 +93,7 @@ type Transaction struct {
 	hash atomic.Pointer[types.Hash] // typed pointer avoids interface boxing
 	size atomic.Value
 	from atomic.Value
+	enc  atomic.Pointer[[]byte] // canonical Ethereum wire encoding
 }
 
 func NewTx(inner TxData) *Transaction {
@@ -417,12 +418,42 @@ func (tx *Transaction) EncodedSize() (int, error) {
 	if s := tx.size.Load(); s != nil {
 		return s.(int), nil
 	}
-	enc, err := EncodeEthereumTransaction(tx)
+	enc, err := tx.EthEncoded()
 	if err != nil {
 		return 0, err
 	}
-	tx.size.Store(len(enc))
 	return len(enc), nil
+}
+
+// EthEncoded returns the transaction's canonical Ethereum wire encoding,
+// computing it at most once.
+//
+// The bytes were already thrown away twice. EncodedSize built the whole
+// encoding to keep its length; and a transaction that arrived over the wire was
+// DECODED from exactly these bytes, which the decoder then discarded -- so the
+// transactions root re-derived them for every leaf of every imported block
+// (0.203 of the root's 0.734 us/tx at 22,857 leaves). Keeping them turns that
+// into a load, which unlike encoding them on a worker pool costs less CPU
+// rather than more.
+//
+// The returned slice is shared and MUST NOT be modified by the caller.
+func (tx *Transaction) EthEncoded() ([]byte, error) {
+	if p := tx.enc.Load(); p != nil {
+		return *p, nil
+	}
+	enc, err := EncodeEthereumTransaction(tx)
+	if err != nil {
+		return nil, err
+	}
+	tx.cacheEncoded(enc)
+	return enc, nil
+}
+
+// cacheEncoded publishes an encoding the caller guarantees is canonical and
+// will not mutate.
+func (tx *Transaction) cacheEncoded(enc []byte) {
+	tx.enc.Store(&enc)
+	tx.size.Store(len(enc))
 }
 
 func (tx *Transaction) RawSignatureValues() (v, r, s *uint256.Int) {
