@@ -84,7 +84,7 @@ var nodeFlg = []cli.Flag{
 	// be exercised cannot be found to be broken -- and keep it loud.
 	&cli.BoolFlag{
 		Name:        "parallel-evm",
-		Usage:       "已知在负载下产生共识分歧, 会使链停止 (2026-09-02 实测). 仅用于调试该路径本身, 勿用于任何区块有意义的链",
+		Usage:       "已知在负载下产生共识分歧, 会使链停止 (2026-09-02 实测: 所有 worker 共用一个 MDBX 游标, 读取有数据竞争). 仅用于调试该路径本身, 勿用于任何区块有意义的链",
 		Category:    "NODE",
 		Value:       false,
 		Destination: &DefaultConfig.NodeCfg.ParallelEVM,

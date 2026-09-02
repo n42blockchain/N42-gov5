@@ -1787,10 +1787,51 @@ insufficient funds for gas * price + value:
 address 0x8AD44d589C5f3fF71E8112a71cd5cA1cFEbca6Db have 0 want 210000000000001
 ```
 
-The leader built that block sequentially, and every transaction in it was
-payable in order. The importing nodes' parallel executor computed a state in
-which the sender had **zero** balance — it did not see an earlier transaction
-of the *same block* crediting that address. Cross-transaction write visibility.
+**That first diagnosis was wrong and is corrected below.** It was published to
+two peer sessions and committed before the failing transactions were tabulated.
+
+### The mechanism, after actually counting
+
+| failing block | tx index | occurrences |
+|---|---|---|
+| 13618674 | **0** | 9 |
+| 13618675 | **0** | 2 |
+| 13618675 | 2500 | 1 |
+
+**Eleven of twelve rejections are on tx 0** — the block's first transaction.
+Nothing earlier in the same block can have credited that sender, so the balance
+must come from the parent state and "cross-transaction write visibility" cannot
+be the cause. `MVS.Read` confirms it from the other side: at `txIndex 0` the
+version search returns `found=false` unconditionally, so tx 0 always falls
+through to the base reader.
+
+The cause is one level lower than `internal/parallel`. `ProcessParallel` hands
+**every Block-STM worker the same state reader**, with a comment that records
+the requirement rather than checking it:
+
+```go
+// NOTE: stateReader (base reader) must be safe for concurrent reads.
+pReader := parallel.NewParallelStateReader(stateReader, executor.MVS(), rw, txIndex)
+```
+
+It is not safe. That reader is a `PlainStateReader` over an `MdbxTx`, and
+`MdbxTx.GetOne` takes a per-bucket cached cursor out of an **unsynchronised
+map** and calls `SeekExact` on it — so every worker shares one MDBX cursor,
+which is not thread-safe even when the map access is benign.
+
+`TestGetOneIsNotConcurrencySafe` in `lib/kv/mdbx` proves it with the race
+detector rather than by argument: twelve `WARNING: DATA RACE` reports on
+`statelessCursor` reached from `GetOne`, the exact path the workers take. It is
+opt-in (`N42_PROVE_MDBX_RACE=1`) because it demonstrates a real race and would
+otherwise fail `make race` for a defect it documents rather than introduces.
+
+So the fix is not in `internal/parallel`: a parallel executor needs a reader
+per worker, or its reads serialised.
+
+- **Rule 31: tabulate the failures before naming the mechanism.** "Insufficient
+  funds" read as an intra-block ordering bug at a glance, and one `grep -c` on
+  the transaction index refuted it. The wrong version was already in a commit
+  message and in two peers' notes by then.
 
 ### This overturns an earlier entry in this file
 

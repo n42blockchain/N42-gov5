@@ -788,19 +788,27 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			// blocks and agreed with each other to 0.5% on execution cost.
 			//
 			// The failure is not a state root mismatch and not a storage-wipe
-			// case. It is cross-transaction write visibility:
+			// case:
 			//
 			//   could not apply tx 0 from block 13618674: insufficient funds
 			//   for gas * price + value: address 0x8AD4..a6Db have 0 want
 			//   210000000000001
 			//
-			// The leader built that block sequentially and every transaction in
-			// it was payable in order. The importing nodes' parallel executor
-			// computed a state in which the sender had ZERO balance, i.e. it
-			// did not see an earlier transaction of the SAME BLOCK crediting
-			// that address. See docs/QS_TPS_BENCHMARK.md.
+			// ELEVEN OF THE TWELVE rejections were on tx 0 -- the block's FIRST
+			// transaction -- so no earlier transaction of the same block could
+			// have credited the sender, and the balance must come from the
+			// parent state. The cause is one level lower: ProcessParallel hands
+			// every Block-STM worker the SAME state reader, noting only that it
+			// "must be safe for concurrent reads". It is not. That reader is a
+			// PlainStateReader over an MdbxTx, and MdbxTx.GetOne takes a
+			// per-bucket cached cursor out of an unsynchronised map and calls
+			// SeekExact on it, so every worker shares one MDBX cursor. The race
+			// detector confirms it -- see TestGetOneIsNotConcurrencySafe in
+			// lib/kv/mdbx, and docs/QS_TPS_BENCHMARK.md for the round.
 			//
-			// So this is not "unaudited", it is "known to diverge under load".
+			// So this is not "unaudited", it is "known to diverge under load",
+			// and the fix is not in internal/parallel: a parallel executor
+			// needs a reader per worker, or reads serialised.
 			log.Warn("ParallelEVM ENABLED — BROKEN under load: a 2026-09-02 bench A-B-A halted the chain (6/7 nodes rejected blocks; the parallel executor missed an intra-block credit). Do NOT enable on any chain whose blocks matter")
 			realBC.SetParallelEVM(true)
 		}
