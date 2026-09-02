@@ -1652,3 +1652,60 @@ parity — so it is not obviously reachable. `write` has never been broken down:
 `blockwrite phases` logs at Info only above `slowBlockThreshold`, and a
 follower's 17.8 ms write stays under it, so a round with `N42_SLOW_BLOCK_MS`
 lowered is what that needs.
+
+## `write` decomposed: 72% of it is one call
+
+`write` is 13% of the import and had never been split, because `blockwrite
+phases` logs at Info only above `slowBlockThreshold` (50 ms) and a follower's
+write is ~18 ms. `N42_SLOW_BLOCK_MS=1` lowers only the log LEVEL — the fields
+are computed either way — so the round stays comparable. `--profiling` was
+deliberately not used: it samples inside the critical path being measured.
+
+63 full blocks, 22,857 transactions each:
+
+| part of `write` | ms | share |
+|---|---|---|
+| **`block`** (`rawdb.WriteBlock`) | **13.34** | **72.3%** |
+| `commit` | 2.09 | 11.3% |
+| `receipts` | 0.83 | 4.5% |
+| `chgset` | 0.63 | 3.4% |
+| `ce`, `qflush`, `state`, `post`, `qmeta`, `begin`, `snap`, `root2` | <0.5 each | 6.0% |
+| **total** | **18.45** | |
+
+**13.34 ms in one call — 0.58 µs a transaction, 9.4% of a 142.4 ms import.**
+That is the largest single identified item outside execution, and unlike `exec`
+there is no cross-client evidence that it is irreducible.
+
+Where it goes, by reading: `WriteBlock` → `WriteBody` → `WriteTransactions`,
+which per transaction does a `MarshalCompactStorage`, a `types.CopyBytes`, and
+an MDBX `Append`. The copy looks redundant — `Append` reaches mdbx-go's `Put`,
+which memcpys into the page during the call — but `kv.RwTx` has several
+implementations (memdb, layered, remotedb) and any one of them retaining the
+slice would make removing it a corruption bug. By magnitude the copy is ~1 ms
+of the 13.34 anyway; the bulk is the compact marshal plus the B-tree insert.
+
+**Further attribution needs a profile of the node under load, not more code
+reading**, and that is where this stops rather than guessing.
+
+### Two other results from the same round
+
+**Hint coverage was 2.8% here against 27.0% in the previous round** — same
+binary, same configuration, same generator settings. A 10x swing in a quantity
+this file had started treating as a property of the routing mode. It also
+retroactively vindicates refusing to attribute the previous round's `recov`
+drop to the encoding cache: had that been claimed, this round would have
+contradicted it.
+
+- **Rule 27: hint coverage is not reproducible round to round.** Any figure
+  derived from it needs the coverage logged in the same round, and a phase that
+  moves with it cannot be attributed to anything else.
+
+**Conditions, logged rather than assumed.** Major faults ran 25-38k/s through
+the round with the neighbouring 33 GB job at 28-31 GB resident; a peer measured
+26k/s and this file measured 129k/s earlier the same day, so the contamination
+level swings ~5x and is not a constant anyone can assume. TLB shootdowns were
+6-18/s against an 18/s idle baseline — no TLB effect on this box, which a peer
+independently confirmed at 11/s under a full flood.
+
+And win2 produced **zero** transactions across 240 blocks: supply exhaustion,
+not a chain limit. Only win1 and the full blocks inside it were used.
