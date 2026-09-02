@@ -27,7 +27,7 @@ type EthTransactions []*Transaction
 func (s EthTransactions) Len() int { return len(s) }
 
 func (s EthTransactions) EncodeIndex(i int, w *bytes.Buffer) {
-	enc, err := EncodeEthereumTransaction(s[i])
+	enc, err := s[i].EthEncoded()
 	if err != nil {
 		// EncodeEthereumTransaction only fails on unsupported tx type.
 		// In practice all txs that reach this path are well-formed.

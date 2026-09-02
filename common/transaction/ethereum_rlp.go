@@ -92,7 +92,21 @@ type setCodeTxRLP struct {
 
 // DecodeEthereumTransaction decodes a standard Ethereum raw transaction
 // (legacy RLP or EIP-2718 typed envelope) into the local Transaction type.
+// DecodeEthereumTransaction decodes a canonical Ethereum wire encoding and
+// keeps it: data IS that encoding -- being it is what makes it decodable -- so
+// caching it here spares the transactions root re-deriving the same bytes for
+// every leaf of every imported block. The copy is 110-odd bytes against a full
+// RLP encode, and it is necessary because the caller's buffer may be reused.
 func DecodeEthereumTransaction(data []byte) (*Transaction, error) {
+	tx, err := decodeEthereumTransaction(data)
+	if err != nil {
+		return nil, err
+	}
+	tx.cacheEncoded(append([]byte(nil), data...))
+	return tx, nil
+}
+
+func decodeEthereumTransaction(data []byte) (*Transaction, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("empty transaction payload")
 	}
