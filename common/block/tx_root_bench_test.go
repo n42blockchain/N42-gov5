@@ -17,13 +17,27 @@ import (
 )
 
 // benchTxs builds n value transfers, the workload the qs fleet runs.
+//
+// The signature values MUST be set. Without them a transfer encodes to 36
+// bytes against ~110 for a real one, because R and S are 32 bytes each -- and
+// the transactions root's cost is dominated by encoding the leaves, so an
+// unsigned list understates it by about a third. That flaw made an earlier
+// version of this benchmark predict a 0.28 us/tx saving where the fleet
+// measured 0.40.
 func benchTxs(n int) []*transaction.Transaction {
 	to := types.HexToAddress("0x2000000000000000000000000000000000000001")
 	from := types.HexToAddress("0x1000000000000000000000000000000000000001")
+	r := uint256.MustFromHex("0x8b5e7f3a1c9d4e2b6a0f8c3d5e7a9b1c2d4e6f8a0b1c3d5e7f9a1b3c5d7e9f01")
+	sig := uint256.MustFromHex("0x1f3d5b7997b5d3f1e0c2a4869b7d5f3120e2c4a68b9d7f5311e3c5a7098b6d4f")
 	out := make([]*transaction.Transaction, n)
 	for i := range out {
-		out[i] = transaction.NewTransaction(uint64(i), from, &to,
+		tx := transaction.NewTransaction(uint64(i), from, &to,
 			uint256.NewInt(1), 21000, uint256.NewInt(1_000_000_007), nil)
+		tx, err := tx.WithSignatureValues(uint256.NewInt(27), r, sig)
+		if err != nil {
+			panic(err)
+		}
+		out[i] = tx
 	}
 	return out
 }
