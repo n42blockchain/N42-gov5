@@ -6,6 +6,8 @@ package block
 import (
 	"bytes"
 	"fmt"
+	"runtime"
+	"sync"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -61,5 +63,58 @@ func BenchmarkTxRoot(b *testing.B) {
 			b.StopTimer()
 			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/float64(n)/1000, "us/tx")
 		})
+	}
+}
+
+// TestTxRootConcurrentRealTransactions exercises the parallel leaf encode over
+// REAL transactions, which the hash package's equivalence test cannot reach
+// (importing common/transaction from common/hash is an import cycle).
+//
+// Two risks are covered here rather than by inspection. EncodeIndex is now
+// called from several goroutines at once, so EncodeEthereumTransaction and
+// everything it reaches -- rlp.EncodeToBytes and its encbuf pool -- must be
+// safe for that; and the root must not depend on which worker encoded which
+// leaf. Run under -race, which is where the first of those would show.
+func TestTxRootConcurrentRealTransactions(t *testing.T) {
+	UseEthereumTxRoot = true
+	// Above the parallel-encode threshold, so this takes the worker pool.
+	txs := benchTxs(5000)
+	want := TxRoot(txs)
+
+	const runners = 8
+	got := make([]types.Hash, runners)
+	var wg sync.WaitGroup
+	wg.Add(runners)
+	for i := 0; i < runners; i++ {
+		go func(i int) {
+			defer wg.Done()
+			got[i] = TxRoot(txs)
+		}(i)
+	}
+	wg.Wait()
+	for i, h := range got {
+		if h != want {
+			t.Fatalf("runner %d computed %s, want %s", i, h.Hex(), want.Hex())
+		}
+	}
+}
+
+// TestTxRootStableAcrossSizes pins that the root does not change with the
+// number of encode workers, which varies with GOMAXPROCS on the machine the
+// node happens to run on. A root that depended on it would make a block valid
+// on one node and invalid on another.
+func TestTxRootStableAcrossSizes(t *testing.T) {
+	UseEthereumTxRoot = true
+	for _, n := range []int{2047, 2048, 2049, 5000} {
+		txs := benchTxs(n)
+		first := TxRoot(txs)
+		prev := runtime.GOMAXPROCS(1)
+		one := TxRoot(txs)
+		runtime.GOMAXPROCS(prev)
+		again := TxRoot(txs)
+		if one != first || again != first {
+			t.Fatalf("n=%d: roots differ by GOMAXPROCS: %s / %s / %s",
+				n, first.Hex(), one.Hex(), again.Hex())
+		}
 	}
 }
