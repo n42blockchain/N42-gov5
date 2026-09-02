@@ -1384,3 +1384,54 @@ binary as well, though neither change touches this path.
 That is now the third independent measurement saying the hint/cache apparatus
 does not buy what its comments claim — 1.0% end-to-end at 100% coverage, 0.00%
 cache hits under broadcast, and now a composition shift that nets to zero.
+
+## Cross-checked against a second client team: what this architecture already has
+
+A second benchmarking session (Rust fleet, `feat/native-fleet7`) reported its
+tenure-route results on 2026-09-02. Three of its findings were checked against
+this codebase rather than assumed to transfer.
+
+**1. "Every block executed twice on the critical path (builder, then the next
+leader's import)" — the builder half does not apply here.** `worker.go:578`
+seals with `WriteBlockWithState(blk, receipts, task.state, task.nopay)`: the
+leader writes the block with the state `fillTx` already computed. There is no
+second execution and no `InsertChain` of its own block. The `InsertExecutedBlock`
+change that took their own-import from ~500 ms to 30-300 ms has no counterpart
+to make here.
+
+The *other* half does apply: the leader of h+1 must import h before it can build
+on it, and that import is what `blockimport phases` measures. It is a
+serialisation across nodes, not duplicated work within one.
+
+**2. Build-ahead already exists and is 100% effective.** `PrepareSpeculativeBlock`
+builds h+1 as soon as this node votes for h and expects to lead the next view.
+Counted by block number over one round, not by log volume: **1,410 parked,
+1,410 hit, intersection 1,410** — no speculation wasted, no hit without a park.
+That covers part of what their `hotstuff.leaderTenure` buys. Leader tenure
+itself is not implemented here; `LeaderForView` is round-robin.
+
+**3. Their serial execution is 2.1-3.3 µs/tx and their BAL parallel executor
+measured at PARITY on this workload.** This client is 3.135 µs/tx — the third
+independent implementation in the same band, which is now a fairly strong
+statement that per-transfer execution cost is a property of the work rather
+than of any of these codebases.
+
+The parity result is the one that changes plans here. This file's rule 22
+identified `exec` (47% of the serial path) as the remaining target, and a check
+of the code found a Block-STM implementation already present
+(`internal/parallel/`, gated by `parallel_evm`, with the storage-wipe defect its
+warning cited long since fixed). The natural next round was to enable it and
+size the prize. **A second team measuring a different parallel executor at
+parity on the same workload is a strong prior that this round returns nothing**,
+and the mechanism is statable: at ~3 µs/tx of actual EVM work, per-access
+version bookkeeping and an ordered serial merge are of the same order as the
+work being parallelised.
+
+That does not settle it — Block-STM and BAL are different designs, and a
+refutation would be worth more than a confirmation. But it moves the round from
+"size the prize" to "check whether a known-negative result reproduces", which is
+a much smaller reason to spend a slot.
+
+- **Rule 24: a per-transaction cost that three independent clients hit within
+  50% of each other is a property of the workload, not of the code.** Look for
+  the remaining room somewhere other than the thing everyone already agrees on.
