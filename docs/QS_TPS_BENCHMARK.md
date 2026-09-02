@@ -2048,3 +2048,51 @@ size once the write set was real, as a peer measures on theirs — **cannot be
 tested here**: the chain ran at 100% occupancy throughout, so all 67 full blocks
 were 22,857 transactions and there is no size range to bin. It needs a round
 paced below saturation.
+
+### Qualification: the spread round ran under page-cache starvation
+
+The section above reports the spread workload's phase table as the cost of a
+real write set. Its conditions log, read afterwards against a peer's finding,
+says something narrower.
+
+| spread round, nodes up, n=118 samples | |
+|---|---|
+| machine major faults/s | median **16,067**, peak **203,010** |
+| available memory | median 60 GB, **minimum 4 GB** |
+| neighbouring datc job | 55-67 GB |
+
+A peer traced their own import doubling to exactly this: at full blocks their
+engine thread took 26 MB/s of disk reads with `rchar = 0` — mmap page faults on
+MDBX state pages — with the machine at 55,444 major faults/s against 837/s on
+partial blocks, and `folio_wait_bit_common` 31% of the thread's wchan samples.
+**My round peaked at 203,010/s and ran out to 4 GB of free memory.**
+
+Every phase in that table is **wall time**. `exec`, `commit`, `chgset` and
+`state` cannot distinguish executing from waiting on an evicted page, and under
+those conditions an unknown share of each is the latter.
+
+What survives and what does not:
+
+- **The workload comparison's direction survives.** A spread write set is more
+  expensive than a single sink, and dramatically so. Nothing about that needs
+  page-cache pressure to be true.
+- **The magnitudes do not.** "`write` is 69% of the import", "`commit` is 37%",
+  "`exec` rose 1.67x" describe a node whose state pages were being evicted
+  faster than it could fault them back. On a box with the page cache to hold its
+  working set, those numbers are unknown.
+- **And the causation runs the wrong way to call it a simple confound.** A
+  spread workload *causes* the memory pressure — more distinct accounts is a
+  larger resident working set — so the pressure is partly intrinsic to the
+  workload and partly the neighbour's. The two cannot be separated from this
+  round.
+
+- **Rule 35: a wall-clock phase table taken under page-cache pressure measures
+  the pressure.** The instruments that tell them apart are per-thread D-state
+  share, the thread's `wchan`, and `/proc/<pid>/io` `read_bytes` against
+  `rchar` — none of which appear in a Go pprof profile, because the thread is
+  not running when it happens.
+
+The honest next step is to repeat the spread round when the box is quiet and the
+fleet's files fit in the page cache, and compare. Until then the single-sink
+table is a measurement of a workload nobody runs and the spread table is a
+measurement of a machine under pressure.
