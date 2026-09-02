@@ -76,6 +76,20 @@ var nodeFlg = []cli.Flag{
 		Value:       "",
 		Destination: &DefaultConfig.NodeCfg.NodePrivate,
 	},
+	// Reachable through the parallel_evm config key already; the flag exists so
+	// a benchmark fleet, which is launched with command-line arguments only,
+	// can measure the path. Execution is 56% of a follower's import here, and
+	// the Block-STM implementation in internal/parallel has been sitting behind
+	// a warning about a storage-wipe defect that was fixed long ago (see
+	// internal/node/node.go). Still EXPERIMENTAL: one defect being closed is not
+	// an end-to-end consensus audit, and nothing here provides one.
+	&cli.BoolFlag{
+		Name:        "parallel-evm",
+		Usage:       "EXPERIMENTAL: Block-STM 并行执行区块交易 (未经端到端共识审计, 勿用于生产链)",
+		Category:    "NODE",
+		Value:       false,
+		Destination: &DefaultConfig.NodeCfg.ParallelEVM,
+	},
 }
 
 var rpcFlags = []cli.Flag{
