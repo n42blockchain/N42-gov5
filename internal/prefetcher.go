@@ -59,8 +59,8 @@ type prefetchRequest struct {
 type StatePrefetcher struct {
 	config    *params.ChainConfig
 	predictor *PrefetchPredictor
-	genWg     sync.WaitGroup      // tracks request-generation goroutines
-	ioWg      sync.WaitGroup      // tracks I/O worker goroutines
+	genWg     sync.WaitGroup // tracks request-generation goroutines
+	ioWg      sync.WaitGroup // tracks I/O worker goroutines
 	cancel    context.CancelFunc
 	ioChan    chan prefetchRequest // bounded channel for async dispatch
 
@@ -123,6 +123,26 @@ func (p *StatePrefetcher) Prefetch(blk *block.Block, stateReader state.StateRead
 	}
 	p.ioChan = make(chan prefetchRequest, chanSize)
 
+	// RACE, UNFIXED: every worker below shares the ONE stateReader this method
+	// was handed, and the caller goes on to use that same reader for the block's
+	// actual execution. On the import path it is a state.PlainStateReader over
+	// one kv.Tx, and MdbxTx.GetOne pulls a per-bucket cached cursor out of an
+	// unsynchronised map and calls SeekExact on it -- so these goroutines race
+	// each other AND the executor on a single MDBX cursor. Proven with the race
+	// detector: lib/kv/mdbx TestGetOneIsNotConcurrencySafe (opt-in via
+	// N42_PROVE_MDBX_RACE=1). The same defect halted the chain when the
+	// Block-STM path shared a reader the same way; see internal/node/node.go
+	// and docs/QS_TPS_BENCHMARK.md.
+	//
+	// Prefetch is off by default (conf.NodeCfg.Prefetch), which is the only
+	// reason this has not been observed in a round. DO NOT ENABLE IT until each
+	// worker reads through its OWN transaction -- the pattern the rest of the
+	// codebase already uses for concurrent readers (per-worker RoTx in
+	// ConcurrentMPTRootComputer, engine_state_adapter, witness_replay_worker).
+	// That is a real change and not a comment: NumCPU/2 is 128 workers on the
+	// bench box, so "one RoTx per worker" needs a worker count chosen for
+	// transactions rather than for cores.
+	//
 	// Start I/O pool: fewer goroutines than generators.
 	ioWorkers := runtime.NumCPU() / 2
 	if ioWorkers < 2 {

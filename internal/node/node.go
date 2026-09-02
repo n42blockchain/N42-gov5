@@ -813,6 +813,13 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			realBC.SetParallelEVM(true)
 		}
 		if cfg.NodeCfg.Prefetch {
+			// Same defect as ParallelEVM above, in a feature that is not marked
+			// experimental: StatePrefetcher.Prefetch runs NumCPU/2 goroutines
+			// against the SAME state reader the executor is using, and that
+			// reader is a PlainStateReader over one kv.Tx whose GetOne shares a
+			// cached MDBX cursor. See internal/prefetcher.go for the analysis
+			// and lib/kv/mdbx TestGetOneIsNotConcurrencySafe for the proof.
+			log.Warn("Prefetch ENABLED — its I/O workers share one state reader with the executor, which races on a single MDBX cursor (see internal/prefetcher.go). Not safe on a chain whose blocks matter")
 			realBC.SetPrefetch(true)
 			// Enable predictive slot prefetching alongside standard prefetching.
 			realBC.SetPrefetchPredictor(internal.NewPrefetchPredictor(64))
