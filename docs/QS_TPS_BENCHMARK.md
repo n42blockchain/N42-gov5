@@ -1595,3 +1595,60 @@ survived removes the work instead of redistributing it: a transaction that
 arrived over the wire was decoded from its canonical encoding and the decoder
 was dropping those exact bytes, so the root re-derived them for every leaf of
 every imported block.
+
+### What is left in the transactions root, and one candidate that failed
+
+With the encoding cached, a profile of what remains says the work is now real:
+
+| | share of the root's cost |
+|---|---|
+| `sha3.keccakF1600` | **62.0%** |
+| `sha3.(*state).Write` | 19.7% |
+| `runtime.memmove` | 11.3% |
+
+Keccak at 62% is the MPT's own arithmetic and there is no waste left to remove
+from it — only splitting the trie could help, and that is the peer's technique
+with the inlining hazard still unaddressed.
+
+The 19.7% in `Write` looked like a free win. `HashBuilder.completeLeafHash`
+issues one `Write` per piece of a leaf's header **and one per compact-key byte**:
+a transactions key is 2-3 bytes, but a state trie's hashed key is 33, so a leaf
+could cost 36 calls into the sponge for a 40-byte header. Assembling the header
+in a scratch buffer and issuing a single `Write` is byte-identical by
+construction, and all four trie/commitment suites passed with it.
+
+**It measured as nothing, and it was reverted.** Five repeats of each:
+
+	with the change    median 11,945,008 ns   range 11.39 - 12.50 M
+	without            median 11,229,275 ns   range 10.29 - 12.78 M
+
+Median 6.4% *worse* with ranges overlapping almost entirely — noise. An earlier
+single pair had shown −4.3% and was about to be committed on that basis.
+
+The mechanism was real and the arithmetic behind it was wrong: Go's
+`sha3.(*state).Write` copies small inputs into the sponge buffer and only runs
+`keccakF1600` when 136 bytes have accumulated. Thirty-six one-byte writes are
+therefore thirty-six small copies, not thirty-six permutations, and a 40-byte
+header costs the same number of permutations however it is split.
+
+- **Rule 26: a plausible mechanism plus one A/B pair is not a result.** Repeat
+  the pair before committing; this file has now recorded the same error at the
+  level of memory, of CPU share, and of a stale warning, and this is the level
+  of ordinary benchmark noise.
+
+### Where the round leaves the import
+
+| phase | µs/tx | share |
+|---|---|---|
+| `exec` | 3.380 | **56.5%** |
+| `recov` | 0.859 | 14.4% |
+| `write` | 0.777 | 13.0% |
+| `body` | 0.458 | 7.7% |
+| `valid` + `hdr` | 0.247 | 4.1% |
+
+`exec` is now more than half, and three independent clients measure per-transfer
+execution within 50% of each other (rule 24) with a BAL parallel executor at
+parity — so it is not obviously reachable. `write` has never been broken down:
+`blockwrite phases` logs at Info only above `slowBlockThreshold`, and a
+follower's 17.8 ms write stays under it, so a round with `N42_SLOW_BLOCK_MS`
+lowered is what that needs.
