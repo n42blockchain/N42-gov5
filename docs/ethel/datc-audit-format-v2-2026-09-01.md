@@ -96,3 +96,11 @@ mainnet 推算 [推算]（基数取 `docs/datc历史proof秒级性能.txt`：13.
 - `n42-datc prep-state --out <copy>`：把一份含状态表 + `DatcMeta/progress` 的 MDBX 拷贝清成干净的 v2 输出（清空全部 Datc* 表、删多余 meta），`build --out <copy>` 即从 `progress` 自动续建（首块 gold-check 立刻验证状态是否对上）。
 - `n42-datc merge --into <lower> --from <upper> [--from-start N]`：上段的段文件重新 spill 到下段目录后 finalize（稳定合并，下段行在前、上段行在后），MDBX 存储节点表按键覆盖拷贝，meta head/progress 更新。边界 epoch 的重复 (path, epoch) 记录由读侧 floor 语义自然选到上段那条；上段每条路径的首条记录是 FULL，DIFF 链不跨边界。`TestE2E_SplitMerge` 覆盖整个流程。
 - 主网现状：`n42-datc-cont-25864981`（Windows Pipeline-B 续建库）里的状态表是 32B 格式、`progress=17,900,000`，直接作为上段基底；按叶变更算 0→17.9M 占 7.13B、17.9M→25.86M 占 6.2B，两段接近均分。
+
+### 6.1 2M 真实数据演练（2026-09-02）
+
+下段 0→1M（5 分钟）→ 拷 mdbx + `prep-state` → 上段 1M→2M（7 分钟）→ `merge --into 上段 --from 下段`：**21 s、峰值 RSS 8.6 GB**（重新 spill 8.8M 行 + finalize 合并，边界 epoch 丢弃 268 条已被上段覆盖的部分记录）→ verify 30/30、根重建 p50 1 ms → bench 账户 proof p50 10 ms / p99 32 ms，含槽 100% ≤1 s。与单进程 D 构建完全一致。25M 规模的 finalize 是按桶在内存排序（每桶约 5–8 GB），合并预计小时级。
+
+## 7. 试过但无效的优化（勿重试）
+
+- **存储树变更子树并行折叠**（2026-09-02）：在 `branchSlotsAt` 把 ≥4 个变更孩子交给各自带独立 RoTx 的 goroutine 折叠。2M 实测：账户 proof p50 13→26 ms（goroutine + 事务开销大于收益），TheDAO 级槽 proof 1.27 s 纹丝不动——它的成本是单个热合约在 depth-2 折叠时要读的 30 万行叶历史本身，不是串行。要治只能加深存储记录（`--sto-depth 3`，代价约 +100–250 GB）。已回退。
