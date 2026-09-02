@@ -1,20 +1,26 @@
 // Copyright 2022-2026 The N42 Authors
 // This file is part of the N42 library.
 //
-// merge — fold an upper-range build (built from a mid-chain state with
-// prep-state, blocks [X, end)) into the genesis build ([0, X)) so one
-// output serves every height.
+// merge — fold two contiguous range builds ([0, X) and [X, end), the upper
+// one built from a mid-chain state with prep-state) into one output that
+// serves every height. Either side may be the one that receives the rows
+// (--into); the other is re-spilled into it.
 //
 // Rows of the two ranges are disjoint except the boundary epoch: the lower
-// build's final flush wrote partial-epoch node records at X-1, the upper
-// build wrote the true end-of-epoch ones. Both are kept in the merged
-// segments (lower first, upper second — finalize's stable merge order), and
-// the reader's floor lookup (Seek then Prev) lands on the LAST record with a
-// given key, i.e. the upper build's; the upper build's first record per path
-// is FULL (resumed build), so no DIFF chain ever crosses the boundary. In
-// MDBX (storage node records) Put simply overwrites.
+// build's final flush wrote PARTIAL-epoch node records (state at X-1) for
+// every level whose epoch is longer than one block, the upper build wrote
+// the true end-of-epoch ones. The reader's floor lookup (Seek then Prev)
+// lands on the LAST record with a given key, so the upper build's record
+// must sort last. When the lower build is --into, finalize's stable merge
+// (existing rows first, new rows second) already guarantees that; when the
+// upper build is --into, the lower build's boundary-epoch partial records
+// are DROPPED while re-spilling (they are redundant: heights inside that
+// epoch step back to the previous record and roll the change rows forward).
+// The upper build's first record per path is FULL (resumed build), so no
+// DIFF chain ever crosses the boundary. In MDBX (storage node records) Put
+// overwrites, with the same drop rule.
 //
-//	n42-datc merge --into /data/datc-25m-v2 --from /data/datc-25m-v2-hi
+//	n42-datc merge --into /data/datc-25m-v2-hi --from /mnt/win/datc-v2-lo
 package main
 
 import (
@@ -92,19 +98,59 @@ func mergeBuilds(into, from string, mapGB int, fromStart uint64) error {
 	}
 	headI := binary.BigEndian.Uint64(metaI["head"])
 	headF := binary.BigEndian.Uint64(metaF["head"])
-	if sv, ok := metaF["start"]; ok && len(sv) == 8 {
-		fromStart = binary.BigEndian.Uint64(sv)
+	metaStart := func(m map[string][]byte, fallback uint64) uint64 {
+		if sv, ok := m["start"]; ok && len(sv) == 8 {
+			return binary.BigEndian.Uint64(sv)
+		}
+		return fallback
 	}
-	if fromStart == 0 {
-		return fmt.Errorf("upper build has no DatcMeta/start; pass --from-start")
+	startF := metaStart(metaF, fromStart)
+	startI := metaStart(metaI, 0)
+	// Which side is the lower range? from is upper when it starts where
+	// into ends; from is lower when it ends where into starts.
+	var fromIsLower bool
+	switch {
+	case startF == headI && headF > headI:
+		fromIsLower = false
+	case headF == startI && startI > 0:
+		fromIsLower = true
+	default:
+		return fmt.Errorf("ranges not contiguous: into=[%d,%d) from=[%d,%d) (pass --from-start when the upper build predates DatcMe/start)", startI, headI, startF, headF)
 	}
-	if fromStart != headI {
-		return fmt.Errorf("ranges not contiguous: into.head=%d from.start=%d", headI, fromStart)
+	var sched epochSchedule
+	for d := 0; d <= maxChgDepth && (d+1)*8 <= len(metaF["sched"]); d++ {
+		sched.e[d] = binary.BigEndian.Uint64(metaF["sched"][d*8:])
 	}
-	if headF <= headI {
-		return fmt.Errorf("upper build head %d not beyond %d", headF, headI)
+	if v := metaF["accroot"]; len(v) == 8 {
+		sched.accRoot = binary.BigEndian.Uint64(v)
 	}
-	fmt.Printf("merge [%d, %d) ← [%d, %d)\n", 0, headI, headI, headF)
+	// boundaryDrop reports whether a node-record key of the LOWER build must
+	// be dropped: its epoch is the (partial) boundary epoch of a level whose
+	// epoch spans more than one block.
+	boundary := headF // lower's exclusive end when from is lower
+	boundaryDrop := func(storage bool, k []byte) bool {
+		if !fromIsLower || len(k) < 5 {
+			return false
+		}
+		pathLen := int(k[0])
+		d := pathLen
+		if storage {
+			d = pathLen - stoDomainLen
+		}
+		if d < 0 || d > maxChgDepth || len(k) != 1+pathLen+4 {
+			return false
+		}
+		l := sched.lenFor(storage, d)
+		if l <= 1 {
+			return false
+		}
+		return uint64(binary.BigEndian.Uint32(k[1+pathLen:])) == (boundary-1)/l
+	}
+	if fromIsLower {
+		fmt.Printf("merge [%d, %d) → prepend to [%d, %d)\n", startF, headF, startI, headI)
+	} else {
+		fmt.Printf("merge [%d, %d) ← [%d, %d)\n", startI, headI, startF, headF)
+	}
 
 	// Segments: re-spill the upper build's segment rows into the lower
 	// build's spill dir, then finalize (merges with the existing segments).
@@ -112,9 +158,31 @@ func mergeBuilds(into, from string, mapGB int, fromStart uint64) error {
 	if err != nil {
 		return err
 	}
-	cache := newFrameLRUSize(64)
+	// One frame cache per segment set: the cache key is (table, bucket,
+	// frame) and does not name the directory, so sets from two builds must
+	// never share one.
+	// A lower boundary-epoch record is dropped ONLY when the upper build
+	// wrote a record for the same key (the node changed again inside the
+	// epoch); otherwise the lower's record IS the end-of-epoch state.
+	var upperNA *leafSegSet
+	if fromIsLower {
+		if set, ok, err := openLeafSegSet(into, segTabNodeA, newFrameLRUSize(64)); err != nil {
+			return err
+		} else if ok {
+			upperNA = set
+			defer set.Close()
+		}
+	}
+	upperHasNA := func(k []byte) bool {
+		if upperNA == nil {
+			return false
+		}
+		c := upperNA.Cursor()
+		fk, _, _ := c.Seek(k)
+		return fk != nil && bytes.Equal(fk, k)
+	}
 	for tab := 0; tab < segTabCount; tab++ {
-		set, ok, err := openLeafSegSet(from, tab, cache)
+		set, ok, err := openLeafSegSet(from, tab, newFrameLRUSize(64))
 		if err != nil {
 			return err
 		}
@@ -122,15 +190,22 @@ func mergeBuilds(into, from string, mapGB int, fromStart uint64) error {
 			continue
 		}
 		c := set.Cursor()
-		n := 0
+		n, dropped := 0, 0
 		for k, v, e := c.Seek([]byte{0}); k != nil && e == nil; k, v, e = c.Next() {
+			if tab == segTabNodeA && boundaryDrop(false, k) && upperHasNA(k) {
+				if os.Getenv("DATC_MERGE_TRACE") != "" {
+					fmt.Printf("    drop %x\n", k)
+				}
+				dropped++
+				continue
+			}
 			if err := sw.add(tab, k, v); err != nil {
 				return err
 			}
 			n++
 		}
 		set.Close()
-		fmt.Printf("  %-3s %d rows re-spilled\n", segTabNames[tab], n)
+		fmt.Printf("  %-3s %d rows re-spilled (%d boundary-epoch partial records dropped)\n", segTabNames[tab], n, dropped)
 	}
 	if err := sw.close(); err != nil {
 		return err
@@ -155,6 +230,11 @@ func mergeBuilds(into, from string, mapGB int, fromStart uint64) error {
 		}
 		n := 0
 		for k, v, e := c.First(); k != nil && e == nil; k, v, e = c.Next() {
+			if (tab == tDatcStoNode && boundaryDrop(true, k)) || (tab == tDatcAccNode && boundaryDrop(false, k)) {
+				if ex, _ := txW.GetOne(tab, k); ex != nil {
+					continue // upper build has the true end-of-epoch record
+				}
+			}
 			if err := txW.Put(tab, k, v); err != nil {
 				c.Close()
 				return err
@@ -166,16 +246,23 @@ func mergeBuilds(into, from string, mapGB int, fromStart uint64) error {
 			fmt.Printf("  mdbx %-13s %d rows copied\n", tab, n)
 		}
 	}
-	if err := txW.Put(tDatcMeta, []byte("head"), metaF["head"]); err != nil {
-		return err
+	if !fromIsLower {
+		if err := txW.Put(tDatcMeta, []byte("head"), metaF["head"]); err != nil {
+			return err
+		}
+		if err := txW.Put(tDatcMeta, []byte("progress"), metaF["progress"]); err != nil {
+			return err
+		}
 	}
-	if err := txW.Put(tDatcMeta, []byte("progress"), metaF["progress"]); err != nil {
+	var sb [8]byte
+	binary.BigEndian.PutUint64(sb[:], min(startI, startF))
+	if err := txW.Put(tDatcMeta, []byte("start"), sb[:]); err != nil {
 		return err
 	}
 	if err := txW.Commit(); err != nil {
 		return err
 	}
-	fmt.Printf("merged: head=%d\n", headF)
+	fmt.Printf("merged: [%d, %d)\n", min(startI, startF), max(headI, headF))
 	return nil
 }
 

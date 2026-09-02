@@ -1034,6 +1034,11 @@ func TestE2E_ConcurrentRoot(t *testing.T) {
 // upper build into the lower one and checks every height + proofs on the
 // merged output — the two-process build used for the mainnet archive.
 func TestE2E_SplitMerge(t *testing.T) {
+	t.Run("upper_into_lower", func(t *testing.T) { splitMerge(t, false) })
+	t.Run("lower_into_upper", func(t *testing.T) { splitMerge(t, true) })
+}
+
+func splitMerge(t *testing.T, lowerIntoUpper bool) {
 	sc := getScenario(t)
 	modules.N42Init()
 	kv.ChaindataTablesCfg = modules.N42TableCfg
@@ -1075,17 +1080,23 @@ func TestE2E_SplitMerge(t *testing.T) {
 	}
 	dbHi.Close()
 
-	if err := mergeBuilds(lo, hi, 4, 0); err != nil {
+	merged := lo
+	if lowerIntoUpper {
+		merged = hi
+		if err := mergeBuilds(hi, lo, 4, 0); err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+	} else if err := mergeBuilds(lo, hi, 4, 0); err != nil {
 		t.Fatalf("merge: %v", err)
 	}
 
 	// Full-height check on the merged output.
-	dbM, err := openDatcDB(logger, lo, 4, 1)
+	dbM, err := openDatcDB(logger, merged, 4, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer dbM.Close()
-	q, closeQ := openTestQuerier(t, dbM, lo, o)
+	q, closeQ := openTestQuerier(t, dbM, merged, o)
 	defer closeQ()
 	fails := 0
 	for n := uint64(0); n < end; n++ {
