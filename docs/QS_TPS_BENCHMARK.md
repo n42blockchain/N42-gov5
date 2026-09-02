@@ -1979,3 +1979,72 @@ What a comparable rig needs is a recipient option in `txflood` — hash-derived,
 count configurable — and every cross-client number in this file re-measured
 with it. Until then the per-transaction costs recorded here describe a
 single-sink workload and should be quoted as such.
+
+## The spread round: at a real write set, every priority in this file changes
+
+The first round with `-recipients 22857` — each block writing ~22,857 distinct
+accounts instead of ~1,201, recipients reused across blocks so the fixture grows
+by 22,857 accounts rather than three million. Same binary, same configuration,
+same pool, same rate as the single-sink baseline; the workload is the only
+change.
+
+| | single sink (pe-A2) | **spread (22,857)** | |
+|---|---|---|---|
+| TPS | 36,721 | **12,571 / 14,476** | −2.7x |
+| blockTime | 0.622 s | **1.579 / 1.818 s** | |
+| occupancy | 100% | 100% | |
+
+| phase µs/tx | sink | spread | ratio |
+|---|---|---|---|
+| `hdr` | 0.088 | 0.088 | 1.00x |
+| `body` | 0.469 | 0.471 | 1.00x |
+| `recov` | 0.835 | 0.724 | 0.87x |
+| `exec` | 3.397 | 5.670 | 1.67x |
+| `valid` | 0.168 | 0.171 | 1.02x |
+| **`write`** | **0.717** | **23.101** | **32.2x** |
+| **total** | **143.0 ms** | **769.1 ms** | **5.38x** |
+
+### The prediction was wrong, and its falsifiable clause said why
+
+Recorded before the round: *"`block` / `write` RISE SUBSTANTIALLY. `block` is
+`rawdb.WriteBlock`; ~19x the distinct account writes per block is the whole
+change."* And: *"If `block` does not rise, my model of where its 13 ms goes is
+wrong: the cost would not be per-account-written."*
+
+| within `write` | sink | spread | ratio |
+|---|---|---|---|
+| **`block`** (`rawdb.WriteBlock`) | 13.03 ms | **10.83 ms** | **0.83x** |
+| **`commit`** | 2.22 ms | **283.50 ms** | **128x** |
+| **`chgset`** | 0.29 ms | **128.04 ms** | **442x** |
+| `receipts` | 0.72 ms | 0.89 ms | 1.24x |
+
+`block` did not rise because `rawdb.WriteBlock` writes the *block* — header and
+transactions — and a block's serialised size does not depend on how many
+accounts its transactions touch. What rises is what is proportional to accounts
+changed: the MDBX `commit` and the changeset write.
+
+### What this does to the day's work
+
+**Everything optimised today lives in phases that are 1-2% of a realistic
+import.** `body` is 0.471 µs/tx of 33.648 — **1.4%** — and the transactions-root
+encoding cache and the compact-codec `uint256` fix both target it. They are
+still real reductions in CPU and allocations, and the A-B-A that measured the
+second one at 1.79 ms stands. But they were aimed by a phase table taken on a
+workload that did almost no state work, and on the workload that does, the
+target was never there.
+
+The honest ordering at a real write set is `write` 69%, `exec` 17%, everything
+else 14% — against `exec` 56%, `write` 13% on the single sink. **`commit` alone
+is 37% of the import**, and it had been 1.5%.
+
+- **Rule 34: a phase table is a property of the workload, not of the client.**
+  Every priority in this file above this section was derived from a table whose
+  dominant term was an artifact of paying one address.
+
+### Not answered by this round
+
+The second prediction — that per-transaction cost would start rising with block
+size once the write set was real, as a peer measures on theirs — **cannot be
+tested here**: the chain ran at 100% occupancy throughout, so all 67 full blocks
+were 22,857 transactions and there is no size range to bin. It needs a round
+paced below saturation.
