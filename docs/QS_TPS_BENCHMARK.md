@@ -1709,3 +1709,51 @@ independently confirmed at 11/s under a full flood.
 
 And win2 produced **zero** transactions across 240 blocks: supply exhaustion,
 not a chain limit. Only win1 and the full blocks inside it were used.
+
+## A-B-A: the compact codec fix is worth 1.79 ms a block, and the total cannot see it
+
+Every single-pair comparison in this file has been confounded by something that
+drifted between the two rounds — memory pressure, hint coverage swinging 10x,
+block interval 2.3x, and a neighbouring 25M-block build whose residency went
+26 → 47 → 74 → 25 → 51 GB inside two hours. So this one was run as **A-B-A**:
+old binary, new binary, old binary, back to back in one sitting, with
+conditions sampled every 5 s throughout.
+
+| leg | binary | `block` ms | `write` ms | `total` ms | TPS | datc peak |
+|---|---|---|---|---|---|---|
+| A | encoding cache only | 13.30 | 19.86 | 141.5 | 40,000 | 74.0 GB |
+| **B** | **+ uint256 fix** | **11.37** | **17.57** | 141.3 | 44,876 | 53.8 GB |
+| A2 | encoding cache only | 13.03 | 18.02 | 143.1 | 35,428 | 50.8 GB |
+
+**The two bookends agree to 0.27 ms on `block`**, so the baseline is stable for
+that phase and the difference is attributable: **B is 1.79 ms below the mean of
+the two A legs.**
+
+**The prediction was 3.2 ms and the measurement is 1.79** — 56% of it. The
+falsifiable clause written before the round named the reason: "the bench runs
+unloaded, so the marshal's share of 13.34 ms may be smaller under fleet load
+where MDBX contention dominates." Direction right, magnitude overestimated 1.8x,
+for the anticipated reason.
+
+### What the round refuses to support
+
+**`total` did not move.** 141.5 / 141.3 / 143.1 — the B leg is 1.0 ms below the
+A mean, against 1.6 ms of spread between the two A legs themselves. A 1.79 ms
+saving in a 142 ms import is 1.3%, and this rig cannot resolve that in the
+total. The phase measurement is the result; the total is not.
+
+**TPS is not the result either**, and it is the trap this design was built to
+catch. B measured 44,876 against A's 40,000 — a 12% gain that would have been
+published from an A/B pair. A2, the same binary as A, came back at 35,428. The
+three TPS figures track the neighbouring job's residency (74 / 53.8 / 50.8 GB)
+more closely than they track the binary.
+
+**Other phases drifted where `block` did not.** A2's `body` was 0.665 µs/tx
+against 0.460 and 0.469 in the other two legs, and its `exec` was 3.213 against
+3.530 and 3.484. So "the bookends agree" holds for `block` specifically and
+must not be generalised to the whole table.
+
+- **Rule 28: bookend an A/B with a repeat of A.** Three legs cost one extra
+  round and convert "the number moved" into "the number moved more than the
+  baseline drifted" — which on this box, today, was the difference between a
+  12% claim and a 1.3% one.
