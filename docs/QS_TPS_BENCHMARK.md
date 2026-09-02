@@ -1924,3 +1924,58 @@ Neither is hard, but both are consensus-critical, and this file has spent a day
 demonstrating what happens to a claim made without measuring. The defect is
 recorded, proven and warned about; the fix is a separate piece of work with its
 own round.
+
+## Correction: this rig's flood is a SINGLE-SINK workload, and the cross-client comparisons assumed otherwise
+
+`cmd/txflood` has no recipient option. Every flood transaction is signed to one
+hard-coded address:
+
+```go
+dead := types.HexToAddress("0x000000000000000000000000000000000000dEaD")
+...
+raws[s*(*perTx)+j] = signOne(keys[s], addrs[s], dead, base+uint64(j), ...)
+```
+
+So a full 22,857-transaction block on this rig writes roughly **1,201 distinct
+accounts** — 1,200 senders, each touched ~19 times, plus the one sink. A peer
+client's 163,000-transaction block spread over 2,000,000 recipients writes
+~163,000. **About 136x more state per block, for a workload this file has been
+comparing per-transaction costs against.**
+
+### What this invalidates
+
+The section above headed "the gap is not execution" compared this client's
+per-transaction costs with a peer's and concluded that execution matches within
+15% while per-block overhead is 5.5x cheaper on their side. **Those numbers are
+not measured on the same workload**, and the direction of the error is against
+this rig's favour: a block that writes 1,201 accounts does far less trie and
+storage work than one writing 163,000, so this client's `exec`, `write` and
+`block` figures are all flattered relative to theirs. Rule 20 (normalise per
+transaction, split execution from the rest) still holds as a method; the
+comparison it was derived from does not.
+
+### And it explains the neighbour sensitivity
+
+A separate measurement had this client's `exec` rising 4.9% while the datc job
+ran and a peer's rising 2.5x. Two explanations were offered — "you are faster so
+a stall is a larger fraction of your cost" (mine) and "your hot state is
+anonymous Go heap, ours is file-backed mmap" (theirs). **Neither needed to be
+true.** A working set of ~1,201 accounts stays resident under any eviction
+pressure; one of 2,000,000 cannot. The immunity is the workload, not the client.
+
+### How the premise went unchecked
+
+A peer stated hours earlier that "yours spreads transfers over up to 2,000,000
+hash-derived recipients; mine sent every transfer to one address", and changed
+their generator to match what they believed this one did. **It was accepted here
+without reading `txflood`.** The recipient is nine lines from the signing call.
+
+- **Rule 33: read your own generator before comparing workloads.** Every
+  cross-client per-transaction figure in this file predates that reading, and a
+  peer re-tooled their benchmark on the strength of a description of this rig
+  that was wrong.
+
+What a comparable rig needs is a recipient option in `txflood` — hash-derived,
+count configurable — and every cross-client number in this file re-measured
+with it. Until then the per-transaction costs recorded here describe a
+single-sink workload and should be quoted as such.
