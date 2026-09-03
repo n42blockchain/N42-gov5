@@ -136,6 +136,7 @@ import (
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
 	log3 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/lib/lthash"
+	libmetrics "github.com/n42blockchain/N42/lib/metrics"
 	libverkle "github.com/n42blockchain/N42/lib/verkle"
 	verklestore "github.com/n42blockchain/N42/lib/verkle/store"
 	"github.com/n42blockchain/N42/log"
@@ -3481,6 +3482,15 @@ func (n *Node) SetupMetrics(config conf.MetricsConfig) {
 
 	// Register Go runtime and system-level metrics.
 	nodeMetrics.RegisterSystemMetrics()
+
+	// Attach lib/metrics' default Set to the registry this endpoint serves.
+	// Without this the whole storage-layer family -- db_pgops{phase=...},
+	// kvcache, txpool, layered, disk, mem -- is updated on every MDBX commit
+	// (MdbxTx.Commit calls CollectMetrics unconditionally) and readable from
+	// nowhere: lib/metrics.Setup is the only thing that registers that Set and
+	// it has no callers. Registering here keeps one endpoint and one port
+	// rather than starting the second HTTP server Setup would.
+	prometheus.RegisterCollector(libmetrics.DefaultSet())
 
 	if config.HTTP != "" {
 		address := net.JoinHostPort(config.HTTP, strconv.Itoa(config.Port))

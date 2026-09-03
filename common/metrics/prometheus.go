@@ -34,6 +34,29 @@ var registerDefaultSetOnce sync.Once
 var defaultSetGatherer prometheus.Gatherer
 var defaultSetRegisterErr error
 
+var extraCollectorsMu sync.Mutex
+var extraCollectors []prometheus.Collector
+
+// RegisterCollector adds a collector to the set this package's Handler serves.
+// It exists because sibling metric packages keep their own default Sets, and a
+// Set that nothing registers is collected on every write and readable nowhere
+// -- which is what happened to lib/metrics for the whole life of the
+// db_pgops family.
+//
+// Must be called before the first Handler(), which is when the gatherer is
+// built. Collectors that fail to register (a duplicate metric name across two
+// Sets is the likely cause) are logged and skipped rather than taking the
+// endpoint down with them: one broken collector should cost its own metrics,
+// not all of them.
+func RegisterCollector(c prometheus.Collector) {
+	if c == nil {
+		return
+	}
+	extraCollectorsMu.Lock()
+	extraCollectors = append(extraCollectors, c)
+	extraCollectorsMu.Unlock()
+}
+
 // Handler returns an HTTP handler which dump metrics in Prometheus format.
 // Output format can be checked here: https://o11y.tools/metricslint/
 func Handler(reg Registry) http.Handler {
@@ -42,6 +65,18 @@ func Handler(reg Registry) http.Handler {
 		defaultSetRegisterErr = registry.Register(defaultSet)
 		if defaultSetRegisterErr == nil {
 			defaultSetGatherer = registry
+		}
+		extraCollectorsMu.Lock()
+		extras := append([]prometheus.Collector(nil), extraCollectors...)
+		extraCollectorsMu.Unlock()
+		for _, c := range extras {
+			if err := registry.Register(c); err != nil {
+				log.Warn("metrics collector not registered; its metrics will not be served", "err", err)
+				continue
+			}
+			if defaultSetGatherer == nil {
+				defaultSetGatherer = registry
+			}
 		}
 	})
 
