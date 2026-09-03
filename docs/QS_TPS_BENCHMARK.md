@@ -2225,14 +2225,25 @@ path, and `commit` at ~40%, stand unqualified. A qualification is a claim too,
 and it needs a measurement before it travels just as much as the number it
 qualifies does.
 
-**39. My import does not wait on pages, and this is now measured rather than
-assumed.** 78 samples across the flood: zero threads in D state at any point,
-`read_bytes` 0-12 KB/s, `perf` giving IPC 2.51 (183.6G instructions over 73.1G
-cycles in 8 s). The pre-registered reading rule said D-state ~0 means the wall
-time is not page waiting and the spread table's magnitudes survive. Both halves
-came out that way. The peer's mechanism is real on their client; it was never
-firing on mine, because at ~2.25 GB of anonymous memory a node my working set
-fits in the page cache the neighbour left behind.
+**39. My import probably does not wait on pages — but the D-state half of that
+claim was never measured, and is withdrawn.** WITHDRAWN AND CORRECTED: I
+reported "zero threads in D state across 78 samples" and even put a p-value on
+it. The sampler measured nothing. It parsed `/proc/<tid>/stat` by stripping
+through `<comm>) ` and then taking field 3 of the remainder — the ppid — so the
+`case` matching D/R/S never matched and all three counters were structurally
+zero. The tell was in the output I read and quoted: D=0, R=0, S=0 with
+total=73. Three states summing to zero over 73 live threads is not a finding,
+it is a broken instrument, and I should have checked D+R+S against `total`
+before believing a number I liked. The sampler now refuses to write a file of
+zeroes (verified by re-introducing the bug and watching it exit 3) and takes a
+`DSTATE_PID` override so the parse can be proven on any live process first.
+
+What survives is the evidence that did not come from that sampler:
+`read_bytes` of 0-12 KB/s, read straight from `/proc/<pid>/io`, and IPC 2.51
+from `perf`. Both point the same way — no meaningful disk reads, CPU-bound
+rather than stalled — and the phase-table invariance in 38 is independent of
+all of it. So the conclusion stands on other legs; it is the D-state
+measurement specifically that does not exist, and no argument may rest on it.
 
 **40. `blockCache` holds nothing — the gigabyte estimate is retracted.** I
 committed that the `blockCacheLimit = 512` hazard "may already be empty, in
