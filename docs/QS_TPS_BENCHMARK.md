@@ -2570,3 +2570,47 @@ writes (direction, from round 6, never quantified), and this harness cannot
 measure how much because its run-to-run variation on the write path exceeds the
 effect. A rig with per-leg state resets -- a peer's design, 1-3% same-binary
 spread against my 17-45% -- could answer it. Mine cannot.
+
+## The prefetcher warms nothing on a default deployment
+
+Found while scoping the fix for its shared-cursor race, and it changes what
+that fix is worth.
+
+`StatePrefetcher.Prefetch` documents its contract as "the stateReader should be
+a CachedStateReader ... so that reads populate the shared cache". Its only
+caller builds the reader in `evmRecord` (internal/blockchain.go:1758):
+
+    var stateReader state.StateReader = state.NewPlainStateReader(tx)
+    if cache := layered.ExtractCache(db); cache != nil {
+        stateReader = state.NewCachedStateReader(stateReader, cache)
+    }
+
+and `layered.ExtractCache` returns non-nil only for a `*layered.LayeredDB`.
+`LayeredDBCfg.Enable` defaults false, no CLI flag sets it, the qs scripts do not
+set it, and a node datadir holds only chaindata/ with no statedb/ or
+historydb/. So on every default deployment the reader handed to the prefetcher
+is a bare `PlainStateReader` over the executor's single `kv.Tx`, with no shared
+cache behind it at all.
+
+Two consequences, and the second is the one I did not know when I documented
+the race:
+
+1. The race is exactly as recorded: NumCPU/2 workers share that one `kv.Tx`,
+   and `MdbxTx.GetOne` pulls a per-bucket cursor from an unsynchronised map.
+2. Those reads populate NOTHING the executor subsequently reads. The
+   `CachedStateReader` layer that was supposed to carry the benefit is absent.
+   What is left is incidental MDBX and OS page-cache warming -- real, but not
+   the mechanism the code was written for, and never measured.
+
+So "give each worker its own RoTx" is necessary and not sufficient: it removes
+the halt risk and leaves a feature with no benefit path. Making prefetch
+worthwhile needs a cache of its own or LayeredDBCfg.Enable, plus a round
+showing the warming pays for its cores. Until then the honest options are to
+refuse `--prefetch` when ExtractCache returns nil -- it can only race without
+benefit -- or to delete it. Neither is done here: the finding is recorded, the
+code is unchanged, and the decision is a behaviour change that wants an owner.
+
+Note ShardedCache itself is fine for this purpose: it is a sharded concurrent
+LRU with a per-shard RWMutex, so a per-worker-RoTx design sharing one
+ShardedCache would be sound. The problem is that no ShardedCache exists on the
+default path.

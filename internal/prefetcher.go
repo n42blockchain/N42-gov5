@@ -143,6 +143,29 @@ func (p *StatePrefetcher) Prefetch(blk *block.Block, stateReader state.StateRead
 	// bench box, so "one RoTx per worker" needs a worker count chosen for
 	// transactions rather than for cores.
 	//
+	// SECOND DEFECT, and the one that changes what fixing the first is worth:
+	// with the layered DB off, this prefetch WARMS NOTHING THE EXECUTOR READS.
+	// The doc comment above says the reader "should be a CachedStateReader ...
+	// so that reads populate the shared cache", but evmRecord builds it as
+	//
+	//     stateReader = state.NewPlainStateReader(tx)
+	//     if cache := layered.ExtractCache(db); cache != nil { ...wrap... }
+	//
+	// and ExtractCache returns non-nil ONLY for a *layered.LayeredDB.
+	// LayeredDBCfg.Enable defaults false, no CLI flag sets it, and a normal
+	// datadir holds only chaindata/ with no statedb/ or historydb/ -- so on
+	// every default deployment the reader handed in here is a bare
+	// PlainStateReader with no shared cache behind it. These goroutines then
+	// race the executor's cursor to populate a cache that does not exist. The
+	// only surviving benefit is incidental MDBX/OS page-cache warming, which is
+	// not the mechanism this code was written for and has never been measured.
+	//
+	// So per-worker RoTx is necessary and NOT sufficient: it would remove the
+	// halt risk and leave a feature with no benefit path. Enabling this needs
+	// either a cache of its own or LayeredDBCfg.Enable, plus a round showing
+	// the warming is worth its cores -- and until then the honest options are
+	// to refuse --prefetch when ExtractCache returns nil, or to delete this.
+	//
 	// Start I/O pool: fewer goroutines than generators.
 	ioWorkers := runtime.NumCPU() / 2
 	if ioWorkers < 2 {
