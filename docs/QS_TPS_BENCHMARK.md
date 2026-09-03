@@ -2344,3 +2344,61 @@ latter scanning the reader lock table -- to maintain gauges with no reader. That
 lands inside the measured `commit` window by construction. It is a floor under
 every leg equally rather than a confound, but nobody has measured how large a
 floor, and it is being paid for nothing.
+
+## Round 7 — the re-run: one bookend held, one did not, and H-spill survived
+
+Design earned by round 6: a warm-up leg run and DISCARDED, then A-B-A-B on
+warm state. Five legs, fresh sender offset each, write_bytes sampled
+throughout.
+
+  leg      sync           n   chgset   commit   wtotal   MB/blk
+  warmup   durable       64    221.8    214.1    608.9    148.0   (discarded)
+  A1       durable       49    295.0    174.7    760.0    139.9
+  B1       safe-nosync   78    231.4     55.7    453.7    140.9
+  A2       durable       67    163.3    159.0    432.2    141.4
+  B2       safe-nosync   90    189.5     45.4    346.9    139.5
+
+**45. The warm-up leg worked, and the round still publishes no number.** The A
+bookend came in at 9.4% against round 6's 42.6%, so discarding a leg did fix
+the post-handover cold start. The B bookend failed at 20.5%. R1 required both,
+so by the pre-registration this round publishes no figure for the fsync split
+and I stop pursuing that split with this harness. Two failed bookends is the
+rig saying something, not luck twice.
+
+Worth recording why B failed, as a lesson for the NEXT pre-registration and
+not as a reason to reinterpret this one: B1 55.7 and B2 45.4 differ by 10.3 ms
+in absolute terms and 20.5% in relative terms. The same 10.3 ms sits inside the
+A legs' agreement without trouble. A relative-spread criterion is harsh on small
+magnitudes and should have been stated as "15% or 20 ms, whichever is larger".
+
+**46. H-spill survives a pre-registered test with a falsifier.** The original
+method died -- the spill gauge is exposed nowhere (see the metrics note above)
+-- and the replacement was recorded before any A/B leg ran: compare write_bytes
+on chgset-spike blocks against normal blocks. Blocks whose chgset spikes run
+1021.4 ms against 191.2 ms, 5.3x the time, while writing 151.5 MB against
+142.4 MB, 1.06x the bytes. The rival hypothesis (those blocks simply write
+more) predicted >=1.5x and is rejected. So the cost RELOCATES inside the
+transaction rather than the block doing more work, which is what MDBX spilling
+dirty pages mid-transaction looks like.
+
+This result does not lean on the failed bookend: it compares block populations
+WITHIN legs, not legs against each other.
+
+**47. The fsync changes the wait, not the bytes -- and this corrects round 6.**
+MB/block across the four counted legs: 139.9, 140.9, 141.4, 139.5. Durable and
+safe-nosync are indistinguishable. In round 6 that number fell from 252.6 to
+148.2 and I explained it as the kernel coalescing dirty pages when no fsync
+forces them out. That explanation was wrong: 252.6 was the cold leg, and warm
+against warm the byte volume is flat. The correction matters because the flat
+version is the cleaner evidence for the reconciliation in round 6 -- the volume
+is real, the time is the fsync's, and the volume is exactly what makes the
+fsync slow.
+
+**48. I left the ghost claim I had warned a peer about.** The runner's exit
+trap removes /data/blockchain/.box-claim-gov5. A refresher I added mid-round --
+to stop a 50-minute round reading as stale under the peer's 30-minute rule --
+also mirrored the claim to wr-logs/, and nothing removed the mirror. I mirrored
+the creation and not the deletion, an hour after describing that exact failure
+to the peer as "worse than the staleness it was written to fix, and a silent
+one". It lived about 45 seconds and was caught by the handover check, which is
+the argument for having a handover check that looks rather than assumes.
