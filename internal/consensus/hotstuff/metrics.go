@@ -37,6 +37,13 @@ var (
 	// whole fleet is the restart wedge: consensus locked on a block the startup
 	// speculative revert rolled back (see Service.ensureParentApplied).
 	metricParentReapplied = prometheus.GetOrCreateCounter("hotstuff_parent_reapplied_total", false)
+	// A sealed block dropped because a QC arrived during the build and moved
+	// LockedQC past the parent the block was built on. Proposing it anyway
+	// would be refused by every voter's extends-check and stall the view, so a
+	// non-zero rate here is the chain avoiding a halt, not a fault -- but a
+	// SUSTAINED rate means builds are outrunning consensus and the leader is
+	// wasting whole views.
+	metricProposalStaleParent = prometheus.GetOrCreateCounter("hotstuff_proposal_stale_parent_total", false)
 
 	// Vote counts of the last committed view (gauges).
 	metricPrepareVotes = prometheus.GetOrCreateCounter("hotstuff_prepare_votes", true)

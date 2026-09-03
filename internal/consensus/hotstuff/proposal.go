@@ -36,6 +36,32 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 		return nil
 	}
 
+	// The block was built against the parent chosen when production was
+	// TRIGGERED, but justifyQC below is read NOW. A QC arriving during the
+	// build moves LockedQC without rotating the view or leaving this phase, so
+	// the two can disagree, and the proposal would then pair a newer JustifyQC
+	// with a block on an older parent. That is precisely what extendsJustify
+	// refuses at vote time: every voter rejects, the view times out, the next
+	// leader repeats it, and the chain stops making progress. A peer hit this
+	// live on the Rust client (leader two imports behind at tenure start, ~0.4 s
+	// build, two Decides arriving inside it); the same shape is reachable here
+	// and more easily, because blockProductionSyncGate allows a leader two
+	// blocks behind to produce and a 22,857-transaction build takes 1.6-2 s.
+	//
+	// Drop rather than propose, matching the two checks above: a timed-out view
+	// is recoverable, a proposal nobody can vote for is not. Fail-open when
+	// either side is unknown, exactly as extendsJustify does — the rule
+	// tightens as information is available and never blocks the honest path.
+	if parent, known := e.importedParents[blockHash]; known && parent != (types.Hash{}) {
+		if justifyBlock := e.roundState.LockedQC().BlockHash; justifyBlock != (types.Hash{}) && parent != justifyBlock {
+			log.Warn("hotstuff: sealed block dropped — parent no longer extends the current LockedQC",
+				"view", view, "block", blockHash.Hex()[:12],
+				"blockParent", parent.Hex()[:12], "justifyBlock", justifyBlock.Hex()[:12])
+			metricProposalStaleParent.Inc()
+			return nil
+		}
+	}
+
 	// The proposal is signed over the SAME message as a Round 1 vote
 	// (SigningMessage(view, blockHash)) and the leader immediately self-votes
 	// with it, so proposing IS a vote commitment. Journal it before anything is
