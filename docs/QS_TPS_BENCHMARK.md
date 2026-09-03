@@ -2402,3 +2402,54 @@ the creation and not the deletion, an hour after describing that exact failure
 to the peer as "worse than the staleness it was written to fix, and a silent
 one". It lived about 45 seconds and was caught by the handover check, which is
 the argument for having a handover check that looks rather than assumes.
+
+## Round 8 — all four predictions failed, which was the useful outcome
+
+Registered before the round: commit, wtotal and chgset together, bookend
+criterion max(15% of the mean, 20 ms), warm-up leg discarded, then A-B-A-B.
+
+  leg      sync           chgset   commit   wtotal   MB/blk
+  warmup   durable         223.0    231.8    539.9    140.3   (discarded)
+  A1       durable         225.4    248.4    581.4    148.5
+  B1       safe-nosync     219.9     92.1    482.7    145.5
+  A2       durable         246.6    227.3    567.1    148.7
+  B2       safe-nosync     234.2     65.0    453.8    143.2
+
+  bookends:   commit  A  8.9% HOLD   B 34.5% FAIL
+              wtotal  A  2.5% HOLD   B  6.2% HOLD
+              chgset  A  9.0% HOLD   B  6.3% HOLD
+
+**49. wtotal is the most stable quantity on this rig, not the least, and I had
+it exactly backwards.** P2 predicted wtotal's bookends would fail at >40% and
+P3 named chgset as the source, both on the strength of round 7 where wtotal's A
+legs sat 55% apart. wtotal came in at 2.5% and 6.2%, chgset at 9.0% and 6.3%.
+The round-7 spread was one leg -- A1 at wtotal 760 against A2's 432 -- and I
+generalised an outlier into a property of the metric, then built a whole round's
+design around defending against it. The defensive co-registration was still the
+right call: it is what let the round say something instead of failing shut.
+
+**50. commit has failed a bookend three times; I stop measuring the fsync split
+on this rig.** Rounds 6, 7 and 8. This round's failure is the B side at 34.5%
+(27.1 ms on a 78 ms mean), while every other quantity in the same legs held.
+That pattern -- commit noisy while chgset and wtotal are steady -- is what
+H-spill predicts: cost relocating between phases leaves each phase varying and
+the total still. In the B legs commit falls 27.1 ms while chgset rises 14.3 and
+the total falls 28.9.
+
+**51. P4 was gated on P1 and stays unevaluated.** wtotal's bookends both held
+and would have carried an effect size (durable ~574 ms against safe-nosync ~468
+ms), and it is not reported, because the gate was registered before the data
+and honouring a gate only when the ungated path is unappealing is not
+honouring it. The next round makes wtotal primary and registers its own effect
+band.
+
+**52. The node rotates its log mid-round.** n42.log rotated at 07:47:59, inside
+the last leg, and the first pass of the analyser found n=0 for the four legs
+before it and blocks only for B2. Nothing was lost -- it had moved to
+n42-*.log.gz -- but an analyser that reads only n42.log will silently report a
+round as empty, or worse, report only its tail. Read the rotated archives too.
+
+Also corrected: my earlier claim that this harness is an order of magnitude
+noisier than a peer's (their 1-3% same-binary spread against my "9-55%"). The
+9-55% was commit's. On wtotal and chgset this rig runs 2.5-9%, which is a much
+closer comparison. The noisy thing was the metric, not the harness.
