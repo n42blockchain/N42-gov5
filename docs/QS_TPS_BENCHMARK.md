@@ -2130,3 +2130,42 @@ structural finding with a magnitude estimate, not a measurement.
   in the code stops describing it. Both of today's retention findings — mine and
   the peer's — are this, and the peer's `PacketCache` analogue on my side (256
   blocks, 796 MB measured) is a third.
+
+### The 5.6 GB is not reclaimable, and the round that would have measured it never ran
+
+`--mobileverify=false` was added to the bench fleet on the strength of a peer's
+RocksDB finding and a 796 MB heap line. **Every node then refused to start:**
+
+```
+fatal: Error starting protocol stack: mobileverify must be enabled on a
+       mining node when MobileAnchorTime is configured
+```
+
+This chainspec sets `mobileAnchorTime`, which makes `MobileRegistryRoot`
+mandatory in HotStuff headers, so a mining node without the pipeline would
+propose headers every follower rejects. `node.go` fails fast on exactly that and
+is right to.
+
+So the finding survives and the fix does not: **PacketCache's 796 MB a node,
+5.6 GB across seven, is real and is not reclaimable by turning the feature
+off on this chain.** The lever is the retention — `MobileVerifyCfg.PacketWindow`,
+256 blocks, no CLI flag today — and choosing a smaller window needs a round to
+say which one, which is a different piece of work from the one attempted.
+
+**The process failure is mine and is the more useful half.** I changed a
+fleet-wide launch argument, deployed it, announced the round to two sessions and
+started it — without once starting a single node with the new argument. The
+round aborted cleanly (`RPC not ready on all 7 nodes`), the guard did its job,
+and the cost was one slot and about half an hour. A smoke test of one node would
+have cost forty seconds; the revert was verified with exactly that, seven of
+seven up.
+
+- **Rule 37: start one node before you start seven.** A launch-argument change
+  is not a code change with a test suite behind it, and the harness's own abort
+  message reports it as an environment fault rather than as a bad flag.
+
+The conditions during the attempt are worth recording anyway, because they were
+not the cause and would have been blamed: the neighbouring `datc` job went
+41.2 → 84.8 GB during the round, and available memory never fell below 48 GB.
+The failure was in the first two seconds of node startup, before any of that
+mattered.

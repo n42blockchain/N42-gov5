@@ -55,15 +55,19 @@ export QS_PROFILE_CONTENTION=$PROFILING
 # QS_NODE_EXTRA appends flags the harness has no option of its own for, so a
 # round can turn on something like --parallel-evm without this line growing a
 # parameter per experiment. Set it in the environment of the round, not here.
-# --mobileverify=false is explicit because --profile n42 AUTO-ENABLES it when
-# the flag is unset (cmd/n42/app.go), and its PacketCache retains the last 256
-# blocks' proof packets: an inuse_space heap profile of a fleet node measured
-# 796 MB live there, 5.6 GB across seven nodes, held for a phone-facing service
-# no benchmark client ever queries. That is anonymous memory competing with the
-# page cache the importer's MDBX mmap needs -- the same shape as a peer client's
-# 4 GiB-per-node RocksDB write buffer. Setting the flag makes ctx.IsSet true and
-# suppresses the auto-enable. A round measuring mobileverify must set it back.
-export QS_EXTRA_ARGS="--pprof.maxcpu $MAXCPU --block-interval-ms $INTERVAL_MS --miner.gasceil $GASCEIL --txpool.globalslots $POOL_SLOTS --txpool.globalqueue $POOL_QUEUE --mobileverify=false ${QS_NODE_EXTRA:-}"
+# NOT --mobileverify=false. It was set here and every node refused to start:
+#   "mobileverify must be enabled on a mining node when MobileAnchorTime is
+#    configured"
+# This chainspec sets mobileAnchorTime, which makes MobileRegistryRoot mandatory
+# in HotStuff headers, so a mining node without the pipeline would propose
+# headers every follower rejects. The guard in node.go fails fast and is right.
+#
+# So the 796 MB a node (5.6 GB across seven) that PacketCache holds is NOT
+# reclaimable by turning the feature off on this chain. The lever is the
+# retention itself -- MobileVerifyCfg.PacketWindow, default 256 blocks -- which
+# has no CLI flag today. Reducing it needs a flag or a config file, and a round
+# to say what the right window is.
+export QS_EXTRA_ARGS="--pprof.maxcpu $MAXCPU --block-interval-ms $INTERVAL_MS --miner.gasceil $GASCEIL --txpool.globalslots $POOL_SLOTS --txpool.globalqueue $POOL_QUEUE ${QS_NODE_EXTRA:-}"
 
 echo "bench fleet: maxcpu=$MAXCPU/node ($(nproc) threads) gasceil=$GASCEIL interval=${INTERVAL_MS}ms pool=$POOL_SLOTS/$POOL_QUEUE profiling=$PROFILING"
 
