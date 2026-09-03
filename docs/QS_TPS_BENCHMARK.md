@@ -2715,3 +2715,28 @@ and nothing else changed.
 
 The budget consequence is real either way: seven nodes at 8.6 GB is 60 GB, and
 this fleet has OOMed once already. The watchdog stays.
+
+### Narrowing 57: the binary hypothesis is weak, and a heap profile is cheaper than an A/B
+
+Static review of the 19 commits between n42-compact (2026-09-02 09:30) and
+n42-dirty (2026-09-03 21:33): fourteen are documentation. The code changes are
+the dirty-page knob (unset by default), the metrics collector registration, the
+prefetch guard (inert unless --prefetch), two flags exposing existing values
+with defaults unchanged, one test, and a change to cmd/txflood which is not in
+the node. None of them touches an allocation on the default path.
+
+That does not eliminate the binary -- static reading is not measurement, which
+is the mistake this whole section is a correction of -- but it makes it the
+least likely of the three, and it changes what the cheap first cut should be.
+
+The leading candidate is now named rather than guessed. The memprobe round's
+heap profile put `qmdb.newMapIndexSized` at 761 MB, 38.8% of a 1,960 MB heap
+and larger than the next six entries combined. Today the chain advanced 85,690
+blocks and chaindata went 32 GB to 49 GB. If that index scales with entries
+written rather than with distinct accounts, several GB is the expected shape.
+
+So the next cut is one heap profile on a saturated node, not a two-binary A-B.
+A profile names the consumer directly; the A-B would only tell me which of
+three confounded variables moved the total, and would cost five legs to do it.
+Cheaper, faster, and it answers "what is holding 8.6 GB" rather than "did it
+change".
