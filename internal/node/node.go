@@ -819,6 +819,20 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			// reader is a PlainStateReader over one kv.Tx whose GetOne shares a
 			// cached MDBX cursor. See internal/prefetcher.go for the analysis
 			// and lib/kv/mdbx TestGetOneIsNotConcurrencySafe for the proof.
+			//
+			// Refuse outright when there is no shared cache to warm. Prefetch's
+			// whole benefit path is that its reads populate the ShardedCache
+			// the executor then reads through, and evmRecord wraps the reader
+			// in a CachedStateReader only when layered.ExtractCache returns
+			// non-nil -- which happens solely for a *layered.LayeredDB.
+			// LayeredDBCfg.Enable defaults false, so on a normal datadir the
+			// workers race the executor's cursor to fill a cache that does not
+			// exist. A warning is the wrong response to a flag that can only
+			// cost and never pay: fail fast, the way the mobileverify guard
+			// does, and say which config key would make it coherent.
+			if err := checkPrefetchHasCache(layered.ExtractCache(chainKv)); err != nil {
+				return nil, err
+			}
 			log.Warn("Prefetch ENABLED — its I/O workers share one state reader with the executor, which races on a single MDBX cursor (see internal/prefetcher.go). Not safe on a chain whose blocks matter")
 			realBC.SetPrefetch(true)
 			// Enable predictive slot prefetching alongside standard prefetching.
@@ -3575,6 +3589,32 @@ func mdbxSyncModeOr(opts mdbx.MdbxOpts, logger log2.Logger) mdbx.MdbxOpts {
 		logger.Warn("ignoring unknown N42_MDBX_SYNC value, staying durable", "value", v)
 		return opts
 	}
+}
+
+// checkPrefetchHasCache rejects --prefetch when there is no shared state cache
+// for it to populate.
+//
+// Prefetch's entire benefit path is that its I/O workers warm the ShardedCache
+// the executor subsequently reads through. evmRecord wraps the block's reader
+// in a CachedStateReader only when layered.ExtractCache returns non-nil, and
+// that happens solely for a *layered.LayeredDB; LayeredDBCfg.Enable defaults
+// false and no CLI flag sets it. So on a normal datadir the prefetch workers
+// race the executor's single MDBX cursor to fill a cache that does not exist:
+// all of the halt risk, none of the benefit. A log warning is the wrong
+// response to a flag that can only cost, so this fails fast the way the
+// mobileverify guard does and names the config key that would make it coherent.
+//
+// Passing a non-nil cache does NOT make prefetch safe -- the shared-cursor race
+// in internal/prefetcher.go is unfixed and its warning still fires. This guard
+// only removes the case where the race buys nothing at all.
+func checkPrefetchHasCache(cache *layered.ShardedCache) error {
+	if cache != nil {
+		return nil
+	}
+	return errors.New("prefetch is enabled but there is no shared state cache to populate: " +
+		"its reads reach the executor only through the ShardedCache of a layered DB, and " +
+		"layered_db.enable is false, so prefetch would race the executor's MDBX cursor " +
+		"(see internal/prefetcher.go) for no benefit. Enable layered_db.enable, or turn prefetch off")
 }
 
 // mdbxMapSizeOr returns sz, or an override from N42_MDBX_MAPSIZE_GB when set.
