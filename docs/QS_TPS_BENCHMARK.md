@@ -2729,11 +2729,22 @@ That does not eliminate the binary -- static reading is not measurement, which
 is the mistake this whole section is a correction of -- but it makes it the
 least likely of the three, and it changes what the cheap first cut should be.
 
-The leading candidate is now named rather than guessed. The memprobe round's
-heap profile put `qmdb.newMapIndexSized` at 761 MB, 38.8% of a 1,960 MB heap
-and larger than the next six entries combined. Today the chain advanced 85,690
-blocks and chaindata went 32 GB to 49 GB. If that index scales with entries
-written rather than with distinct accounts, several GB is the expected shape.
+A candidate was named and then killed by reading the code that sizes it, which
+is the order this section keeps failing to follow. The memprobe heap profile put
+`qmdb.newMapIndexSized` at 761 MB, 38.8% of a 1,960 MB heap and larger than the
+next six entries combined, and the chain advanced 85,690 blocks today, so
+"the index scales with entries written" looked obvious. It does not:
+`persist.go:496` sizes it from `liveCount`, the live key count, not the slot
+count or the append count. Distinct accounts grew by roughly 24,000 today
+(~1,200 fresh senders a leg, with the 22,857 recipients being the same set
+every round), so that index has no reason to have grown by gigabytes.
+
+So both hypotheses are now weak on static grounds -- the binary because its
+code deltas are inert by default, QMDB because its index is sized by a number
+that barely moved -- and I do not know what is holding 8.6 GB. That is the
+honest state, and it was reached for free: reading the sizing code cost
+minutes, where believing it would have cost a round, which is what H-spill
+cost this morning.
 
 So the next cut is one heap profile on a saturated node, not a two-binary A-B.
 A profile names the consumer directly; the A-B would only tell me which of
