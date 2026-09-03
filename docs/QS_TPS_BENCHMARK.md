@@ -2650,3 +2650,51 @@ For the qs harness this means QS_METRICS=1 (already added to qs-env.sh, ports
 6070+i) now produces data. H-spill's original test -- sample the spill counter
 per block and check it advances across chgset spikes -- is available to the
 next round that wants it, instead of the write_bytes proxy round 9 had to use.
+
+## Round 10 — H-spill is withdrawn: MDBX never spills
+
+Round 10 set out to pull the one lever rounds 6-9 produced: MDBX caps the
+ChainDB dirty-page limit at 1 GB, blocks crossing it were believed to spill
+mid-transaction, and `N42_MDBX_DIRTY_GB` removes the cap. It was stopped after
+the discarded warm-up leg, because the primary instrument falsified the
+premise.
+
+`db_pgops{phase="spill"}` — readable for the first time, wired in bd922550 —
+stayed at **0 across 73 samples during full blocks**, while `cow` climbed from
+144,349 to 807,941 and `wops` to 276,367 in the same window. The gauge was
+live; MDBX simply never spilled. `PageOps.Spill` is cumulative over the
+environment's lifetime, so zero means not once since the node started. The
+chgset spikes were present as always: 1 of 17 full blocks at 5.9%, matching
+round 7's ~5%.
+
+**55. H-spill was a name I gave to a measurement, not a mechanism I tested.**
+Round 7's finding stands as measured: spike blocks run 5.3x the time while
+writing 1.06x the bytes, so the cost RELOCATES inside the transaction rather
+than the block doing more work, and the rival "those blocks simply write more"
+was rejected with a pre-registered falsifier. What does not stand is the
+explanation. I reached for the nearest plausible mechanism — MDBX spilling
+dirty pages — wrote it into this document as established, and then built a
+whole round on it without ever testing the mechanism itself. The first time the
+spill counter could be read, it read zero.
+
+The arithmetic should have warned me and did not: round 6 measured 252.6 MB of
+writes per block against a 1 GB limit, which I wrote down at the time and even
+called out as the reason normal blocks do not spill. A mechanism that needs the
+limit crossed, in a workload measured at a quarter of it, deserved a direct
+test before it went in the document.
+
+So the spikes are real, reproduced in three separate rounds, and their cause is
+now open. Per the registration I did not go looking for a third explanation in
+the same round.
+
+**56. The lever is withdrawn but the knob stays.** `N42_MDBX_DIRTY_GB`
+(8404d2e9) is harmless and still useful for whoever tests a spill hypothesis
+properly; its commit already says UNMEASURED and that is now doubly true.
+Nothing sets it, and the default is unchanged.
+
+**57. Fleet memory has grown fourfold and nobody measured it.** The RSS
+watchdog stopped the round at 22:17 with node2 at 8,636 MB, on the DEFAULT
+dirty limit. The memprobe round measured 2.25 GB a node. Whatever grew, it grew
+between those rounds and is not the dirty-page setting. That is an open
+question with a real budget consequence: seven nodes at 8.6 GB is 60 GB, and
+this fleet has OOMed once already.
