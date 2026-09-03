@@ -2331,9 +2331,10 @@ Three metrics packages coexist:
 
 So db_pgops{phase="spill"} is updated on every single MDBX commit and is
 readable by nothing. `--metrics` will not show it; neither will the pprof port.
-Wiring it is a one-line change (register lib/metrics' defaultSet, or call its
-Setup) and is not made here, because the fleet was mid-round and a rebuild would
-have cost the bookend.
+Wiring it is a small change (register lib/metrics' defaultSet into the registry
+the endpoint already serves) and it is NOW DONE -- see the note at the end of
+this document. It was deliberately not done at the time because the fleet was
+mid-round and a rebuild would have cost the bookend.
 
 Two consequences worth separating. The instrumentation one: any round that
 plans to read a storage-layer metric must check the endpoint FIRST, on a leg it
@@ -2614,3 +2615,38 @@ Note ShardedCache itself is fine for this purpose: it is a sharded concurrent
 LRU with a per-shard RWMutex, so a per-worker-RoTx design sharing one
 ShardedCache would be sound. The problem is that no ShardedCache exists on the
 default path.
+
+## db_pgops is now served, so the next round can test H-spill directly
+
+The gap recorded above is closed. `lib/metrics` exports its default Set,
+`common/metrics.RegisterCollector` attaches extra collectors to the registry
+its Handler already serves, and `Node.SetupMetrics` wires the two together
+before `Setup()` builds the gatherer. One endpoint, one port; the second HTTP
+server that `lib/metrics.Setup` would have started is still unused.
+
+So `--metrics --metrics.port N` now serves `db_pgops{phase="spill"}` along with
+the rest of the storage family (kvcache, txpool, layered, disk, mem), and the
+two cgo calls `MdbxTx.Commit` already makes on every commit -- `env.Info()` and
+`tx.Info(true)`, inside the measured `commit` window -- are no longer paid for
+nothing.
+
+Three things were verified rather than assumed, each being a way this could
+have looked wired and not been:
+- The Set is a real `prometheus.Collector` and a labelled name written the way
+  kv writes them (`db_pgops{phase="spill"}`) survives a Gather with its label
+  and value.
+- Ordering: `RegisterCollector` must run before the first `Handler()`, which
+  builds the gatherer under a `sync.Once`. `common/metrics.Handler` has exactly
+  one caller in the tree, inside `Setup()`, which `SetupMetrics` calls after
+  registering. (A different package's identically-named Handler in
+  internal/metrics/prometheus is unrelated and does not touch this once.)
+- The two packages are parallel implementations with separate default Sets, so
+  a shared metric name would make the second registration fail -- and
+  RegisterCollector logs and skips rather than aborting, which would have left
+  the family silently unserved again. A test registers both Sets into one
+  registry with lib/kv loaded and asserts db_pgops is present.
+
+For the qs harness this means QS_METRICS=1 (already added to qs-env.sh, ports
+6070+i) now produces data. H-spill's original test -- sample the spill counter
+per block and check it advances across chgset spikes -- is available to the
+next round that wants it, instead of the write_bytes proxy round 9 had to use.

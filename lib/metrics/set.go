@@ -37,6 +37,16 @@ type Set struct {
 
 var defaultSet = NewSet()
 
+// DefaultSet returns the package's default Set so it can be registered with a
+// Prometheus gatherer that is actually served.
+//
+// This Set holds everything the storage layer counts -- db_pgops in all its
+// phases, kvcache, txpool, layered, disk, mem -- and until this accessor
+// existed, none of it reached any HTTP endpoint: Setup() below is the only
+// thing that registers it, and Setup() has no callers anywhere in the tree.
+// The gauges were updated on every MDBX commit and readable by nothing.
+func DefaultSet() *Set { return defaultSet }
+
 // NewSet creates new set of metrics.
 //
 // Pass the set to RegisterSet() function in order to export its metrics via global WritePrometheus() call.
