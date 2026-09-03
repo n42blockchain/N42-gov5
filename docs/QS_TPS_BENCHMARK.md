@@ -2196,3 +2196,57 @@ retention round taken on a box already starved by the neighbour cannot separate
 my fleet's consumption from the neighbour's, which is the whole question. It
 waits for the regime a peer's launcher also waits for: `datc` under 45 GB and
 80 GB available.
+
+## Round 5 — the memprobe round on a quiet box
+
+The round the previous section was waiting for. It fired automatically at
+04:22:33 on the first clean-box conditions of the day: `datc` at 0 GB, 115 GB
+available, major faults 0-2/s against the 16,067-203,010/s of the confounded
+spread round. Two windows, both at 100% occupancy: 14,095 TPS / 1.622 s and
+14,857 TPS / 1.538 s.
+
+**38. The qualification I put on the spread table does not apply to my client.**
+After a peer found their own import waiting on evicted state pages, I qualified
+my spread table as describing "a node under page-cache starvation" and said its
+magnitudes could not travel until re-measured on a quiet box. That was the right
+methodology and the wrong conclusion. On the quiet box the table reproduces
+within 4% everywhere:
+
+| phase | quiet box | datc at 55-67 GB |
+|-------|-----------|------------------|
+| exec  | 5.474 | 5.670 |
+| write | 23.165 | 23.101 |
+| total | 756.6 ms | 769.1 ms |
+| commit | 304.00 ms | 283.50 ms |
+| chgset | 134.75 ms | 128.04 ms |
+
+The neighbour cost my client nothing measurable. `write` at 69% of the import
+path, and `commit` at ~40%, stand unqualified. A qualification is a claim too,
+and it needs a measurement before it travels just as much as the number it
+qualifies does.
+
+**39. My import does not wait on pages, and this is now measured rather than
+assumed.** 78 samples across the flood: zero threads in D state at any point,
+`read_bytes` 0-12 KB/s, `perf` giving IPC 2.51 (183.6G instructions over 73.1G
+cycles in 8 s). The pre-registered reading rule said D-state ~0 means the wall
+time is not page waiting and the spread table's magnitudes survive. Both halves
+came out that way. The peer's mechanism is real on their client; it was never
+firing on mine, because at ~2.25 GB of anonymous memory a node my working set
+fits in the page cache the neighbour left behind.
+
+**40. `blockCache` holds nothing — the gigabyte estimate is retracted.** I
+committed that the `blockCacheLimit = 512` hazard "may already be empty, in
+which case the constant is a hazard that is not firing and the gigabyte estimate
+must not travel as a number", and that a heap profile would settle it. It does:
+no LRU or block-cache entry appears anywhere in the top 40 of a 1,960 MB heap.
+The constant is still a structural hazard — nothing bounds it by bytes — but it
+is not currently costing anything, and the estimate is withdrawn.
+
+**41. The largest consumer is QMDB's in-memory index, not the caches I had been
+chasing.** `qmdb.newMapIndexSized` holds 761 MB, 38.8% of the heap, more than
+the next six entries combined. `PacketCache` measures 111 MB here — but this
+profile was taken ~76 full blocks into a 256-block window that had just been
+filled with 663 empty decay blocks, so the window was roughly 30% full of real
+packets. It neither confirms nor refutes the 796 MB steady-state figure, and
+must not be quoted against it. Measuring PacketCache honestly needs a profile
+taken after 256 consecutive full blocks.
