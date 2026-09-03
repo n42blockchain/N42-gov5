@@ -2261,3 +2261,52 @@ filled with 663 empty decay blocks, so the window was roughly 30% full of real
 packets. It neither confirms nor refutes the 796 MB steady-state figure, and
 must not be quoted against it. Measuring PacketCache honestly needs a profile
 taken after 256 consecutive full blocks.
+
+## Round 6 — the commit A-B-A, which reports no number
+
+Pre-registered before the round: `commit` in the blockwrite line is
+`dUpdate - dBegin - dInClosure`, i.e. mdbx_txn_commit itself, measured at
+304 ms/block. The round split it into page-write volume versus fsync latency
+with N42_MDBX_SYNC=safe-nosync, bookended durable / safe-nosync / durable,
+fresh sender offset per leg, write_bytes sampled from /proc/<pid>/io
+throughout so the volume half did not depend on the A/B.
+
+**42. The bookend failed and the round publishes nothing.** A1 272.2 ms,
+A2 176.7 ms, both durable, 42.6% apart against a stop condition of 15%. The
+pre-registered rule says a round whose bookends disagree is noise and reports
+nothing, and that rule was written after a single A/B pair showed -4.3% and
+five repeats showed +6.4%. It costs more to honour when the treatment leg looks
+dramatic than when it does not, which is the only circumstance in which it is
+worth anything.
+
+**43. The first leg after a box handover is not a valid baseline.** The
+bookends did not disagree randomly: A1 wrote 252.6 MB per block against 148.2
+and 154.1 for the two legs after it, 67% more, and its commit and its
+within-leg drift (-44%, against -17% in A2) both follow that. A1 started
+minutes after a neighbouring fleet released the box, so it ran against a page
+cache full of someone else's data and paid to fault its own working set back
+in. B and A2 ran warm. Every A-B-A this harness runs after a handover has this
+shape, and the fix is a warm-up leg that is thrown away, not a longer decay --
+the decay produces empty blocks and warms nothing that a full block touches.
+
+**44. What the round saw, labelled as an observation and not as a result.**
+On fast blocks (<=3 s spacing) commit was 320.1 ms in A1, 34.5 ms in B, 179.7
+ms in A2. The treatment direction is unambiguous and its magnitude is several
+times the baseline spread, so fsync -- not page-write volume -- is where
+commit's time goes. That is enough to say the volume model behind P2 was wrong
+and to say why: it conflated pushing 252 MB into the page cache (memcpy speed,
+tens of ms) with getting those bytes onto the device (fdatasync, hundreds).
+It is NOT enough to publish a percentage, and no percentage from this round
+should be quoted. The re-run that would earn one: discard a warm-up leg, then
+A-B-A-B on warm state.
+
+P1 survives either way: write volume was 252.6 MB/block cold and ~150 MB warm,
+both inside the pre-registered 60-400 MB band, and it was measured directly
+rather than inferred from the A/B. The prediction file also claimed P1 and P3
+could not both be true. That clause was wrong and is withdrawn: the volume is
+real AND the time is the fsync's, because the volume is precisely what makes
+the fsync slow.
+
+And whatever a re-run shows, safe-nosync weakens durability -- a crash or power
+loss rolls chaindata back several blocks, which the node must then re-sync.
+Nothing here is a throughput recommendation.
