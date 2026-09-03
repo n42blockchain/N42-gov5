@@ -2692,9 +2692,26 @@ the same round.
 properly; its commit already says UNMEASURED and that is now doubly true.
 Nothing sets it, and the default is unchanged.
 
-**57. Fleet memory has grown fourfold and nobody measured it.** The RSS
-watchdog stopped the round at 22:17 with node2 at 8,636 MB, on the DEFAULT
-dirty limit. The memprobe round measured 2.25 GB a node. Whatever grew, it grew
-between those rounds and is not the dirty-page setting. That is an open
-question with a real budget consequence: seven nodes at 8.6 GB is 60 GB, and
-this fleet has OOMed once already.
+**57. A node was at 8,636 MB and I cannot say why -- the comparison is
+confounded three ways.** The RSS watchdog stopped the round at 22:17 with node2
+at 8,636 MB on the DEFAULT dirty limit. The memprobe round measured 2.25 GB a
+node. I first wrote that fleet memory "has grown fourfold between those rounds",
+which asserts a cause I did not test. The two measurements differ in:
+
+  binary      memprobe ran n42-compact (built 2026-09-02); round 10 ran
+              n42-dirty, built from HEAD tonight -- 19 commits apart.
+  chain size  chaindata 32 GB then, 49 GB now (+53%).
+  instrument  the RSS watchdog did not exist before round 10, so the 18 legs
+              that ran on n42-compact today were never measured. Any of them
+              could have been at 8.6 GB unnoticed.
+
+RSS grew 282% while the database grew 53%, so it does not track state size
+simply, and that is the only thing the numbers support on their own. Whether
+the cause is the newer binary, the larger chain, or something else is open, and
+each has a different consequence: 6 GB of RSS added by 19 commits is a
+regression worth bisecting, while 6 GB added by state growth is a scaling
+limit. The cheap first cut is one leg of each binary with the watchdog running
+and nothing else changed.
+
+The budget consequence is real either way: seven nodes at 8.6 GB is 60 GB, and
+this fleet has OOMed once already. The watchdog stays.
