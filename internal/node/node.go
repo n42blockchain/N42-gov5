@@ -3556,6 +3556,9 @@ func OpenDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logger, nam
 		Path(dbPath).Label(kv.ChainDB).
 		DBVerbosity(kv.DBVerbosityLvl(2)).RoTxsLimiter(roTxsLimiter).
 		MapSize(mdbxMapSizeOr(8 * datasize.TB))
+	if gb := mdbxDirtyGB(); gb > 0 {
+		chainOpts = chainOpts.DirtySpace(gb * uint64(datasize.GB))
+	}
 	chainOpts = mdbxSyncModeOr(chainOpts, logger)
 	chainKv, err := chainOpts.Open(ctx)
 	if err != nil {
@@ -3625,6 +3628,33 @@ func checkPrefetchHasCache(cache *layered.ShardedCache) error {
 		"its reads reach the executor only through the ShardedCache of a layered DB, and " +
 		"layered_db.enable is false, so prefetch would race the executor's MDBX cursor " +
 		"(see internal/prefetcher.go) for no benefit. Enable layered_db.enable, or turn prefetch off")
+}
+
+// mdbxDirtyGB returns an override in GB for the ChainDB's dirty-page limit,
+// from N42_MDBX_DIRTY_GB, or 0 to leave MDBX's computed default alone.
+//
+// Why this exists. computeDirtySpace gives the ChainDB min(TotalMemory/42,
+// 1 GB), so a 136 GB box gets 1 GB and would otherwise have had 3.24 GB. When a
+// block's dirty set crosses that limit MDBX spills pages mid-transaction, and
+// the cost lands in whichever write phase is running rather than in the commit:
+// measured on the qs fleet, 5% of blocks ran chgset at 1021 ms against 191 ms
+// for the rest while writing only 1.06x the bytes, which is ~42 ms a block
+// averaged over the workload and about 7% of the write path. It is also the
+// single largest source of run-to-run variance on that rig -- large enough that
+// four rounds could not measure a 100 ms treatment through it.
+//
+// An env var rather than a config field, matching N42_MDBX_MAPSIZE_GB above, so
+// a round can A/B the limit without a rebuild. Raising it costs resident memory
+// in the worst case (a transaction may hold that many dirty pages before
+// spilling), so it is not raised by default here: the default stays whatever
+// MDBX computes until a round says what the right value is.
+func mdbxDirtyGB() uint64 {
+	if v := os.Getenv("N42_MDBX_DIRTY_GB"); v != "" {
+		if gb, err := strconv.ParseUint(v, 10, 64); err == nil && gb > 0 {
+			return gb
+		}
+	}
+	return 0
 }
 
 // mdbxMapSizeOr returns sz, or an override from N42_MDBX_MAPSIZE_GB when set.
