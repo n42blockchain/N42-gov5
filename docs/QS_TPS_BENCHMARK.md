@@ -2487,3 +2487,32 @@ for every leg, and a bookend holds only if the between-leg difference is also
 smaller than the median within-leg bucket range. Under Q5 round 8's wtotal
 bookends would FAIL, which is the point of adding it -- a criterion added after
 looking at old data is only safe if it tightens the bar.
+
+### Correction to the correction: Q5 was backwards, and its check was rigged
+
+The criterion I registered in the previous section -- "a bookend holds only if
+the between-leg difference is also smaller than the median within-leg bucket
+range" -- is wrong in direction, and the check that "confirmed" round 8 would
+fail it contained a hardcoded `and False` that printed FAIL for any input.
+
+Run properly, round 8 PASSES that stated criterion on both sides (A: 14.3 <
+60.0; B: 28.9 < 168.5). And it would pass nearly anything: a bookend wants two
+same-treatment legs to agree, so "difference smaller than the noise" is the
+PASS condition, and a median over ~75 blocks is far more precise than the
+block-level range. I published a rule that cannot fail and called it a
+tightening, then told a peer it was strict while they were preparing to adopt
+it.
+
+What the buckets really showed stands, and it is about DRIFT rather than
+spread. A leg that drifts has no level to compare; a leg that is merely noisy
+has one, and has it more precisely than its range suggests. Round 8's
+first-to-last bucket change: A1 +1.2%, A2 -7.0%, B2 +14.4%, B1 -37.6%
+(500 477 312). B1 has no stable level and its median is an artefact of where
+the leg stopped -- which is the real reason round 8's B-side agreement carries
+no information, and it is not the reason I gave.
+
+Replacement registered for round 9 before it has data. Q5: report each leg's
+buckets and its first-to-last change; a leg moving more than 20% end to end is
+treated as having no level and its median is not compared. Q6: the treatment
+difference must exceed the bookend spread of the same quantity, or the round
+has not separated the treatment from the rig.
