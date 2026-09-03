@@ -24,6 +24,8 @@ package internal
 import (
 	"context"
 	"errors"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -114,8 +116,27 @@ const (
 	SideStatTy
 )
 
+// blockCacheLimit is a count of FULLY DECODED blocks, so what it retains scales
+// with block size: a decoded transaction is several times its wire encoding
+// (uint256 fields, not bytes), and at the bench fleet's 22,857-transaction
+// blocks 512 of them is gigabytes. On a chain of small blocks the constant is
+// nothing, which is why it reads as harmless.
+//
+// A peer client hit the identical defect from the other side -- an RPC block
+// cache keeping the last 256 blocks with their decoded transactions, ~33 GB a
+// node of blocks nobody queried -- and cutting it to 4 took their windows from
+// ~119k to ~191k TPS, because the retained anonymous memory was evicting the
+// page cache their importer's mmap needed. See docs/QS_TPS_BENCHMARK.md.
+//
+// N42_BLOCK_CACHE_BLOCKS exists to bookend the same question here without
+// rebuilding between legs, which would make the binary a second variable. It is
+// a benchmark instrument, not a tuning knob: the default is unchanged and
+// nothing in production should set it until a round says what the right number
+// is. Whether this cache is even full on the import path is UNMEASURED -- its
+// largest filler (HasBlockAndState) stopped decoding blocks earlier today.
+var blockCacheLimit = envInt("N42_BLOCK_CACHE_BLOCKS", 512)
+
 const (
-	blockCacheLimit     = 512
 	receiptsCacheLimit  = 256
 	maxFutureBlocks     = 256
 	maxTimeFutureBlocks = 5 * 60 // 5 minutes
@@ -243,4 +264,16 @@ type insertStats struct {
 	usedGas                    uint64
 	lastIndex                  int
 	startTime                  time.Time
+}
+
+// envInt reads a positive integer from the environment, falling back to def on
+// anything unset, unparseable or non-positive. Used only for benchmark
+// instruments; a production value belongs in conf, not here.
+func envInt(name string, def int) int {
+	if v := os.Getenv(name); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
 }
