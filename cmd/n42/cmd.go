@@ -193,6 +193,29 @@ var consensusFlag = []cli.Flag{
 		Value:       false,
 		Destination: &DefaultConfig.MobileVerifyCfg.Enabled,
 	},
+	// PacketWindow is the SERVING retention, not a consensus quantity: the
+	// leader stamps Header.MobileRegistryRoot from mobileAnchorRoot() in
+	// internal/miner/worker.go, and PacketCache only answers the phone-facing
+	// query path (mobileverify/packetservice.go). Shrinking it reduces how far
+	// back a phone can fetch a proof packet; it does not change a header.
+	//
+	// It is exposed because the retention is large and had no lever. A heap
+	// profile of a bench node measured 796 MB live in PacketCache at the default
+	// 256 blocks -- 5.6 GB across seven nodes -- and on this chain the feature
+	// cannot be switched off (mobileAnchorTime makes it mandatory on a miner),
+	// so the window is the only way to bookend that memory. A peer client's
+	// equivalent -- an RPC block cache cut from 256 to 4 -- moved their windows
+	// from ~119k to ~191k TPS by giving the page cache back.
+	//
+	// What the right production window is remains an open question this flag
+	// does not answer; it makes it askable.
+	&cli.Uint64Flag{
+		Name:        "mobileverify.packet-window",
+		Usage:       "保留最近多少个块的移动端证明包 (仅影响手机端可回溯范围, 不影响区块头; 默认 256)",
+		Category:    "MINER",
+		Value:       0,
+		Destination: &DefaultConfig.MobileVerifyCfg.PacketWindow,
+	},
 	&cli.StringFlag{
 		Name:        "mobileverify.http",
 		Usage:       "移动端证明 HTTP 监听地址 (空则关闭手机端 HTTP 面, 仍走 gossip/缓存)",
