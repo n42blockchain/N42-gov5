@@ -2741,13 +2741,53 @@ every round), so that index has no reason to have grown by gigabytes.
 
 So both hypotheses are now weak on static grounds -- the binary because its
 code deltas are inert by default, QMDB because its index is sized by a number
-that barely moved -- and I do not know what is holding 8.6 GB. That is the
-honest state, and it was reached for free: reading the sizing code cost
-minutes, where believing it would have cost a round, which is what H-spill
-cost this morning.
+that barely moved. Both were right to doubt, and the profile that settled it is
+below.
 
 So the next cut is one heap profile on a saturated node, not a two-binary A-B.
 A profile names the consumer directly; the A-B would only tell me which of
 three confounded variables moved the total, and would cost five legs to do it.
 Cheaper, faster, and it answers "what is holding 8.6 GB" rather than "did it
 change".
+
+## The answer: nothing grew. The Go live heap is flat and the question was wrong
+
+A heap profile on the largest node at the flood's peak (node3, 6,153 MB
+RssAnon at capture), against the memprobe baseline from 04:22:
+
+  metric                     memprobe        heap probe
+  total inuse_space          1,960 MB        1,890 MB
+  qmdb.newMapIndexSized      761 MB (38.8%)  740 MB (39.1%)
+  go-buffer-pool Get         183 MB          150 MB
+  txCompactReader.u256       117 MB          106 MB
+  PacketCache.put            111 MB           99 MB
+
+**58. The Go live heap did not grow at all** -- it is slightly smaller, and
+every entry holds its share. So no Go object is responsible, and eighteen hours
+of "what grew" was the wrong question.
+
+Where the resident memory actually is, from /proc/<pid>/smaps on a saturated
+node at 8,128 MB RssAnon:
+
+  [anon: Go: heap]                4,662 MB
+  [anon]  (non-Go: MDBX, cgo)     3,359 MB
+  Go metadata + gc bits             100 MB
+
+**59. Two thirds of the gap is GOGC headroom, not retention.** The Go heap
+arena is 4,662 MB resident while inuse_space is 1,890 MB: ~2.8 GB is freed and
+not returned, which is what GOGC=100 asks for on a 1.9 GB live heap (target
+~3.8 GB) plus fragmentation. Not a leak, not growth -- the allocation rate and
+GOGC together set the resident size, and this rig's memory note already records
+that GOGC must track the live heap.
+
+**60. The remaining 3.4 GB is not Go at all.** MDBX's dirty pages are malloc'd
+(WriteMap is off), so they never appear in a heap profile. Any future question
+about this fleet's memory has to separate the three -- Go live, Go headroom,
+non-Go -- because they have different levers: code, GOGC, and MDBX
+configuration respectively.
+
+**61. The "fourfold growth" was never measured.** With the live heap flat, the
+2.25 GB a node this document compared against was not a like-for-like
+saturated figure -- it does not match anything measured here at saturation. The
+comparison should not have been made, was corrected once for being confounded,
+and is now withdrawn entirely: there is no growth to explain.
