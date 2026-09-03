@@ -2169,3 +2169,30 @@ not the cause and would have been blamed: the neighbouring `datc` job went
 41.2 → 84.8 GB during the round, and available memory never fell below 48 GB.
 The failure was in the first two seconds of node startup, before any of that
 mattered.
+
+### `--mobileverify.packet-window` smoke-tested; the round it enables is waiting for a regime
+
+The flag committed as "NOT YET SMOKE-TESTED ON A NODE" now has been, the way
+rule 37 requires and the way the change it replaced should have been:
+`--mobileverify.packet-window 4` reaches the process, `node.go` logs
+`window = 4` at startup, and all seven RPCs answer. The commit message's
+disclaimer was true when written and is superseded here rather than by rewriting
+history.
+
+Two things the smoke test also caught, neither of them the flag:
+
+- The nodes read **DOWN** at 20 s and **OK** at 60 s. A fleet is not up when the
+  processes exist; the first check was simply too early, and a round that
+  branched on it would have aborted a healthy fleet. The harness's own
+  `RPC not ready` abort has the same shape.
+- The two `window = 256` lines in the log were from **16:29 and 01:11**, earlier
+  runs appended to the same file. Reading them as this run's output would have
+  said the flag did not work. Timestamps, not `tail`.
+
+**The round is not being run yet.** `datc` is at 82.9 GB with 47 GB available
+and the page cache already squeezed; a peer's three legs under 52-79 GB of it
+were unreadable and they said so rather than quoting them. A conditions-and-
+retention round taken on a box already starved by the neighbour cannot separate
+my fleet's consumption from the neighbour's, which is the whole question. It
+waits for the regime a peer's launcher also waits for: `datc` under 45 GB and
+80 GB available.
