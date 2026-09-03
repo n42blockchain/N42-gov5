@@ -2310,3 +2310,37 @@ the fsync slow.
 And whatever a re-run shows, safe-nosync weakens durability -- a crash or power
 loss rolls chaindata back several blocks, which the node must then re-sync.
 Nothing here is a throughput recommendation.
+
+## The metrics that are collected and served nowhere
+
+Found while trying to test H-spill directly, and worth its own note because it
+will waste the next person's round the same way it nearly wasted mine.
+
+Three metrics packages coexist:
+
+  common/metrics    -- what `--metrics` actually serves. SetupMetrics calls
+                       its Setup(), which handles /debug/metrics/prometheus
+                       against ITS DefaultRegistry. 1142 lines on a live node.
+  internal/metrics  -- RegisterSystemMetrics(), Go runtime and system gauges.
+  lib/metrics       -- everything the storage layer counts: db_pgops (newly,
+                       cow, clone, split, merge, spill, unspill, wops), kvcache,
+                       txpool, layered, disk, mem. Registered into ITS OWN
+                       defaultSet, which reaches an HTTP handler only through
+                       lib/metrics.Setup() -- and that function HAS NO CALLERS
+                       anywhere in the tree.
+
+So db_pgops{phase="spill"} is updated on every single MDBX commit and is
+readable by nothing. `--metrics` will not show it; neither will the pprof port.
+Wiring it is a one-line change (register lib/metrics' defaultSet, or call its
+Setup) and is not made here, because the fleet was mid-round and a rebuild would
+have cost the bookend.
+
+Two consequences worth separating. The instrumentation one: any round that
+plans to read a storage-layer metric must check the endpoint FIRST, on a leg it
+is willing to throw away -- a warm-up leg caught this after ten minutes instead
+of after fifty. The performance one: MdbxTx.Commit calls CollectMetrics on
+every commit, which makes two cgo calls -- env.Info() and tx.Info(true), the
+latter scanning the reader lock table -- to maintain gauges with no reader. That
+lands inside the measured `commit` window by construction. It is a floor under
+every leg equally rather than a confound, but nobody has measured how large a
+floor, and it is being paid for nothing.
