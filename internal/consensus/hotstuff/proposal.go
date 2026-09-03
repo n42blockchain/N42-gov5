@@ -42,11 +42,21 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 	// the two can disagree, and the proposal would then pair a newer JustifyQC
 	// with a block on an older parent. That is precisely what extendsJustify
 	// refuses at vote time: every voter rejects, the view times out, the next
-	// leader repeats it, and the chain stops making progress. A peer hit this
-	// live on the Rust client (leader two imports behind at tenure start, ~0.4 s
-	// build, two Decides arriving inside it); the same shape is reachable here
-	// and more easily, because blockProductionSyncGate allows a leader two
-	// blocks behind to produce and a 22,857-transaction build takes 1.6-2 s.
+	// leader repeats it, and the chain stops making progress. The window is
+	// wide here: blockProductionSyncGate allows a leader two blocks behind to
+	// produce, and a 22,857-transaction build takes 1.6-2 s.
+	//
+	// The comparison catches a SECOND shape with the same test, and that one
+	// has been seen live on another client: the builder returning a block that
+	// does not extend the parent it was asked for, with the driver trusting the
+	// payload it got back. Here the requested parent IS the LockedQC block
+	// (service.go passes lq.BlockHash), so "built on the wrong parent" and "the
+	// QC moved under the build" both surface as parent != justifyBlock. One
+	// check, two failures.
+	//
+	// (The peer's live halt turned out to be the builder-trust shape, not the
+	// QC race — their QC guard fired zero times. This guard was found here by
+	// reading, not by reproducing theirs, and it stands on that.)
 	//
 	// Drop rather than propose, matching the two checks above: a timed-out view
 	// is recoverable, a proposal nobody can vote for is not. Fail-open when

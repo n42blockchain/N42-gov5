@@ -91,3 +91,29 @@ func TestSealedBlockProposedWhenParentUnknown(t *testing.T) {
 		t.Fatal("dropped a block with no recorded parent; the rule must fail open, not closed")
 	}
 }
+
+// The second shape the same comparison catches, and the one seen live on
+// another client: LockedQC never moves, but the builder hands back a block
+// built on a different parent than the one production was triggered for. The
+// driver must not trust the payload's lineage — here the requested parent is
+// the LockedQC block (service.go passes lq.BlockHash), so a block on any other
+// parent fails the same check.
+func TestSealedBlockDroppedWhenBuilderReturnedAnotherParent(t *testing.T) {
+	engine, out := singleValidatorEngine(t)
+
+	requestedParent := types.Hash{0x11} // what the leader asked to build on
+	blockHash := types.Hash{0xAB}
+	builderUsedParent := types.Hash{0x99} // what the builder actually used
+
+	// LockedQC is stable throughout: this is not the QC-moved race.
+	engine.roundState.UpdateLockedQC(&QuorumCertificate{View: 5, BlockHash: requestedParent})
+	engine.rememberImported(blockHash, builderUsedParent)
+
+	if err := engine.ProcessEvent(ConsensusEvent{Type: EventBlockReady, Hash: blockHash}); err != nil {
+		t.Fatalf("onBlockReady: %v", err)
+	}
+	if broadcastsProposal(drainOutputs(out)) {
+		t.Fatal("proposed a block the builder placed on a parent that was never requested; " +
+			"voters would refuse it and the view would stall")
+	}
+}
