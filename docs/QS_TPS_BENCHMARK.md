@@ -2453,3 +2453,37 @@ Also corrected: my earlier claim that this harness is an order of magnitude
 noisier than a peer's (their 1-3% same-binary spread against my "9-55%"). The
 9-55% was commit's. On wtotal and chgset this rig runs 2.5-9%, which is a much
 closer comparison. The noisy thing was the metric, not the harness.
+
+## Correction to round 8: "wtotal is the stable one" was a claim about medians
+
+A peer read one of their legs in 20-block buckets instead of as a single median
+and found a within-leg slope the median had hidden. Applying the same read to
+round 8's four counted legs, wtotal per 20-block bucket:
+
+  A1 durable   568 647 575         +1.2%  (non-monotonic)
+  B1 nosync    500 477 312        -37.6%
+  A2 durable   585 556 544         -7.0%
+  B2 nosync    444 542 393 508    +14.4%  (oscillating)
+
+Round 8's finding 49 said wtotal is the most stable quantity on this rig at
+2.5% and 6.2%. That is true of the LEG MEDIANS and false of the blocks under
+them. B1 falls 37.6% across its own leg while B2 oscillates, and their medians
+land 6.2% apart. Two legs of different internal shape agreeing on a median is
+not two stable legs agreeing, and I reported the first as though it were the
+second.
+
+The arithmetic that settles it: the between-leg difference is 14.3 ms on the A
+side and 28.9 ms on the B side, while the median within-leg bucket RANGE is
+60.0 ms and 168.5 ms. The legs differ by far less than the blocks inside them
+swing, so the agreement carries no information about the treatment. It is not
+evidence that wtotal is stable; it is a coincidence of medians.
+
+What survives from round 8 unchanged: commit failed its bookend a third time,
+so it stays retired; P4 stayed unevaluated and no number was published, which
+is now doubly right; and the log-rotation instrument note. What does not
+survive is the recommendation that later rounds simply make wtotal primary and
+read leg medians. Round 9 registers Q5 before it has data: buckets are reported
+for every leg, and a bookend holds only if the between-leg difference is also
+smaller than the median within-leg bucket range. Under Q5 round 8's wtotal
+bookends would FAIL, which is the point of adding it -- a criterion added after
+looking at old data is only safe if it tightens the bar.
