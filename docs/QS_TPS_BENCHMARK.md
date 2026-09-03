@@ -2516,3 +2516,57 @@ buckets and its first-to-last change; a leg moving more than 20% end to end is
 treated as having no level and its median is not compared. Q6: the treatment
 difference must exceed the bookend spread of the same quantity, or the round
 has not separated the treatment from the rig.
+
+## Round 9 — the question is unanswerable on this rig, and that is the answer
+
+Registered before the round (Q1-Q6), wtotal primary, warm-up leg discarded,
+A-B-A-B, drift criterion added from a peer's bucket method.
+
+  leg      sync          chgset  commit  wtotal  MB/blk   wtotal buckets -> drift
+  warmup   durable        232.3   248.4   630.9   137.9   664 660 551  -17.0% (discarded)
+  A1       durable        268.6   162.1   592.4   140.3   551 631 563   +2.1%
+  B1       safe-nosync    296.4    86.1   544.3   140.2   540 549 549   +1.6%
+  A2       durable        286.5   257.3   705.6   147.5   671 727 738   +9.8%
+  B2       safe-nosync    314.7    75.2   549.9   143.9   520 584 536   +3.1%
+
+  Q5 drift   : all four counted legs have a level (1.6-9.8%). The warm-up leg
+               drifted -17.0% and was discarded before any of this, which is
+               what a discarded leg is for.
+  bookends   : wtotal  A 17.4% FAIL   B  1.0% HOLD
+               chgset  A  6.5% HOLD   B  6.0% HOLD
+               commit  A 45.4% FAIL   B 13.6% HOLD
+  Q1 FAILS, Q3 HOLDS, Q4 HOLDS (1.3%), Q6 FAILS, Q2 not evaluated.
+
+**53. Q6 is what settles it: the effect is smaller than the noise between two
+identical legs.** The durable-to-nosync difference on wtotal is 101.9 ms. The
+spread between the two DURABLE legs, same binary, same flags, same workload, is
+113.2 ms. A treatment that moves the number less than re-running the same
+configuration moves it has not been separated from the rig, and no amount of
+further legs on this harness changes that -- it is a statement about the
+harness, not about the sample size.
+
+So the pre-registered stop fires: after rounds 6, 7, 8 and 9 I stop measuring
+the fsync split here, and I do not go looking for a fifth metric. Q6 is the
+criterion that did the work, and it only existed because a peer's bucket read
+had already embarrassed one of my conclusions; without it this round would have
+reported a clean-looking 17% cut off the B legs' 1.0% bookend and buried the
+fact that the A legs disagreed by more than the effect.
+
+**54. What four rounds did establish, none of it the thing I was chasing.**
+- Q4 held for the third time: MB/block is 143.9 against 142.0, 1.3% apart. The
+  fsync changes the wait and not the bytes, measured on durable/nosync pairs in
+  rounds 7, 8 and 9.
+- chgset is the stable term (6.5% and 6.0% here, on drift-validated legs) and
+  commit is the unstable one (45.4% on the A side). wtotal inherits commit's
+  instability, which is why it failed here having looked stable in round 8.
+- H-spill stands from round 7: 5.3x the time at 1.06x the bytes, cost
+  relocating inside the transaction rather than blocks doing more work. That
+  mechanism is also the reason commit cannot be pinned down -- the quantity
+  moves between phases run to run.
+
+The honest summary of the whole line: `commit` at 304 ms was a real observation
+about one workload on one afternoon, its time is the fsync rather than the page
+writes (direction, from round 6, never quantified), and this harness cannot
+measure how much because its run-to-run variation on the write path exceeds the
+effect. A rig with per-leg state resets -- a peer's design, 1-3% same-binary
+spread against my 17-45% -- could answer it. Mine cannot.
