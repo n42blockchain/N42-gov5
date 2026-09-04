@@ -291,3 +291,55 @@ the runbook today would reasonably conclude aux is spare.
 benchmark number, say in the commit message which reader you checked. The four
 mechanisms above each took a grep to find and one of them (the PlainState
 unwind) is the kind that fails months later, on a reorg, on one node.
+
+## 5c. What actually bounds the window: consensus irreversibility, not depth
+
+Section 5b took 256 and 512 as given because they are constants in the repo.
+That describes the code; it does not justify the numbers. The right question is
+which boundary the chain is actually subject to — longest-chain, heaviest-chain,
+or consensus-irreversible — and for HotStuff-2 it is the third, which is a
+much stronger guarantee than a depth heuristic.
+
+**The commit is same-view.** `voting.go:376` forms the commit QC for the
+CURRENT view and calls `roundState.Commit` immediately, then broadcasts Decide;
+the phases `WaitingForProposal → Voting → PreCommit → Committed` all run inside
+one view, and `AdvanceView` resets the phase only afterwards. There is no
+multi-view commit lag as in three-chain HotStuff. So at any instant the
+uncommitted suffix is **the current view's block, and nothing else**.
+
+**Therefore the consensus revert depth is at most 1 block.** A block with a
+commit QC cannot be reverted — that is the protocol's safety property, not a
+probability like Bitcoin's 6 confirmations or Ethereum's 12. Those numbers are
+answers to a different question (how deep before a longest-chain reorg becomes
+improbable), and quoting them here, as this document did, imports a
+probabilistic frame into a chain that does not have one.
+
+**So what are 256 and 512 for?** Not consensus reverts. They serve a LOCAL
+discontinuity: PlainState having run ahead of the applied marker, which
+`healPlainStateAheadOfMarkerOnStartup` detects and `realignAppliedToTree`
+repairs. That is a different failure with a different bound, and it is worth
+being exact about it, because the exactness cuts both ways:
+
+- PlainState, its changesets and the marker are written in ONE MDBX
+  transaction. A crash therefore cannot leave them apart — MDBX commits
+  atomically. The divergence the heal exists for came from an earlier PARTIAL
+  REPAIR, not from a crash.
+- A window cannot be sized against a bug's depth. So 256/512 are defensive
+  slack against unknown repair failures, which is a legitimate thing to have,
+  but it should be called that rather than presented as a derived requirement.
+
+**Should the changeset window equal the QMDB undo window?** For the repair
+purpose they serve the same event on two stores — the tree via undo records,
+PlainState via changeset pre-values — so equal sizing is coherent, and
+`qmdbRealignMaxDepth = 512` already mirrors `qmdbUndoWindow = 256` "with
+slack". What is NOT coherent is the current state: undo is pruned at 256 while
+changesets are retained without bound by default. That is a three-order-of-
+magnitude asymmetry between two halves of one mechanism, and no argument in
+this document justifies it. The archive-input requirement of section 6 does
+justify keeping changesets — but as an ARCHIVE input, deliberately, not as a
+side effect of the prune mode defaulting to "archive".
+
+**Rationally, and without inflating it in either direction:** consensus needs
+~1 block; local repair needs a slack window whose size is a judgement, and 256
+is already generous; the archive needs whatever an archive needs and that is a
+policy decision. Three different answers, and only the third is long.
