@@ -112,6 +112,28 @@ malloc'd dirty pages, and a jemalloc profile cannot see reth's mmap'd static
 files. A memory question on either client needs live heap, heap headroom and
 non-heap separated before it is even a question.
 
+### The prune floor, and the rule that sets it
+
+Raised with n42-rs as a hazard and answered by them: **the pruner and the
+unwinder read the same changesets.** Pruning below a block makes an unwind to
+that block impossible, silently, and the failure surfaces months later on one
+node during a reorg. reth ties its prune floor to what it may still need to
+revert.
+
+Their rule, which transfers to any prune mode built on the Go side and is
+sharper on a HotStuff chain than on a longest-chain one: **never prune inside
+the unfinalised window.** On this chain finality is a QC, not a depth, so a
+reorg deeper than the committed window is out of scope by construction — which
+puts the safe prune floor many blocks shy of any target worth pruning to. The
+constraint is real but it is not tight, and that is worth knowing before
+someone decides the whole idea is unsafe.
+
+Concretely, for a future Go prune mode: the floor is the highest
+QC-committed height, not a fixed depth, and it must be read from consensus
+rather than assumed. `qmdbUndoWindow = 256` in blockchain_write.go is a
+DIFFERENT window with a different justification and must not be reused as the
+prune floor by analogy.
+
 **For any client:** if you are about to disable one of these to raise a
 benchmark number, say in the commit message which reader you checked. The four
 mechanisms above each took a grep to find and one of them (the PlainState
