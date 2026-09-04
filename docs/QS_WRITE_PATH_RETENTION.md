@@ -209,7 +209,50 @@ but "how far back might we ever need to rebuild an archive", which is a
 different kind of argument and a much longer answer. The unfinalised-window
 rule from section 5 does not bound it.
 
-### The horizon, concretely — and one half of it is live right now
+## 5b. Correction: two horizons, not one — and the undo one is 512 blocks
+
+Sections 5 and 6 discussed "retention" as a single question and let the
+longest answer set the tone. That was an exaggeration and it is corrected
+here. **Undo and archive-input are different consumers with different
+horizons, and only one of them is long.**
+
+The undo horizon is a constant in this repo, not a judgement:
+
+    qmdbUndoWindow        = 256   blockchain_write.go:461, pruned every block
+    qmdbRealignMaxDepth   = 512   blockchain.go:2684, REFUSES beyond it
+    PruneConfig.Mode      = "archive" by default -> changesets never pruned
+    PruneConfig.BlockRetention = 90000 in "full" mode (~3 days at 3 s)
+
+`realignAppliedToTree` does not merely prefer recent changesets; it returns
+`refusing to realign %d blocks ... beyond the changeset window` past 512, and
+its comment explains why: "a partial heal is worse than staying wedged". So
+**changesets older than 512 blocks are already dead weight for undo — the code
+will not use them.** They are retained without bound to serve a mechanism that
+refuses to read them.
+
+Consensus makes the bound looser still rather than tighter. Practical finality
+elsewhere is shallow — Bitcoin's 6 confirmations, Ethereum's 12 — and here it
+is not a depth at all: a block with a commit QC cannot be reverted. 256 and 512
+are already generous slack over what HotStuff requires, and they were chosen
+that way deliberately (the 512 comment says "mirrors (with slack)").
+
+**What this licenses, stated without inflation.** An undo window of a few
+hundred blocks is small enough to hold in memory, and a node that loses it on
+restart re-syncs those blocks from peers, which is fast and safe precisely
+because the canonical chain is immutable under QC finality — there is no
+ambiguity for it to resolve, only blocks to refetch. That is a design
+direction, not a measurement: nothing here has built or measured a
+memory-resident undo, and the on-disk changeset write is 8.7 ms, so the
+motivation is retention size, not write cost.
+
+**What this does NOT license.** The archive-input horizon in section 6 is
+untouched by any of the above. DATC needs changesets over the whole chain as
+build INPUT, which has nothing to do with how far a node can unwind. Erigon's
+unbounded changeset retention is a staged-sync inheritance; this chain's
+archive dependency is a real and separate requirement, and the two must not be
+argued as one — which is what this document did before this section.
+
+### The archive horizon, concretely — and one half of it is live right now
 
 "How far back might we ever need to rebuild" is easy to write and hard to act
 on, so the eth-el session supplied the numbers. The precondition has TWO parts,
