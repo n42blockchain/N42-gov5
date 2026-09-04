@@ -229,7 +229,7 @@ func (w *PlainStateWriter) WriteHistory() error {
 	// only drops the inverted index, whose sole consumer is historical RPC --
 	// which api.State refuses outright when the index is off, rather than
 	// answering from current PlainState.
-	if HistoryIndexDisabled() {
+	if HistoryIndexDisabled() || HistoryIndexDeferred() {
 		return nil
 	}
 	if w.csw != nil {

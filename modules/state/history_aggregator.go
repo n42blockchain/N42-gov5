@@ -72,6 +72,19 @@ func (a *HistoryAggregator) AddChanges(blockNum uint64, changes *changeset.Chang
 	}
 }
 
+// AddKey records one (key, block) directly, for callers that read changeset
+// rows back from the database rather than holding a ChangeSet. The backfiller
+// does exactly that: the index is a pure function of the changesets, so it
+// rebuilds from the durable rows instead of having data handed out of the
+// commit transaction.
+func (a *HistoryAggregator) AddKey(bucket string, key []byte, blockNum uint64) {
+	m := a.accounts
+	if bucket == modules.StorageHistory {
+		m = a.storage
+	}
+	a.add(m, key, blockNum)
+}
+
 // Flush merges the accumulated block numbers into the on-disk history indices —
 // one read+union+chunked-write per distinct key, in sorted key order — and
 // resets the aggregator for the next batch.
