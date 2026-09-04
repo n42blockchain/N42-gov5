@@ -100,6 +100,14 @@ func (b *HistoryBackfiller) Stop() {
 // IndexedThrough reports the highest block covered by the index, and whether
 // the marker exists at all. A missing marker means nothing is covered — the
 // caller must not read that as "everything".
+//
+// A READ FAILURE returns the same (0, false) as a missing marker, deliberately.
+// The only caller that matters is the interlock, and for it both answers mean
+// the same thing: coverage cannot be established, so refuse. Failing closed on
+// a transient read is the correct direction — the alternative is answering a
+// historical query from current PlainState because the marker was briefly
+// unreadable. Callers wanting to distinguish the two must read the marker
+// themselves; this method does not, and does not pretend to.
 func (b *HistoryBackfiller) IndexedThrough() (uint64, bool) {
 	var n uint64
 	var ok bool
