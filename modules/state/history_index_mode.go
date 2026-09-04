@@ -46,6 +46,8 @@ import (
 var (
 	historyIndexOnce     sync.Once
 	historyIndexDisabled bool
+	historyDeferredOnce  sync.Once
+	historyDeferred      bool
 )
 
 // HistoryIndexDisabled reports whether this node skips the history index.
@@ -68,4 +70,24 @@ func parseHistoryIndexDisabled(v string) bool {
 		return true
 	}
 	return false
+}
+
+// HistoryIndexDeferred reports whether index maintenance runs OFF the block
+// commit path -- skipped inline, rebuilt from the changesets by a background
+// backfiller. Composes with the flag above rather than replacing it: both skip
+// the inline write, and this one additionally keeps the capability, because
+// the index is a pure function of the changesets and they are already durable
+// when the block commits.
+//
+// The difference that matters to a caller is the interlock. With the index
+// simply OFF, historical queries are refused outright. Deferred, they are
+// refused only ABOVE the backfill marker: below it the index is complete and
+// the answers are correct. An index known to be behind is safe; one silently
+// behind is not, because HistoricalStateReader reads a missing entry as
+// "untouched" and falls back to the current value.
+func HistoryIndexDeferred() bool {
+	historyDeferredOnce.Do(func() {
+		historyDeferred = parseHistoryIndexDisabled(os.Getenv("N42_HISTORY_INDEX_DEFERRED"))
+	})
+	return historyDeferred
 }

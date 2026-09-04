@@ -334,6 +334,22 @@ func (n *API) State(tx kv.Tx, blockNrOrHash jsonrpc.BlockNumberOrHash) evmtypes.
 		}
 	}
 
+	// Deferred mode keeps the capability but lags it: the backfiller rebuilds
+	// the index from changesets behind the head. Below the marker the index is
+	// complete and the answer is correct; above it there is a gap, and a gap
+	// reads as "untouched" and resolves to the CURRENT value. Refuse the gap.
+	// A missing marker means nothing has been backfilled, so everything below
+	// the head is refused -- reading an absent marker as "all covered" would
+	// invert the check.
+	if state.HistoryIndexDeferred() {
+		indexed, ok, err := rawdb.ReadHistoryIndexedThrough(tx)
+		if err != nil || !ok || *blockNr > indexed {
+			log.Debug("historical state refused: above the history backfill marker",
+				"block", *blockNr, "indexedThrough", indexed, "markerPresent", ok)
+			return nil
+		}
+	}
+
 	stateReader := state.NewPlainState(tx, *blockNr+1)
 	return state.New(stateReader)
 }

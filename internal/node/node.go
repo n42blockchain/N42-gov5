@@ -188,16 +188,17 @@ type Node struct {
 	rpcAPIs            []jsonrpc.API
 	engineStateAdapter *api.EngineStateAdapter // ETH EL mode only
 
-	http           *httpServer
-	ipc            *ipcServer
-	ws             *httpServer
-	httpAuth       *httpServer
-	wsAuth         *httpServer
-	inprocHandler  *jsonrpc.Server
-	rateLimiter    *jsonrpc.RateLimiter
-	pruner         *Pruner
-	historyExpirer *HistoryExpirer
-	snapshotMgr    *snapshot.Manager
+	http              *httpServer
+	ipc               *ipcServer
+	ws                *httpServer
+	httpAuth          *httpServer
+	wsAuth            *httpServer
+	inprocHandler     *jsonrpc.Server
+	rateLimiter       *jsonrpc.RateLimiter
+	pruner            *Pruner
+	historyBackfiller *internal.HistoryBackfiller
+	historyExpirer    *HistoryExpirer
+	snapshotMgr       *snapshot.Manager
 
 	p2pGenesisHash     types.Hash                  // genesis hash used for P2P fork digest
 	exexManager        *exex.Manager               // Execution Extensions manager
@@ -2055,6 +2056,27 @@ func (n *Node) Start() error {
 		n.snapshotMgr.Start()
 	}
 
+	// History index off the commit path: skipped inline in the state writer and
+	// rebuilt from the changesets behind the head. Measured inline it costs
+	// 130 ms of its own phase plus 266 ms of mdbx_txn_commit paying for the
+	// pages its scattered rows dirty. Whether moving it off the block's
+	// critical section keeps that saving -- or the backfiller gives it back
+	// competing for the same MDBX write lock -- is what this mode measures.
+	if state.HistoryIndexDeferred() {
+		log.Warn("history index DEFERRED — rebuilt off the commit path from changesets; " +
+			"historical queries above the backfill marker are refused until it catches up")
+		n.historyBackfiller = internal.NewHistoryBackfiller(n.db,
+			func() uint64 {
+				if bc := n.blockChain; bc != nil {
+					if cur := bc.CurrentBlock(); cur != nil {
+						return cur.Number64().Uint64()
+					}
+				}
+				return 0
+			}, 256, 2*time.Second)
+		n.historyBackfiller.Start()
+	}
+
 	// Start pruner if enabled
 	if n.config.PruneCfg.IsEnabled() {
 		hp := &nodeHealthProvider{node: n}
@@ -3201,6 +3223,15 @@ func (n *Node) stopServices() []error {
 		{"Pruner", func() error {
 			if n.pruner != nil {
 				n.pruner.Stop()
+			}
+			return nil
+		}},
+		// 3a. History backfiller — stopped before the DB closes; it holds no
+		// state of its own, and a partial batch is simply rebuilt from the
+		// marker, so an abrupt stop costs one batch of work and nothing else.
+		{"History backfiller", func() error {
+			if n.historyBackfiller != nil {
+				n.historyBackfiller.Stop()
 			}
 			return nil
 		}},
