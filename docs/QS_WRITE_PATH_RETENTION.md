@@ -181,8 +181,9 @@ prune floor by analogy.
 
 ## 6. The third consumer: changesets are the DATC archive's only input
 
-Contributed by the eth-el session, which verified both arguments above against
-the code before adding this one — and it is the leg that actually sets the
+Contributed by the session running the DATC v2 archive build and the QS weekly
+replay-sync, which verified both arguments above against the code before
+adding this one — and it is the leg that actually sets the
 retention horizon.
 
 The v2 full-chain DATC archive is built FROM the changeset freezer tables:
@@ -255,7 +256,7 @@ argued as one — which is what this document did before this section.
 ### The archive horizon, concretely — and one half of it is live right now
 
 "How far back might we ever need to rebuild" is easy to write and hard to act
-on, so the eth-el session supplied the numbers. The precondition has TWO parts,
+on, so the DATC archive session supplied the numbers. The precondition has TWO parts,
 and they bind differently.
 
 **While an archive build is in flight, nothing in its range may be pruned at
@@ -416,7 +417,7 @@ is still being wrong, and the size of the miss is the interesting part:
 
 **63. Removing a 128 ms phase removed 391 ms of write path — and the missing
 two thirds are in `commit`, measured.** The gap was logged as this round's open
-question and left unexplained on purpose. The eth-el session then named the
+question and left unexplained on purpose. The DATC archive session then named the
 discriminator, which cost nothing to check because the data was already in the
 same log lines:
 
@@ -494,7 +495,7 @@ the gap are refused.
 
 ## 10. The rebuild story has a hole in it, and this change is what makes it urgent
 
-Contributed by the eth-el session, which verified the rebuild claim before
+Contributed by the DATC archive session, which verified the rebuild claim before
 adding this. `cmd/n42-hist-from-freezer` does read only `acctcs`/`storcs` and
 does go through the same `cscompact` builders, so "a pure function of the
 changesets" holds. **But the artefact it builds cannot serve historical-state
