@@ -158,6 +158,30 @@ func (r *QMDBStateReader) Mismatches() (accounts, storage, compared uint64) {
 	return r.accountMismatch.Load(), r.storageMismatch.Load(), r.compared.Load()
 }
 
+// emptyByPlainPolicy mirrors modules/state.stateObject.empty(), the predicate
+// the plain write path applies before EIP-161 removes an account from the
+// `Account` table.
+//
+// The reader has to apply it because the table's CONTENTS are defined by that
+// policy, and this reader's contract is to return what the table holds. It is
+// not a workaround for the commitment path's unreachable isAccountEmpty (see
+// docs/QS_BLOCK_TIME_BUDGET.md section 6g): that defect is real, lives in the
+// state root, and is unaffected either way.
+//
+// What licenses this is measured, not argued. Round 20 compared 1,000,001 reads
+// a node across three legs and seven nodes: 26,072 divergences, EVERY one of
+// them plainNil=true / qmdbNil=false, and ZERO in the other direction. So QMDB
+// is a strict superset of `Account`, the values agree byte for byte on the
+// intersection, and the extra entries are exactly the ones EIP-161 deletes.
+// Filtering them here reproduces the table exactly.
+//
+// A chain before SpuriousDragon does not remove empty accounts, so a reader for
+// one would have to skip this. The QMDB commitment is the native chain's, which
+// is well past it.
+func emptyByPlainPolicy(a *account.StateAccount) bool {
+	return a.Nonce == 0 && a.Balance.IsZero() && a.CodeHash == emptyCodeHash
+}
+
 func (r *QMDBStateReader) qmdbAccount(address types.Address) (*account.StateAccount, bool, error) {
 	enc, ok := r.src.Get(qmdb.Hash(AccountKeyHash(address)))
 	if !ok || len(enc) == 0 {
@@ -166,6 +190,11 @@ func (r *QMDBStateReader) qmdbAccount(address types.Address) (*account.StateAcco
 	var a account.StateAccount
 	if err := a.DecodeForStorage(enc); err != nil {
 		return nil, true, err
+	}
+	if emptyByPlainPolicy(&a) {
+		// EIP-161 removed it from `Account`; QMDB retained it. Report what the
+		// table would.
+		return nil, true, nil
 	}
 	return &a, true, nil
 }

@@ -151,3 +151,57 @@ func TestOffModeDelegates(t *testing.T) {
 		t.Fatalf("off mode compared %d reads, want 0", compared)
 	}
 }
+
+// The reader must reproduce what the `Account` TABLE holds, and the table's
+// contents are defined by the plain write policy: EIP-161 removes an account
+// with nonce 0, zero balance and no code. QMDB retains those (its own
+// isAccountEmpty is unreachable -- see empty_account_test.go), so the reader
+// filters them.
+//
+// Round 20 is what licenses this: 26,072 divergences over a million comparisons
+// a node, EVERY one plainNil=true/qmdbNil=false and ZERO the other way, so QMDB
+// is a strict superset and filtering reproduces the table exactly.
+func TestQMDBFiltersAccountsEIP161Removed(t *testing.T) {
+	addr := types.Address{0xfe}
+	empty := &account.StateAccount{}
+	empty.Reset() // nonce 0, balance 0, empty code hash -- and Initialised=true
+
+	src := mapSource{qmdb.Hash(AccountKeyHash(addr)): EncodeAccountValue(empty)}
+	// the plain table does NOT hold it
+	plain := &fakePlain{acc: map[types.Address]*account.StateAccount{}}
+
+	r := NewQMDBStateReader(src, plain, QMDBReadOn)
+	got, err := r.ReadAccountData(addr)
+	if err != nil {
+		t.Fatalf("ReadAccountData: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("QMDB read returned %+v for an account EIP-161 removed; want nil", got)
+	}
+
+	// and verify mode must therefore report NO divergence for it
+	rv := NewQMDBStateReader(src, plain, QMDBReadVerify)
+	if _, err := rv.ReadAccountData(addr); err != nil {
+		t.Fatalf("verify read: %v", err)
+	}
+	if am, _, _ := rv.Mismatches(); am != 0 {
+		t.Fatalf("empty-account pair reported %d account mismatches, want 0", am)
+	}
+}
+
+// A non-empty account must still come back. The filter has to be exactly the
+// plain predicate, not "anything with a zero balance".
+func TestQMDBKeepsNonEmptyAccounts(t *testing.T) {
+	addr := types.Address{0x55}
+	for name, a := range map[string]*account.StateAccount{
+		"nonce only":   mkAccount(1, 0),
+		"balance only": mkAccount(0, 1),
+	} {
+		src := mapSource{qmdb.Hash(AccountKeyHash(addr)): EncodeAccountValue(a)}
+		r := NewQMDBStateReader(src, &fakePlain{acc: map[types.Address]*account.StateAccount{addr: a}}, QMDBReadOn)
+		got, err := r.ReadAccountData(addr)
+		if err != nil || got == nil {
+			t.Fatalf("%s: got (%v, %v), want the account", name, got, err)
+		}
+	}
+}
