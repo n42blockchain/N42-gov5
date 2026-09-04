@@ -224,6 +224,14 @@ func (w *PlainStateWriter) SetHistoryAggregator(agg *HistoryAggregator) {
 }
 
 func (w *PlainStateWriter) WriteHistory() error {
+	// Skipping the index does NOT skip the changesets: WriteChangeSets has
+	// already run and its rows are what rewind and the DATC archive need. This
+	// only drops the inverted index, whose sole consumer is historical RPC --
+	// which api.State refuses outright when the index is off, rather than
+	// answering from current PlainState.
+	if HistoryIndexDisabled() {
+		return nil
+	}
 	if w.csw != nil {
 		return w.csw.WriteHistory()
 	}
