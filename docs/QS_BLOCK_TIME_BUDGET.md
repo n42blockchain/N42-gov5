@@ -704,6 +704,72 @@ a background task**, or it will reappear between views exactly as it did here.
 That is a much larger change than moving a notification -- and round 17 is the
 evidence for why the smaller version was not worth adopting.
 
+## 6f. Round 19: the table is `Account`, and it is a duplicate
+
+Round 18 established the shape -- cost tracks the distinct-account count, one
+4 KB page each -- but not the name, and the name had been guessed wrong twice.
+`lib/kv/mdbx/write_probe.go` already existed (`N42_WRITE_PROBE=1`, logger wired
+at cmd/n42/app.go:79) and records rows and payload bytes per TABLE plus the
+transaction's SpaceDirty. It is the third instrument this week that was in the
+tree and had only to be read.
+
+Per write transaction carrying a full block:
+
+Median over n=266 such transactions across three legs:
+
+```
+dirtyBytes   71.3 MB      payloadBytes 6.1 MB      amplification 11.7x
+
+table                 rows/block   payload KB   key
+qmdbEntries               31,375        674.3   slot            (append-ordered)
+BlockTransaction          22,857      2,543.3   transaction no. (append-ordered)
+Account                   15,682        367.6   ADDRESS         (uniform)
+AccountChangeSet          15,585        487.1   block no.+addr  (DupSort, append)
+QMDBUndoWindow                 1      1,111.7   block no.
+Receipt                        1        188.3   block no.
+```
+
+**`Account` is the only table keyed by a uniformly distributed value.**
+`modules.Account` is "address (un-hashed) -> account encoded". Every other table
+with a large row count is append-ordered -- qmdbEntries by slot, BlockTransaction
+by transaction number, AccountChangeSet by block number under DupSort -- so their
+rows pack into few sequential pages. 15,682 random-keyed rows at one 4 KB page
+each is **62.7 MB of the 71.3 MB dirtied, 88%**, from 6% of the payload bytes.
+
+AccountChangeSet is the clean control: it has essentially the SAME row count as
+Account (15,585 against 15,682) and costs almost nothing, because its key is
+append-ordered. Rows are not pages; rows times key scatter are.
+
+**A registered criterion of mine was wrong, and the conclusion is not.** The
+prediction said "FALSIFIED IF the top row by count is not an account-keyed
+table". `Account` is third by count, so by the letter it is falsified. The
+criterion was badly written: rows are not pages, and a sequential-keyed table
+can have twice the rows at a fortieth of the cost. The right proxy is rows times
+key scatter, which is what the earlier sections argued and what the numbers show.
+
+### The duplicate
+
+`qmdbEntries` carries 31,375 rows to `Account`'s 15,682 -- almost exactly 2:1.
+QMDB appends a new entry per changed key and deactivates the old one, so both
+tables are recording **the same ~15,700 account updates**: one append-only, one
+random-keyed. QMDB entries carry the value (`entry{keyHash, value, active}`) and
+`IndexLookup -> entryAt` resolves an account in RAM for the hot set.
+
+So the account state is written twice per block, and the expensive copy is the
+one execution reads through (`PlainStateReader` over `modules.Account`), while
+the cheap one is already authoritative for the state root.
+
+### What that makes the two candidate routes worth
+
+| route | attacks | measured ceiling | cost |
+|-------|---------|------------------|------|
+| A. asynchronous persistence | latency | 46 -> 80 blocks/min (~30k TPS), from round 18's Z1 | moderate; reads must see un-persisted writes |
+| B. drop the `Account` duplicate, read through QMDB | **bytes** | 15,682 random-keyed rows per block stop existing rather than move | large; snap sync iterates `Account` by address, which QMDB cannot serve |
+
+Route A is bounded at roughly 30k TPS by a measurement, not an estimate. Only
+route B changes the per-transaction byte count, and per-transaction cost is the
+only axis left once section 6's ceiling is corrected.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
