@@ -465,3 +465,69 @@ and a deferred index write leaves behind) is exactly the kind that has to be
 answered before it is built, not after. The `refuse rather than lie` gate is
 the shape of the answer: an index known to be behind is safe if queries against
 the gap are refused.
+
+## 10. The rebuild story has a hole in it, and this change is what makes it urgent
+
+Contributed by the eth-el session, which verified the rebuild claim before
+adding this. `cmd/n42-hist-from-freezer` does read only `acctcs`/`storcs` and
+does go through the same `cscompact` builders, so "a pure function of the
+changesets" holds. **But the artefact it builds cannot serve historical-state
+queries correctly today**, and section 7's reframing — "skipping the index
+defers work rather than losing capability" — is only as good as the thing being
+rebuilt.
+
+The defect, already marked KNOWN DEFECT at
+`internal/cscompact/history_segment.go:216`: `HistoryReader.Lookup` consults
+ONLY the segment holding blockNum. A key whose last write before blockNum
+landed in an earlier segment reports not-found, `HistoricalStateReader` reads
+not-found as "untouched", and falls back to PlainState — returning the CURRENT
+value. An account written at 5M and again at 24M, queried at 20M, comes back
+with the 24M value.
+
+It is **latent, not live**: `HistoricalStateReader` is referenced by nothing
+outside its own tests and `eth_getStorageAt` does not route through it. And
+walking backwards through earlier segments does not fix it alone, because the
+index is a bare MPHF with no existence filter (`lib/recsplit/index.go` carries
+its own TODO), so an absent key maps to an arbitrary ordinal and every earlier
+segment reports a false hit — absorbed only by decoding the changeset and
+checking, which turns a miss into ~25 retrieve-and-decode passes at the current
+height. The fix belongs in the format: a key fingerprint beside each ordinal,
+or the existence filter. Either regenerates accthist/storhist.
+
+**Why it lands on this change.** Making rebuilds cheap and routine is exactly
+the moment the format is easiest to change, because every consumer is about to
+rebuild anyway. If nodes start running without the index and the first rebuild
+carries the fingerprint, the cost is nothing. If rebuilds happen for a year
+first, the format is pinned by all of them.
+
+Also: the same builder had a resume defect fixed two days ago (e43ad4ea) —
+whole-segment resume arithmetic counted a SHORT final segment as whole and
+resumed past blocks it never wrote, silently, with no error and no gap report.
+accthist/storhist had been frozen since 2026-06-06 for that reason and nobody
+noticed. Any rebuild path that RESUMES rather than starting clean needs that
+fix; the regression is `internal/cscompact/history_partial_tail_test.go`.
+
+None of this changes the measured saving or the interlock, both of which stand.
+It changes what may be said about the rebuild: **"one offline pass can rebuild
+it" is true of the mechanics and not yet true of the correctness**, and this
+document should not have implied otherwise before section 10 existed.
+
+## 11. The Rust side measured its equivalent at 0.86 microseconds
+
+Relayed from n42-rs-36 via the native-chain session, on a 400 ms direct-import
+leg reading node1's /metrics: `save_blocks_update_history_indices_last` =
+**0.86 µs**, with AccountsHistory at 34 MB and read-only in that window
+(346k gets, 0 puts). So the lever measured here has no counterpart to pull
+there, which is the quantitative form of section 9: the same work costs 128 ms
+inline and effectively nothing off the critical path.
+
+Their persistence cost is elsewhere — QMDB's RocksDB commit, three blocks a
+batch at 0.32-0.71 s each, median 0.89 s and p90 1.23 s per batch, which is
+300-410 ms a block against a 0.51 s cycle. Off the critical path today, and
+they note it would fall behind and trip the 8-block tree threshold at a 0.4 s
+cycle.
+
+They also observe that their persistence cost may be the same class of
+phenomenon as the unexplained threefold amplification in section 8 — dirty
+pages paid at commit rather than at the write. **Neither side has measured
+that**, and it is recorded on both as a candidate rather than a mechanism.
