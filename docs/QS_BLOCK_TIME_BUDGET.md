@@ -890,6 +890,83 @@ hand rather than in place of it.
   equivalent, ran in a mode where a divergence could not change a block, and
   found a pre-existing inconsistency on its first comparison.
 
+## 6h. Round 22: the fold is free, and the duplicate root cannot be made cheap
+
+The leader computes a QMDB root TWICE per block, both on its critical path: once
+on the isolated speculative tree during the build (58.3 ms) and again replaying
+the same ops onto the live tree during the write (59.3 ms). The isolated tree
+exists because a speculative build must not mutate the live one, and speculation
+is what makes `miner: build phases` 4 ms instead of ~500. So the question was
+the SECOND computation: the live tree must receive the entries, but its root is
+already known -- the write path computes it only to compare against
+blk.StateRoot().
+
+Split into "apply" (Set/Delete) and "fold" (Root), n=35 full-block computations
+at a median 16,077 ops:
+
+```
+apply  56.5 ms   99.8%
+fold    0.1 ms    0.2%
+```
+
+**Registered prediction: fold-dominated, roughly 70/30. Wrong by 500x.**
+
+The reason is that QMDB folds INCREMENTALLY. It is a binary tree, not a Patricia
+trie: `Set` appends the entry, writes the leaf as Blake3(0x01||keyHash||value)
+and folds just the 11-node path to its twig root, so by the time `Root()` runs
+there are no dirty twigs left and it only folds the upper tree over changed twig
+roots. The cost is inside `apply`; my split cut at the wrong boundary.
+
+**So the duplication is not attackable this way.** The live tree needs the
+entries (for later reads) and needs the incremental hashing (for the next
+block's root). There is no separable fold to skip, and the registered criterion
+(fold >= 40%) is what stopped this being built on the assumption.
+
+One number worth keeping: 56.5 ms / 16,077 ops = **3.5 us per op**, against
+roughly 0.9 us for the ~12 Blake3 invocations an op implies. The remainder is
+scattered access across a 6.1M-key twig forest. That is a micro-optimisation,
+an order below the write, and it is recorded rather than pursued.
+
+## 6i. The CPU profile says something none of the wall-clock rounds could
+
+Every round in this document judged WALL CLOCK. The standing rule on this rig is
+CPU-seconds before wall clock, and a 45 s CPU profile of node0 inside a loaded
+window says the two answers are not the same:
+
+```
+runtime.cgocall                 66.56s flat   63.50%
+transaction.Sender              66.76s cum    63.69%
+  -> recoverPlainRS -> Ecrecover -> secp256k1.RecoverPubkey (CGO)   58.14%
+txspool.prewarmSenders.func1    43.97s        41.95%
+internal.recoverSenderStride    17.81s        16.99%
+```
+
+**64% of a node's CPU is secp256k1 sender recovery** -- 42 points in the txpool
+and 17 in block import. `blockimport phases` reports `recov` at 16 ms a block
+because commit 2402295b overlapped it with execution. **Overlapping does not
+remove CPU, it hides it** -- the same lesson as 6e's reordering, applied to the
+measurement method instead of to the code.
+
+Two wastes follow directly:
+
+* **The same signatures are recovered twice.** The pool recovers a sender on
+  admission and block import recovers it again from the block body, while the
+  pool already holds it.
+* **Senders are recovered for transactions that are never included.** The flood
+  supplies 40,000 tx/s; the chain consumes 22,857 per ~1.3 s = ~17,600 tx/s.
+
+Round 14 swept the supply rate UP (40,000 against 80,000, no difference) and
+concluded supply is not the limit. Both points were far above capacity. It never
+swept DOWN, which is what round 23 does.
+
+**What this does NOT establish.** The same profile has one node at 2.33 cores
+and seven at roughly 16 of the box's 256 threads, so the fleet is not
+box-saturated and nothing here shows the recovery CPU is the BINDING constraint.
+Round 23's criterion is written so that either answer is usable: if throughput
+does not move when the supply drops, the 64% is recoverable waste that competes
+for nothing, and the constraint is the serial dependency chain the view timings
+describe.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
