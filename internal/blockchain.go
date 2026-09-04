@@ -1759,6 +1759,20 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		if cache := layered.ExtractCache(db); cache != nil {
 			stateReader = state.NewCachedStateReader(stateReader, cache)
 		}
+		// N42_STATE_READ_QMDB (default off) reads accounts and storage slots
+		// from the QMDB tree instead of the address-keyed `Account` table.
+		// Round 19's write probe put `Account` at 16,096 random-keyed rows a
+		// block -- ~64.4 MB of the 71.0 MB MDBX dirties, 90% of the bytes from
+		// 10% of the payload -- and the tree already holds the same values in
+		// the same encoding. `verify` reads both and reports divergence while
+		// still ANSWERING from the plain reader, so an equivalence round cannot
+		// change a block's outcome; nothing here stops the plain write.
+		if mode := commitment.QMDBStateReadMode(); mode != commitment.QMDBReadOff &&
+			bc.qmdbEnabled && bc.qmdbRootComputer != nil {
+			if src := bc.qmdbRootComputer.ValueSource(); src != nil {
+				stateReader = commitment.NewQMDBStateReader(src, stateReader, mode)
+			}
+		}
 		ibs := state.New(stateReader)
 		// Inject root computer for tree-based state root computation.
 		// JMT: only for fresh chains where all blocks use JMT from genesis.

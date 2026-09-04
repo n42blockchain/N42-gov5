@@ -422,6 +422,18 @@ func (r *QMDBRootComputer) UseMDBXIndex(tx kv.RwTx) {
 	r.t.SetIndex(r.mdbxIdx)
 }
 
+// ValueSource exposes the live tree for point reads of account and storage
+// values. The tree already holds every value the address-keyed `Account` table
+// does -- EncodeAccountValue is account.MarshalV2(), the same bytes
+// PlainStateWriter puts there -- so a reader over this returns identical data
+// without the 16,096 random-keyed rows a block writes to that table.
+//
+// Reads are only valid while the computer's cold reader is pointed at a live
+// transaction (SetCold), which evmRecord does per block, and only from the
+// block pipeline's own goroutine: the tree is mutated by ComputeRoot at the end
+// of the same block.
+func (r *QMDBRootComputer) ValueSource() *qmdb.Tree { return r.t }
+
 // SetIndexTx re-points the MDBX index at the current batch's tx (no-op for the
 // in-RAM index). Call each batch alongside SetCold.
 func (r *QMDBRootComputer) SetIndexTx(tx kv.RwTx) {
