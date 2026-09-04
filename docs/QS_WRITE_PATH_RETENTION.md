@@ -428,3 +428,40 @@ The consequence for the number: `-58.8%` is what was measured and it stands.
 "Because it stops dirtying pages" is not established, and if the real cause
 turns out to be something else the SAVING does not change -- only the
 generalisation to other writes would.
+
+## 9. Why this cost exists at all: the index is inline here and asynchronous in reth
+
+Contributed by the native-chain session after round 11, and it reframes the
+win. reth has the same work — `update_history_indices`, the same sharded
+bitmaps over ~163k accounts a block — and it does not appear on their critical
+path. Their persistence runs behind an in-memory tree and the engine only waits
+when a block's persistence exceeds the cycle, or when the tree passes an
+8-block threshold. At their current 0.37-0.45 s persistence that never happens.
+
+Here the index is written **inside the block commit transaction**, so every
+millisecond of it is on the critical path by construction.
+
+That makes round 11's result narrower and more interesting than it first looks:
+
+- Narrow, because it does not say the index is expensive in general. It says
+  the index is expensive WHEN INLINE. The same code off the critical path
+  costs the block nothing, which is why the equivalent lever is worth little
+  on the Rust side and why the native-chain session is measuring their
+  followers' per-block persistence before deciding.
+- Interesting, because the flag removes one item from a critical path that
+  arguably should not contain it. `WriteChangeSets` (8.7 ms) has to be in the
+  commit transaction — its rows must be atomic with the state they describe.
+  The history INDEX does not: it is derived, rebuildable offline, and read by
+  nothing during import. It is in the transaction because that is where it was
+  written, not because it needs to be.
+
+**The larger lever this suggests, stated as a direction and not a result:**
+moving index maintenance off the block commit path — asynchronous, batched, or
+deferred to the offline builder that already exists — would recover the same
+time without giving up the capability, and would apply to any other derived
+artefact that has drifted into the commit transaction. Nothing here has
+measured that, and the atomicity question (what a crash between the state write
+and a deferred index write leaves behind) is exactly the kind that has to be
+answered before it is built, not after. The `refuse rather than lie` gate is
+the shape of the answer: an index known to be behind is safe if queries against
+the gap are refused.
