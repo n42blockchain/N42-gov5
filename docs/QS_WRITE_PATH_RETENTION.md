@@ -85,12 +85,57 @@ one: the cost is not only the two calls at the end of the write path, it is
 spread across every account and storage update in the `state` phase, so the
 `chgset` phase understates it.
 
-What is NOT yet decided is the split between the two halves. `WriteHistory`
-looks tierable on this chain (its only consumers are historical RPC);
-`WriteChangeSets` does not. A round measuring `chgTrunc` / `chgSets` /
-`chgHist` separately (commit 5f05595f) is what decides whether a non-archive
-mode is worth building. Until that number exists, this document deliberately
-does not claim a win.
+### Measured (2026-09-04, 76 full blocks, one leg, 22,857 tx a block)
+
+    Truncate            0.0 ms    0.0% of chgset
+    WriteChangeSets     8.7 ms    6.9%
+    WriteHistory      117.6 ms   92.7%
+    chgset total      126.8 ms
+    write path total  579.9 ms
+
+**The load-bearing half costs 8.7 ms and the tierable half costs 117.6 ms — a
+factor of thirteen, in favour of the one that can go.** WriteHistory alone is
+20.3% of the write path.
+
+Three things follow:
+
+- `Truncate`'s "no-op on the strictly-forward happy path" comment is accurate;
+  it really is free. That hypothesis died for the price of one timer.
+- Everything section 6 protects — native rewind, eth-el rewind, the DATC
+  archive input — depends on **changesets**, and changesets cost 8.7 ms. None
+  of the three depends on the history index. So the expensive half is the one
+  with a single consumer (historical RPC on this chain) and the cheap half is
+  the one with three.
+- The split is clean to implement: `ChangeSetWriter.WriteHistory` reads the
+  in-memory changes already accumulated for the changeset write and only writes
+  the inverted-index bitmaps, so skipping it does not affect `WriteChangeSets`
+  at all.
+
+Absolute numbers are leg-dependent — this leg's write path was 579.9 ms where
+earlier rounds measured ~870 ms — so the 20.3% share travels and the 117.6 ms
+does not.
+
+### Why the existing aggregator does not solve it
+
+`HistoryAggregator` (modules/state/history_aggregator.go) was written for
+exactly this cost: per-block `writeIndex` pays a full read-decode-add-encode-
+write roaring round-trip PER CHANGED KEY PER BLOCK, and a full-chain conversion
+attributed ~330 GB of allocations to that path. It is wired into
+`internal/replay/engine_v2.go` and **nowhere else**.
+
+It does not transfer to live import for two reasons, both worth knowing before
+someone tries:
+
+- Its correctness note scopes itself: "nothing reads the history tables
+  MID-REPLAY". On a live node serving historical RPC that precondition does not
+  hold — a query landing mid-batch would read an incomplete index.
+- Its win is deduplicating a hot key touched across MANY blocks (the coinbase
+  is in every block) into one round-trip. Within a single live block each of
+  the ~24k keys is touched once, so there is nothing to deduplicate.
+
+So the 117.6 ms is inherent to writing an inverted-index entry for ~24k keys
+per block as read-modify-write. The available lever is not to batch it but to
+not write it on a node that does not serve historical queries.
 
 ## 5. Cross-client notes — the same question has different answers
 
