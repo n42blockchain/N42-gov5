@@ -2791,3 +2791,39 @@ configuration respectively.
 saturated figure -- it does not match anything measured here at saturation. The
 comparison should not have been made, was corrected once for being confounded,
 and is now withdrawn entirely: there is no growth to explain.
+
+## What a seven-node fleet on one box is actually measuring
+
+Established with the n42-rs session on 2026-09-04, and it qualifies every
+number this document contains.
+
+Each node independently verifies every transaction it ingests. That is not
+duplication to be optimised away: **a follower cannot vote on a block whose
+signatures it has not checked itself, and ECDSA offers no cheaper check than a
+recovery.** A gossiped or shared sender is a hint, never a proof. I proposed
+sharing senders across the fleet as a lever and it is unsound for exactly this
+reason.
+
+So seven co-located nodes do seven times the chain's required work, and on one
+box that competes for one set of cores. The Rust fleet measured the
+consequence directly: signature recovery at 45 us a transaction, which they
+then showed is the library floor — raw ecrecover on this EPYC is 36.5-43.1 us
+per thread on the crate's default build, and 59-79 us when built with
+`-O3 -march=native`, so the library's own configuration beats the compiler's
+guess and there is no headroom hiding in it. A full 163k-transaction block
+every 0.5 s therefore needs 14.7 of each node's 16 physical cores, and seven
+nodes need 7 x 14.7 of the box's 128.
+
+**Therefore a ceiling measured on this rig is a property of the rig, not of the
+chain.** On seven separate machines each node has its own 16 cores and that
+particular ceiling does not exist. Numbers from this fleet answer "what do
+seven co-located nodes achieve on one box", which is the right question for an
+A/B between two builds and the wrong question for "what can this chain do".
+
+Two consequences worth carrying:
+
+- An A/B on this rig stays valid, because both legs pay the same co-location
+  tax. Round 11's -58.8% write path and +47-55% TPS are unaffected.
+- An absolute number from this rig is a floor for the chain and not an
+  estimate of it. Nothing in this document should be quoted as the chain's
+  capacity, and where it has been, that was wrong.
