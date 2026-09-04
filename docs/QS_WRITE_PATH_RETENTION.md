@@ -164,6 +164,31 @@ but "how far back might we ever need to rebuild an archive", which is a
 different kind of argument and a much longer answer. The unfinalised-window
 rule from section 5 does not bound it.
 
+### The horizon, concretely — and one half of it is live right now
+
+"How far back might we ever need to rebuild" is easy to write and hard to act
+on, so the eth-el session supplied the numbers. The precondition has TWO parts,
+and they bind differently.
+
+**While an archive build is in flight, nothing in its range may be pruned at
+all — and the range is [0, tip], not a recent window.** This is not
+hypothetical: the v2 archive covers [0, 25,864,982] and is being built in two
+halves as this is written. The Windows half is at roughly block 12,894,000 of
+17,900,000, has been reading `acctcs`/`storcs` continuously for two days and
+will keep reading them for days more. Pruning any changeset below 17.9M today
+would not "degrade a future rebuild"; it would kill a running build with 28.7%
+of its leaf work done.
+
+**Once an archive exists and verifies, the changesets are still the only way to
+rebuild it,** so the default horizon is forever.
+
+That second one is a decision someone may legitimately make. The archive is
+~800 GB for the lower half alone against 425 GB of changesets, so "keep the
+archive, drop the inputs" is not obviously wrong. But it trades a rebuildable
+system for an unrebuildable one, and a corrupted archive then cannot be
+regenerated from anything. **That is a decision to take deliberately, not a
+default for a flag to answer.**
+
 ### Where the three will collide
 
 `n42-ancient prune --class aux --before-era N` (`cmd/n42-ancient/main.go:9`) is
