@@ -79,7 +79,47 @@ func (b *HistoryBackfiller) Start() {
 	}
 	b.started = true
 	b.mu.Unlock()
+	b.seedMarker()
 	go b.loop()
+}
+
+// seedMarker sets the marker to the current head the FIRST time deferred mode
+// runs on a database, because everything up to that point was indexed inline
+// and is already complete.
+//
+// Without this the marker starts at 0 and under-claims the entire chain. The
+// index is correct for [0, head] -- the node wrote it synchronously until this
+// mode was switched on -- but the interlock, which trusts the marker rather
+// than the table, refuses every query below it. Measured on the qs fleet at
+// 13.66M blocks: the marker advanced 256 blocks per 2 s tick, so it would have
+// needed about thirty hours to describe an index that was already complete,
+// and historical queries were refused for all of it. Fail-safe, and useless.
+//
+// Seeding is only correct on the FIRST run: a marker that already exists
+// describes real backfill progress and must not be moved forward, or the gap
+// between it and the head would be claimed as covered when it is not. That is
+// the one direction this component must never move the marker.
+func (b *HistoryBackfiller) seedMarker() {
+	if _, ok, err := b.readMarker(); err != nil || ok {
+		return // already seeded, or unreadable: leave it alone
+	}
+	head := b.head()
+	if head == 0 {
+		return // nothing to seed against yet; the next tick starts from 0
+	}
+	if err := b.db.Update(b.ctx, func(tx kv.RwTx) error {
+		// Re-check inside the write transaction: two starts racing must not
+		// let the second overwrite real progress made by the first.
+		if _, ok, err := rawdb.ReadHistoryIndexedThrough(tx); err != nil || ok {
+			return err
+		}
+		return rawdb.WriteHistoryIndexedThrough(tx, head)
+	}); err != nil {
+		log.Warn("history backfill marker seed failed; queries stay refused until it catches up", "err", err)
+		return
+	}
+	log.Info("history backfill marker seeded at the current head", "head", head,
+		"reason", "blocks up to here were indexed inline and are already complete")
 }
 
 func (b *HistoryBackfiller) Stop() {
