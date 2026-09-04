@@ -123,16 +123,56 @@ revert.
 Their rule, which transfers to any prune mode built on the Go side and is
 sharper on a HotStuff chain than on a longest-chain one: **never prune inside
 the unfinalised window.** On this chain finality is a QC, not a depth, so a
-reorg deeper than the committed window is out of scope by construction — which
-puts the safe prune floor many blocks shy of any target worth pruning to. The
-constraint is real but it is not tight, and that is worth knowing before
-someone decides the whole idea is unsafe.
+reorg deeper than the committed window is out of scope by construction.
+
+**That rule covers rewind and nothing else, and rewind is not the binding
+constraint.** See the third consumer below, which sets a far longer horizon.
 
 Concretely, for a future Go prune mode: the floor is the highest
 QC-committed height, not a fixed depth, and it must be read from consensus
 rather than assumed. `qmdbUndoWindow = 256` in blockchain_write.go is a
 DIFFERENT window with a different justification and must not be reused as the
 prune floor by analogy.
+
+## 6. The third consumer: changesets are the DATC archive's only input
+
+Contributed by the eth-el session, which verified both arguments above against
+the code before adding this one — and it is the leg that actually sets the
+retention horizon.
+
+The v2 full-chain DATC archive is built FROM the changeset freezer tables:
+`acctcs` (146.8 GB) and `storcs` (278.5 GB), per
+`modules/rawdb/freezer/freezer.go:57-58`. Every leaf-history row and every
+change-index row in that archive comes from a changeset, and the leaf/chg
+layers are not reconstructible from the trie — that is why Pipeline A exists at
+all, extending leaf history from the forward changesets alone.
+
+So: **prune a range's changesets and no DATC archive can ever be built or
+rebuilt for those heights.** Not "recovery is harder"; the proofs are not
+derivable from anything else that survives. This is not a rewind dependency, so
+it appears in neither argument above, and it has a different and much longer
+horizon:
+
+| leg | what changesets are for | pruning costs |
+|---|---|---|
+| native chain | PlainState's only rewind source (`realignAppliedToTree`) | recovery breaks |
+| eth-el | rewind goes via HashedAccounts/HashedStorages instead | rewind unaffected |
+| **DATC (both chains)** | **the archive's only input** | **historical proofs unbuildable, permanently** |
+
+The retention question for the third leg is not "how far back can we rewind"
+but "how far back might we ever need to rebuild an archive", which is a
+different kind of argument and a much longer answer. The unfinalised-window
+rule from section 5 does not bound it.
+
+### Where the three will collide
+
+`n42-ancient prune --class aux --before-era N` (`cmd/n42-ancient/main.go:9`) is
+the knob, and `docs/QS_WEEKLY_REPLAY_SYNC.md:115` already calls it "the
+(future) knob for dropping old witnesses/changesets", noting only that the
+chain class is not prunable. Nothing there records that the aux class is
+load-bearing for anything beyond rewind. **Before that flag does anything, the
+DATC horizon has to be written down next to it**, because an operator reading
+the runbook today would reasonably conclude aux is spare.
 
 **For any client:** if you are about to disable one of these to raise a
 benchmark number, say in the commit message which reader you checked. The four
