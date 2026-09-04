@@ -1025,6 +1025,63 @@ million comparisons -- not a timing measurement at all), round 22 (99.8% against
 **The baseline also moves.** 56 blocks/min is 21,333 TPS on a quiet box. The
 ~18,000 quoted through the middle of this document was the neighbour's tax.
 
+## 6k. Round 25 on a clean box: 74 ms off the import path buys nothing
+
+Round 15 measured safe-nosync's phase effects with tight bookends and could not
+read its throughput, because datc was resident and the floor was 83%. Round 24
+put the clean floor at 3.6%. Round 25 re-runs it A-B-B-A on the quiet box, with
+the warm-up leg discarded and never read.
+
+Interlock, verified per leg against the node logs rather than the label: warmup
+nosync 7/7, A1 durable 7/7, B1 nosync 7/7, B2 nosync 7/7, A2 durable 7/7. Every
+leg is what it declared. (The runner PRINTED "SYNC INTERLOCK FAILED" on the
+nosync legs; that is a bug in my checker -- it was derived from round 24, whose
+legs were all durable, and its expectation argument stayed hardcoded to durable.
+The observation side is correct on all five legs, which is what the interlock is
+for.)
+
+| leg | sync | commit | write | import | blocks/min |
+|-----|------|--------|-------|--------|------------|
+| A1 | durable | 69.9 | 152.0 | 379.1 | 56 |
+| B1 | nosync  | 16.5 |  94.2 | 323.9 | 56 |
+| B2 | nosync  | 18.3 |  96.5 | 333.6 | 53 |
+| A2 | durable | 81.7 | 180.8 | 426.5 | 51 |
+
+| metric | A mean | B mean | effect | A spread | B spread |
+|--------|--------|--------|--------|----------|----------|
+| commit | 75.8 | **17.4** | **-77%** | 11.8 | **1.8** |
+| write  | 166.4 | **95.4** | **-43%** | 28.8 | **2.3** |
+| import | 402.8 | **328.8** | **-18%** | 47.4 | **9.7** |
+| blocks/min | 53.5 | 54.5 | **+1.9%** | 5 | 3 |
+
+The phase effects are large and their bookends are tight -- the B arm's two legs
+agree to 2.3 ms on the write total. **Throughput moves 1.9% against a 3.6% floor
+and a 5% registered threshold. Not established.**
+
+### What this settles
+
+Seventy-four milliseconds came off a 1,250 ms block's import path, on a clean
+box, with the measurement able to resolve 4%, and the block rate did not move.
+
+That is the third time an instrument improved and the output did not -- round 15's
+commit, round 17's view total -- but the first time the result is readable. So it
+stops being a suspicion and becomes a conclusion:
+
+**No single stage is the constraint. The serial dependency chain is.**
+
+safe-nosync is not adopted: it trades durability for a throughput gain that is
+not there.
+
+The consequence for what remains is sharper than the number. It rules out a
+whole CLASS of change -- anything that makes one stage 20% faster will not move
+the headline. The reason stopping the `Account` write is still worth pursuing is
+not that it is bigger; it is that it is a different KIND of change. It does not
+shorten a stage, it takes the work off the critical path entirely, which is what
+n42-rs does with persistence and what round 19's design does with the vote.
+
+**Getting the kind right matters more than getting the magnitude large.** It
+took eleven rounds to turn that sentence into something with data behind it.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
