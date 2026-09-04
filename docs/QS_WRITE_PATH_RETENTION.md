@@ -380,3 +380,51 @@ The interlock in `api.State` is still right, and for the same reason: while the
 index is absent the node must refuse historical queries rather than answer them
 from current PlainState. "Refuse until the index is built" is an honest state
 for a node to be in. "Answer wrongly" is not.
+
+## 8. Measured end to end: +47-55% TPS, and one number nobody can explain yet
+
+Round 11, 2026-09-04. Warm-up leg discarded, then A-B-A-B, same binary
+throughout, only `N42_NO_HISTORY_INDEX` differing.
+
+    leg      n   chgTrunc  chgSets  chgHist   wtotal
+    A1      81      0.0      8.3     128.4     661.5
+    B1     118      0.0      9.1       0.0     273.8
+    A2      80      0.0      8.4     132.4     668.8
+    B2     121      0.0      9.0       0.0     273.9
+
+    bookends   A 1.1%   B 0.0%
+    write path 665.2 -> 273.9 ms   = -391.3 ms (-58.8%)
+    win TPS    12,952-13,714  ->  19,048-20,952   = +47% to +55%
+
+Every criterion registered before the round:
+
+- **Interlock (outranked everything).** Both B legs REFUSED a historical
+  `eth_getBalance` at head-100; both A legs answered. The gate works.
+- **chgHist -> 0.** 128.4/132.4 becomes 0.0/0.0. The flag did what it says,
+  which is not a given: two rounds today were lost to flags that silently did
+  nothing.
+- **Changesets survive.** chgSets 9.1/9.0 ms in the B legs. Rewind, the archive
+  input and the index rebuild all keep their source.
+- **Bookends 1.1% and 0.0%** — the tightest of the entire effort, and the
+  effect is more than forty times the leg-to-leg spread. This is not one of the
+  marginal results that four earlier rounds could not resolve.
+
+**62. The prediction failed by 2.4x, in the favourable direction.** P3
+registered "write path falls 60-160 ms" on the reasoning that the phase costs
+117.6 ms. It fell 391.3. Being wrong in the direction that flatters the change
+is still being wrong, and the size of the miss is the interesting part:
+
+**63. Removing a 128 ms phase removed 391 ms of write path, and this document
+does not explain it.** The amplification is roughly threefold and it is the
+open question this round produced. A candidate exists -- the index is a
+read-modify-write of a roaring bitmap per changed key per block, ~24k random
+keys, which dirties MDBX pages whose commit cost also disappears, the same
+shape as N42_TXINDEX_TAIL's 2.5x -- but it is UNTESTED and is recorded here as
+a candidate rather than a mechanism. Three explanations offered on this rig
+today were withdrawn after being named without measurement; a fourth is not
+being added on the strength of a plausible story.
+
+The consequence for the number: `-58.8%` is what was measured and it stands.
+"Because it stops dirtying pages" is not established, and if the real cause
+turns out to be something else the SAVING does not change -- only the
+generalisation to other writes would.
