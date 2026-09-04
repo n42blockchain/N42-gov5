@@ -338,20 +338,53 @@ func (n *API) State(tx kv.Tx, blockNrOrHash jsonrpc.BlockNumberOrHash) evmtypes.
 	// the index from changesets behind the head. Below the marker the index is
 	// complete and the answer is correct; above it there is a gap, and a gap
 	// reads as "untouched" and resolves to the CURRENT value. Refuse the gap.
-	// A missing marker means nothing has been backfilled, so everything below
-	// the head is refused -- reading an absent marker as "all covered" would
+	// A missing marker means nothing has been backfilled, so nothing below the
+	// head can be served -- reading an absent marker as "all covered" would
 	// invert the check.
+	//
+	// The `*blockNr < head` guard is NOT redundant, and leaving it out broke a
+	// live fleet. A query at `latest` arrives here with blockNr == head, which
+	// is above any lagging marker, so a marker-only test refuses the CURRENT
+	// state as well as historical state: eth_getBalance at latest returned
+	// null, the benchmark's own faucet preflight failed with "invalid hex
+	// quantity", and every node in the round was unable to answer a
+	// present-tense question. Historical state is what the index is needed for;
+	// `latest` reads PlainState and never consults it.
 	if state.HistoryIndexDeferred() {
+		head := n.currentHeadNumber()
 		indexed, ok, err := rawdb.ReadHistoryIndexedThrough(tx)
-		if err != nil || !ok || *blockNr > indexed {
+		if err != nil {
+			ok = false
+		}
+		if deferredRefusesQuery(*blockNr, head, indexed, ok) {
 			log.Debug("historical state refused: above the history backfill marker",
-				"block", *blockNr, "indexedThrough", indexed, "markerPresent", ok)
+				"block", *blockNr, "indexedThrough", indexed, "markerPresent", ok, "head", head)
 			return nil
 		}
 	}
 
 	stateReader := state.NewPlainState(tx, *blockNr+1)
 	return state.New(stateReader)
+}
+
+// deferredRefusesQuery decides whether the deferred-index gate refuses a query.
+// Extracted because the bug it now encodes lived in the condition, and a
+// condition is testable where a method needing a whole API is not.
+//
+//   - blockNr == head is `latest`: NEVER refused. It reads PlainState and does
+//     not consult the index at all. Testing the marker alone refused it, which
+//     took a live fleet's nodes off the air for present-tense queries and
+//     failed the benchmark's own faucet preflight with "invalid hex quantity".
+//   - head unknown (0) fails OPEN, matching the sealed-horizon gate: refusing
+//     everything because the head is momentarily unreadable is a worse failure
+//     than the one being prevented.
+//   - no marker means nothing is backfilled, so every historical query is
+//     refused. Reading an absent marker as "all covered" inverts the check.
+func deferredRefusesQuery(blockNr, head, indexed uint64, markerPresent bool) bool {
+	if head == 0 || blockNr >= head {
+		return false
+	}
+	return !markerPresent || blockNr > indexed
 }
 
 // currentHeadNumber returns the chain head height, or 0 when it cannot be
