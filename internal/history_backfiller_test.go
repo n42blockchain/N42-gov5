@@ -242,3 +242,47 @@ func TestMarkerOnlyClaimsBlocksTheIndexActuallyHas(t *testing.T) {
 	require.False(t, indexCoversBlock(t, db, marker+1),
 		"block %d is above the marker and must NOT be indexed yet, or the batch cap is not holding", marker+1)
 }
+
+// On the first run the marker must be seeded at the head, because everything
+// below it was indexed inline and is already complete. Starting at 0 makes the
+// marker under-claim the whole chain and the interlock refuse queries the node
+// could answer correctly — measured on a 13.66M-block chain, that would have
+// been about thirty hours of refusing a complete index.
+func TestFirstStartSeedsTheMarkerAtHead(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	b := NewHistoryBackfiller(db, func() uint64 { return 5_000_000 }, 256, time.Hour)
+	defer b.Stop()
+
+	if _, ok := markerOf(t, b); ok {
+		t.Fatal("precondition: a fresh database must have no marker")
+	}
+	b.Start()
+	n, ok := markerOf(t, b)
+	require.True(t, ok, "the first start must write a marker")
+	require.Equal(t, uint64(5_000_000), n, "it must be the head, not zero")
+}
+
+// And it must never move an EXISTING marker forward. That marker describes real
+// backfill progress; jumping it to the head would claim the gap between them as
+// covered when it is not — the one direction this component must never move it.
+func TestRestartDoesNotSeedOverRealProgress(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	seedChangesets(t, db, 10)
+
+	first := NewHistoryBackfiller(db, func() uint64 { return 10 }, 4, time.Hour)
+	require.NoError(t, first.step())
+	progress, ok := markerOf(t, first)
+	require.True(t, ok)
+	require.Equal(t, uint64(4), progress)
+	first.Stop()
+
+	// A restart, now with a much higher head, as after a period of catching up.
+	second := NewHistoryBackfiller(db, func() uint64 { return 9_999_999 }, 4, time.Hour)
+	defer second.Stop()
+	second.Start()
+
+	after, _ := markerOf(t, second)
+	require.Equal(t, progress, after,
+		"seeding moved a marker that already described real progress; blocks %d..%d would be "+
+			"claimed as indexed while their rows were never written", progress, uint64(9_999_999))
+}
