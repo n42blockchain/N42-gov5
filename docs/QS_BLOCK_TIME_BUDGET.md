@@ -770,6 +770,126 @@ Route A is bounded at roughly 30k TPS by a measurement, not an estimate. Only
 route B changes the per-transaction byte count, and per-transaction cost is the
 only axis left once section 6's ceiling is corrected.
 
+## 6g. Round 20 found a real inconsistency between the plain state and QMDB
+
+Round 20 runs the QMDB state reader in `verify` mode -- the plain reader still
+answers every call, QMDB is read alongside, divergence is counted. Its registered
+criterion was absolute: zero account mismatches and zero storage mismatches, or
+route B stops.
+
+**It failed on its first comparison, on every node, and the cause is a defect
+that predates this work.**
+
+```
+{"address":"0xfffffffffffffffffffffffffffffffffffffffe",
+ "plainNil":true, "qmdbNil":false, "msg":"qmdb state read: account diverges..."}
+```
+
+1,789 divergence lines across seven nodes and **exactly one distinct address**:
+`0xff..fe`, the EIP-2935/EIP-7708 system address that block-start system calls
+run as. QMDB holds an account there; the `Account` table does not. Zero storage
+divergences.
+
+### The cause: two different definitions of "empty"
+
+```go
+// the plain write path, modules/state/state_object.go:189
+func (so *stateObject) empty() bool {
+    return so.data.Nonce == 0 && so.data.Balance.IsZero() &&
+        bytes.Equal(so.data.CodeHash[:], emptyCodeHash)
+}
+
+// the commitment path, modules/state/commitment/jmt_commitment.go:174
+func isAccountEmpty(a *account.StateAccount) bool {
+    return a.Nonce == 0 && a.Balance.IsZero() && !a.Initialised
+}
+```
+
+The third clause differs, and the difference is worse than it looks.
+`StateAccount.Reset()` sets `Initialised = true`, and so do
+`state_object.go:304`, `state_object.go:595` and `intra_block_state.go:1068`;
+`computeRoot` then does `acct.Copy(&obj.data)`, which carries the flag over. So
+for any account that came from a state object:
+
+    isAccountEmpty(a) = (nonce==0) && (balance==0) && !true = FALSE, always
+
+**The empty-account deletion in the commitment path is unreachable.** It is not
+a slightly different definition of empty; it never fires. Every account the plain
+path deletes under EIP-161 is retained by QMDB.
+
+That reframes the scope. What was OBSERVED is one address, because a workload of
+plain transfers produces no other account that is both touched and empty -- the
+system address is touched by every block's system call and lands in exactly that
+state. What the MECHANISM implies is general: any account drained to zero balance
+with nonce 0 and no code diverges the same way.
+
+`IntraBlockState.computeRoot` compounds it: it decides what to hand the
+RootComputer on `obj == nil || obj.deleted || obj.selfdestructed` alone and never
+consults `shouldRemoveEmptyAccount`, so the empty-account policy is applied on
+one write path and not the other.
+
+### The scope, measured
+
+Final, three legs, all seven nodes:
+
+```
+per node:  compared 1,000,001   accountMismatch 1,447-1,448   storageMismatch 0
+all nodes: 26,072 divergence lines, 1 distinct address (0xff..fe)
+           0 storage divergences
+```
+
+0.145% of comparisons, all of them the same account. **~998,553 account reads
+and every storage read in a million comparisons matched byte for byte**, and the
+seven nodes agree to within one (1,447 against 1,448, a timing edge). So on this workload the two
+stores agree everywhere except the one account that becomes empty while being
+touched -- strong evidence FOR route B's premise on the read path, and a harder
+blocker than "one address is wrong", since the mechanism above is not
+address-specific.
+
+### What follows
+
+* **The QMDB state root includes accounts EIP-161 says should not exist.** Every
+  node computes the same root, so consensus is self-consistent -- but the root is
+  not a function of the canonical state, and that is worth fixing on its own
+  merits, independent of any performance work.
+* **Route B is genuinely blocked.** Reading through QMDB would return an account
+  where the plain state returns nil, which changes account-existence checks,
+  EXTCODESIZE and refund behaviour. Not a rounding difference.
+* **The criterion is honoured as written.** Step 3 does not proceed on this
+  round's evidence. The criterion is NOT being widened because the divergence is
+  "only one system address with a structural explanation" -- that is exactly the
+  reasoning it exists to refuse.
+* **Reconciling the predicates is a CONSENSUS change, and that reprices route
+  B.** There are only two places to fix it. On the commitment side -- give
+  `isAccountEmpty` the code-hash predicate, or make `computeRoot` consult
+  `shouldRemoveEmptyAccount` -- the account leaves the tree and **every
+  subsequent state root changes**, which on a live chain needs a fork activation
+  (the mechanism this codebase already uses for `PQPrecompilesTime` and
+  friends). On the reader side, teaching the reader to return nil for accounts
+  the plain path considers empty would hide the inconsistency while route B's
+  whole premise is that the tree IS the state. Only the first is a fix.
+
+  So route B is not blocked behind a small bug. It is blocked behind a scheduled
+  consensus change, which is a different kind of item and does not belong inside
+  a benchmark round.
+
+### The way it can still be measured
+
+The qs fleet is a benchmark chain that is reset between campaigns. Fixing the
+predicate and reseeding it costs nothing in consensus terms, so the sequence
+that produces a NUMBER without pre-committing anyone to a fork is:
+
+1. reconcile the predicates,
+2. reseed the qs chain,
+3. re-run the equivalence round -- the criterion unchanged, zero mismatches,
+4. then, and only then, measure what route B is worth.
+
+Production adoption remains a separate decision, taken with that measurement in
+hand rather than in place of it.
+* **The reader earned its keep by failing.** It was built to be proved
+  equivalent, ran in a mode where a divergence could not change a block, and
+  found a pre-existing inconsistency on its first comparison.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
