@@ -60,6 +60,20 @@ type ChangeSetWriter struct {
 	blockNumber    uint64
 }
 
+// ChangedCounts reports how many distinct accounts and storage slots this
+// block changed. The count, not the byte volume, is what decides the cost of
+// the commit: an account update is keyed by address, so 24,000 of them land on
+// up to 24,000 separate B-tree leaves and every one of those pages is written.
+// docs/QS_BLOCK_TIME_BUDGET.md measures 85 MB of device writes per block
+// against ~2 MB of account data, and this is the quantity that number has to be
+// divided by.
+func (c *ChangeSetWriter) ChangedCounts() (accounts, storage int) {
+	if c == nil {
+		return 0, 0
+	}
+	return len(c.accountChanges), len(c.storageChanges)
+}
+
 func NewChangeSetWriter() *ChangeSetWriter {
 	return &ChangeSetWriter{
 		accountChanges: make(map[types.Address][]byte),
