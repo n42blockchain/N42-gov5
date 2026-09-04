@@ -321,8 +321,38 @@ func (n *API) State(tx kv.Tx, blockNrOrHash jsonrpc.BlockNumberOrHash) evmtypes.
 		return nil
 	}
 
+	// Same rule, different cause: with N42_NO_HISTORY_INDEX the inverted index
+	// is not being written, so NewPlainState cannot resolve a past height and
+	// would answer from whatever PlainState currently holds — the wrong value,
+	// returned confidently. `latest` is unaffected: it reads PlainState, which
+	// is exactly what it should read.
+	if state.HistoryIndexDisabled() {
+		if head := n.currentHeadNumber(); head > 0 && *blockNr < head {
+			log.Debug("historical state refused: history index disabled on this node",
+				"block", *blockNr, "head", head)
+			return nil
+		}
+	}
+
 	stateReader := state.NewPlainState(tx, *blockNr+1)
 	return state.New(stateReader)
+}
+
+// currentHeadNumber returns the chain head height, or 0 when it cannot be
+// determined. Used by the history-index gate to tell a historical query from a
+// `latest` one; 0 makes the gate fail OPEN, which is right here — refusing
+// every query because the head is momentarily unreadable would be a worse
+// failure than the one the gate prevents, and the sealed-horizon gate above
+// treats an unknown horizon the same way.
+func (n *API) currentHeadNumber() uint64 {
+	if n == nil || n.bc == nil {
+		return 0
+	}
+	cur := n.bc.CurrentBlock()
+	if cur == nil {
+		return 0
+	}
+	return cur.Number64().Uint64()
 }
 
 func (n *API) blockByEngineHash(hash types.Hash) block.IBlock {
