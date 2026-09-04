@@ -414,20 +414,46 @@ registered "write path falls 60-160 ms" on the reasoning that the phase costs
 117.6 ms. It fell 391.3. Being wrong in the direction that flatters the change
 is still being wrong, and the size of the miss is the interesting part:
 
-**63. Removing a 128 ms phase removed 391 ms of write path, and this document
-does not explain it.** The amplification is roughly threefold and it is the
-open question this round produced. A candidate exists -- the index is a
-read-modify-write of a roaring bitmap per changed key per block, ~24k random
-keys, which dirties MDBX pages whose commit cost also disappears, the same
-shape as N42_TXINDEX_TAIL's 2.5x -- but it is UNTESTED and is recorded here as
-a candidate rather than a mechanism. Three explanations offered on this rig
-today were withdrawn after being named without measurement; a fourth is not
-being added on the strength of a plausible story.
+**63. Removing a 128 ms phase removed 391 ms of write path — and the missing
+two thirds are in `commit`, measured.** The gap was logged as this round's open
+question and left unexplained on purpose. The eth-el session then named the
+discriminator, which cost nothing to check because the data was already in the
+same log lines:
 
-The consequence for the number: `-58.8%` is what was measured and it stands.
-"Because it stops dirtying pages" is not established, and if the real cause
-turns out to be something else the SAVING does not change -- only the
-generalisation to other writes would.
+    phase      A (index on)   B (index off)   fell by
+    chgHist        130.4            0.0        130.4
+    commit         458.2          191.9        266.3
+    state           50.9           48.4          2.6
+                                   sum         399.0
+                                   wtotal      391.3   (residual -7.7)
+
+So the threefold amplification is one part building the rows and **two parts
+`commit` paying for the pages those rows dirtied**. Every millisecond is
+accounted for; the residual is under 2%.
+
+This is the same mechanism as `N42_TXINDEX_TAIL`, the largest win recorded on
+this rig, and the precedent was already in QS_TPS_BENCHMARK.md section 1:
+without the tail tier, every transaction writes a random-key `TxLookup` row and
+`mdbx_txn_commit` becomes the dominant cost — 1.9 s a block against 0.5 ms with
+it on. There the phase timer would have shown almost nothing either way. The
+leverage is **row count and key scatter, not bytes**: an independent
+measurement on the eth-el box put dirty pages at 673 KB a block against 89 KB
+of payload, a 7.5x amplification driven by how many distinct keys are touched.
+History-index rows are small, numerous and scattered, which is the worst case
+for that ratio.
+
+It also explains the Rust counterpart in section 11. Their 0.86 µs is the cost
+of QUEUEING the work, not doing it: row construction is cheap in both
+implementations, and the expensive part is the page flush that the Go path pays
+synchronously inside the commit transaction and theirs defers.
+
+**The general rule this establishes for this codebase:** an index write's cost
+does not land in the phase that writes it. It lands in `mdbx_txn_commit`, and a
+phase timer over the writing code will understate it by whatever the pages cost
+— here by a factor of three, and for the txlookup tail by a factor of
+thousands. Any future decision about a per-transaction or per-key write on this
+chain has to look at `commit` in the same round, or it is measuring the wrong
+number.
 
 ## 9. Why this cost exists at all: the index is inline here and asynchronous in reth
 
