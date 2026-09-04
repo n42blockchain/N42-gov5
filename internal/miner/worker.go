@@ -151,6 +151,14 @@ type newWorkReq struct {
 	// parent. A wrong guess is discarded; a speculative request may be
 	// dropped or interrupted at any time in favour of real work.
 	speculative bool
+	// enqueuedAt is when the request was handed to newWorkCh. runLoop reports
+	// the wait between that moment and the start of commitWork -- the worker
+	// goroutine is single, so a build that is already running (a speculative
+	// guess, most often) delays the real request behind it, and that delay is
+	// invisible in every phase timer the build itself keeps. Zero when the
+	// producer did not set it; the log line is then omitted rather than
+	// reporting a duration measured from the epoch.
+	enqueuedAt time.Time
 }
 
 type generateParams struct {
@@ -428,6 +436,10 @@ func (w *worker) runLoop() error {
 		case <-w.ctx.Done():
 			return w.ctx.Err()
 		case req := <-w.newWorkCh:
+			if !req.enqueuedAt.IsZero() {
+				log.Info("miner: work queue wait", "waitNs", time.Since(req.enqueuedAt).Nanoseconds(),
+					"speculative", req.speculative)
+			}
 			err := w.commitWork(req.interrupt, req.noempty, req.timestamp, req.parentHash, req.speculative)
 			if err != nil && req.speculative {
 				// An aborted or failed guess costs nothing; do not alarm.
@@ -574,6 +586,44 @@ func (w *worker) resultLoop() error {
 				logs = append(logs, receipt.Logs...)
 			}
 
+			// Push-before-write (N42_PUSH_BEFORE_WRITE, off by default): hand
+			// the sealed block to peers BEFORE committing it, so their import
+			// runs alongside this node's write instead of after it. The
+			// stale-seal predicate the write path would apply is evaluated
+			// first, against a read snapshot, so a block the write is about to
+			// reject still reaches nobody. The Proposal is NOT moved: it stays
+			// after a successful write below.
+			var tPush time.Time
+			var dPush time.Duration
+			pushedEarly := false
+			if PushBeforeWrite() {
+				// Fail safe: without the stale-seal check there is no way to
+				// know the write would accept this block, so keep today's
+				// order rather than broadcast one the write may reject.
+				canPush := false
+				c, ok := w.chain.(sealParentChecker)
+				switch {
+				case !ok:
+					log.Warn("push-before-write: chain cannot answer the stale-seal check; keeping write-then-push")
+				default:
+					if cerr := c.CheckSealParentApplied(blk); cerr != nil {
+						log.Info("push-before-write: seal is stale, not pushing",
+							"number", blockNumber.Uint64(), "err", cerr)
+					} else {
+						canPush = true
+					}
+				}
+				if canPush {
+					tPush = time.Now()
+					if perr := w.chain.SealedBlock(blk); perr != nil {
+						log.Error("push-before-write: broadcast failed", "err", perr)
+					} else {
+						pushedEarly = true
+					}
+					dPush = time.Since(tPush)
+				}
+			}
+
 			tWrite := time.Now()
 			err = w.chain.WriteBlockWithState(blk, receipts, task.state, task.nopay)
 			dWrite := time.Since(tWrite)
@@ -620,12 +670,14 @@ func (w *worker) resultLoop() error {
 				"elapsed", common.PrettyDuration(time.Since(task.createdAt)),
 				"txs", len(blk.Transactions()))
 
-			tPush := time.Now()
-			if err = w.chain.SealedBlock(blk); err != nil {
-				log.Error("Failed Broadcast block to p2p network", "err", err)
-				continue
+			if !pushedEarly {
+				tPush = time.Now()
+				if err = w.chain.SealedBlock(blk); err != nil {
+					log.Error("Failed Broadcast block to p2p network", "err", err)
+					continue
+				}
+				dPush = time.Since(tPush)
 			}
-			dPush := time.Since(tPush)
 			// For leader-driven consensus (HotStuff), start the Proposal for THIS
 			// exact sealed block — the one we just persisted and direct-pushed — so
 			// the proposed (and committed) block is byte-for-byte what followers
@@ -646,7 +698,7 @@ func (w *worker) resultLoop() error {
 				"n", blockNumber.Uint64(), "txs", len(blk.Transactions()),
 				"finalize", task.finalize, "witness", task.witness, "assemble", task.assemble,
 				"bls", time.Duration(task.blsNanos.Load()), "seal2res", time.Since(sealStart),
-				"write", dWrite, "push", dPush, "notify", dNotify,
+				"write", dWrite, "push", dPush, "pushedEarly", pushedEarly, "notify", dNotify,
 				"total", time.Since(task.createdAt))
 
 			// Record this as the one candidate for its parent (after a successful
@@ -801,6 +853,18 @@ func (w *worker) paceBlock(num uint64) error {
 	if wait < -interval {
 		w.pacingAnchorWall, w.pacingAnchorNum = time.Now(), num
 	} else if wait > 0 {
+		// Report the throttle's actual cost. paceBlock sits between commitWork
+		// and sealStart -- on the speculative-hit path (91% of builds) it runs
+		// immediately before the task reaches taskCh -- which is inside the
+		// 247-373 ms window that ViewStart -> seal start has never accounted
+		// for. Round 16 measured the two candidates it was aimed at, the
+		// consensus gates and the miner's work queue, at 0.03 ms and 0.01 ms
+		// combined, so the time is somewhere in here. Whether this throttle
+		// fires under load has been ARGUED twice from the cadence and never
+		// measured; the argument says it cannot (a late block's slot is in the
+		// past, so wait is negative), and the decay phase's exact 250 ms/block
+		// says it certainly does when blocks are cheap.
+		log.Info("miner: pacing wait", "num", num, "waitNs", wait.Nanoseconds())
 		timer := time.NewTimer(wait)
 		select {
 		case <-timer.C:
@@ -1046,7 +1110,19 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	log.Info("miner: build phases",
 		"align", tAlign, "reload", tReload-tAlign, "syscalls", tPrep-tReload,
 		"fillTx", time.Since(start)-tPrep, "total", time.Since(start))
-	if err = w.commit(current, stateWriter, ibs, start, headers, tracingReader, readLogRecorder, speculative, parentHash); err != nil {
+	// w.commit() is the rest of commitWork: it assembles and finalizes the
+	// block, creates the task and hands it to taskCh, where taskLoop stamps
+	// sealStart. Everything between "build phases" (logged immediately above)
+	// and sealStart is therefore in here, and that is the remainder of the
+	// unaccounted 247-373 ms once the gates (0.03 ms) and the work queue
+	// (0.01 ms) are ruled out. task.assemble and task.finalize are recorded
+	// INSIDE this call, so they are before sealStart, not inside seal2res --
+	// an earlier subtraction in docs/QS_BLOCK_TIME_BUDGET.md had them on the
+	// wrong side.
+	tCommit := time.Now()
+	err = w.commit(current, stateWriter, ibs, start, headers, tracingReader, readLogRecorder, speculative, parentHash)
+	log.Info("miner: commit phases", "speculative", speculative, "commitNs", time.Since(tCommit).Nanoseconds())
+	if err != nil {
 		log.Errorf("w.commit failed, error %v\n", err)
 		return err
 	}

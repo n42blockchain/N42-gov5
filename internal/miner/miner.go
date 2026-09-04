@@ -196,7 +196,7 @@ func (m *Miner) TriggerBlockProduction(parentHash types.Hash) {
 		p.Store(commitInterruptNewHead)
 	}
 	interrupt := new(atomic.Int32)
-	req := &newWorkReq{interrupt: interrupt, noempty: false, timestamp: time.Now().Unix(), parentHash: parentHash}
+	req := &newWorkReq{interrupt: interrupt, noempty: false, timestamp: time.Now().Unix(), parentHash: parentHash, enqueuedAt: time.Now()}
 	select {
 	// noempty=false: a leader-driven engine (HotStuff) must produce one block per
 	// view to advance the chain, even with an empty mempool. noempty=true would
@@ -242,7 +242,7 @@ func (m *Miner) PrepareSpeculativeBlock(parentHash types.Hash) {
 	if !m.worker.isRunning() || parentHash == (types.Hash{}) {
 		return
 	}
-	req := &newWorkReq{interrupt: new(atomic.Int32), noempty: false, timestamp: time.Now().Unix(), parentHash: parentHash, speculative: true}
+	req := &newWorkReq{interrupt: new(atomic.Int32), noempty: false, timestamp: time.Now().Unix(), parentHash: parentHash, speculative: true, enqueuedAt: time.Now()}
 	select {
 	case m.worker.newWorkCh <- req:
 		log.Debug("miner: speculative build queued", "parent", parentHash.Hex()[:12])
