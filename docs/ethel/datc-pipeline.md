@@ -266,6 +266,43 @@ Related: the toolchain sat UNCOMMITTED in the working tree until 2026-09-01,
 so a checkout of `b78aaa54` has 13 of the 36 files and no `fork-state`. Check
 what a box actually has before trusting a DATC run on it.
 
+## 5e. Heavy regions look like a hang. They are not (2026-09-03)
+
+The v2 genesis-range build (Windows, blocks [0, 17,900,000)) hit a stretch
+around block **12,853,784** where throughput fell by an order of magnitude and
+stayed there:
+
+| | before | in the heavy region |
+|---|---|---|
+| leaf rate | 30-66K lf/s | **4-9K lf/s** (median 4K over 60 heartbeats) |
+| block rate | 120-150 blk/s | **6 blk/s** |
+| leaf % gained | — | **0.2 pp in 72 minutes** (38,033 blocks) |
+
+Everything that would indicate a hang says the opposite:
+
+  CPU        225.6 CPU-seconds per 10 wall seconds = **22.5 cores busy**
+  writes     2 MB / 10 s
+  log        written 4 seconds ago
+  threads    40, process healthy, zero errors
+  memory     commit 46-54%, heap flat at ~34 GB
+
+So it is compute-bound on the blocks themselves, not stuck. Block 12.85M is
+mid-2021 mainnet — the densest DeFi period, with the largest storage tries.
+The upstream runbook already hints at this class of region ("含一次 DoS 区 4
+小时慢段" for the 0→4.67M sparse range), so heavy stretches are expected;
+this records a second one, far later in the chain.
+
+**Do not kill a build that looks stalled here.** Check, in this order: CPU
+seconds advancing, log mtime, error count, commit %. If CPU is pinned and the
+log is fresh, it is working.
+
+**What it does to the ETA.** A single instantaneous `lf/s` reading is
+worthless in this build — it swings between 4K and 66K. Track the MEDIAN over
+~60 heartbeats instead, and treat entering or leaving a heavy region as the
+event worth reporting. At 4K lf/s the remaining 9.5B leaves would take ~660 h
+(27 days); at the pre-region 30-60K it is under a week. Until the region ends
+there is no way to tell which, and quoting either number alone is misleading.
+
 ## 6. Weekly, once the catch-up lands
 
 ~525 leaves/block × ~100k blocks ≈ 52M leaves ⇒ **~35 min + ~8.7 GiB/week**,
