@@ -16,6 +16,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
 )
 
@@ -155,4 +156,89 @@ func TestStartIsIdempotent(t *testing.T) {
 	b.Start()
 	b.Start()
 	b.Stop()
+}
+
+// indexCoversBlock reports whether the inverted index actually contains an
+// entry naming this block. The marker claims coverage; this checks it.
+func indexCoversBlock(t *testing.T, db kv.RwDB, blockNum uint64) bool {
+	t.Helper()
+	var addr types.Address
+	addr[19] = byte(blockNum)
+	found := false
+	require.NoError(t, db.View(context.Background(), func(tx kv.Tx) error {
+		c, err := tx.Cursor(modules.AccountsHistory)
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+		for k, v, err := c.First(); k != nil; k, v, err = c.Next() {
+			if err != nil {
+				return err
+			}
+			if len(k) >= 20 && types.BytesToAddress(k[:20]) == addr && len(v) > 0 {
+				found = true
+				return nil
+			}
+		}
+		return nil
+	}))
+	return found
+}
+
+// A marker that advances past work not actually written is how the sibling
+// accthist/storhist builder sat frozen for three months with no error and no
+// gap report — flagged by the DATC archive session, which hit exactly that.
+// Here the flush and the marker share ONE transaction, so a failed step must
+// move neither. This kills the step mid-flight (context cancellation is the
+// in-process stand-in for a crash) and asserts the marker stayed put.
+func TestFailedStepLeavesTheMarkerWhereItWas(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	seedChangesets(t, db, 12)
+
+	b := NewHistoryBackfiller(db, func() uint64 { return 12 }, 4, time.Hour)
+	require.NoError(t, b.step())
+	before, ok := markerOf(t, b)
+	require.True(t, ok)
+	require.Equal(t, uint64(4), before)
+
+	// Kill it. The next step must fail and change nothing.
+	b.cancel()
+	err := b.step()
+	require.Error(t, err, "a step on a cancelled context must fail rather than half-commit")
+
+	// Read the marker with a LIVE context: b.IndexedThrough uses the
+	// backfiller's own (now cancelled) context and would report (0, false),
+	// which is its fail-closed answer for "cannot establish coverage" and not
+	// evidence about what is on disk.
+	var after uint64
+	require.NoError(t, db.View(context.Background(), func(tx kv.Tx) error {
+		var e error
+		after, _, e = rawdb.ReadHistoryIndexedThrough(tx)
+		return e
+	}))
+	require.Equal(t, before, after,
+		"the marker moved on a step that did not complete; a marker ahead of the rows is how a "+
+			"historical query reads a gap as 'untouched' and answers with the current value")
+}
+
+// The positive half of the same invariant: every block the marker claims must
+// actually be present in the index. Asserting only that the marker did not
+// move would pass for a backfiller that never writes anything.
+func TestMarkerOnlyClaimsBlocksTheIndexActuallyHas(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	seedChangesets(t, db, 6)
+	b := NewHistoryBackfiller(db, func() uint64 { return 6 }, 3, time.Hour)
+	defer b.Stop()
+
+	require.NoError(t, b.step())
+	marker, ok := markerOf(t, b)
+	require.True(t, ok)
+	require.Equal(t, uint64(3), marker)
+
+	for i := uint64(1); i <= marker; i++ {
+		require.True(t, indexCoversBlock(t, db, i),
+			"block %d is at or below the marker but the index has no entry for it", i)
+	}
+	require.False(t, indexCoversBlock(t, db, marker+1),
+		"block %d is above the marker and must NOT be indexed yet, or the batch cap is not holding", marker+1)
 }
