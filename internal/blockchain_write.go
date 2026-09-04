@@ -210,6 +210,10 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		dQMDBMeta    time.Duration
 		dSnapshot    time.Duration
 		dPost        time.Duration
+		// Distinct accounts and slots the block changed, captured inside the
+		// write closure so the log line outside it can report them.
+		nAccts int
+		nSlots int
 	)
 
 	if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
@@ -275,7 +279,8 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			}
 		}
 
-		var stateWriter state.WriterWithChangeSets = state.NewPlainStateWriter(tx, tx, blockNumber.Uint64())
+		plainWriter := state.NewPlainStateWriter(tx, tx, blockNumber.Uint64())
+		var stateWriter state.WriterWithChangeSets = plainWriter
 		if cache := layered.ExtractCache(bc.ChainDB); cache != nil {
 			stateWriter = state.NewCachedStateWriter(stateWriter, cache)
 		}
@@ -296,6 +301,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 				return err
 			}
 			dState = time.Since(tPhase)
+			nAccts, nSlots = plainWriter.ChangedCounts()
 			tPhase = time.Now()
 			// A prior attempt at this height (hotstuff view-change re-production,
 			// a competing same-height proposal, or a reorg re-import) may have
@@ -560,6 +566,14 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			"root2", dRoot2,
 			"qflush", dQMDBFlush, "qmeta", dQMDBMeta, "snap", dSnapshot,
 			"commit", dCommit, "post", dPost, "total", dTotal,
+		}
+		// Distinct accounts and slots the block changed. The commit cost is set
+		// by this COUNT, not by the byte volume: every account update is keyed
+		// by address, so each one can land on its own B-tree leaf and each of
+		// those pages is written out. 85 MB of device writes per block divided
+		// by this is the amplification per changed account.
+		if nAccts > 0 || nSlots > 0 {
+			fields = append(fields, "accts", nAccts, "slots", nSlots)
 		}
 		if dTotal >= slowBlockThreshold {
 			log.Info("blockwrite phases", fields...)

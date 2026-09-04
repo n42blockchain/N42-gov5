@@ -215,6 +215,12 @@ func (w *PlainStateWriter) WriteChangeSets() error {
 	return nil
 }
 
+// ChangedCounts reports the distinct accounts and storage slots this block
+// changed, or (0, 0) without a changeset writer. See ChangeSetWriter.
+func (w *PlainStateWriter) ChangedCounts() (accounts, storage int) {
+	return w.csw.ChangedCounts()
+}
+
 // SetHistoryAggregator routes history-index updates into a batch aggregator
 // (see HistoryAggregator). No-op without a changeset writer.
 func (w *PlainStateWriter) SetHistoryAggregator(agg *HistoryAggregator) {

@@ -323,8 +323,24 @@ func (s *Service) ensureParentApplied(parentHash types.Hash) bool {
 	return false
 }
 
+// triggerBlockProduction runs three gates before handing the build to the miner.
+// Each is timed: the leader's ViewStart -> ProposalSent stage measures 615 ms
+// under load while the miner's own phase timers account for only ~262 ms of it,
+// so the missing time is either in these gates (ensureParentApplied opens a read
+// transaction on every view) or in the wait for the single worker goroutine,
+// which "miner: work queue wait" reports from the other side. Observability
+// only -- no gate is skipped or reordered.
 func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash) {
+	tGate := time.Now()
+	var dBehind, dCommitted, dApplied time.Duration
+	logGates := func(outcome string) {
+		log.Info("hotstuff: leader gate phases", "view", uint64(view), "outcome", outcome,
+			"behindNs", dBehind.Nanoseconds(), "committedNs", dCommitted.Nanoseconds(),
+			"appliedNs", dApplied.Nanoseconds(), "totalNs", time.Since(tGate).Nanoseconds())
+	}
 	if behind := s.heightBehind(); behind > blockProductionSyncGate {
+		dBehind = time.Since(tGate)
+		logGates("behind")
 		log.Warn("hotstuff: behind peers, skipping block production and catching up",
 			"view", view, "behind", behind, "gate", blockProductionSyncGate)
 		if s.blockFetcher != nil {
@@ -332,12 +348,22 @@ func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash)
 		}
 		return
 	}
+	dBehind = time.Since(tGate)
+	tC := time.Now()
 	if s.committedParentBlocked(parentHash) {
+		dCommitted = time.Since(tC)
+		logGates("committed-parent-blocked")
 		return
 	}
+	dCommitted = time.Since(tC)
+	tA := time.Now()
 	if !s.ensureParentApplied(parentHash) {
+		dApplied = time.Since(tA)
+		logGates("parent-not-applied")
 		return
 	}
+	dApplied = time.Since(tA)
+	logGates("trigger")
 	s.blockProducer.TriggerBlockProduction(parentHash)
 }
 
