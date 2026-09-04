@@ -185,11 +185,11 @@ var reloadVerify = os.Getenv("N42_QMDB_RELOAD_VERIFY") == "1"
 // at ~0.5s idle / ~2.75s under load while executing the block itself took
 // ~0.17s. So the reload runs in three tiers, cheapest first:
 //
-//	1. incremental — advance the loaded forest across the delta only, and prove
-//	   it by reproducing the world root persisted with the twig metadata;
-//	2. meta-scan   — rebuild the forest from twig metadata, trusting the index
-//	   below the previous cursor;
-//	3. full rebuild — fresh index, rescan the entry log.
+//  1. incremental — advance the loaded forest across the delta only, and prove
+//     it by reproducing the world root persisted with the twig metadata;
+//  2. meta-scan   — rebuild the forest from twig metadata, trusting the index
+//     below the previous cursor;
+//  3. full rebuild — fresh index, rescan the entry log.
 //
 // Contract: between calls, the ONLY tree mutations must be candidate-build
 // ComputeRoot ops, and they must have been peeled back with ApplyUndo before
@@ -505,6 +505,7 @@ func (r *QMDBRootComputer) ComputeRoot(
 	if r.undoRecording {
 		r.t.StartUndoRecording()
 	}
+	tApply := time.Now()
 	for _, o := range ops {
 		if o.value == nil {
 			r.t.Delete(o.kh)
@@ -515,5 +516,32 @@ func (r *QMDBRootComputer) ComputeRoot(
 	if r.undoRecording {
 		r.lastUndo = r.t.StopUndoRecording()
 	}
-	return types.Hash(r.t.Root()), nil
+	dApply := time.Since(tApply)
+	tFold := time.Now()
+	root := types.Hash(r.t.Root())
+	// Split the two halves of a root computation.
+	//
+	// QMDB is a BINARY tree, not a Patricia trie: an entry is appended to the
+	// next free slot, its leaf is Blake3(0x01||keyHash||value), 2048 leaves make
+	// an 11-level binary twig, and the twig roots make the in-memory upper tree
+	// (see the package doc in lib/qmdb/qmdb.go). "Apply" is Set/Delete writing
+	// leaves and marking twigs dirty; "fold" is recomputeDirtyTwigs plus either
+	// updateUpperPath per dirty twig or a full rebuildUpper.
+	//
+	// The leader pays BOTH halves twice per block -- once on the isolated
+	// speculative tree during the build (58.3 ms measured) and again replaying
+	// the same ops onto the live tree during the write (59.3 ms) -- and both are
+	// on its critical path. Which half dominates decides whether that
+	// duplication is attackable: appending the entries to the live tree is work
+	// that has to happen, but folding them to a root THERE is arguably
+	// redundant, since the root is already known from the isolated computation
+	// and the write path only compares the two.
+	//
+	// Observability only; logged at the same threshold as the other block
+	// phases, and only for blocks big enough to matter.
+	if len(ops) > 1000 {
+		log.Info("qmdb root phases", "ops", len(ops),
+			"applyNs", dApply.Nanoseconds(), "foldNs", time.Since(tFold).Nanoseconds())
+	}
+	return root, nil
 }
