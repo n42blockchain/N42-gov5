@@ -967,6 +967,64 @@ does not move when the supply drops, the 64% is recoverable waste that competes
 for nothing, and the constraint is the serial dependency chain the view timings
 describe.
 
+## 6j. Round 24: the noise floor, and what it costs the rest of this document
+
+Round 23's five legs included three at an identical supply rate and they landed
+at 29 / 44 / 53 peak full blocks per minute. An 83% spread between legs that
+differed in nothing is larger than anything this document has tried to measure,
+so before running another A/B the floor had to be known.
+
+`n42-datc-25m-hi4.bin` (34-50 GB RSS, ~660 MB/s, 93% of the box's major faults)
+was present for every round from 14 to 23 and is now gone. Four legs of ONE
+identical configuration on the quiet box:
+
+| leg | peak full blocks/min | CPU-s/block | fleet's own major faults |
+|-----|----------------------|-------------|--------------------------|
+| warmup (discarded) | 55 | 21.88 | 9,989,346 |
+| N1 | 56 | 23.75 | 9,650,559 |
+| N2 | 56 | 21.14 | 8,434,565 |
+| N3 | 54 | 23.95 | 9,644,789 |
+| N4 | 56 | 23.80 | 9,018,546 |
+
+**Blocks per minute spread 3.6%. The 83% was the neighbour, not the fleet.**
+n42-rs independently reports 2.8% across nine same-shape legs on their rig, so
+the order is not peculiar to this one.
+
+Three things follow, and one of them is expensive.
+
+**The metric to argue from is blocks per minute, not CPU-seconds per block.**
+The normalised CPU figure spreads 13.3% across the same four legs against 3.6%
+for the raw rate. That is the opposite of what I assumed when I built the CPU
+sampler on the strength of the CPU-seconds-first rule: the rule is right about
+what to VALUE, and wrong here about which instrument resolves it.
+
+**The fleet's own major faults are 8.4-10M per leg with no neighbour at all.**
+Round 18 measured 551,394 system major faults in a 60 s window and charged all
+of them to datc without splitting by process; this fleet alone does roughly
+15,000 a second. That attribution was an assumption wearing a measurement's
+clothes, and it is withdrawn. The mechanism n42-rs identified -- a buffered write
+stream churning the page cache and evicting the mmap pages the importers read --
+is present here too, but at a steady rate that does not destabilise throughput.
+
+**Every throughput comparison run between rounds 14 and 23 is unreadable.**
+That includes:
+
+  * round 15's throughput null (commit -72%, block rate unmoved)
+  * round 17's throughput null and its -127 ms view-total effect
+  * round 23's supply sweep -- *including the correction I made to it*. I refit
+    that round's A-B-B-A legs to a linear trend plus a constant effect, got
+    -17 and -14 from the two treatment legs, and reported a coherent -32%.
+    A coherent-looking fit through two points is exactly what an 83% floor
+    produces by chance. **That correction is withdrawn too.**
+
+What survives is everything whose margin dwarfs the floor: round 16 (0.04 ms
+against 373), round 19 (row counts per table), round 21 (zero mismatches in a
+million comparisons -- not a timing measurement at all), round 22 (99.8% against
+0.2%), and the CPU profile's composition.
+
+**The baseline also moves.** 56 blocks/min is 21,333 TPS on a quiet box. The
+~18,000 quoted through the middle of this document was the neighbour's tax.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
