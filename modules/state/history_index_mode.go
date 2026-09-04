@@ -27,6 +27,22 @@ import (
 // currently holds -- a wrong answer delivered confidently, which is worse than
 // a slow chain. So api.State refuses historical queries when this is set,
 // following the sealed-horizon gate that already refuses rather than lying.
+//
+// The refusal is not a permanent capability loss, and this is the point that
+// makes the flag reasonable rather than merely fast. The index is a PURE
+// FUNCTION OF THE CHANGESETS: WriteHistory reads the same account/storage
+// changes that WriteChangeSets persists and emits (key -> block numbers)
+// bitmaps. Nothing else feeds it. So it can be produced out of band from
+// changesets that are being kept anyway, and the tooling already exists --
+// cmd/n42-hist-from-freezer builds accthist/storhist segments directly from
+// the acctcs/storcs freezer, and says in its own header that it exists so the
+// full/archive tiers can ship historical indexes without an Erigon source.
+//
+// The right mental model is therefore: changesets are the durable INPUT, the
+// history index is a DERIVED CACHE. Building the cache inline, in the block
+// commit path, is a choice; on a node that never serves historical queries it
+// is 20.3% of the write path spent on a cache with no reader, and it can be
+// rebuilt later for the cost of one offline pass.
 var (
 	historyIndexOnce     sync.Once
 	historyIndexDisabled bool

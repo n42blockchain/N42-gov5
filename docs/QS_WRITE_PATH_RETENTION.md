@@ -343,3 +343,40 @@ side effect of the prune mode defaulting to "archive".
 ~1 block; local repair needs a slack window whose size is a judgement, and 256
 is already generous; the archive needs whatever an archive needs and that is a
 policy decision. Three different answers, and only the third is long.
+
+## 7. The index is derived, so skipping it is deferral rather than loss
+
+The sharpest simplification in this whole document, and it reframes section 4.
+`WriteHistory` is a **pure function of the changesets**: it reads the same
+account/storage changes `WriteChangeSets` persists and emits (key → block
+numbers) bitmaps. Nothing else feeds it.
+
+So the history index is not a second source of truth that must be maintained in
+lockstep. It is a **derived cache over an input that is being kept anyway**, and
+building it inline — inside the block commit path, on every block — is a
+choice rather than a requirement.
+
+**The out-of-band tooling already exists.** `cmd/n42-hist-from-freezer` builds
+accthist/storhist RecSplit segments directly from the `acctcs`/`storcs`
+changeset freezer, and its own header states the purpose: so that "the
+full/archive tiers can ship historical state-at-height indexes without an
+Erigon source". `ethexec history-build` is the Erigon-sourced counterpart, and
+`internal/cscompact` holds the builders both use.
+
+That gives the correct mental model for the whole retention question:
+
+    changesets      the durable INPUT     -- rewind, archive build, index build
+    history index   a DERIVED CACHE       -- rebuildable offline, any time
+    QMDB undo       the tree's own record -- bounded at 256, unrelated to both
+
+And it settles what a benchmark should do. A node that never serves a
+historical query spends 20.3% of its write path maintaining a cache with no
+reader, on every block, when the same cache can be produced by one offline pass
+whenever someone actually wants it. Skipping it is **deferral, not loss** —
+which is a materially different claim from the one section 4 made, and a much
+easier one to accept.
+
+The interlock in `api.State` is still right, and for the same reason: while the
+index is absent the node must refuse historical queries rather than answer them
+from current PlainState. "Refuse until the index is built" is an honest state
+for a node to be in. "Answer wrongly" is not.
