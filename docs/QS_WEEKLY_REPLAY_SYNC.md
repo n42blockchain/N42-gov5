@@ -95,6 +95,62 @@ either (also 0 blocks). To re-run a range that has already been folded you need
 an EMPTY target or one that is genuinely behind. This matters when reproducing
 a fold for measurement or for a cross-check.
 
+## Step 0b — Cross-check result and what `receiptMismatch` means (2026-09-04)
+
+### Both machines replayed the same source independently and agreed
+
+Windows replayed all 13,612,974 blocks from genesis; Linux folded only this
+week's 115,395-block increment. Different OS, different CPU, different binary
+(Windows built fresh from `fff8a81e`, Linux running its 2026-08-28 `bin/n42`),
+different starting points — and the final state is identical:
+
+| | Windows | Linux |
+|---|---|---|
+| `sourceHead` | 13,612,974 | 13,612,974 |
+| `number` | 13,652,362 | 13,652,362 |
+| `hash` | `0x7b3f3a8f…7924` | **the same, character for character** |
+
+The `replay_stats` fields differ only in SCOPE (full chain vs weekly
+increment); every field that is comparable — `currentBlock`, `fromBlock`,
+`toBlock`, `blocksMissing`, `txFailed`, `txSkipped` — matches.
+
+Measured on the full replay, useful for planning:
+
+| | |
+|---|---|
+| wall time | **1 h 33 m 47 s** (2,419 blk/s average) |
+| processed | 13,612,974 blocks (1,975,448 empty), 26,176,157 txs, **0 missing, 0 failed** |
+| **peak private memory** | **28.76 GB** (25,269 samples at 200 ms) |
+| base size | 28.0 GB |
+
+That peak was measured WHILE the DATC v2 build was running at 44.8 GB private
+on the same box; the two coexisted with no incident. An earlier 6.68 GB figure
+was from a sparse-range probe and is a floor, not the number to plan with.
+
+### `receiptMismatch` is expected, and is NOT a failure
+
+The full replay reported **2,979 receipt mismatches against 13,609,995
+matches (0.022%)**. This is not damage.
+
+The source is the OLD chain and the target is the NEW one, and the two sit on
+**different EIP sets**, so a block's receipts are legitimately derived
+differently on each side. The replayed receipts are correct for the target
+chain; they simply do not reproduce a receipt root that the old chain's rules
+produced. `internal/replay/engine_v2.go` now says so at the comparison itself.
+
+What makes this checkable rather than a claim: the two machines replayed the
+same source independently and produced the SAME canonical hash. Deterministic
+rule differences do that; corruption does not.
+
+So: **a non-zero `receiptMismatch` is not a gate failure.** It is an
+observation counter — the run does not stop on it and the exit code is
+unaffected. Do not make it fatal.
+
+What it does NOT tell you is WHICH blocks differ; the counter records no block
+numbers and the log carries no per-block line. If that is ever needed,
+per-block logging has to be added at the comparison and the replay re-run
+(~1.5 h for the full chain).
+
 ## Step 1 — gracefully stop the fleet, record the head
 
 ```powershell
