@@ -303,6 +303,80 @@ event worth reporting. At 4K lf/s the remaining 9.5B leaves would take ~660 h
 (27 days); at the pre-region 30-60K it is under a week. Until the region ends
 there is no way to tell which, and quoting either number alone is misleading.
 
+## 5f. The heavy region was GC, not work — measured, and fixed 13.8x (2026-09-05)
+
+§5e recorded a stretch where throughput collapsed and said it was compute-bound
+on dense blocks. **That was half right and the wrong half mattered.** The CPU
+was pinned, but not by the build.
+
+A 30-second CPU profile off the build's own `--pprof.port 6072` settled it:
+
+| | before | after |
+|---|---|---|
+| CPU samples in 30 s wall | **700.67 s (23.2 cores)** | **101.24 s (3.4 cores)** |
+| `runtime.gcBgMarkWorker` | **89.66% cum** | out of the top 12 |
+| top entry | `runtime.gcDrain` / `scanObject` | **`flushTrieRootConcurrent` 67.3%** |
+| `runtime.spanClass.sizeclass` | **73.58% flat** | — |
+| real trie work | 5.2% | 67.3% |
+| median leaf rate | **4K lf/s** | **55K lf/s** |
+| Go heap | 42.4 GB (over the 40 cap) | 13.8 GB |
+
+23 of 24 cores were doing GC mark-scan. The build was not slow; it was starved.
+
+### The knobs, and why SHRINKING the cache was right
+
+| flag | was | now | why |
+|---|---|---|---|
+| `--gogc` | 150 | **400** | fewer GC cycles — the most direct lever |
+| `--mem.gb` | 40 | **80** | the heap was ALREADY 42.4 GB, i.e. over its own soft cap, which is what made GC frantic. Commit was only 53%, so the headroom existed |
+| `--stocache.m` | 32 | **16** | **the root fix** |
+
+Halving the cache looks backwards — it lowers hit rate. It is right because
+**GC scan cost scales with OBJECT COUNT, not with hit rate.** `lfCache` held
+29.6M entries, so every mark cycle walked ~30M live objects; that is what
+`spanClass.sizeclass` at 73.58% flat is showing. Fewer objects beat more hits
+by a factor of ten here.
+
+Two earlier calls in this document's history were wrong, and the same mistake
+produced both: reasoning about the cache as a HIT-RATE device.
+
+  "lfCache converges at 57% and will not fill"  — it reached 92.5% and began
+  evicting (`rb` 33.8M > cache 29.6M).
+  "widening lfCache cannot help, it has never evicted" — true premise, wrong
+  frame. The question was never hits; it was objects. The correct move was to
+  shrink it, which nothing about hit rate would ever suggest.
+
+`spanClass.sizeclass` at 73.58% flat is what pointed at object count. That is a
+measurement, not an inference, and it is the signal to look for.
+
+### How to stop a build that has no console
+
+The process is started via `Start-Process` with output redirection, so it gets
+**no console** — `CTRL_BREAK` cannot reach it and `taskkill` without `/F`
+reports "only forceful termination". What DOES work is that `taskkill /PID`
+still sets `stopRequested`, and `main.go:1168` checks that flag **only after a
+batch commit**. At a few blk/s with `--batch 8192` that is up to ~30 minutes.
+
+Waiting is the mechanism, not a workaround. Three minutes of no reaction was
+misread here as "cannot be stopped gracefully"; the build then stopped cleanly
+on its own at the next boundary:
+
+```
+[datc] graceful stop at block 13934592 (committed; spill cut at frame boundary).
+Resume: re-run the SAME command -- --start is auto-loaded from saved progress.
+(Spill retained.)
+```
+
+No corrupt-frame warning, 2,053 spill files / 239.1 GB retained, and the resume
+picked up at exactly 13,934,592 with identical epochs. **Do not escalate to
+`/F`** — that truncates the in-flight spill frame; the `kill-tail` recovery in
+`leafseg.go:344` exists for when someone already has.
+
+Only the three memory/GC knobs moved. `--sched`, `--acc-root-epoch`, `--batch`,
+`--map.gb`, `--dirty.gb`, `--decode-workers` and `--end` were verified byte-
+identical before restarting, because a schedule mismatch silently produces
+records incompatible with what is already built.
+
 ## 6. Weekly, once the catch-up lands
 
 ~525 leaves/block × ~100k blocks ≈ 52M leaves ⇒ **~35 min + ~8.7 GiB/week**,
