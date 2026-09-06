@@ -1628,6 +1628,51 @@ from node0 before the round.
 3. Node5 behaves as the others (its A-leg import within the floor of node0's).
 4. A legs unchanged (74-76 blocks).
 
+### Result: the supply arrived, and the view timer took it
+
+Two starts (11:18 and 11:31 UTC), both read only through the warm-up: the
+first was ended by the mode interlock's byte-offset check meeting a log
+rotation (a false negative -- all seven nodes had the warning, by timestamp;
+the interlock now matches by timestamp across rotated files), the second I
+stopped after the warm-up because it reproduced the first to the block.
+
+| start | win1 blocks | win1 TPS | occupancy | block time | win2 |
+|-------|------------:|---------:|----------:|-----------:|-----:|
+| r31 | 18 | 25,951 | 53% | 3.33 s | 17 blocks, 18,779, 41% |
+| r31b | 17 | 20,551 | 45% | 3.53 s | 16 blocks, 21,014, 48% |
+
+The generator did what it was built to do: blocks of 86,000 average, up to
+141,000, against round 30's 14-17k median. And the cycle went from 1.0-1.2 s
+to 3.3-3.5 s, so TPS fell. The per-block work is not the reason -- a 141k
+block imports in 941 ms (recov 116, exec 484, root 92, write 137), 6.7 us/tx,
+the best per-transaction figure this document has -- and a loaded view is
+2.1-2.6 s on the follower (recv 1.5-2.1 s: the leader's build and write and
+the push of a 24 MB body; r1 0.75-1.0 s: the import). The rest of the 3.4 s
+is **views that time out**: nine in eight minutes on node0 at the 6 s base.
+
+The trace of one: node0 commits a 140k block at 11:25:54 and, in the same
+second, becomes leader of the next view. Its leader gate reads the QMDB
+applied marker, finds the consensus parent (that block) not yet applied
+locally -- its own import is still finishing while the QC formed on five
+faster ones -- answers `parent-not-applied`, hands the parent to
+fetch-on-miss, and returns. Nothing re-runs the gate when the import lands a
+few hundred milliseconds later; the view waits out its 6 s timeout, a TC
+forms, and the next leader starts 6 s late. `ensureParentApplied` says this
+in its own comment: "asynchronous, so this view is skipped and the next
+leader finds the head aligned." At 22,857 a block the leader's own import
+always beat its view; at 140k it often does not.
+
+Fixed in 39f728a5 for round 32: the gate records the deferred view and
+parent, and `NotifyBlockImported` re-runs the gate when that block is
+applied, if this node still leads that view.
+
+A second finding from the stops between legs: a SIGINT sent within ~15 s of
+a node's launch is DROPPED. bench-run starts nodes with `setsid ... &` from a
+non-interactive shell, so they inherit SIG_IGN for SIGINT until
+`signal.Notify` runs after the QMDB load; every "did not exit in 300s" in
+rounds 27-31 was a stop that raced a start. stop-fleet.sh now sends SIGTERM,
+which the node handles identically and no shell ignores.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
