@@ -31,6 +31,17 @@ import (
 // Implements state.StateWriter interface.
 type ParallelStateWriter struct {
 	rw *ReadWriteSet
+	// deltaEligible, when set, says whether an account's update may be
+	// recorded as a balance delta: the transaction never observed the
+	// address's balance. Set by the executor from the state's balance-read
+	// hook.
+	deltaEligible func(types.Address) bool
+}
+
+// SetDeltaEligible installs the predicate that lets UpdateAccountData record
+// a pure balance increase as a delta.
+func (w *ParallelStateWriter) SetDeltaEligible(f func(types.Address) bool) {
+	w.deltaEligible = f
 }
 
 // NewParallelStateWriter creates a writer that captures writes to a ReadWriteSet.
@@ -41,6 +52,17 @@ func NewParallelStateWriter(rw *ReadWriteSet) *ParallelStateWriter {
 // UpdateAccountData records an account update.
 func (w *ParallelStateWriter) UpdateAccountData(address types.Address, original, acc *account.StateAccount) error {
 	key := LocationKey{Address: address, Field: FieldBalance}
+	// A pure balance increase on an account whose balance the transaction
+	// never observed is a delta: commutative with every other delta on the
+	// account, so recipients credited by many transactions stop being a
+	// conflict. Any other change (nonce, code, storage root, a decrease, or
+	// an observed balance) is a full write.
+	if w.deltaEligible != nil && original != nil && acc != nil &&
+		original.Nonce == acc.Nonce && original.CodeHash == acc.CodeHash && original.Root == acc.Root &&
+		original.Initialised == acc.Initialised && acc.Balance.Gt(&original.Balance) && w.deltaEligible(address) {
+		w.rw.RecordDeltaWrite(key, new(uint256.Int).Sub(&acc.Balance, &original.Balance))
+		return nil
+	}
 	data, err := encodeAccount(acc)
 	if err != nil {
 		return err

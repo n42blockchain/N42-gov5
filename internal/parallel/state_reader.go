@@ -48,9 +48,10 @@ func NewParallelStateReader(base state.StateReader, mvs *MVS, rw *ReadWriteSet, 
 func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.StateAccount, error) {
 	key := LocationKey{Address: address, Field: FieldBalance}
 
-	val, writerTx, writerInc, found := r.mvs.Read(key, r.txIndex)
+	full, fullTx, fullInc, found, delta := r.mvs.ReadAccount(key, r.txIndex)
 	if found {
-		r.rw.RecordReadValue(key, writerTx, writerInc, false, val)
+		val := composeAccount(full, delta)
+		r.rw.RecordAccountRead(key, fullTx, fullInc, false, val, nil, delta != nil)
 		if val == nil {
 			// Account was deleted by a preceding tx.
 			return nil, nil
@@ -62,9 +63,9 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 		return acc, nil
 	}
 
-	// Not in MVS — read from base, and record the base bytes in the writer's
-	// encoding so a later write of the same account by a preceding
-	// transaction validates by value.
+	// No full write in the store — read from base, record the base bytes in
+	// the writer's encoding so a later write of the same account by a
+	// preceding transaction validates by value, and add the deltas.
 	acc, err := r.base.ReadAccountData(address)
 	if err != nil {
 		r.rw.RecordRead(key, -1, 0, true)
@@ -74,19 +75,15 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 	if acc != nil {
 		enc, _ = encodeAccount(acc)
 	}
-	r.rw.RecordReadValue(key, -1, 0, true, enc)
-	return acc, nil
+	if delta == nil {
+		r.rw.RecordAccountRead(key, -1, 0, true, enc, enc, false)
+		return acc, nil
+	}
+	val := composeAccount(enc, delta)
+	r.rw.RecordAccountRead(key, -1, 0, true, val, enc, true)
+	return DecodeAccount(val)
 }
 
-// ReadAccountStorage reads a storage slot, checking MVS first, then applying
-// the storage-wipe shadow before falling back to base.
-//
-// Wipe shadow (mirrors modules/state EVMStateView.ReadStorage): if a preceding
-// tx wiped this address's whole storage (SELFDESTRUCT / CREATE-on-existing) and
-// that wipe is newer than the slot's direct writer — or the slot value would
-// come from base (i.e. it is pre-wipe data) — the slot must read as zero, not
-// the stale pre-wipe value. The wipe marker read is recorded so validation
-// re-executes this tx if a later commit changes who wiped the address or when.
 func (r *ParallelStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	locKey := LocationKey{Address: address, Field: FieldStorage, Slot: *key}
 
