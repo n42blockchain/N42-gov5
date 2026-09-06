@@ -1261,6 +1261,43 @@ What the round cannot say: anything about a 163,000-transaction block. At
 comparison with n42-rs's 365,399 TPS (163,000 a block at 0.42 s) needs the
 block size first. That is the round after this one.
 
+## 6m. Round 27: the 163,000-transaction block -- registered before the round ran
+
+Every number in this document is at 22,857 transactions a block (480M gas).
+n42-rs's 365,399 TPS is at 163,000 a block (3.423G gas), 0.42 s a cycle, one
+account touched per transaction (2,000,000 recipients). Round 26 took the
+write off the path; the next question is what this fleet does at their shape.
+
+**Design.** A-B-B-A, warm-up (B) discarded. Every leg runs the mode round 26
+adopted (`N42_STATE_READ_QMDB=1`, `N42_STATE_WRITE_QMDB_ONLY=1`); the ONE
+variable is the gas ceiling: A = 480M, B = 3.423G (`N42_STRESS_GASLIMIT=1`
+makes the limit jump in one block, exported by bench-7node.sh to every node).
+Recipients 2,000,000 on all legs, so a full B block touches ~163,000 distinct
+accounts. Supply is closed-loop for the first time: two generators of
+2,000 x 3,000, `txflood -target-depth 200000`, so the CHAIN sets the offered
+rate and the harness ceiling of rounds 24-26 (occupancy falling in window 2)
+should not recur. Pool 300k/100k, the profile known to fit; a watchdog aborts
+the round under 20 GB MemAvailable, because the pool at this block size has
+never been measured.
+
+**Registered predictions.**
+
+1. B legs fill: occupancy >= 95% in window 1. FALSIFIED IF it is lower, in
+   which case the round measured the harness and its TPS is not the chain's.
+2. B cycle 1.8-2.4 s: ~300 ms fixed plus 163,000 x (exec 5.1 + root 2.8 +
+   write 2.1 + recov 0.7 us) = 1.74 s of per-transaction work. That is
+   68,000-90,000 TPS, 25-33 blocks/min.
+3. Per-transaction import cost at B is BELOW round 26's 11.7 us (the fixed
+   cost amortises 7x further) but not below 10 us (the per-transaction work
+   is what it is).
+4. The A legs reproduce round 26's B arm within the 3.6% floor (74.5 blocks
+   in window 1, import ~267 ms) -- they are the same configuration.
+
+What the round cannot say: anything about n42-rs's remaining 4-5x. At their
+shape this fleet's per-transaction work is execution (5.1 us against their
+1.8, the interpreter on plain transfers) and the root (2.8 us). Those are
+the next two kinds of change, in that order.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
