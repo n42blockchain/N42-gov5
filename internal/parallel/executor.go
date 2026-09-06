@@ -292,8 +292,14 @@ func (e *Executor) executeSingle(ctx any, txIndex int) {
 	// Allocate a fresh ReadWriteSet.
 	rw := NewReadWriteSet(txIndex)
 
-	// Clear old MVS entries for this tx.
-	e.mvs.DeleteAll(txIndex)
+	// Clear the previous incarnation's writes that this one may not repeat.
+	// Only that incarnation's keys: DeleteAll walks every entry in the store
+	// and was 95% of a follower's CPU at 54k transactions (round 35e).
+	if prev := e.rwSets[txIndex]; prev != nil {
+		for _, wd := range prev.Writes {
+			e.mvs.Delete(wd.Key, txIndex)
+		}
+	}
 
 	// Execute the transaction.
 	err := e.exec(ctx, txIndex, rw)
