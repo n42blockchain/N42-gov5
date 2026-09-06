@@ -57,6 +57,7 @@ import (
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/modules/state/witness"
 	"github.com/n42blockchain/N42/params"
 )
@@ -1421,6 +1422,43 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 		return nil
 	}
 
+	// Round 28: after a large block lands the pool's reorg lags the
+	// speculative build by up to 1.7 s, and the build then EXECUTES the
+	// previous block's mined transactions one by one (ErrNonceTooLow, ~5 us
+	// each, ~0.7 s for a 163k block) before reaching anything fresh. Read
+	// each account's state nonce once and drop the stale prefix here
+	// instead: O(accounts) reads for O(stale transactions) executions saved.
+	// Semantics unchanged -- those transactions fail the same way inside.
+	// Read through the state READER, never the IntraBlockState: a read there
+	// creates a state object, and a touched-but-unchanged object is one more
+	// no-op entry in an append-only commitment -- a root the followers, who
+	// never touched it, cannot reproduce.
+	staleTrimmed := 0
+	reader := ibs.GetStateReader()
+	for addr, list := range pending {
+		var nonce uint64
+		if acc, rerr := reader.ReadAccountData(addr); rerr == nil && acc != nil {
+			nonce = acc.Nonce
+		} else if rerr != nil {
+			continue // cannot tell; let execution decide as before
+		}
+		i := 0
+		for i < len(list) && list[i].Nonce() < nonce {
+			i++
+		}
+		if i == 0 {
+			continue
+		}
+		staleTrimmed += i
+		if i == len(list) {
+			delete(pending, addr)
+		} else {
+			pending[addr] = list[i:]
+		}
+	}
+	if len(pending) == 0 {
+		return nil
+	}
 	txSet := builder.NewTxByPriceAndNonce(pending, header.BaseFee)
 	log.Tracef("fillTransactions pending accounts:%d", len(pending))
 	// Round 27: a block that comes out a fifth full with a pool the harness
@@ -1436,6 +1474,9 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	// otherwise indistinguishable from a block that had nothing to include, and
 	// the difference is the whole diagnosis.
 	priceOut := 0
+	// Why accounts left the set (round 28: a 10k pack from a 449k pool).
+	var popGas, popNonceHigh, skipNonceLow, popOther int
+	lookupWait0 := commitment.QMDBLookupWaitNanos()
 	// fillTx phase accumulators — see the breakdown log below the loop.
 	var dPick, dCommit, dHeap time.Duration
 
@@ -1489,10 +1530,13 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			env.tcount++
 			txSet.Shift() // Move to next tx from same account
 		case errors.Is(err, internal.ErrGasLimitReached):
+			popGas++
 			txSet.Pop() // Skip this account entirely
 		case errors.Is(err, internal.ErrNonceTooHigh):
+			popNonceHigh++
 			txSet.Pop() // Nonce gap, skip account
 		case errors.Is(err, internal.ErrNonceTooLow):
+			skipNonceLow++
 			txSet.Shift() // Try next nonce from same account
 		case errors.Is(err, internal.ErrFeeCapTooLow):
 			// The account cannot pay this block's base fee. Skip the whole
@@ -1509,11 +1553,13 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			priceOut++
 			txSet.Pop()
 		default:
+			popOther++
 			log.Error("miningCommitTx failed", "error", err)
 			txSet.Shift()
 		}
 		dHeap += time.Since(tShift)
 	}
+	lookupWait := time.Duration(commitment.QMDBLookupWaitNanos() - lookupWait0)
 
 	// One line per non-trivial build: where fillTx's time actually goes.
 	// pick = Peek + size admit, commit = ApplyTransaction (the EVM work an
@@ -1522,6 +1568,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	// top of commit is the builder's own overhead.
 	if env.tcount > 1000 {
 		log.Info("miner: fillTx breakdown", "pendingAccts", len(pending), "pendingTxs", pendingTxs, "priceOut", priceOut,
+			"popGas", popGas, "popNonceHigh", popNonceHigh, "skipNonceLow", skipNonceLow, "staleTrimmed", staleTrimmed, "popOther", popOther, "lookupWait", lookupWait,
 			"txs", env.tcount, "pick", dPick, "commit", dCommit, "heap", dHeap)
 	}
 
