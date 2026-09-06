@@ -1501,6 +1501,60 @@ now what bounds the block. The pool's reorg (0.5-0.85 s a block, of which
 pending account) is the next lever; 5d0f7d0f batches those reads for round
 30.
 
+### Result: the wade is gone, B is +22%, and the pool's backlog now sets the block
+
+Third start (09:29-10:24 UTC, `GOMEMLIMIT=12GiB` a node, pool 300k/100k,
+target 220k), all five legs, interlocks held. node0, medians; per-build
+figures over builds that saw more than 50k transactions (fresh plus stale).
+
+| leg | ceiling | win1 blocks | win1 TPS | win2 TPS | occupancy | import | recov | exec | root | write | follower view |
+|-----|--------:|------------:|---------:|---------:|----------:|-------:|------:|-----:|-----:|------:|--------------:|
+| A1 | 480M | 74 | 28,190 | 22,593 | 100% | 251 | 20 | 103 | 62 | 43 | 792 |
+| B1 | 3.423G | 55 | 33,246 | 32,505 | 22% | 776 | 129 | 339 | 92 | 87 | 650 |
+| B2 | 3.423G | 54 | 37,245 | 35,227 | 25% | 673 | 127 | 274 | 91 | 80 | 726 |
+| A2 | 480M | 75 | 28,571 | 28,190 | 100% | 249 | 21 | 103 | 62 | 43 | 791 |
+
+| leg | builds | fresh pending (median) | stale trimmed (median) | packed (median) | fill execution | lookup wait |
+|-----|-------:|-----------------------:|-----------------------:|----------------:|---------------:|------------:|
+| A1 | 26 | 90,800 | 105,240 | 22,857 (full) | 113 ms | 0 |
+| B1 | 14 | 20,248 | 233,144 | 20,330 | 102 ms | 0 |
+| B2 | 17 | 21,408 | 197,148 | 21,442 | 100 ms | 0 |
+| A2 | 27 | 109,270 | 104,273 | 22,857 (full) | 105 ms | 0 |
+
+Predictions: (1) trimmed counts in the 100-170k range and fill execution
+scaling with the pack -- **held, and then some**: 197-247k trimmed per B
+build, 100 ms for 21k packed against round 28's 0.7 s for 11k. (2) packed
+median at least 80k -- **falsified**: 20-21k, because that is all the fresh
+supply there was. (3) B at least 25% over A -- **+22%** (34.6k against 28.4k
+across four windows); short of the registered threshold, well above the
+floor, and the direction the round predicted. (4) A legs unchanged -- **held
+exactly**: 74/75 blocks, 250 ms imports, one block apart, equal to round 26's
+B arm.
+
+**What sets the block now.** Every B build packs exactly what is fresh, and
+the fresh supply is ~21k a build because the closed loop reads
+`txpool_status`, which still counts 200-250k already-mined transactions the
+pool has not demoted: it believes the pool is full and adds only the
+shortfall. The build no longer pays for the backlog; the loop does. So the
+next lever is the pool's reorg, which at this size spends its time in two
+read transactions per pending account (5d0f7d0f batches them, round 30), and
+after that the loop's notion of depth.
+
+**Two per-transaction costs went UP at B and are not explained.** Recovery
+3.4 us/tx (129 ms) against 0.9 at A, execution 7.4-9 us against 4.5. The B
+blocks carry transactions the followers' pools saw only a second earlier, so
+the sender hint misses more; the execution difference is open. The A arm's
+11 us/tx is the reference the B arm has to reach at full blocks, and it does
+not yet.
+
+**Memory at this shape** is the third finding: 14-15.5 GB a node without a
+heap bound (two aborts), 10-12 GB with `GOMEMLIMIT=12GiB`, and the in-use
+heap profile names the growth -- 2.1 GB of decoded stored transactions (the
+block cache is sized in BLOCKS, 512 of them, ~160 MB each at 163k), 0.5 GB of
+libp2p buffers for 24 MB messages, 0.5 GB of tx-lookup tail, 0.4 GB of
+mobile-verify packet cache, against a fixed 1.5 GB QMDB index. Round 30
+bounds the block cache to 16.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
