@@ -1575,6 +1575,38 @@ cross-round comparison to round 29 carries both changes and says so.
 4. A legs unchanged within the floor (74-75 blocks); node anonymous RSS at B
    stays under 11 GB with the cache bounded.
 
+### Result: the reorg is 40% cheaper, the loop is still fed by a stale number
+
+10:27-11:13 UTC; warm-up, A1, B1, B2 complete; A2 aborted at launch because
+node5 failed its QMDB reload ("twig metadata inconsistent"), the same class of
+corruption node4 had on 2026-08-24 -- node5 had spent B2 falling behind
+(catch-up range requests failing, a committed block not executed locally)
+before a clean shutdown. Reseeded from node0; the corrupt copy is kept. The
+abort also exposed that bench-run's RPC-not-ready path left six nodes
+running; fixed in the script.
+
+| leg | ceiling | win1 blocks | win TPS | occupancy | import | reorg total | reset | demote | fresh/build | trimmed/build | packed (median / p90) |
+|-----|--------:|------------:|--------:|----------:|-------:|------------:|------:|-------:|------------:|--------------:|----------------------:|
+| A1 | 480M | 75 | 28,571 / 27,809 | 100% / 90% | 247 | 230 | 99 | 56 | 102k | 106k | 22,857 / 22,857 |
+| B1 | 3.423G | 52 | 32,326 / 30,902 | 23-25% | 813 | 380 | 209 | 121 | 14k | 279k | 14,184 / 156,976 |
+| B2 | 3.423G | 49 | 33,761 / 34,320 | 23-25% | 917 | 316 | 195 | 114 | 17k | 225k | 16,616 / 163,000 |
+
+Predictions: (1) reorg total under 0.4 s -- **held** (316-380 ms, from
+500-850); `demote` under 40 ms -- **not held** (114-121 ms: the batched read
+took ~50 ms off it and the rest is the per-transaction list and map work);
+`reset` under 200 ms -- borderline (195-209). (2) trimmed under 120k and
+fresh over 40k -- **not held**: the loop still reads `txpool_status`, which
+still carries 225-279k mined-but-undemoted transactions, and feeds 14-17k a
+build. (3) B more than 22% over A -- **not held**: +12-18%. (4) A unchanged
+-- **held** (75 blocks), and the bounded block cache held anonymous RSS
+under the 12 GiB limit for the whole run.
+
+The p90 says what the loop hides: one build in ten packs a full 163,000
+(fresh supply happened to be there), and those blocks import in ~0.9 s. The
+chain can take the block; the harness is not offering it. Round 31 changes
+the generator's notion of depth to submitted minus mined minus rejected,
+counted from the blocks themselves, with one generator so the count is exact.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
