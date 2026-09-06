@@ -58,3 +58,9 @@ func parsePushBeforeWrite(v string) bool {
 type sealParentChecker interface {
 	CheckSealParentApplied(blk block.IBlock) error
 }
+
+// ProposeBeforeWrite reports N42_PROPOSE_BEFORE_WRITE=1: with the early push
+// on, the Proposal leaves before this node's own write as well (round 34).
+// Without the early push it is inert -- there is no body with the peers to
+// propose.
+func ProposeBeforeWrite() bool { return os.Getenv("N42_PROPOSE_BEFORE_WRITE") == "1" }

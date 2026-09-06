@@ -632,11 +632,33 @@ func (w *worker) resultLoop() error {
 					dPush = time.Since(tPush)
 				}
 			}
+			// Propose-before-write (N42_PROPOSE_BEFORE_WRITE, off by default,
+			// needs the early push): hand the Proposal to the engine as soon
+			// as the body is with the peers, so the prepare round and the
+			// followers' imports run beside this node's write. Round 33: with
+			// only the push moved, the follower's import started earlier but
+			// the view still waited for the Proposal that trailed a ~150 ms
+			// write at ~95k transactions. The engine's onBlockReady reads
+			// nothing from the database; the leader's durable consensus state
+			// is its vote journal, written before any signature leaves; and a
+			// write that fails after this point leaves a block the leader
+			// itself must re-fetch, which the followers decide on regardless.
+			proposedEarly := false
+			if pushedEarly && ProposeBeforeWrite() {
+				if bsn, ok := w.engine.(blockSealNotifier); ok {
+					bsn.NotifyBlockSealed(blk.Hash(), blk.TxHash())
+					proposedEarly = true
+				}
+			}
 
 			tWrite := time.Now()
 			err = w.chain.WriteBlockWithState(blk, receipts, task.state, task.nopay)
 			dWrite := time.Since(tWrite)
 			if err != nil {
+				if proposedEarly {
+					log.Warn("propose-before-write: the write failed AFTER the Proposal left; this node re-fetches its own block if the fleet commits it",
+						"number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12], "err", err)
+				}
 				if errors.Is(err, internal.ErrStaleSeal) {
 					// The applied head moved past this seal's parent while it
 					// was in flight (a competing same-height candidate won).
@@ -693,8 +715,10 @@ func (w *worker) resultLoop() error {
 			// receive and import. Doing this here (not in Seal) binds propose↔push to
 			// the same block, which import-gated voting requires.
 			tNotify := time.Now()
-			if bsn, ok := w.engine.(blockSealNotifier); ok {
-				bsn.NotifyBlockSealed(blk.Hash(), blk.TxHash())
+			if !proposedEarly {
+				if bsn, ok := w.engine.(blockSealNotifier); ok {
+					bsn.NotifyBlockSealed(blk.Hash(), blk.TxHash())
+				}
 			}
 			dNotify := time.Since(tNotify)
 
@@ -707,7 +731,7 @@ func (w *worker) resultLoop() error {
 				"n", blockNumber.Uint64(), "txs", len(blk.Transactions()),
 				"finalize", task.finalize, "witness", task.witness, "assemble", task.assemble,
 				"bls", time.Duration(task.blsNanos.Load()), "seal2res", time.Since(sealStart),
-				"write", dWrite, "push", dPush, "pushedEarly", pushedEarly, "notify", dNotify,
+				"write", dWrite, "push", dPush, "pushedEarly", pushedEarly, "proposedEarly", proposedEarly, "notify", dNotify,
 				"total", time.Since(task.createdAt))
 
 			// Record this as the one candidate for its parent (after a successful
