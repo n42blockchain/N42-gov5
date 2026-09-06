@@ -21,8 +21,8 @@ type sourceAdapter struct{}
 func (sourceAdapter) LatestAccount(_ kv.Getter, _ []byte) ([]byte, error) { return nil, nil }
 
 // TestPlainStateWriter_SkipsAccountWhenSourceInstalled: the writer stops
-// touching `Account` (put and delete) for post-genesis blocks once a head-state
-// source is installed, keeps writing it at genesis, and never skips `Storage`.
+// touching `Account` (put and delete) for post-genesis blocks once the write
+// skip is on (a source alone changes nothing), keeps writing it at genesis, and never skips `Storage`.
 func TestPlainStateWriter_SkipsAccountWhenSourceInstalled(t *testing.T) {
 	addr := types.BytesToAddress([]byte{1})
 	acc := account.NewAccount()
@@ -52,9 +52,13 @@ func TestPlainStateWriter_SkipsAccountWhenSourceInstalled(t *testing.T) {
 		t.Fatalf("no source: want Account put+delete, got %d/%d", p, d)
 	}
 	modules.SetLatestAccountSource(sourceAdapter{})
-	t.Cleanup(func() { modules.SetLatestAccountSource(nil) })
+	t.Cleanup(func() { modules.SetLatestAccountSource(nil); modules.SetPlainAccountWriteSkipped(false) })
+	if p, d := run(false); p != 1 || d != 1 {
+		t.Fatalf("a source alone must not stop the write, got %d/%d", p, d)
+	}
+	modules.SetPlainAccountWriteSkipped(true)
 	if p, d := run(false); p != 0 || d != 0 {
-		t.Fatalf("source installed: Account must not be written, got %d/%d", p, d)
+		t.Fatalf("write skip on: Account must not be written, got %d/%d", p, d)
 	}
 	if p, d := run(true); p != 1 || d != 1 {
 		t.Fatalf("genesis writer must still write Account, got %d/%d", p, d)

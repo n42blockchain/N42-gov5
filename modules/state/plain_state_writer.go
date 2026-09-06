@@ -64,8 +64,8 @@ func NewPlainStateWriterNoHistory(db putDel) *PlainStateWriter {
 }
 
 // skipPlainAccount reports whether this writer leaves the `Account` table
-// alone: a head-state account source is installed (modules.SetLatestAccount-
-// Source, the N42_STATE_WRITE_QMDB_ONLY lever) and this is not genesis. The
+// alone: the N42_STATE_WRITE_QMDB_ONLY lever is on (modules.SetPlainAccount-
+// WriteSkipped) and this is not genesis. The
 // changeset writer above is unaffected -- history keeps every pre-image
 // either way -- and so is `Storage`, which round 19 measured as negligible.
 func (w *PlainStateWriter) skipPlainAccount() bool {
