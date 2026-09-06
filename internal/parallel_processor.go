@@ -24,6 +24,7 @@ package internal
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"strconv"
@@ -183,6 +184,16 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 		return err
 	})
 
+	// Pin each sender's transactions to one worker, in index order: the
+	// nonce chain of a sender is then executed by the worker that already
+	// applied its predecessor, and only cross-sender conflicts (a recipient
+	// credited by several senders in one wave) reach the validator.
+	executor.SetAffinity(func(txIndex int) uint64 {
+		if from := txs[txIndex].From(); from != nil {
+			return binary.LittleEndian.Uint64(from[:8])
+		}
+		return uint64(txIndex)
+	})
 	// Run parallel execution with wave-based validation.
 	results := executor.Run()
 

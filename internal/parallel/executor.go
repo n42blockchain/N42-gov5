@@ -74,6 +74,15 @@ type Executor struct {
 	workerSetup WorkerSetupFunc
 	execCtxFn   TxExecuteWithCtxFunc
 
+	// affinity, when set, pins every transaction with the same key to the
+	// same worker, which executes its transactions in index order. A
+	// sender's nonce chain then never conflicts with itself: each link reads
+	// the previous link's write from the multi-version store, already there
+	// because the same worker applied it. Round 35: without this, a block of
+	// 4,000 senders x ~25 transactions each hit the 64-wave limit on every
+	// block and fell back to sequential, 43 s for 163k.
+	affinity func(txIndex int) uint64
+
 	// Metrics.
 	totalExecutions atomic.Int64
 	totalAborts     atomic.Int64
@@ -97,6 +106,10 @@ func NewExecutorWithWorkerSetup(numTxs int, workers int, setup WorkerSetupFunc, 
 	e.execCtxFn = execFn
 	return e
 }
+
+// SetAffinity pins transactions with equal keys to one worker, in index
+// order (see the affinity field). Call before Run.
+func (e *Executor) SetAffinity(key func(txIndex int) uint64) { e.affinity = key }
 
 // NewExecutor creates a Block-STM executor for numTxs transactions.
 // workers specifies the number of goroutines; 0 means runtime.NumCPU().
@@ -178,9 +191,14 @@ func (e *Executor) Run() []TxResult {
 
 // collectPending returns indices of txs that need (re-)execution.
 func (e *Executor) collectPending() []int {
+	// Only transactions the validator marked pending re-execute (with their
+	// incarnation already advanced). An executed-but-unvalidated transaction
+	// is provisional and gets re-VALIDATED next pass, not re-run: re-running
+	// it here rewrote its value under an unchanged incarnation, which a
+	// dependent that had recorded that incarnation could never detect.
 	var pending []int
 	for i := 0; i < e.numTxs; i++ {
-		if e.status[i] != StatusValidated {
+		if e.status[i] == StatusPending {
 			pending = append(pending, i)
 		}
 	}
@@ -190,7 +208,17 @@ func (e *Executor) collectPending() []int {
 // executeParallel executes the given tx indices in parallel using the worker pool.
 func (e *Executor) executeParallel(txIndices []int) {
 	var wg sync.WaitGroup
+	// With an affinity key, each worker gets its own in-order queue of the
+	// transactions that hash to it; without one, a shared channel.
+	var queues [][]int
 	work := make(chan int, len(txIndices))
+	if e.affinity != nil {
+		queues = make([][]int, e.workers)
+		for _, idx := range txIndices { // txIndices is ascending
+			w := int(e.affinity(idx) % uint64(e.workers))
+			queues[w] = append(queues[w], idx)
+		}
+	}
 
 	// Start workers.
 	for i := 0; i < e.workers; i++ {
@@ -213,20 +241,31 @@ func (e *Executor) executeParallel(txIndices []int) {
 					defer teardown()
 				}
 			}
-			for txIndex := range work {
+			run := func(txIndex int) {
 				if setupErr != nil {
 					e.results[txIndex] = TxResult{Err: setupErr}
 					e.status[txIndex] = StatusExecuted
-					continue
+					return
 				}
 				e.executeSingle(ctx, txIndex)
+			}
+			if queues != nil {
+				for _, txIndex := range queues[workerID] {
+					run(txIndex)
+				}
+				return
+			}
+			for txIndex := range work {
+				run(txIndex)
 			}
 		}(i)
 	}
 
-	// Feed work.
-	for _, idx := range txIndices {
-		work <- idx
+	// Feed work (channel mode only).
+	if queues == nil {
+		for _, idx := range txIndices {
+			work <- idx
+		}
 	}
 	close(work)
 
@@ -262,28 +301,47 @@ func (e *Executor) executeSingle(ctx any, txIndex int) {
 // On first failure, marks the failed tx and all later txs as pending.
 // Returns true if all txs are validated.
 func (e *Executor) validateInOrder() bool {
+	// A pass validates every executed transaction in order. A failure at i
+	// re-executes i alone (incarnation++); every transaction after i is
+	// provisional from then on -- it may have read i's old write -- so at the
+	// end of the pass everything after the FIRST failure is demoted to
+	// Executed and re-validated next pass, when i's new write is in the
+	// store. Transactions that fail later in the same pass are marked pending
+	// too, so independent conflicts are all re-executed in one wave rather
+	// than one per wave. Re-executing every later transaction on the first
+	// failure (the old rule) cost a wave per conflict; round 35 hit the
+	// 64-wave limit on every block with it.
+	firstFail := -1
 	for i := 0; i < e.numTxs; i++ {
-		if e.status[i] == StatusValidated {
-			continue // already validated in a previous wave
-		}
-
-		rw := e.rwSets[i]
-		if Validate(e.mvs, rw) {
-			e.status[i] = StatusValidated
-		} else {
-			// This tx's read set is stale. Mark it and all later txs
-			// as pending for re-execution.
-			e.totalAborts.Add(1)
-			for j := i; j < e.numTxs; j++ {
-				if e.status[j] != StatusValidated {
-					e.status[j] = StatusPending
-					e.incarnation[j]++
-				}
+		switch e.status[i] {
+		case StatusValidated:
+			continue // settled in an earlier pass, and nothing before it moved
+		case StatusPending:
+			if firstFail < 0 {
+				firstFail = i
 			}
-			return false
+			continue
+		}
+		if Validate(e.mvs, e.rwSets[i]) {
+			e.status[i] = StatusValidated
+			continue
+		}
+		e.totalAborts.Add(1)
+		e.status[i] = StatusPending
+		e.incarnation[i]++
+		if firstFail < 0 {
+			firstFail = i
 		}
 	}
-	return true
+	if firstFail < 0 {
+		return true
+	}
+	for j := firstFail + 1; j < e.numTxs; j++ {
+		if e.status[j] == StatusValidated {
+			e.status[j] = StatusExecuted
+		}
+	}
+	return false
 }
 
 // allValidated returns true if all transactions are validated.
