@@ -1293,6 +1293,33 @@ never been measured.
 4. The A legs reproduce round 26's B arm within the 3.6% floor (74.5 blocks
    in window 1, import ~267 ms) -- they are the same configuration.
 
+### Three false starts, and what each one was
+
+The harness had never run this shape, and it said so three times before the
+chain got a turn:
+
+1. **bench-run's own profile guard** hardcoded `--miner.gasceil 480000000`
+   and rejected the 3.423G nodes (fixed: it checks the requested ceiling).
+   The rejected nodes then took over 300 s to honour SIGINT -- they were
+   still loading the 6.3M-key index -- which is its own small finding.
+2. **The closed loop needs the `txpool` RPC namespace**, which the qs fleet
+   did not expose (`--http.api eth,web3,net`); `-target-depth` refused to
+   inject blind and window 1 was 240 empty blocks. Enabled in qs-env.sh.
+3. **Two node-side ceilings at 163k**, found with the pool reading 190,000
+   pending on every node while blocks carried 5,000-70,000: the packing
+   budget is 90% of the gossip cap, and bench-7node.sh exports
+   `N42_MAX_GOSSIP_MB=8` unconditionally -- 7.5 MB, 70,341 transfers, the
+   exact ceiling observed; and the leader builds SPECULATIVELY the moment
+   the parent lands, when a 200k pool that a 70k block just drained and a
+   once-a-second top-up has not refilled is thin, so the sealed block is
+   whatever was executable at that instant. `fillTx breakdown` now reports
+   `pendingAccts`/`pendingTxs`/`priceOut` per build to make that visible.
+
+The fourth start raises the cap to 24 MB, the pool to 600k/200k with a
+500k target depth (so a 163k drain leaves 337k), and 3,000 senders per
+generator. Predictions 1-4 stand as registered; the false starts measured
+the harness, not the chain, and none of their numbers is read.
+
 What the round cannot say: anything about n42-rs's remaining 4-5x. At their
 shape this fleet's per-transaction work is execution (5.1 us against their
 1.8, the interpreter on plain transfers) and the root (2.8 us). Those are
