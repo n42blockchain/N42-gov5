@@ -421,7 +421,7 @@ func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx) state.RootComputer {
 		// Previous build's candidate ops are still on the speculative tree;
 		// peel them so the index matches the last loaded layout again. A
 		// failed peel just voids the trust — ReloadForBuild rebuilds.
-		if err := rc.Tree().ApplyUndo(undo); err != nil {
+		if err := rc.ApplyUndo(undo); err != nil {
 			log.Debug("miner speculative tree candidate peel failed; full reload", "err", err)
 			rc.VoidIndexTrust()
 		}
@@ -457,7 +457,7 @@ func (bc *BlockChain) PrewarmMinerRootComputer(tx kv.Tx) bool {
 	bc.minerRC = rc
 	rc.SetCold(tx)
 	if undo := rc.TakeUndo(); undo != nil {
-		if err := rc.Tree().ApplyUndo(undo); err != nil {
+		if err := rc.ApplyUndo(undo); err != nil {
 			log.Debug("miner speculative tree candidate peel failed; full reload", "err", err)
 			rc.VoidIndexTrust()
 		}
@@ -2834,7 +2834,7 @@ func (bc *BlockChain) revertUncommittedQMDBAppends(blockNum uint64) {
 		// leaves through it. Re-point at a live tx for the duration.
 		bc.qmdbRootComputer.SetCold(tx)
 		defer bc.qmdbRootComputer.SetCold(nil)
-		return bc.qmdbRootComputer.Tree().ApplyUndo(undo)
+		return bc.qmdbRootComputer.ApplyUndo(undo)
 	})
 	if err == nil {
 		log.Debug("peeled failed block's appends off the QMDB tree", "number", blockNum)

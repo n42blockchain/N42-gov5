@@ -598,6 +598,39 @@ func (t *Tree) Get(keyHash Hash) ([]byte, bool) {
 	return nil, false
 }
 
+// GetVia is Get for a reader that is NOT the tree's owner: an evicted entry is
+// faulted through the supplied cold reader instead of t.cold, which is bound
+// to whichever transaction the owner last attached (and is nil between
+// blocks). The caller serialises against the owner's mutations; this method
+// only reads. The second result distinguishes "live but evicted and cold
+// cannot see it" (found=false, evicted=true) from "no live entry"
+// (found=false, evicted=false), so a reader holding a lagging transaction can
+// retry with a fresh one.
+func (t *Tree) GetVia(keyHash Hash, cold ColdReader) (value []byte, found bool, evicted bool) {
+	slot, ok := t.idx.Get(keyHash)
+	if !ok {
+		return nil, false, false
+	}
+	if slot >= t.entriesBase {
+		i := slot - t.entriesBase
+		if i < uint64(len(t.entries)) {
+			return t.entries[i].value, true, false
+		}
+		return nil, false, false
+	}
+	if cold == nil {
+		cold = t.cold
+	}
+	if cold == nil {
+		return nil, false, true
+	}
+	_, v, ok := cold.ColdEntry(slot)
+	if !ok {
+		return nil, false, true
+	}
+	return v, true, false
+}
+
 // markUpperDirty records that twig id's root changed, so the next Root() folds
 // just its path through the upper tree.
 func (t *Tree) markUpperDirty(id int) {

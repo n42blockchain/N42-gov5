@@ -19,6 +19,7 @@ import (
 	"errors"
 	"os"
 	"sort"
+	"sync"
 
 	"time"
 
@@ -46,7 +47,40 @@ type QMDBRootComputer struct {
 	lastUndo      *qmdb.BlockUndo // undo record of the most recent ComputeRoot
 
 	histStore *MDBXQMDBHistoryStore // non-nil when full-history journaling is on
+
+	// readers serialises out-of-band point reads (Lookup: the txpool, RPC
+	// and the miner's build under N42_STATE_WRITE_QMDB_ONLY) against the
+	// owner's mutations. Every method that changes the tree takes it
+	// exclusively for its own duration; the owner is one goroutine and calls
+	// them in sequence, so the tree a reader sees between two of them is a
+	// whole applied state -- the head as executed, possibly not yet
+	// persisted, the same thing the layered cache already exposes.
+	// Uncontended when no source is installed.
+	readers sync.RWMutex
 }
+
+// Lookup reads the live value for keyHash from another goroutine. cold is
+// the reader's own transaction (nil to use the owner's attached one, which
+// is only safe from the owner). It returns evicted=true when the live entry
+// sits below the resident window and cold cannot see it -- the caller's
+// transaction predates the flush that wrote it -- so the caller can retry
+// with a fresh transaction.
+func (r *QMDBRootComputer) Lookup(keyHash qmdb.Hash, cold qmdb.Getter) (value []byte, found bool, evicted bool) {
+	r.readers.RLock()
+	defer r.readers.RUnlock()
+	var cr qmdb.ColdReader = noColdReader{}
+	if cold != nil {
+		cr = qmdb.ColdReaderFromGetter(cold)
+	}
+	return r.t.GetVia(keyHash, cr)
+}
+
+// noColdReader sees nothing, so a Lookup without a transaction reports an
+// evicted entry as evicted instead of faulting through the owner's attached
+// reader from a foreign goroutine.
+type noColdReader struct{}
+
+func (noColdReader) ColdEntry(uint64) (qmdb.Hash, []byte, bool) { return qmdb.Hash{}, nil, false }
 
 // EnableHistory attaches the full-history recorder (death stamps, key
 // versions, top band — lib/qmdb/history.go) writing through tx. Re-point the
@@ -90,11 +124,13 @@ func (r *QMDBRootComputer) EnableUndoRecording() { r.undoRecording = true }
 // deeper unwinds). tx must be the same RwTx the subsequent re-execution
 // flushes through.
 func (r *QMDBRootComputer) RevertBlock(tx kv.RwTx, undo *qmdb.BlockUndo) error {
+	r.readers.Lock()
+	defer r.readers.Unlock()
 	// Re-point the cold entry reader + leaf store at THIS tx first: the tree's
 	// attached readers still reference whatever tx the last execution ran with
 	// (evmRecord re-points them per block, then closes that tx) — reading
 	// through a closed tx segfaults inside MDBX cursor open.
-	r.SetCold(tx)
+	r.setColdLocked(tx)
 	if r.mdbxIdx != nil {
 		r.mdbxIdx.setTx(tx)
 	}
@@ -105,7 +141,7 @@ func (r *QMDBRootComputer) RevertBlock(tx kv.RwTx, undo *qmdb.BlockUndo) error {
 	// leftover record is stale by construction — drop it. A staged flush from
 	// that abandoned position is equally stale.
 	r.lastUndo = nil
-	r.AbortFlushed()
+	r.abortFlushedLocked()
 	ft, err := r.t.ApplyUndoWithStorage(tx, undo, r.flushedThrough)
 	if err != nil {
 		return err
@@ -123,6 +159,8 @@ func (r *QMDBRootComputer) LastUndo() *qmdb.BlockUndo { return r.lastUndo }
 // never recomputed (nil = state unchanged → synthesize an empty record) instead
 // of re-writing a stale one.
 func (r *QMDBRootComputer) TakeUndo() *qmdb.BlockUndo {
+	r.readers.Lock()
+	defer r.readers.Unlock()
 	u := r.lastUndo
 	r.lastUndo = nil
 	return u
@@ -138,17 +176,34 @@ func NewQMDBRootComputer() *QMDBRootComputer {
 // peel failed and the index may carry unpeeled mutations).
 func (r *QMDBRootComputer) VoidIndexTrust() { r.indexTrusted = 0 }
 
+// ApplyUndo peels a block's appends off the tree under the reader lock.
+func (r *QMDBRootComputer) ApplyUndo(undo *qmdb.BlockUndo) error {
+	r.readers.Lock()
+	defer r.readers.Unlock()
+	return r.t.ApplyUndo(undo)
+}
+
 // Tree exposes the underlying tree (for snapshot/proof tests).
 func (r *QMDBRootComputer) Tree() *qmdb.Tree { return r.t }
 
 // Root returns the current world root without applying a dirty set.
-func (r *QMDBRootComputer) Root() types.Hash { return types.Hash(r.t.Root()) }
+func (r *QMDBRootComputer) Root() types.Hash {
+	r.readers.Lock()
+	defer r.readers.Unlock()
+	return types.Hash(r.t.Root())
+}
 
 // LoadFrom rebuilds the forest from a previously-flushed positional layout (the
 // cross-process resume path — the QMDB root is history-dependent, so resume must
 // replay positions, not rebuild from the key set). flushedThrough advances to the
 // reloaded cursor so the next flush is incremental.
 func (r *QMDBRootComputer) LoadFrom(g qmdb.Getter) error {
+	r.readers.Lock()
+	defer r.readers.Unlock()
+	return r.loadFromLocked(g)
+}
+
+func (r *QMDBRootComputer) loadFromLocked(g qmdb.Getter) error {
 	if r.mdbxIdx == nil {
 		// In-RAM index: force the rebuild scan. On a mid-run recovery reload
 		// the index still reflects the PRE-reload in-memory tree (e.g. reverts
@@ -198,8 +253,10 @@ var reloadVerify = os.Getenv("N42_QMDB_RELOAD_VERIFY") == "1"
 // (peel failure, reconciliation mismatch, root mismatch, first use) drops to the
 // next tier automatically, so a tier-1 miss costs latency, never correctness.
 func (r *QMDBRootComputer) ReloadForBuild(g qmdb.Getter) error {
+	r.readers.Lock()
+	defer r.readers.Unlock()
 	if r.mdbxIdx != nil || r.indexTrusted == 0 {
-		return r.LoadFrom(g) // persistent index / first load: already right
+		return r.loadFromLocked(g) // persistent index / first load: already right
 	}
 	prev := r.indexTrusted
 	// Tier 1: advance the forest incrementally — cost proportional to what
@@ -358,6 +415,8 @@ func (r *QMDBRootComputer) verifyReloadIndex(ref *qmdb.Tree, path string) bool {
 // leave flushedThrough pointing past rows that never reached disk, silently
 // skipping them on every later flush.
 func (r *QMDBRootComputer) FlushTo(p qmdb.Putter) (int, error) {
+	r.readers.Lock()
+	defer r.readers.Unlock()
 	// Settle the batch's accumulated death-stamp deltas first (one
 	// read-modify-write per touched twig per batch), same tx as the flush.
 	if err := r.t.FlushHistory(); err != nil {
@@ -380,6 +439,8 @@ func (r *QMDBRootComputer) FlushTo(p qmdb.Putter) (int, error) {
 // covers slots below the ADOPTED cursor, so an uncommitted flush never has its
 // rows dropped from RAM.
 func (r *QMDBRootComputer) CommitFlushed() {
+	r.readers.Lock()
+	defer r.readers.Unlock()
 	if r.stagedValid {
 		r.flushedThrough = r.stagedFlushed
 		r.stagedValid = false
@@ -392,6 +453,12 @@ func (r *QMDBRootComputer) CommitFlushed() {
 // peeling the failed block's appends (TakeUndo + ApplyUndo) so the peel sees
 // the restored bookkeeping.
 func (r *QMDBRootComputer) AbortFlushed() {
+	r.readers.Lock()
+	defer r.readers.Unlock()
+	r.abortFlushedLocked()
+}
+
+func (r *QMDBRootComputer) abortFlushedLocked() {
 	r.stagedValid = false
 	r.t.AbortFlush()
 }
@@ -401,6 +468,12 @@ func (r *QMDBRootComputer) AbortFlushed() {
 // attaches the leaf-blob store (same backing tx) so an evicted twig rehydrates in
 // one read. The engine re-points both at the current batch's tx each batch.
 func (r *QMDBRootComputer) SetCold(g qmdb.Getter) {
+	r.readers.Lock()
+	defer r.readers.Unlock()
+	r.setColdLocked(g)
+}
+
+func (r *QMDBRootComputer) setColdLocked(g qmdb.Getter) {
 	if g == nil {
 		// Detach: a getter wrapping an expired transaction is a delayed nil
 		// panic on the next cold fault (observed live). Callers re-point at a
@@ -418,6 +491,8 @@ func (r *QMDBRootComputer) SetCold(g qmdb.Getter) {
 // survives restarts. Call once on the fresh computer BEFORE LoadFrom, with the
 // first batch's tx. Re-point per batch with SetIndexTx.
 func (r *QMDBRootComputer) UseMDBXIndex(tx kv.RwTx) {
+	r.readers.Lock()
+	defer r.readers.Unlock()
 	r.mdbxIdx = newQMDBMDBXIndex(tx)
 	r.t.SetIndex(r.mdbxIdx)
 }
@@ -437,6 +512,8 @@ func (r *QMDBRootComputer) ValueSource() *qmdb.Tree { return r.t }
 // SetIndexTx re-points the MDBX index at the current batch's tx (no-op for the
 // in-RAM index). Call each batch alongside SetCold.
 func (r *QMDBRootComputer) SetIndexTx(tx kv.RwTx) {
+	r.readers.Lock()
+	defer r.readers.Unlock()
 	if r.mdbxIdx != nil {
 		r.mdbxIdx.setTx(tx)
 	}
@@ -447,6 +524,8 @@ func (r *QMDBRootComputer) SetIndexTx(tx kv.RwTx) {
 // resident footprint to the unflushed window plus the active/touched twigs. Must
 // be called after FlushTo and after SetCold.
 func (r *QMDBRootComputer) EvictFlushed() {
+	r.readers.Lock()
+	defer r.readers.Unlock()
 	r.t.EvictThrough(r.flushedThrough)
 	r.t.EvictTwigsThrough(r.flushedThrough)
 }
@@ -472,6 +551,8 @@ func (r *QMDBRootComputer) ComputeRoot(
 	accounts map[types.Address]*account.StateAccount,
 	storage map[types.Address]map[types.Hash]*uint256.Int,
 ) (types.Hash, error) {
+	r.readers.Lock()
+	defer r.readers.Unlock()
 	type op struct {
 		kh    qmdb.Hash
 		value []byte // nil => delete

@@ -105,7 +105,7 @@ func (r *PlainStateReader) SetCodeSource(src CodeSource) {
 }
 
 func (r *PlainStateReader) ReadAccountData(address types.Address) (*account.StateAccount, error) {
-	enc, err := r.db.GetOne(modules.Account, address.Bytes())
+	enc, err := modules.ReadLatestAccount(r.db, address.Bytes())
 	if err != nil {
 		return nil, err
 	}
