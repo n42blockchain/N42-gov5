@@ -17,7 +17,6 @@
 package parallel
 
 import (
-
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/state"
@@ -51,12 +50,11 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 
 	val, writerTx, writerInc, found := r.mvs.Read(key, r.txIndex)
 	if found {
-		r.rw.RecordRead(key, writerTx, writerInc, false)
+		r.rw.RecordReadValue(key, writerTx, writerInc, false, val)
 		if val == nil {
 			// Account was deleted by a preceding tx.
 			return nil, nil
 		}
-		// Decode protobuf-encoded account.
 		acc, err := DecodeAccount(val)
 		if err != nil {
 			return nil, err
@@ -64,9 +62,20 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 		return acc, nil
 	}
 
-	// Not in MVS — read from base.
-	r.rw.RecordRead(key, -1, 0, true)
-	return r.base.ReadAccountData(address)
+	// Not in MVS — read from base, and record the base bytes in the writer's
+	// encoding so a later write of the same account by a preceding
+	// transaction validates by value.
+	acc, err := r.base.ReadAccountData(address)
+	if err != nil {
+		r.rw.RecordRead(key, -1, 0, true)
+		return nil, err
+	}
+	var enc []byte
+	if acc != nil {
+		enc, _ = encodeAccount(acc)
+	}
+	r.rw.RecordReadValue(key, -1, 0, true, enc)
+	return acc, nil
 }
 
 // ReadAccountStorage reads a storage slot, checking MVS first, then applying
@@ -112,13 +121,18 @@ func (r *ParallelStateReader) ReadAccountCode(address types.Address, codeHash ty
 
 	val, writerTx, writerInc, found := r.mvs.Read(key, r.txIndex)
 	if found {
-		r.rw.RecordRead(key, writerTx, writerInc, false)
+		r.rw.RecordReadValue(key, writerTx, writerInc, false, val)
 		return val, nil
 	}
 
 	// Not in MVS — read from base.
-	r.rw.RecordRead(key, -1, 0, true)
-	return r.base.ReadAccountCode(address, codeHash)
+	code, err := r.base.ReadAccountCode(address, codeHash)
+	if err != nil {
+		r.rw.RecordRead(key, -1, 0, true)
+		return nil, err
+	}
+	r.rw.RecordReadValue(key, -1, 0, true, code)
+	return code, nil
 }
 
 // ReadAccountCodeSize reads code size. Derives from ReadAccountCode.

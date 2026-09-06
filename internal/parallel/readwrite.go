@@ -18,10 +18,16 @@ package parallel
 
 // ReadDescriptor records a single read operation during transaction execution.
 type ReadDescriptor struct {
-	Key              LocationKey
-	WriterTx         int    // index of the transaction that provided the value (-1 if from base state)
+	Key               LocationKey
+	WriterTx          int    // index of the transaction that provided the value (-1 if from base state)
 	WriterIncarnation uint32 // incarnation of the writer tx at read time
-	FromBase         bool   // true if the value was read from the base DB (no MVS entry)
+	FromBase          bool   // true if the value was read from the base DB (no MVS entry)
+	// Value is the bytes the transaction read (nil for a missing account or
+	// slot) when HasValue is set. Validation accepts a read whose version
+	// moved but whose bytes did not: a re-executed writer that produced the
+	// same value does not invalidate its dependants.
+	Value    []byte
+	HasValue bool
 }
 
 // WriteDescriptor records a single write operation during transaction execution.
@@ -58,6 +64,19 @@ func (rw *ReadWriteSet) RecordRead(key LocationKey, writerTx int, writerIncarnat
 }
 
 // RecordWrite adds a write to the set.
+// RecordReadValue is RecordRead with the bytes that were read, so the
+// validator can compare values when the version has moved.
+func (rw *ReadWriteSet) RecordReadValue(key LocationKey, writerTx int, writerIncarnation uint32, fromBase bool, value []byte) {
+	rw.Reads = append(rw.Reads, ReadDescriptor{
+		Key:               key,
+		WriterTx:          writerTx,
+		WriterIncarnation: writerIncarnation,
+		FromBase:          fromBase,
+		Value:             value,
+		HasValue:          true,
+	})
+}
+
 func (rw *ReadWriteSet) RecordWrite(key LocationKey, value []byte) {
 	rw.Writes = append(rw.Writes, WriteDescriptor{
 		Key:   key,
