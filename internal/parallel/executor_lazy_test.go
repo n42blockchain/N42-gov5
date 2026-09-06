@@ -42,7 +42,7 @@ func TestExecutor_SharedCounterRepeated(t *testing.T) {
 func TestExecutor_SenderChainsWithAffinity(t *testing.T) {
 	const S, L, R = 40, 30, 8
 	numTxs := S * L
-	sender := func(i int) int { return i % S }   // interleave senders, chain order by index
+	sender := func(i int) int { return i % S } // interleave senders, chain order by index
 	recipient := func(i int) int { return (i * 7) % R }
 	senderKey := func(s int) LocationKey { return balanceKey(byte(100 + s)) }
 	recipKey := func(r int) LocationKey { return balanceKey(byte(200 + r)) }
