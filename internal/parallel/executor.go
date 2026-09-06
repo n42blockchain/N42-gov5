@@ -337,6 +337,11 @@ func (e *Executor) validateInOrder() bool {
 	// than one per wave. Re-executing every later transaction on the first
 	// failure (the old rule) cost a wave per conflict; round 35 hit the
 	// 64-wave limit on every block with it.
+	// The checks are independent (the store is quiescent between waves), so
+	// they run on the worker count in strides; only the status pass below is
+	// in order. Serial, this was 595 ms of a 163k-transaction block's 2.1 s
+	// (round 35f: ten passes over the whole block).
+	valid := e.validateExecuted()
 	firstFail := -1
 	for i := 0; i < e.numTxs; i++ {
 		switch e.status[i] {
@@ -348,7 +353,7 @@ func (e *Executor) validateInOrder() bool {
 			}
 			continue
 		}
-		if Validate(e.mvs, e.rwSets[i]) {
+		if valid[i] {
 			e.status[i] = StatusValidated
 			continue
 		}
@@ -372,6 +377,33 @@ func (e *Executor) validateInOrder() bool {
 		}
 	}
 	return false
+}
+
+// validateExecuted runs Validate over every executed transaction in
+// parallel and returns the verdicts by index.
+func (e *Executor) validateExecuted() []bool {
+	valid := make([]bool, e.numTxs)
+	workers := e.workers
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > e.numTxs {
+		workers = e.numTxs
+	}
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(start int) {
+			defer wg.Done()
+			for i := start; i < e.numTxs; i += workers {
+				if e.status[i] == StatusExecuted {
+					valid[i] = Validate(e.mvs, e.rwSets[i])
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	return valid
 }
 
 // traceFailure logs why transaction i failed validation (N42_PARALLEL_TRACE).
