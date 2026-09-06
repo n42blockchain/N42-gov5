@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/holiman/uint256"
 
@@ -124,6 +125,7 @@ func touchesAny(txs []*transaction.Transaction, addrs []types.Address) bool {
 func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockState, stateReader state.StateReader, stateWriter state.WriterWithChangeSets, blockHashFunc func(n uint64) types.Hash) (block.Receipts, map[types.Address]*uint256.Int, []*block.Log, uint64, error) {
 	txs := b.Transactions()
 	numTxs := len(txs)
+	tStart := time.Now()
 
 	// Fall back to sequential for small blocks (overhead not worth it).
 	if numTxs <= 4 {
@@ -155,6 +157,7 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 		// check wave after wave until the 64-wave limit.
 		recoverBlockSenders(signer, txs)
 	}
+	tRecovered := time.Now()
 
 	chainConfig := p.config
 	cfg := vm2.Config{}
@@ -268,10 +271,9 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 		return uint64(txIndex)
 	})
 	// Run parallel execution with wave-based validation.
+	tRunStart := time.Now()
 	results := executor.Run()
-	if execs, aborts := executor.Stats(); executor.FellBack() || numTxs >= 1000 {
-		log.Info("parallel block", "n", b.Number64(), "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack())
-	}
+	tRunEnd := time.Now()
 
 	// Check if any transaction had a hard error.
 	for i, r := range results {
@@ -301,8 +303,15 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 	// Apply MVS final state to the real IntraBlockState.
 	// This is critical: the caller (evmRecord) expects ibs to contain all state
 	// changes. writeBlockWithState later calls ibs.CommitBlock() to flush to DB.
+	tApplyStart := time.Now()
 	if err := applyMVSToIBS(executor.MVS(), numTxs, ibs); err != nil {
 		return nil, nil, nil, 0, fmt.Errorf("ProcessParallel: failed to apply MVS state: %w", err)
+	}
+	if execs, aborts := executor.Stats(); executor.FellBack() || numTxs >= 1000 {
+		execNs, valNs := executor.WaveTimes()
+		log.Info("parallel block", "n", b.Number64(), "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
+			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
+			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", time.Since(tApplyStart).Milliseconds())
 	}
 
 	// Credit the deferred fees once per recipient, in transaction order. A

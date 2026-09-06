@@ -22,6 +22,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/n42blockchain/N42/log"
 )
@@ -90,7 +91,9 @@ type Executor struct {
 	totalAborts     atomic.Int64
 	waves           int
 	fellBack        bool
-	traceLeft       int // N42_PARALLEL_TRACE: validation failures still to log this Run
+	execNanos       int64 // wall time in executeParallel across waves
+	validateNanos   int64 // wall time in validateInOrder across waves
+	traceLeft       int   // N42_PARALLEL_TRACE: validation failures still to log this Run
 }
 
 // WorkerSetupFunc prepares one worker's private context. It is called on the
@@ -170,10 +173,14 @@ func (e *Executor) Run() []TxResult {
 		}
 
 		// Execute pending txs in parallel.
+		t0 := time.Now()
 		e.executeParallel(pending)
+		t1 := time.Now()
+		e.execNanos += t1.Sub(t0).Nanoseconds()
 
 		// Validate in order. On first failure, mark it and all later txs as pending.
 		allValid := e.validateInOrder()
+		e.validateNanos += time.Since(t1).Nanoseconds()
 		if allValid {
 			break
 		}
@@ -390,6 +397,11 @@ func (e *Executor) traceFailure(i int) {
 		return
 	}
 	log.Info("parallel trace: failed without a stale read", "tx", i, "reads", len(rw.Reads))
+}
+
+// WaveTimes returns the wall time the last Run spent executing and validating.
+func (e *Executor) WaveTimes() (execNanos, validateNanos int64) {
+	return e.execNanos, e.validateNanos
 }
 
 // Waves is the number of execute+validate passes the last Run took.
