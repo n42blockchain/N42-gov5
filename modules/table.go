@@ -83,8 +83,12 @@ const (
 
 // Block
 const (
-	Headers         = "Header"                 // block_num_u64 + hash -> header
-	HeaderNumber    = "HeaderNumber"           // header_hash -> num_u64
+	Headers      = "Header"       // block_num_u64 + hash -> header
+	HeaderNumber = "HeaderNumber" // header_hash -> num_u64
+	// BadHeaderNumber: header_hash -> BE8(number) for blocks that FAILED validation
+	// on import. Consulted only by the leader's same-height sibling convergence
+	// (a failed sibling is never re-proposed); import itself never reads it.
+	BadHeaderNumber = "BadHeaderNumber"
 	HeaderTD        = "HeadersTotalDifficulty" // block_num_u64 + hash -> td
 	HeaderCanonical = "CanonicalHeader"        // block_num_u64 -> header hash
 
@@ -361,6 +365,7 @@ var n42Tables = []string{
 	HeaderTD,
 	HeaderCanonical,
 	HeaderNumber,
+	BadHeaderNumber,
 
 	HeadBlockKey,
 	HeadHeaderKey,

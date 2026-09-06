@@ -1325,6 +1325,17 @@ func (bc *BlockChain) LowestSiblingAtHeight(number uint64, parentHash types.Hash
 				continue
 			}
 			hh := h.Hash()
+			// A sibling this node failed to validate is never the one to
+			// converge on: round 26 locked a fleet on exactly such a block.
+			if rawdb.IsBadHeaderMarked(tx, hh) {
+				continue
+			}
+			bc.badSiblingsMu.RLock()
+			_, bad := bc.badSiblings[hh]
+			bc.badSiblingsMu.RUnlock()
+			if bad {
+				continue
+			}
 			if !found || bytes.Compare(hh.Bytes(), lowest.Bytes()) < 0 {
 				lowest, found = hh, true
 			}
@@ -2547,6 +2558,7 @@ func isUnknownAncestorErr(err error) bool {
 
 // reportBlock logs a bad block error.
 func (bc *BlockChain) reportBlock(blk block.IBlock, receipts []*block.Receipt, err error) {
+	bc.markBadSibling(blk)
 	var receiptString string
 	for i, receipt := range receipts {
 		receiptString += fmt.Sprintf("\t %d: cumulative: %v gas: %v contract: %v status: %v tx: %v logs: %v bloom: %x state: %x\n",
@@ -2563,6 +2575,48 @@ Hash: %#x
 Error: %v
 ##############################
 `, blk.Number64().String(), blk.Hash(), receiptString, err))
+}
+
+// markBadSibling persists a validation failure so this node's leader never
+// converges on the stored block again (LowestSiblingAtHeight, and the miner's
+// deterministic-rebuild short circuit). Written from its own transaction on
+// another goroutine: reportBlock runs inside the import's read transaction.
+// The mark is advisory for PROPOSING only -- import never consults it, so a
+// transient local failure cannot make this node refuse the committed chain.
+func (bc *BlockChain) markBadSibling(blk block.IBlock) {
+	if blk == nil {
+		return
+	}
+	hash, number := blk.Hash(), blk.Number64().Uint64()
+	bc.badSiblingsMu.Lock()
+	if bc.badSiblings == nil {
+		bc.badSiblings = make(map[types.Hash]struct{})
+	}
+	bc.badSiblings[hash] = struct{}{}
+	bc.badSiblingsMu.Unlock()
+	go func() {
+		if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+			return rawdb.WriteBadHeaderMark(tx, hash, number)
+		}); err != nil {
+			log.Warn("bad-sibling mark not persisted", "hash", hash.Hex()[:12], "number", number, "err", err)
+		}
+	}()
+}
+
+// BadSibling reports whether this node recorded a validation failure for hash
+// (in memory this process, or persisted by an earlier one).
+func (bc *BlockChain) BadSibling(hash types.Hash) bool {
+	bc.badSiblingsMu.RLock()
+	_, ok := bc.badSiblings[hash]
+	bc.badSiblingsMu.RUnlock()
+	if ok {
+		return true
+	}
+	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		ok = rawdb.IsBadHeaderMarked(tx, hash)
+		return nil
+	})
+	return ok
 }
 
 // tryZKFastPath attempts to verify the block's ZK proof. Returns true if
