@@ -1555,6 +1555,26 @@ libp2p buffers for 24 MB messages, 0.5 GB of tx-lookup tail, 0.4 GB of
 mobile-verify packet cache, against a fixed 1.5 GB QMDB index. Round 30
 bounds the block cache to 16.
 
+## 6p. Round 30: batched pool reads and a bounded block cache -- registered before the round ran
+
+Round 29's settings, two changes: the pool's demote and promote passes read
+every account's nonce and balance in ONE transaction (5d0f7d0f) instead of
+two per account, and `N42_BLOCK_CACHE_BLOCKS=16` bounds the block cache the
+heap profile named. The A/B inside the round is still the ceiling alone; the
+cross-round comparison to round 29 carries both changes and says so.
+
+**Registered predictions.**
+
+1. `txpool reorg phases` on B: `demote` falls from 33-221 ms to under 40 ms
+   and `reset` from 125-586 to under 200 ms; the reorg total from 0.5-0.85 s
+   to under 0.4 s.
+2. With the reorg faster the backlog the loop counts shrinks: `staleTrimmed`
+   median on B builds falls below 120k (from 197-247k) and fresh pending
+   per build rises above 40k (from ~21k), so packed median exceeds 40k.
+3. B TPS exceeds A by more than round 29's 22%.
+4. A legs unchanged within the floor (74-75 blocks); node anonymous RSS at B
+   stays under 11 GB with the cache bounded.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
