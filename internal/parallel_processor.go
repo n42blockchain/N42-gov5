@@ -211,7 +211,7 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 		}
 		var base state.StateReader = state.NewPlainStateReader(tx)
 		if useQMDB {
-			base = commitment.NewQMDBStateReader(commitment.NewLookupSource(p.bc.qmdbRootComputer, tx), base, mode)
+			base = commitment.NewQMDBStateReader(commitment.NewLookupSourceLocked(p.bc.qmdbRootComputer, tx), base, mode)
 		}
 		return &workerCtx{tx: tx, base: base}, tx.Rollback, nil
 	}
@@ -270,9 +270,19 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 		}
 		return uint64(txIndex)
 	})
-	// Run parallel execution with wave-based validation.
+	// Run parallel execution with wave-based validation. The tree's reader
+	// lock is held once for the whole run (the workers' lookups skip it);
+	// nothing in the run takes the writer side -- the owner is this
+	// goroutine.
 	tRunStart := time.Now()
+	var unlockReaders func()
+	if useQMDB {
+		unlockReaders = p.bc.qmdbRootComputer.LockReaders()
+	}
 	results := executor.Run()
+	if unlockReaders != nil {
+		unlockReaders()
+	}
 	tRunEnd := time.Now()
 
 	// Check if any transaction had a hard error.

@@ -76,34 +76,57 @@ type mvEntry struct {
 // Each transaction writes to its own "version", and reads find the most recent
 // write from a preceding transaction.
 type MVS struct {
+	shards [mvsShards]mvsShard
+}
+
+// mvsShards splits the location map so 32 workers do not serialise on one
+// reader count: a single RWMutex's RLock/RUnlock is an atomic add on a
+// shared cache line, and it was the executor's hottest instruction in
+// round 35f's profile.
+const mvsShards = 256
+
+type mvsShard struct {
 	mu      sync.RWMutex
 	entries map[LocationKey]*mvEntry
 }
 
 // NewMVS creates a new empty multi-version store.
 func NewMVS() *MVS {
-	return &MVS{
-		entries: make(map[LocationKey]*mvEntry),
+	m := &MVS{}
+	for i := range m.shards {
+		m.shards[i].entries = make(map[LocationKey]*mvEntry)
 	}
+	return m
+}
+
+// shard picks the shard for a key from address, field and slot bytes.
+func (m *MVS) shard(key LocationKey) *mvsShard {
+	h := uint64(key.Address[0])<<8 | uint64(key.Address[19])
+	h ^= uint64(key.Address[7])<<16 | uint64(key.Address[13])<<24
+	h ^= uint64(key.Field) << 5
+	h ^= uint64(key.Slot[0]) | uint64(key.Slot[31])<<8 | uint64(key.Slot[15])<<16
+	h *= 0x9E3779B97F4A7C15
+	return &m.shards[(h>>56)%mvsShards]
 }
 
 // getOrCreateEntry returns the mvEntry for a key, creating it if needed.
 func (m *MVS) getOrCreateEntry(key LocationKey) *mvEntry {
-	m.mu.RLock()
-	e, ok := m.entries[key]
-	m.mu.RUnlock()
+	sh := m.shard(key)
+	sh.mu.RLock()
+	e, ok := sh.entries[key]
+	sh.mu.RUnlock()
 	if ok {
 		return e
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
 	// Double-check after acquiring write lock.
-	if e, ok := m.entries[key]; ok {
+	if e, ok := sh.entries[key]; ok {
 		return e
 	}
 	e = &mvEntry{}
-	m.entries[key] = e
+	sh.entries[key] = e
 	return e
 }
 
@@ -142,9 +165,10 @@ func (m *MVS) Write(key LocationKey, txIndex int, incarnation uint32, value []by
 // Returns (value, writerTxIndex, writerIncarnation, true) if found,
 // or (nil, 0, 0, false) if no preceding transaction has written to this location.
 func (m *MVS) Read(key LocationKey, txIndex int) ([]byte, int, uint32, bool) {
-	m.mu.RLock()
-	e, ok := m.entries[key]
-	m.mu.RUnlock()
+	sh := m.shard(key)
+	sh.mu.RLock()
+	e, ok := sh.entries[key]
+	sh.mu.RUnlock()
 	if !ok {
 		return nil, 0, 0, false
 	}
@@ -167,9 +191,10 @@ func (m *MVS) Read(key LocationKey, txIndex int) ([]byte, int, uint32, bool) {
 
 // Delete removes all writes by txIndex from the store (used before re-execution).
 func (m *MVS) Delete(key LocationKey, txIndex int) {
-	m.mu.RLock()
-	e, ok := m.entries[key]
-	m.mu.RUnlock()
+	sh := m.shard(key)
+	sh.mu.RLock()
+	e, ok := sh.entries[key]
+	sh.mu.RUnlock()
 	if !ok {
 		return
 	}
@@ -189,27 +214,30 @@ func (m *MVS) Delete(key LocationKey, txIndex int) {
 // (highest txIndex < numTxs) value for each location. This is used after
 // parallel execution to replay the validated state to the real StateWriter.
 func (m *MVS) ApplyAll(numTxs int, fn func(LocationKey, []byte) error) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	for key, e := range m.entries {
-		e.mu.RLock()
-		// Find the latest version with txIndex < numTxs.
-		idx := sort.Search(len(e.versions), func(i int) bool {
-			return e.versions[i].txIndex >= numTxs
-		})
-		if idx > 0 {
-			// Copy value while holding the lock to avoid data race.
-			src := e.versions[idx-1].value
-			val := make([]byte, len(src))
-			copy(val, src)
-			e.mu.RUnlock()
-			if err := fn(key, val); err != nil {
-				return err
+	for i := range m.shards {
+		sh := &m.shards[i]
+		sh.mu.RLock()
+		for key, e := range sh.entries {
+			e.mu.RLock()
+			// Find the latest version with txIndex < numTxs.
+			idx := sort.Search(len(e.versions), func(i int) bool {
+				return e.versions[i].txIndex >= numTxs
+			})
+			if idx > 0 {
+				// Copy value while holding the lock to avoid data race.
+				src := e.versions[idx-1].value
+				val := make([]byte, len(src))
+				copy(val, src)
+				e.mu.RUnlock()
+				if err := fn(key, val); err != nil {
+					sh.mu.RUnlock()
+					return err
+				}
+			} else {
+				e.mu.RUnlock()
 			}
-		} else {
-			e.mu.RUnlock()
 		}
+		sh.mu.RUnlock()
 	}
 	return nil
 }
@@ -218,12 +246,15 @@ func (m *MVS) ApplyAll(numTxs int, fn func(LocationKey, []byte) error) error {
 // We collect entries under RLock first, then release it before locking
 // individual entries to prevent deadlock with getOrCreateEntry's Lock.
 func (m *MVS) DeleteAll(txIndex int) {
-	m.mu.RLock()
-	snapshot := make([]*mvEntry, 0, len(m.entries))
-	for _, e := range m.entries {
-		snapshot = append(snapshot, e)
+	var snapshot []*mvEntry
+	for i := range m.shards {
+		sh := &m.shards[i]
+		sh.mu.RLock()
+		for _, e := range sh.entries {
+			snapshot = append(snapshot, e)
+		}
+		sh.mu.RUnlock()
 	}
-	m.mu.RUnlock()
 
 	for _, e := range snapshot {
 		e.mu.Lock()
