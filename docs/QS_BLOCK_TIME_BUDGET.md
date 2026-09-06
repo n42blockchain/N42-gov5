@@ -1401,6 +1401,60 @@ with a 350k target (a 163k drain leaves 187k); two generators of
 3. Per-transaction import at B is 9.5-10.5 us: round 26's 11.7 less the
    amortised fixed cost.
 
+### Result: the shape buys nothing, and the pool says why
+
+07:30-08:27 UTC, all five legs, interlocks held (mode 7/7 on every leg; the
+ceiling verified from the nodes' arguments). node0, medians.
+
+| leg | ceiling | txs/block (median) | occupancy | import | recov | exec | root | write | follower view | win1 blocks | win1 TPS |
+|-----|--------:|-------------------:|----------:|-------:|------:|-----:|-----:|------:|--------------:|------------:|---------:|
+| A1 | 480M | 22,857 | 100% | 257 | 22 | 104 | 61 | 44 | 808 | 65 | 24,762 |
+| B1 | 3.423G | 41,838 | 32-34% | 692 | 145 | 328 | 91 | 100 | 2,047 | 28 | 24,275 |
+| B2 | 3.423G | 52,437 | 29-41% | 844 | 153 | 367 | 91 | 107 | 2,049 | 35 | 27,172 |
+| A2 | 480M | 22,857 | 100% | 252 | 21 | 105 | 62 | 43 | 796 | 52 | 19,809 |
+
+Predictions: (1) A legs at 70-78 blocks -- **not held**: 65 and 52, and the
+two bookends are 20% apart, five times the floor. (2) B fills and cycles at
+3.0-4.5 s -- **falsified on the fill**: 29-41% occupancy, 2.0 s cycles, and
+B's TPS equals A's. (3) B import under 10.5 us/tx -- **falsified**: 15-18 us,
+because recovery and execution both cost more per transaction on a
+half-full block (recov 3.2 against 1.0 us; exec 7.3 against 4.6).
+
+**Where the block is lost: the leader's fill.** Per build on node0, B legs,
+builds that saw over 100k pending:
+
+| leg | builds | pending txs (median) | packed (median) | fill execution |
+|-----|-------:|---------------------:|----------------:|---------------:|
+| B1 | 7 | 449,429 | **11,440** | 774 ms |
+| B2 | 7 | 368,669 | **10,316** | 613 ms |
+| A1 | 27 | 332,753 | 22,857 (full) | 138 ms |
+
+The pool hands the build 370-450k transactions and the build packs ten
+thousand, spending 0.6-0.8 s of EXECUTION doing it -- a constant, whatever
+the count. The one thing that costs execution without packing is a
+transaction whose nonce is already used: `ErrNonceTooLow` shifts to the
+sender's next transaction after paying for the attempt. After a large block
+lands, the pool's reorg that would demote those transactions takes 1.7 s at
+this size (825 ms of it waiting for the pool lock behind 192 concurrent
+submitters), while the speculative build starts at once -- and wades through
+the previous block's ~160k mined transactions at ~5 us each. Meanwhile the
+closed loop counts the stale entries as depth and under-supplies. At 22,857 a
+block the reorg is 4-38 ms and none of this is visible; at 163k it is the
+block.
+
+**And the A bookends.** 65 -> 52 blocks with a 450k pool and two generators
+against 74.5 in round 26 with a 60k pool and one: the pool's reorg and lock
+contention scale with what it holds, and this round held seven times more.
+The A arm is not comparable with round 26 and says so.
+
+**Fix, registered for round 29.** Before executing anything, the fill reads
+each pending account's state nonce ONCE and drops the stale prefix without
+executing it: O(accounts) reads instead of O(stale transactions) executions,
+and a build that starts before the reorg finishes still packs the fresh
+tail. The build also now reports why accounts left the set (`popNonceHigh`,
+`skipNonceLow`, `popGas`) and how long its reads waited for the tree's owner
+(`lookupWait`), so the next round's mechanism is read, not argued.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across

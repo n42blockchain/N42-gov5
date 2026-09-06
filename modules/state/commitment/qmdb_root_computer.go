@@ -20,6 +20,7 @@ import (
 	"os"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"time"
 
@@ -66,7 +67,11 @@ type QMDBRootComputer struct {
 // transaction predates the flush that wrote it -- so the caller can retry
 // with a fresh transaction.
 func (r *QMDBRootComputer) Lookup(keyHash qmdb.Hash, cold qmdb.Getter) (value []byte, found bool, evicted bool) {
+	t0 := time.Now()
 	r.readers.RLock()
+	if w := time.Since(t0); w > 50*time.Microsecond {
+		qmdbLookupWaitNanos.Add(w.Nanoseconds())
+	}
 	defer r.readers.RUnlock()
 	var cr qmdb.ColdReader = noColdReader{}
 	if cold != nil {
@@ -74,6 +79,14 @@ func (r *QMDBRootComputer) Lookup(keyHash qmdb.Hash, cold qmdb.Getter) (value []
 	}
 	return r.t.GetVia(keyHash, cr)
 }
+
+// qmdbLookupWaitNanos accumulates time Lookup spent waiting for the tree's
+// owner (round 28 diagnostic: the leader's build against the import's
+// ComputeRoot/FlushTo at 163k-transaction blocks).
+var qmdbLookupWaitNanos atomic.Int64
+
+// QMDBLookupWaitNanos reports the process-wide accumulated Lookup wait.
+func QMDBLookupWaitNanos() int64 { return qmdbLookupWaitNanos.Load() }
 
 // noColdReader sees nothing, so a Lookup without a transaction reports an
 // evicted entry as evicted instead of faulting through the owner's attached
