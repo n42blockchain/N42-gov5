@@ -1423,6 +1423,13 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 
 	txSet := builder.NewTxByPriceAndNonce(pending, header.BaseFee)
 	log.Tracef("fillTransactions pending accounts:%d", len(pending))
+	// Round 27: a block that comes out a fifth full with a pool the harness
+	// reports at 200,000 pending is only diagnosable if the build says what
+	// the POOL handed it. Counted once per build, reported on the breakdown.
+	pendingTxs := 0
+	for _, list := range pending {
+		pendingTxs += len(list)
+	}
 
 	// Accounts skipped because their head transaction cannot pay the base fee.
 	// Reported once per build: a block that comes out empty with a full pool is
@@ -1514,7 +1521,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	// executes the same transactions in ~5-6µs each; whatever pick+heap add on
 	// top of commit is the builder's own overhead.
 	if env.tcount > 1000 {
-		log.Info("miner: fillTx breakdown",
+		log.Info("miner: fillTx breakdown", "pendingAccts", len(pending), "pendingTxs", pendingTxs, "priceOut", priceOut,
 			"txs", env.tcount, "pick", dPick, "commit", dCommit, "heap", dHeap)
 	}
 
