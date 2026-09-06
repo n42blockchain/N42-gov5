@@ -360,6 +360,9 @@ func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash)
 	if !s.ensureParentApplied(parentHash) {
 		dApplied = time.Since(tA)
 		logGates("parent-not-applied")
+		s.pendingMu.Lock()
+		s.deferredProduce.view, s.deferredProduce.parent = view, parentHash
+		s.pendingMu.Unlock()
 		return
 	}
 	dApplied = time.Since(tA)
@@ -414,6 +417,16 @@ type Service struct {
 	// the height canonical (observed on-disk: canonical rows missing on 6/7
 	// nodes at the first view-changed height). Protected by pendingMu.
 	pendingCommit types.Hash
+	// deferredProduce remembers a leader view whose gate found the consensus
+	// parent not yet applied locally, so the import that lands it can re-run
+	// the gate instead of the view waiting out its 6 s timeout. Round 31: at
+	// 140k-transaction blocks the QC forms on five imports, and the next
+	// leader's own import of that block is often still in flight when its
+	// view starts; every such view cost a timeout.
+	deferredProduce struct {
+		view   ViewNumber
+		parent types.Hash
+	}
 
 	// A CommitQC may arrive before this node executes the committed block. Keep
 	// the consecutive failed execution observations so a leader does not extend
@@ -1526,7 +1539,22 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 	if retryCommit {
 		s.pendingCommit = types.Hash{}
 	}
+	retryProduce := s.deferredProduce.parent == hash && hash != (types.Hash{})
+	deferredView := s.deferredProduce.view
+	if retryProduce {
+		s.deferredProduce.parent = types.Hash{}
+	}
 	s.pendingMu.Unlock()
+
+	// The block a deferred leader view was waiting to extend has just been
+	// applied locally: re-run the gate, if this node still leads that view.
+	if retryProduce && s.engine != nil {
+		eng := s.engine.Engine()
+		if eng != nil && eng.IsCurrentLeader() && eng.CurrentView() == deferredView {
+			log.Info("hotstuff: deferred production resumed after the parent applied", "view", uint64(deferredView), "parent", hash.Hex()[:12])
+			go s.triggerBlockProduction(deferredView, hash)
+		}
+	}
 
 	// A commit that was deferred because this block hadn't arrived: finish it
 	// now, so the canonical marker and head advance on every node, not just the
