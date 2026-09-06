@@ -1926,6 +1926,40 @@ transactions, 1,200 executions, 0 aborts with affinity.
 
 The second start is the round; predictions 1-4 stand.
 
+### The second start: the coinbase is every transaction's write set
+
+Round 35c's warm-up (163k-transaction blocks) logged nine "wave limit
+reached, sequential fallback" on node0 before the leg was stopped. With the
+sender chains pinned, the chain that remained is the block producer:
+`TransitionDb` credits the priority fee to the coinbase in every
+transaction, so all 163,000 write one key, each read of it depends on the
+previous transaction's write, and Block-STM validates one wave at a time.
+
+d1418113 defers the credit. `StateTransition` takes a `FeeSink`;
+`ApplyMessageWithFeeSink` hands the priority-fee and EIP-1559 collector
+credits to it instead of the state, the parallel path records them per
+transaction, sums them per recipient in transaction order after the
+multi-version state is folded into the block's `IntraBlockState`, and
+applies each total once (a zero total still goes through `AddBalance`, so
+the touch matches serial). Equivalence needs no transaction to send from or
+to a fee recipient -- it would see the credit early in serial order -- and
+such a block runs sequentially. The address scan does not cover a contract
+reading the coinbase balance (COINBASE + BALANCE); that would show as a
+state-root mismatch, and the benchmark is plain transfers.
+
+Round 35d is round 35c's runner (offsets 390M-398M) with the n42-r35 binary
+rebuilt at d1418113. Node6 starts with its tree one block ahead of its head
+(a stored header at 13832687 whose root is the tree's); the undo-record
+unwind reverts it on the next import, as node5's did at 35c's start.
+
+**Registered predictions (35d).** Predictions 1-4 stand unchanged; added:
+
+5. Zero "wave limit reached" on any node at 163k. FALSIFIED IF any block
+   over 100k falls back -- then another shared key remains (name it from
+   the executor's conflict log before changing anything else).
+6. Follower `exec` at 163k under 400 ms (43.4 s at 35c's fallback; serial
+   ~0.85 s import at 95k is 8.5-9 us/tx, so 163k serial would be ~1.4 s).
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
