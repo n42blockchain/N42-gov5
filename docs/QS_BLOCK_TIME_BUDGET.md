@@ -1871,6 +1871,30 @@ Adopted for the benchmark line: `N42_PUSH_BEFORE_WRITE=1` and
 `N42_PROPOSE_BEFORE_WRITE=1` (the second costs nothing and removes the
 leader's write from the view's clock).
 
+## 6u. Round 35: parallel execution, with a reader per worker -- registered before the round ran
+
+Round 34's settings plus `--parallel-evm` on every node, `N42_PARALLEL_WORKERS=32`
+(560f388c). The 2026-09-02 halt was a shared MDBX cursor (3709ca6a); each
+Block-STM worker now opens its own read transaction on its own goroutine and
+reads the live tree through `LookupSource` under the tree's reader lock, so
+every worker sees one snapshot -- the tree at the parent, static for the
+whole execution. Code and storage rows come from the worker's transaction.
+Sender verification was already parallel. The leader's fill is NOT parallel
+(the miner builds sequentially); this round measures the followers' import.
+
+**Registered predictions.**
+
+1. Correctness first: zero BAD BLOCKs on any node across the round, seven
+   identical heads at every leg end. FALSIFIED IF any node rejects a block
+   the others commit -- then the per-worker reader is not the snapshot the
+   serial path reads, and the flag goes back to off.
+2. Follower `exec` at B falls from 365-380 ms (~95k, 3.9 us/tx) to under
+   150 ms; import from ~850 to ~600 ms; follower r1 from ~870 to ~620 ms.
+3. B TPS up 8-15% (the cycle is fill ~1.0 s + import; only the import
+   moves). A legs within the floor: `exec` 105 -> ~50 ms is 2% of a 0.75 s
+   cycle.
+4. `staleTrimmed`, timeouts, memory: unchanged.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
