@@ -1455,6 +1455,27 @@ tail. The build also now reports why accounts left the set (`popNonceHigh`,
 `skipNonceLow`, `popGas`) and how long its reads waited for the tree's owner
 (`lookupWait`), so the next round's mechanism is read, not argued.
 
+## 6o. Round 29: round 28 plus the stale-prefix trim -- registered before the round ran
+
+Identical to round 28 in every setting; the binary adds the fill's per-account
+stale-nonce trim (5634bc96) and its counters. Single variable against round 28.
+
+**Registered predictions.**
+
+1. `staleTrimmed` on B builds is in the 100,000-170,000 range and the fill's
+   execution phase for a build that packs N transactions scales with N (no
+   more constant ~0.7 s). FALSIFIED IF trimmed counts are small: then the
+   0.7 s was not the stale wade and the mechanism is elsewhere (the
+   `lookupWait` counter says whether it is the tree lock).
+2. B blocks pack the fresh tail: median packed rises from ~11k to at least
+   80,000, occupancy above 50%. The closed loop still counts stale entries
+   as depth, so 95% is not expected until the pool's reorg is faster or the
+   loop measures fresh depth.
+3. B TPS exceeds A TPS by at least 25% (round 28: equal), because the same
+   2.0 s cycle now carries 80k+ instead of 45k.
+4. A legs are unchanged within the floor (the trim finds nothing to trim
+   when the reorg is 4-38 ms).
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
