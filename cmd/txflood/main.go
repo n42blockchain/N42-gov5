@@ -251,6 +251,7 @@ func main() {
 	conc := flag.Int("conc", 48, "concurrent HTTP submitters")
 	rate := flag.Int("rate", 0, "submissions per second (0 = as fast as possible)")
 	targetDepth := flag.Int("target-depth", 0, "keep this many txs pending in the pool; each second top up only the shortfall (0 = off, requires the txpool RPC namespace)")
+	depthByBlocks := flag.Bool("depth-by-blocks", false, "with -target-depth: measure depth as submitted minus mined (summing each new block's transaction count) minus rejected, instead of asking txpool_status -- exact when this generator is the chain's only traffic, and immune to the pool's not-yet-demoted backlog")
 	senders := flag.Int("senders", 0, "0=single faucet; N=fund+flood from N derived accounts")
 	perTx := flag.Int("pertx", 300, "txs per sender (multi-sender mode)")
 	count := flag.Int("count", 80000, "txs to submit (single-faucet mode)")
@@ -469,14 +470,59 @@ func main() {
 		// up only the shortfall, so the pool sits at a known level and the
 		// offered rate converges on what the chain actually consumes.
 		permits = make(chan struct{}, *targetDepth)
+		// -depth-by-blocks: round 29 found the pool reporting 200-250k pending
+		// that were already mined and not yet demoted, so the loop believed
+		// the pool full and fed it ~21k a second. Counting what the CHAIN has
+		// taken is exact for a single generator and does not depend on the
+		// pool's reorg keeping up.
+		var minedSinceStart int64
+		lastCounted := uint64(0)
+		if *depthByBlocks {
+			if r, err := rpcCall(urls[0], "eth_blockNumber", nil); err == nil {
+				var h string
+				if json.Unmarshal(r, &h) == nil {
+					lastCounted = hexToU64(h)
+				}
+			}
+		}
 		go func() {
 			t := time.NewTicker(time.Second)
 			defer t.Stop()
 			for range t.C {
-				depth, err := poolDepth(urls)
-				if err != nil {
-					fmt.Printf("  !! depth probe failed, refusing to inject blind: %v\n", err)
-					continue
+				var depth int
+				var err error
+				if *depthByBlocks {
+					r, e := rpcCall(urls[0], "eth_blockNumber", nil)
+					var h string
+					if e != nil || json.Unmarshal(r, &h) != nil {
+						fmt.Printf("  !! head probe failed, refusing to inject blind: %v\n", e)
+						continue
+					}
+					head := hexToU64(h)
+					for b := lastCounted + 1; b <= head; b++ {
+						rc, e := rpcCall(urls[0], "eth_getBlockTransactionCountByNumber", []interface{}{fmt.Sprintf("0x%x", b)})
+						var hc string
+						if e != nil || json.Unmarshal(rc, &hc) != nil {
+							err = fmt.Errorf("block %d tx count: %v", b, e)
+							break
+						}
+						minedSinceStart += int64(hexToU64(hc))
+						lastCounted = b
+					}
+					if err != nil {
+						fmt.Printf("  !! depth probe failed, refusing to inject blind: %v\n", err)
+						continue
+					}
+					depth = int(atomic.LoadInt64(&submitted) - minedSinceStart - atomic.LoadInt64(&failed))
+					if depth < 0 {
+						depth = 0
+					}
+				} else {
+					depth, err = poolDepth(urls)
+					if err != nil {
+						fmt.Printf("  !! depth probe failed, refusing to inject blind: %v\n", err)
+						continue
+					}
 				}
 				short := *targetDepth - depth
 				if *rate > 0 && short > *rate {
