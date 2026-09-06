@@ -1960,6 +1960,41 @@ unwind reverts it on the next import, as node5's did at 35c's start.
 6. Follower `exec` at 163k under 400 ms (43.4 s at 35c's fallback; serial
    ~0.85 s import at 95k is 8.5-9 us/tx, so 163k serial would be ~1.4 s).
 
+### 35d: prediction 5 falsified in the warm-up, and the trace named the key
+
+Nine minutes into the warm-up node1 imported a 15,204-transaction block
+through the fallback: 64 waves, 617,414 executions, 611,562 aborts, 3.4 s.
+Not the coinbase -- the fee sink had removed it -- and not a shape the
+executor's model reproduces: the same block in `TestExecutor_HotRecipientBlock`
+(15,204 transfers, 4,000 senders, 22,857 hot recipients, 32 workers) settles
+in 4 waves even under version-only validation.
+
+The round was stopped and re-run as a warm-up only with
+`N42_PARALLEL_TRACE=1`, which logs the first twelve validation failures of
+a block with the key and both versions. Every failure was the SAME sender
+account read from base by consecutive transactions with `reads=1, writes=0`:
+the faucet's funding chain at the start of a block, then single senders'
+nonce chains during decay. Each link of the chain had executed at once on
+a different worker and failed its nonce check -- no writes -- wave after
+wave. The affinity key of 66ff7876 reads `tx.From()`, which is the
+wire-declared sender; a block off the wire carries RLP only, so on import
+it is nil and the key fell back to the transaction index. The executor's
+tests exercised affinity in-process and never saw a wire block.
+
+df7cccae runs the importer's existing parallel sender recovery before the
+first wave (memoised on the transaction; AsMessage reuses it) and falls
+through to the memoised Sender for the key. It also validates by value
+when a read's version has moved -- a dependant whose input bytes did not
+change stays valid -- which the model needed for 3 waves instead of 4 and
+the fleet will need for the recipient cascades once the chains are pinned.
+
+**Registered predictions (35e).** Predictions 1-6 stand; 5 now has its
+mechanism fixed rather than guessed. Added:
+
+7. `waves` per block at 163k in single digits (the model: 3). FALSIFIED IF
+   any block exceeds 16 -- then the fleet's block has a dependency the
+   model lacks, and the trace run names it before anything else changes.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
