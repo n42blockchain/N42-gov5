@@ -1193,6 +1193,69 @@ The chain moved on through the smoke starts (head 13,751,695 before the third
 attempt), and the poisoned siblings now sit at a committed height, where the
 convergence rule never looks. The third attempt's offsets are 205M-209M.
 
+### Result: A-B-B-A holds, and all four predictions with it
+
+Third attempt, 02:35-03:25 UTC on a quiet box, warm-up discarded. Interlock
+verified per leg from the node logs (freeze warning 7/7 on B, 0/7 on A) and
+from the write probe's own `Account` row count. node0, full blocks only,
+medians; blocks/min from the harness's first window and from the peak minute.
+
+| leg | mode | Account rows | dirty MB | amp | write | commit | import | view total | win1 blocks | peak/min |
+|-----|------|-------------:|---------:|----:|------:|-------:|-------:|-----------:|------------:|---------:|
+| A1 | write on  | 15,715 | 72.0 | 11.8x | 200.6 |  97.3 | 421.2 | 1,075 | 55 | 56 |
+| B1 | write off |      0 |  7.2 |  1.3x |  47.3 |   5.0 | 263.5 |   782 | 75 | 65* |
+| B2 | write off |      0 |  7.2 |  1.3x |  47.7 |   4.6 | 269.9 |   797 | 74 | 75 |
+| A2 | write on  | 15,443 | 71.4 | 11.7x | 219.1 | 109.1 | 438.2 | 1,096 | 53 | 54 |
+
+\* B1's flood started mid-minute, so its peak minute is split (61 + 65); its
+harness window, 75 blocks, is the comparable figure.
+
+| metric | A mean | B mean | effect | A spread | B spread |
+|--------|-------:|-------:|-------:|---------:|---------:|
+| dirty MB per block | 71.7 | **7.2** | **-90%** | 0.6 | 0.0 |
+| write (ms) | 209.9 | **47.5** | **-77%** | 18.5 | 0.4 |
+| commit (ms) | 103.2 | **4.8** | **-95%** | 11.8 | 0.4 |
+| import (ms) | 429.7 | **266.7** | **-38%** | 17.0 | 6.4 |
+| follower r1 (ms) | 394 | **226** | **-43%** | 20 | 10 |
+| leader r2 (ms) | 419 | **222** | **-47%** | 2 | 6 |
+| view total (ms) | 1,086 | **790** | **-27%** | 21 | 15 |
+| blocks/min, window 1 | 54.0 | **74.5** | **+38%** | 2 | 1 |
+| TPS, window 1 | 20,571 | **28,381** | **+38%** | | |
+
+Predictions: (1) `Account` rows 0 in B, ~15,600 in A -- held. (2) dirty bytes
+under 15 MB -- 7.2 MB, held. (3) `write` down at least 40% -- down 77%, held.
+(4) blocks per minute over the 5% threshold on a 3.6% floor -- +38%, with the
+two A legs 2 blocks apart and the two B legs 1 block apart. Held.
+
+**What moved, and what did not.** `exec` (117 ms), `root` (65 ms) and `recov`
+(16 ms) are unchanged to the millisecond: this round touched nothing they do.
+The write fell from 210 to 47 ms and the commit from 103 to 5 ms -- the pages
+were the commit, exactly as round 19's arithmetic said (15,700 random-keyed
+rows at one 4 KB page each) and as round 15's fsync result implied (removing
+the fsync left the pages; removing the pages leaves 5 ms). The follower's r1
+and the leader's r2 -- the two places where the import sits on the consensus
+path -- each lost ~170-200 ms, the whole write saving plus its share of the
+seven-way fsync contention. The cycle went from 1,086 to 790 ms.
+
+**Why 38% and not 27%.** The view total fell 27% but the block rate rose 38%,
+because in B the chain outruns the flood: window 2 of every B leg shows
+19-23% occupancy with 150-175 blocks, the supply of 3.0M transactions per leg
+exhausted (memory note: the harness limit first seen at ~28k). The B figure is
+therefore a floor for the change, not its ceiling, and the next round needs a
+larger supply (or the 163k block) before the B arm can be read as a rate.
+
+**Per transaction.** Import 266.7 ms / 22,857 = **11.7 us/tx**, from 18.8. The
+write's share is 2.1 us/tx, from 9.2. Against n42-rs's 1.65 us/tx the import
+is now 7x, from 11x; what remains is execution (5.1 us/tx, the interpreter on
+plain transfers) and the root (2.8 us/tx).
+
+**Adopted for the benchmark line, with its cost stated.** From this round the
+qs fleet runs with `N42_STATE_READ_QMDB=1`; `N42_STATE_WRITE_QMDB_ONLY=1` is
+the new default for rounds. The `Account` table is frozen at block 13,750,514
+(`QMDBMeta.accountFrozenAt`). Snap-sync serving and the state-dump tools read
+a stale table until a repair replays `AccountChangeSet` from that block through
+the tree -- listed in section 8 as owed work, not done work.
+
 What the round cannot say: anything about a 163,000-transaction block. At
 22,857 transactions a block this rig's ceiling is set by the cycle, and the
 comparison with n42-rs's 365,399 TPS (163,000 a block at 0.42 s) needs the
