@@ -1376,6 +1376,31 @@ shape this fleet's per-transaction work is execution (5.1 us against their
 1.8, the interpreter on plain transfers) and the root (2.8 us). Those are
 the next two kinds of change, in that order.
 
+## 6n. Round 28: the 163,000-transaction block on the hot set -- registered before the round ran
+
+Round 27 could not separate the block size from the cold set. Round 28 runs
+the same A/B (480M against 3.423G, adopted mode on every leg, closed-loop
+supply, gossip cap 24 MB) with `--recipients 22857` on every leg, the hot set
+every round before 27 used. The one variable is again the gas ceiling; what
+changed against round 27 is the residency of the working set. Pool 450k/150k
+with a 350k target (a 163k drain leaves 187k); two generators of
+2,000 x 2,000 so the pre-signed sets stay under 2.5 GB each.
+
+**Registered predictions.**
+
+1. A legs reproduce round 26's B arm within the floor: window-1 blocks
+   70-78, import 250-290 ms. (Same configuration, only the supply loop and
+   the pool depth differ.)
+2. B blocks fill (occupancy >= 95%) and cycle at 3.0-4.5 s: leader build
+   ~1.2 s and write ~0.4 s (hot), follower import 163,000 x (5.1 + 2.8 + 2.1
+   + 0.7) us = 1.7 s, plus rounds. That is 36,000-54,000 TPS, 13-20
+   blocks/min -- above the A arm's ~28,000 only if the timeouts of round 27
+   do not recur on the hot set. FALSIFIED IF a B window shows fewer than 10
+   blocks; then the timeout, not the work, still sets the rate and the next
+   change is the consensus timer or the leader's serial build+write.
+3. Per-transaction import at B is 9.5-10.5 us: round 26's 11.7 less the
+   amortised fixed cost.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
