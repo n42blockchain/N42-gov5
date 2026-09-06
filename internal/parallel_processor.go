@@ -41,6 +41,7 @@ import (
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/params"
@@ -268,6 +269,9 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 	})
 	// Run parallel execution with wave-based validation.
 	results := executor.Run()
+	if execs, aborts := executor.Stats(); executor.FellBack() || numTxs >= 1000 {
+		log.Info("parallel block", "n", b.Number64(), "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack())
+	}
 
 	// Check if any transaction had a hard error.
 	for i, r := range results {
