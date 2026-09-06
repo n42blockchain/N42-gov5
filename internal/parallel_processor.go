@@ -228,6 +228,13 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 		pReader := parallel.NewParallelStateReader(wc.base, executor.MVS(), rw, txIndex)
 		txIBS := state.New(pReader)
 		pWriter := parallel.NewParallelStateWriter(rw)
+		// Every explicit balance read (GetBalance, Empty) of this transaction
+		// is recorded: an account it credits without ever observing gets a
+		// delta write, and its read of that account (for code, nonce) is
+		// validated on every field but the balance.
+		observed := make(map[types.Address]struct{}, 4)
+		txIBS.SetBalanceReadHook(func(a types.Address) { observed[a] = struct{}{} })
+		pWriter.SetDeltaEligible(func(a types.Address) bool { _, seen := observed[a]; return !seen })
 
 		txIBS.Prepare(tx.Hash(), b.Hash(), txIndex)
 
@@ -242,6 +249,7 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 			fees = append(fees, deferredFee{recipient: recipient, amount: amount.Clone()})
 		}
 		receipt, gasUsed, logs, err := parallelApplyTx(chainConfig, p.engine, gp, txIBS, pWriter, concreteHeader, tx, vmenv, cfg, sink)
+		rw.MarkBalanceInsensitive(func(a types.Address) bool { _, seen := observed[a]; return seen })
 
 		txResults[txIndex] = parallelTxResult{
 			receipt: receipt,
@@ -444,7 +452,8 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 	// Collect all MVS entries, separated by type.
 	type accountEntry struct {
 		addr  types.Address
-		value []byte // nil = deleted
+		value []byte       // nil = deleted, unless delta is set
+		delta *uint256.Int // set when the block only credited the account
 	}
 	type storageEntry struct {
 		addr  types.Address
@@ -462,12 +471,12 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 	var wipes []types.Address
 
 	// Single pass to collect and categorize all MVS entries.
-	if err := mvs.ApplyAll(numTxs, func(key parallel.LocationKey, value []byte) error {
+	if err := mvs.ApplyAll(numTxs, func(key parallel.LocationKey, value []byte, delta *uint256.Int) error {
 		switch key.Field {
 		case parallel.FieldBalance:
-			// FieldBalance stores the full protobuf-encoded StateAccount
-			// (balance + nonce + codeHash + incarnation), not just balance.
-			accounts = append(accounts, accountEntry{addr: key.Address, value: value})
+			// FieldBalance stores the full encoded StateAccount (balance +
+			// nonce + codeHash + root), or only a balance delta.
+			accounts = append(accounts, accountEntry{addr: key.Address, value: value, delta: delta})
 		case parallel.FieldStorage:
 			storages = append(storages, storageEntry{addr: key.Address, slot: key.Slot, value: value})
 		case parallel.FieldCode:
@@ -489,7 +498,7 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 	// Track which accounts are deleted in the final state.
 	deletedAccounts := make(map[types.Address]bool)
 	for _, ae := range accounts {
-		if ae.value == nil {
+		if ae.value == nil && ae.delta == nil {
 			deletedAccounts[ae.addr] = true
 		}
 	}
@@ -511,6 +520,12 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 
 	// Pass 1: Apply account-level changes.
 	for _, ae := range accounts {
+		if ae.delta != nil {
+			// The block only credited the account: add onto the base value,
+			// which is the same deferred increment the serial path takes.
+			ibs.AddBalance(ae.addr, ae.delta)
+			continue
+		}
 		if ae.value == nil {
 			// Account was deleted (selfdestructed).
 			// Selfdestruct handles accounts that exist in base state;

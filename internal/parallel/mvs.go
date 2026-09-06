@@ -26,6 +26,8 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/holiman/uint256"
+
 	"github.com/n42blockchain/N42/common/types"
 )
 
@@ -63,6 +65,9 @@ type versionedValue struct {
 	txIndex     int
 	incarnation uint32 // incarnation of the writing tx
 	value       []byte // serialized value; nil means "deleted"
+	// delta, when non-nil, makes this version a balance increment over the
+	// composition of the versions before it (value is then unused).
+	delta *uint256.Int
 }
 
 // mvEntry holds all versions for one location, sorted by txIndex ascending.
@@ -153,6 +158,7 @@ func (m *MVS) Write(key LocationKey, txIndex int, incarnation uint32, value []by
 		// Overwrite existing.
 		e.versions[idx].value = vc
 		e.versions[idx].incarnation = incarnation
+		e.versions[idx].delta = nil
 	} else {
 		// Insert at sorted position.
 		e.versions = append(e.versions, versionedValue{})
@@ -161,7 +167,63 @@ func (m *MVS) Write(key LocationKey, txIndex int, incarnation uint32, value []by
 	}
 }
 
+// WriteDelta records that transaction txIndex added delta to the account at
+// key. It replaces any earlier write of txIndex at the key.
+func (m *MVS) WriteDelta(key LocationKey, txIndex int, incarnation uint32, delta *uint256.Int) {
+	e := m.getOrCreateEntry(key)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	idx := sort.Search(len(e.versions), func(i int) bool {
+		return e.versions[i].txIndex >= txIndex
+	})
+	d := delta.Clone()
+	if idx < len(e.versions) && e.versions[idx].txIndex == txIndex {
+		e.versions[idx].value = nil
+		e.versions[idx].incarnation = incarnation
+		e.versions[idx].delta = d
+	} else {
+		e.versions = append(e.versions, versionedValue{})
+		copy(e.versions[idx+1:], e.versions[idx:])
+		e.versions[idx] = versionedValue{txIndex: txIndex, incarnation: incarnation, delta: d}
+	}
+}
+
+// ReadAccount returns the latest full write before txIndex (value, writer,
+// incarnation, found) and the sum of the balance deltas written between
+// that full write (or the start) and txIndex, nil when there are none.
+func (m *MVS) ReadAccount(key LocationKey, txIndex int) (full []byte, fullTx int, fullInc uint32, found bool, delta *uint256.Int) {
+	sh := m.shard(key)
+	sh.mu.RLock()
+	e, ok := sh.entries[key]
+	sh.mu.RUnlock()
+	if !ok {
+		return nil, 0, 0, false, nil
+	}
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	idx := sort.Search(len(e.versions), func(i int) bool {
+		return e.versions[i].txIndex >= txIndex
+	})
+	for i := idx - 1; i >= 0; i-- {
+		v := e.versions[i]
+		if v.delta != nil {
+			if delta == nil {
+				delta = new(uint256.Int)
+			}
+			delta.Add(delta, v.delta)
+			continue
+		}
+		return v.value, v.txIndex, v.incarnation, true, delta
+	}
+	return nil, 0, 0, false, delta
+}
+
 // Read returns the value written by the latest transaction before txIndex.
+// Account keys with deltas must use ReadAccount; here a delta version is
+// reported as its composition over the full write before it.
 // Returns (value, writerTxIndex, writerIncarnation, true) if found,
 // or (nil, 0, 0, false) if no preceding transaction has written to this location.
 func (m *MVS) Read(key LocationKey, txIndex int) ([]byte, int, uint32, bool) {
@@ -186,7 +248,19 @@ func (m *MVS) Read(key LocationKey, txIndex int) ([]byte, int, uint32, bool) {
 	}
 
 	v := e.versions[idx-1]
-	return v.value, v.txIndex, v.incarnation, true
+	if v.delta == nil {
+		return v.value, v.txIndex, v.incarnation, true
+	}
+	var delta uint256.Int
+	for i := idx - 1; i >= 0; i-- {
+		w := e.versions[i]
+		if w.delta != nil {
+			delta.Add(&delta, w.delta)
+			continue
+		}
+		return composeAccount(w.value, &delta), w.txIndex, w.incarnation, true
+	}
+	return composeAccount(nil, &delta), -1, 0, true
 }
 
 // Delete removes all writes by txIndex from the store (used before re-execution).
@@ -213,7 +287,11 @@ func (m *MVS) Delete(key LocationKey, txIndex int) {
 // ApplyAll iterates over all MVS entries and calls fn with the final
 // (highest txIndex < numTxs) value for each location. This is used after
 // parallel execution to replay the validated state to the real StateWriter.
-func (m *MVS) ApplyAll(numTxs int, fn func(LocationKey, []byte) error) error {
+//
+// An account with a full write gets the composition of that write and the
+// deltas after it; an account with only deltas gets a nil value and their
+// sum as delta.
+func (m *MVS) ApplyAll(numTxs int, fn func(key LocationKey, value []byte, delta *uint256.Int) error) error {
 	for i := range m.shards {
 		sh := &m.shards[i]
 		sh.mu.RLock()
@@ -224,12 +302,33 @@ func (m *MVS) ApplyAll(numTxs int, fn func(LocationKey, []byte) error) error {
 				return e.versions[i].txIndex >= numTxs
 			})
 			if idx > 0 {
-				// Copy value while holding the lock to avoid data race.
-				src := e.versions[idx-1].value
-				val := make([]byte, len(src))
-				copy(val, src)
+				var delta *uint256.Int
+				var val []byte
+				fullFound := false
+				for i := idx - 1; i >= 0; i-- {
+					v := e.versions[i]
+					if v.delta != nil {
+						if delta == nil {
+							delta = new(uint256.Int)
+						}
+						delta.Add(delta, v.delta)
+						continue
+					}
+					// Copy value while holding the lock to avoid data race.
+					if v.value != nil {
+						val = make([]byte, len(v.value))
+						copy(val, v.value)
+					}
+					fullFound = true
+					break
+				}
 				e.mu.RUnlock()
-				if err := fn(key, val); err != nil {
+				if fullFound {
+					if err := fn(key, composeAccount(val, delta), nil); err != nil {
+						sh.mu.RUnlock()
+						return err
+					}
+				} else if err := fn(key, nil, delta); err != nil {
 					sh.mu.RUnlock()
 					return err
 				}

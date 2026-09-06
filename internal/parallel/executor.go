@@ -17,7 +17,6 @@
 package parallel
 
 import (
-	"bytes"
 	"os"
 	"runtime"
 	"sync"
@@ -317,6 +316,10 @@ func (e *Executor) executeSingle(ctx any, txIndex int) {
 	// Apply writes to MVS with incarnation tag.
 	inc := e.incarnation[txIndex]
 	for _, wd := range rw.Writes {
+		if wd.Delta != nil {
+			e.mvs.WriteDelta(wd.Key, txIndex, inc, wd.Delta)
+			continue
+		}
 		e.mvs.Write(wd.Key, txIndex, inc, wd.Value)
 	}
 
@@ -409,22 +412,15 @@ func (e *Executor) validateExecuted() []bool {
 // traceFailure logs why transaction i failed validation (N42_PARALLEL_TRACE).
 func (e *Executor) traceFailure(i int) {
 	rw := e.rwSets[i]
-	for _, rd := range rw.Reads {
-		cur, wtx, winc, found := e.mvs.Read(rd.Key, i)
-		ok := false
-		switch {
-		case rd.FromBase && !found:
-			ok = true
-		case !rd.FromBase && found && wtx == rd.WriterTx && winc == rd.WriterIncarnation:
-			ok = true
-		case found && rd.HasValue && bytes.Equal(cur, rd.Value):
-			ok = true
-		}
-		if ok {
+	for ri := range rw.Reads {
+		rd := &rw.Reads[ri]
+		if readValid(e.mvs, i, rd) {
 			continue
 		}
+		cur, wtx, winc, found := e.mvs.Read(rd.Key, i)
 		log.Info("parallel trace: stale read", "tx", i, "inc", e.incarnation[i], "addr", rd.Key.Address.Hex(), "field", rd.Key.Field, "slot", rd.Key.Slot.Hex()[:10],
 			"fromBase", rd.FromBase, "readWriter", rd.WriterTx, "readInc", rd.WriterIncarnation, "hasValue", rd.HasValue, "readLen", len(rd.Value),
+			"hadDelta", rd.HadDelta, "ignoreBalance", rd.IgnoreBalance,
 			"nowFound", found, "nowWriter", wtx, "nowInc", winc, "nowLen", len(cur), "reads", len(rw.Reads), "writes", len(rw.Writes))
 		return
 	}

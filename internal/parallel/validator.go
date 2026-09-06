@@ -26,37 +26,71 @@ import "bytes"
 //
 // Returns true if the read set is valid, false if re-execution is needed.
 func Validate(mvs *MVS, rw *ReadWriteSet) bool {
-	for _, rd := range rw.Reads {
-		cur, writerTx, writerInc, found := mvs.Read(rd.Key, rw.TxIndex)
-		if rd.FromBase {
-			// Value was read from base DB. Still valid if no preceding tx
-			// has since written this location, or if what it wrote is
-			// byte-for-byte what the base held.
-			if !found {
-				continue
-			}
-			if rd.HasValue && bytes.Equal(cur, rd.Value) {
-				continue
-			}
+	for i := range rw.Reads {
+		if !readValid(mvs, rw.TxIndex, &rw.Reads[i]) {
 			return false
 		}
-		// Value was read from MVS (written by tx[rd.WriterTx]).
-		if !found {
-			// The write we depended on was removed — stale.
-			return false
-		}
-		if writerTx == rd.WriterTx && writerInc == rd.WriterIncarnation {
-			continue
-		}
-		// A different writer, or the same writer re-executed. The read is
-		// still valid if the bytes are the same: a sender's nonce chain does
-		// not change because its predecessor re-ran over a recipient
-		// conflict, and version-only validation cascaded that re-run down
-		// every chain (round 35d, 64-wave limit at 15k transactions).
-		if rd.HasValue && bytes.Equal(cur, rd.Value) {
-			continue
-		}
-		return false
 	}
 	return true
+}
+
+// readValid reports whether one recorded read still holds against the store.
+func readValid(mvs *MVS, txIndex int, rd *ReadDescriptor) bool {
+	if rd.Key.Field == FieldBalance && rd.HasValue {
+		return accountReadValid(mvs, txIndex, rd)
+	}
+	cur, writerTx, writerInc, found := mvs.Read(rd.Key, txIndex)
+	if rd.FromBase {
+		// Value was read from base DB. Still valid if no preceding tx
+		// has since written this location, or if what it wrote is
+		// byte-for-byte what the base held.
+		if !found {
+			return true
+		}
+		return rd.HasValue && bytes.Equal(cur, rd.Value)
+	}
+	// Value was read from MVS (written by tx[rd.WriterTx]).
+	if !found {
+		// The write we depended on was removed — stale.
+		return false
+	}
+	if writerTx == rd.WriterTx && writerInc == rd.WriterIncarnation {
+		return true
+	}
+	// A different writer, or the same writer re-executed. The read is
+	// still valid if the bytes are the same: a sender's nonce chain does
+	// not change because its predecessor re-ran over a recipient
+	// conflict, and version-only validation cascaded that re-run down
+	// every chain (round 35d, 64-wave limit at 15k transactions).
+	return rd.HasValue && bytes.Equal(cur, rd.Value)
+}
+
+// accountReadValid validates an account read: the composition of the
+// latest full write (or the base) with the deltas after it must be what the
+// transaction saw -- on every field, or on every field but the balance
+// when the read is balance-insensitive.
+func accountReadValid(mvs *MVS, txIndex int, rd *ReadDescriptor) bool {
+	full, fullTx, fullInc, found, delta := mvs.ReadAccount(rd.Key, txIndex)
+	// Fast path: the same version as at read time, and no deltas then or now.
+	if !rd.HadDelta && delta == nil {
+		if rd.FromBase && !found {
+			return true
+		}
+		if !rd.FromBase && found && fullTx == rd.WriterTx && fullInc == rd.WriterIncarnation {
+			return true
+		}
+	}
+	var cur []byte
+	switch {
+	case found:
+		cur = composeAccount(full, delta)
+	case rd.FromBase:
+		cur = composeAccount(rd.Base, delta)
+	default:
+		return false // the full write it depended on was removed
+	}
+	if rd.IgnoreBalance {
+		return accountEqualIgnoringBalance(cur, rd.Value)
+	}
+	return bytes.Equal(cur, rd.Value)
 }
