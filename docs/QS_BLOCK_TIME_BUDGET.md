@@ -1607,6 +1607,27 @@ chain can take the block; the harness is not offering it. Round 31 changes
 the generator's notion of depth to submitted minus mined minus rejected,
 counted from the blocks themselves, with one generator so the count is exact.
 
+## 6q. Round 31: the generator counts what the chain took -- registered before the round ran
+
+Round 30's settings and binary; the generator changes. One generator of
+4,000 x 1,500 with `txflood -target-depth 220000 -depth-by-blocks`
+(b514f208): depth is submitted minus mined minus rejected, mined summed from
+each new block's transaction count, so the pool's undemoted backlog no longer
+counts. Pool 500k/150k to hold the backlog beside 220k fresh. Node5 reseeded
+from node0 before the round.
+
+**Registered predictions.**
+
+1. Fresh pending per B build (median) rises from 14-17k to over 100k, and
+   packed median over 100k; occupancy in B windows over 60%.
+2. B TPS exceeds A by more than 40% (B over 40,000 with A at ~28,500).
+   FALSIFIED IF B stays under 35,000 with fresh supply over 100k: then the
+   chain, not the harness, holds the 163k block at ~2 s cycles and the next
+   lever is the leader's serial build+write (push before write) or the
+   follower's import.
+3. Node5 behaves as the others (its A-leg import within the floor of node0's).
+4. A legs unchanged (74-76 blocks).
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
