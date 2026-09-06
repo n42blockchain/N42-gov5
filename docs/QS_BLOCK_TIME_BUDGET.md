@@ -1673,6 +1673,38 @@ non-interactive shell, so they inherit SIG_IGN for SIGINT until
 rounds 27-31 was a stop that raced a start. stop-fleet.sh now sends SIGTERM,
 which the node handles identically and no shell ignores.
 
+## 6r. Round 32: the leader gate re-runs when its parent lands -- registered before the round ran
+
+Round 31's settings and generator; the node binary adds 39f728a5 (the gate
+records a deferred view and `NotifyBlockImported` re-runs it). The first
+start's warm-up already answered the mechanism question: 2 `parent-not-applied`
+gates, 2 `deferred production resumed`, **0 view timeouts** in the flood
+window (round 31: 9), 24 blocks of 88,500 in window 1, 35,425 TPS, 2.5 s a
+block. That start was then stopped by the runner when node3 rejected a block
+the other six committed -- an in-memory divergence on one node after a rough
+leg transition (its persisted tree reloads to the committed root; a restart
+heals it), recorded below as an open issue. The second start is the round.
+
+**Registered predictions.**
+
+1. View timeouts in B windows: at most 1 per leg (round 31: 9 in 8 min).
+2. B blocks 85-95k median, cycle 2.3-2.7 s, 33-38k TPS: the serial chain
+   (leader build + write + 24 MB push ~1.2 s, follower import ~0.9 s,
+   rounds) with no timeouts in it.
+3. B at least 25% over A; A unchanged (74-76 blocks).
+
+**Open issue (2026-09-06, round 32 first start).** node3, leader of view
+56003, wrote its own 22,857-transaction block through the leader's replay
+path; the fleet committed it; the next block, built on it by another leader
+and committed by six nodes, failed on node3 with a state-root mismatch
+(proposer `974aab…`, local `c57281…`). node3's persisted tree reloads to
+`974aab…`, so the divergence lived only in its live tree, and its live tree
+had been through a catch-up and restart at the leg transition minutes
+before. Same class as the twig-metadata failure node5 hit in round 30 and
+node4 on 2026-08-24; a dedicated instrument (a periodic live-index
+cross-check against a rebuilt one, the `verifyReload` idea applied to the
+live tree) is the next step if it recurs.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
