@@ -1995,6 +1995,73 @@ mechanism fixed rather than guessed. Added:
    any block exceeds 16 -- then the fleet's block has a dependency the
    model lacks, and the trace run names it before anything else changes.
 
+### 35e/35f: four fixes in one afternoon, each measured by the phase it moved
+
+The runners changed builds between legs (the round was diagnostic; every
+leg's build is named in `r35f.log`), so the legs are read as phase timings
+of one block shape, not as an A-B-B-A. Every number is node1 (a follower)
+on a 163k or 22,857-transaction block; `parallel block` logs the phases.
+
+| build | leg | 22,857 tx | 163k tx | window TPS |
+|---|---|---|---|---|
+| round 34 serial | A/B | exec ~105 ms | import ~1.4 s (est.) | A 30.5k / B 37-38k |
+| 0e9bee6f senders pinned, value validation | 35f A1 | proc 350-390 ms, 3-5 waves, 1.2-1.4x executions | -- | A1 25.9k / 25.1k |
+| 9ff6ff4d + phase timing | 35f B1 | -- | recover 66, setup 100, exec 1521, validate 595, apply 48 ms; 10 waves, 360k executions | B1 32.0k / 30.1k |
+| 2f8dc781 sharded MVS, lock-once tree, parallel validation | 35f B2 | -- | exec 826, validate 78, setup 128, apply 60 ms; 9 waves, 317k executions (155k tx) | B2 36.8k / 36.6k |
+| 4061d36f recipient deltas | 35f A2 | proc 217 ms; 1 wave, 0 aborts, exec 62-74 ms | -- | A2 30.1k / 30.1k |
+
+What each fix was for, in the order the evidence arrived:
+
+- **35e, `MVS.DeleteAll` (0e9bee6f).** The first block over 50k took 17.4 s
+  with 95% of the follower's CPU in `DeleteAll`: it walked every entry in
+  the store before every execution, O(transactions x keys). Now only the
+  previous incarnation's keys are deleted. Round stopped after one block.
+- **35f B1, the phase split (9ff6ff4d).** Execution 1.5 s for 360k
+  executions on 32 workers is 23 us of CPU per execution but 4.2 us of
+  wall per execution per worker: the workers wait. Validation 595 ms was
+  ten serial passes over the block.
+- **35f B2, sharding and lock-once (fe2b57e0), parallel validation
+  (2f8dc781).** The profile's hottest instruction was the atomic add
+  behind `RWMutex.RLock` -- the store's one map lock and the tree's reader
+  lock, each taken per read by 32 workers on one cache line. 256 shards
+  and one reader lock per block: exec 1521 -> 826 ms per execution 4.2 ->
+  2.6 us; validation 595 -> 78 ms. B2 36.8k, from B1's 32.0k, within 3% of
+  serial.
+- **35f A2, recipient deltas (4061d36f).** The 9-10 waves and 2.2x
+  executions that remained were the hot recipients: 22,857 accounts
+  credited ~7 times a block, every credit reading the account for its
+  code hash and writing it back with a new balance. A transaction that
+  never observes an account's balance (the state's `balanceReadHook`
+  records GetBalance/Empty) and only increases it now writes a delta;
+  the store composes deltas onto the latest full write at read and apply
+  time, and the transaction's read of that account is validated on every
+  field but the balance. At 22,857: 1 wave, 0 aborts, proc 350 -> 217 ms.
+  Seven nodes, no BAD BLOCK.
+
+The A leg is now at serial's number (30.1k against 30.5k/30.1k): at
+22,857 the cycle is the leader's fill and the rounds, not the import. The
+B leg is where the import is the cycle, and B has not yet run on the delta
+build -- that is round 35g.
+
+## 6v. Round 35g: the delta build on every leg -- registered before the round ran
+
+Round 35f's runner (offsets 420M-428M) with 4061d36f on all five legs.
+
+**Registered predictions.** 1-4 and 6-7 stand (5 was met in 35f A2 at
+22,857; 35g tests it at 163k). Added:
+
+8. 163k blocks: 1-2 waves, executions within 5% of the transaction count,
+   exec under 400 ms, import (`total`) under 0.85 s. FALSIFIED IF exec
+   stays over 700 ms with waves under 3 -- then the per-execution cost, not
+   the conflicts, is the block, and the next profile is on `executeSingle`
+   with the store quiet.
+9. B TPS above round 34's serial 37-38k. FALSIFIED IF B stays at 36-38k
+   with prediction 8 met -- then the cycle at 163k is the leader's fill
+   (~1.0 s) and the rounds, and the import was never the whole of it;
+   the next lever is on the leader.
+10. Zero BAD BLOCK on any node: the delta path touches consensus state
+    (every credited account), and one mismatch retires it.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
