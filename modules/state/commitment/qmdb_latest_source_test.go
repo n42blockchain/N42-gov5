@@ -197,8 +197,9 @@ func TestQMDBLatestAccountSource_ConcurrentWithWriter(t *testing.T) {
 	wg.Wait()
 }
 
-// TestLatestAccountSeam: installing a source switches the plain writer off
-// and routes ReadLatestAccount away from the table; removing it restores both.
+// TestLatestAccountSeam: installing a source routes ReadLatestAccount away
+// from the table without touching the writer; the write skip is its own
+// switch; removing both restores the table.
 func TestLatestAccountSeam(t *testing.T) {
 	db := n42TestDB(t)
 	rc := NewQMDBRootComputer()
@@ -214,8 +215,8 @@ func TestLatestAccountSeam(t *testing.T) {
 	}
 	defer ro.Rollback()
 
-	if modules.PlainAccountWriteSkipped() {
-		t.Fatal("no source installed but the writer is off")
+	if modules.LatestAccountSourceInstalled() || modules.PlainAccountWriteSkipped() {
+		t.Fatal("clean state expected")
 	}
 	enc, err := modules.ReadLatestAccount(ro, addr[:])
 	if err != nil || decodeNonce(t, enc) != 3 {
@@ -223,16 +224,24 @@ func TestLatestAccountSeam(t *testing.T) {
 	}
 
 	modules.SetLatestAccountSource(NewQMDBLatestAccountSource(rc, db))
-	t.Cleanup(func() { modules.SetLatestAccountSource(nil) })
-	if !modules.PlainAccountWriteSkipped() {
-		t.Fatal("source installed but the writer is still on")
+	t.Cleanup(func() { modules.SetLatestAccountSource(nil); modules.SetPlainAccountWriteSkipped(false) })
+	if !modules.LatestAccountSourceInstalled() {
+		t.Fatal("source not installed")
+	}
+	if modules.PlainAccountWriteSkipped() {
+		t.Fatal("installing a source must not switch the writer off by itself")
 	}
 	enc, err = modules.ReadLatestAccount(ro, addr[:])
 	if err != nil || enc != nil {
 		t.Fatalf("source must answer (tree is empty), not the table: %x %v", enc, err)
 	}
+	modules.SetPlainAccountWriteSkipped(true)
+	if !modules.PlainAccountWriteSkipped() {
+		t.Fatal("write skip not set")
+	}
 	modules.SetLatestAccountSource(nil)
-	if modules.PlainAccountWriteSkipped() {
-		t.Fatal("source removed but the writer is still off")
+	modules.SetPlainAccountWriteSkipped(false)
+	if modules.LatestAccountSourceInstalled() || modules.PlainAccountWriteSkipped() {
+		t.Fatal("both switches must clear")
 	}
 }

@@ -1080,15 +1080,23 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			realBC.SetStateProofProvider(internal.NewQMDBStateProofProvider())
 			log.Info("State commitment: QMDB (twig forest, live block production)",
 				"root", fmt.Sprintf("%x", qmdbRC.Root()))
+			if commitment.QMDBStateReadMode() == commitment.QMDBReadOn {
+				// N42_STATE_READ_QMDB=1: EVERY head-state account read -- the
+				// miner's build, the txpool, RPC, the history fallback -- goes
+				// to the tree, not only block execution. Round 26's first
+				// attempt switched execution alone and the miner built on a
+				// table the previous leg had frozen: state-root mismatch on
+				// the first block, seven nodes wedged.
+				modules.SetLatestAccountSource(commitment.NewQMDBLatestAccountSource(qmdbRC, chainKv))
+				log.Info("head-state account reads served from the QMDB tree (N42_STATE_READ_QMDB=1): miner, txpool and RPC included")
+			}
 			if commitment.QMDBOnlyAccountWrites() {
 				// N42_STATE_WRITE_QMDB_ONLY=1: stop maintaining the plain
-				// `Account` table and serve every head-state account read
-				// from the tree. Only meaningful once reads already go
-				// through it, so the two levers must be typed together.
-				if commitment.QMDBStateReadMode() != commitment.QMDBReadOn {
+				// `Account` table. Only sound once reads no longer touch it.
+				if !modules.LatestAccountSourceInstalled() {
 					return nil, fmt.Errorf("N42_STATE_WRITE_QMDB_ONLY=1 requires N42_STATE_READ_QMDB=1: the plain Account table stops being written, so reads must not depend on it")
 				}
-				modules.SetLatestAccountSource(commitment.NewQMDBLatestAccountSource(qmdbRC, chainKv))
+				modules.SetPlainAccountWriteSkipped(true)
 				// Record the head at the FIRST enablement so a repair can later
 				// rebuild exactly the rows the table missed: every address in an
 				// AccountChangeSet from this block on, re-read from the tree.
