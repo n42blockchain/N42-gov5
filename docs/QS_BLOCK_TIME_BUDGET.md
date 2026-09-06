@@ -1159,6 +1159,40 @@ installs the seam on its own; `N42_STATE_WRITE_QMDB_ONLY=1` only stops the
 write and refuses to start without it. The rerun's offsets are 200M-204M; the
 first attempt's are burnt.
 
+### The second attempt found a liveness hole that predates this round
+
+With the reads fixed, the rerun wedged inside one block again -- on the SAME
+poisoned hash. Instrumenting `Finalize` on both sides (`N42_FINALIZE_TRACE=1`)
+showed the leader building a correct block (root `e6a056…`, the followers'
+answer) and then logging:
+
+```
+miner: converging on lowest-hash sibling; re-proposing it
+    number=13751682 kept=0xb7323b47b7 dropped=0xeb38962f5b
+```
+
+The cross-view same-height convergence rule (`LowestSiblingAtHeight`) makes
+every leader re-propose the lowest-hash block already STORED at head+1, so
+that votes stack on one candidate. It assumed a stored sibling is valid. The
+first attempt had stored two invalid ones -- on node2 its own candidate, on
+the others what fetch-on-miss pulled in -- and they hashed lower than any
+fresh build. Prepare votes are not import-gated (R1 is static in the
+two-phase gate), so 2f+1 of them locked the fleet on a block nobody could
+apply, and every later leader hit `parent-not-applied`. A third start produced
+15 blocks only because the fresh build happened to hash lower than the poison.
+
+Fixed in 1ee32203: a validation failure writes a persisted mark
+(`BadHeaderNumber`), and both re-proposal paths skip marked hashes. The mark is
+advisory for PROPOSING only; import never reads it, so a transient local
+failure cannot make a node refuse the committed chain. The wider observation
+is worth keeping: **a prepare vote on an unexecuted block plus a convergence
+rule that trusts storage is a wedge waiting for any bad candidate.** The
+two-phase design accepts that trade for latency; the mark is the cheap guard.
+
+The chain moved on through the smoke starts (head 13,751,695 before the third
+attempt), and the poisoned siblings now sit at a committed height, where the
+convergence rule never looks. The third attempt's offsets are 205M-209M.
+
 What the round cannot say: anything about a 163,000-transaction block. At
 22,857 transactions a block this rig's ceiling is set by the cycle, and the
 comparison with n42-rs's 365,399 TPS (163,000 a block at 0.42 s) needs the
