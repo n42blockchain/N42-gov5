@@ -1895,6 +1895,37 @@ Sender verification was already parallel. The leader's fill is NOT parallel
    cycle.
 4. `staleTrimmed`, timeouts, memory: unchanged.
 
+### The first start: correct, and 50x slower
+
+Per-worker readers held: 32 workers on every node, no state-root mismatch on
+any node for any block that completed (the one BAD BLOCK was "open read
+transaction: db closed", raised by my own shutdown of the fleet). But every
+block over ~40k hit the executor's 64-wave limit and fell back to
+sequential -- 9.2 s for 41k, 43.4 s for 163k, against 0.85 s serial -- and
+the window read 4 blocks in 60 s.
+
+Two rules in the executor did it, and neither is specific to this chain.
+Validation re-executed EVERY later transaction on the first failure, so a
+block with one early conflict paid a full wave per conflict. And the
+scheduler had no notion of dependency, so a sender's nonce chain -- 4,000
+senders, ~25 transactions each in a block -- re-executed wave after wave,
+every link reading a stale predecessor until the limit.
+
+66ff7876 changes both: a failure re-executes that transaction alone, later
+ones are provisional and re-validated (only those whose recorded read
+versions no longer match re-execute); and `SetAffinity` pins each sender's
+transactions to one worker in index order, so a chain executes on the
+worker that already applied its predecessor and only cross-sender recipient
+credits reach the validator. The change found a latent defect on the way:
+`collectPending` re-ran every unvalidated transaction, which under lazy
+validation rewrote a provisional transaction's value under an unchanged
+incarnation -- a dependent that had recorded that incarnation could never
+detect it (1 lost increment in 30 runs of the shared-counter test, now run
+200 times). The sender-chains test models the benchmark block: 1,200
+transactions, 1,200 executions, 0 aborts with affinity.
+
+The second start is the round; predictions 1-4 stand.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
