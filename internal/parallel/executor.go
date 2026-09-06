@@ -17,6 +17,8 @@
 package parallel
 
 import (
+	"bytes"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -86,6 +88,9 @@ type Executor struct {
 	// Metrics.
 	totalExecutions atomic.Int64
 	totalAborts     atomic.Int64
+	waves           int
+	fellBack        bool
+	traceLeft       int // N42_PARALLEL_TRACE: validation failures still to log this Run
 }
 
 // WorkerSetupFunc prepares one worker's private context. It is called on the
@@ -150,11 +155,18 @@ func (e *Executor) Run() []TxResult {
 		return e.results
 	}
 
+	if os.Getenv("N42_PARALLEL_TRACE") != "" {
+		e.traceLeft = 12
+	}
 	for wave := 0; wave < MaxWaves; wave++ {
+		e.waves = wave + 1
 		// Collect txs that need (re-)execution.
 		pending := e.collectPending()
 		if len(pending) == 0 {
 			break // all validated
+		}
+		if e.traceLeft >= 0 && os.Getenv("N42_PARALLEL_TRACE") != "" {
+			log.Info("parallel trace: wave", "wave", wave, "pending", len(pending), "txs", e.numTxs, "first", pending[0], "last", pending[len(pending)-1])
 		}
 
 		// Execute pending txs in parallel.
@@ -175,6 +187,7 @@ func (e *Executor) Run() []TxResult {
 			"executions", e.totalExecutions.Load(),
 			"aborts", e.totalAborts.Load(),
 		)
+		e.fellBack = true
 		e.mvs = NewMVS()
 		e.runSequential()
 		return e.results
@@ -326,6 +339,10 @@ func (e *Executor) validateInOrder() bool {
 			e.status[i] = StatusValidated
 			continue
 		}
+		if e.traceLeft > 0 {
+			e.traceLeft--
+			e.traceFailure(i)
+		}
 		e.totalAborts.Add(1)
 		e.status[i] = StatusPending
 		e.incarnation[i]++
@@ -343,6 +360,38 @@ func (e *Executor) validateInOrder() bool {
 	}
 	return false
 }
+
+// traceFailure logs why transaction i failed validation (N42_PARALLEL_TRACE).
+func (e *Executor) traceFailure(i int) {
+	rw := e.rwSets[i]
+	for _, rd := range rw.Reads {
+		cur, wtx, winc, found := e.mvs.Read(rd.Key, i)
+		ok := false
+		switch {
+		case rd.FromBase && !found:
+			ok = true
+		case !rd.FromBase && found && wtx == rd.WriterTx && winc == rd.WriterIncarnation:
+			ok = true
+		case found && rd.HasValue && bytes.Equal(cur, rd.Value):
+			ok = true
+		}
+		if ok {
+			continue
+		}
+		log.Info("parallel trace: stale read", "tx", i, "inc", e.incarnation[i], "addr", rd.Key.Address.Hex(), "field", rd.Key.Field, "slot", rd.Key.Slot.Hex()[:10],
+			"fromBase", rd.FromBase, "readWriter", rd.WriterTx, "readInc", rd.WriterIncarnation, "hasValue", rd.HasValue, "readLen", len(rd.Value),
+			"nowFound", found, "nowWriter", wtx, "nowInc", winc, "nowLen", len(cur), "reads", len(rw.Reads), "writes", len(rw.Writes))
+		return
+	}
+	log.Info("parallel trace: failed without a stale read", "tx", i, "reads", len(rw.Reads))
+}
+
+// Waves is the number of execute+validate passes the last Run took.
+func (e *Executor) Waves() int { return e.waves }
+
+// FellBack reports whether the last Run gave up on Block-STM and executed
+// the block sequentially.
+func (e *Executor) FellBack() bool { return e.fellBack }
 
 // allValidated returns true if all transactions are validated.
 func (e *Executor) allValidated() bool {

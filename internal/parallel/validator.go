@@ -16,6 +16,8 @@
 
 package parallel
 
+import "bytes"
+
 // Validate checks whether a transaction's read set is still consistent
 // with the current MVS state. If any read has become stale (because a
 // preceding transaction wrote a different value or was re-executed with
@@ -25,32 +27,36 @@ package parallel
 // Returns true if the read set is valid, false if re-execution is needed.
 func Validate(mvs *MVS, rw *ReadWriteSet) bool {
 	for _, rd := range rw.Reads {
+		cur, writerTx, writerInc, found := mvs.Read(rd.Key, rw.TxIndex)
 		if rd.FromBase {
-			// Value was read from base DB. Check if any preceding tx
-			// has since written to this location.
-			_, _, _, found := mvs.Read(rd.Key, rw.TxIndex)
-			if found {
-				// A preceding tx now writes this location — stale.
-				return false
-			}
-		} else {
-			// Value was read from MVS (written by tx[rd.WriterTx]).
-			// Verify the latest writer before our txIndex is still the same
-			// AND has the same incarnation (value hasn't changed due to re-execution).
-			_, writerTx, writerInc, found := mvs.Read(rd.Key, rw.TxIndex)
+			// Value was read from base DB. Still valid if no preceding tx
+			// has since written this location, or if what it wrote is
+			// byte-for-byte what the base held.
 			if !found {
-				// The write we depended on was removed — stale.
-				return false
+				continue
 			}
-			if writerTx != rd.WriterTx {
-				// A different preceding tx is now the latest writer — stale.
-				return false
+			if rd.HasValue && bytes.Equal(cur, rd.Value) {
+				continue
 			}
-			if writerInc != rd.WriterIncarnation {
-				// Same writer tx but different incarnation — value changed.
-				return false
-			}
+			return false
 		}
+		// Value was read from MVS (written by tx[rd.WriterTx]).
+		if !found {
+			// The write we depended on was removed — stale.
+			return false
+		}
+		if writerTx == rd.WriterTx && writerInc == rd.WriterIncarnation {
+			continue
+		}
+		// A different writer, or the same writer re-executed. The read is
+		// still valid if the bytes are the same: a sender's nonce chain does
+		// not change because its predecessor re-ran over a recipient
+		// conflict, and version-only validation cascaded that re-run down
+		// every chain (round 35d, 64-wave limit at 15k transactions).
+		if rd.HasValue && bytes.Equal(cur, rd.Value) {
+			continue
+		}
+		return false
 	}
 	return true
 }

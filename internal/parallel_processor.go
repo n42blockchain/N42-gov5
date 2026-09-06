@@ -139,11 +139,20 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 	// parallel-EVM node would accept a block a sequential node rejects —
 	// worse than the original hole, because the fleet splits instead of
 	// agreeing. (Blocks of <=4 txs took the gated Process path above.)
+	var signer transaction.Signer
 	if hdrNum, hdrErr := requireHeaderNumber(concreteHeader, "header number unavailable"); hdrErr == nil {
-		signer := transaction.MakeSignerWithTimestamp(p.config, hdrNum.ToBig(), concreteHeader.Time)
+		signer = transaction.MakeSignerWithTimestamp(p.config, hdrNum.ToBig(), concreteHeader.Time)
 		if err := verifyBlockSenders(signer, txs); err != nil {
 			return nil, nil, nil, 0, fmt.Errorf("block %s: %w", concreteHeader.Number.String(), err)
 		}
+		// A block off the wire carries RLP only: From() is nil until the
+		// signature is recovered. The affinity key below needs every sender
+		// before the first wave, so recover them here in parallel (memoised
+		// on the transaction; AsMessage reuses it). Round 35d/t: with From()
+		// nil the key fell back to the index, a sender's nonce chain ran on
+		// 32 workers at once, and every link but the first failed its nonce
+		// check wave after wave until the 64-wave limit.
+		recoverBlockSenders(signer, txs)
 	}
 
 	chainConfig := p.config
@@ -246,8 +255,14 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 	// applied its predecessor, and only cross-sender conflicts (a recipient
 	// credited by several senders in one wave) reach the validator.
 	executor.SetAffinity(func(txIndex int) uint64 {
-		if from := txs[txIndex].From(); from != nil {
+		tx := txs[txIndex]
+		if from := tx.From(); from != nil {
 			return binary.LittleEndian.Uint64(from[:8])
+		}
+		if signer != nil {
+			if from, err := transaction.Sender(signer, tx); err == nil {
+				return binary.LittleEndian.Uint64(from[:8])
+			}
 		}
 		return uint64(txIndex)
 	})
