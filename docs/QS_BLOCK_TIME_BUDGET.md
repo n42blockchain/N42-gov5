@@ -1476,6 +1476,31 @@ stale-nonce trim (5634bc96) and its counters. Single variable against round 28.
 4. A legs are unchanged within the floor (the trim finds nothing to trim
    when the reorg is 4-38 ms).
 
+### Two starts stopped by the memory watchdog, and what they measured
+
+The first two starts of round 29 both ended in the warm-up at 16-18 GB
+MemAvailable. The second carried a per-node RSS sampler: **14.0-15.5 GB a
+node** at the 163k/hot shape with a 350k pool, 105 GB for the fleet, against
+11.2 GB a node saturated at 22,857 (the figure in the rig memory note). The
+generators were 1.6 GB each. Node RSS was FLAT over the last 70 s while
+MemAvailable fell 44 -> 18 GB, so the last 26 GB were not process heap; tmpfs
+held a static 27 GB throughout, and dirty pages read near zero after the
+stop. The third start bounds the Go heap (`GOMEMLIMIT=12GiB` per node),
+drops the pool to 300k/100k, and samples anonymous against file-backed RSS,
+shmem and dirty pages, so the next abort names its consumer.
+
+What the aborted warm-ups still showed, both with the trim: the fill's
+execution scales with what it packs (163,000 in 0.6-0.7 s; 2,000 in 12 ms),
+`staleTrimmed` runs 160,000-424,000 per build -- two to three blocks of mined
+transactions the pool had not yet demoted -- and `lookupWait` is 0, so the
+round-26 tree lock is not on the build's path. B TPS in the warm-up windows
+was 31,500 (450k pool) and 36,200 (350k pool) against round 28's 24,300, with
+occupancy 55% and 28%: the trim recovers the wade, and the fresh supply is
+now what bounds the block. The pool's reorg (0.5-0.85 s a block, of which
+`reset` 125-586 ms and `demote` 33-221 ms are two read transactions per
+pending account) is the next lever; 5d0f7d0f batches those reads for round
+30.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
