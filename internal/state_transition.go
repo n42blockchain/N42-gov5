@@ -81,7 +81,18 @@ type StateTransition struct {
 	sharedBuyGasBalance *uint256.Int
 
 	policy transitionChainPolicy
+
+	// feeSink, when set, receives the priority-fee and EIP-1559 collector
+	// credits instead of the state. The parallel executor uses it: credited
+	// in every transaction, the coinbase is otherwise one write set shared by
+	// the whole block, and Block-STM serialises on it. The caller applies the
+	// summed credits once after the block. nil means credit the state.
+	feeSink FeeSink
 }
+
+// FeeSink receives a fee credit that a StateTransition would otherwise have
+// added to recipient's balance.
+type FeeSink func(recipient types.Address, amount *uint256.Int)
 
 type transitionChainPolicy struct {
 	forceGasBailout            bool
@@ -347,10 +358,31 @@ var dbgNonceTraceN int
 // `refunds` is false when gas refunds should not be applied.
 // `gasBailout` is true when the transaction should not fail if balance is insufficient for gas.
 func ApplyMessage(evm vm2.VMInterface, msg Message, gp *common.GasPool, refunds bool, gasBailout bool) (*ExecutionResult, error) {
+	return ApplyMessageWithFeeSink(evm, msg, gp, refunds, gasBailout, nil)
+}
+
+// ApplyMessageWithFeeSink is ApplyMessage with the block-producer fee credits
+// (priority fee, EIP-1559 collector) diverted to sink instead of the state.
+// The sender's gas purchase and refund still go through the state. A nil sink
+// is ApplyMessage. The caller owns the equivalence: the recipients must not
+// be read or written by any transaction of the block, or the deferred credit
+// changes what those transactions see.
+func ApplyMessageWithFeeSink(evm vm2.VMInterface, msg Message, gp *common.GasPool, refunds bool, gasBailout bool, sink FeeSink) (*ExecutionResult, error) {
 	st := NewStateTransition(evm, msg, gp)
+	st.feeSink = sink
 	res, err := st.TransitionDb(refunds, gasBailout)
 	st.release()
 	return res, err
+}
+
+// creditFee adds a block-producer fee to recipient, or hands it to the fee
+// sink when one is installed.
+func (st *StateTransition) creditFee(recipient types.Address, amount *uint256.Int) {
+	if st.feeSink != nil {
+		st.feeSink(recipient, amount)
+		return
+	}
+	st.state.AddBalance(recipient, amount)
 }
 
 func (st *StateTransition) to() types.Address {
@@ -597,13 +629,13 @@ func (st *StateTransition) TransitionDb(refunds bool, gasBailout bool) (*Executi
 
 	amount := new(uint256.Int).SetUint64(st.gasUsed())
 	amount.Mul(amount, effectiveTip)
-	st.state.AddBalance(st.policy.priorityFeeRecipient(st.evm.Context().Coinbase), amount)
+	st.creditFee(st.policy.priorityFeeRecipient(st.evm.Context().Coinbase), amount)
 
 	// EIP-1559 fee collection
 	if st.policy.shouldCollectEIP1559Fee(msg, rules) {
 		burntContractAddress := *st.evm.ChainConfig().Eip1559FeeCollector
 		burnAmount := new(uint256.Int).Mul(new(uint256.Int).SetUint64(st.gasUsed()), st.evm.Context().BaseFee)
-		st.state.AddBalance(burntContractAddress, burnAmount)
+		st.creditFee(burntContractAddress, burnAmount)
 	}
 
 	if blockGasUsed == 0 {
