@@ -65,9 +65,37 @@ type Executor struct {
 	// Execution function provided by caller.
 	execFn TxExecuteFunc
 
+	// workerSetup, when set, runs once per worker goroutine per wave and
+	// returns a per-worker context handed to every execFn call that worker
+	// makes, plus a teardown run when the worker exits. It exists so each
+	// worker can own resources that cannot be shared across goroutines -- a
+	// read transaction bound to its OS thread and a state reader over it
+	// (3709ca6a: the workers used to share one MDBX cursor).
+	workerSetup WorkerSetupFunc
+	execCtxFn   TxExecuteWithCtxFunc
+
 	// Metrics.
 	totalExecutions atomic.Int64
 	totalAborts     atomic.Int64
+}
+
+// WorkerSetupFunc prepares one worker's private context. It is called on the
+// worker's own goroutine, so anything it opens is used on the goroutine that
+// opened it. teardown may be nil.
+type WorkerSetupFunc func(workerID int) (ctx any, teardown func(), err error)
+
+// TxExecuteWithCtxFunc is TxExecuteFunc with the worker context.
+type TxExecuteWithCtxFunc func(ctx any, txIndex int, rw *ReadWriteSet) error
+
+// NewExecutorWithWorkerSetup is NewExecutor for callers whose workers own
+// resources: setup runs per worker goroutine, execFn receives that worker's
+// context. A setup error fails every transaction that worker would have run,
+// which surfaces as a block execution error rather than a silent fallback.
+func NewExecutorWithWorkerSetup(numTxs int, workers int, setup WorkerSetupFunc, execFn TxExecuteWithCtxFunc) *Executor {
+	e := NewExecutor(numTxs, workers, nil)
+	e.workerSetup = setup
+	e.execCtxFn = execFn
+	return e
 }
 
 // NewExecutor creates a Block-STM executor for numTxs transactions.
@@ -167,7 +195,7 @@ func (e *Executor) executeParallel(txIndices []int) {
 	// Start workers.
 	for i := 0; i < e.workers; i++ {
 		wg.Add(1)
-		go func() {
+		go func(workerID int) {
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
@@ -176,10 +204,24 @@ func (e *Executor) executeParallel(txIndices []int) {
 					log.Error("panic in parallel executor worker, recovered", "panic", r, "stack", string(buf[:n]))
 				}
 			}()
-			for txIndex := range work {
-				e.executeSingle(txIndex)
+			var ctx any
+			var setupErr error
+			if e.workerSetup != nil {
+				var teardown func()
+				ctx, teardown, setupErr = e.workerSetup(workerID)
+				if teardown != nil {
+					defer teardown()
+				}
 			}
-		}()
+			for txIndex := range work {
+				if setupErr != nil {
+					e.results[txIndex] = TxResult{Err: setupErr}
+					e.status[txIndex] = StatusExecuted
+					continue
+				}
+				e.executeSingle(ctx, txIndex)
+			}
+		}(i)
 	}
 
 	// Feed work.
@@ -192,7 +234,7 @@ func (e *Executor) executeParallel(txIndices []int) {
 }
 
 // executeSingle executes a single transaction.
-func (e *Executor) executeSingle(txIndex int) {
+func (e *Executor) executeSingle(ctx any, txIndex int) {
 	e.totalExecutions.Add(1)
 
 	// Allocate a fresh ReadWriteSet.
@@ -202,7 +244,7 @@ func (e *Executor) executeSingle(txIndex int) {
 	e.mvs.DeleteAll(txIndex)
 
 	// Execute the transaction.
-	err := e.execFn(txIndex, rw)
+	err := e.exec(ctx, txIndex, rw)
 
 	e.results[txIndex] = TxResult{Err: err}
 	e.rwSets[txIndex] = rw
@@ -254,13 +296,35 @@ func (e *Executor) allValidated() bool {
 	return true
 }
 
+// exec dispatches to whichever execution function the executor was built with.
+func (e *Executor) exec(ctx any, txIndex int, rw *ReadWriteSet) error {
+	if e.execCtxFn != nil {
+		return e.execCtxFn(ctx, txIndex, rw)
+	}
+	return e.execFn(txIndex, rw)
+}
+
 // runSequential falls back to sequential execution.
 func (e *Executor) runSequential() {
+	var ctx any
+	if e.workerSetup != nil {
+		c, teardown, err := e.workerSetup(0)
+		if err != nil {
+			for i := 0; i < e.numTxs; i++ {
+				e.results[i] = TxResult{Err: err}
+			}
+			return
+		}
+		if teardown != nil {
+			defer teardown()
+		}
+		ctx = c
+	}
 	for i := 0; i < e.numTxs; i++ {
 		rw := e.rwSets[i]
 		rw.Clear()
 
-		err := e.execFn(i, rw)
+		err := e.exec(ctx, i, rw)
 		e.results[i] = TxResult{Err: err}
 
 		for _, wd := range rw.Writes {

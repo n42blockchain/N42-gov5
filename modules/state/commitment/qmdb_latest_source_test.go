@@ -3,6 +3,7 @@ package commitment
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -11,6 +12,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
+	"github.com/n42blockchain/N42/lib/qmdb"
 	"github.com/n42blockchain/N42/modules"
 )
 
@@ -243,5 +245,60 @@ func TestLatestAccountSeam(t *testing.T) {
 	modules.SetPlainAccountWriteSkipped(false)
 	if modules.LatestAccountSourceInstalled() || modules.PlainAccountWriteSkipped() {
 		t.Fatal("both switches must clear")
+	}
+}
+
+// TestLookupSource_ConcurrentReadersDuringApply: many goroutines read through
+// LookupSource with their own transactions while the owner applies, flushes
+// and evicts blocks -- the Block-STM worker shape. For -race.
+func TestLookupSource_ConcurrentReadersDuringApply(t *testing.T) {
+	db := n42TestDB(t)
+	rc := NewQMDBRootComputer()
+	addrs := make([]types.Address, 128)
+	for i := range addrs {
+		addrs[i] = types.BytesToAddress([]byte{byte(i + 1), 7})
+	}
+	applyAndPersist(t, rc, db, map[types.Address]*account.StateAccount{addrs[0]: testAcct(1, 1), addrs[1]: testAcct(2, 2)})
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	var reads atomic.Int64
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; ; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				tx, err := db.BeginRo(context.Background())
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				src := NewLookupSource(rc, tx)
+				for j := 0; j < 16; j++ {
+					kh := qmdb.Hash(AccountKeyHash(addrs[(i*16+j+g)%len(addrs)]))
+					if v, ok := src.Get(kh); ok && len(v) == 0 {
+						t.Error("found with empty value")
+					}
+					reads.Add(1)
+				}
+				tx.Rollback()
+			}
+		}(g)
+	}
+	for blk := 1; blk <= 30; blk++ {
+		dirty := map[types.Address]*account.StateAccount{}
+		for i := 0; i < 16; i++ {
+			dirty[addrs[(blk*5+i)%len(addrs)]] = testAcct(uint64(blk), uint64(i+1))
+		}
+		applyAndPersist(t, rc, db, dirty)
+	}
+	close(stop)
+	wg.Wait()
+	if reads.Load() == 0 {
+		t.Fatal("no reads happened")
 	}
 }

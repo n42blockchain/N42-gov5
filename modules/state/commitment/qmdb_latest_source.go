@@ -37,6 +37,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/qmdb"
+	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules"
 )
 
@@ -108,3 +109,31 @@ func (s *QMDBLatestAccountSource) LatestAccount(g kv.Getter, addr []byte) ([]byt
 }
 
 var _ modules.AccountSource = (*QMDBLatestAccountSource)(nil)
+
+// LookupSource serves QMDBStateReader point reads for a reader on ANOTHER
+// goroutine than the tree's owner: every read goes through
+// QMDBRootComputer.Lookup under the reader lock and faults evicted entries
+// through the caller's own transaction. It is what a Block-STM worker uses
+// instead of the tree's raw Get (which faults through the owner's attached
+// transaction and is not safe from a second goroutine).
+type LookupSource struct {
+	rc   *QMDBRootComputer
+	cold kv.Getter
+}
+
+// NewLookupSource returns a source over rc for a reader holding cold, a read
+// transaction opened on the calling goroutine after the last commit.
+func NewLookupSource(rc *QMDBRootComputer, cold kv.Getter) *LookupSource {
+	return &LookupSource{rc: rc, cold: cold}
+}
+
+// Get implements the reader's value source.
+func (s *LookupSource) Get(keyHash qmdb.Hash) ([]byte, bool) {
+	v, found, evicted := s.rc.Lookup(keyHash, s.cold)
+	if !found && evicted {
+		// Only possible with a transaction older than the last flush, which
+		// a worker opened during execution cannot be; keep it visible.
+		log.Warn("qmdb lookup source: live entry evicted and not visible to the reader's transaction", "keyHash", fmt.Sprintf("%x", keyHash[:8]))
+	}
+	return v, found
+}

@@ -812,7 +812,8 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			// So this is not "unaudited", it is "known to diverge under load",
 			// and the fix is not in internal/parallel: a parallel executor
 			// needs a reader per worker, or reads serialised.
-			log.Warn("ParallelEVM ENABLED — BROKEN under load: a 2026-09-02 bench A-B-A halted the chain (6/7 nodes rejected blocks; the parallel executor missed an intra-block credit). Do NOT enable on any chain whose blocks matter")
+			log.Warn("ParallelEVM ENABLED: each Block-STM worker now owns its read transaction and reads the live QMDB tree under its lock (the 2026-09-02 halt was a shared MDBX cursor, 3709ca6a); UNMEASURED under load until a round says otherwise -- do not enable on a chain whose blocks matter",
+				"workers", internal.ParallelWorkers())
 			realBC.SetParallelEVM(true)
 		}
 		if cfg.NodeCfg.Prefetch {

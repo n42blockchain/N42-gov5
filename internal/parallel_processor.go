@@ -23,7 +23,10 @@
 package internal
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"strconv"
 
 	"github.com/holiman/uint256"
 
@@ -36,9 +39,23 @@ import (
 	"github.com/n42blockchain/N42/internal/parallel"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/vm/evmtypes"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/params"
 )
+
+// parallelWorkers is the Block-STM worker count: N42_PARALLEL_WORKERS, default
+// 32. One read transaction per worker is a different resource than one
+// goroutine per worker (94775a0a), so this is not NumCPU (256 here).
+func parallelWorkers() int {
+	if v := os.Getenv("N42_PARALLEL_WORKERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 32
+}
 
 // parallelTxResult stores per-transaction execution output from parallel execution.
 type parallelTxResult struct {
@@ -100,17 +117,49 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 	// Per-tx result storage. Each goroutine writes to its own index (no race).
 	txResults := make([]parallelTxResult, numTxs)
 
-	// Use var + assignment to allow the closure to reference executor via capture.
-	// When the closure executes (during executor.Run), executor is already assigned.
+	// Every worker owns its base reader. 3709ca6a proved the shared one was a
+	// shared MDBX cursor (a read transaction is bound to the OS thread that
+	// opened it, and GetOne pulls a per-bucket cursor out of an unsynchronised
+	// map), and 94775a0a set the shape of the fix: a read transaction opened
+	// on the worker's own goroutine, a worker count chosen for transactions
+	// rather than for CPUs, and every worker reading the SAME snapshot. The
+	// snapshot is the live QMDB tree at the parent, static for the whole
+	// execution (its owner is this goroutine, which is waiting), read through
+	// LookupSource under the tree's reader lock with the worker's own
+	// transaction as the cold getter; code and storage rows come from that
+	// same transaction. A worker whose transaction cannot be opened fails its
+	// transactions, and the block, rather than reading through anything shared.
+	mode := commitment.QMDBStateReadMode()
+	useQMDB := mode != commitment.QMDBReadOff && p.bc != nil && p.bc.qmdbEnabled && p.bc.qmdbRootComputer != nil
+	if p.bc == nil || p.bc.ChainDB == nil {
+		return nil, nil, nil, 0, fmt.Errorf("ProcessParallel: no chain database for per-worker readers")
+	}
+	type workerCtx struct {
+		tx   kv.Tx
+		base state.StateReader
+	}
+	setup := func(workerID int) (any, func(), error) {
+		tx, err := p.bc.ChainDB.BeginRo(context.Background())
+		if err != nil {
+			return nil, nil, fmt.Errorf("parallel worker %d: open read transaction: %w", workerID, err)
+		}
+		var base state.StateReader = state.NewPlainStateReader(tx)
+		if useQMDB {
+			base = commitment.NewQMDBStateReader(commitment.NewLookupSource(p.bc.qmdbRootComputer, tx), base, mode)
+		}
+		return &workerCtx{tx: tx, base: base}, tx.Rollback, nil
+	}
 	var executor *parallel.Executor
-	executor = parallel.NewExecutor(numTxs, 0, func(txIndex int, rw *parallel.ReadWriteSet) error {
+	executor = parallel.NewExecutorWithWorkerSetup(numTxs, parallelWorkers(), setup, func(ctx any, txIndex int, rw *parallel.ReadWriteSet) error {
 		tx := txs[txIndex]
+		wc, ok := ctx.(*workerCtx)
+		if !ok || wc == nil || wc.base == nil {
+			return fmt.Errorf("parallel worker has no state reader for tx %d", txIndex)
+		}
 
-		// Each tx gets its own IntraBlockState with MVS-backed reader.
-		// NOTE: stateReader (base reader) must be safe for concurrent reads.
-		// PlainStateReader wraps a kv.Tx (read-only MDBX transaction) which
-		// supports concurrent reads from multiple goroutines.
-		pReader := parallel.NewParallelStateReader(stateReader, executor.MVS(), rw, txIndex)
+		// Each tx gets its own IntraBlockState with MVS-backed reader over
+		// this worker's private base reader.
+		pReader := parallel.NewParallelStateReader(wc.base, executor.MVS(), rw, txIndex)
 		txIBS := state.New(pReader)
 		pWriter := parallel.NewParallelStateWriter(rw)
 
@@ -374,3 +423,6 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 
 	return nil
 }
+
+// ParallelWorkers reports the configured Block-STM worker count (for logs).
+func ParallelWorkers() int { return parallelWorkers() }
