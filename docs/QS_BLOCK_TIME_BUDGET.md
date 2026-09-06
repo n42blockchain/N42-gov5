@@ -1131,6 +1131,34 @@ then. This is why it is a typed-out environment lever and not a default.
    1-3 hold: then bytes are not on the critical path either, and the serial
    chain is the whole story.
 
+### The first attempt wedged the fleet inside one block
+
+The warm-up leg (B) ran: 73 full blocks in its first window against round 25's
+62. Then leg A1 produced nothing for seventeen minutes. Every node logged the
+same thing for every proposal:
+
+```
+state root mismatch at block 13751682: proposer e77f5b…, locally computed 6e32a6…
+```
+
+All seven nodes had reloaded the SAME tree root at A1's start, byte-equal to
+the head's `stateRoot`, so the trees agreed and the divergence was in the
+reads of the next block. The cause was in the first commit of this round: it
+installed the head-state source only when the WRITE was also off. In an A leg
+block execution read through the tree (`N42_STATE_READ_QMDB=1` has always
+wrapped that path), but the miner's build, the txpool and RPC still read the
+plain table -- which the B warm-up had just frozen. The proposer built on
+stale balances, the followers verified against the tree, and no block could
+carry a quorum. Two nodes then applied their own bad candidates before the
+round was stopped; the journals were reset on all seven and the applied-marker
+unwind peeled the candidates on the next start.
+
+The rule it establishes, now enforced in the node: **"read through QMDB"
+means every reader of the head state, or none.** `N42_STATE_READ_QMDB=1`
+installs the seam on its own; `N42_STATE_WRITE_QMDB_ONLY=1` only stops the
+write and refuses to start without it. The rerun's offsets are 200M-204M; the
+first attempt's are burnt.
+
 What the round cannot say: anything about a 163,000-transaction block. At
 22,857 transactions a block this rig's ceiling is set by the cycle, and the
 comparison with n42-rs's 365,399 TPS (163,000 a block at 0.42 s) needs the
