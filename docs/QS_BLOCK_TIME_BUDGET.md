@@ -1320,6 +1320,57 @@ The fourth start raises the cap to 24 MB, the pool to 600k/200k with a
 generator. Predictions 1-4 stand as registered; the false starts measured
 the harness, not the chain, and none of their numbers is read.
 
+### Result: the blocks fill, and the shape costs 8x, not 0.3x
+
+Fourth start, 06:38-07:01 UTC, warm-up (B) and A1 completed; the memory
+watchdog then stopped the round at 19 GB available (seven nodes with 600k
+pools plus two generators holding 9M pre-signed transactions each, 7.5 GB).
+node0, full blocks, medians; write-probe rows per block.
+
+| leg | shape | recipients | txs/block | recov | exec | root | write | import | us/tx | dirty MB | win1 blocks | win1 TPS |
+|-----|-------|-----------:|----------:|------:|-----:|-----:|------:|-------:|------:|---------:|------------:|---------:|
+| warm-up | 3.423G | 2,000,000 | 163,000 | 140 | 930 | 755 | 659 | 2,592 | **15.9** | 95.0 | 4 | 9,182 |
+| A1 | 480M | 2,000,000 | 22,857 | 21 | 137 | 105 | 96 | 390 | **17.0** | 28.9 | 49 | 18,667 |
+| round 26 B (reference) | 480M | 22,857 | 22,857 | 16 | 117 | 65 | 47 | 267 | **11.7** | 7.2 | 74.5 | 28,381 |
+
+Predictions: (1) the B blocks fill -- 84.5% and 100% occupancy, **held**.
+(2) B cycle 1.8-2.4 s -- **falsified by 8x**: 15 s and 20 s a block in the two
+windows. (3) per-transaction import below 11.7 us -- **falsified**: 15.9 us.
+(4) A1 reproduces round 26's B arm -- **not testable as registered**: the
+recipients changed too (2,000,000 against 22,857), and that one variable
+took 49 blocks where round 26 took 74.5.
+
+**Three mechanisms, in the order they matter.**
+
+*The cold set.* Every transaction in this round touched a recipient drawn
+from 2,000,000 on a 6.3M-account chain, so nearly every recipient read and
+write missed the resident window and the page cache. At the SAME block size
+that alone costs 34% of throughput (A1 against round 26's B arm: root 105
+against 65 ms, write 96 against 47, dirty bytes 28.9 against 7.2 MB). At
+163k it is the whole budget: 15.9 us/tx against 11.7 hot, with the block
+seven times larger. n42-rs's 2,000,000 recipients live on a FRESH chain of
+about that many accounts, entirely resident; the shape is theirs but the
+residency is not, and residency is the larger term here.
+
+*The view timeout.* The follower's loaded view total was 5.4 s (recv 3.67 s:
+the leader's 1.2 s build plus 1.37 s write before the push; r1 2.0 s: the
+import) -- yet windows saw 15-20 s a block. The difference is views that
+produce no timing line because they timed out: a 2.6 s median import with
+outliers of 9.2 and 12.7 s (an `align` of 6.5 s unwinding a 163k-transaction
+local candidate on a branch switch; a `qmeta` of 9.8 s pruning an 8 MB undo
+record) crosses the base view timeout, and each timeout costs a TC and a
+re-proposal. At this shape the consensus timer, not the work, sets the rate.
+
+*The harness.* Two generators pre-signing 9M transactions each cost 7.5 GB;
+`-target-depth` needs the txpool namespace; the packing budget is 90% of the
+gossip cap. All three are now handled or documented; none is the chain.
+
+**Amortisation is real and small.** 17.0 -> 15.9 us/tx from 22,857 to
+163,000 is the fixed cost divided by seven: about 1.1 us/tx, 7%. The shape
+does not buy throughput on this chain; it exposes what residency and the
+timeout cost. Round 28 isolates the shape from the cold set (same A/B, hot
+22,857 recipients).
+
 What the round cannot say: anything about n42-rs's remaining 4-5x. At their
 shape this fleet's per-transaction work is execution (5.1 us against their
 1.8, the interpreter on plain transfers) and the root (2.8 us). Those are
