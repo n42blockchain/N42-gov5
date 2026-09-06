@@ -1705,6 +1705,48 @@ node4 on 2026-08-24; a dedicated instrument (a periodic live-index
 cross-check against a rebuilt one, the `verifyReload` idea applied to the
 live tree) is the next step if it recurs.
 
+### Result: +25% over A, the timeouts halved, and the cycle is now the serial chain
+
+Second start, 12:17-13:04 UTC. A1 was lost at launch (node1's QMDB reload
+took longer than the harness's 240 s readiness window -- 26 s of index
+rebuild and then ~108k twig blobs from a cold page cache; node0's same start
+took 75 s; the window is now 600 s), so the round has one A bookend. node0,
+medians; timeouts counted over each leg on node0.
+
+| leg | ceiling | win TPS | occupancy | block time | import | recov | exec | root | write | leader propose | follower recv | follower r1 | view | timeouts | gate deferred/resumed |
+|-----|--------:|--------:|----------:|-----------:|-------:|------:|-----:|-----:|------:|---------------:|--------------:|------------:|-----:|---------:|----------------------:|
+| B1 | 3.423G | 34,417 / 36,127 | 58-60% | 2.73 s | 791 | 133 | 325 | 92 | 90 | 1,594 | 1,688 | 788 | 2,639 | 6 | 7 / 7 |
+| B2 | 3.423G | 36,007 / 33,951 | 57-58% | 2.6-2.7 s | 861 | 148 | 373 | 93 | 100 | 1,284 | 1,754 | 838 | 2,557 | 3 | 5 / 5 |
+| A2 | 480M | 27,809 / 28,190 | 100% | 0.81 s | 256 | 21 | 105 | 63 | 42 | 494 | 561 | 215 | 805 | 0 | 2 / 2 |
+
+Predictions: (1) at most 1 timeout a leg -- **not held**: 3 and 6 (round 31:
+9), so the gate fix removed the deferred-leader case (every deferred gate
+resumed) and something else still times out a view or two a minute. (2) B
+cycle 2.3-2.7 s, 33-38k TPS -- **held** (2.6-2.7 s, 34.0-36.1k; blocks ~95k,
+below the 85-95k median I named only because occupancy was 57-60%). (3) B at
+least 25% over A -- **held at the line**: 35.1k against 28.0k, +25%; A
+unchanged, 73/74.
+
+**The cycle, read from the follower.** 2.6 s = recv 1.7 s + r1 0.8 s + rounds.
+r1 is the import (0.79-0.86 s for ~95k, 8.5-9 us/tx, the per-transaction
+figure now steady across rounds 31-32). recv is the leader's propose
+(1.3-1.6 s: the fill's execution 0.3-0.5 s for what it packs, the seal, the
+write, the push of a 14-24 MB body) plus the view skew. Nothing in it is a
+stall any more; it is the serial dependency chain the document named in
+round 25, at seven times the block. Round 33 takes the leader's write out
+of recv (`N42_PUSH_BEFORE_WRITE=1`, the round-17 lever, which had nothing to
+move at 22,857 and has ~100-200 ms here); after that the candidates are the
+push itself (the body travels as 14-24 MB of gossip) and building the next
+block while the current one imports, which is what n42-rs does.
+
+**Leg-transition fragility is now the round's main cost.** Three of the last
+four rounds lost a leg to a node that did not come back cleanly (node5's
+twig metadata, node3's in-memory divergence, node1's reload past the
+readiness window). The entry log has grown from 168M to 222M slots over
+these rounds, and the live tree's reload scans all of it; a persistent
+index for the live tree (the MDBX-backed one the miner cannot use) is the
+structural answer and is not in scope for a benchmark round.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
