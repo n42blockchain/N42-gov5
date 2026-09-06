@@ -117,8 +117,9 @@ var _ modules.AccountSource = (*QMDBLatestAccountSource)(nil)
 // instead of the tree's raw Get (which faults through the owner's attached
 // transaction and is not safe from a second goroutine).
 type LookupSource struct {
-	rc   *QMDBRootComputer
-	cold kv.Getter
+	rc     *QMDBRootComputer
+	cold   kv.Getter
+	locked bool // the caller holds rc.LockReaders for the source's lifetime
 }
 
 // NewLookupSource returns a source over rc for a reader holding cold, a read
@@ -127,9 +128,22 @@ func NewLookupSource(rc *QMDBRootComputer, cold kv.Getter) *LookupSource {
 	return &LookupSource{rc: rc, cold: cold}
 }
 
+// NewLookupSourceLocked is NewLookupSource for a reader whose owner holds
+// rc.LockReaders for as long as the source is used: lookups skip the
+// per-call lock.
+func NewLookupSourceLocked(rc *QMDBRootComputer, cold kv.Getter) *LookupSource {
+	return &LookupSource{rc: rc, cold: cold, locked: true}
+}
+
 // Get implements the reader's value source.
 func (s *LookupSource) Get(keyHash qmdb.Hash) ([]byte, bool) {
-	v, found, evicted := s.rc.Lookup(keyHash, s.cold)
+	var v []byte
+	var found, evicted bool
+	if s.locked {
+		v, found, evicted = s.rc.LookupLocked(keyHash, s.cold)
+	} else {
+		v, found, evicted = s.rc.Lookup(keyHash, s.cold)
+	}
 	if !found && evicted {
 		// Only possible with a transaction older than the last flush, which
 		// a worker opened during execution cannot be; keep it visible.

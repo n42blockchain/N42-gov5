@@ -80,6 +80,25 @@ func (r *QMDBRootComputer) Lookup(keyHash qmdb.Hash, cold qmdb.Getter) (value []
 	return r.t.GetVia(keyHash, cr)
 }
 
+// LockReaders takes the tree's reader lock for a span of lookups -- a
+// Block-STM execution, whose workers would otherwise take and release it per
+// read (an atomic add on one shared cache line, 32 workers wide). The tree
+// is static for the span: its owner is the caller, and it is waiting. The
+// returned func releases the lock.
+func (r *QMDBRootComputer) LockReaders() func() {
+	r.readers.RLock()
+	return r.readers.RUnlock
+}
+
+// LookupLocked is Lookup for a caller inside a LockReaders span.
+func (r *QMDBRootComputer) LookupLocked(keyHash qmdb.Hash, cold qmdb.Getter) (value []byte, found bool, evicted bool) {
+	var cr qmdb.ColdReader = noColdReader{}
+	if cold != nil {
+		cr = qmdb.ColdReaderFromGetter(cold)
+	}
+	return r.t.GetVia(keyHash, cr)
+}
+
 // qmdbLookupWaitNanos accumulates time Lookup spent waiting for the tree's
 // owner (round 28 diagnostic: the leader's build against the import's
 // ComputeRoot/FlushTo at 163k-transaction blocks).
