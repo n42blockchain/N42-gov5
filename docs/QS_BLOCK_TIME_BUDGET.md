@@ -1747,6 +1747,23 @@ these rounds, and the live tree's reload scans all of it; a persistent
 index for the live tree (the MDBX-backed one the miner cannot use) is the
 structural answer and is not in scope for a benchmark round.
 
+## 6s. Round 33: push before write -- registered before the round ran
+
+Round 32's settings and binary, plus `N42_PUSH_BEFORE_WRITE=1`: the leader
+hands the sealed block to peers before its own write, so their import runs
+beside the write instead of after it; the Proposal still follows the write.
+Round 17 measured this at 22,857 a block and adopted nothing (-127 ms on the
+view total, throughput unreadable on an 83% floor). At ~95k a block the
+leader's write is 100-200 ms of a 1.7 s recv.
+
+**Registered predictions.**
+
+1. Follower recv falls by 100-250 ms (from ~1.7 s); leader propose likewise.
+2. B TPS rises 5-10% over round 32 (35.1k -> 37-39k). FALSIFIED IF B is
+   within the floor of round 32: then the write was not on recv's path at
+   this shape either, and the push and the fill are what remain.
+3. A legs unchanged (73-76 blocks); timeouts no worse than round 32.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
