@@ -1798,9 +1798,34 @@ body has already been pushed, so a crash between push and write costs the
 leader a re-fetch, not the fleet a fork. n42-rs's leader never writes on the
 critical path at all.
 
-The B-leg timeouts (5-6 per leg on node0) are unchanged by this round and
-are not the deferred-leader case any more (every deferred gate resumed);
-they are the other open item.
+**Correction on the timeouts.** The per-leg counts (5-6) were taken from
+each leg's start and include the decay phase and the fleet's first views;
+inside B1's flood window node0 timed out ONCE, at the leg's first view. At
+steady state the deferred-leader fix leaves the timeouts at zero. The
+prediction in 6r ("at most 1 per leg") is therefore held on the reading it
+meant, and the "other open item" is withdrawn.
+
+## 6t. Round 34: the Proposal leaves before the write -- registered before the round ran
+
+Round 33's settings plus `N42_PROPOSE_BEFORE_WRITE=1` (5f86b7f8): with the
+early push on, the leader hands the Proposal to the engine as soon as the
+body is with the peers, so the prepare round runs beside its write. The
+engine's `onBlockReady` reads nothing from the database; the leader's
+durable consensus state is its vote journal; a write that fails after the
+Proposal leaves a block the leader re-fetches if the fleet commits it, and
+the followers decide on the block by their own execution either way.
+
+**Registered predictions.**
+
+1. Follower recv at B falls by the leader's write plus its share of the
+   view skew: 150-300 ms (from ~1.8 s); follower view 2.25-2.4 s.
+2. B TPS 38-41k (from 36.6k), +5-12%. FALSIFIED IF within the floor of
+   round 33: then the write was already hidden behind the push at this
+   shape and the fill and the push are all that remain of recv.
+3. A legs within the floor of round 33 (80-84 blocks): the write at 22,857
+   is 42 ms and already overlapped by the import.
+4. No "write failed AFTER the Proposal left" warning on any node; zero
+   steady-state timeouts.
 
 ## 7. Not levers (recorded so they are not proposed again)
 
