@@ -200,7 +200,7 @@ func (r *HistoricalStateReader) accountAtPlain(addr types.Address) ([]byte, erro
 		return nil, err
 	}
 	defer tx.Rollback()
-	v, err := tx.GetOne(modules.Account, addr[:])
+	v, err := modules.ReadLatestAccount(tx, addr[:])
 	if err != nil {
 		return nil, err
 	}

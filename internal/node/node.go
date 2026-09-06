@@ -27,6 +27,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -1079,6 +1080,34 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			realBC.SetStateProofProvider(internal.NewQMDBStateProofProvider())
 			log.Info("State commitment: QMDB (twig forest, live block production)",
 				"root", fmt.Sprintf("%x", qmdbRC.Root()))
+			if commitment.QMDBOnlyAccountWrites() {
+				// N42_STATE_WRITE_QMDB_ONLY=1: stop maintaining the plain
+				// `Account` table and serve every head-state account read
+				// from the tree. Only meaningful once reads already go
+				// through it, so the two levers must be typed together.
+				if commitment.QMDBStateReadMode() != commitment.QMDBReadOn {
+					return nil, fmt.Errorf("N42_STATE_WRITE_QMDB_ONLY=1 requires N42_STATE_READ_QMDB=1: the plain Account table stops being written, so reads must not depend on it")
+				}
+				modules.SetLatestAccountSource(commitment.NewQMDBLatestAccountSource(qmdbRC, chainKv))
+				// Record the head at the FIRST enablement so a repair can later
+				// rebuild exactly the rows the table missed: every address in an
+				// AccountChangeSet from this block on, re-read from the tree.
+				var frozenAt uint64
+				if err := chainKv.Update(ctx, func(tx kv.RwTx) error {
+					if v, err := tx.GetOne(modules.QMDBMeta, commitment.QMDBAccountFrozenAtKey); err == nil && len(v) == 8 {
+						frozenAt = binary.BigEndian.Uint64(v)
+						return nil
+					}
+					frozenAt = bc.CurrentBlock().Number64().Uint64() + 1
+					var buf [8]byte
+					binary.BigEndian.PutUint64(buf[:], frozenAt)
+					return tx.Put(modules.QMDBMeta, commitment.QMDBAccountFrozenAtKey, buf[:])
+				}); err != nil {
+					return nil, fmt.Errorf("record the Account table freeze: %w", err)
+				}
+				log.Warn("QMDB-only account persistence: the plain Account table is frozen; snap-sync serving and state dumps read a stale table (measurement lever, docs/QS_BLOCK_TIME_BUDGET.md round 26)",
+					"frozenAt", frozenAt)
+			}
 
 		case state.RootSchemeLegacyKeccak:
 			log.Info("State commitment: Legacy-Keccak (no tree)")
@@ -1086,6 +1115,9 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		default:
 			return nil, fmt.Errorf("unsupported state scheme: %s", stateScheme)
 		}
+	}
+	if commitment.QMDBOnlyAccountWrites() && !modules.PlainAccountWriteSkipped() {
+		return nil, fmt.Errorf("N42_STATE_WRITE_QMDB_ONLY=1 needs a chain committing with QMDB (state scheme %s does not)", stateScheme)
 	}
 
 	// Initialize ZK proving if configured.

@@ -42,12 +42,18 @@ type putDel interface {
 type PlainStateWriter struct {
 	db  putDel
 	csw *ChangeSetWriter
+	// genesis marks a writer for block 0. The `Account` table is always
+	// written at genesis, because the QMDB tree is seeded FROM it
+	// (genesis_qmdb.go iterates the table) and a head-state source is not
+	// installed until the chain is up.
+	genesis bool
 }
 
 func NewPlainStateWriter(db putDel, changeSetsDB kv.RwTx, blockNumber uint64) *PlainStateWriter {
 	return &PlainStateWriter{
-		db:  db,
-		csw: NewChangeSetWriterPlain(changeSetsDB, blockNumber),
+		db:      db,
+		csw:     NewChangeSetWriterPlain(changeSetsDB, blockNumber),
+		genesis: blockNumber == 0,
 	}
 }
 
@@ -55,6 +61,15 @@ func NewPlainStateWriterNoHistory(db putDel) *PlainStateWriter {
 	return &PlainStateWriter{
 		db: db,
 	}
+}
+
+// skipPlainAccount reports whether this writer leaves the `Account` table
+// alone: a head-state account source is installed (modules.SetLatestAccount-
+// Source, the N42_STATE_WRITE_QMDB_ONLY lever) and this is not genesis. The
+// changeset writer above is unaffected -- history keeps every pre-image
+// either way -- and so is `Storage`, which round 19 measured as negligible.
+func (w *PlainStateWriter) skipPlainAccount() bool {
+	return !w.genesis && modules.PlainAccountWriteSkipped()
 }
 
 func (w *PlainStateWriter) UpdateAccountData(address types.Address, original, account *account.StateAccount) error {
@@ -70,6 +85,9 @@ func (w *PlainStateWriter) UpdateAccountData(address types.Address, original, ac
 	}
 	// Reth-style: Account row carries CodeHash inline; PlainContractCode
 	// and IncarnationMap are no longer maintained (Phase D).
+	if w.skipPlainAccount() {
+		return nil
+	}
 	return w.db.Put(modules.Account, address[:], account.MarshalV2())
 }
 
@@ -89,6 +107,9 @@ func (w *PlainStateWriter) DeleteAccount(address types.Address, original *accoun
 		if err := w.csw.DeleteAccount(address, original); err != nil {
 			return err
 		}
+	}
+	if w.skipPlainAccount() {
+		return nil
 	}
 	return w.db.Delete(modules.Account, address[:])
 }

@@ -1356,7 +1356,7 @@ func (r *BufferedPlainStateReader) ReadAccountData(address types.Address) (*acco
 	// 3. MDBX → cache.
 	r.buf.misses.Add(1)
 	r.buf.acctMisses.Add(1)
-	enc, err := r.db.GetOne(modules.Account, address[:])
+	enc, err := modules.ReadLatestAccount(r.db, address[:])
 	if err != nil {
 		return nil, err
 	}
