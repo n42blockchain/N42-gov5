@@ -1082,6 +1082,60 @@ n42-rs does with persistence and what round 19's design does with the vote.
 **Getting the kind right matters more than getting the magnitude large.** It
 took eleven rounds to turn that sentence into something with data behind it.
 
+## 6l. Round 26: the `Account` write stops -- registered before the round ran
+
+Round 25 closed the class "make one stage 20% faster". What it left open is the
+other kind of change: work that stops existing rather than gets faster. Round 19
+named the candidate -- `Account`, 15,682 random-keyed rows a block, one 4 KB
+page each, 88% of the 71 MB MDBX dirties per block, and a duplicate of the
+entry log -- and round 21 proved the tree answers the same reads (zero
+mismatches in a million). Round 26 stops the write.
+
+**The lever.** `N42_STATE_WRITE_QMDB_ONLY=1` (which refuses to start without
+`N42_STATE_READ_QMDB=1`). The plain writer leaves `Account` alone for every
+block after genesis; every head-state read -- execution, the miner's build, the
+txpool's nonce and balance, RPC `latest`, the history fallback for an account
+unchanged since the queried block -- goes to the live tree through
+`modules.ReadLatestAccount`, the one seam all of them now share. Changesets are
+still written, so history is intact. Out-of-band readers (txpool, RPC) run on
+other goroutines, so the tree owner now takes a lock around each mutation and
+readers fault evicted entries through their own transaction.
+
+**Design.** A-B-B-A, warm-up discarded. Every leg reads through QMDB; only the
+B legs stop the write, so the single variable is the write. Same supply as
+rounds 24-25 (1,200 x 2,500, rate 40,000, 22,857 recipients), write probe on.
+Interlock: the node logs `QMDB-only account persistence` once at start when
+the flag is on; a B leg is a B leg only if all seven nodes logged it after that
+leg's log mark, an A leg only if none did.
+
+**What this does to the chain, permanently.** From the first B leg the
+fleet's `Account` table is frozen. The A legs that follow are still valid --
+they read through the tree -- but the fleet must run with
+`N42_STATE_READ_QMDB=1` from now on until the table is rebuilt.
+`QMDBMeta.accountFrozenAt` records the first block the table missed; a repair
+is every address in an `AccountChangeSet` from there to the head, re-read from
+the tree. Snap-sync SERVING and the state-dump tools read the stale table until
+then. This is why it is a typed-out environment lever and not a default.
+
+**Registered predictions.**
+
+1. The write probe's `Account` row count is 0 in the B legs and ~15,700 in the
+   A legs (this is the interlock's second half; if it fails, nothing below is
+   read).
+2. `dirtyBytes` per full-block write transaction falls from ~71 MB to under
+   15 MB in the B legs (the remaining tables are append-ordered).
+3. `blockwrite phases` `write` per block falls by at least 40% in the B legs
+   (round 25 moved it 43% by removing the fsync; this removes the pages).
+4. Blocks per minute: registered threshold **5%** on the quiet-box floor of
+   3.6%. FALSIFIED IF the B mean is within 5% of the A mean while predictions
+   1-3 hold: then bytes are not on the critical path either, and the serial
+   chain is the whole story.
+
+What the round cannot say: anything about a 163,000-transaction block. At
+22,857 transactions a block this rig's ceiling is set by the cycle, and the
+comparison with n42-rs's 365,399 TPS (163,000 a block at 0.42 s) needs the
+block size first. That is the round after this one.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
