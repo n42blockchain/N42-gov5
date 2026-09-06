@@ -1827,6 +1827,50 @@ the followers decide on the block by their own execution either way.
 4. No "write failed AFTER the Proposal left" warning on any node; zero
    steady-state timeouts.
 
+### Result: recv fell 300 ms, r1 rose 300 ms, and the view did not move
+
+14:08-15:01 UTC; the warm-up was lost at launch (node4 stalled after its
+index load, the second such stall, intermittent and not yet caught in the
+act), so A1 is the effective warm-up. node0, medians.
+
+| leg | ceiling | win blocks | win TPS | import | follower recv | follower r1 | follower view | leader propose | leader r2 |
+|-----|--------:|-----------:|--------:|-------:|--------------:|------------:|--------------:|---------------:|----------:|
+| B1 | 3.423G | 24 / 23 | 38,132 / 37,122 | 866 | **1,546** | **880** | 2,588 | 1,264 | 1,014 |
+| B2 | 3.423G | 24 / 24 | 38,409 / 38,290 | 837 | **1,446** | **858** | 2,500 | 1,249 | 919 |
+| A2 | 480M | 80 / 84 | 30,476 | 277 | 475 | 236 | 732 | 394 | 252 |
+| round 33 B (reference) | 3.423G | 22-25 | 34.8-39.2k | 847 | 1,781-1,829 | 626-660 | 2,540-2,552 | 1,394-1,644 | 662-667 |
+
+Every leader block over 50k on node0 (14 of 14) was proposed early; the
+leader's write (205 ms median) is off recv; no "write failed after the
+Proposal" on any node. Predictions: (1) recv down 150-300 ms -- **held**:
+-280 to -330. (2) B up 5-12% -- **falsified**: 37.9k against 36.6k, +3.5%,
+inside the floor, because r1 rose by what recv lost. (3) A unchanged --
+**held**, 80/84. (4) no post-Proposal write failure, no timeouts -- **held**.
+
+**What the two rounds together say.** The follower's view is the time from
+its view start to its COMMIT vote, and the commit vote waits for its own
+import (the two-phase gate). The import starts when the body arrives (the
+push) and takes ~850 ms; moving the Proposal earlier moved the prepare vote
+earlier and nothing else. So at ~95k a block the cycle is: leader's fill and
+seal (~0.9-1.0 s after its view starts) -> push -> followers' import (0.85 s)
+-> commit QC -> next view. Two things are on it and both are work, not
+waits: the leader's fill on the critical path, and the import. The write is
+gone from both sides.
+
+The next kind of change is the one n42-rs has and this chain does not:
+build the next block while the current one imports. The speculative build
+exists (it builds on the head as soon as the head lands), but the leader's
+view starts at the QC, before its own import of the previous block has
+finished, so the speculative block is not ready and the view-triggered fill
+runs in full. Building on the in-memory post-state of the block being
+imported -- an overlay the followers already hold in the IntraBlockState
+they are executing -- is the change; it is round 35's design question, not
+a knob.
+
+Adopted for the benchmark line: `N42_PUSH_BEFORE_WRITE=1` and
+`N42_PROPOSE_BEFORE_WRITE=1` (the second costs nothing and removes the
+leader's write from the view's clock).
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
