@@ -152,6 +152,10 @@ const (
 // =============================================================================
 
 type BlockChain struct {
+	// badSiblings: blocks this process failed to validate (see markBadSibling).
+	badSiblingsMu sync.RWMutex
+	badSiblings   map[types.Hash]struct{}
+
 	chainConfig  *params.ChainConfig
 	ctx          context.Context
 	cancel       context.CancelFunc

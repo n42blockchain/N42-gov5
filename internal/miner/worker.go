@@ -85,6 +85,9 @@ type blockSealNotifier interface {
 // height extending a given parent. See BlockChain.LowestSiblingAtHeight.
 type siblingLookup interface {
 	LowestSiblingAtHeight(number uint64, parentHash types.Hash) (block.IBlock, bool)
+	// BadSibling reports a block this node failed to validate; such a block
+	// is never re-proposed, whichever path would have picked it.
+	BadSibling(hash types.Hash) bool
 }
 
 // leaderAware is implemented by leader-driven consensus engines (HotStuff) so
@@ -474,6 +477,11 @@ func (w *worker) resultLoop() error {
 			// Short circuit when receiving duplicate result caused by resubmitting.
 			if w.chain.HasBlock(blk.Hash(), blockNumber.Uint64()) {
 				if usesTimerDrivenSealing(w.engine) {
+					continue
+				}
+				if sl, ok := w.chain.(siblingLookup); ok && sl.BadSibling(blk.Hash()) {
+					log.Warn("miner: deterministic rebuild equals a block this node failed to validate; not re-proposing it",
+						"number", blockNumber.Uint64(), "hash", blk.Hash().Hex()[:12])
 					continue
 				}
 				// Leader-driven (HotStuff): the deterministic rebuild collides
