@@ -1764,6 +1764,44 @@ leader's write is 100-200 ms of a 1.7 s recv.
    this shape either, and the push and the fill are what remain.
 3. A legs unchanged (73-76 blocks); timeouts no worse than round 32.
 
+### Result: +8.7% at 22,857, +4% at ~95k, and the Proposal is what still trails
+
+13:08-14:01 UTC, all five legs, interlocks held, every node up on time.
+node0, medians.
+
+| leg | ceiling | win1 / win2 blocks | win TPS | import | follower recv | follower r1 | follower view | leader propose | leader r2 |
+|-----|--------:|-------------------:|--------:|-------:|--------------:|------------:|--------------:|---------------:|----------:|
+| A1 | 480M | 80 / 84 | 30,476 | 273 | 570 | **127** | **734** | 493 | 118 |
+| B1 | 3.423G | 25 / 22 | 39,216 / 34,825 | 848 | 1,829 | **626** | 2,552 | 1,644 | 667 |
+| B2 | 3.423G | 23 / 23 | 36,042 / 36,202 | 847 | 1,781 | **660** | 2,540 | 1,394 | 662 |
+| A2 | 480M | 80 / 83 | 30,476 | 281 | 576 | **135** | **739** | 511 | 132 |
+| round 32 A2 (reference) | 480M | 73 / 74 | 27,809 / 28,190 | 256 | 561 | 215 | 805 | 494 | 215 |
+| round 32 B (reference) | 3.423G | 22-23 | 34.0-36.1k | 791-861 | 1,688-1,754 | 788-838 | 2,557-2,639 | 1,284-1,594 | 770-868 |
+
+Predictions: (1) recv down 100-250 ms -- **not held**: recv went UP 90 ms at
+B while r1 fell 160 ms, because the Proposal still follows the write and
+recv is measured to the Proposal; the import simply started earlier under
+the same clock. (2) B up 5-10% -- **+4%**, inside the floor. (3) A unchanged
+-- **not held, the other way**: 80/80 blocks against 73/74, **+8.7%**, with r1
+215 -> 130 ms. Round 17 measured this same lever's -127 ms on the view total
+and could not read its throughput on an 83% floor; on a 3.6% floor it is a
+clean 8.7%, and it is adopted for the benchmark line.
+
+**What it says about the shape.** At 22,857 the follower's import (250 ms)
+is the same size as the leader's write it now overlaps, so the overlap is
+the whole import. At ~95k the import is 850 ms and the leader's write ~150,
+so the overlap covers a fifth of it, and the Proposal -- which carries the
+prepare vote and so the view -- still leaves after the write. Moving the
+Proposal before the write is the next lever: the leader's durable consensus
+state is its vote journal, written before the signature leaves, and the
+body has already been pushed, so a crash between push and write costs the
+leader a re-fetch, not the fleet a fork. n42-rs's leader never writes on the
+critical path at all.
+
+The B-leg timeouts (5-6 per leg on node0) are unchanged by this round and
+are not the deferred-leader case any more (every deferred gate resumed);
+they are the other open item.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
