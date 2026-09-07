@@ -2115,6 +2115,59 @@ Round 35g's runner (offsets 430M-438M) with three changes:
     cycle, and this round does not touch it. A rise past 40k means the
     import was still on the critical path more than the view timing shows.
 
+### Result: 11 held, 12 fell upward, and the generator is now the ceiling
+
+Warm-up lost again to a short index load (node2, 6.2M of 8.5M keys; see
+`docs/OPEN_ISSUES.md`). A1 33.5k / 32.0k at blockTime 0.68 / 0.61 s (35g:
+30.5k / 29.7k at 0.75 s -- the A leg had never moved off serial's number
+before). B1 44.1k / 39.0k, the first window past 40k; the second window ran
+at 25% occupancy (41k transactions a block, 1.05 s blocks): one generator
+at target-depth 220k no longer fills the blocks, so B2/A2 below are
+supply-bound and 35i runs two.
+
+Node1 at ~100k transactions: 1 wave, recover ~40, setup ~25, exec 82-129,
+validate 8, apply 15 ms; `proc` 373-478 ms, import `total` 578-682 ms
+(35g at 117k: exec 385, proc 765, total 1,022). At 22,857: exec 31 ms
+(35g: 62-68). Prediction 11 held. 12 fell the other way: the import was
+still on the critical path -- the leader imports v-1 before it builds v,
+so a faster import moved the A leg 10% and B1 12%.
+
+One correction to this round's registration: the pool-hinted sender gate
+(f7ae8d0c) is inert on this fleet. The gate only runs for a transaction
+that DECLARES a sender on the wire, and the flood's raw legacy
+transactions arrive with From nil; `hintHits` is 0 on every block, and
+the profile's secp256k1 time is the pool's own prewarm of gossip arrivals
+(70%) and the pre-wave recovery (18%, mostly sender-cache hits). The 35h
+gain is per-worker reuse and GOGC=300. The gate change stands for chains
+whose transactions carry From.
+
+## 6x. Round 35i: two generators, the pool's reorg, and the fill's own overhead -- registered before the round ran
+
+35h's runner with two floods (offsets 440M-448M; target-depth 220k each,
+pool 500k), and 90342be7: the pool's reset treats a head that extends the
+old one as a linear extension (headers walked, no bodies loaded) instead
+of a reorg whose difference is empty -- 250-480 ms of a 0.8-1.1 s reorg at
+100k-transaction blocks. 710d0c13 times the fill's pool snapshot and stale
+trim; 5b095b9f times the block end and Finalize after the executor;
+debb97ef names the twig if a startup load fails, and the runner keeps the
+stalled node's run.log.
+
+**Registered predictions.** 1-4, 6-8, 10, 11 stand. Added:
+
+13. B legs at full occupancy again (blocks >= 90% of the 163k ceiling in
+    the window's mean); B TPS at or above 44k in both windows. FALSIFIED
+    IF occupancy stays under 60% with two generators -- then the harness,
+    not the chain, is the ceiling, and the next round changes the
+    generator (more concurrency or a third flood), not the node.
+14. `staleTrimmed` on the leader's fill falls below one block's worth
+    (< 163k) from 377k, and the pool's `reset` phase under 50 ms at 100k
+    blocks. FALSIFIED IF reset stays over 200 ms -- then the lag is not the
+    body walk.
+15. `finalizeMs` on the follower names most of the ~220 ms of `proc`
+    outside the executor at 100k transactions. FALSIFIED IF it is under
+    50 ms -- then the remainder is the caller's commit and root, and the
+    next timer goes there.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
