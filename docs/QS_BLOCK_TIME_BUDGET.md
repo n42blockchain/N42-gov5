@@ -2192,7 +2192,11 @@ busy. On the follower at 163k: exec 260, recover 227 (the 1M-slot sender
 cache thrashes with ~440k transactions in flight), finalize 185, apply
 22 ms; import 930 ms at 142k. Prediction 14: reset met, staleTrimmed
 not (the reorg still lags a block: 1.6 s per reorg). Prediction 15 held
-(finalize ~190 ms). 13 could not be read. The round was stopped after
+(finalize ~190 ms) -- and it is the state root: the engine's Finalize
+calls `ibs.IntermediateRoot()` (the QMDB apply over ~23k changed
+accounts; `blockimport phases` shows root=0 because it sits inside
+proc). Real work, the next thing to parallelise on the follower once the
+leader is off the pool lock. 13 could not be read. The round was stopped after
 the warm-up window; 35j is the same runner with the snapshot.
 
 ## 6y. Round 35j: the builder reads the pool without the lock -- registered before the round ran
