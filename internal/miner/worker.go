@@ -27,6 +27,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"runtime/debug"
 	"sort"
 	"sync"
@@ -1287,6 +1288,9 @@ func (w *worker) workLoop(recommit time.Duration) error {
 	}
 }
 
+// parallelFillEnabled gates the builder's Block-STM fill (N42_MINER_PARALLEL_FILL=1).
+func parallelFillEnabled() bool { return os.Getenv("N42_MINER_PARALLEL_FILL") == "1" }
+
 func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs *state.IntraBlockState, getHeader func(hash types.Hash, number uint64) *block.Header) (retErr error) {
 	header := env.header
 	headerNumber, err := requireHeaderNumber(header, "mining header number unavailable")
@@ -1489,6 +1493,69 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 		return nil
 	}
 	txSet := builder.NewTxByPriceAndNonce(pending, header.BaseFee)
+
+	// Round 35k: the builder's fill was the leader's largest single phase at
+	// 163k transactions (commit 611-683 ms, ~3.8 us/tx serial), with the
+	// import already on Block-STM at ~200 ms. Pick the candidates in the
+	// same price-and-nonce order without executing (gas by each
+	// transaction's limit, so the block cannot exceed the ceiling), run them
+	// through the same executor the followers use, drop the ones that fail
+	// their pre-check (they wrote nothing; a dropped nonce fails its sender's
+	// later candidates the same way), and hand the survivors to assemble.
+	// Bundles, BAL capture and fee-recipient candidates keep the serial path.
+	if parallelFillEnabled() && balCap == nil && env.tcount == 0 && !w.chainConfig.IsBAL(env.header.Time) {
+		if bc, ok := w.chain.(*internal.BlockChain); ok {
+			tPickP := time.Now()
+			budget := env.gasPool.Gas()
+			candidates := make([]*transaction.Transaction, 0, estCap)
+			for {
+				tx := txSet.Peek()
+				if tx == nil {
+					break
+				}
+				if tx.Gas() > budget {
+					txSet.Pop()
+					if budget < params.TxGas {
+						break
+					}
+					continue
+				}
+				txSize, decision, sizeErr := sizeLimiter.admit(tx)
+				if sizeErr != nil || decision != packAccept {
+					if decision == packStop {
+						break
+					}
+					txSet.Pop() // packSkipAccount, or unencodable: skip the account
+					continue
+				}
+				sizeLimiter.add(txSize)
+				budget -= tx.Gas()
+				candidates = append(candidates, tx)
+				txSet.Shift()
+			}
+			dPickP := time.Since(tPickP)
+			tRun := time.Now()
+			included, receipts, usedGas, failed, perr := bc.BuildParallel(header, candidates, ibs, internal.GetHashFn(header, getHeader))
+			if perr == nil {
+				env.txs = append(env.txs, included...)
+				env.receipts = append(env.receipts, receipts...)
+				env.tcount += len(included)
+				header.GasUsed += usedGas
+				if err := env.gasPool.SubGas(usedGas); err != nil {
+					return err
+				}
+				log.Info("miner: parallel fill", "candidates", len(candidates), "included", len(included), "failed", failed,
+					"pick", dPickP, "run", time.Since(tRun), "pendingSnapshot", dPending, "trim", dTrim, "staleTrimmed", staleTrimmed)
+				return nil
+			}
+			if !errors.Is(perr, internal.ErrParallelNotApplicable) {
+				return perr
+			}
+			// Not applicable: rebuild the set and take the serial path.
+			txSet = builder.NewTxByPriceAndNonce(pending, header.BaseFee)
+			sizeLimiter = newBlockSizeLimiter(header)
+		}
+	}
 	log.Tracef("fillTransactions pending accounts:%d", len(pending))
 	// Round 27: a block that comes out a fifth full with a pool the harness
 	// reports at 200,000 pending is only diagnosable if the build says what

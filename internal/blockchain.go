@@ -393,6 +393,21 @@ func (bc *BlockChain) SetQMDBRootComputer(rc *commitment.QMDBRootComputer) {
 // falls back to the default MPT state root). tx must be a read tx at the parent
 // head; the QMDB DB state tracks the head because writeBlockWithState flushes
 // per block.
+// BuildParallel runs the builder's candidate list through Block-STM on ibs
+// (lenient: failed candidates are dropped) and returns the survivors with
+// their receipts. See StateProcessor.BuildParallel.
+func (bc *BlockChain) BuildParallel(header *block.Header, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash) (included []*transaction.Transaction, receipts block.Receipts, usedGas uint64, failed int, err error) {
+	sp, ok := bc.process.(*StateProcessor)
+	if !ok || sp == nil {
+		return nil, nil, 0, 0, ErrParallelNotApplicable
+	}
+	run, err := sp.BuildParallel(header, txs, ibs, blockHashFunc)
+	if err != nil {
+		return nil, nil, 0, 0, err
+	}
+	return run.Included, run.Receipts, run.UsedGas, run.Failed, nil
+}
+
 func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx) state.RootComputer {
 	if !bc.qmdbEnabled {
 		return nil

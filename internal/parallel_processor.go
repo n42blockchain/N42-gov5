@@ -25,6 +25,7 @@ package internal
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -122,21 +123,67 @@ func touchesAny(txs []*transaction.Transaction, addrs []types.Address) bool {
 // Note: the stateWriter parameter may be a NoopWriter (from evmRecord). All
 // state changes MUST be applied to ibs, which CommitBlock later flushes to
 // the real database writer.
+// ErrParallelNotApplicable says a lenient (builder) run cannot use the
+// parallel path for this transaction list; the caller runs its serial fill.
+var ErrParallelNotApplicable = errors.New("parallel build not applicable")
+
+// parallelRun is the outcome of one Block-STM execution of a transaction
+// list. In strict mode every transaction succeeded; in lenient mode the
+// failed ones (a nonce, funds or gas pre-check) are dropped -- they wrote
+// nothing, so the state is exactly what the survivors alone produce -- and
+// Included/Receipts hold the survivors in order with cumulative gas and
+// indices renumbered.
+type parallelRun struct {
+	Included []*transaction.Transaction
+	Receipts block.Receipts
+	Logs     []*block.Log
+	UsedGas  uint64
+	Failed   int
+	Nopay    map[types.Address]*uint256.Int
+}
+
+// ProcessParallel executes a block's transactions with Block-STM (strict:
+// any transaction failure fails the block) and finalizes it.
 func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockState, stateReader state.StateReader, stateWriter state.WriterWithChangeSets, blockHashFunc func(n uint64) types.Hash) (block.Receipts, map[types.Address]*uint256.Int, []*block.Log, uint64, error) {
 	txs := b.Transactions()
-	numTxs := len(txs)
-	tStart := time.Now()
-	senderHintHits := 0
-
-	// Fall back to sequential for small blocks (overhead not worth it).
-	if numTxs <= 4 {
+	if len(txs) <= 4 {
 		return p.Process(b, ibs, stateReader, stateWriter, blockHashFunc)
 	}
-
 	concreteHeader, ok := b.Header().(*block.Header)
 	if !ok {
 		return nil, nil, nil, 0, fmt.Errorf("ProcessParallel: invalid header type assertion for block %v", b.Number64())
 	}
+	if touchesAny(txs, deferredFeeRecipients(p.config, concreteHeader)) {
+		// A block that sends from or to a fee recipient cannot defer the
+		// credit (see runParallel) and runs sequentially.
+		return p.Process(b, ibs, stateReader, stateWriter, blockHashFunc)
+	}
+	run, err := p.runParallel(concreteHeader, b.Hash(), txs, ibs, blockHashFunc, false)
+	if err != nil {
+		return nil, nil, nil, 0, err
+	}
+	return run.Receipts, run.Nopay, run.Logs, run.UsedGas, nil
+}
+
+// BuildParallel is the builder's lenient run over a candidate list: the
+// header is the one being built (GasUsed unset), failed candidates are
+// dropped, and neither block end nor Finalize runs -- the builder's assemble
+// does that. ErrParallelNotApplicable when a candidate touches a fee
+// recipient.
+func (p *StateProcessor) BuildParallel(header *block.Header, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash) (*parallelRun, error) {
+	if touchesAny(txs, deferredFeeRecipients(p.config, header)) {
+		return nil, ErrParallelNotApplicable
+	}
+	return p.runParallel(header, types.Hash{}, txs, ibs, blockHashFunc, true)
+}
+
+// runParallel is the shared core: sender gate, per-worker readers, the
+// executor, the fold into ibs, the deferred fee credit; strict mode then
+// validates gas against the header and finalizes.
+func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash types.Hash, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash, lenient bool) (*parallelRun, error) {
+	numTxs := len(txs)
+	tStart := time.Now()
+	senderHintHits := 0
 
 	// Same consensus-safety gate as the serial Process: this executor also
 	// reaches AsMessage, which trusts a wire-declared `From`. Without it a
@@ -152,7 +199,7 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 		}
 		hits, err := verifyBlockSendersHinted(signer, txs, hints)
 		if err != nil {
-			return nil, nil, nil, 0, fmt.Errorf("block %s: %w", concreteHeader.Number.String(), err)
+			return nil, fmt.Errorf("block %s: %w", concreteHeader.Number.String(), err)
 		}
 		senderHintHits = hits
 		// A block off the wire carries RLP only: From() is nil until the
@@ -177,12 +224,9 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 	// BALANCE) are not covered by the address scan; the benchmark workload is
 	// plain transfers, and an EVM-visible difference shows as a BAD BLOCK.
 	feeRecipients := deferredFeeRecipients(chainConfig, concreteHeader)
-	if touchesAny(txs, feeRecipients) {
-		return p.Process(b, ibs, stateReader, stateWriter, blockHashFunc)
-	}
 
 	if err := ProcessExecutionBlockStart(concreteHeader.ParentBeaconRoot, chainConfig, ibs, concreteHeader, p.engine); err != nil {
-		return nil, nil, nil, 0, err
+		return nil, err
 	}
 	// blockContext is a value type — each goroutine's NewEVM copies it, safe to share.
 	blockContext := NewEVMBlockContext(concreteHeader, blockHashFunc, p.engine, chainConfig, nil)
@@ -205,7 +249,7 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 	mode := commitment.QMDBStateReadMode()
 	useQMDB := mode != commitment.QMDBReadOff && p.bc != nil && p.bc.qmdbEnabled && p.bc.qmdbRootComputer != nil
 	if p.bc == nil || p.bc.ChainDB == nil {
-		return nil, nil, nil, 0, fmt.Errorf("ProcessParallel: no chain database for per-worker readers")
+		return nil, fmt.Errorf("ProcessParallel: no chain database for per-worker readers")
 	}
 	// A worker owns one IntraBlockState, one EVM, one reader and one writer
 	// for the whole block and rebinds them per transaction: allocating them
@@ -260,11 +304,11 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 		clear(wc.observed)
 		txIBS, pWriter := wc.ibs, wc.writer
 
-		txIBS.Prepare(tx.Hash(), b.Hash(), txIndex)
+		txIBS.Prepare(tx.Hash(), blockHash, txIndex)
 
 		// Each tx gets its own gas pool (block-level gas validation happens after).
 		gp := new(common.GasPool)
-		gp.AddGas(b.GasLimit())
+		gp.AddGas(concreteHeader.GasLimit)
 
 		vmenv := wc.evm
 
@@ -317,29 +361,53 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 	}
 	tRunEnd := time.Now()
 
-	// Check if any transaction had a hard error.
+	// Strict: any transaction failure fails the block. Lenient: a failed
+	// candidate wrote nothing (the failure is a pre-check, before FinalizeTx),
+	// so it is dropped and the survivors are renumbered.
+	failed := 0
 	for i, r := range results {
-		if r.Err != nil {
-			return nil, nil, nil, 0, fmt.Errorf("could not apply tx %d from block %d [%v]: %w",
-				i, b.Number64(), txs[i].Hash().String(), r.Err)
+		if r.Err == nil {
+			continue
 		}
+		if !lenient {
+			return nil, fmt.Errorf("could not apply tx %d from block %d [%v]: %w",
+				i, concreteHeader.Number.Uint64(), txs[i].Hash().String(), r.Err)
+		}
+		failed++
 	}
 
 	// Collect receipts and logs, fixing cumulative gas.
 	usedGas := uint64(0)
 	var receipts block.Receipts
 	var allLogs []*block.Log
-
+	included := txs
+	if failed > 0 {
+		included = make([]*transaction.Transaction, 0, numTxs-failed)
+	}
 	for i := 0; i < numTxs; i++ {
+		if results[i].Err != nil {
+			continue
+		}
 		tr := txResults[i]
 		usedGas += tr.gasUsed
-
 		if tr.receipt != nil {
 			tr.receipt.CumulativeGasUsed = usedGas
+			if failed > 0 {
+				tr.receipt.TransactionIndex = uint(len(included))
+				for _, l := range tr.receipt.Logs {
+					l.TxIndex = uint(len(included))
+					l.Index = uint(len(allLogs))
+					allLogs = append(allLogs, l)
+				}
+			}
 			receipts = append(receipts, tr.receipt)
 		}
-
-		allLogs = append(allLogs, tr.logs...)
+		if failed == 0 {
+			allLogs = append(allLogs, tr.logs...)
+		}
+		if failed > 0 {
+			included = append(included, txs[i])
+		}
 	}
 
 	// Apply MVS final state to the real IntraBlockState.
@@ -347,7 +415,7 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 	// changes. writeBlockWithState later calls ibs.CommitBlock() to flush to DB.
 	tApplyStart := time.Now()
 	if err := applyMVSToIBS(executor.MVS(), numTxs, ibs); err != nil {
-		return nil, nil, nil, 0, fmt.Errorf("ProcessParallel: failed to apply MVS state: %w", err)
+		return nil, fmt.Errorf("ProcessParallel: failed to apply MVS state: %w", err)
 	}
 	tApplied := time.Now()
 
@@ -372,29 +440,30 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 		ibs.AddBalance(r, totals[r])
 	}
 
-	// Validate total gas used.
-	if usedGas != concreteHeader.GasUsed {
-		return nil, nil, nil, 0, fmt.Errorf("gas used by execution: %d, in header: %d", usedGas, concreteHeader.GasUsed)
-	}
-	if _, err := ProcessExecutionBlockEnd(nil, p.config, ibs, concreteHeader, p.engine); err != nil {
-		return nil, nil, nil, 0, err
-	}
-
-	// Finalize block (rewards, etc.) — operates on ibs which now has all changes.
+	// Strict: validate gas against the header, then block end and Finalize
+	// (rewards, the state root). Lenient: the builder's assemble does those.
 	var nopay map[types.Address]*uint256.Int
-	var err error
-	_, nopay, err = p.engine.Finalize(p.bc, concreteHeader, ibs, txs, nil)
-	if err != nil {
-		return nil, nil, nil, 0, err
+	if !lenient {
+		if usedGas != concreteHeader.GasUsed {
+			return nil, fmt.Errorf("gas used by execution: %d, in header: %d", usedGas, concreteHeader.GasUsed)
+		}
+		if _, err := ProcessExecutionBlockEnd(nil, p.config, ibs, concreteHeader, p.engine); err != nil {
+			return nil, err
+		}
+		var err error
+		_, nopay, err = p.engine.Finalize(p.bc, concreteHeader, ibs, txs, nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if execs, aborts := executor.Stats(); executor.FellBack() || numTxs >= 1000 {
 		execNs, valNs := executor.WaveTimes()
-		log.Info("parallel block", "n", b.Number64(), "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
+		log.Info("parallel block", "n", concreteHeader.Number.Uint64(), "lenient", lenient, "failed", failed, "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
 			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
 			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "finalizeMs", time.Since(tApplied).Milliseconds())
 	}
 
-	return receipts, nopay, allLogs, usedGas, nil
+	return &parallelRun{Included: included, Receipts: receipts, Logs: allLogs, UsedGas: usedGas, Failed: failed, Nopay: nopay}, nil
 }
 
 // parallelApplyTx executes a single transaction in the parallel context.
