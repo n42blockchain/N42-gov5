@@ -2172,6 +2172,48 @@ stalled node's run.log.
     50 ms -- then the remainder is the caller's commit and root, and the
     next timer goes there.
 
+### Result: stopped in the warm-up -- two generators put the leader on the pool lock
+
+The first launch went out with GOMEMLIMIT 12 GiB (the runner file was
+edited while the waiter was starting it) and was stopped before its
+flood; the relaunch ran the warm-up with the 7 GiB limit (nodes at
+~7 GB anon, 39 GB available at 163k blocks). Its first window: 32.6k
+TPS at 100% occupancy and 5.0 s blocks. The fill breakdown said why:
+
+| leader, 141-163k tx | pendingSnapshot | trim | commit | heap | staleTrimmed |
+|---|---|---|---|---|---|
+| node0, three builds | 0.97-1.94 s | 8-10 ms | 570-683 ms | 53-61 ms | 294-358k |
+
+`Pending()` is not the copy (713-820 accounts) but the wait for the pool
+lock, which two generators' inserts (~250 batches a second) and the
+reorg (reset now 0 ms -- the linear-extension path -- but demote 322,
+promote 79, nonces 28 ms under lock, and its own lockWait 1.0 s) keep
+busy. On the follower at 163k: exec 260, recover 227 (the 1M-slot sender
+cache thrashes with ~440k transactions in flight), finalize 185, apply
+22 ms; import 930 ms at 142k. Prediction 14: reset met, staleTrimmed
+not (the reorg still lags a block: 1.6 s per reorg). Prediction 15 held
+(finalize ~190 ms). 13 could not be read. The round was stopped after
+the warm-up window; 35j is the same runner with the snapshot.
+
+## 6y. Round 35j: the builder reads the pool without the lock -- registered before the round ran
+
+35i's runner (offsets 450M-458M, two floods, GOMEMLIMIT 7 GiB) with
+4d993c36 -- the reorg publishes the pending map before it unlocks and
+Pending(false) hands out a shallow copy of it with no lock -- and
+N42_SENDER_CACHE_SLOTS=4194304.
+
+**Registered predictions.** 13-15 stand. Added:
+
+16. `pendingSnapshot` under 20 ms on every build; the leader's propose
+    phase under 1.2 s at 163k; blockTime at B under 2.5 s with two
+    generators at 100% occupancy. FALSIFIED IF blockTime stays over 4 s
+    -- then the lock is held elsewhere on the build path (the reorg's
+    demote, or the inserts themselves), and the next timer is inside
+    fillTx's commit loop.
+17. `recoverMs` at 163k under 80 ms with the 4M-slot cache. FALSIFIED IF
+    it stays over 150 ms -- then the misses are not capacity, and the
+    pool's prewarm and the import see different signers.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
