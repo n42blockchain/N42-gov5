@@ -43,8 +43,19 @@ the process exited (the pprof dump at +150 s is 0 bytes because the
 server never came up). The stalled start's run.log was overwritten by the
 next leg's start before it was read. debb97ef names the twig in the error
 and logs it; the 35i runner copies run.log/run.err at +150 s and reports
-whether the process is alive. Done means: the error named and fixed, or
-the load made retry-safe.
+whether the process is alive.
+
+Round 35j named it: node2, `qmdb: load twig 64710 of 132328 (nextSlot
+271007173, active 132327, indexed so far 6260263): qmdb: twig metadata
+inconsistent (stored root does not match leafRoot+bits)`, logged at
+01:32:51 and the process exited; the same store loaded all 132,328 twigs
+at 01:42. A sealed twig in the middle of the store, read through one
+read transaction, disagreed with its own metadata once and not the next
+time -- a transient read, not the disk. 88b01d9e retries the startup load
+three times on a fresh computer and read view. Still open: WHY a sealed
+twig's stored root can disagree with its leaves on one read (a stale
+leaf row from the evict/flush path? a value read past its transaction?),
+and whether the same can happen on the live path.
 
 ## node3 one-time in-memory divergence (2026-09-06, round 32 first start)
 
