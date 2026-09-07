@@ -207,7 +207,10 @@ type TxsPool struct {
 	// The slices are the lists' flatten caches, which are never mutated in
 	// place (Put/Filter drop the cache; Forward reslices), so a snapshot
 	// stays valid after the lists move on.
-	pendingSnap   atomic.Pointer[map[types.Address][]*transaction.Transaction]
+	pendingSnap atomic.Pointer[map[types.Address][]*transaction.Transaction]
+	// reorgWaiting is set while a reorg waits for pool.mu; inserters yield
+	// to it (see addTxs).
+	reorgWaiting  atomic.Bool
 	currentMaxGas uint64
 
 	ctx    context.Context

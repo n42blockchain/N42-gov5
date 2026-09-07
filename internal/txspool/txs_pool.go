@@ -373,6 +373,14 @@ func (pool *TxsPool) addTxs(txs []*transaction.Transaction, local, sync bool) []
 	// what already happens to every transaction the pool outlives.
 	accounts := pool.accountsFor(news)
 
+	// A reorg waiting for the lock goes first: with two generators (~250
+	// insert batches a second, each holding the lock ~2 ms) the mutex's FIFO
+	// hand-off made the reorg wait 1.4 s behind the queued inserters (round
+	// 35j), promotion lagged, and the A leg's second window ran at 72%
+	// occupancy with 400k transactions pending.
+	for pool.reorgWaiting.Load() {
+		time.Sleep(200 * time.Microsecond)
+	}
 	pool.mu.Lock()
 	newErrs, dirtyAddrs := pool.addTxsLocked(news, local, accounts)
 	pool.mu.Unlock()
@@ -979,7 +987,9 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 	var dReset, dPromote, dDemote, dNonces, dTruncate time.Duration
 	nQueue, nPending := 0, 0
 
+	pool.reorgWaiting.Store(true)
 	pool.mu.Lock()
+	pool.reorgWaiting.Store(false)
 	tLocked := time.Now()
 	if reset != nil {
 		tR := time.Now()
