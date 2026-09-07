@@ -2714,6 +2714,50 @@ harness fix, not a throughput lever. FALSIFIED IF win2 still collapses
 with the eight floods reporting non-zero pool depth; then the pool's
 eviction, not the generators, is what empties the second window.
 
+## 6ah. Rounds 35s/35t/35u: making the generators' closed loop honest (2026-09-07)
+
+**35s (n42-r35y, txflood-r32 `-depth-share 8`), aborted after its
+warm-up.** Prediction 32's first half held -- win1 35,510 and win2
+35,143, both at 16% occupancy, 0.74 s blocks of ~26k -- and that
+stability was the finding: `-depth-share N` is a fixed point at ANY
+rate. The generators start staggered; the one running alone credits
+itself with an eighth of blocks that were entirely its own, keeps a
+phantom ~25k in flight forever, and from then on every generator tops up
+exactly what it credits itself with. The chain consumes what it is given
+and the generators give what was consumed. Every pool reported zero
+pending while every generator believed it had 22-28k in flight; the
+leaders' fills found 26-40k fresh candidates behind 150-166k already
+mined (`staleTrimmed`).
+
+**35t (txflood-r33 `-depth-by-nonce`), aborted after its warm-up
+windows.** The loop now measures each generator's own in-flight from its
+senders' chain nonces (sender s owns raws[s*perTx:(s+1)*perTx]; 128
+senders refreshed a second, round-robin over the ones with anything in
+flight). Verified live: a sender just included in the head block
+answered latest == pending == 1500 == perTx. With supply honest the B
+warm-up read win1 45,375 at 57.6% occupancy, 2.069 s per block of ~94k
+under rotation (build 0.6 s: align 0.13, fill 0.35, reload 0.16;
+propose 0.35 s; follower import 0.7 s: proc 0.45, write 0.13). Two
+limits showed at once and both are the harness's:
+
+- 1.5M transactions per generator are gone in 3-4 minutes at the real
+  6-8k tx/s each; flood 0 finished before the windows opened, flood 4
+  during win1, and win2 read 26k at 8%.
+- The 300k pool held ~200-280k mined-but-not-yet-demoted transactions
+  (the reorg demotes 190-230 ms a block and lags the leader by about two
+  blocks), so fresh candidates were capped near 95k a block: `candidates
+  97,147 / staleTrimmed 213,407`. Every node at 300-316k pending.
+
+While the last generators were still funding, 26 view timeouts in three
+minutes stretched blocks to 13 s; steady state was 2.07 s.
+
+**35u = 35t with pertx 3000 (3M per generator, 25,385 ETH of faucet a
+round against 44,777 available) and pool 600k/200k.** Prediction 33: B
+blocks over 130k at under 3 s, both windows within 10% of each other,
+B TPS over 50k. FALSIFIED IF fills still cap near 100k with the pool at
+its new limit -- then the stale share scales with the pool and the lever
+is the reorg's demote, not the pool size.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
