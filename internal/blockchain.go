@@ -449,9 +449,14 @@ func (bc *BlockChain) voidMinerRootTrust(reason string) {
 	}
 }
 
-func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx) state.RootComputer {
+// NewMinerRootComputer returns the isolated computer a leader build seals
+// its state root on, or (nil, nil) when the chain does not commit with QMDB.
+// A reload failure is returned as an error rather than swallowed: the caller
+// used to seal on the default root instead, a block no follower accepts and
+// one whose stale write later panicked the worker (round 35r).
+func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx) (state.RootComputer, error) {
 	if !bc.qmdbEnabled {
-		return nil
+		return nil, nil
 	}
 	// PERSISTENT speculative computer: a fresh instance pays a full index
 	// rescan (5.9M point reads, ~5s IO-bound — invisible on CPU profiles) on
@@ -483,10 +488,10 @@ func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx) state.RootComputer {
 		}
 	}
 	if err := rc.ReloadForBuild(tx); err != nil {
-		log.Warn("miner QMDB speculative reload failed; block uses default root", "err", err)
-		return nil
+		log.Warn("miner QMDB speculative reload failed; build abandoned", "err", err)
+		return nil, err
 	}
-	return rc
+	return rc, nil
 }
 
 // PrewarmMinerRootComputer performs the startup pre-warm reload AND the
