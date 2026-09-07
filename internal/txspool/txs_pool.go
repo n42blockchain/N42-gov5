@@ -806,6 +806,14 @@ func (pool *TxsPool) reset(oldBlock, newBlock block.IBlock) {
 				log.Warn("Skipping transaction reset with unavailable head number", "oldErr", oldNumErr, "newErr", newNumErr)
 			} else if depth := uint64(math.Abs(float64(oldNum.Uint64()) - float64(newNum.Uint64()))); depth > 64 {
 				log.Debug("Skipping deep transaction reorg", "depth", depth)
+			} else if pool.linearExtension(oldHeader.Hash(), oldNum.Uint64(), newBlock, newNum.Uint64()) {
+				// The old head is an ancestor of the new one: the pool merely
+				// lagged the chain by a block or more, nothing was discarded and
+				// there is nothing to reinject. The walk below would read every
+				// intermediate block's body to compute an empty difference --
+				// 250-480 ms of a 0.8-1.1 s reorg at 100k-transaction blocks
+				// (round 35g, node0), and that lag is what leaves already-mined
+				// transactions in pending for the next build to trim.
 			} else {
 				var discarded, included []*transaction.Transaction
 				rem := oldBlock
@@ -890,6 +898,37 @@ func (pool *TxsPool) reset(oldBlock, newBlock block.IBlock) {
 // slowReorgThreshold is the pool-reorg cost above which the phase breakdown is
 // logged at Info. A reorg runs on every new head, so anything lower would put a
 // line in the log per block for a path that is normally a few milliseconds.
+// headerByHashReader is what linearExtension needs from the chain; the pool's
+// IBlockChain does not declare it, BlockChain implements it.
+type headerByHashReader interface {
+	GetHeaderByHash(hash types.Hash) (block.IHeader, error)
+}
+
+// linearExtension reports whether the block at oldHash/oldNum is an ancestor
+// of newBlock, walking headers only (no bodies). False when it cannot tell.
+func (pool *TxsPool) linearExtension(oldHash types.Hash, oldNum uint64, newBlock block.IBlock, newNum uint64) bool {
+	if newNum <= oldNum {
+		return false
+	}
+	hr, ok := pool.bc.(headerByHashReader)
+	if !ok {
+		return false
+	}
+	h := newBlock.ParentHash()
+	for n := newNum - 1; n > oldNum; n-- {
+		hdr, err := hr.GetHeaderByHash(h)
+		if err != nil || hdr == nil {
+			return false
+		}
+		ch, ok := hdr.(*block.Header)
+		if !ok || ch == nil {
+			return false
+		}
+		h = ch.ParentHash
+	}
+	return h == oldHash
+}
+
 const slowReorgThreshold = 200 * time.Millisecond
 
 // runReorg runs reset and promoteExecutables on behalf of scheduleLoop.
