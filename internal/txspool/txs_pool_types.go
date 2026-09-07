@@ -199,6 +199,15 @@ type TxsPool struct {
 
 	currentState  ReadState
 	pendingNonces *txNoncer
+	// pendingSnap is the pending map as of the last reorg, published for
+	// Pending(false) to hand out without taking the pool lock: the lock is
+	// held by the inserts (two generators, ~250 batches a second) and by
+	// the reorg (~430 ms a block under lock at 140k-transaction blocks),
+	// and the leader's build waited 1-2 s in Pending() for it (round 35i).
+	// The slices are the lists' flatten caches, which are never mutated in
+	// place (Put/Filter drop the cache; Forward reslices), so a snapshot
+	// stays valid after the lists move on.
+	pendingSnap   atomic.Pointer[map[types.Address][]*transaction.Transaction]
 	currentMaxGas uint64
 
 	ctx    context.Context

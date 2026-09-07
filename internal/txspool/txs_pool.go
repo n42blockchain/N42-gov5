@@ -27,6 +27,7 @@ import (
 	"errors"
 	"math"
 	"math/big"
+	"os"
 	"time"
 
 	"github.com/holiman/uint256"
@@ -181,6 +182,16 @@ func (pool *TxsPool) GetTransaction() (txs []*transaction.Transaction, err error
 // Pending retrieves all currently processable transactions, grouped by origin
 // account and sorted by nonce.
 func (pool *TxsPool) Pending(enforceTips bool) map[types.Address][]*transaction.Transaction {
+	if !enforceTips && pendingSnapshotEnabled() {
+		if snap := pool.pendingSnap.Load(); snap != nil {
+			// Shallow copy: the builder reslices and deletes entries.
+			out := make(map[types.Address][]*transaction.Transaction, len(*snap))
+			for addr, txs := range *snap {
+				out[addr] = txs
+			}
+			return out
+		}
+	}
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
 
@@ -929,6 +940,24 @@ func (pool *TxsPool) linearExtension(oldHash types.Hash, oldNum uint64, newBlock
 	return h == oldHash
 }
 
+// pendingSnapshotEnabled gates Pending(false) on the reorg-published
+// snapshot (N42_POOL_PENDING_SNAPSHOT=0 restores the locked walk).
+func pendingSnapshotEnabled() bool {
+	return os.Getenv("N42_POOL_PENDING_SNAPSHOT") != "0"
+}
+
+// publishPendingSnapshot stores the pending map for lock-free Pending(false).
+// Called under pool.mu at the end of every reorg.
+func (pool *TxsPool) publishPendingSnapshot() {
+	snap := make(map[types.Address][]*transaction.Transaction, len(pool.pending))
+	for addr, list := range pool.pending {
+		if txs := list.FlattenReadOnly(); len(txs) > 0 {
+			snap[addr] = txs
+		}
+	}
+	pool.pendingSnap.Store(&snap)
+}
+
 const slowReorgThreshold = 200 * time.Millisecond
 
 // runReorg runs reset and promoteExecutables on behalf of scheduleLoop.
@@ -1002,6 +1031,7 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 	pool.truncatePending()
 	pool.truncateQueue()
 	dTruncate = time.Since(tT)
+	pool.publishPendingSnapshot()
 	nQueue, nPending = len(pool.queue), len(pool.pending)
 	pool.changesSinceReorg = 0
 	pool.mu.Unlock()
