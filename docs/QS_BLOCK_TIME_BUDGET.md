@@ -2585,6 +2585,26 @@ and 35q runs tenure 1 -- the post-switch bad root stays open with a
 narrower suspect (`docs/OPEN_ISSUES.md`: the live tree's in-memory
 state for the two accounts every empty block credits).
 
+## 6af. Round 35q: eight generators, rotation -- registered before the round ran
+
+35p's runner (offsets 530M-538M) with tenure 1, eight floods of 1,000
+senders, target-depth 30k each (the first two launches ran 55k: the
+generators start flooding as each finishes funding, so the eighth's
+1,000 faucet transactions met a 300k pool holding the first seven's
+385k and were evicted before any leader included them -- "funding was
+not confirmed within 80s"; the warm-up died earlier on one empty
+eth_getBalance reply, now retried in txflood, 501130ba). The persisted
+wait plus the align is back in the build path (c0830181).
+
+**Registered predictions.** 10 and 28 stand. Added:
+
+30. Eight generators supply over 60k/s: B occupancy over 40% at 163k
+    with the rotation cycle of 2.2-2.9 s, i.e. B TPS at or above 55k.
+    FALSIFIED IF B stays under 50k at under 35% occupancy -- then the
+    generators' ceiling is not their process count (the box's RPC
+    ingest or the pool's insert gate), and the harness needs pre-signed
+    replay into the leader.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
