@@ -2617,6 +2617,20 @@ caps, eight generators' arrivals, 4M sender-cache slots) and collect on
 every block. Round 35r raises GOMEMLIMIT to 9 GiB (63 GB of heaps on
 the 137 GB box, ~40 GB left) with everything else as 35q.
 
+Round 35q: A1 29.3k / 28.2k, B1 46.2k / 42.5k (98-100% occupancy, 3.5-3.75
+s blocks), B2 46.2k / 36.9k, A2 19.6k / 0 (the second window 240 empty
+0.25 s blocks -- the generators had run dry). Zero BAD BLOCK, zero
+timeouts under rotation; the drain step settled the head at every leg
+end.
+
+## 6ag. Round 35r: the same round with GOMEMLIMIT 9 GiB -- registered before the round ran
+
+**Registered prediction.** 31. B blocks at 100% occupancy in 2.3-2.6 s
+instead of 3.5 s, B TPS over 60k. FALSIFIED IF blockTime stays over 3 s
+with the heaps under the limit -- then the cycle at full blocks is the
+leader's assemble/state root and the followers' import, not the GC, and
+35k's 2.3 s was a lighter pool.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
