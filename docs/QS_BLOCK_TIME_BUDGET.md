@@ -2492,6 +2492,16 @@ story, the unwind leaves a forked state (`docs/OPEN_ISSUES.md`). Views
 tenure keeps the leader, so the sibling race repeats. Round 35o runs
 tenure 1 with everything else kept.
 
+Read after the abort: node3's persisted state at the kept sibling is
+identical to node0's and node1's (probe: same head, same root, tree
+reload matches), so the unwind is right on disk and the bad root was
+the speculative build's timing -- it waited for the parent to be
+persisted, and a sibling's header is stored before its state is applied.
+580d2f32 waits for the applied marker instead. 35o's warm-up fleet
+launched seconds before the swap and runs without it (rotation does not
+take that path: the next leader imports the parent before it builds);
+the legs after the warm-up run it.
+
 ## 6ad. Round 35o: four generators, tenure 1 -- registered before the round ran
 
 35n's runner (offsets 500M-508M) with four floods of 2,000 senders

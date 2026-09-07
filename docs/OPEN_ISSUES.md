@@ -86,10 +86,17 @@ its own losing sibling at 13886257, unwound to the parent, imported the
 kept lowest-hash sibling and built on it has a state the six others do
 not. The 20 s rebuild also times out the view (24 s views seen in the
 decay), and with a tenure the same leader keeps re-proposing at the
-height, so siblings recur. Rounds from 35o run tenure 1 until the
-unwind is right; the sequence to reproduce: tenure 4, two generators,
-watch for "seal is stale" -> "branch switch" -> "converging on
-lowest-hash sibling" -> BAD BLOCK on the next proposal.
+height, so siblings recur. Then the probe: node3's persisted state at
+the kept sibling 13886257 is byte-identical to node0's and node1's
+(same head hash, same root, the tree reload matches) -- the unwind is
+right on disk. The wrong root came from the speculative build's timing:
+it waited for the parent to be PERSISTED (`WaitBlockPersisted`, header
+present), and a sibling's header is stored on arrival, before its state
+is applied; a build started in that window read the previous state, and
+for an empty block the only difference is the winner's reward credit.
+580d2f32 makes the build wait for the applied marker
+(`WaitBlockApplied`). Tenure can be tried again with it; the 20 s
+rebuild after a void still times out a view, so keep the void rare.
 
 ## Plain `Account` table frozen at 13,750,514 on the qs fleet (2026-09-06, round 26)
 
