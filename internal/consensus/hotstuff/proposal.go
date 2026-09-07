@@ -122,6 +122,17 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 		return err
 	}
 
+	// Same-leader speculative build: with a leader tenure above one this
+	// node also leads view+1, and the vote-time hint never fires for its
+	// own block (a leader does not import what it built). Advise the
+	// producer now; it waits for the block to persist, then builds view+1
+	// on its post-state while the followers import it (round 35l: without
+	// this, tenure views proposed in 363-528 ms like rotation views, all
+	// twenty builds "triggered (leader view)", none a speculative hit).
+	if LeaderForView(view+1, vs) == e.myIndex {
+		_ = e.emit(EngineOutput{Type: OutputSpeculativeBuild, View: view + 1, Hash: blockHash})
+	}
+
 	// Check if quorum already reached (single-validator scenario).
 	return e.tryFormPrepareQC()
 }
