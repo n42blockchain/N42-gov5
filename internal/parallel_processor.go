@@ -126,6 +126,7 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 	txs := b.Transactions()
 	numTxs := len(txs)
 	tStart := time.Now()
+	senderHintHits := 0
 
 	// Fall back to sequential for small blocks (overhead not worth it).
 	if numTxs <= 4 {
@@ -145,9 +146,15 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 	var signer transaction.Signer
 	if hdrNum, hdrErr := requireHeaderNumber(concreteHeader, "header number unavailable"); hdrErr == nil {
 		signer = transaction.MakeSignerWithTimestamp(p.config, hdrNum.ToBig(), concreteHeader.Time)
-		if err := verifyBlockSenders(signer, txs); err != nil {
+		var hints SenderHintSource
+		if p.bc != nil {
+			hints = p.bc.senderHints
+		}
+		hits, err := verifyBlockSendersHinted(signer, txs, hints)
+		if err != nil {
 			return nil, nil, nil, 0, fmt.Errorf("block %s: %w", concreteHeader.Number.String(), err)
 		}
+		senderHintHits = hits
 		// A block off the wire carries RLP only: From() is nil until the
 		// signature is recovered. The affinity key below needs every sender
 		// before the first wave, so recover them here in parallel (memoised
@@ -345,7 +352,7 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 	if execs, aborts := executor.Stats(); executor.FellBack() || numTxs >= 1000 {
 		execNs, valNs := executor.WaveTimes()
 		log.Info("parallel block", "n", b.Number64(), "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
-			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
+			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
 			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", time.Since(tApplyStart).Milliseconds())
 	}
 

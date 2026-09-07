@@ -28,6 +28,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/transaction"
 )
@@ -278,9 +279,26 @@ func recoverBlockSenders(signer transaction.Signer, txs []*transaction.Transacti
 // senderCache for pool-seen txs so honest blocks stay fast) and compare.
 // Any mismatch or unrecoverable signature rejects the whole block.
 func verifyBlockSenders(signer transaction.Signer, txs []*transaction.Transaction) error {
+	_, err := verifyBlockSendersHinted(signer, txs, nil)
+	return err
+}
+
+// verifyBlockSendersHinted is verifyBlockSenders with the pool as a cache:
+// a transaction the pool holds under the same hash carries the same
+// signature bytes (the hash covers them), and the pool recovered its sender
+// at admission, so that sender -- re-derived through the block's signer,
+// which checks the cache belongs to this signer -- is what recovering the
+// wire copy would give. It is compared with the declared sender exactly as
+// a fresh recovery would be; only the secp256k1 work is skipped. Returns
+// how many transactions the pool answered for. Round 35g: every one of a
+// 163k-transaction block's senders was recovered here at ~50 us, 8
+// core-seconds a block on every node, for transactions the node's pool had
+// already recovered once on arrival.
+func verifyBlockSendersHinted(signer transaction.Signer, txs []*transaction.Transaction, hints SenderHintSource) (int, error) {
 	if signer == nil {
-		return nil
+		return 0, nil
 	}
+	var hintHits atomic.Int64
 	type mismatch struct {
 		idx int
 		err error
@@ -316,6 +334,17 @@ func verifyBlockSenders(signer transaction.Signer, txs []*transaction.Transactio
 		if v, r, sv := tx.RawSignatureValues(); v == nil || r == nil || sv == nil {
 			report(i, fmt.Errorf("tx %d declares sender %s but carries no signature values (V/R/S)", i, declared.Hex()))
 			return
+		}
+		if hints != nil {
+			if ptx := hints.GetTx(tx.Hash()); ptx != nil {
+				if pooled, err := transaction.Sender(signer, ptx); err == nil {
+					hintHits.Add(1)
+					if pooled != *declared {
+						report(i, fmt.Errorf("tx %d declares sender %s but signature recovers %s", i, declared.Hex(), pooled.Hex()))
+					}
+					return
+				}
+			}
 		}
 		recovered, err := transaction.RecoverSenderFromSig(signer, tx)
 		if err != nil {
@@ -368,7 +397,7 @@ func verifyBlockSenders(signer transaction.Signer, txs []*transaction.Transactio
 		}
 	}
 	if len(found) == 0 {
-		return nil
+		return int(hintHits.Load()), nil
 	}
 	// Deterministic error: report the lowest-index offender.
 	best := found[0]
@@ -377,5 +406,5 @@ func verifyBlockSenders(signer transaction.Signer, txs []*transaction.Transactio
 			best = m
 		}
 	}
-	return best.err
+	return int(hintHits.Load()), best.err
 }
