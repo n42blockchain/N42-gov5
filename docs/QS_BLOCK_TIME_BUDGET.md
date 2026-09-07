@@ -2573,6 +2573,18 @@ seven agreed). Fills 32-48k, window 39.5k at 16.5% occupancy and 0.68 s
 blocks: the chain empties the pool as fast as four generators fill it.
 Round 35q runs eight generators of 1,000 senders.
 
+A1: 35.4k at 0.46 s blocks (71% of the 22,857 cap), then 4.2k -- views
+3677-3679 timed out on all nodes. Node2, then node3, as tenure leaders:
+"consensus parent 60c340f4.. not applied in time" on every build. The
+applied-wait (580d2f32) runs before AlignAppliedBranch, and the align is
+what unwinds a locally applied sibling so the consensus parent can be
+imported; a leader that had applied a sibling could never pass it, and
+tenure made it fail four views in a row. Reverted (the persisted wait
+plus the align, the original order); the round stopped, journals reset,
+and 35q runs tenure 1 -- the post-switch bad root stays open with a
+narrower suspect (`docs/OPEN_ISSUES.md`: the live tree's in-memory
+state for the two accounts every empty block credits).
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across

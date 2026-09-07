@@ -94,9 +94,27 @@ it waited for the parent to be PERSISTED (`WaitBlockPersisted`, header
 present), and a sibling's header is stored on arrival, before its state
 is applied; a build started in that window read the previous state, and
 for an empty block the only difference is the winner's reward credit.
-580d2f32 makes the build wait for the applied marker
-(`WaitBlockApplied`). Tenure can be tried again with it; the 20 s
-rebuild after a void still times out a view, so keep the void rare.
+580d2f32 made the build wait for the applied marker
+-- and round 35p showed that was wrong too: the wait runs BEFORE
+`AlignAppliedBranch`, which is what unwinds a locally applied sibling
+so the consensus parent can be imported, so a leader that had applied a
+sibling failed every view of its tenure ("consensus parent not applied
+in time", three timeouts a tenure). Reverted (persisted wait + align,
+the original order). The void on branch switch was removed too
+(99ea54ad): its 10-23 s rebuild timed out views under plain rotation.
+
+What is left, then, for the bad root after a switch: the persisted
+state is right and the speculative computer rebuilt from it was still
+wrong, and the only accounts that differed in those zero-transaction
+blocks are the ones the losing and winning siblings both credit (the
+coinbase and the dev faucet). The builder reads accounts through the
+LIVE tree (`QMDBLatestAccountSource` -> `Lookup`), so the suspect is the
+live tree's in-memory state after RevertBlock + the winner's apply (the
+index or the live bits for those two keys), not the disk. A reload of
+the live tree from disk after a mutating unwind would test it, but that
+reload is O(history) (60-90 s here). Until then: tenure 1 (rotation has
+run whole rounds clean); with tenure the sibling race after a stale
+seal recurs and the leader that switched builds the bad block.
 
 ## Plain `Account` table frozen at 13,750,514 on the qs fleet (2026-09-06, round 26)
 
