@@ -45,6 +45,13 @@ func NewParallelStateReader(base state.StateReader, mvs *MVS, rw *ReadWriteSet, 
 }
 
 // ReadAccountData reads account data, checking MVS first.
+// Rebind points the reader at another transaction's read set and index, so
+// one reader per worker serves the whole block.
+func (r *ParallelStateReader) Rebind(rw *ReadWriteSet, txIndex int) {
+	r.rw = rw
+	r.txIndex = txIndex
+}
+
 func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.StateAccount, error) {
 	key := LocationKey{Address: address, Field: FieldBalance}
 

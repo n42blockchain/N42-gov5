@@ -69,8 +69,10 @@ type ReadWriteSet struct {
 func NewReadWriteSet(txIndex int) *ReadWriteSet {
 	return &ReadWriteSet{
 		TxIndex: txIndex,
-		Reads:   make([]ReadDescriptor, 0, 32),
-		Writes:  make([]WriteDescriptor, 0, 16),
+		// A transfer reads three or four locations and writes two; the old
+		// 32/16 was 4 KB of garbage per transaction, 600 MB a 163k block.
+		Reads:  make([]ReadDescriptor, 0, 6),
+		Writes: make([]WriteDescriptor, 0, 3),
 	}
 }
 
