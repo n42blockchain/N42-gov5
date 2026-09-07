@@ -49,6 +49,11 @@ func NewParallelStateWriter(rw *ReadWriteSet) *ParallelStateWriter {
 	return &ParallelStateWriter{rw: rw}
 }
 
+// Rebind points the writer at another transaction's read/write set.
+func (w *ParallelStateWriter) Rebind(rw *ReadWriteSet) {
+	w.rw = rw
+}
+
 // UpdateAccountData records an account update.
 func (w *ParallelStateWriter) UpdateAccountData(address types.Address, original, acc *account.StateAccount) error {
 	key := LocationKey{Address: address, Field: FieldBalance}

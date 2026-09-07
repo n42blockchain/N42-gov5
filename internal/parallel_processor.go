@@ -200,10 +200,21 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 	if p.bc == nil || p.bc.ChainDB == nil {
 		return nil, nil, nil, 0, fmt.Errorf("ProcessParallel: no chain database for per-worker readers")
 	}
+	// A worker owns one IntraBlockState, one EVM, one reader and one writer
+	// for the whole block and rebinds them per transaction: allocating them
+	// per transaction was 46% of the executor's CPU in round 35g's profile
+	// (mallocgc under 32 workers serialises on the heap lock, and the
+	// garbage drives the GC), with the workers running at ~7 cores of 32.
 	type workerCtx struct {
-		tx   kv.Tx
-		base state.StateReader
+		tx       kv.Tx
+		base     state.StateReader
+		reader   *parallel.ParallelStateReader
+		writer   *parallel.ParallelStateWriter
+		ibs      *state.IntraBlockState
+		evm      *vm2.EVM
+		observed map[types.Address]struct{}
 	}
+	var executor *parallel.Executor
 	setup := func(workerID int) (any, func(), error) {
 		tx, err := p.bc.ChainDB.BeginRo(context.Background())
 		if err != nil {
@@ -213,9 +224,19 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 		if useQMDB {
 			base = commitment.NewQMDBStateReader(commitment.NewLookupSourceLocked(p.bc.qmdbRootComputer, tx), base, mode)
 		}
-		return &workerCtx{tx: tx, base: base}, tx.Rollback, nil
+		wc := &workerCtx{tx: tx, base: base, observed: make(map[types.Address]struct{}, 8)}
+		wc.reader = parallel.NewParallelStateReader(base, executor.MVS(), nil, 0)
+		wc.ibs = state.New(wc.reader)
+		wc.writer = parallel.NewParallelStateWriter(nil)
+		// Every explicit balance read (GetBalance, Empty) of a transaction
+		// is recorded: an account it credits without ever observing gets a
+		// delta write, and its read of that account (for code, nonce) is
+		// validated on every field but the balance.
+		wc.ibs.SetBalanceReadHook(func(a types.Address) { wc.observed[a] = struct{}{} })
+		wc.writer.SetDeltaEligible(func(a types.Address) bool { _, seen := wc.observed[a]; return !seen })
+		wc.evm = vm2.NewEVM(blockContext, evmtypes.TxContext{}, wc.ibs, chainConfig, cfg)
+		return wc, tx.Rollback, nil
 	}
-	var executor *parallel.Executor
 	executor = parallel.NewExecutorWithWorkerSetup(numTxs, parallelWorkers(), setup, func(ctx any, txIndex int, rw *parallel.ReadWriteSet) error {
 		tx := txs[txIndex]
 		wc, ok := ctx.(*workerCtx)
@@ -223,18 +244,14 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 			return fmt.Errorf("parallel worker has no state reader for tx %d", txIndex)
 		}
 
-		// Each tx gets its own IntraBlockState with MVS-backed reader over
-		// this worker's private base reader.
-		pReader := parallel.NewParallelStateReader(wc.base, executor.MVS(), rw, txIndex)
-		txIBS := state.New(pReader)
-		pWriter := parallel.NewParallelStateWriter(rw)
-		// Every explicit balance read (GetBalance, Empty) of this transaction
-		// is recorded: an account it credits without ever observing gets a
-		// delta write, and its read of that account (for code, nonce) is
-		// validated on every field but the balance.
-		observed := make(map[types.Address]struct{}, 4)
-		txIBS.SetBalanceReadHook(func(a types.Address) { observed[a] = struct{}{} })
-		pWriter.SetDeltaEligible(func(a types.Address) bool { _, seen := observed[a]; return !seen })
+		// Rebind the worker's state to this transaction: the reader serves
+		// its MVS view, the writer records into its read/write set, the
+		// IntraBlockState forgets the previous transaction's objects.
+		wc.reader.Rebind(rw, txIndex)
+		wc.writer.Rebind(rw)
+		wc.ibs.Reset()
+		clear(wc.observed)
+		txIBS, pWriter := wc.ibs, wc.writer
 
 		txIBS.Prepare(tx.Hash(), b.Hash(), txIndex)
 
@@ -242,14 +259,14 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 		gp := new(common.GasPool)
 		gp.AddGas(b.GasLimit())
 
-		vmenv := vm2.NewEVM(blockContext, evmtypes.TxContext{}, txIBS, chainConfig, cfg)
+		vmenv := wc.evm
 
 		var fees []deferredFee
 		sink := func(recipient types.Address, amount *uint256.Int) {
 			fees = append(fees, deferredFee{recipient: recipient, amount: amount.Clone()})
 		}
 		receipt, gasUsed, logs, err := parallelApplyTx(chainConfig, p.engine, gp, txIBS, pWriter, concreteHeader, tx, vmenv, cfg, sink)
-		rw.MarkBalanceInsensitive(func(a types.Address) bool { _, seen := observed[a]; return seen })
+		rw.MarkBalanceInsensitive(func(a types.Address) bool { _, seen := wc.observed[a]; return seen })
 
 		txResults[txIndex] = parallelTxResult{
 			receipt: receipt,
