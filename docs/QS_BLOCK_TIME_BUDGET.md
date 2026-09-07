@@ -2519,6 +2519,15 @@ without a rejection). Added:
     under 50% -- then four generators still do not supply 60k/s and the
     harness needs a cheaper transaction source (pre-signed replay).
 
+Warm-up: 47.2k / 41.0k at 72-76% occupancy and 2.6-2.9 s blocks. Fills
+101-138k (prediction 28's first clause holds: the caps and the fourth
+generator refilled the blocks), generators at 56-98% of a core each,
+zero BAD BLOCK, zero timeouts. But the rotation cycle grew to 2.6-2.9
+s from 35k's 2.2-2.3 s: node heaps sit at the 7 GiB limit with the
+raised caps (400k+ stale transactions trimmed per fill), and the leader's
+propose is 1.27-1.32 s with r2 0.78-0.90 s. Round 35p returns to tenure
+4 with the applied-wait fix and the pool at 300k/100k.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
