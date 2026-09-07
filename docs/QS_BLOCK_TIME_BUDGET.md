@@ -2528,6 +2528,14 @@ raised caps (400k+ stale transactions trimmed per fill), and the leader's
 propose is 1.27-1.32 s with r2 0.78-0.90 s. Round 35p returns to tenure
 4 with the applied-wait fix and the pool at 300k/100k.
 
+A1 made four blocks in its 400 s decay and the generators' funding never
+confirmed: a stale seal, a branch switch, the void, and a 20 s rebuild
+on the leader -- under plain rotation. The void (359e1f89, narrowed by
+ea76069e) is the wrong fix: its rebuild times out the view whose stale
+seal caused the switch, and the bad roots it was for were builds on a
+persisted-but-unapplied sibling, now waited out (580d2f32). 99ea54ad
+removes the void call; B2 and A2 run it (B1 launched before the swap).
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
