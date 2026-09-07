@@ -2290,6 +2290,51 @@ at ~160 MB each, the QMDB index, the txindex tail) until every block's
 and the sender cache at 2M slots; a heap profile inside a B leg is the
 next reading if the trend persists.
 
+### 35k warm-up (read before the legs): the builder's root is the followers' root
+
+Seven nodes, zero BAD BLOCK through the warm-up with the builder on
+Block-STM: 163,000 candidates picked in 49-52 ms, 163,000 included, 0
+failed, run 311-625 ms (the serial fill's commit was 611-683 ms at the
+same size; the spread is the leader's own CPU under the pool's prewarm
+and the imports). Warm-up windows 50.4k / 46.6k -- the first window over
+50k -- at 71-75% occupancy and 2.3-2.6 s blocks. Node heaps 3.5-3.8 GB
+with the block cache at 4 (from 6.8 GB at 16); MemAvailable 80 GB.
+
+The leader at ~163k now: build 460-510 ms (fill 300, reload 156-167,
+align 55-80), assemble 323-351 (state root 183-200, the rest receipts
+and roots), write 224-264 (off the critical path), push 80; propose
+1.1-1.8 s, r1 60, r2 0.63-1.06 s (the follower's proc: recover 110,
+setup 116, exec 338, apply 31, finalize 210 -- the write, 241 ms, is
+already off r2: the executed hook casts the vote before the write). Both
+sides pay the state root (~200 ms, of which QMDB's serial append is ~78
+ms and the rest is the IntraBlockState materialising ~45k objects).
+
+## 6aa. Round 35l: one leader for four views -- registered before the round ran
+
+35k's runner (offsets 470M-478M) with 289f5630 under
+N42_HOTSTUFF_LEADER_TENURE=4 on every node, and the sender cache back at
+4M slots (recover 110 ms at 2M, 59 at 4M). The leader rotates every view,
+so view v+1's build waits behind its leader's import of v; with a tenure
+the leader that sealed v is v+1's leader, and the existing next-leader
+speculative build (fired at vote time) runs on its own post-state of v
+while the followers import v. The cycle should approach max(build,
+import) + rounds instead of their sum.
+
+**Registered predictions.** 10 (zero BAD BLOCK) and 18 stand. Added:
+
+21. On the leader, `speculative build hit` on three of every four views
+    and propose under 0.5 s on those views at 163k (the build already
+    done; seal2res ~0.3 s). FALSIFIED IF propose stays over 1 s on tenure
+    views -- then the speculative build waits for the leader's own write
+    (`ensureParentApplied` reads the disk) and the lever is to build on
+    the in-memory post-state.
+22. B TPS over 65k in a full-occupancy window (cycle ~1.4 s at 163k:
+    r1 + r2 ~0.9 s, seal 0.3, push 0.1). FALSIFIED IF under 55k with 21
+    met -- then r2 (the followers' import) is the whole cycle and the
+    next round is the follower's state root and setup.
+23. View timeouts stay at zero (a timed-out leader keeps its tenure; the
+    fleet has had none at steady state since round 32).
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
