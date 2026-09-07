@@ -2976,9 +2976,13 @@ func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authori
 	bc.PeelDanglingQMDBAppends()
 	mutated := false
 	err := bc.unwindForReimportTx(n, parentHash, authorizedSwitch, &mutated)
-	if mutated {
-		bc.voidMinerRootTrust("branch switch")
-	}
+	// The speculative computer is NOT voided here any more (359e1f89 did,
+	// and ea76069e narrowed it to this path): the post-switch bad roots
+	// were builds on a persisted-but-unapplied sibling, fixed by waiting
+	// for the applied marker (580d2f32), and the void's full rebuild takes
+	// 10-23 s at 13.9M blocks -- long enough to time out the view, whose
+	// stale seal then causes the next switch (35o A1: four blocks in a
+	// 400 s decay). voidMinerRootTrust stays for an operator/debug path.
 	if err != nil && !mutated {
 		// Pre-check rejections (finality floor, lineage mismatch → future
 		// queue, unauthorized passive switch) fail BEFORE any tree mutation:
