@@ -349,12 +349,7 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 	if err := applyMVSToIBS(executor.MVS(), numTxs, ibs); err != nil {
 		return nil, nil, nil, 0, fmt.Errorf("ProcessParallel: failed to apply MVS state: %w", err)
 	}
-	if execs, aborts := executor.Stats(); executor.FellBack() || numTxs >= 1000 {
-		execNs, valNs := executor.WaveTimes()
-		log.Info("parallel block", "n", b.Number64(), "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
-			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
-			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", time.Since(tApplyStart).Milliseconds())
-	}
+	tApplied := time.Now()
 
 	// Credit the deferred fees once per recipient, in transaction order. A
 	// zero total still goes through AddBalance: the serial path touches the
@@ -391,6 +386,12 @@ func (p *StateProcessor) ProcessParallel(b *block.Block, ibs *state.IntraBlockSt
 	_, nopay, err = p.engine.Finalize(p.bc, concreteHeader, ibs, txs, nil)
 	if err != nil {
 		return nil, nil, nil, 0, err
+	}
+	if execs, aborts := executor.Stats(); executor.FellBack() || numTxs >= 1000 {
+		execNs, valNs := executor.WaveTimes()
+		log.Info("parallel block", "n", b.Number64(), "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
+			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
+			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "finalizeMs", time.Since(tApplied).Milliseconds())
 	}
 
 	return receipts, nopay, allLogs, usedGas, nil
