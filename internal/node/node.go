@@ -1056,25 +1056,38 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			// entry log per block. The in-RAM key->slot index is used because the
 			// per-block evmRecord tx is read-only (cannot back the index with
 			// MDBX on the live path). Also serve QMDB-native eth_getProof.
-			qmdbRC := commitment.NewQMDBRootComputer()
-			rtx, err := chainKv.BeginRo(ctx)
-			if err != nil {
-				return nil, fmt.Errorf("open QMDB forest reload view: %w", err)
-			}
 			// Wire the cold/leaf getters BEFORE LoadFrom: the rebuild faults
 			// frozen leaves and cold entries through them. A failed reload can
 			// leave a partially populated twig slice, so it is not an empty-tree
 			// fallback: using it can panic in Root(), and an actually empty tree
 			// would not reproduce this history-dependent root. Fail closed and
-			// require repair/reseed instead.
-			qmdbRC.SetCold(rtx)
-			loadErr := qmdbRC.LoadFrom(rtx)
-			rtx.Rollback()
-			// rtx is dead from here; detach so nothing faults through it (the
-			// first block's execution re-points at a live tx).
-			qmdbRC.SetCold(nil)
+			// require repair/reseed instead -- after retrying on a fresh
+			// computer and read view: rounds 35g-35j lost a node at every
+			// fleet start to "twig metadata inconsistent" part way through the
+			// scan, and the same store loaded whole on the next start ten
+			// minutes later, so the first failure is a transient read, not
+			// the disk.
+			var qmdbRC *commitment.QMDBRootComputer
+			var loadErr error
+			for attempt := 1; attempt <= 3; attempt++ {
+				qmdbRC = commitment.NewQMDBRootComputer()
+				rtx, err := chainKv.BeginRo(ctx)
+				if err != nil {
+					return nil, fmt.Errorf("open QMDB forest reload view: %w", err)
+				}
+				qmdbRC.SetCold(rtx)
+				loadErr = qmdbRC.LoadFrom(rtx)
+				rtx.Rollback()
+				// rtx is dead from here; detach so nothing faults through it (the
+				// first block's execution re-points at a live tx).
+				qmdbRC.SetCold(nil)
+				if loadErr == nil {
+					break
+				}
+				log.Error("QMDB forest reload failed at startup", "attempt", attempt, "err", loadErr)
+				time.Sleep(2 * time.Second)
+			}
 			if loadErr != nil {
-				log.Error("QMDB forest reload failed at startup", "err", loadErr)
 				return nil, fmt.Errorf("reload QMDB forest: %w", loadErr)
 			}
 			qmdbRC.EnableUndoRecording()
