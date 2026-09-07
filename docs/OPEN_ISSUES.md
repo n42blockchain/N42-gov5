@@ -79,9 +79,17 @@ speculative build proposed with a wrong root (six rejections, zero
 transactions). The builder's persistent speculative root computer
 reloads trusting its index below a cursor for the store's layout, and an
 unwind rewrites entries below that cursor. 359e1f89 voids the trust on
-every unwind and failed-block revert. Still open: the stale-seal /
-sibling race itself under tenure (a leader that keeps the view after its
-seal went stale), which costs a view each time.
+every unwind and failed-block revert. Round 35n B1 (node3, 13886258): the void fired ("branch
+switch"), the next build rebuilt for 20 s, and the proposal was still
+rejected -- so the fault is the unwind itself: a leader that had applied
+its own losing sibling at 13886257, unwound to the parent, imported the
+kept lowest-hash sibling and built on it has a state the six others do
+not. The 20 s rebuild also times out the view (24 s views seen in the
+decay), and with a tenure the same leader keeps re-proposing at the
+height, so siblings recur. Rounds from 35o run tenure 1 until the
+unwind is right; the sequence to reproduce: tenure 4, two generators,
+watch for "seal is stale" -> "branch switch" -> "converging on
+lowest-hash sibling" -> BAD BLOCK on the next proposal.
 
 ## Plain `Account` table frozen at 13,750,514 on the qs fleet (2026-09-06, round 26)
 

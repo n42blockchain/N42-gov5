@@ -2481,6 +2481,34 @@ ceiling), zero BAD BLOCK, zero timeouts, zero voids; and the
 generators themselves at 81-89% of one core each -- a single-threaded
 signer at ~12k transactions a second is the next supply ceiling.
 
+A1 39.6k / 31.2k (the A leg's highest; 0.58 s blocks full, then 0.39 s
+blocks at 53% -- the chain drains the pool faster than two generators
+fill it). B1 stopped in its decay: node3, leading views 3204-3205, had
+applied its own losing sibling at 13886257, switched branches to the
+lowest-hash sibling, voided and rebuilt its speculative tree (20 s), and
+its 13886258 was rejected by six nodes -- the void was not the whole
+story, the unwind leaves a forked state (`docs/OPEN_ISSUES.md`). Views
+3202-3203 had lasted 12 and 24 s: the rebuild times out the view, and
+tenure keeps the leader, so the sibling race repeats. Round 35o runs
+tenure 1 with everything else kept.
+
+## 6ad. Round 35o: four generators, tenure 1 -- registered before the round ran
+
+35n's runner (offsets 500M-508M) with four floods of 2,000 senders
+(the same 6M pre-signed transactions in memory, twice the signing
+cores; target-depth 110k each) and N42_HOTSTUFF_LEADER_TENURE=1; the
+raised per-account caps, the insert gate, the builder on Block-STM and
+the void on unwind stay.
+
+**Registered predictions.** 10 stands (rotation has run whole rounds
+without a rejection). Added:
+
+28. B occupancy over 70% with four generators and fills over 120k at
+    163k; B TPS at or above 35k's 53k, and over 60k if the rotation
+    cycle at full blocks is under 2.5 s. FALSIFIED IF occupancy stays
+    under 50% -- then four generators still do not supply 60k/s and the
+    harness needs a cheaper transaction source (pre-signed replay).
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
