@@ -2631,6 +2631,89 @@ with the heaps under the limit -- then the cycle at full blocks is the
 leader's assemble/state root and the followers' import, not the GC, and
 35k's 2.3 s was a lighter pool.
 
+**Result (2026-09-07, n42-r35x = c0830181, tenure 1, 8 floods x 1000 x
+1500, target-depth 30k by blocks each, pool 300k, GOMEMLIMIT 9 GiB).**
+
+| leg | win1 | win2 |
+|-----|------|------|
+| warmup (B) | 57,050 at 100%, 2.857 s/block | 27,745 at 7.9% |
+| A1 | 28,571 at 52.8%, 0.423 s | 30,058 at 53.3% |
+| B1 | 39,319 at 96.5%, 4.000 s | 84 at 0.1% |
+| B2 | 57,050 at 100%, 2.857 s/block | 23,623 at 6.0% |
+| A2 | 29,333 at 53.1%, 0.414 s | (duplicate of win1; chain empty from 12:47:41) |
+
+Prediction 31 FALSIFIED. B blocks at 100% occupancy take 2.857 s (21
+blocks per 60 s window, twice, to the block) with every node's heap at
+2.5-2.9 GB against the 9 GiB limit. The GC was never the full-block
+ceiling; 35k's 2.3 s was a lighter pool. The cycle at 163k transactions,
+from the B2 win1 medians (leaders' `miner: build phases` / `miner:
+propose phases`, node1's `blockimport phases`):
+
+| phase | ms | where |
+|-------|----|-------|
+| align + fill + reload | 185 + 414 + 158 = 766 | leader, serial |
+| assemble (state root) | 507 | leader, serial |
+| finalize / write / push | 255 / 273 / 143 (seal-to-result 439) | leader |
+| follower import | 1,012 (body 91, proc 682, valid 32, write 199) | follower |
+| two vote rounds | ~150 | network |
+
+So ~1.7 s of leader work followed by ~1.0 s of follower import: the
+leader and the followers never overlap under tenure 1, and neither side
+has a single phase over 0.5 s left. The next 2x comes from overlap
+(tenure + build-ahead, blocked by the post-branch-switch root bug in
+OPEN_ISSUES.md) or from shortening every phase a little, not from one
+lever.
+
+**B1's 4.0 s was a miner-killing bug, now fixed (1f1140e3).** node3 was
+relaunched by the harness at 12:07 (startup stall watchdog); its first
+build's speculative QMDB reload failed ("twig metadata inconsistent",
+transient, the same read as the startup stalls), the build fell back to
+the default root and sealed a stale block 19.7 s later. The write path's
+stale-seal gate runs only for isolated QMDB seals, so this block reached
+CommitBlock, which read the coinbase through the build's rolled-back
+read transaction: nil MDBX txn, panic in resultLoop. The errgroup
+wrapper recovered the panic, but resultLoop's deferred stop() had
+already run, and node3 answered its next 18 leader views with "build
+trigger while worker not running" -- a 6 s view timeout each, 108 s of
+the leg, which is exactly the gap between 2.857 s and 4.0 s per block.
+The fix: a panic on one sealed block (or one build) drops that block and
+keeps the worker; the stale-seal check runs before every write and is
+decisive; a failed reload abandons the build instead of sealing on a
+root no follower would accept.
+
+**Every second window is the generators, not the chain.** All eight
+floods submitted their full 1.5M with failed=0 in 52-143 s, i.e. ~12M
+transactions offered to a 300k pool at 85k-170k tx/s; the chain took
+~1.8-3.4M of them and the pool evicted the rest. The cause is the
+closed loop: `-depth-by-blocks` credits every block's whole transaction
+count to the generator asking, so eight generators each read the pool
+as empty eight times too early and injected at full rate (`pool=0
+topup=150` in every out file). Fixed in txflood with `-depth-share N`
+(this generator owns 1/N of every block). Until a round runs with it,
+NO win2 of this round or 35q is a chain measurement, and the A legs'
+53% occupancy is the same effect one block at a time (eviction leaves
+the pool's pending contiguous, but the senders' later nonces land in the
+queue behind the evicted ones and never promote).
+
+**A2 from 12:47:41: every leader fill executed 22,857 candidates and
+dropped all of them** (node0: 39 of 113 fills, six of them partial first,
+`staleTrimmed` falling from 15,644 to 0), so the chain made empty
+blocks for the leg's last minutes while the pool reported them pending.
+The lenient run did not record why. The next binary logs a `parallel
+fill drops` line with the failures by class (nonce low / nonce high /
+funds / fee cap / other, plus a sample) so the next round reads the
+answer instead of guessing between an evicted-nonce gap and the fixed
+10 gwei price falling under a climbing baseFee.
+
+**Next round (35s), not yet launched: the box went to the rust session
+at 12:53.** Same configuration on n42-r35y (1f1140e3 + the drop
+histogram) and txflood-r32 with `-depth-share 8`. Prediction 32: with
+the depth loop honest, win2 of every leg reads within 10% of win1, and
+B stays at 2.86 s/block, 57k -- the round is a measurement of the
+harness fix, not a throughput lever. FALSIFIED IF win2 still collapses
+with the eight floods reporting non-zero pool depth; then the pool's
+eviction, not the generators, is what empties the second window.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across

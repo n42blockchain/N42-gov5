@@ -70,6 +70,20 @@ start, when seven nodes scan at once. Next: run the load under the race
 detector against a copy of a failed store, or log the twig's leaf-row
 length and the recomputed vs stored roots on the mismatch.
 
+Round 35r (2026-09-07): the same mismatch on the LIVE path. The miner's
+speculative reload (`ReloadForBuild`, the persistent per-leader
+computer) failed four times across the fleet in one day -- node3 twice
+within ten seconds of a mid-leg relaunch (pre-warm at 12:07:55, twig
+169440; first build at 12:08:04, twig 20732), node5 and node6 once each
+-- always a different twig, always transient. So the read is not only a
+startup phenomenon, and "seven nodes scanning at once" is not required:
+node3's two failures were one process reading alone. The consequence was
+worse than a slow build: the build fell back to the default root, sealed
+a stale block 19.7 s later, and its write panicked the miner worker for
+the life of the process (fixed in 1f1140e3 -- a failed reload now
+abandons the build, a stale seal is dropped before its write, and a
+panic costs one block, not the worker). The mismatch itself stays open.
+
 ## Leader in-memory divergence after a branch switch (2026-09-06 round 32; cause found 2026-09-07 round 35m)
 
 Round 32: node3 proposed a block with a root nobody could reproduce; a
