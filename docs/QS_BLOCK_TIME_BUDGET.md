@@ -2309,6 +2309,18 @@ already off r2: the executed hook casts the vote before the write). Both
 sides pay the state root (~200 ms, of which QMDB's serial append is ~78
 ms and the rest is the IntraBlockState materialising ~45k objects).
 
+### Result: B 52.7k / 46.6k and 53.1k / 47.6k; the A leg does not move
+
+A1 30.9k / 27.4k, B1 52.7k / 46.6k, B2 53.1k / 47.6k, A2 30.1k / 26.3k;
+zero BAD BLOCK on seven nodes across the round -- the builder's root is
+the followers' root at every block size (prediction 10). Prediction 18:
+run 311-625 ms at 163k, 0 failed; propose 1.1-1.8 s, over the 0.8 s line
+-- assemble (state root 183-200 + ~150 of receipts and roots) and reload
+(156-167) are the leader now, with the fill. Prediction 19: over 50k in
+the first window of both B legs, at 72-76% occupancy (the pool's
+promotion lag; the second windows 46-48k at 2.6 s blocks). The A leg is
+where it was: at 22,857 the fill was never the cycle.
+
 ## 6aa. Round 35l: one leader for four views -- registered before the round ran
 
 35k's runner (offsets 470M-478M) with 289f5630 under
