@@ -2218,6 +2218,24 @@ N42_SENDER_CACHE_SLOTS=4194304.
     it stays over 150 ms -- then the misses are not capacity, and the
     pool's prewarm and the import see different signers.
 
+### A1: the builder is off the lock, and the reorg is starved instead
+
+Warm-up lost once more to node2's start -- this time with the error
+named (`twig metadata inconsistent`, twig 64710 of 132328, then the
+process exited; 88b01d9e retries the load and went in for the legs
+after A1). A1 32.0k / 28.2k: the first window at 100% occupancy and
+0.71 s blocks, the second at 72% with 400k transactions pending.
+
+Leader at 22,857: `pendingSnapshot` 0 ms (from 0.97-1.94 s), trim 4,
+commit 108-123, heap 8 ms; view timing propose 380-430, r1 75, r2 200 ms,
+total 0.66-0.73 s. Prediction 16's first clause held. The pool's reorg,
+no longer on the builder's path, is now starved by the inserters: reset
+0, demote 48-73, promote 71-146 ms, but lockWait 1.4-1.5 s of a 2.3-2.6 s
+reorg -- the mutex hands off FIFO and ~250 insert batches a second queue
+ahead of it -- so promotion lags and the second window's blocks came out
+72% full. ffbf204c (the reorg raises a flag before it takes the lock;
+inserters yield while it is up) went in for the legs after B1.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
