@@ -2271,6 +2271,25 @@ thing to read. Added:
     read this too). FALSIFIED IF it stays over 1 s -- then the inserters
     hold the lock in longer stretches than the flag can yield around.
 
+### 35j B2/A2 (read before 35k ran): the priority flag did nothing, and a B leg degrades as the heap meets its limit
+
+B2, the reorg-priority build: 47.4k / 36.7k, the same as B1's 47.4k /
+35.7k; A2 31.6k / 28.2k like A1. lockWait 0.75-2.2 s still -- the flag
+turns away new inserters, but the ~200 concurrent RPC batches already
+queued on the mutex go first, and each holds it for the whole
+200-transaction batch. Prediction 20 fell.
+
+Both B legs' second windows ran 3.75 s blocks. Over B2's three minutes,
+node0's propose went 1.18 -> 2.06 s and r2 0.94 -> 1.09 s while node1's
+exec for a ~140k block went 97 -> 674 ms and MemAvailable 86 -> 43 GB:
+the follower's executor tripled on the same work. That is the garbage
+collector at the 7 GiB GOMEMLIMIT -- the live heap grows through the
+leg (the pool's 400k+ pending, 16 decoded 163k-blocks in the block cache
+at ~160 MB each, the QMDB index, the txindex tail) until every block's
+~1 GB of allocation forces a full mark. 35k runs the block cache at 4
+and the sender cache at 2M slots; a heap profile inside a B leg is the
+next reading if the trend persists.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
