@@ -236,6 +236,26 @@ func (bc *BlockChain) SetExecutedHook(h func(hash, txHash, parentHash types.Hash
 // timeout passes. The early-vote path lets a view advance while the previous
 // block's persistence is still in flight, so a leader triggered at the view
 // change may need to wait a few milliseconds before building on it.
+// WaitBlockApplied waits until hash is the applied head (the QMDB applied
+// marker), the state a build on it must read. Persisted is not enough: a
+// sibling's header is stored before its state is applied.
+func (bc *BlockChain) WaitBlockApplied(hash types.Hash, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if bc.AppliedHeadIs(hash) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-bc.ctx.Done():
+			return false
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
 func (bc *BlockChain) WaitBlockPersisted(hash types.Hash, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for {

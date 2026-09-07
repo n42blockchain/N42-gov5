@@ -993,8 +993,14 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 			// PlainState, which lands atomically with the header — wait for it
 			// rather than aligning against (and mis-reading) the pre-parent
 			// state. Normally sub-millisecond; 2s covers a stalled write.
-			if !bc.WaitBlockPersisted(parentHash, 2*time.Second) {
-				return fmt.Errorf("consensus parent %x not persisted in time", parentHash[:8])
+			// APPLIED, not merely persisted: a sibling's header is stored on
+			// arrival (the lowest-hash convergence needs it) before its state
+			// is applied, and a build that starts in that window reads the
+			// previous state and seals a root the followers reject (rounds
+			// 35m/35n: node2 and node3 after a branch switch, zero-transaction
+			// blocks whose only difference was the winner's reward credit).
+			if !bc.WaitBlockApplied(parentHash, 2*time.Second) {
+				return fmt.Errorf("consensus parent %x not applied in time", parentHash[:8])
 			}
 			pblk, _ := w.chain.GetBlockByHash(parentHash)
 			if pblk == nil {
