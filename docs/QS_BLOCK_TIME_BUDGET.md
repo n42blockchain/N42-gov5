@@ -2236,6 +2236,41 @@ ahead of it -- so promotion lags and the second window's blocks came out
 72% full. ffbf204c (the reorg raises a flag before it takes the lock;
 inserters yield while it is up) went in for the legs after B1.
 
+B1 (two floods, snapshot on, before the reorg-priority lock): 47.4k /
+35.7k -- the first window a new high at 76% occupancy and 2.6 s blocks,
+the second at 82% and 3.75 s. Leader at 163k: pendingSnapshot 0, trim 11,
+commit 611-615 ms (the serial EVM at ~3.8 us/tx), heap 57 ms; propose
+1.14-1.30 s, r1 65, r2 0.64-0.75 s, total 1.85-2.07 s. Follower at 163k:
+recover 59 ms (prediction 17 held with the 4M-slot cache), setup 90,
+exec 200, apply 18, finalize 195 ms. Prediction 16: propose was at the
+1.2 s line, blockTime under 2.5 s in the first window only.
+
+## 6z. Round 35k: the builder on Block-STM -- registered before the round ran
+
+35j's runner (offsets 460M-468M, two floods, snapshot, reorg-priority lock
+ffbf204c on every leg) with 6148b6cd under N42_MINER_PARALLEL_FILL=1: the
+builder picks its candidates in price-and-nonce order without executing
+(gas by limit, size limiter as before), runs them through the followers'
+executor on its own IntraBlockState, drops the candidates that fail their
+pre-check, renumbers the survivors and hands them to the unchanged
+assemble. The leader's fill commit was 611-683 ms at 163k; the followers
+execute the same block in ~200 ms.
+
+**Registered predictions.** 10 (zero BAD BLOCK -- the builder's root must
+equal what seven followers compute from the same list) is the first
+thing to read. Added:
+
+18. `miner: parallel fill` at 163k: run under 300 ms, failed candidates
+    under 1% of the list; propose under 0.8 s. FALSIFIED IF propose stays
+    over 1.1 s with run under 300 ms -- then assemble/finalize (state
+    root 190 ms, reload 140 ms, assemble 170 ms) is the leader now.
+19. B TPS over 50k in a full-occupancy window. FALSIFIED IF it stays
+    under 45k with prediction 18 met -- then r2 (the followers' import,
+    0.65-0.75 s) or the supply is the cycle.
+20. The reorg's lockWait under 200 ms with the priority flag (35j B2/A2
+    read this too). FALSIFIED IF it stays over 1 s -- then the inserters
+    hold the lock in longer stretches than the flag can yield around.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
