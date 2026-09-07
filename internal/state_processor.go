@@ -171,7 +171,11 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 		// the signature — so an imported block's declared senders must be
 		// verified against V/R/S or a byzantine leader could forge them.
 		// Reject before any execution touches state.
-		if err := verifyBlockSenders(signer, b.Transactions()); err != nil {
+		var hints SenderHintSource
+		if p.bc != nil {
+			hints = p.bc.senderHints
+		}
+		if _, err := verifyBlockSendersHinted(signer, b.Transactions(), hints); err != nil {
 			return nil, nil, nil, 0, fmt.Errorf("block %s: %w", concreteHeader.Number.String(), err)
 		}
 		// First pass: senders the pool already recovered at admission. Second
