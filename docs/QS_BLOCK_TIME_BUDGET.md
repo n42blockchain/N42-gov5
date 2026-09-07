@@ -2433,6 +2433,37 @@ s the comment remembered. ea76069e keeps the void on the mutating
 unwind only (two "branch switch" voids in the same window). Third
 launch at 05:08.
 
+### Third launch, warm-up: the gate works, and the per-account caps are the fill's ceiling
+
+Warm-up windows 56.9k / 52.9k -- the highest yet -- at 40-43% occupancy
+and 1.13-1.33 s blocks; zero BAD BLOCK, zero timeouts, zero voids. The
+pool's reorg: lockWait 0-7 ms (from 0.75-2.2 s; prediction 24 held),
+demote 320-420 ms. But `pendingAccts` 11-33 on node0 with 8,000 senders
+in flight, fills of 31-37k candidates (all included, 0 stale): the
+bench's `-shard-senders` routes each sender to one node, so six-sevenths
+of every sender's transactions reach a leader by gossip as REMOTE, and
+the pool keeps at most 16 executable and 64 queued per remote account.
+A rotating leader's local senders had 2.3 s to accumulate; a tenure
+leader builds four blocks in a row from the same pool and the caps bind.
+Stopped after the warm-up; 35n raises the caps.
+
+## 6ac. Round 35n: the remote per-account caps raised -- registered before the round ran
+
+35m's runner (offsets 490M-498M) with `--txpool.accountslots 4096
+--txpool.accountqueue 8192` on every node (the global 500k/150k stay).
+
+**Registered predictions.** 10, 23, 24 stand. Added:
+
+26. `pendingAccts` on the leader over 1,000 and fills over 120k
+    candidates at the 163k ceiling; B occupancy over 70% under tenure.
+    FALSIFIED IF fills stay under 60k with the caps raised -- then the
+    promotion rate (demote 320-420 ms per reorg, one reorg at a time)
+    is the ceiling, not the caps.
+27. B TPS over 70k in a window (the 0.7-1.1 s tenure cycle with blocks
+    over 100k). FALSIFIED IF under 60k with 26 met -- then the cycle
+    grew with the block again (the follower import at 163k, ~0.8 s) and
+    the leader's assemble/state root is next.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
