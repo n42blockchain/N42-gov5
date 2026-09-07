@@ -2122,8 +2122,11 @@ Warm-up lost again to a short index load (node2, 6.2M of 8.5M keys; see
 30.5k / 29.7k at 0.75 s -- the A leg had never moved off serial's number
 before). B1 44.1k / 39.0k, the first window past 40k; the second window ran
 at 25% occupancy (41k transactions a block, 1.05 s blocks): one generator
-at target-depth 220k no longer fills the blocks, so B2/A2 below are
-supply-bound and 35i runs two.
+at target-depth 220k no longer fills the blocks, so 35i runs two. B2's
+first window read 42.6k at 52% occupancy; then the memory watchdog
+stopped the round at 19 GB available: under GOGC=300 every node's heap
+sat at its 12 GiB GOMEMLIMIT (7 x 11.8 GB anon) on a 137 GB box that
+also carries 20 GB of shmem and ~39 GB of page cache. A2 did not run.
 
 Node1 at ~100k transactions: 1 wave, recover ~40, setup ~25, exec 82-129,
 validate 8, apply 15 ms; `proc` 373-478 ms, import `total` 578-682 ms
@@ -2144,7 +2147,8 @@ whose transactions carry From.
 ## 6x. Round 35i: two generators, the pool's reorg, and the fill's own overhead -- registered before the round ran
 
 35h's runner with two floods (offsets 440M-448M; target-depth 220k each,
-pool 500k), and 90342be7: the pool's reset treats a head that extends the
+pool 500k), GOMEMLIMIT 7 GiB (GOGC=300 kept: the limit, not GOGC, bounds
+the heap now -- 7 x 7 GiB leaves the box ~50 GB), and 90342be7: the pool's reset treats a head that extends the
 old one as a linear extension (headers walked, no bodies loaded) instead
 of a reorg whose difference is empty -- 250-480 ms of a 0.8-1.1 s reorg at
 100k-transaction blocks. 710d0c13 times the fill's pool snapshot and stale
