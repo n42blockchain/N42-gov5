@@ -416,7 +416,10 @@ func (bc *BlockChain) BuildParallel(header *block.Header, txs []*transaction.Tra
 // leading four views in a row: a stale seal at 13881479, a branch switch to
 // the lowest-hash sibling, and its next speculative build proposed 13881480
 // with a root six followers rejected (state root mismatch, zero
-// transactions). The full rebuild is ~5 s once, after the rare switch.
+// transactions). The full rebuild is 10-23 s at 13.9M blocks, so only the
+// mutating unwind voids it: the failed-block revert fires on routine paths
+// (35m's relaunch: 48 voids in four minutes, every build a full reload,
+// one block a minute).
 func (bc *BlockChain) voidMinerRootTrust(reason string) {
 	bc.minerRCMu.Lock()
 	defer bc.minerRCMu.Unlock()
@@ -2907,7 +2910,6 @@ func (bc *BlockChain) revertUncommittedQMDBAppends(blockNum uint64) {
 	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil {
 		return
 	}
-	bc.voidMinerRootTrust("failed block revert")
 	// Idempotent with the writeBlockWithState failure path: make sure the
 	// staged flush is discarded before the peel — ApplyUndo prunes revived
 	// slots out of deadFlushed and must see the re-queued reclaim list.
