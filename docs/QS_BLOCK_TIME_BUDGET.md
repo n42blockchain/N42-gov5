@@ -2425,6 +2425,14 @@ branches. 359e1f89 voids the trust on every unwind and failed-block
 revert (the next build rebuilds, ~5 s, once). The round relaunched with
 it and the rejected hash on the runner's known-bad list.
 
+Second launch: one block a minute. The failed-block revert fires on
+routine import paths -- node0 voided the trust 48 times in four minutes
+("failed block revert"), and every leader build then reloaded the
+speculative tree from the entry log: 10-23 s at 13.9M blocks, not the 5
+s the comment remembered. ea76069e keeps the void on the mutating
+unwind only (two "branch switch" voids in the same window). Third
+launch at 05:08.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
