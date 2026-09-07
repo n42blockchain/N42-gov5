@@ -1441,7 +1441,10 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	}
 
 	// Phase 2: Fill remaining space with regular transactions sorted by effective tip.
+	tPending := time.Now()
 	pending := w.txsPool.Pending(false)
+	dPending := time.Since(tPending)
+	pendingRawAccts := len(pending)
 	if len(pending) == 0 {
 		return nil
 	}
@@ -1458,6 +1461,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	// no-op entry in an append-only commitment -- a root the followers, who
 	// never touched it, cannot reproduce.
 	staleTrimmed := 0
+	tTrim := time.Now()
 	reader := ibs.GetStateReader()
 	for addr, list := range pending {
 		var nonce uint64
@@ -1480,6 +1484,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			pending[addr] = list[i:]
 		}
 	}
+	dTrim := time.Since(tTrim)
 	if len(pending) == 0 {
 		return nil
 	}
@@ -1591,7 +1596,8 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	// executes the same transactions in ~5-6µs each; whatever pick+heap add on
 	// top of commit is the builder's own overhead.
 	if env.tcount > 1000 {
-		log.Info("miner: fillTx breakdown", "pendingAccts", len(pending), "pendingTxs", pendingTxs, "priceOut", priceOut,
+		log.Info("miner: fillTx breakdown", "pendingAccts", len(pending), "pendingRawAccts", pendingRawAccts, "pendingTxs", pendingTxs, "priceOut", priceOut,
+			"pendingSnapshot", dPending, "trim", dTrim,
 			"popGas", popGas, "popNonceHigh", popNonceHigh, "skipNonceLow", skipNonceLow, "staleTrimmed", staleTrimmed, "popOther", popOther, "lookupWait", lookupWait,
 			"txs", env.tcount, "pick", dPick, "commit", dCommit, "heap", dHeap)
 	}
