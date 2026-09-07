@@ -2371,6 +2371,15 @@ block behind the head (the reorg's lockWait 0.75-2.2 s behind ~200
 queued insert batches). c8740e20 serialises inserters on a gate ahead of
 pool.mu, so the reorg waits behind one batch; that is round 35m.
 
+B2 (tenure with the same-leader hint, f6a8d5d3): 51.0k / 47.7k at 21-22%
+occupancy and 0.70-0.73 s blocks -- the consensus cycle at ~35k-tx blocks
+is now 0.7 s. Node0: 40 leader views, 40 speculative hits; tenure views
+proposed in 39-555 ms (the first view of each tenure 0.86-1.25 s, its
+build waiting behind the previous leader's block), r2 7-800 ms, zero
+timeouts, zero BAD BLOCK. Fills 62-89k candidates, all included. The
+pool's promotion is the whole ceiling: full blocks at this cycle would
+be a different chain.
+
 ## 6ab. Round 35m: tenure with the hint, and the pool's reorg unstarved -- registered before the round ran
 
 35l's runner (offsets 480M-488M) with f6a8d5d3 (the leader advises its
