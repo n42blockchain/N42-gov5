@@ -365,6 +365,12 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 	// candidate wrote nothing (the failure is a pre-check, before FinalizeTx),
 	// so it is dropped and the survivors are renumbered.
 	failed := 0
+	// Why the lenient run dropped what it dropped. Round 35r's A2 leg had a
+	// third of the leader fills execute 22,857 candidates and drop every one,
+	// with the stale-nonce trim finding nothing -- and no record of the
+	// reason. Counted by class so the log line answers that next time.
+	var failNonceLow, failNonceHigh, failFunds, failFeeCap, failOther int
+	var failSample error
 	for i, r := range results {
 		if r.Err == nil {
 			continue
@@ -374,6 +380,21 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 				i, concreteHeader.Number.Uint64(), txs[i].Hash().String(), r.Err)
 		}
 		failed++
+		switch {
+		case errors.Is(r.Err, ErrNonceTooLow):
+			failNonceLow++
+		case errors.Is(r.Err, ErrNonceTooHigh):
+			failNonceHigh++
+		case errors.Is(r.Err, ErrInsufficientFunds):
+			failFunds++
+		case errors.Is(r.Err, ErrFeeCapTooLow):
+			failFeeCap++
+		default:
+			failOther++
+			if failSample == nil {
+				failSample = r.Err
+			}
+		}
 	}
 
 	// Collect receipts and logs, fixing cumulative gas.
@@ -458,6 +479,10 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 	}
 	if execs, aborts := executor.Stats(); executor.FellBack() || numTxs >= 1000 {
 		execNs, valNs := executor.WaveTimes()
+		if lenient && failed > 0 {
+			log.Info("parallel fill drops", "n", concreteHeader.Number.Uint64(), "failed", failed,
+				"nonceLow", failNonceLow, "nonceHigh", failNonceHigh, "funds", failFunds, "feeCap", failFeeCap, "other", failOther, "sample", failSample)
+		}
 		log.Info("parallel block", "n", concreteHeader.Number.Uint64(), "lenient", lenient, "failed", failed, "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
 			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
 			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "finalizeMs", time.Since(tApplied).Milliseconds())
