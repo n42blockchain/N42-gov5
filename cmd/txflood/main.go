@@ -182,19 +182,32 @@ func getNonce(url string, a types.Address) (uint64, error) {
 }
 
 func getBalanceAt(url string, a types.Address, tag string) (*big.Int, error) {
-	r, err := rpcCall(url, "eth_getBalance", []interface{}{a.Hex(), tag})
-	if err != nil {
-		return nil, err
+	// Retried: with eight generators funding at once a node under load
+	// answered one preflight with an empty quantity and the whole leg died
+	// (round 35q warm-up). Five tries, a second apart.
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Second)
+		}
+		r, err := rpcCall(url, "eth_getBalance", []interface{}{a.Hex(), tag})
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		var h string
+		if err := json.Unmarshal(r, &h); err != nil {
+			lastErr = err
+			continue
+		}
+		n, err := hexToBig(h)
+		if err != nil {
+			lastErr = fmt.Errorf("invalid %s balance for %s: %w", tag, a.Hex(), err)
+			continue
+		}
+		return n, nil
 	}
-	var h string
-	if err := json.Unmarshal(r, &h); err != nil {
-		return nil, err
-	}
-	n, err := hexToBig(h)
-	if err != nil {
-		return nil, fmt.Errorf("invalid %s balance for %s: %w", tag, a.Hex(), err)
-	}
-	return n, nil
+	return nil, lastErr
 }
 
 func fundingAmounts(senders, perTx int, gasPrice uint64) (*uint256.Int, *big.Int) {
