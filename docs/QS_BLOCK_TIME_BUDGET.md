@@ -2062,6 +2062,59 @@ Round 35f's runner (offsets 420M-428M) with 4061d36f on all five legs.
 10. Zero BAD BLOCK on any node: the delta path touches consensus state
     (every credited account), and one mismatch retires it.
 
+### Result: 8 and 10 held, 9 did not -- the import is no longer the cycle
+
+The warm-up leg was lost to node3's start (its QMDB index came up with
+2.2M of 8.5M live keys and the rebuild ran past the 600 s readiness
+deadline; the next start loaded 8.5M and the node was fine -- the stall
+issue in `docs/OPEN_ISSUES.md`, now with a cause: an index left short by
+the stop). The legs: A1 30.5k / 29.7k, B1 37.4k / 37.6k, B2 38.9k / 38.8k
+(A2 below). Zero BAD BLOCK on seven nodes across the round.
+
+Node1 at 117,353 transactions: 1 wave, 0 aborts, executions = transactions,
+recover 55, setup 99, exec 385, validate 11, apply 27 ms; `proc` 765 ms,
+import `total` 1,022 ms. Prediction 8 held on the executor (exec under
+400 ms, 1 wave) but the import total did not reach 0.85 s: 180 ms of
+`proc` lie outside the executor -- the sender gate's 117k secp256k1
+recoveries at ~27 workers -- and 250 ms outside `proc` (header, body,
+validation, write 141 ms). Prediction 9 fell as its own clause said it
+would: B moved 37.5k -> 38.9k, within the noise floor of serial's 37-38k,
+so at 163k the cycle is the leader.
+
+The leader's view timing (node0, B2): propose 1.1-1.9 s, r1 ~60 ms, r2
+0.7-0.9 s, total 2.0-2.7 s. Inside propose, the measured phases: fill
+`commit` 400 ms (103k transactions executed serially in the miner, ~4
+us/tx), `assemble` 270-350 ms, `finalize` 165-180 ms, `write` 210-250
+ms, `push` 70 ms; the rest is the leader importing the previous block
+first -- the leader rotates every view, so import and build sit in series
+on the critical path. That is the next round's target, after 35h retires
+what remains of the import's CPU.
+
+## 6w. Round 35h: the import's CPU -- registered before the round ran
+
+Round 35g's runner (offsets 430M-438M) with three changes:
+
+- 5b8c9d65: one IntraBlockState, EVM, reader and writer per worker,
+  rebound per transaction (35g's profile: mallocgc 46% of the executor's
+  CPU, the workers at ~7 of 32 cores meeting on the heap lock).
+- f7ae8d0c: the sender gate asks the pool for the transaction by hash and
+  takes its recovered sender (same hash, same signature bytes, re-derived
+  through the block's signer) instead of recovering again: 8 core-seconds
+  a block on every node at 163k.
+- GOGC=300 (the runner env): ~1 GB of allocation a block against a 2-3 GB
+  live heap collected every 2-3 blocks, 12% of CPU in gcDrain.
+
+**Registered predictions.** 1-4, 6-8, 10 stand. Added:
+
+11. Node1 at ~117k: exec under 250 ms (from 385), `hintHits` equal to the
+    transaction count on every block after the pool has seen them, `proc`
+    under 550 ms (from 765). FALSIFIED IF exec stays over 350 ms -- then
+    the workers' idle time is not allocation, and the next profile is a
+    block profile (contention), not a CPU profile.
+12. B TPS unchanged within the floor (37-39k): the leader's propose is the
+    cycle, and this round does not touch it. A rise past 40k means the
+    import was still on the critical path more than the view timing shows.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
