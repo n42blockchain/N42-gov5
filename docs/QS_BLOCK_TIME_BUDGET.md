@@ -2379,6 +2379,10 @@ build waiting behind the previous leader's block), r2 7-800 ms, zero
 timeouts, zero BAD BLOCK. Fills 62-89k candidates, all included. The
 pool's promotion is the whole ceiling: full blocks at this cycle would
 be a different chain.
+A2 (tenure with the hint): 37.3k / 30.5k -- the A leg moved for the
+first time since round 34 (0.61 s blocks at 100% occupancy, then 0.42 s
+blocks at 56%). Round 35l: A1 31.2k / 27.0k, B1 43.2k / 42.1k (no hint),
+B2 51.0k / 47.7k, A2 37.3k / 30.5k; zero BAD BLOCK, zero timeouts.
 
 ## 6ab. Round 35m: tenure with the hint, and the pool's reorg unstarved -- registered before the round ran
 
