@@ -2464,6 +2464,23 @@ Stopped after the warm-up; 35n raises the caps.
     grew with the block again (the follower import at 163k, ~0.8 s) and
     the leader's assemble/state root is next.
 
+### Two launches to read with care
+
+First launch (05:30): all seven nodes exited within the same second,
+right after "TxLookup segments loaded", with nothing on stderr and no
+OOM record readable from here; the relaunch seven minutes later ran
+normally. Unexplained; the binary accepts the new flags.
+
+Second launch's warm-up: the runner log carries two `=== r35-warmup`
+headers and two sets of window lines, and four generators ran -- two per
+sender offset -- so every transaction was submitted twice and the
+windows (42-46k at 15-19% occupancy) are not a reading. The A1 leg has
+one bench-run. What the warm-up does show: fills of 86-117k candidates
+on the leaders (prediction 26's first clause: the caps were the fill's
+ceiling), zero BAD BLOCK, zero timeouts, zero voids; and the
+generators themselves at 81-89% of one core each -- a single-threaded
+signer at ~12k transactions a second is the next supply ceiling.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
