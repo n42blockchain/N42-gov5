@@ -57,6 +57,19 @@ twig's stored root can disagree with its leaves on one read (a stale
 leaf row from the evict/flush path? a value read past its transaction?),
 and whether the same can happen on the live path.
 
+Round 35l (node5, 03:35): all three attempts failed, at twigs 37904, 82102
+and 85715 of 142788 -- a different sealed twig each time, so nothing on
+disk is bad; the fourth start (the next leg, ten minutes later) loaded
+all 8.6M keys. Ruled out since: the MDBX binding always opens with
+NOTLS, so an unpinned read view is not it; the SIMD twig hasher
+(`hashNodesRun`) has no shared mutable state; `recompute` is synchronous.
+Still suspect: the leaf rehydration into the shared `scratch` buffer
+(`LeavesInto` / `decodeSparseLeavesInto`) under a store whose leaf rows
+were written by the evict/flush path -- the failures cluster at fleet
+start, when seven nodes scan at once. Next: run the load under the race
+detector against a copy of a failed store, or log the twig's leaf-row
+length and the recomputed vs stored roots on the mismatch.
+
 ## node3 one-time in-memory divergence (2026-09-06, round 32 first start)
 
 Recorded in `docs/QS_BLOCK_TIME_BUDGET.md` (round 32). A restart healed it;
