@@ -192,6 +192,7 @@ func (l leafStoreGetter) LeavesInto(id int, dst *[2 * TwigSize]Hash) bool {
 	}
 	return decodeSparseLeavesInto(v, dst)
 }
+
 // LeafStoreFromGetter wraps a Getter (kv.Tx / map store) as a LeafStore.
 func LeafStoreFromGetter(g Getter) LeafStore { return leafStoreGetter{g} }
 
@@ -525,7 +526,11 @@ func (t *Tree) loadFrom(g Getter, trustedThrough uint64) error {
 	scratch := new([2 * TwigSize]Hash)
 	for id := 0; id < numTwigs; id++ {
 		if err := t.loadTwigFrom(g, id, nextSlot, trustedThrough, activeTwig, nil, scratch); err != nil {
-			return err
+			// Name the twig: two fleet starts (rounds 35g/35h) logged a short
+			// index (2.2M and 6.2M of 8.5M keys) and never reached the next
+			// line, and the next start of the same store loaded all 8.5M.
+			return fmt.Errorf("qmdb: load twig %d of %d (nextSlot %d, active %d, indexed so far %d): %w",
+				id, numTwigs, nextSlot, activeTwig, t.idx.Len(), err)
 		}
 	}
 	// Entry records are not retained — start the resident window empty at the

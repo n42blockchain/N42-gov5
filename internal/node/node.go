@@ -1074,6 +1074,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			// first block's execution re-points at a live tx).
 			qmdbRC.SetCold(nil)
 			if loadErr != nil {
+				log.Error("QMDB forest reload failed at startup", "err", loadErr)
 				return nil, fmt.Errorf("reload QMDB forest: %w", loadErr)
 			}
 			qmdbRC.EnableUndoRecording()
