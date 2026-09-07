@@ -381,9 +381,18 @@ func (pool *TxsPool) addTxs(txs []*transaction.Transaction, local, sync bool) []
 	for pool.reorgWaiting.Load() {
 		time.Sleep(200 * time.Microsecond)
 	}
+	// Inserters serialise on insertGate BEFORE pool.mu, so at most one of
+	// them is ever queued on the pool lock: the reorg then waits behind one
+	// batch (~3 ms), not the ~200 batches the RPC concurrency had queued
+	// (round 35j-35l: lockWait 0.75-2.2 s, promotion a block behind, and
+	// with a leader tenure the same node's pool supplies four blocks in a
+	// row -- 35l B1 filled them to 26-30%). Insert throughput is unchanged:
+	// the batches were serialised by pool.mu anyway.
+	pool.insertGate.Lock()
 	pool.mu.Lock()
 	newErrs, dirtyAddrs := pool.addTxsLocked(news, local, accounts)
 	pool.mu.Unlock()
+	pool.insertGate.Unlock()
 
 	nilSlot := 0
 	for _, err := range newErrs {

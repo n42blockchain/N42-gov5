@@ -210,7 +210,9 @@ type TxsPool struct {
 	pendingSnap atomic.Pointer[map[types.Address][]*transaction.Transaction]
 	// reorgWaiting is set while a reorg waits for pool.mu; inserters yield
 	// to it (see addTxs).
-	reorgWaiting  atomic.Bool
+	reorgWaiting atomic.Bool
+	// insertGate serialises inserters ahead of pool.mu (see addTxs).
+	insertGate    sync.Mutex
 	currentMaxGas uint64
 
 	ctx    context.Context
