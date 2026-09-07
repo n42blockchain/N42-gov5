@@ -2363,6 +2363,34 @@ broadcasts its proposal when it also leads view+1; the producer waits for
 the block to persist (~250 ms) and builds view+1 on its post-state. B1
 runs without it (the fleet launched before the swap); B2 and A2 run it.
 
+B1 (tenure, no same-leader hint): 43.2k / 42.1k at 26-30% occupancy and
+1.0-1.2 s blocks. The cycle halved -- a tenure leader does not import
+its own previous block before building -- and the blocks emptied: one
+node's pool now supplies four blocks in a row, and its promotion runs a
+block behind the head (the reorg's lockWait 0.75-2.2 s behind ~200
+queued insert batches). c8740e20 serialises inserters on a gate ahead of
+pool.mu, so the reorg waits behind one batch; that is round 35m.
+
+## 6ab. Round 35m: tenure with the hint, and the pool's reorg unstarved -- registered before the round ran
+
+35l's runner (offsets 480M-488M) with f6a8d5d3 (the leader advises its
+own speculative build at proposal time when it also leads view+1) and
+c8740e20 (insertGate) on every leg.
+
+**Registered predictions.** 10, 23 stand; 21 re-registered on the fixed
+mechanism. Added:
+
+24. The pool's reorg `lockWait` under 50 ms at 163k with two generators
+    (from 0.75-2.2 s), and B occupancy back over 70% under tenure.
+    FALSIFIED IF lockWait stays over 300 ms -- then a lock holder other
+    than the inserters (Content/Stats/GetTx callers, or the priced heap's
+    discard) is in the way.
+25. B TPS over 60k in a window: the tenure cycle (~1.0-1.2 s at B1's
+    small blocks) with blocks refilled to 120k+. FALSIFIED IF occupancy
+    recovers but TPS stays under 50k -- then the cycle grew with the
+    block (r2 at 163k is 0.65-1.06 s) and the follower import is the
+    whole of it.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
