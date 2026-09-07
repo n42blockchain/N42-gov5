@@ -265,6 +265,8 @@ func main() {
 	rate := flag.Int("rate", 0, "submissions per second (0 = as fast as possible)")
 	targetDepth := flag.Int("target-depth", 0, "keep this many txs pending in the pool; each second top up only the shortfall (0 = off, requires the txpool RPC namespace)")
 	depthByBlocks := flag.Bool("depth-by-blocks", false, "with -target-depth: measure depth as submitted minus mined (summing each new block's transaction count) minus rejected, instead of asking txpool_status -- exact when this generator is the chain's only traffic, and immune to the pool's not-yet-demoted backlog")
+	depthByNonce := flag.Bool("depth-by-nonce", false, "with -target-depth: measure depth as THIS generator's submitted minus mined, from its own senders' chain nonces (sampled: -depth-sample senders a second, round-robin over the ones with anything in flight). Exact per generator whatever else is on the chain. -depth-by-blocks with -depth-share credits N generators with 1/N of every block, which is a fixed point at ANY rate: round 35s ran at 35k TPS and 16% occupancy with every generator believing it had 25k in flight")
+	depthSample := flag.Int("depth-sample", 128, "with -depth-by-nonce: senders whose chain nonce is refreshed each second")
 	depthShare := flag.Int("depth-share", 1, "with -depth-by-blocks: this generator is one of N symmetric generators, so credit it with 1/N of each block's transactions (round 35r: eight generators each counted every block as their own, read the pool as empty, and pushed 12M transactions through a 300k pool)")
 	senders := flag.Int("senders", 0, "0=single faucet; N=fund+flood from N derived accounts")
 	perTx := flag.Int("pertx", 300, "txs per sender (multi-sender mode)")
@@ -312,6 +314,12 @@ func main() {
 
 	// ---------- build the raw tx list ----------
 	var raws []string
+	// Per-sender address and pre-sign base nonce, kept for -depth-by-nonce:
+	// sender s owns raws[s*perTx : (s+1)*perTx], so its submitted count is a
+	// function of the shared claim index and its mined count is its chain
+	// nonce minus the base.
+	var senderAddrs []types.Address
+	var senderBase []uint64
 	if *senders <= 0 {
 		startNonce, err := getNonce(urls[0], from)
 		if err != nil {
@@ -340,6 +348,8 @@ func main() {
 			keys[i] = deriveKey(i)
 			addrs[i] = crypto.PubkeyToAddress(keys[i].PublicKey)
 		}
+		senderAddrs = addrs
+		senderBase = make([]uint64, *senders)
 		fn, err := getNonce(urls[0], from)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "faucet nonce: %v\n", err)
@@ -441,6 +451,7 @@ func main() {
 					atomic.AddInt64(&nonceFailures, 1)
 					return // leave this sender's slots empty rather than sign from a guessed nonce
 				}
+				senderBase[s] = base
 				for j := 0; j < *perTx; j++ {
 					to := dead
 					if *recipients > 0 {
@@ -491,6 +502,11 @@ func main() {
 		// pool's reorg keeping up.
 		var minedSinceStart int64
 		lastCounted := uint64(0)
+		chainNonce := make([]uint64, len(senderAddrs))
+		for s := range chainNonce {
+			chainNonce[s] = senderBase[s]
+		}
+		nonceCursor := 0
 		if *depthByBlocks {
 			if r, err := rpcCall(urls[0], "eth_blockNumber", nil); err == nil {
 				var h string
@@ -505,7 +521,40 @@ func main() {
 			for range t.C {
 				var depth int
 				var err error
-				if *depthByBlocks {
+				if *depthByNonce && len(senderAddrs) > 0 {
+					// Claimed (not acknowledged) indexes count as in flight:
+					// a batch inside its HTTP call is about to be.
+					claimed := atomic.LoadInt64(&idx) + 1
+					per := int64(*perTx)
+					refreshed := 0
+					inflight := int64(0)
+					for k := 0; k < len(senderAddrs); k++ {
+						s := (nonceCursor + k) % len(senderAddrs)
+						sub := claimed - int64(s)*per
+						if sub <= 0 {
+							continue // not reached yet (senders are claimed in order)
+						}
+						if sub > per {
+							sub = per
+						}
+						mined := int64(chainNonce[s]) - int64(senderBase[s])
+						if mined >= sub {
+							continue // fully mined as of the last refresh
+						}
+						if refreshed < *depthSample {
+							if n, e := getNonceAt(urls[s%len(urls)], senderAddrs[s], "latest"); e == nil {
+								chainNonce[s] = n
+								mined = int64(n) - int64(senderBase[s])
+							}
+							refreshed++
+							nonceCursor = s + 1
+						}
+						if mined < sub {
+							inflight += sub - mined
+						}
+					}
+					depth = int(inflight)
+				} else if *depthByBlocks {
 					r, e := rpcCall(urls[0], "eth_blockNumber", nil)
 					var h string
 					if e != nil || json.Unmarshal(r, &h) != nil {
