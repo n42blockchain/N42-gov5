@@ -2536,6 +2536,18 @@ seal caused the switch, and the bad roots it was for were builds on a
 persisted-but-unapplied sibling, now waited out (580d2f32). 99ea54ad
 removes the void call; B2 and A2 run it (B1 launched before the swap).
 
+B1 45.7k / 38.7k and B2 48.8k / 39.9k at 71-78% occupancy, 2.6-3.0 s
+blocks -- rotation with four generators fills the blocks and the cycle
+is slower than 35k's (heaps at the 7 GiB limit with the raised caps).
+A2 produced no block at all: every view timed out for 400 s. The probe
+after the stop: five nodes at head 13890511, two at 13890512, and every
+node's tree at 13890513 -- the leg's stop had cut two blocks in flight,
+and the five nodes' persisted HotStuff state named a committed block
+they did not have, so they looped in catch-up ("block #13890512 not
+found" from the peers that lacked it too) while the two ahead could not
+form a quorum. A journal reset on all seven before 35p; the harness
+should stop the flood and let the chain drain before stopping the fleet.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
