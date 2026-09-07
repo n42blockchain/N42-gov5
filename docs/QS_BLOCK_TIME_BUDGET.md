@@ -2404,6 +2404,27 @@ mechanism. Added:
     block (r2 at 163k is 0.65-1.06 s) and the follower import is the
     whole of it.
 
+### First launch: a BAD BLOCK in the warm-up, and the divergence class has a cause
+
+Two minutes into the decay (empty 0.3 s views) six nodes rejected
+13881480 from node2 -- "state root mismatch, proposer 6330de.., locally
+computed dfd25e..", zero transactions. Node2's log: at 04:36:33 its seal
+of 13881479 was stale ("applied head moved past its parent" -- a sibling
+bca22538.. had landed), at 04:36:42 a branch switch unwound to the
+incoming block's parent and the miner converged on the lowest-hash
+sibling, then, leading the next two views, its parked speculative build
+of 13881480 on bca22538.. was a hit and went out with the wrong root.
+
+The builder's persistent speculative computer reloads by trusting its
+index below a cursor for the store's layout; the unwind rewrote entries
+below that cursor, and nothing voided the trust -- only a failed peel
+inside NewMinerRootComputer did. This is the "one-time in-memory
+divergence" of round 32 (node3), made frequent by tenure: a leader that
+keeps the view after a stale seal is the one that just switched
+branches. 359e1f89 voids the trust on every unwind and failed-block
+revert (the next build rebuilds, ~5 s, once). The round relaunched with
+it and the rejected hash on the runner's known-bad list.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across

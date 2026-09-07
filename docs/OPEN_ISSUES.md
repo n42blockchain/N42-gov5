@@ -70,10 +70,18 @@ start, when seven nodes scan at once. Next: run the load under the race
 detector against a copy of a failed store, or log the twig's leaf-row
 length and the recomputed vs stored roots on the mismatch.
 
-## node3 one-time in-memory divergence (2026-09-06, round 32 first start)
+## Leader in-memory divergence after a branch switch (2026-09-06 round 32; cause found 2026-09-07 round 35m)
 
-Recorded in `docs/QS_BLOCK_TIME_BUDGET.md` (round 32). A restart healed it;
-the cause is not known.
+Round 32: node3 proposed a block with a root nobody could reproduce; a
+restart healed it. Round 35m reproduced it with a leader tenure: a stale
+seal, a branch switch to the lowest-hash sibling, then the leader's next
+speculative build proposed with a wrong root (six rejections, zero
+transactions). The builder's persistent speculative root computer
+reloads trusting its index below a cursor for the store's layout, and an
+unwind rewrites entries below that cursor. 359e1f89 voids the trust on
+every unwind and failed-block revert. Still open: the stale-seal /
+sibling race itself under tenure (a leader that keeps the view after its
+seal went stale), which costs a view each time.
 
 ## Plain `Account` table frozen at 13,750,514 on the qs fleet (2026-09-06, round 26)
 
