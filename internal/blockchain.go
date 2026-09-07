@@ -408,6 +408,24 @@ func (bc *BlockChain) BuildParallel(header *block.Header, txs []*transaction.Tra
 	return run.Included, run.Receipts, run.UsedGas, run.Failed, nil
 }
 
+// voidMinerRootTrust makes the builder's persistent speculative computer
+// rebuild from the entry log on its next use. Its fast reload trusts its
+// index below a cursor for THIS store's layout; an unwind or a failed-block
+// revert rewrites entries below that cursor, and a trusted reload over the
+// new layout yields a root the followers cannot reproduce. Round 35m, node2
+// leading four views in a row: a stale seal at 13881479, a branch switch to
+// the lowest-hash sibling, and its next speculative build proposed 13881480
+// with a root six followers rejected (state root mismatch, zero
+// transactions). The full rebuild is ~5 s once, after the rare switch.
+func (bc *BlockChain) voidMinerRootTrust(reason string) {
+	bc.minerRCMu.Lock()
+	defer bc.minerRCMu.Unlock()
+	if bc.minerRC != nil {
+		bc.minerRC.VoidIndexTrust()
+		log.Warn("miner speculative tree: index trust voided; next build rebuilds", "reason", reason)
+	}
+}
+
 func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx) state.RootComputer {
 	if !bc.qmdbEnabled {
 		return nil
@@ -2889,6 +2907,7 @@ func (bc *BlockChain) revertUncommittedQMDBAppends(blockNum uint64) {
 	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil {
 		return
 	}
+	bc.voidMinerRootTrust("failed block revert")
 	// Idempotent with the writeBlockWithState failure path: make sure the
 	// staged flush is discarded before the peel — ApplyUndo prunes revived
 	// slots out of deadFlushed and must see the re-queued reclaim list.
@@ -2935,6 +2954,9 @@ func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authori
 	bc.PeelDanglingQMDBAppends()
 	mutated := false
 	err := bc.unwindForReimportTx(n, parentHash, authorizedSwitch, &mutated)
+	if mutated {
+		bc.voidMinerRootTrust("branch switch")
+	}
 	if err != nil && !mutated {
 		// Pre-check rejections (finality floor, lineage mismatch → future
 		// queue, unauthorized passive switch) fail BEFORE any tree mutation:
