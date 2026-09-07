@@ -2548,6 +2548,31 @@ found" from the peers that lacked it too) while the two ahead could not
 form a quorum. A journal reset on all seven before 35p; the harness
 should stop the flood and let the chain drain before stopping the fleet.
 
+## 6ae. Round 35p: tenure 4 with the applied-wait fix, pool 300k -- registered before the round ran
+
+35o's runner (offsets 510M-518M) with N42_HOTSTUFF_LEADER_TENURE=4,
+580d2f32 (the speculative build waits for the applied parent), 99ea54ad
+(no void on a branch switch), the pool at 300k/100k. bench-run now lets
+the head settle before it stops the fleet at a leg's end.
+
+**Registered predictions.** 10, 21 (on the fixed mechanism), 23 stand.
+Added:
+
+29. Zero BAD BLOCK across the round under tenure -- the applied-wait is
+    the fix, not the void. FALSIFIED IF a leader is rejected after a
+    branch switch again -- then a second source feeds the build.
+
+### Warm-up: tenure holds, and the generators are the ceiling
+
+Twelve of twelve tenure views a speculative hit; tenure views proposed
+in 58-408 ms, the first view of each tenure 0.64-0.81 s; whole views
+0.13-0.9 s; r2 8-409 ms; zero timeouts and zero BAD BLOCK in the flood
+(the start took a few timeouts and catch-up failures while the split
+heads reconciled -- node4 switched off its own 13890513 -- then all
+seven agreed). Fills 32-48k, window 39.5k at 16.5% occupancy and 0.68 s
+blocks: the chain empties the pool as fast as four generators fill it.
+Round 35q runs eight generators of 1,000 senders.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
