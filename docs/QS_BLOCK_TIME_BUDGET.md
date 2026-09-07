@@ -2605,6 +2605,18 @@ wait plus the align is back in the build path (c0830181).
     ingest or the pool's insert gate), and the harness needs pre-signed
     replay into the leader.
 
+### Third launch, in progress: full blocks, and the cycle is the heap
+
+Warm-up 37.9k / 26.2k at 57-61% occupancy (2.6 then 3.5 s blocks); A1
+29.3k / 28.2k; B1's first window 46.2k at 100% occupancy -- the first
+full 163k blocks since round 35k -- but 3.5 s a block, against 35k's
+2.3 s for the same blocks. Prediction 30 fell on its occupancy clause
+but for the other reason: the supply is there now, and the rotation
+cycle stretched. The nodes sit at the 7 GiB limit (raised per-account
+caps, eight generators' arrivals, 4M sender-cache slots) and collect on
+every block. Round 35r raises GOMEMLIMIT to 9 GiB (63 GB of heaps on
+the 137 GB box, ~40 GB left) with everything else as 35q.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
