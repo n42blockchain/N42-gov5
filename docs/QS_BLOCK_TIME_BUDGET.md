@@ -2347,6 +2347,22 @@ import) + rounds instead of their sum.
 23. View timeouts stay at zero (a timed-out leader keeps its tenure; the
     fleet has had none at steady state since round 32).
 
+### A1 (read before B1 ran): tenure works, the speculative build never fires for it
+
+Warm-up lost to node5's start (three attempts, three different twigs;
+`docs/OPEN_ISSUES.md`). A1 31.2k / 27.0k, as 35k. The schedule holds:
+node0 led views 17304-17307, 17332-17335, ... (four in a row, every 28),
+zero view timeouts and zero BAD BLOCK on seven nodes (prediction 23). But
+the tenure views proposed in 363-528 ms, the same as the first view of
+each tenure: node0 logged twenty "build triggered (leader view)" and no
+"speculative build hit". The vote-time hint (proposal.go, cast when a
+node votes for a block it has IMPORTED) never fires for a leader's own
+block -- a leader does not import what it built. Prediction 21 fell on
+its mechanism, not its premise. f6a8d5d3 emits the hint as the leader
+broadcasts its proposal when it also leads view+1; the producer waits for
+the block to persist (~250 ms) and builds view+1 on its post-state. B1
+runs without it (the fleet launched before the swap); B2 and A2 run it.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
