@@ -265,6 +265,7 @@ func main() {
 	rate := flag.Int("rate", 0, "submissions per second (0 = as fast as possible)")
 	targetDepth := flag.Int("target-depth", 0, "keep this many txs pending in the pool; each second top up only the shortfall (0 = off, requires the txpool RPC namespace)")
 	depthByBlocks := flag.Bool("depth-by-blocks", false, "with -target-depth: measure depth as submitted minus mined (summing each new block's transaction count) minus rejected, instead of asking txpool_status -- exact when this generator is the chain's only traffic, and immune to the pool's not-yet-demoted backlog")
+	depthShare := flag.Int("depth-share", 1, "with -depth-by-blocks: this generator is one of N symmetric generators, so credit it with 1/N of each block's transactions (round 35r: eight generators each counted every block as their own, read the pool as empty, and pushed 12M transactions through a 300k pool)")
 	senders := flag.Int("senders", 0, "0=single faucet; N=fund+flood from N derived accounts")
 	perTx := flag.Int("pertx", 300, "txs per sender (multi-sender mode)")
 	count := flag.Int("count", 80000, "txs to submit (single-faucet mode)")
@@ -526,7 +527,14 @@ func main() {
 						fmt.Printf("  !! depth probe failed, refusing to inject blind: %v\n", err)
 						continue
 					}
-					depth = int(atomic.LoadInt64(&submitted) - minedSinceStart - atomic.LoadInt64(&failed))
+					// N symmetric generators share every block about equally;
+					// counting the whole block as this generator's own read
+					// the pool as empty N times too early (round 35r).
+					share := int64(*depthShare)
+					if share < 1 {
+						share = 1
+					}
+					depth = int(atomic.LoadInt64(&submitted) - minedSinceStart/share - atomic.LoadInt64(&failed))
 					if depth < 0 {
 						depth = 0
 					}
