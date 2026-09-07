@@ -385,6 +385,24 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 			failNonceLow++
 		case errors.Is(r.Err, ErrNonceTooHigh):
 			failNonceHigh++
+			if failNonceHigh <= 2 && lenient {
+				// Round 35v A legs: after every full block the next fill
+				// dropped all 22,857 candidates as nonce-too-high while the
+				// stale-nonce trim (the build's own reader) had just removed
+				// the previous block's mined prefix. The worker's error text
+				// carries the nonce it saw; read the same sender through the
+				// build's reader so the two views sit side by side.
+				var buildNonce int64 = -1
+				if from := txs[i].From(); from != nil {
+					if acc, aerr := ibs.GetStateReader().ReadAccountData(*from); aerr == nil && acc != nil {
+						buildNonce = int64(acc.Nonce)
+					} else if aerr == nil {
+						buildNonce = 0
+					}
+				}
+				log.Info("parallel fill nonce-high sample", "n", concreteHeader.Number.Uint64(), "tx", i,
+					"txNonce", txs[i].Nonce(), "buildReaderNonce", buildNonce, "workerErr", r.Err)
+			}
 		case errors.Is(r.Err, ErrInsufficientFunds):
 			failFunds++
 		case errors.Is(r.Err, ErrFeeCapTooLow):
