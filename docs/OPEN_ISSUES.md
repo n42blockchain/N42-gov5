@@ -30,12 +30,21 @@ work; do not enable `PQPrecompilesTime` on any chain before it lands.
 the chain (rounds 32-35: 60-90 s at 13.8M blocks). Done means a checkpoint
 the reload can start from.
 
-## Intermittent startup stall after big-block legs (2026-09-06, rounds 32/34)
+## Intermittent startup stall after big-block legs (2026-09-06, rounds 32/34; 35g/35h)
 
-A node logs "qmdb index loaded" and then nothing for 10+ minutes. The
-round-35 runners dump goroutines from pprof at +150 s
-(`/data/blockchain/wr-pprof/r35*-stall-goroutines.txt`); no dump has been
-read yet.
+A node logs "qmdb index loaded" and then nothing for 10+ minutes; the leg
+loses that node past the 600 s readiness deadline and the next start of
+the same store is fine. Rounds 35g (node3) and 35h (node2) added the
+shape: the "index loaded" line reports a SHORT index (2,230,875 and
+6,187,593 of 8,500,566 keys, puts == liveKeys), which the load prints
+from its deferred summary on error as well as on success -- so the twig
+scan most likely returned an error part way, `NewNode` returned it, and
+the process exited (the pprof dump at +150 s is 0 bytes because the
+server never came up). The stalled start's run.log was overwritten by the
+next leg's start before it was read. debb97ef names the twig in the error
+and logs it; the 35i runner copies run.log/run.err at +150 s and reports
+whether the process is alive. Done means: the error named and fixed, or
+the load made retry-safe.
 
 ## node3 one-time in-memory divergence (2026-09-06, round 32 first start)
 
