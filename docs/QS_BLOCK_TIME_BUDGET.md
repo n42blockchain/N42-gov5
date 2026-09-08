@@ -2930,6 +2930,46 @@ harness readiness 900 s). 35z3 re-runs on n42-r35ad. Prediction 35
 stands; the live-tree divergence after unwind + re-apply stays open in
 OPEN_ISSUES.md until it reproduces outside a sibling storm.
 
+**35z3 (06:42-07:42 EDT, n42-r35ad, synchronous pre-warm): the startup
+is clean and the chain stops being the ceiling.** Zero view timeouts,
+zero branch switches, zero BAD BLOCKs from the first view (every earlier
+start had 11 timeouts). Under tenure 4:
+
+| leg | win1 | win2 |
+|-----|------|------|
+| warmup (B) | 46,973 at 1.154 s, ~54k per block | 40,919 at 1.250 s |
+| A1 | 33,905 at 0.674 s, every block 22,857 | 32,762 at 0.698 s |
+| B1 | 47,708 at 1.154 s, ~55k per block | 45,406 at 1.250 s |
+
+Stopped after B1 by hand. Prediction 35 is half right and half moot: A
+blocks came in at 0.67-0.70 s (predicted ~0.55; rotation 0.92) and B
+blocks at 1.15-1.25 s (predicted 2.0-2.4 s -- FASTER, because they are
+a third full: the leader now drains the pool faster than transactions
+arrive). B TPS 45-48k is the same number as under rotation, and it is
+the SUPPLY: every generator saw 5-9k in flight against its 30k target
+and asked for 21-25k tx/s more each, and the nodes accepted ~6.7k tx/s
+each (node0 published 5.5k/s). The 15 s CPU profile of an inserting node
+(wr-pprof/r35z3-A1-node0-cpu.pprof, 78 CPU-seconds = 5.2 of 37 cores)
+puts the insert path's time under the pool lock: 8.3 s of 15, of which
+4.4 s evicting (the pool was full -- the reorg ran once per ~8 blocks
+and pending held 600-750k mined transactions, so every insert evicted
+one through an O(n) list filter) and 3.0 s in RemoteToLocals (a sweep of
+every transaction in the pool each time a sender is first seen; the
+bench's 8,000 senders are all new). The reorg was ~300 ms, of which the
+un-timed publishPendingSnapshot -- re-sorting 300 pending lists whose
+cache every Put had cleared -- was most.
+
+**35z4 = 35z3 on n42-r35ae (178fdea5):** Put keeps the sorted cache
+when the nonce extends the tail, Ready trims a prefix, the reorg logs
+its snapshot phase, and N42_TXPOOL_NOLOCALS=1 makes RPC submissions
+remote (no locals set, journal, or per-sender sweep). Prediction 36:
+the reorg runs every block or two and its snapshot phase reads under
+20 ms; the pending snapshot's stale share drops under one block; B
+blocks under tenure carry over 100k transactions and B TPS passes 60k.
+FALSIFIED IF fills stay near 55k and the generators still report 5-9k
+in flight -- then the insert ceiling is elsewhere (secp256k1 recovery
+at 25 of 78 CPU-seconds, or the RPC handler), not the lock.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
