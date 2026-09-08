@@ -2758,6 +2758,52 @@ B TPS over 50k. FALSIFIED IF fills still cap near 100k with the pool at
 its new limit -- then the stale share scales with the pool and the lever
 is the reorg's demote, not the pool size.
 
+**35u (2026-09-07 21:40) aborted in A1: every mdbx.dat at 137.4 GB.** The
+qs-env.sh map cap (`N42_MDBX_MAPSIZE_GB=128`) was reached on all seven
+nodes; MDBX_MAP_FULL on the QMDB undo write stopped the chain at 22:08:55
+with only "hotstuff catch-up: insert failed" to show for it, and the leg's
+last two generators timed out on funding because nothing was being mined.
+The warm-up before it is the first honest B measurement of the day:
+48,900 / 46,183 at 100% occupancy, 3.33 / 3.53 s per 163k block.
+
+**35v (2026-09-08 00:39, n42-r35y, txflood-r34, map 192 GiB, pool
+600k/200k, pertx 3000, funding at 2x, leg offsets 8M apart).**
+
+| leg | win1 | win2 |
+|-----|------|------|
+| warmup (B) | 51,617 at 100%, 3.158 s | 48,900 at 100%, 3.333 s |
+| A1 | 26,666 at 53.0%, 0.455 s | 26,286 at 53.1%, 0.462 s |
+| B1 | 51,617 at 100%, 3.158 s | 48,900 at 100%, 3.333 s |
+| B2 | 48,900 at 100%, 3.333 s | 46,183 at 100%, 3.529 s |
+| A2 | 24,000 at 53.4%, 0.508 s | 20,952 at 52.4%, 0.571 s |
+
+Prediction 33: full blocks (163k) in every B window and every pair of
+windows within 6% -- the supply side is finally a measurement. B TPS
+over 50k only in the first windows; blocks take 3.2-3.5 s, not under 3.
+The full-block cycle from B win1 medians: leader build 0.95 s (align
+0.26, fill 0.54 -- of which the candidate run 0.38, reload 0.16),
+assemble 0.57, seal-to-push 0.51; follower import 1.14 (proc 0.78,
+write 0.21). Every phase is 10-20% slower than 35r's 2.86 s cycle, and
+the difference is the box: eight generators at their real rate and a
+600k pool whose reorg demotes 485 ms a block on every node (the fill's
+snapshot still carries 450-540k mined-but-undemoted transactions). So
+the stale share does scale with the pool; the pool-size lever is spent.
+
+**The A legs' 53% is a builder bug, not supply.** Blocks alternate full
+/ empty fleet-wide. The new `parallel fill drops` line says why: after
+every full block the next leader's fill executed 22,857 candidates and
+dropped 22,848 as nonce too high (9 fee cap, 0 funds, 0 nonce low),
+while the same fill's stale-nonce trim -- reading through the build's
+own reader -- had just removed 11-28k of the previous block's mined
+prefix. Two views of the same live tree disagree by exactly one block,
+and only for the block that just landed; the empty block that follows
+changes no nonces, so the build after it succeeds. The B legs escape it
+because 3.3 s is long enough for whatever lags to catch up. Sender
+recovery is not it (hint hits are 22,85x in both the failing and the
+succeeding runs). Round 35w runs one A leg on n42-r35z, which logs the
+first two nonce-high failures with the worker's error (its nonce) beside
+the build reader's nonce for the same sender.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
