@@ -66,6 +66,7 @@ func runPrepState(args []string) {
 		fmt.Printf("  clear %-16s rows=%d\n", tab, count(tab))
 	}
 	var drop [][]byte
+	// "start" is rewritten below; every other stale meta key goes.
 	c, err := tx.Cursor(tDatcMeta)
 	if err != nil {
 		die("meta cursor: %v", err)
@@ -90,9 +91,62 @@ func runPrepState(args []string) {
 			die("delete meta %s: %v", k, err)
 		}
 	}
+	// The prepared output's origin is exactly the state's block: that is the
+	// first block the resumed build will produce. Recording it here means
+	// `merge` can pair this range with the one below it.
+	var sb [8]byte
+	binary.BigEndian.PutUint64(sb[:], progress)
+	if err := tx.Put(tDatcMeta, []byte("start"), sb[:]); err != nil {
+		die("write meta start: %v", err)
+	}
 	if err := tx.Commit(); err != nil {
 		die("commit: %v", err)
 	}
 	fmt.Printf("prepared: build --out %s resumes at %d\n", *out, progress)
 	_ = kv.ChainDB
+}
+
+// runSetStart repairs DatcMeta/start on an existing build. Needed for outputs
+// written before the origin was recorded on the first commit (it used to be
+// written at the end, so a resumed build stored its last resume point). Only
+// that one key is touched.
+func runSetStart(args []string) {
+	fs := flag.NewFlagSet("set-start", flag.ExitOnError)
+	out := fs.String("out", "", "build dir")
+	block := fs.Uint64("block", 0, "the first block this output ever built")
+	force := fs.Bool("force", false, "required, since a wrong value makes merge pair the wrong ranges")
+	mapGB := fs.Int("map.gb", 4096, "MDBX map size GB")
+	_ = fs.Parse(args)
+	if *out == "" || !*force {
+		die("--out and --force required (--block may be 0 for a genesis-range build)")
+	}
+	modulesInit()
+	db, err := openDatcDB(log.New(), *out, *mapGB, 1)
+	if err != nil {
+		die("open: %v", err)
+	}
+	defer db.Close()
+	tx, err := db.BeginRw(context.Background())
+	if err != nil {
+		die("begin: %v", err)
+	}
+	defer tx.Rollback()
+	old, _ := tx.GetOne(tDatcMeta, []byte("start"))
+	prog, _ := tx.GetOne(tDatcMeta, []byte("progress"))
+	oldStr := "absent"
+	if len(old) == 8 {
+		oldStr = fmt.Sprintf("%d", binary.BigEndian.Uint64(old))
+	}
+	if len(prog) == 8 && binary.BigEndian.Uint64(prog) < *block {
+		die("refusing: progress %d is below the requested start %d", binary.BigEndian.Uint64(prog), *block)
+	}
+	var sb [8]byte
+	binary.BigEndian.PutUint64(sb[:], *block)
+	if err := tx.Put(tDatcMeta, []byte("start"), sb[:]); err != nil {
+		die("put: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		die("commit: %v", err)
+	}
+	fmt.Printf("%s: start %s -> %d\n", *out, oldStr, *block)
 }

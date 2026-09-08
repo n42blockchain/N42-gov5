@@ -571,8 +571,10 @@ type builder struct {
 	statMixedElided     uint64 // MIXED epochs elided (floor already MIXED)
 	statDenseUpgraded   uint64 // mixed TrieOf rows recorded in full from the dense hook
 
-	// buildStart: first block of this output (DatcMeta/start).
-	buildStart uint64
+	// buildStart: first block of this output (DatcMeta/start); startWritten
+	// records that this run has already checked/written that key.
+	buildStart   uint64
+	startWritten bool
 
 	// decode pipeline width and state prefetch (see pipeline.go).
 	decodeWorkers int
@@ -1100,7 +1102,7 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 			if b.windowing {
 				cad = W
 			}
-			for k, v := range map[string]uint64{"srcad": cad, "accdepth": uint64(b.accDepth), "stodepth": uint64(b.stoDepth), "accroot": b.sched.accRoot, "start": b.buildStart} {
+			for k, v := range map[string]uint64{"srcad": cad, "accdepth": uint64(b.accDepth), "stodepth": uint64(b.stoDepth), "accroot": b.sched.accRoot} {
 				if err := tx.Put(tDatcMeta, []byte(k), binary.BigEndian.AppendUint64(nil, v)); err != nil {
 					tx.Rollback()
 					return err
@@ -1141,6 +1143,21 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		if err := tx.Put(tDatcMeta, []byte("progress"), prog[:]); err != nil {
 			tx.Rollback()
 			return err
+		}
+		// The output's ORIGIN: the first block it ever built. Written on the
+		// first commit and never again (a resume must not overwrite it with
+		// its own resume point), so `merge` can tell two ranges apart. Builds
+		// seeded by prep-state get it from there.
+		if !b.startWritten {
+			if sv, _ := tx.GetOne(tDatcMeta, []byte("start")); len(sv) != 8 {
+				var sb [8]byte
+				binary.BigEndian.PutUint64(sb[:], b.buildStart)
+				if err := tx.Put(tDatcMeta, []byte("start"), sb[:]); err != nil {
+					tx.Rollback()
+					return err
+				}
+			}
+			b.startWritten = true
 		}
 		if err := tx.Commit(); err != nil {
 			return err
