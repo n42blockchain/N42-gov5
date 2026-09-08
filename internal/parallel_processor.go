@@ -400,8 +400,31 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 						buildNonce = 0
 					}
 				}
+				// Every candidate of this sender in the list, with its outcome:
+				// tells a missing head (pool gap) from a head whose write the
+				// same worker's next transaction did not see (executor).
+				chain := ""
+				if from := txs[i].From(); from != nil {
+					n := 0
+					for j := range txs {
+						if f := txs[j].From(); f == nil || *f != *from {
+							continue
+						}
+						st := "ok"
+						if results[j].Err != nil {
+							st = results[j].Err.Error()
+							if len(st) > 24 {
+								st = st[:24]
+							}
+						}
+						chain += fmt.Sprintf(" [%d:%d %s]", j, txs[j].Nonce(), st)
+						if n++; n >= 5 {
+							break
+						}
+					}
+				}
 				log.Info("parallel fill nonce-high sample", "n", concreteHeader.Number.Uint64(), "tx", i,
-					"txNonce", txs[i].Nonce(), "buildReaderNonce", buildNonce, "workerErr", r.Err)
+					"txNonce", txs[i].Nonce(), "buildReaderNonce", buildNonce, "workerErr", r.Err, "senderChain", chain)
 			}
 		case errors.Is(r.Err, ErrInsufficientFunds):
 			failFunds++
