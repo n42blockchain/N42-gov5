@@ -1069,7 +1069,11 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			// the disk.
 			var qmdbRC *commitment.QMDBRootComputer
 			var loadErr error
-			for attempt := 1; attempt <= 3; attempt++ {
+			// Round 35z2 (2026-09-08): all three attempts failed on three
+			// different twigs (172644, 179292, 185698 of 219511) and the fourth
+			// start, ten minutes later, loaded whole -- six attempts with a
+			// longer pause ride out a longer burst of whatever the transient is.
+			for attempt := 1; attempt <= 6; attempt++ {
 				qmdbRC = commitment.NewQMDBRootComputer()
 				rtx, err := chainKv.BeginRo(ctx)
 				if err != nil {
@@ -1085,7 +1089,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 					break
 				}
 				log.Error("QMDB forest reload failed at startup", "attempt", attempt, "err", loadErr)
-				time.Sleep(2 * time.Second)
+				time.Sleep(5 * time.Second)
 			}
 			if loadErr != nil {
 				return nil, fmt.Errorf("reload QMDB forest: %w", loadErr)
