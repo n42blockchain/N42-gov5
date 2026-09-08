@@ -487,11 +487,45 @@ func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx) (state.RootComputer, error)
 			rc.VoidIndexTrust()
 		}
 	}
+	bc.applyMinerRewindsLocked(rc, tx)
 	if err := rc.ReloadForBuild(tx); err != nil {
 		log.Warn("miner QMDB speculative reload failed; build abandoned", "err", err)
 		return nil, err
 	}
 	return rc, nil
+}
+
+// queueMinerRewind records a branch-switch undo for the miner's speculative
+// tree. Called from the live unwind (under bc.lock); consumed by the next
+// build under minerRCMu.
+func (bc *BlockChain) queueMinerRewind(undo *qmdb.BlockUndo) {
+	if undo == nil {
+		return
+	}
+	bc.minerRCMu.Lock()
+	defer bc.minerRCMu.Unlock()
+	if bc.minerRC == nil {
+		return // no speculative tree yet: its first load sees the store as it is
+	}
+	bc.minerPendingUndo = append(bc.minerPendingUndo, undo)
+}
+
+// applyMinerRewindsLocked peels queued branch-switch undos off the miner's
+// speculative tree, newest-applied first as the live tree did. Caller holds
+// minerRCMu and has already peeled the dangling candidate.
+func (bc *BlockChain) applyMinerRewindsLocked(rc *commitment.QMDBRootComputer, tx kv.Tx) {
+	pending := bc.minerPendingUndo
+	bc.minerPendingUndo = nil
+	for _, u := range pending {
+		if err := rc.RewindForUndo(tx, u); err != nil {
+			log.Warn("miner speculative tree: branch-switch rewind failed; next reload rebuilds from the entry log",
+				"firstSlot", u.PrevNextSlot, "err", err)
+			return // trust is void; the remaining records are moot
+		}
+	}
+	if len(pending) > 0 {
+		log.Info("miner speculative tree rewound for a branch switch", "records", len(pending))
+	}
 }
 
 // PrewarmMinerRootComputer performs the startup pre-warm reload AND the
@@ -3198,6 +3232,11 @@ func (bc *BlockChain) unwindForReimportTx(n uint64, parentHash types.Hash, autho
 				// leaves the in-memory tree untouched; the tx rolls back on return.
 				return fmt.Errorf("unwind block %d: qmdb revert: %w: %w", appliedNum, err, errRevertUnavailable)
 			}
+			// The miner's speculative tree loaded this block from the store;
+			// hand it the same undo so its next build peels it too (applied
+			// on the build goroutine, never here -- a build may be reading
+			// that tree right now).
+			bc.queueMinerRewind(undo)
 			// The tree is mutated from here on: a failure below this point
 			// (or in a LATER iteration) leaves the in-memory tree ahead of
 			// the rolled-back transaction — the caller must reload it.

@@ -17,6 +17,7 @@ package commitment
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"sort"
 	"sync"
@@ -179,6 +180,44 @@ func (r *QMDBRootComputer) RevertBlock(tx kv.RwTx, undo *qmdb.BlockUndo) error {
 		return err
 	}
 	r.flushedThrough = ft
+	return nil
+}
+
+// RewindForUndo brings a PERSISTENT speculative-build computer (the miner's)
+// in line with a branch switch the live tree took: the block this undo
+// record describes was applied to the store at [u.PrevNextSlot, ...) and has
+// since been reverted there. If this tree loaded those appends, peel them the
+// same way -- after any dangling candidate above them -- so its index stays
+// exact, and lower the trust cursor to the block's first slot so the next
+// ReloadForBuild rescans only what the winning sibling rewrote. A peel
+// failure voids the trust (the next build rebuilds from the entry log)
+// rather than leave a tree the followers cannot reproduce: round 35z, the
+// leader's speculative block after a switch at 13964697 carried a root six
+// followers rejected. cold is the read transaction the peel may fault
+// boundary-twig leaves through. Called on the build goroutine only.
+func (r *QMDBRootComputer) RewindForUndo(cold kv.Getter, u *qmdb.BlockUndo) error {
+	r.readers.Lock()
+	defer r.readers.Unlock()
+	if u == nil || r.indexTrusted == 0 || r.indexTrusted <= u.PrevNextSlot {
+		return nil // never loaded that block: nothing of it is in this tree
+	}
+	r.setColdLocked(cold)
+	if cu := r.lastUndo; cu != nil {
+		r.lastUndo = nil
+		if err := r.t.ApplyUndo(cu); err != nil {
+			r.indexTrusted = 0
+			return fmt.Errorf("peel dangling candidate: %w", err)
+		}
+	}
+	if err := r.t.ApplyUndo(u); err != nil {
+		r.indexTrusted = 0
+		return err
+	}
+	r.indexTrusted = u.PrevNextSlot
+	if r.flushedThrough > u.PrevNextSlot {
+		r.flushedThrough = u.PrevNextSlot
+	}
+	r.stagedValid = false
 	return nil
 }
 

@@ -24,6 +24,7 @@ package internal
 import (
 	"context"
 	"errors"
+	"github.com/n42blockchain/N42/lib/qmdb"
 	"os"
 	"strconv"
 	"sync"
@@ -219,6 +220,7 @@ type BlockChain struct {
 
 	qmdbRootComputer *commitment.QMDBRootComputer
 	minerRC          *commitment.QMDBRootComputer // persistent speculative-build computer (guarded by minerRCMu; see NewMinerRootComputer)
+	minerPendingUndo []*qmdb.BlockUndo            // branch-switch undo records the miner tree has not applied yet (guarded by minerRCMu; newest last)
 	minerRCMu        sync.Mutex                   // serializes the startup pre-warm against the first leader build
 	qmdbEnabled      bool
 
