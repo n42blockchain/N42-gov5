@@ -130,6 +130,15 @@ reload is O(history) (60-90 s here). Until then: tenure 1 (rotation has
 run whole rounds clean); with tenure the sibling race after a stale
 seal recurs and the leader that switched builds the bad block.
 
+Resolved 2026-09-08 (2685afb5): the miner's persistent speculative
+computer now receives every undo record the live tree's branch switch
+applies and peels them on its next build, lowering its trust cursor to the
+unwound block's first slot, so the reload rescans exactly the rewritten
+slots. Round 35z reproduced the failure in an empty-block decay (BAD BLOCK
+13964698 after a sibling switch at 13964697, all six followers agreeing
+against the leader); 35z2 is the first round on the fix. Leave this entry
+until a full tenure round completes without a BAD BLOCK.
+
 ## Plain `Account` table frozen at 13,750,514 on the qs fleet (2026-09-06, round 26)
 
 `N42_STATE_WRITE_QMDB_ONLY=1` stopped plain Account writes; QMDBMeta records

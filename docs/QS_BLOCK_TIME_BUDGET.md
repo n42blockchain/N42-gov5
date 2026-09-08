@@ -2887,6 +2887,23 @@ not overlapping the import, or the hint arrives too late) or the round
 aborts on a BAD BLOCK (the post-branch-switch bad root; then the fix in
 OPEN_ISSUES.md comes before any tenure measurement).
 
+**35z (2026-09-08 04:29 EDT) aborted in its warm-up DECAY -- empty blocks,
+no generators yet.** Three view timeouts in the startup catch-up (views
+44379-44381), five leaders sealed siblings at 13964697, node0 (tenure
+leader) had 0x704b… applied and speculatively built 13964698 on it, was
+switched off it by an incoming sibling, converged back to 0x704b… as the
+lowest hash, and when it won, the speculative build was hit and
+proposed: "state root mismatch at block 13964698: proposer 36c923b2,
+locally computed 55ceb1c8" on all six followers. The cause is what
+OPEN_ISSUES suspected: the miner's persistent speculative tree kept its
+index and trust cursor across the live tree's unwind, so the appends the
+sibling switch rewrote were trusted stale. Fixed in 2685afb5 -- the
+unwind queues its undo records for the miner tree, and the next build
+peels them the way the live tree did and lowers its trust cursor to the
+unwound block's first slot (the incremental reload then rescans only what
+the winner rewrote; no 10-23 s rebuild). 35z2 re-runs the same round on
+n42-r35ab; prediction 35 stands.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
