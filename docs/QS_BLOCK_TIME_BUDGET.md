@@ -3036,6 +3036,62 @@ Two harness fixes came out of it, both about memory and cleanup:
 stands, and the fleet should now fit beside a 29 GB neighbour: peak
 demand drops from ~85 GB to ~56 GB.
 
+**35z7 warm-up (19:14-19:17 EDT): lazy signing works, prediction 37 is
+falsified, and the reason is structural.** The eight generators held
+2.3 GB between them (0.28 GB each, against 3.6 GB pre-signed), funding
+and flooding unchanged, and the supply finally filled every block:
+54,333 TPS at 3.000 s per FULL 163k block (win2 43,467 at 3.750 s).
+
+`hintFills` is 0 on every imported block, and so is `hintHits`. The pool
+holds 651k transactions, the hint source is attached, and the lookup is a
+plain hash map -- the block's transactions are simply not in the
+follower's pool. **Transaction gossip has been off since 35z4**: the last
+`tx broadcaster: publishing` line on any node is from the sweep fleet at
+17:21. `N42_TXPOOL_NOLOCALS=1` makes RPC submissions remote, and the
+broadcaster only publishes locals. With `-shard-senders` sending each
+sender's transactions to exactly one node, each pool then holds only its
+own seventh, and a follower cannot have seen what the leader mined. So
+no sender-hint scheme can hit in this benchmark's shape, by construction.
+(ecfe77f4 is still right for a real network, where transactions gossip
+everywhere; it simply cannot show here. Re-enabling gossip is the
+configuration the pool's own comment records as OOMing this box: every
+node sees every transaction up to seven times.)
+
+**The cycle at a full 163k block under tenure 4:**
+
+| phase | ms |
+|---|---|
+| cycle (leader view total) | 2,988 |
+| propose | 881 |
+| r1 | 70 |
+| **r2 = the follower's import** | **1,926** |
+| import total | 1,879 (body 104, proc 1,381, valid 45, write 284) |
+| proc: recover / setup / exec / validate / apply / finalize | 500 / 105 / 432 / 17 / 30 / 251 |
+
+Every node sat at 9.3-9.7 GB anon against `GOMEMLIMIT=8GiB`: over the
+limit, so the GC ran hard and `exec` nearly doubled (0.43 s here against
+0.23 s at 130k blocks in 35z4), which is also why win2 degraded. The
+8 GiB cap only existed to leave room for the generators' 29 GB, and that
+is gone.
+
+**35z8 = 35z7 with GOMEMLIMIT 12 GiB** (budget alone on the box:
+7 x 12 + 2.3 + 20 shmem = 106 GB of 136). Prediction 38: `exec` back
+under 0.30 s and `finalize` under 0.22, import under 1.5 s, cycle under
+2.5 s, B TPS over 65k, and win2 within 10% of win1 instead of collapsing.
+FALSIFIED IF the heaps sit at 12 GiB too and exec stays near 0.43 --
+then the executor's allocation per block, not the limit, is what the GC
+is chasing.
+
+**Next lever after that, registered here so it is not re-derived:** the
+follower's 0.5 s sender recovery is the largest single item on the
+critical path and cannot be helped by the pool in this shape. The leader
+already recovered every sender while building. Attaching that sender
+list to the direct push -- as a hint, not a consensus field -- is safe
+from the PROPOSER (a wrong hint only makes the proposer's own block fail
+validation on every follower), costs ~3.3 MB on a ~24 MB block, and
+removes ~0.5 s from six nodes' critical path per block. It must not be
+accepted from an arbitrary peer, only from the block's proposer.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
