@@ -266,6 +266,7 @@ func main() {
 	targetDepth := flag.Int("target-depth", 0, "keep this many txs pending in the pool; each second top up only the shortfall (0 = off, requires the txpool RPC namespace)")
 	depthByBlocks := flag.Bool("depth-by-blocks", false, "with -target-depth: measure depth as submitted minus mined (summing each new block's transaction count) minus rejected, instead of asking txpool_status -- exact when this generator is the chain's only traffic, and immune to the pool's not-yet-demoted backlog")
 	depthByNonce := flag.Bool("depth-by-nonce", false, "with -target-depth: measure depth as THIS generator's submitted minus mined, from its own senders' chain nonces (sampled: -depth-sample senders a second, round-robin over the ones with anything in flight). Exact per generator whatever else is on the chain. -depth-by-blocks with -depth-share credits N generators with 1/N of every block, which is a fixed point at ANY rate: round 35s ran at 35k TPS and 16% occupancy with every generator believing it had 25k in flight")
+	sweep := flag.Bool("sweep", false, "return the derived senders' balances (-senders from -sender-offset) to the faucet and exit: each sender sends balance minus one transfer's gas. Round 35y: fresh senders every leg left ~44k ETH stranded across a day's offsets and the faucet ran dry")
 	fundGasPrice := flag.Uint64("fund-gasprice", 0, "gas price for the faucet's funding transfers (0 = twice -gasprice). The builder orders equal-tip candidates account by account, so a faucet batch at the flood's price gets ~1 slot per block among thousands of flooding senders: round 35u A1 confirmed 4 of 1,000 funding transfers a block and timed out. A strictly higher price puts the whole batch in the next block")
 	depthSample := flag.Int("depth-sample", 128, "with -depth-by-nonce: senders whose chain nonce is refreshed each second")
 	depthShare := flag.Int("depth-share", 1, "with -depth-by-blocks: this generator is one of N symmetric generators, so credit it with 1/N of each block's transactions (round 35r: eight generators each counted every block as their own, read the pool as empty, and pushed 12M transactions through a 300k pool)")
@@ -318,6 +319,10 @@ func main() {
 	fundPrice := 2 * *gasPrice
 	if *fundGasPrice > 0 {
 		fundPrice = *fundGasPrice
+	}
+
+	if *sweep {
+		os.Exit(runSweep(urls, priv, from, *senders, *conc, *gasPrice, signAt))
 	}
 
 	// ---------- build the raw tx list ----------
@@ -765,4 +770,58 @@ func main() {
 	wg.Wait()
 	el := time.Since(tf)
 	fmt.Printf("DONE submitted=%d failed=%d in %s (%.0f tx/s offered)\n", submitted, failed, el.Round(time.Millisecond), float64(len(raws))/el.Seconds())
+}
+
+// runSweep sends every derived sender's balance, less one transfer's gas,
+// back to the faucet. Senders that hold less than that are skipped. Runs
+// -conc senders at a time; one eth_sendRawTransaction each.
+func runSweep(urls []string, priv *ecdsa.PrivateKey, faucet types.Address, senders, conc int, gasPrice uint64,
+	signAt func(priv *ecdsa.PrivateKey, from, to types.Address, nonce uint64, value *uint256.Int, gas, price uint64) string) int {
+	gasCost := new(big.Int).Mul(big.NewInt(21000), new(big.Int).SetUint64(gasPrice))
+	var swept, skipped, failed int64
+	total := new(big.Int)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	if conc < 1 {
+		conc = 1
+	}
+	sem := make(chan struct{}, conc)
+	for i := 0; i < senders; i++ {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			k := deriveKey(i)
+			addr := crypto.PubkeyToAddress(k.PublicKey)
+			url := urls[i%len(urls)]
+			bal, err := getBalanceAt(url, addr, "latest")
+			if err != nil || bal.Cmp(gasCost) <= 0 {
+				atomic.AddInt64(&skipped, 1)
+				return
+			}
+			nonce, err := getNonceAt(url, addr, "pending")
+			if err != nil {
+				atomic.AddInt64(&failed, 1)
+				return
+			}
+			value := new(big.Int).Sub(bal, gasCost)
+			raw := signAt(k, addr, faucet, nonce, new(uint256.Int).SetBytes(value.Bytes()), 21000, gasPrice)
+			if _, err := rpcCall(url, "eth_sendRawTransaction", []interface{}{raw}); err != nil {
+				atomic.AddInt64(&failed, 1)
+				return
+			}
+			atomic.AddInt64(&swept, 1)
+			mu.Lock()
+			total.Add(total, value)
+			mu.Unlock()
+		}(i)
+	}
+	wg.Wait()
+	fmt.Printf("SWEEP offset=%d senders=%d swept=%d skipped=%d failed=%d returned=%s wei (%.1f ETH)\n",
+		senderOffset, senders, swept, skipped, failed, total, new(big.Float).Quo(new(big.Float).SetInt(total), big.NewFloat(1e18)))
+	if failed > 0 {
+		return 1
+	}
+	return 0
 }
