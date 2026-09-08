@@ -2904,6 +2904,32 @@ unwound block's first slot (the incremental reload then rescans only what
 the winner rewrote; no 10-23 s rebuild). 35z2 re-runs the same round on
 n42-r35ab; prediction 35 stands.
 
+**35z2 (05:12-05:47 EDT, n42-r35ab).** Lost its warm-up to node3's
+startup load (three attempts, three different twigs; retries raised to
+six in e2a868d0). A1 under tenure 4: **32,381 / 33,143 at 0.706 / 0.690
+s per full 22,857 block** (rotation: 24.8k at 0.92 s) -- the first
+measured overlap, +31%. B1 aborted in its decay: BAD BLOCK 13966002, and
+this time with THREE roots -- the miner's speculative tree 55c1, the
+leader's own live tree d866 ("does not reproduce sealed root"), and the
+six followers' 95f0. The miner rewind (2685afb5) did run ("rewound for
+a branch switch, records 1"), so the divergence is not only the miner's
+index: the leader's live tree after apply X / unwind X / re-apply X
+differs from the followers' after apply Y / unwind Y / apply X. A
+tree-level round trip of both shapes (lib/qmdb revert_reapply_test.go,
+with flush and eviction between) passes, so it sits above lib/qmdb.
+
+**The trigger is the startup.** HotStuff started at 05:42:05; the
+miner pre-warm (a second full load, ~3.5 min) held minerRCMu until
+05:45:39, every leader's build of those minutes blocked on the lock,
+views 1329-1339 all timed out (30 s each), and when the lock freed the
+stale candidates surfaced together at 13966001 -- five siblings, a
+switch on every node, and the leader converging back to a sibling it had
+itself unwound. 35z died in the same window. bcadd720 makes the pre-warm
+synchronous (consensus starts warm; node start ~7 min at 219k twigs;
+harness readiness 900 s). 35z3 re-runs on n42-r35ad. Prediction 35
+stands; the live-tree divergence after unwind + re-apply stays open in
+OPEN_ISSUES.md until it reproduces outside a sibling storm.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across

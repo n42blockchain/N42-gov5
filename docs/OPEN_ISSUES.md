@@ -145,6 +145,23 @@ slots. Round 35z reproduced the failure in an empty-block decay (BAD BLOCK
 against the leader); 35z2 is the first round on the fix. Leave this entry
 until a full tenure round completes without a BAD BLOCK.
 
+Not resolved. 35z2 B1 (05:46 EDT) reproduced it WITH the miner rewind in
+place and with three distinct roots for the empty block 13966002: the
+miner's speculative tree (55c1, built after the rewind + incremental
+reload), the leader's live tree (d866: the leader had applied 019b,
+unwound it to build its own candidate, then converged back to 019b and
+re-applied it), and all six followers (95f0: applied the sibling 1c89,
+unwound it, applied 019b). A lib/qmdb round trip of both shapes passes,
+so the difference is above the tree (QMDBRootComputer.RevertBlock and
+its staged-flush / reclaim state, the re-import path after "converging
+on lowest-hash sibling", or the miner's incremental reload after a
+rewind). What always precedes it is a sibling storm caused by the
+startup: the miner pre-warm held minerRCMu for ~3.5 min after HotStuff
+started, so 11 views timed out and their stale candidates surfaced at
+one height (bcadd720 makes the pre-warm synchronous). Next: instrument
+the live tree root after every apply/unwind on all nodes, and reproduce
+the exact 35z2 sequence in a test at the BlockChain level.
+
 ## Plain `Account` table frozen at 13,750,514 on the qs fleet (2026-09-06, round 26)
 
 `N42_STATE_WRITE_QMDB_ONLY=1` stopped plain Account writes; QMDBMeta records
