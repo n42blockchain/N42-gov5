@@ -84,6 +84,12 @@ the life of the process (fixed in 1f1140e3 -- a failed reload now
 abandons the build, a stale seal is dropped before its write, and a
 panic costs one block, not the worker). The mismatch itself stays open.
 
+Round 35z2 (2026-09-08 05:15 EDT): node3's three startup attempts failed
+on twigs 172644, 179292 and 185698 of 219511 (a different one each time,
+all in the top quarter of the store), the process exited and the leg was
+lost; the next leg's start loaded all 8,833,566 keys. Retries raised to
+six, five seconds apart (n42-r35ac). Still open: the loader itself.
+
 ## Leader in-memory divergence after a branch switch (2026-09-06 round 32; cause found 2026-09-07 round 35m)
 
 Round 32: node3 proposed a block with a root nobody could reproduce; a
