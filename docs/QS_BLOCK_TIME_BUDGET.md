@@ -2863,6 +2863,29 @@ shape and the per-transaction cost of each stage.
 mines only part of it; the remainder strands. txflood-r35 `-sweep`
 returns it (run-sweep.sh sweeps offsets 500M-690M with the fleet up and
 no generators).
+ The sweep of 2026-09-08 05:27-05:54 returned 26,001 ETH from
+offsets 500M-664M (10 senders failed at 664M; the runner then exited
+without a word and its fleet ran claimless until stopped by hand at
+08:02; 665M-690M are unswept), faucet 567 -> 56,265 ETH.
+
+## 6ai. Round 35z: leader tenure 4 on the honest harness -- registered before the round ran
+
+Everything the harness measured wrongly is fixed (supply, pool, funding,
+fee cap, map size), and the cycle is a serial leader (~2.0 s at 163k:
+build 0.95, assemble 0.57, seal-to-push 0.51) followed by a serial
+follower (~1.3 s: import 1.14 plus the vote rounds). Tenure 4
+(N42_HOTSTUFF_LEADER_TENURE=4, f6a8d5d3's same-leader speculative build)
+lets the leader build v+1 on its own post-state while the followers
+import v, so the cycle should approach max(leader, follower) instead of
+their sum. Round 35p ran it at 16% occupancy (supply-bound, 0.13-0.9 s
+views); this is the first full-block measurement.
+
+**Prediction 35.** B blocks (163k) in 2.0-2.4 s, B TPS 68-80k; A blocks
+(22,857) in ~0.55 s, A TPS 40-45k; both windows of a leg within 10%.
+FALSIFIED IF B stays at 3.2-3.5 s (the same-leader speculative build is
+not overlapping the import, or the hint arrives too late) or the round
+aborts on a BAD BLOCK (the post-branch-switch bad root; then the fix in
+OPEN_ISSUES.md comes before any tenure measurement).
 
 ## 7. Not levers (recorded so they are not proposed again)
 
