@@ -428,6 +428,47 @@ func (bc *BlockChain) BuildParallel(header *block.Header, txs []*transaction.Tra
 	return run.Included, run.Receipts, run.UsedGas, run.Failed, nil
 }
 
+// logStartupStateFingerprint prints, on every node, what the startup repair
+// left behind: the live QMDB tree's root and append cursor, the applied
+// marker, and the canonical head. Round 35z5: one node came up holding an
+// uncommitted speculative block (slot 489598909 against the fleet's
+// 489543974), reverted it, led the next view and sealed a root the other six
+// did not compute -- and there was no way to tell from the logs whether its
+// tree was already wrong here or only diverged when it executed. Seven of
+// these lines, one per node, answer that in one grep.
+func (bc *BlockChain) logStartupStateFingerprint() {
+	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil {
+		return
+	}
+	root := bc.qmdbRootComputer.Root()
+	nextSlot := bc.qmdbRootComputer.Tree().NextSlot()
+	var appliedNum uint64
+	var appliedHash types.Hash
+	var haveApplied bool
+	if err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		n, h, ok, err := rawdb.ReadQMDBApplied(tx)
+		if err != nil {
+			return err
+		}
+		appliedNum, appliedHash, haveApplied = n, types.Hash(h), ok
+		return nil
+	}); err != nil {
+		log.Warn("startup state fingerprint: applied marker unreadable", "err", err)
+	}
+	head := bc.CurrentBlock()
+	headNum := uint64(0)
+	headHash := types.Hash{}
+	if head != nil {
+		headNum = head.Number64().Uint64()
+		headHash = head.Hash()
+	}
+	log.Info("startup state fingerprint",
+		"treeRoot", fmt.Sprintf("%x", root[:8]), "nextSlot", nextSlot,
+		"appliedNum", appliedNum, "appliedHash", fmt.Sprintf("%x", appliedHash[:8]),
+		"haveApplied", haveApplied,
+		"headNum", headNum, "headHash", fmt.Sprintf("%x", headHash[:8]))
+}
+
 // voidMinerRootTrust makes the builder's persistent speculative computer
 // rebuild from the entry log on its next use. Its fast reload trusts its
 // index below a cursor for THIS store's layout; an unwind or a failed-block
@@ -677,6 +718,7 @@ func (bc *BlockChain) Start() error {
 	bc.alignCanonicalToAppliedOnStartup()
 	bc.repairCanonicalLinkageOnStartup()
 	bc.revertSpeculativeOnStartup()
+	bc.logStartupStateFingerprint()
 
 	// Pre-warm the speculative build computer off the leader's critical path:
 	// the FIRST build after a restart otherwise pays the full ~5s index
