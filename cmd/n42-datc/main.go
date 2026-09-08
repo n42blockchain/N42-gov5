@@ -106,7 +106,7 @@ func openCS(dir, name string) *freezer.FreezerTable {
 
 func main() {
 	if len(os.Args) < 2 {
-		die("usage: n42-datc build|verify|proof|bench|segexport|diag|finalize-leaves [flags]")
+		die("usage: n42-datc build|verify|proof|bench|merge|prep-state|set-start|segexport|diag|finalize-leaves [flags]")
 	}
 	if os.Args[1] == "verify" {
 		runVerify(os.Args[2:])
@@ -140,6 +140,10 @@ func main() {
 		runPrepState(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "set-start" {
+		runSetStart(os.Args[2:])
+		return
+	}
 	if os.Args[1] == "merge" {
 		runMerge(os.Args[2:])
 		return
@@ -160,7 +164,7 @@ func main() {
 		return
 	}
 	if os.Args[1] != "build" {
-		die("usage: n42-datc build|verify|proof|bench|segexport|diag|finalize-leaves [flags]")
+		die("usage: n42-datc build|verify|proof|bench|merge|prep-state|set-start|segexport|diag|finalize-leaves [flags]")
 	}
 	fs := flag.NewFlagSet("build", flag.ExitOnError)
 	srcMode := fs.String("src", "mainnet", "source: mainnet (acctcs/storcs freezer + headerc gold check) | n42 (erigon-style MDBX changesets, internal root oracle + final-state check)")
