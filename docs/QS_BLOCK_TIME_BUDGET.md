@@ -2834,6 +2834,36 @@ B unchanged at 46-52k. FALSIFIED IF the A occupancy stays at 26.5% (the
 new 53%) -- then something other than the fee cap empties every second
 block.
 
+**35y (2026-09-08 01:31-02:38, n42-r35aa): the alternation is gone, the
+A ceiling is the cycle.**
+
+| leg | win1 | win2 |
+|-----|------|------|
+| warmup (B) | 48,900, 3.333 s | 46,183, 3.529 s |
+| A1 | 24,762, 0.923 s, every block 22,857 | 24,381, 0.938 s |
+| B1 | 48,098, 3.389 s | 46,183, 3.529 s |
+| B2 / A2 | not run: the faucet was down to 498 ETH (a generator needs 632) | |
+
+Prediction 34 half right: every A block is full and the base fee reads
+0 for the whole leg, and the A TPS did not move -- a full 22,857 block
+takes 0.92 s, not the 0.45 s the alternating legs averaged (their empty
+blocks took ~0.2 s). A's cycle from the leg's medians: leader build 0.25
+(align 0.03, fill 0.13, reload 0.09), assemble 0.13, seal-to-push 0.18;
+follower import 0.33 (proc 0.23, of which the state root ~0.11); view
+timing propose 0.37-0.69, r1 0.07, r2 0.29-0.55 (the commit vote waits
+for the follower's import). With B's 3.3 s at 163k the two legs fit one
+line: cycle ~ 0.75 s + 15.7 us per transaction. The fixed part is the
+reload, the state root on both sides, the write and two vote rounds; the
+slope is fill execution (2.3 us), import execution (4.2), assemble (3.5)
+and the writes, in series. Supply, pool, funding and the fee cap are no
+longer in the picture; what is left is the serial leader-then-follower
+shape and the per-transaction cost of each stage.
+
+**The faucet.** Each leg funds 8,000 fresh senders for a full pertx and
+mines only part of it; the remainder strands. txflood-r35 `-sweep`
+returns it (run-sweep.sh sweeps offsets 500M-690M with the fleet up and
+no generators).
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
