@@ -1809,7 +1809,7 @@ func (w *worker) makeEnv(parent *block.Header, header *block.Header, coinbase ty
 		family:    mapset.NewSet(),
 		coinbase:  coinbase,
 		header:    header,
-		gasPool:   new(common.GasPool).AddGas(header.GasLimit),
+		gasPool:   new(common.GasPool).AddGas(fillGasBudget(header.GasLimit)),
 	}
 
 	for _, ancestor := range w.chain.GetBlocksFromHash(parent.ParentHash, 3) {

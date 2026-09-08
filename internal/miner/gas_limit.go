@@ -24,6 +24,7 @@ package miner
 
 import (
 	"os"
+	"strconv"
 
 	"github.com/n42blockchain/N42/params"
 )
@@ -72,4 +73,33 @@ func CalcGasLimit(parentGasLimit, desiredLimit uint64) uint64 {
 	default:
 		return parentGasLimit
 	}
+}
+
+// fillGasBudget is the gas the builder fills a block up to: the header's
+// gas limit, or N42_MINER_FILL_GAS when that is set and lower. A benchmark
+// knob for the EIP-1559 interaction that round 35x uncovered: with the
+// fill equal to the header limit every full block sits at twice the gas
+// target, so the base fee climbs 12.5% a block, crosses the generators'
+// fixed price within ~90 s at 0.45 s blocks, and the leg alternates full
+// and empty blocks (53% occupancy) for the rest of its life. Filling to
+// half the header limit keeps a full block AT the target and the base fee
+// flat. Consensus is untouched: the header still carries the ceiling and
+// followers validate it as before.
+var fillGas = func() uint64 {
+	v := os.Getenv("N42_MINER_FILL_GAS")
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.ParseUint(v, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}()
+
+func fillGasBudget(headerGasLimit uint64) uint64 {
+	if fillGas > 0 && fillGas < headerGasLimit {
+		return fillGas
+	}
+	return headerGasLimit
 }
