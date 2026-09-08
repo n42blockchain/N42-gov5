@@ -3005,6 +3005,37 @@ stays near 0 (the pool does not hold the block's transactions at import
 time) or the heaps at 8 GiB thrash (exec/propose doubling over a leg,
 as at 7 GiB in 35j).
 
+**35z5 / 35z6 (2026-09-08 EDT): two aborts, one useful, one avoidable.**
+35z5 died in its warm-up on the startup-revert root divergence (see
+OPEN_ISSUES.md; it is what put the startup fingerprint in 60233433).
+35z6 restarted the same round behind a preflight -- orphaned generators
+swept, hotstuff journals reset on all seven -- and the fingerprint says
+the preflight worked: all seven nodes came up on
+`root 5c5d7ab8ef2c43b5 nextSlot 489543974 applied 13978489 head 13978489`,
+identical, no node holding an uncommitted block. The round then died at
+18:49:56 for a reason that has nothing to do with the chain: MemAvailable
+18 GB. The fleet's own budget is about 85 GB (seven nodes at an 8 GiB
+heap limit, eight generators holding 29 GB of pre-signed transactions at
+pertx 4500) and a neighbouring archive build held 29 GB of its own.
+
+Two harness fixes came out of it, both about memory and cleanup:
+
+- `70afe98a` `txflood -lazy-sign` signs each transaction as it is
+  submitted, from the same mapping the pre-signing loop used. It trades
+  those 29 GB for about half a core per generator (~50 us a signature at
+  8k tx/s).
+- `bench-run.sh` now reaps its generators on EVERY exit (`trap ... EXIT
+  INT TERM`) and sweeps by executable path as well as by recorded PID:
+  `setsid` forks when it is already a process-group leader, so the PID
+  the harness recorded is a parent that exits immediately and the real
+  generator is left with PPID 1. That is how eight of them survived an
+  abort for 5.7 hours at 8 GB and 2.5 cores, and five more survived
+  35z6's abort.
+
+**35z7 = 35z6 with `-lazy-sign` (txflood-r36).** Prediction 37 still
+stands, and the fleet should now fit beside a 29 GB neighbour: peak
+demand drops from ~85 GB to ~56 GB.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
