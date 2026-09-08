@@ -2970,6 +2970,41 @@ FALSIFIED IF fills stay near 55k and the generators still report 5-9k
 in flight -- then the insert ceiling is elsewhere (secp256k1 recovery
 at 25 of 78 CPU-seconds, or the RPC handler), not the lock.
 
+**35z4 (10:09-11:28 EDT, n42-r35ae, tenure 4 + pool fixes): 60k.**
+
+| leg | win1 | win2 |
+|-----|------|------|
+| warmup (B) | 60,400 at 2.143 s, ~129k per block | 55,050 at 2.500 s |
+| A1 | 35,428 at 0.645 s, every block 22,857 | 32,381 at 0.706 s |
+| B1 | **63,717** at 2.069 s, ~132k per block | 59,413 at 1.935 s |
+| B2 | aborted by the memory watchdog at 19 GB available | |
+
+Prediction 36 confirmed: the reorg's snapshot phase reads 0 ms, fills
+are 163k (median; stale share 0 or exactly one block), the generators
+sit at 21-24k of their 30k target, "Setting new local account" is gone,
+and B TPS went from 46-48k to 60-64k. The remaining cycle at 163k, from
+B1's medians: leader propose 0.84 s, r1 0.07, **r2 1.35 s = the
+follower import** (1.25 s: recover 0.32, setup 0.05, exec 0.24,
+finalize 0.20, write 0.22) -- the commit vote waits for it, so the
+follower is now the critical path. Two things still cap it from the
+supply side: flood 0 emptied its 3M transactions in 3m56 at this rate
+(win2 lower than win1 in every B leg), and with the pool no longer full
+the fills track supply x block time (blocks 129-138k of 163k).
+
+Memory: with pool 600k, tenure and NoLocals every node sat at 9.5-10 GB
+anon (the 9 GiB limit) and the eight generators at 2.4 GB each (pertx
+3000 pre-signed); B2 tripped the 20 GB watchdog.
+
+**35z5 = 35z4 on n42-r35af (ecfe77f4: the parallel import applies the
+pool's sender hints before recovery, as the serial path always did),
+pertx 4500, target-depth 45000, GOMEMLIMIT 8 GiB, after a second sweep
+of offsets 640M-860M.** Prediction 37: the follower import loses its
+0.32 s recovery (hintFills ~163k), r2 drops under 1.1 s, B blocks fill
+to 163k every block and B TPS passes 70k; A ~36k. FALSIFIED IF hintFills
+stays near 0 (the pool does not hold the block's transactions at import
+time) or the heaps at 8 GiB thrash (exec/propose doubling over a leg,
+as at 7 GiB in 35j).
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
