@@ -684,18 +684,26 @@ func (bc *BlockChain) Start() error {
 	// every other build rides the ~0.4s trusted reload). This must run AFTER all
 	// startup state repair/revert operations: an earlier snapshot can leave the
 	// trusted miner index pointing at slots that a startup unwind removed.
+	//
+	// SYNCHRONOUS since round 35z2 (2026-09-08): run in the background it
+	// held minerRCMu for the whole ~3.5 min load while HotStuff was already
+	// running -- every leader's build of those minutes blocked on the lock,
+	// eleven consecutive views timed out, and when the lock freed, the
+	// stale candidates from all of them surfaced at one height: a sibling
+	// storm, branch switches on every node, and the root divergence that
+	// aborted rounds 35z and 35z2. Consensus starts after this returns, so
+	// the first view finds a warm builder.
 	if bc.qmdbEnabled {
-		go func() {
-			err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
-				if bc.PrewarmMinerRootComputer(tx) {
-					log.Info("miner speculative computer pre-warmed")
-				}
-				return nil
-			})
-			if err != nil && bc.ctx.Err() == nil {
-				log.Warn("miner speculative computer pre-warm failed", "err", err)
+		t0 := time.Now()
+		err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+			if bc.PrewarmMinerRootComputer(tx) {
+				log.Info("miner speculative computer pre-warmed", "elapsed", time.Since(t0))
 			}
-		}()
+			return nil
+		})
+		if err != nil && bc.ctx.Err() == nil {
+			log.Warn("miner speculative computer pre-warm failed", "err", err)
+		}
 	}
 	// One Add per goroutine started right here — an Add larger than the
 	// number of goroutines makes Close()'s wg.Wait() block forever and every
