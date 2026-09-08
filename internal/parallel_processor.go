@@ -184,6 +184,7 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 	numTxs := len(txs)
 	tStart := time.Now()
 	senderHintHits := 0
+	senderHintFills := 0
 
 	// Same consensus-safety gate as the serial Process: this executor also
 	// reaches AsMessage, which trusts a wire-declared `From`. Without it a
@@ -202,13 +203,21 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 			return nil, fmt.Errorf("block %s: %w", concreteHeader.Number.String(), err)
 		}
 		senderHintHits = hits
+		// The pool already recovered the sender of every transaction it
+		// holds; copy those onto the wire copies first (the serial import
+		// path has done this since the hint source existed; the parallel
+		// path only ran the gate, which is inert for wire transactions).
+		// Round 35z4: recovery was 321 ms of a follower's 1.25 s import at
+		// 163k transactions, on the round's critical path (r2 waits for the
+		// import), with every one of those transactions sitting in the pool.
+		senderHintFills = applySenderHints(hints, signer, txs)
 		// A block off the wire carries RLP only: From() is nil until the
 		// signature is recovered. The affinity key below needs every sender
-		// before the first wave, so recover them here in parallel (memoised
-		// on the transaction; AsMessage reuses it). Round 35d/t: with From()
-		// nil the key fell back to the index, a sender's nonce chain ran on
-		// 32 workers at once, and every link but the first failed its nonce
-		// check wave after wave until the 64-wave limit.
+		// before the first wave, so recover the rest here in parallel
+		// (memoised on the transaction; AsMessage reuses it). Round 35d/t:
+		// with From() nil the key fell back to the index, a sender's nonce
+		// chain ran on 32 workers at once, and every link but the first
+		// failed its nonce check wave after wave until the 64-wave limit.
 		recoverBlockSenders(signer, txs)
 	}
 	tRecovered := time.Now()
@@ -525,7 +534,7 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 				"nonceLow", failNonceLow, "nonceHigh", failNonceHigh, "funds", failFunds, "feeCap", failFeeCap, "other", failOther, "sample", failSample)
 		}
 		log.Info("parallel block", "n", concreteHeader.Number.Uint64(), "lenient", lenient, "failed", failed, "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
-			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
+			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
 			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "finalizeMs", time.Since(tApplied).Milliseconds())
 	}
 
