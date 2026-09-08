@@ -1054,9 +1054,23 @@ func splitMerge(t *testing.T, lowerIntoUpper bool) {
 		t.Fatal(err)
 	}
 	writeFwd(t, dbLo, sc)
-	b := newTestBuilder(t, dbLo, lo, sc, o, 0)
-	if err := b.run(0, split, o.batch); err != nil {
-		t.Fatalf("lower build: %v", err)
+	// Build the lower range in TWO runs: the origin recorded in DatcMeta/start
+	// must stay 0, not the resume point (a wrong origin makes merge reject the
+	// pair as non-contiguous).
+	mid := split / 2
+	if err := newTestBuilder(t, dbLo, lo, sc, o, 0).run(0, mid, o.batch); err != nil {
+		t.Fatalf("lower build (first run): %v", err)
+	}
+	b := newTestBuilder(t, dbLo, lo, sc, o, mid)
+	if err := b.run(mid, split, o.batch); err != nil {
+		t.Fatalf("lower build (resume): %v", err)
+	}
+	if tx, err := dbLo.BeginRo(context.Background()); err == nil {
+		sv, _ := tx.GetOne(tDatcMeta, []byte("start"))
+		tx.Rollback()
+		if len(sv) != 8 || binary.BigEndian.Uint64(sv) != 0 {
+			t.Fatalf("lower build origin: DatcMeta/start = %x, want 0", sv)
+		}
 	}
 	dbLo.Close()
 
@@ -1073,10 +1087,22 @@ func splitMerge(t *testing.T, lowerIntoUpper bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if tx, err := dbHi.BeginRo(context.Background()); err == nil {
+		sv, _ := tx.GetOne(tDatcMeta, []byte("start"))
+		tx.Rollback()
+		if len(sv) != 8 || binary.BigEndian.Uint64(sv) != split {
+			t.Fatalf("prep-state origin: DatcMeta/start = %x, want %d", sv, split)
+		}
+	}
 	writeFwd(t, dbHi, sc) // the upper build reads its changesets from its own DB
-	b2 := newTestBuilder(t, dbHi, hi, sc, o, split)
-	if err := b2.run(split, end, o.batch); err != nil {
-		t.Fatalf("upper build: %v", err)
+	// Resume the upper range too, for the same reason.
+	umid := split + (end-split)/2
+	if err := newTestBuilder(t, dbHi, hi, sc, o, split).run(split, umid, o.batch); err != nil {
+		t.Fatalf("upper build (first run): %v", err)
+	}
+	b2 := newTestBuilder(t, dbHi, hi, sc, o, umid)
+	if err := b2.run(umid, end, o.batch); err != nil {
+		t.Fatalf("upper build (resume): %v", err)
 	}
 	dbHi.Close()
 

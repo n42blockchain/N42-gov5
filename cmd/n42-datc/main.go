@@ -106,7 +106,7 @@ func openCS(dir, name string) *freezer.FreezerTable {
 
 func main() {
 	if len(os.Args) < 2 {
-		die("usage: n42-datc build|verify|proof|bench|segexport|diag|finalize-leaves [flags]")
+		die("usage: n42-datc build|verify|proof|bench|merge|prep-state|set-start|segexport|diag|finalize-leaves [flags]")
 	}
 	if os.Args[1] == "verify" {
 		runVerify(os.Args[2:])
@@ -140,6 +140,10 @@ func main() {
 		runPrepState(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "set-start" {
+		runSetStart(os.Args[2:])
+		return
+	}
 	if os.Args[1] == "merge" {
 		runMerge(os.Args[2:])
 		return
@@ -160,7 +164,7 @@ func main() {
 		return
 	}
 	if os.Args[1] != "build" {
-		die("usage: n42-datc build|verify|proof|bench|segexport|diag|finalize-leaves [flags]")
+		die("usage: n42-datc build|verify|proof|bench|merge|prep-state|set-start|segexport|diag|finalize-leaves [flags]")
 	}
 	fs := flag.NewFlagSet("build", flag.ExitOnError)
 	srcMode := fs.String("src", "mainnet", "source: mainnet (acctcs/storcs freezer + headerc gold check) | n42 (erigon-style MDBX changesets, internal root oracle + final-state check)")
@@ -571,8 +575,10 @@ type builder struct {
 	statMixedElided     uint64 // MIXED epochs elided (floor already MIXED)
 	statDenseUpgraded   uint64 // mixed TrieOf rows recorded in full from the dense hook
 
-	// buildStart: first block of this output (DatcMeta/start).
-	buildStart uint64
+	// buildStart: first block of this output (DatcMeta/start); startWritten
+	// records that this run has already checked/written that key.
+	buildStart   uint64
+	startWritten bool
 
 	// decode pipeline width and state prefetch (see pipeline.go).
 	decodeWorkers int
@@ -1100,7 +1106,7 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 			if b.windowing {
 				cad = W
 			}
-			for k, v := range map[string]uint64{"srcad": cad, "accdepth": uint64(b.accDepth), "stodepth": uint64(b.stoDepth), "accroot": b.sched.accRoot, "start": b.buildStart} {
+			for k, v := range map[string]uint64{"srcad": cad, "accdepth": uint64(b.accDepth), "stodepth": uint64(b.stoDepth), "accroot": b.sched.accRoot} {
 				if err := tx.Put(tDatcMeta, []byte(k), binary.BigEndian.AppendUint64(nil, v)); err != nil {
 					tx.Rollback()
 					return err
@@ -1141,6 +1147,21 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		if err := tx.Put(tDatcMeta, []byte("progress"), prog[:]); err != nil {
 			tx.Rollback()
 			return err
+		}
+		// The output's ORIGIN: the first block it ever built. Written on the
+		// first commit and never again (a resume must not overwrite it with
+		// its own resume point), so `merge` can tell two ranges apart. Builds
+		// seeded by prep-state get it from there.
+		if !b.startWritten {
+			if sv, _ := tx.GetOne(tDatcMeta, []byte("start")); len(sv) != 8 {
+				var sb [8]byte
+				binary.BigEndian.PutUint64(sb[:], b.buildStart)
+				if err := tx.Put(tDatcMeta, []byte("start"), sb[:]); err != nil {
+					tx.Rollback()
+					return err
+				}
+			}
+			b.startWritten = true
 		}
 		if err := tx.Commit(); err != nil {
 			return err
