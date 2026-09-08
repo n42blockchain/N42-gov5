@@ -162,6 +162,27 @@ one height (bcadd720 makes the pre-warm synchronous). Next: instrument
 the live tree root after every apply/unwind on all nodes, and reproduce
 the exact 35z2 sequence in a test at the BlockChain level.
 
+35z5 (2026-09-08 13:32 EDT) narrows it to the STARTUP revert and clears the
+tree layer. The fleet started on a chain whose last blocks came from the
+sweep fleet, stopped without draining its head. node3 came up with its live
+tree at slot 489598909 against the other six at 489543974, logged "startup:
+reverting speculative (uncommitted) blocks to last committed head" plus a
+depth-1 branch switch, pre-warmed its miner tree from the repaired store
+(489543974, matching), became leader for the next view and sealed 13978490
+with root 06f305d9; all six followers computed 7b25df27. No view timed out
+first and no sibling storm preceded it -- the pre-warm fix held -- so the
+trigger is the startup revert alone. lib/qmdb reproduces none of it:
+revert_reapply_test.go now covers revert-then-reapply, sibling-revert-then-
+winner, and the startup shape (load a store that HAS the block, revert with
+the persisted undo record through a marshal round trip, then reload the
+repaired store into a third tree and seal the next block on it) -- all three
+agree with a tree that never saw the block. So the divergence is above the
+tree: the node's revert path (unwindForReimport per block, PlainState
+alignment, the applied marker) or what the leader executes on top of it.
+Next: log the live tree root and applied marker on every node after startup
+repair, and have the leader refuse to build until its applied head equals its
+committed head.
+
 ## Plain `Account` table frozen at 13,750,514 on the qs fleet (2026-09-06, round 26)
 
 `N42_STATE_WRITE_QMDB_ONLY=1` stopped plain Account writes; QMDBMeta records

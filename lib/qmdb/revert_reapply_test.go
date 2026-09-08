@@ -126,3 +126,81 @@ func TestRevertThenReapplySameBlockRoot(t *testing.T) {
 		})
 	}
 }
+
+// TestRevertSpeculativeAfterReloadRoot is the startup shape: a node applied
+// (and flushed) a block that consensus never committed, restarted, loaded the
+// forest from the store -- so its index carries that block's appends -- and
+// then reverted it with the undo record PERSISTED by the previous process,
+// through a marshal/unmarshal round trip. Round 35z5 (2026-09-08): node3 came
+// up at slot 489598909 against the fleet's 489543974, logged "startup:
+// reverting speculative (uncommitted) blocks", became the leader for the next
+// view and sealed a block whose root the other six computed differently.
+func TestRevertSpeculativeAfterReloadRoot(t *testing.T) {
+	for _, base := range []uint64{5, 60, 300} {
+		t.Run(fmt.Sprintf("base%d", base), func(t *testing.T) {
+			h := base + 1
+			xOps := stressOps(h)        // the speculative block
+			nextOps := stressOps(h + 1) // what the fleet builds next
+
+			// Reference: the six nodes that never saw X.
+			ref, refStore, refFlushed := baseTree(t, base)
+			rootBase := ref.Root()
+			applyBlockRecorded(ref, nextOps)
+			rootNext := ref.Root()
+			_ = refStore
+			_ = refFlushed
+
+			// The node that applied and FLUSHED X, then died.
+			tr, store, flushed := baseTree(t, base)
+			undoX := applyBlockRecorded(tr, xOps)
+			tr.Root()
+			flushed = flushEvictHere(t, tr, store, flushed)
+			raw := undoX.Marshal() // what QMDBUndoWindow holds
+
+			// Restart: fresh tree, loaded from the store WITH X's appends.
+			restarted := New()
+			restarted.SetCold(ColdReaderFromGetter(store))
+			if err := restarted.LoadFrom(store); err != nil {
+				t.Fatalf("reload: %v", err)
+			}
+			persisted, err := UnmarshalBlockUndo(raw)
+			if err != nil {
+				t.Fatalf("decode undo: %v", err)
+			}
+			if _, err := restarted.ApplyUndoWithStorage(store, persisted, restarted.NextSlot()); err != nil {
+				t.Fatalf("startup revert: %v", err)
+			}
+			if got := restarted.Root(); got != rootBase {
+				t.Fatalf("after the startup revert the root is %x, the fleet's is %x", got[:8], rootBase[:8])
+			}
+			if got, want := restarted.NextSlot(), persisted.PrevNextSlot; got != want {
+				t.Fatalf("after the startup revert nextSlot is %d, want %d", got, want)
+			}
+			// The leader seals with a SEPARATE computer that loads from the
+			// store, so the store the revert leaves behind must reload into
+			// the same tree the revert produced in memory. This is the step
+			// between the two roots of round 35z5: the live tree was reverted,
+			// the miner tree loaded from the repaired store, and the block it
+			// sealed carried a root the other six did not compute.
+			minerTree := New()
+			minerTree.SetCold(ColdReaderFromGetter(store))
+			if err := minerTree.LoadFrom(store); err != nil {
+				t.Fatalf("miner-tree load from the repaired store: %v", err)
+			}
+			if got, want := minerTree.Root(), restarted.Root(); got != want {
+				t.Fatalf("a tree loaded from the repaired store has root %x, the reverted live tree has %x", got[:8], want[:8])
+			}
+			if got, want := minerTree.NextSlot(), restarted.NextSlot(); got != want {
+				t.Fatalf("a tree loaded from the repaired store is at slot %d, the reverted live tree at %d", got, want)
+			}
+			applyBlockRecorded(minerTree, nextOps)
+			if got := minerTree.Root(); got != rootNext {
+				t.Fatalf("the miner tree seals %x for the block after the revert, the fleet computes %x", got[:8], rootNext[:8])
+			}
+			applyBlockRecorded(restarted, nextOps)
+			if got := restarted.Root(); got != rootNext {
+				t.Fatalf("the block after the startup revert has root %x, the fleet computes %x (the 35z5 shape)", got[:8], rootNext[:8])
+			}
+		})
+	}
+}
