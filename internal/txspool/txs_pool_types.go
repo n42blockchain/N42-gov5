@@ -184,6 +184,15 @@ func applyTxPoolEnvOverrides(c TxsPoolConfig) TxsPoolConfig {
 	set(&c.GlobalQueue, "N42_TXPOOL_GLOBAL_QUEUE")
 	set(&c.AccountSlots, "N42_TXPOOL_ACCOUNT_SLOTS")
 	set(&c.AccountQueue, "N42_TXPOOL_ACCOUNT_QUEUE")
+	// N42_TXPOOL_NOLOCALS=1: treat RPC-submitted transactions as remote --
+	// no locals set, no journal, and no RemoteToLocals sweep of the whole
+	// pool every time a sender is seen for the first time. Round 35z3's
+	// profile: that sweep (accountSet.containsTx over 600k transactions per
+	// new sender) was 3 s of the 8.3 s the insert path held the pool lock
+	// in a 15 s window, on a bench whose 8,000 senders are all new.
+	if v := os.Getenv("N42_TXPOOL_NOLOCALS"); v == "1" || v == "true" {
+		c.NoLocals = true
+	}
 	if c.MinGlobalSlots > c.GlobalSlots {
 		c.MinGlobalSlots = c.GlobalSlots
 	}

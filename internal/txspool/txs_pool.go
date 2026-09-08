@@ -993,7 +993,7 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 	// meaning the pool, not the block schedule, sets the ceiling. Without a
 	// breakdown there is no way to tell which phase owns it.
 	tStart := time.Now()
-	var dReset, dPromote, dDemote, dNonces, dTruncate time.Duration
+	var dReset, dPromote, dDemote, dNonces, dTruncate, dSnapshot time.Duration
 	nQueue, nPending := 0, 0
 
 	pool.reorgWaiting.Store(true)
@@ -1050,7 +1050,9 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 	pool.truncatePending()
 	pool.truncateQueue()
 	dTruncate = time.Since(tT)
+	tS := time.Now()
 	pool.publishPendingSnapshot()
+	dSnapshot = time.Since(tS)
 	nQueue, nPending = len(pool.queue), len(pool.pending)
 	pool.changesSinceReorg = 0
 	pool.mu.Unlock()
@@ -1067,7 +1069,7 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 		emit("txpool reorg phases",
 			"total", total, "lockWait", tLocked.Sub(tStart),
 			"reset", dReset, "promote", dPromote, "demote", dDemote,
-			"nonces", dNonces, "truncate", dTruncate,
+			"nonces", dNonces, "truncate", dTruncate, "snapshot", dSnapshot,
 			"promoted", len(promoted), "queueAccts", nQueue, "pendingAccts", nPending)
 	}
 

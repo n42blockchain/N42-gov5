@@ -363,10 +363,24 @@ func (m *txsSortedMap) Get(nonce uint64) *transaction.Transaction {
 
 func (m *txsSortedMap) Put(tx *transaction.Transaction) {
 	nonce := tx.Nonce()
-	if m.items[nonce] == nil {
+	fresh := m.items[nonce] == nil
+	if fresh {
 		heap.Push(m.index, nonce)
 	}
-	m.items[nonce], m.cache = tx, nil
+	m.items[nonce] = tx
+	// Keep the flattened cache when the new transaction extends the tail --
+	// the common shape (a sender's nonces arrive in order) -- so a reorg's
+	// pending snapshot does not re-sort every active list. Round 35z3:
+	// publishPendingSnapshot was ~270 ms of a ~300 ms reorg at 300 pending
+	// accounts x 2,000 transactions, the reorg ran once per ~8 blocks, and
+	// the pool sat full of mined transactions, evicting on every insert.
+	switch {
+	case m.cache == nil:
+	case fresh && (len(m.cache) == 0 || nonce > m.cache[len(m.cache)-1].Nonce()):
+		m.cache = append(m.cache, tx)
+	default:
+		m.cache = nil
+	}
 }
 
 func (m *txsSortedMap) Forward(threshold uint64) []*transaction.Transaction {
@@ -468,7 +482,12 @@ func (m *txsSortedMap) Ready(start uint64) []*transaction.Transaction {
 		delete(m.items, next)
 		heap.Pop(m.index)
 	}
-	m.cache = nil
+	// Ready takes the lowest nonces, a prefix of the sorted cache.
+	if m.cache != nil && len(ready) <= len(m.cache) {
+		m.cache = m.cache[len(ready):]
+	} else {
+		m.cache = nil
+	}
 	return ready
 }
 
