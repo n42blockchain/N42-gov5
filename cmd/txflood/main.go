@@ -266,6 +266,7 @@ func main() {
 	targetDepth := flag.Int("target-depth", 0, "keep this many txs pending in the pool; each second top up only the shortfall (0 = off, requires the txpool RPC namespace)")
 	depthByBlocks := flag.Bool("depth-by-blocks", false, "with -target-depth: measure depth as submitted minus mined (summing each new block's transaction count) minus rejected, instead of asking txpool_status -- exact when this generator is the chain's only traffic, and immune to the pool's not-yet-demoted backlog")
 	depthByNonce := flag.Bool("depth-by-nonce", false, "with -target-depth: measure depth as THIS generator's submitted minus mined, from its own senders' chain nonces (sampled: -depth-sample senders a second, round-robin over the ones with anything in flight). Exact per generator whatever else is on the chain. -depth-by-blocks with -depth-share credits N generators with 1/N of every block, which is a fixed point at ANY rate: round 35s ran at 35k TPS and 16% occupancy with every generator believing it had 25k in flight")
+	lazySign := flag.Bool("lazy-sign", false, "sign each transaction when it is submitted instead of pre-signing the whole run. Pre-signing 8 x 1000 x 4500 transactions is ~29 GB of resident memory across the generators, which is what pushed the box under its memory watchdog on 2026-09-08 while a neighbouring build held 29 GB. Signing costs ~50 us a transaction, so one generator at 8k tx/s spends under half a core on it")
 	sweep := flag.Bool("sweep", false, "return the derived senders' balances (-senders from -sender-offset) to the faucet and exit: each sender sends balance minus one transfer's gas. Round 35y: fresh senders every leg left ~44k ETH stranded across a day's offsets and the faucet ran dry")
 	fundGasPrice := flag.Uint64("fund-gasprice", 0, "gas price for the faucet's funding transfers (0 = twice -gasprice). The builder orders equal-tip candidates account by account, so a faucet batch at the flood's price gets ~1 slot per block among thousands of flooding senders: round 35u A1 confirmed 4 of 1,000 funding transfers a block and timed out. A strictly higher price puts the whole batch in the next block")
 	depthSample := flag.Int("depth-sample", 128, "with -depth-by-nonce: senders whose chain nonce is refreshed each second")
@@ -333,6 +334,8 @@ func main() {
 	// nonce minus the base.
 	var senderAddrs []types.Address
 	var senderBase []uint64
+	var senderKeys []*ecdsa.PrivateKey
+	var totalTxs int64
 	if *senders <= 0 {
 		startNonce, err := getNonce(urls[0], from)
 		if err != nil {
@@ -340,6 +343,7 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Printf("single-faucet: startNonce=%d, pre-signing %d...\n", startNonce, *count)
+		totalTxs = int64(*count)
 		raws = make([]string, *count)
 		var wg sync.WaitGroup
 		sc := make(chan int, 16)
@@ -362,6 +366,7 @@ func main() {
 			addrs[i] = crypto.PubkeyToAddress(keys[i].PublicKey)
 		}
 		senderAddrs = addrs
+		senderKeys = keys
 		senderBase = make([]uint64, *senders)
 		fn, err := getNonce(urls[0], from)
 		if err != nil {
@@ -452,8 +457,13 @@ func main() {
 		}
 		// pre-sign perTx transfers from each sender
 		total := *senders * *perTx
-		fmt.Printf("pre-signing %d txs (%d senders x %d)...\n", total, *senders, *perTx)
-		raws = make([]string, total)
+		totalTxs = int64(total)
+		if *lazySign {
+			fmt.Printf("probing nonces for %d senders (%d txs will be signed on submit)...\n", *senders, total)
+		} else {
+			fmt.Printf("pre-signing %d txs (%d senders x %d)...\n", total, *senders, *perTx)
+			raws = make([]string, total)
+		}
 		var wg sync.WaitGroup
 		sc := make(chan int, 16)
 		for s := 0; s < *senders; s++ {
@@ -470,6 +480,9 @@ func main() {
 					return // leave this sender's slots empty rather than sign from a guessed nonce
 				}
 				senderBase[s] = base
+				if *lazySign {
+					return // the nonce is all the submit path needs
+				}
 				for j := 0; j < *perTx; j++ {
 					to := dead
 					if *recipients > 0 {
@@ -485,12 +498,29 @@ func main() {
 		wg.Wait()
 	}
 
+	// rawAt returns the i-th transaction of the run, signing it now when the
+	// run was not pre-signed. The mapping is the same one the pre-signing loop
+	// used, so a lazily signed run submits byte-identical transactions in the
+	// same order.
+	rawAt := func(i int64) string {
+		if !*lazySign {
+			return raws[i]
+		}
+		s := int(i / int64(*perTx))
+		j := int(i % int64(*perTx))
+		to := dead
+		if *recipients > 0 {
+			to = deriveRecipient((s**perTx + j) % *recipients)
+		}
+		return signOne(senderKeys[s], senderAddrs[s], to, senderBase[s]+uint64(j), uint256.NewInt(1), 21000)
+	}
+
 	// ---------- flood ----------
 	if nf := atomic.LoadInt64(&nonceFailures); nf > 0 {
 		fmt.Fprintf(os.Stderr, "FATAL: %d senders had no usable nonce after retries; refusing to submit a partial benchmark load\n", nf)
 		os.Exit(1)
 	}
-	fmt.Printf("flooding %d txs to %d node(s) (broadcast=%v conc=%d)...\n", len(raws), len(urls), *broadcast, *conc)
+	fmt.Printf("flooding %d txs to %d node(s) (broadcast=%v conc=%d lazySign=%v)...\n", totalTxs, len(urls), *broadcast, *conc, *lazySign)
 	var idx int64 = -1
 	var submitted, failed int64
 	tf := time.Now()
@@ -690,12 +720,12 @@ func main() {
 					// a bn-sized claim owns [last-bn+1, last].
 					last := atomic.AddInt64(&idx, bn)
 					start := last - bn + 1
-					if start >= int64(len(raws)) {
+					if start >= totalTxs {
 						return
 					}
 					end := last + 1
-					if end > int64(len(raws)) {
-						end = int64(len(raws))
+					if end > totalTxs {
+						end = totalTxs
 					}
 					for lo := start; lo < end; {
 						u := urlFor(lo)
@@ -704,7 +734,9 @@ func main() {
 							hi++
 						}
 						batch := make([]string, hi-lo)
-						copy(batch, raws[lo:hi])
+						for k := range batch {
+							batch[k] = rawAt(lo + int64(k))
+						}
 						if _, err := rpcCall(u, "eth_batchRawTransaction", []interface{}{batch}); err != nil {
 							if n := atomic.AddInt64(&failed, hi-lo); n <= int64(5*bn) || n%1000000 < bn {
 								fmt.Printf("  batch submit err (i=%d n=%d %s): %v\n", lo, hi-lo, u, err)
@@ -719,7 +751,7 @@ func main() {
 		}
 		wg.Wait()
 		el := time.Since(tf)
-		fmt.Printf("DONE submitted=%d failed=%d in %s (%.0f tx/s offered)\n", submitted, failed, el.Round(time.Millisecond), float64(len(raws))/el.Seconds())
+		fmt.Printf("DONE submitted=%d failed=%d in %s (%.0f tx/s offered)\n", submitted, failed, el.Round(time.Millisecond), float64(totalTxs)/el.Seconds())
 		return
 	}
 
@@ -732,13 +764,13 @@ func main() {
 					<-permits
 				}
 				i := atomic.AddInt64(&idx, 1)
-				if i >= int64(len(raws)) {
+				if i >= totalTxs {
 					return
 				}
 				if *broadcast {
 					ok := false
 					for _, url := range urls {
-						if _, err := rpcCall(url, "eth_sendRawTransaction", []interface{}{raws[i]}); err == nil {
+						if _, err := rpcCall(url, "eth_sendRawTransaction", []interface{}{rawAt(i)}); err == nil {
 							ok = true
 						}
 					}
@@ -755,7 +787,7 @@ func main() {
 				} else {
 					url = urls[int(i)%len(urls)]
 				}
-				if _, err := rpcCall(url, "eth_sendRawTransaction", []interface{}{raws[i]}); err != nil {
+				if _, err := rpcCall(url, "eth_sendRawTransaction", []interface{}{rawAt(i)}); err != nil {
 					// The first few distinct failures are the diagnosis; a
 					// counter alone hid an 8.88M-transaction rejection.
 					if n := atomic.AddInt64(&failed, 1); n <= 5 || n%1000000 == 0 {
@@ -769,7 +801,7 @@ func main() {
 	}
 	wg.Wait()
 	el := time.Since(tf)
-	fmt.Printf("DONE submitted=%d failed=%d in %s (%.0f tx/s offered)\n", submitted, failed, el.Round(time.Millisecond), float64(len(raws))/el.Seconds())
+	fmt.Printf("DONE submitted=%d failed=%d in %s (%.0f tx/s offered)\n", submitted, failed, el.Round(time.Millisecond), float64(totalTxs)/el.Seconds())
 }
 
 // runSweep sends every derived sender's balance, less one transfer's gas,
