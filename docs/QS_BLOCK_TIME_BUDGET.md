@@ -2804,6 +2804,36 @@ succeeding runs). Round 35w runs one A leg on n42-r35z, which logs the
 first two nonce-high failures with the worker's error (its nonce) beside
 the build reader's nonce for the same sender.
 
+**35w/35x (2026-09-08 01:00-01:25, one A leg each): the A legs' 53% is
+EIP-1559 against the generators' fixed price.** The samples put the
+build reader and the worker in agreement (state nonce 1504 on both
+sides) and the sender-chain listing showed the mechanism: every sender's
+HEAD candidate fails `max fee per gas less than block base fee`, and its
+successors cascade as nonce too high -- 9 fee-cap failures and 22,848
+nonce-high in one fill because the equal-price heap hands the fill
+22,857 candidates from only nine accounts. The headers confirm it: full
+block after full block the base fee climbs 5.88 -> 6.62 -> 7.45 -> 8.38
+-> 9.42 gwei, the next block cannot include a 10 gwei transaction (base
+fee 10.60), the empty block drops it to 9.28, the next is full, 10.44,
+empty, 9.13 ... A full 480M block is twice the 240M gas target, so
++12.5% a block; from the post-decay floor the base fee crosses 10 gwei
+after ~196 full blocks, ~90 s at 0.45 s per block, i.e. before the
+windows open. The B legs never crossed because their decay ends at a
+base fee of ZERO (the header field reads 0 for every B block) and a full
+block adds one wei from there.
+
+So every A number since round 35k (28-30k at 53%) measured the flood's
+price, not the chain, and the B numbers were spared by an accident of
+the decay. Round 35y (n42-r35aa) doubles the header ceiling (960M / 6.846G)
+and caps the builder's fill at the old one (`N42_MINER_FILL_GAS`
+480M / 3.423G), so a full block sits AT the gas target and the base fee
+stays flat; the harness's occupancy column will read 50% for a full
+block from here on. Prediction 34: A legs run full 22,857 blocks every
+block at ~0.45 s, 45-50k TPS (35r's serial-import ceiling was 37-39k);
+B unchanged at 46-52k. FALSIFIED IF the A occupancy stays at 26.5% (the
+new 53%) -- then something other than the fee cap empties every second
+block.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
