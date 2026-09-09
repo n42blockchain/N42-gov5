@@ -181,6 +181,33 @@ func getNonce(url string, a types.Address) (uint64, error) {
 	return getNonceAt(url, a, "pending")
 }
 
+// faucetNonce returns the highest pending nonce any node reports for the
+// faucet -- the nonce the next funding batch must start from. A single node
+// can be a block behind the leader that just mined the previous generator's
+// batch; the maximum across the fleet cannot. Errors only when every node
+// fails.
+func faucetNonce(urls []string, a types.Address) (uint64, error) {
+	var (
+		best    uint64
+		got     bool
+		lastErr error
+	)
+	for _, u := range urls {
+		n, err := getNonceAt(u, a, "pending")
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if !got || n > best {
+			best, got = n, true
+		}
+	}
+	if !got {
+		return 0, lastErr
+	}
+	return best, nil
+}
+
 func getBalanceAt(url string, a types.Address, tag string) (*big.Int, error) {
 	// Retried: with eight generators funding at once a node under load
 	// answered one preflight with an empty quantity and the whole leg died
@@ -368,7 +395,17 @@ func main() {
 		senderAddrs = addrs
 		senderKeys = keys
 		senderBase = make([]uint64, *senders)
-		fn, err := getNonce(urls[0], from)
+		// The faucet nonce is the HIGHEST pending nonce any node reports, not
+		// the one node this generator talks to. Round 35zb warm-up: eight
+		// generators fund in sequence, each from its own node; the previous
+		// generator's 1000 funding transactions had just been mined on the
+		// leader, this generator's node had not imported that block yet, and
+		// its pending nonce was 1000 behind -- the whole batch went out with
+		// used nonces, nothing was mined, and five of eight generators died
+		// at the 80 s funding deadline (3 generators, 33 full blocks, no
+		// window). A node that is behind cannot know; the max across the
+		// fleet can.
+		fn, err := faucetNonce(urls, from)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "faucet nonce: %v\n", err)
 			os.Exit(1)
@@ -394,15 +431,35 @@ func main() {
 			}
 		}
 		var lastFundHash string
-		for i := 0; !*skipFunding && i < *senders; i++ {
-			raw := signAt(priv, from, addrs[i], fn+uint64(i), fundVal, 21000, fundPrice)
-			r, err := rpcCall(urls[0], "eth_sendRawTransaction", []interface{}{raw})
-			if err != nil {
-				fmt.Printf("fund %d err: %v\n", i, err)
-				continue
+		// A "nonce too low" on the first funding transaction means the nonce
+		// read above was still stale (or another generator raced this one):
+		// re-read the fleet-wide nonce and start the batch over, up to three
+		// times, instead of sending 999 more doomed transactions and waiting
+		// 80 s to find out.
+		for attempt := 0; !*skipFunding && attempt < 3; attempt++ {
+			restart := false
+			for i := 0; i < *senders; i++ {
+				raw := signAt(priv, from, addrs[i], fn+uint64(i), fundVal, 21000, fundPrice)
+				r, err := rpcCall(urls[0], "eth_sendRawTransaction", []interface{}{raw})
+				if err != nil {
+					if i == 0 && strings.Contains(err.Error(), "nonce too low") && attempt < 2 {
+						nfn, nerr := faucetNonce(urls, from)
+						fmt.Printf("fund 0 err: %v -- re-reading the faucet nonce (%d -> %d, err=%v) and restarting the batch\n", err, fn, nfn, nerr)
+						if nerr == nil && nfn > fn {
+							fn = nfn
+							restart = true
+							break
+						}
+					}
+					fmt.Printf("fund %d err: %v\n", i, err)
+					continue
+				}
+				if i == *senders-1 {
+					_ = json.Unmarshal(r, &lastFundHash)
+				}
 			}
-			if i == *senders-1 {
-				_ = json.Unmarshal(r, &lastFundHash)
+			if !restart {
+				break
 			}
 		}
 		// Wait until the last sender is funded (balance > 0), and ABORT if it
