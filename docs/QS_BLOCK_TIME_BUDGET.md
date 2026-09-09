@@ -3173,6 +3173,42 @@ lever is fewer workers per node, not memory). Falsification: recover falls
 in step with exec -- neither explanation; look at the generators. Side
 reading, no claim: leader align 512 -> ~281 ms from the skip.
 
+**Round 35zc result (2026-09-09 18:24-19:44, aborted after B1 win1).** The
+first attempt (35zb) lost five of eight generators to a stale faucet nonce
+(txflood-r37, 5f2cfd20, reads it fleet-wide; a5a4422e gives the eighth
+generator 300 s). 35zc then: A1 31.2k / 28.6k at 0.73-0.80 s (35za: 33-35k);
+B1 win1 **32.4k at 5.0 s a block** (35za: 54.3k at 3.0 s), with "view timed
+out" every 20-40 s from 19:40 and one commit in the minute before the abort.
+Follower node2 over 54 full blocks: total 1754 (median 1568, p90 2574) --
+recover 468, exec 441, finalize 252, write 259, body 101 -- against 35za's
+1393. Memory: MDBX resident 5-7 GB a node (35za: 3-4), heaps 6.6-8.3 GB.
+
+Prediction 43 is falsified on its second branch, harder than written: the
+page cache came back and nothing improved -- recover 468 (pure CPU) is
+untouched, exec is worse, and the 6 GiB cap puts the leader into a GC
+regime where it misses view deadlines. The follower's gap to the replay's
+731 ms is CPU contention, not memory. Side reading: the leader's align is
+657 ms (35za: 512) -- 952ec3e4's skip does not fire under tenure, because
+the parent of the speculative build is the leader's own just-sealed block,
+not yet applied; the align IS the leader re-applying its own block (track 3
+of QS_REPLAN, own-block conversion).
+
+## 6ak. Round 35zd: 16 workers a node -- registered before the round ran (2026-09-09)
+
+35za's configuration (GOMEMLIMIT 10 GiB) with N42_PARALLEL_WORKERS 32 -> 16.
+Six followers recover and execute the same block at the same moment: 6 x 32
+= 192 worker threads plus the leader's build and eight generators on 128 SMT
+cores, so each thread runs at SMT speed. At 16 workers the 96 threads fit
+the cores.
+
+**Prediction 44.** Follower recover 460 -> ~250-300 ms and exec 300 -> ~220
+(each thread on a full core, half as many of them: the replay does 137/157
+with 32 uncontended threads), total 1.4-1.9 s -> ~1.1-1.3 s; B 54-57k ->
+62-68k. If recover stays at 460 the contention is not SMT but something
+serial in recover itself (the sender cache lock, allocation) -- then the
+next lever is the pool-side pre-recovery (track 2). If B drops, the
+followers were CPU-bound in their own right and 32 workers were needed.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
