@@ -3092,6 +3092,28 @@ validation on every follower), costs ~3.3 MB on a ~24 MB block, and
 removes ~0.5 s from six nodes' critical path per block. It must not be
 accepted from an arbitrary peer, only from the block's proposer.
 
+**35z7 A1 and 35z8 (2026-09-08 19:34 - 2026-09-09 00:27 EDT).** 35z7's A
+leg read 33,905 / 33,143 at 0.674 / 0.690 s per full 22,857 block, the
+same as every tenure round since 35z3 -- the A size is untouched by the
+heap. Its B legs were stopped by hand: they would only repeat a
+configuration already shown to be GC-bound.
+
+35z8 raised GOMEMLIMIT to 12 GiB and **aborted in its warm-up at 19 GB
+available**, with all seven nodes at 12.4-12.9 GB anon (87 GB for the
+fleet, plus 18 GB shmem and 35 GB page cache). Put beside 35z7's 9.3-9.7
+GB under an 8 GiB cap, that says the cap is not what sets the heap:
+**GOGC=300 targets live x 4**, so a ~3 GB live set asks for ~12 GB
+whatever the limit is, and the GC only thrashes when the limit is below
+that target. Two knobs, one binding: at 8 GiB the limit bound and the GC
+fought it (exec 0.43 s); at 12 GiB the target bound and the box ran out.
+
+**35z9 = GOGC 200 with GOMEMLIMIT 10 GiB**: the target becomes live x 3
+(~9 GB), inside the cap, and the fleet sits near 70 GB. Prediction 39:
+heaps under 10 GB with no limit pressure, exec back under 0.30 s,
+win2 within 10% of win1, B TPS over 60k at full 163k blocks. FALSIFIED
+IF exec stays near 0.43 s (then the cost is the executor's per-block
+allocation, not the collector's pacing) or the heaps still reach the cap.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
