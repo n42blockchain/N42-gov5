@@ -313,6 +313,7 @@ func main() {
 	// so recorded rounds stay reproducible; set it to make the state work real.
 	recipients := flag.Int("recipients", 0, "spread transfers over N derived recipients (0 = the single 0x..dEaD sink, the historical behaviour)")
 	skipFunding := flag.Bool("skip-funding", false, "assume the derived senders are already funded (re-run after a funding round that mined but aborted)")
+	fundTimeout := flag.Int("fund-timeout", 300, "seconds to wait for the funding batch to mine before aborting (35zc warm-up: the eighth generator's batch took >80 s behind seven flooding generators)")
 	rpcBatch := flag.Int("rpcbatch", 0, "submit N txs per eth_batchRawTransaction call (0 = one eth_sendRawTransaction per tx; max 200)")
 	flag.Parse()
 	if *senders < 0 || *perTx < 0 {
@@ -475,7 +476,7 @@ func main() {
 		} else {
 			fmt.Println("waiting for funding to mine...")
 		}
-		for w := 0; !funded && w < 40; w++ {
+		for w := 0; !funded && w < *fundTimeout/2; w++ {
 			time.Sleep(2 * time.Second)
 			r, _ := rpcCall(urls[0], "eth_getBalance", []interface{}{addrs[*senders-1].Hex(), "latest"})
 			var h string
@@ -508,8 +509,8 @@ func main() {
 		if !funded {
 			latestNonce, latestErr := getNonceAt(urls[0], from, "latest")
 			pendingNonce, pendingErr := getNonceAt(urls[0], from, "pending")
-			fmt.Fprintf(os.Stderr, "FATAL: funding was not confirmed within 80s (latest nonce %d err=%v; pending nonce %d err=%v; expected latest >= %d)\n",
-				latestNonce, latestErr, pendingNonce, pendingErr, fn+uint64(*senders))
+			fmt.Fprintf(os.Stderr, "FATAL: funding was not confirmed within %ds (latest nonce %d err=%v; pending nonce %d err=%v; expected latest >= %d)\n",
+				*fundTimeout, latestNonce, latestErr, pendingNonce, pendingErr, fn+uint64(*senders))
 			os.Exit(1)
 		}
 		// pre-sign perTx transfers from each sender
