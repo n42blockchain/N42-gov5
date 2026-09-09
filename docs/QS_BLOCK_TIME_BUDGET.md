@@ -3153,6 +3153,26 @@ target the base fee stays at zero, so `QS_FLOOD_GASPRICE=1000000000`
 (1 gwei) is as includable and costs a tenth. 35za runs at 1 gwei after
 a sweep of offsets 860M-1110M.
 
+## 6aj. Round 35zb: the per-node memory budget -- registered before the round ran (2026-09-09)
+
+The offline replay (`QS_REPLAN_2026-09-09.md` section 6) imports a 163k block
+in 731 ms on an idle box; the same code on fleet follower node2 took 1393 ms
+for the same block during 35za's B warm-up, every phase 1.5-3.4x slower, and
+the round's memory log shows each node's MDBX resident set falling from 13.5
+GB to 3-4 GB while seven 10-11 GB heaps hold 78-82 GB. One variable:
+GOMEMLIMIT 10 -> 6 GiB (n42-r36 = 35za's binary plus 952ec3e4's align skip,
+read separately from "miner: build phases"; MDBX map 256 GiB because all
+seven mdbx.dat sit at 188 of 192).
+
+**Prediction 43.** If the follower's gap is the page cache: "blockimport
+phases" total at 163k falls from 1.4-1.9 s to ~1.1 s, recover stays where it
+is (pure CPU) while exec/finalize/write shrink, and B rises from 54-57k to
+65-70k. If the gap is SMT contention: recover and exec stay at 460/300 ms,
+the heaps collect every other block, and B is unchanged or lower (then the
+lever is fewer workers per node, not memory). Falsification: recover falls
+in step with exec -- neither explanation; look at the generators. Side
+reading, no claim: leader align 512 -> ~281 ms from the skip.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
