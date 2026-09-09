@@ -1025,6 +1025,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// so can steal an importing block's in-flight undo after ComputeRoot but
 	// before persistence, advancing PlainState/marker while rolling the tree
 	// back one block.
+	var dPersistWait time.Duration
 	if parentHash != (types.Hash{}) {
 		if bc, ok := w.chain.(*internal.BlockChain); ok {
 			// Early-vote overlap: the view can advance while the parent's
@@ -1038,9 +1039,16 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 			// (580d2f32) ran before that unwind and could never succeed on a
 			// node that had applied a sibling -- round 35p: every view of a
 			// tenure timed out on "consensus parent not applied in time".
+			tPersist := time.Now()
 			if !bc.WaitBlockPersisted(parentHash, 2*time.Second) {
 				return fmt.Errorf("consensus parent %x not persisted in time", parentHash[:8])
 			}
+			// Round 35z9: `align` was 551 ms of a 1,358 ms build at 163k
+			// transactions, on the path between one commit and the next
+			// proposal, and there was no way to tell the wait for the parent's
+			// write from the unwind that follows it. Two numbers, so the next
+			// round knows which half to attack.
+			dPersistWait = time.Since(tPersist)
 			pblk, _ := w.chain.GetBlockByHash(parentHash)
 			if pblk == nil {
 				return fmt.Errorf("consensus parent %x not in local db", parentHash[:8])
@@ -1193,7 +1201,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// Build-phase breakdown: the dropped-seal hunt found ~6s builds with a
 	// 6ms seal and no visible spender - this line is the missing evidence.
 	log.Info("miner: build phases",
-		"align", tAlign, "reload", tReload-tAlign, "syscalls", tPrep-tReload,
+		"align", tAlign, "persistWait", dPersistWait, "reload", tReload-tAlign, "syscalls", tPrep-tReload,
 		"fillTx", time.Since(start)-tPrep, "total", time.Since(start))
 	// w.commit() is the rest of commitWork: it assembles and finalizes the
 	// block, creates the task and hands it to taskCh, where taskLoop stamps
