@@ -1053,7 +1053,18 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 			if pblk == nil {
 				return fmt.Errorf("consensus parent %x not in local db", parentHash[:8])
 			}
-			if err := bc.AlignAppliedBranch(pblk.Number64().Uint64()+1, parentHash); err != nil {
+			// Nothing to unwind when the applied state is exactly the
+			// consensus parent, which is every block of a healthy chain.
+			// AlignAppliedBranch takes bc.lock and so waits behind the
+			// parent's own write; skipping it there took 230 ms off the
+			// leader's 512 ms align (round 35za).
+			alignNeeded := !bc.AppliedHeadIsExactly(parentHash, pblk.Number64().Uint64())
+			if err := func() error {
+				if !alignNeeded {
+					return nil
+				}
+				return bc.AlignAppliedBranch(pblk.Number64().Uint64()+1, parentHash)
+			}(); err != nil {
 				if speculative {
 					// A guess is not worth a forced import: the align fallback
 					// below re-imports the consensus parent with switch

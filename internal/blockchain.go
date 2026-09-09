@@ -2981,6 +2981,29 @@ func (bc *BlockChain) clearReadThroughCache() {
 // rewrite canonical rows before a lagging QMDB state has switched off a losing
 // speculative branch. Chains without an applied marker fall back to body
 // presence — the pre-gate behavior.
+// AppliedHeadIs reports whether the QMDB applied marker names exactly this
+// block -- the state is at it, nothing above it has been applied, so a
+// branch-switch unwind would have nothing to do. One read transaction, no
+// chain lock: the point is to skip AlignAppliedBranch, which takes bc.lock
+// and therefore queues behind the write of the very block being asked about.
+// Round 35za measured that queueing at 230 ms of a leader's 512 ms align on
+// a chain with no sibling to unwind at all.
+//
+// A false answer only costs the align that would have run anyway, so a race
+// against a concurrent write is harmless in the safe direction.
+func (bc *BlockChain) AppliedHeadIsExactly(hash types.Hash, number uint64) bool {
+	at := false
+	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		an, ah, ok, err := rawdb.ReadQMDBApplied(tx)
+		if err != nil || !ok {
+			return nil
+		}
+		at = an == number && types.Hash(ah) == hash
+		return nil
+	})
+	return at
+}
+
 func (bc *BlockChain) HasAppliedBlock(hash types.Hash, number uint64) bool {
 	applied := false
 	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
