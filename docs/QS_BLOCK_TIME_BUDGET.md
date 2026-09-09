@@ -3114,6 +3114,45 @@ win2 within 10% of win1, B TPS over 60k at full 163k blocks. FALSIFIED
 IF exec stays near 0.43 s (then the cost is the executor's per-block
 allocation, not the collector's pacing) or the heaps still reach the cap.
 
+**35z9 (2026-09-09 00:51-01:52 EDT, GOGC 200 / GOMEMLIMIT 10 GiB).**
+
+| leg | win1 | win2 |
+|-----|------|------|
+| warmup (B, full 163k) | 54,333 at 3.000 s | **57,050 at 2.857 s** |
+| A1 (full 22,857) | 33,524 at 0.682 s | 33,143 at 0.690 s |
+| B1 | could not fund: faucet 790 ETH against 947 needed per generator | |
+
+Prediction 39, part by part: **win2 no longer collapses** -- 54.3k to
+57.1k (+5%), against 35z7's 54.3k to 43.5k (-20%) under GOGC 300 at an
+8 GiB cap. Every phase improved: exec 432 -> 316 ms, finalize 251 -> 209,
+r2 1,926 -> 1,670, the committed view total 2,988 -> 2,479 ms. But the
+heaps still sit at 10.8-11.3 GB, above the 10 GiB cap (live is ~3.7 GB,
+so GOGC 200 targets ~11 GB), and **B TPS did not pass 60k**.
+
+That gap is the finding: a 17% faster view produced a 0-5% faster window.
+The committed-view timer only sees views that reached a QC, and the
+commits arrive in bursts (0-1 s apart after a pause), so about half a
+second per block sits outside the timed view. The leader's own work is
+where it goes: build 1,358 ms (align 551 -- waiting for the parent's
+write to persist -- fill 584, reload 190) plus assemble 616 ms, against
+the followers' 1,670 ms import. Tenure overlaps the build with the
+import, but the align wait and the assemble still land on the path
+between one commit and the next proposal.
+
+So the next levers are on the leader, not the follower: the 551 ms
+`align` wait (the build blocks until the parent block's write is
+persisted, even though with `N42_STATE_READ_QMDB=1` the state it reads
+is the in-memory tree, which is already current) and the 616 ms
+`assemble`, which recomputes the same root the followers will compute
+again.
+
+**The faucet is a per-leg cost of 7,600 ETH** at 8 generators x 1,000
+senders x pertx 4,500 x 10 gwei -- four legs empty a 32,000 ETH faucet,
+which is what stopped 35z9's B1. Since the fill is capped at the gas
+target the base fee stays at zero, so `QS_FLOOD_GASPRICE=1000000000`
+(1 gwei) is as includable and costs a tenth. 35za runs at 1 gwei after
+a sweep of offsets 860M-1110M.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
