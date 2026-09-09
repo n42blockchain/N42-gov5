@@ -183,6 +183,38 @@ Next: log the live tree root and applied marker on every node after startup
 repair, and have the leader refuse to build until its applied head equals its
 committed head.
 
+**2026-09-09, round 35za: the startup revert is NOT the cause.** The
+fingerprint that 60233433 added answered the question it was built for. All
+seven nodes came up on `root 4dac01037782e8a1 nextSlot 520655309 applied
+13994588 head 13994588` -- identical, no node holding an uncommitted block.
+Two blocks later 13994590 came out with THREE roots: the proposer's miner
+tree sealed `d37eafb0`, the proposer's own live tree computed `4c7768f4`
+("live QMDB tree root does not reproduce sealed root"), and all six
+followers computed `e2a77c89`. The six agree, so the proposer is wrong on
+both of its trees, and it was wrong before it built: its live tree had
+already diverged while importing 13994589, the block it had itself sealed
+in the previous leg and re-imported after the restart.
+
+So the shape is: a node that sealed a block, restarted before it was
+committed, and then re-imported its own block, ends up with a live tree that
+differs from the nodes that only ever imported it -- while every startup
+fingerprint says the state was identical. Whatever differs is not the root,
+the append cursor, the applied marker, or (checked in the test below) the
+index.
+
+`lib/qmdb/revert_reapply_test.go` holds the closest handle: revert-then-
+reapply, sibling-revert-then-winner, and the startup shape (load a store that
+HAS the block, revert with the persisted undo record, reload the repaired
+store into a third tree). The first two pass. The third FAILS -- but not
+reproducibly: in isolation the same revert-then-apply produces the fleet's
+root, and the failure appears only with a miner-tree load and index audits
+between the revert and the apply, with a different wrong root as those
+statements change. It is skipped unless `N42_QMDB_REVERT_INVESTIGATION=1`.
+The next step is to bisect the statements between the revert and the apply --
+that instability is itself the signal, and it points at state shared or
+carried across two Tree instances in one process, which is exactly what a
+node has (the live tree and the miner's speculative tree).
+
 ## Plain `Account` table frozen at 13,750,514 on the qs fleet (2026-09-06, round 26)
 
 `N42_STATE_WRITE_QMDB_ONLY=1` stopped plain Account writes; QMDBMeta records
