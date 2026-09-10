@@ -3286,6 +3286,27 @@ handoffs instead; each recovered view is worth ~2.5 s of the leg. Falsified
 if timeouts persist with a different gate outcome (then the handoff cost is
 elsewhere).
 
+## 6an. Round 35zg: no per-commit fsync -- registered before the round ran (2026-09-10)
+
+35zf's configuration plus `N42_MDBX_SYNC=safe-nosync` (the opt-out
+node.go:mdbxSyncModeOr documents but nobody has measured). 35zf's
+`commit-to-canonical phases` on a follower: total 143-208 ms of which the
+MDBX commit of a few canonical-hash rows is 89-143 ms -- the fsync -- and
+it runs inline in the HotStuff loop before `view changed`, so the follower
+starts importing the next proposal that much later; the import's own
+write commit shows 14 ms because its pages are already flushed by the
+time the meta page syncs.
+
+**Prediction 48.** `commit-to-canonical` commit 89-143 -> <10 ms, `canon`
+~200 -> ~60 ms; blockwrite `commit` on leader and follower down by the
+same order; the follower's chain per view -150 ms and B windows 22-24 ->
+24-26 blocks (65-70k). Falsified if the canon commit stays >50 ms (then it
+is writer-lock contention with the import's transaction, not the fsync)
+or if B does not move with it (then the loop's 200 ms was not on the
+follower's path to its next vote). Durability note: a crash rolls the
+node back a few blocks and it re-syncs; for the benchmark this is the
+same trade every client makes when it batches its fsync.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
