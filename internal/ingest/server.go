@@ -27,6 +27,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -146,9 +147,33 @@ func (s *Server) Start() error {
 		for i := 0; i < s.hintWorkers; i++ {
 			go s.hintWorker()
 		}
+		go s.hintStatsLoop()
 	}
 	go s.acceptLoop(ln)
 	return nil
+}
+
+// hintStatsLoop logs the hint feed's progress every ten seconds while it
+// moves: how many senders were recovered, how many transactions failed to
+// decode or recover, and how deep the queue sits -- the three numbers that
+// say whether the followers' caches are being fed ahead of the blocks.
+func (s *Server) hintStatsLoop() {
+	t := time.NewTicker(10 * time.Second)
+	defer t.Stop()
+	var lastHinted, lastRejected uint64
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-t.C:
+			h, r := s.hinted.Load(), s.rejected.Load()
+			if h == lastHinted && r == lastRejected {
+				continue
+			}
+			log.Info("ingest hint feed", "hinted", h, "hintedDelta", h-lastHinted, "rejected", r, "queued", len(s.hintQueue), "batches", s.batches.Load())
+			lastHinted, lastRejected = h, r
+		}
+	}
 }
 
 // Stop shuts down the server and closes the listener.
@@ -357,10 +382,17 @@ func (s *Server) readHintBatch(r io.Reader, numTxs uint32) (uint32, error) {
 		if _, err := io.ReadFull(r, senderBuf[:]); err != nil {
 			return queued, err
 		}
-		tx := new(transaction.Transaction)
-		if err := tx.Unmarshal(txBuf); err != nil {
-			s.rejected.Add(1)
-			continue
+		// The generators submit Ethereum RLP (what eth_sendRawTransaction
+		// takes); a native-codec feed still works. Round 35zi: decoding the
+		// hint feed with the native codec alone rejected every transaction and
+		// the followers' recover stayed at 419 ms.
+		tx, err := transaction.DecodeEthereumTransaction(txBuf)
+		if err != nil {
+			tx = new(transaction.Transaction)
+			if err := tx.Unmarshal(txBuf); err != nil {
+				s.rejected.Add(1)
+				continue
+			}
 		}
 		select {
 		case s.hintQueue <- tx:

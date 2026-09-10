@@ -812,7 +812,11 @@ func main() {
 					default:
 					}
 				}
-				fmt.Printf("  pool=%d topup=%d\n", depth, max(short, 0))
+				if hints != nil {
+					fmt.Printf("  pool=%d topup=%d hints sent=%d dropped=%d errors=%d\n", depth, max(short, 0), hints.sent.Load(), hints.dropped.Load(), hints.errs.Load())
+				} else {
+					fmt.Printf("  pool=%d topup=%d\n", depth, max(short, 0))
+				}
 			}
 		}()
 	} else if *rate > 0 {

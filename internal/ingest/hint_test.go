@@ -30,7 +30,8 @@ func TestIngestServer_HintOnlyRecoversFromSignature(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := signed.Marshal()
+	// The generators submit Ethereum RLP; that is what the feed carries.
+	raw, err := transaction.EncodeEthereumTransaction(signed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,8 +64,8 @@ func TestIngestServer_HintOnlyRecoversFromSignature(t *testing.T) {
 	}
 	// A fresh decode -- no memo on the object -- recovers through the cache
 	// to the signer's address, not to the bogus sender the client sent.
-	fresh := new(transaction.Transaction)
-	if err := fresh.Unmarshal(raw); err != nil {
+	fresh, err := transaction.DecodeEthereumTransaction(raw)
+	if err != nil {
 		t.Fatal(err)
 	}
 	got, err := transaction.RecoverSenderFromSig(signer, fresh)
