@@ -221,3 +221,17 @@ node has (the live tree and the miner's speculative tree).
 `accountFrozenAt`. Every later start of those datadirs needs
 `N42_STATE_READ_QMDB=1`, or the miner, txpool and RPC read stale accounts.
 No repair tool rebuilds the table from the tree yet.
+
+## Root divergence on the first block after a restart -- mechanism found (2026-09-10)
+
+Round 35zg B1: the leg's restart reverted the incoming leader (node6) to the
+committed head 14029922 while consensus named 14029923, applied before the
+stop, as the parent. `commitWork`'s align is a no-op when the applied head is
+below the parent, so the speculative build of 14029924 ran on a miner tree
+reloaded at 14029922, the parent was re-imported a second later, and the
+parked task was proposed because the speculative-hit check compares only the
+parent hash. Three roots for an empty block: proposer c6901af1, proposer's
+live tree 921cf405, followers c63d8299. Guarded from n42-r41 on (a build
+whose parent is not the applied head is abandoned or imports the parent
+first); the two-tree design that makes the mistake possible is track 3b of
+QS_REPLAN_2026-09-09.md.

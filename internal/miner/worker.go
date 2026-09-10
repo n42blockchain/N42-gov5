@@ -1082,6 +1082,30 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 					return fmt.Errorf("align applied branch to consensus parent %x: %w", parentHash[:8], err)
 				}
 			}
+			// The align is a no-op when the applied head is BELOW the parent
+			// (unwindForReimport leaves "not applied yet" to the future queue),
+			// and the build would then run on the wrong base. Round 35zg B1:
+			// after the leg's restart node6's startup revert sat at 14029922,
+			// consensus named 14029923 as the parent, the speculative build of
+			// 14029924 ran on a tree reloaded at 14029922, the parent was
+			// re-imported one second later, the parked task matched by hash and
+			// the fleet rejected an empty block with three different roots --
+			// the OPEN_ISSUES "three roots after a restart" shape. Never build on
+			// a parent that is not the applied head: a speculative build gives
+			// up (the leader gate's deferred resume re-triggers after the
+			// parent applies); a production build imports the parent with
+			// switch authority first and checks again.
+			if !bc.AppliedHeadIsExactly(parentHash, pblk.Number64().Uint64()) {
+				if speculative {
+					return fmt.Errorf("speculative build: consensus parent %x not applied yet", parentHash[:8])
+				}
+				if _, ierr := bc.InsertChainAuthorized([]block.IBlock{pblk}); ierr != nil {
+					return fmt.Errorf("import consensus parent %x before building: %w", parentHash[:8], ierr)
+				}
+				if !bc.AppliedHeadIsExactly(parentHash, pblk.Number64().Uint64()) {
+					return fmt.Errorf("consensus parent %x still not the applied head after import", parentHash[:8])
+				}
+			}
 		}
 	}
 

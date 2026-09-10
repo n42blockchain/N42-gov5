@@ -3335,6 +3335,25 @@ safe-nosync itself: follower blockwrite `commit` 14 -> 6 ms, leader write
 unchanged, warm-up 59.8k / 62.5k. The round runs to completion for the
 record; the durable mode returns for 35zh.
 
+**Round 35zg result (2026-09-10 03:07-04:02, aborted at B1's first
+block).** A 37.3k / 35.8k; B1 aborted on a BAD BLOCK: node6, leader of the
+leg's first view, proposed an EMPTY block 14029924 whose root (c6901af1)
+matched neither the five followers (c63d8299) nor its own live tree
+(921cf405) -- the OPEN_ISSUES "three roots after a restart" shape, this
+time with the sequence in the log: the leg's restart reverted node6 to the
+committed 14029922 while consensus named 14029923 (applied before the stop)
+as the parent; the speculative build's align found the applied head BELOW
+the parent and returned without doing anything (unwindForReimport leaves
+"not applied yet" to the future queue); the build ran on a tree reloaded at
+14029922; node6 re-imported 14029923 one second later; the parked task
+matched by parent hash and was proposed. Not the adoption path (that build
+reloaded). Fixed in n42-r41: after the align, a build whose parent is not
+the applied head is abandoned (speculative) or imports the parent with
+switch authority first (production). safe-nosync's other cost showed too:
+node5, stopped by the abort, needed MDBX recovery and came back one block
+short (14029922) -- the documented trade, and one more reason 35zh runs
+durable.
+
 ## 6ao. Round 35zh: the committed block from the cache, hashed across the cores -- registered before the round ran (2026-09-10)
 
 35zf's configuration (durable MDBX) on n42-r40: CommitToCanonicalWith takes
