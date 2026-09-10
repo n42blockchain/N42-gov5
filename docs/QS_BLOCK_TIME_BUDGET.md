@@ -3368,6 +3368,19 @@ Falsified if canon stays >100 ms (then the time is in notifyBlockCommitted
 or the tx-index Add itself) or if B does not follow (then the loop's canon
 was not between the commit and the follower's next import after all).
 
+**Round 35zh result (2026-09-10 04:09-06:07).** Prediction 49 holds on
+its phase: `hotstuff: commit phases` canon 199-237 -> mean 18 ms (median 0,
+p90 55), `commit-to-canonical phases` total 12.7 ms (read 6.5 on a cache
+miss). No view timeouts, no BAD BLOCK in five legs on n42-r41 (the
+unapplied-parent guard logged no abandoned builds: the shape needs a
+restart-revert gap and none occurred). A **40.0k / 37.7k** and 37.0k /
+37.0k (35zf 39.2k); B 62.5k / 62.1k and 65.0k / 65.2k -- four-window mean
+**63.7k**, the best so far (35za 55.0k, +16%), but the windows still read
+23-24 blocks: the 180 ms came off the follower's loop and the view moved
+2.6 -> 2.5 s at most. What is left of the follower's view is the import
+itself (1.44 s: recover 460, exec 290, finalize 200, write 260, body 91) --
+QS_REPLAN section 9, track 2 next.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
