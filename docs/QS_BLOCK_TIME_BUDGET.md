@@ -3323,6 +3323,32 @@ follower's path to its next vote). Durability note: a crash rolls the
 node back a few blocks and it re-syncs; for the benchmark this is the
 same trade every client makes when it batches its fsync.
 
+**Round 35zg, first reading (warm-up, 03:18-03:29).** Prediction 48 is
+falsified on its mechanism, and the mechanism was a units error: the
+`commit-to-canonical phases` fields are nanoseconds, so 35zf's "commit
+89-143 ms" was 89-143 us. The 200 ms of `canon` in the HotStuff loop sits
+OUTSIDE the MDBX transaction: after it, CommitToCanonicalWith hashes every
+transaction of the committed block for the transaction index -- serially,
+on an instance freshly decoded by rawdb.ReadBlockByHash (80 ms of read when
+the block cache misses) whose hashes are not memoised -- ~200 ms at 163k.
+safe-nosync itself: follower blockwrite `commit` 14 -> 6 ms, leader write
+unchanged, warm-up 59.8k / 62.5k. The round runs to completion for the
+record; the durable mode returns for 35zh.
+
+## 6ao. Round 35zh: the committed block from the cache, hashed across the cores -- registered before the round ran (2026-09-10)
+
+35zf's configuration (durable MDBX) on n42-r40: CommitToCanonicalWith takes
+the committed block from the block cache when it is there (it is the
+instance this node imported two views ago, every hash memoised) and, on a
+miss, hashes the fresh decode across up to 32 goroutines.
+
+**Prediction 49.** `hotstuff: commit phases` canon 199-237 -> ~10-30 ms;
+`commit-to-canonical phases` read 80 -> <1 ms on a cache hit; the follower's
+chain per view -180 ms and B windows 22-24 -> 24-26 blocks (65-70k).
+Falsified if canon stays >100 ms (then the time is in notifyBlockCommitted
+or the tx-index Add itself) or if B does not follow (then the loop's canon
+was not between the commit and the follower's next import after all).
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across

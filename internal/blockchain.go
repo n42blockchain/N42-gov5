@@ -35,8 +35,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -1270,16 +1272,32 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 	var dRead, dWalk, dLookup, dLock, dBody time.Duration
 	var indexed *block.Block
 	tCommit := time.Now()
+	// The committed block is two views old and almost always the instance
+	// this node imported, still in the block cache with every transaction
+	// hash memoised. Reading it from MDBX instead decoded 163,000
+	// transactions (80 ms cold) and then hashed each of them again for the
+	// transaction index (~200 ms, serial) -- inside the HotStuff loop, before
+	// the next view could start (round 35zg's commit-to-canonical phases).
+	var cached *block.Block
+	if bc.blockCache != nil {
+		if b, ok := bc.blockCache.Get(hash); ok && b != nil {
+			cached = b
+		}
+	}
 	err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
 		tEnter := time.Now()
 		dLock = tEnter.Sub(tCommit)
 		defer func() { dBody = time.Since(tEnter) }()
 		tRead := time.Now()
-		blk, err := rawdb.ReadBlockByHash(tx, hash)
-		dRead = time.Since(tRead)
-		if err != nil {
-			return err
+		blk := cached
+		if blk == nil {
+			var err error
+			blk, err = rawdb.ReadBlockByHash(tx, hash)
+			if err != nil {
+				return err
+			}
 		}
+		dRead = time.Since(tRead)
 		if blk == nil {
 			return fmt.Errorf("committed block %s not in db", hash.Hex())
 		}
@@ -1449,8 +1467,28 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 	if indexed != nil {
 		txs := indexed.Transactions()
 		hashes := make([]types.Hash, len(txs))
-		for i, tx := range txs {
-			hashes[i] = tx.Hash()
+		// Memoised on the cached instance; a fresh decode still hashes, but
+		// across the cores rather than one.
+		workers := runtime.GOMAXPROCS(0)
+		if workers > 32 {
+			workers = 32
+		}
+		if len(txs) < 4096 || workers < 2 {
+			for i, tx := range txs {
+				hashes[i] = tx.Hash()
+			}
+		} else {
+			var wg sync.WaitGroup
+			for w := 0; w < workers; w++ {
+				wg.Add(1)
+				go func(start int) {
+					defer wg.Done()
+					for i := start; i < len(txs); i += workers {
+						hashes[i] = txs[i].Hash()
+					}
+				}(w)
+			}
+			wg.Wait()
 		}
 		bc.txIndexer.Add(indexed.Number64().Uint64(), hashes)
 	}
