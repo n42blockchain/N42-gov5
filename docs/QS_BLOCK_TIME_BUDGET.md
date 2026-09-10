@@ -3260,6 +3260,19 @@ absent -- then the precondition is wrong, most likely the cursor
 comparison) or if roots diverge (BAD BLOCK: the two trees did not hold the
 same layout, and the abort proves the adoption unsafe -- revert the flag).
 
+**Prediction 47 (same round, read separately).** 35ze B1 lost two views
+to a 6 s timeout each, both at a tenure handoff: the incoming leader's gate
+returned `committed-parent-blocked` (a chain-wide streak of commits that
+outran the follower's import), the parent applied 100-160 ms later, and
+nothing resumed the view because only the parent-not-applied branch
+registered a deferred retry. n42-r39 registers it in both branches and
+re-probes once after registering (the import can land between the check and
+the registration). Prediction: "view timed out" 0-1 per B leg (35ze B1: 2
+per node view, 8 across nodes), "deferred production resumed" appearing at
+handoffs instead; each recovered view is worth ~2.5 s of the leg. Falsified
+if timeouts persist with a different gate outcome (then the handoff cost is
+elsewhere).
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across

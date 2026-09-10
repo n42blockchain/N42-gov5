@@ -233,6 +233,28 @@ func (s *Service) requestCommittedCatchUp(hash types.Hash, number uint64) {
 	}()
 }
 
+// deferProduction parks a leader view whose parent is not applied yet so
+// NotifyBlockImported re-runs the gate when it lands. The import can complete
+// between the gate's check and this registration; a second, side-effect-free
+// probe after registering closes that window by re-running the gate at once.
+func (s *Service) deferProduction(view ViewNumber, parentHash types.Hash) {
+	s.pendingMu.Lock()
+	s.deferredProduce.view, s.deferredProduce.parent = view, parentHash
+	s.pendingMu.Unlock()
+	if applied, checked, _ := s.blockExecutionStatus(parentHash); checked && applied {
+		s.pendingMu.Lock()
+		raced := s.deferredProduce.parent == parentHash
+		if raced {
+			s.deferredProduce.parent = types.Hash{}
+		}
+		s.pendingMu.Unlock()
+		if raced {
+			log.Info("hotstuff: deferred production resumed at once, the parent applied during the gate", "view", uint64(view), "parent", parentHash.Hex()[:12])
+			go s.triggerBlockProduction(view, parentHash)
+		}
+	}
+}
+
 // committedParentBlocked rechecks the proposed consensus parent and fails
 // closed after repeated local execution failures. The failure streak is
 // chain-wide rather than keyed by hash because commits keep advancing while a
@@ -353,6 +375,14 @@ func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash)
 	if s.committedParentBlocked(parentHash) {
 		dCommitted = time.Since(tC)
 		logGates("committed-parent-blocked")
+		// The guard fires on a chain-wide streak of commits that landed
+		// before their block was executed here -- routine at 163k a block,
+		// where the commit QC outruns the follower's 1.5 s import -- and the
+		// parent is then one import away: round 35ze B1, both timeouts were
+		// this gate at a tenure handoff, the parent applied 100 ms later, and
+		// nothing resumed the view because only the parent-not-applied
+		// branch registered a retry. Register it here too.
+		s.deferProduction(view, parentHash)
 		return
 	}
 	dCommitted = time.Since(tC)
@@ -360,9 +390,7 @@ func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash)
 	if !s.ensureParentApplied(parentHash) {
 		dApplied = time.Since(tA)
 		logGates("parent-not-applied")
-		s.pendingMu.Lock()
-		s.deferredProduce.view, s.deferredProduce.parent = view, parentHash
-		s.pendingMu.Unlock()
+		s.deferProduction(view, parentHash)
 		return
 	}
 	dApplied = time.Since(tA)
