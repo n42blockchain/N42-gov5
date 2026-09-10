@@ -34,6 +34,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -490,12 +491,16 @@ func (bc *BlockChain) voidMinerRootTrust(reason string) {
 	}
 }
 
+// minerAdoptAppends gates NewMinerRootComputer's own-block fast path; off by
+// default until a fleet round has read it (QS_BLOCK_TIME_BUDGET, round 35zf).
+var minerAdoptAppends = os.Getenv("N42_MINER_ADOPT_APPENDS") == "1"
+
 // NewMinerRootComputer returns the isolated computer a leader build seals
 // its state root on, or (nil, nil) when the chain does not commit with QMDB.
 // A reload failure is returned as an error rather than swallowed: the caller
 // used to seal on the default root instead, a block no follower accepts and
 // one whose stale write later panicked the worker (round 35r).
-func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx) (state.RootComputer, error) {
+func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx, parentRoot types.Hash) (state.RootComputer, error) {
 	if !bc.qmdbEnabled {
 		return nil, nil
 	}
@@ -519,6 +524,19 @@ func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx) (state.RootComputer, error)
 		bc.minerRC = rc
 	}
 	rc.SetCold(tx)
+	// Own-block fast path (N42_MINER_ADOPT_APPENDS=1): the block this tree
+	// built is the parent of the block about to be built -- its root is the
+	// parent header's root, the live tree's cursor is where this tree's
+	// appends end, and no branch switch is queued -- so the tree already IS
+	// the parent's post-state. Keep it instead of peeling and re-reading
+	// the same entries from disk (persistWait + reload, ~450 ms a block on
+	// the leader at 163k). Anything else falls through to the reload.
+	if minerAdoptAppends && len(bc.minerPendingUndo) == 0 && rc.LastUndo() != nil &&
+		parentRoot != (types.Hash{}) && rc.Root() == parentRoot && bc.qmdbRootComputer != nil &&
+		rc.AdoptOwnAppends(bc.qmdbRootComputer.NextSlot(), bc.qmdbRootComputer.FlushedThrough()) {
+		log.Debug("miner speculative tree adopted its own appends", "root", parentRoot.Hex()[:12], "slot", rc.NextSlot())
+		return rc, nil
+	}
 	if undo := rc.TakeUndo(); undo != nil {
 		// Previous build's candidate ops are still on the speculative tree;
 		// peel them so the index matches the last loaded layout again. A

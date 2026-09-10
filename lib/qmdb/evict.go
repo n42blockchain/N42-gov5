@@ -91,6 +91,19 @@ func (t *Tree) EvictThrough(through uint64) {
 // grows.
 func (t *Tree) ResidentEntries() int { return len(t.entries) }
 
+// AdoptFlushed marks this tree's own appends below `through` as persisted by
+// ANOTHER tree that flushed the identical entries at the identical slots (the
+// proposer's isolated build tree, after the live tree wrote the block it
+// built). The dead-row bookkeeping is dropped -- the flushing tree issued
+// those deletes -- and the entries and twig leaves are evicted exactly as
+// EvictThrough/EvictTwigsThrough do after a flush of our own.
+func (t *Tree) AdoptFlushed(through uint64) {
+	t.deadFlushed = t.deadFlushed[:0]
+	t.stagedDead = t.stagedDead[:0]
+	t.EvictThrough(through)
+	t.EvictTwigsThrough(through)
+}
+
 // EntriesBase exposes the absolute slot of the window start (slots below it are
 // cold). For tests/diagnostics.
 func (t *Tree) EntriesBase() uint64 { return t.entriesBase }

@@ -1138,7 +1138,16 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// discarded with the block. Without it, IntermediateRoot falls back to an
 	// empty MPT root and the produced block can never become canonical.
 	if bcForRoot, ok := w.chain.(*internal.BlockChain); ok {
-		rc, rcErr := bcForRoot.NewMinerRootComputer(tx)
+		// The parent's state root lets the miner tree recognise that the block
+		// it built last IS this build's parent (NewMinerRootComputer's
+		// own-block fast path).
+		parentRoot := types.Hash{}
+		if n := current.header.Number.Uint64(); n > 0 {
+			if ph := rawdb.ReadHeader(tx, current.header.ParentHash, n-1); ph != nil {
+				parentRoot = ph.Root
+			}
+		}
+		rc, rcErr := bcForRoot.NewMinerRootComputer(tx, parentRoot)
 		if rcErr != nil {
 			// A block sealed on the fallback (live or empty) root can never
 			// become canonical; abandon the build instead of proposing it.

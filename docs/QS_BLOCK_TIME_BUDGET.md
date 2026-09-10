@@ -3237,6 +3237,29 @@ from 20-22 blocks to 22-24 (59-65k). Falsified if assemble stays >450 ms
 wrong) or if the view period does not follow assemble down (then the
 leader chain is not the pole after all and section 7 is wrong).
 
+## 6am. Round 35zf: the miner tree keeps its own appends -- registered before the round ran (2026-09-09)
+
+35ze's configuration plus `N42_MINER_ADOPT_APPENDS=1` (n42-r38). Track 3a of
+QS_REPLAN section 8: when the block the isolated miner tree built is the
+parent of the next build (parent header root == the tree's root, the live
+tree's cursor == the tree's cursor, no branch switch queued),
+`NewMinerRootComputer` keeps the tree as it is -- drops the undo, trusts the
+index to the cursor, evicts what the live tree flushed -- instead of peeling
+its appends and re-reading the same entries from MDBX. Unit test:
+`TestQMDBMinerTreeAdoptsOwnAppends` (adopted tree == fresh load, block
+after block; a build the live tree did not write is refused).
+
+**Prediction 46.** Leader build 1270 -> ~800 ms: `reload` 145-234 -> <10 ms
+on every build inside a tenure (the first build of a tenure still reloads);
+`persistWait` unchanged this round (the build still waits for the parent's
+write before it can look at the header). With 35ze's assemble at ~300,
+the leader's chain 2.15 -> ~1.7 s and the view approaches the follower's
+~1.6 s: B windows 22-24 -> 25-27 blocks (68-73k). Falsified if `reload`
+stays >100 ms (adoption not taken: the log line "adopted its own appends"
+absent -- then the precondition is wrong, most likely the cursor
+comparison) or if roots diverge (BAD BLOCK: the two trees did not hold the
+same layout, and the abort proves the adoption unsafe -- revert the flag).
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across

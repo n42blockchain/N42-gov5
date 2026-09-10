@@ -594,6 +594,48 @@ func (r *QMDBRootComputer) SetIndexTx(tx kv.RwTx) {
 // the entry records AND the sealed twig leaf arrays from RAM — bounding the
 // resident footprint to the unflushed window plus the active/touched twigs. Must
 // be called after FlushTo and after SetCold.
+// NextSlot is the tree's append cursor (the slot the next entry takes).
+func (r *QMDBRootComputer) NextSlot() uint64 {
+	r.readers.RLock()
+	defer r.readers.RUnlock()
+	return r.t.NextSlot()
+}
+
+// FlushedThrough is the slot below which this computer's entries are on disk
+// (advanced by CommitFlushed).
+func (r *QMDBRootComputer) FlushedThrough() uint64 {
+	r.readers.RLock()
+	defer r.readers.RUnlock()
+	return r.flushedThrough
+}
+
+// AdoptOwnAppends keeps the appends of this computer's last ComputeRoot as
+// the store's state instead of peeling and re-reading them. The proposer's
+// isolated tree builds a block, the live tree replays the same dirty set
+// (writeBlockWithState asserts the roots agree, and a QMDB root is
+// history-dependent, so the entries sit at the same slots) and flushes it;
+// until now the next build then peeled the isolated tree's appends and read
+// the identical entries back from MDBX (round 35zd: persistWait 270 +
+// reload 180 ms of the leader's 1,270 ms build at 163k). The caller proves
+// the trees agree by passing the live tree's cursor: adoption happens only
+// if this tree's cursor equals it and there is an undo to drop; otherwise
+// nothing changes and the caller takes the peel-and-reload path. The dead-row
+// list and the resident entries are released as after a flush of our own.
+func (r *QMDBRootComputer) AdoptOwnAppends(liveNext, liveFlushed uint64) bool {
+	r.readers.Lock()
+	defer r.readers.Unlock()
+	if r.lastUndo == nil || r.t.NextSlot() != liveNext || liveFlushed > liveNext {
+		return false
+	}
+	r.lastUndo = nil
+	r.indexTrusted = liveNext
+	r.flushedThrough = liveFlushed
+	r.stagedValid = false
+	r.indexDelta = r.t.LiveBits() - r.t.LiveCount()
+	r.t.AdoptFlushed(liveFlushed)
+	return true
+}
+
 func (r *QMDBRootComputer) EvictFlushed() {
 	r.readers.Lock()
 	defer r.readers.Unlock()
