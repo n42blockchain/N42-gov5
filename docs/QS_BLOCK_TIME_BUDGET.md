@@ -3209,6 +3209,34 @@ serial in recover itself (the sender cache lock, allocation) -- then the
 next lever is the pool-side pre-recovery (track 2). If B drops, the
 followers were CPU-bound in their own right and 32 workers were needed.
 
+**Round 35zd result (2026-09-09 19:48-21:50).** Sixteen workers a node
+changed nothing the prediction named, because it could not: the recovery
+fan-out is sized from GOMAXPROCS (37 -> 28 workers), not from
+N42_PARALLEL_WORKERS, so recover stayed at 465-466 ms in every leg, and the
+Block-STM executor at 16 workers ran exec in 286-293 ms against 297 at 32.
+A1 32.4k / 30.9k; B1 59.8k / 54.3k (22 and 20 blocks a window: the same
+quantisation as 35za's 54.3k / 57.1k). Follower 1448-1518 ms, leader build
+1270 / assemble 544 / write 290 / push 159 -- 35za to the millisecond. A
+codex session's `cargo test` in rBTC (~17 cores, 20:26-20:37) overlapped
+A1 win2 and the first minutes of B1. Prediction 44 falsified on its
+mis-specified variable; the real reading is that neither the worker count
+nor the memory budget moves the follower, and the leader's chain is what
+sets the view (QS_REPLAN section 7).
+
+## 6al. Round 35ze: the leader stops marshalling the block for nobody -- registered before the round ran (2026-09-09)
+
+35za's configuration on n42-r37: `api.MachineVerify` no longer subscribes
+to MinedEntireEvent when `validVerifiers` is empty (it always is: nothing
+populates it), so `HasSubscribers` is false and the miner skips building
+the Entire event -- the 252 ms "other" of the leader's assemble at 163k.
+
+**Prediction 45.** Leader assemble 544-608 -> ~300 ms (finalize/root
+~280 + copy ~22); the leader's per-view chain 2.4 -> ~2.15 s; B windows move
+from 20-22 blocks to 22-24 (59-65k). Falsified if assemble stays >450 ms
+(then the 252 ms is not the Entire event and the timers around it are
+wrong) or if the view period does not follow assemble down (then the
+leader chain is not the pole after all and section 7 is wrong).
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
