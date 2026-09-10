@@ -3237,6 +3237,19 @@ from 20-22 blocks to 22-24 (59-65k). Falsified if assemble stays >450 ms
 wrong) or if the view period does not follow assemble down (then the
 leader chain is not the pole after all and section 7 is wrong).
 
+**Round 35ze result (2026-09-09 22:46 - 09-10 00:38).** Prediction 45
+holds: the leader's assemble fell from 544-608 to 266-279 ms (breakdown
+"other" 252 -> 0; finalize 231-279 is what is left), leader build unchanged
+(1286-1348: align 550, fill 544-592, persistWait 269-289, reload 179-193),
+follower unchanged (1417-1577), and the view followed the leader's chain
+down: B windows 22-24 blocks (predicted 22-24). A 36.2k / 35.4k and
+34.7k / 33.9k (35za 33-35k, a new A high); B 59.8k / 61.4k and 65.2k /
+62.5k -- four-window mean 62.2k against 35za's 55.0k (+13%) and 35zd's
+59.1k. Warm-up read 65.2k / 62.5k. B1 lost 8 views (four nodes' view of
+two) to the tenure-handoff gate described under prediction 47; B2 three.
+QS_REPLAN section 7 stands: the follower did not move and the throughput
+did.
+
 ## 6am. Round 35zf: the miner tree keeps its own appends -- registered before the round ran (2026-09-09)
 
 35ze's configuration plus `N42_MINER_ADOPT_APPENDS=1` (n42-r38). Track 3a of
