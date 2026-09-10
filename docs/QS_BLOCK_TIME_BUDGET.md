@@ -3402,6 +3402,31 @@ arrives -- 4M slots against ~450k transactions in flight says it should
 not be), or if exec/finalize grow by what recover lost (then the recovery
 CPU merely moved).
 
+**Round 35zi (2026-09-10 18:11-18:38, void).** Two faults, neither the
+prediction's: the hint feed decoded with the native codec and rejected
+every transaction the generators submit (Ethereum RLP; fixed 704475ee), and
+the fleet's MDBX maps hit 256 GiB (the datadirs were then reseeded from
+qs-era-linux: 16 GiB a node, seed head 13,652,362).
+
+**Round 35zj, warm-up reading (19:42-).** The feed works: each node
+recovers 100-160k senders a second, rejected 0, queue empty, txflood sent
+== submitted with no drops. Follower recover 460 -> 368 ms, import 1440 ->
+1395; not the <50 ms predicted. Hashes agree across codecs
+(TestHashAgreesAcrossCodecs), so the entries are findable; the remaining
+cost is the verification's pool lookup, which runs BEFORE the cache: 163k
+`GetTx` read-locks against a pool writer admitting 60k tx/s. n42-r44 asks
+the cache first (`transaction.CachedSender`).
+
+## 6aq. Round 35zk: the verification asks the cache before the pool -- registered before the round ran (2026-09-10)
+
+35zj's configuration on n42-r44. **Prediction 51.** Follower `recover` 368
+-> <60 ms and `hintHits` 163,000 (the cache hit counts there now);
+import ~1.4 -> ~1.1 s; B windows 23-24 -> 26-28 blocks. Falsified if
+recover stays >200 ms with hintHits near 163k (then the time is not in the
+lookup but in the check loop's own overhead -- hashing or the fan-out) or
+if hintHits is low with the feed complete (then cache eviction: 4M slots
+against the in-flight set).
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across

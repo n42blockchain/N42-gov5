@@ -335,6 +335,18 @@ func verifyBlockSendersHinted(signer transaction.Signer, txs []*transaction.Tran
 			report(i, fmt.Errorf("tx %d declares sender %s but carries no signature values (V/R/S)", i, declared.Hex()))
 			return
 		}
+		// The sender cache first: with a hint feed (ingest hint-only mode)
+		// filling it ahead of the block, this is an atomic load per
+		// transaction, whereas the pool lookup below takes the pool's read
+		// lock 163,000 times against a writer admitting 60k tx/s -- round
+		// 35zj: the feed was complete and recover still read 368 ms.
+		if cached, ok := transaction.CachedSender(signer, tx); ok {
+			hintHits.Add(1)
+			if cached != *declared {
+				report(i, fmt.Errorf("tx %d declares sender %s but signature recovers %s", i, declared.Hex(), cached.Hex()))
+			}
+			return
+		}
 		if hints != nil {
 			if ptx := hints.GetTx(tx.Hash()); ptx != nil {
 				if pooled, err := transaction.Sender(signer, ptx); err == nil {
