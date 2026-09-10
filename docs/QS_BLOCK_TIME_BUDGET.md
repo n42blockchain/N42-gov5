@@ -3286,6 +3286,22 @@ handoffs instead; each recovered view is worth ~2.5 s of the leg. Falsified
 if timeouts persist with a different gate outcome (then the handoff cost is
 elsewhere).
 
+**Round 35zf result (2026-09-10 01:11-03:04).** Prediction 46 holds:
+leader build 1286-1348 -> 1063-1077 ms, `reload` median 4 ms (mean 50: the
+first build of a tenure still reloads, p90 225), `persistWait` 269-289 ->
+225-229, no BAD BLOCK in five legs -- the two trees do hold the same layout.
+Prediction 47 holds: view timeouts inside the B windows 8 -> 0 (the four in
+B2 were at the leg's restart, before any gate ran), "deferred production
+resumed" 4-7 a leg. A **39.2k / 37.7k** and 37.7k / 36.6k (35ze 36.2 /
+35.4); B 62.5k / 59.8k and 59.8k / 59.8k, four-window mean 60.5k (35ze
+62.2k, 35zd 59.1k): the leader's 500 ms did not become blocks, because the
+view is now the follower's chain -- import 1.4-1.6 s, then
+commit-to-canonical ~200 ms inline in the HotStuff loop before `view
+changed`, then the vote (QS_REPLAN section 7's crossover reached). The
+leader levers are spent until the follower moves; round 35zg starts on the
+follower side (prediction 48). N42_MINER_ADOPT_APPENDS stays the runners'
+setting; the default flips once 35zg confirms nothing regressed with it on.
+
 ## 6an. Round 35zg: no per-commit fsync -- registered before the round ran (2026-09-10)
 
 35zf's configuration plus `N42_MDBX_SYNC=safe-nosync` (the opt-out
