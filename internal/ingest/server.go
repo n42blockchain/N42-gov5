@@ -64,8 +64,55 @@ type Server struct {
 	rejected atomic.Uint64
 	batches  atomic.Uint64
 
+	// Hint-only mode: decode, recover the sender into the process-wide
+	// sender cache, drop the transaction. See EnableHintOnly.
+	hintOnly    bool
+	hintSigner  transaction.Signer
+	hintWorkers int
+	hintQueue   chan *transaction.Transaction
+	hinted      atomic.Uint64
+
 	ctx    context.Context
 	cancel context.CancelFunc
+}
+
+// EnableHintOnly makes the endpoint a sender pre-recovery feed. Nothing
+// reaches the pool: each transaction is decoded, its sender is recovered
+// from the signature across `workers` goroutines (which memoises it in the
+// process-wide sender cache keyed by transaction hash), and the object is
+// dropped. The client's 20-byte sender field is ignored -- the cache may
+// only ever hold signature-recovered results, because the import's sender
+// verification trusts it. A follower fed the transactions the leader is
+// filling its blocks from then imports with every recovery a cache hit
+// (round 35zh: recover was 460 ms of a 1.44 s import at 163k; the same work
+// done here, ahead of the block, is off the critical path). Must be called
+// before Start.
+func (s *Server) EnableHintOnly(signer transaction.Signer, workers int) {
+	if workers < 1 {
+		workers = 1
+	}
+	s.hintOnly = true
+	s.hintSigner = signer
+	s.hintWorkers = workers
+	s.hintQueue = make(chan *transaction.Transaction, 65536)
+}
+
+// Hinted reports how many senders the hint-only mode has recovered.
+func (s *Server) Hinted() uint64 { return s.hinted.Load() }
+
+func (s *Server) hintWorker() {
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case tx := <-s.hintQueue:
+			if _, err := transaction.Sender(s.hintSigner, tx); err != nil {
+				s.rejected.Add(1)
+				continue
+			}
+			s.hinted.Add(1)
+		}
+	}
 }
 
 // NewServer creates a new ingest server. It does not start listening until
@@ -93,8 +140,13 @@ func (s *Server) Start() error {
 		return fmt.Errorf("ingest: listen %s: %w", s.addr, err)
 	}
 	s.listener = ln
-	log.Info("Ingest server started", "addr", ln.Addr().String())
+	log.Info("Ingest server started", "addr", ln.Addr().String(), "hintOnly", s.hintOnly, "hintWorkers", s.hintWorkers)
 
+	if s.hintOnly {
+		for i := 0; i < s.hintWorkers; i++ {
+			go s.hintWorker()
+		}
+	}
 	go s.acceptLoop(ln)
 	return nil
 }
@@ -208,6 +260,9 @@ func (s *Server) readBatch(r io.Reader) (uint32, error) {
 	}
 
 	// Check backpressure before processing the batch.
+	if s.hintOnly {
+		return s.readHintBatch(r, numTxs)
+	}
 	pending, _, _, _ := s.pool.Stats()
 	if pending > s.hardCap {
 		// Drain the batch from the connection to keep framing consistent,
@@ -278,6 +333,46 @@ func (s *Server) readBatch(r io.Reader) (uint32, error) {
 
 // drainBatch reads and discards a full batch from the reader to keep the
 // wire protocol framing consistent after a backpressure rejection.
+// readHintBatch is readBatch for the hint-only mode: same wire format, the
+// sender field is read and ignored, and the decoded transaction goes to the
+// recovery workers instead of the pool. The reply counts the transactions
+// queued.
+func (s *Server) readHintBatch(r io.Reader, numTxs uint32) (uint32, error) {
+	var queued uint32
+	var senderBuf [20]byte
+	for i := uint32(0); i < numTxs; i++ {
+		var lenBuf [2]byte
+		if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
+			return queued, err
+		}
+		txLen := binary.LittleEndian.Uint16(lenBuf[:])
+		if int(txLen) > maxTxSize {
+			return queued, fmt.Errorf("ingest: tx size %d exceeds max %d", txLen, maxTxSize)
+		}
+		// A fresh buffer per transaction: Unmarshal may keep references.
+		txBuf := make([]byte, txLen)
+		if _, err := io.ReadFull(r, txBuf); err != nil {
+			return queued, err
+		}
+		if _, err := io.ReadFull(r, senderBuf[:]); err != nil {
+			return queued, err
+		}
+		tx := new(transaction.Transaction)
+		if err := tx.Unmarshal(txBuf); err != nil {
+			s.rejected.Add(1)
+			continue
+		}
+		select {
+		case s.hintQueue <- tx:
+			queued++
+		case <-s.ctx.Done():
+			return queued, net.ErrClosed
+		}
+	}
+	s.batches.Add(1)
+	return queued, nil
+}
+
 func (s *Server) drainBatch(r io.Reader, numTxs uint32) error {
 	for i := uint32(0); i < numTxs; i++ {
 		// Read tx_len.

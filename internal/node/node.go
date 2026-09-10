@@ -59,6 +59,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	prometheus "github.com/n42blockchain/N42/common/metrics"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/conf"
@@ -2304,10 +2305,21 @@ func (n *Node) startIngestServer() {
 		n.config.IngestCfg.SoftTarget,
 		n.config.IngestCfg.HardCap,
 	)
+	if n.config.IngestCfg.HintOnly {
+		// Recovery across three quarters of this node's CPU budget, as the
+		// import's own sender recovery sizes itself; the endpoint is fed
+		// ahead of the block, so it competes with nothing on the critical
+		// path except itself.
+		workers := runtime.GOMAXPROCS(0)
+		if workers > 2 {
+			workers -= workers / 4
+		}
+		n.ingestServer.EnableHintOnly(transaction.LatestSignerForChainID(n.blockChain.Config().ChainID), workers)
+	}
 	if err := n.ingestServer.Start(); err != nil {
 		log.Error("Ingest server failed to start", "err", err)
 	} else {
-		log.Info("Ingest server enabled", "addr", n.config.IngestCfg.Addr)
+		log.Info("Ingest server enabled", "addr", n.config.IngestCfg.Addr, "hintOnly", n.config.IngestCfg.HintOnly)
 	}
 }
 

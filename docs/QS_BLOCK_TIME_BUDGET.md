@@ -3381,6 +3381,27 @@ restart-revert gap and none occurred). A **40.0k / 37.7k** and 37.0k /
 itself (1.44 s: recover 460, exec 290, finalize 200, write 260, body 91) --
 QS_REPLAN section 9, track 2 next.
 
+## 6ap. Round 35zi: senders recovered ahead of the block -- registered before the round ran (2026-09-10)
+
+35zh's configuration on n42-r42 with `QS_INGEST_HINT=1`: every node runs
+the ingest endpoint in hint-only mode (`--ingest --ingest.hint-only`:
+decode, recover the sender from the signature into the process-wide sender
+cache across 28 workers, admit nothing, ignore the client's sender field)
+and txflood-r38 streams every submitted batch to all seven endpoints
+(`-hint-peers`) off its submit path. Track 2 of QS_REPLAN section 9.
+
+**Prediction 50.** Follower `recover` 460 -> <50 ms (the import's
+verification hits the cache: `RecoverSenderFromSig` consults it first),
+`hintHits` stays 0 (the hint source is the pool copy; this path fills the
+cache, not the pool), import 1.44 -> ~1.0 s, view ~2.5 -> ~2.1 s, B windows
+23-24 -> 27-28 blocks (73-76k). The hint work is ~11 cores fleet-wide at
+60k tx/s x 7 endpoints. Falsified if recover stays >300 ms with txflood
+reporting sent ~= submitted and dropped ~= 0 (then the import does not
+consult the cache on this path, or the cache is evicted before the block
+arrives -- 4M slots against ~450k transactions in flight says it should
+not be), or if exec/finalize grow by what recover lost (then the recovery
+CPU merely moved).
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across

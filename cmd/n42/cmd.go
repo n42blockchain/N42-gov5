@@ -750,6 +750,33 @@ var (
 		DevTxGenFlag,
 		DevTxGenMaxFlag,
 		DevTxGenKeyFlag,
+		IngestFlag,
+		IngestAddrFlag,
+		IngestHintOnlyFlag,
+	}
+)
+
+var (
+	IngestFlag = &cli.BoolFlag{
+		Name:        "ingest",
+		Usage:       "启用二进制 TCP 交易注入端点 (基准测试用)",
+		Category:    "DEVELOPMENT",
+		Value:       false,
+		Destination: &DefaultConfig.IngestCfg.Enabled,
+	}
+	IngestAddrFlag = &cli.StringFlag{
+		Name:        "ingest.addr",
+		Usage:       "注入端点监听地址",
+		Category:    "DEVELOPMENT",
+		Value:       ":9100",
+		Destination: &DefaultConfig.IngestCfg.Addr,
+	}
+	IngestHintOnlyFlag = &cli.BoolFlag{
+		Name:        "ingest.hint-only",
+		Usage:       "注入端点只预恢复 sender 进缓存, 不入池 (follower 预热)",
+		Category:    "DEVELOPMENT",
+		Value:       false,
+		Destination: &DefaultConfig.IngestCfg.HintOnly,
 	}
 )
 

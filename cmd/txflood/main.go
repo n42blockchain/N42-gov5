@@ -11,11 +11,13 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"runtime/debug"
@@ -282,6 +284,95 @@ func deriveRecipient(i int) types.Address {
 
 var nonceFailures int64
 
+// hintStreamer copies every submitted batch to the fleet's hint-only ingest
+// endpoints (internal/ingest, N42_... --ingest.hint-only): one goroutine and
+// one TCP connection per peer, a bounded queue in between, and a batch that
+// finds the queue full is dropped and counted rather than slowing the submit
+// path. The wire format is the ingest server's: u32 count, then per
+// transaction u16 length, the raw bytes and a 20-byte sender the hint mode
+// ignores; the server answers each batch with a u32 the streamer must read.
+type hintStreamer struct {
+	peers   []string
+	queues  []chan [][]byte
+	dropped atomic.Int64
+	sent    atomic.Int64
+	errs    atomic.Int64
+}
+
+func newHintStreamer(peers []string) *hintStreamer {
+	h := &hintStreamer{peers: peers}
+	for range peers {
+		h.queues = append(h.queues, make(chan [][]byte, 256))
+	}
+	for i := range peers {
+		go h.run(i)
+	}
+	return h
+}
+
+func (h *hintStreamer) offer(raws [][]byte) {
+	for _, q := range h.queues {
+		select {
+		case q <- raws:
+		default:
+			h.dropped.Add(int64(len(raws)))
+		}
+	}
+}
+
+func (h *hintStreamer) run(i int) {
+	var conn net.Conn
+	var zero [20]byte
+	buf := make([]byte, 0, 1<<20)
+	for raws := range h.queues[i] {
+		if conn == nil {
+			c, err := net.DialTimeout("tcp", h.peers[i], 2*time.Second)
+			if err != nil {
+				h.errs.Add(1)
+				h.dropped.Add(int64(len(raws)))
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			conn = c
+		}
+		buf = buf[:0]
+		var n [4]byte
+		binary.LittleEndian.PutUint32(n[:], uint32(len(raws)))
+		buf = append(buf, n[:]...)
+		for _, raw := range raws {
+			var l [2]byte
+			binary.LittleEndian.PutUint16(l[:], uint16(len(raw)))
+			buf = append(buf, l[:]...)
+			buf = append(buf, raw...)
+			buf = append(buf, zero[:]...)
+		}
+		if _, err := conn.Write(buf); err != nil {
+			h.errs.Add(1)
+			h.dropped.Add(int64(len(raws)))
+			conn.Close()
+			conn = nil
+			continue
+		}
+		var resp [4]byte
+		if _, err := io.ReadFull(conn, resp[:]); err != nil {
+			h.errs.Add(1)
+			conn.Close()
+			conn = nil
+			continue
+		}
+		h.sent.Add(int64(len(raws)))
+	}
+}
+
+// rawBytes decodes the 0x-prefixed hex a submit batch carries back to bytes.
+func rawBytes(hexStr string) []byte {
+	b, err := hex.DecodeString(strings.TrimPrefix(hexStr, "0x"))
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
 func main() {
 	debug.SetMaxThreads(200000)
 	key := flag.String("key", "922c1ad85fb8691315b1ae54b39f7111ae3cfb2c36b038740af36844e9673eee", "faucet privkey hex")
@@ -314,6 +405,7 @@ func main() {
 	recipients := flag.Int("recipients", 0, "spread transfers over N derived recipients (0 = the single 0x..dEaD sink, the historical behaviour)")
 	skipFunding := flag.Bool("skip-funding", false, "assume the derived senders are already funded (re-run after a funding round that mined but aborted)")
 	fundTimeout := flag.Int("fund-timeout", 300, "seconds to wait for the funding batch to mine before aborting (35zc warm-up: the eighth generator's batch took >80 s behind seven flooding generators)")
+	hintPeers := flag.String("hint-peers", "", "comma-separated host:port ingest endpoints (hint-only mode) that receive every submitted transaction as well, so followers recover senders ahead of the block")
 	rpcBatch := flag.Int("rpcbatch", 0, "submit N txs per eth_batchRawTransaction call (0 = one eth_sendRawTransaction per tx; max 200)")
 	flag.Parse()
 	if *senders < 0 || *perTx < 0 {
@@ -328,6 +420,11 @@ func main() {
 	}
 	from := crypto.PubkeyToAddress(priv.PublicKey)
 	urls := strings.Split(*rpcs, ",")
+	var hints *hintStreamer
+	if *hintPeers != "" {
+		hints = newHintStreamer(strings.Split(*hintPeers, ","))
+		fmt.Printf("hint peers: %d ingest endpoints receive every batch\n", len(hints.peers))
+	}
 	signer := transaction.NewLondonSigner(big.NewInt(*chainID))
 	dead := types.HexToAddress("0x000000000000000000000000000000000000dEaD")
 	sink := "single 0x..dEaD sink"
@@ -795,6 +892,15 @@ func main() {
 						for k := range batch {
 							batch[k] = rawAt(lo + int64(k))
 						}
+						if hints != nil {
+							raws := make([][]byte, 0, len(batch))
+							for _, hx := range batch {
+								if b := rawBytes(hx); b != nil {
+									raws = append(raws, b)
+								}
+							}
+							hints.offer(raws)
+						}
 						if _, err := rpcCall(u, "eth_batchRawTransaction", []interface{}{batch}); err != nil {
 							if n := atomic.AddInt64(&failed, hi-lo); n <= int64(5*bn) || n%1000000 < bn {
 								fmt.Printf("  batch submit err (i=%d n=%d %s): %v\n", lo, hi-lo, u, err)
@@ -810,6 +916,9 @@ func main() {
 		wg.Wait()
 		el := time.Since(tf)
 		fmt.Printf("DONE submitted=%d failed=%d in %s (%.0f tx/s offered)\n", submitted, failed, el.Round(time.Millisecond), float64(totalTxs)/el.Seconds())
+		if hints != nil {
+			fmt.Printf("hint peers: sent=%d dropped=%d errors=%d\n", hints.sent.Load(), hints.dropped.Load(), hints.errs.Load())
+		}
 		return
 	}
 

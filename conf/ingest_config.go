@@ -16,6 +16,13 @@ type IngestCfg struct {
 	Addr       string `json:"addr" yaml:"addr"`
 	SoftTarget int    `json:"soft_target" yaml:"soft_target"`
 	HardCap    int    `json:"hard_cap" yaml:"hard_cap"`
+	// HintOnly turns the endpoint into a sender pre-recovery feed: each
+	// transaction is decoded and its sender recovered from the signature
+	// into the process-wide sender cache, nothing is admitted to the pool,
+	// and the client's sender field is ignored. A follower fed the same
+	// transactions the leader is filling from then imports the block with
+	// every recovery a cache hit.
+	HintOnly bool `json:"hint_only" yaml:"hint_only"`
 }
 
 // DefaultIngestCfg returns the default ingest configuration.
