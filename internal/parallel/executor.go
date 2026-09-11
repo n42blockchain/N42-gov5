@@ -191,13 +191,14 @@ func arenaFor(numTxs int) *txArena {
 		clear(a.incarnation)
 		clear(a.results)
 	}
+	// Only fill empty slots. A kept set is not touched here: executeSingle
+	// clears it before every execution, its TxIndex is its slot, and
+	// walking 163k scattered sets on a cold cache cost ~55 ms a block
+	// (round 35zzf's profile: NewExecutor 64 ms with the arena kept).
 	for i, rw := range a.rwSets {
 		if rw == nil {
 			a.rwSets[i] = NewReadWriteSet(i)
-			continue
 		}
-		rw.Clear()
-		rw.TxIndex = i
 	}
 	return a
 }
