@@ -75,8 +75,10 @@ Start-Process $EX -ArgumentList '--ancient',$A,'--datadir','d:/N42-eth1177' `
 **Gate**: `freezer-heads` shows n42-eth1 {receipts,senders} and N42-eth1177
 {acctcs,storcs,witness,senders} all = geth Items; `ethel-last-block` = geth head.
 The replay verifies gasUsed per-block inline, so a clean run to tip IS the exec gate.
-(`witness-block-trace` spot-check is currently regressed — fails on known-good
-frozen blocks too; a tool bug, not a data problem.)
+(`witness-block-trace` works again as of 2026-09-10 — three sampled blocks all
+reported `diff=+0`. Pass `-hb-dir d:/n42-eth1/chain/freezer -witness-dir
+d:/N42-eth1177/chain/freezer -senders-dir d:/n42-eth1/chain/freezer -datadir
+d:/N42-eth1177`; the earlier "regressed" note was a wiring problem.)
 
 ---
 
