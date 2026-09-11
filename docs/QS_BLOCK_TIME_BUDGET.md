@@ -3740,6 +3740,10 @@ lists -- a walk over all 600k remote transactions, a heapify and 120k
 single pops -- on every block although the base fee is flat on the gas
 target block after block. Prediction 55's block time cannot be read on
 half-empty blocks; the round is recorded for its TPS and this finding.
+Full round: A1 104 / 106 blocks (39.6k / 39.7k), B1 71 / 78 (67.8k /
+64.3k at 16-18% occupancy), B2 77 / 80 (68.4k / 66.9k), A2 110 / 108
+(41.9k / 41.1k); B mean 66.9k against 35zy's 68.3k -- the empty-block
+tax took what the shorter handover share gave. BAD BLOCK 0.
 
 35zz on n42-r59: SetBaseFee returns early on an unchanged fee, and the
 reorg line times the phase. In-tenure blocks and everything else as 35zz.
