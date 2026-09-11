@@ -4070,6 +4070,22 @@ leaf heap are, and the lever is the flat index or prefetching), or by
 any BAD BLOCK (a batched fold whose root diverges under undo recording,
 a revert, or eviction -- the watchdog aborts the round).
 
+**35zzi result (n42-r67, fresh dirs; 16:31-17:40).** No BAD BLOCK.
+Warmup 78.5k/70.6k (29/26 blocks -- the best first window so far), A1
+49.1k/45.7k (best A), B1 65.2k/48.9k, B2 54.3k/40.8k, A2 40.4k (the
+harness printed one window twice). Mechanism: follower finalizeMs 226 ->
+164 ms (warmup 168; P64 said ~110, threshold 170: held, narrowly -- the
+QMDB apply is 26-30 ms, the ~85 ms recipient fold and ~50 ms of the rest
+remain); B1 whole-leg import 1158 -> 1030 ms, chained seal -> seal 1919
+-> 1776, and the first flood minute of each B leg imported at ~800 ms
+with chained cycles of 1.5 s -- the fastest the fleet has run. The
+throughput claim (+5-7%) is falsified: the B windows fell 11-25%,
+because every B leg decays over its five flood minutes on the MDBX
+writer lock (6be: block writes waiting up to 2.4 s to begin behind the
+history fold). The batched root is kept -- its phase is exact and
+smaller -- and the decay is the next round's variable. Per-minute
+numbers: wr-logs/r35zzi-perminute.txt.
+
 ## 6bc. Round 35zzj: the arena free list keeps the largest arenas -- registered before the round ran (2026-09-11)
 
 35zzi's configuration on a fresh reseed, n42-r67 -> n42-r68. The one
