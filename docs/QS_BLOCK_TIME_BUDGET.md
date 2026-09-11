@@ -3417,6 +3417,19 @@ cost is the verification's pool lookup, which runs BEFORE the cache: 163k
 `GetTx` read-locks against a pool writer admitting 60k tx/s. n42-r44 asks
 the cache first (`transaction.CachedSender`).
 
+**Round 35zj result (2026-09-10 19:42-20:50).** The feed works
+(100-160k senders a second a node, rejected 0, queue empty, no drops);
+follower recover 460 -> 350 ms, exec 249, finalize 217, import 1440 ->
+1337 -- prediction 50's direction, a third of its size (the verification
+still went to the pool first; prediction 51). A **40.8k / 40.4k** and
+38.5k / 35.4k; B 70.6k / 65.2k and 70.6k / 67.0k -- four-window mean
+**68.4k** (35zh 63.7k, +7.4%; 35za 55.0k, +24%), warm-up 67.9k / 70.6k,
+windows 24-26 blocks. Confound to record: the fleet was reseeded before
+this round (16 GiB a node instead of 256; the whole datadir sits in the
+page cache), and the leader's build read 987 (align 424, persistWait 209,
+fill 508) against 35zh's 1063-1077 -- part of the gain is the smaller
+store, not the feed. No timeouts, no BAD BLOCK.
+
 ## 6aq. Round 35zk: the verification asks the cache before the pool -- registered before the round ran (2026-09-10)
 
 35zj's configuration on n42-r44. **Prediction 51.** Follower `recover` 368
