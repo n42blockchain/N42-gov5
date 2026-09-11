@@ -67,6 +67,8 @@ type Executor struct {
 	// Execution function provided by caller.
 	execFn TxExecuteFunc
 
+	arena *txArena // per-transaction arrays on loan from arenaPool
+
 	// workerSetup, when set, runs once per worker goroutine per wave and
 	// returns a per-worker context handed to every execFn call that worker
 	// makes, plus a teardown run when the worker exits. It exists so each
@@ -120,6 +122,55 @@ func (e *Executor) SetAffinity(key func(txIndex int) uint64) { e.affinity = key 
 
 // NewExecutor creates a Block-STM executor for numTxs transactions.
 // workers specifies the number of goroutines; 0 means runtime.NumCPU().
+// txArena holds the per-transaction arrays of an Executor so a block's worth
+// of them is reused by the next block instead of allocated again: at 163k
+// transactions the read/write sets alone are 163k allocations of three
+// objects each, ~60 ms of a follower's import setup (round 35zzb). Arenas
+// travel through arenaPool; Release hands one back once the caller has
+// consumed the results and the MVS.
+type txArena struct {
+	rwSets      []*ReadWriteSet
+	status      []TxStatus
+	incarnation []uint32
+	results     []TxResult
+}
+
+var arenaPool sync.Pool
+
+// arenaFor returns an arena sized for numTxs, reusing a pooled one when it
+// is large enough. Every per-transaction slot is reset.
+func arenaFor(numTxs int) *txArena {
+	var a *txArena
+	if v := arenaPool.Get(); v != nil {
+		a = v.(*txArena)
+	}
+	if a == nil || cap(a.rwSets) < numTxs {
+		a = &txArena{
+			rwSets:      make([]*ReadWriteSet, numTxs),
+			status:      make([]TxStatus, numTxs),
+			incarnation: make([]uint32, numTxs),
+			results:     make([]TxResult, numTxs),
+		}
+	} else {
+		a.rwSets = a.rwSets[:numTxs]
+		a.status = a.status[:numTxs]
+		a.incarnation = a.incarnation[:numTxs]
+		a.results = a.results[:numTxs]
+		clear(a.status)
+		clear(a.incarnation)
+		clear(a.results)
+	}
+	for i, rw := range a.rwSets {
+		if rw == nil {
+			a.rwSets[i] = NewReadWriteSet(i)
+			continue
+		}
+		rw.Clear()
+		rw.TxIndex = i
+	}
+	return a
+}
+
 func NewExecutor(numTxs int, workers int, execFn TxExecuteFunc) *Executor {
 	if workers <= 0 {
 		workers = runtime.NumCPU()
@@ -128,21 +179,30 @@ func NewExecutor(numTxs int, workers int, execFn TxExecuteFunc) *Executor {
 		workers = numTxs
 	}
 
-	rwSets := make([]*ReadWriteSet, numTxs)
-	for i := range rwSets {
-		rwSets[i] = NewReadWriteSet(i)
-	}
-
+	a := arenaFor(numTxs)
 	return &Executor{
 		mvs:         NewMVS(),
 		numTxs:      numTxs,
 		workers:     workers,
-		status:      make([]TxStatus, numTxs),
-		incarnation: make([]uint32, numTxs),
-		rwSets:      rwSets,
-		results:     make([]TxResult, numTxs),
+		status:      a.status,
+		incarnation: a.incarnation,
+		rwSets:      a.rwSets,
+		results:     a.results,
 		execFn:      execFn,
+		arena:       a,
 	}
+}
+
+// Release returns the executor's per-transaction arrays to the pool. Call it
+// once the results and the MVS are no longer read; the executor must not be
+// used afterwards.
+func (e *Executor) Release() {
+	if e.arena == nil {
+		return
+	}
+	a := e.arena
+	e.arena, e.rwSets, e.status, e.incarnation, e.results = nil, nil, nil, nil, nil
+	arenaPool.Put(a)
 }
 
 // Run executes all transactions using wave-based Block-STM.

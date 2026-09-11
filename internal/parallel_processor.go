@@ -241,6 +241,7 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 	blockContext := NewEVMBlockContext(concreteHeader, blockHashFunc, p.engine, chainConfig, nil)
 
 	// Per-tx result storage. Each goroutine writes to its own index (no race).
+	tBlockStart := time.Now()
 	txResults := make([]parallelTxResult, numTxs)
 
 	// Every worker owns its base reader. 3709ca6a proved the shared one was a
@@ -371,6 +372,7 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 	// lock is held once for the whole run (the workers' lookups skip it);
 	// nothing in the run takes the writer side -- the owner is this
 	// goroutine.
+	tExecutorMade := time.Now()
 	tRunStart := time.Now()
 	var unlockReaders func()
 	if useQMDB {
@@ -500,6 +502,7 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 	if err := applyMVSToIBS(executor.MVS(), numTxs, ibs); err != nil {
 		return nil, fmt.Errorf("ProcessParallel: failed to apply MVS state: %w", err)
 	}
+	executor.Release()
 	tApplied := time.Now()
 
 	// Credit the deferred fees once per recipient, in transaction order. A
@@ -546,7 +549,7 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 				"nonceLow", failNonceLow, "nonceHigh", failNonceHigh, "funds", failFunds, "feeCap", failFeeCap, "other", failOther, "sample", failSample)
 		}
 		log.Info("parallel block", "n", concreteHeader.Number.Uint64(), "lenient", lenient, "failed", failed, "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
-			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
+			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
 			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "finalizeMs", time.Since(tApplied).Milliseconds())
 	}
 
