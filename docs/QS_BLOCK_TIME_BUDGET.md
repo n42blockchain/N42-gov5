@@ -3551,6 +3551,42 @@ as a candidate. Two consequences:
 
 Fourth attempt: 35zr on n42-r51, offsets 1800M+, prediction 53 unchanged.
 
+**Round 35zr (04:37-04:39, aborted at the first chained block).** The
+header link held (n42-r50/r51 do their job: "chains on own unwritten
+block" fired once, no refusal, no link error). The chained build of
+13694448 -- an EMPTY block, two reward accounts, three tree slots -- was
+rejected by all six followers on the state root (proposer dac540ce,
+followers f5cea1e4). The leader's own write of the same block passed, so
+its live tree agreed with its miner tree: the divergence is not in the
+tree, it is in what the build READ. A build reads its base state through
+a plain reader on a store transaction, and the store does not hold the
+unwritten parent; the coinbase was credited on the balance from before
+the parent's reward. One-deep speculation never saw this because
+persistWait made the parent's write land before the build read anything.
+With 163k transfers a block the same stale read would hit every sender
+touched in consecutive blocks.
+
+Fix (n42-r52, PostState / PostStateReader in modules/state): in
+adopt-appends mode the worker snapshots each built block's dirty set
+right after the root is computed (accounts, written and wiped slots,
+deployed code -- the same account and storage rules as the root walk),
+keeps it beside the sealed block, and a chained build layers the
+snapshots of every unwritten own ancestor over its store reader, oldest
+innermost. The layers are gathered before the read transaction opens so
+a write landing in between cannot fall through both. When a snapshot is
+missing the build waits for the write as before (logged). Test
+TestPostStateReaderLayersTheSealedBlock.
+
+**Prediction 54 (replaces 53's mechanism claim, keeps its numbers).**
+Chained blocks are accepted: BAD BLOCK 0 over a full round with "chains
+on own unwritten block" on most in-tenure builds. The leader's
+QC-to-next-write-end p90 <1.0 s, view ~1.7 s, B windows 30-35 blocks.
+Falsified if any chained block is rejected on the state root (then the
+snapshot misses a class of effect -- read the address in the mismatch
+against the parent's receipts) or if the p90 stays >1.3 s with chaining
+in place (then the build itself is the floor and the fill is the next
+lever). Round 35zs, offsets 1840M+.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
