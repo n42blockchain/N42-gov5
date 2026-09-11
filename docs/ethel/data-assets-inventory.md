@@ -19,8 +19,8 @@
 
 | Path | Size | Head | State |
 |---|---|---|---|
-| `D:\geth` | 1,624 GB | ancient frozen **25,864,982** | stopped 2026-08-29 22:19; the week's target is frozen−1 |
-| `D:\reth2k` | 3,866 GB | synced 2026-08-30 07:47 | stopped; source for codes / snapshot / hashed-state |
+| `D:\geth` | ~1,630 GB | ancient frozen **25,943,311** | stopped 2026-09-09 20:23; the week's target is frozen−1 |
+| `D:\reth2k` | ~3,870 GB | synced 2026-09-10, head **25,943,310** | stopped; source for codes / snapshot / hashed-state. `r.bat`'s `--debug.tip` is two weeks stale — read `BlockBodyIndices` |
 
 ## 2. Derived freezers — geth-sourced, weekly
 
@@ -28,11 +28,11 @@
 
 | Table | Covers to | Updated | Notes |
 |---|---|---|---|
-| `headerc` | 25,864,981 | ✅ weekly (Step 1) | partial tail auto-rewinds |
-| `bodyc` | 25,864,981 | ✅ weekly (Step 1) | 356 cdat; `full` ships only the newest ~56 |
-| `receipts` | items 25,864,982 | ✅ weekly (Step 1) | |
-| `senders` | items 25,864,982 | ✅ weekly (Step 1) | **byte-identical duplicate of the N42-eth1177 copy** — 40.7 GB, see §7 |
-| `txindex` | 24,000,000 → extending | ⚠️ first weekly run 2026-08-30 | was last built 2026-04-13; now Step 2b |
+| `headerc` | 25,943,310 | ✅ weekly (Step 1) | partial tail auto-rewinds; **framed (F=256) from 2026-09-10** |
+| `bodyc` | 25,943,310 | ✅ weekly (Step 1) | 358 cdat; `full` ships only the newest 56; **framed (F=256) from 2026-09-10** |
+| `receipts` | items 25,943,311 | ✅ weekly (Step 1) | |
+| `senders` | items 25,943,311 | ✅ weekly (Step 1) | **byte-identical duplicate of the N42-eth1177 copy** — 40.7 GB, see §7 |
+| `txindex` | 25,943,310 (26 segments, 16.47 GB) | ✅ weekly (Step 2b) | archive tier, base 0, 3,727,424,025 tx |
 | `codes` | **25,252,184** | ❌ orphan since 2026-06-05 | see §7 — the live copy is in the publish root |
 | `storhist` | 26 segments, built 2026-06-06 | ❌ not in any weekly step | its `accthist` half lives in `D:\n42-release`; see §5 |
 
@@ -40,17 +40,19 @@
 
 | Table / marker | Covers to | Updated |
 |---|---|---|
-| `senders` / `acctcs` / `storcs` / `witness` | items 25,864,982 | ✅ weekly (Step 2) |
-| `ethel-last-block` | 25,864,981 | ✅ weekly (Step 2) |
+| `senders` / `acctcs` / `storcs` / `witness` | items 25,943,311 | ✅ weekly (Step 2) |
+| `ethel-last-block` | 25,943,310 | ✅ weekly (Step 2) |
 | `PlainState` + `Code` (MDBX) | tip | ✅ side effect of Step 2 |
 
 ## 3. Weekly artefacts — reth-sourced
 
 | Path | Size | Covers | Note |
 |---|---|---|---|
-| `D:\n42-snapshot-25765565` | 54 GB | 25,765,565 | 16 shards; regenerated weekly (~2 h) |
-| `D:\N42-hashed-25765565` | 156 GB | 25,765,565 | vtrie root verified against expect |
-| `n42-codes-<tip>` | ~6.2 GB | 25,765,565 | **the 25765565 directory was deleted into the Recycle Bin**; its content survives as hard links inside the publish root |
+| `D:\n42-snapshot-25943310` | 55 GB | 25,943,310 | 16 shards; regenerated weekly (~2 h). Holds both `.val` and `.val.zst`; manifests publish the `.zst`, the E: test dirs use the raw `.val` |
+| `D:\N42-hashed-25943310` | 160 GB | 25,943,310 | vtrie root verified against expect |
+| `D:\n42-codes-25943310` | 6.8 GB | 25,943,310 | 2,750,326 codes, content-addressed |
+| `D:\n42-txindex-window-25943310` | 4.5 GB | 25,943,310 | window tier, base 23,000,000, 3 segments; extended from the prior week's copy |
+| prior generation (`*-25864981`) | ~225 GB | 25,864,981 | reclaimable once this week's publish is seeded |
 
 These are versioned per tip. The previous generation stays until the publish
 swap; nothing prunes them automatically.
@@ -59,17 +61,27 @@ swap; nothing prunes them automatically.
 
 | Path | Size | Note |
 |---|---|---|
-| `D:\n42-publish-25765565` | 756 files / 1,134 GB **logical** | hard-link assembly — near-zero extra bytes. **Mutated by the next weekly run**; see the runbook §6b "publish root is NOT an immutable snapshot" |
+| `D:\n42-publish-25943310` | 599 files / 848 GB **logical** | root A — minimal + archive (archive-tier txindex). Active tails COPIED (6.06 GB), everything else hard-linked, so it no longer mutates under its manifests |
+| `D:\n42-publish-25943310-full` | 526 files / 172 GB **logical** | root B — full (window-tier txindex). Active tails copied: 4.58 GB |
+| `D:\n42-publish-25765565` | 756 files / 1,134 GB **logical** | the 2026-08-16 assembly, `snapshot/` since reclaimed; its manifests no longer verify (pre-tail-isolation) |
 | `D:\n42-release` | 16 GB | the 2026-06-06 release: holds `accthist` + `anchorc` + four manifests + `minimal.torrent` |
 
-Published manifest contents as actually cut on 2026-08-16 (read from the JSON,
+**Two roots, not one**: full and archive write different `txindex.*` content to
+the same in-root path, and the selector matches on that path (runbook §3b
+trap 3).
+
+Published manifest contents as actually cut on 2026-09-10 (read from the JSON,
 not from the spec):
 
-| mode | files | size | sections present |
-|---|---|---|---|
-| archive | 476 | 830.2 GB | bodyc 360, witness 97, txindex 10, codes 5, headerc 4 — **anchors 0** |
-| full | 173 | 165.5 GB | bodyc 57, snapshot 97, txindex 10, codes 5, headerc 4 — txindex is FULL history, not the one-year window |
-| minimal | 97 | 24.6 GB | snapshot only — **headerc and codes were missing** (selector fixed 2026-08-30) |
+| mode | files | size | manifestID | sections present |
+|---|---|---|---|---|
+| archive | 478 | 812.0 GB | `a53754dac37c7efa…` | bodyc 359, witness 98, txindex 12, codes 5, headerc 4 — **anchors 0** |
+| full | 167 | 135.2 GB | `3ced79fabb9e8aa3…` | bodyc 57, snapshot 97, txindex 4 (**window tier**), codes 5, headerc 4 |
+| minimal | 106 | 36.0 GB | `054fa49fb2c78c58…` | snapshot 97 + **headerc 4 + codes 5** |
+
+The minimal selector fix (`89ec772f`) was written 2026-09-01 but only reached a
+manifest on 2026-09-10 — `build/bin/n42-eth-manifest.exe` was still the June 6
+build, so every minimal manifest before this one shipped snapshot files alone.
 
 ## 5. Enhancement tiers — none of them weekly today
 

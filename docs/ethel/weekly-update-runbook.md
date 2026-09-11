@@ -487,6 +487,117 @@ per-tier window rule. The retrimmed receipts still wait on the retrim artefact.
 
 ## 8. Run log
 
+### 2026-09-10/11 (full cycle; first week generated with framed segments)
+
+Source: geth ancient frozen **25,943,311** -> target **25,943,310** (prior week
+25,864,981; d **78,329**). reth2k had already finished at exactly 25,943,310
+(read from `BlockBodyIndices`, not `r.bat` — whose `--debug.tip` reverse-lookups
+to block 25,626,781, two weeks stale). Zero gap, no unwind. geth, reth and the
+qs fleet were all already stopped, so §3a needed no fleet stop and the
+snapshot's memory window was free.
+
+- Step 1: senders 41s / 42s (~1870 blk/s), headerc 1.7s, bodyc 4m14s (3.75 GB,
+  25.0% of raw RLP), receipts 2m43s @ 478 blk/s. Both headerc and bodyc
+  auto-rewound partial tail segment 3157. All exit 0.
+- **Framed segments (F=256) are now what the generators emit** (`51b3abdf` made
+  it the constructor default). The log line to check is
+  `Segment framing frameBlocks=256`; on disk, `cidx-inspect` shows segments
+  0356/0357 with heads starting `502a4d18` (0x184D2A50, the zstd skippable
+  magic) against `28b52ffd` (0xFD2FB528) for 0355 and earlier. A framed set and
+  a legacy set have identical filenames, so those two are the only
+  discriminators after the fact.
+- **A pre-2026-09-01 reader cannot read the new segments**: each frame is a
+  complete `encodeBodySegment` of its own 256 blocks, so a legacy whole-segment
+  decode yields only the first frame. `eth-el` MUST be rebuilt before the
+  three-mode test, or every mode reads 256 blocks per segment and diverges.
+- Step 2 replay: **46m43s @ 29 blk/s** (08-30 was 24.9, 08-16 was 31.9).
+  `ethel-last-block = 25943310`; all six tables at items 25,943,311. Zero
+  errors. The progress log again stopped at 25,940,000 while the run had
+  finished — check the marker, not the log tail.
+- Step 2b txindex: archive **37m15s / 26 segments / 3,727,424,025 tx / 16.47 GB
+  / 35.36 bits per key**; window **33m43s / 3 segments / 819,481,394 tx /
+  4.49 GB / 43.88**. Both rewrote their partial tail (`segment=25` / `segment=2`,
+  943,311 blocks, 289,149,580 tx — the two tiers agreeing on that count is a
+  free cross-check).
+  - **The window tier was extended, not rebuilt.** This week's one-year cut
+    (25,943,310 - 2,600,000 = 23,343,310) still lands inside `[23M, 24M)`, so
+    `txindex.base` stays 23,000,000 and only the tail segment changes. Copy last
+    week's directory first (4.1 GB, 1.2 s — keeps the previous artefact intact),
+    then run the builder against the copy: 34 min against the 1h33m a fresh
+    3-segment build cost on 08-30. Rebuild from empty only when the window
+    actually slides past a 1M boundary (trap 2).
+  - Self-verify with `txlookup-query --ancient ... --blocks <new range>`:
+    10 probes on archive, 7 on window, **0 failed**, negative probe included.
+- Step 3b codes: 11m11s, **2,750,326** codes, raw 15.39 GB -> 6.76 GB @ 43.9%,
+  `codes.hidx` 1.71 bits/key, `codes.coverage=25943310`.
+- Step 3c snapshot: **1h56m** (A 54m50s + B 9m30s + C 31m49s). accounts
+  417,349,421 (.val 4.35 GB -> 3.74 GB, 86.0%); storage 1,649,611,153
+  (.val 25.43 GB -> 19.18 GB, **75.4%** — byte-identical ratio to every prior
+  run); `.idx+.ef` 1.51 GB @ 7.87 bits/key.
+- Step 3a migration: **started during snapshot phase C** — phase C is local
+  zstd and no longer reads reth, which is exactly the overlap §6b rule 5
+  allows; it saved ~30 min. acc 417,349,421 (decodeFail 0) / sto 1,649,611,153
+  (shortVal 0) / tacc 31,153,563 / tsto 144,826,223 (badSub 0) / code 2,750,326
+  (skipped 0) / **PHASE vtrie OK: root == expect
+  `0x64d13bc3eec024779941a2630b9c2688193649967a52c74fa4663af76d82ab01`**.
+  160 GB, `ethel-last-block = 25943310`. The account, storage and code counts
+  match the snapshot export and the codes export exactly — three independent
+  paths agreeing.
+- **Three-mode test (E:, serialized on :30403 / 20115) — all three PASS.** Each
+  caught up to the mainnet live tip and then followed it at the 12 s cadence
+  (the acceptance signal is `eth_blockNumber` advancing ~5 blocks/min with
+  `eth_syncing=false`; this build prints no `caught up` line at info level):
+  - **archive** (164.8 GB assembled): 25,943,310 -> 25,952,093, **8,783 blocks
+    @ 2.75 blk/s**, chaindata grew to 184.7 GB.
+  - **min** (42.9 GB): 8,890 blocks @ **6.7 blk/s**, 22 min — ~2.4x archive,
+    since the snapshot warm overlay maintains no hashed trie.
+  - **full** (142.1 GB): same shape, 22 min.
+  - Zero `level=error`, zero panic, zero state-root mismatch in all three. min
+    logged one `eldevp2p: body txRoot mismatch — refetch block=25952170`: the
+    transport-layer check rejecting a peer's body, which then refetched and
+    carried on. The thousands of other "mismatch" lines are foreign networks
+    rejected at handshake (`network ID mismatch: theirs=369/8453/42161`,
+    `genesis mismatch theirs=0x16b48c1e`) — grep them out before counting.
+- witness spot-check: 25,880,000 / 25,920,000 / 25,943,310 all **gas diff +0**.
+  GATE PASS. (The tool is NOT regressed; the note in `weekly-runbook-full.md`
+  §2 is stale.)
+- **manifests** — two hard-link publish roots, both verified file-by-file
+  against the tree (0 missing, 0 size mismatch) before publishing:
+
+  | mode | root | files | total | manifestID |
+  |---|---|---|---|---|
+  | minimal | `d:/n42-publish-25943310` | **106** | 35.96 GB | `054fa49fb2c78c58…` |
+  | archive | `d:/n42-publish-25943310` | 478 | 811.99 GB | `a53754dac37c7efa…` |
+  | full | `d:/n42-publish-25943310-full` | 167 | 135.24 GB | `3ced79fabb9e8aa3…` |
+
+- NOT run: DATC sr merge (no DATC head advance — see §5b), anchors/bpp,
+  retrimmed receipts for full.
+
+Four things to carry forward:
+
+1. **`build/bin/n42-eth-manifest.exe` was a June 6 binary**, so `89ec772f`
+   ("the minimal tier must ship headerc and codes") had never once shipped:
+   every minimal manifest published since then listed 97 snapshot files and no
+   header or code section. Rebuilt, minimal is 106 files (headers 4 + code 5).
+   Same shape as the stale-`wk-*` trap, one directory over: **`build/bin` is
+   refreshed by nothing, and §6b rule 2 must cover it too.**
+2. **Two publish roots, not one.** Trap 3 in §3b is load-bearing: full and
+   archive write different `txindex.*` content to the same in-root path, so one
+   root cannot carry both. Root A serves minimal + archive (archive tier,
+   26 segments), root B serves full (window tier, 3 segments).
+3. **Isolate the active tails when assembling** (the 08-30 finding, now
+   implemented): a table's `.cidx` and its newest `.cdat` are COPIED, everything
+   else hard-linked. Cost 6.06 GB for root A and 4.58 GB for root B, and the
+   published trees stop mutating under their manifests when next week's
+   generators append. Per-tip directories (codes, snapshot, the window txindex)
+   are never appended to, so they hard-link whole.
+4. **A Windows memory watchdog kills background waiters during the snapshot
+   export.** The export's working set is ~96 GB of reclaimable reth mmap while
+   its Go heap is 500 MB and Committed is 32 GB of 157 GB — safe by the rule
+   §3a already states (watch Committed, not free RAM), but "free RAM 3.6 GB" is
+   enough for a supervisor to start killing things. Poll with a foreground
+   `Wait-Process` instead of a background loop.
+
 ### 2026-08-30 (geth + reth sourced; three long-standing gaps closed)
 
 Source: geth ancient frozen **25,864,982** -> target **25,864,981** (prior week
