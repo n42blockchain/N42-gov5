@@ -247,6 +247,14 @@ func (bc *BlockChain) GetHeaderByNumber(number *uint256.Int) block.IHeader {
 
 // GetHeaderByHash retrieves a block header by hash.
 func (bc *BlockChain) GetHeaderByHash(h types.Hash) (block.IHeader, error) {
+	// The cache first: a header this node sealed and has not written yet is
+	// there (RememberSealedHeader) and has no number row in the store --
+	// looking the number up first returned nil for it, and the speculative
+	// build chained on that block derived no committee-evidence link (round
+	// 35zp).
+	if header, ok := bc.headerCache.Get(h); ok {
+		return header, nil
+	}
 	number := bc.GetBlockNumber(h)
 	if number == nil {
 		return nil, nil
