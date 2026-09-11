@@ -3685,6 +3685,44 @@ the walk and the carried layers still re-layer a base. Round 35zy =
 35zx on n42-r57 (with the own-unverified mark from r56), offsets 2080M+,
 prediction 56 unchanged.
 
+**Round 35zy (06:14-07:2x, n42-r57).** Prediction 56 held: BAD BLOCK 0
+across the legs run so far, parallel fills dropped nothing (0 of 194 in
+warmup, 0 in the B legs), chained builds 1,216 in warmup and 2,360 in the
+B legs. Windows: warmup 26 / 24 (70.6k / 65.2k), A1 101 / 98 (38.5k /
+37.3k), B1 27 / 25 (72.3k / 67.9k; the 72.3k window is the best B window
+recorded), B2 26 / 23 (70.6k / 62.5k). B four-window mean 68.3k against
+35zj/35zl's 68.4k / 69.1k: chaining shortened the in-tenure cycle to 1.92
+s but the handover block (3.44 s, one in four) and the follower import
+(0.93 -> 1.18 s under the overlap) took the gain back. The A legs read
+11% under 35zu's with every phase median equal and only the tails wider
+(follower write p90 102 -> 262 ms), the round-to-round tail variance the
+noise-floor section warned about. Full-block cycle in the B legs (n=139):
+seal -> seal 1.92 s = seal -> QC 1.57 + QC -> seal 0.24; handover 3.44 s.
+Follower import 1.18 s = setup 58 + recover 100 + exec 255 + apply 24 +
+finalize 227 (QMDB apply ~100) + validate 16 + body 98 (the Erigon tx
+root: 72 ms of trie on a cached encoding) + write 213 (block 118,
+receipts 13, state 22, commit 16).
+
+## 6au. Round 35zzb: the follower's import sheds allocations and a serial encode -- registered before the round ran (2026-09-11)
+
+35zy on n42-r58, two changes on the import path and nothing else:
+
+- The parallel executor reuses each transaction's read/write set across
+  executions instead of allocating one per execution on top of the one
+  NewExecutor already made (163k dead allocations a full block, two
+  slices each). Import setup 58 ms is that allocation.
+- WriteTransactions encodes the block's transactions across the cores
+  (16 workers) before the single-writer append loop; the encode was half
+  of the 118 ms "block" write phase. Rows are byte-identical
+  (TestWriteTransactionsParallelMatchesSerial).
+
+**Prediction 57.** Follower import 1.18 -> ~1.08 s (setup 58 -> ~15,
+write.block 118 -> ~60), seal -> QC 1.57 -> ~1.47, in-tenure period 1.92
+-> ~1.82 s; B windows +4-5% (26 -> 27 blocks). Falsified if the import
+median does not move by at least 60 ms (then the setup is not the
+allocation and the block write is not the encode -- profile both) or if
+any BAD BLOCK returns.
+
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
