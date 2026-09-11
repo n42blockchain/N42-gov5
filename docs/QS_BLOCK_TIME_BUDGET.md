@@ -3477,6 +3477,13 @@ timeouts) while the window went 25 -> 21 blocks. The measured phases sum to
 ~1.8 s of a 2.4-2.9 s view; what varies is not in them. Round 35zn is the
 diagnostic (n42-r47, tMs stamps).
 
+**Round 35zn result (2026-09-11 01:29-02:42, diagnostic).** The stamps
+placed the view (QS_REPLAN section 10): write(v) end -> QC 0.85 s, QC ->
+next write end median 0.85-1.17 / p90 1.3-1.9 s, the excess being the
+leader waiting for its own speculative build. Throughput as 35zm: A 39.6k /
+36.6k and 39.6k / 36.6k; B 65.2k / 58.8k and 70.6k / 62.5k, four-window
+mean 64.3k.
+
 ## 6as. Round 35zo: two-deep speculation -- registered before the round ran (2026-09-11)
 
 35zm's configuration on n42-r48 (track 3c, QS_REPLAN section 10). A
