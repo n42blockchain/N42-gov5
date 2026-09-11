@@ -4109,6 +4109,21 @@ a leg (then a third consumer holds an arena, or the cost is not the
 allocation), or by a BAD BLOCK (a reused set leaking a previous block's
 reads -- the clean-reuse test covers this, but the fleet is the proof).
 
+**35zzj result (n42-r68, fresh dirs; 17:43-18:52).** No BAD BLOCK.
+Warmup 78.8k/70.6k, A1 48.0k/44.6k, B1 70.6k/68.4k, B2 73.4k/70.6k (B
+mean 70.7k -- the best B legs so far; 35zzh 68.0k, 35zzi 52.3k), A2
+44.6k/40.0k. Mechanism: follower executorMs 58 -> 0 ms median, p90 3, in
+every minute of every leg (P65: <15; held). Whole-leg import B1 1053 /
+B2 1034 ms, chained seal -> seal 1805 / 1817, handover 3681 / 3338. The
+throughput claim (+2-3% over 35zzi) reads +35% only because 35zzi's B
+legs collapsed on the write lock and 35zzj's did not: this round's
+begin-wait peaked at p90 0.74 s (35zzi: 2.2 s) and imports drifted 787
+-> 1164 ms over a flood instead of 821 -> 2624. Against 35zzh (r66,
+before the root batch) the B mean is +4%, the import -100 ms, the
+chained cycle -100 ms -- the batch (P64) and the arena (P65) together.
+The write-lock decay's size varies round to round; 35zzl tests the fold
+interval directly. Per-minute: wr-logs/r35zzj-perminute.txt.
+
 ## 6bd. Round 35zzk: the delta-credited recipients are read across the workers before the fold -- registered before the round ran (2026-09-11)
 
 35zzj's configuration on a fresh reseed, n42-r68 -> n42-r69. The one
