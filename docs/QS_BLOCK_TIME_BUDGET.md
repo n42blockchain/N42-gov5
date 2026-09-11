@@ -3477,6 +3477,29 @@ timeouts) while the window went 25 -> 21 blocks. The measured phases sum to
 ~1.8 s of a 2.4-2.9 s view; what varies is not in them. Round 35zn is the
 diagnostic (n42-r47, tMs stamps).
 
+## 6as. Round 35zo: two-deep speculation -- registered before the round ran (2026-09-11)
+
+35zm's configuration on n42-r48 (track 3c, QS_REPLAN section 10). A
+speculative build whose parent is a block this node sealed and has not yet
+applied no longer waits for that block's write: the miner tree already IS
+the parent's post-state, so the build chains on it (ChainPendingBuild:
+the parent's undo moves onto a pending stack), the parent header comes from
+the worker's own sealed block, and when the write lands the next build
+adopts the parent beneath the child (AdoptOwnAppends by cursor). A lost
+view peels the stack (PeelAll) and reloads. Test:
+TestQMDBMinerTreeChainsPendingBuilds.
+
+**Prediction 53.** On the leader, the QC-to-next-write-end gap (35zn:
+median 0.85-1.17 s, p90 1.3-1.9 s) collapses onto its floor of assemble
+0.30 + push 0.20 + write 0.34 (~0.85 s median, p90 <1.0); "miner:
+speculative build chains on own unwritten block" appears on every in-tenure
+build; persistWait ~0 on those builds. View ~2.4 -> ~1.7 s; B windows
+21-26 -> 30-35 blocks (80-95k). Falsified if the gap's p90 stays >1.3 s
+(then the build's own 1.05 s is still late even when started at the seal --
+look at fill) or if BAD BLOCK returns (then chaining on an unwritten own
+block diverges from the live replay and the design is unsafe: revert to
+adoption-only).
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across

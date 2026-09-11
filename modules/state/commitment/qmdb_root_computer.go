@@ -48,6 +48,14 @@ type QMDBRootComputer struct {
 	undoRecording bool            // capture per-block undo data in ComputeRoot
 	lastUndo      *qmdb.BlockUndo // undo record of the most recent ComputeRoot
 
+	// pending holds the proposer's earlier builds that the live tree has not
+	// written yet, oldest first, beneath the build lastUndo describes: the
+	// tree's state is base + pending[0] + ... + pending[n-1] + lastUndo. A
+	// build chained on an unwritten own block (two-deep speculation) pushes
+	// the previous lastUndo here; the write of the oldest pops it
+	// (AdoptOwnAppends); a lost view peels everything (PeelAll).
+	pending []pendingBuild
+
 	histStore *MDBXQMDBHistoryStore // non-nil when full-history journaling is on
 
 	// readers serialises out-of-band point reads (Lookup: the txpool, RPC
@@ -144,6 +152,61 @@ func (r *QMDBRootComputer) ProofAtHeight(keyHash qmdb.Hash, h uint64) (*qmdb.Pro
 // undo record (for the recent-window historical proofs); fetch it with
 // LastUndo right after the ComputeRoot call.
 func (r *QMDBRootComputer) EnableUndoRecording() { r.undoRecording = true }
+
+// pendingBuild is one unwritten own build beneath the current one.
+type pendingBuild struct {
+	undo        *qmdb.BlockUndo
+	root        types.Hash
+	cursorAfter uint64 // the tree's cursor when that build finished
+}
+
+// ChainPendingBuild keeps the current build's appends on the tree and moves
+// its undo record onto the pending stack, so the next build appends on top
+// of it. The proposer's build v+1 on its own unwritten block v (track 3c):
+// the tree already IS v's post-state. Returns false if there is nothing to
+// chain on.
+func (r *QMDBRootComputer) ChainPendingBuild() bool {
+	r.readers.Lock()
+	defer r.readers.Unlock()
+	if r.lastUndo == nil {
+		return false
+	}
+	r.pending = append(r.pending, pendingBuild{undo: r.lastUndo, root: types.Hash(r.t.Root()), cursorAfter: r.t.NextSlot()})
+	r.lastUndo = nil
+	return true
+}
+
+// PendingBuilds reports how many unwritten own builds sit beneath the
+// current one.
+func (r *QMDBRootComputer) PendingBuilds() int {
+	r.readers.RLock()
+	defer r.readers.RUnlock()
+	return len(r.pending)
+}
+
+// PeelAll reverts every unwritten own build: the current one (lastUndo)
+// and the pending stack from the newest down. The caller reloads afterwards
+// on any error.
+func (r *QMDBRootComputer) PeelAll() error {
+	r.readers.Lock()
+	defer r.readers.Unlock()
+	if u := r.lastUndo; u != nil {
+		r.lastUndo = nil
+		if err := r.t.ApplyUndo(u); err != nil {
+			r.pending = nil
+			return err
+		}
+	}
+	for i := len(r.pending) - 1; i >= 0; i-- {
+		u := r.pending[i].undo
+		r.pending = r.pending[:i]
+		if err := r.t.ApplyUndo(u); err != nil {
+			r.pending = nil
+			return err
+		}
+	}
+	return nil
+}
 
 // RevertBlock rolls the live QMDB tree back across one block using its undo
 // record, repairing the persisted positional layout in the same tx and
@@ -624,16 +687,43 @@ func (r *QMDBRootComputer) FlushedThrough() uint64 {
 func (r *QMDBRootComputer) AdoptOwnAppends(liveNext, liveFlushed uint64) bool {
 	r.readers.Lock()
 	defer r.readers.Unlock()
-	if r.lastUndo == nil || r.t.NextSlot() != liveNext || liveFlushed > liveNext {
+	if liveFlushed > liveNext {
 		return false
 	}
-	r.lastUndo = nil
-	r.indexTrusted = liveNext
-	r.flushedThrough = liveFlushed
+	adopted := false
+	// Oldest pending builds first: each one the live tree has written (its
+	// cursor reached) is dropped from the stack.
+	for len(r.pending) > 0 && r.pending[0].cursorAfter <= liveNext {
+		r.pending = r.pending[1:]
+		adopted = true
+	}
+	// The current build, when nothing pends beneath it and the live tree is
+	// exactly where it ends.
+	if len(r.pending) == 0 && r.lastUndo != nil && r.t.NextSlot() == liveNext {
+		r.lastUndo = nil
+		adopted = true
+	}
+	if !adopted {
+		return false
+	}
+	if liveNext > r.indexTrusted {
+		r.indexTrusted = liveNext
+	}
+	if liveFlushed > r.flushedThrough {
+		r.flushedThrough = liveFlushed
+	}
 	r.stagedValid = false
 	r.indexDelta = r.t.LiveBits() - r.t.LiveCount()
 	r.t.AdoptFlushed(liveFlushed)
 	return true
+}
+
+// HasUnwrittenBuild reports whether the tree holds appends of an own build
+// the live tree has not written: the current one or any pending beneath it.
+func (r *QMDBRootComputer) HasUnwrittenBuild() bool {
+	r.readers.RLock()
+	defer r.readers.RUnlock()
+	return r.lastUndo != nil || len(r.pending) > 0
 }
 
 func (r *QMDBRootComputer) EvictFlushed() {

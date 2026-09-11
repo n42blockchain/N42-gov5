@@ -270,6 +270,11 @@ type worker struct {
 	// candidate per parent makes each node produce exactly one block per height.
 	// Guarded by mu; pruned below the branch-switch window as heights advance.
 	sealedOnParent map[types.Hash]block.IBlock
+	// sealedByHash holds this node's recent sealed blocks by hash from the
+	// moment they are sealed, before their write lands: a speculative build
+	// whose parent is one of them builds on the miner tree's own post-state
+	// without waiting for the write (track 3c, two-deep speculation).
+	sealedByHash map[types.Hash]block.IBlock
 
 	wg sync.WaitGroup
 	mu sync.RWMutex
@@ -356,6 +361,7 @@ func newWorker(ctx context.Context, group *errgroup.Group, chainConfig *params.C
 		resultCh:         make(chan block.IBlock),
 		pendingTasks:     make(map[types.Hash]*task),
 		sealedOnParent:   make(map[types.Hash]block.IBlock),
+		sealedByHash:     make(map[types.Hash]block.IBlock),
 		minerConf:        minerConf,
 		resubmitAdjustCh: make(chan *intervalAdjust, resubmitAdjustChanSize),
 		bundlePool:       builder.NewBundlePool(),
@@ -538,6 +544,7 @@ func (w *worker) handleSealed(blk block.IBlock) {
 	}
 
 	parentHash := blk.ParentHash()
+	w.rememberSealed(blk)
 
 	// Fix A — cross-view same-height convergence: if a strictly-lower-hash
 	// sibling extending THIS parent is already known locally (sealed here or
@@ -787,6 +794,50 @@ func (w *worker) handleSealed(blk block.IBlock) {
 // firstSealedOnParent returns the first block this node sealed+imported on the
 // given parent, or nil. Used to suppress a later view's divergent same-height
 // sibling (see the sealedOnParent field doc).
+// rememberSealed records a just-sealed block by hash (bounded to the last
+// 16 by number) so a speculative build can extend it before it is written.
+func (w *worker) rememberSealed(blk block.IBlock) {
+	if blk == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.sealedByHash[blk.Hash()] = blk
+	if len(w.sealedByHash) > 16 {
+		var oldest types.Hash
+		oldestNum := ^uint64(0)
+		for h, b := range w.sealedByHash {
+			if n := b.Number64(); n != nil && n.Uint64() < oldestNum {
+				oldestNum, oldest = n.Uint64(), h
+			}
+		}
+		delete(w.sealedByHash, oldest)
+	}
+}
+
+func (w *worker) ownSealed(hash types.Hash) block.IBlock {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.sealedByHash[hash]
+}
+
+// ownPendingSpeculation reports whether this speculative build extends a
+// block this node sealed and has not applied yet. The miner tree already
+// holds that block's post-state (its own build), so the build neither waits
+// for the write nor aligns the applied branch -- the write of the parent
+// and the hit check (AppliedHeadIs at hand-over) keep it honest, and a lost
+// parent takes the child down with it (PeelAll on the next build).
+func (w *worker) ownPendingSpeculation(speculative bool, parent types.Hash, bc *internal.BlockChain) bool {
+	if !speculative || bc == nil {
+		return false
+	}
+	own := w.ownSealed(parent)
+	if own == nil || own.Number64() == nil {
+		return false
+	}
+	return !bc.AppliedHeadIsExactly(parent, own.Number64().Uint64())
+}
+
 func (w *worker) firstSealedOnParent(parent types.Hash) block.IBlock {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
@@ -1026,7 +1077,14 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// before persistence, advancing PlainState/marker while rolling the tree
 	// back one block.
 	var dPersistWait time.Duration
-	if parentHash != (types.Hash{}) {
+	ownPending := false
+	if bc, ok := w.chain.(*internal.BlockChain); ok {
+		ownPending = w.ownPendingSpeculation(speculative, parentHash, bc)
+	}
+	if ownPending {
+		log.Info("miner: speculative build chains on own unwritten block", "parent", parentHash.Hex()[:12])
+	}
+	if parentHash != (types.Hash{}) && !ownPending {
 		if bc, ok := w.chain.(*internal.BlockChain); ok {
 			// Early-vote overlap: the view can advance while the parent's
 			// persistence is still in flight on this node. The build reads
@@ -1166,7 +1224,9 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		// it built last IS this build's parent (NewMinerRootComputer's
 		// own-block fast path).
 		parentRoot := types.Hash{}
-		if n := current.header.Number.Uint64(); n > 0 {
+		if own := w.ownSealed(current.header.ParentHash); own != nil {
+			parentRoot = own.StateRoot()
+		} else if n := current.header.Number.Uint64(); n > 0 {
 			if ph := rawdb.ReadHeader(tx, current.header.ParentHash, n-1); ph != nil {
 				parentRoot = ph.Root
 			}
@@ -1806,7 +1866,10 @@ func (w *worker) prepareWork(param *generateParams) (*environment, error) {
 		return nil, errors.New("invalid current block header type")
 	}
 	if param.parentHash != (types.Hash{}) {
-		b, _ := w.chain.GetBlockByHash(param.parentHash)
+		b := w.ownSealed(param.parentHash)
+		if b == nil {
+			b, _ = w.chain.GetBlockByHash(param.parentHash)
+		}
 		if b == nil {
 			return nil, errors.New("missing parent")
 		}

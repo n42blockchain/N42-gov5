@@ -533,11 +533,23 @@ func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx, parentRoot types.Hash) (sta
 	// the parent's post-state. Keep it instead of peeling and re-reading
 	// the same entries from disk (persistWait + reload, ~450 ms a block on
 	// the leader at 163k). Anything else falls through to the reload.
-	if minerAdoptAppends && len(bc.minerPendingUndo) == 0 && rc.LastUndo() != nil &&
-		parentRoot != (types.Hash{}) && rc.Root() == parentRoot && bc.qmdbRootComputer != nil &&
-		rc.AdoptOwnAppends(bc.qmdbRootComputer.NextSlot(), bc.qmdbRootComputer.FlushedThrough()) {
-		log.Debug("miner speculative tree adopted its own appends", "root", parentRoot.Hex()[:12], "slot", rc.NextSlot())
+	if minerAdoptAppends && len(bc.minerPendingUndo) == 0 && rc.HasUnwrittenBuild() &&
+		parentRoot != (types.Hash{}) && rc.Root() == parentRoot && bc.qmdbRootComputer != nil {
+		// The tree IS the parent's post-state. Whatever the live tree has
+		// written of it is adopted (dropped from the undo bookkeeping); what
+		// it has not written yet -- our own block still in flight, two-deep
+		// speculation, track 3c -- stays as pending appends and the next
+		// build chains on top. Either way: no peel, no reload.
+		liveNext, liveFlushed := bc.qmdbRootComputer.NextSlot(), bc.qmdbRootComputer.FlushedThrough()
+		adopted := rc.AdoptOwnAppends(liveNext, liveFlushed)
+		chained := rc.ChainPendingBuild()
+		log.Debug("miner speculative tree continues on its own build", "root", parentRoot.Hex()[:12],
+			"adopted", adopted, "chained", chained, "pending", rc.PendingBuilds(), "slot", rc.NextSlot(), "liveSlot", liveNext)
 		return rc, nil
+	}
+	if err := rc.PeelAll(); err != nil {
+		log.Debug("miner speculative tree peel failed; full reload", "err", err)
+		rc.VoidIndexTrust()
 	}
 	if undo := rc.TakeUndo(); undo != nil {
 		// Previous build's candidate ops are still on the speculative tree;
