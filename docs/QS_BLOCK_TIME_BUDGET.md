@@ -3933,6 +3933,41 @@ store reads the same as the grown one (then the drift is not the page
 cache and the tails are the code's), in which case the store's growth is
 only a disk problem and the reseed cadence can stay weekly.
 
+**The first full-block profile (35zzf B1, node1 as follower, 25 s = 263
+CPU-seconds, ~10.5 cores).** Signature recovery is 53% of the node's
+CPU (transaction.Sender 141 s), and 119 s of that is the hint ingest's
+hintWorker: the eight generators stream every transaction to every node
+as a hint and each node recovers ~124k signatures a second, ~4.8 cores,
+34 across the fleet -- the price of the 100 ms import recovery. RPC
+ingest (BatchRawTransaction) is 10%, the EVM (executeSingle) 10%.
+Inside runParallel, per block: Finalize 225 ms of which QMDB Tree.Set
+183; ProcessPragueSystemCalls 120-156 ms, all of it FinalizeTx -- the
+parallel apply leaves the whole block's dirty set in the journal and
+each of the two block-end system calls walked its 23k objects through
+updateAccount with the no-op writer; NewExecutor 54-64 ms, the arena
+take walking 163k kept read/write sets on a cold cache (2 ms in
+isolation, where the cache is warm). The heap (8.9 GB in use): QMDB map
+index 753 MB, libp2p buffer pool 453 MB, the packet cache 331 MB (the
+window did cut it from 1.08 GB), sender cache 315 MB, read/write sets
+250 MB.
+
+## 6ba. Round 35zzh: FinalizeTx sets flags only, the arena take stops walking -- registered before the round ran (2026-09-11)
+
+35zzg's configuration (fresh dirs, n42-r64 -> n42-r65). FinalizeTx with
+the no-op writer sets the deleted flags -- the one state effect of
+updateAccount under that writer -- and skips the sort and the per-object
+no-op calls; the arena take fills empty slots only (executeSingle clears
+a set before every execution and its TxIndex is its slot). Both are
+exact: the same flags, the same sets.
+
+**Prediction 63.** Follower import -150 ms (setup ~60 -> <10, block-end
+system calls ~130 -> <15); the leader's build sheds the same ~130 ms of
+block-end and ~55 ms of setup; seal -> QC 1.5 -> ~1.35 s; in-tenure
+period ~1.9 -> ~1.75 s; B windows +6-8% over 35zzg. Falsified if
+executorMs stays above 20 ms (then the take is not the walk) or if the
+block-end phase does not move (then FinalizeTx's cost is elsewhere), or
+by any BAD BLOCK (a flag the fast path gets wrong -- compare the trace).
+
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
