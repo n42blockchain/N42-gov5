@@ -3912,6 +3912,27 @@ blocks). Falsified by a BAD BLOCK with matching trace counts (another
 base-mismatch path) or by the refusal firing on every chained build
 (then the adopt path is not taken where it should be).
 
+**A confound found while 35zzf ran.** The seven datadirs, 16 GiB each at
+the reseed of 2026-09-10 19:20, are 172 GiB each eighteen hours later --
+1.2 TB, ~85 GB a round -- against 62 GB of page cache. Every later
+round imports and writes against a colder store than the round before
+it, which is a plausible reading of the widening tails from 35zy through
+35zzf (B warmup 26 / 24 -> 24 / 21 with no code change that touches the
+follower) and of prediction 57's "gain that moved into the tails". The
+box also has 1.9 TB left at this growth. 35zzg reseeds first.
+
+## 6az. Round 35zzg: the same configuration on a fresh reseed -- registered before the round ran (2026-09-11)
+
+35zzf's configuration on n42-r64 after seed-7node-nolaunch.sh (16 GiB a
+node, seed head 13,652,362) with the grown generation deleted.
+
+**Prediction 62.** B windows back at 35zy's level or above (26-27 / 24-25
+blocks, ~70k); follower import median under 1.10 s with the p90 within
+1.3x of it (35zzb: 1.55x); the A legs at 43-45k. Falsified if the fresh
+store reads the same as the grown one (then the drift is not the page
+cache and the tails are the code's), in which case the store's growth is
+only a disk problem and the reseed cadence can stay weekly.
+
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
