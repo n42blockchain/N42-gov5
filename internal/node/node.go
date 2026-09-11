@@ -27,6 +27,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -58,6 +59,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	prometheus "github.com/n42blockchain/N42/common/metrics"
+	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/utils"
 	"github.com/n42blockchain/N42/conf"
@@ -136,6 +138,7 @@ import (
 	log2 "github.com/n42blockchain/N42/lib/log/v3"
 	log3 "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/lib/lthash"
+	libmetrics "github.com/n42blockchain/N42/lib/metrics"
 	libverkle "github.com/n42blockchain/N42/lib/verkle"
 	verklestore "github.com/n42blockchain/N42/lib/verkle/store"
 	"github.com/n42blockchain/N42/log"
@@ -187,16 +190,17 @@ type Node struct {
 	rpcAPIs            []jsonrpc.API
 	engineStateAdapter *api.EngineStateAdapter // ETH EL mode only
 
-	http           *httpServer
-	ipc            *ipcServer
-	ws             *httpServer
-	httpAuth       *httpServer
-	wsAuth         *httpServer
-	inprocHandler  *jsonrpc.Server
-	rateLimiter    *jsonrpc.RateLimiter
-	pruner         *Pruner
-	historyExpirer *HistoryExpirer
-	snapshotMgr    *snapshot.Manager
+	http              *httpServer
+	ipc               *ipcServer
+	ws                *httpServer
+	httpAuth          *httpServer
+	wsAuth            *httpServer
+	inprocHandler     *jsonrpc.Server
+	rateLimiter       *jsonrpc.RateLimiter
+	pruner            *Pruner
+	historyBackfiller *internal.HistoryBackfiller
+	historyExpirer    *HistoryExpirer
+	snapshotMgr       *snapshot.Manager
 
 	p2pGenesisHash     types.Hash                  // genesis hash used for P2P fork digest
 	exexManager        *exex.Manager               // Execution Extensions manager
@@ -761,18 +765,80 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 	// Enable parallel EVM execution, state prefetching, and ancient DB if configured.
 	if realBC, ok := bc.(*internal.BlockChain); ok {
 		if cfg.NodeCfg.ParallelEVM {
-			// EXPERIMENTAL + known-incorrect: the internal/parallel Block-STM path
-			// (ParallelStateReader.ReadAccountStorage) does NOT consult the
-			// SELFDESTRUCT/CREATE2 storage-wipe set, so an intra-block read of a
-			// slot on an account destroyed earlier in the same block returns the
-			// stale pre-destruct value (and is then faithfully persisted). Off by
-			// default; only reachable via the config key. Warn loudly so it can't
-			// be silently enabled in production until the wipe shadow-read is
-			// ported from modules/state (see docs/ethel/erigon-borrow-audit.md).
-			log.Warn("ParallelEVM ENABLED — EXPERIMENTAL: internal/parallel path lacks SELFDESTRUCT/CREATE2 storage-wipe isolation; do NOT use on consensus-critical chains")
+			// EXPERIMENTAL. Off by default; only reachable via the config key,
+			// cmd/n42 exposes no CLI flag for it.
+			//
+			// This warning used to assert that internal/parallel does NOT
+			// consult the SELFDESTRUCT/CREATE2 storage-wipe set, so an
+			// intra-block read of a slot on an account destroyed earlier in the
+			// same block returned a stale pre-destruct value. That defect was
+			// fixed and the warning was not updated. The wipe shadow-read is
+			// present on all three sides: ParallelStateWriter.CreateContract
+			// records a FieldStorageWipe marker (IntraBlockState calls it on
+			// every SELFDESTRUCT, recreate-after-destruct and fresh CREATE),
+			// ParallelStateReader.ReadAccountStorage shadows stale pre-wipe
+			// slots with the version comparison, parallel_processor.go applies
+			// the wipes on merge, and internal/parallel/wipe_shadow_test.go
+			// pins the ordering cases. docs/ethel/erigon-borrow-audit.md
+			// records the same conclusion.
+			//
+			// That defect being closed was never an assessment of the rest of
+			// the path, and on 2026-09-02 the rest of the path was measured:
+			// an A-B-A on the 7-node bench fleet (sequential / Block-STM /
+			// sequential, one binary, the flag the only variable) HALTED THE
+			// CHAIN on the middle leg. Six of seven nodes rejected the same two
+			// blocks and the measurement window produced zero blocks, while
+			// both sequential legs ran clean at ~36,500 TPS with zero bad
+			// blocks and agreed with each other to 0.5% on execution cost.
+			//
+			// The failure is not a state root mismatch and not a storage-wipe
+			// case:
+			//
+			//   could not apply tx 0 from block 13618674: insufficient funds
+			//   for gas * price + value: address 0x8AD4..a6Db have 0 want
+			//   210000000000001
+			//
+			// ELEVEN OF THE TWELVE rejections were on tx 0 -- the block's FIRST
+			// transaction -- so no earlier transaction of the same block could
+			// have credited the sender, and the balance must come from the
+			// parent state. The cause is one level lower: ProcessParallel hands
+			// every Block-STM worker the SAME state reader, noting only that it
+			// "must be safe for concurrent reads". It is not. That reader is a
+			// PlainStateReader over an MdbxTx, and MdbxTx.GetOne takes a
+			// per-bucket cached cursor out of an unsynchronised map and calls
+			// SeekExact on it, so every worker shares one MDBX cursor. The race
+			// detector confirms it -- see TestGetOneIsNotConcurrencySafe in
+			// lib/kv/mdbx, and docs/QS_TPS_BENCHMARK.md for the round.
+			//
+			// So this is not "unaudited", it is "known to diverge under load",
+			// and the fix is not in internal/parallel: a parallel executor
+			// needs a reader per worker, or reads serialised.
+			log.Warn("ParallelEVM ENABLED: each Block-STM worker now owns its read transaction and reads the live QMDB tree under its lock (the 2026-09-02 halt was a shared MDBX cursor, 3709ca6a); UNMEASURED under load until a round says otherwise -- do not enable on a chain whose blocks matter",
+				"workers", internal.ParallelWorkers())
 			realBC.SetParallelEVM(true)
 		}
 		if cfg.NodeCfg.Prefetch {
+			// Same defect as ParallelEVM above, in a feature that is not marked
+			// experimental: StatePrefetcher.Prefetch runs NumCPU/2 goroutines
+			// against the SAME state reader the executor is using, and that
+			// reader is a PlainStateReader over one kv.Tx whose GetOne shares a
+			// cached MDBX cursor. See internal/prefetcher.go for the analysis
+			// and lib/kv/mdbx TestGetOneIsNotConcurrencySafe for the proof.
+			//
+			// Refuse outright when there is no shared cache to warm. Prefetch's
+			// whole benefit path is that its reads populate the ShardedCache
+			// the executor then reads through, and evmRecord wraps the reader
+			// in a CachedStateReader only when layered.ExtractCache returns
+			// non-nil -- which happens solely for a *layered.LayeredDB.
+			// LayeredDBCfg.Enable defaults false, so on a normal datadir the
+			// workers race the executor's cursor to fill a cache that does not
+			// exist. A warning is the wrong response to a flag that can only
+			// cost and never pay: fail fast, the way the mobileverify guard
+			// does, and say which config key would make it coherent.
+			if err := checkPrefetchHasCache(layered.ExtractCache(chainKv)); err != nil {
+				return nil, err
+			}
+			log.Warn("Prefetch ENABLED — its I/O workers share one state reader with the executor, which races on a single MDBX cursor (see internal/prefetcher.go). Not safe on a chain whose blocks matter")
 			realBC.SetPrefetch(true)
 			// Enable predictive slot prefetching alongside standard prefetching.
 			realBC.SetPrefetchPredictor(internal.NewPrefetchPredictor(64))
@@ -991,23 +1057,41 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			// entry log per block. The in-RAM key->slot index is used because the
 			// per-block evmRecord tx is read-only (cannot back the index with
 			// MDBX on the live path). Also serve QMDB-native eth_getProof.
-			qmdbRC := commitment.NewQMDBRootComputer()
-			rtx, err := chainKv.BeginRo(ctx)
-			if err != nil {
-				return nil, fmt.Errorf("open QMDB forest reload view: %w", err)
-			}
 			// Wire the cold/leaf getters BEFORE LoadFrom: the rebuild faults
 			// frozen leaves and cold entries through them. A failed reload can
 			// leave a partially populated twig slice, so it is not an empty-tree
 			// fallback: using it can panic in Root(), and an actually empty tree
 			// would not reproduce this history-dependent root. Fail closed and
-			// require repair/reseed instead.
-			qmdbRC.SetCold(rtx)
-			loadErr := qmdbRC.LoadFrom(rtx)
-			rtx.Rollback()
-			// rtx is dead from here; detach so nothing faults through it (the
-			// first block's execution re-points at a live tx).
-			qmdbRC.SetCold(nil)
+			// require repair/reseed instead -- after retrying on a fresh
+			// computer and read view: rounds 35g-35j lost a node at every
+			// fleet start to "twig metadata inconsistent" part way through the
+			// scan, and the same store loaded whole on the next start ten
+			// minutes later, so the first failure is a transient read, not
+			// the disk.
+			var qmdbRC *commitment.QMDBRootComputer
+			var loadErr error
+			// Round 35z2 (2026-09-08): all three attempts failed on three
+			// different twigs (172644, 179292, 185698 of 219511) and the fourth
+			// start, ten minutes later, loaded whole -- six attempts with a
+			// longer pause ride out a longer burst of whatever the transient is.
+			for attempt := 1; attempt <= 6; attempt++ {
+				qmdbRC = commitment.NewQMDBRootComputer()
+				rtx, err := chainKv.BeginRo(ctx)
+				if err != nil {
+					return nil, fmt.Errorf("open QMDB forest reload view: %w", err)
+				}
+				qmdbRC.SetCold(rtx)
+				loadErr = qmdbRC.LoadFrom(rtx)
+				rtx.Rollback()
+				// rtx is dead from here; detach so nothing faults through it (the
+				// first block's execution re-points at a live tx).
+				qmdbRC.SetCold(nil)
+				if loadErr == nil {
+					break
+				}
+				log.Error("QMDB forest reload failed at startup", "attempt", attempt, "err", loadErr)
+				time.Sleep(5 * time.Second)
+			}
 			if loadErr != nil {
 				return nil, fmt.Errorf("reload QMDB forest: %w", loadErr)
 			}
@@ -1016,6 +1100,42 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			realBC.SetStateProofProvider(internal.NewQMDBStateProofProvider())
 			log.Info("State commitment: QMDB (twig forest, live block production)",
 				"root", fmt.Sprintf("%x", qmdbRC.Root()))
+			if commitment.QMDBStateReadMode() == commitment.QMDBReadOn {
+				// N42_STATE_READ_QMDB=1: EVERY head-state account read -- the
+				// miner's build, the txpool, RPC, the history fallback -- goes
+				// to the tree, not only block execution. Round 26's first
+				// attempt switched execution alone and the miner built on a
+				// table the previous leg had frozen: state-root mismatch on
+				// the first block, seven nodes wedged.
+				modules.SetLatestAccountSource(commitment.NewQMDBLatestAccountSource(qmdbRC, chainKv))
+				log.Info("head-state account reads served from the QMDB tree (N42_STATE_READ_QMDB=1): miner, txpool and RPC included")
+			}
+			if commitment.QMDBOnlyAccountWrites() {
+				// N42_STATE_WRITE_QMDB_ONLY=1: stop maintaining the plain
+				// `Account` table. Only sound once reads no longer touch it.
+				if !modules.LatestAccountSourceInstalled() {
+					return nil, fmt.Errorf("N42_STATE_WRITE_QMDB_ONLY=1 requires N42_STATE_READ_QMDB=1: the plain Account table stops being written, so reads must not depend on it")
+				}
+				modules.SetPlainAccountWriteSkipped(true)
+				// Record the head at the FIRST enablement so a repair can later
+				// rebuild exactly the rows the table missed: every address in an
+				// AccountChangeSet from this block on, re-read from the tree.
+				var frozenAt uint64
+				if err := chainKv.Update(ctx, func(tx kv.RwTx) error {
+					if v, err := tx.GetOne(modules.QMDBMeta, commitment.QMDBAccountFrozenAtKey); err == nil && len(v) == 8 {
+						frozenAt = binary.BigEndian.Uint64(v)
+						return nil
+					}
+					frozenAt = bc.CurrentBlock().Number64().Uint64() + 1
+					var buf [8]byte
+					binary.BigEndian.PutUint64(buf[:], frozenAt)
+					return tx.Put(modules.QMDBMeta, commitment.QMDBAccountFrozenAtKey, buf[:])
+				}); err != nil {
+					return nil, fmt.Errorf("record the Account table freeze: %w", err)
+				}
+				log.Warn("QMDB-only account persistence: the plain Account table is frozen; snap-sync serving and state dumps read a stale table (measurement lever, docs/QS_BLOCK_TIME_BUDGET.md round 26)",
+					"frozenAt", frozenAt)
+			}
 
 		case state.RootSchemeLegacyKeccak:
 			log.Info("State commitment: Legacy-Keccak (no tree)")
@@ -1023,6 +1143,9 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 		default:
 			return nil, fmt.Errorf("unsupported state scheme: %s", stateScheme)
 		}
+	}
+	if commitment.QMDBOnlyAccountWrites() && !modules.PlainAccountWriteSkipped() {
+		return nil, fmt.Errorf("N42_STATE_WRITE_QMDB_ONLY=1 needs a chain committing with QMDB (state scheme %s does not)", stateScheme)
 	}
 
 	// Initialize ZK proving if configured.
@@ -1993,6 +2116,27 @@ func (n *Node) Start() error {
 		n.snapshotMgr.Start()
 	}
 
+	// History index off the commit path: skipped inline in the state writer and
+	// rebuilt from the changesets behind the head. Measured inline it costs
+	// 130 ms of its own phase plus 266 ms of mdbx_txn_commit paying for the
+	// pages its scattered rows dirty. Whether moving it off the block's
+	// critical section keeps that saving -- or the backfiller gives it back
+	// competing for the same MDBX write lock -- is what this mode measures.
+	if state.HistoryIndexDeferred() {
+		log.Warn("history index DEFERRED — rebuilt off the commit path from changesets; " +
+			"historical queries above the backfill marker are refused until it catches up")
+		n.historyBackfiller = internal.NewHistoryBackfiller(n.db,
+			func() uint64 {
+				if bc := n.blockChain; bc != nil {
+					if cur := bc.CurrentBlock(); cur != nil {
+						return cur.Number64().Uint64()
+					}
+				}
+				return 0
+			}, 256, 2*time.Second)
+		n.historyBackfiller.Start()
+	}
+
 	// Start pruner if enabled
 	if n.config.PruneCfg.IsEnabled() {
 		hp := &nodeHealthProvider{node: n}
@@ -2161,10 +2305,32 @@ func (n *Node) startIngestServer() {
 		n.config.IngestCfg.SoftTarget,
 		n.config.IngestCfg.HardCap,
 	)
+	if n.config.IngestCfg.HintOnly {
+		// Recovery across three quarters of this node's CPU budget, as the
+		// import's own sender recovery sizes itself; the endpoint is fed
+		// ahead of the block, so it competes with nothing on the critical
+		// path except itself.
+		workers := runtime.GOMAXPROCS(0)
+		if workers > 2 {
+			workers -= workers / 4
+		}
+		// The import verifies with the signer of the block's fork rules
+		// (MakeSignerWithTimestamp), and the sender cache is keyed by that
+		// signer: recover into the same one, following the chain head.
+		cfg := n.blockChain.Config()
+		bc := n.blockChain
+		n.ingestServer.EnableHintOnly(func() transaction.Signer {
+			h := bc.CurrentBlock()
+			if h == nil || h.Number64() == nil {
+				return transaction.LatestSignerForChainID(cfg.ChainID)
+			}
+			return transaction.MakeSignerWithTimestamp(cfg, h.Number64().ToBig(), h.Time())
+		}, workers)
+	}
 	if err := n.ingestServer.Start(); err != nil {
 		log.Error("Ingest server failed to start", "err", err)
 	} else {
-		log.Info("Ingest server enabled", "addr", n.config.IngestCfg.Addr)
+		log.Info("Ingest server enabled", "addr", n.config.IngestCfg.Addr, "hintOnly", n.config.IngestCfg.HintOnly)
 	}
 }
 
@@ -3142,6 +3308,15 @@ func (n *Node) stopServices() []error {
 			}
 			return nil
 		}},
+		// 3a. History backfiller — stopped before the DB closes; it holds no
+		// state of its own, and a partial batch is simply rebuilt from the
+		// marker, so an abrupt stop costs one batch of work and nothing else.
+		{"History backfiller", func() error {
+			if n.historyBackfiller != nil {
+				n.historyBackfiller.Stop()
+			}
+			return nil
+		}},
 		// 3b. History expirer
 		{"History expirer", func() error {
 			if n.historyExpirer != nil {
@@ -3421,6 +3596,15 @@ func (n *Node) SetupMetrics(config conf.MetricsConfig) {
 	// Register Go runtime and system-level metrics.
 	nodeMetrics.RegisterSystemMetrics()
 
+	// Attach lib/metrics' default Set to the registry this endpoint serves.
+	// Without this the whole storage-layer family -- db_pgops{phase=...},
+	// kvcache, txpool, layered, disk, mem -- is updated on every MDBX commit
+	// (MdbxTx.Commit calls CollectMetrics unconditionally) and readable from
+	// nowhere: lib/metrics.Setup is the only thing that registers that Set and
+	// it has no callers. Registering here keeps one endpoint and one port
+	// rather than starting the second HTTP server Setup would.
+	prometheus.RegisterCollector(libmetrics.DefaultSet())
+
 	if config.HTTP != "" {
 		address := net.JoinHostPort(config.HTTP, strconv.Itoa(config.Port))
 		log.Info("Enabling stand-alone metrics HTTP endpoint", "address", address)
@@ -3485,6 +3669,9 @@ func OpenDatabase(ctx context.Context, cfg *conf.Config, logger log2.Logger, nam
 		Path(dbPath).Label(kv.ChainDB).
 		DBVerbosity(kv.DBVerbosityLvl(2)).RoTxsLimiter(roTxsLimiter).
 		MapSize(mdbxMapSizeOr(8 * datasize.TB))
+	if gb := mdbxDirtyGB(); gb > 0 {
+		chainOpts = chainOpts.DirtySpace(gb * uint64(datasize.GB))
+	}
 	chainOpts = mdbxSyncModeOr(chainOpts, logger)
 	chainKv, err := chainOpts.Open(ctx)
 	if err != nil {
@@ -3528,6 +3715,59 @@ func mdbxSyncModeOr(opts mdbx.MdbxOpts, logger log2.Logger) mdbx.MdbxOpts {
 		logger.Warn("ignoring unknown N42_MDBX_SYNC value, staying durable", "value", v)
 		return opts
 	}
+}
+
+// checkPrefetchHasCache rejects --prefetch when there is no shared state cache
+// for it to populate.
+//
+// Prefetch's entire benefit path is that its I/O workers warm the ShardedCache
+// the executor subsequently reads through. evmRecord wraps the block's reader
+// in a CachedStateReader only when layered.ExtractCache returns non-nil, and
+// that happens solely for a *layered.LayeredDB; LayeredDBCfg.Enable defaults
+// false and no CLI flag sets it. So on a normal datadir the prefetch workers
+// race the executor's single MDBX cursor to fill a cache that does not exist:
+// all of the halt risk, none of the benefit. A log warning is the wrong
+// response to a flag that can only cost, so this fails fast the way the
+// mobileverify guard does and names the config key that would make it coherent.
+//
+// Passing a non-nil cache does NOT make prefetch safe -- the shared-cursor race
+// in internal/prefetcher.go is unfixed and its warning still fires. This guard
+// only removes the case where the race buys nothing at all.
+func checkPrefetchHasCache(cache *layered.ShardedCache) error {
+	if cache != nil {
+		return nil
+	}
+	return errors.New("prefetch is enabled but there is no shared state cache to populate: " +
+		"its reads reach the executor only through the ShardedCache of a layered DB, and " +
+		"layered_db.enable is false, so prefetch would race the executor's MDBX cursor " +
+		"(see internal/prefetcher.go) for no benefit. Enable layered_db.enable, or turn prefetch off")
+}
+
+// mdbxDirtyGB returns an override in GB for the ChainDB's dirty-page limit,
+// from N42_MDBX_DIRTY_GB, or 0 to leave MDBX's computed default alone.
+//
+// Why this exists. computeDirtySpace gives the ChainDB min(TotalMemory/42,
+// 1 GB), so a 136 GB box gets 1 GB and would otherwise have had 3.24 GB. When a
+// block's dirty set crosses that limit MDBX spills pages mid-transaction, and
+// the cost lands in whichever write phase is running rather than in the commit:
+// measured on the qs fleet, 5% of blocks ran chgset at 1021 ms against 191 ms
+// for the rest while writing only 1.06x the bytes, which is ~42 ms a block
+// averaged over the workload and about 7% of the write path. It is also the
+// single largest source of run-to-run variance on that rig -- large enough that
+// four rounds could not measure a 100 ms treatment through it.
+//
+// An env var rather than a config field, matching N42_MDBX_MAPSIZE_GB above, so
+// a round can A/B the limit without a rebuild. Raising it costs resident memory
+// in the worst case (a transaction may hold that many dirty pages before
+// spilling), so it is not raised by default here: the default stays whatever
+// MDBX computes until a round says what the right value is.
+func mdbxDirtyGB() uint64 {
+	if v := os.Getenv("N42_MDBX_DIRTY_GB"); v != "" {
+		if gb, err := strconv.ParseUint(v, 10, 64); err == nil && gb > 0 {
+			return gb
+		}
+	}
+	return 0
 }
 
 // mdbxMapSizeOr returns sz, or an override from N42_MDBX_MAPSIZE_GB when set.

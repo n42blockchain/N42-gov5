@@ -19,6 +19,7 @@ import (
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
+	"github.com/n42blockchain/N42/lib/trie"
 	"github.com/n42blockchain/N42/modules"
 )
 
@@ -39,16 +40,17 @@ func flushBuf(tx kv.RwTx, table string, buf *[]kvPair) error {
 
 // flushAllBufs drains every sorted-batch buffer into the tx.
 func (b *builder) flushAllBufs(tx kv.RwTx) error {
-	// In --leaf-seg mode the chg rows go to the segment spill like the leaf
-	// rows do (write-once, never read back by the builder; StorChg was the
-	// LARGEST table of the 6M calibration). Node records stay in MDBX — the
+	// In --leaf-seg mode the chg rows and the ACCOUNT node records go to the
+	// segment spill like the leaf rows do (write-once; the account-side
+	// FULL/DIFF bookkeeping lives entirely in accLastFull, so the builder
+	// never reads them back). Storage node records stay in MDBX — the
 	// lastFullCache read-back needs them queryable.
 	if b.spill != nil {
 		for _, e := range []struct {
 			tab int
 			buf *[]kvPair
 		}{
-			{segTabChgA, &b.chgAccBuf}, {segTabChgS, &b.chgStoBuf},
+			{segTabChgA, &b.chgAccBuf}, {segTabChgS, &b.chgStoBuf}, {segTabNodeA, &b.nodeAccBuf},
 		} {
 			for i := range *e.buf {
 				if err := b.spill.add(e.tab, (*e.buf)[i].k, (*e.buf)[i].v); err != nil {
@@ -58,14 +60,22 @@ func (b *builder) flushAllBufs(tx kv.RwTx) error {
 			*e.buf = (*e.buf)[:0]
 		}
 	}
+	if b.spill != nil {
+		for i := range b.stoRootBuf {
+			if err := b.spill.add(segTabStoRoot, b.stoRootBuf[i].k, b.stoRootBuf[i].v); err != nil {
+				return err
+			}
+		}
+		b.stoRootBuf = b.stoRootBuf[:0]
+	}
 	for _, e := range []struct {
 		table string
 		buf   *[]kvPair
 	}{
 		{tDatcAccChg, &b.chgAccBuf}, {tDatcStoChg, &b.chgStoBuf},
 		{tDatcLeafA, &b.leafABuf}, {tDatcLeafS, &b.leafSBuf},
-		{tDatcAccNode, &b.nodeAccBuf}, {tDatcStoNode, &b.nodeStoBuf},
 		{tDatcStoRoot, &b.stoRootBuf},
+		{tDatcAccNode, &b.nodeAccBuf}, {tDatcStoNode, &b.nodeStoBuf},
 	} {
 		if err := flushBuf(tx, e.table, e.buf); err != nil {
 			return err
@@ -75,48 +85,25 @@ func (b *builder) flushAllBufs(tx kv.RwTx) error {
 }
 
 func (b *builder) maybeEarlyFlush(tx kv.RwTx) error {
-	// Cap the unbounded storage change-aggregation map: drain it to the (compact,
-	// length-capped) sorted buffers, which the buffer check below then flushes.
-	if b.chgAggCapBytes > 0 && b.chgStoAggBytes > b.chgAggCapBytes {
-		b.flushChgAgg()
-	}
-	// EVERY growing buffer must be checked, not just the leaf/chg ones.
-	//
-	// --records-only writes ONLY node records + StoRoot: putLeaf returns early
-	// and the chg aggregation is skipped, so chgAccBuf/chgStoBuf/leafABuf/
-	// leafSBuf stay permanently EMPTY. Checking only those four made the gate
-	// unreachable in Pipeline B, and nodeAccBuf/nodeStoBuf/stoRootBuf grew
-	// unbounded to the batch boundary (20k blocks) — measured 2026-08-31 at
-	// 75 GB private / 0.4 GB system free before the run had to be killed.
-	// Pipeline B had never been executed, which is why this never showed up.
-	if earlyFlushNeeded(b) {
+	if len(b.chgAccBuf) > bufFlushThreshold || len(b.chgStoBuf) > bufFlushThreshold ||
+		len(b.leafABuf) > bufFlushThreshold || len(b.leafSBuf) > bufFlushThreshold {
 		return b.flushAllBufs(tx)
 	}
 	return nil
-}
-
-// earlyFlushNeeded reports whether any write buffer has grown past the flush
-// threshold. Extracted so a unit test can pin that EVERY buffer is covered —
-// see TestEarlyFlushGateCoversEveryBuffer.
-func earlyFlushNeeded(b *builder) bool {
-	return len(b.chgAccBuf) > bufFlushThreshold || len(b.chgStoBuf) > bufFlushThreshold ||
-		len(b.leafABuf) > bufFlushThreshold || len(b.leafSBuf) > bufFlushThreshold ||
-		len(b.nodeAccBuf) > bufFlushThreshold || len(b.nodeStoBuf) > bufFlushThreshold ||
-		len(b.stoRootBuf) > bufFlushThreshold
 }
 
 // emitBlock writes one block's leaf-history rows + change events for the
 // dirty maps (shared by the per-block and window paths).
 func (b *builder) emitBlock(n uint64,
 	dirtyA map[types.Address]*account.StateAccount, dirtyS map[types.Address]map[types.Hash]*uint256.Int,
-	blk8 [8]byte) error {
+	blk4 [blkLen]byte) error {
 	for addr, acct := range dirtyA {
 		ah := b.addrHash(addr)
 		var val []byte
 		if acct != nil {
 			val = acct.MarshalV2()
 		}
-		if err := b.putLeaf(false, append(append([]byte{}, ah[:]...), blk8[:]...), val); err != nil {
+		if err := b.putLeaf(false, append(append([]byte{}, ah[:]...), blk4[:]...), val); err != nil {
 			return err
 		}
 		b.leafAPuts++
@@ -133,17 +120,10 @@ func (b *builder) emitBlock(n uint64,
 		if _, also := dirtyA[addr]; !also {
 			b.recordChange(false, nil, nibblesOf(ah[:]), n)
 		}
-		domain := make([]byte, 40)
-		copy(domain, ah[:])
-		// domain = addrHash(32) ‖ 8 zero bytes. The 8 trailing bytes are a
-		// DATC-internal leaf-composite convention only (the 72-byte DatcLeafS
-		// key = domain‖slotHash); they are NOT an incarnation — the system
-		// dropped incarnation, and the physical HashedStorage/TrieOfStorage
-		// keys are addrHash(32)-prefixed. Any read of those external tables
-		// must use ah[:] (32 bytes), never this 40-byte domain.
+		domain := ah[:] // storage domain = addrHash (32B)
 		for slot, v := range slots {
 			sh := b.slotHash(slot)
-			composite := make([]byte, 0, 72+8)
+			composite := make([]byte, 0, stoDomainLen+32+blkLen)
 			composite = append(composite, domain...)
 			composite = append(composite, sh[:]...)
 			var val []byte
@@ -155,7 +135,7 @@ func (b *builder) emitBlock(n uint64,
 				}
 				val = append([]byte{}, bb[s:]...)
 			}
-			if err := b.putLeaf(true, append(composite, blk8[:]...), val); err != nil {
+			if err := b.putLeaf(true, append(composite, blk4[:]...), val); err != nil {
 				return err
 			}
 			b.leafSPuts++
@@ -168,15 +148,22 @@ func (b *builder) emitBlock(n uint64,
 // recordChange records one dirty key: the changed-children bitmap per ancestor
 // path (drives node diff records) and an aggregated change event per level.
 //
-// d0 change rows are deliberately NOT written: E_0 = 1 means the floor record
-// for any query already sits at block N itself (epoch == block), so the d0
-// change window is empty by construction and the verifier never reads it.
+// Change rows are written for every level whose epoch is longer than one
+// block AND that has node records: the account-trie root (d0) has no record
+// (it is synthesized from its depth-1 children), so account d0 rows are never
+// written; storage tries DO have d0 (root) records, so storage d0 rows are
+// written whenever E_0 > 1 — the reader needs them to tell a mid-epoch
+// storage root apart from the previous epoch's record.
 func (b *builder) recordChange(storage bool, domain []byte, keyNibbles []byte, n uint64) {
 	if storage {
 		b.recordChangeStorage(domain, keyNibbles, n)
 		return
 	}
-	maxD := maxChgDepth
+	// Levels with records: 0..accDepth-1 (the reader folds at accDepth).
+	maxD := b.accDepth - 1
+	if maxD > maxChgDepth {
+		maxD = maxChgDepth
+	}
 	if maxD > len(keyNibbles)-1 {
 		maxD = len(keyNibbles) - 1
 	}
@@ -191,8 +178,8 @@ func (b *builder) recordChange(storage bool, domain []byte, keyNibbles []byte, n
 		} else if cur&bit == 0 {
 			b.accDirty[d][idx] = cur | bit
 		}
-		if d != 0 && b.sched.e[d] != 1 && !b.recordsOnly {
-			epoch := uint32(b.sched.epochOf(d, n))
+		if l := b.sched.lenFor(false, d); l > 1 {
+			epoch := uint32(n / l)
 			slot := &b.chgAccAgg[d][idx]
 			if len(slot.events) > 0 && slot.epoch != epoch {
 				// Epoch rolled over inside the batch: drain the closed epoch's
@@ -218,29 +205,23 @@ func (b *builder) recordChange(storage bool, domain []byte, keyNibbles []byte, n
 // recordChangeStorage is the sparse-domain (per-contract) variant: maps stay,
 // but with pointer values — repeated touches are alloc-free lookups.
 func (b *builder) recordChangeStorage(domain []byte, keyNibbles []byte, n uint64) {
-	maxD := maxChgDepth
+	// Levels with records: 0..stoDepth-1 (the reader folds at stoDepth).
+	maxD := b.stoDepth - 1
+	if maxD > maxChgDepth {
+		maxD = maxChgDepth
+	}
 	if maxD > len(keyNibbles)-1 {
 		maxD = len(keyNibbles) - 1
 	}
 	// One shared key buffer: d(1) | domain | path nibbles | epoch(4); the
 	// dirty key is the [1:1+len(domain)+d] slice, the agg key the whole thing.
-	//
-	// The loop MUST run d = maxD..0 (descending): the agg key for depth d
-	// writes epoch(4) at kb[1+len(domain)+d:], which CLOBBERS the nibble
-	// slots for depths d+1..d+4. Ascending order corrupted every stoDirty pk
-	// and chg agg key at d>=2 into domain|nib0|epoch-bytes (0x00...) — the
-	// deep storage node/chg rows landed under keys the querier (which builds
-	// clean path keys) can never hit, i.e. dead rows + permanent record MISS
-	// at storage depths >= 2 (the reader's fold fallback masked it). With the
-	// descending order each depth consumes its nibbles BEFORE any shallower
-	// depth's epoch write can touch them.
 	kb := b.chgKeyScratch[:0]
 	kb = append(kb, 0)
 	kb = append(kb, domain...)
 	kb = append(kb, keyNibbles[:maxD]...)
 	kb = append(kb, 0, 0, 0, 0)
 	b.chgKeyScratch = kb
-	for d := maxD; d >= 0; d-- {
+	for d := 0; d <= maxD; d++ {
 		bit := uint16(1) << keyNibbles[d]
 		pk := kb[1 : 1+len(domain)+d]
 		if p, ok := b.stoDirty[d][string(pk)]; ok {
@@ -249,24 +230,22 @@ func (b *builder) recordChangeStorage(domain []byte, keyNibbles []byte, n uint64
 			v := bit
 			b.stoDirty[d][string(pk)] = &v
 		}
-		if d == 0 || b.stoSched.e[d] == 1 || b.recordsOnly {
-			continue // empty-window levels / records-only: change rows not aggregated
+		if b.sched.e[d] == 1 {
+			continue // per-block level: the floor record is exact, no window
 		}
-		epoch := b.stoSched.epochOf(d, n)
+		epoch := b.sched.epochOf(d, n)
 		kb[0] = byte(d)
 		ak := kb[:1+len(domain)+d+4]
 		binary.BigEndian.PutUint32(ak[len(ak)-4:], uint32(epoch))
 		if p, ok := b.chgStoAgg[string(ak)]; ok {
 			*p = append(*p, chgEvent{block: uint32(n), nibble: keyNibbles[d]})
-			b.chgStoAggBytes += chgEventSize // amortized event growth
 		} else {
 			evs := make([]chgEvent, 0, 8)
 			evs = append(evs, chgEvent{block: uint32(n), nibble: keyNibbles[d]})
 			b.chgStoAgg[string(ak)] = &evs
-			// new entry: map bucket + key string + slice header/backing overhead.
-			b.chgStoAggBytes += len(ak) + 8*chgEventSize + 80
 		}
 		b.chgPuts++
+		b.chgStoPuts++
 	}
 }
 
@@ -294,8 +273,11 @@ func (b *builder) drainAccSlot(d int, idx uint32, slot *chgSlot) {
 // write buffers: one row per (prefix, batch segment), keyed by the segment's
 // first block so an epoch spanning batches concatenates in block order.
 func (b *builder) flushChgAgg() {
-	// Account side: drain the flat slots via the touched lists and reset them.
-	for d := 1; d <= maxChgDepth; d++ {
+	// Account side: drain the flat slots via the touched lists and reset them
+	// (level 0 included: the root's change rows exist when --acc-root-epoch
+	// > 1; an open epoch's partial row is keyed by its first block like any
+	// other level's).
+	for d := 0; d <= maxChgDepth; d++ {
 		for _, idx := range b.chgAccAggTouched[d] {
 			slot := &b.chgAccAgg[d][idx]
 			if len(slot.events) > 0 {
@@ -315,24 +297,22 @@ func (b *builder) flushChgAgg() {
 		}
 		delete(b.chgStoAgg, ak)
 	}
-	b.chgStoAggBytes = 0
 }
 
 // flushEpoch persists the epoch-end node bytes for every path changed during
 // the closing epoch of level d, reading the CURRENT TrieOf* rows.
 func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
 	// Account side: sorted dense indices (numeric order == path order for a
-	// fixed level), path reconstructed from the index.
-	if len(b.accTouched[d]) > 0 {
+	// fixed level), path reconstructed from the index. Level 0 (the root) is
+	// owned by flushAccRoot (its own cadence, dense-hook sourced).
+	if d > 0 && len(b.accTouched[d]) > 0 {
 		touched := b.accTouched[d]
 		sort.Slice(touched, func(i, j int) bool { return touched[i] < touched[j] })
 		path := make([]byte, d)
 		for _, idx := range touched {
 			changed := b.accDirty[d][idx]
 			b.accDirty[d][idx] = 0
-			if changed == 0 || d == 0 {
-				// d0 = the account-trie root: no TrieAccount row by convention;
-				// the verifier synthesizes it from the depth-1 children.
+			if changed == 0 {
 				continue
 			}
 			v := idx
@@ -346,17 +326,45 @@ func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
 		}
 		b.accTouched[d] = touched[:0]
 	}
-	// Storage-side records flush separately on b.stoSched boundaries (the
-	// account schedule may be dense at d3 for B-prime; mirroring that on the
-	// storage trie wrote a full node row per dirty depth-3 path PER BLOCK).
-	return nil
+	return b.flushStoLevel(tx, d, epoch)
 }
 
-// flushAccPath emits one account-trie node record (FULL/DIFF/tombstone).
+// flushAccRoot records the account-trie root node (no TrieOfAccounts row
+// exists for it; the bytes come from the loader's dense hook) when any
+// account changed since the last root record.
+func (b *builder) flushAccRoot(tx kv.RwTx, epoch uint64) error {
+	changed := b.accDirty[0][0]
+	b.accDirty[0][0] = 0
+	b.accTouched[0] = b.accTouched[0][:0]
+	if changed == 0 {
+		return nil
+	}
+	return b.flushAccPath(tx, []byte{}, changed, epoch)
+}
+
+// nodeUsable reports whether a TrieOf* node can ever be assembled by the
+// reader: every present child must carry a stored hash (a plain branch of
+// hashed children). Nodes with leaf/extension children are folded from the
+// leaf history instead, so their masks and hashes are never read.
+func nodeUsable(node []byte) bool {
+	if len(node) < 6 {
+		return false
+	}
+	hasState, _, hasHash, _, _ := trie.UnmarshalTrieNode(node)
+	return hasState != 0 && hasState == hasHash
+}
+
+// flushAccPath emits one account-trie node record (FULL/DIFF/MIXED/tombstone).
 func (b *builder) flushAccPath(tx kv.RwTx, path []byte, changed uint16, epoch uint64) error {
 	node, err := tx.GetOne(modules.TrieOfAccounts, path)
 	if err != nil {
 		return err
+	}
+	// Prefer the loader's dense form: complete child hashes even when the
+	// TrieOf row is mixed (leaf/extension children) or absent (the root).
+	if dn := b.takeDense(false, string(path)); dn != nil && (len(node) == 0 || !nodeUsable(node)) {
+		node = dn
+		b.statDenseUpgraded++
 	}
 	k := make([]byte, 0, 1+len(path)+4)
 	k = append(k, byte(len(path)))
@@ -370,20 +378,20 @@ func (b *builder) flushAccPath(tx kv.RwTx, path []byte, changed uint16, epoch ui
 			return nil // never had a live record: elide
 		}
 		b.accLastFull[string(path)] = nodeRecState{exists: false}
-	case !st.exists || st.lastFullEpoch >= accFullEvery-1:
-		// Account-side FULL cadence counts RECORDS, not epochs (the reader's
-		// floorRecordBefore walks the record chain, never epoch distance).
-		// The old epoch-distance rule made EVERY record FULL for any node
-		// changing less often than fullEvery blocks under a dense (e=1)
-		// schedule — 529 B/record instead of ~45 (the 2M B′ measurement).
-		// lastFullEpoch is repurposed on this side as the DIFFs-since-FULL
-		// counter; a restart loses the map and safely degrades to FULL.
+	case !nodeUsable(node):
+		if st.mixed && !b.resumed {
+			b.statMixedElided++
+			return nil // still mixed: the floor already says "fold"
+		}
+		v = []byte{nodeRecMixed}
+		b.statMixedBytesSaved += uint64(len(node))
+		b.accLastFull[string(path)] = nodeRecState{mixed: true}
+	case !st.exists || st.diffs >= fullEvery-1:
 		v = append([]byte{nodeRecFull}, node...)
-		b.accLastFull[string(path)] = nodeRecState{lastFullEpoch: 0, exists: true}
+		b.accLastFull[string(path)] = nodeRecState{exists: true}
 	default:
 		v = encodeNodeDiff(node, changed)
-		st.lastFullEpoch++
-		st.exists = true
+		st.diffs++
 		b.accLastFull[string(path)] = st
 	}
 	b.nodeAccBuf = append(b.nodeAccBuf, kvPair{k: k, v: v})
@@ -419,25 +427,19 @@ func (b *builder) flushStoLevel(tx kv.RwTx, d int, epoch uint64) error {
 			changed := *pending[pk]
 			path := []byte(pk)
 			delete(pending, pk)
-			// Read the live storage-trie node from TrieOfStorage. The system
-			// dropped incarnation: the trie computer keys TrieOfStorage by
-			// addrHash(32)‖nibblePath with NO incarnation (storCollector in
-			// modules/state/commitment/trie_root_computer.go). DATC's internal
-			// `path` carries an 8-byte zero incarnation after the addrHash
-			// (addrHash32‖inc8‖nibblePath) — a leaf-composite-only convention
-			// that never appears in the physical key. TrieOfStorage is a PLAIN
-			// DupSort (not AutoDupSort), so there is no key-length folding to
-			// absorb the extra 8 bytes: a 40-byte-prefixed read misses every
-			// node and the record is silently elided as a tombstone (this is
-			// why DatcStorNode came out empty). Strip the incarnation for the
-			// external read — same lesson as the HashedStorage SeekBothRange
-			// reads in main.go.
-			stoKey := make([]byte, 0, len(path)-8)
-			stoKey = append(stoKey, path[:32]...)
-			stoKey = append(stoKey, path[40:]...)
-			node, err := tx.GetOne(srcTable, stoKey)
+			// Full-key read works for the DupSort table: the kv layer auto-
+			// converts keys exactly as trie_root_computer's own Put/Delete do.
+			node, err := tx.GetOne(srcTable, path)
 			if err != nil {
 				return err
+			}
+			if len(node) > 0 && !nodeUsable(node) {
+				if dn := b.takeDense(true, pk); dn != nil {
+					node = dn
+					b.statDenseUpgraded++
+				}
+			} else {
+				b.takeDense(true, pk)
 			}
 			// DATC node record: pathLen(1) | domain|path | epoch(4) → record.
 			// Empty value = tombstone; else flags byte (FULL | DIFF). A FULL is
@@ -463,16 +465,25 @@ func (b *builder) flushStoLevel(tx kv.RwTx, d int, epoch uint64) error {
 					continue
 				}
 				putLF(pk, nodeRecState{exists: false})
-			case !st.exists || degraded || uint32(epoch) >= st.lastFullEpoch+fullEvery:
+			case !nodeUsable(node):
+				if st.mixed {
+					b.statMixedElided++
+					continue // still mixed: the floor already says "fold"
+				}
+				v = []byte{nodeRecMixed}
+				b.statMixedBytesSaved += uint64(len(node))
+				putLF(pk, nodeRecState{mixed: true})
+			case !st.exists || degraded || st.diffs >= fullEvery-1:
 				v = append([]byte{nodeRecFull}, node...)
-				putLF(pk, nodeRecState{lastFullEpoch: uint32(epoch), exists: true})
+				putLF(pk, nodeRecState{exists: true})
 			default:
 				v = encodeNodeDiff(node, changed)
-				st.exists = true
+				st.diffs++
 				putLF(pk, st)
 			}
 			*buf = append(*buf, kvPair{k: k, v: v})
 			b.nodePuts++
+			b.nodeStoPuts++
 		}
 		return nil
 	}

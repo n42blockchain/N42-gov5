@@ -34,8 +34,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -236,6 +239,26 @@ func (bc *BlockChain) SetExecutedHook(h func(hash, txHash, parentHash types.Hash
 // timeout passes. The early-vote path lets a view advance while the previous
 // block's persistence is still in flight, so a leader triggered at the view
 // change may need to wait a few milliseconds before building on it.
+// WaitBlockApplied waits until hash is the applied head (the QMDB applied
+// marker), the state a build on it must read. Persisted is not enough: a
+// sibling's header is stored before its state is applied.
+func (bc *BlockChain) WaitBlockApplied(hash types.Hash, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if bc.AppliedHeadIs(hash) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-bc.ctx.Done():
+			return false
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
 func (bc *BlockChain) WaitBlockPersisted(hash types.Hash, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for {
@@ -393,9 +416,95 @@ func (bc *BlockChain) SetQMDBRootComputer(rc *commitment.QMDBRootComputer) {
 // falls back to the default MPT state root). tx must be a read tx at the parent
 // head; the QMDB DB state tracks the head because writeBlockWithState flushes
 // per block.
-func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx) state.RootComputer {
-	if !bc.qmdbEnabled {
+// BuildParallel runs the builder's candidate list through Block-STM on ibs
+// (lenient: failed candidates are dropped) and returns the survivors with
+// their receipts. See StateProcessor.BuildParallel.
+func (bc *BlockChain) BuildParallel(header *block.Header, txs []*transaction.Transaction, ibs *state.IntraBlockState, blockHashFunc func(n uint64) types.Hash) (included []*transaction.Transaction, receipts block.Receipts, usedGas uint64, failed int, err error) {
+	sp, ok := bc.process.(*StateProcessor)
+	if !ok || sp == nil {
+		return nil, nil, 0, 0, ErrParallelNotApplicable
+	}
+	run, err := sp.BuildParallel(header, txs, ibs, blockHashFunc)
+	if err != nil {
+		return nil, nil, 0, 0, err
+	}
+	return run.Included, run.Receipts, run.UsedGas, run.Failed, nil
+}
+
+// logStartupStateFingerprint prints, on every node, what the startup repair
+// left behind: the live QMDB tree's root and append cursor, the applied
+// marker, and the canonical head. Round 35z5: one node came up holding an
+// uncommitted speculative block (slot 489598909 against the fleet's
+// 489543974), reverted it, led the next view and sealed a root the other six
+// did not compute -- and there was no way to tell from the logs whether its
+// tree was already wrong here or only diverged when it executed. Seven of
+// these lines, one per node, answer that in one grep.
+func (bc *BlockChain) logStartupStateFingerprint() {
+	if !bc.qmdbEnabled || bc.qmdbRootComputer == nil {
+		return
+	}
+	root := bc.qmdbRootComputer.Root()
+	nextSlot := bc.qmdbRootComputer.Tree().NextSlot()
+	var appliedNum uint64
+	var appliedHash types.Hash
+	var haveApplied bool
+	if err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		n, h, ok, err := rawdb.ReadQMDBApplied(tx)
+		if err != nil {
+			return err
+		}
+		appliedNum, appliedHash, haveApplied = n, types.Hash(h), ok
 		return nil
+	}); err != nil {
+		log.Warn("startup state fingerprint: applied marker unreadable", "err", err)
+	}
+	head := bc.CurrentBlock()
+	headNum := uint64(0)
+	headHash := types.Hash{}
+	if head != nil {
+		headNum = head.Number64().Uint64()
+		headHash = head.Hash()
+	}
+	log.Info("startup state fingerprint",
+		"treeRoot", fmt.Sprintf("%x", root[:8]), "nextSlot", nextSlot,
+		"appliedNum", appliedNum, "appliedHash", fmt.Sprintf("%x", appliedHash[:8]),
+		"haveApplied", haveApplied,
+		"headNum", headNum, "headHash", fmt.Sprintf("%x", headHash[:8]))
+}
+
+// voidMinerRootTrust makes the builder's persistent speculative computer
+// rebuild from the entry log on its next use. Its fast reload trusts its
+// index below a cursor for THIS store's layout; an unwind or a failed-block
+// revert rewrites entries below that cursor, and a trusted reload over the
+// new layout yields a root the followers cannot reproduce. Round 35m, node2
+// leading four views in a row: a stale seal at 13881479, a branch switch to
+// the lowest-hash sibling, and its next speculative build proposed 13881480
+// with a root six followers rejected (state root mismatch, zero
+// transactions). The full rebuild is 10-23 s at 13.9M blocks, so only the
+// mutating unwind voids it: the failed-block revert fires on routine paths
+// (35m's relaunch: 48 voids in four minutes, every build a full reload,
+// one block a minute).
+func (bc *BlockChain) voidMinerRootTrust(reason string) {
+	bc.minerRCMu.Lock()
+	defer bc.minerRCMu.Unlock()
+	if bc.minerRC != nil {
+		bc.minerRC.VoidIndexTrust()
+		log.Warn("miner speculative tree: index trust voided; next build rebuilds", "reason", reason)
+	}
+}
+
+// minerAdoptAppends gates NewMinerRootComputer's own-block fast path; off by
+// default until a fleet round has read it (QS_BLOCK_TIME_BUDGET, round 35zf).
+var minerAdoptAppends = os.Getenv("N42_MINER_ADOPT_APPENDS") == "1"
+
+// NewMinerRootComputer returns the isolated computer a leader build seals
+// its state root on, or (nil, nil) when the chain does not commit with QMDB.
+// A reload failure is returned as an error rather than swallowed: the caller
+// used to seal on the default root instead, a block no follower accepts and
+// one whose stale write later panicked the worker (round 35r).
+func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx, parentRoot types.Hash) (state.RootComputer, error) {
+	if !bc.qmdbEnabled {
+		return nil, nil
 	}
 	// PERSISTENT speculative computer: a fresh instance pays a full index
 	// rescan (5.9M point reads, ~5s IO-bound — invisible on CPU profiles) on
@@ -417,20 +526,79 @@ func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx) state.RootComputer {
 		bc.minerRC = rc
 	}
 	rc.SetCold(tx)
+	// Own-block fast path (N42_MINER_ADOPT_APPENDS=1): the block this tree
+	// built is the parent of the block about to be built -- its root is the
+	// parent header's root, the live tree's cursor is where this tree's
+	// appends end, and no branch switch is queued -- so the tree already IS
+	// the parent's post-state. Keep it instead of peeling and re-reading
+	// the same entries from disk (persistWait + reload, ~450 ms a block on
+	// the leader at 163k). Anything else falls through to the reload.
+	if minerAdoptAppends && len(bc.minerPendingUndo) == 0 && rc.HasUnwrittenBuild() &&
+		parentRoot != (types.Hash{}) && rc.Root() == parentRoot && bc.qmdbRootComputer != nil {
+		// The tree IS the parent's post-state. Whatever the live tree has
+		// written of it is adopted (dropped from the undo bookkeeping); what
+		// it has not written yet -- our own block still in flight, two-deep
+		// speculation, track 3c -- stays as pending appends and the next
+		// build chains on top. Either way: no peel, no reload.
+		liveNext, liveFlushed := bc.qmdbRootComputer.NextSlot(), bc.qmdbRootComputer.FlushedThrough()
+		adopted := rc.AdoptOwnAppends(liveNext, liveFlushed)
+		chained := rc.ChainPendingBuild()
+		log.Debug("miner speculative tree continues on its own build", "root", parentRoot.Hex()[:12],
+			"adopted", adopted, "chained", chained, "pending", rc.PendingBuilds(), "slot", rc.NextSlot(), "liveSlot", liveNext)
+		return rc, nil
+	}
+	if err := rc.PeelAll(); err != nil {
+		log.Debug("miner speculative tree peel failed; full reload", "err", err)
+		rc.VoidIndexTrust()
+	}
 	if undo := rc.TakeUndo(); undo != nil {
 		// Previous build's candidate ops are still on the speculative tree;
 		// peel them so the index matches the last loaded layout again. A
 		// failed peel just voids the trust — ReloadForBuild rebuilds.
-		if err := rc.Tree().ApplyUndo(undo); err != nil {
+		if err := rc.ApplyUndo(undo); err != nil {
 			log.Debug("miner speculative tree candidate peel failed; full reload", "err", err)
 			rc.VoidIndexTrust()
 		}
 	}
+	bc.applyMinerRewindsLocked(rc, tx)
 	if err := rc.ReloadForBuild(tx); err != nil {
-		log.Warn("miner QMDB speculative reload failed; block uses default root", "err", err)
-		return nil
+		log.Warn("miner QMDB speculative reload failed; build abandoned", "err", err)
+		return nil, err
 	}
-	return rc
+	return rc, nil
+}
+
+// queueMinerRewind records a branch-switch undo for the miner's speculative
+// tree. Called from the live unwind (under bc.lock); consumed by the next
+// build under minerRCMu.
+func (bc *BlockChain) queueMinerRewind(undo *qmdb.BlockUndo) {
+	if undo == nil {
+		return
+	}
+	bc.minerRCMu.Lock()
+	defer bc.minerRCMu.Unlock()
+	if bc.minerRC == nil {
+		return // no speculative tree yet: its first load sees the store as it is
+	}
+	bc.minerPendingUndo = append(bc.minerPendingUndo, undo)
+}
+
+// applyMinerRewindsLocked peels queued branch-switch undos off the miner's
+// speculative tree, newest-applied first as the live tree did. Caller holds
+// minerRCMu and has already peeled the dangling candidate.
+func (bc *BlockChain) applyMinerRewindsLocked(rc *commitment.QMDBRootComputer, tx kv.Tx) {
+	pending := bc.minerPendingUndo
+	bc.minerPendingUndo = nil
+	for _, u := range pending {
+		if err := rc.RewindForUndo(tx, u); err != nil {
+			log.Warn("miner speculative tree: branch-switch rewind failed; next reload rebuilds from the entry log",
+				"firstSlot", u.PrevNextSlot, "err", err)
+			return // trust is void; the remaining records are moot
+		}
+	}
+	if len(pending) > 0 {
+		log.Info("miner speculative tree rewound for a branch switch", "records", len(pending))
+	}
 }
 
 // PrewarmMinerRootComputer performs the startup pre-warm reload AND the
@@ -457,7 +625,7 @@ func (bc *BlockChain) PrewarmMinerRootComputer(tx kv.Tx) bool {
 	bc.minerRC = rc
 	rc.SetCold(tx)
 	if undo := rc.TakeUndo(); undo != nil {
-		if err := rc.Tree().ApplyUndo(undo); err != nil {
+		if err := rc.ApplyUndo(undo); err != nil {
 			log.Debug("miner speculative tree candidate peel failed; full reload", "err", err)
 			rc.VoidIndexTrust()
 		}
@@ -582,6 +750,7 @@ func (bc *BlockChain) Start() error {
 	bc.alignCanonicalToAppliedOnStartup()
 	bc.repairCanonicalLinkageOnStartup()
 	bc.revertSpeculativeOnStartup()
+	bc.logStartupStateFingerprint()
 
 	// Pre-warm the speculative build computer off the leader's critical path:
 	// the FIRST build after a restart otherwise pays the full ~5s index
@@ -589,18 +758,26 @@ func (bc *BlockChain) Start() error {
 	// every other build rides the ~0.4s trusted reload). This must run AFTER all
 	// startup state repair/revert operations: an earlier snapshot can leave the
 	// trusted miner index pointing at slots that a startup unwind removed.
+	//
+	// SYNCHRONOUS since round 35z2 (2026-09-08): run in the background it
+	// held minerRCMu for the whole ~3.5 min load while HotStuff was already
+	// running -- every leader's build of those minutes blocked on the lock,
+	// eleven consecutive views timed out, and when the lock freed, the
+	// stale candidates from all of them surfaced at one height: a sibling
+	// storm, branch switches on every node, and the root divergence that
+	// aborted rounds 35z and 35z2. Consensus starts after this returns, so
+	// the first view finds a warm builder.
 	if bc.qmdbEnabled {
-		go func() {
-			err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
-				if bc.PrewarmMinerRootComputer(tx) {
-					log.Info("miner speculative computer pre-warmed")
-				}
-				return nil
-			})
-			if err != nil && bc.ctx.Err() == nil {
-				log.Warn("miner speculative computer pre-warm failed", "err", err)
+		t0 := time.Now()
+		err := bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+			if bc.PrewarmMinerRootComputer(tx) {
+				log.Info("miner speculative computer pre-warmed", "elapsed", time.Since(t0))
 			}
-		}()
+			return nil
+		})
+		if err != nil && bc.ctx.Err() == nil {
+			log.Warn("miner speculative computer pre-warm failed", "err", err)
+		}
 	}
 	// One Add per goroutine started right here — an Add larger than the
 	// number of goroutines makes Close()'s wg.Wait() block forever and every
@@ -1107,16 +1284,32 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 	var dRead, dWalk, dLookup, dLock, dBody time.Duration
 	var indexed *block.Block
 	tCommit := time.Now()
+	// The committed block is two views old and almost always the instance
+	// this node imported, still in the block cache with every transaction
+	// hash memoised. Reading it from MDBX instead decoded 163,000
+	// transactions (80 ms cold) and then hashed each of them again for the
+	// transaction index (~200 ms, serial) -- inside the HotStuff loop, before
+	// the next view could start (round 35zg's commit-to-canonical phases).
+	var cached *block.Block
+	if bc.blockCache != nil {
+		if b, ok := bc.blockCache.Get(hash); ok && b != nil {
+			cached = b
+		}
+	}
 	err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
 		tEnter := time.Now()
 		dLock = tEnter.Sub(tCommit)
 		defer func() { dBody = time.Since(tEnter) }()
 		tRead := time.Now()
-		blk, err := rawdb.ReadBlockByHash(tx, hash)
-		dRead = time.Since(tRead)
-		if err != nil {
-			return err
+		blk := cached
+		if blk == nil {
+			var err error
+			blk, err = rawdb.ReadBlockByHash(tx, hash)
+			if err != nil {
+				return err
+			}
 		}
+		dRead = time.Since(tRead)
 		if blk == nil {
 			return fmt.Errorf("committed block %s not in db", hash.Hex())
 		}
@@ -1286,8 +1479,28 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 	if indexed != nil {
 		txs := indexed.Transactions()
 		hashes := make([]types.Hash, len(txs))
-		for i, tx := range txs {
-			hashes[i] = tx.Hash()
+		// Memoised on the cached instance; a fresh decode still hashes, but
+		// across the cores rather than one.
+		workers := runtime.GOMAXPROCS(0)
+		if workers > 32 {
+			workers = 32
+		}
+		if len(txs) < 4096 || workers < 2 {
+			for i, tx := range txs {
+				hashes[i] = tx.Hash()
+			}
+		} else {
+			var wg sync.WaitGroup
+			for w := 0; w < workers; w++ {
+				wg.Add(1)
+				go func(start int) {
+					defer wg.Done()
+					for i := start; i < len(txs); i += workers {
+						hashes[i] = txs[i].Hash()
+					}
+				}(w)
+			}
+			wg.Wait()
 		}
 		bc.txIndexer.Add(indexed.Number64().Uint64(), hashes)
 	}
@@ -1325,6 +1538,17 @@ func (bc *BlockChain) LowestSiblingAtHeight(number uint64, parentHash types.Hash
 				continue
 			}
 			hh := h.Hash()
+			// A sibling this node failed to validate is never the one to
+			// converge on: round 26 locked a fleet on exactly such a block.
+			if rawdb.IsBadHeaderMarked(tx, hh) {
+				continue
+			}
+			bc.badSiblingsMu.RLock()
+			_, bad := bc.badSiblings[hh]
+			bc.badSiblingsMu.RUnlock()
+			if bad {
+				continue
+			}
 			if !found || bytes.Compare(hh.Bytes(), lowest.Bytes()) < 0 {
 				lowest, found = hh, true
 			}
@@ -1759,6 +1983,20 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		if cache := layered.ExtractCache(db); cache != nil {
 			stateReader = state.NewCachedStateReader(stateReader, cache)
 		}
+		// N42_STATE_READ_QMDB (default off) reads accounts and storage slots
+		// from the QMDB tree instead of the address-keyed `Account` table.
+		// Round 19's write probe put `Account` at 16,096 random-keyed rows a
+		// block -- ~64.4 MB of the 71.0 MB MDBX dirties, 90% of the bytes from
+		// 10% of the payload -- and the tree already holds the same values in
+		// the same encoding. `verify` reads both and reports divergence while
+		// still ANSWERING from the plain reader, so an equivalence round cannot
+		// change a block's outcome; nothing here stops the plain write.
+		if mode := commitment.QMDBStateReadMode(); mode != commitment.QMDBReadOff &&
+			bc.qmdbEnabled && bc.qmdbRootComputer != nil {
+			if src := bc.qmdbRootComputer.ValueSource(); src != nil {
+				stateReader = commitment.NewQMDBStateReader(src, stateReader, mode)
+			}
+		}
 		ibs := state.New(stateReader)
 		// Inject root computer for tree-based state root computation.
 		// JMT: only for fresh chains where all blocks use JMT from genesis.
@@ -2091,6 +2329,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				"recov", procPhases.Recover, "prep", procPhases.Prep,
 				"exec", procPhases.Exec, "root", procPhases.Finalize,
 				"proc", dProcess, "valid", dValidate, "write", dWrite, "total", dTotal,
+				"tMs", time.Now().UnixMilli(),
 			}
 			if dTotal >= slowBlockThreshold {
 				log.Info("blockimport phases", fields...)
@@ -2533,6 +2772,7 @@ func isUnknownAncestorErr(err error) bool {
 
 // reportBlock logs a bad block error.
 func (bc *BlockChain) reportBlock(blk block.IBlock, receipts []*block.Receipt, err error) {
+	bc.markBadSibling(blk)
 	var receiptString string
 	for i, receipt := range receipts {
 		receiptString += fmt.Sprintf("\t %d: cumulative: %v gas: %v contract: %v status: %v tx: %v logs: %v bloom: %x state: %x\n",
@@ -2549,6 +2789,48 @@ Hash: %#x
 Error: %v
 ##############################
 `, blk.Number64().String(), blk.Hash(), receiptString, err))
+}
+
+// markBadSibling persists a validation failure so this node's leader never
+// converges on the stored block again (LowestSiblingAtHeight, and the miner's
+// deterministic-rebuild short circuit). Written from its own transaction on
+// another goroutine: reportBlock runs inside the import's read transaction.
+// The mark is advisory for PROPOSING only -- import never consults it, so a
+// transient local failure cannot make this node refuse the committed chain.
+func (bc *BlockChain) markBadSibling(blk block.IBlock) {
+	if blk == nil {
+		return
+	}
+	hash, number := blk.Hash(), blk.Number64().Uint64()
+	bc.badSiblingsMu.Lock()
+	if bc.badSiblings == nil {
+		bc.badSiblings = make(map[types.Hash]struct{})
+	}
+	bc.badSiblings[hash] = struct{}{}
+	bc.badSiblingsMu.Unlock()
+	go func() {
+		if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
+			return rawdb.WriteBadHeaderMark(tx, hash, number)
+		}); err != nil {
+			log.Warn("bad-sibling mark not persisted", "hash", hash.Hex()[:12], "number", number, "err", err)
+		}
+	}()
+}
+
+// BadSibling reports whether this node recorded a validation failure for hash
+// (in memory this process, or persisted by an earlier one).
+func (bc *BlockChain) BadSibling(hash types.Hash) bool {
+	bc.badSiblingsMu.RLock()
+	_, ok := bc.badSiblings[hash]
+	bc.badSiblingsMu.RUnlock()
+	if ok {
+		return true
+	}
+	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		ok = rawdb.IsBadHeaderMarked(tx, hash)
+		return nil
+	})
+	return ok
 }
 
 // tryZKFastPath attempts to verify the block's ZK proof. Returns true if
@@ -2768,6 +3050,29 @@ func (bc *BlockChain) clearReadThroughCache() {
 // rewrite canonical rows before a lagging QMDB state has switched off a losing
 // speculative branch. Chains without an applied marker fall back to body
 // presence — the pre-gate behavior.
+// AppliedHeadIs reports whether the QMDB applied marker names exactly this
+// block -- the state is at it, nothing above it has been applied, so a
+// branch-switch unwind would have nothing to do. One read transaction, no
+// chain lock: the point is to skip AlignAppliedBranch, which takes bc.lock
+// and therefore queues behind the write of the very block being asked about.
+// Round 35za measured that queueing at 230 ms of a leader's 512 ms align on
+// a chain with no sibling to unwind at all.
+//
+// A false answer only costs the align that would have run anyway, so a race
+// against a concurrent write is harmless in the safe direction.
+func (bc *BlockChain) AppliedHeadIsExactly(hash types.Hash, number uint64) bool {
+	at := false
+	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		an, ah, ok, err := rawdb.ReadQMDBApplied(tx)
+		if err != nil || !ok {
+			return nil
+		}
+		at = an == number && types.Hash(ah) == hash
+		return nil
+	})
+	return at
+}
+
 func (bc *BlockChain) HasAppliedBlock(hash types.Hash, number uint64) bool {
 	applied := false
 	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
@@ -2820,7 +3125,7 @@ func (bc *BlockChain) revertUncommittedQMDBAppends(blockNum uint64) {
 		// leaves through it. Re-point at a live tx for the duration.
 		bc.qmdbRootComputer.SetCold(tx)
 		defer bc.qmdbRootComputer.SetCold(nil)
-		return bc.qmdbRootComputer.Tree().ApplyUndo(undo)
+		return bc.qmdbRootComputer.ApplyUndo(undo)
 	})
 	if err == nil {
 		log.Debug("peeled failed block's appends off the QMDB tree", "number", blockNum)
@@ -2852,6 +3157,13 @@ func (bc *BlockChain) unwindForReimport(n uint64, parentHash types.Hash, authori
 	bc.PeelDanglingQMDBAppends()
 	mutated := false
 	err := bc.unwindForReimportTx(n, parentHash, authorizedSwitch, &mutated)
+	// The speculative computer is NOT voided here any more (359e1f89 did,
+	// and ea76069e narrowed it to this path): the post-switch bad roots
+	// were builds on a persisted-but-unapplied sibling, fixed by waiting
+	// for the applied marker (580d2f32), and the void's full rebuild takes
+	// 10-23 s at 13.9M blocks -- long enough to time out the view, whose
+	// stale seal then causes the next switch (35o A1: four blocks in a
+	// 400 s decay). voidMinerRootTrust stays for an operator/debug path.
 	if err != nil && !mutated {
 		// Pre-check rejections (finality floor, lineage mismatch → future
 		// queue, unauthorized passive switch) fail BEFORE any tree mutation:
@@ -3062,6 +3374,11 @@ func (bc *BlockChain) unwindForReimportTx(n uint64, parentHash types.Hash, autho
 				// leaves the in-memory tree untouched; the tx rolls back on return.
 				return fmt.Errorf("unwind block %d: qmdb revert: %w: %w", appliedNum, err, errRevertUnavailable)
 			}
+			// The miner's speculative tree loaded this block from the store;
+			// hand it the same undo so its next build peels it too (applied
+			// on the build goroutine, never here -- a build may be reading
+			// that tree right now).
+			bc.queueMinerRewind(undo)
 			// The tree is mutated from here on: a failure below this point
 			// (or in a LATER iteration) leaves the in-memory tree ahead of
 			// the rolled-back transaction — the caller must reload it.

@@ -42,12 +42,18 @@ type putDel interface {
 type PlainStateWriter struct {
 	db  putDel
 	csw *ChangeSetWriter
+	// genesis marks a writer for block 0. The `Account` table is always
+	// written at genesis, because the QMDB tree is seeded FROM it
+	// (genesis_qmdb.go iterates the table) and a head-state source is not
+	// installed until the chain is up.
+	genesis bool
 }
 
 func NewPlainStateWriter(db putDel, changeSetsDB kv.RwTx, blockNumber uint64) *PlainStateWriter {
 	return &PlainStateWriter{
-		db:  db,
-		csw: NewChangeSetWriterPlain(changeSetsDB, blockNumber),
+		db:      db,
+		csw:     NewChangeSetWriterPlain(changeSetsDB, blockNumber),
+		genesis: blockNumber == 0,
 	}
 }
 
@@ -55,6 +61,15 @@ func NewPlainStateWriterNoHistory(db putDel) *PlainStateWriter {
 	return &PlainStateWriter{
 		db: db,
 	}
+}
+
+// skipPlainAccount reports whether this writer leaves the `Account` table
+// alone: the N42_STATE_WRITE_QMDB_ONLY lever is on (modules.SetPlainAccount-
+// WriteSkipped) and this is not genesis. The
+// changeset writer above is unaffected -- history keeps every pre-image
+// either way -- and so is `Storage`, which round 19 measured as negligible.
+func (w *PlainStateWriter) skipPlainAccount() bool {
+	return !w.genesis && modules.PlainAccountWriteSkipped()
 }
 
 func (w *PlainStateWriter) UpdateAccountData(address types.Address, original, account *account.StateAccount) error {
@@ -70,6 +85,9 @@ func (w *PlainStateWriter) UpdateAccountData(address types.Address, original, ac
 	}
 	// Reth-style: Account row carries CodeHash inline; PlainContractCode
 	// and IncarnationMap are no longer maintained (Phase D).
+	if w.skipPlainAccount() {
+		return nil
+	}
 	return w.db.Put(modules.Account, address[:], account.MarshalV2())
 }
 
@@ -89,6 +107,9 @@ func (w *PlainStateWriter) DeleteAccount(address types.Address, original *accoun
 		if err := w.csw.DeleteAccount(address, original); err != nil {
 			return err
 		}
+	}
+	if w.skipPlainAccount() {
+		return nil
 	}
 	return w.db.Delete(modules.Account, address[:])
 }
@@ -215,6 +236,12 @@ func (w *PlainStateWriter) WriteChangeSets() error {
 	return nil
 }
 
+// ChangedCounts reports the distinct accounts and storage slots this block
+// changed, or (0, 0) without a changeset writer. See ChangeSetWriter.
+func (w *PlainStateWriter) ChangedCounts() (accounts, storage int) {
+	return w.csw.ChangedCounts()
+}
+
 // SetHistoryAggregator routes history-index updates into a batch aggregator
 // (see HistoryAggregator). No-op without a changeset writer.
 func (w *PlainStateWriter) SetHistoryAggregator(agg *HistoryAggregator) {
@@ -224,6 +251,14 @@ func (w *PlainStateWriter) SetHistoryAggregator(agg *HistoryAggregator) {
 }
 
 func (w *PlainStateWriter) WriteHistory() error {
+	// Skipping the index does NOT skip the changesets: WriteChangeSets has
+	// already run and its rows are what rewind and the DATC archive need. This
+	// only drops the inverted index, whose sole consumer is historical RPC --
+	// which api.State refuses outright when the index is off, rather than
+	// answering from current PlainState.
+	if HistoryIndexDisabled() || HistoryIndexDeferred() {
+		return nil
+	}
 	if w.csw != nil {
 		return w.csw.WriteHistory()
 	}

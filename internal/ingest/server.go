@@ -27,6 +27,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -64,8 +65,62 @@ type Server struct {
 	rejected atomic.Uint64
 	batches  atomic.Uint64
 
+	// Hint-only mode: decode, recover the sender into the process-wide
+	// sender cache, drop the transaction. See EnableHintOnly.
+	hintOnly    bool
+	hintSigner  func() transaction.Signer
+	hintWorkers int
+	hintQueue   chan *transaction.Transaction
+	hinted      atomic.Uint64
+
 	ctx    context.Context
 	cancel context.CancelFunc
+}
+
+// EnableHintOnly makes the endpoint a sender pre-recovery feed. Nothing
+// reaches the pool: each transaction is decoded, its sender is recovered
+// from the signature across `workers` goroutines (which memoises it in the
+// process-wide sender cache keyed by transaction hash), and the object is
+// dropped. The client's 20-byte sender field is ignored -- the cache may
+// only ever hold signature-recovered results, because the import's sender
+// verification trusts it. A follower fed the transactions the leader is
+// filling its blocks from then imports with every recovery a cache hit
+// (round 35zh: recover was 460 ms of a 1.44 s import at 163k; the same work
+// done here, ahead of the block, is off the critical path). Must be called
+// before Start.
+//
+// The signer must be THE signer the import will verify with -- the sender
+// cache is keyed by transaction hash and signer, and a londonSigner entry is
+// invisible to an EIP-155 lookup (round 35zk: LatestSignerForChainID on the
+// feed, MakeSignerWithTimestamp on the import, 14 million entries and zero
+// hits). The caller passes a function so the fork-dependent choice follows
+// the chain head.
+func (s *Server) EnableHintOnly(signer func() transaction.Signer, workers int) {
+	if workers < 1 {
+		workers = 1
+	}
+	s.hintOnly = true
+	s.hintSigner = signer
+	s.hintWorkers = workers
+	s.hintQueue = make(chan *transaction.Transaction, 65536)
+}
+
+// Hinted reports how many senders the hint-only mode has recovered.
+func (s *Server) Hinted() uint64 { return s.hinted.Load() }
+
+func (s *Server) hintWorker() {
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case tx := <-s.hintQueue:
+			if _, err := transaction.Sender(s.hintSigner(), tx); err != nil {
+				s.rejected.Add(1)
+				continue
+			}
+			s.hinted.Add(1)
+		}
+	}
 }
 
 // NewServer creates a new ingest server. It does not start listening until
@@ -93,10 +148,41 @@ func (s *Server) Start() error {
 		return fmt.Errorf("ingest: listen %s: %w", s.addr, err)
 	}
 	s.listener = ln
-	log.Info("Ingest server started", "addr", ln.Addr().String())
+	log.Info("Ingest server started", "addr", ln.Addr().String(), "hintOnly", s.hintOnly, "hintWorkers", s.hintWorkers)
 
+	if s.hintOnly {
+		for i := 0; i < s.hintWorkers; i++ {
+			go s.hintWorker()
+		}
+		go s.hintStatsLoop()
+	}
 	go s.acceptLoop(ln)
 	return nil
+}
+
+// hintStatsLoop logs the hint feed's progress every ten seconds while it
+// moves: how many senders were recovered, how many transactions failed to
+// decode or recover, and how deep the queue sits -- the three numbers that
+// say whether the followers' caches are being fed ahead of the blocks.
+func (s *Server) hintStatsLoop() {
+	t := time.NewTicker(10 * time.Second)
+	defer t.Stop()
+	var lastHinted, lastRejected uint64
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-t.C:
+			h, r := s.hinted.Load(), s.rejected.Load()
+			if h == lastHinted && r == lastRejected {
+				continue
+			}
+			hits, misses := transaction.SenderCacheStats()
+			log.Info("ingest hint feed", "hinted", h, "hintedDelta", h-lastHinted, "rejected", r, "queued", len(s.hintQueue), "batches", s.batches.Load(),
+				"cacheHits", hits, "cacheMisses", misses)
+			lastHinted, lastRejected = h, r
+		}
+	}
 }
 
 // Stop shuts down the server and closes the listener.
@@ -208,6 +294,9 @@ func (s *Server) readBatch(r io.Reader) (uint32, error) {
 	}
 
 	// Check backpressure before processing the batch.
+	if s.hintOnly {
+		return s.readHintBatch(r, numTxs)
+	}
 	pending, _, _, _ := s.pool.Stats()
 	if pending > s.hardCap {
 		// Drain the batch from the connection to keep framing consistent,
@@ -278,6 +367,53 @@ func (s *Server) readBatch(r io.Reader) (uint32, error) {
 
 // drainBatch reads and discards a full batch from the reader to keep the
 // wire protocol framing consistent after a backpressure rejection.
+// readHintBatch is readBatch for the hint-only mode: same wire format, the
+// sender field is read and ignored, and the decoded transaction goes to the
+// recovery workers instead of the pool. The reply counts the transactions
+// queued.
+func (s *Server) readHintBatch(r io.Reader, numTxs uint32) (uint32, error) {
+	var queued uint32
+	var senderBuf [20]byte
+	for i := uint32(0); i < numTxs; i++ {
+		var lenBuf [2]byte
+		if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
+			return queued, err
+		}
+		txLen := binary.LittleEndian.Uint16(lenBuf[:])
+		if int(txLen) > maxTxSize {
+			return queued, fmt.Errorf("ingest: tx size %d exceeds max %d", txLen, maxTxSize)
+		}
+		// A fresh buffer per transaction: Unmarshal may keep references.
+		txBuf := make([]byte, txLen)
+		if _, err := io.ReadFull(r, txBuf); err != nil {
+			return queued, err
+		}
+		if _, err := io.ReadFull(r, senderBuf[:]); err != nil {
+			return queued, err
+		}
+		// The generators submit Ethereum RLP (what eth_sendRawTransaction
+		// takes); a native-codec feed still works. Round 35zi: decoding the
+		// hint feed with the native codec alone rejected every transaction and
+		// the followers' recover stayed at 419 ms.
+		tx, err := transaction.DecodeEthereumTransaction(txBuf)
+		if err != nil {
+			tx = new(transaction.Transaction)
+			if err := tx.Unmarshal(txBuf); err != nil {
+				s.rejected.Add(1)
+				continue
+			}
+		}
+		select {
+		case s.hintQueue <- tx:
+			queued++
+		case <-s.ctx.Done():
+			return queued, net.ErrClosed
+		}
+	}
+	s.batches.Add(1)
+	return queued, nil
+}
+
 func (s *Server) drainBatch(r io.Reader, numTxs uint32) error {
 	for i := uint32(0); i < numTxs; i++ {
 		// Read tx_len.

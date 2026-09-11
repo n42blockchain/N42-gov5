@@ -89,3 +89,41 @@ witness replay.
   `devFaucetAddress` (10,603 ETH).
 - `/tmp` is a 69 GB tmpfs at 77% (other sessions' `n42-go-*` caches and fleet data); Go builds need
   `GOTMPDIR=/home/n42/.gotmp` or the linker fails with "disk quota exceeded". Keep fleet data on `/data`.
+
+## 2026-08-29: both Rust clients are validators of chain 94
+
+The "blocked" list above was worked through on the Rust branches (`perf/erigon-borrow-20260828` in each repo):
+
+| | n42-rs (slot 6, replaces Go node6) | N42-26 (slot 5, replaces Go node5) |
+|---|---|---|
+| Header | 23-field gov5 header (`0x80` placeholders for nil optionals + `MobileRegistryRoot`, present in every block, value 0) carried through the Engine API (`ExecutionPayloadV1.mobileRegistryRoot`), blocks sealed with the gov5 hash; pinned on real block 13,560,300 | `Gov5NativeHeader` raw-encoding registry, round-trips real block 13,560,375 to `0x0e37dae9…` |
+| Rewards / committee | rewards as withdrawals (already there); committee evidence checked | rewards parsed from the wire, keccak-concat root checked, credited as EIP-4895 withdrawals (13,540,000 reproduced); committee evidence only written (EIP-4788), not rebuilt |
+| Signatures | `Gov5Legacy` signing profile (`interopV4` is off on chain 94) | same |
+| State | leaf-form QMDB export v2 (gov5 `n42-qmdb-export --leaf-form`, `lib/qmdb/portable_v2.go`, 19 s / 2.35 GB / 30,933 twigs) rebuilt in Rust and checked against the header root; `n42-init-snapshot init` 7m57s, 5.0 GB datadir; forest in memory (EL 9.2 GB RSS) with a delta log instead of a 2.3 GB snapshot per block | reth initialised from `n42-reth-state-dump` (6.12M accounts, 17 s); **stateRoot trusted, not recomputed** (`N42_GOV5_STATE_ROOT_TRUST=1`) — the v1 slot log cannot be exported from a pruned fleet node and the Rust tree cannot yet hold chain 94 |
+| Consensus | votes: 121 of the last 126 committed QCs carry slot 6 while Go node6 is stopped; **leads**: 25 of 151 blocks (coinbase 0x1ccd…, up to 150 txs), identical on every node | votes: 106 execution-validated votes in 10 min, 82 of the last 100 QCs carry bit 5; does not lead by design (trusted state root → `with_leader_disabled`, its view times out like an absent validator). A stall at 06:27 was an H2 rebroadcast storm (forwarded Timeouts echoing with gov5's rotor, ~700 msg/s, inbound streams at capacity, block pushes blocked); fixed by 750 ms byte-identical dedup and no Timeout forwarding under the gov5 profile (`85b9499`), verified lag 0 and 24/34 QCs with bit 5 afterwards |
+| Found on the way | a same-block storage slot written back to its original value is re-written by gov5 (QMDB appends) but dropped by revm's bundle → state root mismatch at 13,561,251, fixed by recording per-tx writes | observer identity gets RST after identify (unexplained) |
+| Runtime | `/data/blockchain/mixed-fleet/n42-rs-qs` (`start-el.sh`, `start-validator.sh`, `qc-evidence.py`); doc `n42-rs/docs/chain94-validator-20260829.md` | `/data/blockchain/mixed-fleet/n42-26-qs` (`run-node.sh`, `stop-node.sh`, `tools/qc-bitmaps.py`); doc `N42-26/docs/devlog-142-chain94-participant-20260829.md` |
+
+Committee now: Go 0–4 + N42-26 (5) + n42-rs (6). Returning a slot to Go: stop the Rust holder first
+(never two holders of one key), then `roll-one-node.sh --node N --bin /data/blockchain/bin/n42 --txgen-max 0`
+with the qs env exported. Not covered on either side: EOF (no revm implementation), Prague/7702 details,
+and for N42-26 the state root.
+
+## 2026-08-29, second pass (offline, fleet paused for a stress test)
+
+n42-rs `e7d5c0cf`: Prague alignment with gov5 on chain 94 (gov5 has `pectraTime` but no `pragueTime`, so its
+`IsPrague()` is false while its execution rules are Prague — the Rust pool now also refuses type-4, a nil
+`requestsHash` commits to nothing, the EIP-7825 gas cap is lifted on gov5 chains); EOF guard (opcode 0xEF hook
+in every EVM → block refused with `EOF_REQUIRED`, metric `n42_evm_eof_required_total`); intra-tx slot
+write-back per gov5; forest persisted at shutdown. Chain scan 12,582,912→13,560,375: 0 type-4 txs, no EOF
+code, max tx gas 1.75M. Inherent: EOF semantics, SLOTNUM 0x4b, Glamsterdam (2027) — the node must leave the
+committee before that timestamp unless revm is aligned.
+
+N42-26 `9629353`: committee evidence (gov5 `blspool` port; 4,973 consecutive real links verified);
+**state root recomputed** with a new hollow leaf tree (`QmdbLeafTree`: sealed twigs keep leaf root + bits,
+open twigs full; leaf-form v2 import 9.4 s / 681 MB; `n42-qmdb-replay` 4,968/4,968 blocks with matching roots,
+final root and slot cursor identical to gov5, 5.0 s, 783 MB); the three gov5 rules it needed (intra-tx
+restore, Prague active via `N42_GOV5_PRAGUE_TIME`, empty system-caller leaf `0xffff…fffe` per Prague block);
+EOF guard (`n42_gov5_eof_blocks_rejected_total`); execution-behind now pulls gov5 ranges instead of N42
+state-sync. Live participant test with recomputed roots not yet run (paused); procedure in devlog-143,
+`run-node.sh participant-qmdb`.

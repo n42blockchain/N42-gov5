@@ -17,7 +17,7 @@
 // Table classification for the layered two-DB split. Declares the
 // hotTables, coldTables and cachedTables sets and exposes them via
 // IsHotTable, IsColdTable and IsCachedTable. Hot tables (Account,
-// Storage, Code, PlainCodeHash, IncarnationMap) live in the compact
+// Storage, Code, PlainCodeHash) live in the compact
 // state DB and are cached in memory; cold tables (AccountChangeSet,
 // StorageChangeSet, histories, receipts, logs, call traces) live in
 // the append-heavy history DB. Any unclassified table falls through

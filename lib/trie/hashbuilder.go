@@ -14,21 +14,14 @@ import (
 	"github.com/holiman/uint256"
 	"golang.org/x/crypto/sha3"
 
-	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/crypto"
+	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/lib/rlphacks"
 )
 
 const hashStackStride = length.Hash + 1 // + 1 byte for RLP encoding
 
 var EmptyCodeHash = crypto.Keccak256Hash(nil)
-
-// leafTraceEnabled / traceStorCollTop cache their debug env checks ONCE at
-// startup. accountLeafHash and the storage genStruct callback are per-node hot
-// paths; calling os.Getenv there allocated ~360 GB over a full DATC build
-// (pprof alloc_space). Off unless the env var is explicitly set.
-var leafTraceEnabled = os.Getenv("N42_LEAFTRACE") != ""
-var traceStorCollTop = os.Getenv("N42_TRACE_STORCOLL_TOP") == "1"
 
 // HashBuilder implements the interface `structInfoReceiver` and opcodes that the structural information of the trie
 // is comprised of
@@ -38,7 +31,7 @@ type HashBuilder struct {
 
 	hashStack []byte                // Stack of sub-slices, each 33 bytes each, containing RLP encodings of node hashes (or of nodes themselves, if shorter than 32 bytes)
 	nodeStack []node                // Stack of nodes
-	acc       account.StateAccount  // Working account instance (to avoid extra allocations)
+	acc       account.StateAccount      // Working account instance (to avoid extra allocations)
 	sha       keccakState           // Keccak primitive that can absorb data (Write), and get squeezed to the hash out (Read)
 	hashBuf   [hashStackStride]byte // RLP representation of hash (or un-hashes value)
 	keyPrefix [1]byte
@@ -47,13 +40,6 @@ type HashBuilder struct {
 	b         [1]byte   // Buffer for single byte
 	prefixBuf [8]byte
 	trace     bool // Set to true when HashBuilder is required to print trace information for diagnostics
-
-	// AccRootEmitter, when set, receives every folded account leaf's hashed key
-	// (full 64 nibbles, terminator stripped) and its storage root, at the moment
-	// the root is popped off the hash stack. Fires only for accounts WITH a
-	// storage subtree (fieldSet has AccountFieldStorageOnly) — the dense
-	// storage-root-history hook (DATC): O(1) per account, no extra hashing.
-	AccRootEmitter func(accKeyNibbles []byte, root types.Hash)
 
 	topHashesCopy []byte
 
@@ -103,16 +89,16 @@ type HashBuilder struct {
 // originStack values. Semantics per Path 2 fix (G2 Option A):
 //   - originLeaf      : entry is a direct leaf hash, no extension below
 //   - originExtension : entry contains at least one extension somewhere
-//     in its subtree. Includes extension-wrapped nodes
-//     (directly produced by extensionHash) AND any
-//     branch built from children one or more of which
-//     had this flag set (propagated via branchHash
-//     OR'ing children's flags into the new entry).
+//                       in its subtree. Includes extension-wrapped nodes
+//                       (directly produced by extensionHash) AND any
+//                       branch built from children one or more of which
+//                       had this flag set (propagated via branchHash
+//                       OR'ing children's flags into the new entry).
 //   - originBranch    : entry is a branch with NO extension anywhere
-//     in its subtree — safe for V2 encoders looking
-//     at HasTree=0 slots, since the slot's hash is
-//     guaranteed to be a direct leaf or branch hash
-//     (parent's treeMask distinguishes which).
+//                       in its subtree — safe for V2 encoders looking
+//                       at HasTree=0 slots, since the slot's hash is
+//                       guaranteed to be a direct leaf or branch hash
+//                       (parent's treeMask distinguishes which).
 //
 // V2 LeafMarker compression is safe iff: HasTree=0 AND origin==leaf.
 // Origin==extension means the slot's hash incorporates a compressed
@@ -344,7 +330,7 @@ func (hb *HashBuilder) leafHash(keyLength int, keyHex []byte, val rlphacks.RlpSe
 	return hb.leafHashWithKeyVal(key, val)
 }
 
-func (hb *HashBuilder) accountLeaf(keyLength int, keyHex []byte, balance *uint256.Int, nonce uint64, incarnation uint64, fieldSet uint32, accountCodeSize int) (err error) {
+func (hb *HashBuilder) accountLeaf(keyLength int, keyHex []byte, balance *uint256.Int, nonce uint64, fieldSet uint32, accountCodeSize int) (err error) {
 	if hb.trace {
 		fmt.Printf("ACCOUNTLEAF %d (%b)\n", keyLength, fieldSet)
 	}
@@ -355,7 +341,6 @@ func (hb *HashBuilder) accountLeaf(keyLength int, keyHex []byte, balance *uint25
 	hb.acc.Nonce = nonce
 	hb.acc.Balance.Set(balance)
 	hb.acc.Initialised = true
-	// hb.acc.Incarnation removed — incarnation no longer stored in StateAccount
 
 	popped := 0
 	var root node
@@ -369,9 +354,6 @@ func (hb *HashBuilder) accountLeaf(keyLength int, keyHex []byte, balance *uint25
 			}
 		}
 		popped++
-		if hb.AccRootEmitter != nil && len(keyHex) == 65 {
-			hb.AccRootEmitter(keyHex[:64], hb.acc.Root)
-		}
 	}
 	var accountCode codeNode
 	if fieldSet&uint32(8) != 0 {
@@ -422,7 +404,7 @@ func (hb *HashBuilder) accountLeaf(keyLength int, keyHex []byte, balance *uint25
 	return nil
 }
 
-func (hb *HashBuilder) accountLeafHash(keyLength int, keyHex []byte, balance *uint256.Int, nonce uint64, incarnation uint64, fieldSet uint32) (err error) {
+func (hb *HashBuilder) accountLeafHash(keyLength int, keyHex []byte, balance *uint256.Int, nonce uint64, fieldSet uint32) (err error) {
 	if hb.trace {
 		fmt.Printf("ACCOUNTLEAFHASH %d (%b)\n", keyLength, fieldSet)
 	}
@@ -430,15 +412,11 @@ func (hb *HashBuilder) accountLeafHash(keyLength int, keyHex []byte, balance *ui
 	hb.acc.Nonce = nonce
 	hb.acc.Balance.Set(balance)
 	hb.acc.Initialised = true
-	// hb.acc.Incarnation removed — incarnation no longer stored in StateAccount
 
 	popped := 0
 	if fieldSet&AccountFieldStorageOnly != 0 {
 		copy(hb.acc.Root[:], hb.hashStack[len(hb.hashStack)-popped*hashStackStride-length.Hash:len(hb.hashStack)-popped*hashStackStride])
 		popped++
-		if hb.AccRootEmitter != nil && len(keyHex) == 65 {
-			hb.AccRootEmitter(keyHex[:64], hb.acc.Root)
-		}
 	} else {
 		copy(hb.acc.Root[:], EmptyRoot[:])
 	}
@@ -455,7 +433,7 @@ func (hb *HashBuilder) accountLeafHash(keyLength int, keyHex []byte, balance *ui
 	// hb.acc encodes via EncodeForHashing, and the popped count for stack
 	// invariant. Used to bisect block 25,191,537 stateRoot mismatch against
 	// trusted mainnet RPC.
-	if leafTraceEnabled {
+	if os.Getenv("N42_LEAFTRACE") != "" {
 		fmt.Fprintf(os.Stderr,
 			"LEAFACC keyHex=%x len=%d fieldSet=%04b nonce=%d balance=%s root=%x codeHash=%x popped=%d\n",
 			keyHex, keyLength, fieldSet, nonce, hb.acc.Balance.Dec(), hb.acc.Root[:], hb.acc.CodeHash[:], popped)

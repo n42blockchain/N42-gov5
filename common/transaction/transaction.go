@@ -93,6 +93,7 @@ type Transaction struct {
 	hash atomic.Pointer[types.Hash] // typed pointer avoids interface boxing
 	size atomic.Value
 	from atomic.Value
+	enc  atomic.Pointer[[]byte] // canonical Ethereum wire encoding
 }
 
 func NewTx(inner TxData) *Transaction {
@@ -417,12 +418,42 @@ func (tx *Transaction) EncodedSize() (int, error) {
 	if s := tx.size.Load(); s != nil {
 		return s.(int), nil
 	}
-	enc, err := EncodeEthereumTransaction(tx)
+	enc, err := tx.EthEncoded()
 	if err != nil {
 		return 0, err
 	}
-	tx.size.Store(len(enc))
 	return len(enc), nil
+}
+
+// EthEncoded returns the transaction's canonical Ethereum wire encoding,
+// computing it at most once.
+//
+// The bytes were already thrown away twice. EncodedSize built the whole
+// encoding to keep its length; and a transaction that arrived over the wire was
+// DECODED from exactly these bytes, which the decoder then discarded -- so the
+// transactions root re-derived them for every leaf of every imported block
+// (0.203 of the root's 0.734 us/tx at 22,857 leaves). Keeping them turns that
+// into a load, which unlike encoding them on a worker pool costs less CPU
+// rather than more.
+//
+// The returned slice is shared and MUST NOT be modified by the caller.
+func (tx *Transaction) EthEncoded() ([]byte, error) {
+	if p := tx.enc.Load(); p != nil {
+		return *p, nil
+	}
+	enc, err := EncodeEthereumTransaction(tx)
+	if err != nil {
+		return nil, err
+	}
+	tx.cacheEncoded(enc)
+	return enc, nil
+}
+
+// cacheEncoded publishes an encoding the caller guarantees is canonical and
+// will not mutate.
+func (tx *Transaction) cacheEncoded(enc []byte) {
+	tx.enc.Store(&enc)
+	tx.size.Store(len(enc))
 }
 
 func (tx *Transaction) RawSignatureValues() (v, r, s *uint256.Int) {
@@ -616,18 +647,45 @@ func (tx *Transaction) EffectiveGasTipValue(baseFee *uint256.Int) *uint256.Int {
 	return effectiveTip
 }
 
+// effectiveGasTipInto writes the effective tip into dst instead of returning a
+// fresh uint256, so the comparison paths below can keep it on the stack.
+//
+// Same arithmetic as EffectiveGasTip, wrap included: when gasFeeCap < baseFee
+// the subtraction underflows to a huge value and the min then selects
+// gasTipCap, which is the branch ErrGasFeeCapTooLow flags. Callers that need
+// the error keep using EffectiveGasTip.
+func (tx *Transaction) effectiveGasTipInto(dst *uint256.Int, baseFee *uint256.Int) {
+	gasFeeCap := tx.GasFeeCap()
+	dst.Sub(gasFeeCap, baseFee)
+	if tipCap := tx.GasTipCap(); tipCap.Cmp(dst) < 0 {
+		dst.Set(tipCap)
+	}
+}
+
+// EffectiveGasTipCmp orders two transactions by effective tip.
+//
+// This is the txpool's priced-heap comparator, so it runs O(n log n) times per
+// eviction on a pool holding hundreds of thousands of transactions. Returning
+// the tips through EffectiveGasTipValue allocated two uint256 per comparison:
+// on the 480M rig that was 162 million allocations, 8.5% of every object the
+// node allocated, all of it from here. The two locals below do not escape.
 func (tx *Transaction) EffectiveGasTipCmp(other *Transaction, baseFee *uint256.Int) int {
 	if baseFee == nil {
 		return tx.GasTipCapCmp(other)
 	}
-	return tx.EffectiveGasTipValue(baseFee).Cmp(other.EffectiveGasTipValue(baseFee))
+	var a, b uint256.Int
+	tx.effectiveGasTipInto(&a, baseFee)
+	other.effectiveGasTipInto(&b, baseFee)
+	return a.Cmp(&b)
 }
 
 func (tx *Transaction) EffectiveGasTipIntCmp(other *uint256.Int, baseFee *uint256.Int) int {
 	if baseFee == nil {
 		return tx.GasTipCapIntCmp(other)
 	}
-	return tx.EffectiveGasTipValue(baseFee).Cmp(other)
+	var a uint256.Int
+	tx.effectiveGasTipInto(&a, baseFee)
+	return a.Cmp(other)
 }
 
 func uint256Min(x, y *uint256.Int) *uint256.Int {

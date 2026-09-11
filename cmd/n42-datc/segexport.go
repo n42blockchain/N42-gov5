@@ -27,15 +27,15 @@ import (
 
 // segStats aggregates one table's export measurements.
 type segStats struct {
-	rows               uint64
-	keyBytes, valBytes uint64
-	rawStream          uint64
-	zstdFast, zstdMax  uint64
-	zstdMaxHashZeroed  uint64
-	fullRecs, diffRecs uint64
-	tombstones         uint64
-	hashBytes          uint64 // 32B child-hash payload inside values
-	streamSample       []byte // first frame retained for ratio sanity (unused beyond len)
+	rows                 uint64
+	keyBytes, valBytes   uint64
+	rawStream            uint64
+	zstdFast, zstdMax    uint64
+	zstdMaxHashZeroed    uint64
+	fullRecs, diffRecs   uint64
+	tombstones           uint64
+	hashBytes            uint64 // 32B child-hash payload inside values
+	streamSample         []byte // first frame retained for ratio sanity (unused beyond len)
 }
 
 func runSegExport(args []string) {
@@ -74,6 +74,7 @@ func runSegExport(args []string) {
 		{tDatcStoChg, false},
 		{tDatcLeafA, false},
 		{tDatcLeafS, false},
+		{tDatcStoRoot, false},
 	}
 
 	fmt.Printf("%-14s %10s %12s %12s %12s %12s %14s\n",

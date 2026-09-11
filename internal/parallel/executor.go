@@ -17,9 +17,11 @@
 package parallel
 
 import (
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/n42blockchain/N42/log"
 )
@@ -65,10 +67,56 @@ type Executor struct {
 	// Execution function provided by caller.
 	execFn TxExecuteFunc
 
+	// workerSetup, when set, runs once per worker goroutine per wave and
+	// returns a per-worker context handed to every execFn call that worker
+	// makes, plus a teardown run when the worker exits. It exists so each
+	// worker can own resources that cannot be shared across goroutines -- a
+	// read transaction bound to its OS thread and a state reader over it
+	// (3709ca6a: the workers used to share one MDBX cursor).
+	workerSetup WorkerSetupFunc
+	execCtxFn   TxExecuteWithCtxFunc
+
+	// affinity, when set, pins every transaction with the same key to the
+	// same worker, which executes its transactions in index order. A
+	// sender's nonce chain then never conflicts with itself: each link reads
+	// the previous link's write from the multi-version store, already there
+	// because the same worker applied it. Round 35: without this, a block of
+	// 4,000 senders x ~25 transactions each hit the 64-wave limit on every
+	// block and fell back to sequential, 43 s for 163k.
+	affinity func(txIndex int) uint64
+
 	// Metrics.
 	totalExecutions atomic.Int64
 	totalAborts     atomic.Int64
+	waves           int
+	fellBack        bool
+	execNanos       int64 // wall time in executeParallel across waves
+	validateNanos   int64 // wall time in validateInOrder across waves
+	traceLeft       int   // N42_PARALLEL_TRACE: validation failures still to log this Run
 }
+
+// WorkerSetupFunc prepares one worker's private context. It is called on the
+// worker's own goroutine, so anything it opens is used on the goroutine that
+// opened it. teardown may be nil.
+type WorkerSetupFunc func(workerID int) (ctx any, teardown func(), err error)
+
+// TxExecuteWithCtxFunc is TxExecuteFunc with the worker context.
+type TxExecuteWithCtxFunc func(ctx any, txIndex int, rw *ReadWriteSet) error
+
+// NewExecutorWithWorkerSetup is NewExecutor for callers whose workers own
+// resources: setup runs per worker goroutine, execFn receives that worker's
+// context. A setup error fails every transaction that worker would have run,
+// which surfaces as a block execution error rather than a silent fallback.
+func NewExecutorWithWorkerSetup(numTxs int, workers int, setup WorkerSetupFunc, execFn TxExecuteWithCtxFunc) *Executor {
+	e := NewExecutor(numTxs, workers, nil)
+	e.workerSetup = setup
+	e.execCtxFn = execFn
+	return e
+}
+
+// SetAffinity pins transactions with equal keys to one worker, in index
+// order (see the affinity field). Call before Run.
+func (e *Executor) SetAffinity(key func(txIndex int) uint64) { e.affinity = key }
 
 // NewExecutor creates a Block-STM executor for numTxs transactions.
 // workers specifies the number of goroutines; 0 means runtime.NumCPU().
@@ -109,18 +157,29 @@ func (e *Executor) Run() []TxResult {
 		return e.results
 	}
 
+	if os.Getenv("N42_PARALLEL_TRACE") != "" {
+		e.traceLeft = 12
+	}
 	for wave := 0; wave < MaxWaves; wave++ {
+		e.waves = wave + 1
 		// Collect txs that need (re-)execution.
 		pending := e.collectPending()
 		if len(pending) == 0 {
 			break // all validated
 		}
+		if e.traceLeft >= 0 && os.Getenv("N42_PARALLEL_TRACE") != "" {
+			log.Info("parallel trace: wave", "wave", wave, "pending", len(pending), "txs", e.numTxs, "first", pending[0], "last", pending[len(pending)-1])
+		}
 
 		// Execute pending txs in parallel.
+		t0 := time.Now()
 		e.executeParallel(pending)
+		t1 := time.Now()
+		e.execNanos += t1.Sub(t0).Nanoseconds()
 
 		// Validate in order. On first failure, mark it and all later txs as pending.
 		allValid := e.validateInOrder()
+		e.validateNanos += time.Since(t1).Nanoseconds()
 		if allValid {
 			break
 		}
@@ -134,6 +193,7 @@ func (e *Executor) Run() []TxResult {
 			"executions", e.totalExecutions.Load(),
 			"aborts", e.totalAborts.Load(),
 		)
+		e.fellBack = true
 		e.mvs = NewMVS()
 		e.runSequential()
 		return e.results
@@ -150,9 +210,14 @@ func (e *Executor) Run() []TxResult {
 
 // collectPending returns indices of txs that need (re-)execution.
 func (e *Executor) collectPending() []int {
+	// Only transactions the validator marked pending re-execute (with their
+	// incarnation already advanced). An executed-but-unvalidated transaction
+	// is provisional and gets re-VALIDATED next pass, not re-run: re-running
+	// it here rewrote its value under an unchanged incarnation, which a
+	// dependent that had recorded that incarnation could never detect.
 	var pending []int
 	for i := 0; i < e.numTxs; i++ {
-		if e.status[i] != StatusValidated {
+		if e.status[i] == StatusPending {
 			pending = append(pending, i)
 		}
 	}
@@ -162,12 +227,22 @@ func (e *Executor) collectPending() []int {
 // executeParallel executes the given tx indices in parallel using the worker pool.
 func (e *Executor) executeParallel(txIndices []int) {
 	var wg sync.WaitGroup
+	// With an affinity key, each worker gets its own in-order queue of the
+	// transactions that hash to it; without one, a shared channel.
+	var queues [][]int
 	work := make(chan int, len(txIndices))
+	if e.affinity != nil {
+		queues = make([][]int, e.workers)
+		for _, idx := range txIndices { // txIndices is ascending
+			w := int(e.affinity(idx) % uint64(e.workers))
+			queues[w] = append(queues[w], idx)
+		}
+	}
 
 	// Start workers.
 	for i := 0; i < e.workers; i++ {
 		wg.Add(1)
-		go func() {
+		go func(workerID int) {
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
@@ -176,15 +251,40 @@ func (e *Executor) executeParallel(txIndices []int) {
 					log.Error("panic in parallel executor worker, recovered", "panic", r, "stack", string(buf[:n]))
 				}
 			}()
-			for txIndex := range work {
-				e.executeSingle(txIndex)
+			var ctx any
+			var setupErr error
+			if e.workerSetup != nil {
+				var teardown func()
+				ctx, teardown, setupErr = e.workerSetup(workerID)
+				if teardown != nil {
+					defer teardown()
+				}
 			}
-		}()
+			run := func(txIndex int) {
+				if setupErr != nil {
+					e.results[txIndex] = TxResult{Err: setupErr}
+					e.status[txIndex] = StatusExecuted
+					return
+				}
+				e.executeSingle(ctx, txIndex)
+			}
+			if queues != nil {
+				for _, txIndex := range queues[workerID] {
+					run(txIndex)
+				}
+				return
+			}
+			for txIndex := range work {
+				run(txIndex)
+			}
+		}(i)
 	}
 
-	// Feed work.
-	for _, idx := range txIndices {
-		work <- idx
+	// Feed work (channel mode only).
+	if queues == nil {
+		for _, idx := range txIndices {
+			work <- idx
+		}
 	}
 	close(work)
 
@@ -192,17 +292,23 @@ func (e *Executor) executeParallel(txIndices []int) {
 }
 
 // executeSingle executes a single transaction.
-func (e *Executor) executeSingle(txIndex int) {
+func (e *Executor) executeSingle(ctx any, txIndex int) {
 	e.totalExecutions.Add(1)
 
 	// Allocate a fresh ReadWriteSet.
 	rw := NewReadWriteSet(txIndex)
 
-	// Clear old MVS entries for this tx.
-	e.mvs.DeleteAll(txIndex)
+	// Clear the previous incarnation's writes that this one may not repeat.
+	// Only that incarnation's keys: DeleteAll walks every entry in the store
+	// and was 95% of a follower's CPU at 54k transactions (round 35e).
+	if prev := e.rwSets[txIndex]; prev != nil {
+		for _, wd := range prev.Writes {
+			e.mvs.Delete(wd.Key, txIndex)
+		}
+	}
 
 	// Execute the transaction.
-	err := e.execFn(txIndex, rw)
+	err := e.exec(ctx, txIndex, rw)
 
 	e.results[txIndex] = TxResult{Err: err}
 	e.rwSets[txIndex] = rw
@@ -210,6 +316,10 @@ func (e *Executor) executeSingle(txIndex int) {
 	// Apply writes to MVS with incarnation tag.
 	inc := e.incarnation[txIndex]
 	for _, wd := range rw.Writes {
+		if wd.Delta != nil {
+			e.mvs.WriteDelta(wd.Key, txIndex, inc, wd.Delta)
+			continue
+		}
 		e.mvs.Write(wd.Key, txIndex, inc, wd.Value)
 	}
 
@@ -220,29 +330,114 @@ func (e *Executor) executeSingle(txIndex int) {
 // On first failure, marks the failed tx and all later txs as pending.
 // Returns true if all txs are validated.
 func (e *Executor) validateInOrder() bool {
+	// A pass validates every executed transaction in order. A failure at i
+	// re-executes i alone (incarnation++); every transaction after i is
+	// provisional from then on -- it may have read i's old write -- so at the
+	// end of the pass everything after the FIRST failure is demoted to
+	// Executed and re-validated next pass, when i's new write is in the
+	// store. Transactions that fail later in the same pass are marked pending
+	// too, so independent conflicts are all re-executed in one wave rather
+	// than one per wave. Re-executing every later transaction on the first
+	// failure (the old rule) cost a wave per conflict; round 35 hit the
+	// 64-wave limit on every block with it.
+	// The checks are independent (the store is quiescent between waves), so
+	// they run on the worker count in strides; only the status pass below is
+	// in order. Serial, this was 595 ms of a 163k-transaction block's 2.1 s
+	// (round 35f: ten passes over the whole block).
+	valid := e.validateExecuted()
+	firstFail := -1
 	for i := 0; i < e.numTxs; i++ {
-		if e.status[i] == StatusValidated {
-			continue // already validated in a previous wave
-		}
-
-		rw := e.rwSets[i]
-		if Validate(e.mvs, rw) {
-			e.status[i] = StatusValidated
-		} else {
-			// This tx's read set is stale. Mark it and all later txs
-			// as pending for re-execution.
-			e.totalAborts.Add(1)
-			for j := i; j < e.numTxs; j++ {
-				if e.status[j] != StatusValidated {
-					e.status[j] = StatusPending
-					e.incarnation[j]++
-				}
+		switch e.status[i] {
+		case StatusValidated:
+			continue // settled in an earlier pass, and nothing before it moved
+		case StatusPending:
+			if firstFail < 0 {
+				firstFail = i
 			}
-			return false
+			continue
+		}
+		if valid[i] {
+			e.status[i] = StatusValidated
+			continue
+		}
+		if e.traceLeft > 0 {
+			e.traceLeft--
+			e.traceFailure(i)
+		}
+		e.totalAborts.Add(1)
+		e.status[i] = StatusPending
+		e.incarnation[i]++
+		if firstFail < 0 {
+			firstFail = i
 		}
 	}
-	return true
+	if firstFail < 0 {
+		return true
+	}
+	for j := firstFail + 1; j < e.numTxs; j++ {
+		if e.status[j] == StatusValidated {
+			e.status[j] = StatusExecuted
+		}
+	}
+	return false
 }
+
+// validateExecuted runs Validate over every executed transaction in
+// parallel and returns the verdicts by index.
+func (e *Executor) validateExecuted() []bool {
+	valid := make([]bool, e.numTxs)
+	workers := e.workers
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > e.numTxs {
+		workers = e.numTxs
+	}
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(start int) {
+			defer wg.Done()
+			for i := start; i < e.numTxs; i += workers {
+				if e.status[i] == StatusExecuted {
+					valid[i] = Validate(e.mvs, e.rwSets[i])
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	return valid
+}
+
+// traceFailure logs why transaction i failed validation (N42_PARALLEL_TRACE).
+func (e *Executor) traceFailure(i int) {
+	rw := e.rwSets[i]
+	for ri := range rw.Reads {
+		rd := &rw.Reads[ri]
+		if readValid(e.mvs, i, rd) {
+			continue
+		}
+		cur, wtx, winc, found := e.mvs.Read(rd.Key, i)
+		log.Info("parallel trace: stale read", "tx", i, "inc", e.incarnation[i], "addr", rd.Key.Address.Hex(), "field", rd.Key.Field, "slot", rd.Key.Slot.Hex()[:10],
+			"fromBase", rd.FromBase, "readWriter", rd.WriterTx, "readInc", rd.WriterIncarnation, "hasValue", rd.HasValue, "readLen", len(rd.Value),
+			"hadDelta", rd.HadDelta, "ignoreBalance", rd.IgnoreBalance,
+			"nowFound", found, "nowWriter", wtx, "nowInc", winc, "nowLen", len(cur), "reads", len(rw.Reads), "writes", len(rw.Writes))
+		return
+	}
+	log.Info("parallel trace: failed without a stale read", "tx", i, "reads", len(rw.Reads))
+}
+
+// WaveTimes returns the wall time the last Run spent executing and validating.
+func (e *Executor) WaveTimes() (execNanos, validateNanos int64) {
+	return e.execNanos, e.validateNanos
+}
+
+// Waves is the number of execute+validate passes the last Run took.
+func (e *Executor) Waves() int { return e.waves }
+
+// FellBack reports whether the last Run gave up on Block-STM and executed
+// the block sequentially.
+func (e *Executor) FellBack() bool { return e.fellBack }
 
 // allValidated returns true if all transactions are validated.
 func (e *Executor) allValidated() bool {
@@ -254,13 +449,35 @@ func (e *Executor) allValidated() bool {
 	return true
 }
 
+// exec dispatches to whichever execution function the executor was built with.
+func (e *Executor) exec(ctx any, txIndex int, rw *ReadWriteSet) error {
+	if e.execCtxFn != nil {
+		return e.execCtxFn(ctx, txIndex, rw)
+	}
+	return e.execFn(txIndex, rw)
+}
+
 // runSequential falls back to sequential execution.
 func (e *Executor) runSequential() {
+	var ctx any
+	if e.workerSetup != nil {
+		c, teardown, err := e.workerSetup(0)
+		if err != nil {
+			for i := 0; i < e.numTxs; i++ {
+				e.results[i] = TxResult{Err: err}
+			}
+			return
+		}
+		if teardown != nil {
+			defer teardown()
+		}
+		ctx = c
+	}
 	for i := 0; i < e.numTxs; i++ {
 		rw := e.rwSets[i]
 		rw.Clear()
 
-		err := e.execFn(i, rw)
+		err := e.exec(ctx, i, rw)
 		e.results[i] = TxResult{Err: err}
 
 		for _, wd := range rw.Writes {

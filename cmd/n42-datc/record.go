@@ -26,10 +26,6 @@ type chgEvent struct {
 	nibble byte
 }
 
-// chgEventSize is the in-slice size of a chgEvent (uint32 + byte, padded to the
-// uint32 alignment) — used to estimate chgStoAgg heap for the mid-batch drain.
-const chgEventSize = 8
-
 // chgSlot is one account-side aggregation slot (flat-indexed by path).
 type chgSlot struct {
 	epoch  uint32
@@ -40,18 +36,32 @@ const (
 	bufFlushThreshold = 4_000_000 // entries per buffer before an early sorted flush
 
 	// Node record value flags (empty value = tombstone, as before).
-	nodeRecFull = 0x01 // flags | MarshalTrieNode bytes
-	nodeRecDiff = 0x00 // flags | newMasks(6) | changedMask(2) | 32B × (changed ∧ newHasHash)
+	nodeRecFull  = 0x01 // flags | MarshalTrieNode bytes
+	nodeRecDiff  = 0x00 // flags | newMasks(6) | changedMask(2) | 32B × (changed ∧ newHasHash)
+	nodeRecMixed = 0x02 // flags only: the node has leaf/extension children (not
+	// every child hash is stored), so the reader can never assemble it from a
+	// record and always folds it from the leaf history. One byte instead of
+	// masks+hashes; consecutive MIXED epochs are elided (see lastfull.go).
 
-	// fullEvery bounds the reader's diff walk-back: at least every F-th epoch
-	// (per path) the record is FULL. Storage side only — the account side
-	// counts records instead (accFullEvery below).
+	// datcFormat is the on-disk format version stored in DatcMeta/format.
+	// 2: 32-byte storage domain (addrHash, no incarnation), 4-byte block
+	//    suffix on leaf/root-history rows, MIXED node markers, DatcStoRoot.
+	datcFormat = 2
+
+	// stoDomainLen is the storage-trie domain prefix: keccak(address). The
+	// legacy 8-byte incarnation suffix is gone (storage keys are
+	// addrHash(32)+slotHash(32) everywhere in this codebase).
+	stoDomainLen = 32
+	// blkLen is the big-endian block-number suffix on leaf-history and
+	// storage-root-history keys.
+	blkLen = 4
+
+	// fullEvery bounds the reader's diff walk-back: after fullEvery-1 DIFF
+	// records (per path) the next record is FULL, so a chain is at most
+	// fullEvery records long. (Counted in records, not epochs: with a
+	// per-block level a node's records are sparse in epoch space and an
+	// epoch-distance rule made nearly every record FULL.)
 	fullEvery = 8
-
-	// accFullEvery: account-side FULL cadence in RECORDS per path. The reader
-	// walks the per-path record chain (adjacent rows) back to the FULL anchor,
-	// so 64 densely-keyed rows cost 1-2 pages; the FULL amortizes to ~8 B/row.
-	accFullEvery = 64
 )
 
 // nibblesOf expands bytes to one-nibble-per-byte (erigon keyHex form, no terminator).

@@ -1874,3 +1874,16 @@ func (sdb *IntraBlockState) BeforeStateRoot() (hashValue types.Hash, err error) 
 	}
 	return hashValue, nil
 }
+
+// DirtySetSizes reports how many accounts are marked dirty and how many of
+// them are empty (nonce 0, balance 0) -- a diagnostic for comparing a build's and a
+// verify's dirty sets before the root is computed.
+func (sdb *IntraBlockState) DirtySetSizes() (accounts, withStorage int) {
+	for addr := range sdb.stateObjectsDirty {
+		accounts++
+		if so, ok := sdb.stateObjects[addr]; ok && so != nil && so.data.Nonce == 0 && so.data.Balance.IsZero() {
+			withStorage++ // repurposed: dirty accounts that are EMPTY (EIP-161 deletes)
+		}
+	}
+	return accounts, withStorage
+}

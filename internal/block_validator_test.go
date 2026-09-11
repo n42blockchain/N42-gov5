@@ -68,7 +68,7 @@ func TestApplyTransactionRejectsNilHeaderNumber(t *testing.T) {
 }
 
 func TestParallelApplyTxRejectsNilHeaderNumber(t *testing.T) {
-	_, _, _, err := parallelApplyTx(&params.ChainConfig{}, nil, nil, nil, nil, &block.Header{}, nil, nil, vm2.Config{})
+	_, _, _, err := parallelApplyTx(&params.ChainConfig{}, nil, nil, nil, nil, &block.Header{}, nil, nil, vm2.Config{}, nil)
 	if err == nil || err.Error() != "header number unavailable" {
 		t.Fatalf("parallelApplyTx() error = %v", err)
 	}

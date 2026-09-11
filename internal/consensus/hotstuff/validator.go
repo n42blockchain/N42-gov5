@@ -12,10 +12,12 @@ package hotstuff
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 
-	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -147,13 +149,33 @@ func (vs *ValidatorSet) Clone() *ValidatorSet {
 	}
 }
 
-// LeaderForView returns the leader's validator index for the given view.
-// Uses round-robin: leader = view % n.
+// leaderTenure is how many consecutive views one validator leads before the
+// rotation moves on: N42_HOTSTUFF_LEADER_TENURE, default 1 (leader = view %
+// n, the classic round-robin). Consensus-visible: every validator must run
+// the same value. With a tenure above 1 the leader that just sealed view v
+// is also the leader of v+1, so its speculative build of v+1 (on its own
+// in-memory post-state of v) overlaps the followers' import of v instead of
+// waiting behind it; a leader that times out keeps the view for the rest of
+// its tenure (a benchmark lever; production wants rotate-on-timeout).
+var leaderTenure = func() uint64 {
+	if v := os.Getenv("N42_HOTSTUFF_LEADER_TENURE"); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 64); err == nil && n >= 1 {
+			return n
+		}
+	}
+	return 1
+}()
+
+// LeaderTenure reports the configured consecutive-view tenure.
+func LeaderTenure() uint64 { return leaderTenure }
+
+// LeaderForView returns the leader's validator index for the given view:
+// round-robin over the set, each validator holding leaderTenure views.
 func LeaderForView(view ViewNumber, vs *ValidatorSet) ValidatorIndex {
 	if vs.IsEmpty() {
 		return 0
 	}
-	return ValidatorIndex(view % uint64(vs.Len()))
+	return ValidatorIndex((uint64(view) / leaderTenure) % uint64(vs.Len()))
 }
 
 // IsLeader checks if the given validator is the leader for the given view.

@@ -27,6 +27,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"runtime/debug"
 	"sort"
 	"sync"
@@ -57,6 +58,7 @@ import (
 	event "github.com/n42blockchain/N42/modules/event/v2"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
+	"github.com/n42blockchain/N42/modules/state/commitment"
 	"github.com/n42blockchain/N42/modules/state/witness"
 	"github.com/n42blockchain/N42/params"
 )
@@ -85,6 +87,9 @@ type blockSealNotifier interface {
 // height extending a given parent. See BlockChain.LowestSiblingAtHeight.
 type siblingLookup interface {
 	LowestSiblingAtHeight(number uint64, parentHash types.Hash) (block.IBlock, bool)
+	// BadSibling reports a block this node failed to validate; such a block
+	// is never re-proposed, whichever path would have picked it.
+	BadSibling(hash types.Hash) bool
 }
 
 // leaderAware is implemented by leader-driven consensus engines (HotStuff) so
@@ -151,6 +156,14 @@ type newWorkReq struct {
 	// parent. A wrong guess is discarded; a speculative request may be
 	// dropped or interrupted at any time in favour of real work.
 	speculative bool
+	// enqueuedAt is when the request was handed to newWorkCh. runLoop reports
+	// the wait between that moment and the start of commitWork -- the worker
+	// goroutine is single, so a build that is already running (a speculative
+	// guess, most often) delays the real request behind it, and that delay is
+	// invisible in every phase timer the build itself keeps. Zero when the
+	// producer did not set it; the log line is then omitted rather than
+	// reporting a duration measured from the epoch.
+	enqueuedAt time.Time
 }
 
 type generateParams struct {
@@ -257,6 +270,11 @@ type worker struct {
 	// candidate per parent makes each node produce exactly one block per height.
 	// Guarded by mu; pruned below the branch-switch window as heights advance.
 	sealedOnParent map[types.Hash]block.IBlock
+	// sealedByHash holds this node's recent sealed blocks by hash from the
+	// moment they are sealed, before their write lands: a speculative build
+	// whose parent is one of them builds on the miner tree's own post-state
+	// without waiting for the write (track 3c, two-deep speculation).
+	sealedByHash map[types.Hash]block.IBlock
 
 	wg sync.WaitGroup
 	mu sync.RWMutex
@@ -343,6 +361,7 @@ func newWorker(ctx context.Context, group *errgroup.Group, chainConfig *params.C
 		resultCh:         make(chan block.IBlock),
 		pendingTasks:     make(map[types.Hash]*task),
 		sealedOnParent:   make(map[types.Hash]block.IBlock),
+		sealedByHash:     make(map[types.Hash]block.IBlock),
 		minerConf:        minerConf,
 		resubmitAdjustCh: make(chan *intervalAdjust, resubmitAdjustChanSize),
 		bundlePool:       builder.NewBundlePool(),
@@ -428,7 +447,11 @@ func (w *worker) runLoop() error {
 		case <-w.ctx.Done():
 			return w.ctx.Err()
 		case req := <-w.newWorkCh:
-			err := w.commitWork(req.interrupt, req.noempty, req.timestamp, req.parentHash, req.speculative)
+			if !req.enqueuedAt.IsZero() {
+				log.Info("miner: work queue wait", "waitNs", time.Since(req.enqueuedAt).Nanoseconds(),
+					"speculative", req.speculative)
+			}
+			err := w.commitWorkGuarded(req)
 			if err != nil && req.speculative {
 				// An aborted or failed guess costs nothing; do not alarm.
 				log.Debug("speculative build abandoned", "err", err)
@@ -441,6 +464,19 @@ func (w *worker) runLoop() error {
 	}
 }
 
+// commitWorkGuarded turns a panic inside one build into that build's error.
+// runLoop stops the worker when it returns, so a panic that escaped from a
+// build used to take the miner down for good (see handleSealed).
+func (w *worker) commitWorkGuarded(req *newWorkReq) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("panic in miner build; abandoning it: %v\nstack: %s", r, debug.Stack())
+			err = fmt.Errorf("panic in miner build: %v", r)
+		}
+	}()
+	return w.commitWork(req.interrupt, req.noempty, req.timestamp, req.parentHash, req.speculative)
+}
+
 func (w *worker) resultLoop() error {
 	defer w.cancel()
 	defer w.stop()
@@ -450,218 +486,358 @@ func (w *worker) resultLoop() error {
 		case <-w.ctx.Done():
 			return w.ctx.Err()
 		case blk := <-w.resultCh:
-			if blk == nil {
-				continue
-			}
-			blockNumber, err := requireBlockNumber(blk, "block number unavailable")
-			if err != nil {
-				log.Error("Ignoring sealed block", "err", err, "hash", blk.Hash())
-				continue
-			}
-
-			// Short circuit when receiving duplicate result caused by resubmitting.
-			if w.chain.HasBlock(blk.Hash(), blockNumber.Uint64()) {
-				if usesTimerDrivenSealing(w.engine) {
-					continue
-				}
-				// Leader-driven (HotStuff): the deterministic rebuild collides
-				// with a block already imported in an EARLIER round (restart at a
-				// stalled height re-enters overlapping views, so the identical
-				// candidate is already in the DB — imported but never committed).
-				// It still must be proposed for THIS view: skip the state
-				// re-write, but re-push and notify so the Proposal goes out.
-				log.Info("miner: re-proposing already-imported block", "number", blockNumber.Uint64(), "hash", blk.Hash().Hex()[:12])
-				if err := w.chain.SealedBlock(blk); err != nil {
-					log.Warn("miner: re-push of existing block failed", "err", err)
-				}
-				if bsn, ok := w.engine.(blockSealNotifier); ok {
-					bsn.NotifyBlockSealed(blk.Hash(), blk.TxHash())
-				}
-				continue
-			}
-
-			parentHash := blk.ParentHash()
-
-			// Fix A — cross-view same-height convergence: if a strictly-lower-hash
-			// sibling extending THIS parent is already known locally (sealed here or
-			// received from another view's leader), re-propose it instead of
-			// importing this divergent higher-hash candidate. When a height misses
-			// its first commit, each later view's leader otherwise builds a distinct
-			// block (different ConsensusEvidence per view), scattering import-gated
-			// votes so no candidate reaches the 2f+1 quorum — the multi-minute
-			// convergence stall. Deterministic lowest-hash selection (matches the
-			// forkchoice tie-break) makes every leader pick the SAME candidate, so
-			// votes stack on one block. See docs/hotstuff-view-convergence-followup.md.
-			// Only at the single legitimate proposal height (committed head + 1):
-			// a stale leader building at an already-committed height must NOT be
-			// redirected to a dead sibling there — that re-injects a candidate
-			// conflicting with the committed block (observed live at 13014242:
-			// sibling re-proposal at a committed height seeded a canonical-chain
-			// discontinuity). Let the normal import/duplicate path absorb it.
-			if sl, ok := w.chain.(siblingLookup); ok &&
-				blockNumber.Uint64() == w.chain.CurrentBlock().Number64().Uint64()+1 {
-				if low, exists := sl.LowestSiblingAtHeight(blockNumber.Uint64(), parentHash); exists &&
-					low.Hash() != blk.Hash() &&
-					bytes.Compare(low.Hash().Bytes(), blk.Hash().Bytes()) < 0 {
-					log.Info("miner: converging on lowest-hash sibling; re-proposing it",
-						"number", blockNumber.Uint64(), "parent", parentHash.Hex()[:12],
-						"kept", low.Hash().Hex()[:12], "dropped", blk.Hash().Hex()[:12])
-					if err := w.chain.SealedBlock(low); err != nil {
-						log.Warn("miner: re-push of lowest sibling failed", "err", err)
-					}
-					if bsn, ok := w.engine.(blockSealNotifier); ok {
-						bsn.NotifyBlockSealed(low.Hash(), low.TxHash())
-					}
-					continue
-				}
-			}
-
-			// Height-level single-candidate guard (HotStuff-2): keep only the first
-			// block sealed on a given parent. A later view's leader re-entering Seal
-			// on the same still-uncommitted parent produces a divergent sibling;
-			// importing it would fork the applied state and thrash the branch-switch
-			// unwind between the two siblings forever. Re-propose the kept block for
-			// THIS view instead — it is already imported and is what consensus is
-			// building on. Checked BEFORE import so the sibling never touches state.
-			if kept := w.firstSealedOnParent(parentHash); kept != nil && kept.Hash() != blk.Hash() {
-				log.Info("miner: suppressing divergent same-height sibling; re-proposing first sealed block",
-					"number", blockNumber.Uint64(), "parent", parentHash.Hex()[:12],
-					"kept", kept.Hash().Hex()[:12], "dropped", blk.Hash().Hex()[:12])
-				if err := w.chain.SealedBlock(kept); err != nil {
-					log.Warn("miner: re-push of kept sibling failed", "err", err)
-				}
-				if bsn, ok := w.engine.(blockSealNotifier); ok {
-					bsn.NotifyBlockSealed(kept.Hash(), kept.TxHash())
-				}
-				continue
-			}
-
-			var (
-				sealhash = w.engine.SealHash(blk.Header())
-				hash     = blk.Hash()
-			)
-			w.mu.RLock()
-			task, exist := w.pendingTasks[sealhash]
-			var sealStart time.Time
-			if exist {
-				sealStart = task.sealStart
-			}
-			w.mu.RUnlock()
-			if !exist {
-				log.Error("Block found but no relative pending task", "number", blockNumber.Uint64(), "sealhash", sealhash, "hash", hash)
-				continue
-			}
-
-			// Deep copy receipts and set block location fields to prevent write-write conflicts
-			// when different blocks share the same sealhash.
-			receipts := make([]*block.Receipt, len(task.receipts))
-			var logs []*block.Log
-			for i, taskReceipt := range task.receipts {
-				receipt := new(block.Receipt)
-				*receipt = *taskReceipt
-				receipt.BlockHash = hash
-				receipt.BlockNumber = blk.Number64()
-				receipt.TransactionIndex = uint(i)
-
-				receipt.Logs = make([]*block.Log, len(taskReceipt.Logs))
-				for j, taskLog := range taskReceipt.Logs {
-					lg := new(block.Log)
-					*lg = *taskLog
-					lg.BlockHash = hash
-					receipt.Logs[j] = lg
-				}
-				receipts[i] = receipt
-				logs = append(logs, receipt.Logs...)
-			}
-
-			tWrite := time.Now()
-			err = w.chain.WriteBlockWithState(blk, receipts, task.state, task.nopay)
-			dWrite := time.Since(tWrite)
-			if err != nil {
-				if errors.Is(err, internal.ErrStaleSeal) {
-					// The applied head moved past this seal's parent while it
-					// was in flight (a competing same-height candidate won).
-					// An expected race under view churn, not a node fault.
-					log.Info("Sealed block lost to a competing candidate; dropping",
-						"number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12])
-					continue
-				}
-				log.Error("Failed writing block to chain", "err", err)
-				miningErrorsCounter.Inc()
-				continue
-			}
-			w.mu.Lock()
-			delete(w.pendingTasks, sealhash)
-			w.mu.Unlock()
-			blocksMinedCounter.Inc()
-			blockMiningTimer.UpdateDuration(task.createdAt)
-
-			body := blk.Body()
-			var verifierCount, rewardCount int
-			if body != nil {
-				verifierCount = len(body.Verifier())
-				rewardCount = len(body.Reward())
-			}
-			blockSignGauge.Set(uint64(verifierCount))
-
-			if len(logs) > 0 {
-				event.GlobalEvent.Send(common.NewLogsEvent{Logs: logs})
-			}
-
-			log.Info("🔨 Successfully sealed new block",
-				"sealhash", sealhash,
-				"hash", hash,
-				"number", blockNumber.Uint64(),
-				"used gas", blk.GasUsed(),
-				"diff", blk.Difficulty().Uint64(),
-				"headerTime", time.Unix(int64(blk.Time()), 0).Format(time.RFC3339),
-				"verifierCount", verifierCount,
-				"rewardCount", rewardCount,
-				"elapsed", common.PrettyDuration(time.Since(task.createdAt)),
-				"txs", len(blk.Transactions()))
-
-			tPush := time.Now()
-			if err = w.chain.SealedBlock(blk); err != nil {
-				log.Error("Failed Broadcast block to p2p network", "err", err)
-				continue
-			}
-			dPush := time.Since(tPush)
-			// For leader-driven consensus (HotStuff), start the Proposal for THIS
-			// exact sealed block — the one we just persisted and direct-pushed — so
-			// the proposed (and committed) block is byte-for-byte what followers
-			// receive and import. Doing this here (not in Seal) binds propose↔push to
-			// the same block, which import-gated voting requires.
-			tNotify := time.Now()
-			if bsn, ok := w.engine.(blockSealNotifier); ok {
-				bsn.NotifyBlockSealed(blk.Hash(), blk.TxHash())
-			}
-			dNotify := time.Since(tNotify)
-
-			// Leader seal→propose breakdown: ONE line per produced block covering
-			// the window "miner: build phases" stops measuring at (it is emitted
-			// before commit()) up to the Proposal being handed to the engine.
-			// `write` is the whole WriteBlockWithState — "blockwrite phases"
-			// (blockchain_write.go) splits it further.
-			log.Info("miner: propose phases",
-				"n", blockNumber.Uint64(), "txs", len(blk.Transactions()),
-				"finalize", task.finalize, "witness", task.witness, "assemble", task.assemble,
-				"bls", time.Duration(task.blsNanos.Load()), "seal2res", time.Since(sealStart),
-				"write", dWrite, "push", dPush, "notify", dNotify,
-				"total", time.Since(task.createdAt))
-
-			// Record this as the one candidate for its parent (after a successful
-			// import), so a later view's divergent sibling is suppressed above.
-			w.recordSealedOnParent(parentHash, blk)
-			if concrete, ok := blk.(*block.Block); ok {
-				event.GlobalEvent.Send(common.ChainHighestBlock{Block: *concrete, Inserted: true})
-			}
+			w.handleSealed(blk)
 		}
+	}
+}
+
+// handleSealed persists, pushes and proposes one sealed block. It runs under
+// its own recover so a panic on one block costs that block, not the worker:
+// resultLoop stops the worker when it returns, so a panic that escaped from
+// here left the node silently skipping every leader view for the life of the
+// process (round 35r: node3 lost its miner at 12:08 and missed 18 views of one
+// leg, each a 6 s view timeout).
+func (w *worker) handleSealed(blk block.IBlock) {
+	defer func() {
+		if r := recover(); r != nil {
+			id := "nil"
+			if blk != nil {
+				id = blk.Hash().Hex()[:12]
+			}
+			log.Errorf("panic handling sealed block %s; dropping it: %v\nstack: %s", id, r, debug.Stack())
+			miningErrorsCounter.Inc()
+		}
+	}()
+	if blk == nil {
+		return
+	}
+	blockNumber, err := requireBlockNumber(blk, "block number unavailable")
+	if err != nil {
+		log.Error("Ignoring sealed block", "err", err, "hash", blk.Hash())
+		return
+	}
+
+	// Short circuit when receiving duplicate result caused by resubmitting.
+	if w.chain.HasBlock(blk.Hash(), blockNumber.Uint64()) {
+		if usesTimerDrivenSealing(w.engine) {
+			return
+		}
+		if sl, ok := w.chain.(siblingLookup); ok && sl.BadSibling(blk.Hash()) {
+			log.Warn("miner: deterministic rebuild equals a block this node failed to validate; not re-proposing it",
+				"number", blockNumber.Uint64(), "hash", blk.Hash().Hex()[:12])
+			return
+		}
+		// Leader-driven (HotStuff): the deterministic rebuild collides
+		// with a block already imported in an EARLIER round (restart at a
+		// stalled height re-enters overlapping views, so the identical
+		// candidate is already in the DB — imported but never committed).
+		// It still must be proposed for THIS view: skip the state
+		// re-write, but re-push and notify so the Proposal goes out.
+		log.Info("miner: re-proposing already-imported block", "number", blockNumber.Uint64(), "hash", blk.Hash().Hex()[:12])
+		if err := w.chain.SealedBlock(blk); err != nil {
+			log.Warn("miner: re-push of existing block failed", "err", err)
+		}
+		if bsn, ok := w.engine.(blockSealNotifier); ok {
+			bsn.NotifyBlockSealed(blk.Hash(), blk.TxHash())
+		}
+		return
+	}
+
+	parentHash := blk.ParentHash()
+	w.rememberSealed(blk)
+
+	// Fix A — cross-view same-height convergence: if a strictly-lower-hash
+	// sibling extending THIS parent is already known locally (sealed here or
+	// received from another view's leader), re-propose it instead of
+	// importing this divergent higher-hash candidate. When a height misses
+	// its first commit, each later view's leader otherwise builds a distinct
+	// block (different ConsensusEvidence per view), scattering import-gated
+	// votes so no candidate reaches the 2f+1 quorum — the multi-minute
+	// convergence stall. Deterministic lowest-hash selection (matches the
+	// forkchoice tie-break) makes every leader pick the SAME candidate, so
+	// votes stack on one block. See docs/hotstuff-view-convergence-followup.md.
+	// Only at the single legitimate proposal height (committed head + 1):
+	// a stale leader building at an already-committed height must NOT be
+	// redirected to a dead sibling there — that re-injects a candidate
+	// conflicting with the committed block (observed live at 13014242:
+	// sibling re-proposal at a committed height seeded a canonical-chain
+	// discontinuity). Let the normal import/duplicate path absorb it.
+	if sl, ok := w.chain.(siblingLookup); ok &&
+		blockNumber.Uint64() == w.chain.CurrentBlock().Number64().Uint64()+1 {
+		if low, exists := sl.LowestSiblingAtHeight(blockNumber.Uint64(), parentHash); exists &&
+			low.Hash() != blk.Hash() &&
+			bytes.Compare(low.Hash().Bytes(), blk.Hash().Bytes()) < 0 {
+			log.Info("miner: converging on lowest-hash sibling; re-proposing it",
+				"number", blockNumber.Uint64(), "parent", parentHash.Hex()[:12],
+				"kept", low.Hash().Hex()[:12], "dropped", blk.Hash().Hex()[:12])
+			if err := w.chain.SealedBlock(low); err != nil {
+				log.Warn("miner: re-push of lowest sibling failed", "err", err)
+			}
+			if bsn, ok := w.engine.(blockSealNotifier); ok {
+				bsn.NotifyBlockSealed(low.Hash(), low.TxHash())
+			}
+			return
+		}
+	}
+
+	// Height-level single-candidate guard (HotStuff-2): keep only the first
+	// block sealed on a given parent. A later view's leader re-entering Seal
+	// on the same still-uncommitted parent produces a divergent sibling;
+	// importing it would fork the applied state and thrash the branch-switch
+	// unwind between the two siblings forever. Re-propose the kept block for
+	// THIS view instead — it is already imported and is what consensus is
+	// building on. Checked BEFORE import so the sibling never touches state.
+	if kept := w.firstSealedOnParent(parentHash); kept != nil && kept.Hash() != blk.Hash() {
+		log.Info("miner: suppressing divergent same-height sibling; re-proposing first sealed block",
+			"number", blockNumber.Uint64(), "parent", parentHash.Hex()[:12],
+			"kept", kept.Hash().Hex()[:12], "dropped", blk.Hash().Hex()[:12])
+		if err := w.chain.SealedBlock(kept); err != nil {
+			log.Warn("miner: re-push of kept sibling failed", "err", err)
+		}
+		if bsn, ok := w.engine.(blockSealNotifier); ok {
+			bsn.NotifyBlockSealed(kept.Hash(), kept.TxHash())
+		}
+		return
+	}
+
+	var (
+		sealhash = w.engine.SealHash(blk.Header())
+		hash     = blk.Hash()
+	)
+	w.mu.RLock()
+	task, exist := w.pendingTasks[sealhash]
+	var sealStart time.Time
+	if exist {
+		sealStart = task.sealStart
+	}
+	w.mu.RUnlock()
+	if !exist {
+		log.Error("Block found but no relative pending task", "number", blockNumber.Uint64(), "sealhash", sealhash, "hash", hash)
+		return
+	}
+
+	// Deep copy receipts and set block location fields to prevent write-write conflicts
+	// when different blocks share the same sealhash.
+	receipts := make([]*block.Receipt, len(task.receipts))
+	var logs []*block.Log
+	for i, taskReceipt := range task.receipts {
+		receipt := new(block.Receipt)
+		*receipt = *taskReceipt
+		receipt.BlockHash = hash
+		receipt.BlockNumber = blk.Number64()
+		receipt.TransactionIndex = uint(i)
+
+		receipt.Logs = make([]*block.Log, len(taskReceipt.Logs))
+		for j, taskLog := range taskReceipt.Logs {
+			lg := new(block.Log)
+			*lg = *taskLog
+			lg.BlockHash = hash
+			receipt.Logs[j] = lg
+		}
+		receipts[i] = receipt
+		logs = append(logs, receipt.Logs...)
+	}
+
+	// Push-before-write (N42_PUSH_BEFORE_WRITE, off by default): hand
+	// the sealed block to peers BEFORE committing it, so their import
+	// runs alongside this node's write instead of after it. The
+	// stale-seal predicate the write path would apply is evaluated
+	// first, against a read snapshot, so a block the write is about to
+	// reject still reaches nobody. The Proposal is NOT moved: it stays
+	// after a successful write below.
+	var tPush time.Time
+	var dPush time.Duration
+	pushedEarly := false
+	// The write path's stale-seal gate, evaluated first against a read
+	// snapshot and decisive: a stale candidate is dropped before its write,
+	// not only before its push. The gate inside the write runs only for
+	// isolated QMDB seals; a build whose speculative reload failed fell back
+	// to the live computer, so its stale block reached CommitBlock, read
+	// through the build's rolled-back transaction and panicked the worker
+	// (round 35r, node3).
+	c, hasCheck := w.chain.(sealParentChecker)
+	if hasCheck {
+		if cerr := c.CheckSealParentApplied(blk); cerr != nil {
+			log.Info("miner: sealed block is stale before its write; dropping",
+				"number", blockNumber.Uint64(), "hash", hash.Hex()[:12], "err", cerr)
+			return
+		}
+	}
+	if PushBeforeWrite() {
+		// Fail safe: without the stale-seal check there is no way to know
+		// the write would accept this block, so keep today's order rather
+		// than broadcast one the write may reject.
+		canPush := hasCheck
+		if !hasCheck {
+			log.Warn("push-before-write: chain cannot answer the stale-seal check; keeping write-then-push")
+		}
+		if canPush {
+			tPush = time.Now()
+			if perr := w.chain.SealedBlock(blk); perr != nil {
+				log.Error("push-before-write: broadcast failed", "err", perr)
+			} else {
+				pushedEarly = true
+			}
+			dPush = time.Since(tPush)
+		}
+	}
+	// Propose-before-write (N42_PROPOSE_BEFORE_WRITE, off by default,
+	// needs the early push): hand the Proposal to the engine as soon
+	// as the body is with the peers, so the prepare round and the
+	// followers' imports run beside this node's write. Round 33: with
+	// only the push moved, the follower's import started earlier but
+	// the view still waited for the Proposal that trailed a ~150 ms
+	// write at ~95k transactions. The engine's onBlockReady reads
+	// nothing from the database; the leader's durable consensus state
+	// is its vote journal, written before any signature leaves; and a
+	// write that fails after this point leaves a block the leader
+	// itself must re-fetch, which the followers decide on regardless.
+	proposedEarly := false
+	if pushedEarly && ProposeBeforeWrite() {
+		if bsn, ok := w.engine.(blockSealNotifier); ok {
+			bsn.NotifyBlockSealed(blk.Hash(), blk.TxHash())
+			proposedEarly = true
+		}
+	}
+
+	tWrite := time.Now()
+	err = w.chain.WriteBlockWithState(blk, receipts, task.state, task.nopay)
+	dWrite := time.Since(tWrite)
+	if err != nil {
+		if proposedEarly {
+			log.Warn("propose-before-write: the write failed AFTER the Proposal left; this node re-fetches its own block if the fleet commits it",
+				"number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12], "err", err)
+		}
+		if errors.Is(err, internal.ErrStaleSeal) {
+			// The applied head moved past this seal's parent while it
+			// was in flight (a competing same-height candidate won).
+			// An expected race under view churn, not a node fault.
+			log.Info("Sealed block lost to a competing candidate; dropping",
+				"number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12])
+			return
+		}
+		log.Error("Failed writing block to chain", "err", err)
+		miningErrorsCounter.Inc()
+		return
+	}
+	w.mu.Lock()
+	delete(w.pendingTasks, sealhash)
+	w.mu.Unlock()
+	blocksMinedCounter.Inc()
+	blockMiningTimer.UpdateDuration(task.createdAt)
+
+	body := blk.Body()
+	var verifierCount, rewardCount int
+	if body != nil {
+		verifierCount = len(body.Verifier())
+		rewardCount = len(body.Reward())
+	}
+	blockSignGauge.Set(uint64(verifierCount))
+
+	if len(logs) > 0 {
+		event.GlobalEvent.Send(common.NewLogsEvent{Logs: logs})
+	}
+
+	log.Info("🔨 Successfully sealed new block",
+		"sealhash", sealhash,
+		"hash", hash,
+		"number", blockNumber.Uint64(),
+		"used gas", blk.GasUsed(),
+		"diff", blk.Difficulty().Uint64(),
+		"headerTime", time.Unix(int64(blk.Time()), 0).Format(time.RFC3339),
+		"verifierCount", verifierCount,
+		"rewardCount", rewardCount,
+		"elapsed", common.PrettyDuration(time.Since(task.createdAt)),
+		"txs", len(blk.Transactions()))
+
+	if !pushedEarly {
+		tPush = time.Now()
+		if err = w.chain.SealedBlock(blk); err != nil {
+			log.Error("Failed Broadcast block to p2p network", "err", err)
+			return
+		}
+		dPush = time.Since(tPush)
+	}
+	// For leader-driven consensus (HotStuff), start the Proposal for THIS
+	// exact sealed block — the one we just persisted and direct-pushed — so
+	// the proposed (and committed) block is byte-for-byte what followers
+	// receive and import. Doing this here (not in Seal) binds propose↔push to
+	// the same block, which import-gated voting requires.
+	tNotify := time.Now()
+	if !proposedEarly {
+		if bsn, ok := w.engine.(blockSealNotifier); ok {
+			bsn.NotifyBlockSealed(blk.Hash(), blk.TxHash())
+		}
+	}
+	dNotify := time.Since(tNotify)
+
+	// Leader seal→propose breakdown: ONE line per produced block covering
+	// the window "miner: build phases" stops measuring at (it is emitted
+	// before commit()) up to the Proposal being handed to the engine.
+	// `write` is the whole WriteBlockWithState — "blockwrite phases"
+	// (blockchain_write.go) splits it further.
+	log.Info("miner: propose phases",
+		"n", blockNumber.Uint64(), "txs", len(blk.Transactions()),
+		"finalize", task.finalize, "witness", task.witness, "assemble", task.assemble,
+		"bls", time.Duration(task.blsNanos.Load()), "seal2res", time.Since(sealStart),
+		"write", dWrite, "push", dPush, "pushedEarly", pushedEarly, "proposedEarly", proposedEarly, "notify", dNotify,
+		"total", time.Since(task.createdAt), "tMs", time.Now().UnixMilli())
+
+	// Record this as the one candidate for its parent (after a successful
+	// import), so a later view's divergent sibling is suppressed above.
+	w.recordSealedOnParent(parentHash, blk)
+	if concrete, ok := blk.(*block.Block); ok {
+		event.GlobalEvent.Send(common.ChainHighestBlock{Block: *concrete, Inserted: true})
 	}
 }
 
 // firstSealedOnParent returns the first block this node sealed+imported on the
 // given parent, or nil. Used to suppress a later view's divergent same-height
 // sibling (see the sealedOnParent field doc).
+// rememberSealed records a just-sealed block by hash (bounded to the last
+// 16 by number) so a speculative build can extend it before it is written.
+func (w *worker) rememberSealed(blk block.IBlock) {
+	if blk == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.sealedByHash[blk.Hash()] = blk
+	if len(w.sealedByHash) > 16 {
+		var oldest types.Hash
+		oldestNum := ^uint64(0)
+		for h, b := range w.sealedByHash {
+			if n := b.Number64(); n != nil && n.Uint64() < oldestNum {
+				oldestNum, oldest = n.Uint64(), h
+			}
+		}
+		delete(w.sealedByHash, oldest)
+	}
+}
+
+func (w *worker) ownSealed(hash types.Hash) block.IBlock {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.sealedByHash[hash]
+}
+
+// ownPendingSpeculation reports whether this speculative build extends a
+// block this node sealed and has not applied yet. The miner tree already
+// holds that block's post-state (its own build), so the build neither waits
+// for the write nor aligns the applied branch -- the write of the parent
+// and the hit check (AppliedHeadIs at hand-over) keep it honest, and a lost
+// parent takes the child down with it (PeelAll on the next build).
+func (w *worker) ownPendingSpeculation(speculative bool, parent types.Hash, bc *internal.BlockChain) bool {
+	if !speculative || bc == nil {
+		return false
+	}
+	own := w.ownSealed(parent)
+	if own == nil || own.Number64() == nil {
+		return false
+	}
+	return !bc.AppliedHeadIsExactly(parent, own.Number64().Uint64())
+}
+
 func (w *worker) firstSealedOnParent(parent types.Hash) block.IBlock {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
@@ -801,6 +977,18 @@ func (w *worker) paceBlock(num uint64) error {
 	if wait < -interval {
 		w.pacingAnchorWall, w.pacingAnchorNum = time.Now(), num
 	} else if wait > 0 {
+		// Report the throttle's actual cost. paceBlock sits between commitWork
+		// and sealStart -- on the speculative-hit path (91% of builds) it runs
+		// immediately before the task reaches taskCh -- which is inside the
+		// 247-373 ms window that ViewStart -> seal start has never accounted
+		// for. Round 16 measured the two candidates it was aimed at, the
+		// consensus gates and the miner's work queue, at 0.03 ms and 0.01 ms
+		// combined, so the time is somewhere in here. Whether this throttle
+		// fires under load has been ARGUED twice from the cadence and never
+		// measured; the argument says it cannot (a late block's slot is in the
+		// past, so wait is negative), and the decay phase's exact 250 ms/block
+		// says it certainly does when blocks are cheap.
+		log.Info("miner: pacing wait", "num", num, "waitNs", wait.Nanoseconds())
 		timer := time.NewTimer(wait)
 		select {
 		case <-timer.C:
@@ -888,21 +1076,53 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// so can steal an importing block's in-flight undo after ComputeRoot but
 	// before persistence, advancing PlainState/marker while rolling the tree
 	// back one block.
-	if parentHash != (types.Hash{}) {
+	var dPersistWait time.Duration
+	ownPending := false
+	if bc, ok := w.chain.(*internal.BlockChain); ok {
+		ownPending = w.ownPendingSpeculation(speculative, parentHash, bc)
+	}
+	if ownPending {
+		log.Info("miner: speculative build chains on own unwritten block", "parent", parentHash.Hex()[:12])
+	}
+	if parentHash != (types.Hash{}) && !ownPending {
 		if bc, ok := w.chain.(*internal.BlockChain); ok {
 			// Early-vote overlap: the view can advance while the parent's
 			// persistence is still in flight on this node. The build reads
 			// PlainState, which lands atomically with the header — wait for it
 			// rather than aligning against (and mis-reading) the pre-parent
 			// state. Normally sub-millisecond; 2s covers a stalled write.
+			// Persisted, then AlignAppliedBranch below: the align is what
+			// unwinds a locally-applied sibling so the consensus parent can
+			// be imported. Waiting here for the parent to be APPLIED
+			// (580d2f32) ran before that unwind and could never succeed on a
+			// node that had applied a sibling -- round 35p: every view of a
+			// tenure timed out on "consensus parent not applied in time".
+			tPersist := time.Now()
 			if !bc.WaitBlockPersisted(parentHash, 2*time.Second) {
 				return fmt.Errorf("consensus parent %x not persisted in time", parentHash[:8])
 			}
+			// Round 35z9: `align` was 551 ms of a 1,358 ms build at 163k
+			// transactions, on the path between one commit and the next
+			// proposal, and there was no way to tell the wait for the parent's
+			// write from the unwind that follows it. Two numbers, so the next
+			// round knows which half to attack.
+			dPersistWait = time.Since(tPersist)
 			pblk, _ := w.chain.GetBlockByHash(parentHash)
 			if pblk == nil {
 				return fmt.Errorf("consensus parent %x not in local db", parentHash[:8])
 			}
-			if err := bc.AlignAppliedBranch(pblk.Number64().Uint64()+1, parentHash); err != nil {
+			// Nothing to unwind when the applied state is exactly the
+			// consensus parent, which is every block of a healthy chain.
+			// AlignAppliedBranch takes bc.lock and so waits behind the
+			// parent's own write; skipping it there took 230 ms off the
+			// leader's 512 ms align (round 35za).
+			alignNeeded := !bc.AppliedHeadIsExactly(parentHash, pblk.Number64().Uint64())
+			if err := func() error {
+				if !alignNeeded {
+					return nil
+				}
+				return bc.AlignAppliedBranch(pblk.Number64().Uint64()+1, parentHash)
+			}(); err != nil {
 				if speculative {
 					// A guess is not worth a forced import: the align fallback
 					// below re-imports the consensus parent with switch
@@ -918,6 +1138,30 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 				}
 				if err = bc.AlignAppliedBranch(pblk.Number64().Uint64()+1, parentHash); err != nil {
 					return fmt.Errorf("align applied branch to consensus parent %x: %w", parentHash[:8], err)
+				}
+			}
+			// The align is a no-op when the applied head is BELOW the parent
+			// (unwindForReimport leaves "not applied yet" to the future queue),
+			// and the build would then run on the wrong base. Round 35zg B1:
+			// after the leg's restart node6's startup revert sat at 14029922,
+			// consensus named 14029923 as the parent, the speculative build of
+			// 14029924 ran on a tree reloaded at 14029922, the parent was
+			// re-imported one second later, the parked task matched by hash and
+			// the fleet rejected an empty block with three different roots --
+			// the OPEN_ISSUES "three roots after a restart" shape. Never build on
+			// a parent that is not the applied head: a speculative build gives
+			// up (the leader gate's deferred resume re-triggers after the
+			// parent applies); a production build imports the parent with
+			// switch authority first and checks again.
+			if !bc.AppliedHeadIsExactly(parentHash, pblk.Number64().Uint64()) {
+				if speculative {
+					return fmt.Errorf("speculative build: consensus parent %x not applied yet", parentHash[:8])
+				}
+				if _, ierr := bc.InsertChainAuthorized([]block.IBlock{pblk}); ierr != nil {
+					return fmt.Errorf("import consensus parent %x before building: %w", parentHash[:8], ierr)
+				}
+				if !bc.AppliedHeadIsExactly(parentHash, pblk.Number64().Uint64()) {
+					return fmt.Errorf("consensus parent %x still not the applied head after import", parentHash[:8])
 				}
 			}
 		}
@@ -976,7 +1220,24 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// discarded with the block. Without it, IntermediateRoot falls back to an
 	// empty MPT root and the produced block can never become canonical.
 	if bcForRoot, ok := w.chain.(*internal.BlockChain); ok {
-		if rc := bcForRoot.NewMinerRootComputer(tx); rc != nil {
+		// The parent's state root lets the miner tree recognise that the block
+		// it built last IS this build's parent (NewMinerRootComputer's
+		// own-block fast path).
+		parentRoot := types.Hash{}
+		if own := w.ownSealed(current.header.ParentHash); own != nil {
+			parentRoot = own.StateRoot()
+		} else if n := current.header.Number.Uint64(); n > 0 {
+			if ph := rawdb.ReadHeader(tx, current.header.ParentHash, n-1); ph != nil {
+				parentRoot = ph.Root
+			}
+		}
+		rc, rcErr := bcForRoot.NewMinerRootComputer(tx, parentRoot)
+		if rcErr != nil {
+			// A block sealed on the fallback (live or empty) root can never
+			// become canonical; abandon the build instead of proposing it.
+			return fmt.Errorf("miner: speculative root computer unavailable: %w", rcErr)
+		}
+		if rc != nil {
 			ibs.SetRootComputer(rc)
 		}
 	}
@@ -1044,9 +1305,21 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// Build-phase breakdown: the dropped-seal hunt found ~6s builds with a
 	// 6ms seal and no visible spender - this line is the missing evidence.
 	log.Info("miner: build phases",
-		"align", tAlign, "reload", tReload-tAlign, "syscalls", tPrep-tReload,
+		"align", tAlign, "persistWait", dPersistWait, "reload", tReload-tAlign, "syscalls", tPrep-tReload,
 		"fillTx", time.Since(start)-tPrep, "total", time.Since(start))
-	if err = w.commit(current, stateWriter, ibs, start, headers, tracingReader, readLogRecorder, speculative, parentHash); err != nil {
+	// w.commit() is the rest of commitWork: it assembles and finalizes the
+	// block, creates the task and hands it to taskCh, where taskLoop stamps
+	// sealStart. Everything between "build phases" (logged immediately above)
+	// and sealStart is therefore in here, and that is the remainder of the
+	// unaccounted 247-373 ms once the gates (0.03 ms) and the work queue
+	// (0.01 ms) are ruled out. task.assemble and task.finalize are recorded
+	// INSIDE this call, so they are before sealStart, not inside seal2res --
+	// an earlier subtraction in docs/QS_BLOCK_TIME_BUDGET.md had them on the
+	// wrong side.
+	tCommit := time.Now()
+	err = w.commit(current, stateWriter, ibs, start, headers, tracingReader, readLogRecorder, speculative, parentHash)
+	log.Info("miner: commit phases", "speculative", speculative, "commitNs", time.Since(tCommit).Nanoseconds())
+	if err != nil {
 		log.Errorf("w.commit failed, error %v\n", err)
 		return err
 	}
@@ -1177,6 +1450,9 @@ func (w *worker) workLoop(recommit time.Duration) error {
 		}
 	}
 }
+
+// parallelFillEnabled gates the builder's Block-STM fill (N42_MINER_PARALLEL_FILL=1).
+func parallelFillEnabled() bool { return os.Getenv("N42_MINER_PARALLEL_FILL") == "1" }
 
 func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs *state.IntraBlockState, getHeader func(hash types.Hash, number uint64) *block.Header) (retErr error) {
 	header := env.header
@@ -1332,19 +1608,134 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	}
 
 	// Phase 2: Fill remaining space with regular transactions sorted by effective tip.
+	tPending := time.Now()
 	pending := w.txsPool.Pending(false)
+	dPending := time.Since(tPending)
+	pendingRawAccts := len(pending)
 	if len(pending) == 0 {
 		return nil
 	}
 
+	// Round 28: after a large block lands the pool's reorg lags the
+	// speculative build by up to 1.7 s, and the build then EXECUTES the
+	// previous block's mined transactions one by one (ErrNonceTooLow, ~5 us
+	// each, ~0.7 s for a 163k block) before reaching anything fresh. Read
+	// each account's state nonce once and drop the stale prefix here
+	// instead: O(accounts) reads for O(stale transactions) executions saved.
+	// Semantics unchanged -- those transactions fail the same way inside.
+	// Read through the state READER, never the IntraBlockState: a read there
+	// creates a state object, and a touched-but-unchanged object is one more
+	// no-op entry in an append-only commitment -- a root the followers, who
+	// never touched it, cannot reproduce.
+	staleTrimmed := 0
+	tTrim := time.Now()
+	reader := ibs.GetStateReader()
+	for addr, list := range pending {
+		var nonce uint64
+		if acc, rerr := reader.ReadAccountData(addr); rerr == nil && acc != nil {
+			nonce = acc.Nonce
+		} else if rerr != nil {
+			continue // cannot tell; let execution decide as before
+		}
+		i := 0
+		for i < len(list) && list[i].Nonce() < nonce {
+			i++
+		}
+		if i == 0 {
+			continue
+		}
+		staleTrimmed += i
+		if i == len(list) {
+			delete(pending, addr)
+		} else {
+			pending[addr] = list[i:]
+		}
+	}
+	dTrim := time.Since(tTrim)
+	if len(pending) == 0 {
+		return nil
+	}
 	txSet := builder.NewTxByPriceAndNonce(pending, header.BaseFee)
+
+	// Round 35k: the builder's fill was the leader's largest single phase at
+	// 163k transactions (commit 611-683 ms, ~3.8 us/tx serial), with the
+	// import already on Block-STM at ~200 ms. Pick the candidates in the
+	// same price-and-nonce order without executing (gas by each
+	// transaction's limit, so the block cannot exceed the ceiling), run them
+	// through the same executor the followers use, drop the ones that fail
+	// their pre-check (they wrote nothing; a dropped nonce fails its sender's
+	// later candidates the same way), and hand the survivors to assemble.
+	// Bundles, BAL capture and fee-recipient candidates keep the serial path.
+	if parallelFillEnabled() && balCap == nil && env.tcount == 0 && !w.chainConfig.IsBAL(env.header.Time) {
+		if bc, ok := w.chain.(*internal.BlockChain); ok {
+			tPickP := time.Now()
+			budget := env.gasPool.Gas()
+			candidates := make([]*transaction.Transaction, 0, estCap)
+			for {
+				tx := txSet.Peek()
+				if tx == nil {
+					break
+				}
+				if tx.Gas() > budget {
+					txSet.Pop()
+					if budget < params.TxGas {
+						break
+					}
+					continue
+				}
+				txSize, decision, sizeErr := sizeLimiter.admit(tx)
+				if sizeErr != nil || decision != packAccept {
+					if decision == packStop {
+						break
+					}
+					txSet.Pop() // packSkipAccount, or unencodable: skip the account
+					continue
+				}
+				sizeLimiter.add(txSize)
+				budget -= tx.Gas()
+				candidates = append(candidates, tx)
+				txSet.Shift()
+			}
+			dPickP := time.Since(tPickP)
+			tRun := time.Now()
+			included, receipts, usedGas, failed, perr := bc.BuildParallel(header, candidates, ibs, internal.GetHashFn(header, getHeader))
+			if perr == nil {
+				env.txs = append(env.txs, included...)
+				env.receipts = append(env.receipts, receipts...)
+				env.tcount += len(included)
+				header.GasUsed += usedGas
+				if err := env.gasPool.SubGas(usedGas); err != nil {
+					return err
+				}
+				log.Info("miner: parallel fill", "candidates", len(candidates), "included", len(included), "failed", failed,
+					"pick", dPickP, "run", time.Since(tRun), "pendingSnapshot", dPending, "trim", dTrim, "staleTrimmed", staleTrimmed)
+				return nil
+			}
+			if !errors.Is(perr, internal.ErrParallelNotApplicable) {
+				return perr
+			}
+			// Not applicable: rebuild the set and take the serial path.
+			txSet = builder.NewTxByPriceAndNonce(pending, header.BaseFee)
+			sizeLimiter = newBlockSizeLimiter(header)
+		}
+	}
 	log.Tracef("fillTransactions pending accounts:%d", len(pending))
+	// Round 27: a block that comes out a fifth full with a pool the harness
+	// reports at 200,000 pending is only diagnosable if the build says what
+	// the POOL handed it. Counted once per build, reported on the breakdown.
+	pendingTxs := 0
+	for _, list := range pending {
+		pendingTxs += len(list)
+	}
 
 	// Accounts skipped because their head transaction cannot pay the base fee.
 	// Reported once per build: a block that comes out empty with a full pool is
 	// otherwise indistinguishable from a block that had nothing to include, and
 	// the difference is the whole diagnosis.
 	priceOut := 0
+	// Why accounts left the set (round 28: a 10k pack from a 449k pool).
+	var popGas, popNonceHigh, skipNonceLow, popOther int
+	lookupWait0 := commitment.QMDBLookupWaitNanos()
 	// fillTx phase accumulators — see the breakdown log below the loop.
 	var dPick, dCommit, dHeap time.Duration
 
@@ -1398,10 +1789,13 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			env.tcount++
 			txSet.Shift() // Move to next tx from same account
 		case errors.Is(err, internal.ErrGasLimitReached):
+			popGas++
 			txSet.Pop() // Skip this account entirely
 		case errors.Is(err, internal.ErrNonceTooHigh):
+			popNonceHigh++
 			txSet.Pop() // Nonce gap, skip account
 		case errors.Is(err, internal.ErrNonceTooLow):
+			skipNonceLow++
 			txSet.Shift() // Try next nonce from same account
 		case errors.Is(err, internal.ErrFeeCapTooLow):
 			// The account cannot pay this block's base fee. Skip the whole
@@ -1418,11 +1812,13 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 			priceOut++
 			txSet.Pop()
 		default:
+			popOther++
 			log.Error("miningCommitTx failed", "error", err)
 			txSet.Shift()
 		}
 		dHeap += time.Since(tShift)
 	}
+	lookupWait := time.Duration(commitment.QMDBLookupWaitNanos() - lookupWait0)
 
 	// One line per non-trivial build: where fillTx's time actually goes.
 	// pick = Peek + size admit, commit = ApplyTransaction (the EVM work an
@@ -1430,7 +1826,9 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	// executes the same transactions in ~5-6µs each; whatever pick+heap add on
 	// top of commit is the builder's own overhead.
 	if env.tcount > 1000 {
-		log.Info("miner: fillTx breakdown",
+		log.Info("miner: fillTx breakdown", "pendingAccts", len(pending), "pendingRawAccts", pendingRawAccts, "pendingTxs", pendingTxs, "priceOut", priceOut,
+			"pendingSnapshot", dPending, "trim", dTrim,
+			"popGas", popGas, "popNonceHigh", popNonceHigh, "skipNonceLow", skipNonceLow, "staleTrimmed", staleTrimmed, "popOther", popOther, "lookupWait", lookupWait,
 			"txs", env.tcount, "pick", dPick, "commit", dCommit, "heap", dHeap)
 	}
 
@@ -1468,7 +1866,10 @@ func (w *worker) prepareWork(param *generateParams) (*environment, error) {
 		return nil, errors.New("invalid current block header type")
 	}
 	if param.parentHash != (types.Hash{}) {
-		b, _ := w.chain.GetBlockByHash(param.parentHash)
+		b := w.ownSealed(param.parentHash)
+		if b == nil {
+			b, _ = w.chain.GetBlockByHash(param.parentHash)
+		}
 		if b == nil {
 			return nil, errors.New("missing parent")
 		}
@@ -1523,7 +1924,7 @@ func (w *worker) makeEnv(parent *block.Header, header *block.Header, coinbase ty
 		family:    mapset.NewSet(),
 		coinbase:  coinbase,
 		header:    header,
-		gasPool:   new(common.GasPool).AddGas(header.GasLimit),
+		gasPool:   new(common.GasPool).AddGas(fillGasBudget(header.GasLimit)),
 	}
 
 	for _, ancestor := range w.chain.GetBlocksFromHash(parent.ParentHash, 3) {

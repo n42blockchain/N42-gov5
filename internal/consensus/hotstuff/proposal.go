@@ -36,6 +36,42 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 		return nil
 	}
 
+	// The block was built against the parent chosen when production was
+	// TRIGGERED, but justifyQC below is read NOW. A QC arriving during the
+	// build moves LockedQC without rotating the view or leaving this phase, so
+	// the two can disagree, and the proposal would then pair a newer JustifyQC
+	// with a block on an older parent. That is precisely what extendsJustify
+	// refuses at vote time: every voter rejects, the view times out, the next
+	// leader repeats it, and the chain stops making progress. The window is
+	// wide here: blockProductionSyncGate allows a leader two blocks behind to
+	// produce, and a 22,857-transaction build takes 1.6-2 s.
+	//
+	// The comparison catches a SECOND shape with the same test, and that one
+	// has been seen live on another client: the builder returning a block that
+	// does not extend the parent it was asked for, with the driver trusting the
+	// payload it got back. Here the requested parent IS the LockedQC block
+	// (service.go passes lq.BlockHash), so "built on the wrong parent" and "the
+	// QC moved under the build" both surface as parent != justifyBlock. One
+	// check, two failures.
+	//
+	// (The peer's live halt turned out to be the builder-trust shape, not the
+	// QC race — their QC guard fired zero times. This guard was found here by
+	// reading, not by reproducing theirs, and it stands on that.)
+	//
+	// Drop rather than propose, matching the two checks above: a timed-out view
+	// is recoverable, a proposal nobody can vote for is not. Fail-open when
+	// either side is unknown, exactly as extendsJustify does — the rule
+	// tightens as information is available and never blocks the honest path.
+	if parent, known := e.importedParents[blockHash]; known && parent != (types.Hash{}) {
+		if justifyBlock := e.roundState.LockedQC().BlockHash; justifyBlock != (types.Hash{}) && parent != justifyBlock {
+			log.Warn("hotstuff: sealed block dropped — parent no longer extends the current LockedQC",
+				"view", view, "block", blockHash.Hex()[:12],
+				"blockParent", parent.Hex()[:12], "justifyBlock", justifyBlock.Hex()[:12])
+			metricProposalStaleParent.Inc()
+			return nil
+		}
+	}
+
 	// The proposal is signed over the SAME message as a Round 1 vote
 	// (SigningMessage(view, blockHash)) and the leader immediately self-votes
 	// with it, so proposing IS a vote commitment. Journal it before anything is
@@ -84,6 +120,17 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 		},
 	}); err != nil {
 		return err
+	}
+
+	// Same-leader speculative build: with a leader tenure above one this
+	// node also leads view+1, and the vote-time hint never fires for its
+	// own block (a leader does not import what it built). Advise the
+	// producer now; it waits for the block to persist, then builds view+1
+	// on its post-state while the followers import it (round 35l: without
+	// this, tenure views proposed in 363-528 ms like rotation views, all
+	// twenty builds "triggered (leader view)", none a speculative hit).
+	if LeaderForView(view+1, vs) == e.myIndex {
+		_ = e.emit(EngineOutput{Type: OutputSpeculativeBuild, View: view + 1, Hash: blockHash})
 	}
 
 	// Check if quorum already reached (single-validator scenario).
@@ -413,7 +460,7 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 		e.pendingCommitQC = nil
 		if held.View == e.roundState.CurrentView() {
 			log.Info("two-phase vote: casting held commit vote after import",
-				"view", held.View, "blockHash", blockHash)
+				"view", held.View, "blockHash", blockHash, "tMs", time.Now().UnixMilli())
 			if err := e.processPrepareQC(held); err != nil {
 				log.Debug("two-phase held commit vote failed", "err", err)
 			}

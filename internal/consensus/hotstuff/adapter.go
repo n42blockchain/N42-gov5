@@ -12,6 +12,7 @@
 package hotstuff
 
 import (
+	"os"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
@@ -652,6 +653,10 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 // Finalize runs any post-transaction state modifications (e.g. block rewards).
 // HotStuff delegates reward logic to the APoS reward module so that validators
 // receive the same epoch-based rewards regardless of which consensus engine is active.
+// finalizeTrace (N42_FINALIZE_TRACE=1) logs what an empty block reads and the
+// root each side computes -- round 26's build-versus-verify diagnostic.
+var finalizeTrace = os.Getenv("N42_FINALIZE_TRACE") == "1"
+
 func (h *HotStuff) Finalize(chain consensus.ChainHeaderReader, iHeader block.IHeader, ibs *state.IntraBlockState, txs []*transaction.Transaction, uncles []block.IHeader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
 	header, ok := iHeader.(*block.Header)
 	if !ok {
@@ -709,7 +714,21 @@ func (h *HotStuff) Finalize(chain consensus.ChainHeaderReader, iHeader block.IHe
 	// replay reasons) — validator QMDB trees could drift apart indefinitely,
 	// surfacing only as nonce anomalies under load and as startup
 	// marker/tree-root mismatches.
+	if finalizeTrace {
+		var fa types.Address
+		if h.chainConfig.HotStuff != nil && h.chainConfig.HotStuff.DevFaucetAddress != nil {
+			fa = *h.chainConfig.HotStuff.DevFaucetAddress
+		}
+		accts, stor := ibs.DirtySetSizes()
+		log.Warn("finalize trace", "number", header.Number.Uint64(), "verify", header.Root != (types.Hash{}),
+			"coinbase", header.Coinbase, "coinbaseBal", ibs.GetBalance(header.Coinbase).String(),
+			"faucetBal", ibs.GetBalance(fa).String(), "txs", len(txs), "dirtyAccts", accts, "dirtySlots", stor)
+	}
 	localRoot := ibs.IntermediateRoot()
+	if finalizeTrace {
+		log.Warn("finalize trace root", "number", header.Number.Uint64(), "verify", header.Root != (types.Hash{}),
+			"proposer", header.Root, "local", localRoot)
+	}
 	if header.Root != (types.Hash{}) && header.Root != localRoot {
 		return nil, nil, fmt.Errorf("state root mismatch at block %d: proposer %x, locally computed %x",
 			header.Number.Uint64(), header.Root[:8], localRoot[:8])

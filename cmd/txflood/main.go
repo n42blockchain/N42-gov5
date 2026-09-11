@@ -11,11 +11,13 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"runtime/debug"
@@ -181,20 +183,60 @@ func getNonce(url string, a types.Address) (uint64, error) {
 	return getNonceAt(url, a, "pending")
 }
 
+// faucetNonce returns the highest pending nonce any node reports for the
+// faucet -- the nonce the next funding batch must start from. A single node
+// can be a block behind the leader that just mined the previous generator's
+// batch; the maximum across the fleet cannot. Errors only when every node
+// fails.
+func faucetNonce(urls []string, a types.Address) (uint64, error) {
+	var (
+		best    uint64
+		got     bool
+		lastErr error
+	)
+	for _, u := range urls {
+		n, err := getNonceAt(u, a, "pending")
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if !got || n > best {
+			best, got = n, true
+		}
+	}
+	if !got {
+		return 0, lastErr
+	}
+	return best, nil
+}
+
 func getBalanceAt(url string, a types.Address, tag string) (*big.Int, error) {
-	r, err := rpcCall(url, "eth_getBalance", []interface{}{a.Hex(), tag})
-	if err != nil {
-		return nil, err
+	// Retried: with eight generators funding at once a node under load
+	// answered one preflight with an empty quantity and the whole leg died
+	// (round 35q warm-up). Five tries, a second apart.
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Second)
+		}
+		r, err := rpcCall(url, "eth_getBalance", []interface{}{a.Hex(), tag})
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		var h string
+		if err := json.Unmarshal(r, &h); err != nil {
+			lastErr = err
+			continue
+		}
+		n, err := hexToBig(h)
+		if err != nil {
+			lastErr = fmt.Errorf("invalid %s balance for %s: %w", tag, a.Hex(), err)
+			continue
+		}
+		return n, nil
 	}
-	var h string
-	if err := json.Unmarshal(r, &h); err != nil {
-		return nil, err
-	}
-	n, err := hexToBig(h)
-	if err != nil {
-		return nil, fmt.Errorf("invalid %s balance for %s: %w", tag, a.Hex(), err)
-	}
-	return n, nil
+	return nil, lastErr
 }
 
 func fundingAmounts(senders, perTx int, gasPrice uint64) (*uint256.Int, *big.Int) {
@@ -225,7 +267,111 @@ func deriveKey(i int) *ecdsa.PrivateKey {
 	return k
 }
 
+// deriveRecipient returns the i-th flood recipient. A separate domain from
+// deriveKey's, so a recipient can never collide with a sender: the two sets
+// touching would silently turn a spread workload back into a partly-shared one.
+//
+// Only the address is derived, never a key -- these accounts receive and never
+// send, so there is nothing to sign for them and no funding to do.
+func deriveRecipient(i int) types.Address {
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], uint64(i))
+	h := crypto.Keccak256([]byte("n42-txflood-recipient-v1"), b[:])
+	var a types.Address
+	copy(a[:], h[12:])
+	return a
+}
+
 var nonceFailures int64
+
+// hintStreamer copies every submitted batch to the fleet's hint-only ingest
+// endpoints (internal/ingest, N42_... --ingest.hint-only): one goroutine and
+// one TCP connection per peer, a bounded queue in between, and a batch that
+// finds the queue full is dropped and counted rather than slowing the submit
+// path. The wire format is the ingest server's: u32 count, then per
+// transaction u16 length, the raw bytes and a 20-byte sender the hint mode
+// ignores; the server answers each batch with a u32 the streamer must read.
+type hintStreamer struct {
+	peers   []string
+	queues  []chan [][]byte
+	dropped atomic.Int64
+	sent    atomic.Int64
+	errs    atomic.Int64
+}
+
+func newHintStreamer(peers []string) *hintStreamer {
+	h := &hintStreamer{peers: peers}
+	for range peers {
+		h.queues = append(h.queues, make(chan [][]byte, 256))
+	}
+	for i := range peers {
+		go h.run(i)
+	}
+	return h
+}
+
+func (h *hintStreamer) offer(raws [][]byte) {
+	for _, q := range h.queues {
+		select {
+		case q <- raws:
+		default:
+			h.dropped.Add(int64(len(raws)))
+		}
+	}
+}
+
+func (h *hintStreamer) run(i int) {
+	var conn net.Conn
+	var zero [20]byte
+	buf := make([]byte, 0, 1<<20)
+	for raws := range h.queues[i] {
+		if conn == nil {
+			c, err := net.DialTimeout("tcp", h.peers[i], 2*time.Second)
+			if err != nil {
+				h.errs.Add(1)
+				h.dropped.Add(int64(len(raws)))
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
+			conn = c
+		}
+		buf = buf[:0]
+		var n [4]byte
+		binary.LittleEndian.PutUint32(n[:], uint32(len(raws)))
+		buf = append(buf, n[:]...)
+		for _, raw := range raws {
+			var l [2]byte
+			binary.LittleEndian.PutUint16(l[:], uint16(len(raw)))
+			buf = append(buf, l[:]...)
+			buf = append(buf, raw...)
+			buf = append(buf, zero[:]...)
+		}
+		if _, err := conn.Write(buf); err != nil {
+			h.errs.Add(1)
+			h.dropped.Add(int64(len(raws)))
+			conn.Close()
+			conn = nil
+			continue
+		}
+		var resp [4]byte
+		if _, err := io.ReadFull(conn, resp[:]); err != nil {
+			h.errs.Add(1)
+			conn.Close()
+			conn = nil
+			continue
+		}
+		h.sent.Add(int64(len(raws)))
+	}
+}
+
+// rawBytes decodes the 0x-prefixed hex a submit batch carries back to bytes.
+func rawBytes(hexStr string) []byte {
+	b, err := hex.DecodeString(strings.TrimPrefix(hexStr, "0x"))
+	if err != nil {
+		return nil
+	}
+	return b
+}
 
 func main() {
 	debug.SetMaxThreads(200000)
@@ -236,13 +382,30 @@ func main() {
 	conc := flag.Int("conc", 48, "concurrent HTTP submitters")
 	rate := flag.Int("rate", 0, "submissions per second (0 = as fast as possible)")
 	targetDepth := flag.Int("target-depth", 0, "keep this many txs pending in the pool; each second top up only the shortfall (0 = off, requires the txpool RPC namespace)")
+	depthByBlocks := flag.Bool("depth-by-blocks", false, "with -target-depth: measure depth as submitted minus mined (summing each new block's transaction count) minus rejected, instead of asking txpool_status -- exact when this generator is the chain's only traffic, and immune to the pool's not-yet-demoted backlog")
+	depthByNonce := flag.Bool("depth-by-nonce", false, "with -target-depth: measure depth as THIS generator's submitted minus mined, from its own senders' chain nonces (sampled: -depth-sample senders a second, round-robin over the ones with anything in flight). Exact per generator whatever else is on the chain. -depth-by-blocks with -depth-share credits N generators with 1/N of every block, which is a fixed point at ANY rate: round 35s ran at 35k TPS and 16% occupancy with every generator believing it had 25k in flight")
+	lazySign := flag.Bool("lazy-sign", false, "sign each transaction when it is submitted instead of pre-signing the whole run. Pre-signing 8 x 1000 x 4500 transactions is ~29 GB of resident memory across the generators, which is what pushed the box under its memory watchdog on 2026-09-08 while a neighbouring build held 29 GB. Signing costs ~50 us a transaction, so one generator at 8k tx/s spends under half a core on it")
+	sweep := flag.Bool("sweep", false, "return the derived senders' balances (-senders from -sender-offset) to the faucet and exit: each sender sends balance minus one transfer's gas. Round 35y: fresh senders every leg left ~44k ETH stranded across a day's offsets and the faucet ran dry")
+	fundGasPrice := flag.Uint64("fund-gasprice", 0, "gas price for the faucet's funding transfers (0 = twice -gasprice). The builder orders equal-tip candidates account by account, so a faucet batch at the flood's price gets ~1 slot per block among thousands of flooding senders: round 35u A1 confirmed 4 of 1,000 funding transfers a block and timed out. A strictly higher price puts the whole batch in the next block")
+	depthSample := flag.Int("depth-sample", 128, "with -depth-by-nonce: senders whose chain nonce is refreshed each second")
+	depthShare := flag.Int("depth-share", 1, "with -depth-by-blocks: this generator is one of N symmetric generators, so credit it with 1/N of each block's transactions (round 35r: eight generators each counted every block as their own, read the pool as empty, and pushed 12M transactions through a 300k pool)")
 	senders := flag.Int("senders", 0, "0=single faucet; N=fund+flood from N derived accounts")
 	perTx := flag.Int("pertx", 300, "txs per sender (multi-sender mode)")
 	count := flag.Int("count", 80000, "txs to submit (single-faucet mode)")
 	broadcast := flag.Bool("broadcast", false, "submit each tx to ALL rpcs")
 	offset := flag.Uint64("sender-offset", 0, "shift the derived sender set; use a fresh offset to get accounts with no nonce history")
 	shardSenders := flag.Bool("shard-senders", false, "route each sender's txs to one node (sender%rpcs) so every proposer owns full nonce sequences")
+	// The flood used to pay ONE hard-coded address, so a full 22,857-tx block
+	// wrote ~1,201 distinct accounts (the senders, plus the sink) where a block
+	// spread over N recipients writes up to N more. That is the difference
+	// between measuring a chain's transfer path and measuring its state growth,
+	// and it made every cross-client per-transaction comparison in
+	// docs/QS_TPS_BENCHMARK.md incomparable. Default 0 keeps the old behaviour
+	// so recorded rounds stay reproducible; set it to make the state work real.
+	recipients := flag.Int("recipients", 0, "spread transfers over N derived recipients (0 = the single 0x..dEaD sink, the historical behaviour)")
 	skipFunding := flag.Bool("skip-funding", false, "assume the derived senders are already funded (re-run after a funding round that mined but aborted)")
+	fundTimeout := flag.Int("fund-timeout", 300, "seconds to wait for the funding batch to mine before aborting (35zc warm-up: the eighth generator's batch took >80 s behind seven flooding generators)")
+	hintPeers := flag.String("hint-peers", "", "comma-separated host:port ingest endpoints (hint-only mode) that receive every submitted transaction as well, so followers recover senders ahead of the block")
 	rpcBatch := flag.Int("rpcbatch", 0, "submit N txs per eth_batchRawTransaction call (0 = one eth_sendRawTransaction per tx; max 200)")
 	flag.Parse()
 	if *senders < 0 || *perTx < 0 {
@@ -257,19 +420,47 @@ func main() {
 	}
 	from := crypto.PubkeyToAddress(priv.PublicKey)
 	urls := strings.Split(*rpcs, ",")
+	var hints *hintStreamer
+	if *hintPeers != "" {
+		hints = newHintStreamer(strings.Split(*hintPeers, ","))
+		fmt.Printf("hint peers: %d ingest endpoints receive every batch\n", len(hints.peers))
+	}
 	signer := transaction.NewLondonSigner(big.NewInt(*chainID))
 	dead := types.HexToAddress("0x000000000000000000000000000000000000dEaD")
-	fmt.Printf("faucet=%s chainId=%d rpcs=%d senders=%d\n", from.Hex(), *chainID, len(urls), *senders)
+	sink := "single 0x..dEaD sink"
+	if *recipients > 0 {
+		sink = fmt.Sprintf("%d derived recipients", *recipients)
+	}
+	fmt.Printf("faucet=%s chainId=%d rpcs=%d senders=%d recipients=%s\n", from.Hex(), *chainID, len(urls), *senders, sink)
 
-	signOne := func(priv *ecdsa.PrivateKey, from, to types.Address, nonce uint64, value *uint256.Int, gas uint64) string {
-		inner := &transaction.LegacyTx{Nonce: nonce, GasPrice: uint256.NewInt(*gasPrice), Gas: gas, To: &to, Value: value, From: &from}
+	signAt := func(priv *ecdsa.PrivateKey, from, to types.Address, nonce uint64, value *uint256.Int, gas, price uint64) string {
+		inner := &transaction.LegacyTx{Nonce: nonce, GasPrice: uint256.NewInt(price), Gas: gas, To: &to, Value: value, From: &from}
 		signed, _ := transaction.SignTx(transaction.NewTx(inner), signer, priv)
 		raw, _ := transaction.EncodeEthereumTransaction(signed)
 		return "0x" + fmt.Sprintf("%x", raw)
 	}
+	signOne := func(priv *ecdsa.PrivateKey, from, to types.Address, nonce uint64, value *uint256.Int, gas uint64) string {
+		return signAt(priv, from, to, nonce, value, gas, *gasPrice)
+	}
+	fundPrice := 2 * *gasPrice
+	if *fundGasPrice > 0 {
+		fundPrice = *fundGasPrice
+	}
+
+	if *sweep {
+		os.Exit(runSweep(urls, priv, from, *senders, *conc, *gasPrice, signAt))
+	}
 
 	// ---------- build the raw tx list ----------
 	var raws []string
+	// Per-sender address and pre-sign base nonce, kept for -depth-by-nonce:
+	// sender s owns raws[s*perTx : (s+1)*perTx], so its submitted count is a
+	// function of the shared claim index and its mined count is its chain
+	// nonce minus the base.
+	var senderAddrs []types.Address
+	var senderBase []uint64
+	var senderKeys []*ecdsa.PrivateKey
+	var totalTxs int64
 	if *senders <= 0 {
 		startNonce, err := getNonce(urls[0], from)
 		if err != nil {
@@ -277,6 +468,7 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Printf("single-faucet: startNonce=%d, pre-signing %d...\n", startNonce, *count)
+		totalTxs = int64(*count)
 		raws = make([]string, *count)
 		var wg sync.WaitGroup
 		sc := make(chan int, 16)
@@ -298,12 +490,30 @@ func main() {
 			keys[i] = deriveKey(i)
 			addrs[i] = crypto.PubkeyToAddress(keys[i].PublicKey)
 		}
-		fn, err := getNonce(urls[0], from)
+		senderAddrs = addrs
+		senderKeys = keys
+		senderBase = make([]uint64, *senders)
+		// The faucet nonce is the HIGHEST pending nonce any node reports, not
+		// the one node this generator talks to. Round 35zb warm-up: eight
+		// generators fund in sequence, each from its own node; the previous
+		// generator's 1000 funding transactions had just been mined on the
+		// leader, this generator's node had not imported that block yet, and
+		// its pending nonce was 1000 behind -- the whole batch went out with
+		// used nonces, nothing was mined, and five of eight generators died
+		// at the 80 s funding deadline (3 generators, 33 full blocks, no
+		// window). A node that is behind cannot know; the max across the
+		// fleet can.
+		fn, err := faucetNonce(urls, from)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "faucet nonce: %v\n", err)
 			os.Exit(1)
 		}
 		fundVal, fundingCost := fundingAmounts(*senders, *perTx, *gasPrice)
+		if fundPrice > *gasPrice {
+			// The transfer itself is paid at the funding price.
+			extra := new(big.Int).Mul(big.NewInt(21000), new(big.Int).SetUint64(fundPrice-*gasPrice))
+			fundingCost.Add(fundingCost, extra.Mul(extra, big.NewInt(int64(*senders))))
+		}
 		fmt.Printf("funding %d senders (nonce %d..), value=%s wei each...\n", *senders, fn, fundVal.Dec())
 		if !*skipFunding {
 			faucetBalance, err := getBalanceAt(urls[0], from, "latest")
@@ -319,15 +529,35 @@ func main() {
 			}
 		}
 		var lastFundHash string
-		for i := 0; !*skipFunding && i < *senders; i++ {
-			raw := signOne(priv, from, addrs[i], fn+uint64(i), fundVal, 21000)
-			r, err := rpcCall(urls[0], "eth_sendRawTransaction", []interface{}{raw})
-			if err != nil {
-				fmt.Printf("fund %d err: %v\n", i, err)
-				continue
+		// A "nonce too low" on the first funding transaction means the nonce
+		// read above was still stale (or another generator raced this one):
+		// re-read the fleet-wide nonce and start the batch over, up to three
+		// times, instead of sending 999 more doomed transactions and waiting
+		// 80 s to find out.
+		for attempt := 0; !*skipFunding && attempt < 3; attempt++ {
+			restart := false
+			for i := 0; i < *senders; i++ {
+				raw := signAt(priv, from, addrs[i], fn+uint64(i), fundVal, 21000, fundPrice)
+				r, err := rpcCall(urls[0], "eth_sendRawTransaction", []interface{}{raw})
+				if err != nil {
+					if i == 0 && strings.Contains(err.Error(), "nonce too low") && attempt < 2 {
+						nfn, nerr := faucetNonce(urls, from)
+						fmt.Printf("fund 0 err: %v -- re-reading the faucet nonce (%d -> %d, err=%v) and restarting the batch\n", err, fn, nfn, nerr)
+						if nerr == nil && nfn > fn {
+							fn = nfn
+							restart = true
+							break
+						}
+					}
+					fmt.Printf("fund %d err: %v\n", i, err)
+					continue
+				}
+				if i == *senders-1 {
+					_ = json.Unmarshal(r, &lastFundHash)
+				}
 			}
-			if i == *senders-1 {
-				_ = json.Unmarshal(r, &lastFundHash)
+			if !restart {
+				break
 			}
 		}
 		// Wait until the last sender is funded (balance > 0), and ABORT if it
@@ -343,7 +573,7 @@ func main() {
 		} else {
 			fmt.Println("waiting for funding to mine...")
 		}
-		for w := 0; !funded && w < 40; w++ {
+		for w := 0; !funded && w < *fundTimeout/2; w++ {
 			time.Sleep(2 * time.Second)
 			r, _ := rpcCall(urls[0], "eth_getBalance", []interface{}{addrs[*senders-1].Hex(), "latest"})
 			var h string
@@ -376,14 +606,19 @@ func main() {
 		if !funded {
 			latestNonce, latestErr := getNonceAt(urls[0], from, "latest")
 			pendingNonce, pendingErr := getNonceAt(urls[0], from, "pending")
-			fmt.Fprintf(os.Stderr, "FATAL: funding was not confirmed within 80s (latest nonce %d err=%v; pending nonce %d err=%v; expected latest >= %d)\n",
-				latestNonce, latestErr, pendingNonce, pendingErr, fn+uint64(*senders))
+			fmt.Fprintf(os.Stderr, "FATAL: funding was not confirmed within %ds (latest nonce %d err=%v; pending nonce %d err=%v; expected latest >= %d)\n",
+				*fundTimeout, latestNonce, latestErr, pendingNonce, pendingErr, fn+uint64(*senders))
 			os.Exit(1)
 		}
 		// pre-sign perTx transfers from each sender
 		total := *senders * *perTx
-		fmt.Printf("pre-signing %d txs (%d senders x %d)...\n", total, *senders, *perTx)
-		raws = make([]string, total)
+		totalTxs = int64(total)
+		if *lazySign {
+			fmt.Printf("probing nonces for %d senders (%d txs will be signed on submit)...\n", *senders, total)
+		} else {
+			fmt.Printf("pre-signing %d txs (%d senders x %d)...\n", total, *senders, *perTx)
+			raws = make([]string, total)
+		}
 		var wg sync.WaitGroup
 		sc := make(chan int, 16)
 		for s := 0; s < *senders; s++ {
@@ -399,12 +634,40 @@ func main() {
 					atomic.AddInt64(&nonceFailures, 1)
 					return // leave this sender's slots empty rather than sign from a guessed nonce
 				}
+				senderBase[s] = base
+				if *lazySign {
+					return // the nonce is all the submit path needs
+				}
 				for j := 0; j < *perTx; j++ {
-					raws[s*(*perTx)+j] = signOne(keys[s], addrs[s], dead, base+uint64(j), uint256.NewInt(1), 21000)
+					to := dead
+					if *recipients > 0 {
+						// Stride by sender so two senders rarely share a
+						// recipient inside one block; the block's write set is
+						// then min(recipients, txs in the block).
+						to = deriveRecipient((s**perTx + j) % *recipients)
+					}
+					raws[s*(*perTx)+j] = signOne(keys[s], addrs[s], to, base+uint64(j), uint256.NewInt(1), 21000)
 				}
 			}(s)
 		}
 		wg.Wait()
+	}
+
+	// rawAt returns the i-th transaction of the run, signing it now when the
+	// run was not pre-signed. The mapping is the same one the pre-signing loop
+	// used, so a lazily signed run submits byte-identical transactions in the
+	// same order.
+	rawAt := func(i int64) string {
+		if !*lazySign {
+			return raws[i]
+		}
+		s := int(i / int64(*perTx))
+		j := int(i % int64(*perTx))
+		to := dead
+		if *recipients > 0 {
+			to = deriveRecipient((s**perTx + j) % *recipients)
+		}
+		return signOne(senderKeys[s], senderAddrs[s], to, senderBase[s]+uint64(j), uint256.NewInt(1), 21000)
 	}
 
 	// ---------- flood ----------
@@ -412,7 +675,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "FATAL: %d senders had no usable nonce after retries; refusing to submit a partial benchmark load\n", nf)
 		os.Exit(1)
 	}
-	fmt.Printf("flooding %d txs to %d node(s) (broadcast=%v conc=%d)...\n", len(raws), len(urls), *broadcast, *conc)
+	fmt.Printf("flooding %d txs to %d node(s) (broadcast=%v conc=%d lazySign=%v)...\n", totalTxs, len(urls), *broadcast, *conc, *lazySign)
 	var idx int64 = -1
 	var submitted, failed int64
 	tf := time.Now()
@@ -435,14 +698,104 @@ func main() {
 		// up only the shortfall, so the pool sits at a known level and the
 		// offered rate converges on what the chain actually consumes.
 		permits = make(chan struct{}, *targetDepth)
+		// -depth-by-blocks: round 29 found the pool reporting 200-250k pending
+		// that were already mined and not yet demoted, so the loop believed
+		// the pool full and fed it ~21k a second. Counting what the CHAIN has
+		// taken is exact for a single generator and does not depend on the
+		// pool's reorg keeping up.
+		var minedSinceStart int64
+		lastCounted := uint64(0)
+		chainNonce := make([]uint64, len(senderAddrs))
+		for s := range chainNonce {
+			chainNonce[s] = senderBase[s]
+		}
+		nonceCursor := 0
+		if *depthByBlocks {
+			if r, err := rpcCall(urls[0], "eth_blockNumber", nil); err == nil {
+				var h string
+				if json.Unmarshal(r, &h) == nil {
+					lastCounted = hexToU64(h)
+				}
+			}
+		}
 		go func() {
 			t := time.NewTicker(time.Second)
 			defer t.Stop()
 			for range t.C {
-				depth, err := poolDepth(urls)
-				if err != nil {
-					fmt.Printf("  !! depth probe failed, refusing to inject blind: %v\n", err)
-					continue
+				var depth int
+				var err error
+				if *depthByNonce && len(senderAddrs) > 0 {
+					// Claimed (not acknowledged) indexes count as in flight:
+					// a batch inside its HTTP call is about to be.
+					claimed := atomic.LoadInt64(&idx) + 1
+					per := int64(*perTx)
+					refreshed := 0
+					inflight := int64(0)
+					for k := 0; k < len(senderAddrs); k++ {
+						s := (nonceCursor + k) % len(senderAddrs)
+						sub := claimed - int64(s)*per
+						if sub <= 0 {
+							continue // not reached yet (senders are claimed in order)
+						}
+						if sub > per {
+							sub = per
+						}
+						mined := int64(chainNonce[s]) - int64(senderBase[s])
+						if mined >= sub {
+							continue // fully mined as of the last refresh
+						}
+						if refreshed < *depthSample {
+							if n, e := getNonceAt(urls[s%len(urls)], senderAddrs[s], "latest"); e == nil {
+								chainNonce[s] = n
+								mined = int64(n) - int64(senderBase[s])
+							}
+							refreshed++
+							nonceCursor = s + 1
+						}
+						if mined < sub {
+							inflight += sub - mined
+						}
+					}
+					depth = int(inflight)
+				} else if *depthByBlocks {
+					r, e := rpcCall(urls[0], "eth_blockNumber", nil)
+					var h string
+					if e != nil || json.Unmarshal(r, &h) != nil {
+						fmt.Printf("  !! head probe failed, refusing to inject blind: %v\n", e)
+						continue
+					}
+					head := hexToU64(h)
+					for b := lastCounted + 1; b <= head; b++ {
+						rc, e := rpcCall(urls[0], "eth_getBlockTransactionCountByNumber", []interface{}{fmt.Sprintf("0x%x", b)})
+						var hc string
+						if e != nil || json.Unmarshal(rc, &hc) != nil {
+							err = fmt.Errorf("block %d tx count: %v", b, e)
+							break
+						}
+						minedSinceStart += int64(hexToU64(hc))
+						lastCounted = b
+					}
+					if err != nil {
+						fmt.Printf("  !! depth probe failed, refusing to inject blind: %v\n", err)
+						continue
+					}
+					// N symmetric generators share every block about equally;
+					// counting the whole block as this generator's own read
+					// the pool as empty N times too early (round 35r).
+					share := int64(*depthShare)
+					if share < 1 {
+						share = 1
+					}
+					depth = int(atomic.LoadInt64(&submitted) - minedSinceStart/share - atomic.LoadInt64(&failed))
+					if depth < 0 {
+						depth = 0
+					}
+				} else {
+					depth, err = poolDepth(urls)
+					if err != nil {
+						fmt.Printf("  !! depth probe failed, refusing to inject blind: %v\n", err)
+						continue
+					}
 				}
 				short := *targetDepth - depth
 				if *rate > 0 && short > *rate {
@@ -459,12 +812,27 @@ func main() {
 					default:
 					}
 				}
-				fmt.Printf("  pool=%d topup=%d\n", depth, max(short, 0))
+				if hints != nil {
+					fmt.Printf("  pool=%d topup=%d hints sent=%d dropped=%d errors=%d\n", depth, max(short, 0), hints.sent.Load(), hints.dropped.Load(), hints.errs.Load())
+				} else {
+					fmt.Printf("  pool=%d topup=%d\n", depth, max(short, 0))
+				}
 			}
 		}()
 	} else if *rate > 0 {
 		permits = make(chan struct{}, *rate)
 		per10ms := *rate / 100
+		// A permit releases a WHOLE batch on the batched path below, so issuing
+		// rate/100 of them per 10 ms offers rate*rpcBatch transactions a second
+		// -- at the rig's -rpcbatch 200 that is a 200x ceiling, i.e. none at
+		// all. The closed-loop branch above already divides its shortfall by
+		// rpcBatch for exactly this reason; -rate has to as well, or the flag
+		// silently does nothing and the round reports a supply collapse
+		// (12M transactions offered in 80 s, then three windows draining a
+		// 300k-slot pool) as though it were the chain slowing down.
+		if *rpcBatch > 1 {
+			per10ms = (per10ms + *rpcBatch - 1) / *rpcBatch
+		}
 		if per10ms < 1 {
 			per10ms = 1
 		}
@@ -511,12 +879,12 @@ func main() {
 					// a bn-sized claim owns [last-bn+1, last].
 					last := atomic.AddInt64(&idx, bn)
 					start := last - bn + 1
-					if start >= int64(len(raws)) {
+					if start >= totalTxs {
 						return
 					}
 					end := last + 1
-					if end > int64(len(raws)) {
-						end = int64(len(raws))
+					if end > totalTxs {
+						end = totalTxs
 					}
 					for lo := start; lo < end; {
 						u := urlFor(lo)
@@ -525,7 +893,18 @@ func main() {
 							hi++
 						}
 						batch := make([]string, hi-lo)
-						copy(batch, raws[lo:hi])
+						for k := range batch {
+							batch[k] = rawAt(lo + int64(k))
+						}
+						if hints != nil {
+							raws := make([][]byte, 0, len(batch))
+							for _, hx := range batch {
+								if b := rawBytes(hx); b != nil {
+									raws = append(raws, b)
+								}
+							}
+							hints.offer(raws)
+						}
 						if _, err := rpcCall(u, "eth_batchRawTransaction", []interface{}{batch}); err != nil {
 							if n := atomic.AddInt64(&failed, hi-lo); n <= int64(5*bn) || n%1000000 < bn {
 								fmt.Printf("  batch submit err (i=%d n=%d %s): %v\n", lo, hi-lo, u, err)
@@ -540,7 +919,10 @@ func main() {
 		}
 		wg.Wait()
 		el := time.Since(tf)
-		fmt.Printf("DONE submitted=%d failed=%d in %s (%.0f tx/s offered)\n", submitted, failed, el.Round(time.Millisecond), float64(len(raws))/el.Seconds())
+		fmt.Printf("DONE submitted=%d failed=%d in %s (%.0f tx/s offered)\n", submitted, failed, el.Round(time.Millisecond), float64(totalTxs)/el.Seconds())
+		if hints != nil {
+			fmt.Printf("hint peers: sent=%d dropped=%d errors=%d\n", hints.sent.Load(), hints.dropped.Load(), hints.errs.Load())
+		}
 		return
 	}
 
@@ -553,13 +935,13 @@ func main() {
 					<-permits
 				}
 				i := atomic.AddInt64(&idx, 1)
-				if i >= int64(len(raws)) {
+				if i >= totalTxs {
 					return
 				}
 				if *broadcast {
 					ok := false
 					for _, url := range urls {
-						if _, err := rpcCall(url, "eth_sendRawTransaction", []interface{}{raws[i]}); err == nil {
+						if _, err := rpcCall(url, "eth_sendRawTransaction", []interface{}{rawAt(i)}); err == nil {
 							ok = true
 						}
 					}
@@ -576,7 +958,7 @@ func main() {
 				} else {
 					url = urls[int(i)%len(urls)]
 				}
-				if _, err := rpcCall(url, "eth_sendRawTransaction", []interface{}{raws[i]}); err != nil {
+				if _, err := rpcCall(url, "eth_sendRawTransaction", []interface{}{rawAt(i)}); err != nil {
 					// The first few distinct failures are the diagnosis; a
 					// counter alone hid an 8.88M-transaction rejection.
 					if n := atomic.AddInt64(&failed, 1); n <= 5 || n%1000000 == 0 {
@@ -590,5 +972,59 @@ func main() {
 	}
 	wg.Wait()
 	el := time.Since(tf)
-	fmt.Printf("DONE submitted=%d failed=%d in %s (%.0f tx/s offered)\n", submitted, failed, el.Round(time.Millisecond), float64(len(raws))/el.Seconds())
+	fmt.Printf("DONE submitted=%d failed=%d in %s (%.0f tx/s offered)\n", submitted, failed, el.Round(time.Millisecond), float64(totalTxs)/el.Seconds())
+}
+
+// runSweep sends every derived sender's balance, less one transfer's gas,
+// back to the faucet. Senders that hold less than that are skipped. Runs
+// -conc senders at a time; one eth_sendRawTransaction each.
+func runSweep(urls []string, priv *ecdsa.PrivateKey, faucet types.Address, senders, conc int, gasPrice uint64,
+	signAt func(priv *ecdsa.PrivateKey, from, to types.Address, nonce uint64, value *uint256.Int, gas, price uint64) string) int {
+	gasCost := new(big.Int).Mul(big.NewInt(21000), new(big.Int).SetUint64(gasPrice))
+	var swept, skipped, failed int64
+	total := new(big.Int)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	if conc < 1 {
+		conc = 1
+	}
+	sem := make(chan struct{}, conc)
+	for i := 0; i < senders; i++ {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			k := deriveKey(i)
+			addr := crypto.PubkeyToAddress(k.PublicKey)
+			url := urls[i%len(urls)]
+			bal, err := getBalanceAt(url, addr, "latest")
+			if err != nil || bal.Cmp(gasCost) <= 0 {
+				atomic.AddInt64(&skipped, 1)
+				return
+			}
+			nonce, err := getNonceAt(url, addr, "pending")
+			if err != nil {
+				atomic.AddInt64(&failed, 1)
+				return
+			}
+			value := new(big.Int).Sub(bal, gasCost)
+			raw := signAt(k, addr, faucet, nonce, new(uint256.Int).SetBytes(value.Bytes()), 21000, gasPrice)
+			if _, err := rpcCall(url, "eth_sendRawTransaction", []interface{}{raw}); err != nil {
+				atomic.AddInt64(&failed, 1)
+				return
+			}
+			atomic.AddInt64(&swept, 1)
+			mu.Lock()
+			total.Add(total, value)
+			mu.Unlock()
+		}(i)
+	}
+	wg.Wait()
+	fmt.Printf("SWEEP offset=%d senders=%d swept=%d skipped=%d failed=%d returned=%s wei (%.1f ETH)\n",
+		senderOffset, senders, swept, skipped, failed, total, new(big.Float).Quo(new(big.Float).SetInt(total), big.NewFloat(1e18)))
+	if failed > 0 {
+		return 1
+	}
+	return 0
 }

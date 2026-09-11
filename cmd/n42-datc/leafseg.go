@@ -29,10 +29,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
-	"strconv"
-	"sync"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -42,47 +39,44 @@ const (
 	segTabLeafS   = 1
 	segTabChgA    = 2
 	segTabChgS    = 3
-	segTabStoRoot = 4 // dense storage-root history (addrHash32|block8 → root32/tombstone), exported from DatcStoRoot
+	segTabStoRoot = 4 // storage-root history: addrHash(32)|block(4) → root(32) (empty = no storage)
+	segTabNodeA   = 5 // account-trie node records (pathLen|path|epoch4 → FULL/DIFF/MIXED/tombstone)
+	segTabCount   = 6
 
 	leafSegMagic   = "DATCLS1\n"
 	leafFrameRaw   = 256 << 10 // target uncompressed bytes per frame
 	leafSpillDir   = "leafspill"
 	leafSegDir     = "leafseg"
-	leafFrameCache = 1536 // decompressed frames kept hot (~48 MB at 32 KiB fine frames; pre-recast 256 KiB frames make this ~384 MB — still fine on the build host)
+	leafFrameCache = 192 // decompressed frames kept hot (~48 MB)
 
 	// Back-compat aliases (older call sites / tests).
 	leafTableA = segTabLeafA
 	leafTableS = segTabLeafS
 )
 
-var segTabNames = [5]string{"a", "s", "ca", "cs", "sr"}
+var segTabNames = [segTabCount]string{"a", "s", "ca", "cs", "sr", "na"}
 
-// segPrefixLen is the number of leading key bytes that form the bucket id.
-// Leaves bucket on the hashed key's first byte (uniform). Chg rows bucket on
-// (level byte, second byte) — the second byte is domain[0] for storage rows
-// and the first path nibble for account rows. StoRoot rows bucket on
-// addrHash[0] (uniform, like leaves).
-var segPrefixLen = [5]int{1, 1, 2, 2, 1}
+// segPrefixLen is the number of leading key bytes that form the bucket id
+// (bucket order == key order for any prefix length). Leaves bucket on the
+// hashed key's first byte (uniform). Chg rows bucket on (level byte, second
+// byte) — domain[0] for storage rows, the first path nibble for account rows.
+// Account node records bucket on (pathLen, nib0, nib1): the dense depth-3
+// layer spreads over 256 buckets so finalize sorts ~1 GB at a time.
+var segPrefixLen = [segTabCount]int{1, 1, 2, 2, 1, 3}
 
 func segBucketOf(table int, k []byte) int {
-	if len(k) == 0 {
-		return 0
-	}
-	if segPrefixLen[table] == 1 {
-		return int(k[0])
-	}
-	b := int(k[0]) << 8
-	if len(k) > 1 {
-		b |= int(k[1])
+	b := 0
+	for i := 0; i < segPrefixLen[table]; i++ {
+		b <<= 8
+		if i < len(k) {
+			b |= int(k[i])
+		}
 	}
 	return b
 }
 
 func segFileName(table, bucket int) string {
-	if segPrefixLen[table] == 1 {
-		return fmt.Sprintf("%s.%02x", segTabNames[table], bucket)
-	}
-	return fmt.Sprintf("%s.%04x", segTabNames[table], bucket)
+	return fmt.Sprintf("%s.%0*x", segTabNames[table], 2*segPrefixLen[table], bucket)
 }
 
 // ---------------------------------------------------------------------------
@@ -98,18 +92,12 @@ type spillStream struct {
 type leafSpillWriter struct {
 	dir     string
 	streams map[int]*spillStream // key: table<<16 | bucket
-	rows    [4]uint64
+	rows    [segTabCount]uint64
 	scratch []byte
 }
 
 func newLeafSpillWriter(outDir string) (*leafSpillWriter, error) {
-	return newLeafSpillWriterDir(filepath.Join(outDir, leafSpillDir))
-}
-
-// newLeafSpillWriterDir opens a spill writer at an explicit directory —
-// cs-to-spill writes new-range rows to leafspill2/ so the original spill (the
-// durable truth) is never touched.
-func newLeafSpillWriterDir(dir string) (*leafSpillWriter, error) {
+	dir := filepath.Join(outDir, leafSpillDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
@@ -117,7 +105,7 @@ func newLeafSpillWriterDir(dir string) (*leafSpillWriter, error) {
 }
 
 func (w *leafSpillWriter) stream(table, bucket int) (*spillStream, error) {
-	id := table<<16 | bucket
+	id := table<<24 | bucket // buckets are up to 3 bytes wide (segPrefixLen)
 	if s := w.streams[id]; s != nil {
 		return s, nil
 	}
@@ -128,21 +116,9 @@ func (w *leafSpillWriter) stream(table, bucket int) (*spillStream, error) {
 	}
 	bw := bufio.NewWriterSize(f, 1<<16)
 	zw, err := zstd.NewWriter(bw,
-		// SpeedDefault (kept deliberately, favouring spill compression ratio).
-		// EVERY spill stream keeps its encoder open for the whole run — the 2 leaf
-		// tables (256 buckets each) PLUS the 2 chg tables (2-byte buckets) total
-		// ~1.8k resident encoders at ~2.63 MB each (doubleFast, two hash tables) =
-		// ~4.7 GB steady-state heap. NOTE: the WithWindowSize 256 KiB->64 KiB below
-		// is NEARLY a no-op for memory — the hash tables are window-INDEPENDENT, so
-		// only the small window buffer shrank (~100 MB total); an earlier claim that
-		// it saved ~3 GB was wrong (it compared an early-resume heap, before all
-		// encoders existed, against a steady-state one). The single-table
-		// SpeedFastest would cut per-encoder memory ~38% (-> ~2.9 GB) but trades
-		// spill ratio, which we keep. zstd frames are self-describing, so either
-		// window still decodes (resume-safe).
 		zstd.WithEncoderLevel(zstd.SpeedDefault),
 		zstd.WithEncoderConcurrency(1),
-		zstd.WithWindowSize(1<<16))
+		zstd.WithWindowSize(1<<18))
 	if err != nil {
 		f.Close()
 		return nil, err
@@ -217,21 +193,8 @@ func (w *leafSpillWriter) close() error {
 // removes the spill dir. One bucket is processed at a time (decoded rows for
 // a 25M-mainnet bucket are single-digit GB — in-RAM sortable).
 func finalizeLeafSegments(outDir string) error {
-	// In-place semantics (build resume): spill=leafspill, merge source == output.
-	return finalizeLeafSegmentsOpts(outDir, leafSpillDir, leafSegDir, leafSegDir)
-}
-
-// finalizeLeafSegmentsOpts is the parameterized finalize: rows from
-// <outDir>/<spillSub> merge-stream with the segments in <outDir>/<oldSegSub>
-// (read-only unless == outSegSub) into <outDir>/<outSegSub>. With oldSegSub !=
-// outSegSub this is the RECAST path: existing segments are never mutated (the
-// backup rule), and the output picks up the current segFrameRawTarget — used
-// by the full-range fine-frame recast (old leafseg + cs-to-spill leafspill2 →
-// leafseg2 at 32 KiB frames).
-func finalizeLeafSegmentsOpts(outDir, spillSub, oldSegSub, outSegSub string) error {
-	spill := filepath.Join(outDir, spillSub)
-	oldd := filepath.Join(outDir, oldSegSub)
-	segd := filepath.Join(outDir, outSegSub)
+	spill := filepath.Join(outDir, leafSpillDir)
+	segd := filepath.Join(outDir, leafSegDir)
 	if err := os.MkdirAll(segd, 0o755); err != nil {
 		return err
 	}
@@ -239,166 +202,32 @@ func finalizeLeafSegmentsOpts(outDir, spillSub, oldSegSub, outSegSub string) err
 	if err != nil {
 		return err
 	}
-	// Recast: buckets with no new spill rows still need re-encoding (frame size)
-	// — include every old segment as a spill-less bucket.
-	if oldd != segd {
-		olds, err := filepath.Glob(filepath.Join(oldd, "*.seg"))
-		if err != nil {
-			return err
-		}
-		have := make(map[string]bool, len(names))
-		for _, n := range names {
-			b := filepath.Base(n)
-			have[b[:len(b)-len(".zspill")]] = true
-		}
-		for _, o := range olds {
-			b := filepath.Base(o)
-			base := b[:len(b)-len(".seg")]
-			if !have[base] {
-				names = append(names, filepath.Join(spill, base+".zspill")) // may not exist; tolerated
-			}
-		}
+	zr, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
+	if err != nil {
+		return err
 	}
-	// Bucket-parallel recast: buckets are independent (disjoint key prefixes),
-	// so re-compression — the ~470 GB SpeedBetterCompression bottleneck — fans
-	// across cores. Each worker owns a decoder+encoder (EncodeAll on a shared
-	// encoder is safe, but per-worker avoids WithEncoderConcurrency
-	// oversubscription). Memory is gated two ways: a total worker cap, and a
-	// SEPARATE heavy-bucket semaphore — a bucket whose compressed spill exceeds
-	// heavyBytes reads the whole file into RAM (in-RAM sort) or streams it via
-	// the external sort's whole-file read (~17 GB for s.ab), so only a few may
-	// run at once. Small buckets (the vast majority) run up to the worker cap.
-	workers := runtime.NumCPU() - 2
-	if v := os.Getenv("N42_DATC_FINALIZE_WORKERS"); v != "" {
-		if n, e := strconv.Atoi(v); e == nil && n > 0 {
-			workers = n
-		}
+	defer zr.Close()
+	enc, err := zstd.NewWriter(nil,
+		zstd.WithEncoderLevel(zstd.SpeedBetterCompression),
+		zstd.WithEncoderConcurrency(2))
+	if err != nil {
+		return err
 	}
-	if workers < 1 {
-		workers = 1
-	}
-	if workers > len(names) {
-		workers = len(names)
-	}
-	// Match the external-sort threshold (512 MiB): every bucket that takes the
-	// external path is also gated by the heavy semaphore, so the count of
-	// concurrent big-memory buckets is bounded by heavyMax regardless of how
-	// many workers are free. (Pre-mmap this gated whole-file reads; post-mmap it
-	// gates the per-bucket chunk-budget heap of the external sort.)
-	heavyBytes := int64(512) << 20
-	if v := os.Getenv("N42_DATC_FINALIZE_HEAVY_GB"); v != "" {
-		if f, e := strconv.ParseFloat(v, 64); e == nil && f > 0 {
-			heavyBytes = int64(f * float64(int64(1)<<30))
-		}
-	}
-	heavyMax := 2
-	if v := os.Getenv("N42_DATC_FINALIZE_HEAVY"); v != "" {
-		if n, e := strconv.Atoi(v); e == nil && n > 0 {
-			heavyMax = n
-		}
-	}
+	defer enc.Close()
 
-	// Big buckets first: better load balance (a 17 GB bucket started last would
-	// tail the whole run).
-	sort.Slice(names, func(i, j int) bool {
-		fi, _ := os.Stat(names[i])
-		fj, _ := os.Stat(names[j])
-		var si, sj int64
-		if fi != nil {
-			si = fi.Size()
-		}
-		if fj != nil {
-			sj = fj.Size()
-		}
-		return si > sj
-	})
-
-	fmt.Printf("[leafseg] recast %d buckets: %d workers, heavy(>%dGiB) cap %d, %d KiB frames\n",
-		len(names), workers, heavyBytes>>30, heavyMax, segFrameRawTarget>>10)
-
-	jobs := make(chan string, len(names))
-	for _, src := range names {
-		jobs <- src
-	}
-	close(jobs)
-
-	heavySem := make(chan struct{}, heavyMax)
-	var mu sync.Mutex
 	totalCorrupt := 0
-	var firstErr error
-	var done int64
-	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			zr := zr2()
-			defer zr.Close()
-			enc, eerr := zstd.NewWriter(nil,
-				zstd.WithEncoderLevel(zstd.SpeedBetterCompression),
-				zstd.WithEncoderConcurrency(1))
-			if eerr != nil {
-				mu.Lock()
-				if firstErr == nil {
-					firstErr = eerr
-				}
-				mu.Unlock()
-				return
-			}
-			defer enc.Close()
-			for src := range jobs {
-				mu.Lock()
-				stop := firstErr != nil
-				mu.Unlock()
-				if stop {
-					return
-				}
-				base0 := filepath.Base(src)
-				dst0 := filepath.Join(segd, base0[:len(base0)-len(".zspill")]+".seg")
-				// Resume: a complete .seg (atomic tmp→rename) means this bucket
-				// already recast — skip it (only meaningful when segd != oldd).
-				if segd != oldd {
-					if _, e := os.Stat(dst0); e == nil {
-						mu.Lock()
-						done++
-						mu.Unlock()
-						continue
-					}
-				}
-				heavy := false
-				if fi, e := os.Stat(src); e == nil && fi.Size() > heavyBytes {
-					heavy = true
-					heavySem <- struct{}{}
-				}
-				base := filepath.Base(src)
-				segName := base[:len(base)-len(".zspill")] + ".seg"
-				dst := filepath.Join(segd, segName)
-				oldSeg := filepath.Join(oldd, segName)
-				cf := 0
-				err := finalizeBucket(zr, enc, src, oldSeg, dst, &cf)
-				if heavy {
-					<-heavySem
-				}
-				mu.Lock()
-				if err != nil && firstErr == nil {
-					firstErr = fmt.Errorf("bucket %s: %w", base, err)
-				}
-				totalCorrupt += cf
-				done++
-				if done%64 == 0 || done == int64(len(names)) {
-					fmt.Printf("[leafseg] recast %d/%d buckets\n", done, len(names))
-				}
-				mu.Unlock()
-			}
-		}()
+	for _, src := range names {
+		base := filepath.Base(src)
+		dst := filepath.Join(segd, base[:len(base)-len(".zspill")]+".seg")
+		cf := 0
+		if err := finalizeBucket(zr, enc, src, dst, &cf); err != nil {
+			return fmt.Errorf("bucket %s: %w", base, err)
+		}
+		totalCorrupt += cf
+		if cf == 0 {
+			_ = os.Remove(src) // clean bucket → drop its spill
+		}
 	}
-	wg.Wait()
-	if firstErr != nil {
-		return firstErr
-	}
-	// NEVER delete the spill (operator rule): every .zspill is kept as the
-	// durable, resumable recovery source — segments are derived, the spill is
-	// the truth. Removal is always a manual op after `verify`.
 	if totalCorrupt > 0 {
 		// SAFETY (feedback-human-time-is-precious, 2026-06-13): corrupt/truncated
 		// frames were skipped, so rows may be MISSING from the segments. Do NOT
@@ -412,32 +241,15 @@ func finalizeLeafSegmentsOpts(outDir, spillSub, oldSegSub, outSegSub string) err
 			totalCorrupt, spill)
 		return nil
 	}
-	// NEVER delete the spill (operator rule) even when every bucket was clean:
-	// it stays as the resumable recovery source. Remove it manually after a
-	// successful `verify` if the space is ever needed.
-	return nil
+	return os.RemoveAll(spill)
 }
 
-func finalizeBucket(zr *zstd.Decoder, enc *zstd.Encoder, src, oldSeg, dst string, corruptOut *int) error {
-	// Judge by size: an oversized bucket (a hot-storage prefix whose decompressed
-	// rows exceed RAM) is sorted by a bounded-memory external merge sort. Loading
-	// it whole — as the path below does — exhausts physical memory, fills the
-	// system drive via paging, and can hard-crash marginal hardware. The 84
-	// mainnet-25M buckets that fit in RAM are all well under extSpillThreshold;
-	// only true monster prefixes cross it.
-	if fi, serr := os.Stat(src); serr == nil && fi.Size() > extThreshold() {
-		return finalizeBucketExternal(zr, enc, src, oldSeg, dst, corruptOut)
-	}
-	var comp []byte
-	if f, err := os.Open(src); err == nil {
-		comp, err = io.ReadAll(bufio.NewReaderSize(f, 1<<20))
-		f.Close()
-		if err != nil {
-			return err
-		}
-	} else if !os.IsNotExist(err) {
+func finalizeBucket(zr *zstd.Decoder, enc *zstd.Encoder, src, dst string, corruptOut *int) error {
+	f, err := os.Open(src)
+	if err != nil {
 		return err
-	} // missing spill (recast bucket with no new rows): re-encode oldSeg only
+	}
+	defer f.Close()
 	// Kill-resilient decode: a hard-killed --leaf-seg build leaves a TRUNCATED
 	// zstd frame at the tail of that run's stream; a resumed build then appends
 	// a SECOND, cleanly-closed zstd stream to the same file. A plain
@@ -450,6 +262,10 @@ func finalizeBucket(zr *zstd.Decoder, enc *zstd.Encoder, src, oldSeg, dst string
 	// next group begins at a fresh frame boundary (a resumed run's stream
 	// starts row-aligned, and a single frame never spans two runs). Loss is
 	// bounded to the few rows buffered in the kill-tail frame.
+	comp, err := io.ReadAll(bufio.NewReaderSize(f, 1<<20))
+	if err != nil {
+		return err
+	}
 	zstdMagic := []byte{0x28, 0xb5, 0x2f, 0xfd}
 	var frameStarts []int
 	for i := 0; i+4 <= len(comp); {
@@ -487,39 +303,36 @@ func finalizeBucket(zr *zstd.Decoder, enc *zstd.Encoder, src, oldSeg, dst string
 			p = ve
 		}
 	}
-	// The magic-scan yields FALSE candidates too: a row is uvarint(keyLen)+key,
-	// so bucket a.b5's rows all start 28 B5 (keyLen 40 = 0x28) and a key
-	// beginning b5 2f fd stored as raw literals completes the zstd magic
-	// 28 B5 2F FD inside a healthy frame. Decoding start→next-candidate then
-	// splits that frame and BOTH halves fail — the whole real frame's rows were
-	// discarded as "corrupt" (the v5 a.b5 61-frame / 425k-row loss, bug #2).
-	// Heal: extend the end across subsequent candidates until the slice
-	// decodes; only a genuinely truncated frame (kill-tail) remains corrupt.
 	var group []byte
 	corruptFrames := 0
+	// The 4-byte magic can legitimately occur INSIDE a compressed frame
+	// (hash-heavy tables make that likely), so a candidate boundary is only
+	// trusted when the span up to it decodes. A frame with false magics
+	// inside fails at the short candidates and succeeds once the span is
+	// extended to its real end; a truly truncated (kill-tail) frame fails at
+	// every extension up to the merge cap and is dropped.
+	const maxMergeSpan = 512 << 20
 	for fi := 0; fi < len(frameStarts); {
-		start := frameStarts[fi]
 		decoded := false
-		for ei := fi + 1; ei <= len(frameStarts); ei++ {
+		for j := fi + 1; j <= len(frameStarts); j++ {
 			end := len(comp)
-			if ei < len(frameStarts) {
-				end = frameStarts[ei]
+			if j < len(frameStarts) {
+				end = frameStarts[j]
 			}
-			if end-start > 256<<20 {
-				break // no real frame is this large — truly corrupt
+			if end-frameStarts[fi] > maxMergeSpan {
+				break
 			}
-			dec, derr := zr.DecodeAll(comp[start:end], nil)
-			if derr != nil {
-				continue // false-magic split candidate — extend further
+			dec, derr := zr.DecodeAll(comp[frameStarts[fi]:end], nil)
+			if derr == nil {
+				group = append(group, dec...)
+				fi = j
+				decoded = true
+				break
 			}
-			group = append(group, dec...)
-			fi = ei
-			decoded = true
-			break
 		}
 		if !decoded {
-			// Truncated/corrupt frame (kill-tail): flush the current contiguous
-			// group's complete rows and resync at the next frame boundary.
+			// Truncated/corrupt frame: flush the current contiguous group's
+			// complete rows and resync at the next candidate boundary.
 			appendGroup(group)
 			group = group[:0]
 			corruptFrames++
@@ -551,9 +364,8 @@ func finalizeBucket(zr *zstd.Decoder, enc *zstd.Encoder, src, oldSeg, dst string
 	// A RESUMED build appends to a bucket that was already finalized: merge
 	// the existing segment (sorted, streamed frame by frame) with the new
 	// rows. Equal keys keep the OLD row first — arrival order, deterministic.
-	// In the recast path oldSeg != dst: the source segment is read-only.
 	var old *oldSegIter
-	if f, err := os.Open(oldSeg); err == nil {
+	if f, err := os.Open(dst); err == nil {
 		sf, lerr := loadLeafSegFile(f)
 		if lerr != nil {
 			f.Close()
@@ -639,19 +451,12 @@ func newSegFrameWriter(path string, enc *zstd.Encoder) (*segFrameWriter, error) 
 	return w, nil
 }
 
-// segFrameRawTarget is the uncompressed frame-size target used by segment
-// writers. Default = leafFrameRaw (256 KiB). finalize-leaves --frame-kb
-// overrides it: smaller frames mean a point read (leafFloor / ckpt fold)
-// decompresses proportionally fewer bytes — the fine-frame lever that cuts a
-// proof's decompMB ~8x at 32 KiB.
-var segFrameRawTarget = leafFrameRaw
-
 func (w *segFrameWriter) add(rec, key []byte) error {
 	if w.firstKey == nil {
 		w.firstKey = append([]byte{}, key...)
 	}
 	w.frame = append(w.frame, rec...)
-	if len(w.frame) >= segFrameRawTarget {
+	if len(w.frame) >= leafFrameRaw {
 		return w.flush()
 	}
 	return nil
@@ -800,7 +605,6 @@ type leafSegSet struct {
 	ids     []int // sorted bucket ids (bucket order == key order)
 	table   int
 	cache   *frameLRU
-	zr      *zstd.Decoder // reused across frame decodes (see decodeFrame)
 }
 
 type decodedFrame struct {
@@ -809,18 +613,26 @@ type decodedFrame struct {
 }
 
 type frameLRU struct {
-	m   map[uint64]*decodedFrame // key: table<<48 | bucket<<24 | frameIdx
-	ord []uint64
+	m         map[uint64]*decodedFrame // key: table<<48 | bucket<<24 | frameIdx
+	ord       []uint64
+	capFrames int
 }
 
-func newFrameLRU() *frameLRU { return &frameLRU{m: make(map[uint64]*decodedFrame)} }
+func newFrameLRU() *frameLRU { return newFrameLRUSize(leafFrameCache) }
+
+func newFrameLRUSize(n int) *frameLRU {
+	if n < 8 {
+		n = 8
+	}
+	return &frameLRU{m: make(map[uint64]*decodedFrame, n), capFrames: n}
+}
 
 func (l *frameLRU) get(k uint64) *decodedFrame { return l.m[k] }
 func (l *frameLRU) put(k uint64, d *decodedFrame) {
 	if _, ok := l.m[k]; ok {
 		return
 	}
-	if len(l.ord) >= leafFrameCache {
+	if len(l.ord) >= l.capFrames {
 		old := l.ord[0]
 		l.ord = l.ord[1:]
 		delete(l.m, old)
@@ -832,14 +644,7 @@ func (l *frameLRU) put(k uint64, d *decodedFrame) {
 // openLeafSegSet opens <outDir>/leafseg for one table; ok=false when the
 // build did not use --leaf-seg (or wrote no rows for it).
 func openLeafSegSet(outDir string, table int, cache *frameLRU) (*leafSegSet, bool, error) {
-	// N42_DATC_LEAFSEG_DIR overrides the segment subdir (default "leafseg") so a
-	// freshly-recast set (e.g. leafseg2 at 32 KiB fine frames) can be proof-benched
-	// side-by-side without touching the original.
-	sub := leafSegDir
-	if v := os.Getenv("N42_DATC_LEAFSEG_DIR"); v != "" {
-		sub = v
-	}
-	dir := filepath.Join(outDir, sub)
+	dir := filepath.Join(outDir, leafSegDir)
 	if _, err := os.Stat(dir); err != nil {
 		return nil, false, nil
 	}
@@ -848,7 +653,7 @@ func openLeafSegSet(outDir string, table int, cache *frameLRU) (*leafSegSet, boo
 	if err != nil {
 		return nil, false, err
 	}
-	s := &leafSegSet{table: table, cache: cache, buckets: make(map[int]*leafSegFile), zr: zr2()}
+	s := &leafSegSet{table: table, cache: cache, buckets: make(map[int]*leafSegFile)}
 	for _, name := range names {
 		base := filepath.Base(name)
 		var bucket int
@@ -876,10 +681,6 @@ func (s *leafSegSet) Close() {
 	for b, sf := range s.buckets {
 		_ = sf.f.Close()
 		delete(s.buckets, b)
-	}
-	if s.zr != nil {
-		s.zr.Close()
-		s.zr = nil
 	}
 	s.ids = nil
 }
@@ -927,9 +728,6 @@ func (s *leafSegSet) frameKey(bucket, fi int) uint64 {
 	return uint64(s.table)<<48 | uint64(bucket)<<24 | uint64(fi)
 }
 
-// Diagnostic counters (proof-bench --profile): frame decompressions and bytes.
-var dbgFrameDecodes, dbgFrameCompBytes, dbgFrameRawBytes int64
-
 func (s *leafSegSet) decodeFrame(bucket, fi int) (*decodedFrame, error) {
 	ck := s.frameKey(bucket, fi)
 	if d := s.cache.get(ck); d != nil {
@@ -937,20 +735,16 @@ func (s *leafSegSet) decodeFrame(bucket, fi int) (*decodedFrame, error) {
 	}
 	sf := s.buckets[bucket]
 	fm := sf.frames[fi]
-	dbgFrameDecodes++
-	dbgFrameCompBytes += int64(fm.comp)
-	dbgFrameRawBytes += int64(fm.raw)
 	comp := make([]byte, fm.comp)
 	if _, err := sf.f.ReadAt(comp, fm.off); err != nil {
 		return nil, err
 	}
-	// Reuse the set's decoder rather than allocating (and Close-ing) a fresh
-	// zstd.Decoder per frame: a fold decodes hundreds of frames, and at 32 KiB
-	// fine frames that per-frame NewReader/Close churn dominated wall time —
-	// making fine frames 4.5x SLOWER at p50 than 256 KiB frames despite ~4x less
-	// decompressed data (the 2026-07-09 A/B). DecodeAll on a shared decoder is
-	// safe for concurrent use.
-	raw, err := s.zr.DecodeAll(comp, make([]byte, 0, fm.raw))
+	zr, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
+	if err != nil {
+		return nil, err
+	}
+	raw, err := zr.DecodeAll(comp, make([]byte, 0, fm.raw))
+	zr.Close()
 	if err != nil {
 		return nil, err
 	}

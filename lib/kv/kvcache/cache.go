@@ -282,10 +282,9 @@ func (c *Coherent) OnNewBlock(stateChanges *remote.StateChangeBatch) {
 			if c.cfg.WithStorage && len(change.StorageChanges) > 0 {
 				for _, sc := range change.StorageChanges {
 					loc := gointerfaces.ConvertH256ToHash(sc.Location)
-					k := make([]byte, 20+8+32)
+					k := make([]byte, 20+32)
 					copy(k, addr[:])
-					binary.BigEndian.PutUint64(k[20:], change.Incarnation)
-					copy(k[20+8:], loc[:])
+					copy(k[20:], loc[:])
 					c.add(k, sc.Data, r, id)
 				}
 			}

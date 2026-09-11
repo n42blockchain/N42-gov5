@@ -13,11 +13,16 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
+	gethcommon "github.com/ethereum/go-ethereum/common"
 	gethp2p "github.com/ethereum/go-ethereum/p2p"
+	"github.com/ethereum/go-ethereum/p2p/dnsdisc"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/p2p/nat"
+	gethparams "github.com/ethereum/go-ethereum/params"
 
+	n42types "github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/network/eth69"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/params"
@@ -37,6 +42,12 @@ type ServerConfig struct {
 	BootNodes []*enode.Node
 	// NAT configures NAT traversal (nil = no NAT).
 	NAT nat.Interface
+	// Genesis is the chain's genesis hash. It selects the public DNS node
+	// list (EIP-1459) the dialer draws candidates from; zero disables it.
+	Genesis n42types.Hash
+	// DiscoveryURLs overrides the enrtree:// lists derived from Genesis.
+	// Empty means "use the well-known list for this chain".
+	DiscoveryURLs []string
 }
 
 // Server manages devp2p connections and runs the eth protocol.
@@ -44,6 +55,7 @@ type Server struct {
 	srv     *gethp2p.Server
 	handler *EthHandler
 	cfg     ServerConfig
+	dialMix *enode.FairMix
 }
 
 // NewServer creates a new devp2p server.
@@ -76,6 +88,21 @@ func (s *Server) Start() error {
 	// download. RLPx negotiates the highest COMMON eth version per peer and runs
 	// that Protocol's Run; runPeer receives the negotiated version and encodes/
 	// decodes the matching Status layout. Versions 69+ share the newer layout.
+	//
+	// Dial candidates come from the public EIP-1459 DNS node list for this
+	// chain (all.mainnet.ethdisco.net and friends) MIXED with the discv4/
+	// discv5 tables. The tables are shared with every chain that forked
+	// Ethereum and kept the bootnodes — measured on this host, ~19 of 20
+	// discovered nodes answer the Status handshake with a foreign networkID —
+	// so a dialer fed only by them spends its slots on PulseChain et al. The
+	// DNS list carries only nodes crawled on THIS network.
+	//
+	// The mix has to be ours: p2p.Server installs its own discv4/discv5 feeds
+	// ONLY when no protocol supplies DialCandidates (setupDiscovery), so
+	// handing it a DNS-only iterator would silently switch the DHT off — which
+	// it did, dropping dial volume from ~170 to 5 connections a minute. The
+	// table iterators are attached after Start, when the server has them.
+	dialCandidates := s.dialCandidates()
 	ethProtos := make([]gethp2p.Protocol, 0, len(eth69.ProtocolVersions))
 	for _, v := range eth69.ProtocolVersions {
 		version := v
@@ -84,9 +111,10 @@ func (s *Server) Start() error {
 			return err
 		}
 		ethProtos = append(ethProtos, gethp2p.Protocol{
-			Name:    "eth",
-			Version: version,
-			Length:  length,
+			Name:           "eth",
+			Version:        version,
+			Length:         length,
+			DialCandidates: dialCandidates,
 			Run: func(peer *gethp2p.Peer, rw gethp2p.MsgReadWriter) error {
 				return s.handler.runPeer(peer, rw, version)
 			},
@@ -149,6 +177,7 @@ func (s *Server) Start() error {
 	if err := s.srv.Start(); err != nil {
 		return fmt.Errorf("devp2p start: %w", err)
 	}
+	s.addTableSources()
 
 	// Subscribe to peer add/drop events so we can log the actual
 	// RLPx Disconnect reason from the remote side. That reason is
@@ -190,6 +219,54 @@ func (s *Server) Start() error {
 func (s *Server) Stop() {
 	if s.srv != nil {
 		s.srv.Stop()
+	}
+	if s.dialMix != nil {
+		s.dialMix.Close() // also closes the DNS + table sources
+		s.dialMix = nil
+	}
+}
+
+// discmixTimeout bounds how long the dialer waits on one source before taking
+// a node from any other. Matches go-ethereum's eth backend.
+const discmixTimeout = 5 * time.Second
+
+// dialCandidates builds the dial source mix and seeds it with the EIP-1459 DNS
+// node lists for this chain. The DHT tables are added later by addTableSources,
+// once p2p.Server has started them.
+func (s *Server) dialCandidates() enode.Iterator {
+	s.dialMix = enode.NewFairMix(discmixTimeout)
+	urls := s.cfg.DiscoveryURLs
+	if len(urls) == 0 {
+		if url := gethparams.KnownDNSNetwork(gethcommon.Hash(s.cfg.Genesis), "all"); url != "" {
+			urls = []string{url}
+		}
+	}
+	if len(urls) == 0 {
+		return s.dialMix
+	}
+	it, err := dnsdisc.NewClient(dnsdisc.Config{}).NewIterator(urls...)
+	if err != nil {
+		// Not fatal: the DHT sources below still feed the dialer.
+		log.Warn("devp2p: DNS discovery unavailable, dialing from the DHT tables only",
+			"urls", urls, "err", err)
+		return s.dialMix
+	}
+	log.Info("devp2p: DNS discovery enabled", "urls", urls)
+	s.dialMix.AddSource(enode.WithSourceName("dns", it))
+	return s.dialMix
+}
+
+// addTableSources attaches the discv4/discv5 random-node iterators to the dial
+// mix. Must run after Start — the tables do not exist before it.
+func (s *Server) addTableSources() {
+	if s.dialMix == nil || s.srv == nil {
+		return
+	}
+	if v4 := s.srv.DiscoveryV4(); v4 != nil {
+		s.dialMix.AddSource(enode.WithSourceName("discv4", v4.RandomNodes()))
+	}
+	if v5 := s.srv.DiscoveryV5(); v5 != nil {
+		s.dialMix.AddSource(enode.WithSourceName("discv5", v5.RandomNodes()))
 	}
 }
 

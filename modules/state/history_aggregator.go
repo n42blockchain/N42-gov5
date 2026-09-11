@@ -60,16 +60,29 @@ func (a *HistoryAggregator) add(m map[string]*roaring64.Bitmap, key []byte, bloc
 	bm.Add(block)
 }
 
-// AddChanges records one block's changeset into the aggregator. The key
-// transform matches writeIndex (incarnation stripped).
+// AddChanges records one block's changeset into the aggregator, keyed the
+// same way as writeIndex.
 func (a *HistoryAggregator) AddChanges(blockNum uint64, changes *changeset.ChangeSet, bucket string) {
 	m := a.accounts
 	if bucket == modules.StorageHistory {
 		m = a.storage
 	}
 	for _, change := range changes.Changes {
-		a.add(m, modules.CompositeKeyWithoutIncarnation(change.Key), blockNum)
+		a.add(m, change.Key, blockNum)
 	}
+}
+
+// AddKey records one (key, block) directly, for callers that read changeset
+// rows back from the database rather than holding a ChangeSet. The backfiller
+// does exactly that: the index is a pure function of the changesets, so it
+// rebuilds from the durable rows instead of having data handed out of the
+// commit transaction.
+func (a *HistoryAggregator) AddKey(bucket string, key []byte, blockNum uint64) {
+	m := a.accounts
+	if bucket == modules.StorageHistory {
+		m = a.storage
+	}
+	a.add(m, key, blockNum)
 }
 
 // Flush merges the accumulated block numbers into the on-disk history indices —

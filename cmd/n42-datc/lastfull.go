@@ -21,8 +21,9 @@ import (
 
 // nodeRecState tracks the last node record written for a path.
 type nodeRecState struct {
-	lastFullEpoch uint32
-	exists        bool // false = no record yet or last was a tombstone
+	diffs  uint8 // DIFF records written since the last FULL (bounds the reader's walk-back)
+	exists bool  // false = no record yet, or last was a tombstone / MIXED marker
+	mixed  bool  // last record is a MIXED marker (further MIXED epochs are elided)
 }
 
 // lastFullCache is a capped nodeRecState map whose misses are answered from
@@ -133,6 +134,7 @@ func readBackLastFull(tx kv.Tx, table string, path []byte, epoch uint64) (nodeRe
 	} else {
 		k, v, err = cur.Prev()
 	}
+	diffs := uint8(0)
 	for {
 		if err != nil {
 			return nodeRecState{}, err
@@ -143,20 +145,22 @@ func readBackLastFull(tx kv.Tx, table string, path []byte, epoch uint64) (nodeRe
 		if len(v) == 0 {
 			return nodeRecState{}, nil // floor is a tombstone
 		}
-		if v[0] == nodeRecFull {
-			return nodeRecState{lastFullEpoch: binary.BigEndian.Uint32(k[len(prefix):]), exists: true}, nil
+		if v[0] == nodeRecMixed {
+			return nodeRecState{mixed: true}, nil
 		}
-		// DIFF: keep walking back to its FULL anchor (bounded by fullEvery).
-		// `exists` is true (the floor record is live); only lastFullEpoch is
-		// still unknown.
+		if v[0] == nodeRecFull {
+			return nodeRecState{diffs: diffs, exists: true}, nil
+		}
+		// DIFF: keep walking back to its FULL anchor, counting the chain.
+		diffs++
 		pk, pv, perr := cur.Prev()
 		if perr != nil {
 			return nodeRecState{}, perr
 		}
-		if pk == nil || !bytesEqualPrefix(pk, prefix) || len(pk) != len(prefix)+4 || len(pv) == 0 {
+		if pk == nil || !bytesEqualPrefix(pk, prefix) || len(pk) != len(prefix)+4 || len(pv) == 0 || pv[0] == nodeRecMixed {
 			// Chain truncated (shouldn't happen for a valid DB): degrade to
 			// "due for a FULL now" — safe, just a larger next record.
-			return nodeRecState{lastFullEpoch: 0, exists: true}, nil
+			return nodeRecState{diffs: fullEvery, exists: true}, nil
 		}
 		k, v, err = pk, pv, nil
 	}

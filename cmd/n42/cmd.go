@@ -76,6 +76,19 @@ var nodeFlg = []cli.Flag{
 		Value:       "",
 		Destination: &DefaultConfig.NodeCfg.NodePrivate,
 	},
+	// Reachable through the parallel_evm config key already; the flag exists so
+	// a benchmark fleet, which is launched with command-line arguments only,
+	// can measure the path. It earned its keep immediately: the first round
+	// ever run with it HALTED THE CHAIN (see internal/node/node.go for the
+	// measurement and the failing block). Keep the flag -- a path that cannot
+	// be exercised cannot be found to be broken -- and keep it loud.
+	&cli.BoolFlag{
+		Name:        "parallel-evm",
+		Usage:       "已知在负载下产生共识分歧, 会使链停止 (2026-09-02 实测: 所有 worker 共用一个 MDBX 游标, 读取有数据竞争). 仅用于调试该路径本身, 勿用于任何区块有意义的链",
+		Category:    "NODE",
+		Value:       false,
+		Destination: &DefaultConfig.NodeCfg.ParallelEVM,
+	},
 }
 
 var rpcFlags = []cli.Flag{
@@ -179,6 +192,29 @@ var consensusFlag = []cli.Flag{
 		Category:    "MINER",
 		Value:       false,
 		Destination: &DefaultConfig.MobileVerifyCfg.Enabled,
+	},
+	// PacketWindow is the SERVING retention, not a consensus quantity: the
+	// leader stamps Header.MobileRegistryRoot from mobileAnchorRoot() in
+	// internal/miner/worker.go, and PacketCache only answers the phone-facing
+	// query path (mobileverify/packetservice.go). Shrinking it reduces how far
+	// back a phone can fetch a proof packet; it does not change a header.
+	//
+	// It is exposed because the retention is large and had no lever. A heap
+	// profile of a bench node measured 796 MB live in PacketCache at the default
+	// 256 blocks -- 5.6 GB across seven nodes -- and on this chain the feature
+	// cannot be switched off (mobileAnchorTime makes it mandatory on a miner),
+	// so the window is the only way to bookend that memory. A peer client's
+	// equivalent -- an RPC block cache cut from 256 to 4 -- moved their windows
+	// from ~119k to ~191k TPS by giving the page cache back.
+	//
+	// What the right production window is remains an open question this flag
+	// does not answer; it makes it askable.
+	&cli.Uint64Flag{
+		Name:        "mobileverify.packet-window",
+		Usage:       "保留最近多少个块的移动端证明包 (仅影响手机端可回溯范围, 不影响区块头; 默认 256)",
+		Category:    "MINER",
+		Value:       0,
+		Destination: &DefaultConfig.MobileVerifyCfg.PacketWindow,
 	},
 	&cli.StringFlag{
 		Name:        "mobileverify.http",
@@ -714,6 +750,33 @@ var (
 		DevTxGenFlag,
 		DevTxGenMaxFlag,
 		DevTxGenKeyFlag,
+		IngestFlag,
+		IngestAddrFlag,
+		IngestHintOnlyFlag,
+	}
+)
+
+var (
+	IngestFlag = &cli.BoolFlag{
+		Name:        "ingest",
+		Usage:       "启用二进制 TCP 交易注入端点 (基准测试用)",
+		Category:    "DEVELOPMENT",
+		Value:       false,
+		Destination: &DefaultConfig.IngestCfg.Enabled,
+	}
+	IngestAddrFlag = &cli.StringFlag{
+		Name:        "ingest.addr",
+		Usage:       "注入端点监听地址",
+		Category:    "DEVELOPMENT",
+		Value:       ":9100",
+		Destination: &DefaultConfig.IngestCfg.Addr,
+	}
+	IngestHintOnlyFlag = &cli.BoolFlag{
+		Name:        "ingest.hint-only",
+		Usage:       "注入端点只预恢复 sender 进缓存, 不入池 (follower 预热)",
+		Category:    "DEVELOPMENT",
+		Value:       false,
+		Destination: &DefaultConfig.IngestCfg.HintOnly,
 	}
 )
 

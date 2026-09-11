@@ -28,8 +28,10 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/transaction"
+	"github.com/n42blockchain/N42/log"
 )
 
 // Why this exists.
@@ -55,26 +57,50 @@ import (
 // worth it; those blocks recover inline in the execution loop as before.
 const senderRecoveryMinTxs = 8
 
-// senderRecoveryWorkers is the size of the recovery fan-out.
-//
-// Deliberately a fraction of NumCPU rather than all of it: a validator host
-// commonly runs several nodes side by side, and block import is latency- not
-// throughput-bound — saturating every core would just move the contention.
-// Override with N42_SENDER_RECOVER_WORKERS (1 disables the fan-out).
-var senderRecoveryWorkers = defaultSenderRecoveryWorkers()
+// senderRecoveryWorkerOverride is N42_SENDER_RECOVER_WORKERS, 0 when unset
+// (1 disables the fan-out).
+var senderRecoveryWorkerOverride = envSenderRecoveryWorkers()
 
-func defaultSenderRecoveryWorkers() int {
+func envSenderRecoveryWorkers() int {
 	if v := os.Getenv("N42_SENDER_RECOVER_WORKERS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
 			return n
 		}
 	}
-	n := runtime.NumCPU() / 4
-	if n < 2 {
-		n = 2
+	return 0
+}
+
+// senderRecoveryFanout sizes the recovery pool for THIS node.
+//
+// Two things it must not do, both of which the previous fixed
+// `min(NumCPU/4, 8)` did:
+//
+//   - Read NumCPU. A validator host commonly runs several nodes side by side,
+//     and `--pprof.maxcpu` is how the operator states this node's share of it.
+//     NumCPU ignores that and reports the whole machine.
+//   - Be captured in a package var. GOMAXPROCS is applied from that flag
+//     during startup, well after package init, so a value computed at init is
+//     always the machine's, never the node's.
+//
+// And the ceiling of 8 made the fan-out a constant on any host bigger than 32
+// threads. Measured on the 7-node 480M rig (22,857 transactions per block,
+// ~50 us per secp256k1 recovery = 1.14 core-seconds of work): the importer's
+// `recov` phase sat at 137-149 ms, which is that 1.14 s over exactly 8
+// workers, while the node had a 37-thread budget and was using 0.7 of a core.
+//
+// Recovery is a barrier ahead of execution — none of this node's other
+// critical-path work runs during it — so it takes most of the budget, keeping
+// a quarter back for gossip, consensus and RPC.
+func senderRecoveryFanout() int {
+	if senderRecoveryWorkerOverride > 0 {
+		return senderRecoveryWorkerOverride
 	}
-	if n > 8 {
-		n = 8
+	n := runtime.GOMAXPROCS(0)
+	if n > 2 {
+		n -= n / 4
+	}
+	if n < 2 {
+		return 2
 	}
 	return n
 }
@@ -91,24 +117,63 @@ func defaultSenderRecoveryWorkers() int {
 // leaks. A nil source, a miss, or a recovery error just leaves the transaction
 // for the worker-pool pass.
 func applySenderHints(hints SenderHintSource, signer transaction.Signer, txs []*transaction.Transaction) int {
-	if hints == nil || signer == nil {
+	if signer == nil {
 		return 0
 	}
-	filled := 0
-	for _, tx := range txs {
+	// The process-wide sender cache first, across the recovery fan-out: with
+	// a hint feed (ingest hint-only mode) it holds most of the block already,
+	// and one atomic load a transaction costs nothing. The pool lookup below
+	// is what this pass used to be alone -- 163,000 serial GetTx calls
+	// against a pool writer admitting 60k tx/s, ~2 us each: the 350-410 ms
+	// that rounds 35zj-35zl still read in recover with the feed complete.
+	var filled atomic.Int64
+	fill := func(tx *transaction.Transaction) {
 		if tx == nil || tx.From() != nil {
-			continue
+			return
+		}
+		if addr, ok := transaction.CachedSender(signer, tx); ok {
+			tx.SetFrom(addr)
+			filled.Add(1)
+			return
+		}
+		if hints == nil {
+			return
 		}
 		ptx := hints.GetTx(tx.Hash())
 		if ptx == nil {
-			continue
+			return
 		}
 		if addr, err := transaction.Sender(signer, ptx); err == nil {
 			tx.SetFrom(addr)
-			filled++
+			filled.Add(1)
 		}
 	}
-	return filled
+	workers := senderRecoveryFanout()
+	if len(txs) < senderRecoveryMinTxs || workers > len(txs) {
+		workers = 1
+	}
+	if workers < 2 {
+		for _, tx := range txs {
+			fill(tx)
+		}
+		return int(filled.Load())
+	}
+	done := make(chan struct{}, workers)
+	for w := 0; w < workers; w++ {
+		go func(start int) {
+			defer func() {
+				_ = recover()
+				done <- struct{}{}
+			}()
+			for i := start; i < len(txs); i += workers {
+				fill(txs[i])
+			}
+		}(w)
+	}
+	for w := 0; w < workers; w++ {
+		<-done
+	}
+	return int(filled.Load())
 }
 
 // recoverBlockSenders pre-populates the signature cache of every transaction in
@@ -138,11 +203,69 @@ func applySenderHints(hints SenderHintSource, signer transaction.Signer, txs []*
 // sync.Pool). The underlying erigontech/secp256k1 binding is built for this —
 // it pre-creates one libsecp256k1 context per CPU and its verify-only default
 // context is safe to share across threads.
+// recoverBlockSendersAsync starts the recovery and returns a join function
+// instead of waiting for it, so the caller can execute the block WHILE the
+// senders are being recovered. Join before returning, so the workers never
+// outlive the block that owns them.
+//
+// Overlapping is safe because recovery's only effect is the memo, and the memo
+// is an atomic.Value plus the process-wide cache — both already written by 28
+// workers concurrently today. A transaction the executor reaches before its
+// worker does simply recovers inline, on the executor's goroutine: the same
+// work, the same result, just not overlapped for that one. Static striding
+// means the workers advance as a contiguous frontier (worker w takes
+// w, w+n, w+2n, so every index below n*k is covered after k steps), and the
+// executor walks in the same direction, so it runs just behind that frontier.
+//
+// Nothing here touches inner.from — Sender writes only tx.from and the shared
+// cache — so this does not race with AsMessage reading a wire-declared sender
+// or with applySenderHints, which runs to completion before the launch.
+func recoverBlockSendersAsync(signer transaction.Signer, txs []*transaction.Transaction) func() {
+	if signer == nil || len(txs) < senderRecoveryMinTxs {
+		return func() {}
+	}
+	workers := senderRecoveryFanout()
+	if workers > len(txs) {
+		workers = len(txs)
+	}
+	if workers < 2 {
+		return func() {}
+	}
+	done := make(chan struct{}, workers)
+	for w := 0; w < workers; w++ {
+		go recoverSenderStride(signer, txs, w, workers, done)
+	}
+	return func() {
+		for w := 0; w < workers; w++ {
+			<-done
+		}
+	}
+}
+
+// recoverSenderStride is one recovery worker. A panic below would otherwise
+// take down the process from a goroutine the importer cannot see. Swallowing
+// it here only means this worker stops pre-warming; the execution loop still
+// reaches those transactions and reproduces whatever happened, on its own
+// stack, exactly as it would have without this optimisation.
+func recoverSenderStride(signer transaction.Signer, txs []*transaction.Transaction, start, stride int, done chan<- struct{}) {
+	defer func() {
+		_ = recover()
+		done <- struct{}{}
+	}()
+	for i := start; i < len(txs); i += stride {
+		tx := txs[i]
+		if tx == nil || tx.From() != nil {
+			continue
+		}
+		_, _ = transaction.Sender(signer, tx)
+	}
+}
+
 func recoverBlockSenders(signer transaction.Signer, txs []*transaction.Transaction) {
 	if signer == nil || len(txs) < senderRecoveryMinTxs {
 		return
 	}
-	workers := senderRecoveryWorkers
+	workers := senderRecoveryFanout()
 	if workers > len(txs) {
 		workers = len(txs)
 	}
@@ -195,10 +318,29 @@ func recoverBlockSenders(signer transaction.Signer, txs []*transaction.Transacti
 // the cached From via signer.Sender, but reusing the process-wide
 // senderCache for pool-seen txs so honest blocks stay fast) and compare.
 // Any mismatch or unrecoverable signature rejects the whole block.
+var senderProbeLogged atomic.Bool
+
 func verifyBlockSenders(signer transaction.Signer, txs []*transaction.Transaction) error {
+	_, err := verifyBlockSendersHinted(signer, txs, nil)
+	return err
+}
+
+// verifyBlockSendersHinted is verifyBlockSenders with the pool as a cache:
+// a transaction the pool holds under the same hash carries the same
+// signature bytes (the hash covers them), and the pool recovered its sender
+// at admission, so that sender -- re-derived through the block's signer,
+// which checks the cache belongs to this signer -- is what recovering the
+// wire copy would give. It is compared with the declared sender exactly as
+// a fresh recovery would be; only the secp256k1 work is skipped. Returns
+// how many transactions the pool answered for. Round 35g: every one of a
+// 163k-transaction block's senders was recovered here at ~50 us, 8
+// core-seconds a block on every node, for transactions the node's pool had
+// already recovered once on arrival.
+func verifyBlockSendersHinted(signer transaction.Signer, txs []*transaction.Transaction, hints SenderHintSource) (int, error) {
 	if signer == nil {
-		return nil
+		return 0, nil
 	}
+	var hintHits atomic.Int64
 	type mismatch struct {
 		idx int
 		err error
@@ -235,6 +377,29 @@ func verifyBlockSenders(signer transaction.Signer, txs []*transaction.Transactio
 			report(i, fmt.Errorf("tx %d declares sender %s but carries no signature values (V/R/S)", i, declared.Hex()))
 			return
 		}
+		// The sender cache first: with a hint feed (ingest hint-only mode)
+		// filling it ahead of the block, this is an atomic load per
+		// transaction, whereas the pool lookup below takes the pool's read
+		// lock 163,000 times against a writer admitting 60k tx/s -- round
+		// 35zj: the feed was complete and recover still read 368 ms.
+		if cached, ok := transaction.CachedSender(signer, tx); ok {
+			hintHits.Add(1)
+			if cached != *declared {
+				report(i, fmt.Errorf("tx %d declares sender %s but signature recovers %s", i, declared.Hex(), cached.Hex()))
+			}
+			return
+		}
+		if hints != nil {
+			if ptx := hints.GetTx(tx.Hash()); ptx != nil {
+				if pooled, err := transaction.Sender(signer, ptx); err == nil {
+					hintHits.Add(1)
+					if pooled != *declared {
+						report(i, fmt.Errorf("tx %d declares sender %s but signature recovers %s", i, declared.Hex(), pooled.Hex()))
+					}
+					return
+				}
+			}
+		}
 		recovered, err := transaction.RecoverSenderFromSig(signer, tx)
 		if err != nil {
 			report(i, fmt.Errorf("tx %d declares sender %s but signature does not recover: %w", i, declared.Hex(), err))
@@ -245,7 +410,22 @@ func verifyBlockSenders(signer transaction.Signer, txs []*transaction.Transactio
 		}
 	}
 
-	workers := senderRecoveryWorkers
+	// One-time diagnostic (round 35zk: a complete hint feed and zero cache
+	// hits): before the fan-out, probe the cache slots of the first three
+	// transactions and say what they hold.
+	if len(txs) >= senderRecoveryMinTxs && senderProbeLogged.CompareAndSwap(false, true) {
+		for i := 0; i < 3 && i < len(txs); i++ {
+			if txs[i] == nil {
+				continue
+			}
+			h := txs[i].Hash()
+			occ, same, st := transaction.SenderCacheProbe(h)
+			hits, misses := transaction.SenderCacheStats()
+			log.Info("sender cache probe", "i", i, "hash", h.Hex()[:18], "occupied", occ, "sameHash", same, "entrySigner", st,
+				"importSigner", fmt.Sprintf("%T", signer), "cacheHits", hits, "cacheMisses", misses, "declared", txs[i].From() != nil)
+		}
+	}
+	workers := senderRecoveryFanout()
 	if len(txs) < senderRecoveryMinTxs || workers > len(txs) {
 		workers = 1
 	}
@@ -286,7 +466,7 @@ func verifyBlockSenders(signer transaction.Signer, txs []*transaction.Transactio
 		}
 	}
 	if len(found) == 0 {
-		return nil
+		return int(hintHits.Load()), nil
 	}
 	// Deterministic error: report the lowest-index offender.
 	best := found[0]
@@ -295,5 +475,5 @@ func verifyBlockSenders(signer transaction.Signer, txs []*transaction.Transactio
 			best = m
 		}
 	}
-	return best.err
+	return int(hintHits.Load()), best.err
 }

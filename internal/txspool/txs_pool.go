@@ -27,6 +27,7 @@ import (
 	"errors"
 	"math"
 	"math/big"
+	"os"
 	"time"
 
 	"github.com/holiman/uint256"
@@ -181,6 +182,16 @@ func (pool *TxsPool) GetTransaction() (txs []*transaction.Transaction, err error
 // Pending retrieves all currently processable transactions, grouped by origin
 // account and sorted by nonce.
 func (pool *TxsPool) Pending(enforceTips bool) map[types.Address][]*transaction.Transaction {
+	if !enforceTips && pendingSnapshotEnabled() {
+		if snap := pool.pendingSnap.Load(); snap != nil {
+			// Shallow copy: the builder reslices and deletes entries.
+			out := make(map[types.Address][]*transaction.Transaction, len(*snap))
+			for addr, txs := range *snap {
+				out[addr] = txs
+			}
+			return out
+		}
+	}
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
 
@@ -293,11 +304,40 @@ func (pool *TxsPool) addTxs(txs []*transaction.Transaction, local, sync bool) []
 	// piece of application CPU), it needs no pool state, and it happens outside
 	// the pool lock -- so serialising it only left cores idle: the fleet ran at
 	// 4 busy cores out of 32 while the profile sat in scheduler park/spin.
-	pool.prewarmSenders(txs)
+	// Drop the transactions the pool already holds BEFORE recovering anything.
+	// prewarmSenders used to run over the whole batch, so every duplicate paid
+	// a full secp256k1 recovery for a transaction the very next line was about
+	// to reject as ErrAlreadyKnown.
+	//
+	// How much that is worth depends entirely on how many duplicates reach the
+	// pool, and the measurement says: under the sharded bench profile, almost
+	// none. Splitting the flood across the seven nodes gives each one mostly
+	// transactions it has never seen, and moving the dedup ahead of the warm
+	// took prewarmSenders from 43.07s to 42.31s of a saturated 30s profile --
+	// inside the noise. This is not the 33.8% of node CPU that prewarmSenders
+	// costs there; that cost is first-time recoveries, and it stays.
+	//
+	// It is kept because it is free and because the case it protects is the
+	// one the sharded profile cannot show: with gossip or a broadcasting
+	// submitter every node sees every transaction up to seven times over, and
+	// then the duplicates are the batch. That configuration OOMs this box at
+	// bench supply (~10.4 GB RSS a node against 4.8 GB sharded), so the payoff
+	// is UNMEASURED -- claimed by mechanism, not by a number.
+	//
+	// Nothing else moves. The dedup test is the same pool.all.Get on the same
+	// hash, and everything after it -- validateSender, EncodedSize, the pool
+	// lock -- sees exactly the transactions it saw before.
+	warm := make([]*transaction.Transaction, 0, len(txs))
 	for i, tx := range txs {
-		hash := tx.Hash()
-		if pool.all.Get(hash) != nil {
+		if pool.all.Get(tx.Hash()) != nil {
 			errs[i] = ErrAlreadyKnown
+			continue
+		}
+		warm = append(warm, tx)
+	}
+	pool.prewarmSenders(warm)
+	for i, tx := range txs {
+		if errs[i] != nil {
 			continue
 		}
 		if !pool.validateSender(tx) {
@@ -316,9 +356,43 @@ func (pool *TxsPool) addTxs(txs []*transaction.Transaction, local, sync bool) []
 		return errs
 	}
 
+	// Nonce and balance for the whole batch in ONE read transaction, taken
+	// BEFORE the lock. validateTx used to call GetNonce and GetBalance per
+	// transaction, and each of those opens its own MDBX read transaction — so
+	// admitting a 200-transaction batch opened 400 of them, every one inside
+	// pool.mu, with the block builder waiting on the same lock. Under load the
+	// RPC ingest path was 19.3% of all mutex delay against InsertChain's 1.3%,
+	// and MdbxTx cursor/transaction objects were ~22% of everything the node
+	// allocated.
+	//
+	// The snapshot is read a lock-acquisition earlier than the values it
+	// replaces, which widens an existing staleness window: the two getters were
+	// already separate transactions, so nonce and balance never came from one
+	// consistent view to begin with. A transaction admitted against a nonce
+	// that has since moved is dropped by the builder when it executes, which is
+	// what already happens to every transaction the pool outlives.
+	accounts := pool.accountsFor(news)
+
+	// A reorg waiting for the lock goes first: with two generators (~250
+	// insert batches a second, each holding the lock ~2 ms) the mutex's FIFO
+	// hand-off made the reorg wait 1.4 s behind the queued inserters (round
+	// 35j), promotion lagged, and the A leg's second window ran at 72%
+	// occupancy with 400k transactions pending.
+	for pool.reorgWaiting.Load() {
+		time.Sleep(200 * time.Microsecond)
+	}
+	// Inserters serialise on insertGate BEFORE pool.mu, so at most one of
+	// them is ever queued on the pool lock: the reorg then waits behind one
+	// batch (~3 ms), not the ~200 batches the RPC concurrency had queued
+	// (round 35j-35l: lockWait 0.75-2.2 s, promotion a block behind, and
+	// with a leader tenure the same node's pool supplies four blocks in a
+	// row -- 35l B1 filled them to 26-30%). Insert throughput is unchanged:
+	// the batches were serialised by pool.mu anyway.
+	pool.insertGate.Lock()
 	pool.mu.Lock()
-	newErrs, dirtyAddrs := pool.addTxsLocked(news, local)
+	newErrs, dirtyAddrs := pool.addTxsLocked(news, local, accounts)
 	pool.mu.Unlock()
+	pool.insertGate.Unlock()
 
 	nilSlot := 0
 	for _, err := range newErrs {
@@ -347,11 +421,11 @@ func (pool *TxsPool) addTxs(txs []*transaction.Transaction, local, sync bool) []
 
 // addTxsLocked attempts to queue a batch of transactions if they are valid.
 // The transaction pool lock must be held.
-func (pool *TxsPool) addTxsLocked(txs []*transaction.Transaction, local bool) ([]error, *accountSet) {
+func (pool *TxsPool) addTxsLocked(txs []*transaction.Transaction, local bool, accounts map[types.Address]*AccountInfo) ([]error, *accountSet) {
 	dirty := newAccountSet()
 	errs := make([]error, len(txs))
 	for i, tx := range txs {
-		replaced, err := pool.add(tx, local)
+		replaced, err := pool.add(tx, local, accounts)
 		errs[i] = err
 		if err == nil && !replaced {
 			dirty.addTx(tx)
@@ -371,7 +445,7 @@ func (pool *TxsPool) addTxsLocked(txs []*transaction.Transaction, local bool) ([
 
 // add validates a transaction and inserts it into the non-executable queue for later
 // pending promotion and execution.
-func (pool *TxsPool) add(tx *transaction.Transaction, local bool) (replaced bool, err error) {
+func (pool *TxsPool) add(tx *transaction.Transaction, local bool, accounts map[types.Address]*AccountInfo) (replaced bool, err error) {
 	hash := tx.Hash()
 	gasPrice := tx.GasPrice()
 
@@ -382,7 +456,7 @@ func (pool *TxsPool) add(tx *transaction.Transaction, local bool) (replaced bool
 
 	isLocal := local || pool.locals.containsTx(tx)
 
-	if err := pool.validateTx(tx, isLocal); err != nil {
+	if err := pool.validateTx(tx, isLocal, accounts); err != nil {
 		return false, err
 	}
 
@@ -503,7 +577,42 @@ func (pool *TxsPool) removeTx(hash types.Hash, outofbound bool) {
 
 // validateTx checks whether a transaction is valid according to the consensus
 // rules and adheres to some heuristic limits of the local node (price and size).
-func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
+// accountsFor reads nonce and balance for every distinct sender in txs, in one
+// read transaction. Call it OUTSIDE pool.mu.
+func (pool *TxsPool) accountsFor(txs []*transaction.Transaction) map[types.Address]*AccountInfo {
+	if pool.currentState == nil || len(txs) == 0 {
+		return nil
+	}
+	addrs := make([]types.Address, 0, len(txs))
+	seen := make(map[types.Address]struct{}, len(txs))
+	for _, tx := range txs {
+		from := tx.From()
+		if from == nil {
+			continue
+		}
+		if _, ok := seen[*from]; ok {
+			continue
+		}
+		seen[*from] = struct{}{}
+		addrs = append(addrs, *from)
+	}
+	if len(addrs) == 0 {
+		return nil
+	}
+	return pool.currentState.GetAccountsInfo(addrs)
+}
+
+// accountState answers from the batch snapshot when it has the address, and
+// falls back to the single-address getters for the paths that have no snapshot
+// (single submits, reorg re-injection) or whose account failed to decode.
+func (pool *TxsPool) accountState(addr types.Address, accounts map[types.Address]*AccountInfo) (uint64, *uint256.Int) {
+	if info, ok := accounts[addr]; ok && info != nil && info.Balance != nil {
+		return info.Nonce, info.Balance
+	}
+	return pool.currentState.GetNonce(addr), pool.currentState.GetBalance(addr)
+}
+
+func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool, accounts map[types.Address]*AccountInfo) error {
 	// Accept only legacy transactions until EIP-2718/2930 activates.
 	if !pool.eip2718 && tx.Type() != transaction.LegacyTxType {
 		return internal.ErrTxTypeNotSupported
@@ -542,14 +651,15 @@ func (pool *TxsPool) validateTx(tx *transaction.Transaction, local bool) error {
 	if !local && gasPrice.Cmp(pool.gasPrice) < 0 {
 		return ErrUnderpriced
 	}
-	if pool.currentState.GetNonce(addr) > tx.Nonce() {
+	nonce, balance := pool.accountState(addr, accounts)
+	if nonce > tx.Nonce() {
 		return ErrNonceTooLow
 	}
 	const MaxNonce uint64 = 1<<63 - 1
 	if tx.Nonce() > MaxNonce {
 		return ErrNonceTooHigh
 	}
-	if pool.currentState.GetBalance(addr).Cmp(tx.Cost()) < 0 {
+	if balance.Cmp(tx.Cost()) < 0 {
 		return ErrInsufficientFunds
 	}
 
@@ -724,6 +834,14 @@ func (pool *TxsPool) reset(oldBlock, newBlock block.IBlock) {
 				log.Warn("Skipping transaction reset with unavailable head number", "oldErr", oldNumErr, "newErr", newNumErr)
 			} else if depth := uint64(math.Abs(float64(oldNum.Uint64()) - float64(newNum.Uint64()))); depth > 64 {
 				log.Debug("Skipping deep transaction reorg", "depth", depth)
+			} else if pool.linearExtension(oldHeader.Hash(), oldNum.Uint64(), newBlock, newNum.Uint64()) {
+				// The old head is an ancestor of the new one: the pool merely
+				// lagged the chain by a block or more, nothing was discarded and
+				// there is nothing to reinject. The walk below would read every
+				// intermediate block's body to compute an empty difference --
+				// 250-480 ms of a 0.8-1.1 s reorg at 100k-transaction blocks
+				// (round 35g, node0), and that lag is what leaves already-mined
+				// transactions in pending for the next build to trim.
 			} else {
 				var discarded, included []*transaction.Transaction
 				rem := oldBlock
@@ -790,7 +908,10 @@ func (pool *TxsPool) reset(oldBlock, newBlock block.IBlock) {
 	if len(reinject) > 0 {
 		log.Debugf("Reinjecting stale transactions count %d", len(reinject))
 	}
-	pool.addTxsLocked(reinject, false)
+	// nil snapshot: reset already holds the lock, and re-injected transactions
+	// are revalidated against the state of the block that just arrived, so they
+	// read it directly rather than through a batch taken before it.
+	pool.addTxsLocked(reinject, false, nil)
 
 	// Update all fork indicators by next pending block number.
 	next := big.NewInt(1)
@@ -805,6 +926,55 @@ func (pool *TxsPool) reset(oldBlock, newBlock block.IBlock) {
 // slowReorgThreshold is the pool-reorg cost above which the phase breakdown is
 // logged at Info. A reorg runs on every new head, so anything lower would put a
 // line in the log per block for a path that is normally a few milliseconds.
+// headerByHashReader is what linearExtension needs from the chain; the pool's
+// IBlockChain does not declare it, BlockChain implements it.
+type headerByHashReader interface {
+	GetHeaderByHash(hash types.Hash) (block.IHeader, error)
+}
+
+// linearExtension reports whether the block at oldHash/oldNum is an ancestor
+// of newBlock, walking headers only (no bodies). False when it cannot tell.
+func (pool *TxsPool) linearExtension(oldHash types.Hash, oldNum uint64, newBlock block.IBlock, newNum uint64) bool {
+	if newNum <= oldNum {
+		return false
+	}
+	hr, ok := pool.bc.(headerByHashReader)
+	if !ok {
+		return false
+	}
+	h := newBlock.ParentHash()
+	for n := newNum - 1; n > oldNum; n-- {
+		hdr, err := hr.GetHeaderByHash(h)
+		if err != nil || hdr == nil {
+			return false
+		}
+		ch, ok := hdr.(*block.Header)
+		if !ok || ch == nil {
+			return false
+		}
+		h = ch.ParentHash
+	}
+	return h == oldHash
+}
+
+// pendingSnapshotEnabled gates Pending(false) on the reorg-published
+// snapshot (N42_POOL_PENDING_SNAPSHOT=0 restores the locked walk).
+func pendingSnapshotEnabled() bool {
+	return os.Getenv("N42_POOL_PENDING_SNAPSHOT") != "0"
+}
+
+// publishPendingSnapshot stores the pending map for lock-free Pending(false).
+// Called under pool.mu at the end of every reorg.
+func (pool *TxsPool) publishPendingSnapshot() {
+	snap := make(map[types.Address][]*transaction.Transaction, len(pool.pending))
+	for addr, list := range pool.pending {
+		if txs := list.FlattenReadOnly(); len(txs) > 0 {
+			snap[addr] = txs
+		}
+	}
+	pool.pendingSnap.Store(&snap)
+}
+
 const slowReorgThreshold = 200 * time.Millisecond
 
 // runReorg runs reset and promoteExecutables on behalf of scheduleLoop.
@@ -823,10 +993,12 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 	// meaning the pool, not the block schedule, sets the ceiling. Without a
 	// breakdown there is no way to tell which phase owns it.
 	tStart := time.Now()
-	var dReset, dPromote, dDemote, dNonces, dTruncate time.Duration
+	var dReset, dPromote, dDemote, dNonces, dTruncate, dSnapshot time.Duration
 	nQueue, nPending := 0, 0
 
+	pool.reorgWaiting.Store(true)
 	pool.mu.Lock()
+	pool.reorgWaiting.Store(false)
 	tLocked := time.Now()
 	if reset != nil {
 		tR := time.Now()
@@ -878,6 +1050,9 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 	pool.truncatePending()
 	pool.truncateQueue()
 	dTruncate = time.Since(tT)
+	tS := time.Now()
+	pool.publishPendingSnapshot()
+	dSnapshot = time.Since(tS)
 	nQueue, nPending = len(pool.queue), len(pool.pending)
 	pool.changesSinceReorg = 0
 	pool.mu.Unlock()
@@ -894,7 +1069,7 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 		emit("txpool reorg phases",
 			"total", total, "lockWait", tLocked.Sub(tStart),
 			"reset", dReset, "promote", dPromote, "demote", dDemote,
-			"nonces", dNonces, "truncate", dTruncate,
+			"nonces", dNonces, "truncate", dTruncate, "snapshot", dSnapshot,
 			"promoted", len(promoted), "queueAccts", nQueue, "pendingAccts", nPending)
 	}
 

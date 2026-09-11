@@ -33,7 +33,6 @@ var DBSchemaVersion = types.VersionReply{Major: 6, Minor: 1, Patch: 0}
 
 // Dictionary:
 // "Plain State" - state where keys arent' hashed. "CurrentState" - same, but keys are hashed. "PlainState" used for blocks execution. "CurrentState" used mostly for Merkle root calculation.
-// "incarnation" - uint64 number - how much times given account was SelfDestruct'ed.
 
 /*
 PlainState logical layout:
@@ -42,7 +41,7 @@ PlainState logical layout:
 	  key - address (unhashed)
 	  value - account encoded for storage
 	Contains Storage:
-	  key - address (unhashed) + incarnation + storage key (unhashed)
+	  key - address (unhashed) + storage key (unhashed)
 	  value - storage value(common.hash)
 
 Physical layout:
@@ -96,8 +95,8 @@ AccountChangeSet:
 
 StorageChangeSet:
 
-	key - blockNum_u64 + address + incarnation_u64
-	value - plain_storage_key + value
+	key - blockNum_u64
+	value - address + plain_storage_key + value
 */
 const AccountChangeSet = "AccountChangeSet"
 const StorageChangeSet = "StorageChangeSet"
@@ -108,7 +107,7 @@ const (
 	// key - address hash
 	// value - account encoded for storage
 	// Contains Storage:
-	//key - address hash + incarnation + storage key hash
+	//key - address hash + storage key hash
 	//value - storage value(common.hash)
 	HashedAccounts = "HashedAccount"
 	HashedStorage  = "HashedStorage"
@@ -161,7 +160,7 @@ const (
 	//value - contract code
 	Code = "Code"
 
-	//key - addressHash+incarnation
+	//key - addressHash
 	//value - code hash
 	ContractCode = "HashedCodeHash"
 
@@ -557,7 +556,7 @@ var (
 // ChaindataTablesCfg - can be used to find index in sorted version of ChaindataTables list by name
 var ChaindataTables = []string{
 	"Account", // modules.Account: address -> account encoded (Erigon V2)
-	"Storage", // modules.Storage: address+incarnation+key -> value
+	"Storage", // modules.Storage: address+key -> value
 	E2AccountsHistory,
 	E2StorageHistory,
 	Code,

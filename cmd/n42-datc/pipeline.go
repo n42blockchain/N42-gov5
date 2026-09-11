@@ -10,6 +10,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/ethel"
+	"github.com/n42blockchain/N42/modules"
 )
 
 // decodedBlock is one block's changesets in apply-ready form.
@@ -29,60 +31,6 @@ type decodedBlock struct {
 	ahash  map[types.Address][32]byte
 	shash  map[types.Hash][32]byte
 	err    error
-
-	// innerFree holds cleared dirtyS inner maps for reuse across this pooled
-	// block's lives (one inner map per dirty contract per block was a top
-	// allocator). See getDecodedBlock / releaseDecodedBlock.
-	innerFree []map[types.Hash]*uint256.Int
-}
-
-// decodedBlockPool recycles decodedBlock structs and their maps. The maps are
-// safe to reuse: the main loop copies the only retained references OUT of them
-// (StateAccount/uint256 pointers into winA/winS, key hashes into b's caches) —
-// the maps themselves are never retained past one block's consumption.
-var decodedBlockPool = sync.Pool{New: func() any {
-	return &decodedBlock{
-		dirtyA: make(map[types.Address]*account.StateAccount),
-		dirtyS: make(map[types.Address]map[types.Hash]*uint256.Int),
-		ahash:  make(map[types.Address][32]byte, 8),
-		shash:  make(map[types.Hash][32]byte, 8),
-	}
-}}
-
-// getDecodedBlock returns a cleared decodedBlock for block n.
-func getDecodedBlock(n uint64) *decodedBlock {
-	d := decodedBlockPool.Get().(*decodedBlock)
-	d.n = n
-	d.err = nil
-	return d
-}
-
-// innerMap returns a (cleared) inner storage map, reusing one from the free list.
-func (d *decodedBlock) innerMap() map[types.Hash]*uint256.Int {
-	if k := len(d.innerFree); k > 0 {
-		m := d.innerFree[k-1]
-		d.innerFree = d.innerFree[:k-1]
-		return m
-	}
-	return make(map[types.Hash]*uint256.Int, 8)
-}
-
-// releaseDecodedBlock clears a fully-consumed block's maps (retaining their
-// backing) and returns it to the pool. Call only after the main loop has copied
-// everything it needs out of d (winA/winS pointers + hash caches).
-func releaseDecodedBlock(d *decodedBlock) {
-	if d == nil {
-		return
-	}
-	for _, inner := range d.dirtyS {
-		clear(inner)
-		d.innerFree = append(d.innerFree, inner)
-	}
-	clear(d.dirtyA)
-	clear(d.dirtyS)
-	clear(d.ahash)
-	clear(d.shash)
-	decodedBlockPool.Put(d)
 }
 
 // decodePipeline pre-decodes [next, end) on `workers` goroutines, delivering
@@ -116,7 +64,11 @@ func startDecodePipeline(b *builder, start, end uint64, workers int) *decodePipe
 			ac := make(map[types.Address][32]byte, 1<<14)
 			sc := make(map[types.Hash][32]byte, 1<<14)
 			for n := range p.jobs {
-				p.results <- decodeOne(b, n, ac, sc)
+				d := decodeOne(b, n, ac, sc)
+				if b.prefetch && d.err == nil {
+					prefetchState(b, d)
+				}
+				p.results <- d
 				if len(ac) > 1_000_000 {
 					ac = make(map[types.Address][32]byte, 1<<14)
 				}
@@ -163,15 +115,54 @@ func (p *decodePipeline) Stop() {
 	close(p.results)
 }
 
+// prefetchState touches the HashedAccounts / HashedStorage pages the main
+// loop is about to write for this block (a short read-only tx per block, on
+// the pipeline worker). On a cold multi-hundred-GB state the main thread's
+// puts are otherwise serial page faults; warming the B-tree paths from
+// `workers` goroutines turns them into parallel I/O. Read-only, best effort.
+func prefetchState(b *builder, d *decodedBlock) {
+	tx, err := b.db.BeginRo(context.Background())
+	if err != nil {
+		return
+	}
+	defer tx.Rollback()
+	for addr := range d.dirtyA {
+		if h, ok := d.ahash[addr]; ok {
+			_, _ = tx.GetOne(modules.HashedAccounts, h[:])
+		}
+	}
+	var key [64]byte
+	for addr, slots := range d.dirtyS {
+		ah, ok := d.ahash[addr]
+		if !ok {
+			continue
+		}
+		copy(key[:32], ah[:])
+		_, _ = tx.GetOne(modules.HashedAccounts, ah[:])
+		for slot := range slots {
+			if sh, ok := d.shash[slot]; ok {
+				copy(key[32:], sh[:])
+				_, _ = tx.GetOne(modules.HashedStorage, key[:])
+			}
+		}
+	}
+}
+
 func decodeOne(b *builder, n uint64, ac map[types.Address][32]byte, sc map[types.Hash][32]byte) *decodedBlock {
-	d := getDecodedBlock(n)
+	d := &decodedBlock{
+		n:      n,
+		dirtyA: make(map[types.Address]*account.StateAccount),
+		dirtyS: make(map[types.Address]map[types.Hash]*uint256.Int),
+		ahash:  make(map[types.Address][32]byte, 8),
+		shash:  make(map[types.Hash][32]byte, 8),
+	}
 	hashAddr := func(addr types.Address) {
 		if _, ok := d.ahash[addr]; ok {
 			return
 		}
 		h, ok := ac[addr]
 		if !ok {
-			h = [32]byte(crypto.Keccak256Hash(addr[:])) // pooled hasher, no per-call alloc
+			copy(h[:], crypto.Keccak256(addr[:]))
 			ac[addr] = h
 		}
 		d.ahash[addr] = h
@@ -182,7 +173,7 @@ func decodeOne(b *builder, n uint64, ac map[types.Address][32]byte, sc map[types
 		}
 		h, ok := sc[slot]
 		if !ok {
-			h = [32]byte(crypto.Keccak256Hash(slot[:]))
+			copy(h[:], crypto.Keccak256(slot[:]))
 			sc[slot] = h
 		}
 		d.shash[slot] = h
@@ -219,47 +210,33 @@ func decodeOne(b *builder, n uint64, ac map[types.Address][32]byte, sc map[types
 		}
 	}
 	if len(stoBlob) > 0 {
-		// Stream slots straight from the blob (no intermediate []StorageChange /
-		// per-slot copies): each is consumed in place here — key hashed, value
-		// SetBytes'd into a uint256 — so the sub-slices needn't outlive the call.
-		err := ethel.DecodeStorageChangesFunc(stoBlob, func(addrB, slotB, _, newVal []byte) error {
+		entries, err := ethel.DecodeStorageChanges(stoBlob)
+		if err != nil {
+			d.err = fmt.Errorf("decode storcs: %w", err)
+			return d
+		}
+		for _, e := range entries {
 			var addr types.Address
 			var slot types.Hash
-			copy(addr[:], addrB)
-			copy(slot[:], slotB)
+			copy(addr[:], e.CompositeKey[:20])
+			copy(slot[:], e.CompositeKey[20:])
 			// Account deleted this block: drop its WRITES, keep its wipes —
 			// mirrors addSlot in block().
-			if a, ok := d.dirtyA[addr]; ok && a == nil && len(newVal) != 0 {
-				return nil
+			if a, ok := d.dirtyA[addr]; ok && a == nil && len(e.NewValue) != 0 {
+				continue
 			}
 			hashAddr(addr)
 			hashSlot(slot)
 			inner, ok := d.dirtyS[addr]
 			if !ok {
-				inner = d.innerMap()
+				inner = make(map[types.Hash]*uint256.Int, 8)
 				d.dirtyS[addr] = inner
 			}
-			if len(newVal) == 0 {
+			if len(e.NewValue) == 0 {
 				inner[slot] = nil
 			} else {
-				inner[slot] = new(uint256.Int).SetBytes(newVal)
+				inner[slot] = new(uint256.Int).SetBytes(e.NewValue)
 			}
-			return nil
-		})
-		if err != nil {
-			d.err = fmt.Errorf("decode storcs: %w", err)
-			return d
-		}
-	}
-
-	// Resume-gap repair: the primary freezer contributed NO changes for this block
-	// (a 0-length OR count=0 blob), but --changeset-fallback derived its real
-	// forward delta from a secondary chain. Inject it so the fold sees a complete
-	// changeset. Keyed on the DECODED result (not blob length) so a count=0 stub
-	// blob is repaired too. Mirror the account-deleted-drops-storage-writes rule.
-	if len(d.dirtyA) == 0 && len(d.dirtyS) == 0 && b.csFallback != nil {
-		if fb, ok := b.csFallback[n]; ok {
-			fb.injectGapBlock(d, hashAddr, hashSlot)
 		}
 	}
 	return d

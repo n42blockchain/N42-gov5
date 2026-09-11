@@ -17,7 +17,6 @@
 package parallel
 
 import (
-
 	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/modules/state"
@@ -46,17 +45,24 @@ func NewParallelStateReader(base state.StateReader, mvs *MVS, rw *ReadWriteSet, 
 }
 
 // ReadAccountData reads account data, checking MVS first.
+// Rebind points the reader at another transaction's read set and index, so
+// one reader per worker serves the whole block.
+func (r *ParallelStateReader) Rebind(rw *ReadWriteSet, txIndex int) {
+	r.rw = rw
+	r.txIndex = txIndex
+}
+
 func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.StateAccount, error) {
 	key := LocationKey{Address: address, Field: FieldBalance}
 
-	val, writerTx, writerInc, found := r.mvs.Read(key, r.txIndex)
+	full, fullTx, fullInc, found, delta := r.mvs.ReadAccount(key, r.txIndex)
 	if found {
-		r.rw.RecordRead(key, writerTx, writerInc, false)
+		val := composeAccount(full, delta)
+		r.rw.RecordAccountRead(key, fullTx, fullInc, false, val, nil, delta != nil)
 		if val == nil {
 			// Account was deleted by a preceding tx.
 			return nil, nil
 		}
-		// Decode protobuf-encoded account.
 		acc, err := DecodeAccount(val)
 		if err != nil {
 			return nil, err
@@ -64,20 +70,27 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 		return acc, nil
 	}
 
-	// Not in MVS — read from base.
-	r.rw.RecordRead(key, -1, 0, true)
-	return r.base.ReadAccountData(address)
+	// No full write in the store — read from base, record the base bytes in
+	// the writer's encoding so a later write of the same account by a
+	// preceding transaction validates by value, and add the deltas.
+	acc, err := r.base.ReadAccountData(address)
+	if err != nil {
+		r.rw.RecordRead(key, -1, 0, true)
+		return nil, err
+	}
+	var enc []byte
+	if acc != nil {
+		enc, _ = encodeAccount(acc)
+	}
+	if delta == nil {
+		r.rw.RecordAccountRead(key, -1, 0, true, enc, enc, false)
+		return acc, nil
+	}
+	val := composeAccount(enc, delta)
+	r.rw.RecordAccountRead(key, -1, 0, true, val, enc, true)
+	return DecodeAccount(val)
 }
 
-// ReadAccountStorage reads a storage slot, checking MVS first, then applying
-// the storage-wipe shadow before falling back to base.
-//
-// Wipe shadow (mirrors modules/state EVMStateView.ReadStorage): if a preceding
-// tx wiped this address's whole storage (SELFDESTRUCT / CREATE-on-existing) and
-// that wipe is newer than the slot's direct writer — or the slot value would
-// come from base (i.e. it is pre-wipe data) — the slot must read as zero, not
-// the stale pre-wipe value. The wipe marker read is recorded so validation
-// re-executes this tx if a later commit changes who wiped the address or when.
 func (r *ParallelStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
 	locKey := LocationKey{Address: address, Field: FieldStorage, Slot: *key}
 
@@ -112,13 +125,18 @@ func (r *ParallelStateReader) ReadAccountCode(address types.Address, codeHash ty
 
 	val, writerTx, writerInc, found := r.mvs.Read(key, r.txIndex)
 	if found {
-		r.rw.RecordRead(key, writerTx, writerInc, false)
+		r.rw.RecordReadValue(key, writerTx, writerInc, false, val)
 		return val, nil
 	}
 
 	// Not in MVS — read from base.
-	r.rw.RecordRead(key, -1, 0, true)
-	return r.base.ReadAccountCode(address, codeHash)
+	code, err := r.base.ReadAccountCode(address, codeHash)
+	if err != nil {
+		r.rw.RecordRead(key, -1, 0, true)
+		return nil, err
+	}
+	r.rw.RecordReadValue(key, -1, 0, true, code)
+	return code, nil
 }
 
 // ReadAccountCodeSize reads code size. Derives from ReadAccountCode.

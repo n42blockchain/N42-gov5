@@ -197,11 +197,23 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		dEvidence     time.Duration
 		dState        time.Duration
 		dChangeset    time.Duration
-		dRoot2        time.Duration
-		dQMDBFlush    time.Duration
-		dQMDBMeta     time.Duration
-		dSnapshot     time.Duration
-		dPost         time.Duration
+		// chgset is three separate operations and only their sum was ever
+		// measured. It is the second-largest write phase (~290 ms of a ~870 ms
+		// import at 22,857 tx), so "which of the three" decides what is worth
+		// attacking -- and the rig's history is that a per-transaction write
+		// nobody needs is where the wins are (N42_TXINDEX_TAIL was 2.5x).
+		dChgTruncate time.Duration
+		dChgSets     time.Duration
+		dChgHistory  time.Duration
+		dRoot2       time.Duration
+		dQMDBFlush   time.Duration
+		dQMDBMeta    time.Duration
+		dSnapshot    time.Duration
+		dPost        time.Duration
+		// Distinct accounts and slots the block changed, captured inside the
+		// write closure so the log line outside it can report them.
+		nAccts int
+		nSlots int
 	)
 
 	if err := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
@@ -267,7 +279,8 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			}
 		}
 
-		var stateWriter state.WriterWithChangeSets = state.NewPlainStateWriter(tx, tx, blockNumber.Uint64())
+		plainWriter := state.NewPlainStateWriter(tx, tx, blockNumber.Uint64())
+		var stateWriter state.WriterWithChangeSets = plainWriter
 		if cache := layered.ExtractCache(bc.ChainDB); cache != nil {
 			stateWriter = state.NewCachedStateWriter(stateWriter, cache)
 		}
@@ -288,6 +301,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 				return err
 			}
 			dState = time.Since(tPhase)
+			nAccts, nSlots = plainWriter.ChangedCounts()
 			tPhase = time.Now()
 			// A prior attempt at this height (hotstuff view-change re-production,
 			// a competing same-height proposal, or a reorg re-import) may have
@@ -296,15 +310,21 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			// re-writing the same height collides → MDBX_EKEYMISMATCH and the node
 			// wedges. Clear any rows ≥ this height first — a no-op on the
 			// strictly-forward happy path, and safe (same tx as the re-append).
+			tSub := time.Now()
 			if err := changeset.Truncate(tx, blockNumber.Uint64()); err != nil {
 				return fmt.Errorf("truncating stale changesets for block %d failed: %w", blockNumber.Uint64(), err)
 			}
+			dChgTruncate = time.Since(tSub)
+			tSub = time.Now()
 			if err := stateWriter.WriteChangeSets(); err != nil {
 				return fmt.Errorf("writing changesets for block %d failed: %w", blockNumber.Uint64(), err)
 			}
+			dChgSets = time.Since(tSub)
+			tSub = time.Now()
 			if err := stateWriter.WriteHistory(); err != nil {
 				return fmt.Errorf("writing history for block %d failed: %w", blockNumber.Uint64(), err)
 			}
+			dChgHistory = time.Since(tSub)
 			dChangeset = time.Since(tPhase)
 		}
 
@@ -540,9 +560,20 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		fields := []interface{}{
 			"n", blockNumber.Uint64(), "role", role, "txs", len(blk.Transactions()),
 			"begin", dBegin, "receipts", dReceipts, "block", dBlock, "ce", dEvidence,
-			"state", dState, "chgset", dChangeset, "root2", dRoot2,
+			"state", dState, "chgset", dChangeset,
+			// chgset's three parts, so the phase can be attacked by name.
+			"chgTrunc", dChgTruncate, "chgSets", dChgSets, "chgHist", dChgHistory,
+			"root2", dRoot2,
 			"qflush", dQMDBFlush, "qmeta", dQMDBMeta, "snap", dSnapshot,
 			"commit", dCommit, "post", dPost, "total", dTotal,
+		}
+		// Distinct accounts and slots the block changed. The commit cost is set
+		// by this COUNT, not by the byte volume: every account update is keyed
+		// by address, so each one can land on its own B-tree leaf and each of
+		// those pages is written out. 85 MB of device writes per block divided
+		// by this is the amplification per changed account.
+		if nAccts > 0 || nSlots > 0 {
+			fields = append(fields, "accts", nAccts, "slots", nSlots)
 		}
 		if dTotal >= slowBlockThreshold {
 			log.Info("blockwrite phases", fields...)

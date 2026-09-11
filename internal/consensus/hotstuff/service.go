@@ -233,6 +233,28 @@ func (s *Service) requestCommittedCatchUp(hash types.Hash, number uint64) {
 	}()
 }
 
+// deferProduction parks a leader view whose parent is not applied yet so
+// NotifyBlockImported re-runs the gate when it lands. The import can complete
+// between the gate's check and this registration; a second, side-effect-free
+// probe after registering closes that window by re-running the gate at once.
+func (s *Service) deferProduction(view ViewNumber, parentHash types.Hash) {
+	s.pendingMu.Lock()
+	s.deferredProduce.view, s.deferredProduce.parent = view, parentHash
+	s.pendingMu.Unlock()
+	if applied, checked, _ := s.blockExecutionStatus(parentHash); checked && applied {
+		s.pendingMu.Lock()
+		raced := s.deferredProduce.parent == parentHash
+		if raced {
+			s.deferredProduce.parent = types.Hash{}
+		}
+		s.pendingMu.Unlock()
+		if raced {
+			log.Info("hotstuff: deferred production resumed at once, the parent applied during the gate", "view", uint64(view), "parent", parentHash.Hex()[:12])
+			go s.triggerBlockProduction(view, parentHash)
+		}
+	}
+}
+
 // committedParentBlocked rechecks the proposed consensus parent and fails
 // closed after repeated local execution failures. The failure streak is
 // chain-wide rather than keyed by hash because commits keep advancing while a
@@ -323,8 +345,24 @@ func (s *Service) ensureParentApplied(parentHash types.Hash) bool {
 	return false
 }
 
+// triggerBlockProduction runs three gates before handing the build to the miner.
+// Each is timed: the leader's ViewStart -> ProposalSent stage measures 615 ms
+// under load while the miner's own phase timers account for only ~262 ms of it,
+// so the missing time is either in these gates (ensureParentApplied opens a read
+// transaction on every view) or in the wait for the single worker goroutine,
+// which "miner: work queue wait" reports from the other side. Observability
+// only -- no gate is skipped or reordered.
 func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash) {
+	tGate := time.Now()
+	var dBehind, dCommitted, dApplied time.Duration
+	logGates := func(outcome string) {
+		log.Info("hotstuff: leader gate phases", "view", uint64(view), "outcome", outcome,
+			"behindNs", dBehind.Nanoseconds(), "committedNs", dCommitted.Nanoseconds(),
+			"appliedNs", dApplied.Nanoseconds(), "totalNs", time.Since(tGate).Nanoseconds())
+	}
 	if behind := s.heightBehind(); behind > blockProductionSyncGate {
+		dBehind = time.Since(tGate)
+		logGates("behind")
 		log.Warn("hotstuff: behind peers, skipping block production and catching up",
 			"view", view, "behind", behind, "gate", blockProductionSyncGate)
 		if s.blockFetcher != nil {
@@ -332,12 +370,31 @@ func (s *Service) triggerBlockProduction(view ViewNumber, parentHash types.Hash)
 		}
 		return
 	}
+	dBehind = time.Since(tGate)
+	tC := time.Now()
 	if s.committedParentBlocked(parentHash) {
+		dCommitted = time.Since(tC)
+		logGates("committed-parent-blocked")
+		// The guard fires on a chain-wide streak of commits that landed
+		// before their block was executed here -- routine at 163k a block,
+		// where the commit QC outruns the follower's 1.5 s import -- and the
+		// parent is then one import away: round 35ze B1, both timeouts were
+		// this gate at a tenure handoff, the parent applied 100 ms later, and
+		// nothing resumed the view because only the parent-not-applied
+		// branch registered a retry. Register it here too.
+		s.deferProduction(view, parentHash)
 		return
 	}
+	dCommitted = time.Since(tC)
+	tA := time.Now()
 	if !s.ensureParentApplied(parentHash) {
+		dApplied = time.Since(tA)
+		logGates("parent-not-applied")
+		s.deferProduction(view, parentHash)
 		return
 	}
+	dApplied = time.Since(tA)
+	logGates("trigger")
 	s.blockProducer.TriggerBlockProduction(parentHash)
 }
 
@@ -388,6 +445,16 @@ type Service struct {
 	// the height canonical (observed on-disk: canonical rows missing on 6/7
 	// nodes at the first view-changed height). Protected by pendingMu.
 	pendingCommit types.Hash
+	// deferredProduce remembers a leader view whose gate found the consensus
+	// parent not yet applied locally, so the import that lands it can re-run
+	// the gate instead of the view waiting out its 6 s timeout. Round 31: at
+	// 140k-transaction blocks the QC forms on five imports, and the next
+	// leader's own import of that block is often still in flight when its
+	// view starts; every such view cost a timeout.
+	deferredProduce struct {
+		view   ViewNumber
+		parent types.Hash
+	}
 
 	// A CommitQC may arrive before this node executes the committed block. Keep
 	// the consecutive failed execution observations so a leader does not extend
@@ -671,7 +738,7 @@ func (s *Service) handleOutput(output EngineOutput) {
 		// on non-miner proposals while the chain head never advances. Direct block
 		// push (resultLoop) makes the old gossip-warmup delay unnecessary.
 		isLeader := s.engine.Engine().IsCurrentLeader()
-		log.Info("hotstuff: view changed", "view", output.View, "isLeader", isLeader, "hasProducer", s.blockProducer != nil)
+		log.Info("hotstuff: view changed", "view", output.View, "isLeader", isLeader, "hasProducer", s.blockProducer != nil, "tMs", time.Now().UnixMilli())
 		if isLeader && s.blockProducer != nil {
 			// Sync-gate: a validator whose local head trails the network must NOT
 			// produce a block. It would build on a stale head and self-fork —
@@ -1500,7 +1567,22 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 	if retryCommit {
 		s.pendingCommit = types.Hash{}
 	}
+	retryProduce := s.deferredProduce.parent == hash && hash != (types.Hash{})
+	deferredView := s.deferredProduce.view
+	if retryProduce {
+		s.deferredProduce.parent = types.Hash{}
+	}
 	s.pendingMu.Unlock()
+
+	// The block a deferred leader view was waiting to extend has just been
+	// applied locally: re-run the gate, if this node still leads that view.
+	if retryProduce && s.engine != nil {
+		eng := s.engine.Engine()
+		if eng != nil && eng.IsCurrentLeader() && eng.CurrentView() == deferredView {
+			log.Info("hotstuff: deferred production resumed after the parent applied", "view", uint64(deferredView), "parent", hash.Hex()[:12])
+			go s.triggerBlockProduction(deferredView, hash)
+		}
+	}
 
 	// A commit that was deferred because this block hadn't arrived: finish it
 	// now, so the canonical marker and head advance on every node, not just the

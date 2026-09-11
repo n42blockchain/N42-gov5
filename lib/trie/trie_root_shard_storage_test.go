@@ -41,8 +41,8 @@ func (m *nodeMap) accColl() trie.HashCollector2 {
 }
 
 func (m *nodeMap) stoColl() trie.StorageHashCollector2 {
-	return func(accWithInc, keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
-		k := string(append(append([]byte{}, accWithInc...), keyHex...))
+	return func(accHash, keyHex []byte, hasState, hasTree, hasHash uint16, hashes, rootHash []byte) error {
+		k := string(append(append([]byte{}, accHash...), keyHex...))
 		if hasState == 0 {
 			m.sto[k] = nil
 			return nil
