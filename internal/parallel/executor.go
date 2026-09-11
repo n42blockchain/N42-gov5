@@ -159,11 +159,28 @@ func arenaTake() *txArena {
 	return nil
 }
 
+// arenaGive keeps a released arena. When the list is full it replaces the
+// smallest kept arena if the released one is larger: the list must converge
+// on the biggest blocks seen, or two arenas kept during a leg's ramp (a
+// 23k-transaction A leg, the first 85k block of a B leg) sit in it for the
+// rest of the run and every full block allocates its 163k sets fresh
+// (round 35zzh's profile: arenaFor -> NewReadWriteSet 0.45 s of 25, with
+// the arena code in place).
 func arenaGive(a *txArena) {
 	arenaFree.mu.Lock()
 	defer arenaFree.mu.Unlock()
 	if len(arenaFree.list) < arenaFreeMax {
 		arenaFree.list = append(arenaFree.list, a)
+		return
+	}
+	smallest := 0
+	for i, k := range arenaFree.list {
+		if cap(k.rwSets) < cap(arenaFree.list[smallest].rwSets) {
+			smallest = i
+		}
+	}
+	if cap(arenaFree.list[smallest].rwSets) < cap(a.rwSets) {
+		arenaFree.list[smallest] = a
 	}
 }
 
@@ -172,7 +189,8 @@ func arenaGive(a *txArena) {
 func arenaFor(numTxs int) *txArena {
 	a := arenaTake()
 	if a != nil && cap(a.rwSets) < numTxs {
-		arenaGive(a) // keep it for a smaller block
+		// Too small: drop it rather than keep it for a smaller block. The
+		// larger arena built below takes its place on Release.
 		a = nil
 	}
 	if a == nil {

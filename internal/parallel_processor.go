@@ -101,6 +101,19 @@ func giveTxResults(r []parallelTxResult) {
 	defer txResultsFree.mu.Unlock()
 	if len(txResultsFree.list) < 2 {
 		txResultsFree.list = append(txResultsFree.list, r[:0])
+		return
+	}
+	// Full: replace the smallest kept slice if this one is larger, so two
+	// small slices from a leg's ramp cannot hold the list for the run (the
+	// same trap as the executor arena's free list, round 35zzh).
+	smallest := 0
+	for i, k := range txResultsFree.list {
+		if cap(k) < cap(txResultsFree.list[smallest]) {
+			smallest = i
+		}
+	}
+	if cap(txResultsFree.list[smallest]) < cap(r) {
+		txResultsFree.list[smallest] = r[:0]
 	}
 }
 
