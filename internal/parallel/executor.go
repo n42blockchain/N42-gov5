@@ -295,16 +295,23 @@ func (e *Executor) executeParallel(txIndices []int) {
 func (e *Executor) executeSingle(ctx any, txIndex int) {
 	e.totalExecutions.Add(1)
 
-	// Allocate a fresh ReadWriteSet.
-	rw := NewReadWriteSet(txIndex)
-
-	// Clear the previous incarnation's writes that this one may not repeat.
-	// Only that incarnation's keys: DeleteAll walks every entry in the store
-	// and was 95% of a follower's CPU at 54k transactions (round 35e).
-	if prev := e.rwSets[txIndex]; prev != nil {
-		for _, wd := range prev.Writes {
+	// Reuse the transaction's read/write set. NewExecutor allocates one per
+	// transaction; a fresh one per execution made that allocation dead and
+	// added another 163k (two slices each) per full block on the import's
+	// setup, plus one per re-execution. The MVS copies every value it
+	// stores, so the descriptor arrays can be overwritten once the previous
+	// incarnation's writes are withdrawn.
+	//
+	// Withdraw only that incarnation's keys: DeleteAll walks every entry in
+	// the store and was 95% of a follower's CPU at 54k transactions (35e).
+	rw := e.rwSets[txIndex]
+	if rw != nil {
+		for _, wd := range rw.Writes {
 			e.mvs.Delete(wd.Key, txIndex)
 		}
+		rw.Clear()
+	} else {
+		rw = NewReadWriteSet(txIndex)
 	}
 
 	// Execute the transaction.
