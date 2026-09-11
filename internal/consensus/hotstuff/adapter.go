@@ -12,12 +12,12 @@
 package hotstuff
 
 import (
-	"os"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -607,35 +607,55 @@ func (h *HotStuff) Prepare(chain consensus.ChainHeaderReader, iHeader block.IHea
 	// Prepare), mirroring VerifyHeader — the leader may be extending a block
 	// that is not yet locally canonical (commit lag), and the timestamp + PBR
 	// must derive from the block actually extended.
-	parent, _ := chain.GetHeaderByHash(header.ParentHash)
+	parent, perr := chain.GetHeaderByHash(header.ParentHash)
+	var parentHeader *block.Header
 	if parent != nil {
-		parentHeader, ok := parent.(*block.Header)
-		if ok && parentHeader != nil {
-			period := h.config.Period
-			if period == 0 {
-				period = 3 // default 3 second blocks
-			}
-			// Deterministic block time: parent time + period, with NO now-floor.
-			// A now-floor makes the timestamp (and thus the block hash) change on
-			// every build attempt; a leader triggered several times for the same
-			// parent/view would then produce DIFFERENT blocks (multi-produce) and
-			// followers could never agree which one to import. Determinism makes the
-			// leader produce exactly one block per height — taskLoop dedups repeat
-			// builds by sealHash, and propose/push/import all reference one block.
-			header.Time = parentHeader.Time + period
+		if ph, ok := parent.(*block.Header); ok && ph != nil {
+			parentHeader = ph
+		}
+	}
+	if parentHeader == nil {
+		// With committee evidence wired, every non-genesis header must carry
+		// ParentBeaconRoot = Blake3(parent CE), and only the parent header can
+		// supply it. A build whose parent this node cannot resolve (round 35zo:
+		// an own block still unwritten and invisible to the lookup) would leave
+		// the field zero, be rejected by every follower, and then sit in the
+		// store as a same-height sibling that a later leader converges on and
+		// re-proposes after a restart (round 35zq). Refuse to build it instead;
+		// the miner drops the attempt and the next trigger rebuilds.
+		h.lock.RLock()
+		wired := h.committeePool != nil
+		h.lock.RUnlock()
+		if wired {
+			return fmt.Errorf("prepare: parent %x of block %s is not resolvable, cannot link committee evidence: %v",
+				header.ParentHash[:8], header.Number, perr)
+		}
+	}
+	if parentHeader != nil {
+		period := h.config.Period
+		if period == 0 {
+			period = 3 // default 3 second blocks
+		}
+		// Deterministic block time: parent time + period, with NO now-floor.
+		// A now-floor makes the timestamp (and thus the block hash) change on
+		// every build attempt; a leader triggered several times for the same
+		// parent/view would then produce DIFFERENT blocks (multi-produce) and
+		// followers could never agree which one to import. Determinism makes the
+		// leader produce exactly one block per height — taskLoop dedups repeat
+		// builds by sealHash, and propose/push/import all reference one block.
+		header.Time = parentHeader.Time + period
 
-			// EIP-4788 committee-evidence link: stamp ParentBeaconRoot from the
-			// actual parent header via deterministic CE re-derivation, matching
-			// exactly what VerifyHeader recomputes. No-op until the committee pool
-			// is wired (SetCommitteeEvidence).
-			h.lock.RLock()
-			pool := h.committeePool
-			h.lock.RUnlock()
-			if pbr, perr := parentBeaconRootFromHeader(pool, parentHeader); perr != nil {
-				return perr
-			} else if pbr != nil {
-				header.ParentBeaconRoot = pbr
-			}
+		// EIP-4788 committee-evidence link: stamp ParentBeaconRoot from the
+		// actual parent header via deterministic CE re-derivation, matching
+		// exactly what VerifyHeader recomputes. No-op until the committee pool
+		// is wired (SetCommitteeEvidence).
+		h.lock.RLock()
+		pool := h.committeePool
+		h.lock.RUnlock()
+		if pbr, perr := parentBeaconRootFromHeader(pool, parentHeader); perr != nil {
+			return perr
+		} else if pbr != nil {
+			header.ParentBeaconRoot = pbr
 		}
 	}
 	// Cancun headers carry a parent beacon root. Without committee evidence
