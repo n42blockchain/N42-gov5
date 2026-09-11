@@ -274,6 +274,14 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 		evm      *vm2.EVM
 		observed map[types.Address]struct{}
 	}
+	// A chained speculative build reads its unwritten own parents through
+	// post-state snapshots layered on the block's reader; the per-worker
+	// readers below open their own store transactions and must carry the
+	// same layers, or the workers execute against a store that lacks the
+	// parent (round 35zu: the faucet's funding block lost the parent's
+	// reward and every follower rejected it on the state root). Followers
+	// and unchained builds have no layers; this is a no-op for them.
+	postLayers, _ := state.PostStateLayers(ibs.GetStateReader())
 	var executor *parallel.Executor
 	setup := func(workerID int) (any, func(), error) {
 		tx, err := p.bc.ChainDB.BeginRo(context.Background())
@@ -284,6 +292,7 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 		if useQMDB {
 			base = commitment.NewQMDBStateReader(commitment.NewLookupSourceLocked(p.bc.qmdbRootComputer, tx), base, mode)
 		}
+		base = state.LayerPostStates(postLayers, base)
 		wc := &workerCtx{tx: tx, base: base, observed: make(map[types.Address]struct{}, 8)}
 		wc.reader = parallel.NewParallelStateReader(base, executor.MVS(), nil, 0)
 		wc.ibs = state.New(wc.reader)

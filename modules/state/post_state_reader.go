@@ -188,3 +188,29 @@ func (r *PostStateReader) ForEachStorage(addr types.Address, f func(slot types.H
 		return f(slot, value)
 	})
 }
+
+// PostStateLayers returns the PostState snapshots layered on reader,
+// outermost (newest) first, and the reader beneath them. A component that
+// opens its own store transactions to read base state -- the parallel
+// builder's per-worker readers -- must layer the same snapshots over each
+// of them, or a chained build reads the store without its unwritten parent
+// (round 35zu: the faucet lost the parent's reward in the parallel fill).
+func PostStateLayers(reader StateReader) (layers []*PostState, base StateReader) {
+	for {
+		psr, ok := reader.(*PostStateReader)
+		if !ok {
+			return layers, reader
+		}
+		layers = append(layers, psr.post)
+		reader = psr.base
+	}
+}
+
+// LayerPostStates wraps base with layers as returned by PostStateLayers
+// (outermost first), reproducing the same read order.
+func LayerPostStates(layers []*PostState, base StateReader) StateReader {
+	for i := len(layers) - 1; i >= 0; i-- {
+		base = NewPostStateReader(layers[i], base)
+	}
+	return base
+}
