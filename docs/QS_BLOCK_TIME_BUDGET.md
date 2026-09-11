@@ -4001,6 +4001,81 @@ executorMs stays above 20 ms (then the take is not the walk) or if the
 block-end phase does not move (then FinalizeTx's cost is elsewhere), or
 by any BAD BLOCK (a flag the fast path gets wrong -- compare the trace).
 
+## 6bb. Round 35zzi: the root computer applies a block under the tree's leaf batch -- registered before the round ran (2026-09-11)
+
+35zzh's configuration on a fresh reseed, n42-r66 -> n42-r67. The one
+change: QMDBRootComputer.ComputeRoot builds []qmdb.Op and calls
+Tree.ApplyOps, which wraps the block's sets in BeginLeafBatch/EndLeafBatch
+-- leaf hashes 16-wide, each touched twig's paths folded once per level,
+each twig's liveness bitmap hashed once -- where Set had hashed an
+11-level path per op and the bitmap twice (deactivation, new leaf).
+35zzf's follower profile: 1.83 s of 25 in Tree.Set, 183 ms of the 220 ms
+finalize, and the leader's build root the same. The batch mode existed
+(batch.go, ShardedTree's hot path) but the root computer never used it.
+Isolated, 31k overwrites on a 2M-key tree: eager 92 ms, batched 18 ms.
+The roots are exact (TestQMDBComputerBatchedApplyMatchesEager; the
+tree-level TestBatchFoldEquivalence already covered overwrites, deletes
+and a mid-batch Root).
+
+Why 35zzh did not move (the readout that led here): executorMs 61 -> 57
+ms and finalizeMs 220 -> 210 ms; both P63 mechanism claims fell. The
+35zzf profile, read again: arenaFor's 0.64 s was NewReadWriteSet
+allocations, not a walk -- the kept arena is not being found (or not
+kept) on a follower, so the take allocates 163k sets every block; and the
+finalize window is the engine's Finalize computing the follower's own
+root, not the Prague block-end calls (own-built blocks, which skip
+Finalize, show finalizeMs 15 ms; imported 220). The FinalizeTx fast path
+is correct but was aimed at 1.56 s the profile attributed to a leader's
+build, not at the follower's phase. The arena question is left open
+until 35zzh's B1 profile is read.
+
+35zzh's B1 profile (n42-r66, node1, the first full blocks) splits the
+follower's 210 ms finalize: Tree.Set 1.88 s of 25 against 1.28 s in the
+two block-end system calls' FinalizeTx -- about 125 ms of Set and 85 ms
+of block-end per block. The block-end cost is not the flag loop (the fast
+path runs: finalizeFlags is in the profile, updateAccount is not under
+that caller); it is the balanceInc pre-fold reading ~23k delta-credited
+recipients from the store, one QMDB lookup each, serially
+(getStateObject -> QMDBStateReader.ReadAccountData 0.45 s, plus the sort
+of the 23k addresses twice). That is a later lever (materialize the
+deltas across the workers before the block end). This round moves only
+the Set.
+
+**Prediction 64.** Follower finalizeMs 210 -> ~110 ms (the ~125 ms of
+Set to ~30 on the 14M-key tree: the index misses and the deactivation's
+DRAM touch stay, the hashing goes 5x; the ~85 ms of block-end stays);
+follower import 1.10 -> ~1.0 s; the leader's build root sheds the same;
+seal -> QC 1.43 -> ~1.33 s; chained seal -> seal 1.78 -> ~1.68 s;
+handover 3.3 -> ~3.2 s; B windows +5-7% over 35zzh (B means ~68k ->
+72-73k). Falsified if finalizeMs stays above 170 ms (then the eager
+hashing was not the Set's cost on the live tree -- the index and the
+leaf heap are, and the lever is the flat index or prefetching), or by
+any BAD BLOCK (a batched fold whose root diverges under undo recording,
+a revert, or eviction -- the watchdog aborts the round).
+
+## 6bc. Round 35zzj: the arena free list keeps the largest arenas -- registered before the round ran (2026-09-11)
+
+35zzi's configuration on a fresh reseed, n42-r67 -> n42-r68. The one
+change: the executor's arena free list drops a too-small arena on take
+and, when full, replaces its smallest arena with a larger released one;
+the parallel processor's pooled result slice gets the same rule. 35zzh's
+B1 profile showed why prediction 63's executorMs claim fell: arenaFor ->
+NewReadWriteSet was 0.45 s of 25 on a follower with the arena code in
+place. The list holds two arenas, a too-small one was given straight
+back, so the two sized during a leg's ramp held both slots for the rest
+of the run and every 163k block built its sets fresh (and its Release
+was dropped, the list being full). TestExecutorArenaFreeListKeepsTheLargest
+fails on the old list.
+
+**Prediction 65.** Follower executorMs 57 -> <15 ms (the take reuses;
+what remains is the MVS allocation and the result-slice clear);
+setupMs the same; the leader's build sheds the same ~45 ms; follower
+import -45 ms; chained seal -> seal -45 ms; B windows +2-3% over 35zzi.
+Falsified if executorMs stays above 30 ms after the first full block of
+a leg (then a third consumer holds an arena, or the cost is not the
+allocation), or by a BAD BLOCK (a reused set leaking a previous block's
+reads -- the clean-reuse test covers this, but the fleet is the proof).
+
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
