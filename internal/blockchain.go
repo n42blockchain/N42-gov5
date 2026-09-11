@@ -592,6 +592,21 @@ func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx, parentRoot types.Hash) (sta
 		log.Warn("miner QMDB speculative reload failed; build abandoned", "err", err)
 		return nil, err
 	}
+	// The reload lands on the APPLIED head. A chained build whose parent is
+	// an own unwritten block reaches here only when the tree lost that
+	// block's pending build -- a branch-switch rewind peeled it (round
+	// 35zze: the leader unwound its own 13750006 to rebuild the height,
+	// re-proposed the first block, and the next build chained on it over a
+	// tree reloaded at 13750005; the reads were right through the snapshot,
+	// the root was computed from the wrong base, six followers rejected it).
+	// Refuse rather than seal a root nobody can reproduce; the production
+	// trigger aligns the applied head to the parent and builds again.
+	if parentRoot != (types.Hash{}) {
+		if got := rc.Root(); got != parentRoot {
+			return nil, fmt.Errorf("miner tree reloaded at root %x, build parent root %x: parent is not the applied head and its build is not on the tree",
+				got[:6], parentRoot[:6])
+		}
+	}
 	return rc, nil
 }
 
