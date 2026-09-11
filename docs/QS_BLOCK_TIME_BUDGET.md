@@ -3827,6 +3827,35 @@ memory-bound, not core-bound, and more of them only contend) or if the
 box's busy share climbs past 60% with no gain (then seven nodes at 64
 workers oversubscribe 256 cores at the import instant).
 
+**Round 35zza (11:05-, n42-r62) warmup.** 24 / 23 blocks, 64.1k / 62.2k
+at 2.54 / 2.61 s: below 35zy's warmup (26 / 24). Import exec 255 -> 220
+ms and fill 431 -> 404 -- a third of prediction 59's -85 / -130. The box
+at 64 workers: load 70 against 30. setupMs / executorMs stayed at 61 ms
+with the durable arena in place, while NewExecutor on a kept arena
+measures 2 ms in isolation (68 ms cold): the remaining cost is the fresh
+163k-element result slice the runtime returns to the OS under the memory
+limit and page-faults back in on every block -- n42-r63 pools it too.
+The heap profile taken meanwhile (node1, 7.6 GB in use): txlookup tail
+1.2 GB, the mobileverify packet cache 1.08 GB, the sender cache 1.07 GB,
+the QMDB map index 0.76 GB, decoded transactions ~2 GB; GC CPU fraction
+1.3%, one collection every ~3 s.
+
+## 6ax. Round 35zzd: the mobileverify cohort off -- registered before the round ran (2026-09-11)
+
+35zy's configuration (32 workers, tenure 4) on n42-r63 with
+QS_MOBILEVERIFY=0 (the harness passes --mobileverify=false; the n42
+profile enables the cohort by default). The cohort keeps a 1.08 GB packet
+cache on every node and wraps every builder read in a read-log recorder
+that builds a stream packet per sealed block; none of it is consensus.
+
+**Prediction 60.** Follower heap -1 GB; the leader's fill and assemble
+lose the recorder's share (fill 431 -> ~400 ms, assemble 317 -> ~290);
+executorMs 61 -> <10 ms from the pooled result slice; B windows at or
+above 35zy's 26-27 blocks. Falsified if the leader's fill and assemble
+do not move (then the recorder is cheap and only the memory was real) or
+if any BAD BLOCK returns (then something in the cohort was load-bearing
+for the header -- MobileRegistryRoot is stamped from mobileAnchorRoot).
+
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
