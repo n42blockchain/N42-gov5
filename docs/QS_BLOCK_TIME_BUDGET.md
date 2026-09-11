@@ -3624,6 +3624,38 @@ leader's block -- costs 3.43 s median (p90 4.7 s, n=19) against 1.91 s
 chained, and one block in four is a handover: (3 x 1.91 + 3.43) / 4 =
 2.29 s, which is the window's 2.31 s.
 
+**Round 35zu, continued (aborted in B1 at 05:40).** A1 windows 114 / 112
+blocks, 43.2k / 42.3k TPS at 0.53 s (A best before: 41.5k). B1's first
+full blocks: BAD BLOCK 13699518, a chained block of 73,000 transactions,
+state root rejected by all six followers. The trace (large block, so
+only the summary line) shows every count equal and ONE value different:
+the faucet's balance, follower = proposer + 1000e18 = exactly one block
+reward. The faucet is paid the dev block reward every block and, in this
+block, also funded 1,000 new senders; the proposer's value equals the
+faucet's balance after 13699516 (the last WRITTEN block) minus the
+funding minus nothing, plus this block's reward -- that is, the parent
+13699517's reward was never seen. The chained build reads the parent
+through the snapshot only where the build's own IntraBlockState reads;
+the Block-STM fill (N42_MINER_PARALLEL_FILL=1) opens a store transaction
+per worker and reads base state through a plain reader plus the live
+QMDB tree, which hold the last written block, not the unwritten parent.
+Every sender touched in consecutive chained blocks read stale there too;
+the fill simply failed those transactions (97 of 779 parallel fills
+dropped candidates, 322k in all -- the 18,600 / 17,300 / 49,300 / 73,000
+blocks in the windows), which is why the empty warmup blocks and most
+full blocks passed and only a block whose stale read changed an included
+transaction's outcome was rejected. n42-r55: the parallel builder layers
+the build reader's snapshots over every worker's base reader
+(PostStateLayers / LayerPostStates). Tenure 16 (35zv) waits; the
+one-variable rerun is 35zw = 35zu on n42-r55, offsets 2000M+.
+
+**Prediction 56.** BAD BLOCK 0 across all five legs; parallel fills drop
+no candidates for stale nonces (partial blocks only when supply runs
+out); B windows at or above 35zu's 26 blocks / 70k. Falsified by any
+state-root rejection of a chained block (then a third reader bypasses
+the snapshot -- look for BeginRo in the fill path) or by fills still
+dropping candidates on in-tenure blocks.
+
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
