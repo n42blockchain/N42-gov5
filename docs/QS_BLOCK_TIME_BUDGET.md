@@ -3519,6 +3519,11 @@ GetHeaderByHash consults first; the derivation itself
 (parentBeaconRootFromHeader) is pure. Re-run as 35zp on n42-r49 with
 prediction 53 unchanged.
 
+**Round 35zp (03:42-03:44, aborted, same error).** The header cache did
+not help because GetHeaderByHash looks the block NUMBER up in the store
+before it consults the cache, and an unwritten block has no number row.
+n42-r50 asks the cache first. Third attempt: 35zq.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
