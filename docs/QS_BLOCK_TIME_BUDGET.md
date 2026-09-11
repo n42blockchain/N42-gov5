@@ -3745,8 +3745,13 @@ Full round: A1 104 / 106 blocks (39.6k / 39.7k), B1 71 / 78 (67.8k /
 (41.9k / 41.1k); B mean 66.9k against 35zy's 68.3k -- the empty-block
 tax took what the shorter handover share gave. BAD BLOCK 0.
 
-35zz on n42-r59: SetBaseFee returns early on an unchanged fee, and the
+35zz on n42-r60: SetBaseFee returns early on an unchanged fee, and the
 reorg line times the phase. In-tenure blocks and everything else as 35zz.
+(n42-r60 also carries the executor arena -- 35zzb's warmup showed the
+import setup at 64 ms with the read/write sets reused, so the remaining
+allocation is NewExecutor's own; the arena pools it across blocks and the
+"parallel block" line now splits setup into blockStartMs / executorMs.
+Its metric is setupMs, separate from prediction 58's reorg total.)
 
 **Prediction 58.** Reorg total on the leader ~1 s -> <0.3 s with the
 basefee phase ~0; the builder finds a full snapshot for most builds
