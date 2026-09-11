@@ -3793,9 +3793,28 @@ on the other. The executor arena did nothing (executorMs 54 ms): a
 sync.Pool is emptied by every GC cycle and a full block triggers one;
 n42-r61 keeps the arenas in a free list instead.
 
+**Round 35zzc, continued (aborted by hand at 10:58).** A1 104 / 106 (39.6k
+/ 39.7k). The B1 restart at 10:46 left the fleet crawling: the first views
+timed out while peers were still dialing, the view-4981 leader's block
+reached the followers before its parent was applied and was queued as
+future, each follower fetched and imported the parent on miss, held its
+commit vote for the queued child, and the child was never retried -- the
+future drain gates on the CANONICAL head, which under the two-chain
+commit lag trails the applied head by two, so a queued proposal always
+read as canonical+3. The next leader extended the un-QC'd block, the
+followers repeated the dance one block back, and the fleet advanced one
+block per 30 s timeout for twelve minutes (103 timeouts). Fixed on
+n42-r62: the drain gates on the applied head and retries with push
+authority. Also seen: "fetch-on-miss: requesting block" on the LEADER for
+its own just-pushed block, 4,050 times in the A1 windows (0 in 35zzb) --
+the engine asks to execute the proposal, the block is unwritten and not
+in the block cache; harmless but noisy, noted for later. The two CPU
+profiles taken for the ingress question caught the stalled fleet (0-1% of
+20 s) and say nothing.
+
 ## 6aw. Round 35zza: 64 parallel workers -- registered before the round ran (2026-09-11)
 
-35zy's configuration (tenure 4) on n42-r61 with N42_PARALLEL_WORKERS=64
+35zy's configuration (tenure 4) on n42-r62 (r61 plus the future-drain fix) with N42_PARALLEL_WORKERS=64
 (the runner sets 32). The follower's exec phase is 255 ms and the leader's
 fill 431 ms at 32 workers on a 256-core box whose seven nodes run 32
 workers each; the B-window mpstat read 17-32% busy.
