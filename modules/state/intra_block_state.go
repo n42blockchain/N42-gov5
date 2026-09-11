@@ -187,6 +187,10 @@ type IntraBlockState struct {
 	lastRootAccounts map[types.Address]*account.StateAccount
 	lastRootStorage  map[types.Address]map[types.Hash]*uint256.Int
 
+	// postLayers: the unwritten-parent snapshots layered on stateReader,
+	// carried explicitly for readers that bypass it (SetPostStateLayers).
+	postLayers []*PostState
+
 	// wipedStorageSlots holds, per wiped address, the COMPLETE pre-block storage
 	// slot set (slot → original value) captured at storage-wipe registration time
 	// (Selfdestruct / contract CreateAccount), via a StorageEnumerator reader.

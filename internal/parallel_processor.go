@@ -281,7 +281,10 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 	// parent (round 35zu: the faucet's funding block lost the parent's
 	// reward and every follower rejected it on the state root). Followers
 	// and unchained builds have no layers; this is a no-op for them.
-	postLayers, _ := state.PostStateLayers(ibs.GetStateReader())
+	postLayers := ibs.PostStateLayers()
+	if postLayers == nil {
+		postLayers, _ = state.PostStateLayers(ibs.GetStateReader())
+	}
 	var executor *parallel.Executor
 	setup := func(workerID int) (any, func(), error) {
 		tx, err := p.bc.ChainDB.BeginRo(context.Background())

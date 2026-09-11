@@ -96,6 +96,19 @@ func TestPostStateReaderLayersTheSealedBlock(t *testing.T) {
 		if got, _ := r.ReadAccountData(SystemAddress); got != nil {
 			t.Fatalf("empty created account must read as absent: %+v", got)
 		}
+		// A component that opens its own readers takes the layers from the
+		// state, not from the reader chain, which other wrappers may hide.
+		child := New(&opaqueReader{r})
+		child.SetPostStateLayers([]*PostState{post})
+		if got, _ := PostStateLayers(child.GetStateReader()); len(got) != 0 {
+			t.Fatalf("the opaque wrapper should hide the layers from a type walk, got %d", len(got))
+		}
+		if got := child.PostStateLayers(); len(got) != 1 || got[0] != post {
+			t.Fatalf("carried layers = %v, want the one snapshot", got)
+		}
+		if v, _ := LayerPostStates(child.PostStateLayers(), base).ReadAccountData(coinbase); v == nil || v.Balance.Uint64() != 15 {
+			t.Fatalf("re-layered base does not show the sealed block: %+v", v)
+		}
 		// The snapshot must be independent of the state it came from.
 		ibs.AddBalance(coinbase, uint256.NewInt(100))
 		if got, _ := r.ReadAccountData(coinbase); got.Balance.Uint64() != 15 {
@@ -106,4 +119,20 @@ func TestPostStateReaderLayersTheSealedBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+// opaqueReader stands in for a wrapper that is not a PostStateReader.
+type opaqueReader struct{ inner StateReader }
+
+func (o *opaqueReader) ReadAccountData(a types.Address) (*account.StateAccount, error) {
+	return o.inner.ReadAccountData(a)
+}
+func (o *opaqueReader) ReadAccountStorage(a types.Address, k *types.Hash) ([]byte, error) {
+	return o.inner.ReadAccountStorage(a, k)
+}
+func (o *opaqueReader) ReadAccountCode(a types.Address, h types.Hash) ([]byte, error) {
+	return o.inner.ReadAccountCode(a, h)
+}
+func (o *opaqueReader) ReadAccountCodeSize(a types.Address, h types.Hash) (int, error) {
+	return o.inner.ReadAccountCodeSize(a, h)
 }

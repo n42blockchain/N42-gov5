@@ -214,3 +214,18 @@ func LayerPostStates(layers []*PostState, base StateReader) StateReader {
 	}
 	return base
 }
+
+// SetPostStateLayers records the snapshots layered on this state's reader
+// so a component that opens its own store transactions can reproduce them
+// without walking the reader chain -- which other wrappers (the mobile
+// read-log recorder, the JMT tracing reader) hide from a type walk (round
+// 35zx: every worker of the parallel fill read the store without the
+// unwritten parent while the block's own reads were right).
+func (sdb *IntraBlockState) SetPostStateLayers(layers []*PostState) {
+	sdb.postLayers = layers
+}
+
+// PostStateLayers returns what SetPostStateLayers recorded, outermost first.
+func (sdb *IntraBlockState) PostStateLayers() []*PostState {
+	return sdb.postLayers
+}

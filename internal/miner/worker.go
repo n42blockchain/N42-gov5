@@ -1283,6 +1283,10 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 
 	stateWriter := state.NewNoopWriter()
 	ibs := state.New(stateReader)
+	// Carried explicitly: the parallel fill's per-worker readers must layer
+	// the same snapshots, and the recorder wrappers above hide them from a
+	// walk of the reader chain.
+	ibs.SetPostStateLayers(postLayers)
 	// Inject an isolated root computer so the assembled block's stateRoot uses
 	// the active commitment scheme (e.g. QMDB twig forest). Speculative builds
 	// must not mutate the live tree, so this is a fresh DB-backed instance,
