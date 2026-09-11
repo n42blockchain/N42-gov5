@@ -756,47 +756,46 @@ func (r *QMDBRootComputer) ComputeRoot(
 ) (types.Hash, error) {
 	r.readers.Lock()
 	defer r.readers.Unlock()
-	type op struct {
-		kh    qmdb.Hash
-		value []byte // nil => delete
-	}
-	ops := make([]op, 0, len(accounts)+len(storage))
+	// An op with a nil Value is a delete (ApplyOps' convention); every
+	// live value here is non-empty (an encoded account or a 32-byte word).
+	ops := make([]qmdb.Op, 0, len(accounts)+len(storage))
 	for addr, acct := range accounts {
 		kh := qmdb.Hash(AccountKeyHash(addr))
 		if acct == nil || isAccountEmpty(acct) {
-			ops = append(ops, op{kh: kh, value: nil})
+			ops = append(ops, qmdb.Op{KeyHash: kh})
 		} else {
-			ops = append(ops, op{kh: kh, value: EncodeAccountValue(acct)})
+			ops = append(ops, qmdb.Op{KeyHash: kh, Value: EncodeAccountValue(acct)})
 		}
 	}
 	for addr, slots := range storage {
 		for slot, val := range slots {
 			kh := qmdb.Hash(StorageKeyHash(addr, slot))
 			if val == nil || val.IsZero() {
-				ops = append(ops, op{kh: kh, value: nil})
+				ops = append(ops, qmdb.Op{KeyHash: kh})
 			} else {
 				var buf [32]byte
 				val.WriteToSlice(buf[:])
 				v := make([]byte, 32)
 				copy(v, buf[:])
-				ops = append(ops, op{kh: kh, value: v})
+				ops = append(ops, qmdb.Op{KeyHash: kh, Value: v})
 			}
 		}
 	}
 	sort.Slice(ops, func(i, j int) bool {
-		return bytes.Compare(ops[i].kh[:], ops[j].kh[:]) < 0
+		return bytes.Compare(ops[i].KeyHash[:], ops[j].KeyHash[:]) < 0
 	})
 	if r.undoRecording {
 		r.t.StartUndoRecording()
 	}
+	// ApplyOps runs the sets under the tree's leaf batch: leaf hashes in
+	// 16-wide SIMD groups, each touched twig's paths folded once per level
+	// and its liveness bitmap hashed once, instead of Set hashing an 11-level
+	// path and the bitmap (twice, with the deactivation) for every op. A
+	// 163k-transaction block is ~31k ops; eager, they were 183 ms of a
+	// follower's 220 ms finalize (round 35zzf's profile). It ends with the
+	// tree folded, so Root below is a cached read.
 	tApply := time.Now()
-	for _, o := range ops {
-		if o.value == nil {
-			r.t.Delete(o.kh)
-		} else {
-			r.t.Set(o.kh, o.value)
-		}
-	}
+	r.t.ApplyOps(ops)
 	if r.undoRecording {
 		r.lastUndo = r.t.StopUndoRecording()
 	}
