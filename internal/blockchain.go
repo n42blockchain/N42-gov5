@@ -317,6 +317,27 @@ func (bc *BlockChain) SetOnBlockCommitted(fn func(number uint64)) {
 	bc.onBlockCommittedMu.Unlock()
 }
 
+// RememberSealedHeader makes a just-sealed header findable by GetHeader /
+// GetHeaderByHash before its block is written: a speculative build chained
+// on this node's own unwritten block (track 3c) needs the engine's Prepare
+// to find the parent header -- its committee-evidence link (ParentBeaconRoot)
+// and its time derive from it. Round 35zo: without it the chained header
+// carried no link and every follower rejected the block. ForgetSealedHeader
+// drops it again when the seal is discarded.
+func (bc *BlockChain) RememberSealedHeader(h *block.Header) {
+	if h == nil || bc.headerCache == nil {
+		return
+	}
+	bc.headerCache.Add(h.Hash(), h)
+}
+
+func (bc *BlockChain) ForgetSealedHeader(hash types.Hash) {
+	if bc.headerCache == nil {
+		return
+	}
+	bc.headerCache.Remove(hash)
+}
+
 func (bc *BlockChain) notifyBlockCommitted(number uint64) {
 	bc.onBlockCommittedMu.RLock()
 	fn := bc.onBlockCommitted

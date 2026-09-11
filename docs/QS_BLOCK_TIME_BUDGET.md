@@ -3507,6 +3507,18 @@ look at fill) or if BAD BLOCK returns (then chaining on an unwritten own
 block diverges from the live replay and the design is unsafe: revert to
 adoption-only).
 
+**Round 35zo, first attempt (2026-09-11 02:58-03:01, aborted).** The first
+chained build was rejected by every follower: "ParentBeaconRoot mismatch:
+committee-evidence link broken". Not the state root -- the header link.
+The engine's Prepare derives ParentBeaconRoot from the parent header it
+fetches with GetHeaderByHash, which for an own block still in flight
+returns nothing (the header is written with the block), so the chained
+header carried no link. Fix: the worker hands its sealed block to the
+chain's header and block caches at seal time (RememberSealed), which
+GetHeaderByHash consults first; the derivation itself
+(parentBeaconRootFromHeader) is pure. Re-run as 35zp on n42-r49 with
+prediction 53 unchanged.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across

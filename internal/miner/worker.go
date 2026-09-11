@@ -717,6 +717,9 @@ func (w *worker) handleSealed(blk block.IBlock) {
 			return
 		}
 		log.Error("Failed writing block to chain", "err", err)
+		if bc, ok := w.chain.(*internal.BlockChain); ok {
+			bc.ForgetSealedHeader(blk.Hash())
+		}
 		miningErrorsCounter.Inc()
 		return
 	}
@@ -799,6 +802,11 @@ func (w *worker) handleSealed(blk block.IBlock) {
 func (w *worker) rememberSealed(blk block.IBlock) {
 	if blk == nil {
 		return
+	}
+	if bc, ok := w.chain.(*internal.BlockChain); ok {
+		if h, ok := blk.Header().(*block.Header); ok {
+			bc.RememberSealedHeader(h)
+		}
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
