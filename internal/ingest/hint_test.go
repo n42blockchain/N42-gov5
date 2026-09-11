@@ -38,7 +38,7 @@ func TestIngestServer_HintOnlyRecoversFromSignature(t *testing.T) {
 
 	pool := &mockTxPool{}
 	srv := NewServer("127.0.0.1:0", pool, 1000, 2000)
-	srv.EnableHintOnly(signer, 2)
+	srv.EnableHintOnly(func() transaction.Signer { return signer }, 2)
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
 	}

@@ -2314,7 +2314,18 @@ func (n *Node) startIngestServer() {
 		if workers > 2 {
 			workers -= workers / 4
 		}
-		n.ingestServer.EnableHintOnly(transaction.LatestSignerForChainID(n.blockChain.Config().ChainID), workers)
+		// The import verifies with the signer of the block's fork rules
+		// (MakeSignerWithTimestamp), and the sender cache is keyed by that
+		// signer: recover into the same one, following the chain head.
+		cfg := n.blockChain.Config()
+		bc := n.blockChain
+		n.ingestServer.EnableHintOnly(func() transaction.Signer {
+			h := bc.CurrentBlock()
+			if h == nil || h.Number64() == nil {
+				return transaction.LatestSignerForChainID(cfg.ChainID)
+			}
+			return transaction.MakeSignerWithTimestamp(cfg, h.Number64().ToBig(), h.Time())
+		}, workers)
 	}
 	if err := n.ingestServer.Start(); err != nil {
 		log.Error("Ingest server failed to start", "err", err)

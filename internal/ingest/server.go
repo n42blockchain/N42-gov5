@@ -68,7 +68,7 @@ type Server struct {
 	// Hint-only mode: decode, recover the sender into the process-wide
 	// sender cache, drop the transaction. See EnableHintOnly.
 	hintOnly    bool
-	hintSigner  transaction.Signer
+	hintSigner  func() transaction.Signer
 	hintWorkers int
 	hintQueue   chan *transaction.Transaction
 	hinted      atomic.Uint64
@@ -88,7 +88,14 @@ type Server struct {
 // (round 35zh: recover was 460 ms of a 1.44 s import at 163k; the same work
 // done here, ahead of the block, is off the critical path). Must be called
 // before Start.
-func (s *Server) EnableHintOnly(signer transaction.Signer, workers int) {
+//
+// The signer must be THE signer the import will verify with -- the sender
+// cache is keyed by transaction hash and signer, and a londonSigner entry is
+// invisible to an EIP-155 lookup (round 35zk: LatestSignerForChainID on the
+// feed, MakeSignerWithTimestamp on the import, 14 million entries and zero
+// hits). The caller passes a function so the fork-dependent choice follows
+// the chain head.
+func (s *Server) EnableHintOnly(signer func() transaction.Signer, workers int) {
 	if workers < 1 {
 		workers = 1
 	}
@@ -107,7 +114,7 @@ func (s *Server) hintWorker() {
 		case <-s.ctx.Done():
 			return
 		case tx := <-s.hintQueue:
-			if _, err := transaction.Sender(s.hintSigner, tx); err != nil {
+			if _, err := transaction.Sender(s.hintSigner(), tx); err != nil {
 				s.rejected.Add(1)
 				continue
 			}
@@ -170,7 +177,9 @@ func (s *Server) hintStatsLoop() {
 			if h == lastHinted && r == lastRejected {
 				continue
 			}
-			log.Info("ingest hint feed", "hinted", h, "hintedDelta", h-lastHinted, "rejected", r, "queued", len(s.hintQueue), "batches", s.batches.Load())
+			hits, misses := transaction.SenderCacheStats()
+			log.Info("ingest hint feed", "hinted", h, "hintedDelta", h-lastHinted, "rejected", r, "queued", len(s.hintQueue), "batches", s.batches.Load(),
+				"cacheHits", hits, "cacheMisses", misses)
 			lastHinted, lastRejected = h, r
 		}
 	}

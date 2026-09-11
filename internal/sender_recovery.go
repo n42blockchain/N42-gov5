@@ -278,6 +278,8 @@ func recoverBlockSenders(signer transaction.Signer, txs []*transaction.Transacti
 // the cached From via signer.Sender, but reusing the process-wide
 // senderCache for pool-seen txs so honest blocks stay fast) and compare.
 // Any mismatch or unrecoverable signature rejects the whole block.
+var senderProbeLogged atomic.Bool
+
 func verifyBlockSenders(signer transaction.Signer, txs []*transaction.Transaction) error {
 	_, err := verifyBlockSendersHinted(signer, txs, nil)
 	return err
@@ -368,6 +370,21 @@ func verifyBlockSendersHinted(signer transaction.Signer, txs []*transaction.Tran
 		}
 	}
 
+	// One-time diagnostic (round 35zk: a complete hint feed and zero cache
+	// hits): before the fan-out, probe the cache slots of the first three
+	// transactions and say what they hold.
+	if len(txs) >= senderRecoveryMinTxs && senderProbeLogged.CompareAndSwap(false, true) {
+		for i := 0; i < 3 && i < len(txs); i++ {
+			if txs[i] == nil {
+				continue
+			}
+			h := txs[i].Hash()
+			occ, same, st := transaction.SenderCacheProbe(h)
+			hits, misses := transaction.SenderCacheStats()
+			log.Info("sender cache probe", "i", i, "hash", h.Hex()[:18], "occupied", occ, "sameHash", same, "entrySigner", st,
+				"importSigner", fmt.Sprintf("%T", signer), "cacheHits", hits, "cacheMisses", misses, "declared", txs[i].From() != nil)
+		}
+	}
 	workers := senderRecoveryFanout()
 	if len(txs) < senderRecoveryMinTxs || workers > len(txs) {
 		workers = 1

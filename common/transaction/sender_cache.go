@@ -48,6 +48,7 @@ package transaction
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
 	"strconv"
 	"sync/atomic"
@@ -137,6 +138,21 @@ func senderCachePut(hash types.Hash, signer Signer, from types.Address) {
 
 // SenderCacheStats reports cumulative hits and misses. Exported so operators
 // and tests can confirm the cache is being reached rather than assume it.
+// SenderCacheProbe describes what the slot for `hash` holds, for diagnosing
+// a feed that fills the cache and an import that never hits it: whether the
+// slot is occupied, whether it holds this very hash, and the signer type of
+// the entry.
+func SenderCacheProbe(hash types.Hash) (occupied, sameHash bool, signerType string) {
+	if senderCache == nil {
+		return false, false, "cache disabled"
+	}
+	e := senderCache[senderCacheSlot(hash)].Load()
+	if e == nil {
+		return false, false, ""
+	}
+	return true, e.hash == hash, fmt.Sprintf("%T", e.signer)
+}
+
 func SenderCacheStats() (hits, misses uint64) {
 	return senderCacheHits.Load(), senderCacheMisses.Load()
 }
