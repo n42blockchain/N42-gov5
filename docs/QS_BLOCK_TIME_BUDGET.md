@@ -3524,6 +3524,33 @@ not help because GetHeaderByHash looks the block NUMBER up in the store
 before it consults the cache, and an unwritten block has no number row.
 n42-r50 asks the cache first. Third attempt: 35zq.
 
+**Round 35zq (03:47-03:48, aborted at the first block; n42-r50 was not
+tested).** No build chained ("chains on own unwritten block": 0). The bad
+block was 35zp's: node0 had sealed 13694447 (0x2b1031c607) in 35zp as the
+chained build with the broken link, written it as its own applied block,
+and never marked it bad -- the followers mark a block they fail to verify,
+the leader that built it does not verify it. On restart node0 unwound it
+(uncommitted), became the leader of view 2, built a fresh 13694447
+(0xa53a4100aa), found the stored sibling with the lower hash and, by the
+cross-view convergence rule, re-proposed the stored one. Every follower
+rejected it again. So a leader's own unverified build survives a restart
+as a candidate. Two consequences:
+
+- The store-side hole is closed on n42-r51: with committee evidence wired,
+  Prepare refuses a header whose parent it cannot resolve (that is the
+  only way the link comes out zero), so the block is never sealed, never
+  written, never a sibling. Tests
+  TestPrepareRefusesUnresolvableParentWithCommittee /
+  TestPrepareToleratesUnresolvableParentWithoutCommittee. The lookup fix
+  from n42-r50 stays; the guard makes its regression loud instead of
+  poisoning the store.
+- node0's store now carries the bad-header mark for 0x2b1031c607 (its own
+  re-proposal failed import at 03:48:05 and reportBlock marked it), so
+  the next restart cannot converge on it; the other six marked it in
+  35zp. The fresh candidate was dropped before any write.
+
+Fourth attempt: 35zr on n42-r51, offsets 1800M+, prediction 53 unchanged.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
