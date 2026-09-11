@@ -22,7 +22,15 @@
         └──────────────┴──────┬───────┴──────────────┘
                               ▼
                         AA / DID / UID
+                              │
+                              ▼
+                     AI Agent（受托层）
+              会话密钥 · 花费策略 · paymaster
 ```
+
+四层是**用户自己**的凭证；AI Agent 不是第五种算法，而是架在 AA 之上的**受托层**——
+它用用户授予的、受限的会话密钥代表用户行动，权限边界（金额、合约、方法、时效）
+由 AA 账户合约强制执行。详见 §6。
 
 | 层 | 算法 | 面向 | 取舍 |
 |---|---|---|---|
@@ -150,6 +158,9 @@
 | 4 | **DID 只绑定 secp256k1** | passkey / PQ 账户无法作为 DID 主体 | `CreateDID` 泛化到"任意 verification method 集合"，与 §3 的策略共用同一份公钥列表 |
 | 5 | **PQ 公钥引用模式（`PubKeyMode=1`）的注册表未定义** | 省不掉 666 B 里的公钥部分 | 定义公钥注册合约或状态表，让重复交易只带 32 B 哈希 |
 | 6 | **无跨层轮换/恢复流程** | 用户换手机 / 私钥泄露无解 | 在 AA 合约里定义 guardian / 时间锁恢复，属于 §3 的一部分 |
+| 7 | **会话密钥不验签**（§6.2-1） | 知道 keyID 即可冒用 agent 额度 | `ValidateSessionKey` 增加 `verify(sk.PublicKey, hash, sig)`；合约侧同样强制 |
+| 8 | **bundler 的 value 恒为 nil**（§6.2-2） | 花费上限在该路径上空转 | 从 `CallData` 解析真实 value 后传入 |
+| 9 | **agent 地址非链上地址**（§6.2-3） | 链下账本与链上账户脱节 | 随 §3 的 C 方案统一：agent 是账户合约里的 owner 槽位 |
 
 ---
 
@@ -171,10 +182,89 @@ Falcon 一笔要多带 1.5 KB 左右，直接吃 calldata 费用和区块空间�
 
 ---
 
-## 6. 与已有子系统的关系
+## 6. AI Agent：架在 AA 之上的受托层
 
-- **AI Agent 钱包**（`internal/ai/wallet/`）：会话密钥、花费策略、paymaster 已是 AA 语义，
-  与 §3 的 C 方案天然同构——`AgentSessionValidator` 就是一个策略实现。
+AI Agent 需要**代表用户花钱**（调合约、付 gas、买算力/推理），但绝不能拿到用户的主私钥。
+这正是 AA 的用武之地：Agent 持有的是一把**会话密钥**，权限在账户合约里被显式限制。
+所以 Agent 不是四层之外的第五种签名算法——它是**同一套算法的受限委托**。
+
+### 6.1 已有的积木 —— [已落地]（但只在链下）
+
+`internal/ai/wallet/`：
+
+| 组件 | 文件 | 内容 |
+|---|---|---|
+| `Account` | `account.go` | `Owner` / `Address` / `AgentDID` / 最多 16 把 `SessionKey` |
+| `SessionKey` | `account.go` | `PublicKey`、`Expiry`、`SpendLimit`/`SpentAmount`、`Revoked`；权限 = 合约白名单 + 4 字节方法选择器 + `MaxGasPerTx` |
+| `SpendingPolicy` | `policy.go` | `RatePolicy`（滑窗限频）、`CapPolicy`（单笔 + 每日）、`AllowlistPolicy`、`CompositePolicy`（AND/OR） |
+| `PaymasterService` | `paymaster.go` | 按 owner 押金池代付 gas |
+| 接入点 | `internal/bundler/validator.go` | `AgentSessionValidator` 接口；`ValidateAgentSession` 从 `UserOperation.Signature` 前 32 字节取 keyID |
+
+`internal/ai/coord/`：agent 注册表（能力 + 质押 + 信誉）、任务协商（request → bid → accept → complete/dispute，接受时托管）。
+`internal/ai/attestation/`：推理结果签名存证与多跳链验证，`SafetyLevel` 分级。
+
+### 6.2 三个必须先解决的问题 —— [待修]
+
+把这层当成**授权机制**之前，下面三点必须解决。它们现在不构成线上风险
+（`AICfg.Wallet.Enabled` 默认 false），但决定了这层能不能"算数"。
+
+1. **会话密钥的签名从未被验证**。`Account.ValidateSessionKey()`（`account.go:145`）检查
+   keyID 是否存在、是否吊销/过期、花费上限、合约与方法白名单、gas 上限——
+   **没有任何一步验证调用者持有该会话密钥的私钥**。`SessionKey.PublicKey` 存下来了，
+   但从未参与验签。而 keyID 取自 `UserOperation.Signature` 的前 32 字节，是**公开可见**的。
+   结论：知道 keyID 的人就能冒用该会话密钥的额度。**这是本层最重要的缺口。**
+
+2. **bundler 传给策略检查的 `value` 恒为 `nil`**。`validator.go:140` 调用
+   `ValidateSessionKey(keyID, target, methodSig, nil, gas)`，而 `checkSpendLimit` 在
+   `value == nil` 时直接返回 `nil`（`account.go:280`）——**花费上限这一维在 bundler 路径上
+   实际空转**。真实 value 在 `CallData` 里，需要解析后传入。
+
+3. **agent 地址不是链上地址**。`NewAccount` 用 `Keccak256(ownerKey)[12:]` 作 owner 地址、
+   `Keccak256(ownerKey ‖ agentDID)[12:]` 作 agent 地址，其中 `ownerKey` 是**私钥字节**而非公钥。
+   这与以太坊的 `Keccak256(pubkey)[12:]` 不是同一个东西，所以这些地址与链上账户没有对应关系。
+   当前这套是**链下账本**，不是链上账户。
+
+**合起来看**：今天的 AI Agent 层是一个**链下策略引擎**——能表达"该 agent 每天最多花 1 ETH、
+只能调这三个合约"，但既不能**证明**请求来自那个 agent，也没把限制写到链上任何地方。
+
+### 6.3 目标形态：策略落进账户合约
+
+按 §3 推荐的 C 方案，agent 是账户合约里的一类 owner 槽位，与用户自己的四层凭证并列：
+
+```solidity
+// N42Account.validateUserOp 的判定顺序（示意）
+if (sig.isOwnerSig())            → 用户本人：四层凭证之一，无限额
+else if (sig.isSessionKeySig())  → agent：先 verify(sessionPubKey, hash, sig)   ← 现在缺的就是这步
+                                   再查 expiry / revoked / 合约+方法白名单
+                                   再查 spendLimit（value 必须真实传入）
+                                   再按 SafetyLevel 决定是否需要额外联签
+else                             → reject
+```
+
+要点：
+
+- **会话密钥的算法可以是四层里的任何一种**：高频 agent 用 Ed25519（验签快、签名 64 B，
+  依赖 §4 缺口 2 的预编译）；跨生态 agent 用 secp256k1（`ecrecover` 最便宜）；
+  托管 treasury 的 agent 用 Falcon 联签。
+- **限额与白名单必须在合约里强制**；链下的 `SpendingPolicy` 降级为 bundler 侧的提前拒绝
+  （省 gas、快速失败），不再是唯一防线。
+- **吊销要立即生效**：合约里维护 `revokedKeys` 位图，用户一笔交易即可吊销，
+  不依赖链下服务还活着。
+- **与 `attestation` 打通**：`SafetyLevel = Critical` 的 agent 操作（自动驾驶、机器人控制类）
+  必须附带已验证的推理存证，否则账户合约拒绝——这把 `internal/ai/attestation/` 从
+  "事后审计"升级成"事前授权条件"。
+
+### 6.4 与 DID / UID 的关系
+
+`Account.AgentDID` 已经把 agent 绑到 `did:n42:<address>`。目标是一份 DID 文档同时承载：
+用户的四层凭证（作为 `verificationMethod`）+ 被授权 agent 的会话公钥（作为
+`capabilityDelegation`——W3C DID 里正是为委托设计的关系类型）。这样"谁能代表这个身份做什么"
+只有一个事实来源，钱包、bundler、账户合约读同一份文档。
+
+现状差距：`CreateDID` 只从 secp256k1 钱包私钥派生（§4 缺口 4），还不支持多凭证与委托关系。
+
+## 7. 与已有子系统的关系
+
 - **消息层身份**（`internal/distributed/messaging/`）：X25519（加密）+ Ed25519（群组签名）+ DID，
   已经在用非 secp256k1 的密钥，可以与账户层共用 DID 文档里的公钥集合。
 - **PQ 隔离原则**（见 `CLAUDE.md`）：PQ 预编译不进标准分叉表，只由 `PQPrecompilesTime` 激活。
@@ -182,10 +272,12 @@ Falcon 一笔要多带 1.5 KB 左右，直接吃 calldata 费用和区块空间�
 
 ---
 
-## 7. 下一步
+## 8. 下一步
 
 1. 就 §3 的 A/B/C 拍板（建议 C）。
 2. 写 `N42Account` AA 合约参考实现：四个 owner 槽位 + 金额阈值策略 + guardian 恢复。
 3. 补 Ed25519 验签预编译（缺口 2），先服务 AA 路线。
 4. 处置 SQIsign（缺口 3）：补齐或移除，不要留占位。
 5. PQ 公钥注册表（缺口 5），让 PQ 交易的常态开销从 1.5 KB 降到 32 B 量级。
+6. **先修会话密钥验签（缺口 7）与 bundler 的 value（缺口 8）**——这两条与 §3 的决策无关，
+   现在就能做，且是 AI Agent 层能否被当作授权机制的前提。
