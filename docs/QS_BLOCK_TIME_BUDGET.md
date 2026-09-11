@@ -3587,6 +3587,27 @@ against the parent's receipts) or if the p90 stays >1.3 s with chaining
 in place (then the build itself is the floor and the fill is the next
 lever). Round 35zs, offsets 1840M+.
 
+**Round 35zs (04:51-04:52, aborted at the first chained block, same
+shape).** Overlay in place (one layer, five accounts), the empty chained
+block 13694449 was still rejected on the state root. **Round 35zt
+(04:56-04:57, diagnostic)**: N42_FINALIZE_TRACE=1 now lists the leaves
+behind a small block's root on both sides. For 13694450 the proposer and
+a follower agree byte for byte on four leaves (the two system contracts
+with their slots, the two reward accounts) and the follower has a fifth:
+the system-call address 0xfff...fffe as an empty account. Mechanism: the
+value-zero system call runs Transfer(system -> contract, 0);
+SubBalance(system, 0) goes through GetOrNewStateObject, and when the
+reader says the account does not exist it CREATES an empty object (a
+journal event, so the account is dirty and the root walk carries it).
+The store readers answer nil for an empty account (emptyByPlainPolicy)
+and the root walk deletes its key, so every block on every node creates
+it anew -- except the chained build, whose snapshot of the parent showed
+the address as an existing empty account: SubBalance(0) found it, the
+create never happened, and the leaf was missing. The values were never
+wrong; the snapshot's notion of existence was. n42-r54: the snapshot
+records an empty account as absent, the rule the readers apply. Round
+35zu, offsets 1920M+, prediction 54 unchanged, trace left on.
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
