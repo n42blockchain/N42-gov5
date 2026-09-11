@@ -3449,7 +3449,10 @@ phase is `applySenderHints` -- a single goroutine looking every one of the
 writer admitting 60k tx/s, ~2 us each) -- and that is the 350-410 ms. The
 cache itself is being hit: the feed line's process-wide counters show
 ~73% of the import's lookups hitting (the rest evicted from 4M slots).
-Prediction 51 was aimed at the wrong loop.
+Prediction 51 was aimed at the wrong loop. 35zl ran to completion as the
+baseline for 35zm: A 37.7k / 39.6k and 40.4k / 38.1k; B 70.1k / 70.6k and
+67.9k / 67.9k, four-window mean **69.1k** (35zj 68.4k: the reseeded fleet
+with the feed reproduces to 1%).
 
 ## 6ar. Round 35zm: the hint pass asks the cache first, across the cores -- registered before the round ran (2026-09-10)
 
