@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/holiman/uint256"
@@ -68,6 +69,39 @@ type parallelTxResult struct {
 	err     error
 	logs    []*block.Log
 	fees    []deferredFee
+}
+
+// txResultsFree keeps a block's worth of parallelTxResult slots across blocks.
+// A fresh 163k-element slice per block is ~10 MB the runtime hands back to
+// the OS under the memory limit and page-faults in again on the next block;
+// with the executor arena in place that fault was the whole 60 ms "executorMs"
+// of a follower's import (round 35zza). Two slots: import and builder.
+var txResultsFree struct {
+	mu   sync.Mutex
+	list [][]parallelTxResult
+}
+
+func takeTxResults(n int) []parallelTxResult {
+	txResultsFree.mu.Lock()
+	defer txResultsFree.mu.Unlock()
+	for i := len(txResultsFree.list) - 1; i >= 0; i-- {
+		if r := txResultsFree.list[i]; cap(r) >= n {
+			txResultsFree.list = append(txResultsFree.list[:i], txResultsFree.list[i+1:]...)
+			r = r[:n]
+			clear(r)
+			return r
+		}
+	}
+	return make([]parallelTxResult, n)
+}
+
+func giveTxResults(r []parallelTxResult) {
+	clear(r) // drop the receipt and log pointers now, not at the next take
+	txResultsFree.mu.Lock()
+	defer txResultsFree.mu.Unlock()
+	if len(txResultsFree.list) < 2 {
+		txResultsFree.list = append(txResultsFree.list, r[:0])
+	}
 }
 
 // deferredFee is a block-producer credit a transaction diverted to its fee
@@ -242,7 +276,8 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 
 	// Per-tx result storage. Each goroutine writes to its own index (no race).
 	tBlockStart := time.Now()
-	txResults := make([]parallelTxResult, numTxs)
+	txResults := takeTxResults(numTxs)
+	defer giveTxResults(txResults)
 
 	// Every worker owns its base reader. 3709ca6a proved the shared one was a
 	// shared MDBX cursor (a read transaction is bound to the OS thread that
