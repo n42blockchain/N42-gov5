@@ -3723,6 +3723,22 @@ median does not move by at least 60 ms (then the setup is not the
 allocation and the block write is not the encode -- profile both) or if
 any BAD BLOCK returns.
 
+**Round 35zzb (08:54-10:11, n42-r58).** Prediction 57 falsified on its
+own terms: the follower import median moved 4 ms (1166 -> 1162 in B1
+against 35zy's B1), not 60. The block write phase did what it was meant
+to (block 118 -> 67 ms, write 213 -> 164) but body (97 -> 111), finalize
+(225 -> 238) and exec (246 -> 258) each drifted up by about as much --
+the serial encode it removed was 16 goroutines' worth of burst on every
+follower at the same instant, on a box that hosts all seven, and the
+tails moved. Setup stayed at 59 ms: the read/write sets are reused but
+NewExecutor's own allocation is the setup (fixed on n42-r60, the arena).
+Windows: warmup 27 / 24 (73.4k / 64.5k), A1 104 / 103 (39.6k / 39.2k), B1
+24 / 24 (65.2k / 64.4k), B2 27 / 25 (73.4k / 67.9k), A2 112 / 107 (42.7k /
+40.8k); B mean 67.7k against 35zy's 68.3k. BAD BLOCK 0; two fill drops,
+both legitimate (a warmup nonce-too-low sweep and a sender the build
+reader also saw at nonce 0). The parallel encode stays: it is right on a
+machine per node, and it costs nothing here beyond the tails.
+
 ## 6av. Round 35zzc: the pool stops reheaping on an unchanged base fee -- registered before the round ran (2026-09-11)
 
 **Round 35zz (07:29-, tenure 16, n42-r57) so far.** Warmup windows 68 /
