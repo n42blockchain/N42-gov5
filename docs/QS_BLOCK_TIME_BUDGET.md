@@ -3885,6 +3885,33 @@ which case import setup and the leader's build both shorten. Falsified
 by any BAD BLOCK (retention would then be consensus after all) or by the
 heap not dropping (the cache is not what the profile says it is).
 
+**Round 35zze (11:56-12:51, aborted in B2).** Warmup 27 / 25 (73.4k /
+67.9k), A1 113 / 109 (43.0k / 41.5k), B1 25 / 25 (67.9k / 67.9k). The
+packet window read nothing: executorMs stayed at 62 ms with the result
+slice pooled too, and NewExecutor on a kept arena measures 2 ms in
+isolation -- whatever the 62 ms is, it is not an allocation (the CPU
+profiles meant to say what it is landed in the decay both times; next
+time key the capture on the first full block). B2 died on the hole the
+two-deep design left open: after a view timeout the leader (node3)
+rebuilt 13750006 on the same parent, the align UNWOUND its own applied
+13750006 to do so ("branch switch: unwinding applied blocks", depth 1),
+the rewind peeled the miner tree's pending build, the rebuild was then
+suppressed in favour of the first sealed block, and the next speculative
+build chained on that first block -- reads through its snapshot (right),
+root from a tree reloaded at 13750005 (wrong). Six followers computed
+the same different root. n42-r64: NewMinerRootComputer's reload path
+refuses a build whose parent root the tree does not hold; the production
+trigger aligns first and builds the height.
+
+## 6ay. Round 35zzf: 35zze again on n42-r64 -- registered before the round ran (2026-09-11)
+
+**Prediction 61.** Five legs, BAD BLOCK 0; "miner tree reloaded at root"
+appears at most a handful of times per leg, each followed by a normal
+build of the same height; B windows at 35zy's level (26-27 / 24-25
+blocks). Falsified by a BAD BLOCK with matching trace counts (another
+base-mismatch path) or by the refusal firing on every chained build
+(then the adopt path is not taken where it should be).
+
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
