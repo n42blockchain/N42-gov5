@@ -3608,6 +3608,35 @@ wrong; the snapshot's notion of existence was. n42-r54: the snapshot
 records an empty account as absent, the rule the readers apply. Round
 35zu, offsets 1920M+, prediction 54 unchanged, trace left on.
 
+**Round 35zu (05:03-, running).** Chaining holds: 1,267 chained builds in
+the first 40 full proposals, BAD BLOCK 0, no missing snapshot. Warmup
+windows 26 / 24 blocks, 70.6k / 65.2k TPS at 2.31 / 2.50 s a block (35zn:
+62-64k at 2.4-2.6 s). The leader's full-block cycle, from the tMs stamps
+(in-tenure, n=70): seal(v) -> seal(v+1) 1.91 s median = seal -> QC 1.52 s
+(push 0.19, follower import 1.15, votes) + QC -> next seal 0.27 s. The
+build (0.72 s fill + 0.32 s assemble, persistWait 0) now hides behind the
+followers' import, which grew from 0.93 to 1.15 s (proc 0.75, write 0.21,
+body 0.10) because the leader's chained build overlaps it on the same
+box. Prediction 54's mechanism claim is met (chaining, p90 of the leader's
+own wait 0.55 s); its view number is not: the handover block -- the first
+of each tenure, whose leader can only start after IMPORTING the previous
+leader's block -- costs 3.43 s median (p90 4.7 s, n=19) against 1.91 s
+chained, and one block in four is a handover: (3 x 1.91 + 3.43) / 4 =
+2.29 s, which is the window's 2.31 s.
+
+## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
+
+35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
+sixteen blocks instead of one in four.
+
+**Prediction 55.** Window block time 2.3 -> ~2.0 s ((15 x 1.91 + 3.43) /
+16 = 2.0); B windows 26 -> 29-30 blocks, ~79k TPS; the in-tenure period
+stays 1.9 s. Falsified if the block time stays above 2.2 s (then the
+tenure length feeds something else -- the leader's pool insert rate, its
+gossip share, or the follower import growing further as chaining runs
+uninterrupted) or if any BAD BLOCK returns (the sealed-block caches keep
+16 blocks; a tenure of 16 sits at that edge).
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
