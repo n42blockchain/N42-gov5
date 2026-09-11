@@ -3959,6 +3959,18 @@ index 753 MB, libp2p buffer pool 453 MB, the packet cache 331 MB (the
 window did cut it from 1.08 GB), sender cache 315 MB, read/write sets
 250 MB.
 
+**Round 35zzg (14:25-, fresh dirs, n42-r64) through B1.** Warmup 30 / 26
+blocks at 2.00 / 2.31 s, 79.4k / 70.6k -- the best window recorded, on
+the first full leg after the reseed; A1 119 / 111 (45.3k / 42.3k, the
+best A windows); B1 26 / 24 (70.6k / 64.9k). B1's follower import: 1103
+ms median, p90 1470 (1.33x) against 35zzb's 1162 / 1.55x on the grown
+store; write 154 against 164-213. Prediction 62 held on the import
+median and the windows, missed its p90 clause by a hair (1.33x against
+1.3x): the store's growth is real drag, worth 5-10% by the end of a
+day, and the reseed belongs at the start of every comparison set. The
+cycle itself did not move (chained 1.85 s, seal -> QC 1.56, handover
+3.45), so the levers stand where the profile put them.
+
 ## 6ba. Round 35zzh: FinalizeTx sets flags only, the arena take stops walking -- registered before the round ran (2026-09-11)
 
 35zzg's configuration (fresh dirs, n42-r64 -> n42-r65). FinalizeTx with
