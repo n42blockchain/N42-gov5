@@ -3440,6 +3440,28 @@ lookup but in the check loop's own overhead -- hashing or the fan-out) or
 if hintHits is low with the feed complete (then cache eviction: 4M slots
 against the in-flight set).
 
+**Rounds 35zk/35zl (2026-09-10 21:22-, 22:04-).** 35zk was aborted at its
+warm-up: the cache-first verification counted zero hits. 35zl's one-shot
+probe explains it: the block's transactions carry NO declared sender on
+the wire, so the verification loop returns before the cache; the recover
+phase is `applySenderHints` -- a single goroutine looking every one of the
+163,000 transactions up in the pool (GetTx takes the pool lock against a
+writer admitting 60k tx/s, ~2 us each) -- and that is the 350-410 ms. The
+cache itself is being hit: the feed line's process-wide counters show
+~73% of the import's lookups hitting (the rest evicted from 4M slots).
+Prediction 51 was aimed at the wrong loop.
+
+## 6ar. Round 35zm: the hint pass asks the cache first, across the cores -- registered before the round ran (2026-09-10)
+
+35zl's configuration on n42-r46, N42_SENDER_CACHE_SLOTS 4M -> 16M.
+applySenderHints consults the sender cache before the pool and runs across
+the recovery fan-out; the pool lookup is the fallback for a miss.
+**Prediction 52.** Follower recover 350-410 -> <60 ms, hintFills ~163,000,
+import ~1.34 -> ~1.0 s, view -0.3 s, B windows 24-26 -> 27-29 blocks
+(73-79k). Falsified if recover stays >150 ms with hintFills near 163k
+(then the residue is the fan-out's own cost) or hintFills is low (then the
+16M cache still evicts: the in-flight set is larger than assumed).
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across

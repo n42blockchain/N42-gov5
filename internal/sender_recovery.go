@@ -117,24 +117,63 @@ func senderRecoveryFanout() int {
 // leaks. A nil source, a miss, or a recovery error just leaves the transaction
 // for the worker-pool pass.
 func applySenderHints(hints SenderHintSource, signer transaction.Signer, txs []*transaction.Transaction) int {
-	if hints == nil || signer == nil {
+	if signer == nil {
 		return 0
 	}
-	filled := 0
-	for _, tx := range txs {
+	// The process-wide sender cache first, across the recovery fan-out: with
+	// a hint feed (ingest hint-only mode) it holds most of the block already,
+	// and one atomic load a transaction costs nothing. The pool lookup below
+	// is what this pass used to be alone -- 163,000 serial GetTx calls
+	// against a pool writer admitting 60k tx/s, ~2 us each: the 350-410 ms
+	// that rounds 35zj-35zl still read in recover with the feed complete.
+	var filled atomic.Int64
+	fill := func(tx *transaction.Transaction) {
 		if tx == nil || tx.From() != nil {
-			continue
+			return
+		}
+		if addr, ok := transaction.CachedSender(signer, tx); ok {
+			tx.SetFrom(addr)
+			filled.Add(1)
+			return
+		}
+		if hints == nil {
+			return
 		}
 		ptx := hints.GetTx(tx.Hash())
 		if ptx == nil {
-			continue
+			return
 		}
 		if addr, err := transaction.Sender(signer, ptx); err == nil {
 			tx.SetFrom(addr)
-			filled++
+			filled.Add(1)
 		}
 	}
-	return filled
+	workers := senderRecoveryFanout()
+	if len(txs) < senderRecoveryMinTxs || workers > len(txs) {
+		workers = 1
+	}
+	if workers < 2 {
+		for _, tx := range txs {
+			fill(tx)
+		}
+		return int(filled.Load())
+	}
+	done := make(chan struct{}, workers)
+	for w := 0; w < workers; w++ {
+		go func(start int) {
+			defer func() {
+				_ = recover()
+				done <- struct{}{}
+			}()
+			for i := start; i < len(txs); i += workers {
+				fill(txs[i])
+			}
+		}(w)
+	}
+	for w := 0; w < workers; w++ {
+		<-done
+	}
+	return int(filled.Load())
 }
 
 // recoverBlockSenders pre-populates the signature cache of every transaction in
