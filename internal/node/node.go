@@ -2133,7 +2133,7 @@ func (n *Node) Start() error {
 					}
 				}
 				return 0
-			}, 256, 2*time.Second)
+			}, 256, historyBackfillInterval())
 		n.historyBackfiller.Start()
 	}
 
@@ -3917,4 +3917,23 @@ func (n *Node) Engine() consensus.Engine {
 
 func (n *Node) ChainDb() kv.RwDB {
 	return n.db
+}
+
+// historyBackfillInterval is how often the deferred history backfiller folds
+// the changesets behind the head into the index: N42_HISTORY_INDEX_INTERVAL
+// (a Go duration), default 2 s. Each fold rewrites the index chunk of every
+// account touched since the last one, so a full block's ~23k hot accounts
+// cost ~25 MB of payload and ~106 MB of dirty pages under the single MDBX
+// writer per fold; at one fold per block that writer was busy enough late
+// in a leg that block writes waited up to 2.4 s to begin (round 35zzi).
+// Folding every N seconds rewrites each chunk once for all the blocks in
+// between.
+func historyBackfillInterval() time.Duration {
+	if v := os.Getenv("N42_HISTORY_INDEX_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+		log.Warn("N42_HISTORY_INDEX_INTERVAL ignored (not a positive duration)", "value", v)
+	}
+	return 2 * time.Second
 }

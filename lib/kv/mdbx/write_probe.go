@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 var writeProbeEnabled = func() bool {
@@ -142,6 +143,8 @@ func (tx *MdbxTx) logWriteProbe() {
 	writeProbeLogger.RUnlock()
 	logger("write probe",
 		"label", tx.db.opts.label,
+		"waitMs", tx.waitedFor.Milliseconds(),
+		"heldMs", time.Since(tx.beganAt).Milliseconds(),
 		"dirtyBytes", dirty,
 		"dirtyLimit", limit,
 		"rows", totalRows,
