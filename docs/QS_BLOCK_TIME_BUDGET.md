@@ -4131,6 +4131,43 @@ recipients; finalizeMs 170 -> 96 (P64 + P66 together: -74); proc 499 ->
 these (contended), so the three rounds together should take the
 follower's import from ~1.11 s toward ~0.95 s.
 
+## 6be. Round 35zzl: the history index folds every 20 s -- registered before the round ran (2026-09-11)
+
+35zzk's configuration on a fresh reseed, n42-r69 -> n42-r70 (the
+backfill interval read from N42_HISTORY_INDEX_INTERVAL; the write probe
+logs waitMs and heldMs per write transaction), with
+N42_HISTORY_INDEX_INTERVAL=20s. Unset, r70 runs as r69.
+
+What 35zzi showed (per-minute, saved in wr-logs/r35zzi-perminute.txt):
+the B legs start fast and decay. B2's flood: imports 821 ms in its first
+minute, 864, 1099, 1530, then 2624 ms in the fifth; proposals per minute
+29 -> 15. The whole of the growth is the block write's "begin" -- the
+wait for the single MDBX writer: p90 141 ms in the first minute, 302,
+1957, 2207 ms in the fifth, back to 0 the minute the flood stops. The
+execution phases move a little with the box's load (recover 51 -> 120,
+exec 207 -> 286, QMDB apply 26 -> 30 ms); the write lock moves 2 s. The
+write probe names four writers: HotStuffState (1 row), LastBlock (the
+canonical commit, ~100 ms), BlockTransaction (the block write, 27 MB
+payload, 30 MB dirty) and AccountHistory -- the deferred history fold:
+22.9k rows, 24.8 MB payload, 106 MB dirty pages (amplification 4.3),
+once per block, because it ticks every 2 s and rewrites the index chunk
+of every account the block touched, and the block's 23k accounts are the
+same hot set every block. The 2 s the block write waits is that fold's
+commit in front of it; as the index grows over a leg the fold slows and
+the wait grows. GC (32-46 collections a minute, 8 GB heaps at the 10 GiB
+limit) and the disk (12% busy, 60 MB/s) are not it.
+
+**Prediction 67.** Block-write begin wait p90 late in a B leg 2.2 s ->
+<0.3 s; the AccountHistory write probe shows one fold per ~20 s with
+waitMs/heldMs naming it; the late-leg import median 1.5-2.6 s -> ~1.0 s;
+B win2 no longer collapses (35zzi: 65.2k -> 48.9k, 54.3k -> 40.8k): win2
+within 10% of win1; B window means +15-25% over 35zzi. Falsified if the
+begin wait stays above 1 s late in the leg with the fold at 20 s (then
+the writer is held by something the probe does not name, or by the block
+writes themselves queueing behind each other -- read heldMs), or if the
+fold's own transaction at ~10 blocks exceeds the 255 MB dirty limit and
+spills (heldMs of the AccountHistory rows).
+
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
