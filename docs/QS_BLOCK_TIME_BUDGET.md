@@ -3465,6 +3465,18 @@ import ~1.34 -> ~1.0 s, view -0.3 s, B windows 24-26 -> 27-29 blocks
 (then the residue is the fan-out's own cost) or hintFills is low (then the
 16M cache still evicts: the in-flight set is larger than assumed).
 
+**Round 35zm result (2026-09-10 23:13 - 09-11 00:24).** Prediction 52
+holds on its phase and fails on its throughput: follower recover 350-410 ->
+51 ms on the first dozen full blocks (hintFills 149k of 163k) and 91-122 ms
+in the B legs (hintFills 117-132k), import 1337 -> 891 (first blocks) and
+1170-1210 ms (B legs, p90 1450). A **41.5k / 40.4k** (a new A high) and
+38.9k / 37.7k. B 67.9k / 62.5k and 62.5k / 57.1k -- four-window mean 62.5k,
+BELOW 35zl's 69.1k baseline, with B1 and B2 reading the same phases
+(import 1.2 s, leader assemble 0.30 + write 0.34 + push 0.20, no
+timeouts) while the window went 25 -> 21 blocks. The measured phases sum to
+~1.8 s of a 2.4-2.9 s view; what varies is not in them. Round 35zn is the
+diagnostic (n42-r47, tMs stamps).
+
 ## 7. Not levers (recorded so they are not proposed again)
 
 - **Supply.** Round 14 doubled the flood rate from 40,000 to 80,000 tx/s across
