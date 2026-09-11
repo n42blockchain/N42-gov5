@@ -3921,6 +3921,14 @@ it, which is a plausible reading of the widening tails from 35zy through
 follower) and of prediction 57's "gain that moved into the tails". The
 box also has 1.9 TB left at this growth. 35zzg reseeds first.
 
+**Round 35zzf (12:57-14:21).** Prediction 61 held: five legs, BAD BLOCK
+0, the refusal never fired, 10 branch switches and 28 view timeouts
+(the restart ones) passed without a bad root. Windows: warmup 24 / 21
+(65.2k / 57.1k), A1 107 / 107 (40.8k / 40.8k), B1 25 / 23 (67.9k /
+62.5k), B2 28 / 24 (75.6k -- the best window recorded -- / 65.2k), A2
+113 / 108 (43.0k / 41.1k); B mean 67.8k. The windows of one round now
+span 57k to 76k on a store of 172 GiB a node.
+
 ## 6az. Round 35zzg: the same configuration on a fresh reseed -- registered before the round ran (2026-09-11)
 
 35zzf's configuration on n42-r64 after seed-7node-nolaunch.sh (16 GiB a
