@@ -3688,7 +3688,8 @@ prediction 56 unchanged.
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
-sixteen blocks instead of one in four.
+sixteen blocks instead of one in four. (Runs as 35zz on n42-r57 once
+35zy completes: the 35zu configuration it compares against is 35zy's.)
 
 **Prediction 55.** Window block time 2.3 -> ~2.0 s ((15 x 1.91 + 3.43) /
 16 = 2.0); B windows 26 -> 29-30 blocks, ~79k TPS; the in-tenure period
