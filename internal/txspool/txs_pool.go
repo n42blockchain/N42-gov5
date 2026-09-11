@@ -993,7 +993,7 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 	// meaning the pool, not the block schedule, sets the ceiling. Without a
 	// breakdown there is no way to tell which phase owns it.
 	tStart := time.Now()
-	var dReset, dPromote, dDemote, dNonces, dTruncate, dSnapshot time.Duration
+	var dReset, dPromote, dDemote, dNonces, dTruncate, dSnapshot, dBaseFee time.Duration
 	nQueue, nPending := 0, 0
 
 	pool.reorgWaiting.Store(true)
@@ -1030,8 +1030,10 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 		if reset.newBlock != nil {
 			if blockNumber := reset.newBlock.Number64(); blockNumber != nil && pool.chainconfig.IsLondon(blockNumber.Uint64()+1) {
 				if header, ok := reset.newBlock.Header().(*block.Header); ok && header != nil {
+					tF := time.Now()
 					pendingBaseFee, _ := uint256.FromBig(misc.CalcBaseFee(pool.chainconfig, header))
 					pool.priced.SetBaseFee(pendingBaseFee)
+					dBaseFee = time.Since(tF)
 				}
 			}
 		}
@@ -1069,7 +1071,7 @@ func (pool *TxsPool) runReorg(done chan struct{}, reset *txspoolResetRequest, di
 		emit("txpool reorg phases",
 			"total", total, "lockWait", tLocked.Sub(tStart),
 			"reset", dReset, "promote", dPromote, "demote", dDemote,
-			"nonces", dNonces, "truncate", dTruncate, "snapshot", dSnapshot,
+			"nonces", dNonces, "truncate", dTruncate, "snapshot", dSnapshot, "basefee", dBaseFee,
 			"promoted", len(promoted), "queueAccts", nQueue, "pendingAccts", nPending)
 	}
 
