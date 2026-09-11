@@ -3971,9 +3971,22 @@ day, and the reseed belongs at the start of every comparison set. The
 cycle itself did not move (chained 1.85 s, seal -> QC 1.56, handover
 3.45), so the levers stand where the profile put them.
 
+**Round 35zzg, B2 (aborted 15:12).** A new shape, once: block 13659928,
+an empty chained block in B2's decay at four blocks a second, rejected
+by all seven nodes (the leader's own echo included) with "invalid QC in
+extra-data: snap_ssz: length overflow" -- the header's QC bytes did not
+decode. The state was not involved (trace counts equal). The QC handed
+to Prepare is a deep clone under the engine lock, Seal signs a
+CopyHeader, and buildHeaderExtra allocates fresh, so no path in the
+code as read explains it; one block in ~50,000 chained today points at
+a race in the hand-over of a parked block. n42-r66 makes Seal decode
+the extra it is about to sign and refuse the block otherwise, logging
+the bytes -- the next occurrence costs one build instead of a round,
+and leaves evidence. The B1 numbers stand.
+
 ## 6ba. Round 35zzh: FinalizeTx sets flags only, the arena take stops walking -- registered before the round ran (2026-09-11)
 
-35zzg's configuration (fresh dirs, n42-r64 -> n42-r65). FinalizeTx with
+35zzg's configuration (fresh dirs, n42-r64 -> n42-r66: r65 plus the Seal self-check). FinalizeTx with
 the no-op writer sets the deleted flags -- the one state effect of
 updateAccount under that writer -- and skips the sort and the per-object
 no-op calls; the arena take fills empty slots only (executeSingle clears

@@ -862,6 +862,17 @@ func (h *HotStuff) Seal(chain consensus.ChainHeaderReader, b block.IBlock, resul
 	}
 	sealedHeader.ResetHashCache()
 
+	// Self-check the extra we are about to sign for: every follower decodes
+	// it, and one malformed QC in the header (round 35zzg: "snap_ssz:
+	// length overflow" on an empty chained block, one in ~50k) is a BAD
+	// BLOCK on all of them. Refuse to seal it here instead, and keep the
+	// bytes so the next occurrence can be read.
+	if _, _, _, derr := decodeHeaderExtra(sealedHeader.Extra); derr != nil {
+		log.Error("hotstuff: refusing to seal a header whose extra-data does not decode",
+			"number", sealedHeader.Number, "err", derr, "extra", hex.EncodeToString(sealedHeader.Extra))
+		return fmt.Errorf("seal: header extra-data does not decode: %w", derr)
+	}
+
 	sealed := b.WithSeal(sealedHeader)
 
 	// Deliver the sealed block to the miner's resultLoop. The Proposal is NOT
