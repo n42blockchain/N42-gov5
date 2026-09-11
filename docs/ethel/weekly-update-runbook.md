@@ -485,6 +485,52 @@ per-tier window rule. The retrimmed receipts still wait on the retrim artefact.
   the newly indexed range through `txlookup.Service`.
 - DATC sr merge: built-in spot gate (§5.3).
 
+## 7b. Linux cross-check on n42dev — min + full only
+
+The E: three-mode test proves the artefacts on the box that built them. The
+Linux run on `n42@192.168.0.166` (n42dev, Ubuntu 26.04, `/data` 7.0 TB) proves
+they are portable: the same `chaindata` / `chain/freezer` / `snapshot` tree
+copied over, started by a Linux binary, catching up and following the tip.
+The MDBX file moves across unchanged — it is the same page layout on both.
+
+**archive is NOT tested here as of 2026-09-11** (operator decision): it cost
+179 GB on `/data` for a mode the E: test already covers, and the copy alone ran
+longer than the test. `ethel-archive-*` and `run-archive.sh` were deleted; do
+not re-create them.
+
+```bash
+# layout mirrors the E: dirs exactly — snapshot/ holds the raw .val, no .val.zst
+scp -r -o Compression=no /e/ethel-min-<tip>  n42@192.168.0.166:/data/blockchain/ethel-test/
+scp -r -o Compression=no /e/ethel-full-<tip> n42@192.168.0.166:/data/blockchain/ethel-test/
+```
+
+At ~71 MB/s over this LAN that is ~12 min for min (49 GB) and ~35 min for full
+(149 GB). **Do not measure catch-up while a copy is in flight** — the node and
+the scp share the link, and min's rate drops from 6.7 to 0.64 blk/s, which
+looks like a node problem and is not.
+
+**The binary is the trap.** `/data/blockchain/bin/eth-el-*` are August builds,
+older than the framed read path (2026-09-01). Pointed at this week's segments
+they decode one frame per segment — 256 blocks out of 8192 — with no error.
+Build from the week's own tree:
+
+```bash
+git -C /home/n42/src/n42/N42-gov5 fetch origin <this week's branch>
+git -C /home/n42/src/n42/N42-gov5 worktree add /data/blockchain/gov5-framed origin/<branch>
+cd /data/blockchain/gov5-framed
+go build -tags "nosqlite,noboltdb,n42el" -o /data/blockchain/bin/eth-el-framed ./cmd/eth-el
+```
+
+A worktree rather than a checkout, because that repo's main tree carries the qs
+line and is usually mid-experiment. `run-min-<tip>.sh` / `run-full-<tip>.sh`
+carry the flags (min on `:30313` / RPC 20115, full on `:30314` / RPC 20116,
+`--storage.mapsize.gb 256`). Start them with output redirected AND stdin closed
+(`nohup ./run-x.sh > log 2>&1 < /dev/null &`) — without the stdin redirect the
+ssh session never returns.
+
+Acceptance is the same as §7: `eth_blockNumber` advancing ~5 blocks/min (the
+mainnet cadence) with no state-root mismatch in the log.
+
 ## 8. Run log
 
 ### 2026-09-10/11 (full cycle; first week generated with framed segments)
@@ -570,6 +616,17 @@ snapshot's memory window was free.
   | archive | `d:/n42-publish-25943310` | 478 | 811.99 GB | `a53754dac37c7efa…` |
   | full | `d:/n42-publish-25943310-full` | 167 | 135.24 GB | `3ced79fabb9e8aa3…` |
 
+- **Linux cross-check on n42dev (§7b)**: min and full copied over (49 + 149 GB
+  at 71-81 MB/s) and started by a freshly built `eth-el-framed`. Both reached
+  **25,952,754** and then advanced **5 blocks in 60 s** — the mainnet cadence —
+  block-for-block identical to each other, `level=error` 0, non-p2p mismatch 0.
+  That doubles as the portability proof for framed segments: a reader that
+  mishandled them would decode 256 blocks per segment and never reach the tip.
+  archive was not tested and will not be (§7b).
+- Reclaimed afterwards: **224.7 GB** on D: (the four `*-25864981` artefacts),
+  **373.8 GB** on E: (the three-mode test dirs), **~400 GB** on n42dev's /data
+  (archive 179 GB + last week's min/full 197 GB). C: had a separate 45 GB of
+  orphaned `%TEMP%\go-build*` directories from interrupted builds.
 - NOT run: DATC sr merge (no DATC head advance — see §5b), anchors/bpp,
   retrimmed receipts for full.
 
