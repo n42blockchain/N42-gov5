@@ -3778,6 +3778,36 @@ reorg totals stay above 0.5 s (then the demote or the lock wait is the
 rest) or if occupancy stays under 30% with the pool full (then the
 pending snapshot cadence, not the reorg cost, starves the builder).
 
+**Round 35zzc (10:14-, tenure 16, n42-r60) warmup.** Prediction 58's
+reorg half held -- reorg totals 227 ms, all of it demote, basefee 0 --
+and its occupancy half fell: 76 / 72 blocks at 0.79 / 0.83 s, 66.4k /
+65.6k TPS, occupancy 16%, candidates median 10,600, pending accounts
+after a reorg ~100. The pool is not full and its snapshot is fresh; it
+is EMPTY: what reaches a node -- its seventh of the generators' RPC
+submissions plus what gossip carries from the other six -- is ~66k tx/s,
+and at tenure 16 one leader drains exactly that. Tenure 4 read the same
+70k for a different reason (cycle-bound at 1.9-3.4 s a block, each
+leader draining a pool that filled while it followed). Both regimes meet
+at ~70k: the follower cycle on one side and per-node transaction ingress
+on the other. The executor arena did nothing (executorMs 54 ms): a
+sync.Pool is emptied by every GC cycle and a full block triggers one;
+n42-r61 keeps the arenas in a free list instead.
+
+## 6aw. Round 35zza: 64 parallel workers -- registered before the round ran (2026-09-11)
+
+35zy's configuration (tenure 4) on n42-r61 with N42_PARALLEL_WORKERS=64
+(the runner sets 32). The follower's exec phase is 255 ms and the leader's
+fill 431 ms at 32 workers on a 256-core box whose seven nodes run 32
+workers each; the B-window mpstat read 17-32% busy.
+
+**Prediction 59.** Import exec 255 -> ~170 ms, fill 431 -> ~300 ms;
+follower import 1.16 -> ~1.06 s; in-tenure period 1.92 -> ~1.82 s; B
+windows +4-5%. Separately, executorMs 54 -> <10 ms from the durable
+arena. Falsified if exec does not drop by 50 ms (then the workers are
+memory-bound, not core-bound, and more of them only contend) or if the
+box's busy share climbs past 60% with no gain (then seven nodes at 64
+workers oversubscribe 256 cores at the import instant).
+
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
