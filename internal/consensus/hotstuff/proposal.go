@@ -460,7 +460,7 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 		e.pendingCommitQC = nil
 		if held.View == e.roundState.CurrentView() {
 			log.Info("two-phase vote: casting held commit vote after import",
-				"view", held.View, "blockHash", blockHash)
+				"view", held.View, "blockHash", blockHash, "tMs", time.Now().UnixMilli())
 			if err := e.processPrepareQC(held); err != nil {
 				log.Debug("two-phase held commit vote failed", "err", err)
 			}

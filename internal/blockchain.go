@@ -2317,6 +2317,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				"recov", procPhases.Recover, "prep", procPhases.Prep,
 				"exec", procPhases.Exec, "root", procPhases.Finalize,
 				"proc", dProcess, "valid", dValidate, "write", dWrite, "total", dTotal,
+				"tMs", time.Now().UnixMilli(),
 			}
 			if dTotal >= slowBlockThreshold {
 				log.Info("blockimport phases", fields...)

@@ -738,7 +738,7 @@ func (s *Service) handleOutput(output EngineOutput) {
 		// on non-miner proposals while the chain head never advances. Direct block
 		// push (resultLoop) makes the old gossip-warmup delay unnecessary.
 		isLeader := s.engine.Engine().IsCurrentLeader()
-		log.Info("hotstuff: view changed", "view", output.View, "isLeader", isLeader, "hasProducer", s.blockProducer != nil)
+		log.Info("hotstuff: view changed", "view", output.View, "isLeader", isLeader, "hasProducer", s.blockProducer != nil, "tMs", time.Now().UnixMilli())
 		if isLeader && s.blockProducer != nil {
 			// Sync-gate: a validator whose local head trails the network must NOT
 			// produce a block. It would build on a stale head and self-fork —

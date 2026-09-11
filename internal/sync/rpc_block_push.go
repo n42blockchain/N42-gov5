@@ -5,6 +5,7 @@ package sync
 
 import (
 	"errors"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
 
@@ -44,6 +45,7 @@ func (s *Service) blockPushStreamHandler(stream network.Stream) {
 		}
 		return
 	}
+	log.Info("block push: arrived", "number", blk.Number64().Uint64(), "txs", len(blk.Transactions()), "tMs", time.Now().UnixMilli())
 	if _, err := s.cfg.chain.InsertChain([]block.IBlock{blk}); err != nil {
 		if isAncestorError(err) {
 			// Missing parent (e.g. a committed same-height sibling this node
@@ -61,7 +63,7 @@ func (s *Service) blockPushStreamHandler(stream network.Stream) {
 		log.Info("block push: insert failed", "number", blk.Number64().Uint64(), "err", err)
 		return
 	}
-	log.Info("block push: received", "number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12])
+	log.Info("block push: received", "number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12], "tMs", time.Now().UnixMilli())
 	// Notify the HotStuff engine that this block is imported so a deferred
 	// import-gated prepare vote can be cast. The gossip path does this in
 	// subscriber_blocks.go; the direct-push path must do it too, otherwise a

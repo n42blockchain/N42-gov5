@@ -774,7 +774,7 @@ func (w *worker) handleSealed(blk block.IBlock) {
 		"finalize", task.finalize, "witness", task.witness, "assemble", task.assemble,
 		"bls", time.Duration(task.blsNanos.Load()), "seal2res", time.Since(sealStart),
 		"write", dWrite, "push", dPush, "pushedEarly", pushedEarly, "proposedEarly", proposedEarly, "notify", dNotify,
-		"total", time.Since(task.createdAt))
+		"total", time.Since(task.createdAt), "tMs", time.Now().UnixMilli())
 
 	// Record this as the one candidate for its parent (after a successful
 	// import), so a later view's divergent sibling is suppressed above.
