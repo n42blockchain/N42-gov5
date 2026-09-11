@@ -3869,6 +3869,22 @@ do not move (then the recorder is cheap and only the memory was real) or
 if any BAD BLOCK returns (then something in the cohort was load-bearing
 for the header -- MobileRegistryRoot is stamped from mobileAnchorRoot).
 
+**Round 35zzd (11:38-11:54, aborted: no node started).** Prediction 60's
+second falsifier fired before any block: with --mobileverify=false every
+node stops at startup with "mobileverify must be enabled on a mining node
+when MobileAnchorTime is configured" -- the cohort stamps
+MobileRegistryRoot into the header, so it is load-bearing on this chain.
+The cohort stays; only its packet retention is a free variable.
+
+**Prediction 60, revised (round 35zze).** 35zy's configuration on
+n42-r63 with QS_EXTRA_ARGS="--mobileverify.packet-window 8" (default
+256; the flag is documented as serving retention only). Follower heap
+-1 GB; executorMs 61 -> <10 ms from the pooled result slice; the cycle
+unchanged unless memory pressure was feeding the page-fault cost, in
+which case import setup and the leader's build both shorten. Falsified
+by any BAD BLOCK (retention would then be consensus after all) or by the
+heap not dropping (the cache is not what the profile says it is).
+
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
