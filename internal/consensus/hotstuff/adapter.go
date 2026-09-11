@@ -12,17 +12,20 @@
 package hotstuff
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/holiman/uint256"
+	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/transaction"
@@ -748,6 +751,24 @@ func (h *HotStuff) Finalize(chain consensus.ChainHeaderReader, iHeader block.IHe
 	if finalizeTrace {
 		log.Warn("finalize trace root", "number", header.Number.Uint64(), "verify", header.Root != (types.Hash{}),
 			"proposer", header.Root, "local", localRoot)
+		// The exact leaves the root was computed from, for a small block:
+		// diffing this line between the proposer and a rejecting follower
+		// names the account or slot the two sides disagree on.
+		if accts, stor := ibs.LastRootDirtySet(); len(accts) <= 16 {
+			for _, addr := range sortedAddrs(accts) {
+				enc := "<removed>"
+				if a := accts[addr]; a != nil {
+					enc = fmt.Sprintf("%x", a.MarshalV2())
+				}
+				var slots []string
+				for key, v := range stor[addr] {
+					slots = append(slots, fmt.Sprintf("%x=%s", key[:4], v.Hex()))
+				}
+				sort.Strings(slots)
+				log.Warn("finalize trace leaf", "number", header.Number.Uint64(), "verify", header.Root != (types.Hash{}),
+					"addr", addr.Hex(), "account", enc, "slots", strings.Join(slots, ","))
+			}
+		}
 	}
 	if header.Root != (types.Hash{}) && header.Root != localRoot {
 		return nil, nil, fmt.Errorf("state root mismatch at block %d: proposer %x, locally computed %x",
@@ -1025,3 +1046,13 @@ var (
 	_ consensus.Engine       = (*HotStuff)(nil)
 	_ consensus.EngineReader = (*HotStuff)(nil)
 )
+
+// sortedAddrs lists the keys of m in address order (deterministic trace).
+func sortedAddrs(m map[types.Address]*account.StateAccount) []types.Address {
+	out := make([]types.Address, 0, len(m))
+	for a := range m {
+		out = append(out, a)
+	}
+	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i][:], out[j][:]) < 0 })
+	return out
+}
