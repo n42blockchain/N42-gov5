@@ -2063,7 +2063,13 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				stateReader = commitment.NewQMDBStateReader(src, stateReader, mode)
 			}
 		}
+		// The parallel processor seeds this layer with the block's
+		// delta-credited recipients, read across its workers, so the
+		// block-end fold does not read them from the store one by one.
+		prefetch := state.NewAccountPrefetch(stateReader)
+		stateReader = prefetch
 		ibs := state.New(stateReader)
+		ibs.SetAccountPrefetch(prefetch)
 		// Inject root computer for tree-based state root computation.
 		// JMT: only for fresh chains where all blocks use JMT from genesis.
 		// MPT: always inject when enabled (branches persisted in MDBX).

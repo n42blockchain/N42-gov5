@@ -35,6 +35,7 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
@@ -553,6 +554,21 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 	executor.Release()
 	tApplied := time.Now()
 
+	// Read the delta-credited recipients ahead of the block-end fold, across
+	// goroutines with their own store readers (the workers' view), and seed
+	// the state's prefetch layer so the fold's sorted, serial reads become
+	// map hits. Skipped when the state has no layer (a caller that did not
+	// wire one) -- the fold then reads the store as before.
+	var prefetched int
+	if pf := ibs.AccountPrefetch(); pf != nil {
+		n, err := p.prefetchPendingCredits(ibs, pf, useQMDB, mode, postLayers)
+		if err != nil {
+			return nil, fmt.Errorf("ProcessParallel: prefetch pending credits: %w", err)
+		}
+		prefetched = n
+	}
+	tPrefetched := time.Now()
+
 	// Credit the deferred fees once per recipient, in transaction order. A
 	// zero total still goes through AddBalance: the serial path touches the
 	// recipient in every transaction, and the touch decides whether an empty
@@ -598,7 +614,7 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 		}
 		log.Info("parallel block", "n", concreteHeader.Number.Uint64(), "lenient", lenient, "failed", failed, "txs", numTxs, "waves", executor.Waves(), "executions", execs, "aborts", aborts, "fallback", executor.FellBack(),
 			"recoverMs", tRecovered.Sub(tStart).Milliseconds(), "hintHits", senderHintHits, "hintFills", senderHintFills, "setupMs", tRunStart.Sub(tRecovered).Milliseconds(), "blockStartMs", tBlockStart.Sub(tRecovered).Milliseconds(), "executorMs", tExecutorMade.Sub(tBlockStart).Milliseconds(), "runMs", tRunEnd.Sub(tRunStart).Milliseconds(),
-			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "finalizeMs", time.Since(tApplied).Milliseconds())
+			"execMs", execNs/1e6, "validateMs", valNs/1e6, "collectMs", tApplyStart.Sub(tRunEnd).Milliseconds(), "applyMs", tApplied.Sub(tApplyStart).Milliseconds(), "prefetched", prefetched, "prefetchMs", tPrefetched.Sub(tApplied).Milliseconds(), "finalizeMs", time.Since(tPrefetched).Milliseconds())
 	}
 
 	return &parallelRun{Included: included, Receipts: receipts, Logs: allLogs, UsedGas: usedGas, Failed: failed, Nopay: nopay}, nil
@@ -801,3 +817,73 @@ func applyMVSToIBS(mvs *parallel.MVS, numTxs int, ibs *state.IntraBlockState) er
 
 // ParallelWorkers reports the configured Block-STM worker count (for logs).
 func ParallelWorkers() int { return parallelWorkers() }
+
+// prefetchPendingCredits reads the state's pending balance-increase
+// addresses across goroutines, each on its own read transaction through the
+// same reader stack the workers used, and seeds the prefetch layer with the
+// result. Small sets are not worth the transactions and read through the
+// fold as before.
+func (p *StateProcessor) prefetchPendingCredits(ibs *state.IntraBlockState, pf *state.AccountPrefetch, useQMDB bool, mode commitment.QMDBReadMode, postLayers []*state.PostState) (int, error) {
+	addrs := ibs.PendingBalanceIncreases()
+	if len(addrs) < 256 {
+		return 0, nil
+	}
+	workers := parallelWorkers()
+	if workers > 16 {
+		workers = 16
+	}
+	if workers > len(addrs)/64 {
+		workers = len(addrs) / 64
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	results := make([]*account.StateAccount, len(addrs))
+	errs := make([]error, workers)
+	var wg sync.WaitGroup
+	per := (len(addrs) + workers - 1) / workers
+	for w := 0; w < workers; w++ {
+		lo, hi := w*per, (w+1)*per
+		if hi > len(addrs) {
+			hi = len(addrs)
+		}
+		if lo >= hi {
+			break
+		}
+		wg.Add(1)
+		go func(w, lo, hi int) {
+			defer wg.Done()
+			tx, err := p.bc.ChainDB.BeginRo(context.Background())
+			if err != nil {
+				errs[w] = fmt.Errorf("prefetch worker %d: open read transaction: %w", w, err)
+				return
+			}
+			defer tx.Rollback()
+			var base state.StateReader = state.NewPlainStateReader(tx)
+			if useQMDB {
+				base = commitment.NewQMDBStateReader(commitment.NewLookupSourceLocked(p.bc.qmdbRootComputer, tx), base, mode)
+			}
+			base = state.LayerPostStates(postLayers, base)
+			for i := lo; i < hi; i++ {
+				a, err := base.ReadAccountData(addrs[i])
+				if err != nil {
+					errs[w] = fmt.Errorf("prefetch worker %d: %w", w, err)
+					return
+				}
+				results[i] = a
+			}
+		}(w, lo, hi)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return 0, err
+		}
+	}
+	accts := make(map[types.Address]*account.StateAccount, len(addrs))
+	for i, addr := range addrs {
+		accts[addr] = results[i]
+	}
+	pf.Seed(accts)
+	return len(addrs), nil
+}

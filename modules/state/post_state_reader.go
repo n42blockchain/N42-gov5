@@ -197,6 +197,10 @@ func (r *PostStateReader) ForEachStorage(addr types.Address, f func(slot types.H
 // (round 35zu: the faucet lost the parent's reward in the parallel fill).
 func PostStateLayers(reader StateReader) (layers []*PostState, base StateReader) {
 	for {
+		if pf, ok := reader.(*AccountPrefetch); ok {
+			reader = pf.base // transparent to the walk
+			continue
+		}
 		psr, ok := reader.(*PostStateReader)
 		if !ok {
 			return layers, reader

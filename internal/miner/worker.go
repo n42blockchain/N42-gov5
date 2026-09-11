@@ -1264,6 +1264,13 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		stateReader = state.NewPostStateReader(postLayers[i], stateReader)
 	}
 
+	// Under the recorder and the tracer: the parallel fill seeds this layer
+	// with the delta-credited recipients read across its workers, and the
+	// block-end fold's reads -- logged above it in the same order as before
+	// -- become map hits.
+	prefetch := state.NewAccountPrefetch(stateReader)
+	stateReader = prefetch
+
 	// Wrap state reader with TracingReader when JMT is enabled to record
 	// all state accesses for witness generation.
 	var tracingReader *witness.TracingReader
@@ -1287,6 +1294,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// the same snapshots, and the recorder wrappers above hide them from a
 	// walk of the reader chain.
 	ibs.SetPostStateLayers(postLayers)
+	ibs.SetAccountPrefetch(prefetch)
 	// Inject an isolated root computer so the assembled block's stateRoot uses
 	// the active commitment scheme (e.g. QMDB twig forest). Speculative builds
 	// must not mutate the live tree, so this is a fresh DB-backed instance,

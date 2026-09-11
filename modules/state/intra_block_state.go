@@ -191,6 +191,10 @@ type IntraBlockState struct {
 	// carried explicitly for readers that bypass it (SetPostStateLayers).
 	postLayers []*PostState
 
+	// accountPrefetch: the layer under stateReader that serves accounts
+	// read ahead across the parallel processor's workers (SetAccountPrefetch).
+	accountPrefetch *AccountPrefetch
+
 	// wipedStorageSlots holds, per wiped address, the COMPLETE pre-block storage
 	// slot set (slot → original value) captured at storage-wipe registration time
 	// (Selfdestruct / contract CreateAccount), via a StorageEnumerator reader.
