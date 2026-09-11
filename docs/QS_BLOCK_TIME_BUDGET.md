@@ -3723,6 +3723,36 @@ median does not move by at least 60 ms (then the setup is not the
 allocation and the block write is not the encode -- profile both) or if
 any BAD BLOCK returns.
 
+## 6av. Round 35zzc: the pool stops reheaping on an unchanged base fee -- registered before the round ran (2026-09-11)
+
+**Round 35zz (07:29-, tenure 16, n42-r57) so far.** Warmup windows 68 /
+78 blocks at 0.88 / 0.77 s, 73.7k / 67.2k TPS (73.7k is the best window
+recorded), occupancy 19.9% / 15.9%: the chain now outruns what the
+builder finds. Of 544 blocks in the two windows 270 were empty, 187 under
+50k, 74 full; the parallel fill saw a median of 12,800 candidates, p90
+163,000. The builder reads the pool's reorg-published pending snapshot;
+under tenure 4 one snapshot fed the three chained blocks of a tenure, at
+tenure 16 it is spent after three or four and the leader mints empties
+until the next reorg publishes. The slow-reorg lines show reorgs of
+0.4-1.8 s of which the timed phases sum to ~150 ms (demote 100-170);
+the untimed remainder is priced.SetBaseFee, which reheaps the priced
+lists -- a walk over all 600k remote transactions, a heapify and 120k
+single pops -- on every block although the base fee is flat on the gas
+target block after block. Prediction 55's block time cannot be read on
+half-empty blocks; the round is recorded for its TPS and this finding.
+
+35zz on n42-r59: SetBaseFee returns early on an unchanged fee, and the
+reorg line times the phase. In-tenure blocks and everything else as 35zz.
+
+**Prediction 58.** Reorg total on the leader ~1 s -> <0.3 s with the
+basefee phase ~0; the builder finds a full snapshot for most builds
+(fills with >=100k candidates the majority; empty blocks in the windows
+under 20% of 544); occupancy in the B windows back to 50% or supply-bound
+at the generators' ~117k/s accepted; B windows >=85k TPS. Falsified if
+reorg totals stay above 0.5 s (then the demote or the lock wait is the
+rest) or if occupancy stays under 30% with the pool full (then the
+pending snapshot cadence, not the reorg cost, starves the builder).
+
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
