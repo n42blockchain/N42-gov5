@@ -67,7 +67,7 @@ type Executor struct {
 	// Execution function provided by caller.
 	execFn TxExecuteFunc
 
-	arena *txArena // per-transaction arrays on loan from arenaPool
+	arena *txArena // per-transaction arrays on loan from arenaFree
 
 	// workerSetup, when set, runs once per worker goroutine per wave and
 	// returns a per-worker context handed to every execFn call that worker
@@ -126,7 +126,7 @@ func (e *Executor) SetAffinity(key func(txIndex int) uint64) { e.affinity = key 
 // of them is reused by the next block instead of allocated again: at 163k
 // transactions the read/write sets alone are 163k allocations of three
 // objects each, ~60 ms of a follower's import setup (round 35zzb). Arenas
-// travel through arenaPool; Release hands one back once the caller has
+// are kept in arenaFree; Release hands one back once the caller has
 // consumed the results and the MVS.
 type txArena struct {
 	rwSets      []*ReadWriteSet
@@ -135,16 +135,47 @@ type txArena struct {
 	results     []TxResult
 }
 
-var arenaPool sync.Pool
+// arenaFree keeps released arenas across blocks. A sync.Pool was tried first
+// and gave nothing back: the collector empties it on every cycle, and a full
+// block's import allocates enough to trigger one, so every block started
+// from an empty pool (round 35zzc: executorMs 54 ms, unchanged). At most
+// arenaFreeMax arenas are kept -- one for the import path and one for the
+// builder, which can overlap on a leader.
+var arenaFree struct {
+	mu   sync.Mutex
+	list []*txArena
+}
 
-// arenaFor returns an arena sized for numTxs, reusing a pooled one when it
-// is large enough. Every per-transaction slot is reset.
-func arenaFor(numTxs int) *txArena {
-	var a *txArena
-	if v := arenaPool.Get(); v != nil {
-		a = v.(*txArena)
+const arenaFreeMax = 2
+
+func arenaTake() *txArena {
+	arenaFree.mu.Lock()
+	defer arenaFree.mu.Unlock()
+	if n := len(arenaFree.list); n > 0 {
+		a := arenaFree.list[n-1]
+		arenaFree.list = arenaFree.list[:n-1]
+		return a
 	}
-	if a == nil || cap(a.rwSets) < numTxs {
+	return nil
+}
+
+func arenaGive(a *txArena) {
+	arenaFree.mu.Lock()
+	defer arenaFree.mu.Unlock()
+	if len(arenaFree.list) < arenaFreeMax {
+		arenaFree.list = append(arenaFree.list, a)
+	}
+}
+
+// arenaFor returns an arena sized for numTxs, reusing a kept one when it is
+// large enough. Every per-transaction slot is reset.
+func arenaFor(numTxs int) *txArena {
+	a := arenaTake()
+	if a != nil && cap(a.rwSets) < numTxs {
+		arenaGive(a) // keep it for a smaller block
+		a = nil
+	}
+	if a == nil {
 		a = &txArena{
 			rwSets:      make([]*ReadWriteSet, numTxs),
 			status:      make([]TxStatus, numTxs),
@@ -202,7 +233,7 @@ func (e *Executor) Release() {
 	}
 	a := e.arena
 	e.arena, e.rwSets, e.status, e.incarnation, e.results = nil, nil, nil, nil, nil
-	arenaPool.Put(a)
+	arenaGive(a)
 }
 
 // Run executes all transactions using wave-based Block-STM.
