@@ -464,6 +464,13 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			if err := rawdb.WriteQMDBApplied(tx, blockNumber.Uint64(), blk.Hash()); err != nil {
 				return fmt.Errorf("writing QMDB applied marker for block %d failed: %w", blockNumber.Uint64(), err)
 			}
+			if isolatedQMDBSeal {
+				// Own build, unverified by anyone yet: keep it out of the
+				// sibling convergence until the fleet commits it.
+				if err := rawdb.WriteOwnUnverifiedMark(tx, blk.Hash(), blockNumber.Uint64()); err != nil {
+					return fmt.Errorf("marking own block %d unverified: %w", blockNumber.Uint64(), err)
+				}
+			}
 			const qmdbUndoWindow = 256
 			if bn := blockNumber.Uint64(); bn > qmdbUndoWindow {
 				if err := rawdb.PruneQMDBUndoBelow(tx, bn-qmdbUndoWindow); err != nil {

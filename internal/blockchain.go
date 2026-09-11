@@ -1341,6 +1341,10 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 			return fmt.Errorf("committed block %s not in db", hash.Hex())
 		}
 		committedNumber = blk.Number64().Uint64()
+		// The fleet committed it: an own build is a convergence candidate again.
+		if err := rawdb.ClearOwnUnverifiedMark(tx, hash); err != nil {
+			return err
+		}
 		// Applied-state guard: canonicalization must never run ahead of the
 		// EXECUTED chain. The embedded-QC catch-up path can name a block that
 		// is STORED locally but was never executed here (a known-skip during a
@@ -1568,6 +1572,13 @@ func (bc *BlockChain) LowestSiblingAtHeight(number uint64, parentHash types.Hash
 			// A sibling this node failed to validate is never the one to
 			// converge on: round 26 locked a fleet on exactly such a block.
 			if rawdb.IsBadHeaderMarked(tx, hh) {
+				continue
+			}
+			// A block this node built and wrote itself is not a candidate
+			// until the fleet vouched for it (the mark clears on commit):
+			// the builder never verifies its own block, and rounds 35zq /
+			// 35zw re-proposed a rejected own build after a restart.
+			if rawdb.IsOwnUnverifiedMarked(tx, hh) {
 				continue
 			}
 			bc.badSiblingsMu.RLock()
