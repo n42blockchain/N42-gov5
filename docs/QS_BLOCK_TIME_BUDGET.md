@@ -4076,6 +4076,33 @@ a leg (then a third consumer holds an arena, or the cost is not the
 allocation), or by a BAD BLOCK (a reused set leaking a previous block's
 reads -- the clean-reuse test covers this, but the fleet is the proof).
 
+## 6bd. Round 35zzk: the delta-credited recipients are read across the workers before the fold -- registered before the round ran (2026-09-11)
+
+35zzj's configuration on a fresh reseed, n42-r68 -> n42-r69. The one
+change: a reader layer (AccountPrefetch) directly under the state's
+reader, on the import and on the build; after the multi-version store is
+applied, the parallel processor lists the pending balance increases the
+state has not read (~23k delta-credited recipients a full block), reads
+them across up to 16 goroutines on their own read transactions through
+the workers' reader stack, and seeds the layer. The block-end fold
+(FinalizeTx in the two Prague system calls, then IntermediateRoot) reads
+the same addresses in the same sorted order through the same chain --
+the mobile read-log recorder sits above the layer and logs what it
+logged before -- and every read is a map hit. 35zzh's B1 profile: those
+reads were 0.45 s of 25 in QMDBStateReader.ReadAccountData under the
+fold, ~85 ms a block with the sort, serial.
+
+**Prediction 66.** "parallel block" prefetched ~23k, prefetchMs ~10;
+follower finalizeMs (now measured after the prefetch) -70 ms against
+35zzj; the leader's build sheds the same ~70 ms (hidden behind the QC
+wait in a tenure, visible at the handover); follower import -70 ms; seal
+-> QC -70 ms; chained seal -> seal -70 ms; handover -140 ms; B windows
++3-4% over 35zzj. Falsified if prefetchMs + finalizeMs is not below
+35zzj's finalizeMs by 50 ms (then the fold's reads were not the cost, or
+the parallel reads contend on the tree's reader lock), or by any BAD
+BLOCK (a prefetched value differing from what the fold would have read
+-- the workers' view against the state's chain).
+
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
