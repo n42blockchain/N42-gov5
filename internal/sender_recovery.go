@@ -31,6 +31,7 @@ import (
 	"sync/atomic"
 
 	"github.com/n42blockchain/N42/common/transaction"
+	"github.com/n42blockchain/N42/log"
 )
 
 // Why this exists.
