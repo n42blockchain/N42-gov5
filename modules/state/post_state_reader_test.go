@@ -60,6 +60,7 @@ func TestPostStateReaderLayersTheSealedBlock(t *testing.T) {
 		ibs.SetNonce(fresh, 4)
 		ibs.SetState(coinbase, &slot, *uint256.NewInt(0x1234))
 		ibs.Selfdestruct(doomed)
+		ibs.SubBalance(SystemAddress, uint256.NewInt(0)) // creates it, empty
 		if err := ibs.FinalizeTx(&params.Rules{IsSpuriousDragon: true}, NewNoopWriter()); err != nil {
 			return err
 		}
@@ -89,6 +90,11 @@ func TestPostStateReaderLayersTheSealedBlock(t *testing.T) {
 		other := types.HexToHash("0x02")
 		if v, _ := r.ReadAccountStorage(coinbase, &other); v != nil {
 			t.Fatalf("unwritten slot must fall through to the store (empty): %x", v)
+		}
+		// An account the block created but left empty (a value-zero system
+		// call's caller) reads as absent, exactly as the store would show it.
+		if got, _ := r.ReadAccountData(SystemAddress); got != nil {
+			t.Fatalf("empty created account must read as absent: %+v", got)
 		}
 		// The snapshot must be independent of the state it came from.
 		ibs.AddBalance(coinbase, uint256.NewInt(100))

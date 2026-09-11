@@ -52,7 +52,13 @@ func CapturePostState(sdb *IntraBlockState) *PostState {
 	}
 	for addr := range sdb.stateObjectsDirty {
 		obj := sdb.stateObjects[addr]
-		if obj == nil || obj.deleted || obj.selfdestructed {
+		// An empty account is absent: the store readers answer nil for one
+		// (emptyByPlainPolicy) and the root walk deletes its key. A block's
+		// value-zero system call creates the system address as an empty
+		// object every block precisely because the store never shows it as
+		// existing; a snapshot that showed it would make the next block's
+		// SubBalance(0) find it, skip the create, and drop a leaf (35zt).
+		if obj == nil || obj.deleted || obj.selfdestructed || obj.empty() {
 			ps.accounts[addr] = nil
 			ps.wiped[addr] = struct{}{}
 			continue
