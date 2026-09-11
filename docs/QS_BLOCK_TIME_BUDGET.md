@@ -4120,6 +4120,17 @@ the parallel reads contend on the tree's reader lock), or by any BAD
 BLOCK (a prefetched value differing from what the fold would have read
 -- the workers' view against the state's chain).
 
+**Offline check of r66 vs r69 before the rounds ran (qs-replay, 16:27-16:31).**
+A reflink copy of qs-node0 taken during 35zzh's B2; the last 60 blocks
+(10-11 full 163k blocks among them) rewound and re-imported, 16 workers,
+16 CPUs, uncontended. r69 (= r67 + r68 + the prefetch): 0 root errors.
+Per full block, r66 -> r69: executorMs 37 -> 13 (the arena list, P65);
+qmdb root applyMs 75 -> 25 (the batch, P64); prefetchMs 4 for 22,857
+recipients; finalizeMs 170 -> 96 (P64 + P66 together: -74); proc 499 ->
+414; import total 633 -> 549 ms (-13%). The fleet numbers are ~1.8x
+these (contended), so the three rounds together should take the
+follower's import from ~1.11 s toward ~0.95 s.
+
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
