@@ -118,6 +118,10 @@ type task struct {
 	block     block.IBlock
 	createdAt time.Time
 	nopay     map[types.Address]*uint256.Int
+	// post is the block's post-state snapshot (adopt-appends mode only): a
+	// chained speculative build reads the parent's effects from it while the
+	// parent's write is still in flight.
+	post *state.PostState
 
 	// Seal-path phase timings — OBSERVABILITY ONLY. The leader's
 	// ViewStart→ProposalSent window spans three goroutines (commit → taskLoop →
@@ -275,6 +279,9 @@ type worker struct {
 	// whose parent is one of them builds on the miner tree's own post-state
 	// without waiting for the write (track 3c, two-deep speculation).
 	sealedByHash map[types.Hash]block.IBlock
+	// sealedPost holds the post-state snapshot of each block in sealedByHash
+	// that was built with one (adopt-appends mode); pruned with it.
+	sealedPost map[types.Hash]*state.PostState
 
 	wg sync.WaitGroup
 	mu sync.RWMutex
@@ -362,6 +369,7 @@ func newWorker(ctx context.Context, group *errgroup.Group, chainConfig *params.C
 		pendingTasks:     make(map[types.Hash]*task),
 		sealedOnParent:   make(map[types.Hash]block.IBlock),
 		sealedByHash:     make(map[types.Hash]block.IBlock),
+		sealedPost:       make(map[types.Hash]*state.PostState),
 		minerConf:        minerConf,
 		resubmitAdjustCh: make(chan *intervalAdjust, resubmitAdjustChanSize),
 		bundlePool:       builder.NewBundlePool(),
@@ -808,9 +816,13 @@ func (w *worker) rememberSealed(blk block.IBlock) {
 			bc.RememberSealedHeader(h)
 		}
 	}
+	sealhash := w.engine.SealHash(blk.Header())
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.sealedByHash[blk.Hash()] = blk
+	if t := w.pendingTasks[sealhash]; t != nil && t.post != nil {
+		w.sealedPost[blk.Hash()] = t.post
+	}
 	if len(w.sealedByHash) > 16 {
 		var oldest types.Hash
 		oldestNum := ^uint64(0)
@@ -820,7 +832,36 @@ func (w *worker) rememberSealed(blk block.IBlock) {
 			}
 		}
 		delete(w.sealedByHash, oldest)
+		delete(w.sealedPost, oldest)
 	}
+}
+
+// unwrittenOwnPostStates returns the post-state snapshots of the own sealed
+// blocks from parent down to (excluding) the applied lineage, newest first.
+// nil when any block on that path is not ours or has no snapshot: the build
+// then waits for the parent's write like a plain speculative build.
+func (w *worker) unwrittenOwnPostStates(parent types.Hash, bc *internal.BlockChain) []*state.PostState {
+	var out []*state.PostState
+	h := parent
+	for range 16 {
+		own := w.ownSealed(h)
+		if own == nil || own.Number64() == nil {
+			return nil
+		}
+		w.mu.RLock()
+		post := w.sealedPost[h]
+		w.mu.RUnlock()
+		if post == nil {
+			return nil
+		}
+		out = append(out, post)
+		num := own.Number64().Uint64()
+		if num == 0 || bc.HasAppliedBlock(own.ParentHash(), num-1) {
+			return out
+		}
+		h = own.ParentHash()
+	}
+	return nil
 }
 
 func (w *worker) ownSealed(hash types.Hash) block.IBlock {
@@ -1089,8 +1130,22 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	if bc, ok := w.chain.(*internal.BlockChain); ok {
 		ownPending = w.ownPendingSpeculation(speculative, parentHash, bc)
 	}
+	// The layers are gathered BEFORE the read transaction opens: a parent
+	// written between the two would be missing from both the store snapshot
+	// and the overlay.
+	var postLayers []*state.PostState
 	if ownPending {
-		log.Info("miner: speculative build chains on own unwritten block", "parent", parentHash.Hex()[:12])
+		if bc, ok := w.chain.(*internal.BlockChain); ok {
+			postLayers = w.unwrittenOwnPostStates(parentHash, bc)
+		}
+		if postLayers == nil {
+			log.Warn("miner: own unwritten parent has no post-state snapshot; waiting for its write instead",
+				"parent", parentHash.Hex()[:12])
+			ownPending = false
+		} else {
+			log.Info("miner: speculative build chains on own unwritten block",
+				"parent", parentHash.Hex()[:12], "layers", len(postLayers), "accounts", postLayers[0].Accounts())
+		}
 	}
 	if parentHash != (types.Hash{}) && !ownPending {
 		if bc, ok := w.chain.(*internal.BlockChain); ok {
@@ -1201,6 +1256,12 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	var stateReader state.StateReader = state.NewPlainStateReader(tx)
 	if cache := layered.ExtractCache(w.chain.DB()); cache != nil {
 		stateReader = state.NewCachedStateReader(stateReader, cache)
+	}
+	// A chained build reads its unwritten own ancestors' effects from their
+	// post-state snapshots, oldest innermost (round 35zr: without this the
+	// coinbase was credited on the pre-parent balance and the root diverged).
+	for i := len(postLayers) - 1; i >= 0; i-- {
+		stateReader = state.NewPostStateReader(postLayers[i], stateReader)
 	}
 
 	// Wrap state reader with TracingReader when JMT is enabled to record
@@ -2103,10 +2164,18 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	// instead of sealing it. Sealing signs and PROPOSES; that right arrives
 	// only with TriggerBlockProduction, which will collect this via
 	// takeSpecTask when the guessed parent is confirmed.
+	// Snapshot the block's effects while the state is still ours alone: the
+	// write path mutates the objects, and a chained build may read the
+	// snapshot at any time after the seal.
+	var post *state.PostState
+	if internal.MinerAdoptAppends() {
+		post = state.CapturePostState(ibs)
+	}
+
 	if speculative {
 		w.specMu.Lock()
 		w.specTask = &task{
-			receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay,
+			receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay, post: post,
 			finalize: dFinalize, witness: dWitness, assemble: time.Since(tCommitStart),
 		}
 		w.specParent = specParent
@@ -2121,7 +2190,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 
 	select {
 	case w.taskCh <- &task{
-		receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay,
+		receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay, post: post,
 		finalize: dFinalize, witness: dWitness, assemble: time.Since(tCommitStart),
 	}:
 		blockNumber := uint64(0)

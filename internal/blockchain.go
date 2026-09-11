@@ -518,6 +518,12 @@ func (bc *BlockChain) voidMinerRootTrust(reason string) {
 // default until a fleet round has read it (QS_BLOCK_TIME_BUDGET, round 35zf).
 var minerAdoptAppends = os.Getenv("N42_MINER_ADOPT_APPENDS") == "1"
 
+// MinerAdoptAppends reports whether the miner tree keeps its own appends
+// (N42_MINER_ADOPT_APPENDS=1), which is also what lets a speculative build
+// chain on an own unwritten block; the worker snapshots each sealed block's
+// post-state only in that mode.
+func MinerAdoptAppends() bool { return minerAdoptAppends }
+
 // NewMinerRootComputer returns the isolated computer a leader build seals
 // its state root on, or (nil, nil) when the chain does not commit with QMDB.
 // A reload failure is returned as an error rather than swallowed: the caller
