@@ -3656,6 +3656,19 @@ state-root rejection of a chained block (then a third reader bypasses
 the snapshot -- look for BeginRo in the fill path) or by fills still
 dropping candidates on in-tenure blocks.
 
+**Round 35zw (05:48-05:50, aborted at its first block; n42-r55 not
+tested).** The 35zq shape again: node0 re-proposed 35zu's rejected
+13699518 from its store by lowest-hash convergence. The 35zq record
+called the builder-never-marks-its-own-block hole "closed at the
+source", which was true only for the unresolvable-parent case; any
+rejected own build survives a restart as a candidate. Closed now
+(85211338): the leader writes an own-unverified mark with its block,
+LowestSiblingAtHeight skips marked blocks, CommitToCanonical clears the
+mark once the fleet commits the block; a deterministic rebuild of the
+same block is still re-proposed. Fleet binary n42-r56 from the next
+round on. 35zx = 35zw relaunched on n42-r55 (the stale block now carries
+a bad mark on node0), offsets 2040M+, prediction 56.
+
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
