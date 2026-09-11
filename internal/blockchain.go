@@ -1172,7 +1172,18 @@ func (bc *BlockChain) processFutureBlocks() {
 		log.Warn("Skipping future block processing", "err", err)
 		return
 	}
-	if firstNumber.Uint64() > currentNumber.Uint64()+1 {
+	// Gate on the APPLIED head, not the canonical one: under HotStuff the
+	// canonical head trails the applied head by the two-chain commit lag, so
+	// a queued proposal (applied+1) always read as canonical+3 and never left
+	// the queue. Round 35zzc: after a leg restart every follower held its
+	// commit vote for a block whose parent it had just imported through
+	// fetch-on-miss, the queued child was never retried, the view timed out,
+	// and the fleet crawled one block per timeout for twelve minutes.
+	headNum := currentNumber.Uint64()
+	if an, ok := bc.appliedHeadNumber(); ok && an > headNum {
+		headNum = an
+	}
+	if firstNumber.Uint64() > headNum+1 {
 		return
 	}
 
@@ -1185,7 +1196,9 @@ func (bc *BlockChain) processFutureBlocks() {
 	// stays for the next pass.
 	inserted := 0
 	for _, b := range blocks {
-		if _, err := bc.InsertChain([]block.IBlock{b}); err != nil {
+		// The queue holds proposals that arrived by push with consensus
+		// authority; retry them with the same authority the push path used.
+		if _, err := bc.InsertChainAuthorized([]block.IBlock{b}); err != nil {
 			log.Debug("insert future block failed", "number", b.Number64().Uint64(),
 				"hash", b.Hash().Hex()[:12], "err", err)
 			continue
@@ -3098,6 +3111,20 @@ func (bc *BlockChain) clearReadThroughCache() {
 //
 // A false answer only costs the align that would have run anyway, so a race
 // against a concurrent write is harmless in the safe direction.
+// appliedHeadNumber reports the QMDB applied marker's block number.
+func (bc *BlockChain) appliedHeadNumber() (uint64, bool) {
+	var num uint64
+	var have bool
+	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+		an, _, ok, err := rawdb.ReadQMDBApplied(tx)
+		if err == nil && ok {
+			num, have = an, true
+		}
+		return nil
+	})
+	return num, have
+}
+
 func (bc *BlockChain) AppliedHeadIsExactly(hash types.Hash, number uint64) bool {
 	at := false
 	_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
