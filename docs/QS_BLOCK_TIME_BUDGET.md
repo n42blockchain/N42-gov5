@@ -3669,6 +3669,22 @@ same block is still re-proposed. Fleet binary n42-r56 from the next
 round on. 35zx = 35zw relaunched on n42-r55 (the stale block now carries
 a bad mark on node0), offsets 2040M+, prediction 56.
 
+**Round 35zx (05:52-, n42-r55; aborted by hand once the cause was read).**
+Warmup 25 / 23 blocks, 67.9k / 62.4k. Prediction 56's second falsifier
+fired: 43 of 235 parallel fills still dropped candidates, all "nonce too
+high" with the WORKER's state nonce 0 while the block's own reader gave
+the right nonce -- every chained build, every node. The per-worker
+readers never received the layers: the mobile read-log recorder
+(mobileverify runs on the fleet) wraps the build reader, and
+PostStateLayers walked the chain from the outside, met the recorder and
+returned nothing. The block's own reads were right all along because the
+recorder delegates. n42-r57: the worker records the layers on the
+IntraBlockState (SetPostStateLayers) and the parallel builder reads them
+from there, no type walk. Test: an opaque wrapper hides the layers from
+the walk and the carried layers still re-layer a base. Round 35zy =
+35zx on n42-r57 (with the own-unverified mark from r56), offsets 2080M+,
+prediction 56 unchanged.
+
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
