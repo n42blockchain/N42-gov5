@@ -4001,6 +4001,23 @@ executorMs stays above 20 ms (then the take is not the walk) or if the
 block-end phase does not move (then FinalizeTx's cost is elsewhere), or
 by any BAD BLOCK (a flag the fast path gets wrong -- compare the trace).
 
+**35zzh result (n42-r66, fresh dirs; 15:18-16:26).** No BAD BLOCK, 0
+refusals, ~430 chained blocks. Warmup 76.1k/65.2k (28/24 blocks), A1
+27.8k/41.9k (the flood's ramp; 0.5-0.8 s blocks), B1 73.4k/65.2k, B2
+65.2k (win2 was a 9-block window cut by the leg's end), A2 44.6k/44.2k.
+Against 35zzg (r64, fresh dirs): B1 win1 70.6k -> 73.4k (+4%), win2
+64.9k -> 65.2k; A 45.3k -> 44.6k. Follower import B1 median 1158 ms
+(proc 741, body 101, write 166), B2 1114 (proc 683); chained seal ->
+seal 1919 / 1871 ms, handover 3525 / 3337. The "parallel block" phases:
+executorMs 62 (P63: <20; fell), finalizeMs 226 (P63: block-end -115;
+fell). Prediction 63 is falsified on both mechanism claims and the
+throughput claim (+6-8%; got +4% on one window, 0 on the other). The
+profile that explains it is in 6bb; the corrected levers run as 35zzi
+(the root's batch) and 35zzj (the arena list). Noted in passing: the
+"hotstuff: committed block not executed locally" error (a CommitQC
+arriving before the local import finishes) runs at ~100 an hour across
+the fleet in every B leg since at least 35zzg; benign here, not new.
+
 ## 6bb. Round 35zzi: the root computer applies a block under the tree's leaf batch -- registered before the round ran (2026-09-11)
 
 35zzh's configuration on a fresh reseed, n42-r66 -> n42-r67. The one
