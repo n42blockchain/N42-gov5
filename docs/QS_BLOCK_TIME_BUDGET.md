@@ -3840,6 +3840,19 @@ The heap profile taken meanwhile (node1, 7.6 GB in use): txlookup tail
 the QMDB map index 0.76 GB, decoded transactions ~2 GB; GC CPU fraction
 1.3%, one collection every ~3 s.
 
+**Round 35zza, end (11:35).** A1 118 / 113 blocks, 45.0k / 43.0k -- the
+best A windows recorded (43.8k before): 64 workers do pay on 22,857-tx
+blocks, where exec is a larger share and the box has room. The B legs
+were lost to a harness edit of mine: the QS_MOBILEVERIFY switch added to
+qs-env.sh between legs used a bare `$( [[ .. ]] && echo .. )`, whose
+exit status of 1 when the variable is unset aborted the node start under
+set -e, and B1, B2, A2 each "finished" in a second (fixed with `|| true`;
+the switch is now inert unless set). Prediction 59 on what ran: exec
+-35 ms, fill -27, warmup B windows 24 / 23 (35zy 26 / 24) -- falsified
+for full blocks, held for A blocks; the box's load doubled. The
+future-drain fix released 29 queued blocks over the round with no
+timeouts beyond the restart ones. 35zzd keeps 32 workers.
+
 ## 6ax. Round 35zzd: the mobileverify cohort off -- registered before the round ran (2026-09-11)
 
 35zy's configuration (32 workers, tenure 4) on n42-r63 with
