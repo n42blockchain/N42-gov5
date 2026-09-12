@@ -4162,6 +4162,21 @@ recipients; finalizeMs 170 -> 96 (P64 + P66 together: -74); proc 499 ->
 these (contended), so the three rounds together should take the
 follower's import from ~1.11 s toward ~0.95 s.
 
+**35zzk result (n42-r69, fresh dirs; 2026-09-11 23:14 - 2026-09-12 00:21;
+the queue lost 18:52-23:12 to a chain script counting its own claim
+files).** No BAD BLOCK. Warmup 76.1k/70.6k, A1 50.3k/46.9k (best A), B1
+78.8k/69.5k, B2 76.1k/67.9k (B mean 73.1k, best yet; 35zzj 70.7k, +3.4%
+-- P66 said +3-4%), A2 46.5k/43.8k. Mechanism: prefetched 22,857
+accounts in 7 ms on every full block; finalizeMs per minute 120-157
+against 35zzj's 141-186 at the same points, so prefetch + finalize is
+-20 to -25 ms, short of P66's -50: the serial store reads were about a
+third of the fold's ~85 ms, the rest is the two sorted walks, the object
+creation and the second system call's pass over 23k objects. Whole-leg
+import 997 / 1010 ms (35zzj 1053 / 1034), chained seal -> seal 1643 /
+1786 (1805 / 1817), handover 3193 / 3181 (3681 / 3338). P66 holds on
+throughput and on direction, falls on the size of the phase; the layer
+stays. Per-minute: wr-logs/r35zzk-perminute.txt.
+
 ## 6be. Round 35zzl: the history index folds every 20 s -- registered before the round ran (2026-09-11)
 
 35zzk's configuration on a fresh reseed, n42-r69 -> n42-r70 (the
