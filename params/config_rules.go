@@ -437,6 +437,12 @@ func (c *ChainConfig) IsMobileAnchor(time uint64) bool {
 	return isForked(c.MobileAnchorTime, time)
 }
 
+// IsTxRootBlake3 returns whether a block at time uses the BLAKE3 binary
+// transactions root (TxRootBlake3Time).
+func (c *ChainConfig) IsTxRootBlake3(time uint64) bool {
+	return isForked(c.TxRootBlake3Time, time)
+}
+
 // IsEip1559FeeCollector returns whether num has reached the EIP-1559 fee collector transition.
 func (c *ChainConfig) IsEip1559FeeCollector(num uint64) bool {
 	return c.Eip1559FeeCollector != nil && isForked(c.Eip1559FeeCollectorTransition, num)

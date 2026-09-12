@@ -311,6 +311,14 @@ type ChainConfig struct {
 	// byte-identical). Keep nil until validated on a test chain.
 	MobileAnchorTime *big.Int `json:"mobileAnchorTime,omitempty"`
 
+	// TxRootBlake3Time activates the N42 native transactions root -- a binary
+	// Merkle tree of BLAKE3 hashes over the transactions' consensus encodings
+	// (hash.Blake3BinaryRoot) -- in place of the Ethereum keccak
+	// Merkle-Patricia root, for every block whose timestamp is at or past
+	// it. Changes Header.TxHash and therefore the block hash from the fork
+	// on; blocks before it validate under the old rule. Nil = never.
+	TxRootBlake3Time *big.Int `json:"txRootBlake3Time,omitempty"`
+
 	// StateScheme determines the state commitment algorithm for Header.Root.
 	// Set at genesis, immutable thereafter. Nodes MUST refuse to start if the
 	// configured scheme does not match the database.

@@ -95,7 +95,7 @@ func (v *BlockValidator) ValidateBody(b block.IBlock) error {
 	}
 
 	blockNum := blockNumber.Uint64()
-	txHash := block.TxRoot(b.Transactions())
+	txHash := block.TxRootAt(b.Transactions(), b.Time())
 	if txHash != b.TxHash() {
 		return fmt.Errorf("transaction root hash mismatch: have %x, want %x", txHash, b.TxHash())
 	}

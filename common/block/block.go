@@ -212,7 +212,7 @@ func NewBlockFromReceipt(h IHeader, txs []*transaction.Transaction, _ []IHeader,
 	}
 
 	block.header.Bloom = CreateBloom(receipts)
-	block.header.TxHash = TxRoot(txs)
+	block.header.TxHash = TxRootAt(txs, block.header.Time)
 	block.header.ReceiptHash = hash.DeriveSha(Receipts(receipts))
 
 	return block
@@ -243,6 +243,24 @@ func TxRoot(txs []*transaction.Transaction) types.Hash {
 		return hash.DeriveShaErigon(transaction.EthTransactions(txs))
 	}
 	return hash.DeriveSha(transaction.Transactions(txs))
+}
+
+// TxRootBlake3Time is the chain's txRootBlake3Time, set at startup like
+// UseEthereumTxRoot (same process-global invariant). Zero = never.
+var TxRootBlake3Time uint64
+
+// TxRootAt computes the transactions root for a block at blockTime: the
+// BLAKE3 binary root (hash.Blake3BinaryRoot over the consensus encodings)
+// from TxRootBlake3Time on, TxRoot's rule before it. Block production and
+// validation must both use it so the fork is applied on both sides.
+func TxRootAt(txs []*transaction.Transaction, blockTime uint64) types.Hash {
+	if TxRootBlake3Time != 0 && blockTime >= TxRootBlake3Time {
+		if UseEthereumTxRoot {
+			return hash.Blake3BinaryRoot(transaction.EthTransactions(txs))
+		}
+		return hash.Blake3BinaryRoot(transaction.Transactions(txs))
+	}
+	return TxRoot(txs)
 }
 
 func (b *Block) Header() IHeader {

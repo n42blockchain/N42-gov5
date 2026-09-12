@@ -805,7 +805,7 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 							Number:           uint256.NewInt(newBlockNum),
 							Time:             gapTime,
 							Root:             gapTreeRoot,
-							TxHash:           block.TxRoot(nil),
+							TxHash:           block.TxRootAt(nil, gapTime),
 							ReceiptHash:      emptyReceiptHash,
 							Difficulty:       uint256.NewInt(0),
 							GasLimit:         srcHeader.GasLimit,
@@ -1029,7 +1029,7 @@ func (e *EngineV2) processBatchV2(ctx context.Context, from, to uint64) error {
 
 				// Compute receipt/tx roots and bloom (reuse existing hash infrastructure).
 				receiptHash := hash.DeriveSha(block.Receipts(receipts))
-				txHash := block.TxRoot(replayedTxs)
+				txHash := block.TxRootAt(replayedTxs, srcTime)
 				bloom := block.CreateBloom(receipts)
 
 				// Compute rewards hash (withdrawalsRoot = hash of block rewards).

@@ -37,6 +37,7 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -86,6 +87,7 @@ func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consen
 	// proto keccak-concat root for historical hash continuity. Must be set
 	// before any block is produced or validated.
 	block.UseEthereumTxRoot = config != nil && (config.StateScheme == string(params.StateCommitmentPresetQMDB) || config.StateScheme == string(params.StateCommitmentPresetEthereumMPT))
+	block.TxRootBlake3Time = txRootBlake3Time(config)
 	concreteGenesis, err := requireConcreteBlock(genesisBlock, "unexpected genesis block type")
 	if err != nil {
 		cancel()
@@ -3526,4 +3528,23 @@ func (bc *BlockChain) tryZKFastPath(blk block.IBlock) bool {
 
 func (bc *BlockChain) syncChain(remoteBlock uint64, peerID peer.ID) {
 	log.Debugf("syncChain.......")
+}
+
+// txRootBlake3Time is the chain's txRootBlake3Time, or -- on a bench chain
+// whose built-in chainspec has none -- N42_TXROOT_BLAKE3_TIME (a Unix
+// timestamp), so a fleet can run the BLAKE3 binary transactions root from
+// a chosen block time before the chainspec carries the fork. Logged loudly:
+// every node of the chain must agree on it.
+func txRootBlake3Time(config *params.ChainConfig) uint64 {
+	if config != nil && config.TxRootBlake3Time != nil && config.TxRootBlake3Time.Sign() > 0 {
+		return config.TxRootBlake3Time.Uint64()
+	}
+	if v := os.Getenv("N42_TXROOT_BLAKE3_TIME"); v != "" {
+		if t, err := strconv.ParseUint(v, 10, 64); err == nil && t > 0 {
+			log.Warn("transactions root: BLAKE3 binary root from N42_TXROOT_BLAKE3_TIME (bench override; every node must set the same value)", "time", t)
+			return t
+		}
+		log.Warn("N42_TXROOT_BLAKE3_TIME ignored (not a positive integer)", "value", v)
+	}
+	return 0
 }
