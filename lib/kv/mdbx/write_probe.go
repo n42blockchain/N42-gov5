@@ -88,12 +88,22 @@ func (tx *MdbxTx) noteWrite(table string, payload int, isDelete bool) {
 
 // logWriteProbe reports the transaction's attribution. Called just before the
 // commit, while SpaceDirty still describes this transaction.
-func (tx *MdbxTx) logWriteProbe() {
+// writeProbeDirty samples the transaction's dirty space while it is still
+// open; logWriteProbe reports it after the commit so heldMs covers the
+// commit (the largest part of the writer lock's occupancy).
+func (tx *MdbxTx) writeProbeDirty() (dirty, limit uint64, ok bool) {
 	if !writeProbeEnabled || tx.readOnly || tx.tableWrites == nil {
-		return
+		return 0, 0, false
 	}
-	dirty, limit, err := tx.SpaceDirty()
+	d, l, err := tx.SpaceDirty()
 	if err != nil {
+		return 0, 0, false
+	}
+	return d, l, true
+}
+
+func (tx *MdbxTx) logWriteProbe(dirty, limit uint64, commit time.Duration) {
+	if !writeProbeEnabled || tx.readOnly || tx.tableWrites == nil {
 		return
 	}
 	tx.tableWrites.mu.Lock()
@@ -145,6 +155,7 @@ func (tx *MdbxTx) logWriteProbe() {
 		"label", tx.db.opts.label,
 		"waitMs", tx.waitedFor.Milliseconds(),
 		"heldMs", time.Since(tx.beganAt).Milliseconds(),
+		"commitMs", commit.Milliseconds(),
 		"dirtyBytes", dirty,
 		"dirtyLimit", limit,
 		"rows", totalRows,

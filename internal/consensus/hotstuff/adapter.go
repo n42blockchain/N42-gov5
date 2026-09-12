@@ -445,8 +445,18 @@ func (h *HotStuff) verifyHeaderWithBatch(chain consensus.ChainHeaderReader, iHea
 	// Execution consumes the header's own GasLimit (block gas pool), so an
 	// unchecked header lets a bad leader mint arbitrarily large blocks.
 	// This invariant holds for every honestly-produced AND replayed block.
-	if header.GasUsed > header.GasLimit {
-		return fmt.Errorf("gasUsed %d exceeds gasLimit %d", header.GasUsed, header.GasLimit)
+	usedLimit := header.GasLimit
+	if h.chainConfig != nil && chain != nil && h.chainConfig.IsDeferredExecution(header.Time) {
+		// The header's GasUsed is the PARENT's execution, bounded by the
+		// parent's limit (the limit may step between the two).
+		if p, _ := chain.GetHeaderByHash(header.ParentHash); p != nil {
+			if ph, ok := p.(*block.Header); ok && ph != nil {
+				usedLimit = ph.GasLimit
+			}
+		}
+	}
+	if header.GasUsed > usedLimit {
+		return fmt.Errorf("gasUsed %d exceeds gasLimit %d", header.GasUsed, usedLimit)
 	}
 	// EIP-1559 BaseFee re-derivation is deliberately NOT enforced here.
 	// A head-adjacency gate was tried and is unsound: the FIRST header of

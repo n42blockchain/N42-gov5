@@ -372,6 +372,12 @@ func (e *Executor) executeParallel(txIndices []int) {
 			}
 			run := func(txIndex int) {
 				if setupErr != nil {
+					// A kept set would carry the previous block's reads into
+					// validation and re-execute for MaxWaves before the
+					// sequential fallback reports the setup error.
+					if rw := e.rwSets[txIndex]; rw != nil {
+						rw.Clear()
+					}
 					e.results[txIndex] = TxResult{Err: setupErr}
 					e.status[txIndex] = StatusExecuted
 					return

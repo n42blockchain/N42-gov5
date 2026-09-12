@@ -230,6 +230,7 @@ func (c *MdbxCursor) Current() ([]byte, []byte, error) {
 }
 
 func (c *MdbxCursor) Delete(k []byte) error {
+	c.tx.noteWrite(c.bucketName, 0, true)
 	if c.bucketCfg.AutoDupSortKeysConversion {
 		return c.deleteDupSort(k)
 	}
@@ -254,6 +255,7 @@ func (c *MdbxCursor) Delete(k []byte) error {
 // Both MDB_NEXT and MDB_GET_CURRENT will return the same record after
 // this operation.
 func (c *MdbxCursor) DeleteCurrent() error {
+	c.tx.noteWrite(c.bucketName, 0, true)
 	return c.delCurrent()
 }
 
@@ -290,6 +292,7 @@ func (c *MdbxCursor) deleteDupSort(key []byte) error {
 }
 
 func (c *MdbxCursor) PutNoOverwrite(key []byte, value []byte) error {
+	c.tx.noteWrite(c.bucketName, len(key)+len(value), false)
 	if c.bucketCfg.AutoDupSortKeysConversion {
 		return fmt.Errorf("PutNoOverwrite does not support AutoDupSortKeysConversion")
 	}
@@ -298,6 +301,7 @@ func (c *MdbxCursor) PutNoOverwrite(key []byte, value []byte) error {
 }
 
 func (c *MdbxCursor) Put(key []byte, value []byte) error {
+	c.tx.noteWrite(c.bucketName, len(key)+len(value), false)
 	var err error
 	if c.bucketCfg.AutoDupSortKeysConversion {
 		err = c.putDupSort(key, value)
@@ -382,6 +386,7 @@ func (c *MdbxCursor) SeekExact(key []byte) ([]byte, []byte, error) {
 // Cast your cursor to *MdbxCursor to use this method.
 // Return error - if provided data will not sorted (or bucket have old records which mess with new in sorting manner).
 func (c *MdbxCursor) Append(k []byte, v []byte) error {
+	c.tx.noteWrite(c.bucketName, len(k)+len(v), false)
 	if c.bucketCfg.AutoDupSortKeysConversion {
 		b := c.bucketCfg
 		from, to := b.DupFromLen, b.DupToLen

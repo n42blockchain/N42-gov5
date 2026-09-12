@@ -27,7 +27,10 @@ import (
 // header is h, as this node knows it: the header's own fields before the
 // fork, the stored result after it.
 func ExecutedResultOfHeader(config *params.ChainConfig, tx kv.Getter, h *block.Header) (rawdb.ExecutedResult, error) {
-	if config == nil || !config.IsDeferredExecution(h.Time) {
+	if config == nil || !config.IsDeferredExecution(h.Time) || h.Number.Uint64() == 0 {
+		// Before the fork a header carries its own result; so does the
+		// genesis header (nothing executed before it, and nothing stores a
+		// result for it).
 		return rawdb.ExecutedResult{Root: h.Root, ReceiptHash: h.ReceiptHash, Bloom: h.Bloom, GasUsed: h.GasUsed}, nil
 	}
 	r, ok, err := rawdb.ReadExecutedResult(tx, h.Hash())

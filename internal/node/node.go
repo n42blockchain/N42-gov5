@@ -1097,7 +1097,7 @@ func NewNode(cliCtx *cli.Context, cfg *conf.Config) (*Node, error) {
 			}
 			qmdbRC.EnableUndoRecording()
 			realBC.SetQMDBRootComputer(qmdbRC)
-			realBC.SetStateProofProvider(internal.NewQMDBStateProofProvider())
+			realBC.SetStateProofProvider(internal.NewQMDBStateProofProvider(realBC.Config()))
 			log.Info("State commitment: QMDB (twig forest, live block production)",
 				"root", fmt.Sprintf("%x", qmdbRC.Root()))
 			if commitment.QMDBStateReadMode() == commitment.QMDBReadOn {

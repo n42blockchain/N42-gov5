@@ -96,13 +96,29 @@ func (s *Service) deferredCheck(blk block.IBlock) {
 		return
 	}
 	if retry {
+		parent := blk.ParentHash()
 		s.deferredMu.Lock()
 		if s.deferredPending == nil {
 			s.deferredPending = make(map[types.Hash][]block.IBlock)
+			s.deferredAttempts = make(map[types.Hash]int)
 		}
-		s.deferredPending[blk.ParentHash()] = append(s.deferredPending[blk.ParentHash()], blk)
+		s.deferredAttempts[blk.Hash()]++
+		if s.deferredAttempts[blk.Hash()] > deferredMaxAttempts || len(s.deferredPending) > deferredMaxPendingParents {
+			// Give up: the old import-gated vote still applies once the
+			// block imports; nothing is lost but the pipeline's head start.
+			delete(s.deferredAttempts, blk.Hash())
+			s.deferredMu.Unlock()
+			log.Debug("deferred check: giving up the pre-import vote for this block", "number", blk.Number64().Uint64(), "err", err)
+			return
+		}
+		s.deferredPending[parent] = append(s.deferredPending[parent], blk)
 		s.deferredMu.Unlock()
 		log.Debug("deferred check: waiting for the parent to apply", "number", blk.Number64().Uint64(), "err", err)
+		// The parent may have applied between the check and the enqueue,
+		// or may land through a path that does not call
+		// retryDeferredChildren (a fetch, the future queue, the miner's own
+		// write): poll it back on a short timer.
+		time.AfterFunc(deferredRetryInterval, func() { s.retryDeferredChildren(parent) })
 		return
 	}
 	log.Warn("deferred check FAILED: not voting for this block", "number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12], "err", err)
@@ -119,3 +135,9 @@ func (s *Service) retryDeferredChildren(parent types.Hash) {
 		s.deferredCheck(c)
 	}
 }
+
+const (
+	deferredRetryInterval     = 200 * time.Millisecond
+	deferredMaxAttempts       = 60 // ~12 s of polling a parent that never applies here
+	deferredMaxPendingParents = 64
+)

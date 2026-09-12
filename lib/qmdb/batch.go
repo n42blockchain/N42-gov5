@@ -195,7 +195,10 @@ func (t *Tree) foldTouched() {
 	}
 	t.batchTouched = t.batchTouched[:0]
 	if len(g) == 0 {
+		// Every touched twig was dirty or evicted: nothing to fold, but the
+		// liveness bitmaps flipped in this batch still need their roots.
 		t.foldScratch = g
+		t.recombineBitsTouched()
 		return
 	}
 	for level := 0; level < TwigHeight; level++ {

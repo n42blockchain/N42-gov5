@@ -106,6 +106,16 @@ func NewEngineV2(cfg ConfigV2) (*EngineV2, error) {
 	// uses the Ethereum-standard RLP MPT root; legacy native chains keep proto).
 	// Must be set before replaying any block so block.TxRoot agrees with node.
 	block.UseEthereumTxRoot = cfg.ChainConfig.StateScheme == string(params.StateCommitmentPresetQMDB)
+	// The timestamp forks of the transactions root and of deferred execution
+	// are process-globals the node sets in NewBlockChain; the replay does
+	// not go through it and would otherwise reseal post-fork blocks under
+	// the old rules.
+	if t := cfg.ChainConfig.TxRootBlake3Time; t != nil && t.Sign() > 0 {
+		block.TxRootBlake3Time = t.Uint64()
+	}
+	if t := cfg.ChainConfig.DeferredExecutionTime; t != nil && t.Sign() > 0 {
+		block.DeferredExecutionTime = t.Uint64()
+	}
 	if cfg.SkipAddresses == nil {
 		cfg.SkipAddresses = DefaultSkipAddresses
 	}

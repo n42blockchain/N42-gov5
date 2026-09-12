@@ -76,6 +76,10 @@ func Blake3BinaryRoot(list DerivableList) types.Hash {
 // EmptyBlake3Root is Blake3BinaryRoot of an empty list: blake3 of no bytes.
 var EmptyBlake3Root = types.Hash(blake3.Sum256(nil))
 
+// parallelFor runs f over [0, n) in worker-sized chunks. A panic in a chunk
+// (a list entry that cannot be encoded) is re-raised on the caller's
+// goroutine, where the import's recovery sees it, instead of killing the
+// process from a worker.
 func parallelFor(n, workers int, f func(lo, hi int)) {
 	if workers <= 1 || n < workers {
 		f(0, n)
@@ -83,6 +87,8 @@ func parallelFor(n, workers int, f func(lo, hi int)) {
 	}
 	chunk := (n + workers - 1) / workers
 	var wg sync.WaitGroup
+	var panicMu sync.Mutex
+	var panicked interface{}
 	for w := 0; w < workers; w++ {
 		lo, hi := w*chunk, (w+1)*chunk
 		if hi > n {
@@ -94,8 +100,20 @@ func parallelFor(n, workers int, f func(lo, hi int)) {
 		wg.Add(1)
 		go func(lo, hi int) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					panicMu.Lock()
+					if panicked == nil {
+						panicked = r
+					}
+					panicMu.Unlock()
+				}
+			}()
 			f(lo, hi)
 		}(lo, hi)
 	}
 	wg.Wait()
+	if panicked != nil {
+		panic(panicked)
+	}
 }

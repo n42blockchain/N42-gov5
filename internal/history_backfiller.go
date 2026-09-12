@@ -5,6 +5,7 @@ package internal
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,7 +43,8 @@ import (
 type HistoryBackfiller struct {
 	db       kv.RwDB
 	head     func() uint64
-	batch    uint64
+	batch    uint64 // current fold size in blocks; halved on a full transaction, restored on success
+	maxBatch uint64
 	interval time.Duration
 
 	ctx    context.Context
@@ -67,7 +69,7 @@ func NewHistoryBackfiller(db kv.RwDB, head func() uint64, batch uint64, interval
 		interval = 2 * time.Second
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &HistoryBackfiller{db: db, head: head, batch: batch, interval: interval,
+	return &HistoryBackfiller{db: db, head: head, batch: batch, maxBatch: batch, interval: interval,
 		ctx: ctx, cancel: cancel, done: make(chan struct{})}
 }
 
@@ -170,8 +172,33 @@ func (b *HistoryBackfiller) loop() {
 		case <-b.ctx.Done():
 			return
 		case <-t.C:
-			if err := b.step(); err != nil {
-				log.Warn("history backfill step failed; will retry", "err", err)
+			// Fold until caught up (a long interval must not leave the marker
+			// falling behind by more than one batch a tick), then stop.
+			for {
+				folded, err := b.stepFold()
+				if err != nil {
+					if strings.Contains(err.Error(), "MDBX_TXN_FULL") && b.batch > 1 {
+						b.batch /= 2
+						log.Warn("history backfill: a fold overflowed the transaction; halving the batch", "batch", b.batch, "err", err)
+					} else {
+						log.Warn("history backfill step failed; will retry", "err", err)
+					}
+					break
+				}
+				if !folded {
+					break
+				}
+				if b.batch < b.maxBatch {
+					b.batch *= 2
+					if b.batch > b.maxBatch {
+						b.batch = b.maxBatch
+					}
+				}
+				select {
+				case <-b.ctx.Done():
+					return
+				default:
+				}
 			}
 		}
 	}
@@ -179,14 +206,23 @@ func (b *HistoryBackfiller) loop() {
 
 // step folds one batch of changesets into the index. Returns nil when there is
 // nothing to do.
+// step folds one batch; kept for the tests and callers that only need the
+// error.
 func (b *HistoryBackfiller) step() error {
+	_, err := b.stepFold()
+	return err
+}
+
+// stepFold folds one batch of changesets into the index; folded reports
+// whether there was anything to fold.
+func (b *HistoryBackfiller) stepFold() (folded bool, err error) {
 	from, _, err := b.readMarker()
 	if err != nil {
-		return err
+		return false, err
 	}
 	head := b.head()
 	if head == 0 || head <= from {
-		return nil
+		return false, nil
 	}
 	to := from + b.batch
 	if to > head {
@@ -217,18 +253,21 @@ func (b *HistoryBackfiller) step() error {
 		}
 		return nil
 	}); err != nil {
-		return err
+		return false, err
 	}
 
 	// Index rows and the marker go in ONE transaction. A crash may lose both
 	// (the range is simply rebuilt) but can never leave the marker ahead of the
 	// rows, which is the case that would let a query read a gap as untouched.
-	return b.db.Update(b.ctx, func(tx kv.RwTx) error {
+	if err := b.db.Update(b.ctx, func(tx kv.RwTx) error {
 		if err := agg.Flush(tx); err != nil {
 			return err
 		}
 		return rawdb.WriteHistoryIndexedThrough(tx, to)
-	})
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (b *HistoryBackfiller) readMarker() (uint64, bool, error) {

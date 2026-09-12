@@ -46,11 +46,14 @@ func (tx *MdbxTx) Commit() error {
 	defer tx.cleanup()
 	tx.closeCursors()
 	tx.CollectMetrics()
-	tx.logWriteProbe()
+	dirty, limit, probe := tx.writeProbeDirty()
 
 	latency, err := tx.tx.Commit()
 	if err != nil {
 		return fmt.Errorf("label: %s, %w", tx.db.opts.label, err)
+	}
+	if probe {
+		tx.logWriteProbe(dirty, limit, latency.Whole)
 	}
 
 	if tx.db.opts.label == kv.ChainDB {

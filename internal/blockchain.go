@@ -33,8 +33,8 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"math/big"
 	"fmt"
+	"math/big"
 	"os"
 	"runtime"
 	"sort"
@@ -90,6 +90,10 @@ func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consen
 	block.UseEthereumTxRoot = config != nil && (config.StateScheme == string(params.StateCommitmentPresetQMDB) || config.StateScheme == string(params.StateCommitmentPresetEthereumMPT))
 	block.TxRootBlake3Time = txRootBlake3Time(config)
 	block.DeferredExecutionTime = deferredExecutionTime(config)
+	if block.DeferredExecutionTime != 0 && !nativeQMDBChain(config) {
+		cancel()
+		return nil, errors.New("deferredExecutionTime is set but the chain is not the native QMDB chain: the stored execution results and the applied marker it relies on exist only there")
+	}
 	concreteGenesis, err := requireConcreteBlock(genesisBlock, "unexpected genesis block type")
 	if err != nil {
 		cancel()
@@ -896,11 +900,18 @@ func (bc *BlockChain) verifyAppliedStateOnStartup() {
 			return nil
 		}
 		treeRoot := bc.qmdbRootComputer.Root()
-		if treeRoot == hdr.Root {
+		// The executed roots: a header's own Root before the deferred
+		// execution fork, the stored result after it.
+		hdrRoot, hok := bc.executedRootIn(tx, hdr)
+		if hok && treeRoot == hdrRoot {
 			return nil // marker and executed state agree
 		}
 		parent := rawdb.ReadHeader(tx, hdr.ParentHash, appliedNum-1)
-		if parent != nil && treeRoot == parent.Root {
+		parentRoot, pok := types.Hash{}, false
+		if parent != nil {
+			parentRoot, pok = bc.executedRootIn(tx, parent)
+		}
+		if parent != nil && pok && treeRoot == parentRoot {
 			log.Warn("applied marker was one block ahead of the executed state; rolling PlainState and marker back",
 				"marker", appliedNum, "markerRoot", fmt.Sprintf("%x", hdr.Root[:8]),
 				"treeRoot", fmt.Sprintf("%x", treeRoot[:8]))
@@ -2275,6 +2286,11 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 					return nil, fmt.Errorf("%w: parent header %x of block %d not stored", ErrDeferredResultUnknown, hdr.ParentHash[:8], hdr.Number.Uint64())
 				}
 				if err := checkDeferredHeader(bc.chainConfig, tx, hdr, parentHdr); err != nil {
+					if errors.Is(err, ErrDeferredResultUnknown) {
+						// The parent is stored but not applied here yet: queue
+						// and retry after it lands, like a missing ancestor.
+						return nil, fmt.Errorf("%w: %w", ErrPrunedAncestor, err)
+					}
 					bc.reportBlock(blk, nil, err)
 					return nil, fmt.Errorf("%w: %w", consensus.ErrExecutionInvalid, err)
 				}
@@ -2501,7 +2517,11 @@ func (bc *BlockChain) insertSideChain(blk block.IBlock, it *insertIterator, auth
 				externTd = *pt
 				continue
 			}
-			if canonical != nil && canonical.StateRoot() == blk.StateRoot() {
+			deferredSibling := false
+			if h, ok := blk.Header().(*block.Header); ok && bc.chainConfig != nil && bc.chainConfig.IsDeferredExecution(h.Time) {
+				deferredSibling = true // siblings carry the same parent root by construction
+			}
+			if canonical != nil && !deferredSibling && canonical.StateRoot() == blk.StateRoot() {
 				log.Warn("Sidechain ghost-state mismatch detected", "number", blk.Number64(), "sideroot", blk.StateRoot(), "canonroot", canonical.StateRoot())
 				return it.index, errors.New("sidechain ghost-state mismatch")
 			}
@@ -2999,7 +3019,23 @@ func (bc *BlockChain) ensureQMDBTreeAtParent(blk block.IBlock) error {
 		return nil
 	}
 	treeRoot := bc.qmdbRootComputer.Root()
-	if treeRoot == pHdr.Root {
+	// A header's Root is the state after that block before the deferred
+	// execution fork and the PARENT's after it; the tree is compared with
+	// each header's EXECUTED root.
+	execRootOf := func(h *block.Header) (types.Hash, bool) {
+		if bc.chainConfig == nil || !bc.chainConfig.IsDeferredExecution(h.Time) || h.Number.Uint64() == 0 {
+			return h.Root, true
+		}
+		var r rawdb.ExecutedResult
+		var found bool
+		_ = bc.ChainDB.View(bc.ctx, func(tx kv.Tx) error {
+			var err error
+			r, found, err = rawdb.ReadExecutedResult(tx, h.Hash())
+			return err
+		})
+		return r.Root, found
+	}
+	if pr, ok := execRootOf(pHdr); ok && treeRoot == pr {
 		return nil
 	}
 	// Out-of-order arrival, not a discontinuity: the applied state simply has
@@ -3024,7 +3060,7 @@ func (bc *BlockChain) ensureQMDBTreeAtParent(blk block.IBlock) error {
 	// failure leaves everything exactly as it was.
 	cur := pHdr
 	for depth := 0; depth < 256 && cur != nil; depth++ {
-		if treeRoot == cur.Root {
+		if cr, ok := execRootOf(cur); ok && treeRoot == cr {
 			target, targetHash := cur.Number.Uint64(), cur.Hash()
 			if werr := bc.ChainDB.Update(bc.ctx, func(tx kv.RwTx) error {
 				return realignAppliedToTree(tx, target, targetHash)
@@ -3549,11 +3585,18 @@ func (bc *BlockChain) syncChain(remoteBlock uint64, peerID peer.ID) {
 // a chosen block time before the chainspec carries the fork. Logged loudly:
 // every node of the chain must agree on it.
 func txRootBlake3Time(config *params.ChainConfig) uint64 {
-	if config != nil && config.TxRootBlake3Time != nil && config.TxRootBlake3Time.Sign() > 0 {
-		return config.TxRootBlake3Time.Uint64()
+	if config != nil && config.TxRootBlake3Time != nil {
+		return gateFrom(config.TxRootBlake3Time)
 	}
 	if v := os.Getenv("N42_TXROOT_BLAKE3_TIME"); v != "" {
+		if !nativeQMDBChain(config) {
+			log.Warn("N42_TXROOT_BLAKE3_TIME ignored: not the native QMDB chain")
+			return 0
+		}
 		if t, err := strconv.ParseUint(v, 10, 64); err == nil && t > 0 {
+			if config != nil {
+				config.TxRootBlake3Time = new(big.Int).SetUint64(t)
+			}
 			log.Warn("transactions root: BLAKE3 binary root from N42_TXROOT_BLAKE3_TIME (bench override; every node must set the same value)", "time", t)
 			return t
 		}
@@ -3567,10 +3610,14 @@ func txRootBlake3Time(config *params.ChainConfig) uint64 {
 // (a Unix timestamp), applied to the chain config too so every fork check
 // in the node sees it. Logged loudly: every node of the chain must agree.
 func deferredExecutionTime(config *params.ChainConfig) uint64 {
-	if config != nil && config.DeferredExecutionTime != nil && config.DeferredExecutionTime.Sign() > 0 {
-		return config.DeferredExecutionTime.Uint64()
+	if config != nil && config.DeferredExecutionTime != nil {
+		return gateFrom(config.DeferredExecutionTime)
 	}
 	if v := os.Getenv("N42_DEFERRED_EXECUTION_TIME"); v != "" {
+		if !nativeQMDBChain(config) {
+			log.Warn("N42_DEFERRED_EXECUTION_TIME ignored: not the native QMDB chain")
+			return 0
+		}
 		if t, err := strconv.ParseUint(v, 10, 64); err == nil && t > 0 {
 			if config != nil {
 				config.DeferredExecutionTime = new(big.Int).SetUint64(t)
@@ -3581,4 +3628,31 @@ func deferredExecutionTime(config *params.ChainConfig) uint64 {
 		log.Warn("N42_DEFERRED_EXECUTION_TIME ignored (not a positive integer)", "value", v)
 	}
 	return 0
+}
+
+// nativeQMDBChain: the bench-only fork overrides apply to the native chain
+// (QMDB state scheme) only, never to an Ethereum-EL chain.
+func nativeQMDBChain(config *params.ChainConfig) bool {
+	return config != nil && config.StateScheme == string(params.StateCommitmentPresetQMDB) && !config.EthereumReceiptEncoding()
+}
+
+// gateFrom turns a configured fork timestamp into the process-global: a
+// present zero means "from genesis" (isForked(0, t) is true for every t),
+// which the global expresses as 1, since 0 means "never" there.
+func gateFrom(v *big.Int) uint64 {
+	if v.Sign() <= 0 {
+		return 1
+	}
+	return v.Uint64()
+}
+
+// executedRootIn is ExecutedResultOfHeader's root read inside tx: the
+// header's Root before the deferred-execution fork (and for genesis), the
+// stored result after it; ok is false when the result is not stored.
+func (bc *BlockChain) executedRootIn(tx kv.Getter, h *block.Header) (types.Hash, bool) {
+	r, err := ExecutedResultOfHeader(bc.chainConfig, tx, h)
+	if err != nil {
+		return types.Hash{}, false
+	}
+	return r.Root, true
 }

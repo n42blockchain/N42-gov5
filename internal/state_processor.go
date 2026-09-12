@@ -268,7 +268,9 @@ func (p *StateProcessor) Process(b *block.Block, ibs *state.IntraBlockState, sta
 		// No need to call SoftFinalise here.
 	}
 
-	if !cfg.StatelessExec && *usedGas != concreteHeader.GasUsed {
+	// Under deferred execution the header's GasUsed is the parent's; this
+	// block's own is stored with its result and checked by the next header.
+	if !cfg.StatelessExec && !chainConfig.IsDeferredExecution(concreteHeader.Time) && *usedGas != concreteHeader.GasUsed {
 		return nil, nil, nil, 0, fmt.Errorf("gas used by execution: %d, in header: %d", *usedGas, concreteHeader.GasUsed)
 	}
 

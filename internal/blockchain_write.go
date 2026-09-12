@@ -422,9 +422,19 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 				if cerr != nil {
 					return fmt.Errorf("replaying sealed block %d onto the live QMDB tree: %w", blockNumber.Uint64(), cerr)
 				}
-				if liveRoot != blk.StateRoot() {
+				sealedRoot := blk.StateRoot()
+				if hdr, ok := blk.Header().(*block.Header); ok && bc.chainConfig != nil && bc.chainConfig.IsDeferredExecution(hdr.Time) {
+					// The header carries the parent's root; the build's own
+					// root is what the live tree must reproduce.
+					own, ok := ibs.LastIntermediateRoot()
+					if !ok {
+						return fmt.Errorf("deferred execution: sealed block %d has no computed root", blockNumber.Uint64())
+					}
+					sealedRoot = own
+				}
+				if liveRoot != sealedRoot {
 					return fmt.Errorf("live QMDB tree root %x does not reproduce sealed root %x at block %d",
-						liveRoot[:8], blk.StateRoot().Bytes()[:8], blockNumber.Uint64())
+						liveRoot[:8], sealedRoot.Bytes()[:8], blockNumber.Uint64())
 				}
 				dRoot2 = time.Since(tPhase)
 			}

@@ -561,7 +561,19 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 	// wire one) -- the fold then reads the store as before.
 	var prefetched int
 	if pf := ibs.AccountPrefetch(); pf != nil {
+		// The prefetch readers use the locked lookup source, whose contract
+		// is the tree's readers lock for their lifetime (on the leader the
+		// live tree is being written by the import of the previous block
+		// while the next build runs; a read racing an append, an eviction or
+		// a resize is a crash or a seeded "absent" account).
+		var unlock func()
+		if useQMDB {
+			unlock = p.bc.qmdbRootComputer.LockReaders()
+		}
 		n, err := p.prefetchPendingCredits(ibs, pf, useQMDB, mode, postLayers)
+		if unlock != nil {
+			unlock()
+		}
 		if err != nil {
 			return nil, fmt.Errorf("ProcessParallel: prefetch pending credits: %w", err)
 		}
@@ -594,7 +606,7 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 	// (rewards, the state root). Lenient: the builder's assemble does those.
 	var nopay map[types.Address]*uint256.Int
 	if !lenient {
-		if usedGas != concreteHeader.GasUsed {
+		if !p.config.IsDeferredExecution(concreteHeader.Time) && usedGas != concreteHeader.GasUsed {
 			return nil, fmt.Errorf("gas used by execution: %d, in header: %d", usedGas, concreteHeader.GasUsed)
 		}
 		if _, err := ProcessExecutionBlockEnd(nil, p.config, ibs, concreteHeader, p.engine); err != nil {

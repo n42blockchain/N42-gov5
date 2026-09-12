@@ -14,6 +14,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
@@ -56,6 +57,13 @@ func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool,
 	if err := checkDeferredHeader(bc.chainConfig, tx, hdr, parent); err != nil {
 		return true, errors.Is(err, ErrDeferredResultUnknown), err
 	}
+	// The applied-head check and the state reads below must see one state:
+	// the tree's readers lock keeps the import from moving the applied head
+	// (and the tree) between them.
+	if bc.qmdbEnabled && bc.qmdbRootComputer != nil {
+		unlock := bc.qmdbRootComputer.LockReaders()
+		defer unlock()
+	}
 	if !bc.AppliedHeadIsExactly(parent.Hash(), number-1) {
 		return true, true, ErrDeferredParentNotApplied
 	}
@@ -73,7 +81,8 @@ func (bc *BlockChain) checkIncludable(tx kv.Tx, hdr *block.Header, txs []*transa
 	if _, err := verifyBlockSendersHinted(signer, txs, bc.senderHints); err != nil {
 		return fmt.Errorf("deferred execution: block %d senders: %w", number, err)
 	}
-	rules := bc.chainConfig.Rules(number)
+	rules := bc.chainConfig.RulesWithTimestamp(number, hdr.Time)
+	baseFee := hdr.BaseFee
 	var blockGas uint64
 	type senderTxs struct {
 		first int
@@ -89,6 +98,23 @@ func (bc *BlockChain) checkIncludable(tx kv.Tx, hdr *block.Header, txs []*transa
 		blockGas += t.Gas()
 		if blockGas > hdr.GasLimit {
 			return fmt.Errorf("deferred execution: block %d exceeds its gas limit at tx %d", number, i)
+		}
+		if len(t.BlobHashes()) > 0 {
+			// Blob fees and their balance charge are not modelled here.
+			return fmt.Errorf("deferred execution: block %d tx %d: blob transactions are not includable under deferred execution", number, i)
+		}
+		feeCap, tip := t.GasFeeCap(), t.GasTipCap()
+		if feeCap == nil {
+			feeCap = t.GasPrice()
+		}
+		if tip == nil {
+			tip = feeCap
+		}
+		if feeCap == nil {
+			return fmt.Errorf("deferred execution: block %d tx %d has no fee cap", number, i)
+		}
+		if err := CheckEip1559TxGasFeeCap(*from, feeCap, tip, baseFee, false); err != nil {
+			return fmt.Errorf("deferred execution: block %d tx %d: %w", number, i, err)
 		}
 		create := t.To() == nil
 		value := t.Value()
@@ -159,11 +185,20 @@ func (bc *BlockChain) checkIncludable(tx kv.Tx, hdr *block.Header, txs []*transa
 				if acc != nil {
 					nonce = acc.Nonce
 					balance.Set(&acc.Balance)
+					// EIP-3607: a sender with code cannot originate.
+					if acc.CodeHash != (types.Hash{}) && acc.CodeHash != crypto.EmptyCodeHash {
+						errs[w] = fmt.Errorf("deferred execution: block %d sender %x has code", number, from[:4])
+						return
+					}
 				}
 				cost.Clear()
 				for _, t := range st.txs {
 					if t.Nonce() != nonce {
 						errs[w] = fmt.Errorf("deferred execution: block %d sender %x nonce %d, state expects %d", number, from[:4], t.Nonce(), nonce)
+						return
+					}
+					if nonce == ^uint64(0) {
+						errs[w] = fmt.Errorf("deferred execution: block %d sender %x nonce at its maximum", number, from[:4])
 						return
 					}
 					nonce++
@@ -173,11 +208,20 @@ func (bc *BlockChain) checkIncludable(tx kv.Tx, hdr *block.Header, txs []*transa
 					}
 					gasCost.SetUint64(t.Gas())
 					if feeCap != nil {
-						gasCost.Mul(gasCost, feeCap)
+						if _, over := gasCost.MulOverflow(gasCost, feeCap); over {
+							errs[w] = fmt.Errorf("deferred execution: block %d sender %x gas cost overflows", number, from[:4])
+							return
+						}
 					}
-					cost.Add(cost, gasCost)
+					if _, over := cost.AddOverflow(cost, gasCost); over {
+						errs[w] = fmt.Errorf("deferred execution: block %d sender %x cost overflows", number, from[:4])
+						return
+					}
 					if v := t.Value(); v != nil {
-						cost.Add(cost, v)
+						if _, over := cost.AddOverflow(cost, v); over {
+							errs[w] = fmt.Errorf("deferred execution: block %d sender %x cost overflows", number, from[:4])
+							return
+						}
 					}
 				}
 				if cost.Gt(balance) {

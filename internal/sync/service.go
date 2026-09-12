@@ -104,8 +104,9 @@ func (s *Service) SetBlockImportNotifier(n BlockImportNotifier) {
 type Service struct {
 	// deferredPending: pushed blocks whose deferred-execution check must run
 	// again once their parent is applied (keyed by parent hash).
-	deferredMu      sync.Mutex
-	deferredPending map[types.Hash][]block.IBlock
+	deferredMu       sync.Mutex
+	deferredPending  map[types.Hash][]block.IBlock
+	deferredAttempts map[types.Hash]int
 
 	cfg    *config
 	ctx    context.Context

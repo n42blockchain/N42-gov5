@@ -295,6 +295,9 @@ func (e *ConsensusEngine) onBlockChecked(blockHash types.Hash, parentHash types.
 			oldest := e.checkedFIFO[0]
 			e.checkedFIFO = e.checkedFIFO[1:]
 			delete(e.checkedBlocks, oldest)
+			if !e.importedBlocks[oldest] {
+				delete(e.importedParents, oldest) // recorded here for the extends-check only
+			}
 		}
 		e.checkedBlocks[blockHash] = true
 		e.checkedFIFO = append(e.checkedFIFO, blockHash)
