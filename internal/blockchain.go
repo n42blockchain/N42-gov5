@@ -33,6 +33,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"math/big"
 	"fmt"
 	"os"
 	"runtime"
@@ -88,6 +89,7 @@ func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consen
 	// before any block is produced or validated.
 	block.UseEthereumTxRoot = config != nil && (config.StateScheme == string(params.StateCommitmentPresetQMDB) || config.StateScheme == string(params.StateCommitmentPresetEthereumMPT))
 	block.TxRootBlake3Time = txRootBlake3Time(config)
+	block.DeferredExecutionTime = deferredExecutionTime(config)
 	concreteGenesis, err := requireConcreteBlock(genesisBlock, "unexpected genesis block type")
 	if err != nil {
 		cancel()
@@ -2266,6 +2268,17 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				defer prefetcher.Close()
 			}
 
+			if bc.chainConfig != nil && bc.chainConfig.IsDeferredExecution(concreteBlock.Header().(*block.Header).Time) {
+				hdr := concreteBlock.Header().(*block.Header)
+				parentHdr := rawdb.ReadHeader(tx, hdr.ParentHash, hdr.Number.Uint64()-1)
+				if parentHdr == nil {
+					return nil, fmt.Errorf("%w: parent header %x of block %d not stored", ErrDeferredResultUnknown, hdr.ParentHash[:8], hdr.Number.Uint64())
+				}
+				if err := checkDeferredHeader(bc.chainConfig, tx, hdr, parentHdr); err != nil {
+					bc.reportBlock(blk, nil, err)
+					return nil, fmt.Errorf("%w: %w", consensus.ErrExecutionInvalid, err)
+				}
+			}
 			pstart := time.Now()
 			var nopay map[types.Address]*uint256.Int
 			if bc.parallelEVM {
@@ -3545,6 +3558,27 @@ func txRootBlake3Time(config *params.ChainConfig) uint64 {
 			return t
 		}
 		log.Warn("N42_TXROOT_BLAKE3_TIME ignored (not a positive integer)", "value", v)
+	}
+	return 0
+}
+
+// deferredExecutionTime is the chain's deferredExecutionTime, or -- on a
+// bench chain whose built-in chainspec has none -- N42_DEFERRED_EXECUTION_TIME
+// (a Unix timestamp), applied to the chain config too so every fork check
+// in the node sees it. Logged loudly: every node of the chain must agree.
+func deferredExecutionTime(config *params.ChainConfig) uint64 {
+	if config != nil && config.DeferredExecutionTime != nil && config.DeferredExecutionTime.Sign() > 0 {
+		return config.DeferredExecutionTime.Uint64()
+	}
+	if v := os.Getenv("N42_DEFERRED_EXECUTION_TIME"); v != "" {
+		if t, err := strconv.ParseUint(v, 10, 64); err == nil && t > 0 {
+			if config != nil {
+				config.DeferredExecutionTime = new(big.Int).SetUint64(t)
+			}
+			log.Warn("deferred execution from N42_DEFERRED_EXECUTION_TIME (bench override; every node must set the same value)", "time", t)
+			return t
+		}
+		log.Warn("N42_DEFERRED_EXECUTION_TIME ignored (not a positive integer)", "value", v)
 	}
 	return 0
 }

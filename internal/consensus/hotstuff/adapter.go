@@ -770,6 +770,13 @@ func (h *HotStuff) Finalize(chain consensus.ChainHeaderReader, iHeader block.IHe
 			}
 		}
 	}
+	if h.chainConfig.IsDeferredExecution(header.Time) {
+		// The header's Root is the parent's executed root (checked against
+		// this node's stored result before execution); this block's own
+		// root was just computed and is read by the caller from
+		// ibs.LastIntermediateRoot to be stored for the next header.
+		return rewards, unpayMap, nil
+	}
 	if header.Root != (types.Hash{}) && header.Root != localRoot {
 		return nil, nil, fmt.Errorf("state root mismatch at block %d: proposer %x, locally computed %x",
 			header.Number.Uint64(), header.Root[:8], localRoot[:8])

@@ -102,6 +102,11 @@ func (s *Service) SetBlockImportNotifier(n BlockImportNotifier) {
 // Service is responsible for handling all runtime p2p related operations as the
 // main entry point for network messages.
 type Service struct {
+	// deferredPending: pushed blocks whose deferred-execution check must run
+	// again once their parent is applied (keyed by parent hash).
+	deferredMu      sync.Mutex
+	deferredPending map[types.Hash][]block.IBlock
+
 	cfg    *config
 	ctx    context.Context
 	cancel context.CancelFunc

@@ -191,6 +191,11 @@ type IntraBlockState struct {
 	// carried explicitly for readers that bypass it (SetPostStateLayers).
 	postLayers []*PostState
 
+	// lastIntermediateRoot is what IntermediateRoot last returned
+	// (LastIntermediateRoot); the deferred-execution write reads it.
+	lastIntermediateRoot    types.Hash
+	lastIntermediateRootSet bool
+
 	// accountPrefetch: the layer under stateReader that serves accounts
 	// read ahead across the parallel processor's workers (SetAccountPrefetch).
 	accountPrefetch *AccountPrefetch
@@ -1513,10 +1518,21 @@ func (s *IntraBlockState) GenerateRootHash() types.Hash {
 // If a RootComputer is set (e.g., JMT), it delegates to that;
 // otherwise falls back to the legacy incremental Keccak hash.
 func (s *IntraBlockState) IntermediateRoot() types.Hash {
+	var root types.Hash
 	if s.rootComputer != nil {
-		return s.computeRootViaComputer()
+		root = s.computeRootViaComputer()
+	} else {
+		root = s.GenerateRootHash()
 	}
-	return s.GenerateRootHash()
+	s.lastIntermediateRoot, s.lastIntermediateRootSet = root, true
+	return root
+}
+
+// LastIntermediateRoot returns the root the most recent IntermediateRoot
+// computed, without computing again (a QMDB root computation applies the
+// block's writes to the tree; a second call would apply them twice).
+func (s *IntraBlockState) LastIntermediateRoot() (types.Hash, bool) {
+	return s.lastIntermediateRoot, s.lastIntermediateRootSet
 }
 
 // computeRootViaComputer collects dirty accounts/storage and delegates

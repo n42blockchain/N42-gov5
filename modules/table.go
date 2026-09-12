@@ -89,6 +89,11 @@ const (
 	// on import. Consulted only by the leader's same-height sibling convergence
 	// (a failed sibling is never re-proposed); import itself never reads it.
 	BadHeaderNumber = "BadHeaderNumber"
+	// ExecutedResult: block_hash -> root(32) receiptsRoot(32) bloom(256) gasUsed(8),
+	// this node's own execution result of the block. Under deferred execution
+	// (ChainConfig.DeferredExecutionTime) the next block's header is checked
+	// against it, and the builder stamps it into the header it builds on top.
+	ExecutedResult = "ExecutedResult"
 	HeaderTD        = "HeadersTotalDifficulty" // block_num_u64 + hash -> td
 	HeaderCanonical = "CanonicalHeader"        // block_num_u64 -> header hash
 
@@ -366,6 +371,7 @@ var n42Tables = []string{
 	HeaderCanonical,
 	HeaderNumber,
 	BadHeaderNumber,
+	ExecutedResult,
 
 	HeadBlockKey,
 	HeadHeaderKey,

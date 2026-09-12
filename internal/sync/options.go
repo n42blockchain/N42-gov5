@@ -2,6 +2,7 @@ package sync
 
 import (
 	"github.com/n42blockchain/N42/common"
+	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/p2p"
 )
@@ -52,6 +53,17 @@ func WithEarliestBlock(fn func() uint64) Option {
 // Used by HotStuff to learn that a proposed block is now locally available.
 type BlockImportNotifier interface {
 	NotifyBlockImported(hash types.Hash, txHash types.Hash)
+	// NotifyBlockChecked: deferred execution -- the block passed the
+	// pre-execution check (DeferredBlockChecker) and can be voted for once
+	// its parent is imported.
+	NotifyBlockChecked(hash types.Hash, parent types.Hash)
+}
+
+// DeferredBlockChecker is implemented by the chain under deferred
+// execution: checked is false before the fork; retry asks for the check to
+// run again once the block's parent is applied.
+type DeferredBlockChecker interface {
+	CheckDeferredBlock(blk block.IBlock) (checked, retry bool, err error)
 }
 
 // WithBlockImportNotifier sets a notifier called after gossip blocks are imported.

@@ -211,9 +211,14 @@ func NewBlockFromReceipt(h IHeader, txs []*transaction.Transaction, _ []IHeader,
 		ReceiveAt: time.Now(),
 	}
 
-	block.header.Bloom = CreateBloom(receipts)
+	// Under deferred execution the bloom and the receipts root in this header
+	// are the parent's, stamped by the builder; this block's own are stored
+	// with its execution result and appear in the next header.
+	if !DeferredAt(block.header.Time) {
+		block.header.Bloom = CreateBloom(receipts)
+		block.header.ReceiptHash = hash.DeriveSha(Receipts(receipts))
+	}
 	block.header.TxHash = TxRootAt(txs, block.header.Time)
-	block.header.ReceiptHash = hash.DeriveSha(Receipts(receipts))
 
 	return block
 }
@@ -243,6 +248,18 @@ func TxRoot(txs []*transaction.Transaction) types.Hash {
 		return hash.DeriveShaErigon(transaction.EthTransactions(txs))
 	}
 	return hash.DeriveSha(transaction.Transactions(txs))
+}
+
+// DeferredExecutionTime is the chain's deferredExecutionTime, set at startup
+// like UseEthereumTxRoot (same process-global invariant). Zero = never.
+// From it, a header's Root, ReceiptHash, Bloom and GasUsed are the parent's
+// executed values and the assembly must leave what the builder stamped.
+var DeferredExecutionTime uint64
+
+// DeferredAt reports whether a block at blockTime is under deferred
+// execution.
+func DeferredAt(blockTime uint64) bool {
+	return DeferredExecutionTime != 0 && blockTime >= DeferredExecutionTime
 }
 
 // TxRootBlake3Time is the chain's txRootBlake3Time, set at startup like

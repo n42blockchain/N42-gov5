@@ -257,9 +257,53 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
 		}
 		return e.sendVote(view, proposal.BlockHash)
 	}
+	if voted, err := e.tryDeferredVote(view); voted || err != nil {
+		return err
+	}
 	log.Info("import-gated vote: deferring until block imported",
 		"view", view, "blockHash", proposal.BlockHash)
 	return nil
+}
+
+// tryDeferredVote casts the prepare vote for view's pending proposal under
+// deferred execution: the block was checked (EventBlockChecked) and its
+// parent -- the JustifyQC block -- is imported. Returns whether it voted.
+func (e *ConsensusEngine) tryDeferredVote(view ViewNumber) (bool, error) {
+	pending, ok := e.pendingProposals[view]
+	if !ok || !e.checkedBlocks[pending] || e.roundState.HasVotedInView(view) {
+		return false, nil
+	}
+	justify, ok := e.pendingJustifyBlocks[view]
+	if !ok || justify == (types.Hash{}) || !e.importedBlocks[justify] {
+		return false, nil
+	}
+	if !e.extendsJustify(view, pending) {
+		return false, nil // extends-rule violation logged; do not vote
+	}
+	if err := e.journalPrepareVote(view, pending); err != nil {
+		return false, err // abstain: the commitment is not durable
+	}
+	log.Info("deferred vote: block checked and parent imported, voting", "view", view, "blockHash", pending, "tMs", time.Now().UnixMilli())
+	return true, e.sendVote(view, pending)
+}
+
+// onBlockChecked records a block the service verified under deferred
+// execution and votes for it if its parent is already imported.
+func (e *ConsensusEngine) onBlockChecked(blockHash types.Hash, parentHash types.Hash) error {
+	if !e.checkedBlocks[blockHash] {
+		if len(e.checkedFIFO) >= MaxImportedBlocks {
+			oldest := e.checkedFIFO[0]
+			e.checkedFIFO = e.checkedFIFO[1:]
+			delete(e.checkedBlocks, oldest)
+		}
+		e.checkedBlocks[blockHash] = true
+		e.checkedFIFO = append(e.checkedFIFO, blockHash)
+	}
+	if parentHash != (types.Hash{}) {
+		e.importedParents[blockHash] = parentHash // the extends-check reads it
+	}
+	_, err := e.tryDeferredVote(e.roundState.CurrentView())
+	return err
 }
 
 // processPrepareQC processes a PrepareQC from the leader.
@@ -487,6 +531,11 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 	// proposal, which is the common case (the leader importing its own block,
 	// catch-up imports, a re-import after a view change). It carried Info and
 	// fired on nearly every import, making it 8% of all log bytes.
+	// Deferred execution: the imported block may be the PARENT of the
+	// pending, already-checked proposal.
+	if voted, err := e.tryDeferredVote(view); voted || err != nil {
+		return err
+	}
 	log.Debug("import-gated vote: block imported but no matching pending proposal", "view", view, "blockHash", blockHash, "hasPending", e.pendingProposals[view])
 
 	return nil

@@ -53,6 +53,7 @@ import (
 	"github.com/n42blockchain/N42/internal/streamverify"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/internal/zkprover"
+	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/layered"
 	"github.com/n42blockchain/N42/log"
 	event "github.com/n42blockchain/N42/modules/event/v2"
@@ -122,6 +123,10 @@ type task struct {
 	// chained speculative build reads the parent's effects from it while the
 	// parent's write is still in flight.
 	post *state.PostState
+	// exec is the block's own execution result under deferred execution:
+	// recorded with the sealed block so a chained build stamps it into the
+	// next header before this block's write lands.
+	exec *rawdb.ExecutedResult
 
 	// Seal-path phase timings — OBSERVABILITY ONLY. The leader's
 	// ViewStart→ProposalSent window spans three goroutines (commit → taskLoop →
@@ -282,6 +287,9 @@ type worker struct {
 	// sealedPost holds the post-state snapshot of each block in sealedByHash
 	// that was built with one (adopt-appends mode); pruned with it.
 	sealedPost map[types.Hash]*state.PostState
+	// sealedExec holds the own execution result of each block in
+	// sealedByHash built under deferred execution; pruned with it.
+	sealedExec map[types.Hash]rawdb.ExecutedResult
 
 	wg sync.WaitGroup
 	mu sync.RWMutex
@@ -370,6 +378,7 @@ func newWorker(ctx context.Context, group *errgroup.Group, chainConfig *params.C
 		sealedOnParent:   make(map[types.Hash]block.IBlock),
 		sealedByHash:     make(map[types.Hash]block.IBlock),
 		sealedPost:       make(map[types.Hash]*state.PostState),
+		sealedExec:       make(map[types.Hash]rawdb.ExecutedResult),
 		minerConf:        minerConf,
 		resubmitAdjustCh: make(chan *intervalAdjust, resubmitAdjustChanSize),
 		bundlePool:       builder.NewBundlePool(),
@@ -820,8 +829,13 @@ func (w *worker) rememberSealed(blk block.IBlock) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.sealedByHash[blk.Hash()] = blk
-	if t := w.pendingTasks[sealhash]; t != nil && t.post != nil {
-		w.sealedPost[blk.Hash()] = t.post
+	if t := w.pendingTasks[sealhash]; t != nil {
+		if t.post != nil {
+			w.sealedPost[blk.Hash()] = t.post
+		}
+		if t.exec != nil {
+			w.sealedExec[blk.Hash()] = *t.exec
+		}
 	}
 	if len(w.sealedByHash) > 16 {
 		var oldest types.Hash
@@ -833,6 +847,7 @@ func (w *worker) rememberSealed(blk block.IBlock) {
 		}
 		delete(w.sealedByHash, oldest)
 		delete(w.sealedPost, oldest)
+		delete(w.sealedExec, oldest)
 	}
 }
 
@@ -1304,12 +1319,15 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		// The parent's state root lets the miner tree recognise that the block
 		// it built last IS this build's parent (NewMinerRootComputer's
 		// own-block fast path).
+		// The parent's EXECUTED root: its header's Root before the fork, this
+		// node's result of it under deferred execution (the header then
+		// carries the grandparent's).
 		parentRoot := types.Hash{}
-		if own := w.ownSealed(current.header.ParentHash); own != nil {
-			parentRoot = own.StateRoot()
-		} else if n := current.header.Number.Uint64(); n > 0 {
-			if ph := rawdb.ReadHeader(tx, current.header.ParentHash, n-1); ph != nil {
-				parentRoot = ph.Root
+		if current.header.Number.Uint64() > 0 {
+			if pr, perr := w.parentExecutedResult(tx, current.header); perr == nil {
+				parentRoot = pr.Root
+			} else if w.chainConfig.IsDeferredExecution(current.header.Time) {
+				return fmt.Errorf("miner: deferred execution: %w", perr)
 			}
 		}
 		rc, rcErr := bcForRoot.NewMinerRootComputer(tx, parentRoot)
@@ -2030,9 +2048,33 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 
 	envCopy := env.copy()
 	dCopy := time.Since(tCommitStart)
+	deferredExec := block.DeferredAt(envCopy.header.Time)
+	if deferredExec {
+		// The header carries the parent's executed result; this block's own
+		// is recorded below and appears in the next header.
+		rtx, terr := w.chain.DB().BeginRo(w.ctx)
+		if terr != nil {
+			return terr
+		}
+		pr, perr := w.parentExecutedResult(rtx, envCopy.header)
+		rtx.Rollback()
+		if perr != nil {
+			return fmt.Errorf("miner: deferred execution: %w", perr)
+		}
+		envCopy.header.Root, envCopy.header.ReceiptHash, envCopy.header.Bloom, envCopy.header.GasUsed = pr.Root, pr.ReceiptHash, pr.Bloom, pr.GasUsed
+	}
 	iblock, rewards, unpay, err := w.engine.FinalizeAndAssemble(w.chain, envCopy.header, ibs, envCopy.txs, nil, envCopy.receipts)
 	if err != nil {
 		return err
+	}
+	var exec *rawdb.ExecutedResult
+	if deferredExec {
+		root, ok := ibs.LastIntermediateRoot()
+		if !ok {
+			return errors.New("miner: deferred execution: the build computed no root")
+		}
+		r := internal.ExecutedResultFor(w.chainConfig, envCopy.header.Number.Uint64(), root, envCopy.receipts)
+		exec = &r
 	}
 	dFinalize := time.Since(tCommitStart)
 
@@ -2187,7 +2229,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	if speculative {
 		w.specMu.Lock()
 		w.specTask = &task{
-			receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay, post: post,
+			receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay, post: post, exec: exec,
 			finalize: dFinalize, witness: dWitness, assemble: time.Since(tCommitStart),
 		}
 		w.specParent = specParent
@@ -2202,7 +2244,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 
 	select {
 	case w.taskCh <- &task{
-		receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay, post: post,
+		receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay, post: post, exec: exec,
 		finalize: dFinalize, witness: dWitness, assemble: time.Since(tCommitStart),
 	}:
 		blockNumber := uint64(0)
@@ -2278,4 +2320,30 @@ func signalToErr(signal int32) error {
 	default:
 		return fmt.Errorf("undefined signal %d", signal)
 	}
+}
+
+// parentExecutedResult returns this node's execution result of the parent
+// of header: the record kept with a block this node sealed, else the
+// stored result of an applied block (or the parent header's own fields
+// before the deferred-execution fork).
+func (w *worker) parentExecutedResult(tx kv.Getter, header *block.Header) (rawdb.ExecutedResult, error) {
+	parent := header.ParentHash
+	w.mu.RLock()
+	r, ok := w.sealedExec[parent]
+	ownBlk := w.sealedByHash[parent]
+	w.mu.RUnlock()
+	if ok {
+		return r, nil
+	}
+	var ph *block.Header
+	if ownBlk != nil {
+		ph, _ = ownBlk.Header().(*block.Header)
+	}
+	if ph == nil && header.Number.Uint64() > 0 {
+		ph = rawdb.ReadHeader(tx, parent, header.Number.Uint64()-1)
+	}
+	if ph == nil {
+		return rawdb.ExecutedResult{}, fmt.Errorf("parent %x of block %d unknown", parent[:8], header.Number.Uint64())
+	}
+	return internal.ExecutedResultOfHeader(w.chainConfig, tx, ph)
 }

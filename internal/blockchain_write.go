@@ -464,6 +464,15 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			if err := rawdb.WriteQMDBApplied(tx, blockNumber.Uint64(), blk.Hash()); err != nil {
 				return fmt.Errorf("writing QMDB applied marker for block %d failed: %w", blockNumber.Uint64(), err)
 			}
+			if hdr, ok := blk.Header().(*block.Header); ok && bc.chainConfig != nil && bc.chainConfig.IsDeferredExecution(hdr.Time) {
+				root, ok := ibs.LastIntermediateRoot()
+				if !ok {
+					return fmt.Errorf("deferred execution: block %d has no computed root to store", blockNumber.Uint64())
+				}
+				if err := rawdb.WriteExecutedResult(tx, blk.Hash(), ExecutedResultFor(bc.chainConfig, blockNumber.Uint64(), root, receipts)); err != nil {
+					return fmt.Errorf("storing execution result of block %d: %w", blockNumber.Uint64(), err)
+				}
+			}
 			if isolatedQMDBSeal {
 				// Own build, unverified by anyone yet: keep it out of the
 				// sibling convergence until the fleet commits it.

@@ -1547,6 +1547,19 @@ func (s *Service) broadcastBlockData(_ types.Hash) {
 	time.Sleep(50 * time.Millisecond)
 }
 
+// NotifyBlockChecked implements sync.BlockImportNotifier: under deferred
+// execution the sync layer verified an arrived block without executing it
+// (its header carries this node's result of the parent; its transactions
+// are includable), so the engine may vote for it as soon as the parent is
+// imported.
+func (s *Service) NotifyBlockChecked(hash types.Hash, parent types.Hash) {
+	if ce := s.engine.Engine(); ce != nil {
+		if err := ce.ProcessEvent(ConsensusEvent{Type: EventBlockChecked, Hash: hash, ParentHash: parent}); err != nil {
+			log.Debug("hotstuff: EventBlockChecked processing failed", "hash", hash, "err", err)
+		}
+	}
+}
+
 // NotifyBlockImported implements sync.BlockImportNotifier.
 // Called by the sync layer after a gossip block is successfully imported.
 // Matches against pending execution requests and notifies the engine.

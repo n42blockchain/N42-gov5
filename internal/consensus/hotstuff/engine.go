@@ -120,9 +120,15 @@ type ConsensusEngine struct {
 	outputCh chan<- EngineOutput
 
 	// Block tracking
-	importedBlocks   map[types.Hash]bool
-	importedParents  map[types.Hash]types.Hash // imported blockHash → its parent hash (extends-check at vote time)
-	importedFIFO     []types.Hash              // insertion order for bounded eviction; blocks stay known-imported across view changes
+	importedBlocks  map[types.Hash]bool
+	importedParents map[types.Hash]types.Hash // imported blockHash → its parent hash (extends-check at vote time)
+	importedFIFO    []types.Hash              // insertion order for bounded eviction; blocks stay known-imported across view changes
+	// checkedBlocks: under deferred execution, blocks the service verified
+	// without executing them (the header carries this node's result of the
+	// parent; the transactions are includable). Such a block is voted for
+	// once its parent is imported. Bounded like importedBlocks.
+	checkedBlocks    map[types.Hash]bool
+	checkedFIFO      []types.Hash
 	pendingTxRoots   map[types.Hash]types.Hash // blockHash → expected TxRootHash (DA verification)
 	pendingProposals map[ViewNumber]types.Hash // view → proposed blockHash awaiting local import before the prepare vote (import-gated voting)
 	// pendingJustifyBlocks records, per view, the proposal's JustifyQC.BlockHash
@@ -335,6 +341,7 @@ func NewConsensusEngineWithEpochManager(
 		outputCh:                  outputCh,
 		importedBlocks:            make(map[types.Hash]bool),
 		importedParents:           make(map[types.Hash]types.Hash),
+		checkedBlocks:             make(map[types.Hash]bool),
 		pendingTxRoots:            make(map[types.Hash]types.Hash),
 		pendingProposals:          make(map[ViewNumber]types.Hash),
 		pendingJustifyBlocks:      make(map[ViewNumber]types.Hash),
@@ -376,6 +383,7 @@ func WithRecoveredState(
 		outputCh:                  outputCh,
 		importedBlocks:            make(map[types.Hash]bool),
 		importedParents:           make(map[types.Hash]types.Hash),
+		checkedBlocks:             make(map[types.Hash]bool),
 		pendingTxRoots:            make(map[types.Hash]types.Hash),
 		pendingProposals:          make(map[ViewNumber]types.Hash),
 		pendingJustifyBlocks:      make(map[ViewNumber]types.Hash),
@@ -591,6 +599,8 @@ func (e *ConsensusEngine) ProcessEvent(event ConsensusEvent) error {
 		return e.onBlockReady(event.Hash, event.TxRootHash)
 	case EventBlockImported:
 		return e.onBlockImported(event.Hash, event.TxRootHash, event.ParentHash)
+	case EventBlockChecked:
+		return e.onBlockChecked(event.Hash, event.ParentHash)
 	default:
 		return nil
 	}
@@ -627,7 +637,7 @@ type ConsensusEvent struct {
 	Msg        ConsensusMsg
 	Hash       types.Hash
 	TxRootHash types.Hash // DA commitment: transaction root hash (Baby Raptr)
-	ParentHash types.Hash // EventBlockImported only: imported block's parent (extends-check; zero = unknown, check skipped)
+	ParentHash types.Hash // EventBlockImported / EventBlockChecked: the block's parent (extends-check; zero = unknown, check skipped)
 }
 
 // ConsensusEventType identifies the type of consensus event.
@@ -637,6 +647,10 @@ const (
 	EventMessage       ConsensusEventType = 1
 	EventBlockReady    ConsensusEventType = 2
 	EventBlockImported ConsensusEventType = 3
+	// EventBlockChecked: deferred execution -- the block's header carries this
+	// node's result of its parent and its transactions are includable; the
+	// vote no longer waits for the block's own import, only for the parent's.
+	EventBlockChecked ConsensusEventType = 4
 )
 
 // Internal helpers

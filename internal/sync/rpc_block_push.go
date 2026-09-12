@@ -10,6 +10,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 
 	"github.com/n42blockchain/N42/common/block"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/log"
 )
@@ -46,6 +47,7 @@ func (s *Service) blockPushStreamHandler(stream network.Stream) {
 		return
 	}
 	log.Info("block push: arrived", "number", blk.Number64().Uint64(), "txs", len(blk.Transactions()), "tMs", time.Now().UnixMilli())
+	s.deferredCheck(blk)
 	if _, err := s.cfg.chain.InsertChain([]block.IBlock{blk}); err != nil {
 		if isAncestorError(err) {
 			// Missing parent (e.g. a committed same-height sibling this node
@@ -72,5 +74,48 @@ func (s *Service) blockPushStreamHandler(stream network.Stream) {
 	// return nil too) — require applied-state evidence.
 	if n := s.cfg.blockImportNotifier; n != nil && s.blockApplied(blk.Hash(), blk.Number64().Uint64()) {
 		n.NotifyBlockImported(blk.Hash(), blk.TxHash())
+	}
+	s.retryDeferredChildren(blk.Hash())
+}
+
+// deferredCheck runs the deferred-execution vote check on an arrived block
+// and tells the consensus layer when it passes; a block whose parent is not
+// applied yet is kept and checked again when the parent lands.
+func (s *Service) deferredCheck(blk block.IBlock) {
+	checker, ok := s.cfg.chain.(DeferredBlockChecker)
+	if !ok || s.cfg.blockImportNotifier == nil {
+		return
+	}
+	checked, retry, err := checker.CheckDeferredBlock(blk)
+	if !checked {
+		return
+	}
+	if err == nil {
+		log.Info("deferred check: block passes, vote may proceed before its import", "number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12], "tMs", time.Now().UnixMilli())
+		s.cfg.blockImportNotifier.NotifyBlockChecked(blk.Hash(), blk.ParentHash())
+		return
+	}
+	if retry {
+		s.deferredMu.Lock()
+		if s.deferredPending == nil {
+			s.deferredPending = make(map[types.Hash][]block.IBlock)
+		}
+		s.deferredPending[blk.ParentHash()] = append(s.deferredPending[blk.ParentHash()], blk)
+		s.deferredMu.Unlock()
+		log.Debug("deferred check: waiting for the parent to apply", "number", blk.Number64().Uint64(), "err", err)
+		return
+	}
+	log.Warn("deferred check FAILED: not voting for this block", "number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12], "err", err)
+}
+
+// retryDeferredChildren re-runs the deferred check of the blocks waiting on
+// parent, after parent was imported.
+func (s *Service) retryDeferredChildren(parent types.Hash) {
+	s.deferredMu.Lock()
+	children := s.deferredPending[parent]
+	delete(s.deferredPending, parent)
+	s.deferredMu.Unlock()
+	for _, c := range children {
+		s.deferredCheck(c)
 	}
 }

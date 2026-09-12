@@ -319,6 +319,17 @@ type ChainConfig struct {
 	// on; blocks before it validate under the old rule. Nil = never.
 	TxRootBlake3Time *big.Int `json:"txRootBlake3Time,omitempty"`
 
+	// DeferredExecutionTime activates deferred execution (EIP-7862 style,
+	// agreed cross-client in the n42-rs PHASE_D document): from a block whose
+	// timestamp is at or past it, the header's Root, ReceiptHash, Bloom and
+	// GasUsed are the PARENT's executed values; the block's own execution
+	// result appears in the next header. The first such header carries the
+	// same Root as its parent (the parent executed under the old rule). A
+	// follower votes on a block once it has imported the parent, the header's
+	// execution fields equal its own result for the parent, and the block's
+	// transactions are includable against that post-state. Nil = never.
+	DeferredExecutionTime *big.Int `json:"deferredExecutionTime,omitempty"`
+
 	// StateScheme determines the state commitment algorithm for Header.Root.
 	// Set at genesis, immutable thereafter. Nodes MUST refuse to start if the
 	// configured scheme does not match the database.
