@@ -553,20 +553,12 @@ type builder struct {
 	// computed roots into DatcRoots instead). Window mode requires it.
 	rootOracle func(n uint64) (types.Hash, error)
 
-	// stoRoots collects the storage roots the trie loader finalises during
-	// ComputeRoot (TrieRootComputer.SetStorageRootHook); emitStoRoots turns
-	// them into DatcStoRoot rows. Guarded: concurrent-root shards call the
-	// hook from 16 goroutines.
-	stoRootsMu sync.Mutex
-	stoRoots   map[[32]byte][32]byte
-	// dense: full per-child slot frames of every branch the loader
-	// collected since the path's last flush (TrieRootComputer.
-	// SetDenseNodeHook). Lets mixed nodes (leaf/extension children, whose
-	// hashes the TrieOf* rows omit) be recorded as complete FULL/DIFF
-	// records instead of MIXED markers. Keyed path (accounts) /
-	// domain+path (storage).
-	denseAcc, denseSto map[string]denseEntry
-	stoRootBuf         []kvPair
+	// hooks holds what the root-computation hooks collect (storage roots and
+	// dense branch frames), split by key nibble: the concurrent-root shards
+	// call the hooks from 16 goroutines, and one shared mutex had several of
+	// them queued at any moment.
+	hooks      [hookShards]hookShard
+	stoRootBuf []kvPair
 	// winWiped: window mode — contracts whose pre-state slots were
 	// tombstoned by a SELFDESTRUCT inside the current window.
 	winWiped map[types.Address]bool
@@ -599,6 +591,45 @@ func (b *builder) statLegacyExtraBytes() uint64 {
 	return b.leafSPuts*(8+4) + b.leafAPuts*4 + b.chgStoPuts*8 + b.nodeStoPuts*8
 }
 
+// hookShards is the number of hook shards: one per top nibble, plus one for
+// the empty (root) account path.
+const hookShards = 17
+
+// hookShard is one nibble's slice of the hook output.
+type hookShard struct {
+	mu sync.Mutex
+	// stoRoots collects the storage roots the trie loader finalises during
+	// ComputeRoot (TrieRootComputer.SetStorageRootHook); emitStoRoots turns
+	// them into DatcStoRoot rows.
+	stoRoots map[[32]byte][32]byte
+	// dense: full per-child slot frames of every branch the loader
+	// collected since the path's last flush (TrieRootComputer.
+	// SetDenseNodeHook). Lets mixed nodes (leaf/extension children, whose
+	// hashes the TrieOf* rows omit) be recorded as complete FULL/DIFF
+	// records instead of MIXED markers. Keyed path (accounts) /
+	// domain+path (storage).
+	denseAcc, denseSto map[string]denseEntry
+}
+
+// accHookShard and stoHookShard pick a key's hook shard: an account path by
+// its first nibble (the empty path has its own shard), a storage key by the
+// top nibble of its account hash. Writers and readers only need the same
+// choice for the same key; this one also matches the concurrent-root shard
+// that reports the key, so the shards rarely share a lock.
+func accHookShard[T ~string | ~[]byte](path T) int {
+	if len(path) == 0 {
+		return hookShards - 1
+	}
+	return int(path[0] & 0x0f)
+}
+
+func stoHookShard[T ~string | ~[]byte](key T) int {
+	if len(key) == 0 {
+		return hookShards - 1
+	}
+	return int(key[0] >> 4)
+}
+
 // denseEntry is one collected branch: masks + 33-byte slot per present child.
 type denseEntry struct {
 	hasState, hasTree uint16
@@ -608,42 +639,57 @@ type denseEntry struct {
 // onDenseNode is the TrieRootComputer dense-node hook (may run on shard
 // goroutines; (nil, nil, 0, 0, nil) resets).
 func (b *builder) onDenseNode(accWithInc, keyHex []byte, hasState, hasTree uint16, slots []byte) {
-	b.stoRootsMu.Lock()
-	defer b.stoRootsMu.Unlock()
 	if keyHex == nil && hasState == 0 {
-		b.denseAcc = make(map[string]denseEntry, len(b.denseAcc))
-		b.denseSto = make(map[string]denseEntry, len(b.denseSto))
+		for i := range b.hooks {
+			s := &b.hooks[i]
+			s.mu.Lock()
+			s.denseAcc = make(map[string]denseEntry, len(s.denseAcc))
+			s.denseSto = make(map[string]denseEntry, len(s.denseSto))
+			s.mu.Unlock()
+		}
 		return
-	}
-	if b.denseAcc == nil {
-		b.denseAcc = make(map[string]denseEntry, 1<<12)
-		b.denseSto = make(map[string]denseEntry, 1<<12)
 	}
 	e := denseEntry{hasState: hasState, hasTree: hasTree, slots: append([]byte{}, slots...)}
 	if accWithInc == nil {
-		b.denseAcc[string(keyHex)] = e
+		s := &b.hooks[accHookShard(keyHex)]
+		s.mu.Lock()
+		if s.denseAcc == nil {
+			s.denseAcc = make(map[string]denseEntry, 1<<8)
+		}
+		s.denseAcc[string(keyHex)] = e
+		s.mu.Unlock()
 		return
 	}
 	k := make([]byte, 0, len(accWithInc)+len(keyHex))
 	k = append(k, accWithInc...)
 	k = append(k, keyHex...)
-	b.denseSto[string(k)] = e
+	s := &b.hooks[stoHookShard(k)]
+	s.mu.Lock()
+	if s.denseSto == nil {
+		s.denseSto = make(map[string]denseEntry, 1<<8)
+	}
+	s.denseSto[string(k)] = e
+	s.mu.Unlock()
 }
 
 // takeDense returns (and forgets) the collected dense form of a path as a
 // synthetic MarshalTrieNode with every present child hashed (hasHash ==
 // hasState), or nil when none was collected or a child is inline.
 func (b *builder) takeDense(storage bool, key string) []byte {
-	b.stoRootsMu.Lock()
-	m := b.denseAcc
+	s := &b.hooks[accHookShard(key)]
 	if storage {
-		m = b.denseSto
+		s = &b.hooks[stoHookShard(key)]
+	}
+	s.mu.Lock()
+	m := s.denseAcc
+	if storage {
+		m = s.denseSto
 	}
 	e, ok := m[key]
 	if ok {
 		delete(m, key)
 	}
-	b.stoRootsMu.Unlock()
+	s.mu.Unlock()
 	if !ok {
 		return nil
 	}
@@ -671,19 +717,25 @@ func (b *builder) takeDense(storage bool, key string) []byte {
 // onStorageRoot is the TrieRootComputer storage-root hook. (nil, nil) is the
 // reset signal sent before a serial recompute of a diverged concurrent window.
 func (b *builder) onStorageRoot(addrHash, root []byte) {
-	b.stoRootsMu.Lock()
-	defer b.stoRootsMu.Unlock()
 	if addrHash == nil {
-		b.stoRoots = make(map[[32]byte][32]byte, len(b.stoRoots))
+		for i := range b.hooks {
+			s := &b.hooks[i]
+			s.mu.Lock()
+			s.stoRoots = make(map[[32]byte][32]byte, len(s.stoRoots))
+			s.mu.Unlock()
+		}
 		return
-	}
-	if b.stoRoots == nil {
-		b.stoRoots = make(map[[32]byte][32]byte, 1<<10)
 	}
 	var k, v [32]byte
 	copy(k[:], addrHash)
 	copy(v[:], root)
-	b.stoRoots[k] = v
+	s := &b.hooks[stoHookShard(addrHash)]
+	s.mu.Lock()
+	if s.stoRoots == nil {
+		s.stoRoots = make(map[[32]byte][32]byte, 1<<6)
+	}
+	s.stoRoots[k] = v
+	s.mu.Unlock()
 }
 
 // emitStoRoots writes the DatcStoRoot rows for block n after a ComputeRoot:
@@ -702,10 +754,16 @@ func (b *builder) emitStoRoots(tx kv.Tx, n uint64,
 		k = append(k, blk4[:]...)
 		b.stoRootBuf = append(b.stoRootBuf, kvPair{k: k, v: root})
 	}
-	b.stoRootsMu.Lock()
-	roots := b.stoRoots
-	b.stoRoots = nil
-	b.stoRootsMu.Unlock()
+	roots := make(map[[32]byte][32]byte)
+	for i := range b.hooks {
+		s := &b.hooks[i]
+		s.mu.Lock()
+		for k, v := range s.stoRoots {
+			roots[k] = v
+		}
+		s.stoRoots = nil
+		s.mu.Unlock()
+	}
 	for addr := range stor {
 		if a, ok := accs[addr]; ok && a == nil {
 			continue // deleted this block/window: handled below
