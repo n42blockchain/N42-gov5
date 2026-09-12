@@ -82,6 +82,25 @@ func (tx *MdbxTx) Put(table string, k, v []byte) error {
 	return nil
 }
 
+// Upsert makes k hold exactly v in table (see kv.Upserter).
+func (tx *MdbxTx) Upsert(table string, k, v []byte) error {
+	c, err := tx.statelessCursor(table)
+	if err != nil {
+		return err
+	}
+	up, ok := c.(interface{ Upsert(k, v []byte) error })
+	if !ok {
+		return fmt.Errorf("table %s: cursor %T cannot upsert", table, c)
+	}
+	if err := up.Upsert(k, v); err != nil {
+		return err
+	}
+	tx.writeCount.Add(1)
+	tx.writeBytes.Add(uint64(len(k) + len(v)))
+	tx.noteWrite(table, len(k)+len(v), false)
+	return nil
+}
+
 func (tx *MdbxTx) Delete(table string, k []byte) error {
 	c, err := tx.statelessCursor(table)
 	if err != nil {

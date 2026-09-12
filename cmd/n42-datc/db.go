@@ -31,7 +31,18 @@ var datcTables = []string{tDatcAccNode, tDatcStoNode, tDatcAccChg, tDatcStoChg, 
 // pages to disk ~20x over; a multi-GB dirty space keeps a full batch's dirty
 // set in RAM and commit then writes it once.
 func openDatcDB(logger log.Logger, path string, mapGB, dirtyGB int) (kv.RwDB, error) {
-	return mdbxkv.NewMDBX(logger).Path(path).Label(kv.ChainDB).
+	return openDatcDBMode(logger, path, mapGB, dirtyGB, false)
+}
+
+// openDatcDBMode is openDatcDB with an explicit MDBX_WRITEMAP choice. The
+// on-disk format is the same either way, so a DB can be reopened in the other
+// mode.
+func openDatcDBMode(logger log.Logger, path string, mapGB, dirtyGB int, writeMap bool) (kv.RwDB, error) {
+	opts := mdbxkv.NewMDBX(logger).Path(path).Label(kv.ChainDB)
+	if writeMap {
+		opts = opts.WriteMap()
+	}
+	return opts.
 		MapSize(datasize.ByteSize(mapGB) * datasize.GB).
 		DirtySpace(uint64(dirtyGB) * uint64(datasize.GB)).
 		WithTableCfg(func(_ kv.TableCfg) kv.TableCfg {

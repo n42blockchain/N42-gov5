@@ -300,6 +300,51 @@ func (c *MdbxCursor) PutNoOverwrite(key []byte, value []byte) error {
 	return c.putNoOverwrite(key, value)
 }
 
+// Upsert makes key hold exactly value (see kv.Upserter). AutoDupSort tables
+// already replace the duplicate carrying the same sub-key in putDupSort. On a
+// plain DupSort table the key is positioned once: a single same-length
+// duplicate is rewritten in place (or left alone when equal), anything else is
+// cleared before the insert.
+func (c *MdbxCursor) Upsert(key []byte, value []byte) error {
+	err := c.upsert(key, value)
+	if err != nil {
+		return fmt.Errorf("label: %s, table: %s, upsert: %w", c.tx.db.opts.label, c.bucketName, err)
+	}
+	return nil
+}
+
+func (c *MdbxCursor) upsert(key []byte, value []byte) error {
+	if c.bucketCfg.AutoDupSortKeysConversion {
+		return c.putDupSort(key, value)
+	}
+	if c.bucketCfg.Flags&mdbx.DupSort == 0 {
+		return c.put(key, value)
+	}
+	_, old, err := c.set(key)
+	if err != nil {
+		if mdbx.IsNotFound(err) {
+			return c.put(key, value)
+		}
+		return err
+	}
+	// c.c.Count is the duplicate count of the positioned key; MdbxCursor.Count
+	// is the whole table's row count.
+	dups, err := c.c.Count()
+	if err != nil {
+		return err
+	}
+	if dups == 1 && len(old) == len(value) {
+		if bytes.Equal(old, value) {
+			return nil
+		}
+		return c.putCurrent(key, value)
+	}
+	if err := c.delAllDupData(); err != nil {
+		return err
+	}
+	return c.put(key, value)
+}
+
 func (c *MdbxCursor) Put(key []byte, value []byte) error {
 	c.tx.noteWrite(c.bucketName, len(key)+len(value), false)
 	var err error

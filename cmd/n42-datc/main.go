@@ -180,6 +180,7 @@ func main() {
 	schedStr := fs.String("sched", "", "explicit per-depth epoch lengths e0,e1,...,e5 (overrides --alpha/--cbar); e0 = storage-root level, e1..e3 = account levels 1..3 (e.g. 1024,16384,1024,1,4194304,4194304 = sparse tops + per-block depth-3)")
 	batch := fs.Uint64("batch", 20_000, "blocks per MDBX commit (large batches spill MDBX dirty pages and stall)")
 	mapGB := fs.Int("map.gb", 1024, "MDBX map size GB")
+	writeMap := fs.Bool("writemap", false, "open the output MDBX with MDBX_WRITEMAP: dirty pages live in the file mapping instead of a sorted in-process dirty list (whose re-sorting dominated the per-batch flush on a large, fragmented DB)")
 	dirtyGB := fs.Int("dirty.gb", 16, "MDBX DirtySpace GB — raise so a dense batch's dirty pages stay in RAM and commit doesn't spill (cures the multi-minute commit stalls in DeFi-dense regions)")
 	stoCacheM := fs.Int("stocache.m", 8, "storage lastFull node cache size, in millions of entries — raise to cut late-block read-back (rb) cgo reads; ~150 B/entry (64 ≈ 10 GB)")
 	leavesTotal := fs.Uint64("leaves-total", 4_726_265_247+8_599_658_943, "total leaf-change workload (AccountChangeSets+StorageChangeSets rows) — denominator for the leaf-workload progress %")
@@ -262,7 +263,7 @@ func main() {
 	// Hashed*/node pages, so every window was SPILLING dirty pages to disk
 	// ~20x over (the ~33µs/put mystery across all earlier runs). 16 GB keeps
 	// a full batch's dirty set in RAM; commit then writes it once.
-	db, err := openDatcDB(logger, *out, *mapGB, *dirtyGB)
+	db, err := openDatcDBMode(logger, *out, *mapGB, *dirtyGB, *writeMap)
 	if err != nil {
 		die("open out mdbx: %v", err)
 	}
