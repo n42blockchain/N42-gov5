@@ -4269,6 +4269,41 @@ root hash mismatch" (a leader and a follower disagreeing on the gate --
 the env value must be identical on all seven nodes; the runner exports
 it once for all).
 
+## 6bg. Round 35zzn: deferred execution -- registered before the round ran (2026-09-12)
+
+35zzm's configuration on a fresh reseed, n42-r71 -> n42-r72, with
+N42_DEFERRED_EXECUTION_TIME=1789205400 (2026-09-12 05:30 EDT). The one
+change is the rule agreed with the n42-rs side (their PHASE_D document,
+sections 8-9; gov5's implementation is commit 93e31b89): from the fork
+a header carries the PARENT's Root, ReceiptHash, Bloom and GasUsed; every
+node stores its own result of each block it applies; the import checks
+the header against the parent's stored result before executing; the
+builder stamps the parent's result; and a follower votes for a proposal
+once the parent is imported, the header matches its own result of the
+parent, and the transactions pass the includability check -- without
+executing the block. The cycle becomes max(build, import) instead of
+import + fixed. Their bench went from 293k to 300-303k at 56 blocks a
+window with the same rule (their cycle was already ~540 ms, so the gain
+there was the vote's ~500 ms of import turning into ~130 ms of check);
+ours has ~1.0 s of import inside a ~1.65 s cycle.
+
+**Prediction 69.** The follower's vote leaves the import: seal -> QC
+from ~1.4 s to ~0.5 s (push ~0.2 + the check ~0.15: sender recovery
+~0.1 hinted + the nonce/balance pass ~0.04 + the header compare); the
+chained seal -> seal from ~1.65 s to max(the leader's build ~0.65 +
+seal, the follower's import ~1.0 that must finish before the NEXT
+vote) = ~1.05-1.15 s; the handover unchanged in kind; B windows +40-50%
+over 35zzm (B mean ~87k -> ~125k at the same 163k block, bounded by the
+import of N-1 finishing before the vote on N). Falsified: any BAD BLOCK
+or "deferred execution: header ... carries" import error (the leader and
+a follower disagreeing on a parent's result -- the invariant at the fork
+block, the chained build's stored result, or the includability rule
+letting a failing transaction through), a "deferred check FAILED" line
+on any node, or seal -> QC staying above 1.0 s (then the vote still
+waits on something -- read "deferred vote:" against "import-gated vote:"
+lines). The first deferred header appears mid-warmup if the round starts
+before 05:30 EDT; that is the invariant's live test.
+
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
