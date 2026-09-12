@@ -4214,6 +4214,36 @@ writes themselves queueing behind each other -- read heldMs), or if the
 fold's own transaction at ~10 blocks exceeds the 255 MB dirty limit and
 spills (heldMs of the AccountHistory rows).
 
+**35zzl result (n42-r70, N42_HISTORY_INDEX_INTERVAL=20s, fresh dirs;
+2026-09-12 00:23-01:27).** No BAD BLOCK. Warmup 81.5k/70.6k, A1
+56.4k/53.0k, B1 86.9k/76.1k, B2 90.3k/81.5k, A2 57.9k/51.8k. B mean
+83.7k (35zzk 73.1k: +14.5%; P67 said +15-25% -- held at the edge), A
+mean 54.8k (+16%), and 90.3k is the best window the fleet has produced.
+Mechanism, all held: the block write's begin wait is 0 at p75 and p90 in
+every flood minute (max 0.3-1.4 s, single blocks; 35zzi: p90 2.2 s); the
+write probe's new fields name the writers -- on node1 over the B legs
+AccountHistory ran 77 times (one fold per ~20 s) holding the writer 415
+ms median, 752 p90, 3.3 s once (a fold under the 255 MB dirty limit,
+not spilling), BlockTransaction 130 ms median, LastBlock 9 ms p90; the
+TxPoolJournal appeared twice at 55 MB / 445 ms. Late-leg imports 1001-
+1039 ms (35zzk 1101-1148), win2 within 12% of win1 on both B legs
+(35zzi: -25%). The fold at 20 s rewrites each hot chunk once per ~10
+blocks instead of every block. Per-minute: wr-logs/r35zzl-perminute.txt.
+
+Standing after the four rounds (all fresh dirs, 32 workers, tenure 4):
+B mean 68.0k (r66) -> 52.3k (r67, write-lock collapse) -> 70.7k (r68) ->
+73.1k (r69) -> 83.7k (r70 + fold 20 s); follower import 1158 -> ~1000
+ms; chained seal -> seal 1919 -> ~1650. Left on the import: exec 250-310
+(grows over a leg with the box's load), recover 50 -> 110 (same), the
+tx-root/body 100, finalize ~130 (QMDB apply 28, the fold's two sorted
+walks), write 130-210. The fold interval is a knob, not a fix: the 415 ms
+hold every 20 s is still 2% of the writer; nosync for the fold (its
+marker makes a lost transaction safe) and a longer interval are the
+cheap follow-ups. Beyond the import, the cycle is import + fixed; the
+deferred-execution rule agreed with the n42-rs side (header N carries
+the execution of N-1) makes it max(build, import) and is the next
+structural lever.
+
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
