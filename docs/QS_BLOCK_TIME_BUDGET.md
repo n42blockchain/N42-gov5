@@ -4269,6 +4269,39 @@ root hash mismatch" (a leader and a follower disagreeing on the gate --
 the env value must be identical on all seven nodes; the runner exports
 it once for all).
 
+**35zzm, first attempt (n42-r71, 05:15-05:5x): void.** The gate was set
+as a wall-clock timestamp (1789185600), but the chain's block timestamps
+run ~9 days behind the wall clock (the era seed's head, block 13,652,362,
+is stamped 1788393863; the fleet's blocks continue from there at the
+chain's own pace), so no block of the round reached the gate: the B1
+profile shows ValidateBody's 2.36 s of 25 still in the keccak MPT root.
+Warmup 78.8k/72.9k and A1 56.4k/52.6k are r70-equivalent figures.
+Aborted at B1 for the audit's fixes (6bh); both gates are now the seed
+head's timestamp + 1 (1788393864), which every block of a reseeded
+round is past, and the first block of the round is the fork block.
+
+## 6bh. The audit before the deferred-execution round (2026-09-12 05:20-06:00)
+
+Four read-only reviews of r67-r72 in parallel (the consensus change;
+the QMDB batch, arena and prefetch; the transactions root, backfill and
+probe; the fork gating and restart paths) found twenty items, fixed in
+b15cd2b7 (n42-r73). Three would have failed every deferred block on the
+fleet -- the processors' gas-used comparison against the header, the
+tree-at-parent alignment and the startup self-check comparing the live
+tree with header roots, the leader's own write comparing its replay
+with blk.StateRoot() -- and one was a confirmed race in r69's prefetch
+(the live tree read without the readers lock while the import writes
+it). The includability rule gained the fee-cap, sender-code, blob,
+overflow and nonce-max checks that execution still enforces, and reads
+the parent's state under the readers lock; a not-yet-stored parent
+result is retried, not marked bad; the header's GasUsed is bounded by
+the parent's limit; genesis and a zero fork time are handled; the sync
+layer polls pending children; eth_getProof uses executed roots; the
+runner's watchdog knows the new failure signatures. The n42-rs vectors
+run against the header check in TestDeferredExecutionCrossClientVectors.
+35zzm (r73, tx root) and 35zzn (r73, tx root + deferred execution) run
+next, each on a fresh reseed.
+
 ## 6bg. Round 35zzn: deferred execution -- registered before the round ran (2026-09-12)
 
 35zzm's configuration on a fresh reseed, n42-r71 -> n42-r72, with
