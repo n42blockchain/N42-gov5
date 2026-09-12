@@ -4244,6 +4244,31 @@ deferred-execution rule agreed with the n42-rs side (header N carries
 the execution of N-1) makes it max(build, import) and is the next
 structural lever.
 
+## 6bf. Round 35zzm: the BLAKE3 binary transactions root -- registered before the round ran (2026-09-12)
+
+35zzl's configuration on a fresh reseed, n42-r70 -> n42-r71, with
+N42_TXROOT_BLAKE3_TIME=1789185600 (2026-09-12 00:00 EDT: after the seed's
+last block, before the round). The one change: the transactions root of
+every block from that time is hash.Blake3BinaryRoot -- leaf blake3(0x00 ||
+enc), node blake3(0x01 || l || r), odd nodes carried up, empty blake3("")
+-- in place of the Ethereum keccak Merkle-Patricia trie that a73a7258
+put the QMDB chain on. The trie builder is single-threaded and ~70 ms at
+163k on every follower (the "body" phase, ~100 ms with the decode) and
+in the leader's assembly; the binary tree hashes every level across the
+cores: 6 ms in isolation. The chain's state is a BLAKE3 binary forest;
+the body root now follows the same design. Proposed to the n42-rs side
+as a joint header rule (their side pays the same ~72 ms of serial
+keccak); both clients' vectors are in common/hash/txroot_blake3_test.go.
+
+**Prediction 68.** Follower import "body" 100 -> ~35 ms; leader assemble
+262 -> ~200 ms; follower import ~1000 -> ~935 ms; seal -> QC -65 ms;
+chained seal -> seal 1650 -> ~1585; B windows +3-4% over 35zzl (B mean
+83.7k -> ~86-87k). Falsified if the body phase stays above 70 ms (then
+the decode, not the root, is the phase) or by any BAD BLOCK or "transaction
+root hash mismatch" (a leader and a follower disagreeing on the gate --
+the env value must be identical on all seven nodes; the runner exports
+it once for all).
+
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
