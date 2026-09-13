@@ -5,6 +5,32 @@ paused the session. Detail and every prediction live in
 `docs/QS_BLOCK_TIME_BUDGET.md` (sections 6ba-6bh cover this handover's span);
 this file is the entry point. No keys in here.
 
+## Update 2026-09-13 (read this before section 0)
+
+- A second full audit (four read-only reviews plus n42-rs's last three
+  days) led to **n42-r74 = `6445f1bf`**: duplicate work removed on the
+  follower import, the leader's seal and push, the ingest and RPC paths;
+  the r73 deferred check fixed (it would have failed every non-empty
+  block: senders were never recovered); deferred commit retries made a
+  set; checked evidence withdrawn on import failure. Details and
+  predictions 70-72: `QS_BLOCK_TIME_BUDGET.md` 6bi-6bk.
+- **35zzm and 35zzn are superseded** (never run on r73). Queued instead,
+  not launched: `chain-35zzo.sh` (r74, 35zzl config), then
+  `chain-35zzp.sh` (+ tx root gate), then `chain-35zzq.sh` (+ deferred
+  execution); each waits for the previous ROUND line, the box claim
+  protocol and three quiet checks, reseeds, installs n42-r74, launches.
+  Start all three with `setsid nohup bash ./chain-35zzX.sh > wr-logs/chain-35zzX.out 2>&1 </dev/null &`.
+- Still open from the audit (not in r74): QMDB eviction one block behind
+  (the next block re-reads its hot set from MDBX; needs the dead-row
+  reclaim in `deactivate` for resident-but-flushed slots); the miner tree
+  sharing the live index (~0.8 GB a node); QMDBUndoWindow v3; the history
+  fold (bench could run with `N42_NO_HISTORY_INDEX=1`); the leader's
+  handover reload from disk (1 block in 4); the deferred path reusing the
+  build's receipts root/bloom in the write; the 50 ms sleep before each
+  Proposal once deferred execution is on; the mobileverify packet being
+  built from a read log the parallel fill does not record; txflood
+  sending hints to the node it RPC-submits to.
+
 ## 0. In one screen
 
 - **Best measured**: round 35zzl (n42-r70 + history fold every 20 s): B mean

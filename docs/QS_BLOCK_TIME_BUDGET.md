@@ -4337,6 +4337,76 @@ waits on something -- read "deferred vote:" against "import-gated vote:"
 lines). The first deferred header appears mid-warmup if the round starts
 before 05:30 EDT; that is the invariant's live test.
 
+## 6bi. The second audit and round 35zzo -- registered before the round ran (2026-09-13)
+
+Four read-only audits of the seven-node paths (QMDB storage and reads
+against PlainState; the follower import; the leader build and seal; the
+transaction ingest, pool and sender recovery) and a read of n42-rs's
+last three days (80 commits, loops 120-155). Findings that set the
+direction:
+
+- Account and storage reads on the import hit the QMDB tree only; no
+  plain fallback, no verify read, no layered cache (off on the bench).
+  The duplication is in what sits beside the tree: the 20 s history fold
+  rewrites a derived copy of AccountChangeSet (~106 MB dirty a fold);
+  eviction after every block makes the next block re-read its hot set
+  from MDBX two or three times; every node holds two full indexes (live
+  and miner tree); QMDBUndoWindow (1.67 MB a block) is mostly bytes
+  already in qmdbEntries and the changeset. Not changed in r74 (each
+  needs design: section 7 of the handover).
+- n42-rs's lead is not its state storage (its EVM still reads reth's
+  hashed MDBX tables; QMDB only computes the root). It is deferred
+  execution plus seal-first, the leader never executing its own block
+  twice, and per-block QMDB work bounded by the block. Its workload
+  touches ~147k accounts a block against this bench's ~23k (22,857
+  recipients): the TPS figures of the two clients are not the same load.
+- The r73 deferred check could not have passed a non-empty block: it ran
+  before the import on wire-decoded transactions (From nil) and failed
+  "has no sender". 35zzn would have aborted on its first full block.
+
+n42-r74 = `6445f1bf` removes, byte-identically: the commit's re-decode
+and re-hash of the committed block (block cache on write); the serial
+block decode (parallel); the gossip copy's decode and second import
+(header peek against the push in flight); half of every tx hash
+(keccak of the cached encoding); the per-tx signer; the block end's
+repeated sorts of ~23k recipients; ~9% of senders recovered twice
+(two-way cache); the leader's per-push re-encode and synchronous gossip
+publish, and the receipts copy before the Proposal; the same-head pool
+reset; the reflective signing-payload encode; the per-tx hint channel
+hand-off; the RPC head-block decode for eth_getTransactionCount. It
+fixes the deferred check (senders recovered inside, readers lock only
+around the state reads), makes the deferred commit retry a set, and
+withdraws checked evidence of a block rejected on import.
+
+**Prediction 70 (35zzo: 35zzl's configuration, fold 20 s, no fork gates,
+on r74).** Leader push phase ~180 -> <=60 ms and the QC -> next seal gap
+~240 -> ~130 ms; follower recover median down >=30% against 35zzl's
+50-110 ms (fewer cache misses); commit-to-canonical body phase no longer
+decoding (canon <20 ms on followers); seal -> QC ~1.40 -> ~1.25 s;
+chained seal -> seal ~1.65 -> ~1.45 s; B mean 83.7k -> 92-95k. Falsified
+if the push phase stays above 120 ms, if the B mean gains less than 5%,
+or by any BAD BLOCK / "transaction root hash mismatch" (the hash
+shortcut or the pending-only sorts would be the suspects).
+
+## 6bj. Round 35zzp: 35zzo plus the BLAKE3 transactions root -- registered before the round ran (2026-09-13)
+
+Replaces void 35zzm. `N42_TXROOT_BLAKE3_TIME=1788393864` (chain time:
+the era seed head is stamped 1788393863, so the round's first block is
+the fork block). **Prediction 71.** Follower body (ValidateBody) ~100 ->
+<=35 ms; leader assemble -60 ms; B mean +3-4% over 35zzo. Falsified if
+body stays above 70 ms, or by any "transaction root hash mismatch".
+
+## 6bk. Round 35zzq: 35zzp plus deferred execution -- registered before the round ran (2026-09-13)
+
+Replaces 35zzn. `N42_DEFERRED_EXECUTION_TIME=1788393864`. **Prediction
+72.** Followers log "deferred check: block passes" and "deferred vote:
+block checked and parent imported" for full blocks; seal -> QC ~1.25 ->
+~0.5 s; chained seal -> seal -> max(the leader's build + seal, the
+follower's import that the next vote needs) ~0.95-1.05 s; B mean +35-50%
+over 35zzp. Falsified by any "deferred check FAILED", "deferred
+execution: header ... carries", BAD BLOCK, a lost commit (a follower's
+head standing while consensus advances), or seal -> QC above 1.0 s.
+
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
