@@ -163,6 +163,15 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		tracing.Int64Attr("block.receipt_count", int64(len(receipts))),
 	)
 	defer func() {
+		if retErr == nil && bc.blockCache != nil {
+			// Commit-to-canonical of this block runs two views later and looks
+			// in the block cache first; nothing added the imported (or sealed)
+			// instance, so every commit decoded 163k transactions from MDBX
+			// inside the write transaction and hashed each again for the tx
+			// index (35zzm follower profile: 0.9 s + 3.1 s of 25). This
+			// instance has every transaction hash memoised.
+			bc.blockCache.Add(concreteBlock.Hash(), concreteBlock)
+		}
 		if retErr != nil {
 			tracing.SetSpanError(span, retErr)
 		} else {

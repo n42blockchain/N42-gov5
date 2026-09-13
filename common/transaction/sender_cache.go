@@ -61,6 +61,24 @@ type senderCacheEntry struct {
 	hash   types.Hash
 	signer Signer
 	from   types.Address
+	seq    uint64 // insertion order, for choosing the victim of a two-way set
+}
+
+// senderCacheSeq orders insertions for the two-way eviction.
+var senderCacheSeq atomic.Uint64
+
+// senderCacheSlots returns the two slots of hash's set: its home slot and
+// the neighbour that differs in the lowest bit. A direct-mapped table lost
+// ~9% of a block's senders to age-driven overwrites at ~86k inserts/s
+// (35zzm follower: 189k misses in 30 s with no hint dropped); a two-way set
+// with the older entry evicted keeps the recent ones.
+func senderCacheSlots(hash types.Hash) (uint64, uint64) {
+	s := senderCacheSlot(hash)
+	alt := s ^ 1
+	if alt > senderCacheMask {
+		alt = s
+	}
+	return s, alt
 }
 
 var (
@@ -115,25 +133,42 @@ func senderCacheGet(hash types.Hash, signer Signer) (types.Address, bool) {
 	if senderCache == nil {
 		return types.Address{}, false
 	}
-	e := senderCache[senderCacheSlot(hash)].Load()
-	// The full hash is re-checked because the slot is shared by every key that
-	// maps to it, and the signer because the same bytes recover differently
-	// under different chain rules.
-	if e == nil || e.hash != hash || !e.signer.Equal(signer) {
-		senderCacheMisses.Add(1)
-		return types.Address{}, false
+	a, b := senderCacheSlots(hash)
+	if e := senderCache[a].Load(); e != nil && e.hash == hash && e.signer.Equal(signer) {
+		senderCacheHits.Add(1)
+		return e.from, true
 	}
-	senderCacheHits.Add(1)
-	return e.from, true
+	if b != a {
+		if e := senderCache[b].Load(); e != nil && e.hash == hash && e.signer.Equal(signer) {
+			senderCacheHits.Add(1)
+			return e.from, true
+		}
+	}
+	senderCacheMisses.Add(1)
+	return types.Address{}, false
 }
 
 func senderCachePut(hash types.Hash, signer Signer, from types.Address) {
 	if senderCache == nil {
 		return
 	}
-	senderCache[senderCacheSlot(hash)].Store(&senderCacheEntry{
-		hash: hash, signer: signer, from: from,
-	})
+	entry := &senderCacheEntry{hash: hash, signer: signer, from: from, seq: senderCacheSeq.Add(1)}
+	a, b := senderCacheSlots(hash)
+	ea := senderCache[a].Load()
+	if ea == nil || ea.hash == hash || a == b {
+		senderCache[a].Store(entry)
+		return
+	}
+	eb := senderCache[b].Load()
+	if eb == nil || eb.hash == hash {
+		senderCache[b].Store(entry)
+		return
+	}
+	if eb.seq < ea.seq {
+		senderCache[b].Store(entry)
+		return
+	}
+	senderCache[a].Store(entry)
 }
 
 // SenderCacheStats reports cumulative hits and misses. Exported so operators
@@ -146,11 +181,22 @@ func SenderCacheProbe(hash types.Hash) (occupied, sameHash bool, signerType stri
 	if senderCache == nil {
 		return false, false, "cache disabled"
 	}
-	e := senderCache[senderCacheSlot(hash)].Load()
-	if e == nil {
+	a, b := senderCacheSlots(hash)
+	var seen *senderCacheEntry
+	for _, i := range []uint64{a, b} {
+		e := senderCache[i].Load()
+		if e == nil {
+			continue
+		}
+		if e.hash == hash {
+			return true, true, fmt.Sprintf("%T", e.signer)
+		}
+		seen = e
+	}
+	if seen == nil {
 		return false, false, ""
 	}
-	return true, e.hash == hash, fmt.Sprintf("%T", e.signer)
+	return true, false, fmt.Sprintf("%T", seen.signer)
 }
 
 func SenderCacheStats() (hits, misses uint64) {

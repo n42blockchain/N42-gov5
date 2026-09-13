@@ -27,7 +27,9 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -36,11 +38,11 @@ import (
 
 	"github.com/n42blockchain/N42/lib/rlp"
 
-	"github.com/n42blockchain/N42/proto/types_pb"
 	"github.com/n42blockchain/N42/common/hash"
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/common/utils"
+	"github.com/n42blockchain/N42/proto/types_pb"
 )
 
 type Block struct {
@@ -160,7 +162,10 @@ func (b *Block) EncodeRLP(w io.Writer) error {
 	}
 	txData := make([][]byte, len(body.Txs))
 	for i, tx := range body.Txs {
-		enc, err := transaction.EncodeEthereumTransaction(tx)
+		// The cached consensus encoding (filled at pool admission, at decode,
+		// or by the transactions root): the same bytes, without re-encoding
+		// 163k transactions for every push of a sealed block.
+		enc, err := tx.EthEncoded()
 		if err != nil {
 			return err
 		}
@@ -181,13 +186,9 @@ func (b *Block) DecodeRLP(s *rlp.Stream) error {
 	if err := s.Decode(&dec); err != nil {
 		return err
 	}
-	txs := make([]*transaction.Transaction, len(dec.TxData))
-	for i, enc := range dec.TxData {
-		tx, err := transaction.DecodeEthereumTransaction(enc)
-		if err != nil {
-			return err
-		}
-		txs[i] = tx
+	txs, err := decodeBlockTxs(dec.TxData)
+	if err != nil {
+		return err
 	}
 	b.header = dec.Header
 	b.body = &Body{Txs: txs, Verifiers: dec.Verifiers, Rewards: dec.Rewards, ZkProof: dec.ZkProof}
@@ -373,4 +374,67 @@ func (b *Block) SendersToTxs(senders []types.Address) {
 
 func (b *Block) Uncles() []*Header {
 	return nil
+}
+
+// parallelTxDecodeMin is the transaction count from which a block's
+// transactions are decoded across goroutines.
+const parallelTxDecodeMin = 2048
+
+// decodeBlockTxs decodes a block's transaction encodings, across goroutines
+// for a large block (a follower decoded 163k transactions on the stream
+// goroutine before its import could start: ~110 ms a block). The error, if
+// any, is the one of the lowest failing index, as the serial loop reported.
+func decodeBlockTxs(data [][]byte) ([]*transaction.Transaction, error) {
+	txs := make([]*transaction.Transaction, len(data))
+	workers := runtime.GOMAXPROCS(0)
+	if workers > 16 {
+		workers = 16
+	}
+	if len(data) < parallelTxDecodeMin || workers < 2 {
+		for i, enc := range data {
+			tx, err := transaction.DecodeEthereumTransaction(enc)
+			if err != nil {
+				return nil, err
+			}
+			txs[i] = tx
+		}
+		return txs, nil
+	}
+	chunk := (len(data) + workers - 1) / workers
+	var (
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		errAt = -1
+		first error
+	)
+	for w := 0; w < workers; w++ {
+		lo, hi := w*chunk, (w+1)*chunk
+		if hi > len(data) {
+			hi = len(data)
+		}
+		if lo >= hi {
+			break
+		}
+		wg.Add(1)
+		go func(lo, hi int) {
+			defer wg.Done()
+			for i := lo; i < hi; i++ {
+				tx, err := transaction.DecodeEthereumTransaction(data[i])
+				if err != nil {
+					mu.Lock()
+					if errAt < 0 || i < errAt {
+						errAt, first = i, err
+					}
+					mu.Unlock()
+					return
+				}
+				txs[i] = tx
+			}
+		}(lo, hi)
+	}
+	wg.Wait()
+	if first != nil {
+		return nil, first
+	}
+	return txs, nil
 }

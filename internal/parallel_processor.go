@@ -387,7 +387,7 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 		sink := func(recipient types.Address, amount *uint256.Int) {
 			fees = append(fees, deferredFee{recipient: recipient, amount: amount.Clone()})
 		}
-		receipt, gasUsed, logs, err := parallelApplyTx(chainConfig, p.engine, gp, txIBS, pWriter, concreteHeader, tx, vmenv, cfg, sink)
+		receipt, gasUsed, logs, err := parallelApplyTx(chainConfig, p.engine, gp, txIBS, pWriter, concreteHeader, tx, vmenv, cfg, sink, signer)
 		rw.MarkBalanceInsensitive(func(a types.Address) bool { _, seen := wc.observed[a]; return seen })
 
 		txResults[txIndex] = parallelTxResult{
@@ -646,6 +646,7 @@ func parallelApplyTx(
 	evm vm2.VMInterface,
 	cfg vm2.Config,
 	sink FeeSink,
+	signer transaction.Signer,
 ) (*block.Receipt, uint64, []*block.Log, error) {
 	headerNumber, err := requireHeaderNumber(header, "header number unavailable")
 	if err != nil {
@@ -653,7 +654,13 @@ func parallelApplyTx(
 	}
 	rules := evm.ChainRules()
 
-	msg, err := tx.AsMessage(transaction.MakeSignerWithTimestamp(config, headerNumber.ToBig(), header.Time), header.BaseFee)
+	// The block's signer, built once per block by the caller (it re-derived
+	// the fork rules for every transaction: 0.49 s of a follower's 25 s
+	// profile). Nil falls back to building it here.
+	if signer == nil {
+		signer = transaction.MakeSignerWithTimestamp(config, headerNumber.ToBig(), header.Time)
+	}
+	msg, err := tx.AsMessage(signer, header.BaseFee)
 	if err != nil {
 		return nil, 0, nil, err
 	}

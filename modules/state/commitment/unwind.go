@@ -191,7 +191,14 @@ func UnwindPlainStateBlock(tx kv.RwTx, n uint64) error {
 	if err != nil {
 		return err
 	}
+	// Under QMDB-only account persistence the plain Account table is frozen
+	// (the tree is the account state): writing the unwound pre-values into it
+	// put rows from after the freeze into a table nothing maintains.
+	skipAccounts := modules.PlainAccountWriteSkipped()
 	for addr, acc := range accounts {
+		if skipAccounts {
+			break
+		}
 		if acc == nil {
 			if err := tx.Delete(modules.Account, addr[:]); err != nil {
 				return err

@@ -57,6 +57,9 @@ type BlockImportNotifier interface {
 	// pre-execution check (DeferredBlockChecker) and can be voted for once
 	// its parent is imported.
 	NotifyBlockChecked(hash types.Hash, parent types.Hash)
+	// NotifyBlockRejected: the block failed validation on import; withdraw
+	// any pre-import vote evidence for it.
+	NotifyBlockRejected(hash types.Hash)
 }
 
 // DeferredBlockChecker is implemented by the chain under deferred

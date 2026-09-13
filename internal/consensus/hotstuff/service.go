@@ -439,12 +439,16 @@ type Service struct {
 	notifiedImports map[types.Hash]struct{}
 	notifiedFIFO    []types.Hash
 
-	// pendingCommit is a committed block whose CommitToCanonical was deferred
+	// pendingCommits are committed blocks whose CommitToCanonical was deferred
 	// because the block hadn't arrived yet. Retried when that block imports —
 	// without the retry, nodes that missed the commit-time import never mark
 	// the height canonical (observed on-disk: canonical rows missing on 6/7
-	// nodes at the first view-changed height). Protected by pendingMu.
-	pendingCommit types.Hash
+	// nodes at the first view-changed height). A set, not one slot: a follower
+	// that hears several Decides before their bodies must retry every one,
+	// not only the last (n42-rs loop149/loop154 hit exactly that with the
+	// deferred-execution rule, where the vote no longer waits for the body).
+	// Protected by pendingMu.
+	pendingCommits map[types.Hash]struct{}
 	// deferredProduce remembers a leader view whose gate found the consensus
 	// parent not yet applied locally, so the import that lands it can re-run
 	// the gate instead of the view waiting out its 6 s timeout. Round 31: at
@@ -682,11 +686,14 @@ func (s *Service) handleOutput(output EngineOutput) {
 				log.Debug("hotstuff: commit-to-canonical deferred", "hash", output.Hash, "err", cErr)
 				// Remember it — NotifyBlockImported retries when the block lands.
 				s.pendingMu.Lock()
-				s.pendingCommit = output.Hash
+				if s.pendingCommits == nil || len(s.pendingCommits) >= maxPendingCommits {
+					s.pendingCommits = make(map[types.Hash]struct{})
+				}
+				s.pendingCommits[output.Hash] = struct{}{}
 				s.pendingMu.Unlock()
 			} else {
 				s.pendingMu.Lock()
-				s.pendingCommit = types.Hash{}
+				delete(s.pendingCommits, output.Hash)
 				s.pendingMu.Unlock()
 			}
 			dCanon = time.Since(tCanon)
@@ -1547,6 +1554,25 @@ func (s *Service) broadcastBlockData(_ types.Hash) {
 	time.Sleep(50 * time.Millisecond)
 }
 
+// maxPendingCommits bounds the deferred-commit set; a node that far behind
+// catches up through the range import, not through retries.
+const maxPendingCommits = 256
+
+// NotifyBlockRejected implements sync.BlockImportNotifier: a block that
+// failed validation on import withdraws any deferred-execution check
+// evidence, so a re-proposal of the same hash is not voted for on the
+// strength of a check whose block then failed.
+func (s *Service) NotifyBlockRejected(hash types.Hash) {
+	if s.engine == nil {
+		return
+	}
+	if ce := s.engine.Engine(); ce != nil {
+		if err := ce.ProcessEvent(ConsensusEvent{Type: EventBlockRejected, Hash: hash}); err != nil {
+			log.Debug("hotstuff: EventBlockRejected processing failed", "hash", hash, "err", err)
+		}
+	}
+}
+
 // NotifyBlockChecked implements sync.BlockImportNotifier: under deferred
 // execution the sync layer verified an arrived block without executing it
 // (its header carries this node's result of the parent; its transactions
@@ -1576,9 +1602,9 @@ func (s *Service) NotifyBlockImported(hash types.Hash, txHash types.Hash) {
 
 	s.pendingMu.Lock()
 	delete(s.pendingExecutions, hash) // clear if present; no longer used to gate
-	retryCommit := s.pendingCommit == hash && hash != (types.Hash{})
+	_, retryCommit := s.pendingCommits[hash]
 	if retryCommit {
-		s.pendingCommit = types.Hash{}
+		delete(s.pendingCommits, hash)
 	}
 	retryProduce := s.deferredProduce.parent == hash && hash != (types.Hash{})
 	deferredView := s.deferredProduce.view

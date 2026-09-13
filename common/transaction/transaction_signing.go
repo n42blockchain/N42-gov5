@@ -480,15 +480,7 @@ func (s eip2930Signer) SignatureValues(tx *Transaction, sig []byte) (R, S, V *bi
 func (s eip2930Signer) Hash(tx *Transaction) (types.Hash, error) {
 	switch tx.Type() {
 	case LegacyTxType:
-		return hash.RlpHash([]interface{}{
-			tx.Nonce(),
-			tx.GasPrice(),
-			tx.Gas(),
-			tx.To(),
-			tx.Value(),
-			tx.Data(),
-			s.chainId, uint(0), uint(0),
-		}), nil
+		return legacySigningHash(tx, s.chainId), nil
 	case AccessListTxType:
 		return hash.PrefixedRlpHash(
 			tx.Type(),
@@ -577,15 +569,7 @@ func (s EIP155Signer) SignatureValues(tx *Transaction, sig []byte) (R, S, V *big
 // Hash returns the hash to be signed by the sender.
 // It does not uniquely identify the transaction.
 func (s EIP155Signer) Hash(tx *Transaction) (types.Hash, error) {
-	return hash.RlpHash([]interface{}{
-		tx.Nonce(),
-		tx.GasPrice(),
-		tx.Gas(),
-		tx.To(),
-		tx.Value(),
-		tx.Data(),
-		s.chainId, uint(0), uint(0),
-	}), nil
+	return legacySigningHash(tx, s.chainId), nil
 }
 
 // HomesteadTransaction implements TransactionInterface using the

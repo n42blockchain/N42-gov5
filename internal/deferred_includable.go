@@ -15,10 +15,10 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/crypto"
-	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/modules/rawdb"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/modules/state/commitment"
+	"github.com/n42blockchain/N42/params"
 )
 
 // ErrDeferredParentNotApplied: the parent is stored but not (yet) this
@@ -33,9 +33,8 @@ var ErrDeferredParentNotApplied = errors.New("deferred execution: parent is not 
 // nonces contiguous from the state, worst-case cost within the balance,
 // intrinsic gas within the gas limit, block gas within the header's
 // limit) -- the rule that keeps execution from ever failing a committed
-// block. Returns checked=false when the block is before the fork.
-// ErrDeferredResultUnknown / ErrDeferredParentNotApplied ask the caller to
-// retry once the parent is applied.
+// block. Returns checked=false when the block is before the fork; retry
+// asks the caller to run the check again once the parent is applied.
 func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool, err error) {
 	hdr, ok := blk.Header().(*block.Header)
 	if !ok || bc.chainConfig == nil || !bc.chainConfig.IsDeferredExecution(hdr.Time) {
@@ -57,6 +56,16 @@ func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool,
 	if err := checkDeferredHeader(bc.chainConfig, tx, hdr, parent); err != nil {
 		return true, errors.Is(err, ErrDeferredResultUnknown), err
 	}
+	// Senders and the stateless rules first, outside the tree's readers lock.
+	// A block decoded from the wire carries no sender -- the import's hint
+	// pass sets From later -- so the check recovers them itself, through the
+	// per-object memo and the process-wide sender cache (which the import
+	// then hits), and never writes or reads the From field the import
+	// writes: the check can run beside the import of a child without a race.
+	plan, err := deferredTxPlan(bc.chainConfig, hdr, blk.Transactions())
+	if err != nil {
+		return true, false, err
+	}
 	// The applied-head check and the state reads below must see one state:
 	// the tree's readers lock keeps the import from moving the applied head
 	// (and the tree) between them.
@@ -67,41 +76,93 @@ func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool,
 	if !bc.AppliedHeadIsExactly(parent.Hash(), number-1) {
 		return true, true, ErrDeferredParentNotApplied
 	}
-	return true, false, bc.checkIncludable(tx, hdr, blk.Transactions())
+	return true, false, bc.checkSenderStates(number, plan)
 }
 
-// checkIncludable verifies txs against the applied head's post-state (the
-// parent of hdr).
-func (bc *BlockChain) checkIncludable(tx kv.Tx, hdr *block.Header, txs []*transaction.Transaction) error {
+// deferredSender is one sender's transactions in block order.
+type deferredSender struct {
+	addr types.Address
+	txs  []*transaction.Transaction
+}
+
+// deferredTxPlan recovers every transaction's sender (across goroutines),
+// applies the rules that need no state -- block gas, blob transactions, fee
+// cap against the base fee and the tip, intrinsic gas under the block
+// timestamp's fork rules -- and groups the transactions by sender in first
+// appearance order.
+func deferredTxPlan(config *params.ChainConfig, hdr *block.Header, txs []*transaction.Transaction) ([]*deferredSender, error) {
 	if len(txs) == 0 {
-		return nil
+		return nil, nil
 	}
 	number := hdr.Number.Uint64()
-	signer := transaction.MakeSignerWithTimestamp(bc.chainConfig, hdr.Number.ToBig(), hdr.Time)
-	if _, err := verifyBlockSendersHinted(signer, txs, bc.senderHints); err != nil {
-		return fmt.Errorf("deferred execution: block %d senders: %w", number, err)
+	signer := transaction.MakeSignerWithTimestamp(config, hdr.Number.ToBig(), hdr.Time)
+	senders := make([]types.Address, len(txs))
+	var (
+		errMu  sync.Mutex
+		errAt  = -1
+		errVal error
+	)
+	fail := func(i int, err error) {
+		errMu.Lock()
+		if errAt < 0 || i < errAt {
+			errAt, errVal = i, err
+		}
+		errMu.Unlock()
 	}
-	rules := bc.chainConfig.RulesWithTimestamp(number, hdr.Time)
+	workers := senderRecoveryFanout()
+	if len(txs) < senderRecoveryMinTxs || workers < 2 {
+		workers = 1
+	}
+	if workers > len(txs) {
+		workers = len(txs)
+	}
+	chunk := (len(txs) + workers - 1) / workers
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		lo, hi := w*chunk, (w+1)*chunk
+		if hi > len(txs) {
+			hi = len(txs)
+		}
+		if lo >= hi {
+			break
+		}
+		wg.Add(1)
+		go func(lo, hi int) {
+			defer wg.Done()
+			for i := lo; i < hi; i++ {
+				t := txs[i]
+				if t == nil {
+					fail(i, fmt.Errorf("deferred execution: block %d tx %d is nil", number, i))
+					return
+				}
+				addr, err := transaction.Sender(signer, t)
+				if err != nil {
+					fail(i, fmt.Errorf("deferred execution: block %d tx %d sender: %w", number, i, err))
+					return
+				}
+				senders[i] = addr
+			}
+		}(lo, hi)
+	}
+	wg.Wait()
+	if errVal != nil {
+		return nil, errVal
+	}
+
+	rules := config.RulesWithTimestamp(number, hdr.Time)
 	baseFee := hdr.BaseFee
 	var blockGas uint64
-	type senderTxs struct {
-		first int
-		txs   []*transaction.Transaction
-	}
-	bySender := make(map[types.Address]*senderTxs, len(txs)/8+1)
-	var order []types.Address
+	bySender := make(map[types.Address]*deferredSender, len(txs)/8+1)
+	var plan []*deferredSender
 	for i, t := range txs {
-		from := t.From()
-		if from == nil {
-			return fmt.Errorf("deferred execution: block %d tx %d has no sender", number, i)
-		}
+		from := senders[i]
 		blockGas += t.Gas()
 		if blockGas > hdr.GasLimit {
-			return fmt.Errorf("deferred execution: block %d exceeds its gas limit at tx %d", number, i)
+			return nil, fmt.Errorf("deferred execution: block %d exceeds its gas limit at tx %d", number, i)
 		}
 		if len(t.BlobHashes()) > 0 {
 			// Blob fees and their balance charge are not modelled here.
-			return fmt.Errorf("deferred execution: block %d tx %d: blob transactions are not includable under deferred execution", number, i)
+			return nil, fmt.Errorf("deferred execution: block %d tx %d: blob transactions are not includable under deferred execution", number, i)
 		}
 		feeCap, tip := t.GasFeeCap(), t.GasTipCap()
 		if feeCap == nil {
@@ -111,48 +172,54 @@ func (bc *BlockChain) checkIncludable(tx kv.Tx, hdr *block.Header, txs []*transa
 			tip = feeCap
 		}
 		if feeCap == nil {
-			return fmt.Errorf("deferred execution: block %d tx %d has no fee cap", number, i)
+			return nil, fmt.Errorf("deferred execution: block %d tx %d has no fee cap", number, i)
 		}
-		if err := CheckEip1559TxGasFeeCap(*from, feeCap, tip, baseFee, false); err != nil {
-			return fmt.Errorf("deferred execution: block %d tx %d: %w", number, i, err)
+		if err := CheckEip1559TxGasFeeCap(from, feeCap, tip, baseFee, false); err != nil {
+			return nil, fmt.Errorf("deferred execution: block %d tx %d: %w", number, i, err)
 		}
 		create := t.To() == nil
 		value := t.Value()
 		hasValue := value != nil && !value.IsZero()
-		selfTransfer := !create && t.To() != nil && *t.To() == *from
+		selfTransfer := !create && *t.To() == from
 		ig, err := IntrinsicGas(t.Data(), t.AccessList(), t.AuthList(), create, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai, rules.IsPrague, rules.IsGlamsterdam, hasValue, selfTransfer)
 		if err != nil {
-			return fmt.Errorf("deferred execution: block %d tx %d: %w", number, i, err)
+			return nil, fmt.Errorf("deferred execution: block %d tx %d: %w", number, i, err)
 		}
 		if ig > t.Gas() {
-			return fmt.Errorf("deferred execution: block %d tx %d: intrinsic gas %d exceeds gas limit %d", number, i, ig, t.Gas())
+			return nil, fmt.Errorf("deferred execution: block %d tx %d: intrinsic gas %d exceeds gas limit %d", number, i, ig, t.Gas())
 		}
-		st := bySender[*from]
+		st := bySender[from]
 		if st == nil {
-			st = &senderTxs{first: i}
-			bySender[*from] = st
-			order = append(order, *from)
+			st = &deferredSender{addr: from}
+			bySender[from] = st
+			plan = append(plan, st)
 		}
 		st.txs = append(st.txs, t)
 	}
-	// Nonce and worst-case cost against the parent post-state, the senders
-	// read across goroutines with their own store readers.
-	workers := 16
-	if workers > len(order) {
-		workers = len(order)
+	return plan, nil
+}
+
+// checkSenderStates verifies each sender's nonces and worst-case cost
+// against the applied head's post-state (the parent), reading the senders
+// across goroutines with their own read transactions. The caller holds the
+// tree's readers lock.
+func (bc *BlockChain) checkSenderStates(number uint64, plan []*deferredSender) error {
+	if len(plan) == 0 {
+		return nil
 	}
-	if workers < 1 {
-		workers = 1
+	workers := 16
+	if workers > len(plan) {
+		workers = len(plan)
 	}
 	mode := commitment.QMDBStateReadMode()
 	useQMDB := mode != commitment.QMDBReadOff && bc.qmdbEnabled && bc.qmdbRootComputer != nil
 	errs := make([]error, workers)
-	per := (len(order) + workers - 1) / workers
+	per := (len(plan) + workers - 1) / workers
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
 		lo, hi := w*per, (w+1)*per
-		if hi > len(order) {
-			hi = len(order)
+		if hi > len(plan) {
+			hi = len(plan)
 		}
 		if lo >= hi {
 			break
@@ -173,8 +240,8 @@ func (bc *BlockChain) checkIncludable(tx kv.Tx, hdr *block.Header, txs []*transa
 			cost := new(uint256.Int)
 			gasCost := new(uint256.Int)
 			for i := lo; i < hi; i++ {
-				from := order[i]
-				st := bySender[from]
+				st := plan[i]
+				from := st.addr
 				acc, err := reader.ReadAccountData(from)
 				if err != nil {
 					errs[w] = err

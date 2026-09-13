@@ -635,25 +635,6 @@ func (w *worker) handleSealed(blk block.IBlock) {
 
 	// Deep copy receipts and set block location fields to prevent write-write conflicts
 	// when different blocks share the same sealhash.
-	receipts := make([]*block.Receipt, len(task.receipts))
-	var logs []*block.Log
-	for i, taskReceipt := range task.receipts {
-		receipt := new(block.Receipt)
-		*receipt = *taskReceipt
-		receipt.BlockHash = hash
-		receipt.BlockNumber = blk.Number64()
-		receipt.TransactionIndex = uint(i)
-
-		receipt.Logs = make([]*block.Log, len(taskReceipt.Logs))
-		for j, taskLog := range taskReceipt.Logs {
-			lg := new(block.Log)
-			*lg = *taskLog
-			lg.BlockHash = hash
-			receipt.Logs[j] = lg
-		}
-		receipts[i] = receipt
-		logs = append(logs, receipt.Logs...)
-	}
 
 	// Push-before-write (N42_PUSH_BEFORE_WRITE, off by default): hand
 	// the sealed block to peers BEFORE committing it, so their import
@@ -715,6 +696,28 @@ func (w *worker) handleSealed(blk block.IBlock) {
 			bsn.NotifyBlockSealed(blk.Hash(), blk.TxHash())
 			proposedEarly = true
 		}
+	}
+
+	// The receipts copy (163k allocations) is needed by the write, not by
+	// the push or the Proposal: done after both leave.
+	receipts := make([]*block.Receipt, len(task.receipts))
+	var logs []*block.Log
+	for i, taskReceipt := range task.receipts {
+		receipt := new(block.Receipt)
+		*receipt = *taskReceipt
+		receipt.BlockHash = hash
+		receipt.BlockNumber = blk.Number64()
+		receipt.TransactionIndex = uint(i)
+
+		receipt.Logs = make([]*block.Log, len(taskReceipt.Logs))
+		for j, taskLog := range taskReceipt.Logs {
+			lg := new(block.Log)
+			*lg = *taskLog
+			lg.BlockHash = hash
+			receipt.Logs[j] = lg
+		}
+		receipts[i] = receipt
+		logs = append(logs, receipt.Logs...)
 	}
 
 	tWrite := time.Now()

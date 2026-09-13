@@ -70,7 +70,7 @@ type Server struct {
 	hintOnly    bool
 	hintSigner  func() transaction.Signer
 	hintWorkers int
-	hintQueue   chan *transaction.Transaction
+	hintQueue   chan []*transaction.Transaction // batches of hinted transactions
 	hinted      atomic.Uint64
 
 	ctx    context.Context
@@ -102,7 +102,7 @@ func (s *Server) EnableHintOnly(signer func() transaction.Signer, workers int) {
 	s.hintOnly = true
 	s.hintSigner = signer
 	s.hintWorkers = workers
-	s.hintQueue = make(chan *transaction.Transaction, 65536)
+	s.hintQueue = make(chan []*transaction.Transaction, 1024)
 }
 
 // Hinted reports how many senders the hint-only mode has recovered.
@@ -113,12 +113,15 @@ func (s *Server) hintWorker() {
 		select {
 		case <-s.ctx.Done():
 			return
-		case tx := <-s.hintQueue:
-			if _, err := transaction.Sender(s.hintSigner(), tx); err != nil {
-				s.rejected.Add(1)
-				continue
+		case batch := <-s.hintQueue:
+			signer := s.hintSigner()
+			for _, tx := range batch {
+				if _, err := transaction.Sender(signer, tx); err != nil {
+					s.rejected.Add(1)
+					continue
+				}
+				s.hinted.Add(1)
 			}
-			s.hinted.Add(1)
 		}
 	}
 }
@@ -178,7 +181,7 @@ func (s *Server) hintStatsLoop() {
 				continue
 			}
 			hits, misses := transaction.SenderCacheStats()
-			log.Info("ingest hint feed", "hinted", h, "hintedDelta", h-lastHinted, "rejected", r, "queued", len(s.hintQueue), "batches", s.batches.Load(),
+			log.Info("ingest hint feed", "hinted", h, "hintedDelta", h-lastHinted, "rejected", r, "queuedBatches", len(s.hintQueue), "batches", s.batches.Load(),
 				"cacheHits", hits, "cacheMisses", misses)
 			lastHinted, lastRejected = h, r
 		}
@@ -371,16 +374,37 @@ func (s *Server) readBatch(r io.Reader) (uint32, error) {
 // sender field is read and ignored, and the decoded transaction goes to the
 // recovery workers instead of the pool. The reply counts the transactions
 // queued.
+// hintBatchSize is how many hinted transactions travel to the workers per
+// channel send. One send per transaction made the hand-off itself (selectgo
+// and the channel lock) ~9 s of a node's 25 s profile.
+const hintBatchSize = 256
+
 func (s *Server) readHintBatch(r io.Reader, numTxs uint32) (uint32, error) {
 	var queued uint32
 	var senderBuf [20]byte
+	pending := make([]*transaction.Transaction, 0, hintBatchSize)
+	flush := func() error {
+		if len(pending) == 0 {
+			return nil
+		}
+		select {
+		case s.hintQueue <- pending:
+			queued += uint32(len(pending))
+			pending = make([]*transaction.Transaction, 0, hintBatchSize)
+			return nil
+		case <-s.ctx.Done():
+			return net.ErrClosed
+		}
+	}
 	for i := uint32(0); i < numTxs; i++ {
 		var lenBuf [2]byte
 		if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
+			_ = flush()
 			return queued, err
 		}
 		txLen := binary.LittleEndian.Uint16(lenBuf[:])
 		if int(txLen) > maxTxSize {
+			_ = flush()
 			return queued, fmt.Errorf("ingest: tx size %d exceeds max %d", txLen, maxTxSize)
 		}
 		// A fresh buffer per transaction: Unmarshal may keep references.
@@ -403,12 +427,15 @@ func (s *Server) readHintBatch(r io.Reader, numTxs uint32) (uint32, error) {
 				continue
 			}
 		}
-		select {
-		case s.hintQueue <- tx:
-			queued++
-		case <-s.ctx.Done():
-			return queued, net.ErrClosed
+		pending = append(pending, tx)
+		if len(pending) == hintBatchSize {
+			if err := flush(); err != nil {
+				return queued, err
+			}
 		}
+	}
+	if err := flush(); err != nil {
+		return queued, err
 	}
 	s.batches.Add(1)
 	return queued, nil

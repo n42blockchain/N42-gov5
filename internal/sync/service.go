@@ -108,6 +108,12 @@ type Service struct {
 	deferredPending  map[types.Hash][]block.IBlock
 	deferredAttempts map[types.Hash]int
 
+	// pushInflight: blocks the direct-push handler has decoded and is
+	// importing. The gossip copy of the same block is ignored on its header
+	// before the full decode (every block arrived twice, and the second copy
+	// was decoded, re-validated under validateBlockLock and re-imported).
+	pushInflight sync.Map
+
 	cfg    *config
 	ctx    context.Context
 	cancel context.CancelFunc

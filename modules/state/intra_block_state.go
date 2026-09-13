@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"unsafe"
 
@@ -51,8 +52,27 @@ func sortedAddresses[V any](m map[types.Address]V) []types.Address {
 	for addr := range m {
 		addrs = append(addrs, addr)
 	}
-	sort.Slice(addrs, func(i, j int) bool {
-		return bytes.Compare(addrs[i][:], addrs[j][:]) < 0
+	slices.SortFunc(addrs, func(a, b types.Address) int {
+		return bytes.Compare(a[:], b[:])
+	})
+	return addrs
+}
+
+// pendingIncreaseAddrs returns, sorted, the addresses whose balance increase
+// is still unfolded -- the ones the block-end passes read. Sorting the whole
+// balanceInc map instead re-sorted the block's ~23k credited recipients in
+// both system calls' FinalizeTx, in the root computation and in
+// CommitBlock, long after every increase had been folded. The read order is
+// unchanged: the pending subset in address order.
+func (sdb *IntraBlockState) pendingIncreaseAddrs() []types.Address {
+	var addrs []types.Address
+	for addr, bi := range sdb.balanceInc {
+		if bi != nil && !bi.transferred {
+			addrs = append(addrs, addr)
+		}
+	}
+	slices.SortFunc(addrs, func(a, b types.Address) int {
+		return bytes.Compare(a[:], b[:])
 	})
 	return addrs
 }
@@ -1253,10 +1273,8 @@ func (sdb *IntraBlockState) FinalizeTx(chainRules *params.Rules, stateWriter Sta
 	// the reader here is the block-witness recorder (ethel). Map-order
 	// iteration would produce witness byte streams that differ between
 	// runs of the same block.
-	for _, addr := range sortedAddresses(sdb.balanceInc) {
-		if bi := sdb.balanceInc[addr]; !bi.transferred {
-			sdb.getStateObject(addr)
-		}
+	for _, addr := range sdb.pendingIncreaseAddrs() {
+		sdb.getStateObject(addr)
 	}
 	if _, noop := stateWriter.(*NoopWriter); noop {
 		// With the no-op writer the only state updateAccount changes is the
@@ -1330,10 +1348,8 @@ func (sdb *IntraBlockState) CommitBlock(chainRules *params.Rules, stateWriter St
 	// Sorted iteration: see note on FinalizeTx — getStateObject can read
 	// through the block-witness recorder, so iteration order is visible
 	// in the witness stream.
-	for _, addr := range sortedAddresses(sdb.balanceInc) {
-		if bi := sdb.balanceInc[addr]; !bi.transferred {
-			sdb.getStateObject(addr)
-		}
+	for _, addr := range sdb.pendingIncreaseAddrs() {
+		sdb.getStateObject(addr)
 	}
 	return sdb.MakeWriteSet(chainRules, stateWriter)
 }
@@ -1547,11 +1563,9 @@ func (s *IntraBlockState) computeRootViaComputer() types.Hash {
 	// sorted CommitBlock loop, in IntermediateRoot) made the witness byte
 	// stream nondeterministic run-to-run, breaking ethel replay / mobile
 	// verification reproducibility.
-	for _, addr := range sortedAddresses(s.balanceInc) {
-		if bi := s.balanceInc[addr]; bi != nil && !bi.transferred {
-			s.getStateObject(addr)
-			s.stateObjectsDirty[addr] = struct{}{}
-		}
+	for _, addr := range s.pendingIncreaseAddrs() {
+		s.getStateObject(addr)
+		s.stateObjectsDirty[addr] = struct{}{}
 	}
 	// Merge journal.dirties — Finalize (block rewards) and post-block system
 	// calls write to journal but there's no FinalizeTx after them.

@@ -543,3 +543,23 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 
 	return nil
 }
+
+// onBlockRejected withdraws the deferred-execution check evidence of a
+// block that failed on import (n42-rs found a rejected block keeping it:
+// a re-proposal of the hash was voted for unchecked).
+func (e *ConsensusEngine) onBlockRejected(blockHash types.Hash) {
+	if !e.checkedBlocks[blockHash] {
+		return
+	}
+	delete(e.checkedBlocks, blockHash)
+	for i, h := range e.checkedFIFO {
+		if h == blockHash {
+			e.checkedFIFO = append(e.checkedFIFO[:i], e.checkedFIFO[i+1:]...)
+			break
+		}
+	}
+	if !e.importedBlocks[blockHash] {
+		delete(e.importedParents, blockHash)
+	}
+	log.Warn("deferred vote evidence withdrawn: the checked block failed on import", "blockHash", blockHash)
+}

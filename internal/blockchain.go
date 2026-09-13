@@ -1722,8 +1722,18 @@ func (bc *BlockChain) SealedBlock(b block.IBlock) error {
 		return fmt.Errorf("sealed block %d is %d bytes, above the %d byte p2p wire limit", b.Number64().Uint64(), len(data), limit)
 	}
 	bc.directPushBlock(b, data)
-	// Also gossip as a best-effort fallback.
-	return bc.p2p.BroadcastBlock(bc.ctx, data)
+	// Gossip as a best-effort fallback, off the seal path: the direct pushes
+	// are already in flight, and compressing and publishing an ~18 MB block
+	// here held the Proposal back (part of the leader's ~180 ms push phase).
+	if bc.p2p != nil {
+		number := b.Number64().Uint64()
+		go func() {
+			if err := bc.p2p.BroadcastBlock(bc.ctx, data); err != nil {
+				log.Warn("sealed block gossip fallback failed", "number", number, "err", err)
+			}
+		}()
+	}
+	return nil
 }
 
 // directPushBlock opens a stream to each connected peer and writes the block as

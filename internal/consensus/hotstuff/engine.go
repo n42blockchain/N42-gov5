@@ -601,6 +601,9 @@ func (e *ConsensusEngine) ProcessEvent(event ConsensusEvent) error {
 		return e.onBlockImported(event.Hash, event.TxRootHash, event.ParentHash)
 	case EventBlockChecked:
 		return e.onBlockChecked(event.Hash, event.ParentHash)
+	case EventBlockRejected:
+		e.onBlockRejected(event.Hash)
+		return nil
 	default:
 		return nil
 	}
@@ -651,6 +654,9 @@ const (
 	// node's result of its parent and its transactions are includable; the
 	// vote no longer waits for the block's own import, only for the parent's.
 	EventBlockChecked ConsensusEventType = 4
+	// EventBlockRejected: the block failed validation on import; any
+	// deferred-execution check evidence for it is withdrawn.
+	EventBlockRejected ConsensusEventType = 5
 )
 
 // Internal helpers

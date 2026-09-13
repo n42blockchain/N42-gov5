@@ -1222,8 +1222,16 @@ func (pool *TxsPool) blockChangeLoop() {
 			return
 		case highestBlock, ok := <-highestBlockCh:
 			if ok && highestBlock.Inserted {
-				pool.requestReset(oldBlock, pool.bc.CurrentBlock())
-				oldBlock = pool.bc.CurrentBlock()
+				head := pool.bc.CurrentBlock()
+				// A block write fires this before the block is canonical; for an
+				// own block the head has not moved, and a reset from a head to
+				// itself still ran promote/demote over every pending account
+				// under pool.mu. The next move of the head resets the whole range.
+				if oldBlock != nil && head != nil && oldBlock.Hash() == head.Hash() {
+					continue
+				}
+				pool.requestReset(oldBlock, head)
+				oldBlock = head
 			}
 		}
 	}

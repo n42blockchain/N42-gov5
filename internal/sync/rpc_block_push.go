@@ -46,6 +46,8 @@ func (s *Service) blockPushStreamHandler(stream network.Stream) {
 		}
 		return
 	}
+	s.pushInflight.Store(blk.Hash(), struct{}{})
+	defer s.pushInflight.Delete(blk.Hash())
 	log.Info("block push: arrived", "number", blk.Number64().Uint64(), "txs", len(blk.Transactions()), "tMs", time.Now().UnixMilli())
 	s.deferredCheck(blk)
 	if _, err := s.cfg.chain.InsertChain([]block.IBlock{blk}); err != nil {
