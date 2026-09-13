@@ -720,6 +720,13 @@ func (w *worker) handleSealed(blk block.IBlock) {
 		logs = append(logs, receipt.Logs...)
 	}
 
+	if task.exec != nil {
+		if eh, ok := w.chain.(interface {
+			RememberExecutedResult(types.Hash, rawdb.ExecutedResult)
+		}); ok {
+			eh.RememberExecutedResult(blk.Hash(), *task.exec)
+		}
+	}
 	tWrite := time.Now()
 	err = w.chain.WriteBlockWithState(blk, receipts, task.state, task.nopay)
 	dWrite := time.Since(tWrite)

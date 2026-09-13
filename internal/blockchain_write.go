@@ -488,7 +488,15 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 				if !ok {
 					return fmt.Errorf("deferred execution: block %d has no computed root to store", blockNumber.Uint64())
 				}
-				if err := rawdb.WriteExecutedResult(tx, blk.Hash(), ExecutedResultFor(bc.chainConfig, blockNumber.Uint64(), root, receipts)); err != nil {
+				// The leader's build already computed this block's result (the
+				// receipts root and bloom over every receipt): the same state and
+				// the same receipts. Take it when its root agrees; otherwise
+				// derive it here as a follower does.
+				result, hinted := bc.takeExecutedResultHint(blk.Hash())
+				if !hinted || result.Root != root {
+					result = ExecutedResultFor(bc.chainConfig, blockNumber.Uint64(), root, receipts)
+				}
+				if err := rawdb.WriteExecutedResult(tx, blk.Hash(), result); err != nil {
 					return fmt.Errorf("storing execution result of block %d: %w", blockNumber.Uint64(), err)
 				}
 			}

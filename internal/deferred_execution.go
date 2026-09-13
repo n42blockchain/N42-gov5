@@ -93,3 +93,20 @@ func ExecutedResultFor(config *params.ChainConfig, number uint64, root types.Has
 		GasUsed:     gasUsed,
 	}
 }
+
+// RememberExecutedResult hands a sealed block's write the execution result
+// the leader's build already computed for it, so the write does not derive
+// the receipts root and bloom a second time.
+func (bc *BlockChain) RememberExecutedResult(hash types.Hash, r rawdb.ExecutedResult) {
+	bc.executedHints.Store(hash, r)
+}
+
+// takeExecutedResultHint returns and forgets the result remembered for hash.
+func (bc *BlockChain) takeExecutedResultHint(hash types.Hash) (rawdb.ExecutedResult, bool) {
+	v, ok := bc.executedHints.LoadAndDelete(hash)
+	if !ok {
+		return rawdb.ExecutedResult{}, false
+	}
+	r, ok := v.(rawdb.ExecutedResult)
+	return r, ok
+}

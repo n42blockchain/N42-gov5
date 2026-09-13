@@ -14,10 +14,10 @@ this file is the entry point. No keys in here.
   block: senders were never recovered); deferred commit retries made a
   set; checked evidence withdrawn on import failure. Details and
   predictions 70-72: `QS_BLOCK_TIME_BUDGET.md` 6bi-6bk.
-- **35zzm and 35zzn are superseded** (never run on r73). Queued instead,
-  not launched: `chain-35zzo.sh` (r74, 35zzl config), then
+- **35zzm and 35zzn are superseded** (never run on r73). Queued instead
+  (launched 2026-09-13 17:41 EDT, waiting for the box): `chain-35zzo.sh` (r74, 35zzl config), then
   `chain-35zzp.sh` (+ tx root gate), then `chain-35zzq.sh` (+ deferred
-  execution); each waits for the previous ROUND line, the box claim
+  execution, on n42-r75); each waits for the previous ROUND line, the box claim
   protocol and three quiet checks, reseeds, installs n42-r74, launches.
   Start all three with `setsid nohup bash ./chain-35zzX.sh > wr-logs/chain-35zzX.out 2>&1 </dev/null &`.
 - Still open from the audit (not in r74): QMDB eviction one block behind

@@ -4398,7 +4398,10 @@ body stays above 70 ms, or by any "transaction root hash mismatch".
 
 ## 6bk. Round 35zzq: 35zzp plus deferred execution -- registered before the round ran (2026-09-13)
 
-Replaces 35zzn. `N42_DEFERRED_EXECUTION_TIME=1788393864`. **Prediction
+Replaces 35zzn. Runs on n42-r75 (r74 plus the leader's write taking
+the execution result its build already computed, instead of deriving the
+receipts root and bloom a second time; deferred-only).
+`N42_DEFERRED_EXECUTION_TIME=1788393864`. **Prediction
 72.** Followers log "deferred check: block passes" and "deferred vote:
 block checked and parent imported" for full blocks; seal -> QC ~1.25 ->
 ~0.5 s; chained seal -> seal -> max(the leader's build + seal, the
