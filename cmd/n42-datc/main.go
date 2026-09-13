@@ -649,6 +649,13 @@ func (b *builder) onDenseNode(accWithInc, keyHex []byte, hasState, hasTree uint1
 		}
 		return
 	}
+	// Keep only levels a node-record flush takes the dense form for. The
+	// loader reports every branch it hashes and nothing removes a deeper
+	// entry, so keeping those grew the maps without bound (25 GB of heap by
+	// block 22.6M, with the GC taking most of the CPU).
+	if len(keyHex) > b.maxDenseDepth(accWithInc != nil) {
+		return
+	}
 	e := denseEntry{hasState: hasState, hasTree: hasTree, slots: append([]byte{}, slots...)}
 	if accWithInc == nil {
 		s := &b.hooks[accHookShard(keyHex)]
@@ -670,6 +677,20 @@ func (b *builder) onDenseNode(accWithInc, keyHex []byte, hasState, hasTree uint1
 	}
 	s.denseSto[string(k)] = e
 	s.mu.Unlock()
+}
+
+// maxDenseDepth is the deepest trie level (path length in nibbles) whose node
+// records are flushed, the same bound recordChange uses: account levels
+// 0..accDepth-1, storage levels 0..stoDepth-1, both capped at maxChgDepth.
+func (b *builder) maxDenseDepth(storage bool) int {
+	d := b.accDepth - 1
+	if storage {
+		d = b.stoDepth - 1
+	}
+	if d > maxChgDepth {
+		d = maxChgDepth
+	}
+	return d
 }
 
 // takeDense returns (and forgets) the collected dense form of a path as a
