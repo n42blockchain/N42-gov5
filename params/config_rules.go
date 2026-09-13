@@ -124,6 +124,7 @@ type Rules struct {
 	IsRandomness                                                bool // N42 extension: on-chain randomness beacon precompile
 	IsBAL                                                       bool // N42 extension: EIP-7928 block-level access list
 	IsMobileAnchor                                              bool // N42 native chain: mobile-attestation accumulator root anchor (NOT eth-el)
+	IsNativeAsset                                               bool // N42 extension: native asset module (USDT transfer without the interpreter)
 }
 
 // Rules ensures c's ChainID is not nil.
@@ -184,6 +185,7 @@ func (c *ChainConfig) RulesWithTimestamp(num uint64, timestamp uint64) *Rules {
 		IsRandomness:          c.IsRandomness(timestamp),
 		IsBAL:                 c.IsBAL(timestamp),
 		IsMobileAnchor:        c.IsMobileAnchor(timestamp),
+		IsNativeAsset:         c.IsNativeAsset(timestamp),
 	}
 	rules.applyForkInheritance()
 	return rulesCache.put(key, rules)
@@ -435,6 +437,12 @@ func (c *ChainConfig) IsBAL(time uint64) bool {
 // (Header.MobileRegistryRoot) as a pure header commitment — no state write.
 func (c *ChainConfig) IsMobileAnchor(time uint64) bool {
 	return isForked(c.MobileAnchorTime, time)
+}
+
+// IsNativeAsset returns whether time is at or past the native asset module
+// activation. N42 extension; nil on every Ethereum chainspec.
+func (c *ChainConfig) IsNativeAsset(time uint64) bool {
+	return isForked(c.NativeAssetTime, time)
 }
 
 // IsTxRootBlake3 returns whether a block at time uses the BLAKE3 binary

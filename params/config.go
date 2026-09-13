@@ -311,6 +311,15 @@ type ChainConfig struct {
 	// byte-identical). Keep nil until validated on a test chain.
 	MobileAnchorTime *big.Int `json:"mobileAnchorTime,omitempty"`
 
+	// NativeAssetTime activates the native asset module (internal/vm
+	// native_asset.go): USDT transfer(address,uint256) is executed without the
+	// interpreter. The module is bytecode-equivalent -- it leaves the same
+	// state, logs, refund counter, access list and remaining gas as the
+	// TetherToken bytecode, and hands every call outside the one shape it
+	// models back to the interpreter -- so activation changes no consensus
+	// result. N42 extension; no Ethereum chainspec sets it. Nil = disabled.
+	NativeAssetTime *big.Int `json:"nativeAssetTime,omitempty"`
+
 	// TxRootBlake3Time activates the N42 native transactions root -- a binary
 	// Merkle tree of BLAKE3 hashes over the transactions' consensus encodings
 	// (hash.Blake3BinaryRoot) -- in place of the Ethereum keccak

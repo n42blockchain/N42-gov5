@@ -393,7 +393,11 @@ func (evm *EVM) call(typ OpCode, caller ContractRef, addr types.Address, input [
 				contract = evm.newContract(caller, AccountRef(addrCopy), value, gas, evm.config.SkipAnalysis)
 			}
 			contract.SetCallCode(&addrCopy, codeHash, code)
-			ret, err = run(evm, contract, input, typ == STATICCALL)
+			if typ == CALL && evm.chainRules.IsNativeAsset && addrCopy == usdtAddress {
+				ret, err = evm.callNativeAsset(contract, input, value)
+			} else {
+				ret, err = run(evm, contract, input, typ == STATICCALL)
+			}
 			gas = contract.Gas
 		}
 	} else {
