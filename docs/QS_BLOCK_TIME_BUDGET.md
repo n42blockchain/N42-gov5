@@ -4451,6 +4451,24 @@ exposes a ceiling 35zzl only touched (its second windows fell 10-12%).
 the rbtc replay. The same slide happens on a quiet box (warm-up win2
 72k, B win2 68k); the replay deepened it to 43k.
 
+**Levers for the slide, on main, not yet in any fleet binary** (their
+rounds are registered after 35zzq, on whichever of 35zzp/35zzq wins):
+
+- `f0603e82`: the deferred fold prepares its rows under a read
+  transaction; its write transaction only puts ~46k rows and the marker
+  (byte-identical rows; the pruner is held off by HistoryIndexMu). Expected
+  to take the fold's 0.6-8.5 s writer hold to the put-and-commit, ~0.1-0.2 s.
+- `15710ab9`: the tx lookup tail keeps 1M transactions (not 64 blocks,
+  ~1.1 GB at 163k) and a seal tick drains its backlog (one segment per
+  15 s sealed ~67k tx/s against ~116k committed).
+- Harness bug: `bench-7node.sh` rebuilds `QS_EXTRA_ARGS` from its own
+  flags plus `QS_NODE_EXTRA`, so every runner's
+  `export QS_EXTRA_ARGS="--mobileverify.packet-window 8"` has been
+  discarded since it was added; the nodes run the default window of 256
+  (~1.0 GB of packets late in a B leg). The flag belongs in
+  `QS_NODE_EXTRA`. Moving it changes the heap of every later round, so it
+  is a round of its own, not a silent fix inside 35zzp/35zzq.
+
 ## 6bj. Round 35zzp: 35zzo plus the BLAKE3 transactions root -- registered before the round ran (2026-09-13)
 
 Replaces void 35zzm. `N42_TXROOT_BLAKE3_TIME=1788393864` (chain time:
