@@ -44,9 +44,22 @@ acctcs/storcs 只能由**逐块执行**的节点写出：eth-el staged catch-up 
 
 1. **准备变更集**：在执行节点上追到 T，确认 `acctcs.Items() > T` 且 `storcs` 同高
    （Linux 侧可用 `go run ./cmd/freezer-items <freezer 目录>` 查看项数）。
-2. **同步到 Linux**：把 `acctcs.cidx`、`storcs.cidx` 以及**最后一个旧 `.cdat` 段和所有新段**拷到
-   `/data/blockchain/datc-input/N42-eth1177/chain/freezer/`（最后一个段会被追加写，必须重拷）。
-   区块头同理更新 `headerc.cidx` 和相关 `.cdat`；**不要**把 header 软链指向 `ethel-test/`，该目录每周轮换删除。
+2. **同步到 Linux（先放暂存目录验收，再替换）**：
+   - **变更集尾段不是纯追加**：批量模式下，旧表最后一个不满 64 项的批次会在**原偏移处被重新编码成满批**
+     （2026-09-14 实测：`acctcs.0078.cdat` 最后约 35 万字节、`storcs.0149.cdat` 最后约 49 万字节被改写，
+     cidx 前缀不变）。因此这两个尾段**必须整文件替换**（写临时文件再 rename，rsync 默认行为），
+     **禁止** `rsync --append/--inplace` 或 `cp` 覆盖——追加会把旧尾批和新数据拼坏，截断式覆盖会让读者读到半截文件。
+   - **区块头**：`headerc.NNNN.cdat` 是纯追加（新段写在文件末尾），但 `headerc.cidx` 最后一项会被改指向新段，
+     所以 cidx 同样整文件替换。
+   - **顺序**：先新段和尾段 `.cdat`，最后 `.cidx`；没变化的旧段不要碰。
+   - `datc-input/n42-eth1/chain/freezer/headerc.*` 是指向 `/data/blockchain/witness` 的软链：只把变化的
+     `headerc.cidx` 和最后一个 `.cdat` 换成实体文件，其余软链保留，**不要改 witness**（共享副本）。
+   - **运行中的 DATC 不必停**：它启动时就缓存了项数/段数，并一直持有 cidx 与尾段的文件句柄；rename 替换后它继续读旧 inode，
+     结果不变。新数据在**下一次续跑**时才生效。
+   - **验收暂存数据**（替换前）：用与 DATC 相同的打开方式（`NewFreezerTableReadOnly` 后 `ForceBatchSize(freezer.BatchSize)`
+     + `SetCompressed(true)`，否则读出的是空值或整批压缩字节）逐块读取：重叠区与现有数据逐块相同、新块全部非空；
+     区块头与独立来源（周更新 eth-el 节点的 headerc）逐块比对 stateRoot/txRoot/receiptRoot。
+     压缩区块头去掉了 ParentHash，不能用 `Hash()` 做父子链接检查。
 3. **确认机器空闲**：`ls /data/blockchain/.box-claim-*`，写 `.box-claim-datc`。**只在用户明确下令时启动 DATC。**
 4. **续跑延伸**（与主构建相同参数，`--end` 给大值，自动截断到可用高度）：
    ```bash
