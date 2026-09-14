@@ -32,6 +32,7 @@ func (c *MdbxDupSortCursor) Internal() *mdbx.Cursor {
 
 // DeleteExact - does delete
 func (c *MdbxDupSortCursor) DeleteExact(k1, k2 []byte) error {
+	c.tx.noteWrite(c.bucketName, 0, true)
 	_, err := c.getBoth(k1, k2)
 	if err != nil { // if key not found, or found another one - then nothing to delete
 		if mdbx.IsNotFound(err) {
@@ -133,6 +134,7 @@ func (c *MdbxDupSortCursor) LastDup() ([]byte, error) {
 }
 
 func (c *MdbxDupSortCursor) Append(k []byte, v []byte) error {
+	c.tx.noteWrite(c.bucketName, len(k)+len(v), false)
 	if err := c.c.Put(k, v, mdbx.Append|mdbx.AppendDup); err != nil {
 		return fmt.Errorf("label: %s, in Append: bucket=%s, %w", c.tx.db.opts.label, c.bucketName, err)
 	}

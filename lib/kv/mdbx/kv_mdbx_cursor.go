@@ -306,6 +306,7 @@ func (c *MdbxCursor) PutNoOverwrite(key []byte, value []byte) error {
 // duplicate is rewritten in place (or left alone when equal), anything else is
 // cleared before the insert.
 func (c *MdbxCursor) Upsert(key []byte, value []byte) error {
+	c.tx.noteWrite(c.bucketName, len(key)+len(value), false)
 	err := c.upsert(key, value)
 	if err != nil {
 		return fmt.Errorf("label: %s, table: %s, upsert: %w", c.tx.db.opts.label, c.bucketName, err)
