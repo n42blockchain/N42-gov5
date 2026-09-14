@@ -156,3 +156,36 @@ func TestTailSealRangeBoundsByBlocks(t *testing.T) {
 		t.Fatal("the block bound overrode keepBlocks")
 	}
 }
+
+// TestTailSealRangeKeepTx: large blocks keep fewer blocks behind the seal point
+// (bounded by transactions), at least one block always stays, and keepTx <= 0
+// is exactly SealRange.
+func TestTailSealRangeKeepTx(t *testing.T) {
+	tl := NewTail()
+	for n := uint64(0); n < 20; n++ {
+		tl.Add(n, tailBlock(n, 100)) // 100 txs each
+	}
+	// keepBlocks 10 alone leaves blocks 0..9 sealable; minTx 250 takes 0..2.
+	if s, e, ok := tl.SealRangeKeepTx(250, 1000, 10, 0); !ok || s != 0 || e != 3 {
+		t.Fatalf("keepTx 0 = %d,%d,%v want 0,3,true", s, e, ok)
+	}
+	if s, e, ok := tl.SealRange(250, 1000, 10); !ok || s != 0 || e != 3 {
+		t.Fatalf("SealRange = %d,%d,%v want 0,3,true", s, e, ok)
+	}
+	// keepTx 300 keeps only the newest 3 blocks: 17 sealable, maxBlocks 100
+	// and minTx 1700 take all 17.
+	if s, e, ok := tl.SealRangeKeepTx(1700, 100, 10, 300); !ok || s != 0 || e != 17 {
+		t.Fatalf("keepTx 300 = %d,%d,%v want 0,17,true", s, e, ok)
+	}
+	// Without the tx bound the same request cannot reach 1700 sealable txs.
+	if _, _, ok := tl.SealRangeKeepTx(1700, 100, 10, 0); ok {
+		t.Fatal("keepBlocks alone offered 1700 txs out of 10 sealable blocks")
+	}
+	// A keepTx smaller than one block still keeps the newest block.
+	if s, e, ok := tl.SealRangeKeepTx(1_000_000, 19, 10, 1); !ok || s != 0 || e != 19 {
+		t.Fatalf("keepTx 1 = %d,%d,%v want 0,19,true", s, e, ok)
+	}
+	if _, _, ok := tl.SealRangeKeepTx(1_000_000, 20, 10, 1); ok {
+		t.Fatal("keepTx 1 sealed the newest block")
+	}
+}

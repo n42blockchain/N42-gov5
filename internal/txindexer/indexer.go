@@ -96,6 +96,17 @@ const (
 	// throughout, and the newest are the ones most likely to be asked about.
 	txIndexKeepBlocks = 64
 
+	// txIndexKeepTx bounds the same keep-behind by transactions. 64 blocks of
+	// 163,000 transactions are 10.4M hashes, ~1.1 GB of heap on the qs fleet
+	// (round 35zzo); the newest million transactions stay in the tail either way.
+	txIndexKeepTx = 1_000_000
+
+	// txIndexSealMaxPerTick is how many segments one tick may build back to back.
+	// One segment per 15 s tick seals ~1M transactions, ~67k a second, while a
+	// full-block flood commits ~116k a second: the tail grew through every flood
+	// and was sealed only after it. The loop stops as soon as nothing is sealable.
+	txIndexSealMaxPerTick = 8
+
 	// txIndexSealInterval is how often the sealer looks for work.
 	txIndexSealInterval = 15 * time.Second
 
@@ -377,33 +388,42 @@ func (x *Indexer) txIndexSealLoop() {
 		case <-x.ctx.Done():
 			return
 		case <-t.C:
-			x.sealTxIndexOnce()
+			for i := 0; i < txIndexSealMaxPerTick && x.sealTxIndexOnce(); i++ {
+				select {
+				case <-x.txIndexStop:
+					return
+				case <-x.ctx.Done():
+					return
+				default:
+				}
+			}
 		}
 	}
 }
 
-// sealTxIndexOnce builds at most one segment. Sealing then dropping, in that
-// order and never the reverse: a block dropped from the tail before it is in a
-// segment is findable nowhere.
-func (x *Indexer) sealTxIndexOnce() {
-	start, end, ok := x.txTail.SealRange(txIndexSealMinTx, txIndexSealMaxBlocks, txIndexKeepBlocks)
+// sealTxIndexOnce builds at most one segment and reports whether it did.
+// Sealing then dropping, in that order and never the reverse: a block dropped
+// from the tail before it is in a segment is findable nowhere.
+func (x *Indexer) sealTxIndexOnce() bool {
+	start, end, ok := x.txTail.SealRangeKeepTx(txIndexSealMinTx, txIndexSealMaxBlocks, txIndexKeepBlocks, txIndexKeepTx)
 	if !ok {
-		return
+		return false
 	}
 	t0 := time.Now()
 	if err := txlookup.BuildSegmentFromSource(x.ctx, x.txIndexDir, start, end, x.txTail.Source()); err != nil {
 		// Keep the blocks in the tail and retry next tick; they stay
 		// answerable in the meantime.
 		log.Error("txindex seal failed", "from", start, "to", end, "err", err)
-		return
+		return false
 	}
 	x.txTail.DropBelow(end)
 	if err := x.reopenTxSegments(); err != nil {
 		log.Error("txindex: sealed but could not reopen segments", "err", err)
-		return
+		return false
 	}
 	log.Info("txindex sealed", "from", start, "to", end-1,
 		"tailBlocks", x.txTail.Len(), "took", time.Since(t0).Truncate(time.Millisecond))
+	return true
 }
 
 // reopenTxSegments swaps in a reader that includes the segment just written.

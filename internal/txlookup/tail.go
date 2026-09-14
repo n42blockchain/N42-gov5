@@ -133,10 +133,37 @@ func (t *Tail) TxCount() int {
 // hashes, which measured 1.25 GB of allocation, the largest single source in
 // the node. Bounding blocks bounds the rebuild whatever the density.
 func (t *Tail) SealRange(minTx, maxBlocks, keepBlocks int) (start, end uint64, ok bool) {
+	return t.SealRangeKeepTx(minTx, maxBlocks, keepBlocks, 0)
+}
+
+// SealRangeKeepTx is SealRange with the blocks kept behind the seal point also
+// bounded by transactions: the newest blocks are kept until keepBlocks of them
+// or keepTx transactions, whichever comes first, and at least one block always
+// stays. keepTx <= 0 leaves the keep bounded by blocks alone.
+//
+// A block count alone is sized for ordinary blocks. At the qs fleet's 163,000
+// transactions a block, 64 kept blocks are 10.4M hashes, ~1.1 GB of a node's
+// heap held against a 10 GiB GOMEMLIMIT (round 35zzo), while the newest
+// million transactions are what a caller is most likely to ask about.
+func (t *Tail) SealRangeKeepTx(minTx, maxBlocks, keepBlocks, keepTx int) (start, end uint64, ok bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	sealable := len(t.blocks) - keepBlocks
+	keep := keepBlocks
+	if keepTx > 0 {
+		held, n := 0, 0
+		for i := len(t.blocks) - 1; i >= 0 && n < keepBlocks; i-- {
+			if n > 0 && held+len(t.blocks[i]) > keepTx {
+				break
+			}
+			held += len(t.blocks[i])
+			n++
+		}
+		if n < keep {
+			keep = n
+		}
+	}
+	sealable := len(t.blocks) - keep
 	if sealable <= 0 {
 		return 0, 0, false
 	}
