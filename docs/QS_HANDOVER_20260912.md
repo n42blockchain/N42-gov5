@@ -5,6 +5,35 @@ paused the session. Detail and every prediction live in
 `docs/QS_BLOCK_TIME_BUDGET.md` (sections 6ba-6bh cover this handover's span);
 this file is the entry point. No keys in here.
 
+## Paused 2026-09-14 04:40 EDT (read this first)
+
+- **Box:** nothing of gov5 runs or is queued: no claim, no fleet, no runner, no chain
+  script. BOX-NOTE-gov5.txt says so. The box is shared by turns with n42-rs (user's
+  instruction, 2026-09-14).
+- **Measured today.** 35zzo re-run (r74): B mean 90.6k (35zzl 83.7k), A1 62.3k, A2 lost
+  to a foreign cargo check. 35zzp (r74 + BLAKE3 tx root), stopped at the pause: A1 68.2k,
+  B1 win1 125.9k at 1.277 s. 35zzq (r75, deferred execution) has not run. Budget doc 6bi
+  and 6bj have the tables.
+- **The open problem is the second window of every B leg**: 113-126k at 1.3-1.4 s, then
+  52-68k at 2.4-3.2 s. The heap reaches GOMEMLIMIT 10 GiB (GC every ~1.1 s) and the 20 s
+  history fold holds the MDBX writer up to 8.5 s. Block cache and hint queue ruled out.
+- **On main, in no fleet binary yet:** `a8ab0c61` write probe counts rows once;
+  `f0603e82` fold prepared outside the write transaction; `15710ab9` tx lookup tail
+  bounded by 1M transactions with a draining sealer. Harness bug: `bench-7node.sh`
+  rebuilds `QS_EXTRA_ARGS`, so `--mobileverify.packet-window 8` never reached the nodes
+  (default 256, ~1 GB); per-node flags go in `QS_NODE_EXTRA`.
+- **To resume:** in `/data/blockchain/gov5-work`, re-run 35zzp then 35zzq:
+  `setsid nohup bash ./chain-35zzp.sh >> wr-logs/chain-35zzp.out 2>&1 </dev/null &` and the
+  same for `chain-35zzq.sh`. Both wait for any rbtc replay, yield to a waiting n42-rs
+  runner (up to 30 / 20 min), claim before reseeding, reseed, install n42-r74 (q installs
+  n42-r75) and launch. 35zzp's aborted logs are in `wr-logs/r35zzp-paused/`, so the re-run
+  writes a fresh `r35zzp.log`. Then register a round per lever above (fold; heap headroom:
+  packet window + tail) on top of whichever of 35zzp/35zzq wins; each needs a new binary
+  (build before claiming, not while another driver measures).
+- **Coordination lessons:** an rbtc cold replay and a CI cargo test both ran without a
+  claim; the chain scripts now wait for rbtc by process. Do not compile while another
+  driver's runner waits for load < 8.
+
 ## Update 2026-09-13 (read this before section 0)
 
 - A second full audit (four read-only reviews plus n42-rs's last three

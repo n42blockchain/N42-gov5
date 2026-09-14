@@ -4477,6 +4477,21 @@ the fork block). **Prediction 71.** Follower body (ValidateBody) ~100 ->
 <=35 ms; leader assemble -60 ms; B mean +3-4% over 35zzo. Falsified if
 body stays above 70 ms, or by any "transaction root hash mismatch".
 
+**35zzp partial (2026-09-14 03:58-04:36 EDT), stopped when the user paused
+for the day.** The BLAKE3 gate was live on every node (startup warning at
+chain time 1788393864, no root mismatch, no BAD BLOCK).
+
+| window | 35zzo re-run | 35zzp |
+|---|---|---|
+| warm-up win1 / win2 | 116.8k / 72.4k | 129.0k / 51.6k |
+| A1 win1 / win2 | 63.6k / 61.0k | 69.7k / 66.7k |
+| B1 win1 | 113.4k (1.429 s) | 125.9k (1.277 s) |
+
+A1 +9.5%, B1 win1 +11%. Not scored: no B mean, no body-phase reading.
+The warm-up's second window fell further (3.16 s blocks), which fits the
+section 6bi slide being reached sooner by a faster chain. Logs and the
+per-minute summary: `wr-logs/r35zzp-paused/`.
+
 ## 6bk. Round 35zzq: 35zzp plus deferred execution -- registered before the round ran (2026-09-13)
 
 Replaces 35zzn. Runs on n42-r75 (r74 plus the leader's write taking
