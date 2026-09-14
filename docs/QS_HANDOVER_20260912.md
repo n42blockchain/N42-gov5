@@ -24,6 +24,12 @@ this file is the entry point. No keys in here.
   shared the disk (budget doc 6bi). The queue is now `chain-35zzo2.sh` (re-run), then
   `chain-35zzp.sh`, then `chain-35zzq.sh`; all three also wait for the rbtc supervisor
   (`cold-replay-20260914/run_replay.py`) to exit.
+- 2026-09-14 02:15 EDT: the 35zzo re-run gave B mean **90.6k** (35zzl 83.7k, +8.3%), A1 62.3k;
+  A2 was lost to the memory watchdog when a foreign cargo check took ~48 GB. First windows run
+  113k at 1.43 s, second windows fall to 68k at 2.40 s: the heap reaches GOMEMLIMIT 10 GiB
+  (GC every ~1.1 s) and the 20 s history fold holds the writer up to 8.5 s. That slide is the
+  next lever (budget doc 6bi). The box is shared by turns with n42-rs now: 35zzp/35zzq wait
+  for a waiting rust runner's claim to come and go.
 - Still open from the audit (not in r74): QMDB eviction one block behind
   (the next block re-reads its hot set from MDBX; needs the dead-row
   reclaim in `deactivate` for resident-but-flushed slots); the miner tree

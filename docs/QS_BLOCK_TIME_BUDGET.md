@@ -4404,6 +4404,53 @@ handover 2102 ms (35zzl 3200), no BAD BLOCK. Evidence is kept in
 `wr-logs/r35zzo-contended/`. `chain-35zzo2.sh` re-runs it once the rbtc
 supervisor has exited, and 35zzp/35zzq queue behind it.
 
+**35zzo re-run (2026-09-14 01:17-02:15 EDT, quiet box until A2).**
+
+| window | 35zzl | 35zzo re-run |
+|---|---|---|
+| A1 win1 / win2 | 56.4k / 53.0k | 63.6k / 61.0k |
+| B1 win1 / win2 | 86.9k / 76.1k | 113.4k / 67.9k |
+| B2 win1 / win2 | 90.3k / 81.5k | 113.2k / 67.9k |
+| A2 win1 / win2 | 57.9k / 51.8k | aborted |
+
+B mean 90.6k against 83.7k (+8.3%); A1 mean 62.3k against 54.7k
+(+14%). A2 was stopped by the memory watchdog at 02:15:22: MemAvailable
+fell from 64 GB to 16 GB in ten seconds while a foreign `cargo check
+--all-targets` ran (02:15:06, gone by 02:15:49), three minutes into the
+leg's restart. A2 is missing, not scored. **Prediction 70: not
+falsified, target missed.** The B mean gained 8.3% (criterion: at least
+5%), no BAD BLOCK or root mismatch in ~190 full blocks, leader push
+phase median 60 ms (p90 488) against ~180; but 90.6k is short of 92-95k.
+
+What the B legs show is a split: both first windows run 1.43 s blocks
+(113k, +30% over 35zzl), and both second windows fall to 2.40 s (68k,
+-11% under 35zzl). The fall is the same to the block in B1 and B2, so it
+is structural, not noise. Measured through B1 and B2, uncontended:
+
+- Follower execution rises inside each flood: 331 -> 610 -> 948 ms a
+  full block (B1) and 204 -> 374 -> 729 ms (B2), import median 1060 ->
+  1784 ms; 35zzl's B1 held 250-310 ms over the same four minutes.
+- The live heap reaches the 10 GiB GOMEMLIMIT: node3 in-use 5.67 GB at
+  the start of B1, 7.97 GB late in B2; GC every ~1.1 s (22 cycles in
+  25 s) and GC mark 11% -> 26% of the node's CPU. Largest holders late:
+  pool transactions decoded by BatchRawTransaction 1.92 GB, sender cache
+  1.18 GB, tx lookup tail 1.13 GB, mobileverify packet cache 1.0 GB,
+  QMDB map index 0.79 GB.
+- The 20 s history fold (46k AccountHistory rows, 53 MB payload, 109 MB
+  dirty, commit ~60 ms) holds the writer longer as the flood goes on:
+  median 616 -> 1444 ms, worst 8.5 s; other writers wait behind it up to
+  6.3 s.
+- Ruled out: the r74 block cache on write (the fleet runs
+  N42_BLOCK_CACHE_BLOCKS=4; block-decoded transactions in use 244 MB),
+  and the batched hint queue (the old queue also blocked when full; the
+  feed recovers the same ~45-60k tx/s a node).
+
+A faster chain reaches the heap limit and the long folds sooner, so r74
+exposes a ceiling 35zzl only touched (its second windows fell 10-12%).
+**Correction to attempt 1 above:** its warm-up win2 collapse was not all
+the rbtc replay. The same slide happens on a quiet box (warm-up win2
+72k, B win2 68k); the replay deepened it to 43k.
+
 ## 6bj. Round 35zzp: 35zzo plus the BLAKE3 transactions root -- registered before the round ran (2026-09-13)
 
 Replaces void 35zzm. `N42_TXROOT_BLAKE3_TIME=1788393864` (chain time:
