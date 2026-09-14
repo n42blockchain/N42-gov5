@@ -26,6 +26,7 @@ import (
 	"bytes"
 	"math"
 	"sort"
+	"sync"
 
 	"github.com/RoaringBitmap/roaring/roaring64"
 
@@ -85,22 +86,78 @@ func (a *HistoryAggregator) AddKey(bucket string, key []byte, blockNum uint64) {
 	a.add(m, key, blockNum)
 }
 
+// HistoryIndexMu serialises the writers of the history index tables that read
+// the index before they write it. The deferred fold prepares its rows under a
+// read transaction and writes them in a later write transaction; a prune landing
+// in between would have its deletions undone by the fold's rewrite of a key's
+// last chunk. The fold and the pruner both hold this lock across their read and
+// their write. The inline path (Flush inside the block's own write transaction)
+// needs no lock: MDBX already serialises it against both.
+var HistoryIndexMu sync.Mutex
+
 // Flush merges the accumulated block numbers into the on-disk history indices —
 // one read+union+chunked-write per distinct key, in sorted key order — and
 // resets the aggregator for the next batch.
 func (a *HistoryAggregator) Flush(rwTx kv.RwTx) error {
-	if err := flushHistoryMap(rwTx, modules.AccountsHistory, a.accounts); err != nil {
+	p, err := a.Prepare(rwTx)
+	if err != nil {
 		return err
 	}
-	if err := flushHistoryMap(rwTx, modules.StorageHistory, a.storage); err != nil {
-		return err
+	return p.Apply(rwTx)
+}
+
+// PreparedHistory holds every index row a flush puts, computed ahead of the
+// write transaction, in the order the flush puts them.
+type PreparedHistory struct {
+	rows []preparedHistoryRow
+}
+
+type preparedHistoryRow struct {
+	bucket     string
+	key, value []byte
+}
+
+// Len reports how many rows Apply puts.
+func (p *PreparedHistory) Len() int { return len(p.rows) }
+
+// Prepare is the read side of Flush, against tx, which may be read-only: for
+// each distinct key, in sorted order, it reads the key's last chunk, unions the
+// batch's block numbers in and encodes the resulting chunks. It resets the
+// aggregator. The rows are only valid for a write transaction that sees the
+// same index content as tx; a caller that prepares outside the write
+// transaction guarantees that with HistoryIndexMu.
+//
+// Reading every key before writing any is equivalent to Flush's interleaving:
+// history keys in one table have a fixed length, so one key's chunks are never
+// in another key's read range.
+//
+// The split exists for the deferred fold. Inside the write transaction the reads
+// and encodes of ~46k hot accounts held the MDBX writer 0.6-8.5 s every 20 s on
+// the qs fleet (round 35zzo), and the block writes queued behind it.
+func (a *HistoryAggregator) Prepare(tx kv.Tx) (*PreparedHistory, error) {
+	p := &PreparedHistory{rows: make([]preparedHistoryRow, 0, len(a.accounts)+len(a.storage))}
+	if err := prepareHistoryMap(tx, modules.AccountsHistory, a.accounts, p); err != nil {
+		return nil, err
+	}
+	if err := prepareHistoryMap(tx, modules.StorageHistory, a.storage, p); err != nil {
+		return nil, err
 	}
 	a.accounts = make(map[string]*roaring64.Bitmap)
 	a.storage = make(map[string]*roaring64.Bitmap)
+	return p, nil
+}
+
+// Apply puts the prepared rows.
+func (p *PreparedHistory) Apply(rwTx kv.RwTx) error {
+	for _, r := range p.rows {
+		if err := rwTx.Put(r.bucket, r.key, r.value); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-func flushHistoryMap(rwTx kv.RwTx, bucket string, m map[string]*roaring64.Bitmap) error {
+func prepareHistoryMap(tx kv.Tx, bucket string, m map[string]*roaring64.Bitmap, p *PreparedHistory) error {
 	if len(m) == 0 {
 		return nil
 	}
@@ -111,7 +168,7 @@ func flushHistoryMap(rwTx kv.RwTx, bucket string, m map[string]*roaring64.Bitmap
 	sort.Strings(keys)
 	buf := bytes.NewBuffer(nil)
 	for _, k := range keys {
-		index, err := bitmapdb.Get64(rwTx, bucket, []byte(k), math.MaxUint32, math.MaxUint32)
+		index, err := bitmapdb.Get64(tx, bucket, []byte(k), math.MaxUint32, math.MaxUint32)
 		if err != nil {
 			return err
 		}
@@ -121,7 +178,8 @@ func flushHistoryMap(rwTx kv.RwTx, bucket string, m map[string]*roaring64.Bitmap
 			if _, err := chunk.WriteTo(buf); err != nil {
 				return err
 			}
-			return rwTx.Put(bucket, chunkKey, types.CopyBytes(buf.Bytes()))
+			p.rows = append(p.rows, preparedHistoryRow{bucket: bucket, key: chunkKey, value: types.CopyBytes(buf.Bytes())})
+			return nil
 		}); err != nil {
 			return err
 		}

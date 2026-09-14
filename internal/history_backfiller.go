@@ -215,8 +215,19 @@ func (b *HistoryBackfiller) step() error {
 
 // stepFold folds one batch of changesets into the index; folded reports
 // whether there was anything to fold.
+//
+// Only the puts and the marker run in the write transaction. Reading the
+// changesets, reading each key's last index chunk, the unions and the encodes
+// run under a read transaction first: inside the write transaction they held
+// the MDBX writer 0.6-8.5 s every fold on the qs fleet (round 35zzo, ~46k hot
+// accounts), and every block write queued behind them. HistoryIndexMu keeps
+// the pruner out between the read and the write, and the marker is checked
+// again before the rows go in.
 func (b *HistoryBackfiller) stepFold() (folded bool, err error) {
-	from, _, err := b.readMarker()
+	state.HistoryIndexMu.Lock()
+	defer state.HistoryIndexMu.Unlock()
+
+	from, seeded, err := b.readMarker()
 	if err != nil {
 		return false, err
 	}
@@ -230,6 +241,7 @@ func (b *HistoryBackfiller) stepFold() (folded bool, err error) {
 	}
 
 	agg := state.NewHistoryAggregator()
+	var prepared *state.PreparedHistory
 	if err := b.db.View(b.ctx, func(tx kv.Tx) error {
 		for _, spec := range []struct{ cs, hist string }{
 			{modules.AccountChangeSet, modules.AccountsHistory},
@@ -251,7 +263,9 @@ func (b *HistoryBackfiller) stepFold() (folded bool, err error) {
 				return err
 			}
 		}
-		return nil
+		var err error
+		prepared, err = agg.Prepare(tx)
+		return err
 	}); err != nil {
 		return false, err
 	}
@@ -259,13 +273,28 @@ func (b *HistoryBackfiller) stepFold() (folded bool, err error) {
 	// Index rows and the marker go in ONE transaction. A crash may lose both
 	// (the range is simply rebuilt) but can never leave the marker ahead of the
 	// rows, which is the case that would let a query read a gap as untouched.
+	// Rows prepared against a marker that has since moved describe an index
+	// that no longer exists; they are dropped and the next tick starts over.
+	stale := false
 	if err := b.db.Update(b.ctx, func(tx kv.RwTx) error {
-		if err := agg.Flush(tx); err != nil {
+		cur, ok, err := rawdb.ReadHistoryIndexedThrough(tx)
+		if err != nil {
+			return err
+		}
+		if cur != from || ok != seeded {
+			stale = true
+			return nil
+		}
+		if err := prepared.Apply(tx); err != nil {
 			return err
 		}
 		return rawdb.WriteHistoryIndexedThrough(tx, to)
 	}); err != nil {
 		return false, err
+	}
+	if stale {
+		log.Warn("history backfill: marker moved while the fold was prepared; dropped", "from", from, "to", to)
+		return false, nil
 	}
 	return true, nil
 }
