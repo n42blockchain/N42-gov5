@@ -4388,6 +4388,22 @@ if the push phase stays above 120 ms, if the B mean gains less than 5%,
 or by any BAD BLOCK / "transaction root hash mismatch" (the hash
 shortcut or the pending-only sorts would be the suspects).
 
+**35zzo attempt 1 (2026-09-13 23:51 - 2026-09-14 00:16 EDT): aborted,
+not evidence.** Three minutes after the gov5 claim an rbtc cold-cache
+replay started without a claim (supervisor `run_replay.py`, rbtcd on
+cores 0-7, ~125 MB/s written to the same NVMe; a redb lane, an audit,
+then an mdbx lane, ~2 h in all). The warm-up's first window read 116k
+(43 blocks, 1.40 s) and its second 43k (16 blocks, 3.75 s): the leader's
+root2 replay, the history fold and the canonical commit each held the
+MDBX writer 0.5-3.6 s while the page cache sat 10-15 GB below 35zzl's.
+The contention would have covered every leg and spoiled the other job's
+cold-cache measurement too, so the round was stopped in A1's decay. What
+it did show before the contention built up: leader push phase 21 ms
+(35zzl ~180), follower canon 0.7 ms, chained seal -> seal 1179 ms,
+handover 2102 ms (35zzl 3200), no BAD BLOCK. Evidence is kept in
+`wr-logs/r35zzo-contended/`. `chain-35zzo2.sh` re-runs it once the rbtc
+supervisor has exited, and 35zzp/35zzq queue behind it.
+
 ## 6bj. Round 35zzp: 35zzo plus the BLAKE3 transactions root -- registered before the round ran (2026-09-13)
 
 Replaces void 35zzm. `N42_TXROOT_BLAKE3_TIME=1788393864` (chain time:

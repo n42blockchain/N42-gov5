@@ -20,6 +20,10 @@ this file is the entry point. No keys in here.
   execution, on n42-r75); each waits for the previous ROUND line, the box claim
   protocol and three quiet checks, reseeds, installs n42-r74, launches.
   Start all three with `setsid nohup bash ./chain-35zzX.sh > wr-logs/chain-35zzX.out 2>&1 </dev/null &`.
+- 2026-09-14 00:16 EDT: 35zzo attempt 1 was aborted because an unclaimed rbtc cold replay
+  shared the disk (budget doc 6bi). The queue is now `chain-35zzo2.sh` (re-run), then
+  `chain-35zzp.sh`, then `chain-35zzq.sh`; all three also wait for the rbtc supervisor
+  (`cold-replay-20260914/run_replay.py`) to exit.
 - Still open from the audit (not in r74): QMDB eviction one block behind
   (the next block re-reads its hot set from MDBX; needs the dead-row
   reclaim in `deactivate` for resident-but-flushed slots); the miner tree
