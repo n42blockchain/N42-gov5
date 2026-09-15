@@ -90,7 +90,7 @@ profile 与火焰图在 `/data/blockchain/datc-out/profiles/`，生成脚本 `sc
 - 收尾绝不在 `supervise.sh` 或任何自动重启下运行，用 `datc.bin finalize-leaves` 单独跑并盯着。
 - 启动收尾前，先列出最大的 spill（`ls -l leafspill | sort -k5 -n | tail`），并检查空闲内存和磁盘。
 - 收尾被打断后，按上面的"恢复"步骤处理，不要直接重跑。
-- 待修：`supervise.sh` 在 `DatcMeta/progress == end` 时不应重启；或者让收尾幂等。
+- `supervise.sh` 已修：构建到达终点后若在收尾中退出（rc≠0），不再重启；日志里有未完成的收尾（最后一个 `[leafseg] finalizing` 之后没有 `[leafseg] done`）时拒绝启动。人工恢复并单独收尾后，往日志追加一行 `[leafseg] done (standalone)` 才能再用它。
 
 ## 7. 以后可以改进的地方
 
