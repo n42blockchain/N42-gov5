@@ -5,7 +5,36 @@ paused the session. Detail and every prediction live in
 `docs/QS_BLOCK_TIME_BUDGET.md` (sections 6ba-6bh cover this handover's span);
 this file is the entry point. No keys in here.
 
-## Paused 2026-09-15 00:10 EDT, box handed to n42-rs (read this first)
+## Queue prepared 2026-09-15 07:30 EDT (read this first)
+
+- DATC holds the box (claim 07:11); gov5 runs and claims nothing. 35zzq was held
+  before it launched.
+- Built and ready in /data/blockchain/gov5-work, none launched:
+
+  | round | binary | the one change | prediction |
+  |---|---|---|---|
+  | 35zzq | n42-r75 | deferred execution (on 35zzp's tx root) | 72 |
+  | 35zzr | n42-r76 = `f0603e82` | history fold outside the write transaction | 73 |
+  | 35zzs | n42-r77 = `15710ab9` | tx lookup tail bounded at 1M transactions | 74 |
+  | 35zzt | n42-r77 | packet window 8 via QS_NODE_EXTRA | 75 |
+
+  Each `chain-35zzX.sh` waits for the previous round's ROUND line, Shmem <= 22 GB,
+  any rbtc replay, a waiting n42-rs runner, and three quiet checks; then it claims,
+  reseeds, installs its binary and launches. 35zzr-35zzt only make sense if 35zzq
+  passes (budget doc 6bl-6bn).
+- To resume once the box is quiet, start all four at once (each waits for the one
+  before it):
+
+  ```
+  cd /data/blockchain/gov5-work
+  for s in chain-35zzq chain-35zzr chain-35zzs chain-35zzt; do setsid nohup bash ./$s.sh >> /data/blockchain/wr-logs/$s.out 2>&1 </dev/null & done
+  ```
+
+- New on main today: `28f3c5c7` gossip MsgID hashed in parts (-7.1 GB of a follower's
+  allocations, byte-identical IDs); not in r75-r77. Not a lever: the 50 ms delay before
+  each Proposal broadcast (6bn).
+
+## Paused 2026-09-15 00:10 EDT, box handed to n42-rs
 
 - Nothing of gov5 runs, is claimed or is queued. n42-rs holds the box.
 - 35zzq (r75, deferred execution) has still not run. Its chain script now waits for
