@@ -89,3 +89,31 @@ acctcs/storcs 只能由**逐块执行**的节点写出：eth-el staged catch-up 
 - 变更集和区块头必须来自**同一条链、同一高度连续**；金标校验会在第一块发现不一致（ROOT MISMATCH 时回滚，不写坏数据）。
 - 延伸中途要停，用守护脚本的 TERM 优雅停（等当前批提交）；不要 `kill -9`。
 - 二进制用 `datc.bin` 指向的当前版本（含写库 upsert、钩子分片、dense 钩子泄漏修复）；旧二进制会慢数倍或 GC 饥饿。
+
+## 7. 数据保留清单（每次周更新前后都要遵守）
+
+周更新是在已有归档上**增量续跑**，下面的数据一旦丢失或被改动，就只能重建（25M 全链约一周量级）。
+
+### 必须长期保留
+
+| 数据 | 位置 | 大小（2026-09-15） | 为什么 |
+|---|---|---|---|
+| 归档库（合并后） | `/data/blockchain/datc-out/datc-25m-v2-hi`：`mdbx.dat` + `leafseg/` | mdbx 约 464 GB，leafseg 约 330 GB | 续跑从 `DatcMeta/progress` 接着跑，依赖库里的**当前态表**（HashedAccount/HashedStorage/TrieOf*）与 `DatcMeta`（start/progress/head/sched/format）；新 leaf 行会合并进已有 `leafseg/*.seg` |
+| 变更集输入 | `/data/blockchain/datc-input/N42-eth1177/chain/freezer/acctcs.*`、`storcs.*`（全部段 + cidx） | acctcs 158.7 GB + storcs 300.9 GB | 续跑只读新块，但项号是绝对块号、`verify`/`bench` 会抽样老高度；最后一个段每周会被原位改写，只能整文件替换 |
+| 区块头 | `/data/blockchain/datc-input/n42-eth1/chain/freezer/headerc.*`（全部段 + cidx，**实体文件**） | 约 4.8 GB | 每块 stateRoot 金标校验；`verify` 抽样老高度 |
+| 执行节点（数据来源） | Windows `D:/N42-eth1177`（PlainState 与 acctcs/storcs 同高度）、`D:/n42-eth1`（区块头） | — | 下周的变更集只能由它逐块执行产出；不要重置、裁剪或换成快照启动 |
+| 二进制与脚本 | `datc.bin`（当前 hi9）、`run-25m-hi9-ext.sh`（`--end 99999999`）、`supervise.sh` | — | 换二进制前先确认格式与参数不变 |
+
+### 绝对不要做
+
+- 删除或清空归档库的当前态表（为了省空间也不行）；对归档库跑 `prep-state`、`set-start`。
+- 把任何输入软链到别的项目目录（`ethel-test/` 每周轮换删除；`witness/` 属于 witness-replay 项目）。区块头已于 2026-09-15 改为实体文件。
+- 用 `rsync --append/--inplace` 或 `cp` 覆盖变更集尾段。
+- 在 leaf 段收尾（`[leafseg] finalizing`）过程中打断进程：spill 被保留时，重跑收尾会把同一批行重复合并进已有段。
+
+### 验收通过后可以删除
+
+- `leafspill/`：收尾结束且 `verify --samples 50` 通过后（收尾出现过 kill-tail 损坏帧时 spill 会被保留，需手动删除）。
+- 下段库 `datc-25m-v2-lo`：`merge` 完成且合并后 `verify`/`bench` 通过后。
+- 每周的暂存目录 `datc-input-staging-<高度>/`，以及同步时备份的旧尾段/旧 cidx（`datc-input-backup-<高度>/`）：当周延伸的 `verify` 通过后。
+- 旧版本二进制（hi6/hi7/hi8）：确认当前二进制稳定一段时间后。
