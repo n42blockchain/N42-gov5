@@ -4537,6 +4537,41 @@ over 35zzp. Falsified by any "deferred check FAILED", "deferred
 execution: header ... carries", BAD BLOCK, a lost commit (a follower's
 head standing while consensus advances), or seal -> QC above 1.0 s.
 
+## 6bl. Round 35zzr: the deferred fold outside the write transaction -- registered before the round ran (2026-09-15)
+
+Runs only if 35zzq passes (no deferred-check failure, no BAD BLOCK); its
+configuration is 35zzq's on n42-r76 = `f0603e82`. `chain-35zzr.sh` is written,
+not launched. **Prediction 73.** The write probe's fold transactions
+(AccountHistory rows) hold the writer <=0.2 s median late in a B leg, against
+0.6-1.4 s median and 8.5 s worst in 35zzo; block writes stop waiting behind them
+(worst wait <=1 s, was 6.3 s); B second windows +10% and the B mean +5-10% over
+35zzq. Falsified if the fold's held time stays above 0.5 s median, by any
+"marker moved while the fold was prepared" line during a flood (a second folder
+exists), or by a historical query refusal the marker should not produce.
+
+## 6bm. Round 35zzs: the tx lookup tail bounded by transactions -- registered before the round ran (2026-09-15)
+
+35zzr on n42-r77 = `15710ab9`. **Prediction 74.** "txindex sealed" logs show
+tailBlocks <=10 through a B flood (35zzo: 66-77) and back-to-back seals when a
+backlog exists; a follower's heap in use late in B -1 GB; GC cycles per 25 s late
+in B -20%; B mean +3-6% over 35zzr. Falsified if tailBlocks grows through a flood,
+by any "txindex seal failed" or "could not reopen segments", or if in-use heap
+late in B does not fall.
+
+## 6bn. Round 35zzt: the packet window flag that never reached the nodes -- registered before the round ran (2026-09-15)
+
+35zzs with `--mobileverify.packet-window 8` moved into `QS_NODE_EXTRA`.
+**Prediction 75.** Every node's command line carries the flag; the mobileverify
+packet cache in use falls from ~1.0 GB to <=0.05 GB late in B; GC cycles late in B
+-20%; B mean +3-6% over 35zzs. Falsified if the flag is absent from
+/proc/<pid>/cmdline or the packet cache stays above 0.2 GB.
+
+Not levers (checked 2026-09-15): the 50 ms sleep before each Proposal broadcast.
+A follower votes only after the block itself arrives and imports (or passes the
+deferred check), and an 18 MB block takes longer than 50 ms from push to decode,
+so the Proposal arriving earlier moves no vote; it would make a follower whose
+block has not landed fetch it a second time.
+
 ## 6at. Round 35zv: leader tenure 16 -- registered before the round ran (2026-09-11)
 
 35zu with N42_HOTSTUFF_LEADER_TENURE=16, nothing else. One handover in
