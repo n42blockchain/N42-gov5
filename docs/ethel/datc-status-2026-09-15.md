@@ -32,7 +32,7 @@
 
 ## 3. 停机前 profile（25.46M）
 
-profile 与火焰图在 `/data/blockchain/datc-out/profiles/`，生成脚本 `pprof2flame.py <profile> <out.svg> [title]`（不依赖 graphviz 或 flamegraph.pl）。
+profile 与火焰图在 `/data/blockchain/datc-out/profiles/`，生成脚本 `scripts/datc/pprof2flame.py <profile> <out.svg> [title]`（不依赖 graphviz 或 flamegraph.pl）。
 
 稳态 60 秒平均只用约 3.1 个核：状态根计算 73%（其中游标 seek 40%，经 cgo 读 MDBX 占总 CPU 33%，哈希构建约 20%，keccak 7%），逐块执行 14%，预取加解码约 6%，GC 4.5%，spill/zstd 不到 2%。
 

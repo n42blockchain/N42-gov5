@@ -1,12 +1,13 @@
 #!/bin/bash
-# DATC v2 upper-range build on Linux: [17,900,000, 25,864,982) over the state copied from
+# DATC v2 upper-range build on Linux from 17,900,000 over the state copied from
 # n42-datc-cont-25864981 (prep-state cleared its v1 Datc* tables). Run under supervise.sh.
+# --end 99999999 is clamped to the synced changeset/header inputs, so weekly extensions resume with the same script.
 # --writemap: the per-batch flush on the large output DB was dominated by MDBX dirty-list sorting.
 BIN=/data/blockchain/datc-out/datc.bin   # symlink to the current binary; older per-revision copies were removed
 CS=/data/blockchain/datc-input/N42-eth1177/chain/freezer
 HD=/data/blockchain/datc-input/n42-eth1/chain/freezer
 OUT=/data/blockchain/datc-out/datc-25m-v2-hi
-exec $BIN build --src mainnet --changesets $CS --headers $HD --out $OUT --end 25864982 \
+exec $BIN build --src mainnet --changesets $CS --headers $HD --out $OUT --end 99999999 \
   --sched 1024,16384,1024,1,4194304,4194304 --acc-root-epoch 1 --window=false --concurrent-root \
   --leaf-seg --batch 4096 --map.gb 4096 --dirty.gb 8 --stocache.m 16 --gogc 150 --mem.gb 40 \
   --decode-workers 16 --prefetch --pprof.port 6073 --writemap
