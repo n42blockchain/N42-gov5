@@ -88,7 +88,8 @@ acctcs/storcs 只能由**逐块执行**的节点写出：eth-el staged catch-up 
 - 周更新节点数据目录（`ethel-test/*`）会被下一轮删除，DATC 的任何输入都不要指向那里。
 - 变更集和区块头必须来自**同一条链、同一高度连续**；金标校验会在第一块发现不一致（ROOT MISMATCH 时回滚，不写坏数据）。
 - 延伸中途要停，用守护脚本的 TERM 优雅停（等当前批提交）；不要 `kill -9`。
-- 二进制用 `datc.bin` 指向的当前版本（含写库 upsert、钩子分片、dense 钩子泄漏修复）；旧二进制会慢数倍或 GC 饥饿。
+- 二进制用 `datc.bin` 指向的当前版本（含写库 upsert、钩子分片、dense 钩子泄漏修复、leaf 收尾外排序）；旧二进制会慢数倍、GC 饥饿，或在大存储合约的桶上收尾时 OOM。
+- 延伸跑完后的 leaf 收尾，单桶内存受 `DATC_FINALIZE_RUN_BYTES`（默认 1 GiB）限制；临时批次文件写在 `leafseg/` 旁边，需要预留最大桶解码后大小的磁盘。
 
 ## 7. 数据保留清单（每次周更新前后都要遵守）
 
@@ -110,6 +111,7 @@ acctcs/storcs 只能由**逐块执行**的节点写出：eth-el staged catch-up 
 - 把任何输入软链到别的项目目录（`ethel-test/` 每周轮换删除；`witness/` 属于 witness-replay 项目）。区块头已于 2026-09-15 改为实体文件。
 - 用 `rsync --append/--inplace` 或 `cp` 覆盖变更集尾段。
 - 在 leaf 段收尾（`[leafseg] finalizing`）过程中打断进程：spill 被保留时，重跑收尾会把同一批行重复合并进已有段。
+- 在 `supervise.sh` 或任何自动重启下跑收尾：OOM 强杀后自动重启会再次收尾，已合并的桶会重复（2026-09-15 事故，见 `datc-status-2026-09-15.md` 第 6 节）。收尾要用外排序版本（hi10 及以后）单独运行。
 
 ### 验收通过后可以删除
 

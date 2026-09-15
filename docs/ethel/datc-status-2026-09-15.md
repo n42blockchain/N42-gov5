@@ -8,7 +8,7 @@
 |---|---|
 | 下段 `datc-25m-v2-lo` | 已完成，区块 `[0, 17,900,000)`，514 GB，leaf 段已收尾 |
 | 上段 `datc-25m-v2-hi` | 构建已完成，区块 `[17,900,000, 25,943,311)`，最后一块 **25,943,311**（含周更新延伸）。`DatcMeta`：start 17,900,000、progress/head 25,943,311、format 2，sched 与深度参数和下段逐字节相同 |
-| leaf 段收尾 | 进行中（09-15 19:54 UTC 完成 1463/1963 桶），单线程约 22 MB/s，预计总耗时约 4.5 小时 |
+| leaf 段收尾 | 进行中。09-15 21:05 UTC 在 `s.7b` 被 OOM 强杀（内存排序），已隔离恢复（见第 6 节）；已完成 1574/1963 桶，剩余 389 桶待用外排序版本（hi10）单独重跑 |
 | 下一步 | 行数核对（a/s 桶恢复行数 vs `leafprog` 增量）→ `merge --into hi --from lo` → `verify --samples 50` → `bench` → 删除 `leafspill/` 与下段库 |
 
 ## 2. 构建性能优化
@@ -61,7 +61,38 @@ profile 与火焰图在 `/data/blockchain/datc-out/profiles/`，生成脚本 `sc
 
 **收尾过程中禁止打断**：spill 被保留时重跑收尾，会把同一批行再合并进已有段，造成重复。
 
-## 6. 以后可以改进的地方
+## 6. leaf 段收尾 OOM 事故（2026-09-15）与外排序
+
+**经过**
+
+1. 旧的 `finalizeBucket` 把整个 spill 读进内存（`io.ReadAll`），解码、排序后再写段。USDT 这类存储极多的合约，所有 leaf 行都落在同一个桶：`s.ab` 压缩后 14.9 GB，`s.7b` 9.6 GB，`s.15` 12 GB，解码后是几十 GB。21:05 在 `s.7b` 被 OOM 强杀。
+2. `supervise.sh` 在 rc≠0 后自动重启构建。此时 progress == end，构建跑 0 块就直接再次收尾。之前因 kill-tail 损坏帧保留了 spill 的桶被重新合并进已有段，`a.00.seg` 出现重复行。30 秒后发现并停止。
+
+**恢复**（已执行）
+
+- 先停掉所有进程。
+- 已有 `.seg`、但 spill 仍在 `leafspill/` 的桶（684 个）：把 spill 移到 `datc-25m-v2-hi-quarantine-20260915/leafspill-finalized/`，不删除。
+- 被重启进程改写过的 `a.00.seg`：移到 `leafseg-dup/`，再由它的 spill 重建。
+- 只对"没有段的 spill"重跑收尾。
+
+**修复：外排序**（`cmd/n42-datc/leafseg.go`，hi10）
+
+- spill 不再整体读入。按块流式扫描帧起点，每帧用 `ReadAt` 读取。损坏帧的扩展重试只增量读取新增字节。
+- 每解出一帧就解析其中的完整行，残尾留给下一帧。损坏帧、组内残尾丢弃的语义不变。
+- 行攒到 `DATC_FINALIZE_RUN_BYTES`（默认 1 GiB）就稳定排序，写成段旁的临时批次文件 `<seg>.runNNNN.tmp`。
+- 最后做堆多路归并，相同键的顺序是：已有段优先，然后按批次先后。
+- 只有一个批次时仍走内存路径。
+- 验证：与旧实现在同一 spill 上（含重复键、kill-tail 截断帧、续跑合并）的输出逐字节相同。见 `TestFinalizeExternalSortMatchesInMemory`。
+- 内存上限约为 2×批次大小；临时磁盘约等于最大桶解码后的大小。
+
+**规则（避免再犯）**
+
+- 收尾绝不在 `supervise.sh` 或任何自动重启下运行，用 `datc.bin finalize-leaves` 单独跑并盯着。
+- 启动收尾前，先列出最大的 spill（`ls -l leafspill | sort -k5 -n | tail`），并检查空闲内存和磁盘。
+- 收尾被打断后，按上面的"恢复"步骤处理，不要直接重跑。
+- 待修：`supervise.sh` 在 `DatcMeta/progress == end` 时不应重启；或者让收尾幂等。
+
+## 7. 以后可以改进的地方
 
 - leaf 段收尾是单线程逐桶处理（约 22 MB/s，377 GB spill 约 4.5 小时）。各桶互相独立，可以改成多桶并行。
 - 根计算分片不均：需要存储树内部并行或更细的分片，涉及节点记录生成方式，需在非构建期间开发并用 e2e 验证。

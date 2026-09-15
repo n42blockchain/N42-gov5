@@ -24,12 +24,14 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"container/heap"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -190,8 +192,8 @@ func (w *leafSpillWriter) close() error {
 }
 
 // finalizeLeafSegments turns the spill files into sorted static segments and
-// removes the spill dir. One bucket is processed at a time (decoded rows for
-// a 25M-mainnet bucket are single-digit GB — in-RAM sortable).
+// removes the spill dir. One bucket is processed at a time; a bucket larger
+// than finalizeRunBytes is sorted externally (see finalizeBucket).
 func finalizeLeafSegments(outDir string) error {
 	spill := filepath.Join(outDir, leafSpillDir)
 	segd := filepath.Join(outDir, leafSegDir)
@@ -244,66 +246,100 @@ func finalizeLeafSegments(outDir string) error {
 	return os.RemoveAll(spill)
 }
 
+// finalizeRunBytes bounds the decoded rows one bucket finalize keeps in memory.
+// A bucket that fits in one run is sorted in memory; a larger one (the storage
+// bucket of a USDT-class contract holds tens of GB of rows, which OOM-killed the
+// 25M build's finalize) is sorted in runs written next to the segment and then
+// k-way merged, so memory stays near this bound whatever the bucket size.
+// DATC_FINALIZE_RUN_BYTES overrides it; tests use a tiny value to exercise the
+// merge path.
+var finalizeRunBytes = func() int {
+	if v, err := strconv.Atoi(os.Getenv("DATC_FINALIZE_RUN_BYTES")); err == nil && v > 0 {
+		return v
+	}
+	return 1 << 30
+}()
+
+// maxSpillField caps a row's key or value length while parsing decoded spill
+// bytes. A larger length is garbage: the rest of that frame group is dropped,
+// where the whole-group parser stopped too.
+const maxSpillField = 64 << 20
+
 func finalizeBucket(zr *zstd.Decoder, enc *zstd.Encoder, src, dst string, corruptOut *int) error {
 	f, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	// Kill-resilient decode: a hard-killed --leaf-seg build leaves a TRUNCATED
-	// zstd frame at the tail of that run's stream; a resumed build then appends
-	// a SECOND, cleanly-closed zstd stream to the same file. A plain
-	// io.ReadAll over the concatenation dies at the truncated frame
-	// ("reserved bits not zero"). Recover by decoding frame-by-frame (split on
-	// the 4-byte zstd magic), accumulating consecutive good frames into one
-	// contiguous group, and resyncing at the next frame whenever one fails to
-	// decode. Rows are parsed per group, so a group's trailing partial row —
-	// and the rows in the dropped truncated frame — are simply discarded; the
-	// next group begins at a fresh frame boundary (a resumed run's stream
-	// starts row-aligned, and a single frame never spans two runs). Loss is
-	// bounded to the few rows buffered in the kill-tail frame.
-	comp, err := io.ReadAll(bufio.NewReaderSize(f, 1<<20))
+	st, err := f.Stat()
 	if err != nil {
 		return err
 	}
-	zstdMagic := []byte{0x28, 0xb5, 0x2f, 0xfd}
-	var frameStarts []int
-	for i := 0; i+4 <= len(comp); {
-		j := bytes.Index(comp[i:], zstdMagic)
-		if j < 0 {
-			break
-		}
-		frameStarts = append(frameStarts, i+j)
-		i += j + 4
+	size := st.Size()
+	// Kill-resilient decode: a hard-killed --leaf-seg build leaves a TRUNCATED
+	// zstd frame at the tail of that run's stream; a resumed build then appends
+	// a SECOND, cleanly-closed zstd stream to the same file. Decode frame by
+	// frame (split on the 4-byte zstd magic, read by offset so the spill never
+	// has to fit in memory), accumulating consecutive good frames into one
+	// contiguous group, and resync at the next frame whenever one fails to
+	// decode. Rows are parsed as frames arrive; a group's trailing partial row —
+	// and the rows in the dropped truncated frame — are discarded when the group
+	// ends. The next group begins at a fresh frame boundary (a resumed run's
+	// stream starts row-aligned, and a single frame never spans two runs). Loss
+	// is bounded to the few rows buffered in the kill-tail frame.
+	frameStarts, err := scanZstdMagics(f, size)
+	if err != nil {
+		return err
 	}
-	var raw []byte    // recovered, row-aligned concatenation
-	var offs []uint64 // start of each record in raw
-	appendGroup := func(g []byte) {
+	runs := &bucketRuns{dst: dst, limit: finalizeRunBytes}
+	defer runs.cleanup()
+
+	var group []byte // decoded bytes of the current group not yet parsed into rows
+	groupBad := false
+	parseGroup := func() error {
 		p := 0
-		for p < len(g) {
-			kl, m := binary.Uvarint(g[p:])
-			if m <= 0 || kl > uint64(len(g)) {
-				return // partial/garbage tail of this group — stop here
+		for p < len(group) && !groupBad {
+			kl, m := binary.Uvarint(group[p:])
+			if m < 0 || kl > maxSpillField {
+				groupBad = true
+				break
 			}
-			ks := p + m
-			ke := ks + int(kl)
-			if ke > len(g) {
-				return
+			if m == 0 {
+				break
 			}
-			vl, m2 := binary.Uvarint(g[ke:])
-			if m2 <= 0 || vl > uint64(len(g)) {
-				return
+			ke := p + m + int(kl)
+			if ke > len(group) {
+				break
+			}
+			vl, m2 := binary.Uvarint(group[ke:])
+			if m2 < 0 || vl > maxSpillField {
+				groupBad = true
+				break
+			}
+			if m2 == 0 {
+				break
 			}
 			ve := ke + m2 + int(vl)
-			if ve > len(g) {
-				return
+			if ve > len(group) {
+				break
 			}
-			offs = append(offs, uint64(len(raw)))
-			raw = append(raw, g[p:ve]...)
+			if err := runs.add(group[p:ve]); err != nil {
+				return err
+			}
 			p = ve
 		}
+		group = group[:copy(group, group[p:])]
+		return nil
 	}
-	var group []byte
+	endGroup := func() error {
+		if err := parseGroup(); err != nil {
+			return err
+		}
+		group = group[:0]
+		groupBad = false
+		return nil
+	}
+
 	corruptFrames := 0
 	// The 4-byte magic can legitimately occur INSIDE a compressed frame
 	// (hash-heavy tables make that likely), so a candidate boundary is only
@@ -312,63 +348,67 @@ func finalizeBucket(zr *zstd.Decoder, enc *zstd.Encoder, src, dst string, corrup
 	// extended to its real end; a truly truncated (kill-tail) frame fails at
 	// every extension up to the merge cap and is dropped.
 	const maxMergeSpan = 512 << 20
+	var span, dec []byte
 	for fi := 0; fi < len(frameStarts); {
 		decoded := false
+		span = span[:0]
 		for j := fi + 1; j <= len(frameStarts); j++ {
-			end := len(comp)
+			end := size
 			if j < len(frameStarts) {
 				end = frameStarts[j]
 			}
-			if end-frameStarts[fi] > maxMergeSpan {
+			n := end - frameStarts[fi]
+			if n > maxMergeSpan {
 				break
 			}
-			dec, derr := zr.DecodeAll(comp[frameStarts[fi]:end], nil)
+			// Read only the bytes past the previous candidate: a kill-tail
+			// frame is retried across every candidate up to the merge cap.
+			have := int64(len(span))
+			span = append(span, make([]byte, n-have)...)
+			if _, err := f.ReadAt(span[have:], frameStarts[fi]+have); err != nil && err != io.EOF {
+				return err
+			}
+			var derr error
+			dec, derr = zr.DecodeAll(span, dec[:0])
 			if derr == nil {
-				group = append(group, dec...)
+				if !groupBad {
+					group = append(group, dec...)
+					if err := parseGroup(); err != nil {
+						return err
+					}
+				}
 				fi = j
 				decoded = true
 				break
 			}
 		}
 		if !decoded {
-			// Truncated/corrupt frame: flush the current contiguous group's
+			// Truncated/corrupt frame: finish the current contiguous group's
 			// complete rows and resync at the next candidate boundary.
-			appendGroup(group)
-			group = group[:0]
+			if err := endGroup(); err != nil {
+				return err
+			}
 			corruptFrames++
 			fi++
 		}
 	}
-	appendGroup(group)
+	if err := endGroup(); err != nil {
+		return err
+	}
+	span, dec, group = nil, nil, nil
 	if corruptFrames > 0 {
 		fmt.Printf("[leafseg] %s: skipped %d corrupt frame(s) (kill-tail), recovered %d rows\n",
-			filepath.Base(src), corruptFrames, len(offs))
+			filepath.Base(src), corruptFrames, runs.rows)
 	}
-	recKey := func(off uint64) []byte {
-		kl, m := binary.Uvarint(raw[off:])
-		return raw[off+uint64(m) : off+uint64(m)+kl]
-	}
-	recEnd := func(off uint64) uint64 {
-		kl, m := binary.Uvarint(raw[off:])
-		p := off + uint64(m) + kl
-		vl, m2 := binary.Uvarint(raw[p:])
-		return p + uint64(m2) + vl
-	}
-	// Sort by full key (which embeds the block/epoch suffix → version order).
-	// STABLE: duplicate keys (a resumed build re-spilling an overlap) keep
-	// arrival order, so output is deterministic.
-	sort.SliceStable(offs, func(i, j int) bool {
-		return bytes.Compare(recKey(offs[i]), recKey(offs[j])) < 0
-	})
 
 	// A RESUMED build appends to a bucket that was already finalized: merge
 	// the existing segment (sorted, streamed frame by frame) with the new
 	// rows. Equal keys keep the OLD row first — arrival order, deterministic.
 	var old *oldSegIter
-	if f, err := os.Open(dst); err == nil {
-		sf, lerr := loadLeafSegFile(f)
+	if of, err := os.Open(dst); err == nil {
+		sf, lerr := loadLeafSegFile(of)
 		if lerr != nil {
-			f.Close()
+			of.Close()
 			return fmt.Errorf("existing segment: %w", lerr)
 		}
 		old = &oldSegIter{sf: sf, zr: zr2()}
@@ -380,35 +420,8 @@ func finalizeBucket(zr *zstd.Decoder, enc *zstd.Encoder, src, dst string, corrup
 	if err != nil {
 		return err
 	}
-	ni := 0
-	emitNew := func() error {
-		end := recEnd(offs[ni])
-		err := sw.add(raw[offs[ni]:end], recKey(offs[ni]))
-		ni++
+	if err := runs.writeSorted(sw, old); err != nil {
 		return err
-	}
-	for old != nil && old.valid() {
-		ok, oerr := old.ensure()
-		if oerr != nil {
-			return oerr
-		}
-		if !ok {
-			break
-		}
-		for ni < len(offs) && bytes.Compare(recKey(offs[ni]), old.key()) < 0 {
-			if err := emitNew(); err != nil {
-				return err
-			}
-		}
-		if err := sw.add(old.rec(), old.key()); err != nil {
-			return err
-		}
-		old.next()
-	}
-	for ni < len(offs) {
-		if err := emitNew(); err != nil {
-			return err
-		}
 	}
 	if err := sw.finish(); err != nil {
 		return err
@@ -425,7 +438,305 @@ func finalizeBucket(zr *zstd.Decoder, enc *zstd.Encoder, src, dst string, corrup
 	return os.Rename(tmp, dst)
 }
 
-// segFrameWriter emits the frames + footer format of one segment file.
+// scanZstdMagics returns the offset of every non-overlapping zstd frame magic
+// in f, reading it in chunks.
+func scanZstdMagics(f *os.File, size int64) ([]int64, error) {
+	magic := []byte{0x28, 0xb5, 0x2f, 0xfd}
+	const chunk = 16 << 20
+	buf := make([]byte, chunk+len(magic)-1)
+	var starts []int64
+	carry := 0
+	for off := int64(0); off < size; {
+		n, err := f.ReadAt(buf[carry:carry+chunk], off)
+		if err != nil && err != io.EOF {
+			return nil, err
+		}
+		if n == 0 {
+			break
+		}
+		data := buf[:carry+n]
+		base := off - int64(carry)
+		next := 0 // first position a new match may start at (matches do not overlap)
+		for i := 0; ; {
+			j := bytes.Index(data[i:], magic)
+			if j < 0 {
+				break
+			}
+			starts = append(starts, base+int64(i+j))
+			i += j + len(magic)
+			next = i
+		}
+		keep := len(magic) - 1
+		if keep > len(data) {
+			keep = len(data)
+		}
+		if start := len(data) - keep; start < next {
+			keep = len(data) - next
+		}
+		copy(buf, data[len(data)-keep:])
+		carry = keep
+		off += int64(n)
+	}
+	return starts, nil
+}
+
+func spillRecKey(raw []byte, off uint64) []byte {
+	kl, m := binary.Uvarint(raw[off:])
+	return raw[off+uint64(m) : off+uint64(m)+kl]
+}
+
+func spillRecEnd(raw []byte, off uint64) uint64 {
+	kl, m := binary.Uvarint(raw[off:])
+	p := off + uint64(m) + kl
+	vl, m2 := binary.Uvarint(raw[p:])
+	return p + uint64(m2) + vl
+}
+
+// bucketRuns collects one bucket's rows in arrival order. Rows stay in memory
+// until limit bytes, then are sorted into a run file beside the segment.
+type bucketRuns struct {
+	dst   string
+	limit int
+	raw   []byte
+	offs  []uint64
+	files []string
+	rows  int
+}
+
+func (b *bucketRuns) add(rec []byte) error {
+	b.offs = append(b.offs, uint64(len(b.raw)))
+	b.raw = append(b.raw, rec...)
+	b.rows++
+	if len(b.raw) >= b.limit {
+		return b.spillRun()
+	}
+	return nil
+}
+
+// sortMem sorts the buffered rows by full key (which embeds the block/epoch
+// suffix → version order). STABLE: duplicate keys (a resumed build re-spilling
+// an overlap) keep arrival order, so output is deterministic.
+func (b *bucketRuns) sortMem() {
+	raw := b.raw
+	sort.SliceStable(b.offs, func(i, j int) bool {
+		return bytes.Compare(spillRecKey(raw, b.offs[i]), spillRecKey(raw, b.offs[j])) < 0
+	})
+}
+
+// spillRun sorts the buffered rows into the next run file (each record
+// prefixed with its uvarint length) and empties the buffer.
+func (b *bucketRuns) spillRun() error {
+	if len(b.offs) == 0 {
+		return nil
+	}
+	b.sortMem()
+	name := fmt.Sprintf("%s.run%04d.tmp", b.dst, len(b.files))
+	f, err := os.Create(name)
+	if err != nil {
+		return err
+	}
+	b.files = append(b.files, name)
+	bw := bufio.NewWriterSize(f, 4<<20)
+	var lp [binary.MaxVarintLen64]byte
+	for _, off := range b.offs {
+		rec := b.raw[off:spillRecEnd(b.raw, off)]
+		n := binary.PutUvarint(lp[:], uint64(len(rec)))
+		if _, err := bw.Write(lp[:n]); err != nil {
+			f.Close()
+			return err
+		}
+		if _, err := bw.Write(rec); err != nil {
+			f.Close()
+			return err
+		}
+	}
+	if err := bw.Flush(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	b.raw = b.raw[:0]
+	b.offs = b.offs[:0]
+	return nil
+}
+
+func (b *bucketRuns) cleanup() {
+	for _, name := range b.files {
+		_ = os.Remove(name)
+	}
+}
+
+// writeSorted emits every row in key order into sw, merged with the existing
+// segment when old != nil. Equal keys come out old segment first, then in
+// arrival order (earlier runs first, stable within a run) — exactly the order
+// of one in-memory stable sort followed by the old-first merge.
+func (b *bucketRuns) writeSorted(sw *segFrameWriter, old *oldSegIter) error {
+	if len(b.files) == 0 {
+		b.sortMem()
+		ni := 0
+		emitNew := func() error {
+			off := b.offs[ni]
+			ni++
+			return sw.add(b.raw[off:spillRecEnd(b.raw, off)], spillRecKey(b.raw, off))
+		}
+		for old != nil && old.valid() {
+			ok, err := old.ensure()
+			if err != nil {
+				return err
+			}
+			if !ok {
+				break
+			}
+			for ni < len(b.offs) && bytes.Compare(spillRecKey(b.raw, b.offs[ni]), old.key()) < 0 {
+				if err := emitNew(); err != nil {
+					return err
+				}
+			}
+			if err := sw.add(old.rec(), old.key()); err != nil {
+				return err
+			}
+			old.next()
+		}
+		for ni < len(b.offs) {
+			if err := emitNew(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if err := b.spillRun(); err != nil {
+		return err
+	}
+	b.raw, b.offs = nil, nil
+	h := &mergeHeap{}
+	if old != nil {
+		src := &segMergeSource{it: old}
+		ok, err := old.ensure()
+		if err != nil {
+			return err
+		}
+		if ok {
+			*h = append(*h, mergeItem{src: src, prio: 0})
+		}
+	}
+	var opened []*runMergeSource
+	defer func() {
+		for _, r := range opened {
+			r.close()
+		}
+	}()
+	for i, name := range b.files {
+		r, err := openRunMergeSource(name)
+		if err != nil {
+			return err
+		}
+		opened = append(opened, r)
+		ok, err := r.next()
+		if err != nil {
+			return err
+		}
+		if ok {
+			*h = append(*h, mergeItem{src: r, prio: i + 1})
+		}
+	}
+	heap.Init(h)
+	for h.Len() > 0 {
+		top := (*h)[0]
+		if err := sw.add(top.src.rec(), top.src.key()); err != nil {
+			return err
+		}
+		ok, err := top.src.next()
+		if err != nil {
+			return err
+		}
+		if ok {
+			heap.Fix(h, 0)
+		} else {
+			heap.Pop(h)
+		}
+	}
+	return nil
+}
+
+// mergeSource is one sorted input of the run merge, positioned on a record.
+type mergeSource interface {
+	key() []byte
+	rec() []byte
+	next() (bool, error)
+}
+
+type segMergeSource struct{ it *oldSegIter }
+
+func (s *segMergeSource) key() []byte { return s.it.key() }
+func (s *segMergeSource) rec() []byte { return s.it.rec() }
+func (s *segMergeSource) next() (bool, error) {
+	s.it.next()
+	return s.it.ensure()
+}
+
+type runMergeSource struct {
+	f   *os.File
+	br  *bufio.Reader
+	buf []byte
+}
+
+func openRunMergeSource(name string) (*runMergeSource, error) {
+	f, err := os.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return &runMergeSource{f: f, br: bufio.NewReaderSize(f, 4<<20)}, nil
+}
+
+func (s *runMergeSource) key() []byte { return spillRecKey(s.buf, 0) }
+func (s *runMergeSource) rec() []byte { return s.buf }
+func (s *runMergeSource) next() (bool, error) {
+	n, err := binary.ReadUvarint(s.br)
+	if err == io.EOF {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if uint64(cap(s.buf)) < n {
+		s.buf = make([]byte, n)
+	}
+	s.buf = s.buf[:n]
+	if _, err := io.ReadFull(s.br, s.buf); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+func (s *runMergeSource) close() { _ = s.f.Close() }
+
+// mergeItem orders sources by current key, then by priority (0 = existing
+// segment, then runs in arrival order).
+type mergeItem struct {
+	src  mergeSource
+	prio int
+}
+
+type mergeHeap []mergeItem
+
+func (h mergeHeap) Len() int { return len(h) }
+func (h mergeHeap) Less(i, j int) bool {
+	if c := bytes.Compare(h[i].src.key(), h[j].src.key()); c != 0 {
+		return c < 0
+	}
+	return h[i].prio < h[j].prio
+}
+func (h mergeHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h *mergeHeap) Push(x any)   { *h = append(*h, x.(mergeItem)) }
+func (h *mergeHeap) Pop() any {
+	old := *h
+	it := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return it
+}
+
 type segFrameWriter struct {
 	f     *os.File
 	bw    *bufio.Writer
