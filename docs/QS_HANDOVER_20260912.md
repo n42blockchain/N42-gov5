@@ -5,7 +5,19 @@ paused the session. Detail and every prediction live in
 `docs/QS_BLOCK_TIME_BUDGET.md` (sections 6ba-6bh cover this handover's span);
 this file is the entry point. No keys in here.
 
-## 2026-09-14 23:45 EDT (read this first)
+## Paused 2026-09-15 00:10 EDT, box handed to n42-rs (read this first)
+
+- Nothing of gov5 runs, is claimed or is queued. n42-rs holds the box.
+- 35zzq (r75, deferred execution) has still not run. Its chain script now waits for
+  Shmem <= 22 GB before its turn-taking and quiet checks (the whole-GB comparison let
+  22.6 GB through). At the pause the tmpfs /tmp held 31 GB: the CI reproduction tree was
+  removed, the n42-rs session's Claude task outputs (7.9 GB) were not.
+- To resume: check `grep Shmem /proc/meminfo` (35zzo ran at 20.8 GB), then
+  `setsid nohup bash ./chain-35zzq.sh >> /data/blockchain/wr-logs/chain-35zzq.out 2>&1 </dev/null &`
+  in /data/blockchain/gov5-work. After 35zzq, register the lever rounds (6bi) and build
+  n42-r76 from main before claiming.
+
+## 2026-09-14 23:45 EDT
 
 - 35zzp re-run finished its B legs: B mean 87.9k (35zzo re-run 90.6k), follower body
   median 15 ms (was ~100-180), stopped by the memory watchdog at the end of B2. The
