@@ -5,7 +5,18 @@ paused the session. Detail and every prediction live in
 `docs/QS_BLOCK_TIME_BUDGET.md` (sections 6ba-6bh cover this handover's span);
 this file is the entry point. No keys in here.
 
-## Paused 2026-09-14 04:40 EDT (read this first)
+## 2026-09-14 23:45 EDT (read this first)
+
+- 35zzp re-run finished its B legs: B mean 87.9k (35zzo re-run 90.6k), follower body
+  median 15 ms (was ~100-180), stopped by the memory watchdog at the end of B2. The
+  tmpfs /tmp grew to 35 GB since the morning, so the run had ~7 GB less memory than 35zzo.
+- **35zzq is held** (its chain script was stopped): it would hit the same 20 GB floor.
+  It needs either a smaller /tmp (owners: the n42-rs session's task outputs and
+  /tmp/n42-ci-repro-*) or the packet-window flag moved into QS_NODE_EXTRA, which the user
+  has to accept as a second variable. Resume with `chain-35zzq.sh` once decided.
+- Nothing of gov5 runs or is claimed.
+
+## Paused 2026-09-14 04:40 EDT
 
 - **Box:** nothing of gov5 runs or is queued: no claim, no fleet, no runner, no chain
   script. BOX-NOTE-gov5.txt says so. The box is shared by turns with n42-rs (user's

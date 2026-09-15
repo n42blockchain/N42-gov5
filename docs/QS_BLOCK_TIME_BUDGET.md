@@ -4492,6 +4492,37 @@ The warm-up's second window fell further (3.16 s blocks), which fits the
 section 6bi slide being reached sooner by a faster chain. Logs and the
 per-minute summary: `wr-logs/r35zzp-paused/`.
 
+**35zzp re-run (2026-09-14 22:45-23:40 EDT).** Gate live, no root mismatch or
+BAD BLOCK in 351 full imports. Stopped by the memory watchdog (MemAvailable 19 GB)
+at the end of B2, after all four B windows.
+
+| window | 35zzo re-run | 35zzp re-run |
+|---|---|---|
+| A1 win1 / win2 | 63.6k / 61.0k | 59.4k / 55.8k |
+| B1 win1 / win2 | 113.4k / 67.9k | 118.2k / 57.0k |
+| B2 win1 / win2 | 113.2k / 67.9k | 117.2k / 59.2k |
+
+B mean 87.9k against 90.6k (-3%); A1 57.6k against 62.3k. Follower body
+phase median 15 ms (p90 42) against ~100-180 ms in 35zzo; valid 43 ms,
+proc 796 ms, write 165 ms, total 1042 ms medians.
+
+**Prediction 71: the mechanism holds, the throughput claim fails on this
+run.** Body <=35 ms is met by a wide margin. The B mean did not gain 3-4%:
+first windows gained ~4%, second windows lost ~14%. The run is not a clean
+A/B against 35zzo: the tmpfs `/tmp` had grown to 35 GB (Shmem 27.9 GB
+against 20.8 GB during 35zzo), leaving B legs 21-24 GB available where
+35zzo had 31-33 GB, node heaps reached 10.3-12.7 GB against GOMEMLIMIT
+10 GiB, and this morning's partial 35zzp on the smaller tmpfs read 125.9k
+in B1 win1 against 118.2k tonight. The second-window slide (6bi) is what
+the transactions-root saving feeds into, and less memory deepens it.
+
+**35zzq is held.** With ~7 GB less headroom it would reach the 20 GB
+watchdog floor in its B legs as this run did. Before it runs either the
+tmpfs shrinks (its largest holders are another session's Claude task
+outputs, 7.9 GB, and a CI reproduction tree, 4.8 GB, neither gov5's) or a
+round applies the packet-window flag the harness has been dropping
+(~1 GB a node, section 6bi), which is a second variable for 35zzq.
+
 ## 6bk. Round 35zzq: 35zzp plus deferred execution -- registered before the round ran (2026-09-13)
 
 Replaces 35zzn. Runs on n42-r75 (r74 plus the leader's write taking
