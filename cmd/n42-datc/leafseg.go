@@ -260,6 +260,30 @@ var finalizeRunBytes = func() int {
 	return 1 << 30
 }()
 
+// finalizeStreamMin is the span size above which a candidate frame is decoded
+// by STREAMING it twice (once to check it decodes, once to feed rows) instead
+// of DecodeAll'ing it into one buffer. merge re-spills a whole bucket as a
+// single frame, which can be gigabytes; DecodeAll would need the decoded size
+// in RAM at once. DATC_FINALIZE_STREAM_MIN overrides it (tests lower it).
+var finalizeStreamMin = func() int64 {
+	if v, err := strconv.ParseInt(os.Getenv("DATC_FINALIZE_STREAM_MIN"), 10, 64); err == nil && v > 0 {
+		return v
+	}
+	return 64 << 20
+}()
+
+// finalizeMergeSpan bounds how far a candidate frame boundary is extended while
+// resyncing: the 4-byte zstd magic also occurs inside compressed data, so a
+// frame is only trusted once the span up to the next candidate decodes. Spans
+// past this bound are only tried when the candidate is the end of the file —
+// otherwise a truncated kill-tail frame would be retried over gigabytes.
+var finalizeMergeSpan = func() int64 {
+	if v, err := strconv.ParseInt(os.Getenv("DATC_FINALIZE_MERGE_SPAN"), 10, 64); err == nil && v > 0 {
+		return v
+	}
+	return 512 << 20
+}()
+
 // maxSpillField caps a row's key or value length while parsing decoded spill
 // bytes. A larger length is garbage: the rest of that frame group is dropped,
 // where the whole-group parser stopped too.
@@ -341,42 +365,38 @@ func finalizeBucket(zr *zstd.Decoder, enc *zstd.Encoder, src, dst string, corrup
 	}
 
 	corruptFrames := 0
-	// The 4-byte magic can legitimately occur INSIDE a compressed frame
-	// (hash-heavy tables make that likely), so a candidate boundary is only
-	// trusted when the span up to it decodes. A frame with false magics
-	// inside fails at the short candidates and succeeds once the span is
-	// extended to its real end; a truly truncated (kill-tail) frame fails at
-	// every extension up to the merge cap and is dropped.
-	const maxMergeSpan = 512 << 20
-	var span, dec []byte
+	var cands []int
+	sd := &spanDecoder{zr: zr}
+	defer sd.close()
 	for fi := 0; fi < len(frameStarts); {
+		// Candidate ends for this frame: the next magics, then the end of the
+		// file. Spans over finalizeMergeSpan are skipped unless the candidate
+		// is EOF — a whole-bucket frame written by merge has no other end.
+		cands := cands[:0]
+		for j := fi + 1; j < len(frameStarts); j++ {
+			if frameStarts[j]-frameStarts[fi] > finalizeMergeSpan {
+				break
+			}
+			cands = append(cands, j)
+		}
+		cands = append(cands, len(frameStarts))
 		decoded := false
-		span = span[:0]
-		for j := fi + 1; j <= len(frameStarts); j++ {
+		for _, j := range cands {
 			end := size
 			if j < len(frameStarts) {
 				end = frameStarts[j]
 			}
-			n := end - frameStarts[fi]
-			if n > maxMergeSpan {
-				break
-			}
-			// Read only the bytes past the previous candidate: a kill-tail
-			// frame is retried across every candidate up to the merge cap.
-			have := int64(len(span))
-			span = append(span, make([]byte, n-have)...)
-			if _, err := f.ReadAt(span[have:], frameStarts[fi]+have); err != nil && err != io.EOF {
+			ok, err := sd.decode(f, frameStarts[fi], end-frameStarts[fi], func(chunk []byte) error {
+				if groupBad {
+					return nil
+				}
+				group = append(group, chunk...)
+				return parseGroup()
+			})
+			if err != nil {
 				return err
 			}
-			var derr error
-			dec, derr = zr.DecodeAll(span, dec[:0])
-			if derr == nil {
-				if !groupBad {
-					group = append(group, dec...)
-					if err := parseGroup(); err != nil {
-						return err
-					}
-				}
+			if ok {
 				fi = j
 				decoded = true
 				break
@@ -395,7 +415,7 @@ func finalizeBucket(zr *zstd.Decoder, enc *zstd.Encoder, src, dst string, corrup
 	if err := endGroup(); err != nil {
 		return err
 	}
-	span, dec, group = nil, nil, nil
+	group = nil
 	if corruptFrames > 0 {
 		fmt.Printf("[leafseg] %s: skipped %d corrupt frame(s) (kill-tail), recovered %d rows\n",
 			filepath.Base(src), corruptFrames, runs.rows)
@@ -490,6 +510,76 @@ func spillRecEnd(raw []byte, off uint64) uint64 {
 	p := off + uint64(m) + kl
 	vl, m2 := binary.Uvarint(raw[p:])
 	return p + uint64(m2) + vl
+}
+
+// spanDecoder decodes one candidate frame span of a spill file. A span up to
+// finalizeStreamMin is decoded into one buffer; a larger one is streamed
+// TWICE — the first pass only checks that it decodes, so a span that fails
+// (a truncated kill-tail frame, or a false magic that cut a frame short)
+// emits nothing, exactly as the buffered path does.
+type spanDecoder struct {
+	zr     *zstd.Decoder
+	stream *zstd.Decoder
+	dec    []byte
+	buf    []byte
+	span   []byte
+}
+
+// decode reports whether [off, off+n) of f decodes; every decoded chunk is
+// passed to emit in order. Nothing is emitted when it returns false.
+func (d *spanDecoder) decode(f *os.File, off, n int64, emit func([]byte) error) (bool, error) {
+	if n <= finalizeStreamMin {
+		if int64(cap(d.span)) < n {
+			d.span = make([]byte, n)
+		}
+		d.span = d.span[:n]
+		if _, err := f.ReadAt(d.span, off); err != nil && err != io.EOF {
+			return false, err
+		}
+		var derr error
+		d.dec, derr = d.zr.DecodeAll(d.span, d.dec[:0])
+		if derr != nil {
+			return false, nil
+		}
+		return true, emit(d.dec)
+	}
+	if d.stream == nil {
+		zr, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
+		if err != nil {
+			return false, err
+		}
+		d.stream = zr
+	}
+	if d.buf == nil {
+		d.buf = make([]byte, 1<<20)
+	}
+	for pass := 0; pass < 2; pass++ {
+		if err := d.stream.Reset(io.NewSectionReader(f, off, n)); err != nil {
+			return false, err
+		}
+		for {
+			m, err := d.stream.Read(d.buf)
+			if m > 0 && pass == 1 {
+				if eerr := emit(d.buf[:m]); eerr != nil {
+					return false, eerr
+				}
+			}
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return false, nil // pass 0 rejects the span; pass 1 cannot fail
+			}
+		}
+	}
+	return true, nil
+}
+
+func (d *spanDecoder) close() {
+	if d.stream != nil {
+		d.stream.Close()
+		d.stream = nil
+	}
 }
 
 // bucketRuns collects one bucket's rows in arrival order. Rows stay in memory

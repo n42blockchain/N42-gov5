@@ -41,20 +41,25 @@ func runMerge(args []string) {
 	into := fs.String("into", "", "genesis-range build dir (receives the rows)")
 	from := fs.String("from", "", "upper-range build dir")
 	mapGB := fs.Int("map.gb", 4096, "MDBX map size GB")
+	skipSeg := fs.Bool("skip-segments", false, "MDBX phase only: the segments were already merged (recovery after an interrupted merge)")
 	fromStart := fs.Uint64("from-start", 0, "first block of the upper build when its DatcMeta/start is absent (older binary)")
 	_ = fs.Parse(args)
 	if *into == "" || *from == "" {
 		die("--into and --from required")
 	}
 	modulesInit()
-	if err := mergeBuilds(*into, *from, *mapGB, *fromStart); err != nil {
+	if err := mergeBuilds(*into, *from, *mapGB, *fromStart, *skipSeg); err != nil {
 		die("merge: %v", err)
 	}
 }
 
+// respillFrameRows is how many re-spilled rows go into one zstd frame. Rows
+// arrive in key order, so this bounds the frame of the bucket being written.
+const respillFrameRows = 4 << 20
+
 // mergeBuilds does the work of the merge subcommand.
-func mergeBuilds(into, from string, mapGB int, fromStart uint64) error {
-	if _, err := os.Stat(filepath.Join(into, leafSpillDir)); err == nil {
+func mergeBuilds(into, from string, mapGB int, fromStart uint64, skipSegments bool) error {
+	if _, err := os.Stat(filepath.Join(into, leafSpillDir)); err == nil && !skipSegments {
 		return fmt.Errorf("%s still has a leafspill dir (build not finalized)", into)
 	}
 	if _, err := os.Stat(filepath.Join(from, leafSpillDir)); err == nil {
@@ -152,69 +157,84 @@ func mergeBuilds(into, from string, mapGB int, fromStart uint64) error {
 		fmt.Printf("merge [%d, %d) ← [%d, %d)\n", startI, headI, startF, headF)
 	}
 
-	// Segments: re-spill the upper build's segment rows into the lower
-	// build's spill dir, then finalize (merges with the existing segments).
-	sw, err := newLeafSpillWriter(into)
-	if err != nil {
-		return err
-	}
-	// One frame cache per segment set: the cache key is (table, bucket,
-	// frame) and does not name the directory, so sets from two builds must
-	// never share one.
-	// A lower boundary-epoch record is dropped ONLY when the upper build
-	// wrote a record for the same key (the node changed again inside the
-	// epoch); otherwise the lower's record IS the end-of-epoch state.
-	var upperNA *leafSegSet
-	if fromIsLower {
-		if set, ok, err := openLeafSegSet(into, segTabNodeA, newFrameLRUSize(64)); err != nil {
-			return err
-		} else if ok {
-			upperNA = set
-			defer set.Close()
-		}
-	}
-	upperHasNA := func(k []byte) bool {
-		if upperNA == nil {
-			return false
-		}
-		c := upperNA.Cursor()
-		fk, _, _ := c.Seek(k)
-		return fk != nil && bytes.Equal(fk, k)
-	}
-	for tab := 0; tab < segTabCount; tab++ {
-		set, ok, err := openLeafSegSet(from, tab, newFrameLRUSize(64))
+	// The segment phase is skipped when an interrupted merge already merged
+	// the segments and only the MDBX phase is left (--skip-segments).
+	if !skipSegments {
+		// Segments: re-spill the upper build's segment rows into the lower
+		// build's spill dir, then finalize (merges with the existing segments).
+		sw, err := newLeafSpillWriter(into)
 		if err != nil {
 			return err
 		}
-		if !ok {
-			continue
-		}
-		c := set.Cursor()
-		n, dropped := 0, 0
-		for k, v, e := c.Seek([]byte{0}); k != nil && e == nil; k, v, e = c.Next() {
-			if tab == segTabNodeA && boundaryDrop(false, k) && upperHasNA(k) {
-				if os.Getenv("DATC_MERGE_TRACE") != "" {
-					fmt.Printf("    drop %x\n", k)
-				}
-				dropped++
-				continue
+		// One frame cache per segment set: the cache key is (table, bucket,
+		// frame) and does not name the directory, so sets from two builds must
+		// never share one.
+		// A lower boundary-epoch record is dropped ONLY when the upper build
+		// wrote a record for the same key (the node changed again inside the
+		// epoch); otherwise the lower's record IS the end-of-epoch state.
+		var upperNA *leafSegSet
+		if fromIsLower {
+			if set, ok, err := openLeafSegSet(into, segTabNodeA, newFrameLRUSize(64)); err != nil {
+				return err
+			} else if ok {
+				upperNA = set
+				defer set.Close()
 			}
-			if err := sw.add(tab, k, v); err != nil {
+		}
+		upperHasNA := func(k []byte) bool {
+			if upperNA == nil {
+				return false
+			}
+			c := upperNA.Cursor()
+			fk, _, _ := c.Seek(k)
+			return fk != nil && bytes.Equal(fk, k)
+		}
+		for tab := 0; tab < segTabCount; tab++ {
+			set, ok, err := openLeafSegSet(from, tab, newFrameLRUSize(64))
+			if err != nil {
 				return err
 			}
-			n++
+			if !ok {
+				continue
+			}
+			c := set.Cursor()
+			n, dropped := 0, 0
+			for k, v, e := c.Seek([]byte{0}); k != nil && e == nil; k, v, e = c.Next() {
+				if tab == segTabNodeA && boundaryDrop(false, k) && upperHasNA(k) {
+					if os.Getenv("DATC_MERGE_TRACE") != "" {
+						fmt.Printf("    drop %x\n", k)
+					}
+					dropped++
+					continue
+				}
+				if err := sw.add(tab, k, v); err != nil {
+					return err
+				}
+				n++
+				// Cut a frame periodically: without this the whole bucket is ONE
+				// zstd frame (gigabytes), which finalize then has to resync past
+				// in one piece — a frame over its resync bound was dropped as
+				// corrupt, silently losing the bucket's rows (2026-09-16).
+				if n%respillFrameRows == 0 {
+					if err := sw.flushBatch(); err != nil {
+						return err
+					}
+				}
+			}
+			set.Close()
+			fmt.Printf("  %-3s %d rows re-spilled (%d boundary-epoch partial records dropped)\n", segTabNames[tab], n, dropped)
 		}
-		set.Close()
-		fmt.Printf("  %-3s %d rows re-spilled (%d boundary-epoch partial records dropped)\n", segTabNames[tab], n, dropped)
-	}
-	if err := sw.close(); err != nil {
-		return err
-	}
-	if err := finalizeLeafSegments(into); err != nil {
-		return err
-	}
-	if _, err := os.Stat(filepath.Join(into, leafSpillDir)); err == nil {
-		return fmt.Errorf("finalize retained the spill dir (corrupt frames?) — merge incomplete")
+		if err := sw.close(); err != nil {
+			return err
+		}
+		if err := finalizeLeafSegments(into); err != nil {
+			return err
+		}
+		if _, err := os.Stat(filepath.Join(into, leafSpillDir)); err == nil {
+			return fmt.Errorf("finalize retained the spill dir (corrupt frames?) — merge incomplete")
+		}
+	} else {
+		fmt.Println("skip-segments: leafseg/ left as it is, running the MDBX phase only")
 	}
 
 	// MDBX: storage node records (upper wins on equal keys) + meta head.

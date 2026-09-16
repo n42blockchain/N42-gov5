@@ -1109,10 +1109,10 @@ func splitMerge(t *testing.T, lowerIntoUpper bool) {
 	merged := lo
 	if lowerIntoUpper {
 		merged = hi
-		if err := mergeBuilds(hi, lo, 4, 0); err != nil {
+		if err := mergeBuilds(hi, lo, 4, 0, false); err != nil {
 			t.Fatalf("merge: %v", err)
 		}
-	} else if err := mergeBuilds(lo, hi, 4, 0); err != nil {
+	} else if err := mergeBuilds(lo, hi, 4, 0, false); err != nil {
 		t.Fatalf("merge: %v", err)
 	}
 
