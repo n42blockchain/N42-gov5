@@ -176,12 +176,23 @@ func mergeBuilds(into, from string, mapGB int, fromStart uint64, skipSegments bo
 		// wrote a record for the same key (the node changed again inside the
 		// epoch); otherwise the lower's record IS the end-of-epoch state.
 		var upperNA *leafSegSet
+		// This set reads the DESTINATION's own segments, which
+		// finalizeLeafSegments rewrites below, so it has to be closed before
+		// that call and not merely on return: on Windows the open handle makes
+		// the rewrite fail outright ("used by another process"), and on Linux
+		// it silently leaves the reader on an unlinked inode.
+		closeUpperNA := func() {
+			if upperNA != nil {
+				upperNA.Close()
+				upperNA = nil
+			}
+		}
+		defer closeUpperNA()
 		if fromIsLower {
 			if set, ok, err := openLeafSegSet(into, segTabNodeA, newFrameLRUSize(64)); err != nil {
 				return err
 			} else if ok {
 				upperNA = set
-				defer set.Close()
 			}
 		}
 		upperHasNA := func(k []byte) bool {
@@ -227,6 +238,7 @@ func mergeBuilds(into, from string, mapGB int, fromStart uint64, skipSegments bo
 			set.Close()
 			fmt.Printf("  %-3s %d rows re-spilled (%d boundary-epoch partial records dropped)\n", segTabNames[tab], n, dropped)
 		}
+		closeUpperNA()
 		if err := sw.close(); err != nil {
 			return err
 		}
