@@ -1171,7 +1171,7 @@ func TestE2E_SeparateStorageSchedule(t *testing.T) {
 	runE2E(t, e2eOpts{
 		sched:    schedE0is4,
 		stoSched: [maxChgDepth + 1]uint64{8, 32, 8, 8, 64, 64},
-		batch:    50, stoCache: 64, accDepth: 3, stoDepth: 3,
+		batch:    50, stoCache: 64, accDepth: 2, stoDepth: 3,
 	})
 }
 
