@@ -243,7 +243,7 @@ func mergeBuilds(into, from string, mapGB int, fromStart uint64, skipSegments bo
 		return err
 	}
 	defer txW.Rollback()
-	for _, tab := range []string{tDatcStoNode, tDatcAccNode, tDatcStoRoot, tDatcAccChg, tDatcStoChg, tDatcLeafA, tDatcLeafS} {
+	for _, tab := range []string{tDatcStoNode, tDatcAccNode, tDatcStoRoot, tDatcStoDepth, tDatcAccChg, tDatcStoChg, tDatcLeafA, tDatcLeafS} {
 		c, err := txF.Cursor(tab)
 		if err != nil {
 			return err

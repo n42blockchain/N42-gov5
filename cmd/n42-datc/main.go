@@ -35,8 +35,10 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"net/http"
@@ -45,6 +47,8 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -73,14 +77,15 @@ var stopRequested atomic.Bool
 
 // DATC table names (prototype-local; registered via WithTableCfg).
 const (
-	tDatcAccNode = "DatcAccNode"
-	tDatcStoNode = "DatcStorNode"
-	tDatcAccChg  = "DatcAccChg"
-	tDatcStoChg  = "DatcStorChg"
-	tDatcLeafA   = "DatcLeafA"
-	tDatcLeafS   = "DatcLeafS"
-	tDatcStoRoot = "DatcStoRoot" // addrHash(32)|block(4) → storage root (empty = no storage)
-	tDatcMeta    = "DatcMeta"
+	tDatcAccNode  = "DatcAccNode"
+	tDatcStoNode  = "DatcStorNode"
+	tDatcAccChg   = "DatcAccChg"
+	tDatcStoChg   = "DatcStorChg"
+	tDatcLeafA    = "DatcLeafA"
+	tDatcLeafS    = "DatcLeafS"
+	tDatcStoRoot  = "DatcStoRoot"  // addrHash(32)|block(4) → storage root (empty = no storage)
+	tDatcStoDepth = "DatcStoDepth" // addrHash(32)|block(4) → 1-byte storage record depth in force from that block
+	tDatcMeta     = "DatcMeta"
 )
 
 // maxChgDepth caps the change-index depth. Deeper levels are resolved by the
@@ -192,6 +197,7 @@ func main() {
 	window := fs.Bool("window", true, "mainnet: batch the root per E_1 window (bpp Path C) instead of per block — identical records, gold check per window")
 	accDepth := fs.Int("acc-depth", 4, "account-trie levels 1..N-1 get node records + change rows; the reader folds subtrees from the leaf history at depth N (persisted in DatcMeta)")
 	stoDepth := fs.Int("sto-depth", 2, "storage-trie levels 0..N-1 get node records + change rows; the reader folds at depth N (persisted in DatcMeta)")
+	stoDepthMap := fs.String("sto-depth-map", "", "per-contract storage record depth: a text file of '<addrHash hex> <depth>' lines (segcount --map writes one). A contract the map does not name uses --sto-depth, which defaults to 0 once a map is given: folding a small contract whole is cheaper than recording a level for a handful of keys")
 	pprofPort := fs.Int("pprof.port", 0, "serve net/http/pprof on this port (0=off)")
 	decodeWorkers := fs.Int("decode-workers", 3, "changeset decode pipeline workers (mainnet mode)")
 	prefetch := fs.Bool("prefetch", false, "pipeline workers pre-touch the Hashed* pages of upcoming blocks (parallel warm-up of a cold state DB; read-only)")
@@ -337,8 +343,11 @@ func main() {
 		accDepth:    *accDepth,
 		stoDepth:    *stoDepth,
 	}
-	if *accDepth < 1 || *accDepth > maxChgDepth+1 || *stoDepth < 1 || *stoDepth > maxChgDepth+1 {
-		die("--acc-depth/--sto-depth must be in [1, %d]", maxChgDepth+1)
+	if *stoDepthMap != "" && !stoDepthSet(fs) {
+		*stoDepth = 0 // the map decides; unnamed contracts get no records
+	}
+	if *accDepth < 1 || *accDepth > maxChgDepth+1 || *stoDepth < 0 || *stoDepth > maxChgDepth+1 {
+		die("--acc-depth must be in [1, %d] and --sto-depth in [0, %d]", maxChgDepth+1, maxChgDepth+1)
 	}
 	// Prefer the persisted leaf-progress baseline (exact across resumes); fall
 	// back to --leaves-base only when it's absent (resume from an older binary).
@@ -349,6 +358,15 @@ func main() {
 			}
 			otx.Rollback()
 		}
+	}
+	if *stoDepthMap != "" {
+		m, err := loadStoDepthMap(*stoDepthMap)
+		if err != nil {
+			die("sto-depth-map: %v", err)
+		}
+		b.stoDepthMap = m
+		b.stoDepthSeen = make(map[string]uint8, len(m))
+		fmt.Printf("  storage record depth: per-contract map %s (%d contracts), fallback %d\n", *stoDepthMap, len(m), b.stoDepth)
 	}
 	for d := 0; d <= maxChgDepth; d++ {
 		size := 1
@@ -583,6 +601,13 @@ type builder struct {
 	// the leaf history at accDepth / stoDepth. Deeper records would never be
 	// read (the reader always folds there), so they are not written.
 	accDepth, stoDepth int
+	// stoDepthMap is the per-contract storage record depth (format 3); a
+	// contract it does not name uses stoDepth. stoDepthSeen tracks what has
+	// been written to DatcStoDepth so a row is emitted only when a contract's
+	// depth first applies or changes.
+	stoDepthMap  map[string]uint8
+	stoDepthSeen map[string]uint8
+	stoDepthBuf  []kvPair
 }
 
 // statLegacyExtraBytes estimates how many more bytes the pre-v2 layout would
@@ -692,6 +717,86 @@ func (b *builder) maxDenseDepth(storage bool) int {
 		d = maxChgDepth
 	}
 	return d
+}
+
+// stoDepthSet reports whether --sto-depth was given explicitly, so a depth map
+// does not silently override it.
+func stoDepthSet(fs *flag.FlagSet) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "sto-depth" {
+			set = true
+		}
+	})
+	return set
+}
+
+// loadStoDepthMap reads '<addrHash hex> <depth>' lines into a map.
+func loadStoDepthMap(path string) (map[string]uint8, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	m := make(map[string]uint8, 1<<17)
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<16), 1<<20)
+	for ln := 1; sc.Scan(); ln++ {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("line %d: want '<addrHash hex> <depth>'", ln)
+		}
+		h, err := hex.DecodeString(parts[0])
+		if err != nil || len(h) != stoDomainLen {
+			return nil, fmt.Errorf("line %d: bad addrHash", ln)
+		}
+		d, err := strconv.Atoi(parts[1])
+		if err != nil || d < 0 || d > maxChgDepth+1 {
+			return nil, fmt.Errorf("line %d: bad depth", ln)
+		}
+		m[string(h)] = uint8(d)
+	}
+	return m, sc.Err()
+}
+
+// stoDepthFor is the record depth in force for one contract: levels 0..depth-1
+// get node records and change rows, and the reader folds at depth.
+func (b *builder) stoDepthFor(domain []byte) int {
+	if b.stoDepthMap != nil {
+		if d, ok := b.stoDepthMap[string(domain)]; ok {
+			return int(d)
+		}
+	}
+	return b.stoDepth
+}
+
+// noteStoDepth records the depth in force for a contract from block n, once per
+// build and again whenever it changes, so the reader folds at the depth that
+// was actually recorded at any height.
+func (b *builder) noteStoDepth(domain []byte, n uint64) {
+	if b.stoDepthSeen == nil {
+		return // no map: the DatcMeta default applies to every contract
+	}
+	d := uint8(b.stoDepthFor(domain))
+	prev, seen := b.stoDepthSeen[string(domain)]
+	if seen && prev == d {
+		return
+	}
+	b.stoDepthSeen[string(domain)] = d
+	if !seen && d == uint8(b.stoDepth) {
+		// The reader falls back to DatcMeta/stodepth for a contract with no
+		// row, so the default needs no row of its own — that is 28M rows and
+		// ~1 GB on mainnet. A later change away from it still writes one.
+		return
+	}
+	k := make([]byte, 0, stoDomainLen+blkLen)
+	k = append(k, domain...)
+	k = binary.BigEndian.AppendUint32(k, uint32(n))
+	b.stoDepthBuf = append(b.stoDepthBuf, kvPair{k: k, v: []byte{d}})
 }
 
 // takeDense returns (and forgets) the collected dense form of a path as a

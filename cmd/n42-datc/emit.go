@@ -76,6 +76,7 @@ func (b *builder) flushAllBufs(tx kv.RwTx) error {
 		{tDatcLeafA, &b.leafABuf}, {tDatcLeafS, &b.leafSBuf},
 		{tDatcStoRoot, &b.stoRootBuf},
 		{tDatcAccNode, &b.nodeAccBuf}, {tDatcStoNode, &b.nodeStoBuf},
+		{tDatcStoDepth, &b.stoDepthBuf},
 	} {
 		if err := flushBuf(tx, e.table, e.buf); err != nil {
 			return err
@@ -205,8 +206,14 @@ func (b *builder) recordChange(storage bool, domain []byte, keyNibbles []byte, n
 // recordChangeStorage is the sparse-domain (per-contract) variant: maps stay,
 // but with pointer values — repeated touches are alloc-free lookups.
 func (b *builder) recordChangeStorage(domain []byte, keyNibbles []byte, n uint64) {
-	// Levels with records: 0..stoDepth-1 (the reader folds at stoDepth).
-	maxD := b.stoDepth - 1
+	// Levels with records: 0..depth-1 for THIS contract (the reader folds at
+	// depth). A contract whose whole history fits inside one fold gets depth 0
+	// and no records at all.
+	b.noteStoDepth(domain, n)
+	maxD := b.stoDepthFor(domain) - 1
+	if maxD < 0 {
+		return
+	}
 	if maxD > maxChgDepth {
 		maxD = maxChgDepth
 	}

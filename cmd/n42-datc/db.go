@@ -23,7 +23,7 @@ func modulesInit() {
 
 // datcTables are the prototype-local tables registered on top of the
 // chaindata schema (the build also needs Hashed*/TrieOf* from it).
-var datcTables = []string{tDatcAccNode, tDatcStoNode, tDatcAccChg, tDatcStoChg, tDatcLeafA, tDatcLeafS, tDatcStoRoot, tDatcMeta, tFwdAcctCS, tFwdStorCS, tDatcRoots}
+var datcTables = []string{tDatcAccNode, tDatcStoNode, tDatcAccChg, tDatcStoChg, tDatcLeafA, tDatcLeafS, tDatcStoRoot, tDatcStoDepth, tDatcMeta, tFwdAcctCS, tFwdStorCS, tDatcRoots}
 
 // openDatcDB opens (creating if needed) the DATC output MDBX with the DATC
 // tables registered. DirtySpace: the kv default is 128 MB — a heavy window

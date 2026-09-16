@@ -252,7 +252,9 @@ func checkFormat(tx kv.Tx) error {
 	if err != nil {
 		return err
 	}
-	if len(fv) != 1 || fv[0] != datcFormat {
+	// Read paths accept the previous format too: a format-2 archive has no
+	// DatcStoDepth table, so every contract folds at the meta depth.
+	if len(fv) != 1 || (fv[0] != datcFormat && fv[0] != datcFormat-1) {
 		return fmt.Errorf("DATC data format %v does not match this binary's format %d (rebuild required)", fv, datcFormat)
 	}
 	return nil
@@ -309,6 +311,8 @@ type querier struct {
 	// lastFloorReason: why the last floorRecordBefore returned ok=false
 	// (absent | tombstone | mixed | chainBroken | undecodable).
 	lastFloorReason string
+	// stoDepthCache memoizes the per-contract fold depth (format 3).
+	stoDepthCache map[string]int
 	// absentPaths (tests): account paths whose floor came back absent.
 	absentPaths map[string]int
 }
@@ -497,7 +501,7 @@ func (q *querier) branchSlotsAt(domain, path []byte, n uint64) (slots [16]*types
 	d := len(path)
 	fold := q.accFold
 	if domain != nil {
-		fold = q.stoFold
+		fold = q.stoFoldAt(domain, n)
 	}
 	if d >= fold {
 		q.noteFold(d, "belowFold")
@@ -591,6 +595,42 @@ func (q *querier) branchSlotsAt(domain, path []byte, n uint64) (slots [16]*types
 		return slots, nKids, false, nil
 	}
 	return slots, nKids, true, nil
+}
+
+// stoFoldAt is the depth at which this contract's storage trie is folded at
+// block n: the floor DatcStoDepth row (format 3, written by a build with
+// --sto-depth-map), else the build-wide default from DatcMeta.
+func (q *querier) stoFoldAt(domain []byte, n uint64) int {
+	ck := string(domain) + string([]byte{byte(n >> 24), byte(n >> 16)})
+	if d, ok := q.stoDepthCache[ck]; ok {
+		return d
+	}
+	d := q.stoFold
+	if q.tx != nil {
+		if c, err := q.tx.Cursor(tDatcStoDepth); err == nil {
+			seek := make([]byte, 0, stoDomainLen+blkLen)
+			seek = append(seek, domain...)
+			seek = binary.BigEndian.AppendUint32(seek, uint32(n+1))
+			k, v, serr := c.Seek(seek)
+			if serr == nil {
+				if k == nil {
+					k, v, serr = c.Last()
+				} else {
+					k, v, serr = c.Prev()
+				}
+			}
+			if serr == nil && k != nil && len(k) == stoDomainLen+blkLen && len(v) == 1 &&
+				bytes.Equal(k[:stoDomainLen], domain) {
+				d = int(v[0])
+			}
+			c.Close()
+		}
+	}
+	if q.stoDepthCache == nil || len(q.stoDepthCache) > 4096 {
+		q.stoDepthCache = make(map[string]int, 64)
+	}
+	q.stoDepthCache[ck] = d
+	return d
 }
 
 // synthesizeRoot assembles the account-trie root node from its 16 depth-1
