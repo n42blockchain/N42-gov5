@@ -234,9 +234,18 @@ func (b *builder) recordChangeStorage(domain []byte, keyNibbles []byte, n uint64
 			continue // per-block level: the floor record is exact, no window
 		}
 		epoch := b.sched.epochOf(d, n)
-		kb[0] = byte(d)
-		ak := kb[:1+len(domain)+d+4]
-		binary.BigEndian.PutUint32(ak[len(ak)-4:], uint32(epoch))
+		// The aggregation key needs its OWN buffer: writing the 4 epoch bytes
+		// into kb would land on kb[1+len(domain)+d], which is where level d+1
+		// reads its path nibble — every deeper level then keyed its dirty path
+		// with the epoch's high byte (0) instead of the nibble, so only child 0
+		// ever got a node record and the reader folded the other 15 subtrees.
+		ab := b.chgAggScratch[:0]
+		ab = append(ab, byte(d))
+		ab = append(ab, domain...)
+		ab = append(ab, keyNibbles[:d]...)
+		ab = binary.BigEndian.AppendUint32(ab, uint32(epoch))
+		b.chgAggScratch = ab
+		ak := ab
 		if p, ok := b.chgStoAgg[string(ak)]; ok {
 			*p = append(*p, chgEvent{block: uint32(n), nibble: keyNibbles[d]})
 		} else {
@@ -433,14 +442,14 @@ func (b *builder) flushStoLevel(tx kv.RwTx, d int, epoch uint64) error {
 			if err != nil {
 				return err
 			}
-			if len(node) > 0 && !nodeUsable(node) {
-				if dn := b.takeDense(true, pk); dn != nil {
-					node = dn
-					b.statDenseUpgraded++
-				}
-			} else {
-				b.takeDense(true, pk)
-			}
+			// The storage side does NOT take the loader's dense form: the
+			// synthesized node does not match the epoch-end node here, and a
+			// record built from it hashes differently from the leaf-history
+			// fold (TestDiagStorageChildHashes / TestE2E_PerBlock_E0is4 catch
+			// it). A mixed node stays MIXED and the reader folds it. This path
+			// was unreachable until the dirty-key fix above, because the dirty
+			// key carried a zeroed nibble while the hook keys the true one.
+			b.takeDense(true, pk) // drain the hook entry either way
 			// DATC node record: pathLen(1) | domain|path | epoch(4) → record.
 			// Empty value = tombstone; else flags byte (FULL | DIFF). A FULL is
 			// forced when no prior record exists (or it was a tombstone) and at

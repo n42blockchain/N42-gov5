@@ -504,6 +504,7 @@ type builder struct {
 	slotHashCache map[types.Hash][32]byte
 
 	chgKeyScratch []byte // reusable storage-side chg key buffer
+	chgAggScratch []byte // aggregation-key buffer, kept apart from chgKeyScratch
 
 	resumed bool // resumed builds always write tombstones (cold lastFull maps)
 
