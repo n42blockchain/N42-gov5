@@ -313,22 +313,10 @@ func main() {
 	debug.SetGCPercent(*gogc)
 	debug.SetMemoryLimit(int64(*memGB) << 30)
 
-	sched := newSchedule(*alpha, *cbar)
-	if *stoSchedStr != "" {
-		s, err := parseSchedule(*stoSchedStr)
-		if err != nil {
-			die("--sto-sched: %v", err)
-		}
-		sched.sto = s.e
+	sched, serr := resolveSchedule(*alpha, *cbar, *schedStr, *stoSchedStr, *accRootEpoch)
+	if serr != nil {
+		die("%v", serr)
 	}
-	if *schedStr != "" {
-		s, err := parseSchedule(*schedStr)
-		if err != nil {
-			die("--sched: %v", err)
-		}
-		sched = s
-	}
-	sched.accRoot = *accRootEpoch
 	fmt.Printf("DATC build: blocks [%d, %d) α=%.0f C̄=%.0f GOGC=%d\n  epochs/depth: ", *startBlock, *endBlock, *alpha, *cbar, *gogc)
 	for d := 0; d <= maxChgDepth; d++ {
 		fmt.Printf("d%d=%d ", d, sched.e[d])

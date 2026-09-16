@@ -96,3 +96,30 @@ func parseSchedule(str string) (epochSchedule, error) {
 	}
 	return s, nil
 }
+
+// resolveSchedule turns the --alpha/--cbar/--sched/--sto-sched/--acc-root-epoch
+// flags into the effective schedule.
+//
+// Order matters: --sched replaces the whole ladder, so the storage ladder has
+// to be applied AFTER it. Applying --sto-sched first dropped it on the floor
+// whenever both flags were given -- the storage tries then silently inherited
+// the account ladder, which is the very thing --sto-sched exists to prevent.
+func resolveSchedule(alpha, cbar float64, schedStr, stoSchedStr string, accRoot uint64) (epochSchedule, error) {
+	sched := newSchedule(alpha, cbar)
+	if schedStr != "" {
+		s, err := parseSchedule(schedStr)
+		if err != nil {
+			return sched, fmt.Errorf("--sched: %w", err)
+		}
+		sched = s
+	}
+	if stoSchedStr != "" {
+		s, err := parseSchedule(stoSchedStr)
+		if err != nil {
+			return sched, fmt.Errorf("--sto-sched: %w", err)
+		}
+		sched.sto = s.e
+	}
+	sched.accRoot = accRoot
+	return sched, nil
+}
