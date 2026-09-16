@@ -24,7 +24,13 @@ import (
 // depth-1 children). A per-block root record (accRoot = 1) costs ~16 hashes
 // per block and removes the whole depth-1..3 fan-out from every proof.
 type epochSchedule struct {
-	e       [maxChgDepth + 1]uint64
+	e [maxChgDepth + 1]uint64
+	// sto is the STORAGE tries' ladder. A zero entry means "same as e" (format
+	// 2 archives and builds without --sto-sched). Deep storage levels want
+	// short epochs: a proof re-folds every child that changed inside the
+	// window, so a long epoch at the deepest recorded level fans out into
+	// sixteen folds however fine the record depth is.
+	sto     [maxChgDepth + 1]uint64
 	accRoot uint64
 }
 
@@ -33,6 +39,9 @@ type epochSchedule struct {
 func (s epochSchedule) lenFor(storage bool, d int) uint64 {
 	if !storage && d == 0 {
 		return s.accRoot
+	}
+	if storage && s.sto[d] != 0 {
+		return s.sto[d]
 	}
 	return s.e[d]
 }

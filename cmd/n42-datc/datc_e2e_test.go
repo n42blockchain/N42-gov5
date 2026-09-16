@@ -581,6 +581,7 @@ func (sc *scenario) storageRootAt(addr types.Address, n uint64) types.Hash {
 
 type e2eOpts struct {
 	sched       epochSchedule
+	stoSched    [maxChgDepth + 1]uint64 // storage ladder (zero = same as sched)
 	window      bool
 	leafSeg     bool
 	batch       uint64
@@ -601,6 +602,9 @@ func newTestBuilder(t *testing.T, db kv.RwDB, out string, sc *scenario, o e2eOpt
 	t.Helper()
 	sched := o.sched
 	sched.accRoot = o.accRoot
+	if o.stoSched != ([maxChgDepth + 1]uint64{}) {
+		sched.sto = o.stoSched
+	}
 	b := &builder{
 		sched: sched, db: db,
 		addrHashCache: make(map[types.Address][32]byte, 1<<10),
@@ -1157,4 +1161,27 @@ func splitMerge(t *testing.T, lowerIntoUpper bool) {
 			t.Fatalf("proof %x at %d: %v", addr[:4], n, err)
 		}
 	}
+}
+
+// The storage tries get their own epoch ladder: every level's records and
+// change rows must then be keyed by the storage epochs, and the reader must
+// pick that ladder up from DatcMeta/stosched. Short deep epochs and long
+// shallow ones, deliberately unlike the account ladder.
+func TestE2E_SeparateStorageSchedule(t *testing.T) {
+	runE2E(t, e2eOpts{
+		sched:    schedE0is4,
+		stoSched: [maxChgDepth + 1]uint64{8, 32, 8, 8, 64, 64},
+		batch:    50, stoCache: 64, accDepth: 3, stoDepth: 3,
+	})
+}
+
+// Known failure, kept visible: with accDepth 3 and the e0is4 ladder (level 1
+// epoch 16, level 2 epoch 64) the reconstructed account root diverges from
+// the reference from height 208 on, on unpatched main as well. Every other
+// shape tried passes (equal epochs, growing epochs at deeper levels, batch
+// longer than the epoch, accDepth 4 and 5). Not on the mainnet rebuild's
+// path; tracked in docs/ethel/datc-status-2026-09-15.md.
+func TestE2E_KnownAcc3E0is4Divergence(t *testing.T) {
+	t.Skip("known divergence at height 208 with accDepth 3 + schedE0is4; see the status doc")
+	runE2E(t, e2eOpts{sched: schedE0is4, batch: 50, stoCache: 64, accDepth: 3, stoDepth: 2})
 }

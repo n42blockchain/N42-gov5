@@ -182,6 +182,7 @@ func main() {
 	alpha := fs.Float64("alpha", 16, "target changes per node per epoch")
 	cbar := fs.Float64("cbar", 20, "assumed average changed keys per block")
 	accRootEpoch := fs.Uint64("acc-root-epoch", 0, "record the account-trie root node every N blocks from the loader (1 = per block, ~16 hashes/block; removes the depth-1..3 fan-out from proofs); 0 = synthesize the root from depth-1 records")
+	stoSchedStr := fs.String("sto-sched", "", "explicit per-depth epoch lengths for the STORAGE tries s0,...,s5 (default: same as --sched). Keep the deep levels short (1024-4096): a proof re-folds every child that changed inside the window, so a long epoch at the deepest recorded level fans out into 16 folds whatever the record depth")
 	schedStr := fs.String("sched", "", "explicit per-depth epoch lengths e0,e1,...,e5 (overrides --alpha/--cbar); e0 = storage-root level, e1..e3 = account levels 1..3 (e.g. 1024,16384,1024,1,4194304,4194304 = sparse tops + per-block depth-3)")
 	batch := fs.Uint64("batch", 20_000, "blocks per MDBX commit (large batches spill MDBX dirty pages and stall)")
 	mapGB := fs.Int("map.gb", 1024, "MDBX map size GB")
@@ -313,6 +314,13 @@ func main() {
 	debug.SetMemoryLimit(int64(*memGB) << 30)
 
 	sched := newSchedule(*alpha, *cbar)
+	if *stoSchedStr != "" {
+		s, err := parseSchedule(*stoSchedStr)
+		if err != nil {
+			die("--sto-sched: %v", err)
+		}
+		sched.sto = s.e
+	}
 	if *schedStr != "" {
 		s, err := parseSchedule(*schedStr)
 		if err != nil {
@@ -324,6 +332,10 @@ func main() {
 	fmt.Printf("DATC build: blocks [%d, %d) α=%.0f C̄=%.0f GOGC=%d\n  epochs/depth: ", *startBlock, *endBlock, *alpha, *cbar, *gogc)
 	for d := 0; d <= maxChgDepth; d++ {
 		fmt.Printf("d%d=%d ", d, sched.e[d])
+	}
+	fmt.Print("\n  storage epochs/depth: ")
+	for d := 0; d <= maxChgDepth; d++ {
+		fmt.Printf("s%d=%d ", d, sched.lenFor(true, d))
 	}
 	fmt.Println()
 
@@ -1070,6 +1082,10 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 			fmt.Printf("window mode: e[0] %d → W=%d\n", b.sched.e[0], W)
 			b.sched.e[0] = W
 		}
+		if b.sched.sto[0] != 0 && b.sched.sto[0] != W {
+			fmt.Printf("window mode: s[0] %d → W=%d\n", b.sched.sto[0], W)
+			b.sched.sto[0] = W
+		}
 		if batchBlocks < W*4 {
 			return fmt.Errorf("--batch %d too small for window mode (W=%d)", batchBlocks, W)
 		}
@@ -1206,14 +1222,22 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 			// (read through the overlay — the freshest node state lives there).
 			// In window mode every epoch end coincides with a window boundary,
 			// so the trie is exactly at block n here.
+			// The account and storage ladders close their epochs on their
+			// own cadence, so each side flushes with its own epoch number.
 			for d := 0; d <= maxChgDepth; d++ {
+				if b.windowing && (n+1)%W != 0 {
+					continue // mid-window: nothing materializes (all elided)
+				}
 				if (n+1)%b.sched.e[d] == 0 {
-					if b.windowing && (n+1)%W != 0 {
-						continue // d0 (E=1) mid-window: nothing materializes (all elided)
-					}
-					if err := b.flushEpoch(wtx, d, b.sched.epochOf(d, n)); err != nil {
+					if err := b.flushAccLevel(wtx, d, b.sched.epochOf(d, n)); err != nil {
 						tx.Rollback()
-						return fmt.Errorf("epoch flush d=%d block %d: %w", d, n, err)
+						return fmt.Errorf("account epoch flush d=%d block %d: %w", d, n, err)
+					}
+				}
+				if (n+1)%b.sched.lenFor(true, d) == 0 {
+					if err := b.flushStoLevel(wtx, d, b.sched.epochOfFor(true, d, n)); err != nil {
+						tx.Rollback()
+						return fmt.Errorf("storage epoch flush d=%d block %d: %w", d, n, err)
 					}
 				}
 			}
@@ -1256,7 +1280,11 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		if hi == end {
 			// Final flush of all partial epochs + meta.
 			for d := 0; d <= maxChgDepth; d++ {
-				if err := b.flushEpoch(wtx, d, b.sched.epochOf(d, hi-1)); err != nil {
+				if err := b.flushAccLevel(wtx, d, b.sched.epochOf(d, hi-1)); err != nil {
+					tx.Rollback()
+					return err
+				}
+				if err := b.flushStoLevel(wtx, d, b.sched.epochOfFor(true, d, hi-1)); err != nil {
 					tx.Rollback()
 					return err
 				}
@@ -1280,6 +1308,14 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 				sb = binary.BigEndian.AppendUint64(sb, b.sched.e[d])
 			}
 			if err := tx.Put(tDatcMeta, []byte("sched"), sb); err != nil {
+				tx.Rollback()
+				return err
+			}
+			var ssb []byte
+			for d := 0; d <= maxChgDepth; d++ {
+				ssb = binary.BigEndian.AppendUint64(ssb, b.sched.lenFor(true, d))
+			}
+			if err := tx.Put(tDatcMeta, []byte("stosched"), ssb); err != nil {
 				tx.Rollback()
 				return err
 			}

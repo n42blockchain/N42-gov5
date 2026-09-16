@@ -237,10 +237,10 @@ func (b *builder) recordChangeStorage(domain []byte, keyNibbles []byte, n uint64
 			v := bit
 			b.stoDirty[d][string(pk)] = &v
 		}
-		if b.sched.e[d] == 1 {
+		if b.sched.lenFor(true, d) == 1 {
 			continue // per-block level: the floor record is exact, no window
 		}
-		epoch := b.sched.epochOf(d, n)
+		epoch := b.sched.epochOfFor(true, d, n)
 		// The aggregation key needs its OWN buffer: writing the 4 epoch bytes
 		// into kb would land on kb[1+len(domain)+d], which is where level d+1
 		// reads its path nibble — every deeper level then keyed its dirty path
@@ -318,6 +318,16 @@ func (b *builder) flushChgAgg() {
 // flushEpoch persists the epoch-end node bytes for every path changed during
 // the closing epoch of level d, reading the CURRENT TrieOf* rows.
 func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
+	if err := b.flushAccLevel(tx, d, epoch); err != nil {
+		return err
+	}
+	return b.flushStoLevel(tx, d, epoch)
+}
+
+// flushAccLevel persists the account-trie node records of level d for the
+// closing epoch. The account and storage ladders can differ, so the build
+// loop calls this and flushStoLevel separately, each with its own epoch.
+func (b *builder) flushAccLevel(tx kv.RwTx, d int, epoch uint64) error {
 	// Account side: sorted dense indices (numeric order == path order for a
 	// fixed level), path reconstructed from the index. Level 0 (the root) is
 	// owned by flushAccRoot (its own cadence, dense-hook sourced).
@@ -342,7 +352,7 @@ func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
 		}
 		b.accTouched[d] = touched[:0]
 	}
-	return b.flushStoLevel(tx, d, epoch)
+	return nil
 }
 
 // flushAccRoot records the account-trie root node (no TrieOfAccounts row

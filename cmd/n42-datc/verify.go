@@ -192,6 +192,11 @@ func loadQuerierCache(tx kv.Tx, out string, foldOverride int, frameCache int) (*
 	for d := 0; d <= maxChgDepth && (d+1)*8 <= len(schedV); d++ {
 		sched.e[d] = binary.BigEndian.Uint64(schedV[d*8:])
 	}
+	if ssv, _ := tx.GetOne(tDatcMeta, []byte("stosched")); len(ssv) >= 8 {
+		for d := 0; d <= maxChgDepth && (d+1)*8 <= len(ssv); d++ {
+			sched.sto[d] = binary.BigEndian.Uint64(ssv[d*8:])
+		}
+	}
 	u64 := func(key string) (uint64, error) {
 		v, err := tx.GetOne(tDatcMeta, []byte(key))
 		if err != nil {
@@ -430,10 +435,10 @@ func (q *querier) storageRootAt(domain []byte, n uint64) (root types.Hash, exist
 		return root, false, false, err
 	}
 	haveFloor := k != nil && len(k) == 32+blkLen && bytes.Equal(k[:32], domain)
-	if !q.stoRootPerBlock && q.sched.e[0] > 1 {
+	if !q.stoRootPerBlock && q.sched.lenFor(true, 0) > 1 {
 		// Rows are per epoch (window): a change inside N's own epoch is not
 		// reflected by the floor row yet.
-		changed, cerr := q.changedChildren(domain, nil, q.sched.epochOf(0, n), n)
+		changed, cerr := q.changedChildren(domain, nil, q.sched.epochOfFor(true, 0, n), n)
 		if cerr != nil {
 			return root, false, false, cerr
 		}

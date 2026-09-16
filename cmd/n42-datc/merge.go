@@ -96,7 +96,7 @@ func mergeBuilds(into, from string, mapGB int, fromStart uint64, skipSegments bo
 	if err != nil {
 		return err
 	}
-	for _, k := range []string{"format", "sched", "accdepth", "stodepth", "srcad", "accroot"} {
+	for _, k := range []string{"format", "sched", "stosched", "accdepth", "stodepth", "srcad", "accroot"} {
 		if !bytes.Equal(metaI[k], metaF[k]) {
 			return fmt.Errorf("meta %q differs: into=%x from=%x", k, metaI[k], metaF[k])
 		}
@@ -125,6 +125,9 @@ func mergeBuilds(into, from string, mapGB int, fromStart uint64, skipSegments bo
 	var sched epochSchedule
 	for d := 0; d <= maxChgDepth && (d+1)*8 <= len(metaF["sched"]); d++ {
 		sched.e[d] = binary.BigEndian.Uint64(metaF["sched"][d*8:])
+	}
+	for d := 0; d <= maxChgDepth && (d+1)*8 <= len(metaF["stosched"]); d++ {
+		sched.sto[d] = binary.BigEndian.Uint64(metaF["stosched"][d*8:])
 	}
 	if v := metaF["accroot"]; len(v) == 8 {
 		sched.accRoot = binary.BigEndian.Uint64(v)
