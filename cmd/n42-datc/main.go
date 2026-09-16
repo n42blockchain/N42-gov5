@@ -327,6 +327,11 @@ func main() {
 	}
 	fmt.Println()
 
+	if *stoDepthMap != "" && !stoDepthSet(fs) {
+		// The map decides every contract it names; the rest are cheaper folded
+		// whole than recorded. Must run BEFORE the builder copies *stoDepth.
+		*stoDepth = 0
+	}
 	b := &builder{
 		sched: sched, db: db,
 		acctTbl: acctTbl, storTbl: storTbl,
@@ -342,9 +347,6 @@ func main() {
 		leavesTotal: *leavesTotal,
 		accDepth:    *accDepth,
 		stoDepth:    *stoDepth,
-	}
-	if *stoDepthMap != "" && !stoDepthSet(fs) {
-		*stoDepth = 0 // the map decides; unnamed contracts get no records
 	}
 	if *accDepth < 1 || *accDepth > maxChgDepth+1 || *stoDepth < 0 || *stoDepth > maxChgDepth+1 {
 		die("--acc-depth must be in [1, %d] and --sto-depth in [0, %d]", maxChgDepth+1, maxChgDepth+1)
