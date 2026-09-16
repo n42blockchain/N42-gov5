@@ -8,8 +8,8 @@
 |---|---|
 | 下段 `datc-25m-v2-lo` | 已完成，区块 `[0, 17,900,000)`，514 GB，leaf 段已收尾 |
 | 上段 `datc-25m-v2-hi` | 构建已完成，区块 `[17,900,000, 25,943,311)`，最后一块 **25,943,311**（含周更新延伸）。`DatcMeta`：start 17,900,000、progress/head 25,943,311、format 2，sched 与深度参数和下段逐字节相同 |
-| leaf 段收尾 | 进行中。09-15 21:05 UTC 在 `s.7b` 被 OOM 强杀（内存排序），已隔离恢复（见第 6 节）；已完成 1574/1963 桶，剩余 389 桶待用外排序版本（hi10）单独重跑 |
-| 下一步 | 行数核对（a/s 桶恢复行数 vs `leafprog` 增量）→ `merge --into hi --from lo` → `verify --samples 50` → `bench` → 删除 `leafspill/` 与下段库 |
+| leaf 段收尾 | 已完成（1963 个段，外排序版峰值内存 5.8 GB）。上段范围内抽查 4 个高度全部 byte-exact |
+| 下一步 | merge 段阶段续做中（见第 7 节事故）→ `merge --skip-segments` 完成 MDBX 阶段 → `verify --samples 50` → `bench` |
 
 ## 2. 构建性能优化
 
@@ -92,7 +92,33 @@ profile 与火焰图在 `/data/blockchain/datc-out/profiles/`，生成脚本 `sc
 - 收尾被打断后，按上面的"恢复"步骤处理，不要直接重跑。
 - `supervise.sh` 已修：构建到达终点后若在收尾中退出（rc≠0），不再重启；日志里有未完成的收尾（最后一个 `[leafseg] finalizing` 之后没有 `[leafseg] done`）时拒绝启动。人工恢复并单独收尾后，往日志追加一行 `[leafseg] done (standalone)` 才能再用它。
 
-## 7. 以后可以改进的地方
+## 7. merge 丢行事故（2026-09-16）与帧切分
+
+**经过**：`merge --into hi --from lo` 跑到 na 表时，日志出现 45 条
+`na.XXXXXX.zspill: skipped 1 corrupt frame(s), recovered 0 rows` —— spill 有 500–600 MB，却一行都没恢复出来，
+即这些桶的下段行整批丢失。发现后停机。
+
+**根因**（与外排序无关，旧代码即有）：
+
+1. merge 的 re-spill 从头到尾不切帧（只有构建路径每批 `flushBatch`），所以**一个桶就是一个 zstd 帧**，可达数 GB。
+   实测 `na.03060f.zspill` 641 MB、`s.00.zspill` 752 MB，文件里 zstd magic 都只有 1 个。
+2. finalize 为了在假 magic 处重新同步，限制候选跨度不超过 512 MiB；**超过上限的帧被当成损坏帧整体丢弃**。
+3. 2M 演练时每个桶都小于 512 MiB，所以没暴露；25M 的剩余 spill 里有 86 个超限。
+
+**修复**（`07271382`）：
+
+- `merge`：re-spill 每 4M 行切一次帧，与构建路径一致。
+- `finalize`：跨度超过 `finalizeStreamMin`（默认 64 MiB，环境变量 `DATC_FINALIZE_STREAM_MIN`）时改为**流式解码两遍**
+  —— 第一遍只验证能解出来，第二遍才喂行，因此损坏帧仍然整帧丢弃，而内存不随帧大小增长；
+  超过 `finalizeMergeSpan` 的跨度只在候选是文件末尾时才尝试，避免 kill-tail 帧被反复重试。
+- 新增 `merge --skip-segments`：只跑 MDBX 阶段，用于段已经合好、merge 被中断后的续做。
+- 回归测试：`TestFinalizeFrameLargerThanMergeSpan`（单个巨帧必须完整恢复）、`TestFinalizeStreamingMatchesBuffered`
+  （流式与缓冲输出逐字节相同）。
+
+**教训**：写路径和读路径的分帧假设必须一致。spill 的帧大小由**写入方**决定，收尾方只能按上限拒绝——一旦拒绝就是静默丢数据。
+所以收尾对"整桶 0 行"这类结果要当成事故信号看，不能只当成一条日志。
+
+## 8. 以后可以改进的地方
 
 - leaf 段收尾是单线程逐桶处理（约 22 MB/s，377 GB spill 约 4.5 小时）。各桶互相独立，可以改成多桶并行。
 - 根计算分片不均：需要存储树内部并行或更细的分片，涉及节点记录生成方式，需在非构建期间开发并用 e2e 验证。
