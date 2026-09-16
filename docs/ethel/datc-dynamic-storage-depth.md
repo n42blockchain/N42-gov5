@@ -210,17 +210,25 @@ n42-datc build ... --sto-depth-map sto-depth-map-b1024.txt
 
 ## 7. 落地路径
 
-0. **前提**：`73779b51` 的路径键修复必须包含在重建用的二进制里，否则深度参数怎么调都没用
+0. **上段的起点状态从哪来**（两机并行的前提）：`prep-state` 需要一份"某高度的当前态表 + `DatcMeta/progress`"的 MDBX 拷贝。
+   上一轮用的是 Windows 的 `D:\n42-datc-cont-25864981`（Pipeline-B `--records-only` 续建库，状态停在 17,900,000），
+   Linux 侧那份在 2026-09-08 已删（435 GB）。因此：
+   - **变体 A（真并行，前提是那份库还在 Windows 上）**：Windows 拷出 17.9M 状态 → Linux `prep-state` → 两台同时开跑，
+     Windows 跑 `[0, 17,900,000)`、Linux 跑 `[17,900,000, head)`。
+   - **变体 B（串行播种，没有现成中段状态时）**：一台先从创世跑到分割点（下段产物本身就含该高度的当前态表），
+     拷贝 `mdbx.dat` 给第二台 → `prep-state` → 第二台接上段。并行度只覆盖上段，下段时间无法重叠。
+   - 分割点不必是 17.9M：按叶变更量均分即可（上一轮 0→17.9M 占 7.13B 次、17.9M→25.86M 占 6.2B 次）。
+1. **二进制前提**：`73779b51` 的路径键修复必须包含在重建用的二进制里，否则深度参数怎么调都没用
    （深度 1 以下的记录根本不会按正确路径写出）。
-1. 先在 2M 区块的原型上重建一次（`--sto-depth-dynamic --fold-width 1024`），跑 `bench --samples 500` 对比 p99；
-2. 确认后全链重建（约一周量级，需要约 1 TB 磁盘；当前 `/data` 剩 2.6 TB）。**分两台机器跑上下段**：
+2. 先在 2M 区块的原型上重建一次（`--sto-depth-dynamic --fold-width 1024`），跑 `bench --samples 500` 对比 p99；
+3. 确认后全链重建（约一周量级，需要约 1 TB 磁盘；当前 `/data` 剩 2.6 TB）。**分两台机器跑上下段**：
    - 下段 `[0, 17,900,000)` 与上段 `[17,900,000, head)` 各跑一台，跑完 `merge --into 上段 --from 下段`；
    - **两台必须用同一份 `--sto-depth-map` 文件**（用 md5 核对），否则同一个合约在两段里的记录深度不同，
      合并后读取端按 `DatcStoDepth` 取到的深度会与实际写出的记录对不上；
    - 上段照旧需要 `prep-state` 从中段状态起步；两段的 `--sched`/`--acc-depth`/`--acc-root-epoch` 必须一致
      （`merge` 会校验 meta）；
    - 合并后的验收：`verify --samples 50` + **`bench --samples 500`**（verify 不覆盖 leaf 段，见状态文档第 8 节）。
-3. 重建期间保留现有归档，验收（`verify --samples 50` + `bench --samples 500`，注意 **verify 不覆盖 leaf 段**，
+4. 重建期间保留现有归档，验收（`verify --samples 50` + `bench --samples 500`，注意 **verify 不覆盖 leaf 段**，
    见 `datc-status-2026-09-15.md` 第 8 节）通过后再替换。
 
 > 注意：这是**格式变更**（新增 `DatcStoDepth` 表、存储节点记录深度不再是常量），
