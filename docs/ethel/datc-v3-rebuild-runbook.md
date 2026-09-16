@@ -14,22 +14,42 @@
 
 | 项 | 值 |
 |---|---|
-| 代码 | `origin/main` ≥ `ba06ec32`（含 73779b51 + 2ebcafde + 1ee4f9e1） |
+| 代码 | `origin/main` ≥ `5201031f`（含 73779b51 路径键修复、2ebcafde/1ee4f9e1 动态深度、102168ee 存储阶梯） |
 | Windows 编译 | `go build -tags "nosqlite,noboltdb" -o build\bin\n42-datc.exe .\cmd\n42-datc\`（需要 CGO/MDBX） |
-| Linux 二进制 | `/data/blockchain/datc-out/n42-datc-25m-hi13.bin` |
-| 深度映射 | `sto-depth-map-b1024.txt`，6.2 MB，92,502 行，**md5 `39cc2139d9f3157f7f8e44af4c16c9bf`** |
+| Linux 二进制 | `/data/blockchain/datc-out/n42-datc-25m-hi14.bin` |
+| 深度映射 | `sto-depth-map-b512.txt`（折叠宽度 512），144,361 行，**md5 `db00db3f8d7d0239947b8b4024558072`** |
 | 上段起点状态 | Windows `D:\n42-datc-cont-25864981`（`--records-only` 续建库，状态停在 17,900,000） |
 
 **两台机器必须用同一份映射文件**：两边的脚本都会自校 md5，不一致直接退出。映射由
-`n42-datc segcount --out <旧归档> --fold-width 1024 --map <file>` 生成，只需生成一次并复制。
+`n42-datc segcount --out <旧归档> --fold-width 512 --map <file>` 生成，只需生成一次并复制。
+
+## 1.5 重建参数（两台机器完全一致，2026-09-16 审核后定稿）
+
+```
+--acc-depth 5 --acc-root-epoch 1
+--sched     1024,16384,1024,4096,4096,4194304     # 账户树：e1..e4 = 16384,1024,4096,4096
+--sto-sched 1024,1024,1024,1024,4096,4096         # 存储树：深层保持短 epoch
+--sto-depth-map sto-depth-map-b512.txt            # 折叠宽度 512
+--window=false --concurrent-root --leaf-seg
+```
+
+为什么是这三处（详见 `datc-dynamic-storage-depth.md` 第 8 节"审核"）：
+
+- **折叠宽度 512**：带槽证明读放大 ≤ 33×2×512 ≈ 3.4 万次读，8 并发下 100–140 ms；空间与 1024 几乎相同。
+- **账户 accDepth 5、level 3/4 epoch 4096**：账户折叠宽度从约 1 万键降到约 600 键，账户证明从 p50 190 ms（8 并发）降到约 25 ms；
+  同时把 level 3 从逐块改为 4096，账户节点段（现 270 GB）预计降到 50 GB 量级。
+- **独立的存储阶梯**：不再让存储树深层沿用账户树的 e3=1（逐块）与 e4=4194304（400 万块窗口）。
+
+这套形状（缩放版）在 e2e 里逐高度校验过根与证明：`TestCfgAcc5Deep4096`/`TestShapeAcc5Growing`（账户）、
+`TestShapeStoGrowing`（存储 5 层）均通过。
 
 ## 2. 启动
 
 **Windows（下段）**
 
 ```powershell
-# 1) 把映射复制到 D:\sto-depth-map-b1024.txt，核对 md5
-Get-FileHash -Algorithm MD5 D:\sto-depth-map-b1024.txt
+# 1) 把映射复制到 D:\sto-depth-map-b512.txt，核对 md5
+Get-FileHash -Algorithm MD5 D:\sto-depth-map-b512.txt
 # 2) 开跑（脚本会先自校 md5）
 C:\N42\N42-gov5\scripts\datc\run-genesis-windows-v3.ps1
 ```
@@ -43,7 +63,7 @@ C:\N42\N42-gov5\scripts\datc\run-genesis-windows-v3.ps1
 # 1) 收下 Windows 的中段状态库（含 17.9M 当前态表），拷成上段输出目录
 #    目标：/data/blockchain/datc-out/datc-v3-hi
 # 2) 清成干净的 v3 输出（清空全部 Datc* 表，保留状态表）
-/data/blockchain/datc-out/n42-datc-25m-hi13.bin prep-state --out /data/blockchain/datc-out/datc-v3-hi
+/data/blockchain/datc-out/n42-datc-25m-hi14.bin prep-state --out /data/blockchain/datc-out/datc-v3-hi
 #    必须打印 progress=17900000
 # 3) 开跑（脚本自校映射 md5）
 setsid nohup /data/blockchain/datc-out/run-rebuild-upper.sh > /data/blockchain/datc-out/datc-v3-hi.build.log 2>&1 < /dev/null &
@@ -54,7 +74,7 @@ setsid nohup /data/blockchain/datc-out/run-rebuild-upper.sh > /data/blockchain/d
 2M 原型只验证了机制，**收益要到 DeFi 密集区才出现**。上段跑过 20,000,000 后立刻跑一次：
 
 ```bash
-n42-datc-25m-hi13.bin bench --out datc-v3-hi --headers <hd> --changesets <cs> \
+n42-datc-25m-hi14.bin bench --out datc-v3-hi --headers <hd> --changesets <cs> \
   --samples 300 --seed 3 --mode mixed --parallel 8 --json bench-v3-partial.json
 ```
 
@@ -66,9 +86,9 @@ n42-datc-25m-hi13.bin bench --out datc-v3-hi --headers <hd> --changesets <cs> \
 
 ```bash
 # 下段传回 Linux（只传 mdbx.dat + leafseg/，不要传 leafspill/）
-n42-datc-25m-hi13.bin merge --into datc-v3-hi --from datc-v3-lo   # 下段并入上段
-n42-datc-25m-hi13.bin verify --out datc-v3-hi --headers <hd> --samples 50          # 须 50/50
-n42-datc-25m-hi13.bin bench  --out datc-v3-hi --headers <hd> --changesets <cs> \
+n42-datc-25m-hi14.bin merge --into datc-v3-hi --from datc-v3-lo   # 下段并入上段
+n42-datc-25m-hi14.bin verify --out datc-v3-hi --headers <hd> --samples 50          # 须 50/50
+n42-datc-25m-hi14.bin bench  --out datc-v3-hi --headers <hd> --changesets <cs> \
   --samples 500 --mode mixed --parallel 8                                          # 真正的验收
 ```
 

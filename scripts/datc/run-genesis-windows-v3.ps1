@@ -12,8 +12,8 @@ $bin = "C:\N42\N42-gov5\build\bin\n42-datc.exe"
 $cs  = "D:/N42-eth1177/chain/freezer"
 $hd  = "D:/n42-eth1/chain/freezer"
 $out = "D:/n42-datc-v3-lo"
-$map = "D:/sto-depth-map-b1024.txt"
-$wantMd5 = "39CC2139D9F3157F7F8E44AF4C16C9BF"
+$map = "D:/sto-depth-map-b512.txt"
+$wantMd5 = "DB00DB3F8D7D0239947B8B4024558072"
 
 $md5 = (Get-FileHash -Algorithm MD5 $map).Hash
 if ($md5 -ne $wantMd5) {
@@ -21,7 +21,7 @@ if ($md5 -ne $wantMd5) {
   exit 1
 }
 & $bin build --src mainnet --changesets $cs --headers $hd --out $out --end 17900000 `
-  --sched 1024,16384,1024,1,4194304,4194304 --acc-root-epoch 1 --window=false --concurrent-root `
+  --sched 1024,16384,1024,4096,4096,4194304 --sto-sched 1024,1024,1024,1024,4096,4096 --acc-depth 5 --acc-root-epoch 1 --window=false --concurrent-root `
   --leaf-seg --batch 8192 --map.gb 2048 --dirty.gb 16 --stocache.m 32 --gogc 150 --mem.gb 40 `
   --decode-workers 8 --prefetch --pprof.port 6072 --sto-depth-map $map 2>&1 |
   Tee-Object -FilePath "$out.build.log" -Append
