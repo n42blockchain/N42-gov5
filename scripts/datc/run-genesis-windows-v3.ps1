@@ -12,8 +12,8 @@ $bin = "C:\N42\N42-gov5\build\bin\n42-datc.exe"
 $cs  = "D:/N42-eth1177/chain/freezer"
 $hd  = "D:/n42-eth1/chain/freezer"
 $out = "D:/n42-datc-v3-lo"
-$map = "D:/sto-depth-map-b512.txt"
-$wantMd5 = "DB00DB3F8D7D0239947B8B4024558072"
+$map = "D:/sto-depth-map-v3.txt"
+$wantMd5 = "2C188263B4D0B05081FC3BF9325046C8"
 
 $md5 = (Get-FileHash -Algorithm MD5 $map).Hash
 if ($md5 -ne $wantMd5) {

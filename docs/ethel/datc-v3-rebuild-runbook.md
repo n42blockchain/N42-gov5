@@ -14,14 +14,14 @@
 
 | 项 | 值 |
 |---|---|
-| 代码 | `origin/main` ≥ `5201031f`（含 73779b51 路径键修复、2ebcafde/1ee4f9e1 动态深度、102168ee 存储阶梯） |
+| 代码 | `origin/main` ≥ `a8775a72`（路径键修复、动态深度、独立存储阶梯、dense 陈旧修复、按合约截断层、64 KiB 帧、格式 3） |
 | Windows 编译 | `go build -tags "nosqlite,noboltdb" -o build\bin\n42-datc.exe .\cmd\n42-datc\`（需要 CGO/MDBX） |
-| Linux 二进制 | `/data/blockchain/datc-out/n42-datc-25m-hi14.bin` |
-| 深度映射 | `sto-depth-map-b512.txt`（折叠宽度 512），144,361 行，**md5 `db00db3f8d7d0239947b8b4024558072`** |
+| Linux 二进制 | `/data/blockchain/datc-out/n42-datc-25m-hi19.bin` |
+| 深度映射 | `sto-depth-map-v3.txt`（四列 `<addrHash> <depth> <level> <shift>`；折叠宽度 512、fold-target 300：28 个合约截断，24 个在 L0、4 个在 L1），144,361 行，**md5 `2c188263b4d0b05081fc3bf9325046c8`** |
 | 上段起点状态 | Windows `D:\n42-datc-cont-25864981`（`--records-only` 续建库，状态停在 17,900,000） |
 
 **两台机器必须用同一份映射文件**：两边的脚本都会自校 md5，不一致直接退出。映射由
-`n42-datc segcount --out <旧归档> --fold-width 512 --map <file>` 生成，只需生成一次并复制。
+`n42-datc segcount --out <旧归档> --fold-width 512 --fold-target 300 --blocks <链长> --sto-sched 1024,1024,1024,1024,4096,4096 --map <file>` 生成，只需生成一次并复制。
 
 ## 1.5 重建参数（两台机器完全一致，2026-09-16 审核后定稿）
 
@@ -48,8 +48,8 @@
 **Windows（下段）**
 
 ```powershell
-# 1) 把映射复制到 D:\sto-depth-map-b512.txt，核对 md5
-Get-FileHash -Algorithm MD5 D:\sto-depth-map-b512.txt
+# 1) 把映射复制到 D:\sto-depth-map-v3.txt，核对 md5
+Get-FileHash -Algorithm MD5 D:\sto-depth-map-v3.txt
 # 2) 开跑（脚本会先自校 md5）
 C:\N42\N42-gov5\scripts\datc\run-genesis-windows-v3.ps1
 ```
@@ -63,7 +63,7 @@ C:\N42\N42-gov5\scripts\datc\run-genesis-windows-v3.ps1
 # 1) 收下 Windows 的中段状态库（含 17.9M 当前态表），拷成上段输出目录
 #    目标：/data/blockchain/datc-out/datc-v3-hi
 # 2) 清成干净的 v3 输出（清空全部 Datc* 表，保留状态表）
-/data/blockchain/datc-out/n42-datc-25m-hi14.bin prep-state --out /data/blockchain/datc-out/datc-v3-hi
+/data/blockchain/datc-out/n42-datc-25m-hi19.bin prep-state --out /data/blockchain/datc-out/datc-v3-hi
 #    必须打印 progress=17900000
 # 3) 开跑（脚本自校映射 md5）
 setsid nohup /data/blockchain/datc-out/run-rebuild-upper.sh > /data/blockchain/datc-out/datc-v3-hi.build.log 2>&1 < /dev/null &
@@ -74,7 +74,7 @@ setsid nohup /data/blockchain/datc-out/run-rebuild-upper.sh > /data/blockchain/d
 2M 原型只验证了机制，**收益要到 DeFi 密集区才出现**。上段跑过 20,000,000 后立刻跑一次：
 
 ```bash
-n42-datc-25m-hi14.bin bench --out datc-v3-hi --headers <hd> --changesets <cs> \
+n42-datc-25m-hi19.bin bench --out datc-v3-hi --headers <hd> --changesets <cs> \
   --samples 300 --seed 3 --mode mixed --parallel 8 --json bench-v3-partial.json
 ```
 
@@ -86,9 +86,9 @@ n42-datc-25m-hi14.bin bench --out datc-v3-hi --headers <hd> --changesets <cs> \
 
 ```bash
 # 下段传回 Linux（只传 mdbx.dat + leafseg/，不要传 leafspill/）
-n42-datc-25m-hi14.bin merge --into datc-v3-hi --from datc-v3-lo   # 下段并入上段
-n42-datc-25m-hi14.bin verify --out datc-v3-hi --headers <hd> --samples 50          # 须 50/50
-n42-datc-25m-hi14.bin bench  --out datc-v3-hi --headers <hd> --changesets <cs> \
+n42-datc-25m-hi19.bin merge --into datc-v3-hi --from datc-v3-lo   # 下段并入上段
+n42-datc-25m-hi19.bin verify --out datc-v3-hi --headers <hd> --samples 50          # 须 50/50
+n42-datc-25m-hi19.bin bench  --out datc-v3-hi --headers <hd> --changesets <cs> \
   --samples 500 --mode mixed --parallel 8                                          # 真正的验收
 ```
 
