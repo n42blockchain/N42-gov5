@@ -44,6 +44,16 @@ func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool,
 	if number == 0 {
 		return false, false, nil
 	}
+	// Already executed here (a catch-up range import or the gossip copy landed
+	// first): the state the includability check would read is this block's own
+	// post-state, where its transactions read as nonces already used. Nothing
+	// to check -- a block this node imported has passed full validation, so the
+	// vote may proceed (35zzq: a follower one block behind imported 13654279
+	// from the range fetch, then the direct push arrived and the check failed
+	// it, "nonce 0, state expects 4096", and the round was aborted).
+	if bc.HasAppliedBlock(blk.Hash(), number) {
+		return true, false, nil
+	}
 	tx, err := bc.ChainDB.BeginRo(context.Background())
 	if err != nil {
 		return true, true, err
@@ -75,6 +85,17 @@ func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool,
 	}
 	if !bc.AppliedHeadIsExactly(parent.Hash(), number-1) {
 		return true, true, ErrDeferredParentNotApplied
+	}
+	// The applied marker moves AFTER the tree takes a block's appends, so the
+	// marker naming the parent is not proof that the tree is at the parent's
+	// post-state: an import in flight can already have written its rows. Under
+	// deferred execution the header carries that post-state (header N holds
+	// N-1's root), so the tree's root is the exact test.
+	if bc.qmdbEnabled && bc.qmdbRootComputer != nil {
+		if got := bc.qmdbRootComputer.Root(); got != hdr.Root {
+			return true, true, fmt.Errorf("%w: the tree is at %x, the parent's post-state is %x",
+				ErrDeferredParentNotApplied, got[:6], hdr.Root[:6])
+		}
 	}
 	return true, false, bc.checkSenderStates(number, plan)
 }

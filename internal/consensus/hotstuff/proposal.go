@@ -287,6 +287,43 @@ func (e *ConsensusEngine) tryDeferredVote(view ViewNumber) (bool, error) {
 	return true, e.sendVote(view, pending)
 }
 
+// deferredAttested reports whether this node's execution guarantee for a block
+// is met the deferred way: it checked the block (the header carries this node's
+// own result of the parent, and the transactions are includable against that
+// post-state) and it has imported the parent. A CommitQC over such votes proves
+// a quorum executed the parent and validated this block, which is the guarantee
+// deferred execution moves one block back. Without this the Round-2 gate waits
+// for the block's own import and the cycle stays import-bound -- 35zzq measured
+// the same 1.33 s block time as the round without deferred execution.
+func (e *ConsensusEngine) deferredAttested(blockHash types.Hash) bool {
+	if !e.checkedBlocks[blockHash] {
+		return false
+	}
+	parent, ok := e.importedParents[blockHash]
+	return ok && parent != (types.Hash{}) && e.importedBlocks[parent]
+}
+
+// castHeldCommitVoteIfAttested fires a parked Round-2 vote once its block is
+// attested (imported, or checked with the parent imported).
+func (e *ConsensusEngine) castHeldCommitVoteIfAttested(blockHash types.Hash) {
+	if !e.twoPhaseVote || e.pendingCommitQC == nil || e.pendingCommitQC.BlockHash != blockHash {
+		return
+	}
+	if !e.importedBlocks[blockHash] && !e.deferredAttested(blockHash) {
+		return
+	}
+	held := e.pendingCommitQC
+	e.pendingCommitQC = nil
+	if held.View != e.roundState.CurrentView() {
+		return
+	}
+	log.Info("two-phase vote: casting held commit vote", "view", held.View, "blockHash", blockHash,
+		"deferred", !e.importedBlocks[blockHash], "tMs", time.Now().UnixMilli())
+	if err := e.processPrepareQC(held); err != nil {
+		log.Debug("two-phase held commit vote failed", "err", err)
+	}
+}
+
 // onBlockChecked records a block the service verified under deferred
 // execution and votes for it if its parent is already imported.
 func (e *ConsensusEngine) onBlockChecked(blockHash types.Hash, parentHash types.Hash) error {
@@ -306,6 +343,7 @@ func (e *ConsensusEngine) onBlockChecked(blockHash types.Hash, parentHash types.
 		e.importedParents[blockHash] = parentHash // the extends-check reads it
 	}
 	_, err := e.tryDeferredVote(e.roundState.CurrentView())
+	e.castHeldCommitVoteIfAttested(blockHash)
 	return err
 }
 
@@ -331,7 +369,7 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg) error {
 	// it until the block is imported locally, so a CommitQC still proves
 	// 2f+1 validators EXECUTED the block. onBlockImported re-enters this
 	// function with the held message once the import lands.
-	if e.twoPhaseVote && !e.importedBlocks[pqc.BlockHash] {
+	if e.twoPhaseVote && !e.importedBlocks[pqc.BlockHash] && !e.deferredAttested(pqc.BlockHash) {
 		held := *pqc
 		e.pendingCommitQC = &held
 		log.Info("two-phase vote: holding commit vote until block imports",
@@ -502,16 +540,10 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 	// Two-phase mode: a held Round-2 CommitVote fires as soon as its block
 	// imports (processPrepareQC parked it; re-entering is idempotent via
 	// HasCommitVotedInView).
-	if e.twoPhaseVote && e.pendingCommitQC != nil && e.pendingCommitQC.BlockHash == blockHash {
-		held := e.pendingCommitQC
-		e.pendingCommitQC = nil
-		if held.View == e.roundState.CurrentView() {
-			log.Info("two-phase vote: casting held commit vote after import",
-				"view", held.View, "blockHash", blockHash, "tMs", time.Now().UnixMilli())
-			if err := e.processPrepareQC(held); err != nil {
-				log.Debug("two-phase held commit vote failed", "err", err)
-			}
-		}
+	if e.twoPhaseVote && e.pendingCommitQC != nil {
+		// This block, or a checked child of it whose guarantee this import
+		// completes (deferred execution attests the parent, not the block).
+		e.castHeldCommitVoteIfAttested(e.pendingCommitQC.BlockHash)
 	}
 
 	// Import-gated voting: now that this block is imported, cast the deferred
