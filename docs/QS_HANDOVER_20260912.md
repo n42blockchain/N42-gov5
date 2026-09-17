@@ -5,7 +5,20 @@ paused the session. Detail and every prediction live in
 `docs/QS_BLOCK_TIME_BUDGET.md` (sections 6ba-6bh cover this handover's span);
 this file is the entry point. No keys in here.
 
-## Queue prepared 2026-09-15 07:30 EDT (read this first)
+## Queue running since 2026-09-16 20:25 EDT (read this first)
+
+- DATC stopped at 20:17 but left `.box-claim-datc` from 09-15 17:54 behind. The chain
+  scripts now count only foreign claims younger than 90 minutes, which is what
+  BOX-CLAIM-PROTOCOL.md says everyone should do; nobody's claim file was deleted.
+- `chain-35zzq/r/s/t.sh` are running detached: 35zzq yields 20 min to the waiting
+  n42-rs runner, then three quiet checks, claims, reseeds and launches (~20:50),
+  ~80 min a round, and 35zzr/s/t follow one after another.
+- On return: read `wr-logs/chain-35zz*.log` and `wr-logs/r35zz*.log`, re-arm the
+  monitors, and score 35zzq against prediction 72 (6bk).
+- n42-rs's run-loop170.sh has waited ~18 h because its quiet check treats any foreign
+  claim as busy, stale or not; noted for them in BOX-NOTE-gov5.txt.
+
+## Queue prepared 2026-09-15 07:30 EDT
 
 - DATC holds the box (claim 07:11); gov5 runs and claims nothing. 35zzq was held
   before it launched.
