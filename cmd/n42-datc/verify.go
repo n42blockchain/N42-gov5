@@ -316,9 +316,12 @@ type querier struct {
 	// lastFloorReason: why the last floorRecordBefore returned ok=false
 	// (absent | tombstone | mixed | chainBroken | undecodable).
 	lastFloorReason string
-	// stoDepthCache memoizes the per-contract ladder (depth + deepest-level
-	// epoch shift) read from DatcStoDepth.
-	stoDepthCache map[string]stoLadder
+	// stoDepthCache holds, per contract, every DatcStoDepth row (block → ladder)
+	// so a lookup is exact at any height. The ladder sets the epoch DIVISOR of
+	// that contract's records; a stale ladder near a change block would make
+	// the floor lookup land on a record from another epoch scale — possibly a
+	// later height — so this must never be approximate.
+	stoDepthCache map[string][]stoLadderAt
 	// absentPaths (tests): account paths whose floor came back absent.
 	absentPaths map[string]int
 }
@@ -436,10 +439,10 @@ func (q *querier) storageRootAt(domain []byte, n uint64) (root types.Hash, exist
 		return root, false, false, err
 	}
 	haveFloor := k != nil && len(k) == 32+blkLen && bytes.Equal(k[:32], domain)
-	if !q.stoRootPerBlock && q.sched.lenFor(true, 0) > 1 {
+	if lad := q.stoLadderAt(domain, n); !q.stoRootPerBlock && q.sched.stoLenFor(0, lad) > 1 {
 		// Rows are per epoch (window): a change inside N's own epoch is not
 		// reflected by the floor row yet.
-		changed, cerr := q.changedChildren(domain, nil, q.sched.epochOfFor(true, 0, n), n)
+		changed, cerr := q.changedChildren(domain, nil, q.sched.stoEpochOf(0, lad, n), n)
 		if cerr != nil {
 			return root, false, false, cerr
 		}
@@ -618,46 +621,64 @@ func (q *querier) stoFoldAt(domain []byte, n uint64) int { return q.stoLadderAt(
 // depth its node records reach, and how much the deepest level's epoch was
 // shortened. Absent (format 2, or a contract the build's map did not name) it
 // is the build-wide default from DatcMeta with no shift.
+// stoLadderAt is the record shape in force for this contract at block n: the
+// newest DatcStoDepth row at or before n, else the build-wide default from
+// DatcMeta (format 2, or a contract the map did not name).
+type stoLadderAt struct {
+	block uint64
+	lad   stoLadder
+}
+
 func (q *querier) stoLadderAt(domain []byte, n uint64) stoLadder {
-	ck := string(domain) + string([]byte{byte(n >> 24), byte(n >> 16)})
-	if l, ok := q.stoDepthCache[ck]; ok {
-		return l
+	rows, ok := q.stoDepthCache[string(domain)]
+	if !ok {
+		rows = q.loadStoLadders(domain)
+		if q.stoDepthCache == nil || len(q.stoDepthCache) > 4096 {
+			q.stoDepthCache = make(map[string][]stoLadderAt, 64)
+		}
+		q.stoDepthCache[string(domain)] = rows
 	}
 	lad := stoLadder{depth: q.stoFold}
-	if q.tx != nil {
-		if c, err := q.tx.Cursor(tDatcStoDepth); err == nil {
-			seek := make([]byte, 0, stoDomainLen+blkLen)
-			seek = append(seek, domain...)
-			seek = binary.BigEndian.AppendUint32(seek, uint32(n+1))
-			k, v, serr := c.Seek(seek)
-			if serr == nil {
-				if k == nil {
-					k, v, serr = c.Last()
-				} else {
-					k, v, serr = c.Prev()
-				}
-			}
-			if serr == nil && k != nil && len(k) == stoDomainLen+blkLen && len(v) >= 1 &&
-				bytes.Equal(k[:stoDomainLen], domain) {
-				lad.depth = int(v[0])
-				switch len(v) {
-				case 2: // (depth, shift): the shift applied to the deepest level
-					lad.shift = v[1]
-					if lad.depth > 0 {
-						lad.level = uint8(lad.depth - 1)
-					}
-				case 3: // (depth, level, shift)
-					lad.level, lad.shift = v[1], v[2]
-				}
-			}
-			c.Close()
+	for _, r := range rows { // ascending by block; usually one or two rows
+		if r.block > n {
+			break
 		}
+		lad = r.lad
 	}
-	if q.stoDepthCache == nil || len(q.stoDepthCache) > 4096 {
-		q.stoDepthCache = make(map[string]stoLadder, 64)
-	}
-	q.stoDepthCache[ck] = lad
 	return lad
+}
+
+// loadStoLadders reads every DatcStoDepth row of one contract, in block order.
+func (q *querier) loadStoLadders(domain []byte) []stoLadderAt {
+	if q.tx == nil {
+		return nil
+	}
+	c, err := q.tx.Cursor(tDatcStoDepth)
+	if err != nil {
+		return nil
+	}
+	defer c.Close()
+	var rows []stoLadderAt
+	for k, v, e := c.Seek(domain); k != nil && e == nil; k, v, e = c.Next() {
+		if len(k) != stoDomainLen+blkLen || !bytes.Equal(k[:stoDomainLen], domain) {
+			break
+		}
+		if len(v) == 0 {
+			continue
+		}
+		lad := stoLadder{depth: int(v[0])}
+		switch len(v) {
+		case 2: // (depth, shift): the shift applied to the deepest level
+			lad.shift = v[1]
+			if lad.depth > 0 {
+				lad.level = uint8(lad.depth - 1)
+			}
+		case 3: // (depth, level, shift)
+			lad.level, lad.shift = v[1], v[2]
+		}
+		rows = append(rows, stoLadderAt{block: uint64(binary.BigEndian.Uint32(k[stoDomainLen:])), lad: lad})
+	}
+	return rows
 }
 
 // synthesizeRoot assembles the account-trie root node from its 16 depth-1
