@@ -4555,6 +4555,15 @@ parent's post-state (the root the header carries) before it reads senders.
 **35zzq re-runs on n42-r78 = r75 plus those two fixes**, keeping deferred
 execution as its one variable; predictions 72-75 stand.
 
+**35zzq attempt 2 (2026-09-16 21:23-21:44 EDT): aborted on a self-deadlock in
+the fix itself.** The tree-root guard added to the includability check read the
+root inside the readers span, and `Root()` takes that same lock for writing:
+the goroutine deadlocked, every import queued behind it, and the fleet produced
+one block in eighteen minutes (views timed out from 1 to 37). `RootLocked()` is
+the lock-free accessor for a caller already inside the span, with a regression
+test that hangs on the old call. Nothing was measured; deferred execution is
+still untested on the fleet.
+
 ## 6bl. Round 35zzr: the deferred fold outside the write transaction -- registered before the round ran (2026-09-15)
 
 Runs only if 35zzq passes (no deferred-check failure, no BAD BLOCK); its

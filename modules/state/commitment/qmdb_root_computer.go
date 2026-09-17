@@ -99,6 +99,15 @@ func (r *QMDBRootComputer) LockReaders() func() {
 	return r.readers.RUnlock
 }
 
+// RootLocked is Root for a caller already inside a LockReaders span. Root
+// takes the readers lock for writing, so calling it under LockReaders
+// self-deadlocks the goroutine and every reader and writer behind it (round
+// 35zzq: the deferred check did exactly that and the fleet produced one block
+// in eighteen minutes).
+func (r *QMDBRootComputer) RootLocked() types.Hash {
+	return types.Hash(r.t.Root())
+}
+
 // LookupLocked is Lookup for a caller inside a LockReaders span.
 func (r *QMDBRootComputer) LookupLocked(keyHash qmdb.Hash, cold qmdb.Getter) (value []byte, found bool, evicted bool) {
 	var cr qmdb.ColdReader = noColdReader{}

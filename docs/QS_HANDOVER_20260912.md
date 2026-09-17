@@ -5,6 +5,18 @@ paused the session. Detail and every prediction live in
 `docs/QS_BLOCK_TIME_BUDGET.md` (sections 6ba-6bh cover this handover's span);
 this file is the entry point. No keys in here.
 
+## Box handed back 2026-09-16 21:44 EDT (read this first)
+
+- gov5 holds nothing: no claim, no fleet, no runner, no chain script. The box is free
+  for n42-rs and DATC (user's instruction after two aborted attempts).
+- 35zzq has still never measured deferred execution. Attempt 1 died on the two-phase
+  gate hiding it; attempt 2 died on a self-deadlock in the fix (the includability check
+  read the QMDB root inside the readers span). Both fixed on main.
+- Binaries built and ready: n42-r78 (r75 + deferred fixes), n42-r79 (+ fold), n42-r80
+  (+ tail). They predate the RootLocked fix, so rebuild them from main before the next
+  attempt: `build-and-queue.sh` does the cherry-picks, or build by hand.
+- The chain scripts chain-35zzq/r/s/t are written and point at r78/r79/r80; none runs.
+
 ## The drift check (run it at every round end, user's standing ask 2026-09-16)
 
 The goal is one number: the seven-node fleet's sustained TPS at the bench's

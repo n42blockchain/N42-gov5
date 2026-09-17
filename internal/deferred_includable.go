@@ -92,7 +92,7 @@ func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool,
 	// deferred execution the header carries that post-state (header N holds
 	// N-1's root), so the tree's root is the exact test.
 	if bc.qmdbEnabled && bc.qmdbRootComputer != nil {
-		if got := bc.qmdbRootComputer.Root(); got != hdr.Root {
+		if got := bc.qmdbRootComputer.RootLocked(); got != hdr.Root {
 			return true, true, fmt.Errorf("%w: the tree is at %x, the parent's post-state is %x",
 				ErrDeferredParentNotApplied, got[:6], hdr.Root[:6])
 		}
