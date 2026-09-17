@@ -5,6 +5,25 @@ paused the session. Detail and every prediction live in
 `docs/QS_BLOCK_TIME_BUDGET.md` (sections 6ba-6bh cover this handover's span);
 this file is the entry point. No keys in here.
 
+## The drift check (run it at every round end, user's standing ask 2026-09-16)
+
+The goal is one number: the seven-node fleet's sustained TPS at the bench's
+163,000-transaction blocks. Everything else is a means. At each ROUND DONE or
+ABORT, answer three questions in the report:
+
+1. **Where are we?** B mean of the round against the best so far (35zzo re-run
+   90.6k) and against n42-rs's ~242k sustained / 333k window-1 on the same box,
+   and against the 1M campaign target (rs `FLEET7_PLAN_V3.md` section 5).
+2. **Did the last round move that number, and if not, what did it teach?**
+   A round that measures nothing (35zzq attempt 1) counts as a defect found,
+   not as progress.
+3. **Is the next thing on the critical path?** The path is: deferred execution
+   (cycle = max(build, import) instead of a sum) -> the second-window slide
+   (heap at GOMEMLIMIT, the 20 s fold holding the writer) -> per-transaction
+   work (follower 4.9 us/tx against rs's 2.2). Box coordination, harness bugs
+   and tooling are prerequisites, never the work itself: if two consecutive
+   reports contain no new measurement, say so plainly and fix the blocker.
+
 ## Queue running since 2026-09-16 20:25 EDT (read this first)
 
 - DATC stopped at 20:17 but left `.box-claim-datc` from 09-15 17:54 behind. The chain
