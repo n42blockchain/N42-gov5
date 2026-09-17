@@ -46,7 +46,7 @@ const (
 	// datcFormat is the on-disk format version stored in DatcMeta/format.
 	// 2: 32-byte storage domain (addrHash, no incarnation), 4-byte block
 	//    suffix on leaf/root-history rows, MIXED node markers, DatcStoRoot.
-	datcFormat = 2
+	datcFormat = 3 // 3: per-contract storage record shape (DatcStoDepth depth+shift) and a separate storage ladder (stosched)
 
 	// stoDomainLen is the storage-trie domain prefix: keccak(address). The
 	// legacy 8-byte incarnation suffix is gone (storage keys are
