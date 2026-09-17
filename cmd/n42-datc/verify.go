@@ -316,8 +316,9 @@ type querier struct {
 	// lastFloorReason: why the last floorRecordBefore returned ok=false
 	// (absent | tombstone | mixed | chainBroken | undecodable).
 	lastFloorReason string
-	// stoDepthCache memoizes the per-contract fold depth (format 3).
-	stoDepthCache map[string]int
+	// stoDepthCache memoizes the per-contract ladder (depth + deepest-level
+	// epoch shift) read from DatcStoDepth.
+	stoDepthCache map[string]stoLadder
 	// absentPaths (tests): account paths whose floor came back absent.
 	absentPaths map[string]int
 }
@@ -505,8 +506,10 @@ func (q *querier) nodeHashAt(domain, path []byte, n uint64) (types.Hash, bool, e
 func (q *querier) branchSlotsAt(domain, path []byte, n uint64) (slots [16]*types.Hash, nKids int, usable bool, err error) {
 	d := len(path)
 	fold := q.accFold
+	var lad stoLadder
 	if domain != nil {
-		fold = q.stoFoldAt(domain, n)
+		lad = q.stoLadderAt(domain, n)
+		fold = lad.depth
 	}
 	if d >= fold {
 		q.noteFold(d, "belowFold")
@@ -539,6 +542,10 @@ func (q *querier) branchSlotsAt(domain, path []byte, n uint64) (slots [16]*types
 	// epoch's last block; otherwise step back and replay the window.
 	curEpoch := q.sched.epochOfFor(domain != nil, d, n)
 	eLen := q.sched.lenFor(domain != nil, d)
+	if domain != nil {
+		eLen = q.sched.stoLenFor(d, lad.depth, lad.shift)
+		curEpoch = q.sched.stoEpochOf(d, lad.depth, lad.shift, n)
+	}
 	if recEpoch == curEpoch && (n+1)%eLen != 0 {
 		st2, recEpoch2, ok2, err2 := q.floorRecordBefore(domain, path, curEpoch)
 		if err2 != nil {
@@ -605,12 +612,18 @@ func (q *querier) branchSlotsAt(domain, path []byte, n uint64) (slots [16]*types
 // stoFoldAt is the depth at which this contract's storage trie is folded at
 // block n: the floor DatcStoDepth row (format 3, written by a build with
 // --sto-depth-map), else the build-wide default from DatcMeta.
-func (q *querier) stoFoldAt(domain []byte, n uint64) int {
+func (q *querier) stoFoldAt(domain []byte, n uint64) int { return q.stoLadderAt(domain, n).depth }
+
+// stoLadderAt is the record shape in force for this contract at block n: the
+// depth its node records reach, and how much the deepest level's epoch was
+// shortened. Absent (format 2, or a contract the build's map did not name) it
+// is the build-wide default from DatcMeta with no shift.
+func (q *querier) stoLadderAt(domain []byte, n uint64) stoLadder {
 	ck := string(domain) + string([]byte{byte(n >> 24), byte(n >> 16)})
-	if d, ok := q.stoDepthCache[ck]; ok {
-		return d
+	if l, ok := q.stoDepthCache[ck]; ok {
+		return l
 	}
-	d := q.stoFold
+	lad := stoLadder{depth: q.stoFold}
 	if q.tx != nil {
 		if c, err := q.tx.Cursor(tDatcStoDepth); err == nil {
 			seek := make([]byte, 0, stoDomainLen+blkLen)
@@ -624,18 +637,21 @@ func (q *querier) stoFoldAt(domain []byte, n uint64) int {
 					k, v, serr = c.Prev()
 				}
 			}
-			if serr == nil && k != nil && len(k) == stoDomainLen+blkLen && len(v) == 1 &&
+			if serr == nil && k != nil && len(k) == stoDomainLen+blkLen && len(v) >= 1 &&
 				bytes.Equal(k[:stoDomainLen], domain) {
-				d = int(v[0])
+				lad.depth = int(v[0])
+				if len(v) >= 2 {
+					lad.shift = v[1]
+				}
 			}
 			c.Close()
 		}
 	}
 	if q.stoDepthCache == nil || len(q.stoDepthCache) > 4096 {
-		q.stoDepthCache = make(map[string]int, 64)
+		q.stoDepthCache = make(map[string]stoLadder, 64)
 	}
-	q.stoDepthCache[ck] = d
-	return d
+	q.stoDepthCache[ck] = lad
+	return lad
 }
 
 // synthesizeRoot assembles the account-trie root node from its 16 depth-1
@@ -767,7 +783,11 @@ func applyDiff(prev nodeState, rec []byte) (st nodeState, ok bool) {
 // chains alike — the caller falls back to the fold, which is always correct.
 func (q *querier) floorRecord(domain, path []byte, n uint64) (nodeState, uint64, bool, error) {
 	d := len(path)
-	return q.floorRecordBefore(domain, path, q.sched.epochOfFor(domain != nil, d, n)+1)
+	if domain != nil {
+		lad := q.stoLadderAt(domain, n)
+		return q.floorRecordBefore(domain, path, q.sched.stoEpochOf(d, lad.depth, lad.shift, n)+1)
+	}
+	return q.floorRecordBefore(domain, path, q.sched.epochOfFor(false, d, n)+1)
 }
 
 // floorRecordBefore reconstructs the newest record with epoch < beforeEpoch by

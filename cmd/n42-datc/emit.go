@@ -211,7 +211,8 @@ func (b *builder) recordChangeStorage(domain []byte, keyNibbles []byte, n uint64
 	// depth). A contract whose whole history fits inside one fold gets depth 0
 	// and no records at all.
 	b.noteStoDepth(domain, n)
-	maxD := b.stoDepthFor(domain) - 1
+	lad := b.stoLadderFor(domain)
+	maxD := lad.depth - 1
 	if maxD < 0 {
 		return
 	}
@@ -232,16 +233,17 @@ func (b *builder) recordChangeStorage(domain []byte, keyNibbles []byte, n uint64
 	for d := 0; d <= maxD; d++ {
 		bit := uint16(1) << keyNibbles[d]
 		pk := kb[1 : 1+len(domain)+d]
-		if p, ok := b.stoDirty[d][string(pk)]; ok {
+		dirty := b.stoDirty[d][lad.shiftAt(d)]
+		if p, ok := dirty[string(pk)]; ok {
 			*p |= bit // alloc-free hot path
 		} else {
 			v := bit
-			b.stoDirty[d][string(pk)] = &v
+			dirty[string(pk)] = &v
 		}
-		if b.sched.lenFor(true, d) == 1 {
+		if b.sched.stoLenFor(d, lad.depth, lad.shift) == 1 {
 			continue // per-block level: the floor record is exact, no window
 		}
-		epoch := b.sched.epochOfFor(true, d, n)
+		epoch := b.sched.stoEpochOf(d, lad.depth, lad.shift, n)
 		// The aggregation key needs its OWN buffer: writing the 4 epoch bytes
 		// into kb would land on kb[1+len(domain)+d], which is where level d+1
 		// reads its path nibble — every deeper level then keyed its dirty path
@@ -322,7 +324,7 @@ func (b *builder) flushEpoch(tx kv.RwTx, d int, epoch uint64) error {
 	if err := b.flushAccLevel(tx, d, epoch); err != nil {
 		return err
 	}
-	return b.flushStoLevel(tx, d, epoch)
+	return b.flushStoLevel(tx, d, 0, epoch)
 }
 
 // flushAccLevel persists the account-trie node records of level d for the
@@ -453,8 +455,8 @@ func (b *builder) flushAccPath(tx kv.RwTx, path []byte, changed uint16, epoch, l
 
 // flushStoLevel emits the storage-trie node records for one level's pending
 // paths (sorted; pointer-valued map).
-func (b *builder) flushStoLevel(tx kv.RwTx, d int, epoch uint64) error {
-	pending := b.stoDirty[d]
+func (b *builder) flushStoLevel(tx kv.RwTx, d int, shift uint8, epoch uint64) error {
+	pending := b.stoDirty[d][shift]
 	{
 		if len(pending) == 0 {
 			return nil

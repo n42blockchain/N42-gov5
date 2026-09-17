@@ -51,7 +51,7 @@ func TestPerContractStorageDepth(t *testing.T) {
 	b := newTestBuilder(t, db, out, sc, o, 0)
 	b.stoDepth = 0 // unnamed contracts: no records, the reader folds them whole
 	b.stoDepthMap = m
-	b.stoDepthSeen = make(map[string]uint8, len(m))
+	b.stoDepthSeen = make(map[string]stoLadder, len(m))
 	if err := b.run(0, end, o.batch); err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestPerContractStorageDepth(t *testing.T) {
 		defer dc.Close()
 		for k, v, e := dc.First(); k != nil && e == nil; k, v, e = dc.Next() {
 			depthRows++
-			if len(v) != 1 || v[0] != 3 || string(k[:stoDomainLen]) != string(deepHash[:]) {
+			if len(v) == 0 || v[0] != 3 || string(k[:stoDomainLen]) != string(deepHash[:]) {
 				return fmt.Errorf("unexpected DatcStoDepth row %x=%x", k, v)
 			}
 		}

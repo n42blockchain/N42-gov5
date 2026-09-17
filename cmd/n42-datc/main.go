@@ -367,8 +367,18 @@ func main() {
 			die("sto-depth-map: %v", err)
 		}
 		b.stoDepthMap = m
-		b.stoDepthSeen = make(map[string]uint8, len(m))
-		fmt.Printf("  storage record depth: per-contract map %s (%d contracts), fallback %d\n", *stoDepthMap, len(m), b.stoDepth)
+		b.stoDepthSeen = make(map[string]stoLadder, len(m))
+		used := map[uint8]bool{0: true}
+		for _, l := range m {
+			used[l.shift] = true
+		}
+		for s := uint8(0); s <= maxStoShift; s++ {
+			if used[s] {
+				b.stoShifts = append(b.stoShifts, s)
+			}
+		}
+		fmt.Printf("  storage record depth: per-contract map %s (%d contracts), fallback %d, deepest-level shifts %v\n",
+			*stoDepthMap, len(m), b.stoDepth, b.stoShifts)
 	}
 	b.initFlatSlots()
 	if hdrs != nil {
@@ -479,7 +489,9 @@ type builder struct {
 	// mutation goes through the pointer, and only a first insert allocates.
 	accDirty   [maxChgDepth + 1][]uint16 // flat: idx = first d nibbles
 	accTouched [maxChgDepth + 1][]uint32
-	stoDirty   [maxChgDepth + 1]map[string]*uint16
+	// stoDirty[d][shift]: dirty storage paths of level d, bucketed by the
+	// contract's deepest-level shift so each bucket flushes on its own epoch.
+	stoDirty [maxChgDepth + 1][maxStoShift + 1]map[string]*uint16
 	// accLastChg[d][idx] is the last block at which anything under that node
 	// changed. An epoch-end record may only be built from a dense snapshot
 	// collected at or after it — see flushAccPath.
@@ -607,9 +619,12 @@ type builder struct {
 	// contract it does not name uses stoDepth. stoDepthSeen tracks what has
 	// been written to DatcStoDepth so a row is emitted only when a contract's
 	// depth first applies or changes.
-	stoDepthMap  map[string]uint8
-	stoDepthSeen map[string]uint8
+	stoDepthMap  map[string]stoLadder
+	stoDepthSeen map[string]stoLadder
 	stoDepthBuf  []kvPair
+	// stoShifts are the distinct deepest-level shifts the map uses, so the
+	// per-block flush loop only walks the buckets that exist.
+	stoShifts []uint8
 }
 
 // statLegacyExtraBytes estimates how many more bytes the pre-v2 layout would
@@ -739,7 +754,9 @@ func (b *builder) initFlatSlots() {
 		b.accDirty[d] = make([]uint16, size)
 		b.accLastChg[d] = make([]uint32, size)
 		b.chgAccAgg[d] = make([]chgSlot, size)
-		b.stoDirty[d] = make(map[string]*uint16, 1<<10)
+		for s := 0; s <= maxStoShift; s++ {
+			b.stoDirty[d][s] = make(map[string]*uint16, 1<<10)
+		}
 	}
 }
 
@@ -755,14 +772,48 @@ func stoDepthSet(fs *flag.FlagSet) bool {
 	return set
 }
 
-// loadStoDepthMap reads '<addrHash hex> <depth>' lines into a map.
-func loadStoDepthMap(path string) (map[string]uint8, error) {
+// stoLadder is one contract's storage record shape: how deep its node records
+// go, and how much the DEEPEST level's epoch is shortened (shift). A hot
+// contract takes a large shift so that level lands on a per-block cadence,
+// which makes its record exact at any height — the reader then stops
+// recursing into changed children and stops folding there.
+type stoLadder struct {
+	depth int
+	shift uint8
+}
+
+// shiftAt is the shift that applies at level d: only the deepest recorded
+// level takes it, so shallower levels stay on the shared ladder (and in the
+// shared dirty bucket).
+func (l stoLadder) shiftAt(d int) uint8 {
+	if d == l.depth-1 {
+		return l.shift
+	}
+	return 0
+}
+
+// stoShiftsAt returns the shift buckets in use at level d. Only the deepest
+// recorded level of some contract can carry a shift, so shallower levels only
+// ever use bucket 0.
+func (b *builder) stoShiftsAt(d int) []uint8 {
+	if len(b.stoShifts) == 0 {
+		return []uint8{0}
+	}
+	return b.stoShifts
+}
+
+// maxStoShift bounds the per-contract shift (and so the number of dirty
+// buckets); 16 is past per-block for every schedule we use.
+const maxStoShift = 16
+
+// loadStoDepthMap reads '<addrHash hex> <depth> [shift]' lines into a map.
+func loadStoDepthMap(path string) (map[string]stoLadder, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	m := make(map[string]uint8, 1<<17)
+	m := make(map[string]stoLadder, 1<<17)
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1<<16), 1<<20)
 	for ln := 1; sc.Scan(); ln++ {
@@ -771,8 +822,8 @@ func loadStoDepthMap(path string) (map[string]uint8, error) {
 			continue
 		}
 		parts := strings.Fields(line)
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("line %d: want '<addrHash hex> <depth>'", ln)
+		if len(parts) != 2 && len(parts) != 3 {
+			return nil, fmt.Errorf("line %d: want '<addrHash hex> <depth> [shift]'", ln)
 		}
 		h, err := hex.DecodeString(parts[0])
 		if err != nil || len(h) != stoDomainLen {
@@ -782,20 +833,29 @@ func loadStoDepthMap(path string) (map[string]uint8, error) {
 		if err != nil || d < 0 || d > maxChgDepth+1 {
 			return nil, fmt.Errorf("line %d: bad depth", ln)
 		}
-		m[string(h)] = uint8(d)
+		sh := 0
+		if len(parts) == 3 {
+			if sh, err = strconv.Atoi(parts[2]); err != nil || sh < 0 || sh > maxStoShift {
+				return nil, fmt.Errorf("line %d: bad shift", ln)
+			}
+		}
+		m[string(h)] = stoLadder{depth: d, shift: uint8(sh)}
 	}
 	return m, sc.Err()
 }
 
 // stoDepthFor is the record depth in force for one contract: levels 0..depth-1
 // get node records and change rows, and the reader folds at depth.
-func (b *builder) stoDepthFor(domain []byte) int {
+func (b *builder) stoDepthFor(domain []byte) int { return b.stoLadderFor(domain).depth }
+
+// stoLadderFor is the record shape in force for one contract.
+func (b *builder) stoLadderFor(domain []byte) stoLadder {
 	if b.stoDepthMap != nil {
-		if d, ok := b.stoDepthMap[string(domain)]; ok {
-			return int(d)
+		if l, ok := b.stoDepthMap[string(domain)]; ok {
+			return l
 		}
 	}
-	return b.stoDepth
+	return stoLadder{depth: b.stoDepth}
 }
 
 // noteStoDepth records the depth in force for a contract from block n, once per
@@ -805,13 +865,13 @@ func (b *builder) noteStoDepth(domain []byte, n uint64) {
 	if b.stoDepthSeen == nil {
 		return // no map: the DatcMeta default applies to every contract
 	}
-	d := uint8(b.stoDepthFor(domain))
+	lad := b.stoLadderFor(domain)
 	prev, seen := b.stoDepthSeen[string(domain)]
-	if seen && prev == d {
+	if seen && prev == lad {
 		return
 	}
-	b.stoDepthSeen[string(domain)] = d
-	if !seen && d == uint8(b.stoDepth) {
+	b.stoDepthSeen[string(domain)] = lad
+	if !seen && lad.depth == b.stoDepth && lad.shift == 0 {
 		// The reader falls back to DatcMeta/stodepth for a contract with no
 		// row, so the default needs no row of its own — that is 28M rows and
 		// ~1 GB on mainnet. A later change away from it still writes one.
@@ -820,7 +880,7 @@ func (b *builder) noteStoDepth(domain []byte, n uint64) {
 	k := make([]byte, 0, stoDomainLen+blkLen)
 	k = append(k, domain...)
 	k = binary.BigEndian.AppendUint32(k, uint32(n))
-	b.stoDepthBuf = append(b.stoDepthBuf, kvPair{k: k, v: []byte{d}})
+	b.stoDepthBuf = append(b.stoDepthBuf, kvPair{k: k, v: []byte{uint8(lad.depth), lad.shift}})
 }
 
 // takeDense returns (and forgets) the collected dense form of a path as a
@@ -1250,10 +1310,17 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 						return fmt.Errorf("account epoch flush d=%d block %d: %w", d, n, err)
 					}
 				}
-				if (n+1)%b.sched.lenFor(true, d) == 0 {
-					if err := b.flushStoLevel(wtx, d, b.sched.epochOfFor(true, d, n)); err != nil {
-						tx.Rollback()
-						return fmt.Errorf("storage epoch flush d=%d block %d: %w", d, n, err)
+				// Each shift bucket of this level closes its epochs on its own
+				// cadence: a contract that records its deepest level per block
+				// sits in a bucket that flushes every block, without dragging
+				// every other contract's records to that frequency.
+				for _, sh := range b.stoShiftsAt(d) {
+					el := b.sched.stoLenFor(d, d+1, sh)
+					if (n+1)%el == 0 {
+						if err := b.flushStoLevel(wtx, d, sh, n/el); err != nil {
+							tx.Rollback()
+							return fmt.Errorf("storage epoch flush d=%d shift=%d block %d: %w", d, sh, n, err)
+						}
 					}
 				}
 			}
@@ -1300,9 +1367,12 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 					tx.Rollback()
 					return err
 				}
-				if err := b.flushStoLevel(wtx, d, b.sched.epochOfFor(true, d, hi-1)); err != nil {
-					tx.Rollback()
-					return err
+				for _, sh := range b.stoShiftsAt(d) {
+					el := b.sched.stoLenFor(d, d+1, sh)
+					if err := b.flushStoLevel(wtx, d, sh, (hi-1)/el); err != nil {
+						tx.Rollback()
+						return err
+					}
 				}
 			}
 			if r := b.sched.accRoot; r > 0 {

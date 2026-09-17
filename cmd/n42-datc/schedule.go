@@ -46,6 +46,30 @@ func (s epochSchedule) lenFor(storage bool, d int) uint64 {
 	return s.e[d]
 }
 
+// stoLenFor is the STORAGE epoch length of level d for one contract. Only the
+// deepest recorded level (d == depth-1) takes the contract's shift: a hot
+// contract records it per block, and its record is then the exact state at any
+// height, so the reader neither replays a window nor folds there.
+func (s epochSchedule) stoLenFor(d, depth int, shift uint8) uint64 {
+	l := s.lenFor(true, d)
+	if d == depth-1 && shift > 0 {
+		l >>= shift
+		if l == 0 {
+			l = 1
+		}
+	}
+	return l
+}
+
+// stoEpochOf is stoLenFor's matching epoch number.
+func (s epochSchedule) stoEpochOf(d, depth int, shift uint8, block uint64) uint64 {
+	l := s.stoLenFor(d, depth, shift)
+	if l == 0 {
+		return 0
+	}
+	return block / l
+}
+
 // epochOfFor is epochOf for a level that may be the account root.
 func (s epochSchedule) epochOfFor(storage bool, d int, block uint64) uint64 {
 	l := s.lenFor(storage, d)

@@ -45,8 +45,11 @@ const (
 	segTabNodeA   = 5 // account-trie node records (pathLen|path|epoch4 → FULL/DIFF/MIXED/tombstone)
 	segTabCount   = 6
 
-	leafSegMagic   = "DATCLS1\n"
-	leafFrameRaw   = 256 << 10 // target uncompressed bytes per frame
+	leafSegMagic = "DATCLS1\n"
+	leafFrameRaw = 64 << 10 // target uncompressed bytes per frame. A fold
+	// decompresses one frame, so this is the fixed cost of every fold the
+	// reader does; 256 KiB made a hot contract's proof spend ~0.6 ms per fold
+	// on decompression alone (2026-09-17 measurement).
 	leafSpillDir   = "leafspill"
 	leafSegDir     = "leafseg"
 	leafFrameCache = 192 // decompressed frames kept hot (~48 MB)
