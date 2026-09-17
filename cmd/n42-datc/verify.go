@@ -543,8 +543,8 @@ func (q *querier) branchSlotsAt(domain, path []byte, n uint64) (slots [16]*types
 	curEpoch := q.sched.epochOfFor(domain != nil, d, n)
 	eLen := q.sched.lenFor(domain != nil, d)
 	if domain != nil {
-		eLen = q.sched.stoLenFor(d, lad.depth, lad.shift)
-		curEpoch = q.sched.stoEpochOf(d, lad.depth, lad.shift, n)
+		eLen = q.sched.stoLenFor(d, lad)
+		curEpoch = q.sched.stoEpochOf(d, lad, n)
 	}
 	if recEpoch == curEpoch && (n+1)%eLen != 0 {
 		st2, recEpoch2, ok2, err2 := q.floorRecordBefore(domain, path, curEpoch)
@@ -640,8 +640,14 @@ func (q *querier) stoLadderAt(domain []byte, n uint64) stoLadder {
 			if serr == nil && k != nil && len(k) == stoDomainLen+blkLen && len(v) >= 1 &&
 				bytes.Equal(k[:stoDomainLen], domain) {
 				lad.depth = int(v[0])
-				if len(v) >= 2 {
+				switch len(v) {
+				case 2: // (depth, shift): the shift applied to the deepest level
 					lad.shift = v[1]
+					if lad.depth > 0 {
+						lad.level = uint8(lad.depth - 1)
+					}
+				case 3: // (depth, level, shift)
+					lad.level, lad.shift = v[1], v[2]
 				}
 			}
 			c.Close()
@@ -785,7 +791,7 @@ func (q *querier) floorRecord(domain, path []byte, n uint64) (nodeState, uint64,
 	d := len(path)
 	if domain != nil {
 		lad := q.stoLadderAt(domain, n)
-		return q.floorRecordBefore(domain, path, q.sched.stoEpochOf(d, lad.depth, lad.shift, n)+1)
+		return q.floorRecordBefore(domain, path, q.sched.stoEpochOf(d, lad, n)+1)
 	}
 	return q.floorRecordBefore(domain, path, q.sched.epochOfFor(false, d, n)+1)
 }

@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 )
@@ -16,11 +17,13 @@ import (
 //
 //   - depth from the contract's DISTINCT slot keys K, so a fold walks about
 //     --fold-width keys: d = ceil(log16(K / width));
-//   - a shift for the deepest recorded level from the contract's WRITE RATE
-//     w (rows / blocks): a proof re-folds every child that changed inside the
-//     window of the level above, about w * s[d-2] / 2 folds on average; when
-//     that exceeds --fold-target the deepest level goes per block, which makes
-//     its record exact at any height and the folds disappear.
+//   - which level, if any, to record per block. A proof recurses into every
+//     child that changed inside each level's window, so the folds it ends up
+//     doing multiply down the trie (16 x 16 x ... for a hot contract). A level
+//     recorded per block is exact at every height and stops that recursion
+//     off the proof path. Cutting costs min(16^level, writes/block) records per
+//     block, so the policy takes the SHALLOWEST level whose residual folds fit
+//     --fold-target; a contract that fits without any cut gets none.
 //
 // Both come from the history that is actually there, which is what "size by
 // the reads a proof costs" means in practice.
@@ -106,8 +109,28 @@ func runSegCount(args []string) {
 		}
 		return s
 	}
+	// residualFolds estimates the folds one proof does when level cut (-1 =
+	// none) is recorded per block: below the cut only the proof path
+	// continues, and at each level its node recurses into the children that
+	// changed inside that level's window — about w*s[d]/2 writes spread over
+	// 16^d nodes, capped at 16 per node.
+	residualFolds := func(w float64, d, cut int) float64 {
+		v := 1.0
+		for lv := cut + 1; lv < d; lv++ {
+			c := w * float64(sto.e[lv]) / 2 / math.Pow(16, float64(lv))
+			if c > 16 {
+				c = 16
+			}
+			if c < 1 {
+				c = 1
+			}
+			v *= c
+		}
+		return v
+	}
 	var depthHist [8]uint64
-	var shifted, shiftedRows uint64
+	var cutHist [8]uint64
+	var shifted, extraPerBlock float64
 	var mapW *bufio.Writer
 	if *mapPath != "" {
 		f, err := os.Create(*mapPath)
@@ -120,9 +143,10 @@ func runSegCount(args []string) {
 	}
 	type heavy struct {
 		ent
-		d     int
-		shift uint8
-		folds float64
+		d, cut int
+		shift  uint8
+		folds0 float64
+		folds  float64
 	}
 	var hv []heavy
 	for _, e := range all {
@@ -131,21 +155,35 @@ func runSegCount(args []string) {
 			depthHist[d]++
 		}
 		w := float64(e.rows) / float64(*blocks)
-		var shift uint8
-		var folds float64
-		if d >= 2 {
-			folds = w * float64(sto.e[d-2]) / 2
-			if folds > *foldTarget {
-				shift = perBlockShift(d - 1)
-				shifted++
-				shiftedRows += e.rows
+		cut, shift := -1, uint8(0)
+		folds0 := residualFolds(w, d, -1)
+		folds := folds0
+		if d >= 1 && folds0 > *foldTarget {
+			for lv := 0; lv < d; lv++ {
+				if f := residualFolds(w, d, lv); f <= *foldTarget {
+					cut, shift, folds = lv, perBlockShift(lv), f
+					break
+				}
+			}
+			if cut < 0 { // nothing fits: cut as deep as possible
+				cut, shift, folds = d-1, perBlockShift(d-1), residualFolds(w, d, d-1)
+			}
+			shifted++
+			cost := math.Min(math.Pow(16, float64(cut)), w)
+			extraPerBlock += cost
+			if cut < len(cutHist) {
+				cutHist[cut]++
 			}
 		}
 		if mapW != nil && (d > 0 || shift > 0) {
-			fmt.Fprintf(mapW, "%x %d %d\n", e.dom, d, shift)
+			if shift > 0 {
+				fmt.Fprintf(mapW, "%x %d %d %d\n", e.dom, d, cut, shift)
+			} else {
+				fmt.Fprintf(mapW, "%x %d\n", e.dom, d)
+			}
 		}
 		if e.keys >= 100_000 {
-			hv = append(hv, heavy{e, d, shift, folds})
+			hv = append(hv, heavy{e, d, cut, shift, folds0, folds})
 		}
 	}
 	fmt.Printf("depth policy (fold width %d): ", *width)
@@ -154,11 +192,17 @@ func runSegCount(args []string) {
 			fmt.Printf("d%d=%d ", d, n)
 		}
 	}
-	fmt.Printf("\nper-block deepest level (fold target %.0f): %d contracts, %d history rows between them (≈ extra records at that level)\n", *foldTarget, shifted, shiftedRows)
-	sort.Slice(hv, func(i, j int) bool { return hv[i].folds > hv[j].folds })
-	fmt.Printf("top %d contracts by predicted folds per proof (addrHash, keys, rows, writes/block, depth, shift, folds):\n", *top)
+	fmt.Printf("\nper-block cuts (fold target %.0f): %.0f contracts; by level: ", *foldTarget, shifted)
+	for lv, n := range cutHist {
+		if n > 0 {
+			fmt.Printf("L%d=%d ", lv, n)
+		}
+	}
+	fmt.Printf("\n  extra records ≈ %.1f per block ≈ %.2fe9 over %d blocks\n", extraPerBlock, extraPerBlock*float64(*blocks)/1e9, *blocks)
+	sort.Slice(hv, func(i, j int) bool { return hv[i].folds0 > hv[j].folds0 })
+	fmt.Printf("top %d contracts by predicted folds per proof (addrHash, keys, rows, writes/block, depth, cut level, shift, folds before → after):\n", *top)
 	for i := 0; i < len(hv) && i < *top; i++ {
 		h := hv[i]
-		fmt.Printf("  %x keys=%d rows=%d w=%.2f d=%d shift=%d folds≈%.0f\n", h.dom, h.keys, h.rows, float64(h.rows)/float64(*blocks), h.d, h.shift, h.folds)
+		fmt.Printf("  %x keys=%d rows=%d w=%.2f d=%d cut=%d shift=%d folds≈%.0f→%.0f\n", h.dom, h.keys, h.rows, float64(h.rows)/float64(*blocks), h.d, h.cut, h.shift, h.folds0, h.folds)
 	}
 }

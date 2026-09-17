@@ -240,10 +240,10 @@ func (b *builder) recordChangeStorage(domain []byte, keyNibbles []byte, n uint64
 			v := bit
 			dirty[string(pk)] = &v
 		}
-		if b.sched.stoLenFor(d, lad.depth, lad.shift) == 1 {
+		if b.sched.stoLenFor(d, lad) == 1 {
 			continue // per-block level: the floor record is exact, no window
 		}
-		epoch := b.sched.stoEpochOf(d, lad.depth, lad.shift, n)
+		epoch := b.sched.stoEpochOf(d, lad, n)
 		// The aggregation key needs its OWN buffer: writing the 4 epoch bytes
 		// into kb would land on kb[1+len(domain)+d], which is where level d+1
 		// reads its path nibble — every deeper level then keyed its dirty path

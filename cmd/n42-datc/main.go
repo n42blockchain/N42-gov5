@@ -783,6 +783,7 @@ func stoDepthSet(fs *flag.FlagSet) bool {
 // recursing into changed children and stops folding there.
 type stoLadder struct {
 	depth int
+	level uint8 // the level the shift applies to
 	shift uint8
 }
 
@@ -790,7 +791,7 @@ type stoLadder struct {
 // level takes it, so shallower levels stay on the shared ladder (and in the
 // shared dirty bucket).
 func (l stoLadder) shiftAt(d int) uint8 {
-	if d == l.depth-1 {
+	if l.shift != 0 && d == int(l.level) {
 		return l.shift
 	}
 	return 0
@@ -810,7 +811,8 @@ func (b *builder) stoShiftsAt(d int) []uint8 {
 // buckets); 16 is past per-block for every schedule we use.
 const maxStoShift = 16
 
-// loadStoDepthMap reads '<addrHash hex> <depth> [shift]' lines into a map.
+// loadStoDepthMap reads '<addrHash hex> <depth> [level shift]' lines into a
+// map (a three-column line means the shift applies to the deepest level).
 func loadStoDepthMap(path string) (map[string]stoLadder, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -826,8 +828,8 @@ func loadStoDepthMap(path string) (map[string]stoLadder, error) {
 			continue
 		}
 		parts := strings.Fields(line)
-		if len(parts) != 2 && len(parts) != 3 {
-			return nil, fmt.Errorf("line %d: want '<addrHash hex> <depth> [shift]'", ln)
+		if len(parts) < 2 || len(parts) > 4 {
+			return nil, fmt.Errorf("line %d: want '<addrHash hex> <depth> [level shift]'", ln)
 		}
 		h, err := hex.DecodeString(parts[0])
 		if err != nil || len(h) != stoDomainLen {
@@ -837,13 +839,24 @@ func loadStoDepthMap(path string) (map[string]stoLadder, error) {
 		if err != nil || d < 0 || d > maxChgDepth+1 {
 			return nil, fmt.Errorf("line %d: bad depth", ln)
 		}
-		sh := 0
-		if len(parts) == 3 {
+		lv, sh := d-1, 0
+		switch len(parts) {
+		case 3:
 			if sh, err = strconv.Atoi(parts[2]); err != nil || sh < 0 || sh > maxStoShift {
 				return nil, fmt.Errorf("line %d: bad shift", ln)
 			}
+		case 4:
+			if lv, err = strconv.Atoi(parts[2]); err != nil || lv < 0 || lv >= d {
+				return nil, fmt.Errorf("line %d: bad level", ln)
+			}
+			if sh, err = strconv.Atoi(parts[3]); err != nil || sh < 0 || sh > maxStoShift {
+				return nil, fmt.Errorf("line %d: bad shift", ln)
+			}
 		}
-		m[string(h)] = stoLadder{depth: d, shift: uint8(sh)}
+		if lv < 0 {
+			lv = 0
+		}
+		m[string(h)] = stoLadder{depth: d, level: uint8(lv), shift: uint8(sh)}
 	}
 	return m, sc.Err()
 }
@@ -884,7 +897,7 @@ func (b *builder) noteStoDepth(domain []byte, n uint64) {
 	k := make([]byte, 0, stoDomainLen+blkLen)
 	k = append(k, domain...)
 	k = binary.BigEndian.AppendUint32(k, uint32(n))
-	b.stoDepthBuf = append(b.stoDepthBuf, kvPair{k: k, v: []byte{uint8(lad.depth), lad.shift}})
+	b.stoDepthBuf = append(b.stoDepthBuf, kvPair{k: k, v: []byte{uint8(lad.depth), lad.level, lad.shift}})
 }
 
 // takeDense returns (and forgets) the collected dense form of a path as a
@@ -1319,7 +1332,7 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 				// sits in a bucket that flushes every block, without dragging
 				// every other contract's records to that frequency.
 				for _, sh := range b.stoShiftsAt(d) {
-					el := b.sched.stoLenFor(d, d+1, sh)
+					el := b.sched.stoLenFor(d, stoLadder{depth: d + 1, level: uint8(d), shift: sh})
 					if (n+1)%el == 0 {
 						if err := b.flushStoLevel(wtx, d, sh, n/el); err != nil {
 							tx.Rollback()
@@ -1372,7 +1385,7 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 					return err
 				}
 				for _, sh := range b.stoShiftsAt(d) {
-					el := b.sched.stoLenFor(d, d+1, sh)
+					el := b.sched.stoLenFor(d, stoLadder{depth: d + 1, level: uint8(d), shift: sh})
 					if err := b.flushStoLevel(wtx, d, sh, (hi-1)/el); err != nil {
 						tx.Rollback()
 						return err
