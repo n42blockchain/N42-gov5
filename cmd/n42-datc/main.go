@@ -1420,9 +1420,9 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		var m runtime.MemStats
 		runtime.ReadMemStats(&m)
 		bps := float64(blocksDone) / time.Since(t0).Seconds()
-		fmt.Printf("  block %d / %d  %.0f blk/s  heap=%dMB  leafA=%d leafS=%d chg=%d nodes=%d  lfCache=%d(rb=%d)\n",
+		fmt.Printf("  block %d / %d  %.0f blk/s  heap=%dMB  leafA=%d leafS=%d chg=%d nodes=%d  lfCache=%d(rb=%d)  dense=%d/stale%d\n",
 			hi, end, bps, m.HeapAlloc>>20, b.leafAPuts, b.leafSPuts, b.chgPuts, b.nodePuts,
-			len(b.stoLastFull.m), b.stoLastFull.missRB)
+			len(b.stoLastFull.m), b.stoLastFull.missRB, b.statDenseUpgraded, b.statDenseStale)
 		// Graceful stop point: the batch is committed and the spill is cut at a
 		// frame boundary, so this is the safe place to honor Ctrl+C. Skip
 		// finalize (run is incomplete); spill is retained for resume.
@@ -1434,6 +1434,13 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		}
 	}
 	fmt.Printf("DATC build done: %d blocks in %s\n", blocksDone, time.Since(t0).Round(time.Second))
+	// The account side is the only one that records the loader's dense
+	// snapshot, so these two numbers are the audit trail for it: how often a
+	// snapshot completed a record the TrieOf row could not, and how often one
+	// was too old to trust and the node was written MIXED instead. Both being
+	// zero means the dense path never ran at all.
+	fmt.Printf("  account dense snapshots: %d recorded, %d too old and downgraded to MIXED\n",
+		b.statDenseUpgraded, b.statDenseStale)
 	if b.spill != nil {
 		fmt.Printf("[leafseg] finalizing %d + %d spilled leaf rows …\n", b.spill.rows[leafTableA], b.spill.rows[leafTableS])
 		tFin := time.Now()
