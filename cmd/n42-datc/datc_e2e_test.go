@@ -623,15 +623,7 @@ func newTestBuilder(t *testing.T, db kv.RwDB, out string, sc *scenario, o e2eOpt
 		b.stoDepth = 2
 	}
 	b.concurrentRoot = o.concurrent
-	for d := 0; d <= maxChgDepth; d++ {
-		size := 1
-		for i := 0; i < d; i++ {
-			size *= 16
-		}
-		b.accDirty[d] = make([]uint16, size)
-		b.chgAccAgg[d] = make([]chgSlot, size)
-		b.stoDirty[d] = make(map[string]*uint16, 1<<10)
-	}
+	b.initFlatSlots()
 	b.fwdMode = true
 	b.windowing = o.window
 	b.resumed = start > 0
@@ -1175,13 +1167,49 @@ func TestE2E_SeparateStorageSchedule(t *testing.T) {
 	})
 }
 
-// Known failure, kept visible: with accDepth 3 and the e0is4 ladder (level 1
-// epoch 16, level 2 epoch 64) the reconstructed account root diverges from
-// the reference from height 208 on, on unpatched main as well. Every other
-// shape tried passes (equal epochs, growing epochs at deeper levels, batch
-// longer than the epoch, accDepth 4 and 5). Not on the mainnet rebuild's
-// path; tracked in docs/ethel/datc-status-2026-09-15.md.
-func TestE2E_KnownAcc3E0is4Divergence(t *testing.T) {
-	t.Skip("known divergence at height 208 with accDepth 3 + schedE0is4; see the status doc")
-	runE2E(t, e2eOpts{sched: schedE0is4, batch: 50, stoCache: 64, accDepth: 3, stoDepth: 2})
+// A node record must never be built from a dense snapshot older than the
+// node's last change.
+//
+// The loader reports a branch to the dense hook while it walks it, and once
+// erigon drops that node's TrieOf row it can stop reporting for the rest of
+// the epoch while the subtree keeps changing. Recording the last snapshot as
+// the epoch-end state writes child hashes from the wrong height under a
+// correct changed-mask — a record nothing downstream can tell apart from a
+// good one.
+//
+// First seen as "accDepth 3 + the e0is4 ladder diverges from height 208".
+// That framing was too narrow: accDepth 4 and 5 fail the same way, and
+// --acc-root-epoch 1 only hides it from the ROOT query (proofs still walk the
+// depth-1..4 records). What decides it is a LONG epoch at a level whose nodes
+// are small enough for erigon to drop their rows — so the shapes below also
+// cover v3's ladder with its depth-3/4 epochs lengthened, next to the v2
+// ladder (depth-3 epoch of 1 block) that could never go stale.
+func TestE2E_StaleDenseSnapshot(t *testing.T) {
+	// The v3 rebuild ladder 1024,16384,1024,4096,4096,4194304 scaled by 1/256
+	// to fit the 360-block scenario.
+	v3 := [maxChgDepth + 1]uint64{4, 64, 4, 16, 16, 16384}
+	v3sto := [maxChgDepth + 1]uint64{4, 4, 4, 4, 16, 16}
+	for _, tc := range []struct {
+		name     string
+		e        [maxChgDepth + 1]uint64
+		sto      [maxChgDepth + 1]uint64
+		accDepth int
+		accRoot  uint64
+	}{
+		{"e0is4/accDepth3", schedE0is4.e, [maxChgDepth + 1]uint64{}, 3, 0},
+		{"e0is4/accDepth5", schedE0is4.e, [maxChgDepth + 1]uint64{}, 5, 0},
+		{"e0is4/accDepth5/accRoot1", schedE0is4.e, [maxChgDepth + 1]uint64{}, 5, 1},
+		{"v3scaled", v3, v3sto, 5, 1},
+		{"v3scaled/deep-long", [maxChgDepth + 1]uint64{4, 64, 4, 64, 64, 16384}, v3sto, 5, 1},
+		{"v3scaled/d2-long", [maxChgDepth + 1]uint64{4, 64, 64, 64, 64, 16384}, v3sto, 5, 1},
+		{"v2scaled/d3-per-block", [maxChgDepth + 1]uint64{4, 64, 4, 1, 16384, 16384}, v3sto, 5, 1},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			runE2E(t, e2eOpts{
+				sched: epochSchedule{e: tc.e}, stoSched: tc.sto,
+				batch: 50, stoCache: 64, accDepth: tc.accDepth, stoDepth: 2, accRoot: tc.accRoot,
+			})
+		})
+	}
 }

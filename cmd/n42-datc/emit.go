@@ -179,6 +179,7 @@ func (b *builder) recordChange(storage bool, domain []byte, keyNibbles []byte, n
 		} else if cur&bit == 0 {
 			b.accDirty[d][idx] = cur | bit
 		}
+		b.accLastChg[d][idx] = uint32(n)
 		if l := b.sched.lenFor(false, d); l > 1 {
 			epoch := uint32(n / l)
 			slot := &b.chgAccAgg[d][idx]
@@ -346,7 +347,7 @@ func (b *builder) flushAccLevel(tx kv.RwTx, d int, epoch uint64) error {
 				path[i] = byte(v & 0xf)
 				v >>= 4
 			}
-			if err := b.flushAccPath(tx, path, changed, epoch); err != nil {
+			if err := b.flushAccPath(tx, path, changed, epoch, uint64(b.accLastChg[d][idx])); err != nil {
 				return err
 			}
 		}
@@ -365,7 +366,7 @@ func (b *builder) flushAccRoot(tx kv.RwTx, epoch uint64) error {
 	if changed == 0 {
 		return nil
 	}
-	return b.flushAccPath(tx, []byte{}, changed, epoch)
+	return b.flushAccPath(tx, []byte{}, changed, epoch, uint64(b.accLastChg[0][0]))
 }
 
 // nodeUsable reports whether a TrieOf* node can ever be assembled by the
@@ -381,16 +382,31 @@ func nodeUsable(node []byte) bool {
 }
 
 // flushAccPath emits one account-trie node record (FULL/DIFF/MIXED/tombstone).
-func (b *builder) flushAccPath(tx kv.RwTx, path []byte, changed uint16, epoch uint64) error {
+// lastChg is the last block at which anything under the node changed.
+func (b *builder) flushAccPath(tx kv.RwTx, path []byte, changed uint16, epoch, lastChg uint64) error {
 	node, err := tx.GetOne(modules.TrieOfAccounts, path)
 	if err != nil {
 		return err
 	}
 	// Prefer the loader's dense form: complete child hashes even when the
 	// TrieOf row is mixed (leaf/extension children) or absent (the root).
-	if dn := b.takeDense(false, string(path)); dn != nil && (len(node) == 0 || !nodeUsable(node)) {
-		node = dn
-		b.statDenseUpgraded++
+	//
+	// Only when it is CURRENT, though. The loader reports a branch while it
+	// walks it, and once erigon drops the node's TrieOf row it can stop
+	// reporting for the rest of the epoch while the subtree keeps changing.
+	// Recording that snapshot as the epoch-end state writes child hashes from
+	// the wrong height under a correct changed-mask, and the reader has no way
+	// to tell (2026-09-16: `--acc-depth 3 --sched 4,16,64,...` diverged from
+	// height 208, and lengthening v3's depth-3/4 epochs reproduces it).
+	staleDense := false
+	if dn, dnBlk := b.takeDense(false, string(path)); dn != nil && (len(node) == 0 || !nodeUsable(node)) {
+		if dnBlk >= lastChg {
+			node = dn
+			b.statDenseUpgraded++
+		} else {
+			staleDense = true
+			b.statDenseStale++
+		}
 	}
 	k := make([]byte, 0, 1+len(path)+4)
 	k = append(k, byte(len(path)))
@@ -399,6 +415,16 @@ func (b *builder) flushAccPath(tx kv.RwTx, path []byte, changed uint16, epoch ui
 	st := b.accLastFull[string(path)]
 	var v []byte
 	switch {
+	case staleDense:
+		// No trustworthy epoch-end bytes: MIXED tells the reader to fold this
+		// node from the leaf history, which is always right (just slower than
+		// a record). Never a tombstone — the node is live, only unreported.
+		if st.mixed && !b.resumed {
+			b.statMixedElided++
+			return nil
+		}
+		v = []byte{nodeRecMixed}
+		b.accLastFull[string(path)] = nodeRecState{mixed: true}
 	case len(node) == 0: // tombstone
 		if !st.exists && !b.resumed {
 			return nil // never had a live record: elide

@@ -34,7 +34,8 @@ func TestDenseHookKeepsOnlyRecordedLevels(t *testing.T) {
 		{true, key([]byte{5}), true},
 		{true, key([]byte{5, 6}), false},
 	} {
-		if got := b.takeDense(tc.storage, tc.key) != nil; got != tc.kept {
+		dn, _ := b.takeDense(tc.storage, tc.key)
+		if got := dn != nil; got != tc.kept {
 			t.Errorf("storage=%v path len %d: kept=%v, want %v", tc.storage, len(tc.key), got, tc.kept)
 		}
 	}

@@ -370,15 +370,7 @@ func main() {
 		b.stoDepthSeen = make(map[string]uint8, len(m))
 		fmt.Printf("  storage record depth: per-contract map %s (%d contracts), fallback %d\n", *stoDepthMap, len(m), b.stoDepth)
 	}
-	for d := 0; d <= maxChgDepth; d++ {
-		size := 1
-		for i := 0; i < d; i++ {
-			size *= 16
-		}
-		b.accDirty[d] = make([]uint16, size)
-		b.chgAccAgg[d] = make([]chgSlot, size)
-		b.stoDirty[d] = make(map[string]*uint16, 1<<10)
-	}
+	b.initFlatSlots()
 	if hdrs != nil {
 		b.rootOracle = func(n uint64) (types.Hash, error) {
 			hdr, err := hdrs.ReadHeader(n)
@@ -488,6 +480,13 @@ type builder struct {
 	accDirty   [maxChgDepth + 1][]uint16 // flat: idx = first d nibbles
 	accTouched [maxChgDepth + 1][]uint32
 	stoDirty   [maxChgDepth + 1]map[string]*uint16
+	// accLastChg[d][idx] is the last block at which anything under that node
+	// changed. An epoch-end record may only be built from a dense snapshot
+	// collected at or after it — see flushAccPath.
+	accLastChg [maxChgDepth + 1][]uint32
+	// curBlock is the block being built, for stamping dense hook entries. The
+	// hook runs on the concurrent-root shard goroutines.
+	curBlock atomic.Uint64
 
 	// Per-path last-record bookkeeping for the diff superblock rule: a FULL
 	// node record is written when no prior record exists (or it was a
@@ -588,6 +587,7 @@ type builder struct {
 	statMixedBytesSaved uint64 // node bytes replaced by 1-byte MIXED markers
 	statMixedElided     uint64 // MIXED epochs elided (floor already MIXED)
 	statDenseUpgraded   uint64 // mixed TrieOf rows recorded in full from the dense hook
+	statDenseStale      uint64 // dense snapshots older than the node's last change, recorded MIXED instead
 
 	// buildStart: first block of this output (DatcMeta/start); startWritten
 	// records that this run has already checked/written that key.
@@ -658,9 +658,14 @@ func stoHookShard[T ~string | ~[]byte](key T) int {
 	return int(key[0] >> 4)
 }
 
-// denseEntry is one collected branch: masks + 33-byte slot per present child.
+// denseEntry is one collected branch: masks + 33-byte slot per present child,
+// plus the block it was collected at. The loader does not report a branch on
+// every block it changes (once its TrieOf* row is gone it can go quiet for the
+// rest of an epoch), so an entry is only the epoch-end state when nothing
+// under the node changed after blk.
 type denseEntry struct {
 	hasState, hasTree uint16
+	blk               uint64
 	slots             []byte
 }
 
@@ -684,7 +689,7 @@ func (b *builder) onDenseNode(accWithInc, keyHex []byte, hasState, hasTree uint1
 	if len(keyHex) > b.maxDenseDepth(accWithInc != nil) {
 		return
 	}
-	e := denseEntry{hasState: hasState, hasTree: hasTree, slots: append([]byte{}, slots...)}
+	e := denseEntry{hasState: hasState, hasTree: hasTree, blk: b.curBlock.Load(), slots: append([]byte{}, slots...)}
 	if accWithInc == nil {
 		s := &b.hooks[accHookShard(keyHex)]
 		s.mu.Lock()
@@ -719,6 +724,23 @@ func (b *builder) maxDenseDepth(storage bool) int {
 		d = maxChgDepth
 	}
 	return d
+}
+
+// initFlatSlots allocates the per-level flat arrays (idx = the first d
+// nibbles of the path). The CLI builder and the test builder both go through
+// here, so a new per-level array cannot be added to one and forgotten in the
+// other.
+func (b *builder) initFlatSlots() {
+	for d := 0; d <= maxChgDepth; d++ {
+		size := 1
+		for i := 0; i < d; i++ {
+			size *= 16
+		}
+		b.accDirty[d] = make([]uint16, size)
+		b.accLastChg[d] = make([]uint32, size)
+		b.chgAccAgg[d] = make([]chgSlot, size)
+		b.stoDirty[d] = make(map[string]*uint16, 1<<10)
+	}
 }
 
 // stoDepthSet reports whether --sto-depth was given explicitly, so a depth map
@@ -803,8 +825,10 @@ func (b *builder) noteStoDepth(domain []byte, n uint64) {
 
 // takeDense returns (and forgets) the collected dense form of a path as a
 // synthetic MarshalTrieNode with every present child hashed (hasHash ==
-// hasState), or nil when none was collected or a child is inline.
-func (b *builder) takeDense(storage bool, key string) []byte {
+// hasState), or nil when none was collected or a child is inline. blk is the
+// block the entry was collected at; the caller must check it against the
+// node's last change before recording the bytes as an epoch-end state.
+func (b *builder) takeDense(storage bool, key string) (node []byte, blk uint64) {
 	s := &b.hooks[accHookShard(key)]
 	if storage {
 		s = &b.hooks[stoHookShard(key)]
@@ -820,7 +844,7 @@ func (b *builder) takeDense(storage bool, key string) []byte {
 	}
 	s.mu.Unlock()
 	if !ok {
-		return nil
+		return nil, 0
 	}
 	const stride = 33
 	digits := 0
@@ -830,17 +854,17 @@ func (b *builder) takeDense(storage bool, key string) []byte {
 		}
 	}
 	if len(e.slots) != digits*stride {
-		return nil
+		return nil, 0
 	}
 	hashes := make([]byte, 0, digits*32)
 	for i := 0; i < digits; i++ {
 		if e.slots[i*stride] != 0xa0 {
-			return nil // inline child: not representable as a hash list
+			return nil, 0 // inline child: not representable as a hash list
 		}
 		hashes = append(hashes, e.slots[i*stride+1:i*stride+stride]...)
 	}
 	buf := make([]byte, 6+len(hashes))
-	return trie.MarshalTrieNode(e.hasState, e.hasTree, e.hasState, hashes, nil, buf)
+	return trie.MarshalTrieNode(e.hasState, e.hasTree, e.hasState, hashes, nil, buf), e.blk
 }
 
 // onStorageRoot is the TrieRootComputer storage-root hook. (nil, nil) is the
@@ -1152,6 +1176,10 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 		trc.SetSortedWrites(true)
 
 		for n := lo; n < hi; n++ {
+			// The dense hook stamps its entries with this, and the epoch flush
+			// compares the stamp against the node's last change to tell a
+			// current snapshot from a stale one.
+			b.curBlock.Store(n)
 			var dec *decodedBlock
 			if pipe != nil {
 				if dec, err = pipe.Next(n); err != nil {
