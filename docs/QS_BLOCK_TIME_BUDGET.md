@@ -4537,6 +4537,24 @@ over 35zzp. Falsified by any "deferred check FAILED", "deferred
 execution: header ... carries", BAD BLOCK, a lost commit (a follower's
 head standing while consensus advances), or seal -> QC above 1.0 s.
 
+**35zzq attempt 1 (2026-09-16 20:29-20:43 EDT): aborted, and it falsifies
+nothing about deferred execution -- the mechanism never ran.** The gate was
+live on all seven nodes and the check passed 2779 times, but the warm-up
+windows read 121.6k at 1.333 s and 51.6k at 3.158 s: the same block time as
+35zzp, which has no deferred execution. Cause: the chain spec sets
+`twoPhaseVoteGate`, and the Round-2 commit vote was held until the node
+imported the block itself, so the cycle stayed import-bound. The round then
+aborted on a false includability failure -- a follower one block behind
+imported 13654279 through the catch-up range and the check read that block's
+own post-state ("sender nonce 0, state expects 4096").
+
+Both are fixed on main: the Round-2 gate accepts the deferred attestation
+(checked + parent imported), a held vote fires when either lands, and the
+check skips a block this node has applied and requires the tree to be at the
+parent's post-state (the root the header carries) before it reads senders.
+**35zzq re-runs on n42-r78 = r75 plus those two fixes**, keeping deferred
+execution as its one variable; predictions 72-75 stand.
+
 ## 6bl. Round 35zzr: the deferred fold outside the write transaction -- registered before the round ran (2026-09-15)
 
 Runs only if 35zzq passes (no deferred-check failure, no BAD BLOCK); its
