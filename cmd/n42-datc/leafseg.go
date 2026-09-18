@@ -30,8 +30,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
+	"sync"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -195,8 +198,10 @@ func (w *leafSpillWriter) close() error {
 }
 
 // finalizeLeafSegments turns the spill files into sorted static segments and
-// removes the spill dir. One bucket is processed at a time; a bucket larger
-// than finalizeRunBytes is sorted externally (see finalizeBucket).
+// removes the spill dir. Buckets are independent (one spill → one segment), so
+// finalizeWorkers of them run at a time, each worker with its own zstd codec
+// state; a bucket larger than finalizeRunBytes is sorted externally (see
+// finalizeBucket). Output is identical whatever the worker count.
 func finalizeLeafSegments(outDir string) error {
 	spill := filepath.Join(outDir, leafSpillDir)
 	segd := filepath.Join(outDir, leafSegDir)
@@ -207,31 +212,82 @@ func finalizeLeafSegments(outDir string) error {
 	if err != nil {
 		return err
 	}
-	zr, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
-	if err != nil {
-		return err
+	workers := finalizeWorkers
+	if workers > len(names) {
+		workers = len(names)
 	}
-	defer zr.Close()
-	enc, err := zstd.NewWriter(nil,
-		zstd.WithEncoderLevel(zstd.SpeedBetterCompression),
-		zstd.WithEncoderConcurrency(2))
-	if err != nil {
-		return err
+	if workers < 1 {
+		workers = 1
 	}
-	defer enc.Close()
 
-	totalCorrupt := 0
+	var (
+		wg           sync.WaitGroup
+		mu           sync.Mutex
+		firstErr     error
+		totalCorrupt int
+		done         int
+	)
+	start := time.Now()
+	jobs := make(chan string)
+	for w := 0; w < workers; w++ {
+		zr, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
+		if err != nil {
+			close(jobs)
+			wg.Wait()
+			return err
+		}
+		enc, err := zstd.NewWriter(nil,
+			zstd.WithEncoderLevel(zstd.SpeedBetterCompression),
+			zstd.WithEncoderConcurrency(2))
+		if err != nil {
+			zr.Close()
+			close(jobs)
+			wg.Wait()
+			return err
+		}
+		wg.Add(1)
+		go func(zr *zstd.Decoder, enc *zstd.Encoder) {
+			defer wg.Done()
+			defer zr.Close()
+			defer enc.Close()
+			for src := range jobs {
+				base := filepath.Base(src)
+				dst := filepath.Join(segd, base[:len(base)-len(".zspill")]+".seg")
+				cf := 0
+				err := finalizeBucket(zr, enc, src, dst, &cf)
+				if err == nil && cf == 0 {
+					_ = os.Remove(src) // clean bucket → drop its spill
+				}
+				mu.Lock()
+				if err != nil {
+					if firstErr == nil {
+						firstErr = fmt.Errorf("bucket %s: %w", base, err)
+					}
+				} else {
+					totalCorrupt += cf
+				}
+				done++
+				if done%200 == 0 || done == len(names) {
+					fmt.Printf("[leafseg] finalize %d/%d buckets (%d workers, %s)\n",
+						done, len(names), workers, time.Since(start).Truncate(time.Second))
+				}
+				mu.Unlock()
+			}
+		}(zr, enc)
+	}
 	for _, src := range names {
-		base := filepath.Base(src)
-		dst := filepath.Join(segd, base[:len(base)-len(".zspill")]+".seg")
-		cf := 0
-		if err := finalizeBucket(zr, enc, src, dst, &cf); err != nil {
-			return fmt.Errorf("bucket %s: %w", base, err)
+		mu.Lock()
+		failed := firstErr != nil
+		mu.Unlock()
+		if failed {
+			break // let the in-flight buckets finish, then report
 		}
-		totalCorrupt += cf
-		if cf == 0 {
-			_ = os.Remove(src) // clean bucket → drop its spill
-		}
+		jobs <- src
+	}
+	close(jobs)
+	wg.Wait()
+	if firstErr != nil {
+		return firstErr
 	}
 	if totalCorrupt > 0 {
 		// SAFETY (feedback-human-time-is-precious, 2026-06-13): corrupt/truncated
@@ -248,6 +304,25 @@ func finalizeLeafSegments(outDir string) error {
 	}
 	return os.RemoveAll(spill)
 }
+
+// finalizeWorkers is how many buckets finalize at once. Each worker holds up
+// to finalizeRunBytes of decoded rows plus its codec buffers (~1.3 GB at the
+// default run size), so the peak is about workers x 1.3 GB on top of the
+// caller's heap — the build finalizes inside its own process with the builder
+// heap still live. DATC_FINALIZE_WORKERS overrides it (0/unset = automatic).
+var finalizeWorkers = func() int {
+	if v, err := strconv.Atoi(os.Getenv("DATC_FINALIZE_WORKERS")); err == nil && v > 0 {
+		return v
+	}
+	n := runtime.NumCPU() / 2
+	if n < 1 {
+		n = 1
+	}
+	if n > 8 {
+		n = 8
+	}
+	return n
+}()
 
 // finalizeRunBytes bounds the decoded rows one bucket finalize keeps in memory.
 // A bucket that fits in one run is sorted in memory; a larger one (the storage
