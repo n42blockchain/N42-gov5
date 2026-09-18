@@ -69,6 +69,9 @@ C:\N42\N42-gov5\scripts\datc\run-genesis-windows-v3.ps1
 setsid nohup /data/blockchain/datc-out/run-rebuild-upper.sh > /data/blockchain/datc-out/datc-v3-hi.build.log 2>&1 < /dev/null &
 ```
 
+脚本**不传 `--start`**：起点从 `DatcMeta/progress` 自动加载（`prep-state` 后就是 17,900,000；停机后是最后提交的批次）。
+停机后若再传 `--start 17900000`，会对已前进的状态重放第一块，金标校验立即 `ROOT MISMATCH` 中止（2026-09-18 发生过一次，数据未损）。
+
 ## 3. 中途检查点：上段过 20M 就先 bench
 
 2M 原型只验证了机制，**收益要到 DeFi 密集区才出现**。上段跑过 20,000,000 后立刻跑一次：
