@@ -157,6 +157,7 @@ func runBench(args []string) {
 	seed := fs.Int64("seed", 1, "sampling seed")
 	maxSlots := fs.Int("slots", 2, "max storage slots per query (from the touching block's storcs)")
 	mode := fs.String("mode", "mixed", "touch | random | mixed (see file header)")
+	from := fs.Uint64("from", 0, "lowest block to sample touches from (a partial archive built from a state base at block B proves heights >= B only)")
 	parallel := fs.Int("parallel", 1, "independent queriers running concurrently")
 	jsonOut := fs.String("json", "", "write per-query results to this JSON file")
 	mapGB := fs.Int("map.gb", 512, "MDBX map size GB")
@@ -202,8 +203,11 @@ func runBench(args []string) {
 	// Sample generation from the changesets.
 	rng := rand.New(rand.NewSource(*seed))
 	var set []benchSample
+	if *from >= head {
+		die("--from %d is not below head %d", *from, head)
+	}
 	for tries := 0; len(set) < *samples && tries < *samples*20; tries++ {
-		n := rng.Uint64() % head
+		n := *from + rng.Uint64()%(head-*from)
 		blob, err := acctTbl.Retrieve(n)
 		if err != nil || len(blob) == 0 {
 			continue
