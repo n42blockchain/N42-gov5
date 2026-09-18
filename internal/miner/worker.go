@@ -268,6 +268,10 @@ type worker struct {
 	specTask            *task
 	specParent          types.Hash
 	activeSpecInterrupt atomic.Pointer[atomic.Int32]
+	// activeSpecParent is the parent of the speculative build currently
+	// running, so a real trigger can tell "the guess in flight IS this block"
+	// from "the guess is for another parent".
+	activeSpecParent atomic.Pointer[types.Hash]
 
 	// sealedOnParent records the FIRST block this node sealed on a given parent
 	// (keyed by parentHash). A leader re-elected across several views at the same
@@ -1137,9 +1141,12 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 
 	if speculative {
 		// Publish our interrupt so a real production trigger can abort us, and
-		// make sure only one speculative build runs at a time.
+		// make sure only one speculative build runs at a time. The parent goes
+		// with it: a trigger for the SAME parent lets us finish instead.
 		w.activeSpecInterrupt.Store(interrupt)
-		defer w.activeSpecInterrupt.Store(nil)
+		p := parentHash
+		w.activeSpecParent.Store(&p)
+		defer func() { w.activeSpecInterrupt.Store(nil); w.activeSpecParent.Store(nil) }()
 	}
 
 	// Consensus-pinned parent (HotStuff HighQC block): the world state must BE

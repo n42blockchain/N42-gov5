@@ -98,3 +98,52 @@ func TestSpeculativeInterruptSignalled(t *testing.T) {
 	// Drain for cleanliness.
 	<-w.newWorkCh
 }
+
+// TestSpeculativeForSameParentIsNotInterrupted: the guess in flight IS the
+// block the trigger wants. Interrupting it throws away a nearly finished build
+// and starts over -- which is where round 35zzq's 406 ms between the QC and the
+// next seal went, once deferred execution made the vote path shorter than a
+// full build.
+func TestSpeculativeForSameParentIsNotInterrupted(t *testing.T) {
+	w := &worker{newWorkCh: make(chan *newWorkReq, 1), running: 1}
+	m := &Miner{worker: w}
+
+	parent := types.Hash{0x07}
+	specInt := new(atomic.Int32)
+	w.activeSpecInterrupt.Store(specInt)
+	p := parent
+	w.activeSpecParent.Store(&p)
+
+	m.TriggerBlockProduction(parent)
+
+	if got := specInt.Load(); got != 0 {
+		t.Fatalf("the in-flight guess for this parent was interrupted: %d", got)
+	}
+	select {
+	case req := <-w.newWorkCh:
+		if req.parentHash != parent || req.speculative {
+			t.Fatalf("queued request = parent %x speculative %v", req.parentHash, req.speculative)
+		}
+	default:
+		t.Fatal("the real trigger was not queued")
+	}
+}
+
+// A guess for another parent is still interrupted: it is building the wrong
+// block and the worker is needed now.
+func TestSpeculativeForAnotherParentIsInterrupted(t *testing.T) {
+	w := &worker{newWorkCh: make(chan *newWorkReq, 1), running: 1}
+	m := &Miner{worker: w}
+
+	specInt := new(atomic.Int32)
+	w.activeSpecInterrupt.Store(specInt)
+	other := types.Hash{0x08}
+	w.activeSpecParent.Store(&other)
+
+	m.TriggerBlockProduction(types.Hash{0x09})
+
+	if got := specInt.Load(); got != commitInterruptNewHead {
+		t.Fatalf("a guess for another parent was not interrupted: %d", got)
+	}
+	<-w.newWorkCh
+}

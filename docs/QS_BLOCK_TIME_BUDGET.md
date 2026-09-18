@@ -4606,6 +4606,25 @@ against the QC. The next round adds `tMs` to both (the 35zzn pattern: a
 diagnostic round that changes no behaviour) and reads back where the leader
 waits between the QC and its seal.
 
+## 6bo. Round 35zzu: the leader stops restarting the build the QC arrives for -- registered before the round ran (2026-09-17)
+
+Where 35zzq's 406 ms went, found in the code rather than a diagnostic round.
+`TriggerBlockProduction` interrupts the speculative build in flight on every
+real trigger. Before deferred execution that cost nothing: the QC came back
+1146 ms after the seal and the guess had long since parked (139 ms from QC to
+seal). With the vote path at 699 ms and a full build at 566 ms median (p90
+1328), the QC now arrives while the guess is still running, the trigger kills
+it, and the leader rebuilds the same block from scratch.
+
+The trigger now interrupts only a guess for a DIFFERENT parent; one building
+this very block is left to finish, and `takeSpecTask` collects it as it
+already does. **Prediction 76 (on n42-r82 = the deferred configuration plus
+this).** QC -> next seal falls from ~406 ms to <=150 ms; seal -> seal from
+1205 to <=850 ms; B mean >=110k (35zzq 89.1k); "speculative build hit" stays
+above 90% of full-block builds. Falsified if QC -> seal stays above 250 ms, if
+the hit rate falls, or by any BAD BLOCK or root mismatch (a build that keeps
+running across a view change is the risk the interrupt existed to avoid).
+
 ## 6bl. Round 35zzr: the deferred fold outside the write transaction -- registered before the round ran (2026-09-15)
 
 Runs only if 35zzq passes (no deferred-check failure, no BAD BLOCK); its

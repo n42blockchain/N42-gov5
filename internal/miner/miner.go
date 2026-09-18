@@ -188,12 +188,20 @@ func (m *Miner) TriggerBlockProduction(parentHash types.Hash) {
 		log.Warn("miner: build trigger while worker not running")
 		return
 	}
-	// A speculative build in flight yields to real work: signal its interrupt
-	// so the worker goroutine frees up. (If the guess already finished and
-	// matches parentHash, commitWork collects it via takeSpecTask instead of
-	// rebuilding.)
+	// A speculative build in flight yields to real work -- UNLESS it is
+	// building this very block. Interrupting it there throws away most of a
+	// finished build and rebuilds from scratch: under deferred execution the
+	// QC comes back before a full block is built (round 35zzq: vote path
+	// 699 ms, build 566 ms median, and the leader then took 406 ms after the
+	// QC to seal, where it took 139 before). Letting it finish costs the
+	// remainder and commitWork collects it through takeSpecTask.
 	if p := m.worker.activeSpecInterrupt.Load(); p != nil {
-		p.Store(commitInterruptNewHead)
+		if sp := m.worker.activeSpecParent.Load(); sp != nil && *sp == parentHash {
+			log.Info("miner: the speculative build in flight is this block; letting it finish",
+				"parent", parentHash.Hex()[:12], "tMs", time.Now().UnixMilli())
+		} else {
+			p.Store(commitInterruptNewHead)
+		}
 	}
 	interrupt := new(atomic.Int32)
 	req := &newWorkReq{interrupt: interrupt, noempty: false, timestamp: time.Now().Unix(), parentHash: parentHash, enqueuedAt: time.Now()}
