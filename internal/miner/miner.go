@@ -205,7 +205,9 @@ func (m *Miner) TriggerBlockProduction(parentHash types.Hash) {
 	// parentHash (when non-zero) pins the proposal to the consensus-mandated
 	// parent (the HighQC block) instead of the local head.
 	case m.worker.newWorkCh <- req:
-		log.Info("miner: build triggered (leader view)", "parent", parentHash.Hex()[:12])
+		// tMs places the trigger against the QC that caused it: round 35zzq left
+		// 406 ms between the QC and the next seal unaccounted for.
+		log.Info("miner: build triggered (leader view)", "parent", parentHash.Hex()[:12], "tMs", time.Now().UnixMilli())
 	default:
 		// The queue slot is taken. If a SPECULATIVE request is what occupies
 		// it, evict it — a real trigger must never be dropped in favour of a

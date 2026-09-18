@@ -1123,7 +1123,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 				if err := w.paceBlock(num); err != nil {
 					return err
 				}
-				log.Info("miner: speculative build hit", "number", num, "parent", parentHash.Hex()[:12])
+				log.Info("miner: speculative build hit", "number", num, "parent", parentHash.Hex()[:12], "tMs", time.Now().UnixMilli())
 				select {
 				case w.taskCh <- st:
 				case <-w.ctx.Done():
@@ -1415,7 +1415,10 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// 6ms seal and no visible spender - this line is the missing evidence.
 	log.Info("miner: build phases",
 		"align", tAlign, "persistWait", dPersistWait, "reload", tReload-tAlign, "syscalls", tPrep-tReload,
-		"fillTx", time.Since(start)-tPrep, "total", time.Since(start))
+		"fillTx", time.Since(start)-tPrep, "total", time.Since(start),
+		// tMs is the build's END; tMs - total is its start. Round 35zzq could not
+		// place either against the QC, and the gap between them is the cycle now.
+		"tMs", time.Now().UnixMilli())
 	// w.commit() is the rest of commitWork: it assembles and finalizes the
 	// block, creates the task and hands it to taskCh, where taskLoop stamps
 	// sealStart. Everything between "build phases" (logged immediately above)
@@ -2248,7 +2251,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 		if n := iblock.Number64(); n != nil {
 			num = n.Uint64()
 		}
-		log.Info("miner: speculative build parked", "number", num, "txs", envCopy.tcount, "parent", specParent.Hex()[:12])
+		log.Info("miner: speculative build parked", "number", num, "txs", envCopy.tcount, "parent", specParent.Hex()[:12], "tMs", time.Now().UnixMilli())
 		return nil
 	}
 
