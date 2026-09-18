@@ -121,8 +121,8 @@ func TestLeafSegCursor(t *testing.T) {
 	// Multiple frames actually exercised?
 	frames := 0
 	for b := 0; b < 256; b++ {
-		if set.buckets[b] != nil {
-			frames += len(set.buckets[b].frames)
+		if n, err := set.frameCount(b); err == nil {
+			frames += n
 		}
 	}
 	if frames < 8 {

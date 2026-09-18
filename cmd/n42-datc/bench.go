@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"runtime/pprof"
 	"sort"
 	"sync"
 	"time"
@@ -163,6 +164,7 @@ func runBench(args []string) {
 	mapGB := fs.Int("map.gb", 512, "MDBX map size GB")
 	baseDir := fs.String("base", "", "partial archive: the pristine prep-state base it was built from (keys untouched since the base read their base value)")
 	frameCache := fs.Int("frame-cache", defaultFrameCache, "decompressed segment frames kept in RAM per querier (256 KiB each)")
+	cpuProfile := fs.String("cpuprofile", "", "write a CPU profile of the query phase to this file")
 	_ = fs.Parse(args)
 	if *out == "" {
 		die("--out required")
@@ -194,6 +196,14 @@ func runBench(args []string) {
 	storTbl := openCS(*csDir, "storcs")
 	defer storTbl.Close()
 
+	// Load the segment indexes up front, as a long-lived reader would, so the
+	// latencies below are proofs and not first-touch index parsing.
+	tPre := time.Now()
+	nSeg, err := preloadSegFiles(*out, 32)
+	if err != nil {
+		die("preload segments: %v", err)
+	}
+	fmt.Printf("preloaded %d segment indexes in %s\n", nSeg, time.Since(tPre).Round(time.Millisecond))
 	// Head from meta (one throwaway querier).
 	tx0, err := db.BeginRo(context.Background())
 	if err != nil {
@@ -276,6 +286,20 @@ func runBench(args []string) {
 		next <- i
 	}
 	close(next)
+	stopProfile := func() {}
+	if *cpuProfile != "" {
+		pf, err := os.Create(*cpuProfile)
+		if err != nil {
+			die("cpuprofile: %v", err)
+		}
+		if err := pprof.StartCPUProfile(pf); err != nil {
+			die("cpuprofile: %v", err)
+		}
+		stopProfile = func() {
+			pprof.StopCPUProfile()
+			pf.Close()
+		}
+	}
 	tStart := time.Now()
 	for w := 0; w < *parallel; w++ {
 		wg.Add(1)
@@ -303,6 +327,7 @@ func runBench(args []string) {
 	}
 	wg.Wait()
 	wall := time.Since(tStart)
+	stopProfile() // the report below may exit the process
 
 	// Report.
 	var accMs, totMs []float64

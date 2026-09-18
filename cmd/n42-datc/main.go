@@ -161,6 +161,10 @@ func main() {
 		runStampMeta(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "reframe" {
+		runReframe(os.Args[2:])
+		return
+	}
 	if os.Args[1] == "finalize-leaves" {
 		// Crash recovery: turn an interrupted build's leaf/chg spill files into
 		// queryable segments without re-running the build.

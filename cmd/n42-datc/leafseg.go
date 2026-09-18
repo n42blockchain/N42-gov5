@@ -64,6 +64,60 @@ const (
 
 var segTabNames = [segTabCount]string{"a", "s", "ca", "cs", "sr", "na"}
 
+// nodeFrameRaw is the frame target of the account node records. A proof reads
+// ~270 of them, each from a different frame (one per level-3 path), so the
+// frame is the unit of cost there: at 256 KiB an account proof spent 80% of
+// its time decompressing frames it used one record of. 16 KiB costs ~5% in
+// compression ratio and makes that read ~10x cheaper (2026-09-18 measurement).
+const nodeFrameRaw = 16 << 10
+
+// segFrameRawFor is the frame target a table's segments are written with.
+func segFrameRawFor(table int) int {
+	if table == segTabNodeA {
+		return nodeFrameRaw
+	}
+	return leafFrameRaw
+}
+
+// segTableOfName maps a segment or spill file name ("na.030f01.seg") to its
+// table.
+func segTableOfName(base string) (int, bool) {
+	for i := 0; i < len(base); i++ {
+		if base[i] == '.' {
+			for t, n := range segTabNames {
+				if n == base[:i] {
+					return t, true
+				}
+			}
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+// segDecoder is the one zstd decoder every frame read shares. DecodeAll is
+// safe for concurrent use, and building a decoder per frame cost about as
+// much as decompressing the frame.
+var (
+	segDecoderOnce sync.Once
+	segDecoder     *zstd.Decoder
+)
+
+func sharedSegDecoder() *zstd.Decoder {
+	segDecoderOnce.Do(func() {
+		n := runtime.NumCPU()
+		if n > 64 {
+			n = 64
+		}
+		d, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(n))
+		if err != nil {
+			panic(fmt.Sprintf("zstd decoder: %v", err))
+		}
+		segDecoder = d
+	})
+	return segDecoder
+}
+
 // segPrefixLen is the number of leading key bytes that form the bucket id
 // (bucket order == key order for any prefix length). Leaves bucket on the
 // hashed key's first byte (uniform). Chg rows bucket on (level byte, second
@@ -514,7 +568,11 @@ func finalizeBucket(zr *zstd.Decoder, enc *zstd.Encoder, src, dst string, corrup
 	}
 
 	tmp := dst + ".tmp"
-	sw, err := newSegFrameWriter(tmp, enc)
+	target := leafFrameRaw
+	if table, ok := segTableOfName(filepath.Base(dst)); ok {
+		target = segFrameRawFor(table)
+	}
+	sw, err := newSegFrameWriter(tmp, enc, target)
 	if err != nil {
 		return err
 	}
@@ -915,14 +973,18 @@ type segFrameWriter struct {
 	}
 	frame    []byte
 	firstKey []byte
+	target   int // uncompressed bytes per frame
 }
 
-func newSegFrameWriter(path string, enc *zstd.Encoder) (*segFrameWriter, error) {
+func newSegFrameWriter(path string, enc *zstd.Encoder, target int) (*segFrameWriter, error) {
 	f, err := os.Create(path)
 	if err != nil {
 		return nil, err
 	}
-	w := &segFrameWriter{f: f, bw: bufio.NewWriterSize(f, 1<<20), enc: enc}
+	if target <= 0 {
+		target = leafFrameRaw
+	}
+	w := &segFrameWriter{f: f, bw: bufio.NewWriterSize(f, 1<<20), enc: enc, target: target}
 	if _, err := w.bw.WriteString(leafSegMagic); err != nil {
 		f.Close()
 		return nil, err
@@ -935,7 +997,7 @@ func (w *segFrameWriter) add(rec, key []byte) error {
 		w.firstKey = append([]byte{}, key...)
 	}
 	w.frame = append(w.frame, rec...)
-	if len(w.frame) >= leafFrameRaw {
+	if len(w.frame) >= w.target {
 		return w.flush()
 	}
 	return nil
@@ -1001,7 +1063,7 @@ func zr2() *zstd.Decoder {
 	return d
 }
 
-func (it *oldSegIter) valid() bool { return !it.closed && it.fi < len(it.sf.frames) }
+func (it *oldSegIter) valid() bool { return !it.closed && it.fi < it.sf.numFrames() }
 
 // ensure decodes the current frame; returns false at end.
 func (it *oldSegIter) ensure() (bool, error) {
@@ -1010,7 +1072,7 @@ func (it *oldSegIter) ensure() (bool, error) {
 			return false, nil
 		}
 		if it.raw == nil {
-			fm := it.sf.frames[it.fi]
+			fm := it.sf.frame(it.fi)
 			comp := make([]byte, fm.comp)
 			if _, err := it.sf.f.ReadAt(comp, fm.off); err != nil {
 				return false, err
@@ -1067,23 +1129,185 @@ func (it *oldSegIter) close() {
 // read side
 
 type frameMeta struct {
-	off      int64 // compressed offset in file
-	comp     int
-	raw      int
-	firstKey []byte
+	off  int64 // compressed offset in file
+	comp int
+	raw  int
 }
 
+// leafSegFile is one open segment and its frame index. The index holds no
+// pointers per frame: with 16 KiB node-record frames an archive has tens of
+// millions of frames, and a slice of structs with a key slice each made the
+// garbage collector walk all of them on every cycle (half the CPU of a
+// parallel bench, 2026-09-18). It is immutable once loaded, so every reader
+// in the process shares one copy (acquireSegFile).
 type leafSegFile struct {
-	f      *os.File
-	frames []frameMeta
+	f    *os.File
+	offs []int64  // compressed start of frame i; offs[n] is the end of the last
+	raws []uint32 // uncompressed length of frame i
+	kOff []uint32 // first key of frame i = keys[kOff[i]:kOff[i+1]]
+	keys []byte
 }
 
-// leafSegSet is the reader for one table's bucket segments.
+func (sf *leafSegFile) numFrames() int { return len(sf.raws) }
+
+func (sf *leafSegFile) frame(i int) frameMeta {
+	return frameMeta{off: sf.offs[i], comp: int(sf.offs[i+1] - sf.offs[i]), raw: int(sf.raws[i])}
+}
+
+func (sf *leafSegFile) firstKey(i int) []byte { return sf.keys[sf.kOff[i]:sf.kOff[i+1]] }
+
+// segFileEntry is a shared, reference-counted leafSegFile. The key carries the
+// file's size and mtime, so a segment replaced on disk (finalize, reframe) is
+// loaded afresh instead of answering from the old index.
+type segFileEntry struct {
+	key  string
+	once sync.Once
+	sf   *leafSegFile
+	err  error
+	refs int
+}
+
+var segFiles = struct {
+	mu sync.Mutex
+	m  map[string]*segFileEntry
+	// retain keeps a segment open after its last reader closes. A process that
+	// opens a querier per query (bench, a proof server) would otherwise reload
+	// the index of every segment whose readers happened to all be done.
+	retain bool
+}{m: make(map[string]*segFileEntry)}
+
+// retainSegFiles makes the shared segment files live as long as the process.
+func retainSegFiles() {
+	segFiles.mu.Lock()
+	segFiles.retain = true
+	segFiles.mu.Unlock()
+}
+
+func acquireSegFile(path string) (*segFileEntry, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	key := fmt.Sprintf("%s|%d|%d", path, st.Size(), st.ModTime().UnixNano())
+	segFiles.mu.Lock()
+	e := segFiles.m[key]
+	if e == nil {
+		e = &segFileEntry{key: key}
+		segFiles.m[key] = e
+	}
+	e.refs++
+	segFiles.mu.Unlock()
+	e.once.Do(func() {
+		f, err := os.Open(path)
+		if err != nil {
+			e.err = err
+			return
+		}
+		if e.sf, e.err = loadLeafSegFile(f); e.err != nil {
+			f.Close()
+			e.err = fmt.Errorf("%s: %w", path, e.err)
+		}
+	})
+	if e.err != nil {
+		releaseSegFile(e)
+		return nil, e.err
+	}
+	return e, nil
+}
+
+func releaseSegFile(e *segFileEntry) {
+	segFiles.mu.Lock()
+	e.refs--
+	last := e.refs == 0 && !segFiles.retain
+	if last {
+		delete(segFiles.m, e.key)
+	}
+	segFiles.mu.Unlock()
+	if last && e.sf != nil {
+		_ = e.sf.f.Close()
+	}
+}
+
+// preloadSegFiles loads the frame index of every segment under outDir and
+// retains them for the life of the process. Parsing a 16 KiB-frame node
+// segment's index takes tens of milliseconds, which a long-lived reader pays
+// at start-up instead of inside the first proofs that touch each segment.
+func preloadSegFiles(outDir string, workers int) (int, error) {
+	names, err := filepath.Glob(filepath.Join(outDir, leafSegDir, "*.seg"))
+	if err != nil {
+		return 0, err
+	}
+	retainSegFiles()
+	if workers < 1 {
+		workers = 1
+	}
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		firstErr error
+		ch       = make(chan string)
+	)
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for name := range ch {
+				e, err := acquireSegFile(name)
+				if err == nil {
+					releaseSegFile(e) // retained: stays loaded
+					continue
+				}
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	for _, n := range names {
+		ch <- n
+	}
+	close(ch)
+	wg.Wait()
+	return len(names), firstErr
+}
+
+// leafSegSet is the reader for one table's bucket segments. Segments are
+// opened on first use: a proof touches a few dozen of an archive's ~2000
+// files. A set serves one goroutine; the files behind it are shared.
 type leafSegSet struct {
-	buckets map[int]*leafSegFile
-	ids     []int // sorted bucket ids (bucket order == key order)
-	table   int
-	cache   *frameLRU
+	paths map[int]string        // bucket → segment path
+	open  map[int]*segFileEntry // buckets opened so far
+	ids   []int                 // sorted bucket ids (bucket order == key order)
+	table int
+	cache *frameLRU
+}
+
+// file returns the bucket's segment, opening it on first use.
+func (s *leafSegSet) file(bucket int) (*leafSegFile, error) {
+	if e := s.open[bucket]; e != nil {
+		return e.sf, nil
+	}
+	path, ok := s.paths[bucket]
+	if !ok {
+		return nil, fmt.Errorf("leafseg: no segment for bucket %x of table %s", bucket, segTabNames[s.table])
+	}
+	e, err := acquireSegFile(path)
+	if err != nil {
+		return nil, err
+	}
+	s.open[bucket] = e
+	return e.sf, nil
+}
+
+// frameCount is the number of frames in one bucket's segment.
+func (s *leafSegSet) frameCount(bucket int) (int, error) {
+	sf, err := s.file(bucket)
+	if err != nil {
+		return 0, err
+	}
+	return sf.numFrames(), nil
 }
 
 type decodedFrame struct {
@@ -1132,23 +1356,14 @@ func openLeafSegSet(outDir string, table int, cache *frameLRU) (*leafSegSet, boo
 	if err != nil {
 		return nil, false, err
 	}
-	s := &leafSegSet{table: table, cache: cache, buckets: make(map[int]*leafSegFile)}
+	s := &leafSegSet{table: table, cache: cache, paths: make(map[int]string), open: make(map[int]*segFileEntry)}
 	for _, name := range names {
 		base := filepath.Base(name)
 		var bucket int
 		if _, err := fmt.Sscanf(base, segTabNames[table]+".%x.seg", &bucket); err != nil {
 			continue
 		}
-		f, err := os.Open(name)
-		if err != nil {
-			return nil, false, err
-		}
-		sf, err := loadLeafSegFile(f)
-		if err != nil {
-			f.Close()
-			return nil, false, fmt.Errorf("%s: %w", name, err)
-		}
-		s.buckets[bucket] = sf
+		s.paths[bucket] = name
 		s.ids = append(s.ids, bucket)
 	}
 	sort.Ints(s.ids)
@@ -1157,9 +1372,9 @@ func openLeafSegSet(outDir string, table int, cache *frameLRU) (*leafSegSet, boo
 
 // Close releases the segment file handles.
 func (s *leafSegSet) Close() {
-	for b, sf := range s.buckets {
-		_ = sf.f.Close()
-		delete(s.buckets, b)
+	for b, e := range s.open {
+		releaseSegFile(e)
+		delete(s.open, b)
 	}
 	s.ids = nil
 }
@@ -1186,7 +1401,7 @@ func loadLeafSegFile(f *os.File) (*leafSegFile, error) {
 		return nil, fmt.Errorf("bad footer")
 	}
 	p := m
-	sf := &leafSegFile{f: f, frames: make([]frameMeta, 0, n)}
+	sf := &leafSegFile{f: f, offs: make([]int64, 0, n+1), raws: make([]uint32, 0, n), kOff: make([]uint32, 0, n+1)}
 	off := int64(len(leafSegMagic))
 	for i := uint64(0); i < n; i++ {
 		comp, m1 := binary.Uvarint(foot[p:])
@@ -1195,11 +1410,15 @@ func loadLeafSegFile(f *os.File) (*leafSegFile, error) {
 		p += m2
 		kl, m3 := binary.Uvarint(foot[p:])
 		p += m3
-		fk := append([]byte{}, foot[p:p+int(kl)]...)
+		sf.offs = append(sf.offs, off)
+		sf.raws = append(sf.raws, uint32(rawLen))
+		sf.kOff = append(sf.kOff, uint32(len(sf.keys)))
+		sf.keys = append(sf.keys, foot[p:p+int(kl)]...)
 		p += int(kl)
-		sf.frames = append(sf.frames, frameMeta{off: off, comp: int(comp), raw: int(rawLen), firstKey: fk})
 		off += int64(comp)
 	}
+	sf.offs = append(sf.offs, off)
+	sf.kOff = append(sf.kOff, uint32(len(sf.keys)))
 	return sf, nil
 }
 
@@ -1212,18 +1431,16 @@ func (s *leafSegSet) decodeFrame(bucket, fi int) (*decodedFrame, error) {
 	if d := s.cache.get(ck); d != nil {
 		return d, nil
 	}
-	sf := s.buckets[bucket]
-	fm := sf.frames[fi]
+	sf, err := s.file(bucket)
+	if err != nil {
+		return nil, err
+	}
+	fm := sf.frame(fi)
 	comp := make([]byte, fm.comp)
 	if _, err := sf.f.ReadAt(comp, fm.off); err != nil {
 		return nil, err
 	}
-	zr, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
-	if err != nil {
-		return nil, err
-	}
-	raw, err := zr.DecodeAll(comp, make([]byte, 0, fm.raw))
-	zr.Close()
+	raw, err := sharedSegDecoder().DecodeAll(comp, make([]byte, 0, fm.raw))
 	if err != nil {
 		return nil, err
 	}
@@ -1289,8 +1506,12 @@ func (c *segLeafCursor) Seek(k []byte) ([]byte, []byte, error) {
 	bi := sort.SearchInts(c.set.ids, probe)
 	for ; bi < len(c.set.ids); bi++ {
 		bucket := c.set.ids[bi]
-		sf := c.set.buckets[bucket]
-		if len(sf.frames) == 0 {
+		sf, err := c.set.file(bucket)
+		if err != nil {
+			return nil, nil, err
+		}
+		nf := sf.numFrames()
+		if nf == 0 {
 			continue
 		}
 		var fi, ri int
@@ -1298,8 +1519,8 @@ func (c *segLeafCursor) Seek(k []byte) ([]byte, []byte, error) {
 			fi, ri = 0, 0 // everything in a later bucket is > k
 		} else {
 			// Last frame whose firstKey <= k (or frame 0 if k precedes all).
-			fi = sort.Search(len(sf.frames), func(i int) bool {
-				return bytes.Compare(sf.frames[i].firstKey, k) > 0
+			fi = sort.Search(nf, func(i int) bool {
+				return bytes.Compare(sf.firstKey(i), k) > 0
 			}) - 1
 			if fi < 0 {
 				fi = 0
@@ -1314,7 +1535,7 @@ func (c *segLeafCursor) Seek(k []byte) ([]byte, []byte, error) {
 			})
 			if ri == len(d.offs) {
 				// Past this frame: first row of the next frame (or next bucket).
-				if fi+1 < len(sf.frames) {
+				if fi+1 < nf {
 					fi, ri = fi+1, 0
 				} else {
 					continue
@@ -1338,15 +1559,22 @@ func (c *segLeafCursor) Next() ([]byte, []byte, error) {
 		c.ri++
 		return c.current()
 	}
-	sf := c.set.buckets[c.set.ids[c.bi]]
-	if c.fi+1 < len(sf.frames) {
+	nf, err := c.set.frameCount(c.set.ids[c.bi])
+	if err != nil {
+		return nil, nil, err
+	}
+	if c.fi+1 < nf {
 		if err := c.position(c.bi, c.fi+1, 0); err != nil {
 			return nil, nil, err
 		}
 		return c.current()
 	}
 	for bi := c.bi + 1; bi < len(c.set.ids); bi++ {
-		if bf := c.set.buckets[c.set.ids[bi]]; len(bf.frames) > 0 {
+		nf, err := c.set.frameCount(c.set.ids[bi])
+		if err != nil {
+			return nil, nil, err
+		}
+		if nf > 0 {
 			if err := c.position(bi, 0, 0); err != nil {
 				return nil, nil, err
 			}
@@ -1376,8 +1604,12 @@ func (c *segLeafCursor) Prev() ([]byte, []byte, error) {
 		return c.current()
 	}
 	for bi := c.bi - 1; bi >= 0; bi-- {
-		if bf := c.set.buckets[c.set.ids[bi]]; len(bf.frames) > 0 {
-			fi := len(bf.frames) - 1
+		nf, err := c.set.frameCount(c.set.ids[bi])
+		if err != nil {
+			return nil, nil, err
+		}
+		if nf > 0 {
+			fi := nf - 1
 			d, err := c.set.decodeFrame(c.set.ids[bi], fi)
 			if err != nil {
 				return nil, nil, err
@@ -1394,8 +1626,12 @@ func (c *segLeafCursor) Prev() ([]byte, []byte, error) {
 
 func (c *segLeafCursor) Last() ([]byte, []byte, error) {
 	for bi := len(c.set.ids) - 1; bi >= 0; bi-- {
-		if bf := c.set.buckets[c.set.ids[bi]]; len(bf.frames) > 0 {
-			fi := len(bf.frames) - 1
+		nf, err := c.set.frameCount(c.set.ids[bi])
+		if err != nil {
+			return nil, nil, err
+		}
+		if nf > 0 {
+			fi := nf - 1
 			d, err := c.set.decodeFrame(c.set.ids[bi], fi)
 			if err != nil {
 				return nil, nil, err

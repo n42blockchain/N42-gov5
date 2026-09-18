@@ -803,8 +803,11 @@ func runE2E(t *testing.T, o e2eOpts) {
 	havePath := map[string]bool{}
 	if q.segNA != nil {
 		for _, bucket := range q.segNA.ids {
-			sf := q.segNA.buckets[bucket]
-			for fi := range sf.frames {
+			nf, err := q.segNA.frameCount(bucket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for fi := 0; fi < nf; fi++ {
 				d, err := q.segNA.decodeFrame(bucket, fi)
 				if err != nil {
 					t.Fatal(err)
