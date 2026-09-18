@@ -54,6 +54,7 @@ func runVerify(args []string) {
 	at := fs.Uint64("at", 0, "verify exactly this height (overrides sampling)")
 	seed := fs.Int64("seed", 42, "sampling seed")
 	mapGB := fs.Int("map.gb", 512, "MDBX map size GB")
+	baseDir := fs.String("base", "", "partial archive: the pristine prep-state base it was built from (keys untouched since the base read their base value)")
 	frameCache := fs.Int("frame-cache", defaultFrameCache, "decompressed segment frames kept in RAM (256 KiB each)")
 	_ = fs.Parse(args)
 	if *out == "" {
@@ -71,6 +72,12 @@ func runVerify(args []string) {
 		die("open: %v", err)
 	}
 	defer db.Close()
+	if *baseDir != "" {
+		if err := openPartialBase(logger, *baseDir, *mapGB); err != nil {
+			die("%v", err)
+		}
+		defer partialBaseDB.Close()
+	}
 	var hdrs *ethel.HeaderCompactReader
 	if !*internalRoots {
 		var err error
@@ -91,6 +98,7 @@ func runVerify(args []string) {
 	if err != nil {
 		die("%v", err)
 	}
+	defer q.Close()
 	{
 		if os.Getenv("DATC_CHG_MDBX") != "" {
 			// Diagnostic: force the change index through MDBX (ignore chg
@@ -223,6 +231,11 @@ func loadQuerierCache(tx kv.Tx, out string, foldOverride int, frameCache int) (*
 		sched.accRoot = binary.BigEndian.Uint64(v)
 	}
 	q := &querier{tx: tx, sched: sched, accFold: int(accDepth), stoFold: int(stoDepth), stoRootPerBlock: cad == 1}
+	if partialBaseDB != nil {
+		if q.base, err = partialBaseDB.BeginRo(context.Background()); err != nil {
+			return nil, 0, fmt.Errorf("base: %w", err)
+		}
+	}
 	if foldOverride > 0 {
 		if foldOverride > q.accFold {
 			return nil, 0, fmt.Errorf("--fold-depth %d exceeds the build's account record depth %d", foldOverride, q.accFold)
@@ -296,6 +309,8 @@ func floorRoot(tx kv.Tx, n uint64) (types.Hash, bool, error) {
 type querier struct {
 	tx    kv.Tx
 	sched epochSchedule
+	// base: read transaction on partialBaseDB (nil for a complete archive).
+	base kv.Tx
 	// accFold / stoFold: depth at/below which the account / storage trie is
 	// folded from the leaf history (= the build's record depth, or lower for
 	// diagnostics). Records at depth >= fold do not exist.
@@ -325,6 +340,106 @@ type querier struct {
 	// absentPaths (tests): account paths whose floor came back absent.
 	absentPaths map[string]int
 }
+
+// partialBaseDB, when set (--base), is the pristine prep-state base a PARTIAL
+// archive was built from: one range of a two-machine rebuild, before its
+// merge with the other range, has leaf history, storage-root history and
+// node records only from its base block B on. A key with no history row at
+// or below N still holds its base value at N, so every leaf-level lookup
+// overlays the base: exact-key floors, subtree folds and storage roots. The
+// merged archive has history from genesis and never needs it.
+var partialBaseDB kv.RoDB
+
+// openPartialBase opens the base copy read-only (Accede: it is the prep-state
+// output of the same schema) for the readers of this process.
+func openPartialBase(logger log.Logger, dir string, mapGB int) error {
+	db, err := mdbxkv.NewMDBX(logger).Path(dir).Label(kv.ChainDB).
+		MapSize(datasize.ByteSize(mapGB) * datasize.GB).Accede().Readonly().
+		Open(context.Background())
+	if err != nil {
+		return fmt.Errorf("base: %w", err)
+	}
+	partialBaseDB = db
+	return nil
+}
+
+// Close ends the querier's base transaction (the archive transaction belongs
+// to the caller).
+func (q *querier) Close() {
+	if q.base != nil {
+		q.base.Rollback()
+		q.base = nil
+	}
+}
+
+// baseLeaf returns the base value of one hashed key (account: addrHash;
+// storage: addrHash+slotHash); false when the key has no base value.
+func (q *querier) baseLeaf(storage bool, key []byte) ([]byte, bool, error) {
+	if q.base == nil {
+		return nil, false, nil
+	}
+	tab := modules.HashedAccounts
+	if storage {
+		tab = modules.HashedStorage
+	}
+	v, err := q.base.GetOne(tab, key)
+	if err != nil || len(v) == 0 {
+		return nil, false, err
+	}
+	return append([]byte{}, v...), true, nil
+}
+
+// baseLeafIter walks the base leaves under a byte prefix in key order
+// (HashedAccounts rows, or one contract's HashedStorage dups with the slot
+// prefix; the kv layer restores addrHash+slotHash keys).
+type baseLeafIter struct {
+	c      kv.Cursor
+	prefix []byte
+	keyLen int
+	oddNib bool
+	oddVal byte
+	k, v   []byte
+	err    error
+}
+
+func (q *querier) baseLeaves(storage bool, prefix []byte, keyLen int, oddNib bool, oddVal byte) (*baseLeafIter, error) {
+	if q.base == nil {
+		return nil, nil
+	}
+	tab := modules.HashedAccounts
+	if storage {
+		tab = modules.HashedStorage
+	}
+	c, err := q.base.Cursor(tab)
+	if err != nil {
+		return nil, err
+	}
+	it := &baseLeafIter{c: c, prefix: prefix, keyLen: keyLen, oddNib: oddNib, oddVal: oddVal}
+	it.k, it.v, it.err = c.Seek(prefix)
+	it.settle()
+	return it, nil
+}
+
+// settle skips rows outside the prefix / odd-nibble branch; k == nil at the end.
+func (it *baseLeafIter) settle() {
+	for it.err == nil && it.k != nil {
+		if !bytes.HasPrefix(it.k, it.prefix) {
+			it.k = nil
+			return
+		}
+		if len(it.k) == it.keyLen && (!it.oddNib || it.k[len(it.prefix)]>>4 == it.oddVal) && len(it.v) > 0 {
+			return
+		}
+		it.k, it.v, it.err = it.c.Next()
+	}
+}
+
+func (it *baseLeafIter) next() {
+	it.k, it.v, it.err = it.c.Next()
+	it.settle()
+}
+
+func (it *baseLeafIter) close() { it.c.Close() }
 
 func (q *querier) noteFold(depth int, reason string) {
 	if depth < len(q.foldDepthHist) {
@@ -451,7 +566,14 @@ func (q *querier) storageRootAt(domain []byte, n uint64) (root types.Hash, exist
 		}
 	}
 	if !haveFloor {
-		return root, false, true, nil // never had storage before N
+		// No row at or below N: never had storage before N. On a partial
+		// archive the contract may just be untouched since the base, whose
+		// account rows carry no storage root — leave it undecided so the
+		// caller folds the root from the base slots (plus any history).
+		if q.base != nil {
+			return root, false, false, nil
+		}
+		return root, false, true, nil
 	}
 	if len(v) == 0 {
 		return root, false, true, nil
@@ -1086,7 +1208,7 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 	defer c.Close()
 
 	var out []foldLeaf
-	emit := func(hk, val []byte) error {
+	emitLeaf := func(hk, val []byte) error {
 		if len(val) == 0 {
 			return nil // deleted/absent at n
 		}
@@ -1119,6 +1241,44 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 		out = append(out, foldLeaf{remainder: rem, value: v})
 		return nil
 	}
+	// Partial archive: base leaves fill in between the history keys. A key the
+	// history decides (a row at or below n, live or deleted) wins; a key whose
+	// rows are all past n, or that has no rows, keeps its base value.
+	base, err := q.baseLeaves(domain != nil, bytePrefix, keyLen, oddNib, oddVal)
+	if err != nil {
+		return nil, err
+	}
+	if base != nil {
+		defer base.close()
+	}
+	// flushBase emits the base keys below hk (all of them for hk == nil).
+	flushBase := func(hk []byte) error {
+		if base == nil {
+			return nil
+		}
+		for base.k != nil && (hk == nil || bytes.Compare(base.k, hk) < 0) {
+			if err := emitLeaf(base.k, base.v); err != nil {
+				return err
+			}
+			base.next()
+		}
+		return base.err
+	}
+	emit := func(hk []byte, decided bool, val []byte) error {
+		if hk == nil {
+			return nil // the walk's first "previous key" is empty
+		}
+		if err := flushBase(hk); err != nil {
+			return err
+		}
+		if base != nil && base.k != nil && bytes.Equal(base.k, hk) {
+			if !decided {
+				val = base.v
+			}
+			base.next()
+		}
+		return emitLeaf(hk, val)
+	}
 
 	// Adaptive distinct-key walk (the QMDB OldId idea adapted to the sorted
 	// (key | block) layout): per key we need only the FLOOR entry ≤ n, so after
@@ -1150,7 +1310,7 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 			continue
 		}
 		if !bytes.Equal(hk, curKey) {
-			if err := emit(curKey, ifFloor(haveFloor, curVal)); err != nil {
+			if err := emit(curKey, haveFloor, ifFloor(haveFloor, curVal)); err != nil {
 				return nil, err
 			}
 			curKey = append(curKey[:0], hk...)
@@ -1194,7 +1354,10 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 		}
 		k, v, err = c.Next()
 	}
-	if err := emit(curKey, ifFloor(haveFloor, curVal)); err != nil {
+	if err := emit(curKey, haveFloor, ifFloor(haveFloor, curVal)); err != nil {
+		return nil, err
+	}
+	if err := flushBase(nil); err != nil { // base keys after the last history key
 		return nil, err
 	}
 	return out, nil

@@ -319,7 +319,9 @@ func (q *querier) leafFloor(storage bool, key []byte, n uint64) ([]byte, bool, e
 		return nil, false, err
 	}
 	if k == nil || len(k) != len(key)+blkLen || !bytes.Equal(k[:len(key)], key) {
-		return nil, false, nil
+		// No row at or below n: on a partial archive the key may simply be
+		// untouched since the base and still hold its base value.
+		return q.baseLeaf(storage, key)
 	}
 	if len(v) == 0 {
 		return nil, false, nil // deleted at floor
@@ -523,6 +525,7 @@ func runProof(args []string) {
 	at := fs.Uint64("at", 0, "historical block height")
 	foldDepth := fs.Int("fold-depth", 0, "diagnostic: account-trie fold depth override (0 = the build's record depth from DatcMeta)")
 	mapGB := fs.Int("map.gb", 512, "MDBX map size GB")
+	baseDir := fs.String("base", "", "partial archive: the pristine prep-state base it was built from (keys untouched since the base read their base value)")
 	_ = fs.Parse(args)
 	if *out == "" || *addrHex == "" {
 		die("--out and --addr required")
@@ -545,6 +548,12 @@ func runProof(args []string) {
 		die("open: %v", err)
 	}
 	defer db.Close()
+	if *baseDir != "" {
+		if err := openPartialBase(logger, *baseDir, *mapGB); err != nil {
+			die("%v", err)
+		}
+		defer partialBaseDB.Close()
+	}
 	tx, err := db.BeginRo(context.Background())
 	if err != nil {
 		die("begin: %v", err)
@@ -555,6 +564,7 @@ func runProof(args []string) {
 	if err != nil {
 		die("%v", err)
 	}
+	defer q.Close()
 	if *at >= head {
 		die("--at %d out of range (head %d)", *at, head)
 	}

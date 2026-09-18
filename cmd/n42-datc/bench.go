@@ -161,6 +161,7 @@ func runBench(args []string) {
 	parallel := fs.Int("parallel", 1, "independent queriers running concurrently")
 	jsonOut := fs.String("json", "", "write per-query results to this JSON file")
 	mapGB := fs.Int("map.gb", 512, "MDBX map size GB")
+	baseDir := fs.String("base", "", "partial archive: the pristine prep-state base it was built from (keys untouched since the base read their base value)")
 	frameCache := fs.Int("frame-cache", defaultFrameCache, "decompressed segment frames kept in RAM per querier (256 KiB each)")
 	_ = fs.Parse(args)
 	if *out == "" {
@@ -177,6 +178,12 @@ func runBench(args []string) {
 		die("open: %v", err)
 	}
 	defer db.Close()
+	if *baseDir != "" {
+		if err := openPartialBase(logger, *baseDir, *mapGB); err != nil {
+			die("%v", err)
+		}
+		defer partialBaseDB.Close()
+	}
 	hdrs, err := ethel.OpenHeaderCompact(*hdrDir)
 	if err != nil {
 		die("open headerc: %v", err)
@@ -198,6 +205,7 @@ func runBench(args []string) {
 	}
 	fmt.Printf("DATC bench: head=%d accFold=%d stoFold=%d stoRootPerBlock=%v e0=%d accRoot=%d frameCache=%d samples=%d mode=%s parallel=%d\n",
 		head, q0.accFold, q0.stoFold, q0.stoRootPerBlock, q0.sched.e[0], q0.sched.accRoot, *frameCache, *samples, *mode, *parallel)
+	q0.Close()
 	tx0.Rollback()
 
 	// Sample generation from the changesets.
@@ -282,6 +290,7 @@ func runBench(args []string) {
 			if err != nil {
 				die("%v", err)
 			}
+			defer q.Close()
 			for i := range next {
 				hdr, err := hdrs.ReadHeader(set[i].Height)
 				if err != nil {

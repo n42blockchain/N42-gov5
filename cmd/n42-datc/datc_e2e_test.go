@@ -683,6 +683,7 @@ func openTestQuerier(t *testing.T, db kv.RwDB, out string, o e2eOpts) (*querier,
 		t.Fatal("leaf-seg build produced no segments")
 	}
 	return q, func() {
+		q.Close()
 		tx.Rollback()
 		for _, s := range []*leafSegSet{q.segA, q.segS, q.segCA, q.segCS, q.segSR, q.segNA} {
 			if s != nil {
