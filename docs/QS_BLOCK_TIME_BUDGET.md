@@ -4564,6 +4564,48 @@ the lock-free accessor for a caller already inside the span, with a regression
 test that hangs on the old call. Nothing was measured; deferred execution is
 still untested on the fleet.
 
+**35zzq attempt 3 (2026-09-17 19:23-20:29 EDT): the first round that actually
+ran deferred execution. Prediction 72 is falsified on throughput and confirmed
+on mechanism.**
+
+| leg | 35zzp re-run | 35zzq (deferred) |
+|---|---|---|
+| A1 win1 / win2 | 59.4k / 55.8k | 71.6k / 64.4k |
+| B1 win1 / win2 | 118.2k / 57.0k | 114.6k / 67.6k |
+| B2 win1 / win2 | 117.2k / 59.2k | 105.4k / 68.9k |
+| A2 win1 / win2 | (lost) | 67.8k / 67.0k |
+
+B mean 89.1k against 87.9k (+1.4%), and against the best round so far, the
+35zzo re-run's 90.6k, -1.7%. A mean 67.7k against 68.2k. The prediction asked
+for +35-50%.
+
+The mechanism is not in doubt: 0 check failures in ~3,200 checks a node, no
+BAD BLOCK, no root mismatch, and the held Round-2 votes fire on the deferred
+attestation (7 of 7, 12 of 12, 32 of 34 across three followers). What it bought
+and where it went:
+
+| | 35zzp | 35zzq |
+|---|---|---|
+| seal -> QC | 1146 ms | 699 ms |
+| QC -> next seal | 139 ms | 406 ms |
+| seal -> seal | 1232 ms | 1205 ms |
+| leader fillTx | 788 ms | 508 ms |
+| leader write | 657 ms | 444 ms |
+
+Deferred execution took 39% off the vote path, exactly as designed, and the
+cycle did not move: the leader now takes 406 ms after the QC to seal the next
+block, where it took 139. Everything else got faster. The speculative build is
+not the cause: 95% of builds hit the parked task (263 of 275 on a leader) and
+96% of builds reload in under 50 ms. The 400 ms is unaccounted for, and it is
+now the whole game -- at 699 ms of vote path, a cycle of ~730 ms would be
+~150k TPS on the B legs.
+
+**Next: a diagnostic, not a lever.** "miner: build phases" and "build triggered
+(leader view)" carry no millisecond stamp, so the build's start cannot be placed
+against the QC. The next round adds `tMs` to both (the 35zzn pattern: a
+diagnostic round that changes no behaviour) and reads back where the leader
+waits between the QC and its seal.
+
 ## 6bl. Round 35zzr: the deferred fold outside the write transaction -- registered before the round ran (2026-09-15)
 
 Runs only if 35zzq passes (no deferred-check failure, no BAD BLOCK); its
