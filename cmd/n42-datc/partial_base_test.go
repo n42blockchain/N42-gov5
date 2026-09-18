@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -67,11 +68,46 @@ func TestE2E_PartialWithBase(t *testing.T) {
 	}
 	dbHi.Close()
 
+	// A mid-build snapshot has no querier meta (the build writes it with its
+	// final flush): drop what this finished build wrote and stamp it back
+	// from the build flags — the stamped values must reproduce the build's.
+	var built map[string][]byte
+	metaKeys := []string{"head", "sched", "stosched", "format", "srcad", "accdepth", "stodepth", "accroot"}
+	dbHi, err = openDatcDB(logger, hi, 4, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dbHi.Update(context.Background(), func(tx kv.RwTx) error {
+		built = map[string][]byte{}
+		for _, k := range metaKeys {
+			v, _ := tx.GetOne(tDatcMeta, []byte(k))
+			built[k] = append([]byte{}, v...)
+			if err := tx.Delete(tDatcMeta, []byte(k)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dbHi.Close()
+	runStampMeta([]string{"--out", hi, "--map.gb", "4", "--sched", "8,64,16,1,4096,4096", "--acc-depth", "4", "--sto-depth", "2", "--acc-root-epoch", "1"})
 	dbQ, err := openDatcDB(logger, hi, 4, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer dbQ.Close()
+	if err := dbQ.View(context.Background(), func(tx kv.Tx) error {
+		for _, k := range metaKeys {
+			v, _ := tx.GetOne(tDatcMeta, []byte(k))
+			if !bytes.Equal(v, built[k]) {
+				t.Errorf("stamp-meta %s = %x, build wrote %x", k, v, built[k])
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	keys := []types.Address{sc.eoas[0], sc.eoas[7], sc.big[0], sc.big[1], sc.small[2], sc.small[5], sc.absent}
 	heights := []uint64{end - 2, end - 1, (split + end) / 2, split + 64, split + 63, split + 7, split + 1, split}

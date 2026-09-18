@@ -12,9 +12,15 @@
 package main
 
 import (
+	"context"
+	"encoding/binary"
+	"flag"
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/n42blockchain/N42/lib/kv"
+	log "github.com/n42blockchain/N42/lib/log/v3"
 )
 
 // epochSchedule holds per-depth epoch lengths. e[d] applies to storage level
@@ -148,4 +154,94 @@ func resolveSchedule(alpha, cbar float64, schedStr, stoSchedStr string, accRoot 
 	}
 	sched.accRoot = accRoot
 	return sched, nil
+}
+
+// writeQuerierMeta records in DatcMeta what a reader needs to interpret the
+// records: head (exclusive), the account and storage ladders, the on-disk
+// format, the storage-root row cadence (srcad) and the record depths. The
+// build writes it with its final flush; stamp-meta writes it into a snapshot
+// of a build that has not finished.
+func writeQuerierMeta(tx kv.RwTx, hi uint64, sched epochSchedule, accDepth, stoDepth int, srcad uint64) error {
+	meta := make([]byte, 8+8+8)
+	binary.BigEndian.PutUint64(meta[0:], hi)
+	binary.BigEndian.PutUint64(meta[8:], sched.e[0])
+	binary.BigEndian.PutUint64(meta[16:], uint64(maxChgDepth))
+	if err := tx.Put(tDatcMeta, []byte("head"), meta); err != nil {
+		return err
+	}
+	var sb, ssb []byte
+	for d := 0; d <= maxChgDepth; d++ {
+		sb = binary.BigEndian.AppendUint64(sb, sched.e[d])
+		ssb = binary.BigEndian.AppendUint64(ssb, sched.lenFor(true, d))
+	}
+	if err := tx.Put(tDatcMeta, []byte("sched"), sb); err != nil {
+		return err
+	}
+	if err := tx.Put(tDatcMeta, []byte("stosched"), ssb); err != nil {
+		return err
+	}
+	if err := tx.Put(tDatcMeta, []byte("format"), []byte{datcFormat}); err != nil {
+		return err
+	}
+	for k, v := range map[string]uint64{"srcad": srcad, "accdepth": uint64(accDepth), "stodepth": uint64(stoDepth), "accroot": sched.accRoot} {
+		if err := tx.Put(tDatcMeta, []byte(k), binary.BigEndian.AppendUint64(nil, v)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// runStampMeta writes the querier meta into a SNAPSHOT of an unfinished
+// build (the build only writes it with its final flush), so verify/proof/
+// bench can read a mid-build checkpoint. The ladders and depths must be the
+// build's own flags; head defaults to the committed resume point
+// (DatcMeta/progress), the first block the snapshot has not built.
+func runStampMeta(args []string) {
+	fs := flag.NewFlagSet("stamp-meta", flag.ExitOnError)
+	out := fs.String("out", "", "snapshot DATC dir (no build running on it)")
+	head := fs.Uint64("head", 0, "head (exclusive); 0 = DatcMeta/progress")
+	schedStr := fs.String("sched", "", "the build's --sched")
+	stoSchedStr := fs.String("sto-sched", "", "the build's --sto-sched")
+	accRoot := fs.Uint64("acc-root-epoch", 0, "the build's --acc-root-epoch")
+	accDepth := fs.Int("acc-depth", 0, "the build's --acc-depth")
+	stoDepth := fs.Int("sto-depth", 0, "the build's --sto-depth (0 with a depth map)")
+	window := fs.Bool("window", false, "the build's --window")
+	mapGB := fs.Int("map.gb", 512, "MDBX map size GB")
+	_ = fs.Parse(args)
+	if *out == "" || *schedStr == "" || *accDepth == 0 {
+		die("stamp-meta needs --out, --sched and --acc-depth")
+	}
+	sched, err := resolveSchedule(0, 0, *schedStr, *stoSchedStr, *accRoot)
+	if err != nil {
+		die("sched: %v", err)
+	}
+	srcad := uint64(1)
+	if *window {
+		srcad = sched.e[1]
+	}
+	modulesInit()
+	db, err := openDatcDB(log.New(), *out, *mapGB, 1)
+	if err != nil {
+		die("open: %v", err)
+	}
+	defer db.Close()
+	err = db.Update(context.Background(), func(tx kv.RwTx) error {
+		hi := *head
+		if hi == 0 {
+			pv, err := tx.GetOne(tDatcMeta, []byte("progress"))
+			if err != nil || len(pv) != 8 {
+				return fmt.Errorf("DatcMeta/progress missing (%v): pass --head", err)
+			}
+			hi = binary.BigEndian.Uint64(pv)
+		}
+		if err := writeQuerierMeta(tx, hi, sched, *accDepth, *stoDepth, srcad); err != nil {
+			return err
+		}
+		fmt.Printf("stamped head=%d sched=%v stosched=%v accdepth=%d stodepth=%d accroot=%d srcad=%d format=%d\n",
+			hi, sched.e, sched.sto, *accDepth, *stoDepth, sched.accRoot, srcad, datcFormat)
+		return nil
+	})
+	if err != nil {
+		die("stamp-meta: %v", err)
+	}
 }

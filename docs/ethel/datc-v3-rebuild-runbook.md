@@ -72,18 +72,34 @@ setsid nohup /data/blockchain/datc-out/run-rebuild-upper.sh > /data/blockchain/d
 脚本**不传 `--start`**：起点从 `DatcMeta/progress` 自动加载（`prep-state` 后就是 17,900,000；停机后是最后提交的批次）。
 停机后若再传 `--start 17900000`，会对已前进的状态重放第一块，金标校验立即 `ROOT MISMATCH` 中止（2026-09-18 发生过一次，数据未损）。
 
-## 3. 中途检查点：上段过 20M 就先 bench
+## 3. 中途检查点：上段过 20M 就先 bench（不停机）
 
-2M 原型只验证了机制，**收益要到 DeFi 密集区才出现**。上段跑过 20,000,000 后立刻跑一次：
+2M 原型只验证了机制，**收益要到 DeFi 密集区才出现**。上段跑过 20,000,000 后在一个快照上跑一次。
+上段是"部分归档"（只有基底之后的历史），读取端要带 `--base`（4b3495f2）：没有历史行的键取纯净基底
+的值，否则所有账户证明在 depth 1 失败；bench 还要 `--from <基底块>` 让样本落在上段范围内。
 
 ```bash
-n42-datc-25m-hi19.bin bench --out datc-v3-hi --headers <hd> --changesets <cs> \
-  --samples 300 --seed 3 --mode mixed --parallel 8 --json bench-v3-partial.json
+D=/data/blockchain/datc-out; CK=$D/datc-v3-hi-ckpt
+# 1) 快照：mdbx 用 reflink（原子；inode 锁会让 build 停 5–10 分钟，3,900 万 extent 的文件约 9 分钟），
+#    再克隆 leafspill（只追加，瞬间）。不要用普通 cp / dd：非原子拷贝的 MDBX 一定撕裂。
+cp --reflink=always $D/datc-v3-hi/mdbx.dat $CK/mdbx.dat
+cp -r --reflink=always $D/datc-v3-hi/leafspill $CK/leafspill
+# 2) 并行收尾（每桶尾部一个截断帧是快照切在批次中间的正常现象；spill 会被保留，读取端不用它）
+n42-datc finalize-leaves --out $CK
+# 3) build 只在最终 flush 才写 querier 元数据，快照里没有：按 build 的参数补写（head 取 progress）
+n42-datc stamp-meta --out $CK --sched 1024,16384,1024,4096,4096,4194304 \
+  --sto-sched 1024,1024,1024,1024,4096,4096 --acc-root-epoch 1 --acc-depth 5 --sto-depth 0 --map.gb 4096
+# 4) bench
+n42-datc bench --out $CK --base $D/datc-v3-hi-base --headers <hd> --changesets <cs> \
+  --from 17904096 --samples 300 --seed 3 --mode mixed --parallel 8 --map.gb 4096 --json bench-v3-partial.json
+rm -rf $CK   # 用完即删：快照存在期间 build 的每个脏页都要 CoW
 ```
+
+快照里各层"当前 epoch"还没 flush，读取端会折叠补齐——数字只会偏悲观。
 
 对照现有归档的同类数字：账户 p50 164ms / ≤1s 98.4%；带槽 p50 177ms / p90 148s / p99 22min。
 **带槽 p90 必须显著下降**（预期进入亚秒）。若没有，停下来查 `DatcStoDepth` 是否按合约写出、
-以及慢查询的折叠深度（`DATC_FOLD_TRACE=1 n42-datc proof ...`），不要闷头跑完一周。
+以及慢查询的折叠深度（`DATC_TRACE=1 n42-datc proof ...`），不要闷头跑完一周。
 
 ## 4. 合并与验收
 

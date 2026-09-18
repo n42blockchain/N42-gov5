@@ -157,6 +157,10 @@ func main() {
 		runSegCount(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "stamp-meta" {
+		runStampMeta(os.Args[2:])
+		return
+	}
 	if os.Args[1] == "finalize-leaves" {
 		// Crash recovery: turn an interrupted build's leaf/chg spill files into
 		// queryable segments without re-running the build.
@@ -1398,34 +1402,6 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 					return err
 				}
 			}
-			meta := make([]byte, 8+8+8)
-			binary.BigEndian.PutUint64(meta[0:], hi)
-			binary.BigEndian.PutUint64(meta[8:], uint64(b.sched.e[0]))
-			binary.BigEndian.PutUint64(meta[16:], uint64(maxChgDepth))
-			if err := tx.Put(tDatcMeta, []byte("head"), meta); err != nil {
-				tx.Rollback()
-				return err
-			}
-			var sb []byte
-			for d := 0; d <= maxChgDepth; d++ {
-				sb = binary.BigEndian.AppendUint64(sb, b.sched.e[d])
-			}
-			if err := tx.Put(tDatcMeta, []byte("sched"), sb); err != nil {
-				tx.Rollback()
-				return err
-			}
-			var ssb []byte
-			for d := 0; d <= maxChgDepth; d++ {
-				ssb = binary.BigEndian.AppendUint64(ssb, b.sched.lenFor(true, d))
-			}
-			if err := tx.Put(tDatcMeta, []byte("stosched"), ssb); err != nil {
-				tx.Rollback()
-				return err
-			}
-			if err := tx.Put(tDatcMeta, []byte("format"), []byte{datcFormat}); err != nil {
-				tx.Rollback()
-				return err
-			}
 			// Storage-root history cadence: 1 = a row per changed block
 			// (exact floor); W = a row per window (the reader must check
 			// the depth-0 change window before trusting the floor).
@@ -1433,11 +1409,9 @@ func (b *builder) run(start, end, batchBlocks uint64) error {
 			if b.windowing {
 				cad = W
 			}
-			for k, v := range map[string]uint64{"srcad": cad, "accdepth": uint64(b.accDepth), "stodepth": uint64(b.stoDepth), "accroot": b.sched.accRoot} {
-				if err := tx.Put(tDatcMeta, []byte(k), binary.BigEndian.AppendUint64(nil, v)); err != nil {
-					tx.Rollback()
-					return err
-				}
+			if err := writeQuerierMeta(tx, hi, b.sched, b.accDepth, b.stoDepth, cad); err != nil {
+				tx.Rollback()
+				return err
 			}
 		}
 		// Drain the aggregated change events, then the sorted-batch buffers,
