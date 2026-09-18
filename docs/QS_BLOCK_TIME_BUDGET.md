@@ -4625,6 +4625,33 @@ above 90% of full-block builds. Falsified if QC -> seal stays above 250 ms, if
 the hit rate falls, or by any BAD BLOCK or root mismatch (a build that keeps
 running across a view change is the risk the interrupt existed to avoid).
 
+## 6bp. Candidate: the Prague delegation check reads the recipient of every transaction (found 2026-09-18, not yet a round)
+
+`StateTransition.TransitionDb` runs, for every transaction under Prague:
+
+    if rules.IsPrague {
+        if delegatedAddr, ok := vm2.ParseDelegation(st.state.GetCode(st.to())); ok { ... }
+    }
+
+Its only effect is to warm the access list with an EIP-7702 delegate. On a
+follower's CPU profile late in a B leg (35zzo, node3) `GetCode` is 2.9% of the
+node, and 99.7% of that is `getStateObject`: it is the account READ, not the
+code bytes. At ~4 us a call it is missing every cache -- the parallel executor
+gives each transaction its own IntraBlockState, so a block pays ~163,000 reads
+for ~22,857 distinct recipients.
+
+It also undoes the delta-credit design (6bd): a transfer deliberately does NOT
+read its recipient, crediting it in a buffer that the block-end fold applies.
+The delegation check reads it anyway.
+
+**Fix to test:** a per-block "does this address have code" cache shared by the
+workers, invalidated when a 7702 authorisation (or any SetCode) gives an
+account code within the block; the check consults it and only calls GetCode on
+a hit. Expected: ~140,000 account reads a block removed on every node, the
+executor's ReadAccountData share (3.1% of a follower's CPU) mostly with it.
+This is consensus-path code and needs the 7702 delegation tests to cover the
+invalidation before it runs on the fleet.
+
 ## 6bl. Round 35zzr: the deferred fold outside the write transaction -- registered before the round ran (2026-09-15)
 
 Runs only if 35zzq passes (no deferred-check failure, no BAD BLOCK); its
