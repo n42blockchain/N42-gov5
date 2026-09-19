@@ -221,5 +221,5 @@ eth-el 日志里的 `eth_getProof served from the DATC archive ... blocks [0, N)
 
 | 项 | 为什么 | 怎么做 |
 |---|---|---|
-| 归档 head → 链头的证明 | DATC 按周更新，最近几天的高度没有证明 | 让 eth-el 的 CS sink 直接喂一个常驻的 DATC 增量构建（输入就是它自己写的 acctcs/storcs），把 head 滞后从一周降到分钟级；`derive-ns --from` 已支持小步追加 |
+| 归档 head → 链头的证明 | DATC 按周更新，最近几天的高度没有证明 | **方案已定、未实施：`datc-head-to-tip-plan-2026-09-19.md`**——冷段 + MDBX 热尾 + 未 finalized 窗口三层读取；热尾由 eth-el 在算状态根时顺带写（同一个 `TrieRootComputer`，不要第二份状态）。过渡办法：`weekly` 每天跑 |
 | 分发 | 800 GB 的只读段适合做成可下载的 archive-plus 数据包 | 段是内容不变的文件，按表 + 桶分片、附 CRC 清单 |
