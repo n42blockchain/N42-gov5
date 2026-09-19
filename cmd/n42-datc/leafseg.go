@@ -1520,18 +1520,41 @@ func (c *segLeafCursor) Seek(k []byte) ([]byte, []byte, error) {
 			fi, ri = 0, 0 // everything in a later bucket is > k
 		} else {
 			// Last frame whose firstKey <= k (or frame 0 if k precedes all).
-			fi = sort.Search(nf, func(i int) bool {
-				return bytes.Compare(sf.firstKey(i), k) > 0
+			// A fold seeks forward, key after key, mostly a few rows or frames
+			// ahead: from a cursor already standing in this bucket at or before
+			// k, gallop from its frame instead of bisecting the whole index
+			// (tens of thousands of cold 68-byte keys per probe).
+			lo, hi, riLo := 0, nf, 0
+			var d *decodedFrame
+			if !c.eof && c.cur != nil && c.bi == bi && c.fi < nf {
+				if ck, _ := c.cur.kv(c.ri); bytes.Compare(ck, k) <= 0 {
+					lo = c.fi
+					step := 1
+					for lo+step < nf && bytes.Compare(sf.firstKey(lo+step), k) <= 0 {
+						lo += step
+						step *= 2
+					}
+					if lo+step < nf {
+						hi = lo + step + 1
+					}
+				}
+			}
+			fi = lo + sort.Search(hi-lo, func(i int) bool {
+				return bytes.Compare(sf.firstKey(lo+i), k) > 0
 			}) - 1
 			if fi < 0 {
 				fi = 0
 			}
-			d, err := c.set.decodeFrame(bucket, fi)
-			if err != nil {
+			if !c.eof && c.cur != nil && c.bi == bi && c.fi == fi {
+				d = c.cur // same frame: no cache lookup
+				if ck, _ := d.kv(c.ri); bytes.Compare(ck, k) <= 0 {
+					riLo = c.ri
+				}
+			} else if d, err = c.set.decodeFrame(bucket, fi); err != nil {
 				return nil, nil, err
 			}
-			ri = sort.Search(len(d.offs), func(i int) bool {
-				kk, _ := d.kv(i)
+			ri = riLo + sort.Search(len(d.offs)-riLo, func(i int) bool {
+				kk, _ := d.kv(riLo + i)
 				return bytes.Compare(kk, k) >= 0
 			})
 			if ri == len(d.offs) {

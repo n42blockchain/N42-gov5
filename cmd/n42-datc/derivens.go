@@ -113,7 +113,11 @@ func nodeRows(set *leafSegSet, domain, path []byte) ([]deriveRow, error) {
 	odd := len(path)%2 == 1
 	var rows []deriveRow
 	c := set.Cursor()
-	k, v, err := c.Seek(prefix)
+	start := prefix
+	if odd {
+		start = append(append([]byte{}, prefix...), path[len(path)-1]<<4)
+	}
+	k, v, err := c.Seek(start)
 	for ; k != nil; k, v, err = c.Next() {
 		if err != nil {
 			return nil, err

@@ -199,3 +199,65 @@ func TestFinalizeFalseMagic(t *testing.T) {
 		t.Fatalf("rows lost: got %d want %d", n, rows)
 	}
 }
+
+// TestLeafSegSeekFromPosition: a Seek from a positioned cursor (the forward
+// gallop) lands exactly where a Seek from a fresh cursor does, for targets
+// before, inside and far beyond the current frame, across buckets.
+func TestLeafSegSeekFromPosition(t *testing.T) {
+	dir := t.TempDir()
+	w, err := newLeafSpillWriter(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rng := uint64(4242)
+	next := func() uint64 { rng = rng*6364136223846793005 + 1442695040888963407; return rng >> 11 }
+	var keys [][]byte
+	for i := 0; i < 40000; i++ {
+		k := make([]byte, 36)
+		k[0] = byte(next() % 5) // few buckets, many frames each
+		binary.BigEndian.PutUint64(k[1:], next()%3000)
+		binary.BigEndian.PutUint32(k[32:], uint32(i))
+		v := make([]byte, 30+int(next()%60))
+		if err := w.add(leafTableA, k, v); err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, k)
+	}
+	if err := w.close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := finalizeLeafSegments(dir); err != nil {
+		t.Fatal(err)
+	}
+	set, ok, err := openLeafSegSet(dir, leafTableA, newFrameLRU())
+	if err != nil || !ok {
+		t.Fatalf("open: ok=%v err=%v", ok, err)
+	}
+	defer set.Close()
+	c := set.Cursor()
+	for i := 0; i < 20000; i++ {
+		target := append([]byte{}, keys[int(next()%uint64(len(keys)))]...)
+		switch next() % 4 {
+		case 0:
+			target[35]++ // just past an existing key
+		case 1:
+			target = target[:20] // a prefix
+		case 2:
+			target[0] = byte(next() % 7) // another (or a missing) bucket
+		}
+		if next()%8 == 0 {
+			c.Next() // wander off the last seek's row
+		}
+		gk, gv, err := c.Seek(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wk, wv, err := set.Cursor().Seek(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(gk, wk) || !bytes.Equal(gv, wv) {
+			t.Fatalf("seek %d to %x: positioned cursor %x, fresh cursor %x", i, target, gk, wk)
+		}
+	}
+}

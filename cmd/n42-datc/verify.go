@@ -1323,7 +1323,13 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 	var haveFloor bool
 	linearSteps := 0
 
-	k, v, err := c.Seek(bytePrefix)
+	// An odd path ends inside a byte: start at that nibble's first key instead
+	// of walking the lower sibling nibbles' keys to get there.
+	start := bytePrefix
+	if oddNib {
+		start = append(append([]byte{}, bytePrefix...), oddVal<<4)
+	}
+	k, v, err := c.Seek(start)
 	for k != nil {
 		if err != nil {
 			return nil, err
@@ -1337,9 +1343,7 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 		}
 		hk := k[:keyLen]
 		if oddNib && hk[len(bytePrefix)]>>4 != oddVal {
-			// Wrong odd-nibble branch: skip this whole key.
-			k, v, err = seekNextKey(c, hk)
-			continue
+			break // keys are sorted: past this path's nibble, the rest is a sibling's
 		}
 		if !bytes.Equal(hk, curKey) {
 			if err := emit(curKey, haveFloor, ifFloor(haveFloor, curVal)); err != nil {
@@ -1353,7 +1357,15 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 		switch {
 		case blk > n:
 			// Versions are ascending: everything further in this key is past n.
-			k, v, err = seekNextKey(c, hk)
+			// Most keys have a version or two left, so step before seeking.
+			for skip := 0; skip < linearBudget; skip++ {
+				if k, v, err = c.Next(); err != nil || k == nil || len(k) != keyLen+blkLen || !bytes.Equal(k[:keyLen], curKey) {
+					break
+				}
+			}
+			if err == nil && k != nil && len(k) == keyLen+blkLen && bytes.Equal(k[:keyLen], curKey) {
+				k, v, err = seekNextKey(c, curKey)
+			}
 			continue
 		case linearSteps < linearBudget:
 			curVal = append(curVal[:0], v...)
@@ -1368,6 +1380,11 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 			if ferr != nil {
 				return nil, ferr
 			}
+			// The seek lands on the first row past (key, n). When that row
+			// already belongs to another key — the usual case at a height past
+			// the key's last write — it IS the next key: step back for the
+			// floor, step forward again, and the second seek is saved.
+			landedOnNext := fk != nil && !(len(fk) == keyLen+blkLen && bytes.Equal(fk[:keyLen], curKey))
 			if fk == nil {
 				fk, fv, ferr = c.Last()
 			} else {
@@ -1376,12 +1393,16 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 			if ferr != nil {
 				return nil, ferr
 			}
-			if fk != nil && len(fk) == keyLen+blkLen && bytes.Equal(fk[:keyLen], hk) {
+			if fk != nil && len(fk) == keyLen+blkLen && bytes.Equal(fk[:keyLen], curKey) {
 				curVal = append(curVal[:0], fv...)
 				haveFloor = true
 				q.leafReads++
 			}
-			k, v, err = seekNextKey(c, hk)
+			if landedOnNext {
+				k, v, err = c.Next()
+			} else {
+				k, v, err = seekNextKey(c, curKey)
+			}
 			continue
 		}
 		k, v, err = c.Next()

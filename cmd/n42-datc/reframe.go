@@ -156,6 +156,7 @@ func runReframe(args []string) {
 	frameKiB := fs.Int("frame-kib", 0, "uncompressed KiB per frame; 0 = each table's default")
 	workers := fs.Int("workers", 16, "segments rewritten at once")
 	check := fs.Bool("check", true, "read every rewritten segment back and compare its rows with the source")
+	match := fs.String("match", "", "only segments whose file name matches this glob (e.g. 's.ab.seg'); for trying a frame size on a few buckets")
 	_ = fs.Parse(args)
 	if *out == "" {
 		die("--out required")
@@ -190,6 +191,13 @@ func runReframe(args []string) {
 		}
 		sort.Strings(names)
 		for _, n := range names {
+			if *match != "" {
+				if ok, err := filepath.Match(*match, filepath.Base(n)); err != nil {
+					die("--match: %v", err)
+				} else if !ok {
+					continue
+				}
+			}
 			jobs = append(jobs, job{filepath.Base(n), target})
 		}
 	}
