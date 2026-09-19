@@ -1234,6 +1234,9 @@ type foldLeaf struct {
 // history: per key, the floor entry ≤ N is its value (empty = absent).
 func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) {
 	parts := q.birthPartsAt(domain, n)
+	if parts == nil && domain != nil && len(path) == 0 && q.segS != nil && q.base == nil {
+		return q.asOfLeavesWhole(domain, n)
+	}
 	if parts == nil {
 		c, err := q.leafCursor(domain != nil)
 		if err != nil {

@@ -1291,6 +1291,12 @@ type leafSegSet struct {
 	cache *frameLRU
 }
 
+// clone is another reader of the same segments for another goroutine: the
+// files and their indexes are shared, the frame cache is its own.
+func (s *leafSegSet) clone(cacheFrames int) *leafSegSet {
+	return &leafSegSet{paths: s.paths, ids: s.ids, table: s.table, open: make(map[int]*segFileEntry), cache: newFrameLRUSize(cacheFrames)}
+}
+
 // file returns the bucket's segment, opening it on first use.
 func (s *leafSegSet) file(bucket int) (*leafSegFile, error) {
 	if e := s.open[bucket]; e != nil {

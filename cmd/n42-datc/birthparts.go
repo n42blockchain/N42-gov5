@@ -110,6 +110,56 @@ func (q *querier) birthPartsAt(domain []byte, n uint64) []*leafSegSet {
 	return parts
 }
 
+// wholeFoldWorkers is how many goroutines share the fold of a whole storage
+// trie. A contract below the record threshold has no records at all, and its
+// fold is the one cost of its proofs; the 16 first-nibble subtrees are
+// independent scans, so splitting them is pure wall-clock gain.
+const wholeFoldWorkers = 4
+
+// asOfLeavesWhole is asOfLeaves(domain, nil, n) over the main history, its 16
+// first-nibble ranges scanned concurrently.
+func (q *querier) asOfLeavesWhole(domain []byte, n uint64) ([]foldLeaf, error) {
+	var (
+		wg     sync.WaitGroup
+		parts  [16][]foldLeaf
+		errs   [16]error
+		reads  [16]int
+		nibble = make(chan byte, 16)
+	)
+	for nib := byte(0); nib < 16; nib++ {
+		nibble <- nib
+	}
+	close(nibble)
+	for w := 0; w < wholeFoldWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			set := q.segS.clone(16)
+			defer set.Close()
+			sub := &querier{} // storage leaves need nothing of the querier but its read counter
+			for nib := range nibble {
+				before := sub.leafReads
+				parts[nib], errs[nib] = sub.asOfLeavesFrom(set.Cursor(), false, domain, []byte{nib}, n)
+				reads[nib] = sub.leafReads - before
+			}
+		}()
+	}
+	wg.Wait()
+	var out []foldLeaf
+	for nib := range parts {
+		if errs[nib] != nil {
+			return nil, errs[nib]
+		}
+		q.leafReads += reads[nib]
+		for _, lf := range parts[nib] {
+			// Remainders come back relative to the one-nibble path.
+			lf.remainder = append([]byte{byte(nib)}, lf.remainder...)
+			out = append(out, lf)
+		}
+	}
+	return out, nil
+}
+
 // mergeFoldLeaves merges two key-sorted, disjoint leaf lists.
 func mergeFoldLeaves(a, b []foldLeaf) []foldLeaf {
 	if len(a) == 0 {

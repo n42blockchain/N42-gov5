@@ -179,12 +179,14 @@ func runBench(args []string) {
 	baseDir := fs.String("base", "", "partial archive: the pristine prep-state base it was built from (keys untouched since the base read their base value)")
 	frameCache := fs.Int("frame-cache", defaultFrameCache, "decompressed segment frames kept in RAM per querier (256 KiB each)")
 	cpuProfile := fs.String("cpuprofile", "", "write a CPU profile of the query phase to this file")
+	crossCheck := fs.Bool("cross-check", false, "also re-hash every folded subtree with the second builder (every proof is verified against the header root regardless)")
 	queries := fs.String("queries", "", "run the planned queries of this JSON file (bench-plan) instead of sampling the changesets")
 	_ = fs.Parse(args)
 	if *out == "" {
 		die("--out required")
 	}
 	defaultFrameCache = *frameCache
+	proofCrossCheck = *crossCheck
 
 	logger := log.New()
 	modulesInit()

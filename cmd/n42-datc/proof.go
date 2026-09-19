@@ -224,6 +224,12 @@ func mleavesOf(raw []foldLeaf) ([]mleaf, error) {
 // ---------------------------------------------------------------------------
 // proof assembly
 
+// proofCrossCheck makes proofPath hash every folded subtree a second time with
+// the GenStructStep fold and compare. It doubles the hashing of a fold; bench
+// turns it off because it verifies every proof against the header root, which
+// is the stronger check.
+var proofCrossCheck = true
+
 // proofPath returns the EIP-1186 node list for `fullNib` (the key's nibbles
 // relative to the domain) as of block N: record-path branches on top, then
 // the built-from-leaves subtree below.
@@ -276,6 +282,9 @@ func (q *querier) proofPath(domain, fullNib []byte, n uint64) ([][]byte, error) 
 			sub := mptNodeRLP(leaves, 0, fullNib[len(path):], &nodes)
 			// Cross-check: the independently built subtree must reproduce the
 			// fold's hash (the value committed by the parent branch).
+			if !proofCrossCheck {
+				return nodes, nil
+			}
 			if want, exists, ferr := foldLeaves(raw); ferr == nil && exists {
 				got := keccak(sub)
 				if got != want {
