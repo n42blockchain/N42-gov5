@@ -25,6 +25,7 @@ import (
 	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/consensus"
+	"github.com/n42blockchain/N42/internal/datc"
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/internal/ethel/rpccaps"
 	"github.com/n42blockchain/N42/internal/ethel/snapshotreader"
@@ -56,6 +57,11 @@ type Config struct {
 	// full/archive (which read PlainState or hashed) and M0 (not state-backed).
 	Snapshot *snapshotreader.Segment
 	Code     state.CodeSource
+	// DATCDir, when set, is a DATC archive (the archive-plus tier) that serves
+	// eth_getProof for every height below its head; DATCVerify says when its
+	// proofs are checked against this node's headers first (datc.go).
+	DATCDir    string
+	DATCVerify DATCVerify
 }
 
 // Service is the public RPC server lifecycle.
@@ -66,6 +72,7 @@ type Service struct {
 	rpc      *rpc.Server
 	server   *http.Server
 	listener net.Listener
+	archive  *datc.Archive
 }
 
 // Disabled returns an inert service (Start/Stop no-op) — used when construction
@@ -126,7 +133,22 @@ func New(cfg Config, chainCfg *params.ChainConfig, engine consensus.Engine, db k
 		}
 	}
 
-	return &Service{cfg: cfg, chainCfg: chainCfg, db: db, rpc: srv}, nil
+	svc := &Service{cfg: cfg, chainCfg: chainCfg, db: db, rpc: srv}
+	if cfg.DATCDir != "" {
+		a, err := datc.OpenArchive(cfg.DATCDir, datc.ArchiveOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("publicrpc: DATC archive: %w", err)
+		}
+		verify := cfg.DATCVerify
+		if verify == "" {
+			verify = DATCVerifyHeader
+		}
+		core.SetProofSource(&datcSource{archive: a, verify: verify})
+		svc.archive = a
+		start, head := a.Range()
+		log.Info("eth-el: eth_getProof served from the DATC archive", "dir", cfg.DATCDir, "blocks", fmt.Sprintf("[%d, %d)", start, head), "verify", verify)
+	}
+	return svc, nil
 }
 
 // currentHead reads the canonical head number under a short read tx (0 if
@@ -175,14 +197,20 @@ func (s *Service) Start(_ context.Context) error {
 	return nil
 }
 
-// Stop shuts the server down.
+// Stop shuts the server down, then releases the DATC archive (its database
+// closes only once no proof is in flight).
 func (s *Service) Stop() error {
-	if s.server == nil {
-		return nil
+	var err error
+	if s.server != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err = s.server.Shutdown(ctx)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return s.server.Shutdown(ctx)
+	if s.archive != nil {
+		s.archive.Close()
+		s.archive = nil
+	}
+	return err
 }
 
 // buildStateReader selects the modules/state reader for the post-state of

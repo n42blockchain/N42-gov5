@@ -122,6 +122,10 @@ type API struct {
 	// reader (WarmOverlayReader latest / historicalstate historical), since eth-el
 	// keeps no PlainState. blockNum is the block whose post-state is requested.
 	stateReaderProvider func(tx kv.Tx, blockNum uint64) (state.StateReader, error)
+
+	// proofSource, when set, answers eth_getProof for the heights it holds
+	// ahead of this node's own state (eth-el: the DATC archive-plus tier).
+	proofSource ProofSource
 }
 
 // SetStateReaderProvider installs a custom state-reader factory used by State()
@@ -130,6 +134,26 @@ type API struct {
 func (n *API) SetStateReaderProvider(fn func(tx kv.Tx, blockNum uint64) (state.StateReader, error)) {
 	n.stateReaderProvider = fn
 }
+
+// ProofSource answers eth_getProof from something that holds proofs for past
+// heights — eth-el's DATC archive (archive-plus tier) — instead of this node's
+// own state, which on eth-el has no historical state and no trie-backed proof
+// provider. It returns the whole answer, values included, because the node
+// could not read those values at a historical height either.
+type ProofSource interface {
+	// ProveAt answers for the post-state of blockNum. It returns
+	// ErrProofNotCovered when it holds no state for that height; any other
+	// error is final (a source that cannot prove what it holds must not be
+	// papered over by a weaker path).
+	ProveAt(ctx context.Context, tx kv.Tx, address types.Address, storageKeys []string, blockNum uint64) (*AccountResult, error)
+}
+
+// ErrProofNotCovered: the ProofSource has no state for the requested height;
+// eth_getProof falls back to the node's own path.
+var ErrProofNotCovered = errors.New("proof source does not cover this height")
+
+// SetProofSource installs the historical proof source (nil clears it).
+func (n *API) SetProofSource(src ProofSource) { n.proofSource = src }
 
 // StateReaderProvider exposes the installed provider (nil on n42), so trace
 // backends can build state-at-block over the same reader.

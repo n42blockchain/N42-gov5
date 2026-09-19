@@ -147,6 +147,8 @@ func flags() []cli.Flag {
 		&cli.StringFlag{Name: "publicrpc.host", Value: "127.0.0.1", Usage: "Public JSON-RPC listen host"},
 		&cli.IntFlag{Name: "publicrpc.port", Value: 20015, Usage: "Public JSON-RPC listen port"},
 		&cli.StringFlag{Name: "publicrpc.mode", Value: "archive", Usage: "Data-availability mode for RPC capability gating: archive|full|m1|m0"},
+		&cli.StringFlag{Name: "publicrpc.datc", Usage: "DATC archive directory (archive-plus tier): serve eth_getProof at any height below its head from it"},
+		&cli.StringFlag{Name: "publicrpc.datc.verify", Value: "header", Usage: "Check DATC proofs against this node's header stateRoot before serving: header (when the node has the header) | strict (refuse without one) | off"},
 		&cli.BoolFlag{Name: "eldevp2p.enabled", Usage: "Run an embedded Ethereum devp2p (eth/68-69) listener so eth-el catches up via EL p2p directly, bypassing a CL"},
 		&cli.StringFlag{Name: "eldevp2p.listen", Usage: "EL devp2p TCP listen address (default :30303)", Value: ":30303"},
 		&cli.IntFlag{Name: "eldevp2p.max-peers", Usage: "Maximum simultaneous EL devp2p peers (0 = built-in default, 200)", Value: 0},
@@ -420,6 +422,10 @@ func run(c *cli.Context) error {
 	// Public (non-JWT) JSON-RPC — the Blockscout-facing endpoint. Reuses the
 	// shared eth/net/web3 + debug_/trace_ handlers over the eth-el datadir,
 	// gated per data mode by rpccaps. Off unless --publicrpc.enabled.
+	datcVerify, err := publicrpc.ParseDATCVerify(c.String("publicrpc.datc.verify"))
+	if err != nil {
+		return err
+	}
 	node.RegisterFactory(func(n *ethel.Node) ethel.Service {
 		svc, err := publicrpc.New(publicrpc.Config{
 			Enabled:         c.Bool("publicrpc.enabled"),
@@ -427,6 +433,8 @@ func run(c *cli.Context) error {
 			Port:            c.Int("publicrpc.port"),
 			Mode:            publicrpc.ParseMode(c.String("publicrpc.mode")),
 			HashedCanonical: c.Bool("hashed-canonical"),
+			DATCDir:         c.String("publicrpc.datc"),
+			DATCVerify:      datcVerify,
 		}, n.ChainConfig(), n.Engine(), n.RwDB(), txPool)
 		if err != nil {
 			log.Error("eth-el: public RPC init failed", "err", err)
