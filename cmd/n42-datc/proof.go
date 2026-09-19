@@ -196,6 +196,11 @@ func (q *querier) subtreeLeaves(domain, path []byte, n uint64) ([]mleaf, error) 
 	if err != nil {
 		return nil, err
 	}
+	return mleavesOf(raw)
+}
+
+// mleavesOf converts as-of leaves to mleaf form.
+func mleavesOf(raw []foldLeaf) ([]mleaf, error) {
 	out := make([]mleaf, 0, len(raw))
 	for _, lf := range raw {
 		nib := lf.remainder[:len(lf.remainder)-1] // strip the 0x10 terminator
@@ -252,7 +257,14 @@ func (q *querier) proofPath(domain, fullNib []byte, n uint64) ([][]byte, error) 
 			usable = true
 		}
 		if !usable {
-			leaves, err := q.subtreeLeaves(domain, path, n)
+			// One scan of the leaf history serves both the subtree builder and
+			// its cross-check: the scan is what a fold costs.
+			q.folds++
+			raw, err := q.asOfLeaves(domain, path, n)
+			if err != nil {
+				return nil, err
+			}
+			leaves, err := mleavesOf(raw)
 			if err != nil {
 				return nil, err
 			}
@@ -264,7 +276,7 @@ func (q *querier) proofPath(domain, fullNib []byte, n uint64) ([][]byte, error) 
 			sub := mptNodeRLP(leaves, 0, fullNib[len(path):], &nodes)
 			// Cross-check: the independently built subtree must reproduce the
 			// fold's hash (the value committed by the parent branch).
-			if want, exists, ferr := q.foldAt(domain, path, n); ferr == nil && exists {
+			if want, exists, ferr := foldLeaves(raw); ferr == nil && exists {
 				got := keccak(sub)
 				if got != want {
 					return nil, fmt.Errorf("subtree builder mismatch at path %x: built %x fold %x (%d leaves)",

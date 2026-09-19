@@ -38,6 +38,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	mdbxkv "github.com/n42blockchain/N42/lib/kv/mdbx"
 	log "github.com/n42blockchain/N42/lib/log/v3"
+	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
 
 // benchSample is one (address, slots, height) query.
@@ -46,6 +47,12 @@ type benchSample struct {
 	Slots   []types.Hash  `json:"slots,omitempty"`
 	Touched uint64        `json:"touched"` // block that touched the address
 	Height  uint64        `json:"height"`  // queried height
+	// Planned queries (--queries, written by bench-plan) name the account and
+	// slots by their HASHED keys — the leaf history knows no preimages — and
+	// carry the stratum they were drawn for.
+	AddrHash   *types.Hash  `json:"addrHash,omitempty"`
+	SlotHashes []types.Hash `json:"slotHashes,omitempty"`
+	Class      string       `json:"class,omitempty"`
 }
 
 // benchResult is one measured query.
@@ -67,6 +74,13 @@ func proveAt(q *querier, s benchSample, wantRoot types.Hash) benchResult {
 	q.recs, q.folds, q.leafReads = 0, 0, 0
 	t0 := time.Now()
 	ah := keccak(s.Addr[:])
+	if s.AddrHash != nil {
+		ah = *s.AddrHash
+	}
+	slotHashes := append([]types.Hash{}, s.SlotHashes...)
+	for _, slot := range s.Slots {
+		slotHashes = append(slotHashes, keccak(slot[:]))
+	}
 	accNib := nibblesOfBytes(ah[:])
 	accNodes, err := q.proofPath(nil, accNib, s.Height)
 	if err != nil {
@@ -114,8 +128,8 @@ func proveAt(q *querier, s benchSample, wantRoot types.Hash) benchResult {
 	r.Live = accLive
 	r.AccountMs = float64(time.Since(t0).Microseconds()) / 1000
 	if accLive && storageHash != emptyTrieRoot {
-		for _, slot := range s.Slots {
-			sh := keccak(slot[:])
+		for _, sh := range slotHashes {
+			slot := sh
 			sNib := nibblesOfBytes(sh[:])
 			sNodes, err := q.proofPath(ah[:], sNib, s.Height)
 			if err != nil {
@@ -165,6 +179,7 @@ func runBench(args []string) {
 	baseDir := fs.String("base", "", "partial archive: the pristine prep-state base it was built from (keys untouched since the base read their base value)")
 	frameCache := fs.Int("frame-cache", defaultFrameCache, "decompressed segment frames kept in RAM per querier (256 KiB each)")
 	cpuProfile := fs.String("cpuprofile", "", "write a CPU profile of the query phase to this file")
+	queries := fs.String("queries", "", "run the planned queries of this JSON file (bench-plan) instead of sampling the changesets")
 	_ = fs.Parse(args)
 	if *out == "" {
 		die("--out required")
@@ -191,10 +206,6 @@ func runBench(args []string) {
 		die("open headerc: %v", err)
 	}
 	defer hdrs.Close()
-	acctTbl := openCS(*csDir, "acctcs")
-	defer acctTbl.Close()
-	storTbl := openCS(*csDir, "storcs")
-	defer storTbl.Close()
 
 	// Load the segment indexes up front, as a long-lived reader would, so the
 	// latencies below are proofs and not first-touch index parsing.
@@ -223,6 +234,28 @@ func runBench(args []string) {
 	var set []benchSample
 	if *from >= head {
 		die("--from %d is not below head %d", *from, head)
+	}
+	if *queries != "" {
+		raw, err := os.ReadFile(*queries)
+		if err != nil {
+			die("queries: %v", err)
+		}
+		if err := json.Unmarshal(raw, &set); err != nil {
+			die("queries: %v", err)
+		}
+		for _, s := range set {
+			if s.Height >= head {
+				die("queries: height %d is not below head %d", s.Height, head)
+			}
+		}
+		*samples = 0 // no changeset sampling below
+	}
+	var acctTbl, storTbl *freezer.FreezerTable
+	if *samples > 0 {
+		acctTbl = openCS(*csDir, "acctcs")
+		defer acctTbl.Close()
+		storTbl = openCS(*csDir, "storcs")
+		defer storTbl.Close()
 	}
 	for tries := 0; len(set) < *samples && tries < *samples*20; tries++ {
 		n := *from + rng.Uint64()%(head-*from)
@@ -275,7 +308,7 @@ func runBench(args []string) {
 		set = append(set, s)
 	}
 	if len(set) == 0 {
-		die("no samples could be drawn from the changesets")
+		die("no samples: nothing could be drawn from the changesets, or --queries is empty")
 	}
 
 	// Run.
@@ -366,12 +399,37 @@ func runBench(args []string) {
 		pct(accMs, .5), pct(accMs, .9), pct(accMs, .99), pct(accMs, 1), under(accMs, 100), under(accMs, 1000))
 	fmt.Printf("account+slots  ms: p50=%.1f p90=%.1f p99=%.1f max=%.1f  ≤100ms %.1f%%  ≤1s %.1f%%\n",
 		pct(totMs, .5), pct(totMs, .9), pct(totMs, .99), pct(totMs, 1), under(totMs, 100), under(totMs, 1000))
+	// Per stratum (planned queries): the point of a stratified bench is that
+	// no class hides behind the others' median.
+	byClass := map[string][]float64{}
+	for _, r := range results {
+		if r.Class != "" && r.Err == "" {
+			byClass[r.Class] = append(byClass[r.Class], r.TotalMs)
+		}
+	}
+	if len(byClass) > 0 {
+		classes := make([]string, 0, len(byClass))
+		for c := range byClass {
+			classes = append(classes, c)
+		}
+		sort.Strings(classes)
+		fmt.Println("by class (account+slots ms):")
+		for _, c := range classes {
+			v := byClass[c]
+			fmt.Printf("  %-22s n=%-4d p50=%8.1f p90=%8.1f max=%8.1f  ≤200ms %5.1f%%  ≤1s %5.1f%%\n",
+				c, len(v), pct(v, .5), pct(v, .9), pct(v, 1), under(v, 200), under(v, 1000))
+		}
+	}
 	sort.Slice(results, func(i, j int) bool { return results[i].TotalMs > results[j].TotalMs })
 	fmt.Println("slowest:")
 	for i := 0; i < len(results) && i < 8; i++ {
 		r := results[i]
-		fmt.Printf("  %7.1f ms  addr=%x touched=%d height=%d slots=%d live=%v recs=%d folds=%d leafReads=%d %s\n",
-			r.TotalMs, r.Addr[:6], r.Touched, r.Height, len(r.Slots), r.Live, r.Recs, r.Folds, r.LeafReads, r.Err)
+		who := fmt.Sprintf("addr=%x", r.Addr[:6])
+		if r.AddrHash != nil {
+			who = fmt.Sprintf("addrHash=%x %s", r.AddrHash[:6], r.Class)
+		}
+		fmt.Printf("  %7.1f ms  %s touched=%d height=%d slots=%d live=%v recs=%d folds=%d leafReads=%d %s\n",
+			r.TotalMs, who, r.Touched, r.Height, len(r.Slots)+len(r.SlotHashes), r.Live, r.Recs, r.Folds, r.LeafReads, r.Err)
 	}
 	if fails > 0 {
 		fmt.Println("failures:")

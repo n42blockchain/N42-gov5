@@ -256,10 +256,13 @@ func loadQuerierCache(tx kv.Tx, out string, foldOverride int, frameCache int) (*
 	for _, e := range []struct {
 		tab int
 		dst **leafSegSet
-	}{{segTabLeafA, &q.segA}, {segTabLeafS, &q.segS}, {segTabChgA, &q.segCA}, {segTabChgS, &q.segCS}, {segTabStoRoot, &q.segSR}, {segTabNodeA, &q.segNA}} {
+	}{{segTabLeafA, &q.segA}, {segTabLeafS, &q.segS}, {segTabChgA, &q.segCA}, {segTabChgS, &q.segCS}, {segTabStoRoot, &q.segSR}, {segTabNodeA, &q.segNA}, {segTabNodeS, &q.segNS}} {
 		if *e.dst, err = open(e.tab); err != nil {
 			return nil, 0, err
 		}
+	}
+	if q.exact, err = loadExactLadders(out); err != nil {
+		return nil, 0, err
 	}
 	return q, head, nil
 }
@@ -322,7 +325,12 @@ type querier struct {
 
 	// seg*, when non-nil, serve the leaf history / change index / storage-root
 	// history from static zstd segments (leafseg.go) instead of the MDBX tables.
-	segA, segS, segCA, segCS, segSR, segNA *leafSegSet
+	segA, segS, segCA, segCS, segSR, segNA, segNS *leafSegSet
+	// exact, when non-nil, puts every storage trie on the exact-only ladder
+	// (exactladder.go): one per-block record level per listed contract, no
+	// epoch levels, no change index; unlisted contracts fold whole.
+	exact     *exactLadders
+	exactMemo exactMemo
 
 	folds, recs, leafReads int
 	// Diagnostics: folds per depth and why the record path was unusable.
@@ -369,6 +377,14 @@ func (q *querier) Close() {
 	if q.base != nil {
 		q.base.Rollback()
 		q.base = nil
+	}
+	// The segment files are shared and reference-counted: release this
+	// reader's hold on them.
+	for _, s := range []**leafSegSet{&q.segA, &q.segS, &q.segCA, &q.segCS, &q.segSR, &q.segNA, &q.segNS} {
+		if *s != nil {
+			(*s).Close()
+			*s = nil
+		}
 	}
 }
 
@@ -629,6 +645,9 @@ func (q *querier) nodeHashAt(domain, path []byte, n uint64) (types.Hash, bool, e
 // children) — callers fall back to the leaf fold. Shared by nodeHashAt and
 // the proof builder (proof.go), so both follow the exact same logic.
 func (q *querier) branchSlotsAt(domain, path []byte, n uint64) (slots [16]*types.Hash, nKids int, usable bool, err error) {
+	if domain != nil && q.exact != nil {
+		return q.exactSlotsAt(domain, path, n)
+	}
 	d := len(path)
 	fold := q.accFold
 	var lad stoLadder
@@ -957,6 +976,13 @@ func (q *querier) floorRecordBefore(domain, path []byte, beforeEpoch uint64) (no
 		return zero, 0, false, err
 	}
 	defer c.Close()
+	return q.floorRecordFrom(c, prefix, beforeEpoch)
+}
+
+// floorRecordFrom is floorRecordBefore on a given record cursor; prefix is the
+// record key without its epoch suffix.
+func (q *querier) floorRecordFrom(c leafCur, prefix []byte, beforeEpoch uint64) (nodeState, uint64, bool, error) {
+	var zero nodeState
 	seek := append(append([]byte{}, prefix...), 0, 0, 0, 0)
 	binary.BigEndian.PutUint32(seek[len(prefix):], uint32(beforeEpoch))
 	k, v, err := c.Seek(seek)
@@ -1144,6 +1170,12 @@ func (q *querier) foldAt(domain, path []byte, n uint64) (types.Hash, bool, error
 	if err != nil {
 		return types.Hash{}, false, err
 	}
+	return foldLeaves(leaves)
+}
+
+// foldLeaves is the subtree root hash over as-of leaves (sorted by key).
+func foldLeaves(leaves []foldLeaf) (types.Hash, bool, error) {
+	var err error
 	if len(leaves) == 0 {
 		return types.Hash{}, false, nil
 	}
