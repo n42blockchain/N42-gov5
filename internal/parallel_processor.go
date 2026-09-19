@@ -336,6 +336,10 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 		postLayers, _ = state.PostStateLayers(ibs.GetStateReader())
 	}
 	var executor *parallel.Executor
+	// One base-read cache for this block, shared by every worker (see
+	// parallel.BaseCache). Sized for the distinct accounts a block touches:
+	// the bench's blocks are ~163k transfers over ~23k recipients.
+	baseCache := parallel.NewBaseCache(len(txs)/4 + 64)
 	setup := func(workerID int) (any, func(), error) {
 		tx, err := p.bc.ChainDB.BeginRo(context.Background())
 		if err != nil {
@@ -348,6 +352,12 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 		base = state.LayerPostStates(postLayers, base)
 		wc := &workerCtx{tx: tx, base: base, observed: make(map[types.Address]struct{}, 8)}
 		wc.reader = parallel.NewParallelStateReader(base, executor.MVS(), nil, 0)
+		// One base-read cache for the whole block, shared by every worker: the
+		// base is the parent's post-state and cannot change while the block
+		// executes, and each transaction otherwise pays its own read of the
+		// accounts it touches (~163k reads for ~23k accounts at the bench's
+		// block size).
+		wc.reader.SetBaseCache(baseCache)
 		wc.ibs = state.New(wc.reader)
 		wc.writer = parallel.NewParallelStateWriter(nil)
 		// Every explicit balance read (GetBalance, Empty) of a transaction

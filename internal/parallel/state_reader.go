@@ -31,6 +31,28 @@ type ParallelStateReader struct {
 	mvs     *MVS
 	rw      *ReadWriteSet
 	txIndex int
+	// baseCache memoises base reads for the whole block (see BaseCache); nil
+	// disables it, which is what the tests and the serial path use.
+	baseCache *BaseCache
+}
+
+// SetBaseCache shares one block's base-read cache with this reader. Every
+// worker's reader gets the same cache: the base state is the parent's
+// post-state and does not change while the block executes.
+func (r *ParallelStateReader) SetBaseCache(c *BaseCache) { r.baseCache = c }
+
+// baseAccount reads an account from the base state, through the block's cache
+// when there is one.
+func (r *ParallelStateReader) baseAccount(address types.Address) (*account.StateAccount, error) {
+	if acc, ok := r.baseCache.get(address); ok {
+		return acc, nil
+	}
+	acc, err := r.base.ReadAccountData(address)
+	if err != nil {
+		return nil, err
+	}
+	r.baseCache.put(address, acc)
+	return acc, nil
 }
 
 // NewParallelStateReader creates a state reader that reads from MVS first,
@@ -73,7 +95,7 @@ func (r *ParallelStateReader) ReadAccountData(address types.Address) (*account.S
 	// No full write in the store — read from base, record the base bytes in
 	// the writer's encoding so a later write of the same account by a
 	// preceding transaction validates by value, and add the deltas.
-	acc, err := r.base.ReadAccountData(address)
+	acc, err := r.baseAccount(address)
 	if err != nil {
 		r.rw.RecordRead(key, -1, 0, true)
 		return nil, err
