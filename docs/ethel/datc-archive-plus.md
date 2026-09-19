@@ -166,16 +166,22 @@ eth_getProof ──► internal/api.BlockChainAPI.GetProof
 ```bash
 eth-el ... --publicrpc.enabled --publicrpc.mode archive \
   --publicrpc.datc /data/blockchain/datc-out/datc-25m-v2-hi \
-  --publicrpc.datc.verify header        # header | strict | off
+  --publicrpc.datc.verify header \       # header | strict | off
+  --publicrpc.datc.headers /data/blockchain/witness   # 可选：headerc 冷冻库，给节点自己没有的老区块头
 ```
 
 - `datc.OpenArchive` 只读打开，**不碰进程级的表配置**（节点有自己的 MDBX）；读取器放在池里（默认 16 个并发证明），段索引在打开时加载并由 Archive 持有。
 - **返回整份答案**（nonce/balance/codeHash/storageHash/槽值 + 证明），因为节点在历史高度也读不到这些值。
 - **校验**：`header`（默认）= 节点有该块区块头就先对 stateRoot 走一遍证明、并核对叶子与返回值一致，不一致直接报错（`ErrProofMismatch`，绝不回落到弱路径）；
-  `strict` = 没有区块头就拒绝；`off` = 不在节点侧校验（客户端反正要自己验）。快照启动的 eth-el 没有老区块头，显式块号按原样交给归档。
+  `strict` = 没有区块头就拒绝；`off` = 不在节点侧校验（客户端反正要自己验）。快照启动的 eth-el 没有老区块头，显式块号按原样交给归档；
+  这种节点要想在节点侧校验，用 `--publicrpc.datc.headers` 指一个 headerc 冷冻库（先查节点自己的 DB，再查它）。
 - **周更新不用停节点**：段是 rename 替换的，打开的文件保持旧 inode；Archive 每 30 秒看一眼 `leafseg/`、`ns.ladders`、`a.stages`、head，变了就换一代读取器。
 - 部分归档（`start > 0`，只有上段）拒绝服务：它离开 `--base` 在任何高度都会答错。
-- 归档 head 到链头之间的块 DATC 不覆盖（周更新节奏）；这一段走节点自己的路径——目前 eth-el 只有 latest 状态，没有 MPT 证明。补这一段见 §9。
+- **真节点实测**（2026-09-19，周更新测试节点 `ethel-full-25943310` 的 reflink 副本，关 p2p，`strict` + headerc）：归档 1 秒内挂上；
+  `TestDATCGetProofMainnet` 以 `DATC_RPC_URL` 指向活节点，7 个用例经独立校验器全过（7–70 ms）；2000 个 bench 查询 16 并发 301 req/s，
+  p50 51 / p99 114 / 最慢 225 ms，1981 个成功，其余 19 个是 headerc 源不到 25.86M、被 `strict` 按设计拒绝；节点日志 0 条 error，TERM 优雅退出。
+- 归档 head 到链头之间的块 DATC 不覆盖（周更新节奏）；这一段走节点自己的路径——eth-el 没有 MPT 证明提供者，实测返回的是共享 handler 的占位结果（`accountProof` 只有一条 32 字节的哈希，
+  **不是可验证的证明**；`latest` 在该测试节点上返回 null）。这是接入 DATC 之前就有的行为。补这一段见 §9。
 
 ## 8. 维护
 

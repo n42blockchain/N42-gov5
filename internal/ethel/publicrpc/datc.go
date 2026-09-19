@@ -8,9 +8,12 @@
 // a past block.
 //
 // Every answer is walked from the block's stateRoot before it leaves the node
-// when the node holds that header (--publicrpc.datc.verify=header, default);
-// "strict" refuses heights whose header the node lacks, "off" serves the
-// archive as is (a client verifies against its own header either way).
+// when a header for that height is at hand (--publicrpc.datc.verify=header,
+// default); "strict" refuses heights without one, "off" serves the archive as
+// is (a client verifies against its own header either way). A node
+// bootstrapped from a snapshot holds no old headers, so the archive's whole
+// range would go unverified: --publicrpc.datc.headers names a headerc freezer
+// (the one the archive was built against, or any other) to take them from.
 
 package publicrpc
 
@@ -18,11 +21,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/datc"
+	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -52,16 +57,36 @@ func ParseDATCVerify(s string) (DATCVerify, error) {
 type datcSource struct {
 	archive *datc.Archive
 	verify  DATCVerify
+	// headers (optional) supplies the stateRoots the node's DB lacks. The
+	// reader caches decoded segments without locking, hence headersMu.
+	headers   *ethel.HeaderCompactReader
+	headersMu sync.Mutex
+}
+
+// stateRootAt is the stateRoot to verify a proof at n against: the node's own
+// header first, else the headerc freezer.
+func (d *datcSource) stateRootAt(tx kv.Tx, n uint64) (types.Hash, bool) {
+	if h := rawdb.ReadHeaderByNumber(tx, n); h != nil {
+		return h.StateRoot(), true
+	}
+	if d.headers != nil {
+		d.headersMu.Lock()
+		h, err := d.headers.ReadHeader(n)
+		d.headersMu.Unlock()
+		if err == nil && h != nil {
+			return h.StateRoot(), true
+		}
+	}
+	return types.Hash{}, false
 }
 
 func (d *datcSource) ProveAt(ctx context.Context, tx kv.Tx, address types.Address, storageKeys []string, n uint64) (*api.AccountResult, error) {
 	var root *types.Hash
 	if d.verify != DATCVerifyOff {
-		if h := rawdb.ReadHeaderByNumber(tx, n); h != nil {
-			r := h.StateRoot()
+		if r, ok := d.stateRootAt(tx, n); ok {
 			root = &r
 		} else if d.verify == DATCVerifyStrict {
-			return nil, fmt.Errorf("eth_getProof at %d: this node has no header to verify the archive's proof against", n)
+			return nil, fmt.Errorf("eth_getProof at %d: no header to verify the archive's proof against (see --publicrpc.datc.headers)", n)
 		}
 	}
 	slots := make([]types.Hash, len(storageKeys))

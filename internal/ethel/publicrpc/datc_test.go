@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -48,10 +49,15 @@ func TestParseDATCVerify(t *testing.T) {
 //
 //	DATC_ARCHIVE=/data/blockchain/datc-out/datc-25m-v2-hi \
 //	DATC_HEADERS=/data/blockchain/witness go test ./internal/ethel/publicrpc -run TestDATCGetProofMainnet -v
+//
+// With DATC_RPC_URL set, the same checks run against a LIVE eth-el started
+// with --publicrpc.datc (DATC_ARCHIVE is then the node's business, not ours):
+//
+//	DATC_RPC_URL=http://127.0.0.1:20015 DATC_HEADERS=... go test ... -run TestDATCGetProofMainnet -v
 func TestDATCGetProofMainnet(t *testing.T) {
-	dir, hdrDir := os.Getenv("DATC_ARCHIVE"), os.Getenv("DATC_HEADERS")
-	if dir == "" || hdrDir == "" {
-		t.Skip("DATC_ARCHIVE / DATC_HEADERS not set")
+	dir, hdrDir, liveURL := os.Getenv("DATC_ARCHIVE"), os.Getenv("DATC_HEADERS"), os.Getenv("DATC_RPC_URL")
+	if hdrDir == "" || (dir == "" && liveURL == "") {
+		t.Skip("DATC_HEADERS and one of DATC_ARCHIVE / DATC_RPC_URL not set")
 	}
 	hdrs, err := ethel.OpenHeaderCompact(hdrDir)
 	if err != nil {
@@ -64,13 +70,17 @@ func TestDATCGetProofMainnet(t *testing.T) {
 	kv.ChaindataTablesCfg = modules.N42TableCfg
 	t.Cleanup(func() { kv.ChaindataTablesCfg = prev })
 	// The node's own DB is empty: no headers, no state. Every answer below can
-	// only come from the archive; verify=off because there is no header to
-	// check against on the node (the test checks each one itself).
-	svc, err := New(Config{DATCDir: dir, DATCVerify: DATCVerifyOff}, params.MainnetChainConfig, nil, memdb.NewTestDB(t), nil)
-	if err != nil {
-		t.Fatal(err)
+	// only come from the archive.
+	var svc *Service
+	if liveURL == "" {
+		// strict + the headerc freezer: the node's DB is empty, so every answer is
+		// verified on the node against a freezer header before the test verifies
+		// it again, independently.
+		if svc, err = New(Config{DATCDir: dir, DATCVerify: DATCVerifyStrict, DATCHeaders: hdrDir}, params.MainnetChainConfig, nil, memdb.NewTestDB(t), nil); err != nil {
+			t.Fatal(err)
+		}
+		defer svc.Stop()
 	}
-	defer svc.Stop()
 
 	usdt := "0xdac17f958d2ee523a2206206994597c13d831ec7"
 	cases := []struct {
@@ -93,7 +103,7 @@ func TestDATCGetProofMainnet(t *testing.T) {
 			t.Fatalf("header %d: %v", tc.height, err)
 		}
 		t0 := time.Now()
-		res := callGetProof(t, svc, tc.addr, tc.slots, tc.height)
+		res := callGetProof(t, svc, liveURL, tc.addr, tc.slots, tc.height)
 		took := time.Since(t0)
 		root := h.StateRoot()
 
@@ -169,7 +179,7 @@ type proofResult struct {
 	} `json:"storageProof"`
 }
 
-func callGetProof(t *testing.T, svc *Service, addr string, slots []string, height uint64) proofResult {
+func callGetProof(t *testing.T, svc *Service, liveURL, addr string, slots []string, height uint64) proofResult {
 	t.Helper()
 	if slots == nil {
 		slots = []string{}
@@ -178,16 +188,30 @@ func callGetProof(t *testing.T, svc *Service, addr string, slots []string, heigh
 		"jsonrpc": "2.0", "id": 1, "method": "eth_getProof",
 		"params": []any{addr, slots, hexutil.EncodeUint64(height)},
 	})
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	svc.rpc.ServeHTTP(rec, req)
+	var raw []byte
+	if liveURL != "" {
+		hr, err := http.Post(liveURL, "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST %s: %v", liveURL, err)
+		}
+		raw, err = io.ReadAll(hr.Body)
+		hr.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		svc.rpc.ServeHTTP(rec, req)
+		raw = rec.Body.Bytes()
+	}
 	var resp struct {
 		Result *proofResult    `json:"result"`
 		Error  json.RawMessage `json:"error"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("response: %v: %s", err, rec.Body.String())
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("response: %v: %s", err, raw)
 	}
 	if resp.Result == nil {
 		t.Fatalf("eth_getProof %s at %d: %s", addr, height, strings.TrimSpace(string(resp.Error)))

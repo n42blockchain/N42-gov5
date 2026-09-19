@@ -62,6 +62,9 @@ type Config struct {
 	// proofs are checked against this node's headers first (datc.go).
 	DATCDir    string
 	DATCVerify DATCVerify
+	// DATCHeaders is an optional headerc freezer directory: the stateRoots to
+	// verify against for heights whose header this node does not hold.
+	DATCHeaders string
 }
 
 // Service is the public RPC server lifecycle.
@@ -73,6 +76,7 @@ type Service struct {
 	server   *http.Server
 	listener net.Listener
 	archive  *datc.Archive
+	headers  *ethel.HeaderCompactReader
 }
 
 // Disabled returns an inert service (Start/Stop no-op) — used when construction
@@ -143,10 +147,19 @@ func New(cfg Config, chainCfg *params.ChainConfig, engine consensus.Engine, db k
 		if verify == "" {
 			verify = DATCVerifyHeader
 		}
-		core.SetProofSource(&datcSource{archive: a, verify: verify})
+		src := &datcSource{archive: a, verify: verify}
+		if cfg.DATCHeaders != "" && verify != DATCVerifyOff {
+			if src.headers, err = ethel.OpenHeaderCompact(cfg.DATCHeaders); err != nil {
+				a.Close()
+				return nil, fmt.Errorf("publicrpc: DATC headers: %w", err)
+			}
+			svc.headers = src.headers
+		}
+		core.SetProofSource(src)
 		svc.archive = a
 		start, head := a.Range()
-		log.Info("eth-el: eth_getProof served from the DATC archive", "dir", cfg.DATCDir, "blocks", fmt.Sprintf("[%d, %d)", start, head), "verify", verify)
+		log.Info("eth-el: eth_getProof served from the DATC archive", "dir", cfg.DATCDir, "blocks", fmt.Sprintf("[%d, %d)", start, head),
+			"verify", verify, "headers", cfg.DATCHeaders)
 	}
 	return svc, nil
 }
@@ -209,6 +222,10 @@ func (s *Service) Stop() error {
 	if s.archive != nil {
 		s.archive.Close()
 		s.archive = nil
+	}
+	if s.headers != nil {
+		s.headers.Close()
+		s.headers = nil
 	}
 	return err
 }

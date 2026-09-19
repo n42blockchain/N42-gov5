@@ -148,6 +148,7 @@ func flags() []cli.Flag {
 		&cli.IntFlag{Name: "publicrpc.port", Value: 20015, Usage: "Public JSON-RPC listen port"},
 		&cli.StringFlag{Name: "publicrpc.mode", Value: "archive", Usage: "Data-availability mode for RPC capability gating: archive|full|m1|m0"},
 		&cli.StringFlag{Name: "publicrpc.datc", Usage: "DATC archive directory (archive-plus tier): serve eth_getProof at any height below its head from it"},
+		&cli.StringFlag{Name: "publicrpc.datc.headers", Usage: "headerc freezer directory with the stateRoots to verify DATC proofs against where this node holds no header (a snapshot-bootstrapped node has none of the old ones)"},
 		&cli.StringFlag{Name: "publicrpc.datc.verify", Value: "header", Usage: "Check DATC proofs against this node's header stateRoot before serving: header (when the node has the header) | strict (refuse without one) | off"},
 		&cli.BoolFlag{Name: "eldevp2p.enabled", Usage: "Run an embedded Ethereum devp2p (eth/68-69) listener so eth-el catches up via EL p2p directly, bypassing a CL"},
 		&cli.StringFlag{Name: "eldevp2p.listen", Usage: "EL devp2p TCP listen address (default :30303)", Value: ":30303"},
@@ -435,6 +436,7 @@ func run(c *cli.Context) error {
 			HashedCanonical: c.Bool("hashed-canonical"),
 			DATCDir:         c.String("publicrpc.datc"),
 			DATCVerify:      datcVerify,
+			DATCHeaders:     c.String("publicrpc.datc.headers"),
 		}, n.ChainConfig(), n.Engine(), n.RwDB(), txPool)
 		if err != nil {
 			log.Error("eth-el: public RPC init failed", "err", err)
