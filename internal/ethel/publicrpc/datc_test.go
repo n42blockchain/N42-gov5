@@ -158,6 +158,22 @@ func TestDATCGetProofMainnet(t *testing.T) {
 				t.Fatalf("%s/%s at %d: value %s, proven %s", tc.addr, sp.Key, tc.height, sp.Value, want)
 			}
 		}
+		// Historical values through the plain methods must be the PROVEN ones.
+		hx := hexutil.EncodeUint64(tc.height)
+		var bal hexutil.Big
+		var nonce hexutil.Uint64
+		callRPC(t, svc, liveURL, "eth_getBalance", []any{tc.addr, hx}, &bal)
+		callRPC(t, svc, liveURL, "eth_getTransactionCount", []any{tc.addr, hx}, &nonce)
+		if bal.ToInt().Cmp(res.Balance.ToInt()) != 0 || nonce != res.Nonce {
+			t.Fatalf("%s at %d: eth_getBalance/TransactionCount %s/%d, proven %s/%d", tc.addr, tc.height, bal.ToInt(), nonce, res.Balance.ToInt(), res.Nonce)
+		}
+		for _, sp := range res.StorageProof {
+			var word hexutil.Bytes
+			callRPC(t, svc, liveURL, "eth_getStorageAt", []any{tc.addr, sp.Key, hx}, &word)
+			if new(uint256.Int).SetBytes(word).ToBig().Cmp(sp.Value.ToInt()) != 0 {
+				t.Fatalf("%s/%s at %d: eth_getStorageAt %x, proven %s", tc.addr, sp.Key, tc.height, []byte(word), sp.Value)
+			}
+		}
 		t.Logf("%s at %d: %d account nodes, %d slots, %v", tc.addr[:10], tc.height, len(res.AccountProof), len(res.StorageProof), took.Round(time.Millisecond))
 	}
 }
@@ -184,10 +200,16 @@ func callGetProof(t *testing.T, svc *Service, liveURL, addr string, slots []stri
 	if slots == nil {
 		slots = []string{}
 	}
-	body, _ := json.Marshal(map[string]any{
-		"jsonrpc": "2.0", "id": 1, "method": "eth_getProof",
-		"params": []any{addr, slots, hexutil.EncodeUint64(height)},
-	})
+	var out proofResult
+	callRPC(t, svc, liveURL, "eth_getProof", []any{addr, slots, hexutil.EncodeUint64(height)}, &out)
+	return out
+}
+
+// callRPC sends one JSON-RPC call to the live node (liveURL) or the in-process
+// server and decodes a non-null result into out.
+func callRPC(t *testing.T, svc *Service, liveURL, method string, params []any, out any) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
 	var raw []byte
 	if liveURL != "" {
 		hr, err := http.Post(liveURL, "application/json", bytes.NewReader(body))
@@ -207,16 +229,18 @@ func callGetProof(t *testing.T, svc *Service, liveURL, addr string, slots []stri
 		raw = rec.Body.Bytes()
 	}
 	var resp struct {
-		Result *proofResult    `json:"result"`
+		Result json.RawMessage `json:"result"`
 		Error  json.RawMessage `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		t.Fatalf("response: %v: %s", err, raw)
 	}
-	if resp.Result == nil {
-		t.Fatalf("eth_getProof %s at %d: %s", addr, height, strings.TrimSpace(string(resp.Error)))
+	if len(resp.Result) == 0 || string(resp.Result) == "null" {
+		t.Fatalf("%s %v: no result: %s", method, params, strings.TrimSpace(string(raw)))
 	}
-	return *resp.Result
+	if err := json.Unmarshal(resp.Result, out); err != nil {
+		t.Fatalf("%s result: %v: %s", method, err, resp.Result)
+	}
 }
 
 func decodeNodes(t *testing.T, hexNodes []string) [][]byte {

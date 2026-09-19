@@ -126,6 +126,10 @@ type API struct {
 	// proofSource, when set, answers eth_getProof for the heights it holds
 	// ahead of this node's own state (eth-el: the DATC archive-plus tier).
 	proofSource ProofSource
+
+	// historicalState, when set, supplies the state reader for the heights it
+	// holds ahead of stateReaderProvider / PlainState (eth-el: the DATC archive).
+	historicalState HistoricalStateSource
 }
 
 // SetStateReaderProvider installs a custom state-reader factory used by State()
@@ -151,6 +155,23 @@ type ProofSource interface {
 // ErrProofNotCovered: the ProofSource has no state for the requested height;
 // eth_getProof falls back to the node's own path.
 var ErrProofNotCovered = errors.New("proof source does not cover this height")
+
+// HistoricalStateSource reads state at past heights from something other than
+// this node's own history — eth-el's DATC archive, which has every account
+// and slot value at every height while the node keeps the tip only. Everything
+// that goes through State() is served by it: eth_getBalance, eth_getStorageAt,
+// eth_getTransactionCount, eth_getCode, and eth_call at a past block.
+type HistoricalStateSource interface {
+	// StateAt returns a reader of the post-state of blockNum, or
+	// ErrStateNotCovered when the source does not hold that height.
+	StateAt(tx kv.Tx, blockNum uint64) (state.StateReader, error)
+}
+
+// ErrStateNotCovered: the HistoricalStateSource has no state for the height.
+var ErrStateNotCovered = errors.New("historical state source does not cover this height")
+
+// SetHistoricalStateSource installs the historical state source (nil clears it).
+func (n *API) SetHistoricalStateSource(src HistoricalStateSource) { n.historicalState = src }
 
 // SetProofSource installs the historical proof source (nil clears it).
 func (n *API) SetProofSource(src ProofSource) { n.proofSource = src }
@@ -316,6 +337,18 @@ func (n *API) GetEvm(ctx context.Context, msg internal.Message, ibs evmtypes.Int
 func (n *API) State(tx kv.Tx, blockNrOrHash jsonrpc.BlockNumberOrHash) evmtypes.IntraBlockState {
 	if ibs := n.overlayState(tx, blockNrOrHash); ibs != nil {
 		return ibs
+	}
+	// Before the canonical lookup: a node bootstrapped from a snapshot cannot
+	// resolve an old block at all, yet the source holds its state.
+	if n.historicalState != nil {
+		if num, ok := proofBlockNumber(tx, blockNrOrHash); ok {
+			if reader, err := n.historicalState.StateAt(tx, num); err == nil && reader != nil {
+				return state.New(reader)
+			} else if err != nil && !errors.Is(err, ErrStateNotCovered) {
+				log.Warn("historical state source failed", "block", num, "err", err)
+				return nil
+			}
+		}
 	}
 	_, blockHash, err := rpchelper.GetCanonicalBlockNumber(blockNrOrHash, tx)
 	if err != nil {

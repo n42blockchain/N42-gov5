@@ -99,6 +99,24 @@ func TestArchiveProve(t *testing.T) {
 				t.Errorf("%x at %d: storage hash differs", addr[:4], n)
 			}
 		}
+		// The plain value lookups (eth_getBalance / eth_getStorageAt at a past
+		// height) must agree with what the proof just proved.
+		acct, err := a.AccountAt(context.Background(), addr, n)
+		if err != nil {
+			return err
+		}
+		if (acct != nil) != p.Exists || (acct != nil && (acct.Nonce != p.Nonce || !acct.Balance.Eq(p.Balance) || acct.Root != p.StorageHash)) {
+			t.Errorf("%x at %d: AccountAt disagrees with the proof", addr[:4], n)
+		}
+		for _, sp := range p.Storage {
+			v, err := a.StorageAt(context.Background(), addr, sp.Key, n)
+			if err != nil {
+				return err
+			}
+			if got := new(uint256.Int).SetBytes(v); !got.Eq(sp.Value) {
+				t.Errorf("%x/%x at %d: StorageAt %s, proof %s", addr[:4], sp.Key[:4], n, got, sp.Value)
+			}
+		}
 		sm := sc.storageAt(addr, n)
 		for _, sp := range p.Storage {
 			v, live := sm[sp.Key]

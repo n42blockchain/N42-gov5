@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/n42blockchain/N42/common/account"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/api"
@@ -31,6 +32,7 @@ import (
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
+	"github.com/n42blockchain/N42/modules/state"
 )
 
 // DATCVerify selects when a DATC proof is checked against the node's header.
@@ -104,6 +106,41 @@ func (d *datcSource) ProveAt(ctx context.Context, tx kv.Tx, address types.Addres
 		return nil, fmt.Errorf("eth_getProof at %d from the DATC archive: %w", n, err)
 	}
 	return toAccountResult(p, storageKeys), nil
+}
+
+// StateAt makes the archive an api.HistoricalStateSource: balances, nonces,
+// code hashes and slot values at any covered height.
+func (d *datcSource) StateAt(tx kv.Tx, n uint64) (state.StateReader, error) {
+	if !d.archive.Covers(n) {
+		return nil, api.ErrStateNotCovered
+	}
+	return &datcStateReader{archive: d.archive, n: n, code: state.NewHashedStateReader(tx)}, nil
+}
+
+// datcStateReader reads the post-state of one block from the archive. Code is
+// content-addressed, so it comes from the node's own code store whatever the
+// height (nil when the node does not have it).
+type datcStateReader struct {
+	archive *datc.Archive
+	n       uint64
+	code    *state.HashedStateReader
+}
+
+func (r *datcStateReader) ReadAccountData(address types.Address) (*account.StateAccount, error) {
+	return r.archive.AccountAt(context.Background(), address, r.n)
+}
+
+func (r *datcStateReader) ReadAccountStorage(address types.Address, key *types.Hash) ([]byte, error) {
+	return r.archive.StorageAt(context.Background(), address, *key, r.n)
+}
+
+func (r *datcStateReader) ReadAccountCode(address types.Address, codeHash types.Hash) ([]byte, error) {
+	return r.code.ReadAccountCode(address, codeHash)
+}
+
+func (r *datcStateReader) ReadAccountCodeSize(address types.Address, codeHash types.Hash) (int, error) {
+	code, err := r.code.ReadAccountCode(address, codeHash)
+	return len(code), err
 }
 
 func hexNodes(nodes [][]byte) []string {

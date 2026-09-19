@@ -334,6 +334,86 @@ func (a *Archive) Prove(ctx context.Context, address types.Address, slots []type
 	return p, err
 }
 
+// AccountAt is the account as of the post-state of block n, its storage root
+// included; nil when it does not exist then. It is what eth_getBalance /
+// eth_getTransactionCount / eth_getCode need at a past height — a floor lookup
+// in the leaf history, no proof.
+func (a *Archive) AccountAt(ctx context.Context, address types.Address, n uint64) (*account.StateAccount, error) {
+	var out *account.StateAccount
+	err := a.withReader(ctx, n, func(q *querier) error {
+		ah := keccak(address[:])
+		raw, live, err := q.leafFloor(false, ah[:], n)
+		if err != nil || !live {
+			return err
+		}
+		acct := new(account.StateAccount)
+		if err := acct.DecodeForStorage(raw); err != nil {
+			return fmt.Errorf("account decode: %w", err)
+		}
+		acct.Root = emptyTrieRoot
+		if root, has, decided, err := q.storageRootAt(ah[:], n); err != nil {
+			return err
+		} else if decided && has {
+			acct.Root = root
+		} else if !decided {
+			if root, has, err := q.nodeHashAt(ah[:], nil, n); err != nil {
+				return err
+			} else if has {
+				acct.Root = root
+			}
+		}
+		if acct.CodeHash == (types.Hash{}) {
+			acct.CodeHash = emptyCodeHash
+		}
+		out = acct
+		return nil
+	})
+	return out, err
+}
+
+// StorageAt is the value of a storage slot as of the post-state of block n
+// (the stored bytes, without leading zeros); nil when the slot is empty.
+func (a *Archive) StorageAt(ctx context.Context, address types.Address, slot types.Hash, n uint64) ([]byte, error) {
+	var out []byte
+	err := a.withReader(ctx, n, func(q *querier) error {
+		ah, sh := keccak(address[:]), keccak(slot[:])
+		composite := append(append(make([]byte, 0, 64), ah[:]...), sh[:]...)
+		val, live, err := q.leafFloor(true, composite, n)
+		if err == nil && live {
+			out = val
+		}
+		return err
+	})
+	return out, err
+}
+
+// Covers reports whether the archive holds the state of block n.
+func (a *Archive) Covers(n uint64) bool {
+	start, head := a.Range()
+	return n >= start && n < head
+}
+
+// withReader runs fn on a pooled reader for a covered height.
+func (a *Archive) withReader(ctx context.Context, n uint64, fn func(q *querier) error) error {
+	if !a.Covers(n) {
+		start, head := a.Range()
+		return fmt.Errorf("%w: block %d, archive [%d, %d)", ErrNotCovered, n, start, head)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r, err := a.reader()
+	if err != nil {
+		return err
+	}
+	if err := fn(r.q); err != nil {
+		r.close()
+		return err
+	}
+	a.release(r)
+	return nil
+}
+
 func proveWith(q *querier, address types.Address, slots []types.Hash, n uint64, stateRoot *types.Hash) (*Proof, error) {
 	ah := keccak(address[:])
 	accNib := nibblesOfBytes(ah[:])

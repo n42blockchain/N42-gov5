@@ -156,6 +156,7 @@ func New(cfg Config, chainCfg *params.ChainConfig, engine consensus.Engine, db k
 			svc.headers = src.headers
 		}
 		core.SetProofSource(src)
+		core.SetHistoricalStateSource(src)
 		svc.archive = a
 		start, head := a.Range()
 		log.Info("eth-el: eth_getProof served from the DATC archive", "dir", cfg.DATCDir, "blocks", fmt.Sprintf("[%d, %d)", start, head),
