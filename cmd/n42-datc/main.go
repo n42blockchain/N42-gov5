@@ -169,6 +169,10 @@ func main() {
 		runDeriveNS(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "derive-acc-parts" {
+		runDeriveAccParts(os.Args[2:])
+		return
+	}
 	if os.Args[1] == "bench-plan" {
 		runBenchPlan(os.Args[2:])
 		return

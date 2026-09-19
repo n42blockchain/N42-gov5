@@ -118,7 +118,14 @@ func loadExactLadders(out string) (*exactLadders, error) {
 		return nil, err
 	}
 	for _, r := range l.m {
-		sort.Slice(r, func(i, j int) bool { return r[i].from < r[j].from })
+		// Rungs at the same block (a contract that outgrew two depths within
+		// one bin): the deeper one must win, so order by depth too.
+		sort.Slice(r, func(i, j int) bool {
+			if r[i].from != r[j].from {
+				return r[i].from < r[j].from
+			}
+			return r[i].depth < r[j].depth
+		})
 	}
 	exactLaddersCache.m[key] = l
 	return l, nil

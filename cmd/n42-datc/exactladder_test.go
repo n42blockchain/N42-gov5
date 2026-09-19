@@ -46,17 +46,59 @@ func TestE2E_ExactLadder(t *testing.T) {
 	for a, d := range listed {
 		contracts = append(contracts, deriveContract{dom(a), d})
 	}
-	if err := deriveNS(out, out, contracts, 4, 32); err != nil {
+	stageBin = 8 // the scenario is 360 blocks long
+	defer func() { stageBin = 1024 }()
+	if err := deriveNS(out, out, contracts, 4, 32, false); err != nil {
 		t.Fatalf("derive-ns: %v", err)
 	}
-	if err := deriveNS(out, out, contracts[:1], 4, 32); err == nil {
+	if err := deriveNS(out, out, contracts[:1], 4, 32, false); err == nil {
 		t.Fatal("deriving a listed contract twice must be refused")
+	}
+	// Account birth partitions: every account fold below block 250 reads them.
+	if err := deriveAccParts(out, out, []uint64{40, 120, 250}, 4); err != nil {
+		t.Fatalf("derive-acc-parts: %v", err)
 	}
 
 	q, closeQ := openTestQuerier(t, db, out, o)
 	defer closeQ()
 	if q.exact == nil || q.segNS == nil {
 		t.Fatal("archive has no exact ladder after derive-ns")
+	}
+	if q.segAP[0] == nil || len(q.accStages) != 3 {
+		t.Fatal("archive has no account birth partitions after derive-acc-parts")
+	}
+	staged := 0
+	for a, d := range listed {
+		rungs := q.exact.m[string(dom(a))]
+		if len(rungs) != d {
+			t.Fatalf("%x: %d rungs, want %d", a[:4], len(rungs), d)
+		}
+		if d > 1 && rungs[0].from < rungs[d-1].from {
+			staged++
+		}
+		if parts := q.birthPartsAt(dom(a), rungs[d-1].from); parts != nil {
+			t.Fatalf("%x: the last stage must read the main history", a[:4])
+		}
+	}
+	havePart := false
+	for _, p := range q.segSP {
+		havePart = havePart || p != nil
+	}
+	if staged == 0 || !havePart {
+		t.Fatal("no contract grew through more than one stage: the scenario does not exercise the rungs")
+	}
+	// The account trie at every height, early ones through the partitions.
+	for n := uint64(0); n < end; n++ {
+		root, exists, err := q.nodeHashAt(nil, nil, n)
+		if err != nil {
+			t.Fatalf("account root at %d: %v", n, err)
+		}
+		if !exists {
+			root = emptyTrieRoot
+		}
+		if root != sc.roots[n] {
+			t.Fatalf("account root at %d (stage %d): %x != reference %x", n, stageOf(q.accStages, n), root[:6], sc.roots[n][:6])
+		}
 	}
 
 	addrs := []types.Address{sc.big[0], sc.big[1], sc.small[2], sc.small[5], sc.small[7]}

@@ -264,6 +264,17 @@ func loadQuerierCache(tx kv.Tx, out string, foldOverride int, frameCache int) (*
 	if q.exact, err = loadExactLadders(out); err != nil {
 		return nil, 0, err
 	}
+	for i := 0; i < maxBirthParts; i++ {
+		if q.segSP[i], err = open(segTabLeafS0 + i); err != nil {
+			return nil, 0, err
+		}
+		if q.segAP[i], err = open(segTabLeafA0 + i); err != nil {
+			return nil, 0, err
+		}
+	}
+	if q.accStages, err = loadAccStages(out); err != nil {
+		return nil, 0, err
+	}
 	return q, head, nil
 }
 
@@ -326,6 +337,9 @@ type querier struct {
 	// seg*, when non-nil, serve the leaf history / change index / storage-root
 	// history from static zstd segments (leafseg.go) instead of the MDBX tables.
 	segA, segS, segCA, segCS, segSR, segNA, segNS *leafSegSet
+	// Birth partitions and the account trie's stage boundaries (birthparts.go).
+	segSP, segAP [maxBirthParts]*leafSegSet
+	accStages    []uint64
 	// exact, when non-nil, puts every storage trie on the exact-only ladder
 	// (exactladder.go): one per-block record level per listed contract, no
 	// epoch levels, no change index; unlisted contracts fold whole.
@@ -380,7 +394,11 @@ func (q *querier) Close() {
 	}
 	// The segment files are shared and reference-counted: release this
 	// reader's hold on them.
-	for _, s := range []**leafSegSet{&q.segA, &q.segS, &q.segCA, &q.segCS, &q.segSR, &q.segNA, &q.segNS} {
+	sets := []**leafSegSet{&q.segA, &q.segS, &q.segCA, &q.segCS, &q.segSR, &q.segNA, &q.segNS}
+	for i := range q.segSP {
+		sets = append(sets, &q.segSP[i], &q.segAP[i])
+	}
+	for _, s := range sets {
 		if *s != nil {
 			(*s).Close()
 			*s = nil
@@ -1215,6 +1233,31 @@ type foldLeaf struct {
 // asOfLeaves enumerates the leaves under `path` as of block N from the leaf
 // history: per key, the floor entry ≤ N is its value (empty = absent).
 func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) {
+	parts := q.birthPartsAt(domain, n)
+	if parts == nil {
+		c, err := q.leafCursor(domain != nil)
+		if err != nil {
+			return nil, err
+		}
+		defer c.Close()
+		return q.asOfLeavesFrom(c, true, domain, path, n)
+	}
+	// An early height: the keys that existed then live in the birth
+	// partitions, each sorted by key and disjoint from the others.
+	var out []foldLeaf
+	for _, set := range parts {
+		leaves, err := q.asOfLeavesFrom(set.Cursor(), false, domain, path, n)
+		if err != nil {
+			return nil, err
+		}
+		out = mergeFoldLeaves(out, leaves)
+	}
+	return out, nil
+}
+
+// asOfLeavesFrom is asOfLeaves over one leaf-history source. withBase overlays
+// the partial-archive base (the main history only).
+func (q *querier) asOfLeavesFrom(c leafCur, withBase bool, domain, path []byte, n uint64) ([]foldLeaf, error) {
 	keyLen := 32
 	if domain != nil {
 		keyLen = stoDomainLen + 32 // storage leaf keys: addrHash(32) + slotHash(32)
@@ -1232,12 +1275,6 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 	if oddNib {
 		oddVal = fullNibbles[len(fullNibbles)-1]
 	}
-
-	c, err := q.leafCursor(domain != nil)
-	if err != nil {
-		return nil, err
-	}
-	defer c.Close()
 
 	var out []foldLeaf
 	emitLeaf := func(hk, val []byte) error {
@@ -1276,9 +1313,12 @@ func (q *querier) asOfLeaves(domain, path []byte, n uint64) ([]foldLeaf, error) 
 	// Partial archive: base leaves fill in between the history keys. A key the
 	// history decides (a row at or below n, live or deleted) wins; a key whose
 	// rows are all past n, or that has no rows, keeps its base value.
-	base, err := q.baseLeaves(domain != nil, bytePrefix, keyLen, oddNib, oddVal)
-	if err != nil {
-		return nil, err
+	var base *baseLeafIter
+	var err error
+	if withBase {
+		if base, err = q.baseLeaves(domain != nil, bytePrefix, keyLen, oddNib, oddVal); err != nil {
+			return nil, err
+		}
 	}
 	if base != nil {
 		defer base.close()

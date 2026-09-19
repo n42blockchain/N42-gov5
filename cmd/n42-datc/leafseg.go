@@ -47,7 +47,13 @@ const (
 	segTabStoRoot = 4 // storage-root history: addrHash(32)|block(4) → root(32) (empty = no storage)
 	segTabNodeA   = 5 // account-trie node records (pathLen|path|epoch4 → FULL/DIFF/MIXED/tombstone)
 	segTabNodeS   = 6 // exact storage node records (pathLen|addrHash|path|block4 → FULL/DIFF/tombstone), see exactladder.go
-	segTabCount   = 7
+	// Birth partitions (birthparts.go): the early history of the keys born in
+	// growth stage i, so a fold at an early height never visits later keys.
+	segTabLeafS0 = 7  // storage: s0, s1, s2
+	segTabLeafA0 = 10 // accounts: a0, a1, a2
+	segTabCount  = 13
+
+	maxBirthParts = 3
 
 	leafSegMagic = "DATCLS1\n"
 	leafFrameRaw = 64 << 10 // target uncompressed bytes per frame. A fold
@@ -63,7 +69,7 @@ const (
 	leafTableS = segTabLeafS
 )
 
-var segTabNames = [segTabCount]string{"a", "s", "ca", "cs", "sr", "na", "ns"}
+var segTabNames = [segTabCount]string{"a", "s", "ca", "cs", "sr", "na", "ns", "s0", "s1", "s2", "a0", "a1", "a2"}
 
 // nodeFrameRaw is the frame target of the account node records. A proof reads
 // ~270 of them, each from a different frame (one per level-3 path), so the
@@ -125,7 +131,7 @@ func sharedSegDecoder() *zstd.Decoder {
 // byte) — domain[0] for storage rows, the first path nibble for account rows.
 // Account node records bucket on (pathLen, nib0, nib1): the dense depth-3
 // layer spreads over 256 buckets so finalize sorts ~1 GB at a time.
-var segPrefixLen = [segTabCount]int{1, 1, 2, 2, 1, 3, 2}
+var segPrefixLen = [segTabCount]int{1, 1, 2, 2, 1, 3, 2, 1, 1, 1, 1, 1, 1}
 
 func segBucketOf(table int, k []byte) int {
 	b := 0

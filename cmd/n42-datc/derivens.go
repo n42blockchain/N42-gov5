@@ -146,7 +146,10 @@ func nodeRows(set *leafSegSet, domain, path []byte) ([]deriveRow, error) {
 
 // deriveNode replays one level D-1 node and emits its per-block records.
 // samples (ascending) receive the node's state as of each sample block.
-func deriveNode(rows []deriveRow, domain, path []byte, samples []deriveSample,
+//
+// to > 0 stops the records at the first block >= to: an early growth stage
+// records its level only until the next rung takes over.
+func deriveNode(rows []deriveRow, domain, path []byte, samples []deriveSample, to uint64,
 	emit func(k, v []byte) error, st *deriveStats) ([]deriveNodeAt, error) {
 
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].block < rows[j].block })
@@ -178,6 +181,9 @@ func deriveNode(rows []deriveRow, domain, path []byte, samples []deriveSample,
 	}
 	for lo := 0; lo < len(rows); {
 		blk := rows[lo].block
+		if to > 0 && uint64(blk) >= to {
+			break
+		}
 		for si < len(samples) && samples[si].block < uint64(blk) {
 			at[si] = snapshot()
 			si++
@@ -338,6 +344,7 @@ func runDeriveNS(args []string) {
 	list := fs.String("contracts", "", "file of '<addrHash> <depth>' lines: the contracts to put on the exact ladder")
 	workers := fs.Int("workers", 16, "level D-1 nodes replayed at once (each holds its rows and 16 unit tries in memory)")
 	nSamples := fs.Int("check-samples", 64, "blocks per contract at which the derived root is compared with the storage-root history")
+	earlyOnly := fs.Bool("early-only", false, "the listed contracts already have their final-depth records in --dst: add only their growth stages (rungs, birth partitions, early-stage records)")
 	_ = fs.Parse(args)
 	if *out == "" || *list == "" {
 		die("--out and --contracts required")
@@ -354,7 +361,7 @@ func runDeriveNS(args []string) {
 	if _, err := preloadSegFiles(*out, 32); err != nil {
 		die("preload: %v", err)
 	}
-	if err := deriveNS(*out, *dst, contracts, *workers, *nSamples); err != nil {
+	if err := deriveNS(*out, *dst, contracts, *workers, *nSamples, *earlyOnly); err != nil {
 		die("derive-ns: %v", err)
 	}
 }
@@ -362,7 +369,7 @@ func runDeriveNS(args []string) {
 // deriveNS derives the ns records of `contracts` from the archive `out` into
 // `dst` and lists them in dst's ns.ladders. Nothing becomes readable unless
 // every contract's derived roots match the storage-root history.
-func deriveNS(out, dst string, contracts []deriveContract, workers, nSamples int) error {
+func deriveNS(out, dst string, contracts []deriveContract, workers, nSamples int, earlyOnly bool) error {
 	ladders := map[string][]exactRung{}
 	if old, err := loadExactLadders(dst); err != nil {
 		return fmt.Errorf("ladders: %v", err)
@@ -372,8 +379,12 @@ func deriveNS(out, dst string, contracts []deriveContract, workers, nSamples int
 		}
 	}
 	for _, c := range contracts {
-		if _, dup := ladders[string(c.dom)]; dup {
+		old, listed := ladders[string(c.dom)]
+		switch {
+		case listed && !earlyOnly:
 			return fmt.Errorf("contract %x already has ns records in %s", c.dom[:6], dst)
+		case earlyOnly && (!listed || len(old) != 1 || old[0].from != 0 || old[0].depth != c.depth):
+			return fmt.Errorf("--early-only: contract %x is not listed in %s at depth %d from block 0", c.dom[:6], dst, c.depth)
 		}
 	}
 	if err := os.MkdirAll(filepath.Join(dst, leafSegDir), 0o755); err != nil {
@@ -384,11 +395,12 @@ func deriveNS(out, dst string, contracts []deriveContract, workers, nSamples int
 		return fmt.Errorf("spill: %v", err)
 	}
 	var spillMu sync.Mutex
-	emit := func(k, v []byte) error {
+	emitTo := func(table int, k, v []byte) error {
 		spillMu.Lock()
 		defer spillMu.Unlock()
-		return spill.add(segTabNodeS, k, v)
+		return spill.add(table, k, v)
 	}
+	emit := func(k, v []byte) error { return emitTo(segTabNodeS, k, v) }
 
 	srSet, ok, err := openLeafSegSet(out, segTabStoRoot, newFrameLRUSize(64))
 	if err != nil || !ok {
@@ -412,7 +424,7 @@ func deriveNS(out, dst string, contracts []deriveContract, workers, nSamples int
 			nodes *= 16
 		}
 		results[ci] = make([][]deriveNodeAt, nodes)
-		for idx := 0; idx < nodes; idx++ {
+		for idx := 0; idx < nodes && !earlyOnly; idx++ {
 			path := make([]byte, c.depth-1)
 			for i, x := len(path)-1, idx; i >= 0; i, x = i-1, x/16 {
 				path[i] = byte(x % 16)
@@ -431,6 +443,61 @@ func deriveNS(out, dst string, contracts []deriveContract, workers, nSamples int
 		start    = time.Now()
 		ch       = make(chan job)
 	)
+
+	// Part one, per contract: the growth stages (derivestages.go). A contract
+	// of depth 1 has none — before its only rung it is folded whole.
+	bounds := make([][]uint64, len(contracts))
+	early := make([][][][]deriveNodeAt, len(contracts)) // [contract][stage][node][sample]
+	{
+		prep := make(chan int)
+		pw := workers/4 + 1
+		for w := 0; w < pw; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				set, ok, err := openLeafSegSet(out, segTabLeafS, newFrameLRUSize(32))
+				if err != nil || !ok {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("open storage leaf history: ok=%v err=%v", ok, err)
+					}
+					mu.Unlock()
+					for range prep {
+					}
+					return
+				}
+				defer set.Close()
+				for ci := range prep {
+					c := contracts[ci]
+					var st deriveStats
+					b, keys, err := contractRungs(set, c.dom, c.depth)
+					var e [][][]deriveNodeAt
+					if err == nil {
+						e, err = deriveStages(set, c, b, samples[ci], emitTo, &st)
+					}
+					mu.Lock()
+					if err != nil && firstErr == nil {
+						firstErr = fmt.Errorf("contract %x stages: %w", c.dom[:6], err)
+					}
+					bounds[ci], early[ci] = b, e
+					total.records += st.records
+					total.fulls += st.fulls
+					total.hashes += st.hashes
+					fmt.Printf("[derive-ns] %x: %d keys, depth %d, rungs at %v  %s\n", c.dom[:6], keys, c.depth, b, time.Since(start).Truncate(time.Second))
+					mu.Unlock()
+				}
+			}()
+		}
+		for ci := range contracts {
+			prep <- ci
+		}
+		close(prep)
+		wg.Wait()
+		if firstErr != nil {
+			_ = spill.close()
+			return fmt.Errorf("%v (spill left in %s)", firstErr, filepath.Join(dst, leafSpillDir))
+		}
+	}
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func() {
@@ -453,7 +520,7 @@ func deriveNS(out, dst string, contracts []deriveContract, workers, nSamples int
 				rows, err := nodeRows(set, c.dom, j.path)
 				var at []deriveNodeAt
 				if err == nil {
-					at, err = deriveNode(rows, c.dom, j.path, samples[j.ci], emit, &st)
+					at, err = deriveNode(rows, c.dom, j.path, samples[j.ci], 0, emit, &st)
 				}
 				mu.Lock()
 				if err != nil && firstErr == nil {
@@ -496,9 +563,19 @@ func deriveNS(out, dst string, contracts []deriveContract, workers, nSamples int
 	var checked, skipped int
 	for ci, c := range contracts {
 		for si, s := range samples[ci] {
-			level := make([]deriveNodeAt, len(results[ci]))
-			for ni := range results[ci] {
-				level[ni] = results[ci][ni][si]
+			// The stage the sample falls in decides which level speaks for it:
+			// stage 0 has no records, the last stage has the final level.
+			nodes := results[ci]
+			switch g := stageOf(bounds[ci], s.block); {
+			case g == 0 || (g == c.depth && earlyOnly):
+				skipped++
+				continue
+			case g < c.depth:
+				nodes = early[ci][g]
+			}
+			level := make([]deriveNodeAt, len(nodes))
+			for ni := range nodes {
+				level[ni] = nodes[ni][si]
 			}
 			root, exists, ok := deriveRootAt(level)
 			if !ok {
@@ -512,13 +589,17 @@ func deriveNS(out, dst string, contracts []deriveContract, workers, nSamples int
 			checked++
 		}
 	}
-	fmt.Printf("[derive-ns] roots checked against sr: %d ok, %d not checkable from records (single-child node)\n", checked, skipped)
+	fmt.Printf("[derive-ns] roots checked against sr: %d ok, %d not checkable (stage without records, or a single-child node)\n", checked, skipped)
 
 	if err := finalizeLeafSegments(dst); err != nil {
 		return fmt.Errorf("finalize: %v", err)
 	}
-	for _, c := range contracts {
-		ladders[string(c.dom)] = []exactRung{{from: 0, depth: c.depth}}
+	for ci, c := range contracts {
+		var rungs []exactRung
+		for g, from := range bounds[ci] {
+			rungs = append(rungs, exactRung{from: from, depth: g + 1})
+		}
+		ladders[string(c.dom)] = rungs
 	}
 	if err := writeExactLadders(dst, ladders); err != nil {
 		return fmt.Errorf("ladders: %v", err)
