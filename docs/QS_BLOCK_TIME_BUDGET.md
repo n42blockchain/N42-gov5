@@ -4694,6 +4694,39 @@ not launched. **Prediction 73.** The write probe's fold transactions
 "marker moved while the fold was prepared" line during a flood (a second folder
 exists), or by a historical query refusal the marker should not produce.
 
+**35zzr (2026-09-19 16:49-17:55 EDT): prediction 73 confirmed, and the first
+round of this campaign that moved the number.**
+
+| leg | 35zzq | 35zzr |
+|---|---|---|
+| A1 win1 / win2 | 71.6k / 64.4k | 72.4k / 68.2k |
+| B1 win1 / win2 | 114.6k / 67.6k | 110.3k / 94.0k |
+| B2 win1 / win2 | 105.4k / 68.9k | 117.5k / 86.4k |
+| A2 win1 / win2 | 67.8k / 67.0k | 71.2k / 66.7k |
+
+**B mean 102.0k against 89.1k (+14.5%), and against the best round so far --
+the 35zzo re-run's 90.6k -- +12.6%. A mean 69.6k, also a best.** No check
+failure and no BAD BLOCK.
+
+The mechanism is exactly what was predicted:
+
+| | 35zzo | 35zzr |
+|---|---|---|
+| fold's writer hold, median | 0.6-1.4 s | 154-175 ms |
+| fold's writer hold, worst | 8.5 s | 547 ms |
+| other writers waiting, worst | 6.3 s | 185 ms |
+
+And it lands where the slide was: the second windows went 67.6k -> 94.0k and
+68.9k -> 86.4k, so a B leg now loses 15% from its first window to its second
+instead of 40%. The warm-up's second window did NOT improve (59.8k), which
+says the warm-up's collapse has another cause -- it runs on a cold page cache
+right after the reseed.
+
+What this does NOT fix: the heap still reaches GOMEMLIMIT and the leader's
+write is still 0.5 s on the critical path. 35zzs (tail bounded by transactions)
+and 35zzt (the packet window that never reached the nodes) are the next two,
+both aimed at the heap.
+
 ## 6bm. Round 35zzs: the tx lookup tail bounded by transactions -- registered before the round ran (2026-09-15)
 
 35zzr on n42-r77 = `15710ab9`. **Prediction 74.** "txindex sealed" logs show

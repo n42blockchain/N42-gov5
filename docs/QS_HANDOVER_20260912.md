@@ -17,6 +17,14 @@ this file is the entry point. No keys in here.
   attempt: `build-and-queue.sh` does the cherry-picks, or build by hand.
 - The chain scripts chain-35zzq/r/s/t are written and point at r78/r79/r80; none runs.
 
+## Best so far: 35zzr, B mean 102.0k (2026-09-19)
+
+The deferred history fold outside the write transaction (`f0603e82`, n42-r79)
+took the fold's writer hold from 0.6-1.4 s to 165 ms and the B mean from 89.1k
+to 102.0k. Rounds and their binaries: 35zzq deferred execution (r78) 89.1k,
+35zzu the speculative-build interrupt (r82) 85.3k and falsified, 35zzr the fold
+(r79) 102.0k. 35zzs (tail, r80) and 35zzt (packet window) follow.
+
 ## The drift check (run it at every round end, user's standing ask 2026-09-16)
 
 The goal is one number: the seven-node fleet's sustained TPS at the bench's
