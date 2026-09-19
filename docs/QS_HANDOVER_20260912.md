@@ -17,6 +17,15 @@ this file is the entry point. No keys in here.
   attempt: `build-and-queue.sh` does the cherry-picks, or build by hand.
 - The chain scripts chain-35zzq/r/s/t are written and point at r78/r79/r80; none runs.
 
+## Best so far: 35zzs, B mean 112.7k (2026-09-19)
+
+Two levers landed back to back on top of deferred execution: the fold outside the
+write transaction (35zzr, n42-r79) 89.1k -> 102.0k, and the transaction-bounded
+lookup tail with a draining sealer (35zzs, n42-r80) 102.0k -> 112.7k. Both work by
+taking long, allocation-heavy work off the block's path. Next: 35zzt (the packet
+window flag that never reached the nodes) and 35zzw (one base-state read per
+account per block, n42-r83, scripts ready, binary not built).
+
 ## Best so far: 35zzr, B mean 102.0k (2026-09-19)
 
 The deferred history fold outside the write transaction (`f0603e82`, n42-r79)

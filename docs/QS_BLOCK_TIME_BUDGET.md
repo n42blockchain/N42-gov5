@@ -4736,6 +4736,35 @@ in B -20%; B mean +3-6% over 35zzr. Falsified if tailBlocks grows through a floo
 by any "txindex seal failed" or "could not reopen segments", or if in-use heap
 late in B does not fall.
 
+**35zzs (2026-09-19 18:00-19:06 EDT): prediction 74 confirmed, and a second
+best in a row.**
+
+| leg | 35zzr | 35zzs |
+|---|---|---|
+| A1 win1 / win2 | 72.4k / 68.2k | 72.0k / 66.7k |
+| B1 win1 / win2 | 110.3k / 94.0k | 120.4k / 109.3k |
+| B2 win1 / win2 | 117.5k / 86.4k | 131.5k / 89.7k |
+| A2 win1 / win2 | 71.2k / 66.7k | 72.8k / 68.2k |
+
+**B mean 112.7k against 102.0k (+10.5%)**, where the prediction asked for 3-6%.
+A mean 69.9k. No check failure, no BAD BLOCK.
+
+The mechanism: "txindex sealed" now reports 9-14 tail blocks through a B flood
+(35zzo: 66-77) and each seal takes 44-66 ms where it took 4-5 s, because a tick
+drains the backlog instead of building one 1M-transaction segment. The second
+windows went 94.0k -> 109.3k and 86.4k -> 89.7k. Node heaps did NOT fall (10.5-11
+GB, the same as 35zzr): GOMEMLIMIT still binds, so what this bought is the
+allocation churn of those 4-5 s seals, not resident memory.
+
+Two rounds have now taken the B mean 90.6k -> 102.0k -> 112.7k, both by taking
+long, allocation-heavy work off the block's path rather than by making the block
+itself cheaper.
+
+**Watchdog note.** The round printed ROUND DONE and then aborted its own A2
+epilogue on "QMDB tree/marker discontinuity before execution" -- err "context
+canceled", logged while the fleet was shutting down. The remaining runners
+filter `context canceled` before matching the fatal signatures.
+
 ## 6bn. Round 35zzt: the packet window flag that never reached the nodes -- registered before the round ran (2026-09-15)
 
 35zzs with `--mobileverify.packet-window 8` moved into `QS_NODE_EXTRA`.
