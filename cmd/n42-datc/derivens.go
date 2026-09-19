@@ -27,6 +27,8 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"runtime/pprof"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -152,7 +154,7 @@ func nodeRows(set *leafSegSet, domain, path []byte) ([]deriveRow, error) {
 func deriveNode(rows []deriveRow, domain, path []byte, samples []deriveSample, to uint64,
 	emit func(k, v []byte) error, st *deriveStats) ([]deriveNodeAt, error) {
 
-	sort.SliceStable(rows, func(i, j int) bool { return rows[i].block < rows[j].block })
+	rows = sortRowsByBlock(rows)
 	depth := len(path) + 1 // the units' level
 	var (
 		tries    [16]unitTrie
@@ -260,6 +262,96 @@ func deriveNode(rows []deriveRow, domain, path []byte, samples []deriveSample, t
 	return at, nil
 }
 
+// sortRowsByBlock orders rows by block, keeping the key order inside a block
+// (rows arrive sorted by key). Sorting packed (block, index) words and
+// permuting once is several times cheaper than a stable sort that moves
+// 64-byte rows around.
+func sortRowsByBlock(rows []deriveRow) []deriveRow {
+	keys := make([]uint64, len(rows))
+	for i := range rows {
+		keys[i] = uint64(rows[i].block)<<32 | uint64(uint32(i))
+	}
+	slices.Sort(keys)
+	out := make([]deriveRow, len(rows))
+	for i, k := range keys {
+		out[i] = rows[uint32(k)]
+	}
+	return out
+}
+
+// deriveEmitter hands records to the spill writers. A writer compresses as it
+// goes, so one writer behind one lock serialized every worker; records are
+// buffered per job and flushed in batches, and the writers are sharded by the
+// contract's first byte — a (table, bucket) spill file always belongs to one
+// writer, so the shards never touch the same file.
+type deriveEmitter struct {
+	shards []*deriveShard
+}
+
+type deriveShard struct {
+	mu sync.Mutex
+	w  *leafSpillWriter
+}
+
+func newDeriveEmitter(dst string, n int) (*deriveEmitter, error) {
+	e := &deriveEmitter{}
+	for i := 0; i < n; i++ {
+		w, err := newLeafSpillWriter(dst)
+		if err != nil {
+			return nil, err
+		}
+		e.shards = append(e.shards, &deriveShard{w: w})
+	}
+	return e, nil
+}
+
+// deriveBatch buffers one job's records for one contract.
+type deriveBatch struct {
+	e     *deriveEmitter
+	shard *deriveShard
+	recs  []deriveRec
+	bytes int
+}
+
+type deriveRec struct {
+	table int
+	k, v  []byte
+}
+
+func (e *deriveEmitter) batch(dom []byte) *deriveBatch {
+	return &deriveBatch{e: e, shard: e.shards[int(dom[0])%len(e.shards)]}
+}
+
+func (b *deriveBatch) add(table int, k, v []byte) error {
+	b.recs = append(b.recs, deriveRec{table, k, v})
+	if b.bytes += len(k) + len(v); b.bytes >= 8<<20 {
+		return b.flush()
+	}
+	return nil
+}
+
+func (b *deriveBatch) flush() error {
+	b.shard.mu.Lock()
+	defer b.shard.mu.Unlock()
+	for _, r := range b.recs {
+		if err := b.shard.w.add(r.table, r.k, r.v); err != nil {
+			return err
+		}
+	}
+	b.recs, b.bytes = b.recs[:0], 0
+	return nil
+}
+
+func (e *deriveEmitter) close() error {
+	var first error
+	for _, s := range e.shards {
+		if err := s.w.close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
 // deriveSamples picks up to n blocks at which the contract's storage root is
 // known exactly: rows of the per-block storage-root history.
 func deriveSamples(sr *leafSegSet, domain []byte, n int, rng *rand.Rand) ([]deriveSample, error) {
@@ -344,6 +436,7 @@ func runDeriveNS(args []string) {
 	list := fs.String("contracts", "", "file of '<addrHash> <depth>' lines: the contracts to put on the exact ladder")
 	workers := fs.Int("workers", 16, "level D-1 nodes replayed at once (each holds its rows and 16 unit tries in memory)")
 	nSamples := fs.Int("check-samples", 64, "blocks per contract at which the derived root is compared with the storage-root history")
+	cpuProfile := fs.String("cpuprofile", "", "write a CPU profile here")
 	earlyOnly := fs.Bool("early-only", false, "the listed contracts already have their final-depth records in --dst: add only their growth stages (rungs, birth partitions, early-stage records)")
 	_ = fs.Parse(args)
 	if *out == "" || *list == "" {
@@ -356,12 +449,26 @@ func runDeriveNS(args []string) {
 	if err != nil {
 		die("contracts: %v", err)
 	}
+	if *cpuProfile != "" {
+		pf, err := os.Create(*cpuProfile)
+		if err != nil {
+			die("cpuprofile: %v", err)
+		}
+		if err := pprof.StartCPUProfile(pf); err != nil {
+			die("cpuprofile: %v", err)
+		}
+		defer func() {
+			pprof.StopCPUProfile()
+			pf.Close()
+		}()
+	}
 	// Every worker reads the same storage segments: load their indexes once
 	// and keep them for the run.
 	if _, err := preloadSegFiles(*out, 32); err != nil {
 		die("preload: %v", err)
 	}
 	if err := deriveNS(*out, *dst, contracts, *workers, *nSamples, *earlyOnly); err != nil {
+		pprof.StopCPUProfile()
 		die("derive-ns: %v", err)
 	}
 }
@@ -390,17 +497,10 @@ func deriveNS(out, dst string, contracts []deriveContract, workers, nSamples int
 	if err := os.MkdirAll(filepath.Join(dst, leafSegDir), 0o755); err != nil {
 		return fmt.Errorf("dst: %v", err)
 	}
-	spill, err := newLeafSpillWriter(dst)
+	spill, err := newDeriveEmitter(dst, 16)
 	if err != nil {
 		return fmt.Errorf("spill: %v", err)
 	}
-	var spillMu sync.Mutex
-	emitTo := func(table int, k, v []byte) error {
-		spillMu.Lock()
-		defer spillMu.Unlock()
-		return spill.add(table, k, v)
-	}
-	emit := func(k, v []byte) error { return emitTo(segTabNodeS, k, v) }
 
 	srSet, ok, err := openLeafSegSet(out, segTabStoRoot, newFrameLRUSize(64))
 	if err != nil || !ok {
@@ -473,7 +573,10 @@ func deriveNS(out, dst string, contracts []deriveContract, workers, nSamples int
 					b, keys, err := contractRungs(set, c.dom, c.depth)
 					var e [][][]deriveNodeAt
 					if err == nil {
-						e, err = deriveStages(set, c, b, samples[ci], emitTo, &st)
+						batch := spill.batch(c.dom)
+						if e, err = deriveStages(set, c, b, samples[ci], batch.add, &st); err == nil {
+							err = batch.flush()
+						}
 					}
 					mu.Lock()
 					if err != nil && firstErr == nil {
@@ -520,7 +623,11 @@ func deriveNS(out, dst string, contracts []deriveContract, workers, nSamples int
 				rows, err := nodeRows(set, c.dom, j.path)
 				var at []deriveNodeAt
 				if err == nil {
-					at, err = deriveNode(rows, c.dom, j.path, samples[j.ci], 0, emit, &st)
+					batch := spill.batch(c.dom)
+					emit := func(k, v []byte) error { return batch.add(segTabNodeS, k, v) }
+					if at, err = deriveNode(rows, c.dom, j.path, samples[j.ci], 0, emit, &st); err == nil {
+						err = batch.flush()
+					}
 				}
 				mu.Lock()
 				if err != nil && firstErr == nil {
