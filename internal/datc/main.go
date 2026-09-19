@@ -172,6 +172,18 @@ func Main() {
 		runDeriveNS(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "slim" {
+		runSlim(os.Args[2:])
+		return
+	}
+	if os.Args[1] == "serving-copy" {
+		runServingCopy(os.Args[2:])
+		return
+	}
+	if os.Args[1] == "weekly" {
+		runWeekly(os.Args[2:])
+		return
+	}
 	if os.Args[1] == "derive-plan" {
 		runDerivePlan(os.Args[2:])
 		return

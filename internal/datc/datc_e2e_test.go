@@ -588,6 +588,7 @@ type e2eOpts struct {
 	stoCache    int
 	accDepth    int    // build: account record depth (0 → 2)
 	stoDepth    int    // build: storage record depth (0 → 2)
+	noStoRecs   bool   // build with --sto-depth 0: no storage node records, no storage change rows
 	foldDepth   int    // query: account fold override (0 = record depth)
 	splitAt     uint64 // >0: stop the first run here and resume with a fresh builder
 	finalizeMid bool   // leafSeg + splitAt: finalize segments before the resume (exercises the merge)
@@ -619,7 +620,7 @@ func newTestBuilder(t *testing.T, db kv.RwDB, out string, sc *scenario, o e2eOpt
 	if b.accDepth == 0 {
 		b.accDepth = 2
 	}
-	if b.stoDepth == 0 {
+	if b.stoDepth == 0 && !o.noStoRecs {
 		b.stoDepth = 2
 	}
 	b.concurrentRoot = o.concurrent

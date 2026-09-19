@@ -179,6 +179,7 @@ func runBench(args []string) {
 	baseDir := fs.String("base", "", "partial archive: the pristine prep-state base it was built from (keys untouched since the base read their base value)")
 	frameCache := fs.Int("frame-cache", defaultFrameCache, "decompressed segment frames kept in RAM per querier (256 KiB each)")
 	cpuProfile := fs.String("cpuprofile", "", "write a CPU profile of the query phase to this file")
+	gateMaxMs := fs.Float64("gate-max-ms", 0, "exit with status 3 when a verified query took longer than this (0 = no gate)")
 	crossCheck := fs.Bool("cross-check", false, "also re-hash every folded subtree with the second builder (every proof is verified against the header root regardless)")
 	queries := fs.String("queries", "", "run the planned queries of this JSON file (bench-plan) instead of sampling the changesets")
 	_ = fs.Parse(args)
@@ -451,5 +452,9 @@ func runBench(args []string) {
 	}
 	if fails > 0 {
 		os.Exit(2)
+	}
+	if *gateMaxMs > 0 && pct(totMs, 1) > *gateMaxMs {
+		fmt.Printf("GATE: slowest verified query %.1f ms exceeds --gate-max-ms %.0f\n", pct(totMs, 1), *gateMaxMs)
+		os.Exit(3)
 	}
 }
