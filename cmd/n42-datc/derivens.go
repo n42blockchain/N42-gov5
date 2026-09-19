@@ -150,8 +150,11 @@ func nodeRows(set *leafSegSet, domain, path []byte) ([]deriveRow, error) {
 // samples (ascending) receive the node's state as of each sample block.
 //
 // to > 0 stops the records at the first block >= to: an early growth stage
-// records its level only until the next rung takes over.
-func deriveNode(rows []deriveRow, domain, path []byte, samples []deriveSample, to uint64,
+// records its level only until the next rung takes over. from > 0 replays the
+// history below it without writing (the archive already has those records)
+// and opens the new run with a FULL record, since the state of the existing
+// DIFF chain is not known here.
+func deriveNode(rows []deriveRow, domain, path []byte, samples []deriveSample, from, to uint64,
 	emit func(k, v []byte) error, st *deriveStats) ([]deriveNodeAt, error) {
 
 	rows = sortRowsByBlock(rows)
@@ -224,7 +227,7 @@ func deriveNode(rows []deriveRow, domain, path []byte, samples []deriveSample, t
 				changed |= bit
 			}
 		}
-		if changed == 0 {
+		if changed == 0 || uint64(blk) < from {
 			continue
 		}
 		k := binary.BigEndian.AppendUint32(append([]byte{}, keyBase...), blk)
@@ -354,7 +357,7 @@ func (e *deriveEmitter) close() error {
 
 // deriveSamples picks up to n blocks at which the contract's storage root is
 // known exactly: rows of the per-block storage-root history.
-func deriveSamples(sr *leafSegSet, domain []byte, n int, rng *rand.Rand) ([]deriveSample, error) {
+func deriveSamples(sr *leafSegSet, domain []byte, n int, minBlock uint64, rng *rand.Rand) ([]deriveSample, error) {
 	var picked []deriveSample
 	seen := 0
 	c := sr.Cursor()
@@ -368,6 +371,9 @@ func deriveSamples(sr *leafSegSet, domain []byte, n int, rng *rand.Rand) ([]deri
 			break
 		}
 		s := deriveSample{block: uint64(binary.BigEndian.Uint32(k[stoDomainLen:]))}
+		if s.block < minBlock {
+			continue
+		}
 		if len(v) == 32 {
 			copy(s.want[:], v)
 			s.has = true
@@ -437,17 +443,30 @@ func runDeriveNS(args []string) {
 	workers := fs.Int("workers", 16, "level D-1 nodes replayed at once (each holds its rows and 16 unit tries in memory)")
 	nSamples := fs.Int("check-samples", 64, "blocks per contract at which the derived root is compared with the storage-root history")
 	cpuProfile := fs.String("cpuprofile", "", "write a CPU profile here")
+	extendFrom := fs.Uint64("from", 0, "weekly update: append the records of blocks >= this one (the archive's previous head) for contracts that are already listed; without --contracts, for all of them")
 	earlyOnly := fs.Bool("early-only", false, "the listed contracts already have their final-depth records in --dst: add only their growth stages (rungs, birth partitions, early-stage records)")
 	_ = fs.Parse(args)
-	if *out == "" || *list == "" {
+	if *out == "" || (*list == "" && *extendFrom == 0) {
 		die("--out and --contracts required")
 	}
 	if *dst == "" {
 		*dst = *out
 	}
-	contracts, err := parseDeriveContracts(*list)
-	if err != nil {
-		die("contracts: %v", err)
+	var contracts []deriveContract
+	var err error
+	if *list != "" {
+		if contracts, err = parseDeriveContracts(*list); err != nil {
+			die("contracts: %v", err)
+		}
+	} else {
+		listed, err := loadExactLadders(*dst)
+		if err != nil || listed == nil {
+			die("--from without --contracts needs an archive with ns.ladders (err=%v)", err)
+		}
+		for dom, rungs := range listed.m {
+			contracts = append(contracts, deriveContract{dom: []byte(dom), depth: rungs[len(rungs)-1].depth})
+		}
+		sort.Slice(contracts, func(i, j int) bool { return bytes.Compare(contracts[i].dom, contracts[j].dom) < 0 })
 	}
 	if *cpuProfile != "" {
 		pf, err := os.Create(*cpuProfile)
@@ -467,7 +486,7 @@ func runDeriveNS(args []string) {
 	if _, err := preloadSegFiles(*out, 32); err != nil {
 		die("preload: %v", err)
 	}
-	if err := deriveNS(*out, *dst, contracts, *workers, *nSamples, *earlyOnly); err != nil {
+	if err := deriveNS(*out, *dst, contracts, *workers, *nSamples, deriveOpts{earlyOnly: *earlyOnly, extendFrom: *extendFrom}); err != nil {
 		pprof.StopCPUProfile()
 		die("derive-ns: %v", err)
 	}
@@ -476,7 +495,18 @@ func runDeriveNS(args []string) {
 // deriveNS derives the ns records of `contracts` from the archive `out` into
 // `dst` and lists them in dst's ns.ladders. Nothing becomes readable unless
 // every contract's derived roots match the storage-root history.
-func deriveNS(out, dst string, contracts []deriveContract, workers, nSamples int, earlyOnly bool) error {
+// deriveOpts selects what deriveNS writes for contracts that are already listed.
+type deriveOpts struct {
+	// earlyOnly: the final-depth records exist; add the growth stages only.
+	earlyOnly bool
+	// extendFrom > 0: the archive grew (a weekly update). Append the final-depth
+	// records of blocks >= extendFrom; rungs and partitions are history and
+	// stay as they are.
+	extendFrom uint64
+}
+
+func deriveNS(out, dst string, contracts []deriveContract, workers, nSamples int, opts deriveOpts) error {
+	earlyOnly, extend := opts.earlyOnly, opts.extendFrom > 0
 	ladders := map[string][]exactRung{}
 	if old, err := loadExactLadders(dst); err != nil {
 		return fmt.Errorf("ladders: %v", err)
@@ -488,6 +518,10 @@ func deriveNS(out, dst string, contracts []deriveContract, workers, nSamples int
 	for _, c := range contracts {
 		old, listed := ladders[string(c.dom)]
 		switch {
+		case extend:
+			if !listed || old[len(old)-1].depth != c.depth || old[len(old)-1].from >= opts.extendFrom {
+				return fmt.Errorf("--from %d: contract %x must be listed in %s at depth %d with its last rung below that block", opts.extendFrom, c.dom[:6], dst, c.depth)
+			}
 		case listed && !earlyOnly:
 			return fmt.Errorf("contract %x already has ns records in %s", c.dom[:6], dst)
 		case earlyOnly && (!listed || len(old) != 1 || old[0].from != 0 || old[0].depth != c.depth):
@@ -516,7 +550,7 @@ func deriveNS(out, dst string, contracts []deriveContract, workers, nSamples int
 	rng := rand.New(rand.NewSource(1))
 	var jobs []job
 	for ci, c := range contracts {
-		if samples[ci], err = deriveSamples(srSet, c.dom, nSamples, rng); err != nil {
+		if samples[ci], err = deriveSamples(srSet, c.dom, nSamples, opts.extendFrom, rng); err != nil {
 			return fmt.Errorf("samples of %x: %v", c.dom[:6], err)
 		}
 		nodes := 1
@@ -548,7 +582,14 @@ func deriveNS(out, dst string, contracts []deriveContract, workers, nSamples int
 	// of depth 1 has none — before its only rung it is folded whole.
 	bounds := make([][]uint64, len(contracts))
 	early := make([][][][]deriveNodeAt, len(contracts)) // [contract][stage][node][sample]
-	{
+	for ci, c := range contracts {
+		if extend {
+			for _, r := range ladders[string(c.dom)] {
+				bounds[ci] = append(bounds[ci], r.from)
+			}
+		}
+	}
+	if !extend {
 		prep := make(chan int)
 		pw := workers/4 + 1
 		for w := 0; w < pw; w++ {
@@ -625,7 +666,7 @@ func deriveNS(out, dst string, contracts []deriveContract, workers, nSamples int
 				if err == nil {
 					batch := spill.batch(c.dom)
 					emit := func(k, v []byte) error { return batch.add(segTabNodeS, k, v) }
-					if at, err = deriveNode(rows, c.dom, j.path, samples[j.ci], 0, emit, &st); err == nil {
+					if at, err = deriveNode(rows, c.dom, j.path, samples[j.ci], opts.extendFrom, 0, emit, &st); err == nil {
 						err = batch.flush()
 					}
 				}
@@ -701,15 +742,17 @@ func deriveNS(out, dst string, contracts []deriveContract, workers, nSamples int
 	if err := finalizeLeafSegments(dst); err != nil {
 		return fmt.Errorf("finalize: %v", err)
 	}
-	for ci, c := range contracts {
-		var rungs []exactRung
-		for g, from := range bounds[ci] {
-			rungs = append(rungs, exactRung{from: from, depth: g + 1})
+	if !extend {
+		for ci, c := range contracts {
+			var rungs []exactRung
+			for g, from := range bounds[ci] {
+				rungs = append(rungs, exactRung{from: from, depth: g + 1})
+			}
+			ladders[string(c.dom)] = rungs
 		}
-		ladders[string(c.dom)] = rungs
-	}
-	if err := writeExactLadders(dst, ladders); err != nil {
-		return fmt.Errorf("ladders: %v", err)
+		if err := writeExactLadders(dst, ladders); err != nil {
+			return fmt.Errorf("ladders: %v", err)
+		}
 	}
 	fmt.Printf("derived %d contracts: rows=%d records=%d (full=%d) hashes=%d in %s\n",
 		len(contracts), total.rows, total.records, total.fulls, total.hashes, time.Since(start).Truncate(time.Second))

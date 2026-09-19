@@ -48,10 +48,10 @@ func TestE2E_ExactLadder(t *testing.T) {
 	}
 	stageBin = 8 // the scenario is 360 blocks long
 	defer func() { stageBin = 1024 }()
-	if err := deriveNS(out, out, contracts, 4, 32, false); err != nil {
+	if err := deriveNS(out, out, contracts, 4, 32, deriveOpts{}); err != nil {
 		t.Fatalf("derive-ns: %v", err)
 	}
-	if err := deriveNS(out, out, contracts[:1], 4, 32, false); err == nil {
+	if err := deriveNS(out, out, contracts[:1], 4, 32, deriveOpts{}); err == nil {
 		t.Fatal("deriving a listed contract twice must be refused")
 	}
 	// Account birth partitions: every account fold below block 250 reads them.

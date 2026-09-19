@@ -169,6 +169,14 @@ func main() {
 		runDeriveNS(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "derive-plan" {
+		runDerivePlan(os.Args[2:])
+		return
+	}
+	if os.Args[1] == "verify-ns" {
+		runVerifyNS(os.Args[2:])
+		return
+	}
 	if os.Args[1] == "derive-acc-parts" {
 		runDeriveAccParts(os.Args[2:])
 		return

@@ -168,7 +168,7 @@ func deriveStages(set *leafSegSet, c deriveContract, bounds []uint64, samples []
 			for i, x := level-1, idx; i >= 0; i, x = i-1, x/16 {
 				path[i] = byte(x % 16)
 			}
-			at, err := deriveNode(byNode[idx], c.dom, path, samples, bounds[g], emitNS, st)
+			at, err := deriveNode(byNode[idx], c.dom, path, samples, 0, bounds[g], emitNS, st)
 			if err != nil {
 				return nil, err
 			}

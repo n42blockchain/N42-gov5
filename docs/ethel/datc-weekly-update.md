@@ -77,6 +77,34 @@ acctcs/storcs 只能由**逐块执行**的节点写出：eth-el staged catch-up 
    另查 `DatcMeta/progress == T+1`、`head` 同步推进、`start` 未变（合并后应为 0）。
 6. **收尾**：删 `.box-claim-datc`；记录新的终点 T。
 
+## 4.1 精确阶梯归档的追加步骤（2026-09-19 起）
+
+归档 `datc-25m-v2-hi` 现在是"v2 构建产物 + 离线推导"的组合（见 `datc-ladder-redesign-design-2026-09-18.md`）：
+`leafseg/` 里的 `na` 是 16 KiB 帧、`a`/`s`/`sr` 是 64 KiB 帧，另有离线推导出来的 `ns`（精确存储记录）+ `ns.ladders`、
+出生分区 `s0..s2`/`a0..a2` + `a.stages`。`mdbx.dat`（当前态表）照旧保留，构建器续跑仍然靠它。读取端见到 `ns.ladders`
+就走精确阶梯，不再读 MDBX 里的 DatcStorNode 和 `cs`。
+
+构建器本身没变（`--sched 1024,16384,1024,1,4194304,4194304 --acc-root-epoch 1 --acc-depth 4`，账户第 3 层逐块）。
+周更新在第 4 步的"续跑延伸"和"验收"之间多三步，二进制必须是 hi24 及以后（收尾时 `na` 按 16 KiB 切帧）：
+
+```bash
+B=/data/blockchain/datc-out; A=$B/datc-25m-v2-hi; E=<上次终点，不含>
+# a. 已在阶梯上的合约：把 [E, 新链头) 的精确记录接上（重放历史、只写 >= E 的记录，逐合约对 sr 校验；全链约 25 分钟）
+$B/datc.bin derive-ns --out $A --from $E --workers 32
+# b. 这一周长过阈值的新合约：普查（~1 分钟）→ 有就整份推导（含成长阶段与出生分区）
+$B/datc.bin derive-plan --out $A --list $B/weekly-new-contracts.txt
+[ -s $B/weekly-new-contracts.txt ] && $B/datc.bin derive-ns --out $A --contracts $B/weekly-new-contracts.txt --workers 32
+# c. 经读取端复核（存储根历史 vs 阶梯合成的根），只看新块
+$B/datc.bin verify-ns --out $A --from $E --contracts 400
+```
+
+- 三步都只在 `leafseg/` 里写（spill → 收尾归并进已有 `ns`/分区段），不碰 `mdbx.dat`。收尾同样**不能被打断、不能在自动重启下跑**。
+- `derive-ns` 在校验不过时不会收尾，spill 留在 `leafspill/` 里；确认原因后删掉 spill 重来。
+- 出生分区和 rung 是历史，周更新不改；账户侧没有要追加的离线数据（`na` 由构建器产出）。
+- 验收 bench 加一条分层的：`bench --queries redesign-2026-09-18/p1-queries.json`（合约档位 × 生命阶段），再跑原来的 mixed 500。
+- 已知限制：阶梯深度上限 3（单精确层）。终深已是 3 的合约继续长大只会让折叠单元变大（USDT 现在 ~2.1 万键/单元，≈25 ms），
+  到单元 > ~10 万键再考虑第二个精确层；实测目前没有合约需要。
+
 ## 5. 耗时与资源参考
 
 - 25M 构建后段（24–25.2M）实测 **20–27 块/秒**（hi9 + `--writemap`）；一周约 5 万块 ≈ **35–45 分钟**，
