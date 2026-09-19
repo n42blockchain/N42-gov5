@@ -181,3 +181,63 @@ func TestE2E_ExactLadder(t *testing.T) {
 	}
 	_ = context.Background
 }
+
+// TestE2E_AccountExactLadder: on a build whose account level 3 is per block
+// (the mainnet archive's shape) the exact-only account reading is in force,
+// reconstructs every height's state root, never opens the change index, and
+// agrees with the epoch-record path it replaces.
+func TestE2E_AccountExactLadder(t *testing.T) {
+	sc := getScenario(t)
+	modules.N42Init()
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	out := t.TempDir()
+	db, err := openDatcDB(log.New(), out, 4, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	writeFwd(t, db, sc)
+	o := e2eOpts{sched: epochSchedule{e: [maxChgDepth + 1]uint64{8, 64, 16, 1, 4096, 4096}}, batch: 50, stoCache: 64, accDepth: 4, stoDepth: 2, leafSeg: true, accRoot: 1}
+	end := uint64(len(sc.blocks))
+	if err := newTestBuilder(t, db, out, sc, o, 0).run(0, end, o.batch); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	rootsWith := func(exact bool) (roots []types.Hash, recs int) {
+		accExactLadder = exact
+		defer func() { accExactLadder = true }()
+		q, closeQ := openTestQuerier(t, db, out, o)
+		defer closeQ()
+		if q.accExact != exact {
+			t.Fatalf("accExact = %v, want %v", q.accExact, exact)
+		}
+		if exact {
+			q.segCA.Close() // the exact path must not need the change index
+			q.segCA = nil
+		}
+		for n := uint64(0); n < end; n++ {
+			root, exists, err := q.nodeHashAt(nil, nil, n)
+			if err != nil {
+				t.Fatalf("exact=%v height %d: %v", exact, n, err)
+			}
+			if !exists {
+				root = emptyTrieRoot
+			}
+			roots = append(roots, root)
+		}
+		return roots, q.recs
+	}
+	exact, recs := rootsWith(true)
+	if recs == 0 {
+		t.Fatal("the exact path read no records: the scenario does not reach the recorded level")
+	}
+	epoch, _ := rootsWith(false)
+	for n := range exact {
+		if exact[n] != sc.roots[n] {
+			t.Fatalf("height %d: exact ladder root %x != reference %x", n, exact[n][:6], sc.roots[n][:6])
+		}
+		if epoch[n] != exact[n] {
+			t.Fatalf("height %d: the two account paths disagree", n)
+		}
+	}
+}

@@ -249,5 +249,90 @@ func (q *querier) exactSlotsAt(domain, path []byte, n uint64) (slots [16]*types.
 	return slots, nKids, true, nil
 }
 
+// accExactLadder enables the exact-only reading of the account trie for
+// archives whose deepest account level is recorded per block (tests switch it
+// off to compare with the epoch-record path).
+var accExactLadder = true
+
+// accExactSlotsAt is branchSlotsAt for the account trie when its deepest
+// recorded level is per block. The epoch levels above it answer a dense trie
+// no better than assembling them from their children — every child changed
+// inside the window, so the reader recursed into all 16 anyway — and reading
+// them needs the change index; this path needs neither.
+//
+//	root (accRoot = 1)   its per-block record, else assembled from level 1
+//	levels in between    assembled from their 16 children
+//	level accFold-1      its floor record IS the node at n
+//	level accFold        folded
+//
+// Unlike a derived ns record, a builder record exists only while the node is
+// a branch whose children are all hashed: absent, tombstone and MIXED all
+// mean "whatever sits here, only the fold knows its shape".
+func (q *querier) accExactSlotsAt(path []byte, n uint64) (slots [16]*types.Hash, nKids int, usable bool, err error) {
+	d := len(path)
+	if d >= q.accFold {
+		q.noteFold(d, "belowFold")
+		return slots, 0, false, nil
+	}
+	if q.accExactMemo.n != n || q.accExactMemo.m == nil {
+		q.accExactMemo = exactMemo{n: n, m: make(map[string]exactMemoEntry)}
+	}
+	if e, ok := q.accExactMemo.m[string(path)]; ok {
+		return e.slots, e.nKids, e.usable, nil
+	}
+	defer func() {
+		if err == nil {
+			q.accExactMemo.m[string(path)] = exactMemoEntry{slots, nKids, usable}
+		}
+	}()
+
+	recorded := d == q.accFold-1 || (d == 0 && q.sched.accRoot == 1)
+	if recorded {
+		st, _, ok, ferr := q.floorRecord(nil, path, n)
+		if ferr != nil {
+			return slots, 0, false, ferr
+		}
+		if ok && st.hasState == st.hasHash && st.hasState != 0 {
+			q.recs++
+			for nib := 0; nib < 16; nib++ {
+				if st.hasState&(1<<nib) != 0 {
+					h := types.Hash(st.hash[nib])
+					slots[nib] = &h
+					nKids++
+				}
+			}
+			return slots, nKids, nKids >= 2, nil
+		}
+		if d == q.accFold-1 {
+			reason := "mixedRecord"
+			if !ok {
+				reason = "floor:" + q.lastFloorReason
+				if q.absentPaths != nil && q.lastFloorReason == "absent" {
+					q.absentPaths[string(path)]++
+				}
+			}
+			q.noteFold(d, reason)
+			return slots, 0, false, nil
+		}
+		// An unusable root record: assemble the root like any other level.
+	}
+	for nib := byte(0); nib < 16; nib++ {
+		h, exists, herr := q.nodeHashAt(nil, append(append(make([]byte, 0, d+1), path...), nib), n)
+		if herr != nil {
+			return slots, 0, false, herr
+		}
+		if exists {
+			hc := h
+			slots[nib] = &hc
+			nKids++
+		}
+	}
+	if nKids == 1 {
+		q.noteFold(d, "collapsed")
+		return slots, nKids, false, nil
+	}
+	return slots, nKids, true, nil
+}
+
 // exactBlockOf is the block suffix of an ns record key.
 func exactBlockOf(k []byte) uint64 { return uint64(binary.BigEndian.Uint32(k[len(k)-4:])) }

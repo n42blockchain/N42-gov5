@@ -264,6 +264,7 @@ func loadQuerierCache(tx kv.Tx, out string, foldOverride int, frameCache int) (*
 	if q.exact, err = loadExactLadders(out); err != nil {
 		return nil, 0, err
 	}
+	q.accExact = accExactLadder && q.accFold >= 2 && q.sched.lenFor(false, q.accFold-1) == 1
 	for i := 0; i < maxBirthParts; i++ {
 		if q.segSP[i], err = open(segTabLeafS0 + i); err != nil {
 			return nil, 0, err
@@ -348,6 +349,12 @@ type querier struct {
 	// epoch levels, no change index; unlisted contracts fold whole.
 	exact     *exactLadders
 	exactMemo exactMemo
+	// accExact: the account trie's deepest recorded level is per block, so
+	// the account side reads like the storage ladder — that level and the
+	// per-block root are exact, the levels between are assembled from their
+	// children — and never touches the epoch records or the change index.
+	accExact     bool
+	accExactMemo exactMemo
 
 	folds, recs, leafReads int
 	// Diagnostics: folds per depth and why the record path was unusable.
@@ -668,6 +675,9 @@ func (q *querier) nodeHashAt(domain, path []byte, n uint64) (types.Hash, bool, e
 func (q *querier) branchSlotsAt(domain, path []byte, n uint64) (slots [16]*types.Hash, nKids int, usable bool, err error) {
 	if domain != nil && q.exact != nil {
 		return q.exactSlotsAt(domain, path, n)
+	}
+	if domain == nil && q.accExact {
+		return q.accExactSlotsAt(path, n)
 	}
 	d := len(path)
 	fold := q.accFold
