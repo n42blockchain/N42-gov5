@@ -85,6 +85,11 @@ acctcs/storcs 只能由**逐块执行**的节点写出：eth-el staged catch-up 
 就走精确阶梯，不再读 MDBX 里的 DatcStorNode 和 `cs`。
 
 构建器本身没变（`--sched 1024,16384,1024,1,4194304,4194304 --acc-root-epoch 1 --acc-depth 4`，账户第 3 层逐块）。
+**一条命令**（hi26 及以后）：`datc.bin weekly --out $A --headers <headerc> --changesets <acctcs 目录> --queries redesign-2026-09-18/p1-queries.json -- <构建参数>`
+把第 4 步的续跑和下面三步、再加验收串起来，任何一步失败即停（构建参数照 `run-25m-hi9-ext.sh`，把 `--sto-depth 0` 加上：精确阶梯归档不再需要
+v2 的存储 epoch 记录；`--dry-run` 先看它要跑什么）。它有锁文件、`leafspill/` 里有残留就拒绝启动，**不要包在 supervise.sh 之类的自动重启里**。
+下面是它内部做的事，出问题时按步手动跑。
+
 周更新在第 4 步的"续跑延伸"和"验收"之间多三步，二进制必须是 hi24 及以后（收尾时 `na` 按 16 KiB 切帧）：
 
 ```bash

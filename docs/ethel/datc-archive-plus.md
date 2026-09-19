@@ -37,7 +37,7 @@ DATC = 叶历史（一切的真相）+ 少量节点记录（让"折"的范围小
 
 | | 记录 | 折叠 | 每个证明 |
 |---|---|---|---|
-| 账户树 | 根（第 0 层）逐块 + **第 3 层逐块**（`na` 段）；第 1、2 层是 v2 遗留的 epoch 记录，仍在用、可去 | 第 4 层（单元 ≈ 7k 历史键） | ≈ 273 条记录 + 1 次折叠 |
+| 账户树 | 根（第 0 层）逐块 + **第 3 层逐块**（`na` 段）；第 1、2 层由孩子合成（`accExactSlotsAt`）。v2 遗留的第 1/2 层 epoch 记录和 `ca` 不再读取 | 第 4 层（单元 ≈ 7k 历史键） | ≈ 257 条记录 + 1 次折叠 |
 | 存储树（合约在精确阶梯上，深度 D ≤ 3） | **只有第 D−1 层逐块**（`ns` 段）；之上的层由 16 个孩子合成 | 第 D 层 | D=1/2/3 → 1 / 17 / 273 条记录 + 1 次折叠 |
 | 存储树（其余 2800 万个合约） | 无 | 整棵树（4 个 goroutine 分 16 个首 nibble 区间） | 1 次折叠 |
 
@@ -76,7 +76,9 @@ DATC = 叶历史（一切的真相）+ 少量节点记录（让"折"的范围小
 | `derivens.go` `derivestages.go` `deriveplan.go` | 离线推导：`derive-ns`（全量 / `--early-only` / `--from E` 周更新）、成长阶段、`derive-plan` |
 | `verifyns.go` `bench.go` `benchplan.go` | 验收：`verify-ns`（经读取端合成存储根 vs `sr`）、`bench`（每个证明对区块头根校验；`--queries` 分层）、`bench-plan` |
 | `reframe.go` | 按表重切段帧（逐段读回校验 行数/字节/CRC64；`--view` 不动原档） |
-| `archive.go` | **库读取端**：`OpenArchive` / `Prove`，给长驻进程（eth-el）用 |
+| `archive.go` | **库读取端**：`OpenArchive` / `Prove` / `AccountAt` / `StorageAt`，给长驻进程（eth-el）用 |
+| `weekly.go` | 周更新一条命令（各步是本二进制的子进程，任何一步失败即停） |
+| `slim.go` | `slim`（清构建归档 MDBX 里的死表）、`serving-copy`（只读服务副本：硬链接的段 + 只含 DatcMeta 的 MDBX） |
 | `merge.go` `prepstate.go` | 两段构建合并、从状态拷贝起一段构建 |
 
 盘上布局（归档目录）：
@@ -88,7 +90,7 @@ leafseg/sr.*            存储根历史        key = addrHash | block(4)
 leafseg/na.*            账户节点记录      key = pathLen | path | epoch(4)，16 KiB 帧
 leafseg/ns.* ns.ladders 精确存储记录      key = pathLen | addrHash | path | block(4)；rung 清单
 leafseg/s0..s2 a0..a2 a.stages  出生分区
-leafseg/ca.* cs.*       变更索引：ca 账户第 1/2 层 epoch 记录还在用；cs 已不用（留作保险，19.6 GB）
+leafseg/ca.* cs.*       变更索引：两侧都走纯精确层之后读取端都不再用（30 GB，服务副本里不带）
 ```
 
 ## 4. 踩过的坑
@@ -127,9 +129,9 @@ leafseg/ca.* cs.*       变更索引：ca 账户第 1/2 层 epoch 记录还在�
 | 账户节点记录 `na` | 288 GB | 64.3 亿条 ≈ 40 B/条（哈希不可压，已贴近 32 B 下限） |
 | 精确存储记录 `ns` | 205 GB | 2,848 个合约；前 4 个合约占 ≈ 98 GB |
 | 出生分区 | 7.5 GB | |
-| `ca` + `cs` | 30 GB | `cs` 可删 |
-| 查询所需合计 | **≈ 800 GB** | v2 是 1011 GB（存储证明 p90 148 s）；v3 外推 1.3 TB |
-| `mdbx.dat` | 433 GB | 续跑用的当前态 + 已不用的 DatcStorNode 90 GB；查询只读 DatcMeta |
+| `ca` + `cs` | 30 GB | 读取端已不用；服务副本不带 |
+| 查询所需合计（= 服务副本 `datc-25m-serving`） | **821 GB** | v2 是 1011 GB（存储证明 p90 148 s）；v3 外推 1.3 TB |
+| `mdbx.dat`（只在构建归档里） | 262 GB | 续跑用的当前态；`slim` 清掉了 90 GB 的 DatcStorNode（39 秒），压缩拷贝后文件 464 → ~262 GB。服务副本的 `mdbx.dat` 是 256 KB |
 
 ## 6. 性能
 
@@ -137,12 +139,12 @@ leafseg/ca.* cs.*       变更索引：ca 账户第 1/2 层 epoch 记录还在�
 
 | bench | 通过 | p50 | p90 | p99 | 最慢 | ≤ 200 ms | ≤ 1 s |
 |---|---|---|---|---|---|---|---|
-| 一般 2000（账户 + ≤ 2 槽，按变更集均匀采），热缓存 | 1981 | **29.5** | 44 | 77 | 213 | 99.95% | 100% |
-| 同上，冷缓存 | 1981 | 74 | 110 | 142 | 227 | 99.95% | 100% |
-| 分层 336（giant/large/mid/midhot/small × 幼年/早/中/晚），热 | 334 | 34 | 49 | 102 | 105 | 100% | 100% |
-| 同上，冷 | 334 | 79 | 122 | 152 | 171 | 100% | 100% |
+| 一般 2000（账户 + ≤ 2 槽，按变更集均匀采），热缓存 | 1981 | **16.8** | 31 | 70 | 199 | 100% | 100% |
+| 分层 336（giant/large/mid/midhot/small × 幼年/早/中/晚），热；服务副本 + 完整区块头源 | 336 | 19.7 | 34 | 92 | 154 | 100% | 100% |
+| 账户侧改纯精确层之前：一般 2000 热 / 冷 | 1981 | 29.5 / 74 | 44 / 110 | 77 / 142 | 213 / 227 | 99.95% | 100% |
 
-冷/热差别来自账户侧 273 次 16 KiB 读（冷时每次一个 NVMe pread）。吞吐 8 路 ≈ 235 证明/秒（热）。
+账户证明 p50 15 ms（按高度：< 1.2M 25 ms、1.2–4.4M 6 ms、4.4–12M 10 ms、≥ 12M 16 ms）。冷/热差别来自账户侧 ~257 次 16 KiB 读（冷时每次一个 NVMe pread）。吞吐 8 路 ≈ 350 证明/秒（热）。
+bench 用 `/data/blockchain/witness` 做区块头源时 25.86M 以上取不到头（那 19 个"失败"）；用 `datc-input/n42-eth1/chain/freezer` 则全部通过。
 
 经 eth-el 完整 JSON-RPC 链路（`TestDATCGetProofMainnet`，独立校验器）：块 6 万 21 ms；块 100 万 6 ms；USDT 出生后几天 2 槽 105 ms；
 USDT @15M / @25.8M 2 槽 132 / 149 ms；USDC @20M 121 ms；不存在的账户 76 ms（首次触碰、缓存未热）。
@@ -172,6 +174,10 @@ eth-el ... --publicrpc.enabled --publicrpc.mode archive \
 
 - `datc.OpenArchive` 只读打开，**不碰进程级的表配置**（节点有自己的 MDBX）；读取器放在池里（默认 16 个并发证明），段索引在打开时加载并由 Archive 持有。
 - **返回整份答案**（nonce/balance/codeHash/storageHash/槽值 + 证明），因为节点在历史高度也读不到这些值。
+- **历史值**：同一个归档也是 `api.HistoricalStateSource`——`State()` 在做规范块号解析之前先问它，于是凡是走 `State()` 的方法在任意已覆盖高度都有值：
+  `eth_getBalance`、`eth_getStorageAt`、`eth_getTransactionCount`、`eth_getCode`（代码按哈希从节点自己的 code 表取），以及历史块上的 `eth_call`。
+  只是叶历史里的一次 floor 查找，不出证明，远低于 1 ms。（标准 JSON-RPC 没有 `eth_getBalanceAt`：`BalanceAt` 是 go-ethereum 客户端库的函数名，
+  线上方法是 `eth_getBalance(address, block)`；存储槽的方法名本来就是 `eth_getStorageAt`。）测试把这些值与同高度 `eth_getProof` **证明出来的**值逐一比对。
 - **校验**：`header`（默认）= 节点有该块区块头就先对 stateRoot 走一遍证明、并核对叶子与返回值一致，不一致直接报错（`ErrProofMismatch`，绝不回落到弱路径）；
   `strict` = 没有区块头就拒绝；`off` = 不在节点侧校验（客户端反正要自己验）。快照启动的 eth-el 没有老区块头，显式块号按原样交给归档；
   这种节点要想在节点侧校验，用 `--publicrpc.datc.headers` 指一个 headerc 冷冻库（先查节点自己的 DB，再查它）。
@@ -185,8 +191,18 @@ eth-el ... --publicrpc.enabled --publicrpc.mode archive \
 
 ## 8. 维护
 
-**每周**（详见 `datc-weekly-update.md`）：变更集/区块头同步并验收 → 构建器续跑（`datc.bin build`，自动从 `DatcMeta/progress` 接，35–45 分钟）→
-`derive-ns --from E`（≈ 25 分钟）→ `derive-plan` + 对新上榜合约 `derive-ns --contracts` → `verify-ns --from E` → `verify --samples 50` + 分层 bench + 一般 bench。
+**每周**（详见 `datc-weekly-update.md`）：变更集/区块头同步并验收，然后一条命令：
+
+```bash
+datc.bin weekly --out $A --headers $H --changesets $C --queries redesign-2026-09-18/p1-queries.json -- \
+  --src mainnet --sched 1024,16384,1024,1,4194304,4194304 --acc-root-epoch 1 --window=false --concurrent-root \
+  --leaf-seg --sto-depth 0 --batch 4096 --map.gb 4096 --dirty.gb 8 --stocache.m 16 --gogc 150 --mem.gb 40 --decode-workers 16 --prefetch --writemap
+```
+
+它依次跑：构建器续跑（35–45 分钟）→ `derive-ns --from E`（≈ 25 分钟）→ `derive-plan` + 对新上榜合约 `derive-ns --contracts` → `verify-ns --from E` →
+`verify --samples 50` → 分层 bench + 新块 bench（`--max-ms` 闸口）。任何一步失败即停并打印该步的命令；有锁文件，`leafspill/` 里有残留就拒绝启动
+（收尾绝不能对同一批行跑两次）；**不要包在自动重启里**。`--dry-run` 只打印命令。`--sto-depth 0`：精确阶梯归档不再需要 v2 的存储 epoch 记录和 `cs`。
+之后 `serving-copy` 重新生成服务副本（或让服务节点直接指向构建归档）。
 
 **不能丢的**：归档目录（含 `mdbx.dat` 的当前态表）、变更集与区块头输入、Windows 执行节点（下周变更集的唯一来源）。
 **不能做的**：对归档跑 `prep-state`/`set-start`；打断收尾或在自动重启下跑收尾；`rsync --append` 变更集尾段；`pgrep -f` 带脚本名杀进程。
@@ -200,11 +216,10 @@ eth-el 日志里的 `eth_getProof served from the DATC archive ... blocks [0, N)
 
 ## 9. 后续工作（已备好入口）
 
+2026-09-19 已完成并从本表移除：账户侧纯精确层、`mdbx.dat` 瘦身 + 服务副本、周更新一键化、`eth_getBalance`/`eth_getStorageAt` 等的历史值。
+
+
 | 项 | 为什么 | 怎么做 |
 |---|---|---|
 | 归档 head → 链头的证明 | DATC 按周更新，最近几天的高度没有证明 | 让 eth-el 的 CS sink 直接喂一个常驻的 DATC 增量构建（输入就是它自己写的 acctcs/storcs），把 head 滞后从一周降到分钟级；`derive-ns --from` 已支持小步追加 |
-| 账户侧也改成纯精确层 | 去掉 `ca`、第 1/2 层 epoch 记录和 `branchSlotsAt` 的窗口递归，读取端只剩一种逻辑 | `na` 第 3 层已是逐块；读取端对账户走 `exactSlotsAt` 同样的"合成上层"即可，数据不用动 |
-| `mdbx.dat` 瘦身 | 433 GB 里查询只用 DatcMeta；DatcStorNode 90 GB 已是死数据 | 构建器加 `--no-sto-records`（不再写 v2 存储 epoch 记录）；服务节点只需要段 + 一个只含 DatcMeta 的小库 |
-| 周更新一键化 | 现在是 5 条命令 | `n42-datc weekly --out A` 串起来，任何一步校验不过就停 |
-| `eth_getStorageAt` / `eth_getBalance` 的历史值 | 归档里已经有任意高度的叶值（`leafFloor`），比证明便宜得多 | 同一个 `ProofSource` 思路给 `stateReaderProvider` 加一个 DATC 后端 |
 | 分发 | 800 GB 的只读段适合做成可下载的 archive-plus 数据包 | 段是内容不变的文件，按表 + 桶分片、附 CRC 清单 |
