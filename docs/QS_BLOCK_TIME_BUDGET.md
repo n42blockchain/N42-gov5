@@ -4652,6 +4652,36 @@ executor's ReadAccountData share (3.1% of a follower's CPU) mostly with it.
 This is consensus-path code and needs the 7702 delegation tests to cover the
 invalidation before it runs on the fleet.
 
+**35zzu (2026-09-19 15:06-16:11 EDT): prediction 76 falsified, and the
+instrument that pointed at it was misreading.**
+
+| leg | 35zzq | 35zzu |
+|---|---|---|
+| A1 win1 / win2 | 71.6k / 64.4k | 70.5k / 65.1k |
+| B1 win1 / win2 | 114.6k / 67.6k | 118.4k / 74.8k |
+| B2 win1 / win2 | 105.4k / 68.9k | 107.4k / 40.8k |
+| A2 win1 / win2 | 67.8k / 67.0k | 66.7k / 50.3k |
+
+B mean 85.3k against 89.1k. The change is in effect -- "the speculative build
+in flight is this block; letting it finish" fired 54 and 93 times on two
+leaders -- but that is 10-15% of builds, and the cycle did not shorten:
+seal -> seal 1326 ms against 1205, seal -> QC 827 against 699, QC -> seal 386
+against 406. No check failure and no BAD BLOCK in ~5,700 checks a node.
+
+**What the 406 ms actually was.** Pairing the leader's own logs by block
+number (park, hit, propose) shows the parked build is taken by the trigger
+after 0 ms -- the guess is never waiting -- and the 677 ms that follow are the
+propose path itself, which is logged AFTER the write: assemble 219 ms plus
+write 535 ms. "QC -> seal" in cycle.py is measured to the "propose phases"
+line, so it has always included the leader's write, and the 139 -> 406 ms jump
+in 35zzq was the write moving, not a rebuild. The interrupt fix is sound (it
+cannot cost anything to keep a build the trigger wants) but it was aimed at the
+wrong thing.
+
+The leader's write (535 ms median) is on the critical path between one seal and
+the next, even with N42_PROPOSE_BEFORE_WRITE: the next build needs its result.
+That, and the second-window slide (6bi), are what the remaining rounds test.
+
 ## 6bl. Round 35zzr: the deferred fold outside the write transaction -- registered before the round ran (2026-09-15)
 
 Runs only if 35zzq passes (no deferred-check failure, no BAD BLOCK); its
