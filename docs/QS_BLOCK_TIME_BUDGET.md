@@ -4606,6 +4606,32 @@ against the QC. The next round adds `tMs` to both (the 35zzn pattern: a
 diagnostic round that changes no behaviour) and reads back where the leader
 waits between the QC and its seal.
 
+**35zzt (2026-09-19 19:11-20:17 EDT): prediction 75 confirmed, a third best in
+a row -- and the bench hit its supply ceiling.**
+
+| leg | 35zzs | 35zzt |
+|---|---|---|
+| A1 win1 / win2 | 72.0k / 66.7k | 72.8k / 69.3k |
+| B1 win1 / win2 | 120.4k / 109.3k | 133.0k / 122.3k |
+| B2 win1 / win2 | 131.5k / 89.7k | 134.8k / 120.1k |
+
+**B mean 127.6k against 112.7k (+13.2%)**, where 3-6% was predicted. The flag is
+verified on the live nodes this time: `--mobileverify.packet-window 8` appears in
+/proc/<pid>/cmdline, which it never did before -- bench-7node.sh rebuilt
+QS_EXTRA_ARGS and dropped it, so every round until now ran the default 256-block
+window (~1 GB of packets a node late in a B leg).
+
+**The supply ceiling.** Both second windows report 37% occupancy at 0.984 s
+blocks: a full block is 50%, so the chain is now producing faster than eight
+generators can fill. 127.6k is therefore a floor, not the chain's limit, and
+every further gain will be under-measured until the harness supplies more --
+more generators, or a bigger per-transaction budget. That is a harness round,
+not a code round, and it must come before the next code lever is judged.
+
+The three rounds since deferred execution: 89.1k -> 102.0k (fold) -> 112.7k
+(tail) -> 127.6k (packet window). All three took memory pressure or long lock
+holds off the block's path; none made the block's own work cheaper.
+
 ## 6bo. Round 35zzu: the leader stops restarting the build the QC arrives for -- registered before the round ran (2026-09-17)
 
 Where 35zzq's 406 ms went, found in the code rather than a diagnostic round.

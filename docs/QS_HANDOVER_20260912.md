@@ -17,6 +17,15 @@ this file is the entry point. No keys in here.
   attempt: `build-and-queue.sh` does the cherry-picks, or build by hand.
 - The chain scripts chain-35zzq/r/s/t are written and point at r78/r79/r80; none runs.
 
+## Best so far: 35zzt, B mean 127.6k (2026-09-19) -- and the bench is now supply-bound
+
+Four rounds on top of deferred execution: fold outside the write transaction
+(35zzr) 102.0k, transaction-bounded lookup tail (35zzs) 112.7k, packet window 8
+actually reaching the nodes (35zzt) 127.6k. The B legs' second windows now run at
+37% occupancy and 0.984 s blocks, so eight generators can no longer fill the
+chain: raise the supply before judging the next code lever. 35zzw (one base-state
+read per account per block, n42-r83) is queued behind 35zzt.
+
 ## Best so far: 35zzs, B mean 112.7k (2026-09-19)
 
 Two levers landed back to back on top of deferred execution: the fold outside the
