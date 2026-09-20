@@ -14,6 +14,19 @@ writer + tx-bounded tail + packet window 8). Protocol: QS_AGENT_PROTOCOL.md.
 | S5 | the leader's write (~0.5 s) off the critical path | not built | not written | candidate | |
 | S6 | per-transaction allocation hotspots (receipt, AsMessage, journal dirties, IBS.Reset maps) | not built | not written | candidate | |
 
+## Acceptance note on S1 (added 2026-09-20 after S3b)
+
+S3b closed the reader-disagreement lead: only 2 of ~993 builds in the
+13659302 log dropped any candidate to `nonceHigh`, and both were the delta
+bug's own cascade -- the block whose 17,036 credited accounts were emptied,
+and the next block, whose senders then read nonce 0. The fix removes the
+cascade, so 35zzt's 37% occupancy is a genuine supply shortage and S1 stands.
+
+The agent that analyses 35zzx attempt 2 must therefore also report the
+`parallel fill drops` nonceHigh total across the B legs. It should be
+approximately zero. If mass drops reappear on n42-r84, the occupancy gain is
+not supply and prediction 77 must not be credited, whatever the B mean says.
+
 ## Closed
 
 | id | step | outcome |
