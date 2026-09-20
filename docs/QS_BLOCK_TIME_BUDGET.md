@@ -5126,6 +5126,91 @@ fallback bug. Sixteen generators of 500 senders at 4500-deep nonces run out
 partway through a 15-minute B leg once the gas ceiling is raised to B's
 level; the harness still cannot fill a block for the full window.
 
+## 6bv. What actually shrank in 35zzx: not the funded budget, the depth target and the funding gate (2026-09-20)
+
+The working story going into this step was that sixteen generators of 500
+senders split the same funded pool eight generators used, so each sender
+ended up with half the transactions to its name. The runner scripts do not
+support that story. `run-r35zzt.sh` and `run-r35zzx.sh` differ in exactly one
+line: `--floods 8 --senders 1000` becomes `--floods 16 --senders 500`; `-pertx
+4500`, `-target-depth 45000`, the pool sizing, the recipients count and the
+funding gas price are all untouched. `cmd/txflood/main.go`'s `fundingAmounts`
+funds a sender for `(pertx+10) x 21000 x gasPrice` wei regardless of how many
+other senders or generators exist, so the per-sender budget is the literal
+same 4500-transaction allowance in both rounds, and the total sender count is
+the same 8,000 either way (8 x 1,000 = 16 x 500). Multiplying senders by
+pertx gives the same 36,000,000-transaction supply per leg in both rounds,
+and multiplying the faucet's per-sender cost (about 0.094731 ETH at
+`QS_FLOOD_GASPRICE=1000000000`) by 8,000 senders gives the same faucet spend,
+about 757.85 ETH, per leg, in both rounds. The premise that prompted S1 does
+not hold at the flag level: nothing in the funding phase was halved.
+
+What the two runners do differently is `-target-depth`, which is a per-process
+flag, not a per-leg one: each generator tries to keep 45,000 transactions of
+its own in flight regardless of how many senders it has to spread them over.
+Eight generators asked the fleet's pool for 360,000 transactions in flight at
+once; sixteen generators asked for 720,000 against the same 800,000-slot pool
+(`--pool-slots 600000 --pool-queue 200000`) and the same 8,000-sender base --
+double the aggregate pipeline depth, unchanged supply underneath it. That
+alone does not consume budget faster, but it does mean twice as many
+transactions per sender are queued and unmined at any moment (roughly 90 per
+sender against 35zzt's 45), so a single stuck nonce -- the pool's
+already-documented failure mode, where everything above a lost transaction
+reads as unpromotable until that hole is filled -- now blocks a bigger share
+of the fleet's live pipeline per occurrence, and the `nonceHigh` drop code
+path (`internal/parallel_processor.go`) is exactly what a mass hole looks
+like from the miner's side.
+
+The other harness difference is wall-clock, not arithmetic. `bench-run.sh`
+funds generators strictly one at a time -- "waiting for flood N to finish
+funding before starting the next" -- so sixteen generators serialize twice as
+many funding gates as eight. Backing the funding-phase length out of each
+leg's own bookends (`LEG ... done` minus `LEG ...` start, minus the 400 s
+decay, minus the 120 s of measured windows, minus the roughly 60 s drain
+every leg shows) gives about 209-226 s of funding and ramp-up per B leg in
+35zzt against about 304-319 s in 35zzx, a 40-45% increase. That longer,
+serialized gate produced a visibly different startup: `wr-logs/r35zzx-mem.log`
+shows all seven nodes' resident memory flat for minutes and then jumping in
+lockstep -- anon memory per node roughly 1.4 GB at 15:03:01, past 10 GB by
+15:03:42 -- in the same 30-40 second span that node0's log shows the 23-block,
+183,282-candidate `nonceHigh` collapse (13661672 through 13661759,
+15:03:08-15:03:45). Sixteen generators finishing a longer serial gate in a
+tighter cluster than eight do, then all flooding to a doubled aggregate depth
+target at once, is a synchronized inrush; 35zzt's eight-generator gate never
+produced a memory or `nonceHigh` signature like it in either B leg.
+
+The consumption numbers rule out plain exhaustion as the mechanism. Summing
+`win1`+`win2`'s reported `txs` field (the harness's own count, not TPS x 60)
+for 35zzt's B1 and B2 gives 15,321,199 and 15,298,940 transactions -- about
+43% of that leg's 36,000,000-transaction budget -- with no collapse. The same
+sum for 35zzx's B1 and B2 gives 5,654,300 and 5,623,400 -- about 16% of the
+same-size budget -- while collapsing. 35zzx failed while sitting on roughly
+84% of its funded supply, not after spending it; whatever broke, it was not
+the fleet running the faucet's 36,000,000-transaction allowance to zero.
+
+**The real constraint is the per-process depth target, not the funded
+supply.** `-target-depth` is not scaled to the generator count anywhere in
+the harness, so doubling `FLOODS` silently doubles what the fleet asks its
+own pool to hold at once, against an unchanged sender base and an unchanged
+serialized funding gate that now takes 40-45% longer to bring every generator
+online. The one parameter a supply round should change next is
+`-target-depth` itself: halve it alongside the doubled generator count, 45000
+-> 22500, so the fleet's aggregate in-flight target returns to 360,000 -- the
+same number 35zzt already ran two full B legs on without a `nonceHigh` mass
+drop. Everything else (16 generators, 500 senders, pertx 4500, pool sizing,
+funding order) stays as 35zzx ran it; this isolates the depth target as the
+one variable.
+
+**Prediction 81.** With `--target-depth 22500` in place of 45000 on the
+sixteen-generator harness, no B-leg block will drop a double-digit percentage
+of its candidates to `nonceHigh` while `fallback: false`, and every one of
+the four B windows -- not just the mean -- will clear 25% occupancy, with the
+B mean above the 127.6k standing best. Falsified if any single B window's
+occupancy is below 25% (the win2-collapse pattern recurring even once), if
+the B mean does not clear 127.6k, or if any B-leg block shows a `parallel
+fill drops` `nonceHigh` share in the double digits with `fallback: false` and
+no preceding wave-limit exhaustion in the same log.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
