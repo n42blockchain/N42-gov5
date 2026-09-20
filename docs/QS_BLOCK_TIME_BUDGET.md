@@ -5070,6 +5070,62 @@ that would mean genuine send-ahead is a real, independent contributor after
 all, and the supply round's premise needs re-examining on its own terms
 rather than as a residual of these two bugs.
 
+## 6bu. Round 35zzx attempt 2: sixteen generators did not restore supply, and prediction 80 falls with it (2026-09-20)
+
+Attempt 2 ran on n42-r84 (2026-09-20 14:10-15:23 EDT) and finished `ROUND
+DONE` with no abort. Attempt 1's logs, archived under
+`wr-logs/r35zzx-attempt1/`, are not used anywhere below.
+
+| leg | win1 TPS / occ / blockTime | win2 TPS / occ / blockTime |
+|---|---|---|
+| B1 | 92,323 / 17.0% / 0.583 s | 1,915 / 0.6% / 1.053 s |
+| B2 | 91,848 / 16.2% / 0.561 s | 1,875 / 0.1% / 0.250 s |
+
+**B mean 47.0k against the 127.6k standing best (35zzt) -- a 63% regression,
+not a gain.** Occupancy across the four B windows means 8.5%, against
+35zzt's 37%: the opposite of prediction 77's ">60%". Mean block time across
+the same four windows is 0.612 s against 35zzt's 0.984 s, but that number is
+not a speed-up to bank -- it is pulled down by win2 of both legs collapsing
+to nearly empty blocks (occupancy 0.6% and 0.1%), which commit fast because
+there is almost nothing in them, not because the chain got quicker.
+
+**Headline: mass `nonceHigh` drops reappeared, so prediction 77 cannot be
+credited regardless of the B mean.** `parallel fill drops` lines across the
+B legs (bounded to 14:40:32-15:10:16, this round's own runner log) show
+exactly zero drops anywhere in B1 or in the first ~8 minutes of B2, then 23
+consecutive blocks (13661672-13661673, 13661720-13661731,
+13661749-13661759) in a 37-second span (15:03:08-15:03:45) that together
+drop 183,282 candidates to `nonceHigh` -- 99.98% of the 183,323 total
+`failed` count in that window, and the entire reason win2 of both B legs
+reads near zero. One block, 13661726, drops 13,473 of its 13,482 candidates
+(99.9%). This is the sixteen generators running dry under B's larger gas
+ceiling, not a harness win: restoring supply was the point of this round,
+and on n42-r84 it emptied faster than 35zzt's eight generators did.
+
+This also settles prediction 80 (section 6bt), registered against exactly
+this round's log: all 23 blocks show `lenient: true`, `fallback: false`,
+`waves: 1`, `aborts: 0` on the leader's own `parallel block` line -- a plain
+"not enough live candidates" fill, with no wave-limit exhaustion anywhere
+near it. Prediction 80 called for no full build to drop a double-digit
+percent of candidates to `nonceHigh` while `fallback: false` and no
+wave-limit exhaustion preceded it in the same log; 23 of them do, one at
+99.9%. Prediction 80 is falsified: genuine send-ahead (here, generator
+exhaustion) is a real, independent contributor to mass `nonceHigh` drops,
+not only the two bug-driven blocks S3b traced in the previous log.
+
+No leg saw a BAD BLOCK or a root divergence: all seven nodes' logs across
+the full round window (14:10:32-15:23:24) have zero matches for `BAD BLOCK`
+or any divergence/mismatch message, and every leg's `drained: head ...
+settled` line appears with no abort. The delta fix (c0931aeb) held.
+
+**Prediction 77 falsified.** Occupancy fell (8.5% mean, worse than 35zzt's
+37%), the B mean fell 63% against the 127.6k standing best, and the
+acceptance condition in QS_QUEUE.md is tripped: mass `nonceHigh` drops are
+back, this time from genuine supply exhaustion rather than the fixed
+fallback bug. Sixteen generators of 500 senders at 4500-deep nonces run out
+partway through a 15-minute B leg once the gas ceiling is raised to B's
+level; the harness still cannot fill a block for the full window.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
