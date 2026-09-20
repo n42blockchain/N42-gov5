@@ -115,13 +115,31 @@ the 92.3k first windows point at the generators.
 | id | step | binary | prediction | status |
 |----|------|--------|-----------|--------|
 | S2 | 35zzw: per-block base-read cache (`parallel.BaseCache`) | n42-r85 | 78 (6br) | **queued on the box, chain script waiting behind n42-rs** |
-| S7 | the real supply constraint: what the funding phase actually buys | spec in flight | 81 (6bv, being written) | an agent is writing it now |
+| S7 | sixteen generators with `-target-depth` halved (45000 -> 22500) | n42-r85 or later | 81 (6bv) | **specced and ruled: runs after S2** |
 | S4 | the Prague delegation check reads every recipient (6bp) | not built | not written | candidate |
 | S5 | the leader's write (~0.5 s) off the critical path | not built | not written | candidate |
 | S6 | per-transaction allocation hotspots | not built | not written | candidate |
 
 S1 (sixteen generators) and S3/S3b (the fallback and the reader
 disagreement) are closed; see above.
+
+**S7's spec corrected the diagnosis of S1, and the correction matters more
+than the round did** (section 6bv). The funding budget was never the
+constraint: both rounds bought 36,000,000 transactions per leg, and 35zzx
+collapsed having spent only 16% of it, where 35zzt spent 43% and never
+collapsed. What broke is that `-target-depth` is a PER-GENERATOR flag, so
+doubling the generators doubled the fleet's aggregate in-flight target from
+360,000 to 720,000 against a 600,000 transaction pool -- every generator
+believing it had stock in flight that the pool could not hold -- compounded
+by a serialised funding phase 40-45% longer, which synchronised the inrush.
+
+So the fleet at 37% occupancy is NOT short of funded supply; it is short of
+submission RATE, with half its budget unspent. More generators is the right
+direction and S1 simply forgot to halve the depth with it. S7 is that round
+done properly: sixteen generators at `-target-depth` 22500, which restores
+the aggregate 360,000 of the 127.6k baseline while doubling the submission
+parallelism -- one variable against 35zzt. Run it after S2, so the code
+lever already on the box is read out first.
 
 35zzw uses the **eight-generator baseline shape**, so it is directly
 comparable to 35zzt's 127.6k and was not contaminated by S1's bad shape.
