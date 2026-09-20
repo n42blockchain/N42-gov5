@@ -104,6 +104,12 @@ func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool,
 type deferredSender struct {
 	addr types.Address
 	txs  []*transaction.Transaction
+	// credit is value this block pays the sender BEFORE its first transaction,
+	// which execution will have credited by the time those transactions run. A
+	// block that funds an account and spends from it -- what the bench's
+	// generators do on every leg -- is includable, and checking it against the
+	// parent alone rejected it (35zzx: "worst-case cost exceeds balance").
+	credit uint256.Int
 }
 
 // deferredTxPlan recovers every transaction's sender (across goroutines),
@@ -174,6 +180,7 @@ func deferredTxPlan(config *params.ChainConfig, hdr *block.Header, txs []*transa
 	baseFee := hdr.BaseFee
 	var blockGas uint64
 	bySender := make(map[types.Address]*deferredSender, len(txs)/8+1)
+	incoming := make(map[types.Address]*uint256.Int, len(txs)/8+1)
 	var plan []*deferredSender
 	for i, t := range txs {
 		from := senders[i]
@@ -212,10 +219,29 @@ func deferredTxPlan(config *params.ChainConfig, hdr *block.Header, txs []*transa
 		st := bySender[from]
 		if st == nil {
 			st = &deferredSender{addr: from}
+			if c := incoming[from]; c != nil {
+				st.credit.Set(c)
+			}
 			bySender[from] = st
 			plan = append(plan, st)
 		}
 		st.txs = append(st.txs, t)
+		// Record what this transaction pays its recipient, for senders that
+		// appear later in the block. A self-transfer changes nothing, and a
+		// creation has no recipient.
+		if !create && hasValue && !selfTransfer {
+			to := *t.To()
+			c := incoming[to]
+			if c == nil {
+				c = new(uint256.Int)
+				incoming[to] = c
+			}
+			if _, over := c.AddOverflow(c, value); over {
+				// Unreachable with real balances; treat as no credit rather
+				// than claiming one.
+				c.Clear()
+			}
+		}
 	}
 	return plan, nil
 }
@@ -310,6 +336,11 @@ func (bc *BlockChain) checkSenderStates(number uint64, plan []*deferredSender) e
 							errs[w] = fmt.Errorf("deferred execution: block %d sender %x cost overflows", number, from[:4])
 							return
 						}
+					}
+				}
+				if !st.credit.IsZero() {
+					if _, over := balance.AddOverflow(balance, &st.credit); over {
+						balance.SetAllOne()
 					}
 				}
 				if cost.Gt(balance) {
