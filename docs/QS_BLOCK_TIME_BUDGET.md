@@ -4991,6 +4991,85 @@ nonce-high samples show `buildReaderNonce` and the worker's `state:` agreeing
 -- that would mean the reader disagreement is a correlate of the fallback,
 not its trigger.
 
+## 6bt. S3b: the routine nonceHigh drops are not routine, and neither of them is genuine send-ahead (2026-09-20)
+
+The premise that prompted this step -- that every build in a run suffers a
+`nonceHigh` drop rate like block 13659302's 9,200 of 32,200 or block
+13659303's 13,500 of 18,500 -- does not hold in the log where those two
+numbers come from. `internal/parallel_processor.go` emits `parallel fill
+drops` (the line the two counts came from) for any lenient fill with
+`failed > 0` that also has `numTxs >= 1000` or fell back, and it emits
+`parallel fill nonce-high sample` for the first two `nonceHigh` failures of
+any lenient fill regardless of size -- so neither line is throttled to a
+sampled subset of builds; every build with so much as one `nonceHigh` drop
+would show up under one or the other. Grepping the leader log for both across
+all 993 recorded builds (`miner: build phases`) and all 1,460 `parallel
+block` lines turns up exactly two matches: 13659302 and 13659303, back to
+back, and nothing else. `nonceHigh` did not touch any of the other ~991
+builds in this log at all.
+
+That confines the question to those two blocks, and the two disagree with
+each other in exactly the way section 6bs already flagged for 13659302 alone.
+Block 13659302's sample has `buildReaderNonce: 4500` against the worker's
+`state: 0` for sender `0xCA2048...` -- the build's own reader, reading the
+same parent state the executor is about to read, gets the right answer
+(4500, matching `txNonce`) while the executor's per-worker snapshot gets a
+fresh, never-used account. That is a live disagreement between two readers
+open microseconds apart on the same parent state, and it is what drove the
+64-wave, 9,064-abort, `fallback: true` exhaustion recorded in 6bs.
+
+Block 13659303's sample looks like agreement -- `buildReaderNonce: 0` against
+`state: 0` for sender `0x72814A7C...`, `txNonce: 4206` -- and the build itself
+shows no churn at all: one wave, zero aborts, `fallback: false`. But the fix
+already merged in this tree, commit c0931aeb ("the sequential fallback
+deleted every credit-only recipient"), describes this exact pair of blocks by
+number: 13659302's wave-limit fallback replayed every delta write as a full
+write, whose nil value the applier reads as delete, so it selfdestructed
+17,036 accounts the block had only credited; the commit message states
+outright that the leader then "sealed 13659303 on top, which every follower
+rejected." 13659303 is not built on a clean parent state -- it is built on
+the leader's own state, freshly emptied of 17,036 accounts by 13659302's own
+bug. A sender that had legitimately reached nonce ~4206 over the earlier
+blocks in this run, and that also happened to be a pure credit recipient
+inside 13659302, would read back as nonce 0 from *any* reader after that
+block landed, because the account record itself is gone, not because either
+reader is confused. The build's reader and the worker's snapshot agree in
+13659303 for the same reason two clocks agree when both are stopped: they are
+reading the same already-wrong ground truth, not confirming a real one.
+
+So neither block's drop is the generator legitimately sending ahead of a
+sender's confirmed nonce. 13659302's drop traces to a live, still-open bug
+(the reader race behind prediction 79). 13659303's drop traces to a
+different, already-fixed bug (c0931aeb) that the first bug's fallback
+triggered one block earlier. Both are artifacts of code, zero of the two
+sampled blocks show a demand-side explanation, and the log gives no third
+block to check because no other build in it dropped a single candidate to
+`nonceHigh`. The one thing this log cannot show is whether 13659303-style
+mass drops recur on the fixed binary when a build reaches the fallback path
+some other way, or whether round 35zzt's 37% occupancy -- measured on a
+different run this analysis was not given -- carries the same signature;
+that would need 35zzt's own `parallel fill drops` / `fallback` lines, which
+are out of scope here.
+
+Because both observed cases are bug-driven and neither is genuine send-ahead,
+prediction 80 is registered below rather than leaving this as a pure
+falsification of the supply story: the fallback-corruption bug is already
+fixed, so round 35zzx attempt 2 (running on n42-r84, which includes
+c0931aeb) is the first data this campaign will have on whether mass
+`nonceHigh` drops disappear once that fix is in place, independent of the
+extra generators also shipping in that same round.
+
+**Prediction 80.** Round 35zzx attempt 2's leader log will show no build with
+a `nonceHigh` drop fraction resembling 13659303's 73% (or 13659302's 29%)
+unless that build's own `fallback` field is `true` -- i.e. mass `nonceHigh`
+drops keep tracking fallback/corruption events, not ordinary full builds.
+Falsified if any full build in that round drops a large share (rounding to
+double digits of a percent) of its candidates to `nonceHigh` while
+`fallback: false` and no wave-limit exhaustion preceded it in the same log:
+that would mean genuine send-ahead is a real, independent contributor after
+all, and the supply round's premise needs re-examining on its own terms
+rather than as a residual of these two bugs.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
