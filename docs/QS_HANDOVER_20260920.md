@@ -202,3 +202,11 @@ out from origin/main (see build-and-queue.sh; `git checkout origin/main --
 3. Collect the S7 report (prediction 81) and decide whether the supply round
    runs before or after the next code lever.
 4. Arm the monitor before going quiet. Never poll.
+
+## S7 runner prepared (2026-09-20, America/New_York time)
+
+Scripts: `/data/blockchain/gov5-work/run-r35zzy.sh` and `/data/blockchain/gov5-work/chain-35zzy.sh`.
+
+One-line diff: `export QS_FLOOD_EXTRA="-target-depth 22500 -depth-by-nonce -lazy-sign"` (35zzx's 45000 -> 22500; aggregate in-flight back to 360,000 as in 35zzt).
+
+Not launched; waits for 35zzw to end and the box claim.
