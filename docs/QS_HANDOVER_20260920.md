@@ -133,6 +133,43 @@ instead), independent of the unmeasurable `proc` delta. Process note for the
 next binary: pull `import_breakdown.py` right after ITS OWN round, before
 the next round's node logs overwrite the evidence.
 
+## Two rulings from 35zzw that bind the next session
+
+**Do not carry n42-r85's base-read cache into any later binary.** Round
+35zzw (section 6bw) came in at a B mean of 96.1k against the 127.6k
+standing best, a 24.7% fall, and the shape of the fall is specific:
+occupancy ROSE (48.9% against 42.75%) while block time rose much harder
+(1.645 s against 1.086 s), with `execMs` 717 ms of a 988 ms follower
+`proc`. Fuller blocks sealing half again as slowly is the opposite of a
+cheaper import. Later levers branch from **n42-r84**, not r85.
+
+The commander's hypothesis for the next session to test, cheaply, before
+anything else is tried with this cache: `parallel.BaseCache` guards a
+single map with one `sync.RWMutex`, and it is consulted on the base
+fallback of every account read. With `PARALLEL_EVM x32` and ~23,000
+transactions a block, that is a global lock inserted into the hottest read
+path in the executor, and a lock convoy there would produce exactly this
+signature -- more work admitted per block, each block taking longer. A CPU
+profile of a follower during a B leg settles it; if it is the mutex, the
+fix is sharding the map by address prefix the way `MVS` already shards,
+not abandoning the idea. Do not re-run the round before profiling it.
+
+**A harness defect worth fixing first: the round's own before/after is not
+recoverable.** Prediction 78's literal criterion was the follower's import
+`proc` time, and it could not be executed, because node logs retain only
+the current file plus one rotated generation and no earlier round in this
+lineage ever ran `import_breakdown.py` -- every prior readout used
+`cycle.py`'s seal-to-seal timings instead. The agent correctly reported
+`n/a` rather than inventing a baseline, but a campaign that registers
+phase-level predictions must capture phase-level numbers every round.
+**From now on, every round's analysis agent records the
+`import_breakdown.py` line (body / proc / write / total, plus the proc
+breakdown) into its section, whether or not the round's prediction asks
+for it.** Then the next round always has its baseline. This is also why
+prediction 78 was written badly: it bundled a mechanism claim (`proc`
+down) with a throughput claim, so half of it could not be ruled on. Keep
+those separate in future predictions.
+
 ## The queue
 
 | id | step | binary | prediction | status |
