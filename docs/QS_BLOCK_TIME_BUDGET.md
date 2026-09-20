@@ -4927,6 +4927,70 @@ supply round moved it. Falsified if `proc` does not move: then the read is
 already served by a cache below it and the profile line is the map lookup, not
 the disk.
 
+## 6bs. Candidate: the fill re-executes candidates for 64 waves because nothing tells Block-STM a nonce miss is permanent (found 2026-09-20, not yet a round)
+
+Block 13659302's leader build (section 6bq) is the only build in its log that
+exhausted `MaxWaves`. Its `parallel block` line: 32,200 candidates, 9,200
+dropped (all `nonceHigh`), 9,064 aborts, 41,263 executions -- one re-execution
+per abort, essentially -- and 64 waves, never reaching `allValidated`. The
+followers' import of the same block runs the 23,000 survivors in one wave,
+zero aborts.
+
+The two `parallel fill nonce-high sample` lines this build emitted point at
+the same thing twice. Sender `0xCA2048...` and sender `0x72814A...` are
+deep-nonce accounts from earlier blocks in this run (`txNonce` 4500 and 4206);
+`ibs.GetStateReader()` -- the build's own reader, used by the stale-nonce trim
+in `internal/miner/worker.go` -- reports their nonce as exactly what the
+candidate expects (`buildReaderNonce: 4500`). The executor's own worker,
+reading through the fresh per-worker snapshot built in `runParallel`'s `setup`
+closure (`internal/parallel_processor.go`: `p.bc.ChainDB.BeginRo` layered with
+`state.LayerPostStates(postLayers, base)`), reports the same account's nonce
+as 0 (`workerErr: "... state: 0"`) -- an unfunded, never-used account. Two
+readers of the same parent state, opened microseconds apart for the same
+build, disagree about the same account.
+
+That disagreement, not the drop count, is what drives the wave churn: the
+very next build in the same log, block 13659303, dropped *more* candidates to
+`nonceHigh` (13,500 of 18,500, 73% against 302's 29%) and still validated in
+one wave with zero aborts. `collectPending` (`internal/parallel/executor.go`)
+and `validateInOrder` do not distinguish a transaction whose nonce can never
+be satisfied within the block from one whose read went stale because another
+transaction's write has not landed yet -- both come back `StatusPending` and
+both get retried. When the base read itself disagrees with the build's own
+view of an account, no number of extra waves supplies the missing write:
+Block-STM keeps re-validating (and here, re-executing) candidates that were
+never going to pass, one layer of `validateInOrder`'s index-ordered demotion
+at a time, until `MaxWaves` gives up. The block's `reload` time (the isolated
+tree swap logged in `miner: build phases`) was 47.9 ms, the 94.5th percentile
+of the 993 builds in this log -- elevated, but not unique: roughly 54 other
+builds saw an equal or longer reload and still converged in one wave, so a
+slow reload widens the window for the race without being sufficient by
+itself.
+
+The fix under this diagnosis is not a bigger `MaxWaves` or a smarter affinity
+key: it is to stop trusting a candidate the moment the reader that picked it
+(the build's `ibs`) and the reader that is about to execute it (the
+executor's per-worker base + `postLayers`) can be shown to disagree, rather
+than admitting all 32,200 candidates and paying 64 wasted waves to find out
+9,064 aborts at a time. Concretely, `BuildParallel` already pays one state
+read per pending account for the stale-nonce trim (`internal/miner/worker.go`);
+that read and the executor's per-worker setup need to be provably the same
+snapshot, and where `postLayers` cannot carry every chained sibling's account
+update (only the fold's prefetch list is seeded today, section 6bd), the fill
+should recognise the gap and fall back before running the executor, the same
+way `ErrParallelNotApplicable` already does for fee-recipient blocks, instead
+of after.
+
+**Prediction 79.** The next leader build that exhausts the wave limit will
+carry a `parallel fill nonce-high sample` line whose `buildReaderNonce`
+disagrees with the `state:` value embedded in `workerErr`, for at least one
+sender, in that same build; and the build immediately following it in the
+same log will not show wave churn even if its own `nonceHigh` drop count is
+equal or higher. Falsified if a wave-limit exhaustion turns up whose
+nonce-high samples show `buildReaderNonce` and the worker's `state:` agreeing
+-- that would mean the reader disagreement is a correlate of the fallback,
+not its trigger.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
