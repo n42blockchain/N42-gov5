@@ -4882,6 +4882,51 @@ with normal-looking views and simply fewer of them. View-timing percentiles
 therefore describe the views that SUCCEEDED, and must be read next to a
 block-rate number rather than instead of one.
 
+## 6bq. Round 35zzx: restoring supply, on a binary that no longer deletes credited accounts -- registered before the round runs (2026-09-20)
+
+The bench is supply-bound: 35zzt ran at 37% occupancy with 0.984 s blocks, so
+the next code lever would be measured against a generator that cannot fill a
+block. 35zzx is a HARNESS round, not a code round: sixteen generators of 500
+senders each instead of the previous shape, with the funding serialized so the
+warm-up window does not open before funding finishes. It buys the right to
+judge a code lever, and on its own it should move the B mean.
+
+Attempt 1 (2026-09-19 22:30 EDT) died on a BAD BLOCK, and the cause is now
+fixed rather than worked around: the leader's build of 13659302 was the only
+one in the round to exhaust the Block-STM wave limit, and the sequential
+fallback replayed every delta write as a full write, whose nil value means
+DELETED -- so `applyMVSToIBS` selfdestructed all 17,036 accounts the block only
+credited. The leader's root diverged from all six followers and it sealed the
+next block on top. Written up in OPEN_ISSUES.md ("Sequential fallback dropped
+delta credits"); fixed in `internal/parallel/executor.go` with
+`TestSequentialPathKeepsDeltaWrites` covering both sequential entries.
+
+Attempt 2 runs on **n42-r84** = n42-r80 (deferred + fold + tail + packet
+window) + that fix. **Prediction 77.** Supply, not code, is the variable:
+occupancy 37% -> above 60%, block time roughly unchanged at ~1.0 s, and the B
+mean above the 127.6k standing best. No BAD BLOCK: the fallback is now
+value-preserving, so a leader that falls back computes the followers' root.
+Falsified if the B mean does not clear 127.6k, or if any leg aborts on a root
+divergence.
+
+## 6br. Round 35zzw: one base-state read per account per block -- registered before the round runs (2026-09-20)
+
+`parallel.BaseCache` (internal/parallel/base_cache.go): the executor gives
+every transaction its own IntraBlockState, so an account touched by k
+transactions is read from the base state k times, and the base state is
+immutable for the life of the block. The cache is a per-block map consulted in
+the base fallback of `ParallelStateReader.ReadAccountData`, copy-in/copy-out so
+no caller can mutate a shared account. Round 35zzo's profile puts the account
+read behind `GetCode` alone at 2.9% of a follower's CPU (section 6bp), and the
+delta-credited recipients are read again at the block-end fold.
+
+Runs on **n42-r85** = n42-r84 + the cache, after 35zzx so it is measured
+against a supply that can fill a block. **Prediction 78.** Follower import
+`proc` down at least 10% on full blocks; the B mean up, but by less than the
+supply round moved it. Falsified if `proc` does not move: then the read is
+already served by a cache below it and the profile line is the map lookup, not
+the disk.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
