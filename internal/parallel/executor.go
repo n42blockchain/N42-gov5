@@ -603,7 +603,17 @@ func (e *Executor) runSequential() {
 		err := e.exec(ctx, i, rw)
 		e.results[i] = TxResult{Err: err}
 
+		// Mirror the parallel write-back: a delta write carries a nil Value,
+		// so replaying it through Write would record a DELETION of the
+		// account. On the fallback path that silently selfdestructed every
+		// recipient the block only credited (round 35zzx, block 13659302:
+		// the leader's build fell back, 17,036 credited accounts came out
+		// empty and its root diverged from all six followers).
 		for _, wd := range rw.Writes {
+			if wd.Delta != nil {
+				e.mvs.WriteDelta(wd.Key, i, 0, wd.Delta)
+				continue
+			}
 			e.mvs.Write(wd.Key, i, 0, wd.Value)
 		}
 	}

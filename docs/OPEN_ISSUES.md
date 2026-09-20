@@ -235,3 +235,52 @@ live tree 921cf405, followers c63d8299. Guarded from n42-r41 on (a build
 whose parent is not the applied head is abandoned or imports the parent
 first); the two-tree design that makes the mistake possible is track 3b of
 QS_REPLAN_2026-09-09.md.
+
+## Sequential fallback dropped delta credits -- FIXED (2026-09-20, round 35zzx)
+
+Round 35zzx died on a BAD BLOCK at 13659302: the leader (node0) computed
+root b552d4, all six followers computed bfcb7f, and the leader then sealed
+13659303 carrying b552d4, so every follower rejected it ("deferred
+execution: header 13659303 carries parent state root ..., this node
+executed ...").
+
+The finalize traces agreed on everything that was easy to compare: 23000
+transactions, 20154 dirty accounts, identical coinbase and faucet balances,
+and 20151 accounts written on both sides. The one difference was the second
+counter, which `IntraBlockState.DirtySetSizes` returns under the name
+`dirtySlots` but has been repurposed to count dirty accounts that are EMPTY
+(nonce 0, balance 0 -- the EIP-161 deletes): 17037 on the leader against 1
+on the followers. 17037 is not 2x8191; EIP-2935 writes exactly one slot per
+block (`vm.StoreParentBlockHash`), which is the followers' 1.
+
+So the leader ended the block with 17,036 accounts emptied. The money had
+left the senders on both sides -- the faucet balance matched to the wei --
+and on the leader it never arrived.
+
+Cause: the leader's build was the only one in the round to fall back. Its
+`parallel block` line reads `fallback=true, aborts=9064, executions=41263`;
+the followers imported the same block with `fallback=false`. A recipient the
+block only credits is recorded as a DELTA write (`RecordDeltaWrite`), whose
+`Value` is nil and whose `Delta` carries the increment. `executeParallel`
+replays those through `MVS.WriteDelta`; `runSequential` replayed every write
+through `MVS.Write`, where a nil value means DELETED. `applyMVSToIBS` then
+saw `value == nil && delta == nil`, put the address in `deletedAccounts` and
+called `ibs.Selfdestruct` on it. Every credit-only recipient in the block was
+selfdestructed.
+
+Fixed in internal/parallel/executor.go: `runSequential` now mirrors the
+parallel write-back. Regression: `TestSequentialPathKeepsDeltaWrites`
+(internal/parallel/sequential_delta_test.go) covers both sequential entries
+-- the `numTxs <= 2` shortcut inside `Run` and the wave-limit fallback -- and
+fails on the old code with "recipient folded as value=[] delta=nil".
+
+Note the blast radius: any block with 3+ transactions that exhausted
+MaxWaves, and EVERY block of 1-2 transactions, lost its credit-only
+recipients. Small blocks on the fleet are the empty ones (3 dirty accounts,
+no transfers), which is why this surfaced as one bad block rather than a
+constant drift. Evidence preserved in /data/blockchain/divergence-13659302/
+(node0-leader, node1-follower).
+
+Still open, separately: why that build fell back at all. 9064 aborts on
+23000 transactions is the wave limit doing real work, and a fallback on the
+leader's critical path also costs the block its parallelism.
