@@ -5211,6 +5211,87 @@ the B mean does not clear 127.6k, or if any B-leg block shows a `parallel
 fill drops` `nonceHigh` share in the double digits with `fallback: false` and
 no preceding wave-limit exhaustion in the same log.
 
+## 6bw. Round 35zzw: the base-read cache, on the eight-generator shape -- prediction 78 falsified (2026-09-20)
+
+35zzw ran on **n42-r85** (2026-09-20 15:57-17:04 EDT), finishing `ROUND DONE`
+with no abort. It shares 35zzt's eight-generator, 1,000-sender shape
+(`8 floods x 1000 x 3000`, same gasceil/fillgas per leg), so it is the round
+that is directly comparable to the 127.6k standing best -- unlike 35zzx's
+sixteen-generator shape, which is not a baseline for anything in this section.
+
+| leg | win1 TPS / occ / blockTime | win2 TPS / occ / blockTime |
+|---|---|---|
+| B1 | 97,800 / 50.0% / 1.667s | 92,439 / 46.1% / 1.579s |
+| B2 | 97,800 / 50.0% / 1.667s | 96,340 / 49.6% / 1.667s |
+
+**B mean 96.1k against the 127.6k standing best (35zzt) -- a 24.7% fall, not
+the predicted rise.** Occupancy is actually up (48.9% mean across the four B
+windows against 35zzt's 42.75% mean / ~37% on both of 35zzt's win2s), but
+block time is badly up too: 1.645s mean across the four B windows against
+35zzt's 1.086s (the two win2s specifically, the steady-state number section
+6bq/6br call "35zzt's 0.984 s", are 1.579s and 1.667s here -- 60-69% slower).
+Fuller blocks taking well over half again as long to seal is the opposite of
+what a cheaper follower import should produce.
+
+**The acceptance condition on `proc`: before is unmeasurable, and that is
+itself a finding.** `import_breakdown.py`, run over both B legs
+(16:24:13-16:52:06, node logs plus each node's one retained rotated
+generation, txs>=160,000), gives r85's own number cleanly:
+
+    follower import (full blocks) n=1722
+      body 9 ms, proc 988 ms (p90 1131), write 205 ms, total 1215 ms
+      proc breakdown: recoverMs 28, execMs 717, applyMs 27, finalizeMs 142, validateMs 20
+
+That is the **after** number. The **before** (n42-r84, no cache) is not
+recoverable: node logs retain only the current file plus one rotated
+generation, the boundary from 35zzw's own rotation already sits after 35zzx
+ended (14:10-15:23 EDT), and no earlier section in this document ever ran
+`import_breakdown.py` against the r76-r84 lineage -- every prior readout used
+`cycle.py`'s seal-to-seal timings instead. So the literal test in prediction
+78 ("falsified if `proc` does not move") cannot be executed as a before/after
+delta on this lineage; that number is `n/a`, not an estimate. (The nearest
+thing on record, 35zzp re-run's proc 796 ms medians at section "6bk" lineage,
+is two further code generations back, on a different memory budget and before
+the fold/tail/packet-window changes -- section 7b's caution against invalid
+cross-round comparisons applies to it directly, so it is not used as a
+baseline here, only noted in passing that 988 ms sits above it rather than
+comfortably below.)
+
+What is measured, though, contradicts prediction 78 as a whole regardless of
+the missing `proc` delta: the prediction bundled "proc down >=10%" together
+with "B mean up, but by less than the supply round moved it," and the B mean
+fell by a quarter while the chained seal-to-seal cycle (measured directly over
+the same window, `n=177` chained pairs) runs at a 1,284 ms median (p90 1,465),
+with `execMs` alone at 717 ms median -- the dominant term in `proc`, and not
+a number consistent with a working, beneficial cache under this load. A
+result this large is not the reporting noise floor (documented at 3.6%); it
+is a genuine regression, just one that cannot be pinned on the cache with a
+same-shape n42-r84 control missing from the record.
+
+**Acceptance checks, both clean.** `parallel fill drops` (only logged when a
+lenient fill has `failed>0`) has zero matches anywhere in the round's node
+logs, and the broader `miner: parallel fill` records confirm it: 545 records
+across the B legs, sum of `failed` across all of them is 0, so the
+`nonceHigh` acceptance condition is met at the strictest possible reading (0,
+not "approximately zero," and nothing like 35zzx's 183,282). No `BAD BLOCK`
+and no root-mismatch/divergence message appears anywhere in the round's node
+logs; the only related hits are four benign
+`miner: suppressing divergent same-height sibling` lines (the ordinary
+leader-race resolution path), not a root divergence. Commit c0931aeb's fix
+holds.
+
+**Prediction 78 falsified.** The stated falsification trigger (`proc` failing
+to move) cannot be checked directly because n42-r84's own full-block `proc`
+was never captured before its logs rotated away -- a process gap this round
+exposes: the next binary's proc breakdown needs to be pulled immediately
+after its own round, not read out after the following round has already
+overwritten the node logs. But the prediction's other, directly measured
+half is unambiguous: the B mean fell 24.7% against the 127.6k standing best,
+and every one of the four B windows ran 40-69% slower per block than 35zzt's
+corresponding window, which is not "B mean up, but by less" -- it is a fall.
+On the measured evidence, the round does not show a faster follower import;
+it shows a slower one.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`

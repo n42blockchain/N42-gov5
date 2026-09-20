@@ -10,10 +10,13 @@ gov5, HotStuff-2, QMDB BLAKE3 binary twig forest, MDBX). The scored metric
 is the **B mean**, and the standing best is **127.6k** (round 35zzt, binary
 n42-r80 = deferred execution + the fold outside the write transaction +
 the transaction-bounded tail + packet window 8). Today fixed a real
-state-corruption bug, closed two false leads, and ran one round that
-falsified its prediction. Nothing is in flight on the box right now: the
-box is with **n42-rs** (claim taken 15:25 EDT), our fleet is down, and
-round 35zzw is queued behind them, waiting.
+state-corruption bug, closed two false leads, and ran two rounds that both
+falsified their predictions. Nothing is in flight on the box right now: our
+fleet is down and the box is held by **n42-rs** (`.box-claim-rust`); round
+35zzw (S2) finished at 17:04 EDT and has been read out. Next up, once the
+box is free, is S7 (16 generators, `-target-depth` 22500, prediction 81),
+still ruled as the next step -- see "What happened today" below for why
+35zzw's outcome does not change that ruling.
 
 ## How the work is split -- READ THIS FIRST
 
@@ -110,18 +113,43 @@ binary change was forced -- without the fix the round could not finish --
 but it means 47.0k cannot be attributed cleanly. The zero divergences and
 the 92.3k first windows point at the generators.
 
+**Round 35zzw (S2) falsified prediction 78** (section 6bw). n42-r85 (=
+n42-r84 + `parallel.BaseCache`, a per-block base-state read cache) ran the
+same eight-generator shape as 35zzt, so it IS directly comparable to the
+127.6k standing best -- and came in at a B mean of 96.1k, a 24.7% fall.
+Occupancy was actually up (48.9% mean against 35zzt's 37% steady-state), but
+every one of the four B windows ran 40-69% slower per block, which is the
+opposite of what a cheaper follower import should produce. The prediction's
+own falsification test (follower import `proc` failing to move) could not be
+run as a clean before/after: n42-r84's full-block `proc` was never captured
+and its node logs had already rotated out by the time 35zzw's own round
+finished (only the current log plus one rotated generation survive per
+node) -- so that specific number is `n/a`, not zero and not an estimate.
+r85's own number is on record (proc median 988 ms on full B-leg blocks,
+execMs 717 of it). The round is otherwise clean: 0 `nonceHigh` drops across
+545 fill records, no BAD BLOCK, no root divergence. Ruled falsified on the
+measured half of the prediction (B mean was supposed to rise; it fell 24.7%
+instead), independent of the unmeasurable `proc` delta. Process note for the
+next binary: pull `import_breakdown.py` right after ITS OWN round, before
+the next round's node logs overwrite the evidence.
+
 ## The queue
 
 | id | step | binary | prediction | status |
 |----|------|--------|-----------|--------|
-| S2 | 35zzw: per-block base-read cache (`parallel.BaseCache`) | n42-r85 | 78 (6br) | **queued on the box, chain script waiting behind n42-rs** |
-| S7 | sixteen generators with `-target-depth` halved (45000 -> 22500) | n42-r85 or later | 81 (6bv) | **specced and ruled: runs after S2** |
+| S7 | sixteen generators with `-target-depth` halved (45000 -> 22500) | n42-r84 | 81 (6bv) | **specced and ruled: next** |
 | S4 | the Prague delegation check reads every recipient (6bp) | not built | not written | candidate |
 | S5 | the leader's write (~0.5 s) off the critical path | not built | not written | candidate |
 | S6 | per-transaction allocation hotspots | not built | not written | candidate |
 
-S1 (sixteen generators) and S3/S3b (the fallback and the reader
-disagreement) are closed; see above.
+S1 (sixteen generators), S2 (the base-read cache), and S3/S3b (the fallback
+and the reader disagreement) are closed; see above. S7 already targets
+n42-r84 (no cache), so S2's falsification does not change its rationale --
+but n42-r85's unexplained slowdown means the cache should not be layered
+onto whatever runs after S7 until it is understood (candidate cause:
+`BaseCache`'s single `sync.RWMutex` per block, contended by all 32 workers,
+costing more in lock traffic than the avoided reads save -- not yet
+profiled).
 
 **S7's spec corrected the diagnosis of S1, and the correction matters more
 than the round did** (section 6bv). The funding budget was never the
@@ -138,12 +166,12 @@ submission RATE, with half its budget unspent. More generators is the right
 direction and S1 simply forgot to halve the depth with it. S7 is that round
 done properly: sixteen generators at `-target-depth` 22500, which restores
 the aggregate 360,000 of the 127.6k baseline while doubling the submission
-parallelism -- one variable against 35zzt. Run it after S2, so the code
-lever already on the box is read out first.
+parallelism -- one variable against 35zzt, on n42-r84 so the cache's
+unexplained regression (above) is not a second variable in it.
 
-35zzw uses the **eight-generator baseline shape**, so it is directly
-comparable to 35zzt's 127.6k and was not contaminated by S1's bad shape.
-Let it run.
+35zzw used the **eight-generator baseline shape**, so it was directly
+comparable to 35zzt's 127.6k and was not contaminated by S1's bad shape --
+it has already run and been read out (falsified, above).
 
 ## Binaries
 
@@ -152,8 +180,8 @@ out from origin/main (see build-and-queue.sh; `git checkout origin/main --
 <file>` picks up everything that has landed in those files).
 
     n42-r80 = deferred + fold + tail + packet window     <- the 127.6k baseline
-    n42-r84 = r80 + the delta fix                        <- 35zzx attempt 2
-    n42-r85 = r84 + the base-read cache                  <- 35zzw
+    n42-r84 = r80 + the delta fix                        <- 35zzx attempt 2; S7 runs on this
+    n42-r85 = r84 + the base-read cache                  <- 35zzw; falsified, B mean 96.1k
 
 ## Standing rules (user's, in force)
 
@@ -195,12 +223,14 @@ out from origin/main (see build-and-queue.sh; `git checkout origin/main --
 ## First moves in a new session
 
 1. Read docs/QS_QUEUE.md. Nothing else.
-2. Check the box: `ls -l /data/blockchain/.box-claim-*` and whether
-   `chain-35zz*.sh` is still waiting. If 35zzw has finished, dispatch its
-   analysis agent with a brief modelled on agent-tasks/S1-analyse-35zzx.md,
-   scored against 127.6k and against prediction 78.
-3. Collect the S7 report (prediction 81) and decide whether the supply round
-   runs before or after the next code lever.
+2. S2 (35zzw) is done and falsified (section 6bw); S7 (prediction 81, on
+   n42-r84) is next as ruled. Check the box: `ls -l /data/blockchain/.box-claim-*`
+   and whether it is still held by n42-rs before claiming it and launching
+   `run-r35zzy.sh` / `chain-35zzy.sh`.
+3. Collect the S7 report (prediction 81) and decide the next code lever,
+   noting that the base-read cache (n42-r85) is not yet trusted -- its
+   regression in 35zzw is unexplained and it should not be layered onto
+   whatever runs after S7 until profiled.
 4. Arm the monitor before going quiet. Never poll.
 
 ## S7 runner prepared (2026-09-20, America/New_York time)
