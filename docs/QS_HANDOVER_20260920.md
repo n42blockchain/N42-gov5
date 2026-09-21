@@ -335,7 +335,7 @@ cost; #2 is a previously-undocumented edge case worth a follow-up read of
 the push/gossip interleave under a real fleet trace, not a code change on
 current evidence.
 
-## S11 prepared -- diagnostics built and tested; round blocked on the r85 cache (2026-09-20)
+## S11 prepared -- n42-r86 built on a clean lineage, round ready, not launched (2026-09-20)
 
 Implements the two diagnostics 6by asked for (commit `537ec21e`,
 `feat(miner): pre-fill step timers and a build-stall goroutine dump
@@ -345,24 +345,54 @@ watchdog that dumps every goroutine's stack to
 `<datadir>/log/build-stall-<n>-<unixsec>.stacks`. Both behind
 `N42_BUILD_STALL_DIAG=1`, off by default, no behavior change to block
 production. See `docs/QS_BLOCK_TIME_BUDGET.md` section 6bz for the full
-writeup, field-by-field file:line list and test results (55 tests, 0
-failures; `go vet` and `-race` clean).
+writeup, field-by-field file:line list, the one-variable check and test
+results.
 
-**Not built: n42-r86.** Confirming n42-r84's lineage (worktree at
-`f7ec2836` + `DEFERRED`/`FOLD`/`TAIL` file lists from `build-and-queue.sh` +
-`internal/parallel/executor.go` from `c0931aeb`, the delta fix) also
-surfaced that qs/replan's current HEAD carries commit `3c9311ac` (the
-n42-r85 base-read cache, `parallel.BaseCache`) unconditionally --
-`internal/parallel_processor.go:342` constructs it on every parallel
-build/import with no env gate anywhere in the cache's own files. 6bw
-falsified this cache on the same eight-generator shape this round would
-have used (B mean 96.1k vs the 127.6k standing best, a 24.7% fall), and it
-was never reverted or gated afterward. Per this task's own instruction,
-finding the cache "enabled by default" on HEAD means stop and report
-instead of building -- so n42-r86 was not built, `run-r35zzz.sh`/
-`chain-35zzz.sh` were not created, and prediction 82 was not registered.
+**Confirming n42-r84's lineage surfaced a live contamination risk, and the
+commander ruled how to route around it rather than touch the branch.**
+qs/replan's current HEAD carries commit `3c9311ac` (the n42-r85 base-read
+cache, `parallel.BaseCache`) unconditionally -- `internal/parallel_processor.go:342`
+constructs it on every parallel build/import with no env gate anywhere in
+the cache's own files. 6bw falsified this cache on the same eight-generator
+shape this round uses (B mean 96.1k vs the 127.6k standing best, a 24.7%
+fall), and it was never reverted or gated on the branch. Ruling: build
+n42-r86 with the established file-checkout recipe (worktree at `f7ec2836` +
+n42-r84's exact file list + S11's own files) so the cache's files are
+simply never in the build, rather than revert or gate `3c9311ac` on
+qs/replan.
 
-**To read the dump when a future round produces one:** the file is a plain
+**n42-r86: built.** `/data/blockchain/gov5-work/n42-r86`, 108,694,408 bytes,
+sha256 `f07e2b811d6569363c363d0286b17d672b4854dfecbe593297fa63e7a77e665c`.
+Commit list: base `f7ec2836`; `DEFERRED`/`FOLD`/`TAIL`/
+`internal/parallel/executor.go` at `c0931aeb`; S11's seven files at
+`537ec21e` -- four byte-identical to r84's own version of the file
+(`internal/blockchain.go`, `internal/blockchain_types.go`,
+`internal/miner/miner_test.go`, `log/root.go`, checked out whole), one
+requiring a hunk-only apply (`internal/miner/worker.go`: two intervening
+commits `19687889`/`89d15267` are not part of r84's lineage, so only S11's
+own diagnostic diff was applied onto r84's copy of the file, verified
+clean with `git apply --check` first), and two brand new
+(`internal/miner/build_stall_watchdog.go`,
+`internal/miner/build_stall_watchdog_test.go`). Verified in the binary
+itself: `strings n42-r86 | grep -c "build stalled before fill"` = 1,
+`strings n42-r86 | grep -c BaseCache` = 0. In the build worktree: `go vet`
+clean, `go test ./internal/miner/...` 53/53 (2 fewer than qs/replan HEAD's
+55 -- the two tests `19687889`/`89d15267` added are correctly absent from
+r84's lineage).
+
+**Runner: `run-r35zzz.sh`/`chain-35zzz.sh`, built from the 35zzt pair, not
+launched.** 35zzt's eight-generator shape (`-target-depth 45000`, `--floods
+8 --senders 1000`, unchanged), binary retargeted to n42-r86,
+`N42_BUILD_STALL_DIAG=1` added next to `N42_MINER_ADOPT_APPENDS=1`. One
+harness fix carried in from after 35zzt (diffed against `run-r35zzy.sh`):
+the `MODE-FAILED` regex no longer treats "deferred check FAILED" as an
+abort signature (expected pre-import vote decline, not a failure). No other
+difference beyond the sixteen-generator shape (skipped by design) and
+round-name tokens. `chain-35zzz.sh` waits on `wr-logs/r35zzy.log`'s
+terminal line; memory gate, n42-rs turn-taking and quiet-box checks
+unchanged. `bash -n` clean on both.
+
+**To read the dump when the round produces one:** the file is a plain
 `runtime.Stack(_, true)` text dump (goroutine ID, state, full call stack per
 goroutine); grep it for the step name the accompanying
 `miner: build stalled before fill` log line names (e.g.
@@ -372,11 +402,4 @@ fault, etc.). The `miner: prefill phases` lines in the surrounding log
 window separately show which named step's cumulative time actually grew
 that build, without needing the dump at all in the common case.
 
-**Two ways to unblock, for the commander to choose between:**
-(a) build n42-r86 with the same file-checkout recipe used for n42-r78/79/80
-(worktree at `f7ec2836`, individual files, never touching
-`internal/parallel_processor.go`/`internal/parallel/base_cache.go`/
-`internal/parallel/state_reader.go`) plus S11's seven changed/new files
-taken from qs/replan commit `537ec21e`; or
-(b) revert or env-gate `3c9311ac` on qs/replan HEAD first, then build off
-HEAD directly. Neither choice was made here.
+Prediction 82 is registered in 6bz. Launch is the commander's next call.
