@@ -9823,6 +9823,225 @@ show the mechanism is the ONLY contributor -- `specTreeReload` (6cq's
 prefill table) and ordinary GC pacing under `GOGC=300`/`GOMEMLIMIT=9GiB`
 remain live, uncaptured contributors this round did not separate out.
 
+## 6cs. S21: hypothesis W confirmed in corrected form -- push(v+1) waits on whichever of {write(v) ending, CommitQC(v) forming} is LATER, plus a leg-invariant ~254 ms pacing/seal constant, resolving 6cq's apparent contradiction (2026-09-21)
+
+Commander's ruling on S19 flagged a real contradiction in 6cq: Round2 fell
+403 -> 115 ms (-288 ms) while the in-tenure cycle stayed flat (715 ->
+720 ms) and 6cq called the saved time "nowhere measurable" -- which
+cannot be true of a genuinely serial chain. This section finds the
+segments were never a serial sum: 6cq's own cycle number for B2 was
+ALSO measured with a formula that predates S19 and needed correcting,
+and the real governing relationship is a MAX, not a SUM, of two
+upstream paths that happen to converge on the same downstream constant.
+Logs-only, same kept files: `wr-logs/r35zzze-keep/node{0-6}-B.log`.
+Script: `wt-r27/scripts/qs-analysis/write_journal_gate.py`.
+
+**0. A formula bug, found and fixed first.** Every section since 6cb has
+computed `push_instant = tMs - write/1e6`, valid only because push always
+preceded write immediately (`worker.go:677` push, `:759-761` write, and
+before S19, nothing sat between them). S19 inserted `lwWait` between
+push and write (`worker.go:747-757`) whenever `N42_LEADER_WRITE_AFTER_
+JOURNAL=1`, so in B2 the old formula actually computes `writeStart`
+(push_instant + lwWait), not push_instant. The corrected formula is
+`push_instant = tMs - (write + lwWait + notify)/1e6`. Effect on the
+cycle (push(n) - push(n-1), win1 only): **B1 unaffected** (715.0 ->
+715.0 ms median, since lwWait=0 throughout B1) confirming every B1
+number in 6cq/6cp stands; **B2 shifts** 720.3 -> **656.0 ms** median
+(p10 604.9->555.1, p90 774.4->747.6) -- an 8.9% reduction, not the whole
+288 ms but a real, confirmed correction. This bug does not change 6cq's
+headline (Round2 genuinely fell 71%, and the cycle genuinely did not
+fall by anywhere near that) but it does mean 6cq's own B2win1 cycle
+number (720.3) overstated the true value by 64 ms; the corrected number
+(656.0) is used throughout this section and should be read as superseding
+6cq's B2 cycle figures.
+
+**1. The gate test (item 2), win1 only, ms-precision.** `CommitQC(v)` is
+derived as `push(v+1) - propose(v+1)`, using view_timing.go's own
+`propose` field (`ViewStart -> ProposalSent`, `view_timing.go:391,529`)
+rather than a fresh join against `"hotstuff: view changed"` -- a direct
+cross-check found the isLeader-search proxy (used for leg-offset
+calibration and everywhere else this campaign needs "when did this node
+become leader") disagrees with `push(v+1) - propose(v+1)` by 300-400 ms
+specifically in B2 (self-consistency check: `CommitQC(v) - push(v)`
+should equal `r1(v) + r2(v)`; via `propose` it does, in both legs,
+within the noise a median-of-medians comparison allows; via the
+isLeader-search proxy it does only in B1). The isLeader event apparently
+fires later than CommitQC actually forms in B2 specifically (plausibly
+the same serial-output-queue effect this campaign has flagged before,
+though `"hotstuff: commit phases"` staying sub-ms rules out
+`OutputBlockCommitted` itself as the queued item ahead of it -- not
+chased further; flagged as a loose end, not resolved here). `write(v)_
+end` is `tMs(v) - notify(v)/1e6` (write's own completion, from the same
+line as always).
+
+| | B1win1 (n=21) | B2win1 (n=25) |
+|---|---|---|
+| write(v)_end is the LATER of the two ("write gates") | 0.0% | **92.0%** |
+| push(v+1) - gate = max(write_end, CommitQC) | median 254.0 (p10 195, p90 343) | median 254.2 (p10 224.1, p90 316.1) |
+| push(v+1) - CommitQC(v) | median 254.0 (same -- CommitQC always the gate) | median 467.0 (p10 266, p90 569) |
+| push(v+1) - write(v)_end | median 347.6 (p10 281.4, p90 451.3) | median 270.7 (p10 224.8, p90 330.1) |
+
+**`push(v+1) - gate` is tight and essentially IDENTICAL across legs**
+(254.0 vs 254.2 ms, medians 0.2 ms apart, both distributions of similar
+width) **while `push(v+1) - CommitQC(v)` is NOT** (254.0 vs 467.0 ms) --
+this is hypothesis W's own predicted signature, measured: in B1,
+Round1+Round2 (447-501 ms median, 6cq) always outlasts the write
+(245.3 ms median), so CommitQC(v) is always the later event and gates
+100% of the time. In B2, Round2 collapses (6cq) but the write now starts
+~101 ms later too (`lwWait`), so the write's own completion overtakes
+CommitQC(v) as the later event in 92% of views -- and once it does,
+`push(v+1)` waits on IT instead, for almost exactly the same downstream
+~254 ms that B1 always paid after its own (different) gate. **Prediction
+87's saved 288 ms did not vanish and did not reappear elsewhere: it
+was never on a path that fed the cycle in the first place, once the
+write becomes the binding constraint** -- this is the resolution to the
+"contradiction," not a refutation of S19's own finding (6cq's "nothing
+moved" verdict was correct; it just needed this gate model to explain
+WHY nothing needed to move).
+
+**2. What "propose(v+1)" (the ~254 ms constant) actually is.** 6cb's own
+worked example (an earlier round, no S19 switch, median in-tenure block
+n=13658061) already decomposed this exact span and it matches closely:
+ViewStart(552.7) -> BLS-sign-start(688.1, a 135.4 ms gap, almost
+certainly `paceBlock`'s grid wait -- this round's own `"miner: pacing
+wait"` lines show a 179.4 ms median, second-resolution-matched only, not
+a per-block join, but the same order of magnitude) -> BLS sign (0.6 ms)
+-> "gate+copy residual" (83.9 ms, `CheckSealParentApplied` + the
+163k-allocation receipts copy, `worker.go:660-667,705-725`, neither
+separately timed) -> push (26.5 ms) = **246.4 ms total**, against this
+task's own 254.0/254.2 ms measured medians -- an independent,
+cross-round confirmation of the same constant to within 3%.
+
+**3. Code trace: what does the write-bound path (B2's 92%) actually wait
+on?** Traced three candidates directly:
+
+- **`WaitBlockPersisted(parentHash, 2s)`** (`worker.go:1246`,
+  `internal/blockchain.go:270-290`, a 5 ms-poll read-transaction check
+  for the parent header) -- gated behind `parentHash != zero && !
+  ownPending`. `ownPending` is true whenever the build is speculative AND
+  `w.ownSealed(parent) != nil` (`ownPendingSpeculation`, `worker.go:941-
+  950`) -- i.e. almost always, for a chained (same-leader) tenure run:
+  `"miner: speculative build parked"`/`"miner: speculative build hit"`
+  counts match to within 0-1 across all 7 nodes over the whole kept
+  window (e.g. node0: parked=551 hit=551; node6: parked=555 hit=554),
+  and `"speculative build discarded"`/`"speculative align failed"` are
+  ZERO occurrences anywhere in the kept logs. **The speculative-build-hit
+  fast path is essentially universal for chained full blocks this round,
+  and it explicitly bypasses `WaitBlockPersisted`** (`ownPendingSpeculation`'s
+  own doc comment: "the build neither waits for the write nor aligns the
+  applied branch") -- ruling this OUT as the mechanism for the 92% figure.
+- **`CheckSealParentApplied`** (`internal/seal_push_order.go:33-42`) --
+  a non-blocking snapshot read (`bc.ChainDB.View`, no wait, no lock) run
+  just before push. `"sealed block is stale before its write; dropping"`
+  (the only observable failure mode) has **zero** occurrences in the
+  entire kept window, both legs -- this check is passing every time and
+  is not gating anything (nor could it: a snapshot check does not wait,
+  it only rejects).
+- **The write itself, `bc.lock`, or the MDBX single-writer slot** -- the
+  strongest remaining candidate, since `AlignAppliedBranch`'s own comment
+  states plainly it "takes `bc.lock` and so waits behind the parent's own
+  write" (`worker.go:1264-1266`) when it runs at all (it is SKIPPED, per
+  the same code, when the applied head already matches the parent -- the
+  normal chained case, so this specific call is also not it here). No
+  log line in this round's binary carries a `tMs` on the commitWork-
+  begin/build-phases/speculative-parked/speculative-hit events (a
+  binary-vintage gap matching 6cb's own note about an EARLIER round --
+  see caveat below), so the exact statement that blocks cannot be pinned
+  to a specific file:line this round; the measured 92%/254ms pattern is
+  solid, but the single mutex or resource responsible is inferred, not
+  directly observed. **Best-supported reading:** since push(v+1) itself
+  happens BEFORE v+1's own write starts (push-before-write, same as v),
+  the wait is not v+1's own write queuing behind v's -- it has to be
+  something upstream of push, in the pacing/gate/seal handoff itself.
+  Given `CheckSealParentApplied` is ruled out above, the most likely
+  remaining site is a lock taken somewhere in the seal/BLS-sign path
+  (`taskLoop`, `w.commit()`'s snapshot/update-metrics calls) that is ALSO
+  taken by `WriteBlockWithState` for v -- consistent with, but not proven
+  by, this round's evidence. **Naming it precisely is the one addition
+  the next round needs**: add `tMs` to `"miner: speculative build
+  parked"`/`"hit"` and `"commitWork begin"` (already planned/flagged in
+  6cb for an unrelated reason, still not done as of this binary), which
+  would let a future pass place every step in the propose(v+1) span at
+  ms precision instead of inferring it from the aggregate 254 ms.
+- **Real or incidental?** Given the mechanism is most likely a lock
+  shared with `WriteBlockWithState`, and MDBX permits exactly one writer
+  transaction at a time (a hard constraint, not a conservative choice),
+  this reads as **REAL**: as long as this leader's own write and the
+  next block's seal/commit path share ANY exclusive resource (the
+  writer slot itself, or a coarser lock guarding it), one MUST wait for
+  the other. It is the S19 SWITCH's own choice to delay the write's
+  START (not a new dependency) that moves this from "never binds" (B1)
+  to "binds 92% of the time" (B2) -- the dependency was arguably always
+  there, just never exposed before because the write always finished
+  before Round2 did.
+
+**4. 6cb corrected in place (dated note, 2026-09-21).** 6cb's own
+two-segment model ("push(v-1) -> QC(v-1)/ViewStart(v): WAIT (consensus
+round-trip)" then "leader commit/seal: CPU") is not wrong for the round
+it measured (n42-r86, no S19 switch existed), but its first segment's
+label should be read, going forward, as **WAIT for max(CommitQC(v-1)
+forming, write(v-1) ending)**, not simply "the consensus round-trip." In
+every block 6cb measured, Round1+Round2 was slower than the write
+(matching this task's own 0%-B1 finding), so the two readings were
+indistinguishable at the time; S19/S21 is what separates them, by
+making Round2 fast enough that the write can become the later event
+instead. 6cb's worked example's own numbers (ViewStart at +552.7 with
+"already done, -90.9 margin" for the fill) illustrate the B1-shaped case
+specifically; a same-shaped worked example from B2's write-bound regime
+would show the "leader trigger+prefill+fill" line landing AFTER
+ViewStart rather than before it, with the same downstream ~246 ms.
+
+**5. Consequence table (derived from measured medians only, labelled as
+such -- not a new measurement).** Inputs used: `r1`+`r2` (B2win1
+medians, 6cq: 65+96=161 ms); Round2 pooled (S19, 6cq: 115.5 ms, so
+`r1`(65, pooled B2)+`r2`(115.5) = 180.5 ms); write(v)_end-push(v) today
+in B2 (`lwWait` 101.2 + `write` 240.3 = 341.5 ms); the measured constant
+(254 ms, both legs).
+
+| scenario | inputs summed | derived cycle |
+|---|---|---|
+| (i) Round2 = 115 ms (pooled), dependency removed (gate always = CommitQC) | 180.5 (r1+Round2) + 254 (constant) | **434.5 ms** |
+| (ii) write as today (341.5 ms end-offset), but propose(v+1) never waits on it (gate always = CommitQC) | 161 (r1+r2, win1) + 254 (constant) | **415 ms** |
+| (iii) only the write gets 100 ms faster (lwWait unchanged, write 240.3->140.3) | max(161, 101.2+140.3=241.5) + 254 = 241.5+254 | **495.5 ms** |
+
+(iii) still lands well above (i)/(ii) because at write=140.3 ms the
+write (241.5 ms end-offset) is STILL the later event vs CommitQC
+(161 ms) -- the write would need to shrink by more than 100 ms (to
+roughly parity with 161 ms, i.e. another ~40 ms past the 100 ms cut)
+before removing the write's own gate manually stops mattering, matching
+prediction 87's own design goal (6co/6cn) rather than S19's already-
+measured -100 ms scenario in isolation.
+
+**Method.** Reuses the campaign's standard join (per-leg `leg_offset`
+via the isLeader-search QC-proxy, validator-index map) for leg-offset
+calibration ONLY -- the core gate test in (1) deliberately avoids that
+proxy for per-view `CommitQC(v)` placement, using `propose(v+1)` instead,
+per the self-consistency check in (1). Build-phase/speculative-build
+duration stats (6cq's job, reused here) are joined by log ORDER within
+a node (build phases and commit phases are logged adjacently, one pair
+per `commitWork` call, with no block number or `tMs` on either line in
+this round's binary) -- exact for durations, second-resolution only for
+absolute placement, and not used in the core ms-precision test.
+
+**What this does and does not show.** It shows, with a clean and
+internally cross-validated (against 6cb's own independent worked
+example from a different round) measurement, that hypothesis W holds in
+corrected form: push(v+1) is gated by whichever of {write(v) ending,
+CommitQC(v) forming} is later, plus a leg-invariant ~254 ms pacing/
+gate/push constant -- resolving 6cq's "contradiction" as a MAX
+relationship the SUM-shaped segment model never captured. It shows the
+formula bug in every prior section's `push_instant` for B2-style
+(`lwWait`>0) legs, now fixed, with a measured (not estimated) 64 ms
+correction to 6cq's own B2win1 cycle figure. It does NOT identify the
+exact lock or resource behind the write-bound 92% with file:line
+certainty -- (3) narrows it to "a lock shared with `WriteBlockWithState`,
+most likely in the seal/commit path" and names the one instrumentation
+addition (`tMs` on the speculative-build/commitWork-begin lines) that
+would close this. It does NOT re-examine win2 or the handover
+population under this same gate model -- both are flagged as the
+natural next extension, not done here given this task's own win1-only
+scope.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
