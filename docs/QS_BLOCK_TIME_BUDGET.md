@@ -9419,6 +9419,410 @@ It does NOT test a fix for either finding (6co/prediction 87 already
 proposes one for the journal-collision finding, prepared separately);
 this section measures, per this task's own scope.
 
+## 6cq. Round 35zzze, Job 1 (prediction 87): letting the journal go first collapses Round2 by 71% (403 -> 115.5 ms) without moving the cost anywhere else on the measured cycle (2026-09-21)
+
+n42-r91 (r89 + the write-latch: `N42_LEADER_WRITE_AFTER_JOURNAL=1` delays
+the START of a leader's own `WriteBlockWithState` until its own
+commit-vote journal for that block succeeds, or a 150 ms timeout, or
+view-abandonment) ran clean, A/B BY LEG: B1 (=0, today's ordering)
+11:13:13-11:26:23; B2 (=1) 11:26:23-11:39:24. New per-block fields on
+`miner: propose phases` (leader-only, top-level JSON, nanoseconds):
+`lwWait`, `lwWhy` in `{off, journal, timeout, abandoned}`. Node logs
+preserved whole, trimmed to `wr-logs/r35zzze-keep/node{0-6}-B.log`
+(11:13:00-11:39:59). Script:
+`wt-r27/scripts/qs-analysis/leader_write_after_journal.py`. Windows
+were located by taking the full-block (>=150,000 tx) sequence within
+each leg in order and splitting at the round log's own counts (48/35
+for B1, 53/35 for B2) -- this reproduces the round log's own
+occupancy/TPS numbers exactly and is the same method 6cp validated.
+
+**(a) Headline: Round2 collapses.** Pooling both windows per leg
+(in-tenure/chained full blocks only, n=45 B1 / n=50 B2):
+
+| | leader jcvMs | Round2 (r2) | r2kth | in-tenure cycle | lwWhy |
+|---|---|---|---|---|---|
+| B1 (off) | median 334, p10 268, p90 494 | median 403, p10 310, p90 519 | median 399 | median 795.7 | off 100% |
+| B2 (on) | median 0, p10 0, p90 4 | median 115.5, p10 58, p90 296 | median 112.5 | median 755.1 | journal 82%, timeout 18% |
+
+**Round2 falls 403 -> 115.5 ms (-71.3%); the leader's own jcvMs falls
+334 -> 0 ms (median) because the journal write is now UNCONTENDED --
+it goes first, while the writer is idle, exactly as 6co proposed.**
+The in-tenure cycle (push-to-push, same leader, chained views) does
+**not** grow to compensate -- if anything it is a hair faster (795.7 ->
+755.1 ms) -- an early, direct answer to "not merely moved": see (b) for
+the fuller accounting.
+
+By window:
+
+| | B1win1 | B1win2 | B2win1 | B2win2 |
+|---|---|---|---|---|
+| jcvMs (leader, median) | 329 | 369 | 0 | 0 |
+| r2 (median) | 383 | 431 | 96 | 138 |
+| in-tenure cycle (median) | 715.0 | 860.1 | 720.3 | 909.0 |
+| leader blockwrite `write` (median) | 245.3 | 396.3 | 240.3 | 343.3 |
+| lwWait (median) | 0 | 0 | 101.2 | 120.0 |
+| lwWhy shares | off 100% | off 100% | journal 80%/timeout 20% | journal 84%/timeout 16% |
+| derived full-block ceiling (win1 only, Job 1e) | 223,333 tx/s | -- | 230,180 tx/s | -- |
+
+Handover (leader-change) full blocks are unaffected in direction but
+noisier and slower in absolute terms in BOTH legs (median cycle 1109.2
+ms B1, 1464.0 ms B2 -- n=37/35; handover was never this task's target
+and the two legs' handover medians are not treated as a paired
+comparison here, since a leader change brings its own queueing that
+this task did not isolate).
+
+**Every `lwWhy=timeout`/`abandoned` case, explained.** All 9 non-
+`journal`/`off` cases this round are `timeout` (0 `abandoned`): 5 in
+B2win1, 4 in B2win2, `lwWait` pinned at 150.0-150.9 ms (the configured
+ceiling) in every one. Cross-checked against this round's 10 TC events
+and 19 view-timed-out events (6ck's method, deduped by (time,view)):
+**none of the 9 timeout cases falls within +/-1 view of a TC/timeout
+event.** Reading the matched view-timing lines directly: these are
+views where Round2's own vote-gathering (the same thing `r2`/`r2kth`
+measure) simply ran past the 150 ms budget on its own -- e.g. the
+paired sample at n=13660439 has `jcvMs=461` on the SAME view the write
+timed out on, i.e. the underlying journal/quorum-formation event this
+node was waiting on was itself an outlier that block. **No timeout case
+corresponds to a genuine HotStuff-level view timeout or TC formation**
+-- the write-latch's own 150 ms ceiling, not consensus instability, is
+what ends the wait.
+
+**(b) "Not merely moved."** Four places time could have reappeared,
+checked directly:
+
+- **`lwWait` itself, on the write path.** Once `jcvMs` is uncontended
+  (~0), `lwWait` (B2 median 101-120 ms) is no longer "journal duration"
+  -- it is now dominated by however long THIS node's own Round2
+  vote-quorum took to complete (since the write cannot start until this
+  node's own commit vote, part of forming the CommitQC that makes it
+  leader of the next block, has both formed AND journaled). Read
+  against B2's pooled Round2 (median 115.5 ms), `lwWait`'s median
+  (101-120 ms across the two windows) sits close to it -- consistent
+  with the wait now being intrinsic consensus latency (quorum
+  formation), not queueing for a resource, though a tight per-block
+  identity does not hold (the per-row `jcvMs`(n-1)/`lwWait`(n) pairing
+  is noisy -- see Method).
+- **Prefill** (`miner: prefill phases`, >50 ms outliers only): B1 n=87,
+  B2 n=76. `persistWait`/`insertParent`/`rootLockWait` are 0 at the
+  median in BOTH legs (the parent-import gate, 6cb/6cc, stays cleared).
+  `specTreeReload` (122.2 -> 129.3 ms median) and prefill `total` (139.5
+  -> 143.1 ms median) are statistically flat between legs -- no
+  migration of cost into pre-fill.
+- **Build dispatch / CommitToCanonical.** `hotstuff: commit phases`
+  (`canon`+`persist`) stays sub-millisecond at the median in every
+  window in both legs (B1win1 0.3 ms, B2win2 0.4 ms); the visible
+  growth is only in the tail (p90 52.9->343.0 ms range across windows,
+  present in BOTH legs, tracking the win1->win2 pattern in 6cr, not the
+  A/B switch). `committed block not executed locally` (1673 B1 / 1827
+  B2), `refusing block production on unexecuted committed parent` (11 /
+  12) and `deferred production resumed` (60 / 58) are all essentially
+  equal between legs -- the deferred-execution gate's load is unchanged
+  by the switch, as expected (it gates on parent import, not on the
+  journal).
+- **Followers.** (Job 1c) Follower `total`/`write`/`body`/`proc` import
+  phases and follower `jcvMs`/`jpvMs` are statistically unchanged
+  between legs (follower jcvMs/jpvMs both medians 0.0 ms in both legs;
+  import total medians 4.4 B1 / 4.5 B2 ms) -- exactly as predicted: the
+  switch only reorders the LEADER's own write against its OWN journal
+  call and touches nothing on the follower side.
+
+**No saved time reappears anywhere this task instrumented.** The
+71.3% Round2 reduction is not offset by a matching increase in
+prefill, dispatch, CommitToCanonical, or follower cost; the in-tenure
+cycle is flat-to-slightly-better. The closest thing to "reappeared
+time" is `lwWait` itself, but that is consensus's own unavoidable
+quorum-wait, not a new artificial queue.
+
+**(c) Throughput and derived ceiling.** B2win1 (140,885 TPS,
+1.132 s/block) is FASTER than B1win1 (127,869 TPS, 1.250 s/block) by
++10.2%, at equal ~49% occupancy -- consistent with (a)/(b): the switch
+removes real critical-path time (the collision) without adding it back
+elsewhere. Derived full-block ceiling (mean txs/block over mean
+in-tenure cycle, win1 only, labelled DERIVED since it extrapolates a
+100%-in-tenure, no-handover chain that never actually runs):
+B1win1 **223,333 tx/s**, B2win1 **230,180 tx/s** (+3.1%) -- a much
+smaller gap than the round-level TPS gap, because the round-level
+number is diluted by the identical win2 slowdown (6cr) present in both
+legs and by handover blocks, neither of which this switch touches.
+
+**(d) Safety.** BAD BLOCK 0, divergence 0, MODE-FAILED 0 both legs.
+TC events: 5 B1 / 5 B2. View-timed-out events: 9 B1 / 10 B2 (both legs
+have a comparable, small timeout rate; none of B2's 9 write-latch
+timeouts double as one of these, per (a)). Zero build stalls this
+round. Every one of the 171 full-window blocks has its own
+`propose phases` write line -- no leader block proposed-and-committed
+but never written, in either leg.
+
+**(e) Prediction 87, clause by clause.**
+
+- *"B1 jcvMs ~ Round2 residual"* -- **confirmed**, consistent with 6cp:
+  median jcvMs 334 ms against median Round2 403 ms (82.9%).
+- *"B2 jcvMs < 10 ms, Round2 < 80 ms, in-tenure cycle down by >= 250 ms"*
+  -- **partial**. jcvMs collapses as predicted (median 0, p90 4 ms,
+  comfortably under 10). Round2 falls hard but its MEDIAN (115.5 ms) is
+  above the 80 ms bar the prediction set (B2win1's own median, 96 ms,
+  is closer; B2win2's median, 138 ms, is further; the p10 across both,
+  42-58 ms, clears it) -- reported as measured rather than rounded to
+  fit. The in-tenure cycle does **not** fall by >=250 ms -- it is
+  essentially flat (795.7 -> 755.1 ms pooled, a 40.6 ms improvement).
+  This is not a failure of the mechanism: the in-tenure cycle was never
+  gated by Round2 alone (6cb/6cg's own critical-path work put transport
+  and other segments on it too), so a jcvMs-sized drop in Round2 was
+  never guaranteed to show up ms-for-ms in the push-to-push cycle --
+  the mechanism (a) and the "nothing moved" result (b) are the two
+  clauses this task can actually certify; the specific 250 ms
+  cycle-improvement number was an optimistic upper bound, not
+  re-derived from first principles before the round ran.
+- **Confound acknowledged, stated plainly.** B1 always runs before B2
+  in this design (leg order is fixed: warmup, A1, B1, B2, A2), and
+  win1's own supply ceiling sits near 140k both legs -- so any
+  round-over-round drift in the box, the generators' own warmup state,
+  or accumulated chain size between B1 and B2 is confounded with the
+  switch itself. What the leg-order confound and the shared ~140k win1
+  ceiling DO allow: a same-round, adjacent-leg comparison at matched
+  occupancy (~49% both), matched block size (163,000 tx dominant both),
+  and matched tenure/topology -- the strongest control this campaign's
+  method offers without a same-round interleaved A/B (not supported by
+  the harness). What they do NOT allow: ruling out a systematic
+  box-state drift between the two legs as a partial contributor to the
+  B2win1-vs-B1win1 TPS gap, though the DERIVED ceiling (which factors
+  out handover blocks and the win2 slowdown) shows a far smaller,
+  more plausible +3.1% gap than the raw +10.2% TPS gap -- suggesting
+  most of the raw gap is win2/handover composition, not drift.
+
+**Overall verdict: confirmed** for the mechanism (jcvMs collapses,
+Round2 falls sharply, nothing else grows to compensate) and **partial**
+for the two specific numeric thresholds prediction 87 set in advance
+(Round2<80ms median, cycle down >=250ms) -- both directionally right,
+neither hit exactly as stated.
+
+**Method.** Reuses `journal_timing.py`'s parsing/join machinery
+(push-instant/QC-proxy/leg-offset/validator-index map) verbatim, adding
+`lwWait`/`lwWhy` (top-level JSON on `propose phases`, nanoseconds),
+`miner: prefill phases`, `hotstuff: commit phases` canon/persist split,
+`hotstuff: committed block not executed locally` /
+`refusing block production on unexecuted committed parent` /
+`deferred production resumed`, `TC formed locally` / `view timed out`,
+and any line mentioning `fetch`/`FetchBlockByHash`. The per-block
+`jcvMs`(n-1) <-> `lwWait`(n) identity was checked directly (printed,
+not shown in this table) and found noisy at the single-block level --
+`lwWhy=journal` rows show `lwWait` ranging 19.6-154.9 ms against
+`jcvMs`(n-1) values that are mostly 0 with occasional large outliers
+not lining up 1:1 -- so this section reports the AGGREGATE match
+(median-to-median) rather than claiming a verified per-block identity;
+the aggregate signal (both distributions dominated by Round2's own
+timescale, ~100-150 ms) is the basis for the "consensus's own wait,
+not a new queue" reading in (b).
+
+**What this does and does not show.** It shows, on this round's own
+evidence, that N42_LEADER_WRITE_AFTER_JOURNAL=1 does what 6co proposed:
+it removes the MDBX-writer collision 6cp measured directly, Round2
+falls by 71% at the median, and none of the four places time could
+hide (prefill, dispatch/CommitToCanonical, followers, the in-tenure
+cycle itself) shows a compensating increase. It does NOT show the
+effect isolated from the B1-before-B2 leg-order confound this design
+carries by construction -- see (e)'s confound clause. It does NOT
+explain every individual `lwWhy=timeout` case beyond "Round2 itself was
+slow that view" (n=9, not further decomposed per-view). It does NOT
+change 6cr's finding below: the within-leg win1->win2 slowdown is
+present, and of similar size, in BOTH legs of this round -- this
+switch is orthogonal to it.
+
+## 6cr. Round 35zzze, Job 2 (S20): the within-leg slowdown tracks a QMDB in-RAM index that never stops growing until the next restart, squeezing the page cache under a fixed GOMEMLIMIT (2026-09-21)
+
+Same round, same kept logs. `r35zzze-mem.log` (10s samples, richer than
+prior rounds: per-node `Anon+FileMB` for all 7 nodes plus system-wide
+`avail`/`Cached`/`Dirty`/`AnonPages`/`Shmem`) and 16 pprof captures
+(`/data/blockchain/wr-pprof/r35zzze-{B1,B2}-t{250,345}-node{0,3}-
+{cpu,heap}.pb.gz`) were supplied for a win1-vs-win2 comparison inside
+each leg. **The captures do not land inside win1/win2.**
+
+**(0) Capture-timing check, done first.** The true win1/win2 wall-clock
+windows were derived the same way 6cp validated (first N full blocks in
+leg-chronological order = win1, next M = win2; N/M chosen to reproduce
+the round log's own block counts exactly): B1win1 11:21:26-11:22:38,
+B1win2 11:22:40-11:23:26; B2win1 11:34:59-11:36:19, B2win2
+11:36:22-11:37:04. The `t250`/`t345` pprof captures were actually taken
+at B1 11:17:37-57 / 11:19:12-32 and B2 11:30:42-11:31:02 /
+11:32:17-37 -- **roughly 4-5 minutes BEFORE win1 even starts**, still
+inside each leg's 400s baseFee-decay phase (empty/near-empty blocks,
+decay itself only finishes at leg-start+400s: 11:19:53 for B1,
+11:33:03 for B2). This is confirmed independently by the CPU profiles
+themselves: total samples are ~8.75-9.95% of one core in EVERY one of
+the 8 CPU captures, both `t250` and `t345`, both legs -- flat, low
+utilization inconsistent with a 32-worker node mid-full-block
+production, and inconsistent with each other showing any shift (the
+coordinator's own read, confirmed: GC is not it, and the CPU profiles
+here add no win1-vs-win2 signal because they were never inside either
+window). **The heap/CPU profile comparisons below are reported for
+completeness but are DECAY-PHASE snapshots, not a win1-vs-win2
+comparison** -- the authoritative win1-vs-win2 comparison in this
+section is the `mem.log` analysis in (c), which spans the correct wall
+-clock ranges directly.
+
+**(a) Heap, as captured (decay phase, not win1/win2).** `inuse_space`
+totals: B1 node0 1545.93MB at BOTH `t250` and `t345` (byte-identical
+top-15, including the flat totals -- no allocation activity in this
+node during this particular 95s decay window); B1 node3 1499.62MB at
+both captures (also identical). B2 (captured ~1 minute closer to
+win1's own ramp than B1's captures were, and evidently already past
+whatever quiet point B1's captures caught): node0 815.99 -> 1132.31MB
+(+38.8%), node3 689.07 -> 1049.84MB (+52.4%). **In every one of the 8
+captures, the single largest and (in B2) fastest-growing consumer is
+the same function**: `github.com/n42blockchain/N42/lib/qmdb.
+newMapIndexSized` -- 51-73% of `inuse_space` in every capture,
+growing 509.64->772.59MB (node0) / 468.80->767.90MB (node3) in B2's
+two snapshots and static in B1's. `alloc_space` rate between the two
+captures could not be computed (the harness took `inuse_space`-only
+snapshots; no cumulative alloc-rate counter was captured this round).
+
+**(b) CPU, as captured (decay phase, not win1/win2; relative shares
+only, per the undersampling caveat).** `runtime.cgocall` dominates
+every capture at 65-66% of the (tiny) sampled total, in both legs, at
+both timestamps, with no directional shift between them --
+`internal/runtime/syscall/linux.Syscall6` a distant second (4.5-6.8%).
+No memmove/memclr/page-fault-shaped function appears in the top 10 of
+any capture. Consistent with (0): this is idle-ish decay-phase CPU,
+not a signal about win1-vs-win2.
+
+**(c) The authoritative win1-vs-win2 comparison: `r35zzze-mem.log`,
+averaged over each window's own samples.**
+
+| | B1win1 (n=7) | B1win2 (n=4) | delta | B2win1 (n=8) | B2win2 (n=4) | delta |
+|---|---|---|---|---|---|---|
+| avail | 51.4G | 46.8G | -9.0% | 51.0G | 46.8G | -8.2% |
+| system Cached | 54,869M | 44,344M | -19.2% | 53,036M | 43,851M | -17.3% |
+| system AnonPages | 73,836M | 77,878M | +5.5% | 74,165M | 77,188M | +4.1% |
+| per-node Anon (mean of 7) | 9,906MB | 10,339MB | +4.4% | 9,919MB | 10,278MB | +3.6% |
+| per-node File (mean of 7) | 3,295MB | 1,724MB | **-47.7%** | 3,611MB | 1,691MB | **-53.2%** |
+
+**Per-node FILE-resident memory (the MDBX mmap'd pages backing
+`chaindata`) falls hard from win1 to win2 -- by roughly half -- while
+Anon rises by only a few percent over the SAME interval, in BOTH legs,
+almost identically.** This is squeeze, not simultaneous growth: the
+system is not "running out of RAM" in a generic sense (`avail` still
+has 45-53G free throughout) so much as the kernel choosing to evict
+clean, file-backed MDBX pages to make room as each node's own resident
+Anon footprint (already elevated well above baseline by this point in
+the leg, see (d)) keeps a slow, steady climb. `Dirty` is negligible
+throughout (0-17M) -- this is a read-side (page cache), not a
+write-buffering, effect.
+
+Which MDBX-touching sub-phase grows most, win1->win2 (from 6cq's own
+per-window tables, both legs): leader `assemble`+`finalize` (state-root
+computation, which walks the trie/QMDB structures through the mmap)
+and leader `write` grow together and by the largest absolute amounts,
+matching the file-cache-squeeze mechanism directly -- a page fault on
+what used to be a cheap mmap hit shows up exactly there. The write
+probe (`"msg":"write probe"`, all 7 nodes, every MDBX commit) confirms
+the same direction at its own tail: p90 `heldMs` (time the write
+transaction holds the single-writer slot) 156->228 ms (B1) and
+156->222 ms (B2); p90 `waitMs` (time spent waiting to acquire it)
+0->47 ms (B1) and 1->88 ms (B2); p90 `commitMs` 15->20 ms (B1) and
+15->19 ms (B2) -- all three growing win1->win2, in both legs, at the
+tail where the squeeze bites (medians stay at 0 throughout: most
+per-node writes are tiny housekeeping commits, and it is only the
+per-block state-commit tail that lengthens).
+
+**(d) What resets at node restart but not across legs on disk.** The
+mem log's own restart instants make this unambiguous: at B1's exact
+restart second (11:13:13) `avail` spikes to 122G and system `AnonPages`
+craters to 1,635M (from 71,636M the sample before, taken from the
+PRIOR leg's own tail) as the old processes are torn down; per-node
+`Anon` for the fresh processes starts at ~1,288-1,636MB ten seconds
+later and climbs steadily to ~9,900MB by win1 -- the SAME shape at
+B2's restart (11:26:21: `avail` jumps to 58G, `AnonPages` to 62,503M
+transiently, then per-node `Anon` restarts near 436-3,088MB and climbs
+back to ~9,900-10,700MB by B2's own win1). **B2's win1 is exactly as
+fast as (in fact slightly faster than) B1's win1, even though B2's
+on-disk `chaindata` files are strictly larger than B1's were at the
+same point** (B2 continues from B1's chain height, decay, and flood
+data) -- directly ruling out on-disk size as the driver, and pointing
+at in-process state that is torn down and rebuilt from near-zero at
+every SIGTERM+relaunch. The Go heap (including the QMDB `mapIndex`
+identified in (a)) fits this exactly: a plain `make(map[Hash]uint64)`
+that starts empty on every fresh process and is never reset except by
+restart, growing without bound across a leg's own live-key churn.
+Linux's own page cache (`Cached`) is explicitly NOT in this category
+(6cp already established it survives across legs on a live box, and is
+reclaimable independent of process restart) -- it is the victim being
+squeezed here, not the resetting resource.
+
+**(e) Verdict.** The data support naming a specific, well-evidenced
+mechanism, not just a symptom:
+
+1. `lib/qmdb.mapIndex` (`lib/qmdb/index.go:47-65`) is a plain
+   `map[Hash]uint64` holding one entry per LIVE key across the whole
+   tree -- per its own doc comment, "the largest single allocation in a
+   loaded node: 780 MB of live heap" once loaded, and (unlike an MDBX
+   B+tree page) it lives entirely on the Go heap, is never partially
+   evicted, and a Go map's backing table never shrinks after deletes.
+2. It is the dominant (51-73%) and, in the one leg where growth is
+   visible in the captures, the ONLY meaningfully growing consumer of
+   `inuse_space` in every heap profile this round.
+3. Growth in the map (more live keys touched as the flood's working
+   set of accounts/storage grows over a leg) consumes Anon directly,
+   under a fixed `GOMEMLIMIT=9GiB` per node (this round's own leg
+   banner) that keeps the Go runtime competing for RAM against the
+   kernel's page cache.
+4. The mem log shows the resulting squeeze precisely: File (MDBX mmap
+   pages) roughly halves from win1 to win2 while Anon only inches up,
+   in both legs, identically -- and 6cq's own phase table shows exactly
+   the MDBX-touching phases (`assemble`/`finalize`/`write`) growing the
+   most, consistent with previously-cheap mmap hits turning into page
+   faults.
+5. It resets cleanly at every restart (fresh empty map) independent of
+   on-disk chain size (B2's win1, on a larger on-disk chain, is as fast
+   as B1's), matching (d) exactly.
+
+**Naming the cause on this evidence: the QMDB in-RAM live-key index's
+unbounded, restart-only-reset growth across a leg, competing with the
+page cache under a fixed heap limit.** The one gap in an otherwise
+closed chain: this round did not capture the map's own live entry
+count over time (`qmdb.IndexStats()`, `lib/qmdb/index.go:109-111`,
+already exposes hit/miss/put/delete counters but not `Len()`), so the
+correlation runs through `inuse_space` and the mem log rather than
+through the map's own cardinality. **The one addition the next round's
+harness needs**: a periodic (10s, matching the existing mem-log cadence)
+log line reporting each node's live `mapIndex.Len()` (or the existing
+`IndexStats()` put/delete counters, from which live count is
+recoverable) alongside `r35zzze-mem.log`'s own per-node Anon/File
+sample -- in the harness/diagnostic layer, not a node code change,
+since `Len()` is already an exported method on the `Index` interface.
+That one number turns "the dominant, growing allocator is the live-key
+index, correlated with the memory-pressure pattern" into "the
+memory-pressure pattern IS the live-key index, quantified" or falsifies
+it outright if `Len()` turns out flat while `inuse_space` still grows
+(pointing instead at fragmentation or a second, uncaptured allocator).
+
+**Method.** Window boundaries independently re-derived and cross-
+checked against the round log's own block counts (0, above) before
+trusting the profile timestamps at all -- this is the check that
+caught the mismatch. Heap/CPU tables read via `go tool pprof -top
+-sample_index=inuse_space` and `-top` (CPU, default samples index);
+mem-log parsing via a fixed-format line regex (`nodesAnon+FileMB=`
+repeated 7 times, `Cached:`/`Dirty:`/`AnonPages:`/`Shmem:` system-wide),
+averaged per window over whatever 10s samples fall inside its
+wall-clock range (n=4-8 per window; short windows given win2's own
+~45-65s span at 10s sampling).
+
+**What this does and does not show.** It shows a well-evidenced,
+specific candidate mechanism (the QMDB live-key index) for the
+recurring within-leg slowdown 6cp first flagged, backed by a
+restart/on-disk-size dissociation test that directly rules out the
+simplest alternative (accumulated disk size). It does NOT close the
+loop with a direct live-key-count measurement -- that is the one
+addition named in (e). It does NOT deliver a win1-vs-win2 heap/CPU
+comparison from the requested captures, because those captures do not
+fall inside win1/win2 this round (0) -- next round's harness should
+time captures from the ACTUAL window boundaries (derivable the same
+way this section did, from the full-block sequence) rather than a
+fixed offset from leg start, which this round's decay+funding phase
+(itself variable in length across rounds) made unreliable. It does NOT
+show the mechanism is the ONLY contributor -- `specTreeReload` (6cq's
+prefill table) and ordinary GC pacing under `GOGC=300`/`GOMEMLIMIT=9GiB`
+remain live, uncaptured contributors this round did not separate out.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
