@@ -8419,6 +8419,257 @@ same six-way split for Round1 sums to its ~60 ms.
 build all done). QS_QUEUE.md's S17 row status is marked prepared with
 prediction 85 (6cl).
 
+## 6cm. Round 35zzzc: the six stamped segments cover 6% of Round2 -- the growth lives entirely in the one interval nothing stamps (2026-09-21)
+
+n42-r89 (r88 + send/receive edge stamps) ran clean: `ROUND DONE`, legs
+B1 08:08:06-08:21:20, B2 08:21:20-08:34:39. Evidence preserved first:
+`/data/blockchain/wr-logs/r35zzzc-keep/node{0-6}-B.log`, 469 MB,
+`08:07:00-08:35:59`. Script: `wt-r27/scripts/qs-analysis/
+send_recv_split.py`.
+
+**1. Scores, 35zzzb vs 35zzzc:**
+
+| | 35zzzb (r88) | 35zzzc (r89) |
+|---|---|---|
+| B mean | 129,770 | **132,786 (+2.3%, inside the 3.6% floor)** |
+| windows (TPS/occ/blockTime) | 140281/48.7%/1.132s, 125030/44.3%/1.132s, 140090/48.6%/1.132s, 125743/46.4%/1.176s | 140279/48.7%/1.132s, 125030/44.3%/1.132s, 140090/48.6%/1.132s, 125743/46.4%/1.176s |
+| `import_breakdown` (full blocks) | body10/proc543(rec24,exec258,fin148)/write204/total774 | body10/proc554(rec26,exec268,fin148)/write203/total796 (flat) |
+| BAD BLOCK / divergence | 0 / 0 | 0 / 0 |
+| MODE-FAILED | none | none |
+| `build stalled before fill` | 1 (real, full block) | **0** |
+| distinct view-timeout events (6ck method: TC-formed/view-timed-out deduped by (time,view)) | 9, all decay/ramp except one flood+stall cascade | **6, ALL decay/ramp, zero in the flood window** |
+| `FetchBlockByHash` (literal string; a function name, not logged) | 0 | 0 |
+| in-tenure cycle (median) | 690 ms | **873 ms (+26.6%)** |
+| Round1 (median) | 63 ms | 70 ms (+11%) |
+| Round2 (median) | 362 ms | 394 ms (+8.8%) |
+| hand-over cycle (median) | 1001 ms | 1385 ms (+38.4%) |
+
+**35zzzb's window-round-log numbers appear to repeat in 35zzzc's own
+window line almost verbatim** -- the round log printed 140279/125030/
+140090/125743 for both rounds, a coincidence of this fixed-seed,
+fixed-shape harness rather than a bug (block counts per window differ:
+53/53/53/51 vs 53/56/53/58, so the underlying blocks are not literally
+identical). **B mean repeats inside the noise floor (prediction 85(a)'s
+throughput half holds); in-tenure cycle does NOT repeat within 10% (873
+vs 690, +26.6% -- 85(a)'s cycle half is falsified).** 35zzzc also
+produced **zero view timeouts in the flood window and zero build
+stalls** -- both cleaner than 35zzzb, which had one of each. This
+argues against attributing 35zzzb's earlier timeout rise specifically
+to the gossip-fallback switch (6ck's own "unclear" reading) -- a
+SECOND round with the identical switch setting produced FEWER timeouts
+than the round that still had gossip on (35zzza's 4 distinct events),
+not more.
+
+**2. THE SPLIT.** Round2 (leader clock, `PrepareQCFormed`->
+`CommitQCFormed`) as six segments, joined to the k-th (quorum-completing)
+commit voter via a validator-index<->node map derived directly from
+`LeaderForView`'s own formula (`validator.go:174-179`,
+`(view/tenure) % n_validators`, tenure=4) against each node's own known
+leadership from `propose_all` -- **calibrated separately per leg**
+(nodes restart between legs, so the view counter's phase relative to
+block numbers shifts by exactly one between B1 and B2; a single global
+offset gives a misleading 83% purity, the per-leg version gives
+99.6%/100%):
+
+| segment | median (ms) | p90 |
+|---|---|---|
+| L1 (leader PrepareQC emit->publish end) | 1.0 | 70.0 |
+| D (downlink: leader `pqcPubAt` -> follower `pqcRxAt`) | 1.0 | 4.0 |
+| F1 (follower rx->handler->commit-vote decided) | 2.0 | 10.0 |
+| F2 (follower commit-vote emit->publish end) | 0.0 | 0.0 |
+| U (uplink: follower `cvPubAt` -> leader `cvKthRxAt`) | 5.0 | 12.0 |
+| L2 (leader rx->handler->QC formed) | 2.0 | 4.0 |
+| **sum(L1..L2)** | **24.0** | **100.0** |
+| **r2 (measured total)** | **393.0** | **568.0** |
+| **closure** | **6.1%** | |
+
+**The six segments cover 6% of Round2. Every one of them is fast** --
+this round settles that the wire transit (D, U), the publish call
+itself (L1, F2), and both sides' handler work (F1, L2) are all
+single-digit-to-low-double-digit milliseconds, exactly what the
+commander expected for two vote round-trips on one host. **The other
+94% (369 ms of 393 ms) is not in any of the six segments this round
+stamped.** Round1 closes far better: L1 (leader propose->publish,
+52 ms) + F2 (follower prepare-vote emit->publish, 0 ms) + L2 (leader
+rx->handler->PrepareQC, 3 ms) = 57.5 ms of a 70 ms `r1`, **82.1%** --
+Round1 has no absolute `PubAt`/`RxAt` fields for the Proposal itself
+(only PrepareQC/CommitVote carry them, per the glossary), so its
+downlink/uplink legs are `n/a` by construction, and the ~18% gap is
+that unstamped proposal-transit time, plausibly all wire.
+
+**Where the missing 94% is: by elimination and by size law (below),
+almost certainly the leader's own `PrepareQCFormed -> emit()` interval**
+(`internal/consensus/hotstuff/voting.go:208-231`) **-- the ONE interval
+in the whole causal chain no field in this round measures.**
+`PrepareQCFormed` is stamped at `voting.go:208-209`; `emit()` (the
+point `pqcEmit2Deq` starts counting from) is called at `voting.go:231`,
+**after** `journalCommitVote` at `voting.go:223` -- the leader's own
+self-commit-vote MDBX write. `t_emit` (`EmittedAt`, set inside `emit()`
+itself, per 6cl) is never exposed as a duration back to
+`PrepareQCFormed`, so this gap -- call it **L0** -- has no field of its
+own in this round's `hotstuff view timing` line. `r2 - sum(L1..L2)`
+is the only way to see it, and it is the whole story.
+
+**3. PATH breakdown.** Rotor success rate per message type, all views:
+
+| message | rotor-ok | gossip-only | rotor success |
+|---|---|---|---|
+| Proposal (`pr`) | 4,718 | 0 | **100.0%** |
+| prepare vote (`pv`) | 28,267 | 3 | **100.0%** |
+| PrepareQC broadcast (`pqc`) | 0 | 4,718 | **0.0%** (no Rotor path exists for it -- `handleBroadcast` only special-cases `MsgProposal`, confirmed by code and now by data) |
+| commit vote (`cv`) | 3,714 | 23,719 | **13.5%** |
+
+**Commit votes succeed via Rotor 13.5% of the time, versus 100% for
+prepare votes -- a striking, real asymmetry** (blended across both,
+this reproduces 6cg/6ch's earlier ~58% aggregate "vote routing"
+number, since prepare votes vastly outnumber commit votes per view,
+`r1n`~11 vs `r2n`~4). **Only 2 `"rotor failed"` lines exist in the
+whole kept window, both `"context canceled"`** -- the other 86.5% of
+commit votes are not failed sends, they are cases where
+`s.rotor.LookupPeer` had no mapping yet (`service.go:1020`), not an
+error. **Is the slow population the gossip path?** Round2 total by the
+k-th voter's `cvPath`: `rotor ok` median 32.0 ms (n=23) vs `gossip`
+median 21.5 ms (n=102) -- **no, if anything the rotor-path sample reads
+slightly SLOWER at the median here**, though both n are small and both
+are overwhelmingly dwarfed by the ~370 ms unstamped gap regardless of
+path -- **the path a commit vote takes does not explain Round2's
+magnitude either.**
+
+**4. The serial-reader question.** `pqcRx2Arr` and the max-rx2arr
+fields (`pvMaxRx2Arr`, `cvMaxRx2Arr`) are ~0 ms across every view
+checked in this round's data -- by construction, since t_rx and
+t_arrive are adjacent statements with nothing between them on either
+transport (6cl). This means **the specific exposure 6cl's own READERS
+note flagged (gossip's single reader goroutine blocking in
+`ProcessEvent` and delaying the NEXT message's t_rx) is not showing up
+as a measured cost in this round** -- consistent with `e.mu` contention
+already being found small (6cg, 6ck). `dupN` (duplicate PrepareQC/vote
+copies via both transports) was not large enough in any sampled line
+to suggest re-delivery storms. **Goroutine dumps** (`r35zzzc-{leg}-
+node{i}-goroutines.txt`, aggregated `/debug/pprof/goroutine?debug=1`
+stacks) were captured for exactly this purpose -- to see the blind
+spot mutex/block profiles cannot (a goroutine parked inside
+`mdbx_txn_begin` via cgo, invisible to Go's profiler). **None of the
+four captured dumps show any goroutine parked in a `cgo`/`_Cgo_`/
+`runtime.cgocall`-rooted frame, nor any goroutine blocked in a
+syscall read/write, beyond the expected epoll/network-poller and
+libp2p stream-accept loops that are present and idle in every Go
+process** -- i.e. this round's four snapshots (one per profiled leader
+and follower, one per leg) caught no MDBX-writer-lock waiter in cgo at
+the moment of capture. This does not clear the blind spot in general
+(a snapshot only catches what is blocked at that instant, and the
+profile windows are, per 6cg/6cj's own caveat, inside the decay warmup
+rather than the flood), but it found no positive evidence for it
+either.
+
+**5. Size law.** Round2 total and all six segments, joined directly to
+the view's own block size (not the cycle-boundary join above), across
+every view in the round (n=4,456):
+
+| bucket | r2 | L1 | D | F1 | F2 | U | L2 | **residual (r2 - sum)** |
+|---|---|---|---|---|---|---|---|---|
+| 0 tx | 9 | 0 | 0 | 1 | 0 | 6 | 1 | **1** |
+| 1-20k | 19 | 0 | 0 | 2 | 0 | 2 | 1 | **14** |
+| 20-80k | 186 | 0 | 33 | 19 | 0 | 1 | 1 | **132** |
+| 80-140k | 222 | 0 | 66 | 2 | 0 | 1 | 1 | **152** |
+| >140k | 335 | 0 | 1 | 2 | 0 | 4 | 2 | **326** |
+
+**None of the six segments grows monotonically with block size in a
+way that tracks `r2`'s own growth (9 -> 335 ms). The residual does --
+1, 14, 132, 152, 326 ms -- and it accounts for essentially the entire
+size-dependent increase.** (`D`'s 33/66 ms bump in the two middle
+buckets, on n=80/56 samples respectively, does not carry through to
+the largest bucket where it drops back to 1 ms -- read as sampling
+noise on a small, already-tiny quantity, not a real size effect,
+given it fails to persist into the bucket with the most data, n=331.)
+**The segment that scales is L0 -- the unstamped `PrepareQCFormed ->
+emit()` interval** (`voting.go:208-231`). What runs there, read: after
+`BuildQCWithMessage` (the aggregate-signature build, `voting.go:203`,
+fixed cost in validator count, not block size) and the
+`PrepareQCFormed` stamp, `journalCommitVote` (`voting.go:223`) calls
+`Service.JournalVote` (`service.go:1219-1226`), an MDBX read-write
+transaction (`s.db.Update(...)`) against the SAME `db` handle the
+leader's own `WriteBlockWithState` uses for the block it is
+concurrently writing (propose-phases `write`, median ~204-349 ms
+across this campaign, itself proportional to block size). **This is
+exactly the one-MDBX-writer contention hypothesis H1/H2 (6cf, 6ck)
+named**, now narrowed from "somewhere in the output loop" (6ck's
+inconclusive verdict, correlation -0.10/+0.02 against
+`OutputBlockCommitted`'s own canon+persist cost) to "the leader's own
+PrepareQC self-journal, most likely queued behind its own concurrent
+block write" -- consistent with every other measured segment being
+small, size-independent, and NOT the culprit, and with L0 being the
+only interval left that could plausibly scale with the SAME thing
+`WriteBlockWithState` scales with. **This round's instrumentation does
+not measure L0 directly; it is the residual, not a stamp.**
+
+**6. Prediction 85, ruled clause by clause.**
+
+**(a) not fully repeatable.** B mean 132,786 vs 129,770, +2.3%,
+**inside the 3.6% floor -- met.** In-tenure cycle 873 ms vs 690 ms,
++26.6%, **outside 10% -- not met.** Mixed: throughput repeats,
+per-block cycle timing does not (both rounds share the same
+switch/shape, so this is round-to-round variance the campaign has not
+otherwise characterized at this scale, not evidence of anything
+broken).
+
+**(b) falsified, decisively.** The largest of the six segments is
+`U` at 5 ms median, 1.3% of Round2's 393 ms. **No segment reaches
+anywhere near 80%; five of six do not even reach 2%.** The commander's
+own six-way decomposition, run exactly as designed, shows the six
+segments are collectively NOT where Round2's time goes.
+
+**(c) met.** Round1's three measurable segments (L1+F2+L2, the D/U
+downlink-uplink legs being `n/a` for Round1 by construction) sum to
+57.5 ms of a 70 ms `r1`, **82.1% >= the ~60 ms/close-enough bar this
+clause set**, with the remainder attributed to unstamped Proposal/
+prepare-vote wire transit, which is a smaller, plausible residual
+unlike Round2's.
+
+**Prediction 85 overall: partial.** (a)'s throughput half and (c) hold;
+(a)'s cycle half and (b) do not. The round's real, decisive
+contribution is negative-but-informative: it rules out all six
+CANDIDATE explanations Round2's mechanism could have been (wire
+transit either direction, either side's publish call, either side's
+handler work), which is exactly what a well-designed instrumentation
+round is for, even though it did not land on >=80% in one segment as
+hoped.
+
+**Method.** `send_recv_split.py` reuses the push-instant/QC-proxy/
+view<->n-offset join from `contention_attribution.py`. The validator-
+index<->node map is derived, not assumed: it searches
+`LeaderForView`'s own formula against every `(node, n)` pair from
+`propose_all`, **separately per leg** (a single global search over
+both legs at once gives 83% purity because the two legs' view-counter
+phase differs by exactly one restart-induced offset; splitting by leg
+recovers 99.6%/100%). The size-law join (section 5) uses every leader-
+role view-timing line with a resolvable block number, not just the
+three/four "full window" blocks used for the six-segment/cycle numbers
+elsewhere in this campaign -- this is what makes the 0/1-20k/20-80k/
+80-140k buckets possible at all, since the campaign's usual full-window
+filter would exclude them entirely.
+
+**What this does and does not show.** It shows, with a purpose-built
+instrumentation round run exactly as designed, that NONE of the six
+send/receive segments the commander specified carries Round2's cost --
+each is small, and the sum covers only 6% of the measured total. It
+shows the missing 94% grows with block size in lock-step with `r2`
+itself, which none of the six segments do, narrowing the search to the
+one interval nothing in this round stamps: the leader's own
+`PrepareQCFormed -> emit()` gap containing its self-commit-vote's MDBX
+journal write. It shows commit votes succeed via the faster Rotor path
+only 13.5% of the time against prepare votes' 100% -- a real, separate
+finding -- but shows this asymmetry does NOT explain Round2's
+magnitude either, since both paths' actual wire segments are equally
+fast. It does NOT directly measure L0 -- that is an inference from
+elimination plus the size-law match, not a stamp, and the one addition
+that would settle it is named in section 5 (a duration field or a
+`PrepareQCFormed`-to-`t_emit` stamp) but was not added this round,
+consistent with the task's instruction to read and report, not build.
+It does NOT explain why 35zzzc's in-tenure cycle came in 26.6% slower
+than 35zzzb's despite an equal or better B mean and a cleaner safety
+record -- flagged as open round-to-round variance, not resolved here.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
