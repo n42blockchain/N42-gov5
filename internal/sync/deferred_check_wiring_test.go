@@ -44,10 +44,11 @@ func (c *deferredTestChain) callCount() int {
 }
 
 type recordingNotifier struct {
-	mu       sync.Mutex
-	checked  [][2]types.Hash
-	imported int
-	rejected int
+	mu          sync.Mutex
+	checked     [][2]types.Hash
+	imported    int
+	rejected    int
+	headerKnown [][2]types.Hash
 }
 
 func (n *recordingNotifier) NotifyBlockImported(types.Hash, types.Hash) {
@@ -65,6 +66,12 @@ func (n *recordingNotifier) NotifyBlockChecked(hash, parent types.Hash) {
 func (n *recordingNotifier) NotifyBlockRejected(types.Hash) {
 	n.mu.Lock()
 	n.rejected++
+	n.mu.Unlock()
+}
+
+func (n *recordingNotifier) NotifyBlockHeaderKnown(hash, parent types.Hash, _ uint64) {
+	n.mu.Lock()
+	n.headerKnown = append(n.headerKnown, [2]types.Hash{hash, parent})
 	n.mu.Unlock()
 }
 

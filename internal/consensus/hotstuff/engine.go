@@ -147,6 +147,10 @@ type ConsensusEngine struct {
 	// once its parent is imported. Bounded like importedBlocks.
 	checkedBlocks    map[types.Hash]bool
 	checkedFIFO      []types.Hash
+	// headerKnownFIFO (S31): bounded eviction for importedParents entries
+	// populated ONLY by EventBlockHeaderKnown (the block has neither been
+	// checked nor imported yet) -- see onBlockHeaderKnown.
+	headerKnownFIFO  []types.Hash
 	pendingTxRoots   map[types.Hash]types.Hash // blockHash → expected TxRootHash (DA verification)
 	pendingProposals map[ViewNumber]types.Hash // view → proposed blockHash awaiting local import before the prepare vote (import-gated voting)
 	// pendingJustifyBlocks records, per view, the proposal's JustifyQC.BlockHash
@@ -687,6 +691,8 @@ func (e *ConsensusEngine) ProcessEvent(event ConsensusEvent) error {
 	case EventBlockRejected:
 		e.onBlockRejected(event.Hash)
 		return nil
+	case EventBlockHeaderKnown:
+		return e.onBlockHeaderKnown(event.Hash, event.ParentHash, event.Number)
 	default:
 		return nil
 	}
@@ -723,7 +729,8 @@ type ConsensusEvent struct {
 	Msg        ConsensusMsg
 	Hash       types.Hash
 	TxRootHash types.Hash // DA commitment: transaction root hash (Baby Raptr)
-	ParentHash types.Hash // EventBlockImported / EventBlockChecked: the block's parent (extends-check; zero = unknown, check skipped)
+	ParentHash types.Hash // EventBlockImported / EventBlockChecked / EventBlockHeaderKnown: the block's parent (extends-check; zero = unknown, check skipped)
+	Number     uint64     // EventBlockHeaderKnown: the block's own height, for logging only (extendsJustify never reads it)
 	// ReceivedAt is S14's diagnostic arrival stamp for an EventMessage: the
 	// first line of the network handler (processGossipMessage), before
 	// decode. Zero unless N42_CONTENTION_DIAG=1; every downstream contention
@@ -766,6 +773,19 @@ const (
 	// EventBlockRejected: the block failed validation on import; any
 	// deferred-execution check evidence for it is withdrawn.
 	EventBlockRejected ConsensusEventType = 5
+	// EventBlockHeaderKnown (S31, docs/QS_BLOCK_TIME_BUDGET.md 6dg/6dh):
+	// the block-push receive path has decoded (peeked, when the reader
+	// allows it) this block's HEADER -- its parent hash is now known, well
+	// before the (possibly 160k-transaction) body finishes decoding and
+	// before CheckDeferredBlock's own per-transaction walk runs. This is
+	// enough for extendsJustify (which only ever reads the parent hash) to
+	// evaluate, so a two-phase Round 1 prepare vote can fire on it directly
+	// -- Round 2's own execution guarantee (deferredAttested / the full
+	// import gate) is completely unchanged and still waits for the real
+	// check. Two-phase only: for import-gated (non-two-phase) voting the
+	// event still records the parent (harmless, already-covered
+	// bookkeeping) but never by itself unlocks a vote.
+	EventBlockHeaderKnown ConsensusEventType = 6
 )
 
 // Internal helpers

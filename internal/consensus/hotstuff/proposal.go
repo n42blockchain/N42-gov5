@@ -279,12 +279,51 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal, mt msgTiming) erro
 		}
 		return e.sendVote(view, proposal.BlockHash)
 	}
+	if voted, err := e.tryHeaderVote(view); voted || err != nil {
+		return err
+	}
 	if voted, err := e.tryDeferredVote(view); voted || err != nil {
 		return err
 	}
 	log.Info("import-gated vote: deferring until block imported",
 		"view", view, "blockHash", proposal.BlockHash)
 	return nil
+}
+
+// tryHeaderVote casts the Round 1 prepare vote once this view's pending
+// proposal's HEADER is known (S31, docs/QS_BLOCK_TIME_BUDGET.md 6dg/6dh):
+// extendsJustify only ever reads the block's parent hash, which is a header
+// field, so it can be evaluated well before CheckDeferredBlock's own
+// per-transaction structural check completes (that check still gates Round
+// 2 unchanged, via deferredAttested/checkedBlocks). Two-phase mode only --
+// import-gated (non-two-phase) voting keeps its own documented guarantee
+// ("vote only once the block is imported locally") and never takes this
+// path. Returns whether it voted.
+func (e *ConsensusEngine) tryHeaderVote(view ViewNumber) (bool, error) {
+	if !e.twoPhaseVote {
+		return false, nil
+	}
+	pending, ok := e.pendingProposals[view]
+	if !ok || e.roundState.HasVotedInView(view) {
+		return false, nil
+	}
+	// The header-known map entry must be a REAL, positively-known parent --
+	// extendsJustify's own "fail open when parent unknown" branch must not
+	// be mistaken for a pass here, or a proposal whose header has not
+	// arrived yet would vote blind on the exact fail-open path extendsJustify
+	// uses for a genuinely untracked block.
+	if parent, known := e.importedParents[pending]; !known || parent == (types.Hash{}) {
+		return false, nil
+	}
+	if !e.extendsJustify(view, pending) {
+		return false, nil // extends-rule violation logged; do not vote
+	}
+	if err := e.journalPrepareVote(view, pending); err != nil {
+		return false, err // abstain: the commitment is not durable
+	}
+	log.Info("header vote: block header known and extends its JustifyQC block, voting",
+		"view", view, "blockHash", pending, "tMs", time.Now().UnixMilli())
+	return true, e.sendVote(view, pending)
 }
 
 // tryDeferredVote casts the prepare vote for view's pending proposal under
@@ -377,6 +416,35 @@ func (e *ConsensusEngine) onBlockChecked(blockHash types.Hash, parentHash types.
 	}
 	_, err := e.tryDeferredVote(e.roundState.CurrentView())
 	e.castHeldCommitVoteIfAttested(blockHash, "checked")
+	return err
+}
+
+// onBlockHeaderKnown records a block's parent as soon as its HEADER is known
+// (S31, docs/QS_BLOCK_TIME_BUDGET.md 6dg/6dh) -- well before
+// CheckDeferredBlock's own per-transaction check completes, and possibly
+// before the body's transactions have even finished decoding. This does NOT
+// set checkedBlocks: Round 2's execution guarantee (deferredAttested) is
+// completely unaffected and still requires the real check. Bounded by its
+// own FIFO, since a block may arrive here without ever being checked or
+// imported (a stale/abandoned header) and must not pin importedParents
+// forever; an entry already tracked by checkedBlocks/importedBlocks is left
+// alone by this FIFO's own eviction, matching checkedFIFO's existing guard.
+func (e *ConsensusEngine) onBlockHeaderKnown(blockHash, parentHash types.Hash, _ uint64) error {
+	if parentHash == (types.Hash{}) {
+		return nil // nothing to record; extendsJustify already fails open for this case
+	}
+	if _, known := e.importedParents[blockHash]; !known {
+		if len(e.headerKnownFIFO) >= MaxImportedBlocks {
+			oldest := e.headerKnownFIFO[0]
+			e.headerKnownFIFO = e.headerKnownFIFO[1:]
+			if !e.checkedBlocks[oldest] && !e.importedBlocks[oldest] {
+				delete(e.importedParents, oldest)
+			}
+		}
+		e.headerKnownFIFO = append(e.headerKnownFIFO, blockHash)
+	}
+	e.importedParents[blockHash] = parentHash
+	_, err := e.tryHeaderVote(e.roundState.CurrentView())
 	return err
 }
 
