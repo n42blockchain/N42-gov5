@@ -147,6 +147,40 @@ type task struct {
 	// on another goroutine — atomic. Reads 0 if Seal's delivery goroutine beats
 	// the store, which is harmless for a diagnostic counter.
 	blsNanos atomic.Int64
+
+	// S22 (docs/QS_BLOCK_TIME_BUDGET.md 6cs/6ct) seal-path stamps, extending
+	// the pattern above further back: commitWork/the speculative park-hit
+	// pair set these BEFORE the task ever reaches taskCh; taskLoop and
+	// resultLoop only read them. All zero (and the "miner: seal path" line
+	// that reads them is not emitted) unless N42_CONTENTION_DIAG=1
+	// (contentionDiagEnabled, seal_path_diag.go) -- diagnostic only, no
+	// behaviour change.
+	//
+	// triggerAt is the CONFIRMING trigger's own newWorkReq.enqueuedAt --
+	// i.e. "build trigger received" (OutputViewChanged -> TriggerBlockProduction),
+	// threaded through commitWorkGuarded/commitWork as a new parameter. For a
+	// speculative-hit task this is the trigger that CONFIRMED it, not the
+	// earlier speculative request that built it.
+	triggerAt time.Time
+	// buildBeginAt is commitWork's own entry (its local `start`) for
+	// whichever commitWork call actually produced this task's block -- the
+	// original speculative call for a hit, this same call for a fresh build.
+	buildBeginAt time.Time
+	// specParkedAt/specHitAt are set only for a task that went through the
+	// speculative park-then-hit path (worker.go's takeSpecTask); both stay
+	// zero for a fresh (non-speculative) build.
+	specParkedAt time.Time
+	specHitAt    time.Time
+	// paceEnterAt/paceDur cover whichever paceBlock call actually applies to
+	// this task (the hit path pays it when handing the parked block over;
+	// the fresh path pays it inline before the fill).
+	paceEnterAt time.Time
+	paceDur     time.Duration
+	// taskChSentAt is stamped immediately before this task is handed to
+	// taskCh (both the hit path and the fresh path); taskQWaitMs
+	// (sealStart - taskChSentAt) is derived from it and sealStart in the
+	// final log line, not stored separately.
+	taskChSentAt time.Time
 }
 
 type newWorkReq struct {
@@ -495,7 +529,7 @@ func (w *worker) commitWorkGuarded(req *newWorkReq) (err error) {
 			err = fmt.Errorf("panic in miner build: %v", r)
 		}
 	}()
-	return w.commitWork(req.interrupt, req.noempty, req.timestamp, req.parentHash, req.speculative)
+	return w.commitWork(req.interrupt, req.noempty, req.timestamp, req.parentHash, req.speculative, req.enqueuedAt)
 }
 
 func (w *worker) resultLoop() error {
@@ -519,6 +553,19 @@ func (w *worker) resultLoop() error {
 // process (round 35r: node3 lost its miner at 12:08 and missed 18 views of one
 // leg, each a 6 s view timeout).
 func (w *worker) handleSealed(blk block.IBlock) {
+	// S22 (docs/QS_BLOCK_TIME_BUDGET.md 6cs/6ct): this is resultLoop's own
+	// entry for this sealed result -- as early in this function as possible,
+	// right after the two constant-time guards above, so it is a close proxy
+	// for "resultLoop received this from resultCh". Used below (once the
+	// pending task is found) to derive resQWaitMs: the gap between Seal()
+	// itself finishing (task.sealStart + task.blsNanos) and this stamp is the
+	// time this exact sealed block spent waiting for resultLoop to be free --
+	// i.e. queued behind whatever handleSealed(v) is still doing (its own
+	// WriteBlockWithState, most likely) on this SAME single goroutine.
+	var tHandleSealedEnter time.Time
+	if contentionDiagEnabled {
+		tHandleSealedEnter = time.Now()
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			id := "nil"
@@ -657,9 +704,18 @@ func (w *worker) handleSealed(blk block.IBlock) {
 	// to the live computer, so its stale block reached CommitBlock, read
 	// through the build's rolled-back transaction and panicked the worker
 	// (round 35r, node3).
+	var tCheckEnter time.Time
+	var dCheck time.Duration
 	c, hasCheck := w.chain.(sealParentChecker)
 	if hasCheck {
-		if cerr := c.CheckSealParentApplied(blk); cerr != nil {
+		if contentionDiagEnabled {
+			tCheckEnter = time.Now()
+		}
+		cerr := c.CheckSealParentApplied(blk)
+		if contentionDiagEnabled {
+			dCheck = time.Since(tCheckEnter)
+		}
+		if cerr != nil {
 			log.Info("miner: sealed block is stale before its write; dropping",
 				"number", blockNumber.Uint64(), "hash", hash.Hex()[:12], "err", cerr)
 			return
@@ -695,15 +751,27 @@ func (w *worker) handleSealed(blk block.IBlock) {
 	// write that fails after this point leaves a block the leader
 	// itself must re-fetch, which the followers decide on regardless.
 	proposedEarly := false
+	var tProposeEarly time.Time
+	var dProposeEarly time.Duration
 	if pushedEarly && ProposeBeforeWrite() {
 		if bsn, ok := w.engine.(blockSealNotifier); ok {
+			if contentionDiagEnabled {
+				tProposeEarly = time.Now()
+			}
 			bsn.NotifyBlockSealed(blk.Hash(), blk.TxHash())
+			if contentionDiagEnabled {
+				dProposeEarly = time.Since(tProposeEarly)
+			}
 			proposedEarly = true
 		}
 	}
 
 	// The receipts copy (163k allocations) is needed by the write, not by
 	// the push or the Proposal: done after both leave.
+	var tCopyStart time.Time
+	if contentionDiagEnabled {
+		tCopyStart = time.Now()
+	}
 	receipts := make([]*block.Receipt, len(task.receipts))
 	var logs []*block.Log
 	for i, taskReceipt := range task.receipts {
@@ -722,6 +790,10 @@ func (w *worker) handleSealed(blk block.IBlock) {
 		}
 		receipts[i] = receipt
 		logs = append(logs, receipt.Logs...)
+	}
+	var dCopy time.Duration
+	if contentionDiagEnabled {
+		dCopy = time.Since(tCopyStart)
 	}
 
 	if task.exec != nil {
@@ -784,6 +856,49 @@ func (w *worker) handleSealed(blk block.IBlock) {
 	w.mu.Unlock()
 	blocksMinedCounter.Inc()
 	blockMiningTimer.UpdateDuration(task.createdAt)
+
+	// S22 (docs/QS_BLOCK_TIME_BUDGET.md 6cs/6ct): ONE line covering every
+	// named step from this view's build trigger to the push, plus the two
+	// queue waits U1 asked for directly. sealStart/blsNanos double as
+	// "engine.Seal enter"/"BLS sign start-end" (Seal's own call is bracketed
+	// by exactly these two existing timers, taskLoop's tSeal a few lines
+	// above sealStart); resQWaitMs is the gap between Seal() itself finishing
+	// (sealStart+blsNanos) and resultLoop actually receiving this result
+	// (tHandleSealedEnter) -- queued behind whatever handleSealed(v) was
+	// still doing (its own write, most likely) on this single goroutine.
+	// taskQWaitMs is the same idea for taskCh (taskChSentAt -> sealStart).
+	if contentionDiagEnabled {
+		blsEnd := sealStart.Add(time.Duration(task.blsNanos.Load()))
+		log.Info("miner: seal path",
+			"number", blockNumber.Uint64(),
+			"triggerTMs", tMs(task.triggerAt),
+			"buildBeginTMs", tMs(task.buildBeginAt),
+			"specParkedTMs", tMs(task.specParkedAt),
+			"specHitTMs", tMs(task.specHitAt),
+			"paceEnterTMs", tMs(task.paceEnterAt),
+			"paceDurMs", task.paceDur.Milliseconds(),
+			"taskSentTMs", tMs(task.taskChSentAt),
+			"taskQWaitMs", waitMs(task.taskChSentAt, sealStart),
+			"taskPickedTMs", tMs(sealStart),
+			"sealEnterTMs", tMs(sealStart),
+			"checkEnterTMs", tMs(tCheckEnter),
+			"checkExitTMs", tMs(tCheckEnter.Add(dCheck)),
+			"blsStartTMs", tMs(sealStart),
+			"blsEndTMs", tMs(blsEnd),
+			"resultRecvTMs", tMs(tHandleSealedEnter),
+			"resQWaitMs", waitMs(blsEnd, tHandleSealedEnter),
+			"copyStartTMs", tMs(tCopyStart),
+			"copyEndTMs", tMs(tCopyStart.Add(dCopy)),
+			"pushStartTMs", tMs(tPush),
+			"pushEndTMs", tMs(tPush.Add(dPush)),
+			"proposeStartTMs", tMs(tProposeEarly),
+			"proposeEndTMs", tMs(tProposeEarly.Add(dProposeEarly)),
+			"lwWaitMs", lwWait.Milliseconds(),
+			"lwWhy", lwWhy,
+			"writeStartTMs", tMs(tWrite),
+			"writeEndTMs", tMs(tWrite.Add(dWrite)),
+		)
+	}
 
 	body := blk.Body()
 	var verifierCount, rewardCount int
@@ -1125,7 +1240,7 @@ func (w *worker) takeSpecTask(parent types.Hash) *task {
 	return nil
 }
 
-func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int64, parentHash types.Hash, speculative bool) error {
+func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int64, parentHash types.Hash, speculative bool, triggerAt time.Time) error {
 	log.Info("miner: commitWork begin", "speculative", speculative) // diagnostic: pairs with "build triggered"
 	start := time.Now()
 
@@ -1173,10 +1288,21 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 				if n := st.block.Number64(); n != nil {
 					num = n.Uint64()
 				}
+				if contentionDiagEnabled {
+					st.paceEnterAt = time.Now()
+				}
 				if err := w.paceBlock(num); err != nil {
 					return err
 				}
+				if contentionDiagEnabled {
+					st.paceDur = time.Since(st.paceEnterAt)
+					st.specHitAt = time.Now()
+					st.triggerAt = triggerAt
+				}
 				log.Info("miner: speculative build hit", "number", num, "parent", parentHash.Hex()[:12], "tMs", time.Now().UnixMilli())
+				if contentionDiagEnabled {
+					st.taskChSentAt = time.Now()
+				}
 				select {
 				case w.taskCh <- st:
 				case <-w.ctx.Done():
@@ -1362,9 +1488,17 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// Block-production pacing (skipped for speculative builds, which run early
 	// on purpose; the grid wait is paid when the parked block is HANDED OVER,
 	// see the speculative-hit path in this function's caller flow).
+	var tPaceEnter time.Time
+	var dPace time.Duration
 	if !speculative {
+		if contentionDiagEnabled {
+			tPaceEnter = time.Now()
+		}
 		if err := w.paceBlock(current.header.Number.Uint64()); err != nil {
 			return err
+		}
+		if contentionDiagEnabled {
+			dPace = time.Since(tPaceEnter)
 		}
 	}
 
@@ -1544,7 +1678,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// an earlier subtraction in docs/QS_BLOCK_TIME_BUDGET.md had them on the
 	// wrong side.
 	tCommit := time.Now()
-	err = w.commit(current, stateWriter, ibs, start, headers, tracingReader, readLogRecorder, speculative, parentHash)
+	err = w.commit(current, stateWriter, ibs, start, headers, tracingReader, readLogRecorder, speculative, parentHash, triggerAt, tPaceEnter, dPace)
 	log.Info("miner: commit phases", "speculative", speculative, "commitNs", time.Since(tCommit).Nanoseconds())
 	if err != nil {
 		log.Errorf("w.commit failed, error %v\n", err)
@@ -2183,7 +2317,7 @@ func (w *worker) makeEnv(parent *block.Header, header *block.Header, coinbase ty
 	return env
 }
 
-func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs *state.IntraBlockState, start time.Time, needHeaders []*block.Header, tracingReader *witness.TracingReader, readLogRecorder *streamverify.ReadLogRecorder, speculative bool, specParent types.Hash) error {
+func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs *state.IntraBlockState, start time.Time, needHeaders []*block.Header, tracingReader *witness.TracingReader, readLogRecorder *streamverify.ReadLogRecorder, speculative bool, specParent types.Hash, triggerAt time.Time, tPaceEnter time.Time, dPace time.Duration) error {
 	if !w.isRunning() {
 		return nil
 	}
@@ -2376,10 +2510,15 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 	}
 
 	if speculative {
+		var tParked time.Time
+		if contentionDiagEnabled {
+			tParked = time.Now()
+		}
 		w.specMu.Lock()
 		w.specTask = &task{
 			receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay, post: post, exec: exec,
 			finalize: dFinalize, witness: dWitness, assemble: time.Since(tCommitStart),
+			buildBeginAt: start, specParkedAt: tParked, triggerAt: triggerAt,
 		}
 		w.specParent = specParent
 		w.specMu.Unlock()
@@ -2391,10 +2530,15 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 		return nil
 	}
 
+	var tTaskSent time.Time
+	if contentionDiagEnabled {
+		tTaskSent = time.Now()
+	}
 	select {
 	case w.taskCh <- &task{
 		receipts: envCopy.receipts, block: iblock, createdAt: time.Now(), state: ibs, nopay: unpay, post: post, exec: exec,
 		finalize: dFinalize, witness: dWitness, assemble: time.Since(tCommitStart),
+		buildBeginAt: start, triggerAt: triggerAt, paceEnterAt: tPaceEnter, paceDur: dPace, taskChSentAt: tTaskSent,
 	}:
 		blockNumber := uint64(0)
 		if number := iblock.Number64(); number != nil {
