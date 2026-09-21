@@ -1701,6 +1701,21 @@ func (s *Service) NotifyBlockChecked(hash types.Hash, parent types.Hash) {
 	}
 }
 
+// NotifyBlockHeaderKnown implements sync.BlockImportNotifier (S31,
+// docs/QS_BLOCK_TIME_BUDGET.md 6dg/6dh): the block-push receive path has
+// decoded this block's header, well before CheckDeferredBlock's own
+// per-transaction check (or even the rest of the body) has been processed.
+// extendsJustify only ever reads the parent hash, so a two-phase Round 1
+// prepare vote may fire on this alone; Round 2's own execution guarantee is
+// untouched.
+func (s *Service) NotifyBlockHeaderKnown(hash types.Hash, parent types.Hash, number uint64) {
+	if ce := s.engine.Engine(); ce != nil {
+		if err := ce.ProcessEvent(ConsensusEvent{Type: EventBlockHeaderKnown, Hash: hash, ParentHash: parent, Number: number}); err != nil {
+			log.Debug("hotstuff: EventBlockHeaderKnown processing failed", "hash", hash, "err", err)
+		}
+	}
+}
+
 // NotifyBlockImported implements sync.BlockImportNotifier.
 // Called by the sync layer after a gossip block is successfully imported.
 // Matches against pending execution requests and notifies the engine.

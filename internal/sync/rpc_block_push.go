@@ -25,7 +25,19 @@ import (
 func (s *Service) blockPushStreamHandler(stream network.Stream) {
 	defer func() { _ = stream.Close() }()
 
-	blk, err := ReadChunkedBlock(stream, s.cfg.p2p, true)
+	// S31 (docs/QS_BLOCK_TIME_BUDGET.md 6dg/6dh): peek the header the instant
+	// its own bytes are decoded, well before the (possibly 160k-transaction)
+	// body below and before deferredCheck's own per-transaction walk. The
+	// engine's HotStuff-2 extends-rule only ever needs the parent hash, a
+	// header field -- this lets a two-phase Round 1 prepare vote fire on it
+	// directly instead of waiting for the full deferred check. A peek
+	// failure or a nil notifier is silently ignored; the ordinary decode and
+	// deferredCheck below are completely unaffected either way.
+	blk, err := ReadChunkedBlockPeekHeader(stream, s.cfg.p2p, func(h *block.Header) {
+		if n := s.cfg.blockImportNotifier; n != nil && h.Number != nil {
+			n.NotifyBlockHeaderKnown(h.Hash(), h.ParentHash, h.Number.Uint64())
+		}
+	})
 	if err != nil {
 		log.Info("block push: read failed", "peer", stream.Conn().RemotePeer().String()[:12], "err", err)
 		return

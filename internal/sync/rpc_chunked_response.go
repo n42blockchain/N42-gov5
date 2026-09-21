@@ -155,13 +155,28 @@ func decodeChunkedBlock(data []byte) (*types.Block, error) {
 // converts it into a block. The first chunk has different deadline handling.
 func ReadChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider, isFirstChunk bool) (*types.Block, error) {
 	if isFirstChunk {
-		return readFirstChunkedBlock(stream, p2p)
+		return readFirstChunkedBlock(stream, p2p, nil)
 	}
 	return readResponseChunk(stream, p2p)
 }
 
-// readFirstChunkedBlock reads the first chunked block with appropriate deadlines.
-func readFirstChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (*types.Block, error) {
+// ReadChunkedBlockPeekHeader behaves exactly like ReadChunkedBlock(stream,
+// p2p, true) (the single-chunk case block-push always uses) but additionally
+// peeks the block's HEADER -- via peekBlockHeader, which decodes only the
+// header, leaving the transaction list untouched -- as soon as the raw bytes
+// are fully read, BEFORE the full RLP decode below (which, for a full block,
+// means decoding every one of its transactions). onHeader is called at most
+// once; a peek failure is silently ignored and does not affect the ordinary
+// decode/error handling that follows (S31, docs/QS_BLOCK_TIME_BUDGET.md
+// 6dg/6dh).
+func ReadChunkedBlockPeekHeader(stream libp2pcore.Stream, p2p p2p.EncodingProvider, onHeader func(*types.Header)) (*types.Block, error) {
+	return readFirstChunkedBlock(stream, p2p, onHeader)
+}
+
+// readFirstChunkedBlock reads the first chunked block with appropriate
+// deadlines. onHeader, when non-nil, is invoked with the peeked header
+// before the full decode (see ReadChunkedBlockPeekHeader).
+func readFirstChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider, onHeader func(*types.Header)) (*types.Block, error) {
 	code, errMsg, err := ReadStatusCode(stream, p2p.Encoding())
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to read status code from first chunk")
@@ -179,6 +194,11 @@ func readFirstChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider) (
 	raw := &rawSSZBytes{}
 	if err = encoder.DecodeWithMaxLengthLimit(stream, raw, encoder.MaxBlockChunkSize); err != nil {
 		return nil, errors.Wrapf(err, "failed to decode block from first chunk (forkDigest=%x)", ctx)
+	}
+	if onHeader != nil {
+		if h, perr := peekBlockHeader(raw.data); perr == nil {
+			onHeader(h)
+		}
 	}
 	blk, err := decodeChunkedBlock(raw.data)
 	if err != nil {

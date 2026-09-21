@@ -60,6 +60,13 @@ type BlockImportNotifier interface {
 	// NotifyBlockRejected: the block failed validation on import; withdraw
 	// any pre-import vote evidence for it.
 	NotifyBlockRejected(hash types.Hash)
+	// NotifyBlockHeaderKnown (S31): the block-push receive path has decoded
+	// (or peeked) this block's header -- its parent hash is known, well
+	// before the (possibly 160k-transaction) body finishes decoding or
+	// CheckDeferredBlock runs. Lets a two-phase Round 1 prepare vote
+	// evaluate the extends-rule immediately; Round 2's own execution
+	// guarantee (NotifyBlockChecked/NotifyBlockImported) is unaffected.
+	NotifyBlockHeaderKnown(hash types.Hash, parent types.Hash, number uint64)
 }
 
 // DeferredBlockChecker is implemented by the chain under deferred
