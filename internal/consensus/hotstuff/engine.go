@@ -209,6 +209,24 @@ type ConsensusEngine struct {
 	// to the network. Nil disables journalling (unit tests, embedded harnesses)
 	// and restores the pre-journal behaviour.
 	voteJournal VoteJournal
+
+	// S19 (docs/QS_BLOCK_TIME_BUDGET.md 6co, write_latch.go): selfProposalHash
+	// is the block THIS node most recently proposed as leader, tracked so
+	// advanceToView can release a still-waiting write latch
+	// (N42_LEADER_WRITE_AFTER_JOURNAL) if the view is abandoned (a timeout)
+	// before journalCommitVote ever ran for it. Guarded by e.mu, like every
+	// other field above. Zero hash = nothing pending. Only ever set when
+	// leaderWriteAfterJournalEnabled.
+	selfProposalHash types.Hash
+
+	// writeLatchMu/writeLatches hand a per-block-hash signal from the engine
+	// to the leader's own write path (internal/miner), fired once
+	// journalCommitVote succeeds in tryFormPrepareQC or once advanceToView
+	// abandons the view first. A separate leaf lock from e.mu -- like
+	// timingMu/sendMu above -- because the miner's write path waits on the
+	// returned latch OUTSIDE e.mu. See write_latch.go.
+	writeLatchMu sync.Mutex
+	writeLatches map[types.Hash]*writeLatch
 }
 
 // VoteJournal persists the engine's safety state. Implementations MUST make the
@@ -926,6 +944,24 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	if newView <= e.roundState.CurrentView() {
 		return nil
 	}
+
+	// S19 (6co): the view this node (possibly as leader) is about to leave is
+	// ending, one way or another. If it proposed a block that never reached
+	// journalCommitVote (a timeout: PrepareQC never formed, so tryFormPrepareQC
+	// never got there), release any write latch waiting on it now rather than
+	// making the write path sit out its full configured timeout. On the
+	// ordinary success path this block's latch was already fired ("journal")
+	// before advanceToView is ever reached here (voting.go's tryFormCommitQC
+	// calls advanceToView AFTER emitting OutputBlockCommitted, which itself
+	// only runs once CommitQC formed, which requires PrepareQC to have formed
+	// first) -- so this is a harmless, idempotent no-op fire in that case
+	// (writeLatch.Fire: first writer wins). No-op entirely when the switch is
+	// off: selfProposalHash is only ever set when it is on.
+	if leaderWriteAfterJournalEnabled && e.selfProposalHash != (types.Hash{}) {
+		e.fireWriteLatch(e.selfProposalHash, "abandoned")
+		e.selfProposalHash = types.Hash{}
+	}
+
 	epochBoundary := e.epochManager.EpochsEnabled() && e.epochManager.IsEpochBoundary(newView)
 
 	// Save current PrepareQC for piggybacking.

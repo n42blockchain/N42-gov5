@@ -82,6 +82,15 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 		return err
 	}
 
+	// S19 (6co): this node is proposing blockHash as leader for view -- record
+	// it so advanceToView can release a write latch waiting on
+	// journalCommitVote for THIS hash if the view is abandoned (a timeout)
+	// before that ever runs. No-op when the switch is off, matching every
+	// other leaderWriteAfterJournalEnabled call site.
+	if leaderWriteAfterJournalEnabled {
+		e.selfProposalHash = blockHash
+	}
+
 	justifyQC := e.roundState.LockedQC().Clone()
 	message := e.proposalSigningMessage(view, blockHash)
 	signature := e.secretKey.Sign(message)
