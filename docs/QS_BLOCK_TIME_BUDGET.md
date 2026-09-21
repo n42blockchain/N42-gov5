@@ -11676,6 +11676,19 @@ Launch is the commander's next call.
 
 ## 6da. S25: the flood's live heap is 5.4-7.5 GB, GOGC=200 would want 3x that, and 6 GiB leaves no room -- txpool/sender-cache/txlookup and QMDB's own index are the two families that would have to shrink (2026-09-21)
 
+> **CORRECTION (commander, 2026-09-21 18:30 EDT) -- the "10.36 GB per block / 65-68 KB per transfer" figure in
+> this section is WRONG and every number derived from it by division must not be used.** The harness fetched
+> `/debug/pprof/allocs` WITHOUT `?seconds=`, which returns allocation CUMULATIVE SINCE PROCESS START (the whole
+> leg: start-up, funding, 400 s of empty decay blocks, ramp, flood), and the analysis divided that total by the
+> 16 blocks of the 20 s capture span. The runtime's own counter settles it: MemStats TotalAlloc on node0 rose
+> 46-50 GB per 30 s in B1's first window = ~1.6 GB/s = **~1.9 GB per full block, ~12 KB per transfer per node**
+> (second window ~2.3 GB per block). What stays valid: SHARES within the profile (as shares of the leg's
+> cumulative allocation, mixing phases), the live-heap figures (inuse_space), NumGC, and the GC share of CPU
+> (CPU profiles were 20 s deltas). With ~12 KB per transfer in total, the isolated benchmark's 6.25 KB per
+> transfer for the executor is about HALF of a node's allocation, consistent with the partition's ~49%
+> execution share -- the '4.4x gap' between benchmark and fleet was this artefact, not a property of the
+> backend. From round 35zzzj on the capture uses `allocs?seconds=20`.
+
 n42-r92 (harness-only change: in-window pprof capture, GOMEMLIMIT A/B by
 leg, GOGC=200 everywhere) ran B1 (10GiB, 16:15:28-16:28:40) and B2
 (6GiB, 16:28:40-16:41:54) cleanly. Node logs preserved whole, trimmed to
@@ -11956,6 +11969,19 @@ It does NOT change Job 4's own honest caveat: one clean incident in ten
 rounds is evidence of severity, not of frequency.
 
 ## 6db. S27-spec: line-level work list for the flood's 10.36 GB/block allocation rate -- the per-transaction signer rebuild and IntraBlockState.Reset's six fresh maps are the two highest-value, lowest-risk cuts (2026-09-21)
+
+> **CORRECTION (commander, 2026-09-21 18:30 EDT) -- the "10.36 GB per block / 65-68 KB per transfer" figure in
+> this section is WRONG and every number derived from it by division must not be used.** The harness fetched
+> `/debug/pprof/allocs` WITHOUT `?seconds=`, which returns allocation CUMULATIVE SINCE PROCESS START (the whole
+> leg: start-up, funding, 400 s of empty decay blocks, ramp, flood), and the analysis divided that total by the
+> 16 blocks of the 20 s capture span. The runtime's own counter settles it: MemStats TotalAlloc on node0 rose
+> 46-50 GB per 30 s in B1's first window = ~1.6 GB/s = **~1.9 GB per full block, ~12 KB per transfer per node**
+> (second window ~2.3 GB per block). What stays valid: SHARES within the profile (as shares of the leg's
+> cumulative allocation, mixing phases), the live-heap figures (inuse_space), NumGC, and the GC share of CPU
+> (CPU profiles were 20 s deltas). With ~12 KB per transfer in total, the isolated benchmark's 6.25 KB per
+> transfer for the executor is about HALF of a node's allocation, consistent with the partition's ~49%
+> execution share -- the '4.4x gap' between benchmark and fleet was this artefact, not a property of the
+> backend. From round 35zzzj on the capture uses `allocs?seconds=20`.
 
 Profiles + code reading only, single-threaded (35zzzi running on the
 box). Inputs: `/data/blockchain/wr-pprof/r35zzzh-win1-win1-node{1,2}-
@@ -12261,6 +12287,19 @@ project-code fix available) or `decodeUint256`'s wider, riskier fix in
 the top list, consistent with the task's own risk-weighting.
 
 ## 6dc. S27 CLOSED: all four allocation-reduction items dropped -- item 1 measures ~0%, items 2-4 re-propose a change already reverted for a 27.59% CPU regression; the isolated executor is ~9% of the fleet's 10.36 GB/block; nothing shipped (2026-09-21)
+
+> **CORRECTION (commander, 2026-09-21 18:30 EDT) -- the "10.36 GB per block / 65-68 KB per transfer" figure in
+> this section is WRONG and every number derived from it by division must not be used.** The harness fetched
+> `/debug/pprof/allocs` WITHOUT `?seconds=`, which returns allocation CUMULATIVE SINCE PROCESS START (the whole
+> leg: start-up, funding, 400 s of empty decay blocks, ramp, flood), and the analysis divided that total by the
+> 16 blocks of the 20 s capture span. The runtime's own counter settles it: MemStats TotalAlloc on node0 rose
+> 46-50 GB per 30 s in B1's first window = ~1.6 GB/s = **~1.9 GB per full block, ~12 KB per transfer per node**
+> (second window ~2.3 GB per block). What stays valid: SHARES within the profile (as shares of the leg's
+> cumulative allocation, mixing phases), the live-heap figures (inuse_space), NumGC, and the GC share of CPU
+> (CPU profiles were 20 s deltas). With ~12 KB per transfer in total, the isolated benchmark's 6.25 KB per
+> transfer for the executor is about HALF of a node's allocation, consistent with the partition's ~49%
+> execution share -- the '4.4x gap' between benchmark and fleet was this artefact, not a property of the
+> backend. From round 35zzzj on the capture uses `allocs?seconds=20`.
 
 **Commander's ruling:** accepted as CLOSED. No perf code ships from this
 step. `n42-r95` is NOT built; the qs-replay comparison this step's own
@@ -12631,6 +12670,19 @@ commander's next call.
 
 ## 6de. S29: 43% of the flood's allocation runs on the parallel-executor's own worker-pool goroutines and cannot be split leader-vs-follower by stack trace at all; of what CAN be split, block-import (F) is 3-4x ingest/gossip/pool combined (2026-09-21)
 
+> **CORRECTION (commander, 2026-09-21 18:30 EDT) -- the "10.36 GB per block / 65-68 KB per transfer" figure in
+> this section is WRONG and every number derived from it by division must not be used.** The harness fetched
+> `/debug/pprof/allocs` WITHOUT `?seconds=`, which returns allocation CUMULATIVE SINCE PROCESS START (the whole
+> leg: start-up, funding, 400 s of empty decay blocks, ramp, flood), and the analysis divided that total by the
+> 16 blocks of the 20 s capture span. The runtime's own counter settles it: MemStats TotalAlloc on node0 rose
+> 46-50 GB per 30 s in B1's first window = ~1.6 GB/s = **~1.9 GB per full block, ~12 KB per transfer per node**
+> (second window ~2.3 GB per block). What stays valid: SHARES within the profile (as shares of the leg's
+> cumulative allocation, mixing phases), the live-heap figures (inuse_space), NumGC, and the GC share of CPU
+> (CPU profiles were 20 s deltas). With ~12 KB per transfer in total, the isolated benchmark's 6.25 KB per
+> transfer for the executor is about HALF of a node's allocation, consistent with the partition's ~49%
+> execution share -- the '4.4x gap' between benchmark and fleet was this artefact, not a property of the
+> backend. From round 35zzzj on the capture uses `allocs?seconds=20`.
+
 Profiles + code reading only, single-threaded/`nice` (35zzzi still on
 the box). Inputs: `wr-pprof/r35zzzh-win1-win1-node{1,2}-allocs.pb.gz`
 (B1/10GiB leg, win1; node1 = round log's own "leader=node1", node2 =
@@ -12866,6 +12918,19 @@ its instruction to report findings honestly rather than force a
 resolution.
 
 ## 6df. S30: H-bench wins -- the benchmark's memdb backend and its explicit skip of Finalize/block-end explain the 4.4x gap; H-multi's literal form (re-executing a committed block) is not found, but a real, already-counted second per-tx pass (CheckDeferredBlock's own sender recovery) is confirmed on the follower side (2026-09-21)
+
+> **CORRECTION (commander, 2026-09-21 18:30 EDT) -- the "10.36 GB per block / 65-68 KB per transfer" figure in
+> this section is WRONG and every number derived from it by division must not be used.** The harness fetched
+> `/debug/pprof/allocs` WITHOUT `?seconds=`, which returns allocation CUMULATIVE SINCE PROCESS START (the whole
+> leg: start-up, funding, 400 s of empty decay blocks, ramp, flood), and the analysis divided that total by the
+> 16 blocks of the 20 s capture span. The runtime's own counter settles it: MemStats TotalAlloc on node0 rose
+> 46-50 GB per 30 s in B1's first window = ~1.6 GB/s = **~1.9 GB per full block, ~12 KB per transfer per node**
+> (second window ~2.3 GB per block). What stays valid: SHARES within the profile (as shares of the leg's
+> cumulative allocation, mixing phases), the live-heap figures (inuse_space), NumGC, and the GC share of CPU
+> (CPU profiles were 20 s deltas). With ~12 KB per transfer in total, the isolated benchmark's 6.25 KB per
+> transfer for the executor is about HALF of a node's allocation, consistent with the partition's ~49%
+> execution share -- the '4.4x gap' between benchmark and fleet was this artefact, not a property of the
+> backend. From round 35zzzj on the capture uses `allocs?seconds=20`.
 
 Logs + profiles + code, single-threaded/`nice` (35zzzi still on the
 box). Same inputs as 6de (`wr-logs/r35zzzh-keep/node{1,2}-B.log`,
