@@ -285,7 +285,7 @@ Still open, separately: why that build fell back at all. 9064 aborts on
 23000 transactions is the wave limit doing real work, and a fallback on the
 leader's critical path also costs the block its parallelism.
 
-## A quorum-committed block that no node stored -- fix prepared (2026-09-21, round 35zzzg, S23b/S26)
+## A quorum-committed block that no node stored -- fix CONFIRMED in a fleet round (2026-09-21, round 35zzzg -> 35zzzi, S23b/S26)
 
 **STATUS (S26, 2026-09-21): fix prepared, not yet launched.** Root cause per
 PART 1 of S26's own investigation (docs/QS_BLOCK_TIME_BUDGET.md 6cz):
@@ -435,3 +435,35 @@ defect is rare in general -- it is one incident in ten rounds' worth of
 logs, at a leg-teardown timing this campaign has otherwise only produced
 once -- but it is the full extent of what today's evidence shows: no
 other kept round shows a second committed hash at any height.
+
+**Confirmation round (S26, 2026-09-21, round 35zzzi, n42-r94 = n42-r92 +
+`e49ce1512ff3cf17d5200d96b16fe191b4b8b09d`).** Full two-leg fleet round,
+`GOMEMLIMIT=10GiB` throughout, docs/QS_BLOCK_TIME_BUDGET.md 6dg:
+`height_conflict_check.py` re-run independently of the harness's own new
+check finds **0 conflicting heights across 3,355 committed heights** --
+matching the harness's own result. The fix's one new log line
+(`"commit vote REFUSED: proposal does not extend its JustifyQC block"`,
+`processPrepareQC`'s Round 2 guard) fired **0 times on any of the 7
+nodes** -- the stale-sibling race did not recur this round. The fix's
+OWN new leader-side guard (`"miner: suppressing divergent same-height
+sibling"`, moved to run before push/propose per the fix) fired **exactly
+once** (node6) -- the one genuine same-height-sibling collision this
+round produced, caught before either candidate was ever proposed,
+demonstrating the fix's own mechanism working as designed, not merely
+absent because the race never recurred. The much larger, unrelated
+`"sealed block is stale"`/`ErrStaleSeal` count (365-378 per node,
+identical on every node) is the ordinary, pre-existing background rate
+of a speculative build outracing real chain progress -- confirmed
+harmless by the same 0-refusal count (none of these stale-seal events
+was preceded by a proposal that had also collected votes). **The fix's
+cost is real, not free**: Round1 rose from this lineage's own ~60-72 ms
+baseline (n42-r92, round 35zzzf) to 153-262 ms, close to the ~180 ms the
+fix's own design predicted (Round1 now waits on `CheckDeferredBlock`);
+`CommitQC(v)` becomes the LATER event than the leader's own speculative
+build (the vote round back on the critical path) in 78-83% of the
+round's own second-window views, versus only 33% in the first window --
+a real, measured throughput cost, concentrated in the leg's already-slow
+second window, that should be tracked rather than assumed zero in future
+comparisons against pre-S26 rounds. **Status: fix confirmed safe and
+adopted; n42-r94 is the base binary from here forward regardless of the
+measured cost, which is a tracked, not blocking, item.**
