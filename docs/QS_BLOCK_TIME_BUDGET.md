@@ -7084,6 +7084,325 @@ against the `hotstuff view timing` line's new fields (which name a PHASE
 and a MAGNITUDE) and the profile (which names a LOCK/CALL SITE and a
 MAGNITUDE) for the same ~20 s window on the same node.
 
+## 6cg. Round 35zzza: the vote round-trip is dominated by waiting for a message to arrive, not by any of the three suspected locks -- prediction 83 confirmed via its own fallback clause, not its primary bar (2026-09-21)
+
+n42-r87 (r86 + `N42_CONTENTION_DIAG=1`) ran clean: `ROUND DONE`, legs
+B1 03:13:55-03:27:39, B2 03:27:39-03:41:01. Evidence preserved first,
+same recipe as 6ca/6ce: `/data/blockchain/wr-logs/r35zzza-keep/
+node{0-6}-B.log`, 648 MB, `03:13:00-03:41:59` (each node rotated once
+mid-window, 03:25-03:38; `.gz` + live `n42.log` concatenated per node,
+verified against the `.gz`'s own earliest timestamp). Script:
+`wt-r27/scripts/qs-analysis/contention_attribution.py`.
+
+**1. Round score.** B mean **125,125** (win TPS 133005/112907/131902/
+122686) -- **-0.93% vs 35zzz's 126.3k, -1.98% vs 35zzt's 127.6k, both
+inside the 3.6% noise floor.** B1win2 (31.7% occupancy, 0.896 s
+blockTime) is NOT full this round (unlike 35zzz, where it was B1win2
+that qualified) -- this round's three full windows are B1win1, B2win1,
+B2win2 (49.0/48.6/47.0% occupancy). `import_breakdown.py`-equivalent,
+full blocks (n=1842): `body` 10 ms (p90 24), `proc` recover 25 (p90 59)
+/ exec 266 (p90 383) / finalize 151 (p90 193), `write` 207 ms (p90 273),
+`total` 795 ms (p90 947) -- same shape as 6ca's r86 numbers, no
+regression. **BAD BLOCK 0, state-root/tree divergence 0, no
+`wr-logs/r35zzza-MODE-FAILED` file.** Two `"diverg*"`-matching lines are
+the ordinary, handled `"miner: suppressing divergent same-height
+sibling"` path (`internal/blockchain.go`, already documented in 6cb),
+not a correctness fault. **One real `"miner: build stalled before
+fill"`** (node6, block 13658850, **a full block, 163,000 txs**,
+`elapsedMs:3000`, step `specTreeReload`, 03:22:28) -- the first live
+firing of S11's watchdog since 6bz's unit tests, and it self-healed:
+the same two blocks (13658850/13658851) also carry the two flood-window
+view timeouts (of 4 TC events total, 28 node-observations) and the two
+sibling-suppressions above, all within a 16-second window
+(03:22:28-03:22:44) inside B1's actual flood, not its decay warmup --
+unlike 35zzz's TCs, which all landed in the quiet pre-flood period. The
+other two TCs (03:14:59 in B1, 03:28:47 in B2) do match 35zzz's
+leg-start-decay-artifact pattern. No BAD BLOCK, no divergence and a
+clean `ROUND DONE` came out the other side of this incident -- it is
+recorded as a genuine, contained disruption, not folded into "zero
+stalls this round" the way 6ca could for 35zzz.
+
+**2. Cycle anatomy, same method as 6cb/6cd (`push_instant` from `miner:
+propose phases`, QC proxy from the leader's own `isLeader` view-changed
+event, view<->n offset calibrated per leg -- confirmed self-consistent
+again: 23/24 B1 rows and 58/58 B2 rows agree on one offset each).**
+
+| | this round (35zzza) | 35zzz (6cb/6cc) | delta |
+|---|---|---|---|
+| in-tenure cycle (median) | 806.2 ms | 799.1 ms | +0.9% |
+| hand-over cycle (median) | 1252.0 ms | 1201.1 ms | +4.2% |
+| in-tenure fraction | 82/146 = 56.2% | 79/147 = 53.7% | ~flat |
+
+**Essentially unchanged from 35zzz within run-to-run noise** -- the
+contention diagnostics did not measurably shift the cycle, consistent
+with prediction 83(a)'s "diagnostics are free" already being satisfied
+by the B-mean result above.
+
+**3. The attribution the round was run for.** Leader-side fields,
+matched to the exact view whose CommitQC gates the measured cycle (same
+join key as the QC proxy above; 81/82 in-tenure rows matched):
+
+| field | median (ms) | p90 | meaning |
+|---|---|---|---|
+| `r1` (Round1 total) | 124.0 | 206.0 | ProposalSent -> PrepareQCFormed |
+| `r1kth` | 110.0 | 204.0 | round-start -> k-th (quorum) prepare vote ARRIVES |
+| `r1qk` | 2.0 | 5.0 | k-th vote's own lock+work+aggregate -> PrepareQC formed |
+| `r1lw` (sum over r1n=10 votes) | 598.0 | 989.0 | see note below -- NOT on the k-th vote's own path |
+| `r1lwMax` | 292.0 | 420.0 | largest single vote's lock-wait this round |
+| `r1wk` (sum) | 8.0 | 11.0 | total handler CPU across all r1n votes |
+| `r2` (Round2 total) | 353.0 | 525.0 | PrepareQCFormed -> CommitQCFormed |
+| `r2kth` | 349.0 | 515.0 | PrepareQC-formed -> k-th commit vote ARRIVES |
+| `r2qk` | 4.0 | 9.0 | k-th vote's own lock+work+aggregate -> CommitQC formed |
+| `r2lw` (sum, r2n=4) | 5.0 | 19.0 | small this round, unlike r1lw |
+| `r2wk` (sum) | 1.0 | 3.0 | |
+
+**Additive check:** Round2 closes almost exactly on `r2kth + r2qk`:
+349 + 4 = 353 vs measured `r2` = 353 -- **100.0%.** Round1 closes on
+`r1kth + r1qk` = 110 + 2 = 112 vs measured `r1` = 124 -- **90.3%**, the
+other 12 ms falling inside the k-th vote's own decode/dispatch, not
+separately named. **`r1lw` must NOT be added to this sum**: it is the
+SUM of `(t_locked - t_arrive)` over all `r1n`=10 votes this round
+(`roundContention.record`, `view_timing.go:168-190`), and those ten
+intervals overlap in wall-clock time (ten votes queue up behind ONE
+serial engine goroutine, so the round's own 124 ms window can contain
+far more than 124 ms of SUMMED individual queueing) -- adding it
+produces 710 ms, 573% of the round, which is exactly the mechanical
+double-counting 6ca already flagged for the S11 `lockWait` field
+(`internal/blockchain_types.go:236-237`) applied to a new field with
+the same shape. **The correct reading: `r1kth`/`r2kth` (waiting for the
+deciding vote's MESSAGE to physically arrive) is 90-100% of each
+round's own total; the k-th vote's own lock-wait+work+aggregate-verify
+(`r1qk`/`r2qk`) is 2-4 ms, essentially free.**
+
+Follower-side fields, all 6 non-leader nodes, matched the same way
+(448 rows):
+
+| field | median (ms) | meaning |
+|---|---|---|
+| `propLw` | 0.0 | lock-wait before the Proposal handler ran |
+| `propWk` | 2.0 | Proposal handler's own work (BLS verify, journal, sendVote) |
+| `pqcLw` | 0.0 | lock-wait before the PrepareQC handler ran |
+| `pqcWk` | 2.0 | PrepareQC handler's own work |
+| `pqc2cv` | 2.0 | PrepareQC-arrival -> this node's commit vote sent |
+| `cvHeld` share | 8/448 = 1.8% | far lower than 35zzz's 13.5% -- this round's import chain kept up |
+| `cvGate` (of held) | 100% `checked` | the deferred-includability path, none `own-import`/`parent-import` |
+
+**A follower's own processing, on both messages, is 0-2 ms -- essentially
+instant.** The follower is never the one doing slow work; the round's own
+`r1kth`/`r2kth` numbers are large because the MESSAGE the follower is
+waiting to send (or that the leader is waiting to receive back) takes
+that long to physically arrive over the network/gossip layer, not
+because either side's own handling is slow.
+
+**Percentage of Round1+Round2 (477 ms this round, vs 6ce's 499 ms
+median for 35zzz -- close, not identical, expected run-to-run variance)
+attributed to NAMED causes, under the prediction's own literal
+wording ("a lock or queue, with its holder identified, or named
+work")**: only `r1qk`+`r2qk` (+ their sub-fields `lw`/`wk` for the
+k-th vote specifically, already included) qualify as that -- **6 ms of
+477 ms, 1.3%.** "Waiting for the k-th vote's message to arrive"
+(`r1kth`+`r2kth` = 459 ms, 96.2%) is real, measured, and now precisely
+located, but it is neither a lock with an identified holder nor CPU
+work with a named function -- it is network/gossip transit time, which
+is exactly the third category prediction 83(c) was written to catch if
+(b)'s stricter bar failed.
+
+**4. Profiles -- a critical timing caveat first.** The runner's own
+per-leg capture point (`leg start + 150 s`) landed **inside the 400 s
+baseFee-decay warmup on all four captures**, confirmed directly from
+the round log (`"decaying baseFee for 400s of empty blocks before the
+flood..."` precedes each `"S14 profile capture"` line, and `"all 8
+flood(s) submitting"` follows it by several more minutes) and from the
+kept logs (every one of the 84 blocks produced in each 20 s profile
+window carries `"txs":0`). **All four profiles measure empty-block
+consensus overhead, not full-block Round1/Round2 cost.** This is not
+disqualifying -- the vote-path stamps above (section 3) ARE correctly
+scoped to full in-tenure blocks via the leg-window join, and remain the
+primary evidence -- but the profile numbers below characterize a
+lighter workload than the one whose 124/353 ms this section is trying
+to explain, and are reported as directional corroboration, not a
+full-block measurement.
+
+Mutex profile (`-sample_index=delay`), total delay per 20 s window:
+node0 (B1 leader) 568 ms, node1 (B1 follower) 792 ms, node3 (B2 leader)
+653 ms, node4 (B2 follower) 683 ms -- **2.8-4.0% of wall time**, all of
+it attributed (by unlock-site stack, i.e. holder) to `sync.(*Mutex)
+.Unlock`, with cumulative context split roughly `ConsensusEngine
+.ProcessEvent` (e.mu, 51-64%) vs `BlockChain.InsertChain` (a different
+lock, bc's own, 34-47%) -- the two dominant locks in this codebase,
+neither being the MDBX writer transaction, which showed 0 samples under
+`-focus='JournalVote'` in every block profile (see suspect 1 below).
+84 blocks/20 s window (empty blocks, ~4/s) makes a per-block
+normalization meaningless for this workload; the per-block figures
+that matter are section 3's stamps, not this profile.
+
+Block profile (`-sample_index=delay`), unfiltered top entries are
+**97.8-98% `runtime.selectgo` under `go-libp2p-pubsub.(*validation)
+.validateWorker`** -- an idle worker-pool artifact (goroutines parked
+in `select` waiting for gossip-validation jobs), not contention; this
+inflates the raw total to "1.7-1.9 hours" of nominal delay in a 20 s
+window purely from goroutine-count arithmetic and must be filtered out
+(`-peek`/`-focus` on the relevant call paths) before the profile says
+anything. Filtered to `ConsensusEngine|ProcessEvent|InsertChain`:
+`ProcessEvent`'s own blocked time is 187-309 ms/20 s (e.mu), of which
+`processProposal` is 58-69%, `processVote`/`processPrepareQC`/
+`processCommitVote`/`processDecide` each single digits to ~25 ms --
+small in absolute terms, consistent with section 3's `r1qk`/`r2qk`
+being tiny. `InsertChain`'s own blocked time is 491-562 ms/20 s, split
+between `blockSubscriber` (gossip path) and `blockPushStreamHandler`
+(direct-push path) both contending for the SAME `bc.lock` -- these are
+the fallback gossip copy and the direct push of the SAME (empty, in
+this window) blocks racing each other, a real if modest cost this
+round's diagnostics were not aimed at and prediction 83 did not name as
+a suspect.
+
+CPU profile: total CPU use is tiny -- **1.90-1.99 s over 20 s wall time
+(9.5-9.95% of one core)**, consistent with an empty-block workload
+(no transaction execution). Within that small budget, **BLS signature
+verification is the largest single item**: `crypto/bls/blst.(*Signature)
+.Verify` -> `AggregateVerify` -> `coreAggregateVerifyPkInG1`
+(`internal/consensus/hotstuff/quorum.go`'s `verifyAggregateSignature`,
+called from `interop_v4.go`'s `verifyQCWithSet`) is 470-760 ms/20 s, **25-40% of the
+already-small CPU total**, running under `ConsensusEngine.ProcessEvent`
+(i.e. under e.mu) on every node. This is real, named, CPU-bound work
+(suspect 3), and the profile shows it clearly -- but at this workload's
+scale (roughly 20 empty views/20 s) it is on the order of 25-35 ms of
+CPU per view, an order of magnitude short of the 110-349 ms `kth`
+values section 3 measured on full blocks, and it does not appear on
+the k-th vote's own path there either (`r1qk`/`r2qk` are 2-4 ms). Share
+of CPU under `ProcessEvent` handlers overall: 62.8-71.6%
+(`dispatchMessage`/`processMessage`), of which the BLS verify chain
+above is the largest named component; no separate figure for "the
+leader's own state-root computation" (6cb/6cd's ~271 ms segment) exists
+in these profiles because the profiled 20 s windows contain no
+transaction execution at all to sample.
+
+**5. Verdict per suspect.**
+
+1. **`JournalVote`'s MDBX write under `e.mu` -- falsified as a material
+   contributor.** `-focus='JournalVote'` returns **0 samples in the
+   block profile on all 4 nodes** (no goroutine anywhere was ever
+   recorded waiting behind it), and in the CPU profile it appears on
+   only one of four nodes, at 30 ms/20 s (1.54% of that node's tiny CPU
+   budget) via `MdbxKV.Update -> MdbxTx.Commit`. Section 3's `r1qk`/
+   `r2qk` (2-4 ms, which INCLUDE the k-th vote's own journal write) is
+   the on-target confirmation: even on full blocks, the deciding vote's
+   own journal-write-plus-lock cost is negligible. Caveat: if MDBX's
+   writer-lock acquisition blocks inside a CGO call without yielding
+   through a Go-visible primitive, it would be invisible to both
+   profiles; this round's evidence does not include that failure mode,
+   it can only report that no signal for it was found by any means this
+   round's diagnostics can see.
+2. **`processOutputs`'s inline `CommitToCanonical`/`persistState` --
+   falsified as a material contributor (this workload).** `-focus`
+   shows only the output-loop's own idle-select (not contention) in the
+   block profile, and 10-20 ms/20 s (0.5-1%) in the CPU profile via
+   `Miner.CommitToCanonicalWith -> MdbxKV.Update -> MdbxTx.Commit`.
+   Cheap and rare in the profiled (empty-block) window; not evaluated
+   under full-block commit load by this round's profiles (caveat above
+   applies equally here).
+3. **Unbatched BLS/QC signature verification under `e.mu` -- confirmed
+   as real, named, CPU-bound work, but too small in the profiled
+   window and off the k-th vote's own path on full blocks to explain
+   the gap.** 25-40% of a ~10%-of-one-core CPU budget under empty
+   blocks (470-760 ms/20 s); on full blocks, the deciding vote's own
+   post-arrival cost (`r1qk`/`r2qk`, which would include any BLS verify
+   its own processing triggers) is only 2-4 ms. Confirmed as a real,
+   attributable cost (partial credit -- it is genuinely there and named),
+   but it does not scale up to explain 110-349 ms.
+
+**None of the three suspects explains `r1kth`/`r2kth`.** What the
+combined stamps + profiles show instead: the follower's own handling of
+both the Proposal and the PrepareQC is 0-2 ms in every measurement this
+round took (section 3), and neither of the two real locks in this
+codebase (e.mu, bc.lock) nor BLS verification cost enough, in either the
+full-block stamps or the (empty-block) profiles, to explain the 110 ms
+and 349 ms medians. The dominant, unattributed cost is **time for a
+vote's message to physically arrive at the other side (`t_arrive`,
+stamped at the first line of `processGossipMessage`, before any
+decode/verify/lock)** -- i.e. gossip/network propagation, or scheduling
+delay on the sending side before that node even calls `emit`/broadcasts,
+neither of which any instrument in this round (stamps or profiles) times
+independently of the other.
+
+**6. Prediction 83, ruled clause by clause.** **(a) confirmed**: B mean
+125,125 is -0.93% vs 126.3k, inside the 3.6% floor; the diagnostics
+cost nothing measurable. Note per the task: a 20 s CPU profile did run
+inside each B leg on two nodes each, as designed -- but see section 4's
+timing caveat: it landed in the decay warmup, not the flood, on all
+four captures, which limits what it can independently confirm about
+full-block cost (it does not change the B-mean verdict, which is
+leg-wide). **(b) falsified, on the prediction's own literal bar**: only
+1.3% of Round1+Round2 (6 of 477 ms) is a lock/queue-with-holder or
+named CPU work; the other 96.2% (`kth`) is real and now precisely
+located but is network arrival time, which the prediction's wording
+("a lock or queue, with its holder identified, or named work") does not
+cover. **(c) confirmed, exactly as designed as the fallback**: the
+stamps do split each round cleanly into "waiting for enough votes"
+(`kth`, 90-100% of each round) vs "leader-side QC-formation" (`qk`,
+2-4 ms), and the answer is unambiguous -- **followers/the network are
+the slow half, not the leader's own aggregation or lock handling.**
+**Prediction 83 overall: confirmed**, via the fallback clause it was
+explicitly written to fall back on; its primary (b) bar was not met.
+
+**Method.** `contention_attribution.py` reuses 6cb/6cd/6ce's exact
+join: `push_instant` from `miner: propose phases`, in-tenure/hand-over
+classification by consecutive-block leader identity, QC proxy from the
+leader's own next `isLeader:true` "hotstuff: view changed" event, and a
+per-leg view<->n offset calibrated from that same join (self-consistency
+checked: 23/24 and 58/58 agreement). The new `r1*`/`r2*`/`prop*`/`pqc*`
+fields are parsed with a regex directly off the SAME `"hotstuff view
+timing"` lines used for the QC proxy, so leader and follower attribution
+rows are matched to the identical blocks used everywhere else in this
+campaign -- no separate-population reconciliation needed, unlike 6ce's
+Round1/Round2 cross-check against 6cb's independently-filtered
+aggregate table. Full windows for this round (B1win1, B2win1, B2win2;
+B1win2 excluded, 31.7% occupancy) were identified from `r35zzza.log`'s
+own printed occupancy figures, not assumed to match 35zzz's window
+pattern. Profiles read via `go tool pprof -top/-peek/-focus
+-sample_index=delay <binary> <file>.pb.gz`, `GOCACHE=/data/blockchain/
+gov5-work/.gocache`, binary `/data/blockchain/gov5-work/n42-r87`; the
+decay-window timing caveat (section 4) was found by cross-referencing
+each profile's own block-number set (all `txs:0`) against
+`r35zzza.log`'s decay/flood transition lines, not assumed.
+
+**What this does and does not show.** It shows, with vote-path stamps
+correctly scoped to full in-tenure blocks and independently corroborated
+(where the profiled workload allows) by mutex/block/CPU profiles, that
+none of the three suspects the round was built to test explains
+Round1's 124 ms or Round2's 353 ms -- each is dominated (90-100%) by
+waiting for the deciding vote's own message to arrive, and each side's
+own local processing (follower: 0-2 ms; leader's post-arrival
+aggregation: 2-4 ms) is close to free. It shows this round also produced
+a genuine, self-healed live occurrence of S11's 3 s build-stall
+watchdog (block 13658850, a full 163,000-tx block) coincident with two
+view timeouts and two sibling-suppressions, all inside the actual flood
+window and all resolved without a BAD BLOCK or a divergence. It does
+NOT show what causes the 110-349 ms of message-arrival time itself --
+gossipsub mesh fan-out, the pubsub validation queue ahead of
+`processGossipMessage`, or plain host-level scheduling contention across
+seven node processes are all consistent with the evidence but none is
+separately timed by this round's instrumentation, all of which starts
+its clock at `t_arrive`. It does NOT re-profile a full-block window --
+the runner's `leg start + 150 s` capture point landed in the decay
+warmup on all four captures this round, so the CPU/mutex/block numbers
+in section 4 characterize empty-block consensus overhead, not the
+110-349 ms this section explains from the stamps. It does NOT design or
+test a fix for either the message-arrival gap or the `InsertChain`/
+`bc.lock` contention between the gossip-fallback and direct-push
+delivery paths noticed in passing.
+
+The single change this evidence most directly supports testing next is
+timestamping gossip-message receipt earlier than `processGossipMessage`
+-- e.g. at the pubsub library's own delivery callback, before its
+internal validation queue -- to learn whether `r1kth`/`r2kth`'s 110-349 ms
+is pubsub queueing, mesh transit, or sender-side delay; the upper bound
+this round's own measurements support is the full `r1kth`+`r2kth`
+gap itself, **at most ~459 ms per in-tenure cycle** (Round1's 110 ms
+plus Round2's 349 ms) if that gap could be eliminated entirely -- not an
+estimate of what a fix would actually recover, since nothing here
+identifies which portion is reducible.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
