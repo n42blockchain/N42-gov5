@@ -7403,6 +7403,204 @@ plus Round2's 349 ms) if that gap could be eliminated entirely -- not an
 estimate of what a fix would actually recover, since nothing here
 identifies which portion is reducible.
 
+## 6ch. S15a: hypothesis G (the gossiped block head-of-line-blocks the votes) -- falsified as the dominant mechanism; the size-scaling points at the already-known deferred-check cost instead (2026-09-21)
+
+Commander's follow-up to 6cg: since no lock explains `r1kth`(110 ms)/
+`r2kth`(349 ms), does the unconditional block-gossip fallback
+(`internal/blockchain.go:1758-1764`) share GossipSub's transport with
+consensus messages and head-of-line-block them? Same logs
+(`r35zzza-keep`), a short code trace, and one new script
+(`wt-r27/scripts/qs-analysis/gossip_headline.py`).
+
+**1. Code facts.**
+
+- **Consensus messages**: gossiped on topic `hotstuff_consensus`
+  (`internal/p2p/topics.go:22`, `GossipHotStuffConsensusMessage`) via
+  `Service.subscribeMessages` (`internal/consensus/hotstuff/
+  service.go:1032-1043`, plain `SubscribeToTopic`, **no
+  `RegisterTopicValidator` call anywhere in the hotstuff package** --
+  confirmed by grep, so this topic's messages skip whatever cost a
+  validator would add). Votes/timeouts additionally try a faster
+  **direct stream** first (`handleSendToValidator`, `service.go:958-
+  1005`, the "Rotor" relay, `SendRawBytes` on its own dedicated
+  stream) -- but **gossip is always ALSO sent, unconditionally**
+  (`service.go:1009-1014`: "Gossip is always sent... a safety net...";
+  `s.handleBroadcast(output)` runs regardless of `directDelivered`).
+  This round's own `"hotstuff: vote routing stats"` line: **58.1-59.1%
+  of votes used direct delivery, the remaining ~41% had gossip as
+  their only successful path** (all 7 nodes' last sample, e.g. node0
+  direct=2099/fallback=1501). `t_arrive` (6cf) is stamped once, in
+  `processGossipMessage`, "the single entry point for both the gossip
+  loop and the direct Rotor-relay stream handler" -- so whichever
+  delivery wins the race is what the stamps see.
+- **Blocks**: direct push, one dedicated per-peer stream opened per
+  block (`blockchain.go:1773-1806`, confirmed concurrent per-peer
+  goroutines in 6ce), **plus** an unconditional async gossip fallback
+  on the SEPARATE `block` topic (`blockchain.go:1758-1764`,
+  `go bc.p2p.BroadcastBlock(...)`). The block topic's own validator,
+  `validateBlockPubSub` (`internal/sync/validate_blocks.go:26-90`+),
+  checks `pushInflight`/`HasBlock` on the header alone first (cheap,
+  `ValidationIgnore` in the common case where direct push already
+  landed or is landing) -- but when that short-circuit does not apply,
+  it does a full inline RLP decode of the whole block under
+  `s.validateBlockLock` (`internal/sync/service.go:134`, a
+  `sync.RWMutex` scoped to this ONE validator, not shared with
+  anything else).
+- **The shared element hypothesis G names is real, but it is a
+  library-level queue, not an application lock**: go-libp2p-pubsub
+  (`v0.17.0`) runs exactly ONE outgoing goroutine per peer
+  (`handleSendingMessages`, `comm.go:219-268`) draining ONE FIFO
+  `rpcQueue` (`rpc_queue.go:16-46`, `priorityQueue.Pop()` drains
+  `priority` before `normal`) per peer, **shared across every topic
+  published to that peer** -- block-gossip and consensus-gossip alike.
+  Every actual data publish (block or vote) is enqueued as `Push(rpc,
+  false)` = normal priority (`gossipsub.go:935` and all other
+  `sendRPC(p, out, false)` call sites); the ONLY `UrgentPush` call in
+  the whole library is for `IDONTWANT` control messages
+  (`gossipsub.go:907`), unrelated to either message type here. So a
+  large block-gossip RPC queued ahead of a vote/PrepareQC RPC **to the
+  same peer** would delay it, with no size- or type-based priority to
+  rescue it -- this is a real, code-confirmed mechanism, not
+  speculation.
+- **Validate-side throttling is not the bottleneck**: this node's
+  `WithValidateQueueSize`/`WithPeerOutboundQueueSize` are both set to
+  1024 (`internal/p2p/service.go:46`, `pubsubQueueSize`); go-libp2p-
+  pubsub's own per-validator concurrency throttle defaults to 8192
+  (`validation.go:17`, `defaultValidateThrottle`, never overridden
+  here) -- three to four orders of magnitude above what a 7-node net
+  could exhaust. GossipSub params for this fleet: `D=8, Dlo=6`
+  (`internal/p2p/pubsub.go:21-22`) against only 6 possible peers, so
+  the mesh should be effectively complete (every node directly meshed
+  with every other) -- gossip here is single-hop, not multi-hop
+  fan-out, for this fleet size.
+- **Transactions are also gossiped**, on a separate topic
+  (`GossipTransactionMessage = "transaction_v2"`, `topics.go:18`,
+  actively wired in `broadcaster.go`/`subscriber.go`), sharing the SAME
+  per-peer queue mechanism as blocks and consensus messages. Whether
+  the 99.4% sender-hint-cache-fill rate (6ce) comes from this gossip
+  path or from the flood harness submitting directly to multiple
+  nodes' RPC (`"msg":"Served eth_batchRawTransaction"`, confirmed
+  present and active in the kept logs) is **n/a to separate from these
+  logs** -- both paths exist and are live; no counter distinguishes a
+  transaction admitted via gossip from one admitted via direct RPC.
+
+**2. Timeline correlation: not directly measurable this round -- a
+genuine logging gap, not an omission in this analysis.** The receiving
+side's own block-gossip lines -- `"Subscriber received new block"`
+(`subscriber_blocks.go:30`), `"Block parent not yet available, queuing
+as future"` (`:65`), `"Received block"` / `"Received block with an
+invalid parent"` (`validate_blocks.go:104,125`) -- are **all
+`log.Debug`**, confirmed **zero occurrences in all 7 kept files**
+(the round ran at Info level, per every other section in this
+campaign). There is no timestamp anywhere in these logs marking when a
+GOSSIPED (as opposed to directly-pushed) copy of a block arrives,
+starts validating, or is dropped as a duplicate -- so "does the k-th
+vote arrive within 20 ms of the gossiped block's transit on the same
+node" cannot be computed from this round's evidence. This is reported
+as a hard gap, not approximated.
+
+**Downlink/uplink split of `r2kth`: also n/a to compute exactly.**
+Follower-side `pqcLw`+`pqcWk`+`pqc2cv` (6cg) sum to 2-6 ms median --
+this node's own local cost once it has the PrepareQC in hand is
+negligible, so essentially all of `r2kth` (333 ms on full blocks, see
+below) is message transit split across downlink (leader forms
+PrepareQC -> a follower receives it) and uplink (that follower sends
+its commit vote -> the leader receives it) -- but no line stamps the
+follower's own PrepareQC-arrival on an absolute clock, so the two legs
+cannot be separated with these fields alone.
+
+**3. Size discriminator -- the one measurement this round answers
+cleanly, joining `r1kth`/`r2kth` directly to the size of the block the
+SAME view produces (not the cycle-boundary n-1 join 6cg used):**
+
+| block size | r1kth median (p90) | r2kth median (p90) |
+|---|---|---|
+| empty (0 tx, n=3800) | 55 ms (58) | 8 ms (9) |
+| small (1-999 tx, n=4) | 56 ms (255) | 10 ms (36) |
+| mid (1,000-149,999 tx, n=338) | 65 ms (192) | 114 ms (501) |
+| **full (>=150,000 tx, n=313)** | **129 ms (219)** | **333 ms (533)** |
+
+**Both grow with size, but by very different factors: r1kth grows
+~2.3x (55 -> 129 ms) from empty to full; r2kth grows ~42x (8 -> 333 ms)
+over the same range.** If a single, symmetric mechanism (a large block
+sitting ahead of both message types in one shared per-peer queue) were
+the dominant cause, both rounds should scale similarly, since the same
+queued block would delay whichever message is stuck behind it
+regardless of which round it belongs to. They do not. **`r2kth`'s
+much larger, much more size-sensitive growth is exactly the shape
+6cd's Gap B already established and explained: `CheckDeferredBlock`
+(`internal/deferred_includable.go:38`) does real, per-transaction work
+(sender recovery, nonce/balance/gas checks) before a commit vote can
+release, and 6cd measured its cost directly at ~134 ms for a
+160,000-tx block -- squarely inside this round's 333 ms full-block
+`r2kth` median.** `r1kth`'s smaller, still-real growth (74 ms) is
+harder to explain that way, since the two-phase prepare vote needs no
+block content at all (`processProposal`, `proposal.go:228-233`) -- it
+is CONSISTENT with a smaller network/transport effect (gossip
+queue-sharing, or general host contention while a large block is also
+in flight), but nothing in this round's logs pins that specifically to
+the gossip fallback rather than, say, general CPU/scheduling
+contention on a 7-process host while a 26 MB write is in progress
+(6cg already found the leader's own CPU budget under load is tiny --
+1.9-2.0 s/20 s -- but that CPU profile was captured during the DECAY
+window, not the flood, so it does not directly speak to CPU
+contention specifically during full-block processing).
+
+**No comparable tx-gossip-volume metric exists to test against block
+size directly** -- the flood runs at a roughly constant generator rate
+throughout each full window, so if transaction-gossip volume were the
+driver it should be closer to constant across the "full" bucket's own
+samples, whereas block byte-size (occupancy) does vary; this is
+suggestive but not a controlled comparison, since neither is directly
+measured against the other in these logs.
+
+**4. Verdict on G: falsified as the dominant mechanism.** The larger,
+more consequential delay (`r2kth`, 333 ms, 72% of the combined 462 ms
+this section's full-block bucket carries) has an already-established,
+better-fitting explanation (`CheckDeferredBlock`'s own per-transaction
+cost, 6cd) that predicts exactly the sharp, size-driven scaling
+observed and requires no gossip-transport mechanism at all. The
+smaller delay (`r1kth`, 129 ms) does grow with block size in a way
+`CheckDeferredBlock` cannot explain (prepare votes never touch block
+content), which keeps a transport-level explanation -- gossip
+queue-sharing among them -- alive as a **partial, unfalsified
+candidate** for that specific 74 ms of growth, but the direct evidence
+hypothesis G asked for (votes clustering right after a gossiped
+block's own transit, on the same node pair) could not be tested at all
+in this round's logs, because the lines that would show it are
+Debug-level and were never captured. **Falsified for the combined
+459 ms gap as a whole; inconclusive, not confirmed, for `r1kth`'s
+smaller residual.**
+
+**Method.** `gossip_headline.py` reuses the exact QC-proxy/view<->n
+offset calibration from 6cb-6cg (94/95 and 99/99 agreement this round),
+then joins the leader-side `r1kth`/`r2kth` fields DIRECTLY to the view
+that produces block `n` (not `n`'s predecessor, since the question here
+is "does a bigger block slow its own round," unlike the cycle-boundary
+framing earlier sections used) across every view in the kept logs, not
+just the three full windows -- this is what makes the empty/small/mid
+buckets possible. The Debug-level gap was confirmed, not assumed: the
+script greps for the exact message strings against all 7 kept files
+and reports the count (0) rather than skipping the check.
+
+**What this does and does not show.** It shows, from the code, that
+GossipSub's per-peer transport is a real, shared, unprioritized queue
+that in principle could delay a vote behind a large block -- hypothesis
+G's mechanism is not imaginary. It shows the DOMINANT size-dependent
+delay (`r2kth`) has a better, already-measured explanation elsewhere in
+this campaign, so pursuing gossip-transport changes to fix Round2 would
+very likely fix the wrong thing. It does NOT determine what causes
+`r1kth`'s smaller (74 ms, empty-to-full) but real growth -- gossip
+queue-sharing remains consistent with it, but so does general
+host-level contention, and this round's logs cannot distinguish the two
+(the Debug-level gap in section 2, and the fact that 6cg's CPU profile
+of a light workload cannot speak to a full-block workload's CPU
+picture). It does NOT re-open or dispute suspects 1-3 from 6cg (a
+different question, already answered). It does NOT recommend raising
+the Debug lines to Info -- that is an instrumentation change with its
+own cost/tradeoff this task did not ask for, though it is the obvious
+next step if `r1kth`'s residual is ever worth chasing further.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
