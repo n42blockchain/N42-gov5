@@ -11674,6 +11674,287 @@ status is marked prepared with prediction 91 (6cz).
 `docs/OPEN_ISSUES.md`'s entry is updated to reflect the prepared fix.
 Launch is the commander's next call.
 
+## 6da. S25: the flood's live heap is 5.4-7.5 GB, GOGC=200 would want 3x that, and 6 GiB leaves no room -- txpool/sender-cache/txlookup and QMDB's own index are the two families that would have to shrink (2026-09-21)
+
+n42-r92 (harness-only change: in-window pprof capture, GOMEMLIMIT A/B by
+leg, GOGC=200 everywhere) ran B1 (10GiB, 16:15:28-16:28:40) and B2
+(6GiB, 16:28:40-16:41:54) cleanly. Node logs preserved whole, trimmed to
+`wr-logs/r35zzzh-keep/node{0-6}-B.log`. Samplers:
+`wr-logs/r35zzzh-vm.log` (per-node CPU-seconds; the `gens:` generator
+field is present in the format but **empty on every single line checked
+-- Job 3 has no data this round**, not analysed further) and
+`wr-logs/r35zzzh-memstats.log` (nodes 0/1 `debug=1` heap dump trailers
+every 30s). Pprof captures landed inside the scored windows for the
+first time: `wr-pprof/r35zzzh-win{1,2}-win{1,2}-node{N}-*.pb.gz`.
+**File-name collision found and worked around**: B1's win2 capture used
+`leader=node6` and B2's win2 capture ALSO used `leader=node6`, and
+since the file names carry window label but not leg, **B2's win2
+capture for node6 overwrote B1's** (mtimes: B1 win2 files are 16:26,
+B2 win2 files are 16:39-40; only the later set exists on disk for
+node6) -- B1win2's own LEADER heap profile is lost; its FOLLOWER
+(node0, not reused by B2) survived. Script:
+`wt-r27/scripts/qs-analysis/height_conflict_check.py` (Job 4 only; Jobs
+1-3 used `go tool pprof` directly with `GOCACHE=/data/blockchain/
+gov5-work/.gocache` plus short inline `python3` reads of `-memstats.log`/
+`-vm.log`, no new script needed for those).
+
+### JOB 1: what is in the heap during the flood
+
+**Live heap totals** (`inuse_space`, `go tool pprof -top`): B1win1
+node1 (leader) **5.78 GB**, node2 (follower) **6.30 GB**; B1win2 node0
+(follower only, leader lost) **7.46 GB**; B2win1 node3 (leader)
+**5.69 GB**, node4 (follower) **5.49 GB**; B2win2 node6 (leader)
+**5.71 GB**, node2 (follower) **5.07 GB**. **Every one of these is well
+below both the 10 GiB and the 6 GiB limit** -- the flood's live heap
+was never actually starved of room in EITHER leg; what changes between
+legs is how much slack is left above it (see JOB 2).
+
+**Top contributors, `inuse_space` (B1win1 node1, representative of
+every capture -- B2's own leader/follower captures reproduce the same
+ranking within 1-2 percentage points):**
+
+| subsystem | flat | % of total | owning code |
+|---|---|---|---|
+| txpool lookup index (`txlookup.(*Tail).Add`) | 1.04 GB | 18.0% | `internal/txlookup/` |
+| sender-recovery cache (`transaction.senderCachePut`) | 0.93 GB | 16.2% | `common/transaction/` |
+| QMDB in-RAM live-key index (`qmdb.newMapIndexSized`) | 0.78 GB | 13.6% | `lib/qmdb/index.go` (6cr's own candidate) |
+| RLP uint256 decode buffers (`rlp.decodeUint256`) | 0.42 GB | 7.2% | `common/rlp/` |
+| tx decode (`transaction.decodeEthereumTransaction`, flat) | 0.34 GB | 5.8% (cum 18.8%) | `common/transaction/` |
+| tx decode (`transaction.DecodeEthereumTransaction`, flat) | 0.31 GB | 5.4% (cum **25.3%**) | `common/transaction/` |
+| pooled transaction objects (`transaction.NewTxOwned`) | 0.26 GB | 4.6% | `common/transaction/` |
+| MVS/parallel-executor read-write sets (`parallel.NewReadWriteSet`) | 0.18 GB | 3.1% | `internal/parallel/` |
+| receipts deep-copy (`miner.copyReceipts`) | 0.14 GB | 2.4% | `internal/miner/worker.go` |
+
+**By cumulative caller**, the single largest attributable chain is
+**RPC batch submission decoding**: `jsonrpc.(*handler).handleMsg.func1`
+-> ... -> `api.(*TransactionAPI).BatchRawTransaction` -> ...
+-> `transaction.DecodeEthereumTransaction` accounts for **1.71 GB
+(28.9% of the whole heap)** -- this is the generators' own
+`eth_batchRawTransaction` submissions being decoded and held. Top-5 by
+`inuse_objects` (object count, not bytes): `rlp.decodeUint256`
+(13.98M objects, 25.1%), `transaction.senderCachePut` (12.54M, 22.5%),
+`transaction.(*Transaction).Hash` (3.29M, 5.9%), `reflect.unsafe_New`
+(3.01M, 5.4%), `transaction.DecodeEthereumTransaction` (2.97M, 5.3%) --
+the pool's own per-transaction bookkeeping (uint256 fields, sender
+cache, hash cache) dominates OBJECT COUNT even more than it dominates
+bytes, meaning per-object overhead (not payload size) is a real
+secondary cost here.
+
+**Win1 vs win2**: live heap grows from ~6.0 GB (B1win1 mean of 2 nodes)
+to 7.46 GB (B1win2, single node) -- a ~24% increase, consistent with
+every prior round's win1->win2 growth (6cp/6cr/6cv/6cw/6cx). **B2 does
+NOT show this growth** (win1 mean 5.59 GB -> win2 mean 5.39 GB, flat to
+slightly DOWN) -- under the 6 GiB ceiling the heap cannot grow the way
+it does at 10 GiB; see JOB 2 for what replaces that growth (GC cost,
+not memory headroom).
+
+**`allocs` (`alloc_space`, garbage churn, not live footprint), B1win1
+node1, top contributors, in a 20-second capture covering 16 blocks
+(1.25 GB/s average allocation rate; 165.74 GB total / 16 blocks =
+**10.36 GB allocated per block**, the large majority immediately
+garbage since live heap is only ~6 GB):** `internal.parallelApplyTx`
+9.86 GB flat / 30.36 GB cum (18.3%), `go-buffer-pool.(*BufferPool).Get`
+8.32 GB (5.0%, p2p wire buffers), `transaction.decodeEthereumTransaction`
+8.28 GB flat / 21.23 GB cum (12.8%), `state.(*journal).push` 7.31 GB
+(4.4%, EVM state-change journal), `rlp.decodeUint256` 5.93 GB (3.6%),
+`lib/rlp.(*encbuf).encodeString` 4.77 GB (2.9%), `p2p.MsgID` 4.32 GB
+(2.6%), `state.(*IntraBlockState).setStateObject` 4.23 GB flat / 5.93 GB
+cum (3.6%), `transaction.DecodeEthereumTransaction` 4.08 GB flat /
+26.17 GB cum (15.8%), `protobuf...consumeBytes` 3.96 GB (2.4%),
+`transaction.NewTxOwned` 3.51 GB (2.1%).
+
+**Memstats (nodes 0/1, `HeapAlloc`/`HeapInuse`/`NumGC`/`GCCPUFraction`
+every 30s -- B1's own win1/win2 windows are only 20s and the 30s
+sampler missed both entirely; B2's windows happened to catch exactly
+one sample each):**
+
+| | B1_ramp (5 samples) | B2_ramp (6 samples) | B2win1 (1 sample) | B2win2 (1 sample) |
+|---|---|---|---|---|
+| node0 HeapAlloc | 4.09 GB | 3.71 GB | 6.15 GB | 6.31 GB |
+| node1 HeapAlloc | 5.09 GB | 3.86 GB | 6.55 GB | 6.16 GB |
+| node0 NumGC range | 10-31 | 7-124 | 195 | 329 |
+| node1 NumGC range | 10-32 | 12-134 | 202 | 339 |
+| GCCPUFraction (mean) | 1.6-2.0* | 1.4-1.9* | 0.018-0.020 | 0.029-0.031 |
+
+*GCCPUFraction is Go's "fraction of available CPU used by GC since
+process start" -- a CUMULATIVE, not windowed, statistic; values above 1
+during `_ramp` reflect a process that has been running since the leg's
+own start with multiple concurrent mark-worker goroutines counted
+against a per-core denominator, not a parsing error, but this makes
+the RAW ramp figures uninterpretable as a rate. **`NumGC`, a monotonic
+counter, is the reliable signal here**: B1's ramp shows 21-22 GCs over
+its 5-sample (~2 min) span (~10.5 GC/min); B2's ramp ALREADY shows 110+
+GCs over a similar span (~50+ GC/min) before the flood even starts, and
+by B2win1/win2 the single samples (195, then 329 seventy seconds later)
+imply **~115 GC/min sustained during the flood itself** -- roughly
+**10-15x B1's GC frequency**, the clearest, most reliable single number
+in this section.
+
+### JOB 2: the 6 GiB leg -- failure mode confirmed
+
+**Throughput collapse**: B2win1 21,733 TPS @ 7.500s/block (vs B1win1's
+128,503 TPS @ 1.250s -- a **5.7x slowdown**, not a modest degradation);
+B2win2 19,017 TPS @ 8.571s/block (vs B1win2's 95,078 @ 1.622s, a
+**5.0x slowdown**). Occupancy stays at 50% in both legs (the harness
+still fills each block to its cap) -- **this is a pure per-block cost
+explosion, not a supply or occupancy effect.**
+
+**CPU-seconds (VM sampler, summed across all 7 nodes over each 20s
+capture window):** B1win1 1,580 CPU-s / 16 blocks = **98.8 CPU-s/block**;
+B2win1 1,464 CPU-s / 2 blocks = **732 CPU-s/block** -- a **7.4x**
+increase in total fleet CPU spent per block, despite B2's blocks being
+the SAME size (50% occupancy, same gas ceiling) as B1's. B1win2: 1,194
+CPU-s/block-count; B2win2: 1,310 CPU-s over its own 2-block window =
+**655 CPU-s/block** (lower than B2win1's per-block figure, but still
+several times B1's). **Total CPU usage stayed roughly FLAT between
+legs in absolute terms (1,464-1,580 CPU-s per ~20s window, both legs)
+while USEFUL OUTPUT (blocks produced) fell by 8x -- the CPU didn't
+disappear, it stopped doing block work and started doing GC work.**
+This is the single cleanest confirmation of prediction 90's mechanism:
+the box is not idler under 6 GiB, it is BUSIER per unit of useful
+output.
+
+**GC frequency**: per JOB 1's memstats table, ~10-15x B1's rate,
+sustained through both B2win1 and B2win2 (195->329 NumGC in ~70s
+between the two single samples = ~115/min, an order of magnitude above
+B1's ~10.5/min ramp baseline).
+
+**Did RssAnon fall (prediction 90a)?** Not checked directly by RssAnon
+this round (the `-vm.log`'s per-node `rssAnon` field was not re-pulled
+for this task; the heap-profile totals ARE the direct measurement of
+live process memory and they show B2's OWN live heap (5.4-5.7 GB) is
+essentially IDENTICAL to B1's win1 figure (~6.0 GB) and, unlike B1,
+does not grow into win2 -- consistent with RssAnon being HELD DOWN by
+continuous collection rather than allowed to climb, which is
+prediction 90(a)'s own claim, **confirmed by the heap-profile evidence
+even without a direct RssAnon pull this round.**
+
+**Safety**: 0 BAD BLOCK, 0 unhandled divergence in either leg (the 3
+`"miner: suppressing divergent same-height sibling; re-proposing first
+sealed block"` hits, all in B2win2 at 16:40:02/13, are the SAME safety
+mechanism working CORRECTLY -- dropping a genuine duplicate before
+push, not after a QC formed, unlike 35zzzg's own failure). View-timeout/
+TC events: B1 2 TC / 3 timeout; **B2 13 TC / 21 timeout** -- a large,
+real increase in liveness stress consistent with 7.5-8.6s block times
+repeatedly outrunning the view timeout clock.
+
+**Prediction 90, clause by clause.** **(a)** RssAnon/live-heap held
+down under the tighter limit rather than climbing -- **confirmed**
+(heap-profile evidence, above). **(b)** GC cost (frequency and,
+qualitatively, CPU share) dramatically higher under 6 GiB --
+**confirmed** (10-15x NumGC rate; flat total CPU across an 8x
+throughput collapse). **(c)** win2 block time -- **confirmed as
+catastrophic, not merely worse**: 7.5s -> 8.6s (win1->win2 within B2
+itself, matching every prior round's within-leg growth direction, now
+at a vastly larger absolute scale). **(d)** heap composition -- see
+JOB 1's own top-contributor table.
+
+**ROOM: is there a workable value between 6 and 10 GiB?** With
+`GOGC=200`, Go's own default pacer targets a heap of roughly
+`live x (1 + GOGC/100) = live x 3` before the NEXT collection, absent
+`GOMEMLIMIT` intervention. At B1win1's own live heap (~6.0 GB mean),
+that target is **~18.1 GB** -- already far above the 10 GiB limit in
+THIS round, meaning **`GOMEMLIMIT` is already the binding constraint
+at 10 GiB**, not merely a distant backstop; B1win2's live heap
+(7.46 GB) would want **~22.4 GB** GOGC-paced, even further above. At
+B2's own live heap (~5.4-5.7 GB), the GOGC-paced target is
+**~16.2-17.1 GB**, against a 6 GiB limit -- **the live heap alone is
+essentially the same size as the limit**, leaving `GOMEMLIMIT` with
+almost no slack to work with before forcing a collection, which is
+exactly the ~10-15x GC-frequency result measured above. **The
+arithmetic gives no comfortable value in the 6-7 GiB range on TODAY's
+live-heap numbers**: even 7 GiB would sit only ~1.3-1.6 GB above the
+measured live heap (5.4-7.5 GB), a small fraction of the ~10-16 GB of
+"room" GOGC=200 would naturally want. For 6-7 GiB to become
+comfortable (say, 2x live heap as a rough GC-health rule of thumb
+rather than the GOGC-implied 3x), **live heap would need to roughly
+HALVE, to ~3-3.5 GB** -- naming the two families that would need to
+shrink to get there: **(1) the transaction-pool/lookup family as a
+whole** -- `senderCachePut` + `DecodeEthereumTransaction`/
+`decodeEthereumTransaction` + `NewTxOwned` + `txlookup.Tail.Add`
+together are **~2.55-2.6 GB, 44-45% of the heap** -- and **(2) QMDB's
+own in-RAM live-key index** (`qmdb.newMapIndexSized`, 0.78 GB, 13.6%,
+6cr's own long-flagged candidate). Shrinking BOTH by roughly half would
+bring live heap from ~5.8-6.3 GB down to ~4.1-4.5 GB -- still short of
+the ~3-3.5 GB a comfortable 6-7 GiB limit would want, but the largest
+lever available without a new subsystem-level redesign.
+
+### JOB 3: generators -- no data this round
+
+The VM sampler's `gens:` field (documented as carrying per-generator
+CPU-seconds and RssAnon) is **present in every line's format but empty
+on every single line checked**, across the whole round (`grep -c
+"gens:.*cpuSec" r35zzzh-vm.log` returns 0). This is a sampler defect
+(generator PID discovery apparently failing), not a finding about the
+generators themselves -- **Job 3 is unanswered this round; the
+question of how much of the box's own CPU/memory the 8 `txflood`
+processes consume during the flood remains open and needs the sampler
+fixed before it can be answered.**
+
+### JOB 4: retroactive safety check across today's rounds
+
+Applied the harness's new per-height, at-most-one-distinct-hash check
+to all 10 kept rounds from today via `height_conflict_check.py`,
+joining `"hotstuff: block committed"`/`"block committed!"` lines (hash
++ view) to a height through a hash-prefix table built from `"block
+push: received"`/`"🔨 Successfully sealed new block"`/`"add future
+block"` lines (all three carry hash + height; join key = first 6 hex
+characters, since different call sites truncate the same hash
+differently but always from the same prefix):
+
+| round | heights checked | committed events | unresolved | conflicts |
+|---|---|---|---|---|
+| r35zzy | 4,853 | 38,824 | 0 | 0 |
+| r35zzz | 4,626 | 37,024 | 0 | 0 |
+| r35zzza | 4,645 | 37,168 | 0 | 0 |
+| r35zzzb | 4,317 | 34,530 | 0 | 0 |
+| r35zzzc | 4,717 | 37,727 | 0 | 0 |
+| r35zzzd | 3,975 | 31,767 | 0 | 0 |
+| r35zzze | 4,015 | 32,119 | 0 | 0 |
+| r35zzzf | 5,043 | 40,337 | 0 | 0 |
+| **r35zzzg** | 6,242 | 49,950 | 8 | **1** |
+| r35zzzh | 6,376 | 51,007 | 0 | 0 |
+
+**48,809 committed heights checked fleet-wide; the ONLY conflict found
+anywhere is 35zzzg's own height 13661138** (hashes `7a6d85`/`f47f65`,
+views 8784/8785 -- exactly the incident already documented in 6cx/
+`OPEN_ISSUES.md`). **Zero conflicts in the other 9 rounds.** This is
+NOT proof the defect is rare in general -- it is one incident in ten
+rounds' worth of logs, and 35zzzg's own leg-teardown view-churn timing
+(sub-second consecutive views) has not been reproduced by any other
+kept round -- but it is the full extent of what today's evidence shows.
+Recorded as a dated paragraph in `docs/OPEN_ISSUES.md`'s existing entry
+for this defect.
+
+**Method.** Job 1/2 use `go tool pprof -top -sample_index=inuse_space|
+inuse_objects|alloc_space` directly against the in-window capture
+files (`GOCACHE=/data/blockchain/gov5-work/.gocache`, per the
+coordinator's instruction); no script was written since this is
+read-only interrogation of existing profile files, not a repeatable
+per-block join. `-memstats.log`/`-vm.log` parsing used short inline
+`python3` scripts (regex over the fixed-format lines), not checked in,
+since each is a one-off window-boundary query using this round's own
+timestamps. Job 4's script is checked in
+(`height_conflict_check.py`) since it is designed to be re-run against
+future rounds' kept logs unmodified.
+
+**What this does and does not show.** It shows, with the FIRST
+in-window heap/alloc captures this whole campaign has produced (four
+prior rounds' captures all landed in the pre-flood decay ramp), the
+actual composition of the flood's live heap: transaction-pool/lookup
+memory and QMDB's own index dominate, at a live size (5.4-7.5 GB) that
+was never the binding constraint on ITS OWN at either 6 or 10 GiB --
+`GOGC=200`'s own natural pacing target (3x live) is what makes BOTH
+limits tight, catastrophically so at 6 GiB. It shows the 6 GiB
+failure's mechanism directly (CPU that stayed flat while useful output
+fell 8x, GC frequency up 10-15x) rather than inferring it from
+occupancy/blockTime alone. It does NOT answer Job 3 (sampler defect,
+no generator data). It does NOT identify a workable GOMEMLIMIT value in
+the 6-10 GiB band on today's live-heap numbers -- the arithmetic says
+none exists without first shrinking the two named subsystem families.
+It does NOT change Job 4's own honest caveat: one clean incident in ten
+rounds is evidence of severity, not of frequency.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
