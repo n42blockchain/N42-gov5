@@ -475,3 +475,78 @@ the same node -- the log line names a PHASE and a MAGNITUDE, the profile
 names a LOCK/CALL SITE and a MAGNITUDE.
 
 Prediction 83 is registered in 6cf. Launch is the commander's next call.
+
+## S15b prepared -- n42-r88 built, block-gossip-fallback experiment ready, not launched (2026-09-21)
+
+Why: 6cg found the vote round-trip's 110-349 ms `kth` gaps are message-
+arrival time, not a lock. 6ch read hypothesis G (the unconditional
+block-gossip fallback head-of-line-blocking votes) as falsified for
+`r2kth`'s dominant share, crediting `CheckDeferredBlock` instead -- but
+**the commander overruled that to INCONCLUSIVE in QS_QUEUE.md's S15
+row**: only 1.8% of commit votes were ever held on the deferred-check
+gate (`cvHeld`, 6cg) and a follower's commit vote fires 2 ms after a
+PrepareQC arrives (`pqc2cv`, 6cg), so the check is done long before the
+gating message shows up for the 98.2% majority and cannot be what most
+of `r2kth` waits for; 6ch's own size asymmetry is what a shared,
+unprioritized per-peer gossip queue predicts by timing (Round1 runs
+while the fallback is still being published, Round2 while it sits in
+every per-peer queue). Hypothesis G is therefore live and untested by
+direct evidence for BOTH `r1kth` and `r2kth` -- S15b's switch is what
+decides it, per the commander's own note. See
+`docs/QS_BLOCK_TIME_BUDGET.md` section 6ci for the full writeup and
+prediction 84.
+
+**n42-r88: built.** `/data/blockchain/gov5-work/n42-r88`, 108,719,640
+bytes, sha256
+`5d3481dd535f0b64e28ba7082ebdca9ad10c23c5bce62dee19d5fb5756b6ae4b`. Same
+file-checkout recipe as n42-r86/r87, extended with S15b's commit
+(`b876b3d2`): one file modified (`internal/blockchain.go`, confirmed
+byte-identical to r87's own version before this change -- untouched
+since S11's `537ec21e`) and one new (`internal/block_gossip_fallback_test.go`),
+both checked out directly, no hunk surgery needed. `internal/parallel/
+base_cache.go` confirmed absent; `grep -rl BaseCache`: empty. In the
+build worktree: `go vet` clean on `internal/`, `internal/consensus/
+hotstuff/...`, `internal/miner/...`; `go test` passes on all three
+(`internal/`: 200 tests, ~3 s -- fast enough that no `-short` was
+needed). `strings n42-r88 | grep -c BaseCache` = 0; `... | grep -c
+"build stalled before fill"` = 1; `... | grep -c "contention profiling
+enabled"` = 1; `... | grep -c "block gossip fallback disabled"` = 1;
+`... | grep -c "block gossip fallback skipped"` = 1.
+
+**What S15b adds, behind `N42_BLOCK_GOSSIP_FALLBACK`** (unset/"1" =
+today's behaviour; "0" = the experiment): `SealedBlock`
+(`internal/blockchain.go`) skips its post-direct-push `BroadcastBlock`
+gossip call once the direct push was dispatched to at least one
+connected peer (`directPushBlock` now returns that count); on zero
+peers it still gossips. Exactly one gossip-publish call site exists in
+the whole repo and this switch covers it; no follower re-publishes or
+forwards a received block (`internal/sync/subscriber_blocks.go`/
+`rpc_block_push.go` call no publish at all).
+
+**Safety.** A follower that misses the direct push recovers through an
+already-existing, gossip-INDEPENDENT path: a Proposal names only a
+block hash, `OutputExecuteBlock` always triggers
+`FetchBlockByHash` (`internal/consensus/hotstuff/service.go:620-634` ->
+`internal/sync/rpc_block_by_hash.go:60`+), a direct peer-to-peer stream
+request unrelated to the gossip `block` topic. This runs unconditionally
+regardless of the switch, so turning the fallback off cannot wedge the
+fleet -- no additional "fall back to gossip on push error" safety net
+was needed or added.
+
+**Runner: `run-r35zzzb.sh`/`chain-35zzzb.sh`, built from the 35zzza
+pair, not launched.** Same eight-generator shape; binary retargeted to
+n42-r88; `N42_BLOCK_GOSSIP_FALLBACK=0` added, `N42_CONTENTION_DIAG=1`/
+`N42_BUILD_STALL_DIAG=1` kept on; S14's per-B-leg profile capture kept,
+outputs renamed to `r35zzzb-*`. `chain-35zzzb.sh` waits on
+`wr-logs/r35zzza.log`'s terminal line; gates unchanged. `bash -n` clean
+on both.
+
+Prediction 84 is registered in 6ci, exactly as specified: (a) mechanism
+(`r2kth` 349->under 100 ms, `r1kth` 110->under 50 ms, in-tenure cycle
+806->under 650 ms), (b) throughput (B mean > 130.8k, watch for supply
+binding near 142k), (c) safety (no BAD BLOCK/divergence/rise in view
+timeouts or block-fetch events vs 35zzza). Per the commander's overrule
+above, `r2kth` is now the clause with the STRONGER supporting case going
+in (the deferred-check alternative is ruled out for the 98.2% majority),
+not the harder one -- this round is a real test of the primary
+mechanism, not just a residual. Launch is the commander's next call.

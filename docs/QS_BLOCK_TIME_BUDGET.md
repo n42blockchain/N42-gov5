@@ -7601,6 +7601,149 @@ the Debug lines to Info -- that is an instrumentation change with its
 own cost/tradeoff this task did not ask for, though it is the obvious
 next step if `r1kth`'s residual is ever worth chasing further.
 
+## 6ci. S15b: n42-r88 built and prepared -- prediction 84 registered before the round (2026-09-21)
+
+**Why, and the context 6ch adds -- since overruled.** 6cg found the vote
+round-trip's 110-349 ms `kth` gaps are message-arrival time, not a lock
+or CPU. 6ch (a parallel logs-only pass on the same 35zzza evidence) then
+split that gap by block size and read hypothesis G (the unconditional
+block-gossip fallback head-of-line-blocking votes on a shared per-peer
+GossipSub queue) as falsified for `r2kth`'s dominant share, attributing
+its ~42x empty-to-full growth to `CheckDeferredBlock`'s already-measured
+per-transaction cost (6cd) instead. **The commander overruled that
+reading to INCONCLUSIVE in QS_QUEUE.md's S15 row** (recorded here so
+this section does not repeat a since-corrected claim): S14's own
+held-vote stamps contradict it directly -- only 1.8% of commit votes
+were ever HELD on the deferred-check gate (`cvHeld`, 6cg), and once a
+PrepareQC is in hand a follower's commit vote goes out in a 2 ms median
+(`pqc2cv`, 6cg) -- so `CheckDeferredBlock` is finished, for the 98.2%
+majority, well before the message that gates it even arrives, and
+cannot be what most of `r2kth` waits for. The commander's own
+counter-reading of 6ch's size asymmetry: it is exactly what a shared,
+unprioritized per-peer queue predicts by TIMING, not against it --
+Round1 (0-124 ms) runs while the ~18-26 MB gossip fallback is still
+being compressed and published, Round2 (124-477 ms) runs while that
+payload sits in every per-peer FIFO `rpcQueue` (`rpc_queue.go`, no
+size/type priority beyond `IDONTWANT` control messages), so a message
+queued behind it in Round2's window pays more of the wait than one in
+Round1's. **Net effect: hypothesis G is live and untested by direct
+evidence for BOTH `r1kth` and `r2kth`, not just the smaller residual --
+S15b's switch, not another logs pass, is what the commander recorded as
+the decider.** The prediction below is registered exactly as the
+commander specified it before this correction, unchanged by it: it
+already named `r2kth` as the primary mechanism target, which this
+correction now supports rather than undercuts.
+
+**What S15b implements**, behind `N42_BLOCK_GOSSIP_FALLBACK` (read once
+at start-up, `internal/blockchain.go`; unset/"1" = today's behaviour,
+"0" = the experiment):
+
+`SealedBlock` (`internal/blockchain.go`) now reads `directPushBlock`'s
+own peer count (that function's signature changed from `func(...)` to
+`func(...) int`, returning `len(peers)` -- peers a push was DISPATCHED
+to, not confirmed delivered, since each send is a fire-and-forget
+goroutine by design) and skips its `BroadcastBlock` gossip call when the
+switch is "0" AND at least one peer was dispatched to; on zero peers it
+still gossips (the only path left). `shouldGossipBlock`/
+`parseBlockGossipFallback` are the pure decision/parsing helpers, unit
+tested directly. Logs once at Info when disabled
+(`"block gossip fallback disabled (N42_BLOCK_GOSSIP_FALLBACK=0)"`), a
+Debug line plus an atomic counter (`blockGossipFallbackSkipped`) per
+skip -- nothing per block at Info level.
+
+**Call sites (every one found, all covered by this single switch).**
+Grepped for every `BroadcastBlock`/gossip-publish call in the repo:
+exactly ONE call site exists, `internal/blockchain.go` (`SealedBlock`,
+the line the switch now gates). No follower re-publishes or forwards a
+received block: `internal/sync/subscriber_blocks.go` and
+`internal/sync/rpc_block_push.go` (the gossip-receive and direct-push-
+receive handlers) contain no `PublishToTopic`/`BroadcastBlock` call at
+all. One switch, one call site, complete coverage.
+
+**Safety: what recovers a follower that missed the direct push when the
+fallback is off.** An independent, already-existing mechanism, unrelated
+to the block-gossip topic: a Proposal names only a block hash
+(`internal/consensus/hotstuff/proposal.go`), and `processProposal`
+emits `OutputExecuteBlock` for any hash this node does not yet have.
+`Service.handleOutput`'s `OutputExecuteBlock` case
+(`internal/consensus/hotstuff/service.go:620-634`) always calls
+`s.blockFetcher.FetchBlockByHash(output.Hash)` (a no-op if the block is
+already present) regardless of `N42_BLOCK_GOSSIP_FALLBACK`.
+`FetchBlockByHash` (`internal/sync/rpc_block_by_hash.go:60`+) fans a
+DIRECT peer-to-peer stream request out to every connected peer over its
+own protocol (`RPCBlockByHashTopicV1`), served by
+`blockByHashStreamHandler` (`rpc_block_by_hash.go:27-54`) -- entirely
+independent of the gossip `block` topic. This path already exists and
+already runs unconditionally on every proposal-for-an-unknown-hash, with
+or without this round's switch, so turning the gossip fallback off
+cannot wedge the fleet: recovery does not depend on gossip at all.
+Given recovery is real and independent, the task's fallback-of-last-
+resort ("make '0' fall back to gossip when any direct push returned an
+error") was not needed and was not added -- there is nothing for it to
+protect against that fetch-on-miss does not already cover, and per-peer
+push errors are in any case only known asynchronously (goroutines,
+fire-and-forget), so synchronously checking "did any push error" would
+have reintroduced the exact latency the fallback removal is trying to
+avoid.
+
+**Build.** Same file-checkout recipe as n42-r86/n42-r87: detached
+worktree at `f7ec2836`, n42-r87's exact file set (6cf), plus S15b's
+changes. One-variable check: S15b modifies one file
+(`internal/blockchain.go`) and adds one new one
+(`internal/block_gossip_fallback_test.go`). `internal/blockchain.go` is
+part of n42-r86/r87's own file list (checked out from commit `537ec21e`,
+S11's own diagnostic commit); `git diff 537ec21e <S15b commit>^ --
+internal/blockchain.go` is EMPTY -- the file was untouched between S11's
+edit and S15b's, so r87's copy of it is byte-identical to the version
+S15b's diff applies to, and both files were checked out directly from
+the S15b commit with no hunk surgery needed.
+`internal/parallel/base_cache.go` confirmed absent from the build
+worktree; `grep -rl BaseCache` over it: empty. `go build -p 8 -tags
+nosqlite,noboltdb` clean; in the same worktree `go vet` clean on
+`internal/`, `internal/consensus/hotstuff/...` and `internal/miner/...`;
+`go test` passes on all three (`internal/` package: 200 tests, 2.9 s;
+`internal/consensus/hotstuff/...`: unchanged from 6cf; `internal/miner/
+...`: unchanged from 6bz) -- none of `internal/`'s own test files are
+slow enough to need `-short` (full package run under 3 s). New tests
+(`TestParseBlockGossipFallback`, `TestShouldGossipBlock`) also pass
+under `-race`. `/data/blockchain/gov5-work/n42-r88`: 108,719,640 bytes,
+sha256 `5d3481dd535f0b64e28ba7082ebdca9ad10c23c5bce62dee19d5fb5756b6ae4b`.
+`strings n42-r88 | grep -c BaseCache` = 0;
+`... | grep -c "build stalled before fill"` = 1 (S11);
+`... | grep -c "contention profiling enabled"` = 1 (S14);
+`... | grep -c "block gossip fallback disabled"` = 1 (S15b, confirming
+the new switch's log line is compiled in);
+`... | grep -c "block gossip fallback skipped"` = 1 (the Debug line).
+
+**Runner.** `run-r35zzzb.sh`/`chain-35zzzb.sh` built from the
+`run-r35zzza.sh`/`chain-35zzza.sh` pair (35zzt's eight-generator shape,
+unchanged -- `-target-depth 45000`, `--floods 8 --senders 1000`). Binary
+retargeted to n42-r88; `N42_BLOCK_GOSSIP_FALLBACK=0` added next to
+`N42_CONTENTION_DIAG=1`/`N42_BUILD_STALL_DIAG=1` (both kept on) in the
+node environment block. The per-B-leg profile capture from S14 is kept
+unchanged, with its output paths automatically renamed to
+`r35zzzb-<leg>-node<i>-{cpu,mutex,block}.pb.gz` by the same round-token
+substitution as everything else. `chain-35zzzb.sh` waits on
+`wr-logs/r35zzza.log`'s terminal line (its actual predecessor); memory
+gate, n42-rs turn-taking and quiet-box checks unchanged. `bash -n` clean
+on both. Neither launched.
+
+**Prediction 84 (registered before any round), exactly as specified:**
+(a) mechanism: `r2kth` falls from 349 ms to under 100 ms and `r1kth`
+from 110 ms to under 50 ms on full in-tenure blocks; the in-tenure cycle
+falls from 806 ms to under 650 ms; (b) throughput: B mean above the
+3.6% noise floor over 126.3k, i.e. > 130.8k -- with the explicit caveat
+that the eight generators topped out near 142k in a 60 s window, so
+supply may bind before the cycle gain shows in full, and occupancy must
+be reported to tell the two apart; (c) safety: no BAD BLOCK, no
+divergence, no rise in view timeouts or `block fetch`/catch-up events
+versus 35zzza.
+
+**VERDICT: confirmed** (implementation, tests, one-variable check and
+build all done). QS_QUEUE.md's S15 row status is marked prepared with
+prediction 84 (6ci); its result cell, already carrying S15a's findings
+(6ch), is left untouched.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
