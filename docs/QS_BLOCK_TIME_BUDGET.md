@@ -5583,7 +5583,7 @@ It does not show whether halving the leader-batch size (4 views/leader)
 would shorten a future stall's blast radius, since only one instance of
 this specific stall exists in the round.
 
-## 6bz. S11: the diagnostics are built and tested, but qs/replan HEAD still carries the falsified r85 cache -- no round prepared (2026-09-20)
+## 6bz. S11: the diagnostics are built, tested and built into n42-r86 on a clean lineage, on the commander's ruling -- prediction 82 registered (2026-09-20)
 
 **What S11 implements.** Two diagnostics for the commitWork pre-fill path
 6by could not see inside, both gated behind `N42_BUILD_STALL_DIAG=1` (read
@@ -5633,12 +5633,12 @@ non-diagnostic edit was widening `fillTransactions`' call in
 `miner_test.go:237` (`TestFillTransactionsRejectsMissingHeaderNumber`) to
 pass the two new (nil) parameters.
 
-**Why no round is prepared.** Step 4 required confirming n42-r84's exact
-lineage and building on top of it *without* the n42-r85 base-read cache
-(6bw: `parallel.BaseCache`, falsified -- B mean 96.1k against the 127.6k
-standing best, a 24.7% fall, on the same eight-generator shape this round
-would have used) -- and to stop instead of building if qs/replan HEAD
-carries that cache enabled by default. It does:
+**Why the naive build was refused, and what confirmed HEAD carries the
+cache.** Step 4 required confirming n42-r84's exact lineage and building on
+top of it *without* the n42-r85 base-read cache (6bw: `parallel.BaseCache`,
+falsified -- B mean 96.1k against the 127.6k standing best, a 24.7% fall,
+on the same eight-generator shape this round uses) -- and to stop instead
+of building if qs/replan HEAD carries that cache enabled by default:
 
     git merge-base --is-ancestor 3c9311ac HEAD   # true, on qs/replan e1822bf3
       (3c9311ac "perf(parallel): read each account from the base state
@@ -5650,38 +5650,101 @@ anywhere in `internal/parallel/base_cache.go`,
 `internal/parallel/state_reader.go` or the call site -- "enabled by
 default" in the plainest sense, and 6bw's own numbers show it is live on
 exactly this fleet's follower-import path, not some unreachable branch.
+The commander's ruling on this finding: build n42-r86 with the established
+file-checkout recipe (worktree at `f7ec2836` plus n42-r84's exact file list
+plus S11's own files), never touching `internal/parallel/base_cache.go`,
+`internal/parallel/state_reader.go` or `internal/parallel_processor.go` --
+do not revert or gate `3c9311ac` on the branch.
 
-n42-r84's own lineage (per `docs/QS_HANDOVER_20260920.md`: "n42-r84 = r80 +
-the delta fix") is a detached worktree at `f7ec2836` plus individual files
-checked out from `origin/main` -- `DEFERRED`/`FOLD`/`TAIL` (the three lists
-in `build-and-queue.sh`, giving n42-r80) plus `internal/parallel/executor.go`
-from commit `c0931aeb` (the delta fix; 6bw: "commit c0931aeb's fix holds").
-That lineage never touches `internal/parallel_processor.go`,
-`internal/parallel/base_cache.go` or `internal/parallel/state_reader.go`,
-so it does not carry the cache -- but qs/replan HEAD, built as a whole, does.
-S11's own six changed files (`internal/blockchain.go`,
-`internal/blockchain_types.go`, `internal/miner/worker.go`,
-`internal/miner/build_stall_watchdog.go` (new),
-`internal/miner/build_stall_watchdog_test.go` (new),
-`internal/miner/miner_test.go`, `log/root.go`) do not intersect the cache
-files either, so a same-recipe file checkout (n42-r84's three lists plus
-`c0931aeb`'s file plus these seven) would build cleanly on the clean
-lineage. That build was not attempted here: the task's explicit instruction
-on finding the cache "enabled by default" on HEAD is to stop and report
-instead of building, so n42-r86 was not built, prediction 82 was not
-registered, and `run-r35zzz.sh`/`chain-35zzz.sh` were not created --
-creating a launch-ready pair that names a binary that does not exist would
-not be "prepared."
+**One-variable check (required before building).** n42-r84's lineage
+(per `docs/QS_HANDOVER_20260920.md`: "n42-r84 = r80 + the delta fix") is a
+detached worktree at `f7ec2836` plus `DEFERRED`/`FOLD`/`TAIL` (the three
+file lists in `build-and-queue.sh`, giving n42-r80) plus
+`internal/parallel/executor.go`, all four checked out from commit `c0931aeb`
+(the delta fix; verified unchanged between `c0931aeb` and current
+`origin/main` for all eight files, so checking them out from `c0931aeb`
+or from `origin/main` today gives identical bytes). None of those eight
+files is one S11 touches. For each of the five *pre-existing* files S11's
+commit `537ec21e` modifies, `git diff f7ec2836 537ec21e^ -- <file>` (the
+version n42-r84 was built from, since none of the eight lever files above
+overlaps these five, is simply `f7ec2836`'s copy):
 
-**What the commander needs to decide.** Either (a) build n42-r86 via the
-file-checkout recipe above (known clean, mechanically identical to how
-n42-r78/79/80/84 were already built), or (b) revert or env-gate 3c9311ac on
-qs/replan first and build off HEAD directly. This document does not choose
-between them; S11's own diagnostic code is untouched by either choice and
-is committed and ready to build into whichever binary comes next.
+| file | f7ec2836 == 537ec21e^ | resolution |
+|---|---|---|
+| `internal/blockchain.go` | yes (0 diff lines) | checked out `537ec21e`'s version directly |
+| `internal/blockchain_types.go` | yes (0 diff lines) | checked out `537ec21e`'s version directly |
+| `internal/miner/miner_test.go` | yes (0 diff lines) | checked out `537ec21e`'s version directly |
+| `log/root.go` | yes (0 diff lines) | checked out `537ec21e`'s version directly |
+| `internal/miner/worker.go` | **no** (60 diff lines) | two intervening commits touch it: `19687889` "diag(miner): stamp the build trigger, the build's end and the speculative park/hit" and `89d15267` "perf(miner): do not restart the speculative build the trigger was waiting for" -- neither is part of n42-r84's lineage. Applied only S11's diagnostic hunk: `git diff 537ec21e^ 537ec21e -- internal/miner/worker.go \| git apply` against `f7ec2836`'s copy in the build worktree -- applied cleanly (`git apply --check` verified first), so worker.go carries r84's pre-diagnostic behavior plus exactly S11's hunk, nothing from the two intervening commits |
 
-**VERDICT: aborted** (build step only -- implementation and tests both
-confirmed). QS_QUEUE.md's S11 row is marked blocked, not prepared.
+4 of 5 pre-existing files identical (1 required the hunk-only path, applied
+cleanly, no stop condition hit). The two brand-new files
+(`internal/miner/build_stall_watchdog.go`, `internal/miner/build_stall_watchdog_test.go`)
+have no prior version to diff against; checked out directly from `537ec21e`.
+
+**Build.** Detached worktree `/data/blockchain/gov5-work/wt-r86-build` at
+`f7ec2836`; `git checkout c0931aeb -- <DEFERRED+FOLD+TAIL+executor.go>`;
+`git checkout 537ec21e -- <the 4 identical files + the 2 new files>`; the
+worker.go hunk applied as above.
+`internal/parallel/base_cache.go` absent from the resulting tree; `grep -rl
+BaseCache internal/ modules/` empty. `GOCACHE`/`GOTMPDIR` under
+`/data/blockchain/gov5-work` throughout (never `/home`, which is full).
+`CGO_ENABLED=1 GOMAXPROCS=8 nice -n 15 go build -p 8 -tags nosqlite,noboltdb
+-o n42-r86 ./cmd/n42` -- clean. In the same worktree: `go vet -tags
+"nosqlite,noboltdb" ./internal/miner/...` clean; `go test -tags
+"nosqlite,noboltdb" -p 8 ./internal/miner/... -count=1`: 53 tests, 0
+failures (2 fewer than qs/replan HEAD's 55 -- the two tests the intervening
+commits `19687889`/`89d15267` added to the package are, correctly, not in
+r84's lineage). Binary verification: `strings n42-r86 \| grep -c "build
+stalled before fill"` = 1 (the diagnostic is present); `strings n42-r86 \|
+grep -c BaseCache` = 0 (the cache is absent) -- both markers exact string
+matches against the running binary, not a source-tree check.
+
+`/data/blockchain/gov5-work/n42-r86`: 108,694,408 bytes, sha256
+`f07e2b811d6569363c363d0286b17d672b4854dfecbe593297fa63e7a77e665c`. Commit
+list: base `f7ec2836`; lever files (`DEFERRED`/`FOLD`/`TAIL`/
+`internal/parallel/executor.go`) at `c0931aeb`; S11 files at `537ec21e`
+(`internal/blockchain.go`, `internal/blockchain_types.go`,
+`internal/miner/miner_test.go`, `log/root.go`, `internal/miner/worker.go`
+(hunk-only), `internal/miner/build_stall_watchdog.go`,
+`internal/miner/build_stall_watchdog_test.go`).
+
+**Runner.** `run-r35zzz.sh`/`chain-35zzz.sh` built from the `run-r35zzt.sh`/
+`chain-35zzt.sh` pair (35zzt's proven eight-generator, 1000-sender shape --
+`-target-depth 45000`, `--floods 8 --senders 1000`, unchanged from 35zzt,
+NOT 35zzy's sixteen-generator numbers). Binary references retargeted to
+n42-r86; `N42_BUILD_STALL_DIAG=1` added next to `N42_MINER_ADOPT_APPENDS=1`
+in the node environment block, same style as its neighbors. One harness fix
+made after 35zzt was carried in (found by diffing `run-r35zzt.sh` against
+`run-r35zzy.sh`): the `MODE-FAILED` trigger regex no longer treats "deferred
+check FAILED" as an abort signature (it is the expected pre-import vote
+decline, not a failure -- 35zzx aborted on one needlessly); the comment
+explaining why was carried with it. No other difference between the two
+runners was found beyond the sixteen-generator shape itself (skipped, by
+design) and round-name/log-path tokens. `chain-35zzz.sh` waits on
+`wr-logs/r35zzy.log`'s terminal line (not `r35zzs.log`, since 35zzy is this
+round's actual predecessor) with the memory gate, n42-rs turn-taking and
+quiet-box checks unchanged from `chain-35zzt.sh`. `bash -n` clean on both.
+One collateral-damage bug caught and fixed before finishing: a blanket
+`s/35zzt/35zzz/g` over `run-r35zzt.sh` also corrupted an unrelated historical
+reference inside the file's ~11 KB running commentary line ("35s: 35r on
+n42-r35zzt", an old binary name that happens to contain the literal
+substring "35zzt" -- coincidence, not this round's token); restored that one
+line verbatim from `run-r35zzt.sh` before finalizing. Neither script was
+launched.
+
+**Prediction 82 (registered before any round).** On `run-r35zzz.sh`/
+`chain-35zzz.sh`, n42-r86, 35zzt's eight-generator shape:
+(a) diagnostics cost nothing: B mean within the 3.6% noise floor of 127.6k;
+(b) every build that takes >3 s to reach its fill leaves a stack dump and a
+`prefill phases` line that name the step and the lock or call it waited on;
+(c) if no such stall occurs in the round, the round still yields the
+n42-r84-lineage import-phase line (`import_breakdown.py`) on the
+eight-generator shape.
+
+**VERDICT: confirmed** (implementation, tests, one-variable check and build
+all done on the commander's ruling). QS_QUEUE.md's S11 row is marked
+prepared, not launched.
 
 ## 8. Method
 
