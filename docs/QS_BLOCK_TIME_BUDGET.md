@@ -8670,6 +8670,214 @@ It does NOT explain why 35zzzc's in-tenure cycle came in 26.6% slower
 than 35zzzb's despite an equal or better B mean and a cleaner safety
 record -- flagged as open round-to-round variance, not resolved here.
 
+## 6cn. S18: n42-r90 built and prepared -- the journal-timing stamp only; the env-separation switch is blocked on a safety conflict, prediction 86 registered (2026-09-21)
+
+**Why.** 6cm narrowed Round2's unmeasured 94% (369 of 393 ms) to one
+interval: the leader's own `PrepareQCFormed -> emit()` gap
+(`voting.go:208-231`), which contains `journalCommitVote`'s MDBX write
+(`voting.go:229`) against the same `db` handle the leader's own
+concurrent `WriteBlockWithState` uses. The commander's S18 asked for
+two things: (1) a duration stamp on every `journalPrepareVote`/
+`journalCommitVote` call, aggregated per view as `jpvMs`/`jcvMs` (plus
+`jcvAt`, the commit-vote call's absolute start time), to measure L0
+directly instead of by elimination; (2) an env switch,
+`N42_HOTSTUFF_JOURNAL_ENV`, to move the HotStuff safety journal into
+its own MDBX environment with the same durability flags, so an A/B
+round could show whether removing the writer contention actually cuts
+`jcvMs` and Round2. The task's own instruction, verbatim: "be
+conservative, keep semantics identical, and STOP and report rather
+than improvise if anything below does not hold," and specifically: "If
+any journal write is today part of a LARGER transaction together with
+chain data ..., do NOT split it: report it and leave that record in
+the chain DB."
+
+**(1) is implemented.** `journalPrepareVote`/`journalCommitVote`
+(`internal/consensus/hotstuff/engine.go:264,297`) now time their own
+call to `e.voteJournal.JournalVote(st)` under the existing
+`N42_CONTENTION_DIAG=1` switch, summing into
+`contentionStamps.journalPrepareVoteMs`/`journalCommitVoteMs` and
+recording `journalCommitVoteAtMs` (the call's own start, unix ms) --
+mirrors every other diagnostic field this campaign has added: silent
+when the switch is off, no new lock (written under `e.mu`, like the
+rest of `contentionStamps`), no per-call logging, only the per-view
+aggregate. Rendered in the `hotstuff view timing` line as `jpvMs`,
+`jcvMs`, `jcvAt`. Read directly (`voting.go:214-235`), the
+`PrepareQCFormed -> emit()` gap contains nothing else that scales:
+`EnterPreCommit()`/`UpdateLockedQC()` (in-memory bookkeeping) before
+`journalCommitVote`, and building the `PrepareQCMsg` struct after it --
+so `jcvMs` should be very close to the whole of L0, not merely a lower
+bound on it.
+
+**(2) is NOT implemented -- a confirmed safety conflict, not a
+judgment call.** `SaveConsensusState` (`persistence.go:76`) is written
+by TWO call paths against the identical key (`hotstuffStateKey` in
+table `modules.HotStuffState`), and both are load-bearing:
+
+- `JournalVote` (`service.go:1308-1315`) -- called from
+  `journalPrepareVote`/`journalCommitVote` (`engine.go:264,297`), a
+  STANDALONE `s.db.Update(...)` transaction. This is the one the task
+  describes and the one (1) above times.
+- `newStateHook().run` (`service.go:1348-1380`) -- called from
+  `persistStateCtx`/`persistState` (periodic + shutdown, standalone),
+  AND passed as the `inTx` hook into
+  `cw.CommitToCanonicalWith(output.Hash, hook.run)` on every single
+  `OutputBlockCommitted` (`service.go:689`) -- i.e. atomic with chain
+  canonicalization, on every committed block, no exception.
+
+`CommitToCanonicalWith`'s own doc comment
+(`internal/blockchain.go:1355-1367`) states this fold is deliberate,
+for two reasons: it removes a whole MDBX write transaction per block
+(a profile at the 480M tier found `mdbx_txn_begin` for write
+transactions costing 20.4% of node CPU), and "it also closes a crash
+window: canonical head and consensus state now move together. A crash
+between the two transactions left a node whose persisted view/lock did
+not match its applied chain -- exactly the restart failure the
+persistence code documents." Per the task's own rule, this write
+CANNOT be split out of the chain DB.
+
+The reason this blocks (2) is `mergeMonotonic`
+(`persistence.go:137-176`), whose read-modify-write both writers rely
+on for correctness. `SaveConsensusState`'s own doc comment
+(`persistence.go:68-75`) names this explicitly: "Two goroutines write
+this key -- the engine goroutine via JournalVote (always current,
+holding the engine mutex) and the service's periodic/shutdown
+persistState, which snapshots under the mutex and writes later, so its
+snapshot can be stale by the time its transaction runs. Without the
+merge below, that stale write un-says a vote already on disk, and a
+restart in that window re-votes in a view it had already committed to
+-- the exact equivocation the vote journal exists to prevent." The
+merge works only because both writers read and write the SAME record
+in the SAME transactional store: each write's `mergeMonotonic` call
+loads whatever the OTHER writer most recently committed and folds it
+forward (vote commitments append-only per `mergeVoteCommitment`, each
+QC kept at its highest view per `mergeQCMonotonic`).
+
+Move `JournalVote`'s writes into a second MDBX environment while
+`newStateHook`'s stay in the chain DB (as the task's own "do not
+split" rule requires), and this breaks: `journalCommitVote`'s
+transaction would `mergeMonotonic` against the JOURNAL environment's
+own copy, never seeing the chain DB's latest `LockedQC`/
+`LastCommittedQC` from the most recent `OutputBlockCommitted`; symmetrically,
+the next `OutputBlockCommitted`/`persistStateCtx` write would
+`mergeMonotonic` against the CHAIN DB's copy, never seeing the vote
+just journaled to the OTHER environment. `LoadConsensusState` at
+restart (`persistence.go:220`) must pick ONE environment, and whichever
+one it picks is missing updates the other environment holds. Concretely:
+a crash after `journalCommitVote` durably records a commit vote (in the
+journal environment) but before the next canonicalization or periodic
+persist reaches the chain DB would restart reading a STALE
+`LastCommitVotedView`/`Hash` from the chain DB -- exactly the
+double-vote/equivocation window `JournalVote`'s own doc comment
+("makes a vote commitment durable before the engine releases the
+vote") exists to close. This is not a performance tradeoff; it is the
+safety property the feature was asked to speed up, broken by the act
+of speeding it up. No env var, no migration logic, and no
+`cmd/hotstuff-reset`/`cmd/qs-hsreset` changes are added; both tools
+continue to operate on the single chain DB's `modules.HotStuffState`
+table exactly as today (`cmd/hotstuff-reset/main.go:88,96,122`,
+`cmd/qs-hsreset/main.go:58-59,73`).
+
+**Consequence for the round.** With no second variable, 35zzzd cannot
+be an A/B-by-leg round as the task described; it is a single
+configuration (identical to 35zzzc plus the new stamp), across all
+legs. Its only job is to let `jcvMs` confirm or refute L0 directly,
+replacing 6cm's elimination argument with a measurement.
+
+**Tests.** `internal/consensus/hotstuff/journal_timing_test.go`
+(new): `TestViewPhasesJournalTiming`/`TestViewPhasesJournalTimingUnmeasured`
+cover `Phases()` deriving `JournalPrepareVote`/`JournalCommitVote`/
+`JournalCommitVoteAt` from `contentionStamps` (measured and
+untouched); `TestLogLineRendersJournalTiming`/
+`TestLogLineSilentWithoutJournalTiming` cover `jpvMs`/`jcvMs`/`jcvAt`
+appearing (and staying silent) in `LogLine()`.
+`TestJournalCommitVoteTimingReflectsJournalDelay`/
+`TestJournalPrepareVoteTimingReflectsJournalDelay` drive the real
+`journalCommitVote`/`journalPrepareVote` methods (via
+`newTestSetup`/`newTestEngine`, this package's own harness) against a
+`slowVoteJournal` test double with a fixed artificial delay, and assert
+the recorded `jcvMs`/`jpvMs` is at least that delay -- proving the
+stamp wraps the real call, not an unrelated span. These two are gated
+on `contentionDiagEnabled` (read once from `N42_CONTENTION_DIAG` at
+process start, so a per-test `t.Setenv` cannot toggle it) and `t.Skip`
+when the switch is off; run once with `N42_CONTENTION_DIAG=1` exported
+before `go test`, both pass. Full `internal/consensus/hotstuff/...`
+suite (all pre-existing tests plus these) passes under BOTH
+placements of the switch (on and off) and under `-race`, in both the
+day-to-day worktree and the detached build worktree used for n42-r90.
+
+**Build.** Same file-checkout recipe as n42-r86/87/88/89: detached
+worktree at `f7ec2836`, n42-r89's exact file set (6cl), plus this
+step's changes. One-variable check: the two touched files
+(`internal/consensus/hotstuff/{engine,view_timing}.go`) were both
+byte-identical to n42-r89's own version of each before this change
+(`git diff 9f307e90 e1d8d7d1^` empty for both -- `e1d8d7d1` is this
+step's own commit), so both were checked out directly from `e1d8d7d1`
+with no hunk surgery; the new `journal_timing_test.go` is added fresh.
+Every other lever file in the cumulative build (`c0931aeb`'s 3,
+`537ec21e`'s 6 plus the `worker.go` hunk, `56cc1dac`'s 7, `b876b3d2`'s
+2, `9f307e90`'s 7) was re-verified byte-identical to its own
+predecessor lever's baseline before checkout, same as every prior
+build in this chain. `internal/parallel/base_cache.go` confirmed
+absent from the build worktree; `grep -rl BaseCache`: empty. `go build
+-p 8 -tags nosqlite,noboltdb` clean; `go vet ./internal/...` clean;
+`go test` passes on `internal/consensus/hotstuff/...` (both diag
+placements), `internal/miner/...`, `internal/` (top package),
+`internal/parallel/...`. `/data/blockchain/gov5-work/n42-r90`:
+108,737,984 bytes, sha256
+`193bd320478acc9b0588605009e0eb93387eb9e9716ccb520aa8d30b422d6759`.
+`strings n42-r90 | grep -c BaseCache` = 0; `... | grep -c "build
+stalled before fill"` = 1; `... | grep -c "contention profiling
+enabled"` = 1; `... | grep -c "block gossip fallback disabled"` = 1;
+`... | grep -c "rotor failed -> gossip"` = 1; `... | grep -c jpvMs` =
+1; `... | grep -c jcvMs` = 1; `... | grep -c jcvAt` = 1 (this step's
+own new markers, confirming the code is actually compiled in).
+
+**Runner.** `run-r35zzzd.sh`/`chain-35zzzd.sh` built from the
+`run-r35zzzc.sh`/`chain-35zzzc.sh` pair via `cp`+`sed
+'s/35zzzc/35zzzd/g'` (checked first: the round token `35zzzc` occurs
+nowhere in either script's giant single-line history comment, so the
+blanket substitution cannot corrupt it, matching 25/12 occurrences
+respectively, all accounted for). NOT an A/B-by-leg script: since (2)
+above is not implemented, there is no second variable, so both scripts
+carry ONE configuration through every leg -- header comments in both
+rewritten by hand to say so plainly and to point at this section for
+the reason, rather than leaving the old S17 wording in place.
+Predecessor-wait fixed by hand (`chain-35zzzc.sh` waited on
+`r35zzzb.log`; `chain-35zzzd.sh` now correctly waits on
+`r35zzzc.log`, its actual immediate predecessor), and the binary
+references updated by hand (`n42-r89` -> `n42-r90` at the `[ -s
+$W/n42-r90 ]` guard and the `cmp`/`cp` retarget line, which -- as
+established in 6cl -- runs inside the chain script at ACTUAL launch
+time, gated by the box-claim protocol, not something done ahead of
+time while only preparing). ALL other env unchanged from 35zzzc,
+including `N42_BLOCK_GOSSIP_FALLBACK=0` and the S17
+`/debug/pprof/goroutine?debug=1` capture (kept; not specific to the
+switch that was not built). `bash -n` clean on both. Neither launched
+(`ps` confirms no `run-r35zzzd`/`chain-35zzzd` process exists).
+
+**Prediction 86 (revised -- registered before any round; the original
+A/B-by-leg framing does not apply, see above):** on full in-tenure
+views, `jcvMs`'s distribution by block-size bucket lands close to
+6cm's residual table (0 tx: ~1 ms; 1-20k: ~14 ms; 20-80k: ~132 ms;
+80-140k: ~152 ms; >140k: ~326 ms) -- i.e. `jcvMs` alone, added to
+6cm's six already-stamped segments, accounts for >=80% of Round2's
+median at every bucket. CAVEAT: this is a correlation/magnitude check
+only, not a fix -- even if confirmed, this round cannot show the
+mechanism removed (no switch exists to turn writer contention off),
+and 6cm's own round-to-round variance (in-tenure cycle +26.6% between
+two rounds sharing a configuration) means a single round's numbers
+should be read as one more data point, not a settled value. Throughput
+and safety carry the same bars as 6cl/85(a): B mean within the 3.6%
+noise floor of 132.8k; no BAD BLOCK/divergence; no unexplained rise in
+view timeouts vs 35zzzc.
+
+**VERDICT: aborted (the env-separation feature) / confirmed
+(the timing stamp).** The timing diagnostic -- implementation, tests,
+one-variable check, and build -- is complete and correct. The
+env-separation switch named in the task is not built, for the safety
+reason above, which is exactly the condition the task itself named as
+a stop condition. QS_QUEUE.md's S18 row is marked accordingly.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
