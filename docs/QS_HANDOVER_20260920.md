@@ -277,3 +277,60 @@ Scripts: `/data/blockchain/gov5-work/run-r35zzy.sh` and `/data/blockchain/gov5-w
 One-line diff: `export QS_FLOOD_EXTRA="-target-depth 22500 -depth-by-nonce -lazy-sign"` (35zzx's 45000 -> 22500; aggregate in-flight back to 360,000 as in 35zzt).
 
 Not launched; waits for 35zzw to end and the box claim.
+
+## Duplicate serialization audit (2026-09-20)
+
+Read-only static audit, done off-box while n42-rs held the fleet (grep/read
+only, no build/bench/test run). Trigger: n42-rs found their vote path
+decodes the block, re-encodes 163k transactions into a NEW_PAYLOAD frame,
+pushes 26 MB over a local socket, and the execution layer parses it again
+-- 107 ms, 29% of the block cycle. Question: does gov5, a single process
+with no engine-API socket, have the same class of waste on its in-process
+equivalents (proposal decode, push/gossip re-encode, tx-root re-derivation,
+sender-hash re-encoding, size/logging encodes, deep copies) for a ~163k-tx,
+~26 MB block?
+
+Headline: **falsified for the specific n42-rs mechanism.** The HotStuff
+`Proposal` wire message never carries the block or its transactions at all
+-- `encodeProposal`/`decodeProposal` (`internal/consensus/hotstuff/codec.go:175-224`)
+put only `BlockHash` and `TxRootHash` (32+32 bytes) on the vote-path
+message; the 26 MB body travels on a separate channel (direct P2P push +
+gossip fallback) that the vote never touches. So there is no analogue of
+"decode block -> re-encode 163k txs into the consensus message -> push ->
+decode again" on the vote path itself, by construction. Most of the
+individual duplications that *would* recreate the same class of cost on the
+push/import path were already found and removed in `6445f1bf` (n42-r74,
+documented in `docs/QS_BLOCK_TIME_BUDGET.md` around line 4367) and confirmed
+still in place by this reread of the current source. One genuine
+still-open item was found (#1 below): every node still fully re-serializes
+all 163k transactions a second time, in a different byte layout, on the
+storage write.
+
+| # | Path | file:line chain | What happens N times per block per node | Status | Existing measurement | Smallest fix |
+|---|------|------------------|------------------------------------------|--------|----------------------|---------------|
+| 1 | write (both) | `modules/rawdb/accessors_chain.go:374-385` `encodeTxForStorage` (compact `tx_compact.go:202-234` or `EncodeEthereumTransaction` `common/transaction/ethereum_rlp.go:229-...`), called from `WriteTransactions`/`encodeTxsParallel` at `accessors_chain.go:394-463` | Every tx is serialized a 2nd time (wire decode -> struct fields -> per-tx storage record), even though the exact wire RLP bytes are already cached on the tx (`tx.enc`, see row 5). Storage needs a different byte layout (keyed compact record, not a block-level RLP list), so this is not the identical-bytes-for-no-reason case n42-rs found, but it is still a full second pass over 163k txs on every node's write. | confirmed | yes -- round 35zy ("block" phase 118 ms of a 213 ms write) and round 35zzb (parallel encode, ~half via `parallelTxEncodeMin`/`encodeTxsParallel`, doc lines ~3706-3739) | Let `MarshalCompactStorage` reuse `tx.EthEncoded()` for the legacy-shaped fields it already stores verbatim (nonce/gas/to/data/sign), instead of re-copying them field-by-field from `tx.inner`; would not remove the pass but could cut per-tx allocation |
+| 2 | follower gossip vs. push race | `internal/sync/rpc_block_push.go:25-51` (`ReadChunkedBlock` decode at line 28, `pushInflight.Store` only at line 49) vs. `internal/sync/validate_blocks.go:47-61` (`peekBlockHeader` + `pushInflight.Load` check) | If gossip's header-peek runs in the window between the push handler starting its full decode (line 28) and marking the hash busy (line 49), the gossip path does not see "busy" yet and may fall through to its own full RLP decode of the same 163k-tx block (`validate_blocks.go:74-77`) before the push's `HasBlock`/`InsertChain` result is visible. | suspected (race window, not traced to a live occurrence) | n/a | Store the hash in `pushInflight` from the decoded header before/while reading the body, not after, or peek the header on the push side too and register it before the full chunked read completes |
+| 3 | leader push (all peers) + gossip fallback | `internal/blockchain.go:1700-1733` `SealedBlock` (`rlp.EncodeToBytes` once, comment explicitly states the reuse) -> `directPushBlock` (`internal/blockchain.go:1738-1774`, per-peer loop reuses the same `data` slice, only re-wraps it in the SSZ chunk framing via `rawBlockBytes`) | N/A -- single encode, shared bytes, across every peer and the gossip goroutine | not a problem (already fixed) | doc line ~3706 area / commit `6445f1bf` list ("the leader's per-push re-encode... removes") | none needed |
+| 4 | follower commit-to-canonical | `internal/blockchain.go:1358-1382` `CommitToCanonicalWith` reads `bc.blockCache` first; populated at `internal/blockchain_write.go:159-173` inside `writeBlockWithState`'s deferred hook | N/A -- the imported/sealed `*block.Block` instance (every tx hash memoised) is reused instead of `rawdb.ReadBlockByHash` decoding 163k txs from MDBX again | not a problem (already fixed) | round 35zg / 35zzm cited inline in the comment (80 ms decode + ~200 ms re-hash avoided) | none needed |
+| 5 | decode -> tx hash / tx root | `common/transaction/ethereum_rlp.go:100-107` (`DecodeEthereumTransaction` caches the exact wire bytes into `tx.enc`) feeding `common/transaction/transaction.go:439-451` (`EthEncoded`) and `:575-593` (`Hash()`, keccak of the cached encoding) and `common/block/block.go:157-181` (`Block.EncodeRLP` calls `tx.EthEncoded()` per tx, no re-encode) | N/A -- one encode (the original wire bytes) serves the tx hash, the tx root leaf, and any re-encode (RLP push) of the block | not a problem (already fixed) | doc: "half of every tx hash (keccak of the cached encoding)" in the `6445f1bf` list; isolation bench "70 -> 6 ms" for the Blake3 switch | none needed |
+| 6 | sender recovery: deferred check + import | `internal/deferred_includable.go:120-247` (`deferredTxPlan`, calls `transaction.Sender` per tx) runs before `internal/sync/rpc_block_push.go:52` / `subscriber_blocks.go:58` `deferredCheck(blk)`, then the normal import's own sender recovery (`internal/sender_recovery.go`) walks the same `blk.Transactions()` slice | Per-object memo (`common/transaction/transaction_signing.go:218-247`, `tx.from` field) plus a process-wide two-way cache keyed by tx hash mean the import's pass is a lookup, not a second secp256k1 recovery, for txs the deferred check already touched (same tx pointers, same slice) | not a problem for the common case; ~9% still misses under cache pressure per doc | doc: "~9% of senders recovered twice (two-way cache)" fix already landed in `6445f1bf`; no new measurement here | n/a (already the documented residual, not newly found) |
+
+Not a problem -- checked and cleared:
+
+- Consensus vote message (`Proposal`) never carries the block or tx list (`internal/consensus/hotstuff/codec.go:175-224`) -- the entire n42-rs mechanism (decode -> re-encode into the vote frame -> push -> decode again) has no analogue here by construction.
+- Header hash is cached on the struct (`common/block/header.go:126-133`, `atomic.Value`) and the cache is set once per decoded instance; no evidence of repeated `rlpHash()` calls across validate/import/write for the same instance.
+- Tx root (`TxRootAt`) is computed exactly once per node per block: once by the leader at block assembly (`internal/miner/worker.go:2302`, `NewBlockFromReceipt` -> `common/block/block.go:222`) and once by each follower in `ValidateBody` (`internal/block_validator.go:98`, called from exactly one site, `internal/blockchain_insert.go:104`). `writeBlockWithState`/`state_processor.go` do not recompute it (grepped, no hits).
+- Block-level RLP decode of a pushed/gossiped block is parallelized (`common/block/block.go:184-198` `DecodeRLP` -> `decodeBlockTxs`/`:387-427`, threshold `parallelTxDecodeMin`), and each per-tx decode caches its own wire bytes (`DecodeEthereumTransaction`), so the transactions-root leaf hashes and any later RLP re-encode reuse those bytes rather than re-deriving them.
+- The one full per-tx re-marshal outside storage/write (`internal/miner/worker.go:2179-2192`, the `MinedEntireEvent` RPC snapshot) is gated behind `event.GlobalEvent.HasSubscribers(...)` and does not run when nothing is subscribed -- already the "ask before building" fix described in its own comment.
+- Receipts are deep-copied once, after the push and the Proposal leave, not before (`internal/miner/worker.go:705-725`), matching the `6445f1bf` list item "the receipts copy before the Proposal".
+- No `Size()`/`len(Marshal())` measure-only calls were found in the hot files searched (`internal/blockchain.go`, `internal/blockchain_write.go`, `internal/state_processor.go`, `internal/miner/worker.go`, `internal/consensus/hotstuff/*.go`); the one `Size()`-adjacent path (`common/transaction/transaction.go` `EncodedSize`/`EthEncoded`) is itself cache-backed.
+
+Verdict: no same-class duplicate of the n42-rs mechanism exists on the vote
+path (it is falsified there), because the Proposal is hash-only by design.
+One confirmed, already-measured full second pass over all 163k txs remains
+on the write path for storage-layout reasons (#1), and one narrow race
+window between the push and gossip decode paths is suspected but not
+confirmed live (#2). Neither is new: #1 is a known, parallelized, tracked
+cost; #2 is a previously-undocumented edge case worth a follow-up read of
+the push/gossip interleave under a real fleet trace, not a code change on
+current evidence.
