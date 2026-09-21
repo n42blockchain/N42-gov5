@@ -677,6 +677,20 @@ func (w *worker) handleSealed(blk block.IBlock) {
 		return
 	}
 
+	// S26 (docs/OPEN_ISSUES.md "A quorum-committed block that no node
+	// stored"): record THIS block as the sole candidate for parentHash now,
+	// at seal time -- not after its write completes (writeAndFinish used to
+	// do this, "after a successful import"). recordSealedOnParent is what the
+	// guard above reads; recording it late left a window, widest with
+	// N42_LEADER_WRITE_ASYNC=1 but present on any slow write, where a second,
+	// independently-building seal on the SAME parent (a parked speculative
+	// task finishing while this block's write is still in flight) found
+	// firstSealedOnParent empty and proceeded to push/propose a divergent
+	// sibling instead of being suppressed here. Moving the record here closes
+	// that window; the vote-rule fix in the hotstuff package is the
+	// independent, sufficient backstop if this one is ever missed.
+	w.recordSealedOnParent(parentHash, blk)
+
 	var (
 		sealhash = w.engine.SealHash(blk.Header())
 		hash     = blk.Hash()
@@ -817,8 +831,8 @@ func (w *worker) handleSealed(blk block.IBlock) {
 	// everything from here on -- the S19 journal-latch wait, the write
 	// itself, and everything that today assumes "the write already
 	// returned" (pendingTasks cleanup, counters, the seal-path/propose-
-	// phases/"Successfully sealed" log lines, recordSealedOnParent, the
-	// ChainHighestBlock event) -- moves into writeAndFinish, called either
+	// phases/"Successfully sealed" log lines, the ChainHighestBlock event) --
+	// moves into writeAndFinish, called either
 	// synchronously here (switch off: byte-for-byte today's control flow,
 	// same goroutine, same order) or from the dedicated writer goroutine
 	// (switch on: resultLoop returns immediately after Enqueue, free to
@@ -850,7 +864,7 @@ func (w *worker) handleSealed(blk block.IBlock) {
 // handleSealed always has).
 func (w *worker) writeAndFinish(job *writeJob) bool {
 	blk, task := job.blk, job.task
-	hash, sealhash, parentHash := job.hash, job.sealhash, job.parentHash
+	hash, sealhash := job.hash, job.sealhash
 	blockNumber := job.blockNumber
 	receipts, logs := job.receipts, job.logs
 	sealStart, tHandleSealedEnter := job.sealStart, job.tHandleSealedEnter
@@ -1033,9 +1047,9 @@ func (w *worker) writeAndFinish(job *writeJob) bool {
 		"lwWait", lwWait, "lwWhy", lwWhy,
 		"total", time.Since(task.createdAt), "tMs", time.Now().UnixMilli())
 
-	// Record this as the one candidate for its parent (after a successful
-	// import), so a later view's divergent sibling is suppressed above.
-	w.recordSealedOnParent(parentHash, blk)
+	// S26: recordSealedOnParent now runs in handleSealed, at seal time,
+	// before push/propose -- see the comment there. Recording it again here
+	// would be a no-op (first write wins) kept only as history.
 	if concrete, ok := blk.(*block.Block); ok {
 		event.GlobalEvent.Send(common.ChainHighestBlock{Block: *concrete, Inserted: true})
 	}
@@ -1156,9 +1170,11 @@ func (w *worker) firstSealedOnParent(parent types.Hash) block.IBlock {
 }
 
 // recordSealedOnParent records blk as the sole candidate for its parent (first
-// write wins) and prunes entries older than the 256-block branch-switch window —
-// a sibling that far back can no longer be unwound/switched, so it needs no
-// suppression record.
+// SEAL wins -- called from handleSealed before push/propose, S26; a write that
+// is still in flight when a second, independently-built seal on the same
+// parent arrives must not leave this map empty) and prunes entries older than
+// the 256-block branch-switch window — a sibling that far back can no longer
+// be unwound/switched, so it needs no suppression record.
 func (w *worker) recordSealedOnParent(parent types.Hash, blk block.IBlock) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
