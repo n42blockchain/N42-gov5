@@ -13,7 +13,7 @@ writer + tx-bounded tail + packet window 8). Protocol: QS_AGENT_PROTOCOL.md.
 | S4 | the Prague delegation check reads every recipient (6bp) | not built | not written | candidate | |
 | S5 | the leader's write (~0.5 s) off the critical path | not built | not written | candidate | |
 | S6 | per-transaction allocation hotspots (receipt, AsMessage, journal dirties, IBS.Reset maps) | not built | not written | candidate | |
-| S7 | 35zzx retry: same 16-generator harness, `-target-depth` halved 45000 -> 22500 so the fleet's aggregate in-flight target returns to 360,000 (35zzt's proven number) instead of the doubled 720,000 S1 actually ran at | n42-r84 | 81 (6bv): every B window >=25% occupancy, B mean > 127.6k, no B-leg block drops a double-digit percent of candidates to nonceHigh with fallback:false | next | |
+| S7 | 35zzx retry: same 16-generator harness, `-target-depth` halved 45000 -> 22500 so the fleet's aggregate in-flight target returns to 360,000 (35zzt's proven number) instead of the doubled 720,000 S1 actually ran at | n42-r84 | 81 (6bv): every B window >=25% occupancy, B mean > 127.6k, no B-leg block drops a double-digit percent of candidates to nonceHigh with fallback:false | queued 2026-09-20 20:04 EDT as 35zzy (chain-35zzy.sh), waiting for the n42-rs claim to clear | |
 
 ## Acceptance note on S1 (added 2026-09-20 after S3b)
 
