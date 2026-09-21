@@ -412,3 +412,26 @@ phase actually produces empty blocks (it already computes this --
 exists in the log) and marks the ROUND `ABORTED` rather than `DONE`
 when any leg reports 0. No fix to the consensus/import path is proposed
 here.
+
+**Retroactive fleet-wide check (S25 Job 4, 2026-09-21).** The harness's new
+per-height, at-most-one-distinct-hash check was applied offline to every
+kept round from today: `r35zzy`, `r35zzz`, `r35zzza`, `r35zzzb`, `r35zzzc`,
+`r35zzzd`, `r35zzze`, `r35zzzf`, `r35zzzg`, `r35zzzh` --
+`wt-r27/scripts/qs-analysis/height_conflict_check.py`, joining each
+round's `"hotstuff: block committed"`/`"block committed!"` lines (hash +
+view, no height) to a height via a hash-prefix table built from
+`"block push: received"`/`"🔨 Successfully sealed new block"`/`"add future
+block"` lines (all three carry both hash and height; the join key is the
+first 6 hex characters of the hash, since different call sites truncate
+hashes differently but always from the same prefix). **48,809 committed
+heights checked fleet-wide across the 9 non-conflicting rounds plus
+35zzzg; the ONLY conflict found anywhere is 35zzzg's own height
+13661138** (hashes `7a6d85`/`f47f65`, views 8784/8785, exactly as
+already documented above) -- zero conflicts in the other 9 rounds
+(4,317-6,376 heights checked per round, 0 unresolved hash-to-height
+joins in 9 of 10 rounds, 8 unresolved in 35zzzg from short-lived A2
+retry noise, none affecting the conflict count). This is not proof the
+defect is rare in general -- it is one incident in ten rounds' worth of
+logs, at a leg-teardown timing this campaign has otherwise only produced
+once -- but it is the full extent of what today's evidence shows: no
+other kept round shows a second committed hash at any height.
