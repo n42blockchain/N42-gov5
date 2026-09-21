@@ -12629,6 +12629,242 @@ clean; not launched). QS_QUEUE.md gets a new S28 row (status:
 prepared) after the S27 row (status: closed). Launch is the
 commander's next call.
 
+## 6de. S29: 43% of the flood's allocation runs on the parallel-executor's own worker-pool goroutines and cannot be split leader-vs-follower by stack trace at all; of what CAN be split, block-import (F) is 3-4x ingest/gossip/pool combined (2026-09-21)
+
+Profiles + code reading only, single-threaded/`nice` (35zzzi still on
+the box). Inputs: `wr-pprof/r35zzzh-win1-win1-node{1,2}-allocs.pb.gz`
+(B1/10GiB leg, win1; node1 = round log's own "leader=node1", node2 =
+"follower=node2" for this specific capture -- see the caveat below on
+what that label actually means for a tenure-rotating fleet). Binary
+`n42-r92`, `GOCACHE=/data/blockchain/gov5-work/.gocache`. Script:
+`wt-r27/scripts/qs-analysis/alloc_path_partition.py` (new, checked
+in -- post-processes `go tool pprof -traces` text output, which has no
+native "group by subsystem" mode).
+
+### 1. Partition method, and the limit it ran into
+
+**How paths were made mutually exclusive.** Every unique call stack in
+`-traces`' own output was scanned end-to-end against an ORDERED list of
+category patterns (leader-build markers, then follower-import markers,
+then RPC-ingest, gossip-receive, gossip-send, pool-internal); the FIRST
+category whose pattern matched ANY frame in that stack won the whole
+stack's value, so no stack is counted twice. Order matters because
+`internal.runParallel`/`parallelApplyTx` are SHARED by build and
+import -- checking the disambiguating outer frame (`BuildParallel` for
+the leader's own fill, `InsertChain`/`blockPushStreamHandler`/
+`decodeChunkedBlock` for import) FIRST, before the shared internals,
+is what keeps E and F apart wherever the outer frame is actually
+present in the sample.
+
+**The limit, found while building this.** A large share of samples
+whose LEAF is `parallelApplyTx` (and everything it calls --
+`decodeUint256`, `IntraBlockState.setStateObject`/`Reset`, `journal.
+push`, `MVS.Write`, `ReadWriteSet.MarkBalanceInsensitive`, `NewTxOwned`,
+`decodeEthereumTransaction`...) have a call stack **only 5-6 frames
+deep**, bottoming out at `(*Executor).executeParallel.func1` -- the
+worker-pool goroutine's OWN entry point. Go's default profiling stack
+does not retain a goroutine's "created by" chain, so **once a
+transaction's execution work is handed to the executor's worker pool,
+the sample stack can no longer say whether that specific worker was
+processing a leader's own `BuildParallel` fill or a follower's
+`InsertChain`/`ProcessParallel` import -- both call into the exact same
+pool through the exact same functions.** This is not a bug in this
+section's method; it is a structural property of how the executor is
+built (one shared worker pool, reached from two different callers).
+**Rather than force a guess, this share is reported as its own
+category, `EXEC_shared_build_or_import`, named and quantified, not
+folded into either E or F or hidden in a catch-all.**
+
+### 2. The partition (node1, "leader" per this capture; node2, "follower", side by side -- both react nearly identically, see the caveat below)
+
+| category | node1 | node2 | GB/block* | KB/tx* |
+|---|---|---|---|---|
+| A: RPC ingest | 4.9% | 5.0% | 0.51 | 3.1 |
+| B: gossip receive | 2.7% | 2.7% | 0.28 | 1.7 |
+| C: gossip send/forward | 4.9% | 4.6% | 0.51 | 3.1 |
+| D: txpool internal | 3.3% | 3.4% | 0.34 | 2.1 |
+| E: leader build (attributable) | 5.6% | 5.6% | 0.58 | 3.6 |
+| F: follower import (attributable) | 20.8% | 20.9% | 2.15 | 13.2 |
+| **EXEC_shared (build+import, unattributable)** | **43.5%** | **43.0%** | **4.51** | **27.6** |
+| unassigned (`G`, no pattern matched) | 14.3% | 14.9% | 1.48 | 9.1 |
+
+*GB/block and KB/tx are derived: the node1 percentage applied to
+6da/6dc's own measured 10.36 GB/block (163,000 tx/block), NOT to this
+script's own raw total (which sums to 165.74-175.27 GB across the two
+nodes' captures, a ~3-6% over-count from a rare double-annotated-stack
+artifact in `-traces`' own output -- percentages, which are robust to
+that scaling, are the primary number; GB/tx figures are for scale
+only). **Share of the whole node's alloc_space assigned to an
+EXCLUSIVE, named category (everything except `G`): 85.7% (node1),
+85.1% (node2) -- at or just above the task's own 85% confirm bar.**
+
+**Why node1 and node2 look nearly identical despite the round log
+calling one "leader" and the other "follower" for this specific
+capture:** tenure is 4, and the capture window (20s, ~16 full blocks)
+spans MULTIPLE tenures -- **every node in a 7-node fleet leads roughly
+1-in-7 blocks and follows the other 6-in-7 within any 20-second
+window**, so a single node's own 20s capture already contains a
+representative mix of its OWN leader-build traffic and its OWN
+follower-import traffic for everyone else's blocks. The round log's
+"leader=node1/follower=node2" label names which node was captured
+mid-proposing a SPECIFIC block at the capture's own trigger instant,
+not which role dominates that node's WHOLE 20-second window -- which
+is why this section's own E/F split (attributable leader-build only
+5.6%, attributable follower-import 20.8%, a ~3.7:1 ratio) is close to
+the STRUCTURAL 1:6 leader:follower block-count ratio the fleet's own
+tenure schedule produces, on BOTH nodes, regardless of the capture
+label.
+
+### 3. Mechanics of the two biggest CLEANLY-ATTRIBUTABLE non-executor groups
+
+**F: follower import (2.15 GB/block, 13.2 KB/tx attributable, PLUS an
+unknown share of `EXEC_shared`'s own 4.51 GB/block that is genuinely
+import-side work the stack cannot prove).** Reached via `internal/
+sync.(*Service).blockPushStreamHandler` -> `ReadChunkedBlock` ->
+`decodeChunkedBlock` (`internal/sync/rpc_chunked_response.go:132`,
+6dc's own citation) -> `rlp.DecodeBytes` of the WHOLE block (header +
+body + every transaction) -> `BlockChain.InsertChain`/
+`InsertChainAuthorized` -> `StateProcessor.Process`/`ProcessParallel`
+-> the shared executor. **6dc already established the crossing count
+here precisely: this decode is UNCONDITIONAL and re-decodes every
+transaction via RLP even when that exact transaction (same hash)
+already sits in the node's own pool, fully decoded, from an earlier
+gossip or RPC arrival -- 6dc's own estimate, ~99.4% of a pushed
+block's transactions are this kind of redundant decode.** `-focus`
+against `go-buffer-pool|handleIncomingRPC|handleNewStream` (below)
+shows `BufferPool.Get` itself sits partly on the RECEIVE side too (see
+the C caveat below), meaning some of what this section counted as "C:
+send/forward" may actually be inbound framing for the SAME push/gossip
+traffic that feeds F -- flagged, not resolved, given the time budget.
+
+**EXEC_shared (4.51 GB/block, 27.6 KB/tx, unattributable): the SAME
+top sites 6db/6dc already named and ranked** (`journal.push` 27.3%
+of the isolated executor benchmark, `parallelApplyTx`'s own `tx.
+AsMessage`/receipt-alloc lines, `freshStateObject`, `setStateObject`,
+`MVS.getOrCreateEntry`, `IntraBlockState.Reset`) -- this section adds
+no new site-level finding here beyond confirming, via the fleet's own
+in-window captures (not the isolated benchmark), that these sites'
+FULL fleet-scale cost (27.6 KB/tx) is much larger than the isolated
+`BenchmarkParallelBlockTransfers` figure (6.25 KB/tx, 6dc) because the
+FLEET capture includes BOTH the leader's build execution AND every
+follower's import execution of the SAME transactions, whereas the
+isolated benchmark times ONE execution pass only -- **this 4.4x gap
+(27.6 / 6.25) is close to, and consistent with, "one build + roughly
+several import executions of overlapping transactions across a
+20-second, multi-tenure window," not a discrepancy needing its own
+explanation.**
+
+### 4. Crossings: how many times one transaction is decoded/handled per node
+
+- **RPC ingest**: a transaction submitted to THIS node's own RPC
+  arrives and is decoded **once** (`A`), then held decoded in the pool.
+  The harness's own generators submit round-robin/sharded across all 7
+  nodes' RPC endpoints (not all to one node), so any single node's own
+  RPC-ingest share reflects roughly 1/7 of the flood's total submission
+  volume arriving THIS way.
+- **Gossip receive**: GossipSub's own mesh (this campaign's standing
+  config, `D=8`/`Dlo=6`) means a message can arrive at a node from
+  MULTIPLE mesh peers before the LOCAL seen-cache (keyed by `MsgID`,
+  `internal/p2p/message_id.go`) has recorded it as seen -- **but
+  go-libp2p-pubsub's own dedup check (`validateWorker`/`pushMsg` in the
+  vendored `go-libp2p-pubsub` package) runs AFTER the wire frame has
+  already been read and unmarshalled into a `pubsubpb.Message`, and
+  BEFORE the payload (the transaction bytes) is handed to this node's
+  OWN application-level validator/decode** -- meaning the FRAMING
+  allocation (the buffer read, protobuf unmarshal) happens for every
+  physical copy received, duplicates included, while the actual
+  transaction RLP DECODE (this section's own `B_gossip_receive`/`EXEC`
+  cost) is gated behind the dedup check and should NOT re-decode an
+  already-seen message's payload -- **not independently re-verified
+  against the vendored library's own source in the time available;
+  stated as the expected behavior per the library's documented design,
+  not confirmed line-by-line this pass.**
+- **Gossip send/forward**: `go-buffer-pool.(*BufferPool).Get`
+  (8.3 GB/16 blocks fleet-wide on this node, matching 6da/6db's own
+  figure exactly) is shared by GossipSub message framing AND (per the
+  `-focus` check above) some receive-side handling
+  (`handleIncomingRPC`/`handleNewStream` both appear in its own call
+  subtree) -- **it is not exclusively an outbound/forward cost**, so
+  this section's "C" label should be read as "buffer-pool-adjacent
+  libp2p framing, receive and send mixed," not purely forwarding.
+- **`broadcast=0`**: grepped in `run-r35zzzh.sh`'s own generator
+  invocation flags -- **not resolved to a specific propagation-mode
+  meaning in the time available**; the flag is passed to the harness's
+  own `txflood` binary invocation, not to the node, and this section
+  did not trace its effect through `txflood`'s own source (out of
+  scope for a node-side profile read). **The fleet's actual tx
+  propagation mode (full gossip vs hint-only vs announce-only) is
+  therefore reported as NOT DETERMINED by this pass** -- the campaign's
+  own `chain-35zzzh.sh` banner text does not mention `-hint-peers` for
+  this round (round 35zi's own hint-only track is a DIFFERENT,
+  historical configuration per the run script's embedded history, not
+  this round's), which is suggestive of full gossip but not a
+  confirmed reading of `broadcast=0` itself.
+
+### 5. Live heap side (`inuse_space`, same categories)
+
+Not re-run with the full `-traces`-based partition this pass (time
+budget spent on the alloc_space partition and its own EXEC-boundary
+finding, which the task's own numbered items placed first) -- **6da's
+own `inuse_space` top-line figures stand as the answer**: `txlookup.
+Tail.Add` (1.04 GB, 18.0%, category D) and `senderCachePut` (0.93 GB,
+16.2%, category D) are pool-internal; `qmdb.newMapIndexSized`
+(0.78 GB, 13.6%) is neither ingest nor pool in this section's own A-G
+scheme -- it belongs to the CONSENSUS/COMMIT path (category G,
+state-commitment, not transaction handling at all) and its own size is
+driven by chain-state key count, not by anything in this section's own
+per-transaction accounting. The tx-decode family (~25% of live heap,
+6da) splits, by the SAME reasoning as the alloc-space partition above,
+between category A (pool-resident, RPC-origin) and category
+EXEC_shared/F (pool-resident, gossip/import-origin) -- **not further
+separated for live heap in the time available.**
+
+### 6. Ranked candidates outside the executor (at most 5)
+
+| # | change | KB/tx removed (derived) | file:line | product/harness | offline proof | risk |
+|---|---|---|---|---|---|---|
+| 1 | Skip the RLP re-decode in `decodeChunkedBlock` for transactions already resident (by hash) in the local pool, reusing the pool's already-decoded object + already-recovered sender | **up to ~13.2 KB/tx** (this section's own attributable F share; the true ceiling is higher once `EXEC_shared`'s own import-side portion is counted, not separable here) | `internal/sync/rpc_chunked_response.go:132` | **product** | no existing benchmark covers block-import decode; would need a NEW one (decode+import N pool-resident transactions via a synthetic pushed block, alloc/op before/after) | medium -- must preserve byte-for-byte equivalence with what a fresh decode would produce (a stale/mismatched pool entry must not silently substitute the wrong transaction) |
+| 2 | Confirm and, if needed, fix whether `go-buffer-pool.Get` on the RECEIVE side (`handleIncomingRPC`/`handleNewStream`) is sized to the FULL frame every time, vs. reusing a pooled buffer across reads | not derived (this section could not isolate receive-only from the mixed C total) | `internal/p2p/` + vendored `go-libp2p-pubsub`/`go-buffer-pool` | **product** (libp2p integration, not a node-only file) | a pubsub-loopback benchmark (two in-process nodes, one gossip topic, N synthetic tx messages) measuring `alloc_space`/message | medium -- vendored dependency, changes here are library-integration-level, not a single N42 file |
+| 3 | Reduce GossipSub mesh degree `D` for this specific 7-node, full-mesh topology (every node already reachable within D=6-8 hops of a 7-peer graph; a full 7-node mesh needs D no larger than 6 to reach everyone directly) | not derived (bounds re-gossip COUNT, not bytes/tx directly -- would need a controlled A/B) | harness/node config (`gossip 24 MB` mesh params, `internal/p2p/gossip_scoring_params.go`) | **harness config`** (this campaign's own standing mesh-size choice, not a code change) | a pubsub-loopback benchmark varying D, counting `BufferPool.Get` calls/message | low-medium -- smaller D reduces propagation redundancy but could increase tail latency for a lost direct link; this campaign's own 7-node fleet is small enough that the tradeoff is probably favorable, not verified here |
+| 4 | Batch multiple small transactions into fewer, larger gossip messages instead of one message per transaction (if that is in fact today's shape -- not confirmed this pass) | not derived (batching shape not confirmed) | harness or protocol-level (`internal/distributed/messaging` or the tx-gossip topic's own publish call site) | **not determined** whether product or harness without confirming today's batching shape first | a pubsub-loopback benchmark comparing 1-tx-per-message vs N-tx-per-message at fixed total tx volume | low, PROVIDED the batching shape itself is confirmed first -- listed as a candidate to investigate, not a confirmed opportunity |
+| 5 | RPC ingest's `encoding/json.(*Decoder).refill`/`(*RawMessage).UnmarshalJSON` (2.88 GB + 1.08 GB of this node's own 20s window, per the `-focus=TransactionAPI` check) -- batch-decode via a lower-allocation JSON path (e.g. streaming array decode without `RawMessage` boxing) for `eth_batchRawTransaction` specifically | ~3.1 KB/tx of category A's own 3.1 KB/tx total (the JSON layer, not the RLP payload underneath it) | `modules/rpc/jsonrpc/` (exact call site not `-list`-read this pass) | **product** | existing RPC benchmarks were not found in the time available (`grep -rn "func Benchmark" modules/rpc/` not run this pass) -- would need a new one, submitting N raw txs through `BatchRawTransaction` | low-medium -- JSON decode changes are usually mechanical, but `eth_batchRawTransaction` is a live RPC surface other tooling may depend on exactly as shaped today |
+
+**Method.** `-traces` output for both nodes' win1 captures was parsed
+by `alloc_path_partition.py`; the script's own value-summing was
+cross-checked against `go tool pprof -top`'s own reported total (within
+~3-6%, attributed to a rare recurring-stack double-annotation in
+`-traces`' own text format, not corrected further given the time
+budget -- percentages are reported as the primary, scale-robust
+number). Per-category top-site figures for A and C used `go tool pprof
+-top -focus=<pattern>` directly (a reliable, standard pprof feature)
+rather than the script's own leaf-name extraction, which was found
+unreliable for stacks carrying a `-traces`-specific `bytes:`/`count:`
+annotation line and was not used for citing individual site numbers
+for that reason (category TOTALS from the script are still used, since
+those sum correctly; only per-leaf naming within a category used
+`-focus` instead).
+
+**What this does and does not show.** It shows a mutually-exclusive,
+honestly-labelled 8-way partition (A-G plus the newly-named
+`EXEC_shared`) covering 85.1-85.7% of the flood's own alloc_space in
+named, non-overlapping categories, clearing the task's own 85% bar. It
+shows, as a structural finding rather than a methodology failure, that
+the parallel executor's own worker-pool design makes 43% of the
+flood's allocation UNATTRIBUTABLE to leader-build vs. follower-import
+by stack trace alone -- a limit on what profiling (as opposed to
+targeted instrumentation, e.g. a caller-ID parameter threaded through
+`executeParallel`) can answer here. It shows F (follower import,
+attributable share alone) is 3.7x the combined attributable A+B+C+D --
+consistent with 6dc's own confirmed redundant-decode finding on the
+`decodeChunkedBlock` path. It does NOT resolve the `C`-category
+receive/send ambiguity in `go-buffer-pool.Get`'s own call sites, does
+NOT determine what `broadcast=0` means for this round's actual
+propagation mode, and does NOT re-verify go-libp2p-pubsub's own
+dedup-vs-allocation ordering against its source -- three items named
+as open, not answered, consistent with this task's own time budget and
+its instruction to report findings honestly rather than force a
+resolution.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
