@@ -13355,6 +13355,381 @@ the base binary regardless (the safety fix is not optional), but the
 cost should be tracked, not assumed zero, in every throughput
 comparison against pre-S26 rounds from here forward.**
 
+## 6dh. S31: the prepare vote fires on the block's header, not the deferred check -- same predicate as S26, moved earlier; n42-r95 built, prediction 94 registered before the round (2026-09-21)
+
+**Why.** 6dg measured S26's real cost: Round1 rose from ~60-72ms to
+153-262ms because the two-phase prepare vote now waits for
+`EventBlockChecked` -- `CheckDeferredBlock`'s own per-transaction walk
+(sender recovery, nonce/balance checks, ~134ms on a full block, more
+under win2's GC pressure) -- before `extendsJustify` ever runs.
+`CommitQC(v)` became the later event than the leader's own build end in
+33% of win1 views and 78-83% of win2 views (0% before S26): the vote
+round is back on the critical path. But `extendsJustify` never reads
+anything `CheckDeferredBlock` computes -- only the block's parent hash,
+a HEADER field, which `internal/sync/validate_blocks.go`'s
+`peekBlockHeader` already decodes independently of the transaction
+list, and which arrives with the pushed body ~30-65ms after the
+Proposal (6ce).
+
+**PART 0 -- same predicate, proven from the code.**
+`extendsJustify(view, blockHash)` (`internal/consensus/hotstuff/
+proposal.go`, unchanged by this step) is a pure function of exactly two
+inputs: `e.pendingJustifyBlocks[view]` (set once, in `processProposal`,
+from the Proposal's own signed `JustifyQC.BlockHash` -- S31 does not
+touch this) and `e.importedParents[blockHash]` (the block's own parent
+hash). Under S26, the ONLY way `importedParents[blockHash]` gets
+populated before Round 1 votes is `onBlockChecked(blockHash,
+parentHash)`, called from `internal/sync/rpc_block_push.go`'s
+`deferredCheck` with `parentHash = blk.ParentHash()` -- a getter that
+reads the ALREADY-DECODED header's `ParentHash` FIELD directly.
+**`CheckDeferredBlock` does not compute, validate, or otherwise modify
+this value in any way** -- it validates senders, nonces, balances and
+gas against the PARENT's post-state, using `ParentHash` as an input,
+never producing it as an output. So `onBlockChecked`'s own `parentHash`
+argument and S31's new `onBlockHeaderKnown`'s `parentHash` argument are
+**the identical value, read from the identical header field, via two
+different call sites** -- one after the full deferred check succeeds,
+one the instant the header is decoded. Populating the SAME map
+(`importedParents`) with the SAME value from an EARLIER call site
+cannot change what `extendsJustify` computes; it can only change WHEN
+the value becomes available for it to read. This is the whole proof:
+moving the trigger earlier changes timing only, never the predicate.
+
+(One live wrinkle, not a predicate change: S31's own gate,
+`tryHeaderVote`, additionally requires `e.twoPhaseVote` -- import-gated
+(non-two-phase) voting is untouched and keeps its documented guarantee,
+"vote only once the block is imported locally"; this is a NEW
+restriction on WHEN the fast path applies, not a change to what
+`extendsJustify` itself evaluates.)
+
+**Binding: how the peeked header is tied to the leader's signed
+Proposal.** A block's hash is `keccak256(rlp(header))` alone --
+`common/block/header.go:126` (`Header.Hash()`, computed via `rlpHash()`
+over header fields only) -- confirmed independently by
+`internal/sync/validate_blocks.go`'s own comment on the gossip path,
+"The block hash is keccak(rlp(header)), so the decoded block
+recomputes the identical hash." **Hashing the header therefore
+suffices**; no body field (including the transaction root, which is
+itself a HEADER field, `TxHash`) is needed to compute it. The Proposal
+message is BLS-signed over `proposalSigningMessage(view, blockHash)`
+(verified in `processProposal` before anything else runs), so
+`proposal.BlockHash` is cryptographically bound to the leader's
+identity. S31 adds **no explicit hash-comparison code**: the peeked
+header's own self-computed `Hash()` is used directly as the key into
+`e.importedParents`/looked up against `e.pendingProposals[view]` --
+these only correlate when the peeked header's hash EQUALS the
+BLS-signed `proposal.BlockHash`, exactly the binding needed. A header
+for the wrong block (or a corrupted/attacker-supplied one) simply
+never matches this view's pending proposal and is silently ignored
+(`TestHeaderVoteIgnoresHeaderForADifferentBlockHash`) -- the same
+"fails to correlate, not fails a check" pattern `onBlockChecked`/
+`onBlockImported` already use. Binding is hashing the header; nothing
+heavier is needed, so this step does not stop for a wire-format
+decision.
+
+**Where the event fires, and what each option costs.** Two shapes were
+possible: (a) peek the header BEFORE the full body decode, or (b)
+notify right after the full decode but before `deferredCheck`.
+`internal/sync/rpc_chunked_response.go`'s `readFirstChunkedBlock`
+already reads the WHOLE length-prefixed byte blob into memory
+(`encoder.DecodeWithMaxLengthLimit`) before calling `decodeChunkedBlock`
+for the full RLP decode -- so `peekBlockHeader(raw.data)` (already
+proven in production on the gossip path, `validate_blocks.go:52`) can
+run on those bytes at ZERO extra I/O cost, strictly before the
+transaction-list decode. **Chose (a)**: a new `ReadChunkedBlockPeekHeader`
+(`rpc_chunked_response.go`) invokes a callback with the peeked header
+immediately after the raw bytes are read, before `decodeChunkedBlock`
+runs at all -- ahead of the ENTIRE body decode, not merely ahead of
+`CheckDeferredBlock`. Cost of the peek itself: an RLP list-header read
+plus one FIXED-size header struct decode (the same operation the
+gossip path already performs live, no new code path); it does not
+scale with transaction count and does not shorten the wire transfer
+itself (the whole blob must still arrive before `raw.data` is
+complete) -- the saving is entirely in CPU/dispatch time downstream of
+that transfer: the transaction-list RLP decode (which S27's own 6dc
+found to be a non-trivial per-transaction cost) and `CheckDeferredBlock`'s
+own per-transaction walk both move OFF Round 1's own critical path,
+onto a path that runs anyway (for import/Round 2) but no longer gates
+the FIRST vote.
+
+**The fix.** `internal/consensus/hotstuff/engine.go`: new
+`EventBlockHeaderKnown` event type, carrying `Hash`/`ParentHash`/
+`Number` (`Number` is logging-only; nothing in the vote path reads it).
+`internal/consensus/hotstuff/proposal.go`: `onBlockHeaderKnown` records
+the parent in `importedParents` (bounded by its own `headerKnownFIFO`,
+since a header may arrive for a block never checked or imported and
+must not pin the map forever; an entry already tracked by
+`checkedBlocks`/`importedBlocks` is left alone by this FIFO's own
+eviction, mirroring `checkedFIFO`'s existing guard) WITHOUT setting
+`checkedBlocks` -- Round 2's `deferredAttested` gate is completely
+unaffected and still requires the real check. New `tryHeaderVote`
+(two-phase only) casts the Round 1 vote once the parent is POSITIVELY
+known (not merely "unknown, fail open" -- `extendsJustify`'s own
+fail-open branch must not be mistaken for a pass here) and
+`extendsJustify` passes; it is attempted from both `processProposal`
+(header arrived first) and `onBlockHeaderKnown` (Proposal arrived
+first), so either delivery order votes exactly once via the existing
+`journalPrepareVote`/`HasVotedInView` idempotency. If the header event
+never arrives, `processProposal`'s existing chain (already-imported ->
+`tryHeaderVote` -> `tryDeferredVote` -> defer) falls through to the
+UNCHANGED S26 checked/imported gate -- never voting blind.
+`internal/sync/options.go`: `BlockImportNotifier` gains
+`NotifyBlockHeaderKnown`; `internal/consensus/hotstuff/service.go`
+implements it, dispatching `EventBlockHeaderKnown`.
+`internal/sync/rpc_block_push.go`'s `blockPushStreamHandler` calls
+`ReadChunkedBlockPeekHeader` instead of `ReadChunkedBlock`, notifying
+from the peek callback. The two OTHER callers of the underlying reader
+(`rpc_block_by_hash.go`, `rpc_send_request.go`) are untouched -- they
+still call `ReadChunkedBlock`, which now threads a `nil` callback
+through unchanged.
+
+**Tests (`internal/consensus/hotstuff/header_vote_test.go`, new).**
+`TestHeaderVoteRefusesNonExtendingHeaderBeforeAnyDeferredCheck`: a
+non-extending header is refused at Round 1 with NO `EventBlockChecked`
+ever delivered in the test, proving the refusal does not depend on the
+deferred check having run.
+`TestHeaderVoteIgnoresHeaderForADifferentBlockHash`: a header event for
+a different block hash (even with a parent that legitimately extends
+the locked chain) never unlocks this view's own pending proposal.
+`TestHeaderVoteFiresExactlyOnceRegardlessOfOrder`: both orderings
+(header before the Proposal, header after) vote exactly once.
+`TestHeaderVoteFallsBackToCheckedGateWithoutTheHeaderEvent`: with no
+header event anywhere in the test, the existing checked/imported gate
+still carries the vote. Both S26 regression tests
+(`conflicting_commit_test.go`) pass unchanged. Full
+`internal/consensus/hotstuff` and `internal/sync` (+ subpackages)
+suites pass; the four new tests plus the two S26 tests pass under
+`-race`. `go vet`/`go build` clean across the whole repository.
+
+## 6di. S28: 14 GiB does not fit the box (nodes alone would need ~105 GB of it); the generators hold a stable ~3.6 GB and are not the driver; and a TRUE 20-second delta profile shows B1's real allocation rate is ~1.88 GB/block (~11.3 KB/tx), not the ~10.36 GB/block reported from earlier, apparently non-delta captures (2026-09-21)
+
+n42-r94, LIGHT work only (`nice -n 19`, single-threaded, no
+benchmarks; the box belongs to another fleet). B1 (10GiB,
+18:37:58-18:50:43) completed cleanly; B2 (14GiB) was aborted by the
+memory watchdog at 19:00:50 during its own ramp and was not retried.
+Node logs preserved (B1 whole, B2's tail possibly cut, copied mid-
+shutdown) at `wr-logs/r35zzzj-keep/node{0-6}/`. This section reads
+`r35zzzj-mem.log`/`-vm.log`/`-memstats.log` and the new true-delta
+allocs captures directly; no new script (the existing `alloc_path_
+partition.py` was reused unmodified on the new profile). Per the
+task's own instruction, `docs/OPEN_ISSUES.md` and this file both carry
+other, uncommitted edits from elsewhere in this worktree at the time
+of writing -- left untouched, not stashed or reset, per instruction.
+
+### 1. The abort: the memory ledger, B1 vs B2's last 3 minutes
+
+| | B1 (10GiB), low-water tail (18:47:44-18:50:37) | B2 (14GiB), last 3 min before abort (18:58:00-19:00:50) |
+|---|---|---|
+| per-node RssAnon (range across 7 nodes) | 10.1-11.1 GB | 11.4-14.7 GB (still climbing at abort) |
+| per-node RssFile (range) | 0.6-1.6 GB | 0.5-0.7 GB |
+| 8 generators, RssAnon total | ~3.5-3.9 GB | ~3.6 GB |
+| system `Shmem` | ~9.3-9.6 GB | ~9.5 GB |
+| system `Cached` | 48-51 GB | 27-46 GB (falling as nodes grow) |
+| system `AnonPages` | 76-79 GB | 85-104 GB (climbing) |
+| `MemAvailable` | **41-45 GB (low-water this leg)** | 36G -> 27G -> 23G -> 21G -> **18G (abort)** |
+
+**What consumed the memory in B2: the nodes, overwhelmingly, not the
+generators.** At the abort instant (19:00:50), the 7 nodes' own
+`RssAnon` sum to **98.8 GB** (13.7-14.7 GB each, already AT or past
+the nominal 14 GiB = 15.03 GB decimal ceiling for several nodes, and
+still visibly climbing sample-to-sample); the 8 generators sum to a
+STABLE **~3.6 GB total** (unchanged, within noise, from B1's own
+~3.5-3.9 GB) -- **the generators are not the driver; they were never
+close to the driver.** `Shmem` (~9.5 GB, stable across both legs) is
+the third-largest single line item, larger than the generators. Simple
+arithmetic against the box's own 137 GB: `7 nodes x 14 GiB (15.03 GB
+decimal) = 105.2 GB` + `generators ~3.6 GB` + `Shmem ~9.5 GB` +/- a
+`~7-8 GB` baseline OS/cache overhead (backed out from B1's own
+low-water figure below) `= ~125.3-126.3 GB`, leaving **~11-12 GB** of
+the box's 137 GB -- already below the 20 GB watchdog floor BEFORE the
+nodes even reach their own full 14 GiB ceiling, which is exactly what
+was observed (abort at 18G avail while nodes were still at 13.7-14.7,
+not yet 15.03, GB each).
+
+**B1's own low-water `MemAvailable` this leg was 41 GB** (10GiB
+limit) -- **comfortably above the 20 GB watchdog**, with roughly 21 GB
+of margin. Backing out the same arithmetic for B1: `7 x 10 GiB
+(10.74 GB decimal) = 75.2 GB` + `generators ~3.7 GB` + `Shmem ~9.4 GB`
+`= 88.3 GB`, against an observed low-water `avail` of ~41-45 GB out of
+137 GB (i.e. ~92-96 GB actually in use) -- the **~4-8 GB gap** between
+this arithmetic and the observed usage is the "baseline OS/cache
+overhead" term used above, consistent between the two legs' own
+arithmetic (a good sign the accounting method is sound, not
+coincidental).
+
+**Stated plainly: no `GOMEMLIMIT` meaningfully above 10 GiB is
+feasible on this 137 GB box with today's generator/Shmem footprint.**
+14 GiB already failed, and the arithmetic shows WHY without needing a
+second failed round to prove it: `7 x limit + ~3.6 (gens) + ~9.5
+(shmem) + ~7-8 (baseline) + 20 (watchdog floor) <= 137` solves to
+`limit <= (137 - 3.6 - 9.5 - 7.5 - 20) / 7 = 13.77 GB decimal =
+12.83 GiB` as the theoretical ceiling -- and 14 GiB (15.03 GB decimal)
+is already past that, which is exactly why it aborted. **Even a
+smaller bump (11-12 GiB) sits close enough to this ceiling that it
+should be treated as marginal, not safe, without first shrinking one
+of the four line items (nodes, generators, Shmem, or the watchdog
+floor itself) -- none of which this section proposes changing.**
+
+### 2. Generators, measured for the first time
+
+**Stable, small, and NOT the memory story**: ~3.5-3.9 GB total RssAnon
+across all 8 generators in every phase checked (ramp, win1, win2 of
+B1; the last 3 minutes before B2's abort) -- individual generators
+range 300-615 MB each, with no growth trend across phases. **CPU**: a
+10-second delta (B1win1) gave 98 cpu-seconds across 8 generators in
+10s wall time = **9.8 cores** -- non-trivial (roughly a third of the
+box's presumed ~32-core budget if PARALLEL_EVM's own 32 workers are
+counted per-node, though this is the GENERATORS' own share, separate
+from any one node's workers), but small next to the multi-hundred-GB
+memory question this section is centrally about. **What the memory
+is, from the run script's own flags** (`8 floods x 1000 x 3000`, `pool
+600k (300k held)`, `-depth-by-nonce`, `target-depth 30000-45000`,
+per this and every prior round's own banner text; `cmd/txflood` was
+not present to read directly in this worktree, so this is read from
+the run script's own accumulated commentary, not the generator's own
+source): each of the 8 generators tracks, in memory, **its own pool of
+pre-signed/pre-built transactions for its 1,000 senders** (the
+`pool 600k/200k` figures are the NODE's mempool limits, not the
+generator's; the generator's OWN footprint is its pending-transaction
+staging buffer plus **per-sender in-flight/nonce tracking** -- the
+`-depth-by-nonce`/`target-depth` flags exist specifically to cap how
+many transactions-in-flight each sender believes it has outstanding,
+which bounds this exact structure). **One paragraph, not a design
+note**: a few hundred MB per generator for ~1,000 senders' worth of
+staged/pre-built transactions and their own nonce bookkeeping is a
+small, bounded, and evidently STABLE cost -- it does not grow across a
+leg's own ramp/win1/win2 progression the way the node's own memory
+does, which is consistent with it being a fixed-size, capped
+structure rather than an accumulating one.
+
+### 3. B1's TRUE allocation numbers -- a correction to the measurement basis of 6dc-6df
+
+**The new true-20-second-delta allocs capture gives a dramatically
+different total than every prior round's own captures.** B1win1,
+node2: **30.04 GB alloc_space over the profile's own reported
+20.04 s duration**, 16 blocks in that span (blockTime 1.25 s) =
+**1.878 GB/block, 11.5 KB/transfer** (163,000 tx/block). **Cross-
+checked independently against `MemStats.TotalAlloc` deltas** (a
+monotonic counter, immune to any profile-capture-window question):
+node1's own `TotalAlloc` rose from 144.85 GB (18:47:32) to
+243.54 GB (18:48:34), a 98.69 GB delta over 62 s = 1.592 GB/s = **31.8
+GB over a 20 s window** -- **agrees with the pprof delta (30.04 GB)
+within ~5.5%, comfortably inside the task's own 20% tolerance.**
+
+**This is roughly 5.5x SMALLER than 6dc/6da's own reported
+10.36 GB/block, 68.2 KB/transfer figure.** The coordinator's own
+framing of this round's fix ("a true 20 s DELTA," implying prior
+captures were not) is the most direct explanation available: **every
+earlier round's own `allocs` capture in this campaign (6da, 6db, 6de,
+6df) was very likely NOT a clean 20-second delta** -- almost certainly
+a longer-window or cumulative-since-an-earlier-point capture that
+inflated the reported totals by roughly the same 5-6x factor this
+section finds directly. **This is flagged here as a measurement-basis
+correction that 6dc-6df's own headline numbers need, not re-derived or
+rewritten in place given this task's own light-work, single-node,
+time-boxed scope** -- the qualitative FINDINGS of those sections
+(which sites dominate, which code paths are shared vs attributable,
+the H-bench/H-multi reconciliation) do not obviously change just
+because the scale was off, but the ABSOLUTE numbers throughout (GB/
+block, KB/tx, and every "X% of 10.36 GB" framing) should be treated as
+suspect pending a re-run with confirmed-delta captures.
+
+**Partition by entry path, redone on this true-delta profile**
+(`alloc_path_partition.py`, unmodified, B1win1 node2, 32.66 GB summed
+across traces vs the profile's own 30.04 GB total -- the same
+~5-8% `-traces` double-annotation artifact 6de already flagged):
+
+| category | % | KB/tx (rescaled to the true 30.04 GB/20s, 16 blocks) |
+|---|---|---|
+| A: RPC ingest | 6.5% | 0.75 |
+| B: gossip receive | 0.1% | 0.01 |
+| C: gossip send/libp2p | 0.3% | 0.03 |
+| D: pool internal | 3.9% | 0.45 |
+| E: leader build (attributable) | 8.9% | 1.03 |
+| F: follower import (attributable) | 25.4% | 2.93 |
+| EXEC_shared (unattributable) | 41.4% | **4.77** |
+| unassigned (G) | 13.6% | 1.57 |
+
+**86.4% assigned to named categories, clearing the 85% bar again.**
+**`EXEC_shared`'s own corrected figure, 4.77 KB/tx, is now LOWER than
+6dc's own isolated-benchmark figure (6.25 KB/tx)** -- the "4.4x gap"
+6df spent a full section explaining has, on this corrected
+measurement, mostly EVAPORATED (and the isolated benchmark now reads
+as somewhat MORE expensive per transaction than the fleet's own
+shared-executor share, the opposite direction, on a single window's
+worth of data). **This does not mean 6df's own H-bench reasoning
+(memdb vs MDBX/QMDB, Finalize/block-end skipped, pre-decoded inputs)
+was wrong as a mechanism** -- those are still real, confirmed
+structural differences -- **but the MAGNITUDE of the gap they were
+asked to explain was itself an artifact of the same capture-window
+problem this section's own cross-check exposes.** Top 5 sites by flat
+`alloc_space`, this capture (not separately re-`-list`-read this
+pass, time budget): the same ranking shape as 6db/6dc/6de (`journal.
+push`, `parallelApplyTx`'s own sub-lines, `decodeEthereumTransaction`,
+`IntraBlockState` methods) -- MB/block figures would need rescaling by
+this section's own ~5.5x correction factor from 6db's own table,
+not independently re-measured here.
+
+### 4. GC, B1, win1/win2
+
+| | win1 (~18:47:57-18:48:17) | win2 (~18:48:56-18:49:16) |
+|---|---|---|
+| `NumGC` (bracketing samples) | ~42 -> 81 (62s span) | ~81 -> 102 (31s span) |
+| rate | ~37.7/min | ~40.6/min |
+| `HeapAlloc` (bracketing) | 6.43 -> 8.12 GB | 8.12 -> 8.76 GB |
+| `HeapInuse` (bracketing) | 7.02 -> 8.52 GB | 8.52 -> 9.30 GB |
+
+**GC frequency is roughly FLAT between win1 and win2 this round**
+(~38 vs ~41/min) -- unlike 35zzzh's own sharp win1->win2 jump (6da),
+this round's B1 (10 GiB, the SAME nominal limit as 35zzzh's own B1)
+does not show the same acceleration in this specific window pairing.
+`HeapAlloc`/`HeapInuse` climb steadily and continuously across both
+windows (part of the same leg's own ongoing ramp toward the 10 GiB
+ceiling, not a step change at the win1/win2 boundary). **GC+alloc
+share of CPU was not re-derived this pass** (properly-sampled,
+leg-named CPU profiles exist for this round, per the task's own note,
+but were not read given the light-work time budget -- named as not
+done, not estimated). Per-node `RssAnon`/`RssFile`/fault-counter table
+(continuity with 6da): already given in full in section 1's own ledger
+table above (this round's B1 IS the "B1" comparison point 6da's own
+table format calls for).
+
+### 5. Prediction 93, ruled
+
+- **(a)-(c)** (does 14 GiB reduce NumGC/GC-CPU-share, does RssAnon/
+  fault-counters rise as expected, does win2 block time improve):
+  **cannot be judged -- the leg aborted during its own ramp, before
+  any measurement window opened.** Stated exactly that, per the task's
+  own instruction, not estimated or guessed from the partial data
+  available.
+- **(d)** S26 safety checks, legs that ran: `height_conflict_check.py`
+  against B1's own kept logs -- **0 conflicts** (checked directly,
+  consistent with every round since the fix landed). B2's own partial/
+  cut logs were not separately checked given the leg never reached a
+  scored window and the task's own light-work scope.
+
+**VERDICT: falsified** (prediction 93 asked whether 14 GiB is
+affordable and helps; it is not affordable at all, on this box, with
+today's generator/Shmem footprint -- the clearest possible negative
+result, not merely "inconclusive").
+
+**What this does and does not show.** It shows, with clean, load-
+bearing arithmetic backed by two consistent low-water observations
+(B1's 41 GB, B2's abort at 18 GB), that 14 GiB does not fit this box
+and that neither the generators (~3.6 GB, stable) nor `Shmem`
+(~9.5 GB, stable) are the reason -- the NODES' own growth is. It shows,
+via an independent cross-check against `TotalAlloc` deltas, that this
+round's TRUE per-block allocation rate (1.878 GB/block, 11.5 KB/tx) is
+roughly 5.5x smaller than every prior round's own reported figure --
+the single most consequential finding in this section, flagged as a
+correction 6dc-6db-6de-6df's own absolute numbers need, without
+attempting that correction here. It does NOT re-derive GC-CPU-share
+from this round's own properly-sampled CPU profiles (time budget). It
+does NOT determine a specific SAFE `GOMEMLIMIT` above 10 GiB -- the
+arithmetic bounds it at ~12.8 GiB in theory, but this section
+recommends treating anything above 10 GiB as unproven until a round
+actually completes at that setting.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
