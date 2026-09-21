@@ -966,3 +966,109 @@ not running.
 
 Prediction 89 (see 6cu for the exact bars) is registered. Launch is
 the commander's next call.
+
+## S25 prepared -- harness-only fixes tested offline, GOMEMLIMIT A/B, not launched (2026-09-21)
+
+Why: the in-window capture has now failed twice for two different
+reasons (35zzzf: wrong trigger, landed in the decay ramp; 35zzzg: the
+fixed trigger had a real parsing bug and span until its own deadline).
+This step proves the fix offline before handing it back a third time.
+See `docs/QS_BLOCK_TIME_BUDGET.md` section 6cy for the full writeup
+and prediction 90. Binary stays **n42-r92** (sha256 ba1a2105e458) --
+NOT r93; 35zzzg's A2 leg (the second `N42_LEADER_WRITE_ASYNC=1` leg)
+never produced a block after the restart, now explained in 6cx as a
+pre-existing propose-before-write/sibling-race hazard reachable on r92
+too (not S23-specific), under separate write-up in `docs/OPEN_ISSUES.md`
+-- noted here, not re-investigated, per this step's own instruction.
+
+**Offline test output (both pass in full):**
+
+```
+$ bash scripts/qs-harness/test_full_block_check.sh
+PASS: empty block (0%) (status=1)
+PASS: 48.7% full block (status=0)
+PASS: 22% full block (status=1)
+PASS: RPC error response (status=2)
+PASS: completely empty body (status=2)
+PASS: gasUsed before gasLimit (status=0)
+PASS: gasLimit before gasUsed (status=0)
+PASS: exactly 45% (boundary, inclusive) (status=0)
+PASS: 44% (just under threshold) (status=1)
+PASS: realistic trailing-fields response (status=0)
+
+10 passed, 0 failed
+```
+
+```
+$ bash scripts/qs-harness/dry_run_capture.sh
+writing to /tmp/tmp.XXXXXXXXXX
+t=3: first full block detected (poll returned a %45+ block); win1 start
+t=5: capturing win1 (target was win1_start+2s = 5)
+t=9: capturing win2 (target was win1_start+6s = 9)
+
+=== checks ===
+PASS: win1-node1-cpu.pb.gz written and non-empty
+PASS: win1-node2-heap.pb.gz written and non-empty
+PASS: win2-node1-cpu.pb.gz written and non-empty
+PASS: win2-node2-heap.pb.gz written and non-empty
+PASS: win2 capture landed 4s after win1 capture (want ~4s)
+
+dry run OK
+```
+
+The bug itself: `grep -o '"gasUsed":"0x[0-9a-f]*"' | grep -o
+'0x[0-9a-f]*$'` -- the first grep's own match text ends in a closing
+quote, so the `$`-anchored second grep never matches; reproduced
+directly against the exact string in a live shell (empty output every
+time), not just reasoned about. Fixed by dropping the anchor,
+extracted into `scripts/qs-harness/full_block_check.sh`'s
+`is_full_block` (0=full/1=not full/2=could not parse, so the caller
+retries on 2 rather than treating a bad response as "empty"). The
+threshold also needed fixing separately: 95% (measure-tps.sh's own
+occupancy convention) is unreachable here since the builder's fill cap
+is HALF the header gas ceiling, so a genuinely full block never
+exceeds ~50% -- lowered to 45%.
+
+**Window timing derived from source, not assumed:**
+`bench-run.sh:281-293` -- the flood-ready announcement
+(`"all $FLOODS flood(s) submitting; opening measurement windows"`)
+fires, THEN a hardcoded `sleep 15` (line 282), THEN `measure-tps.sh`
+is called (line 293), whose own per-window loop opens win1 on its very
+first line (`measure-tps.sh:32-33`) with nothing else in between. So
+win1's true start = that print line's own timestamp + 15s, exactly,
+not a proxy. This is now the PRIMARY detection signal (reusing the
+SAME `$mark`/`'all 8 flood'` grep the script's own `check_mode` gate
+already computes, right after `benchpid` starts); the fixed
+first-full-block poll is kept as a fallback.
+
+**GOMEMLIMIT: found where it is set.** `run_leg`'s own `export
+GOMEMLIMIT=10GiB` (this script; every round since 35zb has used this
+fixed value). `bench-7node.sh` does not set or override it itself
+(confirmed by grep). New 6th `run_leg` argument passes it per leg:
+`warmup 1 10GiB`, `A1 1 10GiB`, `B1 1 10GiB` (baseline), `B2 1 6GiB`,
+`A2 1 6GiB`. `GOGC=200` unchanged. `N42_LEADER_WRITE_ASYNC` is not a
+`run_leg` argument this round -- left unset everywhere.
+
+**New captures/samplers:** `allocs` profile added alongside the
+existing cpu/mutex/block/heap/goroutine set. VM sampler (10s) gains
+per-node AND per-generator CPU-seconds (`/proc/<pid>/stat` fields
+14/15, this box's clock tick confirmed at 100 Hz via `getconf
+CLK_TCK`) and generator `RssAnon`. A new runtime-memstats sampler
+(30s, two fixed nodes) GETs `.../debug/pprof/heap?debug=1` and keeps
+`tail -n 40` into `wr-logs/r35zzzh-memstats.log` -- verified against
+this box's actual Go 1.26 source (`net/http/pprof/pprof.go`'s
+"debug=N... N > 0: plaintext" doc comment; `runtime/pprof/pprof.go`'s
+`writeHeap` prints the `# runtime.MemStats` trailer with `HeapAlloc`/
+`NumGC`/`GCCPUFraction`/`PauseNs` -- note: `PauseNs` is a raw-sample
+ring buffer, there is no single `PauseTotalNs` field here as such),
+not tested live (no fleet up), so tolerant of a non-200/empty
+response. `/debug/vars` (expvar) confirmed absent (no import
+anywhere).
+
+**Runner: `run-r35zzzh.sh`/`chain-35zzzh.sh`, built from the 35zzzf
+pair (not 35zzzg), not launched.** Predecessor-wait fixed to
+`r35zzzg.log` (already finished). `bash -n` clean on both; confirmed
+not running.
+
+Prediction 90 (see 6cy for the exact bars) is registered. Launch is
+the commander's next call.

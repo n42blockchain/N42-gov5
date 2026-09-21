@@ -11267,6 +11267,176 @@ for the complete evidence trail and classification (**B: reachable on
 r92 too, not specific to S23's relaxed pre-check** -- retiring
 `N42_LEADER_WRITE_ASYNC` does not close this hazard).
 
+## 6cy. S25: the in-window capture proved offline before being handed back a third time -- a real parsing bug (anchored regex) and an unreachable threshold (95% on a shape whose full blocks top out near 50%), plus a GOMEMLIMIT A/B; prediction 90 registered before the round (2026-09-21)
+
+**Why.** The in-window capture has now failed in two rounds for two
+different reasons: round 35zzzf's own captures landed inside the
+baseFee-decay ramp (wrong trigger, fixed by S22/6ct's switch to a
+first-full-block detector); round 35zzzg's fix had a real bug that made
+that SAME detector spin until its own deadline every time. This step
+does not hand the fix back a third time without testing it first.
+
+**1a/1b. The bug, and proving the fix offline (not "trust me").**
+`grep -o '"gasUsed":"0x[0-9a-f]*"' | grep -o '0x[0-9a-f]*$'` -- the
+FIRST grep's own match is `"gasUsed":"0x1234"` (quotes included), and
+the hex digits are never the LAST characters of that string (a closing
+`"` always follows), so the `$`-anchored second grep never matches;
+`gu`/`gl` stay empty forever and the poll loop spins until the leg's
+own 900s deadline. Confirmed directly, not just reasoned about:
+running the OLD pattern against a real matched string in this shell
+reproduces empty output every time. Fixed by dropping the anchor.
+Extracted into `wt-r27/scripts/qs-harness/full_block_check.sh`
+(`is_full_block`, a pure function: 0=full, 1=not full but parsed OK,
+2=could not parse -- the caller must retry on 2, not treat it as
+"empty") and tested with `test_full_block_check.sh` against ten canned
+JSON cases: an empty block, 48.7%/22%/45%(boundary)/44%(just under)
+percent-full blocks, an RPC error response, a completely empty body,
+gasUsed-before-gasLimit and gasLimit-before-gasUsed (field-order
+independence), and a realistic response with extra trailing fields.
+**All 10 pass.** The threshold itself also needed fixing, separately:
+95% (copied from `measure-tps.sh`'s own occupancy convention) is
+unreachable in this harness's shape, where `N42_MINER_FILL_GAS` caps
+the builder's own fill at HALF the header gas ceiling -- a genuinely
+full block never gets much past ~50%. This means round 35zzzf's own
+capture attempt plausibly never fired EITHER, quietly (it degrades to
+"no full block seen, skipping" rather than an error), and 35zzzg's
+timeout is what finally made the underlying bug visible. Lowered to
+45%. `dry_run_capture.sh` then runs the WHOLE sequence -- poll (against
+a stubbed `curl` shell function serving two empty blocks then a full
+one) -> detect -> wait to win1_start+15s -> capture -> wait to
+win2_start(+60s)+15s -> capture -- end to end with scaled-down timings,
+writing real files to a `mktemp -d` directory and checking they exist,
+are non-empty, and that the two captures land the expected number of
+seconds apart. **Dry run: OK.** No live fleet was used for any of this.
+
+**1c. When win1 actually opens.** Read (not modified):
+`/data/blockchain/scripts-qs/bench-run.sh` and `measure-tps.sh`.
+`bench-run.sh` prints `"all $FLOODS flood(s) submitting; opening
+measurement windows"` (`bench-run.sh:281`) the instant every generator
+is confirmed flooding, THEN unconditionally sleeps 15s
+(`bench-run.sh:282`, its own comment: "let the pool reach depth")
+before calling `./measure-tps.sh --windows "$WINDOWS" --window-sec 60`
+(`bench-run.sh:293`). `measure-tps.sh`'s own per-window loop opens
+win1 immediately on entry -- `h0=$(head_num); t0=$(date +%s)` is the
+very first thing inside the `for (( w = 1; w <= WINDOWS; w++ ))` loop
+(`measure-tps.sh:32-33`), with nothing between the function call and
+this line. **So win1's true start is that print line's own timestamp
+plus exactly 15 seconds -- not a proxy for it, the harness's own
+literal schedule.** `measure-tps.sh` itself prints NOTHING at a
+window's start (only a one-line summary AFTER each 60s window's sleep
+returns, `measure-tps.sh:70-71`), confirming there is no more direct
+live signal available than the flood-announcement line. This line is
+ALSO the exact string this same script's own `check_mode`-gating logic
+already tracks (`local mark; mark=$(grep -c 'all 8 flood' $L ...)`,
+computed once right after this leg's own `benchpid` starts) -- reused
+directly rather than duplicated, so "this leg's own occurrence" means
+the same thing in both places. This is now the PRIMARY win1-detection
+signal; the fixed first-full-block poll is kept as a FALLBACK for if
+the primary string is ever not seen (e.g. `FLOODS` stops being 8, or
+the wording changes) within the poll deadline.
+
+**1d. Captures.** Per window, from the sitting leader and one
+follower (unchanged selection): cpu (20s), mutex (20s), block (20s),
+heap, goroutine (`debug=1`), plus NEW **allocs** (the cumulative
+allocation profile -- heap answers "what is resident now," allocs
+answers "what is being allocated fastest," which a short-lived
+high-churn allocator can dominate without ever showing a large inuse
+figure). Separately, since this campaign's own CPU profiles are
+badly undersampled (~1.76s of samples per 20s capture -- a longstanding,
+unexplained gap this step does not chase), the 10s VM sampler gains
+kernel-level CPU accounting that does not depend on pprof's sampling
+at all: `utime`+`stime` from `/proc/<pid>/stat` fields 14/15 (this
+box's own clock tick confirmed at 100 Hz via `getconf CLK_TCK`, not
+assumed), for the seven nodes AND the eight txflood generators, plus
+the generators' own `RssAnon` (the existing memory watchdog already
+reads combined generator RSS, never per-generator, and never their
+CPU) -- so a within-leg slowdown can finally be split into "the chain
+got slower" vs. "the load generators themselves slowed down."
+
+**Part 2 -- GOMEMLIMIT.** Found where it is set today: `run_leg`'s own
+`export GOMEMLIMIT=10GiB` (this script; every round back to 35zb has
+used this fixed value -- 35zb's own note: "the follower import is 2x
+its uncontended 731 ms because the seven heaps squeeze the page cache
+to 3-4 GB of MDBX per node"). `bench-7node.sh` does not set or
+override it itself (confirmed by grep: no match), so this `export` is
+the only place it is set for the fleet's node processes; `GOGC=200`
+(same location) is unrelated and left unchanged, per the task. This is
+the first round that varies it: `run_leg` gained a 6th argument
+(`GOMEMLIMIT`, e.g. `"10GiB"`/`"6GiB"`) exported verbatim; `N42_LEADER_
+WRITE_ASYNC` is NOT a `run_leg` argument this round (left unset
+everywhere, matching the binary staying at n42-r92, not r93).
+
+**Part 3 -- runtime memstats, no profile needed.** `/debug/vars`
+(expvar) does **not** exist on these nodes: confirmed by grep, no
+`expvar` import anywhere in `cmd/n42` or `internal`. `/debug/pprof/
+heap?debug=1` DOES carry what is needed: verified directly against
+this box's own Go 1.26 source (not guessed) --
+`net/http/pprof/pprof.go`'s own doc comment states plainly "debug=N
+(all profiles): response format: N = 0: binary (default), N > 0:
+plaintext," and `runtime/pprof/pprof.go`'s `writeHeap` (~lines
+717-753) prints a `"\n# runtime.MemStats\n"` block ending the
+response, containing `HeapAlloc`/`HeapSys`/`HeapIdle`/`HeapInuse`/
+`HeapReleased`/`HeapObjects`, `NumGC`, `NumForcedGC`, `GCCPUFraction`,
+and `PauseNs` -- **one correction to the task's own expectation: there
+is no single cumulative `PauseTotalNs` field printed here; `PauseNs`
+is a ring-buffer array of recent raw pause samples.** `NumGC` (a per-
+window delta gives GC frequency) and `GCCPUFraction` are what this
+round reads for GC cost instead, which serves the same purpose. Not
+tested against a live fleet (none is up while preparing this round),
+so the new sampler is written tolerant of a non-200 status or empty
+body regardless, logging `"HTTP <code> (tolerated)"` rather than
+failing. Samples two fixed nodes (0 and 1 -- cheap enough not to need
+leader/follower role-targeting) every 30s (`tail -n 40` of the
+response, comfortably covering the ~23-line trailer) into
+`wr-logs/r35zzzh-memstats.log`.
+
+**Runner.** `run-r35zzzh.sh`/`chain-35zzzh.sh` built from the
+`run-r35zzzf.sh`/`chain-35zzzf.sh` pair (NOT 35zzzg -- the binary
+stays n42-r92) via `cp`+`sed 's/35zzzf/35zzzh/g'`. Fixed by hand
+afterward: the predecessor-wait (`chain-35zzzh.sh` now waits on
+`r35zzzg.log`, per this step's own instruction -- 35zzzg has already
+finished) and the header comments (rewritten to describe S25, not the
+inherited S22 text). GOMEMLIMIT plumbed as `run_leg`'s 6th argument;
+calls: `warmup 1 10GiB`, `A1 1 10GiB`, `B1 1 10GiB` (today's value,
+the in-round baseline), `B2 1 6GiB`, `A2 1 6GiB`. Both already-adopted
+switches (`N42_LEADER_WRITE_AFTER_JOURNAL`, `N42_CONTENTION_DIAG`)
+stay on in every leg; `N42_LEADER_WRITE_ASYNC` stays unset. `bash -n`
+clean on both; confirmed not running.
+
+**Prediction 90 (registered before any round):**
+
+**(a) Mechanism.** In B2 (6 GiB), per-node `RssAnon` in win1/win2 is
+lower than B1's (10 GiB) by >= 2 GB; per-node `RssFile` is higher;
+fleet `pgmajfault` and `workingset_refault_file` per 10s tick in win2
+are lower by >= 2x -- the direct OS-counter signature 6cr/6cv already
+established for page-cache thrash, now tested as a LEVER rather than
+merely observed.
+
+**(b) Cost.** GC count per window (`NumGC` delta from the new memstats
+sampler) and GC CPU (`GCCPUFraction`, or the VM sampler's own per-node
+CPU-seconds split against block count) reported for both legs. If
+`NumGC` per block rises above ~1 in B2, the 35q failure mode (heaps
+collecting on every block under a too-tight limit) is back and 6 GiB
+is too low a value for this shape.
+
+**(c) Score, with the leg-order caveat stated up front.** Second
+windows of otherwise-identical legs have differed by up to ~10k TPS
+between legs in this campaign already (6cv), so: B2 win2 block time
+<= 1.45s against B1's own ~1.7s would be a real effect; anything
+inside 1.6-1.8s is no effect, not a null result to over-read.
+
+**(d) What is actually in the heap.** The in-window heap profiles
+(win1 AND win2, both legs) are the first this campaign has ever taken
+INSIDE the scored flood window rather than the empty-block decay ramp
+-- top 10 `inuse_space` entries settle 6cr/6cv's own open question
+("what fills anonymous memory is NOT yet known... every heap profile
+so far was taken in the empty-block phase").
+
+**VERDICT: confirmed** (offline tests pass, dry run passes, harness-
+only changes built and syntax-checked). QS_QUEUE.md's S25 row status
+is marked prepared with prediction 90 (6cy). Launch is the
+commander's next call.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
