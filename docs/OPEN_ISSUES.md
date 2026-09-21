@@ -287,6 +287,23 @@ leader's critical path also costs the block its parallelism.
 
 ## A quorum-committed block that no node stored -- open (2026-09-21, round 35zzzg, S23b)
 
+**SEVERITY (commander, 2026-09-21, from node5's raw log): this is a consensus SAFETY violation, not only
+a liveness halt.** Both blocks were COMMITTED, one second apart, by honest nodes: `block committed!`
+view 8784 hash `7a6d85...23259c` at 15:05:56 (votes 5/5 in both rounds) and `block committed!` view 8785
+hash `f47f65...13d8ac` at 15:05:57 (votes 5/5 in both rounds) -- two different blocks at height 13661138
+with the same parent (13661137, `5f35affe...`). The state did not fork only because no node could import
+the second one; the chain halted instead. Two defects are needed for this and both are on the main line:
+(1) the leader proposed, in view 8785, a block sealed on a parent that its own view-8784 block had
+already superseded (a stale speculative build was pushed and proposed; the only check that caught it ran
+at WRITE time, after the proposal had gathered its CommitQC -- `PROPOSE_BEFORE_WRITE`); (2) six followers
+cast prepare AND commit votes for a block that does not extend the block they had just committed: the
+deferred-vote path (`deferred check: block passes, vote may proceed before its import`) and the
+extends-check that fails open (6ce: proposal.go, prepare 'gated on nothing beyond the Proposal message
+itself') let a conflicting sibling through. A correct vote rule alone would have made (1) harmless.
+Required before any further protocol-path change is adopted: a regression test that replays exactly this
+(commit X at height h in view v; proposal Y at height h with X's parent in view v+1 -> no vote), and the
+vote rule fixed to refuse it. Tracked as QS queue step S26.
+
 Round 35zzzg, leg B2 (`N42_LEADER_WRITE_ASYNC=1`), 15:05:56-57 EDT, views
 8784-8785. Node5 led a 4-view tenure (8782-8785) into which the last two
 views both produced a block claiming **height 13661138**: view 8784
