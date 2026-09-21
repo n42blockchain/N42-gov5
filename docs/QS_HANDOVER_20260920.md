@@ -789,3 +789,90 @@ including `N42_BLOCK_GOSSIP_FALLBACK=0`/`N42_CONTENTION_DIAG=1`.
 
 Prediction 87 (see 6co for the exact bars and the "NOT merely moved"
 caveat) is registered. Launch is the commander's next call.
+
+## S22 prepared -- n42-r92 built, seal-path stamps ready, harness captures fixed to win1/win2, VM sampler added, not launched (2026-09-21)
+
+Why: 6cs confirmed push(v+1) is gated by `max(write(v) ending,
+CommitQC(v) forming)` plus a leg-invariant ~254 ms constant, but could
+not name the exact lock behind the write-bound path (92% of B2's
+views) without `tMs` on lines no binary this campaign has built
+carries. It also found every profile captured so far (+150 s here,
++250 s/+345 s the commander's own) landed inside the 400 s baseFee
+decay ramp (empty blocks), never the scored windows. See
+`docs/QS_BLOCK_TIME_BUDGET.md` section 6ct for the full writeup, the
+U1 code reading, and prediction 88.
+
+**U1 code reading, in one paragraph:** `resultCh` (`worker.go:337`,
+unbuffered, `:414`) has exactly one consumer, `resultLoop`
+(`worker.go:535`, started once at `:460`), which calls `handleSealed`
+SYNCHRONOUSLY (`:543`) and does not loop back to receive the next
+result until `handleSealed` returns -- and `handleSealed` runs
+`WriteBlockWithState` inline, on this SAME goroutine (`:831`). `Seal`
+(`adapter.go:850`) does not block its own caller; it spawns a
+per-call delivery goroutine (`:903`) that blocks on the unbuffered
+channel send (`:905`) until `resultLoop` is free. So a block v+1
+sealed while `handleSealed(v)` is still running its own write cannot
+be picked up (hence cannot be pushed, since the early push happens
+inside `handleSealed` before the write) until that write returns --
+the single `resultLoop` goroutine IS the gate, confirmed by file:line
+rather than inferred.
+
+**n42-r92: built.** `/data/blockchain/gov5-work/n42-r92`, 108,774,624
+bytes, sha256
+`ba1a2105e458bc22908e1755c0a9a322269cae6aa57e593c294c7ac121ad890f`.
+Same file-checkout recipe as n42-r86 through r91 (commit `62439af7`):
+`seal_path_diag.go`/`_test.go` are new; `worker.go` needed a THIRD
+hunk on the same base (S11's, then S19's, now S22's), with ONE
+mechanical conflict (the speculative-hit block's context lines differ
+from an off-lineage `tMs` field already excluded from every build
+since n42-r86) resolved by hand and verified against a full diff --
+only the same four already-known off-lineage lines remain, nothing
+new. `go vet` clean; `go test` passes on `internal/consensus/
+hotstuff/...` and `internal/miner/...` (both `N42_CONTENTION_DIAG`
+placements, `-race` included), `internal/`, `internal/parallel/...`.
+`strings n42-r92 | grep -c BaseCache` = 0; every prior marker present;
+four new ones (`"miner: seal path"`, `resQWaitMs`, `taskQWaitMs`,
+`specHitTMs`) each = 1.
+
+**Field glossary addition** (new log line `"miner: seal path"`, one
+per sealed block on the leader, behind `N42_CONTENTION_DIAG=1`):
+`triggerTMs`, `buildBeginTMs`, `specParkedTMs`/`specHitTMs`,
+`paceEnterTMs`/`paceDurMs`, `taskSentTMs`, `taskQWaitMs` (the queue
+wait U1 asked for on `taskCh`), `taskPickedTMs`/`sealEnterTMs` (both
+`sealStart`), `checkEnterTMs`/`checkExitTMs`, `blsStartTMs`/
+`blsEndTMs` (`sealStart`/`sealStart+blsNanos` -- no new cross-package
+stamp needed), `resultRecvTMs`, `resQWaitMs` (the queue wait U1 asked
+for on `resultCh` -- the one this section's own reading says should
+track the write-bound views directly), `copyStartTMs`/`copyEndTMs`,
+`pushStartTMs`/`pushEndTMs`, `proposeStartTMs`/`proposeEndTMs`,
+`lwWaitMs`/`lwWhy` (S19, unchanged), `writeStartTMs`/`writeEndTMs`.
+
+**Runner: `run-r35zzzf.sh`/`chain-35zzzf.sh`, built from the 35zzze
+pair, not launched. NOT an A/B round** (unlike 35zzze): `run_leg`'s
+5th argument (`N42_LEADER_WRITE_AFTER_JOURNAL`) is `1` in every leg
+now, adopted provisionally per the commander's ruling on S21.
+Predecessor-wait fixed by hand to `r35zzze.log` (the sed pass alone
+would have left S19/S21's own `r35zzzd.log` target in place); binary
+references updated to `n42-r92`.
+
+Two harness changes, both read-only against `bench-run.sh`/
+`measure-tps.sh` (neither modified): (1) profile captures (B legs
+only) now trigger on the leg's own first FULL block
+(`gasUsed/gasLimit >= 0.95`, polled every 3 s) instead of a fixed
++150 s sleep -- decay makes only empty blocks, so this coincides with
+win1's own start; win2 = win1 + 60 s (the harness's own fixed
+`--windows 2 --window-sec 60`), captured at both +15 s, now including
+a heap profile alongside the existing cpu/mutex/block/goroutine set.
+(2) a new VM sampler (mirroring the existing memory watchdog's own
+start/stop discipline, every 10 s) into `wr-logs/r35zzzf-vm.log`:
+per-node `minflt`/`majflt` (`/proc/<pid>/stat` fields 10/12) and
+Anon/File/Shmem RSS (`/proc/<pid>/status`, the same source the
+existing watchdog uses -- `smaps_rollup` was not used since there is
+no live fleet right now to time it against a real node's mapping size,
+and status is already proven fast here), plus `/proc/vmstat` reclaim
+counters as 10 s deltas.
+
+`bash -n` clean on both; confirmed not running.
+
+Prediction 88 (see 6ct for the exact bars) is registered. Launch is
+the commander's next call.

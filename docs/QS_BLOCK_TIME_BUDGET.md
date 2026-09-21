@@ -10042,6 +10042,227 @@ population under this same gate model -- both are flagged as the
 natural next extension, not done here given this task's own win1-only
 scope.
 
+## 6ct. S22: n42-r92 built and prepared -- seal-path stamps close 6cs's U1 gap, the harness now captures inside win1/win2 instead of the decay ramp, and a VM sampler tests S20 directly; prediction 88 registered before the round (2026-09-21)
+
+**Why.** 6cs confirmed push(v+1) is gated by `max(write(v) ending,
+CommitQC(v) forming)` plus a leg-invariant ~254 ms pacing/seal
+constant, and named the write-bound path's own mechanism (92% of B2's
+views) as "a lock shared with `WriteBlockWithState`, most likely in
+the seal/commit path" -- inferred from the aggregate 254 ms, not
+observed at file:line, because no binary this campaign has built
+carries `tMs` on the speculative-build/commitWork-begin lines. 6cs
+also corrected the harness record: `bench-run.sh` runs the 400 s
+baseFee decay BEFORE the flood, so every profile captured so far
+(+150 s, and the commander's own +250 s/+345 s) landed inside the
+decay ramp, sampling empty blocks, never the scored windows.
+
+**Part A -- code.** `internal/miner/worker.go` gains one new info line
+per sealed block on the leader, `"miner: seal path"`, plus
+`internal/miner/seal_path_diag.go` (the `N42_CONTENTION_DIAG` switch,
+read independently in this package the same way S14 established it in
+`internal/consensus/hotstuff`, and two small helpers, `tMs`/`waitMs`,
+so a step that never happened reads as a plain 0 rather than a
+zero-`time.Time`'s huge negative `UnixMilli()`).
+
+Seven new fields on the existing `task` struct (`triggerAt`,
+`buildBeginAt`, `specParkedAt`, `specHitAt`, `paceEnterAt`, `paceDur`,
+`taskChSentAt`) extend the SAME pattern `finalize`/`witness`/
+`assemble`/`sealStart`/`blsNanos` already use -- carrying timings
+collected on three different goroutines (`commit` -> `taskLoop` ->
+`resultLoop`) so `resultLoop` can emit ONE line with full context
+instead of several scattered ones. `commitWork`/`commit` each gain two
+new parameters (`triggerAt`, threaded from the confirming
+`newWorkReq.enqueuedAt`; `tPaceEnter`/`dPace`, from whichever
+`paceBlock` call applies -- the speculative-hit path's own call, or
+the fresh-build path's). All extra `time.Now()` calls are gated on
+`contentionDiagEnabled`; the log line itself is only emitted when the
+switch is on. No new lock, no per-transaction work -- everything added
+is once per sealed block, matching the existing (unconditional)
+`sealStart`/`createdAt`/`blsNanos` fields' own cost.
+
+**Field list on `"miner: seal path"`** (unix-ms stamps unless named
+otherwise): `triggerTMs` (build trigger received --
+`OutputViewChanged`/`TriggerBlockProduction`), `buildBeginTMs`
+(`commitWork`'s own entry), `specParkedTMs`/`specHitTMs` (zero for a
+fresh, never-speculative build), `paceEnterTMs`/`paceDurMs`,
+`taskSentTMs` (task handed to `taskCh`), **`taskQWaitMs`**
+(`taskChSentAt` -> `sealStart`, U1's own ask), `taskPickedTMs`/
+`sealEnterTMs` (both `sealStart` -- `taskLoop` picks the task and
+stamps `sealStart` in the same critical section, worker.go:1058-1063,
+so these two names are the same instant), `checkEnterTMs`/
+`checkExitTMs` (`CheckSealParentApplied`), `blsStartTMs`/`blsEndTMs`
+(`sealStart` and `sealStart+blsNanos` -- Seal's own call is already
+bracketed by exactly these two existing timers, so no new cross-package
+instrumentation was needed), `resultRecvTMs` (`resultLoop`'s own entry
+for this result), **`resQWaitMs`** (`sealStart+blsNanos` ->
+`resultRecvTMs`, U1's other ask), `copyStartTMs`/`copyEndTMs`
+(receipts copy), `pushStartTMs`/`pushEndTMs`, `proposeStartTMs`/
+`proposeEndTMs` (the EARLY propose branch specifically -- the late
+branch already had its own timing before this step), `lwWaitMs`/
+`lwWhy` (S19, unchanged), `writeStartTMs`/`writeEndTMs`.
+
+**Part A -- U1 reading (file:line, not fixed).** `resultCh`
+(`worker.go:337`) is unbuffered (`make(chan block.IBlock)`,
+`worker.go:414`) with exactly ONE consumer: `resultLoop`
+(`worker.go:535`), started once (`worker.go:460`) and never again,
+whose loop body (`worker.go:543`, `case blk := <-w.resultCh:`) calls
+`handleSealed` SYNCHRONOUSLY -- it does not return to `select` until
+`handleSealed` returns. `handleSealed` runs `WriteBlockWithState`
+inline (`worker.go:831`), on this SAME goroutine. `Seal`
+(`adapter.go:850`) does not block ITS OWN caller (`taskLoop`): it
+spawns a per-call delivery goroutine (`adapter.go:903`) that blocks on
+`results <- sealed` (`adapter.go:905`, the unbuffered channel send)
+until `resultLoop` is free. **Putting these together: a block v+1
+sealed while `handleSealed(v)` is still running its own write cannot
+be picked up by `resultLoop` -- and since the early push happens
+inside `handleSealed`, before the write, v+1 cannot be pushed either --
+until `handleSealed(v)` returns, i.e. until v's write completes.** This
+is exactly the "obvious suspect" the task named, confirmed here by
+file:line rather than inferred from an aggregate duration: the single
+`resultLoop` goroutine itself is the gate 6cs's own code trace was
+looking for. `taskQWaitMs`/`resQWaitMs` (above) let a round measure how
+often and how long this queueing actually costs, directly, rather than
+by elimination.
+
+**Tests.** `seal_path_diag_test.go`: `tMs`/`waitMs` (zero-time
+handling, a real positive duration, and a negative-clamps-to-zero case
+for clock-skew safety) and the switch's off-by-default contract.
+Existing `internal/miner` and `internal/consensus/hotstuff` suites
+pass unchanged under both `N42_CONTENTION_DIAG` placements, including
+`-race`.
+
+**Build.** Same file-checkout recipe as n42-r86 through n42-r91:
+detached worktree at `f7ec2836`, n42-r91's exact file set (6co), plus
+this step's changes (`internal/miner/{worker,seal_path_diag,
+seal_path_diag_test}.go`). One-variable check: `seal_path_diag.go`/
+`_test.go` are new; `worker.go` needed a THIRD hunk on top of the same
+base n42-r86/r91 already use (S11's own hunk, then S19's, confirmed
+via `git diff 812cf162 62439af7^` empty -- nothing else touched
+`worker.go` between S19 and S22). The mechanical hunk itself hit ONE
+conflict: the speculative-hit block's own context lines (the "miner:
+speculative build hit" log call) differ between the tracked lever
+chain and the full branch history (an off-lineage `tMs` field from
+commits `89d15267`/`19687889`, excluded from every build in this chain
+since n42-r86 -- see 6ca/S11), so `git apply` rejected that one hunk
+(13 of 14 applied with only line-offset adjustment) and it was applied
+by hand instead, onto the SAME target lines, verified against a full
+diff of the resulting file against `62439af7`'s own version afterward:
+the ONLY differences left are the same four already-known, already-
+accepted off-lineage lines every prior build in this chain has shown
+(`activeSpecParent`, two `tMs` fields on the speculative build/parked
+lines, one `tMs` on "miner: build phases") -- confirmed identical to
+what n42-r90/r91's own build diffs showed, not a new gap.
+`internal/parallel/base_cache.go` confirmed absent from the build
+worktree; `grep -rl BaseCache`: empty. `go build -p 8 -tags
+nosqlite,noboltdb` clean; `go vet ./internal/...` clean; `go test`
+passes on `internal/consensus/hotstuff/...` (both switch placements,
+`-race` included), `internal/miner/...` (both placements, `-race`
+included), `internal/`, `internal/parallel/...`.
+`/data/blockchain/gov5-work/n42-r92`: 108,774,624 bytes, sha256
+`ba1a2105e458bc22908e1755c0a9a322269cae6aa57e593c294c7ac121ad890f`.
+`strings n42-r92 | grep -c BaseCache` = 0; every prior marker
+("build stalled before fill", "contention profiling enabled", "rotor
+failed -> gossip", `jpvMs`, `lwWait`, `lwWhy`, ...) present; four new
+markers (`"miner: seal path"`, `resQWaitMs`, `taskQWaitMs`,
+`specHitTMs`) each = 1.
+
+**Part B -- harness.** `run-r35zzzf.sh`/`chain-35zzzf.sh` built from
+the `run-r35zzze.sh`/`chain-35zzze.sh` pair via `cp`+`sed
+'s/35zzze/35zzzf/g'` (checked first: `35zzze` occurs nowhere in either
+script's giant single-line history comment). Fixed by hand
+afterward: the predecessor-wait (`chain-35zzzf.sh` now waits on
+`r35zzze.log`, its actual predecessor -- the sed pass alone left
+S19/S21's own `r35zzzd.log` target in place, carried over from the
+35zzze pair) and the binary references (`n42-r91` -> `n42-r92`).
+
+*Item 3.* `run_leg` keeps its 5th positional argument
+(`N42_LEADER_WRITE_AFTER_JOURNAL`) rather than hardcoding the switch,
+but every call site now passes `1` (`warmup A1 B1 B2 A2` all `1`) --
+the commander's ruling on S21 adopted the switch provisionally in
+every leg, so this round is NOT an A/B by leg; it repeats 35zzze's own
+(now switch-uniform) configuration and adds only the new diagnostics.
+
+*Item 4, the capture-timing fix.* Read
+`/data/blockchain/scripts-qs/bench-run.sh` and `measure-tps.sh` in
+full (neither modified): `bench-run.sh` runs `--decay-sec 400` (empty
+blocks only, at the baseFee floor) BEFORE starting the flood, then
+waits for the flood to reach "flooding," sleeps 15 s more, then calls
+`measure-tps.sh --windows 2 --window-sec 60`. `measure-tps.sh` itself
+prints NOTHING at a window's start -- only a one-line summary AFTER
+each 60 s window's `sleep` returns -- so there is no live "window N
+starting" announcement to grep for at all, confirming 6cs's own
+finding that this campaign's fixed-offset captures (+150 s, +250 s,
++345 s) could only ever have sampled the decay ramp. The fix (B legs
+only, matching the existing capture's own scope): poll one node's RPC
+every 3 s for the first block whose `gasUsed/gasLimit >= 0.95`
+(`measure-tps.sh`'s own "full" threshold) -- decay produces ONLY empty
+blocks, so this first full block coincides with the flood's
+settle-then-measure moment, i.e. win1's own start, to within the 3 s
+poll granularity. Since `--windows 2 --window-sec 60` is fixed for
+every leg, win2's start is computed as win1's start + 60 s rather than
+independently detected. Captures at win1-start+15 s and win2-start+15
+s, reusing the existing leader/follower selection (grep each node's
+own log for its most recent `"miner: propose phases"` line) verbatim;
+adds a heap profile to the existing cpu/mutex/block/goroutine set
+(6cp/6cr's own dominant-allocator finding needs a heap snapshot taken
+INSIDE the window it names, not the ramp). Outputs
+`wr-pprof/r35zzzf-<leg>-<win>-node<i>-{cpu,mutex,block,heap,
+goroutines}.*`.
+
+*Item 5, the S20 VM sampler.* Started/stopped exactly like the
+existing memory watchdog just above it in the script (tied to
+`$benchpid`, every 10 s), writing to `wr-logs/r35zzzf-vm.log`: per
+node, `minflt`/`majflt` from `/proc/<pid>/stat` fields 10/12 (`man 5
+proc`), and the Anon/File/Shmem RSS split from `/proc/<pid>/status`'s
+`RssAnon`/`RssFile`/`RssShmem` -- the SAME source the existing memory
+watchdog already reads (`worker.go`'s sibling script, not this
+package; confirmed cheap there). `smaps_rollup` was the other option
+named for this and was NOT used: there is no live fleet on this box
+right now to time it against a real, heavily-mapped node process (a
+320 GiB MDBX mapping), so using an option already proven fast and
+already in production use here avoids risking the "< 50 ms per node"
+budget on an untested path; this is a deliberate, reported choice, not
+an oversight. Chain-wide reclaim counters from `/proc/vmstat`
+(`pgmajfault`, `pgscan_kswapd`, `pgscan_direct`, `pgsteal_kswapd`,
+`workingset_refault_file`) are tracked as 10 s DELTAS (vmstat's own
+counters are cumulative since boot), computed with bash associative
+arrays carried across loop iterations in the same subshell.
+
+`bash -n` clean on both scripts. Neither launched (`ps` confirms no
+`run-r35zzzf`/`chain-35zzzf` process exists).
+
+**Prediction 88 (registered before any round):**
+
+**(a) repeatability.** With `N42_LEADER_WRITE_AFTER_JOURNAL=1` and
+`N42_CONTENTION_DIAG=1` in every leg, win1's in-tenure cycle is within
+10% of 656 ms (6cs's corrected B2win1 figure) in EVERY leg now (not
+just the legs that had the switch on before); B-leg first windows sit
+at the eight generators' own supply ceiling (~140k, 6cm). The B mean
+is reported, not predicted: both second windows run into the S20
+within-leg slowdown (6cp/6cr), so a full-round B mean is not a clean
+test of anything this step changed.
+
+**(b) seal-path attribution.** The `"miner: seal path"` stamps place
+>= 90% of the leg-invariant ~254 ms constant (6cs) in NAMED steps
+(pace, check, BLS, copy, push, propose, or the two queue waits) rather
+than leaving it as an unattributed residual; `taskQWaitMs`/
+`resQWaitMs` directly say whether push(v+1) queues behind write(v) on
+the single `resultLoop` goroutine (U1's own reading above predicts
+`resQWaitMs` should track the write-bound views specifically -- large
+whenever `write(v)_end` is the later gate, small/zero otherwise).
+
+**(c) S20.** Between win1 and win2, per-node `majflt` rate and
+`workingset_refault_file` (from the new VM sampler) rise by a large
+factor while `RssFile` falls (page-cache thrash, matching 6cp/6cr's
+own win1->win2 FILE-memory halving) -- OR they do not, which would
+mean memory pressure is not the within-leg slowdown's actual
+mechanism. Either outcome is informative and is not itself a pass/fail
+bar for this prediction.
+
+**VERDICT: confirmed** (implementation, tests, one-variable check and
+build all done). QS_QUEUE.md's S22 row status is marked prepared with
+prediction 88 (6ct). Launch is the commander's next call.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
