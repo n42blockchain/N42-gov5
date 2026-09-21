@@ -6718,6 +6718,203 @@ without first asking whether shaving CPU out of `fillTransactions` or
 `CheckDeferredBlock` is worth it against 6cb's finding that neither
 hand-over nor the held-vote path binds the median (in-tenure) cycle.
 
+## 6ce. S13: hypothesis D (block delivery is the largest item on the in-tenure critical path) -- falsified; delivery is the smallest measured item, at ~44 ms of 520 ms (8.5%) (2026-09-21)
+
+Commander's follow-up: `Delivery` (434 ms median, from 6cb's aggregate
+`hotstuff view timing` table) sits inside a 799 ms in-tenure cycle whose
+push->QC segment is 520 ms, and two vote round-trips on localhost should
+cost milliseconds, not hundreds. Hypothesis D: delivering the ~26 MB
+full block body to the quorum-forming follower, plus that follower's
+receive/decode, is the largest item on the path. Script:
+`wt-r27/scripts/qs-analysis/delivery_budget.py`, same kept logs.
+
+**1. `Delivery` defined exactly, from the code that fills it
+(`internal/consensus/hotstuff/view_timing.go:66-81`,
+`engine.go:279-308`).** `Delivery = span(ViewStart, ProposalReceived)`,
+both FOLLOWER-local `time.Now()` stamps on that node's own clock (all
+seven processes share one host clock this round, so no skew correction
+is needed, but the two stamps are still two DIFFERENT events on the
+SAME follower, not a leader-timestamp-vs-follower-receipt pair carried
+in a message). `ViewStart` is set by `newViewTiming(view)`
+(`engine.go:305-308`) at `advanceToView`, i.e. "every node: the view was
+entered" -- which itself only happens once this node has locally
+processed the PREVIOUS view's CommitQC or timeout
+(`voting.go:401-405`/`timeout.go:274,368,435,497`). `ProposalReceived`
+is set in `processProposal` (`proposal.go:211-212`) the moment this
+node finishes verifying the **Proposal message** (BLS signature +
+JustifyQC + safety rule) -- **not** at block-body availability and not
+at decode/check completion. The Proposal carries only `BlockHash`,
+`TxRootHash`, the leader's signature and the QC fields (re-confirming
+the S8 audit, handover commit `31a25647`: no block bytes travel with
+it). **So `Delivery` measures "receive+verify a small consensus message
+after locally entering the view," not "receive the block."**
+
+**2. Block-BODY arrival, ranked, in-tenure full blocks (n=79), offsets
+from the leader's own `push_instant`:**
+
+| rank (of 6 followers) | median (ms) | p10 | p90 |
+|---|---|---|---|
+| 1st (fastest) | 28.5 | 14.4 | 71.5 |
+| 2nd | 34.6 | 17.6 | 89.6 |
+| 3rd | 40.0 | 18.6 | 90.6 |
+| **4th (quorum-forming, k=4th of 6 -- 6cb/6cc)** | **43.9** | 22.4 | 97.5 |
+| 5th | 55.6 | 27.7 | 131.5 |
+| 6th (slowest) | 65.7 | 34.4 | 183.9 |
+
+**Spread (median rank4 - median rank1) = 15.5 ms -- small.** All six
+followers get the ~26 MB body within a ~37 ms band (28.5 to 65.7 ms
+medians); this is the signature of parallel, not serial or
+bandwidth-shared, delivery -- confirmed directly from the send code
+below, not inferred from the spread alone.
+
+**3. Leader-side transport, from the code
+(`internal/blockchain.go:1727-1807`, `internal/p2p/encoder/ssz.go`,
+`internal/p2p/options.go`).**
+
+- **Encode once, reused for both paths** (`blockchain.go:1740`,
+  re-confirming the S8 audit): `rlp.EncodeToBytes(b)` runs once in
+  `SealedBlock`; the same `data` bytes go to `directPushBlock` and to
+  the gossip fallback.
+- **Direct push: per-peer sends are CONCURRENT, not sequential**
+  (`blockchain.go:1773-1806`): `for _, pid := range peers { go
+  func(pid peer.ID) {...}(pid) }` -- one goroutine per connected peer,
+  each opening its own stream with a 5 s context timeout.
+- **Chunking:** `encoder.EncodeWithMaxLengthLimit(stream,
+  &rawBlockBytes{data: data}, encoder.MaxBlockChunkSize)`
+  (`blockchain.go:1800`); `MaxBlockChunkSize` defaults to 64 MB
+  (`internal/p2p/encoder/ssz.go:42`, `N42_MAX_GOSSIP_MB`-overridable). A
+  ~26 MB block fits in ONE frame -- there is no multi-round-trip,
+  per-chunk-ack chunking protocol here, only a single varint-length-
+  prefixed write (`ssz.go:128-149`); flow control is whatever the
+  underlying muxer stream provides, not an application-level ack.
+- **Compression: yes, snappy, on BOTH paths.** Direct push:
+  `rawBlockBytes` is carried "through the SSZ length/snappy framing"
+  (`blockchain.go:1812-1813` doc comment), and `EncodeWithMaxLengthLimit`
+  calls `writeSnappyBuffer(w, b)` (`ssz.go:150`). Gossip:
+  `EncodeGossip` calls `snappy.Encode` explicitly (`ssz.go:123`), and
+  the receive side calls `enc.DecodeGossip` which decompresses snappy
+  (`service.go:1072`, "Decompress snappy").
+- **Also gossiped: yes, but as an async, off-critical-path fallback.**
+  `SealedBlock` launches `go func() { bc.p2p.BroadcastBlock(ctx, data)
+  }()` (`blockchain.go:1758-1764`) AFTER the direct pushes are already
+  dispatched; the comment on this line says explicitly that compressing
+  and publishing the block inline "held the Proposal back (part of the
+  leader's ~180 ms push phase)" in an earlier round, which is why it was
+  moved off the seal path.
+- **Transport: TCP + QUIC registered, Noise security, default muxers**
+  (`internal/p2p/options.go:75-78`): `libp2p.Transport(tcp.NewTCPTransport)`,
+  `libp2p.Transport(libp2pquic.NewTransport)`, `libp2p.DefaultMuxers`,
+  `libp2p.Security(noise.ID, noise.New)` -- Noise, not TLS, for the TCP
+  path (QUIC carries its own TLS 1.3 and native multiplexing when a
+  connection uses it). No explicit yamux window-size override exists in
+  this codebase's p2p setup -- `DefaultMuxers` takes go-libp2p's library
+  default, not further configured here.
+
+**4. Follower-side, between first byte and "block available":**
+
+| step | measured (ms) | source |
+|---|---|---|
+| network + read + RLP decode (one lump) | see rank table above (28.5-65.7 median by rank) | `"block push: arrived"` tMs minus leader `push_instant`; `ReadChunkedBlock` has no internal sub-timer, so read and decode cannot be split further -- **n/a beyond the lump** |
+| `hdr` (wait on parallel `VerifyHeaders`/BLS seal result) | 2.8 | `blockimport phases` |
+| `body` (`ValidateBody`: recompute the tx root over every tx) | 10.0 | `blockimport phases` |
+| `root` (state root #3, `Finalize`->`IntermediateRoot`) | 0.0 | `blockimport phases` |
+| sender recovery (parallel, part of import's own `proc`) | 38.0 | `parallel block`'s `recoverMs` |
+| deferred includability check (`CheckDeferredBlock`) | 134.5 (13.5% of slots that hold; presumed similar cost when not logged) | 6cd Gap B |
+
+**Sender recovery before the vote: no, not for Round1.** Under
+two-phase voting (`processProposal`, `proposal.go:228-233`), the Round-1
+PREPARE vote is cast on "static validation alone" -- the leader's BLS
+signature and JustifyQC -- with no reference to transaction contents, no
+sender recovery, and (per `extendsJustify`, `proposal.go:499-513`)
+fails OPEN when the parent isn't yet known rather than blocking. **Round
+1 is gated on nothing beyond having the Proposal message itself.**
+Sender recovery only happens later, inside `CheckDeferredBlock`
+(gating the Round-2 COMMIT vote for the deferred-attested path) or
+inside full import's own `proc.recov` phase -- confirming 6cd's Gap B
+finding that the includability check, not raw body transit, is what a
+COMMIT vote actually waits on.
+
+**5. Verdict on D, with the budget table.** Round1/Round2 durations
+matched to the EXACT SAME 79 blocks q2s uses (same view<->n offset
+calibration as 6cc/6cd; 79/79 rows matched):
+
+| segment | median (ms) | note |
+|---|---|---|
+| push start (T0, ~= ProposalSent) | 0 | leader `push_instant` |
+| body at quorum-forming follower (rank 4) | 43.9 | parallel with Round1 below, not serial -- see reconciliation |
+| Round1 (`ProposalSent`->`PrepareQCFormed`) | 129.0 | leader clock, matched population |
+| Round2 (`PrepareQCFormed`->`CommitQCFormed`) | 370.0 | leader clock, matched population |
+| **Round1 + Round2** | **499.0** | |
+| **q2s, same 79 rows (push->QC)** | **520.1** | 6cb/6cc/6cd |
+| **closure** | **95.9%** | within the 15% bar -- **confirmed** |
+
+Body delivery (43.9 ms) is not a third serial segment here: it
+completes well inside Round1's own 129 ms window (Round1 does not need
+the body at all, per finding 4, so this is slack, not a dependency),
+and even more so ahead of Round2 (which starts at T0+129 ms, by which
+point the body has been sitting available for ~85 ms already for the
+quorum-forming follower). **Body delivery is not the largest item on
+the path -- it is the smallest one measured: 43.9 ms is 8.5% of the
+520 ms q2s segment and 34% of Round1 alone, dwarfed by Round2 (370 ms,
+8.4x larger) and even by Round1 (129 ms, 2.9x larger). Hypothesis D is
+falsified.**
+
+**Reconciling Round1 (96-129 ms) with `Delivery` (434 ms): they are not
+one serial path, and Round1 does not start at `Delivery`'s end.**
+Round1 starts at `ProposalSent` -- a LEADER-clock event, ~equal to that
+leader's own `push_instant` -- and ends once the SAME leader collects a
+quorum of Round-1 votes; it is a leader-side round-trip measurement,
+full stop. `Delivery`, by contrast, starts at a FOLLOWER's own
+`ViewStart`, which -- per finding 1 -- only fires once that follower has
+locally finished processing the PREVIOUS view's CommitQC/Decide or
+timeout. Since `advanceToView` runs on every node independently, a
+follower's `ViewStart` for view V can lag the leader's own
+`CommitQCFormed` for view V-1 by however long the Decide message takes
+to propagate and be locally processed -- not by anything to do with the
+CURRENT proposal's transit. The ~300-340 ms gap between `Delivery` and
+either Round1 estimate most plausibly reflects that lag (plus whatever
+else was queued on this follower's single-threaded consensus event
+loop at that moment -- 6cc already showed importers are not
+saturated but do have bursty backlogs in some windows), but **no log
+line isolates that sub-interval on its own; this is the best-supported
+reading, not a closed measurement.**
+
+**6. Known-tx share (no design implied, measurement only).** Every
+`"parallel block"` line carries `hintFills`/`txs` -- the count of
+transactions whose sender was served from the sender-recovery hint
+cache, which `worker.go`'s own comment says "the pool cached... at
+admission" (i.e. this node's mempool had already recovered that sender
+before the block arrived, ordinarily because it already held or had
+seen the transaction). Across the same 474 (follower, full-block)
+slots: **`hintFills`/`txs` median = 99.4% (p10 95.0%, p90 99.9%).**
+Essentially every transaction in a full block was already known to
+this follower's own node before the block's body ever arrived.
+
+**What this does and does not show.** It shows, from the exact code
+that decides what a vote requires, that block-body delivery is
+structurally off the Round-1 critical path (two-phase voting's prepare
+vote needs only the small Proposal message) and empirically fast when
+it does matter (43.9-65.7 ms across all six followers, tightly
+clustered, confirmed as parallel sends by reading the send code, not
+merely inferred from the spread). It shows Round1+Round2, matched to
+the identical 79 blocks used elsewhere in this campaign, close the
+520 ms q2s segment to 95.9% -- a clean, apples-to-apples reconciliation
+that 6cb's independently-sourced aggregate table (Round1 96 ms, Round2
+288 ms, a DIFFERENT and broader population of views) did not by itself
+provide. It does NOT determine what specifically fills Round1's 129 ms
+or Round2's 370 ms beyond what 6cd's Gap B already established for the
+held-vote minority (`CheckDeferredBlock`, ~134 ms) -- no line splits
+either round into network transit, BLS aggregate/verify, or event-loop
+queueing on the majority (non-held) path. It does NOT close the gap
+between `Delivery` (434 ms) and Round1 with a measured number -- the
+explanation offered (Decide-propagation-plus-local-processing lag) is
+the best fit given the code that produces `ViewStart`, but remains
+unmeasured directly. It does NOT show why sender-hint cache fills are
+at 99.4% (whether the mempool independently receives most transactions
+ahead of the block, or some other admission path populates the cache),
+nor does it evaluate a compact-block relay design -- only the
+measurement the task asked for.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
