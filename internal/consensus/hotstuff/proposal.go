@@ -248,20 +248,19 @@ func (e *ConsensusEngine) processProposal(proposal *Proposal, mt msgTiming) erro
 	e.pendingProposals[view] = proposal.BlockHash
 	e.pendingJustifyBlocks[view] = proposal.JustifyQC.BlockHash
 
-	// Two-phase mode: Round 1 votes on static validation alone (order-then-
-	// execute) — the leader's signature, JustifyQC and DA commitment were
-	// verified above; the execution guarantee moves to Round 2 (the
-	// CommitVote in processPrepareQC waits for the local import). The
-	// extends-rule is still enforced when the parent is already known.
-	if e.twoPhaseVote {
-		if e.importedBlocks[proposal.BlockHash] && !e.extendsJustify(view, proposal.BlockHash) {
-			return nil // extends-rule violation logged; do not vote
-		}
-		if err := e.journalPrepareVote(view, proposal.BlockHash); err != nil {
-			return err // abstain: the commitment is not durable
-		}
-		return e.sendVote(view, proposal.BlockHash)
-	}
+	// S26 (docs/OPEN_ISSUES.md "A quorum-committed block that no node
+	// stored", round 35zzzg): two-phase mode used to vote here immediately,
+	// gated only on "extendsJustify if the block happens to be already
+	// imported" -- which is essentially never true this early (a Proposal
+	// always arrives before the deferred-execution check or the full import
+	// completes), so the extends-rule was skipped on the common path. Round 1
+	// still only needs the CHEAP, non-executing guarantee ("static
+	// validation": CheckDeferredBlock via EventBlockChecked) -- the execution
+	// guarantee is Round 2's job either way (processPrepareQC / deferredAttested)
+	// -- so two-phase mode now shares the exact same checked/imported gate as
+	// import-gated voting below, with extendsJustify enforced every time the
+	// block's real parent becomes known instead of only when it happens to be
+	// known already.
 
 	// Import-gated voting (NOT optimistic): vote only once the block is imported
 	// locally, so a CommitQC proves a quorum actually holds the block — not just
@@ -296,8 +295,13 @@ func (e *ConsensusEngine) tryDeferredVote(view ViewNumber) (bool, error) {
 	if !ok || !e.checkedBlocks[pending] || e.roundState.HasVotedInView(view) {
 		return false, nil
 	}
+	// S26: a zero-hash justify (the genesis QC, view 0 -- unlocked, nothing
+	// committed yet) has no real parent to wait for; treat it the same way
+	// extendsJustify itself already fails open for a zero justify, instead of
+	// blocking forever on "genesis imports". Any non-zero justify still must
+	// be imported before this attestation is trusted.
 	justify, ok := e.pendingJustifyBlocks[view]
-	if !ok || justify == (types.Hash{}) || !e.importedBlocks[justify] {
+	if !ok || (justify != (types.Hash{}) && !e.importedBlocks[justify]) {
 		return false, nil
 	}
 	if !e.extendsJustify(view, pending) {
@@ -445,6 +449,20 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg, mt msgTiming) erro
 			e.viewTiming.Contention.commitVoteHeld = true
 		}
 		log.Info("two-phase vote: holding commit vote until block imports",
+			"view", view, "blockHash", pqc.BlockHash)
+		return nil
+	}
+
+	// S26 (docs/OPEN_ISSUES.md "A quorum-committed block that no node
+	// stored"): defense in depth for the Round 1 fix above. A valid
+	// PrepareQC signature only proves 2f+1 validators SENT a prepare vote --
+	// not that the block they voted for actually extends the chain. By this
+	// point the block's real parent is known (imported, or checked with
+	// deferredAttested true), so extendsJustify can resolve for real instead
+	// of failing open; refuse the commit vote if it does not extend its own
+	// JustifyQC block (recorded from this view's Proposal).
+	if !e.extendsJustify(view, pqc.BlockHash) {
+		log.Warn("commit vote REFUSED: proposal does not extend its JustifyQC block",
 			"view", view, "blockHash", pqc.BlockHash)
 		return nil
 	}
