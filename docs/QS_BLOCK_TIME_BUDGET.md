@@ -5406,6 +5406,183 @@ cleared. The depth target was one lever on a problem with (at least) two
 causes; the serialized per-generator funding gate is the other, and it is
 still untouched.
 
+## 6by. S10: the B1 win2 collapse is a 52 s stall on one leader's build queue, not a per-block slowdown (2026-09-20)
+
+Logs-only diagnostic on 35zzy (n42-r84, 2026-09-20 20:58-22:07 EDT). Node
+logs had not rotated (each `log/n42.log` still spans 20:58:34-22:07:18, no
+`n42-*.log.gz` siblings), so the full B-leg window was copied verbatim
+before analysis: `/data/blockchain/wr-logs/r35zzy-keep/node{0-6}-B.log`,
+21:25:00-21:54:30, 197 MB total across the seven nodes -- well under the
+6 GB cutback threshold, so both B legs are kept whole (no B2 truncation
+needed).
+
+**The mechanism.** Cross-referencing `blockimport phases`' own `n` (block
+number) across all seven nodes' copies pins the collapse to a single gap:
+block 13659710 commits at 21:37:51 on every node, and the next block,
+13659711, does not commit anywhere until 21:38:43 -- 52 seconds later,
+chain-wide, not just on one follower. Node5's own log explains why. At
+21:37:51 node5 (that view's leader) logs four straight `hotstuff:
+committed block not executed locally` failures against its own recent
+commits, then `hotstuff: refusing block production on unexecuted
+committed parent`, then `hotstuff: deferred production resumed after the
+parent applied` and `miner: commitWork begin` -- all in the same second.
+The next evidence that build is progressing, `miner: parallel fill`
+(163,000 candidates), does not appear until 21:38:42, 51 seconds later.
+Meanwhile HotStuff correctly detects the silent leader and cycles view
+timeouts with doubling backoff -- view 7356 timed out after 6 s
+(21:37:57), 7357 after 12 s (21:38:09), 7358 after 24 s (21:38:33) -- and
+re-elects node5 each time (`TC formed, I am the new leader`) because the
+round-robin schedule gives it a 4-view batch. A second, later-triggered
+build request queues behind the first the whole time; when the first
+finally seals block 13659711 at 21:38:43, the queued duplicate collides
+with it (`miner: suppressing divergent same-height sibling; re-proposing
+first sealed block`, number 13659711) and is dropped. None of this shows
+up as slow per-view voting: `hotstuff view timing`'s own `r1`/`r2` fields
+for the surrounding views stay in their normal 4-67 ms range throughout:
+the 52 s is invisible to the consensus-round instrumentation and lives
+entirely inside the miner/build path.
+
+**Q1 -- where the time goes (win1 = first 60 s of full [txs>20000] blocks
+in B1, 21:33:46-21:34:46; win2 = the stall itself, 21:37:51-21:38:43;
+medians pooled across all seven nodes' own phase lines, since only the
+current leader emits the leader-only ones):**
+
+| phase (field) | win1 median | win2 (n=6 samples; 1 outlier) | grower? |
+|---|---|---|---|
+| `miner: work queue wait` (`waitNs`) | 0.012 ms (n=306) | median 0.020 ms, **max 45,265 ms** (node5, 21:38:43) | **the collapse** |
+| `hotstuff view timing` role=leader `total` | 250 ms (n=157) | 696 ms (n=4) | view total grows but stays 2 orders below the stall |
+| `miner: build phases` `total` | 10.7 ms (n=159) | 633 ms (n=3) | tracks block size (see below) |
+| `blockimport phases` `total` | 9.9 ms (n=936, mixed sizes) | 605.6 ms (n=26) | tracks block size |
+| `blockwrite phases` `total` | 3.6 ms (n=1094, mixed sizes) | 96.8 ms (n=29) | tracks block size |
+
+**The single largest grower is `miner: work queue wait`**, from a
+0.012 ms median to a single 45,265 ms (45.265 s) sample -- five orders of
+magnitude, and on its own it accounts for essentially the entire 52 s
+gap between blocks 13659710 and 13659711. It is emitted at
+`internal/miner/worker.go:472`, where the single-goroutine `runLoop`
+drains `newWorkCh` one request at a time, so any request that arrives
+while the prior `commitWorkGuarded` call (started at `worker.go` from the
+`deferred production resumed` path, `internal/consensus/hotstuff/service.go:1621`)
+is still running queues behind it and reports that queueing as `waitNs`.
+
+The other rows that look like growers (`blockimport`/`blockwrite`
+`total`, `miner: build phases` `total`) are not a slowdown of the
+machinery: win2's blocks average ~163,000 txs against win1's ~55,000 (a
+separate cut restricted to blocks with txs>=15000, so the two samples are
+comparable), and the *per-transaction* cost actually falls from win1 to
+win2 -- `blockimport`'s `proc` 4,948 ns/tx -> 3,705 ns/tx, `write` 1,552
+ns/tx -> 1,138 ns/tx. Bigger blocks amortize better, exactly as expected;
+none of this is where the 52 s went.
+
+**Q2 -- stale candidates, four B windows** (win1/win2 boundaries: B1 as
+above; B2win1 = first 60 s of full blocks, 21:47:45-21:48:45; B2win2 =
+last 60 s of the leg, 21:52:58-21:53:58 -- B2 has no comparable stall, the
+largest gap between substantial blocks anywhere in B2 is 5 s, so B2win2 is
+an ordinary tail window, not a second collapse):
+
+| window | candidates (sum) | nonceLow (sum) | nonceLow share | blocks >25% nonceLow | leaders with any nonceLow drop |
+|---|---|---|---|---|---|
+| B1 win1 | 3,009,528 | 0 | 0.0% | 0 | none |
+| B1 win2 | 337,000 | 100,700 | **29.9%** | 1 (node5, block 13659711: 100,700/163,000 = 61.8%) | node5 only |
+| B2 win1 | 3,851,364 | 0 | 0.0% | 0 | none |
+| B2 win2 | 1,146,200 | 0 | 0.0% | 0 | none |
+
+nonceLow is exactly zero in three of the four windows and tracks the
+collapse precisely: it is nonzero in B1win2 and nowhere else, and within
+B1win2 it is a single block on a single leader (node5), not a pattern
+spread across the leader rotation. (`nonceHigh` -- the separate,
+already-documented 6bx drop -- is a different phenomenon: it appears on
+nodes 3/4/5/6 in both legs' ramp windows and is not restricted to the
+collapse.)
+
+**Q3 -- pool state.** `txpool reorg phases` is not a per-block line: only
+28 instances fire across the whole ~29-minute B-leg span (all seven nodes
+combined), each costing 200-390 ms total, of which 99%+ is `demote`
+(`reset` is 0.1 ms every time -- negligible). The last one before the
+stall is node5 at 21:37:35 (`pendingAccts:3, nonces:7540, total:211.9ms,
+demote:211.8ms`). No node logs a `txpool reorg phases` line during the
+stall (21:37:51-21:38:43), and none fires anywhere for 11 min 42 s
+afterward -- the next is node0 at 21:49:25 (`pendingAccts:10,
+nonces:15650, total:238.2ms`). That gap is not attributable to the stall
+alone: it also spans B1's post-collapse tail, the inter-leg quiet period,
+and B2's own ramp-up (B2's first full block is at 21:47:45, so there is
+little for a reorg to demote before then either). No node prints how many
+blocks a given reset covers, so that comparison is n/a. What is measured:
+node5 walked into the 163,000-candidate fill for block 13659711 68
+seconds after its last demote sweep, with the pool's stale/already-mined
+backlog un-cleared, producing the 61.8%-nonceLow fill above.
+
+**Q4 -- slow or waiting?** Both, but with a clear root and a clear
+symptom. The root is node-side: node5's local execution/apply path for
+its own recently committed blocks fell behind (four `committed block not
+executed locally` failures at 21:37:51), triggering a `deferred
+production resumed` catch-up whose build request then sat for ~51 s
+before `miner: parallel fill` (a routine, fast, 237 ms fill once it
+finally ran) could even start. The symptom is HotStuff correctly noticing
+the silent leader and cycling three view timeouts with doubling backoff
+(6 s, 12 s, 24 s -- views 7356/7357/7358, the last two of which,
+21:38:09 and 21:38:33, fall inside the literal 21:38:00-21:39:47 window);
+the view-timing instrumentation itself (`r1`/`r2`/`propose`) stays normal
+throughout, so the chain was not waiting on network propagation or vote
+aggregation -- it was waiting on its own leader, which was in turn waiting
+on its own build queue. The largest unaccounted gap in any view's
+timeline is exactly this one: ~52 s inside node5's `commitWork`
+call/queue, present in no `hotstuff view timing` field at all.
+
+**Method (6by).** Evidence preserved first, before any analysis, into
+`/data/blockchain/wr-logs/r35zzy-keep/node{0-6}-B.log` via `grep -E`
+against each node's live `log/n42.log` for
+`"time":"2026-09-20 21:(2[5-9]|[34][0-9]|5[0-3]):[0-5][0-9]"` or
+`"time":"2026-09-20 21:54:([0-2][0-9]|30)"` (21:25:00-21:54:30, both B
+legs whole). All grep/awk/python passes below read only those seven
+copies, single-threaded, no fleet process touched. Block timeline:
+`"msg":"blockimport phases"` lines parsed with `json.loads`, keyed on
+`n`/`txs`/`time`, sorted per node, diffed for the largest `n`-to-`n+1`
+timestamp gap (found the 52 s 13659710->13659711 gap identically on
+every node). Phase medians: same technique over `"msg":"miner: build
+phases"`, `"msg":"miner: parallel fill"`, `"msg":"miner: work queue
+wait"`, `"msg":"parallel block"`, `"msg":"blockwrite phases"`, windowed
+by `time` string comparison (`WIN1`/`WIN2` tuples) and pooled across all
+seven `node*-B.log` files. Leader-only view timing:
+`"msg":"hotstuff view timing"`'s embedded `view=<n> role=leader
+propose=Xms r1=Yms r2=Zms total=Wms` parsed with
+`re.compile(r"view=(\d+) role=leader((?: \w+=\d+ms)*)")`. Stale
+candidates: `"msg":"parallel fill drops"` (`nonceLow`/`nonceHigh`/
+`failed`) joined by same-timestamp `"msg":"miner: parallel fill"`
+(`candidates`) for the window totals; per-block share from the one line
+matching both `n` and `time`. Pool: `"msg":"txpool reorg phases"`
+(`demote`/`reset`/`pendingAccts`/`nonces`/`total`), all 28 instances
+listed and eyeballed for the nearest-before/nearest-after the stall. View
+timeouts: `"msg":"view timed out"` and `"msg":"TC formed` grepped across
+all seven copies and cross-checked against node5's own
+`"msg":"hotstuff: committed block not executed locally"` /
+`"refusing block production on unexecuted committed parent"` /
+`"deferred production resumed after the parent applied"` /
+`"msg":"miner: commitWork begin"` /
+`"msg":"miner: suppressing divergent same-height sibling"` lines in
+strict `time` order to build the 21:37:51-21:38:43 narrative. Code
+pointers found with `grep -rn` for each exact log string against
+`internal/`.
+
+**What this does and does not show.** It shows, with a chain-wide
+timestamp match across all seven nodes' independently preserved logs,
+that the B1 win2 collapse is one 52-second stall caused by a single
+leader's serialized build queue backing up behind a slow local
+execution-catch-up, not a steady-state 3.5 s-per-block regime -- the
+blocks immediately before and after the stall commit in around a second
+each. It shows the stale-candidate spike (Q2) and the pool's quiet demote
+sweep (Q3) are downstream of that same stall, not independent causes. It
+does not show *why* node5's execution/apply fell behind in the first
+place (the four "not executed locally" failures are themselves a routine,
+high-frequency line seen 800+ times per node across the round, so their
+mere presence is not diagnostic -- what is unusual is only how long this
+one resume took); that requires either a CPU/lock profile of node5 at
+21:37:51-21:38:42 or a repeat of this exact shape with finer-grained
+build-internal timing, neither of which this log-only pass can produce.
+It does not show whether halving the leader-batch size (4 views/leader)
+would shorten a future stall's blast radius, since only one instance of
+this specific stall exists in the round.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
