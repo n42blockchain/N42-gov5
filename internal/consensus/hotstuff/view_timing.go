@@ -159,6 +159,19 @@ type contentionStamps struct {
 	// since receipt is already funneled through the single-threaded
 	// engine before those handlers run -- no extra lock needed.
 	rx rxStamps
+
+	// S18 (docs/QS_BLOCK_TIME_BUDGET.md 6cm/6cn): duration of this node's own
+	// journalPrepareVote/journalCommitVote calls (engine.go) in this view --
+	// summed, in the rare case either fires more than once. On the leader,
+	// journalCommitVoteMs is the self-commit-vote journal write inside
+	// tryFormPrepareQC (voting.go), the ONE call in the unstamped
+	// PrepareQCFormed->emit() gap (L0, 6cm) that can block. Written under
+	// e.mu, like every other contentionStamps field -- no extra lock.
+	journalPrepareVoteMs  time.Duration
+	journalCommitVoteMs   time.Duration
+	journalCommitVoteAtMs int64
+	journalPrepareVoteOK  bool
+	journalCommitVoteOK   bool
 }
 
 // sendMsgStamp is S17's sender-side timing for ONE message this node
@@ -427,6 +440,13 @@ type ViewPhases struct {
 	RxPrepareQC                                                  MsgRxPhase
 	RxPrepareVote, RxCommitVote                                  VoteRxPhase
 	DupN                                                         int
+
+	// S18: this node's own journalPrepareVote/journalCommitVote call
+	// duration(s) this view (summed), plus the absolute start time of the
+	// commit-vote journal call (for cross-node/cross-round joins).
+	JournalPrepareVote  PhaseDuration
+	JournalCommitVote   PhaseDuration
+	JournalCommitVoteAt int64
 }
 
 // MsgSendPhase is S17's derived sender-side timing for one message this
@@ -543,6 +563,13 @@ func (t ViewTiming) Phases() ViewPhases {
 	p.RxPrepareVote = rx.pv.phase()
 	p.RxCommitVote = rx.cv.phase()
 	p.DupN = rx.dupN
+
+	// S18: journal call timing, role-independent (a leader's self-commit-
+	// vote journal and a follower's own commit-vote journal are the same
+	// call, journalCommitVote, just reached from different code paths).
+	p.JournalPrepareVote = durOK(t.Contention.journalPrepareVoteMs, t.Contention.journalPrepareVoteOK)
+	p.JournalCommitVote = durOK(t.Contention.journalCommitVoteMs, t.Contention.journalCommitVoteOK)
+	p.JournalCommitVoteAt = t.Contention.journalCommitVoteAtMs
 
 	return p
 }
@@ -683,6 +710,11 @@ func (p ViewPhases) LogLine() string {
 	appendKthRx("cv", p.RxCommitVote)
 	if p.DupN > 0 {
 		line += fmt.Sprintf(" dupN=%d", p.DupN)
+	}
+	appendMs("jpvMs", p.JournalPrepareVote)
+	appendMs("jcvMs", p.JournalCommitVote)
+	if p.JournalCommitVote.OK {
+		line += fmt.Sprintf(" jcvAt=%d", p.JournalCommitVoteAt)
 	}
 	return line
 }
