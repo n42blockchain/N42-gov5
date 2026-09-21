@@ -1751,32 +1751,99 @@ func (bc *BlockChain) SealedBlock(b block.IBlock) error {
 			"txs", len(b.Transactions()), "size", len(data), "limit", limit)
 		return fmt.Errorf("sealed block %d is %d bytes, above the %d byte p2p wire limit", b.Number64().Uint64(), len(data), limit)
 	}
-	bc.directPushBlock(b, data)
+	peerCount := bc.directPushBlock(b, data)
 	// Gossip as a best-effort fallback, off the seal path: the direct pushes
 	// are already in flight, and compressing and publishing an ~18 MB block
 	// here held the Proposal back (part of the leader's ~180 ms push phase).
+	//
+	// S15b (docs/QS_BLOCK_TIME_BUDGET.md 6cg): this same ~18-26 MB gossip
+	// publish (and, on every OTHER node, the receive side's validation/
+	// forwarding of it) rides the identical per-peer GossipSub streams the
+	// consensus messages (Proposal/Vote/PrepareQC/CommitVote/Decide) use,
+	// and 6cg's block profile shows the gossiped copy and the direct push of
+	// the SAME block contending for bc.lock on InsertChain. Hypothesis G is
+	// that this head-of-line-blocks the vote round-trip. N42_BLOCK_GOSSIP_FALLBACK=0
+	// skips this publish once the direct push was actually dispatched to at
+	// least one connected peer (peerCount>0) -- when there were zero peers,
+	// gossip is the only path left and always runs, switch or no switch.
+	// Default (unset or "1"): unchanged behaviour, always gossip.
 	if bc.p2p != nil {
 		number := b.Number64().Uint64()
-		go func() {
-			if err := bc.p2p.BroadcastBlock(bc.ctx, data); err != nil {
-				log.Warn("sealed block gossip fallback failed", "number", number, "err", err)
-			}
-		}()
+		if shouldGossipBlock(blockGossipFallbackEnabled(), peerCount) {
+			go func() {
+				if err := bc.p2p.BroadcastBlock(bc.ctx, data); err != nil {
+					log.Warn("sealed block gossip fallback failed", "number", number, "err", err)
+				}
+			}()
+		} else {
+			blockGossipFallbackSkipped.Add(1)
+			log.Debug("block gossip fallback skipped: direct push dispatched", "number", number, "peers", peerCount)
+		}
 	}
 	return nil
+}
+
+// blockGossipFallbackOnce/On/Skipped back blockGossipFallbackEnabled, S15b's
+// experiment switch (see the comment in SealedBlock above). Read once at
+// start-up like this codebase's other N42_* switches (e.g.
+// internal/miner/push_order.go's PushBeforeWrite); Skipped is a lightweight
+// counter, not logged per block, for whoever wants to confirm the switch
+// actually fired without grepping Debug-level logs.
+var (
+	blockGossipFallbackOnce    sync.Once
+	blockGossipFallbackOn      bool
+	blockGossipFallbackSkipped atomic.Int64
+)
+
+// parseBlockGossipFallback is N42_BLOCK_GOSSIP_FALLBACK's parser: anything
+// but the literal "0" (including unset, "") keeps today's behaviour.
+func parseBlockGossipFallback(v string) bool {
+	return v != "0"
+}
+
+// shouldGossipBlock is the pure decision blockGossipFallbackEnabled's switch
+// feeds SealedBlock: gossip when the fallback is on, OR when the direct push
+// reached no peers at all -- in that case gossip is the only delivery path
+// left, switch or no switch.
+func shouldGossipBlock(fallbackEnabled bool, peerCount int) bool {
+	return fallbackEnabled || peerCount == 0
+}
+
+// blockGossipFallbackEnabled reports whether SealedBlock's gossip fallback
+// runs unconditionally (true, the default/unset/"1" case) or only when the
+// direct push reached zero peers ("0"). N42_BLOCK_GOSSIP_FALLBACK=0 is an
+// experiment, not a production default: it trades the fallback's redundancy
+// for removing its ~18-26 MB publish from the same GossipSub streams the
+// vote round-trip uses (6cg).
+func blockGossipFallbackEnabled() bool {
+	blockGossipFallbackOnce.Do(func() {
+		blockGossipFallbackOn = parseBlockGossipFallback(os.Getenv("N42_BLOCK_GOSSIP_FALLBACK"))
+		if !blockGossipFallbackOn {
+			log.Info("block gossip fallback disabled (N42_BLOCK_GOSSIP_FALLBACK=0)")
+		}
+	})
+	return blockGossipFallbackOn
 }
 
 // directPushBlock opens a stream to each connected peer and writes the block as
 // a single chunked response (status code + fork digest + encoded block) — the
 // same wire format ReadChunkedBlock decodes in the sync block-push handler. The
 // RLP-encoded block bytes are passed in (encoded once by SealedBlock).
-func (bc *BlockChain) directPushBlock(b block.IBlock, data []byte) {
+//
+// Returns the number of connected peers a push was DISPATCHED to (goroutines
+// launched), not confirmed delivered -- each send is fire-and-forget on its
+// own goroutine (that is the whole point: SealedBlock must not block on
+// network I/O), so per-peer success is only known later, asynchronously, and
+// cheap dispatch-time visibility is what S15b's gossip-fallback switch needs
+// (see blockGossipFallbackEnabled). 0 when p2p is unavailable, the fork
+// digest cannot be computed, or there are no connected peers.
+func (bc *BlockChain) directPushBlock(b block.IBlock, data []byte) int {
 	if bc.p2p == nil {
-		return
+		return 0
 	}
 	digest, err := utils.CreateForkDigest(b.Number64(), bc.genesisBlock.Hash())
 	if err != nil {
-		return
+		return 0
 	}
 	protoID := protocol.ID(p2p.RPCBlockPushTopicV1 + bc.p2p.Encoding().ProtocolSuffix())
 	peers := bc.p2p.Peers().Connected()
@@ -1807,6 +1874,7 @@ func (bc *BlockChain) directPushBlock(b block.IBlock, data []byte) {
 			}
 		}(pid)
 	}
+	return len(peers)
 }
 
 // rawBlockBytes carries pre-encoded RLP block bytes through the SSZ length/snappy
