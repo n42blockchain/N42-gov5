@@ -6505,6 +6505,219 @@ specifically elevates B1win2 was out of scope here. It does NOT
 determine, for hand-over blocks, what the new leader's build is doing
 for ~508 ms after its own import of the parent finishes.
 
+## 6cd. S12c: both remaining gaps split with lines that already exist -- Gap A is real CPU work, Gap B is the deferred-includability check, and the code shows exactly why hand-over cannot borrow in-tenure's speculative shortcut (2026-09-21)
+
+Commander's follow-up to 6cc, accepted: H is falsified, 6cb stands. Two
+gaps were left as single numbers -- hand-over's ~508 ms (new leader's
+build starting after its own import of the parent) and the ~134-149 ms
+between a follower's chain-layer import-complete line and its held
+commit-vote release. Both split cleanly using lines already in the kept
+logs (no new instrumentation), plus a code trace for what connects them.
+Script: `wt-r27/scripts/qs-analysis/gap_trace.py`, same kept files as
+6ca/6cb/6cc.
+
+**Gap A: hand-over timeline, on the new leader, relative to its OWN
+`blockimport phases` end for the parent (t=0), n=68 rows.**
+
+| segment | median (ms) | p10 | p90 |
+|---|---|---|---|
+| `blockimport phases` end -> `"block push: received"` | 0.0 | 0.0 | 0.0 |
+| `"block push: received"` -> `miner: prefill phases` buildStart | 0.5 | -0.2 | 24.4 |
+| prefill itself (buildStart -> prefill end) | 142.0 | -- | -- |
+| prefill end -> `t_commit_start(v)` (= `fillTransactions` itself) | 351.3 | 279.3 | 451.6 |
+| **sum** | **493.8** | | |
+| (cross-check: direct `t_parent_end -> t_commit_start(v)`, matches 6cc) | **508.3** | 388.5 | 637.1 |
+
+493.8 / 508.3 = **97.1%, confirmed (within the 15% bar, in fact within
+3%).** All 68 hand-over rows have a matching `"miner: prefill phases"`
+line (100% coverage -- a hand-over build almost always crosses the 50 ms
+`logIfSlow` cutoff, unlike a steady-state in-tenure build, 6ca's ~5%).
+
+**The largest sub-interval is `fillTransactions` itself, ~351 ms, real
+CPU** (`internal/miner/worker.go:1657`, called from `commitWork` at
+`worker.go:1471`) -- picking and executing candidates for a
+~160,000-tx block with **no speculative head start** (see below for why
+none exists). Prefill (142 ms) is the second-largest and is also real
+CPU -- 6ca's own prefill-phases table already showed `specTreeReload`
+and `headerPrepare` as its dominant steps; nothing here overturns that.
+**The dispatch/queue/gate segment is ~0 ms** (0.0 ms for the
+InsertChain-tail-to-log-line hop, 0.5 ms median for everything between
+that and the build's own `buildStart` stamp: `blockApplied()`'s
+in-memory/marker check, `NotifyBlockImported`
+(`internal/consensus/hotstuff/service.go:1592`), the `go
+s.triggerBlockProduction(...)` goroutine launch (`service.go:1622`), the
+three re-run leader gates (`service.go:355-397`, `"hotstuff: leader gate
+phases"` -- no `tMs` on this line, but its own three duration fields
+`behindNs`/`committedNs`/`appliedNs` are each single-digit-to-low-double-
+digit microseconds in the sample checked, consistent with an
+in-memory-only gate at this point since the block IS now applied),
+`Miner.TriggerBlockProduction` sending onto `w.newWorkCh`
+(`internal/miner/miner.go:186-209`), and `commitWork`'s own entry
+(`"miner: commitWork begin"`, `worker.go:1096`) through to the prefill
+timer's `buildStart` (`build_stall_watchdog.go:212`, set to `commitWork`'s
+own `start := time.Now()` at `worker.go:1097`)). **Answer to "is the new
+leader waiting for the QC, its own write/apply, or a timer/queue":
+neither the QC nor a timer/queue -- gates, dispatch and queueing are
+free (~0 ms); the entire measured gap is the leader doing real,
+un-shortcut-able CPU work** (prefill + fill) that it could not have done
+any earlier, because it did not yet have the parent's post-state to
+build against (its own `ensureParentApplied` gate,
+`service.go:304-349`, is exactly the check that would have blocked an
+earlier start).
+
+`worker.go:1070`'s `time.NewTimer(wait)` is `paceBlock`'s pacing
+throttle, sitting between `commitWork` and `sealStart`, and fires only
+when `wait > 0` (ahead of a fixed-interval grid) -- the code's own
+comment already argues it "cannot [fire] under load, a late block's
+slot is in the past, so wait is negative," and the measured ~0 ms
+dispatch gap here is consistent with that: nothing suggests this timer
+fired on any of the 68 hand-over builds. `worker.go:1561`'s `timer :=
+time.NewTimer(0)` is the main worker loop's legacy periodic-recommit
+timer (`commit()`'s `timer.Reset(recommit)`), which the surrounding code
+comment says a leader-driven engine (HotStuff) does not use for
+production -- "produce ONLY via `TriggerBlockProduction`... An
+event-driven `commit()` here builds on the local head with no pin." Not
+on this path.
+
+**Can the hand-over build start from a parked speculative task? The
+mechanism exists in the code for exactly this case, but the deferred
+vote path it depends on almost never satisfies its own gate.** Two
+`OutputSpeculativeBuild` emission sites exist
+(`internal/consensus/hotstuff/proposal.go:133,462`), the second being
+the cross-view case: `sendVote` (Round 1, prepare), right after casting
+this node's own vote for `blockHash`, checks `if
+e.importedBlocks[blockHash] && LeaderForView(view+1,
+e.validatorSet()) == e.myIndex` (`proposal.go:461`) and, if true, tells
+the miner to start speculatively building on `blockHash` right away --
+precisely "a node that knows it leads the next tenure speculates on the
+outgoing leader's last block once it has imported it." The comment
+above it (`proposal.go:450-459`) names the intent explicitly: "if
+round-robin makes this node the NEXT view's leader... the ~500 ms build
+can run during this view's vote rounds instead of after the view
+change." **What prevents it firing for our 68 rows: the guard is
+`e.importedBlocks[blockHash]`, i.e. the block's own FULL import, but
+`sendVote` for a large block is overwhelmingly called from
+`tryDeferredVote`** (`proposal.go:269-287`) **under deferred execution --
+exactly the path that votes BEFORE the block is fully imported** (its
+premise is "checked + parent imported," not "imported"; 6cc measured
+this: follower `ExecWait` is 0 ms at the median, and 86.5%+ of votes
+never wait on import at all). At the moment `tryDeferredVote` calls
+`sendVote(view, pending)`, `e.importedBlocks[pending]` is essentially
+always still false for a block this large, so the guard fails silently
+and no `OutputSpeculativeBuild` is ever emitted for it -- `sendVote` runs
+exactly once per view and the hint is never retried later, even once
+the import this section measured (508 ms after `sendVote` already ran)
+actually completes. In one sentence: **the same deferred-vote
+optimization that makes in-tenure blocks fast is, as currently wired,
+the reason hand-over gets no speculative head start at all** -- no
+design proposed, per the task, but the mechanism and its silent failure
+mode are both named with file:line above.
+
+**Gap B: the ~134-149 ms held-commit-vote release, in-tenure, n=64
+usable (follower, block) rows.** Same causal chain, now traced with one
+more existing line: `"deferred check: block passes, vote may proceed
+before its import"` (`internal/sync/rpc_block_push.go:96`, backed by
+`CheckDeferredBlock`, `internal/deferred_includable.go:38`).
+
+| pair | median (ms) | share within 20 ms |
+|---|---|---|
+| `t_parent_end` -> `"block push: received"` (InsertChain tail) | 0.0 | -- |
+| `t_parent_end` -> `t_checked(v)` (`"deferred check: block passes"`) | 134.5 | 0% |
+| `t_checked(v)` -> `t_gate` (the actual vote release) | **0.0** (n=64, values 0-1 ms, one outlier at 7 ms) | 100% |
+
+**All 64 usable rows show `t_gate` and `t_checked` at the same
+millisecond (or one apart).** So the ~134 ms is not a dispatch, queue,
+or scheduling gap at all -- **it is the wall-clock duration of
+`CheckDeferredBlock` itself**, run synchronously on the same goroutine
+chain that `NotifyBlockImported` (`service.go:1592`) drives:
+`NotifyBlockImported(parent's hash)` -> `retryDeferredChildren(parent's
+hash)` (`rpc_block_push.go:125-133`) -> `deferredCheck(v)`
+(`rpc_block_push.go:78-121`) -> `CheckDeferredBlock(v)`
+(`internal/deferred_includable.go:38-100+`) -> on success, logs
+`"deferred check: block passes..."` and calls `NotifyBlockChecked`
+(`rpc_block_push.go:96-97`) -> `onBlockChecked` ->
+`tryDeferredVote`/`onBlockImported`'s already-pending
+`castHeldCommitVoteIfAttested` (`proposal.go:517-547`) fires in the same
+call stack. `CheckDeferredBlock` itself does real, size-proportional
+work per its own doc comment (`deferred_includable.go:29-33`): sender
+recovery, nonce-contiguity and balance/gas checks against the parent's
+just-published post-state, over every transaction in the block -- for a
+~160,000-tx block, ~134 ms of that is unsurprising and requires no
+further gap to explain. **No periodic element is on this path**: the
+`100 ms` ticker at `service.go:215` belongs to
+`requestCommittedCatchUp`'s post-hash/pre-header polling loop (a
+catch-up-after-restart mechanism, gated on `s.blockFetcher` calls a node
+only makes when it is missing a block entirely), not to the
+already-arrived, already-queued deferred-check retry, which is invoked
+directly by `retryDeferredChildren` with no timer in between (the
+`deferredRetryInterval = 200 ms` `time.AfterFunc` at
+`rpc_block_push.go:120` exists for a DIFFERENT case -- a block whose
+check failed for a reason other than "parent not applied yet" landing
+zero `NotifyBlockImported` calls to retry it on -- and does not fire on
+this round's held-vote population, whose median 134 ms is well under
+that 200 ms poll period and whose `t_checked`-`t_gate` gap of ~0 ms is
+inconsistent with having gone through an extra timer round-trip).
+
+**Gap B, answered: the code path is `NotifyBlockImported` ->
+`retryDeferredChildren` -> `deferredCheck` -> `CheckDeferredBlock`, all
+synchronous on one goroutine (the stream handler that just finished
+importing the parent); the ~134 ms IS `CheckDeferredBlock`'s own
+execution time for this block's transactions, not a wait.**
+
+**Gap C (view-timing split, from the fields already parsed in 6cb --
+no new parsing needed for the coarse table; the finer split the task
+asked for is not available from these lines).**
+
+| role | segment | median (ms) |
+|---|---|---|
+| leader | propose (ViewStart -> ProposalSent) | 250 |
+| leader | Round1 (ProposalSent -> PrepareQCFormed) | 96 |
+| leader | Round2 (PrepareQCFormed -> CommitQCFormed) | 288 |
+| leader | total (ViewStart -> CommitQCFormed) | 718 |
+| follower | Delivery (ViewStart -> ProposalReceived) | 434 |
+| follower | ExecWait (ProposalReceived -> VoteSent) | 0 (present in only 334/1440 rows) |
+| follower | Round1 (VoteSent -> CommitVoteSent) | 288.5 |
+| follower | Round2 (CommitVoteSent -> CommitQCFormed) | 12 |
+| follower | total | 756 |
+
+`ViewPhases.LogLine()` (`internal/consensus/hotstuff/view_timing.go:190-
+207`) is the only source of these numbers, and it carries exactly the
+six/five fields above per role -- no sub-timer inside Round1 or Round2
+separates "waiting for the k-th vote" from "aggregating/sending once it
+arrives," on either the leader or the follower side. **That finer split
+is n/a: the logs cannot tell.** What the coarse table already shows,
+unchanged from 6cb/6cc: leader Round2 (288 ms) closely tracks follower
+Round1 (288.5 ms) -- both cover the interval in which a follower's
+COMMIT vote becomes sendable, which Gap B just showed is dominated by
+`CheckDeferredBlock`'s per-transaction cost for whichever of the 13.5%
+of (follower, block) pairs needed to hold, not by network round-trip
+alone (a bare BLS-aggregate/gossip round trip on localhost/LAN would not
+plausibly cost 288 ms by itself). Where exactly the REMAINING ~150 ms
+of leader Round2 goes for the 86.5% of votes that are never held (since
+Gap B only explains the held subset) is not determined by any line in
+this round -- **n/a beyond that boundary**.
+
+**What this does and does not show.** It shows, with lines that already
+existed and a full code trace, that hand-over's ~508 ms is genuine,
+necessary CPU work with essentially zero dispatch/queue/gate overhead,
+and names the exact reason (a guard on full import, not on the
+deferred-check-and-vote path that large blocks actually take) that the
+existing cross-tenure speculative-build hint never fires for it. It
+shows that the ~134-149 ms held-vote gap is `CheckDeferredBlock`'s own
+execution time, not a scheduling artifact, with a same-millisecond
+release confirming there is no queue between the check passing and the
+vote going out. It does NOT explain the ~150 ms of leader Round2 that
+sits outside the 13.5% held-vote population Gap B covers -- the other
+86.5% of votes are not "held" (no log line marks their release time
+against anything), so nothing here places what a Round2 vote round-trip
+costs on that majority path beyond the aggregate 288 ms already known.
+It does NOT propose a fix for hand-over's missing speculation (the task
+asked for the mechanism and its failure mode only, not a design). It
+does NOT re-open Gap A/B as open questions for optimization purposes
+without first asking whether shaving CPU out of `fillTransactions` or
+`CheckDeferredBlock` is worth it against 6cb's finding that neither
+hand-over nor the held-vote path binds the median (in-tenure) cycle.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
