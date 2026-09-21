@@ -8007,6 +8007,241 @@ the block-gossip fallback eliminated as a candidate with direct
 partial removal (e.g. only for full blocks, or only above some size) --
 this round tested the switch fully off, nothing in between.
 
+## 6ck. S16a: the output-loop mechanism (H2) exists in the code but does not correlate with r2kth -- the stamps stop before the actual publish, which is where the missing time most likely is (2026-09-21)
+
+Same kept logs (`r35zzza-keep`, `r35zzzb-keep`), a code trace, and one
+new script (`wt-r27/scripts/qs-analysis/output_loop_trace.py`, taking
+the same positional leg/window overrides as 6cj's scripts so it runs
+identically against both rounds).
+
+### Part A: where a commit vote actually leaves the process
+
+**Trace, file:line, leader and follower share the same code path
+(`processPrepareQC`, `proposal.go:377-461`) since both sides call it --
+the leader for its own self-triggered commit vote, a follower for the
+PrepareQC it received.**
+
+1. `processPrepareQC` decides to vote: journals the commitment
+   (`journalCommitVote`, `proposal.go:431`, **before** signing/sending
+   it -- "so the commitment is not durable" if skipped) -- this is the
+   MDBX write suspect 1 (6cf) named, confirmed still present here on
+   the COMMIT-VOTE path specifically, running on the CONSENSUS ENGINE's
+   own goroutine under `e.mu`, not on the output loop.
+2. **`e.viewTiming.CommitVoteSent = &now` is stamped at `proposal.go:449`,
+   BEFORE `return e.emit(EngineOutput{...})` at `proposal.go:453`.**
+   `pqc2cv` (`PrepareQCArrival` to `CommitVoteSent`, view_timing.go:261)
+   is therefore **the engine's decision latency (verify + journal +
+   sign), not network time** -- confirming the commander's blind spot
+   (ii) exactly. The same pattern holds for the PREPARE vote
+   (`VoteSent`, `proposal.go:481`, before its own `emit` at line 483)
+   and for the LEADER's own PrepareQC-formed stamp
+   (`voting.go:208-209`, `e.viewTiming.PrepareQCFormed = &now`, set
+   BEFORE the leader's own `journalCommitVote` call at `voting.go:223`
+   and its own `emit(OutputBroadcast{...MsgPrepareQC...})` at
+   `voting.go:231-236`) -- **the leader's own Round2 "start" timestamp
+   also precedes its own journal-write-then-broadcast-dispatch chain.**
+3. `emit()` (`engine.go:739-752`) is a non-blocking send onto
+   `e.outputCh`, a **1024-deep buffered channel**
+   (`adapter.go:168`) shared by every output type.
+4. **The channel is drained by exactly one goroutine**,
+   `processOutputs` (`service.go:585-596`): `for { select { case
+   output := <-s.engine.OutputCh(): s.handleOutput(output) } }` --
+   **strictly serial, one output at a time**, confirming "drained
+   serially."
+5. Inside `handleOutput` (`service.go:598-`), **`OutputSendToValidator`
+   (votes) and `OutputBroadcast` (Proposal/PrepareQC/Decide) are BOTH
+   dispatched via `go ...(output)`** (`service.go:618-619` and
+   `600-617`) -- the loop only pays the cost of spawning a goroutine
+   for these two types, not the publish itself. The actual network
+   write happens later, in that spawned goroutine: `handleSendToValidator`
+   (`service.go:958-1013`, Rotor direct stream via `SendRawBytes`,
+   falling through to `s.handleBroadcast(output)` regardless -- "gossip
+   is always sent") or `handleBroadcast` (`service.go:841-925`,
+   `PublishToTopic` at `:876`/`:889`/`:896`/`:922` depending on message
+   type and Rotor availability). **No line in this round's diagnostics
+   stamps entry to or exit from any of these calls.**
+6. **`OutputBlockCommitted` is the one case NOT dispatched to a
+   goroutine -- it runs fully inline, blocking the loop**
+   (`service.go:642-716`): `CommitToCanonical`/`CommitToCanonicalWith`
+   (`:679-699`) then `persistState`/the hook's own MDBX commit
+   (`:702-713`), each opening its own MDBX write transaction against
+   the SAME `s.db` `JournalVote` uses (`node.go:1863` wires the same
+   `n.db` into both). Logged as `"hotstuff: commit phases"`
+   (`canon`/`observe`/`persist`/`total`, `:714`+).
+7. **`OutputExecuteBlock`/`OutputSpeculativeBuild` are also handled
+   inline** (`service.go:620-641`) but are cheap on the fast path
+   (`FetchBlockByHash` is a no-op if the block is already present,
+   `rpc_block_by_hash.go:60-90`; `PrepareSpeculativeBlock` hands off to
+   the miner's own channel, not measured here as it is off the vote
+   path).
+
+**So the ordered list of what can sit ahead of a vote/broadcast IN THE
+QUEUE (not blocking it once dispatched, since votes/broadcasts get
+their own goroutine) is:** any `OutputBlockCommitted` for an EARLIER
+view enqueued before it -- **MDBX-write: yes** (`service.go:679-713`);
+any `OutputExecuteBlock`/`OutputSpeculativeBuild` ahead of it -- MDBX-write:
+no (fast path) / no (hands off elsewhere); the vote/broadcast's OWN
+goroutine spawn -- MDBX-write: no, sub-microsecond. **The leader's own
+PrepareQC broadcast is structurally exposed to the identical
+mechanism**: it is emitted as `OutputBroadcast` (`voting.go:231-236`)
+through the SAME `outputCh`/`processOutputs`, so if THIS node's own
+`OutputBlockCommitted` for the PREVIOUS block has not yet been
+dequeued, the PrepareQC broadcast's dispatch (not its publish, which
+still happens promptly once dispatched) queues behind it on the
+leader's own side, before it ever leaves the process.
+
+### Part A, tested on the logs
+
+**No stamp places the actual publish moment** (section above) -- the
+one test available without it is whether a node's OWN `"hotstuff:
+commit phases"` cost for the PREVIOUS block predicts an elevated
+`r2kth` for the NEXT one it leads, joined by the same view<->n offset
+calibration used throughout this campaign (no `tMs` on `commit phases`,
+so this is a same-view-adjacency correlation, not a millisecond
+coincidence test):
+
+| | 35zzza | 35zzzb |
+|---|---|---|
+| leader's own `commit_phases(n-1)` [canon+persist] median | 51.1 ms | 44.9 ms |
+| leader's own `r2kth(n)` median (this join) | 248.0 ms | 193.0 ms |
+| Pearson r | 0.081 | 0.023 |
+| **Spearman rho** | **-0.103** | **0.018** |
+
+**No correlation in either round.** A node whose own previous-block
+commit-to-canonical/persist cost was unusually large is no more likely
+to see an unusually large `r2kth` on its next view than one whose cost
+was small. This is direct evidence AGAINST the specific "queued behind
+`OutputBlockCommitted`'s inline MDBX write" mechanism being what
+typically drives `r2kth`'s ~200-350 ms baseline, even though the code
+path (Part A above) is real and could occasionally contribute
+(`commit_phases`' own distribution is heavily right-skewed, median
+~0.2-51 ms depending on population, max up to 780 ms across the whole
+round -- 6cg's per-round table). It does not rule out the SAME
+mechanism affecting a MINORITY of views the way it does not show up in
+an aggregate rank correlation.
+
+**Verdict on H2: inconclusive.** The mechanism named is real, present
+in the code exactly as hypothesized (a serial single-consumer output
+loop, one case of which does inline MDBX-writing work), and structurally
+reachable from both the follower's commit-vote path and the leader's
+own PrepareQC-broadcast path. But the one proxy this round's logs can
+test it against shows no correlation, and the actual publish step
+(where the delay most plausibly sits, given `pqc2cv`/`CommitVoteSent`
+are stamped BEFORE it) is completely unstamped. **Confirmed as a real,
+reachable mechanism; not confirmed, nor ruled out, as the explanation
+for `r2kth`'s typical magnitude.**
+
+**The one stamp that would settle it**: two `time.Now()` calls bracketing
+the actual wire write, at the exact call sites already found --
+`internal/consensus/hotstuff/service.go:922` (the general
+`PublishToTopic` call inside `handleBroadcast`, covering PrepareQC/
+Decide) and inside `handleSendToValidator`'s `SendRawBytes` call
+(`service.go:975`) and its own fallback `PublishToTopic` inside
+`handleBroadcast` (reached via `service.go:1015`) -- i.e. one pair of
+stamps per goroutine, at the true network-write boundary, not a
+redesign of the output loop.
+
+### Part B: size law
+
+**`r1kth`/`r2kth` by tx-count bucket, joined directly to the view that
+produces the block (same convention as 6ch), both rounds:**
+
+| bucket | 35zzza r1kth / r2kth | 35zzzb r1kth / r2kth |
+|---|---|---|
+| 0 tx | 55 / 8 ms | 55 / 8 ms |
+| 1-20k | 60 / 30 ms | 59 / 46 ms |
+| 20-80k | 60 / 124 ms | 59 / 231 ms |
+| 80-140k | 75 / 170 ms | 60 / 206 ms |
+| >140k | 128 / 327 ms | 63 / 333 ms |
+
+`r2kth` grows roughly **linearly with tx count in both rounds** (not a
+step): per-10,000-tx slopes across the buckets run 0.001-0.003 ms/tx in
+35zzza, the same order of magnitude in 35zzzb (35zzzb's 80-140k bucket
+dips slightly below 20-80k's, the one non-monotonic point, inside
+normal sampling noise for n=60-78). `r1kth` (unaffected by gossip in
+35zzzb, per 6cj) stays nearly flat across all buckets except the very
+top one in 35zzza (55->60 ms through 80-140k, then 128 ms at >140k --
+closer to a step at the very largest blocks specifically, in the round
+that still had gossip on; 35zzzb's `r1kth` is flat all the way through,
+55->63 ms, no step anywhere).
+
+**Rank correlation (Spearman), `r2kth` vs write time, all views (not
+just the 3 full windows), both rounds:**
+
+| | vs leader's own `blockwrite` (propose-phases `write`) | vs mean follower `blockimport` `write` |
+|---|---|---|
+| 35zzza | rho=0.345 (n=4455) | rho=0.352 (n=4455) |
+| 35zzzb | rho=0.350 (n=4231) | rho=0.385 (n=4231) |
+
+**A real, moderate, near-identical correlation in both rounds** --
+consistent with `r2kth` tracking something proportional to block size
+(as the bucket table already shows directly), but far from a tight
+1:1 relationship (rho ~0.35-0.39, not >0.8), meaning block-write time
+alone does not explain most of `r2kth`'s variance either.
+
+### Part C: view-timeout placement
+
+**Distinct (time, view) TC-formed/view-timed-out events, classified by
+the ACTUAL block each affected view maps to (via the same view<->n
+offset), not by a coarse time boundary:**
+
+| round | decay (block=0 tx) | ramp (partial fill) | flood (full block, no stall) | flood + build-stall cascade |
+|---|---|---|---|---|
+| 35zzza | 2 (03:14:59, 03:28:46/47) | 1 (03:22:31, 15,000 tx) | 0 | 1 (03:22:43, 163,000 tx -- coincides with the round's own build stall at 03:22:28) |
+| 35zzzb | 2 (05:14:55-05:15:24 x4, 05:28:33-39) | 2 (05:14:48/05:15:20, 22,857 tx; 05:35:41, 80,800 tx) | **1 (05:39:09, 163,000 tx, no stall found)** | 1 (05:40:14 onward, view 8708/8709, 4 further retries through 05:41:52 -- coincides with 35zzzb's own build stall at 05:40:11, block 13661061) |
+
+35zzzb has **one genuinely new kind of event 35zzza did not produce**:
+a flood-window, full-block timeout (05:39:09) with **no build stall,
+no `TC formed`-adjacent stall dump, and no fetch/catch-up line of any
+kind in the 2 seconds before it on any of the 7 nodes** -- checked
+directly (`grep -iE 'fetch|not found|catch'` in the `[t-2s, t]` window
+across every kept file, both this event and the 05:35:41 ramp event:
+**zero matches for either**). The switch's OWN safety mechanism
+(`FetchBlockByHash` fetch-on-miss, 6ci) runs unconditionally regardless
+of the switch and would have logged something identifiable if a
+follower had missed the direct push and needed it; nothing did.
+
+**The rise (25->47 raw `view timed out` lines, 4->9 distinct views) is
+real but NOT attributable to the switch via the one mechanism this
+task asked to check (a follower falling back to fetch-by-hash after a
+missed direct push).** The single new unexplained flood-window timeout
+(05:39:09) could still be attributable to the switch through a
+mechanism this check cannot see -- e.g. higher VARIANCE in direct-push
+delivery timing without a gossip second chance, brushing the timeout
+threshold without ever triggering an outright miss -- but that is
+speculation, not evidence from these logs. **On the evidence actually
+found: unclear, leaning "not attributable via fetch-by-hash," with one
+event that remains genuinely unexplained.**
+
+**Method.** `output_loop_trace.py` reuses the exact push-instant/QC-proxy/
+view<->n-offset join from `contention_attribution.py`, adds a second join
+on `"hotstuff: commit phases"` keyed the same way, and computes Pearson/
+Spearman by hand (no numpy dependency in this environment). The TC/
+timeout classification maps each event's `view` to a block number via
+the SAME per-leg offset already calibrated for the round's own full-window
+join, rather than a hand-placed time boundary -- this is what let the
+03:22:31/43 pair in 35zzza resolve to a real 15,000-tx and 163,000-tx
+block respectively instead of being lumped as "ramp" by clock time alone.
+
+**What this does and does not show.** It shows, with file:line, that
+every stamp this campaign has relied on for Round 2 timing
+(`CommitVoteSent`, `PrepareQCFormed`, `pqc2cv`) is taken before the
+engine hands the message to the output channel, not after it is
+actually written to the wire -- so none of them can see the one place
+most likely to hold the missing ~200-300 ms. It shows the specific
+"queued behind an inline MDBX write" mechanism, while real and
+reachable in the code, does not correlate with `r2kth` in either
+round's own data, so it should not be assumed to be the dominant cause
+without the one stamp above confirming it. It shows `r2kth` scales
+close to linearly with block size and moderately with write time in
+both rounds identically, which is consistent with (but does not prove)
+some other size-proportional network or serialization cost on the
+publish path. It does NOT identify what that cost is. It does NOT
+resolve whether 35zzzb's view-timeout rise is caused by the gossip-
+fallback switch -- the one mechanism checked (fetch-by-hash) shows no
+evidence either way, and a repeat round would be needed before treating
+either the rise or its non-attribution as settled.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
