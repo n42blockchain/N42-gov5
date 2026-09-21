@@ -53,3 +53,14 @@ not supply and prediction 77 must not be credited, whatever the B mean says.
 | -- | 35zzt: packet window 8 actually reaching the nodes | B 127.6k, standing best |
 | -- | 35zzs: tx-bounded tail with a draining sealer | B 112.7k |
 | -- | 35zzr: the fold outside the write transaction | B 89.1k -> 102.0k |
+
+## Decision: the consensus safety journal stays where it is (2026-09-21, commander, delegated by the user)
+
+No separate WAL and no second MDBX environment for the HotStuff safety state. The ConsensusState
+record is written standalone by JournalVote and atomically with canonical chain data by
+CommitToCanonicalWith's hook; two copies reopen the equivocation window persistence.go:68-75 warns
+about, and a monotone max-merge on recovery would be new safety-critical code bought for no measured
+gain: 35zzzd/35zzze show follower jcvMs = 0 and the leader's 334 ms journal wait disappears entirely
+with a scheduling change (N42_LEADER_WRITE_AFTER_JOURNAL=1) that touches no safety semantics.
+Revisit only if a later round measures journal waits again (watch jpvMs/jcvMs after S23 lets
+write(v) overlap view v+1); the first remedy is again scheduling, not a second store.
