@@ -163,6 +163,19 @@ func (miner *Miner) Close() {
 	if err := miner.group.Wait(); err != nil && !errors.Is(err, context.Canceled) {
 		log.Error("miner errgroup returned error", "err", err)
 	}
+	// S23 (N42_LEADER_WRITE_ASYNC=1): resultLoop has now fully returned (the
+	// group.Wait above only returns once every registered goroutine,
+	// including resultLoop, has exited), so no new job can arrive on the
+	// writer's queue -- safe to close it and wait for whatever is already
+	// in flight or queued to finish, so a shutdown never leaves a
+	// pushed/proposed block unwritten. 30s is generous next to a single
+	// block write (hundreds of ms); a timeout here means something is
+	// genuinely wedged, not that this is racing a normal write.
+	if miner.worker.asyncWriter != nil {
+		if !miner.worker.asyncWriter.Drain(30 * time.Second) {
+			log.Error("miner: leader write queue did not drain within 30s on shutdown")
+		}
+	}
 }
 
 func (m *Miner) Mining() bool {

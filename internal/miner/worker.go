@@ -387,6 +387,12 @@ type worker struct {
 	snapshotRewards  []*block.Reward
 	snapshotBlock    block.IBlock // lazily assembled from snapshotEnv
 	snapshotReceipts block.Receipts
+
+	// asyncWriter is non-nil only when N42_LEADER_WRITE_ASYNC=1 (set once in
+	// newWorker); nil means "off", and every call site checks for nil rather
+	// than re-reading the switch, so a switched-off worker never even
+	// allocates the channel. See async_write.go.
+	asyncWriter *asyncBlockWriter
 }
 
 func newWorker(ctx context.Context, group *errgroup.Group, chainConfig *params.ChainConfig, engine consensus.Engine, bc common.IBlockChain, txsPool common.ITxsPool, isLocalBlock func(header *block.Header) bool, init bool, minerConf conf.MinerConfig) *worker {
@@ -420,6 +426,9 @@ func newWorker(ctx context.Context, group *errgroup.Group, chainConfig *params.C
 		minerConf:        minerConf,
 		resubmitAdjustCh: make(chan *intervalAdjust, resubmitAdjustChanSize),
 		bundlePool:       builder.NewBundlePool(),
+	}
+	if LeaderWriteAsyncOn() {
+		worker.asyncWriter = newAsyncBlockWriter(worker)
 	}
 	recommit := worker.minerConf.Recommit
 	if recommit < minPeriodInterval {
@@ -711,7 +720,7 @@ func (w *worker) handleSealed(blk block.IBlock) {
 		if contentionDiagEnabled {
 			tCheckEnter = time.Now()
 		}
-		cerr := c.CheckSealParentApplied(blk)
+		cerr := w.checkSealParentApplied(c, blk, parentHash)
 		if contentionDiagEnabled {
 			dCheck = time.Since(tCheckEnter)
 		}
@@ -804,6 +813,52 @@ func (w *worker) handleSealed(blk block.IBlock) {
 		}
 	}
 
+	// S23 (docs/QS_BLOCK_TIME_BUDGET.md 6ct/6cu, N42_LEADER_WRITE_ASYNC=1):
+	// everything from here on -- the S19 journal-latch wait, the write
+	// itself, and everything that today assumes "the write already
+	// returned" (pendingTasks cleanup, counters, the seal-path/propose-
+	// phases/"Successfully sealed" log lines, recordSealedOnParent, the
+	// ChainHighestBlock event) -- moves into writeAndFinish, called either
+	// synchronously here (switch off: byte-for-byte today's control flow,
+	// same goroutine, same order) or from the dedicated writer goroutine
+	// (switch on: resultLoop returns immediately after Enqueue, free to
+	// receive and push/propose the NEXT sealed result without waiting for
+	// THIS write).
+	job := &writeJob{
+		blk: blk, receipts: receipts, logs: logs, task: task,
+		sealhash: sealhash, hash: hash, parentHash: parentHash, blockNumber: blockNumber.Uint64(),
+		sealStart: sealStart, tHandleSealedEnter: tHandleSealedEnter,
+		tCheckEnter: tCheckEnter, dCheck: dCheck,
+		tCopyStart: tCopyStart, dCopy: dCopy,
+		tPush: tPush, dPush: dPush, pushedEarly: pushedEarly,
+		tProposeEarly: tProposeEarly, dProposeEarly: dProposeEarly, proposedEarly: proposedEarly,
+	}
+	if w.asyncWriter != nil {
+		w.asyncWriter.Enqueue(job)
+		return
+	}
+	w.writeAndFinish(job)
+}
+
+// writeAndFinish runs the S19 journal-latch wait, WriteBlockWithState
+// itself, and everything handleSealed does today only after a successful
+// write -- extracted so the switch-off (synchronous, called directly from
+// handleSealed) and switch-on (called from asyncBlockWriter.run, S23,
+// N42_LEADER_WRITE_ASYNC=1) paths share IDENTICAL logic. Returns whether
+// the write succeeded (informational only; the caller does not currently
+// branch on it -- a failed write already logs and returns exactly as
+// handleSealed always has).
+func (w *worker) writeAndFinish(job *writeJob) bool {
+	blk, task := job.blk, job.task
+	hash, sealhash, parentHash := job.hash, job.sealhash, job.parentHash
+	blockNumber := job.blockNumber
+	receipts, logs := job.receipts, job.logs
+	sealStart, tHandleSealedEnter := job.sealStart, job.tHandleSealedEnter
+	tCheckEnter, dCheck := job.tCheckEnter, job.dCheck
+	tCopyStart, dCopy := job.tCopyStart, job.dCopy
+	tPush, dPush, pushedEarly := job.tPush, job.dPush, job.pushedEarly
+	tProposeEarly, dProposeEarly, proposedEarly := job.tProposeEarly, job.dProposeEarly, job.proposedEarly
+
 	// N42_LEADER_WRITE_AFTER_JOURNAL (S19, docs/QS_BLOCK_TIME_BUDGET.md 6cn/
 	// 6co): delay the START of the write below until this node's own
 	// journalCommitVote for THIS block has succeeded (or the configured
@@ -816,6 +871,11 @@ func (w *worker) handleSealed(blk block.IBlock) {
 	// even run yet at this point -- there is nothing to wait for, so this is
 	// skipped rather than spending the full timeout on a signal that cannot
 	// possibly arrive yet. Never holds w.mu or any chain lock while waiting.
+	// S23: this wait now runs on the dedicated writer goroutine when the
+	// switch is on, not on resultLoop -- moving it there too (not just the
+	// write) is what keeps resultLoop free the whole time, matching the
+	// task's own requirement that the S19 latch wait "must NOT block
+	// resultLoop either".
 	var lwWait time.Duration
 	lwWhy := "off"
 	if LeaderWriteAfterJournalOn() {
@@ -829,7 +889,7 @@ func (w *worker) handleSealed(blk block.IBlock) {
 	}
 
 	tWrite := time.Now()
-	err = w.chain.WriteBlockWithState(blk, receipts, task.state, task.nopay)
+	err := w.chain.WriteBlockWithState(blk, receipts, task.state, task.nopay)
 	dWrite := time.Since(tWrite)
 	if err != nil {
 		if proposedEarly {
@@ -838,18 +898,21 @@ func (w *worker) handleSealed(blk block.IBlock) {
 		}
 		if errors.Is(err, internal.ErrStaleSeal) {
 			// The applied head moved past this seal's parent while it
-			// was in flight (a competing same-height candidate won).
-			// An expected race under view churn, not a node fault.
+			// was in flight (a competing same-height candidate won, OR --
+			// S23 only -- an earlier queued write of this node's OWN onto
+			// the same parent chain failed; see pendingWrite's doc comment,
+			// async_write.go, for why this path is exactly as safe here as
+			// it always has been for an ordinary sibling race).
 			log.Info("Sealed block lost to a competing candidate; dropping",
 				"number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12])
-			return
+			return false
 		}
 		log.Error("Failed writing block to chain", "err", err)
 		if bc, ok := w.chain.(*internal.BlockChain); ok {
 			bc.ForgetSealedHeader(blk.Hash())
 		}
 		miningErrorsCounter.Inc()
-		return
+		return false
 	}
 	w.mu.Lock()
 	delete(w.pendingTasks, sealhash)
@@ -867,10 +930,13 @@ func (w *worker) handleSealed(blk block.IBlock) {
 	// (tHandleSealedEnter) -- queued behind whatever handleSealed(v) was
 	// still doing (its own write, most likely) on this single goroutine.
 	// taskQWaitMs is the same idea for taskCh (taskChSentAt -> sealStart).
+	// S23 adds wqWaitMs/wqDepth: the NEW queue wait, this write's own
+	// enqueue call on resultLoop (zero when the switch is off, or when this
+	// write's own enqueue did not have to block).
 	if contentionDiagEnabled {
 		blsEnd := sealStart.Add(time.Duration(task.blsNanos.Load()))
 		log.Info("miner: seal path",
-			"number", blockNumber.Uint64(),
+			"number", blockNumber,
 			"triggerTMs", tMs(task.triggerAt),
 			"buildBeginTMs", tMs(task.buildBeginAt),
 			"specParkedTMs", tMs(task.specParkedAt),
@@ -897,6 +963,8 @@ func (w *worker) handleSealed(blk block.IBlock) {
 			"lwWhy", lwWhy,
 			"writeStartTMs", tMs(tWrite),
 			"writeEndTMs", tMs(tWrite.Add(dWrite)),
+			"wqWaitMs", job.wqWaitMs,
+			"wqDepth", job.wqDepth,
 		)
 	}
 
@@ -915,7 +983,7 @@ func (w *worker) handleSealed(blk block.IBlock) {
 	log.Info("🔨 Successfully sealed new block",
 		"sealhash", sealhash,
 		"hash", hash,
-		"number", blockNumber.Uint64(),
+		"number", blockNumber,
 		"used gas", blk.GasUsed(),
 		"diff", blk.Difficulty().Uint64(),
 		"headerTime", time.Unix(int64(blk.Time()), 0).Format(time.RFC3339),
@@ -928,7 +996,7 @@ func (w *worker) handleSealed(blk block.IBlock) {
 		tPush = time.Now()
 		if err = w.chain.SealedBlock(blk); err != nil {
 			log.Error("Failed Broadcast block to p2p network", "err", err)
-			return
+			return true
 		}
 		dPush = time.Since(tPush)
 	}
@@ -958,7 +1026,7 @@ func (w *worker) handleSealed(blk block.IBlock) {
 	// switch is unset; "not-proposed-yet": no early Proposal to wait on;
 	// "unsupported": w.engine does not implement commitVoteJournalWaiter).
 	log.Info("miner: propose phases",
-		"n", blockNumber.Uint64(), "txs", len(blk.Transactions()),
+		"n", blockNumber, "txs", len(blk.Transactions()),
 		"finalize", task.finalize, "witness", task.witness, "assemble", task.assemble,
 		"bls", time.Duration(task.blsNanos.Load()), "seal2res", time.Since(sealStart),
 		"write", dWrite, "push", dPush, "pushedEarly", pushedEarly, "proposedEarly", proposedEarly, "notify", dNotify,
@@ -971,6 +1039,7 @@ func (w *worker) handleSealed(blk block.IBlock) {
 	if concrete, ok := blk.(*block.Block); ok {
 		event.GlobalEvent.Send(common.ChainHighestBlock{Block: *concrete, Inserted: true})
 	}
+	return true
 }
 
 // firstSealedOnParent returns the first block this node sealed+imported on the
@@ -1045,6 +1114,22 @@ func (w *worker) ownSealed(hash types.Hash) block.IBlock {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return w.sealedByHash[hash]
+}
+
+// checkSealParentApplied is handleSealed's stale-seal gate, factored out so
+// the S23 bypass decision is independently testable. c.CheckSealParentApplied
+// is the real, authoritative-as-of-last-commit DB check; the bypass (when
+// N42_LEADER_WRITE_ASYNC=1) additionally treats blk's parent as applied when
+// it matches whatever w.asyncWriter itself most recently accepted for
+// writing -- see pendingWrite's doc comment (async_write.go) for why an
+// optimistic pass here is safe even when it turns out to be wrong.
+func (w *worker) checkSealParentApplied(c sealParentChecker, blk block.IBlock, parentHash types.Hash) error {
+	if w.asyncWriter != nil {
+		if expHash, _, ok := w.asyncWriter.ExpectedParent(); ok && expHash == parentHash {
+			return nil
+		}
+	}
+	return c.CheckSealParentApplied(blk)
 }
 
 // ownPendingSpeculation reports whether this speculative build extends a
