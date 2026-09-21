@@ -5746,6 +5746,276 @@ eight-generator shape.
 all done on the commander's ruling). QS_QUEUE.md's S11 row is marked
 prepared, not launched.
 
+## 6ca. Round 35zzz: n42-r86 on the eight-generator shape -- zero stalls, prediction 82 confirmed on all three clauses (2026-09-21)
+
+35zzz ran on **n42-r86** (2026-09-20 23:51 EDT preflight - 2026-09-21 00:50:35,
+`ROUND DONE`, no abort), 35zzt's proven eight-generator/1000-sender/
+`-target-depth 45000` shape, `N42_BUILD_STALL_DIAG=1` the only new variable.
+Legs: A1 done 00:10:41, B1 00:10:41-00:24:14, B2 00:24:14-00:37:45, A2 done
+00:50:35 (A legs not used to conclude anything, per protocol).
+
+**Evidence preserved first.** Every node's `log/n42.log` had already rotated
+once by round end (node0 at 00:41:41 .. node3 at 00:49:32, all after both B
+legs finished), so the entire 00:10:41-00:37:45 window sits inside each
+node's single rotated `n42-*.log.gz` (`zcat <gz> | head -1` gives
+`2026-09-20 23:51:06` for all seven, well before the window; each node's live
+`n42.log` starts only at its own rotation timestamp, all after 00:38:30). One
+`zgrep -E` pass per node against that `.gz`, pattern
+`"time":"2026-09-21 00:(1[0-9]|2[0-9]|3[0-7]):[0-5][0-9]"` or
+`"time":"2026-09-21 00:38:(0[0-9]|[12][0-9]|30)"`, single-threaded, no fleet
+process touched: `/data/blockchain/wr-logs/r35zzz-keep/node{0-6}-B.log`,
+486 MB total (59-79 MB a node), well under the 6 GB cutback threshold. No
+`build-stall-*.stacks` file exists on any node, in the kept window or
+anywhere in the full-round `.gz`/current `n42.log` pair (checked separately,
+see below) -- there was nothing to copy.
+
+**1. B mean, TPS, occupancy, block time.** Same instrument as 6bx: the four
+B-window lines the harness itself prints to the round log
+(`/data/blockchain/wr-logs/r35zzz.log`), not a re-derivation.
+
+| leg | win1 TPS / occ / blockTime | win2 TPS / occ / blockTime |
+|---|---|---|
+| B1 | 135,016 / 48.7% / 1.176s | 118,969 / 47.6% / 1.304s |
+| B2 | 132,731 / 48.9% / 1.200s | 118,435 / 34.8% / 0.938s |
+
+**B mean (135016+118969+132731+118435)/4 = 126,288.** Against 35zzt's 127.6k
+standing best (same generator shape, so a direct comparison, not a
+mechanism-only one) that is -1.0%, inside the documented 3.6% noise floor
+(6j). Against 35zzy's 86.2k (a different, sixteen-generator shape, kept here
+only because the task asked for it) it is +46.5% -- not a meaningful
+delta, since 6bx already showed cross-shape numbers are not comparable.
+
+35zzt's own four B-window numbers, same shape, for the side-by-side the
+86.2k table never had: B1win1 133,038/49.0%/1.200s, B1win2 122,315/36.9%/
+0.984s, B2win1 134,836/48.1%/1.176s, B2win2 120,147/37.0%/0.984s. One
+genuine (mild) shape difference from that baseline: 35zzt's win2 blockTime
+is FASTER than win1 in both legs (0.984s < 1.200s/1.176s -- fewer, better-
+packed blocks late in the leg); 35zzz's B1win2 is SLOWER than its own win1
+(1.304s > 1.176s) and only B2win2 shows the 35zzt-style speedup (0.938s <
+1.200s). This is a real, small divergence in shape, not a stall: the
+largest chain-wide gap inside B1 is 2 s (see below), nothing like the 52 s
+6by found, and it sits nowhere near the B1win2 boundary used above.
+
+**2. `import_breakdown.py`, adapted to read the kept files instead of the
+live (already-rotated) `qs-node*/log/n42.log` path the original script
+opens, over both B legs, `txs>=160000`** (same threshold, run against
+`/data/blockchain/wr-logs/r35zzz-keep/node*-B.log`):
+
+    follower import (full blocks) n=1896
+      body 10 ms (p90 26), proc 554 ms (p90 707), write 214 ms (p90 283), total 803 ms (p90 951)
+      proc breakdown (joined to the same block's own `parallel block` line, n=2212 samples across all leader turns):
+        recoverMs 26 (p90 61), execMs 255 (p90 387), finalizeMs 145 (p90 195)
+
+Side by side with 6bx's r84-without-cache number on the *sixteen*-generator
+shape (body 9 / proc 529 (recov 21, exec 260, finalize 149) / write 215 /
+total 762 ms): this eight-generator round's numbers are 5-20% higher on
+every field except `write`, which is flat. As 6bx already noted for the
+reverse comparison, the two are not a clean A/B (different generator count
+changes the mix of block sizes feeding the `txs>=160000` filter), but the
+n42-r86 diagnostics add no field to this line and could not plausibly be
+the source of the difference -- `body`/`proc`/`write` are computed the same
+way `blockimport phases` always has been, unrelated to S11's own
+instrumentation (`miner: prefill phases`, `build_stall_watchdog.go`), which
+lives entirely in the leader's pre-fill path, not the follower import path
+this line measures.
+
+**3. Stalls.** Zero. `grep -c '"msg":"miner: build stalled before fill"'`
+returns 0 on every one of the 7 kept `node*-B.log` files, and 0 again when
+the same pattern is run against each node's full-round `.gz` (23:51:06
+onward) and current `n42.log` (00:38:30+ onward) -- so this is not an
+artifact of the B-window cut, the whole round produced zero. Correspondingly
+zero `build-stall-*.stacks` files exist anywhere. Chain-wide committed-block
+gaps (`blockimport phases`' own `n`, earliest timestamp seen on any of the 7
+nodes, consecutive-`n` diff, computed the same way 6by pinned the 52 s gap):
+largest gap in B1 is **2 s** (13658193@00:23:06 -> 13658194@00:23:08, and
+three earlier ties of the same 2 s at 00:22:58-00:23:06; leader of
+13658194 is **node3**, propose-phases `total` 235,877,282 ns = 236 ms on
+that block, itself unremarkable); largest gap in B2 is **3 s**
+(13660336@00:35:07 -> 13660337@00:35:10; leader of 13660337 is **node0**;
+tied at 3 s by 13660312@00:34:35 -> 13660313@00:34:38, leader **node1**).
+Both are inside each leg's own win1/win2 blockTime range (1.176-1.304s in
+B1, 0.938-1.200s in B2), i.e. roughly 1.5-3x an ordinary block, not a
+collapse. `TC formed`/`view timed out`: exactly **2** distinct events in the
+combined B legs (view 3852 at 00:11:43, new leader node4; view 6087 at
+00:25:18-19, new leader node3), each seen identically by all 7 nodes.  Both
+land 62-65 s into their leg's own 400 s baseFee-decay warmup (B1 starts
+00:10:41, B2 00:24:14) -- i.e. during the quiet pre-flood period, not during
+either leg's scored flood window -- consistent with a leg-startup artifact
+common to both legs rather than anything the flood or the S11 diagnostics
+did. `hotstuff view timing`'s `r1`/`r2` fields were not re-examined here
+since no stall exists to explain.
+
+**No stack dump exists to anatomize.** This is the direct, expected
+consequence of zero builds crossing the 3 s watchdog threshold -- there is
+no counterexample to clause (b), but also no live-fire exercise of the dump
+path itself in this round (6bz's unit tests are the only evidence the dump
+code runs; see the ruling below).
+
+**4. `miner: prefill phases`, steady state.** 226 lines across the 7 kept
+files (`grep -c` per node: 44/29/36/31/29/28/29). Field-by-field
+(nanoseconds from the log, converted to ms; `p95` = value at the
+`int(n*0.95)` sorted index):
+
+| field | median | p95 | max |
+|---|---|---|---|
+| `alignCall` | 0.0 | 0.0 | 0.0 |
+| `lockWait` | 3505.7 | 6449.3 | 8106.8 |
+| `insertParent` | 0.0 | 0.0 | 0.0 |
+| `persistWait` | 0.0 | 0.0 | 0.0 |
+| `roTxBegin` | 0.0 | 0.0 | 0.0 |
+| `specTreeReload` | 111.8 | 209.4 | 300.9 |
+| `rootLockWait` | 0.0 | 0.0 | 0.0 |
+| `headerPrepare` | 0.6 | 99.8 | 380.3 |
+| `blockStart` | 0.1 | 0.2 | 1.0 |
+| `pendingSnapshot` | 0.0 | 0.0 | 5.8 |
+| `trim` | 0.3 | 7.0 | 148.5 |
+| `total` | 123.4 | 230.4 | 448.0 |
+
+**`lockWait`/`rootLockWait` are not this build's own wait time and must be
+read differently from every other field in this table.** They are drained
+(`Swap(0)`, `internal/blockchain.go:541-548`) from a `bc`-wide atomic
+accumulator (`buildStallLockWaitNs`/`buildStallRootLockWaitNs`,
+`internal/blockchain_types.go:236-237`) that ANY caller of `bc.lock` or
+`minerRCMu` adds to -- ordinary block import and write included, per the
+field's own doc comment ("shared with ordinary import/write"). A build's
+`pf.lockWait` is whatever accumulated there since the last drain by anyone,
+not what this build itself waited for; that is exactly why its median
+(3,505.7 ms) is 28x the `total` median (123.4 ms) for the same 226 lines --
+an impossible relationship if it were bounded by this build's own elapsed
+time. It is real evidence that `bc.lock`/`minerRCMu` contention is
+substantial somewhere on the node across the round, but it cannot be
+charged to any one build's critical path from this instrumentation alone.
+
+Excluding that pair, **`specTreeReload` is the dominant per-build cost**
+at ordinary (just-over-the-50ms-cutoff) magnitudes: median 111.8 ms is 91%
+of the `total` median (123.4 ms). **`headerPrepare` is the dominant cost in
+the heaviest individual lines**: all 5 of the largest-`total` prefill lines
+in the round (397-448 ms, all on node0, in two tight clusters --
+13658098-13658101 at 00:21:27-00:21:30, and 13660337-13660338 at
+00:35:08-00:35:09, the second cluster containing the very block that owns
+B2's largest 3 s commit gap above) are `headerPrepare`-dominated
+(158-380 ms) with `specTreeReload` as a secondary, more variable
+contributor (0.8-193 ms across the same 5 lines). **No line in the round
+crosses 500 ms** (`total` max is 448 ms), so the ">500 ms dominant step"
+question the task posed has no rows to answer from this round; the
+closest analogue is the 5 lines just described.
+
+`headerPrepare` times `prepareWork` (`internal/miner/worker.go:2065-2134`),
+which holds `w.mu.RLock()` for its whole body, including `makeEnv`. S11 adds
+no sub-timer inside that call, so whether its heaviest draws are
+`w.mu` contention from a concurrent writer (`w.mu.Lock()` sites at
+`worker.go:458-459,757-759,843-844,930-931,991-1009,1579-1586`) or real
+work inside `makeEnv`/`engine.Prepare` cannot be distinguished from this
+diagnostic; see "What waits on what" below.
+
+**5. `parallel fill drops` / candidate drops.** Zero, completely, in both B
+legs on every node. `grep -c '"parallel fill drops"'` is 0 on all 7 kept
+files. Every `"msg":"miner: parallel fill"` line's own `failed` field (782
+lines total, 110-117 a node) sums to 0 with a max of 0 -- not "small",
+literally none. So `nonceHigh`, `nonceLow`, and "blocks with >25% dropped"
+are all **0** in every window, per leg, and for the two B legs combined; no
+per-window split is needed since there is nothing to split. **BAD BLOCK**:
+0 (checked across each node's full-round `.gz` and current `n42.log`, not
+just the B window). **Divergence-style messages** (`does not reproduce
+sealed root`, `QMDB tree/marker discontinuity`, any `diverg*` string): 0,
+same full-round check. **`MODE-FAILED`**: the round log never emits `ABORT`
+or `ROUND ABORTED`, ends in a clean `ROUND DONE`, and
+`/data/blockchain/wr-logs/r35zzz-MODE-FAILED` does not exist.
+**`miner: suppressing divergent same-height sibling`**: 0 in the B legs
+(present in 35zzy at 3 instances; absent here). **Generators dry: no.**
+Summing `blockimport phases`' own `txs` field over node0's full leg spans
+(chain-wide, one count, no double counting): B1 consumed 28,960,848 of its
+36,000,000-tx funded budget (80.4%), B2 consumed 27,571,778 of 36,000,000
+(76.6%) -- high utilization, but under budget in both legs, and the
+zero-drop record (a dry generator's own send-ahead exhaustion is exactly
+what would show up as `nonceHigh`/`nonceLow`, per 6bt/6bx/6by) points the
+same way. Direct generator stdout was not retained under the
+one-current-plus-one-rotated log policy, so this is inferred, not read off
+the flood's own output -- consistent with 6bx's identical caveat.
+
+**Ruling on prediction 82.**
+
+**(a) B mean within the 3.6% noise floor of 127.6k -- confirmed.** 126,288
+vs 127,600 is -1.0%, comfortably inside 3.6%. The registered caveat about
+r86 also carrying r84's two lineage fixes (84ecf827, c0931aeb) on top of
+the diagnostics does not need to be invoked to explain a miss, because
+there is no miss to explain -- but it is worth restating for the record now
+rather than only if a future round needs it: this result alone cannot
+separate "diagnostics cost nothing" from "diagnostics cost something small
+that a ~1% swing already hides," since no round in this campaign has run
+n42-r84's exact bits (without the diagnostics) on this exact eight-
+generator shape to subtract against. What is confirmed is only the
+registered bar itself: the number is within noise of the standing best.
+
+**(b) every build that takes >3 s to reach its fill leaves a stack dump and
+a prefill-phases line naming the step -- vacuously confirmed, not
+live-fire tested.** No build in the round crossed the 3 s threshold (max
+observed prefill `total` 448 ms), so there is no case in this round where
+the clause could have failed, and none where it was actually exercised
+end-to-end either. `TestBuildStallWatchdog{FiresAfterThreshold,
+CancelPreventsDump,RateLimited}` (6bz) remain the only evidence the dump
+path itself runs; this round adds no live confirmation beyond "it did not
+need to fire."
+
+**(c) if no stall occurs, the round still yields the n42-r84-lineage
+import-phase line on the eight-generator shape -- confirmed.** Section 2
+above is exactly that line, obtained without any stall in the round,
+directly satisfying the clause as written.
+
+**VERDICT: confirmed**, on the plain reading of all three clauses as
+registered. Two things temper it without falsifying anything: clause (a)'s
+result cannot be attributed to the diagnostics in isolation (see above),
+and clause (b) was never exercised live (no counterexample, but also no
+positive demonstration beyond the unit tests).
+
+**What waits on what.** Nothing in this round waited long enough to need an
+answer at the granularity prediction 82 was built to get: no build reached
+the 3 s watchdog, so there is no goroutine dump and no `commitWork`-path
+stall to attribute to a specific lock or holder. At the steady-state
+granularity the prefill phases line does resolve, ordinary (just-over-
+50 ms) prefill time is dominated by `specTreeReload` (`NewMinerRootComputer`'s
+speculative-tree reload, sharing `minerRCMu` with the startup pre-warm,
+`internal/blockchain.go:562`), and the heaviest individual draws (397-
+448 ms, still nowhere near the 3 s dump threshold) are dominated instead by
+`headerPrepare` (`prepareWork`, `internal/miner/worker.go:2065`, held under
+`w.mu.RLock()` for the call's full body including `makeEnv`). The evidence
+does not determine which: S11 times `headerPrepare` as one block, with no
+timer separating "waiting for a concurrent `w.mu.Lock()` holder" from "doing
+real work inside `makeEnv`/`engine.Prepare`," and no goroutine dump exists
+for any of these lines to read the blocked frame from directly, because
+none of them stalled long enough to trigger one. Plainly: not determined,
+and this round's own instrumentation is not fine-grained enough at the
+sub-3s scale to determine it without a further timer inside `prepareWork`
+itself.
+
+**Method (6ca).** Evidence preserved first (see above) before any analysis.
+`import_breakdown.py`'s logic (`/data/blockchain/gov5-work/wt-r27/scripts/
+qs-analysis/import_breakdown.py`) was reproduced against the kept files
+rather than run in place, since the original script's `glob` target
+(`/data/blockchain/qs-node*/log/n42.log`) had already rotated the B-window
+data out by analysis time; same `txs>=160000` filter, same field set,
+`proc` breakdown joined to `"msg":"parallel block"` by block number `n`
+(not by timestamp, since that line does carry `n`, unlike `"miner: parallel
+fill"` below). Prefill-phases stats: one `json.loads` pass per kept file
+over `"msg":"miner: prefill phases"` lines, medians/p95/max computed in
+Python over the raw nanosecond fields divided by 1e6. `parallel fill
+drops`/`miner: parallel fill`: the same technique, noting the latter line
+carries no block number (`internal/miner/worker.go:1925`) and was read on
+its own `failed` field only, not joined to a block -- sufficient here since
+every value was 0. Commit-gap timeline: identical technique to 6by's,
+`"msg":"blockimport phases"` keyed on `n`/`time`, earliest time per `n`
+across all 7 kept files, consecutive-`n` diff, leg-bounded by the exact
+`LEG B1`/`LEG B2`/`LEG B2`/`LEG A2` timestamps in the round log (so the
+leg-start decay-period gap at each boundary, e.g. the 64 s and 68 s gaps
+that span 00:10:39->00:11:43 and 00:24:11->00:25:19, is correctly excluded
+from "inside the leg" by the boundary itself, not filtered by a size cut).
+Leader attribution: for a given `n`, whichever node's kept file carries a
+`"msg":"miner: propose phases"` line with that `n` is that block's leader.
+BAD BLOCK/divergence/stall-dump checks were run against each node's full
+`.gz` and current `n42.log`, not just the kept B-window slice, specifically
+because those are round-wide correctness questions, not B-window
+throughput ones.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
