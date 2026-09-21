@@ -285,7 +285,35 @@ Still open, separately: why that build fell back at all. 9064 aborts on
 23000 transactions is the wave limit doing real work, and a fallback on the
 leader's critical path also costs the block its parallelism.
 
-## A quorum-committed block that no node stored -- open (2026-09-21, round 35zzzg, S23b)
+## A quorum-committed block that no node stored -- fix prepared (2026-09-21, round 35zzzg, S23b/S26)
+
+**STATUS (S26, 2026-09-21): fix prepared, not yet launched.** Root cause per
+PART 1 of S26's own investigation (docs/QS_BLOCK_TIME_BUDGET.md 6cz):
+under two-phase (deferred-execution) voting, `processProposal`'s Round 1
+branch voted immediately, checking the extends-rule (`extendsJustify`)
+only when the block happened to already be locally imported -- which is
+essentially never true the instant a Proposal arrives, so the check was
+skipped on the ordinary path, not just a rare race. Round 2
+(`processPrepareQC`) had no extends check at all. Fix (no switch --
+safety is not optional): both rounds now refuse a vote for a proposal
+that does not extend its own JustifyQC block, once the block's real
+parent is known (via the existing checked/imported bookkeeping; no wire
+change). Leader side: `recordSealedOnParent` (the height-level
+single-candidate guard) now runs at seal time, before push/propose,
+instead of after the write completes, closing the window a second,
+independently-sealed candidate on the same parent could slip through
+while the first one's write was still in flight. Regression tests
+`TestTwoPhasePrepareVoteRefusesNonExtendingProposal` and
+`TestTwoPhaseCommitVoteRefusesNonExtendingProposal`
+(internal/consensus/hotstuff/conflicting_commit_test.go) fail on
+n42-r92's source and pass with the fix. Code commit `e49ce151`
+("fix(hotstuff): refuse to vote for a block that does not extend the
+committed head; drop stale seals before proposing"). Build: n42-r94 =
+n42-r92's exact file set + this fix. Prepared round: 35zzzi
+(run-r35zzzi.sh/chain-35zzzi.sh), with two new harness safety checks
+(conflicting commits per height; a leg bench-run.sh itself refused to
+measure), tested offline against 35zzzg (flags) and 35zzzf (clean).
+Launch is the commander's call.
 
 **SEVERITY (commander, 2026-09-21, from node5's raw log): this is a consensus SAFETY violation, not only
 a liveness halt.** Both blocks were COMMITTED, one second apart, by honest nodes: `block committed!`

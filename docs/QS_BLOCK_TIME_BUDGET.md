@@ -11437,6 +11437,243 @@ only changes built and syntax-checked). QS_QUEUE.md's S25 row status
 is marked prepared with prediction 90 (6cy). Launch is the
 commander's next call.
 
+## 6cz. S26 (SAFETY): the vote rule fails open under two-phase voting, not the leader path; regression tests fail on n42-r92 and pass on n42-r94; prediction 91 registered before the round (2026-09-21)
+
+**Why.** Round 35zzzg (docs/OPEN_ISSUES.md "A quorum-committed block
+that no node stored"): node5 led views 8782-8785. View 8784 committed
+`7a6d85…23259c` (height 13661138, parent `5f35af…`=13661137), 5/5
+votes both rounds. One second later view 8785 committed
+`f47f65…13d8ac` -- ALSO height 13661138, ALSO parent 13661137 -- 5/5
+votes both rounds. Node5's own write of the second block failed
+(`ErrStaleSeal`) after its CommitQC had already formed; the other six
+nodes voted it through the deferred path, then parked it as a future
+block they could never place. A block with a full, valid CommitQC
+exists in zero of the seven nodes' chains.
+
+**Part 1 -- reading before touching anything.**
+
+*(a) The vote rule, as implemented (`internal/consensus/hotstuff/`).*
+SR1 (`RoundState.IsSafeToVote`, `proposal.go:196`) is a VIEW-based lock:
+`justify_qc.view >= locked_qc.view`. It is necessary but not sufficient
+here -- a leader who legitimately just committed X (view 8784) has its
+own `LockedQC()` at X by view 8785, so a stale proposal Y whose
+JustifyQC is built from THAT SAME up-to-date lock (`onBlockReady`:
+`justifyQC := e.roundState.LockedQC().Clone()`) satisfies SR1 trivially
+even though Y's own block body does not extend X at all. The rule that
+is SUPPOSED to catch that mismatch, `extendsJustify` (`proposal.go:571`,
+"the proposed block's parent must be the proposal's JustifyQC block"),
+already existed (from an earlier, different incident at height
+13014242) and is correctly wired into every DEFERRED vote path
+(`tryDeferredVote`, `onBlockImported`'s import-gated branch) -- but
+`processProposal`'s TWO-PHASE branch (the mode this fleet actually
+runs) had its own, separate, unconditional-vote shortcut: `if
+e.twoPhaseVote { if e.importedBlocks[...] && !extendsJustify {refuse};
+journal+vote }` (pre-fix, ~`proposal.go:256-264`). Since a Proposal is
+processed the instant it arrives -- always before the block's own body
+is checked or imported -- `e.importedBlocks[proposal.BlockHash]` is
+false essentially every time, so the `&&` short-circuits and the vote
+is journalled and sent with NO extends check at all. This is not a
+narrow race; it is the ordinary case for every prepare vote under
+two-phase voting. Round 2 was worse: `processPrepareQC`'s two-phase
+gate (`proposal.go:441`, pre-fix) held the commit vote until
+`e.importedBlocks[pqc.BlockHash] || e.deferredAttested(pqc.BlockHash)`,
+and `deferredAttested` (`proposal.go:321-327`) checks only "the block
+was checked AND its OWN (possibly stale) parent is locally applied" --
+which is true of Y precisely because its stale parent (13661137) is
+old enough to be canonical everywhere. Neither the aggregate PrepareQC
+signature verified just above (proves a quorum SENT prepare votes, not
+that the votes were for a block that extends anything) nor
+`deferredAttested` ever calls `extendsJustify`. So the data needed
+(the proposal's real parent, from `checkedBlocks`/`importedParents`,
+populated by `onBlockChecked` off the deferred-execution check) IS
+available by commit-vote time -- the code just never asked it the
+right question on either round.
+
+*(b) The leader side.* Node5 leads a 4-view tenure (8782-8785); a
+speculative build parked on parent 13661137 sometime before view 8784
+decided X, and was sealed/taken later, in view 8785, still carrying
+that stale parent. `onBlockReady`'s own pre-propose guard
+(`proposal.go:65-73`, from the 13014242 incident) compares the sealed
+block's parent against `LockedQC().BlockHash`, but ONLY when
+`e.importedParents[blockHash]` is already known -- and for a block
+this node itself just sealed (never externally "checked" or
+"imported"), that map entry does not exist yet, so the guard fails
+open by design (`TestSealedBlockProposedWhenParentUnknown` pins this
+intentionally). The actual leader-side gap is upstream of the hotstuff
+package: `worker.go`'s height-level single-candidate guard
+(`firstSealedOnParent`/`recordSealedOnParent`, "keep only the first
+block sealed on a given parent") used to record the winner only AFTER
+its write completed (`writeAndFinish`, "after a successful import").
+Under `PUSH_BEFORE_WRITE`/`PROPOSE_BEFORE_WRITE` the write is the
+SLOWEST step in the sequence, so a second, independently-sealed
+candidate on the same parent (the parked task) can reach `handleSealed`
+while the first block's write is still in flight and find the map
+empty -- treating itself as the only candidate instead of being
+suppressed. r93's S23 bypass (`checkSealParentApplied` accepting
+`asyncWriter.ExpectedParent()`) is a red herring here, confirmed
+independently: it only ever widens the SAME race (whichever check runs
+at write time), and the write-time check is not what admitted Y to a
+CommitQC in the first place -- the CommitQC had already formed by then.
+This guard was "usually true" only because writes are normally faster
+than a second seal on the same parent arriving; nothing made it
+airtight.
+
+*(c) Protocol.* Confirmed from the design doc, not paraphrased:
+`docs/consensus/hotstuff2-spec.md:96`, "A block is committed when, in
+the same view, both PrepareQC and CommitQC have formed. No third
+phase." Two CommitQCs at one height, from two different views, is an
+unambiguous violation of that stated intent -- the design gives no
+third round in which one could be reconciled against the other. This
+also settles PART1(c): the commander's SEVERITY note ("a correct vote
+rule alone would have made (1) harmless") is exactly what the design
+doc's own finality rule requires -- a proposal that will never form a
+valid PrepareQC because no honest voter extends it can never reach
+CommitQC, regardless of what the leader does upstream.
+
+**Part 2 -- regression tests, proven to fail first.**
+`internal/consensus/hotstuff/conflicting_commit_test.go` (new, reusing
+the existing `newTestSetup`/`newTestEngine` harness):
+`TestTwoPhasePrepareVoteRefusesNonExtendingProposal` (Round 1: a
+two-phase follower must not vote for a proposal until it knows the
+block's real parent, and must never vote once that parent turns out
+not to match JustifyQC) and `TestTwoPhaseCommitVoteRefusesNonExtendingProposal`
+(Round 2: even granting a PrepareQC formed, the commit vote must still
+be refused). Both FAILED on the pre-fix code (`prepare-voted ... before
+its parent was known: 1 votes`; `commit-voted for a proposal that does
+not extend its JustifyQC block: 1 votes`) and PASS after the fix.
+`TestTwoPhaseVotesStillFireForAnExtendingProposal` is the happy-path
+guard (passed both before and after). `internal/miner/seal_guard_test.go`
+(new) pins the leader-side invariant the relocated `recordSealedOnParent`
+call depends on: `TestRecordSealedOnParentFirstSealWins` -- a second,
+divergent seal on an already-recorded parent must never overwrite the
+kept candidate (this one is a map-level unit test, not a full
+`handleSealed` integration test; the vote-rule fix above is what
+actually makes a leader-side miss harmless, per PART1(c)).
+
+**Part 3 -- the fix, no switch.** (i)
+`internal/consensus/hotstuff/proposal.go`: two-phase mode's Round 1
+branch is removed; both modes now share the import-gated branch's
+logic (vote immediately if already imported, else `tryDeferredVote`,
+else defer), so `extendsJustify` always runs once the parent is known
+instead of only when it happened to be known already. `tryDeferredVote`'s
+own "justify must be imported" condition is relaxed for a zero
+(genesis) justify -- matching `extendsJustify`'s own fail-open rule for
+that case -- fixing a latent bug this change surfaced
+(`TestDeferredPipelineCommitsWithoutImportingTheBlock` failed until
+this one-line fix: the FIRST block after genesis has justify=zero,
+which the old unconditional-import check waited on forever). Round 2
+(`processPrepareQC`) gains an explicit `extendsJustify` call once the
+two-phase hold-check has decided not to hold (by which point the real
+parent is always known), refusing the commit vote otherwise. No wire
+format change: the Proposal message itself carries only
+`BlockHash`/`JustifyQC` (no parent/number field, confirmed by reading
+the struct), so the fix relies entirely on the SAME
+`checked`/`imported` bookkeeping the non-two-phase path already used --
+the vote simply waits for the block's pushed body (via
+`EventBlockChecked`/`EventBlockImported`) instead of trusting the
+Proposal message alone. (ii) `internal/miner/worker.go`:
+`recordSealedOnParent` moves from `writeAndFinish` (after the write)
+to `handleSealed`, immediately after the `firstSealedOnParent`
+suppression check and before push/propose -- so a second seal on the
+same parent finds the record no matter how long the first one's write
+takes. Total diff: ~35 lines in `proposal.go`, ~20 lines in
+`worker.go` (comments included), well under the ~200-line budget; no
+protocol decision was needed. Every existing test in both packages
+passes unchanged (`internal/consensus/hotstuff`, `internal/miner`,
+`internal/miner/builder`, plus `internal/parallel` and `internal/`
+from the build worktree's own rebuild).
+
+**Part 4 -- build and harness.** `n42-r94` = n42-r92's exact file set
+(NOT r93/`N42_LEADER_WRITE_ASYNC`, retired) + this fix, via the same
+file-checkout recipe (detached worktree at `f7ec2836`, layering
+`c0931aeb`, `537ec21e` (+ the same worker.go hunk n42-r86 through r92
+already needed, reproduced by isolating each lever commit's OWN diff
+against its immediate parent and applying in sequence -- `git apply
+--reject` left the SAME one conflict, the "speculative build hit" log
+line, resolved by hand exactly as documented for r92), `56cc1dac`,
+`b876b3d2`, `9f307e90`, `e1d8d7d1`, `812cf162`, `62439af7`, then this
+step's `proposal.go`/`worker.go` changes on top). One-variable check:
+rebuilding r92 from scratch this way and diffing its `worker.go`
+against `62439af7`'s own blob left exactly the four already-known
+off-lineage lines (`activeSpecParent`, two `tMs` fields on the
+speculative build/parked lines, one `tMs` on "miner: build phases")
+that every prior build in this chain has shown -- confirming the
+reconstruction before layering the fix on top; `proposal.go`'s
+pre-fix content was BYTE-IDENTICAL to HEAD's own pre-S26 `proposal.go`
+(no commit touched it between `812cf162` and this step), so it was
+copied directly rather than patched. `internal/parallel/base_cache.go`
+confirmed absent; `strings n42-r94 | grep -c BaseCache` = 0. Markers:
+`"miner: seal path"` = 1, `"import-gated vote REFUSED: proposal does
+not extend its JustifyQC block"` = 1, `"commit vote REFUSED: proposal
+does not extend its JustifyQC block"` (new) = 1.
+`/data/blockchain/gov5-work/n42-r94`: 108,779,120 bytes, sha256
+`658bee2d0aabaf45c010f500f85eec263cb6c40fadb53754d0c0f4404b67e588`.
+
+`run-r35zzzi.sh`/`chain-35zzzi.sh` built from the `run-r35zzzh.sh`/
+`chain-35zzzh.sh` pair via `cp`+`sed 's/35zzzh/35zzzi/g'`, then fixed
+by hand: the predecessor-wait (`chain-35zzzi.sh` now waits on
+`r35zzzh.log`, its actual predecessor), the binary references
+(`n42-r92` -> `n42-r94`), GOMEMLIMIT made uniform at `10GiB` in every
+leg (B2/A2 no longer run 6GiB -- S25's own A/B by leg is a separate,
+still-open question, not repeated here), and the header comments.
+In-window captures and the S20 VM/memstats samplers carry over
+unchanged from 35zzzh.
+
+Two new end-of-round checks added to `run-r35zzzi.sh`, after the legs,
+before the terminal line, neither gated by a switch:
+`check_conflicting_commits` (joins "block committed!"'s `blockHash`
+against the height carried on "Successfully sealed new block"/"add
+future block"/"block push: received" via `jq`, across all seven
+nodes' `n42.log`s; prints `ROUND ABORTED: conflicting commits at
+height N (<hashes>)` for any height with more than one distinct
+committed hash) and `check_legs_produced` (greps the round log for
+bench-run.sh's own refusal, "chain is not producing"/"refusing to
+measure", and prints `ROUND ABORTED: leg <x> did not produce`,
+attributing it to the most recently started `LEG` line above it).
+Tested OFFLINE against real data before trusting them: against the
+kept logs of 35zzzg, `check_conflicting_commits` correctly flags
+`13661138 7a6d85…23259c,f47f65…13d8ac` and `check_legs_produced`
+correctly flags leg A2 (deduplicated to one line, since bench-run.sh
+prints two refusal lines for the same leg); against the kept logs of
+35zzzf, both are silent. `chain-35zzzi.sh` waits on
+`wr-logs/r35zzzh.log`'s terminal line. `bash -n` clean on both;
+confirmed not running (`ps` shows no `run-r35zzzi`/`chain-35zzzi`
+process).
+
+**Prediction 91 (registered before any round):**
+
+**(a) Safety.** Zero heights with two distinct committed hashes across
+all seven nodes' logs, in every leg; every leg produces (neither new
+harness check fires).
+
+**(b) Cost.** The fix adds work only to the deferred vote path that
+already existed for non-two-phase voting -- two-phase Round 1 now
+waits for `EventBlockChecked`/`EventBlockImported` the same way the
+import-gated path always has, instead of voting on the bare Proposal
+message. The body (and therefore the check/import that lets
+`tryDeferredVote` fire) reaches the quorum-forming follower ~44 ms
+after the push (6ce), so Round 1 should land ~40-45 ms later than
+before on the common path -- but Round 1 has never been on the
+critical path in this campaign (6ct/6cv/6cw: the leader's own build,
+611-691 ms, dominates the in-tenure cycle; Round 1+Round 2 together
+have measured at 24 ms of a 393 ms Round 2 budget, 6cm). So win1's
+in-tenure cycle and B-leg first windows should land within the noise
+floor of 35zzzf's (680-691 ms; ~140k), not move by anywhere near
+40 ms.
+
+**(c) Regression tests.** `TestTwoPhasePrepareVoteRefusesNonExtendingProposal`
+and `TestTwoPhaseCommitVoteRefusesNonExtendingProposal` fail on n42-r92's
+source and pass on n42-r94's.
+
+**VERDICT: confirmed** (regression tests fail-then-pass as required;
+fix is additive, no switch, ~55 lines total, no protocol decision
+needed; n42-r94 built and one-variable-checked; full
+`internal/consensus/hotstuff`/`internal/miner`/`internal/miner/builder`/
+`internal/parallel`/`internal/` suites pass). QS_QUEUE.md's S26 row
+status is marked prepared with prediction 91 (6cz).
+`docs/OPEN_ISSUES.md`'s entry is updated to reflect the prepared fix.
+Launch is the commander's next call.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
