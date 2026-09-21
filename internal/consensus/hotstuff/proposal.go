@@ -137,8 +137,22 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 	return e.tryFormPrepareQC()
 }
 
-// processProposal processes a proposal from the leader.
-func (e *ConsensusEngine) processProposal(proposal *Proposal) error {
+// processProposal processes a proposal from the leader. receivedAt is S14's
+// diagnostic arrival stamp (zero unless N42_CONTENTION_DIAG=1); tLocked is
+// taken here, the first line that runs once e.mu is held for this message.
+// The deferred recording covers every return path (safety-rule rejection,
+// bad signature, etc.), not just the success path.
+func (e *ConsensusEngine) processProposal(proposal *Proposal, receivedAt time.Time) error {
+	if contentionDiagEnabled && !receivedAt.IsZero() {
+		tLocked := time.Now()
+		defer func() {
+			tDone := time.Now()
+			e.viewTiming.Contention.proposalLockWait = tLocked.Sub(receivedAt)
+			e.viewTiming.Contention.proposalWork = tDone.Sub(tLocked)
+			e.viewTiming.Contention.proposalLockWaitOK = true
+			e.viewTiming.Contention.proposalWorkOK = true
+		}()
+	}
 	view := e.roundState.CurrentView()
 
 	if proposal.View != view {
@@ -304,8 +318,11 @@ func (e *ConsensusEngine) deferredAttested(blockHash types.Hash) bool {
 }
 
 // castHeldCommitVoteIfAttested fires a parked Round-2 vote once its block is
-// attested (imported, or checked with the parent imported).
-func (e *ConsensusEngine) castHeldCommitVoteIfAttested(blockHash types.Hash) {
+// attested (imported, or checked with the parent imported). gate names which
+// caller/condition is releasing it -- "own-import" | "parent-import" |
+// "checked" (see contentionStamps.commitVoteGate) -- recorded only when the
+// vote was actually held; ignored otherwise.
+func (e *ConsensusEngine) castHeldCommitVoteIfAttested(blockHash types.Hash, gate string) {
 	if !e.twoPhaseVote || e.pendingCommitQC == nil || e.pendingCommitQC.BlockHash != blockHash {
 		return
 	}
@@ -317,9 +334,12 @@ func (e *ConsensusEngine) castHeldCommitVoteIfAttested(blockHash types.Hash) {
 	if held.View != e.roundState.CurrentView() {
 		return
 	}
+	if contentionDiagEnabled {
+		e.viewTiming.Contention.commitVoteGate = gate
+	}
 	log.Info("two-phase vote: casting held commit vote", "view", held.View, "blockHash", blockHash,
 		"deferred", !e.importedBlocks[blockHash], "tMs", time.Now().UnixMilli())
-	if err := e.processPrepareQC(held); err != nil {
+	if err := e.processPrepareQC(held, time.Time{}); err != nil {
 		log.Debug("two-phase held commit vote failed", "err", err)
 	}
 }
@@ -343,12 +363,29 @@ func (e *ConsensusEngine) onBlockChecked(blockHash types.Hash, parentHash types.
 		e.importedParents[blockHash] = parentHash // the extends-check reads it
 	}
 	_, err := e.tryDeferredVote(e.roundState.CurrentView())
-	e.castHeldCommitVoteIfAttested(blockHash)
+	e.castHeldCommitVoteIfAttested(blockHash, "checked")
 	return err
 }
 
 // processPrepareQC processes a PrepareQC from the leader.
-func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg) error {
+// processPrepareQC processes an incoming PrepareQC and, once the two-phase
+// gate is satisfied, sends the Round 2 commit vote. receivedAt is S14's
+// diagnostic arrival stamp for a FRESH message; it is zero when this call is
+// a held-vote release re-entry from castHeldCommitVoteIfAttested, in which
+// case the original arrival's lockWait/work/arrival were already recorded on
+// first entry and must not be overwritten here.
+func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg, receivedAt time.Time) error {
+	if contentionDiagEnabled && !receivedAt.IsZero() {
+		tLocked := time.Now()
+		e.viewTiming.Contention.prepareQCArrival = receivedAt
+		defer func() {
+			tDone := time.Now()
+			e.viewTiming.Contention.prepareQCLockWait = tLocked.Sub(receivedAt)
+			e.viewTiming.Contention.prepareQCWork = tDone.Sub(tLocked)
+			e.viewTiming.Contention.prepareQCLockWaitOK = true
+			e.viewTiming.Contention.prepareQCWorkOK = true
+		}()
+	}
 	view := e.roundState.CurrentView()
 
 	if pqc.View != view {
@@ -372,6 +409,9 @@ func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg) error {
 	if e.twoPhaseVote && !e.importedBlocks[pqc.BlockHash] && !e.deferredAttested(pqc.BlockHash) {
 		held := *pqc
 		e.pendingCommitQC = &held
+		if contentionDiagEnabled {
+			e.viewTiming.Contention.commitVoteHeld = true
+		}
 		log.Info("two-phase vote: holding commit vote until block imports",
 			"view", view, "blockHash", pqc.BlockHash)
 		return nil
@@ -543,7 +583,16 @@ func (e *ConsensusEngine) onBlockImported(blockHash types.Hash, actualTxRoot typ
 	if e.twoPhaseVote && e.pendingCommitQC != nil {
 		// This block, or a checked child of it whose guarantee this import
 		// completes (deferred execution attests the parent, not the block).
-		e.castHeldCommitVoteIfAttested(e.pendingCommitQC.BlockHash)
+		// blockHash (this onBlockImported call's own parameter) equal to the
+		// held vote's block means THIS block's own import satisfied the
+		// gate ("own-import"); any other value means some other import --
+		// in practice the parent's -- made deferredAttested newly true
+		// ("parent-import").
+		gate := "parent-import"
+		if blockHash == e.pendingCommitQC.BlockHash {
+			gate = "own-import"
+		}
+		e.castHeldCommitVoteIfAttested(e.pendingCommitQC.BlockHash, gate)
 	}
 
 	// Import-gated voting: now that this block is imported, cast the deferred

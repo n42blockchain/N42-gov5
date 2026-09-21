@@ -1068,7 +1068,21 @@ func (s *Service) subscribeMessages() {
 	}
 }
 
+// processGossipMessage is the single entry point for every inbound consensus
+// message, whichever transport delivered it: the gossip loop (subscribeMessages)
+// and the direct Rotor-relay stream handler (setupRotorStreamHandler) both call
+// this. S14 (N42_CONTENTION_DIAG=1): tArrive is the first line of this
+// handler -- the network "channel receive" the task asked for -- before
+// snappy-decompress/RLP-decode, so downstream contention stamps (see
+// contentionStamps in view_timing.go) include decode time in their
+// lock-wait figure. Zero time.Time when the switch is off, which every
+// downstream stamp already treats as "not measured."
 func (s *Service) processGossipMessage(data []byte, enc encoder.NetworkEncoding, from peer.ID) {
+	var tArrive time.Time
+	if contentionDiagEnabled {
+		tArrive = time.Now()
+	}
+
 	// Decompress snappy.
 	raw := &rawSSZMarshaler{}
 	if err := enc.DecodeGossip(data, raw); err != nil {
@@ -1099,8 +1113,9 @@ func (s *Service) processGossipMessage(data []byte, enc encoder.NetworkEncoding,
 	s.learnValidatorPeer(consensusMsg, from)
 
 	if err := ce.ProcessEvent(ConsensusEvent{
-		Type: EventMessage,
-		Msg:  *consensusMsg,
+		Type:       EventMessage,
+		Msg:        *consensusMsg,
+		ReceivedAt: tArrive,
 	}); err != nil {
 		log.Debug("hotstuff: message processing error", "type", consensusMsg.Type, "err", err)
 	}

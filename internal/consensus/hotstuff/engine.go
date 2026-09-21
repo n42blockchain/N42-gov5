@@ -10,6 +10,7 @@
 package hotstuff
 
 import (
+	"os"
 	"sync"
 	"time"
 
@@ -17,6 +18,16 @@ import (
 	"github.com/n42blockchain/N42/crypto/bls/common"
 	"github.com/n42blockchain/N42/log"
 )
+
+// contentionDiagEnabled gates S14's vote-path contention stamps (see
+// contentionStamps in view_timing.go) and the runtime mutex/block profiling
+// enabled alongside it in cmd/n42/app.go. Read once at start-up, same pattern
+// as internal/miner's N42_BUILD_STALL_DIAG (which keeps working independently
+// of this switch). Off by default: no time.Now() calls, no extra fields
+// touched, no change to "hotstuff view timing"'s existing output.
+// docs/QS_BLOCK_TIME_BUDGET.md 6cb-6ce found ~450ms of an in-tenure cycle's
+// 520ms consensus round-trip unattributed to any named wait; this measures it.
+var contentionDiagEnabled = os.Getenv("N42_CONTENTION_DIAG") == "1"
 
 // Protocol constants.
 const (
@@ -302,6 +313,12 @@ type ViewTiming struct {
 	CommitQCFormed   *time.Time
 	PrepareVoteCount uint32
 	CommitVoteCount  uint32
+
+	// Contention is S14's vote-path timing accumulator (diagnostic only,
+	// N42_CONTENTION_DIAG=1; see contentionStamps in view_timing.go). It
+	// rides along with ViewTiming so it resets/snapshots/publishes exactly
+	// where the timestamps above already do, with no separate plumbing.
+	Contention contentionStamps
 }
 
 func newViewTiming(view ViewNumber) ViewTiming {
@@ -594,7 +611,7 @@ func (e *ConsensusEngine) ProcessEvent(event ConsensusEvent) error {
 
 	switch event.Type {
 	case EventMessage:
-		return e.processMessage(event.Msg)
+		return e.processMessage(event.Msg, event.ReceivedAt)
 	case EventBlockReady:
 		return e.onBlockReady(event.Hash, event.TxRootHash)
 	case EventBlockImported:
@@ -641,6 +658,11 @@ type ConsensusEvent struct {
 	Hash       types.Hash
 	TxRootHash types.Hash // DA commitment: transaction root hash (Baby Raptr)
 	ParentHash types.Hash // EventBlockImported / EventBlockChecked: the block's parent (extends-check; zero = unknown, check skipped)
+	// ReceivedAt is S14's diagnostic arrival stamp for an EventMessage: the
+	// first line of the network handler (processGossipMessage), before
+	// decode. Zero unless N42_CONTENTION_DIAG=1; every downstream contention
+	// stamp is gated on it being non-zero, so leaving it unset costs nothing.
+	ReceivedAt time.Time
 }
 
 // ConsensusEventType identifies the type of consensus event.
@@ -876,7 +898,10 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 	}
 
 	for _, msg := range toReplay {
-		if err := e.dispatchMessage(msg); err != nil {
+		// time.Time{}: a replayed future-buffered message's original network
+		// arrival time is not retained in futureMsg, so its contention stamps
+		// (S14) are correctly left unmeasured rather than misattributed.
+		if err := e.dispatchMessage(msg, time.Time{}); err != nil {
 			log.Debug("buffered message replay failed", "view", newView, "err", err)
 		}
 	}
@@ -886,7 +911,7 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 
 // Message processing
 
-func (e *ConsensusEngine) processMessage(msg ConsensusMsg) error {
+func (e *ConsensusEngine) processMessage(msg ConsensusMsg, receivedAt time.Time) error {
 	// SyncInfo: adopt any piggybacked TC before view gating, so a lagging node
 	// catches up from a vote/timeout even if it missed the NewView.
 	if err := e.processEmbeddedTC(&msg); err != nil {
@@ -924,7 +949,7 @@ func (e *ConsensusEngine) processMessage(msg ConsensusMsg) error {
 			} else if jumped {
 				newCurrent := e.roundState.CurrentView()
 				if msgView == newCurrent {
-					return e.dispatchMessage(msg)
+					return e.dispatchMessage(msg, receivedAt)
 				} else if msgView > newCurrent && msgView <= newCurrent+FutureViewWindow &&
 					len(e.futureMsgBuffer) < MaxFutureMessages {
 					e.futureMsgBuffer = append(e.futureMsgBuffer, futureMsg{view: msgView, msg: msg})
@@ -939,10 +964,14 @@ func (e *ConsensusEngine) processMessage(msg ConsensusMsg) error {
 		return nil
 	}
 
-	return e.dispatchMessage(msg)
+	return e.dispatchMessage(msg, receivedAt)
 }
 
-func (e *ConsensusEngine) dispatchMessage(msg ConsensusMsg) error {
+// dispatchMessage routes a decoded consensus message to its handler.
+// receivedAt is S14's diagnostic arrival stamp (zero unless
+// N42_CONTENTION_DIAG=1, or for a replayed future-buffered message whose
+// original arrival time is not retained -- see advanceToView).
+func (e *ConsensusEngine) dispatchMessage(msg ConsensusMsg, receivedAt time.Time) error {
 	if msg.Payload == nil {
 		return ErrInvalidMessage
 	}
@@ -952,25 +981,25 @@ func (e *ConsensusEngine) dispatchMessage(msg ConsensusMsg) error {
 		if !ok || p == nil {
 			return ErrInvalidMessage
 		}
-		return e.processProposal(p)
+		return e.processProposal(p, receivedAt)
 	case MsgVote:
 		v, ok := msg.Payload.(*Vote)
 		if !ok || v == nil {
 			return ErrInvalidMessage
 		}
-		return e.processVote(v)
+		return e.processVote(v, receivedAt)
 	case MsgCommitVote:
 		cv, ok := msg.Payload.(*CommitVote)
 		if !ok || cv == nil {
 			return ErrInvalidMessage
 		}
-		return e.processCommitVote(cv)
+		return e.processCommitVote(cv, receivedAt)
 	case MsgPrepareQC:
 		pqc, ok := msg.Payload.(*PrepareQCMsg)
 		if !ok || pqc == nil {
 			return ErrInvalidMessage
 		}
-		return e.processPrepareQC(pqc)
+		return e.processPrepareQC(pqc, receivedAt)
 	case MsgTimeout:
 		tm, ok := msg.Payload.(*TimeoutMessage)
 		if !ok || tm == nil {
