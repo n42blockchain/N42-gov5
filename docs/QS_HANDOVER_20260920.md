@@ -334,3 +334,49 @@ confirmed live (#2). Neither is new: #1 is a known, parallelized, tracked
 cost; #2 is a previously-undocumented edge case worth a follow-up read of
 the push/gossip interleave under a real fleet trace, not a code change on
 current evidence.
+
+## S11 prepared -- diagnostics built and tested; round blocked on the r85 cache (2026-09-20)
+
+Implements the two diagnostics 6by asked for (commit `537ec21e`,
+`feat(miner): pre-fill step timers and a build-stall goroutine dump
+(diagnostic)`): named step timers between `commitWork begin` and the start
+of the fill (`miner: prefill phases`, logged above 50 ms) and a 3 s stall
+watchdog that dumps every goroutine's stack to
+`<datadir>/log/build-stall-<n>-<unixsec>.stacks`. Both behind
+`N42_BUILD_STALL_DIAG=1`, off by default, no behavior change to block
+production. See `docs/QS_BLOCK_TIME_BUDGET.md` section 6bz for the full
+writeup, field-by-field file:line list and test results (55 tests, 0
+failures; `go vet` and `-race` clean).
+
+**Not built: n42-r86.** Confirming n42-r84's lineage (worktree at
+`f7ec2836` + `DEFERRED`/`FOLD`/`TAIL` file lists from `build-and-queue.sh` +
+`internal/parallel/executor.go` from `c0931aeb`, the delta fix) also
+surfaced that qs/replan's current HEAD carries commit `3c9311ac` (the
+n42-r85 base-read cache, `parallel.BaseCache`) unconditionally --
+`internal/parallel_processor.go:342` constructs it on every parallel
+build/import with no env gate anywhere in the cache's own files. 6bw
+falsified this cache on the same eight-generator shape this round would
+have used (B mean 96.1k vs the 127.6k standing best, a 24.7% fall), and it
+was never reverted or gated afterward. Per this task's own instruction,
+finding the cache "enabled by default" on HEAD means stop and report
+instead of building -- so n42-r86 was not built, `run-r35zzz.sh`/
+`chain-35zzz.sh` were not created, and prediction 82 was not registered.
+
+**To read the dump when a future round produces one:** the file is a plain
+`runtime.Stack(_, true)` text dump (goroutine ID, state, full call stack per
+goroutine); grep it for the step name the accompanying
+`miner: build stalled before fill` log line names (e.g.
+`step="alignAppliedBranch"`) to find the stuck goroutine, then read up its
+stack for the exact blocking call (channel receive, mutex `Lock`, mmap
+fault, etc.). The `miner: prefill phases` lines in the surrounding log
+window separately show which named step's cumulative time actually grew
+that build, without needing the dump at all in the common case.
+
+**Two ways to unblock, for the commander to choose between:**
+(a) build n42-r86 with the same file-checkout recipe used for n42-r78/79/80
+(worktree at `f7ec2836`, individual files, never touching
+`internal/parallel_processor.go`/`internal/parallel/base_cache.go`/
+`internal/parallel/state_reader.go`) plus S11's seven changed/new files
+taken from qs/replan commit `537ec21e`; or
+(b) revert or env-gate `3c9311ac` on qs/replan HEAD first, then build off
+HEAD directly. Neither choice was made here.

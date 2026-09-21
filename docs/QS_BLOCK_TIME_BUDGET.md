@@ -5583,6 +5583,106 @@ It does not show whether halving the leader-batch size (4 views/leader)
 would shorten a future stall's blast radius, since only one instance of
 this specific stall exists in the round.
 
+## 6bz. S11: the diagnostics are built and tested, but qs/replan HEAD still carries the falsified r85 cache -- no round prepared (2026-09-20)
+
+**What S11 implements.** Two diagnostics for the commitWork pre-fill path
+6by could not see inside, both gated behind `N42_BUILD_STALL_DIAG=1` (read
+once at start-up, same pattern as `N42_MINER_ADOPT_APPENDS`) and otherwise a
+no-op:
+
+1. Named step timers between `miner: commitWork begin` and the start of the
+   fill, one `miner: prefill phases` line per build logged only when the
+   pre-fill total exceeds 50 ms: `alignCall`/`lockWait` (`AlignAppliedBranch`,
+   `internal/blockchain.go:3025`), `insertParent` (`InsertChainAuthorized`,
+   `internal/blockchain.go:1941`, same `bc.lock` -- the mutex the miner build
+   path shares with ordinary block import/write), `persistWait`
+   (`WaitBlockPersisted`, `internal/miner/worker.go:1211`), `roTxBegin`
+   (`DB().BeginRo`, `internal/miner/worker.go:1339`), `specTreeReload`/
+   `rootLockWait` (`NewMinerRootComputer`'s peel/reload and its `minerRCMu`
+   wait -- shared with the startup pre-warm, `internal/blockchain.go:562`),
+   `headerPrepare` (`prepareWork`, `internal/miner/worker.go:1315`),
+   `blockStart` (`ProcessExecutionBlockStart`, `internal/miner/worker.go:1448`),
+   `pendingSnapshot`/`trim` (already-timed pool fetch and stale-nonce trim
+   inside `fillTransactions`, `internal/miner/worker.go:1812` and `:1859`).
+2. A stall watchdog (`internal/miner/build_stall_watchdog.go`): if a build
+   has not reached its fill within 3 s of `commitWork begin`, it dumps every
+   goroutine's stack (`runtime.Stack(_, true)`, grown to a 64 MiB cap) to
+   `<datadir>/log/build-stall-<n>-<unixsec>.stacks` (`log.LogDir()`, new
+   accessor in `log/root.go`) or stderr if that directory is unreachable,
+   rate-limited to one dump per process per 60 s, and logs
+   `miner: build stalled before fill` with the step name and elapsed time.
+   One `time.AfterFunc` per build, cancelled the moment the fill starts
+   (right where `prefillTimes.logIfSlow` fires, `internal/miner/worker.go`
+   fillTransactions, immediately after `txSet` is built) or the build is
+   abandoned (a deferred `Cancel()` in `commitWork` catches every early
+   return, including the speculative-hit fast path that never reaches the
+   fill at all).
+
+Tests: `TestBuildStallWatchdog{DisabledIsNil,NilMethodsAreNoOps,
+FiresAfterThreshold,CancelPreventsDump,RateLimited}`,
+`TestWriteGoroutineDumpFallsBackToStderrWhenDirEmpty`,
+`TestAllowBuildStallDump` in `internal/miner/build_stall_watchdog_test.go`,
+using an injectable threshold (`newBuildStallWatchdogWithThreshold`) so the
+"fires once after the threshold" and "rate-limited" cases run in
+milliseconds. `go test -tags "nosqlite,noboltdb" -p 8 ./internal/miner/...
+-count=1`: 55 tests, 0 failures (45 in the package itself, 10 in
+`internal/miner/builder`). `go vet -tags "nosqlite,noboltdb"
+./internal/miner/...`: clean. `-race` on the new tests alone and on the
+whole package: clean. No test in the package changed behavior; the only
+non-diagnostic edit was widening `fillTransactions`' call in
+`miner_test.go:237` (`TestFillTransactionsRejectsMissingHeaderNumber`) to
+pass the two new (nil) parameters.
+
+**Why no round is prepared.** Step 4 required confirming n42-r84's exact
+lineage and building on top of it *without* the n42-r85 base-read cache
+(6bw: `parallel.BaseCache`, falsified -- B mean 96.1k against the 127.6k
+standing best, a 24.7% fall, on the same eight-generator shape this round
+would have used) -- and to stop instead of building if qs/replan HEAD
+carries that cache enabled by default. It does:
+
+    git merge-base --is-ancestor 3c9311ac HEAD   # true, on qs/replan e1822bf3
+      (3c9311ac "perf(parallel): read each account from the base state
+       once per block" -- the commit 6br/6bw call the base-read cache)
+
+`internal/parallel_processor.go:342` constructs `parallel.NewBaseCache(...)`
+unconditionally on every parallel block build/import, with no env switch
+anywhere in `internal/parallel/base_cache.go`,
+`internal/parallel/state_reader.go` or the call site -- "enabled by
+default" in the plainest sense, and 6bw's own numbers show it is live on
+exactly this fleet's follower-import path, not some unreachable branch.
+
+n42-r84's own lineage (per `docs/QS_HANDOVER_20260920.md`: "n42-r84 = r80 +
+the delta fix") is a detached worktree at `f7ec2836` plus individual files
+checked out from `origin/main` -- `DEFERRED`/`FOLD`/`TAIL` (the three lists
+in `build-and-queue.sh`, giving n42-r80) plus `internal/parallel/executor.go`
+from commit `c0931aeb` (the delta fix; 6bw: "commit c0931aeb's fix holds").
+That lineage never touches `internal/parallel_processor.go`,
+`internal/parallel/base_cache.go` or `internal/parallel/state_reader.go`,
+so it does not carry the cache -- but qs/replan HEAD, built as a whole, does.
+S11's own six changed files (`internal/blockchain.go`,
+`internal/blockchain_types.go`, `internal/miner/worker.go`,
+`internal/miner/build_stall_watchdog.go` (new),
+`internal/miner/build_stall_watchdog_test.go` (new),
+`internal/miner/miner_test.go`, `log/root.go`) do not intersect the cache
+files either, so a same-recipe file checkout (n42-r84's three lists plus
+`c0931aeb`'s file plus these seven) would build cleanly on the clean
+lineage. That build was not attempted here: the task's explicit instruction
+on finding the cache "enabled by default" on HEAD is to stop and report
+instead of building, so n42-r86 was not built, prediction 82 was not
+registered, and `run-r35zzz.sh`/`chain-35zzz.sh` were not created --
+creating a launch-ready pair that names a binary that does not exist would
+not be "prepared."
+
+**What the commander needs to decide.** Either (a) build n42-r86 via the
+file-checkout recipe above (known clean, mechanically identical to how
+n42-r78/79/80/84 were already built), or (b) revert or env-gate 3c9311ac on
+qs/replan first and build off HEAD directly. This document does not choose
+between them; S11's own diagnostic code is untouched by either choice and
+is committed and ready to build into whichever binary comes next.
+
+**VERDICT: aborted** (build step only -- implementation and tests both
+confirmed). QS_QUEUE.md's S11 row is marked blocked, not prepared.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
