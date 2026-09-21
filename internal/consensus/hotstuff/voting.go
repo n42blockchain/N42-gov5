@@ -30,11 +30,12 @@ type pendingVote struct {
 	message  []byte
 }
 
-// processVote processes a Round 1 (Prepare) vote from a validator.
-// receivedAt is S14's diagnostic arrival stamp (zero unless
-// N42_CONTENTION_DIAG=1); tLocked is taken here, the first line that runs
-// once e.mu is held for this message -- see contentionStamps.
-func (e *ConsensusEngine) processVote(vote *Vote, receivedAt time.Time) error {
+// processVote processes a Round 1 (Prepare) vote from a validator. mt is
+// S14/S17's diagnostic arrival timing (zero unless N42_CONTENTION_DIAG=1);
+// tLocked is taken here, the first line that runs once e.mu is held for
+// this message -- see contentionStamps.
+func (e *ConsensusEngine) processVote(vote *Vote, mt msgTiming) error {
+	receivedAt := mt.arrive
 	tLocked := time.Now()
 	view := e.roundState.CurrentView()
 
@@ -139,7 +140,12 @@ func (e *ConsensusEngine) processVote(vote *Vote, receivedAt time.Time) error {
 		// is the quorum-completing vote is judged the same way the flush
 		// decision above already was.
 		total := e.prepareVoteCollectorCount() + len(e.prepareVoteBuf)
-		e.viewTiming.Contention.round1.record(receivedAt, tLocked, time.Now(), total >= quorum)
+		quorumReached := total >= quorum
+		e.viewTiming.Contention.round1.record(receivedAt, tLocked, time.Now(), quorumReached)
+		if !mt.rx.IsZero() {
+			rx := &e.viewTiming.Contention.rx
+			recordVoteRx(rx, &rx.seenPrepareVoteMask, &rx.pv, vote.Voter, mt, quorumReached)
+		}
 	}
 
 	return e.tryFormPrepareQC()
@@ -248,9 +254,10 @@ func (e *ConsensusEngine) tryFormPrepareQC() error {
 	return e.tryFormCommitQC()
 }
 
-// processCommitVote processes a Round 2 (Commit) vote from a validator.
-// receivedAt is S14's diagnostic arrival stamp; see processVote.
-func (e *ConsensusEngine) processCommitVote(cv *CommitVote, receivedAt time.Time) error {
+// processCommitVote processes a Round 2 (Commit) vote from a validator. mt
+// is S14/S17's diagnostic arrival timing; see processVote.
+func (e *ConsensusEngine) processCommitVote(cv *CommitVote, mt msgTiming) error {
+	receivedAt := mt.arrive
 	tLocked := time.Now()
 	view := e.roundState.CurrentView()
 
@@ -342,7 +349,12 @@ func (e *ConsensusEngine) processCommitVote(cv *CommitVote, receivedAt time.Time
 
 	if contentionDiagEnabled && !receivedAt.IsZero() {
 		total := e.commitVoteCollectorCount() + len(e.commitVoteBuf)
-		e.viewTiming.Contention.round2.record(receivedAt, tLocked, time.Now(), total >= quorum)
+		quorumReached := total >= quorum
+		e.viewTiming.Contention.round2.record(receivedAt, tLocked, time.Now(), quorumReached)
+		if !mt.rx.IsZero() {
+			rx := &e.viewTiming.Contention.rx
+			recordVoteRx(rx, &rx.seenCommitVoteMask, &rx.cv, cv.Voter, mt, quorumReached)
+		}
 	}
 
 	return e.tryFormCommitQC()
