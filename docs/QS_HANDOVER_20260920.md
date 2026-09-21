@@ -876,3 +876,93 @@ counters as 10 s deltas.
 
 Prediction 88 (see 6ct for the exact bars) is registered. Launch is
 the commander's next call.
+
+## S23 prepared -- n42-r93 built, leader write moves off resultLoop, A/B by leg, not launched (2026-09-21)
+
+Why: 6ct's U1 finding -- `resultCh` is unbuffered with exactly one
+consumer, `resultLoop`, which calls `handleSealed` synchronously and
+runs `WriteBlockWithState` inline on that same goroutine, so a block
+sealed while the previous write is still running cannot even be
+received. `N42_LEADER_WRITE_ASYNC=1` moves the write (and everything
+that runs only after it succeeds) to a dedicated writer goroutine. See
+`docs/QS_BLOCK_TIME_BUDGET.md` section 6cu for the full Part 1
+invariant list and prediction 89.
+
+**Part 1, in one paragraph each:**
+- Everything assuming "write returned" (pendingTasks cleanup,
+  counters, the seal-path/propose-phases/successfully-sealed logs,
+  recordSealedOnParent, ChainHighestBlock) is extracted into
+  `writeAndFinish` and called either inline or from the writer --
+  identical code either way.
+- `WaitBlockPersisted` is poll-based against the DB: unaffected.
+- `CheckSealParentApplied` DOES break: it reads the DB's last-
+  committed applied marker, which today is always current (the
+  previous write has always already returned) but would routinely see
+  a merely-queued parent as stale once the write moves off resultLoop,
+  dropping good blocks before they are even pushed. Fixed: a new
+  `checkSealParentApplied` also accepts a parent that matches the
+  writer's own `ExpectedParent()` (its most recently accepted job). A
+  wrong optimistic pass costs nothing -- the real check runs again
+  inside `writeBlockWithState` under `bc.lock` against the actual
+  committed state, rejecting a truly-failed chain via the SAME
+  existing `ErrStaleSeal` path an ordinary sibling race already uses.
+  Strict FIFO order (one channel, one reader goroutine) is what makes
+  this safe.
+- `CommitToCanonicalWith`/deferred-execution's applied marker: same
+  mechanism S19 already found and left alone, likely exercised more.
+- Own-unwritten-chain depth: `unwrittenOwnPostStates` already walks up
+  to 16 levels; the new bound (2, from the writer's own capacity) is
+  well inside that, not a new assumption.
+- Failure: unchanged (log, drop, rely on the fleet) -- no "abort the
+  queue" logic needed, since (per the CheckSealParentApplied fix
+  above) a chained failure is caught by the SAME real check on its OWN
+  write attempt.
+- Back-pressure: channel capacity 1 (one in flight, one queued); a
+  third Enqueue blocks (rate-limited warning), degrading to today's
+  timing rather than growing memory; `wqWaitMs`/`wqDepth` land on
+  "miner: seal path".
+- Shutdown: `Miner.Close` drains the writer only AFTER `group.Wait()`
+  confirms `resultLoop` itself has already stopped, so no send can
+  race a close; 30s bound, logged if exceeded.
+- Overlap: write(v) can now run while the leader handles view v+1's
+  own `journalPrepareVote`/`journalCommitVote` (same MDBX writer).
+  Confirmed: this only costs time (MDBX's mutual exclusion), never
+  safety, and the timeline suggests it should rarely bind in practice.
+- Switch off / followers: byte-for-byte unchanged control flow; the
+  writer is never even constructed when the switch is off.
+
+**n42-r93: built.** `/data/blockchain/gov5-work/n42-r93`, 108,789,800
+bytes, sha256
+`25f83814239489827783e4526bb57484dd91dcf6d0f8e655cdbacea524b5ea38`.
+Same file-checkout recipe as n42-r86 through r92 (commit `8ae39838`):
+`worker.go` needed its fourth hunk (same recurring off-lineage
+conflict, resolved by hand as always); `miner.go` needed hunk
+treatment for the FIRST time in this recipe (`git diff f7ec2836
+8ae39838^ -- miner.go` is non-empty -- the same off-lineage
+`activeSpecParent` feature also touches this file), confirmed correct
+via a full diff against `8ae39838`'s own version afterward. `go vet`
+clean; `go test` passes on `internal/consensus/hotstuff/...` and
+`internal/miner/...` (both switch placements), `internal/`,
+`internal/parallel/...`. `strings n42-r93 | grep -c BaseCache` = 0;
+every prior marker present; three new ones (`wqWaitMs`, `wqDepth`,
+"leader write queue full") present. Built with `nice -n 10` and
+`-race` limited to the new tests only, per this step's own time budget
+(prepared while round 35zzzf runs on the box).
+
+**Field glossary addition** (`"miner: seal path"`): `wqWaitMs` (how
+long this block's own enqueue call blocked, 0 if it did not),
+`wqDepth` (queue length observed at enqueue time, 0 or 1).
+
+**Runner: `run-r35zzzg.sh`/`chain-35zzzg.sh`, built from the 35zzzf
+pair, not launched. THIS IS an A/B-by-leg round** (on the new
+switch): `run_leg` gained a 6th parameter, `N42_LEADER_WRITE_ASYNC`,
+alongside the already-adopted `N42_LEADER_WRITE_AFTER_JOURNAL`/
+`N42_CONTENTION_DIAG` (both stay 1 everywhere). Calls: `warmup 1 0`,
+`A1 1 0`, `B1 1 0` (async off, the in-round baseline), `B2 1 1`,
+`A2 1 1` (async on). In-window captures and the VM sampler carry over
+unchanged. Predecessor-wait fixed by hand to `r35zzzf.log`; binary
+references updated to `n42-r93`. `bash -n` clean on both; confirmed
+not running.
+
+Prediction 89 (see 6cu for the exact bars) is registered. Launch is
+the commander's next call.

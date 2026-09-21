@@ -10263,6 +10263,260 @@ bar for this prediction.
 build all done). QS_QUEUE.md's S22 row status is marked prepared with
 prediction 88 (6ct). Launch is the commander's next call.
 
+## 6cu. S23: n42-r93 built and prepared -- the leader's write moves off resultLoop, A/B by leg, prediction 89 registered before the round (2026-09-21)
+
+**Why.** 6ct's U1 finding: `resultCh` is unbuffered with exactly one
+consumer, `resultLoop`, which calls `handleSealed` synchronously and
+runs `WriteBlockWithState` inline on that same goroutine -- so a block
+sealed while the previous one's write is still running cannot even be
+received, let alone pushed or proposed. `N42_LEADER_WRITE_ASYNC=1`
+moves the write (and everything downstream of a successful write) onto
+a dedicated writer goroutine.
+
+**Part 1 -- invariants, file:line, and how the async path keeps each one.**
+
+**(a) "handleSealed returned => written."** Everything that runs only
+after a successful write today -- `pendingTasks` cleanup, counters,
+the `"miner: seal path"`/`"miner: propose phases"`/`"Successfully
+sealed"` log lines, `recordSealedOnParent`, the `ChainHighestBlock`
+event (`worker.go`, formerly inline in `handleSealed`) -- is extracted
+into `writeAndFinish` (`worker.go`), called either synchronously
+(switch off) or from the writer goroutine (switch on): the SAME code,
+the same order, just a different caller. Callers/waiters:
+- `WaitBlockPersisted` (`internal/blockchain.go:270-290`) is POLL-based
+  against the DB (`ReadHeaderNumber`, 5ms interval) -- it does not
+  depend on which goroutine calls the write, or on `handleSealed`
+  returning at all. Unaffected by construction.
+- `CheckSealParentApplied` (`internal/seal_push_order.go:33`,
+  `checkQMDBLeaderSealParent` inside it,
+  `internal/blockchain_write.go:130`) reads the DB's last-committed
+  QMDB-applied marker (`ReadQMDBApplied`/`WriteQMDBApplied`,
+  `blockchain_write.go:134,483` -- the latter inside the SAME write
+  transaction as the rest of `writeBlockWithState`, so "applied" is
+  only visible once that transaction commits). **This is the one
+  invariant that breaks without a fix**: today it never sees a merely-
+  QUEUED parent, because the previous block's write has ALWAYS already
+  returned by the time this runs (single serial `resultLoop`,
+  unbuffered `resultCh`) -- moving the write off `resultLoop` removes
+  that guarantee, and this check would routinely see a legitimately-
+  queued (not stale) parent as stale, dropping good blocks before they
+  are even pushed. Fixed: `worker.go`'s new `checkSealParentApplied`
+  additionally treats a parent as applied when it matches whatever
+  `asyncBlockWriter.ExpectedParent()` reports (the last job the writer
+  has accepted, in flight or queued -- `async_write.go`). An optimistic
+  pass here is safe even when wrong: the REAL check runs again inside
+  `writeBlockWithState` under `bc.lock`
+  (`checkQMDBLeaderSealParent`, `blockchain_write.go:234`) against the
+  actual committed state, so a block whose trusted parent never truly
+  applies is rejected there via the EXISTING `ErrStaleSeal` path
+  (`worker.go`, "Sealed block lost to a competing candidate;
+  dropping") -- exactly the handling an ordinary sibling race already
+  gets today. Strict FIFO order (one channel, one reader goroutine) is
+  what makes this safe: job N's true outcome is always settled before
+  job N+1's own write ever calls `checkQMDBLeaderSealParent`.
+- `CommitToCanonicalWith` needing the block in cache-or-DB
+  (`internal/blockchain.go:1394-1414`) is the SAME mechanism S19
+  already found and left unchanged (6cn/6co): a premature call defers
+  via `pendingCommits`/`NotifyBlockImported`, self-healing on the
+  leader via `observeCommittedExecution`'s existing fetch-by-hash
+  fallback. Unchanged here; likely exercised somewhat more often, same
+  as it already became more often under S19.
+- The deferred-execution "applied" marker / `NotifyBlockImported`: same
+  reasoning as the line above -- an existing, already-safe mechanism,
+  not touched, potentially firing somewhat more often.
+- Own-unwritten-chain depth: `unwrittenOwnPostStates` (`worker.go`)
+  ALREADY walks BACK through up to 16 levels of this node's own sealed-
+  but-unwritten blocks, collecting a post-state snapshot from each,
+  stopping at the first one that is actually applied (its own doc
+  comment: "returns...from parent down to (excluding) the applied
+  lineage"). Today's achievable depth is effectively 0-1 (resultLoop's
+  own serialization means at most one block is "being written" at a
+  time, never two sealed-but-unwritten blocks coexisting). Under the
+  switch, the writer's own bounded capacity (one job in flight, one
+  queued) bounds the achievable depth at 2 -- comfortably inside the
+  existing 16-level design, so this is NOT a new assumption and NOT a
+  stop condition.
+
+**(b) Failure.** Today, a write failure after push/propose
+(`ErrStaleSeal`: log and drop, "an expected race under view churn";
+any other error: log, `ForgetSealedHeader`, increment a counter) is
+NOT fatal to the node -- it relies on the fleet's own consensus to
+recover, exactly as it always has. `writeAndFinish` reproduces this
+unchanged. **No explicit "abort the queue" logic was added**: per (a)
+above, a job built on a truly-failed parent is caught by the SAME
+`checkQMDBLeaderSealParent` call inside its OWN `writeBlockWithState`
+attempt, and rejected via the same existing `ErrStaleSeal` path --
+strict FIFO order is the only thing this safety property needs, and
+the channel already provides it.
+
+**(c) Back-pressure.** `asyncBlockWriter`'s job channel has capacity 1
+(`async_write.go`): the writer goroutine's own in-progress job is "in
+flight," and the channel holds at most one more "queued" -- a third
+`Enqueue` call blocks until a slot frees, degrading to today's
+synchronous timing rather than growing memory. A rate-limited warning
+(`"miner: leader write queue full..."`, at most once per 5s) logs when
+this happens; `wqWaitMs`/`wqDepth` are stamped on the job and appear on
+`"miner: seal path"` (zero when the enqueue did not have to wait).
+
+**(d) Shutdown.** `Miner.Close` (`internal/miner/miner.go`) calls
+`asyncBlockWriter.Drain(30s)` only AFTER `group.Wait()` returns --
+i.e. only once `resultLoop` itself has already exited and can no
+longer call `Enqueue` -- then closes the job channel and waits for the
+writer to finish whatever is already in flight or queued, so a
+shutdown never leaves a pushed/proposed block unwritten. Bounded by a
+30s timeout (logged as an error if exceeded) so a genuinely wedged
+write cannot hang shutdown forever.
+
+**(e) Overlap with view v+1's own journal writes.** The writer now
+does the S19 latch wait (`journalCommitVote` succeeded/timeout/
+abandoned) THEN the write, both off `resultLoop` -- so write(v) can now
+run concurrently with the leader handling view v+1:
+`journalPrepareVote(v+1)` at propose and `journalCommitVote(v+1)` at
+`PrepareQC(v+1)` both need the same single MDBX writer write(v) is
+holding. From 6cs's own timeline (push(v) at 0, write ~100-342ms,
+push(v+1) at roughly +430ms under the OFF-switch baseline), the common
+case should miss: `journalPrepareVote(v+1)` fires essentially at
+push(v+1) (already proven to win this exact race today, per 6ct's own
+finding that it always completes before the leader's own block write
+even starts, since it runs on `resultLoop`'s OWN goroutine before
+`handleSealed`'s write is reached) and `journalCommitVote(v+1)` fires
+after Round1(v+1), which independently takes tens of ms. Whether or
+not they collide, MDBX's single-writer mutual exclusion is what
+enforces it either way, and mutual exclusion never produces an
+incorrect result -- only a delayed one, exactly the same kind of delay
+S18/S19 already characterized in depth for the analogous v-on-v
+collision. **Confirmed: this overlap can only cost time, never
+safety.**
+
+**(f) Followers and switch-off.** The switch is read once
+(`LeaderWriteAsyncOn()`, `sync.Once`); `newWorker` only constructs
+`asyncBlockWriter` when it is on, so a switched-off node never
+allocates the channel or starts the goroutine, and `handleSealed`'s
+own branch (`w.asyncWriter != nil`) falls through to calling
+`writeAndFinish` directly -- byte-for-byte today's control flow, same
+goroutine, same order. Followers never call `TriggerBlockProduction`/
+`handleSealed` as a leader would, so this entire path is inert for
+them regardless of the switch.
+
+**Implementation.** `internal/miner/async_write.go` (new):
+`LeaderWriteAsyncOn()` (env, `sync.Once`); `writeJob` (carries
+everything `handleSealed` has already computed by write time --
+`blk`, `receipts`, `logs`, `task`, hashes, and every timing var the
+"seal path" line needs); `pendingWrite`/`asyncBlockWriter`
+(`ExpectedParent`, `Enqueue`, `run`, `Drain`, all documented above).
+`worker.go`: the `task` struct is unchanged; `handleSealed` now builds
+a `writeJob` after push/propose/receipts-copy/exec-remember and either
+enqueues it or calls the new `writeAndFinish` directly;
+`checkSealParentApplied` (new, small, directly tested) wraps the
+bypass decision. `miner.go`: `Close` drains the writer after
+`group.Wait()`.
+
+**Tests.** `async_write_test.go`: strict FIFO ordering under back-to-
+back seals (`TestAsyncWriterOrdersJobsStrictly`), the capacity-1-plus-1
+back-pressure bound blocking then resuming
+(`TestAsyncWriterEnqueueBlocksAtCapacityAndResumes`), `wqWaitMs`/
+`wqDepth` stamping (`TestAsyncWriterEnqueueStampsWaitAndDepth`),
+`ExpectedParent` appearing at enqueue and clearing after processing
+(`TestAsyncWriterExpectedParentTracksThenClears`), `Drain` waiting for
+an in-flight job vs. correctly timing out on a wedged one
+(`TestAsyncWriterDrainWaitsForInFlightJob`/`TestAsyncWriterDrainTimesOut`),
+and the `checkSealParentApplied` bypass firing only on a matching
+parent and always falling through with the switch off
+(`TestCheckSealParentApplied*`, three cases). All new tests pass under
+`-race`. `internal/miner`'s full suite passes under both switch
+placements, combined with `N42_LEADER_WRITE_AFTER_JOURNAL`/
+`N42_CONTENTION_DIAG`. `internal/consensus/hotstuff` untouched this
+step, re-run for regression only. Per this step's own time budget
+(prepared while round 35zzzf runs), `-race` was run only on the new
+tests, not whole packages.
+
+**Build.** Same file-checkout recipe as n42-r86 through n42-r92:
+detached worktree at `f7ec2836`, n42-r92's exact file set (6ct), plus
+this step's changes. One-variable check: `worker.go`/`miner.go` both
+required the SAME two-part treatment n42-r86 established --
+`git diff 62439af7 8ae39838^` empty for both files (nothing else
+touched either between S22 and S23), so this step's own hunk applies
+on the SAME base every prior build already used. `worker.go` needed
+its by-now-familiar FOURTH hunk (S11, S19, S22, S23 in sequence), with
+the SAME single mechanical conflict every build since n42-r90 has hit
+(the speculative-hit block's own off-lineage `tMs` context line,
+`89d15267`/`19687889`, excluded from this lineage since n42-r86) --
+resolved by hand, verified against a full diff of the result: only the
+same four already-known lines remain. `miner.go` needed its FIRST
+hunk (new to this recipe): `git diff f7ec2836 8ae39838^ --
+internal/miner/miner.go` is NOT empty (41 lines -- the SAME
+`activeSpecParent` off-lineage feature also touches this file), so a
+direct checkout would have been wrong; `git diff 8ae39838^ 8ae39838 --
+miner.go` applied cleanly onto the `f7ec2836` base, and the resulting
+file's diff against `8ae39838`'s own version shows only the same
+already-known, already-excluded lines. `internal/parallel/base_cache.go`
+confirmed absent; `grep -rl BaseCache`: empty. `go build -p 8 -tags
+nosqlite,noboltdb` clean; `go vet ./internal/...` clean; `go test`
+passes on `internal/consensus/hotstuff/...` (both switch placements),
+`internal/miner/...` (both placements), `internal/`,
+`internal/parallel/...`. `/data/blockchain/gov5-work/n42-r93`:
+108,789,800 bytes, sha256
+`25f83814239489827783e4526bb57484dd91dcf6d0f8e655cdbacea524b5ea38`.
+`strings n42-r93 | grep -c BaseCache` = 0; every prior marker present;
+three new markers (`wqWaitMs`, `wqDepth`, `"leader write queue
+full"`) each present.
+
+**Runner.** `run-r35zzzg.sh`/`chain-35zzzg.sh` built from the
+`run-r35zzzf.sh`/`chain-35zzzf.sh` pair via `cp`+`sed
+'s/35zzzf/35zzzg/g'` (checked first: `35zzzf` occurs nowhere in
+either script's giant single-line history comment). Fixed by hand
+afterward: the predecessor-wait (`r35zzzf.log`, its actual
+predecessor) and the binary references (`n42-r93`). **THIS round IS
+an A/B by leg**, on the NEW switch: `run_leg` gained a 6th positional
+parameter, `N42_LEADER_WRITE_ASYNC` (0 or 1), exported alongside the
+already-adopted `N42_LEADER_WRITE_AFTER_JOURNAL`/`N42_CONTENTION_DIAG`
+(both stay 1 in every leg). Calls: `warmup 1 0`, `A1 1 0`, `B1 1 0`
+(async switch off, the in-round baseline), `B2 1 1`, `A2 1 1` (async
+switch on). The in-window (win1-start+15s, win2-start+15s) profile
+captures and the S20 VM sampler (6ct/6cr) carry over unchanged.
+`bash -n` clean on both; confirmed not running.
+
+**Prediction 89 (registered before any round):**
+
+**(a) B1 (off), mechanism.** `resQWaitMs` on full in-tenure blocks is
+large (report the median; expected to track whatever part of write(v)
+outlasts `CommitQC(v)`, per 6cs/6ct's own model) and `push(v+1)`
+continues to follow write(v)'s end, matching today's baseline exactly.
+
+**(b) B2 (on), mechanism.** `resQWaitMs` < 10 ms; `wqDepth` <= 1 with
+`wqWaitMs` ~0 on >= 95% of blocks (the queue should rarely if ever
+reach its second slot at this campaign's block rate); `push(v+1) -
+CommitQC(v)` returns to the ~254 ms leg-invariant constant (6cs); win1
+in-tenure cycle <= 480 ms (6cs's own derived 415-435 ms range from
+measured medians, with margin for the (e) journal/write overlap cost).
+
+**(c) Not merely moved.** Report, for both legs: leader `jcvMs`/
+`jpvMs` (S18), the `QC->push` constant (6cb/6cs), the `CommitToCanonical`
+wait/defer rate, `"committed block not executed locally"` occurrence
+count (S19's own flagged side effect), and follower phases -- so a
+flat or worse B mean can be read against the mechanism numbers rather
+than assumed to mean the lever failed.
+
+**(d) Score: no claim beyond the supply ceiling.** With a ~450 ms
+cycle the eight generators (~140k) cannot fill every block at that
+rate, so occupancy is EXPECTED TO FALL in B2's win1 while TPS holds
+near ~140k -- stated in advance so a flat or lower score is not misread
+as a failed lever; the mechanism clauses (a)-(c) are what decide this
+step, not the score.
+
+**(e) Safety.** No BAD BLOCK/divergence; every proposed-and-committed
+own block written exactly once and in the order it was sealed (cross-
+check write-completion log lines against seal order); no new
+flood-window view-timeout events vs 35zzzf; clean shutdown between
+legs (no `"database closed"`/lost-write errors at leg boundaries --
+directly exercises this step's own Drain-on-shutdown design).
+
+**VERDICT: confirmed** (implementation, tests, one-variable check and
+build all done; Part 1's invariants are read, confirmed, and one --
+`CheckSealParentApplied` -- fixed as part of the design, not merely
+noted). QS_QUEUE.md's S23 row status is marked prepared with
+prediction 89 (6cu). Launch is the commander's next call.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
