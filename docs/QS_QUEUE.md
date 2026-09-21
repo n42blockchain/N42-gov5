@@ -72,3 +72,12 @@ gain: 35zzzd/35zzze show follower jcvMs = 0 and the leader's 334 ms journal wait
 with a scheduling change (N42_LEADER_WRITE_AFTER_JOURNAL=1) that touches no safety semantics.
 Revisit only if a later round measures journal waits again (watch jpvMs/jcvMs after S23 lets
 write(v) overlap view v+1); the first remedy is again scheduling, not a second store.
+
+## Box sharing (2026-09-21 19:10 EDT)
+
+gov5 ran back-to-back rounds all day with ~3-minute gaps, shorter than the n42-rs runner's quiet check, so the
+Rust fleet never got the box. After round 35zzzj ends gov5 stands down: no chain script queued, claim files
+verified gone, fleet down for at least 100 minutes or until `.box-claim-rust` has come and gone, whichever is
+later. From now on: at least 10 minutes of free box between gov5 rounds, and no chain script queued behind a
+running round while n42-rs has work waiting. Prepared and waiting for the box: 35zzzk (S31, n42-r95).
+
