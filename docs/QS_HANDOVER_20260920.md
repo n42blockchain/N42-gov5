@@ -403,3 +403,75 @@ window separately show which named step's cumulative time actually grew
 that build, without needing the dump at all in the common case.
 
 Prediction 82 is registered in 6bz. Launch is the commander's next call.
+
+## S14 prepared -- n42-r87 built, contention diagnostics on, round ready, not launched (2026-09-21)
+
+Why: 6cb-6ce closed transport and the held-vote minority as explanations
+for the in-tenure cycle's 520 ms push->QC segment (Round1 129 ms + Round2
+370 ms = 499 ms, 95.9% of it), leaving ~450 ms of consensus handlers
+waiting on something no line names. See `docs/QS_BLOCK_TIME_BUDGET.md`
+section 6cf for the full writeup, the ranked suspects found by reading the
+code, and prediction 83.
+
+**n42-r87: built.** `/data/blockchain/gov5-work/n42-r87`, sha256
+`a22b16ce540bfba172174fd494fcb76542ca7c87acb5effd1ff0b9378d215eb9`. Same
+file-checkout recipe as n42-r86 (worktree at `f7ec2836` + n42-r86's file
+set + S14's commit `56cc1dac`): all 7 files S14 touches/adds were
+byte-identical to r86's own version before this change (one of them,
+`internal/consensus/hotstuff/proposal.go`, is part of r86's own DEFERRED
+lever from `c0931aeb`; the other 6 are simply `f7ec2836`'s untouched
+copies), so every one was checked out directly from `56cc1dac` with no
+hunk surgery needed. `internal/parallel/base_cache.go` confirmed absent;
+`grep -rl BaseCache` over the worktree: empty. In the build worktree:
+`go vet` clean, `go test ./internal/consensus/hotstuff/...` (263 tests)
+and `./internal/miner/...` both pass, full package run (not `-short`,
+~5-6 s including under `-race`). `strings n42-r87 | grep -c BaseCache` = 0;
+`... | grep -c "build stalled before fill"` = 1; `... | grep -c
+"contention profiling enabled"` = 1.
+
+**What S14 adds, gated behind `N42_CONTENTION_DIAG=1`** (see 6cf for the
+full field list and file:line detail): runtime mutex/block profiling
+(`SetMutexProfileFraction(5)`/`SetBlockProfileRate(1_000_000)`, before the
+consensus service starts) and per-message vote-path timing stamps
+(arrival -> `e.mu` acquired -> handler done) aggregated into the existing
+`hotstuff view timing` line as new short fields: leader `r1n`/`r1lw`/
+`r1lwMax`/`r1wk`/`r1kth`/`r1qk` and the `r2*` equivalents; follower
+`propLw`/`propWk`/`pqcLw`/`pqcWk`/`pqc2cv`/`cvHeld`/`cvGate`. Silent when
+the switch is off.
+
+**Suspects found by reading the code, ranked (not fixed -- 6cf has the
+full detail):**
+1. `JournalVote` (`service.go:1219-1226`, an MDBX write transaction) runs
+   under `e.mu` on every single vote and shares the node's one MDBX writer
+   lock with block import/write (`n.db`, `node.go:1863`) -- a concurrent
+   block write can stall it, and since it runs under `e.mu`, stalls ALL
+   consensus message processing on that node for the wait.
+2. `processOutputs`' serial output loop runs `CommitToCanonical`/
+   `persistState` inline (`service.go:585-704`), a second serialising
+   point (already partially mitigated for broadcasts) that also contends
+   for the same MDBX writer lock as suspect 1.
+3. Unbatched BLS verification of incoming QC messages under `e.mu`
+   (`verifyQCWithSet`) -- real CPU held under the lock, but likely small
+   (single digits of ms for 7 validators) next to 1-2.
+
+**Runner: `run-r35zzza.sh`/`chain-35zzza.sh`, built from the 35zzz pair,
+not launched.** Same eight-generator shape as always (`-target-depth
+45000`, `--floods 8 --senders 1000`); binary retargeted to n42-r87;
+`N42_CONTENTION_DIAG=1` added next to `N42_BUILD_STALL_DIAG=1`.
+`chain-35zzza.sh` waits on `wr-logs/r35zzz.log`'s terminal line (its
+actual predecessor); gates unchanged. New: a per-B-leg profile capture in
+`run-r35zzza.sh` (150 s after leg start, sitting leader + one non-leader
+follower, 20 s CPU + mutex + block delta profiles into
+`/data/blockchain/wr-pprof/r35zzza-<leg>-node<i>-{cpu,mutex,block}.pb.gz`,
+curl failures logged and never fatal). `bash -n` clean on both.
+
+**How to read a saved profile:** `go tool pprof -top -sample_index=delay
+/data/blockchain/wr-pprof/r35zzza-B1-node<i>-mutex.pb.gz` ranks lock sites
+by cumulative wait time (drop `-sample_index=delay` for a contention
+count instead); the block profile reads the same way; the CPU profile
+reads like any `go tool pprof -top ...cpu.pb.gz`. Cross-reference against
+the `hotstuff view timing` line's new fields for the same ~20 s window on
+the same node -- the log line names a PHASE and a MAGNITUDE, the profile
+names a LOCK/CALL SITE and a MAGNITUDE.
+
+Prediction 83 is registered in 6cf. Launch is the commander's next call.
