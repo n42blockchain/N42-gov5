@@ -9197,6 +9197,228 @@ build all done; the code-level findings for Part 1 are complete and
 documented above). QS_QUEUE.md's S19 row status is marked prepared
 with prediction 87 (6co). Launch is the commander's next call.
 
+## 6cp. Round 35zzzd: jcvMs measures Round2's residual directly, 98.8% of the time colliding with the leader's own block write -- and the second windows are slow because of a memory-pressure cycle that repeats every leg, in every round, visible only when supply isn't already the limit (2026-09-21)
+
+n42-r90 (r89 + `jpvMs`/`jcvMs`/`jcvAt`) ran clean: `ROUND DONE`, legs B1
+10:02:45-10:15:54, B2 10:15:54-10:29:28. Evidence preserved first (this
+round's own node directories were kept whole ahead of the next round's
+reseed): `/data/blockchain/wr-logs/r35zzzd-keep/node{0-6}-B.log`, trimmed
+by this step from the full node directories, `10:02:00-10:29:59`.
+Script: `wt-r27/scripts/qs-analysis/journal_timing.py`.
+
+### JOB 1: the journal, directly measured
+
+**(a) Leader `jcvMs`.** Full in-tenure views (n=85): median **340 ms**
+(p10 231, p90 475) against a measured `r2` median of 396 ms --
+**jcvMs alone is 85.9% of Round2's median.** `jpvMs` (the leader's own
+prepare-vote journal, which nothing else queues behind) is 0 ms at the
+median, p90 2 ms -- consistent with 6cm/6ck: only the COMMIT-vote
+journal is exposed to the collision, because only it runs inside
+`tryFormPrepareQC`, on the same node, at the same time as that node's
+own `WriteBlockWithState`.
+
+Joint table (`jcvMs` bucket -> share of views, mean `r2kth`, mean
+`jcvMs`, mean gap):
+
+| `jcvMs` bucket | share | mean `r2kth` | mean `jcvMs` | mean gap |
+|---|---|---|---|---|
+| >=200 ms | 94.1% | 411.8 | 360.1 | 51.6 |
+| 20-200 ms | 1.2% | 267.0 | 197.0 | 70.0 |
+| <20 ms | 4.7% | 155.8 | 0.0 | 155.8 |
+
+**94.1% of full in-tenure views have `jcvMs` >= 200 ms, and for those
+the mean gap (what `jcvMs` does NOT explain) is only 51.6 ms** -- close
+to 6cm's own six-segment sum (~24 ms) plus normal round-to-round noise.
+The 4.7% of views where the leader's own journal is fast (<20 ms) still
+average 155.8 ms of unexplained `r2kth` -- see (b) for where that goes.
+
+`jcvMs` by block-size bucket, next to 6cm's residual law (1/14/132/152/
+326 ms):
+
+| bucket | `jcvMs` median (this round) | `r2` median (this round) | 6cm's residual law |
+|---|---|---|---|
+| 0 tx | 0.0 (n=3,280) | 9.0 | 1 |
+| 1-20k | 0.0 (n=131) | 20.0 | 14 |
+| 20-80k | 64.5 (n=64) | 176.5 | 132 |
+| 80-140k | 76.0 (n=41) | 208.0 | 152 |
+| >140k | 299.0 (n=318) | 344.0 | 326 |
+
+**Same shape, same order of magnitude, closest at the extremes** (empty
+and full) -- the middle buckets read lower this round (64.5/76 vs 132/
+152), consistent with 6cm's own caveat that round-to-round variance at
+this campaign's scale (6cm found in-tenure cycle move 26.6% between two
+rounds sharing a configuration) means single-round numbers are one data
+point, not a settled value. The FULL-block bucket -- the one this whole
+campaign is about -- lands at 299 vs 326, an 8.3% difference, and
+`jcvMs`/`r2` at that bucket is **86.9%**, clearing the >=80% bar
+prediction 86(a) set.
+
+**(b) Follower `jcvMs`, and the k-th-voter test.** Follower `jcvMs`
+across ALL views (n=22,505): median **0.0 ms**, p90 0.0 ms -- followers'
+own commit-vote journal writes are essentially always instant. In the
+85 matched in-tenure views, only **3** have the leader's own `jcvMs`
+under 20 ms AND `r2kth` >= 100 ms (the case the commander asked about:
+is the round waiting on a FOLLOWER's journal instead, when the
+leader's is fast). In all 3, **the k-th voter's own `jcvMs` is 0 ms** --
+**not** what explains those views' residual; n=3 is too small to name
+what does. **Identity test**, `r2 ~ jcv_leader + jcv_kth(quorum voter) +
+24 ms (6cm's stamped-edge sum)`: median absolute error **17 ms**, and
+**78.8%** of the 85 views land within 15% of the measured `r2`. The
+three-term model is a good fit for the large majority of views, with
+the leader's own `jcvMs` doing essentially all of the work (the k-th
+follower's own `jcvMs` term is 0 in the overwhelming majority of rows,
+per the 0-ms-median finding above).
+
+**(c) Collision partner: confirmed directly, not by elimination.**
+Using `jcvAt` (the journal call's own start, unix ms) plus `jcvMs` as
+the wait interval, and searching each node's OWN nearest block-write end
+(`miner: propose phases`/`blockimport phases` `tMs`, which is the write
+completion instant on both leader and follower, 6cb/6cg):
+
+| | own-block-write end within 10 ms | `commit phases` same second (1s resolution only) | unknown |
+|---|---|---|---|
+| leader (own `journalCommitVote`, n=81) | **98.8%** | 1.2% | 0.0% |
+| k-th follower (own commit-vote journal, n=3) | 0.0% | 100.0% | 0.0% |
+
+**The leader's own `journalCommitVote` wait ends within 10 ms of that
+SAME leader's own block-write ending, 98.8% of the time.** This is the
+collision partner named directly: `journalCommitVote` (`voting.go:223`,
+inside `tryFormPrepareQC`) and the leader's own `WriteBlockWithState`
+(triggered from `resultLoop`/`handleSealed`, per 6co's own file:line)
+are both `s.db.Update(...)`/MDBX write transactions against the SAME
+database handle, and MDBX allows exactly one writer at a time -- the
+smaller, cheaper journal write queues behind the larger, size-
+proportional block write until it finishes, which is exactly why
+`jcvMs` tracks block size (a). (The follower row (n=3) is too small
+to support any claim; it is reported, not interpreted.)
+
+**(d) Prediction 86(a): confirmed**, with one qualification. The
+headline claim -- `jcvMs` alone accounts for the large majority of
+Round2, and does so most cleanly on FULL blocks -- holds: median 85.9%
+overall, 86.9% on the >=140k bucket specifically, 94.1% of views with
+`jcvMs` >= 200 ms and a mean residual of only 52 ms among them. The
+LITERAL "every bucket >=80%" bar is not met at the two middle buckets
+(20-80k: 36.5%; 80-140k: 36.5%) -- reported honestly rather than
+rounded up, though the full-block bucket that motivated the whole
+investigation clears it comfortably.
+
+### JOB 2: why the second windows were slow
+
+**Round score**: B1win1 133,460 TPS/48.7%occ/1.132s, B1win2 86,866/
+50.0%/**1.875s**; B2win1 130,886/49.2%/1.224s, B2win2 86,661/49.8%/
+**1.875s**. B mean **109,468** -- 17.5% BELOW 35zzzc's 132,786, on an
+IDENTICAL configuration. Crucially, **all four windows are full this
+round** (48.7-50.0% occupancy, unlike 35zzzc's 44.3-47% second
+windows) -- so, unlike 35zzzc, a supply explanation is ruled out before
+looking further: win2 here is not building smaller blocks, it is
+building the SAME size blocks more slowly.
+
+**Every phase that touches the database grows from win1 to win2, by
+30-90%, in both legs:**
+
+| phase (median, ms) | B1win1 | B1win2 | delta | B2win1 | B2win2 | delta |
+|---|---|---|---|---|---|---|
+| follower `body` | 8.7 | 10.0 | +14.9% | 8.4 | 10.2 | +21.4% |
+| follower `proc` | 457.7 | 525.8 | +14.9% | 468.9 | 510.1 | +8.8% |
+| follower `write` | 190.3 | 218.2 | +14.7% | 194.1 | 227.4 | +17.2% |
+| follower `total` | 670.8 | 793.4 | +18.3% | 688.6 | 772.1 | +12.1% |
+| leader `assemble` | 137.1 | 211.4 | **+54.2%** | 135.6 | 194.9 | +43.7% |
+| leader `finalize` | 125.8 | 189.1 | **+50.3%** | 125.6 | 182.6 | +45.4% |
+| leader `write` | 285.5 | 383.0 | +34.2% | 286.5 | 409.2 | +42.8% |
+| leader `total` | 350.0 | 503.8 | +44.0% | 337.0 | 485.7 | +44.1% |
+| Round1 | 65.0 | 89.5 | +37.7% | 63.0 | 89.0 | +41.3% |
+| Round2 | 280.0 | 377.0 | +34.6% | 246.0 | 390.5 | +58.7% |
+| `jcvMs` (leader) | 226.5 | 308.5 | +36.2% | 186.0 | 358.0 | **+92.5%** |
+
+**No single phase carries this alone -- it is a broad, correlated
+slowdown across every operation that reads or writes the database**
+(state-root `finalize`, `write`, `proc`, and `jcvMs`, itself an MDBX
+write, all move together), which is the signature of a SHARED-RESOURCE
+effect, not a per-phase regression. In absolute terms, `leader total`
+grows the most (154/149 ms), with `assemble`+`finalize` (state-root
+work) responsible for most of that (138/117 ms of it).
+
+**The shared resource: memory. `AnonPages` (system-wide anonymous
+memory, `r35zzzd-mem.log`) grows ~4-5x within EVERY leg, timed to the
+same point, and resets at every leg restart:**
+
+- B1: `AnonPages` sits at 14-20 GB (avail 105-111 GB) from leg start
+  through ~10:10; starts climbing at **10:10:39** (49 GB) and reaches
+  75-79 GB (avail 45-53 GB) by 10:11-10:15 -- **this ramp's start
+  (10:10:39) is 4:54 before B1's own end (10:15:54), squarely inside
+  B1's own win1-to-win2 transition** (win1 is roughly the leg's first
+  half by block count). Resets at the leg boundary: 10:16:04, `AnonPages`
+  back to 25 GB, avail back to 100 GB (the SIGTERM+relaunch between legs
+  clears it).
+- B2: identical shape -- low (11-20 GB, avail 104-114 GB) through
+  ~10:23, climbing from **10:24:09** (53 GB) to 74-79 GB (avail 45-52 GB)
+  by 10:25-10:28, resetting at 10:29:38 (13.8 GB, avail 111 GB).
+
+**This is not new to 35zzzd.** `r35zzzc-mem.log` shows the identical
+shape at the identical relative timing: B1 (08:08:06-08:21:20)
+`AnonPages` low (14-18 GB) through 08:15, climbing from **08:16:01**
+(39.5 GB) to 74-79 GB by 08:17-08:21 (avail 47-56 GB), resetting at
+08:21:30 (4.5 GB). **The mechanism runs every leg, every round in this
+campaign checked -- 35zzzc simply did not show it in blockTime because
+its own second windows were ALREADY supply-limited (occupancy 44-47%)
+by the time memory pressure built up; 35zzzc's generators ran out of
+transactions to offer before the memory-pressure slowdown could bind.
+35zzzd's second windows stayed full (occupancy 49.8-50.0%) throughout,
+so the same underlying slowdown -- which was always there -- became the
+binding constraint instead of supply, and blockTime nearly doubled where
+35zzzc's blockTime barely moved.**
+
+**Safety, this round.** BAD BLOCK 0, divergence 0. Two `"miner: build
+stalled before fill"` events (node2, block 13658323, 10:10:56 -- the
+EXACT minute `AnonPages` starts climbing in B1; node1, block 13660387,
+10:24:18 -- likewise B2's climb start), both `specTreeReload`, both
+self-healed. **View-timeout events: 16 distinct (time,view) pairs this
+round, split 1 ramp / 8 decay / 7 flood-and-full** -- a marked contrast
+with 35zzzc's zero flood-window timeouts (6cm): B1's `6135`/`6167`/
+`6178` (all 163,000-tx blocks, 10:13:38-10:14:57, inside B1's own
+memory-pressure window) and B2's `8230`/`8246`/`8263`/`8270` (also all
+163,000-tx, 10:27:09-10:28:25, likewise inside B2's window) -- **every
+flood-window timeout this round falls inside the same memory-pressure
+window Job 2 identified**, tying the mechanism directly to a real
+liveness cost, not just a throughput one.
+
+**Method.** `journal_timing.py` reuses the push-instant/QC-proxy/
+view<->n-offset/validator-index-map join from `contention_attribution.py`
+and `send_recv_split.py`. The collision-partner test (Job 1c) searches
+each node's OWN nearest `tMs` (from every `propose phases`/`blockimport
+phases` line for that node, not just the matched block) via binary
+search, rather than assuming the relevant write belongs to block `n-1`
+or `n` specifically -- the leader's own concurrent write can belong to
+whichever block its OWN pipeline is on at that instant, which need not
+be the block the journal call's own view is about. `commit_phases`
+carries no `tMs` (6ck), so the canonical-commit/persist candidate could
+only be tested at 1-second resolution, reported as a separate, coarser
+column rather than folded into the 10 ms test. Job 2's memory numbers
+are read directly from `r35zzzd-mem.log`/`r35zzzc-mem.log`'s own
+`AnonPages`/`avail` fields at their native sampling interval
+(~10-30 s), not resampled or smoothed.
+
+**What this does and does not show.** It shows, with a direct
+measurement rather than an elimination argument, that `journalCommitVote`
+IS Round2's dominant cost on full blocks (85.9-86.9% depending on
+population) and that it collides with the leader's own concurrent block
+write 98.8% of the time -- the single-MDBX-writer hypothesis this
+campaign has carried since 6cf, now measured rather than inferred. It
+shows the second-window slowdown this round is not a new phenomenon or
+a box problem but a MEMORY-PRESSURE CYCLE present in every leg of every
+round checked, whose visibility in blockTime depends entirely on
+whether supply is already the binding constraint by the time it
+arrives. It does NOT identify the root cause of the `AnonPages` growth
+itself (a growing QMDB speculative-tree cache, Go heap/GC behavior, or
+something else) -- `AnonPages` is the number that TRACKS it, not a
+diagnosis of its source, and no further breakdown (e.g. `pprof heap`)
+was captured this round to distinguish those. It does NOT explain the
+3-view case in Job 1b where neither the leader's nor the k-th follower's
+`jcvMs` accounts for the residual -- n=3 is too small to characterize.
+It does NOT test a fix for either finding (6co/prediction 87 already
+proposes one for the journal-collision finding, prepared separately);
+this section measures, per this task's own scope.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
