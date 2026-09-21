@@ -315,6 +315,25 @@ n42-r92's exact file set + this fix. Prepared round: 35zzzi
 measure), tested offline against 35zzzg (flags) and 35zzzf (clean).
 Launch is the commander's call.
 
+**STATUS (S31, 2026-09-21): refinement prepared, not yet launched.**
+Round 35zzzi (6dg) confirmed the S26 fix holds in a full fleet round (0
+conflicting heights across 3,355 checked) and measured its real cost
+(Round1 60-72 -> 153-262ms; CommitQC(v) later than the leader's own
+build end in 33% of win1 views, 78-83% of win2 views). S31 recovers the
+cost without touching the rule: `extendsJustify` only ever reads a
+block's parent hash, a header field never touched by
+`CheckDeferredBlock`'s per-transaction check, so the two-phase Round 1
+prepare vote now fires on a new `EventBlockHeaderKnown` (emitted by the
+block-push path as soon as the header is peeked, before the full body
+decode) instead of waiting for the deferred check. Round 2 is
+unchanged; no header event falls back to the existing checked/imported
+gate. Code commit `c124146e` ("perf(hotstuff): decide the prepare vote
+on the block header, not the deferred check"). Full PART 0 proof (same
+predicate as S26, timing only) and the binding argument (hashing the
+header alone suffices) in docs/QS_BLOCK_TIME_BUDGET.md 6dh. Build:
+n42-r95 = n42-r94's exact file set + this change. Prepared round:
+35zzzk. Launch is the commander's call.
+
 **SEVERITY (commander, 2026-09-21, from node5's raw log): this is a consensus SAFETY violation, not only
 a liveness halt.** Both blocks were COMMITTED, one second apart, by honest nodes: `block committed!`
 view 8784 hash `7a6d85...23259c` at 15:05:56 (votes 5/5 in both rounds) and `block committed!` view 8785
