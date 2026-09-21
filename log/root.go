@@ -341,6 +341,18 @@ func GetLevel() int {
 	return int(terminal.GetLevel())
 }
 
+// LogDir returns the directory the node's rotating log file lives in, or ""
+// when no LogFile is configured (e.g. an interactive terminal session with
+// nothing to rotate). A diagnostic feature that wants to drop a file next to
+// the node's own log -- e.g. the miner build-stall watchdog, S11 -- reads
+// this instead of resolving DataDir/log a second time.
+func LogDir() string {
+	if logWriter == nil || logWriter.Filename == "" {
+		return ""
+	}
+	return filepath.Dir(logWriter.Filename)
+}
+
 // Close 关闭日志系统，停止后台任务并刷新缓冲
 func Close() {
 	if logManager != nil {

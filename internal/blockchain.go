@@ -526,6 +526,28 @@ func (bc *BlockChain) voidMinerRootTrust(reason string) {
 // default until a fleet round has read it (QS_BLOCK_TIME_BUDGET, round 35zf).
 var minerAdoptAppends = os.Getenv("N42_MINER_ADOPT_APPENDS") == "1"
 
+// buildStallDiagEnabled gates S11's diagnostic mutex-wait timers on bc.lock
+// (AlignAppliedBranch, InsertChainAuthorized) and minerRCMu
+// (NewMinerRootComputer). Read once at start-up, same pattern as
+// minerAdoptAppends above. Off by default: the extra time.Now() pair around
+// each Lock() is skipped entirely, so a fleet round that has not opted in
+// pays nothing. See docs/QS_BLOCK_TIME_BUDGET.md 6by/S11 and the matching
+// switch in internal/miner/build_stall_watchdog.go.
+var buildStallDiagEnabled = os.Getenv("N42_BUILD_STALL_DIAG") == "1"
+
+// TakeBuildStallLockWait returns and resets the bc.lock wait time accumulated
+// by AlignAppliedBranch/InsertChainAuthorized calls since the last call to
+// this method. Diagnostic only: always zero unless N42_BUILD_STALL_DIAG=1.
+func (bc *BlockChain) TakeBuildStallLockWait() time.Duration {
+	return time.Duration(bc.buildStallLockWaitNs.Swap(0))
+}
+
+// TakeBuildStallRootLockWait is TakeBuildStallLockWait for minerRCMu (the
+// lock NewMinerRootComputer shares with the startup pre-warm).
+func (bc *BlockChain) TakeBuildStallRootLockWait() time.Duration {
+	return time.Duration(bc.buildStallRootLockWaitNs.Swap(0))
+}
+
 // MinerAdoptAppends reports whether the miner tree keeps its own appends
 // (N42_MINER_ADOPT_APPENDS=1), which is also what lets a speculative build
 // chain on an own unwritten block; the worker snapshots each sealed block's
@@ -551,8 +573,16 @@ func (bc *BlockChain) NewMinerRootComputer(tx kv.Tx, parentRoot types.Hash) (sta
 	// falls back to the full rebuild inside ReloadForBuild.
 	//
 	// Serialization: only the miner worker's single build goroutine calls
-	// this, so the computer needs no lock of its own.
-	bc.minerRCMu.Lock()
+	// this, so the computer needs no lock of its own. The lock exists for
+	// PrewarmMinerRootComputer (startup only); S11 times a wait on it here
+	// in case a slow pre-warm after a restart is what a future stall waits on.
+	if buildStallDiagEnabled {
+		t0 := time.Now()
+		bc.minerRCMu.Lock()
+		bc.buildStallRootLockWaitNs.Add(int64(time.Since(t0)))
+	} else {
+		bc.minerRCMu.Lock()
+	}
 	defer bc.minerRCMu.Unlock()
 	rc := bc.minerRC
 	if rc == nil {
@@ -1912,7 +1942,20 @@ func (bc *BlockChain) InsertChainAuthorized(chain []block.IBlock) (int, error) {
 	if len(chain) == 0 {
 		return 0, nil
 	}
-	bc.lock.Lock()
+	// S11: same bc.lock, same diagnostic as AlignAppliedBranch above. A build
+	// stall's InsertChainAuthorized call is the "import consensus parent"
+	// fallback below AlignAppliedBranch in worker.go's commitWork, so this
+	// wait lands in the same accumulator (TakeBuildStallLockWait), read right
+	// after each call from the single build goroutine -- routine gossip/sync
+	// imports calling this too could in principle add noise here, but that
+	// path is reserved for consensus-driven imports, not routine traffic.
+	if buildStallDiagEnabled {
+		t0 := time.Now()
+		bc.lock.Lock()
+		bc.buildStallLockWaitNs.Add(int64(time.Since(t0)))
+	} else {
+		bc.lock.Lock()
+	}
 	defer bc.lock.Unlock()
 	return bc.insertChain(chain, true)
 }
@@ -2984,7 +3027,17 @@ func (bc *BlockChain) AlignAppliedBranch(childNum uint64, parentHash types.Hash)
 	// unwind the live QMDB tree, whose in-memory mutations are not covered by
 	// the MDBX transaction. Serialize the whole operation with InsertChain and
 	// WriteBlockWithState so a leader cannot consume an import's in-flight undo.
-	bc.lock.Lock()
+	//
+	// S11: bc.lock is exactly the mutex a leader build shares with import/
+	// write, so time the wait for it when diagnosing a build stall
+	// (docs/QS_BLOCK_TIME_BUDGET.md 6by). Off by default -- no timing calls.
+	if buildStallDiagEnabled {
+		t0 := time.Now()
+		bc.lock.Lock()
+		bc.buildStallLockWaitNs.Add(int64(time.Since(t0)))
+	} else {
+		bc.lock.Lock()
+	}
 	defer bc.lock.Unlock()
 	return bc.unwindForReimport(childNum, parentHash, true)
 }

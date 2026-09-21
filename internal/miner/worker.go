@@ -1095,6 +1095,22 @@ func (w *worker) takeSpecTask(parent types.Hash) *task {
 func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int64, parentHash types.Hash, speculative bool) error {
 	log.Info("miner: commitWork begin", "speculative", speculative) // diagnostic: pairs with "build triggered"
 	start := time.Now()
+
+	// S11 diagnostics (N42_BUILD_STALL_DIAG=1; docs/QS_BLOCK_TIME_BUDGET.md
+	// 6by): pf accumulates named step timings between here and the start of
+	// the fill; wd dumps every goroutine's stack if the fill is not reached
+	// within a few seconds. Both nil (zero cost) when the switch is off. wd
+	// is disarmed by the deferred Cancel on every return path -- a normal
+	// completion cancels it explicitly at the fill boundary in
+	// fillTransactions; any early return here or in a callee just lets this
+	// defer catch it.
+	var pf *prefillTimes
+	if buildStallDiagEnabled {
+		pf = &prefillTimes{buildStart: start}
+	}
+	wd := newBuildStallWatchdog(buildStallDiagEnabled, log.LogDir())
+	defer wd.Cancel()
+
 	w.mu.RLock()
 	coinbase := w.coinbase
 	w.mu.RUnlock()
@@ -1192,6 +1208,7 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 			// (580d2f32) ran before that unwind and could never succeed on a
 			// node that had applied a sibling -- round 35p: every view of a
 			// tenure timed out on "consensus parent not applied in time".
+			wd.SetStep("persistWait")
 			tPersist := time.Now()
 			if !bc.WaitBlockPersisted(parentHash, 2*time.Second) {
 				return fmt.Errorf("consensus parent %x not persisted in time", parentHash[:8])
@@ -1202,6 +1219,9 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 			// write from the unwind that follows it. Two numbers, so the next
 			// round knows which half to attack.
 			dPersistWait = time.Since(tPersist)
+			if pf != nil {
+				pf.persistWait = dPersistWait
+			}
 			pblk, _ := w.chain.GetBlockByHash(parentHash)
 			if pblk == nil {
 				return fmt.Errorf("consensus parent %x not in local db", parentHash[:8])
@@ -1212,12 +1232,18 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 			// parent's own write; skipping it there took 230 ms off the
 			// leader's 512 ms align (round 35za).
 			alignNeeded := !bc.AppliedHeadIsExactly(parentHash, pblk.Number64().Uint64())
+			wd.SetStep("alignAppliedBranch")
+			tAlignCall := time.Now()
 			if err := func() error {
 				if !alignNeeded {
 					return nil
 				}
 				return bc.AlignAppliedBranch(pblk.Number64().Uint64()+1, parentHash)
 			}(); err != nil {
+				if pf != nil {
+					pf.align += time.Since(tAlignCall)
+					pf.lockWait += bc.TakeBuildStallLockWait()
+				}
 				if speculative {
 					// A guess is not worth a forced import: the align fallback
 					// below re-imports the consensus parent with switch
@@ -1228,12 +1254,29 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 				// The QC block is in the DB but on a branch this node never
 				// applied (it didn't vote in that view). Import it WITH switch
 				// authority — the QC is the consensus mandate — then re-align.
-				if _, ierr := bc.InsertChainAuthorized([]block.IBlock{pblk}); ierr != nil {
+				wd.SetStep("insertChainAuthorized")
+				tInsert := time.Now()
+				_, ierr := bc.InsertChainAuthorized([]block.IBlock{pblk})
+				if pf != nil {
+					pf.insertParent += time.Since(tInsert)
+					pf.lockWait += bc.TakeBuildStallLockWait()
+				}
+				if ierr != nil {
 					return fmt.Errorf("import consensus parent %x: %w (align: %v)", parentHash[:8], ierr, err)
 				}
-				if err = bc.AlignAppliedBranch(pblk.Number64().Uint64()+1, parentHash); err != nil {
+				wd.SetStep("alignAppliedBranch")
+				tAlignCall2 := time.Now()
+				err = bc.AlignAppliedBranch(pblk.Number64().Uint64()+1, parentHash)
+				if pf != nil {
+					pf.align += time.Since(tAlignCall2)
+					pf.lockWait += bc.TakeBuildStallLockWait()
+				}
+				if err != nil {
 					return fmt.Errorf("align applied branch to consensus parent %x: %w", parentHash[:8], err)
 				}
+			} else if pf != nil {
+				pf.align += time.Since(tAlignCall)
+				pf.lockWait += bc.TakeBuildStallLockWait()
 			}
 			// The align is a no-op when the applied head is BELOW the parent
 			// (unwindForReimport leaves "not applied yet" to the future queue),
@@ -1252,7 +1295,14 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 				if speculative {
 					return fmt.Errorf("speculative build: consensus parent %x not applied yet", parentHash[:8])
 				}
-				if _, ierr := bc.InsertChainAuthorized([]block.IBlock{pblk}); ierr != nil {
+				wd.SetStep("insertChainAuthorized")
+				tInsert2 := time.Now()
+				_, ierr := bc.InsertChainAuthorized([]block.IBlock{pblk})
+				if pf != nil {
+					pf.insertParent += time.Since(tInsert2)
+					pf.lockWait += bc.TakeBuildStallLockWait()
+				}
+				if ierr != nil {
 					return fmt.Errorf("import consensus parent %x before building: %w", parentHash[:8], ierr)
 				}
 				if !bc.AppliedHeadIsExactly(parentHash, pblk.Number64().Uint64()) {
@@ -1262,10 +1312,18 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 		}
 	}
 
+	wd.SetStep("prepareWork")
+	tPrepareWork := time.Now()
 	current, err := w.prepareWork(&generateParams{timestamp: uint64(timestamp), coinbase: coinbase, parentHash: parentHash})
+	if pf != nil {
+		pf.headerPrepare = time.Since(tPrepareWork)
+	}
 	if err != nil {
 		log.Error("cannot prepare work", "err", err)
 		return err
+	}
+	if n := current.header.Number; n != nil {
+		wd.SetBlockNumber(n.Uint64())
 	}
 
 	// Block-production pacing (skipped for speculative builds, which run early
@@ -1278,7 +1336,12 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	}
 
 	tAlign := time.Since(start)
+	wd.SetStep("roTxBegin")
+	tRoTx := time.Now()
 	tx, err := w.chain.DB().BeginRo(w.ctx)
+	if pf != nil {
+		pf.roTxBegin = time.Since(tRoTx)
+	}
 	if err != nil {
 		log.Error("work.commitWork failed", err)
 		return err
@@ -1347,7 +1410,13 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 				return fmt.Errorf("miner: deferred execution: %w", perr)
 			}
 		}
+		wd.SetStep("specTreeReload")
+		tReloadCall := time.Now()
 		rc, rcErr := bcForRoot.NewMinerRootComputer(tx, parentRoot)
+		if pf != nil {
+			pf.specTreeReload += time.Since(tReloadCall)
+			pf.rootLockWait += bcForRoot.TakeBuildStallRootLockWait()
+		}
 		if rcErr != nil {
 			// A block sealed on the fallback (live or empty) root can never
 			// become canonical; abandon the build instead of proposing it.
@@ -1376,8 +1445,13 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	// system contracts' storage writes, so with import-side root verification
 	// on, every follower rejected every locally built block (proposer/computed
 	// mismatch on the very first sealed block).
+	wd.SetStep("blockStartSyscalls")
+	tBlockStart := time.Now()
 	if err := internal.ProcessExecutionBlockStart(current.header.ParentBeaconRoot, w.chainConfig, ibs, current.header, w.engine); err != nil {
 		return fmt.Errorf("miner block-start system calls: %w", err)
+	}
+	if pf != nil {
+		pf.blockStart = time.Since(tBlockStart)
 	}
 
 	// N42 native chain (phase 6c): stamp the committed mobile-registry root into
@@ -1393,7 +1467,8 @@ func (w *worker) commitWork(interrupt *atomic.Int32, noempty bool, timestamp int
 	}
 
 	tPrep := time.Since(start)
-	err = w.fillTransactions(interrupt, current, ibs, getHeader)
+	wd.SetStep("pendingSnapshot")
+	err = w.fillTransactions(interrupt, current, ibs, getHeader, pf, wd)
 	switch {
 	case err == nil:
 		w.resubmitAdjustCh <- &intervalAdjust{inc: false}
@@ -1573,7 +1648,13 @@ func (w *worker) workLoop(recommit time.Duration) error {
 // parallelFillEnabled gates the builder's Block-STM fill (N42_MINER_PARALLEL_FILL=1).
 func parallelFillEnabled() bool { return os.Getenv("N42_MINER_PARALLEL_FILL") == "1" }
 
-func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs *state.IntraBlockState, getHeader func(hash types.Hash, number uint64) *block.Header) (retErr error) {
+// pf and wd are S11's diagnostic pre-fill timer/watchdog (both nil unless
+// N42_BUILD_STALL_DIAG=1; docs/QS_BLOCK_TIME_BUDGET.md 6by). This function
+// is where the pre-fill total completes (pending-pool snapshot + stale
+// trim) and where the parallel/serial fill decision is made, so it is also
+// where pf's summary line is logged and wd is cancelled -- the literal
+// "start of the fill" boundary.
+func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs *state.IntraBlockState, getHeader func(hash types.Hash, number uint64) *block.Header, pf *prefillTimes, wd *buildStallWatchdog) (retErr error) {
 	header := env.header
 	headerNumber, err := requireHeaderNumber(header, "mining header number unavailable")
 	if err != nil {
@@ -1664,6 +1745,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 
 	// Phase 1: Execute MEV bundles at block top (highest-paying first).
 	if w.bundlePool != nil {
+		wd.SetStep("mevBundles")
 		bundles := w.bundlePool.GetBundles(blockNumber, header.Time)
 		for _, bundle := range bundles {
 			if env.gasPool.Gas() < params.TxGas {
@@ -1727,11 +1809,14 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	}
 
 	// Phase 2: Fill remaining space with regular transactions sorted by effective tip.
+	wd.SetStep("pendingSnapshot")
 	tPending := time.Now()
 	pending := w.txsPool.Pending(false)
 	dPending := time.Since(tPending)
 	pendingRawAccts := len(pending)
 	if len(pending) == 0 {
+		pf.logIfSlow(blockNumber, dPending, 0)
+		wd.Cancel()
 		return nil
 	}
 
@@ -1747,6 +1832,7 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	// no-op entry in an append-only commitment -- a root the followers, who
 	// never touched it, cannot reproduce.
 	staleTrimmed := 0
+	wd.SetStep("staleTrim")
 	tTrim := time.Now()
 	reader := ibs.GetStateReader()
 	for addr, list := range pending {
@@ -1772,9 +1858,19 @@ func (w *worker) fillTransactions(interrupt *atomic.Int32, env *environment, ibs
 	}
 	dTrim := time.Since(tTrim)
 	if len(pending) == 0 {
+		pf.logIfSlow(blockNumber, dPending, dTrim)
+		wd.Cancel()
 		return nil
 	}
 	txSet := builder.NewTxByPriceAndNonce(pending, header.BaseFee)
+
+	// S11: this is the true "start of the fill" boundary -- everything above
+	// is pre-fill setup (align/import, RoTx open, tree reload, header
+	// prepare, pool snapshot, stale trim); everything below (parallel or
+	// serial) is the fill itself. Log the summary and disarm the watchdog
+	// here, whichever fill path runs next.
+	pf.logIfSlow(blockNumber, dPending, dTrim)
+	wd.Cancel()
 
 	// Round 35k: the builder's fill was the leader's largest single phase at
 	// 163k transactions (commit 611-683 ms, ~3.8 us/tx serial), with the
