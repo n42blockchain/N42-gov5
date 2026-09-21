@@ -5292,6 +5292,120 @@ corresponding window, which is not "B mean up, but by less" -- it is a fall.
 On the measured evidence, the round does not show a faster follower import;
 it shows a slower one.
 
+## 6bx. Round 35zzy: the halved depth target does not clear any of prediction 81's three bars (2026-09-20)
+
+35zzy ran on **n42-r84** (2026-09-20 20:58-22:07 EDT), finishing `ROUND DONE`
+with no abort. It is the 35zzx retry registered as prediction 81 (6bv):
+same 16-generator, 500-sender harness as 35zzx, `-target-depth` halved
+45000 -> 22500 so the fleet's aggregate in-flight target returns to
+360,000, matching 35zzt's proven number instead of 35zzx's doubled
+720,000. Legs: A1 21:12:54-21:25:57, B1 21:25:57-21:39:47, B2
+21:39:47-21:53:58, A2 21:53:58-22:07:20 (A legs not used to conclude
+anything, per protocol).
+
+| leg | win1 TPS / occ / blockTime | win2 TPS / occ / blockTime |
+|---|---|---|
+| B1 | 113,715 / 22.0% / 0.645s | 18,960 / 20.3% / 3.529s |
+| B2 | 113,887 / 22.8% / 0.652s | 98,210 / 19.4% / 0.645s |
+
+**B mean 86.2k.** Against the 127.6k standing best (35zzt) that is a 32.4%
+fall; against 35zzx attempt 2's 47.0k (6bu) it is an 83% rise. Halving the
+depth target bought back most of what doubling it cost, but not enough to
+clear the registered bar.
+
+**Clause 1 (every B window >=25% occupancy) -- falsified.** All four B
+windows come in below 25%: 22.0%, 20.3%, 22.8%, 19.4% (mean 21.1%, mean
+block time across the four windows 1.368s). None clears the bar, so this
+is not a marginal miss on one window -- no window in the round passes.
+B1's win2 is the sharpest instance of the "win2-collapse pattern" the
+prediction named directly: 17 blocks in the 60s window against win1's 93,
+blockTime up 5.5x (0.645s -> 3.529s) while occupancy stays roughly flat
+(22.0% -> 20.3%) -- the chain is not idle, it is stuck taking far longer
+per block.
+
+**Clause 2 (B mean > 127.6k) -- falsified.** 86.2k does not clear 127.6k
+by any margin; it is 32.4% below it.
+
+**Clause 3 (no B-leg block drops a double-digit percent of candidates to
+`nonceHigh` with `fallback:false`) -- falsified.** `parallel fill drops`
+lines bounded to the two B legs (21:25:57-21:53:58) show 20 distinct
+committed blocks with a nonzero `nonceHigh` count, summing to 63,700
+candidates dropped: 15 in B1 (21:33:48-21:34:14, a 26 s span) and 5 in B2
+(21:47:48-21:48:04, a 16 s span), both bursts sitting right at the start of
+each leg's flood ramp. Fourteen of the twenty are the same 4,490-candidate
+drop recurring on different blocks; six of those fourteen have
+`candidates == failed == 4491`, i.e. the block's local build kept none of
+its flood candidates (worst observed share 4490/4491 = 99.98%, e.g. blocks
+13659234, 13659238, 13659242, 13659290, 13659294, 13659298). Every matched
+block reads `fallback:false, lenient:true, waves:1, aborts:0` on its own
+`parallel block` line -- no wave-limit exhaustion precedes any of them, so
+the clause's own exemption does not apply and the falsification stands
+exactly as written. Node0, node1 and node2 show zero `nonceHigh` drops
+anywhere in the round; the bursts sit entirely on nodes 3-6 in their turns
+as leader.
+
+**A related, larger drop is out of the clause's scope but explains the B1
+win2 collapse.** Node5's block 13659711 (21:38:43, inside B1's win2) drops
+100,700 of 163,000 candidates -- but as `nonceLow` (stale/already-mined),
+not `nonceHigh`; `nonceHigh` on that block is 0. This is the pool
+mined-not-demoted signature the harness has recorded before (`run-r35zzy.sh`
+notes 35zzt: "300k held ~200k mined-not-demoted, so fresh candidates capped
+near 95k a block"), not generator exhaustion: B1+B2 together consumed
+20,686,300 transactions against the two legs' 72,000,000-transaction
+funded budget (~29%), nowhere near dry, and `r35zzy-mem.log` shows all
+seven nodes' anon memory jumping in lockstep from ~1.7 GB to ~9-10 GB
+between 21:33:41 and 21:34:32 -- the same synchronized-inrush signature
+6bv described for 35zzx, smaller in magnitude and duration here but not
+eliminated by halving the depth target alone.
+
+**Acceptance checks.** No `BAD BLOCK` and no root-mismatch/divergence
+message anywhere in any of the seven nodes' full-round logs
+(20:58:34-22:07:20). Three `miner: suppressing divergent same-height
+sibling` lines fall inside the B legs (node2 21:34:32, node5 21:38:43, both
+coincident with the drop bursts above) -- the ordinary benign leader-race
+path, not a root divergence, consistent with every prior round on this
+lineage. No `MODE-FAILED` and no watchdog trip in the round log, runner
+log or mem log. Timeout certificates (`TC formed locally`, HotStuff's
+view-timeout signal) fire 8 times inside the two B legs (21:26:58,
+21:34:32, 21:34:44, 21:37:57, 21:38:09, 21:38:33, 21:40:56, 21:53:23) of 13
+across the whole round, clustered in the same two ramp windows as the
+`nonceHigh`/`nonceLow` bursts; one `f+1 future timeouts observed;
+advancing weak synchronizer` line appears once, in A2 (21:55:19), outside
+the B legs. Generator exhaustion: no evidence either way from direct
+generator output -- this round's per-flood stdout was not retained under
+the one-current-plus-one-rotated-generation log policy -- but the
+consumed-vs-funded ratio above and the memory-inrush timing both point away
+from a dry generator and toward the funding-gate synchronization 6bv
+already named.
+
+**Mandatory phase baseline for n42-r84 (per the 6bw ruling).**
+`import_breakdown.py` over both B legs (21:25-21:54, txs>=160,000) gives
+the number 6bw could not recover for this exact binary:
+
+    follower import (full blocks) n=1020
+      body 9 ms (p90 15), proc 529 ms (p90 678), write 215 ms (p90 276), total 762 ms (p90 924)
+      proc breakdown (joined to the same block's own `parallel block` line):
+        recoverMs 21 (p90 26), execMs 260 (p90 375), applyMs 28 (p90 42),
+        finalizeMs 149 (p90 193), validateMs 22 (p90 36)
+
+This is n42-r84 without the base-read cache, on the same eight-... no,
+sixteen-generator/22500-depth shape as this round -- not directly
+comparable to 6bw's r85-with-cache number (proc 988 ms) because the
+generator shape differs (16x500 here vs 6bw's 8x1000), but it is now on
+record so a same-shape r84-vs-r85 comparison no longer needs a fresh round
+just to establish the "before" side.
+
+**Prediction 81 falsified on all three clauses.** Halving `-target-depth`
+recovered most of the B mean 35zzx attempt 2 lost (47.0k -> 86.2k, +83%)
+and did shrink the `nonceHigh`/memory-inrush signature relative to 35zzx's
+183,282-candidate, 23-block collapse (63,700 candidates, 20 blocks here),
+but it did not remove the synchronized funding-gate inrush 6bv identified
+as the actual mechanism, and none of the three registered bars -- 25%
+occupancy floor, 127.6k B mean, single-digit `nonceHigh` shares -- is
+cleared. The depth target was one lever on a problem with (at least) two
+causes; the serialized per-generator funding gate is the other, and it is
+still untouched.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
