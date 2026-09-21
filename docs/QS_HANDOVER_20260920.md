@@ -627,3 +627,73 @@ waits (e.g. an MDBX writer-lock wait) invisible to the mutex/block
 profiles. `bash -n` clean on both.
 
 Prediction 85 is registered in 6cl. Launch is the commander's next call.
+
+## S18 prepared -- n42-r90 built, journal-write timing stamp ready; the env-separation switch is NOT built (safety conflict), not launched (2026-09-21)
+
+Why: 6cm narrowed Round2's unmeasured 94% to the leader's own
+`PrepareQCFormed -> emit()` gap (`voting.go:208-231`), which contains
+`journalCommitVote`'s MDBX write against the same `db` handle the
+leader's own concurrent block write uses. S18 asked for two things: a
+`jpvMs`/`jcvMs`/`jcvAt` timing stamp on the journal calls, and an env
+switch to move the HotStuff safety journal into its own MDBX
+environment so an A/B round could test whether removing the writer
+contention helps. See `docs/QS_BLOCK_TIME_BUDGET.md` section 6cn for
+the full writeup and prediction 86.
+
+**Only the timing stamp is built.** The env-separation switch is not,
+because `SaveConsensusState` is written by two paths sharing one
+monotonic, equivocation-preventing record -- `JournalVote`
+(`service.go:1308`, standalone, the one the task describes) and
+`newStateHook().run` (`service.go:1348`), which is ALSO the `inTx` hook
+folded atomically into `CommitToCanonicalWith` on every committed
+block (`service.go:689`) by design (`blockchain.go:1355-1367`'s own
+doc comment: closes a crash window between canonical head and
+consensus state). The task's own rule says not to split a journal
+write that shares a transaction with chain data. Splitting only the
+first path into a second environment while the second stays in the
+chain DB gives `mergeMonotonic` (`persistence.go:137`) two
+independently-advancing copies of the same record with no
+reconciliation -- `LoadConsensusState` at restart would read a stale
+vote commitment from whichever environment it picks, reopening the
+exact double-vote window the journal exists to close
+(`persistence.go:68-75`'s own doc comment names this failure mode).
+This is a confirmed correctness conflict, not a judgment call --
+exactly the condition the task named as a stop-and-report case. No env
+var, no migration, no `hotstuff-reset`/`qs-hsreset` changes.
+
+**n42-r90: built.** `/data/blockchain/gov5-work/n42-r90`, 108,737,984
+bytes, sha256
+`193bd320478acc9b0588605009e0eb93387eb9e9716ccb520aa8d30b422d6759`.
+Same file-checkout recipe as n42-r86/87/88/89 (commit `e1d8d7d1`): both
+touched files (`engine.go`, `view_timing.go`) were byte-identical to
+n42-r89's own version before this change (`git diff 9f307e90
+e1d8d7d1^` empty for both), checked out directly, no hunk surgery;
+`journal_timing_test.go` is new. `internal/parallel/base_cache.go`
+confirmed absent; `grep -rl BaseCache`: empty. `go vet` clean on
+`internal/...`; `go test` passes on `internal/consensus/hotstuff/...`
+(both `N42_CONTENTION_DIAG` placements, and under `-race`),
+`internal/miner/...`, `internal/`, `internal/parallel/...`. `strings
+n42-r90 | grep -c BaseCache` = 0; the four prior markers ("build
+stalled before fill", "contention profiling enabled", "block gossip
+fallback disabled", "rotor failed -> gossip") each = 1; the three new
+markers (`jpvMs`, `jcvMs`, `jcvAt`) each = 1.
+
+**Field glossary addition** (behind the existing
+`N42_CONTENTION_DIAG=1`, silent otherwise):
+- `jpvMs` -- this node's own `journalPrepareVote` MDBX-write duration this view (summed, in the rare case it fires more than once)
+- `jcvMs` -- same, `journalCommitVote`. On the leader this is the self-commit-vote journal write inside `tryFormPrepareQC` (`voting.go:229`) -- the one call in L0.
+- `jcvAt` -- absolute start time (unix ms) of the `journalCommitVote` call, for cross-node/cross-round joins
+
+**Runner: `run-r35zzzd.sh`/`chain-35zzzd.sh`, built from the 35zzzc
+pair, not launched.** NOT an A/B script -- with no second variable,
+every leg runs ONE configuration, identical to 35zzzc plus the new
+stamp. Header comments in both rewritten by hand to say this plainly.
+`chain-35zzzd.sh`'s predecessor wait fixed by hand to `r35zzzc.log`
+(the `sed` pass alone would have left it waiting on `r35zzzb.log`,
+35zzzc's predecessor, not 35zzzd's); binary references updated by hand
+to `n42-r90`. ALL other env unchanged from 35zzzc, including
+`N42_BLOCK_GOSSIP_FALLBACK=0` and the S17 goroutine-dump capture.
+`bash -n` clean on both; confirmed not running.
+
+Prediction 86 (revised, see 6cn for the exact bar and caveat) is
+registered. Launch is the commander's next call.
