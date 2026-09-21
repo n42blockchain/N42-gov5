@@ -11257,6 +11257,16 @@ build/import composition or page-cache thrash -- Job 3 reproduces the
 same shape a second time, at somewhat smaller magnitude on B1, both
 inside the established noise band.
 
+**Addendum (S23b, 2026-09-21).** The block named in Job 1 above (hash
+`f47f65…13d8ac`, view 8785, would-be height 13661138) was traced in
+full: it was a genuine SIBLING of the already-written `7a6d85…23259c`
+at the SAME height, both children of block 13661137, produced by node5
+across its own 4-view tenure under sub-second view churn -- see
+`docs/OPEN_ISSUES.md`, "A quorum-committed block that no node stored,"
+for the complete evidence trail and classification (**B: reachable on
+r92 too, not specific to S23's relaxed pre-check** -- retiring
+`N42_LEADER_WRITE_ASYNC` does not close this hazard).
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
