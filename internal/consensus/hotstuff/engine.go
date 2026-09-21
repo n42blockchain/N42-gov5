@@ -271,7 +271,19 @@ func (e *ConsensusEngine) journalPrepareVote(view ViewNumber, hash types.Hash) e
 	}
 	st := e.snapshotState()
 	st.LastVotedView, st.LastVotedHash = view, hash
-	if err := e.voteJournal.JournalVote(st); err != nil {
+	// S18 (docs/QS_BLOCK_TIME_BUDGET.md 6cm): time the journal write itself,
+	// diagnostic only -- no change to what is written, when, or under which
+	// lock. Aggregated (summed) per view as jpvMs.
+	var tJournal time.Time
+	if contentionDiagEnabled {
+		tJournal = time.Now()
+	}
+	err := e.voteJournal.JournalVote(st)
+	if contentionDiagEnabled {
+		e.viewTiming.Contention.journalPrepareVoteMs += time.Since(tJournal)
+		e.viewTiming.Contention.journalPrepareVoteOK = true
+	}
+	if err != nil {
 		log.Error("hotstuff: ABSTAINING — could not journal prepare vote before sending",
 			"view", view, "blockHash", hash, "err", err)
 		return err
@@ -289,7 +301,23 @@ func (e *ConsensusEngine) journalCommitVote(view ViewNumber, hash types.Hash) er
 	}
 	st := e.snapshotState()
 	st.LastCommitVotedView, st.LastCommitVotedHash = view, hash
-	if err := e.voteJournal.JournalVote(st); err != nil {
+	// S18: same as journalPrepareVote above; jcvAt is the absolute start
+	// time (unix ms) of this call -- on the leader this IS the self-
+	// commit-vote journal write inside tryFormPrepareQC (voting.go), the
+	// one call in the unstamped PrepareQCFormed->emit() gap (L0, 6cm) that
+	// can block on the MDBX writer.
+	var tJournal time.Time
+	if contentionDiagEnabled {
+		tJournal = time.Now()
+	}
+	err := e.voteJournal.JournalVote(st)
+	if contentionDiagEnabled {
+		d := time.Since(tJournal)
+		e.viewTiming.Contention.journalCommitVoteMs += d
+		e.viewTiming.Contention.journalCommitVoteAtMs = tJournal.UnixMilli()
+		e.viewTiming.Contention.journalCommitVoteOK = true
+	}
+	if err != nil {
 		log.Error("hotstuff: ABSTAINING — could not journal commit vote before sending",
 			"view", view, "blockHash", hash, "err", err)
 		return err
