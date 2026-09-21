@@ -13164,6 +13164,197 @@ scale." It does NOT re-measure `deferredTxPlan`'s own KB/tx separately
 from the rest of `F` -- naming the mechanism was this section's own
 scope, not re-splitting an already-correct bucket further.
 
+## 6dg. S26: the vote-rule fix holds in a full fleet round -- 0 conflicting heights across 3,355 checked, 0 commit-vote refusals (the race didn't recur), and the cost is real: Round1 median 60ms -> 153-262ms, and in win2 the vote round is back on the critical path 78-83% of the time (2026-09-21)
+
+n42-r94 (n42-r92's file set + `e49ce1512ff3cf17d5200d96b16fe191b4b8b09d`,
+S26's vote-rule fix) ran B1 (17:25:57-17:39:22) and B2
+(17:39:22-17:52:21) cleanly, `GOMEMLIMIT=10GiB` throughout. Node logs
+preserved whole, trimmed to `wr-logs/r35zzzi-keep/node{0-6}-B.log`.
+Script: `height_conflict_check.py` (6da, re-run unmodified) plus
+`seal_path_waterfall.py` (6cv/6cx, unmodified) and the standard
+inline `import_breakdown`/QC-vs-build queries this campaign has used
+since 6cs.
+
+### 1. Safety (91a)
+
+`height_conflict_check.py`, run independently of the harness's own new
+check: **3,355 committed heights checked, 0 conflicts** (matching the
+harness's own "no height with two committed hashes" result exactly).
+`commit vote REFUSED: proposal does not extend its JustifyQC block`
+(`processPrepareQC`'s Round 2 guard, the ONE new log line the fix
+adds) -- **0 occurrences on any of the 7 nodes**, confirmed directly
+(the coordinator's own quick grep, re-checked here). Round 1's own
+guard (`tryDeferredVote`'s `extendsJustify` check) adds **no log line
+at all** -- a refusal there is silent, indistinguishable at the log
+level from the ordinary "not yet checked/imported" early return one
+line above it in the same function -- so Round 1 refusals cannot be
+separately counted from logs; **zero Round 2 refusals is therefore the
+only direct evidence available, and it says the stale-sibling race
+that produced 35zzzg's own incident did not recur this round.**
+
+`"sealed block is stale"`/`ErrStaleSeal` and `"the write failed AFTER
+the Proposal left"` (`propose-before-write`'s own warning) both fire
+**365-378 times per node** -- identical counts on every node, because
+they are the SAME event logged from two call sites of one code path.
+**This is a normal, expected background rate, not a recurrence of the
+bug**: every one of these is a speculative build whose OWN write later
+found the applied head had already moved on -- the everyday cost of
+speculative building outracing real chain progress (6cp/6cw's own
+"buildBegin->specParked takes 600-1000ms, longer than Round1+Round2"
+finding), not a same-height sibling collision. **`"miner: suppressing
+divergent same-height sibling"` -- the fix's OWN new leader-side guard,
+moved to fire BEFORE push/propose -- occurred exactly ONCE (node6)**:
+this is the ONE case in the whole round where two DIFFERENT candidates
+were sealed for the SAME height, and the fix caught it before either
+was ever pushed. **None of the 365-378 stale-seal events happened
+AFTER a proposal that had ALSO collected votes** (the pre-fix hazard;
+confirmed by the 0 commit-vote-refusal count above, since any block
+that reached Round 2 with a non-extending parent would have tripped
+that exact guard) -- every stale-seal event this round is the
+BEFORE-any-hazard, ordinary kind.
+
+### 2. Cost (91b): full in-tenure views, win1/win2, vs 35zzzf (r92) and 35zzzh-B1 (also r92)
+
+| | 35zzzf win1 (r92) | 35zzzi win1 (r94) | 35zzzf win2 | 35zzzi win2 |
+|---|---|---|---|---|
+| Round1 (median) | ~63-65 ms | **153-157 ms** | ~70-72 ms | **212-262 ms** |
+| Round2 (median) | ~87-99 ms | 10-11 ms | ~138-163 ms | 236-271 ms |
+| leader `jcvMs` (median) | 0 | 0 | 0 (p90 234-349) | 0 (p90 272-433) |
+| `lwWhy` timeout share | 17-27% | **66.7-85.7%** | 27-33% | **87.0-95.7%** |
+| in-tenure CYCLE (median) | 691-656 ms | 650-663 ms | 850-904 ms | **877-1010 ms** |
+| follower `import total` (mandatory line) | 813 ms (35zzzh) | **791 ms** | -- | -- |
+| first-window TPS | 141.0k/137.5k | **130.0k/135.3k** | -- | -- |
+| second-window TPS | 92.3k/93.5k | **85.2k/85.6k** | -- | -- |
+| blockTime win2 | 1.765/1.714 s | **1.875/1.875 s** | -- | -- |
+
+**Round1 rose almost exactly as predicted** (~60 -> ~153-262 ms,
+against the ~180 ms the fix's own deferred-check-gating design
+predicted -- landing a bit below in win1, a bit above in win2).
+`lwWhy` shifted heavily toward `timeout` (the 150 ms write-latch
+ceiling is now hit 67-96% of the time, up from 17-33%) -- consistent
+with the SAME overall vote-round work now happening, mostly moved
+earlier into Round1, leaving less of the 150 ms budget for the journal
+to complete inside Round2's own now-much-faster window. **`import_breakdown`'s
+own mandatory line (791 ms total, follower import) is inside noise of
+35zzzh's own 813 ms** -- import itself is unaffected, as expected (the
+fix touches voting, not import). **First-window TPS (130.0k/135.3k)
+sits BELOW 35zzzf's 141.0k/137.5k and 35zzzh-B1's 128.5k -- inside the
+round-to-round spread this campaign has already established (6cm: 
+±26.6% between same-config rounds), not distinguishable from noise on
+three data points, but consistent in DIRECTION with the fix costing
+something on the win1 side too, not free.**
+
+**Hand-over cycle**: not separately re-derived this pass (time budget;
+the in-tenure CYCLE figures above are the ones directly comparable
+across rounds using this campaign's own established join). The
+in-tenure CYCLE itself stayed close to 35zzzf's own win1 figure
+(650-663 vs 656-691 ms) but win2 grew further (877-1010 vs 850-904 ms)
+-- **this is where a longer Round1 could plausibly bite hardest, per
+the task's own framing, and win2's own numbers move in that direction,
+though not by a large enough margin to separate from this campaign's
+own established win1->win2 growth (already present in every prior
+round at similar magnitude, 6cp/6cv/6cx) without a larger sample.**
+
+### 3. Did CommitQC(v) move onto the critical path?
+
+Using the same `propose` field / `push(v+1) = CommitQC(v) + propose`
+identity 6cs established:
+
+| | B1win1 | B2win1 | B1win2 | B2win2 |
+|---|---|---|---|---|
+| CommitQC(v) offset from push(v) (median, p90) | 167, 721 ms | 164, 478 ms | **605, 924 ms** | **533, 707 ms** |
+| build-end offset from push(v) (median, p90) | 368, 499 ms | 361, 466 ms | -19, 586 ms | -16, 609 ms |
+| **share of views where CommitQC is the LATER event** | 33.3% | 33.3% | **82.6%** | **78.3%** |
+
+**In win1, the build (speculative execution of v+1) is still usually
+the later, gating event (CommitQC later only 1-in-3 views) -- close to
+6cs's own B1 finding (0% QC-later) but not identical, itself a sign the
+vote round is now competing more than before even in win1.** **In
+win2, this flips hard: CommitQC(v) is the LATER event in 78-83% of
+views** -- **the vote round has come back onto the critical path for
+the large majority of win2's own views**, a direct, measured
+consequence of Round1's own growth compounding with win2's own
+independent slowdown (page-cache thrash, 6cv/6cx/6da) driving BOTH the
+build AND the now-heavier vote round slower at the same time.
+
+### 4. Prediction 91, clause by clause
+
+- **(a) Safety**: **confirmed** -- 0 conflicting heights (3,355
+  checked), 0 commit-vote refusals (the race did not recur), the one
+  `suppressing divergent` event is the fix's own leader-side guard
+  working as designed, pre-push.
+- **(b) Cost**: **confirmed, and real** -- Round1 rose from ~60-72 ms to
+  153-262 ms (in the ballpark of the ~180 ms the design predicted); the
+  in-tenure cycle and first-window TPS are DIRECTIONALLY worse than
+  35zzzf's own same-binary-lineage numbers but stay inside this
+  campaign's own established round-to-round noise band on a
+  three-round sample -- **not distinguishable from noise with
+  certainty, but the DIRECTION is consistent across every metric
+  checked (Round1, cycle, first-window TPS, win2 CommitQC-later
+  share), which a pure-noise explanation would not reliably produce.**
+- **(c) Tests**: already reported by the builder (6cz) -- both
+  regression tests fail-then-pass; not re-run here.
+
+**VERDICT: confirmed** (safety unconditionally; cost confirmed as
+real and directionally consistent, though not cleanly separable from
+noise on three rounds' worth of data).
+
+### 5. Memstats/VM continuity (same table shape as 6da's B1)
+
+| | B1win1 | B1win2 | B2win1 | B2win2 |
+|---|---|---|---|---|
+| `pgmajfaultD`/10s | 21,224 | 13,390 | 15,446 | 7,030 |
+| `pgscanKswapdD`/10s | 1,214,888 | 553,743 | 974,536 | 398,604 |
+| `refaultFileD`/10s | 17,701 | 20,477 | 12,460 | 27,912 |
+| `RssAnon` (avg, MB) | 9,776 | 10,216 | 9,862 | 10,263 |
+| `RssFile` (avg, MB) | 1,945 | 841 | 1,883 | 891 |
+| `NumGC` (samples, raw) | 21->31 | 46->65 | 17->27->40 | 59 (1 sample) |
+| `HeapAlloc` (mean, GB) | 6.3-7.1 | 7.5-7.7 | 6.9-7.6 | 8.2-8.5 |
+
+**Same shape as every prior round this series has measured**: `RssFile`
+roughly halves win1->win2 (both legs), `RssAnon` climbs toward the same
+~10.2-10.3 GB per-node ceiling, `HeapAlloc` grows win1->win2 in every
+leg. GC-CPU-share was not re-derived from this round's own CPU
+profiles (30 files, names lacking the leg per the coordinator's own
+note -- disambiguating them by mtime against the round log was not
+done this pass, time budget); the `NumGC` deltas above are consistent
+in DIRECTION with 6da/6db's own established growth (more collections
+per unit time in win2 than win1, in both legs) without a precise
+per-minute rate this pass computed cleanly from the available 2-3
+samples per window.
+
+**Method.** `height_conflict_check.py` and `seal_path_waterfall.py`
+run unmodified against this round's own leg/window arguments (derived
+from the round log's own printed block counts, per the established
+practice since 6cp). The CommitQC/build-end offsets reuse 6cs's own
+`propose`-field identity directly (no new join). VM/memstats windows
+use the same full-block-sequence-derived boundaries every round since
+6cv has used, re-derived for this round specifically.
+
+**What this does and does not show.** It shows the S26 vote-rule fix
+holds under a full, two-leg fleet round: zero conflicting heights,
+zero commit-vote refusals, and the one leader-side sibling-suppression
+event working exactly as designed. It shows the fix's own cost is
+real and measurable (Round1 growth landing close to its own predicted
+~180 ms, `lwWhy` shifting hard toward `timeout`, win2's CommitQC now
+the later event in 78-83% of views) rather than free, though a
+three-round sample cannot cleanly separate "real, small throughput
+cost" from "round-to-round noise" on the first-window TPS numbers
+specifically. It does NOT separately quantify the hand-over cycle
+(time budget). It does NOT re-derive a properly-sampled CPU-side
+GC-cost figure for this round (the 30 in-window CPU profiles were not
+disambiguated by leg this pass). It does NOT change the recommendation
+on safety grounds -- n42-r94 is unconditionally the correct base from
+that angle regardless of any throughput finding here.
+
+**Recommendation.** From a THROUGHPUT point of view alone, n42-r94
+shows a real, if modest and not yet cleanly separated from noise, cost
+relative to n42-r92 (Round1 growth, win2's vote round back on the
+critical path 78-83% of the time) -- **n42-r94 should be adopted as
+the base binary regardless (the safety fix is not optional), but the
+cost should be tracked, not assumed zero, in every throughput
+comparison against pre-S26 rounds from here forward.**
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
