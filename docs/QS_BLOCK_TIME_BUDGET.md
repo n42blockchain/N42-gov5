@@ -11005,6 +11005,258 @@ included -- while still landing every major cost bucket (parallel
 execution, state-root, MDBX write) precisely enough to rank and
 attribute them.
 
+## 6cx. S23: N42_LEADER_WRITE_ASYNC is NEUTRAL as predicted (cycle 651.5 -> 656.0 ms), but B2's ONLY committed block at the leg's last two views was never written anywhere -- a pre-existing propose-before-write/sibling-race exposed by view churn at leg-teardown, not a shutdown-drain bug (2026-09-21)
+
+n42-r93 (r92 + `N42_LEADER_WRITE_ASYNC`, A/B by leg: B1=0, B2=1;
+`N42_LEADER_WRITE_AFTER_JOURNAL=1` and the gossip-fallback switch on
+throughout) ran B1 (14:39:37-14:52:56) and B2 (14:52:56-15:06:07)
+cleanly, then **leg A2 never produced a single block** and the harness
+correctly refused to score it. Node logs preserved whole, trimmed to
+`wr-logs/r35zzzg-keep/node{0-6}-B.log` (14:39:00-15:24:11, covering
+B1/B2/A2 and both restarts). Script (Job 2 reuses `seal_path_
+waterfall.py` unmodified, args only); Job 1/3 are inline `python3`
+one-shot scripts, single-threaded per the box-sharing note (35zzzg was
+still using the box while this analysis ran).
+
+### JOB 1: why A2 never produced -- traced to a specific, named event
+
+**0. Heads did NOT diverge at restart.** Every one of the 7 nodes'
+`txindex tail enabled` startup line at A2's own boot (15:06:22-27)
+reports the identical `"head":13661138` -- ruling out a split-brain
+head as the cause before looking further.
+
+**1. The actual failure, found by direct log correlation, not
+inference.** At 15:05:56-57, still INSIDE B2 (11-16 s before ANY
+SIGTERM was sent), node5 -- leader of view 8785 -- logged, in this
+exact order:
+
+```
+15:05:56  hotstuff: sealed block dropped — phase left WaitingForProposal   {block: 0x99e7eeba5f, phase: 1, view: 8785}
+15:05:56  propose-before-write: the write failed AFTER the Proposal left  {err: "sealed block 13661138 parent 5f35affe70bce8ac is
+                                                                              no longer the applied head (13661138/7a6d850bacab3b27):
+                                                                              sealed block is stale (applied head moved past its parent)",
+                                                                            hash: 0xf47f6514cc}
+15:05:57  hotstuff: committed block not executed locally           {failures: 1, hash: f47f65…13d8ac, number: 0}
+15:05:57  hotstuff: committed block not executed locally           {failures: 2, hash: f47f65…13d8ac, number: 0}
+15:06:03  view timed out                                           {view: 8786}
+15:06:03  hotstuff: committed block not executed locally           {failures: 3, hash: f47f65…13d8ac, number: 0}
+15:06:03  hotstuff: refusing block production on unexecuted committed parent {failures: 3, hash: f47f65…13d8ac, number: 0}
+```
+
+**Reading this in order: two candidate blocks were sealed for the same
+view (8785) in a burst of ultra-fast, near-empty-block view churn
+right at B2's own teardown** (views 8784/8785/8786 all land within
+about 7 seconds, per `"hotstuff: view changed"` `tMs` -- `1790017555516
+-> 1790017556732 -> 1790017557043`, i.e. 1.2 s then 0.3 s between
+them, versus the ~650-900 ms full-block cycle measured throughout this
+whole campaign; blocks this late in a leg are emptying out as the
+generators drain (6cv's own occupancy figures already show win2 fading
+toward the leg boundary), so views advance far faster than a full
+block's own cycle). `0x99e7eeba5f` was correctly dropped as the
+divergent sibling (the existing "first sealed block wins"
+suppression, `worker.go:611-622`). The KEPT candidate, hash
+`f47f65…13d8ac` (`0xf47f6514cc` truncated the other way in the second
+line), went on to collect a **complete quorum -- 5/5 votes -- and form
+a CommitQC for view 8785** (node5's own `"hotstuff view timing:
+view=8785 role=leader ... votes=5/5"` line, 15:05:57) -- **but its OWN
+proposer's write of it FAILED** (`ErrStaleSeal`, `"sealed block is
+stale (applied head moved past its parent)"`) because BY THE TIME the
+write ran, node5's own locally-applied head had already advanced past
+this block's parent (some other locally-processed activity, in the
+same view-churn burst, moved the applied head first). Because
+`N42_PUSH_BEFORE_WRITE`/`N42_PROPOSE_BEFORE_WRITE` send the raw block
+data and the Proposal BEFORE the write runs (by design -- 6cq/6cs), the
+Proposal and the votes it collected are entirely decoupled from
+whether the write ever succeeds; the code comment for this exact
+tradeoff (`internal/miner/push_order.go:36-40`) says plainly: **"the
+only new exposure is that followers may have imported a block the
+leader then abandons"** -- this round is a direct, measured instance
+of exactly that exposure, except here the block was not merely
+imported by followers but fully QC'd, and STILL never durably written
+anywhere. Every one of the other 6 nodes shows the identical symptom
+(`"hotstuff: persisted committed QC names a block this node does not
+have"`, same hash, same `localHead: 13661138`, all at 15:07:2x-3x on
+restart) -- **this is a fleet-wide, unrecoverable loss of ONE
+committed block, discovered live at 15:05:56-57 and never resolved
+before A2's decay window ran out and timed out with zero production.**
+
+**2. This is NOT a shutdown/Drain bug.** The failure (`"committed
+block not executed locally"`, `failures: 1`) is first logged at
+15:05:56-57, **11-16 seconds before the SIGTERM sequence even begins**
+(`"drained: head 0xd073d2 settled after 24 s"` then `node 0: SIGTERM`
+in the round log, after `win2` closes). `Miner.Close()`'s `Drain`
+(`internal/miner/miner.go:169-176`, `internal/miner/async_write.go:
+221`) never had a chance to matter: there was nothing queued to drain
+by the time shutdown began -- the write had already been attempted,
+had already failed, and the node was already retrying
+`fetch-on-miss` for a block that no peer anywhere possessed. No
+`"miner: leader write queue did not drain within 30s on shutdown"`
+error appears in any of the 7 kept logs, and `wqDepth`/`wqWaitMs`
+(Job 2) read 0 at every window's median in both legs -- **the async
+write queue was never backed up; this was never a queueing problem.**
+
+**3. Attribution to the switch: plausible but not proven.** The
+REJECTION mechanism itself (`ErrStaleSeal`/sibling-suppression/
+propose-before-write's own documented exposure) is pre-existing code,
+unrelated to `N42_LEADER_WRITE_ASYNC`. What is specific to this round
+is the TIMING that exposed it: two candidates sealed for the same view
+within the fastest view-churn window this whole campaign has measured
+(sub-second, versus the usual 650-900 ms). Whether `N42_LEADER_WRITE_
+ASYNC=1` (shortening the leader's own critical path, per S23's own
+design intent) made this faster churn -- and hence the race window --
+MORE likely is a reasonable hypothesis this task's own evidence cannot
+settle: A2's failure happened at the very end of a B2 leg that ran
+async ON, but the fast-churn burst itself involves node5's own
+locally-applied-head bookkeeping racing against its OWN write, a
+mechanism this section's log evidence does not fully unwind to a
+single line. **Reported as found: plausible contributing factor, not
+a proven cause.**
+
+**4. Never seen before this round.** `grep -l "chain is not
+producing" wr-logs/r35zz*.log` returns **only `r35zzzg.log`** -- no
+earlier round (including every prior A2 leg, all of which ran with
+`N42_LEADER_WRITE_ASYNC` unset/0) ever hit this failure mode. Combined
+with (3), this is circumstantial but real: **the box has run this
+exact leg-boundary transition dozens of times before without
+incident; the one round it failed is the one round that also
+introduced the new switch**, even though the failure mechanism itself
+predates the switch.
+
+**Root cause, stated plainly.** A validly-quorum-committed block
+(CommitQC, 5/5 votes, view 8785) was never durably written by ANY of
+the 7 nodes, because the push-before-write/propose-before-write
+design lets a Proposal (and the votes/QC it collects) proceed
+independently of whether its own write later succeeds, and this
+round's leg-teardown view churn was fast enough to trigger the
+write's own pre-existing stale-seal rejection on the very block that
+went on to collect quorum. The next leg (A2) inherited a
+committed-but-unwritable parent and could never produce past it. This
+is a genuine, previously-undocumented liveness/durability gap in the
+propose-before-write design -- not a new bug S23 introduced, but one
+S23's round was the first to actually trigger.
+
+### JOB 2: the A/B, full in-tenure views
+
+| | B1win1 (async=0) | B2win1 (async=1) | B1win2 | B2win2 |
+|---|---|---|---|---|
+| CYCLE (median) | 651.5 (565-765) | 656.0 (596-781) | 856.5 (761-1244) | 904.5 (772-1117) |
+| `resQWaitMs` | 0 (all) | 0 (all) | 0 | 0 |
+| `wqWaitMs`/`wqDepth` | 0/0 (fields inert, async off) | 0/0 | 0/0 | 0/0 |
+| `lwWaitMs`/`lwWhy` | journal 54.2%/timeout 45.8% | journal 82.6%/timeout 17.4% | journal 88.5%/timeout 11.5% | journal 73.3%/timeout 26.7% |
+| leader `jcvMs` (median) | 0 (p90 12) | 0 (p90 0) | 0 (p90 4) | 0 (p90 349) |
+| leader `jpvMs` (median) | 0 | 0 | 0 (p90 4) | 0 (p90 2) |
+| `r1`/`r2` (median) | 62/79.5 | 63/87.0 | 81.5/123.0 | 70.5/163.0 |
+| `resultRecv(v+1)-writeEnd(v)` | 233 (0% within 10ms) | 217 (0% within 10ms) | 283 | 294 |
+| named-step constant (item c, 6cw's method) | 124.0 ms | 119.0 ms | -- | -- |
+
+**(a) Prediction 89, clause by clause.** *"S23's switch is neutral
+by construction (nothing on the resultLoop-bound critical path
+changes)"* -- **confirmed**: `resQWaitMs` is 0 in every window, both
+legs (as 6cv already found for a different round), and `wqDepth`/
+`wqWaitMs` (the new async-queue diagnostics) read 0 at every
+percentile checked -- the async writer was NEVER backed up, so it
+never had anything to contend for. **(b)** wqDepth/wqWaitMs both 0/0
+in both legs; cycle 651.5 -> 656.0 ms (win1, +0.7%) and 856.5 -> 904.5
+ms (win2, +5.6%) -- both DIRECTIONALLY flat-to-slightly-worse, well
+inside this campaign's own established round-to-round noise band
+(6cm: ±26.6% between same-config rounds). **Prediction 89(a) --
+"NEUTRAL" -- confirmed on win1; win2's own +5.6% is not distinguishable
+from noise on this sample.** **(c)** leader `jcvMs` stays at the
+median-0 ms floor in BOTH legs (S19's fix holds a THIRD round running);
+`jpvMs` likewise; no evidence the leader/follower write overlap S23
+introduces brings journal contention back -- the journal and the
+(now-async) write remain uncontended at the median regardless of the
+switch. Stale-seal drops: **1 observed this round, and it is the
+fatal one from Job 1** -- `"sealed block is stale before its write;
+dropping"` and `"propose-before-write: the write failed AFTER the
+Proposal left"` both fire 0 times elsewhere in the B1/B2 windows
+(grepped directly), so this was not a recurring background rate, it
+was a single, leg-teardown event. `CommitToCanonical` waits/
+`"committed block not executed locally"` are otherwise absent from
+B1/B2 proper (all occurrences are inside the A2 failure window,
+already covered in Job 1). **(d)** occupancy/TPS: B1win1 139.2k @
+1.154s, B2win1 136.5k @1.176s (comparable); B1win2 90.3k @1.714s,
+B2win2 100.6k @1.463s -- see the WIN2 comparison below. **(e)** BAD
+BLOCK 0, divergence 0 (both legs); TC/timeout events B1 2/3, B2 4/7
+(B2's own higher count includes the fatal view-churn burst, still a
+small absolute number); every OTHER proposed-and-committed own block
+in B1/B2 has its own successful write line (checked by the same
+`import_breakdown`-style presence check earlier sections use) -- **the
+ONE exception, fleet-wide, is Job 1's own block**, already covered,
+not a second instance.
+
+**WIN2: is B2's 100.6k vs B1's 90.3k a mechanism, or noise?** Compared
+against the last two rounds' own B1/B2 win2 pairs -- **35zzzf: 92.3k /
+93.5k, 35zzze: 95.1k / 93.7k, this round: 90.3k / 100.6k** -- the
+spread across all three rounds' six win2 numbers is 90.3k-100.6k, a
+10.2% band with NO consistent B1-vs-B2 direction (35zzzf and 35zzze
+both had B2 slightly ABOVE B1; this round has B2 further above B1 by a
+larger margin, but 35zzzf/e's own gaps were 1.3%/-1.5% while this
+round's is +11.4%, an outlier in MAGNITUDE though not in DIRECTION).
+**Verdict: sits inside leg-to-leg noise** -- three rounds is not
+enough to call a repeatable async-write win2 effect, and nothing in
+the seal-path stamps (identical `resQWaitMs`, comparable `jcvMs`/`r1`/
+`r2`) points to a mechanism that would make B2's win2 specifically
+faster; the more likely explanation is the same generator-supply/
+page-cache variability 6cv already established as noisy at this
+sample size.
+
+### JOB 3: S20 continuity, `r35zzzg-vm.log`
+
+| | B1 ramp | B1win1 | B1win2 | B2 ramp | B2win1 | B2win2 |
+|---|---|---|---|---|---|---|
+| `pgmajfaultD`/10s | 1,812 | **8,389** (4.6x) | 3,700 | 1,705 | **20,661** (12.1x) | 4,468 |
+| `pgscanKswapdD`/10s | 119,395 | **1,075,726** (9.0x) | 354,383 | 25,308 | **1,107,365** (43.8x) | 230,353 |
+| `refaultFileD`/10s | 883 | **4,868** (5.5x) | 4,100 | 1,053 | **17,285** (16.4x) | 9,024 |
+| `RssAnon` (avg, MB) | 2,850 | 9,994 | 10,332 | 3,632 | 9,822 | 10,262 |
+| `RssFile` (avg, MB) | 4,491 | 2,388 | **1,423** | 5,343 | 3,306 | **1,782** |
+
+**A second round confirms 6cv's exact shape**: a large ramp->win1 jump
+on every OS fault/scan counter (4.6-43.8x here, 17-200x in 35zzzf --
+both rounds show the SAME qualitative pattern, with this round's B1
+leg jump notably smaller than either leg of 35zzzf, consistent with
+the campaign's own established noise band rather than a contradiction),
+`RssFile` roughly halving again win1->win2 in both legs (2,388->1,423
+MB B1, 3,306->1,782 MB B2), and `RssAnon` climbing to the same ~10.0-
+10.3 GB per-node ceiling regardless of leg or switch. Page-cache
+thrash is present in BOTH the async-off (B1) and async-on (B2) legs,
+at comparable magnitude -- **S23's own switch has no visible effect on
+the memory-pressure mechanism**, exactly as expected since it only
+reorders WHEN a write happens, not how much memory the block's own
+execution/state-root work touches.
+
+**Method.** Job 1 is a direct, manual log correlation (`grep`/`python3
+-c` one-liners) across all 7 kept files around the exact failure
+timestamps -- no script was needed or written, per this task's own
+"do not guess its content" spirit: every claim above is a quoted log
+line, not an inference from absence. Job 2 reuses `seal_path_
+waterfall.py` (6cw) unmodified with this round's own leg/window
+arguments; `wqDepth`/`wqWaitMs` were pulled with a short inline query
+since the checked-in script predates their addition to `"miner: seal
+path"`. Job 3 reuses 6cv's own window-derivation and `vm.log`-parsing
+method verbatim, on this round's own ramp/win1/win2 boundaries
+(re-derived from the full-block sequence, not fixed offsets, per 6cv's
+own established practice after 35zzzf's mistimed captures).
+
+**What this does and does not show.** It shows prediction 89 holds on
+its own central claim (the switch is neutral: cycle unchanged within
+noise, `resQWaitMs`/`wqDepth`/`wqWaitMs` all 0). It shows, with a
+directly-quoted, fleet-wide-corroborated log trail, that leg A2's
+total production failure traces to ONE specific committed-but-
+unwritten block caused by a pre-existing propose-before-write/
+sibling-race exposure (documented in the code's own comment as a known
+tradeoff) that this round's leg-teardown view-churn was fast enough to
+trigger -- not a shutdown/Drain bug in the new async writer, which
+never had anything queued when the failure occurred. It does NOT prove
+`N42_LEADER_WRITE_ASYNC` caused the fast view-churn that exposed the
+race -- that attribution is stated as plausible, not proven, per (3)
+above. It does NOT establish a repeatable win2 mechanism from the
+async switch -- three rounds of B1/B2 win2 pairs show no consistent
+direction. It does NOT change any of 6cv/6cw's own findings about
+build/import composition or page-cache thrash -- Job 3 reproduces the
+same shape a second time, at somewhat smaller magnitude on B1, both
+inside the established noise band.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
