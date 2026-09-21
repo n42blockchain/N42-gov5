@@ -234,7 +234,7 @@ func TestFillTransactionsRejectsMissingHeaderNumber(t *testing.T) {
 		header: &block.Header{},
 	}
 
-	err := w.fillTransactions(nil, env, nil, nil)
+	err := w.fillTransactions(nil, env, nil, nil, nil, nil)
 	if err == nil || err.Error() != "mining header number unavailable" {
 		t.Fatalf("fillTransactions() error = %v", err)
 	}

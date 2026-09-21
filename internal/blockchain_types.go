@@ -224,6 +224,18 @@ type BlockChain struct {
 	minerRCMu        sync.Mutex                   // serializes the startup pre-warm against the first leader build
 	qmdbEnabled      bool
 
+	// S11 diagnostics (N42_BUILD_STALL_DIAG=1 only; see docs/QS_BLOCK_TIME_BUDGET.md
+	// 6by). buildStallLockWaitNs accumulates the time AlignAppliedBranch and
+	// InsertChainAuthorized spend blocked on bc.lock -- the mutex both the
+	// miner build path and ordinary block import/write share.
+	// buildStallRootLockWaitNs is the same for minerRCMu (shared with the
+	// startup pre-warm, PrewarmMinerRootComputer). internal/miner/worker.go
+	// drains both with TakeBuildStallLockWait / TakeBuildStallRootLockWait
+	// into its "miner: prefill phases" line. Always zero when the switch is
+	// off -- no atomic writes on that path.
+	buildStallLockWaitNs     atomic.Int64
+	buildStallRootLockWaitNs atomic.Int64
+
 	ltHashCommitment   *commitment.LtHashCommitment
 	ltHashEnabled      bool
 	rootComputer       state.RootComputer
