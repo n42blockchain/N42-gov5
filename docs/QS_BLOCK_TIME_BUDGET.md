@@ -10517,6 +10517,270 @@ build all done; Part 1's invariants are read, confirmed, and one --
 noted). QS_QUEUE.md's S23 row status is marked prepared with
 prediction 89 (6cu). Launch is the commander's next call.
 
+## 6cv. Round 35zzzf: U1 is real but never binds -- v+1's own build always outlasts v's write; the ~254 ms constant was mostly pacing that doesn't apply to full blocks; and the VM sampler puts the win1-to-win2 slowdown beyond doubt as page-cache thrash (2026-09-21)
+
+n42-r92 (r91 + `"miner: seal path"` ms-precision stamps, both switches
+on in every leg) ran clean: legs B1 13:28:24-13:41:42, B2
+13:41:42-13:55:37. Node logs preserved whole; trimmed to
+`wr-logs/r35zzzf-keep/node{0-6}-B.log` (13:28:00-13:59:59) -- **node0
+rotated TWICE this round and the first trim silently dropped it**
+(`ls node0/*.gz` returns two paths on one line; quoting that
+multi-line variable in `zgrep -E "$PAT" "$gz"` passes it as a single
+invalid filename and zgrep exits 1 without complaint) -- fixed by
+leaving the glob unquoted (word-split) before the second, verified
+attempt; flagged here since it is a preservation-step bug, not an
+analysis one, and would silently cost a whole node's evidence on any
+future round with a mid-window rotation. Scripts:
+`wt-r27/scripts/qs-analysis/seal_path_waterfall.py` (Job 1),
+inline analysis over `r35zzzf-vm.log` (Job 2, see Method).
+
+### JOB 1 (S22): the seal-path waterfall
+
+**(a) Waterfall (medians, win1 both legs; full table in script output).**
+Every step from `specHit` through `push`/`propose` is at or near 0 ms;
+the pipeline's real work concentrates in exactly three places:
+
+| step | B1win1 | B2win1 |
+|---|---|---|
+| `buildBegin -> specParked` (the actual build: fillTx+assemble+finalize) | 650.0 (554-762) | 611.5 (542-721) |
+| `trigger -> specHit` (real trigger waiting on the still-running build) | 79.5 (39-176) | 82.5 (22-106) |
+| `copyStart -> copyEnd` (receipts copy) | 36.0 (27-47) | 31.5 (26-40) |
+| `copyEnd -> writeStart` = `lwWaitMs` | 92.0 (24-151) | 99.5 (36-150) |
+| `writeStart -> writeEnd` (the write itself) | 244.5 (193-378) | 227.0 (184-354) |
+| `push` (`pushStart->pushEnd`) | 18.0 (13-36) | 17.5 (14-23) |
+| **CYCLE** `pushEnd(v) -> pushEnd(v+1)` | **680.0 (568-779)** | **691.0 (586-817)** |
+
+Everything else (`specParked->specHit`, `paceEnter->taskSent`
+[=`paceDurMs`], `taskSent->taskPicked` [=`taskQWaitMs`], `sealEnter->
+checkEnter->checkExit->blsStart->blsEnd`, `blsEnd->resultRecv`
+[=`resQWaitMs`]) medians to **0 ms** in every window, both legs.
+`paceDurMs` on full blocks is confirmed ~0 as predicted (88c) -- pacing
+only bites on small/empty blocks running faster than the target grid.
+
+**(b) U1, tested directly: real, but never the binding constraint.**
+`resQWaitMs` -- U1's own predicted number -- is **0 ms at the median in
+every one of the four windows**. `resultRecv(v+1) - writeEnd(v)` is
+**positive and large** in every window (B1win1 245, B1win2 286,
+B2win1 228, B2win2 298.5 ms) and **0% of sampled blocks land within
+10 ms of it** (checked directly, all four windows). The predicted
+identity `resQWaitMs(v+1) = writeEnd(v) - blsEnd(v+1)` comes out
+strongly NEGATIVE (median -228 to -298.5 ms) precisely because
+`blsEnd(v+1)` -- itself gated by the whole `trigger->specHit->...->BLS`
+chain above -- already lands well AFTER `writeEnd(v)`, so the
+single-consumer `resultCh` queue (6ct Part A: unbuffered, one consumer,
+`handleSealed` runs `WriteBlockWithState` inline) never has anything to
+queue behind. **U1's own code reading is correct and unrefuted** (the
+dependency exists exactly as described, file:line) **but it is
+structurally impossible for it to bind in this round's full-block
+population, because v+1's own build (650-850 ms, see (a)) always
+outlasts v's write (227-331 ms) on its own** -- the state U1 protects
+against (v+1 ready to deliver before v's write finishes) never occurs
+here. **The number S23 was asked to state: the median ms per block v+1
+spends queued behind v's write, via `resQWaitMs`, is 0 ms in every
+window this round** -- not because the dependency was removed, but
+because it was never reached.
+
+**(c) The ~254 ms constant, decomposed and found SMALLER than 6cs's
+estimate.** Summing the named steps between `trigger` and `pushEnd`
+(`trigger->specHit`, `pace`, `taskQ`, `sealEnter->checkEnter`, `check`,
+`BLS`, `resQ`, `copy`, `push`) gives **133.5 ms (B1win1)** and
+**131.5 ms (B2win1)** -- not 254 ms. Share placed in named steps:
+100% by construction (every ms-gap in the chain is one of the named
+steps; prediction 88(b)'s ">=90%" bar is met with room to spare,
+`n/a` for "unplaced" since there is none). The three largest named
+steps are `trigger->specHit` (79.5-82.5 ms, effectively 100% WAIT --
+this node's own worker goroutine finishing the still-running build),
+`copy` (31.5-36.0 ms, WORK -- 163k-allocation receipts deep-copy,
+`worker.go:705-725`), and `push` (17.5-18.0 ms, mostly WORK -- the
+`SealedBlock` broadcast call). **6cs's own 254 ms figure (from an
+independent, earlier-round worked example in 6cb) was dominated by a
+~135 ms pacing wait that does not apply to full blocks** -- this
+round's own `paceDurMs` medians to 0 exactly as (a) confirms, so the
+"constant" was never a fixed physical cost; it is whatever `paceBlock`
+happens to charge on that round's block-size/grid combination, plus
+this same ~130 ms of gate/copy/push overhead. Read together with (b):
+of that ~130 ms, roughly two-thirds (`trigger->specHit`) is this node
+finishing its OWN queued build, not any cross-block resource wait.
+
+**(d) Repeatability (prediction 88a).** In-tenure cycle win1: 680.0 ms
+(B1), 691.0 ms (B2) -- both close to, and a little BELOW, 35zzze's own
+656.0 ms B2win1 figure (6cs, corrected), consistent given a different
+round's noise floor (6cm: ±26.6% between same-config rounds is normal
+at this campaign's sample sizes). `r1`/`r2`: 65.5/91.5 (B1win1),
+65.0/99.5 (B2win1) ms, both growing into win2 (79.0/142.5 B1win2,
+72.5/138.0 B2win2) -- consistent with the within-leg slowdown touching
+Round2 too, not just the write. **Leader `jcvMs` stays uncontended at
+the MEDIAN in every window (0 ms, all four)** -- the S19 fix holds up a
+second round -- but its own TAIL grows sharply into win2 (p90 10->281 ms
+B1, 3->234 ms B2), meaning the journal write occasionally contends
+again once the leg's own memory pressure (Job 2) sets in, even though
+S19 keeps the MEDIAN case clean. `jpvMs` stays ~0 throughout (leader's
+own prepare-vote journal, never exposed to the collision, as always).
+`lwWhy` shares: journal 75-79% / timeout 21-33% / abandoned 0%, stable
+across windows and legs -- matching 6cs's B2 findings closely.
+`import_breakdown.py`-equivalent (mandatory line, adapted to the kept
+files, `txs>=160000`, whole round): **n=1926, body 11 ms (p90 26), proc
+571 ms (p90 779), write 201 ms (p90 277), total 819 ms (p90 1051)**;
+joined to `"parallel block"` (`execMs`/`finalizeMs`): exec 280 ms
+(p90 503), finalize 134 ms (p90 192). **Safety: 0 BAD BLOCK, 0
+divergence, 0 build stalls** (grepped directly, all 7 kept files).
+Distinct TC/view-timeout events: **B1 2** (view 4653 at 13:29:23, ~65 s
+into the leg, still inside the 400 s decay; view 6602 at 13:40:35, past
+both windows, in the drain tail) -- **decay/drain, none in a scored
+window; B2 9** (a cluster of 7 at views 6790/6792, 13:42:51-13:43:15,
+~69-93 s into the leg, still decay; 1 at view 8488, 13:50:33, 9 s after
+B2win1 opens -- **flood**, the only scored-window timeout event either
+leg produced this round).
+
+**(e) Derived (sums of measured medians only).** `resQWaitMs` is
+already 0 at the median (b), so removing it changes nothing: cycle
+stays 680.0/691.0 ms (B1/B2 win1). Removing `copy` on top (31.5-36.0 ms,
+a real, separable receipts-deep-copy cost, not currently overlapped
+with anything else in the chain): **B1win1 644.0 ms, B2win1 659.5 ms**
+-- a 5.0-4.6% reduction, the ceiling this specific pair of changes can
+buy on today's numbers.
+
+### JOB 2 (S20): the VM sampler confirms page-cache thrash directly
+
+Windows located from the full-block sequence, not fixed offsets (0.a
+below), then read against `r35zzzf-vm.log`'s 10 s `vmstat`+per-PID
+samples (`minflt`/`majflt`, `RssAnon+File+ShmemMB`, and system-wide
+`pgmajfaultD`/`pgscanKswapdD`/`pgscanDirectD`/`pgstealKswapdD`/
+`refaultFileD` -- all already DELTAS over the preceding 10 s, per the
+sampler's own field names).
+
+**0. Windows.** B1win1 13:36:40-13:37:57, B1win2 13:38:00-13:38:43;
+B2win1 13:50:24-13:51:47, B2win2 13:51:47-13:52:29 (same method as
+6cp/6cs: first N/next M full blocks in chronological order, N/M chosen
+to reproduce the round log's own win1/win2 block counts exactly).
+"Ramp" = the last ~3.5 min before win1 opens (post-decay, pre-flood-
+saturation).
+
+**(a) The fault-rate jump is enormous, and it happens at ramp->win1,
+not win1->win2.**
+
+| | ramp | win1 | win2 |
+|---|---|---|---|
+| B1 `pgmajfaultD`/10s (fleet avg) | 1,192 | **25,749** (21.6x) | 15,987 (0.62x win1) |
+| B1 `pgscanKswapdD`/10s | 54,277 | **1,109,077** (20.4x) | 597,985 (0.54x win1) |
+| B1 `refaultFileD`/10s | 429 | **21,593** (50.3x) | 16,322 (0.76x win1) |
+| B1 per-node `RssFile` (avg, MB) | ~4,100-4,300 | ~2,800-2,985 | **~1,410-1,490** |
+| B1 per-node `RssAnon` (avg, MB) | ~2,400-2,600 | ~9,740-9,970 | ~10,150-10,360 |
+| B2 `pgmajfaultD`/10s | 1,481 | **25,941** (17.5x) | 1,431 (0.06x win1) |
+| B2 `pgscanKswapdD`/10s | 4,428 | **885,875** (200.1x) | 597,916 (0.67x win1) |
+| B2 `refaultFileD`/10s | 662 | **23,092** (34.9x) | 2,720 (0.12x win1) |
+| B2 per-node `RssFile` (avg, MB) | ~3,800-6,010 | ~3,290-4,260 | **~1,630-1,790** |
+| B2 per-node `RssAnon` (avg, MB) | ~2,040-4,830 | ~9,480-10,080 | ~10,120-10,340 |
+
+**The dramatic jump (17-200x on every fault/scan counter) happens
+between ramp and win1, not between win1 and win2** -- by the time win1
+opens, the fleet is already deep in page-cache thrash. Per-node
+`RssFile` then **keeps shrinking** through win2 (another ~40-50% past
+win1's own already-reduced level) while the raw fault-RATE counters
+actually **fall back somewhat** from their win1 peak. This is a
+saturation effect, not relief: there is simply less resident,
+file-backed memory left to evict and refault by win2 (`RssFile` is
+down to 1.4-1.8 GB fleet-wide, a fraction of the ramp's 3.8-6.0 GB), so
+the ABSOLUTE count of major faults/scans per 10 s window drops even
+though the underlying pressure (the still-climbing `RssAnon`, now
+~10.2-10.4 GB per node, matching 6cr/6cp's own finding) has not eased.
+**Answering the question as posed: thrash does not "start" at the
+win1->win2 boundary -- it is already present at 17-200x the ramp rate
+by win1 and never returns to baseline, with `RssFile` still falling
+through win2 -- so memory pressure is NOT ruled out by this data; if
+anything this is the most direct, specific confirmation this campaign
+has produced (previous rounds inferred the mechanism from `AnonPages`/
+`Cached` alone; this round measures the actual fault and scan
+counters).**
+
+**(b) Which phases grow more: MDBX-touching vs pure-CPU, win1->win2.**
+
+| phase | kind | B1 win1->win2 | B2 win1->win2 |
+|---|---|---|---|
+| follower `execMs` (EVM exec, reads through MDBX pages) | MDBX-touching | 218->256 (+17.4%) | 209->284 (**+35.9%**) |
+| follower `finalizeMs` (state-root) | MDBX-touching | 120->130 (+8.3%) | 115->148 (+28.7%) |
+| follower `write` | MDBX-touching | 193->211 (+9.3%) | 190->213 (+12.1%) |
+| follower `proc` (recover+exec+finalize) | mixed | 467->545 (+16.7%) | 446->588 (+31.8%) |
+| leader `writeStart->writeEnd` | MDBX-touching | 244.5->297.5 (+21.7%) | 227.0->331.0 (+45.8%) |
+| leader `buildBegin->specParked` (fillTx+assemble+finalize) | mixed | 650.0->796.0 (+22.5%) | 611.5->850.0 (+39.0%) |
+| `copy` (receipts deep-copy) | pure CPU | 36.0->42.5 (+18.1%) | 31.5->34.5 (+9.5%) |
+| `push` (network send) | pure CPU/IO | 18.0->23.0 (+27.8%) | 17.5->22.5 (+28.6%) |
+| write probe `heldMs` p90 | MDBX-touching | 157->221 (+40.8%) | 162->224 (+38.3%) |
+| write probe `waitMs` p90 | MDBX-touching | 0->94 | 5->63 |
+
+**The separation leans toward MDBX-touching steps growing more, most
+clearly in B2** (`execMs` +35.9%, leader `write` +45.8%, write-probe
+`heldMs`/`waitMs` both up sharply) **but it is not a clean, total
+discriminator** -- pure-CPU `push` grows 27.8-28.6% too, comparable to
+several MDBX-touching steps. Read alongside (a)'s much larger and
+specific fault/scan jump, the most defensible reading is: the dominant
+driver is memory/page-cache pressure (the discriminator (a) provides
+directly, at 17-200x), which SECONDARILY drags up MDBX-touching phases
+more than pure-CPU ones, but general CPU/scheduling contention (more
+goroutines competing as `RssAnon` climbs, GC pacing under
+`GOGC=300`/`GOMEMLIMIT=9GiB`) is plausibly still adding a smaller,
+across-the-board tax on top -- consistent with 6cr's own closing
+caveat that it never claimed to be the ONLY contributor.
+
+**(c) Everything else checked, one table.** `candidates`==`included`
+in every window (B1win1 142,200==142,200 median; B1win2 163,000==
+163,000; B2win1 156,500==156,500; B2win2 163,000==163,000) -- `failed`
+implicitly 0, and candidates GROW win1->win2, not shrink: **supply is
+not the constraint, confirmed again**. No generator (`txflood`)
+CPU/RSS line exists in `r35zzzf-mem.log`/`-vm.log` (`n/a`, not
+captured this round). No runtime `MemStats`/GC-pause log line exists
+either (`n/a`). MDBX file growth was not sampled this round (`n/a` --
+`r35zzzf-vm.log` and `-mem.log` both report OS-level memory, not file
+sizes).
+
+**(d) Verdict, prediction 88(c).** **Page-cache thrash: YES**, with a
+17-200x factor on the fault/scan counters between the pre-flood ramp
+and the scored windows (largest single jump: B2's `pgscanKswapdD`,
+200x), and `RssFile` falling by roughly half again from win1 to win2 in
+both legs while `RssAnon` keeps climbing toward ~10.2-10.4 GB per node
+-- this is now measured directly (fault/scan counters), not inferred
+(`Cached`/`AnonPages` alone, 6cp/6cr). The MDBX-touching-vs-CPU phase
+contrast in (b) is directionally consistent but not sharp enough alone
+to rule out a smaller, additional CPU/GC contribution riding on top.
+
+**Method.** Job 1's join, leg-offset calibration and validator-index
+map reuse 6cs's own method verbatim (per-leg QC-proxy join for offset
+calibration only; the U1 test needs no view-offset join at all, since
+`seal path`/`propose phases` share the same `number`/`n` key directly).
+`import_breakdown.py`'s logic was run inline against the kept files
+(the original script's own live-path glob, `/data/blockchain/qs-node*/
+log/n42.log`, no longer resolves once a round's node dirs are
+reseeded) rather than editing the checked-in script, to avoid drifting
+it from the copy other rounds still invoke against a live path when
+one exists. Job 2's window/ramp boundaries are wall-clock ranges
+derived from Job 1's own `propose_all` timestamps (first/last block in
+each window), not a separate join -- the `vm.log`'s own 10 s cadence
+means win2 (34-35 blocks, ~43-60 s) contains only 4 samples in every
+window, the tightest population this analysis has used; medians/means
+over n=4 are reported as such, not smoothed or extended.
+
+**What this does and does not show.** It shows, with a structural code
+citation (6ct) now backed by a direct measurement, that U1's resultCh
+dependency is REAL but does not bind in this round's full-block
+population, because v+1's own build (650-850 ms) is unconditionally
+longer than v's write (227-331 ms) -- so S23's own design (moving the
+write off `resultLoop`) targets a real mechanism that this round's data
+cannot show actually costing anything YET; it would only start costing
+something if a future change made the build faster than the write. It
+shows the ~254 ms "constant" from 6cs was round/config-specific
+(dominated by pacing that doesn't apply to today's full blocks), not a
+fixed physical cost -- 6cs's own number should be read as an artifact
+of a different, faster-block round, not superseded so much as
+recontextualized. It shows the win1-to-win2 slowdown is accompanied by
+a 17-200x jump in OS-level page-fault/scan activity, the most direct
+evidence this campaign has produced for the memory-pressure mechanism
+6cp/6cr proposed from coarser counters -- but does NOT fully separate
+memory pressure from a secondary CPU/GC contribution, and does NOT
+identify (again) the specific in-process structure driving `RssAnon`'s
+climb beyond 6cr's own `qmdb.mapIndex` candidate (this round captured
+no heap profile at all, by the harness's own admission, so that
+question is untouched here).
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
