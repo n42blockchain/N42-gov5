@@ -13498,8 +13498,96 @@ header event anywhere in the test, the existing checked/imported gate
 still carries the vote. Both S26 regression tests
 (`conflicting_commit_test.go`) pass unchanged. Full
 `internal/consensus/hotstuff` and `internal/sync` (+ subpackages)
-suites pass; the four new tests plus the two S26 tests pass under
-`-race`. `go vet`/`go build` clean across the whole repository.
+suites pass (non-race); `go vet`/`go build` clean across the whole
+repository. Round 35zzzj aborted mid-B2 (`MemAvailable 18G`, S28's own
+14GiB legs -- confirming the GATES worst-case risk 6dd flagged, and
+matching 6di's own from-scratch arithmetic below) and the box then
+went to the Rust fleet for ~100 minutes, so per the commander's own
+instruction whole-package `-race` did not run this step: **the two
+S26 regression tests plus the four new tests above pass under
+`-race`, individually targeted** (`go test -race -run 'TestHeaderVote|
+TestTwoPhasePrepareVoteRefusesNonExtendingProposal|
+TestTwoPhaseCommitVoteRefusesNonExtendingProposal'
+./internal/consensus/hotstuff/`, `nice -n 19`, `-p 4`) -- whole-package
+`-race` is deferred until the commander confirms the box is free again.
+
+**Build.** n42-r95 = n42-r94's exact file set + this step's changes,
+via the same file-checkout recipe reconstruction (detached worktree at
+`f7ec2836`, the same lever commits n42-r94 used), built with `nice -n 19`
+and `-p 4` per the commander's box-sharing instruction. One-variable
+check: `internal/consensus/hotstuff/{engine,proposal,service}.go` and
+`internal/sync/{options,rpc_block_push,rpc_chunked_response}.go` are
+each touched by exactly ONE commit since their own last lever-commit
+checkout (`proposal.go`: `e49ce151` then `c124146e`; the rest: only
+`c124146e`) -- confirmed via `git log <last-lever-commit>..HEAD --
+<file>` for each, so each was copied directly from `wt-r27`'s own HEAD
+rather than patched. `internal/miner/worker.go` needed the SAME
+by-now-familiar hand-hunk treatment (S19/S22/S23-lineage's own
+"speculative build hit" off-lineage conflict): applying `e49ce151`'s
+own isolated diff (`git diff e49ce151^ e49ce151`) hit the SAME single
+conflict as every prior build in this chain (the off-lineage
+`activeSpecParent`/`tMs` fields), resolved by hand exactly as before;
+the OTHER two hunks in that diff (referencing `writeAndFinish`, S23's
+retired async-writer function) correctly rejected outright, since this
+build's own `worker.go` -- like n42-r94's -- never had that
+restructuring; no manual substitute was needed for those two, since
+S26's leader-side fix (`recordSealedOnParent` moved to seal time) does
+not depend on `writeAndFinish` existing. `internal/parallel/base_cache.go`
+confirmed absent; `strings n42-r95 | grep -c BaseCache` = 0. Markers:
+`"commit vote REFUSED..."` = 1, `"header vote: block header known and
+extends its JustifyQC block, voting"` (new) = 1, `"suppressing
+divergent same-height sibling"` = 1, `"miner: seal path"` = 1.
+`go build -p 4 -tags nosqlite,noboltdb` clean.
+`/data/blockchain/gov5-work/n42-r95`: 108,785,200 bytes, sha256
+`0d4edb372a533ca4ad8d155637ff98374757c287bd2e8364743da109568d1712`.
+
+**Harness.** `run-r35zzzk.sh`/`chain-35zzzk.sh`, from the 35zzzj pair:
+GOMEMLIMIT reverted to 10GiB in every leg (S28's own 14GiB A/B, 6dd/6di,
+is a separate, now clearly closed-negative question, left as
+`run_leg`'s own 6th argument); the allocs capture already carries the
+commander's own live fix (`?seconds=20`, inherited directly from
+35zzzj's own edited script -- a plain, un-timed GET is cumulative
+since process start, which is what produced 6dc's own bogus "10.36
+GB/block" figure, corrected in 6de/6df/6di); the heap capture stays
+plain (already a point-in-time snapshot, not a cumulative counter).
+Both S26 harness safety checks (`check_conflicting_commits`/
+`check_legs_produced`) carry over unchanged. `bash -n` clean on both
+scripts; confirmed not running. `chain-35zzzk.sh` waits on
+`wr-logs/r35zzzj.log`'s terminal line.
+
+**Prediction 94 (registered before any round):**
+
+**(a) Safety.** Zero conflicting heights across every height checked
+(the S26 harness check and `height_conflict_check.py` both agree);
+every refusal (`import-gated vote REFUSED`/`commit vote REFUSED`) is
+logged with enough context (view, blockHash, parent, justify) to
+attribute it to a stage.
+
+**(b) Mechanism.** Round1 (median) on full in-tenure views <= 90 ms
+(35zzzf/r92: ~60-72 ms; 35zzzi/r94: 153-262 ms) -- the header-vote path
+should land close to r92's own figure again, since the gating work
+(deferred-check completion) moves off Round 1 entirely for the common
+case. `CommitQC(v)` later than the leader's own build end in <= 5% of
+win1 views (35zzzi: 33%; 35zzzf/r92: 0%).
+
+**(c) Throughput.** Win1 in-tenure cycle within noise of 650-690 ms
+(35zzzf/r92's own figure); first-window TPS not below 35zzzi/r94's own
+130.0k/135.3k (recovering toward, not below, the pre-S26 baseline).
+
+**(d) Tests.** The four new `header_vote_test.go` tests plus both S26
+regression tests pass (already confirmed above, individually, under
+`-race`); whole-package suites (already confirmed non-race) to be
+re-run under `-race` once the box is free again, per the commander's
+own instruction.
+
+**VERDICT: confirmed** (PART 0 predicate-equivalence proven from the
+code; binding proven via `Header.Hash()`; targeted tests pass,
+including under `-race`; n42-r95 built and one-variable-checked;
+harness prepared and syntax-checked, not launched; whole-package
+`-race` explicitly deferred, not skipped, per the commander's own
+box-sharing instruction). QS_QUEUE.md's S31 row status is marked
+prepared with prediction 94 (6dh); `docs/OPEN_ISSUES.md`'s entry
+carries a dated S31 status line. Launch is the commander's next call.
 
 ## 6di. S28: 14 GiB does not fit the box (nodes alone would need ~105 GB of it); the generators hold a stable ~3.6 GB and are not the driver; and a TRUE 20-second delta profile shows B1's real allocation rate is ~1.88 GB/block (~11.3 KB/tx), not the ~10.36 GB/block reported from earlier, apparently non-delta captures (2026-09-21)
 
