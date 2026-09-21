@@ -147,6 +147,83 @@ type contentionStamps struct {
 
 	commitVoteHeld bool
 	commitVoteGate string
+
+	// send holds S17's sender-side stamps for this view, claimed from
+	// ConsensusEngine.sendByView by publishCommittedTiming right before
+	// Phases() runs. See perViewSendStamps.
+	send perViewSendStamps
+
+	// rx holds S17's receiver-side arrival stamps for this view. Unlike
+	// send, these are written directly here (under e.mu, from inside
+	// processProposal/processVote/processCommitVote/processPrepareQC),
+	// since receipt is already funneled through the single-threaded
+	// engine before those handlers run -- no extra lock needed.
+	rx rxStamps
+}
+
+// sendMsgStamp is S17's sender-side timing for ONE message this node
+// itself emitted in a view: t_emit (ConsensusEngine.emit) -> t_deq
+// (processOutputs dequeues it) -> t_pub0/t_pub1 (bracketing the actual
+// network call in handleBroadcast/handleSendToValidator, service.go).
+// Recorded by recordSendStamp (engine.go), off the e.mu hot path.
+type sendMsgStamp struct {
+	emit2Deq time.Duration
+	deq2Pub  time.Duration
+	pubDur   time.Duration
+	pubAtMs  int64  // t_pub1, unix ms -- for joining sender/receiver across nodes on the shared host clock
+	path     string // "rotor ok" | "rotor failed -> gossip" | "gossip only"
+	ok       bool
+}
+
+// perViewSendStamps is one view's sender-side stamps for the four hot
+// message types. A node only ever sends a subset of these in a given
+// view (a follower never sends PrepareQC; the leader never sends a
+// prepare/commit vote through this path -- see tryFormPrepareQC's direct
+// self-vote), so an unset field's ok is simply false.
+type perViewSendStamps struct {
+	proposal    sendMsgStamp
+	prepareVote sendMsgStamp
+	prepareQC   sendMsgStamp
+	commitVote  sendMsgStamp
+}
+
+// kthRxStamps is S17's receiver-side timing for the QUORUM-COMPLETING
+// (k-th) vote of one round: t_rx (earliest point the bytes were in this
+// process) to t_arrive (existing S14 handler-entry stamp), the voter,
+// which transport delivered it first, and the max rx2arr seen across
+// every vote counted toward that round (a proxy for the round's slowest
+// straggler, not just the deciding one).
+type kthRxStamps struct {
+	rx2Arr    time.Duration
+	rxAtMs    int64
+	voter     ValidatorIndex
+	via       string // "rotor" | "gossip"
+	maxRx2Arr time.Duration
+	maxOK     bool
+	ok        bool
+}
+
+// rxStamps is S17's receiver-side arrival timing for one view. pv/cv
+// track the k-th prepare/commit vote (this node as leader); pqc tracks
+// the one PrepareQC message (this node as follower). Duplicate arrivals
+// (the same logical message via both Rotor and gossip -- "gossip is
+// always sent" regardless of Rotor's own success, service.go) keep the
+// FIRST arrival's stamps and only increment dupN; seen*Mask/seenPrepareQC
+// are the dedup memory (bitmask by validator index for votes, since a
+// validator set this small never needs more than a handful of bits).
+type rxStamps struct {
+	pqcRx2Arr time.Duration
+	pqcRxAtMs int64
+	pqcVia    string // "rotor" | "gossip" | "both" (a duplicate arrived via the other transport)
+	pqcOK     bool
+
+	pv, cv kthRxStamps
+
+	dupN int
+
+	seenPrepareQC       bool
+	seenPrepareVoteMask uint64
+	seenCommitVoteMask  uint64
 }
 
 // roundContention is one round's (Round 1 or Round 2) leader-side vote
@@ -216,6 +293,84 @@ func (r roundContention) phase(roundStart, qcFormed *time.Time) RoundContentionP
 	return p
 }
 
+// phase derives a MsgSendPhase from one recorded sendMsgStamp.
+func (s sendMsgStamp) phase() MsgSendPhase {
+	if !s.ok {
+		return MsgSendPhase{}
+	}
+	return MsgSendPhase{
+		Emit2Deq: PhaseDuration{D: s.emit2Deq, OK: true},
+		Deq2Pub:  PhaseDuration{D: s.deq2Pub, OK: true},
+		PubDur:   PhaseDuration{D: s.pubDur, OK: true},
+		PubAtMs:  s.pubAtMs,
+		Path:     s.path,
+		OK:       true,
+	}
+}
+
+// phase derives a MsgRxPhase from the follower's one-PrepareQC-per-view
+// arrival stamps.
+func (r rxStamps) pqcPhase() MsgRxPhase {
+	if !r.pqcOK {
+		return MsgRxPhase{}
+	}
+	return MsgRxPhase{
+		Rx2Arr: PhaseDuration{D: r.pqcRx2Arr, OK: true},
+		RxAtMs: r.pqcRxAtMs,
+		Via:    r.pqcVia,
+		OK:     true,
+	}
+}
+
+// recordVoteRx records one vote's receiver-side rx2arr into its round's
+// k-th/max accumulator, deduping per voter via mask so a duplicate arriving
+// on the OTHER transport ("gossip is always sent" regardless of Rotor's
+// own success, service.go) cannot inflate maxRx2Arr or be mistaken for a
+// later, distinct k-th vote. quorumReached decides whether THIS vote is
+// the (first) quorum-completing one, judged by the caller the same way
+// roundContention.record's caller already does.
+func recordVoteRx(rx *rxStamps, mask *uint64, kth *kthRxStamps, voter ValidatorIndex, mt msgTiming, quorumReached bool) {
+	bit := uint64(1) << uint(voter%64)
+	if *mask&bit != 0 {
+		rx.dupN++
+		return
+	}
+	*mask |= bit
+	rx2arr := mt.arrive.Sub(mt.rx)
+	if rx2arr < 0 {
+		rx2arr = 0
+	}
+	if !kth.maxOK || rx2arr > kth.maxRx2Arr {
+		kth.maxRx2Arr = rx2arr
+		kth.maxOK = true
+	}
+	if !kth.ok && quorumReached {
+		kth.rx2Arr = rx2arr
+		kth.rxAtMs = mt.rx.UnixMilli()
+		kth.voter = voter
+		kth.via = mt.via
+		kth.ok = true
+	}
+}
+
+// phase derives a VoteRxPhase from one round's k-th-vote receiver stamps.
+func (k kthRxStamps) phase() VoteRxPhase {
+	if !k.ok {
+		return VoteRxPhase{}
+	}
+	p := VoteRxPhase{
+		KthRx2Arr: PhaseDuration{D: k.rx2Arr, OK: true},
+		KthRxAtMs: k.rxAtMs,
+		KthVoter:  k.voter,
+		KthVia:    k.via,
+		OK:        true,
+	}
+	if k.maxOK {
+		p.KthMaxRx2Arr = PhaseDuration{D: k.maxRx2Arr, OK: true}
+	}
+	return p
+}
+
 // ViewPhases is the derived per-stage breakdown of one view.
 //
 // Leader view:
@@ -261,6 +416,56 @@ type ViewPhases struct {
 	PrepareQCToCommitVote            PhaseDuration // follower only: prepareQCArrival -> CommitVoteSent
 	CommitVoteHeld                   bool          // follower only
 	CommitVoteGate                   string        // follower only, set when CommitVoteHeld
+
+	// S17 diagnostics (N42_CONTENTION_DIAG=1 only; docs/QS_BLOCK_TIME_BUDGET.md
+	// 6ck/6cl). Sender side: this node's own emit->publish timing for
+	// whichever of the four hot messages it sent THIS view (a node sends a
+	// subset depending on its role -- OK is false for the rest). Receiver
+	// side: PrepareQC arrival (follower) and the k-th prepare/commit vote's
+	// arrival (leader).
+	SendProposal, SendPrepareVote, SendPrepareQC, SendCommitVote MsgSendPhase
+	RxPrepareQC                                                  MsgRxPhase
+	RxPrepareVote, RxCommitVote                                  VoteRxPhase
+	DupN                                                         int
+}
+
+// MsgSendPhase is S17's derived sender-side timing for one message this
+// node emitted in the view: Emit2Deq (t_emit->t_deq, engine.emit to
+// processOutputs dequeuing it), Deq2Pub (t_deq->t_pub0, queueing behind
+// this goroutine's own dispatch), PubDur (t_pub0->t_pub1, the actual
+// network call(s)), PubAtMs (t_pub1, unix ms, for joining sender/receiver
+// timestamps across nodes on the shared host clock -- 0 if OK is false),
+// and Path ("rotor ok" | "rotor failed -> gossip" | "gossip only").
+type MsgSendPhase struct {
+	Emit2Deq, Deq2Pub, PubDur PhaseDuration
+	PubAtMs                   int64
+	Path                      string
+	OK                        bool
+}
+
+// MsgRxPhase is S17's derived receiver-side timing for the one PrepareQC
+// message a follower receives in a view: Rx2Arr (t_arrive-t_rx, the gap
+// between the bytes reaching this process and the existing S14
+// handler-entry stamp), RxAtMs (t_rx, unix ms), and Via ("rotor" |
+// "gossip" | "both", if a duplicate arrived on the other transport).
+type MsgRxPhase struct {
+	Rx2Arr PhaseDuration
+	RxAtMs int64
+	Via    string
+	OK     bool
+}
+
+// VoteRxPhase is S17's derived receiver-side timing for the
+// QUORUM-COMPLETING (k-th) vote of a round, as seen by the leader:
+// KthRx2Arr/KthRxAtMs/KthVoter/KthVia describe that one vote; KthMaxRx2Arr
+// is the max Rx2Arr over every vote counted toward the round (the
+// slowest straggler, not just the deciding one).
+type VoteRxPhase struct {
+	KthRx2Arr, KthMaxRx2Arr PhaseDuration
+	KthRxAtMs               int64
+	KthVoter                ValidatorIndex
+	KthVia                  string
+	OK                      bool
 }
 
 // span measures later-earlier, reporting not-OK when either endpoint is missing
@@ -323,6 +528,22 @@ func (t ViewTiming) Phases() ViewPhases {
 		p.CommitVoteHeld = c.commitVoteHeld
 		p.CommitVoteGate = c.commitVoteGate
 	}
+
+	// S17: sender/receiver stamps are role-independent -- a leader sends
+	// Proposal+PrepareQC and receives votes; a follower sends votes and
+	// receives PrepareQC. Each field's own OK flag is false when this node
+	// did not play that part in this view.
+	send := t.Contention.send
+	p.SendProposal = send.proposal.phase()
+	p.SendPrepareVote = send.prepareVote.phase()
+	p.SendPrepareQC = send.prepareQC.phase()
+	p.SendCommitVote = send.commitVote.phase()
+	rx := t.Contention.rx
+	p.RxPrepareQC = rx.pqcPhase()
+	p.RxPrepareVote = rx.pv.phase()
+	p.RxCommitVote = rx.cv.phase()
+	p.DupN = rx.dupN
+
 	return p
 }
 
@@ -354,6 +575,19 @@ func (e *ConsensusEngine) LastCommittedPhases() (ViewPhases, bool) {
 // timingMu is a leaf lock so the nesting is safe in one direction only —
 // never acquire e.mu while holding timingMu.
 func (e *ConsensusEngine) publishCommittedTiming(t ViewTiming) {
+	// S17: claim this view's sender-side publish stamps (recorded off the
+	// e.mu hot path by background publish goroutines -- see recordSendStamp)
+	// before deriving Phases(), so "hotstuff view timing" carries them in
+	// the same line as everything else. A slow publish that outlives the
+	// view (network stall, degraded mesh) is simply not claimed here and
+	// stays unattributed for this view -- see docs/QS_BLOCK_TIME_BUDGET.md
+	// 6cl's method note.
+	if contentionDiagEnabled {
+		if send := e.takeSendStamps(t.View); send != nil {
+			t.Contention.send = *send
+		}
+	}
+
 	timing := t
 	e.timingMu.Lock()
 	e.lastCommittedTiming = &timing
@@ -410,6 +644,45 @@ func (p ViewPhases) LogLine() string {
 		if p.CommitVoteGate != "" {
 			line += fmt.Sprintf(" cvGate=%s", p.CommitVoteGate)
 		}
+	}
+
+	// S17 (N42_CONTENTION_DIAG=1 only; docs/QS_BLOCK_TIME_BUDGET.md 6ck/6cl):
+	// sender-side emit->publish timing and receiver-side arrival timing for
+	// the four hot messages. Silent (OK==false) when the switch is off or
+	// this node did not play that part in the view.
+	appendSend := func(prefix string, s MsgSendPhase, withPubAt bool) {
+		if !s.OK {
+			return
+		}
+		line += fmt.Sprintf(" %sEmit2Deq=%dms %sDeq2Pub=%dms %sPubDur=%dms %sPath=%q",
+			prefix, s.Emit2Deq.Ms(), prefix, s.Deq2Pub.Ms(), prefix, s.PubDur.Ms(), prefix, s.Path)
+		if withPubAt {
+			line += fmt.Sprintf(" %sPubAt=%d", prefix, s.PubAtMs)
+		}
+	}
+	appendSend("pr", p.SendProposal, false)
+	appendSend("pv", p.SendPrepareVote, false)
+	appendSend("pqc", p.SendPrepareQC, true)
+	appendSend("cv", p.SendCommitVote, true)
+
+	if p.RxPrepareQC.OK {
+		line += fmt.Sprintf(" pqcRx2Arr=%dms pqcRxAt=%d pqcVia=%s",
+			p.RxPrepareQC.Rx2Arr.Ms(), p.RxPrepareQC.RxAtMs, p.RxPrepareQC.Via)
+	}
+	appendKthRx := func(prefix string, v VoteRxPhase) {
+		if !v.OK {
+			return
+		}
+		line += fmt.Sprintf(" %sKthRx2Arr=%dms %sKthRxAt=%d %sKthVoter=%d %sKthVia=%s",
+			prefix, v.KthRx2Arr.Ms(), prefix, v.KthRxAtMs, prefix, uint32(v.KthVoter), prefix, v.KthVia)
+		if v.KthMaxRx2Arr.OK {
+			line += fmt.Sprintf(" %sMaxRx2Arr=%dms", prefix, v.KthMaxRx2Arr.Ms())
+		}
+	}
+	appendKthRx("pv", p.RxPrepareVote)
+	appendKthRx("cv", p.RxCommitVote)
+	if p.DupN > 0 {
+		line += fmt.Sprintf(" dupN=%d", p.DupN)
 	}
 	return line
 }

@@ -142,12 +142,12 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 // taken here, the first line that runs once e.mu is held for this message.
 // The deferred recording covers every return path (safety-rule rejection,
 // bad signature, etc.), not just the success path.
-func (e *ConsensusEngine) processProposal(proposal *Proposal, receivedAt time.Time) error {
-	if contentionDiagEnabled && !receivedAt.IsZero() {
+func (e *ConsensusEngine) processProposal(proposal *Proposal, mt msgTiming) error {
+	if contentionDiagEnabled && !mt.arrive.IsZero() {
 		tLocked := time.Now()
 		defer func() {
 			tDone := time.Now()
-			e.viewTiming.Contention.proposalLockWait = tLocked.Sub(receivedAt)
+			e.viewTiming.Contention.proposalLockWait = tLocked.Sub(mt.arrive)
 			e.viewTiming.Contention.proposalWork = tDone.Sub(tLocked)
 			e.viewTiming.Contention.proposalLockWaitOK = true
 			e.viewTiming.Contention.proposalWorkOK = true
@@ -339,7 +339,7 @@ func (e *ConsensusEngine) castHeldCommitVoteIfAttested(blockHash types.Hash, gat
 	}
 	log.Info("two-phase vote: casting held commit vote", "view", held.View, "blockHash", blockHash,
 		"deferred", !e.importedBlocks[blockHash], "tMs", time.Now().UnixMilli())
-	if err := e.processPrepareQC(held, time.Time{}); err != nil {
+	if err := e.processPrepareQC(held, msgTiming{}); err != nil {
 		log.Debug("two-phase held commit vote failed", "err", err)
 	}
 }
@@ -374,17 +374,40 @@ func (e *ConsensusEngine) onBlockChecked(blockHash types.Hash, parentHash types.
 // a held-vote release re-entry from castHeldCommitVoteIfAttested, in which
 // case the original arrival's lockWait/work/arrival were already recorded on
 // first entry and must not be overwritten here.
-func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg, receivedAt time.Time) error {
-	if contentionDiagEnabled && !receivedAt.IsZero() {
+func (e *ConsensusEngine) processPrepareQC(pqc *PrepareQCMsg, mt msgTiming) error {
+	if contentionDiagEnabled && !mt.arrive.IsZero() {
 		tLocked := time.Now()
-		e.viewTiming.Contention.prepareQCArrival = receivedAt
+		e.viewTiming.Contention.prepareQCArrival = mt.arrive
 		defer func() {
 			tDone := time.Now()
-			e.viewTiming.Contention.prepareQCLockWait = tLocked.Sub(receivedAt)
+			e.viewTiming.Contention.prepareQCLockWait = tLocked.Sub(mt.arrive)
 			e.viewTiming.Contention.prepareQCWork = tDone.Sub(tLocked)
 			e.viewTiming.Contention.prepareQCLockWaitOK = true
 			e.viewTiming.Contention.prepareQCWorkOK = true
 		}()
+		// S17: receiver-side t_rx->t_arrive for the one PrepareQC message
+		// this view. First arrival wins; a duplicate via the OTHER
+		// transport ("gossip is always sent" regardless of Rotor's own
+		// success, service.go) only flips Via to "both" and counts as a
+		// dup, never overwriting the first timing.
+		if !mt.rx.IsZero() {
+			rx := &e.viewTiming.Contention.rx
+			if !rx.seenPrepareQC {
+				rx.seenPrepareQC = true
+				rx.pqcRx2Arr = mt.arrive.Sub(mt.rx)
+				if rx.pqcRx2Arr < 0 {
+					rx.pqcRx2Arr = 0
+				}
+				rx.pqcRxAtMs = mt.rx.UnixMilli()
+				rx.pqcVia = mt.via
+				rx.pqcOK = true
+			} else {
+				rx.dupN++
+				if rx.pqcVia != "" && rx.pqcVia != mt.via {
+					rx.pqcVia = "both"
+				}
+			}
+		}
 	}
 	view := e.roundState.CurrentView()
 

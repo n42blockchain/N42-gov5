@@ -6,6 +6,7 @@ package hotstuff
 import (
 	"context"
 	"testing"
+	"time"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -208,7 +209,7 @@ func TestDirectVoteSuccessStillGossipsForLiveness(t *testing.T) {
 		Message: &ConsensusMsg{Type: MsgVote, Payload: &Vote{
 			View: 1, Voter: 0,
 		}},
-	})
+	}, time.Time{})
 
 	if p2p.sends != 1 {
 		t.Fatalf("direct sends = %d, want 1", p2p.sends)

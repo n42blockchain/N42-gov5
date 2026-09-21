@@ -590,12 +590,20 @@ func (s *Service) processOutputs() {
 		case <-s.ctx.Done():
 			return
 		case output := <-s.engine.OutputCh():
-			s.handleOutput(output)
+			// S17 (docs/QS_BLOCK_TIME_BUDGET.md 6ck): t_deq, the moment this
+			// serial loop dequeues the output -- emit2Deq = t_deq - t_emit.
+			// Nil unless the message actually carries a t_emit (i.e. the
+			// diagnostic is on), so the zero-value case costs one time.Now().
+			var tDeq time.Time
+			if contentionDiagEnabled && !output.EmittedAt.IsZero() {
+				tDeq = time.Now()
+			}
+			s.handleOutput(output, tDeq)
 		}
 	}
 }
 
-func (s *Service) handleOutput(output EngineOutput) {
+func (s *Service) handleOutput(output EngineOutput, tDeq time.Time) {
 	switch output.Type {
 	case OutputBroadcast:
 		// Off the serial output loop: handleOutput also runs heavyweight work
@@ -607,16 +615,16 @@ func (s *Service) handleOutput(output EngineOutput) {
 		// carries its view, so cross-message ordering is not load-bearing
 		// (the proposal's block-data pre-broadcast stays ordered inside the
 		// same goroutine).
-		go func(out EngineOutput) {
+		go func(out EngineOutput, deq time.Time) {
 			// Leader: broadcast block data via gossip BEFORE sending Proposal,
 			// so followers can import the block and vote on it.
 			if out.Message != nil && out.Message.Type == MsgProposal {
 				s.broadcastBlockData(out.Hash)
 			}
-			s.handleBroadcast(out)
-		}(output)
+			s.handleBroadcast(out, deq)
+		}(output, tDeq)
 	case OutputSendToValidator:
-		go s.handleSendToValidator(output)
+		go s.handleSendToValidator(output, tDeq)
 	case OutputExecuteBlock:
 		// A Proposal references this block. When it is imported (via direct push
 		// or fetch), NotifyBlockImported fires EventBlockImported and the engine
@@ -838,10 +846,31 @@ func (s *Service) handleOutput(output EngineOutput) {
 	}
 }
 
-func (s *Service) handleBroadcast(output EngineOutput) {
+// handleBroadcast publishes a broadcast output (Proposal/PrepareQC/Decide/
+// Timeout/NewView) to the gossip topic, using Rotor's single-hop relay for
+// Proposals when available. tDeq is S17's dequeue stamp from processOutputs;
+// zero when called from handleSendToValidator's own "gossip is always also
+// sent" fallback (that call site records its OWN stamp for MsgVote/
+// MsgCommitVote, so this function's tracking -- gated to Proposal/PrepareQC,
+// which never arrive via that path -- never double-counts).
+func (s *Service) handleBroadcast(output EngineOutput, tDeq time.Time) {
 	if output.Message == nil || s.p2p == nil {
 		return
 	}
+	msgType := output.Message.Type
+	trackSend := contentionDiagEnabled && !output.EmittedAt.IsZero() &&
+		(msgType == MsgProposal || msgType == MsgPrepareQC)
+	var tPub0 time.Time
+	path := "gossip only"
+	if trackSend {
+		defer func() {
+			tPub1 := time.Now()
+			if eng := s.engine.Engine(); eng != nil {
+				eng.recordSendStamp(messageView(*output.Message), msgType, output.EmittedAt, tDeq, tPub0, tPub1, path)
+			}
+		}()
+	}
+
 	if output.Message.Type == MsgDecide && s.h2V4Identity != nil {
 		go s.publishH2V4Decide(output.Message)
 	}
@@ -869,6 +898,10 @@ func (s *Service) handleBroadcast(output EngineOutput) {
 	// message that fails to encode or publish) are logged separately.
 	log.Debug("hotstuff: broadcasting consensus message", "type", output.Message.Type, "topic", topic, "bytes", len(gossipBytes))
 
+	if trackSend {
+		tPub0 = time.Now()
+	}
+
 	// Use Rotor single-hop relay for proposal broadcasts.
 	if output.Message.Type == MsgProposal && s.rotor != nil && s.rotor.Enabled() {
 		eng := s.engine.Engine()
@@ -893,7 +926,10 @@ func (s *Service) handleBroadcast(output EngineOutput) {
 			ds, s.rpcTopic, gossipFn, gossipBytes,
 		); err != nil {
 			log.Warn("hotstuff: rotor broadcast failed, falling back to gossip", "err", err)
+			path = "rotor failed -> gossip"
 			_ = s.p2p.PublishToTopic(s.ctx, topic, gossipBytes)
+		} else {
+			path = "rotor ok"
 		}
 		return
 	}
@@ -955,9 +991,24 @@ func timeoutPublishPeerTarget(quorumSize int) int {
 	return quorumSize - 1
 }
 
-func (s *Service) handleSendToValidator(output EngineOutput) {
+// handleSendToValidator sends a targeted output (a prepare/commit vote or a
+// timeout), trying Rotor's direct stream first and always ALSO gossiping
+// (see the comment above the fallback below). tDeq is S17's dequeue stamp
+// from processOutputs; diagnostic and message-type-gated (MsgVote/
+// MsgCommitVote only -- Proposal/PrepareQC are tracked in handleBroadcast
+// instead, since they arrive here only via OutputBroadcast, not this path).
+func (s *Service) handleSendToValidator(output EngineOutput, tDeq time.Time) {
 	if output.Message == nil || s.p2p == nil {
 		return
+	}
+
+	msgType := output.Message.Type
+	trackSend := contentionDiagEnabled && !output.EmittedAt.IsZero() &&
+		(msgType == MsgVote || msgType == MsgCommitVote)
+	rotorAttempted := false
+	var tPub0 time.Time
+	if trackSend {
+		tPub0 = time.Now()
 	}
 
 	directDelivered := false
@@ -974,6 +1025,7 @@ func (s *Service) handleSendToValidator(output EngineOutput) {
 						var buf bytes.Buffer
 						enc := s.p2p.Encoding()
 						if _, encErr := enc.EncodeGossip(&buf, &rawSSZMarshaler{data: data}); encErr == nil {
+							rotorAttempted = true
 							if sendErr := sender.SendRawBytes(s.ctx, buf.Bytes(), s.rpcTopic, pid); sendErr == nil {
 								s.rotor.RecordVoteDirect()
 								s.logVoteRouting()
@@ -1012,7 +1064,26 @@ func (s *Service) handleSendToValidator(output EngineOutput) {
 		s.rotor.RecordVoteFallback()
 		s.logVoteRouting()
 	}
-	s.handleBroadcast(output)
+	// tDeq2 is handleBroadcast's own dequeue-equivalent stamp for this
+	// nested gossip send: from this function's perspective the message was
+	// already "dequeued" at entry (tDeq), so pass a zero time here to keep
+	// handleBroadcast's OWN recordSendStamp (gated to Proposal/PrepareQC)
+	// from double-counting a vote passing through it.
+	s.handleBroadcast(output, time.Time{})
+
+	if trackSend {
+		tPub1 := time.Now()
+		path := "gossip only"
+		switch {
+		case directDelivered:
+			path = "rotor ok"
+		case rotorAttempted:
+			path = "rotor failed -> gossip"
+		}
+		if eng := s.engine.Engine(); eng != nil {
+			eng.recordSendStamp(messageView(*output.Message), msgType, output.EmittedAt, tDeq, tPub0, tPub1, path)
+		}
+	}
 }
 
 // logVoteRouting periodically reports the Rotor direct-send vs fallback ratio
@@ -1064,7 +1135,16 @@ func (s *Service) subscribeMessages() {
 		if msgCount <= 5 || msgCount%100 == 0 {
 			log.Info("hotstuff: received gossip message", "count", msgCount, "bytes", len(msg.Data))
 		}
-		s.processGossipMessage(msg.Data, enc, msg.ReceivedFrom)
+		// S17: t_rx, the earliest point these bytes are in this process --
+		// right after sub.Next() returns, before processGossipMessage's own
+		// decode. No topic validator is registered for this topic anywhere
+		// in this package (confirmed by grep, matching 6ch), so sub.Next()
+		// returning IS the earliest observable point on the gossip path.
+		var tRx time.Time
+		if contentionDiagEnabled {
+			tRx = time.Now()
+		}
+		s.processGossipMessage(msg.Data, enc, msg.ReceivedFrom, tRx, "gossip")
 	}
 }
 
@@ -1077,7 +1157,14 @@ func (s *Service) subscribeMessages() {
 // contentionStamps in view_timing.go) include decode time in their
 // lock-wait figure. Zero time.Time when the switch is off, which every
 // downstream stamp already treats as "not measured."
-func (s *Service) processGossipMessage(data []byte, enc encoder.NetworkEncoding, from peer.ID) {
+//
+// S17 adds rxAt/via: rxAt (t_rx) is the caller's OWN, even earlier stamp --
+// right after sub.Next() (gossip) or right after the Rotor stream read
+// (direct/relay) -- so rxAt precedes tArrive by exactly this function's own
+// call overhead (nothing else runs between them: see the "READERS" finding
+// in docs/QS_BLOCK_TIME_BUDGET.md 6cl). via names which transport this
+// specific copy arrived on.
+func (s *Service) processGossipMessage(data []byte, enc encoder.NetworkEncoding, from peer.ID, rxAt time.Time, via string) {
 	var tArrive time.Time
 	if contentionDiagEnabled {
 		tArrive = time.Now()
@@ -1116,6 +1203,8 @@ func (s *Service) processGossipMessage(data []byte, enc encoder.NetworkEncoding,
 		Type:       EventMessage,
 		Msg:        *consensusMsg,
 		ReceivedAt: tArrive,
+		RxAt:       rxAt,
+		Via:        via,
 	}); err != nil {
 		log.Debug("hotstuff: message processing error", "type", consensusMsg.Type, "err", err)
 	}
@@ -1523,9 +1612,20 @@ func (s *Service) setupRotorStreamHandler() {
 	}
 
 	sender.SetStreamHandler(s.rpcTopic, func(data []byte, from peer.ID) {
+		// S17: t_rx, the earliest point these bytes are in this process on
+		// the Rotor path. The underlying libp2p stream read completed just
+		// before this closure was invoked (internal/node/hotstuff_p2p_adapter.go's
+		// SetStreamHandler wrapper reads the full body, then calls this
+		// handler with it already in memory) -- one goroutine per incoming
+		// stream (libp2p's own SetStreamHandler contract), unlike the
+		// single serial reader loop the gossip path uses.
+		var tRx time.Time
+		if contentionDiagEnabled {
+			tRx = time.Now()
+		}
 		// Process the message as if received via gossip.
 		enc := s.p2p.Encoding()
-		s.processGossipMessage(data, enc, from)
+		s.processGossipMessage(data, enc, from, tRx, "rotor")
 
 		// If we are a relay for the current view, forward to our assigned targets.
 		if s.rotor == nil || !s.rotor.Enabled() {

@@ -69,6 +69,13 @@ type EngineOutput struct {
 	NewEpoch       uint64
 	ValidatorCount uint32
 	Removed        bool // true if this node was removed from the validator set
+
+	// EmittedAt is S17's diagnostic sender-side stamp (t_emit): set inside
+	// emit() itself, so every output carries it with no change at any call
+	// site. Zero unless N42_CONTENTION_DIAG=1. See
+	// docs/QS_BLOCK_TIME_BUDGET.md 6ck ("the stamps stop before the actual
+	// publish") and ConsensusEngine.recordSendStamp.
+	EmittedAt time.Time
 }
 
 // EngineOutputType identifies the kind of output action.
@@ -181,6 +188,19 @@ type ConsensusEngine struct {
 	viewTiming          ViewTiming
 	timingMu            sync.RWMutex
 	lastCommittedTiming *ViewTiming
+
+	// sendByView holds S17's sender-side publish stamps (t_emit -> t_deq ->
+	// t_pub0/t_pub1), keyed by the view the message belongs to. Written from
+	// handleBroadcast/handleSendToValidator's background goroutines --
+	// AFTER the output has already left the engine via emit(), so these
+	// goroutines never hold e.mu. sendMu is therefore a second leaf lock,
+	// exactly like timingMu: never held while e.mu is held, e.mu never
+	// acquired while it is held. publishCommittedTiming claims (pops) a
+	// view's entry when that view commits; recordSendStamp bounds the map
+	// so a view whose commit vote/broadcast never gets claimed (a timed-out
+	// view) cannot leak forever.
+	sendMu     sync.Mutex
+	sendByView map[ViewNumber]*perViewSendStamps
 
 	// Set when this validator is removed at an epoch boundary.
 	removed bool
@@ -611,7 +631,7 @@ func (e *ConsensusEngine) ProcessEvent(event ConsensusEvent) error {
 
 	switch event.Type {
 	case EventMessage:
-		return e.processMessage(event.Msg, event.ReceivedAt)
+		return e.processMessage(event.Msg, msgTiming{arrive: event.ReceivedAt, rx: event.RxAt, via: event.Via})
 	case EventBlockReady:
 		return e.onBlockReady(event.Hash, event.TxRootHash)
 	case EventBlockImported:
@@ -663,6 +683,27 @@ type ConsensusEvent struct {
 	// decode. Zero unless N42_CONTENTION_DIAG=1; every downstream contention
 	// stamp is gated on it being non-zero, so leaving it unset costs nothing.
 	ReceivedAt time.Time
+	// RxAt is S17's diagnostic t_rx: the EARLIEST point this message's bytes
+	// were in this process -- right after sub.Next() returns (gossip) or
+	// right after the Rotor stream read completes (direct/relay) -- taken
+	// BEFORE ReceivedAt (which is after snappy/RLP decode). Via names which
+	// transport delivered THIS copy ("rotor" | "gossip"). Both zero/empty
+	// unless N42_CONTENTION_DIAG=1.
+	RxAt time.Time
+	Via  string
+}
+
+// msgTiming bundles S14/S17's diagnostic inbound timestamps for one
+// consensus message as it flows from processMessage down to the process*
+// handler that runs under e.mu -- a small value type instead of three
+// separate parameters threaded through processMessage/dispatchMessage/
+// processProposal/processVote/processCommitVote/processPrepareQC. Zero
+// value (Arrive.IsZero()) means "not measured," which every recorder
+// already checks.
+type msgTiming struct {
+	arrive time.Time // t_arrive (S14): first line of processGossipMessage, before decode
+	rx     time.Time // t_rx (S17): earliest point the bytes were in-process
+	via    string    // "rotor" | "gossip": which transport delivered THIS copy
 }
 
 // ConsensusEventType identifies the type of consensus event.
@@ -737,6 +778,9 @@ func (e *ConsensusEngine) ReconfigManager() *ReconfigurationManager {
 }
 
 func (e *ConsensusEngine) emit(output EngineOutput) error {
+	if contentionDiagEnabled {
+		output.EmittedAt = time.Now()
+	}
 	select {
 	case e.outputCh <- output:
 		return nil
@@ -755,6 +799,99 @@ func isCriticalOutput(t EngineOutputType) bool {
 	return t == OutputBlockCommitted || t == OutputBroadcast ||
 		t == OutputSendToValidator || t == OutputEquivocationDetected ||
 		t == OutputEpochTransition
+}
+
+// sendStampsMaxViews bounds ConsensusEngine.sendByView: a view whose
+// message is never published (a timed-out view, a dropped output) or
+// whose record is never claimed by publishCommittedTiming leaves an entry
+// behind. Pruned oldest-first once the map exceeds this, under sendMu.
+const sendStampsMaxViews = 64
+
+// recordSendStamp is S17's sender-side timing recorder, called from
+// handleBroadcast/handleSendToValidator's background goroutines (Service,
+// service.go) after the actual publish completes -- i.e. AFTER the output
+// already left the engine via emit(), on a goroutine that never holds
+// e.mu. Guarded by sendMu, a leaf lock (see the struct field comment):
+// never held while e.mu is held, and e.mu is never acquired while this is
+// held, so it cannot contend with or deadlock against the consensus hot
+// path. No-op unless the diagnostic is on.
+func (e *ConsensusEngine) recordSendStamp(view ViewNumber, msgType ConsensusMsgType, emit, deq, pub0, pub1 time.Time, path string) {
+	// No contentionDiagEnabled check here: both call sites (handleBroadcast,
+	// handleSendToValidator) already gate on it before ever computing a
+	// non-zero emit, so this stays a pure function of its arguments --
+	// straightforward to unit test without the env-gated package var.
+	if emit.IsZero() {
+		return
+	}
+	stamp := sendMsgStamp{
+		emit2Deq: durSince(emit, deq),
+		deq2Pub:  durSince(deq, pub0),
+		pubDur:   durSince(pub0, pub1),
+		pubAtMs:  pub1.UnixMilli(),
+		path:     path,
+		ok:       true,
+	}
+	e.sendMu.Lock()
+	defer e.sendMu.Unlock()
+	if e.sendByView == nil {
+		e.sendByView = make(map[ViewNumber]*perViewSendStamps)
+	}
+	rec, ok := e.sendByView[view]
+	if !ok {
+		if len(e.sendByView) >= sendStampsMaxViews {
+			e.pruneOldestSendStampLocked()
+		}
+		rec = &perViewSendStamps{}
+		e.sendByView[view] = rec
+	}
+	switch msgType {
+	case MsgProposal:
+		rec.proposal = stamp
+	case MsgVote:
+		rec.prepareVote = stamp
+	case MsgPrepareQC:
+		rec.prepareQC = stamp
+	case MsgCommitVote:
+		rec.commitVote = stamp
+	}
+}
+
+// pruneOldestSendStampLocked drops the lowest-numbered view's entry.
+// Caller must hold sendMu. Views only increase, so "lowest" is "oldest."
+func (e *ConsensusEngine) pruneOldestSendStampLocked() {
+	var oldest ViewNumber
+	first := true
+	for v := range e.sendByView {
+		if first || v < oldest {
+			oldest, first = v, false
+		}
+	}
+	if !first {
+		delete(e.sendByView, oldest)
+	}
+}
+
+// takeSendStamps claims (pops) a view's sender-side stamps, called once
+// from publishCommittedTiming when that view commits. Returns nil if no
+// message this node sent for that view has finished publishing yet (a
+// slow publish that outlives the view is simply not attributed -- see
+// docs/QS_BLOCK_TIME_BUDGET.md 6cl's method note).
+func (e *ConsensusEngine) takeSendStamps(view ViewNumber) *perViewSendStamps {
+	e.sendMu.Lock()
+	defer e.sendMu.Unlock()
+	rec := e.sendByView[view]
+	delete(e.sendByView, view)
+	return rec
+}
+
+// durSince is time.Time.Sub with a floor of zero, guarding against a
+// non-monotonic pair (clock adjustment) producing a negative duration.
+func durSince(earlier, later time.Time) time.Duration {
+	d := later.Sub(earlier)
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
@@ -901,7 +1038,7 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 		// time.Time{}: a replayed future-buffered message's original network
 		// arrival time is not retained in futureMsg, so its contention stamps
 		// (S14) are correctly left unmeasured rather than misattributed.
-		if err := e.dispatchMessage(msg, time.Time{}); err != nil {
+		if err := e.dispatchMessage(msg, msgTiming{}); err != nil {
 			log.Debug("buffered message replay failed", "view", newView, "err", err)
 		}
 	}
@@ -911,7 +1048,7 @@ func (e *ConsensusEngine) advanceToView(newView ViewNumber) error {
 
 // Message processing
 
-func (e *ConsensusEngine) processMessage(msg ConsensusMsg, receivedAt time.Time) error {
+func (e *ConsensusEngine) processMessage(msg ConsensusMsg, mt msgTiming) error {
 	// SyncInfo: adopt any piggybacked TC before view gating, so a lagging node
 	// catches up from a vote/timeout even if it missed the NewView.
 	if err := e.processEmbeddedTC(&msg); err != nil {
@@ -949,7 +1086,7 @@ func (e *ConsensusEngine) processMessage(msg ConsensusMsg, receivedAt time.Time)
 			} else if jumped {
 				newCurrent := e.roundState.CurrentView()
 				if msgView == newCurrent {
-					return e.dispatchMessage(msg, receivedAt)
+					return e.dispatchMessage(msg, mt)
 				} else if msgView > newCurrent && msgView <= newCurrent+FutureViewWindow &&
 					len(e.futureMsgBuffer) < MaxFutureMessages {
 					e.futureMsgBuffer = append(e.futureMsgBuffer, futureMsg{view: msgView, msg: msg})
@@ -964,14 +1101,14 @@ func (e *ConsensusEngine) processMessage(msg ConsensusMsg, receivedAt time.Time)
 		return nil
 	}
 
-	return e.dispatchMessage(msg, receivedAt)
+	return e.dispatchMessage(msg, mt)
 }
 
-// dispatchMessage routes a decoded consensus message to its handler.
-// receivedAt is S14's diagnostic arrival stamp (zero unless
-// N42_CONTENTION_DIAG=1, or for a replayed future-buffered message whose
-// original arrival time is not retained -- see advanceToView).
-func (e *ConsensusEngine) dispatchMessage(msg ConsensusMsg, receivedAt time.Time) error {
+// dispatchMessage routes a decoded consensus message to its handler. mt is
+// S14/S17's diagnostic arrival timing (zero unless N42_CONTENTION_DIAG=1,
+// or for a replayed future-buffered message whose original timing is not
+// retained -- see advanceToView).
+func (e *ConsensusEngine) dispatchMessage(msg ConsensusMsg, mt msgTiming) error {
 	if msg.Payload == nil {
 		return ErrInvalidMessage
 	}
@@ -981,25 +1118,25 @@ func (e *ConsensusEngine) dispatchMessage(msg ConsensusMsg, receivedAt time.Time
 		if !ok || p == nil {
 			return ErrInvalidMessage
 		}
-		return e.processProposal(p, receivedAt)
+		return e.processProposal(p, mt)
 	case MsgVote:
 		v, ok := msg.Payload.(*Vote)
 		if !ok || v == nil {
 			return ErrInvalidMessage
 		}
-		return e.processVote(v, receivedAt)
+		return e.processVote(v, mt)
 	case MsgCommitVote:
 		cv, ok := msg.Payload.(*CommitVote)
 		if !ok || cv == nil {
 			return ErrInvalidMessage
 		}
-		return e.processCommitVote(cv, receivedAt)
+		return e.processCommitVote(cv, mt)
 	case MsgPrepareQC:
 		pqc, ok := msg.Payload.(*PrepareQCMsg)
 		if !ok || pqc == nil {
 			return ErrInvalidMessage
 		}
-		return e.processPrepareQC(pqc, receivedAt)
+		return e.processPrepareQC(pqc, mt)
 	case MsgTimeout:
 		tm, ok := msg.Payload.(*TimeoutMessage)
 		if !ok || tm == nil {
