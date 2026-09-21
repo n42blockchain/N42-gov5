@@ -6016,6 +6016,308 @@ BAD BLOCK/divergence/stall-dump checks were run against each node's full
 because those are round-wide correctness questions, not B-window
 throughput ones.
 
+## 6cb. S12: the full-block cycle is not import-bound -- deferred execution moved the critical path to the vote round-trip and the leader's own state-root computation (2026-09-21)
+
+Logs-only, no fleet touched. Source: `/data/blockchain/wr-logs/r35zzz-keep/
+node{0-6}-B.log` (the same kept files as 6ca). Script: `wt-r27/scripts/
+qs-analysis/full_block_critical_path.py` (committed alongside this section).
+"Full" = `txs >= 150000` on a `"miner: propose phases"` line (matches the
+task's threshold; 6ca's own `txs>=160000` filter would drop a handful of
+147-159k blocks that still read as ~90%+ of the fill cap -- using 150000
+does not change any conclusion below, only the sample size).
+
+**A binary-vintage fact that shapes everything below.** n42-r86 (this
+round's binary) predates commits 89d15267/b97ca94e: `"miner: build
+triggered (leader view)"`, `"miner: build phases"`, and the speculative
+park/hit lines carry no `tMs` here -- only second-resolution `time`, too
+coarse to place inside a ~0.8-1.2 s cycle. `"miner: prefill phases"` only
+fires above a 50 ms cutoff (`build_stall_watchdog.go:225-236`), i.e. NOT
+for the median (fast) block. So the leader's trigger/prefill/fill prefix
+cannot be read directly off those lines for a typical block. Two lines
+that DO carry `tMs` for every full block give an equivalent anchor instead
+(`worker.go:813-818`, `2153-2195`, `2340-2365`):
+
+- `task.createdAt = tMs - total/1e6` (`total` = `time.Since(createdAt)`;
+  `createdAt` is stamped when `commit()` hands the task to the sealer,
+  i.e. the end of `fillTransactions`/`commit()`).
+- `t_commit_start = createdAt - assemble/1e6` (`assemble` = the whole
+  `commit()` call, `tCommitStart` to `createdAt`) -- the end of fill /
+  start of state-root assembly, in epoch ms, for every full block.
+- `push_instant = tMs - write/1e6` -- push happens before write under
+  `N42_PUSH_BEFORE_WRITE`/`N42_PROPOSE_BEFORE_WRITE` (both on this round,
+  `worker.go:645-703`), so this is the instant a follower could actually
+  start receiving the block. Same convention `cycle.py`/`leg_compare.py`
+  already use as `"seal"`, reused here under its real name.
+- follower side: `"blockimport phases"` `tMs` = end of that follower's
+  import (own write included); `total` is the import's own elapsed time.
+
+**1. Cycle time (push-instant to push-instant, chain-wide), full blocks.**
+Three full windows recovered from the kept logs alone (the round log
+never prints their exact timestamps): B1's 170 full blocks in
+`00:10:41-00:24:14`, first 51 = win1, next 46 = win2 (harness's own
+printed counts); B2's 160 full blocks in `00:24:14-00:37:45`, first 50 =
+win1 (B2win2 -- 34.8% occupancy -- excluded even though it contributes 10
+stray full blocks past the cut). 147 full blocks total. Every full block
+is paired with its immediate predecessor `n-1`, **whatever size that
+predecessor was** -- requiring the predecessor to also be full (my first
+pass) turns out to bias the handover/chained mix (see below), so the
+final numbers use any-size predecessors, matched via `worker.go`'s own
+per-block leader field:
+
+| population | n | median | p90 |
+|---|---|---|---|
+| all | 147 | 887.8 ms | 1735.5 ms |
+| in-tenure (chained) | 79 | 799.1 ms | 1085.7 ms |
+| hand-over | 68 | 1201.1 ms | 1884.2 ms |
+
+This is a **push-to-push** cycle (leader's own push instant, not
+write-completion and not a commit timestamp -- see anchor list above).
+Against the baseline's 1.18-1.30 s (the harness's `blockTime`, which is
+`60 s window / block count`, i.e. a MEAN over a fixed-duration window,
+not a per-block median): the median in-tenure cycle (799 ms) is at the
+baseline's low end, and the population's own p90 (1735 ms `all`) plus a
+handful of multi-second gaps (6ca: 2-3 s) pull the window MEAN up to
+where `blockTime` reads it. The two statistics measure different things
+and are not expected to match; they are consistent (median < mean, as a
+right-skewed distribution requires).
+
+**Handover fraction: 68/147 = 46%, NOT the tenure=4 baseline of 25%.**
+Checked directly: leader run-lengths over every block (any size) in leg
+B1 are 557 runs of exactly 4 and 2 runs of 3, out of 559 runs across 2234
+blocks -- tenure=4 holds essentially exactly. Full blocks are
+over-represented right after a hand-over because hand-over cycles run
+longer (1201 ms vs 799 ms median), giving the mempool more time to
+refill before the new leader proposes -- not because leadership rotates
+more often. (An earlier pass that required BOTH blocks in a pair to be
+full got 8/87 = 9%, the opposite bias, for the mirror-image reason: a
+big hand-over block can drain enough backlog that blocks 2-4 of the next
+tenure dip under 150,000 and drop out of a full-to-full pairing. Neither
+9% nor 46% is "the" hand-over rate of blocks in general -- 25% is: it is
+only the rate *conditioned on the outgoing block being full* that
+runs high.)
+
+**2. Waterfalls.** T0 = `push_instant` of the block *before* the one
+named. Leader segments are exact for the specific example block named
+(they are literally sequential offsets from one anchor); follower
+segments are the arrival/import-phases lines for all six followers, ranked by
+import-end; the "quorum-forming" follower is explained in section 3.
+
+*Median in-tenure block, n=13658061 (leader=node4, cycle=799 ms):*
+
+| segment | start (ms) | dur (ms) | note |
+|---|---|---|---|
+| push(v-1) -> QC(v-1)/ViewStart(v) | 0 | 552.7 | WAIT (consensus round-trip) |
+| leader trigger+prefill+fill | 552.7 | -90.9 | already done (speculative hit) before QC formed |
+| leader commit()/assemble+finalize | 461.8 | 226.3 | CPU (state-root dominates: finalize done at +206.5 of the 226.3) |
+| leader BLS sign | 688.1 | 0.6 | CPU, negligible |
+| leader gate+copy residual (unsplit) | 688.6 | 83.9 | CheckSealParentApplied + receipts copy, not separately timed |
+| leader push | 772.6 | 26.5 | ends the cycle (offset 799.1 = push_instant(v)) |
+| leader write (off critical path) | 799.1 | 239.6 | parallel with the next cycle |
+
+| follower | arrive offset | import-end offset | import dur |
+|---|---|---|---|
+| node1 | 841.7 | 1842.7 | 757.6 |
+| node0 | 936.7 | 1974.7 | 745.6 |
+| node3 | 870.7 | 1851.7 | 836.5 |
+| node6 | 830.7 | **1859.7 (4th-fastest = quorum-forming)** | 861.6 |
+| node2 | 872.7 | 1795.7 | 806.5 |
+| node5 | 868.7 | 1974.7 | 872.7 |
+
+Every follower's import of block v is **still running at least one full
+cycle after v was pushed** (import-end offsets of 1795-1975 ms against a
+799 ms cycle) -- two more blocks get proposed before any follower finishes
+importing this one. That is the headline fact this step was asked to
+find: the fleet is not waiting on it.
+
+*Median hand-over block, n=13657990 (leader=node1, prev=node0, cycle=1207 ms):*
+
+| segment | start (ms) | dur (ms) | note |
+|---|---|---|---|
+| push(v-1) -> QC(v-1)/ViewStart(v) | 0 | 400.7 | WAIT |
+| leader trigger+prefill+fill | 400.7 | 600.1 | new leader has no parked task -- real work here (see section 4) |
+| leader commit()/assemble+finalize | 1000.8 | 152.6 | CPU |
+| leader BLS sign | 1153.4 | 0.3 | CPU, negligible |
+| leader gate+copy residual | 1153.7 | 37.5 | unsplit |
+| leader push | 1191.3 | 15.4 | ends the cycle (offset 1206.7) |
+| leader write (off critical path) | 1206.7 | 399.1 | parallel |
+
+| follower | arrive offset | import-end offset | import dur |
+|---|---|---|---|
+| node2 | 1243.7 | 1986.7 | 672.4 |
+| node6 | 1250.7 | 1990.7 | 675.7 |
+| node5 | 1254.7 | 1968.7 | 657.6 |
+| node4 | 1287.7 | **1987.7 (4th-fastest = quorum-forming)** | 647.6 |
+| node3 | 1257.7 | 1984.7 | 671.4 |
+| node0 | 1287.7 | 2049.7 | 697.0 |
+
+**3. The critical path.** Quorum size verified from code, not assumed:
+`ValidatorSet.QuorumSize()` returns `n-f` (`internal/consensus/hotstuff/
+validator.go:67-75`), and `validator_quorum_test.go`'s own case table
+has `{n:7, f:2, want:5}`. The leader self-votes at propose time
+(`proposal.go:106-107`, "the leader immediately self-votes... GossipSub
+doesn't deliver back to sender"), so the quorum's 5th-of-7 vote is the
+**4th-fastest of the 6 followers**, not the 6th or the 7th.
+
+Two-segment path, in-tenure (medians): **push(v-1)->QC(v-1) 520 ms +
+QC(v-1)->push(v) 271 ms = 791 ms**, against a measured cycle median of
+799 ms -- **99.05% of the cycle, confirmed** (task's own 10% bar).
+Hand-over (medians): 247 ms + 804 ms = 1051 ms against a measured 1201 ms
+median -- 87.5%, outside the 10% bar on its own (see the note on the
+QC-proxy's higher variance for hand-overs in the Method section below);
+directionally the same shape (nearly all of the added cost sits in the
+second segment, driven by `build_prefix`, section 4).
+
+**The two largest segments on the in-tenure path:**
+
+1. **push(v-1)->QC(v-1), 520 ms, WAIT, but *not* dominantly on raw
+   import CPU.** Two facts pin this down. First, joining the leader's
+   own protocol instrumentation (`"hotstuff view timing"`, filtered to
+   the three full windows by time range) gives leader Round2
+   (`PrepareQCFormed -> CommitQCFormed`) median 288 ms, matching the
+   *followers'* own Round1 (`VoteSent -> CommitVoteSent`) median 288.5 ms
+   almost exactly -- the wait is a vote/QC round-trip, not a local
+   compute phase, and follower `ExecWait` (`ProposalReceived -> VoteSent`,
+   the one phase that directly measures the import-gate) is 0 ms at the
+   median (n=334 of 1440 rows even have it -- most prepare votes are not
+   gated on import at all). Second, this fleet runs deferred execution
+   (task said "on"): 87.4% of `"two-phase vote: casting held commit
+   vote"` lines fleet-wide carry `"deferred":true`, meaning the commit
+   vote's gate (`proposal.go:283-320`, `castHeldCommitVoteIfAttested` /
+   `deferredAttested`) was satisfied by the block being *checked* plus
+   its **parent** already imported -- not by the block's own import. Only
+   13% of commit votes wait on the current block's own
+   `importedBlocks[blockHash]`. Code comment at `proposal.go:294`
+   confirms the mechanism's purpose directly: "Without this the Round-2
+   gate waits for the block's own import and the cycle stays
+   import-bound -- 35zzq measured the same 1.33 s block time as the round
+   without deferred execution." So: WAIT, but on consensus/QC
+   propagation and the (unt imed) "checked" step, not on the ~757-803 ms
+   follower-import pipeline as a whole. Owning code:
+   `internal/consensus/hotstuff/proposal.go` (vote cast/gate logic) +
+   `quorum.go` (aggregation).
+2. **QC(v-1)->push(v), 271 ms, CPU, on the leader.** `build_prefix`
+   (trigger+prefill+fill) is 6.2 ms median here -- essentially zero,
+   because the speculative build already finished before QC arrived (see
+   section 4). The actual 271 ms is the leader's own serial work:
+   `commit()`/assemble+finalize (168 ms median, of which `finalize`
+   alone is 155.6 ms -- state-root computation dominates essentially the
+   whole segment) + BLS sign (0.3 ms) + an unsplit gate-check/
+   receipts-copy residual (35 ms) + push (16 ms). Owning code:
+   `internal/miner/worker.go:2153` (`commit()`, `FinalizeAndAssemble`
+   inside it).
+
+**Largest segment NOT on the path: the leader's own write, 348.6 ms
+median (p90 499 ms -- this is the "~0.5 s write" the task named).**
+Off the path. Evidence: it starts only after push, so it cannot delay
+anything a follower does; and the next block's own build does not wait
+for it either -- 6ca's own prefill-phases table has `persistWait` and
+`insertParent` medians of 0.0 across 226 lines, and this section's
+`build_prefix` (QC-to-build-start gap) is itself ~0 ms at the median,
+meaning the fill for v+1 is typically already complete via the
+speculative-hit path (`worker.go:1120-1150`) well before this write
+would matter even if something did wait on it.
+
+**The follower's write (214 ms, from 6ca's `import_breakdown.py` output)
+is mostly off the path too, given the same deferred-execution finding
+above** -- it is one component of `"blockimport phases"`' `total`, which
+gates the commit vote only on the 13% non-deferred path. Averaged over
+the 87%/13% mix, its contribution to the measured 520 ms wait is real
+but small, not the ~214 ms it would be if every commit vote waited on
+full import. This is the one place this section's method cannot fully
+separate "network propagation of the parent's already-completed import"
+from "this block's own check cost" -- both live inside the same 520 ms,
+and no line in this round times the `checkedBlocks[blockHash] = true`
+step (`proposal.go:339`) on its own.
+
+**4. Build/import overlap (in-tenure).** `build_prefix` = `t_commit_start(v)
+- QC(v-1 proxy)`: median **6.2 ms** in-tenure (p90 47.3 ms) vs **621.2 ms**
+hand-over (p90 1302.3 ms). In-tenure, the leader's speculative build of
+v+1 (`worker.go:1120-1150`, "the whole build phase is off the critical
+path" per that code's own comment) has its fill essentially always
+complete before QC(v) even forms -- i.e. essentially the *entire* 520 ms
+wait segment is overlapped by speculative work on the next block, not
+spent idle. Hand-over is the opposite: the new leader was a follower for
+the outgoing tenure and holds no parked task, so it pays real,
+un-overlapped work here -- 621 ms sits between roughly the follower-import
+median (757 ms) and zero, consistent with "import/align enough of the
+parent to safely build," though this round's diagnostics do not carry a
+sub-timer that would show whether that 621 ms is the full import pipeline,
+a lighter `AlignAppliedBranch` re-check, or `persistWait`/`insertParent`
+specifically (both are accumulator fields shared fleet-wide per 6ca, not
+attributable to one build) -- **n/a at finer resolution than this
+one number.**
+
+**5. Slack check.** Median gap between "QC could form" and "next
+propose happened" (`s2q`, QC(v-1)->push(v)) is **271 ms in-tenure**. Given
+finding 3(1) above -- 87.4% of commit votes do not wait on the current
+block's own import at all -- a follower import 100 ms faster would NOT
+translate to a 100 ms-faster cycle for most blocks: **partial, and small**.
+The honest bound this round's data supports: at most the ~13% of votes on
+the non-deferred path could see the full benefit, and even those still
+share the vote-cast/QC-gossip round-trip with everyone else, which this
+round's logs do not decompose into a per-follower network-delay term
+separable from import time. So: **not "cycle <- -100"** as a blanket
+answer -- the follower side is largely decoupled from the cycle in this
+round, precisely because deferred execution was built to make it so
+(`proposal.go:294`'s own stated purpose, and 35zzq's prior 1.33 s
+without it is the direct before/after this codebase already has).
+
+**Method.** `wt-r27/scripts/qs-analysis/full_block_critical_path.py`:
+one pass per kept file, `json.loads` on lines pre-filtered by `msg`
+substring. `propose_all` keys every `"miner: propose phases"` line by
+`n` (any size) so a full block's predecessor need not itself be full;
+`propose` is the `txs>=150000` subset used to pick which blocks get a
+waterfall. Per-block leader fields (`created_at`, `t_commit_start`,
+`push_instant`, `residual`) are computed once for every proposal from the
+formulas in the anchor list above. Chained vs hand-over: same leader vs
+different leader on consecutive `n`. QC(v) proxy: the leader's own next
+`"hotstuff: view changed"` event with `isLeader:true` strictly after
+`push_instant(v)` -- the same convention `cycle.py`/`leader_gap.py`
+already use (verified here that restricting to `isLeader:true` changes
+nothing for these specific queries: within one leader's own tenure or at
+the moment its tenure begins, the very next view-changed event on that
+node's own log is always its own, since views strictly increment 1:1 with
+blocks in these windows -- zero TCs inside win1/win2/B2win1, per 6ca).
+Follower "quorum-forming" rank: the 6 followers' `"blockimport phases"`
+`tMs` (import end) sorted ascending, 4th entry (0-indexed 3). `"hotstuff
+view timing"` lines (no `tMs`, ns/ms fields inline in the message text,
+not JSON keys) were parsed with a regex and included by time-range
+membership in the three full windows (their own `time` field is
+second-resolution, adequate since these windows are ~97% full blocks
+end-to-end -- a coarse time-range filter and an exact per-block `txs`
+filter select nearly the same population here). The vote-cast
+`"deferred":true/false` ratio was read directly off
+`"two-phase vote: casting held commit vote"` lines, fleet-wide, no
+join needed. Import->vote-cast latency (spot check only, not part of any
+median above) used a nearest-following per-node join on
+`"two-phase vote: casting held commit vote"` tMs, since that line carries
+no block number.
+
+**What this does and does not show.** It shows, with two independent
+cross-checks (the push/QC/push accounting here, and the protocol's own
+`"hotstuff view timing"` r1/r2 fields), that the in-tenure full-block
+cycle is a two-segment path -- a consensus vote/QC round-trip (520 ms,
+mostly off the current block's own import thanks to deferred execution)
+followed by the leader's own serial state-root/seal/push work (271 ms) --
+and that this sums to within 1% of the measured cycle. It shows the
+follower's own import of a block routinely outlives that block's entire
+cycle by 1-2x, so it cannot be the bottleneck in-tenure, and that the
+leader's write and (mostly) the follower's write sit off that path. It
+does NOT show what specifically fills the 520 ms wait beyond "vote/QC
+round-trip plus an untimed 'checked' step" -- no line in this round times
+BLS aggregation, gossip propagation, or `checkedBlocks[blockHash]`
+individually, so that segment's own internal breakdown is n/a here. It
+does NOT show hand-over's 621 ms `build_prefix` at finer resolution than
+one number, for the same reason. It does NOT re-derive or dispute 6ca's
+own findings (occupancy, stall count, prefill-phases table) -- it reuses
+6ca's evidence-preservation and takes the same kept files as ground
+truth. And the hand-over critical-path sum (87.5% of the measured cycle)
+is a directional, not a "confirmed", result -- 68 samples with a p90 more
+than 1.5x the median is a wide enough spread that the QC-proxy's single
+next-`isLeader`-event convention (borrowed from a chained-block context
+where it is unambiguous) likely adds real noise at a hand-over boundary
+that this step did not separately quantify.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
