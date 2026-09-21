@@ -10781,6 +10781,230 @@ climb beyond 6cr's own `qmdb.mapIndex` candidate (this round captured
 no heap profile at all, by the harness's own admission, so that
 question is untouched here).
 
+## 6cw. S24: what is inside the 611-650 ms leader build and the 774-803 ms follower import of the same full block -- parallel EVM execution (~35-53%) and state-root computation (~20-25%) dominate both sides, ~14-22% of the leader's own build stays unaccounted, and the leader is NOT slower than the follower on execution (2026-09-21)
+
+Logs-only, `wr-logs/r35zzzf-keep` (35zzzf, already preserved and used by
+6cv), single-threaded per the box-sharing note (35zzzg running).
+Script: `wt-r27/scripts/qs-analysis/build_vs_import.py`. Every line in
+the campaign that carries a duration for this pipeline was joined by
+block number: `miner: seal path` (leader, ms-precision), `miner:
+prefill phases` (leader, >50 ms outliers only), `miner: parallel fill`
+(leader, no block-number field -- joined by node+time proximity, not
+per-block exact), `parallel block` (BOTH roles -- the shared execution
+engine logs once per node per block, distinguished here by whether the
+logging node IS that block's own leader), `blockimport phases`
+(follower only), `miner: propose phases` (leader's `assemble`/
+`finalize` wrapper fields).
+
+**1/2. LEADER build waterfall, medians (full in-tenure blocks, win1).**
+
+| step | B1win1 | B2win1 | work/wait | owning code |
+|---|---|---|---|---|
+| `buildBegin -> specParked` (TOTAL) | 650.0 (554-762) | 611.5 (542-721) | -- | -- |
+| `parallel block` execution sum (`recoverMs+setupMs+blockStartMs+executorMs+runMs+collectMs+applyMs+prefetchMs+finalizeMs`) | 347.0 | 332.0 | WORK (CPU, parallel EVM) | `internal/parallel_processor.go:560-640` |
+| `miner: parallel fill`'s own `pick` (candidate select/sort, NOT per-block joined -- see Method) | ~60.8 (broader full-block population) | ~60.8 | WORK (CPU, `NewTxByPriceAndNonce` over the pool) | `internal/miner/worker.go:2117-2166` |
+| `propose-phases.assemble` (commit()'s wrapper, dominated by `task.finalize` -- the OUTER, expensive state-root call, separate from `parallel block`'s own small `finalizeMs`) | 150.4 | 144.5 | WORK (CPU, QMDB root commit) | `internal/miner/worker.go:1547` (`w.commit`) -> `Finalize`/root computer |
+| **unaccounted remainder** (TOTAL minus the three rows above) | **91.8 (14.1%)** | **74.2 (12.1%)** | not determined | `worker.go:1244-1420` (`WaitBlockPersisted`-skip/`AlignAppliedBranch`-skip/`prepareWork`/`BeginRo`/state-reader wrapping) + `worker.go:1909-2117` (`fillTransactions`'s own preamble before `NewTxByPriceAndNonce`) |
+| `miner: prefill phases` (align/persistWait/roTxBegin/specTreeReload/headerPrepare/blockStart) | **0/24 matched -- fires only as a >50 ms outlier (22-30 times per node over the WHOLE trimmed window), never on this round's sampled full blocks** | (same) | -- | `internal/miner/build_stall_watchdog.go:225-236` |
+
+Without `pick` (a broader-population estimate, not exactly joined to
+these 24 blocks -- see Method), the gap is 143.5 ms (22.1%, B1win1) /
+139.7 ms (22.8%, B2win1); with it folded in, ~92/74 ms (12-14%)
+remains. **Neither reaches the "within 10%" bar** -- see VERDICT.
+`prefill phases` matching ZERO of the 96-98 sampled full leader blocks
+this round is itself informative: the align/reload/header-assembly
+portion of a TYPICAL full-block build is fast enough (<50 ms combined)
+that it never trips the outlier log, so it CANNOT be where the
+remaining ~74-92 ms lives -- ruling it out rather than leaving it as a
+silent suspect.
+
+**Work vs wait, named steps.** `parallel block`'s execution sum is CPU
+work (parallel EVM execution across 32 workers, `PARALLEL_EVM x32`);
+`waves` medians to 1 with 0 `aborts` and 0 `fallback` in every window,
+both legs -- **6bs's "64-wave re-execution from an unrecognized
+permanent nonce miss" is NOT occurring this round** (closed lever,
+confirmed still closed). `pick` is CPU work (sorting/selecting from a
+600k-entry pool). `assemble`/`finalize` (state-root) is CPU work inside
+the QMDB tree commit -- **6cb already put "the leader's own state-root
+computation" on the critical path** (6cb's title names it explicitly);
+this section adds the actual ms figure (130-170 ms) 6cb's own worked
+example did not isolate this precisely. The unaccounted remainder is
+genuinely unclassified here (per the task's own instruction not to
+guess); it is bounded above by ~92 ms and located to two candidate
+code ranges, not further split.
+
+**Speculative build placement (2, U1/`ownPendingSpeculation` context).**
+The block being measured here IS the speculative build (only a
+speculative call ever produces `specParkedTMs`), so `WaitBlockPersisted`
+is bypassed by construction (6cs/6cv) -- what `prepareWork`(header
+assembly)/`BeginRo`(read-tx open)/state-reader wrapping need from the
+PARENT is only the in-memory `unwrittenOwnPostStates` snapshot
+(`worker.go:1220`), available the instant this SAME node finished
+building its own parent -- i.e. at the parent's OWN `specParked`/`seal`
+time, not at its write. **Idle gap between builds on the same leader**:
+`buildBegin(v+1) - specParked(v)` medians **21.0 ms (B1win1, n=6)** /
+**19.0 ms (B2win1, n=6)** -- small n (needs two consecutive
+same-leader chained pairs inside one window), but consistent with
+6cv's own finding that everything between `specParked`/`specHit` and
+`push` is a handful of near-zero steps: **there is essentially NO idle
+time between consecutive builds on the same leader** -- build(v+1)
+starts as soon as push(v)'s own small pace/seal/push tail clears,
+which is itself only ~20-40 ms after build(v) parks.
+
+**3. FOLLOWER import waterfall, medians (same populations, win1).**
+
+| step | B1win1 | B2win1 | share of `total` |
+|---|---|---|---|
+| `blockimport.total` | 679.8 (558.7-829.3) | 651.3 (562.2-782.5) | 100% |
+| `blockimport.hdr` | 2.8 | 2.6 | 0.4% |
+| `blockimport.body` | 8.7 | 8.7 | 1.3% |
+| `blockimport.proc` (wraps `parallel block`) | 466.4 | 446.9 | 68.6%/68.6% |
+| ` parallel block`.`execMs` | 222.5 | 216.0 | 32.7%/33.2% |
+| `parallel block`.`finalizeMs` | 126.5 | 118.0 | 18.6%/18.1% |
+| `parallel block`.`recoverMs` (sender recovery) | 26.0 | 24.0 | 3.8% |
+| `parallel block`.`applyMs` | 25.0 | 22.0 | 3.7% |
+| `blockimport.write` | 195.2 (154.1-255.6) | 189.6 (153.7-239.0) | 28.7%/29.1% |
+
+Reconciliation: `hdr+body+proc+write` = 2.8+8.7+466.4+195.2 = **673.1**
+vs `total` **679.8** (0.99% gap, B1win1) -- **the follower side
+reconciles cleanly**, unlike the leader's. This makes sense structurally:
+`blockimport phases`' own `proc` field is a direct wrapper around the
+SAME `parallel_processor.go` call `parallel block` reports on, with no
+equivalent of the leader's separate `commit()`/task-park wrapping stage
+sitting outside it.
+
+**4. Top three, each side, with prior-section cross-check.**
+
+LEADER (B1win1, of 650.0 ms total): (1) `parallel block` execution sum,
+347.0 ms, 53.4%, WORK, `internal/parallel_processor.go:560-640` --
+**not previously isolated at this granularity**; 6u introduced the
+per-worker-reader parallel design, 6bs found and closed the 64-wave
+re-execution defect (confirmed still closed here, `aborts`=0). (2)
+`assemble`/state-root, 150.4 ms, 23.1%, WORK, `worker.go:1547` ->
+root computer -- **already flagged as being on the critical path by
+6cb's own title**, not previously given this ms figure. (3) unaccounted
+remainder, 91.8 ms, 14.1%, NOT DETERMINED, `worker.go:1244-1420` /
+`1909-2117` -- **not previously measured or attacked** (this is a new
+open item, not a re-run of a closed lever).
+
+FOLLOWER (B1win1, of 679.8 ms total): (1) `parallel block`.`execMs`,
+222.5 ms, 32.7%, WORK, `internal/parallel_processor.go` (the same
+executor as the leader's), -- covered by the SAME 6u/6bs history as the
+leader's own execution. (2) `blockimport.write`, 195.2 ms, 28.7%, WORK
+(MDBX write, mostly page-write and journal-adjacent cost), `internal/
+blockchain_write.go` -- **already the subject of the entire S18-S23
+campaign arc** (6cp/6cq/6cs/6cv): this is the SAME write whose
+collision with `journalCommitVote` (now resolved by S19) and whose own
+duration (227-331 ms, leader side) has been measured repeatedly; here
+it is confirmed present at a comparable magnitude on the FOLLOWER side
+too, never separately isolated as a follower-specific number before.
+(3) `parallel block`.`finalizeMs`, 126.5 ms, 18.6%, WORK -- **NOT the
+same finalize as the leader's small (17.5 ms) `parallel block`.
+`finalizeMs`** (see (a) below); not previously isolated at this
+granularity as a follower-specific cost.
+
+**(a) Leader vs follower execution: the coordinator's own framing
+("leader fill 351 vs follower exec 255-266") does not hold in this
+round's data -- checked directly and reported as found, not forced to
+fit.** `parallel block`.`execMs`: **leader 205.0 ms vs follower 222.5 ms
+(B1win1)**, **leader 197.5 ms vs follower 216.0 ms (B2win1)** -- the
+**follower is slightly SLOWER on raw EVM execution**, the opposite
+direction from the framing's premise, by 7.9-9.4%. `waves`/`aborts`/
+`fallback` are identical on both sides (1/0/false, medians) -- no
+retry-shape difference. The one place leader and follower diverge
+sharply is `parallel block`.`finalizeMs` itself: **leader 17.5 ms vs
+follower 126.5 ms (B1win1)** -- a ~109 ms gap, the OPPOSITE asymmetry
+from `execMs`. Reading the call site (`internal/parallel_processor.go:
+629`, `p.engine.Finalize(...)`): this is `Engine.Finalize`'s own small,
+per-block bookkeeping (rewards/withdrawals), not the big state-root
+computation (that is the leader's SEPARATE, later `commit()`-wrapper
+`assemble`/`finalize` at 150.4/136.6 ms, which has no such counterpart
+timed inside `blockimport phases` at all -- the follower's OWN
+state-root recomputation is presumably folded into `blockimport.proc`
+or `blockimport.root` without a separate line, `blockimport.root`
+reading exactly 0 in every sample here). **This asymmetry in
+`parallel block`.`finalizeMs` specifically -- not overall execution
+speed -- is the real, measured leader/follower difference, and it runs
+the OPPOSITE way from what the framing assumed; not chased to a
+root cause here given the time budget, but reported precisely rather
+than reconciled to the premise.**
+
+**5. win1 -> win2 growth (6cv's page-cache-thrash window).**
+
+| step | B1 win1->win2 | B2 win1->win2 |
+|---|---|---|
+| leader TOTAL (`buildBegin->specParked`) | 650.0->796.0 (+22.5%) | 611.5->850.0 (+39.0%) |
+| leader `parallel block` execution sum | 347.0->397.0 (+14.4%) | 332.0->444.5 (+33.9%) |
+| leader `assemble`/state-root | 150.4->186.2 (+23.8%) | 144.5->181.1 (+25.3%) |
+| follower `proc` | 466.4->546.2 (+17.1%) | 446.9->585.0 (+30.9%) |
+| follower `execMs` | 222.5->259.5 (+16.6%) | 216.0->270.0 (+25.0%) |
+| follower `finalizeMs` | 126.5->136.0 (+7.5%) | 118.0->148 (+25.4%) |
+| follower `write` | 195.2->213.3 (+9.3%) | 189.6->213 (approx, +12.3%) |
+
+**Every step grows win1->win2, in both legs, consistent with 6cv's
+page-cache-thrash finding** -- B2 grows harder than B1 on almost every
+line (state-root being the one near-parity exception, ~24-25% in both
+legs), matching 6cv's own VM-sampler numbers (B2's fault/scan jump was
+the larger of the two legs).
+
+**6. Derived (sums of measured medians only, labelled as such).**
+Baseline: in-tenure cycle win1 680.0 ms (B1) / 691.0 ms (B2), per 6cv.
+
+- (i) `specTreeReload` (part of `prefill phases`) forced to 0: **no
+  change** -- it is already effectively 0 for the median full block
+  (item 1's own finding: prefill never fires as an outlier on these
+  blocks, so its total contribution is already below the 50 ms
+  threshold that would even register it). Derived cycle: **680.0/691.0
+  ms, unchanged**.
+- (ii) leader's fill matched the follower's exec time: **no
+  change, and the substitution would make things WORSE if taken
+  literally** -- the leader's own execution (`execMs` 205.0/197.5 ms)
+  is ALREADY faster than the follower's (222.5/216.0 ms), per (4a).
+  Derived cycle: **680.0/691.0 ms, unchanged** (there is no headroom to
+  claim here on the measured direction).
+- (iii) build(v+1) starts with no idle gap after build(v): the
+  measured gap (21.0/19.0 ms, small-n) is subtracted directly. Derived
+  cycle: **659.0 ms (B1) / 672.0 ms (B2)**.
+- (iv) all three combined: since (i) and (ii) contribute 0 on today's
+  numbers, this equals (iii) alone: **659.0 ms (B1) / 672.0 ms (B2)** --
+  a 3.1%/2.7% reduction, bounded by how small the idle gap already is.
+
+**Method.** `miner: parallel fill` carries no block-number field, so
+its `pick`/`run`/`pendingSnapshot`/`trim` figures in item 1 are read
+over the BROADER population of every full-block (`candidates>=150000`)
+fill line in the kept window, not exactly joined to the same 24-block
+per-window sample the rest of this section uses -- flagged explicitly
+wherever quoted, and excluded from the strict per-row reconciliation
+sum for that reason. `parallel block` is joined by `(node, n)` and
+disambiguated leader-vs-follower purely by whether the logging node
+equals `propose_all[n]['node']` (the block's own leader) -- no separate
+role field exists on the line itself. `prefill phases`' near-total
+absence from the sampled population is treated as a finding (item 1),
+not a missing join to chase further.
+
+**What this does and does not show.** It shows the two largest, well-
+attributed costs on both sides are the SAME shared mechanism (parallel
+EVM execution, `internal/parallel_processor.go`) and, on the leader,
+the separate state-root commit (`worker.go` `commit()` wrapper) --
+consistent with and quantifying 6cb's and 6u's own earlier framing. It
+shows the coordinator's own working hypothesis about WHY leader and
+follower differ (leader fill slower than follower exec) does not match
+this round's measurements -- the follower is if anything slightly
+slower on raw `execMs`, and the real, measured asymmetry is in
+`parallel block`.`finalizeMs` (a small per-block bookkeeping call, not
+the big state-root), reported as found rather than forced. It does NOT
+close the leader's own ~74-92 ms (12-14%) unaccounted remainder to a
+specific line -- two candidate code ranges are named, not one, and
+`prefill phases`' own non-firing rules out its own listed steps as the
+content, without identifying what actually fills the gap. It does NOT
+explain the follower `finalizeMs` asymmetry's root cause -- flagged,
+not chased, given this task's own time budget. **VERDICT is therefore
+"inconclusive" against the task's own "sums within 10%" bar** -- 12-22%
+depending on leg and whether the imprecisely-joined `pick` figure is
+included -- while still landing every major cost bucket (parallel
+execution, state-root, MDBX write) precisely enough to rank and
+attribute them.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
