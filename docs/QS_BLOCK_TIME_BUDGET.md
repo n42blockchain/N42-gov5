@@ -6262,6 +6262,20 @@ round, precisely because deferred execution was built to make it so
 (`proposal.go:294`'s own stated purpose, and 35zzq's prior 1.33 s
 without it is the direct before/after this codebase already has).
 
+**Confirmatory note (S12b, 2026-09-21).** The commander did not accept
+this section's "not import-bound" reading on the strength of one
+coincidence (in-tenure cycle 799 ms vs follower import total 803 ms) and
+asked for a direct test of the specific mechanism that would make them
+equal: a saturated, serial, depth-1 import-chain pacing one QC per
+import. Section 6cc tests exactly that hypothesis on the same logs and
+**falsifies it**: the import chain runs at 39-61% busy (not saturated),
+73.4% of in-tenure full blocks need zero followers to hold their commit
+vote on import at all, and the specific follower whose vote completes
+the 5-of-7 quorum has a "held" vote line in only 13.9% of blocks (never
+released within 20 ms of its parent's import end even then -- median
+149 ms). This section's conclusion stands, now on stronger evidence than
+the coincidence alone. See 6cc for the full test.
+
 **Method.** `wt-r27/scripts/qs-analysis/full_block_critical_path.py`:
 one pass per kept file, `json.loads` on lines pre-filtered by `msg`
 substring. `propose_all` keys every `"miner: propose phases"` line by
@@ -6317,6 +6331,179 @@ than 1.5x the median is a wide enough spread that the QC-proxy's single
 next-`isLeader`-event convention (borrowed from a chained-block context
 where it is unambiguous) likely adds real noise at a hand-over boundary
 that this step did not separately quantify.
+
+## 6cc. S12b: hypothesis H (a saturated depth-1 import chain paces the QC) -- tested and falsified (2026-09-21)
+
+Commander's follow-up to 6cb. The commander flagged a coincidence 6cb
+left unexplained: in-tenure cycle median 799 ms vs follower import total
+median 803 ms. Hypothesis H, as registered: deferred execution's Round-2
+gate needs the block's PARENT imported (`deferredAttested`), and a
+follower's own import pipeline is serial (import(v-1) cannot start
+before import(v-2) finishes) -- so a saturated depth-1 pipeline whose
+stage takes ~800 ms produces exactly one QC per ~800 ms, the held commit
+vote for v is released by the END of the parent's (v-1's) import, and a
+100 ms-faster import should shorten the cycle by ~100 ms.
+
+**Code path confirmed before measuring anything.** `onBlockImported`
+(`internal/consensus/hotstuff/proposal.go:518-547`), which fires once a
+block's import completes, calls `castHeldCommitVoteIfAttested(pending
+CommitQC.BlockHash)` **directly and synchronously**, in the single
+consensus-engine goroutine. So the code genuinely wires "this node's
+import of some block finished" to "check whether a held vote can now
+release" -- H's causal claim is real code, not speculation. What is not
+yet established is whether that release is (a) the ordinary, universal
+path every full block takes, or (b) a rare path that only fires when a
+follower has fallen behind. Also found while reading: the ROUND-1
+prepare vote has the identical deferred gate (`tryDeferredVote`,
+`proposal.go:269-287`, logged as `"deferred vote: block checked and
+parent imported, voting"` when it fires with a wait) -- both rounds can
+be parent-import-gated, not just the commit round 6cb assumed.
+
+**Method.** `wt-r27/scripts/qs-analysis/parent_import_gate.py`, same
+kept logs as 6ca/6cb. View<->block-number offset (needed because
+`"two-phase vote: casting held commit vote"` carries `view`, not `n`)
+calibrated from the 6cb QC-proxy join itself: for every chained row, the
+view number of the leader's own next `isLeader:true` "hotstuff: view
+changed" event minus the block number it gates is constant per leg --
+**57/57 chained B1 rows agree on offset -13652358, 22/22 B2 rows agree on
+-13652357** (the two legs' view counters are not the same sequence --
+nodes are restarted, `"node N: SIGTERM"` / `"stopped clean"`, between B1
+and B2 in the round log -- so calibrating per-leg rather than assuming
+one global constant is required, not just cautious). `"blockimport
+phases"` `tMs` is confirmed stamped AFTER `dWrite` (`internal/
+blockchain.go:2456-2493`), i.e. import-END, by reading the log call
+site directly, not inferred.
+
+**1. d1 = t_gate(v, deferred=true) - t_parent_end(v-1), in-tenure, all 6
+non-leader nodes x 79 full blocks = 474 (follower, block) slots.**
+
+| | share |
+|---|---|
+| no held-vote line at all (cast immediately, no wait) | 410/474 = 86.5% |
+| held-vote line present, parent's `blockimport phases` also present | 64/474 = 13.5% (100% of these usable) |
+
+Among the 64 usable rows: **median d1 = 134.5 ms, p10 = 100.0 ms, p90 =
+171.0 ms. 0% land in 0-20 ms, 100% are > 20 ms, 0% are negative.** This
+is the opposite mix H's literal "released BY the end of the parent's
+import" wording predicted (which reads as d1 near 0) -- but a tight,
+always-positive, never-negative band is still a real signature of a
+causal link, just with an added ~130-150 ms step this round's logs do
+not decompose further (the chain-layer `"blockimport phases"` line and
+the consensus-layer `castHeldCommitVoteIfAttested` call are in different
+subsystems; whatever connects them -- an `EventBlockImported` dispatch,
+the engine's own event-loop scheduling, `checkedBlocks`/`deferredAttested`
+re-evaluation -- has no separate timestamp anywhere in this round's
+instrumentation. **n/a beyond "a consistent ~134 ms gap exists"**).
+
+**Distribution of how many of the 6 followers actually needed to hold,
+per in-tenure full block (n=79):** median **0**, mean 0.81 --
+
+    held-count:  0    1   2   3   4   5   6
+    blocks:     58    6   3   2   6   2   2
+
+**73.4% of in-tenure full blocks need ZERO followers to hold anything --
+every vote needed for quorum was already cast immediately.** Only
+12.7% have 4 or more of 6 held, the band where holding could plausibly
+be on the path to the 4-of-6 votes the quorum needs (5 of 7 total, the
+leader's self-vote being the other one -- 6cb's quorum-size finding
+carries over unchanged). This alone is most of the falsification: H's
+"pacemaker" reading requires the hold mechanism to matter on most or all
+blocks; it matters, at all, on barely more than a quarter of them.
+
+**Quorum-forming follower specifically (4th-fastest of the 6 by import
+completion, same definition as 6cb):** a held-vote line for that
+specific node/block exists in only **11/79 = 13.9%** of in-tenure full
+blocks. Among those 11: **median d1 = 149 ms, 0% within 20 ms of the
+parent's import end** (values: 102, 112, 122, 126, 142, 149, 153, 155,
+168, 171, 184 ms). For the other 86.1% of blocks the quorum-forming
+follower's vote was cast via the immediate path -- no import-linked wait
+measurable at all for it.
+
+**2. Is the follower import chain saturated?** No. Computed per
+contiguous window (pooling B1win1+B1win2+B2win1 into one span would
+average across the multi-minute inter-leg gap and understate busy time --
+checked and corrected before reporting):
+
+| window | busy fraction (7 nodes) | median idle gap |
+|---|---|---|
+| B1win1 | 40.7-43.6% | 5.9-10.2 ms |
+| B1win2 | 53.7-61.0% | 154.9-215.3 ms |
+| B2win1 | 38.9-43.4% | 6.0-11.8 ms |
+
+Pooled idle-gap median across all nodes/windows: **13.7 ms (n=508
+consecutive-block pairs)**. The chain is busy 39-61% of the time, not
+saturated, and the SHAPE is bimodal, not uniform: most gaps between
+consecutive imports are tiny (order 10 ms -- the chain frequently runs
+back-to-back with slack behind it) while a minority are large enough
+(B1win2's 155-215 ms median -- itself elevated, consistent with B1win2's
+already-known slower 1.304 s blockTime, 6ca) to account for the 40-60%
+non-busy remainder. A saturated depth-1 pipeline would read close to
+100% busy with a near-zero idle gap on every window; this reads as a
+pipeline with real, if unevenly distributed, slack.
+
+**3. Hand-over: does the new leader's build start at its own
+parent-import end?** No, not directly -- but import IS unambiguously
+somewhere on this path, unlike in-tenure. Across all 68 hand-over rows:
+`t_commit_start(v) - own blockimport-phases-end(v-1)` is **median
+508.3 ms, p10 388.5, p90 637.1 -- 100% of rows are > 20 ms (0% within
+20 ms, 0% negative)**: the new leader's build never starts before, and
+never right at, the moment it finishes importing the outgoing leader's
+last block; it always starts a further ~500 ms later. That gap sits
+inside `build_prefix` (QC-proxy-to-build-start, median 621.2 ms) --
+chronologically, the QC-proxy event precedes this node's own
+parent-import-end by a further ~113 ms in the median case (621.2 -
+508.3), meaning the view had already (per the QC-proxy) advanced to this
+node's tenure before its own local import of the immediate parent even
+finished. This round's diagnostics carry no separate timestamp for "own
+vote cast" or "build-trigger received" to explain what fills the
+remaining ~508 ms after import finishes -- **n/a beyond the one number**.
+
+**4. Hypothesis H: falsified**, on three independent legs of evidence
+that all point the same way: (a) the import chain is not saturated
+(39-61% busy, bimodal idle gaps, not ~100%/~0); (b) 73.4% of in-tenure
+full blocks need no follower to hold a vote at all, and the
+quorum-determining follower specifically needs holding in only 13.9% of
+blocks; (c) even in the minority of cases where a hold IS observed, the
+release lags the parent's import-end by a consistent ~130-150 ms, not
+~0 -- a real dependency, but on a path that is off the critical path for
+the large majority of blocks, exactly as 6cb concluded from the
+q2s/leader-r2 evidence alone. The numeric coincidence that prompted H
+(799 vs 803 ms) is not shown to be causal for the median block; it
+remains, on this evidence, a coincidence between two numbers this round
+did not otherwise expect to be equal.
+
+**5. Slack, re-answered with this evidence.** In-tenure: import 100 ms
+faster would leave the cycle for **73.4% of blocks completely
+unchanged** (quorum already forms from immediate votes with zero
+import-linked wait), and would help only the minority where a hold
+happens -- and even then, only partially, since the ~130-150 ms
+dispatch gap on top of the parent's import is itself unexplained and not
+guaranteed to shrink 1:1 with import time. **Partial, and small in
+aggregate** -- confirming 6cb's original answer, now for a mechanistic
+reason (quorum rarely needs the held path at all) rather than only the
+aggregate q2s/r2-timing argument. Hand-over is different in kind: import
+IS somewhere on this node's own path (build never starts before its own
+import ends), so a 100 ms-faster import plausibly removes close to
+100 ms from the ~757 ms import component specifically -- but the
+additional, unexplained ~508 ms gap after import means the translation
+to the full hand-over cycle is **partial, not confirmed as 1:1** for the
+cycle as a whole.
+
+**What this does and does not show.** It shows, with three independent
+measurements (release-timing distribution, per-block held-follower
+count, and chain occupancy), that hypothesis H's specific causal
+mechanism is real code (confirmed by reading `proposal.go:518-547`) but
+is exercised on only a minority of blocks and follower-slots, and does
+not saturate the import chain -- so it cannot be the pacemaker of the
+typical in-tenure cycle. It does NOT show what the ~130-150 ms
+notify-to-release gap consists of (dispatch, event-loop scheduling, or
+re-evaluating `checkedBlocks`/`deferredAttested` -- no line times any of
+these individually). It does NOT show why B1win2's idle gaps are an
+order of magnitude larger than B1win1's/B2win1's beyond "B1win2 is
+already known to be the slower window" (6ca) -- a deeper look at what
+specifically elevates B1win2 was out of scope here. It does NOT
+determine, for hand-over blocks, what the new leader's build is doing
+for ~508 ms after its own import of the parent finishes.
 
 ## 8. Method
 
