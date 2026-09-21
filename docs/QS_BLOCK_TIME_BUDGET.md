@@ -6915,6 +6915,175 @@ ahead of the block, or some other admission path populates the cache),
 nor does it evaluate a compact-block relay design -- only the
 measurement the task asked for.
 
+## 6cf. S14: n42-r87 built and prepared -- prediction 83 registered before the round (2026-09-21)
+
+**Why.** 6cb-6ce closed transport (delivery 43.9 ms, 8.5% of push->QC) and
+the held-vote minority (`CheckDeferredBlock`, ~134 ms, 13.5% of blocks) as
+explanations for the in-tenure cycle's 520 ms push->QC segment, matched to
+Round1 (129 ms) + Round2 (370 ms) = 499 ms (95.9% closure). Signing/
+verifying a handful of BLS votes on one host is milliseconds, so roughly
+450 ms of that 499 ms is consensus handlers waiting on something no line in
+any prior round names. S14 instruments the wait directly rather than
+inferring it from adjacent phase medians again.
+
+**What S14 implements**, all behind `N42_CONTENTION_DIAG=1` (read once at
+start-up, `internal/consensus/hotstuff/engine.go`; `N42_BUILD_STALL_DIAG=1`
+keeps working unchanged alongside it):
+
+1. **Contention profiling** (`cmd/n42/app.go`, before `node.NewNode` starts
+   the consensus service): `runtime.SetMutexProfileFraction(5)` and
+   `runtime.SetBlockProfileRate(1_000_000)`. `/debug/pprof/mutex` and
+   `/debug/pprof/block` are already served wherever pprof is (the
+   `net/http/pprof` blank import registers them unconditionally); this only
+   turns on the sampling that makes them non-empty.
+2. **Vote-path stamps** (`internal/consensus/hotstuff/view_timing.go`'s
+   `contentionStamps`/`roundContention`, wired into `voting.go`/
+   `proposal.go`/`service.go`). The serialising point identified by reading
+   the code (see SERIALISER below) is `e.mu` (`ConsensusEngine.mu`, a plain
+   `sync.Mutex`, `engine.go`), taken by `ProcessEvent`
+   (`engine.go:596-598`) for every inbound message AND every
+   block-imported/checked/rejected/ready event, held for the whole handler
+   call -- there is no separate event-loop dispatch on top of it to time.
+   `t_arrive` is stamped in `processGossipMessage` (`service.go`), the
+   single entry point for both the gossip loop and the direct Rotor-relay
+   stream handler; `t_locked` at the top of
+   `processVote`/`processCommitVote`/`processProposal`/`processPrepareQC`;
+   `t_done` when that handler returns. Aggregated per view into "hotstuff
+   view timing": leader side gets `r1n`/`r1lw`/`r1lwMax`/`r1wk`/`r1kth`/
+   `r1qk` and the Round-2 equivalents (`r2*`) -- count, lock-wait sum/max,
+   work sum, and the quorum-completing (k-th) vote's arrival offset from
+   the round's start plus QC-formed-minus-k-th, splitting each round into
+   "waiting for enough votes" vs "aggregating once there were enough";
+   follower side gets `propLw`/`propWk` (Proposal), `pqcLw`/`pqcWk`
+   (PrepareQC), `pqc2cv` (PrepareQC-arrival to commit-vote-sent), and
+   `cvHeld`/`cvGate` (`own-import` | `parent-import` | `checked`, from
+   `castHeldCommitVoteIfAttested`'s two call sites in `onBlockChecked`/
+   `onBlockImported`, `proposal.go`). All silent (no new fields appended)
+   when the switch is off -- `TestLogLineSilentWithoutContentionData`.
+
+**Suspects found by reading the code (not fixed; ranked).** The task asked
+to write these down rather than fix them -- the round measures, a fix is
+its own future step with its own prediction:
+
+1. **`JournalVote`'s MDBX write, run under `e.mu`, on every single vote --
+   leader propose, follower prepare vote, follower/leader commit vote --
+   shares the node's ONE MDBX writer lock with block import/write.**
+   `journalPrepareVote`/`journalCommitVote` (`engine.go:233-268`, both
+   doc-commented "Caller must hold e.mu") call `e.voteJournal.JournalVote`,
+   implemented by `Service.JournalVote` (`service.go:1219-1226`,
+   `s.db.Update(...)` -- an MDBX read-write transaction) whose own comment
+   says it runs "on the ENGINE goroutine with the engine mutex held."
+   `internal/node/node.go:1863` passes `n.db` -- the SAME `kv.RwDB` the
+   blockchain, snapshots, pruner and history backfiller all write through
+   -- into `hotstuff.NewService`. MDBX allows one writer transaction at a
+   time per environment; a concurrent block write (leader's own ~349 ms
+   median, 6cb; a follower's own ~214 ms, 6ca) holds that slot, so any
+   vote's journal write queued behind it stalls `e.mu` -- and therefore
+   ALL consensus message processing on that node -- for the remainder of
+   the write. Four call sites: `onBlockReady` (`proposal.go:81`, the
+   LEADER's own proposal -- this is the "Propose" phase, 250 ms median in
+   6cd's Gap C table), `processProposal` (`proposal.go:251`, follower
+   two-phase prepare vote), `processPrepareQC` (`proposal.go:431`, follower
+   commit vote), `tryFormPrepareQC` (`voting.go`, leader's own commit-vote
+   journal).
+2. **`processOutputs`' single-threaded output loop runs `CommitToCanonical`
+   and `persistState` inline** (`service.go:585-596`, the `OutputBlockCommitted`
+   case around `service.go:642-704`), a SECOND serialising point (not
+   `e.mu`) the code's own comment already flags: "handleOutput also runs
+   heavyweight work inline (CommitToCanonical unwind+re-execute, persistState
+   MDBX commits)... A vote/timeout broadcast queued behind either misses
+   its view window" -- which is why `OutputBroadcast`/`OutputSendToValidator`
+   were already carved out onto their own goroutines. `OutputExecuteBlock`/
+   `OutputSpeculativeBuild`/a later `OutputBlockCommitted` were not, and can
+   still queue behind an in-flight `CommitToCanonical`; its own `persistState`
+   write is yet another claimant on the same single `n.db` writer lock as
+   suspect 1.
+3. **Unbatched BLS verification of every PrepareQC/CommitQC/Decide message,
+   under `e.mu`, on the receiving side** (`e.verifyQCWithSet`, e.g.
+   `processPrepareQC`, `proposal.go`). Votes are batch-verified
+   (`batchVerifyVotes`, `voting.go`) once buffered; a QC's own aggregate
+   signature is not, so this is real per-message CPU held under the lock --
+   likely single-digit milliseconds for 7 validators, far smaller than
+   suspects 1-2, listed for completeness rather than as a leading
+   candidate.
+
+**Build.** Same file-checkout recipe as n42-r86: detached worktree at
+`f7ec2836`, n42-r86's exact file set (see 6bz), plus S14's changes. One-
+variable check: all 7 files S14 touches/adds
+(`cmd/n42/app.go`, `internal/consensus/hotstuff/{engine,proposal,service,
+view_timing,voting}.go`, the new `contention_test.go`) were compared
+against the version n42-r86 was built from -- `internal/consensus/hotstuff/
+proposal.go` is part of r86's own file list (from commit `c0931aeb`, the
+DEFERRED lever), the other 6 are not (r86's version of those is simply
+`f7ec2836`'s, untouched by any lever). `git diff c0931aeb <S14 commit>^ --
+proposal.go` and `git diff f7ec2836 <S14 commit>^ -- <other 6 files>` were
+all EMPTY -- every one of the 7 files was byte-identical to r86's own
+version before S14's edit, so every file was checked out directly from the
+S14 commit with no hunk surgery needed (unlike `worker.go` in 6bz).
+`internal/parallel/base_cache.go` confirmed absent from the build
+worktree; `grep -rl BaseCache` over `internal/`/`modules/` in it: empty.
+`go build -p 8 -tags nosqlite,noboltdb` clean; in the same worktree,
+`go vet` clean and `go test ./internal/consensus/hotstuff/...`
+(263 tests) and `./internal/miner/...` both pass, full (non-`-short`)
+package run, ~5-6 s including under `-race` -- no need for `-short`.
+`/data/blockchain/gov5-work/n42-r87`: sha256
+`a22b16ce540bfba172174fd494fcb76542ca7c87acb5effd1ff0b9378d215eb9`.
+`strings n42-r87 | grep -c BaseCache` = 0; `strings n42-r87 | grep -c
+"build stalled before fill"` = 1 (S11's diagnostic, still present) and
+`strings n42-r87 | grep -c "contention profiling enabled"` = 1 (S14's).
+
+**Runner.** `run-r35zzza.sh`/`chain-35zzza.sh` built from the `run-r35zzz.sh`/
+`chain-35zzz.sh` pair (35zzt's eight-generator shape, unchanged --
+`-target-depth 45000`, `--floods 8 --senders 1000`). Binary retargeted to
+n42-r87; `N42_CONTENTION_DIAG=1` added next to `N42_BUILD_STALL_DIAG=1` in
+the node environment block. `chain-35zzza.sh` waits on `wr-logs/r35zzz.log`'s
+terminal line (its actual predecessor); memory gate, n42-rs turn-taking and
+quiet-box checks unchanged. New in the run script: a per-B-leg profile
+capture (`run-r35zzza.sh`'s `run_leg`, gated on `$1` being `B1`/`B2`), 150 s
+after leg start -- find the sitting leader (the node whose log most
+recently printed `"miner: propose phases"`, a leader-only line) and one
+follower (the node that printed it least recently or never, a proxy for
+"furthest from being next leader" under round-robin tenure 4, since
+decoding the exact validator<->node schedule was out of scope here); pull a
+20 s CPU profile and 20 s mutex/block DELTA profiles
+(`/debug/pprof/{profile,mutex,block}?seconds=20`, confirmed from the Go
+1.26 stdlib source that mutex/block support `seconds=` as a delta) from
+each, concurrently, into `/data/blockchain/wr-pprof/r35zzza-<leg>-node<i>-
+{cpu,mutex,block}.pb.gz`; curl failures are `say`-logged and never abort
+the round (`-m 40` timeout, matching the existing stall-watch curl's
+pattern). One collateral bug avoided this time: `run-r35zzz.sh`'s giant
+~11 KB history comment line (line 3) contains no legacy binary name that
+collides with the `35zzz`->`35zzza` substitution (unlike 6bz's `n42-r35zzt`
+case against `35zzt`->`35zzz`), confirmed by diffing that exact line before
+and after the blanket rename -- identical. `bash -n` clean on both scripts.
+Neither launched.
+
+**Prediction 83 (registered before any round).** On `run-r35zzza.sh`/
+`chain-35zzza.sh`, n42-r87, 35zzt's eight-generator shape (35zzz's own B
+mean, 126.3k, is the baseline this round is measured against):
+(a) diagnostics are free: B mean within the 3.6% noise floor of 126.3k;
+(b) the stamps plus the mutex/block/CPU profiles attribute >= 70% of
+Round1+Round2 (499 ms median, 6ce) to named waits (a lock or queue, with
+its holder identified) or named work; (c) if (b) fails, the stamps still
+split each round into k-th-vote-arrival vs leader-side QC-formation
+(`r1kth`/`r1qk`/`r2kth`/`r2qk`), which alone says whether followers or the
+leader are the slower half.
+
+**VERDICT: confirmed** (implementation, tests, one-variable check and build
+all done). QS_QUEUE.md's S14 row is marked prepared with prediction 83, not
+launched.
+
+**How to read the profiles.** `go tool pprof -top -sample_index=delay
+http://... ` is for a live server; against a saved `.pb.gz`:
+`go tool pprof -top -sample_index=delay /data/blockchain/wr-pprof/
+r35zzza-B1-node<i>-mutex.pb.gz` ranks lock sites by cumulative wait time
+(the `contentions`/`delay` sample pair mutex/block profiles carry); drop
+`-sample_index=delay` for the `contentions` count instead. The CPU profile
+reads the same way as any `go tool pprof -top ...cpu.pb.gz`. Cross-reference
+against the `hotstuff view timing` line's new fields (which name a PHASE
+and a MAGNITUDE) and the profile (which names a LOCK/CALL SITE and a
+MAGNITUDE) for the same ~20 s window on the same node.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
