@@ -12865,6 +12865,240 @@ as open, not answered, consistent with this task's own time budget and
 its instruction to report findings honestly rather than force a
 resolution.
 
+## 6df. S30: H-bench wins -- the benchmark's memdb backend and its explicit skip of Finalize/block-end explain the 4.4x gap; H-multi's literal form (re-executing a committed block) is not found, but a real, already-counted second per-tx pass (CheckDeferredBlock's own sender recovery) is confirmed on the follower side (2026-09-21)
+
+Logs + profiles + code, single-threaded/`nice` (35zzzi still on the
+box). Same inputs as 6de (`wr-logs/r35zzzh-keep/node{1,2}-B.log`,
+capture span 16:25:11-16:25:31 -- the actual profiled 20s, not the
+16:25:11-16:26:32 span the task named, which spans BOTH win1's node1/
+node2 capture AND win2's separate node6/node0 capture; this section
+uses the window that matches the profiles 6de actually read).
+`BenchmarkParallelBlockTransfers` was READ, not re-run (the task's own
+instruction: at most once, pinned, and the box is still running
+35zzzi -- not spent here since the committed benchmark numbers from
+6dc are sufficient for this section's own comparison).
+
+### H-multi: counted directly from the kept logs, node1 and node2, capture span only
+
+| line | node1 | node2 |
+|---|---|---|
+| `miner: parallel fill` | 1 | 4 |
+| `parallel block` | 15 | 16 |
+| `miner: speculative build parked` | 2 | 3 |
+| `miner: speculative build hit` | 2 | 3 |
+| `miner: speculative build discarded` | 0 | 0 |
+| `blockimport phases` | 14 | 13 |
+| `deferred check:` | 15 | 13 |
+| `miner: suppressing divergent...` (sibling drop) | 0 | 0 |
+
+**`parallel block` fires EXACTLY ONCE per distinct committed height on
+both nodes** (checked directly: node1's 15 occurrences cover 15
+distinct heights 13658578-13658592, each with count 1; node2's 16
+cover 16 distinct heights 13658577-13658592, each count 1). **Zero
+speculative builds were discarded and zero same-height siblings were
+suppressed in this window** -- every speculative build that started
+was later hit, not wasted. **H-multi in its literal form -- the SAME
+committed block's transaction set re-executed more than once on one
+node -- is NOT FOUND in this window.** The denominator question the
+task raised (was the "16 blocks" all full, and did speculative building
+beyond those 16 happen inside the span) is answered directly by the
+above: yes, all 15-16 `parallel block` firings correspond to the 15-16
+FULL, distinct, committed heights counted in 6da/6de (no extra,
+uncommitted executions ran inside the span on either node) -- **the
+denominator (16 blocks / ~163,000 tx each) used throughout 6da-6de is
+correct as a per-committed-transaction average; it is not inflated or
+deflated by hidden re-execution.**
+
+**A real, different form of "multi" IS confirmed, already counted in
+6de's own `F` bucket.** `CheckDeferredBlock` (`internal/
+deferred_includable.go:38`, the ONLY call site is `internal/sync/
+rpc_block_push.go:91` -- **follower-only**, a node never runs this on
+its own sealed block) calls `deferredTxPlan` (line 120), which:
+recovers **every transaction's sender AGAIN** (`transaction.Sender
+(signer, t)`, line 165, fanned out across `senderRecoveryFanout()`
+goroutines) into a fresh `senders := make([]types.Address, len(txs))`
+slice (line 126), then groups transactions into per-sender
+`deferredSender` structs, each carrying its OWN `txs []*transaction.
+Transaction` slice. **This is a genuine SECOND per-transaction pass --
+sender recovery plus a full grouping/slice-allocation walk -- separate
+from and IN ADDITION TO the executor's own per-tx sender recovery
+inside `parallelApplyTx`/`recoverBlockSenders`.** It runs once per
+received block, follower-side only (`deferred check:` firing 13-15
+times matches the follower-import count almost exactly, 14/13 vs
+13/15 blockimport-adjacent counts, consistent with running on
+essentially every pushed block this node receives). **It was already
+correctly bucketed into `F` in 6de** (the call chain `deferredCheck ->
+CheckDeferredBlock -> deferredTxPlan` matched 6de's own F pattern
+list) -- this section's contribution is naming the MECHANISM precisely,
+not correcting a mis-bucketing.
+
+### H-bench: read from the benchmark's own source, `internal/parallel_processor_bench_test.go`
+
+Three structural gaps versus the fleet's real pipeline, all confirmed
+by reading the file directly:
+
+1. **State backend: `lib/kv/memdb` (in-memory), not MDBX/QMDB.**
+   `runTransferBlockOnce` opens `bc.ChainDB.BeginRo` against a
+   `memdb.NewTestDB` -- every state read the benchmark's own
+   `PlainStateReader` performs is a Go map lookup, never a cgo call
+   into MDBX, never a real QMDB tree/twig read, never the fleet's own
+   cached-state-reader/post-state-layer wrapping stack the miner's real
+   fill and the importer's real `ProcessParallel` run through. This is
+   the single largest structural gap: every one of the fleet's own
+   per-tx state reads (`PlainStateReader.ReadAccountData` -- present in
+   BOTH the benchmark's own top-10, 6dc, AND the fleet profile, so the
+   CODE PATH is shared, but the underlying STORAGE is not) costs
+   whatever a real MDBX page read/cgo round-trip costs in the fleet,
+   which the benchmark's in-memory map cannot reproduce.
+2. **`BuildParallel` explicitly skips Finalize and block-end, by its
+   own doc comment** (quoted verbatim in the benchmark's own code
+   comment, `internal/parallel_processor_bench_test.go:121-124`):
+   *"neither block end nor Finalize runs -- the builder's assemble does
+   that."* The fleet's real pipeline -- both the miner's `commit()` (for
+   a leader's OWN block) and the importer's `StateProcessor.Process`
+   (for a follower's import) -- DOES run block-end system calls
+   (EIP-7002/7251 Prague withdrawal/consolidation, per the CLAUDE.md's
+   own architecture notes) and per-block `Finalize` (the delta-credit
+   fold, the state-root-relevant bookkeeping) on top of what
+   `BuildParallel` measures. **None of that cost is in the benchmark's
+   own 6.25 KB/tx at all -- not "under-measured," genuinely absent.**
+3. **20,000 transactions, reused/warm state across `b.N` iterations,
+   fresh keys generated ONCE outside the timed loop.** The fleet's own
+   full blocks are ~163,000 transactions (8.15x the benchmark's own
+   count) against a chain state that has been accumulating live
+   accounts/storage for the whole leg (6da/6cr's own `qmdb.mapIndex`
+   growth finding) -- any per-block bookkeeping structure whose COST
+   scales with total LIVE state size rather than purely with
+   transactions-in-this-block (the QMDB index lookup itself, page-cache
+   locality) would cost MORE in the fleet than in a benchmark running
+   repeatedly against the SAME small, warm, 20,000-account state. This
+   is a plausible contributor, not separately quantified this pass.
+
+**Sites present (non-negligible) in the fleet's own profile but
+absent or negligible in the benchmark's own memprofile top 10 (6dc):**
+`go-buffer-pool.(*BufferPool).Get` (fleet: 8.32 GB/capture, 6da/6de's
+own category C/B; wire/framing -- structurally cannot appear in a
+benchmark that never touches the network), `transaction.
+decodeEthereumTransaction`/`DecodeEthereumTransaction` (fleet: 8.28+
+4.08 GB; the benchmark decodes its OWN 20,000 transactions ONCE,
+OUTSIDE `b.ResetTimer()`, so decode cost is explicitly excluded from
+the timed/measured loop by design -- 6dc's own text confirms this:
+"transactions are pre-decoded before `b.ResetTimer()`"), `internal/
+sync.(*Service).deferredCheck`/`deferredTxPlan` (fleet: real, per H-multi
+above; `BuildParallel` has no caller that would ever reach
+`CheckDeferredBlock`, so this is structurally absent from the
+benchmark, not merely small), `protobuf/internal/impl.consumeBytes`
+(fleet: 3.96 GB; block/message wire deserialization, the benchmark
+builds its `block.Header` as a Go struct literal, never through
+protobuf). **These four are exactly the sites 6de's own `A`/`B`/`C`/
+`F` categories cover -- confirming, from the benchmark's own source
+rather than inference, that the executor-isolated benchmark was never
+going to see them, by design, not by oversight.**
+
+### Reconciled account
+
+| | executor cost per EXECUTION | executions per node per committed block | role |
+|---|---|---|---|
+| Isolated benchmark (`BuildParallel`, memdb, no Finalize/block-end, pre-decoded, 20k tx) | 6.25 KB/tx | 1 (measured in isolation) | neither -- a lower bound on the executor's OWN inner loop only |
+| Fleet, leader role (build) | ~27.6 KB/tx (`EXEC_shared`, 6de) + ~3.6 KB/tx attributable build-wrapper (`E`, 6de) = **~31.2 KB/tx** | **1** (confirmed above: no re-execution found) | `BuildParallel` through the REAL MDBX/QMDB stack, plus `commit()`'s own Finalize/block-end the benchmark skips |
+| Fleet, follower role (import) | ~27.6 KB/tx (`EXEC_shared`) + ~13.2 KB/tx attributable import-wrapper (`F`, 6de, INCLUDES `deferredTxPlan`'s own second sender-recovery pass) = **~40.8 KB/tx** | **1 execution + 1 additional lighter per-tx pass** (`deferredTxPlan`: sender recovery + grouping, not a full EVM re-execution) | `ProcessParallel` through the REAL stack, plus the unconditional RLP re-decode (6dc) and the deferred-check's own extra sender-recovery walk, both real and both already counted in `F` |
+
+**`EXEC_shared`'s own 27.6 KB/tx, appearing in BOTH the leader and
+follower rows above at the SAME value, is not double-counted across
+this table -- it is the SAME underlying per-execution cost (the
+executor doesn't know or care whether `parallelApplyTx` was reached via
+`BuildParallel` or `ProcessParallel`), quoted once per row because each
+row describes ONE node's ONE execution of that role.** The gap between
+this per-execution cost (27.6 KB) and the benchmark's own (6.25 KB) --
+a **4.4x** ratio -- is explained STRUCTURALLY by H-bench's three items
+above (real MDBX/QMDB reads replacing in-memory map reads being the
+largest of the three), not by counting the same execution more than
+once.
+
+**VERDICT: H-bench, primarily; H-multi confirmed in a real but minor,
+already-counted form.** The literal H-multi ("a transaction's full
+execution repeats") is not found in this window: `parallel block`
+fires once per committed height, zero speculative builds were wasted.
+The MILDER form of H-multi (a genuine second, lighter per-transaction
+pass -- sender recovery, not full EVM execution -- via `deferredTxPlan`
+on the follower side) IS confirmed and real, but it was ALREADY inside
+6de's own `F` figure, not an unaccounted addition on top of it. The
+DOMINANT explanation for the executor-cost gap (27.6 vs 6.25 KB/tx,
+4.4x) is H-bench: the isolated benchmark runs against `memdb` (no real
+MDBX/QMDB reads) and explicitly skips `Finalize`/block-end by its own
+design, per its own doc comment -- structural absences, not
+measurement noise.
+
+### Corrections, dated
+
+- **6dc's "~9.2%" (isolated executor's share of the fleet's per-transfer
+  allocation) needs a READING correction, not a numeric one**: 6dc's
+  own 9.2% figure is, and remains, an accurate measurement of WHAT THE
+  BENCHMARK MEASURES (`BuildParallel`'s own inner-loop cost against
+  `memdb`, Finalize/block-end excluded by the benchmark's own explicit
+  design). **It should not be read as "the executor is 9.2% of the
+  fleet's real per-transaction executor cost" -- it is closer to
+  6.25/31.2 = 20% of the fleet's OWN real leader-role executor cost, or
+  6.25/40.8 = 15% of the real follower-role cost**, once Finalize/
+  block-end and the real storage backend are accounted for. 6dc's own
+  conclusion (drop items 1-4, keep the benchmark as a yardstick) is
+  UNCHANGED by this correction -- the benchmark remains a valid,
+  useful tool for measuring changes WITHIN the executor's own inner
+  loop; it was never designed to, and should not be read as, a
+  full-fidelity stand-in for the fleet's total per-transaction cost.
+- **6de's partition needs no bucket correction** -- `deferredTxPlan`
+  was already correctly classified as `F` by this section's own
+  re-check of the call chain. What 6de's own text did not yet say,
+  and this section adds, is the NAME and MECHANISM of a specific,
+  real cost inside `F`: a second, sender-recovery-only per-transaction
+  pass, distinct from (and cheaper than) a full re-execution.
+
+### One-paragraph restatement, of the 10.36 GB/block
+
+**(i) One necessary execution** (the executor's own real, MDBX/QMDB-
+backed, Finalize/block-end-included cost, ~31.2 KB/tx on the block's
+own leader, ~4.51 GB/block worth of `EXEC_shared` fleet-wide-average
+plus its own `E`/`F` wrapper shares) is **roughly 5.1 GB/block (49%)**
+(`EXEC_shared` 4.51 + `E` 0.58 GB, the leader-side reading of "the one
+execution a committed transaction structurally requires"). **(ii)
+Repeated or discarded executions**: **not found in this window** --
+0% of the 10.36 GB, per H-multi's own direct count above (zero
+discarded speculative builds, zero suppressed siblings, one `parallel
+block` per committed height). **(iii) Follower-side decode + deferred
+check** (the unconditional RLP re-decode, 6dc, plus `deferredTxPlan`'s
+own second sender-recovery pass, both inside `F`'s attributable
+2.15 GB/block/13.2 KB-tx): **~2.15 GB/block (21%)**, on top of the SAME
+transactions' `EXEC_shared` cost already counted in (i)'s reading for
+the OTHER six nodes that import rather than build any given block
+(this paragraph describes ONE node's own per-transaction average
+across its own mixed role-week, not a fleet-wide sum across all seven
+nodes, consistent with 6de's own scope). **(iv) Ingest/gossip/pool**
+(`A`+`B`+`C`+`D`, 6de): **~1.61 GB/block (16%)**. **(v) Unassigned**
+(`G`, 6de): **~1.48 GB/block (14%)**. These five sum to the measured
+10.36 GB/block within rounding (5.1+0+2.15+1.61+1.48 = 10.34 GB).
+
+**Method.** Log counts via direct `grep`/`python3 -c` one-liners
+against the exact 20s window each profile actually covers (verified
+per-height uniqueness with a small inline counter, no new script).
+`deferred_includable.go` and `parallel_processor_bench_test.go` read
+directly, in full, for the call chain and the benchmark's own explicit
+scope statements -- no inference from profiles for either.
+
+**What this does and does not show.** It shows the executor-cost gap
+between 6dc's benchmark and 6de's fleet figures is real, structural,
+and now explained by NAMED code differences (backend, Finalize/block-
+end scope, decode timing) rather than left as an open ratio. It shows
+H-multi's literal form is absent from this window by direct count, and
+locates the real (milder) form of "multi" precisely, inside a bucket
+that was already correctly counted. It does NOT re-run the benchmark
+against a QMDB/MDBX-backed harness to QUANTIFY the backend gap
+directly (the task's own instruction: at most once, pinned, and not
+spent here) -- the 4.4x ratio is explained qualitatively, by naming
+the missing pieces, not decomposed into "X% backend, Y% Finalize, Z%
+scale." It does NOT re-measure `deferredTxPlan`'s own KB/tx separately
+from the rest of `F` -- naming the mechanism was this section's own
+scope, not re-splitting an already-correct bucket further.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
