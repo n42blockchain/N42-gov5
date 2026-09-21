@@ -1072,3 +1072,104 @@ not running.
 
 Prediction 90 (see 6cy for the exact bars) is registered. Launch is
 the commander's next call.
+
+---
+
+## S26 (SAFETY) prepared -- the vote rule, not the leader path, is the fix (2026-09-21)
+
+**What happened.** Round 35zzzg: node5 led a 4-view tenure (8782-8785).
+View 8784 committed `7a6d85…23259c` (height 13661138, parent
+13661137). View 8785 committed `f47f65…13d8ac` -- a DIFFERENT block,
+SAME height, SAME parent -- 5/5 votes in both rounds, one second
+later. Node5's own write of the second block failed (`ErrStaleSeal`)
+after its CommitQC had already formed; the other six nodes voted it
+through the deferred path and then could never place it. Full detail
+in docs/OPEN_ISSUES.md "A quorum-committed block that no node stored"
+and docs/QS_BLOCK_TIME_BUDGET.md 6cz.
+
+**Root cause, read from the code, not inferred.** Two-phase (deferred-
+execution) voting's Round 1 (`processProposal`, `internal/consensus/
+hotstuff/proposal.go`) voted on the raw Proposal message immediately,
+checking the extends-rule (`extendsJustify`: "the block's parent must
+be the proposal's JustifyQC block") ONLY when the block happened to
+already be locally imported -- which is essentially never true the
+instant a Proposal arrives, so the check was skipped on the ordinary
+path. Round 2 (`processPrepareQC`) had no extends check at all: a
+valid PrepareQC signature only proves a quorum SENT prepare votes, not
+that those votes were for a block that extends anything, and
+`deferredAttested` (the two-phase Round 2 gate) only checks that the
+block's OWN (possibly stale) parent is locally applied -- true of a
+stale sibling precisely because its parent is old enough to be
+canonical everywhere. The leader-side guard
+(`firstSealedOnParent`/`recordSealedOnParent` in `internal/miner/
+worker.go`) used to record the winning seal only AFTER its write
+completed, so a second, independently-sealed candidate on the same
+parent (a parked speculative task) could reach `handleSealed` while
+the first block's write was still in flight and slip through
+unsuppressed.
+
+**The fix (no switch -- this is a safety fix, not a lever).** Round 1's
+two-phase branch now shares the same checked/imported-gated wait the
+non-two-phase path already used, so `extendsJustify` always runs once
+the block's real parent is known. Round 2 gains an explicit
+`extendsJustify` call before sending the commit vote. Leader:
+`recordSealedOnParent` moves to seal time, before push/propose. No
+wire-format change was needed or made -- the Proposal message carries
+no parent field; the fix uses the SAME `EventBlockChecked`/
+`EventBlockImported` bookkeeping the non-two-phase path already
+relies on. Total diff ~55 lines across two files, well under the
+~200-line stop-and-report bar.
+
+**Tests.** `internal/consensus/hotstuff/conflicting_commit_test.go`
+(new): `TestTwoPhasePrepareVoteRefusesNonExtendingProposal` and
+`TestTwoPhaseCommitVoteRefusesNonExtendingProposal` replay the exact
+shape (a proposal whose JustifyQC names a committed block, but whose
+own checked/imported parent is a different, older block) and FAIL on
+n42-r92's source, PASS with the fix.
+`TestTwoPhaseVotesStillFireForAnExtendingProposal` is the happy-path
+guard. `internal/miner/seal_guard_test.go` (new):
+`TestRecordSealedOnParentFirstSealWins` pins the map-level invariant
+the relocated call depends on. Fixing this surfaced one latent,
+unrelated bug: `tryDeferredVote`'s "justify must be imported" check
+did not fail open for a ZERO (genesis) justify the way `extendsJustify`
+itself already does, so the very first block after genesis under
+deferred + two-phase voting could never pass Round 1 once the two
+modes shared one code path -- caught by
+`TestDeferredPipelineCommitsWithoutImportingTheBlock` (pre-existing),
+fixed with a 3-line change to the same function. Full
+`internal/consensus/hotstuff`, `internal/miner`, `internal/miner/builder`
+suites pass; `internal/parallel` and `internal/` pass in the
+reconstructed build worktree.
+
+**Build: n42-r94 = n42-r92's exact file set + this fix, NOT r93.**
+File-checkout recipe reproduced from scratch (detached worktree at
+`f7ec2836`, the same commit list n42-r92 used), verified via the same
+one-variable check n42-r92's own build used: the reconstructed
+`worker.go` differs from `62439af7`'s own blob by exactly the four
+already-known off-lineage lines every prior build in this chain has
+shown. `proposal.go`'s pre-fix content was byte-identical to HEAD's
+own pre-S26 version (nothing touched it between `812cf162` and this
+step), so it was copied directly, then this step's fix applied on top
+of the reconstructed tree (not HEAD's tree, which already carries
+S23's retired async-writer code). `internal/parallel/base_cache.go`
+confirmed absent. `/data/blockchain/gov5-work/n42-r94`: 108,779,120
+bytes, sha256
+`658bee2d0aabaf45c010f500f85eec263cb6c40fadb53754d0c0f4404b67e588`.
+
+**Harness: `run-r35zzzi.sh`/`chain-35zzzi.sh`, built from the 35zzzh
+pair, not launched.** GOMEMLIMIT uniform at 10GiB in every leg (S25's
+own A/B by leg is a separate, still-open question, not repeated this
+round). Two new end-of-round checks, neither gated by a switch:
+conflicting commits at one height across all seven nodes' logs (joins
+"block committed!" against the height on "Successfully sealed new
+block"/"add future block"/"block push: received" via `jq`), and a leg
+bench-run.sh itself refused to measure ("chain is not producing"/
+"refusing to measure", attributed to the most recently started `LEG`
+line). Tested OFFLINE against real data before trusting them: the kept
+logs of 35zzzg correctly flag `13661138 7a6d85…23259c,f47f65…13d8ac`
+and leg `A2`; the kept logs of 35zzzf are clean on both.
+Predecessor-wait fixed to `r35zzzh.log`. `bash -n` clean on both;
+confirmed not running.
+
+Prediction 91 (see 6cz for the exact bars) is registered. Code commit
+`e49ce151`. Launch is the commander's next call.
