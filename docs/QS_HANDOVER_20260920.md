@@ -550,3 +550,80 @@ above, `r2kth` is now the clause with the STRONGER supporting case going
 in (the deferred-check alternative is ruled out for the 98.2% majority),
 not the harder one -- this round is a real test of the primary
 mechanism, not just a residual. Launch is the commander's next call.
+
+## S17 prepared -- n42-r89 built, send/receive edge stamps ready, not launched (2026-09-21)
+
+Why: 6ck found every existing Round2 stamp (`CommitVoteSent`,
+`PrepareQCFormed`, `pqc2cv`) is taken BEFORE the message reaches the
+output channel, not after it hits the wire -- so nothing has ever
+measured emit->publish on the sender or wire->handler-entry on the
+receiver, which is where `r2kth`'s steady ~350 ms (linear in tx count,
+unlike Round1's flat ~60 ms on the same paths and sizes) most likely
+sits. See `docs/QS_BLOCK_TIME_BUDGET.md` section 6cl for the full
+writeup, the READERS finding, and prediction 85.
+
+**n42-r89: built.** `/data/blockchain/gov5-work/n42-r89`, 108,750,176
+bytes, sha256
+`145301fd8fbebf46d0a2566b7a362118cecd0608b0f7b001ffc209f5f1784a7a`. Same
+file-checkout recipe as n42-r86/87/88 (commit `9f307e90`): all 7 files
+S17 touches/adds were byte-identical to n42-r88's own version before
+this change (5 via `56cc1dac`, S14's commit; `rotor_wiring_test.go` via
+`f7ec2836`, since it is not part of any lever/S11/S14/S15b file list),
+so every file was checked out directly, no hunk surgery needed.
+`internal/parallel/base_cache.go` confirmed absent; `grep -rl
+BaseCache`: empty. In the build worktree: `go vet` clean on `internal/`,
+`internal/consensus/hotstuff/...`, `internal/miner/...`; `go test`
+passes on all three (`internal/consensus/hotstuff/...`: 273 tests, full
+run and under `-race`, ~6-7 s -- no `-short` needed). `strings n42-r89 |
+grep -c BaseCache` = 0; `... | grep -c "build stalled before fill"` = 1;
+`... | grep -c "contention profiling enabled"` = 1; `... | grep -c
+"block gossip fallback disabled"` = 1; `... | grep -c "rotor failed ->
+gossip"` = 1 (S17's own new marker).
+
+**Field glossary** (all behind `N42_CONTENTION_DIAG=1`, silent
+otherwise -- `TestLogLineSilentWithoutSendRecvData`):
+
+Sender (this node's own emit->publish timing for a message it sent):
+- `prEmit2Deq`/`prDeq2Pub`/`prPubDur`/`prPath` -- Proposal (leader)
+- `pvEmit2Deq`/`pvDeq2Pub`/`pvPubDur`/`pvPath` -- prepare vote (follower)
+- `pqcEmit2Deq`/`pqcDeq2Pub`/`pqcPubDur`/`pqcPath`/`pqcPubAt` -- PrepareQC (leader)
+- `cvEmit2Deq`/`cvDeq2Pub`/`cvPubDur`/`cvPath`/`cvPubAt` -- commit vote (follower)
+- `Emit2Deq` = t_emit (engine `emit()`) -> t_deq (`processOutputs` dequeues it)
+- `Deq2Pub` = t_deq -> t_pub0 (queued behind this goroutine's own dispatch)
+- `PubDur` = t_pub0 -> t_pub1 (the actual network call(s))
+- `PubAt` = t_pub1, absolute unix ms (PrepareQC/commit vote only, for cross-node joins on the shared host clock)
+- `Path` = `"rotor ok"` | `"rotor failed -> gossip"` | `"gossip only"`
+
+Receiver (arrival timing on this node):
+- `pqcRx2Arr`/`pqcRxAt`/`pqcVia` -- follower's one PrepareQC message this view (`Via` can be `"both"` if a duplicate arrived on the other transport)
+- `pvKthRx2Arr`/`pvKthRxAt`/`pvKthVoter`/`pvKthVia`/`pvMaxRx2Arr` -- leader's quorum-completing (k-th) prepare vote, plus the max rx2arr over the round's votes
+- `cvKthRx2Arr`/`cvKthRxAt`/`cvKthVoter`/`cvKthVia`/`cvMaxRx2Arr` -- same, commit vote
+- `Rx2Arr` = t_arrive (existing S14 stamp) - t_rx (new: earliest point the bytes were in this process)
+- `dupN` = count of messages seen a second time via the OTHER transport this view (kept: the first arrival's stamps; "gossip is always sent" regardless of Rotor's own success)
+
+**READERS (read, not changed):** the gossip path
+(`subscribeMessages`) is ONE serial goroutine that calls `ProcessEvent`
+synchronously -- a slow `ProcessEvent` (e.g. `e.mu` held elsewhere)
+blocks this loop from calling `sub.Next()` again, delaying the NEXT
+gossip message's own t_rx, which no existing lock-wait field would show
+(they all key off t_arrive, taken only once the delayed message finally
+gets read). The Rotor path is the opposite: libp2p's `SetStreamHandler`
+gives every incoming stream its own goroutine
+(`internal/node/hotstuff_p2p_adapter.go`), so a slow `ProcessEvent`
+there does not block reading the next Rotor message. Nothing
+size-proportional sits between t_rx and t_arrive on either path by
+construction (the two stamps are code-adjacent), and no topic validator
+is registered for the consensus topic (confirmed by grep, matching
+6ch).
+
+**Runner: `run-r35zzzc.sh`/`chain-35zzzc.sh`, built from the 35zzzb
+pair, not launched.** ALL env unchanged from 35zzzb, including
+`N42_BLOCK_GOSSIP_FALLBACK=0`; binary retargeted to n42-r89.
+`chain-35zzzc.sh` waits on `wr-logs/r35zzzb.log`'s terminal line. Added:
+a `/debug/pprof/goroutine?debug=1` capture (aggregated stacks) alongside
+the existing per-B-leg CPU/mutex/block captures, into
+`wr-pprof/r35zzzc-<leg>-node<i>-goroutines.txt` -- shows cgo/syscall
+waits (e.g. an MDBX writer-lock wait) invisible to the mutex/block
+profiles. `bash -n` clean on both.
+
+Prediction 85 is registered in 6cl. Launch is the commander's next call.
