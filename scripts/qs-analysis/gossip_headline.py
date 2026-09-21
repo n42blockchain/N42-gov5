@@ -20,13 +20,26 @@ files at any level this round ran at. There is no gossip-block-arrival
 timestamp in these logs to correlate against a vote's arrival; this
 script reports that gap explicitly rather than approximating it.
 
-Usage: gossip_headline.py /data/blockchain/wr-logs/r35zzza-keep
+Usage: gossip_headline.py <kept-logs-dir> [leg_b1_start leg_b1_end leg_b2_start leg_b2_end]
+Positional overrides let this drive a different round (e.g. 35zzzb)
+with its own leg boundaries -- same join/bucket logic, see
+contention_attribution.py for the same convention.
+
+  gossip_headline.py /data/blockchain/wr-logs/r35zzza-keep
+  gossip_headline.py /data/blockchain/wr-logs/r35zzzb-keep \
+      "2026-09-21 05:14:27" "2026-09-21 05:27:30" \
+      "2026-09-21 05:27:30" "2026-09-21 05:40:47"
 """
 import sys, os, json, glob, re, statistics as st, collections
 
 ROOT = sys.argv[1] if len(sys.argv) > 1 else '/data/blockchain/wr-logs/r35zzza-keep'
-LEG_B1 = ('2026-09-21 03:13:55', '2026-09-21 03:27:39')
-LEG_B2 = ('2026-09-21 03:27:39', '2026-09-21 03:41:01')
+if len(sys.argv) > 5:
+    LEG_B1 = (sys.argv[2], sys.argv[3])
+    LEG_B2 = (sys.argv[4], sys.argv[5])
+else:
+    LEG_B1 = ('2026-09-21 03:13:55', '2026-09-21 03:27:39')
+    LEG_B2 = ('2026-09-21 03:27:39', '2026-09-21 03:41:01')
+print(f'params: LEG_B1={LEG_B1} LEG_B2={LEG_B2}')
 
 def node_of(p):
     return os.path.basename(p).split('-')[0]

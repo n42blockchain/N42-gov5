@@ -15,19 +15,39 @@ the "hotstuff view timing" message text, ms already:
   leader:   r1n r1lw r1lwMax r1wk r1kth r1qk   r2n r2lw r2lwMax r2wk r2kth r2qk
   follower: propLw propWk pqcLw pqcWk pqc2cv cvHeld cvGate
 
-Usage: contention_attribution.py /data/blockchain/wr-logs/r35zzza-keep
+Usage: contention_attribution.py <kept-logs-dir> [leg_b1_start leg_b1_end
+       leg_b2_start leg_b2_end b1win1 b1win2 b2win1 b2win2 full_win_names]
+Positional overrides let the SAME script drive a different round (e.g.
+35zzzb) with its own leg boundaries/window counts/full-window set, with
+zero change to the join/computation logic below -- this is what "the
+same scripts and bucket definitions" across rounds means in practice.
+Defaults below are 35zzza's own parameters (6cg).
+
+  contention_attribution.py /data/blockchain/wr-logs/r35zzza-keep
+  contention_attribution.py /data/blockchain/wr-logs/r35zzzb-keep \
+      "2026-09-21 05:14:27" "2026-09-21 05:27:30" \
+      "2026-09-21 05:27:30" "2026-09-21 05:40:47" \
+      53 56 53 58 B1win1,B2win1
 """
 import sys, os, json, glob, re, statistics as st, collections
 
 ROOT = sys.argv[1] if len(sys.argv) > 1 else '/data/blockchain/wr-logs/r35zzza-keep'
 FULL_TXS = 150000
-LEG_B1 = ('2026-09-21 03:13:55', '2026-09-21 03:27:39')
-LEG_B2 = ('2026-09-21 03:27:39', '2026-09-21 03:41:01')
-# This round's full windows differ from 35zzz's: B1win2 (31.7% occupancy)
-# is NOT full; B1win1, B2win1, B2win2 all are (49.0/48.6/47.0%). Counts
-# from r35zzza.log's own win1/win2 lines.
-WIN_COUNTS = {'B1': (50, 67), 'B2': (50, 48)}
-FULL_WIN_NAMES = ('B1win1', 'B2win1', 'B2win2')
+if len(sys.argv) > 9:
+    LEG_B1 = (sys.argv[2], sys.argv[3])
+    LEG_B2 = (sys.argv[4], sys.argv[5])
+    WIN_COUNTS = {'B1': (int(sys.argv[6]), int(sys.argv[7])),
+                  'B2': (int(sys.argv[8]), int(sys.argv[9]))}
+    FULL_WIN_NAMES = tuple(sys.argv[10].split(',')) if len(sys.argv) > 10 else ('B1win1', 'B2win1', 'B2win2')
+else:
+    LEG_B1 = ('2026-09-21 03:13:55', '2026-09-21 03:27:39')
+    LEG_B2 = ('2026-09-21 03:27:39', '2026-09-21 03:41:01')
+    # 35zzza's full windows differ from 35zzz's: B1win2 (31.7% occupancy)
+    # is NOT full; B1win1, B2win1, B2win2 all are (49.0/48.6/47.0%). Counts
+    # from r35zzza.log's own win1/win2 lines.
+    WIN_COUNTS = {'B1': (50, 67), 'B2': (50, 48)}
+    FULL_WIN_NAMES = ('B1win1', 'B2win1', 'B2win2')
+print(f'params: LEG_B1={LEG_B1} LEG_B2={LEG_B2} WIN_COUNTS={WIN_COUNTS} FULL_WIN_NAMES={FULL_WIN_NAMES}')
 
 def node_of(path):
     return os.path.basename(path).split('-')[0]

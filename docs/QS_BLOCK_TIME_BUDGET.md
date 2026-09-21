@@ -7744,6 +7744,269 @@ build all done). QS_QUEUE.md's S15 row status is marked prepared with
 prediction 84 (6ci); its result cell, already carrying S15a's findings
 (6ch), is left untouched.
 
+## 6cj. Round 35zzzb: turning the block-gossip fallback off fixes r1kth and does nothing to r2kth -- hypothesis G confirmed for Round1, definitively falsified for Round2 (2026-09-21)
+
+n42-r88 (r87 + `N42_BLOCK_GOSSIP_FALLBACK=0`) ran clean: `ROUND DONE`,
+legs B1 05:14:27-05:27:30, B2 05:27:30-05:40:47. Evidence preserved
+first: `/data/blockchain/wr-logs/r35zzzb-keep/node{0-6}-B.log`, 463 MB,
+`05:14:00-05:41:52` (rotation handled the same way as 6ca/6cg/6ch).
+Scripts: `contention_attribution.py` and `gossip_headline.py`
+(`scripts/qs-analysis/`) were extended with positional CLI overrides for
+leg boundaries/window counts (documented in each file's own docstring)
+so **the exact same join/bucket code drives both rounds** -- confirmed
+by re-running each against 35zzza's own kept logs first and diffing the
+output against 6cg/6ch's numbers (byte-identical).
+
+**0. Did the switch fire on every node? Yes, 7/7, both legs -- proven
+three independent ways.** (1) Startup line, across the FULL round's
+`.gz`+current logs (each leg is a fresh process, SIGTERM+restart, per
+`r35zzzb.log`'s own `"node N: SIGTERM"`/`"stopped clean"` lines around
+every leg boundary): `"block gossip fallback disabled
+(N42_BLOCK_GOSSIP_FALLBACK=0)"` appears **exactly 5 times per node**
+(once per leg: warmup ~04:50, A1 ~05:03, **B1 ~05:15**, **B2 ~05:28**,
+A2 ~05:42), on all 7 nodes -- the commander's "only three current
+`n42.log` files" observation is explained by log rotation happening
+*after* these particular startup lines were written on 4 of the 7
+nodes (node0/1 rotated 05:38, node2/3/5/6 rotated 05:47-05:51, node4
+never rotated); the B1/B2 instances are in the rotated `.gz` for those
+nodes, not absent. The kept `-keep` files (windowed to the B legs only)
+independently confirm 2 occurrences per node (one per leg). (2)
+Behavioural, `bc.lock`/`InsertChain` contention (6cg attributed this to
+"gossip-fallback vs direct-push racing," 491-562 ms/20 s in 35zzza):
+**down to 163-170 ms/20 s in 35zzzb (a 66-71% drop), and now 100%
+attributed to `blockPushStreamHandler` alone in every one of the 4
+profiles -- `blockSubscriber` (the gossip-receive path) no longer
+appears in the block-profile breakdown at all.** (3) Behavioural, the
+block-topic validator: `validateBlockPubSub`/`validateBlockLock` CPU
+was already tiny in 35zzza (~10 ms/20 s, 3 of 4 profiles, since the
+profiled window is empty blocks -- see the caveat below) and is **0 ms
+in all 4 of 35zzzb's profiles.** All three checks agree: the switch
+took effect everywhere it was supposed to, for both legs.
+
+**Profile timing caveat carries over unchanged from 6cg**: all four
+20 s captures (`leg start + 150 s`) again landed inside the 400 s
+decay warmup (confirmed the same way -- every block in each profiled
+window has `txs:0`), so the CPU/mutex/block numbers above and below
+characterize an empty-block workload, not full-block cost; only the
+vote-path stamps (section 2) are scoped to full in-tenure blocks.
+
+**1. Round score, 35zzza vs 35zzzb, same computation:**
+
+| | 35zzza (r87) | 35zzzb (r88) | delta |
+|---|---|---|---|
+| B mean | 125,125 | **129,770** | **+3.7%** |
+| B1win1 TPS/occ/blockTime | 133,005 / 49.0% / 1.200s | 140,281 / 48.7% / 1.132s | |
+| B1win2 | 112,907 / 31.7% / 0.896s | 123,052 / 41.3% / 1.071s | |
+| B2win1 | 131,902 / 48.6% / 1.200s | 139,614 / 48.0% / 1.132s | |
+| B2win2 | 122,686 / 47.0% / 1.250s | 116,134 / 37.7% / 1.034s | |
+| `import_breakdown` (full blocks) | body10/proc559(rec25,exec266,fin151)/write207/total795 | body10/proc543(rec24,exec258,fin148)/write204/total774 | flat, within noise |
+| BAD BLOCK / divergence | 0 / 0 | 0 / 0 | flat |
+| MODE-FAILED | none | none | flat |
+| `build stalled before fill` | 1 (real, full block) | 1 (real, full block) | flat |
+| TC formed | 28 | **46** | **+64%** |
+| view timed out | 25 | **47** | **+88%** |
+| catch-up range fetch (`requesting range`/`imported range`) | 3935 / 3067 | 3697 / 2866 | flat/slightly down |
+| `hotstuff: committed block not executed locally` | 4666 | 4484 | flat/slightly down |
+| `FetchBlockByHash` / block-by-hash catch-up | 0 lines match this literal string in either round (function name, not a log message) | 0 | n/a as a direct count -- see clause (c) below for the proxy used |
+
+**View timeouts rose materially** (TC 28->46, view-timed-out 25->47) --
+this is the safety-relevant regression clause (c) asks about, addressed
+below.
+
+**2. Mechanism, full in-tenure blocks, side by side (same join as 6cg):**
+
+| field | 35zzza | 35zzzb | delta |
+|---|---|---|---|
+| in-tenure cycle (median) | 806.2 ms | **689.8 ms** | **-14.4%** |
+| hand-over cycle (median) | 1252.0 ms | **1000.7 ms** | **-20.1%** |
+| in-tenure fraction | 82/146=56.2% | 46/106=43.4% | (denominator also smaller: only 2 full windows this round, not 3 -- B1win2 at 41.3% didn't qualify) |
+| `r1` (Round1 total) | 124.0 ms | **63.0 ms** | **-49.2%** |
+| `r1kth` | 110.0 ms | **59.0 ms** | **-46.4%** |
+| `r1qk` | 2.0 ms | 4.0 ms | flat |
+| `r1lw` (sum, not on k-th path -- 6cg) | 598.0 ms | 640.5 ms | flat (still overlapping-sum artifact) |
+| `r2` (Round2 total) | 353.0 ms | **362.5 ms** | **+2.7%, unchanged** |
+| `r2kth` | 349.0 ms | **361.0 ms** | **+3.4%, unchanged** |
+| `r2qk` | 4.0 ms | 2.0 ms | flat |
+| `r2lw` (sum) | 5.0 ms | 0.0 ms | flat, already tiny |
+| follower `propLw`/`propWk` | 0.0 / 2.0 ms | 0.0 / 2.0 ms | flat |
+| follower `pqcLw`/`pqcWk` | 0.0 / 2.0 ms | 0.0 / 2.0 ms | flat |
+| `pqc2cv` | 2.0 ms | 2.0 ms | flat |
+| `cvHeld` share | 8/448=1.8% | 1/252=0.4% | flat-to-lower, still rare |
+
+**`r1kth` improved almost exactly as predicted (110->59 ms, target
+<50 ms -- close but not quite met); `r2kth` did not move at all
+(349->361 ms, target <100 ms -- not met, and not even directionally
+improved).** In-tenure cycle improved substantially (806->690 ms,
+target <650 ms -- close but not met) -- entirely attributable to
+Round1's fix; Round2 contributed nothing to the improvement and remains
+the larger of the two segments (362 ms vs 63 ms, 85% of Round1+Round2
+this round, up from 74% in 35zzza, simply because Round1 shrank).
+
+**Size discriminator, same buckets as 6ch, joined directly to the
+block each view produces (not the n-1 cycle-boundary join above):**
+
+| block size | 35zzza r1kth / r2kth | 35zzzb r1kth / r2kth |
+|---|---|---|
+| empty (0 tx) | 55 / 8 ms | 55 / 8 ms (identical, as expected) |
+| mid (1,000-149,999 tx) | 65 / 114 ms | 59 / 150 ms |
+| **full (>=150,000 tx)** | **129 / 333 ms** | **63 / 336 ms** |
+
+**This is the decisive result.** `r1kth`'s entire empty-to-full growth
+in 35zzza (55->129 ms, +74 ms) is now almost gone in 35zzzb (55->63 ms,
++8 ms) -- a **93% reduction in the size-dependent portion of `r1kth`**,
+attributable to removing the ~18-26 MB gossip payload from the shared
+per-peer queue that Round1's small messages used to queue behind.
+`r2kth`'s growth is, to within noise, **identical in both rounds**
+(333 ms vs 336 ms on full blocks) -- removing the entire gossip
+payload from the transport had **zero measurable effect** on it.
+
+**Distribution check: is `r2kth` bimodal (some views fast, most still
+slow) or uniformly ~350 ms?** `r2kth` on full blocks: 35zzzb p90 is
+427 ms against a 361 ms median (a 1.18x ratio) -- a moderately
+right-skewed but essentially **unimodal** distribution, not two
+separated clusters; there is no evidence of "most views fast, a
+minority stuck at 350 ms." Split by vote-routing path: this round's
+own `"hotstuff: vote routing stats"` counters are cumulative per node,
+not per-message, so `r2kth` cannot be split by "this specific commit
+vote went via direct Rotor vs gossip fallback" -- that split is **n/a**
+with the fields this round's diagnostics carry. Split by leader
+identity or tenure position was not found to distinguish slow from
+fast views either (the distribution is unimodal, so there is no
+"slow group" to characterize by leader or position -- **none: the
+delay is a property of Round2 itself, not of which view or leader
+carries it**).
+
+**3. Supply vs cycle, per B window.** Direct evidence from `"miner:
+parallel fill"`'s own `candidates`/`included`/`failed` fields at the
+tail of each leg (05:25-05:27 for B1, 05:39-05:41 for B2): **`failed`
+is 0 throughout -- every candidate the pool offered was included, none
+were rejected/dropped** -- and `candidates` itself shrinks
+monotonically from 163,000 down to a trickle (163000 -> 153300 ->
+140100 -> ... -> 2600 within the last two minutes of B2) as each leg's
+flood window closes. **This is unambiguous supply exhaustion, not a
+builder or cycle limitation**: the fill always takes everything on
+offer; there is simply less on offer as the generators run dry, the
+same recurring characteristic this eight-generator shape has shown in
+every prior round (35zzt/35zzz/35zzza). Occupancy by window: B1win1
+48.7%, B1win2 41.3%, B2win1 48.0%, B2win2 37.7% -- **both win2 windows
+are supply-bound, not cycle-bound**, confirmed the same way as B1's.
+
+**Derived full-block ceiling (not a score): if every block in the kept
+window ran at this round's OWN measured full-block size and cycle mix
+(chained+hand-over, weighted by their actual occupancy), the implied
+TPS ceiling is `sum(txs)/sum(cycle)` over the 106 full in-tenure/
+hand-over pairs = 17,259,400 tx / 96.08 s = ~179,631 TPS** (35zzza's
+equivalent: 148 pairs, ~156,588 TPS -- a +14.7% improvement in this
+derived ceiling, tracking the measured cycle improvements). This number
+is a ceiling assuming unlimited supply, explicitly not comparable to
+the B mean score, which stayed supply-bound in both win2 windows this
+round.
+
+**4. Prediction 84, ruled clause by clause.**
+
+**(a) mechanism -- not met, partially.** `r2kth` 349->361 ms (target
+<100 ms): **not met, no improvement at all.** `r1kth` 110->59 ms
+(target <50 ms): **not met on the literal number, but a real, large,
+now-explained improvement** (93% of its size-dependent growth
+eliminated). In-tenure cycle 806->690 ms (target <650 ms): **not met
+on the literal number**, real improvement, driven entirely by (a)'s
+own `r1kth` component. **Clause (a): not met as registered; partially
+confirmed as a mechanism finding.**
+
+**(b) throughput -- not met.** B mean 129,770 vs the 130.8k (3.6%
+noise-floor above 126.3k) bar: **-0.8%, just under the line.** Real, positive
+movement over 125,125 (+3.7%), consistent with (a)'s partial cycle
+improvement, but the registered bar itself is not cleared. Occupancy
+(reported as required): both win1 windows stayed at ~48-49%, both
+win2 windows fell to 37-41%, and section 3 shows this is supply
+exhaustion in both rounds equally -- **the shortfall against 130.8k is
+not explained by a NEW supply limit this round introduced; the same
+supply ceiling was already present in 35zzza.** **Clause (b): falsified
+against its literal bar, though directionally positive.**
+
+**(c) safety -- not met.** BAD BLOCK 0, divergence 0 (met, both flat).
+**View timeouts rose materially: TC formed 28->46 (+64%), view timed
+out 25->47 (+88%)** -- the registered condition ("no rise... versus
+35zzza") is directly contradicted by the counts. Block-fetch/catch-up
+proxies (`requesting range`, `catch-up: imported range`,
+`hotstuff: committed block not executed locally`) did NOT rise (flat
+to slightly down in every one of these counters) -- the "recovery path
+gets used more without the gossip backup" concern that motivated
+tracking this is not borne out by the ONE mechanism this round's logs
+can check it against. **Clause (c): falsified on view timeouts, met on
+BAD BLOCK/divergence/catch-up-proxy counts.** One of the extra TCs
+(05:40:14 in B2) coincides with this round's own build-stall watchdog
+firing (node0, block 13661061, `specTreeReload`, same pattern as 35zzza's
+single stall); the other two late-B2 TCs (05:35:41, 05:39:09) are
+**unexplained by any stall or catch-up event found in these logs** --
+reported as a real, open, unresolved safety signal, not attributed to
+anything specific.
+
+**Prediction 84 overall: not confirmed.** Two of three clauses
+(mechanism's literal bars, throughput's literal bar) are not met, and
+the third (safety) is mixed -- BAD BLOCK/divergence hold, but view
+timeouts rose in a way the prediction explicitly said should not
+happen. The positive, real findings the round DID produce (Round1
+fixed, cycle materially faster, B mean up) are recorded above but do
+not add up to "confirmed" against the bars as registered.
+
+**Hypothesis G (the gossiped block head-of-line-blocks votes):
+confirmed for Round1, definitively falsified for Round2.** This is the
+cleanest result of the whole S15 sequence: removing the ENTIRE gossip
+payload from the shared transport fixed `r1kth`'s size-dependent growth
+almost completely (93% reduction) and left `r2kth`'s size-dependent
+growth completely untouched (336 ms vs 333 ms, no change). A shared,
+unprioritized transport queue predicts a SYMMETRIC effect on any
+message queued behind the same large payload, regardless of which
+round it belongs to -- the asymmetry this experiment produced is the
+opposite of that prediction for Round2, and is direct, causal (not
+merely correlational, since the mechanism was actually removed and
+re-measured) evidence that whatever gates `r2kth` is NOT the block
+gossip fallback. **What actually gates `r2kth` remains open**: 6cg
+already ruled out e.mu contention, `JournalVote`, `CommitToCanonical`,
+and (at this workload) BLS verify cost as material; 6ch's original
+`CheckDeferredBlock` reading was overruled by the commander on `cvHeld`
+being only 1.8-0.4% of votes (this round confirms that share stayed
+low, 0.4%, so it still cannot be the general explanation); and this
+round rules out the gossip fallback specifically. No remaining named
+suspect from this campaign explains `r2kth`'s ~350 ms baseline plus its
+~325 ms empty-to-full growth.
+
+**Method.** `contention_attribution.py`/`gossip_headline.py` were
+extended with positional CLI arguments for `LEG_B1`/`LEG_B2`/window
+counts/full-window names (see each script's updated docstring for the
+exact invocation used for each round) with **zero change to any join,
+offset-calibration, or statistics code** -- confirmed by re-running
+both scripts against 35zzza's own kept logs after the edit and
+diffing the output against the numbers already published in 6cg/6ch
+(identical). The switch-fired check (section 0) used three independent
+sources on purpose (a log line, a lock-contention profile comparison,
+and a validator-CPU profile comparison) specifically because the
+commander flagged that a single grep had been ambiguous. The supply
+discriminator (section 3) reads `"miner: parallel fill"`'s own
+`candidates`/`included`/`failed` fields directly, the same fields 6by/
+6bt/6ca already established as the fleet's own supply-exhaustion
+signature (a genuine drop shows `failed>0`; a supply drought shows
+shrinking `candidates` with `failed` staying 0, which is what this
+round shows).
+
+**What this does and does not show.** It shows, by direct
+removal-and-remeasurement (not correlation), that the block-gossip
+fallback was a real, now-fixed cause of part of Round1's message-
+arrival delay, and was never a cause of Round2's -- narrowing the
+open question left after 6cg/6ch/6ci considerably: `r2kth` needs a
+different explanation than any suspect named so far in this campaign.
+It shows the round's B-mean shortfall against its own registered bar
+is attributable to the same supply ceiling both rounds shared, not to
+a new limit this change introduced. It does NOT show what causes the
+two late-B2 view timeouts that no stall or catch-up event in these
+logs explains -- flagged as open, not resolved. It does NOT identify
+`r2kth`'s actual mechanism; that is the natural next step, now with
+the block-gossip fallback eliminated as a candidate with direct
+(not inferred) evidence. It does NOT re-test hypothesis G against a
+partial removal (e.g. only for full blocks, or only above some size) --
+this round tested the switch fully off, nothing in between.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
