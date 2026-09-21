@@ -697,3 +697,95 @@ to `n42-r90`. ALL other env unchanged from 35zzzc, including
 
 Prediction 86 (revised, see 6cn for the exact bar and caveat) is
 registered. Launch is the commander's next call.
+
+## S19 prepared -- n42-r91 built, leader-write-after-journal switch ready, A/B by leg, not launched (2026-09-21)
+
+Why: 6cn/6cm found Round2's unmeasured 94% is `journalCommitVote` (the
+leader's own self-commit-vote MDBX write) queueing behind the leader's
+own concurrent `WriteBlockWithState` for the single MDBX writer. S19:
+delay the START of that write until the journal write has already
+succeeded (or a timeout, or the view is abandoned) instead. See
+`docs/QS_BLOCK_TIME_BUDGET.md` section 6co for the full writeup,
+Part 1's five code-level answers, and prediction 87.
+
+**Part 1 answers, in one line each (6co has the full evidence):**
+- (a) write starts in `handleSealed` (worker.go), on the miner's own
+  `resultLoop` goroutine, triggered by the engine's `Seal` call
+  handing a sealed block to `w.resultCh`.
+- (b) `persistWait` does NOT see this delay in the current
+  configuration (ownPendingSpeculation bypasses it for a leader's own
+  speculative next build; measured 0.0 ms median/p95/max across 226
+  lines in round 35zzz). `CommitToCanonicalWith` needs the write
+  already complete (or cached); NOT directly on the path to proposing
+  v+1 (`TriggerBlockProduction` is a fast, non-blocking channel send),
+  BUT it runs on the SAME serial `processOutputs` loop, strictly
+  before `OutputViewChanged` (which dispatches v+1's build) -- so if
+  Round2 shrinks a lot, `CommitToCanonicalWith(v)` may itself queue
+  behind the still-running delayed write before `processOutputs` can
+  reach `OutputViewChanged`, potentially reappearing as a NEW delay
+  between CommitQC(v) and dispatching v+1. Handled safely today (a
+  deferred-commit retry path already exists) but that retry
+  (`NotifyBlockImported`) is wired to the SYNC layer only, not to the
+  miner's own local write completing -- a leader's own deferred
+  commit would instead clear via the existing "not executed locally"
+  fetch-by-hash fallback, which will likely start firing routinely
+  (log.Error + a metric) for the leader's own full blocks in the ON
+  leg. Self-healing, not unsafe, but a real, measurable, and
+  previously-rare-turned-routine side effect this round should show.
+- (c)/(d) other MDBX writes on the leader in order:
+  `journalPrepareVote` (always wins the race against the block write --
+  same goroutine, strictly before it), `WriteBlockWithState`,
+  `journalCommitVote` (today's collision, the target), then
+  `CommitToCanonicalWith`+folded state save, then periodic
+  `persistState()`. Followers: `journalPrepareVote` on proposal
+  arrival CAN collide with the follower's own import write of the
+  previous block; stated, not investigated further (out of scope).
+- (e) hand-over: the mechanism is unconditional, nothing changes.
+  Timeout (no PrepareQC ever forms): the write still eventually
+  starts, via the SECOND fire path (`advanceToView` releases the latch
+  with why "abandoned" for any pending self-proposal when its view
+  ends), never blocked forever.
+
+**n42-r91: built.** `/data/blockchain/gov5-work/n42-r91`, 108,753,048
+bytes, sha256
+`df2cf25426b0f445bbe4e921e374fd16e7dd4d5bc352aff5e57417766d01919d`.
+Same file-checkout recipe as n42-r86 through r90 (commit `812cf162`):
+all 6 pre-existing files S19 touches were byte-identical to n42-r90's
+own version before this change, checked out directly; `worker.go`
+needed the same two-hunk approach n42-r86 established (S11's hunk,
+then S19's own, both apply cleanly onto the same f7ec2836 base); one
+file (`view_timing.go`, S18's own, untouched by S19) was missed on the
+first build attempt -- a straight `undefined: contentionStamps` compile
+failure, caught immediately by `go build` and fixed by checking it out
+from `e1d8d7d1` before proceeding. `internal/parallel/base_cache.go`
+confirmed absent; `grep -rl BaseCache`: empty. `go vet` clean on
+`internal/...`; `go test` passes on `internal/consensus/hotstuff/...`
+(both switch placements, and under `-race`), `internal/miner/...`,
+`internal/`, `internal/parallel/...`. `strings n42-r91 | grep -c
+BaseCache` = 0; the seven prior markers each = 1; the three new
+markers (`lwWait`, `lwWhy`, `not-proposed-yet`) each = 1.
+
+**Field glossary addition** (miner's own `"miner: propose phases"`
+line, not `hotstuff view timing` -- these values are only known on the
+miner side): `lwWait` (ms the write start was delayed), `lwWhy`
+(`journal` / `abandoned` / `timeout` / `off` / `not-proposed-yet` /
+`unsupported`).
+
+**Runner: `run-r35zzze.sh`/`chain-35zzze.sh`, built from the 35zzzd
+pair, not launched. THIS IS an A/B-by-leg round** (unlike 35zzzd):
+`run_leg` gained a 5th parameter, `N42_LEADER_WRITE_AFTER_JOURNAL`,
+exported inside the same per-leg subshell that already varies
+`gasceil` by leg -- confirmed safe by reading `bench-run.sh`: every
+`run_leg` call fully stops and freshly relaunches all 7 node processes
+(`stop-fleet.sh` then `bench-7node.sh`), so each leg's env, including
+the new switch, is picked up as a genuine per-process startup value.
+Calls: `warmup 0`, `A1 0`, `B1 0` (switch off, the in-round baseline),
+`B2 1`, `A2 1` (switch on). Predecessor-wait fixed by hand to
+`r35zzzd.log` (S19's actual predecessor; the sed pass alone would have
+left S18's own `r35zzzc.log` target in place); binary references
+updated by hand to `n42-r91`. All other env unchanged from 35zzzd,
+including `N42_BLOCK_GOSSIP_FALLBACK=0`/`N42_CONTENTION_DIAG=1`.
+`bash -n` clean on both; confirmed not running.
+
+Prediction 87 (see 6co for the exact bars and the "NOT merely moved"
+caveat) is registered. Launch is the commander's next call.

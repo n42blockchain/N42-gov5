@@ -8878,6 +8878,325 @@ env-separation switch named in the task is not built, for the safety
 reason above, which is exactly the condition the task itself named as
 a stop condition. QS_QUEUE.md's S18 row is marked accordingly.
 
+## 6co. S19: n42-r91 built and prepared -- the leader schedules its own write after its commit-vote journal, A/B by leg, prediction 87 registered before the round (2026-09-21)
+
+**Why.** 6cn found Round2's unmeasured 94% (369 of 393 ms median) is
+`journalCommitVote` -- the leader's own self-commit-vote MDBX write,
+inside `tryFormPrepareQC` (`voting.go:229`) -- queueing behind the
+leader's own concurrent `WriteBlockWithState` for the single MDBX
+writer. S19's idea: delay the START of that write until the journal
+write has already succeeded (or a timeout, or the view is abandoned),
+so the small journal write finds the writer idle and the ~349 ms write
+overlaps Round2's own ~24 ms round-trip instead of sitting in front of
+it. This section answers Part 1's five questions from the code, with
+file:line evidence, before describing what was built.
+
+**(a) Where the leader's write starts, on which goroutine, what
+triggers it.** `internal/miner/worker.go`'s `resultLoop` (line 501,
+started once via `group.Go(recoverWrap("resultLoop", ...))`, line 426)
+reads sealed blocks off `w.resultCh` and calls `handleSealed` (line
+521) SERIALLY, one block at a time, on its own dedicated goroutine.
+`handleSealed` calls `w.chain.WriteBlockWithState(...)` at line ~735
+(now later, after the new wait -- see below). The trigger is the
+consensus engine's own `Seal` call (`engine.Seal(w.chain, task.block,
+w.resultCh, stopCh)`, worker.go:1006) sending the sealed block onto
+`w.resultCh`; nothing else feeds that channel.
+
+**(b) What waits for the write -- `persistWait` and
+`CommitToCanonical`.** `persistWait` (`worker.go:1211-1224`,
+`bc.WaitBlockPersisted(parentHash, 2*time.Second)`) is inside an `if
+parentHash != (types.Hash{}) && !ownPending` guard (worker.go:1198).
+`ownPending` (`ownPendingSpeculation`, worker.go:908-917) is true
+exactly when the speculative build's parent is a block THIS node
+sealed and has not yet applied -- the common in-tenure case (tenure 4:
+the same leader for four consecutive views) -- and its own doc comment
+states the consequence directly: "the build neither waits for the
+write nor aligns the applied branch." **Measured**: round 35zzz
+(n42-r86, `docs/QS_BLOCK_TIME_BUDGET.md` steady-state table, section
+4 of 6by/6bz's own write-up) reports `persistWait` median 0.0 ms, p95
+0.0 ms, max 0.0 ms across 226 `"miner: prefill phases"` lines for the
+whole round -- **so today, delaying the write by tens to ~150 ms does
+NOT show up as `persistWait` on the next build's critical path in the
+configuration this campaign runs**, because that path is not even
+reached when the ownPending fast path applies. (Older rounds before
+this optimization -- e.g. 35ze/35zf, 2026-09-09/10 -- did carry a real
+225-289 ms `persistWait`; that history is why this campaign has the
+field, not a live risk in the current shape.)
+
+**`CommitToCanonicalWith` (`internal/blockchain.go:1376`) needs the
+block to already be readable** -- `bc.blockCache.Get(hash)`
+(`blockchain.go:1394-1395`, populated only at the END of a successful
+`WriteBlockWithState`, `blockchain_write.go:166-173`) or else
+`rawdb.ReadBlockByHash(tx, hash)` inside the SAME write transaction
+(`blockchain.go:1399-1414`) -- so if the write has not committed yet,
+neither source has it and the call fails with `"committed block %s
+not in db"`. **What happens today when that's the case is already
+production code, built for a different race** (a follower's CommitQC
+arriving before its own gossip-triggered import finishes):
+`OutputBlockCommitted`'s handler (`service.go:684-704`) treats a
+`CommitToCanonicalWith` error as routine, logs it at Debug
+("commit-to-canonical deferred"), and remembers the hash in
+`s.pendingCommits` (capped at 256, `service.go:1674`) for
+`NotifyBlockImported` (`service.go:1707,1746-1752`) to retry later
+with the plain `CommitToCanonical` (no hook -- the consensus-state
+write already fell back to its own standalone `persistState()` call,
+`service.go:709-716`, `stateHookCommitted` returning false). **Is
+`CommitToCanonical` for v on the path to proposing v+1?** By itself,
+no: `advanceToView`/`triggerBlockProduction` (`service.go:770`) is
+reached via a SEPARATE engine output (`OutputViewChanged`), and
+`TriggerBlockProduction` (`internal/miner/miner.go:186`) only sends a
+`newWorkReq` onto the miner's own channel -- a fast, non-blocking
+dispatch, not the build itself. **But it does share a queue with that
+dispatch**: `tryFormCommitQC` emits, in this exact order,
+`OutputBlockCommitted` (voting.go:445) then, after `advanceToView`,
+`OutputViewChanged` (voting.go:460) -- both onto the SAME 1024-deep
+channel `processOutputs` drains strictly serially (`service.go`,
+6ck's own finding), so `OutputBlockCommitted`'s handling (including
+`CommitToCanonicalWith`'s own MDBX transaction, which -- like every
+`bc.ChainDB.Update` call -- must itself wait for the writer if it is
+busy) runs to completion BEFORE `OutputViewChanged` is even looked at.
+**This is the one open risk this step surfaces rather than resolves**:
+if S19 succeeds at shrinking Round2 well below the write's own ~349
+ms, CommitQC(v) will typically form before the NOW-DELAYED write of v
+finishes, so `CommitToCanonicalWith(v)` will itself queue behind that
+same write before `processOutputs` can reach `OutputViewChanged` --
+the ~330 ms this change removes from `journalCommitVote` could
+reappear between CommitQC(v) forming and v+1's build being
+dispatched. The existing deferred-commit path handles this SAFELY
+(nothing breaks), but its retry (`NotifyBlockImported`) is wired only
+to the SYNC layer (gossip/push/catch-up receipt of a block over the
+network, confirmed by grep: every call site is in `internal/sync/*.go`)
+-- not to the miner's own local `WriteBlockWithState` completing. A
+leader's own deferred canonicalization would instead clear via
+`observeCommittedExecution`'s existing "not executed locally" path
+(`service.go:657-659`, `requestCommittedCatchUp`), which fetches the
+block back from a PEER via `FetchBlockByHash`/`CatchUpTo` -- also
+already-existing, already-safe code, but one that will very likely
+start firing ROUTINELY (and logging at `log.Error`,
+`service.go:182-183`, plus `metricCommittedUnexecuted.Inc()`) for the
+leader's own full blocks in the ON leg, where today it is a rare
+anomaly signal. Self-healing, not a correctness problem -- but a real,
+measurable side effect this round's own logs and metrics should show,
+which is exactly what prediction 87(b)'s "NOT merely moved" clause and
+the QC->push measurement are for.
+
+**(c), continued -- other MDBX writes on the leader, in time order,
+inside one successful in-tenure view (today, before S19):**
+
+1. `journalPrepareVote` (leader's own self-Round1 vote,
+   `proposal.go:81`, inside `onBlockReady`) -- called SYNCHRONOUSLY
+   from `NotifyBlockSealed` (`adapter.go:916`), itself called
+   SYNCHRONOUSLY from `handleSealed` (worker.go:700) on the SAME
+   `resultLoop` goroutine, BEFORE `handleSealed` reaches
+   `WriteBlockWithState`. This is why Round1 (`r1kth`) is flat
+   ~60-70 ms regardless of block size (6cl/6cm) -- this journal write
+   structurally never contends with this node's own block write; it
+   always completes first, on the same goroutine, by construction.
+   S19 generalizes exactly this property to the SECOND journal call.
+2. `WriteBlockWithState` (the leader's own block write, `resultLoop`
+   goroutine) -- ~349 ms median on full blocks (6cb).
+3. `journalCommitVote` (leader's self-Round2 vote, `voting.go:229`,
+   inside `tryFormPrepareQC`, on the ENGINE's own goroutine once Round1
+   reaches quorum, ~60-70 ms after propose) -- TODAY races (2) for the
+   writer; this is L0, the target of this step.
+4. `CommitToCanonicalWith` (+ folded `SaveConsensusState`,
+   `service.go:689`) once CommitQC forms -- needs (2) complete; see (b)
+   above for what happens when it is not.
+5. `persistState()` (periodic, rate-limited by `s.persistInterval`,
+   `service.go:773-775`) -- not every view.
+
+History fold (`N42_HISTORY_INDEX_INTERVAL`, ~20 s) and the txpool
+journal are periodic/background, decoupled from per-view timing at the
+resolution this section works at; not investigated further here, per
+the task's own scope ("a scheduling change on the leader only").
+
+**For followers**: `journalPrepareVote` on proposal arrival CAN
+collide with the follower's own import write of the previous block --
+plausible in principle (both are `bc.ChainDB.Update` calls on the same
+node) and not ruled out, but not investigated further here (out of
+scope: S19 only touches the LEADER's own write path; only the 4
+fastest of 6 followers matter for quorum, so even a slow follower's
+own journal write is not necessarily on the round's critical path
+either). Stated, not changed, per the task.
+
+**(e) Hand-over and the timeout case.** Hand-over: the mechanism does
+not change -- the latch is fired from `tryFormPrepareQC`
+unconditionally for whichever block THIS node proposed, whether or not
+the previous view's leader was a different node; nothing about it
+depends on tenure structure. Timeout (no PrepareQC ever forms for this
+node's own proposal): `journalCommitVote` never runs (the quorum gate
+at `voting.go:205` returns before reaching it), so the "journal" fire
+never happens; the write must still eventually happen (the sealed
+block is not discarded merely because its own view timed out -- the
+existing sibling-suppression/re-propose machinery, `worker.go:611-622`,
+can still reference the SAME sealed object in a later view), which is
+exactly why the design has a SECOND fire path: `advanceToView`
+releases the latch with why `"abandoned"` for any still-pending
+self-proposal when the view it belongs to ends (see Implementation
+below) -- so the write starts at that point (or at the configured
+timeout, whichever comes first), never blocked forever.
+
+**Implementation**, behind `N42_LEADER_WRITE_AFTER_JOURNAL` (default
+unset = today's behaviour exactly) and
+`N42_LEADER_WRITE_AFTER_JOURNAL_TIMEOUT_MS` (default 150):
+
+- `internal/consensus/hotstuff/write_latch.go` (new): `writeLatch`, a
+  single-hash, single-fire signal (closed channel -- gives
+  fire-before-wait and fire-after-wait for free, so it cannot deadlock
+  regardless of which side arrives first); `ConsensusEngine.writeLatches`
+  (map, its own leaf lock `writeLatchMu`, separate from `e.mu`, bounded
+  at 64 entries with a reset-on-overflow matching `pendingCommits`'
+  own precedent); `fireWriteLatch` (fire, keep the entry so a
+  fire-before-wait waiter still finds it); `WaitForCommitVoteJournal`
+  (the consuming call, deletes the entry once read, returns
+  immediately with `"off"` when the switch is unset).
+- `voting.go`'s `tryFormPrepareQC`: fires `"journal"` right after
+  `journalCommitVote` succeeds.
+- `proposal.go`'s `onBlockReady`: records `e.selfProposalHash` when
+  this node proposes (leader-only by construction).
+- `engine.go`'s `advanceToView`: fires `"abandoned"` for any pending
+  `e.selfProposalHash` at the top of the function, before anything
+  else changes -- a harmless, idempotent no-op on the success path
+  (journal already fired by the time CommitQC can form, since
+  PrepareQC must form first).
+- `adapter.go`: `HotStuff.WaitForCommitVoteJournal` exposes the
+  engine method to the miner package.
+- `internal/miner/push_order.go`: `commitVoteJournalWaiter` interface,
+  `LeaderWriteAfterJournalOn()`/`LeaderWriteAfterJournalTimeout()`
+  (own `sync.Once`-guarded env parse, same pattern as
+  `PushBeforeWrite`/`ProposeBeforeWrite`; the timeout parser is a pure
+  function, directly tested).
+- `worker.go`'s `handleSealed`: right before `WriteBlockWithState`,
+  waits via the interface IF `proposedEarly` (there is nothing to wait
+  for otherwise -- the Proposal, hence the eventual journal call,
+  has not happened yet); records `lwWait`/`lwWhy` on the existing
+  `"miner: propose phases"` line (`why` one of `journal` / `abandoned`
+  / `timeout` / `off` / `not-proposed-yet` / `unsupported`).
+  `jpvMs`/`jcvMs`/`jcvAt` (S18) are unchanged.
+
+Journal ordering, durability, the single `ConsensusState` record, and
+`e.mu` discipline are all untouched -- this changes only WHEN
+`WriteBlockWithState` starts, never what is journaled, when it is
+journaled, or under which lock.
+
+**Tests.** `write_latch_test.go` (new): the latch itself
+(fire-before-wait, fire-after-wait, timeout, double-fire is a silent
+no-op) needs no switch and always runs; the engine-level fire/wait
+pair, the `advanceToView` abandon path, and the bounded map are gated
+on `leaderWriteAfterJournalEnabled` (a package var read once at
+process start, same constraint as S18's `contentionDiagEnabled`) and
+skip when the switch is off, running for real once with
+`N42_LEADER_WRITE_AFTER_JOURNAL=1` exported. `push_order_test.go`:
+the timeout parser (pure function, always run) and the off-by-default
+contract. Full `internal/consensus/hotstuff/...` and
+`internal/miner/...` suites pass under BOTH placements of the switch
+and under `-race`, in both the day-to-day worktree and the detached
+build worktree used for n42-r91.
+
+**Build.** Same file-checkout recipe as n42-r86 through n42-r90:
+detached worktree at `f7ec2836`, n42-r90's exact file set (6cn), plus
+this step's changes. One-variable check: every one of the 8 files S19
+touches (`adapter.go`, `engine.go`, `proposal.go`, `voting.go`,
+`push_order.go`, `push_order_test.go`, plus new `write_latch.go`/
+`write_latch_test.go`) was byte-identical to n42-r90's own version of
+each before this change (`git diff e1d8d7d1 812cf162^` empty for all
+six pre-existing files), checked out directly from `812cf162`, no
+hunk surgery needed for them. `worker.go` needed the SAME two-step
+hunk approach n42-r86 established (intervening commits outside this
+lineage touch it): `git diff 537ec21e 812cf162^ -- worker.go` is
+EMPTY (confirming nothing touched it between S11 and S19), so S19's
+own hunk (`git diff 812cf162^ 812cf162 -- worker.go`) applies cleanly
+on top of the SAME base (f7ec2836 + S11's own hunk) n42-r86 through
+r90 already used. `internal/consensus/hotstuff/view_timing.go` (S18's
+own file, untouched by S19, `git diff e1d8d7d1 812cf162^` empty) was
+re-checked-out from `e1d8d7d1` -- missed on the first build attempt
+(a straight compile failure, `undefined: contentionStamps` etc.,
+caught immediately by `go build` before any test ran) and fixed before
+proceeding. `internal/parallel/base_cache.go` confirmed absent from
+the build worktree; `grep -rl BaseCache`: empty. `go build -p 8 -tags
+nosqlite,noboltdb` clean; `go vet ./internal/...` clean; `go test`
+passes on `internal/consensus/hotstuff/...` (both switch placements,
+and under `-race`), `internal/miner/...`, `internal/`,
+`internal/parallel/...`. `/data/blockchain/gov5-work/n42-r91`:
+108,753,048 bytes, sha256
+`df2cf25426b0f445bbe4e921e374fd16e7dd4d5bc352aff5e57417766d01919d`.
+`strings n42-r91 | grep -c BaseCache` = 0; the seven prior markers
+("build stalled before fill", "contention profiling enabled", "block
+gossip fallback disabled", "rotor failed -> gossip", `jpvMs`, `jcvMs`,
+`jcvAt`) each = 1; the three new markers (`lwWait`, `lwWhy`,
+`not-proposed-yet`) each = 1, confirming this step's code is actually
+compiled in.
+
+**Runner.** `run-r35zzze.sh`/`chain-35zzze.sh` built from the
+`run-r35zzzd.sh`/`chain-35zzzd.sh` pair via `cp`+`sed
+'s/35zzzd/35zzze/g'` (checked first: `35zzzd` occurs nowhere in either
+script's giant single-line history comment; 25/12 occurrences
+respectively, all accounted for and consistent with the sed). Fixed
+by hand afterward (the mechanical sed cannot know these): the
+predecessor-wait in `chain-35zzze.sh` (the source file waited on
+`r35zzzc.log`, S18's own predecessor; S19's is `r35zzzd.log`) and the
+binary references (`n42-r90` -> `n42-r91` at the `[ -s $W/n42-r91 ]`
+guard and the `cmp`/`cp` retarget line, which -- per 6cl/6cn --
+executes inside the chain script at ACTUAL launch time, gated by the
+box-claim protocol, not something done ahead of time while only
+preparing). **This IS an A/B-by-leg round** (unlike 6cn/35zzzd, which
+had no second variable): `run_leg` gained a 5th positional parameter,
+`N42_LEADER_WRITE_AFTER_JOURNAL` (0 or 1), exported inside the SAME
+per-leg subshell that already varies `gasceil` by leg (confirmed by
+reading `bench-run.sh`: it calls `./stop-fleet.sh` then
+`./bench-7node.sh` on every `run_leg` invocation -- a full stop and
+FRESH launch of all 7 node processes with whatever env this leg's
+subshell exported, the same mechanism that already makes gasceil vary
+by leg in this exact script, so the switch is picked up as a genuine
+per-process env var at each leg's own startup, not something read
+mid-leg). Calls: `warmup 0`, `A1 0`, `B1 0`, `B2 1`, `A2 1` -- the
+switch is off for warm-up/A1/B1 (today's ordering, the in-round
+baseline) and on for B2/A2. The `say "LEG ..."` line prints the
+setting. All other env unchanged from 35zzzd, including
+`N42_BLOCK_GOSSIP_FALLBACK=0` and `N42_CONTENTION_DIAG=1` (so this
+round also repeats 35zzzd's throughput). `bash -n` clean on both.
+Neither launched (`ps` confirms no `run-r35zzze`/`chain-35zzze`
+process exists).
+
+**Prediction 87 (registered before any round):**
+
+**(a) mechanism, B1 (off).** On full in-tenure views, leader `jcvMs`
+(this node's own commit-vote journal write) is close to 6cm's Round2
+residual (330-370 ms), confirming L0 is (still) real and the round's
+baseline repeats 6cm's own finding.
+
+**(b) mechanism, B2 (on).** `jcvMs` < 10 ms; Round2 (`PrepareQCFormed
+-> CommitQCFormed`) < 80 ms; `lwWhy` = `"journal"` on >= 95% of the
+leader's full blocks with `lwWait` close to Round1's own ~50-90 ms (the
+journal fires roughly when Round1 completes); in-tenure cycle lower
+than B1's by >= 200 ms. **NOT merely moved**: report `persistWait`
+(prefill phases) and the `build_prefix`/`QC->push` gap (6cb's own
+segment) in BOTH legs -- per (c) above, if the ~330 ms reappears there
+instead, this clause is not met even if `jcvMs`/Round2 individually
+look fixed, and that specific outcome is the ONE risk this section
+flags as plausible rather than merely theoretical.
+
+**(c) throughput.** No claim above the eight generators' ~140k
+ceiling (6cm); B2 not worse than B1 by more than the 3.6% noise floor;
+occupancy reported for both legs.
+
+**(d) safety.** No BAD BLOCK/divergence; no new flood-window view
+timeouts vs 35zzzd; no proposed-and-committed own block goes unwritten
+-- every leader-authored, CommitQC'd block's write must eventually
+complete (count `lwWhy=timeout` occurrences and read each one's
+outcome: a timeout does not skip the write, only the wait, per (e)
+above, but this is exactly what the round should confirm empirically,
+not merely by construction). B2's second window is historically the
+weakest slot in this harness's shape (supply effects, decay-timing
+edge) -- legs are not interchangeable for the throughput SCORE, but
+the mechanism numbers (jcvMs, lwWait, lwWhy, Round2, in-tenure cycle)
+are what decide this prediction, not the score.
+
+**VERDICT: confirmed** (implementation, tests, one-variable check and
+build all done; the code-level findings for Part 1 are complete and
+documented above). QS_QUEUE.md's S19 row status is marked prepared
+with prediction 87 (6co). Launch is the commander's next call.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
