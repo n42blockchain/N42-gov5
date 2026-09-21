@@ -284,3 +284,86 @@ constant drift. Evidence preserved in /data/blockchain/divergence-13659302/
 Still open, separately: why that build fell back at all. 9064 aborts on
 23000 transactions is the wave limit doing real work, and a fallback on the
 leader's critical path also costs the block its parallelism.
+
+## A quorum-committed block that no node stored -- open (2026-09-21, round 35zzzg, S23b)
+
+Round 35zzzg, leg B2 (`N42_LEADER_WRITE_ASYNC=1`), 15:05:56-57 EDT, views
+8784-8785. Node5 led a 4-view tenure (8782-8785) into which the last two
+views both produced a block claiming **height 13661138**: view 8784
+sealed and successfully wrote hash `7a6d85…23259c` (parent `13661137`);
+a SECOND, separately-sealed candidate for the same height, hash
+`f47f65…13d8ac` (`0xf47f6514cc`, parent `5f35af…3e51ab` = block
+13661137's own hash -- i.e. also a direct child of 13661137, a genuine
+sibling of `7a6d85…`), was independently pushed, proposed under view
+8785, and **collected a full 5/5-vote CommitQC**. By the time node5's
+own write of `f47f65…` ran, its local applied head had already advanced
+to `7a6d85…` (13661138) via the OTHER candidate's earlier write, so the
+authoritative write-path check (`checkQMDBLeaderSealParent`, unrelated
+to and NOT bypassed by S23's relaxed pre-check) correctly rejected it:
+`ErrStaleSeal`, `"sealed block is stale (applied head moved past its
+parent)"`. Every one of the other six nodes received `f47f65…` via
+direct push, cast a deferred (import-pending) vote for it
+(`"deferred check: block passes, vote may proceed before its import",
+number: 13661138`), then -- finding their own local head ALREADY at
+`7a6d85…`/13661138 by the time `f47f65…` needed a home -- filed it as
+`"add future block"` rather than importing it, since its parent slot
+was already occupied by the sibling they had already applied. All seven
+nodes then commit the QC (`"received Decide, committing block"`) but
+can never execute it (`"hotstuff: committed block not executed
+locally"`, `failures` climbing 1/2/3...), and `fetch-on-miss` retries
+forever against peers that also only have the sibling. **A block with a
+full, valid CommitQC exists in zero of the seven nodes' chains.**
+
+Evidence: `/data/blockchain/wr-logs/r35zzzg-keep/node{0-6}-B.log`,
+15:05:55-15:06:03 and again at restart 15:07:2x-15:19:3x (`"hotstuff:
+persisted committed QC names a block this node does not have"`,
+identical on all 7 nodes). Key lines (node5, chronological): `"hotstuff:
+sealed block dropped — phase left WaitingForProposal" {block:
+0x99e7eeba5f, view: 8785}` (a THIRD, later candidate for the same
+tenure, correctly discarded by the engine's own phase check -- not
+implicated further); `"🔨 Successfully sealed new block" {hash:
+7a6d85…23259c, number: 13661138}`; `"hotstuff view timing: view=8785
+role=leader ... votes=5/5"`; `"propose-before-write: the write failed
+AFTER the Proposal left" {err: "sealed block 13661138 parent
+5f35affe70bce8ac is no longer the applied head (13661138/
+7a6d850bacab3b27)...", hash: 0xf47f6514cc}`. Follower lines (all six,
+identical shape): `"block push: arrived"`, `"deferred check: block
+passes, vote may proceed before its import"`, `"add future block"
+{hash: f47f65…13d8ac, number: 13661138}`, `"received Decide, committing
+block"`, `"hotstuff: committed block not executed locally"`.
+
+Classification: **(B) -- reachable on r92 too, an open consensus-
+liveness issue for the main line, not specific to S23's relaxed
+pre-check.** The rejection that actually discarded the block ran
+through `checkQMDBLeaderSealParent` under `bc.lock`, the ORIGINAL,
+unrelaxed authoritative check -- S23's own bypass (`checkSealParentApplied`
+accepting `asyncWriter.ExpectedParent()`) governs a different, earlier
+gate and, even if it had taken the non-bypassed branch instead, the
+same race (two views deciding two different blocks for the same
+height) would have produced the same outcome. The actual bug is
+upstream of the write path entirely: under fast, sub-second view churn
+at a leg's teardown (views 8784/8785/8786 landing within ~7 seconds,
+against this whole campaign's usual 650-900 ms full-block cycle),
+`PUSH_BEFORE_WRITE`/`PROPOSE_BEFORE_WRITE` plus deferred (import-
+pending) voting let TWO views' worth of proposals from the SAME
+tenure-holding leader both collect quorum votes for the SAME height,
+and nothing in the commit/import path reorgs a later-decided QC over an
+already-applied sibling -- it just parks the QC'd block as unreachable
+forever. Retiring `N42_LEADER_WRITE_ASYNC` (the commander's ruling on
+S23) does NOT close this hazard.
+
+Why it matters: a committed-but-unstored block halts the chain
+permanently on restart -- the next leg (A2) inherited a parent it could
+never fetch from anywhere and produced zero blocks for its entire
+20-minute run, yet the harness's own run script printed `ROUND DONE`
+over it (the analysis-side refusal, `"chain is not producing"` in
+`bench-run.sh`, does not propagate to the runner's own terminal status
+line). Undetected, this looks like an ordinary round completion in any
+log grep that only checks for `ROUND DONE`.
+
+What would detect it early: a harness check that every leg's decay
+phase actually produces empty blocks (it already computes this --
+`"decay done: N empty blocks produced"`, N=0 here -- the number already
+exists in the log) and marks the ROUND `ABORTED` rather than `DONE`
+when any leg reports 0. No fix to the consensus/import path is proposed
+here.
