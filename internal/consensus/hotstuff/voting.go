@@ -234,6 +234,16 @@ func (e *ConsensusEngine) tryFormPrepareQC() error {
 		return err
 	}
 
+	// S19 (6co): journalCommitVote just returned successfully -- if this
+	// block is THIS node's own proposal and its write is parked waiting on
+	// WaitForCommitVoteJournal (N42_LEADER_WRITE_AFTER_JOURNAL=1), release
+	// it now. A no-op on followers (this whole function only reaches here
+	// when e.voteCollector is non-nil, i.e. only on the leader that proposed
+	// blockHash) and when the switch is off.
+	if leaderWriteAfterJournalEnabled {
+		e.fireWriteLatch(blockHash, "journal")
+	}
+
 	if err := e.emit(EngineOutput{
 		Type: OutputBroadcast,
 		Message: &ConsensusMsg{

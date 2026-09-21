@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/holiman/uint256"
@@ -923,6 +924,22 @@ func (h *HotStuff) NotifyBlockSealed(hash types.Hash, txHash types.Hash) {
 			log.Debug("hotstuff: seal block event ignored", "err", err)
 		}
 	}
+}
+
+// WaitForCommitVoteJournal implements the miner's commitVoteJournalWaiter
+// interface (push_order.go, S19/6co): it lets the leader's own write path
+// delay the start of WriteBlockWithState for hash until this node's own
+// journalCommitVote for hash has succeeded, or timeout elapses, or the view
+// is abandoned first. Called from the miner's resultLoop goroutine, never
+// from the engine's own -- WaitForCommitVoteJournal itself takes only the
+// engine's separate writeLatchMu leaf lock, never e.mu, so this never blocks
+// anything the consensus hot path is doing. A no-op (returns immediately)
+// when N42_LEADER_WRITE_AFTER_JOURNAL is unset or the engine is unavailable.
+func (h *HotStuff) WaitForCommitVoteJournal(hash types.Hash, timeout time.Duration) (time.Duration, string) {
+	if ce := h.Engine(); ce != nil {
+		return ce.WaitForCommitVoteJournal(hash, timeout)
+	}
+	return 0, "off"
 }
 
 // SealHash returns the hash of a block prior to it being sealed.

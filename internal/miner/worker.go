@@ -731,6 +731,31 @@ func (w *worker) handleSealed(blk block.IBlock) {
 			eh.RememberExecutedResult(blk.Hash(), *task.exec)
 		}
 	}
+
+	// N42_LEADER_WRITE_AFTER_JOURNAL (S19, docs/QS_BLOCK_TIME_BUDGET.md 6cn/
+	// 6co): delay the START of the write below until this node's own
+	// journalCommitVote for THIS block has succeeded (or the configured
+	// timeout elapses, or the view is abandoned), so the journal's small
+	// MDBX write finds the writer idle instead of queueing behind this one.
+	// Only meaningful when the Proposal already left (proposedEarly): that is
+	// what starts the chain of events (onBlockReady -> tryFormPrepareQC ->
+	// journalCommitVote) this wait is waiting on. Without an early Proposal
+	// (switch off, or push-before-write off/failed) NotifyBlockSealed has not
+	// even run yet at this point -- there is nothing to wait for, so this is
+	// skipped rather than spending the full timeout on a signal that cannot
+	// possibly arrive yet. Never holds w.mu or any chain lock while waiting.
+	var lwWait time.Duration
+	lwWhy := "off"
+	if LeaderWriteAfterJournalOn() {
+		if !proposedEarly {
+			lwWhy = "not-proposed-yet"
+		} else if cw, ok := w.engine.(commitVoteJournalWaiter); ok {
+			lwWait, lwWhy = cw.WaitForCommitVoteJournal(hash, LeaderWriteAfterJournalTimeout())
+		} else {
+			lwWhy = "unsupported"
+		}
+	}
+
 	tWrite := time.Now()
 	err = w.chain.WriteBlockWithState(blk, receipts, task.state, task.nopay)
 	dWrite := time.Since(tWrite)
@@ -809,12 +834,20 @@ func (w *worker) handleSealed(blk block.IBlock) {
 	// the window "miner: build phases" stops measuring at (it is emitted
 	// before commit()) up to the Proposal being handed to the engine.
 	// `write` is the whole WriteBlockWithState — "blockwrite phases"
-	// (blockchain_write.go) splits it further.
+	// (blockchain_write.go) splits it further. `lwWait`/`lwWhy` (S19,
+	// N42_LEADER_WRITE_AFTER_JOURNAL) is the wait spliced in just before
+	// `write` starts, if the switch is on: how long this write's own start
+	// was delayed, and why it stopped waiting ("journal": the commit-vote
+	// journal succeeded; "abandoned": the view timed out before that;
+	// "timeout": neither happened inside the configured ceiling; "off": the
+	// switch is unset; "not-proposed-yet": no early Proposal to wait on;
+	// "unsupported": w.engine does not implement commitVoteJournalWaiter).
 	log.Info("miner: propose phases",
 		"n", blockNumber.Uint64(), "txs", len(blk.Transactions()),
 		"finalize", task.finalize, "witness", task.witness, "assemble", task.assemble,
 		"bls", time.Duration(task.blsNanos.Load()), "seal2res", time.Since(sealStart),
 		"write", dWrite, "push", dPush, "pushedEarly", pushedEarly, "proposedEarly", proposedEarly, "notify", dNotify,
+		"lwWait", lwWait, "lwWhy", lwWhy,
 		"total", time.Since(task.createdAt), "tMs", time.Now().UnixMilli())
 
 	// Record this as the one candidate for its parent (after a successful
