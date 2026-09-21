@@ -1173,3 +1173,145 @@ confirmed not running.
 
 Prediction 91 (see 6cz for the exact bars) is registered. Code commit
 `e49ce151`. Launch is the commander's next call.
+
+---
+
+## S27 (performance, no protocol change) prepared -- all four items dropped (2026-09-21)
+
+**Per-item table:**
+
+| item | target | 6db's estimate | measured/found | outcome |
+|---|---|---|---|---|
+| 1 | `internal/parallel_processor.go:670-672` (`parallelApplyTx` signer fallback) | ~1.0 GB/block | `BenchmarkParallelBlockTransfers`, 5x15 runs: sec/op, B/op, allocs/op all "~" (benchstat, p>=0.056) -- the profile's own 15.99GB cum landed on the closing brace of a branch the sole call site never actually takes | dropped (below 2%, reverted) |
+| 2 | `modules/state/intra_block_state.go:520-552` (`Reset`, 6 maps) | ~3.2 GB/block | already tried and reverted: `e414790f` measured 27.59% CPU regression (`matchFull`) from the SAME clear()-not-make() change, because these maps are range-iterated via `sortedAddresses` in `FinalizeTx` every transaction | dropped (known larger regression) |
+| 3 | `modules/state/journal.go:61,63` (`entries`/`dirties`) | ~7.3 GB/block | `entries` reuse already implemented (`journal.reset()`, `entries[:0]`); `dirties` reallocation is the SAME e414790f fix, same reason | dropped (already done / already rejected) |
+| 4 | `modules/state/intra_block_state.go:1047` (`setStateObject`/`stateObjects`) | ~4.2 GB/block | confirmed the SAME map item 2 already covers -- not a separate target; same regression | dropped (double-count with 2, same regression) |
+| 5' | decode question (no code, report only) | -- | confirmed by code: a block-push follower DOES re-decode every transaction via RLP (`internal/sync/rpc_chunked_response.go:132`, `decodeChunkedBlock`), even when it already holds an identical pool copy; the sender-hint machinery only skips re-recovering the sender, not the decode | answered, no fix attempted |
+
+**Why items 2-4 are not a fresh judgment call.** `git log -S"matchFull
+at 27%" -- modules/state/intra_block_state.go` finds `e414790f`
+("perf(state): re-make iterated maps on Reset to drop inflated
+buckets", 2026-05-08). Its own commit message: a prior `/simplify`
+pass had switched these exact maps from `make()` to `clear()` to save
+per-block allocations; once per-worker IBS reuse landed, this caused
+`internal/runtime/maps.matchFull` to cost 27.59% flat CPU, because
+Go's `clear()` keeps a map's bucket array sized to its historical
+high-water mark -- one large transaction inflates the buckets every
+LATER, smaller transaction's `sortedAddresses` iteration must scan in
+full. The revert (back to `make()`) is what ships today, and its own
+doc comment on `IntraBlockState.Reset` (lines 507-515) already states
+this reasoning in the same words. 6db's own profile-only analysis
+(allocation bytes) could not see this CPU-side history; re-deriving
+from the code, not just the profile, is what caught it here.
+
+**Item 1's benchmark, kept.** `internal/parallel_processor_bench_test.go`
+(new): `BenchmarkParallelBlockTransfers` drives 20,000 signed transfers
+from 20,000 funded senders to 2,857 shared recipients through
+`StateProcessor.BuildParallel` (the miner/importer's own entry point)
+at 32 workers, over a `memdb`-backed `BlockChain` -- real EVM
+execution, real RLP-decoded transactions, no mocks below the KV layer.
+Kept as reusable infrastructure for the next allocation-reduction
+attempt on this path, even though item 1 itself did not survive.
+
+**Build: n42-r95 = n42-r94's exact file set, no source change.**
+Rebuilt via the same reconstructed file-checkout recipe to confirm it
+still reproduces and to carry this round's harness fixes.
+`internal/parallel_processor_bench_test.go` is the only new file in
+the repository (test-only, not part of the binary).
+
+**Harness: `run-r35zzzj.sh`/`chain-35zzzj.sh`, from the 35zzzi pair,
+not launched.** Two fixes: (a) the generator process-match pattern
+(`[t]xflood -rpc` -> `[t]xflood.*-rpc`, in both the memory watchdog's
+`floodsMB` and the VM sampler's `gens:` field) -- the generator binary
+is invoked as a VERSIONED name (`txflood-r39`), so "txflood" is never
+immediately followed by a space; tested offline against a synthetic
+`ps` line built from `bench-run.sh`'s own invocation. (b)
+`capture_win`'s filenames now use `$leg` (`run_leg`'s own first
+argument, captured into a named local BEFORE the nested function call
+resets positional parameters) instead of bare `$1`, which inside
+`capture_win` resolved to the SAME string as `$win` -- the exact
+`win1-win1`/`win2-win2` duplication 6da found, and the mechanism behind
+B2's win2 silently overwriting B1's win2 for a repeated node index (no
+leg component in the name at all). Tested offline with a two-`run_leg`
+reproduction. GOMEMLIMIT uniform 10GiB. `bash -n` clean on both;
+confirmed not running. Predecessor-wait fixed to `r35zzzi.log`.
+
+Prediction 92 (see 6dc for the exact bars) is registered: with zero
+perf commits landed, this round repeats 35zzzi's own configuration and
+exists mainly to confirm the fixed samplers, not to test a lever.
+Launch is the commander's next call.
+
+---
+
+## S27 CLOSED by commander's ruling; S28 prepared in its place (2026-09-21)
+
+**S27 update:** the commander accepted the interim report as CLOSED --
+no n42-r95, no qs-replay, no launch of the round drafted above. All
+four items stay dropped for the reasons already written (item 1: ~0%
+on the benchmark; items 2-4: re-propose `e414790f`, a 27.59% CPU
+regression already measured and reverted). Added to 6dc: the
+benchmark's own baseline (91.85M ns/op, 125.06M B/op, 961.9k
+allocs/op per 20,000-tx block; 4,592.6 ns/tx, 6,252.9 B/tx, 48.10
+allocs/tx -- see 6dc for the exact command to reproduce), a
+`-memprofile` capture's top-10 allocation sites by file:line, and the
+executor-share conclusion: the isolated executor accounts for only
+**~9.2% of the fleet's per-transfer allocation (~0.95 GB of the 10.36
+GB/block)** -- the other ~90.8% is ingest/gossip/pool/decode, not
+execution. (5') sharpened with the ratio the commander asked for:
+essentially every transaction in a pushed block (~99.4% on this
+harness's own shape) is already in the receiving node's pool, fully
+decoded with its sender recovered, yet
+`internal/sync/rpc_chunked_response.go:132` (`decodeChunkedBlock`)
+re-decodes the whole wire block unconditionally -- no pool-hash lookup
+exists on this path. QS_QUEUE.md's S27 row status is now the short
+form the commander asked for: "closed: nothing shipped, see 6dc".
+
+**S28 (new):** the prepared-but-now-pointless `run-r35zzzj.sh`/
+`chain-35zzzj.sh` (built for a round with nothing to test) are
+retargeted rather than discarded. New purpose: a config-only
+GOMEMLIMIT A/B by leg in the OTHER direction from S25 -- warm-up/A1/B1
+stay at 10GiB, B2/A2 go to 14GiB (GOGC=200 unchanged) -- testing
+whether MORE headroom against the collector (6db: GC+alloc is 20% of
+CPU in win1, 54% in win2) helps more than the extra ~4GB/node of
+anonymous memory hurts by squeezing the page cache further (6cp/6cr/
+6cv's own thrash evidence). Binary: `n42-r94` (S26's safety fix; S27
+built nothing), via a one-line switch at the top of `chain-35zzzj.sh`
+(`BIN=n42-r94`) the commander can flip to `n42-r92` if 35zzzi ends
+ABORTED or with a safety failure -- left as a manual instruction, not
+an automatic check, per the commander's own wording.
+
+**Gate check, reported not changed:** box is 136.6 GB total
+(confirmed live), current MemAvailable ~104.6 GB (above the 100 GB
+start gate, `chain-35zzzj.sh:75`). Worst case at 14GiB, all seven
+nodes simultaneously at their ceiling: 7 x 14 = 98 GB, plus an
+UNMEASURED generator estimate (~16-24 GB, carried from older rounds'
+own comments -- this harness's generator-memory field has been broken
+by the exact `[t]xflood -rpc` pattern bug in every prior round, live-
+confirmed just now against 35zzzi's own `r35zzzi-mem.log`:
+`floodsMB=` empty on every line), leaving **~19 GB** for OS + page
+cache -- at or below the existing 20 GB watchdog in the worst case.
+6da's own 10GiB measurement (nodes running at 58-75% of their ceiling
+as live heap, not saturating it) makes the REALISTIC case comfortable
+(~90 GB total, ~47 GB free), but the worst case is close enough to the
+watchdog to be worth knowing going in. Not changed, as instructed --
+this round's own (now-fixed) generator sampler will finally produce a
+real number to re-derive this arithmetic from.
+
+**Harness fixes (both retained from S27's own prep, now actually
+useful):** (1) generator process-match pattern, `[t]xflood -rpc` ->
+`[t]xflood.*-rpc` (`bench-run.sh` invokes a VERSIONED binary,
+`txflood-r39` this round, so "txflood" is never immediately followed
+by a space) -- fixes both the VM sampler's `gens:` field and the
+memory watchdog's own `floodsMB` figure; tested offline against a
+synthetic `ps` line AND live-confirmed against 35zzzi's own running
+mem log. (2) `capture_win`'s filenames now use `$leg` instead of bare
+`$1` (which, inside a proper nested FUNCTION call, resolved to the
+same string as `$win`) -- fixes the exact `win1-win1`/`win2-win2`
+duplication that let 35zzzh's B2 silently overwrite B1's own win2
+capture for a repeated node index; tested offline with a two-`run_leg`
+reproduction.
+
+Prediction 93 (see 6dd for the exact bars) is registered. `bash -n`
+clean on both scripts; confirmed not running. QS_QUEUE.md gets a new
+S28 row (status: prepared) directly after S27's (status: closed).
+Launch is the commander's next call.

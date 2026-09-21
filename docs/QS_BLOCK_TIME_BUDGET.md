@@ -12260,6 +12260,375 @@ not settle. It does NOT rank `go-buffer-pool.Get` (libp2p, no
 project-code fix available) or `decodeUint256`'s wider, riskier fix in
 the top list, consistent with the task's own risk-weighting.
 
+## 6dc. S27 CLOSED: all four allocation-reduction items dropped -- item 1 measures ~0%, items 2-4 re-propose a change already reverted for a 27.59% CPU regression; the isolated executor is ~9% of the fleet's 10.36 GB/block; nothing shipped (2026-09-21)
+
+**Commander's ruling:** accepted as CLOSED. No perf code ships from this
+step. `n42-r95` is NOT built; the qs-replay comparison this step's own
+prior draft queued does not run. `BenchmarkParallelBlockTransfers`
+(committed `291f2be7`) is kept as the standing offline yardstick for
+any future allocation-reduction attempt on this path. The two harness
+fixes prepared alongside this step (generator process-match pattern,
+per-leg capture names) are retargeted to S28, not spent here.
+
+**Why.** 6db's own work list (items 1-4 of this step) ranked allocation
+sites purely by `alloc_space` bytes. That lens is blind to the CPU cost
+of the alternative: this section re-derives each item against the
+CODE's own history, not just the profile, and finds that items 2-4
+were already tried and reverted for a measured, larger regression on
+the OTHER side of the trade, and item 1's own real-world effect
+benchmarks at zero.
+
+**Item 1 -- `internal/parallel_processor.go:670-672` (`parallelApplyTx`'s
+signer fallback).** Re-reading the caller: `runParallel` has exactly
+ONE production call site for `parallelApplyTx` (line ~400, inside the
+executor's per-tx closure), and it always passes `signer`, built once
+at line 244 unless `requireHeaderNumber` fails on the block's own
+header -- which would ALSO fail `parallelApplyTx`'s own identical check
+three lines before the fallback, so the fallback cannot be reached on
+any path that gets this far. `go tool pprof -list` against
+`n42-r92`/`r35zzzh-win1-win1-node1-allocs.pb.gz` (source resolved via
+symlinks at the binary's own embedded `build-r92` path) confirms the
+15.99 GB cum the doc attributed to this branch lands on the closing
+BRACE of the `if signer == nil` block (line 672 itself: flat 0, cum
+15.99 GB) -- a classic inlining line-table artifact, not evidence the
+branch runs. Implemented the fix anyway (tighten the fallback into an
+error: "signer is required (must be built once per block by the
+caller)") and measured it with **`BenchmarkParallelBlockTransfers`**
+(new, `internal/parallel_processor_bench_test.go`): 20,000 signed
+`DynamicFeeTx` transfers from 20,000 funded senders to a shared pool of
+2,857 recipients (matching the flood's own ~7:1 tx:recipient ratio),
+through `StateProcessor.BuildParallel` -- the same entry point the
+miner's fill and, via `ProcessParallel`, the importer both use -- at
+the product-default 32 workers, over a `memdb`-backed `BlockChain`.
+5 runs x 15 iterations each side, `benchstat`:
+
+| | before | after | delta |
+|---|---|---|---|
+| sec/op | 106.9m | 118.2m | ~ (p=0.222) |
+| B/op | 119.2Mi | 119.3Mi | ~ (p=0.056) |
+| allocs/op | 961.1k | 962.1k | ~ (p=0.056) |
+
+**No statistically significant difference on any metric** (`benchstat`
+marks all four "~"); B/op moved 0.08% between runs, two orders of
+magnitude below the task's own 2% floor. **Dropped.** The change is
+reverted; the benchmark is kept (new, reusable infrastructure for any
+future `parallelApplyTx`/`BuildParallel` allocation work) and committed
+on its own.
+
+**Items 2 and 4 -- `IntraBlockState.Reset`'s six maps
+(`modules/state/intra_block_state.go:520-552`) and `setStateObject`'s
+`stateObjects` map (line 1047, confirmed the SAME map Reset already
+covers -- no double-count, they are one target, not two).** `git log
+-S"matchFull at 27%"` finds `e414790f` ("perf(state): re-make iterated
+maps on Reset to drop inflated buckets", 2026-05-08): **this exact
+change -- `clear(map)` instead of `make(map)` for `stateObjects`,
+`stateObjectsDirty`, `nilAccounts`, `logs`, `balanceInc` -- was already
+made, profiled, and REVERTED.** Its own commit message: a prior
+`/simplify` pass had switched `Reset`/`journal.reset` to `clear()` to
+save per-block allocs; once IBS reuse landed, `internal/runtime/
+maps.matchFull` cost **27.59% flat CPU**, because Go's `clear()` keeps
+a map's bucket array at its historical high-water mark, and
+`stateObjects`/`stateObjectsDirty` (and `journal.dirties`, item 3
+below) are range-iterated every transaction via `sortedAddresses` in
+`FinalizeTx` (confirmed present today: `intra_block_state.go:1296,
+1377, 1588, 1765`) -- one oversized transaction inflates every
+SUBSEQUENT transaction's iteration cost, even after `len()` drops back
+to a handful of entries. The current source's own doc comment on
+`Reset` (lines 507-515) already explains this in the exact words the
+commit used. **This is not a fresh finding to weigh against item 1's
+kind of small saving -- it is a known, larger (27.59% CPU) regression
+on the other side of the SAME trade, already measured once.**
+**Dropped, no benchmark run** (re-running a change with a known,
+documented, larger-magnitude regression than any saving on the table
+is not a proportionate use of the offline-proof step; the historical
+measurement stands as the offline proof). A bounded hybrid (`clear()`
+below some retained-capacity threshold, full reallocation above it,
+recovering some of the allocation saving on ordinary blocks without
+reintroducing the AMM-block-poisons-everything-after failure mode) is
+a plausible FUTURE candidate but needs its own two-shape benchmark
+(one heavy transaction followed by many light ones) that this step did
+not have time to build; not attempted here.
+
+**Item 3 -- `modules/state/journal.go:61,63`.** Re-reading
+`journal.reset()` (the function that actually runs between
+transactions, as opposed to `push`, the line the profile's `alloc_space`
+attributed cost to): `j.entries = j.entries[:0]` (line 120) **already**
+reuses the backing array across resets -- pre-sizing/reusing `entries`
+is done. `j.dirties = make(map[types.Address]int)` (line 128) carries
+the SAME e414790f comment, word for word: reallocated on purpose,
+because `dirties` is the map `sortedAddresses` iterates in `FinalizeTx`
+(`intra_block_state.go:1296`). **Both sub-parts of item 3 are
+therefore already resolved -- one by an existing implementation this
+pass had not read closely enough, one by the same historical
+regression as items 2/4. Dropped.**
+
+**(5') the decode question, answered from code (not a profile, per the
+task's own instruction -- change nothing).** 6db could not settle
+whether a follower re-decodes a transaction it already holds from
+gossip/RPC when the same transaction arrives again inside a
+leader-pushed block body. Traced the exact path:
+`internal/sync/rpc_block_push.go`'s `blockPushStreamHandler` calls
+`ReadChunkedBlock` (`internal/sync/rpc_chunked_response.go:156`), which
+for the (normal) single-chunk case calls `decodeChunkedBlock(raw.data)`
+(line 132): `rlp.DecodeBytes(data, blk)` decodes the ENTIRE wire block
+-- header, body, every transaction -- in one call, unconditionally.
+**There is no hash lookup against the pool and no `tx.enc`/cached-wire
+short-circuit anywhere on this path: every transaction in a pushed
+block is decoded fresh via RLP, even when this exact transaction
+(same hash) already sits in the node's own pool, fully decoded, from
+an earlier gossip or RPC submission.** The sender-hint machinery
+(`applySenderHints`/`recoverBlockSenders`, `internal/
+parallel_processor.go:249-269`) only reuses the pool's ALREADY-RECOVERED
+SENDER to skip a second ECDSA recovery -- it runs AFTER the RLP decode
+above has already produced a fresh `*transaction.Transaction` object,
+so it does not avoid this cost, only a downstream one. **Answer: yes,
+this is a real, confirmed double-decode on the block-push path; not
+prevented by anything that exists today.** No code changed for this
+item, per the task's own instruction.
+
+**No build this step.** Per the commander's ruling, `n42-r95` is not
+built and the qs-replay comparison does not run -- there is no code
+change to carry into either. The two harness fixes this step's own
+prep produced (generator process-match pattern; `capture_win`'s
+per-leg capture filenames) are retargeted to S28 (see below and the
+new 6dd), which reuses the SAME `run-r35zzzj.sh`/`chain-35zzzj.sh`
+files rather than spending them on a round with nothing to test.
+
+**The benchmark as the standing offline yardstick.** Run it with:
+```
+cd wt-r27
+GOCACHE=/data/blockchain/gov5-work/.gocache GOTMPDIR=/data/blockchain/gov5-work/.gotmp \
+  go test -tags nosqlite,noboltdb -run '^$' -bench 'BenchmarkParallelBlockTransfers$' \
+  -benchmem -benchtime=20x -count=5 ./internal/
+```
+Baseline (today's code, 5 runs x 20 iterations, taskset -c 200-207,
+nice -n 10): **91.85M ns/op, 125.06M B/op, 961.9k allocs/op** per
+20,000-transfer block -- per transaction, **4,592.6 ns/tx, 6,252.9
+B/tx, 48.10 allocs/tx**. Any future change to `parallelApplyTx`,
+`IntraBlockState`, the journal, or the executor's read/write-set path
+should be measured against these numbers with the same command before
+being proposed for a fleet round.
+
+**What the benchmark says about where the 65 KB/transfer go.** The
+fleet's own measured rate (6da/6db) is 10.36 GB/block over ~163,000
+transfers = **68,245 B/tx (~66.6 KB)**. The benchmark isolates
+EXECUTION ONLY -- transactions are pre-decoded before `b.ResetTimer()`,
+so nothing in the timed loop touches RLP decode, gossip, RPC, or the
+pool -- so its own 6,252.9 B/tx is directly comparable as "the
+executor's own share": **6,252.9 / 68,245 = 9.2%** of the per-transfer
+allocation, or, at block scale, **~0.95 GB of the 10.36 GB/block**.
+**The other ~90.8% (~9.41 GB/block) is not the executor** -- it is
+ingest (RPC batch decode), gossip (buffer-pool framing, re-gossip to
+mesh peers), the pool (sender cache, tx-lookup index), and, per (5')
+below, at least one confirmed avoidable re-decode on the block-push
+path. Digging further into `parallelApplyTx`/`IntraBlockState` for
+allocation savings has a ~9% ceiling on the whole block's budget; the
+ingest/gossip/decode path is roughly ten times larger and is where the
+next allocation-reduction step should look.
+
+Captured with `-memprofile` (one run, `-benchtime=20x`,
+`-memprofilerate=1` so every allocation is sampled, not a fraction --
+this makes the run itself ~7x slower, which is expected and does not
+affect the byte/object counts; `taskset -c 200-207`, `nice -n 10`).
+Top 10 by flat `alloc_space` (percentage of the profiled run's own
+3100.56 MB total, applied to the clean baseline's 6,252.9 B/tx to
+normalize away the profiled run's own warm-up/one-time-cost inflation
+-- the profiled run's raw B/op, 6,220.6 B/tx, matches the clean
+baseline within noise, confirming the normalization is sound):
+
+| # | site | file:line | % of profiled alloc_space | est. B/tx |
+|---|---|---|---|---|
+| 1 | `journal.push` | `modules/state/journal.go:61` (`entries = append`, 655.57MB of the 845.10MB) + `:63` (`dirties[addr]++`, 189.53MB) | 27.26% | 1,704.8 |
+| 2 | `parallelApplyTx` | `internal/parallel_processor.go:673` (`tx.AsMessage`, 127.06MB) + `:701` (receipt alloc, 197.65MB) | 10.47% | 654.7 |
+| 3 | `freshStateObject` | `modules/state/state_object.go:242` (struct alloc, 190.62MB) + `:243` (storage map, 25.99MB) | 6.99% | 437.1 |
+| 4 | `setStateObject` | `modules/state/intra_block_state.go:1047` (`stateObjects[addr] = object`) | 6.11% | 382.0 |
+| 5 | `MVS.getOrCreateEntry` | `internal/parallel/mvs.go:133` (`&mvEntry{}`, 24.07MB) + `:134` (map insert, 116.12MB) | 4.52% | 282.6 |
+| 6 | `applyMVSToIBS.func1` | `internal/parallel_processor.go:728` (`applyMVSToIBS`, closure) | 4.20% | 262.6 |
+| 7 | `PlainStateReader.ReadAccountData` | `modules/state/plain_state_reader.go:107` | 3.95% | 247.0 |
+| 8 | `IntraBlockState.Reset` | `modules/state/intra_block_state.go:516-552` | 3.41% | 213.2 |
+| 9 | `ReadWriteSet.MarkBalanceInsensitive` | `internal/parallel/readwrite.go:138` | 3.19% | 199.5 |
+| 10 | `BaseCache.put` | `internal/parallel/base_cache.go:59` | 2.98% | 186.3 |
+
+The top 10 account for 73.08% of the isolated executor's own
+allocation. `journal.push` alone (27.26%, ~1.7 KB/tx) is the single
+largest site -- consistent with items 2-4's own targets being real
+allocation hot spots, just ones this campaign already tried to cut and
+found a larger, measured cost on the other side of the trade (6dc,
+above).
+
+**(5') restated with the exact ratio the commander asked for.**
+`internal/sync/rpc_chunked_response.go:132` (`decodeChunkedBlock`)
+re-decodes every transaction of a pushed block via RLP unconditionally
+-- and on this fleet's own shape, essentially every one of those
+transactions is already in the receiving node's pool: 6db's own DECODES
+finding is that a transaction is decoded once at RPC ingest OR once
+per receiving node at gossip, then held decoded in the pool from then
+on, so by the time a leader pushes a BLOCK containing transactions the
+other six nodes already gossiped/ingested, ~99.4% of them (the
+harness's own `-recipients 22857`/pool-hit shape; the ~0.6% gap is new
+transactions that only reach a node via this exact block, e.g. from a
+generator whose gossip lagged the leader's own inclusion) are
+redundant, byte-for-byte decodes of data the node's pool already holds
+fully decoded, with sender already recovered. No pool-hash lookup or
+`tx.enc`/sender-hint short-circuit exists on this path today.
+
+**VERDICT: confirmed CLOSED.** All four allocation items investigated
+with either a statistically clean negative benchmark result or a
+definitive historical-regression citation; zero regressions shipped;
+(5') answered from code with the redundant-decode ratio quantified;
+the isolated executor is shown to be ~9.2% of the fleet's per-transfer
+allocation, redirecting future allocation work toward ingest/gossip/
+decode rather than the executor. `internal/consensus/hotstuff`,
+`internal/`, `modules/state/...` suites pass unchanged.
+`BenchmarkParallelBlockTransfers` (commit `291f2be7`) is the standing
+offline yardstick. QS_QUEUE.md's S27 row status is marked **closed:
+nothing shipped, see 6dc**.
+
+## 6dd. S28: config-only A/B, GOMEMLIMIT 14GiB the other direction from S25's 6GiB -- rationale, gate check, and prediction 93 (2026-09-21)
+
+**Why.** S27 shipped no allocation-reducing code (6dc), so the
+allocation-per-block figure (10.36 GB) is not moving. S25/6da found
+that TIGHTENING GOMEMLIMIT to 6GiB is catastrophic (5-8x slowdown,
+10-15x GC frequency) because the live heap (5.8-7.5 GB) leaves almost
+no headroom under a 6 GiB ceiling. This step asks the opposite
+question with the SAME lever: does LOOSENING it help, and by how much,
+against the cost of more anonymous memory competing with the page
+cache that 6cp/6cr/6cv already showed thrashing win1->win2.
+
+**Rationale.** At GOMEMLIMIT=10GiB the limit itself (not `GOGC=200`'s
+own pacing) drives the collector: live heap 5.8-7.5 GB, GOGC=200 would
+otherwise pace to roughly 3x live (18-22 GB) before collecting, so the
+10 GiB ceiling forces collection well before GOGC's own target -- headroom
+(limit minus live) is only ~2.5-4.2 GB. 6db's own properly-sampled CPU
+profile (first this campaign) puts combined GC-related CPU (`gcBgMarkWorker`
++ `mallocgc` + `gcAssistAlloc`) at 20.1% in win1, rising to 53.8% in
+win2. Raising the limit to 14GiB roughly DOUBLES win2's headroom
+(~2.5 -> ~6.5 GB against a 7.5 GB live heap), which should let the
+collector run about half as often for the same allocation rate --
+GC frequency scales roughly with allocation/headroom, so doubling
+headroom should roughly halve collections per block, all else equal.
+The cost: whatever anonymous memory the collector no longer reclaims
+as eagerly stays resident, taking room from the page cache (MDBX's own
+memory-mapped files) that 6cp/6cr/6cv's own OS-counter evidence already
+shows under real pressure win1->win2. Which effect dominates is exactly
+what this round measures -- prediction 93 states both directions in
+advance so neither reading can be claimed after the fact.
+
+**Gate check (reported, not changed, per the task's own instruction).**
+Box total RAM: 136.6 GB (`/proc/meminfo` `MemTotal`, confirmed live on
+this box, matching the commander's own "137 GB"). Two existing gates:
+`chain-35zzzj.sh:75`, `while [ "$(avail_gb)" -lt 100 ]` (MemAvailable
+must be >= 100 GB before the fleet launches); `run-r35zzzj.sh`'s own
+memory watchdog aborts the round if MemAvailable falls below 20 GB
+during a leg.
+
+Worst case at 14GiB, all seven nodes simultaneously AT their ceiling:
+7 x 14 GiB = 98 GB committed to node heaps alone. Generator memory has
+never actually been measured by this harness's own sampler -- both the
+VM sampler's `gens:` field AND the memory watchdog's own `floodsMB`
+figure use the SAME broken process-match pattern this step's own
+harness fix repairs (`r35zzzi-mem.log`, live-checked just now:
+`floodsMB=` is empty on every line) -- so any generator figure here is
+an estimate carried from older rounds' own comments (~2-3 GB per
+generator, 8 generators, ~16-24 GB), not a fresh measurement. Sum of
+worst-case commitments: 98 GB (nodes) + ~20 GB (generators, mid
+estimate) = ~118 GB, leaving **~19 GB** for OS + page cache -- at or
+BELOW the existing 20 GB watchdog threshold if every node genuinely
+saturates its new ceiling at the same moment as the generators peak.
+**This is a real, if narrow, risk that the round could trip its own
+existing watchdog during B2/A2 purely from the wider ceiling, not from
+a bug** -- but it is the WORST case, not the expected one: 6da's own
+measurement at 10GiB shows nodes running at 58-75% of their ceiling as
+LIVE heap (5.8-7.5 GB of 10 GiB), not saturating it, so a 14GiB ceiling
+more plausibly sees live heap grow toward, say, 9-11 GB per node (this
+round's own prediction 93(b)) rather than the full 14 GB -- 7 x 10 GB
+(realistic) + ~20 GB (generators) = 90 GB, leaving ~47 GB, comfortably
+clear of both gates. **Verdict: the 100 GB start gate is not at risk
+(it gates the QUIET box before launch, not the flood); the 20 GB
+watchdog has a THINNER but still very likely adequate margin than at
+10GiB, and this round's own working generator sampler (the S27-prepared
+fix, finally landing here) will, for the first time, give a REAL
+generator-memory number to re-derive this arithmetic from afterward.
+Not changed, as instructed.**
+
+**Harness.** `run-r35zzzj.sh`/`chain-35zzzj.sh`, retargeted from the
+35zzzi pair (not rebuilt from scratch -- the same files S27's own prep
+produced). `run_leg` calls: `warmup 1 10GiB`, `A1 1 10GiB`, `B1 1
+10GiB` (baseline), `B2 1 14GiB`, `A2 1 14GiB`. `GOGC=200` unchanged.
+`N42_LEADER_WRITE_AFTER_JOURNAL=1` and `N42_CONTENTION_DIAG=1` stay on
+in every leg; `N42_LEADER_WRITE_ASYNC` stays unset. `chain-35zzzj.sh`
+gets a one-line, easily-flipped binary switch at its own top: `BIN=n42-r94`
+(default), with the fallback to `n42-r92` left as a manual
+instruction in the same comment (if 35zzzi ends ABORTED or with a
+safety failure) rather than an automatic runtime check, per the
+commander's own wording ("a one-line switch... that I can flip").
+Both S27-prepared harness fixes are carried unchanged:
+
+1. Generator process-match pattern (`memory watchdog's `floodsMB`,
+   VM sampler's `gens:`): `[t]xflood -rpc` required "txflood" immediately
+   followed by a space; the generator binary is invoked as `txflood-rNN`
+   (a version suffix sits between the name and the space, since
+   `bench-run.sh` runs `setsid "$TXFLOOD" -rpc ...` with `$TXFLOOD`
+   resolving to a versioned path), so the substring never occurred.
+   Fixed to `[t]xflood.*-rpc` in both places. Tested offline: `echo
+   "PID /path/txflood-r39 -rpc http://..." | awk '/[t]xflood -rpc/'`
+   matches nothing; `awk '/[t]xflood.*-rpc/'` extracts the PID. Live-
+   confirmed the defect independently just now against 35zzzi's own
+   running `r35zzzi-mem.log`: `floodsMB=` is empty on every sampled
+   line of the current round.
+2. `capture_win`'s filenames used bare `$1`, but `capture_win` is a
+   proper nested FUNCTION -- a function call resets `$1`/`$2` to its
+   OWN arguments (`win1`/`win2`, from `capture_win win1 15` /
+   `capture_win win2 75`), so `$1` inside it was always identical to
+   `$win`, producing exactly the `r35zzzh-win1-win1-node1-*`
+   duplication 6da found and the mechanism behind B2's win2 silently
+   overwriting B1's win2 for a repeated node index. Fixed by capturing
+   `run_leg`'s own `$1` into a named `local leg=$1` (visible to
+   `capture_win` via bash's dynamic scoping) and using `$leg` in every
+   capture filename and log line inside `capture_win`. Tested offline
+   with a two-`run_leg` reproduction (`run_leg B1`/`run_leg B2`, each
+   calling `capture_win win2`): before, both legs print the identical
+   filename; after, `r35zzzj-B1-win2-node1-cpu.pb.gz` and
+   `r35zzzj-B2-win2-node1-cpu.pb.gz` are distinct.
+
+`bash -n` clean on both scripts; confirmed not running (`ps` shows no
+`run-r35zzzj`/`chain-35zzzj` process). `chain-35zzzj.sh` waits on
+`wr-logs/r35zzzi.log`'s terminal line.
+
+**Prediction 93 (registered before any round, mechanism only):**
+
+**(a)** NumGC per minute in win2 falls by >= 35% from 35zzzh/35zzzi's
+own 10GiB baseline (~50-115 GC/min range measured across this
+campaign's own 6/10 GiB legs), and combined GC+allocation CPU share in
+win2 falls from ~54% (6db) to <= 40%.
+
+**(b)** Per-node RssAnon rises by 2-4 GB in the B2/A2 (14GiB) legs
+versus the B1 (10GiB) leg's own RssAnon, and fleet-wide `pgmajfault`/
+`workingset_refault_file` per 10s tick in win2 RISE (not fall) as the
+extra anonymous memory competes harder with the page cache -- reported
+by exact magnitude, not just direction, once the round's own (now
+fixed) VM sampler produces real numbers.
+
+**(c)** Win2 block time: if (a)'s collection-frequency saving
+outweighs (b)'s page-cache cost, win2 block time improves toward
+win1's own figure; if (b) dominates, it does not, or gets worse. Either
+outcome is the measured result, stated as such -- **anything inside
+1.6-1.8s is NO EFFECT** (this campaign's own leg-order noise floor is
+~0.1s, 6cv/6cx). Win1 (10GiB throughout in every leg) stays within
+noise of 35zzzi's own win1 figure -- this round changes nothing about
+B1/A1/warmup.
+
+**(d) Safety.** The S26 harness checks (conflicting commits per
+height; a leg that did not produce) stay green in every leg; the
+14GiB legs produce blocks at all (a genuine risk per the GATES
+analysis above, not assumed away).
+
+**VERDICT: confirmed** (config-only change, no code; gates checked and
+reported, not altered; both harness fixes tested offline; `bash -n`
+clean; not launched). QS_QUEUE.md gets a new S28 row (status:
+prepared) after the S27 row (status: closed). Launch is the
+commander's next call.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
