@@ -486,3 +486,13 @@ second window, that should be tracked rather than assumed zero in future
 comparisons against pre-S26 rounds. **Status: fix confirmed safe and
 adopted; n42-r94 is the base binary from here forward regardless of the
 measured cost, which is a tracked, not blocking, item.**
+
+**2026-09-21, round 35zzzk (n42-r95, S31): 35 `import-gated vote REFUSED`
+lines, all one incident (view 6557, all 7 nodes) -- an already-committed
+block's own hash (view 6556) resurfaced one view later carrying a
+self-referential JustifyQC (`justifyBlock == blockHash`); `extendsJustify`
+correctly refused it, the view timed out and formed a TC (~5-6s, one view
+only), 0 conflicting heights held. The refusal is correct, not a bug; the
+upstream mechanism that let an already-committed hash resurface with a
+self-referential justify one view later -- present in r95, not observed
+in r94 -- is untraced and open (docs/QS_BLOCK_TIME_BUDGET.md 6dj).
