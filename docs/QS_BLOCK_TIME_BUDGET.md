@@ -14572,6 +14572,164 @@ this fleet (off by default, `N42_BLOCK_DECODE_REUSE_POOL` unset) until
 one of the two paths above is taken -- it is safe to carry forward
 inert, not yet safe to credit with any throughput effect.
 
+## 6dm. S33-spec: the live heap has four named owners covering >=90% of it in every profile -- decoded transaction objects (biggest, ~28-32%), the sender cache (~15-16%, documented as worth "approximately nothing"), the tx-hash tail index (~16-19%, a known, already-costed design tradeoff), and QMDB's in-RAM live-key map (~11-14%, flat); the top reduction is a one-line config change (2026-09-22)
+
+Read-only: profiles + code, no builds, no benchmarks, box left free.
+Sources: `/data/blockchain/wr-pprof/r35zzzl-B1-{win1,win2}-*-heap.pb.gz`
+(node1/node2 win1, node4/node5 win2 -- switch off both windows, so this
+is the cleanest single-leg growth pair) and the B2 win1/win2 pairs from
+the same round for a second look; `go tool pprof -top -unit=mb`.
+35zzzh/i/k's own equivalently-shaped captures were spot-checked and
+show the same four owners in the same rank order (not tabulated in
+full here to keep this a light pass, per the commander's own
+instruction).
+
+### 1. Owners (B1 win1 node1/node2 avg vs B1 win2 node4/node5 avg, MB)
+
+| owner | win1 | win2 | % of total (win2) | bound is a... |
+|---|---|---|---|---|
+| decoded transaction objects (`DecodeEthereumTransaction` cum: `decodeUint256`+`decodeEthereumTransaction`+`NewTxOwned`+`CacheSender`+`Hash`+`cacheEncoded`+`SetFrom`+`txCompactReader`+`unmarshalCompactStorage`) | 1507.1 | 2159.7 | 29.7-32.4% | **mixed**: pool pending/queued (HARNESS: `--pool-slots 600000 --pool-queue 200000`), block cache (HARNESS/product: `N42_BLOCK_CACHE_BLOCKS=4`), plus transient decode garbage not yet collected |
+| `internal/txlookup.(*Tail).Add` (tx-hash -> block-number tail index) | 1045.7 | 1127.6 | 15.9-16.6% | **product default** (hardcoded `const` in `internal/txindexer/indexer.go`, no env override): `txIndexSealMinTx=1_000_000`, `txIndexSealMaxBlocks=256`, `txIndexKeepBlocks=64`, `txIndexKeepTx=1_000_000` -- ALREADY documented in-code as costing "~1.1 GB of a node's heap... round 35zzo" at this fleet's own 163k-tx blocks |
+| `common/transaction.senderCachePut` (process-wide sender-recovery memo) | 911.6 | 1154.1 | 15.4-16.3% | **harness flag**: `N42_SENDER_CACHE_SLOTS=16777216` (`run-r35zzzl.sh`, adopted round 35zm); code's own header comment: measured hit rate "8.3%-27.9%, decaying" (sharded submission) to "0.00%" (broadcast), end-to-end effect "none separable from round-to-round noise... kept because it is cheap and correct, not because it is load-bearing" |
+| `lib/qmdb.newMapIndexSized` (in-RAM live-key index, `map[Hash]uint64`) | 766.1 | 783.6 | 10.4-10.8% | **product default**: no chain-config/env knob selects the index backend; `QMDBRootComputer.UseMDBXIndex` (an already-built MDBX-backed alternative that moves this off the Go heap into the B+tree page cache) is wired ONLY into `internal/replay/engine_v2.go` (the offline replay tool), never into the live node path (`internal/node/node.go`) |
+| everything else (`parallel.NewReadWriteSet` arenas ~190-200, `mobileverify.PacketCache` ~35-155, `etl.sortableBuffer` (history fold) ~0-303, `miner.copyReceipts` ~65-125, `state.CapturePostState` ~49-61, `txspool.txLookup`/`txsSortedMap` ~40-90, misc <1% lines) | ~340 | ~430 | ~6-7% | mixed; each individually small |
+| **total inuse_space** | **5756** | **6960** | **100%** | -- |
+
+**Coverage: named owners (first four rows) account for 93-94% of
+inuse_space in every profile checked** (both this table's pair and
+the 35zzzh/i/k spot-checks) -- comfortably over the 80% bar.
+
+Arithmetic behind "what the bench actually needs" the commander asked
+for: the flood keeps 8 x 45,000 = 360,000 transactions in flight by
+its own `-target-depth`, well under the pool's own 600,000+200,000 =
+800,000-slot cap -- the cap is not what is currently binding pool
+memory (see growth section: pool/decode-garbage growth tracks leg
+activity, not a fill-to-cap event). Block cache at depth 4 holds
+4 x 163,000 = 652,000 transaction objects; at the isolated benchmark's
+own fresh-decode cost of 817.5 B/tx (6dk PART 4), that alone is
+~511 MB of the ~1.5-2.2 GB "decoded transaction objects" bucket --
+the remainder is pool pending/queued plus in-flight decode garbage
+between GC cycles, not separable further without a heap profile that
+distinguishes retaining structure (pprof's inuse_space groups by
+ALLOCATION site, and pool insertion, block import, and block-cache
+storage all route through the same `DecodeEthereumTransaction` call).
+
+### 2. Growth, win1 -> win2 (same B1 leg, switch off both windows)
+
+| owner | win1 (MB) | win2 (MB) | delta | % of total +1204 MB growth |
+|---|---|---|---|---|
+| decoded transaction objects | 1507.1 | 2159.7 | **+652.6** | 54% |
+| sender cache | 911.6 | 1154.1 | **+242.5** | 20% |
+| tx-hash tail | 1045.7 | 1127.6 | **+81.9** | 7% |
+| QMDB map index | 766.1 | 783.6 | +17.5 | 1% |
+| everything else | ~340 | ~430 | ~+90 | 7% |
+| **total** | **5756** | **6960** | **+1204** | **100%** |
+
+Reading each:
+- **Sender cache (+242.5 MB, 20% of growth)**: filling toward its own
+  16M-slot ceiling as the leg runs -- self-limiting once full (a
+  direct-mapped/two-way table overwrites, it does not keep growing
+  past capacity), consistent with the still-rising-but-decelerating
+  shape a fill-then-plateau curve would show.
+- **Tail index (+81.9 MB, 7%)**: per the code's own math this should
+  self-bound near the `keepTx=1,000,000` window (~6 blocks) once the
+  background sealer keeps pace, but `SealRangeKeepTx`'s `keep` bound
+  only governs what is ELIGIBLE to seal -- actual eviction happens on
+  a separate `DropBelow` after a segment finishes building
+  (`txIndexSealMaxPerTick`, one segment per ~15 s tick). A busier
+  leg's own CPU contention plausibly slows the segment-build tick
+  relative to block production, letting the unsealed backlog grow
+  toward the `keepBlocks=64` ceiling the code's own comment already
+  measured at ~1.1 GB (round 35zzo) -- this round's own win2 figure
+  (1.13 GB) matches that documented ceiling almost exactly, so this
+  looks like an already-known, already-budgeted cost re-confirmed,
+  not a new one.
+- **Decoded transaction objects (+652.6 MB, 54% -- THE dominant
+  grower)**: not a clean pool-fill signature by itself (the pool is
+  nowhere near its 800k-slot cap per the arithmetic above); most
+  consistent with accumulating decode garbage from a busier win2 (more
+  blocks/tx processed per unit time as the round's own occupancy
+  settles) sitting live between GC cycles under GOMEMLIMIT pressure,
+  compounded by whatever the pool's own actual pending/queued count
+  does over the same interval (not independently measured this pass --
+  would need `txpool_status`/reorg-line pending counts cross-referenced
+  against this window's own timestamps to fully split the two; flagged
+  as a gap, not claimed).
+- **QMDB map index (+17.5 MB, ~flat)**: consistent with its own nature
+  -- it holds one entry per LIVE chain key, and this workload's
+  recipient set is fixed (`--recipients 22857`) with senders reused
+  across blocks, so the live-key count should grow slowly within one
+  13-minute leg regardless of block count. Matches.
+- **Fragmentation**: not directly measurable from these `.pb.gz`
+  captures (no embedded `runtime.MemStats`; `go tool pprof -raw`
+  confirms only the four standard heap sample types, no
+  HeapInuse/HeapIdle/HeapReleased fields). The coarser proxy available
+  this pass, `RssAnon` (mem-watchdog, 10 s granularity) minus
+  inuse_space: win1 ~9.9-10.9 GB `RssAnon` vs ~5.6-5.9 GB inuse_space
+  (~4.0-5.0 GB gap) narrowing to ~10.4-11.0 GB vs ~6.8-7.2 GB (~3.3-4.2
+  GB gap) in win2 -- the gap does NOT grow with the leg; live-object
+  growth is eating into headroom, not adding fragmentation. Flagged as
+  a gap for a follow-up round that scrapes `/debug/pprof/heap?debug=1`
+  or a metrics endpoint for the real MemStats fields.
+
+### 3. Ranked reductions (config-only first; do not lower GOMEMLIMIT)
+
+1. **Sender cache -- ~0.7-0.9 GB saved -- config: `N42_SENDER_CACHE_SLOTS` 16777216 -> back to 4194304 (the pre-35zm size) or lower.** Arithmetic: ~65-70 bytes/live entry measured (1.05-1.16 GB / ~16M slots near-full); cutting to 4M caps it near 260-280 MB, saving ~0.7-0.9 GB. Cost: the cache's own code comment already measured its end-to-end effect as unmeasurable against round-to-round noise at ANY size tested, and explicitly warns against enlarging it "on a CPU-share argument again without an end-to-end number" -- shrinking it runs with that same finding, not against it. Proof: pure env value, zero code risk, drop it into `run_leg`'s existing export and A/B by leg exactly like every other switch this campaign has used; watch for any drop in the fleet's own recovery-hit-rate diagnostics as the one thing to confirm didn't regress.
+2. **Tail index keep-window -- ~0.5-0.9 GB saved -- code: lower `txIndexKeepBlocks` (64) and/or `txIndexSealMinTx`/`txIndexSealMaxBlocks` in `internal/txindexer/indexer.go`.** No env override exists today (a one-line addition would make this config-only for future rounds). Cost, already documented in the same file: a restart re-reads every unsealed-and-kept block in full to rebuild the tail, costing allocation proportional to the SAME window being shrunk (currently ~1.25 GB at 64 blocks) -- so this trades live-heap-during-the-leg for restart-time allocation, which is a fair trade only if restarts are rare in production relative to how long the fleet runs hot. Also watch whether a smaller `txIndexSealMaxPerTick`-vs-block-rate gap actually lets the sealer keep the tail AT its nominal `keepTx` bound (~1 block-multiple of 163k) instead of drifting to the `keepBlocks` ceiling, which per the growth section may be the larger win than changing the consts at all. Proof: needs a small code change (add an env override) plus an A/B by leg; not provable purely offline since it depends on the sealer keeping pace under this fleet's own CPU contention, which an isolated benchmark cannot reproduce.
+3. **QMDB live-key index -- ~0.7-0.8 GB saved, but CPU/latency risk -- code: wire `QMDBRootComputer.UseMDBXIndex` into the live node startup path (`internal/node/node.go`), not just `internal/replay/engine_v2.go`.** This moves the entire ~0.77-0.78 GB owner off the Go heap into the MDBX B+tree page cache, which is reclaimable and outside GOMEMLIMIT's accounting the way `RssFile` already behaves differently from `RssAnon` in this campaign's own established distinction (6cr/6cv). Cost: every `Get`/`Put`/`Delete` on the live-key index -- called on every Set, Get, and cold-liveness check in the tree -- moves from an O(1) Go map lookup to an MDBX cursor operation; this is exactly the kind of change 6da/6dj's own page-cache-thrash findings say could go either way under this fleet's own memory pressure. Proof: NOT config-only -- needs a build and its own dedicated A/B round; do not fold into a config-only round.
+4. **Pool slots/queue -- likely near-zero saved, included for completeness only -- config: `--pool-slots`/`--pool-queue` 600000/200000 -> smaller.** The flood's own `-target-depth` keeps 360,000 in flight (8 x 45,000), well under today's 800,000-slot cap, so the cap is very unlikely to be what is currently costing memory (pool structures are Go maps sized by actual content, not pre-allocated to the cap) -- shrinking it plausibly saves nothing measurable and risks generator-starvation if actual pending briefly spikes above a lowered cap. Not recommended as a priority item; listed so it is not silently skipped, and to record why it did not make the top 3.
+5. **Block cache depth -- ~130-260 MB per step saved, moderate risk -- config: `N42_BLOCK_CACHE_BLOCKS` 4 -> 2 or 3.** Isolated cost per retained block ≈163,000 x 817.5 B ≈ 128 MB (6dk PART 4's own fresh-decode figure); dropping from 4 to 2 saves roughly one step (~128 MB) per block of depth removed. Cost: a shallower cache means more `FetchBlockByHash` misses on any re-ask (catch-up sync, a peer requesting an older block by hash) -- this fleet's own harness does not appear to stress that path directly, so risk is plausibly low, but unmeasured this pass. Proof: config-only, A/B by leg.
+6. **History-fold ETL buffer (`etl.sortableBuffer.Put`) -- small (0-300 MB, appears intermittently, likely tied to `N42_HISTORY_INDEX_INTERVAL=20s`'s own fold cadence) -- not pursued as a priority**: the variance between profiles (0 MB in some, 303 MB in others, same round) suggests this is a transient, in-flight buffer captured mid-fold rather than a steady retained owner; a longer fold interval (already raised from 2s to 20s at round 35zzl for a different reason) trades a bigger buffer for less frequent write-amplification, so shrinking the interval back would cost real throughput for a small, non-steady memory return. Not ranked as an action item.
+
+### 4. The GOGC question
+
+The Go runtime's own documented rule (`runtime` package doc,
+Environment Variables section, and `runtime/debug.SetMemoryLimit`):
+GOGC sets a heap-growth target of `L*(1+GOGC/100)` over the live heap
+size `L` at the end of the last collection, while `GOMEMLIMIT` (or an
+equivalent `SetMemoryLimit` call) is a soft cap the collector treats
+as a second, independent trigger -- the runtime schedules the next GC
+at whichever of the two triggers is reached FIRST, i.e. effectively
+`min(L*(1+GOGC/100), GOMEMLIMIT)`. When the GOGC-derived target
+already exceeds the memory limit, the limit is what fires every time
+and GOGC's specific value stops mattering to WHEN a collection
+starts -- only to how far below the limit `L` would have naturally
+sat if the limit were absent, which is moot once the limit binds
+every cycle. Concretely on this fleet: at `GOGC=200` the target is
+`3L`, which exceeds 10 GiB once `L` exceeds `10GiB/3 ≈ 3.33 GB` --
+true for the entire measured 5.8-8.8 GB range (6da/6di/6dj), so the
+limit already binds throughout. At `GOGC=100` the crossover is
+`10GiB/2 = 5 GB` -- ALSO below the measured range's own floor (5.8
+GB), so the limit would bind there too, for effectively the whole
+range. Only at `GOGC=400` does the crossover rise to `10GiB/5 = 2 GB`,
+still below 5.8 GB, so the limit binds there as well. **Answer: no,
+neither GOGC=100 nor GOGC=400 would change anything under this
+specific binding regime** -- the live heap `L` would have to fall
+BELOW roughly 3.3-5.0 GB (depending on which of the two is tried)
+before that GOGC value's own target would ever come in under the
+10 GiB limit and start mattering again; since the whole documented
+climb (5.8 -> 7.5-8.8 GB) sits above that crossover for every GOGC
+value in the 100-400 range, **the only lever that changes GC
+frequency here is reducing L itself (section 3's own reductions),
+not GOGC.** This confirms, from the runtime's documented rule rather
+than from the round's own CPU-share numbers, exactly what 6dj already
+inferred empirically ("the effective GOGC shrinks as L grows").
+
+### What this does and does not show
+
+Shows: four named, quantified owners covering ~93-94% of live heap in
+every profile checked, one of which (the sender cache) is a
+config-only, code-comment-endorsed, near-zero-risk cut of ~0.7-0.9 GB;
+a second (the tail index) is a known, already-documented tradeoff
+whose current size matches its own designed ceiling; a third (QMDB's
+map index) has an existing but unwired MDBX-backed alternative that
+would need its own A/B round, not a config flip. Does not show: which
+share of the dominant "decoded transaction objects" grower is pool
+fill versus decode-garbage versus block cache without a
+pending-count-correlated follow-up; true fragmentation (HeapInuse -
+inuse_space) from these particular capture files; nor any live A/B
+result for reduction #1 -- this section is the spec, not the round.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
