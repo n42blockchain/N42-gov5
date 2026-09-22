@@ -14730,6 +14730,53 @@ pending-count-correlated follow-up; true fragmentation (HeapInuse -
 inuse_space) from these particular capture files; nor any live A/B
 result for reduction #1 -- this section is the spec, not the round.
 
+## 6dn. S35: prediction 97, registered before the round -- the sender cache 16M -> 4M slots by leg (2026-09-22)
+
+Config-only, no build: n42-r96 (S31's header-vote fix; reuse switch
+held at `N42_BLOCK_DECODE_REUSE_POOL=0` in every leg this round, since
+6dl closed it untested and not owed a round). Round 35zzzn = the
+35zzzl pair, A/B by leg on `N42_SENDER_CACHE_SLOTS` instead:
+warm-up/A1/B1 = 16777216 (today's harness value, adopted round 35zm),
+B2/A2 = 4194304. `GOMEMLIMIT` fixed 10GiB every leg; everything else
+unchanged from 35zzzl.
+
+**Prediction 97 (mechanism first):**
+
+**(a) Live heap.** Follower `inuse_space` (in-window heap profile,
+same capture convention as 6dm) in B2 lower than B1 at the
+same-numbered window by 0.6-0.9 GB, with the sender-cache owner
+(`common/transaction.senderCachePut` in `go tool pprof -top`) falling
+from ~1.15 GB (measured 35zzzl B1win2, 6dm) toward ~0.3 GB (the 4M-slot
+arithmetic bound at the same ~65-70 B/entry measured this round).
+
+**(b) Hit rate and recover phase unchanged.** The sender-cache hit
+rate (`"parallel block"`'s own `hintHits`/`hintFills` fields,
+`internal/parallel_processor.go:638`; alternatively `"sender source"`'s
+`hintFills`, `internal/state_processor.go:215` -- whichever line the
+round's logs carry) unchanged within 1 point of 35zzzl's own figure,
+and the follower `recov` phase (`"blockimport phases"`'s `recov`
+field, the campaign's own `recoverMs`) unchanged within noise (26 ms).
+If the hit rate falls measurably, the cache at 4M was doing real work
+this round's own shape did not previously credit it for, and the
+result says so rather than crediting (a)/(c) alone.
+
+**(c) GC and block time.** `NumGC`/block in win2 lower in B2 than B1;
+GC's own share of CPU in win2 lower in B2. Win2 block time better in
+B2 than B1 IF (a) and (c) both move as predicted -- stated as the
+measured outcome either way, against this round's own leg noise floor
+(~0.1 s per prior rounds' own established noise-floor finding).
+
+**(d) Safety.** 0 conflicting heights (`height_conflict_check.py`), no
+BAD BLOCK.
+
+**Baseline caveat, carried from 6dl.** B1 is the first full-block leg
+run against this round's own fresh reseed and was shown (6dl) to run
+measurably slower on unrelated grounds (cold cache, not memory
+pressure or consensus) in 35zzzl. This round compares **win2 vs win2**
+for every clause above, not win1 vs win1, and keeps 35zzzk's own B1
+(a different round's first-full-leg baseline) as an external
+sanity check rather than folding it into either leg's own numbers.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
