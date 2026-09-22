@@ -14052,6 +14052,172 @@ guessed at here, per the task's own explicit instruction. It does NOT
 re-run the delta-allocs partition for this round (time budget,
 priority given to the safety investigation).
 
+## 6dk. S32-prep: a pushed block's own RLP bytes are the exact hash preimage for all five transaction types; the follower reuses pool-resident objects on a hash hit instead of re-decoding -- 94.4% less B/op and 47% less ns/op at the fleet's own 99.4% hit rate; n42-r96 built, prediction 95 registered before the round (2026-09-22)
+
+**Whole-package `-race`, deferred since S31, run first as instructed:**
+`RACE: hotstuff 289 pass/0 fail; sync 138 pass/0 fail`
+(`go test -race ./internal/consensus/hotstuff/... ./internal/sync/...`,
+`nice -n 10`, `-p 8`, box load ~3, no foreign claim.)
+
+**PART 0/1 (read before changing anything).** The full file:line
+proof -- hash preimage identity for all five transaction types, the
+pool's lookup-by-hash API and locking cost, aliasing/mutability
+(including the existing `applySenderHints`/`recoverBlockSenders`
+guard that already makes a reused object's sender recovery a safe
+no-op, and the confirmation that the pool never recycles objects) and
+the deferred-check/consensus-path decode-identity argument -- is
+written in full in `docs/QS_HANDOVER_20260920.md`, "S32 PART 1 --
+read before touching anything (2026-09-22)". Summary of the two load-
+bearing findings:
+
+- `blockRLP.TxData[i]` (`common/block/block.go:144-198`) stores every
+  transaction type uniformly as `tx.EthEncoded()` -- for Legacy a bare
+  RLP list, for AccessList/DynamicFee/SetCode/Blob `type_byte ||
+  RLP(payload)`, and for Blob specifically WITHOUT its EIP-4844
+  sidecar (`EncodeEthereumTransaction`, contrast the sidecar-carrying
+  `EncodeEthereumPooledTransaction` used for pool/gossip propagation).
+  Verified field-by-field that `BlobTx.hash()`/`SetCodeTx.hash()` use
+  the identical field list/order as their own RLP encoding structs, so
+  `keccak256(TxData[i])` is the correct canonical tx hash for ALL FIVE
+  types when computed fresh from the block's own bytes -- no type
+  needs excluding from the HASH computation itself.
+- The narrower, existing `hashFromEncoding()` boundary
+  (`common/transaction/transaction.go:598-604`, Legacy/AccessList/
+  DynamicFee only) is reused as the OBJECT-REUSE eligibility list
+  instead: Blob/SetCode always decode fresh even on a pool hit,
+  because reusing the pool OBJECT (not just its hash) means trusting
+  that object's own cached encoding downstream, and a Blob object's
+  cache can legitimately carry the with-sidecar network form. This is
+  a deliberate, conservative choice to match an already-established
+  safety boundary rather than invent a new one for this task.
+
+Mutability: the leader already builds blocks directly from
+pool-resident objects (`internal/miner/worker.go:2082`,
+`pending := w.txsPool.Pending(false)`) -- sharing objects with the
+pool is an existing pattern, not a new risk. The only non-atomic
+writes on a `*Transaction` (`SetFrom`/`SetNonce`) are already guarded
+at both call sites (`internal/sender_recovery.go:130-133`,`293-296`)
+by `if tx == nil || tx.From() != nil { skip }`, so a reused
+(already-recovered) object is never written to again -- this also
+means `applySenderHints` becomes a no-op for it, saving that share of
+the follower's own recover phase too. No `sync.Pool`/recycling exists
+anywhere in `internal/txspool` (grep-confirmed): a dereferenced
+transaction stays valid indefinitely for any other holder.
+
+**PART 2/3 (implementation + tests).** Behind `N42_BLOCK_DECODE_REUSE_POOL`
+(unset/"0" = today's decode exactly): `common/block/block_decode_reuse.go`
+adds `DecodeRLPReusePool`/`decodeBlockTxsReuse`, computing
+`crypto.Keccak256Hash(data[i])` per transaction and asking the pool
+(`internal/txspool.TxsPool.GetTx`, wired through a small `block.TxLookup`
+function type to avoid an import cycle) before falling back to
+`transaction.DecodeEthereumTransaction`. `internal/sync/rpc_chunked_response.go`
+gains `decodeChunkedBlockReusePool`/`ReadChunkedBlockPeekHeader`'s new
+`lookup` parameter; `internal/sync/rpc_block_push.go` wires the pool
+lookup in only when the switch is on and a pool is configured.
+Six new tests in `common/block/block_decode_reuse_test.go` cover
+per-type equivalence (fresh vs. reuse: identical hashes, re-encoded
+bytes, and senders for all five types; confirms Blob/SetCode are
+NEVER reused despite a pool hit), the miss path, exact-hash-only
+matching (no prefix collision), and two `-race` tests (concurrent
+pool eviction during decode, concurrent import + pool insert). All
+pass, including under `-race`.
+
+**PART 4 (offline proof, gate: >=40% B/op reduction at 99.4% hits,
+ns/op not worse).** `BenchmarkDecodePushedBlock`
+(`common/block/block_decode_reuse_bench_test.go`), a realistic
+160,000-transaction block, `taskset -c 200-207`, `-benchtime=3x`:
+
+| variant | ns/op | B/op | allocs/op | reused | decoded |
+|---|---|---|---|---|---|
+| fresh | 29,891,950 | 130,803,288 | 2,560,037 | -- | 160,000 |
+| reuse, 0.0% hits | 41,250,901 | 136,088,778 | 2,720,055 | 0 | 160,000 |
+| reuse, 99.4% hits | 15,846,686 | 7,356,661 | 175,391 | 159,040 | 960 |
+| reuse, 100.0% hits | 14,052,784 | 6,572,794 | 160,029 | 160,000 | 0 |
+
+Per-transaction: fresh = 817.5 B, 16.0 allocs, 186.8 ns; reuse @
+99.4% hits = 46.0 B, 1.10 allocs, 99.0 ns. **B/op falls 94.4% at the
+fleet's own measured 99.4% hit rate** (well past the 40% bar); ns/op
+falls 47% (an improvement, not a regression). At 0% hits the reuse
+path costs ~38% MORE ns/op than fresh (the extra hash computation
+buys nothing when nothing is ever found) -- reported as the path's
+own honest worst case, not hidden. **Gate cleared: proceeding to
+PART 5.**
+
+Arithmetic for the fleet's own expected effect: at 99.4% hits the
+per-transfer allocation this bucket removes is ~(817.5 - 46.0) =
+771.5 B/tx, i.e. ~99.4% x 771.5 ~= 767 B of the task's own cited
+2.93 KB/transfer follower body+decode bucket -- roughly a quarter of
+that bucket by itself; duplicate LIVE objects avoided across the
+fleet's own block cache depth of 4 (`N42_BLOCK_CACHE_BLOCKS=4`) are
+~163,000 tx/block x 771.5 B x 4 ~= 503 MB of decoded-but-never-needed
+transaction data no longer alive at once per node, on top of the
+per-decode allocation saved.
+
+**PART 5 (build + runner, since PART 4 cleared the bar).** n42-r96 =
+n42-r95's exact file set (S31, confirmed base) plus this step's five
+files, built via the established file-checkout recipe. Markers
+confirmed present exactly once/zero as expected (`BaseCache`=0,
+header-vote log line=1, commit-vote-refused log line=1, `blockimport
+phases`=2). `sha256sum`: n42-r96 =
+`73fdea7c005062898722265cfd9e6142f4581a46e83f6a0cd150bb50f8cbe97b`
+(108,802,568 bytes); binary lineage n42-r92 -> n42-r94 (S26,
+`e49ce151`) -> n42-r95 (S31, `c124146e`) -> n42-r96 (S32, `f961f63e`).
+
+`run-r35zzzl.sh`/`chain-35zzzl.sh` built from the 35zzzk pair:
+`run_leg` gains a 7th argument threading `N42_BLOCK_DECODE_REUSE_POOL`
+A/B BY LEG (warm-up/A1/B1 = "0", B2/A2 = "1"); `GOMEMLIMIT` stays
+fixed at 10GiB in every leg (S28's own question is separate, 6dd/6dm,
+still available as the 6th argument). The predecessor wait was fixed
+to `r35zzzk.log`; the binary check/install and the `BOX-NOTE-gov5.txt`
+message were updated to n42-r96/S32. `bash -n` clean on both scripts;
+neither is running.
+
+**The chain script's memory-abort retry loop was removed for this
+round, per the commander's own conditional instruction** ("only if
+that is a small edit"): the loop's retry BEHAVIOR was confined to a
+single, separable ten-line conditional (`if grep -q "MemAvailable"
+$L35 && [ $attempt -lt 3 ]; then ... continue; fi`) inside the
+existing `for attempt in 1 2 3; do ... done` wrapper -- deleting that
+conditional (now: report which way the round ended, then
+unconditionally `break`) and reducing the loop to `for attempt in 1`
+left every other line (the memory-floor wait, the box-quiet claim
+protocol, the reseed, the launch) untouched. This qualifies as the
+small edit the instruction asked for; the wrapper itself was kept
+(rather than un-nested) to minimize the diff. A round that aborts on
+the memory floor now reports and stops, once, instead of silently
+re-running while the box is shared.
+
+**Prediction 95 (registered before any round, mechanism only):**
+
+**(a) Allocation.** The follower's own body+decode allocation bucket
+(2.93 KB/transfer, 6df/6di) falls by at least the benchmark's own
+measured fraction x 0.7 (i.e. by at least ~66% of that bucket) at the
+fleet's own ~99.4% hit rate.
+
+**(b) Heap.** End-of-win2 `HeapAlloc` lower in B2 (switch on) than
+B1's own (switch off) by at least half of this section's own derived
+duplicate-live-object figure (~503 MB / 2 ~= 250 MB); `NumGC`/block
+lower in B2 than B1.
+
+**(c) Throughput/correctness.** Follower import total not slower in
+B2 than B1; the `blockimport phases` line's new `reuse=`/`dec=`
+fields show reuse >= 99% of a block's own transactions in every B2
+block once the pool has caught up.
+
+**(d) Safety.** S26's own checks stay green (0 conflicting heights);
+no BAD BLOCK; transaction roots verified on every imported block in
+every leg, exactly as every prior round.
+
+**VERDICT: confirmed (bar cleared), not yet run.** PART 4's offline
+proof clears the task's own 40%-B/op / no-ns/op-regression bar by a
+wide margin; PART 1's hash-preimage and mutability questions are
+answered from the code with no open item requiring a stop; n42-r96 is
+built and marker-checked; the harness is prepared and syntax-checked
+with the memory-retry loop removed as instructed. `docs/QS_QUEUE.md`'s
+S32 row is marked prepared with prediction 95 (6dk);
+`docs/OPEN_ISSUES.md` carries a dated S32 status line. Launch is the
+commander's next call.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`

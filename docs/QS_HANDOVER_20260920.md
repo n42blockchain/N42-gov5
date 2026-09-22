@@ -1315,3 +1315,137 @@ Prediction 93 (see 6dd for the exact bars) is registered. `bash -n`
 clean on both scripts; confirmed not running. QS_QUEUE.md gets a new
 S28 row (status: prepared) directly after S27's (status: closed).
 Launch is the commander's next call.
+
+---
+
+## S32 PART 1 -- read before touching anything (2026-09-22)
+
+**(a) Hash preimage per transaction type, and how it sits in the block's own RLP.**
+`Transaction.Hash()` (`common/transaction/transaction.go:575-593`): if
+`tx.hash` is cached, return it; else if `tx.enc` is cached AND
+`hashFromEncoding(tx.Type())` is true, `hash = keccak256(tx.enc)`;
+otherwise fall back to `tx.inner.hash()` (a fresh, type-specific
+struct-field hash). `hashFromEncoding` (`transaction.go:598-604`)
+lists only `LegacyTxType, AccessListTxType, DynamicFeeTxType` --
+Blob and SetCode are excluded, with the doc comment explaining Blob's
+case ("their network encoding can carry the sidecar, which the hash
+does not cover").
+
+The block's own RLP wire form (`common/block/block.go:144-198`,
+`blockRLP{Header, TxData [][]byte, ...}`) stores EVERY transaction
+UNIFORMLY as an opaque byte string: `TxData[i] = tx.EthEncoded()`
+(`block.go:168`, called from `EncodeRLP`). `EthEncoded()`
+(`transaction.go:441-451`) returns `tx.enc` if cached, else computes
+it via `EncodeEthereumTransaction` (`common/transaction/ethereum_rlp.go:229-296`),
+which dispatches per type: Legacy -> `rlp.EncodeToBytes(&legacyTxRLP{...})`
+(a bare RLP list, no type byte); AccessList/DynamicFee/SetCode ->
+`encodeTypedEthereumTransaction(type, &...RLP{...})` = `type_byte ||
+rlp.EncodeToBytes(fields)` (`ethereum_rlp.go:359-365`); Blob ->
+`encodeBlobEthereumTransaction` (`ethereum_rlp.go:337-357`), which
+ALSO calls `encodeTypedEthereumTransaction(BlobTxType, &blobTxRLP{...})`
+-- the SAME shape, and explicitly WITHOUT the sidecar (contrast
+`EncodeEthereumPooledTransaction`, `ethereum_rlp.go:301-329`, used for
+POOL/gossip propagation, which keeps the sidecar in an
+`blobTxNetworkWrapperRLP` when present -- "block payload encoding
+intentionally omits it").
+
+**So `blockRLP.TxData[i]` is, for every type, EXACTLY the same bytes
+`DecodeEthereumTransaction` expects as input** (`ethereum_rlp.go:100-107`:
+`data[0] >= 0xc0` -> legacy list; else `data[0]` is the type byte,
+`data[1:]` the RLP payload) **and exactly the canonical hash preimage**:
+verified field-by-field that `BlobTx.hash()` (`blob_tx.go:186-201`,
+`PrefixedRlpHash(BlobTxType, [ChainID...S])`) and `SetCodeTx.hash()`
+(`setcode_tx.go:260-278`, `PrefixedRlpHash(SetCodeTxType, [ChainID...S])`)
+use the IDENTICAL field list and order as `blobTxRLP`/`setCodeTxRLP`
+respectively -- so `keccak256(TxData[i])` gives the correct tx hash
+for ALL FIVE types uniformly when the bytes come fresh from the
+block's own RLP (no special-casing needed at the block-decode level).
+
+**The Blob/SetCode exclusion from `hashFromEncoding` is a NARROWER,
+object-level cache-provenance concern, not a block-encoding mismatch**:
+it protects against a `Transaction` OBJECT whose own `tx.enc` was
+populated from a DIFFERENT source (e.g. the pool's WITH-sidecar
+network wrapper for a Blob tx submitted by gossip) being hashed
+directly from that (wrong) cached buffer. This matters for MY reuse
+feature differently than it matters for `tx.Hash()`: I compute the
+hash fresh from `TxData[i]` (never touching any pool object's own
+`tx.enc`), so the HASH LOOKUP is safe for all five types -- but
+REUSING the pool's OBJECT (not just its hash) means trusting whatever
+that object's OWN `EthEncoded()`/`tx.enc` would return later (for
+re-serialization, tx-root, etc.) to match `TxData[i]`'s bytes, which
+is exactly what `hashFromEncoding`'s existing exclusion says is unsafe
+for Blob. **Decision: PART 2's reuse fast path uses `hashFromEncoding`'s
+own exact type list (Legacy/AccessList/DynamicFee only); Blob and
+SetCode always decode fresh**, matching an already-established safety
+boundary in the codebase rather than inventing a new one.
+
+**(b) Pool lookup-by-hash API and locking.** `txLookup.Get(hash)`
+(`internal/txspool/txs_list_types.go:145-153`): a single
+`sync.RWMutex` (`txLookup.lock`, line 107) guards BOTH `locals` and
+`remotes` maps together -- NOT sharded. Cost per call: one `RLock`/
+`RUnlock` pair plus one or two map lookups. No batched/lock-free read
+path exists today (`Range` also takes the same `RLock` for its whole
+iteration, lines 125-143). For 160k per-transaction lookups on the
+import path, calling `Get` once per tx (160k `RLock`/`RUnlock` pairs)
+is the ONLY option without adding a new pool API; a hypothetical
+`GetMany` taking the `RLock` ONCE for the whole batch would cut
+lock-acquisition overhead but would hold that `RLock` for the full
+scan duration, during which `Insert`'s own `Lock()` (~130k/s, per the
+task) would queue -- exactly the trade-off the task asked to measure,
+not merely reason about. Decision: PART 2 uses the EXISTING per-tx
+`Get(hash)` call (no new pool API, smallest blast radius); the
+benchmark (PART 4) measures the per-lookup cost and reports whether
+contention is visible at this scale; no pool-side change is proposed
+in this step.
+
+**(c) Aliasing and mutability.** Confirmed the leader already builds
+blocks directly from pool-resident objects: `internal/miner/worker.go:2082`,
+`pending := w.txsPool.Pending(false)`, and the returned per-sender
+slices are placed into the block being assembled without copying --
+"a block sharing objects with the pool is an existing pattern" is
+correct, not a new risk S32 introduces.
+
+Mutation sites of a `*Transaction` after creation: `SetFrom`
+(`transaction.go:541-555`, sets `LegacyTx.From`/`AccessListTx.From`/
+`DynamicFeeTx.From` -- PLAIN, non-atomic pointer fields -- or
+`BlobTx.fromCache`/`SetCodeTx.fromCache`, also plain); `SetNonce`
+(`transaction.go:557-568`); `cacheEncoded` (`transaction.go:453-458`,
+writes `tx.enc`/`tx.size`, BOTH atomic -- `atomic.Pointer[[]byte]`/
+`atomic.Value`); `tx.hash.Store` inside `Hash()` (atomic). **Only
+`SetFrom`/`SetNonce` are non-atomic writes**, and both are called from
+the sender-recovery/import path under an EXISTING guard that makes
+this safe already: `applySenderHints`'s `fill()` and
+`recoverBlockSenders`'s worker loop (`internal/sender_recovery.go:130-133`,
+`293-296`) both check `if tx == nil || tx.From() != nil { skip }`
+BEFORE ever calling `SetFrom` -- a transaction that already has a
+cached sender (which every genuinely pool-resident transaction does,
+since pool admission itself requires sender recovery) is never
+written to again. **This directly answers the task's own question:
+yes, `applySenderHints` becomes a no-op for a reused object (the guard
+already skips it), so import saves the recovery work too** -- for the
+~99.4% hit-rate transactions, this removes their share of the
+follower's own 21-26 ms recover phase, not just their share of decode.
+My own reuse code never calls `SetFrom`/`SetNonce` on a reused object
+(read-only use) precisely to keep this guarantee airtight, since a
+transaction reused from the pool has, by construction, already passed
+through this exact path once (at pool admission).
+
+**Object recycling: NONE.** `txLookup.Remove` (`txs_list_types.go:205-220`)
+only `delete()`s map entries; it does not mutate, zero, or return the
+`*Transaction` object to any pool/free-list (no `sync.Pool` usage
+anywhere in `internal/txspool/`, confirmed by grep). A transaction
+object removed from the pool (mined or evicted) is simply
+dereferenced by the pool; any OTHER holder (a block body that reused
+it, an in-flight fill) keeps a perfectly valid, unmodified reference.
+**Sharing is safe: not stopping.**
+
+**(d) Deferred check / consensus path decode identity.** `CheckDeferredBlock`
+(`internal/deferred_includable.go`) and `InsertChain` both operate on
+the SAME `blk block.IBlock` returned by `blockPushStreamHandler`'s own
+single call to the chunked reader (`internal/sync/rpc_block_push.go:28-40`,
+`s.deferredCheck(blk)` then `s.cfg.chain.InsertChain([]block.IBlock{blk})`
+using the identical `blk`). PART 2's reuse decode is a drop-in
+replacement inside that ONE call site's own decode step, so as long as
+its output is element-for-element equal to a fresh decode (PART 3's
+own equivalence tests), every downstream consumer sees identical
+content with no additional wiring.
