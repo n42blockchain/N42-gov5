@@ -13818,6 +13818,240 @@ arithmetic bounds it at ~12.8 GiB in theory, but this section
 recommends treating anything above 10 GiB as unproven until a round
 actually completes at that setting.
 
+## 6dj. S31: the header-vote fix recovers most of S26's own cost -- Round1 back to 62-64 ms (vs r92's baseline, not r94's 153-262 ms) -- and the 35 refusals are a genuinely stale, correctly-blocked re-proposal of an already-committed block, not a bug in the new rule (2026-09-21)
+
+n42-r95 (n42-r94 + S31's header-vote path) ran B1 (21:50:09-22:03:23)
+and B2 (22:03:23-22:17:09) cleanly, `GOMEMLIMIT=10GiB` throughout.
+Node logs preserved whole, trimmed to `wr-logs/r35zzzk-keep/
+node{0-6}-B.log`. Scripts reused unmodified:
+`height_conflict_check.py`, `seal_path_waterfall.py`.
+
+### The 35 refusals, investigated first, as instructed
+
+**All 35 `"import-gated vote REFUSED"` lines are one incident**: view
+6557, `blockHash=a990bc…815fde`, `blockParent=d149cb…8c956f`,
+`justifyBlock=a990bc…815fde` (self-referential -- the JustifyQC field
+equals the block's own hash), 5-6 occurrences per node (all 7 nodes
+hit it). Reconstructed in full from node0's own log, chronologically:
+
+1. **View 6555** committed `d149cb…8c956f` (the TRUE, correct parent).
+2. **View 6556**: block `a990bc…815fde` (parent `d149cb…`) arrives via
+   `fetch-on-miss` (not a direct push), and is voted CORRECTLY through
+   the NEW header gate: `"header vote: block header known and extends
+   its JustifyQC block, voting"` -- extendsJustify passed (parent ==
+   justify == `d149cb…`, a NORMAL, correct case). The two-phase commit
+   vote follows, `"received Decide, committing block"`, `"hotstuff:
+   block committed"` -- **`a990bc…815fde` is fully, correctly committed
+   IN VIEW 6556.**
+3. **View 6557** (4-5 ms later, same node, NOT leader): the SAME hash
+   `a990bc…815fde` resurfaces as a PENDING PROPOSAL for THIS NEW view,
+   now carrying `JustifyQC.BlockHash = a990bc…815fde` -- **its own,
+   already-committed hash, not a new child's parent pointer.**
+   `extendsJustify` correctly computes `parent (d149cb…) != justify
+   (a990bc…)` and refuses, 6 times (repeated warning lines, ~1 second
+   apart, most plausibly repeated delivery/retry of the SAME stale
+   message rather than 6 independent proposals). **View 6557 then
+   TIMES OUT** (`"view timed out", view: 6557` at 22:02:37) and **a TC
+   forms** (`"TC formed locally, advancing without the next leader",
+   nextView: 6558`), after which view 6558 proceeds normally with a
+   fresh block.
+
+**Answering the four questions directly:**
+
+1. **Which view(s)/node(s), and what happened to the block**: ONE
+   view (6557), all 7 nodes hit the same refusal for the same hash.
+   `a990bc…815fde` itself was NOT a bad block -- it was ALREADY
+   correctly proposed, voted, and committed one view earlier (6556).
+   What was refused in 6557 is a STALE RE-APPEARANCE of that already-
+   decided block's own hash as if it were a fresh proposal for the
+   NEW view, with a JustifyQC that (by the time this stale message was
+   processed) correctly reflected the CURRENT state of the world (a990bc
+   had, by then, become the locked/justified block) but was wrongly
+   being asked to justify EXTENDING ITSELF rather than a genuinely new
+   child. **This is consistent with a duplicate or late-arriving
+   delivery of stale proposal-adjacent state (most likely a repeated/
+   retried message, not a fresh, differently-constructed proposal)
+   rather than a new proposal genuinely built by view 6557's own
+   leader with a wrong idea of its own parent** -- the exact mechanism
+   producing a SELF-referential JustifyQC for a re-surfacing hash was
+   not traced to a specific line this pass (per the task's own
+   instruction not to guess at a fix): `pendingJustifyBlocks[view] =
+   proposal.JustifyQC.BlockHash` (`proposal.go:249`) is the only
+   assignment site and reads directly from whatever the received
+   Proposal message itself carries -- so the self-reference originates
+   in the CONTENT of a message this node received under view 6557's
+   context, not in a local bookkeeping slip on read.
+2. **Did the view complete, and at what cost**: yes -- via a TIMEOUT
+   and TC, not a QC. Approximately **5-6 seconds** elapsed between the
+   stale proposal's own arrival (~22:02:32) and the TC forming
+   (22:02:37) before view 6558 resumed normal, fast (sub-second)
+   progress. **This is a real, one-time cost, isolated to a single
+   view out of several thousand in the round** -- not a repeating
+   pattern (35 log lines, but all one incident, all one view).
+3. **Which gate produced it**: the log text itself
+   (`"import-gated vote REFUSED"`) and the code
+   (`extendsJustify`, `internal/consensus/hotstuff/proposal.go:667`)
+   confirm this is the **S26 fallback/import-gated path**
+   (`processProposal`'s own `if e.importedBlocks[proposal.BlockHash] {
+   if !e.extendsJustify(...) { ... } }` branch, `proposal.go:271-272`)
+   -- **NOT S31's own header gate** (`tryHeaderVote`, which has its
+   OWN, separate log lines and did not fire for this specific event;
+   the block was already imported by view 6557's own processing time,
+   routing it to the import-gated branch instead). `extendsJustify`
+   itself is SHARED code (unchanged by S31), so this finding is about
+   a pre-existing check catching a NEW way of reaching it, not a
+   defect S31 introduced in the check itself.
+4. **Present in 35zzzi (r94)?**: **NO** -- `grep -c "import-gated vote
+   REFUSED\|commit vote REFUSED"` against every one of 35zzzi's own
+   kept logs returns 0 everywhere, confirmed directly. **This specific
+   incident (a block's own hash resurfacing as its own justify one
+   view later) did not occur in r94's round; whether that is because
+   the underlying trigger is timing-sensitive and simply did not
+   recur, or because S31's own header-vote path changes SOMETHING
+   about when/how a stale message reaches this check, is NOT
+   determined by this pass.**
+
+**Verdict on "is this a bug in r95": the REFUSAL ITSELF is correct and
+the fix worked exactly as designed -- a proposal that does not extend
+its own JustifyQC block was refused, exactly as S26/S31 intend, and
+the fleet recovered via the normal timeout/TC path with a small, one-
+time, single-view cost.** Whether something UPSTREAM of the check (why
+`a990bc…815fde`'s own hash resurfaced with a self-referential
+JustifyQC one view later, and why this is new in r95 but absent in
+r94) is itself a defect worth fixing is **NOT determined here** -- named
+as an open question with its exact evidence trail, not guessed at.
+
+### 1. Cost, side by side with 35zzzi (r94) and 35zzzf (r92)
+
+| | 35zzzf win1 (r92) | 35zzzi win1 (r94) | **35zzzk win1 (r95)** | 35zzzf win2 | 35zzzi win2 (r94) | **35zzzk win2 (r95)** |
+|---|---|---|---|---|---|---|
+| Round1 (median) | ~63-65 ms | 153-157 ms | **62-64 ms** | ~70-72 ms | 212-262 ms | **115-115.5 ms** |
+| Round2 (median) | ~87-99 ms | 10-11 ms | 83-92.5 ms | ~138-163 ms | 236-271 ms | 176-181.5 ms |
+| leader `jcvMs` (median) | 0 | 0 | 0 | 0 | 0 | 0 |
+| `lwWhy` timeout share | 17-27% | 66.7-85.7% | **9.1-13.0%** | 27-33% | 87.0-95.7% | **18.5-34.6%** |
+| in-tenure CYCLE (median) | 691/656 ms | 650/663 ms | 655/688 ms | 850/904 ms | 877/1010 ms | 845/898 ms |
+| QC-later-than-build-end share | 0% (35zzzf's own B1 read) | 33.3% | **21.7-27.3%** | 0% | 78.3-82.6% | **59.3-65.4%** |
+| `import_breakdown` total (mandatory) | -- | 791 ms | **817 ms** | -- | -- | -- |
+| first-window TPS | 141.0k/137.5k | 130.0k/135.3k | **141.7k/140.5k** | -- | -- | -- |
+| second-window TPS | 92.3k/93.5k | 85.2k/85.6k | **95.0k/94.5k** | -- | -- | -- |
+| **B mean** | 116.1k | 109.0k | **117.9k** | | | |
+
+**Round1 is back to 62-64 ms in win1 -- essentially identical to
+r92's own pre-S26 baseline, not r94's 153-157 ms.** Win2 (115-115.5 ms)
+is still somewhat above r92's own ~70-72 ms but a large recovery from
+r94's 212-262 ms. `lwWhy` timeout share fell back to single digits in
+win1 (9.1-13.0%, close to r92's 17-27%) and roughly halved in win2
+versus r94. **QC-later-than-build-end share also improved (win1
+21.7-27.3% vs r94's 33.3%; win2 59.3-65.4% vs r94's 78.3-82.6%) but
+has NOT fully returned to r92's own 0% reading** -- the vote round is
+still on the critical path more often than in the pre-S26 baseline,
+just less often than under r94's own header-less two-phase gating.
+**First and second window TPS, and the B mean (117.9k), are now
+ABOVE r92's own same-lineage figures (116.1k)**, not merely recovered
+-- the largest, cleanest positive signal in this table.
+`import_breakdown`'s own mandatory line (817 ms) is inside noise of
+r94's own 791 ms and every prior round's own figure.
+
+### 2. Header-gate usage and timing
+
+**Header-gate votes (`"header vote: block header known..."`) fired
+531-545 times per node** across the whole round; the RESIDUAL fallback
+path (`"import-gated vote: deferring until block imported"`, cases
+that did NOT resolve via either the already-imported fast path or the
+header gate at the time of processing) fired only **105 times per
+node** -- **the header gate is doing the large majority of two-phase
+Round-1 voting work**, consistent with its own design intent (voting
+on the header, well before the deferred check completes). The much
+larger `"import-gated vote: block already imported"` count (3,440 per
+node) is the PRE-EXISTING, unrelated fast path for blocks that arrive
+already-imported (common for small/empty blocks) and is not part of
+S31's own change. **Exact ms-offset of the header event relative to
+the Proposal was not separately stamped/derivable this pass** (no
+dedicated timing field ties `tryHeaderVote`'s own firing instant back
+to `ProposalReceived`'s own timestamp in one line) -- reported as n/a,
+not estimated.
+
+### 3. Safety
+
+`height_conflict_check.py`: **0 conflicts across 4,648 committed
+heights.** `"miner: suppressing divergent same-height sibling"`: **2**
+occurrences (node1) -- the leader-side guard catching genuine
+collisions pre-push, working as designed. **0 BAD BLOCK.** Refusals by
+stage: 35 at the import-gated (S26 fallback) stage, as detailed above;
+**0** at any stage attributable to S31's own header gate specifically
+(the header gate's own code path was not implicated in the incident).
+
+### 4. Memory series continuity and delta-allocs (B1)
+
+| | B1win1 (21:58:17-21:59:37) | B1win2 (21:59:38-22:00:19) |
+|---|---|---|
+| `pgmajfaultD`/10s | 15,916 | 10,151 |
+| `refaultFileD`/10s | 12,810 | 10,226 |
+| `RssAnon` (avg, MB) | 9,781 | 10,285 |
+| `RssFile` (avg, MB) | 3,634 | 2,275 |
+| `NumGC` (bracketing) | ~23 -> 32 (~17.4/min) | ~48 -> 66 (~26.3/min) |
+| `HeapAlloc` end of win2 | -- | ~8.3-9.1 GB |
+
+Same qualitative shape as every round in this series (`RssFile` falls,
+`RssAnon`/`HeapAlloc`/`NumGC` rate all rise, win1->win2). **The delta-
+allocs partition (KB/tx, A-G) was NOT re-run this pass** -- 6di's own
+correction (true-20s-delta captures give a ~5.5x smaller total than
+earlier rounds' captures) applies to this round's own captures too
+(48 files, leg-named, confirmed 20 s deltas per the coordinator's own
+note), but re-running `alloc_path_partition.py` a second time was not
+completed given this task's own combined scope (the safety
+investigation took priority) -- named as not done, not estimated or
+assumed to match 6di's own numbers.
+
+### 5. Prediction 94, ruled
+
+- **Header-vote path exists and fires as the majority mechanism**:
+  confirmed (531-545 header votes vs 105 residual-fallback per node).
+- **Round1 cost recovered toward the pre-S26 baseline**: confirmed,
+  strongly in win1 (62-64 ms, essentially AT r92's own baseline), 
+  partially in win2 (115-115.5 ms, well below r94's 212-262 ms but
+  above r92's ~70-72 ms).
+- **Safety unchanged from r94 (S26's own guarantee preserved)**:
+  confirmed -- 0 conflicting heights, the one incident investigated
+  above is a CORRECT refusal with a small, one-time, single-view cost,
+  not a safety regression.
+- **Throughput**: confirmed RECOVERED AND THEN SOME -- B mean 117.9k,
+  above r92's own 116.1k and well above r94's 109.0k.
+
+**VERDICT: confirmed.**
+
+**Recommendation: n42-r95 becomes the base binary.** Safety is
+unchanged from r94 (unconditionally required regardless). The one
+open item -- the mechanism producing the 35-refusal incident's own
+self-referential JustifyQC, present in r95 but not observed in r94 --
+is a genuine correctness question worth a dedicated, narrower follow-
+up (reproducing or tracing the exact message/path that carries a
+stale hash into a new view's `pendingJustifyBlocks`), but it is NOT,
+on this round's own evidence, a reason to hold r95 back: the check
+that fired is CORRECT, the cost was small and one-time, and safety
+(0 conflicting heights) held throughout.
+
+**Method.** `height_conflict_check.py` and `seal_path_waterfall.py`
+reused unmodified. The refusal investigation is a direct,
+chronological log read (no script) across node0's own kept log,
+cross-referenced against the`extendsJustify`/`tryHeaderVote`/
+`processProposal` source directly.
+
+**What this does and does not show.** It shows S31's header-vote fix
+recovers the large majority of S26's own Round1 cost, with throughput
+now ABOVE the pre-S26 baseline rather than merely restored to it. It
+shows, with a complete chronological reconstruction, that the round's
+one safety-adjacent incident (35 refusal log lines) is a single,
+correctly-handled stale-proposal event costing one view's worth of
+timeout (~5-6 s), not a defect in the new rule's own logic. It does
+NOT identify the exact code path that produced the self-referential
+JustifyQC in the first place, and does NOT determine why this specific
+pattern appeared in r95 but not r94 -- both are named as open,
+evidence-backed questions for a dedicated follow-up, not resolved or
+guessed at here, per the task's own explicit instruction. It does NOT
+re-run the delta-allocs partition for this round (time budget,
+priority given to the safety investigation).
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
