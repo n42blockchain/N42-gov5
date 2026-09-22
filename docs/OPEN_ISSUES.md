@@ -496,3 +496,31 @@ only), 0 conflicting heights held. The refusal is correct, not a bug; the
 upstream mechanism that let an already-committed hash resurface with a
 self-referential justify one view later -- present in r95, not observed
 in r94 -- is untraced and open (docs/QS_BLOCK_TIME_BUDGET.md 6dj).
+
+## A follower re-decodes ~160k already-pool-resident transactions on every pushed block -- fix PREPARED, not yet launched (2026-09-22, S32)
+
+**STATUS (S32, 2026-09-22): reuse fix prepared, not yet launched.**
+6df/6di found a follower's block-push receive path
+(`blockPushStreamHandler` -> `decodeChunkedBlock`) RLP-decodes every
+transaction of a pushed block even though ~99.4% of them already sit
+in the pool, decoded, with sender cached (the fleet's own measured
+shape) -- 2.93 KB of the node's own 11.5 KB/transfer allocation.
+`common/block/block_decode_reuse.go` (new) computes each transaction's
+hash from its own raw RLP slice in the block body -- verified the
+exact canonical hash preimage for all five transaction types
+(docs/QS_BLOCK_TIME_BUDGET.md 6dk PART 0/1a) -- and asks the pool
+before decoding, reusing the object on a hit for Legacy/AccessList/
+DynamicFee only (Blob/SetCode always decode fresh, matching the
+existing `hashFromEncoding()` cache-provenance boundary). Behind
+`N42_BLOCK_DECODE_REUSE_POOL` (unset/"0" = today's decode exactly).
+Offline proof (`BenchmarkDecodePushedBlock`, 160,000-tx block): B/op
+falls 94.4% at the fleet's own 99.4% hit rate (130.8 -> 7.36 MB), ns/op
+falls 47% (29.9 -> 15.8 ms) -- well past the task's own 40%-B/op /
+no-regression bar. Code commit `f961f63e` ("perf(sync): reuse
+pool-resident transactions when decoding a pushed block"). Full PART
+0-4 writeup and prediction 95 in docs/QS_BLOCK_TIME_BUDGET.md 6dk;
+mutability/aliasing findings in docs/QS_HANDOVER_20260920.md's own
+"S32 PART 1" section. Build: n42-r96 = n42-r95's exact file set + this
+change. Prepared round: 35zzzl (run-r35zzzl.sh/chain-35zzzl.sh), A/B
+by leg on the new switch, GOMEMLIMIT fixed 10GiB every leg. Launch is
+the commander's call.
