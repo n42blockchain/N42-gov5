@@ -524,3 +524,25 @@ mutability/aliasing findings in docs/QS_HANDOVER_20260920.md's own
 change. Prepared round: 35zzzl (run-r35zzzl.sh/chain-35zzzl.sh), A/B
 by leg on the new switch, GOMEMLIMIT fixed 10GiB every leg. Launch is
 the commander's call.
+
+**UPDATE (2026-09-22, S32 analysis): round 35zzzl ran; reuse measured
+0% on every node in both switch-on legs (dec=full on every full
+block, fleet-wide, no exceptions) -- prediction 95 is UNTESTED, not
+falsified. Root cause is not the patch (every code path -- env parse,
+`WithTxPool` gating, the PeekHeader wiring, the hash preimage, the
+eligibility list -- re-checked correct against the live wiring): the
+fleet's tx-gossip publish side has relayed zero messages fleet-wide
+(the `"tx gossip: receiving"` canary never fires) since
+`N42_TXPOOL_NOLOCALS=1` entered the baseline at round 35z3/35z4
+(2026-09-08), because `NewLocalTxsEvent` -- the only event
+`broadcastTxs` republishes -- is never sent for a `local=false`
+(NOLOCALS-forced) submission; combined with `-shard-senders` routing
+each sender to exactly one node's own RPC/pool, a follower's pool
+structurally never holds another node's share of a block's
+transactions. This has been true for every round run under this
+baseline, not just this one. Full trace in
+docs/QS_BLOCK_TIME_BUDGET.md 6dl. Safety stayed clean (0/4,495
+conflicting heights, no BAD BLOCK, 0 refusals); n42-r96 is recommended
+as the fleet base for S31's header-vote fix, with the reuse feature
+left dormant (default off) pending either a propagation fix or a
+re-scoped prediction.**

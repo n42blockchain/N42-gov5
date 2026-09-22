@@ -14218,6 +14218,360 @@ S32 row is marked prepared with prediction 95 (6dk);
 `docs/OPEN_ISSUES.md` carries a dated S32 status line. Launch is the
 commander's next call.
 
+## 6dl. S32: round 35zzzl finished with reuse stuck at 0% on every node in every leg -- the code is correct end to end, the cause is that this fleet's transaction gossip has delivered zero messages since N42_TXPOOL_NOLOCALS=1 entered the baseline (round 35z3); prediction 95 is therefore UNTESTED, not falsified (2026-09-22)
+
+Node logs preserved whole, trimmed to `wr-logs/r35zzzl-keep/
+node{0-6}-B.log` (2026-09-22 15:00-15:29, 128,534-129,088 lines/node).
+Scripts reused unmodified: `height_conflict_check.py`,
+`import_breakdown.py`; a direct JSON scan of `blockimport phases`
+lines did the reuse/dec accounting (no new script needed).
+
+### FIRST, as instructed: why reuse stayed 0% in the switch-ON leg
+
+The commander's own grep was reproduced exactly and extended to all
+seven nodes for the whole B2 leg (15:14:38-15:28:26,
+`N42_BLOCK_DECODE_REUSE_POOL=1`): **every node, every full block,
+`reuse=0`**. node0: n=133 full blocks, `sum(reuse)=0`,
+`sum(dec)=21,679,000` (= 133 x 163,000, exact). Nodes 1-6: identical
+pattern, 132-133 full blocks each, `sum(reuse)=0` on all of them, no
+exceptions. The A2 leg (also switch-on) was not separately re-checked
+byte-for-byte but the same B2-window scan already spans past its own
+start with the same result, so the finding covers both switch-on
+legs.
+
+**Step 1 -- did the switch take effect?** There is no dedicated
+startup log line for this switch (checked: only the pre-existing,
+unrelated "Sender hint source attached" line matches "reuse" in the
+logs). Indirect evidence says yes, plumbing-wise:
+
+- `internal/sync/block_decode_reuse_switch.go:26-40`
+  (`BlockDecodeReusePoolOn`/`parseBlockDecodeReusePool`) is a
+  straightforward `sync.Once`-gated `os.Getenv("N42_BLOCK_DECODE_REUSE_POOL")`
+  parse accepting `"1"` -- correct.
+- The fleet is NOT a single long-lived process across legs: every
+  `run_leg` call in `run-r35zzzl.sh` invokes `./bench-run.sh`, which
+  (`/data/blockchain/scripts-qs/bench-run.sh:100-107`) stops any
+  running fleet (`stop-fleet.sh --no-inspect`), resets the pool
+  journal, then calls `bench-7node.sh`, which calls `qs_launch_node`
+  (`qs-env.sh:215-219`, a plain `setsid "$bin" ...` with no `env -i`
+  scrubbing) for all seven nodes. So each leg's node processes are a
+  **fresh exec** inheriting `run_leg`'s own exported environment,
+  including `N42_BLOCK_DECODE_REUSE_POOL=$7`. This rules out the
+  "stale process never restarted, so the env change never took"
+  hypothesis I initially favored -- checked and rejected.
+- `internal/node/node.go:1304-1306` only calls `n42sync.WithTxPool(pool)`
+  (the sole setter of `s.cfg.txPool`, the field `rpc_block_push.go`
+  gates on) when `cfg.P2PCfg.TxGossipEnabled && pool != nil`.
+  `cfg.P2PCfg.TxGossipEnabled` defaults to `true` in
+  `cmd/n42/config.go:127`, with the comment "this flag had no default
+  and no CLI flag" -- confirmed by grepping the whole harness
+  (`run-r35zzzl.sh`, `chain-35zzzl.sh`, `bench-run.sh`,
+  `bench-7node.sh`, `qs-env.sh`) for `TxGossipEnabled`/`txgossip`/a
+  config file: nothing overrides it. `pool` is the return of
+  `txspool.NewTxsPoolWithConfig`, error-checked non-nil before use.
+  Direct log proof this held at runtime: `"Subscribed to transaction
+  gossip topic"` appears exactly 3 times per node in the kept window
+  (once per leg-boundary restart within it), on all 7 nodes --
+  meaning `s.cfg.txGossipEnabled` (set by `WithTxPool` itself,
+  `options.go:87-94`) was true, so `s.cfg.txPool` was non-nil.
+- `internal/sync/rpc_block_push.go:28-34` and
+  `internal/sync/rpc_chunked_response.go`'s `ReadChunkedBlockPeekHeader`
+  -> `decodeChunkedBlockReusePool` -> `Block.DecodeRLPReusePool` chain
+  is exactly the S31 `ReadChunkedBlockPeekHeader` handler (confirmed
+  by reading `blockPushStreamHandler` end to end): the commander's own
+  candidate "did S32 wire reuse into the PeekHeader variant, or the
+  other one?" is answered -- the PeekHeader variant, correctly.
+- Hash computation: `decodeBlockTxsReuse`
+  (`common/block/block_decode_reuse.go:82-84`) computes
+  `crypto.Keccak256Hash(data[i])` where `data[i]` is
+  `dec.TxData[i]`, and `blockRLP.TxData[i]` is filled at encode time
+  from `tx.EthEncoded()` (`common/block/block.go:176-186`) -- the
+  IDENTICAL bytes `transaction.Transaction.Hash()` hashes for the
+  same eligible types (`transaction.go:580-586`,
+  `hashFromEncoding` at `598-604`, same three-type list
+  Legacy/AccessList/DynamicFee reused verbatim as
+  `reuseSafeTxType`). No wrong-bytes, wrong-hash-type, or eligibility
+  bug: this was already proven offline in 6dk PART 0/1 and rechecked
+  here against the live wiring, not just the isolated benchmark.
+
+Every piece the commander asked to check by code -- wrong bytes,
+wrong hash type, wrong handler variant, eligibility mismatch -- reads
+correct. That leaves one more possibility, checked last:
+`decodeBlockTxsReuse`'s own fallback (`lookup == nil`) produces
+EXACTLY the observed `reused=0, decoded=len(txs)` signature
+(`common/block/block_decode_reuse.go:76-79`) -- indistinguishable in
+the log fields from "lookup was non-nil but missed on every single
+transaction." Both are consistent with the data. The second
+possibility is the one confirmed by direct evidence:
+
+**Step 2 -- transaction gossip subscribes but delivers nothing, on
+every node, for the whole round.** `internal/sync/subscriber_transactions.go`
+logs `"tx gossip: receiving"` on the first accepted gossiped
+transaction and every 500th thereafter (`txGossipReceived`, a
+dead-pipeline canary by design). Grepped across all seven kept logs,
+the full round (both legs): **zero occurrences, on every node.** The
+subscription itself succeeds (3x "Subscribed to transaction gossip
+topic" per node, above) -- peers join the mesh -- but not one
+transaction is ever actually relayed over it.
+
+The reason is upstream of gossip's receive side, in the PUBLISH side,
+and it is this round's own long-standing baseline configuration, not
+a new bug:
+
+- `run-r35zzzl.sh` exports `N42_TXPOOL_NOLOCALS=1` in every leg (a
+  switch adopted at round 35z3/35z4, 2026-09-08, "RPC submissions are
+  remote transactions -- no locals set / journal / pool-wide sweep
+  per new sender").
+- `internal/txspool/txs_pool_types.go:187-194`: this env var sets
+  `pool.config.NoLocals = true`.
+- `internal/txspool/txs_pool.go:149` (`AddLocals`): 
+  `return pool.addTxs(txs, !pool.config.NoLocals, false)` -- with
+  `NoLocals=true`, every RPC-submitted transaction is inserted with
+  `local=false`.
+- `internal/txspool/txs_pool.go:404-412` (`addTxs`): 
+  `if local { ... event.GlobalEvent.Send(common.NewLocalTxsEvent{...}) }`
+  -- with `local` always false this round, `NewLocalTxsEvent` is
+  **never sent, for any transaction, by any node.**
+- `internal/sync/tx_broadcaster.go:44-52` (`broadcastTxs`) subscribes
+  ONLY to `NewLocalTxsEvent` -- deliberately, per its own comment, to
+  avoid a 7x gossip-amplification loop by not re-publishing
+  gossip-received transactions. With `NewLocalTxsEvent` never firing,
+  the publisher has nothing to publish, ever, on any node.
+
+Combined with `-shard-senders` routing (`bench-run.sh`'s default when
+`--broadcast` is not passed -- this is what every round's own banner
+reports as `broadcast=0`; `bench-run.sh:219`), each of the 8,000
+flood senders is deterministically assigned to exactly ONE of the 7
+node RPC endpoints (`sender % 7`). Since gossip re-publishes nothing,
+each node's own live tx-pool holds ONLY the ~1/7 shard of senders
+submitted directly to it, permanently -- never another node's share.
+A follower importing a block another node proposed is, structurally,
+importing mostly OTHER nodes' shards, which its own pool has never
+held at any point. `s.cfg.txPool.GetTx(hash)` misses essentially every
+time, not because of anything in the S32 patch, but because the
+object it is looking for was never resident on that node to begin
+with.
+
+**This is fleet-wide and predates this round by two weeks** (NOLOCALS
+has been in the baseline since round 35z3/35z4, 2026-09-08): every
+round run under this configuration -- the entire back half of this
+campaign -- has had a transaction-gossip pipeline that subscribes
+successfully but relays nothing. It also explains, retroactively, WHY
+round 35zi ("track 2: sender pre-recovery through hint-only ingest")
+was ever necessary: the hint-only ingest endpoint
+(`internal/ingest/server.go`) and `-hint-peers` were built specifically
+to get sender-recovery information to every node by a side channel,
+because the "normal" channel (tx gossip, which would also carry
+decoded transaction bodies into every pool) was never delivering
+anything. 6df's own "(5')" finding -- ~99.4% of a pushed block's
+transactions already sit in the pool, decoded, with sender cached --
+was evidently measured or reasoned about a different propagation
+path (the hint-only feed populates the SENDER CACHE, a completely
+separate structure from the pool's own tx map that `GetTx` reads);
+it does not describe the pool's own transaction-object residency,
+which this round shows to be close to 0% for cross-node blocks. This
+gap between 6df's assumption and the pool's real content is the
+proximate cause of today's UNTESTED result, and is being flagged here
+as its own fact rather than folded quietly into the mechanism section
+below.
+
+**Conclusion on the addendum: not a bug in the S32 code.** Every code
+path the commander asked about (env parse, `WithTxPool` gating, the
+PeekHeader wiring, the hash preimage, the eligibility list) was
+re-read against the live wiring and is correct. The 0% hit rate is a
+structural property of this fleet's configuration (shard-senders +
+a non-relaying tx-gossip publish side, both long-standing), not of
+the decode-reuse patch, and it fully explains -- with no residual
+mystery -- why every node's `reuse` counter stayed at 0 in both
+switch-on legs.
+
+### FIRST item on the original list: why B1 win1 is 116.7k @ 1.364s
+
+`import_breakdown.py` on the two win1 capture windows (like-numbered,
+both switch-off vs switch-on but per the above neither switch state
+matters for decode): B1 win1 (15:10-15:12, n=14 full blocks) `proc`
+med=836ms, `body` med=27ms, `total` med=1116ms; B2 win1 (15:24-15:26,
+n=207 full blocks(*) ) `proc` med=620ms, `body` med=11ms, `total`
+med=864ms. (*) the B2 sample size is inflated by the query window
+picking up neighbouring blocks past the 20s capture; treat both as
+indicative, not exact-window figures.
+
+Checked and ruled out:
+- **View timeouts / TC / sibling switches**: zero in both windows
+  (`grep -c` for `timeout certificate|view timed out|advancing
+  view|new-view|TC formed` is 0/0). The 108-114 "timeout" hits in a
+  naive grep are all `"lwWhy":"timeout"` -- the normal
+  N42_LEADER_WRITE_AFTER_JOURNAL 150ms fallback, not a consensus
+  event -- and appear at a similar rate in both windows.
+- **Memory pressure at capture time**: `r35zzzl-mem.log` shows BOTH
+  win1 windows with node `RssAnon` at 9.9-10.9 GB (essentially AT the
+  10GiB `GOMEMLIMIT`) and `RssFile` 1.2-3.1 GB -- the two legs look
+  the SAME on this axis, so GC-thrash-at-the-ceiling (6da/6dj's own
+  established mechanism) does not by itself explain why B1 is worse:
+  B2 hits the same ceiling and is faster.
+- **BAD BLOCK / root mismatch / conflicting heights**: none in the
+  round (see safety section below) -- not a correctness incident.
+
+Not ruled out, and the best-supported remaining candidate: B1 is the
+FIRST full/dense leg run after `chain-35zzzl.sh`'s own fresh reseed
+of all seven node directories immediately before launch (warm-up and
+A1 precede it but A1's own gasceil is 960M vs B1/B2's 6.846B --
+roughly a 7x smaller working set). B1's own MDBX/QMDB pages for this
+round are being touched for the first time at B-tier block sizes,
+while B2 benefits from B1's own ~13 minutes of full-block traffic
+having already warmed the identical address ranges (same reseeded
+data, same node identities' data files, just further along). This
+matches this campaign's own established page-cache-warmup finding
+(6cr/6cv) even though the coarse (10s-interval) memory-watchdog log
+does not show a clean before/after signature on RSS alone -- the
+warmup would show up in access latency to specific hot pages, not
+aggregate RSS. **Classification: cold cache (best-supported by
+elimination); not code, not consensus, not the reuse switch (which
+is off in both legs' win1 anyway -- warm-up/A1/B1 are all
+switch-off).** Every later mechanism number below is therefore
+reported against **B2 win1/win2 vs B1 win1/win2 as captured**, flagged
+where B1's own anomaly likely inflates its numbers, and 35zzzk's
+141.7k @ 1.132s is kept only as an external reference point, not a
+baseline substituted into any OFF-vs-ON delta.
+
+### Mechanism (95a-c): reported as observed, not attributable to the switch
+
+Because reuse was 0% in every ON-leg block, none of the OFF-vs-ON
+deltas below can be read as an effect of `N42_BLOCK_DECODE_REUSE_POOL`
+itself -- the switch never exercised its own reuse path in this round
+(the `lookup==nil` fallback and the `lookup!=nil`-but-0%-hits path are
+computationally close but not identical; see 6dk PART 4's own "reuse,
+0.0% hits" row, which measured **41.25 ms/op vs fresh's 29.89 ms/op --
+a 38% ns/op REGRESSION at 0% hits**, the extra hash computation buying
+nothing). The numbers below are reported for the record, with that
+caveat repeated at each line:
+
+- **reuse/dec share**: 0% / 100% in every full block, both ON legs
+  (confirmed above).
+- **Follower body + import total** (`import_breakdown.py`, MANDATORY):
+  B1 win1 body 27ms / total 1116ms -> B2 win1 body 11ms / total
+  864ms. Both fall, but this is very unlikely to be the 0%-hit-rate
+  decode REGRESSION 6dk's own benchmark predicts -- more likely the
+  B1-anomaly (previous section) inflating B1's own numbers on every
+  phase, decode included. Not attributable to the switch either way.
+- **HeapAlloc, end of win2** (`go tool pprof -top` on the kept heap
+  profiles): B1 win2 (node5, follower, 15:11:56) inuse_space total
+  6,761.61 MB; B2 win2 (node0, follower, 15:25:52) inuse_space total
+  7,557.94 MB -- **higher in B2, not lower**, the opposite of clause
+  (b)'s prediction. Consistent with "the switch did nothing" (no
+  duplicate-live-object savings to realize at 0% hits) plus ordinary
+  leg-to-leg variance, not with a regression caused by the patch.
+- **NumGC/min, NumGC/block**: not separately captured this round (the
+  heap/allocs profiles kept do not carry `runtime.MemStats.NumGC`,
+  and no metrics-endpoint scrape for it was taken in this pass) --
+  flagged as a gap rather than reported as zero-difference.
+- **RssAnon/RssFile, both legs, win1/win2** (`r35zzzl-mem.log`,
+  10s-granularity node RSS): B1 win1 ~9.9-10.9 GB anon / 1.2-3.1 GB
+  file; B1 win2 (~15:11-15:13) ~10.4-11.0 GB anon / 1.1-1.8 GB file;
+  B2 win1 ~9.95-10.7 GB anon / 1.2-1.9 GB file; B2 win2 (~15:26-15:27)
+  ~10.3-10.9 GB anon / 0.8-1.7 GB file. All four windows sit in the
+  same 9.9-11.0 GB anon band against the fixed 10GiB `GOMEMLIMIT` --
+  no leg-to-leg separation visible on this metric.
+- **Faults (majflt)**: not captured this round (the mem watchdog logs
+  RSS only, not `/proc/<pid>/stat` fault counters) -- another gap,
+  not a zero-difference finding.
+- **Leader-side control (jcvMs, build waterfall)**: not re-run this
+  pass given the above; expected unchanged per 6dk's own reasoning
+  (the patch touches only the follower's receive-side decode), and
+  nothing in the follower-side data suggests otherwise.
+- **In-tenure / hand-over cycle**: `import_breakdown.py`'s own join
+  (B2 window only, larger sample) gives chained (same-leader)
+  seal->seal median 970ms / handover median 1908ms, n=24/3 -- both in
+  the expected shape for this fleet (handover roughly 2x chained) and
+  not something the reuse switch would plausibly move.
+
+### Safety (95d)
+
+- `height_conflict_check.py` on the whole round: `heights_checked=4495,
+  committed_events=35960, unresolved=0, conflicts=0`. Clean.
+- `grep -l "BAD BLOCK"` across all 7 kept logs: no matches.
+- Root-mismatch / invalid-root / tx-root-mismatch greps: no matches.
+- `import-gated vote REFUSED`, `commit-vote REFUSED`, `header-vote
+  REFUSED` (35zzzk's own view-6557 pattern): **zero on every node**,
+  unlike 35zzzk's 35-line incident. No safety anomaly this round.
+- New-code warning/error lines: `git show f961f63e` on the five
+  touched files has zero `log.Warn`/`log.Error`/`log.Crit` call sites
+  added -- there is no failure-path log string to check for, by
+  design (the reuse-decode falls back silently to the ordinary path
+  on any RLP error, per `decodeBlockTxsReuse`'s and
+  `decodeChunkedBlockReusePool`'s own fallback branches).
+
+### Prediction 95, clause by clause
+
+**(a) Allocation** -- **UNTESTED.** The follower body+decode bucket's
+fall was never exercised: reuse was 0% throughout, so the mechanism
+prediction (a) describes (some fraction of the benchmark's measured
+reduction) had nothing to act on. The delta-allocs partition
+(`alloc_path_partition.py`, bucket F) was not run this pass given (a)
+is already known to be untestable from the reuse counters alone.
+
+**(b) Heap** -- **UNTESTED, and the raw numbers point the wrong way if
+misread.** End-of-win2 `HeapAlloc`/inuse_space is HIGHER in B2
+(7,557.94 MB) than B1 (6,761.61 MB), the opposite of the predicted
+direction -- but with 0% reuse this cannot be attributed to the patch;
+it is ordinary leg-to-leg variance (plausibly compounded by the same
+B1-anomaly that depressed B1's own throughput). `NumGC`/block was not
+captured.
+
+**(c) Throughput/correctness** -- **PARTIALLY OBSERVED, not
+confirmed.** Follower import total was NOT slower in the ON leg
+(864ms vs 1116ms) -- satisfying the letter of "not slower" -- but
+`reuse >= 99%` (the clause's own correctness bar) was not met at all
+(0%, every block). A clause with two conditions where one silently
+never engages is not a pass; recorded as untested on its substantive
+half.
+
+**(d) Safety** -- **CONFIRMED.** 0 conflicting heights (4,495
+checked), no BAD BLOCK, no root mismatches, no new refusal pattern.
+This clause is independent of whether reuse ever fired and holds
+regardless.
+
+**Overall VERDICT for prediction 95: UNTESTED, not falsified.** The
+switch was live (subscriptions, plumbing, and env propagation all
+confirmed correct end to end) but its own precondition -- the pool
+already holding ~99.4% of a pushed block's transactions -- does not
+hold on this fleet, because transaction gossip has relayed zero
+messages fleet-wide since `N42_TXPOOL_NOLOCALS=1` entered the
+baseline (round 35z3/35z4, 2026-09-08). This round measured the
+switch's own 0%-hit worst case (6dk PART 4's own benchmark: -38%
+ns/op at 0% hits on the isolated decode step) diluted into a total
+block-import time where it is far too small a share to detect either
+way against the observed B1-anomaly-sized noise.
+
+### Recommendation
+
+**Adopt the switch: not yet -- re-test first, do not judge from this
+round.** The patch itself is unfalsified and low-risk (falls back
+identically to today's behavior whenever `lookup` is nil or a hash
+misses; zero new warning/error paths; safety clean); but nothing in
+this round demonstrates it does anything on THIS fleet, because the
+fleet's own tx-pool residency assumption the patch depends on does
+not hold. Before spending another round on A/B by leg, either (i)
+fix the propagation gap so followers' pools actually accumulate
+cross-node transactions (the missing half is `broadcastTxs` firing
+on `NewLocalTxsEvent`, which `NoLocals=true` currently suppresses
+for every RPC submission -- a config/product decision, not a one-line
+fix, since NOLOCALS was itself adopted deliberately for pool-lock
+contention reasons at round 35z3/35z4), or (ii) accept that this
+fleet's real transaction path is shard-senders + hint-only-ingest
+(never full pool mesh) and re-scope prediction 95 around THAT
+reality -- e.g. hash-lookup against a leader's own most-recently-built
+block cache instead of the general pool, which is a different,
+untested mechanism.
+
+**n42-r96 as the fleet base: yes, for S31's header-vote fix**, which
+this round's own safety section reconfirms clean (0 refusals, 0
+conflicts) and which is the binary's other, already-validated change.
+The reuse feature itself should be treated as present-but-dormant on
+this fleet (off by default, `N42_BLOCK_DECODE_REUSE_POOL` unset) until
+one of the two paths above is taken -- it is safe to carry forward
+inert, not yet safe to credit with any throughput effect.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
