@@ -54,6 +54,21 @@ type Block struct {
 
 	ReceiveAt    time.Time
 	ReceivedFrom interface{}
+
+	// decodeReused/decodeDecoded (S32): how many of this block's own
+	// transactions were reused from the pool vs freshly decoded by
+	// DecodeRLPReusePool. Zero value (both 0) for a block decoded any other
+	// way -- callers should not treat "0, 0" as "every tx was reused".
+	// Written once, before the block is ever shared, by the decoder alone.
+	decodeReused, decodeDecoded int
+}
+
+// DecodeReuseStats reports how many of this block's transactions were
+// reused from the pool vs freshly decoded, when it was decoded via
+// DecodeRLPReusePool (S32, N42_BLOCK_DECODE_REUSE_POOL). Both zero for a
+// block decoded any other way.
+func (b *Block) DecodeReuseStats() (reused, decoded int) {
+	return b.decodeReused, b.decodeDecoded
 }
 
 type Verify struct {
