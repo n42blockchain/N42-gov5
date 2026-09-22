@@ -2555,6 +2555,16 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				"proc", dProcess, "valid", dValidate, "write", dWrite, "total", dTotal,
 				"tMs", time.Now().UnixMilli(),
 			}
+			// S32 (docs/QS_BLOCK_TIME_BUDGET.md 6di/6dj,
+			// N42_BLOCK_DECODE_REUSE_POOL): counters only, no per-block info
+			// log of their own -- how many of this block's transactions were
+			// reused from the pool vs freshly decoded on the block-push
+			// receive path. Zero/zero for a block that took any other path
+			// (gossip, catch-up fetch) or arrived with the switch off.
+			if rs, ok := blk.(interface{ DecodeReuseStats() (int, int) }); ok {
+				reused, decoded := rs.DecodeReuseStats()
+				fields = append(fields, "reuse", reused, "dec", decoded)
+			}
 			if dTotal >= slowBlockThreshold {
 				log.Info("blockimport phases", fields...)
 			} else {

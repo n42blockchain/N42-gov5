@@ -80,6 +80,11 @@ type validationFn func(ctx context.Context) (pubsub.ValidationResult, error)
 // TxPool is the interface for adding remote transactions received via gossip.
 type TxPool interface {
 	AddRemotes(txs []*transaction.Transaction) []error
+	// GetTx (S32, N42_BLOCK_DECODE_REUSE_POOL): returns the pool's own
+	// object for hash, or nil on a miss. Used by the block-push receive
+	// path to reuse an already-decoded, sender-cached transaction instead
+	// of decoding the pushed block's copy fresh.
+	GetTx(hash types.Hash) *transaction.Transaction
 }
 
 type config struct {
