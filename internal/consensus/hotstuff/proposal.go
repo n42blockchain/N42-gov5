@@ -72,6 +72,37 @@ func (e *ConsensusEngine) onBlockReady(blockHash types.Hash, txRootHash types.Ha
 		}
 	}
 
+	// S34 (docs/OPEN_ISSUES.md "A follower re-decodes..." is unrelated; see
+	// the "stale-re-proposal" entry there and docs/QS_BLOCK_TIME_BUDGET.md
+	// 6dj/6dk): the check above fails OPEN when importedParents[blockHash] is
+	// unknown, which is the ORDINARY case for a leader's OWN sealed block --
+	// rememberImported/importedParents is populated only by internal/sync's
+	// import-notification call sites (catchup, block-by-hash, gossip
+	// subscriber, block push), never by the leader's own local write path.
+	// Round 35zzzk view 6557: the miner's sibling-suppression path
+	// (internal/miner/worker.go, "suppressing divergent same-height sibling")
+	// re-proposed a990bc.. -- this node's OWN already-committed block, whose
+	// QC was by then the highest known -- as if it were this view's fresh
+	// candidate. With importedParents empty for it, the check above let it
+	// through, and justifyQC below turned out to equal blockHash itself: a
+	// proposal that certifies nothing (a block cannot extend itself), which
+	// every voter correctly refused (extendsJustify, "import-gated vote
+	// REFUSED"), costing one view's timeout (~6s) for no reason -- the
+	// correct next block was already sealed and waiting.
+	//
+	// This guard is unconditional (no bookkeeping to fail open on) and MUST
+	// run before journalPrepareVote/EnterVoting below: rejecting here leaves
+	// the phase at WaitingForProposal, so if a genuinely fresh seal for THIS
+	// view arrives moments later (as it did in the incident, dropped instead
+	// by the phase-left-WaitingForProposal check above because the stale
+	// proposal had already consumed the phase), it still gets proposed.
+	if justify := e.roundState.LockedQC(); blockHash == justify.BlockHash {
+		log.Warn("hotstuff: sealed block dropped — proposal would justify itself (already-committed block re-proposed)",
+			"view", view, "block", blockHash.Hex()[:12], "justifyView", justify.View)
+		metricProposalSelfJustify.Inc()
+		return nil
+	}
+
 	// The proposal is signed over the SAME message as a Round 1 vote
 	// (SigningMessage(view, blockHash)) and the leader immediately self-votes
 	// with it, so proposing IS a vote commitment. Journal it before anything is

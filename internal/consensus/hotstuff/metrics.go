@@ -45,6 +45,16 @@ var (
 	// wasting whole views.
 	metricProposalStaleParent = prometheus.GetOrCreateCounter("hotstuff_proposal_stale_parent_total", false)
 
+	// S34 (docs/OPEN_ISSUES.md, the stale-re-proposal item; docs/QS_BLOCK_TIME_BUDGET.md
+	// 6dk): a leader dropped a sealed block instead of proposing it because it
+	// would have been its own JustifyQC block (already committed) -- the
+	// self-referential-justify shape found live in round 35zzzk view 6557.
+	// Non-zero means the sibling-suppression path in internal/miner is still
+	// re-proposing an already-committed block; the guard here is what stops
+	// it from costing a view's timeout, not evidence that it stopped
+	// happening upstream.
+	metricProposalSelfJustify = prometheus.GetOrCreateCounter("hotstuff_proposal_self_justify_total", false)
+
 	// Vote counts of the last committed view (gauges).
 	metricPrepareVotes = prometheus.GetOrCreateCounter("hotstuff_prepare_votes", true)
 	metricCommitVotes  = prometheus.GetOrCreateCounter("hotstuff_commit_votes", true)

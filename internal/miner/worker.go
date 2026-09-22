@@ -665,6 +665,30 @@ func (w *worker) handleSealed(blk block.IBlock) {
 	// THIS view instead — it is already imported and is what consensus is
 	// building on. Checked BEFORE import so the sibling never touches state.
 	if kept := w.firstSealedOnParent(parentHash); kept != nil && kept.Hash() != blk.Hash() {
+		// S34 (docs/OPEN_ISSUES.md, the stale-re-proposal item;
+		// docs/QS_BLOCK_TIME_BUDGET.md 6dk): "kept" is only ever the FIRST
+		// block sealed on parentHash -- it says nothing about whether that
+		// height has since been committed and written. Round 35zzzk view
+		// 6557: a leftover handleSealed call for a divergent sibling at the
+		// height that had JUST been committed (parentHash was the tip BEFORE
+		// that commit) found "kept" already equal to the just-committed
+		// block itself and re-proposed it -- an already-decided block,
+		// re-injected as if it were a fresh candidate, which the engine's
+		// own self-justify guard (proposal.go) now also refuses. This check
+		// avoids even attempting it: if the chain's own current head is
+		// already at or past this height, the height was decided while this
+		// stale task was in flight, so nothing here is worth proposing.
+		// Best-effort, not the safety net -- CurrentBlock() reflects a
+		// completed WRITE, which can in principle still be in flight when
+		// this runs; the engine's own unconditional guard is what actually
+		// closes the defect regardless of this check's timing.
+		if w.chain.CurrentBlock().Number64().Uint64() >= blockNumber.Uint64() {
+			log.Info("miner: not re-proposing a sibling at an already-decided height",
+				"number", blockNumber.Uint64(), "parent", parentHash.Hex()[:12],
+				"kept", kept.Hash().Hex()[:12], "dropped", blk.Hash().Hex()[:12],
+				"currentBlock", w.chain.CurrentBlock().Number64().Uint64())
+			return
+		}
 		log.Info("miner: suppressing divergent same-height sibling; re-proposing first sealed block",
 			"number", blockNumber.Uint64(), "parent", parentHash.Hex()[:12],
 			"kept", kept.Hash().Hex()[:12], "dropped", blk.Hash().Hex()[:12])
