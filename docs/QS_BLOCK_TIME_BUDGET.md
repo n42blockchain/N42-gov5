@@ -15172,6 +15172,22 @@ launched. `docs/QS_QUEUE.md`'s S34 row is added with prediction 96
 prepared. Launch is the commander's next call.
 
 
+## 6dq. S36a: prediction 99, registered before round 35zzzp -- pool caps 600k/200k -> 400k/100k by leg (2026-09-23)
+
+n42-r97 (S34's fix), sender cache 4M everywhere (adopted, S35),
+GOMEMLIMIT 10GiB. A/B by leg on `--pool-slots`/`--pool-queue`:
+warm-up/A1/B1 = 600000/200000 (today's harness value), B2/A2 =
+400000/100000. Targets the decoded-tx-object owner (6dm: 2.16 GB,
++653 MB/leg); the flood's own 8 x 45,000 = 360k in-flight stays under
+both caps.
+
+**Prediction 99:** (a) follower win2 `inuse_space`, decoded-tx owner,
+lower in B2 by 0.4-0.8 GB; (b) no starvation -- generator in-flight/
+pending depth unchanged within noise, underpriced/pool-full rejection
+RATE (not raw count, per 6cx) unchanged B1 vs B2; (c) NumGC/min win2
+lower in B2, win2 block time not worse than B1's (~0.1 s noise; B1 may
+be cold-cache per 6dl); (d) 0 conflicting heights, no BAD BLOCK.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
