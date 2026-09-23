@@ -14999,6 +14999,179 @@ open question this round leaves before calling the reduction settled
 at its smallest safe value rather than merely a smaller one.
 
 
+## 6dp. S34: the leader re-proposed its own already-committed block with itself as justify -- the existing extends-check fails open for a leader's own sealed block because importedParents is only ever populated by internal/sync; fix prepared, n42-r97 built, prediction 96 registered before the round (2026-09-23)
+
+**RACE (deferred whole-package check, run before this step per the
+commander's own instruction):** `hotstuff 289 pass/0 fail; sync 138
+pass/0 fail` (`go test -race ./internal/consensus/hotstuff/...
+./internal/sync/...`, `nice -n 10 -p 8`, box load ~3, no foreign claim).
+
+**Full PART 1 reconstruction** (mechanism, file:line for every claim,
+the 6556-6558 timeline in ms) is written in
+`docs/QS_HANDOVER_20260920.md`, "S34 -- the stale-re-proposal defect,
+reconstructed from the code". Summary of the two load-bearing findings:
+
+- **Mechanism.** `internal/miner/worker.go`'s sibling-suppression
+  guard (`handleSealed`, pre-fix line 667) re-proposes the FIRST block
+  ever sealed on a given parent when a later, divergent seal on the
+  SAME parent arrives -- without checking whether that height has
+  since been committed and written. Round 35zzzk view 6557: a leftover
+  seal-completion event for a stale sibling at an already-decided
+  height found the "kept" candidate was `a990bc..` -- this node's own
+  block, ALREADY COMMITTED one view earlier -- and re-injected it via
+  `NotifyBlockSealed` -> `EventBlockReady` -> `onBlockReady`
+  (`internal/consensus/hotstuff/proposal.go:21`, pre-fix).
+  `onBlockReady` builds `Proposal.JustifyQC` from
+  `e.roundState.LockedQC()` -- the LEADER's own highest-known QC at
+  propose time, unconditionally, with no check that the proposed
+  block's hash differs from it. The one guard that could have caught
+  this (`importedParents[blockHash]`-gated, pre-fix lines 65-73) FAILS
+  OPEN when that map has no entry for `blockHash` -- and it never does
+  for a leader's own locally-sealed-and-written block:
+  `rememberImported`/`importedParents` is populated ONLY via
+  `NotifyBlockImported`, and every call site of that method in the
+  whole repo is in `internal/sync/` (catchup, block-by-hash, gossip
+  subscriber, block push -- confirmed by full-repo grep). The result:
+  `Proposal{BlockHash: a990bc, JustifyQC: <QC for a990bc itself>}` --
+  a proposal that certifies nothing, since a block cannot extend
+  itself. Every voter's `extendsJustify` correctly refused it
+  (`"import-gated vote REFUSED: proposal does not extend its JustifyQC
+  block"`, 5-6 lines per follower, all 7 nodes), the view timed out
+  (~5.3s), and the genuinely correct next block -- already sealed and
+  waiting -- was silently dropped by a SECOND, unrelated guard
+  (`"sealed block dropped -- phase left WaitingForProposal"`,
+  `proposal.go:33-37`) because the stale proposal had already advanced
+  the view's phase past `PhaseWaitingForProposal` before being refused
+  by the voters.
+- **Fix.** Three guards, minimal, no switch: (i) `onBlockReady` now
+  refuses UNCONDITIONALLY to propose a block whose hash equals its own
+  `JustifyQC.BlockHash` -- no dependency on `importedParents`, so it
+  cannot fail open the way the existing guard does
+  (`internal/consensus/hotstuff/proposal.go`, new guard placed before
+  `journalPrepareVote`/`EnterVoting`); (ii) the same rejection is
+  placed BEFORE any phase mutation, so a rejected stale proposal
+  leaves the phase at `PhaseWaitingForProposal`, letting a genuinely
+  fresh seal for the SAME view still succeed -- this is guard (iii)
+  from the task spec, achieved by placement rather than a separate
+  check; (iii) `internal/miner/worker.go`'s sibling-suppression path
+  additionally checks the chain's own current head before re-proposing
+  "kept" (best-effort defense in depth, not the safety net -- it can
+  in principle race a still-in-flight write; the engine's own guard
+  (i) is unconditional and closes the defect regardless of this
+  check's timing). New metric `hotstuff_proposal_self_justify_total`.
+
+**Tests.** `internal/consensus/hotstuff/proposal_self_justify_test.go`
+(new): `TestSealedBlockDroppedWhenItWouldJustifyItself` (the isolated
+guard), `TestFreshSealStillProposedAfterAStaleSelfJustifyAttempt` (the
+exact incident end to end -- stale self-justify attempt arrives first,
+fresh correct seal follows, only the fresh block is ever proposed),
+`TestSealedBlockProposedWhenNotSelfJustify` (happy-path sanity). All
+three pass, including under `-race`. Full `hotstuff`/`miner` package
+suites pass; `go vet` clean; existing S26 regression tests
+(`TestTwoPhasePrepareVoteRefusesNonExtendingProposal`,
+`TestTwoPhaseCommitVoteRefusesNonExtendingProposal`) unaffected by the
+new guard (confirmed by direct run, not merely "the suite is green").
+
+**Build.** n42-r97 = n42-r96's exact file set (S32's
+`N42_BLOCK_DECODE_REUSE_POOL` switch, left OFF) + this step's three
+files (`internal/consensus/hotstuff/proposal.go`,
+`internal/consensus/hotstuff/metrics.go`, `internal/miner/worker.go`),
+via the established file-checkout recipe: detached worktree at
+`f7ec2836`. One new wrinkle this round: copying only
+`{engine,proposal,service,metrics}.go` from the hotstuff package (as
+prior rounds' own curated list did) no longer compiled -- `engine.go`
+on current `wt-r27` HEAD now references package-level symbols
+(`contentionStamps`, `writeLatch`, `perViewSendStamps`,
+`leaderWriteAfterJournalEnabled`, a `msgTiming` parameter on
+`processVote`) added by OTHER lineage commits (S14/S17/S18/S19
+diagnostics) that touch OTHER files in the same package
+(`view_timing.go`, `voting.go`, `write_latch.go`, `adapter.go`) not in
+that curated list. Resolved by copying the WHOLE
+`internal/consensus/hotstuff/` package's non-test files instead, after
+confirming (`git log f7ec2836..HEAD -- <file>` for each of the 8
+touched files) that every commit touching any of them since the base
+is a recognized lineage commit, never unrelated concurrent work.
+`internal/blockchain.go`'s own reference to `bc.buildStallLockWaitNs`
+needed `internal/blockchain_types.go` (S11's own diagnostic hunk, one
+commit, copied directly); `internal/miner/worker.go`'s watchdog call
+needed `log.LogDir()` (same S11 commit, one file, copied directly) and
+three miner-package companion files
+(`async_write.go`/`build_stall_watchdog.go`/`seal_path_diag.go`/`push_order.go`,
+each a single confirmed-lineage commit). `internal/miner/miner.go`
+needed the SAME hand-revert as `worker.go`: two commits
+(`89d15267`/`19687889`) not part of this lineage since n42-r86 added an
+`activeSpecParent`-dependent code path to `TriggerBlockProduction`
+(letting an in-flight speculative build finish instead of
+interrupting it) plus a `tMs` stamp on the "build triggered" log line;
+both hand-reverted to their pre-existing (n42-r86-lineage) form,
+verified via a full diff against `wt-r27` HEAD showing only the four
+already-known off-lineage lines remaining (the same four every prior
+build in this chain has shown: `activeSpecParent`'s field declaration
+plus its two `Store` call sites, and the three `tMs` stamps on
+`"miner: build phases"`/`"speculative build hit"`/`"speculative build
+parked"`). `grep -rl BaseCache`: empty, confirmed absent. `go build -p
+4 -tags nosqlite,noboltdb` clean (built at `nice -n 19`/`-p 4`, box
+under the Rust fleet's claim, load ~100, per the commander's
+box-sharing instruction). Markers confirmed present exactly once: the
+new self-justify guard's own log line, the new worker-side guard's own
+log line, S31's header-vote line, S26's commit-vote-REFUSED line;
+`"blockimport phases"`=2, matching n42-r96's own count. sha256:
+`b80deae4eea4647ca727c6663f8d59838b8e67911fae289d8d051a28a7f88b2e`
+(108,818,976 bytes); binary lineage n42-r92 -> n42-r94 (S26,
+`e49ce151`) -> n42-r95 (S31, `c124146e`) -> n42-r96 (S32, `f961f63e`)
+-> n42-r97 (S34, `7288c8f0`).
+
+**Harness.** `run-r35zzzm.sh`/`chain-35zzzm.sh` built from the
+35zzzn pair (NOT 35zzzl, per the commander's ordering note -- S35's
+own config-only round runs first). SINGLE CONFIGURATION, no A/B:
+`N42_SENDER_CACHE_SLOTS=4194304` in every leg (S35's own confirmed B2
+value, 6do), `N42_BLOCK_DECODE_REUSE_POOL=0` in every leg (S32 stays
+off; 6dl found this fleet's own transaction gossip delivers zero
+messages under `N42_TXPOOL_NOLOCALS=1`, so the switch is untested
+regardless -- not this round's concern), `GOMEMLIMIT` fixed 10GiB.
+The predecessor wait was set to `r35zzzn.log` (not `r35zzzl.log`,
+which the plain `cp`+`sed` left behind). The memory-abort auto-retry
+loop stays REMOVED (carried forward from 35zzzl/6dk's own precedent,
+confirmed present as `for attempt in 1` in the copied `chain-35zzzn.sh`
+already). `bash -n` clean on both scripts; neither is running; not
+launched.
+
+**Prediction 96 (registered before any round, mechanism only):**
+
+**(a) Safety/mechanism.** Zero `import-gated vote REFUSED`/`commit
+vote REFUSED` lines caused by a self-referential or already-committed
+proposal, and zero `"sealed block dropped -- phase left
+WaitingForProposal"` lines following a sibling-suppression re-proposal
+(35zzzn, without this fix, is the baseline count for comparison -- the
+analyst who ran it will report whether the same shape appeared there).
+
+**(b) Liveness.** Zero view-timeout events in the flood windows
+(35zzzk had exactly one, this incident, in its own flood windows).
+
+**(c) Safety (chain-level).** Zero conflicting heights across every
+height checked (`height_conflict_check.py`), matching every round
+since S26.
+
+**(d) Throughput.** First-window TPS within noise of ~140k (35zzzk's
+own 141.7k/140.5k, 35zzzn's own presumably similar figure) -- this fix
+touches only a rare-path leader guard, no throughput change is
+expected on the honest path.
+
+**VERDICT: confirmed (fix prepared, not yet run).** PART 1's
+mechanism is proven from the code with file:line citations for every
+claim, including the exact reason the EXISTING guard fails open
+(`importedParents` is sync-only, never populated for a leader's own
+block) and the exact reason a fresh, correct seal was ALSO lost (the
+phase-left-WaitingForProposal guard, not a defect in that guard itself
+but a consequence of the stale proposal consuming the phase first).
+The fix closes both findings with three guards, verified end to end by
+a test that replays the exact incident. n42-r97 is built and
+marker-checked; the harness is prepared, syntax-checked, and not
+launched. `docs/QS_QUEUE.md`'s S34 row is added with prediction 96
+(6dp); `docs/OPEN_ISSUES.md`'s stale-re-proposal entry is marked fix
+prepared. Launch is the commander's next call.
+
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
