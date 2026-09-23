@@ -14777,6 +14777,228 @@ for every clause above, not win1 vs win1, and keeps 35zzzk's own B1
 (a different round's first-full-leg baseline) as an external
 sanity check rather than folding it into either leg's own numbers.
 
+## 6do. S35: round 35zzzn confirms prediction 97 -- the sender cache owner falls 1.15 GB -> 0.32 GB exactly as predicted, but the win2 block-time win (1.667 -> 1.304 s) is real and traces to the LEADER's own write phase (719 -> 374 ms) via halved GC CPU share, not to the follower's own import breakdown, which is flat (2026-09-22)
+
+Config-only: n42-r96 (S32 switch off, S31's header-vote fix only) with
+`N42_SENDER_CACHE_SLOTS` A/B by leg -- warm-up/A1/B1 = 16777216, B2/A2
+= 4194304 -- `GOMEMLIMIT` fixed 10GiB. Logs preserved to
+`wr-logs/r35zzzn-keep/node{0-6}/` (subdirectory form this round, plus
+each node's own rotated `.gz` predecessor -- both concatenated for
+this analysis, since the live `n42.log` alone starts mid-B2 on most
+nodes). Captures: `wr-pprof/r35zzzn-{B1,B2}-{win1,win2}-node*-{heap,cpu,allocs}.pb.gz`;
+`r35zzzn-memstats.log` (full `runtime.MemStats` dumps, node0/node1,
+~30s cadence). `height_conflict_check.py` run against a
+`node*-B.log`-named symlink of the concatenated logs (the script's own
+naming convention); `import_breakdown.py` adapted in place to read the
+concatenated per-node logs instead of the (already-rotated) live path.
+
+### 97a: live heap, the sender-cache owner specifically
+
+`go tool pprof -top -unit=mb`, matched leader/follower pairs, B1win2
+(node0 leader / node1 follower) vs B2win2 (node5 leader / node6
+follower):
+
+| | B1win1 (node2/node3 avg) | B1win2 (node0/node1 avg) | B2win1 (node1/node2 avg) | B2win2 (node5/node6 avg) |
+|---|---|---|---|---|
+| `senderCachePut` | 922.1 MB | **1180.8 MB** | 317.5 MB | **314.8 MB** |
+| `txlookup.Tail.Add` | 1086.1 MB | 1548.0 MB | 1090.7 MB | 1830.1 MB |
+| `qmdb.newMapIndexSized` | 788.8 MB | 757.5 MB | 762.1 MB | 772.3 MB |
+| **total inuse_space** | 6225.7 MB | **7585.3 MB** | 5471.6 MB | **7018.6 MB** |
+
+**Sender-cache owner: 1180.8 MB (B1win2) -> 314.8 MB (B2win2), a drop
+of 866 MB** -- inside the predicted 0.6-0.9 GB band, and close to the
+predicted ~0.3 GB floor (4M slots x ~65-70 B/entry measured near-full,
+matching 6dm's own per-entry arithmetic almost exactly). Leader and
+follower move together (no leader/follower asymmetry -- the cache is
+process-wide, not role-specific, as the code's own design implies).
+
+**Total inuse_space: 7585.3 MB -> 7018.6 MB, a drop of only 566.7
+MB** -- smaller than the sender-cache's own 866 MB drop because
+`txlookup.Tail` grew MORE in B2win2 (1830.1 MB) than in B1win2 (1548.0
+MB), a +282 MB partial offset. This is the SAME sealer-backlog
+mechanism 6dm's own growth section already named (the tail's `keep`
+bound is reached quickly at this fleet's block size, but eviction
+waits on a background segment-build tick that can fall behind under
+load) -- not a new finding, and not caused by the sender-cache change;
+flagged here because it dilutes the total-heap delta without
+contradicting the owner-specific one.
+
+### 97b: hit rate, recover phase, and the follower import breakdown (MANDATORY)
+
+Hit rate (`"parallel block"`'s own `hintHits`/`hintFills`, summed over
+every full-block record in each window): **B1win2 14.4% (455 records)
+-> B2win2 19.7% (399 records), +5.3 points -- UP, not down.** This is
+outside the "unchanged within 1 point" band, but in the favorable
+direction: shrinking the cache did not cost hit rate on this round's
+own traffic shape (plausibly leg-to-leg traffic-pattern noise rather
+than a causal effect of the smaller table, given a smaller table
+should if anything evict sooner under a two-way set -- but the
+direction is not the one prediction 97(b) warned about, so the result
+is not undermined by it).
+
+`recoverMs` (the same `"parallel block"` line): **median 24 ms (B1win2)
+-> 42 ms (B2win2), +18 ms -- inside the stated 26 ms noise band, but
+close to its edge; p90 47 ms -> 215 ms is a real widening of the tail**
+that the median-only criterion does not capture. Flagged, not
+folded into the pass/fail verdict on (b) below.
+
+**Follower `blockimport phases` (`import_breakdown.py`, run against
+the concatenated per-node logs since the live path had already
+rotated past B1's own window):**
+
+| | B1win2 (n=417) | B2win2 (n=342) |
+|---|---|---|
+| hdr | 3 ms | 3 ms |
+| body | 11 ms | 10 ms |
+| proc | **691 ms** | **684 ms** |
+| write | 199 ms | 209 ms |
+| **total** | **920 ms** | **921 ms** |
+
+**The follower's own import timing is flat -- statistically
+indistinguishable (920 vs 921 ms total, proc within 1%).** Whatever
+drives the win2 block-time improvement, it is NOT a faster follower
+import path. This is the single most important qualifying finding of
+this round: prediction 97's own clause (c) asked whether block time
+would track (a)+(c); the follower-side data on its own says no.
+
+### 97c: GC, CPU share, and where the real speedup is (the leader's write phase)
+
+**NumGC rate, peak-pressure phase of each leg** (from
+`r35zzzn-memstats.log`, node0/node1, ~30s samples): B1's own heap-climb
+phase (17:39:26, NumGC~11, to 17:44:35, NumGC~211-220) is 209 GCs in
+5.15 min = **~40 GCs/min**; B2's own equivalent phase (17:52:58,
+NumGC~13-14, to 17:58:06, NumGC~159-188) is ~146-175 GCs in 5.13 min =
+**~28-34 GCs/min** -- roughly 25-30% fewer collections per minute at
+the same pressure point in the leg.
+
+**GC CPU share, leg-named CPU profiles** (`go tool pprof -top`, 20 s
+duration, `runtime.gcDrain`'s own cum%, the core GC-worker function):
+
+| | B1win2 node0 | B1win2 node1 | B2win2 node5 | B2win2 node6 |
+|---|---|---|---|---|
+| `gcDrain` cum% | 28.47% | 29.27% | 13.72% | 15.03% |
+| `mallocgc` cum% | 12.33% | 13.71% | 7.40% | 7.24% |
+
+**GC's own share of sampled CPU time roughly HALVED (avg 28.9% ->
+14.4%), and allocation overhead (`mallocgc`) also roughly halved (avg
+13.0% -> 7.3%).** `GCCPUFraction` (cumulative since leg start, from
+`memstats.log`'s own end-of-leg samples) tells the same story: 0.0242
+(B1win2, node0, 17:44:35) vs 0.0107 (B2win2, node0, 17:58:06) -- also
+roughly halved.
+
+**HeapAlloc at end of win2** (memstats, node0): B1 ~9.06 GB (17:44:04,
+just before the leg's own final drop) vs B2 ~8.94-8.89 GB
+(17:57:04/17:58:06) -- close, not dramatically different at the very
+peak (both legs still climb toward a similar ceiling before the leg
+ends and the next reseed/restart resets it); the owner-level and
+GC-rate differences above are the more reliable signal than this one
+noisy peak-value comparison.
+
+**Where the speedup actually is: the LEADER's own `write` phase**
+(`"miner: propose phases"`, leader nodes only, full blocks, same win2
+windows): B1win2 (node0, n=10) `write` median 719 ms, `total`
+(seal2res) median 807 ms; B2win2 (node5, n=10) `write` median 374 ms,
+`total` median 470 ms. **The leader's own write phase very nearly
+halved (719 -> 374 ms, -48%), tracking the halved GC CPU share far
+more closely than anything on the follower's own side.** `assemble`/
+`finalize` (the BUILD steps, not the write) moved the OTHER way (177
+-> 227 ms, 164 -> 208 ms) -- consistent with a smaller sender cache
+buying nothing for the build path (it was never meant to) while GC
+competing less for CPU/memory bandwidth during the write's own
+MDBX/QMDB commit is exactly the established 6da/6dj mechanism
+(page-cache and commit-path cost inflated by heap pressure). Sample
+size caveat: n=10 propose events per leader window is small; the
+median move is large enough (345 ms, ~45% of the smaller figure) to
+trust the direction, less so the exact magnitude.
+
+**Verdict on the win2 block-time question: MECHANISM, but through the
+leader's write path, not the follower's import path, and not through
+(a)+(c) acting on the SAME phase as prediction 97(c) implicitly
+assumed.** Corroborating context requested by the commander: B2win2's
+own `blocks=46 txs=7,295,864 TPS=121,598 occupancy=49.3%
+blockTime=1.304s` -- occupancy matches every other full-block window
+in this round (48.3-50.0%) and the block COUNT (46) is the highest of
+any win2 in this round, not a truncated-window artifact; zero view
+timeouts / TC / advancing-view events in either win2 window (grep
+`0`/`0`). 1.304 s is genuinely outside the range of every prior
+10GiB-round win2 the commander listed (1.463-1.875 s across
+35zzzd/e/f/g/h/i/k/l) -- this round's own B2win2 is a new low, not a
+value that already recurred and could be dismissed as ordinary leg
+noise.
+
+### 97d: safety
+
+`height_conflict_check.py` (run against the concatenated logs,
+`node*-B.log` symlink naming): `heights_checked=11905,
+committed_events=95228, unresolved=0, conflicts=0`. No BAD BLOCK
+(`grep -l` across all 7 nodes' full concatenated logs: no matches).
+**31 `"import-gated vote REFUSED"` lines, all at view 11741** -- the
+same single self-referential-JustifyQC pattern 6dj already
+investigated and classified as a correct safety-net catch (not a
+bug); this occurrence falls in the A2 leg (18:13:57), outside both
+win2 windows compared above, so it does not confound the mechanism
+comparison. **`"sealed block dropped"` events: 2, whole round** --
+recorded here as the baseline count for S34's own target fix, which
+r96 does not yet carry.
+
+### Prediction 97, clause by clause
+
+**(a) Live heap -- CONFIRMED.** Sender-cache owner 1180.8 -> 314.8 MB
+(-866 MB), inside the predicted 0.6-0.9 GB band and close to the
+predicted ~0.3 GB floor. Total inuse_space also fell (-566.7 MB),
+diluted by the unrelated tail-index growth.
+
+**(b) Hit rate and recover -- PARTIAL.** Hit rate moved +5.3 points
+(up, not down -- not a cost, but outside "unchanged within 1 point"
+either way); `recoverMs` median +18 ms (inside the 26 ms noise band)
+but its p90 widened sharply (47 -> 215 ms), a real tail-latency cost
+this clause's median-only criterion does not capture.
+
+**(c) GC and block time -- CONFIRMED, with a correction to the
+mechanism.** NumGC/min at peak fell ~25-30%; GC's own CPU share
+(`gcDrain`) and allocation overhead (`mallocgc`) each roughly halved;
+win2 block time fell 1.667 -> 1.304 s, a genuine new low outside every
+prior 10GiB round's own range. The mechanism is real, but it runs
+through the LEADER's own write phase (-48%), not the follower's import
+breakdown (flat, 920 vs 921 ms) -- prediction 97(c)'s own framing
+("(a)+(c) matter... win2 block time better") is confirmed in outcome
+but the causal path is narrower than a generic "smaller heap helps
+everything" story would suggest.
+
+**(d) Safety -- CONFIRMED.** 0/11,905 conflicting heights, no BAD
+BLOCK. The round's own 31 refusals are the already-classified
+view-11741 pattern, outside the compared windows.
+
+**Overall VERDICT: CONFIRMED**, with the mechanism refined by this
+round's own follower-side null result: the sender cache shrink buys
+its predicted heap reduction cleanly, costs nothing worth stopping
+for on hit rate or median recover time (though the recover tail
+widened), and the round's own headline block-time win is real and
+traces to reduced GC CPU pressure reaching the leader's own write/commit
+path specifically.
+
+### Recommendation
+
+**Adopt `N42_SENDER_CACHE_SLOTS=4194304` for the bench: yes.** The
+cost side of prediction 97(b) is at worst a widened recover-phase
+tail (p90 47 -> 215 ms), not a hit-rate or median-time regression, set
+against a clean ~0.87 GB heap-owner reduction and a corroborated,
+substantial GC-CPU and leader-write-phase improvement. This is
+exactly the config-only, low-risk, high-confidence win 6dm's own
+ranked list called it.
+
+**Try 1M (the product default) too: yes, one more round.** The
+measured hit rate at 4M (19.7%) is itself well below the cache's own
+long-documented "worth approximately nothing" range (8.3-27.9% at
+various sizes, per `sender_cache.go`'s own header comment) -- nothing
+in this round's own data suggests 4M is a floor rather than a point
+on a flat curve. Going to 1M would test whether the recover-phase
+tail widening seen at 4M (a plausible early signal of the table
+getting tight) gets WORSE at a quarter the size, which is the one
+open question this round leaves before calling the reduction settled
+at its smallest safe value rather than merely a smaller one.
+
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
