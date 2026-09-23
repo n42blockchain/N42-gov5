@@ -497,6 +497,38 @@ upstream mechanism that let an already-committed hash resurface with a
 self-referential justify one view later -- present in r95, not observed
 in r94 -- is untraced and open (docs/QS_BLOCK_TIME_BUDGET.md 6dj).
 
+**2026-09-23, S34: mechanism found, fix PREPARED, not yet launched.**
+`internal/miner/worker.go`'s sibling-suppression path re-proposes the
+FIRST block ever sealed on a parent without checking whether that
+height has since been committed and written; in the incident, a
+leftover seal-completion event re-injected node1's own ALREADY-
+COMMITTED block (`a990bc..`) as a fresh candidate via `NotifyBlockSealed`
+-> `onBlockReady`, which builds `Proposal.JustifyQC` from the leader's
+own highest-known QC unconditionally -- the one guard that could have
+caught the mismatch (`importedParents[blockHash]`-gated) fails open
+because `importedParents` is populated only by `internal/sync`'s
+import-notification call sites, never by a leader's own local write
+path. The genuinely correct next block, already sealed and waiting,
+was then ALSO silently dropped by the unrelated
+"phase left WaitingForProposal" guard, because the stale proposal had
+already advanced the view's phase before being refused by the voters.
+Fix: `onBlockReady` now refuses UNCONDITIONALLY to propose a block
+equal to its own JustifyQC.BlockHash, placed before any phase
+mutation so a rejected stale proposal leaves the phase open for a
+genuinely fresh seal to still succeed; `worker.go`'s sibling-suppression
+path also checks the chain's own current head before re-proposing
+(best-effort, not the safety net). Code commit `7288c8f0` ("fix(miner):
+never re-propose a committed or already-proposed block; keep the fresh
+seal"). Tests: `TestSealedBlockDroppedWhenItWouldJustifyItself`,
+`TestFreshSealStillProposedAfterAStaleSelfJustifyAttempt` (the exact
+incident end to end), `TestSealedBlockProposedWhenNotSelfJustify`
+(`internal/consensus/hotstuff/proposal_self_justify_test.go`), all pass
+including under `-race`; existing S26 regression tests unaffected. Full
+mechanism/fix/timeline writeup: docs/QS_BLOCK_TIME_BUDGET.md 6dp;
+docs/QS_HANDOVER_20260920.md "S34" section. Build: n42-r97 = n42-r96's
+exact file set + this fix. Prepared round: 35zzzm (single configuration,
+no A/B), queued behind 35zzzn. Launch is the commander's call.
+
 ## A follower re-decodes ~160k already-pool-resident transactions on every pushed block -- fix PREPARED, not yet launched (2026-09-22, S32)
 
 **STATUS (S32, 2026-09-22): reuse fix prepared, not yet launched.**

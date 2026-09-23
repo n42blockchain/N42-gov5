@@ -1449,3 +1449,142 @@ replacement inside that ONE call site's own decode step, so as long as
 its output is element-for-element equal to a fresh decode (PART 3's
 own equivalence tests), every downstream consumer sees identical
 content with no additional wiring.
+
+## S34 -- the stale-re-proposal defect, reconstructed from the code (2026-09-22/23)
+
+Evidence: `/data/blockchain/wr-logs/r35zzzk-keep/node1/` (node1, leader of
+views 6556-6558), 22:02:30-22:02:38 EDT. Confirmed on node0/node2/node3's
+own logs too: 5-6 `import-gated vote REFUSED` lines per follower, all one
+incident, all `blockHash==justifyBlock==a990bc..815fde`.
+
+**(a) The sibling-suppression path** (`internal/miner/worker.go:660-678`,
+before this step's fix). `firstSealedOnParent(parentHash)` returns the
+FIRST block this node ever sealed on `parentHash` (recorded by
+`recordSealedOnParent`, S26). When a LATER seal-completion event for a
+DIFFERENT, divergent block on the SAME `parentHash` arrives (`handleSealed`,
+worker.go:564), the guard at line 667 re-injects the FIRST ("kept") block
+for the current view instead: `w.chain.SealedBlock(kept)` (re-push over
+p2p) then `bsn.NotifyBlockSealed(kept.Hash(), kept.TxHash())` (re-enter
+the consensus engine as if `kept` were a fresh candidate). **It never
+checks whether `kept`'s own height has since been committed and written**
+-- only `kept.Hash() != blk.Hash()`. In the incident, `parentHash` was
+`d149cb..` (the tip BEFORE a990bc's own commit), `kept` was `a990bc..`
+itself (already committed in view 6556, one view earlier) and the
+divergent sibling being suppressed (`4602be63..`) was a leftover,
+independently-sealed candidate for the SAME, now-stale, parent -- a
+leftover `handleSealed` call reached this guard after the height had
+already been decided.
+
+**(b) The engine side: how `JustifyQC` is set, and how it became
+self-referential.** `NotifyBlockSealed` (`internal/consensus/hotstuff/adapter.go:917-927`)
+fires `EventBlockReady`, handled by `onBlockReady`
+(`internal/consensus/hotstuff/proposal.go:21`, before this step's fix).
+`justifyQC := e.roundState.LockedQC().Clone()` (line 94, pre-fix) is the
+LEADER's OWN highest-known QC AT PROPOSE TIME -- not tied to the block
+being proposed at all. The only guard that could have caught a mismatch
+(lines 65-73, pre-fix: "parent no longer extends the current LockedQC")
+is conditioned on `e.importedParents[blockHash]` being POSITIVELY known,
+and **fails open (skips entirely) when it is not** -- exactly the
+documented, intentional design ("the rule tightens as information is
+available and never blocks the honest path"). `importedParents` is
+populated ONLY by `rememberImported` (`proposal.go:630-648`), called
+ONLY from `onBlockImported` (`proposal.go:676-677`), called ONLY via
+`NotifyBlockImported` -- and every call site of `NotifyBlockImported` in
+the whole repo is in `internal/sync/` (`rpc_catchup.go`, `bad_blocks.go`,
+`rpc_block_by_hash.go`, `subscriber_blocks.go`, `rpc_block_push.go`;
+confirmed by full-repo grep, no other package calls it). **A leader's
+own locally-sealed-and-written block never goes through `internal/sync`'s
+import path on the SAME node** -- it is written directly by the miner's
+own `resultLoop`/`writeAndFinish`. So `importedParents[a990bc]` was
+UNKNOWN on node1 (its own author), the guard skipped, and `onBlockReady`
+proceeded to build `Proposal{BlockHash: a990bc, JustifyQC: <QC for
+a990bc itself>, ...}` -- a proposal whose own hash equals its own
+justify's block hash. There is no other check in `onBlockReady`
+(pre-fix) that `blockHash != justifyQC.BlockHash` or that
+`height(blockHash) == height(justifyQC)+1`.
+
+**(c) `"sealed block dropped -- phase left WaitingForProposal"`**
+(`proposal.go:33-37`, unchanged by this fix). `Phase` transitions:
+`PhaseWaitingForProposal` (initial, reset every view by `AdvanceView`,
+`round_state.go:110-116`) -> `PhaseVoting` (`EnterVoting()`,
+`round_state.go:87-89`, called from `onBlockReady` at the ORIGINAL
+line 113, only on a successful proposal that reaches that point) ->
+`PhasePreCommit` -> `PhaseCommitted`. In the incident, node1's OWN
+`onBlockReady(a990bc)` call (the stale re-proposal) ran the self-
+justifying proposal all the way through: it passed every pre-fix guard,
+called `journalPrepareVote`, built and BROADCAST the malformed
+`Proposal`, and called `e.roundState.EnterVoting()` -- moving the phase
+to `PhaseVoting` for view 6557. When the GENUINELY fresh, correct seal
+(`79e6380a26`, the real child of a990bc) arrived moments later and its
+own `onBlockReady(79e638..)` ran, `e.roundState.Phase()` was no longer
+`PhaseWaitingForProposal` -- so it hit the line-34 warning and was
+DROPPED, silently, with no re-broadcast. This is why the correct block
+never even reached a vote in view 6557: the stale proposal consumed the
+view's one proposal slot before being refused by every VOTER (not by
+the leader's own phase machinery -- the leader itself believed it had
+successfully proposed).
+
+**(d) The fix's placement closes both (b) and (c) at once.** The new
+guard (`proposal.go`, inserted before `journalPrepareVote`/`EnterVoting`)
+rejects `blockHash == justify.BlockHash` UNCONDITIONALLY -- no dependency
+on `importedParents`, so it cannot fail open the way the existing
+guard did -- and returns `nil` before EVER calling `journalPrepareVote`
+or `EnterVoting()`. This means a rejected stale self-justifying seal
+leaves `Phase()` at `PhaseWaitingForProposal`, so the SAME view's
+genuinely fresh seal (arriving moments later, as it did live) still
+finds the phase open and gets proposed normally. Fixing only (b) without
+this placement (e.g. rejecting AFTER `EnterVoting()`) would have stopped
+the bad Proposal from broadcasting but left the fresh seal dropped by
+(c) anyway -- the view would still time out, just silently instead of
+via a voter refusal. Verified end to end by
+`TestFreshSealStillProposedAfterAStaleSelfJustifyAttempt`
+(`internal/consensus/hotstuff/proposal_self_justify_test.go`).
+
+**Timeline, 6556-6558 (ms, from node1's own log; tMs fields are
+absolute Unix ms, "time" fields are second-resolution)**:
+
+| t (ms, view 6557 relative) | event |
+|---|---|
+| view 6556 starts, tMs=1790042550664 (baseline, call it T0) | `hasProducer/isLeader`, node1 leads view 6556 |
+| T0+877 | prepare-QC published (`pqcPubAt=1790042551541`) |
+| T0+1046 | 6th commit vote received, quorum (`cvKthRxAt=1790042551710`) |
+| ~T0+1300-1900 (22:02:31) | `"block committed!"` a990bc, view 6556 (consensus decision) |
+| ~T0+1900-2300 (22:02:32) | a990bc's own WRITE completes (`"Successfully sealed new block"`, elapsed 745ms) -- BEFORE the view switch below |
+| T1 = 1790042552438 (22:02:32.438) | view changed to 6557, node1 leads again (`hasProducer/isLeader`) |
+| T1+0 | `"miner: build triggered (leader view, evicted speculative)"`, parent=a990bc (correct: build 13658911) |
+| T1+~0-100 | `"miner: suppressing divergent same-height sibling; re-proposing first sealed block"`, number=13658910 (the OLD, already-decided height), kept=a990bc (already committed!) |
+| T1+~100-300 (22:02:32, same second) | stale `Proposal{BlockHash: a990bc, JustifyQC: a990bc}` broadcast; `EnterVoting()` -> phase leaves WaitingForProposal |
+| T1+~300-900 (22:02:32/33) | ALL 6 followers log `"import-gated vote REFUSED: proposal does not extend its JustifyQC block"` (5-6 lines each) |
+| T1+~600-900 (22:02:33) | fresh, correct seal `79e6380a26` (13658911, child of a990bc) ready; `"hotstuff: sealed block dropped -- phase left WaitingForProposal"` (phase=1/PhaseVoting) -- DROPPED |
+| T1+~700-1000 (22:02:33) | `"Successfully sealed new block"` 13658911/79e638 completes (elapsed 447ms); `"miner: speculative build parked"` -- parked instead of proposed |
+| T1+~4600-5000 (22:02:37) | `"view timed out"`, view 6557; `"TC formed, I am the new leader"`, nextView=6558 |
+| T2 = 1790042557725 (22:02:37.725), T2-T1 = 5287 ms | view changed to 6558, node1 leads again |
+| T2+0 | `"miner: build triggered (leader view)"`, parent=a990bc; `"miner: speculative build discarded, applied head moved"`; branch-switch unwinds the SPECULATIVELY-applied 79e638 back to a990bc |
+| T2+~0-200 | `"miner: suppressing divergent same-height sibling; re-proposing first sealed block"`, number=13658911, kept=79e638 (correct this time) |
+| T2+~275-600 (22:02:38) | `"block committed!"` 79e638, view 6558 -- SUCCESS, one view late; view timing: propose=254ms r1=59ms r2=18ms total=333ms |
+
+Net cost: view 6557 produced nothing and consumed ~5.3s (its entire
+timeout), while the correct block had been ready since ~T1+900ms.
+
+**Fix verified**: `internal/consensus/hotstuff/proposal_self_justify_test.go`
+(3 new tests, all pass including under `-race`); full `hotstuff`/`miner`
+package suites pass; `go vet` clean; existing S26 regression tests
+(`TestTwoPhasePrepareVoteRefusesNonExtendingProposal`,
+`TestTwoPhaseCommitVoteRefusesNonExtendingProposal`) unaffected. Code
+commit `7288c8f0`. Build: n42-r97 = n42-r96's exact file set + this
+step's three files (`internal/consensus/hotstuff/proposal.go`,
+`internal/consensus/hotstuff/metrics.go`, `internal/miner/worker.go`),
+via the established file-checkout recipe (detached worktree at
+`f7ec2836`; this round additionally required copying the WHOLE
+`internal/consensus/hotstuff/` package non-test files, `internal/miner/miner.go`
+(hand-reverted to strip the same 4 known off-lineage
+`activeSpecParent`/`tMs` bits as `worker.go`), `internal/miner/{async_write,build_stall_watchdog,seal_path_diag,push_order}.go`,
+`internal/blockchain_types.go` and `log/root.go` -- all confirmed, file
+by file, touched only by recognized lineage commits since `f7ec2836`
+(`git log f7ec2836..HEAD -- <file>`), never by unrelated concurrent
+work on this branch). Markers confirmed present exactly once: the new
+self-justify guard's log line, the new worker-side guard's log line,
+S31's header-vote line, S26's commit-vote-REFUSED line; `BaseCache`
+absent; `blockimport phases`=2 (matches n42-r96's own count).
+sha256: `b80deae4eea4647ca727c6663f8d59838b8e67911fae289d8d051a28a7f88b2e`
+(108,818,976 bytes).
