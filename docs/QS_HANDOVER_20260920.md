@@ -1588,3 +1588,128 @@ S31's header-vote line, S26's commit-vote-REFUSED line; `BaseCache`
 absent; `blockimport phases`=2 (matches n42-r96's own count).
 sha256: `b80deae4eea4647ca727c6663f8d59838b8e67911fae289d8d051a28a7f88b2e`
 (108,818,976 bytes).
+
+## Build recipe (from n42-r97) -- reproducible file-checkout recipe, S37 (2026-09-23)
+
+This is the COMPLETE file set n42-r97 was actually built from, recorded
+so the next build in this lineage does not have to rediscover it via
+compile-error whack-a-mole (as this one did). Base commit `f7ec2836`
+(the fixed lineage root every prior build in this chain also used).
+
+```bash
+export GOCACHE=/data/blockchain/gov5-work/.gocache GOTMPDIR=/data/blockchain/gov5-work/.gotmp
+cd /data/blockchain/gov5-work
+rm -rf wt-rNN-build
+git -C wt-r27 worktree add --detach /data/blockchain/gov5-work/wt-rNN-build f7ec2836
+
+SRC=wt-r27
+DST=wt-rNN-build
+
+# 1. The WHOLE internal/consensus/hotstuff/ package, non-test files.
+#    (A curated subset -- engine/proposal/service/metrics.go alone --
+#    stopped compiling once other lineage commits (S14/S17/S18/S19
+#    diagnostics) added package-level symbols engine.go now references
+#    that live in view_timing.go/voting.go/write_latch.go/adapter.go.
+#    Copying the whole package sidesteps having to track that by hand;
+#    verified safe because every commit touching ANY file in this
+#    package since f7ec2836 is a recognized lineage commit -- confirmed
+#    per file via `git log f7ec2836..HEAD -- <file>` before relying on
+#    this, and worth re-confirming again for a future step that isn't
+#    purely this consensus lineage.)
+for f in $SRC/internal/consensus/hotstuff/*.go; do
+  base=$(basename "$f")
+  case "$base" in *_test.go) continue;; esac
+  cp "$f" "$DST/internal/consensus/hotstuff/$base"
+done
+# adapter.go batch_proposal.go bls_keystore.go bls_util.go codec.go
+# engine.go epoch_schedule.go errors.go header_extra.go interop_v4.go
+# interop_v4_wire.go metrics.go pacemaker.go persistence.go proposal.go
+# quorum.go reconfig.go rotor.go round_state.go service.go slashing.go
+# timeout.go types.go validator.go view_timing.go voting.go write_latch.go
+# (26 files)
+
+# 2. Block/sync/blockchain lineage files -- single lineage commit each
+#    since their own last checkout, safe to copy directly.
+cp $SRC/common/block/block.go                          $DST/common/block/block.go
+cp $SRC/common/block/block_decode_reuse.go              $DST/common/block/block_decode_reuse.go
+cp $SRC/internal/blockchain.go                          $DST/internal/blockchain.go
+cp $SRC/internal/blockchain_types.go                    $DST/internal/blockchain_types.go   # bc.buildStallLockWaitNs/buildStallRootLockWaitNs field decls (S11, 537ec21e)
+cp $SRC/internal/sync/rpc_block_push.go                 $DST/internal/sync/rpc_block_push.go
+cp $SRC/internal/sync/rpc_chunked_response.go            $DST/internal/sync/rpc_chunked_response.go
+cp $SRC/internal/sync/service.go                        $DST/internal/sync/service.go
+cp $SRC/internal/sync/options.go                        $DST/internal/sync/options.go
+cp $SRC/internal/sync/block_decode_reuse_switch.go       $DST/internal/sync/block_decode_reuse_switch.go
+cp $SRC/log/root.go                                     $DST/log/root.go                    # log.LogDir() (S11, 537ec21e)
+
+# 3. Miner package companion files -- single lineage commit each.
+cp $SRC/internal/miner/async_write.go          $DST/internal/miner/async_write.go            # asyncBlockWriter/LeaderWriteAsyncOn/writeJob (S23, 8ae39838)
+cp $SRC/internal/miner/build_stall_watchdog.go $DST/internal/miner/build_stall_watchdog.go    # buildStallWatchdog (S11, 537ec21e)
+cp $SRC/internal/miner/seal_path_diag.go       $DST/internal/miner/seal_path_diag.go          # contentionDiagEnabled/prefillTimes (S11/S14 lineage, 537ec21e/62439af7)
+cp $SRC/internal/miner/push_order.go           $DST/internal/miner/push_order.go              # leaderWriteAfterJournalEnabled (S19, 812cf162)
+
+# 4. worker.go and miner.go -- copy, then hand-revert the SAME 4+2
+#    off-lineage lines every build in this chain since n42-r86 has
+#    excluded (commits 89d15267/19687889, never part of this lineage).
+cp $SRC/internal/miner/worker.go $DST/internal/miner/worker.go
+cp $SRC/internal/miner/miner.go  $DST/internal/miner/miner.go
+```
+
+**worker.go hand-revert** (4 lines/fields, all from `89d15267`/`19687889`):
+1. Remove the `activeSpecParent atomic.Pointer[types.Hash]` field and its
+   3-line doc comment (struct field block, near `activeSpecInterrupt`).
+2. In the `speculative` branch: replace
+   `w.activeSpecInterrupt.Store(interrupt); p := parentHash; w.activeSpecParent.Store(&p); defer func() { w.activeSpecInterrupt.Store(nil); w.activeSpecParent.Store(nil) }()`
+   with `w.activeSpecInterrupt.Store(interrupt); defer w.activeSpecInterrupt.Store(nil)`.
+3. `log.Info("miner: build phases", ...)`: drop the trailing
+   `"tMs", time.Now().UnixMilli())` argument (and its 2-line comment).
+4. `log.Info("miner: speculative build hit", ...)` and
+   `log.Info("miner: speculative build parked", ...)`: drop the
+   trailing `, "tMs", time.Now().UnixMilli()` from each.
+
+**miner.go hand-revert** (2 spots, same two commits):
+1. `TriggerBlockProduction`: replace the `activeSpecParent`-aware block
+   (`if p := m.worker.activeSpecInterrupt.Load(); p != nil { if sp := m.worker.activeSpecParent.Load(); sp != nil && *sp == parentHash { ... } else { p.Store(commitInterruptNewHead) } }`)
+   with the plain, unconditional
+   `if p := m.worker.activeSpecInterrupt.Load(); p != nil { p.Store(commitInterruptNewHead) }`.
+2. `log.Info("miner: build triggered (leader view)", ...)`: drop the
+   trailing `, "tMs", time.Now().UnixMilli()`.
+
+Verify each hand-revert leaves NOTHING else different: `diff -u
+$DST/internal/miner/worker.go $SRC/internal/miner/worker.go` (and the
+same for `miner.go`) must show ONLY these known off-lineage hunks, not
+a merge conflict marker or a stray line -- if it shows anything else,
+`worker.go`/`miner.go` picked up a NEW commit since this recipe was
+written and the diff needs re-reading before trusting the checkout.
+
+**Build and verify:**
+```bash
+cd $DST
+grep -rl BaseCache . --include=*.go   # must be empty
+nice -n 19 go build -p 4 -tags nosqlite,noboltdb -o n42-rNN.tmp ./cmd/n42
+# markers, e.g.:
+strings n42-rNN.tmp | grep -c "hotstuff: sealed block dropped — proposal would justify itself"  # =1 (S34)
+strings n42-rNN.tmp | grep -c "header vote: block header known and extends its JustifyQC block"  # =1 (S31)
+strings n42-rNN.tmp | grep -c "commit vote REFUSED: proposal does not extend its JustifyQC block" # =1 (S26)
+strings n42-rNN.tmp | grep -c "blockimport phases"  # =2, matches every build since n42-r96
+sha256sum n42-rNN.tmp
+mv n42-rNN.tmp /data/blockchain/gov5-work/n42-rNN
+cd /data/blockchain/gov5-work
+git -C wt-r27 worktree remove --force wt-rNN-build
+```
+
+**Confirming a file is safe to add/update in a future step:** before
+adding ANY file to this list (or updating one already on it), run `git
+log f7ec2836..HEAD -- <file>` and read every commit message returned --
+if even one is not a recognized step in this consensus/miner-perf
+lineage, STOP and re-derive that file's own diff by hand (isolate the
+lineage commits' own hunks) rather than copying it whole, exactly as
+`worker.go`/`miner.go` require here. This whole recipe's soundness
+rests on that check, not on an assumption that `wt-r27`'s history is
+pure.
+
+**Why not just build from `wt-r27` HEAD directly:** confirmed by a full
+`diff -rq` between the `f7ec2836`-based build tree and `wt-r27` HEAD
+(non-test files) that substantial UNRELATED work also lives on this
+branch's own history since `f7ec2836` -- `cmd/n42-datc/*`, `internal/api/*`,
+`internal/parallel/*`, `lib/kv/mdbx/*`, several `docs/*.md`, etc. --
+none of which belongs in this one-variable lineage's own binary.
