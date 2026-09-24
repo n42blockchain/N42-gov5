@@ -15188,6 +15188,86 @@ RATE (not raw count, per 6cx) unchanged B1 vs B2; (c) NumGC/min win2
 lower in B2, win2 block time not worse than B1's (~0.1 s noise; B1 may
 be cold-cache per 6dl); (d) 0 conflicting heights, no BAD BLOCK.
 
+## 6dr. S38-spec: the hand-over cycle sums to its parts within 1.5%, the speculative-build hint is confirmed silent on all 77 measured hand-overs, and the real gate is a foreign block's post-state existing only at full-import completion (2026-09-23)
+
+Logs-only, `wr-logs/r35zzzn-keep/node{0-6}` (gz+live concatenated; leg
+times/win counts from the surviving `r35zzzn.log`: B1 17:31:54-17:44:56
+win1=54/win2=36, B2 17:44:56-17:58:38 win1=51/win2=46). This binary
+(n42-r96) carries ms-precision `miner: seal path` stamps (absent in
+6cb/6cd's r86), so the timeline below is measured, not inferred.
+Script: `wt-r27/scripts/qs-analysis/s38_handover.py`.
+
+**1. Share and cycle** (any-size predecessor, 6cb's method).
+
+| | win1 (n=102) | win2 (n=82) |
+|---|---|---|
+| hand-over share | 55/102 = **53.9%** | 22/82 = **26.8%** |
+| in-tenure cycle (median) | 676.0 ms | 841.5 ms |
+| hand-over cycle (median) | 966.0 ms | 2045.5 ms |
+
+**Hand-over leader timeline, n=77 (own import of v-1 + own seal-path of v), medians:**
+
+| segment | ms | note |
+|---|---|---|
+| push(v-1) -> "block push: arrived"(v-1) | 16.0 | network delivery |
+| arrived -> import_end(v-1) (= "received") | 566.0 | decode+exec+finalize+write |
+| .. of which hdr+body+proc+write | 199.7 | proc=exec 65+finalize 67+recover 5 |
+| .. unattributed (arrived->received minus above) | ~366 | no line covers it -- MISSING-STAMP |
+| import_end(v-1) -> trigger(v) -> buildBegin(v) | 0.0 | gates/dispatch free (confirms 6cd) |
+| buildBegin(v) -> sealEnter(v) | **632.0** | fill+assemble+state-root, synchronous |
+| specParkedTMs nonzero | **0/77** | speculative park NEVER fires on hand-over |
+| sealEnter -> resultRecv -> copyStart -> copyEnd -> pushEnd | ~45 | check/BLS ~0, copy 29 |
+
+Sum check: import_end(v-1)->pushEnd(v) 651.0 ms vs buildBegin->pushEnd
+649.0 ms; whole cycle 1239.0 ms vs 569.0+651.0=1220.0 ms -- **98.5%, confirmed** (15% bar).
+
+**Derived** (medians only). Factor = in-tenure/hand-over: win1
+676.0/832.4(pooled mean)=0.812, win2 841.5/1163.3=0.723. Applied to the
+ACTUAL harness blockTime/TPS: win1 138,659->170,701 (+23.1%); win2
+109,438->151,309 (+38.3%); pooled (tx/block held constant)
+124,049->161,048, **derived +37,000 TPS (+29.8%)** if equalised.
+
+**2. Code.** BLOCKER: `internal/consensus/hotstuff/proposal.go:650`
+(`sendVote`): `if e.importedBlocks[blockHash] && LeaderForView(view+1,
+vs)==e.myIndex { emit OutputSpeculativeBuild }`. For a large block
+`sendVote` runs from `tryDeferredVote` (`proposal.go:363`), which votes
+BEFORE full import, so `importedBlocks[blockHash]` is false at that
+call and the hint never fires, never retried (0/77 confirms it in data,
+not just code). KNOWS-AT: `LeaderForView` (`validator.go:174`) is a
+pure function of the view number -- a follower knows it leads v+1 from
+`ViewStart(v)`, trivially early. It does NOT have v's post-state that
+early: the deferred check (`internal/deferred_includable.go:38`) only
+validates sender/nonce/balance against v-1's state, it does not execute
+v; v's post-state exists only once `internal/sync`'s ordinary
+`InsertChain`/`blockimport phases` completes (566-920 ms after push).
+`PrepareSpeculativeBlock` (`internal/miner/miner.go:264`) is the only
+consumer of the hint.
+
+**3. Options, ranked (ms saved / risk):**
+1. **C** (overlap prefill/pick only, fill after): needs only v-1's
+   hash/number, startable at `trigger` today. ~60-80 ms, zero protocol
+   risk, no guard interaction, no decision needed.
+2. **B** (build on v after exec+finalize, before its own write):
+   extend `unwrittenOwnPostStates` to a foreign block's in-flight
+   result. Saves the write step (46 ms here, up to ~200 ms when v-1 is
+   itself full, 6cw) plus an unknown share of item 4's gap. Risk: a
+   build on unwritten foreign state must be discarded like today's
+   own-block path if v is later suppressed (`recordSealedOnParent`) or
+   times out -- **needs a protocol decision** (new trust boundary,
+   gated by the same S26/S34 extends-checks before ever proposing).
+3. **A** (build at CHECKED time, task's premise): **not implementable
+   as stated** -- CheckDeferredBlock produces no post-state for v, so
+   there is nothing to build on until import completes; corrected, A
+   collapses into "start import earlier" (already happens on arrival)
+   or into B once exec finishes. Its only unquantified lever is item
+   4's gap -- unrankable until measured.
+
+**4. Missing stamp.** A line at the start of `InsertChain`'s own
+processing (distinct from `"block push: arrived"`, a socket-receipt
+stamp) would split the ~366 ms unattributed remainder into
+queueing/dispatch vs decode/pre-exec setup -- the one number this spec
+could not place.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
