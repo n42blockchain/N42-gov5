@@ -68,7 +68,7 @@ type Block struct {
 	// package writes each one. Zero value for a block that never passes
 	// through a given hand-off, or when the writer's own N42_CONTENTION_DIAG
 	// is off.
-	rxEndTMs, decStartTMs, decEndTMs, chkStartTMs, chkEndTMs, qTMs, insStartTMs int64
+	rxEndTMs, decStartTMs, decEndTMs, chkStartTMs, chkEndTMs, qTMs, insDispatchTMs, insStartTMs int64
 }
 
 // DecodeReuseStats reports how many of this block's transactions were

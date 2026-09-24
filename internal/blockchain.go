@@ -2588,15 +2588,18 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			// InsertChain; insStart is this loop's own tIter, the
 			// "MISSING-STAMP" 6dr asked for -- q -> insStart is the lock/
 			// queue wait between the handler and InsertChain's own
-			// processing.
+			// processing. insDispatch (S42, N42_DEFERRED_CHECK_CONCURRENT) is
+			// set at the same call site as q; comparing it against
+			// chkStart/chkEnd shows whether the check ran sequentially before
+			// InsertChain (today) or concurrently beside it.
 			if is, ok := blk.(interface {
-				ImportStamps() (rxEnd, decStart, decEnd, chkStart, chkEnd, q, insStart int64)
+				ImportStamps() (rxEnd, decStart, decEnd, chkStart, chkEnd, q, insDispatch, insStart int64)
 			}); ok {
-				rxEnd, decStart, decEnd, chkStart, chkEnd, q, insStart := is.ImportStamps()
+				rxEnd, decStart, decEnd, chkStart, chkEnd, q, insDispatch, insStart := is.ImportStamps()
 				fields = append(fields,
 					"rxEndTMs", rxEnd, "decStartTMs", decStart, "decEndTMs", decEnd,
 					"chkStartTMs", chkStart, "chkEndTMs", chkEnd,
-					"qTMs", q, "insStartTMs", insStart)
+					"qTMs", q, "insDispatchTMs", insDispatch, "insStartTMs", insStart)
 			}
 			if dTotal >= slowBlockThreshold {
 				log.Info("blockimport phases", fields...)
