@@ -15350,6 +15350,83 @@ tests, 6dp); this round adds a clean live confirmation with 0 cost
 on every measured axis. The abort is an external-box event, not a
 finding against the binary or configuration.
 
+## 6du. S40 STOPPED: Option B needs a QMDB speculative-tree redesign -- the isolated root computer's own-block fast path is keyed to THIS node's own prior append sequence, not to a post-state value, so a foreign unwritten parent can never satisfy it (2026-09-23)
+
+**Trigger, identified (rule 5 answered in full).** The event that carries
+v-1's post-state readiness already exists: `NotifyBlockExecuted`
+(`internal/consensus/hotstuff/service.go:1885`) fires `EventBlockImported`
+EARLY -- the moment execution+state-root validation succeed, BEFORE
+`writeBlockWithState`. It already reaches `onBlockImported`
+(`proposal.go:707`), which calls `rememberImported` (setting
+`importedBlocks[v-1]=true`). The speculative-build hint
+(`proposal.go:650`, inside `sendVote`) checks exactly that flag but
+NEVER reaches it on the hand-over path: the deferred vote
+(`tryDeferredVote`, a STATIC check against v-2's state, no execution)
+votes for v-1 and sets `HasVotedInView(view)=true` BEFORE execution
+finishes, so when `onBlockImported` runs moments later its own
+`sendVote` branch (`proposal.go:752`, guarded by
+`!HasVotedInView(view)`) is skipped -- confirmed exactly by 6dr's 0/77.
+The fix is a one-line, well-scoped addition: fire the hint
+UNCONDITIONALLY from `onBlockImported`'s own entry (gated on
+`LeaderForView(view+1,...)==myIndex`), not only from inside `sendVote`.
+
+**Why implementation stopped there (rule 2).** The hint firing early is
+USELESS alone: `commitWork`'s speculative branch still falls through to
+`WaitBlockPersisted(parentHash, 2s)` for any parent this node did not
+seal itself (`ownPendingSpeculation` is keyed on `w.sealedByHash`,
+populated only by this node's OWN `handleSealed`). Making that skip
+work needs v-1's POST-STATE for value reads AND its ROOT for the QMDB
+seal. The post-state half is fine: `state.CapturePostState` is a pure
+function of any `*IntraBlockState` (own or imported), and
+`internal/blockchain.go`'s `insertChain` already has one, in scope, at
+the exact point `executedHook` fires -- retaining it (a new bounded map
+on `*BlockChain`, one-shot `Take`) is a small addition, not a redesign,
+and the existing `executedHints`/`RememberExecutedResult` machinery
+(`internal/deferred_execution.go:96`) already solves the matching
+ExecutedResult (Root/ReceiptHash/Bloom/GasUsed) problem the same way --
+a `PeekExecutedResultHint` (non-destructive `Load`) is all that is
+missing there.
+
+The ROOT half is not fine. `NewMinerRootComputer`'s only path for
+building on an UNWRITTEN parent (`internal/blockchain.go:601`,
+`rc.HasUnwrittenBuild() && rc.Root()==parentRoot`) requires the
+ISOLATED speculative tree (`bc.minerRC`, a SEPARATE `QMDBRootComputer`
+instance, `r.t`) to already hold v-1's own appends -- `AdoptOwnAppends`
+(`modules/state/commitment/qmdb_root_computer.go:696`) only ever
+copies CURSOR POSITIONS from the live tree, on the assumption that
+`r.t` appended the IDENTICAL entries in the IDENTICAL order because
+THIS SAME miner build produced both trees in parallel. For a foreign
+v-1, `r.t` never saw v-1's transactions at all -- there is no cursor
+adjustment that makes `rc.Root()` equal v-1's root without literally
+replaying v-1's own append sequence onto `r.t`. The other path,
+`ReloadForBuild` (line 629), reloads at the APPLIED head, which by
+definition is NOT v-1 while its write is still pending -- it returns
+`"parent is not the applied head"` (line 644) every time. Both paths
+fail closed (a speculative build simply errors out, discarded like
+any other miss -- not a safety issue), but that also means the switch
+would be a permanent no-op on the QS fleet's own QMDB configuration:
+every attempt reaches this exact error and every 966 ms hand-over stays
+966 ms.
+
+**What would be needed (not attempted -- redesign, rule 2).** Either
+(a) teach `bc.minerRC` to accept an "adopted foreign candidate" --
+replaying v-1's own mutation sequence onto `r.t` from the import
+path's own execution, with new undo/peel bookkeeping so a v-1 that is
+later suppressed/times out/loses to a sibling can be safely discarded
+without corrupting `r.t`'s single-in-flight-candidate invariant
+(`bc.minerRC` today assumes exactly one goroutine, the miner's own
+build loop, ever touches it); or (b) restructure the build pipeline so
+QMDB root computation is deferred past the point transaction
+execution/fill happens, rather than injected via `ibs.SetRootComputer`
+before the fill starts -- a change to how every build (speculative or
+not) seals its root. Both are architectural, not additive.
+
+**Verdict: not implemented.** No code changed; no build. QS_QUEUE.md's
+S40 row records this as stopped, with the "what would be needed" above
+as the concrete follow-up if the commander wants to fund it as its own
+step.
+
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
