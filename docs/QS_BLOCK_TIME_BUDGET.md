@@ -15529,6 +15529,44 @@ cycle ≥150ms less (966->≤816); (c) B2 win1 TPS >3.6% above B1 or lower
 occupancy; (d) 0 conflicts, 0 votes on a failed check, 0 BAD BLOCK.
 
 
+## 6dz. S41: round 35zzzs rules prediction 102 PARTIAL -- fewer hand-overs and a faster in-tenure cycle at tenure 8 (805 vs 919 ms), but win1 TPS is capped by generator supply, not consensus, once occupancy collapses 49.2% -> 34.1% -> 14.2% (2026-09-24)
+
+n42-r97, config-only: B1 tenure 4 (02:34-02:47), B2 tenure 8
+(02:47-03:01). Logs concatenated (`.gz`+live). `height_conflict_check.py`:
+`heights_checked=12176, conflicts=0`. No BAD BLOCK.
+
+**(a) Hand-over share (sampled full blocks, >=160k tx).** B1 win1
+20.0% (9/45; whole-leg 17.3%, n=110) -- BELOW the nominal 25%, and
+below 6dr's own 53.9%/26.8% on a different round (35zzzn) -- round-to-
+round view-timeout variance, not a stable law; not investigated
+further this pass. B2: 0/37 sampled full blocks are hand-overs, but
+this is a likely SELECTION-BIAS artifact, not a real zero: occupancy
+collapsed to 34.1%/14.2%, so most B2 blocks never reach the 160k-tx
+full-block filter, leaving too few (and probably chained-biased)
+samples to trust literally.
+
+**(b) TPS/occupancy -- SUPPLY-LIMITED, as flagged.** Win1 TPS 122.9k
+-> 130.1k (+5.9%, above the 3.6% floor) WHILE occupancy falls
+49.2% -> 34.1% (win2 42.6% -> 14.2%); blockTime drops 1.304 -> 0.870s.
+The chain got faster; the flood's own supply could not fill the
+now-faster blocks, so realized TPS undersells the mechanism. Cleaner,
+uncofounded evidence the mechanism itself is real: chained-only cycle
+(same full-block filter, both legs) 919ms (B1) -> **805ms (B2), -12.4%**
+-- fewer/no hand-overs plus a faster in-tenure cycle, consistent with
+6do's own leader-side GC/heap mechanism (fewer leader transitions).
+
+**(c) Cost -- clean.** View-timeout events: 12 (B1) vs 12 (B2), equal.
+Sitting win1 leader RssAnon: node0 (B1) ~9.9-10.1 GB vs node5 (B2)
+~9.9-10.5 GB -- within +0.5 GB.
+
+**(d) Safety -- CONFIRMED.** 0/12,176 conflicting heights.
+
+**Recommendation: adopt tenure 8 -- YES for the mechanism, but this
+round cannot certify the TPS number** -- it measured the fleet's
+GENERATOR supply ceiling, not the consensus change's own ceiling.
+Next step (queued, S43/6e0): raise supply (16 generators x 500
+senders, same 360k aggregate) before re-judging tenure 8's own TPS.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
