@@ -15584,6 +15584,13 @@ noise or higher; (c) per-node RPC-ingest CPU/RssAnon not worse than
 +10%, no underpriced/pool-full rise, no build-stall, no view timeouts
 in flood windows; (d) 0 conflicting heights.
 
+**Update (2026-09-24): `run-r35zzzu.sh` now sets
+`N42_HOTSTUFF_LEADER_TENURE=8` in every leg before the round starts
+(S41's own tenure-8 adoption), so supply stays the one variable; the
+reference point for the 8-generator baseline is 35zzzs's own B2 (tenure
+8): 130.1k @0.870s occ 34% / 99.0k @0.469s occ 14%, not B1's tenure-4
+numbers.**
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
