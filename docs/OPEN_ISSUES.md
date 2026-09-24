@@ -529,6 +529,8 @@ docs/QS_HANDOVER_20260920.md "S34" section. Build: n42-r97 = n42-r96's
 exact file set + this fix. Prepared round: 35zzzm (single configuration,
 no A/B), queued behind 35zzzn. Launch is the commander's call.
 
+**2026-09-23, round 35zzzm: fix CONFIRMED.** Guard fired 0 times (the exact incident did not recur this round); 0 `import-gated vote REFUSED`; 1 `sealed block dropped -- phase left WaitingForProposal` (vs 35zzzn's baseline 2), at 20:32:56, 6s into the round's own external memory-abort sequence and with 0 sibling-suppression lines preceding it -- classified as a shutdown artifact, not a sibling-suppression drop. 0/9,089 conflicting heights. Round ABORTED at 20:33:13 on an external memory spike (a foreign Rust/C++ coverage build's `cc1plus`, not the qs fleet -- see docs/QS_BLOCK_TIME_BUDGET.md 6dt), after both B1 and B2 had already completed their own win1/win2 measurement windows. **Status: n42-r97 adopted as the fleet base.**
+
 ## A follower re-decodes ~160k already-pool-resident transactions on every pushed block -- fix PREPARED, not yet launched (2026-09-22, S32)
 
 **STATUS (S32, 2026-09-22): reuse fix prepared, not yet launched.**

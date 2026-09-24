@@ -15287,6 +15287,69 @@ report the largest item; (b) S36b: win2 live heap lower in B2 by
 35zzzp; (d) 0 conflicting heights, no BAD BLOCK.
 
 
+## 6dt. S34: round 35zzzm confirms the fix -- guard never had to fire, 0 refusals, 0 conflicts; ABORTED on an external memory spike (a foreign build, not the fleet) after both B legs had already measured (2026-09-23)
+
+n42-r97 (S34's fix, 7288c8f0), single configuration: sender cache 4M,
+GOMEMLIMIT 10GiB, no A/B. Logs: `wr-logs/r35zzzm-keep/node{0-6}/`
+(+ rotated `.gz`, concatenated for analysis; `height_conflict_check.py`
+run against a `node*-B.log` symlink).
+
+**(a) Guard/safety.** `"sealed block dropped ... would justify itself"`
+(the new guard): 0 occurrences -- the exact incident did not recur.
+`import-gated vote REFUSED`: 0. `"sealed block dropped -- phase left
+WaitingForProposal"`: 1, at 20:32:56 -- 6s into the memory-abort
+sequence (below), 0 sibling-suppression lines precede it anywhere in
+the round -- classified as a shutdown artifact, not a genuine
+sibling-suppression drop (35zzzn's own baseline: 2, under normal
+operation). `height_conflict_check.py`: `heights_checked=9089,
+conflicts=0`. No BAD BLOCK.
+
+**(b) View timeouts:** 0 in the flood windows (35zzzn: also 0).
+
+**(c) SPIKE.** `MemAvailable` 54G (20:32:28) -> 12G (20:32:49): NOT the
+qs fleet (`r35zzzm-mem.log`: node RssAnon flat ~10-11GB throughout;
+`floodsMB=` already empty, generators exited by 20:32:09). `journalctl`
+(kernel) shows a FOREIGN build at this exact window: apparmor denials
+for `comm="hostname"` under `/home/n42/src/n42/n42-26/.artifacts/
+coverage-target/.../tikv-jemalloc-sys.../config.log` at 20:32:34, then
+`cc1plus` (PID 481535) hitting a page-allocation failure / direct
+reclaim storm at 20:32:47 (`pgscanDirectD` 13M, `pgmajfaultD` 97k->396k
+in `r35zzzm-vm.log`); system `AnonPages` +47GB in the same ~15s. The
+Rust fleet's own claim file postdates this by ~1.5 min
+(`.box-claim-rust` mtime 20:34:22) -- consistent with the same actor,
+though the claim write cannot be proven as the cause versus a
+consequence from the samplers alone. Round aborted cleanly at 20:33:13;
+both B legs' own win1/win2 windows had already completed by then.
+
+**(d) Windows and B mean.** B1 win1 128.7k@1.250s, win2 121.7k@1.111s
+occ 41.5%; B2 win1 129.9k@1.224s, win2 116.8k@1.173s occ 42.9%. **B
+mean (4-window average): 124.3k** -- above 35zzzk's own 16M-cache
+figures (141.7k/95.0k, 140.5k/94.5k win1/win2) on win2 specifically
+(121.7k/116.8k here vs 95.0k/94.5k there, the 4M sender-cache win
+already confirmed in 6do/S35) and close to 35zzzn's own B2(4M)
+135.7k/121.6k.
+
+**Cycle/phases** (pooled B1+B2, `cycle.py`, `import_breakdown.py`):
+seal->seal period med 909ms (p10 676, p90 1258); seal->QC 559ms;
+QC->seal 270ms. `blockimport phases` B1win2 (n=528): body 10 / proc
+663 / write 216 / total 922ms; B2win2 (n=498): body 11 / proc 673 /
+write 213 / total 908ms -- flat, as expected (no A/B this round).
+Round1 (`r1`, leader role, pooled) median 59ms, p90 66ms -- matches
+r92/r95 baseline (6dj), not S26's own inflated 153-262ms. `jcvMs`
+median 0ms.
+
+**Clauses:** (a) CONFIRMED -- guard present, never needed, no
+regression. (b) CONFIRMED -- 0 view-timeout events. (c) CONFIRMED --
+0/9,089 conflicting heights, no BAD BLOCK. (d) CONFIRMED -- B mean
+124.3k, both win2 figures above 35zzzk's 16M baseline, consistent with
+the already-adopted 4M sender cache (S35) plus this fix.
+
+**Recommendation: n42-r97 becomes the fleet base -- yes.** The fix is
+proven inert-when-unneeded and correct when it would matter (unit
+tests, 6dp); this round adds a clean live confirmation with 0 cost
+on every measured axis. The abort is an external-box event, not a
+finding against the binary or configuration.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
