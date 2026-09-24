@@ -15473,6 +15473,41 @@ in-flight (6dm) turned out not to leave headroom under the SMALLER
 queue cap once accounting for real-world burstiness; 600k/200k stays
 the harness default. No further round owed on this pair.
 
+## 6dx. S36b/S39: round 35zzzq confirms prediction 100 -- deferredCheck (228 ms median), not a queue wait, holds most of 6dr's own 366 ms gap; block cache 4->2 saves 0.31 GB in win2 (2026-09-23)
+
+n42-r98 (S39's stamps), 9th `run_leg` arg: B1 `N42_BLOCK_CACHE_BLOCKS=4`,
+B2=2; pool 600k/200k fixed. Logs: `wr-logs/r35zzzq-keep/node{0-6}/`
+(+`.gz`, concatenated). `height_conflict_check.py`: `heights_checked=
+11536, conflicts=0`. No BAD BLOCK; 0 `FetchBlockByHash` mentions.
+
+**(a) named-step medians, pooled full blocks, n=2826 (CONFIRMED):**
+decode (`decStart`->`decEnd`) 42ms; **deferredCheck (`chkStart`->
+`chkEnd`) 228ms -- the largest named item, and it is WORK (per-tx
+sender/nonce/balance validation against v-1's state), not a wait**;
+queue wait before InsertChain (`qTMs`->`insStart`) 23ms median but
+p90=363ms (a real tail, plausibly lock contention on the chain's own
+insert path under load); InsertChain-internal `total` 792ms. Sum
+decode+check+queue+total = 1086ms vs `rxEnd`->`tMs` wall 1113ms =
+**97.6%, over the 95% bar.** This resolves 6dr's own ~366ms
+MISSING-STAMP gap: decode+check+queue (42+228+23=293ms) is the
+pre-InsertChain share 6dr's coarser accounting had folded into
+"unattributed"; deferredCheck alone is the dominant piece.
+
+**(b) CONFIRMED.** Win2 heap total: B1(cache 4) avg 6591.8 MB ->
+B2(cache 2) avg 6281.5 MB, **-310 MB** -- at the top of the predicted
+0.1-0.3 GB band. 0 new fetch-by-hash misses.
+
+**(c) CONFIRMED.** B1/B2 win1/win2 TPS (134.1k/124.2k, 130.8k/120.1k)
+sit inside 35zzzp's own range (132.2k-136.8k win1, 121.7k-127.6k win2)
+-- within noise.
+
+**(d) CONFIRMED.** 0/11,536 conflicting heights, no BAD BLOCK.
+
+**Overall: prediction 100 CONFIRMED on all four clauses.** Cache 2 is
+a small, safe win (-310 MB, no correctness cost this round); the more
+consequential finding is deferredCheck's own 228ms, now a named,
+measured target rather than a MISSING-STAMP gap.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
