@@ -15567,6 +15567,23 @@ GENERATOR supply ceiling, not the consensus change's own ceiling.
 Next step (queued, S43/6e0): raise supply (16 generators x 500
 senders, same 360k aggregate) before re-judging tenure 8's own TPS.
 
+## 6e0. S43: prediction 104, registered before round 35zzzu -- sixteen generators of 500 senders by leg, to re-test tenure 8 without a supply ceiling (2026-09-24)
+
+n42-r100 (S42 switch off), config-only: warm-up/A1/B1 `--floods 8
+--senders 1000 -target-depth 45000` (today); B2/A2 `--floods 16
+--senders 500 -target-depth 22500` (same 8000 funded senders, same
+360k aggregate in-flight -- S7's shape, round 35zzy, lost to 6by's 52s
+stall, now on the fixed lineage). Tenure 4, block cache 2, pool
+600k/200k, sender cache 4M, GOMEMLIMIT 10GiB.
+
+**Prediction 104:** (a) B2 win1 occupancy >= B1's, win2 occupancy
+higher than B1's (B1 win2 has run 39-43% = supply-limited since the
+sender-cache fix); generator aggregate submit rate higher in B2;
+(b) B2 win2 TPS above B1's by more than the 3.6% floor, win1 within
+noise or higher; (c) per-node RPC-ingest CPU/RssAnon not worse than
++10%, no underpriced/pool-full rise, no build-stall, no view timeouts
+in flood windows; (d) 0 conflicting heights.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
