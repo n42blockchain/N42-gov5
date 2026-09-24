@@ -70,6 +70,15 @@ func (s *Service) blockPushStreamHandler(stream network.Stream) {
 	defer s.pushInflight.Delete(blk.Hash())
 	log.Info("block push: arrived", "number", blk.Number64().Uint64(), "txs", len(blk.Transactions()), "tMs", time.Now().UnixMilli())
 	s.deferredCheck(blk)
+	// S39 (docs/QS_BLOCK_TIME_BUDGET.md 6dr/6ds): the instant this block is
+	// handed to InsertChain -- the near side of whatever lock/queue wait
+	// sits between here and insertChain's own per-block processing start
+	// (SetInsertStartTMs, internal's insertChain loop); the gap between the
+	// two IS that wait, named by having both points rather than a separate
+	// duration field.
+	if contentionDiagEnabled {
+		blk.SetQueueTMs(timeNowMs())
+	}
 	if _, err := s.cfg.chain.InsertChain([]block.IBlock{blk}); err != nil {
 		if isAncestorError(err) {
 			// Missing parent (e.g. a committed same-height sibling this node
@@ -108,7 +117,21 @@ func (s *Service) deferredCheck(blk block.IBlock) {
 	if !ok || s.cfg.blockImportNotifier == nil {
 		return
 	}
+	// S39 (docs/QS_BLOCK_TIME_BUDGET.md 6dr/6ds): brackets CheckDeferredBlock's
+	// own call. A block whose parent is not yet applied re-enters this
+	// function via retryDeferredChildren; the LATEST attempt's stamps are
+	// what SetCheckStamps keeps, matching "the deferred check that actually
+	// ran" rather than the first, retried attempt.
+	var tChkStart int64
+	if contentionDiagEnabled {
+		tChkStart = timeNowMs()
+	}
 	checked, retry, err := checker.CheckDeferredBlock(blk)
+	if contentionDiagEnabled {
+		if b, ok := blk.(interface{ SetCheckStamps(int64, int64) }); ok {
+			b.SetCheckStamps(tChkStart, timeNowMs())
+		}
+	}
 	if !checked {
 		return
 	}

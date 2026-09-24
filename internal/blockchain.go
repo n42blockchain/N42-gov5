@@ -2246,6 +2246,18 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 		var dAlign, dProcess, dValidate, dWrite time.Duration
 		var procPhases ProcessPhases
 
+		// S39 (docs/QS_BLOCK_TIME_BUDGET.md 6dr/6ds): tIter above IS the start
+		// of InsertChain's own per-block processing -- 6dr's own
+		// "MISSING-STAMP", distinct from the block-push handler's
+		// socket-receipt "arrived" stamp and from whatever lock/queue wait
+		// sits between the handler's own SetQueueTMs (just before this call)
+		// and here.
+		if contentionDiagEnabled {
+			if b, ok := blk.(interface{ SetInsertStartTMs(int64) }); ok {
+				b.SetInsertStartTMs(tIter.UnixMilli())
+			}
+		}
+
 		log.Tracef("Current block: number=%v, hash=%v, difficult=%v | Insert block block: number=%v, hash=%v, difficult= %v",
 			bc.CurrentBlock().Number64(), bc.CurrentBlock().Hash(), bc.CurrentBlock().Difficulty(), blk.Number64(), blk.Hash(), blk.Difficulty())
 
@@ -2564,6 +2576,27 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			if rs, ok := blk.(interface{ DecodeReuseStats() (int, int) }); ok {
 				reused, decoded := rs.DecodeReuseStats()
 				fields = append(fields, "reuse", reused, "dec", decoded)
+			}
+			// S39 (docs/QS_BLOCK_TIME_BUDGET.md 6dr/6ds): the named hand-off
+			// stamps a follower's block-push receive path recorded, gated on
+			// the WRITER's own N42_CONTENTION_DIAG (internal/sync's and this
+			// package's own copies) -- all zero for a block that took a
+			// different path (gossip, catch-up fetch) or arrived with the
+			// diag off, exactly like reuse/dec above. rxEnd/decStart/decEnd
+			// bracket the chunk read and full decode; chkStart/chkEnd bracket
+			// CheckDeferredBlock; q is the instant the handler called
+			// InsertChain; insStart is this loop's own tIter, the
+			// "MISSING-STAMP" 6dr asked for -- q -> insStart is the lock/
+			// queue wait between the handler and InsertChain's own
+			// processing.
+			if is, ok := blk.(interface {
+				ImportStamps() (rxEnd, decStart, decEnd, chkStart, chkEnd, q, insStart int64)
+			}); ok {
+				rxEnd, decStart, decEnd, chkStart, chkEnd, q, insStart := is.ImportStamps()
+				fields = append(fields,
+					"rxEndTMs", rxEnd, "decStartTMs", decStart, "decEndTMs", decEnd,
+					"chkStartTMs", chkStart, "chkEndTMs", chkEnd,
+					"qTMs", q, "insStartTMs", insStart)
 			}
 			if dTotal >= slowBlockThreshold {
 				log.Info("blockimport phases", fields...)

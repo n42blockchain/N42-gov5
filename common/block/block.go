@@ -61,6 +61,14 @@ type Block struct {
 	// way -- callers should not treat "0, 0" as "every tx was reused".
 	// Written once, before the block is ever shared, by the decoder alone.
 	decodeReused, decodeDecoded int
+
+	// Import-timing stamps (S39, docs/QS_BLOCK_TIME_BUDGET.md 6dr): unix-ms
+	// stamps for named hand-off points on a follower's block-push receive
+	// path. See block_import_stamps.go for the setters/getter and which
+	// package writes each one. Zero value for a block that never passes
+	// through a given hand-off, or when the writer's own N42_CONTENTION_DIAG
+	// is off.
+	rxEndTMs, decStartTMs, decEndTMs, chkStartTMs, chkEndTMs, qTMs, insStartTMs int64
 }
 
 // DecodeReuseStats reports how many of this block's transactions were
