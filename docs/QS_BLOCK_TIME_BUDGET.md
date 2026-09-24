@@ -15427,6 +15427,24 @@ as the concrete follow-up if the commander wants to fund it as its own
 step.
 
 
+## 6dv. S41: prediction 102, registered before round 35zzzs -- leader tenure 4 vs 8 by leg (2026-09-23)
+
+n42-r98, config-only: warm-up/A1/B1 `N42_HOTSTUFF_LEADER_TENURE=4`,
+B2/A2 = 8; block cache 4, pool 600k/200k, sender cache 4M, GOMEMLIMIT
+10GiB everywhere. Rationale: 6dr's own 54% (win1) / 26.8% (win2)
+hand-over share at 966 vs 676 ms; 6du closed the speculative-build
+option, leaving fewer hand-overs as the cheap lever.
+
+**Prediction 102:** (a) hand-over share of full blocks in B2 win1
+roughly halves vs B1 (report both; explain 54% > tenure-4's nominal
+25% from the logs -- empty/timed-out views); (b) win1 mean seal->seal
+cycle falls >= 60 ms and win1 TPS rises above B1's by more than the
+3.6% noise floor, OR occupancy falls at the supply ceiling (state
+which); (c) cost: view-timeout events/duration in flood windows not
+worse (report any stall's blast radius under 8-view tenure), sitting
+leader's own RssAnon not higher by more than 0.5 GB; (d) 0 conflicting
+heights.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
