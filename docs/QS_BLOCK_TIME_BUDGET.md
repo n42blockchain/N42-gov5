@@ -15268,6 +15268,25 @@ stamp) would split the ~366 ms unattributed remainder into
 queueing/dispatch vs decode/pre-exec setup -- the one number this spec
 could not place.
 
+## 6ds. S39: stamps for 6dr's own 366 ms gap, riding S36b; n42-r98 built, prediction 100 (2026-09-23)
+
+tMs stamps (N42_CONTENTION_DIAG=1, already on every leg since S14) on
+the block-push path: rxEndTMs, decStartTMs/decEndTMs, chkStartTMs/
+chkEndTMs, qTMs, insStartTMs (6dr's MISSING-STAMP). Carried on Block
+(block_import_stamps.go, S32's DecodeReuseStats pattern), appended to
+"blockimport phases" -- no new log line. Commit `d3069b37`; tests +
+`-race` pass; vet clean. n42-r98 = n42-r97 + these 8 files; markers OK;
+sha256 `14899116e3260ae8e96af62797821496b151bb935660b171157c4fffd8237123`.
+Harness `run-r35zzzq.sh`/`chain-35zzzq.sh` from 35zzzp: S36b (9th
+`run_leg` arg) N42_BLOCK_CACHE_BLOCKS 4 vs 2 by leg; pool caps fixed
+600000/200000 (not an A/B here). `bash -n` clean, not launched.
+
+**Prediction 100:** (a) named steps sum >= 95% of arrived->import_end,
+report the largest item; (b) S36b: win2 live heap lower in B2 by
+0.1-0.3 GB, no new fetch-by-hash misses; (c) win1/win2 within noise of
+35zzzp; (d) 0 conflicting heights, no BAD BLOCK.
+
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
