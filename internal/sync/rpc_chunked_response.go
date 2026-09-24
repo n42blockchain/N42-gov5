@@ -222,14 +222,29 @@ func readFirstChunkedBlock(stream libp2pcore.Stream, p2p p2p.EncodingProvider, o
 	if err = encoder.DecodeWithMaxLengthLimit(stream, raw, encoder.MaxBlockChunkSize); err != nil {
 		return nil, 0, 0, errors.Wrapf(err, "failed to decode block from first chunk (forkDigest=%x)", ctx)
 	}
+	// S39 (docs/QS_BLOCK_TIME_BUDGET.md 6dr/6ds): the raw bytes are fully off
+	// the wire now, before the header peek and the (possibly 160k-transaction)
+	// full decode below -- captured as a local var since the Block this
+	// stamp belongs to does not exist yet.
+	var tRxEnd, tDecStart int64
+	if contentionDiagEnabled {
+		tRxEnd = timeNowMs()
+	}
 	if onHeader != nil {
 		if h, perr := peekBlockHeader(raw.data); perr == nil {
 			onHeader(h)
 		}
 	}
+	if contentionDiagEnabled {
+		tDecStart = timeNowMs()
+	}
 	blk, reused, decoded, err := decodeChunkedBlockReusePool(raw.data, lookup)
 	if err != nil {
 		return nil, 0, 0, errors.Wrapf(err, "failed to decode block payload from first chunk (forkDigest=%x)", ctx)
+	}
+	if contentionDiagEnabled {
+		blk.SetRxEndTMs(tRxEnd)
+		blk.SetDecStamps(tDecStart, timeNowMs())
 	}
 	log.Debug("First chunk decoded successfully", "blockNumber", blk.Number64().Uint64(), "peer", stream.Conn().RemotePeer().String())
 	return blk, reused, decoded, nil
