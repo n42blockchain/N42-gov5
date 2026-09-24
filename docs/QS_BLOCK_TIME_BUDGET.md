@@ -15445,6 +15445,34 @@ worse (report any stall's blast radius under 8-view tenure), sitting
 leader's own RssAnon not higher by more than 0.5 GB; (d) 0 conflicting
 heights.
 
+## 6dw. S36a: round 35zzzp falsifies prediction 99 -- the 400k/100k pool caps starve the generators; occupancy collapses 39.4% -> 13.0% in win2, not a config to adopt (2026-09-23)
+
+n42-r97, config-only A/B by leg (6dq): B1 pool 600k/200k, B2 400k/100k,
+sender cache 4M everywhere. Logs: `wr-logs/r35zzzp-keep/node{0-6}/`
+(+rotated `.gz`, concatenated). `height_conflict_check.py`:
+`heights_checked=11258, conflicts=0`. No BAD BLOCK.
+
+**(b) FALSIFIED -- real starvation.** Occupancy: B1 win1 48.7%/win2
+39.4% -> B2 win1 38.7%/**win2 13.0%**. TPS win2 121.7k -> 89.9k despite
+a FASTER blockTime (1.034 -> 0.458s) -- blocks got emptier, not the
+chain getting faster; classic supply collapse. `"txpool is full"`: 0
+occurrences (the hard cap never tripped), but `"transaction
+underpriced"` (the pool's own near-full discard path, `txs_pool.go:463`)
+roughly doubled, node0: 907 (B1) -> 1826 (B2) in equal-length windows.
+
+**(a) not confirmed, confounded.** Decoded-tx heap owner (cum
+`DecodeEthereumTransaction`) B1win2 avg 2169.9 MB -> B2win2 avg 2102.9
+MB (-67 MB, ~3%) -- far short of the predicted 0.4-0.8 GB, and
+unreliable given win2's own 3x-lower block volume under starvation.
+
+**(c)/(d):** not evaluated -- (b)'s falsification decides the round;
+0 conflicting heights holds regardless.
+
+**Recommendation: do NOT adopt 400k/100k.** The flood's own 360k
+in-flight (6dm) turned out not to leave headroom under the SMALLER
+queue cap once accounting for real-world burstiness; 600k/200k stays
+the harness default. No further round owed on this pair.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
