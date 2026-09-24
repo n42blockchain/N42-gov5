@@ -15508,6 +15508,27 @@ a small, safe win (-310 MB, no correctness cost this round); the more
 consequential finding is deferredCheck's own 228ms, now a named,
 measured target rather than a MISSING-STAMP gap.
 
+## 6dy. S42: the deferred check does not gate InsertChain -- overlap them; n42-r100 built, prediction 103 (2026-09-24)
+
+PART 1: the check's result is consumed only by NotifyBlockChecked, never
+by InsertChain, whose own executor independently re-validates nonces/
+balances/gas/fee-cap -- so a failing check fails execution too, except
+blob txs (check rejects, executor would not): "import succeeds, check
+fails" can exist for that case. deferredAttested's own callers already
+accept importedBlocks OR deferredAttested -- no consensus-side change.
+
+N42_DEFERRED_CHECK_CONCURRENT=1: InsertChain dispatched immediately,
+check runs concurrently; new insDispatchTMs (= qTMs) measures the
+overlap vs chkStart/chkEnd. Commit a01da2cc, 6 new tests pass
+(-race), suites pass, vet clean. n42-r100 = n42-r98 + 7 files, sha256
+`ddbca52c56`. Harness from 35zzzs, switch 0/1 by leg, rest fixed. Not
+launched.
+
+**Prediction 103:** (a) rxEnd->InsertChain ~293->≤80ms; (b) hand-over
+cycle ≥150ms less (966->≤816); (c) B2 win1 TPS >3.6% above B1 or lower
+occupancy; (d) 0 conflicts, 0 votes on a failed check, 0 BAD BLOCK.
+
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
