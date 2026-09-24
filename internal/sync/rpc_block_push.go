@@ -82,7 +82,7 @@ func (s *Service) handlePushedBlock(blk *block.Block, concurrent bool) {
 	s.pushInflight.Store(blk.Hash(), struct{}{})
 	defer s.pushInflight.Delete(blk.Hash())
 	log.Info("block push: arrived", "number", blk.Number64().Uint64(), "txs", len(blk.Transactions()), "tMs", time.Now().UnixMilli())
-	// S42 (docs/QS_BLOCK_TIME_BUDGET.md 6dx/6dz, N42_DEFERRED_CHECK_CONCURRENT):
+	// S42 (docs/QS_BLOCK_TIME_BUDGET.md 6dx/6dy, N42_DEFERRED_CHECK_CONCURRENT):
 	// today's order runs CheckDeferredBlock (228ms median WORK, 6dx) to
 	// completion before InsertChain even starts. The check does not gate
 	// InsertChain -- it never returns a plan, a sender list or anything else
@@ -90,7 +90,7 @@ func (s *Service) handlePushedBlock(blk *block.Block, concurrent bool) {
 	// re-validates nonces/balances/gas via real EVM execution, so a block
 	// that fails the check fails execution too (the one exception: blob
 	// transactions, which the check rejects outright but the executor would
-	// process normally -- see 6dz). With the switch on, InsertChain is
+	// process normally -- see 6dy). With the switch on, InsertChain is
 	// dispatched immediately and the check runs concurrently on its own
 	// goroutine; deferredCheck already tolerates running on an arbitrary
 	// goroutine (retryDeferredChildren already calls it from a
