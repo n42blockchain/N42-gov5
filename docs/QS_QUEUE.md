@@ -98,3 +98,16 @@ running round while n42-rs has work waiting. Prepared and waiting for the box: 3
 Goal unchanged: the seven-node fleet's B mean. Lineage: safety first -- n42-r95 (S26 vote rule + S31 header vote) is the base, r97 adds the leader-side guard (35zzzm running). Score on this lineage: 117.9k (35zzzk, 16M sender cache) -> 35zzzn's B2 leg at 4M ran 135.7k / 121.6k, so a whole round at 4M should read ~128-130k; 35zzzm is that round. The pre-safety 132.8k (35zzzc) is no longer a comparable number.
 What sets the score now, in order of measured size: (1) win2 is the collector (GC 20% -> 54% of CPU as the live heap climbs against GOMEMLIMIT 10GiB; the box cannot afford more memory): shrink the live heap -- sender cache done (S35, -0.87 GB), pool caps (S36a, queued), block cache (S36b), tail index and QMDB index (code knobs, later); (2) win1 sits at the eight generators' supply ceiling (~140k): raise supply only once (1) and (3) give the cycle room, or the extra ingest just feeds the collector; (3) the in-tenure cycle is the leader's own build (611-650 ms: parallel exec ~340, assemble/root ~147, pick ~61, ~80 unplaced -> S37 stamps it), and 25-46% of full blocks pay a ~1000 ms hand-over cycle because the next leader cannot speculate (S38 spec). Rounds alternate with n42-rs; each gov5 round leaves 10 free minutes.
 
+## Honest position (commander, 2026-09-24 11:50 EDT)
+
+The scored B mean has not moved: 127.6k (35zzt) -> 132.8k (35zzzc, pre-safety) -> 124.3k (35zzzm, safe lineage).
+Why: since 35zzzb every win1 has sat at the eight generators' supply ceiling (~140k) and every cycle gain
+(gossip fallback off, journal ordering, header vote, tenure 8) turned into LOWER OCCUPANCY, not higher TPS --
+tenure 8 runs 0.87 s per full block (an engine ceiling of ~187k) with 34% full blocks. The engine got faster by
+~38% per full block since 35zzza; the score cannot show it. Win2 was GC-bound and is now supply-bound too.
+Decision: supply first, everything else waits. 35zzzu (16 x 500 senders) runs before 35zzzt. If sixteen
+generators do not lift the aggregate submit rate, the next levers are generator-side (per-generator rate,
+more funded senders, a second generator host) -- not the node. Each round now reports the ENGINE ceiling
+(txs per full block / full-block cycle) next to the B mean so progress on the node is visible even while the
+score is supply-capped.
+
