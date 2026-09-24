@@ -14,20 +14,21 @@ import "testing"
 func TestImportStampsRoundTrip(t *testing.T) {
 	b := &Block{}
 
-	if rxEnd, decStart, decEnd, chkStart, chkEnd, q, insStart := b.ImportStamps(); rxEnd != 0 || decStart != 0 || decEnd != 0 || chkStart != 0 || chkEnd != 0 || q != 0 || insStart != 0 {
-		t.Fatalf("fresh Block: want all-zero stamps, got %d %d %d %d %d %d %d",
-			rxEnd, decStart, decEnd, chkStart, chkEnd, q, insStart)
+	if rxEnd, decStart, decEnd, chkStart, chkEnd, q, insDispatch, insStart := b.ImportStamps(); rxEnd != 0 || decStart != 0 || decEnd != 0 || chkStart != 0 || chkEnd != 0 || q != 0 || insDispatch != 0 || insStart != 0 {
+		t.Fatalf("fresh Block: want all-zero stamps, got %d %d %d %d %d %d %d %d",
+			rxEnd, decStart, decEnd, chkStart, chkEnd, q, insDispatch, insStart)
 	}
 
 	b.SetRxEndTMs(100)
 	b.SetDecStamps(101, 105)
 	b.SetCheckStamps(106, 110)
 	b.SetQueueTMs(111)
+	b.SetInsDispatchTMs(112)
 	b.SetInsertStartTMs(115)
 
-	rxEnd, decStart, decEnd, chkStart, chkEnd, q, insStart := b.ImportStamps()
-	want := [7]int64{100, 101, 105, 106, 110, 111, 115}
-	got := [7]int64{rxEnd, decStart, decEnd, chkStart, chkEnd, q, insStart}
+	rxEnd, decStart, decEnd, chkStart, chkEnd, q, insDispatch, insStart := b.ImportStamps()
+	want := [8]int64{100, 101, 105, 106, 110, 111, 112, 115}
+	got := [8]int64{rxEnd, decStart, decEnd, chkStart, chkEnd, q, insDispatch, insStart}
 	if got != want {
 		t.Fatalf("ImportStamps() = %v, want %v", got, want)
 	}
@@ -41,7 +42,7 @@ func TestSetCheckStampsOverwritesOnRetry(t *testing.T) {
 	b.SetCheckStamps(10, 20) // first attempt: parent not applied yet
 	b.SetCheckStamps(50, 55) // retry: this is the one that ran to completion
 
-	_, _, _, chkStart, chkEnd, _, _ := b.ImportStamps()
+	_, _, _, chkStart, chkEnd, _, _, _ := b.ImportStamps()
 	if chkStart != 50 || chkEnd != 55 {
 		t.Fatalf("SetCheckStamps: want the latest attempt (50, 55), got (%d, %d)", chkStart, chkEnd)
 	}

@@ -66,18 +66,63 @@ func (s *Service) blockPushStreamHandler(stream network.Stream) {
 		}
 		return
 	}
+	s.handlePushedBlock(blk, DeferredCheckConcurrentOn())
+}
+
+// handlePushedBlock runs the deferred-execution check and InsertChain on a
+// freshly-decoded, not-yet-stored pushed block. Factored out of
+// blockPushStreamHandler (S42) so this ordering logic is testable without a
+// live network.Stream; concurrent is DeferredCheckConcurrentOn() read once
+// by the caller and passed in explicitly (not read again here), so a test
+// can drive both orderings without the env-backed switch's own sync.Once
+// memoizing a single value for the whole test binary -- the same pattern
+// S32's decodeChunkedBlockReusePool already established (lookup passed in,
+// not read from BlockDecodeReusePoolOn() internally).
+func (s *Service) handlePushedBlock(blk *block.Block, concurrent bool) {
 	s.pushInflight.Store(blk.Hash(), struct{}{})
 	defer s.pushInflight.Delete(blk.Hash())
 	log.Info("block push: arrived", "number", blk.Number64().Uint64(), "txs", len(blk.Transactions()), "tMs", time.Now().UnixMilli())
-	s.deferredCheck(blk)
+	// S42 (docs/QS_BLOCK_TIME_BUDGET.md 6dx/6dz, N42_DEFERRED_CHECK_CONCURRENT):
+	// today's order runs CheckDeferredBlock (228ms median WORK, 6dx) to
+	// completion before InsertChain even starts. The check does not gate
+	// InsertChain -- it never returns a plan, a sender list or anything else
+	// InsertChain reads (PART 1); InsertChain's own executor independently
+	// re-validates nonces/balances/gas via real EVM execution, so a block
+	// that fails the check fails execution too (the one exception: blob
+	// transactions, which the check rejects outright but the executor would
+	// process normally -- see 6dz). With the switch on, InsertChain is
+	// dispatched immediately and the check runs concurrently on its own
+	// goroutine; deferredCheck already tolerates running on an arbitrary
+	// goroutine (retryDeferredChildren already calls it from a
+	// time.AfterFunc callback) and already avoids bc.lock/the pool lock
+	// (its own reads use bc.qmdbRootComputer.LockReaders() and a fresh
+	// read-tx). Whichever finishes first advances the vote gate through the
+	// EXISTING notification paths -- deferredAttested's own callers already
+	// accept importedBlocks OR deferredAttested, so "imported first" and
+	// "checked first" are both already-handled orderings; no consensus-side
+	// change is needed. A check failure after InsertChain has already
+	// succeeded changes nothing: deferredCheck never votes on failure (it
+	// only calls NotifyBlockChecked on success), so the only possible
+	// effect of a losing, failing check is the log line below -- the
+	// import's own outcome, and the vote already unlocked by
+	// NotifyBlockImported, are both untouched.
+	if concurrent {
+		go s.deferredCheck(blk)
+	} else {
+		s.deferredCheck(blk)
+	}
 	// S39 (docs/QS_BLOCK_TIME_BUDGET.md 6dr/6ds): the instant this block is
 	// handed to InsertChain -- the near side of whatever lock/queue wait
 	// sits between here and insertChain's own per-block processing start
 	// (SetInsertStartTMs, internal's insertChain loop); the gap between the
 	// two IS that wait, named by having both points rather than a separate
-	// duration field.
+	// duration field. insDispatchTMs (S42) is the same instant, kept
+	// separately so it can be compared against chkStart/chkEnd without
+	// relying on qTMs' own, earlier-established meaning.
 	if contentionDiagEnabled {
-		blk.SetQueueTMs(timeNowMs())
+		now := timeNowMs()
+		blk.SetQueueTMs(now)
+		blk.SetInsDispatchTMs(now)
 	}
 	if _, err := s.cfg.chain.InsertChain([]block.IBlock{blk}); err != nil {
 		if isAncestorError(err) {

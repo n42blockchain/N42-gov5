@@ -17,13 +17,23 @@
 // Written by, in pipeline order:
 //   internal/sync's readFirstChunkedBlock  -- SetRxEndTMs, SetDecStamps
 //   internal/sync's deferredCheck          -- SetCheckStamps
-//   internal/sync's blockPushStreamHandler -- SetQueueTMs (just before InsertChain)
+//   internal/sync's blockPushStreamHandler -- SetQueueTMs, SetInsDispatchTMs
+//     (both just before InsertChain is called)
 //   internal's insertChain loop            -- SetInsertStartTMs (the
 //     "MISSING-STAMP" 6dr asked for: the start of InsertChain's OWN
 //     per-block processing, distinct from the socket-receipt "arrived"
 //     stamp and from whatever lock/queue wait sits between SetQueueTMs and
 //     here -- the gap between the two is that wait, named by having both
 //     points rather than a separate duration field)
+//
+// S42 (docs/QS_BLOCK_TIME_BUDGET.md 6dx/N42_DEFERRED_CHECK_CONCURRENT):
+// insDispatchTMs is set at the SAME call site as qTMs (immediately before
+// InsertChain), in BOTH the sequential (today) and concurrent orderings.
+// Comparing it against chkStartTMs/chkEndTMs is what makes the overlap
+// measurable: sequential has insDispatchTMs >= chkEndTMs (InsertChain
+// dispatched only after the check returns); concurrent has
+// insDispatchTMs approximately equal to chkStartTMs (both dispatched
+// back-to-back, right after decode).
 
 package block
 
@@ -49,6 +59,14 @@ func (b *Block) SetCheckStamps(start, end int64) { b.chkStartTMs, b.chkEndTMs = 
 // sits between here and SetInsertStartTMs.
 func (b *Block) SetQueueTMs(t int64) { b.qTMs = t }
 
+// SetInsDispatchTMs records the same instant as SetQueueTMs (immediately
+// before InsertChain is called), kept as its own field (S42) so an
+// analysis script can compare it directly against chkStartTMs/chkEndTMs
+// without needing qTMs' own, separately-established meaning: sequential
+// (N42_DEFERRED_CHECK_CONCURRENT unset) has it land at or after chkEndTMs;
+// concurrent has it land at or before chkStartTMs.
+func (b *Block) SetInsDispatchTMs(t int64) { b.insDispatchTMs = t }
+
 // SetInsertStartTMs records the start of InsertChain's OWN per-block
 // processing (internal's insertChain loop, captured at the same point the
 // existing dHdr/dBody accounting already anchors to) -- 6dr's own
@@ -57,11 +75,11 @@ func (b *Block) SetQueueTMs(t int64) { b.qTMs = t }
 func (b *Block) SetInsertStartTMs(t int64) { b.insStartTMs = t }
 
 // ImportStamps returns every stamp SetRxEndTMs/SetDecStamps/SetCheckStamps/
-// SetQueueTMs/SetInsertStartTMs recorded, in pipeline order. Any stamp
-// whose setter was never called (a block that took a different path, or
-// N42_CONTENTION_DIAG was off at that hand-off) reads back as 0 -- callers
-// must not treat a 0 as "this hand-off took no time", only as "not
-// recorded here".
-func (b *Block) ImportStamps() (rxEnd, decStart, decEnd, chkStart, chkEnd, q, insStart int64) {
-	return b.rxEndTMs, b.decStartTMs, b.decEndTMs, b.chkStartTMs, b.chkEndTMs, b.qTMs, b.insStartTMs
+// SetQueueTMs/SetInsDispatchTMs/SetInsertStartTMs recorded, in pipeline
+// order. Any stamp whose setter was never called (a block that took a
+// different path, or N42_CONTENTION_DIAG was off at that hand-off) reads
+// back as 0 -- callers must not treat a 0 as "this hand-off took no
+// time", only as "not recorded here".
+func (b *Block) ImportStamps() (rxEnd, decStart, decEnd, chkStart, chkEnd, q, insDispatch, insStart int64) {
+	return b.rxEndTMs, b.decStartTMs, b.decEndTMs, b.chkStartTMs, b.chkEndTMs, b.qTMs, b.insDispatchTMs, b.insStartTMs
 }
