@@ -16039,3 +16039,94 @@ without a hand-placed boundary. The view-timing table comes from the
 `hotstuff view timing` lines, filtered to views adjacent to a full block --
 without that filter the medians are dominated by the ~1,590 empty decay blocks
 each leg produces and read 3-4x too fast.
+
+## 6f0. Gap to n42-rs -- where 280k comes from (2026-09-25)
+
+Read-only, single-threaded. Sources: n42-rs `docs/FLEET7_HANDOFF.md`,
+`FLEET7_PLAN_V4.md` (6.6/6.7), `NATIVE_FLEET7.md` rounds 25-26,
+`scripts/fleet7-bench.sh` (tier sizing), `target/fleet-runs/bench-loop250R925.out`
++ `run-loop250.sh`; gov5 `docs/QS_BLOCK_TIME_BUDGET.md` 6cw/6dx/6dr/6e2/6e4/6e6/6e10
+and `docs/QS_QUEUE.md`'s Position/Honest paragraphs. R925 is a 3-node,
+74-core/node ingest-ceiling probe (not the flagship 7-node fleet); its own
+output gives cycle/occupancy/tier-sizing only -- phase breakdowns below are
+NATIVE_FLEET7 rounds 25-26, a different but same-box, same-163k-shape leg.
+
+**1. Side by side, per 163,000-tx full block, same box**
+
+| metric | n42-rs | gov5 |
+|---|---|---|
+| cycle, full block | 0.577s (R925 win1, occ 98.4%); flagship record 0.508s (loop141) | 0.839s (chained same-leader pair, tenure 8, 6e2) |
+| implied tx/s | 282,500 (163000/0.577) | 194,255 (6e2) |
+| leader build | exec_ms 530 (round25, single-thread reth, ~3.3us/tx -- **round25 states parity with gov5's 3.135us/tx**) | 611-650ms total: par-exec 340-347 (32w) + pick 61 + root/assemble 147-150 + unaccounted 74-92 (6cw) |
+| state commit/root | QMDB root ~39-95ms (round26) | assemble/root 147-150ms leader-side, 118-127ms follower `finalizeMs` (6cw) |
+| block write | batched, **off critical path**: 365ms/~3-block batch (~120ms/block amortized), `persistence_duration` (round26) | 195-200ms, **on critical path** inside InsertChain (6cw) |
+| follower import | decode 30-49, tx-iter-wait 81, EVM exec 349, root ~39 (round26); persistence async | decode 42, deferredCheck 228 (now overlapped, S42), InsertChain total 679.8-792 (exec 205-266, finalize 118-127, write 195-200) (6dx/6cw) |
+| vote on critical path | no, once tenure>1: cycle=max(build, transfer+import+vote) | yes, 78-83% of win2 blocks (6dg); folded into hand-over's 632ms buildBegin->sealEnter |
+| network push | F7_DIRECT_PUSH=1: own-stream to full mesh, ~30ms (was ~210ms gossip) | push(v-1)->arrived 16ms (6dr) |
+| hand-over handling | tenure 16-256; tax 0.6-1.8s/64-256 blocks, ~2-3%/leg | hand-over 25-54% of blocks; cycle 966-2045ms vs in-tenure 676-841ms (6dr, 6e2) |
+| pipelining depth | continuous depth-1 for whole tenure; builds next while fleet imports current | depth-1 only in-tenure (~20ms idle, 6cw); ZERO at hand-over, `specParkedTMs` 0/77 (6dr) |
+| txs/block, occupancy | 163,000; 98.4% (win1) | 163,000 cap; 31.5-49.5% actual (6e2/6e4) |
+| pool size | 1,000,000 slots (this leg; formula = 3 blocks' worth) | 600,000 pending + 200,000 queued (6dq/6e6) |
+| ingest pacing, generators | local per-node gate = 5/6 x pool (833,333); 1 flood proc, 6,000 senders, every node ingests directly | generator's OWN inflated depth estimate throttles to 0 for 17-27% of samples (6e4-10); 8-16 generator procs x 500-1000 senders |
+| GC/memory, cores/node | none (Rust); bounded by `N42_QMDB_RETAIN_DEPTH=16` + ~40GB huge-page pool; 74 cores/node here (32 flagship default) | Go GC under GOMEMLIMIT 10GiB, win2 GC 20%->54% of CPU (QS_QUEUE); GOMAXPROCS=nproc/7 |
+
+**2. Three largest mechanism differences**
+1. **Hand-over pipelining depth.** n42-rs pipelines depth-1 continuously
+   across a 16-256-view tenure (tenure-change tax only 2-3%/leg). gov5
+   pipelines depth-1 only *within* a tenure; at hand-over the new leader's
+   build can't start until v-1's whole import finishes (`specParkedTMs`
+   0/77, `internal/consensus/hotstuff/proposal.go:650`). Worth: 290-1200ms
+   extra per hand-over, on 25-54% of blocks at tenure 4-8 -- the largest
+   single item behind the 194k engine ceiling vs the 124.3k scored mean.
+2. **Serial write on the critical path.** n42-rs batches persistence off
+   the critical path (~120ms/block amortized). gov5's write stays serial
+   inside InsertChain (`internal/blockchain_write.go:147`, 195-200ms);
+   S42 already moved deferredCheck off the serial pre-path (293->75ms,
+   6dy) but S23's async-write attempt (6cx) was neutral and hit a
+   sibling-race. Worth: up to ~75-80ms/block if closed cleanly.
+3. **Supply pacing.** n42-rs guards admission with a LOCAL, pool-sized
+   gate (`N42_TX_INGEST_HIGH_WATER` = 5/6 x pool); occupancy 98.4%. gov5's
+   generator self-throttles on an inflated depth estimate
+   (`cmd/txflood/main.go:~808-818`) plus a pool whose queued->pending
+   promotion fires 0-2x per 14-min leg (`internal/txspool/txs_pool.go:981`,
+   `runReorg`). Worth: not a per-block ms item -- 194,255 x ~0.55-0.64
+   (=124.3k/194.255k) tracks the observed 31.5-49.5% occupancy almost
+   exactly, i.e. this is essentially the WHOLE remaining gap once engine
+   speed is held constant (execution itself is at parity, table row 3).
+
+**3. Transferable, ranked by (ms saved)/risk**
+
+1. Replace the generator's estimated depth-throttle with a gate read off
+   the pool's own size (mirror pool x5/6): `cmd/txflood/main.go:~808-818`,
+   `internal/txspool/txs_pool.go` (600k/200k caps as the read target) --
+   near-zero risk, largest expected win (closes most of the occupancy gap).
+2. Promote queued->pending whenever an account's pending list empties, not
+   only on the periodic reorg: `internal/txspool/txs_pool.go:981`
+   (`runReorg`) -- low risk, internal bookkeeping only.
+3. Raise leader tenure toward n42-rs's 16-256 once (1)/(2) remove the
+   supply ceiling: `internal/consensus/hotstuff/validator.go:160`
+   (`leaderTenure`) -- medium risk, a real BFT liveness trade (up to
+   `tenure` view-timeouts on one bad leader), already flagged in 6dv/6dz.
+4. Move the block write fully off the critical path, following n42-rs's
+   batched persistence: `internal/blockchain_write.go:147`, revisiting
+   S23's `N42_LEADER_WRITE_ASYNC` (6cx) with its sibling-race closed --
+   medium-high risk, a correctness defect already surfaced once.
+
+Not transferable: no-GC is a Rust/Go runtime difference, not a technique
+(only heap-shrinking config on gov5's side, S35-S37); `F7_DIRECT_PUSH`
+assumes a small known-peer full mesh over persistent streams, not gov5's
+open gossip topology; a 256-view tenure is a bench-only liveness trade the
+source itself calls "the price," not a default for an adversarial chain.
+
+**4. Instruments they have that we don't**
+
+- Per-phase Prometheus histograms inside the execution client itself
+  (decode/wait/EVM-exec/state-root/persistence) on loopback per node
+  (`F7_METRICS_BASE`), not just ms-precision log lines.
+- Read-door attribution: exact counts of which door (batch cache / state
+  provider / QMDB view) answered each of a block's reads, not a total.
+- Automatic stack-dump on stall (`N42_WATCHDOG_STACKS=1`, every thread's
+  stack captured 6s into a stuck stage), not inferred from log ordering.
+- A standing, leg-independent defect-grep vocabulary (`transport: error
+  sending`, `has not progressed`, `TC formed`, `execution layer
+  rejected`, ...) run after every leg, not a bespoke script per finding.
