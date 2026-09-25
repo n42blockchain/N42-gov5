@@ -15778,6 +15778,69 @@ floor; (c) cost: `underpriced`/pool-full discards per node not more
 than 2x B1's, no starvation, generators' own `pool=` reading vs the
 new 225000 target reported; (d) 0 conflicting heights.
 
+## 6e6. S45: round 35zzzw -- 225000 drains the generators dry mid-leg; the wr-logs/*-floods files are STALE, so this is the fleet-side evidence and the budget arithmetic (2026-09-25)
+
+n42-r100, tenure 4, `-target-depth` 45000 (B1, 05:53:35-06:06:42) vs
+225000 (B2, 06:06:42-06:21:41). B1: 126.4k@1.277s occ49.5% /
+114.8k@1.071s occ38.3%. B2: 85.5k@0.750s occ20.3% / **715
+TPS@0.248s occ0.1%** -- generators went dry in win2.
+
+**Data-quality finding first**: `wr-logs/{r35zzzt,r35zzzw}-floods/{B1,B2}/
+bench-flood-r35-{B1,B2}.out` are **byte-identical (same MD5) across
+both rounds** -- this capture is STALE, not per-round, and its own
+header ("4000 senders x 1500 pertx", "44460 tx/s offered") does not
+even match this round's own 1000x4500 configuration. Sub-questions
+(1) and (3) (exact generator stop time, pool= vs target in B2's first
+minutes) cannot be answered from these files for THIS round; flagged
+as a harness bug to fix before generator-side instrumentation can be
+trusted again.
+
+**(1)/(2) Fleet-side evidence** (`r35zzzw-vm.log`, node0 `pool
+pending=/queued=`): both legs peak at essentially the SAME ceiling --
+B1 max pending **798,600**, B2 max pending **795,624** -- right at the
+pool's own 600k+200k=800k combined cap, regardless of target-depth.
+B2's own pending sits at exactly 0 for the **final ~1m42s of the leg**
+(06:19:53-06:21:35, 3 consecutive samples), while B1's own zero
+stretch is only its single last 10s sample -- B2's generators ran dry
+well before the leg ended, B1's lasted almost the whole leg.
+`underpriced` (node0): B1 849, B2 168 (lower, consistent with fewer
+transactions even being offered once dry); `txpool is full`: 0 in
+either leg -- the hard cap was never the rejection path, the pool
+simply never got refilled once the generators emptied.
+
+**(3) The estimate, reasoned from configuration** (flood-file numbers
+for this specific claim are unavailable, per the data-quality finding
+above): at target=45000, 6e4 already established the estimate reads
+3-6x over target, self-throttling `topup=0` in 17-27% of samples --
+this PACES consumption of the fixed pre-signed budget. At
+target=225000, real chain consumption (85-126k TPS) so far exceeds
+any single generator's own replenishment rate that the estimate
+should rarely if ever climb above 225000 -- removing the throttle
+entirely, so the generator submits flat-out, continuously.
+
+**Budget arithmetic**: each generator's own fixed reserve is 1000
+senders x 4500 pertx = **4,500,000 tx**. At the one (stale, order-of-
+magnitude only) offered-rate figure on record, ~44,460 tx/s, a
+generator running flat-out with no throttle exhausts 4,500,000 tx in
+**~101 seconds** -- a small fraction of the ~13-minute leg, consistent
+with B2's own decline already visible in win1 (20.3%) and its
+complete collapse by win2.
+
+**Recommendation: depth 90000 + pertx 9000.** Keeping 45000 leaves no
+room for prediction 105's own goal (raising real in-flight toward the
+600k pool cap); 225000 removes the throttle entirely and empties the
+budget in ~101s. Doubling both moves the target far enough to raise
+real in-flight without abandoning throttling headroom altogether
+(90000 is 2x, not 5x, the level whose own inflated estimate already
+throttled 17-27% of samples at 45000), and doubling the pre-signed
+budget to 9,000,000 buys roughly double the flat-out survival time
+(~202s) as a safety margin even if throttling turns out weaker than
+expected at the higher target. Also: fix the `-floods` capture before
+the next generator-focused round -- this round's own generator-side
+questions could not be answered from it.
+
+**(d) Safety CONFIRMED**: 0/11,868 conflicting heights, no BAD BLOCK.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
