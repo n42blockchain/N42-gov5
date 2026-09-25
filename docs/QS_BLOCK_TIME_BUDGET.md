@@ -15841,6 +15841,22 @@ questions could not be answered from it.
 
 **(d) Safety CONFIRMED**: 0/11,868 conflicting heights, no BAD BLOCK.
 
+## 6e7. S46: generator pacing by leg (steady rate vs depth throttle); flood-file capture fixed; launched as 35zzzx, prediction 106 (2026-09-25)
+
+Fixed the flood-file capture (blind glob copied permanent orphans from
+abandoned FLOODS counts -- mtime-vs-leg-start-marker now, proven on
+two consecutive same-name legs). n42-r100 unchanged. `-target-depth`/
+`-rate` are an if/else-if in txflood (not combinable) -- corrected
+B2/A2 to `16000/0/9000` (rate/depth/pertx), depth 0 so `-rate`
+actually engages, not the task's literal `900000` (would keep the
+depth-throttle branch). `-rate` confirmed per-process/per-second,
+pre-batching; `-lazy-sign` makes pertx 9000 free of extra memory.
+
+**Prediction 106:** (a) B2 pending never 0, stays 50k-500k, occupancy
+>=45%; (b) B2 TPS above B1 by >3.6% (win1>=135k, win2>=130k); (c) not
+dry, discards <=2x B1; (d) 0 conflicts, no BAD BLOCK.
+
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
