@@ -16130,3 +16130,85 @@ source itself calls "the price," not a default for an adversarial chain.
 - A standing, leg-independent defect-grep vocabulary (`transport: error
   sending`, `has not progressed`, `TC formed`, `execution layer
   rejected`, ...) run after every leg, not a bespoke script per finding.
+
+## 6f1. S49: n42-rs's own supply mechanism, ported -- N42_TX_INGEST_HIGH_WATER, backoff-retry on backpressure, n42-r101/txflood-r42, prediction 109 (2026-09-25)
+
+6f0's own transferable item 1: n42-rs admits transactions only while a
+node's own pool is below a LOCAL high-water mark (5/6 of its slots) and
+its generators simply push and retry, no estimate anywhere. gov5's own
+generators instead throttle on an ESTIMATED depth (6e4/6e10/6e11) and a
+pool that discards silently once full.
+
+PART 1(a): SendRawTransaction and BatchRawTransaction
+(internal/api/api_transaction.go:56-80, 101-178) decode and ECDSA-recover
+the sender for EVERY entry BEFORE the pool ever sees it -- seedRecoveredSender's
+own comment puts one recovery at ~50us, so a 200-entry batch pays that 200
+times regardless of outcome. `pool.add` (internal/txspool/txs_pool.go:463-485)
+only THEN checks capacity, returning ErrUnderpriced (cheap tx, pool full) or
+ErrTxPoolOverflow ("txpool is full") -- the whole decode+recovery cost was
+spent on a submission the pool discards anyway.
+
+PART 1(b): the flat-out submit loop (cmd/txflood/main.go, both the
+single-tx path and the `-rpcbatch` path) always advanced `idx` by the
+full amount claimed, error or not -- on error it counted `failed` and
+moved to the NEXT index/batch, never retrying the one that failed. Since
+each index maps deterministically to one sender's next nonce, a rejected
+submission was a PERMANENT gap: every later transaction from that sender
+sits queued behind it for the rest of the run, never promoted to pending.
+
+Implemented: (i) `N42_TX_INGEST_HIGH_WATER=<n>` (unset = today, no
+behaviour change) -- both RPC handlers check the pool's own cheap
+`Stats()` (an RLock + summing per-account list lengths, not `Content()`,
+which copies every transaction) before decoding anything, and reject the
+whole submission with a distinct `txpool: above high water` error,
+logged at most once a minute
+(internal/api/tx_ingest_high_water.go). (ii) `submitWithBackoff` +
+`isPoolBackpressure` (cmd/txflood/main.go) -- on `above high water` or
+the pool's own pre-existing `txpool is full`, retry the SAME
+tx/batch (same nonce(s)) with a 20ms-doubling-to-100ms backoff instead of
+advancing; any other error keeps today's handling exactly. Counts
+`deferred=` (retries, not failures) in a once-a-second line: the
+existing depth-throttle print gained the field, and flat-out mode (no
+existing periodic line) got a new minimal one. (iii) confirmed rate<=0
+and targetDepth<=0 already means fully unthrottled -- neither ticker
+goroutine starts, `permits` stays nil, nothing waits on it.
+
+Tests: internal/api (8, `-race`): the gate's pure decision function
+(below/at/above the mark, mark-zero-is-off, nil pool), and both RPC
+handlers proven to skip decode above the mark (garbage input returns
+exactly `errAboveHighWater`, not a decode error) and fall through below
+it. cmd/txflood (5 new, plus 8 existing S48 tests untouched, `-race`):
+`isPoolBackpressure` string matching, `submitWithBackoff` retries the
+SAME closure via a fake RPC (call-count proof), stops unretried on a
+different error, costs no backoff on first success, and caps its own
+backoff at 100ms.
+
+Build: n42-r101 = the same f7ec2836-based recipe as n42-r97/r98/r100
+(docs/QS_HANDOVER_20260920.md "Build recipe") plus S42's own 7-file delta
+(a01da2cc) plus two files this recipe had not needed before --
+internal/contention_diag.go and internal/sync/contention_diag.go (S39's
+own d3069b37, referenced by files already in the recipe but not
+previously copied themselves) -- plus (i) above (2 files:
+internal/api/api_transaction.go, internal/api/tx_ingest_high_water.go).
+Diffed against wt-r27's own HEAD: the only difference inside
+internal/api is exactly the (i) diff; nothing else in the recipe's scope
+changed since n42-r100. sha256 c5c481557a6a6c (n42-r101) vs ddbca52c563e
+(n42-r100). txflood-r42 (next number after r41) = txflood-r41 + (ii).
+
+Round 35zzzaa, tenure 4, N42_DEFERRED_CHECK_CONCURRENT=1, block cache 2,
+pool 600000/200000, sender cache 4194304 -- all fixed. ONE mechanism by
+leg (14th run_leg argument): warm-up/A1/B1 = 35zzzz's own B2 pacing
+unchanged (rate 16000, depth cap 300000, pertx 9000, exact depth,
+N42_TX_INGEST_HIGH_WATER unset); B2/A2 = flat-out (rate 0, depth 0,
+pertx 9000) with N42_TX_INGEST_HIGH_WATER=500000 on every node.
+
+**Prediction 109:** (a) B2 occupancy >=45% of gasLimit (>=90% of the
+fill cap) in BOTH windows; node0 pending sits in a 350k-500k band;
+queued <20k; `underpriced` ~0 (no silent discards); `above high water`
+rejections present in the node logs and cheap (node RPC CPU not more
+than 20% above B1's). (b) B2 win1 TPS >=135k, win2 >=130k, both above B1
+by more than the 3.6% noise floor. (c) generators never dry (topup/credit
+> 0 throughout); `deferred=` nonzero in B2 (proving the gate fires and
+the retry engages) but no permanent nonce gaps (queued stays small, not
+growing). (d) safety clean: 0 conflicting heights, no BAD BLOCK (S47's
+checker fix carries over).
