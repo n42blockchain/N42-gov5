@@ -15644,6 +15644,52 @@ further round on 16x500 as configured; if supply is still suspected,
 retry 16 generators with `-target-depth` UNCHANGED at 45000 (720k
 aggregate) instead of halved.
 
+## 6e3. Why blocks are two thirds full while the pool holds 360k: promotion stalls, not nonce gaps or the snapshot (2026-09-24)
+
+Two clean tenure-8 windows: 35zzzs B2 (8x1000, target-depth 45000) and
+35zzzv B1 (same shape; contended by a soak, but pool-internal counts
+are unaffected by CPU contention). occupancy 34%/31.5% = ~68% of the
+50%-baseline fill cap (~110-113k of 163k tx).
+
+- **Candidates vs cap**: `miner: parallel fill` reaches `candidates=
+  163000` with 0 failed whenever it gets there (both rounds) --
+  when the fill has material, it uses ALL of it. `parallel fill drops`
+  never fires in either window (0 nonceHigh/nonceLow/other) -- ruling
+  out (iv) and the rejection half of (i).
+- **Pool state at build time** (`txpool reorg phases`, 35zzzs B2):
+  `pendingAccts` 67-154, `queueAccts` 0-10, out of 8000 funded senders
+  -- the pool's own "ready to include" set at any snapshot covers
+  ~1-2% of senders, and almost none sit in the future-nonce "queued"
+  bucket either -- most senders are simply ABSENT from the pool
+  between refill bursts, not blocked by a nonce gap.
+- **Promotion (queued->pending) stalls under load**: `txpool reorg
+  phases` -- the ONLY path that promotes a newly non-empty account
+  back into "pending" -- fires **0-2 times in the entire 14-minute B2
+  leg, on EVERY one of the 7 nodes** (node0:1, node1:0, node2:0,
+  node3:1, node4:2, node5:1, node6:0), against ~450 full blocks in the
+  same window. An account whose own pending list drains to empty
+  cannot reappear as "pending" until the next (rare) reorg, however
+  much it has queued or however deep the generator's own target-depth.
+- **Generators' own in-flight vs target**: not measured this pass --
+  the round's own `bench-flood-r35-B2.out`/`.err` files are stale
+  (last written 2026-09-06, a leg-name-only tag every round
+  overwrites) and no fresher generator-side depth line was found;
+  flagged as a gap, not assumed.
+
+**Conclusion: (i) the pool's includable set bounds the block** -- not
+nonce gaps (queueAccts is near-zero) and not rejected candidates (0
+drops), but the SIZE of the currently-promoted "pending" set itself,
+which the reorg/promotion mechanism replenishes far too rarely once
+the leg is busy. Speculative in-flight exclusion (ii) is not supported
+by the write-timing evidence already on record (6do: writes complete
+in 200-370ms, well under the 700-900ms block cadence, so at most one
+block's worth of nonces would be excluded, not enough to explain a
+~50k/block shortfall). The lever is therefore the pool's own
+promotion path, not more generator depth or a different fill: cutting
+`N42_POOL_PENDING_SNAPSHOT`'s effective staleness, or triggering a
+promotion pass whenever an account's pending list empties (not only
+on the periodic reorg), is the next thing to try.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
