@@ -580,3 +580,19 @@ conflicting heights, no BAD BLOCK, 0 refusals); n42-r96 is recommended
 as the fleet base for S31's header-vote fix, with the reuse feature
 left dormant (default off) pending either a propagation fix or a
 re-scoped prediction.**
+
+## Node shutdown closes the DB while an import is in flight -- logs a BAD BLOCK (2026-09-25, S46, round 35zzzx)
+
+The campaign's first BAD BLOCK: block 13663008 arrived via push at the
+same second the harness's own end-of-round SIGTERM began tearing the
+node down; the import raced an already-closing MDBX handle
+(`ProcessParallel: prefetch pending credits: ... db closed`),
+"context canceled" fleet-wide for the same block on every node that
+touched it. All seven nodes' own last successfully-committed block
+(13663007) is identical; `height_conflict_check.py` found 0
+conflicting heights. Not a validation defect and not related to the
+round's own pool-overflow pacing question -- 13663008 was never
+voted on or committed anywhere. Full trace: docs/QS_BLOCK_TIME_BUDGET.md
+6e8. **The harness's end-of-round check should ignore BAD BLOCK lines
+that occur after a leg's own SIGTERM, so a shutdown race does not
+read as a live-round safety failure.**

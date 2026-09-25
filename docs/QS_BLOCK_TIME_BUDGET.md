@@ -15857,6 +15857,65 @@ pre-batching; `-lazy-sign` makes pertx 9000 free of extra memory.
 dry, discards <=2x B1; (d) 0 conflicts, no BAD BLOCK.
 
 
+## 6e8. S46: round 35zzzx -- the campaign's first BAD BLOCK is a shutdown race, not a defect; steady-rate pacing fills win1 but slowly saturates the pool by win2's own end (2026-09-25)
+
+**BAD BLOCK, classified (D) shutdown artefact.** Block 13663008 (hash
+`b7b80d92...`) arrived via push at 08:39:38, the same second the
+harness's own end-of-round SIGTERM began tearing node1/node3 down
+(HTTP/IPC/coprocessor/ingest/pool/HotStuff/P2P all logged "stopped" in
+that same second); the import raced an already-closing MDBX handle
+(`ProcessParallel: prefetch pending credits: ... db closed`) and
+"context canceled" appears fleet-wide for this same block on every
+node that touched it (node2/5/6: "context canceled"; node4, the
+leader: its own write failed the same way). **All seven nodes'
+own last successfully-committed block is 13663007**, confirmed
+identical, before the SIGTERM; `height_conflict_check.py`:
+`heights_checked=10640, conflicts=0`. Not a validation defect, not
+pool-overflow-related -- 13663008 was never voted on or committed
+anywhere; the round was already ending. Added to OPEN_ISSUES.md.
+
+**Prediction 106.** B1 (today's depth-throttle, 45000/4500): win1
+127.3k@1.277s occ49.6%, win2 103.8k@1.364s occ43.4%. B2 (steady rate
+16000/generator, depth 0, pertx 9000): win1 137.5k@1.111s occ46.9%,
+**win2 100.5k@1.622s occ50.0%** (the full-block marker -- blocks stay
+full, just slower).
+
+- (a) CONFIRMED for most of the leg: B2 pending is 0 for the first ~8
+  min (ramp/funding), then climbs through 67k-600k+queued-200k by
+  08:24-08:25 -- never drops back to 0 until the very last samples
+  (leg near its own end). Occupancy >=45% except the ramp.
+- (b) PARTIAL: win1 +8.1% (127.3k->137.5k, above the 3.6% floor);
+  win2 -3.2% (103.8k->100.5k) -- LOWER, not higher, because win2's
+  own blockTime slows (1.364->1.622s) even though occupancy hits 50%.
+- (c) NOT dry, but the pool trends toward and HITS its own 600k+200k
+  cap late in B2 (08:24:45 node0: pending 600,879 + queued climbing to
+  200,000+ by 08:25:47) -- discards: `underpriced` node0 B1 1,211 vs
+  B2 154 (lower); `txpool is full` 0 in either leg; generator-side
+  (fixed files): B1's four generators that finished report 21.6k-26.0k
+  tx/s each (~90-104k/s if representative of all 8); B2's own rate-mode
+  files carry almost no console output (28 underpriced lines total,
+  no periodic status) but the nominal offered rate is 16000x8=128,000
+  tx/s -- close to but ABOVE B2's own ~100.5-137.5k tx/s consumption,
+  a persistent small surplus with NO feedback to throttle it, which is
+  exactly what climbs the pool toward its cap over the leg's own
+  13.5 minutes.
+- (d) CONFIRMED. 0/10,640 conflicting heights (whole round, including
+  the BAD BLOCK's own non-effect).
+
+**ENGINE** (chained same-leader full blocks): B1 989ms @163000tx =
+**164,814 tx/s**; B2 1057ms @163000tx = **154,138 tx/s** (-6.5%) --
+consistent with a saturated, larger pending set costing something at
+build time even on blocks that stay full.
+
+**Recommendation: steady rate is the right MECHANISM (pending never
+starves, occupancy holds at/near the cap) but 16000/generator has no
+feedback and slowly overfills the pool -- tie the rate to consumption
+or drop to ~13,000/generator** (8x13,000=104,000 tx/s, matched to
+B2's own observed ~100-137k tx/s window rather than fixed above it)
+for the next round; a combined rate-with-depth-cap is not possible in
+today's txflood (`-target-depth`/`-rate` are an if/else-if, not
+combinable, per 6e7).
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
