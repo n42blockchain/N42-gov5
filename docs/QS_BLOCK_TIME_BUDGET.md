@@ -15690,6 +15690,70 @@ promotion path, not more generator depth or a different fill: cutting
 promotion pass whenever an account's pending list empties (not only
 on the periodic reorg), is the next thing to try.
 
+## 6e4. S42: round 35zzzt confirms clause (a) exactly (293->75 ms) but the hand-over cycle does not move; plus S44 -- the generators throttle to ~150 tx/s/proc against a ~120k tx/s chain, and that gap is what starves the pool between bursts (2026-09-25)
+
+n42-r100, `N42_DEFERRED_CHECK_CONCURRENT` 0 (B1, 04:23:38-04:36:15) vs
+1 (B2, 04:36:15-04:49:57). `height_conflict_check.py`:
+`heights_checked=11447, conflicts=0`. No BAD BLOCK. The round's one
+deferred-check failure (13654096, sender nonce mismatch) correctly
+withheld its vote ("not voting for this block") -- 0 votes on a failed
+check, as required.
+
+**(a) CONFIRMED, matches the predicted range almost exactly.**
+`rxEnd->InsertChain start`, full blocks: B1 med **286 ms** (n=954) ->
+B2 med **75 ms** (n=870) -- predicted 293->=80ms. `rxEnd->tMs` (whole
+wall) also falls 1058->927ms (-12.4%).
+
+**(b) NOT CONFIRMED.** Hand-over cycle (chained-join, full blocks):
+B1 2036ms (n=20) -> B2 2018ms (n=18), -18ms (-0.9%) -- nowhere near
+the predicted >=150ms cut, and on a different absolute scale than
+6dr's own 966/816ms reference (a different round's own shape). The
+293->75ms saved in (a) is a small fraction of a ~1000-2000ms full
+cycle and does not show up at the hand-over-cycle level.
+
+**(c) NOT CONFIRMED (as expected given (b)).** TPS: B1win1 125.9k ->
+B2win1 126.4k (+0.4%, inside the 3.6% floor); occupancy 49.3% ->
+49.1%, unchanged.
+
+**(d) CONFIRMED.** 0/11,447 conflicting heights, no BAD BLOCK, 0 votes
+on the round's one failed check.
+
+**Ruling: prediction 103 PARTIAL.** The concurrency change does exactly
+what it claims on its own narrow metric (a) with no safety cost, but
+does not reach far enough into the block cycle to move (b)/(c) --
+adopt for the clean latency win it is, not for a throughput claim.
+
+### S44: what bounds a generator, direct instrumentation
+
+`r35zzzt-vm.log`'s new `pool node0/node3 pending=/queued=` (from
+`txpool_pending`/`txpool_queued`, 10s samples): node0 B1 sits at
+**pending=0, queued=0 for the leg's first 7 minutes**, then swings to
+a burst peaking at 776,039 (04:33:16) before falling back to 0 by
+04:35:28 and staying there to leg end -- a bursty, mostly-EMPTY local
+pool, not a steady one. `wr-logs/r35zzzt-floods/{B1,B2}/*.out`'s
+`pool=<n> topup=<n>` (once/s): `pool` sits far ABOVE the nominal
+45,000 target-depth throughout (med 187,093 B1 / 189,127 B2, 0 samples
+in the 40-50k band) while `topup` -- the generator's own new-submission
+rate -- is only **med 165/s (B1), 155/s (B2)**. **The decisive number:
+aggregate generator top-up (~8 procs x ~150-165/s =~1,200-1,320 tx/s)
+against the chain's own ~115,000-126,000 tx/s consumption is a ~90x
+gap** -- the generators believe they are already well ahead of target
+(their own `pool=` reading, whatever its exact scope, is 4-6x the
+target-depth) and throttle new submissions to a trickle nowhere near
+what sustaining full blocks needs.
+
+**Answer: (iii) the generators are short of target, in the sense that
+matters -- not their OWN target-depth accounting (which reads
+comfortably above 45,000 and throttles accordingly), but the
+SUSTAINED replenishment rate the chain actually needs (~90x their
+current top-up rate).** This is consistent with, not a replacement
+for, 6e3's own finding: a per-node pool that is empty most of the
+time and briefly overfull in bursts (node0's 0-for-7-minutes-then-
+776k pattern) is exactly what an under-replenishing, shard-routed
+supply (6dl: cross-node tx gossip is dead, each node sees only its
+own 1/7 of senders) produces, and 6e3's rare promotion events are a
+symptom of the same long empty stretches, not a separate mechanism.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
