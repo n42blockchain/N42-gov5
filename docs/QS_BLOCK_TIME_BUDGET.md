@@ -15591,6 +15591,20 @@ reference point for the 8-generator baseline is 35zzzs's own B2 (tenure
 8): 130.1k @0.870s occ 34% / 99.0k @0.469s occ 14%, not B1's tenure-4
 numbers.**
 
+## 6e1. S43: round 35zzzu VOID -- a foreign soak job shared the box for the whole round (2026-09-24)
+
+Confirmed: `rbtcd-soak-start` (PID 1214623, ~11.6 cores, `1337:07`
+cumulative CPU) started 18:40, before the round's own 19:19:05 start,
+and was still running past the round's 20:32 end; claim file
+`.box-claim-n42-26` present throughout. `r35zzzu-mem.log` shows
+`MemAvailable` bottoming at 33 GB (not the usual headroom). Both legs
+were starved regardless of shape: A2 (tenure-4 reference traffic) ran
+~56k vs the usual 70-75k; B1 (8 generators, tenure 8, same config as
+35zzzs's own B2) ran 84.6k/83.8k vs 35zzzs's clean 130.1k/99.0k.
+**Ruling: prediction 104 UNTESTED (confounded), not falsified** -- B1
+vs B2 not compared beyond noting both legs were starved by the
+foreign load. Re-run queued as 35zzzv (same runner).
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
