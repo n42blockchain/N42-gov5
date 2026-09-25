@@ -15916,6 +15916,24 @@ for the next round; a combined rate-with-depth-cap is not possible in
 today's txflood (`-target-depth`/`-rate` are an if/else-if, not
 combinable, per 6e7).
 
+## 6e9. S47: correction -- -target-depth/-rate were ALREADY combinable (6e7/6e8 were wrong); extracted+tested as injectionCredit; BAD BLOCK false-positive fixed; launched as 35zzzy, prediction 107 (2026-09-25)
+
+6e7/6e8's "if/else-if, not combinable" was wrong: since >=21bea58a
+(Sep 10), the depth branch already computes min(targetDepth-depth,
+rate). Only `else if rate>0` (S46's B2/A2, depth=0) lacks depth
+awareness -- THAT, not exclusivity, overflowed the pool. Extracted as
+injectionCredit (no behaviour change, unit-tested: rate binds low,
+depth binds high/negative, both-zero unlimited); built txflood-r40.
+
+BAD BLOCK false positive: the within-leg checker could run one more
+check after bench-run.sh's own stop-fleet.sh (its last act) SIGTERM'd
+the fleet -- killed the checker the instant `wait $benchpid` returns.
+
+**Prediction 107:** (a) B2 win2 pending <600k, queued <20k, discards
+<=B1; (b) B2 win2 TPS >=115k, occupancy >=45%, block time <=1.3s; (c)
+win1 within noise of 137.5k; (d) safety clean, no false BAD BLOCK.
+
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
