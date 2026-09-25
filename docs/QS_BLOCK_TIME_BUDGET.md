@@ -15978,6 +15978,58 @@ HIGHER depth cap (to give the inflated estimate more headroom before
 it throttles) or an ACCURATE depth reading -- exactly what S48 (queued
 next, `-depth-by-nonce-exact`) now tests directly.
 
+## 6e11. S48: exact same-tick sampled depth vs the rotating estimate; -depth-by-nonce-exact, txflood-r41, prediction 108 (2026-09-25)
+
+6e10's own root cause, precisely: `-depth-by-nonce` (the branch this
+fleet actually runs; `-depth-by-blocks`'s `submitted -
+minedSinceStart/share - failed` is a SIBLING branch never taken here)
+refreshes only `-depth-sample` (128) of up to `-senders` (1000) chain
+nonces per one-second tick, round-robin. The other ~87% keep whatever
+`mined` count they read on a PREVIOUS tick -- with 1000 senders and
+depthSample=128 a full sweep is ~8 ticks, so a sender's own count can
+be up to 8s stale and still charged as in-flight after the chain has
+since mined it. That accumulated staleness across hundreds of senders
+every tick is the 3-6x over-read, not the depth-by-blocks formula.
+
+`-depth-by-nonce-exact` (cmd/txflood/main.go, `sampleDepthExact` +
+`nextSample` + `rpcBatchNonces`): every second, sample S=100 senders
+fresh (one JSON-RPC batch `eth_getTransactionCount`, full sweep 10
+ticks) and extrapolate `depth = mean(nextNonceToSend[s] -
+chainNonce[s]) * totalSenders`. A same-tick sample has nothing stale
+to compound. Prints `pool=<exact> est=<old>` next to the untouched
+rotating estimate; `depth` fed to `injectionCredit` switches to the
+exact figure only when the flag is on. Off = today, byte-for-byte
+(confirmed: the new code is additively gated inside `if
+*depthByNonceExact`, nothing upstream changed). Unit-tested
+(`cmd/txflood/depth_exact_test.go`, 8 cases: uniform, skewed exact-sum,
+sender-not-started reads zero not its own base nonce, per-sender RPC
+failure excluded from both sides of the mean, all-fail leaves
+`sampled=0` so the caller keeps the old estimate, sweep coverage,
+sample-larger-than-fleet clipping, zero-sender fleet). Built
+txflood-r41 (next number after r40).
+
+Round 35zzzz, n42-r100 unchanged, tenure 4, N42_DEFERRED_CHECK_CONCURRENT=1,
+block cache 2, pool 600000/200000, sender cache 4194304 -- all fixed.
+ONE variable, 13th `run_leg` argument: warm-up/A1/B1=0 (old estimate,
+35zzzy's own B2 pacing, rate 16000/depth 300000/pertx 9000 unchanged);
+B2/A2=1 (`-depth-by-nonce-exact` added to `QS_FLOOD_EXTRA`, same
+pacing numbers).
+
+**Prediction 108:** (a) B2's exact depth tracks the pool: node0
+pending stays in a 150k-450k band during both windows, never 0 after
+the ramp, never at the 600k cap; the old estimate printed beside it
+(`pool=<exact> est=<old>`) reads 3-6x higher, consistent with 6e10's
+own finding that real in-flight topped out at 397,992 while the
+estimate had already throttled at 300,000. (b) B2 win1 and win2 both
+>=45% of gasLimit (>=90% of the fill cap) and TPS >=135k (35zzzx's
+6e8 B2win1 137.5k is the reference), above B1 (this round's own old
+estimate, expected close to 6e10's 120.7k/121.3k) by more than the
+3.6% noise floor. (c) no pool overflow (pending stays under 600k,
+queued under 20k), discards not more than B1's, generators not dry
+(topup > 0 through both windows). (d) safety clean: 0 conflicting
+heights, no BAD BLOCK (the S47 end-of-leg checker fix carries over
+unchanged).
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
