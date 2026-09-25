@@ -78,6 +78,114 @@ func injectionCredit(targetDepth, depth, rate int) int {
 	return short
 }
 
+// nextSample returns the next `size` sender indices to refresh, starting at
+// cursor and wrapping mod total, plus the cursor to use next tick. A full
+// sweep (every sender refreshed exactly once) takes ceil(total/size) calls.
+// size is clamped to total so a fleet smaller than the sample cannot repeat
+// an index within one call.
+func nextSample(cursor, total, size int) (sample []int, nextCursor int) {
+	if total <= 0 {
+		return nil, cursor
+	}
+	if size > total {
+		size = total
+	}
+	cursor %= total
+	sample = make([]int, size)
+	for i := 0; i < size; i++ {
+		sample[i] = (cursor + i) % total
+	}
+	return sample, (cursor + size) % total
+}
+
+// sampleDepthExact extrapolates the fleet-wide in-flight backlog from a
+// same-tick sample of senders, instead of accumulating per-sender chain
+// nonces across ticks (-depth-by-nonce's own mechanism below, which only
+// refreshes depth-sample of the senders each second and leaves the rest at
+// whatever they read on a PREVIOUS tick -- with depth-sample=128 and 1000
+// senders that is up to an 8-second-old mined count, still charged as
+// in-flight; round 35zzzy's B2 read 3-6x high and capped a 300k target at
+// 26-33% block fill, docs/QS_BLOCK_TIME_BUDGET.md 6e10). Every sender in
+// `sample` is queried fresh THIS tick via chainNonceOf, so there is no
+// staleness to compound; the mean shortfall over the sample, scaled by
+// totalSenders, estimates the whole fleet's backlog. A sender chainNonceOf
+// fails to reach is skipped, not counted as zero or as the whole target.
+func sampleDepthExact(sample []int, nextNonceToSend func(s int) int64, chainNonceOf func(s int) (uint64, error), totalSenders int) (depth int64, sampled int) {
+	var sum int64
+	for _, s := range sample {
+		n, err := chainNonceOf(s)
+		if err != nil {
+			continue
+		}
+		shortfall := nextNonceToSend(s) - int64(n)
+		if shortfall < 0 {
+			shortfall = 0
+		}
+		sum += shortfall
+		sampled++
+	}
+	if sampled == 0 {
+		return 0, 0
+	}
+	mean := float64(sum) / float64(sampled)
+	return int64(mean*float64(totalSenders) + 0.5), sampled
+}
+
+// rpcBatchNonces fetches eth_getTransactionCount for several senders in one
+// JSON-RPC batch request (an array of request objects; the node's own codec
+// already accepts standard batches -- modules/rpc/jsonrpc/json.go readBatch)
+// instead of len(sample) sequential round trips. The request id carries the
+// sender index so responses, which the spec does not promise are returned in
+// request order, still map back to the right sender.
+func rpcBatchNonces(url string, addrs []types.Address, sample []int, tag string) (map[int]uint64, error) {
+	if len(sample) == 0 {
+		return nil, nil
+	}
+	reqs := make([]map[string]interface{}, len(sample))
+	for i, s := range sample {
+		reqs[i] = map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      s,
+			"method":  "eth_getTransactionCount",
+			"params":  []interface{}{addrs[s].Hex(), tag},
+		}
+	}
+	body, err := json.Marshal(reqs)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := httpClient.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
+	var out []struct {
+		ID     int             `json:"id"`
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	res := make(map[int]uint64, len(out))
+	for _, r := range out {
+		if r.Error != nil {
+			continue
+		}
+		var h string
+		if json.Unmarshal(r.Result, &h) != nil {
+			continue
+		}
+		res[r.ID] = hexToU64(h)
+	}
+	return res, nil
+}
+
 // poolDepth reports how much EXECUTABLE work is waiting, as the largest
 // single-node pending count.
 //
@@ -427,6 +535,8 @@ func main() {
 	fundGasPrice := flag.Uint64("fund-gasprice", 0, "gas price for the faucet's funding transfers (0 = twice -gasprice). The builder orders equal-tip candidates account by account, so a faucet batch at the flood's price gets ~1 slot per block among thousands of flooding senders: round 35u A1 confirmed 4 of 1,000 funding transfers a block and timed out. A strictly higher price puts the whole batch in the next block")
 	depthSample := flag.Int("depth-sample", 128, "with -depth-by-nonce: senders whose chain nonce is refreshed each second")
 	depthShare := flag.Int("depth-share", 1, "with -depth-by-blocks: this generator is one of N symmetric generators, so credit it with 1/N of each block's transactions (round 35r: eight generators each counted every block as their own, read the pool as empty, and pushed 12M transactions through a 300k pool)")
+	depthByNonceExact := flag.Bool("depth-by-nonce-exact", false, "with -target-depth -depth-by-nonce: replace the rotating per-sender chain-nonce accumulator with a fresh sample each second (-depth-sample-exact senders, one JSON-RPC batch call) extrapolated by its mean to every sender. -depth-by-nonce refreshes only depth-sample of up to -senders chain nonces a tick, so most senders' own mined count is up to a full sweep old and still counts already-mined transactions as in flight -- round 35zzzy read 3-6x high and capped a 300k target at 26-33% block fill. A same-tick sample has no such staleness")
+	depthSampleExact := flag.Int("depth-sample-exact", 100, "with -depth-by-nonce-exact: senders sampled fresh each second; a full sweep over -senders takes senders/depth-sample-exact seconds")
 	senders := flag.Int("senders", 0, "0=single faucet; N=fund+flood from N derived accounts")
 	perTx := flag.Int("pertx", 300, "txs per sender (multi-sender mode)")
 	count := flag.Int("count", 80000, "txs to submit (single-faucet mode)")
@@ -748,6 +858,7 @@ func main() {
 			chainNonce[s] = senderBase[s]
 		}
 		nonceCursor := 0
+		exactCursor := 0
 		if *depthByBlocks {
 			if r, err := rpcCall(urls[0], "eth_blockNumber", nil); err == nil {
 				var h string
@@ -795,6 +906,36 @@ func main() {
 						}
 					}
 					depth = int(inflight)
+
+					if *depthByNonceExact {
+						sample, nc := nextSample(exactCursor, len(senderAddrs), *depthSampleExact)
+						exactCursor = nc
+						nonces, e := rpcBatchNonces(urls[0], senderAddrs, sample, "latest")
+						if e != nil {
+							fmt.Printf("  !! exact depth sample failed, keeping the rotating estimate: %v\n", e)
+						} else {
+							nextNonceToSend := func(s int) int64 {
+								c := claimed - int64(s)*per
+								if c < 0 {
+									c = 0
+								} else if c > per {
+									c = per
+								}
+								return int64(senderBase[s]) + c
+							}
+							chainNonceOf := func(s int) (uint64, error) {
+								n, ok := nonces[s]
+								if !ok {
+									return 0, fmt.Errorf("sender %d missing from batch", s)
+								}
+								return n, nil
+							}
+							if exact, sampled := sampleDepthExact(sample, nextNonceToSend, chainNonceOf, len(senderAddrs)); sampled > 0 {
+								fmt.Printf("  pool=%d est=%d\n", exact, depth)
+								depth = int(exact)
+							}
+						}
+					}
 				} else if *depthByBlocks {
 					r, e := rpcCall(urls[0], "eth_blockNumber", nil)
 					var h string
