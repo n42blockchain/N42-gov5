@@ -1784,3 +1784,92 @@ do not add code" instruction (there being no dedicated flag to enable
 (confirmed via `ls -la --time-style=full-iso`: its mtime predates this
 session). `run-r35zzzt.sh` confirmed not started (`ps` shows no
 matching process) before and after editing.
+
+## S46 -- generator pacing by leg + flood-file capture fix, launched as 35zzzx (2026-09-25)
+
+**1. Flood-file capture bug, root cause and fix.** S44's own copy step
+used a blind glob (`bench-flood-r35-$1.out*`). `bench-run.sh` only ever
+writes `$OUT.$f`/`$ERR.$f` for `f` in `0..FLOODS-1` when `FLOODS>1`
+(`scripts-qs/bench-run.sh:207-208`) -- the bare, no-suffix `$OUT`/`$ERR`
+is therefore a permanent ORPHAN once any round runs with `FLOODS>1`
+(confirmed on disk: `bench-flood-r35-B1.out`, no suffix, dated Sep 6 --
+an old single-generator round; `bench-flood-r35-B1.out.8`
+through `.15`, dated Sep 20 -- a since-abandoned 16-generator round;
+`.out.0`-`.out.7` alone are fresh, dated today). The blind glob copied
+ALL of these into the SAME per-leg directory, and since the orphans
+never change, the analyst's own finding (35zzzt-floods and
+35zzzw-floods holding byte-identical `bench-flood-r35-{B1,B2}.out`
+files) is exactly the bare-file orphan being copied unchanged, round
+after round.
+
+**Fix**: touch a marker file (`wr-logs/r35zzzx-legstart-$1`) immediately
+before each leg's own `bench-run.sh` call; copy only files matching the
+glob that are ALSO newer than that marker (`find ... -newer
+"$marker" -exec cp -f {} ...`). This does not depend on hardcoding the
+current `FLOODS=8` (any orphan, regardless of which index it sits at,
+fails `-newer` and is skipped), so a future `FLOODS` change cannot
+reintroduce the same bug.
+
+**Dry run** (isolated sandbox, not the live box): built the same three
+orphan shapes (bare-`.out` dated Sep 6, `.out.8` dated Sep 20, fresh
+`.out.0`-`.7`), ran the marker+find+cp logic for `B1` twice in a row
+with different content each time (simulating two consecutive
+rounds' own leg named `B1`):
+
+```
+=== round 1, leg B1 ===
+e9bb354e3d5f5d460e238f10fd1a4f6a  wrlogs/round1-floods/bench-flood-r35-B1.out.0
+=== round 2 (SAME leg name B1 again), different content ===
+6ef215acb51b2ac242bfc5105e75d92b  wrlogs/round2-floods/bench-flood-r35-B1.out.0
+=== proof: the two rounds' own preserved B1 files differ ===
+PASS: different (fixed)
+1c1
+< ROUND1-B1 generator 0
+---
+> ROUND2-B1 generator 0
+```
+
+Also confirmed in the same dry run: the bare-`.out` and `.out.8` orphans
+never appear in either preserved copy (`grep -c` on the preserved
+directory listing returns 0 for both).
+
+**2. Generator pacing, and a mutual-exclusion finding that changed the
+plan.** The task's own literal B2/A2 triple was `16000/900000/9000`
+(rate/depth/pertx). Reading `cmd/txflood/main.go`'s own dispatch
+(`~line 692`): `if *targetDepth > 0 { <depth-throttle closed loop,
+using permits = make(chan struct{}, *targetDepth)> } else if *rate > 0
+{ <steady-rate ticker> }` -- an **if/else-if, not combinable**. Any
+nonzero `-target-depth` takes the depth-throttle branch
+UNCONDITIONALLY and `-rate` is never even read. Setting `-target-depth
+900000` alongside `-rate 16000` as literally specified would therefore
+silently keep the OLD, already-diagnosed depth-throttle behaviour
+(6e3/6e4/6e6: the estimate lags reality and self-throttles bursty),
+just retargeted to 900000 -- not the intended steady rate at all.
+
+**Corrected**: B2/A2 use `16000/0/9000` -- `-target-depth 0` disables
+the throttle branch entirely, so `-rate 16000` (the `else if` branch)
+actually engages. `-rate`'s own semantics confirmed by reading: it is
+per-PROCESS (each of the 8 generators is a separate OS process with
+its own `*rate` flag value, so 8x16000=128k/s aggregate, matching the
+chain's own ~163k/1.277s tenure-4 consumption), per-SECOND (a
+`time.NewTicker(10*time.Millisecond)` issuing `rate/100` permits per
+tick), and applies BEFORE batching -- `if *rpcBatch > 1 { per10ms =
+(per10ms + *rpcBatch - 1) / *rpcBatch }`, i.e. the permit count is
+divided down by `rpcBatch` so `permits x rpcBatch` transactions per
+tick approximates the requested rate regardless of `-rpcbatch 200`.
+
+`-lazy-sign` (already on for this fleet) means `--pertx 9000` costs no
+extra memory: the ONLY O(senders*pertx) allocation, `raws :=
+make([]string, total)`, is skipped entirely when `-lazy-sign` is set
+(`cmd/txflood/main.go:~617-619`) -- each transaction is signed at
+submit time instead of held pre-signed in bulk.
+
+**Argument layout note**: implemented the triple at the SAME 12th
+`run_leg` position S45's own single-value depth argument used (not an
+additional, separate 13th slot) -- the triple's own middle field
+subsumes what that argument did, and a redundant 13th parameter
+carrying the same information seemed worse than one parameter at the
+same position with a fuller format. Flagged here in case a literal
+13th slot was wanted instead.
+
+`bash -n run-r35zzzx.sh`/`chain-35zzzx.sh`: both clean.
