@@ -15605,6 +15605,45 @@ were starved regardless of shape: A2 (tenure-4 reference traffic) ran
 vs B2 not compared beyond noting both legs were starved by the
 foreign load. Re-run queued as 35zzzv (same runner).
 
+## 6e2. S43: round 35zzzv -- sixteen generators deliver LESS, and the reason is the depth target, not CPU or RPC (2026-09-24)
+
+n42-r100, tenure 8 everywhere; a second, unclaimed cron soak
+(`formal-soak-20260925-cron-retry01`, ~3.3 cores) started 14 min into
+the round and ran through B1/B2/A2 (A2 54-57k vs the usual 70-75k) --
+contends both legs EQUALLY, so B1-vs-B2 stands within the round even
+though absolute numbers do not. B1 (8x1000, target-depth 45000):
+109.6k@0.938s occ31.5% / 106.3k@0.674s occ21.4%. B2 (16x500,
+target-depth 22500): 76.3k@0.500s occ11.7% / 67.6k@0.508s occ11.0%.
+**Sixteen generators deliver LESS than eight -- repeats S1/S7.**
+
+**What bounds a generator** (`r35zzzv-vm.log`, per-10s deltas):
+aggregate generator CPU B1 8 x ~0.9 cores = ~7.2 cores; B2 16 x ~0.3
+cores = ~4.8 cores -- LOWER aggregate CPU with double the process
+count. `underpriced` rejections (pool-pressure signal): B1 763, B2
+**0**. `pendingAccts` median: B1 62, B2 22. **DEPTH-BOUND, not CPU- or
+RPC-bound: the one number is per-generator CPU falling from 0.9 to 0.3
+cores while process count doubles** -- `-target-depth 22500` with
+`-depth-by-nonce` makes each of the 16 generators believe it already
+holds enough in flight and throttle well below available CPU/RPC
+headroom (0 underpriced, lower pendingAccts confirm the pool is never
+under pressure in B2).
+
+**ENGINE** (chained same-leader full-block pairs; B2 has none -- 74
+top-decile B2 blocks reach 163000 tx but never two in a row from the
+same leader): B1 chained cycle 839ms @ 163000 tx = **194,255 tx/s**.
+B2's own top-decile is only 59,100 tx median (occ too low to fill even
+its best 10%) -- not size-comparable to B1's; its single-import proxy
+(399ms @ 59,100 tx = 148,076 tx/s) is reported for completeness, not
+as a like-for-like engine number.
+
+**Ruling: prediction 104 FALSIFIED as stated** (16x500 does not raise
+occupancy or TPS; it lowers both) -- the mechanism is depth-target
+throttling, not a generator-count/CPU ceiling, so the fix is a bigger
+`-target-depth` per generator, not more generators. Recommend: no
+further round on 16x500 as configured; if supply is still suspected,
+retry 16 generators with `-target-depth` UNCHANGED at 45000 (720k
+aggregate) instead of halved.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
