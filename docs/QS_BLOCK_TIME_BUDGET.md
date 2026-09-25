@@ -15934,6 +15934,50 @@ the fleet -- killed the checker the instant `wait $benchpid` returns.
 win1 within noise of 137.5k; (d) safety clean, no false BAD BLOCK.
 
 
+## 6e10. S47: round 35zzzy -- the depth cap stops overflow cleanly, but binds early on the generator's own inflated estimate (2026-09-25)
+
+n42-r100 (fixed txflood-r40), tenure 4: B1 rate 16000/depth 0
+(10:30:48-10:44:00), B2 rate 16000/depth 300000 (10:44:00-10:57:27).
+B1: 133.0k@1.154s occ47.1% / 105.4k@1.500s occ48.5%. B2: 120.7k@0.718s
+occ26.0% / 121.3k@0.896s occ32.9%.
+
+**(a) CONFIRMED, cleanly.** node0 pending in B2 peaks at **397,992**
+(well under 600k) with queued maxing at **1,131** (well under 20k) --
+the depth cap does exactly what S46 asked: no overflow this round.
+`underpriced` (node0): B1 160 -> B2 **0**; no BAD BLOCK anywhere
+(the checker-race fix holds), 0/11,204 conflicting heights.
+
+**(b) PARTIAL.** B2win2 TPS 121,342 (>=115k, CONFIRMED) and blockTime
+0.896s (<=1.3s, CONFIRMED), but occupancy 32.9% misses the >=45% bar.
+
+**(c) NOT CONFIRMED.** B2win1 120,685 vs the 137.5k reference (6e8's
+own B2win1), -12.2% -- outside noise. The pool series shows why: B2's
+own ramp (pending=0) runs **10:44:00 (leg start) to 10:52:06**, ~6:45
+longer than a typical leg's own funding ramp, and win1's own capture
+(10:53:49-10:54:09) lands only ~1:40 after pending first turns
+non-zero, still inside a BURSTY on/off band (109k-321k across the
+capture, not a settled level) -- (c)'s own miss is largely a
+capture-timing artifact of an unusually long ramp, not evidence
+against the mechanism on its own.
+
+**Mechanism (coordinator's own hypothesis, confirmed by the data):
+the cap binds on the generator's own INFLATED estimate, not the real
+pool.** Real in-flight tops out at 397,992, well under both the 300000
+target the generator uses to decide when to stop AND the pool's own
+800k cap -- meaning the generator's own over-read (established 3-6x
+in 6e4/6e6) crosses 300000 and throttles while the real pool still has
+headroom, capping occupancy below what the pool could otherwise
+sustain (compare 6e8's own unthrottled B2, which safely used far more
+of the real pool before eventually overflowing it).
+
+**(d) CONFIRMED.** 0/11,204 conflicting heights, no BAD BLOCK.
+
+**Recommendation:** the rate+depth-cap COMBINATION is the right
+mechanism (clean, no overflow, no BAD BLOCK) but needs either a
+HIGHER depth cap (to give the inflated estimate more headroom before
+it throttles) or an ACCURATE depth reading -- exactly what S48 (queued
+next, `-depth-by-nonce-exact`) now tests directly.
+
 ## 8. Method
 
 `docs`-side reproduction: `analyze-legs.py` buckets `blockwrite`/`blockimport`
