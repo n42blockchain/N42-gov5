@@ -1873,3 +1873,51 @@ same position with a fuller format. Flagged here in case a literal
 13th slot was wanted instead.
 
 `bash -n run-r35zzzx.sh`/`chain-35zzzx.sh`: both clean.
+
+## S47 -- txflood combining correction, BAD BLOCK false-positive fix, launched as 35zzzy (2026-09-25)
+
+**Important correction to my own S46 finding** (also repeated in 6e7/6e8,
+now superseded by 6e9): `-target-depth` and `-rate` were NOT mutually
+exclusive via if/else-if as I claimed. Re-reading `cmd/txflood/main.go`
+past the branch dispatch (not just its own header) shows the
+`-target-depth > 0` branch has, since at least commit `21bea58a` (Sep
+10, predating this whole campaign), already computed `short :=
+targetDepth - depth` and then capped it at `rate` when `rate>0` --
+`min(depth-shortfall, rate)`, exactly the combining behaviour this task
+asked me to build. My own S46 read stopped at the branch dispatch
+(`if targetDepth>0 {...} else if rate>0 {...}`) without reading INTO
+the depth branch's own body far enough to see the rate-capping line
+already there. Given this, I did NOT write a new combining mechanism
+(which would have duplicated and risked diverging from the existing
+one) -- I extracted the existing arithmetic into a named function,
+`injectionCredit(targetDepth, depth, rate int) int`
+(`cmd/txflood/main.go`, near `poolDepth`), a pure refactor confirmed
+byte-for-byte identical to the inline expression it replaces, and added
+`cmd/txflood/injection_credit_test.go` covering the three named
+scenarios plus the two single-flag reductions. All pass, including
+under `-race`; full `cmd/txflood` suite passes; `go vet` clean.
+
+**Binary naming**: `bench-run.sh`'s own `QS_TXFLOOD` variable (set in
+the runner scripts) points at `$SP/txflood-rNN` under
+`/data/blockchain/gov5-work/`; the existing files there
+(`txflood-r37`/`-r38`/`-r39`, dated Sep 9/10/10) confirm the convention.
+Built `txflood-r40` (`go build -tags nosqlite,noboltdb -o
+txflood-r40 ./cmd/txflood`, same tags this campaign always uses).
+
+**BAD BLOCK false-positive fix**: 35zzzx's own "campaign's first BAD
+BLOCK" (OPEN_ISSUES.md, 6e8) was the within-leg checker
+(`run_leg`'s own `( while kill -0 $benchpid; do sleep 15; <BAD BLOCK
+grep>; done ) &`) catching a shutdown artefact. `bench-run.sh`'s own
+last act (`scripts-qs/bench-run.sh:309`, `./stop-fleet.sh
+--no-inspect`) SIGTERMs every qs-node BEFORE `bench-run.sh` itself
+(`= $benchpid`) exits; if `$benchpid` dies mid-`sleep 15`, the
+checker's own already-committed iteration still runs its grep against
+logs the shutdown has already touched. Fixed by capturing the
+checker's own PID and killing it (`kill "$badblockcheckpid"; wait
+"$badblockcheckpid" 2>/dev/null`) the instant `wait $benchpid` returns
+in `run-r35zzzy.sh` -- no timestamp parsing needed, since no further
+check can run at all once the checker is dead. `chain-35zzzx.sh` was
+NOT touched (a lesson already learned in S44/S46); only
+`run-r35zzzy.sh` (not yet started at edit time) was edited.
+
+`bash -n` clean on both new scripts.
