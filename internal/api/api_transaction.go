@@ -57,6 +57,12 @@ func (s *TransactionAPI) SendRawTransaction(ctx context.Context, input hexutil.B
 	if len(input) == 0 {
 		return avmcommon.Hash{}, errors.New("empty transaction data")
 	}
+	// S49 (docs/QS_BLOCK_TIME_BUDGET.md 6f0/6f2): reject before spending
+	// decode + ECDSA sender recovery on a submission the pool would
+	// discard anyway once it is at N42_TX_INGEST_HIGH_WATER.
+	if rejectAboveHighWater(s.api.TxsPool()) {
+		return avmcommon.Hash{}, errAboveHighWater
+	}
 	tx, err := transaction.DecodeEthereumTransaction(input)
 	if err != nil {
 		return avmcommon.Hash{}, err
@@ -104,6 +110,13 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 	}
 	if len(inputs) > MaxBatchSize {
 		return nil, fmt.Errorf("batch size %d exceeds maximum allowed %d", len(inputs), MaxBatchSize)
+	}
+	// S49 (docs/QS_BLOCK_TIME_BUDGET.md 6f0/6f2): reject the WHOLE batch
+	// before decoding any of it once the pool is at
+	// N42_TX_INGEST_HIGH_WATER -- decode + sender recovery below run once
+	// per entry regardless of whether the pool ultimately accepts it.
+	if rejectAboveHighWater(s.api.TxsPool()) {
+		return nil, errAboveHighWater
 	}
 
 	currentBlock, rules, err := s.transactionHeadAndRules()
