@@ -186,6 +186,49 @@ func rpcBatchNonces(url string, addrs []types.Address, sample []int, tag string)
 	return res, nil
 }
 
+// isPoolBackpressure reports whether an RPC submission error means the pool
+// itself is temporarily out of room -- N42_TX_INGEST_HIGH_WATER's own
+// "txpool: above high water" (internal/api/tx_ingest_high_water.go) or the
+// pool's own pre-existing overflow, "txpool is full"
+// (internal/txspool/txs_pool_types.go ErrTxPoolOverflow) -- rather than
+// something wrong with the transaction itself (underpriced, bad nonce,
+// malformed). The caller retries the SAME submission instead of treating it
+// as failed: skipping to the next index here is not recoverable -- every
+// later transaction from that sender then sits queued behind the permanent
+// gap for the rest of the run (S49 PART 1(b)).
+func isPoolBackpressure(msg string) bool {
+	return strings.Contains(msg, "above high water") || strings.Contains(msg, "txpool is full")
+}
+
+// submitWithBackoff calls submit and, on a pool-backpressure error, retries
+// the SAME call (same nonce(s), nothing advances) after a backoff that
+// starts at 20ms and doubles to a 100ms ceiling -- mirroring n42-rs's own
+// generators, which push against a node-side high-water gate and simply
+// retry (docs/QS_BLOCK_TIME_BUDGET.md 6f0). Any other error is returned
+// immediately, unretried, for the caller's existing handling. retries counts
+// how many backpressure attempts were made before success or a different
+// error, so the caller can charge that many transactions to `deferred`
+// instead of `failed`.
+func submitWithBackoff(submit func() (json.RawMessage, error)) (ok bool, err error, retries int64) {
+	backoff := 20 * time.Millisecond
+	const maxBackoff = 100 * time.Millisecond
+	for {
+		_, e := submit()
+		if e == nil {
+			return true, nil, retries
+		}
+		if !isPoolBackpressure(e.Error()) {
+			return false, e, retries
+		}
+		retries++
+		time.Sleep(backoff)
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
 // poolDepth reports how much EXECUTABLE work is waiting, as the largest
 // single-node pending count.
 //
@@ -826,6 +869,11 @@ func main() {
 	fmt.Printf("flooding %d txs to %d node(s) (broadcast=%v conc=%d lazySign=%v)...\n", totalTxs, len(urls), *broadcast, *conc, *lazySign)
 	var idx int64 = -1
 	var submitted, failed int64
+	// deferred (S49 PART 2, docs/QS_BLOCK_TIME_BUDGET.md 6f0/6f2): count of
+	// submissions retried after a pool-backpressure error (isPoolBackpressure)
+	// -- these are NOT failures, the same nonce is re-sent until it is
+	// accepted, so they must not advance idx or inflate `failed`.
+	var deferred int64
 	tf := time.Now()
 	var wg sync.WaitGroup
 
@@ -992,10 +1040,12 @@ func main() {
 					default:
 					}
 				}
+				// S49: deferred (backpressure retries -- not failures) shown
+				// beside the throttle's own numbers.
 				if hints != nil {
-					fmt.Printf("  pool=%d topup=%d hints sent=%d dropped=%d errors=%d\n", depth, max(short, 0), hints.sent.Load(), hints.dropped.Load(), hints.errs.Load())
+					fmt.Printf("  pool=%d topup=%d deferred=%d hints sent=%d dropped=%d errors=%d\n", depth, max(short, 0), atomic.LoadInt64(&deferred), hints.sent.Load(), hints.dropped.Load(), hints.errs.Load())
 				} else {
-					fmt.Printf("  pool=%d topup=%d\n", depth, max(short, 0))
+					fmt.Printf("  pool=%d topup=%d deferred=%d\n", depth, max(short, 0), atomic.LoadInt64(&deferred))
 				}
 			}
 		}()
@@ -1026,6 +1076,21 @@ func main() {
 					default: // submitters are behind; do not let credit pile up
 					}
 				}
+			}
+		}()
+	} else {
+		// Flat-out (S49 PART 2(iii)): rate<=0 and targetDepth<=0 means
+		// permits stays nil and nothing above throttles submission at all --
+		// n42-rs's own "generators simply push and retry" shape. Neither
+		// other branch prints a periodic line in this mode, so add one here
+		// purely for visibility into `deferred` (pool-backpressure retries)
+		// while the round runs; nothing here affects submission itself.
+		go func() {
+			t := time.NewTicker(time.Second)
+			defer t.Stop()
+			for range t.C {
+				fmt.Printf("  flat-out submitted=%d failed=%d deferred=%d\n",
+					atomic.LoadInt64(&submitted), atomic.LoadInt64(&failed), atomic.LoadInt64(&deferred))
 			}
 		}()
 	}
@@ -1085,7 +1150,13 @@ func main() {
 							}
 							hints.offer(raws)
 						}
-						if _, err := rpcCall(u, "eth_batchRawTransaction", []interface{}{batch}); err != nil {
+						ok, err, retries := submitWithBackoff(func() (json.RawMessage, error) {
+							return rpcCall(u, "eth_batchRawTransaction", []interface{}{batch})
+						})
+						if retries > 0 {
+							atomic.AddInt64(&deferred, retries*(hi-lo))
+						}
+						if !ok {
 							if n := atomic.AddInt64(&failed, hi-lo); n <= int64(5*bn) || n%1000000 < bn {
 								fmt.Printf("  batch submit err (i=%d n=%d %s): %v\n", lo, hi-lo, u, err)
 							}
@@ -1099,7 +1170,7 @@ func main() {
 		}
 		wg.Wait()
 		el := time.Since(tf)
-		fmt.Printf("DONE submitted=%d failed=%d in %s (%.0f tx/s offered)\n", submitted, failed, el.Round(time.Millisecond), float64(totalTxs)/el.Seconds())
+		fmt.Printf("DONE submitted=%d failed=%d deferred=%d in %s (%.0f tx/s offered)\n", submitted, failed, atomic.LoadInt64(&deferred), el.Round(time.Millisecond), float64(totalTxs)/el.Seconds())
 		if hints != nil {
 			fmt.Printf("hint peers: sent=%d dropped=%d errors=%d\n", hints.sent.Load(), hints.dropped.Load(), hints.errs.Load())
 		}
@@ -1138,7 +1209,13 @@ func main() {
 				} else {
 					url = urls[int(i)%len(urls)]
 				}
-				if _, err := rpcCall(url, "eth_sendRawTransaction", []interface{}{rawAt(i)}); err != nil {
+				ok, err, retries := submitWithBackoff(func() (json.RawMessage, error) {
+					return rpcCall(url, "eth_sendRawTransaction", []interface{}{rawAt(i)})
+				})
+				if retries > 0 {
+					atomic.AddInt64(&deferred, retries)
+				}
+				if !ok {
 					// The first few distinct failures are the diagnosis; a
 					// counter alone hid an 8.88M-transaction rejection.
 					if n := atomic.AddInt64(&failed, 1); n <= 5 || n%1000000 == 0 {
@@ -1152,7 +1229,7 @@ func main() {
 	}
 	wg.Wait()
 	el := time.Since(tf)
-	fmt.Printf("DONE submitted=%d failed=%d in %s (%.0f tx/s offered)\n", submitted, failed, el.Round(time.Millisecond), float64(totalTxs)/el.Seconds())
+	fmt.Printf("DONE submitted=%d failed=%d deferred=%d in %s (%.0f tx/s offered)\n", submitted, failed, atomic.LoadInt64(&deferred), el.Round(time.Millisecond), float64(totalTxs)/el.Seconds())
 }
 
 // runSweep sends every derived sender's balance, less one transfer's gas,
