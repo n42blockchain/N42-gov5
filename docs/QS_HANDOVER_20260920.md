@@ -1713,3 +1713,74 @@ pure.
 branch's own history since `f7ec2836` -- `cmd/n42-datc/*`, `internal/api/*`,
 `internal/parallel/*`, `lib/kv/mdbx/*`, several `docs/*.md`, etc. --
 none of which belongs in this one-variable lineage's own binary.
+
+## S44 -- pool sampler + generator output preservation, added to run-r35zzzt.sh (2026-09-25)
+
+Harness-only, `run-r35zzzt.sh` edited (not yet started when this ran;
+`chain-35zzzt.sh` was running and waiting, and was NOT touched).
+
+**1. Pool sampler.** `txpool_status` is wired to `TxsPoolAPI.Status()`
+(`internal/api/api_misc.go:411`, registered under the `txpool` namespace
+at `internal/api/router.go:187-188` and `internal/api/api.go:297-298`),
+which calls `TxsPool().Content()` internally to COUNT the very content
+it then discards -- exactly as expensive as `txpool_content` despite
+the lightweight-sounding name (confirmed by reading the handler, not
+assumed). The cheap twin, `TxPoolAPI.Status()` (line 146, backed by
+`TxsPool.Stats()`, an O(accounts) map walk with no per-transaction
+work), is never registered under any namespace -- `grep -rn
+"NewTxPoolAPI("` finds only its own definition, no caller. Used the
+metrics endpoint instead: `txpool_pending`/`txpool_queued`
+(`internal/txspool/txs_pool_types.go:84-85`), Prometheus counters
+maintained incrementally (`Inc`/`Dec` on each pool mutation, e.g.
+`internal/txspool/txs_pool_queues.go:54,82`) and already served on
+every qs node's own metrics port (`--metrics.port
+QS_METRICS_BASE+i` = `6070+i`, `scripts-qs/qs-env.sh:68,178`; path
+`/debug/metrics/prometheus`, `common/metrics/exp.go:17`) -- this
+fleet already runs with `--metrics` on, no new flag needed. Sampled
+for nodes 0 and 3 only, folded into the existing 10s VM-sampler loop,
+appended to the same `wr-logs/r35zzzt-vm.log` line as `pool node<i>
+pending=<n> queued=<n>`; the metrics endpoint returns plain decimal
+counters, not hex, so there is no hex->decimal conversion to do (the
+task's own "(hex -> decimal)" phrasing assumed the RPC route, which
+this deliberately avoids for the reason above).
+
+Dry run (stubbed `curl`: node0 answers a canned metrics body, node3's
+curl call fails as a down node would):
+
+```
+01:14:55 leg=B1 vmstat10s pgmajfaultD=0 pgscanKswapdD=0 pgscanDirectD=0 pgstealKswapdD=0 refaultFileD=0 gens: pool node0 pending=1523 queued=87 pool node3 pending= queued=
+```
+
+Node3's blank `pending=`/`queued=` fields are the intended tolerant-of-
+errors behaviour (never aborts the round), not a bug.
+
+**2. Generator output preservation.** `bench-run.sh`'s own `OUT`/`ERR`
+naming is leg-name-only (`OUT=$QS_ROOT/bench-flood-$TAG.out`,
+`scripts-qs/bench-run.sh:94-95`, `TAG="r35-$1"`), one numbered pair per
+generator when `FLOODS>1` (`$OUT.$f`/`$ERR.$f`, `bench-run.sh:207-208`)
+-- every ROUND overwrites the previous one's files, exactly what 6e3
+found stale. `run_leg` (`run-r35zzzt.sh`) now copies
+`/data/blockchain/bench-flood-r35-$1.out*`/`.err*` to
+`wr-logs/r35zzzt-floods/$1/` immediately after `wait $benchpid` (the
+leg's own bench-run.sh, and every generator under it, has exited by
+then) and before the next leg's own call starts.
+
+Checked `cmd/txflood/main.go` for a stats/progress flag: there is no
+`-stats-interval` or equivalent. There is, however, an existing,
+UNCONDITIONAL periodic status line inside the `-target-depth` closed
+loop (`cmd/txflood/main.go:~813-816`, `time.NewTicker(time.Second)`):
+`fmt.Printf("  pool=%d topup=%d\n", depth, max(short, 0))` (or with
+`-hint-peers`, `"  pool=%d topup=%d hints sent=%d dropped=%d
+errors=%d\n"`), printed once a second to the generator's own stdout
+(`$fout` in `bench-run.sh`) whenever `-target-depth` is set --
+which `QS_FLOOD_EXTRA` already sets for this fleet
+(`-target-depth 45000 -depth-by-nonce -lazy-sign`). This line is
+therefore ALREADY inside the files the copy step above preserves; no
+txflood source change was needed or made, per the task's own "if not,
+do not add code" instruction (there being no dedicated flag to enable
+-- the line is unconditional already).
+
+`bash -n run-r35zzzt.sh`: clean. `chain-35zzzt.sh` not touched
+(confirmed via `ls -la --time-style=full-iso`: its mtime predates this
+session). `run-r35zzzt.sh` confirmed not started (`ps` shows no
+matching process) before and after editing.
