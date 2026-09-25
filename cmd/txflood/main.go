@@ -40,6 +40,44 @@ var httpClient = &http.Client{
 	Transport: &http.Transport{MaxIdleConns: 512, MaxIdleConnsPerHost: 128, MaxConnsPerHost: 128, IdleConnTimeout: 30 * time.Second},
 }
 
+// unlimitedCredit is injectionCredit's own return value when neither
+// -target-depth nor -rate constrains this tick -- a sentinel far larger than
+// any real single-tick injection count this generator could ever reach
+// (senders * pertx tops out in the tens of millions), not a literal permit
+// count the caller loops that many times: in production this path is never
+// reached (the depth branch that calls injectionCredit only runs when
+// -target-depth > 0), but a defined, tested contract costs less than an
+// undefined one.
+const unlimitedCredit = 1 << 30
+
+// injectionCredit computes how many transactions the depth-throttle tick
+// (S46/S47, docs/QS_BLOCK_TIME_BUDGET.md 6e7) may release THIS second,
+// combining -target-depth and -rate: the depth throttle's own shortfall
+// (targetDepth-depth, positive only while the pool estimate reads BELOW
+// target) is capped so it never exceeds rate, regardless of how large the
+// shortfall is -- "submit at most rate per second AND only while the depth
+// estimate is below target-depth" (both conditions must hold; whichever is
+// smaller/stricter wins). targetDepth<=0 means the depth throttle itself is
+// off (this generator is really in the separate, unthrottled-by-depth
+// -rate-only branch further down commitWork's caller, `else if *rate > 0`)
+// -- modelled here as "unconstrained by depth", reducing to rate alone, or
+// fully unlimited if rate is ALSO off. This is a pure extraction of the
+// SAME arithmetic the depth branch always used (see its own call site) --
+// no behaviour change, just a named, independently testable seam.
+func injectionCredit(targetDepth, depth, rate int) int {
+	if targetDepth <= 0 {
+		if rate <= 0 {
+			return unlimitedCredit
+		}
+		return rate
+	}
+	short := targetDepth - depth
+	if rate > 0 && short > rate {
+		short = rate // never exceed the requested ceiling
+	}
+	return short
+}
+
 // poolDepth reports how much EXECUTABLE work is waiting, as the largest
 // single-node pending count.
 //
@@ -797,10 +835,11 @@ func main() {
 						continue
 					}
 				}
-				short := *targetDepth - depth
-				if *rate > 0 && short > *rate {
-					short = *rate // never exceed the requested ceiling
-				}
+				// S47 (6e7): this WAS the inline "short := *targetDepth - depth;
+				// if *rate > 0 && short > *rate { short = *rate }" -- moved into
+				// injectionCredit (same file, above) so the combining arithmetic
+				// has a name and a unit test; the value is identical.
+				short := injectionCredit(*targetDepth, depth, *rate)
 				if *rpcBatch > 1 {
 					// One permit lets a batch worker submit rpcBatch txs, so
 					// scale the credit or the loop overshoots by that factor.
