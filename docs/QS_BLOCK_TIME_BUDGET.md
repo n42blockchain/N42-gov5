@@ -15690,7 +15690,7 @@ promotion path, not more generator depth or a different fill: cutting
 promotion pass whenever an account's pending list empties (not only
 on the periodic reorg), is the next thing to try.
 
-## 6e4. S42: round 35zzzt confirms clause (a) exactly (293->75 ms) but the hand-over cycle does not move; plus S44 -- the generators throttle to ~150 tx/s/proc against a ~120k tx/s chain, and that gap is what starves the pool between bursts (2026-09-25)
+## 6e4. S42: round 35zzzt confirms clause (a) exactly (293->75 ms) but the hand-over cycle does not move; plus S44 (corrected) -- the generators self-throttle on an inflated depth estimate, and aggregate submission (~44k tx/s) also falls short of the ~120k tx/s chain (2026-09-25)
 
 n42-r100, `N42_DEFERRED_CHECK_CONCURRENT` 0 (B1, 04:23:38-04:36:15) vs
 1 (B2, 04:36:15-04:49:57). `height_conflict_check.py`:
@@ -15725,34 +15725,58 @@ adopt for the clean latency win it is, not for a throughput claim.
 
 ### S44: what bounds a generator, direct instrumentation
 
-`r35zzzt-vm.log`'s new `pool node0/node3 pending=/queued=` (from
-`txpool_pending`/`txpool_queued`, 10s samples): node0 B1 sits at
-**pending=0, queued=0 for the leg's first 7 minutes**, then swings to
-a burst peaking at 776,039 (04:33:16) before falling back to 0 by
-04:35:28 and staying there to leg end -- a bursty, mostly-EMPTY local
-pool, not a steady one. `wr-logs/r35zzzt-floods/{B1,B2}/*.out`'s
-`pool=<n> topup=<n>` (once/s): `pool` sits far ABOVE the nominal
-45,000 target-depth throughout (med 187,093 B1 / 189,127 B2, 0 samples
-in the 40-50k band) while `topup` -- the generator's own new-submission
-rate -- is only **med 165/s (B1), 155/s (B2)**. **The decisive number:
-aggregate generator top-up (~8 procs x ~150-165/s =~1,200-1,320 tx/s)
-against the chain's own ~115,000-126,000 tx/s consumption is a ~90x
-gap** -- the generators believe they are already well ahead of target
-(their own `pool=` reading, whatever its exact scope, is 4-6x the
-target-depth) and throttle new submissions to a trickle nowhere near
-what sustaining full blocks needs.
+**CORRECTED (2026-09-25): the first pass had a unit error.**
+`topup=` is RPC BATCHES, not transactions (`cmd/txflood/main.go:~808-818`,
+`short = (short + rpcBatch - 1) / rpcBatch`, `rpcbatch=200`), and
+`pool=` is the generator's own ESTIMATE (`submitted -
+minedSinceStart/share - failed`, `share=8`), not a pool reading.
+Redone from `wr-logs/r35zzzt-floods/{B1,B2}/*.out`:
 
-**Answer: (iii) the generators are short of target, in the sense that
-matters -- not their OWN target-depth accounting (which reads
-comfortably above 45,000 and throttles accordingly), but the
-SUSTAINED replenishment rate the chain actually needs (~90x their
-current top-up rate).** This is consistent with, not a replacement
-for, 6e3's own finding: a per-node pool that is empty most of the
-time and briefly overfull in bursts (node0's 0-for-7-minutes-then-
-776k pattern) is exactly what an under-replenishing, shard-routed
-supply (6dl: cross-node tx gossip is dead, each node sees only its
-own 1/7 of senders) produces, and 6e3's rare promotion events are a
-symptom of the same long empty stretches, not a separate mechanism.
+- **Aggregate submitted**: sum(`topup`)x200 / leg duration -- B1
+  **~45,000 tx/s**, B2 **~43,500 tx/s** -- against the chain's own
+  consumption (TPS) of ~126k (B1win1) / ~115-123k (B2) -- a real but
+  modest **~2.6-2.9x gap**, not 90x.
+- **Self-throttling**: `topup=0` in 17-27% of samples (B1: 111/134
+  active, B2: 90/123), coinciding with `pool=` reading 3-6x above the
+  45,000 target (med 187,093/189,127; sample pairs like
+  `pool=155,500 topup=323` then `pool=256,900 topup=0` show the
+  estimate crossing target mid-window and cutting submission to zero).
+  During ACTIVE seconds alone the rate is higher (topup med 260-286
+  batches/s = ~52,000-57,200 tx/s) -- still short of full consumption.
+
+**Answer: primarily (iii-a), compounded by a real (iii-b) shortfall.**
+The inflated depth estimate self-throttles a meaningful share of
+seconds to zero, dragging the average (43.5-45k tx/s) well below even
+the active-second rate (52-57k tx/s); but the active rate itself is
+also short of the ~115-126k tx/s the chain consumes, so raising
+target-depth (S45) should help by removing the false-ahead throttle,
+without being guaranteed to close the whole gap alone.
+
+**txpool_pending is LIVE, not reorg-gated**: the metric changes value
+on nearly every 10s vm.log sample during the active window (many
+distinct readings between 04:30:43-04:35:18), far more often than the
+0-2 reorg events per leg found in 6e3 -- it reflects the pool's own
+real-time insert/pop state, and 6e3's own low `pendingAccts` figures
+describe a genuinely bursty, mostly-idle LOCAL pool (6dl: shard-routed
+RPC + dead cross-node gossip), not a stale reorg snapshot.
+
+## 6e5. S45: prediction 105, registered before round 35zzzw -- generator target-depth 45000 vs 225000 by leg (2026-09-25)
+
+n42-r100, `N42_DEFERRED_CHECK_CONCURRENT=1` everywhere (adopted,
+S42), tenure 4, config-only: warm-up/A1/B1 `-target-depth 45000`
+(today), B2/A2 `-target-depth 225000`. Rationale (S44/6e4): the
+generator's own depth ESTIMATE reads 3-6x above 45,000 and
+self-throttles to `topup=0` in 17-27% of samples; 225000 (~5x) should
+keep the estimate below target through most of a window, restoring
+the intended ~45,000 real in-flight per generator (~360k aggregate,
+under the 600k pool cap).
+
+**Prediction 105:** (a) B2 win2 occupancy rises 38% -> >=45% and
+blocks/window not lower (win1 is already near the 49% cap, so no
+further room there); (b) B2 win2 TPS above B1's by more than the 3.6%
+floor; (c) cost: `underpriced`/pool-full discards per node not more
+than 2x B1's, no starvation, generators' own `pool=` reading vs the
+new 225000 target reported; (d) 0 conflicting heights.
 
 ## 8. Method
 
