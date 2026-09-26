@@ -128,6 +128,38 @@ func txIndexEnabled() bool {
 	return v
 }
 
+// txIndexKeepBlocksVar / txIndexSealMinTxVar (S60, docs/QS_BLOCK_TIME_BUDGET.md
+// 6fb) override txIndexKeepBlocks (64) / txIndexSealMinTx (1_000_000) for the
+// qs bench's own memory experiments: N42_TXINDEX_KEEP_BLOCKS shrinks how many
+// of the newest blocks stay in the in-memory tail behind the seal point
+// (64 blocks of 163,000-tx blocks is ~1.1 GB, 6dm); N42_TXINDEX_SEAL_MIN_TX
+// exists because SealRangeKeepTx's own sealable range grows as keepBlocks
+// shrinks (fewer of the newest blocks are held back), so a smaller keep
+// window can also change how many transactions accumulate before a seal
+// actually fires -- exposed so keepBlocks can be lowered without also
+// having to accept whatever seal cadence that produces. Unset = today,
+// byte-for-byte identical (both env reads are no-ops when unset or
+// invalid).
+func txIndexKeepBlocksVar() int {
+	return txIndexEnvInt("N42_TXINDEX_KEEP_BLOCKS", txIndexKeepBlocks)
+}
+
+func txIndexSealMinTxVar() int {
+	return txIndexEnvInt("N42_TXINDEX_SEAL_MIN_TX", txIndexSealMinTx)
+}
+
+func txIndexEnvInt(name string, def int) int {
+	v := os.Getenv(name)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
+}
+
 // LookupTx implements rawdb.TxLookupResolver over the tail and the segments.
 func (x *Indexer) LookupTx(txHash types.Hash) (uint64, bool) {
 	if x.txTail == nil {
@@ -405,7 +437,7 @@ func (x *Indexer) txIndexSealLoop() {
 // Sealing then dropping, in that order and never the reverse: a block dropped
 // from the tail before it is in a segment is findable nowhere.
 func (x *Indexer) sealTxIndexOnce() bool {
-	start, end, ok := x.txTail.SealRangeKeepTx(txIndexSealMinTx, txIndexSealMaxBlocks, txIndexKeepBlocks, txIndexKeepTx)
+	start, end, ok := x.txTail.SealRangeKeepTx(txIndexSealMinTxVar(), txIndexSealMaxBlocks, txIndexKeepBlocksVar(), txIndexKeepTx)
 	if !ok {
 		return false
 	}
