@@ -116,7 +116,18 @@ func (s *Server) hintWorker() {
 		case batch := <-s.hintQueue:
 			signer := s.hintSigner()
 			for _, tx := range batch {
-				if _, err := transaction.Sender(signer, tx); err != nil {
+				tx := tx
+				var recErr error
+				// S59 (docs/QS_BLOCK_TIME_BUDGET.md 6fa): N42_HINT_RECOVERY_POOL
+				// dispatches the actual recovery to a bounded, dedicated pool
+				// instead of running it inline on this hintWorker goroutine
+				// (unset = today, inline); RecoverSenderDeduped guarantees at
+				// most one real ECDSA recovery per transaction even if this
+				// same hash also arrives via RPC ingest concurrently.
+				transaction.RecoverOnPool(func() {
+					_, recErr = transaction.RecoverSenderDeduped(signer, tx)
+				})
+				if recErr != nil {
 					s.rejected.Add(1)
 					continue
 				}
