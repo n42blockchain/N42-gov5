@@ -44,7 +44,7 @@ func newOrderTestChain() *orderTestChain {
 	return &orderTestChain{checkDoneCh: make(chan struct{}, 1)}
 }
 
-func (c *orderTestChain) CheckDeferredBlock(block.IBlock) (bool, bool, error) {
+func (c *orderTestChain) CheckDeferredBlock(block.IBlock) (bool, bool, types.Hash, error) {
 	c.mu.Lock()
 	c.checkStart = time.Now()
 	c.mu.Unlock()
@@ -55,7 +55,7 @@ func (c *orderTestChain) CheckDeferredBlock(block.IBlock) (bool, bool, error) {
 	c.checkDone = time.Now()
 	c.mu.Unlock()
 	c.checkDoneCh <- struct{}{}
-	return true, false, c.checkErr
+	return true, false, types.Hash{}, c.checkErr
 }
 
 func (c *orderTestChain) InsertChain([]block.IBlock) (int, error) {

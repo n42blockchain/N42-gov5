@@ -94,6 +94,11 @@ func NewBlockChain(ctx context.Context, genesisBlock block.IBlock, engine consen
 		cancel()
 		return nil, errors.New("deferredExecutionTime is set but the chain is not the native QMDB chain: the stored execution results and the applied marker it relies on exist only there")
 	}
+	deferredDepth2 := deferredExecutionDepth2Time(config)
+	if deferredDepth2 != 0 && block.DeferredExecutionTime == 0 {
+		cancel()
+		return nil, errors.New("deferredExecutionDepth2Time is set without deferredExecutionTime: depth-2 deepens depth-1, it cannot activate on its own")
+	}
 	concreteGenesis, err := requireConcreteBlock(genesisBlock, "unexpected genesis block type")
 	if err != nil {
 		cancel()
@@ -2414,11 +2419,24 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 
 			if bc.chainConfig != nil && bc.chainConfig.IsDeferredExecution(concreteBlock.Header().(*block.Header).Time) {
 				hdr := concreteBlock.Header().(*block.Header)
-				parentHdr := rawdb.ReadHeader(tx, hdr.ParentHash, hdr.Number.Uint64()-1)
+				number := hdr.Number.Uint64()
+				parentHdr := rawdb.ReadHeader(tx, hdr.ParentHash, number-1)
 				if parentHdr == nil {
-					return nil, fmt.Errorf("%w: parent header %x of block %d not stored", ErrDeferredResultUnknown, hdr.ParentHash[:8], hdr.Number.Uint64())
+					return nil, fmt.Errorf("%w: parent header %x of block %d not stored", ErrDeferredResultUnknown, hdr.ParentHash[:8], number)
 				}
-				if err := checkDeferredHeader(bc.chainConfig, tx, hdr, parentHdr); err != nil {
+				// S55 (6f7): the same reference-ancestor resolution as
+				// CheckDeferredBlock -- the authoritative re-check at import
+				// time must apply the identical depth-1/depth-2 rule, or a
+				// block that passed the pre-vote check could fail here.
+				refHdr := parentHdr
+				if number >= 2 && bc.chainConfig.IsDeferredExecutionDepth2(hdr.Time) {
+					grandparentHdr := rawdb.ReadHeader(tx, parentHdr.ParentHash, number-2)
+					if grandparentHdr == nil {
+						return nil, fmt.Errorf("%w: grandparent header %x of block %d not stored", ErrDeferredResultUnknown, parentHdr.ParentHash[:8], number)
+					}
+					refHdr = grandparentHdr
+				}
+				if err := checkDeferredHeader(bc.chainConfig, tx, hdr, refHdr); err != nil {
 					if errors.Is(err, ErrDeferredResultUnknown) {
 						// The parent is stored but not applied here yet: queue
 						// and retry after it lands, like a missing ancestor.
@@ -3803,6 +3821,36 @@ func deferredExecutionTime(config *params.ChainConfig) uint64 {
 			return t
 		}
 		log.Warn("N42_DEFERRED_EXECUTION_TIME ignored (not a positive integer)", "value", v)
+	}
+	return 0
+}
+
+// deferredExecutionDepth2Time is the chain's DeferredExecutionDepth2Time, or
+// -- on a bench chain whose built-in chainspec has none --
+// N42_DEFERRED_EXECUTION_DEPTH2_TIME (a Unix timestamp), applied to the
+// chain config so IsDeferredExecutionDepth2 sees it everywhere (S55, 6f7).
+// Same pattern as deferredExecutionTime, one deferred-execution-only step
+// deeper: depth-2 has no separate common/block package var, since nothing
+// there needs to know the depth, only whether deferred execution is active
+// at all (block.DeferredAt, unaffected by this). Logged loudly: every node
+// of the chain must agree, on BOTH times.
+func deferredExecutionDepth2Time(config *params.ChainConfig) uint64 {
+	if config != nil && config.DeferredExecutionDepth2Time != nil {
+		return gateFrom(config.DeferredExecutionDepth2Time)
+	}
+	if v := os.Getenv("N42_DEFERRED_EXECUTION_DEPTH2_TIME"); v != "" {
+		if !nativeQMDBChain(config) {
+			log.Warn("N42_DEFERRED_EXECUTION_DEPTH2_TIME ignored: not the native QMDB chain")
+			return 0
+		}
+		if t, err := strconv.ParseUint(v, 10, 64); err == nil && t > 0 {
+			if config != nil {
+				config.DeferredExecutionDepth2Time = new(big.Int).SetUint64(t)
+			}
+			log.Warn("deferred execution depth-2 from N42_DEFERRED_EXECUTION_DEPTH2_TIME (bench override; every node must set the same value)", "time", t)
+			return t
+		}
+		log.Warn("N42_DEFERRED_EXECUTION_DEPTH2_TIME ignored (not a positive integer)", "value", v)
 	}
 	return 0
 }

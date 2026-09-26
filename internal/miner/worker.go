@@ -2464,7 +2464,7 @@ func (w *worker) commit(env *environment, writer state.WriterWithChangeSets, ibs
 		if terr != nil {
 			return terr
 		}
-		pr, perr := w.parentExecutedResult(rtx, envCopy.header)
+		pr, perr := w.headerStampResult(rtx, envCopy.header)
 		rtx.Rollback()
 		if perr != nil {
 			return fmt.Errorf("miner: deferred execution: %w", perr)
@@ -2743,25 +2743,75 @@ func signalToErr(signal int32) error {
 // parentExecutedResult returns this node's execution result of the parent
 // of header: the record kept with a block this node sealed, else the
 // stored result of an applied block (or the parent header's own fields
-// before the deferred-execution fork).
+// before the deferred-execution fork). This ALWAYS means the literal
+// parent's own result -- used by the speculative tree's own reload
+// (NewMinerRootComputer) to recognise "this build continues my own last
+// block," a concern unrelated to what a header being built CARRIES. For
+// that, see headerStampResult.
 func (w *worker) parentExecutedResult(tx kv.Getter, header *block.Header) (rawdb.ExecutedResult, error) {
-	parent := header.ParentHash
+	if header.Number.Uint64() == 0 {
+		return rawdb.ExecutedResult{}, fmt.Errorf("block 0 has no parent")
+	}
+	return w.executedResultOfAncestor(tx, header.ParentHash, header.Number.Uint64()-1)
+}
+
+// headerStampResult returns the execution result that a header being built
+// at header.Number/header.Time must carry: the parent's under depth-1
+// (today, identical to parentExecutedResult), or the GRANDPARENT's once
+// N42_DEFERRED_EXECUTION_DEPTH2_TIME activates depth-2 for this header (S55,
+// docs/QS_BLOCK_TIME_BUDGET.md 6f7). Every node has the grandparent's result
+// once the grandparent is imported -- no speculation needed even at a
+// tenure hand-over, unlike parentExecutedResult's own sealedExec fast path,
+// which exists only because a chained in-tenure build's own PARENT is often
+// still unwritten.
+func (w *worker) headerStampResult(tx kv.Getter, header *block.Header) (rawdb.ExecutedResult, error) {
+	number := header.Number.Uint64()
+	if number < 2 || w.chainConfig == nil || !w.chainConfig.IsDeferredExecutionDepth2(header.Time) {
+		return w.parentExecutedResult(tx, header)
+	}
+	parentHeader := w.ancestorHeader(tx, header.ParentHash, number-1)
+	if parentHeader == nil {
+		return rawdb.ExecutedResult{}, fmt.Errorf("parent %x of block %d unknown", header.ParentHash[:8], number)
+	}
+	return w.executedResultOfAncestor(tx, parentHeader.ParentHash, number-2)
+}
+
+// ancestorHeader returns the header for (hash, number): this node's own
+// sealed-but-maybe-unwritten block first (a chained in-tenure build), else
+// the stored header.
+func (w *worker) ancestorHeader(tx kv.Getter, hash types.Hash, number uint64) *block.Header {
 	w.mu.RLock()
-	r, ok := w.sealedExec[parent]
-	ownBlk := w.sealedByHash[parent]
+	ownBlk := w.sealedByHash[hash]
+	w.mu.RUnlock()
+	if ownBlk != nil {
+		if h, ok := ownBlk.Header().(*block.Header); ok {
+			return h
+		}
+	}
+	return rawdb.ReadHeader(tx, hash, number)
+}
+
+// executedResultOfAncestor is parentExecutedResult's and headerStampResult's
+// shared core: this node's own sealed-but-maybe-unwritten record for
+// ancestorHash first, else the stored result of an applied block (or the
+// ancestor header's own fields, pre-fork).
+func (w *worker) executedResultOfAncestor(tx kv.Getter, ancestorHash types.Hash, ancestorNumber uint64) (rawdb.ExecutedResult, error) {
+	w.mu.RLock()
+	r, ok := w.sealedExec[ancestorHash]
+	ownBlk := w.sealedByHash[ancestorHash]
 	w.mu.RUnlock()
 	if ok {
 		return r, nil
 	}
-	var ph *block.Header
+	var ah *block.Header
 	if ownBlk != nil {
-		ph, _ = ownBlk.Header().(*block.Header)
+		ah, _ = ownBlk.Header().(*block.Header)
 	}
-	if ph == nil && header.Number.Uint64() > 0 {
-		ph = rawdb.ReadHeader(tx, parent, header.Number.Uint64()-1)
+	if ah == nil {
+		ah = rawdb.ReadHeader(tx, ancestorHash, ancestorNumber)
 	}
-	if ph == nil {
-		return rawdb.ExecutedResult{}, fmt.Errorf("parent %x of block %d unknown", parent[:8], header.Number.Uint64())
+	if ah == nil {
+		return rawdb.ExecutedResult{}, fmt.Errorf("ancestor %x (block %d) unknown", ancestorHash[:8], ancestorNumber)
 	}
-	return internal.ExecutedResultOfHeader(w.chainConfig, tx, ph)
+	return internal.ExecutedResultOfHeader(w.chainConfig, tx, ah)
 }

@@ -145,8 +145,20 @@ type ConsensusEngine struct {
 	// without executing them (the header carries this node's result of the
 	// parent; the transactions are includable). Such a block is voted for
 	// once its parent is imported. Bounded like importedBlocks.
-	checkedBlocks    map[types.Hash]bool
-	checkedFIFO      []types.Hash
+	checkedBlocks map[types.Hash]bool
+	checkedFIFO   []types.Hash
+	// checkedReference (S55, depth-2 deferred execution, docs/QS_BLOCK_TIME_BUDGET.md
+	// 6f7): blockHash -> the ancestor deferredAttested must see imported,
+	// when it differs from importedParents[blockHash] (the grandparent,
+	// once N42_DEFERRED_EXECUTION_DEPTH2_TIME is active for blockHash's own
+	// header time). Populated only by EventBlockChecked's own ReferenceHash
+	// field, set by the caller that resolved it (CheckDeferredBlock already
+	// computed the correct ancestor to validate the header against; this
+	// just carries that same answer to the vote gate). Deliberately
+	// SEPARATE from importedParents: extendsJustify reads importedParents
+	// for the LITERAL parent-child chain relationship and must never see a
+	// grandparent substituted in.
+	checkedReference map[types.Hash]types.Hash
 	// headerKnownFIFO (S31): bounded eviction for importedParents entries
 	// populated ONLY by EventBlockHeaderKnown (the block has neither been
 	// checked nor imported yet) -- see onBlockHeaderKnown.
@@ -429,6 +441,7 @@ func NewConsensusEngineWithEpochManager(
 		importedBlocks:            make(map[types.Hash]bool),
 		importedParents:           make(map[types.Hash]types.Hash),
 		checkedBlocks:             make(map[types.Hash]bool),
+		checkedReference:          make(map[types.Hash]types.Hash),
 		pendingTxRoots:            make(map[types.Hash]types.Hash),
 		pendingProposals:          make(map[ViewNumber]types.Hash),
 		pendingJustifyBlocks:      make(map[ViewNumber]types.Hash),
@@ -471,6 +484,7 @@ func WithRecoveredState(
 		importedBlocks:            make(map[types.Hash]bool),
 		importedParents:           make(map[types.Hash]types.Hash),
 		checkedBlocks:             make(map[types.Hash]bool),
+		checkedReference:          make(map[types.Hash]types.Hash),
 		pendingTxRoots:            make(map[types.Hash]types.Hash),
 		pendingProposals:          make(map[ViewNumber]types.Hash),
 		pendingJustifyBlocks:      make(map[ViewNumber]types.Hash),
@@ -687,7 +701,7 @@ func (e *ConsensusEngine) ProcessEvent(event ConsensusEvent) error {
 	case EventBlockImported:
 		return e.onBlockImported(event.Hash, event.TxRootHash, event.ParentHash)
 	case EventBlockChecked:
-		return e.onBlockChecked(event.Hash, event.ParentHash)
+		return e.onBlockChecked(event.Hash, event.ParentHash, event.ReferenceHash)
 	case EventBlockRejected:
 		e.onBlockRejected(event.Hash)
 		return nil
@@ -731,6 +745,11 @@ type ConsensusEvent struct {
 	TxRootHash types.Hash // DA commitment: transaction root hash (Baby Raptr)
 	ParentHash types.Hash // EventBlockImported / EventBlockChecked / EventBlockHeaderKnown: the block's parent (extends-check; zero = unknown, check skipped)
 	Number     uint64     // EventBlockHeaderKnown: the block's own height, for logging only (extendsJustify never reads it)
+	// ReferenceHash (S55, 6f7): EventBlockChecked only. The ancestor
+	// deferredAttested requires imported, when depth-2 is active for this
+	// block (the grandparent) -- zero under depth-1, where ParentHash alone
+	// already serves both extendsJustify and deferredAttested.
+	ReferenceHash types.Hash
 	// ReceivedAt is S14's diagnostic arrival stamp for an EventMessage: the
 	// first line of the network handler (processGossipMessage), before
 	// decode. Zero unless N42_CONTENTION_DIAG=1; every downstream contention

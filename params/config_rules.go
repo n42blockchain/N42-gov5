@@ -457,6 +457,13 @@ func (c *ChainConfig) IsDeferredExecution(time uint64) bool {
 	return isForked(c.DeferredExecutionTime, time)
 }
 
+// IsDeferredExecutionDepth2 returns whether a header at time carries its
+// GRANDPARENT's execution fields instead of its parent's
+// (DeferredExecutionDepth2Time, S55, docs/QS_BLOCK_TIME_BUDGET.md 6f7).
+func (c *ChainConfig) IsDeferredExecutionDepth2(time uint64) bool {
+	return isForked(c.DeferredExecutionDepth2Time, time)
+}
+
 // IsEip1559FeeCollector returns whether num has reached the EIP-1559 fee collector transition.
 func (c *ChainConfig) IsEip1559FeeCollector(num uint64) bool {
 	return c.Eip1559FeeCollector != nil && isForked(c.Eip1559FeeCollectorTransition, num)

@@ -35,14 +35,21 @@ var ErrDeferredParentNotApplied = errors.New("deferred execution: parent is not 
 // limit) -- the rule that keeps execution from ever failing a committed
 // block. Returns checked=false when the block is before the fork; retry
 // asks the caller to run the check again once the parent is applied.
-func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool, err error) {
+// reference is the ancestor the header's execution fields actually match --
+// the parent under depth-1 (today), the grandparent once
+// N42_DEFERRED_EXECUTION_DEPTH2_TIME activates depth-2 for hdr's own header
+// time (S55, docs/QS_BLOCK_TIME_BUDGET.md 6f7). Zero when checked is false
+// or the block is pre-fork (depth-1 semantics -- the caller's own
+// importedParents already serves both extendsJustify and deferredAttested
+// in that case, unchanged).
+func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool, reference types.Hash, err error) {
 	hdr, ok := blk.Header().(*block.Header)
 	if !ok || bc.chainConfig == nil || !bc.chainConfig.IsDeferredExecution(hdr.Time) {
-		return false, false, nil
+		return false, false, types.Hash{}, nil
 	}
 	number := hdr.Number.Uint64()
 	if number == 0 {
-		return false, false, nil
+		return false, false, types.Hash{}, nil
 	}
 	// Already executed here (a catch-up range import or the gossip copy landed
 	// first): the state the includability check would read is this block's own
@@ -52,19 +59,35 @@ func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool,
 	// from the range fetch, then the direct push arrived and the check failed
 	// it, "nonce 0, state expects 4096", and the round was aborted).
 	if bc.HasAppliedBlock(blk.Hash(), number) {
-		return true, false, nil
+		return true, false, types.Hash{}, nil
 	}
 	tx, err := bc.ChainDB.BeginRo(context.Background())
 	if err != nil {
-		return true, true, err
+		return true, true, types.Hash{}, err
 	}
 	defer tx.Rollback()
 	parent := rawdb.ReadHeader(tx, hdr.ParentHash, number-1)
 	if parent == nil {
-		return true, true, fmt.Errorf("%w: parent %x of block %d not stored", ErrDeferredResultUnknown, hdr.ParentHash[:8], number)
+		return true, true, types.Hash{}, fmt.Errorf("%w: parent %x of block %d not stored", ErrDeferredResultUnknown, hdr.ParentHash[:8], number)
 	}
-	if err := checkDeferredHeader(bc.chainConfig, tx, hdr, parent); err != nil {
-		return true, errors.Is(err, ErrDeferredResultUnknown), err
+	// depth2Active decides which ancestor the header's own Root/ReceiptHash/
+	// Bloom/GasUsed must match. refHeader is what gets compared against
+	// (checkDeferredHeader is depth-blind: it always compares hdr's fields
+	// to ExecutedResultOfHeader(refHeader)); ref is refHeader's hash, handed
+	// back to the caller for deferredAttested, only when it differs from the
+	// literal parent.
+	depth2Active := number >= 2 && bc.chainConfig.IsDeferredExecutionDepth2(hdr.Time)
+	refHeader := parent
+	if depth2Active {
+		grandparent := rawdb.ReadHeader(tx, parent.ParentHash, number-2)
+		if grandparent == nil {
+			return true, true, types.Hash{}, fmt.Errorf("%w: grandparent %x of block %d not stored", ErrDeferredResultUnknown, parent.ParentHash[:8], number)
+		}
+		refHeader = grandparent
+		reference = grandparent.Hash()
+	}
+	if err := checkDeferredHeader(bc.chainConfig, tx, hdr, refHeader); err != nil {
+		return true, errors.Is(err, ErrDeferredResultUnknown), types.Hash{}, err
 	}
 	// Senders and the stateless rules first, outside the tree's readers lock.
 	// A block decoded from the wire carries no sender -- the import's hint
@@ -74,7 +97,7 @@ func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool,
 	// writes: the check can run beside the import of a child without a race.
 	plan, err := deferredTxPlan(bc.chainConfig, hdr, blk.Transactions())
 	if err != nil {
-		return true, false, err
+		return true, false, types.Hash{}, err
 	}
 	// The applied-head check and the state reads below must see one state:
 	// the tree's readers lock keeps the import from moving the applied head
@@ -83,21 +106,38 @@ func (bc *BlockChain) CheckDeferredBlock(blk block.IBlock) (checked, retry bool,
 		unlock := bc.qmdbRootComputer.LockReaders()
 		defer unlock()
 	}
+	// The tx-includability check below always reads state AT THE PARENT,
+	// under both depths: depth-2 does not change what a block's OWN
+	// transactions are validated against (that stays "the state left by the
+	// immediately preceding block"), only which ancestor's RESULT the
+	// header carries. So this stays keyed to parent, not refHeader -- a
+	// deliberate, documented simplification of 6f7's own "N's pending
+	// deltas" model: rather than projecting N's not-yet-executed effects
+	// against state(N-1), the check waits for N itself to apply (exactly
+	// today's depth-1 behaviour), which is always safe and costs nothing in
+	// steady state (execution is a pipeline stage that keeps pace with
+	// proposals under depth-2 -- 6f7 section 5).
 	if !bc.AppliedHeadIsExactly(parent.Hash(), number-1) {
-		return true, true, ErrDeferredParentNotApplied
+		return true, true, types.Hash{}, ErrDeferredParentNotApplied
 	}
 	// The applied marker moves AFTER the tree takes a block's appends, so the
 	// marker naming the parent is not proof that the tree is at the parent's
 	// post-state: an import in flight can already have written its rows. Under
-	// deferred execution the header carries that post-state (header N holds
-	// N-1's root), so the tree's root is the exact test.
-	if bc.qmdbEnabled && bc.qmdbRootComputer != nil {
+	// DEPTH-1 the header carries that exact post-state (header N holds N-1's
+	// root), so the tree's root is the exact test -- but under depth-2 the
+	// header carries the GRANDPARENT's root while the tree, once the parent
+	// is applied (just confirmed above), is already a generation ahead of
+	// that; the two are expected to differ, so this extra cross-check is
+	// depth-1 only. checkDeferredHeader's own comparison above (against the
+	// STORED result of refHeader, not the live tree) already covers depth-2
+	// correctly.
+	if !depth2Active && bc.qmdbEnabled && bc.qmdbRootComputer != nil {
 		if got := bc.qmdbRootComputer.RootLocked(); got != hdr.Root {
-			return true, true, fmt.Errorf("%w: the tree is at %x, the parent's post-state is %x",
+			return true, true, types.Hash{}, fmt.Errorf("%w: the tree is at %x, the parent's post-state is %x",
 				ErrDeferredParentNotApplied, got[:6], hdr.Root[:6])
 		}
 	}
-	return true, false, bc.checkSenderStates(number, plan)
+	return true, false, reference, bc.checkSenderStates(number, plan)
 }
 
 // deferredSender is one sender's transactions in block order.
