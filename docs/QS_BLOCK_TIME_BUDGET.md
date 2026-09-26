@@ -16296,3 +16296,26 @@ real state oscillates far faster (sub-second empty-to-full swings)
 than the sampler resolves, and most individual builds catch a
 mostly-drained pool between refill bursts; whenever material IS
 present the fill takes all of it with zero waste.
+
+## 6f4. S50b follow-up 2: the pauses are the deferred-execution gate, not TC/timeouts, and they exist (more) at tenure 4 too (2026-09-26)
+
+Inter-block gaps >1s (`blockimport phases` tMs, height-ordered, all
+nodes merged): B1win1+win2 **46 pauses, 70.7s total** (max 2325ms);
+B2win1+win2 **34 pauses, 50.5s total** (max 1982ms) -- no single 4-5s
+pause; many ~1.6-2.3s ones. Zero `view timed out`/`TC formed` events
+and zero `build stalled before fill` dumps in EITHER window, ruling
+both out. **Single most common cause: the deferred-execution gate**
+-- `"hotstuff: refusing block production on unexecuted committed
+parent"` / `"deferred production resumed after the parent applied"`
+(`internal/consensus/hotstuff/service.go:252,274,1751`): the leader
+holds off building v+1 until v's own execution/application finishes.
+Counted in-window: **34 events in B1's own win1+win2, 9 in B2's** --
+MORE frequent at tenure 4, not tenure 8. Sibling suppression/
+`sealed block dropped`: 1 occurrence total (node4, negligible).
+
+**Tenure 8 does not create these pauses -- it exposes fewer of them.**
+The gate is the same deferred-execution wait at both tenures; tenure
+8's own fewer hand-overs simply mean fewer views where a DIFFERENT
+node's own unapplied parent forces this particular leader to wait,
+so the pause count (and total seconds) falls from B1 to B2 rather
+than appearing newly at tenure 8.
