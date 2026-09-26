@@ -200,6 +200,17 @@ func isPoolBackpressure(msg string) bool {
 	return strings.Contains(msg, "above high water") || strings.Contains(msg, "txpool is full")
 }
 
+// waitForBarrier is the funding barrier's pure core: call onWait exactly
+// once, then poll exists via sleep until it reports true. Real callers pass
+// an os.Stat-backed exists and a time.Sleep-backed sleep; a test passes fakes
+// so it exercises the polling loop without a real file or a real wait.
+func waitForBarrier(exists func() bool, sleep func(), onWait func()) {
+	onWait()
+	for !exists() {
+		sleep()
+	}
+}
+
 // submitWithBackoff calls submit and, on a pool-backpressure error, retries
 // the SAME call (same nonce(s), nothing advances) after a backoff that
 // starts at 20ms and doubles to a 100ms ceiling -- mirroring n42-rs's own
@@ -580,6 +591,7 @@ func main() {
 	depthShare := flag.Int("depth-share", 1, "with -depth-by-blocks: this generator is one of N symmetric generators, so credit it with 1/N of each block's transactions (round 35r: eight generators each counted every block as their own, read the pool as empty, and pushed 12M transactions through a 300k pool)")
 	depthByNonceExact := flag.Bool("depth-by-nonce-exact", false, "with -target-depth -depth-by-nonce: replace the rotating per-sender chain-nonce accumulator with a fresh sample each second (-depth-sample-exact senders, one JSON-RPC batch call) extrapolated by its mean to every sender. -depth-by-nonce refreshes only depth-sample of up to -senders chain nonces a tick, so most senders' own mined count is up to a full sweep old and still counts already-mined transactions as in flight -- round 35zzzy read 3-6x high and capped a 300k target at 26-33% block fill. A same-tick sample has no such staleness")
 	depthSampleExact := flag.Int("depth-sample-exact", 100, "with -depth-by-nonce-exact: senders sampled fresh each second; a full sweep over -senders takes senders/depth-sample-exact seconds")
+	waitForFile := flag.String("wait-for-file", "", "a funding barrier: once this generator's own funding/pre-signing is done, print 'waiting for barrier' once and poll every 200ms for this file to exist before starting to flood. S49 (docs/QS_BLOCK_TIME_BUDGET.md 6f1/6f2): with N42_TX_INGEST_HIGH_WATER on, bench-run.sh's existing sequential start let the FIRST generator begin flooding (unthrottled) while later generators were still funding -- the first one alone held every node's pool at the high-water mark, so the later generators' own funding transactions were rejected forever (one generator recorded deferred=16,903,400 and never reached the flooding stage). bench-run.sh passes this flag to every generator and touches the file only once ALL of them report the barrier line, so funding for the whole fleet completes before any of them floods")
 	senders := flag.Int("senders", 0, "0=single faucet; N=fund+flood from N derived accounts")
 	perTx := flag.Int("pertx", 300, "txs per sender (multi-sender mode)")
 	count := flag.Int("count", 80000, "txs to submit (single-faucet mode)")
@@ -865,6 +877,21 @@ func main() {
 	if nf := atomic.LoadInt64(&nonceFailures); nf > 0 {
 		fmt.Fprintf(os.Stderr, "FATAL: %d senders had no usable nonce after retries; refusing to submit a partial benchmark load\n", nf)
 		os.Exit(1)
+	}
+	// Funding barrier (S49, docs/QS_BLOCK_TIME_BUDGET.md 6f1/6f2): funding is
+	// done and this generator is about to start flooding. If -wait-for-file is
+	// set, stop here until bench-run.sh has seen every generator reach this
+	// same point and releases them together -- otherwise the first generator
+	// to finish floods, unthrottled, while the others are still funding, and
+	// under N42_TX_INGEST_HIGH_WATER the first one alone can hold every node's
+	// pool at the mark, rejecting the others' own funding forever.
+	if *waitForFile != "" {
+		path := *waitForFile
+		waitForBarrier(
+			func() bool { _, err := os.Stat(path); return err == nil },
+			func() { time.Sleep(200 * time.Millisecond) },
+			func() { fmt.Println("waiting for barrier") },
+		)
 	}
 	fmt.Printf("flooding %d txs to %d node(s) (broadcast=%v conc=%d lazySign=%v)...\n", totalTxs, len(urls), *broadcast, *conc, *lazySign)
 	var idx int64 = -1
