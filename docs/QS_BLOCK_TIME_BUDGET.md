@@ -16701,6 +16701,32 @@ Once is ~2.0x faster than Twice (one apply's worth); Shared costs the
 same as Twice, confirming the guard itself adds no overhead -- exactly
 as designed for v1.
 
+**v1 live verification (35zzzak, N42_QMDB_SINGLE_FOLD=1 every leg, env
+confirmed on B2):** `"qmdb single-fold guard"` never appears on any of
+the seven nodes -- not a failure: it prints only on a mismatch or every
+1000th call, and the busiest leader led 875 blocks over the round
+(392-875/node), under the threshold either way. Proof of zero
+mismatches instead: `"live QMDB tree root...does not reproduce sealed
+root"`, the SAME hard-abort string both the guard and the pre-existing
+check use, appears zero times across all seven full logs, and the
+round finished ROUND DONE. `role:leader` `blockwrite phases` entries
+show nonzero `root2` on every node, confirming the code path ran.
+Verdict: 0 mismatches by the strongest available signal (a hard
+abort's total absence); the periodic counter itself was never actually
+observed -- v1's 1000-call threshold was a design gap at this round's
+own scale.
+
+**v2: not implemented, stopped.** "The live tree adopts the
+speculative tree's result" needs a REVERSE of `AdoptOwnAppends`
+(bookkeeping only, no twig data moves, `qmdb_root_computer.go:696-728`):
+nothing today lets the LIVE tree take the ISOLATED tree's own unflushed
+appends. The lowest-risk shape -- swapping which `*QMDBRootComputer`
+`bc.qmdbRootComputer` points to -- touches every concurrent reader
+(`LockReaders`/`RootLocked`, CheckDeferredBlock) and internal state
+built for the other role; verifying that safely is a multi-round
+undertaking, not a same-reply extension. Per S40's own precedent:
+reporting what is needed, not a partial swap in consensus state.
+
 ## 6fa. S59: sender recovery off the executor's shared CPU budget -- N42_HINT_RECOVERY_POOL + a single-recovery guarantee, n42-r104 (2026-09-26)
 
 **(1) Six call sites** invoke `transaction.Sender`/`CachedSender` for
