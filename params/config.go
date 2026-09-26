@@ -339,6 +339,18 @@ type ChainConfig struct {
 	// transactions are includable against that post-state. Nil = never.
 	DeferredExecutionTime *big.Int `json:"deferredExecutionTime,omitempty"`
 
+	// DeferredExecutionDepth2Time (S55, docs/QS_BLOCK_TIME_BUDGET.md 6f7)
+	// deepens deferred execution by one more block: from a block whose
+	// timestamp is at or past it, the header's Root, ReceiptHash, Bloom and
+	// GasUsed are the GRANDPARENT's executed values, not the parent's --
+	// the leader no longer needs the parent's execution to propose, only
+	// the grandparent's, which every node already has once the grandparent
+	// is imported (no speculation, even at a tenure hand-over). Requires
+	// DeferredExecutionTime to already be active (depth-2 is a deepening of
+	// depth-1, not a replacement); before this time, or when nil, every
+	// deferred-execution block uses depth-1 exactly as before. Nil = never.
+	DeferredExecutionDepth2Time *big.Int `json:"deferredExecutionDepth2Time,omitempty"`
+
 	// StateScheme determines the state commitment algorithm for Header.Root.
 	// Set at genesis, immutable thereafter. Nodes MUST refuse to start if the
 	// configured scheme does not match the database.

@@ -29,12 +29,12 @@ type deferredResult struct {
 	err     error
 }
 
-func (c *deferredTestChain) CheckDeferredBlock(block.IBlock) (bool, bool, error) {
+func (c *deferredTestChain) CheckDeferredBlock(block.IBlock) (bool, bool, types.Hash, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	r := c.results[min(c.calls, len(c.results)-1)]
 	c.calls++
-	return r.checked, r.retry, r.err
+	return r.checked, r.retry, types.Hash{}, r.err
 }
 
 func (c *deferredTestChain) callCount() int {
@@ -57,7 +57,7 @@ func (n *recordingNotifier) NotifyBlockImported(types.Hash, types.Hash) {
 	n.mu.Unlock()
 }
 
-func (n *recordingNotifier) NotifyBlockChecked(hash, parent types.Hash) {
+func (n *recordingNotifier) NotifyBlockChecked(hash, parent, _ types.Hash) {
 	n.mu.Lock()
 	n.checked = append(n.checked, [2]types.Hash{hash, parent})
 	n.mu.Unlock()

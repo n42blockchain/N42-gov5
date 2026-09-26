@@ -171,7 +171,7 @@ func (s *Service) deferredCheck(blk block.IBlock) {
 	if contentionDiagEnabled {
 		tChkStart = timeNowMs()
 	}
-	checked, retry, err := checker.CheckDeferredBlock(blk)
+	checked, retry, reference, err := checker.CheckDeferredBlock(blk)
 	if contentionDiagEnabled {
 		if b, ok := blk.(interface{ SetCheckStamps(int64, int64) }); ok {
 			b.SetCheckStamps(tChkStart, timeNowMs())
@@ -182,7 +182,7 @@ func (s *Service) deferredCheck(blk block.IBlock) {
 	}
 	if err == nil {
 		log.Info("deferred check: block passes, vote may proceed before its import", "number", blk.Number64().Uint64(), "hash", blk.Hash().Hex()[:12], "tMs", time.Now().UnixMilli())
-		s.cfg.blockImportNotifier.NotifyBlockChecked(blk.Hash(), blk.ParentHash())
+		s.cfg.blockImportNotifier.NotifyBlockChecked(blk.Hash(), blk.ParentHash(), reference)
 		return
 	}
 	if retry {

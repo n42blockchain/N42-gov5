@@ -396,6 +396,13 @@ func (e *ConsensusEngine) deferredAttested(blockHash types.Hash) bool {
 	if !e.checkedBlocks[blockHash] {
 		return false
 	}
+	// S55 (6f7): under depth-2, checkedReference carries the grandparent --
+	// the ancestor the header actually carries the execution result of --
+	// instead of the literal parent. Zero (unset) means depth-1: fall back
+	// to importedParents, unchanged from before this existed.
+	if ref, ok := e.checkedReference[blockHash]; ok && ref != (types.Hash{}) {
+		return e.importedBlocks[ref]
+	}
 	parent, ok := e.importedParents[blockHash]
 	return ok && parent != (types.Hash{}) && e.importedBlocks[parent]
 }
@@ -429,12 +436,21 @@ func (e *ConsensusEngine) castHeldCommitVoteIfAttested(blockHash types.Hash, gat
 
 // onBlockChecked records a block the service verified under deferred
 // execution and votes for it if its parent is already imported.
-func (e *ConsensusEngine) onBlockChecked(blockHash types.Hash, parentHash types.Hash) error {
+//
+// referenceHash (S55, 6f7): the ancestor deferredAttested must see imported
+// for THIS block, when it differs from parentHash -- the grandparent, once
+// depth-2 is active for blockHash's own header time. Zero under depth-1
+// (parentHash alone serves both extendsJustify and deferredAttested there).
+// Stored SEPARATELY from importedParents so extendsJustify, which also
+// reads importedParents for the literal parent-child chain link, is never
+// handed a grandparent by mistake.
+func (e *ConsensusEngine) onBlockChecked(blockHash, parentHash, referenceHash types.Hash) error {
 	if !e.checkedBlocks[blockHash] {
 		if len(e.checkedFIFO) >= MaxImportedBlocks {
 			oldest := e.checkedFIFO[0]
 			e.checkedFIFO = e.checkedFIFO[1:]
 			delete(e.checkedBlocks, oldest)
+			delete(e.checkedReference, oldest)
 			if !e.importedBlocks[oldest] {
 				delete(e.importedParents, oldest) // recorded here for the extends-check only
 			}
@@ -444,6 +460,9 @@ func (e *ConsensusEngine) onBlockChecked(blockHash types.Hash, parentHash types.
 	}
 	if parentHash != (types.Hash{}) {
 		e.importedParents[blockHash] = parentHash // the extends-check reads it
+	}
+	if referenceHash != (types.Hash{}) {
+		e.checkedReference[blockHash] = referenceHash
 	}
 	_, err := e.tryDeferredVote(e.roundState.CurrentView())
 	e.castHeldCommitVoteIfAttested(blockHash, "checked")

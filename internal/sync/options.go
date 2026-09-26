@@ -55,8 +55,11 @@ type BlockImportNotifier interface {
 	NotifyBlockImported(hash types.Hash, txHash types.Hash)
 	// NotifyBlockChecked: deferred execution -- the block passed the
 	// pre-execution check (DeferredBlockChecker) and can be voted for once
-	// its parent is imported.
-	NotifyBlockChecked(hash types.Hash, parent types.Hash)
+	// its parent is imported. reference (S55, depth-2, 6f7) is the ancestor
+	// the header's execution fields actually match -- the grandparent once
+	// depth-2 is active for this block, zero otherwise (depth-1: parent
+	// alone is used, as before).
+	NotifyBlockChecked(hash, parent, reference types.Hash)
 	// NotifyBlockRejected: the block failed validation on import; withdraw
 	// any pre-import vote evidence for it.
 	NotifyBlockRejected(hash types.Hash)
@@ -71,9 +74,12 @@ type BlockImportNotifier interface {
 
 // DeferredBlockChecker is implemented by the chain under deferred
 // execution: checked is false before the fork; retry asks for the check to
-// run again once the block's parent is applied.
+// run again once the block's parent is applied. reference (S55, depth-2,
+// 6f7) is the ancestor the header's execution fields actually match, when
+// it differs from the block's own parent (the grandparent under depth-2);
+// zero under depth-1.
 type DeferredBlockChecker interface {
-	CheckDeferredBlock(blk block.IBlock) (checked, retry bool, err error)
+	CheckDeferredBlock(blk block.IBlock) (checked, retry bool, reference types.Hash, err error)
 }
 
 // WithBlockImportNotifier sets a notifier called after gossip blocks are imported.

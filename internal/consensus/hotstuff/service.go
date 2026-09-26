@@ -1693,9 +1693,9 @@ func (s *Service) NotifyBlockRejected(hash types.Hash) {
 // (its header carries this node's result of the parent; its transactions
 // are includable), so the engine may vote for it as soon as the parent is
 // imported.
-func (s *Service) NotifyBlockChecked(hash types.Hash, parent types.Hash) {
+func (s *Service) NotifyBlockChecked(hash, parent, reference types.Hash) {
 	if ce := s.engine.Engine(); ce != nil {
-		if err := ce.ProcessEvent(ConsensusEvent{Type: EventBlockChecked, Hash: hash, ParentHash: parent}); err != nil {
+		if err := ce.ProcessEvent(ConsensusEvent{Type: EventBlockChecked, Hash: hash, ParentHash: parent, ReferenceHash: reference}); err != nil {
 			log.Debug("hotstuff: EventBlockChecked processing failed", "hash", hash, "err", err)
 		}
 	}

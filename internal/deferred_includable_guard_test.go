@@ -67,7 +67,7 @@ func TestDeferredCheckRetriesWhenTheTreeHasMovedOn(t *testing.T) {
 	bc, _, child := guardChain(t, false)
 	blk := block.NewBlock(child, nil)
 
-	checked, retry, err := bc.CheckDeferredBlock(blk)
+	checked, retry, _, err := bc.CheckDeferredBlock(blk)
 	if !checked {
 		t.Fatal("a post-fork block must be checked")
 	}
@@ -85,7 +85,7 @@ func TestDeferredCheckPassesWithTheTreeAtTheParent(t *testing.T) {
 	bc, _, child := guardChain(t, true)
 	blk := block.NewBlock(child, nil)
 
-	checked, retry, err := bc.CheckDeferredBlock(blk)
+	checked, retry, _, err := bc.CheckDeferredBlock(blk)
 	if !checked || retry || err != nil {
 		t.Fatalf("checked=%v retry=%v err=%v", checked, retry, err)
 	}
@@ -108,7 +108,7 @@ func TestDeferredCheckSkipsABlockAlreadyApplied(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	checked, retry, err := bc.CheckDeferredBlock(blk)
+	checked, retry, _, err := bc.CheckDeferredBlock(blk)
 	if !checked || retry || err != nil {
 		t.Fatalf("an applied block must pass without a state read: checked=%v retry=%v err=%v", checked, retry, err)
 	}
