@@ -132,47 +132,48 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 	// single endpoint. A batch also engages the pool's parallel sender
 	// pre-warm, which a size-1 add cannot.
 	poolSigner := transaction.LatestSignerForChainID(s.api.GetChainConfig().ChainID)
-	hs := make([]avmcommon.Hash, len(inputs))
-	txs := make([]*transaction.Transaction, 0, len(inputs))
-	slot := make([]int, 0, len(inputs))
-	var firstErr error
-	for i, t := range inputs {
+	signer := transaction.MakeSignerWithTimestamp(s.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()), currentBlock.Time())
+	// S53 (docs/QS_BLOCK_TIME_BUDGET.md 6f6): decode + sender recovery (the
+	// ~50us/tx ECDSA cost) spread over N42_INGEST_WORKERS instead of one
+	// goroutine doing all 200 entries serially -- off (0/1) reproduces
+	// exactly the old loop below, in order, entry by entry.
+	processOne := func(_ int, t hexutil.Bytes) (*transaction.Transaction, error) {
 		if len(t) == 0 {
-			if firstErr == nil {
-				firstErr = errors.New("empty transaction data")
-			}
-			continue
+			return nil, errors.New("empty transaction data")
 		}
 		metaTx, err := transaction.DecodeEthereumTransaction(t)
 		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
+			return nil, err
 		}
 		if err := validateTransactionInitCodeSize(metaTx, rules); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
+			return nil, err
 		}
-		signer := transaction.MakeSignerWithTimestamp(s.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()), currentBlock.Time())
 		from, err := transaction.Sender(signer, metaTx)
 		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
+			return nil, err
 		}
 		metaTx.SetFrom(from)
 		seedRecoveredSender(metaTx, poolSigner)
 		if err := checkTxFee(*metaTx.GasPrice(), metaTx.Gas(), baseFee); err != nil {
+			return nil, err
+		}
+		return metaTx, nil
+	}
+	workers, jobs := ingestWorkers()
+	results := processBatchEntries(inputs, workers, jobs, processOne)
+
+	hs := make([]avmcommon.Hash, len(inputs))
+	txs := make([]*transaction.Transaction, 0, len(inputs))
+	slot := make([]int, 0, len(inputs))
+	var firstErr error
+	for i, r := range results {
+		if r.err != nil {
 			if firstErr == nil {
-				firstErr = err
+				firstErr = r.err
 			}
 			continue
 		}
-		txs = append(txs, metaTx)
+		txs = append(txs, r.tx)
 		slot = append(slot, i)
 	}
 	if len(txs) > 0 {
