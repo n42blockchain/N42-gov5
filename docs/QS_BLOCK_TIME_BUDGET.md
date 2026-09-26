@@ -16701,3 +16701,53 @@ Once is ~2.0x faster than Twice (one apply's worth); Shared costs the
 same as Twice, confirming the guard itself adds no overhead -- exactly
 as designed for v1.
 
+## 6fa. S59: sender recovery off the executor's shared CPU budget -- N42_HINT_RECOVERY_POOL + a single-recovery guarantee, n42-r104 (2026-09-26)
+
+**(1) Six call sites** invoke `transaction.Sender`/`CachedSender` for
+one transaction on one node: RPC ingest (`internal/api/api_transaction.go`
+`SendRawTransaction`/`BatchRawTransaction`'s `processOne`), the hint feed
+(`internal/ingest/server.go:111-127` `hintWorker`), the pool's
+`prewarmSenders` (usually a cache hit after RPC ingest seeds it),
+`deferredTxPlan` (`internal/deferred_includable.go`), the import's own
+`applySenderHints`/`recoverBlockSenders{,Async}` (`internal/sender_recovery.go:119-306`,
+fanned out at `senderRecoveryFanout()` -- PLAIN goroutines sized ~75% of
+GOMAXPROCS, line 94-106), and the executor's own `SetAffinity` fallback
+(`internal/parallel_processor.go:418-429`, only if `tx.From()` is nil).
+All six share one two-tier cache (`tx.from` per-object memo; the
+process-wide, hash-keyed `senderCache`), so a real recovery happens once
+per node in the common case -- but the cache is a fixed-size, two-way
+table (2^22 slots), so eviction under load forces repeats, and two
+callers that BOTH miss at once both pay for a real recovery today:
+nothing prevented that before this step. `recoverBlockSendersAsync`
+(line 223-238) explicitly OVERLAPS its own fan-out with block EXECUTION
+on the SAME GOMAXPROCS-wide OS-thread budget the executor's parallel
+workers use -- no separate pool exists at the OS level in pure Go. That
+sharing is 6f8's own 31.8%-of-profile finding.
+
+**Per-recovery cost** (isolated, `taskset -c 200-207`): full path (signing
+hash + `crypto.Ecrecover` + address keccak) **28.95us**; raw `Ecrecover`
+alone **28.11us** -- curve math dominates, ~0.8us of hashing/allocation on
+top. Below the ~50us figure quoted elsewhere: the gap is CONTENTION, not
+per-call work, confirmed below.
+
+**(2)** `N42_HINT_RECOVERY_POOL=<n>` (unset = today): hint-feed and
+single-tx RPC-ingest recovery route through `transaction.RecoverOnPool`
+(`common/transaction/recover_deduped.go`), a bounded, dedicated pool of n
+goroutines, instead of inline on whichever goroutine got there first.
+`RecoverSenderDeduped` is the single-recovery guarantee: a 1024-way
+striped lock per hash serializes same-hash callers, re-checking the
+cache after acquiring the stripe, so a loser gets the winner's cached
+result -- applied to all three sites in scope even with the pool off.
+
+**Benchmarks** (`taskset -c 200-207`): pool size 4 -> **124,864
+recoveries/s**; size 8 -> **235,226 recoveries/s** (near-linear). Executor
+interference (`BenchmarkParallelBlockTransfers{,Interference}`, 20,000
+transfers, isolated runs): **91.7ms/op** vs **116.7ms/op** with a ~150k/s
+background recovery load -- a **27.2% slowdown**, matching 6f8's profile
+share in shape, not exact percentage.
+
+Tests: single-recovery guarantee under 64-way concurrency (exactly 1 real
+call), independent hashes don't serialize, pool-on/off parity, plus the
+full pre-existing suites, all `-race` clean. n42-r104 = r103's file set
++ this diff; sha256 3266583f71a1 vs r103's 32e64e3907d8. Not launched.
+
