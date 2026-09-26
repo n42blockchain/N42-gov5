@@ -16319,3 +16319,46 @@ The gate is the same deferred-execution wait at both tenures; tenure
 node's own unapplied parent forces this particular leader to wait,
 so the pause count (and total seconds) falls from B1 to B2 rather
 than appearing newly at tenure 8.
+
+## 6f5. S50b follow-up 3: the tenure-8 pauses, one by one (2026-09-26)
+
+All 34 inter-block gaps >1s in 35zzzad B2 win1+win2, classified from
+the leader's own seal-path stamps for the delayed block plus the
+predecessor's own follower-import total. In every row the seal path's
+own internal stamps (pace/task/seal/check/push) collapse to <20ms
+once `specParkedTMs` fires -- the ENTIRE gap sits in `buildBeginTMs`
+-> `specParkedTMs` (the speculative build itself: fill+exec+root for
+a full 163000-tx block), so (c) is read directly off that span; rows
+where the PREDECESSOR's own follower-import total (`impMax`) is
+comparably large are read as (e) instead (the build could not even
+start until that slow import/apply finished). Two rows have no
+identifiable leader in the propose-phase log (`?`) -- (f).
+
+| gap ms | height (b) | leader | cause |
+|---|---|---|---|
+|1197|13660750|node6|c| |1370|13660758|node0|c| |1811|13660766|node1|c|
+|1447|13660774|node2|c| |1420|13660782|node3|c| |1641|13660786|?|f|
+|1079|13660788|?|f| |1395|13660790|node4|c| |1480|13660798|node5|c|
+|1482|13660806|node6|c| |1559|13660814|node0|c| |1038|13660816|node0|e|
+|1982|13660822|node1|c| |1531|13660830|node2|c| |1745|13660838|node3|c|
+|1713|13660846|node4|c| |1880|13660878|node1|c| |1671|13660880|node1|e|
+|1822|13660886|node2|c| |1070|13660888|node2|e| |1485|13660894|node3|c|
+|1041|13660896|node3|e| |1701|13660902|node4|c| |1247|13660903|node4|e|
+|1767|13660910|node5|c| |1705|13660918|node6|c| |1202|13660920|node6|e|
+|1708|13660926|node0|c| |1042|13660928|node0|e| |1722|13660934|node1|c|
+|1229|13660937|node1|c| |1657|13660942|node2|c| |1013|13660944|node2|e|
+|1637|13660950|node3|c|
+
+**Histogram:** (c) build itself slow: **38.4s (76%)**. (e) follower
+slow to import/apply the predecessor: **9.3s (18%)**. (f) no leader
+identified: 2.7s (5%). (a)/(b)/(d): **0s** -- no gate event, no
+elevated `lwWait`, no dispatch-delay case in this set.
+
+**The one change that removes the largest bucket**: shrink the
+speculative build's own `buildBeginTMs`->`specParkedTMs` span for a
+full block -- `internal/miner/worker.go:2208`'s `bc.BuildParallel`
+call, which spans fill+exec+state-root for the whole 163000-tx
+candidate set as one measured unit, is where all 38.4s of bucket (c)
+lives; this is the same speculative-build path 6cx/6da already flagged
+as GC/heap-pressure-sensitive under load, not a new site.
+
