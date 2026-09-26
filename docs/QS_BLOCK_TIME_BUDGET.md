@@ -16660,3 +16660,44 @@ single batched engine-insert.
    ms unknown until measured. Risk: UNKNOWN, lowest confidence,
    listed for completeness only.
 
+## 6f9. S58: the leader's QMDB apply+fold, computed twice -- N42_QMDB_SINGLE_FOLD v1 proves equivalence, n42-r103 (2026-09-26)
+
+**(1)** `qmdb_root_computer.go:762-839` (`ComputeRoot`): a block's dirty
+set becomes sorted `qmdb.Op`s, then `ApplyOps` (leaf writes, SIMD-batched,
+marks twigs dirty, ends folded) and `Root()` (a cached read once
+applied -- confirmed by this step's own benchmark: foldNs is 50-110ns
+against applyNs 10-15ms). The leader calls this TWICE for one block, on
+TWO tree instances: once on the isolated speculative tree (`bc.minerRC`,
+6du -- speculative builds must not touch the live tree) during the
+build, again on the live tree during the write, replaying the identical
+snapshotted ops (`ibs.LastRootDirtySet()`, `internal/blockchain_write.go:411-448`)
+so the write can compare `liveRoot != sealedRoot` before persisting
+anything. Duplicated is the APPLY (leaf writes + SIMD hashing + dirty
+marking on a second tree), not fold -- already nearly free. No guard is
+"missing" as in absent; `liveRoot != sealedRoot` IS the guard, but it
+only works by paying for both computations -- no cheap way today to
+trust the shared value without redoing the second one.
+
+**(2)** `N42_QMDB_SINGLE_FOLD=1` (unset = today): `ComputeRootShared`
+(qmdb_root_computer.go) takes the isolated build's own `sealedRoot`;
+v1 still runs the full second computation to verify it -- `matched bool`
+plus atomic counters (`qmdbSingleFoldMatches`/`Mismatches`,
+`QMDBSingleFoldCounts()`), logged every 1000 blocks or on any mismatch.
+Never absorbed: the write-path abort fires exactly as today. v1 proves
+equivalence live, WITHOUT yet banking the ~59ms/block -- a later round
+trusts the counters and skips the live tree's own computation.
+
+**Benchmark** (`BenchmarkQMDBRootCompute{Twice,Once,Shared}`, 31k-account
+dirty set matching a 163k-transfer block's own mutation count, `taskset
+-c 200-207 nice -n 19`, `-benchtime=3x -benchmem`):
+
+| shape | ms/op | B/op | allocs/op |
+|---|---|---|---|
+| Twice (today) | 48.6 | 52.7M | 196,798 |
+| Once (achievable) | 24.2 | 27.4M | 103,588 |
+| Shared (v1, this switch) | 47.5 | 52.7M | 196,799 |
+
+Once is ~2.0x faster than Twice (one apply's worth); Shared costs the
+same as Twice, confirming the guard itself adds no overhead -- exactly
+as designed for v1.
+
