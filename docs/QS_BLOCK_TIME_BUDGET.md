@@ -16263,3 +16263,36 @@ is the soft ceiling) before raising rate further -- pushing rate alone
 without more concurrent RPC capacity only feeds the SAME 84%-efficient
 pipe harder, which is what accumulates the ~600k pending pile (queued
 71-92k) already over the predicted band in both legs.
+
+## 6f3. S50b follow-up: at tenure 8 the pool is not continuously full -- per-block txs alternate between near-instant empty blocks and occasional genuinely full ones (2026-09-26)
+
+Raw per-block trace (node0, `blockimport phases` `txs`, B2 window)
+contradicts a uniform "half-full every 0.65s" read: heights advance
+by 3-5 per SECOND at times, most near-empty (0-30k), interleaved with
+occasional 163000-tx blocks (e.g. 02:23:39-45: 163000,163000,163000,
+87000,0,0,29600 all within 6s) -- the reported 0.65s/26-28% occupancy
+is an average over this bursty mix, not a steady per-block state.
+`miner: parallel fill`: whenever it fires, candidates=included=163000
+with ZERO nonceHigh/nonceLow/other drops -- the fill mechanism uses
+ALL available material completely; it is never the constraint.
+`pending snapshot`/`txpool reorg phases`: only 2 reorg events in the
+whole window, `pendingAccts` **17 and 46** (of 8000 funded senders) --
+the pool's own currently-promoted set is tiny even while `vm.log`'s
+10s sampler shows a 600k peak elsewhere in the same leg (`worker.go`
+2103-2217: fill budget, size limiter, `Pending(false)` snapshot; no
+candidate cap or wave/time-budget limit is what trims here -- 0 drops
+rules that code path out). Speculative build fires normally at
+tenure 8 (`specParkedTMs`>0 in 161/170 seal-path lines, 95%) -- ruling
+out (i), the snapshot excluding in-flight blocks is not suppressing
+fills. `queued` 70-92k: B2's own flood files show **zero submission
+errors** (no underpriced, no batch failures) -- the gap is promotion
+lag on naturally out-of-order arrival under `conc=96`, not generator
+nonce-skipping on error.
+
+**Answer: (iv) supply.** The pool is not continuously full at the
+moment each block is actually built -- `vm.log`'s 10s sampler catches
+a brief 600k peak, but the finer-grained per-block trace shows the
+real state oscillates far faster (sub-second empty-to-full swings)
+than the sampler resolves, and most individual builds catch a
+mostly-drained pool between refill bursts; whenever material IS
+present the fill takes all of it with zero waste.
