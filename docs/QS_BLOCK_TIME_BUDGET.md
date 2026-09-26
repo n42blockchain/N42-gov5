@@ -16751,3 +16751,34 @@ call), independent hashes don't serialize, pool-on/off parity, plus the
 full pre-existing suites, all `-race` clean. n42-r104 = r103's file set
 + this diff; sha256 3266583f71a1 vs r103's 32e64e3907d8. Not launched.
 
+## 6fb. S60: the tx-hash tail's keep window, made configurable -- N42_TXINDEX_KEEP_BLOCKS, n42-r105 (2026-09-26)
+
+`internal/txindexer/indexer.go`: the tail (`internal/txlookup/tail.go`)
+holds hash -> block-number for the newest blocks in a map PLUS a parallel
+`[][]types.Hash` for ordered sealing; `SealRangeKeepTx` keeps
+`min(keepBlocks=64, blocks that fit keepTx=1,000,000 tx)` behind the seal
+point. At this fleet's 163k-tx blocks that is empirically ~1.1 GB (the
+code's own cited ratio, 6dm). Shrinking `keepBlocks` WIDENS the sealable
+range (fewer newest blocks held back), which can make seals fire on a
+different cadence relative to `txIndexSealMinTx` (1,000,000) -- the
+interaction part (2) asked about, confirmed by `TestSealRangeKeepBlocksInteraction`.
+Cost of a smaller window: a lookup for a tx older than the window falls
+to the sealed segment (`x.txSegments.Lookup` + a block-body confirm
+scan, `indexer.go:132-152`) instead of a map hit -- slower, not wrong.
+qs bench need (grepped `scripts-qs/` + `cmd/txflood`): one
+`eth_getTransactionReceipt` per generator for its own just-submitted
+funding tx (`cmd/txflood/main.go:794`) -- always the newest block, safe
+at any window down to 1.
+
+Added `N42_TXINDEX_KEEP_BLOCKS` (default 64) and `N42_TXINDEX_SEAL_MIN_TX`
+(default 1,000,000), read once per seal tick; nothing else changed.
+
+**Arithmetic** (163k-tx blocks, ~105 B/hash from the code's own cited
+1.1 GB / 10.432M hashes): 64 blocks = 10.432M hashes ~= **1.10 GB**; 8
+blocks = 1.304M hashes ~= **0.137 GB** -- a **0.96 GB (~87%) reduction**.
+
+Tests: env-knob default/override, the keepBlocks/seal-min interaction
+above; full `internal/txindexer` + `internal/txlookup` suites, `-race`
+clean. n42-r105 = r104's file set + this diff; sha256 c732069daba9 vs
+r104's 3266583f71a1. Not launched.
+
