@@ -16439,3 +16439,120 @@ pre-existing, unrelated drift n42-r101's own build already had. sha256
 Not launched: build-only per this step's own scope; a round is queued
 by the commander separately.
 
+## 6f7. S55 spec: depth-2 deferred execution -- header N+1 carries the results of N-1 (2026-09-26)
+
+Read-only. Thesis (docs/QS_CEILINGS_AND_BREAKTHROUGHS.md L3, 6bg/6bh):
+the ~190k engine ceiling is depth-1's own leader path, pick+exec+root
+(~570-650ms, 6cw). Depth-2 removes exec+root from that path entirely.
+
+**1. Depth-1 today.** `ChainConfig.DeferredExecutionTime` (params/config.go:331-340,
+gate `IsDeferredExecution`, params/config_rules.go:455-457): from the
+fork, header N's Root/ReceiptHash/Bloom/GasUsed are node's own executed
+result of N-1, not N's. Storage + lookup: `rawdb.ExecutedResult`,
+`ExecutedResultOfHeader`/`checkDeferredHeader` (internal/deferred_execution.go:29-70).
+Leader's build stamps it via `worker.parentExecutedResult`
+(internal/miner/worker.go:2747-2767): checks `w.sealedExec[parent]` (this
+node's OWN sealed-but-maybe-unwritten result, set at internal/miner/worker.go:1106
+when a build seals) before falling back to a stored result -- this is
+"the own speculative post-state" path, in-tenure only (chained on a
+FOREIGN unwritten parent has no such record: the S38/S40 blocker, 6du).
+Follower vote gate: `CheckDeferredBlock` (internal/deferred_includable.go:38-101)
+checks the header against the parent's stored result (`checkDeferredHeader`,
+line 66) and the block's own includability (`deferredTxPlan`+`checkSenderStates`,
+lines 75/100, same-block credit model already at lines 103-113); it
+requires `AppliedHeadIsExactly(parent, N-1)` (line 86) -- i.e. N-1
+IMPORTED here -- returning `ErrDeferredParentNotApplied`/retry=true
+otherwise. `deferredAttested` (internal/consensus/hotstuff/proposal.go:395-401)
+gates the Round-2 vote on `checkedBlocks[N] && importedBlocks[parent(N)]`;
+`castHeldCommitVoteIfAttested` (line 408) releases a parked vote once
+either that or a full import is true. InsertChain re-checks the same
+header rule authoritatively at import time (internal/blockchain.go:2415-2429,
+`ErrPrunedAncestor` on a not-yet-applied parent). None of this touches
+`extendsJustify` (proposal.go:688, parent==JustifyQC block) or
+`sealedOnParent`/`recordSealedOnParent` (internal/miner/worker.go:310-319,1202-1208,
+one seal per parent) -- both are pure chain-structure guards, blind to
+execution depth.
+
+**2. Depth-2, minimal diff.** (a) Header N+1 carries N-1's result. The
+leader's build needs root(N-1) to stamp N+1 -- every node HAS it once
+N-1 is imported (no speculation: `parentExecutedResult` degenerates to
+its storage-read branch always; the `sealedExec` own-post-state path,
+and the S38/S40 foreign-unwritten-parent blocker, retire). (b)
+`deferredTxPlan`/`checkSenderStates` extend from one pending block's
+credits to two: N+1's includability reads state(N-1) plus N's OWN
+pending deltas (not yet applied) plus N+1's own same-block credits --
+`deferredSender.credit` (deferred_includable.go:112) becomes a
+two-block accumulator; nonce continuity must span N's assigned nonces
+before N+1's. (c) `deferredAttested` becomes `checkedBlocks[N+1] &&
+importedBlocks[grandparent(N+1)]` -- walk `importedParents` twice, or
+add `importedGrandparents` alongside it (proposal.go:399); a vote for
+N+1 no longer implies N's own import, only N's own CHECK (its header
+already passed CheckDeferredBlock when N was proposed). (d) exec/commit
+of N is unchanged, just no longer on N+1's proposal path; per-node
+ordering is free because the import pipeline is already sequential per
+node (one InsertChain at a time) -- nothing new enforces exec(N) before
+exec(N+1) starts, the existing pipeline does. (e) Fork transition: block
+F (first deferred-2 block) carries F-1's OLD-rule own fields (like
+depth-1's own first block, deferred_execution.go:21-24); F+1 is the
+first header actually carrying a DIFFERENT block's (F-1's) result --
+the two-block run-up needs the same "nil = pre-fork" fallback
+`ExecutedResultOfHeader` already has (line 30). (f) extendsJustify /
+sealedOnParent / recordSealedOnParent: unchanged, confirmed above they
+are depth-blind; replay hotstuff's own chaos/interop tests plus
+CheckDeferredBlock's existing suite (internal/deferred_includable_test.go
+if present, else new) against a 2-deep fixture.
+
+**3. Failure modes.** A tx in N+1 that N's OWN execution later
+invalidates (nonce reuse/balance drain): under Ethereum semantics this
+is either excluded by (b)'s extended check (nonce/balance provably bad
+against the two-block plan) or it executes and fails, paying gas --
+never a state-root mismatch, since N+1's stamped root is N-1's, not
+N's; the delta-credit rule must treat N's txs as PROVISIONAL debits
+(worst case: all of N's txs from a sender succeed) so N+1 never
+under-charges. Reorg: if N is not committed (timed out/lost a view) but
+N+1 was built assuming N's deltas, N+1 fails the same `extendsJustify`/
+parent-linkage check today's sibling case already fails (unchanged,
+1) -- dropped, not executed. A leader that has not imported N-1 (a
+hand-over after catch-up): refuses to propose, the same
+`ErrDeferredParentNotApplied`/retry path `CheckDeferredBlock` already
+uses for a lagging follower (line 87), now checked at BUILD time too.
+
+**4. Joint header rule (n42-rs).** "From fork time T, header height H's
+Root, ReceiptsRoot, LogsBloom and GasUsed are the node's own executed
+result of block H-2 (not H-1); a node applies H's transactions against
+its own result of H-2 plus the pending nonce/balance deltas of H-1 and
+H itself; a header at H is accepted once H-2 is applied locally, H-1's
+own header has been validated (not necessarily applied), and H's own
+transactions pass that two-block includability check." Their side
+already treats "vote = validated, not executed" as the guarantee
+(6bg); they would extend their own includability window by one block
+the same way, gaining vote-to-propose slack but nothing on the leader
+path (their cycle is already execution-bound, 6f0).
+
+**5. Expected numbers.** Leader path per block: pick ~60 + push ~20 +
+PrepareQC round ~60-170 (6dj/6dt) ~= 150-250ms, execution off the path
+entirely. Execution stage per node: exec 340 + root 147 + write 195-215
+(6cw/6dx, unless L6 lands first) ~= 490-540ms, now a PIPELINE stage
+that must merely keep up, not a critical-path term. Cycle =
+max(path, stage) ~= 490-540ms -> ~300-330k tx/s at 163k tx/block,
+matching n42-rs's own 0.577s/280k shape (their cycle IS their exec
+time, 6f0). At today's ~50% occupancy (supply-bound, L1/L2) the B mean
+would track supply, not the engine, same as now -- the doubling shows
+up only once L1/L2 also clear ~150k+.
+
+**6. Prototype plan.** `N42_DEFERRED_EXECUTION_DEPTH=2` (unset/1 =
+today), same env+ChainConfig pattern as `DeferredExecutionTime`
+(params/config.go:331-340, internal/blockchain.go:3786-3805). Files:
+internal/deferred_execution.go (~40 lines, depth-2 walk),
+internal/deferred_includable.go (~60 lines, two-block plan +
+grandparent applied-check), internal/consensus/hotstuff/proposal.go
+(~20 lines, `deferredAttested` grandparent walk), internal/miner/worker.go
+(~15 lines, `parentExecutedResult` storage-only; `sealedExec` dead
+behind the switch, not removed). ~150-200 lines + tests: unit (two-block
+credit math, nonce continuity across N/N+1, fork fixture, grandparent
+`deferredAttested`), multi-node engine harness (commit before N;
+timeout drops N+1 via extendsJustify; hand-over with N-1 but not N;
+catch-up leader missing N-1 refuses). Stop condition: n42-rs not
+agreeing to the joint rule -- a header-format change, and a mixed-depth
+fleet forks at the first disagreement.
+
