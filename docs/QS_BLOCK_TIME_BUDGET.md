@@ -16362,3 +16362,80 @@ candidate set as one measured unit, is where all 38.4s of bucket (c)
 lives; this is the same speculative-build path 6cx/6da already flagged
 as GC/heap-pressure-sensitive under load, not a new site.
 
+## 6f6. S53: a batch's decode + sender recovery is one goroutine's serial loop -- N42_INGEST_WORKERS spreads it over a shared pool, n42-r102, bench 1/8/32 workers (2026-09-26)
+
+Eight generators offering 20,000 tx/s each delivered only ~16.8k tx/s
+each (6f2) -- consistent with each connection getting its OWN goroutine
+(concurrency ACROSS connections is not the bottleneck: eight together
+still cleared ~130-140k tx/s aggregate), but the 200-entry loop INSIDE
+one `BatchRawTransaction` call (internal/api/api_transaction.go,
+formerly lines 139-177) decoding and ECDSA-recovering senders one at a
+time -- ~50us of pure CPU each (seedRecoveredSender's own comment),
+about 10ms of CPU time on one core regardless of how many the box has
+free.
+
+(1) The pool's own `addTxs` (internal/txspool/txs_pool.go:287) already
+parallelizes recovery via `prewarmSenders`
+(internal/txspool/sender_prewarm.go, up to GOMAXPROCS-1 workers,
+capped 2-16) -- but by the time a batch reaches `AddLocals`, every
+sender is already cached by `seedRecoveredSender` (called on every
+entry in the RPC handler's own loop, BEFORE the pool ever sees it), so
+`prewarmSenders`'s own recovery calls are cache hits and its
+parallelism buys nothing on this path; the uncached work is entirely
+the RPC handler's own serial loop. The pool add itself
+(`pool.insertGate.Lock(); pool.mu.Lock(); addTxsLocked(...)`,
+txs_pool.go:391-395) holds ONE combined lock for the whole batch, but
+nonce/balance are read in ONE MDBX transaction before the lock
+(txs_pool.go:359-374) and `addTxsLocked`'s own per-tx work under the
+lock is pure in-memory bookkeeping -- the code's own prior measurement
+puts one batch's lock hold at ~3ms (txs_pool.go:385-387, "the reorg
+then waits behind one batch (~3 ms)").
+
+Measured split, ~13ms per 200-tx batch: decode+recover ~10ms (serial,
+one core, the bottleneck) + pool add ~3ms (already fast, unaffected by
+this change) => a per-connection ceiling near 200/0.013s =~15,400 tx/s,
+matching the observed ~16.8k tx/s per generator within the noise this
+kind of estimate carries.
+
+(2) N42_INGEST_WORKERS=<n> (unset/<=1 = today, byte-for-byte):
+internal/api/ingest_workers.go adds a shared, process-wide worker pool
+(`newIngestPool`, started once from the env var) that
+`processBatchEntries` dispatches a batch's own per-entry decode +
+validateTransactionInitCodeSize + Sender + seedRecoveredSender +
+checkTxFee work onto, preserving the "first error, in original batch
+order" result exactly (each worker writes only its own result index;
+the caller reassembles in index order, same as the old serial loop).
+Shared, not one-pool-per-call: N42_INGEST_WORKERS bounds the whole
+node's ingest CPU regardless of how many generators submit at once.
+`BatchRawTransaction`'s own per-entry closure (api_transaction.go) is
+unchanged in content, only its dispatch moved out of an inline loop.
+
+Tests (internal/api, 3 new, `-race`): ordering and errors identical
+across workers 0/1/8/32 on a 37-entry batch of real signed transfers
+with one deliberately corrupt entry; workers<=1 or a nil pool never
+touches the jobs channel; a single-entry batch stays serial even with
+workers set. Full `internal/api` package suite green.
+
+**Benchmark** (`BenchmarkBatchRawTransactionIngest`, 200 real signed
+transfers, `taskset -c 200-207`, `-benchtime 2s -benchmem`, isolated
+AMD EPYC 9B45 cores -- absolute numbers are this box's, not the shared
+fleet's, but the SHAPE (near-2x at 8, further gain at 32) is the point):
+
+| workers | ns/op | tx/s | B/op | allocs/op |
+|---|---|---|---|---|
+| 1 (serial) | 424,048 | 471,645 | 174,509 | 3,401 |
+| 8 | 236,735 | 844,827 | 190,542 | 3,602 |
+| 32 | 147,449 | 1,356,400 | 190,555 | 3,602 |
+
+Build: n42-r102 = n42-r101's own file set (the same f7ec2836-based
+recipe, docs/QS_HANDOVER_20260920.md) plus this step's 2-file diff
+(internal/api/api_transaction.go, internal/api/ingest_workers.go).
+Diffed against wt-r27's own HEAD: api_transaction.go is byte-identical
+to HEAD (confirming the recipe carried the S53 diff exactly), and the
+only other internal/api divergence (api.go, blockscout.go) is the same
+pre-existing, unrelated drift n42-r101's own build already had. sha256
+69a6f2df045d (n42-r102) vs c5c481557a6a (n42-r101).
+
+Not launched: build-only per this step's own scope; a round is queued
+by the commander separately.
+
