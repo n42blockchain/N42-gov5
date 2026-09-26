@@ -16216,3 +16216,50 @@ checker fix carries over).
 35zzzaa void for the gated legs (funding starved by the gate); rerun
 35zzzab with the funding barrier; B1 reference changed to 35zzzx's B2
 configuration.
+
+## 6f2. S50b: round 35zzzad -- tenure 8 runs 0.65 s per block; supply is the limit, and it is a soft RPC/concurrency ceiling, not CPU on either side (2026-09-26)
+
+n42-r10x, tenure 4 (B1, rate 16000, 02:01:15-02:13:18) vs tenure 8
+(B2, rate 20000, 02:13:18-02:27:28), conc 96 both legs. B1
+142.8k@0.811s occ34.8% / 127.7k@1.277s occ50%. B2 133.8k@0.652s
+occ26.2% / 134.5k@0.682s occ28.1%.
+
+**(1) What limits delivered supply at rate 20000.** Flood files carry
+NO periodic per-second status for pure rate mode (8 generators, 9
+lines each, header only, no `topup=`/`pool=`/`deferred=` lines) --
+achieved-vs-nominal can only be read from delivery: 134,495 aggregate
+/ 8 = **16,812 tx/s/generator delivered vs 20,000 nominal, 84.1%**.
+`vm.log` per-node CPU: node ingest share is ~134,495/7 = 19,214
+tx/s/node; at the task's own ~50us/tx decode+recover, that costs
+**~0.96 cores/node** -- trivial against this fleet's ~32+-core
+GOMAXPROCS budget, RULING OUT node ingest CPU. Generator-side CPU
+deltas in `vm.log` are similarly small and never saturate a core
+during active (non-empty-pool) samples. **The one number: 84.1%
+delivered with neither CPU resource anywhere near saturated points at
+the RPC/concurrency pipeline (conc=96 in-flight batches) as a soft
+ceiling, not a hard resource wall** -- this cannot be split further
+from generator-loop pacing without round-trip-latency instrumentation
+the flood does not emit in this mode; reported as the best-available
+determination, not a clean isolation.
+
+**(2) Prediction 110, clause by clause.** (a) NOT CONFIRMED: B2 win1
+133.8k (<150k), win2 134.5k (>=130k); cycle 0.652-0.682s (<=1.0s,
+holds). (b) NOT CONFIRMED: `pool node0 pending` peaks at essentially
+the SAME ~600k ceiling in BOTH legs (B1 600,349 / B2 600,477 -- the
+pool's own 600k GlobalSlots cap, not a tenure effect), and `queued`
+reaches 71,400-91,600 in both, well over the predicted <20k. (c)
+CONFIRMED: hand-over share of full blocks 16.5% (B1) -> **0.0%** (B2,
+more than halved); view-timeout events 12 vs 12 (not up). (d)
+CONFIRMED: 0/11,483 conflicting heights, no BAD BLOCK; `underpriced`
+0 in both legs.
+
+**(3) ENGINE at tenure 8** (chained same-leader full blocks): B2
+880ms @163000tx = **185,232 tx/s**, above B1's own 964ms @163000tx =
+169,077 tx/s -- the tenure-8 engine ceiling itself is real and higher,
+consistent with 6dz's own finding.
+
+**(4) Recommendation:** raise conc (the pipeline, not either CPU side,
+is the soft ceiling) before raising rate further -- pushing rate alone
+without more concurrent RPC capacity only feeds the SAME 84%-efficient
+pipe harder, which is what accumulates the ~600k pending pile (queued
+71-92k) already over the predicted band in both legs.
