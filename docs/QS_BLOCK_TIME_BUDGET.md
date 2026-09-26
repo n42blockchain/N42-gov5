@@ -16212,3 +16212,7 @@ by more than the 3.6% noise floor. (c) generators never dry (topup/credit
 the retry engages) but no permanent nonce gaps (queued stays small, not
 growing). (d) safety clean: 0 conflicting heights, no BAD BLOCK (S47's
 checker fix carries over).
+
+35zzzaa void for the gated legs (funding starved by the gate); rerun
+35zzzab with the funding barrier; B1 reference changed to 35zzzx's B2
+configuration.
