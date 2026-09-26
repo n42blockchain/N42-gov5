@@ -425,12 +425,6 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 				if accts == nil && stor == nil {
 					return fmt.Errorf("leader block %d has no snapshotted dirty set to replay onto the live QMDB tree", blockNumber.Uint64())
 				}
-				tPhase = time.Now()
-				bc.qmdbRootComputer.SetCold(tx)
-				liveRoot, cerr := bc.qmdbRootComputer.ComputeRoot(accts, stor)
-				if cerr != nil {
-					return fmt.Errorf("replaying sealed block %d onto the live QMDB tree: %w", blockNumber.Uint64(), cerr)
-				}
 				sealedRoot := blk.StateRoot()
 				if hdr, ok := blk.Header().(*block.Header); ok && bc.chainConfig != nil && bc.chainConfig.IsDeferredExecution(hdr.Time) {
 					// The header carries the parent's root; the build's own
@@ -441,9 +435,33 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 					}
 					sealedRoot = own
 				}
-				if liveRoot != sealedRoot {
-					return fmt.Errorf("live QMDB tree root %x does not reproduce sealed root %x at block %d",
-						liveRoot[:8], sealedRoot.Bytes()[:8], blockNumber.Uint64())
+				tPhase = time.Now()
+				bc.qmdbRootComputer.SetCold(tx)
+				// S58 (docs/QS_BLOCK_TIME_BUDGET.md 6f9): N42_QMDB_SINGLE_FOLD
+				// routes this replay through ComputeRootShared's own explicit
+				// matched/mismatched counters instead of the inline comparison
+				// below; v1 still applies AND folds on the live tree (see its
+				// own doc comment) -- byte-for-byte the same cost as today,
+				// proving equivalence before a later round trusts sealedRoot
+				// alone and skips the live fold for the real ~59ms/block.
+				var liveRoot types.Hash
+				var cerr error
+				if QMDBSingleFoldEnabled() {
+					var matched bool
+					liveRoot, matched, cerr = bc.qmdbRootComputer.ComputeRootShared(accts, stor, sealedRoot)
+					if cerr == nil && !matched {
+						return fmt.Errorf("live QMDB tree root %x does not reproduce sealed root %x at block %d",
+							liveRoot[:8], sealedRoot.Bytes()[:8], blockNumber.Uint64())
+					}
+				} else {
+					liveRoot, cerr = bc.qmdbRootComputer.ComputeRoot(accts, stor)
+					if cerr == nil && liveRoot != sealedRoot {
+						return fmt.Errorf("live QMDB tree root %x does not reproduce sealed root %x at block %d",
+							liveRoot[:8], sealedRoot.Bytes()[:8], blockNumber.Uint64())
+					}
+				}
+				if cerr != nil {
+					return fmt.Errorf("replaying sealed block %d onto the live QMDB tree: %w", blockNumber.Uint64(), cerr)
 				}
 				dRoot2 = time.Since(tPhase)
 			}

@@ -837,3 +837,57 @@ func (r *QMDBRootComputer) ComputeRoot(
 	}
 	return root, nil
 }
+
+// qmdbSingleFoldMatches/qmdbSingleFoldMismatches (S58, docs/QS_BLOCK_TIME_BUDGET.md
+// 6f9) count ComputeRootShared's own outcomes: how many leader blocks the
+// live tree's independently-folded root agreed with the isolated build's
+// already-known root, and how many did not. Package-level, process-wide --
+// there is one leader write path per node.
+var (
+	qmdbSingleFoldMatches    atomic.Int64
+	qmdbSingleFoldMismatches atomic.Int64
+)
+
+// QMDBSingleFoldCounts reports the running match/mismatch counts (tests and
+// the write-path's own periodic log line).
+func QMDBSingleFoldCounts() (matches, mismatches int64) {
+	return qmdbSingleFoldMatches.Load(), qmdbSingleFoldMismatches.Load()
+}
+
+// ComputeRootShared is ComputeRoot's N42_QMDB_SINGLE_FOLD variant: the
+// leader's write path calls this, instead of plain ComputeRoot, to replay a
+// SEALED block's own ops onto the live tree when the ISOLATED speculative
+// tree (bc.minerRC, 6du) already computed and knows this block's own root,
+// sealedRoot -- the "twice per block" duplication 6f9 names (once on the
+// isolated tree during the build, again here during the write, both apply
+// AND fold, ~58-59ms each on a 163k-transfer block).
+//
+// v1 (this switch's first version) does NOT yet skip the live tree's own
+// fold: it always applies (the live tree's own leaves must land there
+// regardless of any sharing -- that half is not what this saves) and always
+// folds too, so this round PROVES over live blocks that the shared value
+// equals what the live tree's own independent computation produces, before
+// a later round trusts sealedRoot alone and skips the second fold for the
+// real ~59ms/block. matched=false is a correctness event, never absorbed
+// silently: the caller's own existing "live root does not reproduce sealed
+// root" abort (internal/blockchain_write.go) still fires exactly as today.
+func (r *QMDBRootComputer) ComputeRootShared(
+	accounts map[types.Address]*account.StateAccount,
+	storage map[types.Address]map[types.Hash]*uint256.Int,
+	sealedRoot types.Hash,
+) (root types.Hash, matched bool, err error) {
+	root, err = r.ComputeRoot(accounts, storage)
+	if err != nil {
+		return root, false, err
+	}
+	matched = root == sealedRoot
+	if matched {
+		qmdbSingleFoldMatches.Add(1)
+	} else {
+		qmdbSingleFoldMismatches.Add(1)
+	}
+	if m, mm := QMDBSingleFoldCounts(); (m+mm)%1000 == 0 || !matched {
+		log.Info("qmdb single-fold guard", "matched", matched, "matches", m, "mismatches", mm)
+	}
+	return root, matched, nil
+}
