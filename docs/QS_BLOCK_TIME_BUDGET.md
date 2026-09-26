@@ -16556,3 +16556,107 @@ catch-up leader missing N-1 refuses). Stop condition: n42-rs not
 agreeing to the joint rule -- a header-format change, and a mixed-depth
 fleet forks at the first disagreement.
 
+
+## 6f8. S56 spec: the execution stage against n42-rs, phase by phase (2026-09-26)
+
+Read-only: n42-rs docs (`FLEET7_PLAN_V4.md` ~1136-1146,
+`FLEET7_STATUS.md` ~60-150), our own kept profiles/logs, one pinned
+benchmark. Both fleets run the same depth-1 deferred rule (their
+`PHASE_D_DEFERRED_EXECUTION.md`; ours 6bg).
+
+**(1) Table (ms/163k-transfer block, same box):**
+
+| phase | rs | gov5 | x |
+|---|---|---|---|
+| follower exec | 83-96 (32 threads, 2.4x/1) | 222-266 (6dx) | ~2.6x |
+| follower root/fold | 30-33+fold76=~106-109 | finalize 126-151 (bundles root, 6cw) | ~1.2-1.4x |
+| follower insert/write | 49 | 195-215 (6dx) | ~4.0-4.4x |
+| follower import total | 178-202 | ~543-632 (exec+finalize+write) | ~2.9-3.1x |
+| leader exec | 72 | 332-347 (parallel, 6cw) | ~4.6-4.8x |
+| leader build total | 250-300 (72+76+18+30) | ~618-638 (exec+root145-150+pick61+~80 unplaced) | ~2.1-2.5x |
+
+**(2) Where our exec 222-340ms goes**: `wr-pprof/r35zzzh-win2-win2-
+node2-cpu.pb.gz` (20s), focused on `runParallel|ProcessParallel|
+parallelApplyTx|executeParallel|executeSingle` (excludes `internal/
+ingest.(*Server).hintWorker`'s own Ecrecover cost -- 31.77% of the
+WHOLE profile, a separate call path). Top 12 by cum, % of the
+executor's own 9.99s:
+
+| fn | cum | % |
+|---|---|---|
+|`executeSingle` (entry)|9.99s|100%|
+|`runParallel.func2`/`Executor.exec`|8.59s|86.0%|
+|`runtime.mallocgc`|7.57s|75.8%|
+|`internal.parallelApplyTx`|6.99s|70.0%|
+|`runtime.systemstack`|5.52s|55.3%|
+|`runtime.gcAssistAlloc`(+deductAssistCredit)|5.41s|54.2%|
+|`runtime.gcDrainN`|5.26s|52.7%|
+|`runtime.newobject`|4.62s|46.2%|
+|`internal.ApplyMessageWithFeeSink`|4.33s|43.3%|
+|`(*StateTransition).TransitionDb`|4.32s|43.2%|
+|`runtime.tryDeferToSpanScan`|3.30s|33.0%|
+|`IntraBlockState.getStateObject`|2.81s|28.1%|
+
+GC/allocation machinery dominates the executor's own CPU, well ahead
+of EVM work (~43%) or state access (~28%+20%).
+
+**Parallel speedup** (`BenchmarkParallelBlockTransfers`, 20k transfers/
+2857 recipients, `N42_PARALLEL_WORKERS`, `taskset -c 200-207 nice -n
+19 -benchtime=3x`): 1w **146.66ms**, 8w **89.56ms** (1.64x), 32w
+**92.40ms** (1.59x, WORSE than 8w). Ours is <2x and REGRESSES past 8
+workers on an 8-core taskset because Block-STM aborts jump 5-9x
+(2-61 at 8w -> 316-552 at 32w) -- oversubscription past the pinned
+core count raises MVS conflict/re-execution faster than added
+concurrency helps; not a shared lock, not the journal.
+
+**(3) Root/finalize 126-150 vs 30-33+fold76**:
+`modules/state/commitment/qmdb_root_computer.go:762-829`
+(`ComputeRoot`): one `r.readers.Lock()` serialises the call against
+out-of-band reads (line 61); ops are serially `sort.Slice`-ed
+(~31k/163k-tx block) before `ApplyOps` (SIMD leaf-batch) and `Root()`
+(fold). The code's own comment: **"The leader pays BOTH halves twice
+per block -- once on the isolated speculative tree during the build
+(58.3ms) and again replaying the same ops onto the live tree during
+the write (59.3ms)... folding them to a root THERE is arguably
+redundant."** rs's "root and hashed post-state joined" is this exact
+join, already done on their side; ours pays it twice, unmerged.
+
+**(4) Write 195-215 vs insert 49**: a full-block `"blockwrite
+phases"` line (`internal/blockchain_write.go`, 163000 txs): `block`
+(body RLP put) **62.3ms**, `qmeta` (QMDB metadata) **47.8ms**,
+`commit` **21.9ms**, `state` **15.5ms**, `qflush` **15.9ms**,
+`chgTrunc+chgSets` **26.3ms**, `receipts` **12.4ms**, `total`
+**191.1ms**. The tail index is already not a per-tx MDBX row
+(`internal/txlookup/tail.go`); the rest is several separate,
+sequential table puts inside one write transaction, versus rs's
+single batched engine-insert.
+
+**(5) Ranked changes (no wire/protocol change):**
+
+1. **Cap `N42_PARALLEL_WORKERS`** (`internal/parallel_processor.go:
+   54-58`) at the box's pinned core count, not a flat 32 --
+   92.4->89.6ms = **2.8ms/block** on this benchmark's 20k-tx scale,
+   likely more at 163k. Proof: this section's own benchmark. Risk:
+   LOW, config-only, A/B-by-leg.
+2. **Stop paying QMDB apply+fold twice on the leader**
+   (`qmdb_root_computer.go:762-829`) -- up to **~59ms/block** (the
+   write-side fold, once the isolated build's root is trusted).
+   Proof: an isolated `ComputeRoot` benchmark, single vs double.
+   Risk: MEDIUM -- removes a correctness cross-check, needs a
+   narrower guard.
+3. **Isolate ingest hint-recovery from the executor's CPU budget**
+   (`internal/ingest/server.go` `hintWorker`, 31.77% of the same
+   profile, already flagged (6ce) as worth "approximately nothing").
+   Overlaps S53/6f6 (`N42_INGEST_WORKERS`, in progress) -- cited for
+   completeness, not double-counted.
+4. **Reduce per-tx allocation in `ApplyMessageWithFeeSink`/
+   `TransitionDb`/`getStateObject`** -- mallocgc is 75.8% of the
+   executor's own cum time. Proof: the benchmark's own B/op. Risk:
+   MEDIUM-HIGH -- 6dc already rejected several such ideas as
+   low-value or a 27.59% regression; needs a fresh benchmark, no
+   assumed savings.
+5. **Batch the `qmeta` write** (47.8ms, second-largest write item) --
+   exact writer not traced this pass (`lib/qmdb/persist*.go` likely);
+   ms unknown until measured. Risk: UNKNOWN, lowest confidence,
+   listed for completeness only.
+
