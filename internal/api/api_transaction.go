@@ -13,6 +13,7 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/hexutil"
 	"github.com/n42blockchain/N42/common/transaction"
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/log"
 	"github.com/n42blockchain/N42/modules/rawdb"
@@ -76,9 +77,19 @@ func (s *TransactionAPI) SendRawTransaction(ctx context.Context, input hexutil.B
 		return avmcommon.Hash{}, err
 	}
 	signer := transaction.MakeSignerWithTimestamp(s.api.GetChainConfig(), uint256ToBigOrZero(header.Number64()), currentBlock.Time())
-	from, err := transaction.Sender(signer, tx)
-	if err != nil {
-		return avmcommon.Hash{}, err
+	// S59 (docs/QS_BLOCK_TIME_BUDGET.md 6fa): N42_HINT_RECOVERY_POOL routes
+	// this single-tx recovery to the same bounded, dedicated pool the hint
+	// feed uses (unset = today, inline on this connection's own goroutine);
+	// RecoverSenderDeduped guarantees at most one real recovery per
+	// transaction even if the hint feed is recovering the same hash at the
+	// same instant.
+	var from types.Address
+	var recErr error
+	transaction.RecoverOnPool(func() {
+		from, recErr = transaction.RecoverSenderDeduped(signer, tx)
+	})
+	if recErr != nil {
+		return avmcommon.Hash{}, recErr
 	}
 	tx.SetFrom(from)
 	seedRecoveredSender(tx, transaction.LatestSignerForChainID(s.api.GetChainConfig().ChainID))
@@ -148,7 +159,12 @@ func (s *TransactionAPI) BatchRawTransaction(ctx context.Context, inputs []hexut
 		if err := validateTransactionInitCodeSize(metaTx, rules); err != nil {
 			return nil, err
 		}
-		from, err := transaction.Sender(signer, metaTx)
+		// S59 (6fa): the batch path already has its own worker pool
+		// (N42_INGEST_WORKERS, S53) it may be dispatched onto, so this uses
+		// the dedup guarantee alone (RecoverSenderDeduped), not a nested
+		// RecoverOnPool -- at most one real recovery per transaction even if
+		// the hint feed is recovering the same hash concurrently.
+		from, err := transaction.RecoverSenderDeduped(signer, metaTx)
 		if err != nil {
 			return nil, err
 		}
