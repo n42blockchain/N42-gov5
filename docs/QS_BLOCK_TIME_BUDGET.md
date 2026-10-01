@@ -16808,3 +16808,202 @@ above; full `internal/txindexer` + `internal/txlookup` suites, `-race`
 clean. n42-r105 = r104's file set + this diff; sha256 c732069daba9 vs
 r104's 3266583f71a1. Not launched.
 
+
+## 6fc. S62: allocation-RATE owners, round 35zzzam (2026-10-01), and who is pulling bodies from the leader
+
+Read-only: `wr-pprof/r35zzzam-B1-win{1,2}-node{0,1,2,6}-allocs.pb.gz`
+(20 s each, `n42-r105`, 8 generators @ rate 20000, tenure 8, node0 =
+leader during B legs, node1 a follower), `-sample_index=alloc_space`.
+Confirms the commander's number: leader `rawdb.ReadBlock` cum
+4443.24 MB / 36127.76 MB = **12.30%** (quoted 12.3%/4.44 GB); follower
+1097.26 MB / 25240.85 MB = **4.35%** (quoted 4.35%/1.10 GB). Callers
+match: `api.(*BlockChainAPI).getBlockByNumber` 1920.59 MB,
+`sync.(*Service).writeBodiesRangeToStream` 3989.93 MB (leader) /
+1236.52 MB (follower), `GetBlocksFromHash` 556.63 MB / 254.99 MB.
+
+**(1) Top-15 flat, leader (node0, win2, 36127.76 MB total):**
+
+| fn | flat MB | flat% |
+|---|---|---|
+|`txCompactReader.u256`|1960.92|5.43%|
+|`parallelApplyTx`|1860.68|5.15%|
+|`rlp.(*encbuf).encodeString`|1829.30|5.06%|
+|`etl.(*sortableBuffer).Put`|1458.13|4.04%|
+|`decodeEthereumTransaction`|1296.64|3.59%|
+|`state.(*journal).push`|1167.88|3.23%|
+|`Transaction.unmarshalCompactStorage`|1147.14|3.18%|
+|`go-buffer-pool.(*BufferPool).Get`|952.66|2.64%|
+|`common/rlp.decodeUint256`|930.03|2.57%|
+|`rawdb.decodeStoredTransaction`|860.08|2.38%|
+|`IntraBlockState.setStateObject`|764.34|2.12%|
+|`utils.ConvertUint256IntToH256`|707.04|1.96%|
+|`bytes.growSlice`|670.64|1.86%|
+|`DecodeEthereumTransaction`|665.57|1.84%|
+|`IntraBlockState.Reset`|605.03|1.67%|
+
+**Top-15 cum, leader:**
+
+| fn | cum MB | cum% |
+|---|---|---|
+|`parallel.(*Executor).executeParallel.func1`|7991|22.65%|
+|`...func1.2`/`executeSingle`|7982|22.63%|
+|`libp2p newStreamHandler`/`SetStreamHandler.func1`|7045|19.97%|
+|`StateProcessor.runParallel.func2`/`Executor.exec`|6952|19.70%|
+|`parallelApplyTx`|5589|15.84%|
+|`jsonrpc handleMsg.func1`/`startCallProc.func1`|4990|14.13%|
+|`jsonrpc.(*handler).handleCallMsg`|4810|13.64%|
+|`rawdb.ReadBlock`|4443|12.30%|
+|`rawdb.ReadCanonicalBodyWithTransactions`|4443|12.30%|
+|`jsonrpc.(*handler).handleCall`|4330|12.27%|
+|`mdbx.(*MdbxTx).ForAmount`|4270|12.09%|
+|`rawdb.decodeStoredTransaction`|4370|12.09%|
+|`BlockChain.GetBlock`|4140|11.73%|
+|`sync.writeBodiesRangeToStream`|3990|11.04%|
+|`ingest.(*Server).handleConn`/`readBatch`|2512|6.95%|
+
+**Top-15 flat, follower (node1, win1, 25240.85 MB total):**
+
+| fn | flat MB | flat% |
+|---|---|---|
+|`parallelApplyTx`|1521.06|6.03%|
+|`decodeEthereumTransaction`|1284.64|5.09%|
+|`state.(*journal).push`|996.00|3.95%|
+|`common/rlp.decodeUint256`|971.03|3.85%|
+|`go-buffer-pool.(*BufferPool).Get`|948.16|3.76%|
+|`IntraBlockState.setStateObject`|630.01|2.50%|
+|`DecodeEthereumTransaction`|614.57|2.43%|
+|`NewTxOwned`|565.55|2.24%|
+|`json.(*Decoder).refill`|557.80|2.21%|
+|`etl.(*sortableBuffer).Put`|547.51|2.17%|
+|`parallel.(*MVS).Write`|541.42|2.14%|
+|`rlp.(*encbuf).encodeString`|512.13|2.03%|
+|`txCompactReader.u256`|499.61|1.98%|
+|`IntraBlockState.Reset`|482.52|1.91%|
+|`p2p.MsgID`|470.31|1.86%|
+
+**Top-15 cum, follower:**
+
+| fn | cum MB | cum% |
+|---|---|---|
+|`parallel.(*Executor).executeParallel.func1`|6650|26.96%|
+|`...func1.2`/`executeSingle`|6640|26.92%|
+|`StateProcessor.runParallel.func2`/`Executor.exec`|5700|23.14%|
+|`libp2p newStreamHandler`/`SetStreamHandler.func1`|5140|20.85%|
+|`parallelApplyTx`|4590|18.63%|
+|`DecodeEthereumTransaction`|4060|16.49%|
+|`decodeEthereumTransaction`|3330|13.49%|
+|`sync.(*Service).blockPushStreamHandler`|3050|12.37%|
+|`StateTransition.TransitionDb`/`ApplyMessageWithFeeSink`|2390|9.70%|
+|`sync.(*Service).handlePushedBlock`|2260|9.18%|
+|`ingest.(*Server).handleConn`/`readBatch`|2250|9.11%|
+|`ingest.(*Server).readHintBatch`|2250|9.11%|
+|`BlockChain.InsertChain`/`insertChain`|1940|7.88%|
+|`sync.writeBodiesRangeToStream`|1237|4.90%|
+|`rawdb.ReadBlock`|1097|4.35%|
+
+**Owner shares** (disjoint cum subtrees, no leaf-level double counting
+between ingest-path decode and stored-tx-redecode, since the latter is
+charged under `rawdb.ReadBlock`'s own call edge):
+
+| owner | leader MB | leader% | follower MB | follower% |
+|---|---|---|---|---|
+|ingest decode (`ingest.(*Server).handleConn`)|2512|6.95%|2300|9.11%|
+|executor (`parallelApplyTx` cum)|5722|15.84%|4702|18.63%|
+|stored-tx re-decode (`rawdb.ReadBlock` cum)|4443|12.30%|1097|4.35%|
+|storage write (`sortableBuffer.Put`+`encbuf.encode`+`ConvertUint256IntToH256`)|4436|12.28%|1533|6.07%|
+|p2p (`go-buffer-pool`+`p2p.MsgID`+protobuf unmarshal)|2187|6.05%|2270|9.00%|
+|other (GC machinery, remaining RLP/account decode, misc)|16828|46.58%|13339|52.84%|
+
+The leader carries double the "stored-tx re-decode" and double the
+"storage write" share of the follower -- both are RPC-serving and
+catch-up-serving costs that the follower, not being asked, mostly
+skips. The follower's ingest/p2p/executor shares each run higher in
+% terms only because its 20 s window measured a smaller total (25.2 GB
+vs 36.1 GB) with similar absolute executor cost.
+
+**(2) Who pulls bodies from the leader via `writeBodiesRangeToStream`?**
+Not a lagging follower. `internal/sync/rpc_catchup.go`'s HotStuff
+catch-up safety net (`CatchUpTo`/`CatchUpToHash` -> `enqueueCatchUp` ->
+`catchUpTo`, triggered on every CommitQC) fires on **every node,
+including the leader itself, roughly once per second** -- grepping
+`"hotstuff catch-up: requesting range"` in the 18:45-18:47 EDT window
+across all 7 kept node logs gives 137-145 hits per node (~1/s/node,
+matching the ~1 s block time), each requesting exactly `count=1`
+(`start=self+1, to=target`, i.e. `self==target-1`: the node is NOT
+behind, it is re-fetching the block it just committed as a backstop).
+`catchUpTo` tries up to 5 connected peers sequentially via
+`SendBodiesByRangeRequest`/`BodiesByRangeRequest`, stopping at the
+first success, so across ~7 nodes doing this every block the well-
+connected leader ends up serving a large, steady share of these single-
+block range pulls purely because every peer's own `Peers().Connected()`
+ordering tends to put it among the first few tried -- not because any
+peer has fallen behind. This is a structural, continuous cost of the
+per-block catch-up design, not a transient lag event.
+
+**(3) Does `rawdb.ReadBlock`/`BlockChain.GetBlock` consult a cache
+first?** Yes, but only on the direct `BlockChain.GetBlock(hash,
+number)` path: `internal/blockchain_reader.go:92-114` checks
+`bc.blockCache.Get(hash)` (an LRU of **fully decoded** blocks, sized by
+`N42_BLOCK_CACHE_BLOCKS`, default 512, `internal/blockchain_types.go:
+137`) before `rawdb.ReadBlock`, and fills it on a miss. The catch -- per
+the code's own comment at `blockchain_reader.go:401` ("Dropping the
+incidental blockCache fill is deliberate... entries it added are
+duplicate blocks and parents, and execution needs the parent's STATE,
+never its transactions") -- is that the cache is filled **lazily, on
+first read**, never pre-populated at block commit/insert time. Since
+`writeBodiesRangeToStream` calls `chain.GetBlockByNumber` ->
+`GetBlock(hash,...)`, the first catch-up request for a freshly
+committed block is always a cold miss (pays the full `ReadBlock`
+decode) and only warms the cache for requests that happen to land on
+the same server slightly later. `api.(*BlockChainAPI).getBlockByNumber`
+goes through the same `GetBlock` call and so IS cache-eligible in
+principle, but at one poll per generator per block and the catch-up
+net's own continuous churn evicting/competing for the same 512-entry
+LRU, it still shows up as 1.92 GB/20 s of decode on the leader -- the
+cache exists, but nothing primes it at import, so both paths pay the
+cold-miss cost most of the time rather than genuinely bypassing it.
+
+**(4) Per-transaction allocation.** Leader (win2, B1): 36127.76 MB /
+20 s against 7,740,019 tx/60 s -> 2,580,006 tx in the matching 20 s
+window -> **14.0 KB/tx** (36127.76 MB / 2,580,006). Follower (win1,
+B1): 25240.85 MB / 20 s against 7,948,163 tx/60 s -> 2,649,388 tx in
+20 s -> **9.5 KB/tx**. Expressed per block (~1 s block time at this
+tenure, ~20 blocks in each 20 s window, matching the catch-up log
+cadence in (2)): leader **~1.81 GB/block**, follower **~1.26 GB/block**.
+The leader's figure lands close to 6di's measured TRUE delta rate of
+**1.878 GB/block, 11.5 KB/tx** for the same workload shape -- consistent
+within the normal round-to-round noise this doc already tracks (6f and
+6fb's "noise floor" sections). The follower runs noticeably lighter
+per block/tx because it carries almost none of the RPC-serving
+(`getBlockByNumber`) or catch-up-serving (`writeBodiesRangeToStream`)
+re-decode load that inflates the leader's total.
+
+**(5) Ranked candidates (no code changed this pass):**
+
+1. **Serve body-range catch-up requests from the block cache instead
+   of a cold `rawdb.ReadBlock` decode** -- prime `bc.blockCache` at
+   block commit/insert (the block and its decoded txs already exist in
+   memory at that point) so `writeBodiesRangeToStream`'s per-second
+   catch-up pulls hit warm cache instead of paying the full decode.
+   Expected cut: up to **~11% of the leader's total allocation**
+   (3.99 GB/20 s, the `writeBodiesRangeToStream` cum share), most of
+   which currently lands inside the already-measured `rawdb.ReadBlock`
+   12.3%.
+2. **Serve `eth_getBlockByNumber(n, full=false)` from the header plus
+   the tx-hash list, without decoding transaction bodies** -- the
+   generators' `measure-tps.sh` poll only needs hashes. Expected cut:
+   **~5.3% of the leader's total** (1.92 GB/20 s,
+   `api.getBlockByNumber`'s share of `ReadBlock`).
+3. **Keep the just-built block in the block cache so `makeEnv`'s
+   `GetBlocksFromHash` ancestor walk does not re-read/-decode it** --
+   smaller but free once (1) primes the cache at commit time. Expected
+   cut: **~1.5% of the leader's total** (0.56 GB/20 s).
+4. **Relax the per-block HotStuff catch-up cadence** (`rpc_catchup.go`,
+   see (2)) so a node that is NOT behind (`self==target-1`, i.e. it
+   just committed the block through the normal gossip/push path) does
+   not also issue a 1-block range pull every ~1 s -- this is the demand
+   generator behind candidates 1 and 3, not an allocation site by
+   itself, so its savings are indirect and conservative (lower request
+   volume into whatever the leader serves it from) rather than a
+   directly measured %; listed last because it changes consensus-
+   adjacent behavior and needs its own safety review before sizing.
