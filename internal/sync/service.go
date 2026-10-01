@@ -145,6 +145,15 @@ type Service struct {
 	catchUpInProgress atomic.Bool
 	catchUpTarget     atomic.Uint64
 
+	// Grace period for a lag-exactly-1 catch-up (N42_HOTSTUFF_CATCHUP_GRACE_MS).
+	// In steady-state depth-1 deferred execution the head is normally one block
+	// behind the QC'd height while the matching proposal is already arriving on
+	// the normal path, so an immediate pull is usually wasted work. When armed,
+	// catchUpGraceTarget holds the most recent deferred target and
+	// catchUpGraceTimer ensures only one grace timer runs at a time.
+	catchUpGraceTarget atomic.Uint64
+	catchUpGraceTimer  atomic.Bool
+
 	// Hashes authenticated by a CommitQC whose body/header had not arrived when
 	// consensus requested catch-up. Any block ingress path promotes the hash to
 	// a numeric range target as soon as the body becomes available.

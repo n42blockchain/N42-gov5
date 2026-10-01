@@ -6,6 +6,8 @@ package sync
 import (
 	"context"
 	"errors"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -152,11 +154,85 @@ func (s *Service) observeCatchUpBlock(hash types.Hash, number uint64) {
 	}
 }
 
+// catchUpGraceEnvVar is the grace period, in milliseconds, to withhold a
+// lag-exactly-1 catch-up request so the normal proposal/commit path has a
+// chance to deliver the block first. 0 (default, unset, or invalid) preserves
+// today's behaviour: request immediately, same as a lag >= 2 request.
+const catchUpGraceEnvVar = "N42_HOTSTUFF_CATCHUP_GRACE_MS"
+
+func catchUpGraceDuration() time.Duration {
+	v := os.Getenv(catchUpGraceEnvVar)
+	if v == "" {
+		return 0
+	}
+	ms, err := strconv.Atoi(v)
+	if err != nil || ms <= 0 {
+		return 0
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
 // enqueueCatchUp coalesces concurrent requests to their highest target and
 // drains targets that arrive during an import. A simple in-progress guard is
 // insufficient: it drops every newer CommitQC while the first range is being
 // inserted, so a fast chain outruns the restarted node forever.
+//
+// When N42_HOTSTUFF_CATCHUP_GRACE_MS > 0 and target == self+1 (the trivial
+// steady-state case under depth-1 deferred execution, where the matching
+// proposal is normally already arriving on the normal path), the request is
+// withheld for the grace period instead of being issued immediately. If the
+// head has not advanced to >= target by the end of the grace, the deferred
+// target is handed to enqueueCatchUpNow exactly like an immediate request —
+// including the equal-height fork-recovery start, which only depends on the
+// head state observed when catchUpTo actually runs. A lag >= 2 always goes
+// through immediately, same as today.
 func (s *Service) enqueueCatchUp(target uint64) {
+	if grace := catchUpGraceDuration(); grace > 0 {
+		if self := currentBlockNumber(s.cfg.chain); self != nil && target == self.Uint64()+1 {
+			s.deferCatchUp(target, grace)
+			return
+		}
+	}
+	s.enqueueCatchUpNow(target)
+}
+
+// deferCatchUp remembers target as the pending lag-1 catch-up and, if no
+// grace timer is already running, starts one. Only one timer runs at a time;
+// a later deferral while a timer is in flight just updates the remembered
+// target, which the running timer re-reads at expiry — self-healing if the
+// normal path or a separate lag >= 2 request already advanced the head.
+func (s *Service) deferCatchUp(target uint64, grace time.Duration) {
+	s.catchUpGraceTarget.Store(target)
+	log.Debug("hotstuff catch-up: lag-1 request deferred", "target", target, "grace", grace)
+	if !s.catchUpGraceTimer.CompareAndSwap(false, true) {
+		return // a timer is already running and will see the updated target
+	}
+	go func() {
+		timer := time.NewTimer(grace)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-s.ctx.Done():
+			s.catchUpGraceTimer.Store(false)
+			return
+		}
+		pending := s.catchUpGraceTarget.Swap(0)
+		s.catchUpGraceTimer.Store(false)
+		if pending == 0 {
+			return
+		}
+		if self := currentBlockNumber(s.cfg.chain); self != nil && self.Uint64() >= pending {
+			return // the normal proposal/commit path delivered it during the grace
+		}
+		log.Info("hotstuff catch-up: grace expired, requesting", "target", pending)
+		s.enqueueCatchUpNow(pending)
+	}()
+}
+
+// enqueueCatchUpNow is the original, unconditional coalesce-and-drain path
+// (today's enqueueCatchUp), used directly for lag >= 2 and for a lag-1
+// request once its grace period has expired without the head catching up.
+func (s *Service) enqueueCatchUpNow(target uint64) {
 	for {
 		previous := s.catchUpTarget.Load()
 		if target <= previous || s.catchUpTarget.CompareAndSwap(previous, target) {
