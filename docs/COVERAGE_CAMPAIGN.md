@@ -264,3 +264,7 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
 | g31 | internal/sync | 22.0 | 27.6 (fake_stream_test.go + fake_p2p_test.go harness landed; handlers continue in g34) |
 | g32 | internal/p2p | 12.9 | 55.5 (mocknet two-peer harness in testservice_test.go) |
 | g28 | internal/datc | 60.1 | 71.1 (run_fixture_test.go synthesizes the headerc freezer and compacted acctcs/storcs inputs) |
+| g36 | lib/kv/bitmapdb | 10.3 | 83.6 (rest of the group re-dispatched as g37) |
+
+- `lib/kv/bitmapdb` `WalkChunkWithKeys64` with a tiny sizeLimit panics (`Maximum()` on an empty tail chunk after a cut,
+  bitmapdb.go:274).
