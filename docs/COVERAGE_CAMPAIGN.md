@@ -176,3 +176,12 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
   clears `running`, so the following `Start` is a no-op and `ctx`/`cancel` keep pointing at the cancelled context;
   `SubmitBlock` then races a fresh channel against a closed `ctx.Done()`. A reorg-recovery Reset can permanently wedge
   the deep pipeline (`TestDeepPipeline_Reset`).
+| g15 | internal | 35.0 | 35.3 |
+| g15 | internal/sync | 14.7 | 22.0 |
+| g15 | internal/sync/initialsync | 3.6 | 29.6 |
+| g15 | internal/sync/snapsync | 39.2 | 44.0 |
+
+- Harness gap (one-time investment that would unlock most of internal/sync, initialsync, snapsync): a lightweight
+  in-repo fake for `network.Stream` (net.Pipe-backed) and a builder for `peers.Status` / `p2p.P2P` with real peer records.
+- `internal/sync` `TestGraceCatchUpDeferredAndResolvedByNormalPath` (S63's own test) fails under `-race`; whether the race
+  is in the test or in `rpc_catchup.go`'s grace path is being checked separately (S63 is adopted in the fleet).
