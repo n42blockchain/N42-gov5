@@ -140,3 +140,15 @@ with that instruction.
 - Test-harness gap (non-test change, not made): the `poaSnapshot` table is not registered in `memdb.NewTestDB`, which
   blocks the apos/apoa `snapshot -> verifySeal` pipeline and most of their APIs (`modules/rawdb/accessors_test.go:534`
   skips for the same reason). Registering it would unlock ~1,500 statements.
+
+## Checkpoint 1 (2026-10-02, after merging g1-g11, 10 groups, ~150 commits)
+
+`go test -short -cover ./...`, 0 failing packages:
+
+| view | covered / statements | coverage |
+|---|---|---|
+| whole module | 88,090 / 211,489 | **41.7%** (baseline 37.2%) |
+| excluding generated stubs, vendored PQ crypto, cmd mains | 85,156 / 160,154 | **53.2%** |
+
+Running: g12 (p2p subpackages, txlookup, mpttrie), g13 (mdbx, qmdb, etl, jmt, bmt, transaction, block),
+g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
