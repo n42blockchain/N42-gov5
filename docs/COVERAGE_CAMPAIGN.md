@@ -423,3 +423,9 @@ Running: g43 (hotstuff service over mocknet), g44 (api executed-chain fixture), 
 
 - `modules/state/mv_evm_adapter.go:376` `ValidateStorageKey` index-panics on a nil/empty key (evaluates `key[0]` in the
   error format argument after the length guard fails).
+| g54 | internal/ethel | 54.5 | 61.7 (sender/receipt/header stages, output batcher, segment store) |
+
+- `internal/ethel/header_compact.go` `HeaderCompactStage.Run` has the SAME resume defect as the body store: when a
+  chain shorter than one segment is re-run, the partial-segment loop truncates only the `.cidx`, not the `.cdat`;
+  the new segment is appended past stale bytes while the index records offset 0, so readers decode the stale segment.
+  Verified experimentally; unaffected once one complete prior segment exists.
