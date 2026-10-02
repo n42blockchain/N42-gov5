@@ -393,3 +393,16 @@ Running: g43 (hotstuff service over mocknet), g44 (api executed-chain fixture), 
   spurious "nonce too low" after re-executing against the advanced PlainState.
 - `BlockChain.SetHead` has no production caller, only writes the HeadHeaderHash row, and never updates
   `bc.currentBlock` nor reverts PlainState: a silent no-op on a live chain.
+| g49 | internal/mptproof | 38.0 | 55.6 |
+| g49 | lib/trie | 56.8 | 63.0 (CalcTrieRoot cross-checked against an independent reference MPT) |
+| g49 | lib/txpool | 48.3 | 54.2 |
+| g49 | internal/txspool | 57.7 | 63.5 |
+| g49 | modules/rpc/jsonrpc | 51.8 | 65.6 |
+
+- `internal/mptproof/source.go` `NewRethLeafSource` opens PlainStorageState without `kv.DupSort` (unlike
+  RethHashedLeafSource/RethBackedReader), so `StorageValue`'s SeekBothRange fails with MDBX_INCOMPATIBLE on a real env
+  and the linear fallback is dead; a second slot per address would overwrite the first
+  (`TestRethLeafSource_MultiSlotPerAddr_Defect`).
+- `modules/rpc/jsonrpc` client-side subscription delivery is dead: `ClientSubscription.run/deliver/close` have no
+  caller and `subid` is never assigned, so server->client notifications are never forwarded and `Unsubscribe()` blocks
+  forever on `unsubDone`.
