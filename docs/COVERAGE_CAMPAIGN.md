@@ -126,3 +126,17 @@ with that instruction.
 
 - `crypto/bls12381` `Engine.AddPairInv` negates its G1 argument in place; reusing the same point variable across
   `AddPair`/`AddPairInv` silently corrupts the pairing input. Document or copy internally.
+| g10 | internal/tracers | 11.7 | 72.8 |
+| g10 | internal/tracers/native | 11.1 | 72.3 |
+| g10 | internal/tracers/logger | 8.1 | 84.6 |
+| g10 | internal/tracers/js | 45.1 | 65.4 |
+| g10 | internal/consensus/apos | 13.6 | 33.9 (snapshot store table not registered in memdb.NewTestDB) |
+| g10 | internal/consensus/apoa | 8.7 | 33.2 (same) |
+| g10 | internal/miner | 16.1 | 17.1 (worker/miner loops need a live chain) |
+
+- `internal/tracers/native/call_flat.go` `flatCallTracer.Stop()` forwards to the embedded callTracer but `GetResult`
+  reads its own never-set `reason`, so `trace_block`/`trace_transaction` never surface an interruption
+  (`TestFlatCallTracerStopDoesNotSurfaceReason`).
+- Test-harness gap (non-test change, not made): the `poaSnapshot` table is not registered in `memdb.NewTestDB`, which
+  blocks the apos/apoa `snapshot -> verifySeal` pipeline and most of their APIs (`modules/rawdb/accessors_test.go:534`
+  skips for the same reason). Registering it would unlock ~1,500 statements.
