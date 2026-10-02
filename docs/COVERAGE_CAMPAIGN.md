@@ -302,3 +302,8 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
 | g41 | internal/metrics/prometheus | 15.5 | 81.3 |
 | g41 | lib/types | 62.6 | 84.9 |
 | g41 | lib/commitment/trie | 36.7 | 90.6 |
+| g42 | internal/api | 48.9 | 57.0 (the rest needs an executed block with transactions; g44 builds that harness) |
+
+- `internal/api/ens_api.go` `ethCall` is a permanent stub returning an error, so every ENS RPC (ResolveName,
+  ResolveAddress, GetContentHash, GetTextRecord, GetOwner, GetResolver) always fails in production. Functional gap, not
+  a test gap.
