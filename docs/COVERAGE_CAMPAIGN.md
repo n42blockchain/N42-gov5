@@ -69,3 +69,15 @@ with that instruction.
 - `internal/cscompact/history_analysis.go` `ParseErigonBitmapValue`: a malformed 16-byte buffer makes
   `roaring64.Bitmap.UnmarshalBinary` panic (`makeslice: len out of range`) instead of falling through to the
   size-estimate fallback.
+
+| g1 | internal/mcp | 6.5 | 75.7 |
+| g1 | modules/rpc/jsonrpc | 5.8 | 51.8 |
+| g1 | internal/api | 43.6 | 43.8 |
+| g3 | modules/rawdb | 39.7 | 63.5 |
+| g3 | modules/state | 55.3 | 57.2 |
+| g3 | lib/state | 49.2 | 49.2 (aggregator needs a wired multi-domain setup) |
+
+- `modules/rpc/jsonrpc/util.go` `UnmarshalText(h types.Hash, ...)` takes the hash BY VALUE, so
+  `BlockNumberOrHash.UnmarshalJSON` returns nil error and a zero hash for every `blockHash` argument: any RPC
+  call that selects a block by hash through this type silently resolves to the zero hash. Likely a real bug;
+  the test documents the current behaviour (TestBlockNumberOrHashUnmarshalJSON).
