@@ -221,3 +221,4 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
   `Filter` which skips until a match; callers that expect upstream semantics will see non-matching nodes.
 - `internal/p2p/enr` `IP.ENRKey()` picks "ip"/"ip6" from the value, so a zero `IP` used as a `Load` target asks for
   "ip6" and misses a stored "ip" entry; load through `IPv4`/`IPv6` instead.
+| g20 | internal/ethel | 35.3 | 39.5 (first pass; coldseed 11.7 -> 85.8, eldevp2p 0 -> 100, publicrpc 18.3 -> 24.6) |
