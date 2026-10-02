@@ -211,3 +211,45 @@ func TestLoadSegmentErrors(t *testing.T) {
 		t.Fatal("expected loadSegment to surface the corrupt segment's decode error")
 	}
 }
+
+// TestStartFrameAheadJoinsStaleSlotForDifferentFrame covers startFrameAhead's
+// join-then-replace branch for a slot armed for a DIFFERENT frame than the
+// one just requested (as opposed to TestFrameAheadArmAndClaim's far-seek case,
+// where the stale slot had already been claimed and cleared by
+// takeFrameAhead). Skipping over the armed frame entirely — reading into
+// frame 2 while frame 1's read-ahead is still in flight/unclaimed — leaves
+// r.frameAhead non-nil and mismatched when startFrameAhead runs again.
+func TestStartFrameAheadJoinsStaleSlotForDifferentFrame(t *testing.T) {
+	const frameSize = 4
+	dir := t.TempDir()
+	writeOneFramedSegmentStore(t, dir, frameSize*6, frameSize)
+
+	r, err := OpenBodyCompact(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() {
+		if sa := r.frameAhead; sa != nil {
+			<-sa.done
+		}
+		r.Close()
+	}()
+
+	// Arms read-ahead for frame 1.
+	if _, err := r.ReadBody(0); err != nil {
+		t.Fatalf("read 0: %v", err)
+	}
+	// Skip straight into frame 2, never touching frame 1: frame 1's slot is
+	// still sitting in r.frameAhead, unclaimed, when this call's own
+	// startFrameAhead(... , 3) runs.
+	blk, err := r.ReadBody(uint64(frameSize * 2))
+	if err != nil {
+		t.Fatalf("read %d: %v", frameSize*2, err)
+	}
+	if blk.Txs[0].Nonce() != uint64(frameSize*2) {
+		t.Fatalf("read %d: wrong content", frameSize*2)
+	}
+	if r.frameAhead == nil || r.frameAhead.frame != 3 {
+		t.Fatalf("expected read-ahead to have moved on to frame 3, got %v", r.frameAhead)
+	}
+}
