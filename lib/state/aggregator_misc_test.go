@@ -45,6 +45,11 @@ func TestAggregator_LastIdInDBEmptyTable(t *testing.T) {
 	require.EqualValues(t, 0, lastIdInDB(db, agg.accounts.indexKeysTable))
 }
 
+func TestAggregator_LastIdInDBWithData(t *testing.T) {
+	agg, db, _, _ := lsTSeedAggregator(t, 4, 16)
+	require.EqualValues(t, 16, lastIdInDB(db, agg.accounts.indexKeysTable))
+}
+
 func TestBackgroundResult_SetHasGetAndReset(t *testing.T) {
 	var br BackgroundResult
 	require.False(t, br.Has())

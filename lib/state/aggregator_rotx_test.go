@@ -91,6 +91,20 @@ func TestAggregatorRoTx_ReadAccountStorageCodePaths(t *testing.T) {
 	size2, _, err := ac.ReadAccountCodeSizeNoStateWithRecent(addr, 8, roTx)
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, size2, 0)
+
+	// Exercise the keyBuf grow/reslice paths in ReadAccountStorageNoState* by
+	// varying the combined key length across calls: first a big key (grows
+	// keyBuf), then a smaller one (len!=need but cap is enough -> reslice),
+	// then back to the original size (cap==len -> no-op).
+	bigLoc := make([]byte, 64)
+	_, _, err = ac.ReadAccountStorageNoState(addr, bigLoc, 8)
+	require.NoError(t, err)
+	_, _, err = ac.ReadAccountStorageNoState(addr, loc, 8)
+	require.NoError(t, err)
+	_, _, err = ac.ReadAccountStorageNoStateWithRecent(addr, bigLoc, 8, roTx)
+	require.NoError(t, err)
+	_, _, err = ac.ReadAccountStorageNoStateWithRecent(addr, loc, 8, roTx)
+	require.NoError(t, err)
 }
 
 func TestAggregatorRoTx_HistoryRangesAndAsOf(t *testing.T) {
