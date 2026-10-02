@@ -444,3 +444,19 @@ Running: g43 (hotstuff service over mocknet), g44 (api executed-chain fixture), 
   live-import `CSFreezerSink.Add/Flush` writes plain per-item Append; feeding sink-written tables to the rebuild returns
   empty blobs silently instead of failing.
 - Dead code: `internal/ethel/journal_verify.go` `deleteStorageByPrefix` has no caller.
+
+## Checkpoint 3 (2026-10-02, after merging g1-g58, 56 groups, ~700 commits)
+
+`go test -short -cover ./...`, 0 failing packages:
+
+| view | covered / statements | coverage |
+|---|---|---|
+| whole module | 117,017 / 211,489 | **55.3%** (baseline 37.2%, checkpoint 2 51.3%) |
+| excluding generated stubs, vendored PQ crypto, cmd mains | 113,382 / 159,266 | **71.2%** (checkpoint 2 66.3%) -- the 70% target is crossed on this view |
+
+Largest remaining gaps (uncovered statements): internal/ethel 3,160 (65.4%), internal/api 2,131 (69.0%),
+internal/datc 1,940 (71.1%, g61 running), internal 1,855 (60.4%), internal/vm 1,447 (72.1%), internal/sync 1,417
+(46.6%, g59 running), lib/state 1,401 (72.0%), lib/commitment 1,332 (66.6%, g57 running), internal/node 1,122 (54.8%),
+internal/miner 1,096 (22.4%, g60 running), internal/replay 927 (25.5%, g57 running).
+Whole-module 70% would need ~31,000 more covered statements, of which ~21,000 sit in generated stubs, vendored PQ crypto
+and cmd mains; the remaining reachable mass is the executed-chain-dependent paths listed above.
