@@ -409,3 +409,13 @@ Running: g43 (hotstuff service over mocknet), g44 (api executed-chain fixture), 
 - `modules/rpc/jsonrpc` client-side subscription delivery is dead: `ClientSubscription.run/deliver/close` have no
   caller and `subid` is never assigned, so server->client notifications are never forwarded and `Unsubscribe()` blocks
   forever on `unsubDone`.
+| g53 | internal/node | 26.3 | 55.0 (in-process Start/Close of an eth-profile private chain over a temp datadir; RPC/JWT/MCP on 127.0.0.1:0) |
+
+- **Node Start/Close data race**: `Node.Start()`'s async `node/sync-startup` goroutine (node.go:2070, reads `n.is` /
+  snap-sync state) races `stopServices()` (node.go:3380/3480) closing the same state; `go test -race` on a plain
+  Start/Close fails. Pre-existing synchronization gap.
+- **Goroutine leak on Close()**: leakybucket Collector.startPeriodicPrune, devp2p Server accept loop, filters
+  EventSystem loop, api Oracle loop, keystore watcher are never stopped (`TestNewNodeStopReleasesGoroutines` tolerates 30).
+- Close() after a failed Start waits ~40 s on snap-sync/initial-sync stop signals that were never started
+  (`stopServices` does not gate on what actually started); makes `TestNewNodeHTTPPortAlreadyInUseFails` slow.
+- `minerAdminAdapter.SetCoinbase` has no RPC caller (no miner_setEtherbase); dead from the outside.
