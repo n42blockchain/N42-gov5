@@ -7,7 +7,8 @@ package miner
 // miner package's tests: a genuine *internal.BlockChain over lib/kv/memdb
 // whose genesis funds a few secp256k1 accounts, followed by a block of
 // signed value transfers inserted through the real import path
-// (BlockChain.InsertChain), using the real apos.Faker consensus engine. This
+// (BlockChain.InsertChain), using a local mnTFakerEngine consensus engine
+// that computes a real state root, receipt hash and logs bloom. This
 // is a package-local port of internal/coreT_chain_fixture_test.go (test
 // files cannot be imported across packages), trimmed to what the miner
 // package's tests need. Helpers use the mnT… prefix per the coverage-task
@@ -16,6 +17,7 @@ package miner
 import (
 	"context"
 	"crypto/ecdsa"
+	"errors"
 	"math/big"
 	"testing"
 
@@ -30,14 +32,104 @@ import (
 	"github.com/n42blockchain/N42/conf"
 	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal"
-	"github.com/n42blockchain/N42/internal/consensus/apos"
+	"github.com/n42blockchain/N42/internal/consensus"
 	vm2 "github.com/n42blockchain/N42/internal/vm"
 	"github.com/n42blockchain/N42/lib/kv"
 	"github.com/n42blockchain/N42/lib/kv/memdb"
 	"github.com/n42blockchain/N42/modules"
+	"github.com/n42blockchain/N42/modules/rpc/jsonrpc"
 	"github.com/n42blockchain/N42/modules/state"
 	"github.com/n42blockchain/N42/params"
 )
+
+var errMnTNotAHeader = errors.New("mnT fixture: header is not *block.Header")
+
+// mnTFakerEngine is a minimal stand-in consensus engine for miner tests: it
+// accepts everything, issues no rewards, and — unlike
+// internal/consensus/apos.Faker (which leaves Root/ReceiptHash/Bloom to the
+// caller and sleeps 2s in Seal to simulate block time) — computes a real
+// state root, receipt hash and logs bloom in FinalizeAndAssemble and seals
+// immediately, so commit()'s output is a genuinely checkable block. Package-
+// local port of internal/coreT_chain_fixture_test.go's coreTFakerEngine
+// (test files cannot be imported across packages).
+type mnTFakerEngine struct{}
+
+func (mnTFakerEngine) Author(header block.IHeader) (types.Address, error) {
+	h, ok := header.(*block.Header)
+	if !ok {
+		return types.Address{}, nil
+	}
+	return h.Coinbase, nil
+}
+
+func (mnTFakerEngine) IsServiceTransaction(types.Address, consensus.SystemCall) bool { return false }
+func (mnTFakerEngine) Type() params.ConsensusType                                    { return params.Faker }
+
+func (mnTFakerEngine) VerifyHeader(consensus.ChainHeaderReader, block.IHeader, bool) error {
+	return nil
+}
+
+func (mnTFakerEngine) VerifyHeaders(chain consensus.ChainHeaderReader, headers []block.IHeader, seals []bool) (chan<- struct{}, <-chan error) {
+	abort := make(chan struct{})
+	results := make(chan error, len(headers))
+	for range headers {
+		results <- nil
+	}
+	return abort, results
+}
+
+func (mnTFakerEngine) VerifyUncles(consensus.ConsensusChainReader, block.IBlock) error { return nil }
+
+func (mnTFakerEngine) Prepare(chain consensus.ChainHeaderReader, header block.IHeader) error {
+	h, ok := header.(*block.Header)
+	if !ok {
+		return nil
+	}
+	parent, _ := chain.GetHeaderByHash(h.ParentHash)
+	if parent != nil {
+		h.Difficulty = mnTFakerEngine{}.CalcDifficulty(chain, h.Time, parent)
+	} else {
+		h.Difficulty = uint256.NewInt(1)
+	}
+	return nil
+}
+
+func (mnTFakerEngine) Finalize(consensus.ChainHeaderReader, block.IHeader, *state.IntraBlockState, []*transaction.Transaction, []block.IHeader) ([]*block.Reward, map[types.Address]*uint256.Int, error) {
+	return nil, nil, nil
+}
+
+func (mnTFakerEngine) FinalizeAndAssemble(_ consensus.ChainHeaderReader, header block.IHeader, ibs *state.IntraBlockState, txs []*transaction.Transaction, _ []block.IHeader, receipts []*block.Receipt) (block.IBlock, []*block.Reward, map[types.Address]*uint256.Int, error) {
+	h, ok := header.(*block.Header)
+	if !ok {
+		return nil, nil, nil, errMnTNotAHeader
+	}
+	h.Root = ibs.IntermediateRoot()
+	h.ReceiptHash = hash.DeriveSha(block.Receipts(receipts))
+	h.Bloom = block.CreateBloom(receipts)
+	return block.NewBlockFromReceipt(h, txs, nil, receipts, nil), nil, nil, nil
+}
+
+func (mnTFakerEngine) Seal(chain consensus.ChainHeaderReader, blk block.IBlock, results chan<- block.IBlock, stop <-chan struct{}) error {
+	select {
+	case results <- blk:
+	case <-stop:
+	}
+	return nil
+}
+
+func (mnTFakerEngine) SealHash(header block.IHeader) types.Hash { return header.Hash() }
+
+func (mnTFakerEngine) CalcDifficulty(chain consensus.ChainHeaderReader, t uint64, parent block.IHeader) *uint256.Int {
+	n := parent.Number64()
+	if n == nil {
+		return uint256.NewInt(0)
+	}
+	return uint256.NewInt(0).Add(n, uint256.NewInt(2))
+}
+
+func (mnTFakerEngine) APIs(consensus.ConsensusChainReader) []jsonrpc.API { return nil }
+
+func (mnTFakerEngine) Close() error { return nil }
 
 // mnTChainFixture bundles a real, executed BlockChain plus the material a
 // miner test needs to build on top of it (a chain head, funded senders, a
@@ -46,7 +138,7 @@ type mnTChainFixture struct {
 	DB     kv.RwDB
 	Chain  *internal.BlockChain
 	Config *params.ChainConfig
-	Engine *apos.Faker
+	Engine mnTFakerEngine
 	Signer transaction.Signer
 
 	Coinbase types.Address
@@ -125,7 +217,7 @@ func mnTNewChainFixture(tb testing.TB) *mnTChainFixture {
 	require.NoError(tb, err)
 	require.NotNil(tb, genesisBlock)
 
-	engine := &apos.Faker{}
+	engine := mnTFakerEngine{}
 	bcIface, err := internal.NewBlockChain(ctx, genesisBlock, engine, db, nil, cfg)
 	require.NoError(tb, err)
 	bc := bcIface.(*internal.BlockChain)
@@ -153,8 +245,8 @@ func (f *mnTChainFixture) mnTSignedTransfer(tb testing.TB, senderIdx int, to typ
 	inner := &transaction.DynamicFeeTx{
 		ChainID:   uint256.MustFromBig(f.Config.ChainID),
 		Nonce:     nonce,
-		GasTipCap: uint256.NewInt(1),
-		GasFeeCap: uint256.NewInt(2),
+		GasTipCap: uint256.NewInt(2_000_000_000),
+		GasFeeCap: uint256.NewInt(1_000_000_000_000),
 		Gas:       500_000,
 		To:        &to,
 		Value:     value,

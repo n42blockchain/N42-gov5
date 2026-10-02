@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/n42blockchain/N42/common"
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
@@ -20,6 +21,28 @@ import (
 // false means the start signal is never sent on startCh, so workLoop/runLoop
 // never see "running"=1 and commitWork/fillTransactions are only driven
 // directly by the test, never by the background loops.
+// mnTBareWorker builds a worker struct literal directly, like
+// speculative_test.go's `&worker{}` tests do, with no newWorker call and so
+// no background goroutines (workLoop/runLoop/taskLoop/resultLoop). Needed
+// whenever a test sets running=1 and reads w.taskCh itself: newWorker's
+// taskLoop would otherwise race the test for the same send and run a real
+// Seal+write, and its workLoop ticker can independently trigger an unwanted
+// second (empty) build once the worker is "running". Has just enough state
+// for prepareWork/makeEnv/fillTransactions/commit to run.
+func mnTBareWorker(tb testing.TB, f *mnTChainFixture, pool common.ITxsPool) *worker {
+	tb.Helper()
+	w := &worker{
+		engine:      f.Engine,
+		chain:       f.Chain,
+		txsPool:     pool,
+		chainConfig: f.Config,
+		minerConf:   conf.MinerConfig{GasCeil: 30_000_000},
+		taskCh:      make(chan *task, 1),
+		ctx:         context.Background(),
+	}
+	return w
+}
+
 func mnTNewIdleWorker(tb testing.TB, f *mnTChainFixture, pool *mnTStubTxsPool) *worker {
 	tb.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
