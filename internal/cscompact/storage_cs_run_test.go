@@ -37,6 +37,10 @@ func csOpenStorageChangesetDB(t *testing.T) kv.RwDB {
 				DupFromLen:                36,
 				DupToLen:                  8,
 			},
+			// See csOpenChangesetDB's comment: declared empty so
+			// detectCSTable's Reth-name probe cleanly misses.
+			"AccountChangeSets": {},
+			"StorageChangeSets": {},
 		}
 	}).MustOpen()
 	t.Cleanup(db.Close)

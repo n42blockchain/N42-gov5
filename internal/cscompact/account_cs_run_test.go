@@ -29,6 +29,14 @@ func csOpenChangesetDB(t *testing.T) kv.RwDB {
 		return kv.TableCfg{
 			ErigonAccountChangeSet: {Flags: kv.DupSort},
 			ErigonStorageChangeSet: {Flags: kv.DupSort},
+			// Declared (empty, non-DupSort) so HistoryBuilder.detectCSTable's
+			// Reth-name probe ("AccountChangeSets"/"StorageChangeSets") gets
+			// a clean CursorDupSort error and falls through to the real
+			// Erigon-name table, instead of MDBX silently handing back the
+			// root DBI for an undeclared name (see detectCSTable's doc
+			// comment on Accede-mode fallback risk).
+			"AccountChangeSets": {},
+			"StorageChangeSets": {},
 		}
 	}).MustOpen()
 	t.Cleanup(db.Close)
