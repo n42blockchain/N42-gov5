@@ -257,3 +257,7 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
 | g30 | internal/ethel/engineapi | 51.1 | 82.3 |
 | g30 | internal/ethel/publicrpc | 24.6 | 74.9 |
 | g30 | internal/ethel/fetch | 56.6 | 60.2 (torrent and webrtc fetchers need live peers) |
+| g29 | internal/ethel (executor/cs_freezer/codes readers/compare_mdbx slice) | 40.3 | 47.3 (synthetic geth-format freezer built in-process) |
+
+- `internal/ethel/executor.go:229` `Executor.SetSenderFreezer(nil)` panics (calls `f.Table` on a nil freezer); every other
+  `Set*` setter accepts nil as "disable".
