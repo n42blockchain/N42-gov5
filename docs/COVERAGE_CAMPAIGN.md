@@ -185,3 +185,10 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
   in-repo fake for `network.Stream` (net.Pipe-backed) and a builder for `peers.Status` / `p2p.P2P` with real peer records.
 - `internal/sync` `TestGraceCatchUpDeferredAndResolvedByNormalPath` (S63's own test) fails under `-race`; whether the race
   is in the test or in `rpc_catchup.go`'s grace path is being checked separately (S63 is adopted in the fleet).
+| g17 | internal/avm/types | 7.9 | 95.4 |
+| g17 | internal/avm/common | 48.2 | 97.2 |
+| g17 | internal/avm/common/compiler | 0.0 | 52.6 (the rest shells out to solc/vyper) |
+| g17 | internal/avm/abi | 79.5 | 89.8 |
+| g17 | internal/avm/rlp | 88.4 | 94.4 |
+
+- `internal/avm/rlp/decode.go` `IsInvalidRLPError(nil)` panics (no nil guard before `err.Error()`).
