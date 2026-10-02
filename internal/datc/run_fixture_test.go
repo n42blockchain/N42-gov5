@@ -46,6 +46,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/golang/snappy"
@@ -71,7 +72,28 @@ func persistentTempDir(t *testing.T, prefix string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	persistentDirsMu.Lock()
+	persistentDirs = append(persistentDirs, dir)
+	persistentDirsMu.Unlock()
 	return dir
+}
+
+// persistentDirs collects every directory handed out by persistentTempDir so
+// TestMain can remove them when the test binary exits; each archive fixture
+// preallocates a ~2 GB MDBX map, and leaving them behind filled GOTMPDIR.
+var (
+	persistentDirsMu sync.Mutex
+	persistentDirs   []string
+)
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	persistentDirsMu.Lock()
+	for _, d := range persistentDirs {
+		os.RemoveAll(d)
+	}
+	persistentDirsMu.Unlock()
+	os.Exit(code)
 }
 
 // gethHeaderRLP mirrors the 15 legacy fields ethel.decodeHeaderFields expects
