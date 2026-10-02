@@ -93,3 +93,12 @@ with that instruction.
   a typed-nil `*block.Block` inside the `block.IBlock` interface passes the `== nil` check and the handler panics on
   `Header()`/`GasLimit()`. Any chain implementation that returns a nil concrete block crashes these RPC handlers.
 | g5 | internal/vm | 50.5 | 55.6 (new bytecode execution harness exec_harness_test.go) |
+| g7 | modules/rawdb | 63.5 | 77.1 |
+| g7 | modules/state | 57.2 | 68.9 |
+| g7 | internal/replay | 14.0 | 25.5 (the rest needs a real source+target datadir) |
+
+- `modules/rawdb/accessors_chain_receipts.go` `ReadReceiptByTxHash`: scans `BaseTxId+i` for i in [0, TxAmount) although
+  `WriteBody` reserves two extra slots and real transactions start at `BaseTxId+1`, so it returns the receipt one position
+  off for every transaction after the first and misses the last one. Marked era-unaware / no production caller today;
+  `TestReadReceiptByTxHash` pins current behaviour.
+- Dead code found: `internal/replay` `BLSResealer.signMembers`, `modules/state` `Scheduler.beginExecution`.
