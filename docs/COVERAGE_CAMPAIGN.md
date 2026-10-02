@@ -473,3 +473,7 @@ and cmd mains; the remaining reachable mass is the executed-chain-dependent path
 
 - `internal/miner` AIOptimizer hook: `SetAIOptimizer` wires the field but `fillTransactions` never calls it, so the AI
   block optimizer (conf AICfg.MEV) has no effect on ordering in this snapshot.
+| g62 | internal/ethel | 65.4 | 70.0 (RunWitnessReplay end to end, parallel feeder over geth and N42 columnar inputs) |
+
+- `internal/ethel/rebuild_state.go` `rebuildEVMFallback` writes `acctcs_patch_N.bin` / `storcs_patch_N.bin` into the
+  process working directory unconditionally (tests chdir into a temp dir to contain it).
