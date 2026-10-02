@@ -277,3 +277,4 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
   past block 0 (`SubUint64` wraps to MaxUint64) and fails with "block not found" instead of stopping.
 - `apos.API.GetSigner` and `apoa.API.GetSigner`: nil-pointer panic on a nil `BlockNumberOrHash` with no current block
   (the missing-block error path calls `.String()` on the nil pointer).
+| g39 | internal/p2p/discover/v5wire | 19.1 | 82.6 (full discv5 handshake over mclock.Simulated) |
