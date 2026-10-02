@@ -348,6 +348,44 @@ func TestExtractInlineNumberRejectsInvalidToken(t *testing.T) {
 	}
 }
 
+func TestExecuteQueryRoutesAccountQueryWithInlineAddress(t *testing.T) {
+	wantAddr := types.HexToAddress("0x1234567890123456789012345678901234567890")
+	var called bool
+	handler := NewHandler(&stubQueryBackend{
+		accountFn: func(_ context.Context, addr types.Address, blockNr *uint64) (*Account, error) {
+			called = true
+			if addr != wantAddr {
+				t.Fatalf("address = %s, want %s", addr.Hex(), wantAddr.Hex())
+			}
+			if blockNr != nil {
+				t.Fatalf("blockNr = %v, want nil (no blockNumber given)", blockNr)
+			}
+			return &Account{Address: addr}, nil
+		},
+	})
+
+	data, err := handler.executeQuery(httptest.NewRequest(http.MethodPost, "/graphql", nil), GraphQLRequest{
+		Query: `query { account(address: "` + wantAddr.Hex() + `") { address } }`,
+	})
+	if err != nil {
+		t.Fatalf("executeQuery() error = %v", err)
+	}
+	if !called {
+		t.Fatal("account backend was not called")
+	}
+	assertTopLevelKeyPresent(t, data, "account")
+}
+
+func TestExecuteQueryRejectsInlineMalformedAddress(t *testing.T) {
+	handler := NewHandler(&stubQueryBackend{})
+	_, err := handler.executeQuery(httptest.NewRequest(http.MethodPost, "/graphql", nil), GraphQLRequest{
+		Query: `query { account(address: "not-an-address") { address } }`,
+	})
+	if err == nil {
+		t.Fatal("expected error for malformed inline address")
+	}
+}
+
 func assertGraphQLErrorContains(t *testing.T, body []byte, substring string) {
 	t.Helper()
 
