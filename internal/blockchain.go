@@ -2476,10 +2476,10 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 			}
 			ptime := time.Since(pstart)
 			dProcess = ptime
-			// Split Process into EVM execution vs state root #3. Only the serial
-			// StateProcessor records the breakdown; the parallel path leaves the
-			// sub-phases zero (dProcess still covers the whole call).
-			if sp, ok := bc.process.(*StateProcessor); ok && !bc.parallelEVM {
+			// Split Process into EVM execution vs state root #3. Both the serial
+			// Process and the strict parallel run publish their breakdown (the
+			// parallel one adds setup and collect).
+			if sp, ok := bc.process.(*StateProcessor); ok {
 				procPhases = sp.LastPhases()
 			}
 
@@ -2584,6 +2584,7 @@ func (bc *BlockChain) insertChain(chain []block.IBlock, authorizedSwitch bool) (
 				"hdr", dHdr, "body", dBody, "align", dAlign,
 				"recov", procPhases.Recover, "prep", procPhases.Prep,
 				"exec", procPhases.Exec, "root", procPhases.Finalize,
+				"setup", procPhases.Setup, "collect", procPhases.Collect,
 				"proc", dProcess, "valid", dValidate, "write", dWrite, "total", dTotal,
 				"tMs", time.Now().UnixMilli(),
 			}
