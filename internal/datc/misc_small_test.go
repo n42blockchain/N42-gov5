@@ -206,6 +206,24 @@ func TestDieExitsNonZero(t *testing.T) {
 	}
 }
 
+// runHelperSubprocess re-execs the test binary with -test.run=<pattern> and
+// the given extra env vars, returning the process exit code and combined
+// output. Shared by every die()/os.Exit subprocess test in this package.
+func runHelperSubprocess(t *testing.T, pattern string, env ...string) (int, string) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run="+pattern)
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return 0, string(out)
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("expected ExitError, got %v (output: %s)", err, out)
+	}
+	return exitErr.ExitCode(), string(out)
+}
+
 func rootSlice(m map[uint64][32]byte, k uint64) []byte {
 	v := m[k]
 	return v[:]
