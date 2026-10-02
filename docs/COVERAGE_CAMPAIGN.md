@@ -193,3 +193,8 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
 
 - `internal/avm/rlp/decode.go` `IsInvalidRLPError(nil)` panics (no nil guard before `err.Error()`).
 | g18 | internal | 35.3 | 47.5 (InsertChain/Start/ProcessParallel need a full engine + EVM harness) |
+| g16 | lib/kv/mdbx | 63.7 | 83.8 |
+| g16 | lib/qmdb | 79.7 | 88.9 |
+
+- `lib/kv/mdbx/kv_mdbx_opts.go` `MdbxOpts.InMem(dir)` unconditionally resets `label` to `kv.InMem`, so
+  `.Label(kv.ChainDB).InMem(dir)` silently loses the label (call-order footgun).
