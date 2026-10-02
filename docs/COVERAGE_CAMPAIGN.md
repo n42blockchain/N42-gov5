@@ -460,3 +460,10 @@ internal/datc 1,940 (71.1%, g61 running), internal 1,855 (60.4%), internal/vm 1,
 internal/miner 1,096 (22.4%, g60 running), internal/replay 927 (25.5%, g57 running).
 Whole-module 70% would need ~31,000 more covered statements, of which ~21,000 sit in generated stubs, vendored PQ crypto
 and cmd mains; the remaining reachable mass is the executed-chain-dependent paths listed above.
+| g57 | internal/replay | 25.5 | 56.4 (on-disk MDBX source chain fixture, EngineV2 run/resume/export) |
+| g57 | lib/commitment | 66.6 | 74.8 |
+| g57 | internal | 60.4 | 62.3 (reorg 14.5 -> 60, recoverAncestors 22.7 -> 86.4) |
+
+- Dead/mismatched: `lib/commitment/hex_patricia_hashed.go` `HexTrieExtractStateRoot` / `HexTrieStateToShortString` /
+  `HexTrieStateToString` expect an 18-byte (txNum|blockNum|stateLen) header that `EncodeCurrentState` (the only
+  producer) never emits; no production caller.
