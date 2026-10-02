@@ -115,3 +115,14 @@ with that instruction.
   (`TestTouchPlainKeyNoDedupModeUpdateFallbackPanics`).
 - `lib/commitment/hex_patricia_hashed.go` `resetForReuse`: pooled instances keep the CSV metrics prefix set by
   `EnableCsvMetrics`, so a later borrower can panic opening a stale path. Pool hygiene gap.
+| g11 | crypto/sha3 | 0.0 | 99.4 |
+| g11 | crypto/csidh | 0.0 | 74.0 |
+| g11 | crypto/bls | 22.8 | 79.8 |
+| g11 | crypto/bls12381 | 49.3 | 81.0 |
+| g11 | accounts/abi/bind | 14.7 | 48.1 |
+| g11 | conf | 55.6 | 77.9 |
+| g11 | params | 64.6 | 87.7 |
+| g11 | accounts | 37.3 | 97.3 |
+
+- `crypto/bls12381` `Engine.AddPairInv` negates its G1 argument in place; reusing the same point variable across
+  `AddPair`/`AddPairInv` silently corrupts the pairing input. Document or copy internally.
