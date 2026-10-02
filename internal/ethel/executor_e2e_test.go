@@ -27,9 +27,9 @@ import (
 	"github.com/n42blockchain/N42/params"
 )
 
-// emptyGethBody is the Snappy+RLP-encoded Geth body [txs, uncles] with
+// emptyGethBodyRLP is the Snappy+RLP-encoded Geth body [txs, uncles] with
 // no transactions, no uncles — matches what DecodeGethBody expects.
-func emptyGethBody(t *testing.T) []byte {
+func emptyGethBodyRLP(t *testing.T) []byte {
 	t.Helper()
 	raw, err := rlp.EncodeToBytes([]interface{}{[]interface{}{}, []interface{}{}})
 	require.NoError(t, err)
@@ -57,7 +57,7 @@ func buildSyntheticGethFreezer(t *testing.T, dir string, n int) *freezer.Freezer
 		h := mkHeader(uint64(i), tsAnchor+uint64(i), parent, emptyTrieRoot(), EthReceiptHash(nil))
 		parent = h.Hash()
 		headers = append(headers, encodeGethHeader(t, h))
-		bodies = append(bodies, emptyGethBody(t))
+		bodies = append(bodies, emptyGethBodyRLP(t))
 		receipts = append(receipts, snappy.Encode(nil, mustRLP(t, []interface{}{})))
 		hb := h.Hash()
 		hashes = append(hashes, hb[:])
