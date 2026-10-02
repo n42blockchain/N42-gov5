@@ -39,3 +39,33 @@ each checkpoint.
 | g2 | internal/vm, lib/trie, lib/rlp2, accounts/abi |
 | g3 | modules/state, lib/state, modules/rawdb |
 | g4 | internal/consensus/hotstuff, internal/txspool, lib/txpool, internal/cscompact |
+
+## Wave 1 results
+
+| group | package | before | after |
+|---|---|---|---|
+| g4 | internal/cscompact | 19.0 | 35.8 |
+| g4 | internal/txspool | 44.3 | 57.7 |
+| g4 | lib/txpool | 44.6 | 48.3 |
+| g4 | internal/consensus/hotstuff | 62.0 | 64.3 |
+| g2 | lib/rlp2 | 16.5 | 74.1 |
+| g2 | accounts/abi | 30.8 | 59.6 |
+| g2 | lib/trie | 46.7 | 56.8 |
+| g2 | internal/vm | 50.0 | 50.5 |
+
+Lesson: pure-helper tests exhaust quickly; the remaining mass (vm opcodes/precompiles, trie hashing, pool main loops,
+hotstuff service) needs tests built on the packages' existing harnesses. Wave 2 assigns one or two packages per agent
+with that instruction.
+
+## Found while testing (not fixed; test-only campaign)
+
+- `lib/rlp2/encodel.go` `EncodeString`: a 56-byte string takes the short-string branch (`> 56` instead of `>= 56`),
+  emitting a non-canonical `0xB8` header; `String()` then rejects it.
+- `lib/rlp2/encoder.go` `writeList`: long-list header (payload > 55 bytes) writes `0x00` as the length byte
+  (`f8 00` for a 60-byte item instead of `f8 3f`); corrupt RLP. Reproduce:
+  `NewEncoder(nil).List(func(i *Encoder) *Encoder { return i.Str(bytes.Repeat([]byte{1}, 60)) })`.
+- `lib/rlp2/commitment.go` `EncodeByteArrayAsRlp`: for a single byte >= 0x80, `generateRlpPrefixLen(1)` returns 0 but
+  one prefix byte is written, so the returned length undercounts by 1.
+- `internal/cscompact/history_analysis.go` `ParseErigonBitmapValue`: a malformed 16-byte buffer makes
+  `roaring64.Bitmap.UnmarshalBinary` panic (`makeslice: len out of range`) instead of falling through to the
+  size-estimate fallback.
