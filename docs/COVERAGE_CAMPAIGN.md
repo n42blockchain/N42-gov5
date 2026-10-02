@@ -226,3 +226,15 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
 | g24 | internal/ethel | 39.5 | 40.3 (second pass weak; ethel now split per file, g26 = body codecs) |
 | g23 | internal/consensus/hotstuff | 64.3 | 75.6 (service lifecycle needs a fake pubsub harness) |
 | g25 | internal/datc | 57.3 | 60.1 (run* workers need an upstream freezer-input fixture; g28 builds it) |
+| g22 | lib/kv/remotedbserver | 19.0 | 67.0 |
+| g22 | lib/kv/remotedb | 5.8 | 78.5 |
+| g22 | lib/direct | 0.0 | 49.3 (every hand-written file at 100%; the rest is mockgen output) |
+| g22 | internal/node | 18.1 | 26.3 (the rest needs Start() or a full p2p.P2P fake) |
+
+- `lib/kv/remotedbserver` `Range`/`IndexRange` pagination is dead: the server loop never checks the limit and
+  `lib/kv/mdbx` `cursor2iter.HasNext()` turns false when its own limit counter hits zero, so `NextPageToken` is never
+  produced through the public API (`TestRangePaginationNeverTriggersViaIntegration`).
+- `lib/direct/eth_backend_client.go` `SubscribeLogs`: the server goroutine's deferred close of `chRecv` races a concurrent
+  client `Send` on the same channel (reproducible under `-race`).
+- `lib/direct` `SubscribeLogsStreamC`/`SubscribeLogsStreamS` do not override `Context()`, so calling it panics on the nil
+  embedded gRPC stream.
