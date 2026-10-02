@@ -294,3 +294,11 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
 - `internal/sync/initialsync/blocks_fetcher.go` `timeToWait()` multiplies `int64(timeTillEmpty) * blocksNeeded` without
   overflow protection; a huge batch request yields a near-zero or negative wait and defeats the rate limiter.
   `waitForBandwidth`'s `uint64(rem) >= count` wraps when `rem` is transiently negative (LeakyBucket.Count rounds up).
+| g41 | internal/api/filters | 8.5 | 70.1 |
+| g41 | lib/rlp | 67.2 | 95.9 |
+| g41 | log | 37.4 | 76.8 |
+| g41 | common/avmtypes | 8.0 | 95.6 |
+| g41 | common/metrics | 16.7 | 78.7 |
+| g41 | internal/metrics/prometheus | 15.5 | 81.3 |
+| g41 | lib/types | 62.6 | 84.9 |
+| g41 | lib/commitment/trie | 36.7 | 90.6 |
