@@ -191,3 +191,23 @@ func unwrapPathError(err error) error {
 	}
 	return err
 }
+
+// TestLoadSegmentErrors covers loadSegment's out-of-range guard and its
+// propagation of a decode error from awaitAhead/decodeSegment.
+func TestLoadSegmentErrors(t *testing.T) {
+	dir := t.TempDir()
+	writeOneSegmentStore(t, dir, []byte{0xff, 0xff, 0xff, 0xff}) // not valid zstd
+
+	r, err := OpenBodyCompact(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer r.Close()
+
+	if err := r.loadSegment(int64(r.segments)); err == nil {
+		t.Fatal("expected an out-of-range error from loadSegment")
+	}
+	if err := r.loadSegment(0); err == nil {
+		t.Fatal("expected loadSegment to surface the corrupt segment's decode error")
+	}
+}
