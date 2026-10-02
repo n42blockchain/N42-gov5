@@ -16,13 +16,21 @@ const denseTestTable = "AccountsDense"
 // table populated with one or more entries, and returns the dir.
 func writeDenseTestDB(t *testing.T, entries map[string][]byte) string {
 	t.Helper()
+	return writeDenseTestDBNamed(t, denseTestTable, entries)
+}
+
+// writeDenseTestDBNamed creates a temp-dir MDBX env with a single dense
+// table (named `table`) populated with the given entries, and returns
+// the dir.
+func writeDenseTestDBNamed(t *testing.T, table string, entries map[string][]byte) string {
+	t.Helper()
 	dir := t.TempDir()
 	logger := log.New()
 	db, err := mdbxkv.NewMDBX(logger).
 		Path(dir).
 		Label(kv.ChainDB).
 		WithTableCfg(func(d kv.TableCfg) kv.TableCfg {
-			d[denseTestTable] = kv.TableCfgItem{}
+			d[table] = kv.TableCfgItem{}
 			return d
 		}).
 		Open(context.Background())
@@ -36,7 +44,7 @@ func writeDenseTestDB(t *testing.T, entries map[string][]byte) string {
 		t.Fatalf("BeginRw: %v", err)
 	}
 	for k, v := range entries {
-		if err := tx.Put(denseTestTable, []byte(k), v); err != nil {
+		if err := tx.Put(table, []byte(k), v); err != nil {
 			t.Fatalf("Put: %v", err)
 		}
 	}
