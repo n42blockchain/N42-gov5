@@ -209,3 +209,15 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
   single byte >= 0x80 (`generateRlpPrefixLen` ignores the first byte); the written bytes are right, the count is wrong.
 - `lib/diagnostics` `SetFillDBInfo` appends a stage only when the list is nil, so every later stage with a new name is
   silently dropped.
+| g12 | internal/p2p/netutil | 0.0 | 94.0 |
+| g12 | internal/p2p/enr | 1.7 | 88.0 |
+| g12 | internal/p2p/peers | 0.0 | 91.7 |
+| g12 | internal/p2p/enode | 37.2 | 79.1 |
+| g12 | internal/p2p/discover | 0.0 | 52.5 (v4 over an in-memory dgram pipe; discv5 untouched) |
+| g12 | internal/mpttrie | 47.2 | 80.9 |
+| g12 | internal/txlookup | 46.4 | 67.4 |
+
+- `internal/p2p/enode` `filterIter.Next()` advances once and reports whether that single node passed, unlike upstream
+  `Filter` which skips until a match; callers that expect upstream semantics will see non-matching nodes.
+- `internal/p2p/enr` `IP.ENRKey()` picks "ip"/"ip6" from the value, so a zero `IP` used as a `Load` target asks for
+  "ip6" and misses a stored "ip" entry; load through `IPv4`/`IPv6` instead.
