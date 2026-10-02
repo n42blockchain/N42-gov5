@@ -269,3 +269,11 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
 - `lib/kv/bitmapdb` `WalkChunkWithKeys64` with a tiny sizeLimit panics (`Maximum()` on an empty tail chunk after a cut,
   bitmapdb.go:274).
 | g34 | internal/sync | 27.6 | 46.0 (catchUpTo/catchUpRange end to end over the pipe harness) |
+| g33 | internal/consensus/apoa | 33.2 | 71.8 (snapshot table via modules.N42Init + swapped ChaindataTablesCfg in a test helper) |
+| g33 | internal/consensus/apos | 33.9 | 60.4 |
+| g33 | internal/miner | 17.1 | 22.4 (worker/miner loops are integration weight) |
+
+- `internal/consensus/apos/consensus.go` `AccumulateRewards`: when `number == rewardEpoch` the backward walk underflows
+  past block 0 (`SubUint64` wraps to MaxUint64) and fails with "block not found" instead of stopping.
+- `apos.API.GetSigner` and `apoa.API.GetSigner`: nil-pointer panic on a nil `BlockNumberOrHash` with no current block
+  (the missing-block error path calls `.String()` on the nil pointer).
