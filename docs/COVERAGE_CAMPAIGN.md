@@ -469,3 +469,7 @@ and cmd mains; the remaining reachable mass is the executed-chain-dependent path
   producer) never emits; no production caller.
 | g61 | lib/txpool | 56.8 | 57.6 (datc unchanged at 71.1; weak pass) |
 | g59 | internal/sync | 46.6 | 58.1 (newFakeP2PWithHost: socket-less libp2p host + real GossipSub behind fakeP2P) |
+| g60 | internal/miner | 22.4 | 56.4 (executed-chain fixture, one synchronous build/seal/write cycle) |
+
+- `internal/miner` AIOptimizer hook: `SetAIOptimizer` wires the field but `fillTransactions` never calls it, so the AI
+  block optimizer (conf AICfg.MEV) has no effect on ordering in this snapshot.
