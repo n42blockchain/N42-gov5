@@ -502,3 +502,23 @@ and cmd mains; the remaining reachable mass is the executed-chain-dependent path
   boundary, the removal branch returns before `roundState.AdvanceView(newView)`, so the removed node's local view
   stays at the pre-boundary value (`TestAdvanceToViewRemovesNodeAtEpochBoundary` pins it). Harmless if the node stays
   an observer; a stale view if it later rejoins. Needs the owner's judgement.
+
+## Checkpoint 4, final (2026-10-02, all 66 groups merged, ~830 commits)
+
+`go test -short -cover ./...` (one flaky warm-up test fixed afterwards, 8ef715bd; the lib/commitment profile was re-measured
+alone and folded in):
+
+| view | covered / statements | coverage |
+|---|---|---|
+| whole module | 120,129 / 211,489 | **56.8%** (baseline 37.2%) |
+| excluding generated stubs, vendored PQ crypto, cmd mains | 116,493 / 159,266 | **73.1%** (baseline ~49%) |
+
+Net: +41,400 covered statements. 366 packages had no test file at the start; the campaign added tests to ~120 packages
+and found ~45 defects (listed above), of which these deserve immediate attention: bptree Tree23.Delete corruption,
+MPT checkpoint not round-tripping, BMT PutBatch dropping keys, bodyc/headerc resume corruption, deep-pipeline Reset
+wedge, node Start/Close race and goroutine leaks, jsonrpc by-hash parse returning the zero hash, historical state read
+returning nil for an account's first change, TraceCall reading state at the wrong height, ENS namespace non-functional,
+receipt-by-hash off by one, ReadReceiptByTxHash, apos reward epoch underflow, the AI optimizer hook never called, the
+fast-verify root mismatch, the removed-validator view advance.
+Rules kept throughout: test-only changes (no production code touched), one commit per test file, English messages,
+no trailers, temp dirs cleaned, nothing run against real datadirs or default ports.
