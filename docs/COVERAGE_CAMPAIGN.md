@@ -238,3 +238,13 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
   client `Send` on the same channel (reproducible under `-race`).
 - `lib/direct` `SubscribeLogsStreamC`/`SubscribeLogsStreamS` do not override `Context()`, so calling it panics on the nil
   embedded gRPC stream.
+| g26 | internal/ethel (body_compact/frames/wire slice) | 40.3 | 43.9 (every function in the three files >= 80%) |
+
+- **`internal/ethel/body_compact.go` `BodyCompactStage.Run` corrupts a store whose only segment is partial on resume**:
+  when `existingSegments` rewinds to 0 the `headFile`/`headSize` recompute block is skipped, the data file is reopened
+  without `O_TRUNC` and appended at its real end, but the new index entry records offset 0, so readers see the stale
+  first-run bytes. The >= 2-segment case is unaffected. Reproduced by the agent, not committed.
+- `BodyCompactReader.Close()` does not join the frame-ahead goroutine (`startFrameAhead`), so a framed random read
+  followed by Close races the background file reads against the handle teardown (`-race` confirmed).
+- `startFrameAhead` calls `dataFile(0, seg)` and discards the result before the goroutine looks up the real file number;
+  harmless with one data file, could trigger a spurious cold-resolver call under multi-file rotation.
