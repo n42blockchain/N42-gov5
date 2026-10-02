@@ -485,3 +485,6 @@ and cmd mains; the remaining reachable mass is the executed-chain-dependent path
   root for the same first empty payload that full verification accepts (`TestExecutePayloadFromTrustedColumnarRunsFastVerifyPath`
   asserts only no internal error). Either a real bug in the incremental root on small databases or a precondition
   (state populated by live wire sync) that the doc comments imply; needs a look before fast-verify is trusted on fresh nodes.
+| g65 | internal/vm | 72.1 | 75.2 (all BLS12-381 precompiles match the official EIP-2537 vectors, output and gas) |
+| g65 | lib/state | 72.0 | 74.7 |
+| g65 | lib/commitment | 74.4 | 75.3 |
