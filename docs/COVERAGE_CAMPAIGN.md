@@ -355,3 +355,11 @@ Largest remaining gaps (uncovered statements): internal/ethel 4,163 (54.5%), int
 (49.2%, g46 running), internal 2,460 (47.5%), internal/vm 2,305 (55.6%), internal/datc 1,940 (71.1%), internal/node 1,831
 (26.3%), modules/state 1,542 (68.6%), internal/sync 1,435 (46.0%), lib/commitment 1,332 (66.6%).
 Running: g43 (hotstuff service over mocknet), g44 (api executed-chain fixture), g45 (cmd mains), g46 (lib/state aggregator).
+| g44 | internal/api | 57.0 | 60.3 (apix_chain_fixture_test.go: real BlockChain over memdb, 5 executed blocks incl. a contract create + call with a log) |
+
+- **Historical state read returns nil for an account's first change**: `state.NewPlainState(tx, blockNr).ReadAccountData`
+  returns `(nil, nil)` for a funded account whose pre-image is the genesis allocation (no prior changeset row) even
+  though AccountsHistory has an index entry. Breaks `debug_trace.go` traceTx (reads state at target-1) and
+  `CreateAccessList` for any transaction that is its sender's first spend ("insufficient funds"). Reproducible with
+  the api fixture; not traced into GetAsOf/FindByHistory yet. Likely affects every historical eth_call at such heights.
+- `rawdb.ReadReceiptByTxHash` confirmed again from the fixture: a 1-tx block returns a nil receipt for its own tx.
