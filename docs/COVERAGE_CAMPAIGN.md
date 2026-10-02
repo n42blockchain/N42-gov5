@@ -435,3 +435,12 @@ Running: g43 (hotstuff service over mocknet), g44 (api executed-chain fixture), 
 | g55 | internal/distributed/messaging | 67.8 | 89.5 (relay and store-query protocol over mocknet) |
 | g55 | lib/txpool | 54.2 | 56.8 (remaining: gRPC server, sentry fetch, mockgen, lifecycle reorg branches) |
 | g55 | internal/txspool | 63.5 | 69.2 |
+| g58 | internal/ethel | 61.7 | 65.4 |
+| g58 | internal/cscompact | 35.8 | 59.9 |
+
+- `internal/cscompact/segment_store.go:80` `SegmentStoreWriter.SegmentCount()` uses `idxFile.Stat()` unchecked; after
+  `Close()` it nil-pointer panics. `HistoryAccumulator.Close()` leaves `a.store` set, so SegmentCount after Close crashes.
+- Format footgun: `RebuildStateWith` reads acctcs/storcs in batch-compressed mode (what output_batcher writes), but the
+  live-import `CSFreezerSink.Add/Flush` writes plain per-item Append; feeding sink-written tables to the rebuild returns
+  empty blobs silently instead of failing.
+- Dead code: `internal/ethel/journal_verify.go` `deleteStorageByPrefix` has no caller.
