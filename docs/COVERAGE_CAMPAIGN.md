@@ -488,3 +488,10 @@ and cmd mains; the remaining reachable mass is the executed-chain-dependent path
 | g65 | internal/vm | 72.1 | 75.2 (all BLS12-381 precompiles match the official EIP-2537 vectors, output and gas) |
 | g65 | lib/state | 72.0 | 74.7 |
 | g65 | lib/commitment | 74.4 | 75.3 |
+| g64 | internal/datc | 71.1 | 75.5 (legacy 40-byte storage keys confirmed skipped by every derive gate) |
+| g64 | lib/txpool | 57.6 | 58.6 (remaining: fetch.go p2p transport, MainLoop, mockgen) |
+
+- Possible `lib/txpool` / `lib/kv/kvcache` issue (unresolved): a sender funded through one `OnNewBlock` then zeroed
+  through a second `OnNewBlock` (Action_UPSERT_CODE) still showed `EnoughBalance` afterwards in a memdb pool; the
+  tests route around it (direct `onSenderStateChange`, cold sender). Either a kvcache root-advance quirk across two
+  StateChangeBatch calls on memdb or a real stale-balance bug; needs isolation.
