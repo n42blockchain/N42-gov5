@@ -432,3 +432,6 @@ Running: g43 (hotstuff service over mocknet), g44 (api executed-chain fixture), 
 | g56 | lib/trie | 63.0 | 70.7 |
 | g56 | internal/mptproof | 55.6 | 62.6 (reth reader/walk files were 0% under -short: their own tests skip without a real datadir) |
 | g56 | internal/sync | 46.0 | 46.6 |
+| g55 | internal/distributed/messaging | 67.8 | 89.5 (relay and store-query protocol over mocknet) |
+| g55 | lib/txpool | 54.2 | 56.8 (remaining: gRPC server, sentry fetch, mockgen, lifecycle reorg branches) |
+| g55 | internal/txspool | 63.5 | 69.2 |
