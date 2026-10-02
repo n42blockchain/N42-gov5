@@ -307,3 +307,11 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
 - `internal/api/ens_api.go` `ethCall` is a permanent stub returning an error, so every ENS RPC (ResolveName,
   ResolveAddress, GetContentHash, GetTextRecord, GetOwner, GetResolver) always fails in production. Functional gap, not
   a test gap.
+| g40 | internal/devp2p | 26.3 | 70.0 |
+| g40 | internal/api/consensusrest | 0.0 | 84.2 |
+| g40 | internal/api/graphql | 48.6 | 79.4 |
+| g40 | internal/mobileverify | 76.7 | 83.9 |
+
+- Test-wiring footgun (recurs across packages): N42-specific tables (`poaSnapshot`, `ConsensusEvidence`, ...) exist
+  only after `modules.N42Init()` and `kv.ChaindataTablesCfg = modules.N42TableCfg`; a fresh `memdb.NewTestDB` fails with
+  `mdbx_cursor_open: permission denied`. Worth a shared test helper in lib/kv/memdb.
