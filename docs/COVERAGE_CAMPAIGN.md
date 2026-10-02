@@ -341,3 +341,17 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
   `(false, nil)`.
 - `lib/seg/sais` panics (`index out of range [0] with length 0`) on a single word whose encoded length reaches the
   16 MiB superstring limit (via extractPatternsInSuperstrings).
+
+## Checkpoint 2 (2026-10-02, after merging g1-g42 except the four groups still running)
+
+`go test -short -cover ./...`, 0 failing packages:
+
+| view | covered / statements | coverage |
+|---|---|---|
+| whole module | 108,503 / 211,489 | **51.3%** (baseline 37.2%, checkpoint 1 41.7%) |
+| excluding generated stubs, vendored PQ crypto, cmd mains | 105,570 / 159,266 | **66.3%** (checkpoint 1 53.2%) |
+
+Largest remaining gaps (uncovered statements): internal/ethel 4,163 (54.5%), internal/api 2,959 (57.0%), lib/state 2,544
+(49.2%, g46 running), internal 2,460 (47.5%), internal/vm 2,305 (55.6%), internal/datc 1,940 (71.1%), internal/node 1,831
+(26.3%), modules/state 1,542 (68.6%), internal/sync 1,435 (46.0%), lib/commitment 1,332 (66.6%).
+Running: g43 (hotstuff service over mocknet), g44 (api executed-chain fixture), g45 (cmd mains), g46 (lib/state aggregator).
