@@ -419,3 +419,7 @@ Running: g43 (hotstuff service over mocknet), g44 (api executed-chain fixture), 
 - Close() after a failed Start waits ~40 s on snap-sync/initial-sync stop signals that were never started
   (`stopServices` does not gate on what actually started); makes `TestNewNodeHTTPPortAlreadyInUseFails` slow.
 - `minerAdminAdapter.SetCoinbase` has no RPC caller (no miner_setEtherbase); dead from the outside.
+| g52 | modules/state | 69.3 | 80.0 |
+
+- `modules/state/mv_evm_adapter.go:376` `ValidateStorageKey` index-panics on a nil/empty key (evaluates `key[0]` in the
+  error format argument after the length guard fails).
