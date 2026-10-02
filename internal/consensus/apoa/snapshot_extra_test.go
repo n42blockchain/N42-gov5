@@ -247,10 +247,10 @@ func TestSnapshotStoreAndLoadRoundTrip(t *testing.T) {
 	cfg := &params.CliqueConfig{Period: 1, Epoch: 30000}
 	snap := newSnapshot(cfg, newSigCache(t), 3, types.HexToHash("0xabc"), []types.Address{signer})
 
-	db := memdb.NewTestDB(t)
+	db := apoaTNewSnapshotDB(t)
 	tx := memdb.BeginRw(t, db)
 	if err := snap.store(tx); err != nil {
-		t.Skipf("skipping: poaSnapshot table not available in test memdb: %v", err)
+		t.Fatalf("store: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit: %v", err)
