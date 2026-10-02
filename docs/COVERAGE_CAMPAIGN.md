@@ -81,3 +81,9 @@ with that instruction.
   `BlockNumberOrHash.UnmarshalJSON` returns nil error and a zero hash for every `blockHash` argument: any RPC
   call that selects a block by hash through this type silently resolves to the zero hash. Likely a real bug;
   the test documents the current behaviour (TestBlockNumberOrHashUnmarshalJSON).
+| g6 | lib/commitment | 52.2 | 53.2 |
+| g6 | modules/state/commitment | 51.2 | 53.1 |
+| g6 | internal/mptproof | 32.5 | 38.1 |
+
+- `lib/commitment/commitment.go` `Updates.TouchCode`: ORs `CodeUpdate` into Flags first, then tests `Flags == 0` to
+  choose `DeleteUpdate` for empty code, so the delete branch is unreachable (TestUpdatesTouchCode pins current behaviour).
