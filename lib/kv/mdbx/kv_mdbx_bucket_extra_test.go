@@ -15,7 +15,10 @@ import (
 // has real entries to work against.
 func chainDB(t *testing.T) kv.RwDB {
 	t.Helper()
-	db := NewMDBX(log.New()).Label(kv.ChainDB).InMem(t.TempDir()).MustOpen()
+	// InMem() unconditionally resets opts.label to kv.InMem, so Label() must
+	// be chained AFTER InMem() to stick (an ordering footgun in MdbxOpts;
+	// see the final coverage report).
+	db := NewMDBX(log.New()).InMem(t.TempDir()).Label(kv.ChainDB).MustOpen()
 	t.Cleanup(db.Close)
 	return db
 }
