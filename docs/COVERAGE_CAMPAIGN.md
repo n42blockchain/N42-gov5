@@ -288,3 +288,9 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
 - `lib/common` `Bytes4/Bytes48/Bytes64/Bytes96.SetBytes` hard-code the 32-byte `length.Hash` (copy of `Hash.SetBytes`):
   Bytes4 panics on almost any input, the others panic for inputs between 32 bytes and their capacity. No production
   caller today (`TestG35BytesNSetBytesIsBroken` pins the panic).
+| g38 | internal/sync/initialsync | 29.6 | 64.0 |
+| g38 | internal/sync/snapsync | 44.0 | 57.2 |
+
+- `internal/sync/initialsync/blocks_fetcher.go` `timeToWait()` multiplies `int64(timeTillEmpty) * blocksNeeded` without
+  overflow protection; a huge batch request yields a near-zero or negative wait and defeats the rate limiter.
+  `waitForBandwidth`'s `uint64(rem) >= count` wraps when `rem` is transiently negative (LeakyBucket.Count rounds up).
