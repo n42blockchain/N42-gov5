@@ -10,6 +10,7 @@ import (
 
 	"github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/n42blockchain/N42/common/types"
@@ -76,6 +77,61 @@ func newTestService(t *testing.T) *Service {
 			},
 		},
 	})
+
+	return s
+}
+
+// newTestServiceOnHost builds a Service around an already-constructed host
+// (e.g. a mocknet peer), skipping libp2p.New entirely. Used for tests that
+// need two Services able to actually exchange streams/pubsub messages,
+// which a host with NoListenAddrs cannot do.
+func newTestServiceOnHost(t *testing.T, h host.Host) *Service {
+	t.Helper()
+
+	cfg := &conf.P2PConfig{
+		MaxPeers:     30,
+		MinSyncPeers: 0,
+		NoDiscovery:  true,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	s := &Service{
+		ctx:            ctx,
+		cancel:         cancel,
+		cfg:            cfg,
+		joinedTopics:   make(map[string]*pubsub.Topic),
+		genesisHash:    types.BytesToHash([]byte{0x01, 0x02, 0x03}),
+		protectedPeers: make(map[peer.ID]struct{}),
+		host:           h,
+	}
+	s.isPreGenesis.Store(true)
+
+	var err error
+	s.addrFilter, err = configureFilter(cfg)
+	if err != nil {
+		t.Fatalf("configureFilter: %v", err)
+	}
+	s.ipLimiter = leakybucket.NewCollector(ipLimit, ipBurst, 30*time.Second, true)
+
+	setPubSubParameters()
+	gs, err := pubsub.NewGossipSub(ctx, h, s.pubsubOptions()...)
+	if err != nil {
+		t.Fatalf("pubsub.NewGossipSub: %v", err)
+	}
+	s.pubsub = gs
+
+	s.peers = peers.NewStatus(ctx, &peers.StatusConfig{
+		PeerLimit: cfg.MaxPeers,
+		ScorerParams: &scorers.Config{
+			BadResponsesScorerConfig: &scorers.BadResponsesScorerConfig{
+				Threshold:     maxBadResponses,
+				DecayInterval: 10 * time.Minute,
+			},
+		},
+	})
+	s.started.Store(true)
 
 	return s
 }
