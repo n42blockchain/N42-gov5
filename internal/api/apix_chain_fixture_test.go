@@ -215,11 +215,20 @@ func apiXBuildChainFixture(tb testing.TB) *apiXChainFixture {
 	ctx := context.Background()
 
 	modules.N42Init()
-	prevTables := kv.ChaindataTablesCfg
+	// Left set for the rest of the test binary rather than restored via
+	// tb.Cleanup: that cleanup would fire when the first test to trigger the
+	// fixture build finishes, flipping this global out from under every
+	// other test still using the shared fixture. Every other file in this
+	// package that touches a real chain sets the same value, so this is
+	// consistent with the whole suite.
 	kv.ChaindataTablesCfg = modules.N42TableCfg
-	tb.Cleanup(func() { kv.ChaindataTablesCfg = prevTables })
 
-	db := memdb.NewTestDB(tb)
+	// Deliberately NOT memdb.NewTestDB(tb): that ties db.Close to tb.Cleanup
+	// of whichever test happens to trigger the sync.Once build, which then
+	// closes the shared fixture's database out from under every later test.
+	// The fixture is process-lifetime; memdb.New's in-memory MDBX instance
+	// (confirmed in-core, not file-backed) is simply left open.
+	db := memdb.New(tb.TempDir())
 
 	cfg := &params.ChainConfig{
 		ChainID:               big.NewInt(1337),
