@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/n42blockchain/N42/crypto"
 	"github.com/n42blockchain/N42/internal/p2p/discover/v4wire"
 	"github.com/n42blockchain/N42/internal/p2p/enode"
 )
@@ -117,5 +118,111 @@ func TestUDPv4_RequestENR(t *testing.T) {
 		_ = resultID
 	case <-time.After(5 * time.Second):
 		t.Fatal("RequestENR() did not return in time")
+	}
+}
+
+// bondWithRemote establishes checkBond(remote) == true on the local side.
+// checkBond looks at LastPongReceived, which is only recorded when WE ping
+// the remote and THEY pong back - so the local transport must initiate.
+func bondWithRemote(t *testing.T, test *udpTest) {
+	t.Helper()
+	rm := test.udp.sendPing(remoteEnodeNode(test).ID(), test.remoteaddr, nil)
+	answerPing(t, test)
+	if err := <-rm.errc; err != nil {
+		t.Fatalf("bonding ping failed: %v", err)
+	}
+}
+
+// TestUDPv4_HandleFindnodeSendsNeighbors verifies that a bonded remote's
+// Findnode request is answered with a Neighbors packet (empty table still
+// sends one empty Neighbors reply, per handleFindnode).
+func TestUDPv4_HandleFindnodeSendsNeighbors(t *testing.T) {
+	test := newUDPTest(t)
+	defer test.close()
+
+	bondWithRemote(t, test)
+
+	req := &v4wire.Findnode{
+		Target:     v4wire.Pubkey{1, 2, 3},
+		Expiration: futureExp,
+	}
+	if err := test.packetIn(req); err != nil {
+		t.Fatalf("packetIn(findnode): %v", err)
+	}
+
+	dg, err := test.pipe.receive()
+	if err != nil {
+		t.Fatalf("expected a Neighbors reply, got error: %v", err)
+	}
+	decoded, _, _, err := v4wire.Decode(dg.data)
+	if err != nil {
+		t.Fatalf("decode reply: %v", err)
+	}
+	if _, ok := decoded.(*v4wire.Neighbors); !ok {
+		t.Fatalf("reply type = %T, want *v4wire.Neighbors", decoded)
+	}
+}
+
+// TestUDPv4_FindnodeClientRoundTrip drives UDPv4.findnode end-to-end: after
+// bonding, it sends a Findnode and resolves once a Neighbors reply carrying
+// a valid node arrives, exercising nodeFromRPC/nodeToRPC along the way.
+func TestUDPv4_FindnodeClientRoundTrip(t *testing.T) {
+	test := newUDPTest(t)
+	defer test.close()
+
+	bondWithRemote(t, test)
+
+	neighborKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate neighbor key: %v", err)
+	}
+	neighborNode := enode.NewV4(&neighborKey.PublicKey, test.remoteaddr.IP, 30303, 30303)
+
+	type findResult struct {
+		nodes []*node
+		err   error
+	}
+	resc := make(chan findResult, 1)
+	go func() {
+		nodes, err := test.udp.findnode(remoteEnodeNode(test).ID(), test.remoteaddr, v4wire.Pubkey{9, 9})
+		resc <- findResult{nodes, err}
+	}()
+
+	// findnode() calls ensureBond first, which checks a DIFFERENT condition
+	// (whether the remote has recently pinged US) than the bonding we set up
+	// above (whether WE pinged the remote); it is still considered "too old"
+	// here, so an extra solicited ping goes out before the Findnode itself.
+	answerPing(t, test)
+
+	dg, err := test.pipe.receive()
+	if err != nil {
+		t.Fatalf("expected outgoing Findnode, got error: %v", err)
+	}
+	decoded, _, _, err := v4wire.Decode(dg.data)
+	if err != nil {
+		t.Fatalf("decode Findnode: %v", err)
+	}
+	if _, ok := decoded.(*v4wire.Findnode); !ok {
+		t.Fatalf("outgoing packet type = %T, want *v4wire.Findnode", decoded)
+	}
+
+	reply := &v4wire.Neighbors{
+		Nodes:      []v4wire.Node{nodeToRPC(wrapNode(neighborNode))},
+		Expiration: futureExp,
+	}
+	if err := test.packetIn(reply); err != nil {
+		t.Fatalf("packetIn(neighbors): %v", err)
+	}
+
+	select {
+	case res := <-resc:
+		if res.err != nil {
+			t.Fatalf("findnode() returned error: %v", res.err)
+		}
+		if len(res.nodes) != 1 || res.nodes[0].ID() != neighborNode.ID() {
+			t.Fatalf("findnode() nodes = %v, want [%v]", res.nodes, neighborNode.ID())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("findnode() did not return in time")
 	}
 }
