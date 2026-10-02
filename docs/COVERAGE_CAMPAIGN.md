@@ -370,3 +370,8 @@ Running: g43 (hotstuff service over mocknet), g44 (api executed-chain fixture), 
 | g45 | cmd/n42 | 8.0 | 13.8 (the rest opens real chaindata or a node) |
 | g45 | cmd/ethexec | 0.4 | 7.1 (same) |
 | g46 | lib/state | 49.2 | 72.0 (lsTNewAggregator helper; full background build/merge cycle at step=1) |
+| g47 | internal/api | 60.3 | 69.0 |
+
+- `internal/api/debug_trace.go` `TraceCall` resolves state with `state.NewPlainState(tx, header.Number)` instead of
+  number+1 (the "latest" convention `api.State()` uses), so at the head a funded sender reads as zero balance and every
+  value-moving `debug_traceCall` at "latest" fails with "insufficient funds" (`TestDebugTraceCallAtLatest`).
