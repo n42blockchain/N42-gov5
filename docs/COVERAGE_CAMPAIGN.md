@@ -222,3 +222,6 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
 - `internal/p2p/enr` `IP.ENRKey()` picks "ip"/"ip6" from the value, so a zero `IP` used as a `Load` target asks for
   "ip6" and misses a stored "ip" entry; load through `IPv4`/`IPv6` instead.
 | g20 | internal/ethel | 35.3 | 39.5 (first pass; coldseed 11.7 -> 85.8, eldevp2p 0 -> 100, publicrpc 18.3 -> 24.6) |
+| g21 | internal/datc | 56.4 | 57.3 (helpers only; second pass g25 running) |
+| g24 | internal/ethel | 39.5 | 40.3 (second pass weak; ethel now split per file, g26 = body codecs) |
+| g23 | internal/consensus/hotstuff | 64.3 | 75.6 (service lifecycle needs a fake pubsub harness) |
