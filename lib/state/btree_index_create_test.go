@@ -44,6 +44,23 @@ func TestCreateBtreeIndex(t *testing.T) {
 	require.NotNil(t, c)
 }
 
+func TestBtIndexWriter_DisableFsync(t *testing.T) {
+	tmp := t.TempDir()
+	logger := log.New()
+	args := BtIndexWriterArgs{
+		IndexFile: path.Join(tmp, "idx.bt"),
+		TmpDir:    tmp,
+		KeyCount:  4,
+	}
+	iw, err := NewBtIndexWriter(args, logger)
+	require.NoError(t, err)
+	defer iw.Close()
+
+	iw.DisableFsync()
+	require.True(t, iw.noFsync)
+	require.NoError(t, iw.fsync())
+}
+
 func TestBtIndexCloseAndEmptyNilSafe(t *testing.T) {
 	var bt *BtIndex
 	require.True(t, bt.Empty())
