@@ -1,0 +1,524 @@
+# Test coverage campaign
+
+Started 2026-10-02 (America/New_York). Branch `test/coverage-70`; per-agent branches `test/coverage-70-g<N>` merge into it.
+
+## Baseline (2026-10-02 00:37 EDT)
+
+`go test -short -cover -covermode=atomic ./...` with tags `nosqlite,noboltdb`, Go 1.26:
+
+| metric | value |
+|---|---|
+| packages | 608 (579 instrumented) |
+| statements | 211,489 |
+| covered | 78,696 |
+| **coverage** | **37.2%** |
+| packages without any test file | 366 |
+
+Target 70% = 148,042 covered statements, i.e. +69,346. Ranking by uncovered statements is in
+`scratch/cov/rank.txt` (not committed); top of the list: internal/ethel 5,912, internal/api 3,886,
+internal 3,043, internal/datc 2,924, internal/vm 2,595, cmd/n42 2,583, lib/state 2,544, internal/sync 2,266,
+modules/state 2,195, generated gRPC stubs lib/gointerfaces/* 5,631 (0-1%), proto/*_pb 2,326.
+
+Denominator notes: generated code (`lib/gointerfaces/*`, `proto/*_pb`, `*_gen.go`, `*.pb.go`) and vendored
+post-quantum crypto internals (`crypto/dilithium/*/internal`, `crypto/kyber/*`, `crypto/csidh`) are ~14k statements
+that no hand-written test should chase; `cmd/*` mains are ~7k. Both views (with and without them) are reported at
+each checkpoint.
+
+## Rules
+
+- One commit per test file or small package; package tests pass and `go vet` is clean before each commit.
+- English commit messages, no "claude" anywhere, no trailers.
+- Test-only changes; untestable functions are listed, not patched.
+- Tests run with `nice -n 19 -p 1 -short`, one package at a time: the box also runs the qs benchmark fleet.
+
+## Wave 1 (dispatched 2026-10-02 01:05 EDT)
+
+| group | packages |
+|---|---|
+| g1 | internal/api, modules/rpc/jsonrpc, internal/mcp |
+| g2 | internal/vm, lib/trie, lib/rlp2, accounts/abi |
+| g3 | modules/state, lib/state, modules/rawdb |
+| g4 | internal/consensus/hotstuff, internal/txspool, lib/txpool, internal/cscompact |
+
+## Wave 1 results
+
+| group | package | before | after |
+|---|---|---|---|
+| g4 | internal/cscompact | 19.0 | 35.8 |
+| g4 | internal/txspool | 44.3 | 57.7 |
+| g4 | lib/txpool | 44.6 | 48.3 |
+| g4 | internal/consensus/hotstuff | 62.0 | 64.3 |
+| g2 | lib/rlp2 | 16.5 | 74.1 |
+| g2 | accounts/abi | 30.8 | 59.6 |
+| g2 | lib/trie | 46.7 | 56.8 |
+| g2 | internal/vm | 50.0 | 50.5 |
+
+Lesson: pure-helper tests exhaust quickly; the remaining mass (vm opcodes/precompiles, trie hashing, pool main loops,
+hotstuff service) needs tests built on the packages' existing harnesses. Wave 2 assigns one or two packages per agent
+with that instruction.
+
+## Found while testing (not fixed; test-only campaign)
+
+- `lib/rlp2/encodel.go` `EncodeString`: a 56-byte string takes the short-string branch (`> 56` instead of `>= 56`),
+  emitting a non-canonical `0xB8` header; `String()` then rejects it.
+- `lib/rlp2/encoder.go` `writeList`: long-list header (payload > 55 bytes) writes `0x00` as the length byte
+  (`f8 00` for a 60-byte item instead of `f8 3f`); corrupt RLP. Reproduce:
+  `NewEncoder(nil).List(func(i *Encoder) *Encoder { return i.Str(bytes.Repeat([]byte{1}, 60)) })`.
+- `lib/rlp2/commitment.go` `EncodeByteArrayAsRlp`: for a single byte >= 0x80, `generateRlpPrefixLen(1)` returns 0 but
+  one prefix byte is written, so the returned length undercounts by 1.
+- `internal/cscompact/history_analysis.go` `ParseErigonBitmapValue`: a malformed 16-byte buffer makes
+  `roaring64.Bitmap.UnmarshalBinary` panic (`makeslice: len out of range`) instead of falling through to the
+  size-estimate fallback.
+
+| g1 | internal/mcp | 6.5 | 75.7 |
+| g1 | modules/rpc/jsonrpc | 5.8 | 51.8 |
+| g1 | internal/api | 43.6 | 43.8 |
+| g3 | modules/rawdb | 39.7 | 63.5 |
+| g3 | modules/state | 55.3 | 57.2 |
+| g3 | lib/state | 49.2 | 49.2 (aggregator needs a wired multi-domain setup) |
+
+- `modules/rpc/jsonrpc/util.go` `UnmarshalText(h types.Hash, ...)` takes the hash BY VALUE, so
+  `BlockNumberOrHash.UnmarshalJSON` returns nil error and a zero hash for every `blockHash` argument: any RPC
+  call that selects a block by hash through this type silently resolves to the zero hash. Likely a real bug;
+  the test documents the current behaviour (TestBlockNumberOrHashUnmarshalJSON).
+| g6 | lib/commitment | 52.2 | 53.2 |
+| g6 | modules/state/commitment | 51.2 | 53.1 |
+| g6 | internal/mptproof | 32.5 | 38.1 |
+
+- `lib/commitment/commitment.go` `Updates.TouchCode`: ORs `CodeUpdate` into Flags first, then tests `Flags == 0` to
+  choose `DeleteUpdate` for empty code, so the delete branch is unreachable (TestUpdatesTouchCode pins current behaviour).
+| g8 | internal/api | 43.8 | 48.9 |
+
+- `internal/api/api_backend.go` `API.CurrentBlock()` and at least `EstimateGas` (pending default) and `BlobBaseFee`:
+  a typed-nil `*block.Block` inside the `block.IBlock` interface passes the `== nil` check and the handler panics on
+  `Header()`/`GasLimit()`. Any chain implementation that returns a nil concrete block crashes these RPC handlers.
+| g5 | internal/vm | 50.5 | 55.6 (new bytecode execution harness exec_harness_test.go) |
+| g7 | modules/rawdb | 63.5 | 77.1 |
+| g7 | modules/state | 57.2 | 68.9 |
+| g7 | internal/replay | 14.0 | 25.5 (the rest needs a real source+target datadir) |
+
+- `modules/rawdb/accessors_chain_receipts.go` `ReadReceiptByTxHash`: scans `BaseTxId+i` for i in [0, TxAmount) although
+  `WriteBody` reserves two extra slots and real transactions start at `BaseTxId+1`, so it returns the receipt one position
+  off for every transaction after the first and misses the last one. Marked era-unaware / no production caller today;
+  `TestReadReceiptByTxHash` pins current behaviour.
+- Dead code found: `internal/replay` `BLSResealer.signMembers`, `modules/state` `Scheduler.beginExecution`.
+| g9 | modules/state/commitment | 53.1 | 72.3 |
+| g9 | lib/commitment | 53.2 | 66.7 |
+
+- **MPT checkpoint does not round-trip** (`modules/state/commitment` `MPTRootComputer.SaveCheckpoint` ->
+  `EncodeTrieState`/`RestoreTrieState`, backed by `lib/commitment/hex_patricia_hashed.go` `EncodeCurrentState`/`SetState`):
+  encoding right after `ComputeRoot` and restoring on the same instance yields a different `RootHash()` (single-account
+  trie: `b80146..` vs `69f2f8..`). The bulk-rebuild resume path cannot reproduce the root it checkpointed. Pinned weakly
+  in `TestPersistentMPTRootComputerCheckpointRoundTrip`; needs the owner's investigation before any resume is trusted.
+- `lib/commitment/commitment.go` `Updates.TouchPlainKeyNoDedup`: the `ModeUpdate` fallback passes a nil callback to
+  `TouchPlainKey`, which calls it unconditionally for a new key -> nil-pointer panic on first use
+  (`TestTouchPlainKeyNoDedupModeUpdateFallbackPanics`).
+- `lib/commitment/hex_patricia_hashed.go` `resetForReuse`: pooled instances keep the CSV metrics prefix set by
+  `EnableCsvMetrics`, so a later borrower can panic opening a stale path. Pool hygiene gap.
+| g11 | crypto/sha3 | 0.0 | 99.4 |
+| g11 | crypto/csidh | 0.0 | 74.0 |
+| g11 | crypto/bls | 22.8 | 79.8 |
+| g11 | crypto/bls12381 | 49.3 | 81.0 |
+| g11 | accounts/abi/bind | 14.7 | 48.1 |
+| g11 | conf | 55.6 | 77.9 |
+| g11 | params | 64.6 | 87.7 |
+| g11 | accounts | 37.3 | 97.3 |
+
+- `crypto/bls12381` `Engine.AddPairInv` negates its G1 argument in place; reusing the same point variable across
+  `AddPair`/`AddPairInv` silently corrupts the pairing input. Document or copy internally.
+| g10 | internal/tracers | 11.7 | 72.8 |
+| g10 | internal/tracers/native | 11.1 | 72.3 |
+| g10 | internal/tracers/logger | 8.1 | 84.6 |
+| g10 | internal/tracers/js | 45.1 | 65.4 |
+| g10 | internal/consensus/apos | 13.6 | 33.9 (snapshot store table not registered in memdb.NewTestDB) |
+| g10 | internal/consensus/apoa | 8.7 | 33.2 (same) |
+| g10 | internal/miner | 16.1 | 17.1 (worker/miner loops need a live chain) |
+
+- `internal/tracers/native/call_flat.go` `flatCallTracer.Stop()` forwards to the embedded callTracer but `GetResult`
+  reads its own never-set `reason`, so `trace_block`/`trace_transaction` never surface an interruption
+  (`TestFlatCallTracerStopDoesNotSurfaceReason`).
+- Test-harness gap (non-test change, not made): the `poaSnapshot` table is not registered in `memdb.NewTestDB`, which
+  blocks the apos/apoa `snapshot -> verifySeal` pipeline and most of their APIs (`modules/rawdb/accessors_test.go:534`
+  skips for the same reason). Registering it would unlock ~1,500 statements.
+
+## Checkpoint 1 (2026-10-02, after merging g1-g11, 10 groups, ~150 commits)
+
+`go test -short -cover ./...`, 0 failing packages:
+
+| view | covered / statements | coverage |
+|---|---|---|
+| whole module | 88,090 / 211,489 | **41.7%** (baseline 37.2%) |
+| excluding generated stubs, vendored PQ crypto, cmd mains | 85,156 / 160,154 | **53.2%** |
+
+Running: g12 (p2p subpackages, txlookup, mpttrie), g13 (mdbx, qmdb, etl, jmt, bmt, transaction, block),
+g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
+| g13 | lib/etl | 59.1 | 80.7 |
+| g13 | lib/bmt | 61.2 | 86.1 (lib/bmt/store 0 -> 89.3) |
+| g13 | lib/jmt | 68.2 | 83.3 |
+| g13 | common/transaction | 79.8 | 86.6 |
+| g13 | common/block | 78.8 | 84.1 |
+
+- **`lib/bmt/tree.go` `PutBatch`/`insertBatch` drops keys**: batching two or more entries into an empty tree leaves the
+  second key unreadable (`Get` -> ErrNotFound) and yields a root different from sequential `Put`s, although BMT roots
+  are meant to be insertion-order independent. Repro in `lib/bmt/tree_batch_test.go`. Check every production caller of
+  `PutBatch` before trusting a BMT root built through it.
+- `lib/etl` `NewCollectorFromFiles` leaves `fileDataProvider.wg` nil, so `Close()`/`Dispose()` on a restored collector
+  panics inside `errgroup.Wait()` (`lib/etl/collector_more_test.go`).
+| g14 | internal/metrics | 20.0 | 99.2 |
+| g14 | internal/mev | 55.4 | 85.4 |
+| g14 | internal/bundler | 65.0 | 93.4 |
+| g14 | internal/deferred | 46.3 | 86.0 |
+| g14 | internal/distributed/compute/inference | 68.8 | 93.0 |
+| g14 | internal/distributed/messaging | 58.8 | 67.8 (peer handler needs a libp2p host pair) |
+| g14 | internal/distributed/storage/torrent | 40.8 | 44.9 (real anacrolix client opens sockets) |
+
+- **`internal/deferred/deep_pipeline.go` `DeepPipeline.Reset()` wedges the pipeline**: it cancels and waits but never
+  clears `running`, so the following `Start` is a no-op and `ctx`/`cancel` keep pointing at the cancelled context;
+  `SubmitBlock` then races a fresh channel against a closed `ctx.Done()`. A reorg-recovery Reset can permanently wedge
+  the deep pipeline (`TestDeepPipeline_Reset`).
+| g15 | internal | 35.0 | 35.3 |
+| g15 | internal/sync | 14.7 | 22.0 |
+| g15 | internal/sync/initialsync | 3.6 | 29.6 |
+| g15 | internal/sync/snapsync | 39.2 | 44.0 |
+
+- Harness gap (one-time investment that would unlock most of internal/sync, initialsync, snapsync): a lightweight
+  in-repo fake for `network.Stream` (net.Pipe-backed) and a builder for `peers.Status` / `p2p.P2P` with real peer records.
+- `internal/sync` `TestGraceCatchUpDeferredAndResolvedByNormalPath` (S63's own test) fails under `-race`; whether the race
+  is in the test or in `rpc_catchup.go`'s grace path is being checked separately (S63 is adopted in the fleet).
+| g17 | internal/avm/types | 7.9 | 95.4 |
+| g17 | internal/avm/common | 48.2 | 97.2 |
+| g17 | internal/avm/common/compiler | 0.0 | 52.6 (the rest shells out to solc/vyper) |
+| g17 | internal/avm/abi | 79.5 | 89.8 |
+| g17 | internal/avm/rlp | 88.4 | 94.4 |
+
+- `internal/avm/rlp/decode.go` `IsInvalidRLPError(nil)` panics (no nil guard before `err.Error()`).
+| g18 | internal | 35.3 | 47.5 (InsertChain/Start/ProcessParallel need a full engine + EVM harness) |
+| g16 | lib/kv/mdbx | 63.7 | 83.8 |
+| g16 | lib/qmdb | 79.7 | 88.9 |
+
+- `lib/kv/mdbx/kv_mdbx_opts.go` `MdbxOpts.InMem(dir)` unconditionally resets `label` to `kv.InMem`, so
+  `.Label(kv.ChainDB).InMem(dir)` silently loses the label (call-order footgun).
+| g19 | lib/rlphacks | 0.0 | 84.0 |
+| g19 | lib/common/dbg | 0.0 | 75.3 |
+| g19 | lib/metrics | 0.0 | 84.1 |
+| g19 | lib/kv/layered | 60.9 | 87.2 |
+| g19 | lib/jmt/store | 26.0 | 86.5 |
+| g19 | lib/diagnostics | 36.3 | 63.7 |
+
+- `lib/rlphacks` `RlpEncodedBytes.DoubleRLPLen()` / `EncodeByteArrayAsRlp()` under-report the length by one byte for a
+  single byte >= 0x80 (`generateRlpPrefixLen` ignores the first byte); the written bytes are right, the count is wrong.
+- `lib/diagnostics` `SetFillDBInfo` appends a stage only when the list is nil, so every later stage with a new name is
+  silently dropped.
+| g12 | internal/p2p/netutil | 0.0 | 94.0 |
+| g12 | internal/p2p/enr | 1.7 | 88.0 |
+| g12 | internal/p2p/peers | 0.0 | 91.7 |
+| g12 | internal/p2p/enode | 37.2 | 79.1 |
+| g12 | internal/p2p/discover | 0.0 | 52.5 (v4 over an in-memory dgram pipe; discv5 untouched) |
+| g12 | internal/mpttrie | 47.2 | 80.9 |
+| g12 | internal/txlookup | 46.4 | 67.4 |
+
+- `internal/p2p/enode` `filterIter.Next()` advances once and reports whether that single node passed, unlike upstream
+  `Filter` which skips until a match; callers that expect upstream semantics will see non-matching nodes.
+- `internal/p2p/enr` `IP.ENRKey()` picks "ip"/"ip6" from the value, so a zero `IP` used as a `Load` target asks for
+  "ip6" and misses a stored "ip" entry; load through `IPv4`/`IPv6` instead.
+| g20 | internal/ethel | 35.3 | 39.5 (first pass; coldseed 11.7 -> 85.8, eldevp2p 0 -> 100, publicrpc 18.3 -> 24.6) |
+| g21 | internal/datc | 56.4 | 57.3 (helpers only; second pass g25 running) |
+| g24 | internal/ethel | 39.5 | 40.3 (second pass weak; ethel now split per file, g26 = body codecs) |
+| g23 | internal/consensus/hotstuff | 64.3 | 75.6 (service lifecycle needs a fake pubsub harness) |
+| g25 | internal/datc | 57.3 | 60.1 (run* workers need an upstream freezer-input fixture; g28 builds it) |
+| g22 | lib/kv/remotedbserver | 19.0 | 67.0 |
+| g22 | lib/kv/remotedb | 5.8 | 78.5 |
+| g22 | lib/direct | 0.0 | 49.3 (every hand-written file at 100%; the rest is mockgen output) |
+| g22 | internal/node | 18.1 | 26.3 (the rest needs Start() or a full p2p.P2P fake) |
+
+- `lib/kv/remotedbserver` `Range`/`IndexRange` pagination is dead: the server loop never checks the limit and
+  `lib/kv/mdbx` `cursor2iter.HasNext()` turns false when its own limit counter hits zero, so `NextPageToken` is never
+  produced through the public API (`TestRangePaginationNeverTriggersViaIntegration`).
+- `lib/direct/eth_backend_client.go` `SubscribeLogs`: the server goroutine's deferred close of `chRecv` races a concurrent
+  client `Send` on the same channel (reproducible under `-race`).
+- `lib/direct` `SubscribeLogsStreamC`/`SubscribeLogsStreamS` do not override `Context()`, so calling it panics on the nil
+  embedded gRPC stream.
+| g26 | internal/ethel (body_compact/frames/wire slice) | 40.3 | 43.9 (every function in the three files >= 80%) |
+
+- **`internal/ethel/body_compact.go` `BodyCompactStage.Run` corrupts a store whose only segment is partial on resume**:
+  when `existingSegments` rewinds to 0 the `headFile`/`headSize` recompute block is skipped, the data file is reopened
+  without `O_TRUNC` and appended at its real end, but the new index entry records offset 0, so readers see the stale
+  first-run bytes. The >= 2-segment case is unaffected. Reproduced by the agent, not committed.
+- `BodyCompactReader.Close()` does not join the frame-ahead goroutine (`startFrameAhead`), so a framed random read
+  followed by Close races the background file reads against the handle teardown (`-race` confirmed).
+- `startFrameAhead` calls `dataFile(0, seg)` and discards the result before the goroutine looks up the real file number;
+  harmless with one data file, could trigger a spurious cold-resolver call under multi-file rotation.
+| g27 | internal/ethel (hashstate/dict/codec/catch_up slice) | 40.3 | 44.1 (all three HPH bootstrap variants agree with the oracle root) |
+| g30 | internal/ethel/modestate | 67.4 | 97.7 |
+| g30 | internal/ethel/catchup | 66.0 | 95.7 |
+| g30 | internal/ethel/bootstrap | 64.7 | 94.1 |
+| g30 | internal/ethel/coldresolve | 58.4 | 87.2 |
+| g30 | internal/ethel/stateless/serve | 55.0 | 83.7 |
+| g30 | internal/ethel/engineapi | 51.1 | 82.3 |
+| g30 | internal/ethel/publicrpc | 24.6 | 74.9 |
+| g30 | internal/ethel/fetch | 56.6 | 60.2 (torrent and webrtc fetchers need live peers) |
+| g29 | internal/ethel (executor/cs_freezer/codes readers/compare_mdbx slice) | 40.3 | 47.3 (synthetic geth-format freezer built in-process) |
+
+- `internal/ethel/executor.go:229` `Executor.SetSenderFreezer(nil)` panics (calls `f.Table` on a nil freezer); every other
+  `Set*` setter accepts nil as "disable".
+| g31 | internal/sync | 22.0 | 27.6 (fake_stream_test.go + fake_p2p_test.go harness landed; handlers continue in g34) |
+| g32 | internal/p2p | 12.9 | 55.5 (mocknet two-peer harness in testservice_test.go) |
+| g28 | internal/datc | 60.1 | 71.1 (run_fixture_test.go synthesizes the headerc freezer and compacted acctcs/storcs inputs) |
+| g36 | lib/kv/bitmapdb | 10.3 | 83.6 (rest of the group re-dispatched as g37) |
+
+- `lib/kv/bitmapdb` `WalkChunkWithKeys64` with a tiny sizeLimit panics (`Maximum()` on an empty tail chunk after a cut,
+  bitmapdb.go:274).
+| g34 | internal/sync | 27.6 | 46.0 (catchUpTo/catchUpRange end to end over the pipe harness) |
+| g33 | internal/consensus/apoa | 33.2 | 71.8 (snapshot table via modules.N42Init + swapped ChaindataTablesCfg in a test helper) |
+| g33 | internal/consensus/apos | 33.9 | 60.4 |
+| g33 | internal/miner | 17.1 | 22.4 (worker/miner loops are integration weight) |
+
+- `internal/consensus/apos/consensus.go` `AccumulateRewards`: when `number == rewardEpoch` the backward walk underflows
+  past block 0 (`SubUint64` wraps to MaxUint64) and fails with "block not found" instead of stopping.
+- `apos.API.GetSigner` and `apoa.API.GetSigner`: nil-pointer panic on a nil `BlockNumberOrHash` with no current block
+  (the missing-block error path calls `.String()` on the nil pointer).
+| g39 | internal/p2p/discover/v5wire | 19.1 | 82.6 (full discv5 handshake over mclock.Simulated) |
+| g35 | modules/changeset | 0.0 | 83.8 |
+| g35 | lib/kv | 0.0 | 86.2 |
+| g35 | common/utils | 37.5 | 81.9 |
+| g35 | lib/chain | 15.3 | 93.1 |
+| g35 | internal/consensus/misc | 36.3 | 78.5 |
+| g35 | lib/common | 0.3 | 86.7 |
+
+- `lib/common` `Bytes4/Bytes48/Bytes64/Bytes96.SetBytes` hard-code the 32-byte `length.Hash` (copy of `Hash.SetBytes`):
+  Bytes4 panics on almost any input, the others panic for inputs between 32 bytes and their capacity. No production
+  caller today (`TestG35BytesNSetBytesIsBroken` pins the panic).
+| g38 | internal/sync/initialsync | 29.6 | 64.0 |
+| g38 | internal/sync/snapsync | 44.0 | 57.2 |
+
+- `internal/sync/initialsync/blocks_fetcher.go` `timeToWait()` multiplies `int64(timeTillEmpty) * blocksNeeded` without
+  overflow protection; a huge batch request yields a near-zero or negative wait and defeats the rate limiter.
+  `waitForBandwidth`'s `uint64(rem) >= count` wraps when `rem` is transiently negative (LeakyBucket.Count rounds up).
+| g41 | internal/api/filters | 8.5 | 70.1 |
+| g41 | lib/rlp | 67.2 | 95.9 |
+| g41 | log | 37.4 | 76.8 |
+| g41 | common/avmtypes | 8.0 | 95.6 |
+| g41 | common/metrics | 16.7 | 78.7 |
+| g41 | internal/metrics/prometheus | 15.5 | 81.3 |
+| g41 | lib/types | 62.6 | 84.9 |
+| g41 | lib/commitment/trie | 36.7 | 90.6 |
+| g42 | internal/api | 48.9 | 57.0 (the rest needs an executed block with transactions; g44 builds that harness) |
+
+- `internal/api/ens_api.go` `ethCall` is a permanent stub returning an error, so every ENS RPC (ResolveName,
+  ResolveAddress, GetContentHash, GetTextRecord, GetOwner, GetResolver) always fails in production. Functional gap, not
+  a test gap.
+| g40 | internal/devp2p | 26.3 | 70.0 |
+| g40 | internal/api/consensusrest | 0.0 | 84.2 |
+| g40 | internal/api/graphql | 48.6 | 79.4 |
+| g40 | internal/mobileverify | 76.7 | 83.9 |
+
+- Test-wiring footgun (recurs across packages): N42-specific tables (`poaSnapshot`, `ConsensusEvidence`, ...) exist
+  only after `modules.N42Init()` and `kv.ChaindataTablesCfg = modules.N42TableCfg`; a fresh `memdb.NewTestDB` fails with
+  `mdbx_cursor_open: permission denied`. Worth a shared test helper in lib/kv/memdb.
+| g37 | modules/rawdb/freezer | 53.2 | 77.3 |
+| g37 | lib/bptree | 64.3 | 85.3 |
+| g37 | lib/kv/membatchwithdb | 58.1 | 81.4 |
+| g37 | lib/seg | 78.6 | 85.7 |
+| g37 | lib/recsplit | 73.5 | 87.5 |
+| g37 | lib/kv/kvcache | 52.4 | 86.8 |
+| g37 | modules/ethdb/olddb | 7.6 | 82.5 |
+| g37 | modules/state/snapshot | 69.3 | 85.5 |
+| g37 | internal/bridge | 14.1 | 67.2 |
+| g37 | modules/ethdb/bitmapdb | 0.0 | 88.8 |
+| g37 | internal/coldstore | 0.0 | 78.7 |
+| g37 | lib/kv/bitmapdb | 83.8 | 85.5 |
+
+- **`lib/bptree` `Tree23.Delete` corrupts the tree**: sequential single-key deletes on a 20-60 key tree make `IsValid()`
+  report "invalid N keys M children", the key set diverges from a reference map, and later operations panic in
+  splitKeys/splitItems. Found by a seeded property test (not committed because it fails); the package's FuzzDelete runs
+  an empty corpus under -short and never sees it. Reproduce: insert via NewTree23, delete keys one at a time, check
+  IsValid() and in-order contents after each delete. Check every production user of Tree23 before trusting deletes.
+- `lib/kv/membatchwithdb` `memory_mutation_cursor.go` `Last()` checks `isEntryDeleted(..., Normal)` instead of `Dup` on
+  pure-dupsort tables, so an entry deleted with DeleteExact can resurface from Last().
+- `modules/rawdb/freezer` `FreezerTable.Sync()` after Close() returns the raw "file already closed" error instead of
+  ErrClosed (every other method checks `closed` first).
+- `modules/ethdb/olddb` `TxDb.Has` returns `(false, ErrKeyNotFound)` on a missing key where the sibling types return
+  `(false, nil)`.
+- `lib/seg/sais` panics (`index out of range [0] with length 0`) on a single word whose encoded length reaches the
+  16 MiB superstring limit (via extractPatternsInSuperstrings).
+
+## Checkpoint 2 (2026-10-02, after merging g1-g42 except the four groups still running)
+
+`go test -short -cover ./...`, 0 failing packages:
+
+| view | covered / statements | coverage |
+|---|---|---|
+| whole module | 108,503 / 211,489 | **51.3%** (baseline 37.2%, checkpoint 1 41.7%) |
+| excluding generated stubs, vendored PQ crypto, cmd mains | 105,570 / 159,266 | **66.3%** (checkpoint 1 53.2%) |
+
+Largest remaining gaps (uncovered statements): internal/ethel 4,163 (54.5%), internal/api 2,959 (57.0%), lib/state 2,544
+(49.2%, g46 running), internal 2,460 (47.5%), internal/vm 2,305 (55.6%), internal/datc 1,940 (71.1%), internal/node 1,831
+(26.3%), modules/state 1,542 (68.6%), internal/sync 1,435 (46.0%), lib/commitment 1,332 (66.6%).
+Running: g43 (hotstuff service over mocknet), g44 (api executed-chain fixture), g45 (cmd mains), g46 (lib/state aggregator).
+| g44 | internal/api | 57.0 | 60.3 (apix_chain_fixture_test.go: real BlockChain over memdb, 5 executed blocks incl. a contract create + call with a log) |
+
+- **Historical state read returns nil for an account's first change**: `state.NewPlainState(tx, blockNr).ReadAccountData`
+  returns `(nil, nil)` for a funded account whose pre-image is the genesis allocation (no prior changeset row) even
+  though AccountsHistory has an index entry. Breaks `debug_trace.go` traceTx (reads state at target-1) and
+  `CreateAccessList` for any transaction that is its sender's first spend ("insufficient funds"). Reproducible with
+  the api fixture; not traced into GetAsOf/FindByHistory yet. Likely affects every historical eth_call at such heights.
+- `rawdb.ReadReceiptByTxHash` confirmed again from the fixture: a 1-tx block returns a nil receipt for its own tx.
+| g43 | internal/consensus/hotstuff | 75.6 | 85.3 (real gossipsub over mocknet in hsT_mocknet_test.go; no consensus defect found) |
+| g45 | cmd/txflood | 9.7 | 39.7 |
+| g45 | cmd/clef | 0.0 | 57.8 (test files force-added: `.gitignore`'s bare `clef` line also matches the source dir) |
+| g45 | cmd/rpcdaemon | 0.0 | 38.2 |
+| g45 | cmd/n42 | 8.0 | 13.8 (the rest opens real chaindata or a node) |
+| g45 | cmd/ethexec | 0.4 | 7.1 (same) |
+| g46 | lib/state | 49.2 | 72.0 (lsTNewAggregator helper; full background build/merge cycle at step=1) |
+| g47 | internal/api | 60.3 | 69.0 |
+
+- `internal/api/debug_trace.go` `TraceCall` resolves state with `state.NewPlainState(tx, header.Number)` instead of
+  number+1 (the "latest" convention `api.State()` uses), so at the head a funded sender reads as zero balance and every
+  value-moving `debug_traceCall` at "latest" fails with "insufficient funds" (`TestDebugTraceCallAtLatest`).
+| g48 | internal/vm | 55.6 | 72.1 (abstract-interpretation CFG, KZG point evaluation, EIP-7702 delegation; no EVM semantics defect) |
+
+- Testing note: `internal/vm/fuse.go` rewrites `PUSH1/2 ; JUMP/JUMPI` into fused opcodes, so bytecode tests never reach
+  the plain opJump/opJumpi/opMload/opMstore/opPop/opSlt/opSgt handlers; cover them by calling the handlers directly
+  with a hand-built ScopeContext (instructions_direct_unfused_test.go).
+| g50 | internal | 47.5 | 60.4 (coreT_chain_fixture_test.go: executed chain through the real InsertChain) |
+
+- ProcessParallel vs sequential Process root "divergence" (g50): ROOT-CAUSED in docs/PARALLEL_ROOT_DIVERGENCE.md,
+  NOT consensus-breaking. Every account field matches byte for byte; the parallel "root" is `hash.NilHash` because
+  `applyMVSToIBS` never calls FinalizeTx/SoftFinalise, so `stateObjectsDirty` stays empty and the legacy
+  `GenerateRootHash` fallback (used only when no RootComputer is wired) short-circuits to the empty hash. Production
+  always wires a RootComputer (internal/blockchain.go:2228) and `computeRootViaComputer` merges the journal dirties, so
+  the fleet is unaffected; wiring an MPTRootComputer into the test fixture makes every shape agree. Residual defect:
+  `runParallel` should SoftFinalise after applyMVSToIBS so the no-RootComputer path is safe too; the fixture should
+  wire a real RootComputer.
+- InsertChain of a strictly-longer, valid, transaction-less side chain forked two blocks behind the head is rejected
+  with a bare ErrPrunedAncestor instead of reorging, although the side blocks are persisted.
+- Re-inserting the exact canonical head through InsertChain misses the ErrKnownBlock fast path and fails with a
+  spurious "nonce too low" after re-executing against the advanced PlainState.
+- `BlockChain.SetHead` has no production caller, only writes the HeadHeaderHash row, and never updates
+  `bc.currentBlock` nor reverts PlainState: a silent no-op on a live chain.
+| g49 | internal/mptproof | 38.0 | 55.6 |
+| g49 | lib/trie | 56.8 | 63.0 (CalcTrieRoot cross-checked against an independent reference MPT) |
+| g49 | lib/txpool | 48.3 | 54.2 |
+| g49 | internal/txspool | 57.7 | 63.5 |
+| g49 | modules/rpc/jsonrpc | 51.8 | 65.6 |
+
+- `internal/mptproof/source.go` `NewRethLeafSource` opens PlainStorageState without `kv.DupSort` (unlike
+  RethHashedLeafSource/RethBackedReader), so `StorageValue`'s SeekBothRange fails with MDBX_INCOMPATIBLE on a real env
+  and the linear fallback is dead; a second slot per address would overwrite the first
+  (`TestRethLeafSource_MultiSlotPerAddr_Defect`).
+- `modules/rpc/jsonrpc` client-side subscription delivery is dead: `ClientSubscription.run/deliver/close` have no
+  caller and `subid` is never assigned, so server->client notifications are never forwarded and `Unsubscribe()` blocks
+  forever on `unsubDone`.
+| g53 | internal/node | 26.3 | 55.0 (in-process Start/Close of an eth-profile private chain over a temp datadir; RPC/JWT/MCP on 127.0.0.1:0) |
+
+- **Node Start/Close data race**: `Node.Start()`'s async `node/sync-startup` goroutine (node.go:2070, reads `n.is` /
+  snap-sync state) races `stopServices()` (node.go:3380/3480) closing the same state; `go test -race` on a plain
+  Start/Close fails. Pre-existing synchronization gap.
+- **Goroutine leak on Close()**: leakybucket Collector.startPeriodicPrune, devp2p Server accept loop, filters
+  EventSystem loop, api Oracle loop, keystore watcher are never stopped (`TestNewNodeStopReleasesGoroutines` tolerates 30).
+- Close() after a failed Start waits ~40 s on snap-sync/initial-sync stop signals that were never started
+  (`stopServices` does not gate on what actually started); makes `TestNewNodeHTTPPortAlreadyInUseFails` slow.
+- `minerAdminAdapter.SetCoinbase` has no RPC caller (no miner_setEtherbase); dead from the outside.
+| g52 | modules/state | 69.3 | 80.0 |
+
+- `modules/state/mv_evm_adapter.go:376` `ValidateStorageKey` index-panics on a nil/empty key (evaluates `key[0]` in the
+  error format argument after the length guard fails).
+| g54 | internal/ethel | 54.5 | 61.7 (sender/receipt/header stages, output batcher, segment store) |
+
+- `internal/ethel/header_compact.go` `HeaderCompactStage.Run` has the SAME resume defect as the body store: when a
+  chain shorter than one segment is re-run, the partial-segment loop truncates only the `.cidx`, not the `.cdat`;
+  the new segment is appended past stale bytes while the index records offset 0, so readers decode the stale segment.
+  Verified experimentally; unaffected once one complete prior segment exists.
+| g56 | lib/trie | 63.0 | 70.7 |
+| g56 | internal/mptproof | 55.6 | 62.6 (reth reader/walk files were 0% under -short: their own tests skip without a real datadir) |
+| g56 | internal/sync | 46.0 | 46.6 |
+| g55 | internal/distributed/messaging | 67.8 | 89.5 (relay and store-query protocol over mocknet) |
+| g55 | lib/txpool | 54.2 | 56.8 (remaining: gRPC server, sentry fetch, mockgen, lifecycle reorg branches) |
+| g55 | internal/txspool | 63.5 | 69.2 |
+| g58 | internal/ethel | 61.7 | 65.4 |
+| g58 | internal/cscompact | 35.8 | 59.9 |
+
+- `internal/cscompact/segment_store.go:80` `SegmentStoreWriter.SegmentCount()` uses `idxFile.Stat()` unchecked; after
+  `Close()` it nil-pointer panics. `HistoryAccumulator.Close()` leaves `a.store` set, so SegmentCount after Close crashes.
+- Format footgun: `RebuildStateWith` reads acctcs/storcs in batch-compressed mode (what output_batcher writes), but the
+  live-import `CSFreezerSink.Add/Flush` writes plain per-item Append; feeding sink-written tables to the rebuild returns
+  empty blobs silently instead of failing.
+- Dead code: `internal/ethel/journal_verify.go` `deleteStorageByPrefix` has no caller.
+
+## Checkpoint 3 (2026-10-02, after merging g1-g58, 56 groups, ~700 commits)
+
+`go test -short -cover ./...`, 0 failing packages:
+
+| view | covered / statements | coverage |
+|---|---|---|
+| whole module | 117,017 / 211,489 | **55.3%** (baseline 37.2%, checkpoint 2 51.3%) |
+| excluding generated stubs, vendored PQ crypto, cmd mains | 113,382 / 159,266 | **71.2%** (checkpoint 2 66.3%) -- the 70% target is crossed on this view |
+
+Largest remaining gaps (uncovered statements): internal/ethel 3,160 (65.4%), internal/api 2,131 (69.0%),
+internal/datc 1,940 (71.1%, g61 running), internal 1,855 (60.4%), internal/vm 1,447 (72.1%), internal/sync 1,417
+(46.6%, g59 running), lib/state 1,401 (72.0%), lib/commitment 1,332 (66.6%, g57 running), internal/node 1,122 (54.8%),
+internal/miner 1,096 (22.4%, g60 running), internal/replay 927 (25.5%, g57 running).
+Whole-module 70% would need ~31,000 more covered statements, of which ~21,000 sit in generated stubs, vendored PQ crypto
+and cmd mains; the remaining reachable mass is the executed-chain-dependent paths listed above.
+| g57 | internal/replay | 25.5 | 56.4 (on-disk MDBX source chain fixture, EngineV2 run/resume/export) |
+| g57 | lib/commitment | 66.6 | 74.8 |
+| g57 | internal | 60.4 | 62.3 (reorg 14.5 -> 60, recoverAncestors 22.7 -> 86.4) |
+
+- Dead/mismatched: `lib/commitment/hex_patricia_hashed.go` `HexTrieExtractStateRoot` / `HexTrieStateToShortString` /
+  `HexTrieStateToString` expect an 18-byte (txNum|blockNum|stateLen) header that `EncodeCurrentState` (the only
+  producer) never emits; no production caller.
+| g61 | lib/txpool | 56.8 | 57.6 (datc unchanged at 71.1; weak pass) |
+| g59 | internal/sync | 46.6 | 58.1 (newFakeP2PWithHost: socket-less libp2p host + real GossipSub behind fakeP2P) |
+| g60 | internal/miner | 22.4 | 56.4 (executed-chain fixture, one synchronous build/seal/write cycle) |
+
+- `internal/miner` AIOptimizer hook: `SetAIOptimizer` wires the field but `fillTransactions` never calls it, so the AI
+  block optimizer (conf AICfg.MEV) has no effect on ordering in this snapshot.
+| g62 | internal/ethel | 65.4 | 70.0 (RunWitnessReplay end to end, parallel feeder over geth and N42 columnar inputs) |
+
+- `internal/ethel/rebuild_state.go` `rebuildEVMFallback` writes `acctcs_patch_N.bin` / `storcs_patch_N.bin` into the
+  process working directory unconditionally (tests chdir into a temp dir to contain it).
+| g63 | internal/api | 69.0 | 71.3 |
+| g63 | internal | 62.3 | 64.8 |
+
+- `internal/api/engine_state_adapter.go` fast-verify path (`ExecutePayloadFromTrustedColumnar` /
+  `executePayloadFromWireMode` with fastVerify=true): the incremental/catch-up state root does not match the wire state
+  root for the same first empty payload that full verification accepts (`TestExecutePayloadFromTrustedColumnarRunsFastVerifyPath`
+  asserts only no internal error). Either a real bug in the incremental root on small databases or a precondition
+  (state populated by live wire sync) that the doc comments imply; needs a look before fast-verify is trusted on fresh nodes.
+| g65 | internal/vm | 72.1 | 75.2 (all BLS12-381 precompiles match the official EIP-2537 vectors, output and gas) |
+| g65 | lib/state | 72.0 | 74.7 |
+| g65 | lib/commitment | 74.4 | 75.3 |
+| g64 | internal/datc | 71.1 | 75.5 (legacy 40-byte storage keys confirmed skipped by every derive gate) |
+| g64 | lib/txpool | 57.6 | 58.6 (remaining: fetch.go p2p transport, MainLoop, mockgen) |
+
+- Possible `lib/txpool` / `lib/kv/kvcache` issue (unresolved): a sender funded through one `OnNewBlock` then zeroed
+  through a second `OnNewBlock` (Action_UPSERT_CODE) still showed `EnoughBalance` afterwards in a memdb pool; the
+  tests route around it (direct `onSenderStateChange`, cold sender). Either a kvcache root-advance quirk across two
+  StateChangeBatch calls on memdb or a real stale-balance bug; needs isolation.
+| g66 | internal/node | 54.8 | 57.5 (devnet genesis hard-codes QMDB for --chain private, so other engines are not reachable by config) |
+| g66 | internal/consensus/hotstuff | 85.3 | 86.8 |
+
+- `internal/consensus/hotstuff/engine.go` `advanceToView`: when the node is REMOVED from the validator set at an epoch
+  boundary, the removal branch returns before `roundState.AdvanceView(newView)`, so the removed node's local view
+  stays at the pre-boundary value (`TestAdvanceToViewRemovesNodeAtEpochBoundary` pins it). Harmless if the node stays
+  an observer; a stale view if it later rejoins. Needs the owner's judgement.
+
+## Checkpoint 4, final (2026-10-02, all 66 groups merged, ~830 commits)
+
+`go test -short -cover ./...` (one flaky warm-up test fixed afterwards, 8ef715bd; the lib/commitment profile was re-measured
+alone and folded in):
+
+| view | covered / statements | coverage |
+|---|---|---|
+| whole module | 120,129 / 211,489 | **56.8%** (baseline 37.2%) |
+| excluding generated stubs, vendored PQ crypto, cmd mains | 116,493 / 159,266 | **73.1%** (baseline ~49%) |
+
+Net: +41,400 covered statements. 366 packages had no test file at the start; the campaign added tests to ~120 packages
+and found ~45 defects (listed above), of which these deserve immediate attention: bptree Tree23.Delete corruption,
+MPT checkpoint not round-tripping, BMT PutBatch dropping keys, bodyc/headerc resume corruption, deep-pipeline Reset
+wedge, node Start/Close race and goroutine leaks, jsonrpc by-hash parse returning the zero hash, historical state read
+returning nil for an account's first change, TraceCall reading state at the wrong height, ENS namespace non-functional,
+receipt-by-hash off by one, ReadReceiptByTxHash, apos reward epoch underflow, the AI optimizer hook never called, the
+fast-verify root mismatch, the removed-validator view advance.
+Rules kept throughout: test-only changes (no production code touched), one commit per test file, English messages,
+no trailers, temp dirs cleaned, nothing run against real datadirs or default ports.
