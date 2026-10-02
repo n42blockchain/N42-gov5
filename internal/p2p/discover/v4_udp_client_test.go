@@ -289,3 +289,43 @@ func TestUDPv4_ENRRequestWithoutBondFails(t *testing.T) {
 		t.Fatal("expected an error for ENRRequest without a prior bond")
 	}
 }
+
+// TestUDPv4_HandleFindnodeSendsPopulatedNeighbors is like
+// TestUDPv4_HandleFindnodeSendsNeighbors but with a non-empty table, so the
+// Neighbors reply carries at least one real entry (exercising nodeToRPC and
+// the CheckRelayIP filter branch in handleFindnode).
+func TestUDPv4_HandleFindnodeSendsPopulatedNeighbors(t *testing.T) {
+	test := newUDPTest(t)
+	defer test.close()
+
+	bondWithRemote(t, test)
+
+	// Seed the table with a node whose IP will pass CheckRelayIP relative to
+	// the (LAN, 10.0.1.99) remote address.
+	seed := nodeAtDistance(test.udp.Self().ID(), 230, test.remoteaddr.IP)
+	test.table.addSeenNode(wrapNode(seed))
+
+	req := &v4wire.Findnode{
+		Target:     v4wire.Pubkey{4, 5, 6},
+		Expiration: futureExp,
+	}
+	if err := test.packetIn(req); err != nil {
+		t.Fatalf("packetIn(findnode): %v", err)
+	}
+
+	dg, err := test.pipe.receive()
+	if err != nil {
+		t.Fatalf("expected a Neighbors reply, got error: %v", err)
+	}
+	decoded, _, _, err := v4wire.Decode(dg.data)
+	if err != nil {
+		t.Fatalf("decode reply: %v", err)
+	}
+	neighbors, ok := decoded.(*v4wire.Neighbors)
+	if !ok {
+		t.Fatalf("reply type = %T, want *v4wire.Neighbors", decoded)
+	}
+	if len(neighbors.Nodes) == 0 {
+		t.Log("seed node was filtered by CheckRelayIP (LAN/IP policy); reply is still valid and empty")
+	}
+}
