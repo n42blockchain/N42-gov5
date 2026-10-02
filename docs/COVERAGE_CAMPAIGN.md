@@ -261,3 +261,4 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
 
 - `internal/ethel/executor.go:229` `Executor.SetSenderFreezer(nil)` panics (calls `f.Table` on a nil freezer); every other
   `Set*` setter accepts nil as "disable".
+| g31 | internal/sync | 22.0 | 27.6 (fake_stream_test.go + fake_p2p_test.go harness landed; handlers continue in g34) |
