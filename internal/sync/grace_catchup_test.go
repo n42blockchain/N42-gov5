@@ -45,7 +45,7 @@ func TestGraceCatchUpDeferredAndResolvedByNormalPath(t *testing.T) {
 	}
 
 	// Normal path delivers the block during the grace window.
-	chain.current = &syncBlockStub{number: uint256.NewInt(101)}
+	chain.setCurrent(&syncBlockStub{number: uint256.NewInt(101)})
 
 	time.Sleep(160 * time.Millisecond) // well past the 80ms grace
 
