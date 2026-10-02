@@ -152,3 +152,15 @@ with that instruction.
 
 Running: g12 (p2p subpackages, txlookup, mpttrie), g13 (mdbx, qmdb, etl, jmt, bmt, transaction, block),
 g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
+| g13 | lib/etl | 59.1 | 80.7 |
+| g13 | lib/bmt | 61.2 | 86.1 (lib/bmt/store 0 -> 89.3) |
+| g13 | lib/jmt | 68.2 | 83.3 |
+| g13 | common/transaction | 79.8 | 86.6 |
+| g13 | common/block | 78.8 | 84.1 |
+
+- **`lib/bmt/tree.go` `PutBatch`/`insertBatch` drops keys**: batching two or more entries into an empty tree leaves the
+  second key unreadable (`Get` -> ErrNotFound) and yields a root different from sequential `Put`s, although BMT roots
+  are meant to be insertion-order independent. Repro in `lib/bmt/tree_batch_test.go`. Check every production caller of
+  `PutBatch` before trusting a BMT root built through it.
+- `lib/etl` `NewCollectorFromFiles` leaves `fileDataProvider.wg` nil, so `Close()`/`Dispose()` on a restored collector
+  panics inside `errgroup.Wait()` (`lib/etl/collector_more_test.go`).
