@@ -164,3 +164,15 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
   `PutBatch` before trusting a BMT root built through it.
 - `lib/etl` `NewCollectorFromFiles` leaves `fileDataProvider.wg` nil, so `Close()`/`Dispose()` on a restored collector
   panics inside `errgroup.Wait()` (`lib/etl/collector_more_test.go`).
+| g14 | internal/metrics | 20.0 | 99.2 |
+| g14 | internal/mev | 55.4 | 85.4 |
+| g14 | internal/bundler | 65.0 | 93.4 |
+| g14 | internal/deferred | 46.3 | 86.0 |
+| g14 | internal/distributed/compute/inference | 68.8 | 93.0 |
+| g14 | internal/distributed/messaging | 58.8 | 67.8 (peer handler needs a libp2p host pair) |
+| g14 | internal/distributed/storage/torrent | 40.8 | 44.9 (real anacrolix client opens sockets) |
+
+- **`internal/deferred/deep_pipeline.go` `DeepPipeline.Reset()` wedges the pipeline**: it cancels and waits but never
+  clears `running`, so the following `Start` is a no-op and `ctx`/`cancel` keep pointing at the cancelled context;
+  `SubmitBlock` then races a fresh channel against a closed `ctx.Done()`. A reorg-recovery Reset can permanently wedge
+  the deep pipeline (`TestDeepPipeline_Reset`).
