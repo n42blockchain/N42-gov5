@@ -477,3 +477,11 @@ and cmd mains; the remaining reachable mass is the executed-chain-dependent path
 
 - `internal/ethel/rebuild_state.go` `rebuildEVMFallback` writes `acctcs_patch_N.bin` / `storcs_patch_N.bin` into the
   process working directory unconditionally (tests chdir into a temp dir to contain it).
+| g63 | internal/api | 69.0 | 71.3 |
+| g63 | internal | 62.3 | 64.8 |
+
+- `internal/api/engine_state_adapter.go` fast-verify path (`ExecutePayloadFromTrustedColumnar` /
+  `executePayloadFromWireMode` with fastVerify=true): the incremental/catch-up state root does not match the wire state
+  root for the same first empty payload that full verification accepts (`TestExecutePayloadFromTrustedColumnarRunsFastVerifyPath`
+  asserts only no internal error). Either a real bug in the incremental root on small databases or a precondition
+  (state populated by live wire sync) that the doc comments imply; needs a look before fast-verify is trusted on fresh nodes.
