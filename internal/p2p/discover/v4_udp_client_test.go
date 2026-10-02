@@ -226,3 +226,66 @@ func TestUDPv4_FindnodeClientRoundTrip(t *testing.T) {
 		t.Fatal("findnode() did not return in time")
 	}
 }
+
+// TestUDPv4_PingPublicWrapper exercises the exported Ping() convenience
+// wrapper around the lower-level ping().
+func TestUDPv4_PingPublicWrapper(t *testing.T) {
+	test := newUDPTest(t)
+	defer test.close()
+
+	errc := make(chan error, 1)
+	go func() { errc <- test.udp.Ping(remoteEnodeNode(test)) }()
+
+	answerPing(t, test)
+
+	select {
+	case err := <-errc:
+		if err != nil {
+			t.Fatalf("Ping() returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Ping() did not return in time")
+	}
+}
+
+// TestUDPv4_HandleENRRequestSendsResponse verifies that a bonded remote's
+// ENRRequest is answered with our local node's current ENRResponse.
+func TestUDPv4_HandleENRRequestSendsResponse(t *testing.T) {
+	test := newUDPTest(t)
+	defer test.close()
+
+	bondWithRemote(t, test)
+
+	req := &v4wire.ENRRequest{Expiration: futureExp}
+	if err := test.packetIn(req); err != nil {
+		t.Fatalf("packetIn(ENRRequest): %v", err)
+	}
+
+	dg, err := test.pipe.receive()
+	if err != nil {
+		t.Fatalf("expected an ENRResponse, got error: %v", err)
+	}
+	decoded, _, _, err := v4wire.Decode(dg.data)
+	if err != nil {
+		t.Fatalf("decode reply: %v", err)
+	}
+	resp, ok := decoded.(*v4wire.ENRResponse)
+	if !ok {
+		t.Fatalf("reply type = %T, want *v4wire.ENRResponse", decoded)
+	}
+	if resp.Record.Seq() != test.udp.Self().Seq() {
+		t.Fatalf("response record seq = %d, want %d", resp.Record.Seq(), test.udp.Self().Seq())
+	}
+}
+
+// TestUDPv4_ENRRequestWithoutBondFails mirrors
+// TestUDPv4_FindnodeRequiresBond for the ENRRequest handler.
+func TestUDPv4_ENRRequestWithoutBondFails(t *testing.T) {
+	test := newUDPTest(t)
+	defer test.close()
+
+	req := &v4wire.ENRRequest{Expiration: futureExp}
+	if err := test.packetIn(req); err == nil {
+		t.Fatal("expected an error for ENRRequest without a prior bond")
+	}
+}

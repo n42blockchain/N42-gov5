@@ -96,3 +96,100 @@ func TestTable_SetFallbackNodesRejectsIncomplete(t *testing.T) {
 		t.Fatal("expected error for incomplete bootstrap node")
 	}
 }
+
+func TestTable_BucketLen(t *testing.T) {
+	transport := newPingRecorder()
+	tab, db := newInactiveTestTable(transport)
+	defer db.Close()
+
+	id := enode.ID{0x55}
+	if tab.bucketLen(id) != 0 {
+		t.Fatalf("bucketLen() = %d, want 0 for an empty bucket", tab.bucketLen(id))
+	}
+	n := nodeAtDistance(tab.self().ID(), enode.LogDist(tab.self().ID(), id), intIP(1))
+	tab.addSeenNode(wrapNode(n))
+	if tab.bucketLen(n.ID()) != 1 {
+		t.Fatalf("bucketLen() = %d, want 1 after adding one node", tab.bucketLen(n.ID()))
+	}
+}
+
+func TestTable_CopyLiveNodes(t *testing.T) {
+	transport := newPingRecorder()
+	tab, db := newInactiveTestTable(transport)
+	defer db.Close()
+
+	// A freshly-added node hasn't been in the table long enough to be
+	// persisted by copyLiveNodes (seedMinTableTime hasn't elapsed), so this
+	// call must simply not panic and leave the DB untouched for it.
+	n := nodeAtDistance(tab.self().ID(), 222, intIP(1))
+	wn := wrapNode(n)
+	wn.livenessChecks = 1
+	tab.addSeenNode(wn)
+	tab.copyLiveNodes()
+
+	if got := db.Node(n.ID()); got != nil {
+		t.Fatal("expected copyLiveNodes to skip a recently-added node")
+	}
+}
+
+func TestTable_DoRevalidatePromotesLiveNode(t *testing.T) {
+	transport := newPingRecorder()
+	tab, db := newInactiveTestTable(transport)
+	defer db.Close()
+
+	n := nodeAtDistance(tab.self().ID(), 222, intIP(1))
+	tab.addSeenNode(wrapNode(n))
+
+	done := make(chan struct{}, 1)
+	tab.doRevalidate(done)
+	<-done
+
+	b := tab.bucket(n.ID())
+	if len(b.entries) != 1 || b.entries[0].livenessChecks == 0 {
+		t.Fatal("expected the pinged node to remain and have livenessChecks incremented")
+	}
+}
+
+func TestTable_DoRevalidateDropsDeadNode(t *testing.T) {
+	transport := newPingRecorder()
+	tab, db := newInactiveTestTable(transport)
+	defer db.Close()
+
+	n := nodeAtDistance(tab.self().ID(), 222, intIP(1))
+	transport.dead[n.ID()] = true
+	tab.addSeenNode(wrapNode(n))
+
+	done := make(chan struct{}, 1)
+	tab.doRevalidate(done)
+	<-done
+
+	if tab.len() != 0 {
+		t.Fatalf("expected dead node to be removed, table len = %d", tab.len())
+	}
+}
+
+func TestTable_DoRevalidateEmptyTable(t *testing.T) {
+	transport := newPingRecorder()
+	tab, db := newInactiveTestTable(transport)
+	defer db.Close()
+
+	// Must not panic/block when there are no nodes to revalidate.
+	done := make(chan struct{}, 1)
+	tab.doRevalidate(done)
+	<-done
+}
+
+func TestTable_Refresh(t *testing.T) {
+	transport := newPingRecorder()
+	tab, db := newTestTable(transport)
+	defer db.Close()
+	defer tab.close()
+
+	waitInitDone(t, tab)
+
+	select {
+	case <-tab.refresh():
+	case <-time.After(5 * time.Second):
+		t.Fatal("refresh() did not complete in time")
+	}
+}
