@@ -198,3 +198,14 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
 
 - `lib/kv/mdbx/kv_mdbx_opts.go` `MdbxOpts.InMem(dir)` unconditionally resets `label` to `kv.InMem`, so
   `.Label(kv.ChainDB).InMem(dir)` silently loses the label (call-order footgun).
+| g19 | lib/rlphacks | 0.0 | 84.0 |
+| g19 | lib/common/dbg | 0.0 | 75.3 |
+| g19 | lib/metrics | 0.0 | 84.1 |
+| g19 | lib/kv/layered | 60.9 | 87.2 |
+| g19 | lib/jmt/store | 26.0 | 86.5 |
+| g19 | lib/diagnostics | 36.3 | 63.7 |
+
+- `lib/rlphacks` `RlpEncodedBytes.DoubleRLPLen()` / `EncodeByteArrayAsRlp()` under-report the length by one byte for a
+  single byte >= 0x80 (`generateRlpPrefixLen` ignores the first byte); the written bytes are right, the count is wrong.
+- `lib/diagnostics` `SetFillDBInfo` appends a stage only when the list is nil, so every later stage with a new name is
+  silently dropped.
