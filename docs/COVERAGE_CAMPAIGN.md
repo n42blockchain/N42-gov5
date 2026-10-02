@@ -364,3 +364,8 @@ Running: g43 (hotstuff service over mocknet), g44 (api executed-chain fixture), 
   the api fixture; not traced into GetAsOf/FindByHistory yet. Likely affects every historical eth_call at such heights.
 - `rawdb.ReadReceiptByTxHash` confirmed again from the fixture: a 1-tx block returns a nil receipt for its own tx.
 | g43 | internal/consensus/hotstuff | 75.6 | 85.3 (real gossipsub over mocknet in hsT_mocknet_test.go; no consensus defect found) |
+| g45 | cmd/txflood | 9.7 | 39.7 |
+| g45 | cmd/clef | 0.0 | 57.8 (test files force-added: `.gitignore`'s bare `clef` line also matches the source dir) |
+| g45 | cmd/rpcdaemon | 0.0 | 38.2 |
+| g45 | cmd/n42 | 8.0 | 13.8 (the rest opens real chaindata or a node) |
+| g45 | cmd/ethexec | 0.4 | 7.1 (same) |
