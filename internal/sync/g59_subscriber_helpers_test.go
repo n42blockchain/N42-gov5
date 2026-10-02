@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/test"
 
 	"github.com/n42blockchain/N42/internal/p2p"
@@ -67,5 +68,50 @@ func TestUnSubscribeFromTopicLeavesTopicAndCancelsSub(t *testing.T) {
 	svc.unSubscribeFromTopic(fullWithSuffix)
 	if svc.subHandler.topicExists(fullWithSuffix) {
 		t.Fatal("expected topic to be removed after unSubscribeFromTopic")
+	}
+}
+
+// TestReValidateSubscriptionsCancelsUnwanted exercises
+// reValidateSubscriptions: a subnet whose index is no longer wanted is
+// cancelled, unsubscribed, and dropped from the map; a wanted one is left
+// untouched.
+func TestReValidateSubscriptionsCancelsUnwanted(t *testing.T) {
+	fp := newFakeP2PWithHost(t)
+	svc := &Service{ctx: context.Background(), cfg: &config{p2p: fp}}
+	svc.subHandler = newSubTopicHandler()
+
+	const topicFormat = "/n42/%x/sub/%d"
+	digest := [4]byte{}
+	suffix := fp.Encoding().ProtocolSuffix()
+
+	newSub := func(idx uint64) *pubsub.Subscription {
+		full := svc.addDigestAndIndexToTopic(topicFormat, digest, idx) + suffix
+		th, err := fp.joinTopic(full)
+		if err != nil {
+			t.Fatalf("joinTopic(%d): %v", idx, err)
+		}
+		sub, err := th.Subscribe()
+		if err != nil {
+			t.Fatalf("Subscribe(%d): %v", idx, err)
+		}
+		svc.subHandler.addTopic(full, sub)
+		return sub
+	}
+
+	wantedSub := newSub(1)
+	unwantedSub := newSub(2)
+
+	subs := map[uint64]*pubsub.Subscription{1: wantedSub, 2: unwantedSub}
+	svc.reValidateSubscriptions(subs, []uint64{1}, topicFormat, digest)
+
+	if _, ok := subs[2]; ok {
+		t.Fatal("expected unwanted subnet 2 to be dropped from the map")
+	}
+	if _, ok := subs[1]; !ok {
+		t.Fatal("expected wanted subnet 1 to remain in the map")
+	}
+	unwantedFull := svc.addDigestAndIndexToTopic(topicFormat, digest, 2) + suffix
+	if svc.subHandler.topicExists(unwantedFull) {
+		t.Fatal("expected unwanted subnet's topic to be removed from subHandler")
 	}
 }
