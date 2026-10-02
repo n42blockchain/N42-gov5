@@ -249,3 +249,11 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
 - `startFrameAhead` calls `dataFile(0, seg)` and discards the result before the goroutine looks up the real file number;
   harmless with one data file, could trigger a spurious cold-resolver call under multi-file rotation.
 | g27 | internal/ethel (hashstate/dict/codec/catch_up slice) | 40.3 | 44.1 (all three HPH bootstrap variants agree with the oracle root) |
+| g30 | internal/ethel/modestate | 67.4 | 97.7 |
+| g30 | internal/ethel/catchup | 66.0 | 95.7 |
+| g30 | internal/ethel/bootstrap | 64.7 | 94.1 |
+| g30 | internal/ethel/coldresolve | 58.4 | 87.2 |
+| g30 | internal/ethel/stateless/serve | 55.0 | 83.7 |
+| g30 | internal/ethel/engineapi | 51.1 | 82.3 |
+| g30 | internal/ethel/publicrpc | 24.6 | 74.9 |
+| g30 | internal/ethel/fetch | 56.6 | 60.2 (torrent and webrtc fetchers need live peers) |
