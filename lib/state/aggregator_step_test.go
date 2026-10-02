@@ -57,10 +57,22 @@ func TestAggregatorStep_ReadsAndIterators(t *testing.T) {
 
 	accHist := as.IterateAccountsHistory(to)
 	require.NotNil(t, accHist)
+	for accHist.HasNext() {
+		_, _, err := accHist.Next()
+		require.NoError(t, err)
+	}
 	stoHist := as.IterateStorageHistory(to)
 	require.NotNil(t, stoHist)
+	for stoHist.HasNext() {
+		_, _, err := stoHist.Next()
+		require.NoError(t, err)
+	}
 	codeHist := as.IterateCodeHistory(to)
 	require.NotNil(t, codeHist)
+	for codeHist.HasNext() {
+		_, _, err := codeHist.Next()
+		require.NoError(t, err)
+	}
 
 	clone := as.Clone()
 	require.NotNil(t, clone)
