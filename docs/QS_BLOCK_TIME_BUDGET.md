@@ -17007,3 +17007,217 @@ re-decode load that inflates the leader's total.
    volume into whatever the leader serves it from) rather than a
    directly measured %; listed last because it changes consensus-
    adjacent behavior and needs its own safety review before sizing.
+
+## 6fd. S65: the executor's own CPU and allocation, read in isolation (2026-10-01)
+
+Read-only, same round as 6fc: `wr-pprof/r35zzzan-B1-win2-node{0,1}-{cpu,allocs}.pb.gz`
+(20 s each), symbols resolved against `n42-r106` (build ID
+`ec7182168bd0faa24113b2d4e639547dd4e5f426`, matches the profiles exactly).
+B1 win2 committed 7,665,203 tx / 60 s -> **~2.555M tx per 20 s window**
+(given). No code changed.
+
+**1. CPU, inclusive.** The executor's own worker-goroutine subtree is
+`parallel.(*Executor).executeParallel.func1 -> executeSingle -> exec ->
+StateProcessor.runParallel.func2 -> parallelApplyTx`. It does NOT nest under
+`ProcessParallel` in the profile (workers run on `go func()`-rooted stacks,
+which pprof does not stitch to the spawning frame), so `ProcessParallel`'s
+own reported cum (0.75%/0.76%) undercounts it; the worker subtree is the
+real figure:
+
+| | follower (node1, 340.91 CPU-s/20s, 1704%) | leader (node0, 358.72 CPU-s/20s, 1794%) |
+|---|---|---|
+| executor subtree (executeSingle incl.) | 31.88s = **9.35%** | 30.95s = **8.63%** |
+| `secp256k1 RecoverPubkeyWithContext` (sender recovery, NOT in the executor subtree) | 184.82s = **54.21%** | 194.24s = **54.15%** |
+
+Sender recovery, not the executor, is the dominant CPU consumer on both
+roles this round — consistent with 6fa/S59 already targeting it
+(`N42_HINT_RECOVERY_POOL`) and separate from this spec's scope. No distinct
+`miner`/`worker.go` fillTx frames surface above the sampling threshold on
+the leader: build orchestration is wait-bound, not CPU-bound, so the
+leader's CPU profile inside fillTx IS the same executor + recovery split as
+the follower's import.
+
+Inside the follower's executor subtree (31.88s = 100% of that subtree):
+
+| component | cum | share of subtree |
+|---|---|---|
+| `runtime.mallocgc` | 4.40s | 13.8% |
+| `runtime.mapaccess2` | 4.24s | 13.3% |
+| `runtime.memmove` + `memclrNoHeapPointers` | 0.97+0.41=1.38s | 4.3% |
+| `vm.(*EVM).Call` (no interpreter loop below it) | 1.45s | 4.5% |
+| `runtime.mapassign` | ~1.94s (below node threshold, summed from mapassign cum elsewhere in tree) | ~6% |
+
+`vm.(*EVMInterpreter).Run` and named opcode functions do not appear at all:
+this workload is plain-transfer EIP-7702/legacy sends, so "EVM
+interpretation proper" is ~0 of the executor's CPU — the cost is state
+bookkeeping (maps, allocation), not bytecode. `runtime.gcAssistAlloc` does
+not surface above the 1.70s node-drop threshold in a 20 s capture (it is
+the dominant term in the longer-leg, memory-pressured captures S27 analyzed
+separately; this short window undersamples it).
+
+**2. Allocation**, follower node1 win2 (33.70 GB / 354.16M objects total,
+20.03 s): `-focus=parallelApplyTx` subtree = 5.71 GB (16.95%) / 61.90M
+objects (17.49%) of the whole node — i.e. the executor is **~17% of the
+node's total allocation**, consistent with 6dc's ~9% (different round/mix)
+and 6fc's 15.8-18.6% cum figures for the same subtree. Per-tx for the
+subtree: 5.71 GB / 2.555M tx = **2238 B/tx**, 61.90M / 2.555M = **24.2
+obj/tx**. Node-wide: 13,194 B/tx, 138.6 obj/tx (executor is the minority of
+both).
+
+Top sites inside the subtree (alloc_space, with alloc_objects alongside),
+grouped:
+
+| fn | group | flat GB | flat obj | B/tx | obj/tx |
+|---|---|---|---|---|---|
+| `parallelApplyTx` (direct: `&block.Receipt{}`, `Bloom`, logs slice) | receipts/logs | 1.94 | 5.63M | 760 | 2.20 |
+| `StateTransition.TransitionDb` (direct) | other (ExecutionResult, refund math) | 0.29 | 7.57M | 114 | 2.96 |
+| `state.(*journal).push` | IntraBlockState | 0.71 | 2.66M | 278 | 1.04 |
+| `IntraBlockState.setStateObject` | IntraBlockState | 0.68 | 2.55M | 266 | 1.00 |
+| `parallel.DecodeAccount` | Block-STM (cold read) | 0.46 | 4.37M | 180 | 1.71 |
+| `IntraBlockState.FinalizeTx` (direct) | IntraBlockState | 0.42 | 2.55M | 164 | 1.00 |
+| `QMDBStateReader.qmdbAccount` (direct) | Block-STM (cold read) | 0.21 | n/a (<threshold alone) | 82 | - |
+| `uint256.(*Int).Clone` | hashing/value math | 0.18 | 6.05M | 70 | 2.37 |
+| `state.(*journal).reset` (dirties map realloc, by design — see 6cp-era comment) | IntraBlockState | 0.14 | 3.04M | 55 | 1.19 |
+| `sortedAddresses[go.shape.int]` | IntraBlockState | 0.11 | 2.47M | 43 | 0.97 |
+
+No tx-decode-inside-exec site (`NewTxOwned`, `decodeUint256`) appears in
+this subtree — decode happens at ingest, outside `parallelApplyTx`,
+matching 6fc's separate listing of those symbols at the node level.
+
+**3. Top 8, read against the code, proposed changes (none applied):**
+
+1. **`IntraBlockState.Reset()` (modules/state/intra_block_state.go:516-525),
+   not in the flat-alloc top 10 by name but the mechanism behind
+   `setStateObject`'s 266 B/tx and a chunk of `mapaccess2`/`mapassign`
+   CPU (13.3%/~6% of the subtree): it does
+   `sdb.stateObjects = make(map[...])`, same for `stateObjectsDirty` and
+   `nilAccounts`, THREE fresh map headers reallocated every transaction
+   (called once per tx in `runParallel`'s rebind loop,
+   `internal/parallel_processor.go:378`). Three lines below it,
+   `storageWipes`/`priorTxWipes`/`wipedStorageSlots` already use
+   `clear()` instead. Change: `clear()` the three maps too instead of
+   `make()`. Expected cut: removes 3 of the ~24 obj/tx in the subtree
+   outright and most of the repeated 0-capacity map growth underneath
+   `setStateObject`'s inserts (plausibly 10-15% of the subtree's
+   mapaccess2/mapassign CPU and a similar slice of its 266 B/tx). Risk:
+   MEDIUM — exactly the pattern `journal.reset`'s own comment warns
+   about (a map whose buckets are iterated can overgrow and make a later
+   `FinalizeTx` scan slower on a block that follows a very wide one); of
+   the three, `stateObjects` and `stateObjectsDirty` ARE iterated
+   elsewhere (`FinalizeTx`'s `sortedAddresses(sdb.journal.dirties)`
+   reads `stateObjects` by lookup, not iteration, so likely safe, but
+   needs the same quick audit `journal.reset`'s comment implies before
+   shipping).
+
+2. **`parallelApplyTx`'s receipt allocation**
+   (`internal/parallel_processor.go` call site, body at
+   `internal/state_processor.go:237-254` with `cfg.NoReceipts` guard
+   already present): `&block.Receipt{...}` and `block.CreateBloom(...)`
+   (256-byte array) allocate fresh per tx even though the receipt's
+   lifetime is bounded to the block (consumed once at assembly). Change:
+   give each worker a pooled/preallocated `[]block.Receipt` slab sized
+   to its share of the block's tx count (the worker already knows
+   `numTxs`/worker count from `runParallel`), store receipts by value in
+   that slab, hand back pointers into it. Risk: LOW-MEDIUM — `[]*Receipt`
+   is the type used block-wide for assembly/RLP encoding; swapping to
+   slab-backed pointers is safe as long as nothing holds a `*Receipt`
+   past the block (true today — receipts are serialized then dropped).
+
+3. **`StateTransition.refundGas`** (internal/state_transition.go:620-641):
+   two `new(uint256.Int)` per call (`Mul(new(...).SetUint64(...), ...)`)
+   that are consumed immediately into `AddBalance`. Change: stack-allocate
+   via a local `var remaining, tmp uint256.Int` and call the value-receiver
+   forms, avoiding the heap escape (both temporaries die before the
+   function returns; nothing retains their address today). Risk: LOW —
+   purely local arithmetic, no cross-call aliasing.
+
+4. **`state.(*journal).push`** (modules/state/journal.go:60-66): the doc
+   comment already says the record itself is copied by value and the hot
+   path doesn't allocate; the 278 B/tx here is `entries` slice growth.
+   Since the per-worker `journal` is rebuilt fresh per block (`wc.ibs =
+   state.New(...)` once per block, `Reset()` per tx) rather than pooled
+   across blocks, every block's `entries` slice re-grows from zero over
+   its first several doubling steps. Change: give the worker's `journal`
+   (via `IntraBlockState`) a capacity hint seeded from the previous
+   block's high-water `len(entries)` per worker, carried in `workerCtx`
+   across the block boundary (workers ARE already reused block-to-block
+   per 6g-era `workerCtx` comments — needs confirming they persist
+   across `ProcessParallel` calls, not just across txs within one call).
+   Expected cut: most of the 278 B/tx after the first few blocks of a
+   steady-state workload. Risk: MEDIUM — needs care that
+   `journal.revert`'s snapshot indices never read past a capacity-only
+   preallocation as real entries (append semantics already guard this,
+   but worth a dedicated test).
+
+5. **`parallel.DecodeAccount`** (internal/parallel/state_reader.go:134-139):
+   `acc := new(account.StateAccount)` per cold read, immediately decoded
+   into and (by the call chain) copied into a `stateObject.data` a few
+   frames up. Change: pool `*account.StateAccount` scratch objects per
+   worker (sync.Pool or a worker-owned freelist) and decode into a reused
+   instance when the caller is known to copy-out rather than retain the
+   pointer. Risk: LOW-MEDIUM — needs a one-time check of every
+   `DecodeAccount` call site to confirm none keeps the pointer past the
+   copy (not done here, so flagged not confirmed).
+
+6. **`IntraBlockState.FinalizeTx`'s own allocations**
+   (modules/state/intra_block_state.go:1241 area): `sortedAddresses(...)`
+   is called twice per tx (once for `balanceInc`, once for
+   `journal.dirties`), each returning a fresh `[]types.Address` — this is
+   the separate `sortedAddresses` line item (43 B/tx, 0.97 obj/tx) PLUS
+   part of `FinalizeTx`'s own 164 B/tx. Change: give each worker one
+   reusable scratch slice (`sortBuf [:0]` pattern) for both call sites
+   instead of allocating a fresh slice each time. Risk: LOW — the slice
+   is consumed synchronously within the same call, not retained.
+
+7. **`QMDBStateReader.qmdbAccount`'s cold-read buffer**
+   (modules/state/commitment/qmdb_state_reader.go, feeding
+   `lib/qmdb.getterCold.ColdEntry` / `ColdReaderFromGetter` seen just
+   below it in the same profile): allocates a fresh `[]byte` per cold
+   lookup that is consumed synchronously by `DecodeAccount` right after.
+   Change: per-worker reusable read buffer, size-classed to the account
+   record's typical encoded length. Risk: LOW — buffer dies before the
+   function returns today; no retention across calls to guard against.
+
+8. **`uint256.(*Int).Clone`** (2.37 obj/tx, ~2 clones/tx): the likely
+   caller is a journal record that snapshots a balance for revert
+   (`balanceChange`-style records) and a per-tx deferred-fee `sink` in
+   `runParallel` (`fees = append(fees, deferredFee{..., amount:
+   amount.Clone()})`, internal/parallel_processor.go ~393). `uint256.Int`
+   is a fixed 4x`uint64` value type with no internal pointers, so if the
+   journal record (or `deferredFee`) embeds `uint256.Int` by value instead
+   of taking an owned clone pointer, the "clone" becomes a plain value
+   copy with no heap traffic. Risk: MEDIUM — touches journal-record and
+   deferred-fee struct layouts and every revert path that reads them;
+   wider blast radius than items 2-7, needs a full-record audit before
+   touching, not just the two call sites seen here.
+
+**4. Measurement recipe on qs-replay** (per
+`memory/project-qs-offline-replay.md`, read-only; this conversation did
+not run it):
+
+1. Copy: `cp -a --reflink=always /data/blockchain/qs-node0 /data/blockchain/qs-replay-node0` (xfs, ~11 s/200 GB). **Checked 2026-10-01: the reflink copy is gone — must be recreated before the next run; `scripts/qs-replay/replay-run.sh` and `replay-phases.sh` and `cmd/n42/qsreplay_cmd.go` all still exist in wt-r27.**
+2. Rewind N blocks (<=256, the QMDB undo window) via the `qs-replay` subcommand's own flag (see `qsreplay_cmd.go` for the exact name — it drives `InsertChainAuthorized` one block at a time from N blocks back).
+3. Run: `scripts/qs-replay/replay-run.sh <tag> <bin> [extra flags]` — already sets the fleet follower env (`N42_HISTORY_INDEX_DEFERRED=1 N42_STATE_READ_QMDB=1 N42_STATE_WRITE_QMDB_ONLY=1`, `GOMEMLIMIT=10GiB GOGC=200`, `N42_PARALLEL_WORKERS=32`, `N42_SLOW_BLOCK_MS=0` to force a "blockimport phases" line per block).
+4. Read phases with `scripts/qs-replay/replay-phases.sh` over the log's "blockimport phases" / "parallel block" lines (recoverMs/execMs/finalizeMs/writeMs per block).
+5. For bytes/tx: add a `runtime.MemStats` sample before/after the replay run (the runner can log `TotalAlloc` via `GODEBUG` or a tiny `-memprofile` snapshot at start/end) and divide the delta by the sum of per-block tx counts logged by the phases line.
+6. For CPU-seconds/block: `/proc/<pid>/stat` utime+stime (or `time -v`) delta over the run, divided by blocks replayed.
+7. For blocks/s: blocks replayed / wall seconds, read directly off the runner's own timestamps.
+8. Comparable to the fleet's 0.75 s blocks: **exec/finalize/write phase times** (uncontended per-block cost) — r4/r5's 720-790 ms full-block wall vs the fleet follower's 1393 ms on the same block (6a7-era baseline) is the standing yardstick.
+9. NOT comparable: **blocks/s and wall-clock throughput** — the replay is single-node, uncontended, no consensus/gossip/view machinery, so its blocks/s has no fleet-TPS meaning; it isolates the execution+write cost only.
+10. Any change from item 3 above should be proven here FIRST (bytes/tx and CPU-s/block delta on an A/B pair of binaries over the same N blocks) before it goes into a fleet round, per 6dc's own ruling.
+
+**5. Ranking.** Build, in order: (1) the `IntraBlockState.Reset()` three
+`make()`->`clear()` map swaps — single-file, lowest risk of the group with
+real upside on both CPU (mapaccess2/mapassign, together ~19-20% of the
+executor's CPU) and allocation (setStateObject's 266 B/tx, partly). (2) the
+receipt/bloom slab in `parallelApplyTx` — 760 B/tx and 2.20 obj/tx is the
+single largest site in the subtree, self-contained. (3) `refundGas`'s two
+`new(uint256.Int)` — trivial, zero-risk, ships in the same change as (2)'s
+review. Total expected cut if all three land and hold on the replay bench:
+roughly 15-25% of the executor's own 2238 B/tx (items 1+2+3 touch ~45% of
+the named sites' bytes, with meaningful but hard-to-bound overlap from
+reduced GC-assist pressure not counted above) — which is **~2.5-4% of the
+node's total 13,194 B/tx**, since the executor is only ~17% of it. This
+matches 6dc's standing verdict: the executor was never the big allocator:
+item 1's CPU share (mapaccess2 13.3%+mapassign) is the more valuable half
+of this list, not the bytes/tx.
