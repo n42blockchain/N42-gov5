@@ -832,7 +832,7 @@ func (r *QMDBRootComputer) ComputeRoot(
 	// Observability only; logged at the same threshold as the other block
 	// phases, and only for blocks big enough to matter.
 	if len(ops) > 1000 {
-		log.Info("qmdb root phases", "ops", len(ops),
+		log.Info("qmdb root phases", "ops", len(ops), "applyWorkers", qmdb.ParallelApplyWorkers,
 			"applyNs", dApply.Nanoseconds(), "foldNs", time.Since(tFold).Nanoseconds())
 	}
 	return root, nil
