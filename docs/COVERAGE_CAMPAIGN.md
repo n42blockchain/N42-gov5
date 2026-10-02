@@ -278,3 +278,13 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
 - `apos.API.GetSigner` and `apoa.API.GetSigner`: nil-pointer panic on a nil `BlockNumberOrHash` with no current block
   (the missing-block error path calls `.String()` on the nil pointer).
 | g39 | internal/p2p/discover/v5wire | 19.1 | 82.6 (full discv5 handshake over mclock.Simulated) |
+| g35 | modules/changeset | 0.0 | 83.8 |
+| g35 | lib/kv | 0.0 | 86.2 |
+| g35 | common/utils | 37.5 | 81.9 |
+| g35 | lib/chain | 15.3 | 93.1 |
+| g35 | internal/consensus/misc | 36.3 | 78.5 |
+| g35 | lib/common | 0.3 | 86.7 |
+
+- `lib/common` `Bytes4/Bytes48/Bytes64/Bytes96.SetBytes` hard-code the 32-byte `length.Hash` (copy of `Hash.SetBytes`):
+  Bytes4 panics on almost any input, the others panic for inputs between 32 bytes and their capacity. No production
+  caller today (`TestG35BytesNSetBytesIsBroken` pins the panic).
