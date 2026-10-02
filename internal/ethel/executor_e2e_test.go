@@ -54,7 +54,7 @@ func buildSyntheticGethFreezer(t *testing.T, dir string, n int) *freezer.Freezer
 	var headers, bodies, receipts, hashes, diffs [][]byte
 	var parent types.Hash
 	for i := 0; i < n; i++ {
-		h := mkHeader(uint64(i), tsAnchor+uint64(i), parent, types.Hash{}, EthReceiptHash(nil))
+		h := mkHeader(uint64(i), tsAnchor+uint64(i), parent, emptyTrieRoot(), EthReceiptHash(nil))
 		parent = h.Hash()
 		headers = append(headers, encodeGethHeader(t, h))
 		bodies = append(bodies, emptyGethBody(t))
