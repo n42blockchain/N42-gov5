@@ -192,3 +192,4 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
 | g17 | internal/avm/rlp | 88.4 | 94.4 |
 
 - `internal/avm/rlp/decode.go` `IsInvalidRLPError(nil)` panics (no nil guard before `err.Error()`).
+| g18 | internal | 35.3 | 47.5 (InsertChain/Start/ProcessParallel need a full engine + EVM harness) |
