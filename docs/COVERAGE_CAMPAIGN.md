@@ -467,3 +467,4 @@ and cmd mains; the remaining reachable mass is the executed-chain-dependent path
 - Dead/mismatched: `lib/commitment/hex_patricia_hashed.go` `HexTrieExtractStateRoot` / `HexTrieStateToShortString` /
   `HexTrieStateToString` expect an 18-byte (txNum|blockNum|stateLen) header that `EncodeCurrentState` (the only
   producer) never emits; no production caller.
+| g61 | lib/txpool | 56.8 | 57.6 (datc unchanged at 71.1; weak pass) |
