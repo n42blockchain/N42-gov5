@@ -91,6 +91,22 @@ func TestInitHashState_CursorError(t *testing.T) {
 	}
 }
 
+func TestInitHashState_StorageCursorError(t *testing.T) {
+	db := memdb.NewTestDB(t)
+	tx, err := db.BeginRw(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	seedPlainState(t, tx)
+	wrapped := &cursorErrorTx{RwTx: tx, failTable: "Storage", err: errCursorOpen}
+
+	err = InitHashState(wrapped)
+	if !errors.Is(err, errCursorOpen) {
+		t.Fatalf("InitHashState (storage cursor) error = %v, want %v", err, errCursorOpen)
+	}
+}
+
 func TestInitHashState_AccountCursorError(t *testing.T) {
 	db := memdb.NewTestDB(t)
 	tx, err := db.BeginRw(context.Background())
