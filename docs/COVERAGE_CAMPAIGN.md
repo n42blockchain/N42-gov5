@@ -263,3 +263,4 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
   `Set*` setter accepts nil as "disable".
 | g31 | internal/sync | 22.0 | 27.6 (fake_stream_test.go + fake_p2p_test.go harness landed; handlers continue in g34) |
 | g32 | internal/p2p | 12.9 | 55.5 (mocknet two-peer harness in testservice_test.go) |
+| g28 | internal/datc | 60.1 | 71.1 (run_fixture_test.go synthesizes the headerc freezer and compacted acctcs/storcs inputs) |
