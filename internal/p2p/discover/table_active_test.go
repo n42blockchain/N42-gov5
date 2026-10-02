@@ -193,3 +193,98 @@ func TestTable_Refresh(t *testing.T) {
 		t.Fatal("refresh() did not complete in time")
 	}
 }
+
+func TestTable_BumpInBucketSameEndpoint(t *testing.T) {
+	transport := newPingRecorder()
+	tab, db := newInactiveTestTable(transport)
+	defer db.Close()
+
+	target := enode.ID{0x33}
+	n1 := wrapNode(nodeAtDistance(tab.self().ID(), enode.LogDist(tab.self().ID(), target), intIP(1)))
+	n2 := wrapNode(nodeAtDistance(tab.self().ID(), enode.LogDist(tab.self().ID(), target), intIP(2)))
+	tab.addSeenNode(n1)
+	tab.addSeenNode(n2)
+
+	b := tab.bucket(target)
+	// Bump n1 (same endpoint): must move to front and report true.
+	if !tab.bumpInBucket(b, n1) {
+		t.Fatal("expected bumpInBucket to succeed for an existing entry")
+	}
+	if b.entries[0].ID() != n1.ID() {
+		t.Fatal("expected n1 to be moved to the front")
+	}
+}
+
+func TestTable_BumpInBucketNotFound(t *testing.T) {
+	transport := newPingRecorder()
+	tab, db := newInactiveTestTable(transport)
+	defer db.Close()
+
+	target := enode.ID{0x44}
+	b := tab.bucket(target)
+	unknown := wrapNode(nodeAtDistance(tab.self().ID(), enode.LogDist(tab.self().ID(), target), intIP(1)))
+	if tab.bumpInBucket(b, unknown) {
+		t.Fatal("expected bumpInBucket to return false for a node not in the bucket")
+	}
+}
+
+func TestTable_AddReplacementDedup(t *testing.T) {
+	transport := newPingRecorder()
+	tab, db := newInactiveTestTable(transport)
+	defer db.Close()
+
+	target := enode.ID{0x55}
+	last := fillBucket(tab, target)
+	b := tab.bucket(target)
+
+	ld := enode.LogDist(tab.self().ID(), target)
+	extra := wrapNode(nodeAtDistance(tab.self().ID(), ld, intIP(500)))
+	tab.addReplacement(b, extra)
+	before := len(b.replacements)
+	// Adding the same node again must not duplicate the replacement entry.
+	tab.addReplacement(b, extra)
+	if len(b.replacements) != before {
+		t.Fatalf("replacements len changed on duplicate add: before=%d after=%d", before, len(b.replacements))
+	}
+	_ = last
+}
+
+func TestTable_ReplaceNoReplacements(t *testing.T) {
+	transport := newPingRecorder()
+	tab, db := newInactiveTestTable(transport)
+	defer db.Close()
+
+	target := enode.ID{0x66}
+	n := wrapNode(nodeAtDistance(tab.self().ID(), enode.LogDist(tab.self().ID(), target), intIP(1)))
+	tab.addSeenNode(n)
+	b := tab.bucket(target)
+
+	// No replacements queued: replace() should delete the entry and return nil.
+	r := tab.replace(b, n)
+	if r != nil {
+		t.Fatalf("replace() = %v, want nil with no replacements", r)
+	}
+	if len(b.entries) != 0 {
+		t.Fatal("expected the entry to be deleted when there are no replacements")
+	}
+}
+
+func TestTable_ReplaceStaleEntry(t *testing.T) {
+	transport := newPingRecorder()
+	tab, db := newInactiveTestTable(transport)
+	defer db.Close()
+
+	target := enode.ID{0x77}
+	n := wrapNode(nodeAtDistance(tab.self().ID(), enode.LogDist(tab.self().ID(), target), intIP(1)))
+	tab.addSeenNode(n)
+	b := tab.bucket(target)
+
+	// A node that is NOT the current last entry: replace() must be a no-op.
+	other := wrapNode(nodeAtDistance(tab.self().ID(), enode.LogDist(tab.self().ID(), target), intIP(2)))
+	if r := tab.replace(b, other); r != nil {
+		t.Fatalf("replace() = %v, want nil for a stale (already-moved) entry", r)
+	}
+	if len(b.entries) != 1 {
+		t.Fatal("expected the real entry to remain untouched")
+	}
+}
