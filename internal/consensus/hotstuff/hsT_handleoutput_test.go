@@ -5,6 +5,7 @@ package hotstuff
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,13 +29,26 @@ func (p *hsTOutputProducer) CommitToCanonical(hash types.Hash) error {
 	return p.canonErr
 }
 
+// hsTOutputFetcher's CatchUp is invoked from handleOutput's own goroutine
+// (OutputSyncRequired's "go s.blockFetcher.CatchUp()"), so caughtUp needs a
+// lock for the test's polling read to be race-clean.
 type hsTOutputFetcher struct {
+	mu       sync.Mutex
 	caughtUp bool
 }
 
 func (f *hsTOutputFetcher) FetchBlockByHash(types.Hash) {}
-func (f *hsTOutputFetcher) CatchUp()                    { f.caughtUp = true }
-func (f *hsTOutputFetcher) HeightBehind() uint64        { return 0 }
+func (f *hsTOutputFetcher) CatchUp() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.caughtUp = true
+}
+func (f *hsTOutputFetcher) HeightBehind() uint64 { return 0 }
+func (f *hsTOutputFetcher) isCaughtUp() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.caughtUp
+}
 
 // hsTNewOutputService builds a fully wired Service (real engine, memdb) for
 // exercising handleOutput's switch directly, bypassing the channel loop.
@@ -181,10 +195,10 @@ func TestService_HandleOutput_SyncRequired(t *testing.T) {
 	s.handleOutput(EngineOutput{Type: OutputSyncRequired, LocalView: 1, TargetView: 5}, time.Time{})
 
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && !fetcher.caughtUp {
+	for time.Now().Before(deadline) && !fetcher.isCaughtUp() {
 		time.Sleep(20 * time.Millisecond)
 	}
-	if !fetcher.caughtUp {
+	if !fetcher.isCaughtUp() {
 		t.Fatal("expected CatchUp to be called")
 	}
 }

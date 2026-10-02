@@ -6,6 +6,7 @@ package hotstuff
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -158,15 +159,26 @@ func TestJournalCommitVote_NonMemberSkipsJournal(t *testing.T) {
 }
 
 // hsTDeferExecProducer tracks TriggerBlockProduction calls for
-// deferProduction's immediate-resume branch.
+// deferProduction's immediate-resume branch. TriggerBlockProduction runs on
+// a background goroutine (deferProduction's "go" call), so access is
+// synchronized for -race.
 type hsTDeferExecProducer struct {
+	mu        sync.Mutex
 	triggered []types.Hash
 }
 
 func (p *hsTDeferExecProducer) TriggerBlockProduction(parentHash types.Hash) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.triggered = append(p.triggered, parentHash)
 }
 func (p *hsTDeferExecProducer) CommitToCanonical(types.Hash) error { return nil }
+
+func (p *hsTDeferExecProducer) snapshot() []types.Hash {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]types.Hash(nil), p.triggered...)
+}
 
 type hsTDeferExecFetcher struct{ applied bool }
 
@@ -224,11 +236,16 @@ func TestDeferProduction_AppliedResumesImmediately(t *testing.T) {
 	s.deferProduction(5, header.Hash())
 
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && len(producer.triggered) == 0 {
+	var triggered []types.Hash
+	for time.Now().Before(deadline) {
+		triggered = producer.snapshot()
+		if len(triggered) != 0 {
+			break
+		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if len(producer.triggered) != 1 || producer.triggered[0] != header.Hash() {
-		t.Fatalf("expected an immediate resume triggering production on %s, got %v", header.Hash(), producer.triggered)
+	if len(triggered) != 1 || triggered[0] != header.Hash() {
+		t.Fatalf("expected an immediate resume triggering production on %s, got %v", header.Hash(), triggered)
 	}
 	s.pendingMu.Lock()
 	cleared := s.deferredProduce.parent == (types.Hash{})
