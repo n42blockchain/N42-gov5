@@ -14,6 +14,8 @@ import (
 	"github.com/n42blockchain/N42/common/block"
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/conf"
+	"github.com/n42blockchain/N42/modules/rawdb"
+	"github.com/n42blockchain/N42/modules/state"
 )
 
 // mnTNewIdleWorker builds a real worker via newWorker(init=false) on top of
@@ -32,13 +34,19 @@ import (
 func mnTBareWorker(tb testing.TB, f *mnTChainFixture, pool common.ITxsPool) *worker {
 	tb.Helper()
 	w := &worker{
-		engine:      f.Engine,
-		chain:       f.Chain,
-		txsPool:     pool,
-		chainConfig: f.Config,
-		minerConf:   conf.MinerConfig{GasCeil: 30_000_000},
-		taskCh:      make(chan *task, 1),
-		ctx:         context.Background(),
+		engine:         f.Engine,
+		chain:          f.Chain,
+		txsPool:        pool,
+		chainConfig:    f.Config,
+		minerConf:      conf.MinerConfig{GasCeil: 30_000_000},
+		taskCh:         make(chan *task, 1),
+		resultCh:       make(chan block.IBlock, 1),
+		ctx:            context.Background(),
+		pendingTasks:   make(map[types.Hash]*task),
+		sealedOnParent: make(map[types.Hash]block.IBlock),
+		sealedByHash:   make(map[types.Hash]block.IBlock),
+		sealedPost:     make(map[types.Hash]*state.PostState),
+		sealedExec:     make(map[types.Hash]rawdb.ExecutedResult),
 	}
 	return w
 }
