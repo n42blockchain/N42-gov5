@@ -268,3 +268,4 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
 
 - `lib/kv/bitmapdb` `WalkChunkWithKeys64` with a tiny sizeLimit panics (`Maximum()` on an empty tail chunk after a cut,
   bitmapdb.go:274).
+| g34 | internal/sync | 27.6 | 46.0 (catchUpTo/catchUpRange end to end over the pipe harness) |
