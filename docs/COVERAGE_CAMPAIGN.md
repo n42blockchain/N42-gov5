@@ -315,3 +315,29 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
 - Test-wiring footgun (recurs across packages): N42-specific tables (`poaSnapshot`, `ConsensusEvidence`, ...) exist
   only after `modules.N42Init()` and `kv.ChaindataTablesCfg = modules.N42TableCfg`; a fresh `memdb.NewTestDB` fails with
   `mdbx_cursor_open: permission denied`. Worth a shared test helper in lib/kv/memdb.
+| g37 | modules/rawdb/freezer | 53.2 | 77.3 |
+| g37 | lib/bptree | 64.3 | 85.3 |
+| g37 | lib/kv/membatchwithdb | 58.1 | 81.4 |
+| g37 | lib/seg | 78.6 | 85.7 |
+| g37 | lib/recsplit | 73.5 | 87.5 |
+| g37 | lib/kv/kvcache | 52.4 | 86.8 |
+| g37 | modules/ethdb/olddb | 7.6 | 82.5 |
+| g37 | modules/state/snapshot | 69.3 | 85.5 |
+| g37 | internal/bridge | 14.1 | 67.2 |
+| g37 | modules/ethdb/bitmapdb | 0.0 | 88.8 |
+| g37 | internal/coldstore | 0.0 | 78.7 |
+| g37 | lib/kv/bitmapdb | 83.8 | 85.5 |
+
+- **`lib/bptree` `Tree23.Delete` corrupts the tree**: sequential single-key deletes on a 20-60 key tree make `IsValid()`
+  report "invalid N keys M children", the key set diverges from a reference map, and later operations panic in
+  splitKeys/splitItems. Found by a seeded property test (not committed because it fails); the package's FuzzDelete runs
+  an empty corpus under -short and never sees it. Reproduce: insert via NewTree23, delete keys one at a time, check
+  IsValid() and in-order contents after each delete. Check every production user of Tree23 before trusting deletes.
+- `lib/kv/membatchwithdb` `memory_mutation_cursor.go` `Last()` checks `isEntryDeleted(..., Normal)` instead of `Dup` on
+  pure-dupsort tables, so an entry deleted with DeleteExact can resurface from Last().
+- `modules/rawdb/freezer` `FreezerTable.Sync()` after Close() returns the raw "file already closed" error instead of
+  ErrClosed (every other method checks `closed` first).
+- `modules/ethdb/olddb` `TxDb.Has` returns `(false, ErrKeyNotFound)` on a missing key where the sibling types return
+  `(false, nil)`.
+- `lib/seg/sais` panics (`index out of range [0] with length 0`) on a single word whose encoded length reaches the
+  16 MiB superstring limit (via extractPatternsInSuperstrings).
