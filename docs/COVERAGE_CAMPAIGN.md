@@ -248,3 +248,4 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
   followed by Close races the background file reads against the handle teardown (`-race` confirmed).
 - `startFrameAhead` calls `dataFile(0, seg)` and discards the result before the goroutine looks up the real file number;
   harmless with one data file, could trigger a spurious cold-resolver call under multi-file rotation.
+| g27 | internal/ethel (hashstate/dict/codec/catch_up slice) | 40.3 | 44.1 (all three HPH bootstrap variants agree with the oracle root) |
