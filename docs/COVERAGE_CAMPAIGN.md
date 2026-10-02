@@ -369,3 +369,4 @@ Running: g43 (hotstuff service over mocknet), g44 (api executed-chain fixture), 
 | g45 | cmd/rpcdaemon | 0.0 | 38.2 |
 | g45 | cmd/n42 | 8.0 | 13.8 (the rest opens real chaindata or a node) |
 | g45 | cmd/ethexec | 0.4 | 7.1 (same) |
+| g46 | lib/state | 49.2 | 72.0 (lsTNewAggregator helper; full background build/merge cycle at step=1) |
