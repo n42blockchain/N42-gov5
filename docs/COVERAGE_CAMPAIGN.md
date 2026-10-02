@@ -225,3 +225,4 @@ g14 (avm, distributed, mev, deferred, bundler, metrics), g15 (core, sync).
 | g21 | internal/datc | 56.4 | 57.3 (helpers only; second pass g25 running) |
 | g24 | internal/ethel | 39.5 | 40.3 (second pass weak; ethel now split per file, g26 = body codecs) |
 | g23 | internal/consensus/hotstuff | 64.3 | 75.6 (service lifecycle needs a fake pubsub harness) |
+| g25 | internal/datc | 57.3 | 60.1 (run* workers need an upstream freezer-input fixture; g28 builds it) |
