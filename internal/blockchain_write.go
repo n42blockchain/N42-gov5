@@ -163,7 +163,7 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 		tracing.Int64Attr("block.receipt_count", int64(len(receipts))),
 	)
 	defer func() {
-		if retErr == nil && bc.blockCache != nil && BlockCachePrimeEnabled() {
+		if retErr == nil && bc.blockCache != nil {
 			// Commit-to-canonical of this block runs two views later and looks
 			// in the block cache first; nothing added the imported (or sealed)
 			// instance, so every commit decoded 163k transactions from MDBX
@@ -171,8 +171,11 @@ func (bc *BlockChain) writeBlockWithState(blk block.IBlock, receipts []*block.Re
 			// index (35zzm follower profile: 0.9 s + 3.1 s of 25). This
 			// instance has every transaction hash memoised.
 			//
-			// Gated by N42_BLOCK_CACHE_PRIME (S64, docs/QS_QUEUE.md): unset
-			// leaves the cache to fill lazily on the next GetBlock miss.
+			// Unconditional (pre-existing, 6445f1bf): this is the HEAD
+			// behaviour and is NOT gated by N42_BLOCK_CACHE_PRIME. Only the
+			// CommitToCanonicalWith cache-miss prime below is gated (S64,
+			// docs/QS_QUEUE.md) -- commander's ruling 2026-10-01: unset must
+			// match today's behaviour exactly.
 			bc.blockCache.Add(concreteBlock.Hash(), concreteBlock)
 		}
 		if retErr != nil {

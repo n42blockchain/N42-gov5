@@ -1414,6 +1414,17 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 			// ancestor walk) does not pay for the same decode again. Gated by
 			// N42_BLOCK_CACHE_PRIME; unset leaves this a read-only lookup as
 			// before.
+			//
+			// Why `cached` (above) was nil despite writeBlockWithState's own
+			// unconditional Add two views ago: bc.blockCache is an in-process
+			// LRU, not persisted, so it is empty after every restart, and a
+			// hash reached via the embedded-QC catch-up / fork-recovery path
+			// (CatchUp, headIsConsensusBlock below) can name a block this
+			// process never ran through writeBlockWithState at all -- it was
+			// written to MDBX by a prior process lifetime or by range-import
+			// tooling. The steady-state case (this process imported the block
+			// itself) is already caught by the `cached` lookup above and never
+			// reaches this branch.
 			if blk != nil && bc.blockCache != nil && BlockCachePrimeEnabled() {
 				bc.blockCache.Add(hash, blk)
 			}

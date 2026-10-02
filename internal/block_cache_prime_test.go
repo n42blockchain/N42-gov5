@@ -31,11 +31,15 @@ func resetBlockCachePrimeSwitch(t *testing.T, val string) {
 }
 
 // TestCommitToCanonicalPrimesBlockCacheWhenEnabled covers S64
-// (docs/QS_QUEUE.md): CommitToCanonicalWith decodes the committed block from
-// MDBX on a cache miss, and with N42_BLOCK_CACHE_PRIME=1 that decoded
-// instance must be added to bc.blockCache so GetBlock(hash) on cache afterward
-// returns it without touching the database. With the switch unset, the cache
-// must stay empty -- today's behaviour, byte for byte.
+// (docs/QS_QUEUE.md) and the commander's ruling 2026-10-01: only the
+// CommitToCanonicalWith cache-miss decode is gated by N42_BLOCK_CACHE_PRIME.
+// This test exercises CommitToCanonicalWith directly, with the block NOT
+// pre-seeded into bc.blockCache (writeBlockWithState's own unconditional
+// prime is out of scope here), so it forces the commit loop's own decode-on-
+// miss path. With the switch unset, that path does not fill the cache --
+// today's HEAD behaviour, byte for byte. With N42_BLOCK_CACHE_PRIME=1, the
+// decoded instance is added to bc.blockCache so GetBlock(hash) afterward
+// returns it without touching the database.
 func TestCommitToCanonicalPrimesBlockCacheWhenEnabled(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
