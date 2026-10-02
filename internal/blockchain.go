@@ -1408,6 +1408,15 @@ func (bc *BlockChain) CommitToCanonicalWith(hash types.Hash, inTx func(kv.RwTx) 
 			if err != nil {
 				return err
 			}
+			// S64 (docs/QS_QUEUE.md): this decode is on the hot HotStuff commit
+			// loop; prime the cache with the instance already in hand so the
+			// next reader (sync body-range serving, api getBlockByNumber, miner
+			// ancestor walk) does not pay for the same decode again. Gated by
+			// N42_BLOCK_CACHE_PRIME; unset leaves this a read-only lookup as
+			// before.
+			if blk != nil && bc.blockCache != nil && BlockCachePrimeEnabled() {
+				bc.blockCache.Add(hash, blk)
+			}
 		}
 		dRead = time.Since(tRead)
 		if blk == nil {
