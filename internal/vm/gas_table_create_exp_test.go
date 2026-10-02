@@ -64,13 +64,23 @@ func TestVMTGasCreate2Legacy(t *testing.T) {
 	ibs.AddBalance(caller, uint256.NewInt(1_000_000_000))
 	ibs.PrepareAccessList(caller, nil, nil, nil)
 
-	// CREATE2 with a 64-byte init code that just STOPs.
-	initCode := make([]byte, 64)
-	initCode[0] = byte(STOP)
-
-	_, _, _, err := evm.Create2(AccountRef(caller), initCode, 500_000, uint256.NewInt(0), uint256.NewInt(0))
+	// The legacy (pre-EIP-3860) gasCreate2 function is wired into the
+	// CREATE2 opcode's own dynamic-gas slot in the jump table; calling
+	// evm.Create2 directly bypasses opcode dispatch entirely (it goes
+	// straight to evm.create), so it never exercises gasCreate2. Run a
+	// CREATE2 instruction via bytecode instead.
+	code := []byte{
+		byte(PUSH1), 0x00, // salt
+		byte(PUSH1), 0x40, // size = 64
+		byte(PUSH1), 0x00, // offset (memory zero-filled: STOP at byte 0)
+		byte(PUSH1), 0x00, // value
+		byte(CREATE2),
+		byte(POP),
+		byte(STOP),
+	}
+	_, _, err := execHarnessCall(t, evm, ibs, code, nil, 1_000_000, nil)
 	if err != nil {
-		t.Fatalf("legacy CREATE2 failed: %v", err)
+		t.Fatalf("legacy CREATE2 via bytecode failed: %v", err)
 	}
 }
 
