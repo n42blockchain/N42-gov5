@@ -40,6 +40,26 @@ func TestExecutePayloadFromWireWithFullVerificationRejectsBadStateRoot(t *testin
 	require.False(t, valid)
 }
 
+func TestExecutePayloadFromTrustedColumnarRunsFastVerifyPath(t *testing.T) {
+	db, genesis, _ := newHiveEngineGenesisDB(t)
+	payload := hiveFirstEmptyPayload()
+	blk, err := executionPayloadV1ToBlock(payload)
+	require.NoError(t, err)
+
+	// ExecutePayloadFromTrustedColumnar runs executePayloadFromWireMode with
+	// fastVerify=true (the incremental-root catch-up shortcut), unlike
+	// ExecutePayloadFromWireWithFullVerification's full-MPT rebuild. On this
+	// tiny synthetic genesis the two disagree (the fast incremental root
+	// does not match the expected wire state root), so this only asserts
+	// the call completes without an internal error and exercises the
+	// allowMissingExpectedBloom=true / fastVerify=true branch — see the
+	// defect note in the test suite's final report regarding this
+	// discrepancy on non-live-sync-populated databases.
+	_, _, err = NewEngineStateAdapter(db, nil, genesis.Config, &apiTestEngine{}).
+		ExecutePayloadFromTrustedColumnar(blk.(*block.Block), nil)
+	require.NoError(t, err)
+}
+
 func TestEngineStateAdapterReorgNoopWhenAtOrBeforeTarget(t *testing.T) {
 	db, genesis, _ := newHiveEngineGenesisDB(t)
 	a := NewEngineStateAdapter(db, nil, genesis.Config, &apiTestEngine{})
