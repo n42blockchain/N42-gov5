@@ -363,3 +363,4 @@ Running: g43 (hotstuff service over mocknet), g44 (api executed-chain fixture), 
   `CreateAccessList` for any transaction that is its sender's first spend ("insufficient funds"). Reproducible with
   the api fixture; not traced into GetAsOf/FindByHistory yet. Likely affects every historical eth_call at such heights.
 - `rawdb.ReadReceiptByTxHash` confirmed again from the fixture: a 1-tx block returns a nil receipt for its own tx.
+| g43 | internal/consensus/hotstuff | 75.6 | 85.3 (real gossipsub over mocknet in hsT_mocknet_test.go; no consensus defect found) |
