@@ -429,3 +429,6 @@ Running: g43 (hotstuff service over mocknet), g44 (api executed-chain fixture), 
   chain shorter than one segment is re-run, the partial-segment loop truncates only the `.cidx`, not the `.cdat`;
   the new segment is appended past stale bytes while the index records offset 0, so readers decode the stale segment.
   Verified experimentally; unaffected once one complete prior segment exists.
+| g56 | lib/trie | 63.0 | 70.7 |
+| g56 | internal/mptproof | 55.6 | 62.6 (reth reader/walk files were 0% under -short: their own tests skip without a real datadir) |
+| g56 | internal/sync | 46.0 | 46.6 |
