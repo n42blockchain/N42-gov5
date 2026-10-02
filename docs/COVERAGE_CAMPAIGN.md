@@ -495,3 +495,10 @@ and cmd mains; the remaining reachable mass is the executed-chain-dependent path
   through a second `OnNewBlock` (Action_UPSERT_CODE) still showed `EnoughBalance` afterwards in a memdb pool; the
   tests route around it (direct `onSenderStateChange`, cold sender). Either a kvcache root-advance quirk across two
   StateChangeBatch calls on memdb or a real stale-balance bug; needs isolation.
+| g66 | internal/node | 54.8 | 57.5 (devnet genesis hard-codes QMDB for --chain private, so other engines are not reachable by config) |
+| g66 | internal/consensus/hotstuff | 85.3 | 86.8 |
+
+- `internal/consensus/hotstuff/engine.go` `advanceToView`: when the node is REMOVED from the validator set at an epoch
+  boundary, the removal branch returns before `roundState.AdvanceView(newView)`, so the removed node's local view
+  stays at the pre-boundary value (`TestAdvanceToViewRemovesNodeAtEpochBoundary` pins it). Harmless if the node stays
+  an observer; a stale view if it later rejoins. Needs the owner's judgement.
