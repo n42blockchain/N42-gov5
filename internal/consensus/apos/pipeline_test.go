@@ -41,7 +41,13 @@ import (
 type aposTChain struct {
 	byNumber map[uint64]block.IHeader
 	byHash   map[types.Hash]block.IHeader
-	current  block.IBlock
+	// blockByNumber memoizes the IBlock wrapper per header number, so a
+	// caller that mutates a fetched block's body (e.g. to attach verifiers
+	// for AccumulateRewards) sees that mutation on every subsequent fetch
+	// of the same number -- GetBlockByNumber would otherwise build a fresh,
+	// empty-bodied block on each call.
+	blockByNumber map[uint64]block.IBlock
+	current       block.IBlock
 
 	depositLow, depositMax map[types.Address]*uint256.Int
 	unpaid                 map[types.Address]*uint256.Int
@@ -49,11 +55,12 @@ type aposTChain struct {
 
 func newAposTChain() *aposTChain {
 	return &aposTChain{
-		byNumber:   map[uint64]block.IHeader{},
-		byHash:     map[types.Hash]block.IHeader{},
-		depositLow: map[types.Address]*uint256.Int{},
-		depositMax: map[types.Address]*uint256.Int{},
-		unpaid:     map[types.Address]*uint256.Int{},
+		byNumber:      map[uint64]block.IHeader{},
+		byHash:        map[types.Hash]block.IHeader{},
+		blockByNumber: map[uint64]block.IBlock{},
+		depositLow:    map[types.Address]*uint256.Int{},
+		depositMax:    map[types.Address]*uint256.Int{},
+		unpaid:        map[types.Address]*uint256.Int{},
 	}
 }
 
@@ -87,11 +94,17 @@ func (c *aposTChain) GetBlock(hash types.Hash, number uint64) block.IBlock {
 	return block.NewBlock(h, nil)
 }
 func (c *aposTChain) GetBlockByNumber(number *uint256.Int) (block.IBlock, error) {
-	h, ok := c.byNumber[number.Uint64()]
+	n := number.Uint64()
+	if blk, ok := c.blockByNumber[n]; ok {
+		return blk, nil
+	}
+	h, ok := c.byNumber[n]
 	if !ok {
 		return nil, nil
 	}
-	return block.NewBlock(h, nil), nil
+	blk := block.NewBlock(h, nil)
+	c.blockByNumber[n] = blk
+	return blk, nil
 }
 func (c *aposTChain) GetDepositInfo(address types.Address) (*uint256.Int, *uint256.Int) {
 	return c.depositLow[address], c.depositMax[address]
