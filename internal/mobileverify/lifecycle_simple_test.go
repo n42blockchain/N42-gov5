@@ -33,6 +33,14 @@ func TestRegistrationServiceStartWithoutP2PErrors(t *testing.T) {
 	s.Stop()
 }
 
+func TestPublishLocalRejectsNilPacket(t *testing.T) {
+	cache := NewPacketCache(8)
+	svc := NewPacketService(cache, nil, "/test")
+	if err := svc.PublishLocal(nil, 1); err == nil {
+		t.Fatal("expected error for a nil StreamPacket")
+	}
+}
+
 func TestNewCohortRelayStartStopWithoutP2P(t *testing.T) {
 	reg := NewRegistry()
 	cfg := CohortConfig{IndexAnnounceDelay: 1, ReconcileDelay: 2, MergeDelay: 4}
