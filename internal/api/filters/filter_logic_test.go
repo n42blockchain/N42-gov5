@@ -26,6 +26,7 @@ func g41Log(addr types.Address, blockNum uint64, topics ...types.Hash) *block.Lo
 		Address:     addr,
 		Topics:      topics,
 		BlockNumber: uint256.NewInt(blockNum),
+		TxHash:      g41Topic(0xee), // non-zero: avoids the receipt-fallback path in checkMatches
 	}
 }
 
