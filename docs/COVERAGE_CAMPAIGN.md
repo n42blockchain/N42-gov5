@@ -375,3 +375,8 @@ Running: g43 (hotstuff service over mocknet), g44 (api executed-chain fixture), 
 - `internal/api/debug_trace.go` `TraceCall` resolves state with `state.NewPlainState(tx, header.Number)` instead of
   number+1 (the "latest" convention `api.State()` uses), so at the head a funded sender reads as zero balance and every
   value-moving `debug_traceCall` at "latest" fails with "insufficient funds" (`TestDebugTraceCallAtLatest`).
+| g48 | internal/vm | 55.6 | 72.1 (abstract-interpretation CFG, KZG point evaluation, EIP-7702 delegation; no EVM semantics defect) |
+
+- Testing note: `internal/vm/fuse.go` rewrites `PUSH1/2 ; JUMP/JUMPI` into fused opcodes, so bytecode tests never reach
+  the plain opJump/opJumpi/opMload/opMstore/opPop/opSlt/opSgt handlers; cover them by calling the handlers directly
+  with a hand-built ScopeContext (instructions_direct_unfused_test.go).
