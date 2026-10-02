@@ -55,8 +55,11 @@ func newAposVoteHeader(t *testing.T, number uint64, coinbase types.Address, auth
 	h := &block.Header{
 		Number:     uint256.NewInt(number),
 		Difficulty: uint256.NewInt(2),
-		Coinbase:   coinbase,
-		Extra:      make([]byte, extraVanity),
+		Coinbase: coinbase,
+		// One byte beyond extraVanity+extraSeal so encodeSigHeader's strip
+		// condition (len(extra) > extraVanity+extraSeal) applies consistently
+		// both when signing (zero-filled seal) and when verifying (real seal).
+		Extra: make([]byte, extraVanity+extraSeal+1),
 	}
 	if authorize {
 		copy(h.Nonce[:], nonceAuthVote)
