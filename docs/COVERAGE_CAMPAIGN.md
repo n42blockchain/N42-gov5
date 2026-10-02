@@ -380,3 +380,16 @@ Running: g43 (hotstuff service over mocknet), g44 (api executed-chain fixture), 
 - Testing note: `internal/vm/fuse.go` rewrites `PUSH1/2 ; JUMP/JUMPI` into fused opcodes, so bytecode tests never reach
   the plain opJump/opJumpi/opMload/opMstore/opPop/opSlt/opSgt handlers; cover them by calling the handlers directly
   with a hand-built ScopeContext (instructions_direct_unfused_test.go).
+| g50 | internal | 47.5 | 60.4 (coreT_chain_fixture_test.go: executed chain through the real InsertChain) |
+
+- **ProcessParallel and sequential Process disagree on the post-state root** for a block that mixes repeated senders
+  (one sender with 2-3 transactions) and a shared recipient; gas used and receipt count agree, the parallel result is
+  deterministic, so this is a conflict-detection / fold gap in runParallel/applyMVSToIBS
+  (internal/parallel_processor.go), not scheduling noise. Consensus-breaking against any sequential executor.
+  Reproducer in the g50 tests (cross-check test). Being root-caused separately (analyst dispatched 2026-10-02).
+- InsertChain of a strictly-longer, valid, transaction-less side chain forked two blocks behind the head is rejected
+  with a bare ErrPrunedAncestor instead of reorging, although the side blocks are persisted.
+- Re-inserting the exact canonical head through InsertChain misses the ErrKnownBlock fast path and fails with a
+  spurious "nonce too low" after re-executing against the advanced PlainState.
+- `BlockChain.SetHead` has no production caller, only writes the HeadHeaderHash row, and never updates
+  `bc.currentBlock` nor reverts PlainState: a silent no-op on a live chain.
