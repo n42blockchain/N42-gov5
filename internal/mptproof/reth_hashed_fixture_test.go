@@ -172,6 +172,14 @@ func g49MkSlot(seed byte) [32]byte {
 // + HashedStorages MDBX tables and a matching AccountsTrie/StoragesTrie
 // pair, then opens a Generator backed by RethHashedLeafSource.
 func g49Fixture(t *testing.T, n int) (*Generator, *RethHashedLeafSource, []g49FixtureAccount) {
+	g, src, accounts, _, _ := g49FixtureWithDirs(t, n)
+	return g, src, accounts
+}
+
+// g49FixtureWithDirs is g49Fixture but also returns the AccountsTrie /
+// StoragesTrie directories, for callers that need to reopen a second
+// Generator against the same trie data (e.g. with a HistoryDir added).
+func g49FixtureWithDirs(t *testing.T, n int) (*Generator, *RethHashedLeafSource, []g49FixtureAccount, string, string) {
 	t.Helper()
 	tmp := t.TempDir()
 	hashedDir := filepath.Join(tmp, "hashed")
@@ -213,7 +221,7 @@ func g49Fixture(t *testing.T, n int) (*Generator, *RethHashedLeafSource, []g49Fi
 	}
 	t.Cleanup(func() { g.Close() })
 
-	return g, src, accounts
+	return g, src, accounts, accDir, storDir
 }
 
 func TestRethHashed_LatestAccountProof_PresentAndAbsent(t *testing.T) {
