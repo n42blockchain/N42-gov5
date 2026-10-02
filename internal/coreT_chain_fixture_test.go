@@ -132,9 +132,9 @@ type coreTChainFixture struct {
 	ValueTransferTxs []*transaction.Transaction
 
 	ContractAddr        types.Address
-	CreateTx             *transaction.Transaction
-	CallTx               *transaction.Transaction
-	ContractBlockNumber  uint64
+	CreateTx            *transaction.Transaction
+	CallTx              *transaction.Transaction
+	ContractBlockNumber uint64
 }
 
 var (
