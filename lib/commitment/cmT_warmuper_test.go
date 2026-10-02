@@ -25,7 +25,7 @@ func cmTOpenWarmupEnv(tb testing.TB) kv.RwDB {
 	logger := log.New()
 	db, err := mdbxkv.NewMDBX(logger).
 		Path(tb.TempDir()).Label(kv.ChainDB).PageSize(4096).
-		MapSize(64*datasize.MB).
+		MapSize(64 * datasize.MB).
 		WithTableCfg(func(d kv.TableCfg) kv.TableCfg {
 			d[CommitmentBranchesTable] = kv.TableCfgItem{}
 			return d
@@ -95,10 +95,17 @@ func TestWarmuper_ProcessDrivesLifecycle(t *testing.T) {
 	}
 	defer tx2.Rollback()
 
+	// Each warm-up worker gets its own read-only transaction: the first batch
+	// is committed, so a RoTx sees every branch the warm-up needs, and sharing
+	// tx2 with the Process goroutine races on the MDBX cursor map.
 	ctxFactory := func() (PatriciaContext, func()) {
+		roTx, err := db.BeginRo(context.Background())
+		if err != nil {
+			t.Fatalf("BeginRo: %v", err)
+		}
 		p := NewPersistentPatriciaContext(reader, nil)
-		p.SetReadTx(tx2)
-		return p, nil
+		p.SetReadTx(roTx)
+		return p, roTx.Rollback
 	}
 
 	pctx2 := NewPersistentPatriciaContext(reader, nil)
