@@ -87,3 +87,8 @@ with that instruction.
 
 - `lib/commitment/commitment.go` `Updates.TouchCode`: ORs `CodeUpdate` into Flags first, then tests `Flags == 0` to
   choose `DeleteUpdate` for empty code, so the delete branch is unreachable (TestUpdatesTouchCode pins current behaviour).
+| g8 | internal/api | 43.8 | 48.9 |
+
+- `internal/api/api_backend.go` `API.CurrentBlock()` and at least `EstimateGas` (pending default) and `BlobBaseFee`:
+  a typed-nil `*block.Block` inside the `block.IBlock` interface passes the `== nil` check and the handler panics on
+  `Header()`/`GasLimit()`. Any chain implementation that returns a nil concrete block crashes these RPC handlers.
