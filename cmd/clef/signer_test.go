@@ -165,6 +165,67 @@ func TestClefSignerServiceSignDynamicFeeRequiresBothFeeFields(t *testing.T) {
 	}
 }
 
+func TestClefSignerServiceSignData(t *testing.T) {
+	ks, acct := clefTestKeystore(t)
+	svc := NewSignerService(ks, big.NewInt(94), mustPermissiveRuleEngine(t), nil)
+
+	sig, err := svc.SignData(context.Background(), "text/plain", acct.Address, hexutil.Bytes("hello"))
+	if err != nil {
+		t.Fatalf("SignData error: %v", err)
+	}
+	if len(sig) == 0 {
+		t.Fatal("expected a non-empty signature")
+	}
+}
+
+func TestClefSignerServiceSignDataUnknownAccount(t *testing.T) {
+	ks, _ := clefTestKeystore(t)
+	svc := NewSignerService(ks, big.NewInt(94), mustPermissiveRuleEngine(t), nil)
+	if _, err := svc.SignData(context.Background(), "text/plain", types.Address{0xaa}, hexutil.Bytes("hello")); err == nil {
+		t.Fatal("expected an error for an unknown account")
+	}
+}
+
+func TestClefSignerServiceSignTypedData(t *testing.T) {
+	ks, acct := clefTestKeystore(t)
+	svc := NewSignerService(ks, big.NewInt(94), mustPermissiveRuleEngine(t), nil)
+
+	td := TypedData{
+		PrimaryType: "Mail",
+		Domain:      map[string]interface{}{"name": "test", "version": "1"},
+		Message:     map[string]interface{}{"contents": "hello"},
+	}
+	sig, err := svc.SignTypedData(context.Background(), acct.Address, td)
+	if err != nil {
+		t.Fatalf("SignTypedData error: %v", err)
+	}
+	if len(sig) == 0 {
+		t.Fatal("expected a non-empty signature")
+	}
+}
+
+func TestClefHashTypedDataDeterministic(t *testing.T) {
+	td := TypedData{
+		PrimaryType: "Mail",
+		Domain:      map[string]interface{}{"name": "test"},
+		Message:     map[string]interface{}{"contents": "hi"},
+	}
+	h1 := hashTypedData(td)
+	h2 := hashTypedData(td)
+	if len(h1) != 32 {
+		t.Fatalf("hashTypedData length = %d, want 32", len(h1))
+	}
+	if string(h1) != string(h2) {
+		t.Fatal("hashTypedData is not deterministic for identical input")
+	}
+
+	other := td
+	other.Message = map[string]interface{}{"contents": "bye"}
+	if string(hashTypedData(other)) == string(h1) {
+		t.Fatal("expected different messages to hash differently")
+	}
+}
+
 func mustPermissiveRuleEngine(t *testing.T) *RuleEngine {
 	t.Helper()
 	re, err := NewRuleEngine("")
