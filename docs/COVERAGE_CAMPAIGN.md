@@ -92,3 +92,4 @@ with that instruction.
 - `internal/api/api_backend.go` `API.CurrentBlock()` and at least `EstimateGas` (pending default) and `BlobBaseFee`:
   a typed-nil `*block.Block` inside the `block.IBlock` interface passes the `== nil` check and the handler panics on
   `Header()`/`GasLimit()`. Any chain implementation that returns a nil concrete block crashes these RPC handlers.
+| g5 | internal/vm | 50.5 | 55.6 (new bytecode execution harness exec_harness_test.go) |
