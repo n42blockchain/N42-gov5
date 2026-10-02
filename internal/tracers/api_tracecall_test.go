@@ -30,6 +30,7 @@ import (
 	"github.com/n42blockchain/N42/common/transaction"
 	common "github.com/n42blockchain/N42/common/types"
 
+	core "github.com/n42blockchain/N42/internal"
 	"github.com/n42blockchain/N42/internal/api"
 	"github.com/n42blockchain/N42/internal/consensus"
 	"github.com/n42blockchain/N42/internal/tracers"
@@ -47,9 +48,10 @@ import (
 // IntraBlockState, so TraceCall / traceTx can be exercised end to end without
 // needing a running node.
 type liveFakeBackend struct {
-	db    kv.RwDB
-	block *types.Block
-	from  common.Address
+	db      kv.RwDB
+	block   *types.Block
+	from    common.Address
+	txFound bool
 }
 
 func newLiveFakeBackend(t *testing.T) *liveFakeBackend {
@@ -92,6 +94,10 @@ func (l *liveFakeBackend) BlockByNumber(ctx context.Context, number rpc.BlockNum
 	return l.block, nil
 }
 func (l *liveFakeBackend) GetTransaction(ctx context.Context, txHash common.Hash) (*transaction.Transaction, common.Hash, uint64, uint64, error) {
+	if l.txFound {
+		var tx transaction.Transaction
+		return &tx, l.block.Hash(), l.block.Number64().Uint64(), 0, nil
+	}
 	return nil, common.Hash{}, 0, 0, errors.New("tx not found")
 }
 func (l *liveFakeBackend) RPCGasCap() uint64                { return 50_000_000 }
@@ -102,7 +108,17 @@ func (l *liveFakeBackend) StateAtBlock(ctx context.Context, tx kv.Tx, block *typ
 	return modstate.New(modstate.NewPlainState(tx, block.Number64().Uint64())), nil
 }
 func (l *liveFakeBackend) StateAtTransaction(ctx context.Context, tx kv.Tx, block *types.Block, txIndex int) (*transaction.Message, evmtypes.BlockContext, *modstate.IntraBlockState, error) {
-	return nil, evmtypes.BlockContext{}, nil, errors.New("tx not found")
+	if !l.txFound {
+		return nil, evmtypes.BlockContext{}, nil, errors.New("tx not found")
+	}
+	to := common.HexToAddress("0xb0b")
+	msg := transaction.NewMessage(l.from, &to, 0, uint256.NewInt(1), 100000, uint256.NewInt(1), uint256.NewInt(1), uint256.NewInt(1), uint256.NewInt(1), nil, nil, nil, false, true)
+	header := l.block.Header().(*types.Header)
+	vmctx := core.NewEVMBlockContext(header, func(uint64) common.Hash { return common.Hash{} }, nil, params.TestChainConfig, nil)
+	statedb := modstate.New(modstate.NewPlainState(tx, header.Number.Uint64()))
+	statedb.CreateAccount(l.from, true)
+	statedb.AddBalance(l.from, uint256.NewInt(1_000_000_000_000))
+	return &msg, vmctx, statedb, nil
 }
 
 func TestAPITraceCallSimpleTransferSucceeds(t *testing.T) {
@@ -208,6 +224,33 @@ func TestAPITraceCallUnknownTracerErrors(t *testing.T) {
 	bnh := rpc.BlockNumberOrHashWithNumber(rpc.BlockNumber(1))
 	if _, err := tapi.TraceCall(context.Background(), args, bnh, cfg); err == nil {
 		t.Fatalf("expected error for unknown tracer name")
+	}
+}
+
+func TestAPITraceTransactionSucceeds(t *testing.T) {
+	backend := newLiveFakeBackend(t)
+	backend.txFound = true
+	tapi := tracers.NewAPI(backend)
+
+	res, err := tapi.TraceTransaction(context.Background(), common.HexToHash("0x1234"), nil)
+	if err != nil {
+		t.Fatalf("TraceTransaction: %v", err)
+	}
+	if res == nil {
+		t.Fatalf("expected non-nil trace result")
+	}
+}
+
+func TestAPITraceBlockByNumberEmptyBlockSucceeds(t *testing.T) {
+	backend := newLiveFakeBackend(t)
+	tapi := tracers.NewAPI(backend)
+
+	results, err := tapi.TraceBlockByNumber(context.Background(), rpc.BlockNumber(1), nil)
+	if err != nil {
+		t.Fatalf("TraceBlockByNumber: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results for empty block, got %d", len(results))
 	}
 }
 
