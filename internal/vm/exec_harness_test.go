@@ -91,6 +91,13 @@ func execHarnessCall(t *testing.T, evm *EVM, ibs *state.IntraBlockState, code, i
 	ibs.CreateAccount(object, true)
 	ibs.SetCode(object, code)
 
+	// Mirror what ApplyMessage/StateTransition does before running a
+	// transaction's top-level call: warm the sender and recipient (and any
+	// precompiles) in the EIP-2929 access list. Skipping this makes EIP-2929+
+	// opcodes (SSTORE, SLOAD, ...) see the recipient itself as cold, which
+	// internal invariants treat as an impossible case and reject.
+	ibs.PrepareAccessList(caller, &object, nil, nil)
+
 	if value == nil {
 		value = uint256.NewInt(0)
 	}
