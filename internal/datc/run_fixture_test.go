@@ -44,6 +44,7 @@ package datc
 import (
 	"context"
 	"math/big"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -52,10 +53,26 @@ import (
 	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/internal/ethel"
 	"github.com/n42blockchain/N42/lib/kv"
+	log "github.com/n42blockchain/N42/lib/log/v3"
 	"github.com/n42blockchain/N42/lib/rlp"
+	"github.com/n42blockchain/N42/modules"
 	"github.com/n42blockchain/N42/modules/changeset"
 	"github.com/n42blockchain/N42/modules/rawdb/freezer"
 )
+
+// persistentTempDir allocates a directory under GOTMPDIR that outlives any
+// single test's T (unlike t.TempDir(), which is removed when that specific
+// test finishes). The shared run-worker fixture below is built once per test
+// binary invocation and read by many tests in turn, so it needs a directory
+// whose lifetime is the process, not one test.
+func persistentTempDir(t *testing.T, prefix string) string {
+	t.Helper()
+	dir, err := os.MkdirTemp(os.Getenv("GOTMPDIR"), prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
 
 // gethHeaderRLP mirrors the 15 legacy fields ethel.decodeHeaderFields expects
 // in order (see internal/ethel/rlp_decode.go) — enough to round-trip a
@@ -84,7 +101,7 @@ type gethHeaderRLP struct {
 // runBench compare against.
 func writeHeaderCompact(t *testing.T, sc *scenario) string {
 	t.Helper()
-	fzDir := filepath.Join(t.TempDir(), "gethfz")
+	fzDir := filepath.Join(persistentTempDir(t, "datc-gethfz-"), "gethfz")
 	fz, err := freezer.New(fzDir, 1)
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +131,7 @@ func writeHeaderCompact(t *testing.T, sc *scenario) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outDir := filepath.Join(t.TempDir(), "headerc")
+	outDir := filepath.Join(persistentTempDir(t, "datc-headerc-"), "headerc")
 	if err := ethel.NewHeaderCompactStage(fz2, outDir).Run(context.Background()); err != nil {
 		t.Fatalf("header compact: %v", err)
 	}
@@ -131,12 +148,11 @@ func writeHeaderCompact(t *testing.T, sc *scenario) string {
 // the e2e harness; old values here only have to decode without error).
 func writeChangesetFreezer(t *testing.T, sc *scenario) string {
 	t.Helper()
-	dir := t.TempDir()
+	dir := persistentTempDir(t, "datc-csfz-")
 	fz, err := freezer.New(dir, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fz.Close()
 	acctT, err := fz.EnsureTable(freezer.TableAccountChanges, "c")
 	if err != nil {
 		t.Fatal(err)
@@ -195,7 +211,59 @@ func writeChangesetFreezer(t *testing.T, sc *scenario) string {
 			t.Fatalf("append storcs %d: %v", n, err)
 		}
 	}
-	return dir
+	if err := fz.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// openCS (main.go) forces batch+compressed read mode, matching the
+	// on-disk shape freezer.CompactAll produces for the real mainnet
+	// acctcs/storcs — not the one-item-per-Append layout above. Compact
+	// into a fresh directory so runBench/runDiag read the fixture exactly
+	// as they would a real archive's changesets.
+	compacted := persistentTempDir(t, "datc-csfz-compact-")
+	if err := freezer.CompactTable(dir, compacted, freezer.TableAccountChanges, "c"); err != nil {
+		t.Fatalf("compact acctcs: %v", err)
+	}
+	if err := freezer.CompactTable(dir, compacted, freezer.TableStorageChanges, "c"); err != nil {
+		t.Fatalf("compact storcs: %v", err)
+	}
+	return compacted
+}
+
+// buildFixtureArchive is buildTestArchive (archive_test.go) with a
+// process-lifetime output directory instead of t.TempDir() — the shared
+// run-worker fixture is read by many tests across the package, well after
+// the test that first built it has finished and its own TempDir was removed.
+func buildFixtureArchive(t *testing.T) (*scenario, string) {
+	t.Helper()
+	sc := getScenario(t)
+	modules.N42Init()
+	kv.ChaindataTablesCfg = modules.N42TableCfg
+	out := persistentTempDir(t, "datc-archive-")
+	db, err := openDatcDB(log.New(), out, 4, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFwd(t, db, sc)
+	o := e2eOpts{sched: schedE0is1, leafSeg: true, batch: 50, stoCache: 64}
+	if err := newTestBuilder(t, db, out, sc, o, 0).run(0, uint64(len(sc.blocks)), o.batch); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	db.Close()
+	stageBin = 8
+	defer func() { stageBin = 1024 }()
+	var contracts []deriveContract
+	for a, d := range map[types.Address]int{sc.big[0]: 2, sc.big[1]: 3, sc.small[2]: 1} {
+		h := keccak(a[:])
+		contracts = append(contracts, deriveContract{h[:], d})
+	}
+	if err := deriveNS(out, out, contracts, 4, 16, deriveOpts{}); err != nil {
+		t.Fatalf("derive-ns: %v", err)
+	}
+	if err := deriveAccParts(out, out, []uint64{40, 120, 250}, 4); err != nil {
+		t.Fatalf("derive-acc-parts: %v", err)
+	}
+	return sc, out
 }
 
 // runFixture bundles every input the run* CLI workers need for the shared
@@ -220,7 +288,7 @@ func newRunFixture(t *testing.T) *runFixture {
 	if cachedRunFixture != nil {
 		return cachedRunFixture
 	}
-	sc, archiveDir := buildTestArchive(t)
+	sc, archiveDir := buildFixtureArchive(t)
 	cachedRunFixture = &runFixture{
 		sc:         sc,
 		archiveDir: archiveDir,
