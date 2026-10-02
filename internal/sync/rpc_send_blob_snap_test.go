@@ -187,4 +187,3 @@ func TestSendGetCodeSendError(t *testing.T) {
 		t.Fatal("expected error when Send fails")
 	}
 }
-
