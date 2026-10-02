@@ -102,3 +102,16 @@ with that instruction.
   off for every transaction after the first and misses the last one. Marked era-unaware / no production caller today;
   `TestReadReceiptByTxHash` pins current behaviour.
 - Dead code found: `internal/replay` `BLSResealer.signMembers`, `modules/state` `Scheduler.beginExecution`.
+| g9 | modules/state/commitment | 53.1 | 72.3 |
+| g9 | lib/commitment | 53.2 | 66.7 |
+
+- **MPT checkpoint does not round-trip** (`modules/state/commitment` `MPTRootComputer.SaveCheckpoint` ->
+  `EncodeTrieState`/`RestoreTrieState`, backed by `lib/commitment/hex_patricia_hashed.go` `EncodeCurrentState`/`SetState`):
+  encoding right after `ComputeRoot` and restoring on the same instance yields a different `RootHash()` (single-account
+  trie: `b80146..` vs `69f2f8..`). The bulk-rebuild resume path cannot reproduce the root it checkpointed. Pinned weakly
+  in `TestPersistentMPTRootComputerCheckpointRoundTrip`; needs the owner's investigation before any resume is trusted.
+- `lib/commitment/commitment.go` `Updates.TouchPlainKeyNoDedup`: the `ModeUpdate` fallback passes a nil callback to
+  `TouchPlainKey`, which calls it unconditionally for a new key -> nil-pointer panic on first use
+  (`TestTouchPlainKeyNoDedupModeUpdateFallbackPanics`).
+- `lib/commitment/hex_patricia_hashed.go` `resetForReuse`: pooled instances keep the CSV metrics prefix set by
+  `EnableCsvMetrics`, so a later borrower can panic opening a stale path. Pool hygiene gap.
