@@ -628,6 +628,17 @@ func (p *StateProcessor) runParallel(concreteHeader *block.Header, blockHash typ
 			return nil, err
 		}
 	}
+	if !lenient {
+		// Publish this block's breakdown for the "blockimport phases" line,
+		// which otherwise has nothing to print for a parallel block.
+		p.lastPhases.Store(&ProcessPhases{
+			Recover:  tRecovered.Sub(tStart),
+			Setup:    tRunStart.Sub(tRecovered),
+			Exec:     tRunEnd.Sub(tRunStart),
+			Collect:  tApplyStart.Sub(tRunEnd),
+			Finalize: time.Since(tApplyStart),
+		})
+	}
 	if execs, aborts := executor.Stats(); executor.FellBack() || numTxs >= 1000 {
 		execNs, valNs := executor.WaveTimes()
 		if lenient && failed > 0 {

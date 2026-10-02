@@ -63,6 +63,13 @@ type ProcessPhases struct {
 	Prep     time.Duration // start-of-block system calls (EIP-4788 / EIP-2935)
 	Exec     time.Duration // pure EVM: the per-transaction ApplyTransaction loop
 	Finalize time.Duration // engine.Finalize: rewards + state root #3
+	// Parallel path only (runParallel, strict mode); zero on the serial path.
+	// Setup is worker readers/IBS/EVM + block start + executor construction;
+	// Collect is the gap between the executor's last wave and applyMVSToIBS.
+	// On the parallel path Exec is the executor's wall time (execute +
+	// validate waves) and Finalize covers applyMVSToIBS through Finalize.
+	Setup   time.Duration
+	Collect time.Duration
 }
 
 // StateProcessor implements Processor and handles state transitions.
