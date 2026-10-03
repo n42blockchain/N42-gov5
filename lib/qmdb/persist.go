@@ -429,6 +429,7 @@ func (t *Tree) resetForLoad() {
 	t.nDirtyTwigs = 0
 	t.deadFlushed = nil
 	t.stagedDead = nil
+	t.flushedResident = 0
 	// A reload replaces the in-memory tree wholesale, so any death stamps still
 	// pending in the recorder describe the ABANDONED tree (e.g. a failed
 	// execution's recordDeath that never reached FlushHistory). Flushing them
@@ -539,6 +540,7 @@ func (t *Tree) loadFrom(g Getter, trustedThrough uint64) error {
 	t.entriesBase = nextSlot
 	t.evicted = nextSlot
 	t.nextSlot = nextSlot
+	t.flushedResident = 0
 	// Drop pre-reload in-memory bookkeeping that refers to the abandoned tree
 	// state. deadFlushed is the load-bearing one: a failed execution marks
 	// flushed slots dead in RAM, its tx rolls back (rows survive on disk), and
