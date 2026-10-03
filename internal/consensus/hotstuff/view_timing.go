@@ -12,9 +12,11 @@
 package hotstuff
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
+	"github.com/n42blockchain/N42/common/types"
 	"github.com/n42blockchain/N42/log"
 )
 
@@ -447,6 +449,14 @@ type ViewPhases struct {
 	JournalPrepareVote  PhaseDuration
 	JournalCommitVote   PhaseDuration
 	JournalCommitVoteAt int64
+
+	// S75 (docs/QS_WIN2_RESIDUAL.md): microsecond-resolution raw timestamps
+	// for the leader propose->votes->QC round trip and the follower's
+	// receive->execute->vote->commit path, correlated to the block hash so
+	// they can be joined against the miner's "miner: block timeline" line.
+	// Always populated (not gated on N42_CONTENTION_DIAG); see USTimeline.
+	BlockHash string
+	USTimeline string
 }
 
 // MsgSendPhase is S17's derived sender-side timing for one message this
@@ -571,7 +581,61 @@ func (t ViewTiming) Phases() ViewPhases {
 	p.JournalCommitVote = durOK(t.Contention.journalCommitVoteMs, t.Contention.journalCommitVoteOK)
 	p.JournalCommitVoteAt = t.Contention.journalCommitVoteAtMs
 
+	// S75 (docs/QS_WIN2_RESIDUAL.md): microsecond raw timestamps, always
+	// populated (unlike the N42_CONTENTION_DIAG=1-gated fields above). Left
+	// empty (and omitted by LogLine) when BlockHash was never set -- e.g. a
+	// view that timed out before a proposal was sent/received.
+	if t.BlockHash != (types.Hash{}) {
+		p.BlockHash = t.BlockHash.Hex()
+		p.USTimeline = t.usTimelineJSON()
+	}
+
 	return p
+}
+
+// usJSON is S75's per-block microsecond timeline payload (one JSON blob
+// embedded in the "hotstuff view timing" line's us=... field). Zero/omitted
+// fields mean that event did not happen on this node for this view (e.g. a
+// leader never sets ProposalReceivedUs/VoteSentUs/BlockExecutedUs).
+type usJSON struct {
+	BlockHash           string `json:"blockHash,omitempty"`
+	ProposalHandedUs    int64  `json:"proposalHandedToNetworkUs,omitempty"`
+	FirstVoteReceivedUs int64  `json:"firstVoteReceivedUs,omitempty"`
+	QCFormedUs          int64  `json:"qcFormedUs,omitempty"`
+	ProposalReceivedUs  int64  `json:"proposalReceivedUs,omitempty"`
+	VoteCastUs          int64  `json:"voteCastUs,omitempty"`
+	BlockExecutedUs     int64  `json:"blockExecutedUs,omitempty"`
+	CommitVoteCastUs    int64  `json:"commitVoteCastUs,omitempty"`
+	CommitQCUs          int64  `json:"commitQcUs,omitempty"`
+}
+
+func usOf(t *time.Time) int64 {
+	if t == nil || t.IsZero() {
+		return 0
+	}
+	return t.UnixMicro()
+}
+
+// usTimelineJSON renders this view's S75 microsecond timeline as a compact
+// JSON string for embedding in "hotstuff view timing" (see LogLine). Never
+// fails: usJSON is a fixed, all-primitive struct.
+func (t ViewTiming) usTimelineJSON() string {
+	j := usJSON{
+		BlockHash:           t.BlockHash.Hex(),
+		ProposalHandedUs:    usOf(t.ProposalSent),
+		FirstVoteReceivedUs: usOf(t.FirstPrepareVoteAt),
+		QCFormedUs:          usOf(t.PrepareQCFormed),
+		ProposalReceivedUs:  usOf(t.ProposalReceived),
+		VoteCastUs:          usOf(t.VoteSent),
+		BlockExecutedUs:     usOf(t.BlockExecuted),
+		CommitVoteCastUs:    usOf(t.CommitVoteSent),
+		CommitQCUs:          usOf(t.CommitQCFormed),
+	}
+	b, err := json.Marshal(j)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // LastCommittedTiming returns a copy of the timing of the most recently
@@ -715,6 +779,14 @@ func (p ViewPhases) LogLine() string {
 	appendMs("jcvMs", p.JournalCommitVote)
 	if p.JournalCommitVote.OK {
 		line += fmt.Sprintf(" jcvAt=%d", p.JournalCommitVoteAt)
+	}
+
+	// S75 (docs/QS_WIN2_RESIDUAL.md): always-on microsecond-resolution
+	// per-block timeline, joinable against the miner's "miner: block
+	// timeline" line via blockHash. Appended last so every field above keeps
+	// its existing position for the harness's python extraction.
+	if p.BlockHash != "" {
+		line += fmt.Sprintf(" blockHash=%s us=%s", p.BlockHash, p.USTimeline)
 	}
 	return line
 }

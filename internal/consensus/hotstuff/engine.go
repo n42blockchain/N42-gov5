@@ -384,6 +384,17 @@ type ViewTiming struct {
 	PrepareVoteCount uint32
 	CommitVoteCount  uint32
 
+	// S75 additions (docs/QS_WIN2_RESIDUAL.md): BlockHash correlates this
+	// view's timing with the miner's "miner: block timeline" line.
+	// FirstPrepareVoteAt is LEADER only: the first Round 1 vote matching the
+	// collector's block hash (processVote), distinct from PrepareQCFormed
+	// (the quorum-completing moment) -- the gap between the two is the
+	// vote-fan-in tail. BlockExecuted is FOLLOWER only: the own-import that
+	// satisfies the current view's pending proposal (onBlockImported).
+	BlockHash          types.Hash
+	FirstPrepareVoteAt *time.Time
+	BlockExecuted      *time.Time
+
 	// Contention is S14's vote-path timing accumulator (diagnostic only,
 	// N42_CONTENTION_DIAG=1; see contentionStamps in view_timing.go). It
 	// rides along with ViewTiming so it resets/snapshots/publishes exactly
