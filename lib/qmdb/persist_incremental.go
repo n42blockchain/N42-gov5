@@ -204,6 +204,7 @@ func (t *Tree) loadIncremental(g Getter, prev uint64) error {
 	t.entriesBase = next
 	t.evicted = next
 	t.nextSlot = next
+	t.flushedResident = 0
 	t.deadFlushed = nil
 	t.stagedDead = nil
 	t.arena = nil

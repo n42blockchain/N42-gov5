@@ -18,7 +18,35 @@
 
 package qmdb
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"sync/atomic"
+)
+
+// coldReads counts entry reads served by a ColdReader (one positional-log
+// GetOne each); residentHits counts reads served from the resident window.
+// Process-wide, observability only (the "qmdb root phases" line). The hit
+// counter is striped over padded cache lines: it is bumped on every state
+// read by up to 32 Block-STM workers.
+var coldReads atomic.Uint64
+
+type paddedCounter struct {
+	n atomic.Uint64
+	_ [56]byte
+}
+
+var residentHits [64]paddedCounter
+
+func noteResidentHit(slot uint64) { residentHits[slot&63].n.Add(1) }
+
+// ReadCounters reports the process-wide totals of cold entry reads and
+// resident-window hits.
+func ReadCounters() (cold, resident uint64) {
+	for i := range residentHits {
+		resident += residentHits[i].n.Load()
+	}
+	return coldReads.Load(), resident
+}
 
 // ColdReader serves entry records that have been evicted from the in-memory
 // window. ColdEntry returns the immutable (keyHash, value) stored at an absolute
@@ -61,7 +89,16 @@ func (t *Tree) SetCold(c ColdReader) { t.cold = c }
 // the cold reader first (e.g. via FlushTo), since entryAt will fault them back
 // from cold. No-op without a cold reader or when nothing new can be evicted.
 // through is typically the flushed-through cursor.
-func (t *Tree) EvictThrough(through uint64) {
+func (t *Tree) EvictThrough(through uint64) { t.evictThrough(through, false) }
+
+// evictThrough is EvictThrough; amortized (the lagged path) reslices instead
+// of copying the retained window into a fresh array unless the dead prefix
+// of the backing array outweighs the retained part. With a K-block lag the
+// retained window is K blocks of entries, and copying it on every block is
+// O(K x block) per block; reslicing makes it O(block) amortized, at the cost
+// of keeping at most one window's worth of dropped records alive until the
+// next copy or append growth.
+func (t *Tree) evictThrough(through uint64, amortized bool) {
 	if t.cold == nil || through <= t.entriesBase {
 		return
 	}
@@ -79,6 +116,14 @@ func (t *Tree) EvictThrough(through uint64) {
 	// prefix (and the old backing array) becomes garbage. A plain reslice would
 	// keep the whole array alive.
 	rem := t.entries[drop:]
+	if amortized && uint64(cap(t.entries)-cap(rem)) <= uint64(len(rem)) {
+		// Clear the dropped records so their values become garbage now.
+		clear(t.entries[:drop])
+		t.entries = rem
+		t.entriesBase += drop
+		t.evicted += drop
+		return
+	}
 	newE := make([]entry, len(rem))
 	copy(newE, rem)
 	t.entries = newE
@@ -98,12 +143,67 @@ func (t *Tree) ResidentEntries() int { return len(t.entries) }
 // those deletes -- and the entries and twig leaves are evicted exactly as
 // EvictThrough/EvictTwigsThrough do after a flush of our own.
 func (t *Tree) AdoptFlushed(through uint64) {
-	t.deadFlushed = t.deadFlushed[:0]
-	t.stagedDead = t.stagedDead[:0]
+	t.AdoptFlushedKeep()
 	t.EvictThrough(through)
 	t.EvictTwigsThrough(through)
+}
+
+// AdoptFlushedKeep is AdoptFlushed without the eviction: the dead-row
+// bookkeeping of a flush another tree performed is dropped, and the entries
+// and twig leaves stay resident until the caller evicts them (the
+// N42_QMDB_EVICT_LAG_BLOCKS residency lag).
+func (t *Tree) AdoptFlushedKeep() {
+	t.deadFlushed = t.deadFlushed[:0]
+	t.stagedDead = t.stagedDead[:0]
 }
 
 // EntriesBase exposes the absolute slot of the window start (slots below it are
 // cold). For tests/diagnostics.
 func (t *Tree) EntriesBase() uint64 { return t.entriesBase }
+
+// EvictLag delays entry eviction by K blocks (N42_QMDB_EVICT_LAG_BLOCKS): each
+// per-block Evict records the flushed-through cursor of that block and evicts
+// entry records only through the cursor recorded K calls earlier,
+// clamped to the current flushed cursor (a revert may have lowered it). Entry
+// records are immutable and a resident entry's liveness is maintained in place
+// by deactivation and revert exactly as for the not-yet-evicted tail, so the
+// lag changes only which reads are served from RAM; roots, undo records and
+// persisted rows are unaffected. K = 0 evicts everything flushed (EvictThrough
+// + EvictTwigsThrough through the current cursor), the original behaviour.
+type EvictLag struct {
+	K    int
+	ring []uint64
+}
+
+// Evict records `through` (this block's flushed cursor) and evicts per the
+// lag. flushedNow is the tree's current flushed cursor (normally == through).
+func (l *EvictLag) Evict(t *Tree, through, flushedNow uint64) {
+	if l.K <= 0 {
+		t.EvictThrough(through)
+		t.EvictTwigsThrough(through)
+		return
+	}
+	// Twig leaves are evicted through the current cursor exactly as without
+	// a lag: FlushTo rewrites the meta and leaf blob of EVERY resident twig on
+	// every flush, so keeping K blocks of twigs resident would multiply the
+	// per-block write volume. Reads need only the entry records.
+	t.EvictTwigsThrough(through)
+	if flushedNow > t.nextSlot {
+		flushedNow = t.nextSlot
+	}
+	t.flushedResident = flushedNow
+	l.ring = append(l.ring, through)
+	if len(l.ring) <= l.K {
+		return
+	}
+	w := l.ring[0]
+	copy(l.ring, l.ring[1:])
+	l.ring = l.ring[:len(l.ring)-1]
+	if w > flushedNow {
+		w = flushedNow
+	}
+	t.evictThrough(w, true)
+}
+
+// Reset forgets the recorded cursors (the next K evictions are skipped).
+func (l *EvictLag) Reset() { l.ring = l.ring[:0] }

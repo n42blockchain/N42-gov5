@@ -339,6 +339,13 @@ type Tree struct {
 	// harmless garbage (never read), just unreclaimed.
 	deadFlushed []uint64
 
+	// flushedResident is the flushed cursor recorded by the last lagged
+	// eviction (EvictLag, K > 0): resident slots below it are ALSO on disk,
+	// so their deactivation schedules a dead-row delete exactly as an evicted
+	// slot's does. Without a lag every flushed slot is evicted before the next
+	// deactivation can reach it, and this stays 0.
+	flushedResident uint64
+
 	// stagedDead holds the deadFlushed slots whose Delete was issued by the last
 	// FlushTo but whose surrounding transaction has not committed yet. CommitFlush
 	// drops them (the deletes are durable); AbortFlush returns them to deadFlushed
@@ -431,6 +438,7 @@ func (t *Tree) entryAt(slot uint64) (entry, bool) {
 	if slot >= t.entriesBase {
 		i := slot - t.entriesBase
 		if i < uint64(len(t.entries)) {
+			noteResidentHit(slot)
 			return t.entries[i], true
 		}
 		return entry{}, false
@@ -438,6 +446,7 @@ func (t *Tree) entryAt(slot uint64) (entry, bool) {
 	if t.cold == nil {
 		return entry{}, false
 	}
+	coldReads.Add(1)
 	kh, v, ok := t.cold.ColdEntry(slot)
 	if !ok {
 		return entry{}, false
@@ -517,6 +526,10 @@ func (t *Tree) deactivate(slot uint64) {
 	if slot >= t.entriesBase {
 		if i := slot - t.entriesBase; i < uint64(len(t.entries)) {
 			t.entries[i].active = false
+		}
+		if slot < t.flushedResident {
+			// Resident only by the eviction lag; its row is on disk.
+			t.deadFlushed = append(t.deadFlushed, slot)
 		}
 	} else {
 		// The row for this slot is already on disk and is now dead: schedule its
@@ -614,6 +627,7 @@ func (t *Tree) GetVia(keyHash Hash, cold ColdReader) (value []byte, found bool, 
 	if slot >= t.entriesBase {
 		i := slot - t.entriesBase
 		if i < uint64(len(t.entries)) {
+			noteResidentHit(slot)
 			return t.entries[i].value, true, false
 		}
 		return nil, false, false
@@ -624,6 +638,7 @@ func (t *Tree) GetVia(keyHash Hash, cold ColdReader) (value []byte, found bool, 
 	if cold == nil {
 		return nil, false, true
 	}
+	coldReads.Add(1)
 	_, v, ok := cold.ColdEntry(slot)
 	if !ok {
 		return nil, false, true
